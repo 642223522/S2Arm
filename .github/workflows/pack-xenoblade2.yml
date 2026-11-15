@@ -1,0 +1,331 @@
+name: pack-xenoblade2
+
+# Xenoblade Chronicles 2 (0100F3400332C000): base + v3.0.1 update + 6 DLC
+# NSPs (~18 GB in Drive folder 异度之刃2), fullscreen test pack, unsigned.
+#
+# TWO-STAGE as of 2026-11-14 (user approved retrying this way):
+# Run 43585076032 (single-stage) FAILED on disk: the xcode-27 runner's
+# 180 Gi disk was already at 136 Gi used / 19 Gi free right after the
+# download step (base image + checkout + tools + 18 GB of NSPs), the
+# unpack added ~15 Gi, and the refresh stage died at 154 Gi / 116 Mi free
+# with "No space left on device" (job log in the goal's hidden_files).
+# So the pack is split across two jobs/runners:
+#   job "extract": download NSPs + keys, run ONLY the shared unpack stage
+#     (pack/stages/unpack.sh extract — the exact producer the oneclick
+#     --from-extract docs name) and pass <out>/extract on as an artifact.
+#     Peak ≈ base+tools ~118 Gi + NSPs 18 Gi + extract ~17 Gi.
+#   job "pack": fresh runner, download the extract artifact + keys only,
+#     then oneclick --from-extract (skips 认包/解包, uses the dir in place,
+#     X=$FX — no second copy) for seeding/refresh/tail. The 18 GB of NSPs
+#     never coexist with the build outputs on this runner.
+# Honest residual risk: the refresh+tail working set for a ~17 Gi game is
+# still large; if job "pack" also fills the disk, the next levers are a
+# single-arch shader build (S2A_PSO_ARCHS for the user's device family)
+# or splitting the DLC set — not another blind retry.
+#
+# Carried over from the single-stage version:
+# - DLC: unpack.sh extract takes base + update + DLC from ONE folder
+#   (nx_unpack --aoc-index, same call oneclick makes) and oneclick seeds
+#   DLC unconditionally (S2A_SEED_AOC=1). No extra flag needed.
+# - NO Mario skin step (Odyssey-only palette); stock touch controls.
+# - Fullscreen in one run: S2A_ALL_CAPS=1 + S2A_WIDEN_AUTO_RUN=0 (layer-3
+#   generic fullscreen, no verified widen row for XC2 — the picture still
+#   needs the user's on-phone verdict after install).
+# - Separate secret DRIVE_IDS_XC2 (Odyssey's DRIVE_IDS stays untouched).
+#   Format, one per line: base= update= dlc1= ... dlc6= keys= titlekeys=
+#   (Drive file IDs; all 8 game files "anyone with the link").
+# - XC2 is NOT in pack/oneclick/titles.tsv, so outputs are named
+#   t0100f3400332c000.ipa + t0100f3400332c000资源包/.
+# - Collect MOVES the resource pack (mv), never copies it.
+# - Delivery (user, 2026-11-14 18:27): 阿里云盘 — whole resource-pack ZIP
+#   + fullscreen IPA + app.entitlements into 移植游戏/异度之刃2/.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pack-xenoblade2
+  cancel-in-progress: false
+
+jobs:
+  extract:
+    runs-on: xcode-27
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools (bash 5, zstd, spirv-cross)
+        run: |
+          brew install bash zstd spirv-cross make meson ninja
+          bash --version | head -1
+          zstd --version
+          which spirv-cross; spirv-cross --version || true
+          which gmake; gmake --version | head -1
+          which meson; meson --version; which ninja; ninja --version
+          which dotnet; dotnet --version || true
+
+      - name: Python venv with the pack's pinned requirements + gdown
+        run: |
+          python3 -m venv "$RUNNER_TEMP/s2a-venv"
+          "$RUNNER_TEMP/s2a-venv/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/s2a-venv/bin/python" -m pip install \
+            -r launchers/macos/requirements-runtime.txt \
+            -r pack/fonts/requirements.txt gdown
+          "$RUNNER_TEMP/s2a-venv/bin/python" -c "import capstone, lz4, numpy, PIL, fontTools; print('venv imports ok')"
+          "$RUNNER_TEMP/s2a-venv/bin/python" -m gdown --version || true
+
+      - name: Download game + DLC + keys from Google Drive (IDs from secret)
+        env:
+          DRIVE_IDS_XC2: ${{ secrets.DRIVE_IDS_XC2 }}
+        run: |
+          set -euo pipefail
+          [ -n "${DRIVE_IDS_XC2:-}" ] || { echo "DRIVE_IDS_XC2 secret is not set"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/game" "$RUNNER_TEMP/keys"
+          BASE=; UPDATE=; DLC1=; DLC2=; DLC3=; DLC4=; DLC5=; DLC6=; KEYS=; TITLEKEYS=
+          while IFS='=' read -r k v; do
+            v=$(printf '%s' "$v" | tr -d ' \t\r')
+            [ -n "$v" ] || continue
+            echo "::add-mask::$v"
+            case "$k" in
+              base) BASE=$v;; update) UPDATE=$v;;
+              dlc1) DLC1=$v;; dlc2) DLC2=$v;; dlc3) DLC3=$v;;
+              dlc4) DLC4=$v;; dlc5) DLC5=$v;; dlc6) DLC6=$v;;
+              keys) KEYS=$v;; titlekeys) TITLEKEYS=$v;;
+            esac
+          done <<< "$DRIVE_IDS_XC2"
+          [ -n "$BASE" ] && [ -n "$KEYS" ] || { echo "DRIVE_IDS_XC2 must contain base= and keys= lines"; exit 1; }
+          dl() { "$RUNNER_TEMP/s2a-venv/bin/python" -m gdown "https://drive.google.com/uc?id=$1" -O "$2"; }
+          dl "$BASE" "$RUNNER_TEMP/game/base.nsp"
+          [ -z "$UPDATE" ] || dl "$UPDATE" "$RUNNER_TEMP/game/update.nsp"
+          [ -z "$DLC1" ] || dl "$DLC1" "$RUNNER_TEMP/game/dlc1.nsp"
+          [ -z "$DLC2" ] || dl "$DLC2" "$RUNNER_TEMP/game/dlc2.nsp"
+          [ -z "$DLC3" ] || dl "$DLC3" "$RUNNER_TEMP/game/dlc3.nsp"
+          [ -z "$DLC4" ] || dl "$DLC4" "$RUNNER_TEMP/game/dlc4.nsp"
+          [ -z "$DLC5" ] || dl "$DLC5" "$RUNNER_TEMP/game/dlc5.nsp"
+          [ -z "$DLC6" ] || dl "$DLC6" "$RUNNER_TEMP/game/dlc6.nsp"
+          dl "$KEYS" "$RUNNER_TEMP/keys/prod.keys"
+          [ -z "$TITLEKEYS" ] || dl "$TITLEKEYS" "$RUNNER_TEMP/keys/title.keys"
+          ls -la "$RUNNER_TEMP/game" "$RUNNER_TEMP/keys"
+          df -h "$RUNNER_TEMP"
+
+      - name: Extract only (shared unpack stage)
+        env:
+          S2A_PYTHON: ${{ runner.temp }}/s2a-venv/bin/python
+          S2A_PY: ${{ runner.temp }}/s2a-venv/bin/python
+        run: |
+          set -euo pipefail
+          bash pack/stages/unpack.sh extract \
+            --src "$RUNNER_TEMP/game" \
+            --out "$RUNNER_TEMP/extract" \
+            --title-id 0100F3400332C000 \
+            --keys "$RUNNER_TEMP/keys/prod.keys" \
+            --log "$RUNNER_TEMP/unpack-stage.log"
+          echo "--- extract tree:"
+          ls "$RUNNER_TEMP/extract"
+          [ -f "$RUNNER_TEMP/extract/exefs/main" ] || { echo "extract missing exefs/main"; exit 1; }
+          [ -f "$RUNNER_TEMP/extract/unpack.tsv" ] || { echo "extract missing unpack.tsv"; exit 1; }
+          du -sh "$RUNNER_TEMP/extract"
+          df -h "$RUNNER_TEMP"
+
+      - name: Upload extract tree for the pack job
+        uses: actions/upload-artifact@v4
+        with:
+          name: xc2-extract
+          path: ${{ runner.temp }}/extract
+          include-hidden-files: true
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Upload stage-1 log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pack-logs-xenoblade2-extract
+          path: ${{ runner.temp }}/unpack-stage.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  pack:
+    needs: extract
+    runs-on: xcode-27
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools (bash 5, zstd, spirv-cross)
+        run: |
+          brew install bash zstd spirv-cross make meson ninja
+          bash --version | head -1
+          zstd --version
+          which spirv-cross; spirv-cross --version || true
+          which gmake; gmake --version | head -1
+          which meson; meson --version; which ninja; ninja --version
+
+      - name: Python venv with the pack's pinned requirements + gdown
+        run: |
+          python3 -m venv "$RUNNER_TEMP/s2a-venv"
+          "$RUNNER_TEMP/s2a-venv/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/s2a-venv/bin/python" -m pip install \
+            -r launchers/macos/requirements-runtime.txt \
+            -r pack/fonts/requirements.txt gdown
+          "$RUNNER_TEMP/s2a-venv/bin/python" -c "import capstone, lz4, numpy, PIL, fontTools; print('venv imports ok')"
+          "$RUNNER_TEMP/s2a-venv/bin/python" -m gdown --version || true
+
+      - name: Download keys only from Google Drive (IDs from secret)
+        env:
+          DRIVE_IDS_XC2: ${{ secrets.DRIVE_IDS_XC2 }}
+        run: |
+          set -euo pipefail
+          [ -n "${DRIVE_IDS_XC2:-}" ] || { echo "DRIVE_IDS_XC2 secret is not set"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/keys"
+          KEYS=; TITLEKEYS=
+          while IFS='=' read -r k v; do
+            v=$(printf '%s' "$v" | tr -d ' \t\r')
+            [ -n "$v" ] || continue
+            echo "::add-mask::$v"
+            case "$k" in
+              keys) KEYS=$v;; titlekeys) TITLEKEYS=$v;;
+            esac
+          done <<< "$DRIVE_IDS_XC2"
+          [ -n "$KEYS" ] || { echo "DRIVE_IDS_XC2 must contain a keys= line"; exit 1; }
+          "$RUNNER_TEMP/s2a-venv/bin/python" -m gdown "https://drive.google.com/uc?id=$KEYS" -O "$RUNNER_TEMP/keys/prod.keys"
+          [ -z "$TITLEKEYS" ] || "$RUNNER_TEMP/s2a-venv/bin/python" -m gdown "https://drive.google.com/uc?id=$TITLEKEYS" -O "$RUNNER_TEMP/keys/title.keys"
+          ls -la "$RUNNER_TEMP/keys"
+          df -h "$RUNNER_TEMP"
+      - name: Download extract tree from the extract job
+        uses: actions/download-artifact@v4
+        with:
+          name: xc2-extract
+          path: ${{ runner.temp }}/extract
+
+      - name: Verify extract tree
+        run: |
+          ls "$RUNNER_TEMP/extract"
+          [ -f "$RUNNER_TEMP/extract/exefs/main" ] || { echo "extract missing exefs/main"; exit 1; }
+          [ -f "$RUNNER_TEMP/extract/unpack.tsv" ] || { echo "extract missing unpack.tsv"; exit 1; }
+          du -sh "$RUNNER_TEMP/extract"
+          df -h "$RUNNER_TEMP"
+
+      - name: Repo prep steps (same as ci.yml / stage-0 probe, venv python)
+        continue-on-error: true
+        run: |
+          PY="$RUNNER_TEMP/s2a-venv/bin/python"
+          "$PY" runtime/rewriter/prepare_deps.py build/rewriter-deps || echo "prep rewriter deps failed"
+          "$PY" pack/fonts/make_open_fonts.py "$RUNNER_TEMP/openfonts" || echo "prep open fonts failed"
+          bash services/systemdata/make_tzdata.sh --prepare-sources || echo "prep tzdata failed"
+          bash compat/fetch_base.sh || echo "prep compat base failed"
+
+      - name: Allow unsigned pack (one-line patch on the checkout only)
+        run: |
+          sed -i '' 's/case $SIGN in adhoc|dev)/case $SIGN in adhoc|dev|none)/' pack/oneclick/oneclick.sh
+          grep -n 'adhoc|dev|none' pack/oneclick/oneclick.sh
+
+      - name: Commit pack-time patches in the runner (ipa.sh needs a clean tree)
+        run: |
+          git add -A
+          git -c user.name="s2arm-pack" -c user.email="pack@localhost" commit -m "pack-time patches: unsigned sign (runner-local, not pushed)" || echo "nothing to commit"
+          echo "dirty files in build dirs after commit (must be empty):"
+          git status --porcelain -- runtime ios graphics translator services compat Makefile || true
+
+      - name: Pre-flight translation-chain tool check (diagnostic)
+        continue-on-error: true
+        run: |
+          echo "spirv-cross identity path: $(which spirv-cross)"
+          "$RUNNER_TEMP/s2a-venv/bin/python" translator/dmsh_chain.py --check-tools || echo "check-tools FAILED (see [RED] lines above)"
+          echo "pre-flight done"
+
+      - name: Pack from extract (unsigned, fullscreen test pack)
+        env:
+          S2A_PYTHON: ${{ runner.temp }}/s2a-venv/bin/python
+          # Runner has 7 GiB RAM; mem_admit's dsh class-floor estimate is
+          # 7.8 GB, so it refuses any unmeasured title with rc=125. Bypass
+          # the admission gate (documented emergency switch); measured dsh
+          # peaks top out at 5.2 GB. If it OOMs, the job just fails.
+          S2A_MEM_ADMIT: '0'
+          # Fullscreen test pack: ipa.sh treats S2A_ALL_CAPS=1 as
+          # --all-caps and ships s2a_caps.all.tsv (widen=1 via the
+          # always-present layer-3 generic fullscreen source). XC2 has no
+          # verified widen row — L3 is the only route, picture judged on
+          # the phone.
+          S2A_ALL_CAPS: '1'
+          # Keep the widen auto-table closed loop OFF (needs external
+          # vision-model keys that live outside the repo).
+          S2A_WIDEN_AUTO_RUN: '0'
+        run: |
+          set +e
+          mkdir -p "$RUNNER_TEMP/out"
+          bash pack/oneclick/oneclick.sh --from-extract "$RUNNER_TEMP/extract" \
+            --keys "$RUNNER_TEMP/keys/prod.keys" \
+            --target ios --sign none \
+            --out "$RUNNER_TEMP/out" \
+            --events "$RUNNER_TEMP/events.jsonl" 2>&1 | tee "$RUNNER_TEMP/pack-console.log"
+          RC=${PIPESTATUS[0]}
+          echo "oneclick exit code: $RC"
+          df -h "$RUNNER_TEMP" || true
+          exit $RC
+
+      - name: Collect deliverables
+        if: always()
+        run: |
+          D="$RUNNER_TEMP/deliver"
+          mkdir -p "$D/logs"
+          cp pack/app.entitlements "$D/" 2>/dev/null || true
+          find "$RUNNER_TEMP/out" -maxdepth 2 -name '*.ipa' -exec cp {} "$D/" \; 2>/dev/null || true
+          # MOVE the resource pack, don't copy it (disk is the constraint).
+          for p in "$RUNNER_TEMP/out"/*资源包; do
+            [ -d "$p" ] && mv "$p" "$D/"
+          done
+          cp "$RUNNER_TEMP/events.jsonl" "$D/logs/" 2>/dev/null || true
+          cp "$RUNNER_TEMP/pack-console.log" "$D/logs/" 2>/dev/null || true
+          cp -R "$RUNNER_TEMP/out/logs" "$D/logs/out" 2>/dev/null || true
+          if [ -d "$RUNNER_TEMP/out/roots/.failed" ]; then
+            mkdir -p "$D/logs/failed"
+            find "$RUNNER_TEMP/out/roots/.failed" -type f -name '*.log' -size -5M -exec cp {} "$D/logs/failed/" \; 2>/dev/null || true
+            find "$RUNNER_TEMP/out/roots/.failed" -type f | head -40 > "$D/logs/failed/FILES.txt" 2>/dev/null || true
+            mkdir -p "$D/logs/libbuild"
+            for d in ~/.s2arm/run/s2arm/cache/*/*.tmp; do [ -d "$d" ] && cp "$d"/*.log "$D/logs/libbuild/" 2> /dev/null || true; done
+          fi
+          for r in "$RUNNER_TEMP/out/roots"/*@*; do
+            [ -d "$r" ] || continue
+            for f in s2a_caps.tsv s2a_caps.all.tsv widen_sites.tsv caps.log; do
+              cp "$r/$f" "$D/logs/" 2>/dev/null || true
+            done
+          done
+          {
+            echo "# pack-xenoblade2 result (two-stage, from-extract)"
+            echo "- widen verdict (shipped caps must be the .all list, widen=1):"
+            grep -h '^widen' "$D/logs/s2a_caps.all.tsv" 2>/dev/null || echo "s2a_caps.all.tsv not collected"
+            grep -h '宽屏验证标记检查' "$RUNNER_TEMP/out/logs"/*.log "$D/logs/out"/*.log 2>/dev/null | head -2 || echo "widen check line not found in logs"
+            echo "- release caps for comparison:"
+            grep -h '^widen' "$D/logs/s2a_caps.tsv" 2>/dev/null || echo "s2a_caps.tsv not collected"
+            echo "- deliverables:"
+            find "$D" -maxdepth 2 -print | head -50
+            echo "- sizes:"
+            du -sh "$D"/* 2>/dev/null || true
+            echo "- events (result lines):"
+            grep '"ev":"result"' "$RUNNER_TEMP/events.jsonl" 2>/dev/null || echo "no result event (pack did not finish)"
+            echo "- disk:"
+            df -h "$RUNNER_TEMP" || true
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload deliverables (unsigned ipa + resource pack + entitlements + logs)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s2arm-xenoblade2-fullscreen-unsigned
+          path: ${{ runner.temp }}/deliver
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Upload logs only (kept longer, contains no game data)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pack-logs-xenoblade2
+          path: ${{ runner.temp }}/deliver/logs
+          if-no-files-found: warn
+          retention-days: 7
