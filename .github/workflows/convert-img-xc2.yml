@@ -1,0 +1,114 @@
+name: convert-img-xc2
+
+# Convert the already-built Xenoblade 2 loose resource pack (artifacts of
+# run 43589781025) into the single-file IMG form the phone imports.
+# The oneclick CLI pack only outputs the loose folder; the IMG conversion
+# (pack/img.py convert) is the GUI launcher's library step, done here
+# because the user is phone-only and the loose folder cannot be imported.
+#
+# - convert needs the product root's ORIGINAL romfs: taken from the
+#   xc2-extract artifact (the untouched unpack tree), assembled as a
+#   minimal root (romfs/ only; gid passed explicitly, no ui_overlay.tsv,
+#   so orig_romfs uses it as-is -- the same original bytes deliver()
+#   would restore from the seed).
+# - export then writes ONE .img = game.img + shader library +
+#   romfs.s2aidx + game.imgmap (the self-sign form; game.img alone lacks
+#   the shader library and boots to a black screen, per pack/jobs/install.py).
+# - Output: one artifact with the export .img + the run's unsigned IPA +
+#   app.entitlements + conversion logs. Game data travels only via
+#   same-repo run artifacts; nothing is committed.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: convert-img-xc2
+  cancel-in-progress: false
+
+jobs:
+  convert:
+    runs-on: xcode-27
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools (bash 5 for the repo's shell tools)
+        run: |
+          brew install bash zstd
+          bash --version | head -1
+          which dotnet; dotnet --version || true
+
+      - name: Download XC2 deliverables artifact (loose pack + ipa)
+        uses: actions/download-artifact@v4
+        with:
+          name: s2arm-xenoblade2-fullscreen-unsigned
+          run-id: 43589781025
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ runner.temp }}/deliver-art
+
+      - name: Download XC2 extract artifact (original romfs source)
+        uses: actions/download-artifact@v4
+        with:
+          name: xc2-extract
+          run-id: 43589781025
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ runner.temp }}/extract-art
+
+      - name: Assemble root + convert pack to IMG form
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/imgroot"; mkdir -p "$ROOT" "$RUNNER_TEMP/imglogs"
+          [ -d "$RUNNER_TEMP/extract-art/romfs" ] || { echo "extract artifact has no romfs/ at top level:"; ls "$RUNNER_TEMP/extract-art"; exit 1; }
+          mv "$RUNNER_TEMP/extract-art/romfs" "$ROOT/romfs"
+          rm -rf "$RUNNER_TEMP/extract-art"
+          PACK=$(find "$RUNNER_TEMP/deliver-art" -maxdepth 2 -type d -name '*资源包' | head -1)
+          [ -n "$PACK" ] || { echo "resource pack folder not found:"; find "$RUNNER_TEMP/deliver-art" -maxdepth 2 | head -30; exit 1; }
+          echo "pack: $PACK"
+          echo "root romfs files: $(find "$ROOT/romfs" -type f | wc -l)"
+          # Disk is the binding constraint (180 Gi runner; a previous run
+          # died writing game.img.part with only 7.8 Gi free). The pack's
+          # romfs.files/ mirror (~13.4 GB) is never read by convert -- it
+          # builds the RomFS segment from the extract tree's original
+          # romfs above -- so drop the mirror to make room for game.img.
+          # Guard: only when the pack really is the virtual-RomFS form
+          # (its index.tsv carries a romfs.img row).
+          if grep -q '^romfs\.img' "$PACK/index.tsv"; then
+            echo "dropping pack romfs.files mirror (not read by convert):"
+            du -sh "$PACK/romfs.files" || true
+            rm -rf "$PACK/romfs.files"
+          else
+            echo "index.tsv has no romfs.img row; keeping the pack as-is"
+          fi
+          df -h "$RUNNER_TEMP"
+          python3 pack/img.py convert "$ROOT" "$PACK" --gid 0100F3400332C000 2>&1 | tee "$RUNNER_TEMP/imglogs/convert.log"
+          rm -rf "$ROOT"
+          ls -la "$PACK"
+          head -c 8 "$PACK/game.img"; echo " <- game.img magic (want S2AIMG01)"
+          df -h "$RUNNER_TEMP"
+
+      - name: Export single-file IMG + assemble ship dir
+        run: |
+          set -euo pipefail
+          PACK=$(find "$RUNNER_TEMP/deliver-art" -maxdepth 2 -type d -name '*资源包' | head -1)
+          SHIP="$RUNNER_TEMP/ship"; mkdir -p "$SHIP"
+          python3 pack/img.py export "$PACK" "$SHIP/异度之刃2.img" 2>&1 | tee "$RUNNER_TEMP/imglogs/export.log"
+          python3 pack/img.py ls "$SHIP/异度之刃2.img" > "$RUNNER_TEMP/imglogs/img-ls.txt" 2>&1 || true
+          echo "img entries: $(wc -l < "$RUNNER_TEMP/imglogs/img-ls.txt")"
+          head -8 "$RUNNER_TEMP/imglogs/img-ls.txt"
+          find "$RUNNER_TEMP/deliver-art" -maxdepth 2 -name '*.ipa' -exec cp {} "$SHIP/" \;
+          find "$RUNNER_TEMP/deliver-art" -maxdepth 2 -name 'app.entitlements' -exec cp {} "$SHIP/" \;
+          cp -R "$RUNNER_TEMP/imglogs" "$SHIP/logs"
+          du -sh "$SHIP"/*; df -h "$RUNNER_TEMP"
+
+      - name: Upload IMG deliverables
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xc2-img-deliver
+          path: ${{ runner.temp }}/ship
+          if-no-files-found: warn
+          retention-days: 3
