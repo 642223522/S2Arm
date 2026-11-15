@@ -147,6 +147,8 @@ if [ "$TIER" != doc ]; then
 # shell 语法用 macOS 自带 /bin/bash 3.2 查全仓库 .sh（10-23 内测朋友：干净 Mac 上 tools/dev_run.sh、tests/gc_test.sh 在 3.2 下语法红——$( ) 里的 case 分支 3.2 解析不了，
 #   我们机器 PATH 上是 Homebrew bash 5 一直绿）；新旧都过才算过，没有 /bin/bash 的机器退回当前 bash
 add 语法 'bad=0; SB=/bin/bash; [ -x "$SB" ] || SB=bash; while IFS= read -r f; do [ -f "$f" ] || continue; "$SB" -n "$f" 2> /dev/null && bash -n "$f" || { echo "语法错 ${f}（$("$SB" -n "$f" 2>&1 | head -1)）"; bad=1; }; done < <(git -c core.quotepath=off ls-files "*.sh" | grep -v "^compat/tree/"); for f in tools/*.py tests/*.py pack/*.py; do [ -f "$f" ] || continue; python3 -m py_compile "$f" || bad=1; done; n=$(ls tools/*.sh tests/*.sh pack/*.sh tools/*.py tests/*.py pack/*.py 2>/dev/null | wc -l | tr -d " "); echo "全部脚本可解析 → $([ $bad = 0 ] && echo 是 || echo 否)（$n 个）"; exit $bad'
+# 跨平台 LDN 设置接线检查：保持 iOS / Host 的最小接线测试进入通用门禁。
+add "LDN 联机设置接线" 'python3 tests/ldn_manual_settings_test.py'
 CH=(${GATE_CHANGED:-}); RT=0; [ -f tools/gate_route.py ] && [ ${#CH[@]} -gt 0 ] && RT=1   # 列车单测的假仓库没有路由器：全跑
 route() { GATE_TIER=$TIER python3 tools/gate_route.py "$1" ${CH[@]+"${CH[@]}"}; }
 [ $RT = 1 ] && echo "路由：$(route why)"
