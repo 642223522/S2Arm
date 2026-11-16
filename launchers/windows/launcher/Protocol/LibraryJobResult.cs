@@ -51,7 +51,7 @@ public sealed record LibraryGame(string Id, string Name, string Version, string 
     IReadOnlyList<string> Missing, bool IphoneReady = false, double? IphoneInstalledAt = null,
     bool IphoneFree = false, IReadOnlyList<GamePackage>? Packages = null, bool CustomName = false, bool CustomCover = false,
     GameLocation? Location = null, bool IphoneRestorable = false, GameSizes? Sizes = null, bool NeedsKeys = false, string IphoneInstallDevice = "",
-    bool OnPhone = false, string Banner = "", bool SGrade = false, bool IphoneExportable = false)   // SGrade：已打上 S 级优化（catalog sgrade，pack/jobs/library.py sgrade_badge）→ 封面左上角金色 S（同 Mac）
+    bool OnPhone = false, string Banner = "", bool SGrade = false, bool IphoneExportable = false, DownstreamOffer? Downstream = null)   // SGrade：已打上 S 级优化（catalog sgrade，pack/jobs/library.py sgrade_badge）→ 封面左上角金色 S（同 Mac）
 {
     /// <summary>Storage state (library layout v3): ok / offline / missing / none; older catalogues without the field read as none.</summary>
     public string LocationState => Location?.State ?? "none";
@@ -95,6 +95,43 @@ public sealed record LibraryGame(string Id, string Name, string Version, string 
         (Packages ?? []).Where(p => p.Type == type).OrderByDescending(p => p.Version).FirstOrDefault() is { } pkg
             ? (pkg.Display.Length > 0 ? pkg.Display : "v" + pkg.Version) : null;
 };
+
+/// <summary>下游深度方案（catalog 每款的 downstream，pack/jobs/downstream.py describe；同 Mac DownstreamOffer）：方案、能不能选与原因、
+/// 确认页文案（按语言）、玩家上次的选择（null = 没选过，导出 iPhone 前弹确认页；"" = 仍用原版）。</summary>
+public sealed record DownstreamOffer(string Id, string Name, bool Eligible, IReadOnlyDictionary<string, string> Reason,
+    IReadOnlyDictionary<string, DownstreamOffer.Copy> Copies, string? Choice)
+{
+    public sealed record Copy(string Title, string Body, IReadOnlyList<string> Points, string Recommend, string Original);
+
+    /// <summary>界面语言 → 登记表的语言键：简 / 繁 → zh，其余取前两位；没有这门语言退回英文、再退回中文</summary>
+    private static T? Pick<T>(IReadOnlyDictionary<string, T> map, string language) where T : class =>
+        (language.StartsWith("zh", StringComparison.Ordinal) ? map.GetValueOrDefault("zh") : map.GetValueOrDefault(language.Length >= 2 ? language[..2] : language))
+        ?? map.GetValueOrDefault("en") ?? map.GetValueOrDefault("zh");
+    public Copy? Text(string language) => Pick(Copies, language);
+    public string Why(string language) => Pick(Reason, language) ?? "";
+
+    /// <summary>缺 id / name 或不是对象 → null（这款没有下游方案）</summary>
+    public static DownstreamOffer? Parse(JsonElement e)
+    {
+        if (e.ValueKind != JsonValueKind.Object) return null;
+        static string S(JsonElement o, string k) => o.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
+        var id = S(e, "id"); var name = S(e, "name");
+        if (id.Length == 0 || name.Length == 0) return null;
+        var reason = new Dictionary<string, string>();
+        if (e.TryGetProperty("reason", out var r) && r.ValueKind == JsonValueKind.Object)
+            foreach (var p in r.EnumerateObject()) if (p.Value.ValueKind == JsonValueKind.String) reason[p.Name] = p.Value.GetString() ?? "";
+        var copies = new Dictionary<string, Copy>();
+        if (e.TryGetProperty("copy", out var c) && c.ValueKind == JsonValueKind.Object)
+            foreach (var p in c.EnumerateObject())
+                if (p.Value.ValueKind == JsonValueKind.Object)
+                    copies[p.Name] = new(S(p.Value, "title"), S(p.Value, "body"),
+                        p.Value.TryGetProperty("points", out var pts) && pts.ValueKind == JsonValueKind.Array
+                            ? pts.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString() ?? "").ToList() : [],
+                        S(p.Value, "recommend"), S(p.Value, "original"));
+        string? choice = e.TryGetProperty("choice", out var ch) && ch.ValueKind == JsonValueKind.String ? ch.GetString() ?? "" : null;
+        return new(id, name, e.TryGetProperty("eligible", out var el) && el.ValueKind == JsonValueKind.True, reason, copies, choice);
+    }
+}
 
 /// <summary>catalog phoneUpdates 的一项（pack/jobs/install.py phone_updates）：按本机装机记录，这台手机上的 S2Arm 壳比本版旧。
 /// Games = 记录里的各款，Stale = 新壳认不得、要按新版重新出包的款（都是 {gameId, name}）。</summary>
@@ -173,7 +210,8 @@ public sealed record LibraryCatalog(IReadOnlyList<LibraryGame> Games, bool KeysR
                     game.TryGetProperty("onPhone", out var onPhone) && onPhone.ValueKind == JsonValueKind.True,
                     game.TryGetProperty("banner", out var banner) && banner.ValueKind == JsonValueKind.String ? banner.GetString() ?? "" : "",   // 设备记录里装在手机上：删除确认多写一句
                     game.TryGetProperty("sgrade", out var sgr) && sgr.ValueKind == JsonValueKind.True,
-                    game.TryGetProperty("iphoneExportable", out var iex) && iex.ValueKind == JsonValueKind.True));
+                    game.TryGetProperty("iphoneExportable", out var iex) && iex.ValueKind == JsonValueKind.True,
+                    game.TryGetProperty("downstream", out var ds) ? DownstreamOffer.Parse(ds) : null));
             }
             var keys = result.GetProperty("keys");
             return new(games.AsReadOnly(), keys.GetProperty("ready").GetBoolean(),

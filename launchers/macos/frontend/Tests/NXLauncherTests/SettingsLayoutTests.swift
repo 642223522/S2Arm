@@ -501,6 +501,37 @@ import S2ArmAppleAdapter
         XCTAssertEqual(fixture.runner.requests.filter { $0["operation"] as? String == "export" }.count, 1, "长按不能重复开始出包")
     }
 
+    /// #1272：选过方案后出包页看得到选的是哪套、能「更改」（弹同一个确认页，不顺带开出包）；没选过不出这一行（导出 iPhone 时确认页会问）
+    func testExportPageShowsDownstreamChoiceWithChange() async throws {
+        let fixture = try SettingsFixture()
+        defer { fixture.remove() }
+        for choice in [nil, ""] as [String?] {
+            fixture.runner.catalogDownstreamChoice = choice
+            fixture.model.refresh()
+            for _ in 0..<200 where fixture.model.games.first?.downstream?.choice != choice || fixture.model.games.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+            let game = try XCTUnwrap(fixture.model.games.first)
+            XCTAssertEqual(game.downstream?.choice, choice)
+            let padFocus = PadFocus()
+            let page = AnyView(ExportView(model: fixture.model, covers: CoverCache(), game: game, install: {})
+                .environmentObject(padFocus).padScope("main", padFocus).frame(width: 1120, height: 900))
+            let (host, window) = try await render(page, fixture: fixture, language: .zh)
+            let navigation = fixture.navigation
+            navigation.source.controllers = { [] }; navigation.attach(window); navigation.source.stop()
+            defer { navigation.detach(); window.close() }
+            let has = navigation.controlTargets(in: window).contains { $0.id == "export.downstream.change" }
+            XCTAssertEqual(has, choice != nil, "选过才出「更改」（choice \(String(describing: choice))）")
+            if choice != nil {
+                try snapshot(host, "export-downstream-change-zh")
+                let before = fixture.runner.requests.count
+                navigation.focus("export.downstream.change"); navigation.handle(.confirm)
+                for _ in 0..<100 where fixture.model.downstreamPromptFor == nil { try await Task.sleep(for: .milliseconds(10)) }
+                XCTAssertEqual(fixture.model.downstreamPromptFor, game.id, "「更改」弹确认页")
+                XCTAssertFalse(fixture.runner.requests.dropFirst(before).contains { $0["operation"] as? String == "export" }, "更改不顺带开出包")
+                fixture.model.downstreamPromptFor = nil
+            }
+        }
+    }
+
     func testExportNameControllerOpensKeyboardWithoutRenameAlert() async throws {
         let fixture = try SettingsFixture()
         defer { fixture.remove() }
@@ -1797,6 +1828,12 @@ private final class SettingsRunner: JobProcessRunner {
         get { lock.withLock { gameCount } }
         set { lock.withLock { gameCount = newValue } }
     }
+    private var downstreamChoice: String? = nil
+    /// 夹具款上次选的下游方案（nil = 没选过；"" = 仍用原版）
+    var catalogDownstreamChoice: String? {
+        get { lock.withLock { downstreamChoice } }
+        set { lock.withLock { downstreamChoice = newValue } }
+    }
     private var playtime: [String: Any]? = nil
     var catalogPlaytime: [String: Any]? {
         get { lock.withLock { playtime } }
@@ -1819,6 +1856,7 @@ private final class SettingsRunner: JobProcessRunner {
                 var game: [String: Any] = ["id": index == 0 ? "fixture" : "fixture-\(index)", "name": "Original UI fixture \(index)", "cover": catalogCover, "ready": true, "needsPreparation": catalogNeedsPreparation, "missing": [],
                  "downstream": ["id": "original-demo", "name": "Original Demo", "eligible": true, "copy": copy]]
                 if index == 0, let playtime = catalogPlaytime { game["playtime"] = playtime }
+                if let choice = catalogDownstreamChoice { game["downstream"] = ["id": "original-demo", "name": "Original Demo", "eligible": true, "copy": copy, "choice": choice] }
                 return game
             }]
         }

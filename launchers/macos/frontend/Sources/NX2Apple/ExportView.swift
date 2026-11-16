@@ -26,6 +26,7 @@ struct ExportView: View {
                 ExportGameHeader(model: model, covers: covers, game: game)
                 // The patch and Mod choices stay in the setup page.
                 SGradeCard(model: model, gameID: game.id)
+                downstream
                 platforms
             }
         } actions: {
@@ -36,6 +37,22 @@ struct ExportView: View {
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             LauncherView.fileURLs(providers) { urls in model.batchSeed = game.id; model.importGames(urls, partialResults: true) }
             return true
+        }
+    }
+
+    // ---- 下游深度方案（#1272）：选过之后在这里看得到选的是哪套、能改。没选过不出（导出 iPhone 时确认页会问）----
+    //   「更改」弹同一个确认页（DownstreamConfirmSheet）；没有待出的单，选完只记下选择，下次导出 iPhone 按新选择走
+    @ViewBuilder private var downstream: some View {
+        if let offer = game.downstream, let choice = offer.choice {
+            let lang = loc.lang.sharedCode
+            let current = choice.isEmpty ? (offer.text(lang)?.original ?? "") : offer.name
+            CardGroup(BackendText.launcherText("export.downstream.group", language: lang), footnote: BackendText.launcherText("export.downstream.note", language: lang)) {
+                CardRow(current) {
+                    Button(BackendText.launcherText("export.downstream.change", language: lang)) { model.downstreamPromptFor = game.id }
+                        .controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy).controllerID("export.downstream.change")
+                }
+                .accessibilityIdentifier("export.downstream")
+            }
         }
     }
 
