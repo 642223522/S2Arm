@@ -35,7 +35,7 @@ uint64_t s2a_guest_anon_budget(const char *e, uint64_t room, uint64_t margin, ui
 uint64_t s2a_guest_next_budget(const char *e, uint64_t room, uint64_t margin, uint64_t first_host, int died, int have, uint64_t prev_b, uint64_t hmin, int *src);
 uint64_t s2a_guest_overflow_budget_ios(const char *e, uint64_t room, uint64_t margin, int died, int *src, uint64_t *pb, uint64_t *ph);
 int s2a_guest_budget_rec_read(uint64_t *b, uint64_t *hmin); void s2a_guest_budget_note(uint64_t avail);
-void s2a_guest_commit(uint64_t a, uint64_t n); void s2a_guest_file_carve(uint64_t a, uint64_t n); int s2a_window_session_reset(void); void s2a_guest_backing_log(void);
+void s2a_guest_commit(uint64_t a, uint64_t n); void s2a_guest_file_carve(uint64_t a, uint64_t n); int s2a_window_session_reset(void); void s2a_guest_backing_log(void); void s2a_guest_backing_sum(uint64_t sum[4]); void s2a_window_trim(uint64_t size);
 static long long fp(void) { task_vm_info_data_t i; mach_msg_type_number_t c = TASK_VM_INFO_COUNT; task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&i, &c); return (long long)i.phys_footprint; }
 static int bad; static uint64_t b;
 #define CHECK(c, ...) do { if (c) { printf("✓ "); } else { printf("✗ "); bad++; } printf(__VA_ARGS__); putchar('\n'); fflush(stdout); } while (0)
@@ -50,6 +50,7 @@ static int open_write(uint64_t p, uint64_t n, uint8_t v) {
     return file_byte(p) == v && file_byte(p + n - 4096) == v;
 }
 static size_t nonzero(uint64_t p, uint64_t n) { size_t k = 0; for (uint64_t o = 0; o < n; o += 4096) k += ((uint8_t *)(uintptr_t)p)[o] != 0; return k; }
+#define GCH (32ull << 20)   // 同 vawin.c GCHUNK
 int main(void) {
     CHECK(s2a_guest_anon_budget(NULL, 6141 * MB, 512 * MB, 2048 * MB) == 3581 * MB, "① 预算 = 6141 − 512 − 2048 = 3581 MB（得 %llu）", (unsigned long long)(s2a_guest_anon_budget(NULL, 6141 * MB, 512 * MB, 2048 * MB) / MB));
     CHECK(s2a_guest_anon_budget(NULL, 2000 * MB, 512 * MB, 2048 * MB) == 0, "① 剩余 2000 MB 不够余量 + 宿主：预算 0（整段进文件）");
@@ -155,6 +156,13 @@ int main(void) {
             CHECK(v == 2629 * MB, "⑫ S2A_GUEST_FILE_OVERFLOW_HOST_MB=3000 → 2629（得 %llu MB）", (unsigned long long)(v / MB));
             unlink(rp); rmdir(d); unsetenv("S2A_GUEST_MEM_PEAK");
         }
+    }
+    {   // ⑬ 窗口收尾只缩窗口、块表不缩（11-16 真机：心跳合计成了 2^64 附近）：收尾后各状态合计必须正好等于收尾后的窗口大小
+        uint64_t b0, z0; s2a_window_get(&b0, &z0); uint64_t keep = (z0 / 2) & ~(uint64_t)(GCH - 1) ;
+        s2a_window_trim(keep + GCH / 2);   // 收在半块处：最后一块只剩半块
+        uint64_t b1, z1, sm[4]; s2a_window_get(&b1, &z1); s2a_guest_backing_sum(sm);
+        CHECK(z1 == keep + GCH / 2 && sm[0] + sm[1] + sm[2] + sm[3] == z1, "⑬ 收尾后合计 %llu MB = 窗口 %llu MB（收尾前 %llu MB）",
+              (unsigned long long)((sm[0] + sm[1] + sm[2] + sm[3]) >> 20), (unsigned long long)(z1 >> 20), (unsigned long long)(z0 >> 20));
     }
     printf("%s t_guest_file_overflow：%d 项不符\n", bad ? "✗" : "✓", bad);
     return bad != 0;

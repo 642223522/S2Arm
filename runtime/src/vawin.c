@@ -688,7 +688,8 @@ void s2a_guest_file_carve(uint64_t a, uint64_t n) {
     if (!(e && *e) && !g_low_tier) LOG("客体内存文件后备：挖区判据 离单进程上限剩余 %llu MB ≥ %llu MB", (unsigned long long)(g_gfile_room >> 20), (unsigned long long)(room_min >> 20));
 }
 // 一块的窗口范围 [*lo, *hi)
-static void gchunk_span(uint64_t i, uint64_t *lo, uint64_t *hi) { uint64_t end = g_base + g_size; *lo = g_base + i * GCHUNK; *hi = *lo + GCHUNK < end ? *lo + GCHUNK : end; }
+//   窗口收尾（s2a_window_trim）只缩 g_size、块表不缩：表尾那些块落在窗口外，范围取空（不夹的话 hi < lo，心跳合计减成 2^64 附近，11-16 真机读数）
+static void gchunk_span(uint64_t i, uint64_t *lo, uint64_t *hi) { uint64_t end = g_base + g_size, l = g_base + i * GCHUNK; *lo = l < end ? l : end; *hi = *lo + GCHUNK < end ? *lo + GCHUNK : end; }
 // 换成文件（持 g_gchunk_mu）：[lo, hi) 里仍是匿名占位（不可访问、没有内容 = 没有后备对象、最大权限含读写）的段按同偏移盖成文件的不可访问映射；
 //   别的段不动（装载器映射的模块 / 代码页、vm_remap 的别名、已有内容的页）——同旧版「整段先进文件、之后它们盖在上面」的结果；挖区那部分跳过。返回没换成的段数
 static int map_file_none(uint64_t lo, uint64_t hi) {
@@ -772,13 +773,17 @@ int s2a_guest_in_file(uint64_t a, uint64_t n) {
     return 1;
 }
 // 心跳调（ios/app.m、macos/heartbeat_mac.c，同 [写盘] 每 10 秒）：开着文件后备时报各状态的块合计
+// 各状态块的字节合计（下标 GC_*；单测 ⑬ 核窗口收尾后合计 = 窗口大小）
+void s2a_guest_backing_sum(uint64_t sum[4]) {
+    sum[0] = sum[1] = sum[2] = sum[3] = 0;
+    for (uint64_t i = 0; i < g_gchunk_n; i++) { uint64_t cl, ch; gchunk_span(i, &cl, &ch); sum[gc_get(i) & 3] += ch - cl; }
+}
 void s2a_guest_backing_log(void) {
     if (g_gfd < 0 || !g_gchunk) return;
 #ifdef __IPHONE_OS_VERSION_MIN_REQUIRED
     s2a_guest_budget_note(os_proc_available_memory());   // 本局离上限剩余最小值 → 本款预算记录（下一局按它定预算）
 #endif
-    uint64_t sum[4] = {0};
-    for (uint64_t i = 0; i < g_gchunk_n; i++) { uint64_t cl, ch; gchunk_span(i, &cl, &ch); sum[gc_get(i) & 3] += ch - cl; }
+    uint64_t sum[4]; s2a_guest_backing_sum(sum);
     LOG("[客体后备] %s：匿名块 %llu MB（已计 %llu MB / 预算 %llu MB）、文件块 %llu MB、挖区未放开 %llu MB、未定 %llu MB；本局离上限剩余最小 %lld MB（-1 = 没读过）", g_gwhole ? "整段进文件" : "溢出模式",
         (unsigned long long)(sum[GC_ANON] >> 20), (unsigned long long)(g_anon_used >> 20), (unsigned long long)(g_anon_budget >> 20),
         (unsigned long long)(sum[GC_FILE] >> 20), (unsigned long long)(sum[GC_CARVE] >> 20), (unsigned long long)(sum[GC_UNDEC] >> 20), g_hmin == UINT64_MAX ? -1ll : (long long)(g_hmin >> 20));
