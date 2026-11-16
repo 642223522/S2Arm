@@ -422,6 +422,21 @@ static int fr_map_mem(const char *path, uint64_t wb, uint64_t ws, uint64_t *byte
     }
     if (ok && cur_hi > cur_lo && mmap((void *)cur_lo, cur_hi - cur_lo, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0) == MAP_FAILED) ok = 0;
     if (!ok) { MLOG("【红】 回放：映射游戏内存段失败（errno %d）", errno); fclose(f); return 0; }
+    // 补洞（11-15）：录像只记录时可读的映射段，录时没映射的地址（例：池销毁后解除映射，贴图登记里仍留着指向池对象的指针）回放时是空洞，
+    //   宿主一读就 SIGBUS（时之笛一帧：pool_tex_obj → tex_storage_live 读 p->magic 崩在 0x7447001068）。真机上游戏地址窗口一直有映射，读到的不是 POOL 就判失效。
+    //   所以窗口里没映射 / 只占了地址（PROT_NONE）的区间补成匿名零页：读到 0、判失效，和真机一致；已有映射的一律不动（同 fr_claimable）。匿名映射按需分配，不占实存
+    { uint64_t a = wb, end = wb + ws, filled = 0, nf = 0;
+      while (a < end) {
+          vm_address_t r = (vm_address_t)a; vm_size_t rs = 0; vm_region_basic_info_data_64_t info; mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t obj = MACH_PORT_NULL;
+          int kr = vm_region_64(mach_task_self(), &r, &rs, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &cnt, &obj) == KERN_SUCCESS;
+          uint64_t lo = kr ? (uint64_t)r : end; if (lo > end) lo = end;
+          if (lo > a && mmap((void *)a, lo - a, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0) != MAP_FAILED) { filled += lo - a; nf++; }   // 没映射的空隙
+          if (!kr || lo >= end) break;
+          uint64_t s0 = lo > a ? lo : a, hi = (uint64_t)r + rs > end ? end : (uint64_t)r + rs;
+          if (info.protection == VM_PROT_NONE && hi > s0 && mmap((void *)s0, hi - s0, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0) != MAP_FAILED) { filled += hi - s0; nf++; }   // 只占了地址的
+          a = hi > a ? hi : a + (uint64_t)getpagesize();
+      }
+      if (nf) MLOG("回放：地址窗口里录时没映射的 %llu 段共 %llu MB 补成零页（读旧指针得 0、判失效，同真机）", (unsigned long long)nf, (unsigned long long)(filled >> 20)); }
     // 第二遍：内容。窗口外的（命令记录宿主块）按原地址映射，占不到原地址就报红
     fseek(f, pos, SEEK_SET);
     for (;;) {

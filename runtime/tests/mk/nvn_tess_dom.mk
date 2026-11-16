@@ -1,6 +1,6 @@
 # native-test-nvn_tess_dom：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += nvn_tess_dom
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # 曲面绘制的 hull 核按域载入（审计 #814 F-tess-dom-first）：有该域的核（<key>_b 或 <key>_b_t<域>）就用那份画、真画出可手算的像素；没有的 hull × 域组合跳过、计数、每组合报红一次
 NVN_TESS_DOM_LIB := $(BUILD)/tests/tess_dom
 $(NVN_TESS_DOM_LIB)/4444444444444444_b_t1.metallib: graphics/nvn/tests/t_nvn_tess_dom_t1.metal

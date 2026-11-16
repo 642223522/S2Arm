@@ -27,6 +27,13 @@ NSUserDefaults *s2a_ios_settings_defaults(void);   // settings.m：诊断局开�
 #include "s2a_sesdiag.h"
 #include "diag_upload.h"   // 上传给开发者：结果判断（纯 C，单测 t_diag_upload）
 
+// 弱链接[lab]：s2a_foreign_scan（runtime/src/pack_apply.c 容器里属主不是 App 的条目清点；输入工作台不链原生核，取不到就不写这一项）
+unsigned s2a_foreign_scan(const char *home, uint64_t *bytes, char *line, size_t n) __attribute__((weak_import));
+static NSDictionary *container_foreign(void) {
+    if (!s2a_foreign_scan) return nil;
+    uint64_t bytes = 0; char line[1600] = ""; unsigned n = s2a_foreign_scan(NSHomeDirectory().fileSystemRepresentation, &bytes, line, sizeof line);
+    return @{@"count": @(n), @"bytes": @(bytes), @"summary": @(line)};
+}
 static NSString *docs(void) { return NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject; }
 // 资源包根：启动上下文给了本款资源包就读它（上下文文件 / 多款容器选了游戏：v0.3.0 起在 Library 下，s2a_docs.h s2a_pack_root）；
 //   单款兼容照旧 Documents/资源包（不随 S2A_GAME_DATA，同改造前）
@@ -207,6 +214,13 @@ static NSURL *build_zip(NSUInteger cap, BOOL slim, NSString **err) {
     }
     NSArray *extra = slim ? @[@"unpack.log"] : @[@"frames.tsv", @"threads.txt", @"unpack.log", @"far_sites.tsv"];   // far_sites.tsv：远端缺页点表（far.c，地址根修的读数）
     for (NSString *f in extra) { NSString *src = [D stringByAppendingPathComponent:f]; if ([fm fileExistsAtPath:src]) add(src, [@"logs/" stringByAppendingString:f], cap); }
+    // 多款容器：每款的解包日志在本款文档根 Documents/games/<游戏号>/unpack.log（runtime/src/pack_apply.c 的 logp），上面只收进程级那份、永远收不到
+    //   （D-4VAX「装不上」：解小文件 -4 的现场 errno 只在这里，诊断包里一行都没有）。每款一份，放 logs/unpack_<游戏号>.log
+    {   NSString *G = [D stringByAppendingPathComponent:@"games"];
+        for (NSString *gid in [[fm contentsOfDirectoryAtPath:G error:nil] sortedArrayUsingSelector:@selector(compare:)]) {
+            NSString *src = [[G stringByAppendingPathComponent:gid] stringByAppendingPathComponent:@"unpack.log"];
+            if ([fm fileExistsAtPath:src]) add(src, [NSString stringWithFormat:@"logs/unpack_%@.log", gid], cap);
+        } }
     int crash = 0, hang = 0, exits = 0;
     NSString *mk = [D stringByAppendingPathComponent:@"metrickit"];
     for (NSString *f in [[fm contentsOfDirectoryAtPath:mk error:nil] sortedArrayUsingSelector:@selector(compare:)]) {
@@ -277,6 +291,50 @@ static NSURL *build_zip(NSUInteger cap, BOOL slim, NSString **err) {
             [fm createDirectoryAtPath:[W stringByAppendingPathComponent:@"pso"] withIntermediateDirectories:YES attributes:nil error:nil];
             if ([fm copyItemAtPath:e[1] toPath:[W stringByAppendingPathComponent:rel] error:nil]) { [files addObject:@{@"path": rel, @"bytes": @(n), @"truncated": @NO}]; used += n; [seen addObject:gid]; }
         } }
+    // 着色器补料（graphics/nvn/host/dsh_salvage.inc，同 Mac pack/jobs/library.py 口径）：多款容器 games/<号>/wire/<号>/shader_miss/、单款包 wire/<号>/shader_miss/ 里
+    //   库里没有 / 现编失败的着色器（index.tsv + 成对的 <键>.ctl / .code），每款打成一个 tar 放 shader_miss/<号>.tar（诊断包成员数有上限：
+    //   tools/diagnostic_report.py MAX_FILES 1000）；取件归档进管线种子目录 rt_shaders/、出包编进那款的直连库。只有游戏着色器字节与键，不含个人信息、不过脱敏。
+    //   每款至多 9 MB（运行时 8 MB + 索引余量）、合计至多 10 MB（整包压缩后 ≤ 30 MB，给日志 / 截图留地方）；索引先放，每键两份成对放（放不下整对不放）；
+    //   同一款只收一处（多款容器那份优先）；不跟链接
+    {   NSMutableArray *srcs = [NSMutableArray array];
+        NSString *G = [D stringByAppendingPathComponent:@"games"], *Wd = [D stringByAppendingPathComponent:@"wire"];
+        for (NSString *gid in [[fm contentsOfDirectoryAtPath:G error:nil] sortedArrayUsingSelector:@selector(compare:)])
+            [srcs addObject:@[gid, [[[[G stringByAppendingPathComponent:gid] stringByAppendingPathComponent:@"wire"] stringByAppendingPathComponent:gid] stringByAppendingPathComponent:@"shader_miss"]]];
+        for (NSString *gid in [[fm contentsOfDirectoryAtPath:Wd error:nil] sortedArrayUsingSelector:@selector(compare:)])
+            [srcs addObject:@[gid, [[Wd stringByAppendingPathComponent:gid] stringByAppendingPathComponent:@"shader_miss"]]];
+        NSCharacterSet *notHex = [[NSCharacterSet characterSetWithCharactersInString:@"0123456789ABCDEF"] invertedSet];
+        NSRegularExpression *keyCtl = [NSRegularExpression regularExpressionWithPattern:@"^[0-9a-f]{16}\\.ctl$" options:0 error:nil];
+        NSMutableSet *seen = [NSMutableSet set]; unsigned long long used = 0;
+        for (NSArray *e in srcs) {
+            NSString *gid = [e[0] uppercaseString], *sd = e[1];
+            if (gid.length != 16 || [gid rangeOfCharacterFromSet:notHex].location != NSNotFound || [seen containsObject:gid]) continue;
+            if (![[fm attributesOfItemAtPath:sd error:nil].fileType isEqualToString:NSFileTypeDirectory]) continue;
+            [seen addObject:gid];
+            NSMutableArray *groups = [NSMutableArray arrayWithObject:@[@"index.tsv"]];
+            for (NSString *f in [[fm contentsOfDirectoryAtPath:sd error:nil] sortedArrayUsingSelector:@selector(compare:)])
+                if ([keyCtl firstMatchInString:f options:0 range:NSMakeRange(0, f.length)]) [groups addObject:@[f, [[f substringToIndex:16] stringByAppendingString:@".code"]]];
+            NSMutableData *tar = [NSMutableData data]; unsigned long long game = 0;
+            for (NSArray *names in groups) {
+                NSMutableArray *datas = [NSMutableArray array]; unsigned long long n = 0; BOOL ok = YES;
+                for (NSString *nm in names) { NSString *fp = [sd stringByAppendingPathComponent:nm];
+                    if (![[fm attributesOfItemAtPath:fp error:nil].fileType isEqualToString:NSFileTypeRegular]) { ok = NO; break; }
+                    NSData *d = [NSData dataWithContentsOfFile:fp]; if (!d) { ok = NO; break; } [datas addObject:d]; n += d.length; }
+                if (!ok || !n || game + n > (9ull << 20) || used + game + n > (10ull << 20)) continue;
+                for (NSUInteger i = 0; i < names.count; i++) {   // ustar：512 字节头（名、模式、大小八进制、校验和）+ 数据补齐到 512
+                    NSData *d = datas[i]; char h[512]; memset(h, 0, sizeof h);
+                    snprintf(h, 100, "%s", [names[i] UTF8String]); memcpy(h + 100, "0000644", 7); memcpy(h + 108, "0000000", 7); memcpy(h + 116, "0000000", 7);
+                    snprintf(h + 124, 12, "%011llo", (unsigned long long)d.length); memcpy(h + 136, "00000000000", 11); h[156] = '0'; memcpy(h + 257, "ustar", 6); memcpy(h + 263, "00", 2);
+                    memset(h + 148, ' ', 8); unsigned sum = 0; for (int b = 0; b < 512; b++) sum += (unsigned char)h[b]; snprintf(h + 148, 8, "%06o", sum); h[155] = ' ';
+                    [tar appendBytes:h length:512]; [tar appendData:d]; static const char z[512]; if (d.length % 512) [tar appendBytes:z length:512 - d.length % 512];
+                }
+                game += n;
+            }
+            if (!game) continue;
+            static const char z2[1024]; [tar appendBytes:z2 length:1024];   // tar 结尾两个空块
+            NSString *rel = [NSString stringWithFormat:@"shader_miss/%@.tar", gid];
+            [fm createDirectoryAtPath:[W stringByAppendingPathComponent:@"shader_miss"] withIntermediateDirectories:YES attributes:nil error:nil];
+            if ([tar writeToFile:[W stringByAppendingPathComponent:rel] atomically:NO]) { [files addObject:@{@"path": rel, @"bytes": @(tar.length), @"truncated": @NO}]; used += game; }
+        } }
     if (copyFailed) {
         [fm removeItemAtPath:W error:nil];
         if (err) *err = S2AL(@"diag.error.redact");
@@ -304,6 +362,8 @@ static NSURL *build_zip(NSUInteger cap, BOOL slim, NSString **err) {
         @"device": @{@"model": hw_model(), @"ios": UIDevice.currentDevice.systemVersion, @"ram_mb": @(NSProcessInfo.processInfo.physicalMemory >> 20),
                      @"gpu_family": gpu_family(), @"low_power": @(NSProcessInfo.processInfo.lowPowerModeEnabled)},
         @"settings": @{@"language": NSLocale.preferredLanguages.firstObject ?: @""},
+        // 容器里属主不是 App 的条目（#569：App 改不了删不掉、只有卸载能清；pack_apply.c s2a_foreign_scan）：个数、文件实占、最早那条的路径 / 时间 / 属主——定是哪种安装方式或迁移造成的
+        @"container_foreign": container_foreign() ?: (id)NSNull.null,
         @"sessions": sessions, @"metrickit": @{@"crash": @(crash), @"hang": @(hang), @"exit": @(exits)}, @"files": files };
     [[NSJSONSerialization dataWithJSONObject:manifest options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys error:nil]
         writeToFile:[W stringByAppendingPathComponent:@"manifest.json"] atomically:NO];
@@ -570,6 +630,8 @@ static S2ADiagMK *g_mk;
 // 崩溃恢复关掉了什么（金手指 / 补丁 / 60 帧的名字，app.m 游戏库容器或本文件单款壳记）：上次死在前台时和诊断询问并成一个提示说，不另弹横幅（11-13 维护者：两个弹层叠在一起）
 static NSString *g_crash_off;
 void s2a_dprompt_notice(NSString *title, NSString *body, double delay, double seconds);   // dprompt.m
+// 弱链接[lab]：s2a_iml_lost
+int s2a_iml_lost(void) __attribute__((weak_import));   // iml_probe.m：这次安装确定丢了「提高内存上限」权限
 void s2a_diag_note_crash_off(NSString *names) { g_crash_off = [names copy]; }
 // 不弹询问时（已问过 / 自动化局 / 正在导出），关掉了什么仍要告诉玩家：退回只有「知道了」的提示条
 static void crash_off_notice_only(void) {
@@ -639,7 +701,7 @@ void s2a_diag_menu_hold(uint64_t press) {
         if (s2a_pad_plus_press() == press) s2a_diag_open_menu();
     });
 }
-// 上局死在前台、当时开着金手指 / 玩家开的未验证社区补丁（ios/game_options.m s2a_ios_crash_suspects）：自动关掉、横幅告诉玩家（11-13 维护者改定：不问）。
+// 上局死在前台、当时开着金手指 / 社区补丁（ios/game_options.m s2a_ios_crash_suspects，v0.4.1 起只取最可疑的一层）：自动关掉、横幅告诉玩家（11-13 维护者改定：不问）。
 //   多款容器在游戏库点开始时已处理（app.m crash_auto_off，社区补丁要在装载前关），这里只剩单款壳：金手指关了马上生效（服务层每秒重载），补丁下次启动生效。
 //   关掉了什么不另弹横幅，交给紧接着的诊断询问一并说（s2a_diag_prompt）
 NSArray<NSDictionary *> *s2a_ios_crash_suspects(void);
@@ -671,7 +733,13 @@ void s2a_diag_attach(UIViewController *vc) {
       dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         check_toggle();
         // 真机自动化（S2A_OPEN_SETTINGS 测试开关在）每局都是被强杀收尾的，上次异常退出的提示会挡住要截的设置页：只在这时不问（玩家给不了这个环境变量）
-        if (prev == S2A_SESMARK_FG) { crash_auto_off(); if (!getenv("S2A_OPEN_SETTINGS")) s2a_diag_prompt(S2AL(@"diag.prompt.abnormalExit")); }
+        if (prev == S2A_SESMARK_FG) crash_auto_off();
+        { void s2a_ios_crash_session_begin_single(int); s2a_ios_crash_session_begin_single(prev != S2A_SESMARK_FG); }   // 单款壳：关完再记这局开着的（v0.4.1，game_options.m）
+        // 这次安装丢了「提高内存上限」权限（iml_probe.m，确定丢了才算）：上次异常退出多半是内存不够，原因那句直接说清、给出怎么重装（11-16 维护者「要，做提示」）
+        if (prev == S2A_SESMARK_FG && !getenv("S2A_OPEN_SETTINGS")) {
+            // iml_probe.m 不在输入工作台工程里（ios/lab/project.yml）：弱引用，没链进来就按普通「没有正常退出」问
+            s2a_diag_prompt(s2a_iml_lost && s2a_iml_lost() ? S2AL(@"diag.prompt.imlLost") : S2AL(@"diag.prompt.abnormalExit"));
+        }
       }); }
 }
 // 进后台 / 回前台（app.m 生命周期通知，主线程）：改写会话标记，在后台被划掉 / 被系统回收不算异常

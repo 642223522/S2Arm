@@ -71,15 +71,28 @@ namespace S2A.Dsh
             r.Add(e[st..]); return r;
         }
         // 分量 u 是不是插值量的 c 分量 → (插值量成员名, 投影?) 或 null
-        static (string Mem, bool Proj)? CompOf(string u, char c, Dictionary<(string, string), List<string>> d)
+        static readonly Regex NdcFma = R(@"fma\((.+), (-?)0\.5, 0\.5\)");
+        // #1152：片元自己把裁剪坐标插值量换成 uv（.x = fma(x / w, 0.5, 0.5)、.y = fma(y / w, -0.5, 0.5)），Ndc = true；同像素证明在宿主按顶点反射 scr_pos（插值量 = gl_Position）
+        static (string Mem, bool Proj, bool Ndc)? CompOf(string u, char c, Dictionary<(string, string), List<string>> d)
         {
+            {   // 临时量先代回（只代顶层单次定义的，同 Factors）再认 fma
+                string e = u.Trim(); int guard = 0;
+                while (guard++ < 8 && Full(@"_\d+", e).Success && d.TryGetValue(("", e), out var l0) && l0.Count == 1 && !(d.TryGetValue(("=", e), out var r0) && r0.Count > 1)) e = l0[0].Trim();
+                var fm = FullAt(NdcFma, e);
+                if (fm != null && (c == 'x' ? fm.Groups[2].Value == "" : c == 'y' && fm.Groups[2].Value == "-"))
+                {
+                    var p = CompOf(fm.Groups[1].Value, c, d);
+                    if (p != null && p.Value.Proj && !p.Value.Ndc) return (p.Value.Mem, true, true);
+                    return null;
+                }
+            }
             var f = Factors(u, d);
-            if (f.Count == 1) { var m = FullAt(Comp1, f[0]); if (m != null && m.Groups[2].Value[0] == c) return (m.Groups[1].Value, false); }
+            if (f.Count == 1) { var m = FullAt(Comp1, f[0]); if (m != null && m.Groups[2].Value[0] == c) return (m.Groups[1].Value, false, false); }
             if (f.Count == 2)
             {
                 string a = f.FirstOrDefault(x => !x.StartsWith("inv(", System.StringComparison.Ordinal)), w = f.FirstOrDefault(x => x.StartsWith("inv(", System.StringComparison.Ordinal));
                 var ma = a == null ? null : FullAt(Comp1, a); var mw = w == null ? null : FullAt(Comp1, w[4..^1]);
-                if (ma != null && mw != null && ma.Groups[2].Value[0] == c && mw.Groups[2].Value == "w" && ma.Groups[1].Value == mw.Groups[1].Value) return (ma.Groups[1].Value, true);
+                if (ma != null && mw != null && ma.Groups[2].Value[0] == c && mw.Groups[2].Value == "w" && ma.Groups[1].Value == mw.Groups[1].Value) return (ma.Groups[1].Value, true, false);
             }
             return null;
         }
@@ -108,7 +121,7 @@ namespace S2A.Dsh
                 dd ??= Defs(msl);
                 var d = DefFull("2", v, F2);
                 var cx = d == null ? null : CompOf(d.Groups[1].Value, 'x', dd); var cy = d == null ? null : CompOf(d.Groups[2].Value, 'y', dd);
-                if (cx == null || cy == null || cx.Value.Mem != cy.Value.Mem || cx.Value.Proj != cy.Value.Proj || !locn.ContainsKey(cx.Value.Mem)) continue;
+                if (cx == null || cy == null || cx.Value.Mem != cy.Value.Mem || cx.Value.Proj != cy.Value.Proj || cx.Value.Ndc != cy.Value.Ndc || !locn.ContainsKey(cx.Value.Mem)) continue;
                 int proj = cx.Value.Proj ? 1 : 0; string vmem = cx.Value.Mem;
                 int i = calls.Count;
                 if (i >= 32) break;
@@ -116,6 +129,7 @@ namespace S2A.Dsh
                 parts.Append(msl, pos, m.Index - pos); parts.Append('(').Append(sel).Append(m.Value).Append(')'); pos = m.Index + m.Length;
                 var c = new PyDict { ["fc"] = (long)i, ["tex_reg"] = reg[member], ["varying_locn"] = (long)locn[vmem] };
                 if (proj != 0) c["proj"] = 1L;
+                if (cx.Value.Ndc) c["ndc"] = 1L;
                 calls.Add(c);
             }
             if (calls.Count == 0 && !omOnlyOk) return (null, "no rewritable sample");
@@ -125,14 +139,19 @@ namespace S2A.Dsh
             var om = Search(@"struct main0_out\s*\{(.*?)\};", body, RegexOptions.Singleline);
             if (!om.Success) return (null, "no output struct");
             var outs = All(@"(\w+) (m_\d+) \[\[color\((\d+)\)\]\];", om.Groups[1].Value).Select(x => (t: x.Groups[1].Value, n: x.Groups[2].Value, c: Int(x.Groups[3].Value))).ToList();
-            if (outs.Count == 0 || outs.Count > 4 || Sub(@"\w+ m_\d+ \[\[color\(\d+\)\]\];", "", om.Groups[1].Value).Trim() != "") return (null, "the output struct is not plain color outputs (or has more than 4)");
+            // #1152：G-buffer 贴花 / 灯光常写 5–6 个颜色附件（异度之刃 3 038af36eb178a2bf 6 个、a93aa7a906dc4e2d 5 个），上限 4 → 8（宿主 nvn_refl fo_color[8]）；
+            //   多重采样关时写满样本掩码的那一项（s2a_smask，color_round 加的）不是颜色输出，照留在结构里
+            const string SMASK = "uint s2a_smask [[sample_mask, function_constant(S2A_MSOFF_ON)]];";
+            bool smask = om.Groups[1].Value.Contains(SMASK, System.StringComparison.Ordinal);
+            if (outs.Count == 0 || outs.Count > 8 || Sub(@"\w+ m_\d+ \[\[color\(\d+\)\]\];", "", om.Groups[1].Value.Replace(SMASK, "")).Trim() != "") return (null, "the output struct is not plain color outputs (or has more than 8)");
             var members = new StringBuilder();
+            if (smask) members.Append("    " + SMASK + "\n");
             for (int j = 0; j < outs.Count; j++) for (int k = 0; k < NFB; k++) members.Append($"    {outs[j].t} {outs[j].n}_at{k} [[color({k}), function_constant(OM_{j}_{k})]];\n");
             body = body[..om.Groups[1].Index] + "\n" + members + body[(om.Groups[1].Index + om.Groups[1].Length)..];
             var consts = new StringBuilder();
             foreach (var c in calls) consts.Append($"constant int FX_{c["fc"]} [[function_constant({c["fc"]})]];\n");
             for (int k = 0; k < NFB; k++) consts.Append($"constant bool FB_{k} [[function_constant({32 + k})]];\n");
-            for (int j = 0; j < outs.Count; j++) for (int k = 0; k < NFB; k++) consts.Append($"constant bool OM_{j}_{k} [[function_constant({64 + 8 * j + k})]];\n");
+            for (int j = 0; j < outs.Count; j++) for (int k = 0; k < NFB; k++) consts.Append($"constant bool OM_{j}_{k} [[function_constant({OmIndex(j, k)})]];\n");
             body = ReplaceOnce(body, "using namespace metal;\n", "using namespace metal;\n\n" + consts);
             int i0 = body.IndexOf("fragment main0_out main0(", System.StringComparison.Ordinal);
             int i1 = i0 >= 0 ? body.IndexOf(")\n{", i0, System.StringComparison.Ordinal) : -1;
@@ -143,12 +162,20 @@ namespace S2A.Dsh
             var put = new StringBuilder();
             for (int j = 0; j < outs.Count; j++) for (int k = 0; k < NFB; k++) put.Append($"    if (OM_{j}_{k}) out.{outs[j].n}_at{k} = spv_o_{outs[j].n};\n");
             var returns = R(@"^[ \t]*return out;[ \t]*\n", RegexOptions.Multiline);
-            if (!returns.IsMatch(body)) return (null, "return out not found");
+            // #1152：color_round / 透明测试把 return 包进单行块「{ if (S2A_MSOFF_ON) out.s2a_smask = …; return out; }」（异度之刃 3 038af36eb178a2bf / a93aa7a906dc4e2d）：
+            //   行首的照旧整行前插；跟在「; 」「{ 」后面的就地前插同一组赋值（单行写法），两种都没有才算找不到
+            var inline = R(@"(?<=[;{] )return out;");
+            if (!returns.IsMatch(body) && !inline.IsMatch(body)) return (null, "return out not found");
             body = returns.Replace(body, m => put + m.Value);
+            string putInline = string.Join(" ", put.ToString().Split('\n').Select(x => x.Trim()).Where(x => x.Length > 0));
+            body = inline.Replace(body, m => putInline + " " + m.Value);
             var meta = new PyDict { ["calls"] = calls.Cast<object>().ToList(), ["mixed_regs"] = mixed,
                                     ["outputs"] = outs.Select(o => (object)new PyDict { ["color"] = (long)o.c, ["type"] = o.t }).ToList() };
             return (body, meta);
         }
+        // 输出搬位置常量 OM_j_k 的编号：前 4 个输出 64 + 8 j + k（64–95，同原先），第 5–8 个 128 + 8 (j − 4) + k（128–159）——96–127 里有 S2A_AT（100）/ S2A_MSOFF（101），
+        //   原先把输出数卡在 4 就是因为第 5 个起会撞号（#1152）。宿主 nvn_mtl.m bf_om_index 同一公式
+        public static int OmIndex(int j, int k) => j < 4 ? 64 + 8 * j + k : 128 + 8 * (j - 4) + k;
         static string ReplaceOnce(string s, string a, string b) { int i = s.IndexOf(a, System.StringComparison.Ordinal); return i < 0 ? s : s[..i] + b + s[(i + a.Length)..]; }
     }
 }

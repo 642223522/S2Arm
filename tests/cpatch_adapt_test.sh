@@ -295,6 +295,25 @@ t19 = sorted((c[2], c[7]) for c in (l.split('\t') for l in open(r19 + '/cpatch.t
 rows19 = {tuple(l.split('\t# ')[0].split('\t')) for l in open(r19 + '/cpatch_rows.tsv').read().splitlines()}
 ck(f'⑲ 单份只改高半（32:9 只写 movk #0x4063）单份参数化：与 ⑤ 同行（实得 表 {t19}；行多 {sorted(rows19 - want5)} 缺 {sorted(want5 - rows19)}）',
    t19 == [('0', 'k1016::@a4'), ('1', 'k1016::@a4')] and rows19 == want5)
+# ⑳ 帧率补丁组（第 13 列，11-15）：同一上游补丁的 main / sdk 两份（同包同 exefs 目录）一组；另一个上游补丁另一组。期望手写
+g = lambda o: cpatch.fps_group({'origin': o})
+ga, gb, gc = g('t/r/Game/120FPS.rar/exefs/2.1.0.pchtxt'), g('t/r/Game/120FPS.rar/exefs/2.1.0v2.pchtxt'), g('f/x/Game/120fps/exefs/2.1.0.pchtxt')
+ck(f'⑳ 帧率补丁组：同包 main / sdk 同组、别的上游另组、8 位（{ga} {gb} {gc}）', ga == gb != gc and len(ga) == 8)
+# ㉑ 组号走完整 plan()（审计 P1-193：单元原先只存缓存路径 f/<哈希>/文件名，组按缓存目录算 = 每份一组；⑳ 只拿带 origin 的字典调 fps_group，没经过 plan）。
+#   本机缓存按内容分目录（f/0、f/1、f/2），上游原路径：前两份在同一个压缩包的 exefs 下（一组），第三份另一个上游。期望手写：前两份第 13 列相同、第三份不同、都是 8 位
+r21 = T + '/root21'; shutil.copytree(r5, r21, ignore=shutil.ignore_patterns('cpatch*'))
+idx21 = T + '/e21/fps'
+for i, off in enumerate((0x114, 0x118, 0x11c)):
+    os.makedirs(f'{idx21}/f/{i}'); open(f'{idx21}/f/{i}/60fps.pchtxt', 'w').write(f'@nsobid-{BID}\n@flag offset_shift 0x100\n// 60 FPS\n@enabled\n{off:08X} 1F2003D5\n@stop\n')
+open(idx21 + '/INDEX.tsv', 'w').write('game\ttitle_id\tpath\ttype\tsource\tlicense\tin_pack\tsha256\ttarget_fps\torigin\n'
+    + '\t0100A3501946E000\tf/0/60fps.pchtxt\tpchtxt\to/r\tMIT\tyes\t\t60\tt/r/Game/60FPS.rar/exefs/60fps.pchtxt\n'
+    + '\t0100A3501946E000\tf/1/60fps.pchtxt\tpchtxt\to/r\tMIT\tyes\t\t60\tt/r/Game/60FPS.rar/exefs/60fps-sdk.pchtxt\n'
+    + '\t0100A3501946E000\tf/2/60fps.pchtxt\tpchtxt\to/r\tMIT\tyes\t\t60\tf/x/Game/60fps/exefs/60fps.pchtxt\n')
+cpatch.plan(r21, '', [idx21])
+rows21 = [c for c in (l.split('\t') for l in open(r21 + '/cpatch.tsv', encoding='utf-8').read().splitlines()[1:]) if c[0].startswith('fps:')]
+grp21 = [c[12] if len(c) > 12 else '' for c in rows21]
+ck(f'㉑ 组号走 plan()：同包两份同组、另一上游另组（实得 {[(c[0], c[12] if len(c) > 12 else "") for c in rows21]}）',
+   len(rows21) == 3 and len(set(grp21)) == 2 and all(len(x) == 8 for x in grp21) and sorted(grp21.count(x) for x in set(grp21)) == [1, 2])
 sys.exit(bad)
 EOF
 rc=$?; [ $rc = 0 ] && echo "✅ cpatch_adapt_test 全过" || { echo "🔴 cpatch_adapt_test 有不通项"; exit 1; }

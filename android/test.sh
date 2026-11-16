@@ -339,9 +339,11 @@ s2a_gate_step "$PY" "$repo_dir/graphics/nvn/tests/gs_replay_mutation_test.py"
 s2a_gate_step "$PY" "$repo_dir/graphics/nvn/tests/dirty_span_memo_mutation_test.py"
 # 原创 Maxwell 经生产请求、真实编译器与生产结果解析；GPU 像素由 Vulkan 门禁另验。
 s2a_gate_step "$PY" "$android_dir/tests/gs_compiler_chain_test.py"
-# BUFFER texture: real producer, Maxwell compiler, SPIR-V parser and replay rejection.
+# BUFFER texture: real producer, Maxwell compiler and SPIR-V parser.
 s2a_gate_step "$PY" "$android_dir/tests/tbuf_compiler_chain_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/libpack_tbuf_withdraw_test.py"
+# Pool-backed TBUF replay: both stages, synchronization and three mutations.
+s2a_gate_step "$PY" "$android_dir/tests/tbuf_replay_core_test.py" --withdraw
 # W2 compute: real C components with synthetic input / Vulkan mocks, never GPU or device evidence.
 s2a_gate_step "$PY" "$android_dir/tests/direct_compute_identity_test.py"
 # P0-3：constantBufferUse 宽掩码的 S2AI1 v3/v4 分叉现由计算与图形共用——正例 + 两处撤改必红（纯宿主 C 编译，秒级）。
@@ -375,6 +377,20 @@ s2a_gate_step "$PY" "$android_dir/tests/w2_observation_draw_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/nvk_fu_decision_test.py"
 # C4b 管线异步缝：真 nvn_vk_first_draw.c TU + 真 pipe_worker/nvn_first_use，假 Vulkan。
 s2a_gate_step "$PY" "$android_dir/tests/nvn_vk_pipe_async_draw_test.py"
+# nvk 新层：首次使用的准备工作下沉（iOS 蓝本 warm_start / pso_pend）。
+# 回放计时：帧级「回放耗时」只在最外层累加一次（三层嵌套每层 1 ms 期望 3 ms，修前 6 ms）。
+s2a_gate_step "$PY" "$android_dir/tests/replay_exec_time_test.py"
+# 预热调度时序合同：先程序后管线、在途重试、有界 Stop、开关关时不起线程。
+s2a_gate_step bash "$android_dir/tools/nvn_warm_test.sh"
+# 预热用的两个清单模块与「同一配方只有一份」的双检（纯逻辑）：往返一致、碰撞不去重、坏文件整份拒绝、
+# 4 线程并发建同一配方只装一份。
+s2a_gate_step bash "$android_dir/tools/nvk_warm_modules_test.sh"
+# 复核 P1-1 / P1-2：程序借用（ASan 下读收尾释放后的记录）与配方级在途表（同配方合并 / 不同配方不排队）
+s2a_gate_step bash "$android_dir/tools/nvk_pipe_flight_test.sh"
+# 首用待定表（纯逻辑）与 demand 后台建管线（fake Vulkan）：状态机 / 同键合并 / 有界等待 / late-stuck / P0 不串管线。
+s2a_gate_step bash "$android_dir/tools/nvk_pipe_pend_test.sh"
+s2a_gate_step bash "$android_dir/tools/nvn_vk_pipe_demand_test.sh"
+s2a_gate_step bash "$android_dir/tools/nvk_shader_lease_test.sh"
 s2a_gate_step "$PY" "$android_dir/tests/w2_observation_lifecycle_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/w2_observation_adapter_test.py"
 # vk_record host regression links the real Linux Vulkan loader; the dispatch itself is mocked.
@@ -408,8 +424,17 @@ s2a_gate_step javac -encoding UTF-8 -d "$out/java" -cp "$out/java" \
     "$android_dir/app/src/main/java/org/s2arm/android/GameStorage.java" \
     "$android_dir/app/src/main/java/org/s2arm/android/GameResume.java" \
     "$android_dir/app/src/main/java/org/s2arm/android/GameSession.java" \
-    "$android_dir/tests/GameSessionTest.java"
+    "$android_dir/app/src/main/java/org/s2arm/android/GameMods.java" \
+    "$android_dir/tests/GameSessionTest.java" \
+    "$android_dir/tests/GameModsTest.java"
 s2a_gate_step java -cp "$out/java" org.s2arm.android.GameSessionTest
+# 资源替换类 mod 导入（口径同 pack/jobs/mods.py）：发布结构 / 别的程序号 / 逃逸与符号链接 / 上限 / 开关 / 删除 / zip64
+s2a_gate_step java -ea -cp "$out/java" org.s2arm.android.GameModsTest
+# 库页游玩时间一行（口径同 Playtime.swift summary，期望照抄 PlaytimeTests.swift）：分钟 / 小时取整、今天昨天 N 天前、读文件、只算路径的 statePath
+s2a_gate_step javac -encoding UTF-8 -d "$out/java" -cp "$out/java" \
+    "$android_dir/app/src/main/java/org/s2arm/android/Playtime.java" \
+    "$android_dir/tests/PlaytimeTest.java"
+s2a_gate_step java -cp "$out/java" org.s2arm.android.PlaytimeTest "$android_dir/app/src/main/res"
 # The shell's BootSpec against boot-spec.v1.schema.json (with and without a region).
 s2a_gate_step "$PY" - "$android_dir/contracts" "$out/boot-spec" <<'PY'
 import importlib.util, os, sys
@@ -424,16 +449,25 @@ PY
 s2a_gate_step javac -encoding UTF-8 -d "$out/java" -cp "$out/java" \
     "$android_dir/app/src/main/java/org/s2arm/android/GamePack.java" \
     "$android_dir/app/src/main/java/org/s2arm/android/GameInstall.java" \
+    "$android_dir/app/src/main/java/org/s2arm/android/ImportReceiver.java" \
     "$android_dir/tests/GamePackTest.java" \
     "$android_dir/tests/GameInstallTest.java"
 s2a_gate_step java -cp "$out/java" org.s2arm.android.GamePackTest
 s2a_gate_step java -cp "$out/java" org.s2arm.android.GameInstallTest
+# 资源包直传接收（电脑经 adb forward 直接写进 App 私有目录，不经共享存储）
+s2a_gate_step javac -encoding UTF-8 -d "$out/java" -cp "$out/java" \
+    "$android_dir/app/src/main/java/org/s2arm/android/ImportReceiver.java" \
+    "$android_dir/tests/ImportReceiverTest.java"
+s2a_gate_step java -cp "$out/java" org.s2arm.android.ImportReceiverTest
 s2a_gate_step "$PY" "$android_dir/tests/deploy_game_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/test_app_id_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/debug_app_admission_test.py"
 s2a_gate_step javac -encoding UTF-8 -d "$out/java" -cp "$out/java" "$android_dir/tests/GameSessionAdmissionTest.java" "$android_dir/tests/GameFingerprintTest.java"
 s2a_gate_step java -cp "$out/java" org.s2arm.android.GameSessionAdmissionTest
 s2a_gate_step java -cp "$out/java" org.s2arm.android.GameFingerprintTest
+# 原地来源（游戏文件留在共享存储、只登记元数据）：首次核 SHA、身份命中、改 / 删 / 挪具名拒、只认登记的根、清理不碰原地文件
+s2a_gate_step javac -encoding UTF-8 -d "$out/java" -cp "$out/java" "$android_dir/tests/InPlaceSourceTest.java"
+s2a_gate_step java -cp "$out/java" org.s2arm.android.InPlaceSourceTest
 s2a_gate_step "$PY" "$android_dir/tests/android_file_stamp_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/verified_source_test.py"
 s2a_gate_step "$PY" "$android_dir/../graphics/vulkan/wsi/tests/startup_surface_test.py"
@@ -466,6 +500,7 @@ s2a_gate_step javac -encoding UTF-8 -d "$out/java" -cp "$out/java" \
     "$android_dir/app/src/main/java/org/s2arm/android/GamePack.java" \
     "$android_dir/app/src/main/java/org/s2arm/android/GameFingerprint.java" \
     "$android_dir/app/src/main/java/org/s2arm/android/GameInstall.java" \
+    "$android_dir/app/src/main/java/org/s2arm/android/ImportReceiver.java" \
     "$android_dir/app/src/main/java/org/s2arm/android/NativeRewriter.java"
 # J09-S1：纯合成密钥；长空白回归由 PlayerKeysTest 启独立 JVM，10 秒限时并回收自身子进程。
 # 同入口区分系统祖先软链与 App 数据根/files/中间目录软链，并核旧权限恢复及 hardlink 不改 inode。
@@ -590,10 +625,14 @@ echo "Android package C/Python backend matrix: running real rewrites and Java co
 
 # Offline codec build/packaging regression (source preparation is explicit).
 s2a_gate_step python3 "$android_dir/tests/game_library_import_test.py"
+# #528 第 15 项：库页「上一局异常结束」提示（真 LibraryActivity + 导入用例的替身；3 个负对照）
+s2a_gate_step python3 "$android_dir/tests/last_session_notice_test.py"
 s2a_gate_step python3 "$android_dir/codecs/tests/build_test.py"
 s2a_gate_step "$PY" "$android_dir/codecs/tests/managed_test.py"
 # #1131：宿主原生构建契约——后端路由 / NativeAOT 静态归档校验 / docker↔host 产物等价核对。
 s2a_gate_step "$PY" "$android_dir/tests/build_backend_test.py"
+# 宿主准备编排：首次（缓存里还没有固定 .NET SDK）先引导 SDK 再算依赖清单，一次写出完成标记。
+s2a_gate_step "$PY" "$android_dir/tests/host_prepare_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/archive_check_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/compare_apks_test.py"
 s2a_gate_step "$PY" "$android_dir/tools/test_compare_apks.py"

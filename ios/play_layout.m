@@ -12,6 +12,7 @@ int s2a_ios_split_active(void) { return atomic_load(&g_split_active); }
 //   非 iOS 编译（Mac 单测 t_play_layout 也编本文件）没有分屏，回空矩形 = 调用方用视图自身
 #if !TARGET_OS_IPHONE
 CGRect s2a_ios_game_area(void) { return CGRectNull; }
+int s2a_ios_game_top(void) { return 0; }
 #endif
 
 NSString *const S2APlaySplitKey=@"splitScreen", *const S2APlayOrientationKey=@"screenOrientation", *const S2APlayLayoutChanged=@"S2APlayLayoutChanged";
@@ -40,17 +41,26 @@ static BOOL finite_rect(CGRect r) {
 }
 S2APlayLayout S2APlayLayoutMake(CGRect b, CGRect safe, S2APlaySplitMode mode, BOOL half, CGRect division) {
     BOOL split=S2APlaySplitEnabled(mode,half);
-    S2APlayLayout l={b,CGRectIntersection(b,safe),CGRectNull,split};
-    if (!finite_rect(b) || CGRectIsEmpty(b)) return (S2APlayLayout){CGRectZero,CGRectZero,CGRectNull,split};
+    S2APlayLayout l={b,CGRectIntersection(b,safe),CGRectNull,split,NO};
+    if (!finite_rect(b) || CGRectIsEmpty(b)) return (S2APlayLayout){CGRectZero,CGRectZero,CGRectNull,split,NO};
     if (!finite_rect(division)) division=CGRectNull;
     if (!CGRectIsNull(division)) l.division=CGRectIntersection(b,division);
     if (!split) return l;
-    CGFloat top=CGRectGetMidY(b), bottom=top;
+    CGFloat top=CGRectGetMidY(b), bottom=top; BOOL hinge=NO;
     if (!CGRectIsNull(l.division) && division.size.width>division.size.height &&
         l.division.size.width>=b.size.width*.9 && CGRectGetMinY(division)>CGRectGetMinY(b) && CGRectGetMaxY(division)<CGRectGetMaxY(b)) {
-        top=CGRectGetMinY(division); bottom=CGRectGetMaxY(division);
+        top=CGRectGetMinY(division); bottom=CGRectGetMaxY(division); hinge=YES;
     }
     l.game=CGRectIntersection(safe,CGRectMake(b.origin.x,b.origin.y,b.size.width,top-b.origin.y));
+    // 竖屏分屏、上区没有折痕可依（手动分屏）、安全区左右有缩进（iPhone Duo 外屏竖着用：系统报右 84 点，11-15 真机读数 视图 466×678、安全区 右 84 下 34）：
+    //   原先取安全区 ∩ 上半屏只有 382 点宽，16:9 画面再上下居中，外屏左上一小块、右边和顶上空着。改成横向按整屏宽、竖向仍按安全区，画面贴顶放
+    //   （上面没有要躲的东西；手柄在下半区）。别的机型竖屏左右缩进都是 0、半折内屏走折痕分支，区域不变
+    CGRect sg=CGRectIntersection(b,safe);
+    if (!hinge && b.size.height>b.size.width && !CGRectIsNull(sg) &&
+        (CGRectGetMinX(sg)>CGRectGetMinX(b) || CGRectGetMaxX(sg)<CGRectGetMaxX(b))) {
+        CGFloat y=MAX(CGRectGetMinY(sg),b.origin.y);
+        l.game=top>y ? CGRectMake(b.origin.x,y,b.size.width,top-y) : CGRectNull; l.top=YES;
+    }
     l.controls=CGRectIntersection(safe,CGRectMake(b.origin.x,bottom,b.size.width,CGRectGetMaxY(b)-bottom));
     if (CGRectIsNull(l.game)) l.game=CGRectZero;
     if (CGRectIsNull(l.controls)) l.controls=CGRectZero;
@@ -76,6 +86,7 @@ static _Atomic double g_view_ratio;
 static _Atomic int g_max_fps;   // 屏幕最高刷新率（帧率补丁按档默认取不超过它的最高一档，runtime/src/cpatch.c fps_pick；布局时在主线程记）
 S2APlayLayout s2a_ios_play_layout(void) { return g_layout; }
 CGRect s2a_ios_game_area(void) { return g_layout.game; }
+int s2a_ios_game_top(void) { return g_layout.top; }
 UIInterfaceOrientationMask s2a_ios_play_orientations(void) {
     NSUserDefaults *d=NSUserDefaults.standardUserDefaults;
     BOOL split=S2APlaySplitEnabled(S2APlayReadSplit(d),g_half);

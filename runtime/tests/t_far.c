@@ -220,6 +220,22 @@ int main(void) {
         EQ("线性：反着先映射高的那块，再映射低的那块也连续", 0, s2a_far_map(A + 6 * MB, 2 * MB) | s2a_far_map(A + 4 * MB, 2 * MB));
         EQ("线性：反序两块连续", 1, s2a_far_g2h(A + 6 * MB) == s2a_far_g2h(A + 4 * MB) + 2 * MB);
         EQ("线性退休", 0, s2a_far_session_reset()); }
+    {   // #442 逐秒账：远端开着，这一秒碰了远端 → 打一行「远端每秒 … 缺页 N、代执行 N」；没碰的秒不出行。期望手写：先静 1.2 秒把前面用例的缺页结掉，
+        //   再碰 5 次远端（5 次读，各缺页一次），等 2.2 秒；截到的日志里恰有一行，缺页 5、代执行 5
+        setenv("S2A_FAR_LINEAR", "1", 1); s2a_far_set(G, G + SPAN, (uint64_t)shadow, (uint64_t)shadow + SH);
+        EQ("逐秒账：给页", 0, s2a_far_map(G, 0x4000));
+        usleep(1200000);
+        char tp[] = "/tmp/t_far_tick.XXXXXX"; int tf = mkstemp(tp), save = dup(g_s2a_logfd);
+        dup2(tf, g_s2a_logfd);
+        for (int i = 0; i < 5; i++) (void)*(volatile uint8_t *)(uintptr_t)(G + 0x100 + (uint64_t)i);
+        usleep(2200000);
+        dup2(save, g_s2a_logfd); close(save);
+        char buf[4096] = {0}; lseek(tf, 0, SEEK_SET); ssize_t rn = read(tf, buf, sizeof buf - 1); close(tf); unlink(tp); (void)rn;
+        int lines = 0; for (const char *q = buf; (q = strstr(q, "远端每秒")); q++) lines++;
+        EQ("逐秒账：恰一行", 1, lines);
+        EQ("逐秒账：缺页 5、代执行 5", 1, strstr(buf, "缺页 5、代执行 5、") != NULL);
+        if (lines != 1 || !strstr(buf, "缺页 5、代执行 5、")) printf("  截到：%s\n", buf);
+        EQ("逐秒账退休", 0, s2a_far_session_reset()); }
     printf("%s t_far：%d / %d 项通过\n", bad ? "✗" : "✓", cnt - bad, cnt);
     return bad != 0;
 }

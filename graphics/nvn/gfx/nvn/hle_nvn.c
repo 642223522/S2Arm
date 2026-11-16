@@ -25,6 +25,7 @@
 #include "nvn_hmap.h"   // 虚拟池按池指针查（g_vph）
 #include "nvn_drvscan.h"   // nvn_drv_nvrm_recode：NvColorFormat 换成游戏自带驱动的编码
 #include <dlfcn.h>
+#include "../../../../runtime/include/s2a_lowva.h"   // #1143：虚拟池预留记进低区账（vpool_lv）
 #include <mach/mach_time.h>
 #include <CommonCrypto/CommonDigest.h>
 #include <CoreFoundation/CoreFoundation.h>
@@ -401,7 +402,9 @@ NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBu
     return 1;
 }
 static void cmdshadow_pool_gone(const uint8_t *mem, size_t n);   // command buffer section: recordings in the pool's memory are released
-NVN(nvnMemoryPoolFinalize, void, NVNmemoryPool *p) { if (((pool_t *)p)->gva) { gva_free(((pool_t *)p)->gva); ((pool_t *)p)->gva = 0; }
+// 先核魔数（审计 P1-190，同 #25 缓冲收尾）：游戏可能 Finalize 没 Initialize 过 / 已 Finalize 过的池，那时 gva / mem / flags 是垃圾或已释放，不能用
+NVN(nvnMemoryPoolFinalize, void, NVNmemoryPool *p) { if (((pool_t *)p)->magic != MAGIC('P', 'O', 'O', 'L')) return;
+    if (((pool_t *)p)->gva) { gva_free(((pool_t *)p)->gva); ((pool_t *)p)->gva = 0; }
     if (((pool_t *)p)->flags & 0x200) vpool_release((pool_t *)p);
     if (((pool_t *)p)->mem && !(((pool_t *)p)->flags & 0x200)) {   // A virtual pool's runs were registered and are dropped by vpool_release
  nvn_dirty_remove_range(((pool_t *)p)->mem); nvn_be_pool_del(((pool_t *)p)->mem); cmdshadow_pool_gone(((pool_t *)p)->mem, ((pool_t *)p)->size); } nvn_be_alias_drop_pool(p); ((pool_t *)p)->magic = 0; }
@@ -410,7 +413,7 @@ static void ft_flush(const uint8_t *a, uint64_t n);
 //   我方贴图在 Metal 侧另有一份，刷新是「CPU 写过这段」唯一的显式信号，照真机做成空操作会在关了脏页上传的配置里漏发布（贴图停在旧内容）
 NVN(nvnMemoryPoolFlushMappedRange, void, const NVNmemoryPool *p, ptrdiff_t off, size_t n) {   // see ft_add
     const pool_t *o = (const pool_t *)p;
-    if (!o->mem) return;
+    if (o->magic != MAGIC('P', 'O', 'O', 'L') || !o->mem) return;   // 没初始化成功的池（审计 P1-190 余项，同池收尾）：mem 是残值，不刷
     ft_flush(o->mem + off, n);
 #if defined(__ANDROID__)
     // 后端可选：内容变化通知（安卓直连用它推进资源账本的内容版本）。
@@ -768,7 +771,7 @@ NVN(nvnTextureInitialize, NVNboolean, NVNtexture *t, const NVNtextureBuilder *b)
 }
 // 释放幂等（原生线 #1014）：serial 是 release 的唯一身份，首次释放后清掉；重复 Finalize 直接早退。
 NVN(nvnTextureFinalize, void, NVNtexture *t) {
-    if (!TX(t)->serial) { TX(t)->magic = 0; return; }
+    if (TX(t)->magic != MAGIC('T', 'E', 'X', 0) || !TX(t)->serial) { TX(t)->magic = 0; return; }   // 没初始化过的对象 serial 是垃圾（审计 P1-190）：只认魔数 + serial
     ft_del(TX(t)->serial);
     DM_BLOCK_BEGIN(); nvn_be_tex_release(TX(t)); DM_BLOCK_END();
     TX(t)->serial = 0; TX(t)->magic = 0;
@@ -1320,7 +1323,17 @@ static int keys_hash_early(const NVNshaderData *sd, uint8_t out[8]) {
 int prog_key(const prog_t *p, unsigned st, uint8_t key[8]) {
     if (st >= p->nstage) return 0;
     prog_keys_t *k = pk_get(p, 1);
-    if (!(k->ok >> st & 1)) { keys_hash(&p->sd[st], 0, k->key[st]); k->ok |= (uint8_t)(1u << st); }
+    if (!(k->ok >> st & 1)) {
+        int got = keys_hash(&p->sd[st], 0, k->key[st]); k->ok |= (uint8_t)(1u << st);
+        // S2Arm D-WQPH（11-15，Mac 奥日2 1.2.0：5 局每局 18–136 支「not in the shader map」，现编汇总成功 / 失败 / 跳过全 0）：SetShaders 时代码区还没进已登记的内存池
+        //   （keys_hash mapped=1 不算键），那支没进首遇现编的待编表；到这里首用才算出键，dm_shader_miss_late 对 Switch 1 只认待编表里有的键，于是不在库里的整支丢、不现编。
+        //   这里补登记（与 SetShaders 同一个入口：库里有就直接返回，没有就拷控制段进待编表 / 后台预编），控制段刚被 keys_hash 读过。NVN2 照旧走 dm_shader_miss_late 自己的首用登记
+        if (got && !(nvn2_on() && nvn2_ctl(p->sd[st].control))) {
+            static _Atomic uint64_t n; uint64_t c = atomic_fetch_add(&n, 1) + 1;
+            if (!(c & (c - 1))) LOG("[nvn] shaders keyed at first use (code not in a registered memory pool at SetShaders): %llu so far; handed to the first-use compile like SetShaders' keys", (unsigned long long)c);
+            dm_shader_miss(k->key[st], p->sd[st].data, p->sd[st].control);
+        }
+    }
     memcpy(key, k->key[st], 8);
     return 1;
 }
@@ -1738,7 +1751,7 @@ void *s2a_cmd_arena_map(uint64_t len) __attribute__((weak));
 void s2a_cmd_arena_unmap(void *p, uint64_t len) __attribute__((weak));
 static void *sh_chunk_map(void) {
     void *t = s2a_cmd_arena_map ? s2a_cmd_arena_map(SH_CHUNK) : NULL; if (t) return t;
-    void *m = mmap(NULL, SH_CHUNK, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+    void *m = mmap(NULL, SH_CHUNK, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, S2A_VMTAG_FD(S2A_VMTAG_HOST), 0);
     return m == MAP_FAILED ? NULL : m;
 }
 static void sh_chunk_unmap(void *m) { if (s2a_cmd_arena_unmap) s2a_cmd_arena_unmap(m, SH_CHUNK); else munmap(m, SH_CHUNK); }
@@ -1917,13 +1930,13 @@ static void sh_grow(cmd_t *o, uint32_t need) {
 // 录制外命令与录制重入的读数（#372 诊断 D-EHK5：竞技场发黑那局只记了首例「command 15 … dropped」，丢了多少、丢在哪个命令缓冲上都不知道）：按命令号计数，
 //   前 8 例带命令缓冲地址与录制状态，与 BeginRecording 重入的地址对得上就是同一条录制被打断；每 300 帧有新增时打一行汇总
 static uint64_t g_frame;   // 定义在下面（帧计数），这里先声明
-static _Atomic uint64_t g_rec_out_op[64], g_rec_out_n, g_rec_reenter_n;
+static _Atomic uint64_t g_rec_out_op[64], g_rec_out_n, g_rec_reenter_n, g_rec_end_idle_n;   // end_idle：EndRecording 落在没在录制的命令缓冲上（#202d02：每帧 Begin / End 一样多却每帧一次重入，看是不是同一缓冲嵌套）
 static void rec_out_summary(uint64_t frame) {
-    static uint64_t said_out, said_re; uint64_t n = atomic_load(&g_rec_out_n), re = atomic_load(&g_rec_reenter_n);
-    if (n == said_out && re == said_re) return;
-    said_out = n; said_re = re; char by[512] = ""; size_t at = 0;
+    static uint64_t said_out, said_re, said_ei; uint64_t n = atomic_load(&g_rec_out_n), re = atomic_load(&g_rec_reenter_n), ei = atomic_load(&g_rec_end_idle_n);
+    if (n == said_out && re == said_re && ei == said_ei) return;
+    said_out = n; said_re = re; said_ei = ei; char by[512] = ""; size_t at = 0;
     for (int i = 0; i < 64 && at < sizeof by - 24; i++) { uint64_t c = atomic_load(&g_rec_out_op[i]); if (c) at += (size_t)snprintf(by + at, sizeof by - at, "%s%d×%llu", at ? "、" : "", i, (unsigned long long)c); }
-    LOG("[nvn] 录制外命令到第 %llu 帧：丢了 %llu 条（按命令号：%s；号见 nvn_obj.h OP_*，15 = BIND_STATE）；BeginRecording 重入 %llu 次", (unsigned long long)frame, (unsigned long long)n, at ? by : "无", (unsigned long long)re);
+    LOG("[nvn] 录制外命令到第 %llu 帧：丢了 %llu 条（按命令号：%s；号见 nvn_obj.h OP_*，15 = BIND_STATE）；BeginRecording 重入 %llu 次、EndRecording 落在没在录制的缓冲上 %llu 次", (unsigned long long)frame, (unsigned long long)n, at ? by : "无", (unsigned long long)re, (unsigned long long)ei);
 }
 static uint8_t *cmd_alloc_cb(cmd_t *o, uint32_t op, uint32_t size, int cb_ok) {
     size = (size + 7) & ~7u;
@@ -2022,6 +2035,7 @@ NVN(nvnCommandBufferBeginRecording, void, NVNcommandBuffer *c) {
 }
 NVN(nvnCommandBufferEndRecording, NVNcommandHandle, NVNcommandBuffer *c) {
     cmd_t *o = CB(c);
+    if (!o->recording) { uint64_t k = atomic_fetch_add(&g_rec_end_idle_n, 1) + 1; if (k <= 8) LOG("【红】 EndRecording on command buffer %p that is not recording (frame %llu, case %llu of the first 8)", (void *)o, (unsigned long long)g_frame, (unsigned long long)k); }
     cmd_alloc(o, OP_END, 8);
     if (o->rec) sh_end(o);
     o->recording = 0;
@@ -3322,7 +3336,8 @@ __attribute__((weak)) int dm_thermal_now(void) { return -1; }   // Strong defini
 __attribute__((weak)) int dm_low_power_now(void) { return 0; }   // Low Power Mode (iOS front_ios.m); off on the Mac
 // Per-frame ring for the long-frame log (GPU time only arrives 8 frames late, so store first and judge later)
 #define LFN 16
-typedef struct { uint64_t f; double fr, nv, t_s, make_ms, up_mb, up_ms; unsigned pso, lib, up, rup; } lf_rec;
+typedef struct { uint64_t f; double fr, nv, t_s, make_ms, up_mb, up_ms, sw_ms, sc_ms; unsigned pso, lib, up, rup; char stl[1024]; } lf_rec;   // sw / sc: submit wall / submit-thread CPU; stl: upload stall breakdown (nvn_be_stall_take)
+__attribute__((weak)) void nvn_be_stall_take(char *out, size_t n) { if (n) out[0] = 0; }   // Upload stall breakdown for the long-frame line; strong definition in the Metal backend (nvn_mtl.m), none on Android: empty
 static lf_rec g_lf[LFN];
 __attribute__((weak)) void dm_longframe_note(const char *what) { LOG("[longframe] %s", what); }   // Default (graphics unit tests); the strong definition in the host's diag.c adds scene context and writes perf.txt
 extern void nvn_be_create_ns(uint64_t *lib_ns, uint64_t *pso_ns); extern uint64_t nvn_be_upload_bytes(void); extern void nvn_be_pkg_stats(uint64_t *uploads, uint64_t *reuploads);
@@ -3361,7 +3376,7 @@ static void power_line(uint64_t frame) {
         double nf = frame > pf ? (double)(frame - pf) : 1;   // per frame: the fair comparison when one build holds the frame rate better than another
         LOG("[nvn] power up to frame %llu: CPU energy %.2f W, %.1f mJ per frame (%.1f fps); CPU %.0f%% (100 = one core), %.0f%% of it on performance cores; wakeups %.0f/s (out of platform idle %.0f); GPU busy %.1f ms/s (time, not energy); thermal %d; top yielders: %s", frame,
             (e - pe) / 1e9 / s, (e - pe) / 1e6 / nf, nf / s, (cpu - pcpu) / 1e7 / s, cpu > pcpu ? 100.0 * (double)(p - pp) / (double)(cpu - pcpu) : 0, (iw - piw) / s, (idw - ppw) / s, (g - pg) / 1e6 / s, dm_thermal_now(), yt);
-        char rs[400]; nvn_be_res_stats(rs, sizeof rs); static uint64_t pbs, pbf; uint64_t bs, bf; nvn_be_barrier_stats(&bs, &bf);
+        char rs[900]; nvn_be_res_stats(rs, sizeof rs); static uint64_t pbs, pbf; uint64_t bs, bf; nvn_be_barrier_stats(&bs, &bf);
         uint64_t nvn_be_cut_count(void), nvn_be_copy_cut_count(void), nvn_be_pass_cut_count(void), nvn_be_blit_splits(void); void nvn_be_ubd_stats(uint64_t *, uint64_t *); static uint64_t pcut, pccut, ppcut, pbsp, pud, puc; uint64_t cut = nvn_be_cut_count(), ccut = nvn_be_copy_cut_count(), pcutn = nvn_be_pass_cut_count(), bsp = nvn_be_blit_splits(), ud, uc; nvn_be_ubd_stats(&ud, &uc);
         void nvn_be_ubp_stats(uint64_t *, uint64_t *, uint64_t *); static uint64_t ppm, ppr, ppf; uint64_t pm, pr, pf_; nvn_be_ubp_stats(&pm, &pr, &pf_);
         void nvn_be_lc_stats(uint64_t *, uint64_t *); static uint64_t plt, pll; uint64_t lt, ll; nvn_be_lc_stats(&lt, &ll);
@@ -3373,7 +3388,7 @@ static void power_line(uint64_t frame) {
             (ld - pld) / 1048576.0 / nf, (st - pst) / 1048576.0 / nf, (fu - pfu) / nf, (udc - pudc) / 1048576.0 / nf); pbs = bs; pbf = bf; pcut = cut; pccut = ccut; ppcut = pcutn; pbsp = bsp; pud = ud; puc = uc; ppm = pm; ppr = pr; ppf = pf_; memcpy(pw5, w5, sizeof pw5); plt = lt; pll = ll;
         char tc[400]; dm_thread_cpu(tc, sizeof tc, s);
         LOG("[nvn] threads up to frame %llu: CPU %s", frame, tc); }
-    else { char yt[192], rs[400], tc[400]; dm_yield_top(yt, sizeof yt); nvn_be_res_stats(rs, sizeof rs); dm_thread_cpu(tc, sizeof tc, 1); }   // the first call only takes the baselines
+    else { char yt[192], rs[900], tc[400]; dm_yield_top(yt, sizeof yt); nvn_be_res_stats(rs, sizeof rs); dm_thread_cpu(tc, sizeof tc, 1); }   // the first call only takes the baselines
     pt = t; pe = e; pcpu = cpu; pp = p; piw = iw; ppw = idw; pg = g; pf = frame; nvn_be_bw(&pld, &pst, &pfu); pudc = nvn_be_udc_saved_bytes();
 #endif
 }
@@ -3875,14 +3890,15 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         {   // long-frame log: this frame's items are first recorded into the ring; whether to print is decided 8 frames later, once the GPU time has arrived (see below)
             static uint64_t plns, ppns, pup, prup, pub; uint64_t lns, pns, up, rup, ub; nvn_be_create_ns(&lns, &pns); nvn_be_pkg_stats(&up, &rup); ub = nvn_be_upload_bytes();
             lf_rec *r = &g_lf[f % LFN]; r->f = f; r->fr = fr; r->nv = nv; r->t_s = (now_ns() - g_t0_ns) / 1e9; r->pso = (unsigned)(pso_ - ppso); r->lib = (unsigned)(lib_ - plib);
-            r->make_ms = ((lns - plns) + (pns - ppns)) / 1e6; r->up = (unsigned)(up - pup); r->rup = (unsigned)(rup - prup); r->up_mb = (ub - pub) / 1048576.0; r->up_ms = up_ms;
+            nvn_be_stall_take(r->stl, sizeof r->stl); r->make_ms = ((lns - plns) + (pns - ppns)) / 1e6; r->up = (unsigned)(up - pup); r->rup = (unsigned)(rup - prup); r->up_mb = (ub - pub) / 1048576.0; r->up_ms = up_ms;
             plns = lns; ppns = pns; pup = up; prup = rup; pub = ub;
         }
         plib = lib_; ppso = pso_;
         trow(f, "@t_s", (now_ns() - g_t0_ns) / 1e9);
         trow(f, "@drawable_ms", nvn_be_drawable_ns_take() / 1e6);
         uint64_t sw = atomic_exchange(&g_sub_wall_ns, 0); g_cpath[f % 16].f = f; g_cpath[f % 16].t = t0 - sw;
-        trow(f, "@sub_wall_ms", sw / 1e6); trow(f, "@sub_cpu_ms", atomic_exchange(&g_sub_cpu_ns, 0) / 1e6); trow(f, "@sub_instr", (double)atomic_exchange(&g_sub_instr, 0));
+        uint64_t sc = atomic_exchange(&g_sub_cpu_ns, 0); g_lf[f % LFN].sw_ms = sw / 1e6; g_lf[f % LFN].sc_ms = sc / 1e6;
+        trow(f, "@sub_wall_ms", sw / 1e6); trow(f, "@sub_cpu_ms", sc / 1e6); trow(f, "@sub_instr", (double)atomic_exchange(&g_sub_instr, 0));
     } else atomic_store(&g_nvn_ns, 0);
     g_acq_wait_ns = g_pq_wait_ns = 0;
     if (f >= 8) { double g = nvn_be_gpu_ms(f - 8); if (g >= 0) { tpush(3, g); trow(f - 8, "@gpu_ms", g); g_gpu_busy_ms += g; uint64_t a, b; if (nvn_be_gpu_span(f - 8, &a, &b) && b / 1e6 > g_gpu_clk_ms) g_gpu_clk_ms = b / 1e6; }   // GPU time is taken 8 frames late (already completed)
@@ -3891,9 +3907,9 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
           // "Long" is relative to recent conditions: when running steadily at 30 fps (menus / windowless host) or under sustained overload, every frame is > 20 ms; those are not long frames and must not flood the log - a frame has to be 40% above the sliding mean of the last 16 frames to count
           static double ef = 16.7, eg = 8; int lf = r->fr > 20.0 && r->fr > 1.4 * ef, lg = g > 16.7 && g > 1.3 * eg;
           if (r->f == f - 8) { ef += ((r->fr < 3 * ef ? r->fr : 3 * ef) - ef) / 16; eg += ((g < 3 * eg ? g : 3 * eg) - eg) / 16; }
-          if (on && r->f == f - 8 && f - 8 > 0 && (lf || lg)) { char b[512];
-              snprintf(b, sizeof b, "frame %llu (%.2f s) whole frame %.1f ms, submit+present %.1f ms, GPU %.1f ms; new pipelines %u + shader libraries %u, %.1f ms in all; texture uploads %u first + %u re-uploads, %.1f MB / %.1f ms",
-                       (unsigned long long)r->f, r->t_s, r->fr, r->nv, g, r->pso, r->lib, r->make_ms, r->up, r->rup, r->up_mb, r->up_ms);
+          if (on && r->f == f - 8 && f - 8 > 0 && (lf || lg)) { char b[2048];
+              snprintf(b, sizeof b, "frame %llu (%.2f s) whole frame %.1f ms, submit+present %.1f ms, GPU %.1f ms; new pipelines %u + shader libraries %u, %.1f ms in all; texture uploads %u first + %u re-uploads, %.1f MB / %.1f ms; submit wall %.1f ms cpu %.1f ms; stages %s",
+                       (unsigned long long)r->f, r->t_s, r->fr, r->nv, g, r->pso, r->lib, r->make_ms, r->up, r->rup, r->up_mb, r->up_ms, r->sw_ms, r->sc_ms, r->stl[0] ? r->stl : "-");
               // Visibility: during the time a long frame "comes out late", what stays on screen is the previous frame; if the previous frame was a loading screen (or this frame itself is one), all the player sees is the loading screen staying a bit longer, with no motion interrupted
               dm_longframe_note(b); } }
         uint64_t g0, g1; if (frame_rec() && nvn_be_gpu_span(f - 8, &g0, &g1)) { trow(f - 8, "@gpu_beg_ms", (g0 - g_t0_ns) / 1e6); trow(f - 8, "@gpu_end_ms", (g1 - g_t0_ns) / 1e6); } }
@@ -4048,8 +4064,8 @@ NVN(nvnSamplerGetBorderColorui, void, const NVNsampler *s, uint32_t *c) {
 NVN(nvnSamplerGetDebugID, uint64_t, const NVNsampler *s) { return (uint64_t)(uintptr_t)s; }
 // A buffer object is a view of its pool: a flush through it publishes CPU-written textures under that range exactly like the pool's flush (ft_flush). Empty before, so a texture the game
 //   wrote through a buffer mapping and flushed there stayed a GPU-only texture with its old content (t_nvn_poolflush; gap scan 11-01 family 42)
-NVN(nvnBufferFlushMappedRange, void, const NVNbuffer *buf, ptrdiff_t off, size_t n) { h_nvnMemoryPoolFlushMappedRange((const NVNmemoryPool *)BF(buf)->pool, BF(buf)->off + off, n); }
-NVN(nvnBufferInvalidateMappedRange, void, const NVNbuffer *buf, ptrdiff_t off, size_t n) { h_nvnMemoryPoolInvalidateMappedRange((const NVNmemoryPool *)BF(buf)->pool, BF(buf)->off + off, n); }
+NVN(nvnBufferFlushMappedRange, void, const NVNbuffer *buf, ptrdiff_t off, size_t n) { if (buf_dead(buf, "nvnBufferFlushMappedRange")) return; h_nvnMemoryPoolFlushMappedRange((const NVNmemoryPool *)BF(buf)->pool, BF(buf)->off + off, n); }
+NVN(nvnBufferInvalidateMappedRange, void, const NVNbuffer *buf, ptrdiff_t off, size_t n) { if (buf_dead(buf, "nvnBufferInvalidateMappedRange")) return; h_nvnMemoryPoolInvalidateMappedRange((const NVNmemoryPool *)BF(buf)->pool, BF(buf)->off + off, n); }
 
 // Memory pool queries
 NVN(nvnMemoryPoolGetFlags, NVNmemoryPoolFlags, const NVNmemoryPool *p) { return (NVNmemoryPoolFlags)((const pool_t *)p)->flags; }
@@ -4103,6 +4119,8 @@ typedef struct { const uint8_t *phys; uint64_t gen; } vpte;
 // One per virtual pool, allocated at Initialize and freed at Finalize. run: the mapped runs, grown as needed (a texture's pool usually has 1–3; Monster Hunter Rise's heap hundreds)
 struct vpool { const pool_t *pool; uint8_t *base; uint64_t len, size, top; int nrun; struct vrun { uint64_t lo, hi; } *run; vpte **pt;
     int nsh, csh; struct vshp { uint64_t off, stamp; } *sh;   // copied host pages (see vsh_*): offset in the pool, dirty stamp of the last copy
+    int lv;   // 预留记进了低区账（vpool_lv_note；帧录虚拟池区里取的不在低区、不记）
+    _Atomic uint64_t gen; uint64_t id;   // gen：本池最近一次映射请求的全局代号（vpt_set）；id：建池序号（全局递增，池对象地址复用时区分新旧池）。GPU 写的稀疏贴图按它们跟映射（nvn_mtl.m gstex_*）
 #if defined(__ANDROID__)
     s2a_vp_alias_table alias;   // dst -> 背板源；vpool_map / vpool_release 维护（#1217 §2.8）
 #endif
@@ -4158,7 +4176,7 @@ static void vpool_unmap_range(uint8_t *base, uint64_t len) {   // 虚拟池区�
 static struct vpool *vpool_new(const pool_t *o, uint8_t *a, uint64_t len) {   // 建页表、登记（录时 vpool_reserve、回放 s2a_hle_vpool_load 共用）
     struct vpool *v = calloc(1, sizeof *v);
     if (!v || !(v->pt = calloc((o->size + (2u << 20) - 1) >> 21 ? (o->size + (2u << 20) - 1) >> 21 : 1, sizeof *v->pt))) die("sparse pool page table allocation failed");
-    v->pool = o; v->base = a; v->len = len; v->size = o->size;
+    static _Atomic uint64_t ids; v->pool = o; v->base = a; v->len = len; v->size = o->size; v->id = atomic_fetch_add(&ids, 1) + 1;
     vp_lock(); vpool_publish(v); vp_unlock();
     return v;
 }
@@ -4167,7 +4185,18 @@ static _Atomic uint64_t g_vsh_pages;   // copied host pages alive in all virtual
 static void *vpool_mmap(uint64_t len) {
     static uint64_t hole = ~0ull; if (hole == ~0ull) { const char *e = getenv("S2A_VPOOL_HOLE_MB"); hole = e && *e ? strtoull(e, NULL, 0) << 20 : 0; }
     if (hole && len > hole) { errno = ENOMEM; return MAP_FAILED; }
-    return mmap(NULL, len, PROT_NONE, MAP_ANON | MAP_PRIVATE, -1, 0);
+    return mmap(NULL, len, PROT_NONE, MAP_ANON | MAP_PRIVATE, S2A_VMTAG_FD(S2A_VMTAG_VPOOL), 0);   // 带标签：低区按标签合计认得出（#7c1a0f）
+}
+// 虚拟池的整段预留记进低区账（#1143：马车世界 iPhone 开局 11 个池预留 1368 MB，宿主 3 GB 一分钟内耗光，原先全算「拦不到的」）。
+//   只记账、不设限（不走 acquire）：预留失败照旧逐次减半；账本取不到（单测 / 回放 / 安卓）就不记
+static const s2a_lowva_api *vpool_lv(int *me) {
+    static const s2a_lowva_api *lv; static int user, tried; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&mu);
+    if (!tried) { tried = 1;
+        const s2a_lowva_api *(*get)(void) = (const s2a_lowva_api *(*)(void))dlsym(RTLD_DEFAULT, "s2a_lowva"); const s2a_lowva_api *l = get ? get() : NULL;
+        if (l && l->size >= sizeof(s2a_lowva_api) && l->version == S2A_LOWVA_VERSION) { lv = l; user = l->user("Switch 2 虚拟池预留", NULL, NULL); } }
+    pthread_mutex_unlock(&mu);
+    *me = user; return lv;
 }
 static uint8_t *vpool_reserve(const pool_t *o) {   // → the reserved range of a virtual pool, NULL when no address space is left
     if (!(o->flags & 0x200)) return NULL;
@@ -4181,6 +4210,7 @@ static uint8_t *vpool_reserve(const pool_t *o) {   // → the reserved range of 
 #endif
     uint64_t len = o->size < cap ? o->size : cap;
     void *a = s2a_vp_arena_map ? s2a_vp_arena_map(len) : NULL;   // 帧录进程：从虚拟池区取，回放进程同址放得回（runtime/src/vawin.c）
+    int arena = a != NULL;
     if (!a) a = vpool_mmap(len);
     // 占不到就逐次减半（按 2 MB 页表粒度取整）再占，直到 16 MB：超出预留的映射走「超出预留、只进页表」那支，预留内的地址照常换得回宿主地址
     //   （11-06 FC26 真机：宿主低区被切碎、最大空洞 511 MB，512 MB 的池原先整池放弃，GPU 地址换不回宿主地址，开赛 SIGSEGV；原先只有大于 1 GB 的退一档到 1 GB）
@@ -4188,7 +4218,8 @@ static uint8_t *vpool_reserve(const pool_t *o) {   // → the reserved range of 
         while (a == MAP_FAILED && len > (16ull << 20)) { len = (len >> 1) & ~((2ull << 20) - 1); a = vpool_mmap(len); }
         if (a != MAP_FAILED) LOG("[nvn] virtual pool %p: %#llx bytes of address space not available (errno %d), reserving %#llx instead", (const void *)o, (unsigned long long)want, er, (unsigned long long)len); }
     if (a == MAP_FAILED) { LOG("【红】 virtual pool %p: cannot reserve %#llx bytes of address space (errno %d)", (const void *)o, (unsigned long long)len, errno); return NULL; }
-    vpool_new(o, a, len); vp_lock(); size_t live = g_nvpa; vp_unlock();
+    struct vpool *nv = vpool_new(o, a, len); vp_lock(); size_t live = g_nvpa; vp_unlock();
+    if (!arena) { int me; const s2a_lowva_api *lv = vpool_lv(&me); if (lv && me > 0) { lv->note(me, (int64_t)len); nv->lv = 1; } }
     static _Atomic uint64_t n; uint64_t k = atomic_fetch_add(&n, 1) + 1;   // a UE4 game makes one per streamed texture: the first ones and every 1000th
     if (k <= 8 || k % 1000 == 0) LOG("[nvn] virtual pool %p (%#llx bytes, flags %#x): own address range %p+%#llx, physical pages are remapped into it (%llu so far, %zu alive)", (const void *)o, (unsigned long long)o->size, o->flags, a, (unsigned long long)len, (unsigned long long)k, live);
     return a;
@@ -4197,6 +4228,7 @@ static void vpool_release(const pool_t *o) {
     vp_lock(); struct vpool *v = vpool_of(o);
     if (v) { vpool_unpublish(v);
         for (int k = 0; k < v->nrun; k++) nvn_be_pool_del(v->base + v->run[k].lo); vpool_unmap_range(v->base, v->len);
+        if (v->lv) { int me; const s2a_lowva_api *lv = vpool_lv(&me); if (lv && me > 0) lv->note(me, -(int64_t)v->len); }
 #if defined(__ANDROID__)
         // 拆池必须早于 s2a_mem_session_reset：祖先先是 vpool_release 再 reset，否则 unref 会下溢。
         s2a_vp_alias_clear(&v->alias);
@@ -4225,7 +4257,7 @@ static void vrun_set(struct vpool *v, uint64_t lo, uint64_t hi, int mapped) {
 // Page table of a sparse pool (see above). Caller holds g_vp_mu
 static const vpte *vpt_get(const struct vpool *v, uint64_t o) { const vpte *l = v->pt[o >> 21]; return l ? &l[(o >> 12) & (VPT_LEAF - 1)] : NULL; }
 static void vpt_set(struct vpool *v, uint64_t voff, uint64_t size, const uint8_t *phys) {
-    uint64_t gen = atomic_fetch_add(&g_vp_gen, 1) + 1;
+    uint64_t gen = atomic_fetch_add(&g_vp_gen, 1) + 1; atomic_store(&v->gen, gen);
     for (uint64_t o = 0; o < size; o += 0x1000) {
         vpte **l = &v->pt[(voff + o) >> 21];
         if (!*l && !phys) continue;   // never mapped: stays unmapped
@@ -5049,6 +5081,18 @@ int nvn_sparse_pool(const void *pool) {   // called per texture lookup: the hash
     const pool_t *o = pool; pthread_rwlock_rdlock(&g_vph_lk); int r = vpool_of(o) != NULL; pthread_rwlock_unlock(&g_vph_lk); return r;
 }
 uint64_t nvn_sparse_gen(void) { return atomic_load(&g_vp_gen); }
+// 一个虚拟池的映射代号与建池序号（nvn_mtl.m gstex_*：GPU 写的稀疏贴图在本池映射变了时才同步块；序号变了 = 池已收尾、地址被新池复用）；不是虚拟池 → 0
+void nvn_sparse_pool_gen(const void *pool, uint64_t *gen, uint64_t *id) {
+    const pool_t *o = pool; pthread_rwlock_rdlock(&g_vph_lk); struct vpool *v = vpool_of(o);
+    *gen = v ? atomic_load(&v->gen) : 0; *id = v ? v->id : 0; pthread_rwlock_unlock(&g_vph_lk);
+}
+// a 起 64 KB 背后的物理内存：16 个 4 KB 页是一整段连续物理内存时给它的地址，否则 0。同一物理内存背后的虚拟块共用一个 Metal 堆页（nvn_stex.inc，移植自 kartnative，MIT）
+uint64_t nvn_sparse_backing(const void *pool, uint64_t a) {
+    vp_lock(); struct vpool *v = vpool_at(pool, a); const uint8_t *p0 = NULL;
+    if (v) { uint64_t o = a - (uint64_t)(uintptr_t)v->base; const vpte *e = (o & 0xFFF) || o + 0x10000 > v->size ? NULL : vpt_get(v, o); p0 = e ? e->phys : NULL;
+        for (unsigned i = 1; p0 && i < 16; i++) { const vpte *f = vpt_get(v, o + i * 0x1000ull); if (!f || f->phys != p0 + i * 0x1000) p0 = NULL; } }
+    vp_unlock(); return (uint64_t)(uintptr_t)p0;
+}
 uint64_t nvn_sparse_copy(const void *pool, void *dst, uint64_t a, uint64_t n) {
     vp_lock(); struct vpool *v = vpool_at(pool, a); uint64_t miss = 0;
     if (!v) { vp_unlock(); memset(dst, 0, n); return n; }
@@ -5086,6 +5130,24 @@ int nvn_sparse_mapped(const void *pool, uint64_t a, uint64_t n) {   // every pag
     vp_unlock(); return ok;
 }
 void nvn_sparse_protect(const void *pool, uint64_t a, uint64_t n) { vpt_walk(pool, a, n, ~0ull, run_protect, 0); }
+// Metal 稀疏贴图（nvn_mtl.m sp_upload）：[a, a+n) 按 64 KB 页出位图（bits 第 k 位 = 第 k 页 16 个 4 KB 小页全有物理页），一次加锁走完；
+//   没映射过的 2 MB 叶整块跳过。返回有映射的页数。a 须 64 KB 对齐（稀疏贴图存储按页对齐）
+uint64_t nvn_sparse_map_bits(const void *pool, uint64_t a, uint64_t n, uint8_t *bits) {
+    uint64_t np = (n + 0xFFFF) >> 16, got = 0; memset(bits, 0, (size_t)((np + 7) >> 3));
+    vp_lock(); struct vpool *v = vpool_at(pool, a);
+    if (!v) { vp_unlock(); return 0; }
+    uint64_t o0 = a - (uint64_t)(uintptr_t)v->base;
+    for (uint64_t k = 0; k < np; k++) {
+        uint64_t o = o0 + (k << 16); int ok = 1;
+        for (uint64_t q = 0; q < 0x10000 && ok; q += 0x1000) {
+            const vpte *e = o + q < v->size ? vpt_get(v, o + q) : NULL;
+            if (!e) { ok = 0; uint64_t leaf_end = ((o + q) | ((2u << 20) - 1)) + 1; uint64_t kk = (leaf_end - o0) >> 16; if (kk > k + 1) k = kk - 1; break; }   // 向下取整：跨叶边界的那页照样逐个查   // 整个 2 MB 叶没映射：跳到叶尾
+            ok = e->phys != NULL;
+        }
+        if (ok) { bits[k >> 3] |= (uint8_t)(1u << (k & 7)); got++; }
+    }
+    vp_unlock(); return got;
+}
 NVN(nvnCommandBufferDrawElementsIndirect, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, NVNindexType it, NVNbufferAddress ib, NVNbufferAddress ind) {
     rec_draw_idx(c, (p_draw_idx){pr, it, 0, 0, 0, 1, GA(ib), GA(ind)});
 }

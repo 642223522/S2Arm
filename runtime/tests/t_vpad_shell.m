@@ -6,6 +6,7 @@
 //   ④ 选 default → 1；selected default、hasMine true（文件保留），底稿仍是 mine（A 键 x 0.5）
 //   ⑤ 游戏号 "../x" / ".h"：读返回 NULL、写返回 0
 //   ⑥ 游戏内（vpad.m 同目录）打开 g1：选 mine 后读到 A 键 x 0.5
+//   ⑬ App 级旧「我的布局」（A x .25、14 键）：新游戏 g3 列表里有、没选上；坏文件 / 内置名不带；g1 自己的不覆盖；删了不再冒
 #import <Foundation/Foundation.h>
 #include <stdlib.h>
 #import "../../ios/vpad_layout.h"
@@ -66,6 +67,20 @@ int main(void) {
         S2AVPadLayout *splitMine = [twoSplit selectedLayout:nil];
         CK(splitMine.buttons.count == 14 && splitMine.sticks.count == 0 && near([[splitMine.buttons firstObject][@"x"] doubleValue], .25), "⑫ 重开分屏 2D 自定义位置，仍无摇杆");
         CK([rd("g2d")[@"selected"] isEqualToString:@"mine"] && near([btn(rd("g2d"), @"A")[@"x"] doubleValue], .5), "⑫ 分屏保存不会覆盖普通 2D 自定义位置");
+        // ⑬ 旧版 App 级「我的布局」（11-15）：拿 ⑫ 那份分屏 2D 自定义（A x .25、14 键）冒充旧版 App 级 mine.json，另放一份坏文件和内置名 default.json
+        NSFileManager *fm = NSFileManager.defaultManager; NSString *app = [root stringByAppendingPathComponent:@"VPadLayouts"];
+        [fm createDirectoryAtPath:app withIntermediateDirectories:YES attributes:nil error:nil];
+        [fm copyItemAtPath:[root stringByAppendingPathComponent:@"games/g2d/VPadLayouts/split/mine.json"] toPath:[app stringByAppendingPathComponent:@"mine.json"] error:nil];
+        [@"{坏" writeToFile:[app stringByAppendingPathComponent:@"bad.json"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        [fm copyItemAtPath:[app stringByAppendingPathComponent:@"mine.json"] toPath:[app stringByAppendingPathComponent:@"default.json"] error:nil];
+        NSDictionary *g3 = rd("g3"); NSString *g3dir = [root stringByAppendingPathComponent:@"games/g3/VPadLayouts"];
+        CK([g3[@"selected"] isEqualToString:@"default"] && [g3[@"hasMine"] boolValue] && near([btn(g3, @"A")[@"x"] doubleValue], .25) && [g3[@"buttons"] count] == 14,
+           "⑬ 新游戏接进旧版 App 级 mine：列表里有（hasMine 1、底稿 A x .25、14 键），但没替玩家选上（selected %s）", [g3[@"selected"] UTF8String]);
+        CK([fm fileExistsAtPath:[g3dir stringByAppendingPathComponent:@"mine.json"]] && ![fm fileExistsAtPath:[g3dir stringByAppendingPathComponent:@"bad.json"]] && ![fm fileExistsAtPath:[g3dir stringByAppendingPathComponent:@"default.json"]],
+           "⑬ 只复制读得通的玩家布局：坏文件与内置名 default.json 不带");
+        CK([rd("g1")[@"selected"] isEqualToString:@"mine"] && near([btn(rd("g1"), @"A")[@"x"] doubleValue], .5), "⑬ 已有自己 mine 的 g1 不被覆盖（A x 仍 .5）");
+        [fm removeItemAtPath:[g3dir stringByAppendingPathComponent:@"mine.json"] error:nil];
+        CK(![rd("g3")[@"hasMine"] boolValue], "⑬ 玩家删了这款的 mine 后不再冒出来（每款只接一次）");
         [NSFileManager.defaultManager removeItemAtPath:root error:nil];
     }
     if (bad) printf("✗ t_vpad_shell：%d 项不通\n", bad); else printf("✓ t_vpad_shell：全部通过\n");

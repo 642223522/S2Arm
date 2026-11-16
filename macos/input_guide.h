@@ -7,6 +7,14 @@ NSDictionary *s2a_mac_guide_identity(void);
 BOOL s2a_mac_guide_show_again(NSString *gameID, NSString *path);
 NSImage *s2a_mac_guide_status_image(void);
 
+// Small, mouse-transparent in-game face-button reference. The game window owns
+// the view; mapping is the exact packed permutation used by its input adapter.
+@interface S2AControllerFaceOverlay : NSVisualEffectView
+@property(nonatomic, copy) NSString *family;
+@property(nonatomic) int mapping;
+- (NSArray<NSString *> *)rows;
+@end
+
 @interface S2AMacInputGuide : NSObject <NSWindowDelegate>
 @property(nonatomic, readonly) NSWindow *window;
 @property(nonatomic, readonly) NSString *selectedTarget;

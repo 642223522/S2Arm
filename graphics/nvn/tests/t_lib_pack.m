@@ -171,6 +171,29 @@ int main(int argc, char **argv) { @autoreleasepool {
         }
         g_hr_rc = -1; if (full != MAP_FAILED) munmap(full, 4 << 20);
     }
+    {   // 覆盖层（lp_pick，S 级升级补的可读瓦片版放 <库目录>/bf/）：主容器键 A（种类 0 库、1 json「主」）、键 C（种类 1 json）；
+        //   覆盖层键 A（种类 1 json「覆盖」、种类 2 _bf 库 = b.metallib）。期望（按写进去的字节手写）：A 的 json 取覆盖层那份、A 的 _bf 取覆盖层、
+        //   A 的库（种类 0）覆盖层没有 → 主容器；C 只在主容器 → 主容器；覆盖层没开（idx 空）→ 一律主容器
+        char dm[] = "/tmp/t_lib_pack_m.XXXXXX"; if (!mkdtemp(dm)) return 2;
+        char dov[PATH_MAX]; snprintf(dov, sizeof dov, "%s/bf", dm); mkdir(dov, 0755);
+        NSData *jm = [@"{\"entry\":\"main\"}" dataUsingEncoding:NSUTF8StringEncoding], *jo = [@"{\"entry\":\"main\",\"fetch\":{}}" dataUsingEncoding:NSUTF8StringEncoding], *jc = [@"{\"c\":1}" dataUsingEncoding:NSUTF8StringEncoding];
+        uint64_t km[3] = {0xaa, 0xaa, 0xcc}; uint8_t kdm[3] = {0, 1, 1}, shm[3] = {0, 0, 1};
+        write_pack(dm, "abcdef012345", @[la, jm, jc], shm, km, kdm, 3, -1);
+        uint64_t ko[2] = {0xaa, 0xaa}; uint8_t kdo[2] = {1, 2}, sho[2] = {0, 1};
+        write_pack(dov, "abcdef012345", @[jo, lb], sho, ko, kdo, 2, -1);
+        lp_pack m, o, none; memset(&none, 0, sizeof none);
+        CHECK(lp_open(&m, dm, "abcdef012345") == 1 && lp_open(&o, dov, "abcdef012345") == 1, "覆盖层：主容器与 bf/ 覆盖层都打开");
+        CHECK(lp_pick(&m, &o, "00000000000000aa_b", 1) == &o, "键 A 的 json：取覆盖层");
+        dispatch_data_t aj = lp_get(lp_pick(&m, &o, "00000000000000aa_b", 1), "00000000000000aa_b", 1);
+        CHECK(aj && [(NSData *)aj isEqualToData:jo], "键 A 的 json 是覆盖层那份（带 fetch）");
+        CHECK(lp_pick(&m, &o, "00000000000000aa_bf", 2) == &o, "键 A 的 _bf：取覆盖层");
+        NSError *e5 = nil; id<MTLLibrary> lbf = lp_library(lp_pick(&m, &o, "00000000000000aa_bf", 2), dev, "00000000000000aa_bf", 2, NULL, &e5);
+        CHECK(lbf && [lbf newFunctionWithName:@"fb"] != nil, "键 A 的 _bf 从覆盖层建库、取到入口 fb（%s）", e5.localizedDescription.UTF8String ?: "-");
+        CHECK(lp_pick(&m, &o, "00000000000000aa_b", 0) == &m, "键 A 的库（种类 0）覆盖层没有：取主容器");
+        CHECK(lp_pick(&m, &o, "00000000000000cc_b", 1) == &m, "键 C 只在主容器：取主容器");
+        CHECK(lp_pick(&m, &none, "00000000000000aa_b", 1) == &m && lp_pick(&m, NULL, "00000000000000aa_bf", 2) == &m, "覆盖层没开：一律主容器");
+        lp_pack bad; CHECK(lp_open(&bad, dov, "000000000000") == -1, "覆盖层链版本不符：判格式错（宿主不开它，只用主容器）");
+    }
     printf("%s t_lib_pack：%d 项，不通 %d\n", fails ? "✗" : "✓", checks, fails);
     return fails ? 1 : 0;
 } }

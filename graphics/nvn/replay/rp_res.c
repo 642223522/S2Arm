@@ -7,6 +7,7 @@
 #include "nvn_fmt_info.h"
 #include "nvn_deswizzle.h"
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -651,11 +652,23 @@ static nvn_gpu_view decl_zero(uint8_t dtt, uint8_t dcls, nvn_gpu_cmd c) {
 }
 
 static nvn_gpu_view view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, nvn_gpu_cmd c, const tex_t **t_out);
+static _Atomic uint64_t g_empty_slot_zero;   // 空槽绑零贴图的次数（#1147；信息计数，不是未接）
+uint64_t rp_empty_slot_zero_count(void) { return atomic_load(&g_empty_slot_zero); }
 nvn_gpu_view rp_view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, int elem, nvn_gpu_cmd c, const tex_t **t_out) {
     if (!dtt) return rp_view_by_id(id, c, t_out);
     nvn_gpu_view out = view_by_id_decl(id, dtt, dcls, c, t_out);
     // 贴图数组里取不到的元素：描述符数组每项都要有效，用声明类型的零贴图顶上（类型与声明一致，不再拿别的元素凑）
     if (!out && elem) out = decl_zero(dtt, dcls, c);
+    // 空槽（#1147）：着色器声明了这个组合槽、游戏这一笔没绑贴图（句柄 0 → 取池里 tex_base + 0；0 号是驱动保留区、TexturePoolInitialize 不写），
+    //   或池容量内一个从没登记过的号：同 Ryujinx（无效描述符按未绑读 0）与 iOS（空槽读 0），绑声明类型的零贴图、不跳整笔，记一条信息计数。
+    //   池容量不知道（没登记池）或号越过池容量、号为负，仍取不到 → 调用方照旧报 texture_slot_unresolved 跳笔
+    if (!out && !elem && id >= 0) {
+        pthread_mutex_lock(&g_rmu);
+        const int empty = g_tpool_n && id < g_tpool_n && (id >= g_ntreg || !g_treg[id].ok);
+        pthread_mutex_unlock(&g_rmu);
+        if (empty && (out = decl_zero(dtt, dcls, c)) != NULL && atomic_fetch_add(&g_empty_slot_zero, 1) == 0)
+            nvn_plat_log(NVN_PLAT_LOG_INFO, "tex", "空贴图槽（句柄 0 或池内未登记的号）：按 Ryujinx / iOS 绑声明类型的零贴图，不跳整笔");
+    }
     return out;
 }
 static nvn_gpu_view view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, nvn_gpu_cmd c, const tex_t **t_out) {

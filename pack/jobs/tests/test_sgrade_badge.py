@@ -42,7 +42,8 @@ class SGradeBadgeTests(unittest.TestCase):
         b = bytearray(0x100); b[0x40:0x48] = bytes.fromhex("1122334455667788"); (mac / "exefs/main").write_bytes(bytes(b))
         def no_extract(c, g): raise Failure("没解过包")
         with patch.object(build, "shared_dir", side_effect=no_extract), patch.object(layout, "image_mac", return_value=mac), \
-             patch.object(layout, "path", side_effect=lambda c, g, *p, create=True: self.t / "nogame" / "/".join(p)):
+             patch.object(layout, "path", side_effect=lambda c, g, *p, create=True: self.t / "nogame" / "/".join(p)), \
+             patch.object(layout, "program_exefs", side_effect=lambda c, g: self.t / "nogame" / "original-exefs"):
             self.assertEqual(cheats.main_build(self.c, {"id": "0100AAAA00000000"}), "1122334455667788")
             (mac / "exefs/main").unlink(); self.info["ios"] = {"mainBid": "99aabbccddeeff00"}
             self.assertEqual(cheats.main_build(self.c, {"id": "0100AAAA00000000"}), "99AABBCCDDEEFF00")

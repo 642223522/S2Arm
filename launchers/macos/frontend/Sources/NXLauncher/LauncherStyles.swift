@@ -1,3 +1,5 @@
+// Derived from NX2Apple (MIT; see frontend/NOTICE).
+// S2Arm: shared theme metrics/materials, consistent controls, and keyboard/controller/accessibility actions.
 import SwiftUI
 
 package struct LauncherWindowChrome: NSViewRepresentable {
@@ -9,7 +11,8 @@ package struct LauncherWindowChrome: NSViewRepresentable {
             window.titleVisibility = .hidden
             window.titlebarAppearsTransparent = true
             window.styleMask.insert(.fullSizeContentView)
-            window.backgroundColor = NSColor(red: 0.055, green: 0.055, blue: 0.06, alpha: 1)
+            window.backgroundColor = .clear
+            window.isOpaque = false
             window.isMovableByWindowBackground = true
         }
     }
@@ -68,18 +71,16 @@ package struct TitlebarDoubleClick: NSViewRepresentable {
 /// controls stand in one column whatever their labels. A row hands it to its trailing controls (`launcherRowControls()`),
 /// and LauncherSecondaryButtonStyle and LauncherDropdown take it from there. Outside a row they size to their label.
 package enum LauncherControl {
-    /// Wide enough for the longest everyday label in every language on one line ("Sök efter uppdateringar", 148 pt in 13 pt
-    /// Manrope semibold, plus the buttons' 15 pt of padding on each side). LauncherControlWidthTests measures them all.
-    package static let width: CGFloat = 184
+    /// A single trailing column; a pair of short actions shares it through LauncherRowActions.
+    package static let width: CGFloat = LauncherTheme.Metrics.controlWidth
     /// What the label of a button may take.
-    package static let buttonLabelWidth: CGFloat = width - 2 * 15
-    /// One line of 13 pt Manrope semibold plus 9 pt of padding above and below. A button or dropdown in a row is exactly this
-    /// high, so a label can never make one taller than its neighbours.
-    package static let height: CGFloat = 36
+    package static let buttonLabelWidth: CGFloat = width - 2 * LauncherTheme.Space.large
+    /// Buttons, dropdowns and input fields share one height, independent of label or language.
+    package static let height: CGFloat = LauncherTheme.Metrics.controlHeight
     /// A label that is a little too long shrinks to this share of its size before it is cut.
     package static let minimumLabelScale: CGFloat = 0.85
     /// The room a dropdown's choice has beside its chevron and the gap to it.
-    package static let choiceWidth: CGFloat = buttonLabelWidth - 8 - 10
+    package static let choiceWidth: CGFloat = buttonLabelWidth - LauncherTheme.Space.small - 10
 }
 
 /// What one button or dropdown in a setting row measured when it was drawn: the width its label wants on a single line, the width
@@ -116,7 +117,8 @@ private struct LauncherControlMeasure<Label: View>: ViewModifier {
             content.background(GeometryReader { box in
                 label.fixedSize().hidden().background(GeometryReader { text in
                     Color.clear.preference(key: LauncherControlSamples.self,
-                                           value: [LauncherControlSample(labelWidth: text.size.width, room: room, size: box.size)])
+                                           value: [LauncherControlSample(labelWidth: text.size.width,
+                                               room: max(0, box.size.width - (LauncherControl.width - room)), size: box.size)])
                 })
             })
         } else {
@@ -155,34 +157,45 @@ private struct LauncherRowControlFrame: ViewModifier {
     func body(content: Content) -> some View {
         content
             .lineLimit(1).minimumScaleFactor(width == nil ? 1 : LauncherControl.minimumLabelScale)
-            .padding(.horizontal, 15)
+            .padding(.horizontal, LauncherTheme.Space.large)
             .frame(width: width, height: width == nil ? nil : LauncherControl.height)
             .launcherMeasured(label: content, room: LauncherControl.buttonLabelWidth)
     }
 }
 
 package struct LauncherSecondaryButtonStyle: ButtonStyle {
-    package init(accent: Color? = nil) { self.accent = accent }
+    package init(accent: Color? = nil, fill: Bool = false, prominent: Bool = false) {
+        self.accent = accent; self.fill = fill; self.prominent = prominent
+    }
     /// Text and border in this colour (the build bar's Stop); plain white otherwise.
     package var accent: Color? = nil
+    package var fill = false
+    package var prominent = false
     /// Inside a setting row the button is exactly LauncherControl.width wide and LauncherControl.height high, its label centred on
     /// one line (a little smaller when it does not fit): the buttons of a page line up in one column and are equally high.
     @Environment(\.launcherControlWidth) private var width
     @Environment(\.isEnabled) private var enabled
+    @State private var hovered = false
     package func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.manrope(13, .semibold))
+            .font(prominent ? .manrope(16, .semibold) : LauncherTheme.TypeStyle.button)
+            .labelStyle(LauncherLabelStyle())
             .multilineTextAlignment(.center)
             .lineLimit(1)
             .minimumScaleFactor(width == nil ? 1 : LauncherControl.minimumLabelScale)
-            .padding(.horizontal, 15).padding(.vertical, 9)
-            .frame(width: width, height: width == nil ? nil : LauncherControl.height)
-            .background(Color.white.opacity(configuration.isPressed ? 0.13 : 0.055), in: RoundedRectangle(cornerRadius: 9))
-            .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(accent?.opacity(0.75) ?? Color.white.opacity(0.10)))
+            .padding(.horizontal, LauncherTheme.Space.large)
+            .frame(width: width, height: prominent ? LauncherTheme.Metrics.prominentControlHeight : LauncherControl.height)
+            .frame(minWidth: width == nil ? LauncherTheme.Metrics.actionMinWidth : nil)
+            .frame(maxWidth: fill ? .infinity : nil)
+            .background(configuration.isPressed ? LauncherTheme.Colors.pressed : hovered ? LauncherTheme.Colors.hover : LauncherTheme.Colors.control,
+                        in: RoundedRectangle(cornerRadius: LauncherTheme.Metrics.controlRadius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: LauncherTheme.Metrics.controlRadius, style: .continuous)
+                .strokeBorder(accent?.opacity(0.75) ?? LauncherTheme.Colors.border))
             .foregroundStyle(enabled ? (accent ?? Color.white.opacity(0.92)) : .gray)
             .opacity(enabled ? 1 : 0.55)
-            .contentShape(RoundedRectangle(cornerRadius: 9))
-            .launcherMeasured(label: configuration.label.font(.manrope(13, .semibold)), room: LauncherControl.buttonLabelWidth)
+            .contentShape(RoundedRectangle(cornerRadius: LauncherTheme.Metrics.controlRadius, style: .continuous))
+            .onHover { hovered = $0 }
+            .launcherMeasured(label: configuration.label.font(prominent ? .manrope(16, .semibold) : LauncherTheme.TypeStyle.button), room: LauncherControl.buttonLabelWidth)
     }
 }
 
@@ -198,12 +211,14 @@ package struct LauncherSwitchStyle: ToggleStyle {
                     .padding(3)
                     .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
             }
-            .frame(width: 40, height: 24)
+            .frame(width: LauncherTheme.Metrics.switchWidth, height: LauncherTheme.Metrics.switchHeight)
             .contentShape(Capsule())
         }
-        .buttonStyle(.plain)
+        .controllerButtonStyle(.plain)
+        .controllerRingRadius(.infinity, outset: 3)   // 胶囊开关：焦点框也是胶囊，画在外侧 3 pt（开着时整条奶油色，贴边的框看不见）
         .opacity(enabled ? 1 : 0.45)
         .accessibilityAddTraits(configuration.isOn ? .isSelected : [])
+        .accessibilityRepresentation { Toggle(isOn: configuration.$isOn) { configuration.label }.toggleStyle(.switch) }
     }
 }
 
@@ -216,7 +231,6 @@ package enum LauncherHeroAction {
     package static let iconSlot: CGFloat = 28
     package static let iconSpacing: CGFloat = 8
     package static let labelWidth = width - 2 * horizontalPadding - iconSlot - iconSpacing
-    package static let minimumScale: CGFloat = 0.7
 }
 
 package struct LauncherHeroActionLabel: View {
@@ -227,12 +241,13 @@ package struct LauncherHeroActionLabel: View {
     package var body: some View {
         HStack(spacing: LauncherHeroAction.iconSpacing) {
             Image(systemName: symbol).frame(width: LauncherHeroAction.iconSlot)
-            Text(title).lineLimit(1).minimumScaleFactor(LauncherHeroAction.minimumScale)
+            Text(title).lineLimit(1).fixedSize()
         }
         .font(.manrope(18, .bold))
         .foregroundStyle(.black)
         .padding(.horizontal, LauncherHeroAction.horizontalPadding)
-        .frame(width: LauncherHeroAction.width, height: LauncherHeroAction.height)
+        // 最小这么宽、字长就撑宽（11-14 加日 / 西 / 法：固定宽 + 缩字仍放不下，被截成「Installer sur l'iPh…」）
+        .frame(minWidth: LauncherHeroAction.width, minHeight: LauncherHeroAction.height, maxHeight: LauncherHeroAction.height)
         .background(LauncherPalette.cream, in: Capsule())
     }
 }
@@ -240,7 +255,7 @@ package struct LauncherHeroActionLabel: View {
 /// The width of a launch option's control (choices, list, slider with its value), so the controls of a card line up
 /// in one column whatever their labels.
 package enum LaunchControl {
-    package static let width: CGFloat = 220
+    package static let width: CGFloat = LauncherTheme.Metrics.controlWidth
     /// A slider's value, in percent or in pixels: wide enough for "1920×1080" in 13 pt Manrope semibold with monospaced digits
     /// (71 pt), so every slider of the sheet is equally long and the reset arrows line up.
     package static let valueWidth: CGFloat = 72
@@ -256,7 +271,7 @@ package enum LaunchControl {
     }
 }
 
-/// Two or three choices side by side; the chosen one is a cream pill. Each choice takes an equal share of the width
+/// Two or three choices side by side; the chosen one uses a cream fill. Each choice takes an equal share of the width
 /// it is given.
 package struct LauncherSegmented: View {
     package init(options: [(value: String, label: String)], selection: String, choose: @escaping (String) -> Void) {
@@ -273,18 +288,19 @@ package struct LauncherSegmented: View {
                     Text(o.label).font(.manrope(12.5, on ? .bold : .medium))
                         .foregroundStyle(on ? Color.black : Color.white.opacity(0.75))
                         .lineLimit(1).minimumScaleFactor(0.85)
-                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .padding(.horizontal, 12).frame(height: LauncherControl.height - 6)
                         .frame(maxWidth: .infinity)
-                        .background(on ? LauncherPalette.cream : .clear, in: Capsule())
-                        .contentShape(Capsule())
+                        .background(on ? LauncherPalette.cream : .clear, in: RoundedRectangle(cornerRadius: LauncherTheme.Metrics.controlRadius - 3))
+                        .contentShape(RoundedRectangle(cornerRadius: LauncherTheme.Metrics.controlRadius - 3))
                 }
-                .buttonStyle(.plain)
+                .controllerButtonStyle(.plain)
                 .accessibilityAddTraits(on ? .isSelected : [])
             }
         }
         .padding(3)
-        .background(Color.white.opacity(0.06), in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.white.opacity(0.08)))
+        .frame(height: LauncherControl.height)
+        .background(LauncherTheme.Colors.control, in: RoundedRectangle(cornerRadius: LauncherTheme.Metrics.controlRadius))
+        .overlay(RoundedRectangle(cornerRadius: LauncherTheme.Metrics.controlRadius).strokeBorder(LauncherTheme.Colors.border))
     }
 }
 
@@ -297,6 +313,8 @@ package struct LauncherSlider: View {
     package let range: ClosedRange<Double>
     package let step: Double
     package let change: (Double) -> Void
+    @Environment(\.isEnabled) private var enabled
+    @FocusState private var focused: Bool
     package var body: some View {
         GeometryReader { g in
             let span = range.upperBound - range.lowerBound
@@ -312,11 +330,31 @@ package struct LauncherSlider: View {
             .frame(maxHeight: .infinity)
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 0).onChanged { drag in
+                guard enabled else { return }
                 let raw = range.lowerBound + Double(min(max(drag.location.x - knob / 2, 0), track) / max(track, 1)) * span
                 let snapped = step > 0 ? (raw / step).rounded() * step : raw
                 change(min(max(snapped, range.lowerBound), range.upperBound))
             })
         }
-        .frame(height: 22)
+        .frame(height: LauncherControl.height)
+        .focusable(enabled).focused($focused)
+        .overlay(RoundedRectangle(cornerRadius: LauncherTheme.Metrics.controlRadius)
+            .strokeBorder(focused ? LauncherPalette.cream.opacity(0.7) : .clear).padding(-3).allowsHitTesting(false))
+        .onMoveCommand { direction in
+            if direction == .left { adjust(-1) } else if direction == .right { adjust(1) }
+        }
+        .accessibilityRepresentation {
+            if step > 0 { Slider(value: Binding(get: { value }, set: change), in: range, step: step).labelsHidden() }
+            else { Slider(value: Binding(get: { value }, set: change), in: range).labelsHidden() }
+        }
+        .controllerControl(activate: { focused = true }, adjust: adjust)
+    }
+
+    private func adjust(_ direction: Int) {
+        guard enabled else { return }
+        let increment = step > 0 ? step : (range.upperBound - range.lowerBound) / 100
+        change(min(max(value + Double(direction) * increment, range.lowerBound), range.upperBound))
     }
 }
+
+extension LauncherSecondaryButtonStyle: PadRingShaped { package var padRingRadius: CGFloat { LauncherTheme.Metrics.controlRadius } }

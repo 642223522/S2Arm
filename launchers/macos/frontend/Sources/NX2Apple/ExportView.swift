@@ -13,14 +13,9 @@ struct ExportView: View {
     @ObservedObject var model: S2ArmLauncherModel
     @EnvironmentObject var loc: Localizer
     @ObservedObject var covers: CoverCache
-    @State private var renaming = false
-    @State private var renameText = ""
-    /// 存放位置（游戏库结构 v3）：选中的文件夹路径；空 = 还没定（出现时按这款现在的 / 上次用的位置填）
+    /// 当前页面的选择；打开时恢复上次手动选择，没有时由模型选缺省位置。
     @State private var location = ""
-    /// 「选择其他文件夹…」选过、还不在位置表里的
-    @State private var pickedLocation: String?
     /// S 级优化卡片报了「这款什么都没有」的游戏号（整张卡不出）
-    @State private var sgradeNothing: String?
     let game: GameSummary
     /// 打开装机页（已出过 iPhone 包的款直接装）。
     let install: () -> Void
@@ -30,14 +25,15 @@ struct ExportView: View {
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 34) {
                     header
-                    if sgradeNothing != game.id {   // 都没有（这个版本没命中、别的版本也没有）就整张不出（11-13 维护者「没匹配就什么都不显示」），换一款再出
-                        SGradeCard(model: model, gameID: game.id, nothing: { sgradeNothing = game.id })   // S 级优化（Beta，11-13）：这款这个版本命中了哪些社区补丁，命中的出包时自动打入
-                    }
+                    // S 级优化（Beta，11-13）：这款这个版本命中了哪些社区补丁，命中的出包时自动打入。11-15 起总是出：卡片里有「导入 Mod」入口
+                    //   （维护者「打包页增加 mod 导入，S 级优化又升级了」；原「没匹配就整张不出」时玩家找不到入口，没匹配时只剩一句「没有这个版本的补丁」+ 导入 Mod）
+                    SGradeCard(model: model, gameID: game.id)
+                    downstream
                     platforms
                 }
-                .padding(.horizontal, 40).padding(.top, 22).padding(.bottom, 40)
-                .frame(maxWidth: 900)
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: 1120, alignment: .leading)
+                .padding(.horizontal, LauncherTheme.Metrics.libraryInset).padding(.top, 22).padding(.bottom, 40)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             Divider().opacity(0.3)
             actionBar
@@ -50,16 +46,26 @@ struct ExportView: View {
         }
     }
 
+    // ---- 下游深度方案（#1272）：选过之后在这里看得到选的是哪套、能改。没选过不出（导出 iPhone 时确认页会问）----
+    //   「更改」弹同一个确认页（DownstreamConfirmSheet）；没有待出的单，选完只记下选择，下次导出 iPhone 按新选择走
+    @ViewBuilder private var downstream: some View {
+        if let offer = game.downstream, let choice = offer.choice {
+            let lang = loc.lang.sharedCode
+            let current = choice.isEmpty ? (offer.text(lang)?.original ?? "") : offer.name
+            CardGroup(BackendText.launcherText("export.downstream.group", language: lang), footnote: BackendText.launcherText("export.downstream.note", language: lang)) {
+                CardRow(current) {
+                    Button(BackendText.launcherText("export.downstream.change", language: lang)) { model.downstreamPromptFor = game.id }
+                        .controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy).controllerID("export.downstream.change")
+                }
+                .accessibilityIdentifier("export.downstream")
+            }
+        }
+    }
+
     // ---- the game ----
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 22) {
-            Button { model.exportFor = nil } label: {
-                Label(loc.t("s2arm.export.back"), systemImage: "chevron.left").font(.manrope(12.5, .semibold))
-            }
-            .buttonStyle(LauncherSecondaryButtonStyle())
-            .keyboardShortcut("[", modifiers: .command)
-            .accessibilityIdentifier("export.back")
             HStack(alignment: .center, spacing: 24) {
                 Button { chooseCover(game) } label: {
                     GameArtwork(covers: covers, cover: game.cover)
@@ -68,30 +74,21 @@ struct ExportView: View {
                     .overlay(alignment: .bottomTrailing) { editBadge.padding(8) }
                     .shadow(color: .black.opacity(0.35), radius: 14, y: 6)
                 }
-                .buttonStyle(.plain).disabled(model.busy || model.customizing)
+                .controllerButtonStyle(.plain).disabled(model.busy || model.customizing)
                 .help(loc.t("s2arm.custom.cover.help"))
                 .accessibilityLabel(loc.t("s2arm.custom.cover.help"))
-                .accessibilityIdentifier("export.cover")
+                .controllerID("export.cover")
                 VStack(alignment: .leading, spacing: 10) {
-                    Button { renameText = game.name; renaming = true } label: {
-                        HStack(alignment: .firstTextBaseline, spacing: 10) {
-                            Text(game.name).font(.manrope(36, .heavy)).tracking(-1.0).lineLimit(2)
-                                .fixedSize(horizontal: false, vertical: true).multilineTextAlignment(.leading)
-                            Image(systemName: "pencil").font(.system(size: 15, weight: .semibold)).foregroundStyle(.secondary)
-                        }
-                    }
-                    .buttonStyle(.plain).disabled(model.busy || model.customizing)
-                    .help(loc.t("s2arm.custom.name.help"))
-                    .accessibilityIdentifier("export.name")
-                    .alert(loc.t("s2arm.custom.name.title"), isPresented: $renaming) {
-                        TextField(loc.t("s2arm.custom.name.placeholder"), text: $renameText)
-                        Button(loc.t("s2arm.custom.save")) { model.customize(game, name: renameText) }
-                        if game.customName { Button(loc.t("s2arm.custom.name.reset")) { model.customize(game, name: "") } }
-                        Button(loc.t("s2arm.custom.cancel"), role: .cancel) {}
+                    let version = String(format: loc.t("s2arm.export.version"), game.display.isEmpty ? (game.version("base") ?? "-") : game.display)
+                    LauncherHeadingLine {
+                        ExportNameControl(name: game.name, custom: game.customName) { model.customize(game, name: $0) }
+                            .id(game.id).disabled(model.busy || model.customizing)
+                    } subtitle: {
+                        Text(version).font(.manrope(14)).foregroundStyle(.secondary).help(version)
                     }
                     if game.customCover {
                         Button(loc.t("s2arm.custom.cover.reset")) { model.customize(game, coverPath: "") }
-                            .buttonStyle(.plain).font(.manrope(12.5)).foregroundStyle(.secondary).underline()
+                            .controllerButtonStyle(.plain).font(.manrope(12.5)).foregroundStyle(.secondary).underline()
                             .disabled(model.busy || model.customizing).accessibilityIdentifier("export.cover.reset")
                     }
                     if model.customizing, let note = model.lockWaitNote {
@@ -100,8 +97,6 @@ struct ExportView: View {
                     if let failed = model.customizeError {
                         Text(loc.backend(failed)).font(.manrope(12.5)).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)
                     }
-                    Text(String(format: loc.t("s2arm.export.version"), game.display.isEmpty ? (game.version("base") ?? "-") : game.display))
-                        .font(.manrope(14)).foregroundStyle(.secondary)
                     HStack(spacing: 6) {
                         if let v = game.version("base") { chip(String(format: loc.t("s2arm.export.base"), v), "shippingbox") }
                         if let v = game.version("update") { chip(String(format: loc.t("s2arm.export.update"), v), "arrow.triangle.2.circlepath") }
@@ -134,8 +129,8 @@ struct ExportView: View {
                 Spacer()
                 if game.iphoneReady {
                     Button(loc.t(model.installKey("s2arm.export.installExisting")), action: install)
-                        .buttonStyle(.plain).font(.manrope(12.5, .semibold)).foregroundStyle(LauncherPalette.cream.opacity(0.85))
-                        .accessibilityIdentifier("export.install")
+                        .controllerButtonStyle(.plain).font(.manrope(12.5, .semibold)).foregroundStyle(LauncherPalette.cream.opacity(0.85))
+                        .controllerID("export.install").controllerShortcut(.rightTrigger, focused: true)
                 }
             }
             HStack(alignment: .top, spacing: 12) {
@@ -149,7 +144,7 @@ struct ExportView: View {
         }
     }
 
-    private func x(_ id: String) -> String { BackendText.launcherText("export." + id, language: loc.lang == .zh ? "zh-Hans" : "en") }
+    private func x(_ id: String) -> String { BackendText.launcherText("export." + id, language: loc.lang.sharedCode) }
 
     /// 存放位置（游戏库结构 v3，像 Steam 的库文件夹）：这款游戏的文件夹放在哪；换了位置，出包前先整个搬过去（存档跟着走）。
     private var locationRow: some View {
@@ -159,8 +154,8 @@ struct ExportView: View {
             return (l.path, l.connected ? x("location.free").replacingOccurrences(of: "{0}", with: name).replacingOccurrences(of: "{1}", with: free ?? "?")
                                         : x("location.offline").replacingOccurrences(of: "{0}", with: name))
         }
-        if let picked = pickedLocation, !options.contains(where: { $0.value == picked }) {
-            options.append((picked, (picked as NSString).abbreviatingWithTildeInPath))
+        if !location.isEmpty, !options.contains(where: { $0.value == location }) {
+            options.append((location, (location as NSString).abbreviatingWithTildeInPath))
         }
         options.append((Self.otherFolder, x("location.other")))
         return VStack(alignment: .leading, spacing: 8) {
@@ -168,12 +163,12 @@ struct ExportView: View {
                 LauncherRowIcon("externaldrive")
                 Text(x("location.title")).font(.manrope(13)).foregroundStyle(.secondary)
                 Spacer(minLength: 12)
-                LauncherDropdown(options: options, selection: location, label: x("location.title"), style: .button) { value in
-                    if value == Self.otherFolder { chooseLocation() } else { location = value }
+                LauncherDropdown(options: options, selection: location, label: x("location.title")) { value in
+                    if value == Self.otherFolder { chooseLocation() } else { selectLocation(value) }
                 }
-                .accessibilityIdentifier("export.location")
+                .controllerID("export.location")
             }
-            if let slack = model.locationSlackText(location, language: loc.lang == .zh ? "zh-Hans" : "en") {   // #444：大分配单元 / 不是 APFS
+            if let slack = model.locationSlackText(location, language: loc.lang.sharedCode) {   // #444：大分配单元 / 不是 APFS
                 Label(slack, systemImage: "exclamationmark.triangle").font(.manrope(12)).foregroundStyle(LauncherPalette.building)
                     .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("export.location.slack")
             }
@@ -181,17 +176,27 @@ struct ExportView: View {
         .padding(.horizontal, 14).padding(.vertical, 12)
         .background(LauncherPalette.surface.opacity(0.7), in: RoundedRectangle(cornerRadius: 12))
         .padding(.top, 4)
-        .onAppear { model.loadLocations() }
+        .onAppear {
+            if location.isEmpty { location = model.defaultLocation(for: game) }
+            model.loadLocations()
+        }
         .onChange(of: model.locations) { _ in if location.isEmpty { location = model.defaultLocation(for: game) } }
+        .onChange(of: model.lastLocation) { _ in if location.isEmpty { location = model.defaultLocation(for: game) } }
     }
 
     private static let otherFolder = "__other__"
+
+    private func selectLocation(_ path: String) {
+        location = path
+        model.rememberExportLocation(path, game: game)
+    }
 
     private func chooseLocation() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
         panel.prompt = x("location.choose")
-        if panel.runModal() == .OK, let url = panel.url { pickedLocation = url.path; location = url.path; model.loadLocations(probe: url.path) }
+        if !location.isEmpty { panel.directoryURL = URL(fileURLWithPath: location, isDirectory: true) }
+        if panel.runModal() == .OK, let url = panel.url { selectLocation(url.path); model.loadLocations(probe: url.path) }
     }
 
 
@@ -237,8 +242,9 @@ struct ExportView: View {
             .contentShape(RoundedRectangle(cornerRadius: 14))
             .opacity(open ? 1 : 0.5)
         }
-        .buttonStyle(.plain)
-        .disabled(!open || model.busy)
+        .controllerButtonStyle(.plain)
+        .controllerID("export.platform." + platform.rawValue)
+        .disabled(!open || model.mainBusy)
         .busyHint(model, disabled: open)
         .padTarget("export." + platform.rawValue, scope: "main", radius: 16) { model.toggleExport(platform) }
         .accessibilityLabel(loc.t("s2arm.export.platform." + platform.rawValue))
@@ -282,36 +288,31 @@ struct ExportView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("export.reason")
                 if blocker == .keys {
-                    Button(x("fix.keys")) { model.showKeys = true }.buttonStyle(LauncherSecondaryButtonStyle())
+                    Button(x("fix.keys")) { model.showKeys = true }.controllerButtonStyle(LauncherSecondaryButtonStyle())
                 }
                 if case .game = blocker, !game.missing.isEmpty {
-                    Button(x("fix.readd")) { model.showAddGames = true }.buttonStyle(LauncherSecondaryButtonStyle())
+                    Button(x("fix.readd")) { model.showAddGames = true }.controllerButtonStyle(LauncherSecondaryButtonStyle())
                 }
             } else {
                 Text(loc.t("s2arm.export.hint")).font(.manrope(13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 12)
+            Button(loc.t("s2arm.job.cancel")) { model.exportFor = nil }
+                .controllerButtonStyle(LauncherSecondaryButtonStyle(prominent: true))
+                .keyboardShortcut(.cancelAction).controllerID("export.cancel").controllerShortcut(.back)
             Button { model.export(game, location: location.isEmpty ? nil : location) } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "shippingbox.fill")
-                    Text(model.busy ? x("action.queue") : count > 1 ? String(format: loc.t("s2arm.export.startCount"), count) : loc.t("s2arm.export.start")).lineLimit(1)
-                }
-                .font(.manrope(16, .bold)).foregroundStyle(.black)
-                .padding(.horizontal, 26).frame(height: 48)
-                .background(LauncherPalette.cream, in: Capsule())
-                .contentShape(Capsule())
+                Label(model.mainBusy || model.phoneHolds(game.id) ? x("action.queue") : count > 1 ? String(format: loc.t("s2arm.export.startCount"), count) : loc.t("s2arm.export.start"), systemImage: "shippingbox.fill")
             }
-            .buttonStyle(.plain)
+            .controllerButtonStyle(LauncherPrimaryButtonStyle(prominent: true))
             .disabled(blocker?.stopsStart == true)   // 缺文件 / 缺 keys 只在左边提示，不置灰（作业层核实）
-            .opacity(blocker?.stopsStart == true ? 0.4 : 1)
             .busyHint(model, disabled: blocker == .busy)   // 别的任务（非出包）在跑：说在等谁（出包在跑时这里是「排队」，不置灰）
             .keyboardShortcut(.defaultAction)
-            .padTarget("export.start", scope: "main", radius: 26) { model.export(game, location: location.isEmpty ? nil : location) }
+            .controllerID("export.start").controllerShortcut(.rightTrigger)
+            .padTarget("export.start", scope: "main", radius: LauncherTheme.Metrics.controlRadius) { model.export(game, location: location.isEmpty ? nil : location) }
             .accessibilityLabel(count > 1 ? String(format: loc.t("s2arm.export.startCount"), count) : loc.t("s2arm.export.start"))
             .accessibilityIdentifier("export.start")
         }
-        .padding(.horizontal, 40).padding(.vertical, 16)
-        .frame(maxWidth: 900)
+        .padding(.horizontal, LauncherTheme.Metrics.libraryInset).padding(.vertical, 16)
         .frame(maxWidth: .infinity)
     }
 }

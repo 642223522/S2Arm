@@ -1,10 +1,63 @@
 #import "input_guide.h"
 #import "controller_view.h"
+#include "../runtime/include/s2a_pad_face.h"
 
 static NSString *guide_text(NSString *zh, NSString *en) {
     NSString *language = getenv("S2A_UI_LANGUAGE") ? @(getenv("S2A_UI_LANGUAGE")) : NSLocale.preferredLanguages.firstObject;
     return [language hasPrefix:@"zh"] ? zh : en;
 }
+
+@interface S2AFaceOverlayContent : NSView
+@end
+
+@implementation S2AControllerFaceOverlay
+@synthesize family = _family, mapping = _mapping;
+- (instancetype)initWithFrame:(NSRect)frame {
+    if ((self = [super initWithFrame:frame])) {
+        self.material = NSVisualEffectMaterialHUDWindow; self.blendingMode = NSVisualEffectBlendingModeWithinWindow;
+        self.state = NSVisualEffectStateActive; self.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+        self.wantsLayer = YES; self.layer.cornerRadius = 16; self.layer.masksToBounds = YES;
+        self.layer.borderWidth = 1; self.layer.borderColor = [NSColor.whiteColor colorWithAlphaComponent:.25].CGColor;
+        self.layer.backgroundColor = [NSColor.blackColor colorWithAlphaComponent:.25].CGColor;
+        self.family = @"other"; self.mapping = S2A_FACE_IDENTITY; self.hidden = YES;
+        self.accessibilityIdentifier = @"game.controller-face-map";
+        NSView *content = [[S2AFaceOverlayContent alloc] initWithFrame:self.bounds];
+        content.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        [self addSubview:content];
+    }
+    return self;
+}
+- (NSView *)hitTest:(NSPoint)point { (void)point; return nil; }
+- (void)setFamily:(NSString *)family { _family = [family copy]; self.subviews.lastObject.needsDisplay = YES; }
+- (void)setMapping:(int)mapping { _mapping = s2a_face_valid(mapping) ? mapping : S2A_FACE_IDENTITY; self.subviews.lastObject.needsDisplay = YES; }
+- (NSArray<NSString *> *)rows {
+    BOOL ps = [self.family isEqual:@"playstation"], nintendo = [self.family isEqual:@"nintendo"];
+    NSArray *labels = ps ? @[@"×", @"○", @"□", @"△"] : @[@"A", @"B", @"X", @"Y"];
+    int positions[4] = {3, 2, 0, 1}; // top, left, bottom, right
+    if (nintendo) { positions[0] = 2; positions[1] = 3; positions[2] = 1; positions[3] = 0; }
+    NSMutableArray *rows = [NSMutableArray new];
+    for (int p = 0; p < 4; p++) {
+        int source = positions[p], target = 0;
+        while (target < 3 && s2a_face_source(self.mapping, target) != source) target++;
+        [rows addObject:[NSString stringWithFormat:@"%@ → %@", labels[source], @[@"A", @"B", @"X", @"Y"][target]]];
+    }
+    return rows;
+}
+@end
+
+@implementation S2AFaceOverlayContent
+- (NSView *)hitTest:(NSPoint)point { (void)point; return nil; }
+- (void)drawRect:(NSRect)dirty {
+    [super drawRect:dirty];
+    S2AControllerFaceOverlay *overlay = (S2AControllerFaceOverlay *)self.superview;
+    NSString *title = [overlay.family isEqual:@"playstation"] ? @"PS" : [overlay.family isEqual:@"xbox"] ? @"Xbox" : [overlay.family isEqual:@"nintendo"] ? @"Switch" : guide_text(@"手柄", @"Controller");
+    [title drawAtPoint:NSMakePoint(16, 150) withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:15 weight:NSFontWeightSemibold], NSForegroundColorAttributeName:NSColor.whiteColor}];
+    [guide_text(@"实体按键 → Switch", @"Physical button → Switch") drawAtPoint:NSMakePoint(16, 130) withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:11], NSForegroundColorAttributeName:[NSColor.whiteColor colorWithAlphaComponent:.7]}];
+    NSPoint points[] = {NSMakePoint(99, 99), NSMakePoint(20, 60), NSMakePoint(99, 21), NSMakePoint(178, 60)};
+    NSArray *rows = overlay.rows;
+    for (int i = 0; i < 4; i++) [rows[i] drawAtPoint:points[i] withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:18 weight:NSFontWeightSemibold], NSForegroundColorAttributeName:NSColor.whiteColor}];
+}
+@end
 
 static NSString *guide_key_name(NSDictionary *binding) {
     if (!binding) return @"—";

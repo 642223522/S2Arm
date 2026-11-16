@@ -55,6 +55,18 @@ int main(void) {
         CHECK(bm == NULL && ba == 0, "没初始化成功的缓冲：Map 应 NULL（得 %p）、地址应 0（得 %#llx）", bm, (unsigned long long)ba);
         printf("✓ 池没有存储、缓冲初始化失败后 Map / 取地址：回空，不崩\n");
     }
+    // 审计 P1-190（同 #25）：从没 Initialize 过的对象（内容是垃圾）上调刷新 / 作废 / 收尾。期望：宿主不崩、不解引用里面的指针；收尾两次也不崩。
+    //   反证：去掉 hle_nvn.c 里池收尾的魔数核对 / 纹理收尾只看 serial / 缓冲刷新不过 buf_dead → 这里解引用 0xa5a5… 段错误
+    {
+        NVNbuffer buf; NVNmemoryPool pool; NVNtexture tex;
+        memset(&buf, 0xa5, sizeof buf); memset(&pool, 0xa5, sizeof pool); memset(&tex, 0xa5, sizeof tex);
+        API(nvnBufferFlushMappedRange)(&buf, 0, 64); API(nvnBufferInvalidateMappedRange)(&buf, 0, 64);
+        API(nvnMemoryPoolFlushMappedRange)(&pool, 0, 64);   // P1-190 余项：池刷新同样先核魔数（0xa5 填的 mem 非空，原先照样 ft_flush 去读）
+        API(nvnMemoryPoolFinalize)(&pool); API(nvnMemoryPoolFinalize)(&pool);
+        API(nvnTextureFinalize)(&tex); API(nvnTextureFinalize)(&tex);
+        API(nvnBufferFinalize)(&buf);
+        checks++; printf("✓ 没初始化过的缓冲刷新 / 作废、池刷新、池收尾两次、纹理收尾两次：不崩\n");
+    }
     printf("✓ t_nvn_map_noaccess：%u 项全过\n", checks);
     return 0;
 }

@@ -1,6 +1,6 @@
 # native-test-vawin_container：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += vawin_container
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # 多款容器构造期按各款取最大（vawin.c s2a_window_container_need）：链生产同一份 svc_mem / loader / layout / programs / imgpack；
 #   这条路径用不到的宿主符号不链（-undefined dynamic_lookup，碰到即崩、单测报红）
 .PHONY: native-test-vawin_container

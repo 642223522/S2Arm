@@ -144,6 +144,23 @@ class RewriteInputKey(unittest.TestCase):
                 handle.write(b'B')
         self.changed(mutate)
 
+    # 运行时留下的 NRO（S2A_NRO_KEPT_DIR，#8be819）：新留下一份 = 要重改写；没设 / 空目录与原先同键
+    def test_kept_dir_absent_or_empty_keeps_key(self):
+        before = self.key()
+        kept = self.tmp / 'kept'; kept.mkdir()
+        self.env['S2A_NRO_KEPT_DIR'] = str(kept)
+        self.assertEqual(before, self.key())
+
+    def test_kept_nro_add_and_change(self):
+        kept = self.tmp / 'kept'; kept.mkdir()
+        self.env['S2A_NRO_KEPT_DIR'] = str(kept)
+        before = self.key()
+        (kept / ('a' * 64 + '.nro')).write_bytes(b'kept-NRO-A')
+        added = self.key()
+        self.assertNotEqual(before, added, 'a kept NRO was added but the rewrite key was reused')
+        (kept / ('a' * 64 + '.nro')).write_bytes(b'kept-NRO-B')
+        self.assertNotEqual(added, self.key(), 'a kept NRO changed but the rewrite key was reused')
+
     def test_unrelated_romfs_resource_does_not_change_rewrite_key(self):
         before = self.key()
         (self.data / 'romfs/data.pak').write_bytes(b'resource-B')

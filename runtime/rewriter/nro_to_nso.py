@@ -12,6 +12,9 @@
 #      再按头里大小整帧解）；整份 NRO 的 SHA-256 **必须在 NRR 登记里**才收，没登记的一律不收（所以不会把归档里别的东西误当模块）。全部登记哈希都找到就停扫。
 #      11-03 大乱斗 SPECIAL：764 个 NRO 全以 zstd 帧藏在 romfs/data.arc（17.6 GB 游戏自有归档），romfs 没有一个 .nro → 原先一个没收、LoadNro 报不在表。
 #      ② 收的模块排在 ① 之后，按 NRR 文件名、表内登记顺序编号（与归档内摆放无关）；来源写 <romfs 相对路径>@<偏移>（原样）/ <…>@<偏移>:zstd（zstd 帧起点）。
+#   ③ 运行时留下的 NRO（可选第三参数 <留存目录>，#8be819：一款把 NRO 藏在自有加密归档里，① ② 都认不出）：游戏 LoadNro 时包里没有改写映像，宿主把游戏已在
+#      内存里解开的整份存成 <文档根>/wire/<程序号>/nro/<SHA-256>.nro（runtime/src/loader.c s2a_nro_keep），启动器收回游戏库 games/<号>/nro_kept/、出包时交这里。
+#      只收文件名 = 内容 SHA-256、且（有 NRR 时）在登记里的；② 之前先认，已有的登记哈希不再去大文件里扫。编号排在 ① ② 之后、按文件名排序；来源写 kept:<文件名>
 # 退出码：0（没有 NRO 也是 0，不出表）。读不懂的 NRR / 读坏的 NRO 跳过这一份、打【黄】记一笔，其余照转（#713：一份 NRR 认不出原先整款出不了包）；
 #   只有环境问题（找不到 libzstd）退出 1。
 # NRO 格式（switchbrew NRO）：+0x4 MOD0 偏移；+0x10 'NRO0'；+0x18 文件大小；+0x20 三段（文件偏移、大小）text / ro / data；+0x38 bss 大小；
@@ -137,8 +140,8 @@ def scan(path, rel, want, hit, zstd, out):
 
 
 def main(argv):
-    if len(argv) != 2: print('用法：nro_to_nso.py <romfs 目录> <输出目录>', file=sys.stderr); return 2
-    romfs, out = argv
+    if len(argv) not in (2, 3): print('用法：nro_to_nso.py <romfs 目录> <输出目录> [运行时留下的 NRO 目录]', file=sys.stderr); return 2
+    romfs, out = argv[:2]; kdir = argv[2] if len(argv) == 3 else None
     found, rest = [], []
     for dp, dn, fn in romfs_list.walk(romfs):
         dn.sort()
@@ -159,7 +162,14 @@ def main(argv):
         os.makedirs(out, exist_ok=True)
         open(os.path.join(out, name), 'wb').write(to_nso(d, segs, bss))
         mods[k] = [name, len(d), bss, [rel]]
-    want = {k for k in reg if k not in mods}; nreg = len(want); hit = {}
+    kept = {}   # ③ SHA-256 → (文件名, 内容)
+    for f in sorted(os.listdir(kdir)) if kdir and os.path.isdir(kdir) else []:
+        if not f.endswith('.nro') or len(f) != 68: continue
+        d = open(os.path.join(kdir, f), 'rb').read(); k = hashlib.sha256(d).hexdigest()
+        if k != f[:64]: print(f'【黄】运行时留下的 {f}：内容 SHA-256 与文件名不符，不收', file=sys.stderr); continue
+        if reg and k not in reg: print(f'【黄】运行时留下的 {f}：不在游戏的 NRR 登记里，不收', file=sys.stderr); continue
+        if k not in mods: kept[k] = (f, d)
+    want = {k for k in reg if k not in mods and k not in kept}; nreg = len(want); hit = {}
     if want:
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../graphics/tools/shbake')); import zstd_lib   # 仓库唯一的 zstd 解码入口
         try: zstd_lib._lib()   # 找不到 libzstd 是环境问题：报红，不当「没找到」静默放过
@@ -176,7 +186,14 @@ def main(argv):
             name = f'nro{len(mods)}'
             open(os.path.join(out, name), 'wb').write(to_nso(d, segs, bss))
             mods[k] = [name, len(d), bss, [hit[k]]]
-        print(f'NRR 登记 {len(reg)} 个哈希：*.nro 命中 {len(reg) - nreg}，其余文件里找到 {len(hit)}（{sum(mods[k][1] for k in hit) / 1e6:.1f} MB），没找到 {len(want)}')
+        print(f'NRR 登记 {len(reg)} 个哈希：*.nro 命中 {len(reg) - nreg - len(kept.keys() & set(reg))}，其余文件里找到 {len(hit)}（{sum(mods[k][1] for k in hit) / 1e6:.1f} MB），运行时留下 {len(kept.keys() & set(reg))}，没找到 {len(want)}')
+    for k, (f, d) in sorted(kept.items(), key=lambda kv: kv[1][0]):
+        try: segs, bss = parse(d, 'kept:' + f)
+        except (ValueError, struct.error) as e: print(f'【黄】{e}：这一份不转，游戏装它时会失败；其余照转', file=sys.stderr); continue
+        name = f'nro{len(mods)}'; os.makedirs(out, exist_ok=True)
+        open(os.path.join(out, name), 'wb').write(to_nso(d, segs, bss))
+        mods[k] = [name, len(d), bss, ['kept:' + f]]
+    if kept: print(f'运行时留下的 NRO：收 {len(kept)} 个（{kdir}）')
     if not mods: print('romfs 里没有 *.nro，不出表' if not reg else '没有 *.nro、也没找到 NRR 登记的 NRO，不出表'); return 0
     with open(os.path.join(out, 'nro_modules.tsv'), 'w') as f:
         f.write('# 模块名\tSHA-256\tNRO 大小\tbss 大小\tromfs 相对路径\n')

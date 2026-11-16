@@ -74,7 +74,7 @@ def _decompress(data):
 
 def _expand(secret):
     if len(secret) != 32:
-        raise ValueError("Ed25519 私钥必须是 32 字节")
+        raise ValueError("Ed25519 私钥必须是 32 字节")  # 非玩家句
     digest = _h(secret)
     a = int.from_bytes(digest[:32], "little")
     a &= (1 << 254) - 8

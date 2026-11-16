@@ -921,9 +921,9 @@ sealed class Ticker : IDisposable
             // Two columns: old four-column readers ignore this optional activity record.
             // No timer runs in the build tree: periodic observation belongs to the parent worker,
             // so an idle/deadlocked child cannot keep nostall alive by writing its own heartbeat.
-            var data = new { schema = 1, pid = Environment.ProcessId, stage, target = Build.Jobs,
-                pool = Build.Jobs * 2, state = ending ? "ended" : "active" };
-            try { File.AppendAllText(path, "#dsh_activity\t" + System.Text.Json.JsonSerializer.Serialize(data) + "\n"); }
+            var data = new DshActivity(schema: 1, pid: Environment.ProcessId, stage: stage, target: Build.Jobs,
+                pool: Build.Jobs * 2, state: ending ? "ended" : "active");   // 具名 record + 源码生成（DshActivity.cs）：dsh_batch 是 NativeAOT 单文件，没有反射序列化
+            try { File.AppendAllText(path, "#dsh_activity\t" + System.Text.Json.JsonSerializer.Serialize(data, DshActivityJson.Default.DshActivity) + "\n"); }
             catch (IOException) { }   // Optional telemetry must not change compilation results.
             catch (UnauthorizedAccessException) { }
         }

@@ -250,7 +250,7 @@ public static partial class SaveTransfer
         }
     }
     /// <summary>Returns a JSON envelope. Errors never include save contents or keys.</summary>
-    public static string Execute(string requestJson)
+    public static string Execute(string requestJson, bool hostRunning = false)
     {
         lock (Gate)
         {
@@ -262,8 +262,12 @@ public static partial class SaveTransfer
                 string lockPath = Path.Combine(c.Work, "save-transfer.lock");
                 CheckLinks(lockPath);
                 using var execution = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
-                bool recovered = Recover(c);
-                JsonObject result = Str(c.Request, "operation") switch
+                string operation = Str(c.Request, "operation");
+                // 游戏在跑：存档目录归游戏写，只许只读的 status / export / inspect（export 前后核指纹）；不跑 Recover（它会换存档），留着没收尾的事务也拒
+                Require(!hostRunning || operation is "status" or "export" or "inspect" && !File.Exists(c.Journal),
+                    T("请在启动游戏前管理存档。", "Manage saves before starting the game."), "save_running");
+                bool recovered = !hostRunning && Recover(c);
+                JsonObject result = operation switch
                 {
                     "recover" => new() { ["recovered"] = recovered },
                     "status" => Status(c, recovered),

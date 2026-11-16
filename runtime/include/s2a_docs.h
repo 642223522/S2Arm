@@ -42,7 +42,7 @@ static inline int s2a_docs_path(char *out, size_t n, const char *fmt, ...) {
 //   别的文档根（单款兼容 App、Mac 局、单测临时目录）资源包照旧在 <文档根>/资源包。唯一取法：宿主、电脑端推包（pack/jobs/install.py game_pack）、
 //   出容器（pack/ship_ext.py launch.ctx game_data）都按这一条，不许另拼。只看一处目录在不在（下面的备用位置），不读别的
 // 备用位置 <容器>/Library/S2Arm（v0.3.3，iOS 27 玩家机上 Library/Application Support/S2Arm 整条归 root、App 写不进，连迁移的新树都建不出来）：
-//   Library 本身归 App。<容器>/Library/S2Arm/games 在就用它（s2a_games_repair 搬过来时建；电脑端推包同一判据，pack/jobs/install.py pack_listing）
+//   Library 本身归 App。<容器>/Library/S2Arm/games 在就用它（v0.3.3–v0.4.4 的迁移建过的玩家机上还在用；迁移已撤，不再新建；电脑端推包同一判据，pack/jobs/install.py pack_listing）
 #define S2A_PACK_BASE_REL "Library/Application Support/S2Arm"
 #define S2A_PACK_BASE_ALT_REL "Library/S2Arm"
 static inline int s2a_pack_legacy_root(char *out, size_t n, const char *docs) { return snprintf(out, n, "%s/资源包", docs); }

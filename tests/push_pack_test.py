@@ -95,6 +95,20 @@ class PlanRules(Base):
         self.assertEqual(self.go(self.on_phone("a"))[:2], (1, 1)); self.assertEqual(self.dev.lists, [["b"]])
         self.assertTrue(any("机上实况抽查 1 个文件，与已应用索引一致" in l for l in self.log))
 
+    def test_core_file_missing_on_phone_is_repushed(self):
+        # #1059 D-JAT7：已应用索引记着 exefs/main.npdm、机上其实没有；别的小文件都在且抽查都对。期望（手写）：抽查必核 exefs/ 与 ctl/control.nacp，
+        #   main.npdm 对不上 → 按机上清单核账，只补推 main.npdm（a、b 在且大小对，不重推）
+        # 内容刻意挑过：6 个小文件 sha 都以 0–3 开头，main.npdm 的 sha 以 f 开头——原先「按 sha 排序取前 5 个」一定轮不到 main.npdm
+        extra = {f"x{i}": b"X" + bytes([0, n]) for i, n in enumerate((2, 7, 9, 10, 13, 15))}
+        self.data.update(extra); self.data["exefs/main.npdm"] = b"NPDM\x02"
+        assert all(sha(v) < "4" for v in extra.values()) and sha(self.data["exefs/main.npdm"]).startswith("f")
+        (self.pk / "exefs").mkdir()
+        for k, v in self.data.items(): (self.pk / k).write_bytes(v)
+        (self.pk / "index.tsv").write_text("".join(self.row(k) for k in self.data))
+        f = self.on_phone(*self.data); del f[f"{RP}/exefs/main.npdm"]
+        self.go(f, listing=True)
+        self.assertEqual(self.dev.lists, [["exefs/main.npdm"]])
+
     def test_old_app_falls_back_to_index_tsv(self):   # 老 App 没有 index.applied.tsv → 认 index.tsv
         self.go(self.on_phone("a", applied=False)); self.assertEqual(self.dev.lists, [["b"]])
 

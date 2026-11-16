@@ -1,5 +1,5 @@
 NATIVE_TEST_OWN += nvn_texdump
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 $(BUILD)/tests/t_nvn_texdump: graphics/nvn/tests/t_nvn_texdump.m $(NVN_MTL_DEPS) $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \
 	  $(NATIVE_INC) -Igraphics/nvn/host -Igraphics/nvn/gfx/nvn -Igraphics/nvn/gfx/nvn/include -Igraphics/nvn/third_party/vulkan-headers/include \

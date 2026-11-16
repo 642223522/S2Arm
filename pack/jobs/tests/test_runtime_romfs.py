@@ -160,6 +160,36 @@ class RuntimeRomfs(unittest.TestCase):
         with self.assertRaises(Failure):
             build.validate_runtime(self.c, self.dest)
 
+    def test_standard_image_runtime_without_romfs_directory(self):
+        # 镜像形态（romfs/ 不在、只有标准 RomFS 镜像 romfs.std）：运行版本搬这一个文件，不要求 romfs/ 实目录；宿主 RomFsIndex.OpenStd 读它
+        (self.source / "romfs").unlink()
+        (self.source / "romfs.std").write_bytes(b"standard romfs image\x00")
+        build.clone_tree(self.c, self.source, self.dest, materialize_romfs=True)
+        self.assertFalse((self.dest / "romfs").exists())
+        self.assertEqual((self.dest / "romfs.std").read_bytes(), b"standard romfs image\x00")
+        self.assertIn("romfs.std", build.snapshot(self.c, self.dest))
+        host = self.dest / "S2ArmGame.app/Contents/MacOS/s2arm-host"
+        host.parent.mkdir(parents=True); host.write_bytes(b"synthetic"); host.chmod(0o755)
+        manifest = dict(schema=1, engine="S2Arm", target="macos-arm64", files=build.snapshot(self.c, self.dest))
+        (self.dest / "manifest.json").write_text(json.dumps(manifest))
+        build.validate_runtime(self.c, self.dest)
+        (self.dest / "romfs.std").unlink()
+        with self.assertRaises(Failure) as error:   # 镜像也没有：照旧拦下
+            build.validate_runtime(self.c, self.dest, files=False)
+        self.assertEqual(error.exception.code, "runtime_invalid")
+        (self.dest / "romfs.std").symlink_to(self.source / "romfs.std")
+        with self.assertRaises(Failure):   # 软链的镜像不算独立运行版本
+            build.validate_runtime(self.c, self.dest, files=False)
+
+    def test_standard_image_source_rules(self):
+        (self.source / "romfs").unlink()
+        with self.assertRaises(Failure):   # 目录、镜像都没有
+            build.clone_tree(self.c, self.source, self.dest, materialize_romfs=True)
+        (self.source / "romfs.std").symlink_to(self.base / "elsewhere.std")
+        (self.base / "elsewhere.std").write_bytes(b"x")
+        with self.assertRaises(Failure):   # 镜像是软链：不跟
+            build.clone_tree(self.c, self.source, self.dest, materialize_romfs=True)
+
 
 class BundleLayoutRomfsImport(unittest.TestCase):
     """出包布局里 Jobs 在 Contents/Resources/Jobs 下：build.py 的 parents[2] 是 Contents（没有 graphics/），

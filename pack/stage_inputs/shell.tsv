@@ -156,6 +156,7 @@
 入	pack/contracts/target.v1.schema.json
 入	pack/contracts/validate.py
 入	pack/display_name.py
+入	pack/jobs/cache_retention.py
 入	pack/jobs/errors.py
 入	pack/pkg_srcs.py
 入	pack/shell/manifest.py
@@ -173,6 +174,9 @@
 入	launchers/shared/experience.v1.json
 入	launchers/shared/experience_strings.py
 入	launchers/shared/experience_zh_hant.json
+入	launchers/shared/l10n/es.json
+入	launchers/shared/l10n/fr.json
+入	launchers/shared/l10n/ja.json
 入	platform/plat.h
 入	platform/plat_asm.h
 入	compat
@@ -192,6 +196,7 @@
 入	tests/build.mk
 入	tests/visual/build.mk
 入	tests/visual/galrec
+入	tools/_timeout.sh
 入	tools/bin/timeout
 入	tools/build.mk
 入	tools/module_order.py

@@ -161,7 +161,8 @@ SaveP("win_01_export_select", () => Navigate(pack, "build"));
 foreach (var (name, json) in new[] {
     ("win_01b_export_sgrade_hit", "{\"build\":\"d95ec48ffe269b6e\",\"exact\":{\"widescreen\":1,\"fps\":1,\"cheat\":12},\"others\":[]}"),
     ("win_01c_export_sgrade_others", "{\"build\":\"aa11bb22cc33dd44\",\"exact\":{},\"others\":[{\"version\":\"1.1.0\",\"cats\":[\"fps\",\"widescreen\"]},{\"version\":\"1.0.0\",\"cats\":[\"cheat\"]}]}"),
-    ("win_01d_export_sgrade_none", "{\"build\":\"aa11bb22cc33dd44\",\"exact\":{},\"others\":[]}") })
+    ("win_01d_export_sgrade_none", "{\"build\":\"aa11bb22cc33dd44\",\"exact\":{},\"others\":[]}"),
+    ("win_01e_export_sgrade_ownwiden", "{\"build\":\"aa11bb22cc33dd44\",\"exact\":{\"cheat\":3},\"others\":[],\"ownWiden\":true}") })
 {
     SaveP(name, () => { Navigate(pack, "build"); SetW(pack, "sgradeFor", MockGame(false).Id); SetW(pack, "sgradeFailed", false);
         SetW(pack, "sgrade", (JsonElement?)JsonDocument.Parse(json).RootElement); Navigate(pack, "build"); });
@@ -185,21 +186,37 @@ SaveP("win_04c_export_success_sgrade", () => Navigate(pack, "progress"));
 SetW(pack, "packBoost", null);
 SetW(pack, "packNotes", (object?)new List<string>());
 
-// 两路（维护者 11-13：出包页起分两路）：导出模式的进度页最后一步是「整理 iPhone 版程序与资源包」、完成页主按钮与说明照导出写
-SetW(pack, "installMode", "export");
+// 导出自签包（11-15 起不是装法）：「导出自签包」点在没出过包的款上，出包进度最后一步是「整理 iPhone 版程序与资源包」、完成页主按钮与说明照导出写
+var selfSignSet = (HashSet<string>)GetW(pack, "selfSignAfterPack")!;
+selfSignSet.Add(MockGame(false).Id);
 InjectMockProgress(pack, fraction: 0.85, stepIndex: 2, running: true, exportMode: true);
 SaveP("win_04c_export_selfsign_progress", () => Navigate(pack, "progress"));
 InjectMockProgress(pack, fraction: 1.0, stepIndex: -1, running: false, state: "succeeded",
     ipaBytes: 1_200_000_000L, packBytes: 3_400_000_000L, elapsed: 247, exportMode: true);
 SaveP("win_04d_export_selfsign_success", () => Navigate(pack, "progress"));
-SetW(pack, "installMode", "device");
+selfSignSet.Clear();
 
 InjectMockProgress(pack, fraction: 0.12, stepIndex: 0, running: false, state: "failed",
     summary: "磁盘空间不足，无法继续出包。");
 SaveP("win_05_export_failed", () => Navigate(pack, "progress"));
 
 InjectMockGame(pack, ready: true);
-SaveP("win_06_library_iphone_ready", () => Navigate(pack, "library"));
+SaveP("win_06_library_iphone_ready", () => Navigate(pack, "library"));   // 大卡：装到 iPhone + 导出自签包 + 出包
+// 导出自签包的进度 / 完成（11-15：装机页只画结局卡，不画装机说明、清单、开始装机 / 删除）
+{
+    var g = MockGame(true);
+    SetW(pack, "installExport", true); SetW(pack, "installGameId", g.Id); SetW(pack, "installGameName", g.Name); SetW(pack, "selectedGame", g.Id);
+    var it = GetW(pack, "installTrack")!;
+    void ITrack(string f, object? v) => it.GetType().GetField(f)!.SetValue(it, v);
+    ITrack("Kind", "install"); ITrack("Started", DateTime.UtcNow.AddSeconds(-40));
+    SetW(pack, "installState", "running");
+    SaveP("win_06b_selfsign_running", () => Navigate(pack, "install"));
+    SetW(pack, "installState", "succeeded"); ITrack("Ended", (DateTime?)DateTime.UtcNow);
+    ITrack("ExportFolder", @"D:\S2Arm Games\S2Arm 自签导出"); ITrack("ExportGames", 3); ITrack("ExportBytes", (long?)9_800_000_000L);
+    SaveP("win_06c_selfsign_done", () => Navigate(pack, "install"));
+    ITrack("ExportFolder", ""); ITrack("ExportGames", 0); ITrack("ExportBytes", (long?)null);
+    SetW(pack, "installExport", false); SetW(pack, "installState", ""); SetW(pack, "installGameId", null);
+}
 
 InjectMockGame(pack, ready: false);
 InjectMockProgress(pack, fraction: 0.35, stepIndex: 1, running: true);
@@ -233,6 +250,14 @@ TrackField("Started", DateTime.UtcNow.AddSeconds(-47)); TrackField("Ended", (Dat
 TrackField("PackBytes", (long?)0L); TrackField("PackFiles", (int?)0); TrackField("Version", "0.3.0");
 SetW(pack, "updateState", "succeeded");
 SaveP("win_21_phone_update_done", () => Navigate(pack, "phoneupdate"));
+// 导出模式完成（#1132）：3 款里 2 款沿用上次导出，只新写了丙 → 路径下点名「.img 只要拷这次新写的：丙.img」
+TrackField("ExportFolder", @"D:\S2Arm Games\S2Arm 自签导出"); TrackField("ExportGames", 3); TrackField("ExportBytes", (long?)9_800_000_000L);
+TrackField("ExportFresh", new List<string> { "丙.img" }); TrackField("ExportReused", 2);
+SaveP("win_21b_export_done_copy_only_new", () => Navigate(pack, "phoneupdate"));
+// 只新写点的那款：丁的 .img 这次没写 → 再点名「丁 的 .img 没写：手机上已有照常能玩，没有就点那款再导出」
+TrackField("ExportUnwritten", new List<string> { "丁" });
+SaveP("win_21c_export_done_unwritten", () => Navigate(pack, "phoneupdate"));
+TrackField("ExportFolder", ""); TrackField("ExportGames", 0); TrackField("ExportBytes", (long?)null); TrackField("ExportFresh", new List<string>()); TrackField("ExportReused", 0); TrackField("ExportUnwritten", new List<string>());
 // 失败示例用真正做不下去的情况（签名失败）；认得出的风险走 drop 态让玩家确认，不当失败（维护者 11-11）
 TrackField("Suggestion", "在 Impactor 里重新登录你的 Apple ID，再点一次。");
 SetW(pack, "updateMessage", "签名没成功：Impactor 里的 Apple ID 登录已过期。");
@@ -255,6 +280,17 @@ if (File.Exists(bannerSrc))
     SetW(pack, "catalog", new LibraryCatalog([withBanner, noCover, MockGame(true)], true, "密钥已就绪"));
     SetW(pack, "connectedFolder", Path.GetDirectoryName(Path.GetDirectoryName(folder))!);
     SaveP("win_09_library_banner_fallback", () => Navigate(pack, "library"));
+}
+
+// 出包页「移植方案」（#1272）：选过「仍用原版方案」后看得到、能更改（同 Mac ExportView downstream）
+{
+    var copy = new Dictionary<string, DownstreamOffer.Copy> {
+        ["zh"] = new("选择运行方案", "示例说明", ["示例要点"], "使用推荐方案", "使用原版方案"),
+        ["en"] = new("Choose a configuration", "Example", ["Example point"], "Use recommended", "Use original") };
+    var dsGame = MockGame(false) with { Downstream = new DownstreamOffer("demo", "Demo Port", true, new Dictionary<string, string>(), copy, "") };
+    SetW(pack, "catalog", new LibraryCatalog([dsGame], false, ""));
+    SaveP("win_01f_export_downstream_change", () => Navigate(pack, "build"));
+    InjectMockGame(pack, ready: false);
 }
 
 // 出包页「签名方式」（v0.2.3 开发者证书签名，DevCertPage.cs）：Apple ID 模式；证书模式（团队、到期、包名、设备核对、缺权限黄字）。
@@ -344,6 +380,11 @@ SetW(pack, "catalog", new LibraryCatalog([atDefault, elsewhere], true, "密钥�
 SetW(pack, "librarySummary", "library.completed"); SetW(pack, "libraryDiagnostics", "");
 pack.Height = 2100;   // 设置页最长：装机方式 + 环境检查 + 运行路径都要在一张图里
 SaveP("tidy_02_settings", () => Navigate(pack, "settings"));
+// 换游戏库没换成（D-3P26）：失败原因常驻在设置页游戏库一行下面（作业层原句按界面语言翻）
+SetW(pack, "libraryFailure", (string)pack.GetType().GetMethod("LibraryFailed", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+    .Invoke(pack, [@"C:\Program Files\S2Arm\games", "游戏库不能放在 S2Arm 启动器自己的文件夹里，也不能包含它（升级时这个文件夹会整个替换，库会被一起删掉）：换一个文件夹。"])!);
+SaveP("tidy_03_settings_library_failed", () => Navigate(pack, "settings"));
+SetW(pack, "libraryFailure", "");
 // S 级优化（v0.4.0，同 Mac）：封面左上角金色 S、游戏库「S 级优化升级」入口、升级页三态（有可升级 / 都没找到原始程序 / 查找中）
 pack.Height = 1100;
 SetW(pack, "catalog", new LibraryCatalog([atDefault with { SGrade = true }, elsewhere], true, "密钥已就绪"));

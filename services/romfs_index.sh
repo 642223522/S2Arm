@@ -15,8 +15,10 @@ DN=${DOTNET:-$(command -v dotnet || echo "$HOME/.dotnet/dotnet")}
 [ $# -eq 1 ] || { [ $# -eq 3 ] && [ "$2" = --list ]; } || { [ $# -ge 5 ] && [ $# -le 6 ] && [ "$1" = --std ]; } \
   || { echo "用法：romfs_index.sh <游戏数据根> [--list <RomFS 清单>] | --std <RomFS 目录> <清单或 -> <输出文件> <偏移> [--consume]（IMG v1 的 RomFS 段，pack/img.py）" >&2; exit 2; }
 if [ -n "${S2A_PREBUILT_TOOLS:-}" ]; then
-  exec timeout 600 "$DN" "$S2A_PREBUILT_TOOLS/romfs/romfs_index.dll" "$@"
+  # 预编件（发版 bundle_engine.py 以 NativeAOT 单文件编进 Binaries/Prepare/romfs/）：直接执行，不需要 .NET 运行时
+  exec timeout 600 "$S2A_PREBUILT_TOOLS/romfs/romfs_index" "$@"
 fi
+DN=${DOTNET:-$(command -v dotnet || echo "$HOME/.dotnet/dotnet")}
 DLL="$HERE/romfs_index/bin/Release/net10.0/romfs_index.dll"
 BUILD_ARGS=(-c Release -nologo -v q)
 if [ "$(uname -s)" = Linux ]; then

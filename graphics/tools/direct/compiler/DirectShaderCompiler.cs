@@ -236,8 +236,10 @@ namespace S2A.DirectCompiler
 
         // 池槽位只能由反射结果决定：翻译器先建 texture binding、后 RegisterTexture，
         // 按调用顺序猜会把这几个槽位全指到第一张纹理上。cbufSlot >= 0 的句柄来自常量
-        // 缓冲：只有同句柄存在直接绑定事实时才按 NVN c2→组合槽放行；其余 cbuf 路径和
-        // separate 采样器仍未实现，明确报红，不写死 0 让运行时绑错。
+        // 缓冲：c2 只有同句柄存在直接绑定事实时才按 NVN c2→组合槽放行；游戏 UBO（c3..c18）
+        // 的单个组合句柄给出 uboSlot / uboOffset（见下）；其余 cbuf 路径和 separate 采样器
+        // 仍未实现，明确报红，不写死 0 让运行时绑错。
+        private const int UserUboFirstCbuf = 3, UserUboLastCbuf = 18, UserUboMaxBytes = 0x10000;
         private static void ResolvePoolSlots(List<(DirectStage stage, ShaderProgram shader, DirectGpuAccessor accessor)> translated,
             DirectAllocator allocator)
         {
@@ -266,6 +268,24 @@ namespace S2A.DirectCompiler
                     binding.SamplerSlot = samplerSlot;
                     continue;
                 }
+                if (resolved.CbufSlot >= UserUboFirstCbuf && resolved.CbufSlot <= UserUboLastCbuf)
+                {
+                    // 句柄在游戏自己的 UBO 里（#999 第 2 片）：照 Ryujinx（TextureBindingsManager 每笔读绑定 UBO 当时的句柄字）
+                    //   与 iOS NVN_RB_TEXU，结果给 uboSlot（NVN UBO 号 = cbuf − 3，同存储绑定的 uboSlot）和 uboOffset（句柄字的字节偏移
+                    //   = HandleIndex × 4），不给 slot（slot 只指 c2 句柄表 / 组合槽）。回放在绑定时读当时的 UBO 字解出贴图号 / 采样器号。
+                    //   编译期事实是这个 (stage, handle, cbufSlot) 的精确事实（NeedTexture 不借组合槽事实，缺就 MISSING_FACT）。
+                    //   只接单个、非分离的采样贴图；分离对（第 4 片）、句柄数组（第 5 片）、贴图缓冲、图像仍如实报未接。
+                    string shape = binding.Kind != "texture" ? "image" : binding.Source == "buffer-texture" ? "buffer texture" :
+                        resolved.Separate ? "separate" : binding.Count != 1 || resolved.ArrayLength > 1 ? "array" :
+                        resolved.HandleIndex < 0 || (long)resolved.HandleIndex * 4 + 4 > UserUboMaxBytes ? "offset outside 64 KiB" : null;
+                    if (shape != null)
+                        throw new DirectCompileException("UNSUPPORTED_PROGRAM",
+                            binding.Stage + ": texture handle from cbuf slot " + resolved.CbufSlot + " is not implemented (" + shape + ")");
+                    binding.Slot = -1;
+                    binding.UboSlot = resolved.CbufSlot - UserUboFirstCbuf;
+                    binding.UboOffset = resolved.HandleIndex * 4;
+                    continue;
+                }
                 if (resolved.CbufSlot >= 0)
                 {
                     // NVN 的 c2 句柄与直连组合纹理槽一一对应：native 侧按 handleIndex
@@ -276,7 +296,12 @@ namespace S2A.DirectCompiler
                     // 数组的第 k 项就是句柄表的第 k 个 8 字节项，宿主按项逐个绑（slot = 0、count = 数组长度），不需要逐句柄的事实。
                     bool handleTableArray = binding.Kind == "texture" && resolved.CbufSlot == 2 && resolved.ArrayLength > 1 &&
                                             resolved.HandleIndex == 0 && binding.Count == resolved.ArrayLength;
-                    if (!handleTableArray && (binding.Kind != "texture" || !entry.accessor.HasDirectTextureFact(resolved.HandleIndex)))
+                    // 图像句柄从 c2 图像句柄表读（字节 0x120 + 8k = 字 72 + 2k，空轨 2nd 9000 计算「cbuf slot 2」）：这个字就是 BindImages 第 k 槽的句柄，
+                    //   与立即句柄 72 + 2k 同一个图像槽（计算解析器按 72..86 换算，同 iOS C2_IMG）；要有同字直接事实（宿主按图像槽出），数组不接。
+                    bool c2Image = binding.Kind == "image" && resolved.CbufSlot == 2 && resolved.HandleIndex >= 72 && resolved.HandleIndex < 88 &&
+                                   (resolved.HandleIndex & 1) == 0 && binding.Count == 1 && resolved.ArrayLength <= 1 &&
+                                   entry.accessor.HasDirectTextureFact(resolved.HandleIndex, resolved.CbufSlot);
+                    if (!handleTableArray && !c2Image && (binding.Kind != "texture" || !entry.accessor.HasDirectTextureFact(resolved.HandleIndex, resolved.CbufSlot)))
                         throw new DirectCompileException("UNSUPPORTED_PROGRAM",
                             binding.Stage + ": texture handle from cbuf slot " + resolved.CbufSlot + " is not implemented");
                 }
@@ -356,6 +381,19 @@ namespace S2A.DirectCompiler
                     throw new DirectCompileException("SPIRV_INVALID", binding.Stage + " storage has no reflected descriptor");
                 ApplyStorageDescriptor(binding, found.Value);
             }
+        }
+
+        private static void WriteRanges(Utf8JsonWriter writer, int[][] ranges)
+        {
+            if (ranges == null) { writer.WriteNullValue(); return; }
+            writer.WriteStartArray();
+            foreach (int[] range in ranges)
+            {
+                writer.WriteStartArray();
+                writer.WriteNumberValue(range[0]); writer.WriteNumberValue(range[1]);
+                writer.WriteEndArray();
+            }
+            writer.WriteEndArray();
         }
 
         private static byte[] WriteContent(DirectProgram program, DirectProfile profile,
@@ -443,6 +481,16 @@ namespace S2A.DirectCompiler
                     WriteInfo(writer, shader.Info);
                     writer.WriteNumber("stateReadFlags", accessor.StateReadFlags);
                     writer.WriteNumber("attributeReadMask", accessor.AttributeReadMask);
+                    if (program.Kind == "graphics")
+                    {
+                        // 图形阶段的 c0（驱动常量段）读集：回放据此判断间接绘制要不要把 GPU 侧的 base instance 拷进 c0 + 0x644。
+                        // 分析不出（动态下标、非标准布局、多个 c0）= null = 未知，消费端照旧拷；没有 c0 绑定 = []。
+                        var stageC0 = allocator.Bindings.Where(b => b.Stage == stage.Stage && b.Kind == "uniform" && b.Slot == 0).ToArray();
+                        int[][] stageReads = stageC0.Length == 0 ? Array.Empty<int[]>() : stageC0.Length != 1 ? null :
+                            DirectComputeC0Reads.Analyze(shader.BinaryCode, stageC0[0].Set, stageC0[0].Binding);
+                        writer.WritePropertyName("c0Reads");
+                        WriteRanges(writer, stageReads);
+                    }
                     writer.WriteEndObject();
                 }
                 writer.WriteEndArray();
@@ -458,6 +506,12 @@ namespace S2A.DirectCompiler
                     writer.WriteNumber("count", binding.Count);
                     if (binding.Slot >= 0) writer.WriteNumber("slot", binding.Slot);
                     if (binding.SamplerSlot >= 0) writer.WriteNumber("samp_slot", binding.SamplerSlot);
+                    if (binding.Kind == "texture" && binding.UboSlot >= 0)
+                    {
+                        // 句柄在游戏 UBO 里（ResolvePoolSlots）：没有 slot，只有这两个来源字段
+                        writer.WriteNumber("uboSlot", binding.UboSlot);
+                        writer.WriteNumber("uboOffset", binding.UboOffset);
+                    }
                     if (binding.Kind == "storage")
                     {
                         // Resolved and uniqueness-checked by ResolveStorageSlots above.

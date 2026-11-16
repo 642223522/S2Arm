@@ -16,6 +16,12 @@ enum Brand {
 }
 
 enum AppSetup {
+    static func defaultWindowSize(displaySize: CGSize, visibleSize: CGSize) -> CGSize {
+        // Use the whole screen's height; only shrink further when a narrow display cannot fit 16:9.
+        let height = min(displaySize.height * 0.7, min(visibleSize.height, visibleSize.width * 9 / 16))
+        return CGSize(width: height * 16 / 9, height: height)
+    }
+
     /// 源码树根（由本文件位置推出）只编进调试版：发布版不带出包机的源码绝对路径（同旧启动器 Store.sourceTree）。
     static var sourceTree: URL? {
         #if DEBUG
@@ -79,7 +85,11 @@ struct S2ArmAppleApp: App {
             S2ArmAppleRootView(model: model, brand: Brand.name)
         }
         .windowStyle(.hiddenTitleBar)
-        .defaultSize(width: 1280, height: 900)
+        .windowResizability(.contentMinSize)
+        .defaultWindowPlacement { _, context in
+            WindowPlacement(size: AppSetup.defaultWindowSize(displaySize: context.defaultDisplay.bounds.size,
+                                                             visibleSize: context.defaultDisplay.visibleRect.size))
+        }
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("About \(Brand.name)") {

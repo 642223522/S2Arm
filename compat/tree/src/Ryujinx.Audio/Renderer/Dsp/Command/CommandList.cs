@@ -118,9 +118,13 @@ namespace Ryujinx.Audio.Renderer.Dsp.Command
 
             StartTime = (ulong)PerformanceCounter.ElapsedNanoseconds;
 
+            // S2Arm: 单条命令抛异常（损坏的音频参数等）只丢这一拍：记命令类型 / NodeId，后面的命令不再执行，
+            //   但仍逐个归还对象池；异常不再沿 inline 的渲染线程主循环打穿（S2A_AUDIO_INLINE 缺省开）
+            bool failed = false;
+
             foreach (ICommand command in Commands)
             {
-                if (command.Enabled)
+                if (!failed && command.Enabled)
                 {
                     bool shouldMeter = command.ShouldMeter();
 
@@ -130,10 +134,19 @@ namespace Ryujinx.Audio.Renderer.Dsp.Command
                     {
                         startTime = PerformanceCounter.ElapsedNanoseconds;
                     }
-                    
-                    command.Process(this);
 
-                    if (shouldMeter)
+                    try
+                    {
+                        command.Process(this);
+                    }
+                    catch (Exception ex)
+                    {
+                        failed = true;
+
+                        Logger.Error?.Print(LogClass.AudioRenderer, $"Command {command.GetType().Name} (node {command.NodeId}) failed; dropping period: {ex}");
+                    }
+
+                    if (shouldMeter && !failed)
                     {
                         ulong effectiveElapsedTime = (ulong)(PerformanceCounter.ElapsedNanoseconds - startTime);
 

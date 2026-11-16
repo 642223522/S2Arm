@@ -432,7 +432,8 @@ def convert(src, out, say=print):
         with open(os.path.join(tmp, '.ns2_nup_key'), 'w', encoding='utf-8', newline='\n') as f:
             f.write(key + '\n')
         shutil.rmtree(out, ignore_errors=True)
-        os.rename(tmp, out)
+        from orch.dirrename import rename_dir   # 刚写完十几万个文件，Windows 上杀软 / 索引扫描开着句柄时目录改名报 WinError 5：按 #361 同一套退避重试
+        rename_dir(tmp, out)                     #   （11-15 Windows 出 Switch 2 大款：展开 22 分钟后在这一步报拒绝访问、整单失败）
         say(f'🟢 展开完成：{stat[0]:,} 个文件，真写 {stat[1] / 2**30:.2f} GB，同内容共用 {stat[2] / 2**30:.2f} GB（{stat[2]:,} 字节）→ {out}')
         return app
 

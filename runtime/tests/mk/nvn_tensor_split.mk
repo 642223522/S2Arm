@@ -1,6 +1,6 @@
 # native-test-nvn_tensor_split：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += nvn_tensor_split
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # 张量核网络顶替的分屏区域：分屏时出口层按推常量的输入 / 输出区域放大（双人分屏 3D 全黑）；Metal 4 编码线程关 / 开、Metal 3 各跑一遍
 $(BUILD)/tests/t_nvn_tensor_split: graphics/nvn/tests/t_nvn_tensor_split.m $(NVN_MTL_DEPS) graphics/nvn/widen_glue.inc graphics/nvn/widen_fallback.inc $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \

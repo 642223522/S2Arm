@@ -36,7 +36,7 @@ public sealed partial class EnvironmentWindow
             if (job.Report.Succeeded && job.Report.Result.ValueKind == JsonValueKind.Object) sgradeScan = job.Report.Result.Clone();
             else sgradeScanError = job.Report.Message.Length > 0 ? job.Report.Message : job.Report.State;
         }
-        catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or InvalidOperationException or OperationCanceledException)
+        catch (Exception error)   // 任何失败都要落成错误文字：页面渲染时见「没结果、没在查、没错误」就再发，漏掉一类异常 = 无限重发卡死 UI（#1149）
         { sgradeScanError = error.Message; }
         finally { sgradeScanning = false; Dispatcher.UIThread.Post(Render); }
     }
@@ -79,7 +79,24 @@ public sealed partial class EnvironmentWindow
         var all = scan.TryGetProperty("games", out var gs) && gs.ValueKind == JsonValueKind.Array ? gs.EnumerateArray().ToList() : [];
         var found = all.Where(g => S(g, "program") is { Length: > 0 } p && p != "none").ToList();
         var yes = found.Where(g => N(g, "total") > 0 && !Bo(g, "off")).ToList();
-        var no = found.Where(g => N(g, "total") == 0).ToList();
+        // 没有对应补丁拆两组（定稿表，同 Mac）：补丁库里有别的版本的 → 写版本号；一类都没有 → 补丁库里没有（作业层 versions）
+        Dictionary<string, List<string>> Avail(JsonElement g) =>
+            g.TryGetProperty("versions", out var vs) && vs.ValueKind == JsonValueKind.Object && vs.TryGetProperty("available", out var av) && av.ValueKind == JsonValueKind.Object
+                ? av.EnumerateObject().Where(p => p.Value.ValueKind == JsonValueKind.Array)
+                    .ToDictionary(p => p.Name, p => p.Value.EnumerateArray().Select(x => x.GetString() ?? "").Where(x => x.Length > 0).ToList())
+                    .Where(kv => kv.Value.Count > 0).ToDictionary(kv => kv.Key, kv => kv.Value)
+                : new();
+        string Mine(JsonElement g) => g.TryGetProperty("versions", out var vs) && vs.ValueKind == JsonValueKind.Object ? S(vs, "mine") : "";
+        var noVer = found.Where(g => N(g, "total") == 0 && Avail(g).Count > 0).ToList();
+        var no = found.Where(g => N(g, "total") == 0 && Avail(g).Count == 0).ToList();
+        string Versions(JsonElement g)
+        {
+            var a = Avail(g); var mine = Mine(g);
+            var parts = new[] { "widescreen", "fps", "gfx", "cheat" }.Where(a.ContainsKey)
+                .Select(c => SGradeVersions.Pick(a[c], mine) is { } p ? X(c == "cheat" ? "cat.cheatPlain" : "cat." + c) + " " + p.Version : null)
+                .Where(s => s is not null);
+            return string.Join(language == "en" ? ", " : "、", parts) + (mine.Length > 0 ? X("version.mine").Replace("{0}", mine) : "");
+        }
         var off = found.Where(g => N(g, "total") > 0 && Bo(g, "off")).ToList();
         var missing = all.Where(g => !found.Contains(g)).ToList();
         string Gains(JsonElement g)
@@ -88,12 +105,13 @@ public sealed partial class EnvironmentWindow
             int C(string k) => p.ValueKind == JsonValueKind.Object ? N(p, k) : 0;
             var parts = new List<string>();
             if (C("widescreen") > 0) parts.Add(X("cat.widescreen"));
+            else if (Bo(g, "ownWiden")) parts.Add(X("cat.ownWiden"));   // S2Arm 通用满屏（作业层 total 已算它 +1，同 Mac）
             if (C("fps") > 0) parts.Add(X("cat.fps"));
             if (C("gfx") > 0) parts.Add(X("cat.gfx"));
             if (C("cheat") > 0) parts.Add(X("cat.cheat").Replace("{0}", C("cheat").ToString()));
             return string.Join(language == "en" ? ", " : "、", parts);
         }
-        void Group(string title, IEnumerable<JsonElement> rows, bool gold = false, bool gains = false)
+        void Group(string title, IEnumerable<JsonElement> rows, bool gold = false, bool gains = false, Func<JsonElement, string>? detail = null)
         {
             // 分组标题与游戏行要一眼分得开（11-14 体验走查：同号同色粗体分不清哪行是标题）：标题小一号、金 / 灰色、带款数，游戏行缩进（同 Mac SGradeUpgradeView）
             var list = rows.ToList();
@@ -107,7 +125,7 @@ public sealed partial class EnvironmentWindow
             {
                 var line = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(title.Length > 0 ? 12 : 0, 0, 0, 0) };
                 line.Children.Add(new TextBlock { Text = S(g, "name"), FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis });
-                if (gains) { var gtx = Muted(Gains(g), 12); Grid.SetColumn(gtx, 1); line.Children.Add(gtx); }
+                if (gains || detail is not null) { var gtx = Muted(detail is not null ? detail(g) : Gains(g), 12); Grid.SetColumn(gtx, 1); line.Children.Add(gtx); }
                 box.Children.Add(line);
             }
         }
@@ -115,6 +133,7 @@ public sealed partial class EnvironmentWindow
         else if (yes.Count == 0)
         {
             if (no.Count > 0) { box.Children.Add(WrappedMuted(X("none"), 14)); Group("", no); }
+            if (noVer.Count > 0) Group(X("no.version"), noVer, detail: Versions);
             if (off.Count > 0) Group(X("off"), off);
             OkRow();
         }
@@ -122,16 +141,17 @@ public sealed partial class EnvironmentWindow
         {
             box.Children.Add(Label(X("found").Replace("{0}", found.Count.ToString()), 14));
             Group(X("yes"), yes, gold: true, gains: true);
-            if (no.Count > 0) Group(X("no"), no);
+            if (noVer.Count > 0) Group(X("no.version"), noVer, detail: Versions);
+            if (no.Count > 0) Group(X("no.none"), no);
             if (off.Count > 0) Group(X("off"), off);
             if (missing.Count > 0) Group(X("missing"), missing);
             if (yes.Any(g => Bo(g, "iphone")))
             {
                 box.Children.Add(WrappedMuted(X("iphoneNote"), 12));
                 var buttons = new WrapPanel { Orientation = Orientation.Horizontal };
-                var install = Primary(X("install"), () => { sgradeOpen = false; _ = UpdatePhoneAsync(false, [], mode: "device", sgradeUpgrade: true); }, !installBusy && !PackBusy);
+                var install = Primary(X("install"), () => { sgradeOpen = false; _ = UpdatePhoneAsync(false, [], mode: "device", sgradeUpgrade: true); }, !installBusy);   // 出包在跑不挡（手机槽）
                 AutomationId(install, "sgrade.upgrade.install"); install.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(install);
-                var export = Action("sgrade.upgrade.export", () => { sgradeOpen = false; _ = UpdatePhoneAsync(false, [], mode: "export", sgradeUpgrade: true); }, !installBusy && !PackBusy);
+                var export = Action("sgrade.upgrade.export", () => { sgradeOpen = false; _ = UpdatePhoneAsync(false, [], mode: "export", sgradeUpgrade: true); }, !installBusy);
                 export.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(export);
                 buttons.Children.Add(Action("sgrade.upgrade.close", Close));
                 box.Children.Add(buttons);

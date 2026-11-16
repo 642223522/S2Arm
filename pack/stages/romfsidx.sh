@@ -13,8 +13,8 @@
 set -u
 G=${1:?款}; H=$(cd "$(dirname "$0")/.." && pwd); R=$(cd "$H/.." && pwd); source "$H/roots.sh"; source "$H/stage_keyfiles.sh"; stage_deps_on || exit 1; SELF=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")   # 实际读入进键（pack/stage_keyfiles.sh）
 CUR=$(root_cur "$G"); [ -n "$CUR" ] && [ -d "$CUR/romfs" ] || { echo "【红】$G 现行产物根没有 romfs/"; exit 1; }
-KT=$(git -C "$R" rev-parse HEAD:services/S2A.Services/RomFsIndex.cs HEAD:services/romfs_index HEAD:services/romfs_index.sh HEAD:compat/tree/Directory.Packages.props 2>/dev/null | shasum -a 256 | cut -c1-16) \
-  && [ "$(git -C "$R" rev-parse HEAD:services/S2A.Services/RomFsIndex.cs HEAD:services/romfs_index HEAD:services/romfs_index.sh HEAD:compat/tree/Directory.Packages.props 2>/dev/null | wc -l | tr -d " ")" = 4 ] \
+OI=$(romfs_writer_oids "$R"); KT=$(printf '%s\n' "$OI" | shasum -a 256 | cut -c1-16) \
+  && [ "$(printf '%s\n' "$OI" | grep -c .)" = 4 ] \
   || { echo "【红】取不到索引写法文件的对象号（RomFsIndex.cs / romfs_index / romfs_index.sh / Directory.Packages.props，改过名就同笔改这里）"; exit 1; }
 # RomFS 遍历经 graphics/nvn/tools/romfs_list.py（仓库里唯一的 RomFS 遍历，walk 同 os.walk）
 KR=$(python3 - "$CUR/romfs" "$R" <<'PY'

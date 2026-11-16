@@ -1,6 +1,6 @@
 # 未写附件不写回在 TBDR 组关时也生效（graphics/nvn/tests/t_nvn_udc.m）。
 NATIVE_TEST_OWN += nvn_udc
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 NVN_UDC_SOURCE ?= graphics/nvn/gfx/nvn/nvn_mtl.m
 NVN_UDC_BINARY ?= $(BUILD)/tests/t_nvn_udc
 $(NVN_UDC_BINARY): graphics/nvn/tests/t_nvn_udc.m $(NVN_UDC_SOURCE) $(NVN_MTL_DEPS) $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)

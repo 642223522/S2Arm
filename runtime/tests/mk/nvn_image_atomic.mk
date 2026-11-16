@@ -1,6 +1,6 @@
 # Real GLSL / production reflection / NVN / NativeAOT Widen; no GPU substitutes.
 NATIVE_TEST_OWN += nvn_image_atomic
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 NVN_IA_OUT := $(abspath $(NVN_TEST_DIR)/image-atomic)
 NVN_IA_DSH := $(NVN_IA_OUT)/dsh-bin/dsh_cmp.dll
 NVN_IA_ASSETS := $(NVN_IA_OUT)/assets

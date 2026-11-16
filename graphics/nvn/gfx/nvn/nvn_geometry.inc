@@ -215,24 +215,28 @@ static void mtk_kick(MTLMeshRenderPipelineDescriptor *m, NSString *names, const 
         os_unfair_lock_unlock(&g_pso_mtk_lock);
     } });
 }
-// A draw that cannot be skipped waits on the submit thread for its pipeline's background build, at most mtk_budget_ms() a frame in all (DM_NVN_MESH_WAIT_MS); past the budget the draw is
-//   skipped as before and waits again the next frame. → the pipeline, nil (skipped)
+// A draw that cannot be skipped waits on the submit thread for its pipeline's background build until it is ready, capped only by the stuck-compiler limit every other draw that cannot
+//   be skipped goes by (pso_unsafe_wait_ms, DM_NVN_PSO_UNSAFE_WAIT_MS, default 10 s; 0 = no cap); past that cap it is skipped with a red line. → the pipeline, nil (skipped)
+//   D-84J2（11-15，Mac M1 Max）：原先每帧共 250 ms 预算（DM_NVN_MESH_WAIT_MS），超了照跳——跳过的是「某阶段写存储」或「目标跨帧保留内容」的那笔，下游读到没写的数据，
+//   3 局 GPU 挂死 / 缺页都出在网格管线首用、紧挨着「没等到、本帧跳过」的那一帧。跳这种绘制在哪块芯片上都不对（老芯片更容易撞上）：不能跳过的就等到编好，
+//   只有可丢的（纯颜色输出、本帧新开的目标，mtk_sync_why 返回 NULL）才首用跳过、后台编。DM_NVN_MESH_WAIT_MS 只留作诊断对照：设了就回到每帧预算的旧做法
 static uint64_t g_mtk_waits, g_mtk_wait_ns, g_mtk_wait_max, g_mtk_wait_over, g_mtk_wait_frame = UINT64_MAX, g_mtk_wait_frame_ns;
 static int g_mtk_budget = -1;   // ms; -1: not read yet (t_nvn_mesh ④d sets it)
-static int mtk_budget_ms(void) { if (g_mtk_budget < 0) { const char *e = getenv("DM_NVN_MESH_WAIT_MS"); g_mtk_budget = e ? atoi(e) : 250; } return g_mtk_budget; }
+static int mtk_budget_ms(void) { if (g_mtk_budget < 0) { const char *e = getenv("DM_NVN_MESH_WAIT_MS"); g_mtk_budget = e && *e ? atoi(e) : 0; } return g_mtk_budget; }   // 0 = no per-frame budget (wait per draw up to pso_unsafe_wait_ms)
 static id mtk_wait(const mtk_key *mk, const char *why) {
     uint64_t f = atomic_load_explicit(&g_cur_frame, memory_order_relaxed); if (f != g_mtk_wait_frame) { g_mtk_wait_frame = f; g_mtk_wait_frame_ns = 0; }
-    uint64_t budget = (uint64_t)mtk_budget_ms() * 1000000ull, t0 = bp_now(); __unsafe_unretained id p = nil; int done = 0;
+    uint64_t budget = (uint64_t)mtk_budget_ms() * 1000000ull, cap = (uint64_t)pso_unsafe_wait_ms() * 1000000ull, t0 = bp_now(); __unsafe_unretained id p = nil; int done = 0;
     while (!mtk_pace()) {
         os_unfair_lock_lock(&g_pso_mtk_lock); p = hm_get_id(&g_pso_mtk, mk); os_unfair_lock_unlock(&g_pso_mtk_lock);
         if (p != g_pso_mtk_building) { done = 1; break; }
-        if (g_mtk_wait_frame_ns + (bp_now() - t0) >= budget) break;
+        if (budget ? g_mtk_wait_frame_ns + (bp_now() - t0) >= budget : (cap && bp_now() - t0 >= cap)) break;
         usleep(200);
     }
     uint64_t dt = bp_now() - t0; g_mtk_wait_frame_ns += dt; g_mtk_waits++; g_mtk_wait_ns += dt; if (dt > g_mtk_wait_max) g_mtk_wait_max = dt;
     if (!done) g_mtk_wait_over++;
-    if (!(g_mtk_waits & (g_mtk_waits - 1)) || !done) MLOG("task / mesh draw that cannot be skipped (%s) waited for its background pipeline %.1f ms (%s); %llu waits so far, %.1f ms in all, longest %.1f ms, %llu past the %d ms frame budget (skipped)",
-        why, dt / 1e6, done ? "ready" : "not ready: skipped this frame", (unsigned long long)g_mtk_waits, g_mtk_wait_ns / 1e6, g_mtk_wait_max / 1e6, (unsigned long long)g_mtk_wait_over, mtk_budget_ms());
+    if (!(g_mtk_waits & (g_mtk_waits - 1)) || !done) MLOG("%stask / mesh draw that cannot be skipped (%s) waited for its background pipeline %.1f ms (%s); %llu waits so far, %.1f ms in all, longest %.1f ms, %llu not ready in time (skipped; %s %d ms)",
+        done ? "" : "【红】 ", why, dt / 1e6, done ? "ready" : "not ready: skipped this frame", (unsigned long long)g_mtk_waits, g_mtk_wait_ns / 1e6, g_mtk_wait_max / 1e6, (unsigned long long)g_mtk_wait_over,
+        mtk_budget_ms() ? "per-frame budget DM_NVN_MESH_WAIT_MS" : "stuck-compiler cap DM_NVN_PSO_UNSAFE_WAIT_MS", mtk_budget_ms() ? mtk_budget_ms() : pso_unsafe_wait_ms());
     return done && p != NSNull.null ? p : nil;
 }
 // Why a mesh draw whose pipeline is not built yet may not be skipped (nil: it may, its pipeline builds in the background); the same rules as skip_safe / first_skip_ok
@@ -244,6 +248,15 @@ static const char *mtk_sync_why(NvShader *ts, NvShader *ms, NvShader *fs) {
     for (int i = 0; i < R.rt.n; i++) if (R.rt.color[i] && !rt_seen_steady(R.rt.color[i])) return "a target not drawn in the last two frames";
     if (R.rt.depth && !rt_seen_steady(R.rt.depth)) return "a target not drawn in the last two frames";
     return NULL;
+}
+// 一条网格管线第一次画（两条路：已编好直接取 / 丢不起的那笔等后台编好）：记本机记录、打「first drawn」、进本提交的 GPU 出错嫌疑（quar_built）。
+//   #1208：网格管线多在后台编、晚几帧才第一次画，隔离原先只收「本提交当场新编的普通管线」，网格管线首画那次提交挂死时嫌疑为空、什么都不隔离，下一局挂在同一处；
+//   丢不起的那笔经 mtk_wait 画出时连「first drawn」都不打
+static uint64_t g_mtk_quar_skip;
+static void mtk_first_drawn(id p, const mtk_key *mk, NvShader *ts, NvShader *ms, NvShader *fs, int merged) {
+    [g_mtk_drawn addObject:p]; mtk_record(mk, ts, ms, fs, merged); quar_built(ms, fs);
+    MLOG("task / mesh pipeline first drawn at frame %llu: %s; still building %d", (unsigned long long)atomic_load_explicit(&g_cur_frame, memory_order_relaxed),
+         mtk_name(p), atomic_load(&g_mtk_inflight));
 }
 static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     NvShader *ts = g_mtk.ts, *ms = g_mtk.ms, *fs = raster->sh[1]; int merged = g_pso_lmap != NULL;
@@ -259,15 +272,16 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     //   only the locations the mesh does not write get (0,0,0,1)); until it is ready the pair's draws are skipped as before, then the pipeline is built with it (its own cache entry)
     uint32_t want = fs && (fs->rf.has_user & 2) ? fs->rf.user_in : 0; id<MTLFunction> pf = want ? vp_fn(ms, want) : nil;
     if (pf) mk.pad = want;
+    // GPU 挂死隔离（#1208）：先前让 GPU 出错的网格管线（网格 + 片元两键，同普通管线的 quar_name）这局起跳过，不再画
+    if (quar_has(ms, fs)) { g_mtk_quar_skip++; static int qn; if (qn++ < 4) MLOG("【红】 GPU error quarantine: task / mesh pipeline (task %s mesh %s fragment %s) skipped (it faulted the GPU before)",
+                                                                           ts ? ts->key : "-", ms->key, fs ? fs->key : "-"); return nil; }
     os_unfair_lock_lock(&g_pso_mtk_lock); __unsafe_unretained id ps = hm_get_id(&g_pso_mtk, &mk);
     if (!ps) { if (!g_pso_mtk_building) g_pso_mtk_building = [NSObject new]; hm_put_id(&g_pso_mtk, &mk, g_pso_mtk_building); }
     os_unfair_lock_unlock(&g_pso_mtk_lock);
     if (ps == NSNull.null && !mk.pad && want) vp_ask(S.prog, ms, want);   // refused unpadded: ask for the padded variant (once; a variant that cannot be made stays failed)
     if (ps && ps != NSNull.null && ps != g_pso_mtk_building) {   // #770: the first draw of each pipeline, with the frame and how many are still building
         if (!g_mtk_drawn) g_mtk_drawn = [NSMutableSet set];
-        if (![g_mtk_drawn containsObject:ps]) { [g_mtk_drawn addObject:ps]; mtk_record(&mk, ts, ms, fs, merged);
-            MLOG("task / mesh pipeline first drawn at frame %llu: %s; still building %d", (unsigned long long)atomic_load_explicit(&g_cur_frame, memory_order_relaxed),
-                 mtk_name(ps), atomic_load(&g_mtk_inflight)); }
+        if (![g_mtk_drawn containsObject:ps]) mtk_first_drawn(ps, &mk, ts, ms, fs, merged);
     }
     if (ps == NSNull.null) return nil;
     if (ps && ps != g_pso_mtk_building) return ps;
@@ -285,7 +299,7 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     if (!why) return nil;   // building in the background, and this draw may wait for it
     __unsafe_unretained id p = mtk_wait(&mk, why);
     if (p) { if (!g_mtk_drawn) g_mtk_drawn = [NSMutableSet set];
-        if (![g_mtk_drawn containsObject:p]) { [g_mtk_drawn addObject:p]; mtk_record(&mk, ts, ms, fs, merged); } }
+        if (![g_mtk_drawn containsObject:p]) mtk_first_drawn(p, &mk, ts, ms, fs, merged); }
     return p;
 }
 static void mtk_encode(id en_) {

@@ -220,13 +220,22 @@ if source.read_bytes() == b"disappear fixture":
 print(json.dumps({"schema":1,"packages":[{"titleId":"0100000000000000","baseId":"0100000000000000","type":"base","version":0,"name":"Synthetic","display":"1.0","guestIsa":"aarch64","builds":{}}]}))
 ''')
         binary.chmod(0o700)
-        # Reader lookup is content-keyed in the actual worker too.
+        # Reader lookup is content-keyed in the actual worker too. Mac 起读取器直接执行缓存位上的
+        # 自包含单文件（不再经 dotnet 跑 dll）：合成读取器脚本就装在缓存位，argv 与 Windows 直跑同形
+        # （少了 dotnet 前缀，源 / 图标目录各前移一位）。
         from core import digest
         key = toolchain.reader_key(self.c)
         actual = self.c.private / "tools" / key
         actual.mkdir(parents=True)
-        (actual / "nx_unpack.dll").write_bytes(b"fixture")
-        atomic(actual / "ready.json", dict(schema=1, sha256=digest(actual / "nx_unpack.dll")))
+        reader = actual / "nx_unpack"
+        reader.write_text(
+            binary.read_text()
+            .replace("sys.argv[4]", "sys.argv[3]")
+            .replace("sys.argv[5]", "sys.argv[4]"),
+            encoding="utf-8",
+        )
+        reader.chmod(0o700)
+        atomic(actual / "ready.json", dict(schema=1, sha256=digest(reader)))
         if sys.platform == 'win32':
             # A local copy of the installed interpreter runs the *same*
             # synthetic reader script. This is not a real .NET reader.
@@ -327,11 +336,11 @@ def synthetic_nacp(title, display):   # 0x4000 字节：ApplicationTitle[0] 名�
 
 
 def ios_fixture(c, gid, *, shell="SID1", pack="cafe01", compat=None, fixups=True):
-    """游戏库结构 v3 里一款出好的 iPhone 版：这款文件夹 image/ios/kit（容器件：main.npdm + 改写产物表）+ image/ios/pack（资源包，清单带 index_sha256），
+    """游戏库结构 v3 里一款出好的 iPhone 版：游戏程序专用文件夹 .programs/<程序号>/kit（容器件：main.npdm + 改写产物表）+ 这款文件夹 image/ios/.pack（资源包，清单带 index_sha256），
     game.json 的 ios 记出它的壳号、资源包号（compat 给了再记 hostAbi / dmshChain）→ (kit, pack)"""
     import layout
     image = layout.image_ios(c, gid)
-    kit, pk = image / "kit", image / ".pack"
+    kit, pk = layout.program_store(c, gid, create=True) / "kit", image / ".pack"
     kit.mkdir(parents=True, exist_ok=True)
     (kit / "main.npdm").write_bytes(b"META")
     if fixups:

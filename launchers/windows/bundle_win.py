@@ -3,9 +3,10 @@
 在 Windows 出包机上（要 .NET SDK / clang / cmake / cargo 等，见 bundle_prepare_win.py）：
   python -X utf8 launchers/windows/bundle_win.py <目标> --shell <预编壳目录> --tzdata <时区目录> --fonts <字体目录>
 产物（<目标> 不许已存在）：
-  Engine/           引擎快照（同 Mac：按 bundle_engine.INPUTS 挑仓库文件、全新单提交 Git 库）+ Binaries/Prepare（bundle_prepare_win 预编件 + Tzdata）+ engine.json
-                    （逐文件大小 + sha256、源码指纹、壳编号；作业层 embedded.install 校验后克隆进私有目录）
-  Runtime/          随包运行时（bundle_runtime_win.py：Python 嵌入版、.NET 运行时、bash、MinGit、zstd、许可）
+  Engine/           引擎快照（同 Mac：按 bundle_engine.INPUTS 挑仓库文件）+ Binaries/Prepare（bundle_prepare_win 预编件 + Tzdata）+ engine.json
+                    （逐文件大小 + sha256、源码指纹、壳编号、出包要的 git 值；作业层 embedded.install 校验后克隆进私有目录）。
+                    打包时建的单提交 Git 库只用来算 git 值（bundle_engine.seal_snapshot），算完删掉、不随包
+  Runtime/          随包运行时（bundle_runtime_win.py：Python 嵌入版、.NET 运行时、bash、zstd、许可）
   Shell/            预编壳（壳编号须等于 engine.json 的 shellId）
   Fonts/            开源共享字体 7 份 .bfttf
   ThirdParty/Impactor/  官方原版 Impactor + plumesign（v2.7.2，不改不重签，SHA-256 钉在 pack/jobs/impactor.py BUNDLED，不符拒打）+ 许可（MIT、内嵌 apple-codesign 的 MPL-2.0）+ 来源说明
@@ -38,7 +39,7 @@ def say(m): print(m, flush=True)
 
 
 def snapshot(engine):
-    """仓库输入 → 全新单提交 Git 库（同 Mac bundle_engine.bundle 的快照段；出包各阶段按 git 对象号取源码身份）"""
+    """仓库输入 → 全新单提交 Git 库（同 Mac bundle_engine.bundle 的快照段；只用来算出包各阶段要的 git 对象号，bundle_engine.seal_snapshot 算完删掉）"""
     engine.mkdir(parents=True)
     n = 0
     for rel in bundle_engine.snapshot_files(ROOT):   # 挑文件与 Mac 同一个函数（单测 pack/jobs/tests/test_downstream.py 锁登记表在内）
@@ -105,6 +106,23 @@ def bundle_impactor(dest, cache=None, fetch=None):
         f"Impactor 完整源码：https://github.com/claration/impactor/tree/v{impactor.TESTED}", ""]), encoding="utf-8")
 
 
+def smoke_reader(runtime, engine):
+    """出包作业怎么找读取器、用什么环境，这里就照样起一次（v0.4.4 候选：作业直接执行 nx_unpack.dll，Windows 交给旧 .NET Framework，导入全挂；
+    打包机装着 .NET，平常跑得通也看不出）：环境只有 core.win_runtime_env 给的那些 + SystemRoot，不继承本机的 DOTNET_* / PATH，
+    DOTNET_ROOT 指随包运行时、不找全局安装。读取器不带参数会打用法、退出码 2：看到用法就算起得来"""
+    sys.path.insert(0, str(ROOT / "pack/jobs"))
+    import types
+    import core, toolchain   # noqa: E401  作业层自己的取法，不另写一份
+    sr = os.environ.get("SystemRoot", r"C:\Windows")
+    env = dict(core.win_runtime_env(runtime, engine, sr), SystemRoot=sr)
+    exe = toolchain.reader(types.SimpleNamespace(engine=engine))
+    p = subprocess.run([str(exe)], env=env, capture_output=True)
+    out = (p.stdout + p.stderr).decode("utf-8", "replace")
+    if "nx_unpack" not in out or p.returncode != 2:
+        raise SystemExit(f"【红】只用随包运行时起不来读取器 {exe}（退出码 {p.returncode & 0xFFFFFFFF:#x}）：{out.strip()[-300:]}")
+    say(f"  读取器 {Path(exe).name} 起得来（只用随包运行时）")
+
+
 def bundle(target, shell, tzdata, fonts):
     target = Path(target).resolve()
     if target.exists():
@@ -124,15 +142,16 @@ def bundle(target, shell, tzdata, fonts):
     say(f"[组装] 引擎快照：{snapshot(engine)} 个文件")
     say("[组装] 预编件"); bundle_prepare_win.bundle(engine)
     shutil.copytree(tzdata, engine / "Binaries/Prepare/Tzdata")
-    identity = bundle_engine.write_manifest(engine, fingerprint)
+    identity = bundle_engine.seal_snapshot(engine, fingerprint)
     say(f"[组装] engine.json：{identity[:16]}（壳 {want}）")
     say("[组装] 随包运行时"); bundle_runtime_win.main([str(target)])
+    say("[组装] 自检：只用随包运行时起读取器"); smoke_reader(target / "Runtime", engine)
     shutil.copytree(shell, target / "Shell")
     (target / "Fonts").mkdir()
     for f in bft:
         shutil.copy2(f, target / "Fonts" / f.name)
     say("[组装] 随包 Impactor"); bundle_impactor(target / impactor.BUNDLE_DIR)
-    # 社区补丁与金手指本地库（11-13，同 Mac build_app.py）：完整快照放 <启动器目录>/CommunityPatches/patches-v2.tar（启动器把本目录作 resources 交作业层）
+    # 社区补丁与金手指本地库（11-13，同 Mac build_app.py）：完整快照放 <启动器目录>/CommunityPatches/patches-v3.tar（v2 发版时转成分块 xz，11-16 瘦身；启动器把本目录作 resources 交作业层）
     sys.path.insert(0, str(ROOT / "tools")); import patch_pack
     why = patch_pack.stage_snapshot(str(target / "CommunityPatches"))
     say("[组装] 社区补丁快照：" + ("已放进 CommunityPatches" if not why else f"🟡 {why}，本版启动器不带本地补丁库"))

@@ -1,5 +1,5 @@
 NATIVE_TEST_OWN += nvn_dispatch_range
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 NVN_PRODUCER_SOURCE ?= graphics/nvn/gfx/nvn/nvn_mtl.m
 NVN_DRANGE_BINARY ?= $(BUILD)/tests/t_nvn_dispatch_range
 $(NVN_DRANGE_BINARY): graphics/nvn/tests/t_nvn_dispatch_range.m $(NVN_PRODUCER_SOURCE) $(NVN_MTL_DEPS) $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)

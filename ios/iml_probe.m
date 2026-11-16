@@ -31,6 +31,25 @@ static int proc_ent_has(const char *key) {
 #define IML_KEY "com.apple.developer.kernel.increased-memory-limit"
 #define GIB (double)(1ull << 30)
 
+// 这次安装的进程有没有「提高内存上限」权限：1 带、0 不带（丢了）、-1 读不到；-2 = 还没读。首启复核读一次记下，诊断询问（diag.m）复用，没读过就现读
+static int g_iml_ent = -2;
+static int iml_ent(void) {
+    if (g_iml_ent == -2) { int e = proc_ent_has(IML_KEY); g_iml_ent = e >= 0 ? e : s2a_ent_has(&_mh_execute_header, IML_KEY); }
+    return g_iml_ent;
+}
+// 上次异常退出后问「把上次的诊断发给我们？」时用（diag.m）：确定丢了才算（读不到不报，防误报）
+int s2a_iml_lost(void) { return iml_ent() == 0; }
+// 游戏库顶上的提示（S2ArmShellHostModel，s2a_shell.h）：确定丢了才给标题与正文（同起局提示条的两句，六语在 S2ArmHost.strings），调用方 free
+char *s2a_shell_iml_notice(void) {
+    @autoreleasepool {
+        if (!s2a_iml_lost()) return NULL;
+        NSData *d = [NSJSONSerialization dataWithJSONObject:@{@"title": S2AL(@"iml.lost.title"), @"body": S2AL(@"iml.lost.body")} options:0 error:nil];
+        if (!d) return NULL;
+        char *p = malloc(d.length + 1); if (!p) return NULL;
+        memcpy(p, d.bytes, d.length); p[d.length] = 0; return p;
+    }
+}
+
 static void _write_result(int ent, uint64_t fit, uint64_t top, int jumbo) {
     NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
     NSString *dir = [docs stringByAppendingPathComponent:@"diag"];
@@ -53,6 +72,7 @@ void s2a_iml_probe_check(void) {
     @autoreleasepool {
         int ent = proc_ent_has(IML_KEY), from_proc = ent >= 0;
         if (!from_proc) ent = s2a_ent_has(&_mh_execute_header, IML_KEY);   // 进程权限读不到才退回读主程序签名
+        g_iml_ent = ent;
         uint64_t need = 0, fit = 0, top = s2a_va_top(); s2a_window_need(&need, &fit);
         int jumbo = s2a_va_jumbo(top);
         _write_result(ent, fit, top, jumbo);
@@ -64,12 +84,14 @@ void s2a_iml_probe_check(void) {
                 jumbo == 0 ? "【黄】带权限却只拿到小地址档，与 R02 不符" : "");
         else
             LOG("【红】[IML] 首启复核：这台机上装的包签名丢了「提高内存上限」权限（%s）；%s，上限 %.1f GB、最大一块 %.1f GB。"
-                "游戏继续运行，超出窗口走远端翻译；请用 Xcode / AltStore Classic v2.3 重签后重装（或 GetMoreRam 给 App ID 补权限后重装）",
+                "游戏继续运行，超出窗口走远端翻译；请在电脑上的 S2Arm 点「装到 iPhone」重装，或用 Xcode / AltStore Classic v2.3 重签后重装（或 GetMoreRam 给 App ID 补权限后重装）",
                 IML_KEY, va, top / GIB, fit / GIB);
         // 玩家也要知道（审计 P2-3：原先只写日志）：同一个包只提示一次，不挡操作（dprompt.m 顶部提示条，起局 3 秒后）
         if (ent == 0) {
             NSUserDefaults *u = NSUserDefaults.standardUserDefaults; NSString *build = [NSBundle.mainBundle objectForInfoDictionaryKey:@"S2ABuildID"] ?: @"-";
-            if (![[u stringForKey:@"S2AIMLLostNoticeBuild"] isEqualToString:build]) {
+            // 玩家在游戏库提示上点过关闭（S2ArmShellHostModel，按 App 包路径认这次安装）：这次安装内不再提示，进游戏也不弹（玩家选择优先）
+            BOOL closed = [[u stringForKey:@"S2AIMLNoticeClosedInstall"] isEqualToString:NSBundle.mainBundle.bundlePath];
+            if (!closed && ![[u stringForKey:@"S2AIMLLostNoticeBuild"] isEqualToString:build]) {
                 [u setObject:build forKey:@"S2AIMLLostNoticeBuild"];
                 void s2a_dprompt_notice(NSString *title, NSString *body, double delay, double seconds);
                 s2a_dprompt_notice(S2AL(@"iml.lost.title"),

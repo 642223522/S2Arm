@@ -47,7 +47,7 @@ def build(app, output, volume_name="S2Arm Installer"):
         work = Path(directory)
         artwork(work, app)
         settings = {
-            "format": "ULFO", "filesystem": "HFS+",
+            "format": "ULMO",   # lzma（11-15 瘦身：同内容 231 → 174 MB；macOS 10.15 起都能挂载） "filesystem": "HFS+",
             "files": [str(app)], "symlinks": {"Applications": "/Applications"},
             "background": str(work / "background.tiff"),
             "window_rect": ((180, 160), (LAYOUT["width"], LAYOUT["height"] + 32)),

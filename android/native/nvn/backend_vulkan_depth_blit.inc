@@ -131,7 +131,7 @@ static void depth_blit(struct nvn_gpu_cmd_s *c, struct nvn_gpu_view_s *sv, const
     pthread_mutex_lock(&g_dsb_mu); int ready = depth_blit_pipelines(d->nvn_format, slot); pthread_mutex_unlock(&g_dsb_mu);
     if (!ready) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "深度模板缩放管线创建失败"); return; }
     VkDescriptorImageInfo images[2] = {{0}}; VkWriteDescriptorSet writes[2] = {{0}}; VkDescriptorSet set;
-    if (!alloc_sets(c, &g_dsb.dsl, 1, &set)) return;
+    if (!alloc_sets(c, &g_dsb.dsl, 1, &set, NULL, 0, 0)) return;
     for (unsigned i = 0; i < 2; i++) {
         images[i].sampler = g_dsb.sampler; images[i].imageView = depth_blit_view(sv, i); images[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
         if (!images[i].imageView) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "深度模板缩放源视图创建失败"); return; }

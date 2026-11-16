@@ -384,7 +384,20 @@ namespace Ryujinx.Audio.Backends.Apple
         private static int s_stallDumps;
 
         [DllImport("s2a_native")]
-        private static extern int s2a_dump_threads(string why);   // runtime/src/tdump.c：全线程宿主栈（自动玩家卡住、崩溃时同一份）
+        private static extern int s2a_dump_threads(string why);
+
+        [DllImport("s2a_native")]
+        private static extern int s2a_audio_volume();   // runtime/src/game_volume.c：游戏音量 0–100（#1186）
+
+        private static bool s_gameVolumeGone;   // 原生层没有这个导出（旧宿主 / 只链托管的单测）：按 100，不再试
+
+        private static int S2AGameVolume()
+        {
+            if (s_gameVolumeGone)
+                return 100;
+            try { return s2a_audio_volume(); }
+            catch (Exception e) when (e is DllNotFoundException || e is EntryPointNotFoundException) { s_gameVolumeGone = true; return 100; }
+        }   // runtime/src/tdump.c：全线程宿主栈（自动玩家卡住、崩溃时同一份）
 
         // 恢复输出流：iOS 重新激活会话 → 同步停队列（重置时重建）→ 收回在途 → 重新排进去 → 开播
         private void S2ARecover(string why, bool rebuild, long now, bool red)
@@ -799,7 +812,8 @@ namespace Ryujinx.Audio.Backends.Apple
 
         private unsafe void ApplyVolume(nint dataPtr, int byteSize)
         {
-            float volume = Math.Clamp(_volume * _driver.Volume, 0f, 1f);
+            // S2A：游戏音量（#1186，runtime/src/game_volume.c；按游戏存、局中齿轮菜单可改）乘进来；100 时同原来整段跳过
+            float volume = Math.Clamp(_volume * _driver.Volume * (S2AGameVolume() / 100f), 0f, 1f);
             if (volume >= 0.999f)
                 return;
 

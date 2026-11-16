@@ -23,3 +23,4 @@ runtime/src/sesdiag.c	iOS 会话标记 + 有界日志摘要（Switch2线 84）�
 runtime/src/logcap.c	日志落盘唯一出口 s2a_log_out（强定义）：安卓单库已链（Runtime.cmake core 名单），调用方是 native.h 里的 s2a_log_line / LOG 宏（每个 TU 内联），矩阵按平台源码找调用方的文本扫描看不到；不是缺口	Switch2线	2026-11-07
 runtime/src/nvos_trace.c	Mac 专用诊断（记 GPU 驱动栈的 NvOs 分配，取重放表参照），iOS / 安卓编成空函数	dev-cheats	2026-11-13
 runtime/src/motion_pick.c	安卓侧缺口（不是不适用）：玩家 1 六轴来源仲裁（手机 / 系统手柄 / NS2 Pro），安卓还没有六轴输入通路、暂无调用方；待安卓线补六轴时接上本模块并删掉这一行	maintainer	2026-11-14
+runtime/src/game_volume.c	游戏音量（#1186）：只接苹果音频输出层（compat/tree Ryujinx.Audio.Backends.Apple ApplyVolume 取值、iOS 齿轮菜单调 S2A_AudioSetVolume）；安卓音频走自己的输出、界面没有这项，不适用	dev-yi	2026-11-15

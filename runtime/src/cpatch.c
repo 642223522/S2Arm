@@ -28,7 +28,7 @@ void s2a_cpatch_abort_boot_inputs(void) {
 
 // 帧率补丁逐份（11-13 维护者：60 / 120 都带进去，玩家自己切档）：模块、掩码槽（模块装载完补上）、位、数据写入（可空）、目标帧率（表第 10 列，0 = 取不到）、
 //   allow = 这份能开（安卓只认开关列表里的；iOS 屏蔽的画面类不算）。跟随开关时只开选中档的那几份（fps_pick），其余关位、写回原值
-struct cp_fu { module_t *m; _Atomic uint64_t *slot; uint64_t bits; char *spec; int target, allow; char id[48]; };
+struct cp_fu { module_t *m; _Atomic uint64_t *slot; uint64_t bits; char *spec; int target, allow, def; char id[48], grp[16]; };   // grp：表第 13 列「组」（同一上游补丁的几份文件，pack/cpatch.py fps_group）；def：表「缺省开」（我方验过）
 static struct cp_fu g_fu[256]; static int g_nfu, g_nfud;   // g_nfud：其中带数据写入的份数（上限 64，同原帧率跟随表口径；只改代码的不计）   // 有帧率类补丁的各模块：掩码槽、其中帧率类的位（按需增长，无上限；只在装载时追加）
 // 随包表：fpslocker.json
 // FPSLocker 帧率配置的运行时部分（pack/fpslocker.py 出、与 cpatch.tsv 同目录）：服务层 services/S2A.Services/FpsLocker.cs 经 s2a_cpatch_tables_dir 找到它
@@ -218,11 +218,24 @@ void s2a_cpatch_frame(uint64_t now, int game, uint64_t dt) {
     }
     t0 = now; frames = ok = bad = 0;
 }
-static int cp_ios_blocked(const char *id) {   // iOS 上不开的类：画面类（见上面 en 的说明）
+// 玩家导入的 mod 带的代码补丁（编号 mod:，pack/jobs/mods.py code_index；11-15）：开关跟 mod 走、不看 S2A_CPATCH_ON——
+//   第 7 列「来源」= <mod 名>/<文件名>，本款 mod 目录（S2A_MODS_DIR：Mac 作业层给游戏文件夹 mods/；否则文档根 mods/，与服务层 RomFsMods.cs 同一处）
+//   下有 <mod 名> 文件夹 = 开；关掉的 mod 改名为 .off-<mod 名>（启动器 / iPhone 资源 Mod 页）= 关；删了 = 关。资源与代码同一个开关，手机上关掉不用重出包
+static int cp_mod_on(const char *src) {
+    const char *slash = src ? strchr(src, '/') : NULL;
+    if (!slash || slash == src || (size_t)(slash - src) >= 200 || src[0] == '.') return 0;
+    char dir[1300]; const char *own = getenv("S2A_MODS_DIR");
+    int n = own && *own ? snprintf(dir, sizeof dir, "%s/%.*s", own, (int)(slash - src), src)
+                        : s2a_docs_path(dir, sizeof dir, "mods/%.*s", (int)(slash - src), src);
+    struct stat st;
+    return n > 0 && n < (int)sizeof dir && !stat(dir, &st) && S_ISDIR(st.st_mode);
+}
+static int cp_ios_blocked(const char *id, const char *dir) {   // iOS 上不开的类（见下面 en 的说明）；dir = 表第 14 列方向（旧表没有 = NULL）
 #if defined(__APPLE__) && TARGET_OS_IPHONE
-    return !strncmp(id, "gfx:", 4);
+    // 画面类只开降负载的（11-16 维护者：方向 load，pack/cpatch.py 第 14 列）；提画质 / 认不出 / 旧表没写方向的照旧不开。other：认不出是画面的（声音 / 玩法等，11-15），一律不开
+    return (!strncmp(id, "gfx:", 4) && !(dir && !strcmp(dir, "load"))) || !strncmp(id, "other:", 6);
 #else
-    (void)id; return 0;
+    (void)id; (void)dir; return 0;
 #endif
 }
 // 随包金手指原文（11-13，见文件头 cheat-src 那行声明）：出包把版本对得上的金手指 txt 以 cheat-src.<原文件名> 放进 App（pack/cpatch.py CHEAT_SHIP），
@@ -277,12 +290,16 @@ static void cpatch_load_stream(module_t *m, FILE *f) {
             LOG("【红】社区补丁 %s：表行过长，不开", m->name); continue;
         }
         line[strcspn(line, "\r\n")] = 0;
-        char *c[11] = {0}; char *s = line; for (int i = 0; i < 11 && s; i++) { c[i] = s; s = strchr(s, '\t'); if (s) *s++ = 0; }   // 第 10 列目标帧率、第 11 列画幅（pack/cpatch.py，旧表没有）
+        char *c[14] = {0}; char *s = line; for (int i = 0; i < 14 && s; i++) { c[i] = s; s = strchr(s, '\t'); if (s) *s++ = 0; }   // 第 10 列目标帧率、第 11 列画幅、第 13 列组、第 14 列方向（pack/cpatch.py，旧表没有）
         if (!c[8] || strcmp(c[1], m->name)) continue;
         char *end; long bit = strtol(c[2], &end, 10);
         // 玩家没选过（没有 S2A_CPATCH_ON）= 默认开（11-13 维护者：S 级优化命中的补丁出包时打入并默认开，用户少做选择）；表里「缺省开」列现在只表示我方验过（界面标签）。
-        //   画面类（gfx:，提分辨率 / 画质）在 iOS 上一律不开（维护者：iOS 默认不打——手机内存更紧，Switch 上没事的提分辨率可能被系统杀），Mac 照常默认开
-        int en = cp_ios_blocked(c[0]) ? 0 : on ? (strcmp(on, "none") && in_list(on, c[0])) : 1, fps = !strncmp(c[0], "fps:", 4);
+        //   画面类（gfx:）在 iOS 上只开降负载的（第 14 列方向 load，11-16 维护者），提分辨率 / 画质的不开（手机内存更紧，Switch 上没事的提分辨率可能被系统杀），Mac 照常默认开
+        // other（认不出是画面的：声音 / 玩法等，tools/patch_index.py classify，11-15）不默认开：只有开关列表点名才开（没选过也不开）
+        // 降负载的画面补丁（第 14 列方向 load）没选过也不开（11-16 维护者：降负载会直接降画质，缺省关、玩家在 S 级优化页手动开；iOS / Mac 同口径）
+        int en = !strncmp(c[0], "mod:", 4) ? cp_mod_on(c[6]) : cp_ios_blocked(c[0], c[13]) ? 0 : on ? (strcmp(on, "none") && in_list(on, c[0]))
+                 : strncmp(c[0], "other:", 6) != 0 && !(!strncmp(c[0], "gfx:", 4) && c[13] && !strcmp(c[13], "load")),
+            fps = !strncmp(c[0], "fps:", 4);
         n++;
         // 帧率补丁里最高的目标帧率（s2a_cpatch_fps_follow 按它定出图上限、出图节拍与服务层 vsync）。帧率类的开关位本来就跟 60 帧开关走、不看开关列表，
         //   目标却原先只从列表里的取：iOS 设置页把帧率补丁做成 60 帧开关的联动、从不写进 S2ACommunityPatches，玩家动过任何一个补丁开关后目标就是 0，
@@ -349,8 +366,8 @@ static void cpatch_load_stream(module_t *m, FILE *f) {
                 LOG("【红】社区补丁 %s %s：帧率跟随表容量已满，整份不开", m->name, c[0]); st_put(c[0], "表不认"); continue;
             }
             struct cp_fu *u = &g_fu[g_nfu++]; memset(u, 0, sizeof *u);
-            u->m = m; u->bits = 1ull << bit; u->target = c[9] ? atoi(c[9]) : 0; u->allow = !cp_ios_blocked(c[0]);
-            snprintf(u->id, sizeof u->id, "%s", c[0]);
+            u->m = m; u->bits = 1ull << bit; u->target = c[9] ? atoi(c[9]) : 0; u->allow = !cp_ios_blocked(c[0], c[13]); u->def = c[8] && c[8][0] == '1';
+            snprintf(u->id, sizeof u->id, "%s", c[0]); snprintf(u->grp, sizeof u->grp, "%s", c[12] ? c[12] : "");
             if (c[7][0] && !(u->spec = strdup(c[7]))) die("社区帧率补丁数据分配失败");
             if (c[7][0]) g_nfud++;
             atomic_fetch_add(&g_nfps, 1);
@@ -401,7 +418,10 @@ void s2a_cpatch_load_source(module_t *m, const void *bytes, size_t length) {
 // 定画幅变体按画幅 A 选（持 g_ad_lock）：开着的几份里取与 A 同在 16:9 一侧、log 比值最近的一份；先关不该开的（写回原值、清位）再开选中的
 static void fx_select(double A) {
     int best = -1; double bd = 0;
-    for (int i = 0; i < g_nfx; i++) {
+    // 自适应满屏开着时定画幅变体让位（11-15 #1152：一款两种都在包里，自适应按 2.167 开、定画幅 2.333 那份也按「最近」开，后写的定画幅把自适应算好的值盖掉，
+    //   画面按 2.333 布局、UI 全部错位）。自适应按屏幕实际画幅算，比挑最近的一份准；没有自适应在开才按最近挑
+    int ad = atomic_load(&g_ad_on);
+    for (int i = 0; i < g_nfx && !ad; i++) {
         struct cp_fx *x = &g_fx[i];
         if (!x->slot || !x->en || !(A > CP_R * 1.001 ? x->a > CP_R * 1.001 : A < CP_R * 0.999 ? x->a < CP_R * 0.999 : 0)) continue;
         double d = fabs(log(x->a / A)); if (best < 0 || d < bd) { best = i; bd = d; }
@@ -410,7 +430,7 @@ static void fx_select(double A) {
         struct cp_fx *x = &g_fx[i]; if (i == best || !x->on) continue;
         if (x->spec[0] && data_writes(x->m, x->spec, 2)) die("宽屏变体已校验的数据写回失败");
         atomic_fetch_and(x->slot, ~(1ull << x->bit)); x->on = 0; st_put(x->id, "关");
-        LOG("社区补丁：%s 宽屏变体 %s（画幅 %.3f）关（当前画幅 %.3f）", x->m->name, x->id, x->a, A);
+        LOG("社区补丁：%s 宽屏变体 %s（画幅 %.3f）关（当前画幅 %.3f%s）", x->m->name, x->id, x->a, A, ad ? "，自适应满屏在开，让位" : "");
     }
     g_fx_aspect = 0;
     if (g_nfx) st_put(CP_FX_ALL, best >= 0 ? "开" : "关");
@@ -460,21 +480,27 @@ double s2a_cpatch_present_aspect(void) {
 static int ws_scan(const char *dir, int need_docked);
 int s2a_cpatch_ws_enabled(const char *dir) { return ws_scan(dir, 0); }
 int s2a_cpatch_ws_needs_docked(const char *dir) { return ws_scan(dir, 1); }
+// need_docked：开着的满屏补丁里有没有「只改主机档渲染宽高」的（定画幅变体 widescreen:、或出包没补齐掌机档的自适应一族 模式 docked）。
+//   有开着的、两档都补齐的自适应一族（模式 both）时，定画幅变体按 fx_select 让位、用不上，不算（11-15 #1152：iPhone 15 Pro 被强制主机档、渲染 2344×1080，
+//   是掌机档的 2.75 倍像素，GPU 受限只有个位数帧；自适应本身带掌机档参数，按玩家选的模式跑就行）
 static int ws_scan(const char *dir, int need_docked) {
     if (!dir || !dir[0]) return 0;
     const char *on = getenv("S2A_CPATCH_ON");
     if (on && !strcmp(on, "none")) return 0;
     char p[1100]; snprintf(p, sizeof p, "%s/cpatch.tsv", dir); FILE *f = fopen(p, "r"); if (!f) return 0;
-    static char line[1 << 16]; int hit = 0;
-    while (!hit && fgets(line, sizeof line, f)) {
+    static char line[1 << 16]; int any = 0, fixed = 0, ad_docked = 0, ad_both = 0;
+    while (fgets(line, sizeof line, f)) {
         char *c[12] = {0}; char *s = line; for (int i = 0; i < 12 && s; i++) { c[i] = s; s = strchr(s, '\t'); if (s) *s++ = 0; }
         if (!c[1]) continue;
-        if (strncmp(line, "widescreen:", 11) && strncmp(line, "wsauto:", 7)) continue;
-        if (need_docked && !strncmp(line, "wsauto:", 7) && !(c[11] && !strncmp(c[11], "docked", 6))) continue;
-        char fam[96]; snprintf(fam, sizeof fam, "%s", line); char *sd = strrchr(fam, ':'); if (!strncmp(line, "wsauto:", 7) && sd) *sd = 0;
-        hit = !on || in_list(on, line) || in_list(on, fam) || (!strncmp(line, "widescreen:", 11) && in_list(on, CP_FX_ALL));
+        int ad = !strncmp(line, "wsauto:", 7);
+        if (strncmp(line, "widescreen:", 11) && !ad) continue;
+        char fam[96]; snprintf(fam, sizeof fam, "%s", line); char *sd = strrchr(fam, ':'); if (ad && sd) *sd = 0;
+        if (!(!on || in_list(on, line) || in_list(on, fam) || (!ad && in_list(on, CP_FX_ALL)))) continue;
+        any = 1;
+        if (!ad) fixed = 1; else if (c[11] && !strncmp(c[11], "docked", 6)) ad_docked = 1; else ad_both = 1;
     }
-    fclose(f); return hit;
+    fclose(f);
+    return need_docked ? ad_docked || (fixed && !ad_both) : any;
 }
 // 60 帧开关（fps.c 起局一次、运行中每次切换调）：帧率类各位一起置开 / 关；它们的数据写入写补丁值 / 写回原值（原值在装载时核过）
 // 补丁优先（11-13 维护者：有 120 帧补丁就盖过我们的 60 帧，有 60 帧补丁就盖过我们自己的 60 帧，满屏同理）：帧率补丁开着、目标高于 60 时，
@@ -487,6 +513,9 @@ static void fps_link(int on) {   // on = 选中档高于 60（开高刷）；包
     const char *pin = getenv("DM_PRESENT_LINK");
     static int owned = -1; if (owned < 0) owned = !pin;   // 第一次进来时启动环境没给，才归补丁管
     if (!owned) return;
+    // 关高刷（选回 60 档 / 关帧率）时回 60 Hz 显示链（1）。补帧这一帧真补不补、要不要把显示链关成 0，归图形层按当时判（审计 P1-188：原先这里见 DM_PRESENT_FI=1
+    //   就写 0，不看是不是 Metal 3、补帧建没建起来、玩家局中关没关）：起局 graphics/nvn/gfx/nvn/nvn_mtl.m present_link_from_env（Metal 4 + 补帧才把 1 换成 0），
+    //   局中 nvn_present_fi.inc fi_link_follow（每帧按「这一帧补不补」在 0 与 1 之间切）
     setenv("DM_PRESENT_LINK", on ? "2" : "1", 1);   // 图形层还没初始化：mtl_init 读环境
     int *pl = (int *)dlsym(RTLD_DEFAULT, "g_dm_present_link");   // 直连图形层（nvn_mtl.m）已初始化：直接改，下一帧 link_sync 对齐；不链直连层的构建 / 单测里没有
     if (pl) *pl = on ? 2 : 1;
@@ -539,32 +568,62 @@ int s2a_cpatch_fps_levels(int *out, int n, int *cur) {
     if (cur) *cur = g_fps_on > 0 ? g_fps_target : fps_pick();
     return k;
 }
+// 选中档里只开一组（11-15 维护者「S 级优化更好用」：一款带了几个不同上游的同档帧率补丁，原先全开——异度之刃1 60 档 60fps Proper / Alter vsync / FPSLocker 三份同开、
+//   银河战士 120 档两个作者的 120FPS 同开；它们是二选一的不同做法，叠开结果说不准）：我方验过（缺省开）的组优先，其余按表里顺序第一组；组内几份（main / sdk）一起开。
+//   旧表没有组列（grp 空）= 照旧全开
+static const char *fps_group_pick(int pick) {
+    const char *first = NULL;
+    for (int i = 0; i < g_nfu; i++) {
+        struct cp_fu *u = &g_fu[i]; if (!u->slot || !u->allow || tgt(u) != pick) continue;
+        if (!u->grp[0]) return NULL;
+        if (u->def) return u->grp;
+        if (!first) first = u->grp;
+    }
+    return first;
+}
+static int fps_chosen(const struct cp_fu *u, int on, int pick, const char *grp) {
+    return on && u->allow && tgt(u) == pick && (!grp || !strcmp(u->grp, grp));
+}
 void s2a_cpatch_fps_follow(int on) {
     g_fps_on = on;
     int pick = on ? fps_pick() : 0;
     g_fps_target = pick;
     fps_link(on && pick > 60);
+    const char *grp = on ? fps_group_pick(pick) : NULL;
     for (int i = 0; i < g_nfu; i++) {   // 先关不选的（写回原值、清位），再开选中的：几档改同一处，顺序不能反
         struct cp_fu *u = &g_fu[i];
-        if (!u->slot || (on && u->allow && tgt(u) == pick)) continue;
+        if (!u->slot || fps_chosen(u, on, pick, grp)) continue;
         atomic_fetch_and(u->slot, ~u->bits);
         if (u->spec && data_writes(u->m, u->spec, 2)) die("社区帧率补丁已准入的数据写入失败");
     }
     for (int i = 0; on && i < g_nfu; i++) {
         struct cp_fu *u = &g_fu[i];
-        if (!u->slot || !u->allow || tgt(u) != pick) continue;
+        if (!u->slot || !fps_chosen(u, on, pick, grp)) continue;
         if (u->spec && data_writes(u->m, u->spec, 1)) die("社区帧率补丁已准入的数据写入失败");
         atomic_fetch_or(u->slot, u->bits);
     }
     if (g_nfu) LOG("社区补丁：帧率类 %d 份，%s", g_nfps, on && pick ? "" : "全关");
+    // 60 帧开关开着、包里却没有可用的帧率补丁（11-15 #934：日志「本局 60 帧开」只说明开关，玩家据此以为在 60 帧）：写明实际怎么跑
+    if (!g_nfu && on) { static int said; const char *fi = getenv("DM_PRESENT_FI");
+        if (!said++) LOG("社区补丁：60 帧开关开着，但包里没有可用的帧率补丁——%s", fi && !strcmp(fi, "1") ? "改用补帧（画面插帧到 60，游戏逻辑仍按原帧率）" : "按游戏原帧率跑"); }
     if (g_nfu && on && pick) LOG("社区补丁：帧率档 %d 帧（%s；屏幕最高 %d Hz）", pick, g_fps_want || getenv("S2A_FPS_PICK") ? "玩家选的" : "默认：不超过屏幕刷新率的最高一档", screen_max_hz());
+    if (g_nfu && on && pick && grp) LOG("社区补丁：这一档只开一组（组 %s，同档别的上游补丁不叠开）", grp);
     pthread_mutex_lock(&g_st_lock); int any = 0;
     for (int j = 0; j < g_nst; j++) if (!strncmp(g_st[j].id, "fps:", 4) && strcmp(g_st[j].st, "不配套") && strcmp(g_st[j].st, "表不认")) {
         int lit = 0;
-        for (int i = 0; i < g_nfu; i++) if (!strcmp(g_fu[i].id, g_st[j].id) && on && g_fu[i].allow && tgt(&g_fu[i]) == pick) lit = 1;
+        for (int i = 0; i < g_nfu; i++) if (!strcmp(g_fu[i].id, g_st[j].id) && fps_chosen(&g_fu[i], on, pick, grp)) lit = 1;
         snprintf(g_st[j].st, sizeof g_st[j].st, "%s", lit ? "开" : "关"); if (!lit) g_st[j].eff[0] = 0; any = 1; }
     if (any) st_flush_locked();
     pthread_mutex_unlock(&g_st_lock);
+}
+// 这一份帧率补丁此刻是否被选中开着（服务层 FpsLocker.cs 每秒按份问）：选中 → 选中档的目标帧率；没选中 / 帧率关 / 包里没有这份 → 0。
+//   FPSLocker 的定期写入只该写选中那一份、按选中的档求值（审计 P1-184：原先跟 s2a_fps_live 一律按 60 写进每一份，选 120 档时和已开的 120 补丁抢同一处）
+int s2a_cpatch_fps_unit(const char *id) {
+    int pick = g_fps_target;
+    if (!id || g_fps_on <= 0 || pick <= 0) return 0;
+    const char *grp = fps_group_pick(pick);
+    for (int i = 0; i < g_nfu; i++) if (!strcmp(g_fu[i].id, id) && fps_chosen(&g_fu[i], 1, pick, grp)) return pick;
+    return 0;
 }
 // 停帧救场（11-14 维护者「补丁导致停帧时在局内自动关掉、恢复出图」）：出图停住看门（runtime/src/ap_host.c）判到「首帧后 30 秒窗口新上屏 ≤ 15 帧」时调（s2a_ap_crawl_due）。
 //   社区帧率补丁开着 → 当场关（写回原值、出图链与节拍回 60 Hz），并记成「这款下次也关」——同「崩了自动关」一套规矩，从崩溃扩到停帧
@@ -589,6 +648,12 @@ int s2a_cpatch_stall_rescue(void) {
 void s2a_cpatch_fps_pick(int target) {
     g_fps_want = target > 0 ? target : 0;
     if (g_fps_on > 0) s2a_cpatch_fps_follow(1);
+}
+// 屏幕最高刷新率刚知道 / 变了（Mac 宿主 macos/front_mac.m screen_fps_note：建窗、换屏时调）：自动档（玩家没选、起局也没给 S2A_FPS_PICK）按新屏幕重挑。
+//   起局选档早于建窗，那时屏幕刷新率还不知道按 60 算，120 Hz 的 Mac 自动档永远落在 60（11-15 v0.4.0 自测：「帧率档 60 帧（默认…屏幕最高 60 Hz）」之后才「窗口所在屏最高刷新 120 Hz」）
+void s2a_cpatch_screen_changed(void) {
+    if (g_fps_on <= 0 || g_fps_want || getenv("S2A_FPS_PICK")) return;
+    if (fps_pick() != g_fps_target) s2a_cpatch_fps_follow(1);
 }
 // 金手指逐条开关（Cheats.cs 每次重载开关表时对每条调；主代码 = 同文件任一条开着）：
 //   → 1 这条编进了包、已按 on 生效；0 包里没有这条（交运行时 Tamper）

@@ -8,7 +8,8 @@
 typedef NS_ENUM(NSInteger, S2APlaySplitMode) { S2APlaySplitAuto, S2APlaySplitOn, S2APlaySplitOff };
 typedef NS_ENUM(NSInteger, S2APlayOrientation) { S2APlayOrientationAuto, S2APlayOrientationLandscape, S2APlayOrientationPortrait };
 extern NSString *const S2APlaySplitKey, *const S2APlayOrientationKey, *const S2APlayLayoutChanged;
-typedef struct { CGRect game, controls, division; BOOL split; } S2APlayLayout;
+// top：画面贴游戏区顶部放（不上下居中）。只在竖屏分屏、游戏区横向放宽到整屏（安全区左右有缩进，iPhone Duo 外屏）时为真，见 S2APlayLayoutMake
+typedef struct { CGRect game, controls, division; BOOL split, top; } S2APlayLayout;
 S2APlaySplitMode S2APlayReadSplit(NSUserDefaults *defaults);
 S2APlayOrientation S2APlayReadOrientation(NSUserDefaults *defaults);
 BOOL S2APlaySplitEnabled(S2APlaySplitMode mode, BOOL partiallyOpen);
@@ -21,6 +22,7 @@ CGSize S2APlayTargetSize(CGSize area);
 void S2APlayPublishSplit(BOOL split);
 int s2a_ios_split_active(void);
 CGRect s2a_ios_game_area(void);
+int s2a_ios_game_top(void);
 
 #if TARGET_OS_IPHONE
 #import <UIKit/UIKit.h>

@@ -206,13 +206,19 @@ static void frame_rec(void) {
 //   预留内（偏移 0x100000）和预留外（偏移 0x18000000 = 384 MB，大于减半后的 256 MB）两段映射都成功；预留内 GPU 按缓冲地址读到物理块，
 //   预留外放贴图经页表读到物理块（预留外的缓冲没有宿主地址，是 beyond_reservation 那支既有的边界，不在本例）。
 //   旧实现：512 MB 预留失败整池放弃，两段 MapVirtual 都被拒（只有 >1 GB 才退一档）。子进程跑：空洞开关进程内只读一次，且不能带帧录区（区里取址不经空洞）
+// 低区账（#1143：虚拟池预留记进低区账）：本单测链了真的 runtime/src/lowva.c，读它的账面合计（snapshot 的 tracked）看净变化
+#include "../../../runtime/include/s2a_lowva.h"
+static uint64_t lv_tracked(void) { uint64_t h, l, r, u, t = 0; s2a_lowva()->snapshot(&h, &l, &r, &u, &t); return t; }
 static void hole_511(void) {
-    phase="最大空洞 511 MB 时的 512 MB 虚拟池"; NVNmemoryPool v; vpool_init(&v,0x20000000);
+    phase="最大空洞 511 MB 时的 512 MB 虚拟池"; uint64_t lv0=lv_tracked(); NVNmemoryPool v; vpool_init(&v,0x20000000);
+    // 预留记账（期望手算：512 MB 要不到 → 减半 256 MB = 0x10000000 入账；Finalize 后回到原值；本子进程不带帧录区，走 mmap 预留）
+    CHECK(lv_tracked()-lv0==0x10000000,"低区账：建池后账面合计多了 %#llx（期望 0x10000000）",(unsigned long long)(lv_tracked()-lv0));
     CHECK(map(&v,0x100000,7,BLOCK),"预留内 0x100000 ← 物理块 7 映射成功");
     CHECK(map(&v,0x18000000,8,2*BLOCK),"预留外 0x18000000 起 2 块 ← 物理块 8–9 映射成功");
     buf_check(&v,0x100000+0x40,7,"缓冲地址 0x100040 读到块 7");
     NVNtexture t; tex_init(&t,&v,0x18000000); tex_count(&t,8,9,"预留外贴图读到块 8 与块 9");
     API(nvnTextureFinalize)(&t); API(nvnMemoryPoolFinalize)(&v); cases++;
+    CHECK(lv_tracked()==lv0,"低区账：池 Finalize 后账面合计 %#llx（期望回到 %#llx）",(unsigned long long)lv_tracked(),(unsigned long long)lv0);
 }
 static void fragmented(void) {
     phase="低区碎片（子进程 S2A_VPOOL_HOLE_MB=511）"; const char *self=getenv("T_NVN_VPOOL_SELF"); REQUIRE(self);

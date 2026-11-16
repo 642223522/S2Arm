@@ -293,6 +293,23 @@ int main(void) { @autoreleasepool {
     err[0] = 0; NvShader *old = shader(SLOT_SRC, refl_slot, err, sizeof err);
     if (old) { read4(old, 40u | 40u << 20, 0, 0, 0); }
     VERIFY(old && old->rf.dyn && near(out4[0], 0.0f), "⑧ 对照：同一句柄 40 经 32 项槽位数组 → %.2f（旧语义夹到槽 31、读占位 0.00，不是 40.50；%s）", old ? out4[0] : -1.0f, old ? "TEXD" : err);
+    // ⑫ #1117 驻留集按类拆（nvn_res_by_kind，显存账行用的同一个函数）：期望手写——往驻留集里加一张 1024×1024 RGBA8 私有纹理（4 MiB）和一个
+    //   2 MiB 私有缓冲，前后两次读数里纹理至少涨 4 MB、私有缓冲至少涨 2 MB。反证：分类写反（私有 / 共享对调）→ 私有缓冲不涨
+    {
+        int64_t tex0 = -1, buf0 = -1, tex1 = -1, buf1 = -1;
+        for (int round = 0; round < 2; round++) {
+            if (round == 1) {
+                MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:1024 height:1024 mipmapped:NO];
+                d.storageMode = MTLStorageModePrivate; d.usage = MTLTextureUsageShaderRead;
+                id<MTLTexture> T = [g_dev newTextureWithDescriptor:d]; id<MTLBuffer> B = [g_dev newBufferWithLength:2u << 20 options:MTLResourceStorageModePrivate];
+                REQUIRE(T && B); res_add(T); res_add(B);
+            }
+            uint64_t k[8]; nvn_res_by_kind(k); long long tb = (long long)(k[1] >> 20), pb = (long long)(k[3] >> 20);
+            if (round == 0) { tex0 = tb; buf0 = pb; } else { tex1 = tb; buf1 = pb; }
+        }
+        VERIFY(tex1 - tex0 >= 4 && buf1 - buf0 >= 2, "⑫ 驻留集按类：加 4 MiB 私有纹理后纹理 %lld → %lld MB（期望至少 +4）、加 2 MiB 私有缓冲后私有缓冲 %lld → %lld MB（期望至少 +2）",
+               (long long)tex0, (long long)tex1, (long long)buf0, (long long)buf1);
+    }
     printf("%s t_nvn_pool_tex：%u 项，%u 项失败（追不到槽的句柄按编号读池：池表 + 已读位图 + 未写渲染目标不建 + 小贴图预建 + 表复用）\n", fails ? "✗" : "✓", checks, fails);
     return fails != 0;
 } }

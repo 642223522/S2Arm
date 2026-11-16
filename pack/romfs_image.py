@@ -106,7 +106,8 @@ def build(src_dir, out, root):
     with open(os.path.join(tmp, 'index.tsv'), 'wb') as f: f.write(ix)
     with open(os.path.join(tmp, 'manifest.json'), 'w', encoding='utf-8', newline='\n') as f:
         json.dump({'version': 2, 'files': len(new), 'total': sum(n for _, n, _ in new), 'index_sha256': hashlib.sha256(ix).hexdigest()}, f, indent=1)
-    shutil.rmtree(out, ignore_errors=True); os.replace(tmp, out)
+    from orch.dirrename import rename_dir   # Windows 刚硬链完十几万个文件，杀软 / 索引扫描开着句柄，目录改名报 WinError 5；按 #361 同一套退避重试（11-15 Windows 出包机 ReFS 盘 18.7 万个文件两单都死在这里，手动再改一次就过）
+    shutil.rmtree(out, ignore_errors=True); rename_dir(tmp, out)
     with open(key_file + '.tmp', 'w', encoding='utf-8', newline='\n') as f: f.write(key + '\n')
     os.replace(key_file + '.tmp', key_file)
     img = sum(n for p, n, _ in new if p.endswith('romfs.img'))

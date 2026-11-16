@@ -32,6 +32,8 @@ namespace S2A.Services
         //   没有时 iOS 单款包 = App 容器 Documents（同 graphics/metal/cs NxColdStart.Doc）；别的平台没有它 = 不启用（Mac 不碰用户文稿夹，见 runtime/include/s2a_docs.h）
         public static string ModsDir()
         {
+            string own = Environment.GetEnvironmentVariable("S2A_MODS_DIR");   // 起局方直接给 mod 目录（Mac 作业层 = 这款游戏文件夹的 mods/，pack/jobs/build.py；启动器「游戏设置 → Mod」导入到那里）
+            if (!string.IsNullOrEmpty(own)) return own;
             string docs = Environment.GetEnvironmentVariable("S2A_DOCS");
             if (string.IsNullOrEmpty(docs) && OperatingSystem.IsIOS()) docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);   // 平台例外：没给 S2A_DOCS 时只有 iOS 的 App 容器 Documents 可当 mod 目录的根；Mac 上同一个调用是用户文稿夹，不许碰，所以只能按平台分
             return string.IsNullOrEmpty(docs) ? null : Path.Combine(docs, DirName);

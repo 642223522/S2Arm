@@ -13,6 +13,7 @@ int s2a_ios_caps_value(const char *cap);
 // 60 帧此刻实际开没开（设置页 / 社区补丁页开关如实显示用，与起局同一口径：玩家选过照选的，没选过 = 包里清单原因是否速度已验证）；
 //   s2a_ios_set_fps60：玩家拨开关（写 S2AFps60 + S2AFps60Manual，起局只认后者算「开」）
 BOOL s2a_ios_fps60_on(void);
+BOOL s2a_ios_metalfx_blocked(NSString *gid);   // 画质提升：这款没走直连（清单 direct 0）→ 锐利放大用不了
 BOOL s2a_ios_fi_on(void);       // 补帧开关（这款；没设过 = 开）
 void s2a_ios_set_fi(BOOL on);
 void s2a_ios_set_fps60(BOOL on);
@@ -46,10 +47,14 @@ NSArray *s2a_ios_per_game_keys(void);
 //   （服务层读本 App 首选语言）。起局时 s2a_ios_apply_graphics_settings 落成 S2A_SYSTEM_LANGUAGE。列表与定义表 options 同序（pack/jobs/tests/test_community.py test_game_language_ios_same_as_table 核）
 #define S2AGameLanguageKey @"S2AGameLanguage"
 NSArray<NSString *> *s2a_ios_game_languages(void);
-// 这款支持的游戏语言（资源包 ctl/control.nacp 支持语言标志，位序 = 宿主 TitleLanguage 枚举名）；读不到 / 标志为 0 → 空（不知道）
+// 这款支持的游戏语言（资源包 ctl/control.nacp 支持语言标志，位序 = 宿主 TitleLanguage 枚举名）；读不到 / 标志为 0 / 合成件（显示版本「?」）→ 空（不知道）
 NSArray<NSString *> *s2a_ios_game_supported_languages(void);
+NSArray<NSString *> *s2a_ios_game_supported_languages_in(NSString *dir);   // 同上，读给定资源包目录（游戏库里还没进游戏的那款，game_options.m）
+// 一种游戏语言给玩家看的名字（"system" / 空 = 「跟随系统」）：游戏内设置页、游戏库每款设置页同一份
+NSString *s2a_ios_game_language_label(NSString *value);
 // 选的游戏语言（没选 = 系统语言）这款不支持时的一句说明（「这款不支持 X，起局用 Y。」），支持或不知道 → nil
 NSString *s2a_ios_game_language_note(void);
+NSString *s2a_ios_game_language_note_with(NSUserDefaults *defaults, NSArray<NSString *> *supported);   // 同上，给定这款的偏好与支持表
 // Discrete values compatible with Settings.bundle and normalized in-app values.
 NSArray<NSDictionary *> *s2a_ios_graphics_options(void);
 NSDictionary *s2a_ios_graphics_snapshot(NSUserDefaults *defaults);

@@ -12,7 +12,9 @@
 //     ts_av1 = ffmpeg -f lavfi -i testsrc2=size=96x64:rate=30 -frames:v 6 -pix_fmt yuv420p -c:v libsvtav1 -crf 30 -preset 8 -g 6 -f ivf，
 //     red10_av1 = 上面那份红色原始 YUV 的 10 位版（Y 324、U 360、V 960）-pix_fmt yuv420p10le -c:v libsvtav1 -crf 10；
 //     经整条接管路径（强制软解）出的像素：8 位、10 位都按上面手算的 (254, 0, 0, 255)，有损 ±3。
-//   - H.264 宿主没接：初始化回失败（不出假画面）。
+//   - H.264（VideoToolbox，诊断 #ea0964：原先宿主没接、初始化回失败，游戏的播放库随即中止）：同一份红色原始 YUV 用 libx264 编（命令见
+//     t_nvn2_codec_h264.inc），起始码分隔与 4 字节长度前缀两种输入各走一遍整条接管路径，两帧像素都按上面手算的 (254, 0, 0, 255)，有损 ±3；
+//     NAL 切分：帧 0 切出 SPS / PPS / IDR 三个（类型 7 / 8 / 5），长度前缀越界的包回 -1。
 //   - 同步句柄：模式 1 比 64 位、其它 32 位回绕比；全 0 句柄算达到。
 // 可选参数 <时间单元文件> <av1C 文件>：再核一对真片子的数据（一次性核对用，不进门禁）
 #include <stdio.h>
@@ -30,6 +32,8 @@
 #include <CommonCrypto/CommonDigest.h>
 #include "nvn_obj.h"
 #include "t_nvn2_codec_av1.inc"
+#include "t_nvn2_codec_h264.inc"
+int nvn2_h264_nals(const uint8_t *p, size_t n, size_t (*nal)[2], int cap);
 
 static unsigned checks;
 #define CHECK(c) do { checks++; if (!(c)) { fprintf(stderr, "t_nvn2_codec:%d 失败：%s\n", __LINE__, #c); exit(1); } } while (0)
@@ -558,10 +562,28 @@ int main(int argc, char **argv) {
         void *it = E("_ZN3nvn11NativeImage17InitializeTextureEPNS_7TextureE"); CHECK(!nvn2_red_of(it) && it != E("_Z35nvnTextureInitializeFromNativeImageP10NVNtextureP14NVNnativeImage"));
     }
 
-    // ---------- H.264 宿主没接：初始化回失败 ----------
+    // ---------- H.264（VideoToolbox）：NAL 切分、起始码 / 长度前缀两种输入各解两帧 ----------
     {
-        _Alignas(16) uint8_t obj[0x400];
-        CHECK(((f_init_tm)E(H264.init))(obj, NULL, 0, 0, 32, 16, 0, 0, 2, 0) != 0);
+        size_t nal[8][2];
+        int k = nvn2_h264_nals(h264_f0_ab, sizeof h264_f0_ab, nal, 8);
+        CHECK(k == 3 && (h264_f0_ab[nal[0][0]] & 0x1f) == 7 && (h264_f0_ab[nal[1][0]] & 0x1f) == 8 && (h264_f0_ab[nal[2][0]] & 0x1f) == 5 && nal[2][1] == sizeof h264_f0_ab);
+        k = nvn2_h264_nals(h264_f0_avcc, sizeof h264_f0_avcc, nal, 8);
+        CHECK(k == 3 && (h264_f0_avcc[nal[0][0]] & 0x1f) == 7 && nal[0][1] - nal[0][0] == (size_t)h264_f0_avcc[3] && nal[2][1] == sizeof h264_f0_avcc);
+        static const uint8_t bad[] = {0x00, 0x00, 0x10, 0x00, 0x65};   // 长度 0x1000 > 包长
+        CHECK(nvn2_h264_nals(bad, sizeof bad, nal, 8) == -1);
+        const uint8_t *f0[2] = {h264_f0_ab, h264_f0_avcc}, *f1[2] = {h264_f1_ab, h264_f1_avcc};
+        size_t n0[2] = {sizeof h264_f0_ab, sizeof h264_f0_avcc}, n1[2] = {sizeof h264_f1_ab, sizeof h264_f1_avcc};
+        for (int v = 0; v < 2; v++) {
+            rig r; rig_up(&r, &H264, 64, 64);
+            uint64_t id;
+            CHECK(((f_sub)E(H264.sub))(&id, r.obj, f0[v], n0[v], 0, 0) == 0);
+            CHECK(((f_sub)E(H264.sub))(&id, r.obj, f1[v], n1[v], 33333000, 0) == 0);
+            sync_h a, b; take(&r, &H264, &spev, &a); take(&r, &H264, &spev, &b);
+            uint8_t p[4];
+            for (uint32_t i = 0; i < 2; i++) { px(&r, i, p); printf("H.264（%s）第 %u 帧像素 (%u,%u,%u,%u)\n", v ? "长度前缀" : "起始码", i, p[0], p[1], p[2], p[3]);
+                CHECK(p[0] >= 251 && p[1] <= 3 && p[2] <= 3 && p[3] == 255); }
+            rig_down(&r, &H264);
+        }
     }
 
     // ---------- dav1d 垫片：逐帧 MD5 对 ffmpeg（libdav1d）参考 ----------

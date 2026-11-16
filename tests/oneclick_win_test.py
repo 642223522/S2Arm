@@ -644,6 +644,18 @@ class InstallWin(unittest.TestCase):
         self.assertIsInstance(e, install_win.Fail); self.assertEqual(e.err, 'signing_server_unreachable'); self.assertNotIn('push', got)
         self.assertIn('os error 11001', str(e))
 
+    def test_signing_server_unreachable_then_panic_keeps_code(self):
+        # 诊断#3fc02b D-5A5K（Windows 0.4.0）：第一次 Anisette 连不上，重试那次 plumesign 直接 panic、输出里认不出原因。
+        #   期望（手写）：仍以 signing_server_unreachable 失败（报第一次的原话），不落回 device_install_failed，不推包
+        body = ("import os\nmark = os.path.join(os.path.dirname(sys.argv[0]), 'tried')\n"
+                "if not os.path.exists(mark):\n    open(mark, 'w').close(); print(%r); sys.exit(1)\n"
+                "print(\"thread 'main' (6788) panicked at 3rdparty/omnisette/src/remote_anisette_v3.rs:521:21:\\nexplicit panic\\n"
+                "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\"); sys.exit(101)\n") % self.ANISETTE_DNS
+        with patch.object(install_win, 'RETRY_WAIT', 0):
+            e, got, log = self.run_fake(body)
+        self.assertIsInstance(e, install_win.Fail); self.assertEqual(e.err, 'signing_server_unreachable'); self.assertNotIn('push', got)
+        self.assertNotIn('RUST_BACKTRACE', str(e)); self.assertIn('os error 11001', str(e))
+
     def test_legacy_case_bundle(self):
         self.assertEqual(install_win.legacy_case_bundle('io.s2arm.games.abcde12345'), 'io.s2arm.games.ABCDE12345')
         for other in (None, 'io.s2arm.games.ABCDE12345', 'io.s2arm.games.0123456789', 'io.s2arm.games.abcde12345.dev', 'a.b.c'):

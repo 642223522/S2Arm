@@ -10,6 +10,9 @@ include tools/toolchain.env
 # 配方失败即删掉目标（10-24 着色器线：gfx 门禁「首跑红、重跑绿」是真失败被增量构建盖住——失败的配方先写出了目标，重跑时 make 判它已最新就跳过）。
 #   */build.mk 都 include 进本文件，这一行覆盖它们；graphics/metal、graphics/nvn 下单独的 Makefile 各自另加
 .DELETE_ON_ERROR:
+# 宿主系统名只取一次（11-14 门禁提速）：*/build.mk 与单测分片两百多处 ifeq 判 Darwin，原先各写一次 $(shell uname -s)，每次 make 起两百多个进程；
+#   原生层门禁每组一次 make、350 组，满载机器上单次解析 4–6 秒大半耗在这里。新分片照写 $(S2A_UNAME)（写 $(shell uname -s) 也对，只是慢）
+S2A_UNAME := $(shell uname -s)
 # 前端 / 玩家机器用 S2A_DEVELOPER_DIR 指自己的 Xcode（同 tools/toolchain.sh，#49）：不设 = toolchain.env 那套（10-23 Spare-host 全新机器实测：Makefile 不认，没装 27.1 的机器着色器键算不出）
 DEVELOPER_DIR := $(or $(S2A_DEVELOPER_DIR),$(_S2A_ENV_DD),$(shell S2A_TC_QUIET=1 bash -c '. tools/toolchain.sh > /dev/null && printf %s "$$DEVELOPER_DIR"' 2>/dev/null),$(shell xcode-select -p 2>/dev/null))
 export DEVELOPER_DIR MACOSX_DEPLOYMENT_TARGET MSBUILDDISABLENODEREUSE   # iOS 下限不导出（两个都导出时不带 -target 的宿主编译会当成 iOS，见 tools/toolchain.sh）

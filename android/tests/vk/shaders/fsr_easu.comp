@@ -1,0 +1,176 @@
+#version 450
+// SPDX-License-Identifier: MIT
+//
+// EASU (Edge-Adaptive Spatial Upsampling), AMD FidelityFX FSR1, ported to GLSL compute.
+//
+// Upstream (MIT):
+//   repo   GPUOpen-LibrariesAndSDKs/FidelityFX-SDK
+//   path   Kits/FidelityFX/upscalers/fsr3/include/gpu/fsr1/ffx_fsr1.h
+//   blob   2ae12de1074188695a51f55123bede2c301fdd8b
+//   sha256 328ee880b26f400f7d8e59ffcdf55b83ae71d6de759e72f106a3c8cfc0d4cc8e
+// Copyright (C) 2026 Advanced Micro Devices, Inc.
+// Full licence text: fsr_easu.LICENSE.txt (same directory).
+//
+// Ported from ffxFsrEasuFloat / fsrEasuTapFloat / fsrEasuSetFloat (the FP32 path).
+// con0..con3 come from ffxFsrPopulateEasuConstants, evaluated on the CPU and passed
+// as floats here; upstream bit-casts them to uint only because HLSL cbuffers want uint.
+//
+// Two deliberate deviations from upstream, both required for a NaN-free GLSL port:
+//   1. ffxApproximateReciprocal / ...SquareRoot become exact 1.0/x and inversesqrt().
+//      The approximations are a GPU cycle-saving trick, not part of the filter shape.
+//   2. The gradient ratio is guarded at zero. Upstream computes saturate(abs(dir)*rcp(len)),
+//      which is 0*INF=NaN on a flat neighbourhood; AMD's saturate is min/max based and
+//      drops the NaN, while GLSL min/max leave NaN undefined. The guard yields the same
+//      intended value (0) without relying on NaN-suppressing min/max.
+//
+// Gather order: upstream's FsrEasuRF/GF/BF are gather4 callbacks whose .x/.y/.z/.w map
+// exactly onto GLSL textureGather's component order for the p0..p3 offsets below.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D srcTex;
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D dstImg;
+// Unquantized copy of the same result, so the host can audit NaN/Inf and range.
+// An rgba8 store would silently launder a NaN into some byte value.
+layout(set = 0, binding = 2, rgba32f) uniform writeonly image2D dstAudit;
+
+layout(push_constant) uniform EasuCon {
+    vec4 con0;
+    vec4 con1;
+    vec4 con2;
+    vec4 con3;
+    uvec2 outSize;
+} pc;
+
+void easuTap(inout vec3 aC, inout float aW, vec2 off, vec2 dir, vec2 len2,
+             float lob, float clp, vec3 c) {
+    vec2 v;
+    v.x = off.x * dir.x + off.y * dir.y;
+    v.y = off.x * (-dir.y) + off.y * dir.x;
+    v *= len2;
+    float d2 = v.x * v.x + v.y * v.y;
+    d2 = min(d2, clp);
+    float wB = (2.0 / 5.0) * d2 - 1.0;
+    float wA = lob * d2 - 1.0;
+    wB *= wB;
+    wA *= wA;
+    wB = (25.0 / 16.0) * wB - (25.0 / 16.0 - 1.0);
+    float w = wB * wA;
+    aC += c * w;
+    aW += w;
+}
+
+void easuSet(inout vec2 dir, inout float len, vec2 pp, int quad,
+             float lA, float lB, float lC, float lD, float lE) {
+    float w = 0.0;
+    if (quad == 0) w = (1.0 - pp.x) * (1.0 - pp.y);
+    if (quad == 1) w = pp.x * (1.0 - pp.y);
+    if (quad == 2) w = (1.0 - pp.x) * pp.y;
+    if (quad == 3) w = pp.x * pp.y;
+
+    float dc = lD - lC;
+    float cb = lC - lB;
+    float lenX = max(abs(dc), abs(cb));
+    float dirX = lD - lB;
+    dir.x += dirX * w;
+    float rX = lenX > 0.0 ? clamp(abs(dirX) / lenX, 0.0, 1.0) : 0.0;
+    len += rX * rX * w;
+
+    float ec = lE - lC;
+    float ca = lC - lA;
+    float lenY = max(abs(ec), abs(ca));
+    float dirY = lE - lA;
+    dir.y += dirY * w;
+    float rY = lenY > 0.0 ? clamp(abs(dirY) / lenY, 0.0, 1.0) : 0.0;
+    len += rY * rY * w;
+}
+
+void main() {
+    ivec2 ip = ivec2(gl_GlobalInvocationID.xy);
+    if (ip.x >= int(pc.outSize.x) || ip.y >= int(pc.outSize.y)) return;
+
+    vec2 pp = vec2(ip) * pc.con0.xy + pc.con0.zw;
+    vec2 fp = floor(pp);
+    pp -= fp;
+
+    // 12-tap kernel, y down:
+    //     b c
+    //   e f g h
+    //   i j k l
+    //     n o
+    vec2 p0 = fp * pc.con1.xy + pc.con1.zw;
+    vec2 p1 = p0 + pc.con2.xy;
+    vec2 p2 = p0 + pc.con2.zw;
+    vec2 p3 = p0 + pc.con3.xy;
+
+    vec4 bczzR = textureGather(srcTex, p0, 0);
+    vec4 bczzG = textureGather(srcTex, p0, 1);
+    vec4 bczzB = textureGather(srcTex, p0, 2);
+    vec4 ijfeR = textureGather(srcTex, p1, 0);
+    vec4 ijfeG = textureGather(srcTex, p1, 1);
+    vec4 ijfeB = textureGather(srcTex, p1, 2);
+    vec4 klhgR = textureGather(srcTex, p2, 0);
+    vec4 klhgG = textureGather(srcTex, p2, 1);
+    vec4 klhgB = textureGather(srcTex, p2, 2);
+    vec4 zzonR = textureGather(srcTex, p3, 0);
+    vec4 zzonG = textureGather(srcTex, p3, 1);
+    vec4 zzonB = textureGather(srcTex, p3, 2);
+
+    // Approximate luma (x2), same as upstream.
+    vec4 bczzL = bczzB * 0.5 + (bczzR * 0.5 + bczzG);
+    vec4 ijfeL = ijfeB * 0.5 + (ijfeR * 0.5 + ijfeG);
+    vec4 klhgL = klhgB * 0.5 + (klhgR * 0.5 + klhgG);
+    vec4 zzonL = zzonB * 0.5 + (zzonR * 0.5 + zzonG);
+
+    float bL = bczzL.x, cL = bczzL.y;
+    float iL = ijfeL.x, jL = ijfeL.y, fL = ijfeL.z, eL = ijfeL.w;
+    float kL = klhgL.x, lL = klhgL.y, hL = klhgL.z, gL = klhgL.w;
+    float oL = zzonL.z, nL = zzonL.w;
+
+    vec2 dir = vec2(0.0);
+    float len = 0.0;
+    easuSet(dir, len, pp, 0, bL, eL, fL, gL, jL);
+    easuSet(dir, len, pp, 1, cL, fL, gL, hL, kL);
+    easuSet(dir, len, pp, 2, fL, iL, jL, kL, nL);
+    easuSet(dir, len, pp, 3, gL, jL, kL, lL, oL);
+
+    float dirR = dir.x * dir.x + dir.y * dir.y;
+    bool zro = dirR < (1.0 / 32768.0);
+    dirR = inversesqrt(max(dirR, 1e-30));
+    dirR = zro ? 1.0 : dirR;
+    dir.x = zro ? 1.0 : dir.x;
+    dir *= dirR;
+
+    len = len * 0.5;
+    len *= len;
+    float stretch = (dir.x * dir.x + dir.y * dir.y) / max(abs(dir.x), abs(dir.y));
+    vec2 len2 = vec2(1.0 + (stretch - 1.0) * len, 1.0 - 0.5 * len);
+    float lob = 0.5 + ((1.0 / 4.0 - 0.04) - 0.5) * len;
+    float clp = 1.0 / lob;
+
+    // Dering window: min/max of the 4 nearest taps (f, g, j, k).
+    vec3 min4 = min(min(vec3(ijfeR.z, ijfeG.z, ijfeB.z), vec3(klhgR.w, klhgG.w, klhgB.w)),
+                    min(vec3(ijfeR.y, ijfeG.y, ijfeB.y), vec3(klhgR.x, klhgG.x, klhgB.x)));
+    vec3 max4 = max(max(vec3(ijfeR.z, ijfeG.z, ijfeB.z), vec3(klhgR.w, klhgG.w, klhgB.w)),
+                    max(vec3(ijfeR.y, ijfeG.y, ijfeB.y), vec3(klhgR.x, klhgG.x, klhgB.x)));
+
+    vec3 aC = vec3(0.0);
+    float aW = 0.0;
+    easuTap(aC, aW, vec2(0.0, -1.0) - pp, dir, len2, lob, clp, vec3(bczzR.x, bczzG.x, bczzB.x)); // b
+    easuTap(aC, aW, vec2(1.0, -1.0) - pp, dir, len2, lob, clp, vec3(bczzR.y, bczzG.y, bczzB.y)); // c
+    easuTap(aC, aW, vec2(-1.0, 1.0) - pp, dir, len2, lob, clp, vec3(ijfeR.x, ijfeG.x, ijfeB.x)); // i
+    easuTap(aC, aW, vec2(0.0, 1.0) - pp, dir, len2, lob, clp, vec3(ijfeR.y, ijfeG.y, ijfeB.y));  // j
+    easuTap(aC, aW, vec2(0.0, 0.0) - pp, dir, len2, lob, clp, vec3(ijfeR.z, ijfeG.z, ijfeB.z));  // f
+    easuTap(aC, aW, vec2(-1.0, 0.0) - pp, dir, len2, lob, clp, vec3(ijfeR.w, ijfeG.w, ijfeB.w)); // e
+    easuTap(aC, aW, vec2(1.0, 1.0) - pp, dir, len2, lob, clp, vec3(klhgR.x, klhgG.x, klhgB.x));  // k
+    easuTap(aC, aW, vec2(2.0, 1.0) - pp, dir, len2, lob, clp, vec3(klhgR.y, klhgG.y, klhgB.y));  // l
+    easuTap(aC, aW, vec2(2.0, 0.0) - pp, dir, len2, lob, clp, vec3(klhgR.z, klhgG.z, klhgB.z));  // h
+    easuTap(aC, aW, vec2(1.0, 0.0) - pp, dir, len2, lob, clp, vec3(klhgR.w, klhgG.w, klhgB.w));  // g
+    easuTap(aC, aW, vec2(1.0, 2.0) - pp, dir, len2, lob, clp, vec3(zzonR.z, zzonG.z, zzonB.z));  // o
+    easuTap(aC, aW, vec2(0.0, 2.0) - pp, dir, len2, lob, clp, vec3(zzonR.w, zzonG.w, zzonB.w));  // n
+
+    vec3 pix = min(max4, max(min4, aC / aW));
+
+    imageStore(dstImg, ip, vec4(pix, 1.0));
+    imageStore(dstAudit, ip, vec4(pix, 1.0));
+}

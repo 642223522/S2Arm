@@ -201,6 +201,24 @@ static void t_clear_image(void) {
     to_buffer(c, i, VK_IMAGE_ASPECT_COLOR_BIT, 0, 8, 8, l0.b); to_buffer(c, i, VK_IMAGE_ASPECT_COLOR_BIT, 1, 8, 8, l1.b);
     submit(c);
     CHECK(px(&l0, 8, 3, 3) == RGBA(255, 0, 0, 255) && px(&l1, 8, 3, 3) == RGBA(0, 0, 255, 255), "③ ClearColorImage：第 1 层红、第 2 层蓝（实测 %#x / %#x）", px(&l0, 8, 3, 3), px(&l1, 8, 3, 3));
+    {   // ③b 4 位四通道（诊断#3156b9：B4G4R4A4 原先建不出、游戏拿空图像取内存需求崩）。读回原样 16 位字，期望按 Vulkan 位排布手写：
+        //   R4G4B4A4 = R 在 12–15 位、A 在 0–3 位：清 (1,0,0,0) → 0xF000；B4G4R4A4 = B 在 12–15、R 在 4–7：清 (1,0,0,0) → 0x00F0；两者清 (0,0,0,1) → 0x000F
+        VkFormat f4[2] = {VK_FORMAT_R4G4B4A4_UNORM_PACK16, VK_FORMAT_B4G4R4A4_UNORM_PACK16}; uint16_t wr[2] = {0xF000, 0x00F0}; uint16_t got[2][2] = {{0}};
+        for (int k = 0; k < 2; k++) {
+            VkImage q = img(f4[k], 8, 8, 1, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+            CHECK(q != VK_NULL_HANDLE, "③b 格式 %d 建得出图像", f4[k]);
+            if (!q) continue;
+            VkMemoryRequirements mr; vkGetImageMemoryRequirements(device, q, &mr); CHECK(mr.size >= 8 * 8 * 2, "③b 格式 %d 内存需求 %llu ≥ 128", f4[k], (unsigned long long)mr.size);
+            VkClearColorValue rr = {.float32 = {1, 0, 0, 0}}, aa = {.float32 = {0, 0, 0, 1}};
+            VkImageSubresourceRange one = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            for (int t = 0; t < 2; t++) {
+                Buf o = buf(8 * 8 * 2, VK_BUFFER_USAGE_TRANSFER_DST_BIT); VkCommandBuffer cq = begin(VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+                vkCmdClearColorImage(cq, q, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, t ? &aa : &rr, 1, &one); to_buffer(cq, q, VK_IMAGE_ASPECT_COLOR_BIT, 0, 8, 8, o.b); submit(cq);
+                memcpy(&got[k][t], o.p + (3 * 8 + 3) * 2, 2);
+            }
+            CHECK(got[k][0] == wr[k] && got[k][1] == 0x000F, "③b 格式 %d 清红读回 %#06x（期望 %#06x）、清 A 读回 %#06x（期望 0x000f）", f4[k], got[k][0], wr[k], got[k][1]);
+        }
+    }
     VkImage ds = img(VK_FORMAT_D32_SFLOAT_S8_UINT, 8, 8, 1, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
     Buf d = buf(8 * 8 * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT), st = buf(8 * 8, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
     c = begin(VK_COMMAND_BUFFER_LEVEL_PRIMARY);

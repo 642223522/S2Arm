@@ -3,7 +3,7 @@
 # nftw needs feature-test declarations on glibc; no Apple SDK is needed by this test.
 NATIVE_TEST_OWN += pack_apply
 PACK_APPLY_TEST_CPPFLAGS :=
-ifeq ($(shell uname -s),Linux)
+ifeq ($(S2A_UNAME),Linux)
 PACK_APPLY_TEST_CPPFLAGS += -D_GNU_SOURCE
 endif
 .PHONY: native-test-pack_apply

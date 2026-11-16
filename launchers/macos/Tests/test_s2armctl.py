@@ -191,6 +191,20 @@ class WaitTests(unittest.TestCase):
                 ctl.main()
             call.assert_called_once_with("POST", "/install", body)
 
+    def test_any_accept_flag_is_forwarded_as_is(self):
+        # 11-15：确认开关不在客户端按名字挑（--accept-low-space 原先被静默丢掉，AI 替玩家确认空间不足也续不上）
+        with mock.patch.object(ctl, "call", return_value={"ok": True}) as call, \
+                mock.patch.object(ctl.sys, "argv", ["s2armctl", "install", "G", "--device", "D", "--accept-low-space", "--no-wait"]), mock.patch("builtins.print"):
+            ctl.main()
+        call.assert_called_once_with("POST", "/install", {"gameId": "G", "device": "D", "acceptLowSpace": True})
+
+    def test_unknown_command_goes_to_app_not_refused_locally(self):
+        # 11-15：客户端不拦不认识的命令，原样 POST /<命令>，由 App 回「不认识」
+        with mock.patch.object(ctl, "call", return_value={"ok": True}) as call, \
+                mock.patch.object(ctl.sys, "argv", ["s2armctl", "brand-new-thing", "a", "b"]), mock.patch("builtins.print"):
+            ctl.main()
+        call.assert_called_once_with("POST", "/brand-new-thing", {"args": ["a", "b"]})
+
     def test_update_phone_passes_accept_dropped_only_when_given(self):
         # 同 install --accept-dropped：玩家同意让别的电脑装的款这次带不上（v0.3.0 只换壳验收：原先 update-phone 没有这个入口，永远过不去）
         for argv, body in [(["update-phone", "--accept-stale", "--ask"], {"acceptStale": True, "ask": True}),

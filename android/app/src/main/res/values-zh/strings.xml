@@ -4,8 +4,20 @@
     <string name="preview_description">安卓宿主调试构建，尚未接入游戏运行。</string>
     <string name="native_unavailable">原生宿主无法启动，详情见 S2Arm 日志。</string>
     <string name="import_game">导入游戏包…</string>
+    <string name="in_place_game">原地使用游戏文件夹…</string>
+    <string name="in_place_access_title">需要「所有文件访问」</string>
+    <string name="in_place_access_text">原地使用会直接读手机存储里的游戏文件，不再往 App 里拷一份，省下和游戏一样大的空间。请在接下来的系统设置里给本 App 打开「允许访问所有文件」，回来后再点一次「原地使用游戏文件夹…」选游戏文件夹。</string>
+    <string name="in_place_access_open">去开启</string>
+    <string name="in_place_not_local">选的位置不是这台手机上的文件夹（比如网盘），没法原地使用。请选手机存储或 SD 卡里的游戏文件夹。</string>
+    <string name="player_err_all_files">App 没有「所有文件访问」权限，读不到原地的游戏文件。</string>
+    <string name="player_err_all_files_next">在系统设置里给本 App 打开「允许访问所有文件」，再试一次。</string>
+    <string name="player_err_in_place">原地的游戏文件被挪走、删掉或改动了。</string>
+    <string name="player_err_in_place_next">把游戏文件夹按原样放回去（或从电脑重新拷一份），再在游戏库点「原地使用游戏文件夹…」重新登记。</string>
     <string name="import_progress">正在导入游戏：%1$d / %2$d MiB</string>
     <string name="fps_overlay_show">显示 FPS（成功提交速率）</string>
+    <string name="quality_high">高画质</string>
+    <string name="quality_saver">更省电</string>
+    <string name="quality_note">选择高画质模式会打开边缘自适应空间放大等功能，画面更清晰</string>
     <string name="fps_overlay_description">游戏帧成功提交速率，每秒更新；不是屏幕刷新率</string>
 
     <!-- 触屏菜单（四指长按）与编辑条；术语对齐 iOS 的 zh-Hans 文案 -->
@@ -33,6 +45,19 @@
     <string name="export_diagnostics_running">正在导出诊断包…</string>
     <string name="export_diagnostics_done">诊断包已生成：%1$s</string>
     <string name="export_diagnostics_failed">诊断包导出失败：%1$s</string>
+    <string name="save_diagnostics">保存诊断包到文件…</string>
+    <string name="save_diagnostics_done">诊断包已保存：%1$s</string>
+    <string name="save_diagnostics_failed">诊断包保存失败：%1$s</string>
+    <!-- #528 第 15 项：上一局死在前台（LastSession），库页状态区提示一次 -->
+    <string name="last_session_abnormal">上一局异常结束。导出诊断包能帮我们查原因。</string>
+    <string name="last_session_abnormal_reason">上一局异常结束（%1$s）。导出诊断包能帮我们查原因。</string>
+    <string name="last_session_crash">应用崩溃</string>
+    <string name="last_session_native_crash">原生崩溃，信号 %1$d</string>
+    <string name="last_session_not_responding">无响应</string>
+    <string name="last_session_low_memory">内存不足，被系统结束</string>
+    <string name="last_session_signaled">被系统结束，信号 %1$d</string>
+    <string name="last_session_excessive">资源占用过高，被系统结束</string>
+    <string name="last_session_dismiss">不用了</string>
     <string name="touch_menu_import">导入布局…</string>
     <string name="touch_menu_export">导出布局…</string>
     <string name="touch_layout_imported">布局已导入</string>
@@ -71,4 +96,30 @@
     <string name="library_position">第 %1$d 个，共 %2$d</string>
     <string name="library_empty">还没有游戏</string>
     <string name="library_empty_hint">用电脑上的 S2Arm 安装游戏。</string>
+    <string name="library_playtime_minutes">玩了 {0} 分钟</string>
+    <string name="library_playtime_hours">玩了 {0} 小时</string>
+    <string name="library_playtime_today">今天</string>
+    <string name="library_playtime_yesterday">昨天</string>
+    <string name="library_playtime_days_ago">{0} 天前</string>
+    <string name="mods_title">Mod（资源替换）</string>
+    <string name="mods_for_game">当前游戏：%1$s</string>
+    <string name="mods_no_game">先安装游戏：mod 按游戏存放。</string>
+    <string name="mods_import_zip">导入 mod（zip）…</string>
+    <string name="mods_import_folder">导入 mod 文件夹…</string>
+    <string name="mods_none">这款还没有 mod。</string>
+    <string name="mods_item">%1$s · %2$d 个文件 · %3$s</string>
+    <string name="mods_remove">删除</string>
+    <string name="mods_working">正在处理 mod…</string>
+    <string name="mods_imported">已导入 mod：%1$s</string>
+    <string name="mods_failed">mod 操作没成：%1$s</string>
+    <string name="mods_err_not_archive">mod 要选 zip 压缩包或文件夹（7z / rar 先解压成文件夹再导入）：%1$s</string>
+    <string name="mods_err_too_many">这个压缩包文件太多（超过 %1$d 个）：%2$s</string>
+    <string name="mods_err_too_large">这个压缩包解开超过 16 GB：%1$s</string>
+    <string name="mods_err_no_romfs">「%1$s」里没找到 romfs 文件夹：资源替换 mod 要带 romfs/（如 atmosphere/contents/%2$s/romfs）。</string>
+    <string name="mods_err_missing">没有这个 mod：%1$s。</string>
+    <string name="mods_err_name_taken">已有同名的 mod：%1$s。</string>
+    <string name="mods_note_other_game">「%1$s」是给另一款游戏（%2$s）的，没收</string>
+    <string name="mods_note_exefs">里面的代码补丁（exefs 的 pchtxt / IPS）这里不收：只导入资源替换（romfs）</string>
+    <string name="mods_note_empty">「%1$s」的 romfs 是空的，没收</string>
+    <string name="mods_note">mod 下次起局生效，按文件夹名顺序叠，后面的覆盖前面的；取消勾选即关闭。改 mod 前先结束游戏。</string>
 </resources>

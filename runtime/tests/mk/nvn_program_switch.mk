@@ -1,6 +1,6 @@
 # native-test-nvn_program_switch：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += nvn_program_switch
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # 多程序合集切程序时直连图形层换着色器库（索尼克×夏特 11-06）
 $(BUILD)/tests/t_nvn_program_switch: graphics/nvn/tests/t_nvn_program_switch.m $(NVN_MTL_DEPS) $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \

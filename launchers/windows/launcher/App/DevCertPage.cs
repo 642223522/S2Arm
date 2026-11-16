@@ -105,7 +105,7 @@ public sealed partial class EnvironmentWindow
             foreach (var (list, color) in new[] { ("blocking", "#E5675F"), ("warnings", "#E8C65A") })
                 if (c.TryGetProperty(list, out var items) && items.ValueKind == JsonValueKind.Array)
                     foreach (var w in items.EnumerateArray())
-                        panel.Children.Add(new TextBlock { Text = (list == "blocking" ? "✕ " : "⚠ ") + Str(w, "text"), FontSize = 12.5,
+                        panel.Children.Add(new TextBlock { Text = (list == "blocking" ? "✕ " : "⚠ ") + B(Str(w, "text")), FontSize = 12.5,
                             TextWrapping = TextWrapping.Wrap, Foreground = Brush.Parse(color) });
             var actions = new WrapPanel { Orientation = Orientation.Horizontal };
             var replace = new Button { Content = S("replace"), Padding = new Thickness(14, 8), CornerRadius = new CornerRadius(8),

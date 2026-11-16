@@ -96,9 +96,9 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
                   "spaceSurvey": library.space_survey, "spaceFree": library.space_free, "storageOverview": sizes.overview,
                   "diagnostics": library.diagnostics, "diagnosticsUpload": diag_upload.upload, "saveInput": library.save_input,
                   "locations": library.list_locations, "moveGame": library.move_game, "relinkGame": library.relink_game, "forgetGame": library.forget_game,
-                  "build": build.prepare, "launch": build.launch, "pullDiagnostics": diag.pull, "ipa": ipa.build, "downstreamChoice": downstream.set_choice, "install": install.install, "installRemove": install.remove_from_phone, "installRestore": install.restore_previous, "installUpdate": install.update_phone, "exportPush": install.push_export_job, "installMode": install.install_mode_job, "installCheck": install.readiness, "signingProject": install.signing_project, "installDotnet": toolchain.install_dotnet, "targetDevice": target.probe,
+                  "build": build.prepare, "launch": build.launch, "pullDiagnostics": diag.pull, "ipa": ipa.build, "downstreamChoice": downstream.set_choice, "install": install.install, "installRemove": install.remove_from_phone, "installRestore": install.restore_previous, "installUpdate": install.update_phone, "phoneKeptPull": install.phone_kept_pull, "exportPush": install.push_export_job, "installMode": install.install_mode_job, "installCheck": install.readiness, "signingProject": install.signing_project, "installDotnet": toolchain.install_dotnet, "targetDevice": target.probe,
                   "saveStatus": saves.status, "saveBackup": saves.backup, "saveInspect": saves.inspect, "saveRestore": saves.restore,
-                  "community": community.listing, "communitySave": community.save, "patchMatch": patches.match, "sgradeScan": sgrade.scan, "sgradeMac": sgrade.mac_all, "devCert": devcert.operation, "export": export_plan.export}
+                  "community": community.listing, "communitySave": community.save, "patchMatch": patches.match, "sgradeScan": sgrade.scan, "sgradeMac": sgrade.mac_all, "sgradeReenable": sgrade.reenable, "devCert": devcert.operation, "export": export_plan.export}
     if operation_overrides:
         operations.update(operation_overrides)
     try:
@@ -264,7 +264,7 @@ def cli(argv, *, context_class=Context, operation_overrides=None):
                 print(json.dumps(dict(dryRun=True, wouldResume=bool(args.force) or not terminal, operation=record.get("operation"),
                                       attemptNo=(record.get("attemptNo") or 1) + (0 if terminal and not args.force else 1),
                                       stage=record.get("stage") or "", attempts=record.get("attempts") or {},
-                                      note="阶段是否跳过只由各阶段自己的产物键（.stage_<阶段>）决定，job 层不记也不预判"), ensure_ascii=False))
+                                      note="阶段是否跳过只由各阶段自己的产物键（.stage_<阶段>）决定，job 层不记也不预判"), ensure_ascii=False))  # 非玩家句
                 return 0
             if record.get("state") in TERMINAL_STATES and not args.force:
                 # Re-running a finished task on purpose is allowed, but a caller that thinks it is resuming must not silently restart it

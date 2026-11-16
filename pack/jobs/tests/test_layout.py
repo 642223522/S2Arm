@@ -273,6 +273,20 @@ class Upgrade3Tests(JobCase):
                 ios_fixture(self.c, A); breaks()
                 self.assertFalse(library.iphone_ready(self.c, A))
 
+    def test_iphone_img_tells_exportable_from_old_format(self):
+        """「导出自签包」能不能直接导出（catalog iphoneExportable，11-15）：资源包清单 format = img 才算；旧格式 / 没清单 / 读不出都不算（点了先重出再导出）"""
+        import library
+        from jobcase import ios_fixture
+        atomic(self.c.library / "catalog.json", dict(schema=1, games=[dict(id=A, name="Alpha")]))
+        self.assertFalse(library.iphone_img(self.c, A))   # 没出过
+        _, pack = ios_fixture(self.c, A)
+        atomic(pack / "manifest.json", {"version": 3, "format": "img", "imgFile": "game.img"})
+        self.assertTrue(library.iphone_img(self.c, A))
+        atomic(pack / "manifest.json", {"version": 2, "index_sha256": "x"})   # 旧格式（散文件 / tar）
+        self.assertFalse(library.iphone_img(self.c, A))
+        (pack / "manifest.json").write_text("{坏")
+        self.assertFalse(library.iphone_img(self.c, A))
+
 
 class DevicesTests(JobCase):
     """devices()：exFAT 搬库带来的 ._<名>.json 附属文件不算设备记录；单个记录读不出不拖垮整个请求（#911）"""
@@ -795,3 +809,17 @@ class HiddenPackTests(JobCase):
         self.assertFalse(legacy.exists())
         self.assertEqual((got / "game.img").read_bytes(), b"img")
         self.assertEqual(layout.ios_pack(self.c, gid), got)   # 第二次直接是新位置
+
+    def test_rename_lost_to_other_caller_returns_hidden_pack(self):
+        """审计 P1-183：两路同时第一次用到（装机页轮询 + 装机作业）：一路刚判「老位置在、新位置不在」，另一路已改完名，
+        这一路改名失败，不能退回已经不存在的 pack/（装机报「没找到这款的资源包」）。期望手写：返回 .pack，且里面就是那份文件"""
+        gid = "0100000000000001"
+        image = layout.image_ios(self.c, gid); legacy = image / "pack"; legacy.mkdir(parents=True); (legacy / "game.img").write_bytes(b"img")
+        real = os.rename
+        def other_won(a, b):   # 另一路抢先改完，这一路再改时老位置已经没了
+            real(a, b)
+            raise FileNotFoundError(2, "No such file or directory", str(a))
+        with patch.object(layout.os, "rename", side_effect=other_won):
+            got = layout.ios_pack(self.c, gid)
+        self.assertEqual(got.name, ".pack")
+        self.assertEqual((got / "game.img").read_bytes(), b"img")

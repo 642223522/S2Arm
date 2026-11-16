@@ -12,7 +12,6 @@ import contextlib
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import tempfile
@@ -110,8 +109,8 @@ def dotnet_missing():
     old = list(dict.fromkeys(f"{version}（{exe}）" for exe, version, _ in _listed_sdks() if not _sdk_ok(version, req)))
     fix = "python3 pack/jobs/applenv.py --install dotnet（装到 ~/.dotnet，不要管理员密码）"
     if old and req:
-        return f".NET SDK 版本太旧：装着 {'、'.join(old)}，要 {req[0]} 起（rollForward {req[1]}，compat/tree/global.json）：{fix}"
-    return f"没有 .NET 10 SDK：{fix}"
+        return f".NET SDK 版本太旧：装着 {'、'.join(old)}，要 {req[0]} 起（rollForward {req[1]}，compat/tree/global.json）：{fix}"  # 非玩家句
+    return f"没有 .NET 10 SDK：{fix}"  # 非玩家句
 
 
 def _iml_device_hint(c, tgt, gid):
@@ -143,9 +142,9 @@ def _iml_device_hint(c, tgt, gid):
         pass
 
 
-WIN_MILESTONES = (("播种", "refresh"), ("八个轻阶段", "direct"), ("抽取 + 直连库", "ipa"))
+WIN_MILESTONES = (("播种", "refresh"), ("八个轻阶段", "direct"), ("抽取 + 直连库", "ipa"))  # 非玩家句
 # 每步开头行「[时刻] 开始：步名」→ 这一步所属的段：一开始就切过去（社区贡献者补丁 #8：原先只认上一步收尾行，解包读完到播种结束前一直停在「解包 100%」）
-WIN_START_MILESTONES = (("播种", "refresh"), ("八个轻阶段", "refresh"), ("抽取 + 直连库", "direct"), ("组工作根", "ipa"), ("ipa 收尾", "ipa"))
+WIN_START_MILESTONES = (("播种", "refresh"), ("八个轻阶段", "refresh"), ("抽取 + 直连库", "direct"), ("组工作根", "ipa"), ("ipa 收尾", "ipa"))  # 非玩家句
 
 
 def win_milestone(text):
@@ -153,7 +152,7 @@ def win_milestone(text):
     失败的步也打收尾行：原先照样进下一段，#244 / #269 的直连库失败被摘要报成「编 App 与签名」，把排查带偏"""
     if re.search(r"（rc=(?!0）)\d+）", text):
         return None
-    started = re.search(r"] 开始：(.+)$", text)
+    started = re.search(r"] 开始：(.+)$", text)  # 非玩家句
     if started:
         return next((stage for step, stage in WIN_START_MILESTONES if started.group(1).startswith(step)), None)
     return next((stage for step, stage in WIN_MILESTONES if f"] {step}：" in text), None)
@@ -171,7 +170,7 @@ def bundled_shell(c):
     if want and have and want != have:
         raise Failure("这份 S2Arm 没装完整：程序的两部分来自不同版本（多半是应用内更新中途失败、回滚没退干净）。"
                       "请从发布页下载最新的安装包，覆盖安装一次（游戏库、存档、密钥都在别处，不受影响），再出包。",
-                      code="engine_incomplete", internal=f"引擎要的壳 {want}，应用自带的壳 {have}（{d}）")
+                      code="engine_incomplete", internal=f"引擎要的壳 {want}，应用自带的壳 {have}（{d}）")  # 非玩家句
     return d
 
 
@@ -191,6 +190,8 @@ def win_oneclick(c, oneclick, extraction, fonts, out, events, log, env, line, so
         return
     ipa, pack = Path(res["ipa"]), Path(res["pack"])
     kuan = ipa.stem
+    if not ipa.is_file() and re.search(r"[\\/]S2A[\\/]j[\\/]", str(ipa), re.I):   # 回报的还是短路径入口（子进程退出时已拆）：报明确原因，不报 WinError 3（诊断#0e3bd5）
+        raise Failure(f"出包已完成，但回报的 ipa 路径还在临时短路径入口下、入口已随出包进程退出拆掉，拷不到：{ipa}。请把这条报错和诊断一起发给我们。")
     shutil.copy2(ipa, out / (kuan + ".ipa"))
     c.run([os.sys.executable, c.engine / "pack/oneclick/deliver_pack.py", pack, out / (kuan + "资源包")], log, env)
     with open(events, "a", encoding="utf-8") as f:   # 末条 result 指向交付件（ipa.build 只认 out 下的包）
@@ -232,8 +233,8 @@ def _build(c):
     tgt = None if os.name == "nt" else resolve_target(c)
     # E：出包第一步读设备窗口，提示窗口大小与需求（只提示，不中止）
     if tgt: _iml_device_hint(c, tgt, gid)
-    # 发版应用（请求带 engineBundle）与 Windows：C# 件随发版预编（Binaries/Prepare）、iOS 壳随包（Resources/Shell，内含 NativeAOT C# 库），
-    #   只要随包 .NET 运行时（Context.env 已设）；只有源码树开发构建才现出壳、要外部 SDK
+    # 发版应用（请求带 engineBundle）与 Windows：C# 件随发版预编（Binaries/Prepare，Mac 全为 NativeAOT 单文件）、iOS 壳随包（Resources/Shell，内含 NativeAOT C# 库），
+    #   运行不要任何 .NET（Windows 侧仍带随包 .NET 运行时，另案）；只有源码树开发构建才现出壳、要外部 SDK
     packaged = os.name == "nt" or bool(c.r.get("engineBundle"))
     home, exe = (None, None) if packaged else dotnet_sdk()
     if not exe and not packaged:
@@ -263,15 +264,16 @@ def _build(c):
         extraction = ensure_extract(c, game, selected_packages(game), env, logs)
         import patches   # 金手指 / 社区补丁（11-12）：解包后按真构建号查库，交改写阶段（同 build.prepare）
         patches.prepare(c, game, extraction, env, target="ios")   # iPhone 包不带画面类补丁（patches.fetch）
+        env["S2A_NRO_KEPT_DIR"] = str(layout.nro_kept(c, gid))   # 运行时留下的 NRO（#8be819；装 iPhone 前从机上拉回，install.pull_kept_nros）
         try:   # 原始程序存一份到这款游戏文件夹（v0.4.0）：以后补丁库更新，「S 级优化升级」只读它、不用回原件（pack/jobs/sgrade.py）
             import sgrade
             sgrade.save_program(c, gid, Path(extraction) / "exefs")
         except OSError as e:
             c.emit("message", f"【黄】原始程序没存下（以后升级要回原件）：{e}")
         kuan = oneclick_kuan(c, gid)
-        if os.name != "nt" and not (out / "roots" / (kuan + "@现行")).exists():   # Windows 机上没有 Mac 包可克隆
+        if os.name != "nt" and not (out / "roots" / (kuan + "@现行")).exists():   # Windows 机上没有 Mac 包可克隆  # 非玩家句
             seed_from_sibling(c, game, out / "roots", kuan)
-        # 出 iPhone 包：平台换成 iOS；.NET 用已确认的外部 SDK（App 内置的只是运行时）
+        # 出 iPhone 包：平台换成 iOS；.NET 只在源码树现编 C#（壳 / iOS 库）时用已确认的外部 SDK（发版应用全用随包预编，运行不要 .NET）
         for name in tuple(env):
             if name.startswith('DOTNET_ROOT_'):
                 env.pop(name)
@@ -282,14 +284,18 @@ def _build(c):
         identity_file = logs / "save-identity.json"
         identity_file.write_text(json.dumps(save_identity(game), ensure_ascii=False), encoding="utf-8")
         env["S2A_SAVE_IDENTITY"] = str(identity_file)
-        if packaged and os.name != "nt":   # Mac 发版应用：随包壳（pack/ipa.sh 见 S2A_SHELL 就不现出壳）+ 应用自带读取器（同 build.py：dotnet 跑 dll 包一层可执行壳）
+        # Mac 发版应用：随包壳（pack/ipa.sh 见 S2A_SHELL 就不现出壳）+ 应用自带读取器（同 build.py：NativeAOT 单文件，直接可执行）
+        if packaged and os.name != "nt":
             from toolchain import reader
-            nxu = logs / "nx_unpack"
-            nxu.write_text("#!/bin/sh\nexec dotnet " + shlex.quote(str(reader(c))) + ' "$@"\n'); nxu.chmod(0o755)
-            env.update(S2A_SHELL=str(bundled_shell(c)), S2A_NX_UNPACK=str(nxu))
+
+            env.update(S2A_SHELL=str(bundled_shell(c)), S2A_NX_UNPACK=str(reader(c)))
         if exe:
-            env.update(DOTNET=str(exe), DOTNET_ROOT=str(home), DOTNET_MULTILEVEL_LOOKUP="0",
-                       PATH=os.pathsep.join(dict.fromkeys([str(exe.parent), str(home), env["PATH"]])))
+            env.update(
+                DOTNET=str(exe),
+                DOTNET_ROOT=str(home),
+                DOTNET_MULTILEVEL_LOOKUP="0",
+                PATH=os.pathsep.join(dict.fromkeys([str(exe.parent), str(home), env["PATH"]])),
+            )
         state = {}
         # 出包与装机重叠（installAfter，pack/jobs/early.py）：开工前认账号与设备，旁路完成就先装 App、先推大头资源，与直连库编译并行
         if c.r.get("installAfter") and os.name != "nt":   # Windows：出完再装（install.install 的 Windows 分支），不做出包期间早装
@@ -298,14 +304,14 @@ def _build(c):
 
         def line(text):
             nonlocal watcher
-            m = re.search(r"款 ([^）\s，,]+)", text)
-            if m and "款" not in state:
-                state["款"] = m.group(1)
-            if "④ 刷新" in text and watcher is None:
+            m = re.search(r"款 ([^）\s，,]+)", text)  # 非玩家句
+            if m and "款" not in state:  # 非玩家句
+                state["款"] = m.group(1)  # 非玩家句
+            if "④ 刷新" in text and watcher is None:  # 非玩家句
                 ms.enter(c, "refresh")
-                watcher = ms.DirectWatcher(c, out / "roots", state.get("款", ""))
+                watcher = ms.DirectWatcher(c, out / "roots", state.get("款", ""))  # 非玩家句
                 watcher.__enter__()
-            if "④ 出包" in text:
+            if "④ 出包" in text:  # 非玩家句
                 if watcher:
                     watcher.__exit__(None, None, None)
                 ms.enter(c, "ipa")
@@ -364,16 +370,20 @@ def _build(c):
     pack_dir = out / (ipa.stem + "资源包")   # 同 pack/oneclick/oneclick.sh 的交付布局
     patches.record(c, gid, "ios", product_root(c, gid))   # 补丁打入结果（打上 / 没打上，完成页列；deliver 之前产物根还在，11-14）
     deliver(c, gid, product_root(c, gid), pack_dir, ipa)
+    import sgrade   # iPhone 设置页的 S 级状态底料（版本对照 / 满屏来源 / 出包时选不打入；手机上没有补丁库，开关与自动关由手机本机算）
+    sgrade.write_kit_state(c, gid, layout.ios_kit(c, gid))
     prune_unless_follow_up(c, gid)
     cache_result = trim(c.work_root, current_gid=gid, **compiler_policy)
     from cache_retention import engine_installed_at, prune_tool_keys
     prune_tool_keys(c.work_root, engine_installed_at(c.engine))   # 当前引擎用不到的工具缓存旧键（NativeAOT / libvpx / opus / dav1d）
+    from cache_retention import trim_build_caches
+    trim_build_caches(c.work_root / "run" / "s2arm", current_gid=gid)   # 出包可重建缓存（aoc / unpack / bake / srcver）总量上限，按盘剩余算比例
     if not cache_result['accountingComplete'] or cache_result['evictionErrors'] or cache_result['diskErrors'] or cache_result['pressureRemaining']:
-        c.diagnostic("编库缓存清理未完整完成：盘余量未恢复/未知或条目未能删除；扫描错误 %d，删除错误 %d，盘量错误 %d，未扫描根 %d，保护链接 %d，变化条目 %d。已完成的 IPA 保留，详见 compilerCache。" %
+        c.diagnostic("编库缓存清理未完整完成：盘余量未恢复/未知或条目未能删除；扫描错误 %d，删除错误 %d，盘量错误 %d，未扫描根 %d，保护链接 %d，变化条目 %d。已完成的 IPA 保留，详见 compilerCache。" %  # 非玩家句
                      (cache_result['scanErrors'], cache_result['evictionErrors'], cache_result['diskErrors'],
                       cache_result['unscannedRoots'], cache_result['protectedLinks'], cache_result['changedEntries']),
                      code="compiler_cache_incomplete", severity="warning")
-    c.emit("message", "编库缓存保护最近 %d 款；已观察保留 %d 字节、淘汰 %d 条；盘余量 %s 字节，底线 %d 字节，仍低于底线：%s。逻辑字节不触发裁剪。" %
+    c.emit("message", "编库缓存保护最近 %d 款；已观察保留 %d 字节、淘汰 %d 条；盘余量 %s 字节，底线 %d 字节，仍低于底线：%s。逻辑字节不触发裁剪。" %  # 非玩家句
            (cache_result['keepTitles'], cache_result['retainedBytes'], cache_result['removedEntries'],
             cache_result['freeBytes'], cache_result['minFreeBytes'], cache_result['pressureRemaining']))
     from library import _part_bytes
@@ -404,7 +414,7 @@ def prune_unless_follow_up(c, gid):
         prune_build(c, gid)
     except (Failure, OSError) as error:   # #793 / #796：包已经出好，清中间产物只是收尾——游戏库在删不了文件的地方（Xbox App 管的文件夹）时
         #   原先 PermissionError 一路抛上去，出好的包被判失败；同失败收尾 clean_after_stop：记一条警告，下次空闲再清
-        c.diagnostic("清理中间产物没有完成，下次空闲时会再清：" + c.redact(str(error)), code="job_failed", severity="warning")
+        c.diagnostic("清理中间产物没有完成，下次空闲时会再清：" + c.redact(str(error)), code="job_failed", severity="warning")  # 非玩家句
         return False
     return True
 
@@ -423,9 +433,29 @@ def refresh_library_ipa(c):
         ipa, _, _ = assemble(c, None, ready)
         commit_phone_ipa(c, ipa, sid)
     except (Failure, OSError) as e:   # 组装出错（盘满、权限、容器件坏）都只警告
-        c.diagnostic("游戏库根目录的 S2Arm.ipa 这次没更新（" + str(e) + "）：这款的 iPhone 版已出好，「装到 iPhone」时会照常组装。", code="job_failed", severity="warning")
+        c.diagnostic("游戏库根目录的 S2Arm.ipa 这次没更新（" + str(e) + "）：这款的 iPhone 版已出好，「装到 iPhone」时会照常组装。", code="job_failed", severity="warning")  # 非玩家句
         return None
     return layout.phone_ipa(c)
+
+
+# 出包与装机并行（11-16 维护者「出包时也能装别的游戏到 iPhone」）：两把库锁，全局取锁顺序 = 手机锁 → 各款程序锁（按游戏号排序），不会成环。
+#   程序锁（.program-<游戏号>.lock）：护住这款的程序件（kit）、资源包（.pack）与 game.json 的 ios 记录——出包只在交付换件那几秒拿；
+#     装机 / 导出在 refresh_ios（可能原地改别款的 kit）+ 组壳（读各款 kit）那段拿它要带的全部款；推资源包期间不拿。
+#   手机锁（.phone.lock）：装机类作业（装到 iPhone / 更新 / 装回上一版 / 从手机删 / 推导出包 / 出包早装）一次一个——默认位置根的 S2Arm.ipa、
+#     S2Arm.previous.ipa 全库一份、不分设备，两台手机并行会互相换掉
+PROGRAM_LOCK_WAIT_S, PHONE_LOCK_WAIT_S = 1800, 7200
+
+
+@contextlib.contextmanager
+def program_locks(c, games):
+    with contextlib.ExitStack() as stack:
+        for g in sorted({str(g).upper() for g in games if g}):
+            stack.enter_context(c.lock("program-" + g, wait=PROGRAM_LOCK_WAIT_S))
+        yield
+
+
+def phone_lock(c):
+    return c.lock("phone", wait=PHONE_LOCK_WAIT_S)
 
 
 CONTAINER_BUNDLE = "io.s2arm.games"   # 组装时的占位包名：Mac 装机换成团队专属的 io.s2arm.games.<团队>（install.container_bundle_id）；Windows 由 plumesign 按账号定
@@ -436,13 +466,24 @@ def deliver(c, gid, root, pack_dir, ipa):
     先存容器件、再换资源包、最后写 game.json：中途被打断时 game.json 还是上一版的，资源包号对不上就按「变了」补推，不会少推"""
     import host_update
     from library import save_container_kit, _rm
-    if root is None or save_container_kit(c, gid, root) is None:
+    with program_locks(c, [gid]):
+        kit = None if root is None else save_container_kit(c, gid, root)
+    if kit is None:
         raise Failure("一键出包结束了，但产物根里没有组装 iPhone 版要用的文件（main.npdm），请查看日志。", code="package_failed")
     to_img(c, gid, root, pack_dir)
     want = read(Path(pack_dir) / "manifest.json", {}).get("index_sha256")
     if not want:
         raise Failure(f"资源包缺清单或清单没有 index_sha256（{pack_dir}）：请重新打 iPhone 包。", code="package_failed")
+    with program_locks(c, [gid]):   # 换资源包 + 记 ios：装机正在推 / 读这款时等它那段做完
+        _swap_pack(c, gid, pack_dir, want)
+    Path(ipa).unlink(missing_ok=True)
+
+
+def _swap_pack(c, gid, pack_dir, want):
+    import host_update
+    from library import _rm
     image = layout.image_ios(c, gid)
+    image.mkdir(parents=True, exist_ok=True)   # 程序件改存专用文件夹（layout.program_store）后，image/ios 不再由存程序件时顺带建
     managed = layout.root_of(c, gid)
     dest, old = image / layout.IOS_PACK, image / (layout.IOS_PACK + ".old")
     if old.exists():
@@ -457,8 +498,8 @@ def deliver(c, gid, root, pack_dir, ipa):
         _rm(c, managed, image / layout.LEGACY_IOS_PACK)
     compat = host_update.engine_compat(c) or {}
     from rewrite_refresh import rewriter_id   # 这次的改写产物出自哪版改写器：改写器以后修了，更新手机时只核记号不同的款（rewrite_refresh.py）
-    layout.update_info(c, gid, ios=dict(shellId=current_shell_id(c), pack=want, rewriterId=rewriter_id(c), **compat))
-    Path(ipa).unlink(missing_ok=True)
+    from sgrade_bf import BF_GEN   # 这次的直连库出自本引擎翻译器：可读瓦片版代数（S 级升级按它判要不要补 _bf，pack/jobs/sgrade_bf.py）
+    layout.update_info(c, gid, ios=dict(shellId=current_shell_id(c), pack=want, rewriterId=rewriter_id(c), bfGen=BF_GEN, **compat))
 
 
 CONSUME_MARK = ".img_consume_inflight"   # 出包工作目录里：写 IMG 正在边写边删产物根 RomFS（#746），写成功才删
@@ -503,14 +544,14 @@ def to_img(c, gid, root, pack_dir):
         if not isinstance(e, Failure):
             raise
         from errors import tool_reason
-        raise Failure("写单一 IMG（game.img）失败：" + (tool_reason(log) or str(e)), code="package_failed") from e
+        raise Failure("写单一 IMG（game.img）失败：" + (tool_reason(log) or str(e)), code="package_failed") from e  # 非玩家句
     mark.unlink(missing_ok=True)
 
 
 def current_shell_id(c):
     r = subprocess.run([os.sys.executable, "-X", "utf8", "-c", "from pack.shell.manifest import current_id; print(current_id())"], cwd=c.engine, env=c.env(), capture_output=True, text=True)
     if r.returncode or not r.stdout.strip():
-        raise Failure("算不出本引擎的壳编号：" + ((r.stderr or "").strip().splitlines() or ["?"])[-1], code="tool_missing")
+        raise Failure("算不出本引擎的壳编号：" + ((r.stderr or "").strip().splitlines() or ["?"])[-1], code="tool_missing")  # 非玩家句
     return r.stdout.strip()
 
 
@@ -528,7 +569,7 @@ def product_root(c, gid):
     """这款的现行产物根（打包流程的工作目录）；不存在 → None"""
     from build import oneclick_kuan
     out = layout.ios_work(c, gid, create=False)
-    r = out / "work/pkg/product" if os.name == "nt" else out / "roots" / (oneclick_kuan(c, gid) + "@现行")   # Windows：win_oneclick 的工作根（现行各项联接 + 直连库，oneclick_win.product）
+    r = out / "work/pkg/product" if os.name == "nt" else out / "roots" / (oneclick_kuan(c, gid) + "@现行")   # Windows：win_oneclick 的工作根（现行各项联接 + 直连库，oneclick_win.product）  # 非玩家句
     return resolve_path(r) if (r / "main.npdm").is_file() else None
 
 
@@ -539,7 +580,7 @@ def usable_kit(c, gid, sid, failed=()):
     kit = layout.ios_kit(c, gid)
     if not (kit / "main.npdm").is_file():
         return None
-    ios = layout.game_info(c, gid).get("ios") or {}
+    ios = layout.program_info(c, gid)   # 游戏文件夹被删了也读得到（专用文件夹的那份）
     if ios.get("shellId") == sid:
         return resolve_path(kit)
     want = host_update.engine_compat(c)
@@ -614,8 +655,8 @@ def kit_astype(c, gid):
 def incompatible_message(text, gid, names):
     """各款地址空间类型不一致（pack/ship_ext.py container 的红行「…装不进同一个窗口：<游戏号> 类型 <t>、…」）→ 点名手机上和这款类型不同的那几款（#1132：原先只说「删掉不兼容的那款」，玩家不知道是哪款）。
     读不出红行就退回原句。gid 为 None（只组手机上已有的几款）时按游戏库名字列出各类型分组"""
-    m = re.search(r"装不进同一个窗口：(.+)", text)
-    kinds = dict(re.findall(r"([0-9A-Fa-f]{16}) 类型 (\d+)", m.group(1))) if m else {}
+    m = re.search(r"装不进同一个窗口：(.+)", text)  # 非玩家句
+    kinds = dict(re.findall(r"([0-9A-Fa-f]{16}) 类型 (\d+)", m.group(1))) if m else {}  # 非玩家句
     kinds = {g.upper(): t for g, t in kinds.items()}
     name = lambda g: "「" + names.get(g, g) + "」"
     if gid and gid.upper() in kinds:
@@ -628,7 +669,7 @@ def incompatible_message(text, gid, names):
         groups = {}
         for g, t in kinds.items():
             groups.setdefault(t, []).append(name(g))
-        return "这几款游戏地址空间类型不同，放不进同一个 App：" + " / ".join("".join(v) for v in groups.values()) + "；只能留其中一组。"
+        return "这几款游戏地址空间类型不同，放不进同一个 App：" + " / ".join("".join(v) for v in groups.values()) + "；只能留其中一组。"  # 非玩家句
     return "这款和手机上已有的游戏地址空间类型不同，放不进同一个 App。"
 
 
@@ -669,16 +710,16 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None, agreed=None)
         #   每行一个固定句式（游戏名进 {0} 占位），界面按 Localizable.json 逐行翻
         lost = "".join("「" + names.get(g, g) + "」" for g in stale_ids if g in missing)
         old = "".join("「" + names.get(g, g) + "」" for g in stale_ids if g not in missing)
-        lines = ["手机上有几款游戏这次放不进同一个 App。"] + (["这台电脑上没有它们的 iPhone 版：" + lost] if lost else []) \
-            + (["它们是旧版 S2Arm 出的 iPhone 版，新版认不得，要重新「打 iPhone 包」：" + old] if old else []) \
+        lines = ["手机上有几款游戏这次放不进同一个 App。"] + ([f"这台电脑上没有它们的 iPhone 版：{lost}"] if lost else []) \
+            + ([f"它们是旧版 S2Arm 出的 iPhone 版，新版认不得，要重新「打 iPhone 包」：{old}"] if old else []) \
             + ["确认继续的话，这次先不带它们照装，它们的存档和资源都留在手机上，之后给它们「打 iPhone 包」再装一次就回来。同意一次后，这台手机在这一版 S2Arm 上不再为它们问。"]
         raise Failure("\n".join(lines), code="container_stale", internal=" ".join(stale_ids))
     if stale:
         for g in stale_ids: roots.pop(g)
-        c.diagnostic("「" + "」「".join(stale) + "」这次没放进新版 S2Arm（要按新版重新出包）；手机上的存档和资源都还在，给它们各「打 iPhone 包」再装一次就回来。",
+        c.diagnostic("「" + "」「".join(stale) + "」这次没放进新版 S2Arm（要按新版重新出包）；手机上的存档和资源都还在，给它们各「打 iPhone 包」再装一次就回来。",  # 非玩家句
                       code="container_stale", severity="warning")
     if deleted:
-        c.diagnostic("「" + "」「".join(deleted) + "」已从游戏库删除，新版 S2Arm 里不再包含它们；手机上的存档还在。", code="job_failed", severity="warning")
+        c.diagnostic("「" + "」「".join(deleted) + "」已从游戏库删除，新版 S2Arm 里不再包含它们；手机上的存档还在。", code="job_failed", severity="warning")  # 非玩家句
     if not roots:
         raise Failure("手机上的 S2Arm 里没有别的游戏了。", code="job_failed")
     shell = container_shell(c, sid)
@@ -701,7 +742,7 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None, agreed=None)
                *[x for r in roots.values() for x in ("--game", r)], *banner_args], log, c.env())
     except Failure as e:
         text = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
-        if e.code == "tool_exit" and "地址空间类型不一致" in text:
+        if e.code == "tool_exit" and "地址空间类型不一致" in text:  # 非玩家句
             raise Failure(incompatible_message(text, gid, names), code="container_incompatible") from e
         raise
     finish_container(c, app, log)
@@ -811,18 +852,18 @@ def resolve_target(c):
 
 # 只登记 oneclick.sh 实际 lap 阶段；子步骤从各自产生错误的脚本取，不虚构事件名。
 ONECLICK_PHASES = {
-    "认游戏": None, "解包": "unpack", "播种": "seed",
-    "刷新各阶段": None, "出包": None, "交付": None,
-    "安卓出包": None, "安装与导入": None,
+    "认游戏": None, "解包": "unpack", "播种": "seed",  # 非玩家句
+    "刷新各阶段": None, "出包": None, "交付": None,  # 非玩家句
+    "安卓出包": None, "安装与导入": None,  # 非玩家句
 }
 
 # pack/ipa.sh 的 fail 前缀。只匹配外层失败原因，detail 内的同名文字不参与归因。
 PACKAGE_FAILURE_PREFIXES = (
-    ("签名失败", "sign"), ("自签失败", "sign"), ("签名核实", "sign"),
-    ("签名里没有「提高内存上限」权限", "sign"), ("签名含私有 JIT 键", "sign"),
-    ("出壳失败", "host"), ("预编壳组装失败", "host"), ("组装没产出", "host"),   # 11-04 全外置：原「make ios 失败 / 没产出」
-    ("资源包失败", "seed"), ("资源包核对", "seed"),
-    ("直连库不全", "seed"),   # 产物根直连库真残缺（#11：原先落成 package_failed「原因没认出来」）
+    ("签名失败", "sign"), ("自签失败", "sign"), ("签名核实", "sign"),  # 非玩家句
+    ("签名里没有「提高内存上限」权限", "sign"), ("签名含私有 JIT 键", "sign"),  # 非玩家句
+    ("出壳失败", "host"), ("预编壳组装失败", "host"), ("组装没产出", "host"),   # 11-04 全外置：原「make ios 失败 / 没产出」  # 非玩家句
+    ("资源包失败", "seed"), ("资源包核对", "seed"),  # 非玩家句
+    ("直连库不全", "seed"),   # 产物根直连库真残缺（#11：原先落成 package_failed「原因没认出来」）  # 非玩家句
 )
 
 
@@ -843,23 +884,23 @@ def _new_refresh_red(path, before):
             stream.seek(0, 2)
             stream.seek(max(0, stream.tell() - 16000))
             lines = stream.read().decode("utf-8", errors="replace").splitlines()
-        red = [line.strip() for line in lines if "【红】" in line]
+        red = [line.strip() for line in lines if "【红】" in line]  # 非玩家句
         return red[-1] if red else None
     except OSError:
         return None
 
 
 def _package_failure_phase(reason):
-    detail = reason.removeprefix("出包失败：").strip()
-    detail = re.sub(r"^【红】[^\r\n]*? 出包：", "", detail, count=1).lstrip()
+    detail = reason.removeprefix("出包失败：").strip()  # 非玩家句
+    detail = re.sub(r"^【红】[^\r\n]*? 出包：", "", detail, count=1).lstrip()  # 非玩家句
     # ipa.sh.fail 会再包住 iml_check / verify 自带的红行；只剥子原因开头，保留摘要原文。
-    detail = re.sub(r"^(?:【红】|🔴)\s*", "", detail, count=1)
+    detail = re.sub(r"^(?:【红】|🔴)\s*", "", detail, count=1)  # 非玩家句
     return next((phase for prefix, phase in PACKAGE_FAILURE_PREFIXES if detail.startswith(prefix)), None)
 
 
 def oneclick_failure(events, milestone, log, *, refresh_log=None, refresh_before=None):
     from errors import classify_failure, player_reason, refresh_stop_phase, tool_reason
-    name = "未记录阶段"
+    name = "未记录阶段"  # 非玩家句
     result = None
     try:
         with open(events, encoding="utf-8", errors="replace") as stream:
@@ -874,7 +915,7 @@ def oneclick_failure(events, milestone, log, *, refresh_log=None, refresh_before
                     name = event["name"]
                 elif event.get("ev") == "stage_end":
                     # 已完成的上一阶段不是随后未知失败的归因；显式失败结束才保留。
-                    name = event["name"] if event.get("ok") is False and isinstance(event.get("name"), str) else "未记录阶段"
+                    name = event["name"] if event.get("ok") is False and isinstance(event.get("name"), str) else "未记录阶段"  # 非玩家句
                 if event.get("ev") == "result":
                     result = event
     except OSError:
@@ -885,10 +926,10 @@ def oneclick_failure(events, milestone, log, *, refresh_log=None, refresh_before
         reason = tool_reason(log)
     if name == "出包":
         phase = _package_failure_phase(reason)
-    elif name == "刷新各阶段":
+    elif name == "刷新各阶段":  # 非玩家句
         # oneclick 会从 result.msg 滤掉「刷新停在」行；回到本轮 refresh.log 找生产方的子阶段。
         red = _new_refresh_red(refresh_log, refresh_before)
-        if red and "刷新停在" in red:
+        if red and "刷新停在" in red:  # 非玩家句
             # 未登记的终止子阶段保持宽错误码，不从更早的红行或残留标签猜原因（errors.refresh_stop_phase）。
             phase = refresh_stop_phase(red)
         if red and red not in reason:
@@ -898,4 +939,4 @@ def oneclick_failure(events, milestone, log, *, refresh_log=None, refresh_before
     fresh_refresh = refresh_log if refresh_log is not None and _log_identity(refresh_log) not in (None, refresh_before) else None
     code, why = classify_failure(phase, log, (reason,) + ((str(fresh_refresh),) if fresh_refresh else ()))
     # 上屏只放玩家话术；阶段 / 红行原文 / 归因依据进 internal → 诊断 detail（「复制错误摘要」带走）
-    return Failure(player_reason(code), code=code, internal="一键出包失败（" + name + "）：" + reason + "\n" + why)
+    return Failure(player_reason(code), code=code, internal="一键出包失败（" + name + "）：" + reason + "\n" + why)  # 非玩家句

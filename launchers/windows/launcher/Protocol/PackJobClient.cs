@@ -73,9 +73,8 @@ public sealed class JobEventReader(string jobId, string operation)
 /// </summary>
 public static class PackJobClient
 {
-    public static readonly IReadOnlySet<string> Operations =
-        new HashSet<string>(StringComparer.Ordinal) { "export", "ipa", "installCheck", "install", "installRemove", "installRestore", "installMode", "installUpdate", "customize",
-            "moveGame", "relinkGame", "forgetGame", "clean", "delete", "spaceFree", "devCert" };
+    // 操作名不在前端设白名单（11-15：前端清单是自己给自己加的卡点——0.4.0 漏登记两页，请求进引擎前就被拒，#1149 卡死）：
+    //   请求原样交给引擎，引擎不认识的操作自己回失败结果（pack/jobs/main.py「不支持的任务类型。」），界面把它当普通失败显示成文字
 
     /// <param name="Secrets">Environment variables for this one job process only (the developer certificate password,
     /// pack/jobs/devcert.py); never written into the request file, and main.run_request drops them from its environment first.</param>
@@ -85,10 +84,9 @@ public static class PackJobClient
     /// <summary>The request body the backend reads (pure; unit-tested).</summary>
     public static Dictionary<string, object?> Payload(Request request, string jobId)
     {
-        if (!Operations.Contains(request.Operation)) throw new ArgumentException("Unsupported pack operation.", nameof(request));
         // The developer certificate and the install mode belong to this computer, installUpdate to the phone (install.update_phone): no game.
         // export 的游戏在计划里（plan.items，ExportStream），信封上不带
-        var perGame = request.Operation is not ("devCert" or "installMode" or "installUpdate" or "export");
+        var perGame = request.Operation is not ("devCert" or "installMode" or "installUpdate" or "export" or "sgradeScan");
         if (perGame && string.IsNullOrWhiteSpace(request.GameId)) throw new ArgumentException("A game is required.", nameof(request));
         var payload = new Dictionary<string, object?>
         {
@@ -102,10 +100,11 @@ public static class PackJobClient
         // The bundled iPhone shell is a launcher path setting (Settings → Shell); ipa.bundled_shell reads shellDir.
         // export 的每一步子作业沿用这份请求（pack/jobs/export_plan.py），iPhone 那步要的壳与随包资源一并带上
         if (request.Operation is "ipa" or "install" or "installUpdate" or "export") payload["shellDir"] = Path.GetFullPath(request.Paths.Shell);
-        // Bundled resources next to S2Arm.exe (bundle_win.py layout): ipa reads the shared fonts from resources/Fonts (core.fonts_dir; without it
+        // Bundled resources next to S2Arm.exe (bundle_win.py layout): sgradeScan reads CommunityPatches/patches-v3.tar (v2 on older installs);
+        // ipa reads the shared fonts from resources/Fonts (core.fonts_dir; without it
         // "shared fonts missing", tianyan 11-07); installCheck / install use the Impactor + plumesign shipped in resources/ThirdParty/Impactor
         // (pack/jobs/impactor.py bundled, 11-07 维护者: no download detour for players).
-        if (request.Operation is "ipa" or "export" or "installCheck" or "install" or "installRemove" or "installRestore" or "installMode" or "installUpdate") payload["resources"] = Path.GetFullPath(AppContext.BaseDirectory);
+        if (request.Operation is "ipa" or "export" or "installCheck" or "install" or "installRemove" or "installRestore" or "installMode" or "installUpdate" or "sgradeScan") payload["resources"] = Path.GetFullPath(AppContext.BaseDirectory);
         foreach (var (key, value) in request.Extra ?? new Dictionary<string, object?>())
         {
             if (payload.ContainsKey(key)) throw new ArgumentException("Extra field overrides the request envelope: " + key);

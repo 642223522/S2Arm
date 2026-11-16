@@ -57,6 +57,12 @@ final class NativeBridge {
      * 诊断仍写会话内部目录。启动加载库后调用一次。
      */
     static native int configureDiagDir(String dir);
+    /**
+     * 外挂 Vulkan 驱动（libadrenotools）的目录：filesDir 是应用内部私有目录（驱动必须复制到
+     * 这里才能 dlopen），externalFilesDir 是 adb push 用的外部私有目录（没有外部存储传空串）。
+     * 只在启动加载库后调用一次；没有选择驱动时 native 不碰这两个目录。
+     */
+    static native int configureGpuDriver(String filesDir, String externalFilesDir);
     static native int configureFrameLogDir(String dir);
     static native int configureLanDiscovery(Object provider);
     static native void lanSnapshot(long generation, String ownName, String[] names, String[] addresses, int[] ports);
@@ -101,6 +107,8 @@ final class NativeBridge {
     static native int configureProfileFreeze(boolean enabled);
     /** 拆线程：GAL 套 ThreadedRenderer，GPU 模拟与 Vulkan 录制提交分两条线程。mode = "0"（单线程基线）| "1" | "auto"（按本游戏上局记录）；只能在宿主创建前设置。 */
     static native int configureThreadedRenderer(String mode);
+    /** 玩家画质选项：true = 高画质（上屏 EASU 放大等），false = 更省电。只能在宿主创建前设置。 */
+    static native int configureHighQuality(boolean on);
     /** 游戏宿主只提供 lease；不会启动诊断 presenter 或执行诊断自测。 */
     static native long createGame();
     /** 返回 0 表示启动 worker 已接收冻结输入，不代表 guest 已运行。 */
@@ -221,6 +229,8 @@ final class NativeBridge {
     static native void setHostBuild(String build);
     /** 存档原子提交判定（共用 direct_prompt.c）：每秒轮询，正数 = 服务层报出原因位（只报一次），负数 = 状态未知（服务层缺导出，不提示）。 */
     static native int pollSaveAtomic();
+    /** 游玩时间落盘（共用 runtime/src/playtime.c）：游戏在前台时每 10 秒、onPause 与收局前各一次；没攒够 1 秒不写。 */
+    static native void flushPlaytime();
 
     static native String checkModules(String modulesDir);
     /** Maps exactly these rewritten module images (load check; nothing runs). Any thread. */

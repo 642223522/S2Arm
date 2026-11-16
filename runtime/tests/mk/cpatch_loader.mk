@@ -1,6 +1,6 @@
 # 使用与宿主相同的完整原生生产对象；不提供 module / follow / loader 桩。
 NATIVE_TEST_OWN += cpatch_loader
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 $(BUILD)/tests/t_cpatch_loader: runtime/tests/t_cpatch_loader.c $(NVN_TEST_HOST_OBJS)
 	$(CC) $(CFLAGS) $(NATIVE_INC) -o $@ $< $(NVN_TEST_HOST_OBJS) $(S2A_HOST_WEAK)
 .PHONY: native-test-cpatch_loader

@@ -12,6 +12,7 @@ nvn_gpu_view rp_view_by_id(int id, nvn_gpu_cmd c, const tex_t **t_out);
 // 按着色器声明取兼容视图；dtt = NVN 目标 + 1，0 沿用原样。elem 表示句柄数组元素。
 // 返回视图由核心持有；调用方在 pin 窗口内取用并交给后端。线程：[提交]。
 nvn_gpu_view rp_view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, int elem, nvn_gpu_cmd c, const tex_t **t_out);
+uint64_t rp_empty_slot_zero_count(void);   // 空贴图槽绑零贴图的次数（#1147；信息计数）
 // 贴图对象 + 视图记录（NULL = 默认视图）→ 视图：渲染目标、拷贝端点用。线程：[提交]。
 nvn_gpu_view rp_view_for(const tex_t *t, const view_t *v, nvn_gpu_cmd c);
 // 当颜色附件取视图。刚建、初始内容该是全零的单级单层颜色图：不在 CPU 上填零，记成「待清零」，

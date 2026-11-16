@@ -47,7 +47,7 @@ int s2a_screen_w(void) { return atomic_load(&g_screen_w); }
 int s2a_screen_h(void) { int w, h; return s2a_android_screen_metrics(&w, &h) ? h : 0; }
 void s2a_boot_mark(const char *stage) { strncpy(g_boot_mark, stage ? stage : "", sizeof g_boot_mark - 1); }
 
-int s2a_fps_live(void) { unbacked(__func__); return 0; }
+int s2a_cpatch_fps_unit(const char *id) { (void)id; unbacked(__func__); return 0; }   // runtime/src/cpatch.c：这份帧率补丁选中档（FpsLocker.cs 按份问）；诊断库 = 没选中
 const char *s2a_cpatch_tables_dir(void) { unbacked(__func__); return ""; }   // runtime/src/cpatch.c：随包补丁表目录（FpsLocker.cs 找帧率配置）；诊断库没有 = 空串，服务层照常跳过
 int s2a_cpatch_cheat(const char *file, const char *name, int on) { (void)file; (void)name; (void)on; unbacked(__func__); return 0; }   // runtime/src/cpatch.c：编进包的金手指开关（Cheats.cs）；0 = 包里没有，交运行时 Tamper   // runtime/src/fps.c：60 帧此刻是否真在生效（服务层 FpsLocker.cs 每秒问）；诊断库里不跑核心 = 不生效
 uint32_t s2a_handle_new(uint32_t kind, uint64_t cookie) { (void)kind; (void)cookie; unbacked(__func__); return 0; }
@@ -98,6 +98,7 @@ int s2a_nro_map(const uint8_t sha[32], uint64_t size, uint64_t bss, uint64_t *ba
     (void)sha; (void)size; (void)bss; if (base) *base = 0; unbacked(__func__); return 1;
 }
 int s2a_nro_unmap(uint64_t base) { (void)base; unbacked(__func__); return 1; }
+int s2a_nro_keep(const uint8_t sha[32], const uint8_t *data, uint64_t size) { (void)sha; (void)data; (void)size; unbacked(__func__); return 1; }
 // 金手指（services Cheats.cs）取主程序基址 / 构建号（runtime/src/loader.c）：诊断目标没有装载器，回「未装载」
 uint64_t s2a_main_base(void) { unbacked(__func__); return 0; }
 uint64_t s2a_main_region_va(uint64_t off) { (void)off; unbacked(__func__); return 0; }

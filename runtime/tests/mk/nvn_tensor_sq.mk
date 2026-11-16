@@ -1,6 +1,6 @@
 # native-test-nvn_tensor_sq：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += nvn_tensor_sq
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # 张量核网络顶替的输出域：平方域出口层先把输入平方再 MetalFX 放大（时之笛游玩画面发白）；Metal 4 编码线程关 / 开、Metal 3 各跑一遍
 $(BUILD)/tests/t_nvn_tensor_sq: graphics/nvn/tests/t_nvn_tensor_sq.m graphics/nvn/gfx/nvn/nvn_mtl.m graphics/nvn/widen_glue.inc graphics/nvn/widen_fallback.inc $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \

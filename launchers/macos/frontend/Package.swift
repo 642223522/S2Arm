@@ -19,11 +19,14 @@ let package = Package(
     products: [.library(name: "NX2AppleUI", targets: ["NX2AppleUI"])],
     dependencies: [.package(path: "../adapter"), .package(path: "../../shared/SaveSync")],
     targets: [
+        .target(name: "LauncherPadBridge", path: "Sources/LauncherPadBridge", publicHeadersPath: "include",
+                cSettings: [.headerSearchPath(".")],
+                linkerSettings: [.linkedFramework("AppKit")]),
         .target(name: "NXCore", path: "Sources/NXCore"),
         .target(name: "NXModel", dependencies: ["NXCore"], path: "Sources/NXModel"),
         .target(name: "NXLauncher", dependencies: ["NXModel", "NXCore"], path: "Sources/NXLauncher"),
         .target(name: "NX2AppleUI",
-                dependencies: ["NXLauncher", "NXModel", "NXCore", .product(name: "S2ArmAppleAdapter", package: "adapter"),
+                dependencies: ["NXLauncher", "NXModel", "NXCore", "LauncherPadBridge", .product(name: "S2ArmAppleAdapter", package: "adapter"),
                                .product(name: "SaveSync", package: "SaveSync"), "Sparkle"],
                 path: "Sources/NX2Apple"),
         // 应用内更新（v0.3.10 维护者拍板：换成业界标准的 Sparkle 2，不再自写换版）：上游 2.10.1 的 Sparkle-for-Swift-Package-Manager.zip，MIT 许可见 Vendor/Sparkle-LICENSE.txt。
@@ -33,6 +36,7 @@ let package = Package(
         .binaryTarget(name: "Sparkle", path: sparkleZip),
         // 界面语言跟随系统 / 记住选择的单测（tests/launcher_language_test.sh 跑；NXCore 是 package 访问级别，只能在本包里测）
         .testTarget(name: "NXCoreTests", dependencies: ["NXCore"], path: "Tests/NXCoreTests"),
+        .testTarget(name: "NXLauncherTests", dependencies: ["NXLauncher", "NX2AppleUI"], path: "Tests/NXLauncherTests"),
     ],
     swiftLanguageModes: [.v5]
 )

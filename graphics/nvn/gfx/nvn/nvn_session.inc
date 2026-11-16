@@ -247,5 +247,5 @@ void nvn_be_begin_session(void) {
     atomic_store(&g_shpre_stopping, 0);
     os_unfair_lock_unlock(&g_shpre_mu);
     atomic_store(&g_link_stop, 0); atomic_store(&g_present_discard, 0);
-    const char *e = getenv("DM_PRESENT_LINK"); g_dm_present_link = e ? atoi(e) : 1;
+    g_dm_present_link = present_link_from_env();   // 同 mtl_init：补帧开着时不起显示链（120 档补丁除外），每局开头不再只按 DM_PRESENT_LINK 缺省 1
 }

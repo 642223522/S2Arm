@@ -34,7 +34,40 @@ int16_t s2a_hid_pad_axis(long v, long min, long max, int invert) {
     return (int16_t)(f * 32767.0);
 }
 
-typedef struct { IOHIDDeviceRef dev; uint32_t buttons, hat; int16_t ax[4]; char name[96]; } hp_dev;
+// ---- Switch Pro 协议（#934 11-15）----
+void s2a_pro_cal_default(s2a_pro_cal *c) { c->cx = c->cy = 2048; c->xmax = c->ymax = c->xmin = c->ymin = 1600; }
+static int cal12(const uint8_t *d, int i) { return i & 1 ? (d[i / 2 * 3 + 1] >> 4) | (d[i / 2 * 3 + 2] << 4) : d[i / 2 * 3] | ((d[i / 2 * 3 + 1] & 0xF) << 8); }   // 9 字节 = 6 个 12 位值
+int s2a_pro_cal_parse(const uint8_t d[18], s2a_pro_cal *l, s2a_pro_cal *r) {
+    int v[12]; for (int i = 0; i < 6; i++) { v[i] = cal12(d, i); v[6 + i] = cal12(d + 9, i); }
+    int blank = 1; for (int i = 0; i < 12; i++) if (v[i] != 0xFFF && v[i] != 0) blank = 0;
+    if (blank) return 0;
+    // 左：上行程 x y、中心 x y、下行程 x y；右：中心 x y、下行程 x y、上行程 x y（字段次序两边不同，照协议文档）
+    *l = (s2a_pro_cal){(uint16_t)v[2], (uint16_t)v[3], (uint16_t)v[0], (uint16_t)v[1], (uint16_t)v[4], (uint16_t)v[5]};
+    *r = (s2a_pro_cal){(uint16_t)v[6], (uint16_t)v[7], (uint16_t)v[10], (uint16_t)v[11], (uint16_t)v[8], (uint16_t)v[9]};
+    return 1;
+}
+int16_t s2a_pro_axis(int v, int center, int above, int below) {
+    int dv = v - center; double f = dv > 0 ? (above > 0 ? (double)dv / above : 0) : (below > 0 ? (double)dv / below : 0);
+    if (f > 1) f = 1; if (f < -1) f = -1;
+    return (int16_t)(f * 32767.0);
+}
+int s2a_pro_parse(const uint8_t *r, size_t n, const s2a_pro_cal *l, const s2a_pro_cal *rc, uint32_t *buttons, int16_t ax[4]) {
+    if (n < 12 || (r[0] != 0x30 && r[0] != 0x21)) return 0;
+    uint8_t a = r[3], m = r[4], b = r[5]; uint32_t o = 0;
+    if (a & 0x01) o |= B_WEST; if (a & 0x02) o |= B_NORTH; if (a & 0x04) o |= B_SOUTH; if (a & 0x08) o |= B_EAST; if (a & 0x40) o |= B_R; if (a & 0x80) o |= B_ZR;
+    if (m & 0x01) o |= B_MINUS; if (m & 0x02) o |= B_PLUS; if (m & 0x04) o |= B_RSTICK; if (m & 0x08) o |= B_LSTICK;
+    if (b & 0x01) o |= B_DOWN; if (b & 0x02) o |= B_UP; if (b & 0x04) o |= B_RIGHT; if (b & 0x08) o |= B_LEFT; if (b & 0x40) o |= B_L; if (b & 0x80) o |= B_ZL;
+    *buttons = o;
+    int lx = r[6] | ((r[7] & 0xF) << 8), ly = (r[7] >> 4) | (r[8] << 4), rx = r[9] | ((r[10] & 0xF) << 8), ry = (r[10] >> 4) | (r[11] << 4);
+    ax[0] = s2a_pro_axis(lx, l->cx, l->xmax, l->xmin); ax[1] = s2a_pro_axis(ly, l->cy, l->ymax, l->ymin);   // 0x30 报告里 Y 向上为正，与 GameController 同向
+    ax[2] = s2a_pro_axis(rx, rc->cx, rc->xmax, rc->xmin); ax[3] = s2a_pro_axis(ry, rc->cy, rc->ymax, rc->ymin);
+    return 1;
+}
+uint8_t s2a_pro_player_lights(int slot) { return slot < 0 ? 0x1 : slot >= 3 ? 0xF : (uint8_t)((1u << (slot + 1)) - 1); }
+
+typedef struct { IOHIDDeviceRef dev; uint32_t buttons, hat; int16_t ax[4]; char name[96];
+    int full; uint8_t cnt, rep[64]; s2a_pro_cal cl, cr;
+    s2a_pad_motion motion; uint64_t motion_us; int imu_said; } hp_dev;   // motion：0x30 报告里的最后一组 IMU（motion_us = 收到时刻，0 = 没有）   // full：已收到 0x30 报告（之后不再用 HID 元素那一路）；cnt：子命令包序号
 static hp_dev g_dev[S2A_HID_PAD_MAX];
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 
@@ -45,7 +78,7 @@ static void value_cb(void *ctx, IOReturn r, void *sender, IOHIDValueRef value) {
     long v = IOHIDValueGetIntegerValue(value), min = IOHIDElementGetLogicalMin(e), max = IOHIDElementGetLogicalMax(e);
     pthread_mutex_lock(&g_mu);
     hp_dev *d = ctx;
-    if (d->dev) {
+    if (d->dev && !d->full) {
         if (page == kHIDPage_Button) { uint32_t b = s2a_hid_pad_switch_button_bit((int)usage); if (v) d->buttons |= b; else d->buttons &= ~b; }
         else if (page == kHIDPage_GenericDesktop) switch (usage) {
             case kHIDUsage_GD_X: d->ax[0] = s2a_hid_pad_axis(v, min, max, 0); break;
@@ -59,6 +92,56 @@ static void value_cb(void *ctx, IOReturn r, void *sender, IOHIDValueRef value) {
     pthread_mutex_unlock(&g_mu);
 }
 
+static int16_t rd16le(const uint8_t *p) { return (int16_t)(p[0] | p[1] << 8); }
+// 0x30 完整报告：报告号 + 计时 + 电量 + 按键 3 + 摇杆 6 + 振动 1 = 13 字节后是 3 组 IMU（每组 12 字节：加速度 xyz、角速度 xyz，5 ms 一组），取最后一组。
+//   量程同一代 Pro 出厂（±8 g、±2000 度/秒）：加速度 0.000244 g / 计数、角速度 0.06103 度/秒 / 计数；轴向同 joycon_imu.m 的 Pro（参考 SDL3 hidapi_switch.c，zlib）
+int s2a_pro_imu(const uint8_t *r, size_t n, s2a_pad_motion *out) {
+    if (!r || n < 13 + 36 || r[0] != 0x30) return 0;
+    const uint8_t *s = r + 13 + 24;
+    float ax = rd16le(s + 0) * 0.000244f, ay = rd16le(s + 2) * 0.000244f, az = rd16le(s + 4) * 0.000244f;
+    float gx = rd16le(s + 6) * 0.06103f, gy = rd16le(s + 8) * 0.06103f, gz = rd16le(s + 10) * 0.06103f;
+    out->acceleration_x = -ay; out->acceleration_y = ax; out->acceleration_z = az;
+    out->gyro_x = -gy; out->gyro_y = gx; out->gyro_z = gz;
+    return 1;
+}
+static uint64_t hp_now_us(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000; }
+
+// 原始输入报告（报告号在首字节）：0x30 = 完整报告（按键 + 12 位摇杆）；0x21 = 子命令应答（同样带按键摇杆，SPI 读应答带校准数据）
+static void report_cb(void *ctx, IOReturn r, void *sender, IOHIDReportType type, uint32_t id, uint8_t *rep, CFIndex n) {
+    (void)r; (void)sender; (void)type;
+    if (n < 1 || (id != 0x30 && id != 0x21)) return;
+    uint8_t b[64]; size_t m = (size_t)n;
+    if (rep[0] == id) { if (m > sizeof b) m = sizeof b; memcpy(b, rep, m); }
+    else { b[0] = (uint8_t)id; if (m > sizeof b - 1) m = sizeof b - 1; memcpy(b + 1, rep, m); m++; }   // 有的路径不带报告号：补上
+    pthread_mutex_lock(&g_mu);
+    hp_dev *d = ctx;
+    if (d->dev) {
+        if (id == 0x21 && m >= 20 + 18 && b[14] == 0x10 && b[15] == 0x3D && b[16] == 0x60) {   // SPI 读 0x603D 应答：出厂摇杆校准
+            s2a_pro_cal l, rc; if (s2a_pro_cal_parse(b + 20, &l, &rc)) { d->cl = l; d->cr = rc;
+                fprintf(stderr, "[输入] 兜底手柄 %s：出厂摇杆校准 左 中心 %u/%u 行程 +%u/-%u +%u/-%u，右 中心 %u/%u\n", d->name, l.cx, l.cy, l.xmax, l.xmin, l.ymax, l.ymin, rc.cx, rc.cy); } }
+        uint32_t bt; int16_t ax[4];
+        if (s2a_pro_parse(b, m, &d->cl, &d->cr, &bt, ax)) {
+            if (id == 0x30 && !d->full) { d->full = 1; d->hat = 0; fprintf(stderr, "[输入] 兜底手柄 %s：收到完整报告 0x30，改按 Switch Pro 协议读（摇杆 12 位、按校准换算）\n", d->name); }
+            if (d->full) { d->buttons = bt; memcpy(d->ax, ax, sizeof ax); } }
+        s2a_pad_motion mo;
+        if (id == 0x30 && s2a_pro_imu(b, m, &mo) && (mo.acceleration_x != 0 || mo.acceleration_y != 0 || mo.acceleration_z != 0)) {   // 全 0 = 手柄没开 IMU / 不带陀螺仪
+            mo.host_timestamp_us = hp_now_us(); d->motion = mo; d->motion_us = mo.host_timestamp_us;
+            if (!d->imu_said) { d->imu_said = 1; fprintf(stderr, "[输入] 兜底手柄 %s：报告里有六轴（陀螺仪 / 加速度），按玩家体感交给游戏\n", d->name); } }
+    }
+    pthread_mutex_unlock(&g_mu);
+}
+// Switch Pro 子命令：输出报告 0x01 = [0x01, 序号, 8 字节空振动, 子命令号, 参数…]（49 字节），delay_ms 后在主线程发
+static void pro_subcmd_later(hp_dev *d, IOHIDDeviceRef dev, uint8_t cmd, const uint8_t *arg, size_t n, int delay_ms) {
+    uint8_t p[49] = {0x01, 0, 0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40, cmd}; if (n > sizeof p - 11) n = sizeof p - 11; memcpy(p + 11, arg, n);
+    NSData *pk = [NSData dataWithBytes:p length:sizeof p]; CFRetain(dev);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)delay_ms * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        pthread_mutex_lock(&g_mu); int live = d->dev == dev; uint8_t c = d->cnt++ & 0xF; pthread_mutex_unlock(&g_mu);
+        if (live) { uint8_t q[49]; memcpy(q, pk.bytes, sizeof q); q[1] = c;
+            IOReturn r = IOHIDDeviceSetReport(dev, kIOHIDReportTypeOutput, 0x01, q, sizeof q);
+            if (r != kIOReturnSuccess) fprintf(stderr, "[输入] 兜底手柄：子命令 0x%02x 发送失败 0x%x（手柄不认 Switch Pro 协议时照旧按 HID 元素读）\n", q[10], r); }
+        CFRelease(dev);
+    });
+}
 static void attach(void *ctx, IOReturn r, void *sender, IOHIDDeviceRef dev) {
     (void)ctx; (void)r; (void)sender;
     CFStringRef pn = IOHIDDeviceGetProperty(dev, CFSTR(kIOHIDProductKey));
@@ -67,7 +150,8 @@ static void attach(void *ctx, IOReturn r, void *sender, IOHIDDeviceRef dev) {
     int vid = 0, pid = 0; CFNumberRef n;
     if ((n = IOHIDDeviceGetProperty(dev, CFSTR(kIOHIDVendorIDKey)))) CFNumberGetValue(n, kCFNumberIntType, &vid);
     if ((n = IOHIDDeviceGetProperty(dev, CFSTR(kIOHIDProductIDKey)))) CFNumberGetValue(n, kCFNumberIntType, &pid);
-    if (!s2a_hid_pad_wants(name, vid)) return;
+    // 不接的 HID 游戏手柄也记一行（#1276：8BitDo 蓝牙模式启动器 / 游戏都认不到，诊断里连名字都没有，只能猜是不是 GameController 没给）
+    if (!s2a_hid_pad_wants(name, vid)) { fprintf(stderr, "[输入] HID 游戏手柄：%s（厂商 / 产品号 0x%x / 0x%x）名字不带「Pro Controller」，兜底不接——GameController 认得它就走系统手柄，认不得就没有输入\n", name[0] ? name : "（没名字）", vid, pid); return; }
     pthread_mutex_lock(&g_mu);
     hp_dev *d = NULL;
     for (int i = 0; i < S2A_HID_PAD_MAX; i++) if (g_dev[i].dev == dev) { pthread_mutex_unlock(&g_mu); return; }
@@ -75,8 +159,17 @@ static void attach(void *ctx, IOReturn r, void *sender, IOHIDDeviceRef dev) {
     if (!d) { pthread_mutex_unlock(&g_mu); fprintf(stderr, "[输入] 兜底手柄：已满 %d 只，%s 不接\n", S2A_HID_PAD_MAX, name); return; }
     memset(d, 0, sizeof *d); d->dev = dev; snprintf(d->name, sizeof d->name, "%s", name);
     pthread_mutex_unlock(&g_mu);
+    s2a_pro_cal_default(&d->cl); s2a_pro_cal_default(&d->cr);
     IOHIDDeviceRegisterInputValueCallback(dev, value_cb, d);
-    fprintf(stderr, "[输入] 兜底手柄：接上 %s（厂商 / 产品号 0x%x / 0x%x，GameController 不认，按 HID 元素直读）\n", name, vid, pid);
+    IOHIDDeviceRegisterInputReportCallback(dev, d->rep, sizeof d->rep, report_cb, d);
+    fprintf(stderr, "[输入] 兜底手柄：接上 %s（厂商 / 产品号 0x%x / 0x%x，GameController 不认）：先按 HID 元素直读，同时发 Switch Pro 子命令切完整报告、点玩家灯\n", name, vid, pid);
+    // 子命令之间隔 50 ms（蓝牙手柄连发会丢）：读出厂摇杆校准 → 切完整报告 0x30 → 点玩家灯
+    int slot = (int)(d - g_dev);
+    static const uint8_t spi[] = {0x3D, 0x60, 0x00, 0x00, 18};
+    pro_subcmd_later(d, dev, 0x10, spi, sizeof spi, 0);
+    pro_subcmd_later(d, dev, 0x03, (const uint8_t[]){0x30}, 1, 50);
+    pro_subcmd_later(d, dev, 0x40, (const uint8_t[]){0x01}, 1, 150);   // 打开 IMU（第三方 Switch 模式手柄带陀螺仪的才有读数；不带的照样回全 0，上面按全 0 不收）
+    pro_subcmd_later(d, dev, 0x30, (const uint8_t[]){s2a_pro_player_lights(slot)}, 1, 100);
 }
 static void detach(void *ctx, IOReturn r, void *sender, IOHIDDeviceRef dev) {
     (void)ctx; (void)r; (void)sender;
@@ -114,4 +207,17 @@ int s2a_mac_hid_pad_read(s2a_hid_pad out[S2A_HID_PAD_MAX]) {
     }
     pthread_mutex_unlock(&g_mu);
     return n;
+}
+
+int s2a_mac_hid_pad_motion(const void *id, s2a_pad_motion *out) {
+    int ok = 0;
+    pthread_mutex_lock(&g_mu);
+    for (int i = 0; i < S2A_HID_PAD_MAX; i++) {
+        hp_dev *d = &g_dev[i];
+        if (id != (const void *)d || !d->dev || !d->motion_us) continue;
+        if (hp_now_us() - d->motion_us < 200000) { *out = d->motion; ok = 1; }
+        break;
+    }
+    pthread_mutex_unlock(&g_mu);
+    return ok;
 }

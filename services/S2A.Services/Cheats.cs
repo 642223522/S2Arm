@@ -27,6 +27,7 @@ namespace S2A.Services
         private const int ReloadEveryTicks = 12;
         private static long _keys;
         private static Thread _thread;
+        private static CancellationTokenSource _stop;
         private static readonly HashSet<string> _native = new(StringComparer.Ordinal);   // 上次交原生层开着的编进包条目：文件删了 / 改名后要关掉
 
         public struct Entry
@@ -85,8 +86,19 @@ namespace S2A.Services
             try { dir = Marshal.PtrToStringUTF8((IntPtr)Imports.s2a_cheats_dir()); }
             catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException) { return; }
             if (string.IsNullOrEmpty(dir)) return;
-            _thread = new Thread(() => Run(dir)) { Name = "S2A.Cheats", IsBackground = true, Priority = ThreadPriority.BelowNormal };
+            var stop = _stop = new CancellationTokenSource();
+            _thread = new Thread(() => Run(dir, stop.Token)) { Name = "S2A.Cheats", IsBackground = true, Priority = ThreadPriority.BelowNormal };
             _thread.Start();
+        }
+
+        // 收局（Exports.ShutdownManaged）：停线程、清掉跨局状态。进程内重启时原生层会话复位把编进包的开关全清成关（runtime/src/cpatch.c s2a_cpatch_session_reset），
+        //   线程不停的话下一局 Start 见线程还在就返回、文件没改也不重载，开关不再交原生层，status.txt 仍写「生效中（编进游戏）」（审计 P1-185）
+        public static void Stop()
+        {
+            Thread t = _thread; if (t == null) return;
+            _stop.Cancel();
+            if (!t.Join(3000)) Console.Error.WriteLine("【红】金手指：线程 3 秒内没停下");
+            _thread = null; _stop = null; _native.Clear(); seenNative = new HashSet<string>(StringComparer.Ordinal);
         }
 
         private sealed class Item
@@ -94,11 +106,11 @@ namespace S2A.Services
             public Entry Entry; public ITamperProgram Code; public string Status; public bool Off;
         }
 
-        private static void Run(string dir)
+        private static void Run(string dir, CancellationToken stop)
         {
             var programs = new List<Item>();
             string seen = null;
-            for (int tick = 0; ; tick++)
+            for (int tick = 0; !stop.IsCancellationRequested; tick++)
             {
                 if (tick % ReloadEveryTicks == 0)
                 {
@@ -144,7 +156,7 @@ namespace S2A.Services
                     else if (p.Status == "地址未就绪") { p.Status = "生效中"; changed = true; }
                 }
                 if (changed) WriteStatus(dir, programs);
-                Thread.Sleep(any ? TickMs : TickMs * ReloadEveryTicks / 2);
+                if (stop.WaitHandle.WaitOne(any ? TickMs : TickMs * ReloadEveryTicks / 2)) return;
                 if (!any) tick += ReloadEveryTicks / 2 - 1;
             }
         }
@@ -246,9 +258,15 @@ namespace S2A.Services
             var sb = new StringBuilder();
             foreach (Item p in programs) sb.Append(p.Entry.Key).Append('\t').Append(p.Status).Append('\n');
             string path = Path.Combine(dir, "status.txt"), tmp = path + ".tmp";
+            // 目录写不进（D-QCTB：iPhone 上 cheats/ 归 root，UnauthorizedAccessException 没接住 → 整局 FailFast）：只记一行红、金手指照常执行，
+            //   状态显示缺了而已；目录归属由宿主起库时的游戏目录修复（runtime/src/pack_apply.c games_unwritable）迁走
             try { File.WriteAllText(tmp, sb.ToString()); File.Move(tmp, path, true); }
-            catch (IOException e) { Console.Error.WriteLine($"金手指：写 status.txt 失败 {e.Message}"); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                if (!_statusWarned) { _statusWarned = true; Console.Error.WriteLine($"【红】金手指：写 status.txt 失败 {e.GetType().Name}: {e.Message}（金手指照常执行，界面看不到状态）"); }
+            }
         }
+        private static bool _statusWarned;
 
         // 「main」区（Atmosphere 区号 0）：偏移按 Horizon 排布算——main 后面首尾相接 subsdk0..N、sdk（各自映像尾 4 KB 对齐），超出 main 的落进后面的模块；
         //   我们的模块按 2 MB 对齐各自摆放（runtime/src/loader.c），直接加 main 基址会写到别的模块的别处（11-13 实测：一款的帧率金手指写 main+0x24191F4，

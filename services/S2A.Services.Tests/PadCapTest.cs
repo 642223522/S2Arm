@@ -39,6 +39,17 @@ namespace S2A.Services.Tests
             Settle(() => Style(1) == 1);
             string again = $"{okAgain.ToString().ToLower()} {InputPump.Pads} 个 {Style(0)} / {Style(1)}";
 
+            var changed = new System.Collections.Generic.List<string>();
+            for (int cycle = 0; cycle < 3; cycle++)
+            {
+                foreach (int max in new[] { 1, 2 })
+                {
+                    bool ok = ui.DisplayMessageDialog(Args(max, max));
+                    Settle(() => Style(1) == (max == 1 ? 0u : 1u));
+                    changed.Add($"{ok.ToString().ToLower()}/{InputPump.Pads}");
+                }
+            }
+
             InputPump.Stop();
             InputPump.SetPrimary(Host.Device, PlayerIndex.Handheld, ControllerType.Handheld);   // 还原，不影响后面的用例
 
@@ -46,6 +57,7 @@ namespace S2A.Services.Tests
             Check("人数上限：再要 1–1 人 → 只留 Player1、小程序重验通过（应答 手柄数 样式 重验 已连 主手柄）", "true 1 个 1 / 0 重验 true 1 Player1", one);
             Check("人数上限：之后再想开到 2 格 → 仍 1 格（手柄数 Player2 样式）", "1 个 0", capped);
             Check("人数上限：下次小程序放宽到 2 人 → 又两格都连", "true 2 个 1 / 1", again);
+            Check("人数上限：连续六次切换人数属于新配置，不累计为同配置卡住", "true/1 true/2 true/1 true/2 true/1 true/2", string.Join(" ", changed));
         }
     }
 }

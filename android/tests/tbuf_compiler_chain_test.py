@@ -246,4 +246,14 @@ else:
                              str(OUT/'profile.json'), identity['translatorClosure'], str(SRC),
                              str(OUT/'production/program.json'), str(result_path)])
     failed += result.returncode != 0
+    for stage, original in [('graphics', OUT/'production/program.json'), ('compute', result_path)]:
+        data = json.loads(original.read_text())
+        binding = next(b for b in data['content']['bindings'] if b['stage'] == ('fs' if stage == 'graphics' else 'cs') and b['kind'] == 'texture')
+        binding.pop('slot', None); binding.pop('samp_slot', None)
+        binding['uboHandle'] = {'slot': 1, 'offset': 16}
+        modified = OUT/(stage + '-tbufu.json')
+        modified.write_text(json.dumps(data, separators=(',', ':')))
+        result = subprocess.run([sys.executable, str(ROOT/'android/tests/nvk_shader_pool_test.py'), '--reject-' + stage + '-tbufu',
+                                 str(OUT/'profile.json'), identity['translatorClosure'], str(SRC), str(modified)])
+        failed += result.returncode != 0
 sys.exit(1 if failed else 0)

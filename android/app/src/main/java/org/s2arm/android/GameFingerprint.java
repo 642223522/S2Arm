@@ -27,7 +27,14 @@ import java.util.regex.Pattern;
 
 /** Device-local performance cache, never the identity of the package itself.
  * An in-place modification that restores size and mtime and keeps the inode is not detected;
- * this relies on the app-private revision's single-writer contract, not on authentication. */
+ * this relies on the app-private revision's single-writer contract, not on authentication.
+ *
+ * <p>原地来源（BootContract.IN_PLACE）：表仍在私有版本目录（revision），核对的是共享存储上的内容根（content）。
+ * 共享存储没有单写者约定，玩家 / 别的 App 可以改：身份（大小、dev、inode、修改时间纳秒）任何一项变了就按索引重算
+ * SHA-256，对不上具名拒（「in-place file changed」），缺了具名拒（「in-place file is missing」）。和私有目录一样，
+ * 保留大小 / 修改时间 / inode 的原地改写测不出，这是缓存不是认证。所以原地来源的可执行文件（revision 来源模块的
+ * image / fixups / gates / widen、exefs 下的 npdm：GameSession 给的 executables）每次起局都整份重算 SHA-256，不走身份命中；
+ * 数据文件（romfs 等）被改等于玩家打 mod，照旧按身份命中。 */
 final class GameFingerprint {
     private static final String PREFIX = ".s2a-fingerprint-";
     private static final Pattern TABLE = Pattern.compile("\\.s2a-fingerprint-[0-9a-f]{64}\\.tsv");
@@ -247,19 +254,69 @@ final class GameFingerprint {
         return verify(revision, entries, indexSha, ref, timing, null);
     }
 
+    static Verification verify(File revision, List<GamePack.Entry> entries, String indexSha, Reference ref,
+                               Timing timing, String artifactName)
+            throws IOException, BootContract.BadGame {
+        return verify(revision, revision, entries, indexSha, ref, timing, artifactName);
+    }
+
     // Single no-follow enumeration of the whole revision tree, replacing the previous
     // per-entry canonicalization loop plus the separate checkFileSet traversal. With
     // NOFOLLOW_LINKS an enumerated name maps 1:1 to its real on-disk path (directory
     // links reject instead of being traversed), so admission needs no realpath per file.
     // artifactName == null keeps install-time staging semantics: strays are ignored.
-    static Verification verify(File revision, List<GamePack.Entry> entries, String indexSha, Reference ref,
+    // revision holds the table; content is the tree that is walked (the same directory unless in place).
+    static Verification verify(File revision, File content, List<GamePack.Entry> entries, String indexSha, Reference ref,
                                Timing timing, String artifactName)
+            throws IOException, BootContract.BadGame {
+        return verify(revision, content, entries, indexSha, ref, timing, artifactName, java.util.Collections.emptyMap());
+    }
+
+    // executables：路径 → 名字（如「module main image」）。这些文件身份命中也整份重算，对不上按名字报
+    static Verification verify(File revision, File content, List<GamePack.Entry> entries, String indexSha, Reference ref,
+                               Timing timing, String artifactName, Map<String,String> executables)
             throws IOException, BootContract.BadGame {
         long phase = Timing.start(timing);
         List<Stamp> saved=read(revision,entries,indexSha,ref);
         Timing.end(timing, "fingerprint_table_read", phase);
+        return verify(content, entries, saved, timing, artifactName, !content.equals(revision), executables);
+    }
+
+    // Install-time staging: placed[n] is the stamp of a file whose size and SHA-256 were checked
+    // while it was placed (null: not checked by this install, so it is hashed here).
+    static Verification verifyPlaced(File revision, List<GamePack.Entry> entries, List<Stamp> placed)
+            throws IOException, BootContract.BadGame {
+        return verifyPlaced(revision, false, entries, placed);
+    }
+
+    // 原地登记：content 是共享存储上的根，placed 是刚按索引核过 SHA-256 的文件身份
+    static Verification verifyPlaced(File content, boolean inPlace, List<GamePack.Entry> entries, List<Stamp> placed)
+            throws IOException, BootContract.BadGame {
+        if (placed.size() != entries.size()) throw new IllegalArgumentException("placed stamps do not match the index");
+        return verify(content, entries, placed, null, null, inPlace, java.util.Collections.emptyMap());
+    }
+
+    /** 按索引里的大小读够就停的 SHA-256：不为确认末尾多读一次（vivo 上经共享存储 FUSE 读大文件，「读到末尾」那次 read
+     *  曾一直不返回，见 GameInstall.store）。读不够 size 字节返回 null（文件比索引短）。 */
+    static String sha256Exact(File file, long size, java.util.function.LongConsumer progress) throws IOException {
+        MessageDigest md=GamePack.digest();
+        byte[] buf=new byte[1<<20];
+        long got=0;
+        try (java.io.InputStream in=new java.io.FileInputStream(file)) {
+            for (int n; got<size && (n=in.read(buf,0,(int)Math.min(buf.length,size-got)))>0; ) {
+                md.update(buf,0,n); got+=n;
+                if (progress!=null) progress.accept(n);
+            }
+        }
+        return got==size ? GamePack.hex(md.digest()) : null;
+    }
+
+    private static Verification verify(File revision, List<GamePack.Entry> entries, List<Stamp> saved,
+                                       Timing timing, String artifactName, boolean inPlace,
+                                       Map<String,String> executables)
+            throws IOException, BootContract.BadGame {
         BootContract.UnderRoot scope=BootContract.underRoot(revision);
-        phase = Timing.start(timing);
+        long phase = Timing.start(timing);
         Map<String,Integer> ord=new LinkedHashMap<>(entries.size()*2);
         for (int n=0;n<entries.size();n++) ord.put(entries.get(n).path,n);
         Stamp[] fresh=new Stamp[entries.size()];
@@ -287,7 +344,7 @@ final class GameFingerprint {
                             System.err.println("S2Arm: revision root file outside the content index ignored: "+name);
                             return FileVisitResult.CONTINUE;
                         }
-                        throw new IOException("revision file is outside the content index: "+name);
+                        throw new IOException((inPlace ? "in-place file is outside the content index: " : "revision file is outside the content index: ")+name);
                     }
                     return FileVisitResult.CONTINUE;
                 }
@@ -326,12 +383,15 @@ final class GameFingerprint {
                     throw (RuntimeException)error;
                 } finally { if (sampled) timing.sample(timing.stats,sampleStart); }
                 if (before != null ? before.size != e.size : (!file.isFile() || file.length()!=e.size))
-                    throw new IOException("revision file fails size / SHA-256: "+e.path);
+                    throw new IOException(inPlace ? "in-place file changed (size differs from index.tsv): "+e.path
+                                                  : "revision file fails size / SHA-256: "+e.path);
                 if (timing != null) timing.replayPaths.add(file);
-                if (saved!=null && before!=null && before.same(saved.get(n))) {
+                boolean hit=saved!=null && before!=null && before.same(saved.get(n));
+                String executable=executables.get(e.path);
+                if (hit && executable==null) {
                     counters[0]++;
                 } else {
-                    counters[1]++; changed[0]=true;
+                    counters[1]++; if (!hit) changed[0]=true;
                     // Full recalculation still resolves through under(): hashing opens the
                     // canonical file, same as the old per-entry flow.
                     File hashed;
@@ -344,8 +404,10 @@ final class GameFingerprint {
                         if (error instanceof IOException) throw (IOException)error;
                         throw (RuntimeException)error;
                     } finally { if (sampled) timing.sample(timing.paths,sampleStart); }
-                    if (!RuntimeLibrary.sha256(hashed).equals(e.sha256))
-                        throw new IOException("revision file fails size / SHA-256: "+e.path);
+                    if (!e.sha256.equals(sha256Exact(hashed,e.size,null)))
+                        throw new IOException(executable != null ? "in-place executable changed (SHA-256 differs from index.tsv): "+executable+" "+e.path
+                                            : inPlace ? "in-place file changed (SHA-256 differs from index.tsv): "+e.path
+                                                      : "revision file fails size / SHA-256: "+e.path);
                     Stamp after=stat(hashed);
                     if (before!=null && !before.same(after))
                         throw new IOException("revision file changed while hashing: "+e.path);
@@ -358,7 +420,8 @@ final class GameFingerprint {
         Timing.end(timing,"verify_walk",walkPhase);
         if (badGame[0]!=null) throw badGame[0];
         for (int n=0;n<entries.size();n++)
-            if (!seen[n]) throw new IOException("revision file fails size / SHA-256: "+entries.get(n).path);
+            if (!seen[n]) throw new IOException(inPlace ? "in-place file is missing: "+entries.get(n).path+" (under "+revision+")"
+                                                        : "revision file fails size / SHA-256: "+entries.get(n).path);
         Timing.end(timing,"fingerprint_verify_loop",phase);
         return new Verification(java.util.Arrays.asList(fresh),counters[0],counters[1],changed[0]);
     }
@@ -379,30 +442,45 @@ final class GameFingerprint {
 
     static Reference write(File revision, List<GamePack.Entry> entries, String indexSha, List<Stamp> stamps) throws IOException {
         if (reserved(entries) || stamps.size()!=entries.size()) return null;
-        StringBuilder b=new StringBuilder("s2a-boot-fingerprint-v1\t").append(indexSha).append('\t').append(entries.size()).append('\n');
-        for (int i=0;i<entries.size();i++) {
-            Stamp s=stamps.get(i); if (s==null) return null;
-            b.append(entries.get(i).path).append('\t').append(s.size).append('\t').append(s.dev).append('\t')
-             .append(s.ino).append('\t').append(s.seconds).append('\t').append(s.nanos).append('\n');
-        }
-        byte[] bytes=b.toString().getBytes(StandardCharsets.UTF_8); if (bytes.length>MAX_TABLE) return null;
-        String sha=GamePack.sha256(bytes), name=PREFIX+sha+".tsv";
-        Path target=revision.toPath().resolve(name);
-        if (Files.exists(target,LinkOption.NOFOLLOW_LINKS)) {
-            if (!Files.isRegularFile(target,LinkOption.NOFOLLOW_LINKS))
-                throw new IOException("fingerprint target is not a regular file");
-            if (Files.size(target)<=MAX_TABLE && GamePack.sha256(Files.readAllBytes(target)).equals(sha))
-                return new Reference(name,sha,indexSha);
-        }
+        for (Stamp s : stamps) if (s==null) return null;
+        // 边写边算 SHA-256，不在内存里拼整张表：大包 30 万行约 32 MB，拼成一个 String 再取字节会撑爆
+        //   App 的 256 MB Java 堆（11-14 真机导入收尾 OutOfMemoryError，进程崩、导入作废）。
         // Own the temporary name format so interrupted writes remain recognizable on Android
         // regardless of the platform's createTempFile implementation.
         Path temp=revision.toPath().resolve(PREFIX+"tmp-"+UUID.randomUUID().toString().replace("-","")+".tsv");
         Files.createFile(temp);
         try {
-            try (FileOutputStream out=new FileOutputStream(temp.toFile())) { out.write(bytes); out.getFD().sync(); }
+            MessageDigest md=GamePack.digest();
+            long size;
+            try (FileOutputStream file=new FileOutputStream(temp.toFile());
+                 java.security.DigestOutputStream digest=new java.security.DigestOutputStream(file,md);
+                 java.io.BufferedOutputStream buf=new java.io.BufferedOutputStream(digest,1<<16)) {
+                byte[] head=("s2a-boot-fingerprint-v1\t"+indexSha+"\t"+entries.size()+"\n").getBytes(StandardCharsets.UTF_8);
+                buf.write(head); size=head.length;
+                StringBuilder line=new StringBuilder(256);
+                for (int i=0;i<entries.size();i++) {
+                    Stamp s=stamps.get(i);
+                    line.setLength(0);
+                    line.append(entries.get(i).path).append('\t').append(s.size).append('\t').append(s.dev).append('\t')
+                        .append(s.ino).append('\t').append(s.seconds).append('\t').append(s.nanos).append('\n');
+                    byte[] bytes=line.toString().getBytes(StandardCharsets.UTF_8);
+                    size+=bytes.length;
+                    if (size>MAX_TABLE) return null;
+                    buf.write(bytes);
+                }
+                buf.flush(); file.getFD().sync();
+            }
+            String sha=GamePack.hex(md.digest()), name=PREFIX+sha+".tsv";
+            Path target=revision.toPath().resolve(name);
+            if (Files.exists(target,LinkOption.NOFOLLOW_LINKS)) {
+                if (!Files.isRegularFile(target,LinkOption.NOFOLLOW_LINKS))
+                    throw new IOException("fingerprint target is not a regular file");
+                if (Files.size(target)<=MAX_TABLE && RuntimeLibrary.sha256(target.toFile()).equals(sha))
+                    return new Reference(name,sha,indexSha);
+            }
             Files.move(temp,target,StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);
+            return new Reference(name,sha,indexSha);
         } finally { Files.deleteIfExists(temp); }
-        return new Reference(name,sha,indexSha);
     }
 
     // Called only under GameStorage. A SHA-named new table is in place before current switches.

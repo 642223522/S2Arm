@@ -12,6 +12,11 @@ void s2a_phone_axes_basis(const int right[2], const int up[2], const double acc_
     acc_raw[0] = (float)-ax; acc_raw[1] = (float)-ay; acc_raw[2] = (float)-az;   // 重力方向 → 支撑反力
     gyr_raw[0] = (float)(rx * deg); gyr_raw[1] = (float)(ry * deg); gyr_raw[2] = (float)(rz * deg);
 }
+void s2a_phone_panel_fix(int panel_w, int panel_h, int right[2], int up[2]) {
+    if (panel_w <= 0 || panel_h <= panel_w || (double)panel_h / panel_w >= 1.6) return;
+    int r0 = right[0], r1 = right[1], u0 = up[0], u1 = up[1];
+    right[0] = r1; right[1] = -r0; up[0] = u1; up[1] = -u0;   // 顺时针 90°：(x, y) → (y, −x)
+}
 void s2a_phone_axes(int landscape_right, const double acc_dev[3], const double gyr_dev[3], float acc_raw[3], float gyr_raw[3]) {
     static const int rr[2] = {0, -1}, ru[2] = {1, 0}, lr[2] = {0, 1}, lu[2] = {-1, 0};
     s2a_phone_axes_basis(landscape_right ? rr : lr, landscape_right ? ru : lu, acc_dev, gyr_dev, acc_raw, gyr_raw);

@@ -2,7 +2,9 @@
 // 与 front_mac.m 的槽位表对接：每只占一个玩家槽，键位走同一份 gamepad 配置（键名同 Switch 2 Pro 那一路）。
 #ifndef S2A_MAC_HID_PAD_H
 #define S2A_MAC_HID_PAD_H
+#include <stddef.h>
 #include <stdint.h>
+#include "s2a_pad.h"
 
 enum { S2A_HID_PAD_MAX = 4 };
 // buttons 位序 = front_mac.m sample_coded_state 的键名表：east south north west leftStick rightStick leftShoulder rightShoulder
@@ -13,6 +15,11 @@ typedef struct { uint32_t buttons; int16_t lx, ly, rx, ry; const void *id; char 
 void s2a_mac_hid_pad_start(void);
 // 当前在线的兜底手柄，按接上顺序填进 out，返回只数
 int s2a_mac_hid_pad_read(s2a_hid_pad out[S2A_HID_PAD_MAX]);
+// 兜底手柄的体感（11-16，第三方 Switch 模式手柄：八位堂 / 盖世小鸡等自带陀螺仪、GameController 不认的）：id = s2a_hid_pad.id；
+//   有近 200 ms 内的六轴样本回 1（从 0x30 完整报告的 IMU 解出，同一代 Pro 的 Switch Pro 协议），否则回 0
+int s2a_mac_hid_pad_motion(const void *id, s2a_pad_motion *out);
+// 纯函数（单测）：0x30 完整报告（首字节报告号）→ 最后一组 IMU 样本换成 NS2 坐标（g、度/秒；同 joycon_imu.m 的 Pro / 右 Joy-Con 映射）。报告太短回 0
+int s2a_pro_imu(const uint8_t *r, size_t n, s2a_pad_motion *out);
 // 纯函数（单测用）：名字 / 厂商号的这只 HID 手柄要不要兜底接管——名字带「Pro Controller」就接，不按厂商号排除
 //   （#934 11-15：macOS 27 上任天堂原厂一代 Pro 手柄 0x057e:0x2009 系统没认出，按厂商号排除会把最需要兜底的这只挡在外面）；
 //   系统已认出的同名手柄由 front_mac.m 每帧按名字跳过，后连上、后被认出也照判，不会变成两个玩家
@@ -23,4 +30,17 @@ uint32_t s2a_hid_pad_switch_button_bit(int usage);
 uint32_t s2a_hid_pad_hat_bits(long v, long min, long max);
 // 纯函数（单测用）：HID 轴原值按逻辑范围归一到 -32767..32767；invert = 反向（HID 的 Y 向下为正）
 int16_t s2a_hid_pad_axis(long v, long min, long max, int invert);
+// Switch Pro 协议（#934 11-15：PowerA 授权手柄在简易 HID 模式下声明的摇杆量程远大于实际值，换算后只有满量程的几分之一、摇杆慢五六倍；
+//   灯一直闪是没人发点灯子命令）：连上时像 Steam 一样发子命令切完整报告（0x30）、点玩家灯、读出厂摇杆校准，之后按 0x30 报告直读。
+//   校准：中心与上 / 下行程（12 位）；读不到出厂校准用缺省（中心 2048、行程 1600）
+typedef struct { uint16_t cx, cy, xmax, ymax, xmin, ymin; } s2a_pro_cal;   // xmax / ymax：中心以上的行程；xmin / ymin：中心以下的行程
+void s2a_pro_cal_default(s2a_pro_cal *c);
+// 纯函数（单测用）：SPI 0x603D 起 18 字节（左 9 + 右 9，两边字段次序不同）→ 左 / 右摇杆校准；字段全是 0x000 / 0xFFF 时视为没写过，回 0 不改
+int s2a_pro_cal_parse(const uint8_t d[18], s2a_pro_cal *l, s2a_pro_cal *r);
+// 纯函数（单测用）：12 位摇杆值按校准归一到 -32767..32767（上 / 右为正）
+int16_t s2a_pro_axis(int v, int center, int above, int below);
+// 纯函数（单测用）：一条 0x30 / 0x21 输入报告（含报告号）→ buttons 位（同 s2a_hid_pad 的位序）与四个摇杆值；不是这两种报告回 0
+int s2a_pro_parse(const uint8_t *r, size_t n, const s2a_pro_cal *l, const s2a_pro_cal *rc, uint32_t *buttons, int16_t ax[4]);
+// 纯函数（单测用）：第 slot 个玩家（0 起）的玩家灯参数：点前 slot + 1 盏
+uint8_t s2a_pro_player_lights(int slot);
 #endif

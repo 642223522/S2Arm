@@ -43,32 +43,65 @@ def src_digest(proj):   # 工程按内容的摘要：ProjectReference 闭包里�
     return h.hexdigest()
 
 
-def prebuilt(dg):   # 启动器内置的一份（launchers/macos/bundle_engine.py 发版时编进 <App>/…/Binaries/Prepare/dsh_batch，并写下按 App 内源码算的摘要）：摘要相同才用，不同（源码被改过）照旧现编
+def _dotnet():  # 本机的 dotnet 命令（现编用；Windows 预编件随包 .NET 运行时也经它跑，见 build()）
+    return os.environ.get("DOTNET") or (
+        os.path.expanduser("~/.dotnet/dotnet")
+        if os.path.exists(os.path.expanduser("~/.dotnet/dotnet"))
+        else shutil.which("dotnet")
+    )
+
+
+def prebuilt(
+    dg,
+):  # 启动器内置的一份（launchers/macos/bundle_engine.py 发版时编进 <App>/…/Binaries/Prepare/dsh_batch，并写下按 App 内源码算的摘要）：摘要相同才用，不同（源码被改过）不用。
+    #   → 内置件程序的路径；两种发版形态不会同目录并存，按件认：Mac 发版是 NativeAOT 单文件（直接执行、不要 .NET 运行时），
+    #   Windows 发版照旧 dll + 随包 .NET 运行时跑（launchers/windows/bundle_prepare_win.py，另案）
     d = os.environ.get('S2A_PREBUILT_TOOLS')
     if not d: return None
     p = os.path.join(d, 'dsh_batch')
     try: same = open(os.path.join(p, '.src_digest')).read().strip() == dg
     except OSError: return None
-    return p if same and os.path.isfile(os.path.join(p, 'dsh_batch.dll')) else None
+    if not same:
+        return None
+    for name in ("dsh_batch", "dsh_batch.dll"):
+        f = os.path.join(p, name)
+        if os.path.isfile(f):
+            return f
+    return None
 
 
-def prebuilt_xfp():   # 启动器内置的 dsh_batch 在用（与 prebuilt() 同一判据：App 内源码摘要相同）时，发版按 App 内源码算好的翻译器指纹（bundle_engine.py 写的 .xfp，
-    #   dmsh_chain.py --xfp 现算，非内置程序自报）；不在用 / 没记 → None。dmsh_chain.tree_xfp 用它：玩家机只带 .NET 运行时、没有 SDK，
-    #   dotnet msbuild 展不开 DshXfpInput 清单（11-06 直连库印章核对）；内置件不在用时 build() 本就要 SDK 现编，照常现算
-    if not os.environ.get('S2A_PREBUILT_TOOLS'): return None
-    p = prebuilt(src_digest(os.path.join(DSH, 'batch', 'dsh_batch.csproj')))
-    if not p: return None
-    try: x = open(os.path.join(p, '.xfp')).read().strip()
-    except OSError: return None
-    return x if re.fullmatch(r'[0-9a-f]{16}', x) else None
+def prebuilt_xfp():  # 启动器内置的 dsh_batch 在用（与 prebuilt() 同一判据：App 内源码摘要相同）时，发版按 App 内源码算好的翻译器指纹（bundle_engine.py 写的 .xfp，
+    #   dmsh_chain.py --xfp 现算，非内置程序自报）；不在用 / 没记 → None。dmsh_chain.tree_xfp 用它：玩家机不带 .NET（预编件全为原生单文件）、没有 SDK，
+    #   dotnet msbuild 展不开 DshXfpInput 清单（11-06 直连库印章核对）；源码树里内置件不在用时 build() 本就要 SDK 现编，照常现算
+    if not os.environ.get("S2A_PREBUILT_TOOLS"):
+        return None
+    f = prebuilt(src_digest(os.path.join(DSH, "batch", "dsh_batch.csproj")))
+    if not f:
+        return None
+    try:
+        x = open(os.path.join(os.path.dirname(f), ".xfp")).read().strip()
+    except OSError:
+        return None
+    return x if re.fullmatch(r"[0-9a-f]{16}", x) else None
 
 
 def build():
-    dn = os.environ.get('DOTNET') or (os.path.expanduser('~/.dotnet/dotnet') if os.path.exists(os.path.expanduser('~/.dotnet/dotnet')) else shutil.which('dotnet'))
-    if not dn: sys.exit('[RED] no dotnet (DOTNET=…): the per-key rewrite is the C# S2A.Dsh batch process')
-    proj = os.path.join(DSH, 'batch', 'dsh_batch.csproj'); dg = src_digest(proj)
-    out = prebuilt(dg)   # 11-06 维护者「玩家体验至上」：玩家首次出包不再现编（Spare-host 约 25 秒 CPU）
+    proj = os.path.join(DSH, "batch", "dsh_batch.csproj")
+    dg = src_digest(proj)
+    out = prebuilt(
+        dg
+    )  # 11-06 维护者「玩家体验至上」：玩家首次出包不再现编（Spare-host 约 25 秒 CPU）
     if out is None:
+        if os.environ.get("S2A_PREBUILT_TOOLS"):
+            # App 里摘要不符 / 预编件缺 = App 装坏了（engine.json 逐文件封存的快照与预编件本是一对）：玩家机不现编、也没有 SDK（同 services/prebuilt_lib.sh 的口径），报重新安装
+            sys.exit(
+                "[RED] App 内置的直连批量进程（Prepare/dsh_batch）缺失或与引擎源码不符：请重新安装完整的 S2Arm（开发机要用本树源码现编就 unset S2A_PREBUILT_TOOLS）"
+            )
+        dn = _dotnet()
+        if not dn:
+            sys.exit(
+                "[RED] no dotnet (DOTNET=…): the per-key rewrite is the C# S2A.Dsh batch process"
+            )
         out = OUT; os.makedirs(OUT, exist_ok=True); stamp = os.path.join(OUT, '.src_digest')
         with xlock.held(os.path.join(OUT, '.lock')):   # 单测编 dsh_cmp（graphics/tools/direct/tests/dshfn.py）拿同一把锁：两边都编 S2A.Dsh 工程、共用它的 obj/（xlock：Mac flock / Windows msvcrt，同 #1100 W6）
             last = open(stamp).read().strip() if os.path.exists(stamp) else ''
@@ -76,11 +109,21 @@ def build():
             r = subprocess.CompletedProcess([], 0) if dg == last and os.path.isfile(os.path.join(OUT, 'dsh_batch.dll')) else subprocess.run([dn, 'build', proj, '-c', 'Release', '-o', OUT, '-nodeReuse:false', '-v', 'q', '-p:UseSharedCompilation=false', *([] if dg == last else ['--no-incremental'])],
                                capture_output=True, text=True)   # 源内容和上次编出这份产物时不同 → 全量重编（含引用工程）
             if not r.returncode: open(stamp, 'w').write(dg + '\n')
-        if r.returncode: sys.exit('[RED] dsh_batch does not build: ' + (r.stdout + r.stderr).strip()[-800:])
-    cmd = [dn, os.path.join(out, 'dsh_batch.dll')]
-    x = subprocess.run([*cmd, '--xfp'], capture_output=True, text=True).stdout.strip()
-    if not re.fullmatch(r'[0-9a-f]{16}', x): sys.exit('[RED] dsh_batch --xfp gave ' + repr(x))
-    return cmd, x + ' ' + hashlib.sha256(open(os.path.join(DSH, 'batch', 'Program.cs'), 'rb').read()).hexdigest()[:16]
+        if r.returncode:
+            sys.exit("[RED] dsh_batch does not build: " + (r.stdout + r.stderr).strip()[-800:])
+        cmd = [dn, os.path.join(out, "dsh_batch.dll")]
+    elif out.endswith(
+        ".dll"
+    ):  # Windows 发版件：dll 经随包 .NET 运行时跑（另案）；Mac 发版件是 NativeAOT 单文件，直接执行
+        cmd = [_dotnet() or "dotnet", out]
+    else:
+        cmd = [out]
+    x = subprocess.run([*cmd, "--xfp"], capture_output=True, text=True).stdout.strip()
+    if not re.fullmatch(r"[0-9a-f]{16}", x):
+        sys.exit("[RED] dsh_batch --xfp gave " + repr(x))
+    return cmd, x + " " + hashlib.sha256(
+        open(os.path.join(DSH, "batch", "Program.cs"), "rb").read()
+    ).hexdigest()[:16]
 
 
 def get():   # → (command, tool fingerprint)

@@ -1,6 +1,6 @@
 # native-test-home_shortcuts：主屏长按快捷操作（ios/shortcuts.json、runtime/build.mk 写 Info.plist、ios/app.m home_shortcut）
 NATIVE_TEST_OWN += home_shortcuts
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 .PHONY: native-test-home_shortcuts
 native-test-home_shortcuts:
 	@bash runtime/tests/t_home_shortcuts.sh

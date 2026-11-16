@@ -174,6 +174,13 @@ int ns2_get_joycon_split(void);   // 现在是不是两只各一位玩家
 typedef void (*ns2_assign_callback)(int link, ns2_kind kind, ns2_assign_gesture gesture, const char *identifier, void *context);
 void ns2_set_assign_callback(ns2_assign_callback callback);
 void ns2_set_assign_mode(int on);
+// 认手柄（启动器玩家列表）：开着时任一只手柄有新按下的键就回调一次（link 是链路槽 0 / 1、identifier 是 CoreBluetooth 设备 id；
+//   buttons = 这一下新按下的按键位（同 ns2_state.buttons 的位序，见下面扩展位；另加摇杆推过一半：第 32–35 位 = 上 / 下 / 左 / 右，两根摇杆合并）、
+//   side = 新按下的 NS2_SIDE_* 位），
+//   启动器据此让那位玩家亮一下、显示按了哪个键。只报「新按下」，按着不放不重复报
+typedef void (*ns2_press_callback)(int link, const char *identifier, uint64_t buttons, int side, void *context);
+void ns2_set_press_callback(ns2_press_callback callback);
+void ns2_set_press_watch(int on);
 void ns2_set_player_order(int first_link);   // 两只拆开时哪条链路是玩家 1（缺省 0）
 typedef struct { int link; ns2_kind kind; char identifier[64]; } ns2_device;
 int ns2_get_devices(ns2_device out[2]);   // 已就绪的链路（最多 2），返回几条

@@ -41,6 +41,7 @@ int main(void) {
             s2a_fps_start(dir); usleep(250000);
             int32_t a; memcpy(&a, img + 0x1000, 4); expect("缺省口径：60 帧开也不写我方 w 行 main+0x1000（仍 0）", 0, a);
             expect("缺省口径：不设 DM_PRESENT_INTERVAL", 0, getenv("DM_PRESENT_INTERVAL") != NULL);
+            expect("缺省口径：只有被禁用的我方 present display 表，不强制退回游戏 interval", 0, s2a_fps_present_at(1000000000ull));
             float f2; memcpy(&f2, img + 0x4000 + 2041 * 8, 4); expect("缺省口径：slot 2041 写关时值 100（×1000）", 100000, (long)(f2 * 1000));
             memcpy(&f2, img + 0x4000 + 2040 * 8, 4); expect("缺省口径：速度槽 1.0（×100）", 100, lroundf(f2 * 100));
             { int s2a_fps_real_source(void); expect("缺省口径：我方帧率表不算真帧率来源", 0, s2a_fps_real_source()); }

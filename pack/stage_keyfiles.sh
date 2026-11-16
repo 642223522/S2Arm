@@ -2,8 +2,31 @@
 # 阶段源码键（维护者 10-26 20:3x：直连库 / 抽取键收窄）：source 后 stage_files_key <阶段> [<仓库根>] → 打印 16 位键，取不到退出 1 并打【红】。
 # 键 = pack/stage_inputs/<阶段>.tsv 里「入」那些文件在 HEAD 上的路径 + 对象号；「外」不进键。改了本表没列的文件（宿主运行时代码等）键不变，
 #   改了「入」里任一文件键就变。表漏没漏由 tests/stage_keys_test.sh 用 tools/stage_inputs.py 扫依赖闭包核（闭包里有表外文件 → 红）
+# 发布快照（App 内置引擎）不带 .git：出包要的 git 值在打包时算好写进 engine.json（launchers/macos/bundle_engine.py snapshot_fields，打包自检核过与 git 算法逐项相等）。
+#   engine_snap <仓库根> <字段[.子键]> → 打印值（列表一行一项），返回 0；没有 engine.json 或没有这个字段（开发树、旧快照）→ 返回 1，调用方走 git
+engine_snap() {
+  [ -f "$1/engine.json" ] || return 1
+  "${S2A_PYTHON:-${S2A_PY:-python3}}" -B -I -c 'import json, sys
+v = json.load(open(sys.argv[1], encoding="utf-8"))
+for k in sys.argv[2].split("."):
+    v = v.get(k) if isinstance(v, dict) else None
+if not v: sys.exit(1)
+print("\n".join(v) if isinstance(v, list) else v)' "$1/engine.json" "$2"
+}
+# 本树提交号前 9 位（包键 / 包号，pack/ipa.sh）
+src_commit9() {
+  local c; if c=$(engine_snap "$1" commit); then printf '%s\n' "${c:0:9}"; else git -C "$1" rev-parse --short=9 HEAD; fi
+}
+# graphics/widen/scan 的树对象号（改写阶段键，pack/stage_rewrite.sh）
+scan_tree() { engine_snap "$1" scanTree || git -C "$1" rev-parse HEAD:graphics/widen/scan 2> /dev/null; }
+# RomFS 索引写法 4 个文件的对象号（一行一个，pack/stages/romfsidx.sh）
+romfs_writer_oids() {
+  engine_snap "$1" romfsIndexOids \
+    || git -C "$1" rev-parse HEAD:services/S2A.Services/RomFsIndex.cs HEAD:services/romfs_index HEAD:services/romfs_index.sh HEAD:compat/tree/Directory.Packages.props 2> /dev/null
+}
 stage_files_key() {
   local st=${1:?阶段} r=${2:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)} t f out
+  engine_snap "$r" "stageFilesKeys.$st" && return 0
   t=$r/pack/stage_inputs/$st.tsv; [ -f "$t" ] || { echo "【红】没有输入声明表 $t" >&2; return 1; }
   f=$(LC_ALL=C awk -F'\t' '$1 == "入" { print $2 }' "$t") || return 1
   [ -n "$f" ] || { echo "【红】$t 里没有「入」的文件" >&2; return 1; }

@@ -53,6 +53,7 @@ __attribute__((weak)) int s2a_front_is_running(void) { return 0; }   // iOS 壳 
 #include "s2a_lan_discovery.h"
 // Hosts without a discovery implementation leave LAN unavailable explicitly.
 __attribute__((weak)) const s2a_lan_discovery_v1 *s2a_ldn_lan_provider(void) { return NULL; }
+__attribute__((weak)) void s2a_window_span_arm(void) {}   // vawin.c（Apple）强定义：低区碰底死的局记跨度用的路径先备好（#1143）
 void s2a_crash_install(void); void s2a_term_install(void);
 uint64_t s2a_mem_init(const char *npdm);
 void s2a_boot_mark(const char *stage);
@@ -407,6 +408,7 @@ static int host_run(int argc, char **argv) {
           fn, (unsigned long long)fs, (unsigned long long)fh); }
     { void s2a_vm_top(const char *); s2a_vm_top("C# 初始化后"); void s2a_vm_low(const char *); s2a_vm_low("C# 初始化后"); }
     { void s2a_guest_va_report(const char *); s2a_guest_va_report("C# 初始化后"); }
+    s2a_window_span_arm();   // 低区碰底死的局在崩溃处理里记跨度：路径与取数函数这里先备好（vawin.c，#1143）
     if (s2a_dev_on()) { void s2a_va_watch_start(void); s2a_va_watch_start(); }   // 地址走势（30 秒一行）：开发设施，玩家口径不起
     s2a_lowva_start();   // 低区统一记账巡检（lowva.c）：每秒实测保留量、余量不够叫可腾退的腾
     LOG("S2A 就绪");   // 测试层契约第 4 节：运行时（原生层 + C#）已起来

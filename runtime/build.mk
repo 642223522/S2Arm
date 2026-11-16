@@ -12,6 +12,9 @@ s2a_comma := ,
 # 弱链接放行参数与 tools/weak_link_decl.py 读同一份解析结果（11-05：原先这里用 sed 按子串收场合「[^]]*host[^]]*」，Python 侧按逗号拆开整词比，
 #   安卓登记 android_draw_host 被 make 误收进 host，c4d0a36e4 合入后 weak_link_decl_test「两侧 host 放行参数同一份」红）
 S2A_WEAK_U = $(shell python3 tools/weak_link_decl.py flags $(1))
+ifndef S2A_UNAME   # 顶层 Makefile 已定义（只算一次）；t_present_settings / t_present_residency / t_fps_limit / tools/gate.sh 单独 make -f 本文件取 NVN_TEST_WEAK 时没有它，不补就整段 Darwin 分支落空、弱链接放行参数为空，三项上屏单测链接报未定义符号（11-15）
+S2A_UNAME := $(shell uname -s)
+endif
 NATIVE_SRCS := runtime/src/envfile.c $(filter-out runtime/src/envfile.c,$(sort $(wildcard runtime/src/*.c runtime/src/*.S)))
 APPLE_PLAT_SRCS := platform/apple/plat_apple.c
 HOST_SRCS   := $(NATIVE_SRCS) $(APPLE_PLAT_SRCS) $(HOST_SRCS)
@@ -19,7 +22,7 @@ NATIVE_INC  := -Iruntime/include
 # 宿主弱符号放行参数的唯一来源（11-01 合入线：原先 5 个单测 mk、gfxmode 单测替身、Mac 图形 Python 测试各抄一份，加一个弱符号要改 7 处、漏一处就红）。
 #   Mac 宿主、原生单测、单测探针的链接行都用它；（原 Mac 图形 Python 测试已随通用模式切换入口删掉）。
 #   登记一致性由 tools/weak_link_decl.py 核（tests/weak_link_decl_test.sh）：runtime/src 里每个 weak_import 都要有「弱链接[host]」登记
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 S2A_HOST_WEAK := $(call S2A_WEAK_U,host)   # 立即求值一次：几十条链接行都引用它，别每次都起一次 python3
 # Mac 宿主热状态 / 低电量（runtime/src/host_main.c dm_thermal_now，经 objc 运行时读 NSProcessInfo，审计 P1-80）：原生层单独构建（runtime/gate.sh）不带 graphics/build.mk 的 Foundation，这里自己链
 HOST_LIBS += -framework Foundation
@@ -48,7 +51,7 @@ native-test-$(1):
 	$(BUILD)/tests/t_$(1)
 endef
 
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # 和 Mac 宿主一样弱链接地址护栏；macOS 27 的 malloc 会在构造函数前占窗。
 # 护栏库的安装名是 @executable_path/libs2a_vaguard.dylib：测试程序在 $(BUILD)/tests/，库得拷到它旁边，否则弱链接找不到、静默不装护栏
 #   （10-24 gate-host 门禁 t_ios_prewarm 红：窗口按真实空洞选址后，没装上护栏的进程里 malloc 预留的 24 GB 让 2^39 以下最大空洞只剩 26–29 GB）
@@ -73,7 +76,7 @@ endif
 # C03③ shared input parsing is auto-discovered in NATIVE_SRCS (Mac/iOS).
 # Its portable C test uses the generic rule; this adapter test deliberately exits
 # before creating an AppKit window or Metal layer and never accesses devices.
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 .PHONY: native-test-input_config_apple
 native-test-input_config_apple:
 	@mkdir -p $(BUILD)/tests
@@ -172,7 +175,7 @@ ios: ios-ns2pro
 	@mkdir -p $(IOS_APP)/Frameworks && cp -R $(NS2_FRAMEWORK) $(IOS_APP)/Frameworks/
 	@cp -R ios/Settings.bundle $(IOS_APP)/Settings.bundle
 	@cp -R ios/l10n/*.lproj $(IOS_APP)/   # 宿主界面字符串表（ios/s2a_l10n.h S2AL）：<语言>.lproj/S2ArmHost.strings 放主 bundle；同目录 InfoPlist.strings 是权限说明的译文（#316）
-	@for l in zh-Hans zh-Hant en; do python3 launchers/shared/experience_strings.py --lang $$l > $(BUILD)/ios/error_$$l.strings || { echo "🔴 装机 / 导入失败文案生成失败（launchers/shared/experience_strings.py --lang $$l）"; exit 1; }; cat $(BUILD)/ios/error_$$l.strings >> $(IOS_APP)/$$l.lproj/S2ArmHost.strings; done   # 失败按码说人话（app.m install_error_text）：码表单一来源 experience.v1.json，生成的键只进包、不进仓库表
+	@for l in zh-Hans zh-Hant en ja es fr; do python3 launchers/shared/experience_strings.py --lang $$l > $(BUILD)/ios/error_$$l.strings || { echo "🔴 装机 / 导入失败文案生成失败（launchers/shared/experience_strings.py --lang $$l）"; exit 1; }; cat $(BUILD)/ios/error_$$l.strings >> $(IOS_APP)/$$l.lproj/S2ArmHost.strings; done   # 失败按码说人话（app.m install_error_text）：码表单一来源 experience.v1.json，生成的键只进包、不进仓库表
 	@$(call ios_objs_cached,$(BUILD)/ios/obj_app,-fobjc-arc $(NATIVE_INC) -Iruntime/src -Iruntime/ns2pro/include,$(IOS_SRCS))
 	$(IOS_LD_REPRO) $(IOS_CC) -fobjc-arc $(IOS_LD_DET) -Wl,-oso_prefix,$(IOS_BUILD_ABS)/ -o $(IOS_APP)/S2Arm $(call ios_objlist,$(BUILD)/ios/obj_app,$(IOS_SRCS)) $(IOS_LIBS) \
 	  -framework UIKit -framework Foundation -framework CoreGraphics $(IOS_SHELLUI_LINK) $(call S2A_WEAK_U,ios) -Wl,-S
@@ -208,7 +211,7 @@ ios: ios-ns2pro
 # 只需原生宿主、直连库和真实宽屏核心，不构建服务层 / Ryujinx / 通用渲染器。
 # 宿主目前一步编链，测试把同一份生产源码缓存成对象，排除提供 main 的 host_main.c。
 # 工具链继续用 S2A_DEVELOPER_DIR；NativeAOT 的本机依赖搜索沿用 LIBRARY_PATH。
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 NVN_TEST_DIR := $(BUILD)/tests/nvn
 # 包含了生产 nvn_mtl.m 的单测目标都依赖这一组（11-05 nvn_rec_cover 时红时绿：目标只写 nvn_mtl.m，改了它包含的 .inc / .h 时增量构建不重编，
 #   红绿取决于旧对象是哪一版；列车 gate-host 复用检出，批与批之间就这样漂）

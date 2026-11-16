@@ -595,6 +595,7 @@ static int thread_keys_init(void) {
 // TLR+0x1F8 = 当前线程对象指针：SDK 内部临界区从这里取，主线程与宿主借建的线程没人填，给一块零初始化对象（旧库同做法）
 // TLR+0x110 = 当前线程句柄：Horizon 内核建线程时无条件写（主线程起进程时 / svcCreateThread）；Switch 2 SDK 的
 // InternalCriticalSection::IsLockedByCurrentThread 拿它比互斥锁属主，留 0 则没人持的锁读成「本线程持有」直接 abort（火纹 Fortune's Weave）
+uint64_t s2a_guest_x18_now(void) { return (uint64_t)(uintptr_t)pthread_getspecific(g_key18); }   // 本线程游戏 x18 的槽值（crash.c 崩溃现场打，诊断#ff9a04）
 static void guest_thread_init(thr_t *t) {
     pthread_setspecific(g_keygate, (void *)sw_gate);
     pthread_setspecific(g_key18, 0);
@@ -2054,7 +2055,15 @@ static uint32_t thr_pause(thr_t *t) {
             return R_BAD_STATE;
         }
         pthread_mutex_lock(&g_susp_mu); thread_resume(t->mport); pthread_mutex_unlock(&g_susp_mu);
-        if (now_ns() - t0 > 2000000000ull) die("【红】SetThreadActivity：线程 %#x 2 秒内没停到游戏代码或系统调用里（重试 %d 次）", t->handle, k);
+        if (now_ns() - t0 > 2000000000ull) {
+            // 取证（D-QJTH）：目标这 2 秒一直在宿主代码里（不在游戏代码、不在系统调用）——记下最后一次挂住时的 pc / lr 落在哪个宿主函数，
+            //   定它是在哪种宿主调用里长时间不回（图形 API 等 GPU？），再判该等它回游戏代码还是直接致命
+            uint64_t pc = __darwin_arm_thread_state64_get_pc(st), lr = __darwin_arm_thread_state64_get_lr(st); Dl_info di = {0}, dl = {0};
+            int okp = n == ARM_THREAD_STATE64_COUNT && dladdr((void *)pc, &di), okl = n == ARM_THREAD_STATE64_COUNT && dladdr((void *)lr, &dl);
+            die("【红】SetThreadActivity：线程 %#x 2 秒内没停到游戏代码或系统调用里（重试 %d 次）；最后一次挂住时 pc %#llx（%s+%#llx）lr %#llx（%s+%#llx）", t->handle, k,
+                (unsigned long long)pc, okp && di.dli_sname ? di.dli_sname : "?", (unsigned long long)(okp && di.dli_saddr ? pc - (uint64_t)di.dli_saddr : 0),
+                (unsigned long long)lr, okl && dl.dli_sname ? dl.dli_sname : "?", (unsigned long long)(okl && dl.dli_saddr ? lr - (uint64_t)dl.dli_saddr : 0));
+        }
         usleep(20);
     }
 }
@@ -2780,7 +2789,7 @@ uint32_t s2a_event_dup_read(uint64_t ev) {
 uint32_t s2a_shmem_create(uint64_t size, void **host) {
     if (!size) return 0;
     shmem_t *sm = calloc(1, sizeof *sm); sm->size = size; sm->refs = 1; sm->owned = 1;
-    sm->buf = mmap(NULL, (size + 0x3FFF) & ~0x3FFFull, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANON, -1, 0);   // MAP_SHARED：vm_remap 别名到游戏地址后同一批物理页
+    sm->buf = mmap(NULL, (size + 0x3FFF) & ~0x3FFFull, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANON, S2A_VMTAG_FD(S2A_VMTAG_SHMEM), 0);   // MAP_SHARED：vm_remap 别名到游戏地址后同一批物理页
     if (sm->buf == MAP_FAILED) die("共享内存后备 mmap %#llx", (unsigned long long)size);
     glock(); uint32_t h = h_new(S2A_OBJ_SHMEM, sm, 0);
     if (h) { sm->next = g_shmem; g_shmem = sm; } pthread_mutex_unlock(&G);
@@ -3105,6 +3114,16 @@ void s2a_thread_dump(void) {
                     mach_ms(now - g_cvl[i].t), g_cvl[i].woken, g_cvl[i].left, mine);
             else LOG("    条件键 %#llx 当前值 %#x，已等 %.0f ms；此键从没被发过信号（或记录被别的键覆盖）%s",
                      (unsigned long long)t->wkey, ld32(t->wkey), mach_ms(now - t->wait_t0), mine);
+            // 锁 / 键周围的原样内存（#19361b：上古卷轴加载线程在 WaitLightEvent 里等，键「从没被发过信号」、锁字 0——
+            //   判不了是「事件已置位、唤醒丢了」还是「根本没人置位」：两者只差键后面那几个字节里的「已置位」标志）。
+            //   从锁地址按 16 对齐往前 16 字节起打 48 字节，盖住游戏自己包在外面的锁字与 SDK 事件的锁 / 键 / 已置位
+#if defined(__APPLE__)   // 安全读靠 Mach vm_read_overwrite（同上面抽样回溯）；安卓不打
+            { uint64_t a0 = (t->waddr < t->wkey ? t->waddr : t->wkey) & ~0xFull; a0 -= 0x10; uint32_t m[12]; vm_size_t got = 0;
+              if (vm_read_overwrite(mach_task_self(), (vm_address_t)a0, sizeof m, (vm_address_t)m, &got) == KERN_SUCCESS && got == sizeof m)
+                  LOG("    键周围内存 %#llx：%08x %08x %08x %08x | %08x %08x %08x %08x | %08x %08x %08x %08x", (unsigned long long)a0,
+                      m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11]);
+              else LOG("    键周围内存 %#llx：读不了", (unsigned long long)a0); }
+#endif
         }
         if (t->wkind && t->wkind != 2 && !t->exited) LOG("    已等 %.0f ms", mach_ms(thread_clock() - t->wait_t0));
         if (t->wkind == 4 && t->wn > 0) {   // 在等哪些句柄：种类 + cookie（C# 对象 / 事件号）——事件一直不来时据此找是哪个服务的

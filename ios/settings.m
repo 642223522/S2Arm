@@ -31,10 +31,16 @@ static void apply_environment(const char *name, NSString *value) {
 // Metal 性能浮层的系统键（11-13 维护者实机：iPad mini / iPadOS 27.2 上 Metal 框架初始化时读 MetalForceHudEnabled，只多存这个键 = 冷启动出面板，
 //   删掉就没有；我们的开关键 MetalHUDForceEnabled（Settings.bundle / 设置页）它不认，MTL_HUD_ENABLED 是进程起来后才设、对系统建设备太晚）。
 //   开关打开就往 App 自己的偏好里写系统键、关掉就删（两种拼法都在：我们的键作界面状态照旧），下次冷启动 Metal 读到。只在值不同时写，免得自己触发变更通知再写
+//   写 / 删会在本线程同步发变更通知、又回到这里：系统键来自删不掉的域（LiveContainer 下 / 启动参数 / 注册缺省）时删完还读得到，
+//   没有这道重入闸就无限递归撑爆线程栈（#1148：v0.4.0 LiveContainer 里一开游戏就闪退，栈是 本函数 ← 通知 ← 本函数 …）
 static void metal_hud_mirror(NSUserDefaults *d) {
+    static _Thread_local int busy;
+    if (busy) return;
+    busy = 1;
     BOOL on = [d boolForKey:@"MetalHUDForceEnabled"];
     if (on && ![d boolForKey:@"MetalForceHudEnabled"]) { [d setBool:YES forKey:@"MetalForceHudEnabled"]; fprintf(stderr, "[S2A 画面设置] Metal 性能浮层：写系统键 MetalForceHudEnabled（下次冷启动生效）\n"); }
     else if (!on && [d objectForKey:@"MetalForceHudEnabled"]) { [d removeObjectForKey:@"MetalForceHudEnabled"]; fprintf(stderr, "[S2A 画面设置] Metal 性能浮层：删系统键 MetalForceHudEnabled（下次冷启动生效）\n"); }
+    busy = 0;
 }
 void s2a_ios_apply_overlay_settings(NSUserDefaults *defaults) {
     metal_hud_mirror(defaults);
@@ -55,7 +61,7 @@ void s2a_ios_apply_overlay_settings(NSUserDefaults *defaults) {
 //   以及撑不住就问玩家的「问过」与「本款原生 60 帧」记号——原先全在 App 级，一款游戏自动退回 16:9、关 60 帧会串到所有游戏
 NSArray *s2a_ios_per_game_keys(void) {
     return @[@"S2AResolutionScale", @"S2AAntiAliasing", @"S2AScalingFilter", @"S2AFrameRateLimit", @"S2AWidescreen", @"S2AFps60",
-             @"S2AFps60Manual", @"S2ADockedMode", @"S2ACommunityPatches", @"S2AWidescreenAsked", @"S2AFps60Asked", @"S2AFpsNative60", @"S2AFpsPick", S2AGameLanguageKey, @"S2AFrameInterp"];
+             @"S2AFps60Manual", @"S2ADockedMode", @"S2ACommunityPatches", @"S2AWidescreenAsked", @"S2AFps60Asked", @"S2AFpsNative60", @"S2AFpsPick", S2AGameLanguageKey, @"S2AFrameInterp", @"S2AGameVolume"];
 }
 NSArray<NSString *> *s2a_ios_game_languages(void) {
     return @[@"system", @"SimplifiedChinese", @"TraditionalChinese", @"AmericanEnglish", @"BritishEnglish", @"Japanese", @"Korean", @"French", @"CanadianFrench", @"German",
@@ -69,9 +75,12 @@ static NSArray<NSString *> *nacp_language_names(void) {
 }
 NSArray<NSString *> *s2a_ios_game_supported_languages(void) {
     const char *gd = getenv("S2A_GAME_DATA");   // 同 loadpage.m：多款容器给 S2A_GAME_DATA，单款在 Documents/资源包
-    NSString *dir = gd && *gd ? @(gd) : [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/资源包"];
+    return s2a_ios_game_supported_languages_in(gd && *gd ? @(gd) : [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/资源包"]);
+}
+NSArray<NSString *> *s2a_ios_game_supported_languages_in(NSString *dir) {
     NSData *d = [NSData dataWithContentsOfFile:[dir stringByAppendingPathComponent:@"ctl/control.nacp"]];
-    if (d.length < 0x3030) return @[];
+    // 合成件（pack/ns2_dump.py synth_nacp：显示版本 0x3060 写「?」）的支持表只声明美式英语防 #401 黑屏，不是游戏真实支持的：当不知道（#1209 选不了中文），同 community.py nacp_languages
+    if (d.length < 0x3030 || (d.length > 0x3060 && ((const uint8_t *)d.bytes)[0x3060] == '?')) return @[];
     uint32_t flag; memcpy(&flag, (const uint8_t *)d.bytes + 0x302C, 4);
     NSMutableArray *out = [NSMutableArray array]; NSArray *names = nacp_language_names();
     for (NSUInteger i = 0; i < names.count; i++) if (flag >> i & 1) [out addObject:names[i]];
@@ -92,18 +101,22 @@ static NSString *system_title_language(void) {
     }
     return @"AmericanEnglish";
 }
-NSString *s2a_ios_game_language_note(void) {
-    NSArray<NSString *> *supported = s2a_ios_game_supported_languages();
-    if (supported.count == 0) return nil;
-    NSString *want = [s2a_ios_settings_defaults() stringForKey:S2AGameLanguageKey] ?: system_title_language(), *got = nil;
-    for (NSString *l in @[want, @"AmericanEnglish", @"BritishEnglish"]) if ([supported containsObject:l]) { got = l; break; }
-    if (!got) got = supported.firstObject;   // 想要的、英语都没有：宿主落支持表第一项（上游 PickFallbackLanguage）
-    if ([got isEqualToString:want]) return nil;
+NSString *s2a_ios_game_language_note(void) { return s2a_ios_game_language_note_with(s2a_ios_settings_defaults(), s2a_ios_game_supported_languages()); }
+NSString *s2a_ios_game_language_label(NSString *value) {
+    if (!value.length || [value isEqualToString:@"system"]) return S2AL(@"settings.gameLanguage.system");
     NSDictionary *names = @{@"SimplifiedChinese": S2AL(@"settings.language.zhHans"), @"TraditionalChinese": S2AL(@"settings.language.zhHant"), @"AmericanEnglish": @"English (US)",
         @"BritishEnglish": @"English (UK)", @"Japanese": S2AL(@"settings.gameLanguage.ja"), @"Korean": @"한국어", @"French": @"Français", @"CanadianFrench": @"Français (Canada)",
         @"German": @"Deutsch", @"Spanish": @"Español", @"LatinAmericanSpanish": @"Español (Latinoamérica)", @"Italian": @"Italiano", @"Dutch": @"Nederlands",
         @"Portuguese": @"Português", @"BrazilianPortuguese": @"Português (Brasil)", @"Russian": @"Русский", @"Polish": @"Polski", @"Thai": @"ไทย"};
-    return [NSString stringWithFormat:S2AL(@"settings.gameLanguage.fallback"), names[want] ?: want, names[got] ?: got];
+    return names[value] ?: value;
+}
+NSString *s2a_ios_game_language_note_with(NSUserDefaults *defaults, NSArray<NSString *> *supported) {
+    if (supported.count == 0) return nil;
+    NSString *want = [defaults stringForKey:S2AGameLanguageKey] ?: system_title_language(), *got = nil;
+    for (NSString *l in @[want, @"AmericanEnglish", @"BritishEnglish"]) if ([supported containsObject:l]) { got = l; break; }
+    if (!got) got = supported.firstObject;   // 想要的、英语都没有：宿主落支持表第一项（上游 PickFallbackLanguage）
+    if ([got isEqualToString:want]) return nil;
+    return [NSString stringWithFormat:S2AL(@"settings.gameLanguage.fallback"), s2a_ios_game_language_label(want), s2a_ios_game_language_label(got)];
 }
 @interface S2AGameLayeredDefaults : NSUserDefaults
 - (instancetype)initWithGame:(NSUserDefaults *)game app:(NSUserDefaults *)app keys:(NSSet<NSString *> *)keys;
@@ -196,10 +209,23 @@ void s2a_ios_set_fps60_for(NSString *gid, BOOL on) {
 }
 BOOL s2a_ios_fps60_on(void) { return s2a_ios_fps60_on_for(current_gid()); }
 // 补帧开关（按游戏存，S2AFrameInterp；没设过 = 开）：有社区帧率补丁时补帧自己让路（runtime/src/fps.c s2a_fps_source），开关不用管
-BOOL s2a_ios_fi_on(void) { id v = [s2a_ios_settings_defaults() objectForKey:@"S2AFrameInterp"]; return v ? [v boolValue] : YES; }
+// 补帧开不开（11-15 维护者：帧率解锁一个开关——有社区帧率补丁用补丁，没有就用补帧）：帧率解锁明确关（S2AFps60 = NO）= 回游戏原帧率，补帧也关；
+//   没选过 / 开着 = 补帧照今天缺省开（补丁开着时补帧每帧让路，nvn_present_fi.inc fi_wanted）。旧的单独「补帧」开关（S2AFrameInterp）关过的照旧关
+BOOL s2a_ios_fi_on(void) {
+    NSUserDefaults *d = s2a_ios_settings_defaults();
+    id fps = [d objectForKey:@"S2AFps60"], fi = [d objectForKey:@"S2AFrameInterp"];
+    if (fps) return [fps boolValue];   // 帧率解锁明确选过：开 = 补帧开（盖过旧的单独补帧开关），关 = 补帧关
+    return fi ? [fi boolValue] : YES;
+}
 void s2a_ios_set_fi(BOOL on) { [s2a_ios_settings_defaults() setBool:on forKey:@"S2AFrameInterp"]; }
 // 停帧救场记住关（runtime/src/cpatch.c s2a_cpatch_stall_rescue 的强定义）：这款「帧率」写关，下次启动不再开帧率补丁，设置页同步显示关
-void s2a_cpatch_persist_fps_off(void) { s2a_ios_set_fps60_for(current_gid(), NO); }
+void s2a_cpatch_persist_fps_off(void) {   // 停帧救场：关「帧率」并记进自动关（原因 stall，S 级状态 off_auto；game_options.m s2a_ios_sgrade_state 读）
+    NSString *g = current_gid(); s2a_ios_set_fps60_for(g, NO);
+    NSUserDefaults *d = s2a_ios_settings_defaults_for(g); NSMutableDictionary *ao = [[d dictionaryForKey:@"S2ACrashAutoOff"] mutableCopy] ?: [@{@"ver": [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @""} mutableCopy];
+    NSMutableArray *items = [ao[@"items"] mutableCopy] ?: [NSMutableArray array];
+    [items addObject:@{@"kind": @"fps", @"key": @"fps60", @"name": @"", @"cause": @"stall", @"at": @((long long)NSDate.date.timeIntervalSince1970)}];
+    ao[@"items"] = items; [d setObject:ao forKey:@"S2ACrashAutoOff"];
+}
 void s2a_ios_set_fps60(BOOL on) { s2a_ios_set_fps60_for(current_gid(), on); }
 
 // 满屏（自适应：按这台设备的屏幕比例铺满，11-13 合并原「宽屏」与「宽屏强制启用」两个开关）：
@@ -235,6 +261,15 @@ void s2a_ios_set_fullscreen(NSString *gid, BOOL on) {
     for (S2ACPatchItem *it in adaptive_items(s2a_ios_game_dir(gid), &groups)) S2ACPatchSetEnabled(groups, s2a_ios_settings_defaults_for(gid), it.ident, on);
 }
 
+// 画质提升「锐利放大（MetalFX）」这款用得了吗：要走直连渲染（能力清单 direct 1「直连可用」；通用渲染路径按双线性，services GraphicsSettings.cs）。
+//   同 Mac（pack/jobs/community.py mac_settings）：读得到清单、direct 不是 1（含没这一行）= 用不了；读不到清单不挡（拿不准不停）。
+//   设备不支持、画面不比屏小等只能运行时知道，回退双线性、不提前提示
+BOOL s2a_ios_metalfx_blocked(NSString *gid) {
+    NSString *dir = s2a_ios_game_dir(gid ?: current_gid());
+    if (![NSFileManager.defaultManager fileExistsAtPath:[dir stringByAppendingPathComponent:@"s2a_caps.tsv"]]) return NO;
+    return caps_value_in(dir, "direct") != 1;
+}
+
 NSArray<NSDictionary *> *s2a_ios_graphics_options(void) {
     return @[
         @{@"key": @"S2AResolutionScale", @"title": S2AL(@"gfx.resolution"), @"initial": @"1",
@@ -242,7 +277,7 @@ NSArray<NSDictionary *> *s2a_ios_graphics_options(void) {
         @{@"key": @"S2AAntiAliasing", @"title": S2AL(@"gfx.antiAliasing"), @"initial": @"None",
           @"values": @[@"None", @"SmaaMedium", @"SmaaHigh"], @"labels": @[S2AL(@"gfx.antiAliasing.off"), S2AL(@"gfx.antiAliasing.medium"), S2AL(@"gfx.antiAliasing.high")]},
         @{@"key": @"S2AScalingFilter", @"title": S2AL(@"gfx.filter"), @"initial": @"Bilinear",
-          @"values": @[@"Bilinear", @"Nearest"], @"labels": @[S2AL(@"gfx.filter.bilinear"), S2AL(@"gfx.filter.nearest")]},
+          @"values": @[@"Bilinear", @"Nearest", @"MetalFX"], @"labels": @[S2AL(@"gfx.filter.bilinear"), S2AL(@"gfx.filter.nearest"), S2AL(@"gfx.filter.metalfx")]},
         @{@"key": @"S2AFrameRateLimit", @"title": S2AL(@"gfx.fpsLimit"), @"initial": @"0",
           @"values": @[@"30", @"60", @"120", @"0"], @"labels": @[@"30", @"60", @"120", S2AL(@"gfx.fpsLimit.none")]}
     ];
@@ -278,7 +313,7 @@ void s2a_ios_apply_graphics_settings(NSUserDefaults *defaults) {
     } options[] = {
         {@"S2AResolutionScale", "S2A_RES_SCALE", @"1", @[@"0.5", @"0.75", @"1", @"1.5", @"2"]},
         {@"S2AAntiAliasing", "S2A_ANTI_ALIASING", @"None", @[@"None", @"SmaaMedium", @"SmaaHigh"]},   // 不带 FXAA（10-30：NVIDIA FXAA 3.11 没有授权条款）；存过的 Fxaa 按无效值清除
-        {@"S2AScalingFilter", "S2A_SCALING_FILTER", @"Bilinear", @[@"Bilinear", @"Nearest"]},
+        {@"S2AScalingFilter", "S2A_SCALING_FILTER", @"Bilinear", @[@"Bilinear", @"Nearest", @"MetalFX"]},   // 画质提升：标准 / 2D 游戏专用 / 锐利放大（MetalFX 空间放大，graphics/nvn/gfx/nvn/nvn_present_fx.inc）
         {@"S2AFrameRateLimit", "S2A_FPS", @"0", @[@"30", @"60", @"120", @"0"]},
     };
 
@@ -339,6 +374,8 @@ void s2a_ios_apply_graphics_settings(NSUserDefaults *defaults) {
         [game removeObjectForKey:@"S2AWidenForce"];
         BOOL fs = NO;
         // 有自适应满屏补丁的款由补丁铺满（下面社区补丁那段让 S2Arm 满屏让开），这里不强开 S2Arm 满屏，免得拉宽两次
+        // 11-15 维护者「没补丁的游戏手动打开满屏就走咱们通用方案」：玩家明确开满屏、没有自适应满屏补丁 → 我方通用满屏（第三层整套放宽，不看已验证名单）。
+        //   原先还要 S2A_CAPS_OWN=1（v0.4.0 撤通用满屏时加的），手动开也不生效；没选过照旧不开（宿主缺省关，runtime/src/widen.c）
         if ([game objectForKey:@"S2AWidescreen"] && [game boolForKey:@"S2AWidescreen"] && s2a_ios_fullscreen_state(@(gid), &fs) == 0 && fs && !adaptive_items(s2a_ios_game_dir(@(gid)), NULL).count) {
             if (!getenv("S2A_WIDEN_VERIFIED")) apply_environment("S2A_WIDEN_VERIFIED", @"1");
             if (!getenv("S2A_WIDESCREEN")) apply_environment("S2A_WIDESCREEN", @"1");
@@ -400,6 +437,15 @@ void s2a_ios_apply_graphics_settings(NSUserDefaults *defaults) {
         id v = [defaults objectForKey:@"S2ACommunityPatches"];
         NSString *on = [v isKindOfClass:NSArray.class] ? ([(NSArray *)v count] ? [(NSArray *)v componentsJoinedByString:@","] : @"none") : [v isKindOfClass:NSString.class] ? v : nil;
         if (on) { apply_environment("S2A_CPATCH_ON", on); fprintf(stderr, "[S2A 画面设置] S2A_CPATCH_ON=%s（本 App 设置：社区补丁）\n", on.UTF8String); }
+    }
+    // 游戏音量（#1186，按游戏存的 S2AGameVolume 0–100；没设过 / 100 不设，输出层整段跳过）→ S2A_AUDIO_VOLUME（runtime/src/game_volume.c）；
+    //   局中改走齿轮菜单 S2A_AudioSetVolume，当场生效。启动环境显式给的优先
+    if (!getenv("S2A_AUDIO_VOLUME")) {
+        id v = [defaults objectForKey:@"S2AGameVolume"];
+        if ([v isKindOfClass:NSNumber.class] && [v integerValue] < 100) {
+            NSInteger p = MAX(0, [v integerValue]);
+            apply_environment("S2A_AUDIO_VOLUME", [NSString stringWithFormat:@"%ld", (long)p]); fprintf(stderr, "[S2A 声音设置] S2A_AUDIO_VOLUME=%ld（本 App 设置：游戏音量）\n", (long)p);
+        }
     }
     // 开着社区宽屏 / 自适应满屏补丁（编号 widescreen: / wsauto:）：游戏自己按屏幕比例画宽画面，S2Arm 的满屏让开、不拉宽两次（同 Mac pack/jobs/community.py launch_env）；
     //   启动环境显式给了 S2A_WIDESCREEN 的照它

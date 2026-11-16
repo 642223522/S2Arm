@@ -1,5 +1,5 @@
 NATIVE_TEST_OWN += dirty_prewrite
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 NVN_DIRTY_PREWRITE_SOURCE ?= graphics/nvn/gfx/nvn/nvn_dirty.c
 NVN_DIRTY_PREWRITE_BINARY ?= $(BUILD)/tests/t_dirty_prewrite
 $(NVN_DIRTY_PREWRITE_BINARY): graphics/nvn/tests/t_dirty_prewrite.c $(NVN_DIRTY_PREWRITE_SOURCE) $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)

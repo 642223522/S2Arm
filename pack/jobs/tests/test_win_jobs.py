@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 S2Arm contributors
 """Windows 作业层打底（启动器线 11-07）：作业环境只用随包运行时、读取器取预编 nx_unpack、探活不用 os.kill(pid, 0)。
-期望按随包布局手写（launchers/windows/bundle_runtime_win.py：Runtime/{python, python/Scripts, dotnet, mingit/cmd, git/usr/bin, zstd}），不跑被测实现推。"""
+期望按随包布局手写（launchers/windows/bundle_runtime_win.py：Runtime/{python, python/Scripts, dotnet, git/usr/bin, zstd}），不跑被测实现推。"""
+import contextlib
 import os
 from pathlib import Path
 import sys
@@ -30,7 +31,8 @@ class AtomicReplace(unittest.TestCase):
                 left[0] -= 1
                 raise PermissionError(13, "拒绝访问。")
             return real(a, b)
-        with tempfile.TemporaryDirectory() as d, mock.patch.object(core, "os", OsView(name, replace=replace)), mock.patch.object(core.time, "sleep", sleeps.append):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(core, "os", OsView(name, replace=replace)), mock.patch.object(core.time, "sleep", sleeps.append), \
+                mock.patch.object(core.winproc, "replace_file", replace):   # Windows 分支走 winproc.replace_file（POSIX 语义替换）；这里只测外层退避
             target = Path(d, "job.json"); target.write_text("old")
             try:
                 core.replace_retrying(self.tmp(d), target); error = None
@@ -64,13 +66,25 @@ class RuntimeEnv(unittest.TestCase):
         env = core.win_runtime_env(r"D:\S2Arm\Runtime", r"D:\S2Arm\Engine", r"C:\Windows")
         self.assertEqual(env["PATH"].split(";"), [
             r"D:\S2Arm\Runtime\python", r"D:\S2Arm\Runtime\python\Scripts", r"D:\S2Arm\Runtime\dotnet",
-            r"D:\S2Arm\Runtime\mingit\cmd", r"D:\S2Arm\Runtime\git\usr\bin", r"D:\S2Arm\Runtime\zstd",
+            r"D:\S2Arm\Runtime\git\usr\bin", r"D:\S2Arm\Runtime\zstd",
             r"C:\Windows\system32", r"C:\Windows", r"C:\Windows\System32\WindowsPowerShell\v1.0"])
         self.assertEqual((env["DOTNET_ROOT"], env["S2A_BASH"], env["PYTHONHOME"], env["S2A_PREBUILT_TOOLS"]),
                          (r"D:\S2Arm\Runtime\dotnet", r"D:\S2Arm\Runtime\git\usr\bin\bash.exe",
                           r"D:\S2Arm\Runtime\python", r"D:\S2Arm\Engine\Binaries\Prepare"))
         self.assertEqual(env["LC_ALL"], "C.UTF-8", "机器上 LANG=C / en_US 时 cygpath 在中文处截断路径（#85）")
 
+
+    def test_git_usr_bin_keeps_only_named_programs(self):
+        # 安装包瘦身（11-16）：usr/bin 只带引擎脚本文本里叫得出名字的程序 + bash 等必带件；vim 一族照旧不带。期望手写
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("brw", ROOT / "launchers/windows/bundle_runtime_win.py")
+        brw = importlib.util.module_from_spec(spec); spec.loader.exec_module(brw)
+        d = Path(tempfile.mkdtemp()); self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))
+        for n in ("sort.exe", "svn.exe", "vim.exe", "bash.exe", "sh.exe", "msys-2.0.dll", "join.exe", "joined.exe"):
+            (d / n).write_bytes(b"not a PE")
+        texts = ["printf 'x' | sort -u | join - other.tsv", "# 编辑用 vim"]
+        self.assertEqual(brw.git_keep(d, texts), {"sort.exe", "join.exe", "bash.exe", "sh.exe", "msys-2.0.dll"})
+        self.assertEqual(brw.pe_imports(d / "sort.exe"), [], "不是 PE：没有导入")
 
     def test_env_cmd_saves_player_path_before_replacing_it(self):
         # Metal 工具装在自定义目录、只加进 PATH：s2arm_env.cmd 换 PATH 之前存进 S2A_USER_PATH，作业层按它找（11-09 Windows 出包机实测 #137）
@@ -146,15 +160,16 @@ class Reader(unittest.TestCase):
         self.mods.start(); self.addCleanup(self.mods.stop)
 
     def test_prebuilt_same_identity(self):
-        (self.d / "nx_unpack.dll").write_bytes(b"x"); (self.d / ".src_digest").write_text("abc123abc123\n")
+        """给能直接执行的 nx_unpack.exe（调用方都直接执行它；Windows 直接执行 .dll 交给旧 .NET Framework，报找不到 System.Runtime 10.0）"""
+        (self.d / "nx_unpack.dll").write_bytes(b"x"); (self.d / "nx_unpack.exe").write_bytes(b"x"); (self.d / ".src_digest").write_text("abc123abc123\n")
         with as_windows(toolchain):
-            self.assertEqual(toolchain.reader(self.c), self.d / "nx_unpack.dll")
+            self.assertEqual(toolchain.reader(self.c), self.d / "nx_unpack.exe")
 
     def test_stale_or_missing_is_named_failure(self):
         (self.d / "nx_unpack.dll").write_bytes(b"x"); (self.d / ".src_digest").write_text("000000000000\n")
         for case in ("stale", "missing"):
             with self.subTest(case=case), as_windows(toolchain):
-                if case == "missing": (self.d / "nx_unpack.dll").unlink()
+                if case == "missing": (self.d / "nx_unpack.dll").unlink()   # exe 本来就没放：只有 dll 也算缺
                 with self.assertRaises(core.Failure) as e:
                     toolchain.reader(self.c)
                 self.assertEqual(e.exception.code, "reader_unavailable")
@@ -306,7 +321,8 @@ class WinInstall(unittest.TestCase):
         self.progress_events = []   # 作业计数事件 (done, total, unit)
         emit = lambda *a, **k: self.progress_events.append((k.get("done"), k.get("total"), k.get("unit"))) if k.get("unit") else None
         self.c = types.SimpleNamespace(r={"gameId": self.gid}, library=self.t / "lib", private=self.t, logs=self.t / "logs", task="k", engine=self.t, emit=emit,
-                                       begin=lambda *a, **k: None, last_log=None, catalog=lambda: {"schema": 1, "games": []})
+                                       begin=lambda *a, **k: None, last_log=None, catalog=lambda: {"schema": 1, "games": []},
+                                       lock=lambda *a, **k: contextlib.nullcontext())   # 装机类作业的手机锁 / 程序锁（ipa.phone_lock / program_locks）
         ios_fixture(self.c, self.gid)   # 出好的 iPhone 版：image/ios/kit + image/ios/pack
 
     def go(self, w, **r):

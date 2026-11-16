@@ -37,7 +37,9 @@ import S2ArmAppleAdapter
         func str(_ k: String) -> String? { a[k] as? String }
         let spaceOverride = a["spaceOverride"] as? Bool ?? false   // 同界面「仍然继续」：磁盘预检不够也照出，真写满会停下报错
         func game(_ k: String = "gameId") -> GameSummary? { str(k).flatMap { id in model.games.first { $0.id == id } } }
-        func busy() -> ControlReply? { model.busy ? .bad("有作业在跑（\(model.session?.name ?? "")）：等它结束或 cancel 再来", code: 409) : nil }
+        func busy() -> ControlReply? { model.busy ? .bad("有作业在跑（\(model.session?.name ?? model.phoneSession?.name ?? "")）：等它结束或 cancel 再来", code: 409) : nil }
+        // 手机作业（装机 / 导出自签包 / 删除 / 装回 / 更新 iPhone）只看手机槽：出包等主槽作业在跑照样能发（同界面，11-16 维护者「出包时也能装别的游戏」）
+        func phoneBusy() -> ControlReply? { model.phoneBusy ? .bad("手机上有作业在跑（\(model.phoneSession?.name ?? "")）：等它结束或 cancel 再来", code: 409) : nil }
         func blocked(_ b: ExportBlocker?) -> ControlReply {
             guard let b else { return .ok() }
             switch b {
@@ -89,6 +91,10 @@ import S2ArmAppleAdapter
             guard let g = game() else { return .bad("没有这个 gameId") }
             return blocked(model.export(g, platforms: [.ios],
                                         deviceTarget: deviceTarget ?? (probe["connected"] as? [[String: Any]])?.first, spaceOverride: spaceOverride))
+        case ("POST", "/selfsign"):   // 同游戏库「导出自签包」：能直接导出的直接导出，没出过 / 旧格式的先出 iPhone 包再导出
+            guard let g = game() else { return .bad("没有这个 gameId") }
+            if let b = g.iphoneExportable ? phoneBusy() : busy() { return b }
+            model.exportSelfSign(g); return .ok()
         case ("POST", "/batch"):   // 批量出包（v0.2.4）：同界面清单页——建批次后一款接一款地出，进度看 GET /state 的 batch
             if let r = busy() { return r }
             if model.batchState != nil, model.batchSummary["done"] as? Bool != true {   // 上一批暂停着 / 没出完：不盖掉（审计 P2-270），同 Windows 回 409
@@ -122,17 +128,17 @@ import S2ArmAppleAdapter
             model.checkInstall(g.id, device: str("device")); return .ok()   // device：查哪一台（s2armctl install-check --device），不给按界面上选中的那台
         case ("POST", "/install"):
             guard let g = game() else { return .bad("没有这个 gameId") }
-            if let b = busy() { return b }
+            if let b = phoneBusy() { return b }
             // 往设备上装东西一律要说明装到哪台（11-11：作业层不替玩家挑，控制口也不拿界面上选中的那台顶替）；s2armctl targets 列设备号。
-            //   装法是「导出，自己签名安装」时不连手机、出到文件夹，不要 device（同界面按钮、同 Windows 控制口）
-            let device = str("device")
-            if device == nil, model.installMode.mode != "export" { return .bad(Self.deviceRequired) }
+            //   mode = export（同游戏库「导出自签包」）：不连手机、出到文件夹，不要 device（同 Windows 控制口）
+            let device = str("device"), export = str("mode") == "export"
+            if device == nil, !export { return .bad(Self.deviceRequired) }
             model.install(g, teamId: str("teamId"), device: device, acceptDropped: a["acceptDropped"] as? Bool ?? false,
-                          accept: Set(["acceptNoBackup", "acceptStale"].filter { a[$0] as? Bool == true }), ask: false); return .ok()
+                          accept: Self.acceptFlags(a).subtracting(["acceptDropped"]), ask: false, export: export); return .ok()
         case ("POST", "/signingProject"):
             model.openSigningProject(); return .ok()
         case ("POST", "/update-phone"):   // 更新 iPhone 上的 S2Arm（v0.3.0）：同库页右上角按钮；有要重新出包的款没给 acceptStale → 409 列出它们
-            if let b = busy() { return b }
+            if let b = phoneBusy() { return b }
             guard let u = model.phoneUpdate else { return ControlReply(code: 409, body: ControlReply.json(["ok": false, "error": "按这台电脑的装机记录，手机上的 S2Arm 已是本版"])) }
             let accept = a["acceptStale"] as? Bool ?? false
             let stale = u.stale.map { ["gameId": $0.id, "name": $0.name] }
@@ -144,19 +150,19 @@ import S2ArmAppleAdapter
             }
             model.updatePhone(acceptStale: accept, repack: a["repack"] as? Bool == true ? u.stale.map(\.id) : [], language: "zh-Hans",
                               device: (a["device"] as? String).flatMap { $0.isEmpty ? nil : $0 },   // 同 /install：连着多台时指定哪台
-                              acceptDropped: a["acceptDropped"] as? Bool ?? false, accept: Set(["acceptNoBackup"].filter { a[$0] as? Bool == true }), ask: false)   // 同 /install：会挤掉别的电脑装的款时原样失败，带 acceptDropped 再发
+                              acceptDropped: a["acceptDropped"] as? Bool ?? false, accept: Self.acceptFlags(a).subtracting(["acceptDropped", "acceptStale"]), ask: false)   // 同 /install：会挤掉别的电脑装的款时原样失败，带 acceptDropped 再发
             return .object(["ok": true, "stale": stale])
         case ("POST", "/restore-iphone"):
             guard let g = game() else { return .bad("没有这个 gameId") }
             guard g.iphoneRestorable else { return .bad("没有可以装回的上一版手机 S2Arm") }
-            if let b = busy() { return b }
+            if let b = phoneBusy() { return b }
             guard let device = str("device") else { return .bad(Self.deviceRequired) }
             model.restorePhone(g, device: device); return .ok()
         case ("POST", "/uninstall"):
             guard let g = game() else { return .bad("没有这个 gameId") }
-            if let b = busy() { return b }
+            if let b = phoneBusy() { return b }
             guard let device = str("device") else { return .bad(Self.deviceRequired) }
-            model.removeFromPhone(g, ask: false, device: device, accept: Set(["acceptDropped", "acceptNoBackup"].filter { a[$0] as? Bool == true })); return .ok()
+            model.removeFromPhone(g, ask: false, device: device, accept: Self.acceptFlags(a)); return .ok()
         case ("POST", "/customize"):
             guard let g = game() else { return .bad("没有这个 gameId") }
             if let b = busy() { return b }
@@ -175,8 +181,9 @@ import S2ArmAppleAdapter
             // 按任务号取消（启动器剃刀 M23）：原先不管传什么都停当前那个；任务号对不上回 409，不停错作业
             guard let id = str("taskId") else { return .bad("缺 taskId") }
             guard model.busy else { return .bad("没有在跑的作业") }
-            guard let current = model.session?.taskID, current == id else {
-                return .bad("这个 taskId 不是正在跑的作业（正在跑：\(model.session?.taskID ?? "还没拿到任务号")）", code: 409)
+            if model.phoneBusy, model.phoneSession?.taskID == id { model.stopPhone(); return .ok() }   // 手机槽的作业
+            guard model.mainBusy, let current = model.session?.taskID, current == id else {
+                return .bad("这个 taskId 不是正在跑的作业（正在跑：\(model.session?.taskID ?? model.phoneSession?.taskID ?? "还没拿到任务号")）", code: 409)
             }
             model.stop(); return .ok()
         case ("POST", "/retry"):
@@ -221,6 +228,16 @@ import S2ArmAppleAdapter
                     if !o.note.isEmpty { r["note"] = o.note }
                     return r })
             } catch { return .bad(error.localizedDescription) }
+        case ("POST", "/mods"):   // 资源替换 mod（同启动设置「资源 Mod」）：import [zip / 文件夹路径]、enable {名字: 真/假}（关掉 = 改名 .off-<名字>）、remove [名字]；都不给 = 只列
+            guard let id = str("gameId") else { return .bad("缺 gameId") }
+            if let b = busy() { return b }
+            let imp = a["import"] as? [String], rem = a["remove"] as? [String], en = a["enable"] as? [String: Bool]
+            do {
+                let m = try await model.launchSettingsFull(id, modsImport: imp?.isEmpty == false ? imp : nil, modsRemove: rem?.isEmpty == false ? rem : nil,
+                                                           modsEnable: en?.isEmpty == false ? en : nil).5
+                return .object(["mods": m.items.map { ["name": $0.id, "enabled": $0.enabled, "files": $0.files, "bytes": $0.bytes] as [String: Any] },
+                                "imported": m.imported, "notes": m.notes])
+            } catch { return .bad(error.localizedDescription) }
         case ("POST", "/cloudFolder"):
             // iCloud 存档同步的云盘文件夹（同环境页「选择文件夹…」）：path 为空 = 关闭
             let path = str("path") ?? ""
@@ -252,7 +269,10 @@ import S2ArmAppleAdapter
                 model.showEnvironment = false; model.showInstallFor = g.id
             case "sgradeUpgrade":   // S 级优化升级页（同点游戏库「S 级优化升级」）：截图核界面用
                 model.showEnvironment = false; model.exportFor = nil; model.sgradeUpgradeOpen = true
-            default: return .bad("page 只认 environment / export / library / install / sgradeUpgrade")
+            case "launchSettings":   // 这款的启动设置（同点游戏库齿轮）：截图核界面用
+                guard let g = game() else { return .bad("没有这个 gameId") }
+                model.showEnvironment = false; model.exportFor = nil; model.displayRequest = g.id
+            default: return .bad("page 只认 environment / export / library / install / sgradeUpgrade / launchSettings")
             }
             return .ok()
         case ("POST", "/refresh"):
@@ -283,6 +303,9 @@ import S2ArmAppleAdapter
 
     /// 自描述：AI 先 GET /help 就知道能做什么（s2armctl help 打的就是这张表）。
     /// 往设备上装 / 删 / 装回不带 device：拒绝（作业层也拒），告诉怎么查设备号
+    /// 请求里所有为真的 accept* 字段（玩家已同意的确认参数）原样交给作业层，不在控制口按名字挑（11-15：/install 原先只转两个，漏了 acceptLowSpace，
+    ///   AI 收到 device_space_low 替玩家确认也续不上）。认不认这个确认由作业层的失败码决定
+    static func acceptFlags(_ a: [String: Any]) -> Set<String> { Set(a.compactMap { k, v in k.hasPrefix("accept") && (v as? Bool) == true ? k : nil }) }
     static let deviceRequired = "缺 device：说明装到哪台（s2armctl targets 列出连着的设备、设备名和设备号），不替你挑"
 
     static let endpoints: [[String: String]] = [
@@ -299,6 +322,7 @@ import S2ArmAppleAdapter
         ["POST /installCheck {gameId}", "装机前清单（只读）：几秒后看 GET /state 的 installReadiness"],
         ["POST /install {gameId, acceptDropped?, acceptNoBackup?, acceptStale?}", "装到 iPhone（不用先 installCheck，缺什么作业报真实原因）；可确认的失败码先问玩家、同意了带对应参数再发：container_would_drop → acceptDropped（手机上有别的电脑装的游戏这次带不上）、save_backup_failed → acceptNoBackup（覆盖前没能备份存档）、container_stale → acceptStale（旧资源包要重出）"],
         ["POST /uninstall {gameId, acceptDropped?, acceptNoBackup?}", "从 iPhone 上的 S2Arm 删一款（备份存档 → 更新容器 → 删数据；其余游戏不动）；acceptDropped / acceptNoBackup 同 /install"],
+        ["POST /mods {gameId, import?:[路径], enable?:{名字: 真/假}, remove?:[名字]}", "资源替换 mod：导入 zip / 文件夹（找 romfs）、开关（关掉下次开始游戏不叠，装到 iPhone 时机上删掉）、删除；都不给只列；回 {mods:[{name, enabled, files, bytes}], imported, notes}"],
         ["POST /delete {gameId}", "删除这款游戏：IPA / 资源包 / 出包中间产物 / 缓存全删；存档与原始游戏文件保留"],
         ["POST /target {action:probe} | {productType, os}", "重新检测连接的设备 / 选出包提示用的机型和系统大版本"],
         ["POST /launch {gameId}", "在 Mac 上启动游戏"],
@@ -320,11 +344,13 @@ import S2ArmAppleAdapter
             ["gameId": m.installGameID ?? "", "checkedDevice": m.installReadinessDevice ?? "", "ready": r.ready, "device": r.device, "account": r.account, "signing": r.signing,
              "items": r.items.map { ["id": $0.id, "ok": $0.ok, "waiting": $0.waiting, "title": $0.title, "detail": $0.detail, "who": $0.who] }]
         } ?? NSNull()
-        let session: Any = m.session.map { s -> [String: Any] in
+        func describe(_ s: JobSession) -> [String: Any] {
             let phase: String
             switch s.phase { case .running: phase = "running"; case .stopping: phase = "cancelling"; case .finished(let st): phase = st.rawValue }
-            return ["kind": s.kind.rawValue, "gameId": s.gameID ?? NSNull(), "name": s.name, "phase": phase, "stage": s.stage, "message": s.message]
-        } ?? NSNull()
+            return ["kind": s.kind.rawValue, "gameId": s.gameID ?? NSNull(), "name": s.name, "phase": phase, "stage": s.stage, "message": s.message, "taskId": s.taskID ?? NSNull()]
+        }
+        let session: Any = m.session.map(describe) ?? NSNull()
+        let phoneSession: Any = m.phoneSession.map(describe) ?? NSNull()   // 手机槽（装机等，可与出包同时跑）
         return [
             "frontend": "S2Arm × NX2Apple",
             "selection": "library", "selectedGame": m.selectedID ?? NSNull(),
@@ -344,14 +370,15 @@ import S2ArmAppleAdapter
                 ["id": g.id, "name": g.name, "customName": g.customName, "customCover": g.customCover, "cover": g.cover ?? "", "display": g.display, "compatibility": g.compatibility, "ready": g.playable, "iphoneRestorable": g.iphoneRestorable,
                  "needsPreparation": g.needsPreparation, "needsKeys": g.needsKeys, "buildable": g.buildable, "missing": g.missing,
                  "baseBytes": g.packages.filter { $0.type == "base" }.reduce(Int64(0)) { $0 + $1.size }, "bytes": g.totalBytes] },
-            "session": session, "busy": m.busy,
+            "session": session, "busy": m.busy, "phoneSession": phoneSession, "mainBusy": m.mainBusy, "phoneBusy": m.phoneBusy,
+            "phoneQueue": m.phoneQueue.map { $0.gameID ?? "" },
             "tasks": ControlJournal.tasks(privateRoot: privateRoot), "queue": [String](),
             "executionTask": m.busy ? (m.session?.taskID.map { $0 as Any } ?? NSNull()) : NSNull(),   // 在跑的作业层任务号（同旧前端 Store.executionTask），s2armctl next 据此判「本游戏正在运行」
             "notice": NSNull(),
             "error": (m.actionError ?? (m.libraryError == LibraryProvider.noLibraryMessage ? nil : m.libraryError) ?? m.environmentError ?? m.installError ?? m.aiControlError).map { $0 as Any } ?? NSNull(),
             "installReadiness": rd,
             "update": m.updateStatus,
-            "installMode": ["mode": m.installMode.mode, "exportAvailable": m.installMode.exportAvailable],
+            "installMode": ["signMode": m.installMode.signMode, "exportAvailable": m.installMode.exportAvailable],
             "phoneUpdates": m.phoneUpdates.map { u in ["device": u.device, "games": u.games.map(\.id), "stale": u.stale.map(\.id)] as [String: Any] },
             "batch": m.batchState.map { s -> [String: Any] in ["running": m.batchRunning, "summary": s["summary"] ?? [:], "next": s["next"] ?? NSNull(),
                                                                    "items": ((s["batch"] as? [String: Any])?["items"]) ?? [], "paused": ((s["batch"] as? [String: Any])?["paused"]) ?? NSNull()] } ?? NSNull(),

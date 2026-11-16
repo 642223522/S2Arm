@@ -35,6 +35,20 @@ int main(int argc, char **argv) {
     free(data);
     if (found != 1) { fprintf(stderr, "SETUP FAILED: expected one FS buffer binding\n"); return 2; }
     if (!ok) return 1;
+    if (!compute) {
+        static const char deps[] = "{\"content\":{\"contract\":\"s2a-direct-program-content-v1\",\"dependencies\":[{\"source\":\"code:sha256:synthetic\",\"method\":\"GetCode\"}]}}";
+        struct rp_prog pg = {0}; uint32_t mask[4];
+        pg.nent[1] = 1; pg.ent[1][0].src_kind = NVN_RB_TEX;
+        pg.ent[1][0].count = 1; pg.ent[1][0].src_reg = 0; pg.ent[1][0].src_reg2 = UINT16_MAX;
+        if (!fact_cache_mask((const uint8_t *)deps, sizeof deps - 1, &pg, mask)) {
+            fprintf(stderr, "SETUP FAILED: ordinary reflected texture should permit dependency identity\n"); return 2;
+        }
+        pg.ent[1][0].cls = NVN_GPU_RES_TBUF; pg.ent[1][0].src_kind = NVN_RB_TBUF;
+        if (fact_cache_mask((const uint8_t *)deps, sizeof deps - 1, &pg, mask)) {
+            fprintf(stderr, "FAIL: reflected TBUF prevents dependency identity reuse\n"); return 1;
+        }
+        puts("PASS: reflected TBUF prevents dependency identity reuse");
+    }
     puts(compute ? "PASS: real compute BUFFER result maps to TBUF source without sampler" : "PASS: real BUFFER result maps to TBUF source without sampler");
     return 0;
 }

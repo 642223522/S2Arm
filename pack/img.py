@@ -49,6 +49,8 @@ def toc_bytes(entries):
     while slots < max(1, len(entries)) * 2: slots <<= 1
     table = [None] * slots; paths = bytearray()
     for path, off, size in entries:
+        # 目录表只放文件（11-16 D-4VAX：手机上按目录表逐项建父目录再改名，一条「/」结尾的项会把目标建成目录、改名 errno 21，整款装不上）
+        if not path or path.endswith('/') or path.startswith('/'): raise Red(f'目录表只放文件，不收这种路径：{path!r}')
         h = fnv(path); k = h & (slots - 1)
         while table[k] is not None:
             if table[k][0] == h and table[k][5] == path: raise Red(f'目录表路径重复：{path}')
@@ -176,24 +178,22 @@ def orig_romfs(root, work):
     return tmp, tmp
 
 
+def _romfs_img():
+    """同目录的 pack/romfs_img.py，按文件路径加载：本文件常被作业层按文件路径加载（pack/jobs/sgrade_bf.py _img，spec_from_file_location），
+    那时 pack/ 不在模块搜索路径里，裸 import romfs_img 找不到（11-16 资源包是 game.img、要补片上读取着色器的款装机「放进手机」一步 job_failed）"""
+    import importlib.util
+    mod = sys.modules.get('s2a_pack_romfs_img')
+    if mod is None:
+        spec = importlib.util.spec_from_file_location('s2a_pack_romfs_img', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'romfs_img.py'))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        sys.modules['s2a_pack_romfs_img'] = mod
+    return mod
+
+
 def std_files(path, base):
-    """IMG 里标准 RomFS 段（起点 base）的文件表 → {相对路径: (game.img 里的绝对偏移, 长度)}；按公开格式只读元数据，不读文件数据"""
-    with open(path, 'rb') as f:
-        def rd(off, n): f.seek(base + off); return f.read(n)
-        hs, dho, dhs, dmo, dms, fho, fhs, fmo, fms, data = struct.unpack('<10Q', rd(0, 0x50))
-        dmeta, fmeta = rd(dmo, dms), rd(fmo, fms)
-    out, todo = {}, [(0, '')]
-    while todo:
-        off, p = todo.pop()
-        _, _, child, first, _, nl = struct.unpack_from('<6I', dmeta, off)
-        name = dmeta[off + 24: off + 24 + nl].decode('utf-8'); here = (p + '/' + name).lstrip('/') if name else p
-        fo = first
-        while fo != 0xFFFFFFFF:
-            _, sib, foff, size, _, fnl = struct.unpack_from('<IIQQII', fmeta, fo)
-            out[(here + '/' + fmeta[fo + 32: fo + 32 + fnl].decode('utf-8')).lstrip('/')] = (base + data + foff, size); fo = sib
-        c = child
-        while c != 0xFFFFFFFF: todo.append((c, here)); c = struct.unpack_from('<6I', dmeta, c)[1]
-    return out
+    """IMG 里标准 RomFS 段（起点 base）的文件表 → {相对路径: (game.img 里的绝对偏移, 长度)}；按公开格式只读元数据，不读文件数据（解析只此一份：pack/romfs_img.py）"""
+    return _romfs_img().RomfsImage(path, base).files()
 
 
 def write_map(pack_dir, img_path):
@@ -352,6 +352,16 @@ def convert(root, pack_dir, progress=None, romfs_index=None, gid=None, consume=F
     mp = write_map(pack_dir, out)
     ix = f"game.img\t{h['total']}\t{h['pack_id']}\n" + ''.join(l for r, l in rows if r.startswith(KEEP))
     if mp: ix += f"{MAP}\t{os.path.getsize(mp)}\t{hashlib.sha256(open(mp, 'rb').read()).hexdigest()}\n"
+    def put(name, text):
+        tmp = os.path.join(pack_dir, name + '.tmp')
+        with open(tmp, 'w', encoding='utf-8', newline='\n') as f: f.write(text)
+        os.replace(tmp, os.path.join(pack_dir, name))
+    # 先换清单、最后删旧形态文件（审计 P1-171：原先先删再换清单，中间断了清单指着已删的文件，再跑 convert 报文件不在）。
+    #   清单换上后再断：旧文件只是多占空间，清单已经是 IMG 形态、照常能用
+    put('index.tsv', ix)
+    total = sum(int(l.split('\t')[1]) for l in ix.splitlines())
+    put('manifest.json', json.dumps({'version': 3, 'format': 'img', 'imgFile': 'game.img', 'files': len(ix.splitlines()), 'total': total,
+                                     'index_sha256': hashlib.sha256(ix.encode('utf-8')).hexdigest()}, indent=1) + '\n')
     for rel, _ in rows:
         if not rel.startswith(KEEP):
             try: os.unlink(os.path.join(pack_dir, rel))
@@ -360,14 +370,6 @@ def convert(root, pack_dir, progress=None, romfs_index=None, gid=None, consume=F
     shutil.rmtree(os.path.join(pack_dir, 'romfs.files'), ignore_errors=True)   # 旧形态库内镜像的硬链接目录（#329，不在清单里）：IMG 已有原件
     for d, subs, files in os.walk(pack_dir, topdown=False):   # 删空了的目录
         if d != pack_dir and not os.listdir(d): os.rmdir(d)
-    def put(name, text):
-        tmp = os.path.join(pack_dir, name + '.tmp')
-        with open(tmp, 'w', encoding='utf-8', newline='\n') as f: f.write(text)
-        os.replace(tmp, os.path.join(pack_dir, name))
-    put('index.tsv', ix)
-    total = sum(int(l.split('\t')[1]) for l in ix.splitlines())
-    put('manifest.json', json.dumps({'version': 3, 'format': 'img', 'imgFile': 'game.img', 'files': len(ix.splitlines()), 'total': total,
-                                     'index_sha256': hashlib.sha256(ix.encode('utf-8')).hexdigest()}, indent=1) + '\n')
     return out
 
 

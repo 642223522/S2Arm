@@ -23,6 +23,10 @@ walk() 与 os.walk(top)（topdown、不跟随软链目录、onerror 同义）逐
 与 os.walk 的差别只有一条：盘点在开始迭代时一次做完（os.walk 边走边盘点），迭代途中 RomFS 被改动看不到——出包期 RomFS 只在阶段的工作副本里改，读的一方不与写的一方并发。
 每次调用都现盘点（不跨调用缓存）：同一进程里先后两次盘点照样能看出中间的改动（resource_input_key.py 前后两次盘点比对靠这一点）。
 跨平台：只用 os.scandir / os.replace / os.path.join，相对路径一律 /；Windows 照用。
+镜像（11-16 维护者：出包 RomFS 不落散文件）：目录 <top> 不在、旁边有 <top>.std（标准 RomFS，pack/romfs_img.py 读；不叫 .img：老资源包形态的 romfs.img 是拼接件、不是标准 RomFS，旁边也没有 romfs/）→ 盘点改从镜像建，
+  条目 / 大小 / 读头 / walk / listdir / 命令行 has-ext、sizes 与读同内容的目录相同（单测对拍）；目录在就照旧读目录，镜像不看。
+  镜像里的条目：文件 = 普通文件、目录 = 实目录（没有软链）；空目录不在镜像里；大小取镜像记的长度，修改时间一律取镜像文件的（身份随镜像换而换）。
+  e.path 是「目录还在的话」它该在的路径（不存在），要读内容用 e.open()（镜像 / 目录都行）；files0 给的是散文件路径，镜像下没有，报红退 1。
 用法（给 shell 阶段）：romfs_list.py has-ext <目录> <后缀>…   任一条目名（不分大小写）以其中一个后缀结尾 → 退 0，否则退 1（同 find -iname '*<后缀>' -print -quit）
                       romfs_list.py sizes <目录> <输出>       普通文件（lstat）每个一行「字节数\\t相对路径」，给 RomFS 索引（services/romfs_index --list，免得它再枚举、逐个打开）
                       romfs_list.py files0 <目录>            普通文件（lstat，不跟随软链；同 find <目录> -type f）每个一行「<目录>/<相对路径>\\0」，scandir 顺序；有读不开的目录退 1（同 find）
@@ -49,11 +53,17 @@ _AUTO = object()
 class Entry:
     """一个条目：rel = 相对路径（/ 分隔）；name；path = 盘点时的完整路径（os.path.join 拼）；kind = 类型位；
     lstat = 本次盘点的 os.lstat 结果（失败为 None，失败原因在 lstat_error）；size / head / error 只在 heads() 之后、只给普通文件"""
-    __slots__ = ("rel", "name", "path", "kind", "lstat", "lstat_error", "size", "head", "error")
+    __slots__ = ("rel", "name", "path", "kind", "lstat", "lstat_error", "size", "head", "error", "image")
 
-    def __init__(self, rel, name, path, kind, st, st_error):
+    def __init__(self, rel, name, path, kind, st, st_error, image=None):
         self.rel, self.name, self.path, self.kind, self.lstat, self.lstat_error = rel, name, path, kind, st, st_error
         self.size = self.head = self.error = None
+        # 从镜像盘点时 = pack/romfs_img.RomfsImage（内容从镜像读），目录盘点为 None
+        self.image = image
+
+    def open(self):
+        """只读打开这个文件（二进制）：镜像盘点从镜像读，目录盘点 open(path)"""
+        return self.image.open(self.rel) if self.image is not None else open(self.path, "rb")
 
     symlink = property(lambda self: bool(self.kind & SYMLINK))
     # 跟随软链后是普通文件（Path.is_file / DirEntry.is_file 的分法）
@@ -80,6 +90,8 @@ class Tree:
         self.identity = None
         # 读头之后为 True
         self.complete = False
+        # 从镜像盘点时 = RomfsImage
+        self.image = None
 
     def files(self):
         return [e for e in self.entries if e.file]
@@ -106,9 +118,69 @@ class Tree:
                     stack.append((os.path.join(top, d), prefix + d))
 
 
+def image_of(top):
+    """<top> 目录不在、<top>.std 是文件 → 镜像路径；否则 None（目录在就读目录）"""
+    top = os.fspath(top)
+    if os.path.isdir(top):
+        return None
+    img = top.rstrip("/" + os.sep) + ".std"
+    return img if os.path.isfile(img) else None
+
+
+def _romfs_image(path):
+    """pack/romfs_img.RomfsImage(path)：随 Jobs 拷出去时与本文件同目录，仓库里在 pack/"""
+    here = Path(__file__).resolve().parent
+    for d in (here, here.parents[2] / "pack"):
+        if (d / "romfs_img.py").is_file():
+            if str(d) not in sys.path:
+                sys.path.insert(0, str(d))
+            from romfs_img import RomfsImage
+            return RomfsImage(path)
+    raise FileNotFoundError(2, "RomFS 镜像读取模块 romfs_img.py 不在本目录，也不在仓库 pack/", str(here / "romfs_img.py"))
+
+
+class _ImgStat:
+    """镜像条目的 lstat 替身：盘点 / 身份 / 清单 / sizes 用到的几项"""
+    __slots__ = ("st_mode", "st_size", "st_mtime_ns")
+
+    def __init__(self, mode, size, mtime_ns):
+        self.st_mode, self.st_size, self.st_mtime_ns = mode, size, mtime_ns
+
+
+def _identity(tree):
+    h = hashlib.sha256(FORMAT.encode())
+    for e in sorted(tree.entries, key=lambda e: e.rel.encode("utf-8", "surrogateescape")):
+        sig = f"{e.lstat.st_size}:{e.lstat.st_mtime_ns}" if stat.S_ISREG(e.lstat.st_mode) else ""
+        h.update(f"{e.rel}\0{e.kind}\0{sig}\n".encode("utf-8", "surrogateescape"))
+    return h.hexdigest()[:32]
+
+
+def _scan_image(top, path, stat_entries):
+    """镜像建的盘点：每层条目按名字 UTF-8 字节序（目录与文件混排，同镜像的路径序）"""
+    tree = Tree(top)
+    im = tree.image = _romfs_image(path)
+    mtime = os.stat(path).st_mtime_ns
+    tree.children = {d: [] for d in im.dirs()}
+    rows = [(d, DIR | WALKDIR, _ImgStat(stat.S_IFDIR | 0o555, 0, mtime)) for d in im.dirs() if d]
+    rows += [(rel, FILE, _ImgStat(stat.S_IFREG | 0o444, size, mtime)) for rel, _, size in im.entries()]
+    rows.sort(key=lambda r: r[0].encode("utf-8", "surrogateescape"))
+    for rel, kind, st in rows:
+        parent, _, name = rel.rpartition("/")
+        e = Entry(rel, name, os.path.join(tree.top, *rel.split("/")), kind, st if stat_entries else None, None, im)
+        tree.children[parent].append(e)
+        tree.entries.append(e)
+    if stat_entries:
+        tree.identity = _identity(tree)
+    return tree
+
+
 def scan(top, stat_entries=True):
     """盘点一棵目录（不打开任何文件）：每层 scandir、每个条目 lstat 一次。打不开的目录记进 errors 并跳过（os.walk 同样跳过）。
-    stat_entries=False：只要名字与类型（walk 用；类型取目录项自带的 d_type，不逐个 lstat），没有 lstat、没有身份"""
+    stat_entries=False：只要名字与类型（walk 用；类型取目录项自带的 d_type，不逐个 lstat），没有 lstat、没有身份。
+    目录不在、旁边有 <top>.std → 从镜像建（见文件头「镜像」）"""
+    img = image_of(top)
+    if img is not None:
+        return _scan_image(top, img, stat_entries)
     tree = Tree(top)
     pending = [(tree.top, "")]
     ok = True
@@ -161,11 +233,7 @@ def scan(top, stat_entries=True):
             if kind & DIR:
                 pending.append((c.path, e.rel))
     if ok and stat_entries:
-        h = hashlib.sha256(FORMAT.encode())
-        for e in sorted(tree.entries, key=lambda e: e.rel.encode("utf-8", "surrogateescape")):
-            sig = f"{e.lstat.st_size}:{e.lstat.st_mtime_ns}" if stat.S_ISREG(e.lstat.st_mode) else ""
-            h.update(f"{e.rel}\0{e.kind}\0{sig}\n".encode("utf-8", "surrogateescape"))
-        tree.identity = h.hexdigest()[:32]
+        tree.identity = _identity(tree)
     return tree
 
 
@@ -175,8 +243,25 @@ def walk(top, onerror=None):
 
 
 def listdir(top):
-    """os.listdir(top) 的替身：只列 RomFS 某一层（不进子目录），也归这里，好让 RomFS 目录读取只有一处"""
-    return os.listdir(top)
+    """os.listdir(top) 的替身：只列 RomFS 某一层（不进子目录），也归这里，好让 RomFS 目录读取只有一处；
+    top 是镜像盘点里的子目录（<镜像对应目录>/a/b，目录不在）也认：找最近一层有 .std 的上级"""
+    top = os.fspath(top)
+    if os.path.isdir(top):
+        return os.listdir(top)
+    rel, cur = [], top.rstrip("/" + os.sep)
+    while cur and image_of(cur) is None:
+        cur, name = os.path.split(cur)
+        if not name:
+            break
+        rel.insert(0, name)
+    img = image_of(cur) if cur else None
+    if img is None:
+        return os.listdir(top)   # 同 os.listdir 报错
+    tree = _scan_image(cur, img, False)
+    kids = tree.children.get("/".join(rel))
+    if kids is None:
+        raise FileNotFoundError(2, "No such file or directory", top)
+    return [e.name for e in kids]
 
 
 def default_listing(top):
@@ -260,6 +345,18 @@ def _read_heads(entries):
             e.error = err
 
 
+def _read_heads_image(files):
+    """镜像：按数据偏移顺序一个句柄读完（同一个大文件里顺着走，不逐个打开）"""
+    if not files:
+        return
+    spans = files[0].image.files()
+    with open(files[0].image.path, "rb") as f:
+        for e in sorted(files, key=lambda e: spans[e.rel][0]):
+            off, size = spans[e.rel]
+            f.seek(off)
+            e.head, e.size = f.read(min(HEAD, size)), size
+
+
 def heads(top, listing=_AUTO, tree=None):
     """盘点 + 每个普通文件的（大小、前 32 字节）：有对得上身份的清单就从清单取（不读盘），否则并行读头并写清单。
     listing：清单目录；缺省见 default_listing；None = 不落盘（只在本次调用里用）。tree：已盘点的结果（同一进程里复用，调用方保证期间没改）"""
@@ -274,6 +371,9 @@ def heads(top, listing=_AUTO, tree=None):
     alt = sorted(p for p in Path(listing).glob(f"*-{tree.identity}.json") if p != path) if path and not path.exists() and Path(listing).is_dir() else []
     if not (path and (_load(path, tree) or any(_load(p, tree) for p in alt))):
         files = tree.files()
+        if tree.image is not None:
+            _read_heads_image(files)
+            files = []
         # 读头是磁盘随机读（外置 SSD 单线程约 1.8k 个/秒），线程多只排队等盘、几乎不占核：16 路约 8k 个/秒（11-03 火纹实测，32 路只再快约 5%）
         workers = max(1, min(16, 2 * (os.cpu_count() or 1)))
         chunks = [files[i::workers * 8] for i in range(workers * 8)]
@@ -291,6 +391,9 @@ def main(argv):
         return 0 if any(e.name.lower().endswith(exts) for e in scan(argv[1]).entries) else 1
     if len(argv) == 2 and argv[0] == "files0":
         tree = scan(argv[1])
+        if tree.image is not None:
+            print(f"romfs_list.py files0：{argv[1]} 只有镜像 {tree.image.path}，没有散文件路径可给（读取方要改成从镜像读）", file=sys.stderr)
+            return 1
         out = sys.stdout.buffer
         for e in tree.entries:
             if e.lstat is not None and stat.S_ISREG(e.lstat.st_mode):

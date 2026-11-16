@@ -155,7 +155,8 @@ def scan(index_dirs, exefs, log=None):
         if not os.path.exists(idx): continue
         seen = set(); rd = csv.DictReader(open(idx, encoding='utf-8', errors='replace'), delimiter='\t')
         # 编号（同启动器 pack/jobs/community.py：表头有 aspect 的是 widescreen、有 target_fps 的是 fps、其余 gfx；补丁内容 sha256 前 16 位，没有就用包内路径散列）
-        kind_id = 'widescreen' if 'aspect' in (rd.fieldnames or []) else 'fps' if 'target_fps' in (rd.fieldnames or []) else 'gfx'
+        kind_id = 'widescreen' if 'aspect' in (rd.fieldnames or []) else 'fps' if 'target_fps' in (rd.fieldnames or []) \
+            else 'mod' if 'mod' in (rd.fieldnames or []) else 'other' if cat == 'other' else 'gfx'   # mod：玩家导入的 mod 带的代码补丁（pack/jobs/mods.py code_index），运行时跟 mod 开关走（runtime/src/cpatch.c）
         rows = list(rd)
         romfs_roots = {(r.get('path') or '').split('/romfs/')[0] for r in rows if (r.get('title_id') or '').upper()[:13] == pid and '/romfs/' in (r.get('path') or '')}
         for r in rows:
@@ -175,15 +176,21 @@ def scan(index_dirs, exefs, log=None):
                 skipped['索引哈希与内容不符'] = skipped.get('索引哈希与内容不符', 0) + 1; continue
             uid = f"{kind_id}:{digest[:16]}"
             meta = {'fps': fps_of(r.get('target_fps'), path), 'romfs': romfs_need(path, romfs_roots),
-                    'aspect': aspect_of(r.get('aspect'), r.get('origin') or path) if kind_id == 'widescreen' else None}   # 画幅变体（运行时按屏幕比例选一份，见 plan）
+                    'aspect': aspect_of(r.get('aspect'), r.get('origin') or path) if kind_id == 'widescreen' else None,   # 画幅变体（运行时按屏幕比例选一份，见 plan）
+                    'dir': (r.get('dir') or '') if kind_id == 'gfx' else ''}   # 画面类方向（load / quality，统一包条目 dir）：表第 14 列，iOS 运行时只开 load
             if uid in taken:
                 m0 = taken[uid]
                 if m0['fps'] is None: m0['fps'] = meta['fps']
                 if m0['romfs'] == 1: m0['romfs'] = meta['romfs']
                 continue
             taken[uid] = meta
+            def mod_miss(bids):   # 玩家导入的 mod（mod:）构建号对不上：记「不收」，完成页列「没打上（Mod 是别的版本的）」（社区补丁版本不对是常态、不列）
+                if kind_id == 'mod' and log is not None:
+                    log.append(f"不收\t{uid}\t-\t{path[:60]}\tmod 构建号对不上：mod 是 {'、'.join(sorted({b[:16] for b in bids if b})) or '（没写构建号）'}，"
+                               f"这份游戏的主程序是 {mods.get('main', '')[:16]}")
             if kind == 'pchtxt' or path.endswith('.pchtxt'):
                 _, secs = parse_pchtxt(open(full, encoding='utf-8', errors='replace').read())
+                if not any(m for s in secs for m, b in mods.items() if s['bid'] and bid_match(b, s['bid'])): mod_miss([s['bid'] for s in secs])
                 for s in secs:
                     ms = [m for m, b in mods.items() if s['bid'] and bid_match(b, s['bid'])]
                     if not ms:
@@ -204,13 +211,17 @@ def scan(index_dirs, exefs, log=None):
                 try:
                     w, rt = fpslocker.convert(miniyaml.load(open(full, encoding='utf-8', errors='replace').read()), (text_end, ro), (M, key))
                 except (fpslocker.Unsupported, ValueError) as e:
-                    skipped['FPSLocker：' + str(e)[:40]] = skipped.get('FPSLocker：' + str(e)[:40], 0) + 1; continue
+                    skipped['FPSLocker：' + str(e)[:40]] = skipped.get('FPSLocker：' + str(e)[:40], 0) + 1
+                    # 进补丁打入记录（11-15 #934：原先只打一行「跳过」，完成页、S 级页都看不出这款的帧率补丁没打进去、开关显示成开着）
+                    if log is not None: log.append(f'不收\t{uid}\tmain\tFPSLocker\tFPSLocker 配置不支持：{str(e)[:120]}')
+                    continue
                 meta = dict(meta, fps=60, ext=True, fpsl=rt)   # ext：代码段尾巴放声明代码、映像结尾放变量（同金手指规则）
-                out.append({'module': 'main', 'cat': 'fps', 'name': 'FPSLocker', 'writes': sorted(w.items()), 'license': r.get('license') or '', 'path': path, 'base': base, 'id': uid, 'meta': meta})
+                out.append({'module': 'main', 'cat': 'fps', 'name': 'FPSLocker', 'writes': sorted(w.items()), 'license': r.get('license') or '', 'path': path, 'base': base, 'id': uid, 'meta': meta,
+                            'origin': r.get('origin') or path})   # 上游原路径：fps_group 按它分组（审计 P1-193）
             elif kind == 'ips' or path.lower().endswith('.ips'):
                 bid = os.path.splitext(os.path.basename(path))[0]
                 ms = [m for m, b in mods.items() if re.fullmatch(r'[0-9A-Fa-f]{16,64}', bid) and bid_match(b, bid)]
-                if not ms: continue
+                if not ms: mod_miss([bid]); continue
                 w = parse_ips(open(full, 'rb').read())
                 if w is None: skipped['IPS 格式不对'] = skipped.get('IPS 格式不对', 0) + 1; continue
                 if w: out.append({'module': ms[0], 'cat': cat, 'name': os.path.basename(os.path.dirname(path)), 'writes': w, 'license': r.get('license') or '', 'path': path, 'base': base, 'id': uid, 'meta': meta})
@@ -1318,7 +1329,34 @@ def fill(im, o):
 
 def flow_hazard(im, text_end, mod, changed, text_cache):
     """changed：{字地址: (原字, 新字)}（本份补丁代码段里真改了的字）→ 不收原因（空串 = 安全）"""
-    if all(nw == 0xd503201f for _, nw in changed.values()): return ''   # 全是 nop：不引入读写
+    # 把调用（bl / blr）改成 nop、整数返回值被换成调用前的 32 位参数（11-15 奥德赛 1.3.0「Disable Dynamic Resolution」，上游注明 not device-validated）：
+    #   +0x5ee438 原是 ldr w0,[x19,#0xa0]（枚举）→ bl（返回字符串指针）→ mov x20,x0 → 当字符串比较；改成 nop 后 x20 = 那个枚举小整数，读 0x2 段错误
+    #   （开场动画第 10367 帧）。「全是 nop 不引入读写」只对删掉的指令本身不写活寄存器成立，调用不在此列。
+    #   只认这一形状，不泛化到所有「删调用」：上游满屏补丁常有意删掉一个浮点调用、让参数 v0 直接当结果用（21:9 / 32:9 的 +0x73de88），那是对的。
+    #   判法：被删调用前顺着落下来的路上最后写 x0 的是 32 位写（w0），删后同一顺序段里第一次读 x0 是按 64 位读（x0）= 整数被当指针用 → 不收
+    def _ins(a):
+        _dec(P0(a), a)   # 初始化反汇编器
+        return next(_cs.disasm(struct.pack('<I', P0(a)), a), None)
+    P0 = lambda a: changed[a][1] if a in changed else (struct.unpack_from('<I', im, a)[0] if 0 <= a and a + 4 <= text_end else 0)
+    for a in sorted(changed):
+        ow, nw = changed[a]
+        if nw != 0xd503201f or not (_dec(ow, a)[2] == 'call' or (ow & 0xfffffc1f) == 0xd63f0000): continue
+        before = None
+        for k in range(1, 17):   # 往前：顺着落下来的那条路（条件跳转照落下走；无条件跳 / 调用 / 返回就停）里最后写 x0 的那条
+            b = a - 4 * k; ins = _ins(b)
+            if ins is None or _dec(P0(b), b)[2] not in ('seq', 'cond'): break
+            if 0 in _dec(P0(b), b)[1]: before = ins.op_str.split(',')[0].strip(); break
+        if before != 'w0': continue
+        after = None
+        for k in range(1, 17):   # 往后：删掉调用后同一顺序段里第一次读 x0
+            b = a + 4 * k; ins = _ins(b); d = _dec(P0(b), b)
+            if ins is None: break
+            ops = [o.strip() for o in ins.op_str.replace('[', ',').replace(']', ',').split(',') if o.strip()]
+            if 0 in d[0]: after = 'x0' if 'x0' in ops[1:] or (d[2] != 'seq' and 'x0' in ops) else 'w0'; break
+            if 0 in d[1] or d[2] != 'seq': break
+        if after == 'x0':
+            return f'调用改成空：{mod}+{a:#x} 原是调用（{ow:08x}），改成 nop 后返回值换成了调用前的 32 位参数 w0，接着按 64 位 x0 用（整数当指针）'
+    if all(nw == 0xd503201f for _, nw in changed.values()): return ''   # 全是 nop（且没有上面那种整数当指针的删调用）：不引入读写
     addrs = sorted(changed); iv = []
     for a in addrs:
         if iv and a - iv[-1][1] <= _GAP: iv[-1][1] = a + 4
@@ -1468,7 +1506,8 @@ def plan(root, default_on, index_dirs):
     ship = []
     for c in adapt_families(scan(index_dirs, exefs, log), exefs, log, root) + (scan_cheats(cheat_dirs, exefs, log, ship) if cheat_dirs else []):
         if c['id'] in excluded: continue
-        u = units.setdefault((c['id'], c['module']), {'cat': c['cat'], 'name': c['name'], 'license': c['license'], 'path': c['path'], 'writes': [], 'meta': c['meta']})
+        u = units.setdefault((c['id'], c['module']), {'cat': c['cat'], 'name': c['name'], 'license': c['license'], 'path': c['path'], 'writes': [], 'meta': c['meta'],
+                                                      'origin': c.get('origin') or c['path']})   # 上游原路径：第 13 列「组」按它算（审计 P1-193：原先单元只存缓存路径 files/<哈希>/…，每份一组）
         u['writes'] += c['writes']
     # 抢同一处时按目标选，不按索引先后（11-01 维护者：先到先得 = 随机选，01006F8002326000收进了 SpeedFix 120 帧版）。排在前面的先占位，后面同处的按「改同一处」落选：
     #   ① 帧率类：目标帧率 = 60 在前，取不到的其次，明确不是 60 的最后（我方目标 60 帧、只提画面帧；非帧率类不参与，视同第一档）
@@ -1483,7 +1522,9 @@ def plan(root, default_on, index_dirs):
     def rank(key):
         uid, mod = key; u = units[key]; m = u['meta']; rf = m['romfs'] if m['romfs'] != 1 else known.get((mod, flat(u)), 1)
         # ⓪ 自适应满屏（wsauto:，adapt_families 合成，任何画幅都铺满）先占位：同模块定画幅的宽屏变体（别家按单一画幅出的）与它改同一处就让它
-        return (0 if uid.startswith('wsauto:') else 1, 0 if not uid.startswith('fps:') or m['fps'] == 60 else 1 if m['fps'] is None else 2, rf, order.index(key))
+        #   玩家自己导入的 mod 代码补丁（mod:，11-15）比所有社区补丁先占位：玩家自己选的优先（关掉那份 mod 不会让被它挤掉的社区补丁回来，重出包才回来）
+        #   画面类（gfx:）最后占位（11-16 维护者：iOS 收降负载画面补丁，和满屏补丁改同一处时满屏优先；落选的照旧记「与 … 改同一处」，结果页写原因）
+        return (0 if uid.startswith('mod:') else 1 if uid.startswith('wsauto:') else 3 if uid.startswith('gfx:') else 2, 0 if not uid.startswith('fps:') or m['fps'] == 60 else 1 if m['fps'] is None else 2, rf, order.index(key))
     ranked = sorted(units, key=rank)
     if ranked != order:
         print('社区补丁按目标排序（帧率 60 优先、不缺 romfs 参数表优先）：' + ' '.join(f"{k[0]}/{k[1]}({units[k]['meta']['fps'] or '?'} 帧，参数表{('不缺', '判不了', '缺')[rank(k)[2]]})" for k in ranked), file=sys.stderr)
@@ -1679,16 +1720,28 @@ def plan(root, default_on, index_dirs):
         # 目标帧率（第 10 列，11-13 维护者「补丁优先：有 120 帧补丁就盖过我们的 60 帧」）：帧率类写补丁目标（索引 target_fps / 名字里的「<数> fps」），
         #   宿主按它定出图上限（runtime/src/cpatch.c：> 60 开 120 Hz 出图）；别的类与认不出的写空
         # 画幅（第 11 列）：宽屏类写补丁画幅（宽 ÷ 高，aspect_of），宿主在开着的几份里按当前屏幕比例只开最近的一份、上屏按它铺满（runtime/src/cpatch.c）；认不出的写空（照旧单独开关）
-        f.write('编号\t模块\t位\t类别\t段名\t许可\t来源\t数据写入\t缺省开\t目标帧率\t画幅\t模式\n')
+        # 方向（第 14 列，11-16）：画面类写 load / quality（统一包条目 dir），宿主在 iOS 上只开 load（runtime/src/cpatch.c cp_ios_blocked）；别的类与认不出的写空
+        f.write('编号\t模块\t位\t类别\t段名\t许可\t来源\t数据写入\t缺省开\t目标帧率\t画幅\t模式\t组\t方向\n')
         for uid, mod, bit, u, dw in table:
             tf = (u.get('meta') or {}).get('fps') if uid.startswith('fps:') else None
             ta = (u.get('meta') or {}).get('aspect') if uid.startswith('widescreen:') else None
             # 第 12 列模式（自适应满屏，11-13）：both = 主机 / 掌机两档渲染尺寸都按画幅（出包补齐了另一档）；docked = 只有主机档（宿主切主机模式）；空 = 不涉渲染尺寸
             md = ('both' if '@y4/' in dw else 'docked') if uid.startswith('wsauto:') and '@x4' in dw else ''
-            f.write('\t'.join([uid, mod, str(bit), u['cat'], re.sub(r'[\t\n]', ' ', u['name']), u['license'], u['path'], dw, '1' if uid in on else '0', str(tf) if tf else '', f'{ta:.4f}' if ta else '', md]) + '\n')
+            f.write('\t'.join([uid, mod, str(bit), u['cat'], re.sub(r'[\t\n]', ' ', u['name']), u['license'], u['path'], dw, '1' if uid in on else '0', str(tf) if tf else '', f'{ta:.4f}' if ta else '', md,
+                               fps_group(u) if uid.startswith('fps:') else '', (u.get('meta') or {}).get('dir', '') if uid.startswith('gfx:') else '']) + '\n')
     with open(os.path.join(root, 'cpatch_plan.log'), 'a') as f: f.write('\n'.join(log) + '\n')
     print(f'社区补丁 {len(units)} 份匹配，进包 {len(table)} 份', file=sys.stderr)
     return 0
+
+
+def fps_group(u):
+    """第 13 列「组」（11-15，帧率补丁互斥）：同一个上游补丁的几份文件（如 main / sdk 各一份、同一压缩包里）是一组，要一起开；不同上游补丁是二选一。
+    按上游原路径（INDEX origin：仓库/路径[/包内路径]）去掉文件名、去掉末尾 exefs 目录取组，短哈希。运行时每档只开一组（runtime/src/cpatch.c fps_follow）"""
+    o = (u.get('origin') or u.get('path') or '').replace('\\', '/')
+    d = o.rsplit('/', 1)[0] if '/' in o else ''
+    while d.lower().endswith('/exefs') or d.lower() == 'exefs':
+        d = d[:-len('exefs')].rstrip('/')
+    return hashlib.sha1(d.encode('utf-8')).hexdigest()[:8]
 
 
 def prune(root):

@@ -17,7 +17,7 @@ static char g_cap[65536]; static size_t g_capn; static _Atomic int g_cap_on;
 #ifndef S2A_LOG_OUT_WEAK   // 安卓暂停夹具（runtime/tests/support/run_pause_wait_host.py）把 thread.c 与本文件拼进同一单元、thread.c 先带进了弱定义：那里不跑 ㉙，不再定义
 void s2a_log_out(int fd, const char *p, size_t n) {
     ssize_t w = write(fd, p, n); (void)w;
-    if (atomic_load(&g_cap_on) && (strstr(p, "同步调用") || strstr(p, "寄存器 x")) && g_capn + n < sizeof g_cap) { memcpy(g_cap + g_capn, p, n); g_capn += n; g_cap[g_capn] = 0; }
+    if (atomic_load(&g_cap_on) && (strstr(p, "同步调用") || strstr(p, "寄存器 x") || strstr(p, "键周围内存")) && g_capn + n < sizeof g_cap) { memcpy(g_cap + g_capn, p, n); g_capn += n; g_cap[g_capn] = 0; }
 }
 #endif
 #include <stdatomic.h>
@@ -190,6 +190,12 @@ static int64_t wait30(void *p) { struct wait30 *w = p; struct timespec a; clock_
     if (w->kind) { r[0] = (uint64_t)w->ow; r[1] = 2; r[2] = 7; r[3] = 30000000; svc_thread(0x34, r); } else svc_thread(0x18, r);
     int64_t v = ns_since(a) - 30000000; w->bad_rc += r[0] != 0xEA01; return v; }
 static _Alignas(4) _Atomic uint32_t g_sv; static _Atomic int g_sv_go, g_sv_done, g_sv_exit;
+// ㉛：停帧现场给等条件的线程打锁 / 键周围 48 字节（#19361b）。结构 16 字节对齐，锁字在 +0x14、键在 +0x18，其余字预先写好
+static _Alignas(16) _Atomic uint32_t g_kw[12]; static _Atomic int g_kw_done;
+static void kw_waiter(uint64_t arg) { (void)arg;
+    atomic_store(&g_kw[5], s2a_thread_current());   // 持锁进 0x1C（SDK 条件变量协议：等之前锁在自己手里）
+    uint64_t r[31] = {(uint64_t)(uintptr_t)&g_kw[5], (uint64_t)(uintptr_t)&g_kw[6], s2a_thread_current(), (uint64_t)-1}; svc_thread(0x1C, r);
+    atomic_store(&g_kw_done, 1); uint64_t e[31] = {0}; svc_thread(0x0A, e); }
 static void sv_spinner(uint64_t arg) { (void)arg;   // ㉙：3 次 SignalToAddress 后在游戏代码里空转（不进系统调用 → 线程表里是「在跑」）
     for (int i = 0; i < 3; i++) { uint64_t r[31] = {(uint64_t)&g_sv, 0, 7, 1}; svc_thread(0x35, r); }
     atomic_store(&g_sv_done, 1); while (!atomic_load(&g_sv_go)) { }
@@ -975,6 +981,22 @@ int main(void) {
         int regl = 0; for (const char *q = g_cap; (q = strstr(q, "寄存器 x28 ")); q++) regl++;
         CHECK(regl >= 1, "㉙ 停帧现场没打在跑线程的通用寄存器（寄存器 x28 行 %d 个）", regl);
         atomic_store(&g_sv_go, 1); wait_flag(&g_sv_exit, 5000);   // 空转线程退出、放核后主线程再往下
+    }
+    {   // ㉛ 停帧现场：等条件的线程打锁 / 键周围原样内存（从锁地址按 16 对齐往前 16 字节起 48 字节）。期望手写：
+        //   等待中锁字已放（0）、键置 1，其余 10 个字是预先写的样式；导出现场应有一行「键周围内存 <结构首址>：」接这 12 个字。
+        //   反证：去掉 thread.c 里打这一行的那段 → 0 行
+        g_case = "㉛ 停帧现场的键周围内存";
+        static const uint32_t pat[12] = {0x11111111, 0x22222222, 0x33333333, 0x44444444, 0x0badf00d, 0, 0, 0xcafe0001, 0x55555555, 0x66666666, 0x77777777, 0x88888888};
+        for (int i = 0; i < 12; i++) atomic_store(&g_kw[i], pat[i]);
+        atomic_store(&g_kw_done, 0);
+        void s2a_core_leave(void);
+        spawn(kw_waiter, 0, NULL); s2a_core_leave();
+        int blocked = 0; for (int k = 0; k < 5000 && !(blocked = s2a_test_waiters(2, (uint64_t)(uintptr_t)&g_kw[6]) > 0); k++) usleep(1000);
+        g_capn = 0; g_cap[0] = 0; atomic_store(&g_cap_on, 1); void s2a_thread_dump(void); s2a_thread_dump(); atomic_store(&g_cap_on, 0);
+        char want[200]; snprintf(want, sizeof want, "键周围内存 %#llx：11111111 22222222 33333333 44444444 | 0badf00d 00000000 00000001 cafe0001 | 55555555 66666666 77777777 88888888",
+                                 (unsigned long long)(uintptr_t)&g_kw[0]);
+        CHECK(blocked && strstr(g_cap, want), "㉛ 停帧现场没打出等条件线程的键周围内存（期望含「%s」；等待者挂上 %d），截到：%s", want, blocked, g_cap);
+        uint64_t sg[31] = {(uint64_t)(uintptr_t)&g_kw[6], 1}; svc_thread(0x1D, sg); wait_flag(&g_kw_done, 5000);   // 放它走：拿回锁、退出
     }
 
     {   // ⑦

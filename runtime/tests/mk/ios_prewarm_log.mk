@@ -1,6 +1,6 @@
 # native-test-ios_prewarm_log：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += ios_prewarm_log
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 .PHONY: native-test-ios_prewarm_log
 native-test-ios_prewarm_log:
 	@mkdir -p $(BUILD)/tests/ios_prewarm_log

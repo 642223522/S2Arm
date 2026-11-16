@@ -27,7 +27,7 @@ BASE = "https://dl.s2arm.com/patches/v2"
 TIMEOUT = 10
 MAX_BYTES = 4 << 20
 UA = "S2Arm-patches"
-FIELDS = {"fps": "target_fps", "widescreen": "aspect", "gfx": None}
+FIELDS = {"fps": "target_fps", "widescreen": "aspect", "gfx": "dir", "other": None}   # other：认不出是画面的（声音 / 玩法等，tools/patch_index.py）
 
 
 def module_bids(exefs):
@@ -52,8 +52,13 @@ def _get(url):
     with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
         data = r.read(MAX_BYTES + 1)
     if len(data) > MAX_BYTES:
-        raise ValueError("太大")
+        raise ValueError("太大")  # 非玩家句
     return data
+
+
+def lzma_error():
+    import lzma
+    return lzma.LZMAError
 
 
 def _base():
@@ -67,25 +72,39 @@ def _snapshot_path(c):
     if e:
         return Path(e)
     r = getattr(c, "r", None) or {}
-    return Path(r.get("resources") or c.private) / "CommunityPatches" / "patches-v2.tar"
+    d = Path(r.get("resources") or c.private) / "CommunityPatches"
+    return d / "patches-v3.tar" if (d / "patches-v3.tar").is_file() else d / "patches-v2.tar"   # 0.5.0 起随包是 v3（分块 xz），老安装是 v2
 
 
 def _snapshot(c):
-    """→ (清单 bundles, 取包函数) ；没有快照 / 读不了 = ({}, None)"""
+    """→ (清单 bundles, 取包函数) ；没有快照 / 读不了 = ({}, None)。
+    取包函数自己按快照清单核内容，核不过回 None：v2（tar 里各包是 .json.gz）核 gz 的 sha256、回 gz 字节；
+    v3（tools/patch_pack.py to_v3：包原文按约 1 MB 一块拼起来 xz 压，安装包小 11 MB）核原文的 raw_sha256、回原文。bundle 两种都认"""
     import tarfile
     p = _snapshot_path(c)
     if not p.is_file():
         return {}, None
-    def fetch(key):   # 每次取包开一次、用完即关（不让快照句柄挂到进程结束）
-        with tarfile.open(p) as t:
-            return t.extractfile(key + ".json.gz").read()
     try:
         with tarfile.open(p) as t:
             index = json.load(t.extractfile("index.json"))
-        return index.get("bundles", {}), fetch
     except (OSError, KeyError, ValueError, tarfile.TarError) as e:
         print(f"补丁：本地快照读不了（{type(e).__name__}），只用云端", file=sys.stderr)
         return {}, None
+    bundles = index.get("bundles", {})
+    def fetch(key):   # 每次取包开一次、用完即关（不让快照句柄挂到进程结束）
+        meta = bundles.get(key) or {}
+        try:
+            with tarfile.open(p) as t:
+                if index.get("schema") == 3:
+                    import lzma
+                    blk = lzma.decompress(t.extractfile(f"blk/{meta['block']:04d}.xz").read())
+                    data, want = blk[meta["off"]:meta["off"] + meta["len"]], meta.get("raw_sha256")
+                else:
+                    data, want = t.extractfile(key + ".json.gz").read(), meta.get("sha256")
+        except (OSError, KeyError, ValueError, tarfile.TarError, lzma_error()):
+            return None
+        return data if want and hashlib.sha256(data).hexdigest() == want else None
+    return bundles, fetch
 
 
 def cloud_manifest():
@@ -134,8 +153,8 @@ def bundle(c, key, cloud, snap, snap_get):
         data = _local(have, snap, snap_get, key)
         if data is None:
             return []
-    try:
-        return json.loads(gzip.decompress(data)).get("items", [])
+    try:   # 增量缓存 / 云端 / v2 快照给 gz，v3 快照给原文
+        return json.loads(gzip.decompress(data) if data[:2] == b"\x1f\x8b" else data).get("items", [])
     except (OSError, ValueError):
         return []
 
@@ -144,9 +163,8 @@ def _local(have, snap, snap_get, key):
     """本地已有的这个包：增量下过的（私有缓存）> 随启动器装的快照（核过快照清单里的 sha256）；都没有 = None"""
     if have is not None:
         return have
-    sw = (snap.get(key) or {}).get("sha256")
-    data = snap_get(key) if snap_get and sw else None
-    return data if data is not None and hashlib.sha256(data).hexdigest() == sw else None
+    # 快照的取包函数自己按快照清单核过内容（v2 核 gz、v3 核原文），这里不再按 gz 的 sha256 重核
+    return snap_get(key) if snap_get and (snap.get(key) or {}).get("sha256") else None
 
 
 _MANIFEST = {}
@@ -199,8 +217,9 @@ def cheat_rows(c, gid, bids):
 
 def fetch(c, game, exefs, target="mac"):
     """→ 交 S2A_CPATCH_DIRS 的索引目录列表（每类一个：fps / widescreen / gfx）；什么都没取到 = []。
-    target = "ios" 时不带画面类（gfx）：11-13 维护者定「画面补丁 iOS 不进包、Mac 进包」。画面类多是主机模式分辨率（1080p / 4K 底座），
-    手机上用不着，还和满屏补丁改同一处（渲染分辨率）——一起进包时改写器只收先排到的一份，满屏补丁整批被挤掉（暗黑三实测 9 份满屏全落选）"""
+    target = "ios" 时画面类（gfx）只带降负载的（条目 dir = load，tools/patch_index.py gfx_dir：关后处理 / 降阴影 / ≤720p 等；11-16 维护者拍板，
+    取代 11-13「画面补丁 iOS 不进包」）。提画质与认不出的照旧不带：多是主机模式分辨率（1080p / 4K 底座），手机上用不着、可能被系统杀。
+    和满屏补丁改同一处时满屏优先（pack/cpatch.py plan 排序：画面类最后占位，落选的在结果页写「和别的补丁改同一处」）"""
     gid = game["id"].upper()
     cache = Path(c.private) / "community-cache"
     bids = module_bids(exefs)
@@ -208,10 +227,11 @@ def fetch(c, game, exefs, target="mac"):
     seeds = [x for x in rows if x[0].get("kind") == "pso"]; rows = [x for x in rows if x[0].get("kind") != "pso"]
     pso_write(cache / "games" / gid / "pso", seeds)
     if target == "ios":
-        rows = [x for x in rows if (x[0].get("cat") if x[0].get("cat") in FIELDS else "gfx") != "gfx"]
+        rows = [x for x in rows if (x[0].get("cat") if x[0].get("cat") in FIELDS else "other") != "other"
+                and (x[0].get("cat") != "gfx" or x[0].get("dir") == "load")]   # iPhone 不打其它类；画面类只打降负载的
     out = {}
     for it, data in rows:
-        cat = it.get("cat") if it.get("cat") in FIELDS else "gfx"
+        cat = it.get("cat") if it.get("cat") in FIELDS else "other"   # 认不出的类别按其它（不默认开），不当画面
         # 在索引目录之内（pack/cpatch.py 拒收逃出索引目录的路径）；按内容哈希分目录、只留原文件名（IPS / FPSLocker 靠文件名认构建号）——
         #   照上游原路径摆会撞 Windows 260 字符路径上限（11-12 Windows 出包机实测：上游路径带游戏名与长目录名）
         name = os.path.basename(it.get("name") or "") or "patch"
@@ -237,6 +257,11 @@ def fetch(c, game, exefs, target="mac"):
         dirs.append(str(d))
     if rows:
         print(f"补丁：{gid} 统一包 {len(rows)} 份（{'、'.join(f'{k} {len(v)}' for k, v in sorted(out.items()))}）", file=sys.stderr)
+    import mods   # 玩家导入的 mod 带的代码补丁（11-15 维护者：出包 / S 级升级时编进程序，运行时跟 mod 开关走）
+    md = mods.code_index(c, game)
+    if md:
+        dirs.append(md)
+        print(f"补丁：{gid} 玩家导入的 mod 代码补丁一并编入（{md}）", file=sys.stderr)
     return dirs
 
 
@@ -295,12 +320,14 @@ def prepare(c, game, extraction, env, target="mac"):
 #   读产物根里编译器自己的记录（pack/cpatch.py plan / prune）：cpatch.tsv = 最终打进去的；cpatch_plan.log 的「收 / 不收 / 移植不了」行与
 #   cpatch_excluded.tsv（改写器缺口剔掉的）= 没打上的及原因。原因翻成玩家看得懂的话；本来就不该打的（版本不对、同画幅已收另一份、本款有我方帧率表）不算失败、不列
 _WHY = (   # (原因里出现的字样, 给玩家的话)；None = 不算失败
-    (("版本不对", "同画幅", "我方帧率表"), None),
-    (("与 ", "改同一处"), "result.why.conflict"),
-    (("超出模块映像", "不在可写数据区", "代码段末页", "原值不符", "数据格式", "不配套", "位表", "不认"), "result.why.mismatch"),
-    (("改写器", "我方改写点", "填充区", "不翻译", "跳转", "解不出", "落点"), "result.why.translate"),
-    (("挂满", "64 份", "用尽"), "result.why.full"),
-    (("移植不了",), "result.why.port"),
+    (("FPSLocker 配置不支持",), "result.why.unsupported"),  # 非玩家句（pack/cpatch.py：FPSLocker 配置里有 S2Arm 还不支持的写法，#934）
+    (("mod 构建号对不上",), "result.why.version"),  # 非玩家句（玩家自己导入的 mod 是别的版本的：要告诉玩家，pack/cpatch.py scan mod_miss）
+    (("版本不对", "同画幅", "我方帧率表"), None),  # 非玩家句
+    (("与 ", "改同一处"), "result.why.conflict"),  # 非玩家句
+    (("超出模块映像", "不在可写数据区", "代码段末页", "原值不符", "数据格式", "不配套", "位表", "不认"), "result.why.mismatch"),  # 非玩家句
+    (("改写器", "我方改写点", "填充区", "不翻译", "跳转", "解不出", "落点"), "result.why.translate"),  # 非玩家句
+    (("挂满", "64 份", "用尽"), "result.why.full"),  # 非玩家句
+    (("移植不了",), "result.why.port"),  # 非玩家句
 )
 
 
@@ -308,7 +335,7 @@ def _why(text):
     for keys, say in _WHY:
         if say is None and any(k in text for k in keys):
             return None
-        if say == "result.why.conflict" and "改同一处" in text:
+        if say == "result.why.conflict" and "改同一处" in text:  # 非玩家句
             return say
         if say not in (None, "result.why.conflict") and any(k in text for k in keys):
             return say
@@ -317,7 +344,7 @@ def _why(text):
 
 def _cat_of(uid, cat=""):
     k = uid.split(":", 1)[0]
-    return {"wsauto": "widescreen", "widescreen": "widescreen", "fps": "fps", "gfx": "gfx", "cheat": "cheat"}.get(k) or (cat if cat in CATS else "gfx")
+    return {"wsauto": "widescreen", "widescreen": "widescreen", "fps": "fps", "gfx": "gfx", "cheat": "cheat", "mod": "mod", "other": "other"}.get(k) or (cat if cat in CATS else "gfx")
 
 
 def outcome(root):
@@ -340,19 +367,19 @@ def outcome(root):
     log = root / "cpatch_plan.log"
     lines = log.read_text(encoding="utf-8", errors="replace").splitlines() if log.is_file() else []
     ex = root / "cpatch_excluded.tsv"
-    lines += [f"不收\t{l}" for l in (ex.read_text(encoding="utf-8", errors="replace").splitlines() if ex.is_file() else []) if "\t" in l]
+    lines += [f"不收\t{l}" for l in (ex.read_text(encoding="utf-8", errors="replace").splitlines() if ex.is_file() else []) if "\t" in l]  # 非玩家句
     for line in lines:
         col = line.split("\t")
-        if col[0] == "收" and len(col) >= 4:
+        if col[0] == "收" and len(col) >= 4:  # 非玩家句
             names[col[1]] = col[3]
     for line in lines:
         col = line.split("\t")
-        if col[0] == "不收" and len(col) >= 5:
+        if col[0] == "不收" and len(col) >= 5:  # 非玩家句
             uid, name, text = col[1], col[3], col[4]
-        elif col[0] == "不收" and len(col) == 3:   # 改写器缺口（prune / cpatch_excluded.tsv）：名字取它当初「收」的那一行
+        elif col[0] == "不收" and len(col) == 3:   # 改写器缺口（prune / cpatch_excluded.tsv）：名字取它当初「收」的那一行  # 非玩家句
             uid, text = col[1], col[2]; name = names.get(uid, uid)
-        elif col[0] == "移植不了" and len(col) >= 5:
-            uid, name, text = col[1], col[3], "移植不了：" + col[4]
+        elif col[0] == "移植不了" and len(col) >= 5:  # 非玩家句
+            uid, name, text = col[1], col[3], "移植不了：" + col[4]  # 非玩家句
         else:
             continue
         say = _why(text)
@@ -398,7 +425,8 @@ def boost(c, game, image, result=None):
     result（record 记的这次打入结果）给了：再带 applied / failed（逐条名字；没打上的带原因文案键），完成页列「没打上」（11-14）"""
     import cheats
     out = dict(cheats=sum(1 for it in cheats.listing(c, game)["items"] if it["ok"]), fps=0, widescreen=0, gfx=0)
-    tsv = next((p for p in (Path(image) / "cpatch.tsv", Path(image) / "kit" / "cpatch.tsv") if p.is_file()), None)   # Mac 运行版本根 / iPhone kit（ship_ext 拷进去的）
+    import layout
+    tsv = next((p for p in (Path(image) / "cpatch.tsv", layout.ios_kit(c, game["id"]) / "cpatch.tsv") if p.is_file()), None)   # Mac 运行版本根 / iPhone 程序件（ship_ext 拷进去的）
     seen = set()
     for line in (tsv.read_text(encoding="utf-8", errors="replace").splitlines()[1:] if tsv else []):
         uid = line.split("\t", 1)[0]
@@ -457,8 +485,24 @@ def match(c):
     port_versions = [v for v, cs in sorted(others.items(), key=key) if "widescreen" in cs] if port else []
     if port:
         others = {v: cs - {"widescreen"} for v, cs in others.items() if cs - {"widescreen"}}
-    return dict(build=build, version=version, exact=exact, total=sum(exact.values()), port=port, portVersions=port_versions,
+    import mods   # 玩家导入的 mod 带的代码补丁（11-15 维护者「打包页增加 mod 导入，S 级优化又升级了」）：出包时一并编进去，单列一类 mod（不参与补丁库版本比对，出包时按构建号对得上的才打）
+    exact["mod"] = sum(m["code"] for m in mods.listing(c, game))
+    return dict(build=build, version=version, exact=exact, total=sum(exact.values()), port=port, portVersions=port_versions, ownWiden=own_widen(c, gid, build),
                 others=[dict(version=v, cats=[k for k in CATS if k in cs]) for v, cs in sorted(others.items(), key=key)])
+
+
+def own_widen(c, gid, build):
+    """这一版在宽屏已验证名单（graphics/widen/tables/verified.tsv，程序号 + main 构建号 + apple）→ 没有社区满屏补丁时用我方通用满屏（维护者 11-15「两者合成一套」）。
+    build = 主程序构建号（前 16 位即可，按前缀对）；没解过包 = False"""
+    if not build:
+        return False
+    try:
+        text = (Path(c.engine) / "graphics/widen/tables/verified.tsv").read_text(encoding="utf-8")
+    except (OSError, AttributeError, TypeError):
+        return False
+    b = build.lower()[:16]
+    return any(f[0].upper() == gid.upper() and f[1].lower().startswith(b) and f[3].lower() == "apple"
+               for f in (l.split("\t") for l in text.splitlines() if l.strip() and not l.startswith("#")) if len(f) >= 4)
 
 
 def display_version(c, game):   # 解包目录删了：退回游戏库记的版本（catalog version，同游戏库卡片）
@@ -469,11 +513,13 @@ def display_version(c, game):   # 解包目录删了：退回游戏库记的版�
         from build import shared_dir
         for line in (shared_dir(c, game) / "extract/unpack.tsv").read_text(encoding="utf-8").splitlines():
             k, _, v = line.partition("\t")
-            if k == "display_version":
+            if k == "display_version" and v.strip():
                 return v.strip()
     except (OSError, ImportError, UnicodeDecodeError, Failure):
         pass
-    return str(game.get("version") or game.get("display") or "").lstrip("vV")
+    # 旧版库（11-10 前出包）catalog 顶层没记 version / display：按包列表取实际跑的版本（有更新取最新更新），同游戏库卡片
+    import community
+    return str(game.get("version") or game.get("display") or community._version(game) or "").lstrip("vV")
 
 
 def bid_hit(build16, theirs):

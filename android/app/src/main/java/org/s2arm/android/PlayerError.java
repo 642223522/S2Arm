@@ -9,7 +9,7 @@ import java.io.FileNotFoundException;
  * 跟随界面语言（values / values-zh）；日志仍记原始英文串，工具和诊断照旧按它认。
  */
 final class PlayerError {
-    enum Reason { NO_SPACE, APK_MISMATCH, NO_ACCESS, BAD_PACK, OTHER }
+    enum Reason { NO_SPACE, APK_MISMATCH, NO_ALL_FILES, IN_PLACE, NO_ACCESS, BAD_PACK, OTHER }
 
     private PlayerError() { }
 
@@ -19,6 +19,9 @@ final class PlayerError {
         if (m.contains("No space left") || m.contains("ENOSPC")) return Reason.NO_SPACE;
         if (m.contains("APK identity") || m.contains("installed APK") || m.contains("the artifact is for")
                 || m.contains("signing certificate")) return Reason.APK_MISMATCH;
+        // 原地来源：没开「所有文件访问」（GameLibrary 真失败后核过权限才加这句）/ 原地文件夹或文件被挪走、删掉、改动
+        if (m.contains("All files access is off")) return Reason.NO_ALL_FILES;
+        if (m.contains("in-place")) return Reason.IN_PLACE;
         // FileNotFoundException 既可能是没权限也可能是文件缺：只按权限字样归「读不到」，缺文件归「包不完整」。
         if (error instanceof SecurityException || m.contains("Permission denied") || m.contains("EACCES")) return Reason.NO_ACCESS;
         if (error instanceof GamePack.BadPack || error instanceof BootContract.BadGame
@@ -32,6 +35,8 @@ final class PlayerError {
         switch (reason(error)) {
             case NO_SPACE: cause = R.string.player_err_no_space; next = R.string.player_err_no_space_next; break;
             case APK_MISMATCH: cause = R.string.player_err_apk; next = R.string.player_err_apk_next; break;
+            case NO_ALL_FILES: cause = R.string.player_err_all_files; next = R.string.player_err_all_files_next; break;
+            case IN_PLACE: cause = R.string.player_err_in_place; next = R.string.player_err_in_place_next; break;
             case NO_ACCESS: cause = R.string.player_err_access; next = R.string.player_err_access_next; break;
             case BAD_PACK: cause = R.string.player_err_pack; next = R.string.player_err_pack_next; break;
             default: cause = R.string.player_err_other; next = R.string.player_err_other_next; break;

@@ -28,10 +28,9 @@ source "$R/tools/cores.sh"; s2a_cores || exit 1; source "$R/tools/progress.sh"  
 SIGN=${S2A_SIGN:-dev}; case $SIGN in dev|adhoc|none) ;; *) echo "【红】S2A_SIGN 只认 dev / adhoc / none"; exit 1;; esac   # none = 不签（交给侧载工具签，Windows 出包用）
 [ "$SIGN" != dev ] && [ $REG = 1 ] && { echo "【红】${SIGN} 包不登记调度（测试设备只装开发直签包）"; exit 1; }
 TEAM=${S2A_TEAM:-${S2A_TEAM_DEFAULT:-}}; [ -n "$TEAM" ] || [ "$SIGN" != dev ] || { echo "【红】没设 S2A_TEAM（复制 tools/machine.local.example 为 tools/machine.local 并填写签名团队）"; exit 1; }
-C=$(git -C "$R" rev-parse --short=9 HEAD) || exit 1
+source "$H/stage_keyfiles.sh"; C=$(src_commit9 "$R") || exit 1   # 发布快照没有 .git：读 engine.json 里打包时记下的提交号
 # 源码树干净才出（包号里的提交号要对得上源码）：防开发者用改了没提交的树出包。发布快照（App 内置引擎，根有 engine.json 清单）
-#   安装时已按清单逐文件核过 sha256、玩家机上没人改它，这条在玩家路径上没有意义，不判（11-02 维护者；beta.3 走查：快照缺
-#   根 .gitignore 时编译产物被当改动，玩家导出 iPhone 版全红——.gitignore 已补进快照，作第二道）
+#   安装时已按清单逐文件核过 sha256、玩家机上没人改它，这条在玩家路径上没有意义，不判（11-02 维护者）；快照也不再带 .git，没有可比的提交
 src_dirty() { [ -f "$1/engine.json" ] && return 1; [ -n "$(git -C "$1" status --porcelain -- runtime ios graphics translator services compat Makefile)" ]; }
 src_dirty "$R" && { echo "【红】本树构建相关目录有未提交改动，包版本对不上提交号，不出"; exit 1; }
 # 同一产物根、同款、同提交只许一份在出（10-20 20:5x 我手出与自动正式局同时出01006F8002326000 c85d1335a，两份抢 CPU）：后到的等先到的出完，

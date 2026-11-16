@@ -8,6 +8,36 @@ namespace S2A.Services;
 
 public static partial class SaveTransfer
 {
+    // 恢复时要删的「上次读写摘要」文件名（审计 P1-178）：备份里没有的玩家各删「savedata-state-<用户号>.txt」；其中对得上第一个玩家的，
+    //   他的摘要没有后缀（savedata-state.txt），也删。first = null（认不出第一个玩家是谁）就不碰无后缀那份——删错了会让刚恢复进来的玩家
+    //   下一局拿存档位置里恢复前的旧档盖掉新档。纯函数，S2A.Services.Tests 测
+    internal static System.Collections.Generic.List<string> StateFilesToDrop(System.Collections.Generic.IEnumerable<string> dropped, string first)
+    {
+        string stem = Path.GetFileNameWithoutExtension(SaveFolder.StateFile);
+        var names = new System.Collections.Generic.List<string>();
+        foreach (string u in dropped)
+        {
+            names.Add(stem + "-" + u + ".txt");
+            if (first != null && string.Equals(u, first, StringComparison.OrdinalIgnoreCase)) names.Add(SaveFolder.StateFile);
+        }
+        return names;
+    }
+    // 第一个玩家的用户号：同起局时的选法（LocalPlayer.Select → SaveFolder.SelectUser）——第一个玩家的存档位置里记了用户号就是它，没记就是缺省用户。
+    //   第一个玩家的存档位置：设了 S2A_SAVE_FOLDER 且当前是第一个玩家就是它，否则是本款文档根下的 SaveData（ios/settings.m）。文档根不明回 null（不碰无后缀摘要）
+    private static string FirstPlayerUser(JsonNode manifest)
+    {
+        string folder = Environment.GetEnvironmentVariable("S2A_SAVE_FOLDER");
+        if (string.IsNullOrEmpty(folder) || LocalPlayer.FileSuffix() != "")
+        {
+            string docs = Environment.GetEnvironmentVariable("S2A_DOCS");
+            if (string.IsNullOrEmpty(docs)) { Console.Error.WriteLine("S2A 存档恢复：认不出第一个玩家的存档位置（没有 S2A_DOCS），不动他的摘要"); return null; }
+            folder = Path.Combine(docs, "SaveData");
+        }
+        ulong pid = 0;
+        foreach (var e in manifest["saveEntries"]?.AsArray() ?? new JsonArray())
+            if (ulong.TryParse(Str(e, "programId"), System.Globalization.NumberStyles.HexNumber, null, out pid) && pid != 0) break;
+        return (SaveFolder.FolderUser(folder, pid) ?? Ryujinx.HLE.HOS.Services.Account.Acc.AccountManager.DefaultUserId.ToString()).ToLowerInvariant();
+    }
     private static string Previous(Context c)
     {
         if (!Directory.Exists(c.Backups)) return "";
@@ -186,10 +216,12 @@ public static partial class SaveTransfer
             }
             // 审计 P1-178：备份里没有的本地玩家，删掉他们外部存档文件夹的「上次读写摘要」（SaveFolder.StatePath 的按玩家文件名），
             //   下一局按已有的 SeedFrom 把他文件夹里的进度读回来；恢复进来的玩家的摘要不动（不然他文件夹里恢复前的旧档会盖掉刚恢复的）
-            foreach (string user in UsersNotInBackup(c, archive.Manifest))
+            //   第一个玩家的摘要没有后缀（savedata-state.txt，LocalPlayer.FileSuffix）：拿掉的用户号对得上第一个玩家时一并删（审计 P1-178 余项）
+            string first = FirstPlayerUser(archive.Manifest);
+            foreach (string name in StateFilesToDrop(UsersNotInBackup(c, archive.Manifest), first))
             {
-                string state = Path.Combine(next, Path.GetFileNameWithoutExtension(SaveFolder.StateFile) + "-" + user + ".txt");
-                if (File.Exists(state)) { File.Delete(state); Console.Error.WriteLine($"S2A 存档恢复：玩家 {user} 不在这份备份里，下一局从他的存档位置重新读入"); }
+                string state = Path.Combine(next, name);
+                if (File.Exists(state)) { File.Delete(state); Console.Error.WriteLine($"S2A 存档恢复：{name} 对应的玩家不在这份备份里，下一局从他的存档位置重新读入"); }
             }
             foreach (var dir in archive.Manifest["directories"].AsArray()) Directory.CreateDirectory(Path.Combine(next, dir.GetValue<string>()));
             foreach (var item in archive.Manifest["files"].AsArray())

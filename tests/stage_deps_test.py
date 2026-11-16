@@ -192,5 +192,26 @@ class EveryStageWired(unittest.TestCase):
                         if f'.stage_{st}' in rp.split(): self.assertIn(f'.stage_{st}.deps', rp.split(), f'{rel}：ROOT_REPLAY 带 .stage_{st} 没带清单')
 
 
+
+class SnapshotListing(unittest.TestCase):
+    """发布快照不带 .git：仓库内算输入的名单取 engine.json 的 listed（打包时 git ls-files -co --exclude-standard 的结果）+ 装好后才有的 .installed.json / .last-used。
+    期望手写：根目录项 = listed 里的顶层名 + 在场的安装标记；不在 listed 的文件（被忽略的产物）不算；读不到的路径一律记「缺」（判不了忽略）"""
+    def test_listed_from_engine_json(self):
+        import hashlib, json
+        with tempfile.TemporaryDirectory(prefix='stage-deps-snap-') as t:
+            r = Path(t)
+            (r / 'a').mkdir(); (r / 'a' / 'x.txt').write_text('x'); (r / 'b.txt').write_text('b'); (r / 'ignored.o').write_text('o')
+            (r / '.installed.json').write_text('{}')
+            (r / 'engine.json').write_text(json.dumps(dict(schema=1, listed=['a/x.txt', 'b.txt', 'engine.json'])))
+            raw = r.parent / (r.name + '-raw'); raw.mkdir()
+            (raw / '1-1.tsv').write_text(f'd\t{r}\nf\t{r}/b.txt\nf\t{r}/build/missing.bin\n')
+            got = {(k, n): h for k, n, h in stage_deps.collect(str(raw), str(r), [])}
+            want = hashlib.sha256('\n'.join(sorted(['.installed.json', 'a', 'b.txt', 'engine.json'])).encode()).hexdigest()[:16]
+            self.assertEqual(got[('d', 'R:.')], want)
+            self.assertEqual(got[('f', 'R:b.txt')], hashlib.sha256(b'b').hexdigest()[:16])
+            self.assertEqual(got[('f', 'R:build/missing.bin')], '缺')
+            self.assertEqual(len(got), 3)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -513,6 +513,10 @@ def spot_check(dev, pack, work, have, say):
     want = {w[0]: w for w in (l.split("\t") for l in (Path(pack) / "index.tsv").read_text(encoding="utf-8").splitlines()) if len(w) == 3}
     same = [w for r, w in want.items() if have.get(r) == w[2]]
     pick = [w for w in same if w[0].startswith("shaders/direct/") and ("/" not in w[0][15:] or re.fullmatch(r"shaders/direct/b-[^/]+/lib\.idx", w[0]))]
+    # 游戏库起局必需的小文件（同 runtime/src/pack_apply.c s2a_pack_core_path：exefs/、ctl/control.nacp）每次都核：账上记着、机上没了就补推。
+    #   #1059 D-JAT7：已应用索引记着 exefs/main.npdm（0.3.x 时 pack_apply 只按 index 记账），机上实际没有；抽查没抽到它，
+    #   推送当「已在」跳过，App 解开后核程序描述不在、每次重装都一样
+    pick += [w for w in same if (w[0].startswith("exefs/") or w[0] == "ctl/control.nacp") and int(w[1]) < 4 << 20 and w not in pick]
     pick += sorted((w for w in same if int(w[1]) < 4 << 20 and w not in pick), key=lambda w: w[2])[:5]
     chk = Path(work) / "chk"; chk.mkdir(exist_ok=True); bad = []
     for i, w in enumerate(pick, 1):

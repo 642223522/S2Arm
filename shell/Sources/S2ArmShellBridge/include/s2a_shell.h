@@ -46,6 +46,8 @@ int s2a_shell_install_phase(const char *game_id, int *phase, double *fraction);
 const char *s2a_shell_install_failure(const char *game_id);
 // 主屏快捷操作「设置」冷启动时宿主记下的请求：1 = 游戏库出现时要打开游戏库设置（取走即清）；运行中宿主直接发通知 S2AShellOpenSettings
 int s2a_shell_take_open_settings(void);
+// 这次安装确定丢了「提高内存上限」权限（ios/iml_probe.m，读不到不算）：返回 {"title","body"}（已按 App 语言）的 JSON，调用方 free；没丢 / 读不到返回 NULL。主线程
+char *s2a_shell_iml_notice(void);
 void s2a_shell_pick_game_data(const char *game_id);
 // 宿主让库界面重判各款资源包（说明里「重新检查」后调）。库界面建好时登记；没登记时 s2a_shell_refresh 什么都不做
 typedef void (*s2a_shell_refresh_fn)(void *ctx);

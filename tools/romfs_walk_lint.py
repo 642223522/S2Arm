@@ -52,6 +52,8 @@ ALLOW = {
         "（romfs_list 只给路径 / 大小，给不了已分配块与克隆族），只走玩家勾选的目录、不进出包流程",
     ("services/S2A.Services/Host.cs", "*"):
         "运行期（宿主服务）：设备上读游戏数据目录，不是出包步骤",
+    ("pack/jobs/mods.py", "_find:rglob"):
+        "误判：导入 / 列出的是玩家给的 mod 压缩包或文件夹（只有 mod 自己的几个文件），不是游戏 RomFS；不进出包流程",
     ("services/S2A.Services/RomFsMods.cs", "*"):
         "运行期（起局）：列的是玩家放进 <文档根>/mods/ 的 mod 文件夹（只有 mod 自己的几个文件），不是游戏 RomFS；游戏 RomFS 经 LibHac 文件表读，不遍历目录",
 }

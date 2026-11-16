@@ -18,6 +18,7 @@
 用法：python3 dirty_span_memo_mutation_test.py [dirty|pool]   （缺省两半都跑；dirty = 取范围索引那半，pool = 池备忘那半）
 """
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -131,6 +132,8 @@ pool_other = ['graphics/nvn/tests/t_nvn_replay.c', 'graphics/nvn/tests/nvn_clear
 pool_flags = [*compile_flags, '-std=c11', '-D_DEFAULT_SOURCE', '-Werror',
               *('-I' + str(ROOT / x) for x in ('.', 'graphics/nvn/gfx/nvn', 'graphics/nvn/gfx/nvn/include', 'graphics/nvn/gfx/tex', 'graphics/nvn/replay'))]
 pool_objs = []
+# 回放核心对平台 / 后端可选件的弱引用：苹果 ld 默认不认未定义弱符号，逐个允许缺；清单只从源码登记生成（tools/weak_link_decl.py flags replay）
+pool_link = subprocess.run([sys.executable, str(ROOT / 'tools/weak_link_decl.py'), 'flags', 'replay'], check=True, capture_output=True, text=True).stdout.split() if sys.platform == 'darwin' else []
 
 
 def pool_build_others():
@@ -146,7 +149,7 @@ def run_pool(name, code):
     obj = OUT / ('pool_%s.o' % name)
     subprocess.run([CC, *pool_flags, '-c', str(src), '-o', str(obj)], check=True, cwd=ROOT)
     exe = OUT / ('pool_%s' % name)
-    subprocess.run([CC, *pool_objs, str(obj), '-lm', '-o', str(exe)], check=True, cwd=ROOT)
+    subprocess.run([CC, *pool_objs, str(obj), *pool_link, '-lm', '-o', str(exe)], check=True, cwd=ROOT)
     return subprocess.run([str(exe), str(ROOT / 'docs/直连_Vulkan回放接线表.tsv')], capture_output=True, text=True, cwd=ROOT, timeout=180)
 
 

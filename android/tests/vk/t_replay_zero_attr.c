@@ -53,6 +53,7 @@ int nvn_dpool_base(const void *p,int t){(void)p;(void)t;return 0;}
 const prog_t *nvn_prog_snap_get(uint64_t s,uint8_t k[6][8],uint8_t *o,uint8_t t[6]){(void)s;(void)k;(void)o;(void)t;return NULL;}
 int rp_shader_resolve(const struct rp_shader_req *q,const struct rp_prog **o){(void)q;*o=&prog;return 0;}
 int rp_depth_zero(void){return 0;}int rp_origin_lower_left(void){return 1;}
+uint64_t rp_frame(void){return 1;}   // #996：rp_draw 首用策略按帧号判（rp_entry.c 的替身，同 t_replay_indirect）
 void rp_perf_add(int i,uint64_t n){(void)i;(void)n;}uint64_t rp_seg_serial(void){return serial;}
 uint64_t rp_sub_serial(void){return serial;}uint64_t rp_sub_fence(void){return 1;}
 int rp_fence_done(uint64_t f){(void)f;return 1;}

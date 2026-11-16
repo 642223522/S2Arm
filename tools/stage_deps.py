@@ -15,7 +15,9 @@
   （缺省由 pack/stage_keyfiles.sh 给社区补丁目录）；不记：给定前缀（产物根等）、S2A_DEPS_KEYED 里阶段已更细进键的文件、本阶段自己写过的、字节码、
   解释器自身（标准库 / site-packages / 钩子，采集端按各进程自己的解释器排）。
 已知边界：只看 Python 进程；os.path.exists 这类只查存在不读的判断看不到（读到的索引表变了照样会变）。"""
+import functools
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -80,13 +82,33 @@ def _git(args, **kw):
     return subprocess.run(['git', *args], env=env, **kw)
 
 
+# 发布快照（App 内置引擎）不带 .git：打包时把 git ls-files -co --exclude-standard 的结果写进 engine.json 的 listed（launchers/macos/bundle_engine.py snapshot_fields）；
+#   装好的副本里 git 还会列出安装后才有的这几个（作业层 pack/jobs/embedded.py 写的安装标记 / 最近使用时刻），在就照算
+SNAPSHOT_RUNTIME = ('.installed.json', '.last-used')
+
+
+@functools.lru_cache(maxsize=None)
+def _snapshot(repo):
+    """→ 快照 engine.json 里的 listed（列表）；开发树 / 旧快照没有 → None"""
+    try:
+        with open(os.path.join(repo, 'engine.json'), encoding='utf-8') as f:
+            listed = json.load(f).get('listed')
+    except FileNotFoundError:
+        return None
+    return tuple(listed) if isinstance(listed, list) and listed else None
+
+
 def _listed(repo):
     """仓库里算输入的文件：git 跟踪的 + 未跟踪但没被忽略的（构建产物 / 缓存被 .gitignore 挡掉）；不是 git 仓库 → None（全收）"""
-    try:
-        out = _git(['-C', repo, 'ls-files', '-co', '--exclude-standard', '-z'], capture_output=True, check=True).stdout
-    except (OSError, subprocess.CalledProcessError):
-        return None, None
-    files = {f for f in out.decode('utf-8', 'surrogateescape').split('\0') if f}
+    listed = _snapshot(os.path.realpath(repo))
+    if listed is not None:
+        files = set(listed) | {f for f in SNAPSHOT_RUNTIME if os.path.isfile(os.path.join(repo, f))}
+    else:
+        try:
+            out = _git(['-C', repo, 'ls-files', '-co', '--exclude-standard', '-z'], capture_output=True, check=True).stdout
+        except (OSError, subprocess.CalledProcessError):
+            return None, None
+        files = {f for f in out.decode('utf-8', 'surrogateescape').split('\0') if f}
     dirs = {''}
     for f in files:
         d = os.path.dirname(f)
@@ -109,6 +131,8 @@ def _keep(kids, name):
 
 
 def _ignored(repo, rel):
+    if _snapshot(os.path.realpath(repo)) is not None:
+        return False   # 快照没有 .git 判不了忽略：读不到的路径一律记「缺」（只多记几行，之后照样稳定）
     return _git(['-C', repo, 'check-ignore', '-q', '--', rel], capture_output=True).returncode == 0
 
 

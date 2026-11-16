@@ -95,6 +95,7 @@ int main(int argc,char **argv) {
             save(dir,"widen_enable","handheld.tsv",enable,strlen(enable));
             const char *full = "0\n";
             save(dir,"widen_full","handheld.tsv",full,strlen(full));
+            setenv("S2A_CAPS_OWN","1",1);   // 测装载器按能力清单写宽屏点的机制本身（11-15 起我方通用满屏缺省不用，runtime/src/widen.c；S2A_CAPS_OWN=1 才认清单）
             setenv("S2A_WIDEN_CAPS","1",1); setenv("S2A_SCREEN_W","2560",1);
             int s2a_widen_full(void); assert(s2a_widen_full() == 1); // pre-admission default must not mask the authenticated table
 

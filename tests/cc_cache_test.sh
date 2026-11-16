@@ -4,7 +4,9 @@
 #   ① 两棵不同目录的树编同一份源：第二棵 1/1 命中，两份 .o 逐字节相同，.o 里没有树的绝对路径
 #   ② 第二棵改了头文件内容 → 不命中（头文件进键）
 #   ③ 只换 SDKROOT（xcrun 选 SDK 的环境变量，ccache 自己不算进键）→ 不命中（shim 补 -isysroot 进命令行）
-#   ④ 链接（不带 -c）、xcrun 查询类调用原样直通：能链出可执行文件、不进命中记录；xcrun --show-sdk-path 与系统 xcrun 一致
+#   ④ 纯链接（输入只有 .o）、xcrun 查询类调用原样直通：能链出可执行文件、不进命中记录；xcrun --show-sdk-path 与系统 xcrun 一致
+#   ⑦ 一步编链（源文件直接 -o 出可执行文件，11-14 起拆成逐源 -c 走缓存 + 一次链接）：能跑；第一次 0/2、换目录再编 2/2 命中；
+#      带 -g 照 clang 一步编链的样出 <输出>.dSYM；编译出错 / 链接出错退出码非 0、报错原样打出；-x 改语言、-E 只预处理的原样直通（不进命中记录）
 #   ⑤ S2A_CCACHE=0 → 不改 PATH、不设 S2A_CCACHE_BIN
 #   没装 ccache 的机器：只验 ④⑤（入口照样能编能链），①②③ 记「没装 ccache，跳过」
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); trap 'rm -rf "$T"' EXIT; bad=0
@@ -29,8 +31,23 @@ if [ -n "$HAVE" ]; then
     ck "③ 只换 SDKROOT → 两次都不命中（$(s2a_ccache_sum "$T/a.log")）" '[ "$(s2a_ccache_sum "$T/a.log")" = "命中 0 / 共 2" ]'
   else echo "通 ③ 本机没有 iOS SDK，跳过"; fi
 else echo "通 ①②③ 没装 ccache，跳过（入口直通，下面④⑤照验）"; fi
-: > "$T/a.log"; o=$( (on a; cd "$T/a" && clang src/m.c -o m && ./m) 2>&1)
-ck "④ 链接直通：链出可执行文件能跑（${o}）、不进命中记录（$(s2a_ccache_sum "$T/a.log")）" '[ "$o" = ok ] && [ "$(s2a_ccache_sum "$T/a.log")" = "命中 0 / 共 0" ]'
+: > "$T/a.log"; o=$( (on a; cd "$T/a" && /usr/bin/xcrun clang -c src/m.c -o m.o && clang m.o -o m && ./m) 2>&1)
+ck "④ 纯链接直通：链出可执行文件能跑（${o}）、不进命中记录（$(s2a_ccache_sum "$T/a.log")）" '[ "$o" = ok ] && [ "$(s2a_ccache_sum "$T/a.log")" = "命中 0 / 共 0" ]'
+if [ -n "$HAVE" ]; then
+  printf '#include "h.h"\nint f(void);\nint main(void) { return f() == K ? 0 : 1; }\n' > "$T/a/src/u.c"; cp "$T/a/src/u.c" "$T/b/src/u.c"; echo '#define K 3' > "$T/b/src/h.h"
+  : > "$T/a.log"; o=$( (on a; cd "$T/a" && clang -g -O1 src/u.c src/x.c -o u && ./u && echo ran) 2>&1)
+  ck "⑦ 一步编链：能跑（${o}）、第一次逐源进缓存（$(s2a_ccache_sum "$T/a.log")）、出 u.dSYM" '[ "$o" = ran ] && [ "$(s2a_ccache_sum "$T/a.log")" = "命中 0 / 共 2" ] && [ -d "$T/a/u.dSYM" ]'
+  : > "$T/b.log"; o=$( (on b; cd "$T/b" && clang -g -O1 src/u.c src/x.c -o u && ./u && echo ran) 2>&1)
+  ck "⑦ 一步编链：换一棵树再编 2/2 命中（$(s2a_ccache_sum "$T/b.log")）、能跑（${o}）" '[ "$o" = ran ] && [ "$(s2a_ccache_sum "$T/b.log")" = "命中 2 / 共 2" ]'
+  printf 'int main(void) { return y; }\n' > "$T/a/src/e.c"; o=$( (on a; cd "$T/a" && clang src/e.c -o e) 2>&1); r=$?
+  ck "⑦ 一步编链编译出错：退出 ${r}（非 0）、报错带文件行列" '[ $r != 0 ] && grep -q "e.c:1:[0-9]*: error:" <<< "$o"'
+  o=$( (on a; cd "$T/a" && clang src/u.c -o e2) 2>&1); r=$?
+  ck "⑦ 一步编链链接出错：退出 ${r}（非 0）、报未定义符号" '[ $r != 0 ] && grep -q "Undefined symbols" <<< "$o"'
+  : > "$T/a.log"; o=$( (on a; cd "$T/a" && clang -x c src/m.c -o m3 && ./m3) 2>&1)
+  ck "⑦ -x 改语言原样直通：能跑（${o}）、不进命中记录（$(s2a_ccache_sum "$T/a.log")）" '[ "$o" = ok ] && [ "$(s2a_ccache_sum "$T/a.log")" = "命中 0 / 共 0" ]'
+  : > "$T/a.log"; o=$( (on a; cd "$T/a" && clang -E src/u.c -o u.i && grep -c 'int main' u.i) 2>&1)
+  ck "⑦ -E 带 -o 只预处理、不拆不链：输出是预处理文本（${o}）、不进命中记录（$(s2a_ccache_sum "$T/a.log")）" '[ "$o" = 1 ] && [ "$(s2a_ccache_sum "$T/a.log")" = "命中 0 / 共 0" ]'
+fi
 s1=$( (on a; xcrun --sdk macosx --show-sdk-path) ); s0=$(/usr/bin/xcrun --sdk macosx --show-sdk-path)
 ck "④ xcrun 查询原样直通（${s1}）" '[ -n "$s1" ] && [ "$s1" = "$s0" ]'
 r=$( (S2A_CCACHE=0; unset S2A_CCACHE_BIN; P0=$PATH; S2A_CCACHE_DIR=$T/cache s2a_ccache_on "$T/a"; [ "$PATH" = "$P0" ] && [ -z "${S2A_CCACHE_BIN:-}" ] && echo same) )

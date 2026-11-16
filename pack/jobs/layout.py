@@ -369,6 +369,8 @@ def game_info(c, gid):
 def update_info(c, gid, **fields):
     d = game_dir(c, gid)
     atomic(d / GAME_JSON, dict(read(d / GAME_JSON, {}), **fields))
+    if "ios" in fields:   # 程序件的兼容记录（壳号 / 宿主约定号 / 直连链号…）同存一份到专用文件夹：游戏文件夹被删了，更新手机照样判得出能不能带这款
+        atomic(program_store(c, gid, create=True) / PROGRAM_INFO, fields["ios"])
 
 
 def read_sizes(c, gid):
@@ -402,6 +404,12 @@ def path(c, gid, *parts, create=True):
     return d.joinpath(*parts)
 
 
+def nro_kept(c, gid, create=False):
+    """运行时留下的 NRO（#8be819：游戏自有加密归档里的 NRO，出包时认不出；宿主 LoadNro 缺表时把游戏解开的那份存成 <SHA-256>.nro，
+    Mac 局收局后 / 装 iPhone 前收回这里），出包改写阶段经 S2A_NRO_KEPT_DIR 读（runtime/rewriter/nro_to_nso.py 第三来源）"""
+    return path(c, gid, "nro_kept", create=create)
+
+
 def image_mac(c, gid, create=True):
     return path(c, gid, "image", "mac", create=create)
 
@@ -427,8 +435,45 @@ def image_ios(c, gid, create=True):
     return path(c, gid, "image", "ios", create=create)
 
 
+# ---- 游戏程序专用文件夹（11-16 维护者：玩家打完包常删输出目录、之后不碰电脑，更新 S2Arm 时组容器要的游戏程序跟着丢了）----
+# 默认位置根 .programs/<程序号>/：kit/（组容器的程序件）、original-exefs/（原始程序，S 级升级用，sgrade.py）、ios.json（程序件的兼容记录，同 game.json 的 ios）。
+#   按程序号分、不在游戏文件夹里：删游戏文件夹、换存放位置删旧位置、「释放空间」都不碰它；只有「删除游戏」（library.delete：从库里删掉、也从各台手机记录摘掉）才删。
+#   旧库的 image/ios/kit、original-exefs 第一次用到时搬过来（同卷改名，跨卷拷后删）。一款约 56–238 MB（11-16 常驻库 14 款实测合计 1971 MB）
+PROGRAMS, PROGRAM_INFO, PROGRAM_EXEFS = ".programs", "ios.json", "original-exefs"
+
+
+def program_store(c, gid, create=False):
+    d = c.library / PROGRAMS / gid.upper()
+    if create:
+        d.mkdir(parents=True, exist_ok=True)
+        hide(c.library / PROGRAMS)
+    return d
+
+
+def _adopt(c, gid, name, legacy):
+    """专用文件夹里还没有 name、游戏文件夹里的旧位置 legacy 有 → 搬过来；搬不动（盘只读 / 被占用）就先用旧位置，下次再搬"""
+    new = program_store(c, gid) / name
+    if os.path.lexists(new) or not os.path.isdir(legacy):
+        return new
+    try:
+        program_store(c, gid, create=True)
+        _move_any(legacy, new)
+    except OSError:
+        return legacy
+    return new
+
+
 def ios_kit(c, gid):
-    return image_ios(c, gid, create=False) / IOS_KIT
+    return _adopt(c, gid, IOS_KIT, image_ios(c, gid, create=False) / IOS_KIT)
+
+
+def program_exefs(c, gid):
+    return _adopt(c, gid, PROGRAM_EXEFS, path(c, gid, PROGRAM_EXEFS, create=False))
+
+
+def program_info(c, gid):
+    """程序件的兼容记录：游戏文件夹 game.json 的 ios 优先，没有（游戏文件夹被删了）读专用文件夹的那份"""
+    return game_info(c, gid).get("ios") or read(program_store(c, gid) / PROGRAM_INFO, {}) or {}
 
 
 def ios_pack(c, gid):
@@ -439,7 +484,11 @@ def ios_pack(c, gid):
             os.rename(legacy, pack)
             hide(pack)
         except OSError:
-            return legacy   # 改不了名（被占着）：照旧用老位置，下次再改
+            # 审计 P1-183：改名失败可能是另一路（装机页轮询 / 出包）刚改完：.pack 已在就用它，不退回已经不存在的 pack/；
+            #   真被占着（老位置还在）才照旧用老位置，下次再改。不加锁、不要求重新出包
+            if pack.is_dir():
+                return pack
+            return legacy
     return pack
 
 
@@ -569,7 +618,7 @@ def _split_release(c, gid, d):
         _rm(c, c.library, releases)
 
 
-_NACP_GLOBS = ("games/{gid}/current/ctl/control.nacp", "games/{gid}/current/exefs/control.nacp", "iPhone/{gid}/*资源包/ctl/control.nacp",
+_NACP_GLOBS = ("games/{gid}/current/ctl/control.nacp", "games/{gid}/current/exefs/control.nacp", "iPhone/{gid}/*资源包/ctl/control.nacp",  # 非玩家句
                "iPhone/{gid}/roots/*/ctl/control.nacp", "iPhone/{gid}/container-kit/ctl/control.nacp", "cache/{gid}/*/roots/*/ctl/control.nacp",
                # 新布局里还叫游戏号的文件夹（heal_folder_names）：Mac / iPhone 产物、出包解包目录
                "games/{gid}/image/mac/ctl/control.nacp", "games/{gid}/image/ios/*/ctl/control.nacp", "games/{gid}/build/*/extract/ctl/control.nacp")
@@ -730,7 +779,7 @@ def _upgrade_3(c, marker):
             done.add(gid); atomic(marker, dict(state, iphone=sorted(done))); continue   # 游戏库里已经没有这款：留着的旧产物下面随 iPhone/ 一起删
         kit = d / "container-kit"
         if not (kit / "main.npdm").is_file():
-            root = next((r for r in [*sorted(d.glob("roots/*@现行")), d / "work/pkg/product"] if (r / "main.npdm").is_file()), None)
+            root = next((r for r in [*sorted(d.glob("roots/*@现行")), d / "work/pkg/product"] if (r / "main.npdm").is_file()), None)  # 非玩家句
             if root is not None and any(p.suffix == ".ipa" for p in d.iterdir()):
                 save_container_kit(c, gid, root, dest=d)
         image = image_ios(c, gid)
@@ -888,7 +937,7 @@ def adopt_library_logs(c):
         if src.name != "jobs" or not src.is_dir():
             continue
         prune_jobs(c.private, jobs=src)
-        for p in src.glob("*.json"):
+        for p in entries(src, "*.json"):
             if p.name.endswith(".request.json"):
                 continue
             try:
@@ -932,6 +981,18 @@ OS_JUNK_PREFIX = "._"
 
 def os_junk(name):
     return name in OS_JUNK or name.startswith(OS_JUNK_PREFIX)
+
+
+def entries(d, pattern="*", recursive=False):
+    """d 下按 pattern 列出的业务文件 / 目录（排好序）：路径里任何一级是系统附属文件都不算（d 不存在 / 不是目录 → []）。
+    玩家能放到外置盘上的目录（游戏库、数据目录、mod / 金手指 / 导出文件夹）一律经这里列：exFAT / FAT 上 macOS 给每个带扩展属性的文件
+    配一份 ._<名>（4 KB AppleDouble，含 NUL、非 UTF-8），pathlib 的 glob("*.json") / rglob 照样匹配它；逐个调用点各自补过滤，
+    换个调用点又漏（#812 #816 #911 #1010 #369 #382 都是这一类）"""
+    d = Path(d)
+    if not d.is_dir():
+        return []
+    found = d.rglob(pattern) if recursive else d.glob(pattern)
+    return sorted(p for p in found if not any(os_junk(part) for part in p.relative_to(d).parts))
 
 
 def has_content(d):
@@ -991,7 +1052,7 @@ def _relocate_lock(private):
             yield
     except filelock.Busy as busy:
         raise Failure("另一个任务正在使用游戏库，请稍后重试。", code="library_busy", holder=busy.holder,
-                      internal=f"等了 {RELOCATE_LOCK_WAIT} 秒，旧默认游戏库搬家锁仍被占（{busy.holder}）") from None
+                      internal=f"等了 {RELOCATE_LOCK_WAIT} 秒，旧默认游戏库搬家锁仍被占（{busy.holder}）") from None  # 非玩家句
 
 
 def _relocate_locked(private, library):

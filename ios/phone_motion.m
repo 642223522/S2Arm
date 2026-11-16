@@ -26,7 +26,8 @@ static BOOL pref_on(NSString *key) {
 
 // ---------- 屏幕朝向（主线程刷新，HID 线程读）----------
 // 屏幕「右」「上」在机身坐标（CoreMotion x、y）里的方向，由屏幕的界面坐标空间换算到它的固定坐标空间（= 原生面板，机身坐标与之对齐）得出，
-//   不按界面朝向枚举猜：iPhone Duo 内屏原生面板是横的，界面横屏时屏幕右就是机身 x，按「竖屏面板横过来」再转 90° 就把 X / Y 对调了（#804）。
+//   不按界面朝向枚举猜。折叠屏内屏例外：iPhone Duo 内屏原生面板其实是竖的（2007x2853），机身坐标却是内屏横放时的右 / 上，
+//   按面板算出的再差 90°（#804 D-KBVC：横端着交给游戏的加速度 (0.80, 0.01, 0.59)，重力落在左右轴上）→ s2a_phone_panel_fix 补转。
 //   普通 iPhone 原生面板是竖的，算出来与原来横屏左 / 右的写死换算相同。打包成一个整数：4 个分量各占 2 位（值 + 1）
 static int basis_pack(int rx, int ry, int ux, int uy) { return (rx + 1) | (ry + 1) << 2 | (ux + 1) << 4 | (uy + 1) << 6; }
 static _Atomic int g_basis = (0 + 1) | (-1 + 1) << 2 | (1 + 1) << 4 | (0 + 1) << 6;   // 缺省 = 竖屏面板横屏右（右 = −y、上 = x）
@@ -39,6 +40,7 @@ static void orient_refresh(void) {
                 CGPoint o = [cs convertPoint:CGPointZero toCoordinateSpace:fs], r = [cs convertPoint:CGPointMake(1, 0) toCoordinateSpace:fs], d = [cs convertPoint:CGPointMake(0, 1) toCoordinateSpace:fs];
                 // 固定坐标 y 朝下、机身 y 朝上：右 =（Δx, −Δy）；屏幕上 = 界面 −y 方向 =（−Δx, +Δy）
                 int rx = unit(r.x - o.x), ry = -unit(r.y - o.y), ux = -unit(d.x - o.x), uy = unit(d.y - o.y);
+                { int rv[2] = {rx, ry}, uv[2] = {ux, uy}; s2a_phone_panel_fix((int)sc.nativeBounds.size.width, (int)sc.nativeBounds.size.height, rv, uv); rx = rv[0]; ry = rv[1]; ux = uv[0]; uy = uv[1]; }
                 if ((rx || ry) && (ux || uy)) {
                     int nb = basis_pack(rx, ry, ux, uy), was = atomic_exchange(&g_basis, nb);
                     if (was != nb) LOG("手机六轴：屏幕右 = 机身 (%d, %d)、上 = 机身 (%d, %d)（原生面板 %.0fx%.0f）", rx, ry, ux, uy, sc.nativeBounds.size.width, sc.nativeBounds.size.height);

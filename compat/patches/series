@@ -597,4 +597,13 @@
 20261114-1318-set-keycodemap-byport.patch
 20261114-1824-hid-supported-follow-sync.patch
 20261114-1829-surfaceflinger-swap-oob.patch
+20261114-2043-ro-nro-keep-unpacked.patch
 20261114-2315-aud-late-probe.patch
+20261115-0732-game-volume.patch
+20261115-1312-biquad-nonfinite-restart.patch
+20261115-1312-audio-diag-peak-nan.patch
+20261115-1505-macrojit-dynamic-code-guard.patch
+20261115-1712-hid-follow-sync-same-lock.patch
+20261116-1551-audio-dsp-mix-volume-round-nearest.patch
+20261116-1552-audio-dsp-biquad-and-mix-local-state.patch
+20261116-1552-audio-dsp-command-fault-isolation.patch

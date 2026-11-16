@@ -58,6 +58,8 @@
     <EmbeddedResource Include="../../../shared/experience.v1.json" LogicalName="S2Arm.experience.v1.json" />
     <!-- 作业层文字的英文对照表：和 Mac 适配层同一份（BackendText），不在 Windows 存副本 -->
     <EmbeddedResource Include="../../../macos/adapter/Sources/S2ArmAppleAdapter/Resources/Localizable.json" LogicalName="S2Arm.Localizable.json" />
+    <!-- 各语言叠加文案（共享 l10n/<语言>.json，Mac 同一份）：加一门语言只加文件（11-14） -->
+    <EmbeddedResource Include="../../../shared/l10n/*.json" LogicalName="S2Arm.l10n.%(Filename).json" />
     <AvaloniaResource Include="Assets/Fonts/*.ttf" />
     <AvaloniaResource Include="Assets/S2Arm.ico" />
     <AvaloniaResource Include="../../../macos/Branding/AppIcon-1024.png" Link="Assets/AppIcon.png" />

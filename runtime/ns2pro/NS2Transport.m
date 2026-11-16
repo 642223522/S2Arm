@@ -121,6 +121,14 @@ static _Atomic int splitDefault, splitNow;
 static _Atomic int assignMode, firstLink;
 static ns2_assign_callback assignCallback;
 static ns2_assign_gesture lastGesture[2];
+// 认手柄（ns2_set_press_watch）：开着时每条链路有新按下的键就报（pressCallback）；lastPress* = 上一笔的按键，比出「新按下」。
+//   lastPress* 只在蓝牙回调线程里读写；开监听时命令线程只立 pressReset，回调线程看到后自己把这一笔当基准（不报），
+//   免得两个线程同时写数组、打开面板那一刻把本来就按着的键当成新按下
+static _Atomic int pressWatch;
+static _Atomic int pressReset[2];
+static ns2_press_callback pressCallback;
+static uint64_t lastPressButtons[2];
+static int lastPressSide[2];
 static ns2_accept_filter acceptFilter;   // 可选：收不收这台（Mac 第二个连接程序用，见 ns2_set_accept_filter）；不设 = 同改前
 static ns2_player_state_callback playerCallback;   // 玩家 2 起的按键 / 摇杆（拆开时槽 1 那只）；state 为 NULL = 这位玩家不在了
 static ns2_state_callback stateCallback;
@@ -823,6 +831,28 @@ static NS2Bridge *bridge;
             assignCallback((int)slot, kind, gesture, identifier, callbackContext);
         }
     } else lastGesture[slot] = NS2_ASSIGN_NONE;
+    if (atomic_load(&pressWatch) && pressCallback) {
+        int side = [self joycon] ? ns2_decode_side_buttons(data.bytes, data.length) : 0;
+        // 摇杆推过一半也算按下一个方向（第 32–35 位：上 / 下 / 左 / 右；两根摇杆合并），面板显示上下左右
+        uint64_t held = state.buttons;
+        const int32_t half = NS2_STICK_MAX / 2;
+        const int32_t xs[2] = {state.lx, state.rx}, ys[2] = {state.ly, state.ry};
+        for (int i = 0; i < 2; i++) {
+            if (ys[i] > half) held |= 1ull << 32;
+            if (ys[i] < -half) held |= 1ull << 33;
+            if (xs[i] < -half) held |= 1ull << 34;
+            if (xs[i] > half) held |= 1ull << 35;
+        }
+        BOOL baseline = atomic_exchange(&pressReset[slot], 0) != 0;   // 监听刚打开：这一笔只当基准
+        uint64_t newButtons = baseline ? 0 : held & ~lastPressButtons[slot];
+        int newSide = baseline ? 0 : side & ~lastPressSide[slot];
+        lastPressButtons[slot] = held; lastPressSide[slot] = side;
+        if (newButtons || newSide) {
+            char identifier[sizeof linkShared[slot].info.identifier];
+            pthread_mutex_lock(&stateMu); memcpy(identifier, linkShared[slot].info.identifier, sizeof identifier); pthread_mutex_unlock(&stateMu);
+            pressCallback((int)slot, identifier, newButtons, newSide, callbackContext);
+        }
+    }
     if ([self joycon]) {
         pthread_mutex_lock(&stateMu);
         linkShared[slot].last = state;
@@ -1444,6 +1474,12 @@ void ns2_set_assign_mode(int on) {
     atomic_store(&assignMode, on ? 1 : 0);
     memset(lastGesture, 0, sizeof lastGesture);
     if (on) LOG("NS2 Pro BLE：分配玩家开始（L + R / SL + SR 登记）");
+}
+void ns2_set_press_callback(ns2_press_callback callback) { pressCallback = callback; }
+void ns2_set_press_watch(int on) {
+    // 开的那一刻已经按着的键不算新按下（不会一打开面板就亮）：叫回调线程把下一笔当基准，数组只由它写
+    if (on) { atomic_store(&pressReset[0], 1); atomic_store(&pressReset[1], 1); }
+    atomic_store(&pressWatch, on ? 1 : 0);
 }
 void ns2_set_player_order(int first_link) { atomic_store(&firstLink, first_link ? 1 : 0); }
 int ns2_get_devices(ns2_device out[2]) {

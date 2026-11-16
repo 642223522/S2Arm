@@ -229,6 +229,36 @@ class ScanTests(unittest.TestCase):
         self.assertEqual({f['reason'] for f in report['uncovered_blocking']},
                          {'excluded_credentials', 'excluded_payload', 'non_regular'})
 
+    def test_synthetic_system_archive_rule_is_exact_and_keeps_unread_boundary(self):
+        path = 'services/S2A.Services/systemdata_synth.tar'
+        other = 'services/S2A.Services/other.tar'
+        rules = self.mod.load_rules()
+        entries = [row for row in rules['allowlist'] if row['id'] == 'generated_synthetic_systemdata_tar']
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]['paths'], [path])
+        self.assertEqual(entries[0]['categories'], ['uncovered_unreviewed_type'])
+        self.assertTrue(entries[0]['reason'])
+        archive = (ROOT / path).read_bytes()
+        self.commit({path: archive, other: archive})
+        with patch.object(self.mod, 'load_rules', return_value=rules), patch.object(
+                self.mod.Blobs, 'read', side_effect=AssertionError('archive body must remain unread')):
+            report = self.mod.scan(self.root, 'HEAD', ['.'])
+        self.assertEqual(report['coverage'], {'unreviewed_type': 2})
+        self.assertEqual([row['path'] for row in report['uncovered_allowed']], [path])
+        self.assertEqual([row['path'] for row in report['uncovered_blocking']], [other])
+        rules['allowlist'].remove(entries[0])
+        with patch.object(self.mod, 'load_rules', return_value=rules):
+            reverted = self.mod.scan(self.root, 'HEAD', ['.'])
+        self.assertEqual(len(reverted['uncovered_blocking']), 2, 'removing registration must block both TARs')
+
+    def test_synthetic_system_archive_is_verified_before_the_ci_scan(self):
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        linux = workflow.split('  linux:\n', 1)[1].split('  macos:\n', 1)[0]
+        verify = 'run: python3 tests/sysdata_synth_tar_test.py'
+        scan = 'run: python3 tools/public_repo_scan.py'
+        self.assertIn(verify, linux)
+        self.assertLess(linux.index(verify), linux.index(scan))
+
     def test_extensionless_text_is_scanned_without_values(self):
         mail = 'synthetic' + '@private.test'
         names = ['THIRD_PARTY_NOTICES', 'custom/runner', 'custom/EMPTY']

@@ -33,6 +33,7 @@ const prog_t *nvn_prog_snap_get(uint64_t serial, uint8_t keys[6][8], uint8_t *ok
 int rp_depth_zero(void) { return 0; }
 int rp_origin_lower_left(void) { return 0; }
 void rp_perf_add(int index, uint64_t value) { (void)index; (void)value; }
+uint64_t rp_frame(void) { return 1; }   // #996：rp_draw 首用策略按帧号判（rp_entry.c 的替身）
 uint64_t rp_seg_serial(void) { return 1; }
 void rp_occl_draw(nvn_gpu_cmd c) { (void)c; }
 int rp_post_gpu_write(uint64_t a, uint64_t n) { (void)a; (void)n; return 0; }

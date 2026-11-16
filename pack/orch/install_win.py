@@ -178,6 +178,12 @@ def install_app(a, say=lambda m: print(m, flush=True)):
                     time.sleep(RETRY_WAIT)
                     try:
                         sign_install(exe, a.ipa, dev, a.name, log, out, bundle)
+                    except Fail as again:
+                        # 重试那次 plumesign 常常连不上就直接 panic（omnisette remote_anisette_v3.rs 显式 panic），输出里只剩
+                        #   「note: run with RUST_BACKTRACE=1」认不出原因、落回 device_install_failed，玩家看到的就是这句（诊断#3fc02b D-5A5K，0.4.0）。
+                        #   第二次认不出就按第一次认出的报：连不上签名服务器
+                        if again.err != 'device_install_failed': raise
+                        raise e from again
                     finally:
                         Path(log).write_text(first + '\n--- 连不上签名服务器：重试 ---\n' + Path(log).read_text(encoding='utf-8', errors='replace'), encoding='utf-8')
             except Fail:

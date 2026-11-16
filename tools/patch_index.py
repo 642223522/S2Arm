@@ -25,17 +25,117 @@ MAX = 2 << 20
 GID = re.compile(r'01[0-9A-Fa-f]{14}')
 
 
-def classify(path, text=''):
-    """类别按路径 / 文件头关键词（同本机补丁库覆盖表口径）：帧率 / 画幅 / 其余画面"""
+def own_name(path):
+    """补丁自己的名字：Atmosphere 结构 <mod 名>/exefs/<文件> 取 mod 名的上一级起往后（变体只用数字命名时类别写在上一级，
+    如 Kenji-NX 的 Aspect Ratio/16'10/exefs/）；不是这种结构取最后两段。
+    再往上的仓库名、聚合目录名不算（11-15 奥德赛：pacoa-kdbg 的 generated-narrow-aspect/ 目录下「关动态分辨率」「关 FXAA」被目录名里的
+    aspect 判成画幅类，绕过 iOS 不打画面类的规则跟着满屏默认打开，开场动画闪退）"""
+    parts = [p for p in path.replace('\\', '/').split('/') if p]
+    low = [p.lower() for p in parts]
+    if 'exefs' in low:
+        i = len(low) - 1 - low[::-1].index('exefs')
+        return '/'.join(parts[max(0, i - 2):])
+    return '/'.join(parts[-2:])
+
+
+GFX = re.compile(r'resolution|\bres\b|\d{3,4}\s*[px]\s*\d{3,4}|\b\d{3,4}p\b|\b(1080|720|900|1440|2160|4k)\b|dynamic|\blod|level of detail|detail|'
+                 r'anti.?alias|\b(fx|sm|t|ms)aa\b|shadow|bloom|blur|depth of field|\bdof\b|\bfog\b|quality|graphic|sharpen|filter|anisotrop|'
+                 r'ambient occlusion|\bssao\b|render|texture|draw distance|lighting|reflection|\bhdr\b|upscal|downscal|scaling|docked|gamma|'
+                 r'brightness|colou?r|contrast|vignette|chromatic|film grain|post.?process|outline|mipmap|bias|v-?sync|frame ?buffer|visual|'
+                 r'\b\d{1,2}k\b|\b(ss|ms|fx|sm|t)?aa\b|cloud|flare|heat ?wave|lens|shading|shader|tint|\bfov\b|field of view|crop')
+
+
+# 整个仓库都是画面合集、补丁自身只写版本号的（文件名 1.0.1.pchtxt、文件头只有游戏名）：自身认不出时按仓库判画面（11-15 全库普查）
+GFX_REPOS = {'cucholix/NX-IPS-romfs-compilation'}
+
+
+def classify(path, text='', repo=''):
+    """类别按补丁自己的名字（own_name）/ 文件头关键词（同本机补丁库覆盖表口径）：帧率 / 画幅 / 其余画面"""
     # 先去网址（11-13）：作者署名里的仓库网址（github.com/StevensND/ue4-emuswitch-60fps）落在前 400 字内，「60fps」把同一作者的关景深 / 关抗锯齿 / 分辨率补丁全判成帧率 60
-    s = re.sub(r'https?://\S+', ' ', (path + '\n' + text[:400]).lower())
+    s = re.sub(r'https?://\S+', ' ', (own_name(path) + '\n' + text[:400]).lower())
     fps = re.search(r'(\d{2,3})\s*fps', s)
-    if re.search(r'ultra\s*wide|widescreen|21[:x_.]9|32[:x_.]9|aspect', s):
+    if re.search(r'ultra\s*wide|widescreen|21[:x_.]9|32[:x_.]9|aspect|(?<![\d.])16[:x_.\']10(?![\d.])', s):   # 16:10 也写成 16.10 / 16\'10：前后不挨数字和点，免得把版本号 1.16.10 当画幅
         m = re.search(r'(\d{1,2}(?:\.\d)?)\s*[:x_\-](9|10)\b', s)
         return 'widescreen', '', f'{m.group(1)}:{m.group(2)}' if m else ''
     if fps or 'fpslock' in s or 'speedfix' in s or re.search(r'(unlock|uncap|unlimit)\w*[\s_-]*fps|fps[\s_-]*(unlock|uncap|unlimit)', s):
         return 'fps', fps.group(1) if fps else '', ''
-    return 'gfx', '', ''
+    # 画面类按正向认定（11-15：原先认不出的一律算画面，「No Music」「Remove Audio」「Subtract Coins」这类声音 / 玩法补丁跟着画面类默认打开，
+    #   Mac 玩家一开游戏就没有背景音乐、没有声音，6 份诊断里都是开着的）；认不出的归 other：不默认开、iPhone 不打，玩家自己在启动设置里开
+    if GFX.search(s) or repo in GFX_REPOS:
+        return 'gfx', '', ''
+    return 'other', '', ''
+
+
+# 画面类再分「降负载 / 提画质」（11-16 维护者：iOS 只收降负载类；判据 = 比游戏在我们这里的底座档默认少干活还是多干活）。
+#   信号只取补丁自己的：own_name 里的变体目录 / 文件名、文件头那行游戏名之后的变体说明、各段的段注释（//、# 行）；游戏名、作者署名、网址不算。
+#   同一份里两类都中、出现 900p–1080p（不知道这款底座原生多少，判不出升降）、或带中性改动（视野 / HUD / 颜色…，整份开关、iOS 不收中性）→ 认不出，仍留 gfx。
+_OFF = r'(?:disabl\w*|remov\w*|no|off|turn[ _-]*off|without|kill\w*|delet\w*)'
+LOAD = re.compile(_OFF + r'[ _-]*(?:the[ _-]*)?(?:fxaa|taa|smaa|aa\b|anti[ _-]*alias\w*|motion[ _-]*blur|camera[ _-]*blur|radial[ _-]*blur|blur|dof\b|depth[ _-]*of[ _-]*field|bloom|'
+                  r'shadows?|ambient[ _-]*occlusion|ssao|ao\b|fog|volumetric\w*|particles?|post[ _-]*process\w*|god[ _-]*rays?|light[ _-]*shafts?|reflections?|ssr\b|grass|foliage|lens[ _-]*flare)'
+                  r'|(?:lower\w*|reduc\w*|decreas\w*|half)[ _-]*(?:the[ _-]*)?(?:render(?:ing)?[ _-]*)?(?:res\b|resolution|lod|shadows?|draw[ _-]*distance|particles?|grass|foliage)'
+                  r'|\b(?:360|480|504|540|576|600|648|720)p\b|\b(?:640|854|960|1024|1152|1280)[ _]*x[ _]*(?:360|480|540|576|648|720)\b'
+                  r'|performance[ _-]*mode|force[ _-]*handheld|handheld[ _-]*(?:mode|res\w*|profile|settings)|half[ _-]*res\w*|low[ _-]*(?:quality|settings|graphics|preset)'
+                  r'|dynamic[ _-]*res\w*[ _-]*(?:lower|min\w*|threshold|floor)')
+QUAL = re.compile(r'\b(?:1152|1200|1296|1440|1620|1800|2160|2880|4320)p\b|\b[2-8]k\b|\b(?:1920[ _]*x[ _]*1200|2[0-9]{3}[ _]*x[ _]*1[2-9][0-9]{2}|[3-9][0-9]{3}[ _]*x[ _]*[0-9]{4})\b'
+                  r'|(?:increas\w*|improv\w*|enhanc\w*|higher|better|high|boost\w*|max\w*|extend\w*|ultra)[ _-]*(?:the[ _-]*)?(?:render(?:ing)?[ _-]*)?(?:res\b|resolution|lod|shadows?|draw[ _-]*distance|quality|anisotrop\w*|textures?|detail|graphics|settings|preset|mip\w*|filtering)'
+                  r'|anisotrop\w*|\baf[ _]*x?16\b|\b16x[ _]*af\b|lod[ _-]*(?:increas\w*|boost\w*)|force[ _-]*max|upscal\w*|sharpen\w*|msaa|supersampl\w*|docked[ _-]*mode|force[ _-]*docked'
+                  r'|' + _OFF + r'[ _-]*(?:dynamic[ _-]*res\w*|resolution[ _-]*scaling|drs\b)|(?:lock\w*|fix\w*)[ _-]*(?:to[ _-]*)?(?:max|native)')
+QUAL_WH = re.compile(r'\b\d{3,4}[ _]*x[ _]*(?:1[2-9]\d\d|[2-9]\d{3})\b')   # 高 ≥ 1200 的宽×高
+# 判不出升降的：721p–1151p（900p–1080p 是底座 / 掌机一对常见写法，不知道这款底座原生多少）、同高度的宽×高
+AMBIG = re.compile(r'\b(?:7[3-9]\d|8\d\d|9\d\d|10\d\d|11[0-4]\d)p\b|\b\d{3,4}[ _]*x[ _]*(?:7[3-9]\d|8\d\d|9\d\d|10\d\d|11[0-4]\d)\b')
+RES_TOKEN = re.compile(r'\b\d{3,4}p\b|\b\d{3,4}[ _]*x[ _]*\d{3,4}\b|resolution|\bres\b')
+DYN = re.compile(r'dynamic[ _-]*res\w*|resolution[ _-]*scaling|\bdrs\b')
+DYN_LOWER = re.compile(r'dynamic[ _-]*res\w*[ _-]*(?:lower|min\w*|threshold|floor)')
+CODE_NOTE = re.compile(r'[0-9a-f]{20,}|\b(?:movz?|movk|movn|fmov|ldr\w*|str\w*|ldp|stp|add|sub|cmp|fcmp|orr|and|eor|lsl|lsr|nop|ret|bl?|br|blr|b\.\w+|cbn?z|tbn?z|fm(?:ul|add|in|ax)\w*|[su]cvtf|fcvt\w*)\s+(?:[wxsdqv]\d+|wzr|xzr|sp|#|\[)', re.I)   # 汇编备注：助记符后跟寄存器 / 立即数；20 位以上十六进制（构建号 / 数据串；16 位的程序号不算）
+NEUTRAL = re.compile(r'(?<![\d.])\d{1,2}\s*:\s*\d{1,2}(?![\d.])|stretch|\bfov\b|field[ _-]*of[ _-]*view|camera|\bhud\b|\bui\b|cursor|intro|skip|outlines?|colou?r|saturation|tint|vignette|letterbox|black[ _-]*bars|'
+                     r'\bcrop|zoom|brightness|gamma|contrast|crosshair|\bmenu|subtitle|font|cutscene|aspect|widescreen|ultra[ _-]*wide')
+
+
+def _dir_signals(path, text=''):
+    """补丁自己的变体说明（见上）：own_name 去掉文件名里的版本号、程序号与 [mods] 包名；pchtxt 文件头「# 游戏名 [程序号] 版本 - 变体」只取变体；段注释整行"""
+    parts = own_name(path).split('/')
+    out = []
+    for p in parts:
+        p = GID.sub(' ', re.sub(r'\.(?:pchtxt|ips|zip|rar|7z)$', '', p, flags=re.I))
+        p = re.sub(r'\bv?\d+(?:\.\d+)+\b', ' ', p)   # 版本号 1.3.0 / v2.7.7.92380（含 720 这类数字时不当分辨率）
+        if p.strip().lower() not in ('', 'exefs', 'mods'):
+            out.append(p)
+    head = True
+    for line in text.splitlines():
+        t = line.strip()
+        if not t or t.startswith('@'):
+            continue
+        if t.startswith(('#', '//')):
+            t = t.lstrip('#/ ').strip()
+            if CODE_NOTE.search(t):   # 汇编 / 十六进制备注（「mov w9, #0x500 (handheld resx)」「720 // 0005…」）说的是某条指令，不是这份补丁要做什么
+                continue
+            if head and GID.search(t):   # 文件头：游戏名 [程序号] 版本 - 变体 / ; 变体
+                head = False
+                m = re.search(r'01[0-9A-Fa-f]{14}\]?\s*(?:v?\d+(?:\.\d+)*)?\s*(.*)$', t)
+                t = re.sub(r'^[-;:,\s]+', '', m.group(1)) if m else ''
+            t = re.sub(r'\bv?\d+(?:\.\d+)+\b', ' ', t)
+            if t:
+                out.append(t)
+    return re.sub(r'https?://\S+', ' ', '\n'.join(out).lower())
+
+
+def gfx_dir(path, text=''):
+    """画面类的方向：load（降负载，iOS 收）/ quality（提画质，只进 Mac）/ ''（认不出或中性，iOS 不收）"""
+    s = _dir_signals(path, text)
+    if AMBIG.search(s):
+        return ''
+    load, qual = bool(LOAD.search(s)), bool(QUAL.search(s) or QUAL_WH.search(s))
+    # 降负载里混着动态分辨率开关（「关 FXAA 和动态分辨率」：关动态分辨率 = 锁最高档，是提画质）→ 认不出
+    if load and DYN.search(DYN_LOWER.sub(' ', s)):
+        return ''
+    # 只改掌机档分辨率（「720p handheld target」）：我们回给游戏的是底座档，掌机档那组数用不上，说不上降负载
+    if load and RES_TOKEN.search(s) and 'handheld' in s and not re.search(r'force[ _-]*handheld|handheld[ _-]*(?:mode|profile|settings)', s):
+        return ''
+    if load and not qual and not NEUTRAL.search(LOAD.sub(' ', s)):
+        return 'load'
+    if qual and not load:
+        return 'quality'
+    return ''
 
 
 def bids_of(path, data):
@@ -130,17 +230,19 @@ def scan(mirror, keep_local=False, cheat_libs=False):
                 lic = next((l.strip() for l in open(p, encoding='utf-8', errors='replace') if l.strip()), '')[:80]
                 break
         def row(rel, name, data, extra=None):
-            m = CHEAT.search(name)
+            m = CHEAT.search(name); gdir = ''
             if m:
                 if repo in CHEAT_LIBS and not cheat_libs:
                     return
                 kind, cat, tfps, aspect, bids = 'cheat', 'cheat', '', '', [m.group(1).upper()]
             else:
                 kind = 'ips' if name.lower().endswith('.ips') else 'pchtxt'
-                cat, tfps, aspect = classify(rel + '/' + name if extra else rel, data.decode('utf-8', 'replace') if kind == 'pchtxt' else '')
+                text = data.decode('utf-8', 'replace') if kind == 'pchtxt' else ''
+                cat, tfps, aspect = classify(rel + '/' + name if extra else rel, text, repo)
+                gdir = gfx_dir(rel + '/' + name if extra else rel, text) if cat == 'gfx' else ''
                 bids = bids_of(name, data)
             rows.append(dict(repo=repo, commit=commit, path=rel, size=len(data), sha256=hashlib.sha256(data).hexdigest(), kind=kind, cat=cat,
-                             target_fps=tfps, aspect=aspect, gids=sorted({g.upper() for g in GID.findall(rel + '/' + name)}), bids=bids, license=lic, **(extra or {})))
+                             target_fps=tfps, aspect=aspect, **({'dir': gdir} if gdir else {}), gids=sorted({g.upper() for g in GID.findall(rel + '/' + name)}), bids=bids, license=lic, **(extra or {})))
             if keep_local:
                 rows[-1]['_local'] = local
         tree = true_paths(repo, commit) if os.environ.get('S2A_PATCH_INDEX_NO_GH') != '1' else None

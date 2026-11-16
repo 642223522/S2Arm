@@ -1,6 +1,6 @@
 # Real production draws and independent GPU colors; exact old-source input optional.
 NATIVE_TEST_OWN += nvn_feedback_snapshot
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 NVN_FEEDBACK_SOURCE ?= graphics/nvn/gfx/nvn/nvn_mtl.m
 NVN_FEEDBACK_BINARY ?= $(BUILD)/tests/t_nvn_feedback_snapshot
 $(NVN_FEEDBACK_BINARY): graphics/nvn/tests/t_nvn_feedback_snapshot.m $(NVN_FEEDBACK_SOURCE) $(NVN_MTL_DEPS) $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)

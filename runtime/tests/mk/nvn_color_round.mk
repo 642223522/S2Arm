@@ -1,6 +1,6 @@
 # Production slot-27 binding, observed on a full-precision GPU attachment.
 NATIVE_TEST_OWN += nvn_color_round
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 NVN_COLOR_ROUND_SOURCE ?= graphics/nvn/gfx/nvn/nvn_mtl.m
 NVN_COLOR_ROUND_BINARY ?= $(BUILD)/tests/t_nvn_color_round
 $(NVN_COLOR_ROUND_BINARY): graphics/nvn/tests/t_nvn_color_round.m $(NVN_COLOR_ROUND_SOURCE) $(NVN_MTL_DEPS) $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)

@@ -63,7 +63,7 @@ class PackLayoutTest(unittest.TestCase):
 
     def test_default(self):
         _, table, _ = self.make()
-        self.layout(table, 60, 3284, 0)
+        self.layout(table, 63, 3284, 1)   # 别名区未测：72 GiB − 固定 2146 MiB − 堆 3284 MiB = 68298 MiB → 66 GiB，封顶 63
 
     def test_unbounded_preserves_heap_and_full_alias(self):
         table = self.base / 'unbounded.tsv'
@@ -99,13 +99,13 @@ class PackLayoutTest(unittest.TestCase):
         self.claim_62_gib(); self.system_resource(0x1000000)
         _, table, _ = self.make()
         self.assertNotIn('别名区上限\t不定', table.read_text())
-        self.layout(table, 63, 798, 1)
+        self.layout(table, 63, 3284, 1)   # 72 GiB − 2146 MiB − 63 GiB = 7070 MiB ≥ 3284：堆不再被挤
 
     def test_static_62_gib_claim_vamm_off(self):
-        # 同一 62 GiB 常量调用，但 SystemResourceSize = 0（VAMM 关，这条调用在真机上是死代码）→ 不算开局占位，落回缺省 60 GiB
+        # 同一 62 GiB 常量调用，但 SystemResourceSize = 0（VAMM 关，这条调用在真机上是死代码）→ 不算开局占位，落回缺省（预算推出 63 GiB）
         self.claim_62_gib(); self.system_resource(0)
         _, table, _ = self.make()
-        self.layout(table, 60, 3284, 0)
+        self.layout(table, 63, 3284, 1)
 
 
 if __name__ == '__main__':

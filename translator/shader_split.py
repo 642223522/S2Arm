@@ -1253,6 +1253,23 @@ def var_pairs(found):
 FILE_RED = '\0file_red'   # marks a file left out whole in the SKIPPED channel (v0.3.1)
 
 
+DEGRADE_ROWS_CAP = 50   # 每类逐条写进降级表的上限：超出的并成一行「另有 N 条」（处数合计不变）
+
+
+def write_degrade(path, file_red, blocks, same_key, cap=DEGRADE_ROWS_CAP):
+    """降级表 degrade.tsv（五列：阶段 / 类别 / 处数 / 玩家提示 / 说明，pack/jobs/build.py degrade_rows 读）：每个被跳过的文件 / 被丢的程序块 / 同键不同内容各写一行
+    （处数 1、说明带文件名或位置与原因），每类最多 cap 行、其余并成一行（处数 = 余数），各类处数合计 = 实际条数。玩家提示留空（不上完成卡，只进诊断）。
+    原先每类只写一行「首个」：诊断里只看得到第一个文件，被丢的程序块整类不写（#1122）。没有降级写空文件（调用方按有无行判）"""
+    kinds = (('split:file_skipped', '直连抽取跳过读不了的文件（里面的着色器运行时首遇现编）', file_red),
+             ('split:block_skipped', '直连抽取丢了 Unity 程序块（这支着色器不进映射表、运行时首遇现编）', blocks),
+             ('split:same_key', '同键不同内容，留先到的那份', same_key))
+    clean = lambda m: ' '.join(str(m).split())[:300]   # 说明一列不许有制表符 / 换行（degrade_rows 按制表符切五列）
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        for kind, what, items in kinds:
+            for m in items[:cap]: f.write(f'extract\t{kind}\t1\t\t{what}：{clean(m)}\n')
+            if len(items) > cap: f.write(f'extract\t{kind}\t{len(items) - cap}\t\t{what}：另有 {len(items) - cap} 条未逐列（见 split.log）\n')
+
+
 def scan_counted(job):
     """scan_file + the Unity program blocks this file had left out (SKIPPED). A file the readers cannot read (a [RED] exit or a parse
     error inside its scan) is left out alone and recorded (FILE_RED), the rest are read on (v0.3.1: do not stop on what we cannot be sure of;
@@ -1575,13 +1592,12 @@ def main():
                 continue
             keys[key] = v; per_src[group(v[0])] += 1
     if skipped and not keys: red(f'every Unity program block was left out ({len(skipped)}, the first: {skipped[0][0]}: {skipped[0][1]}): a reader that is wrong for this game, not bad blocks')
-    # 降级汇总（v0.3.1）：读不了的文件 / 同键不同内容逐条打 [WARN]，按类计数写 <shader_map.tsv 同目录>/degrade.tsv（pack/stage_extract.sh 并进 degrade.extract.tsv）
+    # 降级汇总（v0.3.1）：读不了的文件 / 同键不同内容逐条打 [WARN]，写 <shader_map.tsv 同目录>/degrade.tsv（pack/stage_extract.sh 并进 degrade.extract.tsv，
+    #   出包收尾存进任务日志目录、诊断包收它）。#1122：被丢的 Unity 程序块原先只在 split.log 打 [RED]，诊断里看不到——两位玩家 1.2.0 映射表比 1.1.0 少 53 条、无从定位
     for m in file_red: print('[WARN] skipped: ' + m, flush=True)
     for m in same_key: print('[WARN] ' + m, flush=True)
-    with open(os.path.join(os.path.dirname(os.path.abspath(mapout)), 'degrade.tsv'), 'w', encoding='utf-8', newline='\n') as f:
-        if file_red: f.write(f'extract\tsplit:file_skipped\t{len(file_red)}\t\t直连抽取跳过读不了的文件，里面的着色器运行时首遇现编（首个：{file_red[0][:160]}）\n')
-        if same_key: f.write(f'extract\tsplit:same_key\t{len(same_key)}\t\t同键不同内容，留先到的那份（首个：{same_key[0][:160]}）\n')
-    if file_red or same_key: print(f'【黄】直连抽取：跳过读不了的文件 {len(file_red)} 个、同键不同内容 {len(same_key)} 处（留先到的），其余照抽；逐条见上方 [WARN]', file=sys.stderr)
+    write_degrade(os.path.join(os.path.dirname(os.path.abspath(mapout)), 'degrade.tsv'), file_red, [f'{w}: {why}' for w, why in skipped], same_key)
+    if file_red or skipped or same_key: print(f'【黄】直连抽取：跳过读不了的文件 {len(file_red)} 个、丢了程序块 {len(skipped)} 个、同键不同内容 {len(same_key)} 处（留先到的），其余照抽；逐条见上方 [WARN] / [RED]', file=sys.stderr)
     sp, cover = separable_pairs(keys); pairs |= sp
     if cover: print(f'single-stage programs: {len({v for v, _ in sp}):,} vertex shaders are paired with a cover of {len(cover)} pixel shader(s) ({" ".join(cover)})')
     os.makedirs(pkg, exist_ok=True)

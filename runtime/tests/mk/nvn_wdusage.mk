@@ -1,6 +1,6 @@
 # native-test-nvn_wdusage：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += nvn_wdusage
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # 直连宽屏：存储放不宽的渲染目标不按放宽登记给核心（巫师3 直连标志视频左侧品红，10-26）
 $(BUILD)/tests/t_nvn_wdusage: graphics/nvn/tests/t_nvn_wdusage.m $(NVN_MTL_DEPS) graphics/nvn/widen_glue.inc graphics/nvn/widen_fallback.inc $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \

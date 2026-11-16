@@ -24,7 +24,7 @@ import tempfile
 import time
 
 from .bash import find_bash
-from .roots import REPO, Roots, copy_file, git, is_link, plain_entries, read, remove_owned, text
+from .roots import REPO, Roots, copy_file, git, is_link, plain_entries, read, remove_owned, snapshot, text
 
 ENTRY = {'rewrite': 'pack/stage_rewrite.sh', 'romfsidx': 'pack/stages/romfsidx.sh',
          'direct_profile': 'pack/stage_direct_profile.sh'}
@@ -326,7 +326,7 @@ def rewrite_plan(game, current, deps):
     ak, _ = deps.python('tools/addr_need.py', bid, addr, '--npdm', npdm, '--key', '--main', main, log=ad / 'log')
     sd, _ = deps.python('pack/rewriter.py', 'source')
     kr = digest(sd.strip() + '\n' + (REPO / 'runtime/rewriter/nro_to_nso.py').read_text(encoding='utf-8'), 40)
-    ks = git('rev-parse', 'HEAD:graphics/widen/scan')
+    ks = scan_tree()
     rk, _ = deps.python('pack/rewriter.py', 'key')
     target = env.get('S2A_TARGET', 'apple')
     env.setdefault('S2A_REWRITE_SPIN', '1')
@@ -357,10 +357,20 @@ def rewrite_plan(game, current, deps):
                 addr_log=ad / 'log', community=bool(ck), dirs=dirs, selection=selection)
 
 
+def scan_tree():
+    """graphics/widen/scan 的树对象号（改写阶段键；同 pack/stage_keyfiles.sh scan_tree）：发布快照读 engine.json，开发树走 git"""
+    return snapshot('scanTree') or git('rev-parse', 'HEAD:graphics/widen/scan')
+
+
+def romfs_writer_oids():
+    """RomFS 索引写法 4 个文件的对象号（同 pack/stage_keyfiles.sh romfs_writer_oids）"""
+    return snapshot('romfsIndexOids') or git('rev-parse', 'HEAD:services/S2A.Services/RomFsIndex.cs',
+                                             'HEAD:services/romfs_index', 'HEAD:services/romfs_index.sh',
+                                             'HEAD:compat/tree/Directory.Packages.props').splitlines()
+
+
 def romfsidx_key(current):
-    oids = git('rev-parse', 'HEAD:services/S2A.Services/RomFsIndex.cs',
-               'HEAD:services/romfs_index', 'HEAD:services/romfs_index.sh',
-               'HEAD:compat/tree/Directory.Packages.props').splitlines()
+    oids = romfs_writer_oids()
     if len(oids) != 4:
         raise StageError('RomFS 索引源码对象不完整')
     kt = digest('\n'.join(oids) + '\n')

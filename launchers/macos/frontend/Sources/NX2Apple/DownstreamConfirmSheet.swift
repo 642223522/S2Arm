@@ -19,33 +19,36 @@ struct DownstreamConfirmSheet: View {
     private var lang: String { zh ? "zh" : "en" }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: LauncherTheme.Space.section) {
             if let game, let offer = game.downstream, let text = offer.text(lang) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(text.title).font(.manrope(24, .heavy)).tracking(-0.5).fixedSize(horizontal: false, vertical: true)
-                    Text(game.name).font(.manrope(14)).foregroundStyle(.secondary)
-                }
-                Text(text.body).font(.manrope(14)).fixedSize(horizontal: false, vertical: true)
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(text.points, id: \.self) { p in
-                        Label(p, systemImage: "checkmark.circle").font(.manrope(13)).fixedSize(horizontal: false, vertical: true)
+                LauncherSheetHeading(text.title, subtitle: game.name)
+                LauncherReadingPane {
+                    VStack(alignment: .leading, spacing: LauncherTheme.Space.large) {
+                        Text(LauncherCopy.note(text.body)).font(LauncherTheme.TypeStyle.body).fixedSize(horizontal: false, vertical: true)
+                        VStack(alignment: .leading, spacing: LauncherTheme.Space.small) {
+                            ForEach(text.points, id: \.self) { point in
+                                Label(LauncherCopy.note(point), systemImage: "checkmark.circle")
+                                    .font(LauncherTheme.TypeStyle.detail).fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 if !offer.eligible {
-                    Label(offer.why(lang), systemImage: "info.circle").font(.manrope(13)).foregroundStyle(.secondary)
+                    Label(LauncherCopy.note(offer.why(lang)), systemImage: "info.circle").font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("downstream.reason")
                 }
                 HStack(spacing: 12) {
                     Spacer()
                     Button(text.original) { model.chooseDownstream(gameID, scheme: ""); dismiss() }
-                        .buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("downstream.original")
+                        .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("downstream.original").controllerShortcut(.rightTrigger, focused: true)
                     Button(text.recommend) { model.chooseDownstream(gameID, scheme: offer.id); dismiss() }
-                        .buttonStyle(LauncherSecondaryButtonStyle()).disabled(!offer.eligible)
-                        .keyboardShortcut(.defaultAction).accessibilityIdentifier("downstream.recommend")
+                        .controllerButtonStyle(LauncherPrimaryButtonStyle()).disabled(!offer.eligible)
+                        .keyboardShortcut(.defaultAction).controllerID("downstream.recommend").controllerShortcut(.rightTrigger)
                 }
             }
         }
-        .padding(30).frame(width: 560)
+        .padding(LauncherTheme.Space.page).launcherSheet(.form, height: nil)
     }
 }
 
@@ -57,7 +60,7 @@ struct DownstreamPromptHost: View {
     var body: some View {
         Color.clear.frame(width: 0, height: 0)
             .sheet(item: Binding(get: { model.downstreamPromptFor.map(Target.init) }, set: { if $0 == nil { model.downstreamPromptFor = nil } })) { target in
-                DownstreamConfirmSheet(model: model, gameID: target.id, zh: loc.lang == .zh)
+                DownstreamConfirmSheet(model: model, gameID: target.id, zh: loc.cjkPunctuation)
             }
     }
 }

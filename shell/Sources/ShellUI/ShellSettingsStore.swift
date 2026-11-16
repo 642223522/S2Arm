@@ -27,6 +27,11 @@ public final class ShellSettingsStore: @unchecked Sendable {
     /// S2Arm: 与其他 App 混音（宿主 ios/app.m audio_choice 读同一个键）；原只在系统设置 App 的 S2Arm 页（11-14 挪进游戏库设置）
     public static let mixWithOthersKey = "S2AMixWithOthers"
     public static let liquidGlassKey = "liquidGlass"             // true/false; Liquid Glass on the floating surfaces, on unless turned off
+    /// S2Arm: the app's interface language, the same key as the in-game settings (ios/s2a_l10n.h S2AUILanguageKey). The host sets
+    /// the app's AppleLanguages from it when the process starts, so a change takes effect the next time S2Arm opens. "system" is never
+    /// stored: no value means follow the system.
+    public static let interfaceLanguageKey = "S2AUILanguage"
+    public static let interfaceLanguages = ["system", "zh-Hans", "zh-Hant", "en", "ja", "es", "fr"]
 
     /// The store the app reads and writes. Tests and previews swap it.
     nonisolated(unsafe) public static var current = ShellSettingsStore()
@@ -53,6 +58,14 @@ public final class ShellSettingsStore: @unchecked Sendable {
     public func clearCloudSavesFolderName() { defaults.removeObject(forKey: Self.cloudSavesNameKey) }
     public func storePlayInSilentMode(_ on: Bool) { UserDefaults.standard.set(on, forKey: Self.playInSilentModeKey) }
     public func storeMixWithOthers(_ on: Bool) { UserDefaults.standard.set(on, forKey: Self.mixWithOthersKey) }
+    public var interfaceLanguage: String {
+        guard let v = UserDefaults.standard.string(forKey: Self.interfaceLanguageKey), Self.interfaceLanguages.contains(v) else { return "system" }
+        return v
+    }
+    public func storeInterfaceLanguage(_ value: String) {
+        guard Self.interfaceLanguages.contains(value) else { return }
+        if value == "system" { UserDefaults.standard.removeObject(forKey: Self.interfaceLanguageKey) } else { UserDefaults.standard.set(value, forKey: Self.interfaceLanguageKey) }
+    }
     public func storePerformanceHUD(_ on: Bool) {
         UserDefaults.standard.set(on, forKey: Self.performanceHUDKey)
         defaults.removeObject(forKey: Self.retiredPerformanceHUDKey)

@@ -196,6 +196,14 @@ if(ANDROID)
     target_link_libraries(s2arm_android PRIVATE s2arm_android_memory android log vulkan aaudio mediandk)
     if(S2A_ANDROID_NATIVE_MODE STREQUAL "game")
         target_link_libraries(s2arm_android PRIVATE ${S2A_ANDROID_CODEC_LIBS})
+        # 窄 shim：选驱动时把实例创建入口路由到 adrenotools 的私有 loader；其余 Vulkan 命令不变。
+        target_compile_definitions(s2arm_android PRIVATE S2A_ANDROID_VK_LOADER_SHIM=1)
+        target_link_options(s2arm_android PRIVATE
+            -Wl,--wrap=vkEnumerateInstanceVersion
+            -Wl,--wrap=vkEnumerateInstanceExtensionProperties
+            -Wl,--wrap=vkEnumerateInstanceLayerProperties
+            -Wl,--wrap=vkCreateInstance
+            -Wl,--wrap=vkGetInstanceProcAddr)
     endif()
     if(S2A_ANDROID_EXPERIMENTAL_TOUCH)
         target_compile_definitions(s2arm_android PRIVATE S2A_ANDROID_EXPERIMENTAL_TOUCH=1)
@@ -204,6 +212,33 @@ if(ANDROID)
     target_link_options(s2arm_android PRIVATE -Wl,-z,max-page-size=16384 -Wl,-z,defs)
     target_compile_definitions(s2arm_android PRIVATE $<$<CONFIG:Debug>:S2A_CAPACITY_WRAP=1>)
     target_link_options(s2arm_android PRIVATE $<$<CONFIG:Debug>:-Wl,--wrap=pthread_create>)
+    # 外挂 Vulkan 驱动：libadrenotools（BSD-2-Clause）与它的 hook 库。刻意做成三个独立的
+    # 共享库、不链进 s2arm_android——没有选择驱动时谁也不会加载它们（linkernsbypass 的
+    # 构造器会改 dlopen 所在页的保护），系统驱动路径与改前完全相同。
+    set(S2A_ADRENOTOOLS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libadrenotools")
+    add_library(s2a_linkernsbypass STATIC
+        "${S2A_ADRENOTOOLS_DIR}/lib/linkernsbypass/android_linker_ns.cpp"
+        "${S2A_ADRENOTOOLS_DIR}/lib/linkernsbypass/elf_soname_patcher.cpp")
+    set_target_properties(s2a_linkernsbypass PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    target_include_directories(s2a_linkernsbypass PUBLIC "${S2A_ADRENOTOOLS_DIR}/lib/linkernsbypass")
+    target_compile_options(s2a_linkernsbypass PRIVATE -O2 -w)
+    add_library(adrenotools SHARED "${S2A_ADRENOTOOLS_DIR}/src/driver.cpp")
+    target_include_directories(adrenotools PRIVATE "${S2A_ADRENOTOOLS_DIR}/include" "${S2A_ADRENOTOOLS_DIR}")
+    target_compile_options(adrenotools PRIVATE -O2 -w)
+    target_link_libraries(adrenotools PRIVATE s2a_linkernsbypass android log dl)
+    add_library(hook_impl SHARED
+        "${S2A_ADRENOTOOLS_DIR}/src/hook/hook_impl.cpp"
+        "${S2A_ADRENOTOOLS_DIR}/src/hook/adreno_binder_compat.c")
+    target_include_directories(hook_impl PRIVATE "${S2A_ADRENOTOOLS_DIR}/include")
+    target_compile_options(hook_impl PRIVATE -O2 -w)
+    set_target_properties(hook_impl PROPERTIES CXX_VISIBILITY_PRESET hidden)
+    target_link_options(hook_impl PRIVATE -Wl,-z,global)
+    target_link_libraries(hook_impl PRIVATE s2a_linkernsbypass android log dl)
+    add_library(main_hook SHARED "${S2A_ADRENOTOOLS_DIR}/src/hook/main_hook.c")
+    target_include_directories(main_hook PRIVATE "${S2A_ADRENOTOOLS_DIR}/include")
+    target_compile_options(main_hook PRIVATE -O2 -w)
+    target_link_options(main_hook PRIVATE -Wl,-z,global)
+    target_link_libraries(main_hook PRIVATE hook_impl)
     # Single-library build (S2ARM_ANDROID_CS_SERVICES=static, passed by Gradle): the NativeAOT
     # service layer and the runtime pieces the SDK listed (cs/build.sh) link into this library,
     # with s2a_native bound to the explicitly selected diagnostic or real game provider.

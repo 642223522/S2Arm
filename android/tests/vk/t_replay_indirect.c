@@ -54,6 +54,7 @@ const prog_t *nvn_prog_snap_get(uint64_t s,uint8_t k[6][8],uint8_t *o,uint8_t t[
 int rp_shader_resolve(const struct rp_shader_req *q,const struct rp_prog **o){(void)q;*o=&prog;return 0;}
 static int fixture_origin=1;
 int rp_depth_zero(void){return 0;}int rp_origin_lower_left(void){return fixture_origin;}
+uint64_t rp_frame(void) { return 1; }   // #996：rp_draw 首用策略按帧号判（rp_entry.c 的替身）
 void rp_perf_add(int i,uint64_t n){(void)i;(void)n;}uint64_t rp_seg_serial(void){return serial;}
 uint64_t rp_sub_serial(void){return serial;}uint64_t rp_sub_fence(void){return 1;}
 int rp_fence_done(uint64_t f){(void)f;return 1;}
@@ -223,11 +224,14 @@ static void run_front_origin(struct s2a_vk_device *d,const char *dir) {
  fixture_origin=1;s2a_nvn_rast_flip=0;rp_draw_reset();rp_buf_reset();nvn_gpu_shader_release(prog.sh[0]);nvn_gpu_shader_release(prog.sh[1]);nvn_gpu_view_release(target_view);nvn_gpu_tex_release(tex);nvn_gpu_buf_release(rb,NULL,NULL);GPU(nvn_gpu_close(5000000000ull,&err));
  printf("front-origin matrix cases=%u failed=%u\n",cases,wrong);REQUIRE(!wrong);
 }
+#include "mirror_blit_test.h"
 int main(int argc,char **argv) {
  int depth_only=argc==3&&!strcmp(argv[2],"--depth-only");
- if(argc!=2&&!depth_only)return 2;
+ int mirror_only=argc==3&&!strcmp(argv[2],"--mirror-only");
+ if(argc!=2&&!depth_only&&!mirror_only)return 2;
  struct s2a_vk_device d;char why[256];
  if(s2a_vk_device_create(&d,why,sizeof why)){fprintf(stderr,"%s\n",why);return 2;}
+ if(mirror_only){run_color_mirror(&d);REQUIRE(!s2a_vk_device_destroy(&d,1));return 0;}
  if(!depth_only){
   for(int index=0;index<3;index++){run_case(&d,argv[1],index,0);run_case(&d,argv[1],index,2);run_case(&d,argv[1],index,3);}
   for(int index=0;index<3;index++)for(int mode=10;mode<=22;mode++){if(!index&&((mode>=13&&mode<=15)||mode>=20))continue;run_case(&d,argv[1],index,mode);}
@@ -236,6 +240,7 @@ int main(int argc,char **argv) {
   run_front_origin(&d,argv[1]);
  }
  run_depth_copy(&d);
+ if(!depth_only)run_color_mirror(&d);
  uint64_t dq=nvn_vk_dbg_dq_recs();REQUIRE(getenv("S2A_REPLAY_INDIRECT_DQ")?dq>0:dq==0);
  printf("DQ records=%llu\n",(unsigned long long)dq);REQUIRE(!s2a_vk_device_destroy(&d,1));
  if(depth_only)puts("real depth-copy only: 4 format/subresource cases passed");

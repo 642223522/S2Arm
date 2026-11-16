@@ -43,7 +43,8 @@ def red(msg):
 
 
 def read_tid(npdm):
-    b = open(npdm, 'rb').read()
+    with open(npdm, 'rb') as f:
+        b = f.read()
     if b[:4] != b'META' or len(b) < 0x80:
         raise ValueError(f'{npdm} 不是 META 头')
     aci, size = struct.unpack_from('<II', b, 0x70)
@@ -88,6 +89,44 @@ def clone(src, dst):
     if _libc is not None and _libc.clonefile(src.encode(), dst.encode(), 0) == 0:
         return
     shutil.copy2(src, dst)   # 跨卷 / 非 APFS：真拷
+
+
+def normalize_exefs(exsrc, dst, tid, nxu=None):
+    """把松散 exefs 规范化到 dst：处理 ZBIC NSO，并核对 main / NPDM 程序号。
+
+    供完整 dump 转换和 S 级原始程序提取共用；不读取或写入 romfs。失败抛异常，调用方决定如何呈现。
+    """
+    os.makedirs(dst, exist_ok=True)
+    builds = []
+    for rel, src in walk(exsrc).items():
+        if os.sep in rel:
+            continue
+        with open(src, 'rb') as f:
+            hdr = f.read(0x50)
+        if hdr[:4] == b'NSO0':
+            fl = struct.unpack_from('<I', hdr, 0x0C)[0]
+            if fl & ~0xFF:
+                raise ValueError(f'{src}：NSO 标志 0x{fl:x} 有不认识的位 0x{fl & ~0xFF:x}，压缩方式不明不收')
+            builds.append(f'{rel}:{hdr[0x40:0x50].hex()}')
+            if fl & 0x80:
+                nxu = nxu or os.environ.get('S2A_NX_UNPACK')
+                if not nxu or not os.path.isfile(nxu):
+                    raise FileNotFoundError(f'{src}：NSO 标志 0x{fl:x} 带 ZBIC（0x80）压缩，要 nx_unpack 解：设 S2A_NX_UNPACK=<nx_unpack 程序>（一键出包会给）')
+                target = os.path.join(dst, rel)
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                r = subprocess.run([nxu, '--nso-normalize', src, target], capture_output=True, text=True)
+                if r.returncode:
+                    raise RuntimeError(f'{src}：ZBIC 解不开（nx_unpack 退出 {r.returncode}）：{(r.stderr or r.stdout).strip()[-300:]}')
+                print(f'   {rel}：ZBIC 压缩，已用 nx_unpack 解成段不压缩')
+                continue
+        clone(src, os.path.join(dst, rel))
+    main = os.path.join(dst, 'main')
+    npdm = os.path.join(dst, 'main.npdm')
+    if not os.path.isfile(main) or not os.path.isfile(npdm):
+        raise FileNotFoundError(f'{exsrc} 里没有完整的 main / main.npdm')
+    if read_tid(npdm) != tid:
+        raise ValueError('main.npdm 程序号与本体不一致')
+    return builds
 
 
 # 合成控制分区里各类存档按游戏代码实际挂的建（11-05 0400486024DEC000：游戏挂临时存储 MountTemporaryStorage，合成件 TemporaryStorageSize = 0，
@@ -238,34 +277,10 @@ def convert(dump, out, name=None):
 
     # exefs
     exsrc = os.path.join(upd, 'exefs') if upd and os.path.isfile(os.path.join(upd, 'exefs', 'main')) else os.path.join(base, 'exefs')
-    builds = []
-    for rel, a in walk(exsrc).items():
-        if os.sep in rel:
-            continue
-        hdr = open(a, 'rb').read(0x50)
-        if hdr[:4] == b'NSO0':
-            fl = struct.unpack_from('<I', hdr, 0x0C)[0]
-            # 0–2 段压缩（LZ4）、3–5 段哈希；0x40 原样透传：raiders 0400380020056000 的 main 是 0x7f，the reference port nso.py 与 Eden-NS2 nso.cpp
-            #   都只按段看 0–2 / 3–5 位、不管这一位，两家都跑通了这款（11-04 核过）。0x80 = ZBIC 压缩要 nx_unpack 解；更高的位不认识 → 报红
-            if fl & ~0xFF:
-                red(f'{a}：NSO 标志 0x{fl:x} 有不认识的位 0x{fl & ~0xFF:x}，压缩方式不明不收')
-            builds.append(f'{rel}:{hdr[0x40:0x50].hex()}')
-            if fl & 0x80:   # ZBIC：交 nx_unpack 解成段不压缩（逐段核 SHA-256；标志去掉 0–2 位与 0x80，其余保留）
-                nxu = os.environ.get('S2A_NX_UNPACK')
-                if not nxu or not os.path.isfile(nxu):
-                    red(f'{a}：NSO 标志 0x{fl:x} 带 ZBIC（0x80）压缩，要 nx_unpack 解：设 S2A_NX_UNPACK=<nx_unpack 程序>（一键出包会给）')
-                dst = os.path.join(tmp, 'exefs', rel)
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
-                r = subprocess.run([nxu, '--nso-normalize', a, dst], capture_output=True, text=True)
-                if r.returncode != 0:
-                    red(f'{a}：ZBIC 解不开（nx_unpack 退出 {r.returncode}）：{(r.stderr or r.stdout).strip()[-300:]}')
-                print(f'   {rel}：ZBIC 压缩，已用 nx_unpack 解成段不压缩')
-                continue
-        clone(a, os.path.join(tmp, 'exefs', rel))
-    if not os.path.isfile(os.path.join(tmp, 'exefs', 'main')):
-        red(f'{exsrc} 里没有 main')
-    if read_tid(os.path.join(tmp, 'exefs', 'main.npdm')) != tid:
-        red('更新的 main.npdm 程序号与本体不一致')
+    try:
+        builds = normalize_exefs(exsrc, os.path.join(tmp, 'exefs'), tid)
+    except (OSError, ValueError, RuntimeError, struct.error) as e:
+        red(str(e))
 
     # romfs
     rb = walk(os.path.join(base, 'romfs'))
@@ -347,7 +362,8 @@ def convert(dump, out, name=None):
     with open(os.path.join(tmp, '.ns2_dump_key'), 'w', encoding='utf-8', newline='\n') as f:
         f.write(key + '\n')
     shutil.rmtree(out, ignore_errors=True)
-    os.rename(tmp, out)
+    from orch.dirrename import rename_dir   # 刚写完整份解包，Windows 上杀软 / 索引扫描开着句柄时目录改名报 WinError 5：按 #361 同一套退避重试
+    rename_dir(tmp, out)
     print(f'🟢 Switch 2 导出目录 → {out}：程序号 {tid:016x}；exefs {" ".join(b.split(":")[0] for b in builds)}；'
           f'romfs {len(rom)} 个文件 {nb >> 20} MB（{how}）；DLC {len(aoc_idx)} 个；{ctl_note}；标题「{nm}」')
     return 0

@@ -138,6 +138,25 @@ int main(void) { @autoreleasepool {
       pthread_mutex_lock(&g_bcal_mu); bcal_e *e = nvn_hm_get(&g_bcal, &k), *e2 = nvn_hm_get(&g_bcal, &k2); int held = e && e->wtex, held2 = e2 && e2->wtex; pthread_mutex_unlock(&g_bcal_mu);
       CHECK(wk && !held, "F 写入者 Finalize 后存储被另一张贴图（R32UI，不是块大小的写入者）GPU 覆写：记账不再留着它（表里 %s）", held ? "还留着" : "已放");
       CHECK(wk2 && held2, "G 对照：写入者 Finalize 后存储没被覆写，过同样 40 次提交记账仍留着它（表里 %s）", held2 ? "留着" : "已放"); }
+    // H（#1220）：写入者没 Finalize（仍是活对象），存储被另一张贴图 GPU 覆写 → 记账照样放掉它，但只能放自己那份引用：
+    //   序号表 / 定稿 / 共享存储表还点名这张 Metal 贴图时，它必须还在驻留集（原先一律退役，GPU 做完那次提交就出驻留集，之后的绘制读它缺页）；
+    //   F 那张 Finalize 了、没人点名 → 照旧退役出驻留集（防内存只涨不落的修复不变）
+    { static NVNtexture rg3, ow3, rgF, owF; uint64_t k3 = (uint64_t)(uintptr_t)(mem + (15 << 20)), kF = (uint64_t)(uintptr_t)(mem + (12 << 20)); id w3 = nil, wF = nil;
+      @autoreleasepool {
+        tex(&rg3, NVN_FORMAT_RG32UI, 2, 15 << 20); gpu_write(&rg3); tex(&rgF, NVN_FORMAT_RG32UI, 2, 12 << 20); gpu_write(&rgF);
+        pthread_mutex_lock(&g_bcal_mu); bcal_e *e3 = nvn_hm_get(&g_bcal, &k3), *eF = nvn_hm_get(&g_bcal, &kF);
+        w3 = e3 && e3->wtex ? (__bridge id)e3->wtex : nil; wF = eF && eF->wtex ? (__bridge id)eF->wtex : nil; pthread_mutex_unlock(&g_bcal_mu);
+        API(nvnTextureFinalize)(&rgF);
+        tex(&ow3, NVN_FORMAT_R32UI, 2, 15 << 20); gpu_write(&ow3); tex(&owF, NVN_FORMAT_R32UI, 2, 12 << 20); gpu_write(&owF);
+        for (int i = 0; i < 40; i++) run(^{});
+      }
+      pthread_mutex_lock(&g_bcal_mu); bcal_e *e3 = nvn_hm_get(&g_bcal, &k3); int held3 = e3 && e3->wtex; pthread_mutex_unlock(&g_bcal_mu);
+      pthread_mutex_lock(&g_smu); int named3 = w3 && (serial_holds(&g_by_serial, w3) || serial_holds(&g_ghost, w3) || serial_holds(&g_ghost_active, w3) || serial_holds(&g_alias, w3));
+      int namedF = wF && (serial_holds(&g_by_serial, wF) || serial_holds(&g_ghost, wF) || serial_holds(&g_ghost_active, wF) || serial_holds(&g_alias, wF)); pthread_mutex_unlock(&g_smu);
+      pthread_mutex_lock(&g_res_mu); int res3 = w3 && [g_res_objects containsObject:w3], resF = wF && [g_res_objects containsObject:wF]; pthread_mutex_unlock(&g_res_mu);
+      CHECK(w3 && !held3, "H 活写入者的存储被覆写：记账放掉它（表里 %s）", held3 ? "还留着" : "已放");
+      CHECK(w3 && (!named3 || res3), "H 放掉之后仍被点名（%s）的写入者贴图还在驻留集（%s）", named3 ? "点名" : "没点名", res3 ? "在" : "不在");
+      CHECK(wF && !namedF && !resF, "H 对照：Finalize 了、只挂在共享存储表同键上的写入者：那一项一并摘掉、退役出驻留集（还被点名 %d、在驻留集 %d）", namedF, resF); }
     printf("%s t_nvn_bc_alias：%u 项，不符 %u（Metal %s）\n", failures ? "✗" : "✓", checks, failures, g_m3 ? "3" : "4");
     return failures != 0;
 } }

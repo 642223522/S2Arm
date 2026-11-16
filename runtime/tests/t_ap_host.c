@@ -7,7 +7,7 @@
 //    冻结中停 → 不打；解冻后停 → 3 次；再上屏再停 → 仍 3 次（每局至多 3 次）。
 // ⑤ 标称帧率（s2a_nominal_fps_set → s2a_ap_nominal_fps）：没报过 = 0；报 0 / 负数不收仍 0、不打日志；报 60 → 60 并打一行「标称帧率：60 帧/秒」；
 //    再报 60 → 不重打；报 30 → 30 并打一行带「运行中变了」；报 -5 不收仍 30。期望按函数约定手写（读 fps 与日志行）。
-// ⑧ 开发设施开关：s2a_dev_on 桩 0（玩家口径）→ 首帧上屏后停住看门不起、停 1.6 秒现场 0 份；桩 1（开发包）→ 1 份。各在 fork 子进程里从零开始。
+// ⑧ 开发设施开关：s2a_dev_on 桩 0（玩家口径）→ 首帧上屏后看门只救场（审计 P1-191）、停 1.6 秒现场 0 份；桩 1（开发包）→ 1 份。各在 fork 子进程里从零开始。
 // ⑦ 永久卡住（最该救的那种局：n 恒 1、idle 一直涨）：只打 1 份现场 → 屏幕提示 1 次 → 到 lim+4s 秒走 _exit(86)。
 //    在设 S2A_STALL_DUMP_S 之前 fork 出子进程（阈值是首次调用时缓存的 static），钩子把「退出码 + 现场份数 + 提示次数」带回父进程，
 //    进程内不真死。负对照：把门槛改回 n>=3 时这一项必红（子进程到点不退）。
@@ -20,6 +20,7 @@
 #include <sys/wait.h>
 void s2a_host_shutdown(const char *why) { (void)why; }
 void s2a_dguard_frame(uint64_t now) { (void)now; }
+void s2a_playtime_frame(uint64_t now, int focused) { (void)now; (void)focused; }
 void s2a_dguard_evidence(const char *why, int stall) { (void)why; (void)stall; }
 void s2a_load_first_frame(uint64_t now) { (void)now; }   // loadprog.c 加载页：首帧调   // dguard.c 直连安全网：s2a_frame_presented 每帧调
 void s2a_wg_frame(void) {}   // thread.c 帧间隔工作组（S2A_WORKGROUP）：s2a_frame_presented 每帧调
@@ -88,8 +89,15 @@ int main(void) {
             close(pfd[1]); char b = -1; ssize_t r = read(pfd[0], &b, 1); close(pfd[0]); int st; waitpid(pid, &st, 0);
             int want = dev ? 1 : 0;
             if (r != 1 || b != want) { printf("✗ ⑧ 开发设施 %s：停住现场 %d 份（期望 %d）\n", dev ? "开（开发包）" : "关（玩家口径）", (int)b, want); bad++; }
-            else printf("✓ ⑧ 开发设施 %s：停住看门%s，停 1.6 秒现场 %d 份\n", dev ? "开（开发包）" : "关（玩家口径）", dev ? "照起" : "不起", (int)b);
+            else printf("✓ ⑧ 开发设施 %s：停住看门%s，停 1.6 秒现场 %d 份\n", dev ? "开（开发包）" : "关（玩家口径）", dev ? "全套" : "只救场、不打现场", (int)b);
         }
+    }
+    {   // ⑧c 审计 P1-191：停帧救场是给玩家的，看门线程的模式与开发设施分开（s2a_ap_stall_mode）。期望按规则手写：
+        //    开发设施开 + 现场秒数 > 0 → 2（全套）；开发设施关（玩家包）→ 1（只救场，原先 0 = 线程不起、救场走不到）；开发设施开但现场关（0 秒）→ 1
+        int s2a_ap_stall_mode(int, int);
+        int m1 = s2a_ap_stall_mode(1, 10), m0 = s2a_ap_stall_mode(0, 10), mz = s2a_ap_stall_mode(1, 0);
+        if (m1 != 2 || m0 != 1 || mz != 1) { printf("✗ ⑧c 看门模式 开发包 %d（期望 2）/ 玩家包 %d（期望 1）/ 现场关 %d（期望 1）\n", m1, m0, mz); bad++; }
+        else printf("✓ ⑧c 看门模式：开发包全套、玩家包只救场、现场关也只救场\n");
     }
     {   // ⑧b 判定矩阵（native.h s2a_dev_decide）：环境变量 > Info.plist > 缺省开；期望按约定手写
         struct { const char *env; int has, on, want; const char *what; } dm[] = {

@@ -25,15 +25,22 @@ public struct S2ArmShellHostView: View {
                 if s2a_shell_take_open_settings() != 0 { DispatchQueue.main.async { NotificationCenter.default.post(name: .shellOpenSettings, object: nil) } }
             }
             .onDisappear { model.stopControllers() }
-            // 删除游戏的进度与结果（正在删除 → 已删除，释放多少 / 失败原因）：库顶上一条，点一下收起结果
+            // 库顶上的提示：这次安装丢了「提高内存上限」权限（可关，关了这次安装内不再出）；删除游戏的进度与结果（点一下收起结果）
             .overlay(alignment: .top) {
-                if let notice = model.deleteNotice {
-                    DeleteNoticeBar(notice: notice).onTapGesture { model.dismissDeleteNotice() }
-                        .padding(.top, 12).padding(.horizontal, 16)
-                        .transition(.move(edge: .top).combined(with: .opacity))
+                VStack(spacing: 10) {
+                    if let iml = model.imlNotice, !model.guideOpen {   // 首次引导开着时先不出（引导盖在上面、点不到关闭），引导关了再出
+                        IMLNoticeBar(notice: iml, close: { model.closeIMLNotice() })
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                    if let notice = model.deleteNotice {
+                        DeleteNoticeBar(notice: notice).onTapGesture { model.dismissDeleteNotice() }
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
                 }
+                .padding(.top, 56).padding(.horizontal, 16)   // 让开游戏库顶栏（LibraryView：安全区下 6 pt + 高 44 pt），不挡玩家 / 手柄 / 设置按钮
             }
             .animation(.smooth(duration: 0.25), value: model.deleteNotice)
+            .animation(.smooth(duration: 0.25), value: model.imlNotice)
             // 首次进入引导（三页横滑：设置 / 金手指 / 故障报修），盖在最上面；看过一次就不再弹
             .overlay {
                 if model.guideOpen {
@@ -58,6 +65,35 @@ public struct S2ArmShellHostView: View {
                 }
             }
         #endif
+    }
+}
+
+/// 丢了「提高内存上限」权限的提示：黄色警示、发生了什么（标题）+ 后果与怎么办（正文），右上角关闭；不挡库里的操作
+struct IMLNoticeBar: View {
+    let notice: S2ArmShellHostModel.IMLNotice
+    let close: () -> Void
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "memorychip").font(.system(size: 18, weight: .semibold)).foregroundStyle(Color(red: 1, green: 0.78, blue: 0.28))
+                .padding(.top, 2).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(notice.title).font(.system(size: 15, weight: .semibold)).foregroundStyle(.white).fixedSize(horizontal: false, vertical: true)
+                Text(notice.body).font(.system(size: 13)).foregroundStyle(.white.opacity(0.72)).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+            Button(action: close) {
+                Image(systemName: "xmark").font(.system(size: 13, weight: .bold)).foregroundStyle(.white.opacity(0.7)).frame(width: 30, height: 30)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).accessibilityLabel(shellText("Close")).accessibilityIdentifier("iml.notice.close")
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .background(Color(red: 0.075, green: 0.075, blue: 0.082).opacity(0.96), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color(red: 1, green: 0.78, blue: 0.28).opacity(0.45)))
+        .shadow(color: .black.opacity(0.45), radius: 20)
+        .frame(maxWidth: 620)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("iml.notice")
     }
 }
 

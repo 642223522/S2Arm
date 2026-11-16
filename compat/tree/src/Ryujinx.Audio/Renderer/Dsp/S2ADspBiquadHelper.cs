@@ -16,6 +16,21 @@ namespace Ryujinx.Audio.Renderer.Dsp
     //   直调两条路径逐位对拍。
     internal static class S2ADspBiquadHelper
     {
+        // S2Arm (#1182 无声)：IIR 状态一旦出现 NaN / Inf 就永久传染——NaN 乘任何系数仍是 NaN，Inf*0 与 Inf+(-Inf) 得 NaN，
+        //   之后输入再正常，每个输出都是 NaN（y = x*a0 + s0*a1 + … 里带着 NaN 状态），设备输出饱和把 NaN 变 0，这条嗓音一直静音到重启。
+        //   每次调用末尾写回状态后，某一级状态出现非有限值就整级清零（从零状态重新起振）：一个坏样本只毁当次调用（240 样本 = 5 ms）。
+        //   上游各双二阶循环（BiquadFilterHelper 单级 / 多级 / 带混音）与本文件两条路径都调这里，向量与标量两条路径仍逐位一致。
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static void ClearIfNotFinite(ref BiquadFilterState state)
+        {
+            if (!float.IsFinite(state.State0) || !float.IsFinite(state.State1) || !float.IsFinite(state.State2) || !float.IsFinite(state.State3))
+            {
+                state.State0 = 0f;
+                state.State1 = 0f;
+                state.State2 = 0f;
+                state.State3 = 0f;
+            }
+        }
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void ProcessBiquadFilterStereo(
             ReadOnlySpan<BiquadFilterParameter2> parameters,
@@ -97,6 +112,9 @@ namespace Ryujinx.Audio.Renderer.Dsp
 
                 state0.State0 = s00; state0.State1 = s01; state0.State2 = s02; state0.State3 = s03;
                 state1.State0 = s10; state1.State1 = s11; state1.State2 = s12; state1.State3 = s13;
+
+                ClearIfNotFinite(ref state0);
+                ClearIfNotFinite(ref state1);
             }
         }
 
@@ -188,6 +206,11 @@ namespace Ryujinx.Audio.Renderer.Dsp
             states0[1].State1 = s11.GetElement(0); states1[1].State1 = s11.GetElement(1);
             states0[1].State2 = s12.GetElement(0); states1[1].State2 = s12.GetElement(1);
             states0[1].State3 = s13.GetElement(0); states1[1].State3 = s13.GetElement(1);
+
+            ClearIfNotFinite(ref states0[0]);
+            ClearIfNotFinite(ref states1[0]);
+            ClearIfNotFinite(ref states0[1]);
+            ClearIfNotFinite(ref states1[1]);
         }
     }
 }

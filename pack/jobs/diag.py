@@ -122,7 +122,7 @@ def pull(c):
     c.begin("找已连接的 iPhone / iPad", 1, 3)
     rc, data, err = devicectl(c, "list", "devices")
     if rc:
-        raise Failure("读不到设备列表：需要完整的 Xcode（devicectl）。" + (err.splitlines()[-1] if err else ""))
+        raise Failure("读不到设备列表：需要完整的 Xcode（devicectl）。" + (err.splitlines()[-1] if err else ""))  # 非玩家句
     want = (c.r.get("device") or "").strip()
     devices = [d for d in data.get("result", {}).get("devices", [])
                if is_mobile(d)
@@ -148,7 +148,7 @@ def pull(c):
             bid = app.get("bundleIdentifier", "")
             if not bid.startswith(PREFIXES):
                 continue
-            c.begin("拉回 " + (app.get("name") or bid), 3, 3)
+            c.begin("拉回 " + (app.get("name") or bid), 3, 3)  # 非玩家句
             dest = Path(tempfile.mkdtemp(prefix=f"{name}_{bid}-", dir=root))
             got = 0
             for item in ITEMS:

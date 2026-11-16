@@ -592,6 +592,7 @@ namespace S2A.Services
         {
             Ryujinx.HLE.S2AHooks.NroMap = &Native.NroMap;
             Ryujinx.HLE.S2AHooks.NroUnmap = &Native.NroUnmap;
+            Ryujinx.HLE.S2AHooks.NroKeep = &Native.NroKeep;
         }
 
         private static unsafe System.Memory<byte>? GuestViewOf(ulong va, int size) =>
@@ -850,6 +851,7 @@ namespace S2A.Services
         }
 
         private int _controllerStuck;
+        private (PlayerIndex Player, ControllerType Type, int Pads)? _controllerConfiguration;
 
         // 手柄设置小程序：真机上唯一手柄按「确定」即被分到游戏收的第一个手柄号。这里把唯一的虚拟手柄改配过去
         // （已发现外接手柄时优先 Pro / 双 Joy-Con；否则掌机能收就留掌机），等 HID 采样泵写进共享内存后回 true，
@@ -903,6 +905,13 @@ namespace S2A.Services
             }
 
             // 这里可选的 Pro / Handheld / JoyconPair / JoyconLeft / JoyconRight 与共享内存 FullKey / Handheld / JoyDual / JoyLeft / JoyRight 位值相同。
+            // 人数变更也会重配 Npad；不能仅凭主手柄号和样式相同，把新的多人配置累计成旧配置连续卡住。
+            var configuration = (player, type, InputPump.Pads);
+            if (_controllerConfiguration != configuration)
+            {
+                _controllerConfiguration = configuration;
+                _controllerStuck = 0;
+            }
             uint expectedStyle = (uint)type;
             const uint Joycon2Bits = 0x7000;   // 共享内存里的样式值另带 Joy-Con 2 位（NpadDevices.Joycon2StyleFor）：比一代那部分
             if (InputPump.Player == player && ((uint)Host.Device.Hid.SharedMemory.Npads[(int)player].InternalState.StyleSet & ~Joycon2Bits) == expectedStyle)

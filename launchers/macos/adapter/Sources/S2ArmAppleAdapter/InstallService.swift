@@ -98,6 +98,11 @@ public struct InstallResult: Equatable {
     public var exportGames: Int = 0
     public var exportBytes: Int64? = nil
     public var skipped: [String] = []
+    /// 这次新写的 .img 文件名与沿用上次导出的款数（#1132：沿用的和上次逐字节相同，手机上已有就不用再拷；作业结果 fresh / reused）
+    public var exportFresh: [String] = []
+    public var exportReused: Int = 0
+    /// 只新写点的那款时，别的款里这次没写 .img 的（游戏名，作业结果 unwritten）：手机上已有照常能玩，没有要点那款再导出
+    public var exportUnwritten: [String] = []
 }
 
 /// 从手机删一款的结果（installRemove 作业，pack/jobs/install.py remove_from_phone）。
@@ -139,8 +144,11 @@ public final class InstallService {
     /// 装。
     /// device：要装的那台（UDID / 设备名），必须给：作业层不替玩家挑，不给即报 device_required（pack/jobs/install.py phone）
     /// acceptDropped：玩家已确认「手机上只在别的电脑装过的游戏这次带不上」（作业层 container_would_drop 之后再点）
-    public func install(gameId: String, teamId: String? = nil, device: String? = nil, acceptDropped: Bool = false, accept: Set<String> = [], events: EventSink = .discard) async throws -> InstallResult {
+    /// mode = "export"：游戏库「导出自签包」——不连手机、不签名，出未签名 S2Arm.ipa 和各款 .img 到文件夹（11-15 起导出只看这次请求）
+    public func install(gameId: String, teamId: String? = nil, device: String? = nil, acceptDropped: Bool = false, accept: Set<String> = [], mode: String? = nil,
+                        events: EventSink = .discard) async throws -> InstallResult {
         var extra: [String: Any] = ["gameId": gameId]
+        if let mode { extra["mode"] = mode }
         if acceptDropped { extra["acceptDropped"] = true }
         for key in accept { extra[key] = true }   // 玩家在结局页确认过的（acceptDropped / acceptNoBackup / acceptStale，作业层按码认）
         if let teamId, !teamId.isEmpty { extra["teamId"] = teamId }
@@ -151,7 +159,9 @@ public final class InstallService {
                              openToFinish: r["openToFinish"] as? Bool ?? false,
                              exportFolder: r["exported"] as? Bool == true ? r["outputPath"] as? String ?? "" : "",
                              exportGames: (r["games"] as? [Any])?.count ?? 0, exportBytes: (r["exportBytes"] as? NSNumber)?.int64Value,
-                             skipped: r["skipped"] as? [String] ?? [])
+                             skipped: r["skipped"] as? [String] ?? [],
+                             exportFresh: r["fresh"] as? [String] ?? [], exportReused: (r["reused"] as? NSNumber)?.intValue ?? 0,
+                             exportUnwritten: r["unwritten"] as? [String] ?? [])
     }
 
     /// 推到手机（exportPush，pack/jobs/install.py push_export_job）：把「S2Arm 自签导出」里的完整 .img 推进手机上自签 S2Arm 的「放这里导入」。
@@ -194,9 +204,9 @@ public final class InstallService {
         try await client.perform("signingProject", extra: [:], events: .discard).result["path"] as? String ?? ""
     }
 
-    /// 装到 iPhone 的方式（installMode 作业，pack/jobs/install.py install_mode_job）：mode 给了就改，返回现况
-    public func installMode(set mode: String? = nil) async throws -> InstallModeInfo {
-        InstallModeInfo(result: try await client.perform("installMode", extra: mode.map { ["mode": $0] } ?? [:], events: .discard).result)
+    /// 签名身份（installMode 作业只读；11-15 起导出不再是装法，旧版的装法设置由作业层迁移删掉）
+    public func installMode() async throws -> InstallModeInfo {
+        InstallModeInfo(result: try await client.perform("installMode").result)
     }
 
     /// 更新 iPhone 上的 S2Arm（installUpdate 作业，install.update_phone）：本版壳 + 已有程序模块，只装 App；
@@ -231,16 +241,14 @@ public final class InstallService {
     }
 }
 
-/// 装到 iPhone 的方式：device = 一键装到 iPhone（启动器签名并装），export = 导出、自己签名安装；导出作业合入前 exportAvailable 为 false（界面置灰）
+/// 签名身份（installMode 作业）：signMode = devcert（我的开发者证书）/ appleId；exportAvailable = 导出作业在不在
 public struct InstallModeInfo: Equatable, Sendable {
-    public let mode: String
     public let exportAvailable: Bool
     public let signMode: String
-    public init(mode: String = "device", exportAvailable: Bool = false, signMode: String = "appleId") {
-        self.mode = mode; self.exportAvailable = exportAvailable; self.signMode = signMode
+    public init(exportAvailable: Bool = false, signMode: String = "appleId") {
+        self.exportAvailable = exportAvailable; self.signMode = signMode
     }
     init(result r: [String: Any]) {
-        self.init(mode: r["mode"] as? String == "export" ? "export" : "device", exportAvailable: r["exportAvailable"] as? Bool ?? false,
-                  signMode: r["signMode"] as? String ?? "appleId")
+        self.init(exportAvailable: r["exportAvailable"] as? Bool ?? false, signMode: r["signMode"] as? String ?? "appleId")
     }
 }

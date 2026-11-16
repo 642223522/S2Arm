@@ -80,7 +80,8 @@ public final class S2ArmShellHostModel {
                 installState: ((String) -> Int32)? = nil, installGame: ((String) -> Bool)? = nil, installProgress: ((String) -> (Int, Int)?)? = nil,
                 installPhase: ((String) -> (Int, Double?)?)? = nil, installFailure: ((String) -> String?)? = nil, installWait: (() -> Int32)? = nil,
                 now: @escaping () -> Date = Date.init, pickGameData: ((String) -> Void)? = nil, identityStore: GameIdentityStore = .live,
-                gamesRoot: URL = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Documents/games"), packGamesRoot: URL? = nil) {
+                gamesRoot: URL = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Documents/games"), packGamesRoot: URL? = nil,
+                imlNotice: (() -> String?)? = nil, installID: String = Bundle.main.bundlePath) {
         self.gamesRoot = gamesRoot
         self.packGamesRoot = packGamesRoot ?? Self.packGamesRoot(for: gamesRoot)
         self.stores = stores; self.layoutState = layoutState; bannerURLs = catalogue.bannerURLs
@@ -119,6 +120,9 @@ public final class S2ArmShellHostModel {
         for tile in catalogue.tiles { applyIdentity(tile.id) }
         for p in catalogue.problems { NSLog("S2Arm 游戏库：%@", p) }
         Self.sweepDeleting(gamesRoot)
+        self.installID = installID
+        let json = imlNotice.map { $0() } ?? { guard let p = s2a_shell_iml_notice() else { return nil }; defer { free(p) }; return String(cString: p) }()
+        self.imlNotice = Self.imlNotice(json: json, closed: stores.app.string(forKey: Self.imlClosedKey), install: installID)
         refreshGameData()
         // 测试开关（真机自动化要 XCTest 触控 ID 授权、人不在时点不进去；同 diag.m S2A_OPEN_SETTINGS，环境变量只有 devicectl / Xcode 起 App 能给，玩家碰不到）：
         //   S2A_SHELL_OPEN_LAYOUT_EDITOR=<游戏号> 起来直接盖上这款的「调整位置」编辑页
@@ -168,8 +172,9 @@ public final class S2ArmShellHostModel {
     /// 重判各款装机阶段（建好、回前台、解完、宿主说明里「重新检查」后，库开着时每秒一次）：
     ///   就绪 → 清单写的状态；传着 → 按传输清单画进度（久不动 → 传输中断）；传完 → 后台解开、画解包进度（没解成 → 安装没完成）；没有 → 不显示
     public func refreshGameData() {
-        var missing = Set<String>()
+        var missing = Set<String>(), ledgerChanged = false
         defer {
+            if ledgerChanged { saveLedger() }
             if missing != notOnDevice { notOnDevice = missing; NSLog("S2Arm 游戏库：这台设备上 %d / %d 款可显示", allGames.count - missing.count, allGames.count) }
             startTicker()
         }
@@ -181,18 +186,29 @@ public final class S2ArmShellHostModel {
             case 2: want = .installing(unpackStage(id))
             case 3: want = .installing(transferStage(id))   // 断了也接着看：电脑重新插上续传时字节又涨
             default:   // 资源不在：玩家删掉的不显示；没删过的留在库里显示「需要游戏数据」，Play 点到只给导入说明，不放行（审计 P1-155）
-                if removed.contains(id) { missing.insert(id) }
+                if isRemoved(id) { missing.insert(id) }
                 want = listed == .playable ? .needsGameData : listed
             }
-            if installState(id) != 0, removed.contains(id) { removed.remove(id); saveRemoved() }   // 资源又回来了（电脑重装）：不再当删掉的
+            if installState(id) != 0, mark(id, "present", program: Self.programID(gamesRoot, id)) { ledgerChanged = true }   // 这款资源在（或正在装）：记「在」；删过的又回来了（电脑重装）也改回「在」
             noteDataSize(i, ready: [1, 4].contains(installState(id)))
             let fresh = want == .playable && isFresh(id)
             if allGames[i].game.isNew != fresh { allGames[i].game.isNew = fresh }
+            let played = playtimeLine(id)   // 游玩时间（11-15 维护者）：有就进「最近玩过」与这款的那一行，没玩过不显示
+            if allGames[i].game.recentlyPlayed != played { allGames[i].game.recentlyPlayed = played }
             if allGames[i].game.state != want {
                 if want.installPhase != allGames[i].game.state.installPhase { NSLog("S2Arm 游戏库：%@ → %@", id, String(describing: want)) }
                 allGames[i].game.state = want
             }
         }
+    }
+
+    /// 这款在这台设备上的游玩时间：运行时 runtime/src/playtime.c 写 <游戏根>/<游戏号>/playtime.json（{"seconds":N,"lastPlayed":<Unix 秒>}），
+    ///   这里只读；文件没有 / 读不出 / 0 秒都按没玩过
+    func playtimeLine(_ id: String, now: Date = Date()) -> String? {
+        guard let data = try? Data(contentsOf: gamesRoot.appendingPathComponent(id).appendingPathComponent("playtime.json")),
+              let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let seconds = (j["seconds"] as? NSNumber)?.intValue else { return nil }
+        return ShellFormat.playtime(seconds: seconds, lastPlayed: Date(timeIntervalSince1970: (j["lastPlayed"] as? NSNumber)?.doubleValue ?? 0), now: now)
     }
 
     /// 游戏设置页「游戏数据」那一栏（11-11 宿主梳理：原先永远「未选择数据」、点「选择…」没反应）：资源已就绪的款显示
@@ -375,18 +391,59 @@ public final class S2ArmShellHostModel {
 
     /// 存档在这款数据根下的 S2A/（Ryujinx 数据根 <文档根>/S2A/ryujinx，存档 bis/user/save，同 pack/jobs/install.py SAVE_REL）
     static let saveRoot = "S2A"
-    /// 玩家在这台设备上删掉的游戏号（一行一个，<游戏根>/.s2a-removed.txt）：资源不在时这些款不显示，别的款显示「需要游戏数据」
-    nonisolated static let removedList = ".s2a-removed.txt"
-    @ObservationIgnored private lazy var removed: Set<String> = {
-        let text = (try? String(contentsOf: gamesRoot.appendingPathComponent(Self.removedList), encoding: .utf8)) ?? ""
-        return Set(text.split(whereSeparator: \.isNewline).map(String.init).filter { $0.allSatisfy(\.isHexDigit) && !$0.isEmpty })
-    }()
-    private func saveRemoved() {   // 写不进只记日志：最坏是删掉的款下次显示成「需要游戏数据」
-        let text = removed.sorted().joined(separator: "\n")
+    /// 这台设备的游戏账本（游戏程序双端常驻方案 11-16）：App 容器 Documents/.s2a-games.json（点开头，「文件」App 里不显示），
+    ///   {"version":1,"games":{"<游戏号>":{"state":"present"|"removed","at":<秒>,"program":"<程序摘要>"}}}。
+    ///   写入方只有手机：玩家在 App 里删 → removed（资源不在时不显示，没删过的款显示「需要游戏数据」）；这款资源又在了（电脑重装 / 正在装）→ present。
+    ///   电脑经 s2a-devpush 按 appDataContainer 读这个相对路径，组壳时减去 removed 的款。program = 这款程序副本
+    ///   （<游戏根>/<游戏号>/.s2a-program/main，电脑装机时推）0x40–0x60 的 32 字节构建号、大写十六进制（同 pack/jobs/sgrade.py 判同一程序），没副本为空串。
+    ///   程序副本在这款游戏目录里：App 里删游戏时随目录一起挪进待删目录（存档 S2A/ 按删除页勾选），不另处理
+    ///   旧版删除名单 <游戏根>/.s2a-removed.txt：首次读到时并进账本（removed），账本写成后删掉旧文件
+    nonisolated static let ledgerName = ".s2a-games.json", legacyRemovedList = ".s2a-removed.txt"
+    struct LedgerEntry: Codable, Equatable { var state: String; var at: Int; var program: String? }
+    private struct LedgerFile: Codable { var version = 1; var games: [String: LedgerEntry] }
+    /// 账本位置：正式的游戏根（<家>/Documents/games）→ 它的上一层即文档根下 .s2a-games.json（不另从家目录拼文档根）；别的根（单测）→ 放在根下，测试之间不串
+    nonisolated static func ledgerURL(for gamesRoot: URL, home: URL = URL(fileURLWithPath: NSHomeDirectory())) -> URL {
+        gamesRoot.standardizedFileURL.path == home.appendingPathComponent("Documents/games").standardizedFileURL.path
+            ? gamesRoot.deletingLastPathComponent().appendingPathComponent(ledgerName) : gamesRoot.appendingPathComponent(ledgerName)
+    }
+    @ObservationIgnored private lazy var ledger: [String: LedgerEntry] = loadLedger()
+    private func loadLedger() -> [String: LedgerEntry] {
+        var games = (try? JSONDecoder().decode(LedgerFile.self, from: Data(contentsOf: Self.ledgerURL(for: gamesRoot))))?.games ?? [:]
+        let legacy = gamesRoot.appendingPathComponent(Self.legacyRemovedList)
+        if let text = try? String(contentsOf: legacy, encoding: .utf8) {
+            let stamp = Int(now().timeIntervalSince1970)
+            for id in text.split(whereSeparator: \.isNewline).map(String.init) where !id.isEmpty && id.allSatisfy(\.isHexDigit) && games[id] == nil {
+                games[id] = LedgerEntry(state: "removed", at: stamp, program: "")
+            }
+            if saveLedger(games) { try? FileManager.default.removeItem(at: legacy) }
+        }
+        return games
+    }
+    private func isRemoved(_ id: String) -> Bool { ledger[id]?.state == "removed" }
+    /// 这款程序副本的构建号（main 0x40–0x60，大写十六进制）；没副本 / 读不全 → 空串
+    nonisolated static func programID(_ gamesRoot: URL, _ id: String) -> String {
+        let url = gamesRoot.appendingPathComponent(id).appendingPathComponent(".s2a-program/main")
+        guard let h = try? FileHandle(forReadingFrom: url) else { return "" }
+        defer { try? h.close() }
+        guard (try? h.seek(toOffset: 0x40)) != nil, let d = try? h.read(upToCount: 32), d.count == 32 else { return "" }
+        return d.map { String(format: "%02X", $0) }.joined()
+    }
+    /// 改一款的状态（不写文件，调用方批量后 saveLedger）；状态没变不改时刻。program 给了就更新（记 present 时现读副本）。返回改没改
+    private func mark(_ id: String, _ state: String, program: String? = nil) -> Bool {
+        let old = ledger[id], keep = program ?? old?.program ?? ""
+        guard old?.state != state || old?.program != keep else { return false }
+        ledger[id] = LedgerEntry(state: state, at: old?.state == state ? old!.at : Int(now().timeIntervalSince1970), program: keep)
+        return true
+    }
+    /// 写不进只记日志：最坏是删掉的款下次显示成「需要游戏数据」、电脑这次照旧带上它
+    @discardableResult private func saveLedger(_ games: [String: LedgerEntry]? = nil) -> Bool {
+        let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         do {
-            try FileManager.default.createDirectory(at: gamesRoot, withIntermediateDirectories: true)
-            try Data(text.utf8).write(to: gamesRoot.appendingPathComponent(Self.removedList), options: .atomic)
-        } catch { NSLog("S2Arm 游戏库：记删除名单失败：%@", error.localizedDescription) }
+            let url = Self.ledgerURL(for: gamesRoot)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try enc.encode(LedgerFile(games: games ?? ledger)).write(to: url, options: .atomic)
+            return true
+        } catch { NSLog("S2Arm 游戏库：写游戏账本失败：%@", error.localizedDescription); return false }
     }
 
     /// 删除这款的本机数据：saves = 连存档一起删（整个数据根），否则留下 S2A/（存档与用户资料）、其余（资源包、名字封面等）删掉。
@@ -415,7 +472,7 @@ public final class S2ArmShellHostModel {
                 try fm.moveItem(at: packs, to: trash.appendingPathComponent(".pack")); moved = true
             }
         } catch { moveError = error }
-        if moveError == nil { removed.insert(id); saveRemoved() }   // 玩家删的：资源不在时不再显示（没删成的照旧留在库里）
+        if moveError == nil, mark(id, "removed") { saveLedger() }   // 玩家删的：记进账本，资源不在时不再显示、电脑组壳不再带它（没删成的照旧留在库里）
         refreshGameData()
         if let moveError {   // 挪了一半的照样后台删掉，提示失败原因
             NSLog("S2Arm 游戏库：删除 %@ 失败（挪进待删目录）：%@", id, moveError.localizedDescription)
@@ -440,6 +497,20 @@ public final class S2ArmShellHostModel {
             }
         }
     }
+
+    /// 这次安装丢了「提高内存上限」权限（宿主 ios/iml_probe.m，确定丢了才给，读不到不报）：库顶上一条可关的提示，不拦开局。
+    ///   玩家关了，这次安装内不再出（按 App 包路径认「这次安装」：重装 / 更新后路径会变，换了装法仍丢就再提示）
+    public struct IMLNotice: Equatable, Sendable { public let title: String; public let body: String }
+    public private(set) var imlNotice: IMLNotice?
+    @ObservationIgnored private var installID = ""
+    static let imlClosedKey = "S2AIMLNoticeClosedInstall"
+    nonisolated static func imlNotice(json: String?, closed: String?, install: String) -> IMLNotice? {
+        guard let json, closed != install,
+              let o = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
+              let title = o["title"] as? String, let body = o["body"] as? String, !title.isEmpty else { return nil }
+        return IMLNotice(title: title, body: body)
+    }
+    public func closeIMLNotice() { stores.app.set(installID, forKey: Self.imlClosedKey); imlNotice = nil }
 
     /// 删除进度与结果（宿主视图在库上方画一条提示）：正在删除 → 已删除（释放多少）/ 失败原因；结果停留 4 秒后自动收起
     public struct DeleteNotice: Equatable, Sendable {

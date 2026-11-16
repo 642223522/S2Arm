@@ -48,6 +48,22 @@ sys.exit({code})
                 self.c.run(self.child(p, code=3), env=env, timeout=60)
         self.assertEqual(self.last_progress(emit), (N, N))
 
+    def test_child_done_before_parent_measures_still_reports(self):
+        # 机器忙时父作业起完子进程、还没量进度文件起读位置，子进程已经写完退出（11-15 满载跑全量红过）：
+        #   起子进程这一步替成「起完等它退出才返回」，把这种先后固定下来；写到几照样要收到几
+        import subprocess, core
+        real, first = subprocess.Popen, []
+        def slow_parent(*a, **k):   # 只拖第一次（起工具那一下）；收尾里别的子进程照常，不然读不空管道会互等
+            child = real(*a, **k)
+            if not first: first.append(child); child.wait()
+            return child
+        p = self.root / 'progress.tsv'
+        env = dict(__import__('os').environ, S2A_PROGRESS=str(p))
+        with patch.object(core.subprocess, 'Popen', slow_parent), patch.object(self.c, 'emit', wraps=self.c.emit) as emit:
+            with self.assertRaises(Failure):
+                self.c.run(self.child(p, code=3), env=env, timeout=60)
+        self.assertEqual(self.last_progress(emit), (N, N))
+
 
     def test_tail_read_after_exit_sends_no_activity_pulse(self):
         # 子进程退出前写了直连批次的活动行：补读时它已不在，只发计数，不能再报「还在编」；活动状态清空

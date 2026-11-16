@@ -38,6 +38,10 @@ trap 'rm -rf "${B:?}"' EXIT
 TK=$(printf %s "$R" | shasum | cut -c1-12); SM=${S2A_SHELL_MIRROR_DIR:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/shell_src}/$TK; S=$SM/src; mkdir -p "$S" || exit 1
 until mkdir "$S.lock" 2> /dev/null; do p=$(cat "$S.lock/pid" 2> /dev/null); [ -n "$p" ] && ! kill -0 "$p" 2> /dev/null && rm -rf "$S.lock"; sleep 1; done
 echo $$ > "$S.lock/pid"; trap 'rm -rf "${B:?}" "$S.lock"' EXIT; echo "$R" > "$SM/tree"
+# 镜像按树一份、工作树越开越多：取用即刷新本镜像时间，再按出包可重建缓存同一口径回收别的树最久没用的镜像（pack/jobs/cache_retention.py trim，
+#   1 小时内用过的不删；缺省位置连同运行区别的可重建缓存一起算总量，另指的镜像目录只算它自己）
+touch "$SM"; RR=${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm
+if [ "$(dirname "$SM")" = "$RR/shell_src" ]; then python3 "$R/pack/jobs/cache_retention.py" trim "$RR" > /dev/null 2>&1; else python3 "$R/pack/jobs/cache_retention.py" trim "$RR" "$(dirname "$SM")" > /dev/null 2>&1; fi
 rsync -rlpDc --delete --exclude /build/ --exclude .git --exclude obj/ --exclude bin/ --exclude __pycache__/ "$R/" "$S/" || { echo "【红】源码同步到出壳镜像失败（${S}）"; exit 1; }
 # 设旧访问时间会改文件状态时间：出壳流程里任何 git 命令（取提交号、看改动）都会因此把整棵树重读核对一遍、闭包核不了（11-04 实测一次 git status 读 9635/9638 个）。
 #   本次出壳的子进程一律让 git 不信状态时间（只看修改时间 / 大小 / inode），只作用于本次出壳、不改仓库配置
@@ -58,6 +62,8 @@ HL=$S/build/gal/ios/gal_helpers
 { [ -f "$HL/.stamp" ] || "$MK" -C "$SN" ROOT="$SN" -s "$SN/build/gal/ios/gal_helpers/.stamp" >> "$B/make.log" 2>&1; } \
   && mkdir -p "$APP/gal_helpers/m3" && cp "$HL"/*.metallib "$APP/gal_helpers/" && cp "$HL"/m3/*.metallib "$APP/gal_helpers/m3/" \
   || { echo "【红】渲染器内部辅助库拷不进壳（${HL}）"; exit 1; }
+# 壳本体去调试映射与本地符号（11-15 瘦身：125 → 50 MB；玩家机器上没有代码读本地符号）；未去符号原件放壳目录旁 <壳目录>.symbols/（不进壳、不进 App，发版存档用来离线还原崩溃报告）
+rm -rf "$OUT.symbols" && mkdir -p "$OUT.symbols" && cp "$APP/S2Arm" "$OUT.symbols/S2Arm" && xcrun strip -S -x "$APP/S2Arm" || { echo "【红】壳去符号失败"; exit 1; }
 TABLES=$("$MK" -C "$SN" -s print-app-tables) || { echo "【红】取不到随包表清单"; exit 1; }
 "${S2A_PY:-python3}" "$H/ship_ext.py" shell --app "$APP" --out "$OUT" --tables "$TABLES" || exit 1
 if [ -n "${S2A_SHELL_CLOSURE_SUGGEST:-}" ]; then "${S2A_PY:-python3}" "$H/shell/closure.py" suggest "$S" > "$S2A_SHELL_CLOSURE_SUGGEST" || exit 1

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 S2Arm contributors
-# 门禁覆盖：pack/orch/roots.py
+# 门禁覆盖：pack/orch/roots.py pack/orch/dirrename.py
 # 门禁手动：W1限定七新增文件且不改列车入口；Windows与Mac显式原生运行本测试，命令与分母随PR交付
 """Original files only: transaction/CAS, independent bytes and outside sentinels."""
 import contextlib
@@ -17,7 +17,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pack.orch import roots
+from pack.orch import dirrename, roots
 
 
 class _Os:
@@ -43,7 +43,7 @@ class RenameDirTest(unittest.TestCase):
                 left[0] -= 1
                 e = PermissionError(13, '拒绝访问。'); e.winerror = winerror; raise e
             return real(path, target)
-        with patch.object(roots, 'os', _Os(name)), patch.object(Path, 'rename', rename):
+        with patch.object(dirrename, 'os', _Os(name)), patch.object(Path, 'rename', rename):
             try:
                 roots.rename_dir(self.home / 'a.tmp', self.home / 'a', sleep=sleeps.append); error = None
             except PermissionError as e:

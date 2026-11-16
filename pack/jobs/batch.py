@@ -99,6 +99,9 @@ def create(items, location=None):
     seen = set()
     for raw in items:
         gid, platforms = raw.get("gameId"), [p for p in PLATFORMS if p in (raw.get("platforms") or [])]   # 同一款先出 Mac 再出 iPhone（PLATFORMS 的说明）
+        odd = [p for p in (raw.get("platforms") or []) if p not in PLATFORMS]
+        if odd:   # 不认识的平台明确报错，不静默丢（11-15：上层控制口去掉平台清单前，这一层原先把它悄悄滤掉）
+            raise ValueError(f"不认识的出包平台：{'、'.join(map(str, odd))}（只支持 {' / '.join(PLATFORMS)}）")
         if not isinstance(gid, str) or not gid or gid in seen or not platforms:
             continue
         seen.add(gid)
@@ -132,7 +135,7 @@ def next_step(batch):
 
 def mark(batch, gid, platform, state, message="", code=None, output=None):
     if state not in STATES:
-        raise ValueError(f"状态不对：{state}")
+        raise ValueError(f"状态不对：{state}")  # 非玩家句
     item = find(batch, gid)
     if platform not in item["results"]:
         raise ValueError(f"{gid} 这一批没有 {platform}")
@@ -197,7 +200,7 @@ def show(batch):
 def main(argv=None):
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    ap = argparse.ArgumentParser(description="批量出包的批次（Mac / Windows 共用）")
+    ap = argparse.ArgumentParser(description="批量出包的批次（Mac / Windows 共用）")  # 非玩家句
     ap.add_argument("command", choices=("show", "create", "mark", "recover", "cancel", "resume", "retry", "clear"))
     ap.add_argument("--private-root", required=True)
     ap.add_argument("--json"); ap.add_argument("--game"); ap.add_argument("--platform", choices=PLATFORMS)
@@ -230,7 +233,7 @@ def run(a):
             raise ValueError("没有进行中的批次")
         if a.command == "mark":
             if not (a.game and a.platform and a.state):
-                raise ValueError("mark 要 --game --platform --state")
+                raise ValueError("mark 要 --game --platform --state")  # 非玩家句
             mark(batch, a.game, a.platform, a.state, a.message, a.code, a.output)
         elif a.command == "recover": recover(batch)
         elif a.command == "cancel": cancel(batch)

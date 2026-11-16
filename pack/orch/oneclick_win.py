@@ -266,7 +266,10 @@ class Run:
         self.evf = open(events, 'w', encoding='utf-8', newline='\n') if events else None; self.k = 0
 
     def ev(self, kind, **kw):   # 事件流一行（--events，见文件头）；没给就不写
-        kw = {k: shortroot.show(v) if isinstance(v, str) else v for k, v in kw.items()}   # 事件给界面：玩家只看到自己选的路径
+        # 事件给界面：玩家只看到自己选的路径。show 逐字替换（文案中间的路径），to_long 再按不分大小写、不分 / \\ 换前缀
+        #   （诊断#0e3bd5：result 的 ipa 路径大小写 / 分隔符和登记的短入口不一致，show 没换回，子进程退出拆了联接，父进程拷 ipa 报 WinError 3）
+        tbl = shortroot.table_now()
+        kw = {k: shortroot.to_long(shortroot.show(v), tbl) if isinstance(v, str) else v for k, v in kw.items()}
         if self.evf: self.evf.write(json.dumps({'ev': kind, 't': int(time.time()), **kw}, ensure_ascii=False) + '\n'); self.evf.flush()
 
     def say(self, msg):

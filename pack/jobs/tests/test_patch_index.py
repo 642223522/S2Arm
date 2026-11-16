@@ -113,11 +113,20 @@ class PatchPackTests(unittest.TestCase):
         os.environ["S2A_PATCH_SNAPSHOT"] = str(self.o / "snapshot.tar")
         try:
             self.assertIsNone(self.pp.stage_snapshot(str(res / "CommunityPatches")))
-            self.assertEqual((res / "CommunityPatches/patches-v2.tar").read_bytes(), s1)
+            # 随包放 v3（11-16 安装包瘦身）：v2 中间件不留；v3 同输入同字节、自洽；各包原文与 v2 里 gz 解出来的逐字节相同
+            self.assertEqual(sorted(p.name for p in (res / "CommunityPatches").iterdir()), ["patches-v3.tar"])
+            v3 = (res / "CommunityPatches/patches-v3.tar").read_bytes()
+            self.assertIsNone(self.pp.stage_snapshot(str(res / "again")))
+            self.assertEqual((res / "again/patches-v3.tar").read_bytes(), v3)
+            idx3, why = self.pp.check_v3(str(res / "CommunityPatches/patches-v3.tar"))
+            self.assertIsNone(why); self.assertEqual(idx3["schema"], 3); self.assertEqual(sorted(idx3["bundles"]), sorted(idx["bundles"]))
+            for k, v in idx3["bundles"].items():
+                self.assertEqual(v["sha256"], idx["bundles"][k]["sha256"])   # 和云端比用的 gz sha 原样保留
+                self.assertEqual(v["raw_sha256"], hashlib.sha256(gzip.decompress((self.o / (k + ".json.gz")).read_bytes())).hexdigest())
             bad = bytearray(s1); i = bad.index(b"\x1f\x8b"); bad[i + 40] ^= 0xFF; (self.o / "bad.tar").write_bytes(bytes(bad))
             os.environ["S2A_PATCH_SNAPSHOT"] = str(self.o / "bad.tar")
             self.assertIsNotNone(self.pp.stage_snapshot(str(res / "x")))
-            self.assertFalse((res / "x/patches-v2.tar").exists())
+            self.assertFalse((res / "x/patches-v2.tar").exists()); self.assertFalse((res / "x/patches-v3.tar").exists())
         finally:
             os.environ.pop("S2A_PATCH_SNAPSHOT", None); shutil.rmtree(res, ignore_errors=True)
 

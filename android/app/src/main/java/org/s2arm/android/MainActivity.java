@@ -79,6 +79,15 @@ public class MainActivity extends Activity
     private final android.os.Handler lifecycleProbe = new android.os.Handler(android.os.Looper.getMainLooper());
     private long lastLifecyclePresent;
     private final Runnable lifecycleSample = this::sampleLifecyclePresent;
+    // 游玩时间（共用 runtime/src/playtime.c）：游戏在前台时每 10 秒落一次盘（同 iOS app.m 的 10 秒心跳），闪退 / 被杀最多丢这 10 秒；
+    //   onPause 与收局前另各落一次。计时本身在原生上屏出口里，这里只管什么时候写文件
+    private final Runnable playtimeTick = new Runnable() {
+        @Override public void run() {
+            if (!resumed || !gameMode || !runtimeLoaded || gameStopping) return;
+            if (host != 0) NativeBridge.flushPlaytime();
+            lifecycleProbe.postDelayed(this, 10000);
+        }
+    };
     // B3（debug.s2a.buffer_geometry）：交换链缓冲按渲染目标尺寸出图时，native 把
     // 缓冲尺寸报上来；这里按它把 surface 的 frame 布成同比例居中矩形，
     // 合成器的 SCALE_TO_WINDOW 拉伸才不变形（native_window 没有 SCALE_FIT）。
@@ -361,6 +370,11 @@ public class MainActivity extends Activity
                 if (error != 0) throw new IllegalStateException("Threaded renderer configuration failed: " + error);
                 Log.i("S2Arm", "Threaded renderer (GPU emulation / Vulkan split): " + threadedMode
                     + (threadedExtra ? " (extra)" : " (default)"));
+                // 玩家画质选项（游戏库页「高画质 / 更省电」，缺省更省电）
+                boolean highQuality = getSharedPreferences("display", MODE_PRIVATE).getBoolean("quality_high", false);
+                error = NativeBridge.configureHighQuality(highQuality);
+                if (error != 0) throw new IllegalStateException("Quality configuration failed: " + error);
+                Log.i("S2Arm", "Quality: " + (highQuality ? "high" : "saver"));
             }
             // Last configuration before host creation; the shared services read this
             // same process environment on their normal startup path.
@@ -409,6 +423,12 @@ public class MainActivity extends Activity
             NativeBridge.load(library, app.sourceDir, app.splitSourceDirs, app.nativeLibraryDir);
             configureRedLogDir();
             configureDiagDir();
+            java.io.File externalFiles = getExternalFilesDir(null);
+            // 除了外挂驱动，原生收尾也靠这里存下的 files 目录删会话标记的 end（#528 第 15 项，lifecycle_android.c）：
+            //   每次装载后都要调、不能挪到起局之后，否则每次正常退局库页都会误报「上一局异常结束」（exit_order_test 守着这一行）
+            int gpuDriverRc = NativeBridge.configureGpuDriver(getFilesDir().getAbsolutePath(),
+                externalFiles == null ? "" : externalFiles.getAbsolutePath());
+            if (gpuDriverRc != 0) Log.w("S2Arm", "自定义驱动目录不可用（errno=" + gpuDriverRc + "）");
             try {
                 int frameLogRc = NativeBridge.configureFrameLogDir(getFilesDir().getAbsolutePath());
                 if (frameLogRc != 0) Log.w("S2Arm", "frame-log 目录不可用（errno=" + frameLogRc + "）");
@@ -603,11 +623,18 @@ public class MainActivity extends Activity
         }
     }
 
+    private void stopGame(String why, boolean normal) { stopGame(why, normal, normal); }
+
     // normal 只表示“这是一次正常收局”（用户/游戏主动停止），异常清理（启动失败、
     // Activity 被销毁但没有正常结束会话）不能清 attempt 锁，否则下一局 AUTO 会误回 direct。
-    private void stopGame(String why, boolean normal) {
+    // cleanEnd（#528 第 15 项）：玩家或游戏自己结束了这一局，会话标记写成 end（干净收尾、待原生确认）。
+    //   原生优雅收尾走到最后一步才删它（lifecycle_android.c 的 s2a_sesmark_clear_home）；收尾中途失败或被兜底结束时 end 留着，
+    //   库页照样提示。运行时报错停局（HostApi 低内存 / 显卡设备丢失 / 不可恢复错误）也是 normal，但不算干净收尾，标记留着 fg。
+    //   没有原生宿主（host == 0）就没有这一局的标记，也没有原生收尾来删 end：不动标记。
+    private void stopGame(String why, boolean normal, boolean cleanEnd) {
         if (!gameMode || gameStopping) return;
         gameStopping = true;
+        if (cleanEnd && host != 0) sessionMark(LastSession.ENDING);
         if (frameRate != null) frameRate.setResumed(false);
         saveAtomicProbe.removeCallbacks(saveAtomicSample);
         if (gameAudioFocus != null) gameAudioFocus.pause();
@@ -617,6 +644,9 @@ public class MainActivity extends Activity
         if (surface != null) surface.setKeepScreenOn(false);
         maybeExportShaderCache("session");
         if (gameSession != null) gameSession.stop();
+        lifecycleProbe.removeCallbacks(playtimeTick);
+        // 游玩时间收局前落盘：原生收尾以 _exit 结束进程；收局路径 lifecycle.c 按 dlsym(RTLD_DEFAULT) 找它，安卓单库里不靠它（见坑记录同名一节）
+        if (host != 0) NativeBridge.flushPlaytime();
         // 先让原生收尾在 Surface 仍然有效时开始：Activity 一 finish，BufferQueue 就撤销，
         // GPU/present fence 的排空会和 surfaceDestroyed 抢同一份资源（真机上表现为收尾超时或崩溃）。
         // 进程最终由原生 _exit 结束；这里的延迟 finish 只是「原生没能结束进程」时的兜底。
@@ -625,6 +655,17 @@ public class MainActivity extends Activity
         // 原生收尾有自己的硬预算并会 _exit；这里只兜底「原生没能结束进程」的情况。
         // 提前 finish 会撤销 BufferQueue，surfaceDestroyed 的 1 秒期限随即打断正在排空的 GPU 收尾。
         new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(this::finishAndRemoveTask, 10000);
+    }
+
+    // #528 第 15 项：会话标记（LastSession，iOS sesdiag.c 的安卓侧），库页读它决定要不要提示「上一局异常结束」。
+    //   只在真有一局时写（游戏进程、有原生宿主、没在收局）：回前台 fg、进后台 bg。收局中不再改：干净收尾已写 end（原生收尾走完才删），异常收尾留着 fg。
+    private void markSession(boolean foreground) {
+        if (!gameMode || !runtimeLoaded || host == 0 || gameStopping) return;
+        sessionMark(foreground ? LastSession.FOREGROUND : LastSession.BACKGROUND);
+    }
+    private void sessionMark(int state) {
+        try { LastSession.mark(getFilesDir(), state); }
+        catch (java.io.IOException | RuntimeException error) { Log.e("S2Arm", "Session mark failed", error); }
     }
 
     // Per-game APK (tools/game_apk.py): the game this app was built for, and a load check of the
@@ -646,6 +687,7 @@ public class MainActivity extends Activity
         // A rejected cold-start configuration never owns a native game host.
         // Do not acquire the game storage lease for a session that cannot start.
         if (!runtimeLoaded || (gameMode && host == 0)) return;
+        markSession(true);
         if (gameMode && !gameStopping && gameAudioFocus != null) gameAudioFocus.resume();
         hostKeyboard.resume();
         legacyTextInput.resume();
@@ -660,6 +702,7 @@ public class MainActivity extends Activity
         if (powerState != null) powerState.start();
         tryStartGame();
         if (gameMode) lifecycleProbe.postDelayed(geometrySample, 500);   // B3 输出尺寸轮询（开关关时全部回落 MATCH_PARENT）
+        if (gameMode) { lifecycleProbe.removeCallbacks(playtimeTick); lifecycleProbe.postDelayed(playtimeTick, 10000); }
         if (gameMode && host != 0 && !gameStopping && getIntent().getBooleanExtra(GameActivity.LIFECYCLE_TEST_EXTRA, false)
                 && (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
             lastLifecyclePresent = NativeBridge.gamePresentCount();
@@ -704,17 +747,20 @@ public class MainActivity extends Activity
     }
     @Override protected void onPause() {
         resumed = false;
+        markSession(false);
         if (gameAudioFocus != null) gameAudioFocus.pause();
         if (legacyTextInput != null) legacyTextInput.pause();
         if (dguardNotice != null) dguardNotice.pause();
         lifecycleProbe.removeCallbacks(lifecycleSample);
         lifecycleProbe.removeCallbacks(geometrySample);
+        lifecycleProbe.removeCallbacks(playtimeTick);
         if (runtimeLoaded) {
             clearInput();
             hostKeyboard.pause();
             frameRate.setResumed(false);
             // Rendering stops; the surface stays with the render thread until surfaceDestroyed.
             if (host != 0) NativeBridge.setForeground(host, false);
+            if (gameMode && host != 0) NativeBridge.flushPlaytime();   // 进后台落盘：之后失焦不再计时（同 iOS 进后台）
         }
         if (powerSampler != null) powerSampler.stop();
         if (systemTuning != null) systemTuning.stop();
@@ -978,7 +1024,7 @@ public class MainActivity extends Activity
         String why = NativeBridge.stopReason(reason) + (detail.isEmpty() ? "" : ": " + detail);
         status.setText("Session ended: " + why);
         android.widget.Toast.makeText(this, "S2Arm session ended: " + why, android.widget.Toast.LENGTH_LONG).show();
-        if (gameMode) stopGame(why, true);
+        if (gameMode) stopGame(why, true, LastSession.cleanStop(reason));
         else finish();
     }
     // Debug: `am start ... --es s2arm.orientation landscape|reverse-landscape|portrait` rotates this activity only;

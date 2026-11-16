@@ -1,8 +1,6 @@
+// Derived from NX2Apple (MIT; see frontend/NOTICE).
+// S2Arm: one themed control face, window-local menus, controller actions and isolated dropdown focus.
 import SwiftUI
-
-/// How a LauncherDropdown's button is drawn: `pill` is the round choice beside a launch option, `button` is
-/// LauncherSecondaryButtonStyle's rounded rectangle (the Settings cards).
-package enum LauncherDropdownStyle { case pill, button }
 
 /// Where the list of an open dropdown goes and how big it is. Pure, so the rules are tested (LauncherDropdownTests).
 package enum LauncherDropdownLayout {
@@ -50,13 +48,17 @@ package enum LauncherDropdownLayout {
 
 /// One dropdown being open: what its list shows and what a pick does.
 package struct LauncherDropdownRequest {
-    package init(id: UUID, options: [(value: String, label: String)], selection: String, label: String, choose: @escaping (String) -> Void) {
+    package init(id: UUID, options: [(value: String, label: String)], selection: String, label: String,
+                 artwork: ((String) -> AnyView)? = nil, disabledOptions: Set<String> = [], choose: @escaping (String) -> Void) {
         self.id = id; self.options = options; self.selection = selection; self.label = label; self.choose = choose
+        self.artwork = artwork; self.disabledOptions = disabledOptions
     }
     package let id: UUID
     package let options: [(value: String, label: String)]
     package let selection: String
     package let label: String
+    package let artwork: ((String) -> AnyView)?
+    package let disabledOptions: Set<String>
     package let choose: (String) -> Void
 }
 
@@ -93,8 +95,8 @@ extension View {
 extension View {
     /// The list's own surface: the app's dark card with its border, radius and shadow.
     package func launcherDropdownSurface() -> some View {
-        background(LauncherPalette.surface, in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.white.opacity(0.10)))
+        background(.regularMaterial, in: RoundedRectangle(cornerRadius: LauncherTheme.Metrics.cardRadius))
+            .overlay(RoundedRectangle(cornerRadius: LauncherTheme.Metrics.cardRadius).strokeBorder(LauncherTheme.Colors.border))
             .shadow(color: .black.opacity(0.5), radius: 18, y: 6)
     }
 }
@@ -123,7 +125,7 @@ private struct LauncherDropdownLayer: View {
                     Color.black.opacity(0.001).contentShape(Rectangle())
                         .onTapGesture { state.close() }
                         .accessibilityHidden(true)
-                    LauncherDropdownList(options: request.options, selection: request.selection, label: request.label,
+                    LauncherDropdownList(options: request.options, selection: request.selection, label: request.label, artwork: request.artwork, disabledOptions: request.disabledOptions,
                                          choose: { value in request.choose(value); state.close() }, close: { state.close() })
                         .frame(width: spot.size.width, height: spot.size.height)
                         .launcherDropdownSurface()
@@ -138,12 +140,16 @@ private struct LauncherDropdownLayer: View {
 /// The rows of an open dropdown: the chosen one with a checkmark, the one under the pointer or the arrow keys lit.
 /// Arrow keys move, Return or Space pick, Esc closes (a local key monitor while it is open, as in the Manage menu).
 package struct LauncherDropdownList: View {
-    package init(options: [(value: String, label: String)], selection: String, label: String, choose: @escaping (String) -> Void, close: @escaping () -> Void) {
+    package init(options: [(value: String, label: String)], selection: String, label: String, artwork: ((String) -> AnyView)? = nil, disabledOptions: Set<String> = [],
+                 choose: @escaping (String) -> Void, close: @escaping () -> Void) {
         self.options = options; self.selection = selection; self.label = label; self.choose = choose; self.close = close
+        self.artwork = artwork; self.disabledOptions = disabledOptions
     }
     package let options: [(value: String, label: String)]
     package let selection: String
     package let label: String
+    package let artwork: ((String) -> AnyView)?
+    package let disabledOptions: Set<String>
     package let choose: (String) -> Void
     package let close: () -> Void
     @State private var highlighted: Int?
@@ -170,15 +176,18 @@ package struct LauncherDropdownList: View {
         .onDisappear(perform: stopKeys)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(label)
+        .accessibilityIdentifier("launcher.dropdown")
         .accessibilityAddTraits(.isModal)
         .accessibilityAction(.escape, close)
+        .controllerScope("dropdown")
     }
 
     private func row(_ option: (value: String, label: String), index: Int) -> some View {
         let selected = option.value == selection
         return Button { choose(option.value) } label: {
             HStack(spacing: 10) {
-                Text(option.label).font(.manrope(13, selected ? .bold : .medium)).lineLimit(1)
+                if let artwork { artwork(option.value) }
+                else { Text(option.label).font(.manrope(13, selected ? .bold : .medium)).lineLimit(1) }
                 Spacer(minLength: 16)
                 Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).foregroundStyle(LauncherPalette.cream)
                     .opacity(selected ? 1 : 0)
@@ -189,13 +198,17 @@ package struct LauncherDropdownList: View {
                         in: RoundedRectangle(cornerRadius: 8))
             .contentShape(RoundedRectangle(cornerRadius: 8))
         }
-        .buttonStyle(.plain)
+        .controllerButtonStyle(.plain)
+        .disabled(disabledOptions.contains(option.value))
+        .opacity(disabledOptions.contains(option.value) ? 0.45 : 1)
         .onHover { inside in
             if inside { highlighted = index } else if highlighted == index { highlighted = nil }
         }
         .accessibilityLabel(option.label)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityFocused($spoken, equals: index)
+        .controllerID("dropdown." + option.value)
+        .controllerPreferredFocus(selected)
     }
 
     private func startKeys() {
@@ -204,7 +217,7 @@ package struct LauncherDropdownList: View {
             switch event.keyCode {
             case 125: highlighted = LauncherDropdownLayout.step(from: highlighted, by: 1, count: options.count)
             case 126: highlighted = LauncherDropdownLayout.step(from: highlighted, by: -1, count: options.count)
-            case 36, 76, 49: if let i = highlighted, options.indices.contains(i) { choose(options[i].value) }
+            case 36, 76, 49: if let i = highlighted, options.indices.contains(i), !disabledOptions.contains(options[i].value) { choose(options[i].value) }
             case 53: close()
             case 48: close(); return event
             default: return event
@@ -225,18 +238,18 @@ package struct LauncherDropdownList: View {
 /// the left and the chevron at the right, the choice a little smaller when it does not fit.
 /// `label` names the setting for VoiceOver, which then reads the choice as the value.
 package struct LauncherDropdown: View {
-    package init(options: [(value: String, label: String)], selection: String, label: String = "", style: LauncherDropdownStyle = .pill,
-                  fill: Bool = false, leading: Bool = false, choose: @escaping (String) -> Void) {
-        self.options = options; self.selection = selection; self.label = label; self.style = style; self.fill = fill; self.leading = leading
+    package init(options: [(value: String, label: String)], selection: String, label: String = "",
+                  fill: Bool = false, artwork: ((String) -> AnyView)? = nil, disabledOptions: Set<String> = [], choose: @escaping (String) -> Void) {
+        self.options = options; self.selection = selection; self.label = label; self.fill = fill
+        self.artwork = artwork; self.disabledOptions = disabledOptions
         self.choose = choose
     }
     package let options: [(value: String, label: String)]
     package let selection: String
     package var label = ""
-    package var style: LauncherDropdownStyle = .pill
     package var fill = false
-    /// With `fill`: the choice starts at the left, like the text of a field (the export's device, LNPANDY/NX2Apple#416).
-    package var leading = false
+    package let artwork: ((String) -> AnyView)?
+    package let disabledOptions: Set<String>
     package let choose: (String) -> Void
     @Environment(\.launcherDropdownHost) private var host
     @State private var id = UUID()
@@ -251,32 +264,31 @@ package struct LauncherDropdown: View {
 
     fileprivate var current: String { options.first { $0.value == selection }?.label ?? selection }
 
+    @ViewBuilder private var choiceLabel: some View {
+        if let artwork { artwork(selection) }
+        else { Text(current).font(LauncherTheme.TypeStyle.button) }
+    }
+
     fileprivate func face(open: Bool, rowWidth: CGFloat?) -> some View {
-        let rounded = style == .button
-        let shape = RoundedRectangle(cornerRadius: rounded ? 9 : 99)
+        let shape = RoundedRectangle(cornerRadius: LauncherTheme.Metrics.controlRadius, style: .continuous)
         let width = fill ? nil : rowWidth
-        return HStack(spacing: 0) {
-            Text(current).font(.manrope(rounded ? 13 : 12.5, .semibold)).lineLimit(1)
+        return HStack(spacing: LauncherTheme.Space.small) {
+            choiceLabel.lineLimit(1)
                 .minimumScaleFactor(width == nil ? 1 : 0.85)
                 .fixedSize(horizontal: !fill && width == nil, vertical: false)
-                .frame(maxWidth: fill || width != nil ? .infinity : nil, alignment: fill && leading ? .leading : .center)   // the words centre across the whole button
-                .padding(.leading, (fill && !leading) || width != nil ? 14 : 0)   // room so the chevron never crowds them
-            if fill || width != nil {
-                Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
-                    .rotationEffect(.degrees(open ? 180 : 0)).padding(.trailing, 14)
-            } else {
-                Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
-                    .rotationEffect(.degrees(open ? 180 : 0)).padding(.leading, 8)
-            }
+                .frame(maxWidth: fill || width != nil ? .infinity : nil, alignment: .leading)
+            Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                .frame(width: 10).rotationEffect(.degrees(open ? 180 : 0)).accessibilityHidden(true)
         }
-        .padding(.horizontal, rounded ? 15 : 14).padding(.vertical, rounded ? 9 : 7)
-        .frame(width: width, height: width != nil || (fill && rounded) ? LauncherControl.height : nil)   // a filling button as high as a row's buttons
+        .padding(.horizontal, LauncherTheme.Space.large)
+        .frame(width: width, height: LauncherControl.height)
         .frame(maxWidth: fill ? .infinity : nil)
-        .background(Color.white.opacity(open ? 0.13 : (rounded ? 0.055 : 0.06)), in: shape)
-        .overlay(shape.strokeBorder(Color.white.opacity(open ? 0.18 : 0.10)))
-        .foregroundStyle(Color.white.opacity(0.92))
+        .background(open ? LauncherTheme.Colors.pressed : LauncherTheme.Colors.control, in: shape)
+        .overlay(shape.strokeBorder(open ? LauncherPalette.cream.opacity(0.4) : LauncherTheme.Colors.border))
+        .foregroundStyle(LauncherTheme.Colors.text)
+        .help(current)
         .contentShape(shape)
-        .launcherMeasured(label: Text(current).font(.manrope(rounded ? 13 : 12.5, .semibold)), room: LauncherControl.choiceWidth)
+        .launcherMeasured(label: choiceLabel, room: LauncherControl.choiceWidth)
     }
 
     fileprivate func accessible<V: View>(_ view: V) -> some View {
@@ -294,10 +306,10 @@ package struct LauncherDropdown: View {
                 Button {
                     withAnimation(.easeOut(duration: 0.12)) {
                         host.request = open ? nil : LauncherDropdownRequest(id: dropdown.id, options: dropdown.options, selection: dropdown.selection,
-                                                                            label: dropdown.label, choose: dropdown.choose)
+                                                                            label: dropdown.label, artwork: dropdown.artwork, disabledOptions: dropdown.disabledOptions, choose: dropdown.choose)
                     }
                 } label: { dropdown.face(open: open, rowWidth: rowWidth) }
-                .buttonStyle(.plain)
+                .controllerButtonStyle(.plain)
                 .opacity(enabled ? 1 : 0.55)
                 .anchorPreference(key: LauncherDropdownAnchorKey.self, value: .bounds) { [dropdown.id: $0] }
             )
@@ -313,10 +325,10 @@ package struct LauncherDropdown: View {
         var body: some View {
             dropdown.accessible(
                 Button { open.toggle() } label: { dropdown.face(open: open, rowWidth: rowWidth) }
-                    .buttonStyle(.plain)
+                    .controllerButtonStyle(.plain)
                     .opacity(enabled ? 1 : 0.55)
                     .popover(isPresented: $open, arrowEdge: .bottom) {
-                        LauncherDropdownList(options: dropdown.options, selection: dropdown.selection, label: dropdown.label,
+                        LauncherDropdownList(options: dropdown.options, selection: dropdown.selection, label: dropdown.label, artwork: dropdown.artwork, disabledOptions: dropdown.disabledOptions,
                                              choose: { dropdown.choose($0); open = false }, close: { open = false })
                             .frame(width: LauncherDropdownLayout.width(labels: dropdown.options.map(\.label), button: 0),
                                    height: min(LauncherDropdownLayout.contentHeight(rows: dropdown.options.count), LauncherDropdownLayout.maxHeight))

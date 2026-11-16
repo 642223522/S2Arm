@@ -17,6 +17,7 @@ import ns2_shaders as ns2
 # 不 import shader_split：它导入时就要选游戏配置档（DM_GAME），零配置款没有仓库档。下面三样与 shader_split.py 的 ctl_len / skey / check 同一公式；
 #   文件名的键必须等于重算的键，公式一旦与 shader_split 漂移会当场报红，不会静默进错库
 CTL_MAGIC, GFX_MAGIC, CS_MAGIC = bytes.fromhex('34127698'), bytes.fromhex('78563412'), bytes.fromhex('79563412')
+SPH_STAGE = {1: 'vs', 2: 'hs', 3: 'ds', 4: 'gs', 5: 'ps'}   # = shader_split.py SPH_STAGE
 STAGE_NAME = {'vs': 'vertex', 'hs': 'hull', 'ds': 'domain', 'gs': 'geometry', 'ps': 'pixel', 'cs': 'compute', 'ts': 'task', 'ms': 'mesh'}   # = shader_split.py STAGE_NAME
 
 
@@ -33,14 +34,19 @@ def skey(ctl, code):
 def check(where, st, ctl, code):
     if ns2.is_nvn2(ctl): return ns2.check(st, ctl, code)
     if ctl[:4] != CTL_MAGIC or len(ctl) < ctl_len(ctl): return 'bad control section'
-    if st != 'cs' or code[:4] != CS_MAGIC: return 'only compute shaders are taken from a Switch 1 dump'
+    if (st == 'cs') != (code[:4] == CS_MAGIC) or (st != 'cs' and code[:4] != GFX_MAGIC): return 'code area magic does not match the stage'
     if struct.unpack_from('<I', ctl, 0x704)[0] != len(code): return 'control +0x704 does not match the code area length'
     return None
 
 
 def stage_of(ctl, code):
     if ns2.is_nvn2(ctl): return ns2.stage(ctl)
-    return 'cs' if code[:4] == CS_MAGIC else None   # Switch 1 图形阶段要看代码头里的阶段字段：本工具只收计算着色器与 Switch 2 各阶段，其余报红不进库
+    if code[:4] == CS_MAGIC: return 'cs'
+    # Switch 1 图形阶段（11-15 着色器补料，graphics/nvn/host/dsh_salvage.inc：玩家局里库里没有的多是顶点 / 像素）：代码区 0x30 处的 SPH 阶段字段，与 shader_split.py stage_of 同一公式
+    if code[:4] == GFX_MAGIC and len(code) >= 0x34:
+        w = struct.unpack_from('<I', code, 0x30)[0]
+        return 'vs' if (w >> 10) & 0xf == 0 and w & 0x1f == 1 else SPH_STAGE.get((w >> 10) & 0xf)
+    return None
 
 
 def main():
@@ -59,7 +65,7 @@ def main():
         kk = skey(ctl, code)
         if kk != k: skip(k, f'按 shader_split 键算法重算是 {kk}，与文件名不符（转储坏了或键算法变了）'); continue
         st = stage_of(ctl, code)
-        if st not in STAGE_NAME: skip(k, '认不出阶段（Switch 1 图形阶段本工具不收）'); continue
+        if st not in STAGE_NAME: skip(k, '认不出阶段'); continue
         why = check(k, st, ctl, code)
         if why: skip(k, why); continue
         if k in have: skipped += 1; continue

@@ -393,18 +393,23 @@ void rp_op_copy_t2t(nvn_gpu_cmd c, const p_copy_t2t *o, const void *rec) {
         sr = (NVNcopyRegion){0, 0, 0, (int)w, (int)h, 1}; dr = sr;
     } else {
         int nz = sr.depth > 0 ? sr.depth : 1, dnz = dr.depth > 0 ? dr.depth : 1;
-        if (o->flags & (NVN_COPY_FLAGS_MIRROR_X_BIT | NVN_COPY_FLAGS_MIRROR_Y_BIT | NVN_COPY_FLAGS_MIRROR_Z_BIT)) { nvn_unimpl("tex", "t2t_mirror", rec); return; }
-        if (sr.width != dr.width || sr.height != dr.height || sfmt != dfmt) {
+        int mirror = o->flags & (NVN_COPY_FLAGS_MIRROR_X_BIT | NVN_COPY_FLAGS_MIRROR_Y_BIT);
+        if ((o->flags & NVN_COPY_FLAGS_MIRROR_Z_BIT) || (mirror && s->serial == d->serial)) { nvn_unimpl("tex", "t2t_mirror", rec); return; }
+        if (mirror || sr.width != dr.width || sr.height != dr.height || sfmt != dfmt) {
             // 缩放 / 换格式：二维、单层、单采样。颜色走原生 blit；同格式 D24S8/D32FS8 最近点缩放由后端能力位声明。
             nvn_fmt_info fa, fb; int ia = !nvn_fmt_info_of((uint32_t)sfmt, &fa) || fa.kind == NVN_FMT_UINT || fa.kind == NVN_FMT_SINT || fa.depth || fa.stencil;
             int ib = !nvn_fmt_info_of((uint32_t)dfmt, &fb) || fb.kind == NVN_FMT_UINT || fb.kind == NVN_FMT_SINT || fb.depth || fb.stencil;
             int depth_pair = sfmt == dfmt && sfmt == s->d.format && dfmt == d->d.format &&
-                (sfmt == NVN_FORMAT_DEPTH24_STENCIL8 || sfmt == NVN_FORMAT_DEPTH32F_STENCIL8) && !(o->flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT);
-            if (s3 || d3 || nz != 1 || dnz != 1 || s->d.samples > 1 || d->d.samples > 1 || ((ia || ib) && !depth_pair)) { nvn_unimpl("tex", sfmt != dfmt ? "t2t_format_change" : "t2t_scaled", rec); return; }
+                (sfmt == NVN_FORMAT_DEPTH24_STENCIL8 || sfmt == NVN_FORMAT_DEPTH32F_STENCIL8) && !mirror && !(o->flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT);
+            if (s3 || d3 || nz != 1 || dnz != 1 || s->d.samples > 1 || d->d.samples > 1 || ((ia || ib) && !depth_pair)) { nvn_unimpl("tex", mirror ? "t2t_mirror" : sfmt != dfmt ? "t2t_format_change" : "t2t_scaled", rec); return; }
             nvn_gpu_caps caps; nvn_gpu_caps_get(&caps);
             if (depth_pair ? !(caps.caps & NVN_GPU_CAP_BLIT_DEPTH_STENCIL) : !(caps.caps & NVN_GPU_CAP_BLIT_SCALED)) {
-                nvn_unimpl("tex", depth_pair ? "t2t_scaled" : "t2t_scaled_no_native_blit", rec); return;
+                nvn_unimpl("tex", mirror ? "t2t_mirror" : depth_pair ? "t2t_scaled" : "t2t_scaled_no_native_blit", rec); return;
             }
+            // NVN 区域仍为正尺寸；先防止反向端点的有符号加法溢出。
+            if (mirror && (sr.width <= 0 || sr.height <= 0 || dr.width <= 0 || dr.height <= 0 ||
+                sr.xoffset < 0 || sr.yoffset < 0 || (int64_t)sr.xoffset + sr.width > INT32_MAX ||
+                (int64_t)sr.yoffset + sr.height > INT32_MAX)) { nvn_unimpl("tex", "t2t_mirror", rec); return; }
             // 视图只取级与层：拷贝按存储的格式做
             view_t vs, vd; memset(&vs, 0, sizeof vs); memset(&vd, 0, sizeof vd);
             vs.set_levels = 1; vs.base_level = (int)sl; vs.nlevels = 1; vs.set_layers = 1; vs.min_layer = (int)(sz0 + (uint32_t)sr.zoffset); vs.nlayers = 1;
@@ -415,6 +420,9 @@ void rp_op_copy_t2t(nvn_gpu_cmd c, const p_copy_t2t *o, const void *rec) {
             nvn_gpu_view gv = rp_view_for(s, &vs, c), hv = rp_view_for(d, &vd, c);
             if (!gv || !hv) { rp_view_pin_end(); return; }
             NVNcopyRegion a = sr, b = dr; a.zoffset = b.zoffset = 0; a.depth = b.depth = 1;
+            // Ryujinx ExtentsToOffset3D 同样保留两端次序：镜像沿源矩形反向行走。
+            if (mirror & NVN_COPY_FLAGS_MIRROR_X_BIT) { a.xoffset += a.width; a.width = -a.width; }
+            if (mirror & NVN_COPY_FLAGS_MIRROR_Y_BIT) { a.yoffset += a.height; a.height = -a.height; }
             nvn_gpu_blit(c, gv, &a, hv, &b, (o->flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT) != 0);
             rp_view_pin_end();
             rp_tex_mark_gpu_written(d);

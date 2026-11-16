@@ -364,6 +364,12 @@ def entries_from_root(root, staging, sysdata=None, direct_vulkan=False):
             # Preserve the Android direct offline library only; do not bundle Metal outputs.
             direct = os.path.join(shaders, 'vulkan', 'direct')
             if os.path.isdir(direct): out.append(('shaders/vulkan/direct', direct))
+            # #1434 新图形层读的离线库（LibPack，nvk_shader.c → libpack_vk.c）在 shaders/direct/b-<链>-vk/：只收 Vulkan 版，
+            #   同目录下 Apple 的 Metal 库不进安卓包。原先只收上面那份描述文件式的旧库，出库成功也到不了手机（11-13 奥日 11052 个程序全现编）
+            libs = os.path.join(shaders, 'direct')
+            if os.path.isdir(libs):
+                out += [(f'shaders/direct/{n}', os.path.join(libs, n)) for n in sorted(os.listdir(libs))
+                        if n.startswith('b-') and n.endswith('-vk') and os.path.isdir(os.path.join(libs, n))]
         else:
             out += [(f'shaders/{n}', os.path.join(shaders, n)) for n in sorted(os.listdir(shaders)) if n != 'work']
     # 社区补丁装载器表（#48 D2）：本次按安卓改写器出的那份已写进 staging（随下面的 modules/ 进包）；产物根里苹果改写阶段留下的 cpatch.tsv 不进安卓包

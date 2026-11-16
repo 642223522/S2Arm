@@ -26,6 +26,7 @@
       "targets": {
         "ios": {
           "tool": "dm/tools/d2rm_pack.py",
+          "hosts": ["mac"],
           "entitlements": ["com.apple.developer.kernel.increased-memory-limit", "com.apple.developer.kernel.extended-virtual-addressing"]
         }
       },

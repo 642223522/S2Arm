@@ -58,6 +58,7 @@
 入	graphics/nvn/tools/lz4blk.py
 入	graphics/nvn/tools/nso_syms.py
 入	graphics/nvn/tools/romfs_list.py	仓库里唯一的 RomFS 遍历与文件头清单（11-03）：抽取 / 直连读哪些 RomFS 文件、文件头由它给（glslc_offline / nxsh_extract / ue_pak / spirv_msl / resource_input_key / direct_lib.sh 经它）
+入	pack/romfs_img.py	标准 RomFS 镜像读取（11-16）：RomFS 目录不在、旁边有 <目录>.std 时 romfs_list.py 从镜像盘点 / 读头经它
 入	graphics/tools/direct/direct_lib.sh
 入	graphics/tools/direct/dsh/Dsh.cs	运行时与离线颜色出口同链失效
 入	graphics/tools/direct/dsh/SpvCross.cs	共用 half 出口改写的互操作入口

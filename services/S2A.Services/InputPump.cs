@@ -91,7 +91,8 @@ namespace S2A.Services
             Ryujinx.HLE.HOS.Services.Hid.NpadDevices.S2ASupportedChanged = FollowNow;
         }
         private static readonly object _followSync = new();
-        internal static void FollowNow(Switch device) { lock (_followSync) { FollowSupportedPlayers(device); FollowSupportedStyles(device); } }
+        // 改接之后立刻把配置写进手柄共享内存（S2AApplyConfiguration，审计 P1-192）：游戏在这次声明的服务调用返回后读到的就是新连接，不等输入泵下一拍
+        internal static void FollowNow(Switch device) { lock (_followSync) { FollowSupportedPlayers(device); FollowSupportedStyles(device); device.Hid.Npads.S2AApplyConfiguration(); } }
 
         // 游戏声明的手柄号不含掌机格、含 Player1 时（11-02 维护者 手测七龙珠电光炸裂ZERO 010035F022078000：SetSupportedNpadIdType 只给 Player1，
         //   掌机格被 Remap 断开、「No matching controllers found」，触屏手柄按什么都没反应；真机掌机模式下这时握着的 Joy-Con 当 Player1 用）：
@@ -414,6 +415,11 @@ namespace S2A.Services
             _stop = true;
             if (_padWake != null) _padWake();
             _thread?.Join();
+            // 收局摘回调（审计 P1-192）：之后服务线程的声明不再改这一局已拆掉的手柄；正在跑的那次跟随做完再往下复位（同一把锁）
+            Action<Switch> follow = FollowNow;
+            if (Ryujinx.HLE.HOS.Services.Hid.NpadDevices.S2ASupportedChanged == follow) Ryujinx.HLE.HOS.Services.Hid.NpadDevices.S2ASupportedChanged = null;
+            Monitor.Enter(_followSync);
+            try {
             if (_device != null) lock (_device.Hid.Npads.RumbleSyncRoot)
             {
                 _feedback?.Stop();
@@ -432,6 +438,7 @@ namespace S2A.Services
             _movedOffHandheld = false;   // 审计 P1-94：上一局「挪出掌机格」不带进下一局（同进程重启）
             _styleBefore = ControllerType.None;   // 同上：上一局「按样式换过」不带进下一局
             _joyconBefore = ControllerType.None;   // 同上：上一局「按单只 Joy-Con 换过」不带进下一局
+            } finally { Monitor.Exit(_followSync); }
         }
 
         private static delegate* unmanaged<int*, uint> _vpadRead;
