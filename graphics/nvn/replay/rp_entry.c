@@ -63,7 +63,7 @@ typedef struct {
     uint64_t hits, lookups;
 } pool_tls;
 static _Thread_local pool_tls g_pool_tls;
-static _Atomic uint64_t g_pool_fast_hits;   // pool_find_fast() answers (observability for tests / tuning)
+static uint64_t g_pool_fast_hits;   // pool_find_fast() answers (observability for tests / tuning)
 static int g_pool_memo_on = -1;   // nvn_plat_flag("nvk_pool_memo", 1)：缺省开；每 4096 次查找重读一次（release 包里直接是缺省）
 void rp_pool_memo_stats(uint64_t *hits, uint64_t *lookups) { const pool_tls *t = &g_pool_tls; *hits = t->hits; *lookups = t->lookups; }   // 调用线程自己的累计
 static int pool_find_memo(uint64_t addr, uint64_t len, const uint8_t **mem, uint64_t *size) {
