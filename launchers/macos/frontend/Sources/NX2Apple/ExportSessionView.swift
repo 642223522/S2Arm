@@ -3,7 +3,7 @@
 // 进度条 + 本步已用，后面的排队）；详细记录收起。时间推算用适配层 MilestoneEstimate（只用真读数：本机历史 / 本步实际速度，
 // 10-25 维护者：没有本机记录就不显示整单预计，不编数字）。
 // 做完：按平台给结果与下一步（macOS：开始游戏、在访达中显示；iPhone / iPad：装到 iPhone、在访达中显示 .ipa；没成的：原因 + 复制错误摘要）。
-// 11-08 维护者 重做：左栏是这款游戏的信息和磁盘空间；右栏是整体进度（分段条，段数 = 步骤）、三个时间，和每一步的名称、含义、单项进度与用时。
+// 游戏头部、内容边距与底栏沿用出包设置页；下面保留真实进度、结果和磁盘预算。
 import AppKit
 import SwiftUI
 import NXCore
@@ -54,35 +54,27 @@ struct ExportSessionView: View {
     private func x(_ id: String) -> String { BackendText.launcherText("export." + id, language: uiLanguage) }
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollView(.vertical) {
-                HStack(alignment: succeeded.isEmpty ? .top : .center, spacing: 48) {
-                    VStack(alignment: .leading, spacing: 22) {
-                        if let game { GameInfoPanel(covers: covers, game: game) }
-                        if let space = session.space { spaceCard(space) }
-                    }
-                    .frame(width: 270)
-                    VStack(alignment: .leading, spacing: 26) {
-                        if succeeded.isEmpty { heading }
-                        if finished == nil {
-                            TimelineView(.periodic(from: .now, by: 1)) { timeline in
-                                VStack(alignment: .leading, spacing: 26) {
-                                    overall(at: timeline.date)
-                                    steps(at: timeline.date)
-                                }
+        ExportPageLayout {
+            VStack(alignment: .leading, spacing: 34) {
+                if let game { ExportGameHeader(model: model, covers: covers, game: game, editable: false) }
+                VStack(alignment: .leading, spacing: 26) {
+                    if succeeded.isEmpty { heading }
+                    if finished == nil {
+                        TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                            VStack(alignment: .leading, spacing: 26) {
+                                overall(at: timeline.date)
+                                steps(at: timeline.date)
                             }
-                        } else {
-                            results
                         }
-                        log
+                    } else {
+                        results
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    if let space = session.space { spaceCard(space) }
+                    log
                 }
-                .padding(.horizontal, 40).padding(.top, 30).padding(.bottom, 40)
-                .frame(maxWidth: 1180)
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            Divider().opacity(0.3)
+        } actions: {
             actionBar
         }
     }
@@ -413,21 +405,8 @@ struct ExportSessionView: View {
                 }
                 .accessibilityElement(children: .combine).accessibilityIdentifier("result.\(platform == .ios ? "ios" : "mac").notes")
             }
-            HStack(spacing: 14) {
-                if platform == .ios {
-                    // 装法是「导出，自己签名安装」时（D-9ZF9 / 维护者实测）：按钮和说明照导出写，不再写「一键装到 iPhone / 连上数据线」；出完包会自动接着导出
-                    Button { if exportMode, let game { model.exportSelfSign(game) } else { install(session.gameID ?? "") } } label: { LauncherHeroActionLabel(title: x(exportMode ? "done.export" : "done.install"), symbol: exportMode ? "square.and.arrow.up" : "iphone") }
-                        .controllerButtonStyle(.plain).keyboardShortcut(.defaultAction).controllerID("result.ios.install").controllerShortcut(.rightTrigger, focused: run.platforms.count > 1)
-                    // 出包这步没有 IPA（装机时才组装、整库共用一份）：给「打开游戏文件夹」；真有 IPA 才给「显示 .ipa」
-                    if let ipa = o.ipa, !ipa.isEmpty { finderButton(loc.t("s2arm.export.revealIpa")) { model.revealIpa(ipa) } }
-                    if let game { finderButton(loc.t("s2arm.export.openGameFolder")) { model.reveal(game) } }
-                } else {
-                    Button { if let game { model.backToLibrary(); model.play(game, uiLanguage: uiLanguage) } } label: {
-                        LauncherHeroActionLabel(title: loc.t("library.play"), symbol: "play.fill")
-                    }
-                    .controllerButtonStyle(.plain).controllerID("result.mac.play").controllerShortcut(.rightTrigger, focused: run.platforms.count > 1)
-                    if let game { finderButton(loc.t("s2arm.export.openGameFolder")) { model.reveal(game) } }
-                }
+            if run.platforms.count > 1 {
+                successActions(platform).frame(maxWidth: .infinity, alignment: .trailing)
             }
             if platform == .ios {
                 Text(x(exportMode ? "done.exportNote" : "done.installNote")).font(.manrope(13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -435,15 +414,34 @@ struct ExportSessionView: View {
         }
     }
 
+    private func successActions(_ platform: ExportPlatform) -> some View {
+        let outcome = run.outcomes[platform]
+        return HStack(spacing: 14) {
+            if platform == .ios, let ipa = outcome?.ipa, !ipa.isEmpty {
+                finderButton(loc.t("s2arm.export.revealIpa")) { model.revealIpa(ipa) }
+            }
+            if let game { finderButton(loc.t("s2arm.export.openGameFolder")) { model.reveal(game) } }
+            if platform == .ios {
+                Button { if exportMode, let game { model.exportSelfSign(game) } else { install(session.gameID ?? "") } } label: {
+                    Label(x(exportMode ? "done.export" : "done.install"), systemImage: exportMode ? "square.and.arrow.up" : "iphone")
+                }
+                .controllerButtonStyle(LauncherPrimaryButtonStyle(prominent: true)).keyboardShortcut(.defaultAction)
+                .controllerID("result.ios.install").controllerShortcut(.rightTrigger, focused: run.platforms.count > 1)
+            } else {
+                Button { if let game { model.backToLibrary(); model.play(game, uiLanguage: uiLanguage) } } label: {
+                    Label(loc.t("library.play"), systemImage: "play.fill")
+                }
+                .controllerButtonStyle(LauncherPrimaryButtonStyle(prominent: true))
+                .controllerID("result.mac.play").controllerShortcut(.rightTrigger, focused: run.platforms.count > 1)
+            }
+        }
+    }
+
     private func finderButton(_ title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Label(title, systemImage: "folder").font(.manrope(15, .bold)).foregroundStyle(LauncherPalette.cream)
-                .padding(.horizontal, 24).frame(height: LauncherHeroAction.height)
-                .background(Color.white.opacity(0.08), in: Capsule())
-                .overlay(Capsule().strokeBorder(LauncherPalette.cream.opacity(0.3)))
-                .contentShape(Capsule())
+            Label(title, systemImage: "folder")
         }
-        .controllerButtonStyle(.plain)
+        .controllerButtonStyle(LauncherSecondaryButtonStyle(prominent: true))
     }
 
     private func bigStat(_ label: String, _ value: String) -> some View {
@@ -493,16 +491,16 @@ struct ExportSessionView: View {
             Text(loc.backend(outcome.message.isEmpty ? JobOutcome.interruptedMessage : outcome.message)).font(.manrope(13.5)).fixedSize(horizontal: false, vertical: true)
             if !outcome.suggestion.isEmpty { Text(loc.backend(outcome.suggestion)).font(.manrope(13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
             ReportHint()
-            HStack(spacing: 8) {
+            HStack(spacing: 14) {
                 if outcome.code == "disk_full" {
-                    Button(x("fix.space")) { freeSpace(session.gameID ?? "") }.controllerButtonStyle(LauncherSecondaryButtonStyle())
-                    Button(x("fix.continue")) { if let game { model.export(game, platforms: [platform], spaceOverride: true) } }.controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerShortcut(.rightTrigger, focused: true)
+                    Button(x("fix.space")) { freeSpace(session.gameID ?? "") }.controllerButtonStyle(LauncherSecondaryButtonStyle(prominent: true))
+                    Button(x("fix.continue")) { if let game { model.export(game, platforms: [platform], spaceOverride: true) } }.controllerButtonStyle(LauncherSecondaryButtonStyle(prominent: true)).controllerShortcut(.rightTrigger, focused: true)
                 }
                 // 剃刀 M4：出包前不再按前端的环境检查结果挡人；作业因环境缺东西失败时（作业层错误码），这里给环境检查页的入口
                 if let code = outcome.code, S2ArmLauncherModel.environmentCodes.contains(code) {
-                    Button(loc.t("s2arm.env.title")) { model.showEnvironment = true }.controllerButtonStyle(LauncherSecondaryButtonStyle())
+                    Button(loc.t("s2arm.env.title")) { model.showEnvironment = true }.controllerButtonStyle(LauncherSecondaryButtonStyle(prominent: true))
                 }
-                Button(x("fail.retry")) { if let game { model.export(game, platforms: [platform]) } }.controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerShortcut(.rightTrigger, focused: true)
+                Button(x("fail.retry")) { if let game { model.export(game, platforms: [platform]) } }.controllerButtonStyle(LauncherPrimaryButtonStyle(prominent: true)).controllerShortcut(.rightTrigger, focused: true)
                 Button(copied == platform ? loc.t("s2arm.export.copied") : loc.t("s2arm.export.copyError")) {
                     let fallback = S2ArmLauncherModel.reportUnavailable(loc.backend(outcome.message), code: outcome.code)
                     Task {
@@ -512,8 +510,9 @@ struct ExportSessionView: View {
                         if copied == platform { copied = nil }
                     }
                 }
-                .controllerButtonStyle(LauncherSecondaryButtonStyle())
+                .controllerButtonStyle(LauncherSecondaryButtonStyle(prominent: true))
             }
+            .frame(maxWidth: .infinity, alignment: .trailing)
             HStack(spacing: 10) {
                 Text(x("fail.feedback")).font(.manrope(12.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Link(x("fail.github"), destination: URL(string: "https://github.com/jhaizhou-ops/S2Arm/issues")!).font(.manrope(12.5, .semibold))
@@ -558,23 +557,30 @@ struct ExportSessionView: View {
     private var actionBar: some View {
         HStack(spacing: 14) {
             if finished == nil {
-                Button { model.stop() } label: { LauncherHeroActionLabel(title: loc.t("s2arm.job.cancel"), symbol: "stop.fill") }
-                    .controllerButtonStyle(.plain).disabled(session.phase == .stopping)
+                Text(loc.t("s2arm.export.hint")).font(.manrope(13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 12)
+            if finished == nil {
+                Button(x("running.back")) { model.sessionHidden = true }
+                    .controllerButtonStyle(LauncherSecondaryButtonStyle(prominent: true))
+                    .controllerID("export.session.background").controllerShortcut(.back)
+                Button { model.stop() } label: { Label(loc.t("s2arm.job.cancel"), systemImage: "stop.fill") }
+                    .controllerButtonStyle(LauncherPrimaryButtonStyle(prominent: true)).disabled(session.phase == .stopping)
                     .keyboardShortcut(".", modifiers: .command)
                     .accessibilityLabel(loc.t("s2arm.job.cancel"))
-                Button { model.sessionHidden = true } label: { Text(x("running.back")).font(.manrope(13, .semibold)) }
-                    .controllerButtonStyle(LauncherSecondaryButtonStyle())
-                Text(loc.t("s2arm.export.hint")).font(.manrope(12.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .controllerID("export.session.cancel").controllerShortcut(.rightTrigger)
+            } else if run.platforms.count == 1, let platform = succeeded.first {
+                Button(loc.t("s2arm.play.back")) { model.backToLibrary() }
+                    .controllerButtonStyle(LauncherSecondaryButtonStyle(prominent: true))
+                    .controllerID("export.session.back").controllerShortcut(.back)
+                successActions(platform)
             } else {
-                Button { model.backToLibrary() } label: { Label(loc.t("s2arm.play.back"), systemImage: "chevron.left").font(.manrope(13, .semibold)) }
-                    .controllerButtonStyle(LauncherSecondaryButtonStyle())
+                Button(loc.t("s2arm.play.back")) { model.backToLibrary() }
+                    .controllerButtonStyle(LauncherPrimaryButtonStyle(prominent: true))
                     .accessibilityLabel(loc.t("s2arm.play.back"))
+                    .controllerID("export.session.back").controllerShortcut(.rightTrigger, .back, focused: !succeeded.isEmpty)
             }
-            Spacer()
         }
-        .padding(.horizontal, 40).padding(.vertical, 16)
-        .frame(maxWidth: 1180)
-        .frame(maxWidth: .infinity)
     }
 
     // ---- time text ----

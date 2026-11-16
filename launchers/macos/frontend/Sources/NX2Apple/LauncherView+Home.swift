@@ -104,9 +104,9 @@ extension LauncherView {
                     model.exportSelfSign(game)
                     if game.iphoneExportable { installFor = game.id }
                 } label: {
-                    fitLabel(txt("library.hero.selfSign"), "square.and.arrow.up")
+                    Image(systemName: "square.and.arrow.up")
                 }
-                .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("hero.selfSign")
+                .controllerButtonStyle(ConsoleIconButtonStyle(size: 52)).controllerID("hero.selfSign")
                 .launcherTooltip(txt("library.hero.selfSign"), placement: .above).accessibilityLabel(txt("library.hero.selfSign"))
                 .disabled(game.iphoneReady ? model.busy : model.busy && model.session?.export == nil)
                 // 主按钮是「开始游戏」时，出过 iPhone 包的款照样要能一键装到 iPhone（主线游戏库两个都在）

@@ -343,6 +343,7 @@ public sealed partial class EnvironmentWindow
         }
         body.Children.Add(GameHeader(game));
         body.Children.Add(SGradeCard(game));   // S 级优化（Beta，11-13，同 Mac SGradeCard.swift）：这款这个版本命中了哪些社区补丁，命中的出包时自动打入
+        if (DownstreamRow(game) is { } downstream) body.Children.Add(downstream);   // 移植方案（#1272，同 Mac ExportView downstream）：选过才出，能「更改」
 
         // platforms
         var heading = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
@@ -388,7 +389,7 @@ public sealed partial class EnvironmentWindow
         reason.Children.Add(Muted(blocker ?? T("export.hint"), 14));
         if (ExportBlockerKind(game) == "keys") reason.Children.Add(Action("nav.library", () => Navigate("library")));
         bar.Children.Add(reason);
-        var start = Primary(T("export.start"), () => StartPack(game), !ExportStops(game));   // 缺文件 / 缺 keys 只在左边提示，不置灰（作业层核实）
+        var start = Primary(T("export.start"), () => _ = StartPackAskedAsync(game), !ExportStops(game));   // 缺文件 / 缺 keys 只在左边提示，不置灰（作业层核实）
         AutomationId(start, "export.start");
         Grid.SetColumn(start, 1); bar.Children.Add(start);
         body.Children.Add(Card(bar, 18));
@@ -676,6 +677,85 @@ public sealed partial class EnvironmentWindow
     /// <summary>出包在跑时点「开始出包」的款：按点的顺序排着，前一个出完（单款或一批）接着出（同 Mac exportQueue）</summary>
     private readonly List<(LibraryGame Game, bool SpaceOverride, string? Location)> exportQueue = new();
 
+    // ---- 下游深度方案（#1272，同 Mac DownstreamConfirmSheet）：这款有下游项目做的专门移植时，导出 iPhone 前问玩家一次用哪套；
+    //   选完记下（downstreamChoice 作业，"" = 仍用原版）再接着出，之后的出包 / 装机作业按记下的选择分流。出包页「移植方案」一行能改 ----
+    private string downstreamError = "";
+
+    /// <summary>界面上点「开始出包 / 导出自签包」：这款有下游方案、还没选过、这次出 iPhone → 先弹确认页，选完接着出；关掉确认页 = 这次不出。
+    /// 控制口（AI 操作）直接走 StartPack，不弹页</summary>
+    private async Task StartPackAskedAsync(LibraryGame game)
+    {
+        if (game.Downstream is { Choice: null } && exportIos)
+        {
+            if (!await ChooseDownstreamAsync(game)) { selfSignAfterPack.Remove(game.Id); Render(); return; }
+            game = catalog?.Games.FirstOrDefault(g => g.Id == game.Id) ?? game;
+        }
+        StartPack(game);
+    }
+
+    /// <summary>弹确认页、记下选择、重读游戏库；没选（关掉）或记不下 → false（原因写在出包页「移植方案」下）</summary>
+    private async Task<bool> ChooseDownstreamAsync(LibraryGame game)
+    {
+        if (game.Downstream is not { } offer || await AskDownstreamAsync(game, offer) is not { } scheme) return false;
+        downstreamError = "";
+        try
+        {
+            var job = await PackJobClient.RunAsync(PackRequest("downstreamChoice", game.Id, new Dictionary<string, object?> { ["scheme"] = scheme }), null, CancellationToken.None);
+            if (!job.Report.Succeeded) downstreamError = job.Report.Message;
+        }
+        catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
+            InvalidOperationException or OperationCanceledException or PlatformNotSupportedException or System.ComponentModel.Win32Exception)
+        { downstreamError = error.Message; }
+        if (downstreamError.Length > 0) { Render(); return false; }
+        await RunLibraryAsync("catalog", null);
+        Render();
+        return true;
+    }
+
+    /// <summary>确认页（文案全部来自登记表，游戏名用玩家游戏包里的名字）：「仍用原版方案」→ ""，推荐方案 → 方案 id（物理上做不出来时置灰、写原因），关掉 → null</summary>
+    private async Task<string?> AskDownstreamAsync(LibraryGame game, DownstreamOffer offer)
+    {
+        if (offer.Text(language) is not { } text) return null;
+        var dialog = NewDialog(text.Title, 560);
+        string? choice = null;
+        var body = new StackPanel { Spacing = 14, Margin = new Thickness(28) };
+        body.Children.Add(Label(text.Title, 20));
+        body.Children.Add(Muted(game.Name, 13));
+        var reading = new StackPanel { Spacing = 10 };
+        reading.Children.Add(new TextBlock { Text = text.Body, FontSize = 14, TextWrapping = TextWrapping.Wrap });
+        foreach (var point in text.Points) reading.Children.Add(new TextBlock { Text = "✓  " + point, FontSize = 13, TextWrapping = TextWrapping.Wrap, Foreground = Brush.Parse("#A8A6A1") });
+        body.Children.Add(new ScrollViewer { Content = reading, MaxHeight = 360 });   // 说明长时在这里滚，按钮始终在窗口里
+        if (!offer.Eligible) { var why = Muted(offer.Why(language), 13); AutomationId(why, "downstream.reason"); body.Children.Add(why); }
+        var buttons = new WrapPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        var original = DialogButton(text.Original, false, () => { choice = ""; dialog.Close(); });
+        AutomationId(original, "downstream.original");
+        var recommend = DialogButton(text.Recommend, true, () => { choice = offer.Id; dialog.Close(); });
+        recommend.IsEnabled = offer.Eligible;
+        AutomationId(recommend, "downstream.recommend");
+        buttons.Children.Add(original); buttons.Children.Add(recommend);
+        body.Children.Add(buttons);
+        dialog.Content = body;
+        await dialog.ShowDialog(this);
+        return choice;
+    }
+
+    /// <summary>出包页「移植方案」：选过才出，写当前用哪套、「更改」弹同一个确认页（只记下选择，不顺带出包）；没选过不出（导出 iPhone 时会问）</summary>
+    private Control? DownstreamRow(LibraryGame game)
+    {
+        if (game.Downstream is not { Choice: { } choice } offer) return null;
+        var panel = new StackPanel { Spacing = 10 };
+        panel.Children.Add(Label(T("export.downstream.group"), 16));
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        var current = new TextBlock { Text = choice.Length == 0 ? offer.Text(language)?.Original ?? "" : offer.Name, FontSize = 15, VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap };
+        AutomationId(current, "export.downstream");
+        row.Children.Add(current);
+        var change = Action("export.downstream.change", () => _ = ChooseDownstreamAsync(game), !BusyFor(game));
+        Grid.SetColumn(change, 1); row.Children.Add(change);
+        panel.Children.Add(Card(row, 16));
+        panel.Children.Add(Muted(downstreamError.Length > 0 ? downstreamError : T("export.downstream.note"), 13));
+        return panel;
+    }
+
     private void StartPack(LibraryGame game, bool spaceOverride = false)
     {
         if (ExportStops(game)) return;
@@ -758,7 +838,7 @@ public sealed partial class EnvironmentWindow
         if (game.IphoneExportable) { _ = InstallAsync(game, export: true); Navigate("install"); return; }
         selfSignAfterPack.Add(game.Id);
         if (ExportStops(game)) { selfSignAfterPack.Remove(game.Id); OpenBuild(); return; }   // 出不了（缺文件 / 没勾 iPhone 等）：去出包页看原因
-        StartPack(game);
+        _ = StartPackAskedAsync(game);
     }
 
     private async Task RunExportAsync(Dictionary<string, object?> plan, bool batch, string? mode = null)

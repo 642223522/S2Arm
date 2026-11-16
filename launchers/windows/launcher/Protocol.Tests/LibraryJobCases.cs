@@ -45,6 +45,18 @@ internal static class LibraryJobCases
             catalog.Games[0].Version == "1.2" && !catalog.KeysReady, "handwritten catalog values preserved");
         check(catalog.Games[0].Missing.Single() == "Need base", "backend requirements preserved without UI inference");
         check(catalog.Games[0].Banner == @"D:\lib\banner.jpg", "catalog banner field is read");
+        // #1272 下游方案：catalog downstream 原样读出（期望手写）；没有 choice = 没选过（null），"" = 仍用原版；文案按语言挑，没有这门语言退回英文
+        var ds = System.Text.Json.JsonDocument.Parse("""
+        {"id":"d2r","name":"D2R Port","eligible":false,"reason":{"zh":"只支持 1.0.1","en":"Update 1.0.1 only"},
+         "copy":{"zh":{"title":"选方案","body":"正文","points":["一","二"],"recommend":"用推荐","original":"用原版"},"en":{"title":"Pick","body":"Body","points":["A"],"recommend":"Use port","original":"Use original"}}}
+        """).RootElement;
+        var offer = DownstreamOffer.Parse(ds)!;
+        check(offer.Id == "d2r" && offer.Name == "D2R Port" && !offer.Eligible && offer.Choice is null, "downstream: fields read, no choice means not chosen yet");
+        check(offer.Text("zh-Hant")!.Original == "用原版" && offer.Text("ja")!.Original == "Use original" && offer.Text("en")!.Points.Single() == "A", "downstream: copy picked by language, other languages fall back to English");
+        check(offer.Why("zh-Hans") == "只支持 1.0.1" && offer.Why("fr") == "Update 1.0.1 only", "downstream: reason picked by language");
+        var chosen = System.Text.Json.JsonDocument.Parse("""{"id":"d2r","name":"D2R Port","choice":""}""").RootElement;
+        check(DownstreamOffer.Parse(chosen)!.Choice == "", "downstream: empty choice means the original was chosen");
+        check(DownstreamOffer.Parse(System.Text.Json.JsonDocument.Parse("""{"name":"x"}""").RootElement) is null, "downstream: no id means no offer");
         // #141：本体 + 2 个 DLC 同一个原件（sha256 相同，size 都是整个原件）：合计按原件算一次，每项自己的字节用 contentBytes；单项原件照旧用 size
         const string bundle = """
         {"schema":1,"jobId":"catalog-test","taskId":"catalog-test","seq":1,"type":"result","operation":"catalog","state":"succeeded","message":"操作完成","result":{"games":[{"id":"0100000000000002","name":"Bundle","display":"","cover":"","hidden":false,"missing":[],"packages":[{"type":"base","titleId":"0100000000000002","version":0,"display":"","size":15032385536,"format":"","sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","contentBytes":15032180736},{"type":"dlc","titleId":"0100000000001003","version":0,"display":"","size":15032385536,"format":"","sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","contentBytes":102400},{"type":"dlc","titleId":"0100000000001004","version":0,"display":"","size":15032385536,"format":"","sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","contentBytes":102400},{"type":"dlc","titleId":"0100000000001005","version":0,"display":"","size":3145728,"format":"","sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","contentBytes":5242880}]}],"keys":{"ready":true,"verified":true,"message":""}}}

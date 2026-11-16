@@ -279,6 +279,17 @@ if (File.Exists(bannerSrc))
     SaveP("win_09_library_banner_fallback", () => Navigate(pack, "library"));
 }
 
+// 出包页「移植方案」（#1272）：选过「仍用原版方案」后看得到、能更改（同 Mac ExportView downstream）
+{
+    var copy = new Dictionary<string, DownstreamOffer.Copy> {
+        ["zh"] = new("选择运行方案", "示例说明", ["示例要点"], "使用推荐方案", "使用原版方案"),
+        ["en"] = new("Choose a configuration", "Example", ["Example point"], "Use recommended", "Use original") };
+    var dsGame = MockGame(false) with { Downstream = new DownstreamOffer("demo", "Demo Port", true, new Dictionary<string, string>(), copy, "") };
+    SetW(pack, "catalog", new LibraryCatalog([dsGame], false, ""));
+    SaveP("win_01f_export_downstream_change", () => Navigate(pack, "build"));
+    InjectMockGame(pack, ready: false);
+}
+
 // 出包页「签名方式」（v0.2.3 开发者证书签名，DevCertPage.cs）：Apple ID 模式；证书模式（团队、到期、包名、设备核对、缺权限黄字）。
 //   devCert 直接放作业结果（不跑 devCert 作业）；窗口加高，免得签名一栏落在首屏外
 pack.Height = 1300;

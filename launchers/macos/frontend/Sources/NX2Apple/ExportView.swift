@@ -21,20 +21,15 @@ struct ExportView: View {
     let install: () -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: 34) {
-                    header
-                    // S 级优化（Beta，11-13）：这款这个版本命中了哪些社区补丁，命中的出包时自动打入。11-15 起总是出：卡片里有「导入 Mod」入口
-                    //   （维护者「打包页增加 mod 导入，S 级优化又升级了」；原「没匹配就整张不出」时玩家找不到入口，没匹配时只剩一句「没有这个版本的补丁」+ 导入 Mod）
-                    SGradeCard(model: model, gameID: game.id)
-                    platforms
-                }
-                .frame(maxWidth: 1120, alignment: .leading)
-                .padding(.horizontal, LauncherTheme.Metrics.libraryInset).padding(.top, 22).padding(.bottom, 40)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        ExportPageLayout {
+            VStack(alignment: .leading, spacing: 34) {
+                ExportGameHeader(model: model, covers: covers, game: game)
+                // The patch and Mod choices stay in the setup page.
+                SGradeCard(model: model, gameID: game.id)
+                downstream
+                platforms
             }
-            Divider().opacity(0.3)
+        } actions: {
             actionBar
         }
         .onExitCommand { model.exportFor = nil }
@@ -45,62 +40,20 @@ struct ExportView: View {
         }
     }
 
-    // ---- the game ----
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            HStack(alignment: .center, spacing: 24) {
-                Button { chooseCover(game) } label: {
-                    GameArtwork(covers: covers, cover: game.cover)
-                    .frame(width: 236, height: 236 / 1.8).clipShape(RoundedRectangle(cornerRadius: 10))
-                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.white.opacity(0.08)))
-                    .overlay(alignment: .bottomTrailing) { editBadge.padding(8) }
-                    .shadow(color: .black.opacity(0.35), radius: 14, y: 6)
+    // ---- 下游深度方案（#1272）：选过之后在这里看得到选的是哪套、能改。没选过不出（导出 iPhone 时确认页会问）----
+    //   「更改」弹同一个确认页（DownstreamConfirmSheet）；没有待出的单，选完只记下选择，下次导出 iPhone 按新选择走
+    @ViewBuilder private var downstream: some View {
+        if let offer = game.downstream, let choice = offer.choice {
+            let lang = loc.lang.sharedCode
+            let current = choice.isEmpty ? (offer.text(lang)?.original ?? "") : offer.name
+            CardGroup(BackendText.launcherText("export.downstream.group", language: lang), footnote: BackendText.launcherText("export.downstream.note", language: lang)) {
+                CardRow(current) {
+                    Button(BackendText.launcherText("export.downstream.change", language: lang)) { model.downstreamPromptFor = game.id }
+                        .controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy).controllerID("export.downstream.change")
                 }
-                .controllerButtonStyle(.plain).disabled(model.busy || model.customizing)
-                .help(loc.t("s2arm.custom.cover.help"))
-                .accessibilityLabel(loc.t("s2arm.custom.cover.help"))
-                .controllerID("export.cover")
-                VStack(alignment: .leading, spacing: 10) {
-                    let version = String(format: loc.t("s2arm.export.version"), game.display.isEmpty ? (game.version("base") ?? "-") : game.display)
-                    LauncherHeadingLine {
-                        ExportNameControl(name: game.name, custom: game.customName) { model.customize(game, name: $0) }
-                            .id(game.id).disabled(model.busy || model.customizing)
-                    } subtitle: {
-                        Text(version).font(.manrope(14)).foregroundStyle(.secondary).help(version)
-                    }
-                    if game.customCover {
-                        Button(loc.t("s2arm.custom.cover.reset")) { model.customize(game, coverPath: "") }
-                            .controllerButtonStyle(.plain).font(.manrope(12.5)).foregroundStyle(.secondary).underline()
-                            .disabled(model.busy || model.customizing).accessibilityIdentifier("export.cover.reset")
-                    }
-                    if model.customizing, let note = model.lockWaitNote {
-                        Text(loc.backend(note)).font(.manrope(12.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    }
-                    if let failed = model.customizeError {
-                        Text(loc.backend(failed)).font(.manrope(12.5)).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)
-                    }
-                    HStack(spacing: 6) {
-                        if let v = game.version("base") { chip(String(format: loc.t("s2arm.export.base"), v), "shippingbox") }
-                        if let v = game.version("update") { chip(String(format: loc.t("s2arm.export.update"), v), "arrow.triangle.2.circlepath") }
-                        chip(game.dlcCount > 0 ? String(format: loc.t("s2arm.export.dlc"), game.dlcCount) : loc.t("s2arm.export.noDlc"),
-                             "puzzlepiece.extension", muted: game.dlcCount == 0)
-                        if game.totalBytes > 0 {
-                            chip(ByteCountFormatter.string(fromByteCount: game.totalBytes, countStyle: .file), "internaldrive", muted: true)
-                        }
-                    }
-                    .padding(.top, 2)
-                }
-                Spacer(minLength: 0)
+                .accessibilityIdentifier("export.downstream")
             }
         }
-    }
-
-    private func chip(_ text: String, _ symbol: String, muted: Bool = false) -> some View {
-        Label(text, systemImage: symbol).font(.manrope(12, .semibold)).lineLimit(1)
-            .padding(.horizontal, 10).padding(.vertical, 5)
-            .foregroundStyle(muted ? Color.secondary : LauncherPalette.cream)
-            .background((muted ? Color.white : LauncherPalette.cream).opacity(muted ? 0.06 : 0.10), in: Capsule())
     }
 
     // ---- platforms ----
@@ -238,20 +191,6 @@ struct ExportView: View {
 
     // ---- action bar ----
 
-    private var editBadge: some View {
-        Image(systemName: "photo").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
-            .padding(7).background(.black.opacity(0.55), in: Circle())
-    }
-
-    private func chooseCover(_ game: GameSummary) {
-        let panel = NSOpenPanel()
-        panel.title = loc.t("s2arm.custom.cover.help")
-        panel.allowedContentTypes = [.jpeg, .png]
-        panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        model.customize(game, coverPath: url.path)
-    }
-
     private func reason(_ blocker: ExportBlocker) -> String {
         switch blocker {
         case .noPlatform: return loc.t("s2arm.export.block.noPlatform")
@@ -295,8 +234,6 @@ struct ExportView: View {
             .accessibilityLabel(count > 1 ? String(format: loc.t("s2arm.export.startCount"), count) : loc.t("s2arm.export.start"))
             .accessibilityIdentifier("export.start")
         }
-        .padding(.horizontal, LauncherTheme.Metrics.libraryInset).padding(.vertical, 16)
-        .frame(maxWidth: .infinity)
     }
 }
 

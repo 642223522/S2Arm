@@ -405,6 +405,122 @@ import S2ArmAppleAdapter
         }
     }
 
+    func testSelfSignSessionMatchesTheExportPageLayout() async throws {
+        let fixture = try SettingsFixture()
+        defer { fixture.remove() }
+        fixture.runner.catalogCover = "original-export-cover"
+        let artwork = NSImage(size: CGSize(width: 100, height: 100), flipped: false) { rect in
+            NSColor(deviceRed: 0.9, green: 0.05, blue: 0.9, alpha: 1).setFill()
+            rect.fill(); return true
+        }
+        let covers = CoverCache { _, _ in CoverCache.Loaded(version: "original", image: artwork) }
+        fixture.model.refresh()
+        for _ in 0..<100 where fixture.model.games.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        let game = try XCTUnwrap(fixture.model.games.first)
+        fixture.model.selfSignAfterPack.insert(game.id)
+        for language in [Lang.zh, .en] {
+            for width: CGFloat in [800, 1120, 1440] {
+                fixture.model.session = nil
+                let focus = PadFocus()
+                let reference = AnyView(ExportView(model: fixture.model, covers: covers, game: game, install: {})
+                    .environmentObject(focus).padScope("main", focus).background(Color.black)
+                    .frame(width: width, height: 630))
+                let (referenceHost, referenceWindow) = try await render(reference, fixture: fixture, language: language)
+                defer { referenceWindow.close() }
+                let referenceBounds = referenceWindow.convertToScreen(referenceHost.bounds)
+                let cover = try XCTUnwrap(fixture.navigation.controlTargets(in: referenceWindow).first { $0.id == "export.cover" })
+                XCTAssertEqual(cover.frame.minX - referenceBounds.minX, 48, accuracy: 1)
+                XCTAssertEqual(referenceBounds.maxY - cover.frame.maxY, 22, accuracy: 1)
+                XCTAssertEqual(cover.frame.width, 236, accuracy: 1)
+                XCTAssertEqual(cover.frame.height, 236 / 1.8, accuracy: 1)
+                let expectedArtwork = try exportArtworkBounds(referenceHost)
+                for state in [JobOutcome.State.cancelled, .completed, .failed] {
+                    var run = ExportRun(platforms: [.ios])
+                    if state == .completed { run.outcomes[.ios] = .init(state: .completed, appBytes: 1024, packBytes: 2048, seconds: 90) }
+                    if state == .failed { run.outcomes[.ios] = .init(state: .failed, message: "Original output volume is full", code: "disk_full", suggestion: "Free space and retry") }
+                    let session = JobSession(kind: .export, gameID: game.id, name: game.name, phase: .finished(state), export: run)
+                    fixture.model.session = session
+                    let page = AnyView(ExportSessionView(model: fixture.model, covers: covers, session: session, run: run,
+                        install: { _ in }, freeSpace: { _ in }, uiLanguage: language.sharedCode)
+                        .background(Color.black).foregroundStyle(LauncherTheme.Colors.text).frame(width: width, height: 630))
+                    let (host, window) = try await render(page, fixture: fixture, language: language)
+                    defer { window.close() }
+                    // Compare painted pixels with the reference page: the rounded border
+                    // excludes its outer pixels from the original magenta artwork.
+                    let artworkBounds = try exportArtworkBounds(host)
+                    print("self-sign-layout \(language.code)/\(width)/\(state): artwork=\(artworkBounds), reference=\(expectedArtwork)")
+                    XCTAssertEqual(artworkBounds.minX, expectedArtwork.minX, accuracy: 1)
+                    XCTAssertEqual(artworkBounds.minY, expectedArtwork.minY, accuracy: 1)
+                    XCTAssertEqual(artworkBounds.width, expectedArtwork.width, accuracy: 1)
+                    XCTAssertEqual(artworkBounds.height, expectedArtwork.height, accuracy: 1)
+                    let bounds = window.convertToScreen(host.bounds)
+                    let targets = fixture.navigation.controlTargets(in: window)
+                    let back = try XCTUnwrap(targets.first { $0.id == (state == .completed ? "result.ios.install" : "export.session.back") })
+                    print("self-sign-footer: right=\(bounds.maxX - back.frame.maxX), bottom=\(back.frame.minY - bounds.minY), height=\(back.frame.height)")
+                    XCTAssertEqual(bounds.maxX - back.frame.maxX, 48, accuracy: 1)
+                    XCTAssertEqual(back.frame.minY - bounds.minY, 16, accuracy: 1)
+                    XCTAssertEqual(back.frame.height, 48, accuracy: 1)
+                    for target in targets { XCTAssertTrue(bounds.insetBy(dx: -1, dy: -1).contains(target.frame), "\(state)/\(width): \(target.id) \(target.frame)") }
+                    if state == .completed {
+                        let action = try XCTUnwrap(targets.first { $0.id == "result.ios.install" })
+                        XCTAssertEqual(action.frame.height, 48, accuracy: 1, "结果页的主动作沿用出包页按钮规格")
+                        XCTAssertEqual(action.id, back.id, "单平台结果的主动作应在底栏最右侧")
+                        let footer = targets.filter { $0.frame.maxY < bounds.minY + 90 }
+                        XCTAssertTrue(footer.contains { $0.id == "export.session.back" })
+                        for target in footer { XCTAssertTrue(bounds.contains(target.frame)); XCTAssertEqual(target.frame.height, 48, accuracy: 1) }
+                    }
+                    try snapshot(host, "self-sign-\(language.code)-\(Int(width))-\(state)")
+                }
+            }
+        }
+    }
+
+    func testSelfSignSessionFooterKeepsBackgroundCancelAndReturnActions() async throws {
+        let fixture = try SettingsFixture()
+        defer { fixture.remove() }
+        fixture.model.refresh()
+        for _ in 0..<100 where fixture.model.games.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        let game = try XCTUnwrap(fixture.model.games.first)
+        for phase in [JobSession.Phase.running, .stopping, .finished(.cancelled), .finished(.failed)] {
+            let run = ExportRun(platforms: [.ios])
+            let session = JobSession(kind: .export, gameID: game.id, name: game.name, phase: phase, export: run)
+            fixture.model.session = session
+            let page = AnyView(ExportSessionView(model: fixture.model, covers: CoverCache(), session: session, run: run,
+                install: { _ in }, freeSpace: { _ in }, uiLanguage: "en").frame(width: 800, height: 450))
+            let (host, window) = try await render(page, fixture: fixture, language: .en)
+            let navigation = fixture.navigation
+            navigation.source.controllers = { [] }; navigation.attach(window); navigation.source.stop()
+            navigation.source.isActive = { true }
+            defer { navigation.detach(); window.close() }
+            let bounds = window.convertToScreen(host.bounds)
+            let targets = navigation.controlTargets(in: window)
+            switch phase {
+            case .running, .stopping:
+                let background = try XCTUnwrap(targets.first { $0.id == "export.session.background" })
+                XCTAssertTrue(bounds.contains(background.frame))
+                XCTAssertEqual(background.frame.height, 48, accuracy: 1)
+                navigation.focus(background.id); navigation.handle(.confirm)
+                XCTAssertTrue(fixture.model.sessionHidden, "回库时导出仍在后台进行")
+                XCTAssertEqual(fixture.model.session?.phase, phase)
+                fixture.model.sessionHidden = false
+                if phase == .stopping { XCTAssertFalse(targets.contains { $0.id == "export.session.cancel" }) }
+                else {
+                    navigation.handle(.submit)
+                    XCTAssertEqual(fixture.model.session?.phase, .stopping, "右扳机仍执行原取消动作")
+                }
+            case .finished:
+                let back = try XCTUnwrap(targets.first { $0.id == "export.session.back" })
+                XCTAssertEqual(bounds.maxX - back.frame.maxX, 48, accuracy: 1)
+                for action in [LauncherPadAction.confirm, .submit, .back] {
+                    fixture.model.session = session
+                    navigation.focus(back.id); navigation.handle(action)
+                    XCTAssertNil(fixture.model.session, "结束后的回库操作必须清除会话")
+                }
+            }
+            XCTAssertFalse(fixture.runner.requests.contains { $0["operation"] as? String == "export" }, "底栏不能意外开始另一单导出")
+        }
+    }
+
     func testExportSubmitShortcutUsesTheExistingExportAction() async throws {
         let fixture = try SettingsFixture()
         defer { fixture.remove() }
@@ -433,6 +549,37 @@ import S2ArmAppleAdapter
         XCTAssertEqual(fixture.runner.requests.filter { $0["operation"] as? String == "export" }.count, 1)
         navigation.source.tick(now: 0.8)
         XCTAssertEqual(fixture.runner.requests.filter { $0["operation"] as? String == "export" }.count, 1, "长按不能重复开始出包")
+    }
+
+    /// #1272：选过方案后出包页看得到选的是哪套、能「更改」（弹同一个确认页，不顺带开出包）；没选过不出这一行（导出 iPhone 时确认页会问）
+    func testExportPageShowsDownstreamChoiceWithChange() async throws {
+        let fixture = try SettingsFixture()
+        defer { fixture.remove() }
+        for choice in [nil, ""] as [String?] {
+            fixture.runner.catalogDownstreamChoice = choice
+            fixture.model.refresh()
+            for _ in 0..<200 where fixture.model.games.first?.downstream?.choice != choice || fixture.model.games.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+            let game = try XCTUnwrap(fixture.model.games.first)
+            XCTAssertEqual(game.downstream?.choice, choice)
+            let padFocus = PadFocus()
+            let page = AnyView(ExportView(model: fixture.model, covers: CoverCache(), game: game, install: {})
+                .environmentObject(padFocus).padScope("main", padFocus).frame(width: 1120, height: 900))
+            let (host, window) = try await render(page, fixture: fixture, language: .zh)
+            let navigation = fixture.navigation
+            navigation.source.controllers = { [] }; navigation.attach(window); navigation.source.stop()
+            defer { navigation.detach(); window.close() }
+            let has = navigation.controlTargets(in: window).contains { $0.id == "export.downstream.change" }
+            XCTAssertEqual(has, choice != nil, "选过才出「更改」（choice \(String(describing: choice))）")
+            if choice != nil {
+                try snapshot(host, "export-downstream-change-zh")
+                let before = fixture.runner.requests.count
+                navigation.focus("export.downstream.change"); navigation.handle(.confirm)
+                for _ in 0..<100 where fixture.model.downstreamPromptFor == nil { try await Task.sleep(for: .milliseconds(10)) }
+                XCTAssertEqual(fixture.model.downstreamPromptFor, game.id, "「更改」弹确认页")
+                XCTAssertFalse(fixture.runner.requests.dropFirst(before).contains { $0["operation"] as? String == "export" }, "更改不顺带开出包")
+                fixture.model.downstreamPromptFor = nil
+            }
+        }
     }
 
     func testExportNameControllerOpensKeyboardWithoutRenameAlert() async throws {
@@ -1029,13 +1176,25 @@ import S2ArmAppleAdapter
             navigation.text = { loc.t($0) }
             navigation.editText(value: "Original", label: "Name") { _ in }
             let keyboard = try XCTUnwrap(navigation.keyboard)
+            let controller = GCController.withExtendedGamepad()
+            let pad = try XCTUnwrap(controller.extendedGamepad)
+            navigation.source.controllers = { [controller] }
+            navigation.source.isActive = { true }
+            navigation.source.tick(now: 0)
+            pad.leftTrigger.setValue(1); navigation.source.tick(now: 0.1)
+            XCTAssertEqual(keyboard.value, "", "左扳机应清空屏幕键盘中的文字")
+            keyboard.value = "Original"
+            navigation.source.tick(now: 0.8)
+            XCTAssertEqual(keyboard.value, "Original", "长按左扳机不能重复清空")
+            pad.leftTrigger.setValue(0); navigation.source.tick(now: 0.9)
             for connected in [false, true] {
                 navigation.presentation.connected = connected
                 navigation.presentation.symbols = ControllerFaceMapping.identity.symbols(for: .playstation)
                 try await Task.sleep(for: .milliseconds(120))
                 let targets = navigation.controlTargets(in: keyboard.panel)
                 let shortcuts = navigation.shortcutTargets(in: keyboard.panel)
-                for (shortcut, key) in [(PadShortcut.tertiary, "space"), (.back, "cancel"), (.rightTrigger, "done")] {
+                let clearShortcut = try XCTUnwrap(PadShortcut(rawValue: "leftTrigger"), "清空提示应支持左扳机")
+                for (shortcut, key) in [(PadShortcut.tertiary, "space"), (.back, "cancel"), (.rightTrigger, "done"), (clearShortcut, "clear")] {
                     let id = try XCTUnwrap(shortcuts[shortcut]?.first)
                     let target = try XCTUnwrap(targets.first { $0.id == id })
                     let label = NSHostingView(rootView: Text(loc.t("home.keyboard." + key)).font(.manrope(13, .semibold)))
@@ -1282,9 +1441,9 @@ import S2ArmAppleAdapter
                 let cover = try XCTUnwrap(targets.first { $0.id == "export.cover" })
                 let start = try XCTUnwrap(padFocus.frames["main"]?.first { $0.id == "export.start" })
                 // 接鼠标、没接触控板的 Mac 是常显滚动条，要从可用宽度里扣掉它占的那条
-                let expectedContentWidth = min(1120, width - 96 - (scrollViews(in: host).first.map(scrollerReserve) ?? 0))
+                let expectedContentWidth = min(960, width - 96 - (scrollViews(in: host).first.map(scrollerReserve) ?? 0))
                 print("export-bounded \(language.code)/\(width): left=\(cover.frame.minX - bounds.minX), right=\(width - start.frame.maxX)")
-                XCTAssertEqual(cover.frame.minX - bounds.minX, 48, accuracy: 1, "出包内容最多 1120 pt 宽并靠左，左边距保持 48 pt")
+                XCTAssertEqual(cover.frame.minX - bounds.minX, 48, accuracy: 1, "出包内容最多 960 pt 宽并靠左，左边距保持 48 pt")
                 XCTAssertEqual(width - start.frame.maxX, 48, accuracy: 1, "底栏操作应保持距窗口右边缘 48 pt")
                 XCTAssertTrue(bounds.contains(cover.frame))
                 XCTAssertTrue(CGRect(x: 0, y: 0, width: width, height: 630).contains(start.frame))
@@ -1609,6 +1768,22 @@ import S2ArmAppleAdapter
         }
     }
 
+    private func exportArtworkBounds(_ host: NSView) throws -> CGRect {
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let scale = CGFloat(bitmap.pixelsWide) / host.bounds.width
+        var xs: [Int] = [], ys: [Int] = []
+        for y in 0..<400 {
+            for x in 0..<600 {
+                guard let color = bitmap.colorAt(x: Int(CGFloat(x) * scale), y: Int(CGFloat(y) * scale))?.usingColorSpace(.deviceRGB),
+                      color.redComponent - color.greenComponent > 0.5, color.blueComponent - color.greenComponent > 0.5 else { continue }
+                xs.append(x); ys.append(y)
+            }
+        }
+        let left = try XCTUnwrap(xs.min()), top = try XCTUnwrap(ys.min())
+        return CGRect(x: left, y: top, width: try XCTUnwrap(xs.max()) - left + 1, height: try XCTUnwrap(ys.max()) - top + 1)
+    }
+
     private func render(_ page: AnyView, fixture: SettingsFixture, language: Lang) async throws -> (NSView, NSWindow) {
         _ = NSApplication.shared
         let host = NSHostingView(rootView: page.environmentObject(Localizer(language))
@@ -1703,6 +1878,12 @@ private final class SettingsRunner: JobProcessRunner {
         get { lock.withLock { gameCount } }
         set { lock.withLock { gameCount = newValue } }
     }
+    private var downstreamChoice: String? = nil
+    /// 夹具款上次选的下游方案（nil = 没选过；"" = 仍用原版）
+    var catalogDownstreamChoice: String? {
+        get { lock.withLock { downstreamChoice } }
+        set { lock.withLock { downstreamChoice = newValue } }
+    }
     private var playtime: [String: Any]? = nil
     var catalogPlaytime: [String: Any]? {
         get { lock.withLock { playtime } }
@@ -1725,6 +1906,7 @@ private final class SettingsRunner: JobProcessRunner {
                 var game: [String: Any] = ["id": index == 0 ? "fixture" : "fixture-\(index)", "name": "Original UI fixture \(index)", "cover": catalogCover, "ready": true, "needsPreparation": catalogNeedsPreparation, "missing": [],
                  "downstream": ["id": "original-demo", "name": "Original Demo", "eligible": true, "copy": copy]]
                 if index == 0, let playtime = catalogPlaytime { game["playtime"] = playtime }
+                if let choice = catalogDownstreamChoice { game["downstream"] = ["id": "original-demo", "name": "Original Demo", "eligible": true, "copy": copy, "choice": choice] }
                 return game
             }]
         }

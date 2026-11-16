@@ -105,7 +105,8 @@ extension LauncherView {
     }
 
     private func moreRow(_ title: String, _ symbol: String, danger: Bool = false, action: @escaping () -> Void) -> some View {
-        Button { moreFor = nil; action() } label: {
+        let activate = { moreFor = nil; action() }
+        return Button(action: activate) {
             // 图标放固定宽度的框里、和文字按中线对齐：Label 的图标宽度跟着符号走，各行文字起点会错开（11-09 维护者截图）
             HStack(alignment: .center, spacing: 10) {
                 Image(systemName: symbol).font(.system(size: 14, weight: .medium)).frame(width: 20, height: 20, alignment: .center)
@@ -114,7 +115,8 @@ extension LauncherView {
             .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 8).contentShape(Rectangle())
             .foregroundStyle(danger ? LauncherPalette.danger : Color.primary)
         }
-        .controllerButtonStyle(.plain)
+        .buttonStyle(.plain)
+        .controllerControl(activate: activate)
     }
 
     /// 游戏卡片右键菜单（游戏库结构 v3）：开始游戏、出包、启动设置、在访达中显示、移动到其他位置、清除缓存、删除
