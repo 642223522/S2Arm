@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "S2Arm 鸿蒙开发外壳"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "S2Arm 开发版"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "S2Arm"
+    }
+  ]
+}
