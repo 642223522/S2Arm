@@ -118,7 +118,7 @@ public sealed partial class EnvironmentWindow
     }
 
     private Control PhoneJobCard(PhoneJobTrack tr, string state, string message, string diagnostics, string? gameId, IReadOnlyList<string>? notes = null,
-        Action? retry = null, Action? confirmDrop = null, Action? cancelDrop = null, string? dropTitle = null)
+        Action? retry = null, Action? confirmDrop = null, Action? cancelDrop = null, string? dropTitle = null, bool showsOperation = true)
     {
         var device = tr.Device.Length > 0 ? tr.Device : T("phone.device.unknown");
         var panel = new StackPanel { Spacing = 22, HorizontalAlignment = HorizontalAlignment.Stretch };   // 撑满卡片、贴左（同别的卡片对齐）：进度条、详细过程不被压窄
@@ -127,7 +127,7 @@ public sealed partial class EnvironmentWindow
         var exporting = tr.Kind is "install" or "installUpdate" && (tr.ExportFolder.Length > 0 || state == "running" && (tr.Kind == "install" ? installExport : lastUpdateMode == "export"));
         var title = Label(T(exporting ? "phone.title.export" : "phone.title." + tr.Kind), 18); title.FontWeight = FontWeight.Bold;   // 这是什么操作（维护者：只看得到「更新中 · …」一小行）
         AutomationId(title, "phone.operation");
-        panel.Children.Add(title);
+        if (showsOperation) panel.Children.Add(title);   // 外层已用大标题写明是什么操作（导出自签包页）时不再画，免得「导出自签包」下面又一行「导出，自己签名安装」
         if (state == "drop")
         {
             panel.Children.Add(Seal("!", "#FFC857"));

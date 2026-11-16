@@ -35,7 +35,7 @@ struct InstallView: View {
             if let job = exportJob {
                 // 导出自签包（11-15 维护者：1 下开始导出，进度 / 完成 / 失败都只在这一张卡上，不出现装机清单、Apple ID、数据线、装回、删除）
                 VStack(alignment: .leading, spacing: 10) {
-                    ScrollView { PhoneJobPanel(model: model, session: job).frame(maxWidth: .infinity, alignment: .leading) }
+                    ScrollView { PhoneJobPanel(model: model, session: job, showsOperation: false).frame(maxWidth: .infinity, alignment: .leading) }
                     if case .finished = job.phase {} else {   // 跑着才给「放到后台继续」，跑完底栏「完成」
                         HStack { Spacer(); Button(text("install.background")) { dismiss() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("install.background").controllerShortcut(.back) }
                     }

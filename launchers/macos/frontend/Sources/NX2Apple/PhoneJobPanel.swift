@@ -17,6 +17,8 @@ struct PhoneJobPanel: View {
     let session: JobSession
     /// 成功页额外的提示（装机页：第一次打开前要信任、免费 Apple ID 7 天到期……）
     var notes: [String] = []
+    /// 外层已用大标题写明是什么操作（导出自签包弹层）时不再画这一行，免得「导出自签包」下面又一行「导出，自己签名安装」
+    var showsOperation = true
     @State private var showDetails = false
 
     private var language: String { loc.lang.sharedCode }
@@ -41,7 +43,9 @@ struct PhoneJobPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 30) {
             // 这是什么操作（维护者：原先只看得到「更新中 · …」一小行）
-            Text(t(exporting ? "phone.title.export" : "phone.title." + session.kind.rawValue)).font(.manrope(18, .bold)).accessibilityIdentifier("phone.operation")
+            if showsOperation {
+                Text(t(exporting ? "phone.title.export" : "phone.title." + session.kind.rawValue)).font(.manrope(18, .bold)).accessibilityIdentifier("phone.operation")
+            }
             switch session.phase {
             case .running, .stopping: running
             case .finished(.failed) where pendingConfirm != nil: dropAsk

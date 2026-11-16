@@ -7084,6 +7084,10 @@
   "en": "Install to iPhone from the computer again; it resumes from what was already sent."
  },
  {
+  "source": "在游戏库里长按这款，选「删除游戏…」，再把电脑上导出的这款 .img 重新放进「放这里导入」。",
+  "en": "In the library, press and hold this game and choose “Delete game…”, then put this game's .img exported on the computer into Import Here again."
+ },
+ {
   "source": "重新连电脑推送，会自动补齐。",
   "en": "Connect to the computer and push again; the missing part is filled in automatically."
  },
@@ -9762,5 +9766,29 @@
  {
   "source": "再开一次一般能接着玩（存档停在游戏上次保存的地方）；同一处反复这样，就在「环境检查」导出诊断包，到 GitHub 发帖附上。",
   "en": "Starting again usually lets you keep playing (your save is as of the last time the game saved). If it keeps happening at the same spot, export a diagnostics package from Environment Check and attach it to a GitHub issue."
+ },
+ {
+  "source": "读不到 Impactor 当前选中的 Apple ID：在 Impactor 里登录并选中你的 Apple ID 后再装。",
+  "en": "Can't read the Apple ID selected in Impactor: sign in to Impactor, select your Apple ID, then install again."
+ },
+ {
+  "source": "写进 App 要申请的权限",
+  "en": "Adding the permissions the app requests"
+ },
+ {
+  "source": "这款选的下游方案是独立 App，资源要由电脑推进去：连上手机后点「装到 iPhone」；想导出自签包就在确认页改选「仍用原版方案」。",
+  "en": "The port chosen for this game is a separate app whose resources are copied over from your computer: connect your phone and click Install on iPhone. To export a self-sign package instead, choose Keep the standard route on the confirmation page."
+ },
+ {
+  "source": "这款用的是 {0} 方案（独立 App），现在只能「装到 iPhone」，还不能导出自签包。",
+  "en": "This game uses {0} (a separate app): for now it can only be installed with Install on iPhone, not exported as a self-sign package."
+ },
+ {
+  "source": "下游方案只能装到 iPhone",
+  "en": "This port can only be installed on iPhone"
+ },
+ {
+  "source": "这款选了下游深度方案（独立 App），它的资源要由电脑推进手机，导出的自签包里装不下。",
+  "en": "This game uses a dedicated port (a separate app). Its resources are copied to the phone from your computer, so they can't go into an exported self-sign package."
  }
 ]

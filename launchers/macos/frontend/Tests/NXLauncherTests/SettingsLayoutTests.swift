@@ -28,14 +28,19 @@ import S2ArmAppleAdapter
                 XCTAssertEqual(players.count, 4)
                 let playerRect = window.convertFromScreen(players[player].frame)
                 try click(CGPoint(x: playerRect.midX, y: playerRect.midY), in: window)
-                try await Task.sleep(for: .milliseconds(180))
-                let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-                host.cacheDisplay(in: host.bounds, to: bitmap)
+                // 等选中态真画出来再判：固定等 180 ms 在整套负载下偶发取到旧色。每 50 ms 截一次取色，选中即停，最多等 3 秒
                 let point = host.convert(CGPoint(x: playerRect.minX + 5, y: playerRect.midY), from: nil)
-                let scale = CGFloat(bitmap.pixelsWide) / host.bounds.width
-                let sampleY = host.isFlipped ? point.y : host.bounds.maxY - point.y
-                let color = try XCTUnwrap(bitmap.colorAt(x: Int(point.x * scale), y: Int(sampleY * scale))?.usingColorSpace(.deviceRGB))
-                XCTAssertGreaterThan(color.redComponent, 0.8, "必须实际选中玩家\(player + 1)，不能重复验证玩家 1")
+                var red: CGFloat = 0
+                let deadline = Date().addingTimeInterval(3)
+                repeat {
+                    try await Task.sleep(for: .milliseconds(50))
+                    let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+                    host.cacheDisplay(in: host.bounds, to: bitmap)
+                    let scale = CGFloat(bitmap.pixelsWide) / host.bounds.width
+                    let sampleY = host.isFlipped ? point.y : host.bounds.maxY - point.y
+                    red = try XCTUnwrap(bitmap.colorAt(x: Int(point.x * scale), y: Int(sampleY * scale))?.usingColorSpace(.deviceRGB)).redComponent
+                } while red <= 0.8 && Date() < deadline
+                XCTAssertGreaterThan(red, 0.8, "必须实际选中玩家\(player + 1)，不能重复验证玩家 1")
                 for target in ["A", "B", "Y", "X", "L"] {
                     navigation.focus("input.map." + target)
                     let key = try XCTUnwrap(navigation.controlTargets(in: window).first { $0.id == "input.map." + target })

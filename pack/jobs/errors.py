@@ -12,6 +12,7 @@ RECOVERY = {
     "ios_install_no_space": "清出空间后点「重试」。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
     "ios_install_img_format": "更新 iPhone 上的 S2Arm，再打开这款游戏。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
     "ios_install_img_corrupt": "从电脑重新装到 iPhone，会接着已传的部分续传。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
+    "ios_import_img_corrupt": "在游戏库里长按这款，选「删除游戏…」，再把电脑上导出的这款 .img 重新放进「放这里导入」。",   # 同上，但坏的 game.img 是玩家放进「放这里导入」认领的（pack_apply.c came_from_import）：从电脑续传不对路，删掉重新导入
     "ios_install_pack_truncated": "重新连电脑推送，会自动补齐。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
     "ios_install_files_missing": "从电脑重新装到 iPhone。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
     "ios_install_manifest_bad": "从电脑重新装到 iPhone。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
@@ -64,6 +65,7 @@ RECOVERY = {
     "batch_record_failed": "批次记录（数据目录下的 batch.json）写不进：检查数据目录所在磁盘的空间与权限，处理后在批量出包页点「继续」；已出好的包都在。",
     "library_busy": "等正在用游戏库的那个任务结束（或在任务列表里取消它）再重试；什么都没有改动。",
     "downstream_ineligible": "这个下游方案只支持某一版更新（上面写了是哪一版）：导入那一版更新后再导出；不换更新就在确认页选「仍用原版方案」。",
+    "downstream_export_unsupported": "这款选的下游方案是独立 App，资源要由电脑推进去：连上手机后点「装到 iPhone」；想导出自签包就在确认页改选「仍用原版方案」。",
     "download_failed": "检查这台电脑的网络（能打开 s2arm.com）后再点一次；下了一半的不会被当成好的用。",
     "diag_upload_failed": "导出诊断包，手动发到 GitHub 帖子或群里；网络恢复后也可以再点一次「故障报修」。",   # 上传诊断没成（服务没开通 / 连不上 / 被拒收，diag_upload.py）：界面退回导出
     "disk_full": "释放任务所在磁盘的空间，检查游戏库和应用数据所在磁盘后重试；不要删除存档或上次成功的运行版本。",

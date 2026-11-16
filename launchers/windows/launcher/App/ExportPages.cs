@@ -1429,7 +1429,7 @@ public sealed partial class EnvironmentWindow
             // 导出自签包的进度 / 完成（11-15 维护者：不出现 Apple ID、数据线、检查清单、装回、删除）：标题 + 结局卡（导出文件夹可点、怎么自签安装）
             body.Children.Add(Label(T("library.hero.selfSign"), 22));
             if (!installBusy) installSeen = true;
-            body.Children.Add(LiveSlot(() => InstallStateCard(game)));
+            body.Children.Add(LiveSlot(() => InstallStateCard(game, showsOperation: false)));
             return;
         }
         body.Children.Add(Label(T(PadKey("install.title")), 22));
@@ -1526,13 +1526,13 @@ public sealed partial class EnvironmentWindow
     }
 
     /// 安装页的状态卡：标题、进度条、已推 / 剩余、作业说明、复制错误摘要
-    private Control InstallStateCard(LibraryGame game)
+    private Control InstallStateCard(LibraryGame game, bool showsOperation = true)
     {
         // 装机 / 续签 / 删除 / 装回：同一张结局卡（PhoneJobCard.cs，同 Mac PhoneJobPanel）；Apple ID 登录过期另给「打开 Impactor 重新登录」
         var notes = new List<string>();
         if (installState == "succeeded" && installTrack.Kind == "install" && installOpenToFinish) notes.Add(T("install.done.open"));
         var state = new StackPanel { Spacing = 16 };
-        state.Children.Add(PhoneJobCard(installTrack, installState, installMessage, installDiagnostics, game.Id, notes));
+        state.Children.Add(PhoneJobCard(installTrack, installState, installMessage, installDiagnostics, game.Id, notes, showsOperation: showsOperation));
         if (installState is "failed" && installCode == "apple_session_expired")
         {
             // Apple ID 登录过期（Apple 1100）：打开 Impactor 让玩家自己重新登录（密码不经手），登录好再点一次「装到 iPhone」

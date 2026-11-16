@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import plistlib
 import sys
 import tempfile
 import unittest
@@ -220,6 +221,127 @@ class ExefsTest(unittest.TestCase):
             self.assertEqual(e.exception.code, "downstream_ineligible")
             (Path(d) / "exefs" / "main").write_bytes(b"pinned")
             ds._check_exefs(s, d)
+
+
+IML = "com.apple.developer.kernel.increased-memory-limit"
+EVA = "com.apple.developer.kernel.extended-virtual-addressing"
+
+
+class WinContext:
+    """Windows 装机要用到的作业上下文：begin / emit 只记、run 记命令并在跑 rcodesign 时读下它要签进的权限文件"""
+    def __init__(self, d, request=None):
+        self.private, self.engine, self.task, self.r = Path(d) / "private", Path(d) / "engine", "t1", request or {}
+        self.private.mkdir(parents=True)
+        self.steps, self.messages, self.runs, self.ents = [], [], [], None
+
+    def begin(self, name, i, n): self.steps.append((i, n, name))
+    def emit(self, kind, m): self.messages.append(m)
+
+    def run(self, cmd, log, env=None):
+        self.runs.append([str(x) for x in cmd])
+        if "-e" in self.runs[-1]:
+            self.ents = plistlib.loads(Path(self.runs[-1][self.runs[-1].index("-e") + 1]).read_bytes())
+
+
+class FakeWin:
+    """pack/orch/install_win.py 的替身：记 install_app 收到的参数（与那时 ipa 里的文件）、push_pack 的参数"""
+    class Fail(Exception):
+        def __init__(self, msg, code=1, err=None):
+            super().__init__(msg); self.err = err
+
+    def __init__(self, team="ABCDE12345", fail=None):
+        self.ns = self.names = self.pushed = None
+        self.fail = fail
+        self.impactor = unittest.mock.Mock(bundled=lambda r: {"plumesign": "plumesign.exe"}, select_only_account=lambda exe: None, selected_team=lambda: team)
+
+    def plumesign_path(self, given): return given
+
+    def install_app(self, ns, say=None):
+        self.ns = ns
+        self.names = zipfile.ZipFile(ns.ipa).namelist()
+        if self.fail: raise self.fail
+        return ns.bundle
+
+    def push_pack(self, udid, bid, pack, devpush=None, **kw):
+        self.pushed = dict(udid=udid, bid=bid, pack=str(pack), **kw)
+        return 3, 100
+
+
+class WinInstallTest(unittest.TestCase):
+    """Windows 装下游独立 App（install_ios_win）：入参、返回、出包记录与 Mac 同形；签名装机 / 推送走 install_win（这里打桩）"""
+    def setUp(self):
+        self.d = tempfile.TemporaryDirectory(); d = Path(self.d.name)
+        self.c = WinContext(d)
+        self.s = scheme(targets=dict(ios=dict(tool="t.py", entitlements=[IML, EVA])))
+        out = d / "lib" / "downstream" / "demo"; out.mkdir(parents=True)
+        ipa = out / "demo.ipa"
+        with zipfile.ZipFile(ipa, "w") as z:
+            z.writestr("Payload/Demo.app/Info.plist", plistlib.dumps(dict(CFBundleIdentifier="org.demo")))
+            z.writestr("Payload/Demo.app/Demo", b"bin")
+        (out / "pack").mkdir(); (out / "pack" / "manifest.json").write_text("{}")
+        self.rec = dict(scheme="demo", ipa=str(ipa), pack=str(out / "pack"))
+        self.out = out
+        import install as inst
+        self.inst = inst
+
+    def tearDown(self): self.d.cleanup()
+
+    def go(self, W):
+        import devcert
+        with unittest.mock.patch.object(ds, "last_record", lambda c, gid, s: self.rec), \
+             unittest.mock.patch.object(ds, "out_dir", lambda c, gid, s: self.out), \
+             unittest.mock.patch.object(self.inst, "win_install_mod", lambda c: W), \
+             unittest.mock.patch.object(self.inst, "win_udid", lambda c, w: "UDID1"), \
+             unittest.mock.patch.object(devcert, "rcodesign_path", lambda c: "rcodesign.exe"):
+            return ds.install_ios_win(self.c, dict(id="0100000000010000"), self.s)
+
+    def test_signs_installs_and_pushes(self):
+        W = FakeWin()
+        r = self.go(W)
+        # 包名同 Mac：io.s2arm.ds.<方案>.<小写团队号>；权限按免费团队只申请提高内存上限（扩展寻址免费团队签不了）
+        self.assertEqual(W.ns.bundle, "io.s2arm.ds.demo.abcde12345")
+        self.assertEqual(self.c.ents, {IML: True})
+        self.assertEqual(self.c.runs[0][:3], ["rcodesign.exe", "sign", "-e"])
+        self.assertTrue(self.c.runs[0][-1].endswith("Demo.app"))
+        self.assertIn("Payload/Demo.app/Demo", W.names)   # 交给 plumesign 的是重新打好的 .ipa
+        self.assertEqual((W.ns.udid, W.ns.plumesign), ("UDID1", "plumesign.exe"))
+        self.assertEqual((W.pushed["udid"], W.pushed["bid"], W.pushed["pack"]), ("UDID1", "io.s2arm.ds.demo.abcde12345", self.rec["pack"]))
+        self.assertNotIn("docs", W.pushed); self.assertNotIn("apply_after", W.pushed)   # 单款 App：Documents 为根、不起 App 解包（同 Mac）
+        self.assertEqual((r["bundleId"], r["packFiles"], r["packBytes"], r["openToFinish"]), ("io.s2arm.ds.demo.abcde12345", 3, 100, True))
+        saved = json.loads((self.out / "record.json").read_text())
+        self.assertEqual(saved["installed"]["bundleId"], "io.s2arm.ds.demo.abcde12345")
+        self.assertEqual([i for i, n, _ in self.c.steps], [1, 2, 3, 4])
+
+    def test_no_selected_account_stops_before_signing(self):
+        W = FakeWin(team=None)
+        with self.assertRaises(Failure) as e:
+            self.go(W)
+        self.assertEqual(e.exception.code, "apple_session_expired")
+        self.assertIsNone(W.ns)
+
+    def test_signing_failure_keeps_its_code(self):
+        W = FakeWin()
+        W.fail = FakeWin.Fail("签名装机失败（free_appid_limit）：Developer API error 9120", err="free_appid_limit")
+        with self.assertRaises(Failure) as e:
+            self.go(W)
+        self.assertEqual(e.exception.code, "free_appid_limit")
+        self.assertIsNone(W.pushed)
+
+    def test_windows_dispatch(self):
+        with unittest.mock.patch.object(ds.os, "name", "nt"), unittest.mock.patch.object(ds, "install_ios_win", lambda c, g, s: "win") as _:
+            self.assertEqual(ds.install_ios(None, dict(id="x"), self.s), "win")
+
+
+class ExportTest(unittest.TestCase):
+    def test_export_with_scheme_says_install_only(self):
+        import install as inst
+        with tempfile.TemporaryDirectory() as d:
+            c = FakeContext(d, dict(gameId="0100000000010000", mode="export"))
+            with unittest.mock.patch.object(ds, "requested", lambda c, g: scheme()), \
+                 unittest.mock.patch.object(ds, "install_ios", lambda *a: self.fail("导出不该去装机")):
+                with self.assertRaises(Failure) as e:
+                    inst.install(c)
+            self.assertEqual(e.exception.code, "downstream_export_unsupported")
 
 
 if __name__ == "__main__":

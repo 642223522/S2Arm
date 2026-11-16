@@ -495,6 +495,12 @@ int main(void) {
             int r8 = built ? s2a_pack_apply(D8) : 99;
             CHECK(built && r8 != 0 && !strcmp(s2a_pack_apply_code(), "ios_install_img_corrupt") && strstr(s2a_pack_apply_failure(), expect8[v]),
                   "⑬f 坏表 %d：不硬解、判 IMG 坏、现场写「%s」（造 %d、返回 %d、码 %s「%s」）", v, expect8[v], built, r8, s2a_pack_apply_code(), s2a_pack_apply_failure());
+            if (built && v == 1) {   // ⑬g 同一份坏 IMG 是从「放这里导入」认领来的（.imported 与清单同号）→ 码换导入那条；号对不上（之后电脑推送重写过清单）→ 照旧推送那条
+                snprintf(c, sizeof c, "cp '%s/manifest.json' '%s/.imported'", G8, G8); sh(c); s2a_pack_apply(D8);
+                CHECK(!strcmp(s2a_pack_apply_code(), "ios_import_img_corrupt"), "⑬g 导入来的坏 IMG → ios_import_img_corrupt（码 %s）", s2a_pack_apply_code());
+                snprintf(c, sizeof c, "printf '{\"index_sha256\": \"old\"}' > '%s/.imported'", G8); sh(c); s2a_pack_apply(D8);
+                CHECK(!strcmp(s2a_pack_apply_code(), "ios_install_img_corrupt"), "⑬g 导入号与清单不同（电脑推送过）→ ios_install_img_corrupt（码 %s）", s2a_pack_apply_code());
+            }
         }
       }
       // ⑭ 玩家把 IMG 放进「文件」里 S2Arm 的「放这里导入」文件夹：s2a_img_scan 挪进 games/<头里的游戏号>/资源包/game.img、写 manifest（资源包号同头）与 index.tsv；
@@ -508,8 +514,8 @@ int main(void) {
                " && python3 '%s/pack/img.py' build - '%s/src/others_sh.tsv' '%s/下载/别处.img' --gid 0100abcd00000003 --pack-id img790 > /dev/null", D3, D3, R, D, D3, D3, D3, R, D, D3);
       CHECK(sh(c) == 0, "⑭ 造夹具（导入文件夹第二层一个完整 IMG、导入文件夹下一个拷到一半的、导入文件夹外一个完整 IMG）");
       CHECK(s2a_img_scan(D3) == 1, "⑭ 扫到并挪好 1 个");
-      snprintf(c, sizeof c, "g='%s/games/0100ABCD00000002/资源包'; test -s \"$g/game.img\" && test ! -e '%s/放这里导入/x/某游戏.img' && test -e '%s/放这里导入/半个.img' && test -e '%s/下载/别处.img' && test ! -e '%s/games/0100ABCD00000003' && grep -q '\"index_sha256\": \"img789\"' \"$g/manifest.json\" && test \"$(cut -f1 \"$g/index.tsv\")\" = game.img", D3, D3, D3, D3, D3);
-      CHECK(sh(c) == 0, "⑭ 落到 games/<游戏号>/资源包/game.img、manifest 资源包号 = 头里的、index.tsv 只有 game.img、拷一半的没动");
+      snprintf(c, sizeof c, "g='%s/games/0100ABCD00000002/资源包'; test -s \"$g/game.img\" && test ! -e '%s/放这里导入/x/某游戏.img' && test -e '%s/放这里导入/半个.img' && test -e '%s/下载/别处.img' && test ! -e '%s/games/0100ABCD00000003' && grep -q '\"index_sha256\": \"img789\"' \"$g/manifest.json\" && cmp -s \"$g/manifest.json\" \"$g/.imported\" && test \"$(cut -f1 \"$g/index.tsv\")\" = game.img", D3, D3, D3, D3, D3);
+      CHECK(sh(c) == 0, "⑭ 落到 games/<游戏号>/资源包/game.img、manifest 资源包号 = 头里的、.imported 同清单、index.tsv 只有 game.img、拷一半的没动");
       { char g3[1500]; snprintf(g3, sizeof g3, "%s/games/0100ABCD00000002", D3);
         CHECK(s2a_import_state(g3) == 1, "⑭ 挪好后 → 待导入（状态 %d）", s2a_import_state(g3));
         s2a_pack_apply_phase = phase; memset(g_ph, 0, sizeof g_ph); memset(g_phn, 0, sizeof g_phn);

@@ -297,6 +297,16 @@ static int manifest_sha(const char *path, char *out, size_t n) {
     char *e = strchr(++p, '"'); if (!e || (size_t)(e - p) >= n) return -1;
     memcpy(out, p, (size_t)(e - p)); out[e - p] = 0; return 0;
 }
+// 本款 game.img 是玩家放进「放这里导入」认领的、不是电脑推送的：认领写好清单后同写一份 .imported（内容同清单）。解包判 IMG 坏时
+//   .imported 与当前清单的 index_sha256 相同才算导入来的（之后电脑推送会先置空再重写清单，号就对不上），码换成 ios_import_img_corrupt、
+//   下一步说「删掉这款重新导入」而不是「从电脑重装续传」。写不成只是下一步按推送说，不算认领失败
+static void mark_imported(const char *root, const char *mf) {
+    char p[2400]; snprintf(p, sizeof p, "%s/.imported", root); FILE *f = fopen(p, "w"); if (f) { fputs(mf, f); fclose(f); }
+}
+static int came_from_import(const char *root) {
+    char p[2400], a[160], b[160]; snprintf(p, sizeof p, "%s/.imported", root); if (manifest_sha(p, a, sizeof a)) return 0;
+    snprintf(p, sizeof p, "%s/manifest.json", root); return !manifest_sha(p, b, sizeof b) && !strcmp(a, b);
+}
 // 玩家导入（s2a_import_gate）用：每批解完回调一次（已解批数、总批数），失败原因留给提示页
 void (*s2a_pack_apply_progress)(int done, int total);
 static char g_apply_fail[2400], g_apply_code[48];
@@ -378,6 +388,7 @@ int s2a_pack_apply(const char *docs) {
     // 失败原因不依赖 unpack.log 打得开（#540：游戏目录 Documents/games/<游戏号>/ 不在时 unpack.log 也建不了，原先原因只在 lf 打开时才填，
     //   host.log 那一行「解开 … 没成：」后面是空的、又指去一个不存在的 unpack.log）：先填原因，日志打不开再把这一句接上
     g_apply_fail[0] = 0; snprintf(g_apply_code, sizeof g_apply_code, "%s", s2a_install_code(rc, g_fail_errno, g_untar_trunc, from_img));
+    if (!strcmp(g_apply_code, "ios_install_img_corrupt") && came_from_import(root)) snprintf(g_apply_code, sizeof g_apply_code, "ios_import_img_corrupt");
     if (rc) { int k = snprintf(g_apply_fail, sizeof g_apply_fail, "%s（返回 %d）%s%s", what, rc, g_untar_err[0] ? "；现场：" : "", g_untar_err);   // 现场进 g_apply_fail：界面红行 / 诊断都带上 errno 原文（D-4VAX）
         if (!lf && k > 0 && (size_t)k < sizeof g_apply_fail) snprintf(g_apply_fail + k, sizeof g_apply_fail - (size_t)k, "；unpack.log 建不了：%s %s", logp, strerror(lerr)); }
     if (lf) {
@@ -713,6 +724,7 @@ static int img_update(const char *proc_docs, const char *path, const uint8_t *h,
         char mf[600], p[2400], tp[2500]; snprintf(mf, sizeof mf, "{\"version\": 3, \"format\": \"img\", \"imgFile\": \"game.img\", \"index_sha256\": \"%.40s-u%llx\"}\n", pid, (unsigned long long)bytes);
         snprintf(p, sizeof p, "%s/manifest.json", root); snprintf(tp, sizeof tp, "%s.tmp", p);
         FILE *m = fopen(tp, "w"); if (!m || fputs(mf, m) < 0 || fclose(m) || rename(tp, p)) { rc = -4; snprintf(g_img_err, sizeof g_img_err, "写 manifest.json 失败：%s", strerror(errno)); unlink(tp); }
+        else mark_imported(root, mf);
     }
     if (rc) {   // 写到一半失败：已经换上的本体 / 派生件 / 目录表全部退回，清单改回原名——这款照旧是套更新包之前的样子、照旧能玩
         if (tx) { tx_undo(tx); free(tx); }
@@ -769,6 +781,7 @@ static int img_place(const char *proc_docs, const char *path, int pass) {   // 0
     char mf[600]; snprintf(mf, sizeof mf, "{\"version\": 3, \"format\": \"img\", \"imgFile\": \"game.img\", \"index_sha256\": \"%s\"}\n", pid);
     snprintf(p, sizeof p, "%s/manifest.json", root); snprintf(tp, sizeof tp, "%s.tmp", p);
     FILE *m = fopen(tp, "w"); if (!m || fputs(mf, m) < 0 || fclose(m) || rename(tp, p)) { snprintf(g_img_err, sizeof g_img_err, "写 manifest.json 失败：%s", strerror(errno)); unlink(tp); IMG_PLACE_FAIL(); }
+    mark_imported(root, mf);
 #undef IMG_PLACE_FAIL
     tx_done(tx); free(tx);
     mf_aside(root, 2);

@@ -1712,6 +1712,19 @@ class MacPhone:
             return purge_game(devpush_client(self.c, self.udid, self.bid, w), g)
 
 
+def win_install_failure(e):
+    """Windows plumesign 签名装机失败（install_win.Fail）→ 作业失败。有对应处理建议的码（free_appid_limit = Apple 9120 等）：上屏说人话的原因与办法，
+    plumesign 英文原文只进诊断（Windows 实机：原先整句英文「Developer API error 9120 …」直接上屏，玩家只看到签名失败）；没有专门建议的照旧上屏原文。
+    容器装机（WinPhone.install）与下游独立 App 装机（downstream.install_ios_win）同用"""
+    code = e.err or "device_install_failed"
+    from errors import RECOVERY
+    if code in RECOVERY and code not in ("device_install_failed", "job_failed"):
+        # 连不上签名服务器：plumesign 那句是系统的本地化原话（如「不知道这样的主机。 (os error 11001)」），一并上屏，玩家 / 帮他的人能照着查网络
+        said = f"（Impactor 原话：{str(e).split('：', 1)[-1].strip()}）" if code == "signing_server_unreachable" else ""
+        return Failure("签名装机没成：" + RECOVERY[code] + said, code=code, internal=str(e))  # 非玩家句
+    return Failure(str(e), code=code)
+
+
 class WinPhone:
     """Windows：Impactor 同版 plumesign 签名装机（包名由它按账号定、装完才知道，记在这台的设备记录 devices/<设备>.json 的 bundleId，供下次覆盖前备份）+ s2a-devpush 备份 / 推 / 删"""
 
@@ -1781,15 +1794,7 @@ class WinPhone:
         try:
             self.bid = self.W.install_app(ns, say=lambda m: self.c.emit("message", m))
         except self.W.Fail as e:
-            # 有对应处理建议的码（free_appid_limit = Apple 9120 等）：上屏说人话的原因与办法，plumesign 英文原文只进诊断（Windows 实机：
-            #   原先整句英文「Developer API error 9120 …」直接上屏，玩家只看到签名失败）；没有专门建议的照旧上屏原文
-            code = e.err or "device_install_failed"
-            from errors import RECOVERY
-            if code in RECOVERY and code not in ("device_install_failed", "job_failed"):
-                # 连不上签名服务器：plumesign 那句是系统的本地化原话（如「不知道这样的主机。 (os error 11001)」），一并上屏，玩家 / 帮他的人能照着查网络
-                said = f"（Impactor 原话：{str(e).split('：', 1)[-1].strip()}）" if code == "signing_server_unreachable" else ""
-                raise Failure("签名装机没成：" + RECOVERY[code] + said, code=code, internal=str(e)) from e  # 非玩家句
-            raise Failure(str(e), code=code) from e
+            raise win_install_failure(e) from e
         rec = layout.load_device(self.c, self.key)
         layout.save_device(self.c, self.key, dict(rec, bundleId=self.bid))
 
@@ -2210,6 +2215,8 @@ def install(c):
     import downstream
     scheme = downstream.requested(c, dict(id=gid))   # 下游深度方案出的是独立 App：自己的包名，不进容器（pack/jobs/downstream.py）
     if scheme:
+        if wants_export(c):   # 导出自签包只组 S2Arm 容器；独立 App 的资源靠推送进去，玩家自签装上也拿不到资源——说清楚，不悄悄改成连手机装机
+            raise Failure(f"这款用的是 {scheme['name']} 方案（独立 App），现在只能「装到 iPhone」，还不能导出自签包。", code="downstream_export_unsupported")
         return downstream.install_ios(c, next((g for g in c.catalog()["games"] if g["id"].upper() == gid.upper()), dict(id=gid)), scheme)
     ios_pack(c, gid)
     if wants_export(c):   # 这次是「导出自签包」：不连手机、不签名，出到文件夹；推不推到手机由玩家在完成页选（exportPush）

@@ -2779,6 +2779,7 @@
   "清出空间后点「重试」。": "Libérez de l'espace, puis appuyez sur Réessayer.",
   "更新 iPhone 上的 S2Arm，再打开这款游戏。": "Mettez à jour S2Arm sur l'iPhone, puis rouvrez le jeu.",
   "从电脑重新装到 iPhone，会接着已传的部分续传。": "Réinstallez sur l'iPhone depuis l'ordinateur ; le transfert reprend à partir de ce qui a déjà été envoyé.",
+  "在游戏库里长按这款，选「删除游戏…」，再把电脑上导出的这款 .img 重新放进「放这里导入」。": "Dans la bibliothèque, maintenez ce jeu appuyé et choisissez « Supprimer le jeu… », puis remettez dans le dossier « Import Here » le .img de ce jeu exporté sur l'ordinateur.",
   "重新连电脑推送，会自动补齐。": "Reconnectez-vous à l'ordinateur et renvoyez ; la partie manquante est complétée automatiquement.",
   "从电脑重新装到 iPhone。": "Réinstallez sur l'iPhone depuis l'ordinateur.",
   "重新打开 S2Arm 后点「重试」；还不行就导出诊断包发给我们。": "Rouvrez S2Arm et appuyez sur Réessayer. Si ça échoue encore, exportez un paquet de diagnostic et envoyez-le-nous.",
@@ -3799,6 +3800,12 @@
   "显卡卡住了，S2Arm 把这局安全停下了。": "Le GPU s'est bloqué : S2Arm a arrêté cette session en toute sécurité.",
   "再开一次一般能接着玩（存档停在游戏上次保存的地方）；同一处反复这样，就在「环境检查」导出诊断包，到 GitHub 发帖附上。": "Relancer permet en général de continuer (la sauvegarde est celle du dernier enregistrement du jeu). Si cela se reproduit au même endroit, exportez un diagnostic depuis Vérification de l'environnement et joignez-le à un ticket GitHub.",
   "显卡卡住了，这局被安全停下": "Le GPU s'est bloqué, cette session a été arrêtée en sécurité",
-  "游戏运行中显卡卡住了，S2Arm 为了不让整台电脑跟着卡死，停下了这局。存档停在游戏上次保存的地方。": "Le GPU s'est bloqué pendant le jeu. S2Arm a arrêté cette session pour éviter que tout le Mac ne se fige. La sauvegarde est celle du dernier enregistrement du jeu."
+  "游戏运行中显卡卡住了，S2Arm 为了不让整台电脑跟着卡死，停下了这局。存档停在游戏上次保存的地方。": "Le GPU s'est bloqué pendant le jeu. S2Arm a arrêté cette session pour éviter que tout le Mac ne se fige. La sauvegarde est celle du dernier enregistrement du jeu.",
+  "读不到 Impactor 当前选中的 Apple ID：在 Impactor 里登录并选中你的 Apple ID 后再装。": "Impossible de lire l'identifiant Apple sélectionné dans Impactor : connectez-vous à Impactor, sélectionnez votre identifiant Apple, puis réinstallez.",
+  "写进 App 要申请的权限": "Ajout des autorisations demandées par l'app",
+  "这款选的下游方案是独立 App，资源要由电脑推进去：连上手机后点「装到 iPhone」；想导出自签包就在确认页改选「仍用原版方案」。": "Le portage choisi pour ce jeu est une app distincte dont les ressources sont copiées depuis votre ordinateur : branchez votre téléphone et cliquez sur Installer sur l'iPhone. Pour exporter un paquet à signer vous-même, choisissez Garder la voie standard sur la page de confirmation.",
+  "这款用的是 {0} 方案（独立 App），现在只能「装到 iPhone」，还不能导出自签包。": "Ce jeu utilise {0} (une app distincte) : pour l'instant il ne peut être installé qu'avec Installer sur l'iPhone, pas exporté en paquet à signer vous-même.",
+  "下游方案只能装到 iPhone": "Ce portage ne peut être installé que sur l'iPhone",
+  "这款选了下游深度方案（独立 App），它的资源要由电脑推进手机，导出的自签包里装不下。": "Ce jeu utilise un portage dédié (une app distincte). Ses ressources sont copiées sur le téléphone depuis votre ordinateur, elles ne peuvent donc pas aller dans un paquet exporté à signer vous-même."
  }
 }
