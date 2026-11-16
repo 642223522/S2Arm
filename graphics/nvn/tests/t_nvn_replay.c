@@ -2092,6 +2092,30 @@ static void t_storage_sync_before_pass(void) {
 
 // A buffer texture reads the registered pool range directly, with no sampler.
 // A second untracked use must synchronize before its render pass is reopened.
+// A sampled c2 image-table word must resolve the same handle as the driver table.
+static void t_graphics_high_slots(void) {
+    for (int st = 0; st < 3; st++) for (int slot = 0; slot < 8; slot++) for (int image = 0; image < 2; image++) {
+        pass_fresh(); res_fresh(); g_arena_used = 0; g_resolve_rc = 0;
+        stream s = {0}; q_env(&s);
+        if (st == 2) g_fprog.sh[2] = &g_fsh[2];
+        tex_t a = mk_tex(88901, 0, NVN_FORMAT_RGBA8, 8, 8, 1, 0);
+        tex_t b = mk_tex(88902, 0x1000, NVN_FORMAT_RGBA8, 16, 16, 1, 0);
+        samp_par sp; memset(&sp, 0, sizeof sp);
+        nvn_be_reg_tex(3, &a, NULL); nvn_be_reg_tex(4, &b, NULL);
+        nvn_be_reg_samp(0, &sp); nvn_be_set_tex_pool_n(16);
+        nvn_gpu_layout_ent *e = &g_fprog.ent[st][0]; g_fprog.nent[st] = 1;
+        e->cls = NVN_GPU_RES_TEX_SAMP; e->src_kind = NVN_RB_TEX; e->src_reg = 32 + slot;
+        e->src_reg2 = UINT16_MAX; e->count = 1; e->access = NVN_GPU_ACC_R;
+        rp_S.tex[st][32 + slot] = 3; rp_S.img[st][slot] = image ? 4 : 0;
+        int before = g_gdraws;
+        q_draw(&s); end(&s); submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+        CHECK(g_gdraws == before + 1 && g_nfb[st] == 1 && g_fb[st][0].u.ts.view &&
+              g_fb[st][0].u.ts.view->of->d.d.width == (image ? 16 : 8));
+        rp_S.tex[st][32 + slot] = 0; rp_S.img[st][slot] = 0;
+    }
+    pass_fresh(); res_fresh();
+}
+
 static void t_tbuf_replay(void) {
     pass_fresh(); g_gdraws = g_resolves = g_resolve_rc = 0; g_arena_used = 0;
     g_bind_outside = g_draw_outside = g_pass_open = g_nbw = 0;
@@ -3814,6 +3838,7 @@ int main(int argc, char **argv) {
     t_logic_op_accounting();
     t_gs_dirty_and_topology();
     t_gs_bind(); t_storage_null_binding(); t_storage_sync_before_pass(); t_stage_dropped_clears_binds();
+    t_graphics_high_slots();
     t_tbuf_replay();
     t_decl_sampling();
     t_separate_sampler();

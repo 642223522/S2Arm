@@ -266,7 +266,7 @@ static void gs_request_test(void) {
     rp_S.tex[2][0] = 99;
     CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == ++calls, "changed GS texture fact recompiles");
     bind_pools(100); CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == ++calls, "GS pool size update recompiles");
-    separate_fixture = 1; bind_separate(2, 0, 1, 77);
+    separate_fixture = 1; fake_reg_changes = 0; bind_separate(2, 0, 1, 77);
     CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == ++calls && fact_matches("gs", 90, "2d", 0), "GS separate texture fact reaches compiler");
     fake_reg_changes = 0; int hashes = gs_sep_hash_calls;
     CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == calls && gs_sep_hash_calls == hashes, "unchanged GS separate facts hit cached signature");
@@ -329,14 +329,17 @@ static void bind_separate(int stage, int first, int count, uint64_t handle) {
 static int count_substr(const char *s, const char *needle) {
     int n = 0; size_t len = strlen(needle); while ((s = strstr(s, needle))) { n++; s += len; } return n;
 }
-static int fact_matches(const char *stage, int handle, const char *sampler, int normalized) {
+static int fact_matches_at(const char *stage, int handle, int cb, const char *sampler, int normalized) {
     char key[96], norm[32], type[96];
-    snprintf(key, sizeof key, "\"stage\":\"%s\",\"handle\":%d,\"cbufSlot\":2", stage, handle);
+    snprintf(key, sizeof key, "\"stage\":\"%s\",\"handle\":%d,\"cbufSlot\":%d", stage, handle, cb);
     snprintf(norm, sizeof norm, "\"normalized\":%s", normalized ? "true" : "false");
     snprintf(type, sizeof type, "\"samplerType\":\"%s\"", sampler);
     const char *p = strstr(captured, key), *end = p ? strchr(p, '}') : NULL;
     const char *n = p ? strstr(p, norm) : NULL, *t = p ? strstr(p, type) : NULL;
     return end && n && n < end && t && t < end;
+}
+static int fact_matches(const char *stage, int handle, const char *sampler, int normalized) {
+    return fact_matches_at(stage, handle, 2, sampler, normalized);
 }
 static void run_case(int compute, int pool, int want_called, const char *expected_account) {
     const struct rp_prog *prog = NULL; struct rp_shader_req q = {0}; q.prim = 4;
@@ -491,9 +494,10 @@ static int emit_real_request(const char *profile_path, const char *closure, cons
     for (unsigned st = 0; st < 3; st++) { gs_stages[st] = (uint8_t)st; memcpy(gs_keys[st], keys[st], 8); }
     gs_keys_ok = 7; p_bind_program_id bind = {&gs_program, gs_program.serial, 0x1f, 0};
     if (!rp_state_op(OP_BIND_PROGRAM, &bind, sizeof bind + 8)) return 1;
-    bind_pools(tbuf == 1 || tbuf == 2 || tbuf == 7 ? 100 : 7);
+    bind_pools(tbuf == 1 || tbuf == 2 || tbuf == 7 || tbuf >= 8 ? 100 : 7);
+    if (tbuf >= 8) { separate_fixture = 1; rp_S.img[1][0] = 78; }
     if (tbuf == 1 || tbuf == 2 || tbuf == 7) { separate_fixture = 3; bind_separate(1, 0, 1, 77); }
-    if (tbuf == 2 || tbuf == 3 || tbuf == 7) { fake_compile_file = output; fake_gs_success = 1; nvn_unimpl_reset(); memset(gs_loads, 0, sizeof gs_loads); }
+    if (tbuf == 2 || tbuf == 3 || tbuf == 7 || tbuf == 9) { fake_compile_file = output; fake_gs_success = 1; nvn_unimpl_reset(); memset(gs_loads, 0, sizeof gs_loads); }
     else capture_output = output;
     if (tbuf == 4) rp_S.tex[0][0] = 99;
     if (tbuf == 6) rp_S.ubo[5][15].size = 16;
@@ -518,6 +522,15 @@ static int emit_real_request(const char *profile_path, const char *closure, cons
               "real compiler active-stage UBO mask remains strict without dependency queries");
         fprintf(stderr, "real compiler dependency reuse: checks=%d failures=%d\n", checks, failures);
         return failures != 0;
+    }
+    if (tbuf == 9) {
+        int found = 0;
+        if (prog) for (uint32_t i = 0; i < prog->nent[1]; i++)
+            if (prog->ent[1][i].src_kind == NVN_RB_TEX && prog->ent[1][i].src_reg == 32 &&
+                prog->ent[1][i].src_reg2 == UINT16_MAX) found++;
+        int accepted = !rc && prog && compiler_calls == 1 && gs_loads[1] == 1 && found == 1;
+        fprintf(stderr, "%s: real c2 word 72 result loads FS with combined slot 32\n", accepted ? "PASS" : "FAIL");
+        return !accepted;
     }
     if (tbuf == 2) {
         int found = 0;
@@ -648,6 +661,49 @@ static void graphics_fact_reuse_test(void) {
     rp_shader_reset(); rp_state_reset();
 }
 
+static void graphics_high_slot_test(void) {
+    rp_shader_reset(); s2a_source_clear(); rp_state_reset(); nvn_unimpl_reset();
+    memset(&gs_program, 0, sizeof gs_program); gs_program.magic = MAGIC('P','R','O','G');
+    gs_program.serial = 901; gs_program.nstage = 3;
+    memset(gs_stages, 0xff, sizeof gs_stages); memset(gs_keys, 0, sizeof gs_keys);
+    for (unsigned st = 0; st < 3; st++) { gs_stages[st] = (uint8_t)st; gs_source(st, 0, gs_keys[st]); }
+    gs_keys_ok = 7; p_bind_program_id bind = {&gs_program, gs_program.serial, 0x1f, 0};
+    CHECK(rp_state_op(OP_BIND_PROGRAM, &bind, sizeof bind + 8), "high-slot program binds");
+    bind_pools(100); separate_fixture = 1; fake_gs_success = 1; fake_reg_changes = 0;
+    struct rp_shader_req q = {0}; q.prim = 4; const struct rp_prog *p = NULL;
+    const char *stages[] = {"vs", "fs", "gs"};
+    for (unsigned st = 0; st < 3; st++) for (unsigned slot = 0; slot < 8; slot++) {
+        rp_shader_reset(); memset(rp_S.tex, 0, sizeof rp_S.tex); memset(rp_S.img, 0, sizeof rp_S.img);
+        rp_S.tex[st][32 + slot] = 78; compiler_calls = 0;
+        CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == 1, "high-slot initial request st=%u slot=%u", st, slot);
+        CHECK(fact_matches_at(stages[st], 72 + 2 * slot, -1, "2d", 1), "high-slot texture fact st=%u slot=%u", st, slot);
+        CHECK(!fact_matches_at(stages[(st + 1) % 3], 72 + 2 * slot, -1, "2d", 1), "high-slot fact keeps its stage");
+        CHECK(!fact_matches_at(stages[st], 88, -1, "2d", 1), "high-slot word 88 stays outside the image table");
+        // iOS tex_slot_h: a nonzero image takes precedence over the combined texture.
+        rp_S.img[st][slot] = 77;
+        CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == 2 && fact_matches_at(stages[st], 72 + 2 * slot, -1, "2d", 0),
+              "high-slot image precedence invalidates identity st=%u slot=%u", st, slot);
+        rp_S.tex[st][32 + slot] = 99;
+        CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == 2, "shadowed high-slot texture keeps identity");
+        rp_S.img[st][slot] = 99;
+        CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == 3 && !fact_matches_at(stages[st], 72 + 2 * slot, -1, "2d", 1) &&
+              !fact_matches_at(stages[st], 72 + 2 * slot, -1, "2d", 0), "unregistered high-slot source does not invent a fact");
+    }
+    rp_shader_reset(); memset(rp_S.tex, 0, sizeof rp_S.tex); memset(rp_S.img, 0, sizeof rp_S.img);
+    for (int st = 0; st < 3; st++) {
+        for (int slot = 0; slot < 8; slot++) rp_S.img[st][slot] = 78;
+        bind_separate(st, 0, 128, 78);
+    }
+    compiler_calls = 0;
+    CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == 1, "full high-slot request reaches compiler");
+    for (int st = 0; st < 3; st++) {
+        char needle[64]; snprintf(needle, sizeof needle, "\"stage\":\"%s\",\"handle\":", stages[st]);
+        CHECK(count_substr(captured, needle) == 168 && fact_matches_at(stages[st], 86, -1, "2d", 1) && fact_matches_at(stages[st], 344, 2, "2d", 1),
+              "all 504 graphics facts survive request st=%d", st);
+    }
+    rp_shader_reset(); rp_state_reset(); fake_gs_success = 0; separate_fixture = 0; fake_reg_changes = 1;
+}
+
 /* The compiler request contains only stages in this graphics program. Inactive
  * UBO state (including compute) must not create new graphics identities. */
 static void graphics_active_ubo_test(void) {
@@ -697,6 +753,8 @@ int main(int argc, char **argv) {
         for (size_t i = 0; i < n; i++) printf("%02x", bytes[i]);
         putchar('\n'); return 0;
     }
+    if (argc == 6 && (!strcmp(argv[1], "--emit-high-slot") || !strcmp(argv[1], "--execute-high-slot")))
+        return emit_real_request(argv[2], argv[3], argv[4], argv[5], !strcmp(argv[1], "--emit-high-slot") ? 8 : 9);
     if (argc == 6 && !strcmp(argv[1], "--emit-reuse-texture"))
         return emit_real_request(argv[2], argv[3], argv[4], argv[5], 4);
     if (argc == 6 && !strcmp(argv[1], "--emit-reuse-rt"))
@@ -715,6 +773,7 @@ int main(int argc, char **argv) {
         return emit_compute_request(argv[2], argv[3], argv[4], argv[5], !strcmp(argv[1], "--execute-compute-tbuf"));
     if (argc != 1) return 2;
     graphics_fact_reuse_test();
+    graphics_high_slot_test();
     graphics_active_ubo_test();
     unsetenv("S2A_SHADER_REVISION_ROOT"); unsetenv("S2A_DIRECT_CACHE_DIR"); rp_state_reset(); source();
     for (int cs = 0; cs < 2; cs++) {

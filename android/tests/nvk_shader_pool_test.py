@@ -60,6 +60,30 @@ def main():
         host_link.run(base + [str(p) for p in src] + [strip, '-lm', '-o', str(exe)], check=True, timeout=60)
         return subprocess.run([str(exe), *args], capture_output=True, text=True, timeout=30)
 
+    if sys.argv[1:] == ['--high-slot-controls']:
+        code = original.read_text()
+        base_sha = subprocess.check_output(['git', 'merge-base', 'HEAD', 'origin/main'], cwd=ROOT, text=True).strip()
+        baseline = subprocess.check_output(['git', 'show', base_sha + ':' + original.relative_to(ROOT).as_posix()], cwd=ROOT, text=True)
+        changes = [
+            ('main-high-slots', baseline, 'high-slot texture fact'),
+            ('high-facts-withdraw', code.replace('for (int slot = 0; slot < 8; slot++) {\n            long id = handles[slot]',
+                                               'for (int slot = 0; slot < 0; slot++) {\n            long id = handles[slot]'), 'high-slot texture fact'),
+            ('high-signature-withdraw', code.replace('MIX(graphics_high_fact_sig(st));', '(void)graphics_high_fact_sig;'),
+             'high-slot image precedence invalidates identity'),
+            ('high-image-precedence-withdraw', code.replace('rp_S.img[st][slot] ? rp_S.img[st][slot] : rp_S.tex[st][32 + slot]',
+                                                          'rp_S.tex[st][32 + slot]'), 'high-slot image precedence invalidates identity'),
+        ]
+        for name, changed, expected in changes:
+            assert changed != code, (name, 'mutation anchor')
+            path = out / (name + '.c')
+            path.write_text(changed)
+            result = run(name, path)
+            (out / (name + '.log')).write_text(result.stdout + result.stderr)
+            assert result.returncode and expected in result.stderr, (name, result.stdout, result.stderr)
+            print(name + ': expected assertion failure: ' + expected, flush=True)
+        print('PASS: main baseline and 3 high-slot negative controls')
+        return 0
+
     if len(sys.argv) in (3, 4) and sys.argv[1] == '--tbuf-layout':
         exe = out/'tbuf-layout'
         src = [ROOT/'android/tests/tbuf_layout_test.c', *libs]
@@ -89,7 +113,7 @@ def main():
         assert before_lines[1] == after_lines[1], 'legacy S2AI1 bytes changed'
         print(f'legacy request and canonical identity byte-for-byte unchanged versus {base_sha}')
         return 0
-    if len(sys.argv) == 6 and sys.argv[1] in ('--emit-reuse-texture', '--emit-reuse-rt', '--emit-reuse-inactive', '--emit-real', '--emit-real-tbuf', '--execute-tbuf', '--emit-compute-tbuf', '--execute-compute-tbuf', '--reject-graphics-tbufu', '--reject-compute-tbufu'):
+    if len(sys.argv) == 6 and sys.argv[1] in ('--emit-high-slot', '--execute-high-slot', '--emit-reuse-texture', '--emit-reuse-rt', '--emit-reuse-inactive', '--emit-real', '--emit-real-tbuf', '--execute-tbuf', '--emit-compute-tbuf', '--execute-compute-tbuf', '--reject-graphics-tbufu', '--reject-compute-tbufu'):
         result = run('emit-real', original, args=sys.argv[1:])
         sys.stdout.write(result.stdout); sys.stderr.write(result.stderr)
         return result.returncode

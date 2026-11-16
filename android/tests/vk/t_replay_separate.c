@@ -90,13 +90,21 @@ int main(int argc, char **argv) {
     p_bind_handles bh = {0}; bh.stage = 1; bh.first = 130; bh.n = 1; bh.h[0] = 7; rp_state_op(OP_BIND_TEX, &bh, sizeof bh);
     bh.first = 4; bh.h[0] = (uint64_t)3 << 20; rp_state_op(OP_BIND_SAMP, &bh, sizeof bh);
     const uint8_t pixels[8] = {255,0,0,255, 0,255,0,255};
-    for (int round = 0; round < 2; ++round) {
+    for (int round = 0; round < 18; ++round) {
         nvn_gpu_cmd cmd = begin_cmd();
         // Production nvn_be_sub_begin advances the segment and dirties all
         // backend state, even when a new command reuses the same address.
         segment++; rp_dirty_all();
         if (!round) nvn_gpu_tex_upload(cmd, input, 0, 0, NULL, pixels, 8, 8);
         else { sample_sampler = clamp; generation++; }
+        if (round >= 2) {
+            unsigned slot = (unsigned)(round - 2) / 2; int image = round & 1;
+            ent->src_reg = (uint16_t)(32 + slot); ent->src_reg2 = UINT16_MAX;
+            bh.first = 32 + (int)slot; bh.h[0] = ((uint64_t)3 << 20) | (image ? 9u : 7u);
+            CHECK(rp_state_op(OP_BIND_TEX, &bh, sizeof bh), "high-slot texture bind");
+            bh.first = (int)slot; bh.h[0] = image ? ((uint64_t)3 << 20) | 7u : 0;
+            CHECK(rp_state_op(OP_BIND_IMG, &bh, sizeof bh), "high-slot image bind");
+        }
         p_draw draw = {0}; draw.prim = 4; draw.count = 3; draw.instances = 1;
         rp_draw(cmd, &draw, NULL, &draw); nvn_gpu_pass_end(cmd);
         nvn_gpu_copy_tex_buf(cmd, output, 0, 0, NULL, rb, 0, 16, 64);
@@ -113,10 +121,10 @@ int main(int argc, char **argv) {
         }
     }
     uint64_t drawn = 0, skipped = 0; rp_draw_stats(&drawn, &skipped);
-    CHECK(drawn == 2 && skipped == 0, "two draws and no skips");
+    CHECK(drawn == 18 && skipped == 0, "two separate and sixteen high-slot draws, no skips");
     nvn_gpu_shader_release(prog.sh[0]); nvn_gpu_shader_release(prog.sh[1]); free(vsm); free(fsm);
     nvn_gpu_samp_release(repeat); nvn_gpu_samp_release(clamp); nvn_gpu_view_release(sample_view); nvn_gpu_tex_release(input);
     nvn_gpu_view_release(target_view); nvn_gpu_tex_release(output); nvn_gpu_buf_release(rb, NULL, NULL);
     CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "close session"); s2a_vk_device_destroy(&g_dev, 1);
-    printf("separate core: repeat red, clamp green, failures=%d\n", g_fail); return g_fail ? 1 : 0;
+    printf("separate core: repeat red, clamp green; high slots 32..39 x texture/image, 256 pixels, failures=%d\n", g_fail); return g_fail ? 1 : 0;
 }

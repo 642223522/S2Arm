@@ -352,6 +352,9 @@ static int parse_graphics(const uint8_t *bytes, size_t length, struct fd_program
                 dst->samp_slot = (int16_t)samp_v;
             } else if (dst->kind == 2 && dst->slot >= 8 && dst->slot < 72 && !(dst->slot & 1)) {
                 dst->tex_slot = (int16_t)((dst->slot - 8) / 2);
+            } else if (dst->kind == 2 && dst->count == 1 && dst->slot >= 72 && dst->slot < 88 && !(dst->slot & 1)) {
+                // c2 图像表字 72..86 同组合槽 32..39，回放按 iOS tex_slot_h 取有效句柄。
+                dst->tex_slot = (int16_t)(32 + (dst->slot - 72) / 2);
             } else if (dst->kind == 2 && dst->count == 1 && dst->slot >= 90 && dst->slot < 346 && !(dst->slot & 1)) {
                 // 立即句柄直接读 c2 分离贴图表的字（无分离采样器：取尺寸 / texelFetch，采样器取同字高位，同组合槽）：分离贴图槽 128 + k
                 dst->tex_slot = (int16_t)(128 + (dst->slot - 90) / 2);
