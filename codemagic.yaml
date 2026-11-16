@@ -105,6 +105,13 @@ workflows:
           "$FF_WORK/venv/bin/python" translator/dmsh_chain.py --check-tools || echo "check-tools FAILED (see [RED] lines above)"
           echo "pre-flight done"
 
+      - name: Install .NET 10 SDK (pack prerequisite; GitHub images had it, Codemagic does not)
+        script: |
+          set -e
+          "$HOME/ff-work/venv/bin/python" pack/jobs/applenv.py --install dotnet
+          ls "$HOME/.dotnet/sdk"
+          "$HOME/ff-work/venv/bin/python" pack/jobs/applenv.py
+
       - name: Pack (unsigned, fullscreen test pack)
         script: |
           set +e
