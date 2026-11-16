@@ -60,14 +60,15 @@ enum { POOL_MEMO_N = 16 };   // 2 的幂
 typedef struct {
     pool_memo memo[POOL_MEMO_N];
     unsigned put, mru, tick;
+    unsigned tick_fast;
     uint64_t hits, lookups;
+    uint64_t fast_hits;
 } pool_tls;
 static _Thread_local pool_tls g_pool_tls;
-static uint64_t g_pool_fast_hits;   // pool_find_fast() answers (observability for tests / tuning)
+static int g_pool_fast_off = -1;   // nvn_plat_flag("nvk_pool_nofast", 0)：缺省开快路；每 4096 次查找重读一次（release 包里直接是缺省）
 static int g_pool_memo_on = -1;   // nvn_plat_flag("nvk_pool_memo", 1)：缺省开；每 4096 次查找重读一次（release 包里直接是缺省）
 void rp_pool_memo_stats(uint64_t *hits, uint64_t *lookups) { const pool_tls *t = &g_pool_tls; *hits = t->hits; *lookups = t->lookups; }   // 调用线程自己的累计
-static int pool_find_memo(uint64_t addr, uint64_t len, const uint8_t **mem, uint64_t *size) {
-    pool_tls *const t = &g_pool_tls;   // 整个函数只取这一次 TLS 地址
+static int pool_find_memo(pool_tls *const t, uint64_t addr, uint64_t len, const uint8_t **mem, uint64_t *size) {
     int on = __atomic_load_n(&g_pool_memo_on, __ATOMIC_RELAXED);
     if (on < 0 || !(++t->tick & 4095)) { on = nvn_plat_flag("nvk_pool_memo", 1) != 0; __atomic_store_n(&g_pool_memo_on, on, __ATOMIC_RELAXED); }
     if (!on) return 0;
@@ -125,8 +126,10 @@ static int pool_find_locked(uint64_t addr, uint64_t len, const uint8_t **mem, ui
     }
     return 1;
 }
-static int pool_find_fast(uint64_t addr, uint64_t len, const uint8_t **mem, uint64_t *size) {   // 快路：不抢锁；代际一致才认
-    if (nvn_plat_flag("nvk_pool_nofast", 0)) return 0;   // debug.s2a.nvk_pool_nofast=1 关快路（缺省开；玩家包恒缺省）
+static int pool_find_fast(pool_tls *const t, uint64_t addr, uint64_t len, const uint8_t **mem, uint64_t *size) {   // 快路：不抢锁；代际一致才认
+    int off = __atomic_load_n(&g_pool_fast_off, __ATOMIC_RELAXED);
+    if (off < 0 || !(++t->tick_fast & 4095)) { off = nvn_plat_flag("nvk_pool_nofast", 0) != 0; __atomic_store_n(&g_pool_fast_off, off, __ATOMIC_RELAXED); }
+    if (off) return 0;   // debug.s2a.nvk_pool_nofast=1 关快路（缺省开；玩家包恒缺省）
     const uint64_t ep = __atomic_load_n(&g_pool_epoch, __ATOMIC_ACQUIRE);
     const uint64_t s1 = __atomic_load_n(&g_pool_lh_seq, __ATOMIC_ACQUIRE);
     if (s1 & 1) return 0;                                   // 正在写：这一笔走锁内二分
@@ -138,7 +141,7 @@ static int pool_find_fast(uint64_t addr, uint64_t len, const uint8_t **mem, uint
     if (addr - a > n || len > n - (addr - a)) return 0;
     if (mem) *mem = (const uint8_t *)(uintptr_t)a;
     if (size) *size = n;
-    __atomic_fetch_add(&g_pool_fast_hits, 1, __ATOMIC_RELAXED);
+    t->fast_hits++;
     return 1;
 }
 void nvn_be_pool_add(const void *mem, uint64_t size) {
@@ -170,7 +173,8 @@ void nvn_be_pool_del(const void *mem) {
 }
 int nvn_be_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
     const uint8_t *mem = NULL; uint64_t size = 0;
-    int hit = pool_find_memo(addr, len, &mem, &size) || pool_find_fast(addr, len, &mem, &size);
+    pool_tls *const t = &g_pool_tls;
+    int hit = pool_find_memo(t, addr, len, &mem, &size) || pool_find_fast(t, addr, len, &mem, &size);
     if (!hit) {
         pthread_mutex_lock(&g_mu);
         hit = pool_find_locked(addr, len, &mem, &size);
@@ -180,14 +184,15 @@ int nvn_be_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
     return hit;
 }
 int rp_pool_find(uint64_t addr, uint64_t len, const uint8_t **mem, uint64_t *size) {
-    if (pool_find_memo(addr, len, mem, size) || pool_find_fast(addr, len, mem, size)) return 1;
+    pool_tls *const t = &g_pool_tls;
+    if (pool_find_memo(t, addr, len, mem, size) || pool_find_fast(t, addr, len, mem, size)) return 1;
     pthread_mutex_lock(&g_mu);
     int hit = pool_find_locked(addr, len, mem, size);
     pthread_mutex_unlock(&g_mu);
     return hit;
 }
 int rp_pool_count(void) { pthread_mutex_lock(&g_mu); int n = g_npool; pthread_mutex_unlock(&g_mu); return n; }
-uint64_t rp_pool_fast_hits(void) { return __atomic_load_n(&g_pool_fast_hits, __ATOMIC_RELAXED); }
+uint64_t rp_pool_fast_hits(void) { return g_pool_tls.fast_hits; }
 void nvn_be_pool_addressed(const void *mem, uint64_t size) { (void)mem; (void)size; }   // 原始全局内存表：翻译器的裸地址访问接上时用
 
 // ---------- 贴图：初始化只登记序号，建图在首次使用（nvn_mtl.m:2597 / :4113）----------
