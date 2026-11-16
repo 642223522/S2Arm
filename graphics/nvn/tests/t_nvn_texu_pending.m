@@ -49,12 +49,12 @@ int main(int argc, char **argv) { @autoreleasepool {
     int later=argc==2 && !strcmp(argv[1],"--later");
     int all=argc==2 && !strcmp(argv[1],"--all"), collision=argc==2 && !strcmp(argv[1],"--collision");
     REQUIRE(argc==1 || cancel || current || later || all || collision);
-    size_t mem_size=collision ? 512u<<20 : all ? 32u<<20 : 16u<<20;
+    size_t mem_size=collision ? (size_t)2048<<20 : all ? 32u<<20 : 16u<<20;
     setvbuf(stdout,NULL,_IOLBF,0); setenv("DM_PSO_ARCHIVE","0",1);
     struct sigaction sa={0}; sa.sa_sigaction=fault; sa.sa_flags=SA_SIGINFO; sigaction(SIGBUS,&sa,NULL); sigaction(SIGSEGV,&sa,NULL);
     NVNdeviceBuilder db; API(nvnDeviceBuilderSetDefaults)(&db); REQUIRE(API(nvnDeviceInitialize)(&device,&db));
     NVNqueueBuilder qb; API(nvnQueueBuilderSetDefaults)(&qb); API(nvnQueueBuilderSetDevice)(&qb,&device); REQUIRE(API(nvnQueueInitialize)(&queue,&qb));
-    REQUIRE(!posix_memalign((void **)&memory,65536,mem_size)); memset(memory,0,mem_size);
+    REQUIRE(!posix_memalign((void **)&memory,65536,mem_size)); memset(memory,0,MIN(mem_size,(size_t)32<<20));   // large allocations come from mmap, already zero
     NVNmemoryPoolBuilder pb; API(nvnMemoryPoolBuilderSetDefaults)(&pb); API(nvnMemoryPoolBuilderSetDevice)(&pb,&device);
     API(nvnMemoryPoolBuilderSetStorage)(&pb,memory,mem_size); API(nvnMemoryPoolBuilderSetFlags)(&pb,NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED|NVN_MEMORY_POOL_FLAGS_GPU_CACHED);
     REQUIRE(API(nvnMemoryPoolInitialize)(&pool,&pb));
@@ -98,17 +98,21 @@ int main(int argc, char **argv) { @autoreleasepool {
         NVNcommandBuffer other; static uint8_t other_control[4096];
         REQUIRE(API(nvnCommandBufferInitialize)(&other,&device)); API(nvnCommandBufferAddControlMemory)(&other,other_control,sizeof other_control);
         API(nvnCommandBufferAddCommandMemory)(&other,&pool,CMD, CMD); API(nvnCommandBufferBeginRecording)(&other);
-        if(all) API(nvnCommandBufferClearBuffer)(&other,ga+OTHER_OFF,(16u<<20)+4096,0x5a5a5a5a);
-        else {
-            size_t off=OTHER_OFF;
-            if(collision) {
-                // Find a different real pool page mapped to the handle's GW slot.
-                // A public GPU update to it, after A, must create a live collision.
-                for(;off+4096<=mem_size;off+=4096) if(gw_slot(nvn_ga2ca(ga+off)>>12)==gw_slot(handle_addr>>12)) break;
-                REQUIRE(off+4096<=mem_size && (nvn_ga2ca(ga+off)>>12)!=(handle_addr>>12));
-            }
-            API(nvnCommandBufferUpdateUniformBuffer)(&other,ga+off,256,0,4,&red_handle);
-        }
+        if(all) {
+            // Wide writes are tracked as exact ranges (g_gw_wide, GW_WIDE slots).
+            // GW_WIDE+1 distinct live wide ranges, none over the handle, overflow
+            // that table: the last one can only be recorded as "every page" (g_gw_all).
+            for(int i=0;i<=GW_WIDE;i++) API(nvnCommandBufferClearBuffer)(&other,ga+OTHER_OFF+(size_t)i*4096,(16u<<20)+4096,0x5a5a5a5a);
+        } else if(collision) {
+            // Inline uniform updates no longer enter the GW page table (ifw), so
+            // a collision needs two real GPU writes: two different pool pages,
+            // neither the handle's, mapped to the handle's GW slot.
+            size_t off[2]; int n=0;
+            for(size_t o=OTHER_OFF;o+4096<=mem_size && n<2;o+=4096)
+                if(gw_slot(nvn_ga2ca(ga+o)>>12)==gw_slot(handle_addr>>12) && (nvn_ga2ca(ga+o)>>12)!=(handle_addr>>12)) off[n++]=o;
+            REQUIRE(n==2);
+            for(int i=0;i<2;i++) API(nvnCommandBufferClearBuffer)(&other,ga+off[i],4096,0x5a5a5a5a);
+        } else API(nvnCommandBufferUpdateUniformBuffer)(&other,ga+OTHER_OFF,256,0,4,&red_handle);
         NVNcommandHandle c=API(nvnCommandBufferEndRecording)(&other);
         if(later) { later_gate=[g_dev newSharedEvent]; REQUIRE(later_gate); nvn_be_queue_wait_event((__bridge void *)later_gate,1); }
         API(nvnQueueSubmitCommands)(&queue,1,&c);

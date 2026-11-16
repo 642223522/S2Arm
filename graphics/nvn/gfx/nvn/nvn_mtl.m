@@ -1992,12 +1992,14 @@ static void gw_put(uint64_t lo, uint64_t hi, uint64_t fence, uint64_t done) {
 // untracked large write conservatively contribute their fence, never the open
 // submission's future fence. Unrelated non-colliding pages do not delay a read.
 enum { GW_ALL = 1, GW_COLLISION = 2 };
+static uint64_t ifw_pending_fence(uint64_t lo, uint64_t hi);   // 运行中提交的内联常量更新（下面的 ifw 表，main #41 后不进页表）
 static uint64_t gw_pending_fence(uint64_t lo, uint64_t hi, unsigned *reason) {
     if (reason) *reason = 0;
     if (hi <= lo) return 0;
     uint64_t done = g_done;   // read without the lock as elsewhere: a stale value only refuses more
     uint64_t exact = 0, collision = 0;
     for (int i = 0; i < GW_WIDE; i++) if (lo < g_gw_wide[i].hi && g_gw_wide[i].lo < hi && g_gw_wide[i].fence > exact) exact = g_gw_wide[i].fence;   // 大范围写入（main 的 g_gw_wide）：区间精确，算精确依赖
+    { uint64_t f = ifw_pending_fence(lo, hi); if (f > exact) exact = f; }   // 运行中提交的内联常量更新（ifw，区间精确）
     for (uint64_t pg = lo >> 12; pg <= (hi - 1) >> 12; pg++) { unsigned s = gw_slot(pg);
         if (g_gw[s].page == pg && g_gw[s].fence > exact) exact = g_gw[s].fence;
         else if (g_gw[s].page == ~0ull && g_gw[s].fence > collision) collision = g_gw[s].fence; }
@@ -2031,6 +2033,17 @@ static int ifw_put(uint64_t lo, uint64_t hi, const uint8_t *src, uint64_t fence,
         x->seq = s; x->lo = a; x->hi = b; x->fence = fence; x->next = g_ifw_head[h]; memcpy(x->b, src + (a - lo), (size_t)(b - a)); g_ifw_head[h] = s;
         a = b; }
     return 1;
+}
+// [lo, hi) 里还在 GPU 上没落地的内联常量更新的最大栅栏（0 = 没有）：沿页桶链找区间重叠、栅栏未完成的项（链按栅栏递减，遇到已完成或被回收的就停）
+static uint64_t ifw_pending_fence(uint64_t lo, uint64_t hi) {
+    if (!g_ifw || hi <= lo) return 0;
+    uint64_t done = g_done, f = 0;
+    for (uint64_t pg = lo >> 12; pg <= (hi - 1) >> 12; pg++)
+        for (uint64_t sq = g_ifw_head[ifw_bucket(pg)]; sq; ) {
+            ifw_ent *x = &g_ifw[sq % IFW_N]; if (x->seq != sq || x->fence <= done) break;
+            if (x->lo < hi && lo < x->hi && x->fence > f) f = x->fence;
+            sq = x->next; }
+    return f;
 }
 // Covered intervals of a range, sorted and disjoint (ubp_get): x..y covered whole / add x..y; exact = 0 once they no longer fit in COVN
 enum { COVN = 64 };
