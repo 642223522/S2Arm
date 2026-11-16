@@ -241,7 +241,15 @@ static napi_value start(napi_env env,napi_callback_info info) {
     std::string id=argstr(env,a[4]); char *end=nullptr; g_program=strtoull(id.c_str(),&end,16);
     if(id.size()!=16 || !end || *end || !g_program) { detail("无效游戏身份"); return str(env,"无效游戏身份"); }
     if(g_started.exchange(true)) return str(env,"本进程已有启动任务，请重开应用再试");
-    pthread_t thread; int rc=pthread_create(&thread,nullptr,worker,nullptr);
+    // OHOS musl's default worker stack is only 128 KiB on the emulator.
+    // NativeAOT service startup needs the same 8 MiB budget as the main thread.
+    pthread_t thread; pthread_attr_t attr;
+    int rc=pthread_attr_init(&attr);
+    if(!rc) {
+        rc=pthread_attr_setstacksize(&attr,8u<<20);
+        if(!rc) rc=pthread_create(&thread,&attr,worker,nullptr);
+        pthread_attr_destroy(&attr);
+    }
     if(rc) { g_started=false;return str(env,"无法创建游戏线程："+std::to_string(rc)); }
     pthread_detach(thread);
     rc=pthread_create(&thread,nullptr,watch_stop,nullptr);
