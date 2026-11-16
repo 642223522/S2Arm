@@ -105,12 +105,20 @@ workflows:
           "$FF_WORK/venv/bin/python" translator/dmsh_chain.py --check-tools || echo "check-tools FAILED (see [RED] lines above)"
           echo "pre-flight done"
 
-      - name: Install .NET 10 SDK (pack prerequisite; GitHub images had it, Codemagic does not)
+      - name: Install .NET 10 SDK + Metal components (pack prerequisites; GitHub images had them, Codemagic does not)
         script: |
           set -e
-          "$HOME/ff-work/venv/bin/python" pack/jobs/applenv.py --install dotnet
+          VENV_PY="$HOME/ff-work/venv/bin/python"
+          "$VENV_PY" pack/jobs/applenv.py --install dotnet
           ls "$HOME/.dotnet/sdk"
-          "$HOME/ff-work/venv/bin/python" pack/jobs/applenv.py
+          "$VENV_PY" pack/jobs/applenv.py --install metal
+          # The read-only applenv check is a DESKTOP checklist (it flags the
+          # machine's default Python, Apple ID login, test-only tools, etc.)
+          # and is NOT the pack gate: the pack itself runs under
+          # S2A_PYTHON=<venv> with all packages installed. Print it for
+          # diagnosis only; never let it fail this step.
+          export S2A_PYTHON="$VENV_PY"
+          "$VENV_PY" pack/jobs/applenv.py || echo "applenv advisory check exited $?: non-fatal, continuing to Pack"
 
       - name: Pack (unsigned, fullscreen test pack)
         script: |
