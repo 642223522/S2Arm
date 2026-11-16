@@ -103,6 +103,10 @@ pool_mutations = [
     ('池备忘关着也查', [('if (!on) return 0;', '/* 变异：关着也查 */')], 'pm_hits() == hz && pm_lookups() == lz'),
     ('快路不看可答区间', [('if (addr < lo || addr >= lim) return 0;   // outside the answer interval: the locked search decides', 'if (0 && (addr < lo || addr >= lim)) return 0;   // 变异：不看区间')],
      'rp_pool_find(B + SMALL_OFF + 0x20, 0x40'),
+    ('池查找下界不并入跨过的小池',
+     [('for (int k = ci + 1; k <= cand; k++) {',
+       'for (int k = ci + 1; k <= cand && 0; k++) {   // 变异：lo 回退旧公式 [a, 下一起点)')],
+     'm == B + SMALL_OFF && n == SMALL'),
 ]
 
 compile_flags = ['-O2', '-g', '-Wall', '-Wextra', '-Wno-unused-parameter']
