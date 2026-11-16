@@ -1,5 +1,8 @@
 # 鸿蒙音频输出层
 
+FAST renderer 的 Start 返回 `AUDIOSTREAM_ERROR_ILLEGAL_STATE` 时，只尝试一次同格式 NORMAL 重建；其他错误不重试，不自动切无声音频。
+控制流用例：`CC=<宿主C编译器> python ohos/audio/test_start.py`，不需要 OHOS SDK，覆盖 8 条成功/失败路径。它不替代设备音频或实时回调验证。
+
 复用 android/native/pcm_ring.c，鸿蒙仅提供 OHAudio 输出、回调与控制线程边界。它独立于旧/新图形后端，不携带游戏数据或签名材料。
 
 ## 构建

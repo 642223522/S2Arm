@@ -22,6 +22,7 @@ struct s2a_ohaudio {
     int format, rate, channels, wake_fd;
     int32_t burst_frames;
     uint32_t reopens;
+    int normal_latency;               // control thread only: FAST stream refused to start, use NORMAL
     _Atomic int wants_running, focus_paused, stop_hint, closing;
     _Atomic int reopen_pending, control_pending, last_error;
     _Atomic int shared_duck, shared_mute;
@@ -123,7 +124,7 @@ static int open_stream(struct s2a_ohaudio *a) {
         && !(e = OH_AudioStreamBuilder_SetChannelCount(builder, a->channels))
         && !(e = OH_AudioStreamBuilder_SetSampleFormat(builder, expected))
         && !(e = OH_AudioStreamBuilder_SetEncodingType(builder, AUDIOSTREAM_ENCODING_TYPE_RAW))
-        && !(e = OH_AudioStreamBuilder_SetLatencyMode(builder, AUDIOSTREAM_LATENCY_MODE_FAST))
+        && !(e = OH_AudioStreamBuilder_SetLatencyMode(builder, a->normal_latency ? AUDIOSTREAM_LATENCY_MODE_NORMAL : AUDIOSTREAM_LATENCY_MODE_FAST))
         && !(e = OH_AudioStreamBuilder_SetRendererInfo(builder, AUDIOSTREAM_USAGE_GAME))
         && !(e = OH_AudioStreamBuilder_SetRendererWriteDataCallback(builder, on_data, a))
         && !(e = OH_AudioStreamBuilder_SetRendererInterruptCallback(builder, on_interrupt, a))
@@ -150,7 +151,19 @@ static int apply_control(struct s2a_ohaudio *a) {
     int e = OH_AudioRenderer_GetCurrentState(a->renderer, &state);
     if (e) return record_error(a, -e);
     int run = atomic_load(&a->wants_running) && !atomic_load(&a->focus_paused);
-    if (run && state != AUDIOSTREAM_STATE_RUNNING) e = OH_AudioRenderer_Start(a->renderer);
+    if (run && state != AUDIOSTREAM_STATE_RUNNING) {
+        e = OH_AudioRenderer_Start(a->renderer);
+        // A FAST stream can be created but refuse to start where the output has no low-latency path
+        // (OpenHarmony 7.0.0.39 emulator, ALSA loopback: AUDIOSTREAM_ERROR_ILLEGAL_STATE). Same format, NORMAL latency.
+        if (e == AUDIOSTREAM_ERROR_ILLEGAL_STATE && !a->normal_latency) {
+            fprintf(stderr, "[OHAudio] FAST stream start failed (%d); reopening with NORMAL latency\n", e);
+            a->normal_latency = 1;
+            int r = release_stream(a);
+            if (!r) r = open_stream(a);
+            if (r) return r;
+            e = OH_AudioRenderer_Start(a->renderer);
+        }
+    }
     else if (!run && state == AUDIOSTREAM_STATE_RUNNING)
         e = atomic_load(&a->stop_hint) ? OH_AudioRenderer_Stop(a->renderer) : OH_AudioRenderer_Pause(a->renderer);
     else if (state == AUDIOSTREAM_STATE_INVALID || state == AUDIOSTREAM_STATE_RELEASED) e = EIO;
