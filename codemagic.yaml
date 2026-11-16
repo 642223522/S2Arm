@@ -168,7 +168,7 @@ workflows:
 
       - name: Collect deliverables and upload to relay
         script: |
-          set -ux
+          set -eux
           FF_WORK="$HOME/ff-work"
           D="$FF_WORK/deliver"
           mkdir -p "$D/logs"
@@ -231,16 +231,47 @@ workflows:
           "
           fi
           echo "output release id: $REL_ID"
+          # STREAMING upload: curl --data-binary loads the whole file into
+          # RAM and OOMs on 1.8 GB parts (build #3 lost 7 of 8 parts this
+          # way while reporting success). curl -T streams from disk.
+          # Every upload is checked by HTTP status, and the step fails fast
+          # unless every local file appears in the release byte-exact.
           for f in "$D"/*; do
+            [ -f "$f" ] || continue
             n=$(basename "$f")
-            echo "uploading $n ($(stat -f%z "$f") bytes)"
-            curl -s -X POST -H "Authorization: Bearer $RELAY_TOKEN" \
+            sz=$(stat -f%z "$f")
+            echo "uploading $n ($sz bytes) [streaming curl -T]"
+            resp=$(curl -s -w '\n%{http_code}' -X POST -H "Authorization: Bearer $RELAY_TOKEN" \
               -H "Content-Type: application/octet-stream" \
-              --data-binary @"$f" \
-              "https://uploads.github.com/repos/642223522/game-relay/releases/$REL_ID/assets?name=$n" \
-              | python3 -c "import sys, json; d = json.load(sys.stdin); print(' ->', d.get('name'), d.get('size'), d.get('state'))"
+              -T "$f" \
+              "https://uploads.github.com/repos/642223522/game-relay/releases/$REL_ID/assets?name=$n")
+            code=$(printf '%s' "$resp" | tail -1)
+            echo " -> HTTP $code"
+            [ "$code" = "201" ] || { echo "UPLOAD FAILED for $n (HTTP $code): $(printf '%s' "$resp" | head -c 400)"; exit 1; }
           done
-          echo "ALL UPLOADS DONE"
+          python3 - "$D" "$REL_ID" <<'PYEOF'
+          import sys, json, os, urllib.request
+          d, rel = sys.argv[1], sys.argv[2]
+          tok = os.environ['RELAY_TOKEN']
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/642223522/game-relay/releases/{rel}/assets?per_page=100",
+              headers={'Authorization': f'Bearer {tok}', 'Accept': 'application/vnd.github+json'})
+          assets = {a['name']: a['size'] for a in json.load(urllib.request.urlopen(req))}
+          bad = []
+          for name in sorted(os.listdir(d)):
+              p = os.path.join(d, name)
+              if not os.path.isfile(p):
+                  continue
+              want, got = os.path.getsize(p), assets.get(name)
+              print(f"{name}: local {want} remote {got}")
+              if got != want:
+                  bad.append(name)
+          if bad:
+              print("MISSING/MISMATCHED:", bad)
+              sys.exit(1)
+          print("release assets verified byte-exact")
+          PYEOF
+          echo "ALL UPLOADS VERIFIED"
 
     artifacts:
       - /Users/builder/ff-work/deliver/*.ipa
