@@ -41,16 +41,18 @@ static volatile uint64_t g_pool_epoch = 1;
 // 上次命中的池（无锁读）：用奇偶序号做 seqlock，读侧看到序号变化就放弃快路——
 // 只靠「代际 + 两个字段」会被撕裂读（新起点配旧长度）误判成命中，进而把地址解析到错的池上。
 static volatile uint64_t g_pool_lh_seq;
-// lim: upper bound of the interval this entry answers for (= the next pool start, UINT64_MAX for the last pool).
-// Without it the fast path would answer addresses past a nested pool with the outer pool, disagreeing with the locked search.
-static struct { uint64_t a, n, lim, epoch; } g_pool_lh;
+// [lo, lim): the interval this entry truly answers for. lim = the next pool start (UINT64_MAX for the last pool);
+// lo = the greatest end among the pools the binary search passed over after the hit (none of them can cover an
+// address at or past its end). Without them the fast path would answer addresses past a nested pool with the
+// outer pool, or fall back to the locked search on every nested lookup.
+static struct { uint64_t a, n, lo, lim, epoch; } g_pool_lh;
 // 线程内备忘（#974 问 3，维护者答「做」）：上面「上次命中的池」全局只有一格，而一笔绘制要在顶点池 / 常量缓冲池 / 索引池之间来回，
 // 那一格几乎总被别的池占着，多数查找仍然抢全局锁 + 二分（真机取样：rp_pool_find 占回放线程 2.6%，每帧约 4500 段）。
 // 每个线程多记 16 个池，命中时不抢锁、不碰任何共享的缓存行。
 // 键 = 地址区间 [a, lim)：池表按起点升序，二分的候选是「起点不超过地址的最后一个池」，区间内任何地址的候选都是这一个池；
 // 命中后「装不装得下」用与锁内二分逐字相同的算术判，装不下就不算命中、照旧走锁内——答案与锁内二分逐位一致，不改任何返回值。
 // 代际：与上面同一个 g_pool_epoch（加池 / 删池都会推进）；记录发生在锁内，读到的代际与表同时成立；代际一变整张作废。
-typedef struct { uint64_t a, n, lim, epoch; } pool_memo;   // 区间 [a, lim) 内的地址，二分候选都是起点 a、长 n 的这个池
+typedef struct { uint64_t a, n, lo, lim, epoch; } pool_memo;   // 区间 [a, lim) 内的地址，二分候选都是起点 a、长 n 的这个池
 enum { POOL_MEMO_N = 16 };   // 2 的幂
 // 一个线程一份、整块放进同一个 _Thread_local 对象：每个 _Thread_local 变量在动态装载的 .so 里（安卓 dlopen 进来的游戏库）每次取址都要
 // 调一次 TLS 描述符的解析函数（linker64 里，约几十条指令、还要查 DTV 代际）。原先 memo 数组 / put / mru / hits / lookups / tick 是六个独立变量，
@@ -61,6 +63,7 @@ typedef struct {
     uint64_t hits, lookups;
 } pool_tls;
 static _Thread_local pool_tls g_pool_tls;
+static _Atomic uint64_t g_pool_fast_hits;   // pool_find_fast() answers (observability for tests / tuning)
 static int g_pool_memo_on = -1;   // nvn_plat_flag("nvk_pool_memo", 1)：缺省开；每 4096 次查找重读一次（release 包里直接是缺省）
 void rp_pool_memo_stats(uint64_t *hits, uint64_t *lookups) { const pool_tls *t = &g_pool_tls; *hits = t->hits; *lookups = t->lookups; }   // 调用线程自己的累计
 static int pool_find_memo(uint64_t addr, uint64_t len, const uint8_t **mem, uint64_t *size) {
@@ -73,8 +76,8 @@ static int pool_find_memo(uint64_t addr, uint64_t len, const uint8_t **mem, uint
     for (unsigned j = 0; j < POOL_MEMO_N; j++) {
         const unsigned i = (t->mru + j) & (POOL_MEMO_N - 1);   // 先看上次命中的那一项：相邻两次查找多半在同一个池
         const pool_memo *m = &t->memo[i];
-        if (m->epoch != ep || addr < m->a || addr >= m->lim) continue;
-        if (addr - m->a > m->n || len > m->n - (addr - m->a)) return 0;   // 候选是它但装不下：锁内二分同样判不命中，交给锁内
+        if (m->epoch != ep || addr < m->lo || addr >= m->lim) continue;
+        if (addr - m->a > m->n || len > m->n - (addr - m->a)) continue;   // 区间内但装不下：池可能嵌套，看后面的记录，都不行再落回锁内
         t->mru = i; t->hits++;
         if (mem) *mem = (const uint8_t *)(uintptr_t)m->a;
         if (size) *size = m->n;
@@ -102,15 +105,23 @@ static int pool_find_locked(uint64_t addr, uint64_t len, const uint8_t **mem, ui
     if (hit < 0) return 0;
     const int ci = hit;
     uint64_t b = (uint64_t)(uintptr_t)g_pool[ci].mem, sz = g_pool[ci].size;
+    // Answer interval [lo, lim): lim is where the binary search stops pointing at ci; lo is the greatest end
+    // among the pools ci+1..cand the search passed over (none of them can cover an address at/after it).
+    uint64_t alo = b;
+    for (int k = ci + 1; k <= cand; k++) {
+        uint64_t ke = (uint64_t)(uintptr_t)g_pool[k].mem + g_pool[k].size;
+        if (ke > alo) alo = ke;
+    }
+    uint64_t lim = cand + 1 < g_npool ? (uint64_t)(uintptr_t)g_pool[cand + 1].mem : UINT64_MAX;
     if (mem) *mem = g_pool[ci].mem;
     if (size) *size = sz;
     const uint64_t ep = __atomic_load_n(&g_pool_epoch, __ATOMIC_RELAXED);
     __atomic_add_fetch(&g_pool_lh_seq, 1, __ATOMIC_RELEASE);   // 奇数：正在写
-    g_pool_lh.a = b; g_pool_lh.n = sz; g_pool_lh.lim = ci + 1 < g_npool ? (uint64_t)(uintptr_t)g_pool[ci + 1].mem : UINT64_MAX; g_pool_lh.epoch = ep;
+    g_pool_lh.a = b; g_pool_lh.n = sz; g_pool_lh.lo = alo; g_pool_lh.lim = lim; g_pool_lh.epoch = ep;
     __atomic_add_fetch(&g_pool_lh_seq, 1, __ATOMIC_RELEASE);   // 偶数：写完
     if (__atomic_load_n(&g_pool_memo_on, __ATOMIC_RELAXED) > 0) {   // 备忘开着才记（关着时行为与改动前完全一致）
         pool_tls *const t = &g_pool_tls;
-        t->memo[t->put++ & (POOL_MEMO_N - 1)] = (pool_memo){b, sz, ci + 1 < g_npool ? (uint64_t)(uintptr_t)g_pool[ci + 1].mem : UINT64_MAX, ep};
+        t->memo[t->put++ & (POOL_MEMO_N - 1)] = (pool_memo){b, sz, alo, lim, ep};
     }
     return 1;
 }
@@ -118,14 +129,15 @@ static int pool_find_fast(uint64_t addr, uint64_t len, const uint8_t **mem, uint
     const uint64_t ep = __atomic_load_n(&g_pool_epoch, __ATOMIC_ACQUIRE);
     const uint64_t s1 = __atomic_load_n(&g_pool_lh_seq, __ATOMIC_ACQUIRE);
     if (s1 & 1) return 0;                                   // 正在写：这一笔走锁内二分
-    uint64_t a = g_pool_lh.a, n = g_pool_lh.n, lim = g_pool_lh.lim, cep = g_pool_lh.epoch;
+    uint64_t a = g_pool_lh.a, n = g_pool_lh.n, lo = g_pool_lh.lo, lim = g_pool_lh.lim, cep = g_pool_lh.epoch;
     const uint64_t s2 = __atomic_load_n(&g_pool_lh_seq, __ATOMIC_ACQUIRE);
     if (s1 != s2 || cep != ep) return 0;
     if (!a) return 0;
-    if (addr >= lim) return 0;   // past a nested pool: the locked search decides
-    if (addr < a || addr - a > n || len > n - (addr - a)) return 0;
+    if (addr < lo || addr >= lim) return 0;   // outside the answer interval: the locked search decides
+    if (addr - a > n || len > n - (addr - a)) return 0;
     if (mem) *mem = (const uint8_t *)(uintptr_t)a;
     if (size) *size = n;
+    __atomic_fetch_add(&g_pool_fast_hits, 1, __ATOMIC_RELAXED);
     return 1;
 }
 void nvn_be_pool_add(const void *mem, uint64_t size) {
@@ -174,6 +186,7 @@ int rp_pool_find(uint64_t addr, uint64_t len, const uint8_t **mem, uint64_t *siz
     return hit;
 }
 int rp_pool_count(void) { pthread_mutex_lock(&g_mu); int n = g_npool; pthread_mutex_unlock(&g_mu); return n; }
+uint64_t rp_pool_fast_hits(void) { return __atomic_load_n(&g_pool_fast_hits, __ATOMIC_RELAXED); }
 void nvn_be_pool_addressed(const void *mem, uint64_t size) { (void)mem; (void)size; }   // 原始全局内存表：翻译器的裸地址访问接上时用
 
 // ---------- 贴图：初始化只登记序号，建图在首次使用（nvn_mtl.m:2597 / :4113）----------
