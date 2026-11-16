@@ -126,6 +126,7 @@ static int pool_find_locked(uint64_t addr, uint64_t len, const uint8_t **mem, ui
     return 1;
 }
 static int pool_find_fast(uint64_t addr, uint64_t len, const uint8_t **mem, uint64_t *size) {   // 快路：不抢锁；代际一致才认
+    if (nvn_plat_flag("nvk_pool_nofast", 0)) return 0;   // debug.s2a.nvk_pool_nofast=1 关快路（缺省开；玩家包恒缺省）
     const uint64_t ep = __atomic_load_n(&g_pool_epoch, __ATOMIC_ACQUIRE);
     const uint64_t s1 = __atomic_load_n(&g_pool_lh_seq, __ATOMIC_ACQUIRE);
     if (s1 & 1) return 0;                                   // 正在写：这一笔走锁内二分
