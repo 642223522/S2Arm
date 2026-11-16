@@ -94,7 +94,8 @@ if(ANDROID)
         if(S2ARM_ANDROID_VK_BACKEND STREQUAL "nvk")
             # 新回放层直接实现 nvn_be_*：没有名字转接头，没有 shim。回放核心与后端源在 LinkSources.cmake 的 nvk 清单里。
             target_sources(s2arm_android PRIVATE ${s2a_frontend_c}
-                native/gfx_plat/provider_nvk.c native/direct/profile_compose.c)
+                native/gfx_plat/provider_nvk.c native/direct/profile_compose.c
+                native/nvn/guest_window_crop.c native/nvn/guest_window_crop.S)
             target_compile_definitions(s2arm_android PRIVATE S2A_ANDROID_VK_BACKEND_NVK=1)
         else()
             # 共享前端的后端入口名是 main 的 nvn_be_*；本线 Android 后端仍以 mtl_* 实现。

@@ -3074,7 +3074,11 @@ static void nvn2_win_builder_defaults(NVNwindowBuilder *b);   // 「NVN2 入口�
 NVN(nvnWindowBuilderSetDefaults, void, NVNwindowBuilder *b) { NVNdevice *dev = WB(b)->dev; memset(b, 0, sizeof(win_builder_t)); WB(b)->dev = dev; WB(b)->interval = 1;
     if (nvn2_on()) nvn2_win_builder_defaults(b); }   // NVN2 字段在 0x40 之后：只有 Switch 2 的构建器有那么大
 NVN(nvnWindowBuilderSetDevice, void, NVNwindowBuilder *b, NVNdevice *d) { WB(b)->dev = d; }
-NVN(nvnWindowBuilderSetNativeWindow, void, NVNwindowBuilder *b, NVNnativeWindow w) { WB(b)->native = w; }
+extern void nvn_plat_guest_window_watch(void *) __attribute__((weak));
+NVN(nvnWindowBuilderSetNativeWindow, void, NVNwindowBuilder *b, NVNnativeWindow w) {
+    WB(b)->native = w;
+    if (nvn_plat_guest_window_watch) nvn_plat_guest_window_watch(w);
+}
 NVN(nvnWindowBuilderSetTextures, void, NVNwindowBuilder *b, int n, NVNtexture *const *t) {
     if (n < 0 || n > 4) { LOG("【红】 WindowBuilderSetTextures count %d", n); n = n < 0 ? 0 : 4; }
     WB(b)->ntex = n; for (int i = 0; i < n; i++) WB(b)->tex[i] = t[i];
