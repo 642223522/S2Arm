@@ -620,3 +620,5 @@
 20261117-1546-snapshot-hooks.patch
 20261117-2020-shared-font-read-once.patch
 20261117-1813-ampere-image-atomic-bank.patch
+20261116-1626-audio-dsp-datasource-drop-redundant-tofloat.patch
+20261116-1627-audio-dsp-device-sink-conditional-clear.patch
