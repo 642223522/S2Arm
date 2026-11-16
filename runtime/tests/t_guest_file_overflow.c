@@ -154,6 +154,20 @@ int main(void) {
             CHECK(v == 1533 * MB && src == 3, "⑫ 没记录 → 首局估计 1533（得 %llu MB，来源 %d）", (unsigned long long)(v / MB), src);
             setenv("S2A_GUEST_FILE_OVERFLOW_HOST_MB", "3000", 1); v = s2a_guest_overflow_budget_ios(NULL, 6141 * MB, 512 * MB, 0, &src, &pb, &ph); unsetenv("S2A_GUEST_FILE_OVERFLOW_HOST_MB");
             CHECK(v == 2629 * MB, "⑫ S2A_GUEST_FILE_OVERFLOW_HOST_MB=3000 → 2629（得 %llu MB）", (unsigned long long)(v / MB));
+            {   // ⑫b 两局上限不同（11-16 真机：8189 → 6141）：上局起局剩余 8189、预算 3581、剩余最小 4835；这局剩余 6141 → 剩余最小按差 2048 扣成 2787，
+                //   预算 3581 + 2787 − 512 − 32 = 5824，夹到 6141 − 512 = 5629；这局剩余 8189 → 不扣：3581 + 4835 − 512 − 32 = 7872，夹到 7677
+                FILE *f = fopen(rp, "w"); fprintf(f, "3581 4835 8189\n"); fclose(f);
+                uint64_t v1 = s2a_guest_overflow_budget_ios(NULL, 6141 * MB, 512 * MB, 0, &src, &pb, &ph);
+                CHECK(v1 == 5629 * MB && ph == 2787 * MB, "⑫b 上限低 2048：剩余最小扣成 %llu（期望 2787）、预算 %llu（期望 5629）", (unsigned long long)(ph / MB), (unsigned long long)(v1 / MB));
+                f = fopen(rp, "w"); fprintf(f, "1000 3000 8189\n"); fclose(f);
+                v1 = s2a_guest_overflow_budget_ios(NULL, 6141 * MB, 512 * MB, 0, &src, &pb, &ph);
+                CHECK(v1 == 1000 * MB + 952 * MB - 512 * MB - 32 * MB && ph == 952 * MB, "⑫b 不夹时：1000 + (3000 − 2048) − 512 − 32 = 1408（得 %llu）", (unsigned long long)(v1 / MB));
+                f = fopen(rp, "w"); fprintf(f, "1000 3000 6141\n"); fclose(f);
+                v1 = s2a_guest_overflow_budget_ios(NULL, 8189 * MB, 512 * MB, 0, &src, &pb, &ph);
+                CHECK(v1 == 3456 * MB && ph == 3000 * MB, "⑫b 上限高了不加：1000 + 3000 − 512 − 32 = 3456（得 %llu）", (unsigned long long)(v1 / MB));
+                s2a_guest_budget_note(1234 * MB); unsigned long long x = 0, y = 0, z = 0; f = fopen(rp, "r"); int n3 = f ? fscanf(f, "%llu %llu %llu", &x, &y, &z) : 0; if (f) fclose(f);
+                CHECK(n3 == 3 && z == 8189, "⑫b 记录第三项写这局起局剩余 %llu（期望 8189）", z);
+            }
             unlink(rp); rmdir(d); unsetenv("S2A_GUEST_MEM_PEAK");
         }
     }
