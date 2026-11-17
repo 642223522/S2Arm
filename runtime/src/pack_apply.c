@@ -463,6 +463,14 @@ unsigned s2a_pack_repair_modes_as(const char *docs, const char *root, unsigned s
     if (!lstat(root, &st) && S_ISDIR(st.st_mode)) nftw(root, repair_one, 32, FTW_PHYS);
     return g_repair_n;
 }
+// App 启动时整棵补（ios/app.m img_scan_bg，在任何解包之前）：推送一报「写不进」电脑端就停，走不到解包开头那次补，
+//   玩家只能删 App 重装（D-A76N 第二回：照提示删了 Mac 上的游戏重出，还是写不进）。容器 Documents 与 Library 下 S2Arm 目录各跑一次，
+//   只补 App 自己名下的；归别的用户的（#569）照旧不动、照旧报
+unsigned s2a_pack_repair_tree(const char *dir) {
+    g_repair_n = 0; g_repair_self = repair_self(); struct stat st;
+    if (dir && !lstat(dir, &st) && S_ISDIR(st.st_mode)) nftw(dir, repair_one, 32, FTW_PHYS);
+    return g_repair_n;
+}
 int s2a_pack_apply(const char *docs) {
     char root[2048], inc[2100], logp[2100]; s2a_pack_root(root, sizeof root, docs); snprintf(inc, sizeof inc, "%s/.incoming", root); snprintf(logp, sizeof logp, "%s/unpack.log", docs);
     if (pack_in_bundle(root, "解开资源包")) return -12;   // 同「目录写不进」的码
