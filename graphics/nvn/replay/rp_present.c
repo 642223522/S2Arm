@@ -2,7 +2,9 @@
 // 现在的做法：游戏调上屏时在调用线程上直接取一张交换链图、把游戏的贴图按比例贴上去、呈现。
 // 还没接：独立的上屏线程与显示节拍（按住 N 拍、选帧、虚拟拍）、实际上屏时刻（后端没有这项能力时按交给呈现引擎的时刻记）、后处理与抗锯齿缩放。
 #include <time.h>
+#include <stdatomic.h>
 #include "rp_exec.h"
+#include "rp_fps_seg.h"
 #include "rp_res.h"
 #include "nvn_unimpl.h"
 #include "nvn_plat.h"
@@ -110,6 +112,12 @@ static void on_shown(void *user, const nvn_gpu_shown *s) {   // 持 g_pmu 的 pr
 // This backend resolves initial storage synchronously in rp_present_view below;
 // there is no handoff to a separate presentation thread to prepare for.
 void nvn_be_present_prepare(const tex_t *t) { (void)t; }
+// 按游戏申请的帧率分段（rp_fps_seg.h）：前端每次上屏前交来此刻的交换间隔与设它的时刻；只进「分时（目标帧率）」日志，不改上屏节拍。
+static _Atomic int g_tgt_itv = 1;
+static _Atomic uint64_t g_tgt_set_ns;
+static struct fseg_win g_fseg;   // [上屏] 线程独占
+void nvn_be_present_target(int interval, uint64_t set_ns) { atomic_store_explicit(&g_tgt_itv, interval, memory_order_relaxed); atomic_store_explicit(&g_tgt_set_ns, set_ns, memory_order_relaxed); }
+static void fseg_out(const char *line) { nvn_plat_log(NVN_PLAT_LOG_INFO, "present", line); }
 
 // ---------- 诊断：池查找统计（开关 debug.s2a.pool_stats=1，缺省关；#1368 三档读数）----------
 // 每 1024 帧（上屏的帧边界，回放线程）打一行，会话收尾再打一行；开着时 0 值也打。行形态（nvn_plat_log：logcat + 宿主日志）：
@@ -192,6 +200,7 @@ uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]) {
         {   // 分时读数：每 5 秒一行（帧率低的时候「每 600 帧」等不到）
             static uint64_t t_last, n_last, d_last; struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); uint64_t now = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
             if (!t_last) t_last = now;
+            fseg_frame(&g_fseg, now, atomic_load_explicit(&g_tgt_itv, memory_order_relaxed), atomic_load_explicit(&g_tgt_set_ns, memory_order_relaxed));
             if (now - t_last >= 5000000000ull) {
                 uint64_t pf[RP_PERF_N], nd = 0, nsk = 0; rp_perf_take(pf); rp_draw_stats(&nd, &nsk);
                 uint64_t fr = g_n_shown + 1 - n_last; double sec = (double)(now - t_last) / 1e9, f = fr ? (double)fr : 1.0;
@@ -283,6 +292,7 @@ uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]) {
                     snprintf(b, sizeof b, "分时（线程内备忘，每帧）：池查找 备忘命中 %.0f 次 / 共 %.0f 次", (double)(ph - ph0) / f, (double)(pl - pl0) / f);
                     nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b);
                     ph0 = ph; pl0 = pl; }
+                fseg_emit(&g_fseg, now, fseg_out);   // 本窗口按游戏申请的交换间隔分段：每段一行（目标 / 实际帧率、达标比例、慢帧），然后开下一窗口
                 t_last = now; n_last = g_n_shown + 1; d_last = nd;
             }
         }
@@ -315,4 +325,4 @@ double nvn_be_presented_time(uint64_t n) {
     return at;
 }
 void rp_present_stats(uint64_t *shown, uint64_t *dropped) { pthread_mutex_lock(&g_pmu); if (shown) *shown = g_n_shown; if (dropped) *dropped = g_n_dropped; pthread_mutex_unlock(&g_pmu); }
-void rp_present_reset(void) { pthread_mutex_lock(&g_pmu); g_surf = NULL; g_hz = 0; g_ticket = 0; g_n_shown = g_n_dropped = 0; memset(g_shown, 0, sizeof g_shown); pthread_mutex_unlock(&g_pmu); }
+void rp_present_reset(void) { pthread_mutex_lock(&g_pmu); g_surf = NULL; g_hz = 0; g_ticket = 0; g_n_shown = g_n_dropped = 0; memset(g_shown, 0, sizeof g_shown); memset(&g_fseg, 0, sizeof g_fseg); pthread_mutex_unlock(&g_pmu); }

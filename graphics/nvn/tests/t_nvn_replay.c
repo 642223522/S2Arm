@@ -6,6 +6,7 @@
 #include "nvn_mtl.h"
 #include "../replay/rp_state.h"
 #include "../replay/rp_exec.h"
+#include "../replay/rp_fps_seg.h"
 #include "../replay/rp_res.h"
 #include "../replay/rp_shader.h"
 #include "nvn_refl.h"
@@ -4287,6 +4288,43 @@ static void t_sync_reuse_after_gpu_write(void) {
     nvn_be_pool_del(g_pmem); g_buf_cpu_auto = 0;
 }
 
+// ---------- 「分时」按游戏申请的帧率分段（rp_fps_seg.h）----------
+// 一个窗口里 60 → 30 → 60：各段的目标、帧数、实际帧率、达标比例、慢帧计数都按手算的对；空窗口 0 值也打。时间都是整纳秒，期望值手算：
+//   段 1 间隔 1：100.000 秒起每 1/60 秒一帧共 100 帧，再隔 120 毫秒一帧（101 帧；慢帧 1.5 倍 1、100 毫秒 1）；101.800 秒游戏设间隔 2
+//   段 2 间隔 2：101.800 起每 1/30 秒一帧 30 帧（第一帧离上一帧 63 毫秒 > 50），再隔 60 毫秒一帧（31 帧；1.5 倍 2、100 毫秒 0）；102.900 秒设回 1
+//   段 3 间隔 1：102.900 起每 1/60 秒一帧 60 帧（第一帧离上一帧 57 毫秒 > 25；1.5 倍 1），收尾在 103.900 秒
+//   实际帧率：101 / 1.8 = 56.1（达标 94%），31 / 1.1 = 28.2（94%），60 / 1.0 = 60.0（100%）
+static char g_fseg_lines[6][400]; static int g_fseg_n;
+static void fseg_cap(const char *l) { if (g_fseg_n < 6) snprintf(g_fseg_lines[g_fseg_n], 400, "%s", l); g_fseg_n++; }
+static void t_fps_target_segments(void) {
+    struct fseg_win w; memset(&w, 0, sizeof w); g_fseg_n = 0;
+    const uint64_t S = 1000000000ull, T0 = 100 * S;
+    uint64_t t = 0;
+    for (uint64_t k = 0; k < 100; k++) { t = T0 + k * S / 60; fseg_frame(&w, t, 1, 0); }
+    t += 120000000ull; fseg_frame(&w, t, 1, 0);
+    const uint64_t set2 = T0 + 1800000000ull, set3 = T0 + 2900000000ull;
+    for (uint64_t j = 1; j <= 30; j++) { t = set2 + j * S / 30; fseg_frame(&w, t, 2, set2); }
+    t += 60000000ull; fseg_frame(&w, t, 2, set2);
+    for (uint64_t m = 1; m <= 60; m++) { t = set3 + m * S / 60; fseg_frame(&w, t, 1, set3); }
+    CHECK(w.n == 3 && w.s[0].frames == 101 && w.s[1].frames == 31 && w.s[2].frames == 60);
+    CHECK(w.s[1].t0 == set2 && w.s[2].t0 == set3);                       // 断段在游戏设间隔的时刻，不在下一帧
+    fseg_emit(&w, t, fseg_cap);
+    CHECK(g_fseg_n == 3);
+    CHECK(strstr(g_fseg_lines[0], "第 1/3 段 100.000–101.800 秒（1.80 秒）：游戏申请交换间隔 1（目标 60.0 帧/秒、帧间隔 16.7 毫秒）；上屏 101 帧、实际 56.1 帧/秒、达标 94%；超过目标间隔 1.5 倍 1 帧、超过 100 毫秒 1 帧") != NULL);
+    CHECK(strstr(g_fseg_lines[1], "第 2/3 段 101.800–102.900 秒（1.10 秒）：游戏申请交换间隔 2（目标 30.0 帧/秒、帧间隔 33.3 毫秒）；上屏 31 帧、实际 28.2 帧/秒、达标 94%；超过目标间隔 1.5 倍 2 帧、超过 100 毫秒 0 帧") != NULL);
+    CHECK(strstr(g_fseg_lines[2], "第 3/3 段 102.900–103.900 秒（1.00 秒）：游戏申请交换间隔 1（目标 60.0 帧/秒、帧间隔 16.7 毫秒）；上屏 60 帧、实际 60.0 帧/秒、达标 100%；超过目标间隔 1.5 倍 1 帧、超过 100 毫秒 0 帧") != NULL);
+    // 下一窗口沿用最后的间隔；一帧没上屏也打一行（0 值）
+    CHECK(w.n == 1 && w.s[0].itv == 1 && w.s[0].frames == 0 && w.s[0].t0 == t);
+    fseg_emit(&w, t + 5 * S, fseg_cap);
+    CHECK(g_fseg_n == 4 && strstr(g_fseg_lines[3], "第 1/1 段") && strstr(g_fseg_lines[3], "上屏 0 帧、实际 0.0 帧/秒、达标 0%；超过目标间隔 1.5 倍 0 帧、超过 100 毫秒 0 帧"));
+    // 设的时刻不在当前段里（早于段起点）：断在这一帧
+    memset(&w, 0, sizeof w); fseg_frame(&w, T0, 1, 0); fseg_frame(&w, T0 + S, 2, T0 - S);
+    CHECK(w.n == 2 && w.s[1].t0 == T0 + S);
+    g_fseg_n = 0; fseg_emit(&w, T0 + 2 * S, fseg_cap);
+    CHECK(g_fseg_n == 2 && w.n == 1 && w.s[0].itv == 2);             // 窗口收在间隔 2：下一窗口从间隔 2 起（不回到 1）
+    nvn_be_present_target(1, 0);                                         // 回放核心接了前端的钩子（链得上即可；上屏节拍不受它影响）
+}
+
 // ---------- 池查找统计（rp_present.c rp_pool_stats_*，开关 pool_stats；#1368 读数）----------
 // 契约：关着一行不打；开着每 1024 帧一行（0 值也打）、会话收尾一行 why=end。各字段等于对应的累计读数：
 // fast_hits = rp_pool_fast_hits()，memo_hits / lookups = rp_pool_memo_stats，span_index_hits = nvn_dirty_span_stats，
@@ -4434,6 +4472,7 @@ int main(int argc, char **argv) {
     t_pass_3d_slice_view();
     t_bind_reuse();
     t_begin_fail();
+    t_fps_target_segments();
     t_pool_stats();
     t_frame_take_delta();
     if (argc > 1 && t_table(argv[1])) g_fail++;
