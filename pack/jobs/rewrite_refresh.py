@@ -248,7 +248,27 @@ def sgrade_key(c, gid, rid, main_bid):
     import patches
     import mods   # 玩家导入的 mod 代码补丁（11-15）：导入 / 删了要重编；只开关不算（运行时开关）。没有 mod 代码补丁时记号与原来一字不差（不让所有老游戏白白重补）
     md = mods.code_digest(c, gid)
-    return f"{rid}:{plan_code_id(c)}:{patches.version_key(c, gid, main_bid)}:{cheats_digest(c, gid)}" + (f":{md}" if md != "-" else "")
+    fp = fpsl_code_id(c) if _has_fpsl(c, gid, main_bid) else ""   # 带 FPSLocker 配置的款：转换代码变了也要重出表（没带的款记号一字不变，不白白重补）
+    return (f"{rid}:{plan_code_id(c)}:{patches.version_key(c, gid, main_bid)}:{cheats_digest(c, gid)}" + (f":{md}" if md != "-" else "")
+            + (f":fpsl{fp}" if fp else ""))
+
+
+def fpsl_code_id(c):
+    """FPSLocker 配置转换代码的指纹（pack/fpslocker.py + pack/miniyaml.py）：改了 = 同一份配置会转出不同的补丁行
+    （11-17 D-7AQ2：「+160」原先读成绝对偏移，修了以后已出过包的款要按新转换重出表，走 S 级补进同一条路，玩家不用手动重出）"""
+    h = hashlib.sha256()
+    for f in ("pack/fpslocker.py", "pack/miniyaml.py"):
+        h.update((Path(c.engine) / f).read_bytes())
+    return h.hexdigest()[:12]
+
+
+def _has_fpsl(c, gid, main_bid):
+    """这款在补丁库里有没有 FPSLocker 配置（kind fpsl / .yaml）；取不到补丁库 → False（记号照旧）"""
+    import patches
+    try:
+        return any(it.get("kind") == "fpsl" or str(it.get("name", "")).lower().endswith(".yaml") for it in patches.items_for(c, gid, main_bid))
+    except (OSError, ValueError, Failure):
+        return False
 
 
 def cheats_digest(c, gid):

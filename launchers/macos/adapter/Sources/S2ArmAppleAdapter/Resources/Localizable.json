@@ -10154,5 +10154,13 @@
  {
   "source": "这份 S2Arm 没装完整：程序的两部分来自不同版本（多半是应用内更新中途失败、回滚没退干净）。这次照常出包；出包失败或游戏起不来时，请从发布页下载最新的安装包，覆盖安装一次（游戏库、存档、密钥都在别处，不受影响）。",
   "en": "This S2Arm isn't fully installed: two parts of the program are from different versions (usually an in-app update failed midway and didn't roll back cleanly). Packaging continues anyway; if packaging fails or the game won't start, download the latest installer from the release page and install over it (your library, saves and keys are stored elsewhere and are not affected)."
+ },
+ {
+  "source": "这款存档在 iCloud 云存档里有一份（{0}），覆盖装不会碰它：这次不另备份，照装",
+  "en": "This game's saves have a copy in your iCloud cloud saves ({0}), which overwriting the app won't touch: installing without a separate backup this time"
+ },
+ {
+  "source": "这台 Mac 空间不够，存档备份放不下（只剩 {0} MB）：腾出 {1} GB 再试，或者确认后继续",
+  "en": "This Mac is out of space and the save backup doesn't fit (only {0} MB left): free up {1} GB and try again, or confirm to continue"
  }
 ]

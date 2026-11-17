@@ -7,6 +7,7 @@ AltStore 重签后会在后面加团队号，按前缀认）→ 从 App 数据�
 Apple TV（11-15 tvOS 版）同一条路：同网配对过的 Apple TV 一起列进来，按 TV_ITEMS（文档根 Library/Caches/S2Arm）拉，之后照旧走诊断包导出 / 上传。
 """
 from __future__ import annotations
+import errno
 import json
 import os
 import re
@@ -37,24 +38,39 @@ NO_COREDEVICE = "这台 Mac 没装 Xcode 的设备组件（CoreDevice），读�
 
 
 DEVICECTL_TIMEOUT = 124   # devicectl 超时的返回码（同 coreutils timeout）
+DEVICECTL_NOSPACE = 28    # 这台 Mac 磁盘满、devicectl 的结果文件写不下（同 errno ENOSPC）
 
 
 def devicectl(c, *args, timeout=120):
     exe = COREDEVICE / "Resources/bin/devicectl"
     if not (exe.is_file() and os.access(exe, os.X_OK)):
         return 127, {}, NO_COREDEVICE
-    with tempfile.NamedTemporaryFile(suffix=".json", dir=c.private) as out:
-        try:
-            p = subprocess.run([str(exe), *args, "--json-output", out.name], env=c.env(), capture_output=True, text=True, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            # devicectl 会一直挂到超时（#333）：转成非零退出，不再裸 traceback 收场。原因如实只说「等了多久没返回」，不猜锁屏
-            #   （启动器剃刀 H21：推送链实测锁屏照样能写，一律说「可能锁屏了」会把玩家指错方向）；要不要提示解锁由调用方按它知道的事实判
-            return DEVICECTL_TIMEOUT, {}, f"devicectl 等了 {timeout} 秒没有返回，已停止等待"
-        try:
-            data = json.loads(Path(out.name).read_text() or "{}")
-        except ValueError:
-            data = {}
-    return p.returncode, data, (p.stderr or p.stdout).strip()
+    # 结果文件写在数据目录：Mac 磁盘满时建不出 / devicectl 写不进（玩家截图 [Errno 28]），原先 OSError 冲出去或被当成「问不出设备」。
+    #   建不出、读不全，或 devicectl 自己报没空间 → 返回 DEVICECTL_NOSPACE，调用方按「Mac 空间不够」说
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".json", dir=c.private) as out:
+            try:
+                p = subprocess.run([str(exe), *args, "--json-output", out.name], env=c.env(), capture_output=True, text=True, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                # devicectl 会一直挂到超时（#333）：转成非零退出，不再裸 traceback 收场。原因如实只说「等了多久没返回」，不猜锁屏
+                #   （启动器剃刀 H21：推送链实测锁屏照样能写，一律说「可能锁屏了」会把玩家指错方向）；要不要提示解锁由调用方按它知道的事实判
+                return DEVICECTL_TIMEOUT, {}, f"devicectl 等了 {timeout} 秒没有返回，已停止等待"
+            try:
+                data = json.loads(Path(out.name).read_text() or "{}")
+            except ValueError:
+                data = {}
+    except OSError as e:
+        if e.errno == errno.ENOSPC:
+            return DEVICECTL_NOSPACE, {}, f"这台 Mac 磁盘满了，devicectl 的结果写不下：{e}"  # 非玩家句（玩家看到的是 install.py save_backup_stuck 那句）
+        raise
+    err = (p.stderr or p.stdout).strip()
+    if p.returncode and NOSPACE.search(err):
+        return DEVICECTL_NOSPACE, data, err
+    return p.returncode, data, err
+
+
+# 磁盘满的各种说法（Python OSError / Foundation NSPOSIXErrorDomain 28 / NSCocoaErrorDomain 640 NSFileWriteOutOfSpaceError）
+NOSPACE = re.compile(r"No space left on device|Errno 28|NSPOSIXErrorDomain[^\n]{0,40}\b28\b|Code=28\b|NSFileWriteOutOfSpaceError|Code=640\b|not enough (free )?space|out of space", re.I)
 
 
 # Apple Vision Pro（visionOS）：按 iPad 兼容 App 装（「Designed for iPad」），走和 iPad 同一条路——理论支持、未真机验证（没有实物）。

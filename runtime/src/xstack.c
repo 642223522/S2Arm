@@ -47,10 +47,8 @@ static const char *const k_leaf[] = {"memcpy", "memset", "memmove", "memcmp", "m
 const char *s2a_xs_leaf_name(unsigned i) { return i < sizeof k_leaf / sizeof *k_leaf ? k_leaf[i] : NULL; }   // 单测逐个核整份名单
 #endif
 // 叶子函数也套桩（11-17 D-DVZZ：客体 sp 不对齐时宿主叶子函数开头一压栈就 SIGBUS）：叶子桩 xs_leaf_stubs 不切栈，只在 sp 不对齐时先对齐、调完恢复（entry.S xs_leaf_entry）
-void *sw_xstack_wrap(const char *name, void *fn) {
+static void *xs_wrap(const char *name, void *fn, int leaf) {
     if (!fn) return fn;
-    int leaf = 0;
-    for (unsigned i = 0; i < sizeof k_leaf / sizeof *k_leaf && !leaf; i++) leaf = !strcmp(name, k_leaf[i]);
     const uint32_t *stubs = leaf ? xs_leaf_stubs : xs_stubs;
     pthread_mutex_lock(&g_xs_mu);
     for (unsigned i = 0; i < g_nxs; i++) if (g_xs_fn[i] == fn) { pthread_mutex_unlock(&g_xs_mu); return (void *)&stubs[2 * i]; }   // 同一实现共用一个编号（两种桩按名字取）
@@ -59,6 +57,13 @@ void *sw_xstack_wrap(const char *name, void *fn) {
     pthread_mutex_unlock(&g_xs_mu);
     return (void *)&stubs[2 * i];
 }
+void *sw_xstack_wrap(const char *name, void *fn) {
+    int leaf = 0;
+    for (unsigned i = 0; i < sizeof k_leaf / sizeof *k_leaf && !leaf; i++) leaf = !strcmp(name, k_leaf[i]);
+    return xs_wrap(name, fn, leaf);
+}
+// 不在名单里、但同样留在游戏栈上跑的宿主函数（直连层 NVN 命令录制，每帧上万次；graphics/nvn/gfx/nvn/hle_nvn.c nvn_leaf_wrap）：一律给叶子桩
+void *sw_xstack_leaf(const char *name, void *fn) { return xs_wrap(name, fn, 1); }
 // 客体线程在宿主栈上、进客体之前调：top = 宿主代码从这里往下用（调用方自己的活帧在其上）
 static void xs_plat_init(void) {
     uint64_t off;
