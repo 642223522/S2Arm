@@ -444,6 +444,63 @@ class BigFallback(unittest.TestCase):
         self.assertIn("本机可用内存", err)
 
 
+class NoSpace(unittest.TestCase):
+    """手机写满了：同一族报错各种说法都认，按写满报，不报成连接中断（11-17 Duo 实测：AFC「No space left」被说成「devicectl 退出码 1，确认数据线插稳」）。
+    原文取自真机日志与工具输出，期望手写"""
+    REAL = ["推 Library/Application Support/S2Arm/games/0400C3F00006E000/资源包/game.img 失败：写文件失败：afc error: No space left",   # s2a-devpush 写（11-17 Duo）
+            "打不开 Library/Application Support/S2Arm/games/0400C3F00006E000/资源包/game.img：afc error: No space left",            # s2a-devpush 再打开（同上）
+            "ERROR: The operation couldn’t be completed. (NSPOSIXErrorDomain error 28 - No space left on device)",                  # devicectl
+            "Underlying error: POSIX error code 28",                                                                              # devicectl cp.log
+            "afc_file_write returned AFC_E_NO_SPACE_LEFT",                                                                        # libimobiledevice
+            "OSError: [Errno 28] No space left on device (ENOSPC)"]
+    NOT = ["写文件失败：device socket io failed", "NSPOSIXErrorDomain error 280", "POSIX error code 2", "afc error: Permission denied", ""]
+
+    def test_family(self):
+        for t in self.REAL: self.assertTrue(push.nospace(t), t)
+        for t in self.NOT: self.assertFalse(push.nospace(t), t)
+        for t in self.REAL: self.assertEqual(push.push_reason(t), "手机空间写满了", t)
+
+    def test_stream_full_no_retry_no_devicectl(self):   # 流式写报写满：不隔 3 秒重试、不改走 devicectl（白等两分钟），原样交给 run
+        with tempfile.TemporaryDirectory() as t:
+            src = Path(t) / "game.img"; src.write_bytes(b"\0" * 512)
+            d = push.Devicectl("C891", "io.s2arm.games.t", t, env={"S2A_DC_FALLBACK_MAX": "4096"})
+            calls = []
+            class Stream:
+                def put(self, src, rel): calls.append(rel); raise push.Fail(f"资源包写进 iPhone 时中断（{NoSpace.REAL[0]}）：确认手机解锁、数据线插稳后再点一次")
+            d.dp = Stream(); copied, said = [], []; d.say = said.append; d.put = lambda src, rel: copied.append(rel)
+            with self.assertRaises(push.Fail) as e: d.put_big(src, "Documents/资源包/game.img")
+            self.assertTrue(push.nospace(str(e.exception)))
+            self.assertEqual((len(calls), copied, said), (1, [], []))
+
+    def test_run_reports_full_from_text_even_when_free_unreadable(self):   # 推的时候报写满、推完量不到空闲 → 照样按写满报（ios_install_no_space）
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t); pk = d / "pack"; pk.mkdir(); w = d / "w"; w.mkdir()
+            (pk / "a").write_bytes(b"A"); (pk / "index.tsv").write_text(f"a\t1\t{sha(b'A')}\n"); (pk / "manifest.json").write_text('{"version": 2}')
+            dev = Fake({})
+            def full(lst, root, rel): raise push.Fail(f"资源包写进 iPhone 时中断（{NoSpace.REAL[0]}）：确认手机解锁、数据线插稳后再点一次")
+            dev.put_tar = full
+            with self.assertRaises(push.SpaceFull) as e: push.run(dev, pk, w, full=True, say=lambda m: None, env={"S2A_PUSH_SPARE_GB": "0"})
+            self.assertEqual(e.exception.code, "ios_install_no_space"); self.assertIn("写满", str(e.exception)); self.assertNotIn("数据线", str(e.exception))
+
+    def test_devicectl_free_asks_devpush_first(self):   # 玩家机上多半没装 ideviceinfo：有 s2a-devpush 就按它读（AFC 设备信息），读到就不再问 ideviceinfo
+        with tempfile.TemporaryDirectory() as t:
+            d = push.Devicectl("C891", "io.s2arm.games.t", t)
+            class DP:
+                def free(self): return 123 << 30
+            d.dp = DP()
+            with mock.patch.object(push.shutil, "which", lambda n: self.fail("不该再找 ideviceinfo")):
+                self.assertEqual(d.free(), 123 << 30)
+
+    def test_low_space_says_how_much_short(self):   # 预检：要 8198 字节、手机报 8000 → 说清还差多少
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t); pk = d / "pack"; pk.mkdir(); w = d / "w"; w.mkdir()
+            (pk / "a").write_bytes(b"A"); (pk / "b").write_bytes(b"BB")
+            (pk / "index.tsv").write_text(f"a\t1\t{sha(b'A')}\nb\t2\t{sha(b'BB')}\n"); (pk / "manifest.json").write_text('{"version": 2}')
+            dev = Fake({}); dev.free = lambda: 8000
+            with self.assertRaises(push.LowSpace) as e: push.run(dev, pk, w, full=True, say=lambda m: None, env={"S2A_PUSH_SPARE_GB": "0"})
+            self.assertIn("还差约", str(e.exception))
+
+
 class PushReason(unittest.TestCase):
     """推送失败的原文 → 摘要里一眼看得懂的一类（11-12 v0.3.1 Mac 玩家「romfs.img 没传完」看不出是哪种）。期望按 s2a-devpush / devicectl 的报错特征手写"""
     def test_kinds(self):
