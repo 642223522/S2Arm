@@ -923,9 +923,9 @@ def backup_failed(c, why):
 
 
 # 手机锁着（devicectl：com.apple.dt.RemotePairingError 1016「…has not been unlocked recently」等）：读不了 App 数据容器，解锁后就能读。
-#   维护者 11-17（玩家判断不了的我们替他判）：不先问「仍然继续 / 先不」，提示解锁、每几秒自动重试，等到了照常备份；等满还锁着才走原来的确认
+#   维护者 11-17（玩家判断不了的我们替他判）：不先问「仍然继续 / 先不」，提示解锁、每几秒自动重试，等到了照常备份；等满 2 分钟还锁着才走原来的确认
 LOCKED = re.compile(r"RemotePairingError.{0,40}\b1016\b|not been unlocked|device is locked|passcode.{0,20}locked", re.I | re.S)
-UNLOCK_WAIT_S, UNLOCK_POLL_S = 300, 5
+UNLOCK_WAIT_S, UNLOCK_POLL_S = 120, 5   # 等满 2 分钟还锁着才退回确认框
 
 
 def wait_unlocked(c, call):
