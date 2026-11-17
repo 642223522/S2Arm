@@ -46,6 +46,9 @@ struct LauncherView: View {
     @State private var updateErrorDismissed = false   // 更新失败 toast 按 × 关掉；状态一变（重试 / 再失败）就重置
     @State private var titlebarActionsWidth: CGFloat = 0
     @State var showHomeSearch = false
+    @State private var returnToInstallFromEnv: String?
+    @State private var returnToDisplayFromInput: String?
+    @State private var returnToEnvFromSpace = false
     let brand: String
 
     init(model: S2ArmLauncherModel, brand: String) {
@@ -124,20 +127,35 @@ struct LauncherView: View {
         .onAppear { model.startup() }
         .sheet(isPresented: $model.sgradeUpgradeOpen) { SGradeUpgradeView(model: model).environmentObject(loc) }   // S 级优化升级（v0.4.0）
         .sheet(item: Binding(get: { installFor.map(OptionsTarget.init) }, set: { installFor = $0?.id })) { target in
-            InstallView(model: model, gameID: target.id).environmentObject(loc)
+            InstallView(model: model, gameID: target.id, onOpenSettings: { returnToInstallFromEnv = target.id }).environmentObject(loc)
         }
         .onChange(of: model.spaceRequest) { id in if let id { spaceFor = id; model.spaceRequest = nil } }   // 设置页「磁盘空间」
         .onChange(of: model.displayRequest) { id in if let id { displayFor = id; model.displayRequest = nil } }   // 控制口打开启动设置
-        .sheet(item: Binding(get: { spaceFor.map(OptionsTarget.init) }, set: { spaceFor = $0?.id })) { target in
+        .sheet(item: Binding(get: { spaceFor.map(OptionsTarget.init) }, set: {
+            spaceFor = $0?.id
+            if $0 == nil, returnToEnvFromSpace {
+                returnToEnvFromSpace = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { model.showEnvironment = true }
+            }
+        })) { target in
             FreeSpaceView(model: model, gameID: target.id).environmentObject(loc)
         }
         .sheet(item: Binding(get: { displayFor.map(OptionsTarget.init) }, set: { displayFor = $0?.id })) { target in
-            LaunchSettingsSheet(model: model, gameID: target.id, openInput: { inputFor = target.id }).environmentObject(loc)
+            LaunchSettingsSheet(model: model, gameID: target.id, openInput: {
+                returnToDisplayFromInput = target.id
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { inputFor = target.id }
+            }).environmentObject(loc)
         }
         .sheet(item: Binding(get: { saveFor.map(OptionsTarget.init) }, set: { saveFor = $0?.id; if $0 == nil { saveDrop = nil } })) { target in
             SaveManageSheet(model: model, gameID: target.id, source: saveDrop).environmentObject(loc)
         }
-        .sheet(item: Binding(get: { inputFor.map(OptionsTarget.init) }, set: { inputFor = $0?.id })) { target in
+        .sheet(item: Binding(get: { inputFor.map(OptionsTarget.init) }, set: {
+            inputFor = $0?.id
+            if $0 == nil, let back = returnToDisplayFromInput {
+                returnToDisplayFromInput = nil
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { displayFor = back }
+            }
+        })) { target in
             InputSettingsSheet(model: model, gameID: target.id).environmentObject(loc)
         }
         .sheet(item: Binding(get: { model.diagUploadFor.map(OptionsTarget.init) }, set: { model.diagUploadFor = $0?.id })) { target in   // 上传给开发者（游戏库菜单 / 控制口）
@@ -161,7 +179,7 @@ struct LauncherView: View {
         } message: { Text(loc.backend(model.libraryConfirm?.message ?? "")) }
         .sheet(isPresented: $model.showAddGames) { ImportSheet(model: model, kind: .games).environmentObject(loc) }
         // 打开时最多一个更新弹窗（有新版 / 这版更新了什么），只给最新一期；关掉（含 Esc）= 这一版不再弹
-        .sheet(isPresented: Binding(get: { model.updatePopup != nil && !model.showAddGames && !model.showKeys }, set: { if !$0, model.updatePopup != nil { model.closeUpdatePopup() } })) {
+        .sheet(isPresented: Binding(get: { model.updatePopup != nil && !model.showAddGames && !model.showKeys && !model.showEnvironment }, set: { if !$0, model.updatePopup != nil { model.closeUpdatePopup() } })) {
             if model.updatePopup?["kind"] as? String == "feature" {   // 大版本首次打开的新功能大窗（docs/site/feature.json，updater.py feature_spotlight）
                 FeatureSpotlightView(model: model, language: uiLanguage)
             } else {
@@ -171,9 +189,17 @@ struct LauncherView: View {
         .alert(txt(model.updateGate ?? "update.gate.busy"), isPresented: Binding(get: { model.updateGate != nil && model.updatePopup == nil }, set: { if !$0 { model.updateGate = nil } })) {
             Button(txt("update.after.ok"), role: .cancel) { model.updateGate = nil }
         } message: { Text(txt((model.updateGate ?? "update.gate.busy") + ".body")) }
-        .sheet(isPresented: $model.showKeys) { ImportSheet(model: model, kind: .keys).environmentObject(loc) }
+        .sheet(isPresented: Binding(get: { model.showKeys && !model.showEnvironment }, set: { model.showKeys = $0 })) {
+            ImportSheet(model: model, kind: .keys).environmentObject(loc)
+        }
         .sheet(isPresented: $model.showEnvironment) {
-            EnvironmentView(model: model).environmentObject(loc)
+            EnvironmentView(model: model, onOpenSpace: { returnToEnvFromSpace = true }).environmentObject(loc)
+        }
+        .onChange(of: model.showEnvironment) { shown in
+            if !shown, !returnToEnvFromSpace, let back = returnToInstallFromEnv {
+                returnToInstallFromEnv = nil
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { installFor = back }
+            }
         }
     }
 
@@ -196,7 +222,7 @@ struct LauncherView: View {
                         .help(txt("notice.close")).accessibilityLabel(txt("notice.close")).accessibilityIdentifier("notice.phoneUpdate.close")
                 }
             }
-            .padding(.horizontal, 34).padding(.vertical, 10)
+            .padding(.horizontal, LauncherTheme.Metrics.libraryInset).padding(.vertical, 10)
             .background(LauncherPalette.cream.opacity(0.10))
             .accessibilityIdentifier("notice.phoneUpdate")
         }
@@ -219,7 +245,7 @@ struct LauncherView: View {
                         .accessibilityIdentifier("notice.library.close")
                 }
             }
-            .padding(.horizontal, 34).padding(.vertical, 10)
+            .padding(.horizontal, LauncherTheme.Metrics.libraryInset).padding(.vertical, 10)
             .background((n.kind == .failed ? LauncherPalette.danger : LauncherPalette.cream).opacity(0.10))
             .accessibilityIdentifier("notice.library")
             .task(id: n) { if n.kind == .done { try? await Task.sleep(nanoseconds: 6_000_000_000); if model.libraryNotice == n { model.libraryNotice = nil } } }
@@ -299,6 +325,7 @@ struct LauncherView: View {
                 messagesButton
                 Button { installFor = nil; model.goToLibrary() } label: {
                     Label(loc.t("s2arm.nav.library"), systemImage: "square.grid.2x2")
+                        .foregroundStyle(showingHome && !model.showsWelcome ? LauncherPalette.cream : .white)
                 }
                 .controllerButtonStyle(ConsoleIconButtonStyle()).help(loc.t("s2arm.nav.library"))
                 .controllerID("top.library")
@@ -322,7 +349,7 @@ struct LauncherView: View {
                 .controllerButtonStyle(ConsoleIconButtonStyle()).help(txt("report.button"))
                 .controllerID("top.report").accessibilityIdentifier("top.report")
         }
-        .padding(.trailing, LauncherTheme.Metrics.libraryInset)
+        .padding(.trailing, LauncherTheme.Space.section)
         .fixedSize()   // 放在标题栏里没有宽度约束，不固定的话按钮文字会被压成省略号
         .labelStyle(.titleAndIcon)   // Popovers keep their text; icon styles are local to each toolbar button.
         .tint(LauncherPalette.cream)
@@ -420,7 +447,7 @@ struct LauncherView: View {
                 Button { model.dismissNotice() } label: { Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).frame(width: 22, height: 22).contentShape(Rectangle()) }
                     .controllerButtonStyle(.plain).foregroundStyle(LauncherPalette.cream.opacity(0.8)).help(txt("notice.close")).accessibilityLabel(txt("notice.close"))
             }
-            .padding(.horizontal, 24).padding(.vertical, 10)
+            .padding(.horizontal, LauncherTheme.Metrics.libraryInset).padding(.vertical, 10)
             .background(LauncherPalette.building.opacity(0.16))
             .overlay(alignment: .bottom) { Rectangle().fill(LauncherPalette.building.opacity(0.45)).frame(height: 1) }
         }
@@ -430,11 +457,23 @@ struct LauncherView: View {
     @ViewBuilder private var updateButton: some View {
         switch model.updateState {
         case .working(let id, let percent):
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.mini)
-                Text(txt(id).replacingOccurrences(of: "{0}", with: "\(percent ?? 0)")).font(.manrope(12)).monospacedDigit().foregroundStyle(.secondary)
+            Button { if model.availableUpdate != nil { model.showUpdatePopup() } } label: {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text(txt(id).replacingOccurrences(of: "{0}", with: "\(percent ?? 0)")).font(.manrope(12)).monospacedDigit().foregroundStyle(.secondary)
+                }
             }
-        case .ready, .idle where model.availableUpdate != nil:
+            .controllerButtonStyle(.plain)
+            .help(txt(id).replacingOccurrences(of: "{0}", with: "\(percent ?? 0)"))
+        case .ready:
+            Button { model.showUpdatePopup() } label: {
+                Label(txt("update.top.available").replacingOccurrences(of: "{0}", with: model.availableUpdate?["version"] as? String ?? ""), systemImage: "arrow.down.circle.fill")
+                    .foregroundStyle(LauncherPalette.cream)
+            }
+            .controllerButtonStyle(ConsoleIconButtonStyle())
+            .help(txt("update.top.available").replacingOccurrences(of: "{0}", with: model.availableUpdate?["version"] as? String ?? ""))
+            .controllerID("top.update")
+        case .idle where model.availableUpdate != nil:
             // 草图：「以后再说」之后顶栏留「有新版 vX」，点开回到更新弹窗①（「现在更新并重启」在弹窗里；有局在跑时那里先拦下说明）
             Button { model.showUpdatePopup() } label: {
                 Label(txt("update.top.available").replacingOccurrences(of: "{0}", with: model.availableUpdate?["version"] as? String ?? ""), systemImage: "arrow.down.circle")

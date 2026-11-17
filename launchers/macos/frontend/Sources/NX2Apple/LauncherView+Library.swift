@@ -49,24 +49,17 @@ extension LauncherView {
         saveDrop = first; saveFor = game.id
     }
 
-    /// 显示的是上次的列表（启动先显示的快照 / 刷新失败）：标明是上次的；失败时说原因、给重试。
+    /// 显示的是上次的列表（刷新失败）：标明是上次的、说原因、给重试。后台正常刷新时只在顶栏转轻菊花，避免首屏横幅占位导致封面排下移再上跳。
     @ViewBuilder var staleBanner: some View {
-        if model.showingSnapshot && !model.games.isEmpty && (model.loading || model.libraryError != nil) {
+        if model.showingSnapshot && !model.games.isEmpty && model.libraryError != nil {
             HStack(spacing: 12) {
-                if model.loading {
-                    ProgressView().controlSize(.small)
-                    Text(txt("library.stale.loading")).font(.manrope(13.5, .semibold))
-                } else {
-                    Image(systemName: "exclamationmark.arrow.triangle.2.circlepath").foregroundStyle(LauncherPalette.danger)
-                    Text(txt("library.stale.failed").replacingOccurrences(of: "{0}", with: loc.backend(model.staleLibraryError ?? ""))).font(.manrope(13.5, .semibold))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                Image(systemName: "exclamationmark.arrow.triangle.2.circlepath").foregroundStyle(LauncherPalette.danger)
+                Text(txt("library.stale.failed").replacingOccurrences(of: "{0}", with: loc.backend(model.staleLibraryError ?? ""))).font(.manrope(13.5, .semibold))
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 12)
-                if !model.loading {
-                    Button(txt("library.stale.retry")) { model.refresh() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("library.stale.retry")
-                }
+                Button(txt("library.stale.retry")) { model.refresh() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("library.stale.retry")
             }
-            .padding(.horizontal, 34).padding(.vertical, 10).background((model.loading ? LauncherPalette.building : LauncherPalette.danger).opacity(0.10))
+            .padding(.horizontal, LauncherTheme.Metrics.libraryInset).padding(.vertical, 10).background(LauncherPalette.danger.opacity(0.10))
         }
     }
 
@@ -79,7 +72,7 @@ extension LauncherView {
                 Spacer(minLength: 12)
                 Button(txt("library.hero.renew")) { model.targetInstalledDevice(of: game); installFor = game.id }.controllerButtonStyle(LauncherSecondaryButtonStyle())
             }
-            .padding(.horizontal, 34).padding(.vertical, 10).background(LauncherPalette.building.opacity(0.10))
+            .padding(.horizontal, LauncherTheme.Metrics.libraryInset).padding(.vertical, 10).background(LauncherPalette.building.opacity(0.10))
         }
     }
 
@@ -94,13 +87,14 @@ extension LauncherView {
             if model.finishedExports[game.id] != nil, !(model.mainBusy && model.session?.gameID == game.id) {   // 这款上次出包 / 装机 / 导出的结果页（原首页圆钮）
                 moreRow(txt("library.hero.results"), "checkmark.seal") { model.viewingResult = model.finishedExports[game.id] }
             }
-            moreRow(loc.t("s2arm.export.action"), "shippingbox") { model.exportFor = game.id }
-                .controllerShortcut(.rightTrigger)
             moreRow(loc.t("s2arm.action.freeSpace"), "externaldrive") { spaceFor = game.id }
             moreRow(txt("game.display"), "slider.horizontal.3") { displayFor = game.id }
             moreRow(txt("game.saves"), "tray.full") { saveFor = game.id }
             moreRow(txt("game.input"), "gamecontroller") { inputFor = game.id }
             moreRow(txt("game.diag"), "paperplane") { model.diagUploadFor = game.id }   // 上传给开发者；上传没成在弹窗里退回导出
+            if !game.location.path.isEmpty {
+                moreRow(txt("library.menu.reveal"), "folder") { model.reveal(game) }
+            }
             Divider().opacity(0.3).padding(.vertical, 4)
             moreRow(txt("game.delete"), "trash", danger: true) { deleteFor = game }
         }
@@ -110,13 +104,7 @@ extension LauncherView {
     private func moreRow(_ title: String, _ symbol: String, danger: Bool = false, action: @escaping () -> Void) -> some View {
         let activate = { moreFor = nil; action() }
         return Button(action: activate) {
-            // 图标放固定宽度的框里、和文字按中线对齐：Label 的图标宽度跟着符号走，各行文字起点会错开（11-09 维护者截图）
-            HStack(alignment: .center, spacing: 10) {
-                Image(systemName: symbol).font(.system(size: 14, weight: .medium)).frame(width: 20, height: 20, alignment: .center)
-                Text(title).lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 8).contentShape(Rectangle())
-            .foregroundStyle(danger ? LauncherPalette.danger : Color.primary)
+            MoreMenuRowLabel(title: title, symbol: symbol, danger: danger)
         }
         .buttonStyle(.plain)
         .controllerControl(activate: activate)
@@ -198,12 +186,15 @@ extension LauncherView {
 struct CoverFill: View {
     let image: NSImage
     var body: some View {
-        GeometryReader { g in
-            // 填满后溢出的部分 .clipped() 只裁显示、不裁点击区域：不限定的话，接近正方形的封面会把点击区域伸出框外，
-            //   盖住上面的「返回游戏库」、旁边的卡片（11-09 维护者：丝之歌出包页返回点不了；AX 量到封面按钮高 236、看得见的只有 131）
-            Image(nsImage: image).resizable().interpolation(.high).aspectRatio(contentMode: .fill)
-                .frame(width: g.size.width, height: g.size.height).clipped().contentShape(Rectangle())
-        }
+        // 填满后溢出的部分 .clipped() 只裁显示、不裁点击区域：不限定的话，接近正方形的封面会把点击区域伸出框外，
+        //   盖住上面的「返回游戏库」、旁边的卡片（11-09 维护者：丝之歌出包页返回点不了；AX 量到封面按钮高 236、看得见的只有 131）。
+        //   用 Color.clear.overlay 代替 GeometryReader，避免卡片从小变大时 GeometryReader 尺寸一步到位跳过插值动画
+        Color.clear
+            .overlay {
+                Image(nsImage: image).resizable().interpolation(.high).scaledToFill()
+            }
+            .clipped()
+            .contentShape(Rectangle())
     }
 }
 
@@ -266,7 +257,7 @@ struct CardDrop: ViewModifier {
         content
             .overlay(alignment: .top) {
                 if targeted.wrappedValue {
-                    RoundedRectangle(cornerRadius: 5).strokeBorder(LauncherPalette.cream, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                    RoundedRectangle(cornerRadius: 20).strokeBorder(LauncherPalette.cream, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
                         .frame(height: artwork).allowsHitTesting(false)
                 }
             }
@@ -274,5 +265,25 @@ struct CardDrop: ViewModifier {
                 LauncherView.fileURLs(providers, perform)
                 return true
             }
+    }
+}
+
+private struct MoreMenuRowLabel: View {
+    let title: String
+    let symbol: String
+    let danger: Bool
+    @State private var hovered = false
+
+    var body: some View {
+        // 图标放固定宽度的框里、和文字按中线对齐：Label 的图标宽度跟着符号走，各行文字起点会错开（11-09 维护者截图）
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: symbol).font(.system(size: 14, weight: .medium)).frame(width: 20, height: 20, alignment: .center)
+            Text(title).lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 8)
+        .background(Color.white.opacity(hovered ? 0.08 : 0), in: RoundedRectangle(cornerRadius: 6))
+        .contentShape(Rectangle())
+        .foregroundStyle(danger ? LauncherPalette.danger : Color.primary)
+        .onHover { hovered = $0 }
     }
 }
