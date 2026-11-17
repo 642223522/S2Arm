@@ -342,6 +342,8 @@
 "dprompt.expiry.hours" = "約 %d 小時";
 "dprompt.expiry.lessThanHour" = "不到 1 小時";
 "dprompt.expiry.title" = "簽署即將到期";
+"dprompt.input.bad.body" = "這局先用預設按鍵照常開始（%@）。";
+"dprompt.input.bad.title" = "按鍵設定沒讀懂";
 "dprompt.ns2pro.body" = "四指長按螢幕 1.5 秒開啟設定，開啟「啟用 Switch 2 Pro 手把」，再按手把上的配對鍵。";
 "dprompt.ns2pro.title" = "要使用 Switch 2 Pro 手把嗎？";
 "dprompt.motion.title" = "體感操作";

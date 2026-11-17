@@ -367,6 +367,8 @@
 "dprompt.expiry.hours" = "unos %d horas";
 "dprompt.expiry.lessThanHour" = "menos de 1 hora";
 "dprompt.expiry.title" = "La firma expira pronto";
+"dprompt.input.bad.body" = "Esta partida empieza con los botones predeterminados (%@).";
+"dprompt.input.bad.title" = "No se pudo leer la configuración de botones";
 "dprompt.ns2pro.body" = "Mantén cuatro dedos en la pantalla durante 1,5 segundos para abrir Ajustes, activa «Habilitar mando Switch 2 Pro» y luego pulsa el botón de emparejamiento del mando.";
 "dprompt.ns2pro.title" = "¿Usas un mando Switch 2 Pro?";
 "dprompt.motion.title" = "Controles de movimiento";

@@ -166,6 +166,7 @@ static NSDictionary *input_config_dictionary(const s2a_input_config *c) {
         @"mouseOptions": @{@"mode": c->mouse_camera ? @"camera" : @"off", @"sensitivityX": @(c->sensitivity_x), @"sensitivityY": @(c->sensitivity_y),
             @"invertX": @((BOOL)c->invert_x), @"invertY": @((BOOL)c->invert_y), @"recenter": @((BOOL)c->recenter)}};
 }
+static char g_input_bad[96];   // 玩家 1 的键位映射读不懂时的原因（s2a_front_run 记下，窗口提示条起来后显示一次再清空）
 static NSDictionary *default_config(void) { s2a_input_config c; s2a_input_config_default(&c); return input_config_dictionary(&c); }
 static int mac_input_config_read(const char *path, s2a_input_config *out) {
     if (!out) return S2A_INPUT_CONFIG_JSON;
@@ -1883,6 +1884,10 @@ static __weak S2AMacDelegate *g_delegate;
     self.controllerStatus.title = [NSString stringWithFormat:@"%s：%@", s2a_mac_ns2_kind_name(s2a_mac_ns2_kind()), state];
     // 存档不能原子提交（审计 P2-13；判定与 iOS 共用 runtime/src/direct_prompt.c s2a_save_atomic_poll）：非 0 提示一次
     if (s2a_save_atomic_poll()) [self.banner showTitle:@S2A_DPROMPT_SAVE_ATOMIC_TITLE body:@S2A_DPROMPT_SAVE_ATOMIC_MAC accept:nil decline:nil seconds:15];
+    if (g_input_bad[0] && self.banner.hidden) {
+        [self.banner showTitle:@S2A_DPROMPT_INPUT_BAD_TITLE body:[NSString stringWithFormat:@S2A_DPROMPT_INPUT_BAD_MAC, g_input_bad] accept:nil decline:nil seconds:15];
+        g_input_bad[0] = 0;
+    }
     // 横幅正显示别的提醒时先不查，等它收起再提示，免得互相盖掉
     NSString *lan = self.banner.hidden ? lan_warning() : nil;
     if (lan) [self.banner showTitle:@"本地联机" body:lan accept:nil decline:nil seconds:15];
@@ -1967,7 +1972,11 @@ void s2a_front_run(void (*guest_main)(void)) {
         keys = [NSMutableSet set]; mouse = [NSMutableSet set];
         s2a_input_config decoded;
         int inputError = mac_input_config_read(getenv("S2A_INPUT_CONFIG"), &decoded);
-        if (inputError) { fprintf(stderr, "[s2a] 【红】Mac 输入配置损坏，拒绝启动（%d: %s）\n", inputError, s2a_input_config_error_message(inputError)); exit(2); }
+        if (inputError) {   // 11-17 维护者：校验不过不再拒启。默认键位照常起，游戏窗口的提示条点名原因（窗口建好后由状态刷新显示）
+            fprintf(stderr, "[s2a] 【黄】Mac 输入配置读不懂（%d: %s），这局用默认键位照常启动\n", inputError, s2a_input_config_error_message(inputError));
+            s2a_input_config_default(&decoded);
+            snprintf(g_input_bad, sizeof g_input_bad, "%s", s2a_input_config_error_message(inputError));
+        }
         config = input_config_dictionary(&decoded);
         // 玩家 2–4 自己的键位映射（启动器按玩家保存：起局时给了 S2A_INPUT_CONFIG_P2..P4 才有，见 slot_cfg）。
         //   可选映射读不懂只记一笔、照玩家 1 的键位，不像玩家 1 那份直接拒启——不该挡开局

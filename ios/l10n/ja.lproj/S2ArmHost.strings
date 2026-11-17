@@ -367,6 +367,8 @@
 "dprompt.expiry.hours" = "約 %d 時間";
 "dprompt.expiry.lessThanHour" = "1 時間未満";
 "dprompt.expiry.title" = "署名の有効期限が近づいています";
+"dprompt.input.bad.body" = "今回は既定のボタン配置で起動します（%@）。";
+"dprompt.input.bad.title" = "ボタン設定を読み込めませんでした";
 "dprompt.ns2pro.body" = "画面を 4 本指で 1.5 秒長押しして設定を開き、「Switch 2 Pro コントローラーを有効にする」をオンにしてから、コントローラーのペアリングボタンを押してください。";
 "dprompt.ns2pro.title" = "Switch 2 Pro コントローラーを使用しますか？";
 "dprompt.motion.title" = "モーション操作";

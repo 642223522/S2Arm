@@ -367,6 +367,8 @@
 "dprompt.expiry.hours" = "environ %d heures";
 "dprompt.expiry.lessThanHour" = "moins d'1 heure";
 "dprompt.expiry.title" = "La signature expire bientôt";
+"dprompt.input.bad.body" = "Cette partie démarre avec les boutons par défaut (%@).";
+"dprompt.input.bad.title" = "Impossible de lire les réglages des boutons";
 "dprompt.ns2pro.body" = "Maintenez quatre doigts sur l'écran pendant 1,5 seconde pour ouvrir Réglages, activez « Activer la manette Switch 2 Pro », puis appuyez sur le bouton d'appairage de la manette.";
 "dprompt.ns2pro.title" = "Vous utilisez une manette Switch 2 Pro ?";
 "dprompt.motion.title" = "Commandes de mouvement";
