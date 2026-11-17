@@ -31,6 +31,7 @@ final class LibraryProviderTests: XCTestCase {
 
     func testLastKnownGamesShowBeforeTheJobAndFollowTheLibrary() throws {
         let box = try Sandbox(); defer { box.remove() }
+        try FileManager.default.createDirectory(atPath: box.environment().library, withIntermediateDirectories: true)   // 游戏库文件夹在（没了是 #1412 那条路）
         let runner = FakeRunner()
         runner.script = { _ in ([eventLine("result", state: "succeeded", message: "操作完成", extra: #","result":{"games":[{"id":"0100A","name":"Alpha","display":"1.2.0","ready":true,"missing":[]}],"keys":{"ready":true},"jobs":[]}"#)], 0, false) }
         try writeLibraryMarker(box)
@@ -74,8 +75,51 @@ final class LibraryProviderTests: XCTestCase {
         XCTAssertTrue(runner.starts.isEmpty)
     }
 
+    // #1412：玩家在访达里删了游戏库文件夹——忘掉它（设置里的游戏库两项清空、上次列表不再显示），按「还没有游戏库」回欢迎页，不起作业
+    func testDeletedLibraryFolderIsForgottenAndNoStaleListShows() throws {
+        let box = try Sandbox(); defer { box.remove() }
+        let runner = FakeRunner()
+        runner.script = { _ in ([eventLine("result", state: "succeeded", message: "操作完成", extra: #","result":{"games":[{"id":"0100A","name":"Alpha","ready":true,"missing":[]}]}"#)], 0, false) }
+        let env = box.environment()
+        try writeLibraryMarker(box)
+        try JobEnvironment.saveLibrary(privateRoot: box.privateRoot, library: env.library, libraryId: env.libraryId)
+        let provider = LibraryProvider(client: client(box, runner, env: env))
+        let done = expectation(description: "load")
+        provider.load { _ in done.fulfill() }
+        wait(for: [done], timeout: 5)
+        XCTAssertEqual(LibraryProvider(client: client(box, runner, env: env)).lastKnownGames()?.map(\.id), ["0100A"], "文件夹还在：照常显示上次的列表")
+        try FileManager.default.removeItem(atPath: env.library)
+        runner.script = { _ in ([eventLine("result", state: "failed", message: "游戏库未连接或标识不符，请重新选择游戏库。")], 1, false) }   // 作业层的真实说法
+        let gone = LibraryProvider(client: client(box, runner, env: env))
+        XCTAssertNil(gone.lastKnownGames(), "文件夹没了：不显示旧列表")
+        let failed = expectation(description: "load gone")
+        var message: String?
+        gone.load { if case .failure(let e) = $0 { message = e.message }; failed.fulfill() }
+        wait(for: [failed], timeout: 5)
+        XCTAssertEqual(message, LibraryProvider.noLibraryMessage, "按「还没有游戏库」回欢迎页，不再报未连接")
+        XCTAssertEqual(JobEnvironment.load(privateRoot: box.privateRoot, resources: box.resources).library, "", "设置里的游戏库已清空")
+        XCTAssertEqual(JobEnvironment.load(privateRoot: box.privateRoot, resources: box.resources).libraryId, "")
+    }
+
+    // 外接盘没插上不算「没了」：不忘掉，照旧起作业（作业层报「磁盘没连上」，插上就回来）
+    func testUnpluggedDiskLibraryIsNotForgotten() throws {
+        let box = try Sandbox(); defer { box.remove() }
+        let runner = FakeRunner()
+        runner.script = { _ in ([eventLine("result", state: "failed", message: "游戏库所在的磁盘「Example」没连上：插上这块盘后再试一次。")], 1, false) }
+        let env = box.environment(library: "/Volumes/Example/S2Arm")
+        let provider = LibraryProvider(client: client(box, runner, env: env))
+        XCTAssertFalse(provider.libraryFolderGone)
+        let done = expectation(description: "load")
+        var message: String?
+        provider.load { if case .failure(let e) = $0 { message = e.message }; done.fulfill() }
+        wait(for: [done], timeout: 5)
+        XCTAssertEqual(runner.starts.count, 1, "照旧起作业")
+        XCTAssertEqual(message, "游戏库所在的磁盘「Example」没连上：插上这块盘后再试一次。")
+    }
+
     func testFailedCatalogReportsTheJobMessage() throws {
         let box = try Sandbox(); defer { box.remove() }
+        try FileManager.default.createDirectory(atPath: box.environment().library, withIntermediateDirectories: true)   // 游戏库文件夹在（没了是 #1412 那条路）
         let runner = FakeRunner()
         runner.script = { _ in ([eventLine("result", state: "failed", message: "游戏库所在的磁盘没有连接。")], 1, false) }
         let done = expectation(description: "load")

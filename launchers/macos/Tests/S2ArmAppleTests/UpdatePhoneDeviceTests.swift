@@ -34,6 +34,7 @@ import S2ArmAppleAdapter
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root.appendingPathComponent("Jobs"), withIntermediateDirectories: true)
         try Data().write(to: root.appendingPathComponent("Jobs/main.py"))
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("lib"), withIntermediateDirectories: true)   // 游戏库文件夹在（更新后重读游戏库失败不能当成库没了，#1412）
         let runner = RequestRunner(); runner.dropFirst = 2
         let model = S2ArmLauncherModel(client: JobClient(environment: JobEnvironment(
             privateRoot: root, resources: root, library: root.appendingPathComponent("lib").path, libraryId: "fixture"), runner: runner))
