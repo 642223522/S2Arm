@@ -457,6 +457,21 @@ class FreeAccountLimits(unittest.TestCase):
         self.assertTrue(loc.get(RECOVERY["signing_server_unreachable"]) and spec["signing_server_unreachable"]["title"]["en"] and "signing_server_unreachable" in guide)
         self.assertEqual(ctl.AI_NEXT["signing_server_unreachable"][0], "human")
         self.assertEqual(impactor.explain("Anisette error: -80046 Apple rejected"), "login_identity_rejected")
+        # #edc5f5 拆三种（期望手写）：没登录 / 没选中 → apple_not_signed_in；连不上 *.apple.com → apple_server_unreachable；1100 仍是过期。
+        #   连不上 anisette 服务器（jkcoxson）仍归 signing_server_unreachable，不被新的那条吞掉；各处都登记
+        for raw, code in (("Error: No account selected. Please login first using 'plumesign account login'", "apple_not_signed_in"),
+                          ("Error: not logged in", "apple_not_signed_in"),
+                          ("Error: error sending request for url (https://gsa.apple.com/grandslam/GsService2)\n\nCaused by:\n    dns error", "apple_server_unreachable"),
+                          ("Error: Anisette error: Request Error error sending request for url (https://mac-ani.jkcoxson.com/v3/client_info) dns error", "signing_server_unreachable"),
+                          ("Error: Developer API error 1100 (HTTP Some(200)): Your session has expired. Please log in.", "apple_session_expired")):
+            with self.subTest(raw=raw[:40]):
+                self.assertEqual(impactor.explain(raw), code)
+        for code in ("apple_not_signed_in", "apple_server_unreachable"):
+            with self.subTest(code=code):
+                self.assertTrue(loc.get(RECOVERY[code]) and spec[code]["title"]["en"] and spec[code]["detail"]["en"] and code in guide)
+                self.assertEqual(ctl.AI_NEXT[code][0], "human")
+        self.assertIn("添加账号", RECOVERY["apple_not_signed_in"]); self.assertNotIn("过期", RECOVERY["apple_not_signed_in"])
+        self.assertIn("DNS", RECOVERY["apple_server_unreachable"]); self.assertIn("不是 Apple ID", RECOVERY["apple_server_unreachable"])
         for other, code in (("Developer API error 9401: An App ID with Identifier 'x' is not available.", "app_id_taken"),
                             ("-21669 verification code", "two_factor_wrong"), ("-20101 entered incorrectly", "apple_id_wrong")):
             self.assertEqual(impactor.explain(other), code)

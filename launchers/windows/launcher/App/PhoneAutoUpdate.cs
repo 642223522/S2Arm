@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 S2Arm contributors
 // iPhone 上 S2Arm 的更新：手动更新（11-16 维护者「那改成更稳妥的手动更新吧 启动器和移动端都是」；同 Mac S2ArmLauncherModel.keptModulesTick / +PhoneBanner.swift）。
-//   每 2 分钟跑一次 phoneKeptPull 作业：手机上宿主留下的代码模块拉回游戏库；查到要更新（kept / 壳旧了）只重读游戏库，顶栏亮「更新 iPhone」，不自动装。
+//   每 2 分钟跑一次 phoneKeptPull 作业查手机要不要更新：Windows 自己不从手机收回代码模块（WinPhone.pull_kept 回 0，收回只在 Mac 上做），
+//   kept 只会来自 Mac 收回过的同一个游戏库里还没补进的（一般为空），平时起作用的是壳旧了（shellUpdate）；
+//   查到要更新只重读游戏库，顶栏亮「更新 iPhone」，不自动装。
 //   新版启动器头一次读到要更新的手机 → 后台 installUpdatePrepare（不碰手机，点了以后装得快），准备期间不出横幅；准备完出横幅「有新版，点这里更新」，
 //   点了 = 顶栏「更新 iPhone」；玩家点了更新后横幅显示进度，装完 phoneUpdates 空了横幅自己收起。
 //   开关：privateRoot/auto-update-phone.off 存在 = 玩家关了（缺省开，存的是「关」，同 Mac S2AAutoUpdatePhoneOff）：不准备、不出横幅。

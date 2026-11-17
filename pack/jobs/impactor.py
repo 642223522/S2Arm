@@ -91,10 +91,12 @@ EXPLAIN = (
     (r'anisette error[\s\S]{0,600}?(?:dns error|os error 1100[1-4]|client error \(connect\)|error sending request|connection (?:refused|reset)|timed out)', 'signing_server_unreachable'),
     # 保存的 Apple ID 会话过期（Apple 开发者接口 1100「Your session has expired. Please log in.」，plumesign 恢复会话时报，玩家反馈 v0.2.7）：
     #   要在 Impactor 里重新登录；原先落到 device_install_failed，建议写「检查设备连接与包的有效性」，把玩家往错的方向引
-    (r'developer api error 1100\b|\b1100\b[^\n]{0,40}session|session has expired|please log ?in again|not logged in', 'apple_session_expired'),
-    # 存了账号却没选中（D-ZM37 plumesign 原文「No account selected. Please login first」）：处理办法同过期——在 Impactor 里移除再添加，
-    #   添加即选中（v2.7.2 accounts_add 设 selected_account）；只存了一个的在签名前已替玩家选上（select_only_account），到这里的是存了多个
-    (r'no account selected', 'apple_session_expired'),
+    # 连不上苹果自己的服务器（登录 gsa.apple.com、签名 developerservices2.apple.com）：网络问题，不是 Apple ID 的问题（#edc5f5 拆分）
+    (r'error sending request for url \(https?://[^\s)]*\bapple\.com', 'apple_server_unreachable'),
+    (r'developer api error 1100\b|\b1100\b[^\n]{0,40}session|session has expired|please log ?in again', 'apple_session_expired'),
+    # 还没登录 / 存了账号却没选中（D-ZM37 plumesign 原文「No account selected. Please login first」）：原先归「登录已过期」，
+    #   对从没登录成功过的玩家措辞不对（#edc5f5）。添加即选中（v2.7.2 accounts_add 设 selected_account）；只存了一个的在签名前已替玩家选上（select_only_account）
+    (r'no account selected|please log ?in first|not logged in', 'apple_not_signed_in'),
     (r'-2097\d|-20101|incorrect|entered incorrectly', 'apple_id_wrong'),
     (r'-21669|verification code|two.?factor|2fa', 'two_factor_wrong'),
     (r'unknown error occured while reading the file|unknown error occurred while reading the file|zip64', 'ipa_needs_repack'),

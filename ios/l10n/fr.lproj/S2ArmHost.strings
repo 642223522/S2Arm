@@ -271,8 +271,8 @@
 "app.fpsCap.restored" = "60 FPS est rétabli.";
 "app.lowRam.title" = "Cet appareil n'a peut-être pas assez de mémoire";
 "app.lowRam.body" = "Ce jeu nécessite plus de mémoire que cet appareil n'en dispose. Il démarrera quand même, mais il pourrait ralentir ou être fermé par le système.";
-"app.gpuStop.body" = "Fermez cette app depuis le sélecteur d'apps, puis rouvrez le jeu.";
-"app.gpuStop.title" = "Erreur graphique — arrêté";
+"app.gpuStop.body" = "Fermez cette app depuis le sélecteur d'apps puis rouvrez-la : vous pourrez généralement reprendre depuis le dernier enregistrement du jeu. Pour nous aider à trouver la cause, touchez « Signaler un problème » pour nous envoyer le diagnostic.";
+"app.gpuStop.title" = "Le jeu s'est bloqué et a été arrêté en toute sécurité";
 "app.library.broken.title" = "Les fichiers d'origine du jeu sont incomplets";
 "app.library.cantOpen" = "Ce jeu ne peut pas être ouvert";
 "app.library.cantOpen.message" = "Ce jeu n'a pas pu être préparé pour le démarrage. Fermez l'app depuis le sélecteur d'apps et rouvrez-la ; si le problème persiste, exportez le diagnostic et envoyez-le nous.";

@@ -21,7 +21,7 @@ tiers_json="$repo/android/tests/vk/profiles/s2a_sim_tiers.json"
 profiles_sha=b502e9b0d7508e06e6300af272548cf0ee32f380
 profiles_url=https://github.com/KhronosGroup/Vulkan-Profiles.git
 
-all=(no_bc no_d24 no_vertex_stores no_clip_distance no_int16 no_dual_src_blend no_calibrated_timestamps no_mirror_clamp no_exact16 no_depth_clamp no_vertex_divisor no_custom_border no_minmax ssbo_align_256)
+all=(no_bc no_d24 no_vertex_stores no_clip_distance no_int16 no_dual_src_blend no_calibrated_timestamps no_mirror_clamp no_exact16 no_depth_clamp no_vertex_divisor no_custom_border no_minmax ssbo_align_256 no_fmt_filter_blend)
 want=("$@"); [ ${#want[@]} -gt 0 ] || want=("${all[@]}")
 for t in "${want[@]}"; do
     case " ${all[*]} " in *" $t "*) ;; *) echo "未知档：${t}（可用：${all[*]}）" >&2; exit 64 ;; esac
@@ -194,6 +194,10 @@ check_tier() {
             [ "$rc" -eq 0 ] || red no_minmax "run.sh rc=$rc"
             has "$log" "vk sampler minmax: enabled=0" || red no_minmax "层没去掉 VK_EXT_sampler_filter_minmax"
             has "$log" "C976r 没有扩展：min 归约建采样器 rc=-1002（sampler_reduction_min：" || red no_minmax "C976r 没在缺扩展的设备上具名报 UNSUPPORTED" ;;
+        no_fmt_filter_blend)
+            run_tier no_fmt_filter_blend "$log" || rc=$?
+            [ "$rc" -eq 0 ] || red no_fmt_filter_blend "run.sh rc=$rc"
+            has "$log" "sim fmt caps: RGBA16 filter=0 R32F blend=0" || red no_fmt_filter_blend "后端没如实报 RGBA16 不能过滤 / R32F 不能混合（核心据此退最近点 / 关混合）" ;;
         no_depth_clamp)
             run_tier no_depth_clamp "$log" || rc=$?
             [ "$rc" -ne 0 ] || red no_depth_clamp "负对照竟然绿了：缺硬门槛 depthClamp 应建设备失败"

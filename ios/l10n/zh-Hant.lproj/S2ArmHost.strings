@@ -246,8 +246,8 @@
 "app.fpsCap.restored" = "60 幀已恢復。";
 "app.lowRam.title" = "這台裝置記憶體可能不夠";
 "app.lowRam.body" = "這款遊戲需要的記憶體比這台裝置多。照樣可以開始，但可能卡頓，或被系統關掉。";
-"app.gpuStop.body" = "請從背景滑掉本 App，再重新開啟遊戲。\nPlease reopen the game.";
-"app.gpuStop.title" = "畫面發生錯誤，已停止\nGraphics error — stopped";
+"app.gpuStop.body" = "從背景滑掉本 App 再開啟，一般能接著玩，存檔停在遊戲上次儲存的地方。想讓我們查原因，點「故障報修」把診斷傳給我們。";
+"app.gpuStop.title" = "遊戲卡住了，已經安全停下";
 "app.library.broken.title" = "遊戲資源不完整";
 "app.library.cantOpen" = "這款遊戲無法開啟";
 "app.library.cantOpen.message" = "啟動這款遊戲前的準備工作未完成。請從背景滑掉 App 後重新開啟再試；如果還是不行，請匯出診斷包傳給我們。";

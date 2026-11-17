@@ -707,7 +707,7 @@ def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None, pack_root=Non
         if m:
             c.diagnostic(m.group(0), code="manual_unpack_required", severity="warning")
             return got.get("files", 0), got.get("mb", 0) << 20
-        m = re.search(r"^S2A_PUSH_CODE (device_space_low|ios_install_no_space)\t([^\n]+)", text, re.M)   # tools/push_pack.py：估算空间不够（玩家可确认继续）/ 真写满了
+        m = re.search(r"^S2A_PUSH_CODE (device_space_low|ios_install_no_space|ios_install_dir_unwritable)\t([^\n]+)", text, re.M)   # tools/push_pack.py：估算空间不够（玩家可确认继续）/ 真写满了 / 机上目录 App 写不进（删除重装）
         if m:
             raise Failure(m.group(2), code=m.group(1)) from e
         m = re.search(r"iPhone 写不进资源包：[^\n]*", text)   # tools/push_pack.py probe：推之前写探针失败、手机确实锁着（#333）  # 非玩家句

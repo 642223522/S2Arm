@@ -118,6 +118,38 @@ class ProgramStoreTests(unittest.TestCase):
         kit = layout.ios_kit(self.c, GID)
         self.assertEqual((kit / "sgrade_state.json").read_text(), '{"schema": 1}')
 
+    def test_resource_images_stay_out_unknown_small_files_stay_in(self):
+        # 期望手写：资源镜像这一小类封闭集合（romfs.std / game.img / *.nsp / *.xci / *.nca，大小写不论）不进程序件也不进配方；
+        #   不认识的小文件照常进（不是白名单：程序件有约 30 种、读写方各不相同，漏一项升级就坏）
+        product = self.product()
+        res = ("romfs.std", "game.img", "base.nsp", "card.XCI", "x.nca")
+        for n in res:
+            (product / n).write_bytes(b"R" * 64)
+        (product / "new_table.tsv").write_text("新表")
+        sgrade.save_program(self.c, GID, self.exefs())
+        kit = library.save_container_kit(self.c, GID, product)
+        recipe = self.names(self.store / "recipe.tar.zst")
+        for n in res:
+            self.assertFalse((kit / n).exists(), n); self.assertNotIn(n, recipe)
+        self.assertEqual((kit / "new_table.tsv").read_text(), "新表"); self.assertIn("new_table.tsv", recipe)
+
+    def test_oversized_kit_is_loud_and_names_the_biggest_file(self):
+        # 期望手写（阈值换成 1000 字节）：除改写产物外合计超过阈值 → 报 kit_oversized（告警、不拦），点名最大的文件；
+        #   改写产物（main.patched.bin 再大）不算；没超过不报
+        said = []
+        self.c.diagnostic = lambda msg, code="job_failed", severity="error", **kw: said.append((code, severity, msg))
+        product = self.product()
+        (product / "main.patched.bin").write_bytes(b"P" * 5000)
+        sgrade.save_program(self.c, GID, self.exefs())
+        with mock.patch.object(library, "KIT_LOUD_BYTES", 1000):
+            library.save_container_kit(self.c, GID, product)
+            self.assertEqual(said, [])
+            (product / "mystery.bin").write_bytes(b"M" * 2000)
+            kit = library.save_container_kit(self.c, GID, product)
+        self.assertEqual([(c, s) for c, s, _ in said], [("kit_oversized", "warning")])
+        self.assertIn("mystery.bin", said[0][2])
+        self.assertTrue((kit / "mystery.bin").is_file())   # 只报不拦：照常存
+
     def test_cache_deleted_rebuilds_same_kit(self):
         for rows, seen in (("", "-"), ("p main 1 2 3 # x\n", "rows")):
             with self.subTest(rows=bool(rows)):
@@ -250,6 +282,35 @@ class ProgramStoreTests(unittest.TestCase):
             parts = library.space_parts(self.c, GID)
         self.assertEqual(parts["ipa"], [pack])
         self.assertEqual(parts["shaders"], [self.cache])
+
+
+class PutDir(unittest.TestCase):
+    """换目录（programs._put_dir）：期望手写——旧的整份被新的取代、不留挪开的旧目录；Windows 上改名被拒（WinError 5，杀软扫描）退避重试后成功"""
+    def setUp(self):
+        self.t = Path(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, self.t, True)
+        self.part, self.dest = self.t / "kit.partial", self.t / "kit"
+        self.part.mkdir(); (self.part / "new.txt").write_text("新")
+        self.dest.mkdir(); (self.dest / "old.txt").write_text("旧")
+
+    def test_existing_dest_is_replaced_whole(self):
+        programs._put_dir(self.part, self.dest)
+        self.assertEqual(sorted(p.name for p in self.dest.iterdir()), ["new.txt"])
+        self.assertEqual(sorted(p.name for p in self.t.iterdir()), ["kit"])   # 没留 kit.partial / kit.old-*
+
+    def test_busy_rename_is_retried_on_windows(self):
+        sys.path.append(str(Path(programs.__file__).resolve().parents[2]))
+        from pack.orch import dirrename
+        real, calls = Path.rename, []
+        def rename(src, dst):
+            calls.append(src.name)
+            if len(calls) == 1:
+                raise PermissionError(13, "被占用")   # 没有 winerror 属性按 5 认（同 dirrename）
+            return real(src, dst)
+        with mock.patch.object(dirrename, "os", SimpleNamespace(name="nt")), mock.patch.object(dirrename, "DIR_RENAME_RETRIES", (0, 0)), \
+             mock.patch.object(Path, "rename", rename):
+            programs._put_dir(self.part, self.dest)
+        self.assertEqual(calls, ["kit", "kit", "kit.partial"])   # 挪开旧的：第一次被拒、第二次成功；再把新的改名就位
+        self.assertEqual((self.dest / "new.txt").read_text(), "新")
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ import io
 import os
 from pathlib import Path
 import shutil
+import sys
 import tarfile
 import tempfile
 import threading
@@ -31,6 +32,30 @@ EXEFS, RECIPE = "exefs.tar.zst", "recipe.tar.zst"
 # zstd 档位（11-16 实测一款 67 MB 原始程序，负载高的本机）：19 档 41.1 MB、压 87–234 秒；9 档多线程 45.0 MB、压 2 秒——体积多约一成，迁移 / 出包快两个数量级
 LEVEL = 9
 OUTPUTS = ("patched.bin", "fixups.tsv", "gates.tsv", "sites.tsv", "gaps.tsv", "widen.tsv", "code_patch.tsv")   # 同 rewrite_refresh.OUTPUTS
+
+
+def _rename_dir(src, dst):
+    """目录改名按 #361 同一套退避重试（pack/orch/dirrename.py：Windows 上杀软 / 索引程序开着刚写完的文件时报 WinError 5 / 32，扫完会放开）"""
+    root = str(Path(__file__).resolve().parents[2])   # 作业主程序只把 pack/jobs 放进 sys.path：pack.orch 从引擎根导入（同 library._rename_library_path）
+    if root not in sys.path:
+        sys.path.append(root)
+    from pack.orch.dirrename import rename_dir
+    rename_dir(src, dst)
+
+
+def _put_dir(part, dest):
+    """part 换成 dest。原先 rmtree(dest, ignore_errors) + os.replace：Windows 上 dest 里有文件被开着时 rmtree 静默删不干净，
+    os.replace 再报 WinError 5 / 183，整单失败。改为先把旧的改名挪开、再改名就位，两次改名都退避重试；挪开的旧目录最后尽力删"""
+    part, dest = Path(part), Path(dest)
+    for stale in dest.parent.glob(dest.name + ".old-*"):   # 上次尽力删没删掉的
+        shutil.rmtree(stale, ignore_errors=True)
+    old = None
+    if dest.exists():
+        old = dest.with_name(f"{dest.name}.old-{os.getpid()}")
+        _rename_dir(dest, old)
+    _rename_dir(part, dest)
+    if old is not None:
+        shutil.rmtree(old, ignore_errors=True)
 MODULES = ("main", "sdk") + tuple(f"subsdk{i}" for i in range(10))
 
 
@@ -106,8 +131,7 @@ def _extract(path, dest):
             out.parent.mkdir(parents=True, exist_ok=True)
             with t.extractfile(m) as src, open(out, "wb") as dst:
                 shutil.copyfileobj(src, dst)
-    shutil.rmtree(dest, ignore_errors=True)
-    os.replace(part, dest)
+    _put_dir(part, dest)
 
 
 def exefs_modules(exefs):
@@ -124,7 +148,7 @@ def save_exefs(c, gid, exefs):
         part = dest.with_name("exefs.partial"); shutil.rmtree(part, ignore_errors=True); part.mkdir(parents=True)
         for f in files:
             shutil.copyfile(f, part / f.name)
-        shutil.rmtree(dest, ignore_errors=True); os.replace(part, dest)
+        _put_dir(part, dest)
     kit = cache(c, gid) / "kit"
     if (kit / "main.npdm").is_file():
         save_recipe(c, gid)
@@ -193,8 +217,7 @@ def rebuild(c, gid):
                 env["S2A_CPATCH_TSV"] = str(rows)
             rr.rewrite_modules(rr.rewriter_bin(c), env, exefs, built, built / "widen_sites.tsv")
         kit.parent.mkdir(parents=True, exist_ok=True)
-        shutil.rmtree(kit, ignore_errors=True)
-        os.replace(built, kit)
+        _put_dir(built, kit)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     return kit
@@ -254,7 +277,7 @@ def _rebuilds_same(c, gid, kit):
     """按刚存的配方现建到临时目录，与 kit 逐文件逐字节比；改写器跑不起来也算对不上"""
     keep = cache(c, gid) / "kit.verify"
     shutil.rmtree(keep, ignore_errors=True)
-    os.replace(kit, keep)
+    _put_dir(kit, keep)
     try:
         try:
             built = rebuild(c, gid)
@@ -266,8 +289,7 @@ def _rebuilds_same(c, gid, kit):
         a, b = files(keep), files(built)
         return a == b and all((keep / f).read_bytes() == (built / f).read_bytes() for f in a)
     finally:
-        shutil.rmtree(kit, ignore_errors=True)
-        os.replace(keep, kit)
+        _put_dir(keep, kit)
 
 
 def drop(c, gid):
