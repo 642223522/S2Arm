@@ -42,8 +42,8 @@
 "cheats.status.packed" = "Active";
 "cheats.status.off" = "Off";
 "cheats.status.pending" = "Waiting to take effect…";
-"cheats.status.versionMismatch" = "Version mismatch";
-"cheats.status.versionMismatch.file" = "Version mismatch, won’t take effect";
+"cheats.status.versionMismatch" = "Doesn’t match this game version, turned off";
+"cheats.status.versionMismatch.file" = "Doesn’t match this game version, turned off (the game plays normally)";
 "cheats.title" = "Cheats";
 "cheats.unnamed" = "Untitled";
 "common.cancel" = "Cancel";

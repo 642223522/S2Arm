@@ -6164,6 +6164,10 @@
   "en": "The S2Arm reader tool is missing or does not match the engine version. Reinstall the full S2Arm."
  },
  {
+  "source": "这款游戏的程序号（{0}）和游戏包（{1}）对不上，多半是游戏文件被改过；已按程序号放进设备，照常安装。玩不了时请用原版游戏文件重新导入。",
+  "en": "This game's program ID ({0}) doesn't match its game package ({1}), usually because the game files were modified. It was placed on the device by program ID and installed as usual. If it doesn't play, import the original game files again."
+ },
+ {
   "source": ".NET SDK 装完了但没找到，请查看日志。",
   "en": "The .NET SDK was installed but cannot be found. See the log."
  },
@@ -8096,6 +8100,10 @@
   "en": "Couldn't back up the saves on the phone before this install ({0}). Without a backup, saves could be lost if the install goes wrong. Click again to continue anyway."
  },
  {
+  "source": "iPhone 锁着，读不了存档：请解锁手机，解锁后会自动继续",
+  "en": "The iPhone is locked, so its saves can't be read. Unlock the phone and this will continue automatically"
+ },
+ {
   "source": "读不懂 iPhone 返回的存档文件清单（{0} 条没有路径字段，多半是 Xcode 版本不同）",
   "en": "Couldn't understand the save file list from the iPhone ({0} entries have no path; usually a different Xcode version)"
  },
@@ -9080,8 +9088,12 @@
   "en": "Couldn't download {0}'s package: {1}. Check your network and try again."
  },
  {
-  "source": "{0} 的包件内容和登记的不一致（提交 {1}）：没有用它。",
-  "en": "{0}'s package doesn't match its registration (commit {1}), so it wasn't used."
+  "source": "{0} 的包件内容和登记的不一致（提交 {1}），重新下载后还是不对：没有用它。",
+  "en": "The {0} package doesn't match its registered contents (commit {1}), even after downloading it again, so it wasn't used."
+ },
+ {
+  "source": "{0} 的包件解不开，重新下载后还是不对：没有用它。",
+  "en": "The {0} package couldn't be extracted, even after downloading it again, so it wasn't used."
  },
  {
   "source": "解包出的游戏程序 {0} 不是 {1} 要的那一版（{2}），做不出来。导入 {3} 更新后再导出。",

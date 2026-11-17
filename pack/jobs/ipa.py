@@ -782,13 +782,30 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None, agreed=None)
     write_container_ipa(c, app, ipa, log)
     trace(c, "组容器结束")
     games = [g["title_id"] for g in json.loads((app / "s2a_catalogue.json").read_text(encoding="utf-8"))["games"]]
-    if gid and gid not in games:
-        # 程序文件（main.npdm 的程序号）和游戏包（导入时 CNMT 的发行号）对不上：游戏文件被改过、或混进了别的游戏的程序
-        #   （玩家实报：把别的游戏的程序换进了这款的包里）。设备侧目录按程序号，放过去就推错地方，这道核对保留，只把原因说清
-        raise Failure(f"这款游戏的程序文件和游戏包对不上（程序里是 {' '.join(games)}，游戏包是 {gid}），可能是游戏文件被改过或混了别的游戏。请用原版游戏文件重新导入。",
-                      code="game_files_mismatch")
+    title_mismatch(c, gid, others, games)
     shutil.rmtree(app, ignore_errors=True)
     return ipa, games, sid
+
+
+def title_mismatch(c, gid, others, games):
+    """程序文件（main.npdm 的程序号）和游戏包（导入时 CNMT 的发行号）对不上：游戏文件被改过、或混进了别的游戏的程序（玩家实报）。
+    维护者 11-17（玩家自己判断不了的我们替他判，不拦）：设备侧目录按程序号，容器里多出来的程序号恰好一个 → 就是这款，资源包推到程序号的位置
+    （记进 c.title_alias，取资源包时 library_id 换回游戏包号），发一条 warning 说清，不再拒绝。认不出是哪个（没多出或多出不止一个）才停"""
+    if not gid or gid in games:
+        return
+    expected = {g.upper() for g in [gid, *others] if g}
+    extra = [g for g in games if g.upper() not in expected]
+    if len(extra) != 1:
+        raise Failure(f"这款游戏的程序文件和游戏包对不上（程序里是 {' '.join(games)}，游戏包是 {gid}），可能是游戏文件被改过或混了别的游戏。请用原版游戏文件重新导入。",
+                      code="game_files_mismatch")
+    c.title_alias = dict(getattr(c, "title_alias", {}) or {}, **{extra[0]: gid})
+    c.diagnostic(f"这款游戏的程序号（{extra[0]}）和游戏包（{gid}）对不上，多半是游戏文件被改过；已按程序号放进设备，照常安装。玩不了时请用原版游戏文件重新导入。",
+                 code="game_files_mismatch", severity="warning")
+
+
+def library_id(c, g):
+    """容器里的程序号 → 游戏库里这款的游戏号（title_mismatch 记过的换回去，其余原样）"""
+    return (getattr(c, "title_alias", {}) or {}).get(g, g)
 
 
 def assemble_shell(c, *, dest=None):

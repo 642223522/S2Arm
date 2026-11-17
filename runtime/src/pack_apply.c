@@ -463,6 +463,14 @@ unsigned s2a_pack_repair_modes_as(const char *docs, const char *root, unsigned s
     if (!lstat(root, &st) && S_ISDIR(st.st_mode)) nftw(root, repair_one, 32, FTW_PHYS);
     return g_repair_n;
 }
+// App 启动时整棵补（ios/app.m img_scan_bg，在任何解包之前）：推送一报「写不进」电脑端就停，走不到解包开头那次补，
+//   玩家只能删 App 重装（D-A76N 第二回：照提示删了 Mac 上的游戏重出，还是写不进）。容器 Documents 与 Library 下 S2Arm 目录各跑一次，
+//   只补 App 自己名下的；归别的用户的（#569）照旧不动、照旧报
+unsigned s2a_pack_repair_tree(const char *dir) {
+    g_repair_n = 0; g_repair_self = repair_self(); struct stat st;
+    if (dir && !lstat(dir, &st) && S_ISDIR(st.st_mode)) nftw(dir, repair_one, 32, FTW_PHYS);
+    return g_repair_n;
+}
 int s2a_pack_apply(const char *docs) {
     char root[2048], inc[2100], logp[2100]; s2a_pack_root(root, sizeof root, docs); snprintf(inc, sizeof inc, "%s/.incoming", root); snprintf(logp, sizeof logp, "%s/unpack.log", docs);
     if (pack_in_bundle(root, "解开资源包")) return -12;   // 同「目录写不进」的码
@@ -781,9 +789,12 @@ static void mf_aside(const char *root, int back) {
 //   tx_swap 把 dst 原有的那份改名成 dst.s2a-prev 再把 src 改名进来，记下；失败时 tx_undo 倒序换回（新进来的删掉 / 挪回原处），成功时 tx_done 删掉各份 .s2a-prev。
 //   全是同一目录树里的 rename，不拷贝
 typedef struct { char dst[2400], back[2400]; int had_prev; } tx_ent;
-typedef struct { tx_ent e[64]; int n; } tx_t;
+// 记录按需扩容（D-455Z / D-MACF：原先固定 64 格，着色器更新包的派生件超过 63 个就报 E2BIG 整份拒收——
+//   派生件个数没有上限，物理上换得下去，不该被一张定长表拦住）；扩不了（内存不够）才失败、照常回滚
+typedef struct { tx_ent *e; int n, cap; } tx_t;
+static void tx_free(tx_t *t) { if (t) { free(t->e); free(t); } }
 static int tx_swap(tx_t *t, const char *src, const char *dst, const char *undo_to) {   // undo_to：失败时把新件挪回哪里（NULL = 删掉）
-    if (t->n >= (int)(sizeof t->e / sizeof t->e[0])) { errno = E2BIG; return -1; }   // 记不下就不换（换了退不回去）
+    if (t->n == t->cap) { int cap = t->cap ? t->cap * 2 : 64; tx_ent *e = realloc(t->e, (size_t)cap * sizeof *e); if (!e) { errno = ENOMEM; return -1; } t->e = e; t->cap = cap; }
     tx_ent *x = &t->e[t->n]; snprintf(x->dst, sizeof x->dst, "%s", dst); snprintf(x->back, sizeof x->back, "%s", undo_to ? undo_to : "");
     char prev[2500]; snprintf(prev, sizeof prev, "%s.s2a-prev", dst); unlink(prev);
     struct stat st; x->had_prev = !lstat(dst, &st) && !S_ISDIR(st.st_mode) && !rename(dst, prev);   // 位置被目录占着：不挪它，下面改名照旧失败（同原来）
@@ -877,10 +888,10 @@ static int img_update(const char *proc_docs, const char *path, const uint8_t *h,
         else mark_imported(root, mf);
     }
     if (rc) {   // 写到一半失败：已经换上的本体 / 派生件 / 目录表全部退回，清单改回原名——这款照旧是套更新包之前的样子、照旧能玩
-        if (tx) { tx_undo(tx); free(tx); }
+        if (tx) { tx_undo(tx); tx_free(tx); }
         if (!cloned && nt > 0) LOG("【红】资源导入：%s 套到一半失败，本体是原地整理的（不是 APFS、克隆不了），目录表退不回去：下次解包按清单核对会重取", fn);
         mf_aside(root, 1); return rc; }
-    tx_done(tx); free(tx);
+    tx_done(tx); tx_free(tx);
     mf_aside(root, 2);
     unlink(path);   // 已套上：导入文件夹里的更新包删掉（派生件已在资源包里）
     LOG("资源导入：着色器更新包 %s 套到 %s（%llu MB 派生件，本体没动）", fn, gid, (unsigned long long)(bytes >> 20));
@@ -915,8 +926,8 @@ static int img_place(const char *proc_docs, const char *path, int pass) {   // 0
     (void)old; tx_t *tx = calloc(1, sizeof *tx); if (!tx) { snprintf(g_img_err, sizeof g_img_err, "内存不够"); return -4; }
     mf_aside(root, 0);   // 先作废（留退路）：挪到一半断了不会判成就绪
     // 旧 game.img 改名留作退路（审计 P1-169 兄弟站点）：后面 index.tsv / 清单写失败时新包挪回导入处、旧包与旧目录表换回，这款照旧能玩
-    if (tx_swap(tx, path, p, path)) { int e = errno; free(tx); mf_aside(root, 1); snprintf(g_img_err, sizeof g_img_err, "把 %s 挪进资源包失败：%s", path, strerror(e)); return -4; }
-#define IMG_PLACE_FAIL() do { int e_ = errno; tx_undo(tx); free(tx); mf_aside(root, 1); errno = e_; return -4; } while (0)
+    if (tx_swap(tx, path, p, path)) { int e = errno; tx_free(tx); mf_aside(root, 1); snprintf(g_img_err, sizeof g_img_err, "把 %s 挪进资源包失败：%s", path, strerror(e)); return -4; }
+#define IMG_PLACE_FAIL() do { int e_ = errno; tx_undo(tx); tx_free(tx); mf_aside(root, 1); errno = e_; return -4; } while (0)
     // index.tsv：game.img 一行 + 原有 index.tsv 里的直连库 / 覆盖层行（着色器库与覆盖层是 App 管的缓存、不进 IMG；电脑推过的那部分不丢）
     char ip[2400], tp[2500]; snprintf(ip, sizeof ip, "%s/index.tsv", root); snprintf(tp, sizeof tp, "%s.tmp", ip);
     FILE *o = fopen(tp, "w"), *in = fopen(ip, "r"); if (!o) { if (in) fclose(in); snprintf(g_img_err, sizeof g_img_err, "写 index.tsv 失败：%s", strerror(errno)); IMG_PLACE_FAIL(); }
@@ -934,7 +945,7 @@ static int img_place(const char *proc_docs, const char *path, int pass) {   // 0
     FILE *m = fopen(tp, "w"); if (!m || fputs(mf, m) < 0 || fclose(m) || rename(tp, p)) { snprintf(g_img_err, sizeof g_img_err, "写 manifest.json 失败：%s", strerror(errno)); unlink(tp); IMG_PLACE_FAIL(); }
     mark_imported(root, mf);
 #undef IMG_PLACE_FAIL
-    tx_done(tx); free(tx);
+    tx_done(tx); tx_free(tx);
     mf_aside(root, 2);
     LOG("资源导入：%s → %s/game.img（%llu MB），等游戏库解开", strrchr(path, '/') ? strrchr(path, '/') + 1 : path, root, (unsigned long long)(total >> 20));
     return 0;
