@@ -1,7 +1,7 @@
 // 手机端自签（0.6.0 通用壳，可行性验证）：在 iOS 上用玩家自己的开发证书（p12）给游戏程序库（Mach-O dylib，arm64 单架构）重新签名，
 //   电脑不用签。只用 iOS 也有的系统接口：CommonCrypto（SHA-256）、Security（SecPKCS12Import / SecKeyCreateSignature）。
 // 签名格式照 Apple 代码签名（与 codesign / rcodesign 同构）：
-//   SuperBlob 0xfade0cc0 = CodeDirectory（v0x20400，SHA-256，16 KiB 页）+ 空 Requirements 集合 + CMS 签名（PKCS#7 SignedData，分离式）
+//   SuperBlob 0xfade0cc0 = CodeDirectory（v0x20400，SHA-256，16 KiB 页）+ 空 Requirements 集合 +（可选）XML / DER 权限 + CMS 签名（PKCS#7 SignedData，分离式）
 //   CMS 签的是 CodeDirectory 原字节：签名属性 = contentType / signingTime / messageDigest（CD 的 SHA-256）/ Apple cdhash 两条（plist + SHA-256）；
 //   证书带叶证书 + p12 里的链（WWDR 中间证书）。RSA PKCS#1 v1.5 + SHA-256。
 // 输入可以已有签名（ad-hoc 或别的证书）：在原 LC_CODE_SIGNATURE 处截断、按新签名大小改该命令与 __LINKEDIT 尺寸后重写，代码页本身不动。
@@ -78,8 +78,8 @@ static int cert_issuer_serial(const uint8_t *der, size_t n, buf *out) {
 
 // ---------- CodeDirectory ----------
 // 返回 CD 字节（cd）；sig_off = 签名在文件里的偏移（= codeLimit），code = 文件前 sig_off 字节
-static int build_cd(const uint8_t *code, uint32_t limit, const char *ident, const char *team, const uint8_t req_hash[32], uint64_t exec_base, uint64_t exec_limit, uint64_t exec_flags, buf *cd) {
-    uint32_t nslots = (limit + CS_PAGE - 1) >> CS_PAGE_SHIFT, nspecial = 2;
+static int build_cd(const uint8_t *code, uint32_t limit, const char *ident, const char *team, const uint8_t req_hash[32], const uint8_t *ent_hash, const uint8_t *ent_der_hash, uint64_t exec_base, uint64_t exec_limit, uint64_t exec_flags, buf *cd) {
+    uint32_t nslots = (limit + CS_PAGE - 1) >> CS_PAGE_SHIFT, nspecial = ent_hash ? 7 : 2;
     size_t hdr = 88, ident_n = strlen(ident) + 1, team_n = team ? strlen(team) + 1 : 0;
     size_t ident_off = hdr, team_off = team ? ident_off + ident_n : 0, hash_off = hdr + ident_n + team_n + nspecial * 32;
     size_t total = hash_off + (size_t)nslots * 32;
@@ -94,6 +94,7 @@ static int build_cd(const uint8_t *code, uint32_t limit, const char *ident, cons
     if (team) memcpy(h + team_off, team, team_n);
     // 特殊槽从 hash_off 往前：-1 Info.plist（没有，全零）、-2 Requirements
     memcpy(h + hash_off - 2 * 32, req_hash, 32);
+    if (ent_hash) { memcpy(h + hash_off - 5 * 32, ent_hash, 32); memcpy(h + hash_off - 7 * 32, ent_der_hash, 32); }   // -5 XML 权限、-7 DER 权限（-3/-4/-6 没有，全零）
     for (uint32_t i = 0; i < nslots; i++) {
         uint32_t off = i << CS_PAGE_SHIFT, len = limit - off < CS_PAGE ? limit - off : CS_PAGE;
         CC_SHA256(code + off, len, h + hash_off + (size_t)i * 32);
@@ -158,6 +159,27 @@ static int build_cms(const uint8_t cd_sha256[32], SecKeyRef key, CFArrayRef chai
     return r ? -1 : 0;
 }
 
+// ---------- 权限（免费团队必带）----------
+// 免费开发团队的证书过不了系统直接信任，AMFI 改按设备上装的描述文件校验：签名里的权限要能对上描述文件
+//   （真机：不带权限 → -415「best matching profile does not match the entitlements」）。
+//   只放描述文件里一定有、也足够定位描述文件的两条：application-identifier（团队号.包名）与 team-identifier。
+//   XML（0xfade7171）与 DER（0xfade7172）各一份，字节格式照 codesign 输出（同内容逐字节核过）
+static int der_str(buf *b, const char *s) { return der_tlv(b, 0x0c, s, strlen(s)); }
+static int build_ents(const char *appid, const char *team, buf *xml, buf *der) {
+    static const char head[] = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n";
+    char body[1024]; int bn = snprintf(body, sizeof body, "\t<key>application-identifier</key>\n\t<string>%s</string>\n\t<key>com.apple.developer.team-identifier</key>\n\t<string>%s</string>\n</dict>\n</plist>\n", appid, team);
+    if (bn <= 0 || bn >= (int)sizeof body) return -1;
+    uint8_t h[8]; size_t xn = 8 + sizeof head - 1 + (size_t)bn; be32(h, 0xfade7171); be32(h + 4, (uint32_t)xn);
+    if (bput(xml, h, 8) || bput(xml, head, sizeof head - 1) || bput(xml, body, (size_t)bn)) return -1;
+    // DER：[APPLICATION 16] { INTEGER 1, [CONTEXT 16] { SEQUENCE { key, value } … } }，键按字节序升序（这两条本来就是升序）
+    buf kv = {0}, d = {0}, e1 = {0}, e2 = {0}, top = {0}; uint8_t one = 1; int r = 0;
+    r |= der_str(&e1, "application-identifier") || der_str(&e1, appid) || der_wrap(&kv, 0x30, &e1);
+    r |= der_str(&e2, "com.apple.developer.team-identifier") || der_str(&e2, team) || der_wrap(&kv, 0x30, &e2);
+    r |= der_tlv(&top, 0x02, &one, 1) || der_wrap(&top, 0xb0, &kv) || der_wrap(&d, 0x70, &top);
+    if (!r) { be32(h, 0xfade7172); be32(h + 4, (uint32_t)(8 + d.n)); r |= bput(der, h, 8) || bput(der, d.p, d.n); }
+    free(kv.p); free(d.p); free(e1.p); free(e2.p); free(top.p); return r ? -1 : 0;
+}
+
 // ---------- Mach-O ----------
 // p12 → 私钥 + 证书链；team = 证书 OU（调用方给，或从证书里取）
 int s2a_selfsign_identity(const void *p12, size_t n, const char *password, SecKeyRef *key, CFArrayRef *chain) {
@@ -179,10 +201,11 @@ int s2a_selfsign_identity(const void *p12, size_t n, const char *password, SecKe
     CFRelease(items); return 0;
 }
 
-// 给 in（整份文件，arm64 单架构 dylib / 可执行）签名，结果写 out（调用方 free）。ident = 签名标识（NULL = 沿用原签名里的），team = 团队号
-int s2a_selfsign_macho(const uint8_t *in, size_t n, const char *ident, const char *team, SecKeyRef key, CFArrayRef chain, uint8_t **out, size_t *out_n, char *why, size_t why_n) {
-#define FAIL(...) do { snprintf(why, why_n, __VA_ARGS__); free(cd.p); free(cms.p); free(req.p); free(sb.p); free(o.p); return -1; } while (0)
-    buf cd = {0}, cms = {0}, req = {0}, sb = {0}, o = {0};
+// 给 in（整份文件，arm64 单架构 dylib / 可执行）签名，结果写 out（调用方 free）。ident = 签名标识（NULL = 沿用原签名里的），team = 团队号，
+//   appid = 「团队号.包名」（非 NULL 就带上权限：免费团队必须，付费团队带上也无妨）
+int s2a_selfsign_macho(const uint8_t *in, size_t n, const char *ident, const char *team, const char *appid, SecKeyRef key, CFArrayRef chain, uint8_t **out, size_t *out_n, char *why, size_t why_n) {
+#define FAIL(...) do { snprintf(why, why_n, __VA_ARGS__); free(cd.p); free(cms.p); free(req.p); free(sb.p); free(o.p); free(ex.p); free(ed.p); return -1; } while (0)
+    buf cd = {0}, cms = {0}, req = {0}, sb = {0}, o = {0}, ex = {0}, ed = {0};
     if (n < sizeof(struct mach_header_64)) FAIL("文件太小");
     const struct mach_header_64 *mh = (const void *)in;
     if (mh->magic != MH_MAGIC_64 || mh->cputype != CPU_TYPE_ARM64) FAIL("不是 arm64 单架构 Mach-O（magic %#x）", mh->magic);
@@ -196,6 +219,9 @@ int s2a_selfsign_macho(const uint8_t *in, size_t n, const char *ident, const cha
     if (!sig || !le) FAIL("没有 LC_CODE_SIGNATURE / __LINKEDIT（要先有一份签名，ad-hoc 也行）");
     uint32_t limit = sig->dataoff;
     if (limit > n || le->fileoff > limit) FAIL("签名偏移越界");
+    // 带权限时签名标识取 appid 的包名部分：免费团队按描述文件校验，libmis 拿「团队号.签名标识」对描述文件的 application-identifier
+    //   （真机：标识沿用 ad-hoc 的 img_xxx-哈希 → 「Local Profile has non-matching application-identifier」→ -415）
+    if (!ident && appid && *appid) { const char *dot = strchr(appid, '.'); if (dot && dot[1]) ident = dot + 1; }
     // 沿用原标识
     char ident_buf[512] = {0};
     if (!ident) {
@@ -210,6 +236,13 @@ int s2a_selfsign_macho(const uint8_t *in, size_t n, const char *ident, const cha
     // 空 Requirements 集合：magic 0xfade0c01 / 长度 12 / 个数 0
     uint8_t rq[12]; be32(rq, 0xfade0c01); be32(rq + 4, 12); be32(rq + 8, 0); bput(&req, rq, 12);
     uint8_t req_hash[32]; CC_SHA256(rq, 12, req_hash);
+    uint8_t ent_hash[32], ent_der_hash[32]; int ents = appid && *appid;
+    if (ents) {
+        if (!team || !*team) FAIL("带权限要给团队号");
+        if (build_ents(appid, team, &ex, &ed)) FAIL("出权限失败");
+        CC_SHA256(ex.p, (CC_LONG)ex.n, ent_hash); CC_SHA256(ed.p, (CC_LONG)ed.n, ent_der_hash);
+    }
+    uint32_t nblob = ents ? 5 : 3, ents_n = ents ? (uint32_t)(ex.n + ed.n) : 0;
     // 先算一次签名大小，改头再出 CD（CD 覆盖到 codeLimit，含已改过的头）
     uint8_t *code = malloc(limit); if (!code) FAIL("内存不足"); memcpy(code, in, limit);
     uint32_t est = 0;
@@ -221,29 +254,32 @@ int s2a_selfsign_macho(const uint8_t *in, size_t n, const char *ident, const cha
             s2->datasize = est; l2->filesize = (uint64_t)limit + est - l2->fileoff;
             l2->vmsize = (l2->filesize + CS_PAGE - 1) & ~(uint64_t)(CS_PAGE - 1);
         }
-        if (build_cd(code, limit, ident, team, req_hash, text_off, text_size, mh->filetype == MH_EXECUTE ? 1 : 0, &cd)) { free(code); FAIL("出 CodeDirectory 失败"); }
+        if (build_cd(code, limit, ident, team, req_hash, ents ? ent_hash : NULL, ents ? ent_der_hash : NULL, text_off, text_size, mh->filetype == MH_EXECUTE ? 1 : 0, &cd)) { free(code); FAIL("出 CodeDirectory 失败"); }
         uint8_t h[32]; CC_SHA256(cd.p, (CC_LONG)cd.n, h);
         if (build_cms(h, key, chain, &cms)) { free(code); FAIL("出 CMS 签名失败（私钥签不了或证书解析失败）"); }
-        uint32_t need = (uint32_t)(12 + 3 * 8 + cd.n + req.n + cms.n);
+        uint32_t need = (uint32_t)(12 + nblob * 8 + cd.n + req.n + ents_n + cms.n + 8);
         if (pass == 0) est = (need + 1024 + 15) & ~15u;   // 留 1 KiB 余量（第二遍签名时间长度不变，CMS 长度只差几个字节）
         else if (need > est) { free(code); FAIL("签名比预留大（%u > %u）", need, est); }
     }
-    // SuperBlob：CodeDirectory(0) / Requirements(2) / CMS(0x10000)
-    uint32_t off0 = 12 + 3 * 8, off1 = off0 + (uint32_t)cd.n, off2 = off1 + (uint32_t)req.n;
-    bput(&sb, NULL, off0); be32(sb.p, 0xfade0cc0); be32(sb.p + 4, off2 + (uint32_t)cms.n + 8); be32(sb.p + 8, 3);
-    be32(sb.p + 12, 0); be32(sb.p + 16, off0); be32(sb.p + 20, 2); be32(sb.p + 24, off1); be32(sb.p + 28, 0x10000); be32(sb.p + 32, off2);
-    bput(&sb, cd.p, cd.n); bput(&sb, req.p, req.n);
+    // SuperBlob：CodeDirectory(0) / Requirements(2) / [XML 权限(5) / DER 权限(7)] / CMS(0x10000)，索引按类型升序
+    uint32_t off0 = 12 + nblob * 8, off1 = off0 + (uint32_t)cd.n, offx = off1 + (uint32_t)req.n, offd = offx + (uint32_t)ex.n, off2 = off1 + (uint32_t)req.n + ents_n;
+    bput(&sb, NULL, off0); be32(sb.p, 0xfade0cc0); be32(sb.p + 8, nblob);
+    { uint8_t *ix = sb.p + 12; be32(ix, 0); be32(ix + 4, off0); be32(ix + 8, 2); be32(ix + 12, off1); ix += 16;
+      if (ents) { be32(ix, 5); be32(ix + 4, offx); be32(ix + 8, 7); be32(ix + 12, offd); ix += 16; }
+      be32(ix, 0x10000); be32(ix + 4, off2); }
+    bput(&sb, cd.p, cd.n); bput(&sb, req.p, req.n); if (ents) { bput(&sb, ex.p, ex.n); bput(&sb, ed.p, ed.n); }
     { uint8_t wh[8]; be32(wh, 0xfade0b01); be32(wh + 4, (uint32_t)cms.n + 8); bput(&sb, wh, 8); bput(&sb, cms.p, cms.n); }   // CMS 包成 BlobWrapper
     if (sb.n > est) { free(code); FAIL("SuperBlob 比预留大"); }
     be32(sb.p + 4, (uint32_t)sb.n);
     bput(&o, code, limit); bput(&o, sb.p, sb.n); bput(&o, NULL, est - sb.n);
-    free(code); free(cd.p); free(cms.p); free(req.p); free(sb.p);
+    free(code); free(cd.p); free(cms.p); free(req.p); free(sb.p); free(ex.p); free(ed.p);
     *out = o.p; *out_n = o.n; return 0;
 #undef FAIL
 }
 
 // ---------- 真机验证入口（0.6.0 可行性，开发用环境变量；玩家路径不设就不走）----------
-// S2A_SELFSIGN_P12 / S2A_SELFSIGN_IN / S2A_SELFSIGN_OUT（@home/ 前缀 = App 数据容器）、S2A_SELFSIGN_PW、S2A_SELFSIGN_TEAM：
+// S2A_SELFSIGN_P12 / S2A_SELFSIGN_IN / S2A_SELFSIGN_OUT（@home/ 前缀 = App 数据容器）、S2A_SELFSIGN_PW、S2A_SELFSIGN_TEAM、
+//   S2A_SELFSIGN_APPID（团队号.包名，给了就带权限；免费团队必须）：
 //   起局构造期（launchctx.c 定启动上下文之前）在手机上把 IN 用 p12 重签写到 OUT，日志记耗时与大小；之后照常按启动上下文加载 OUT
 static int home_path(char *out, size_t n, const char *p) {
     if (!strncmp(p, "@home/", 6)) { const char *h = getenv("HOME"); if (!h) return -1; snprintf(out, n, "%s/%s", h, p + 6); } else snprintf(out, n, "%s", p);
@@ -282,7 +318,7 @@ void s2a_selfsign_probe(void) {
     }
     clock_gettime(CLOCK_MONOTONIC, &t1);
     uint8_t *ob = NULL; size_t on = 0;
-    rc = s2a_selfsign_macho(ib, n, NULL, getenv("S2A_SELFSIGN_TEAM"), key, chain, &ob, &on, why, sizeof why);
+    rc = s2a_selfsign_macho(ib, n, NULL, getenv("S2A_SELFSIGN_TEAM"), getenv("S2A_SELFSIGN_APPID"), key, chain, &ob, &on, why, sizeof why);
     clock_gettime(CLOCK_MONOTONIC, &t2);
     long nchain = (long)CFArrayGetCount(chain); free(ib); CFRelease(key); CFRelease(chain);
     if (rc) { LOG("【红】手机端自签：签名失败：%s", why); return; }
