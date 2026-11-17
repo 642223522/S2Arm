@@ -792,6 +792,10 @@ uint64_t s2a_window_container_need(const char *bundle, const char *home) {
         int fp = ppaths ? ppaths(home, gid, dir, img, why, sizeof why) : 0;   // dir / img 各 1400 字节 ≥ S2A_LCTX_PATH
         if (fp < 0) { LOG("【红】地址窗口：多款容器里 %s 的程序包读不了：%s，不占窗口", gid, why); ok = 0; break; }
         if (!fp) { snprintf(dir, sizeof dir, "%s/%s", gd, gid); snprintf(img, sizeof img, "%s/Frameworks/S2AImages-%s.dylib", bundle, gid); }
+        // 通用壳：App 包的 Games/<号>/ 只放游戏库界面用的小文件、程序包还没推到这台（或推了一半、清单最后才写）——这款程序不在：跳过，
+        //   不拖累别的款（原先整个容器「读不到 main.npdm、不占窗口」，已装好的款也起不来）。玩家点它时起局取路径报「App 不完整」（S2A_SELECT_APP_INCOMPLETE）
+        if (!fp) { char np[1500]; struct stat ns; snprintf(np, sizeof np, "%s/main.npdm", dir);
+            if (stat(np, &ns)) { LOG("【黄】地址窗口：多款容器里 %s 的程序不在这台（程序包没推到、App 包里也没有 main.npdm），构造期跳过，不影响别的款", gid); continue; } }
         snprintf(g_npdm, sizeof g_npdm, "%s/main.npdm", dir);
         int t = astype_of(g_npdm);
         if (t < 0) { LOG("【红】地址窗口：多款容器里 %s 读不到 main.npdm（或不是 META），不知道要多大，不占窗口", gid); ok = 0; break; }
