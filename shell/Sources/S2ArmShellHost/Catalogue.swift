@@ -49,7 +49,8 @@ public struct Catalogue: Equatable, Sendable {
         var c: Catalogue
         if let data = try? Data(contentsOf: url) { c = parse(data, baseDirectory: url.deletingLastPathComponent()) }
         else { c = Catalogue(tiles: [], problems: ["清单读不了：\(path)"]) }
-        if let programRoot { c.merge(programs: programRoot) }
+        let shellOnly = c.tiles.isEmpty && c.problems.isEmpty   // 0.6.0 通用壳：App 包清单 games 为空（只装壳）
+        if let programRoot { c.merge(programs: programRoot, legacy: shellOnly) }
         return c
     }
 
@@ -64,11 +65,21 @@ public struct Catalogue: Equatable, Sendable {
     /// 0.6.0 通用壳：「推到 iPhone」只推这一款、不重装 App，新推进来的款在 App 包清单里没有条目——按每款程序包清单 <根>/<号>/program/catalogue.json
     /// 列进来（单个对象，字段同 App 包清单条目，另有 dir）。图 / 补丁表都相对版本目录 program/<dir>/（没写 dir = program/）。
     /// 同一个号 App 包清单里也有：以程序包这条为准（换上的是这一版）。游戏号不合规的目录、清单读不了 / 不是这一款的都跳过并记问题
-    mutating func merge(programs root: URL) {
+    /// legacy（只装壳的通用 App）：0.5.x 老玩家覆盖装上通用 App 后，老款的资源包还在 <根>/<号>/资源包、App 包里没有它、也还没有程序包——
+    /// 照样列出来，卡片「在电脑上更新」（.needsGameUpdate；电脑总控台「更新所选」补程序包，资源不重推），不让玩家以为游戏丢了。名字暂用游戏号
+    mutating func merge(programs root: URL, legacy: Bool = false) {
         guard let ids = try? FileManager.default.contentsOfDirectory(atPath: root.path) else { return }
         for id in ids.sorted() where isTitleID(id) {
             let prog = root.appendingPathComponent(id).appendingPathComponent("program")
-            guard let data = try? Data(contentsOf: prog.appendingPathComponent("catalogue.json")) else { continue }
+            guard let data = try? Data(contentsOf: prog.appendingPathComponent("catalogue.json")) else {
+                var isDir: ObjCBool = false
+                if legacy, !tiles.contains(where: { $0.id == id }),
+                   FileManager.default.fileExists(atPath: root.appendingPathComponent(id).appendingPathComponent("资源包").path, isDirectory: &isDir), isDir.boolValue {
+                    tiles.append(GameTile(id: id, title: id, state: .needsGameUpdate))
+                    problems.append("\(id) 只有资源包、没有程序包（0.5.x 老款），列为「在电脑上更新」")
+                }
+                continue
+            }
             guard let e = try? JSONDecoder().decode(CatalogueEntry.self, from: data), e.titleID == id else { problems.append("程序包清单 \(id) 读不了或不是这一款，跳过"); continue }
             if let d = e.dir, !d.isEmpty, !(d.hasPrefix("v-") && !d.contains("/") && !d.contains("..")) { problems.append("程序包清单 \(id) 的 dir「\(d)」不合规，跳过"); continue }
             let base = (e.dir ?? "").isEmpty ? prog : prog.appendingPathComponent(e.dir!)

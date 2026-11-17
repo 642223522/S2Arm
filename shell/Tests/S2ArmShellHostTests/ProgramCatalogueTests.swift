@@ -40,6 +40,30 @@ import ShellUI
     #expect(c.problems.contains { $0.contains("0100000000040000") }, "清单不是这一款的记问题")
 }
 
+// 0.5.x 老玩家覆盖装上通用 App（开发甲 11-17 迁移路径）：只装壳的 App 包清单 games 为空；资源根下 E 只有 资源包/（没有程序包）、F 有程序包、
+//   G 只有 program/ 空目录没有清单也没有资源包 → 列 E（「在电脑上更新」、名字暂用游戏号）、F（可玩）；G 不列。
+//   App 包清单里有款的老容器（0.5.x 行为）：同样只有资源包的 H 不额外列出（开关关着行为不变）
+@Test func legacyPackOnlyGamesListedAsUpdateOnComputer() throws {
+    let fm = FileManager.default
+    let tmp = fm.temporaryDirectory.appendingPathComponent("s2a-legacy-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: tmp) }
+    let root = tmp.appendingPathComponent("games")
+    for d in ["0100000000050000/资源包", "0100000000060000/program", "0100000000070000/program", "0100000000080000/资源包"] {
+        try fm.createDirectory(at: root.appendingPathComponent(d), withIntermediateDirectories: true)
+    }
+    try Data(#"{"title_id":"0100000000060000","name":"F"}"#.utf8).write(to: root.appendingPathComponent("0100000000060000/program/catalogue.json"))
+    let shell = tmp.appendingPathComponent("shell.json"); try Data(#"{"schema":1,"shell_id":"x","games":[]}"#.utf8).write(to: shell)
+    let c = Catalogue.load(path: shell.path, programRoot: root)
+    #expect(c.tiles.map(\.id) == ["0100000000050000", "0100000000060000", "0100000000080000"], "列 E、F、H（实际 \(c.tiles.map(\.id))）")
+    let e = c.tiles.first { $0.id == "0100000000050000" }
+    #expect(e?.state == .needsGameUpdate && e?.title == "0100000000050000", "只有资源包的款：「在电脑上更新」、名字是游戏号")
+    #expect(c.tiles.first { $0.id == "0100000000060000" }?.state == .playable, "有程序包的照常可玩")
+    let old = tmp.appendingPathComponent("old.json"); try Data(#"{"schema":1,"shell_id":"x","games":[{"title_id":"0100000000050000","name":"E"}]}"#.utf8).write(to: old)
+    let o = Catalogue.load(path: old.path, programRoot: root)
+    #expect(o.tiles.map(\.id) == ["0100000000050000", "0100000000060000"], "老容器不额外列只有资源包的 H（实际 \(o.tiles.map(\.id))）")
+    #expect(o.tiles.first?.title == "E" && o.tiles.first?.state == .playable, "老容器 App 包里的 E 照旧")
+}
+
 // 只装壳的容器：App 包清单 games 为空、也没有程序包 → 空游戏库，不报「清单读不了」
 @Test func shellOnlyCatalogueIsEmptyLibrary() throws {
     let fm = FileManager.default
