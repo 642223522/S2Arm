@@ -22,12 +22,13 @@ struct ExportView: View {
 
     var body: some View {
         ExportPageLayout {
-            VStack(alignment: .leading, spacing: 34) {
+            VStack(alignment: .leading, spacing: 20) {
                 ExportGameHeader(model: model, covers: covers, game: game)
                 // The patch and Mod choices stay in the setup page.
                 SGradeCard(model: model, gameID: game.id)
                 downstream
-                platforms
+                platformsSection
+                optionsSection
             }
         } actions: {
             actionBar
@@ -58,7 +59,7 @@ struct ExportView: View {
 
     // ---- platforms ----
 
-    private var platforms: some View {
+    private var platformsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text(loc.t("s2arm.export.platforms")).font(.manrope(15, .semibold)).foregroundStyle(.secondary).padding(.leading, 2)
@@ -80,6 +81,12 @@ struct ExportView: View {
             HStack(alignment: .top, spacing: 12) {
                 ForEach(ExportPlatform.allCases) { platform in tile(platform) }
             }
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var optionsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
             locationRow
             if model.exportTargets.contains(.ios) { IosAfterPackPicker(model: model) }   // 出完之后：装到 iPhone / 导出自签 IPA（11-16 维护者：一个入口、两条分叉各走到底）
             if model.exportTargets.contains(.tvos) || game.appleTvReady { appleTVRow }   // 签名 / 安装方式收进环境检查（v0.3.0），这里只读 + 更改
@@ -144,7 +151,6 @@ struct ExportView: View {
         }
         .padding(.horizontal, 14).padding(.vertical, 12)
         .background(LauncherPalette.surface.opacity(0.7), in: RoundedRectangle(cornerRadius: 12))
-        .padding(.top, 4)
         .onAppear {
             if location.isEmpty { location = model.defaultLocation(for: game) }
             model.loadLocations()
@@ -206,7 +212,7 @@ struct ExportView: View {
                 }
                 Spacer(minLength: 0)
             }
-            .padding(18).frame(maxWidth: .infinity, minHeight: 142, alignment: .topLeading)
+            .padding(16).frame(maxWidth: .infinity, minHeight: 126, maxHeight: .infinity, alignment: .topLeading)
             .background(on ? LauncherPalette.cream.opacity(0.05) : LauncherPalette.surface.opacity(open ? 0.75 : 0.4), in: RoundedRectangle(cornerRadius: 14))
             .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(on ? LauncherPalette.cream.opacity(0.7) : Color.white.opacity(0.06), lineWidth: on ? 1.5 : 1))
             .contentShape(RoundedRectangle(cornerRadius: 14))
@@ -237,7 +243,6 @@ struct ExportView: View {
 
     private var actionBar: some View {
         let blocker = model.exportBlocker(game)
-        let count = model.exportTargets.count
         return HStack(spacing: 14) {
             if let blocker {
                 Label(reason(blocker), systemImage: "info.circle").font(.manrope(13)).foregroundStyle(.secondary)
@@ -290,7 +295,7 @@ struct IosAfterPackPicker: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(x("after.title")).font(.manrope(13, .semibold)).foregroundStyle(.secondary).padding(.leading, 2).padding(.top, 4)
+            Text(x("after.title")).font(.manrope(13, .semibold)).foregroundStyle(.secondary).padding(.leading, 2)
             HStack(alignment: .top, spacing: 12) {
                 option("install", x("after.install"), x("after.install_note"), "iphone.and.arrow.forward")
                 option("export", x("after.export"), x("after.export_note"), "square.and.arrow.up")
