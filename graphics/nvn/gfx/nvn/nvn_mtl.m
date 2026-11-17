@@ -6310,6 +6310,52 @@ static void attach(MTLRenderPassAttachmentDescriptor *a, const tex_t *t, const v
                 RED_ONCE(68, "render target view format %#x cannot be attached (base texture Metal format %lu was created without the format-view usage): drawing in the base format", v->format, (unsigned long)base.pixelFormat); }
     }
 }
+// The layers an attached render target view covers from its attached slice (3D: depth plane) on: the view's layer count (0: the rest), else every layer the texture has from there
+//   (ported from nxnative ffdf67de, MIT)
+static NSUInteger att_layers(MTLRenderPassAttachmentDescriptor *a, const view_t *v, int has_v) {
+    id<MTLTexture> t = a.texture; if (!t) return 1;
+    NSUInteger all = t.textureType == MTLTextureType3D ? MAX(t.depth >> a.level, 1u) : t.arrayLength * (t.textureType == MTLTextureTypeCube || t.textureType == MTLTextureTypeCubeArray ? 6 : 1);
+    NSUInteger from = t.textureType == MTLTextureType3D ? a.depthPlane : a.slice, n = all > from ? all - from : 1;
+    if (has_v && v->set_layers && v->nlayers) n = MIN(n, (NSUInteger)v->nlayers);
+    return MAX(n, 1u);
+}
+// NVN clears every layer of the bound render target view (the whole texture when the view sets no layer range). A clear folded into the pass's load action reaches only the pass's
+//   layers: one, unless the pass is layered (renderTargetArrayLength, set only for a vertex shader that writes the layer). 01002FC00412C000 clears each point light's six-face shadow
+//   cube (D32F_S8) in the pass that captures its one-pass geometry shader's vertices, which is not layered: only face 0 (+X) was cleared, faces 1-5 kept zero depth, every fragment
+//   failed the depth test there and the comparison sampler read them as fully shadowed, so the light reached the room only through one face. A cleared attachment whose view covers
+//   more than one layer, in a pass that is not layered, is cleared on every layer in a pass of its own, and the pass loads it (ported from nxnative ffdf67de, MIT).
+//   DM_NVN_LAYER_CLEAR=0 turns it off (comparison only)
+static uint64_t g_lyc_n;   // attachments cleared on every layer in a pass of their own (layer_clears)
+static int lyc_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_LAYER_CLEAR"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("DM_NVN_LAYER_CLEAR=0: a clear of a layered target in a pass that is not layered reaches only the attached layer"); } return v; }
+static void layer_clears(id pd0) {
+    MTLRenderPassDescriptor *pd = (MTLRenderPassDescriptor *)pd0;   // the attachment properties both descriptor classes share (see copy_resolve_scaled)
+    if (!lyc_on()) return;
+    for (int i = 0; i <= R.rt.n && i <= 8; i++) {
+        int ds = i == R.rt.n || i == 8;
+        MTLRenderPassAttachmentDescriptor *a = !ds ? pd.colorAttachments[i] : pd.depthAttachment.texture ? pd.depthAttachment : pd.stencilAttachment;
+        int cd = ds && pd.depthAttachment.texture && pd.depthAttachment.loadAction == MTLLoadActionClear, cs = ds && pd.stencilAttachment.texture && pd.stencilAttachment.loadAction == MTLLoadActionClear;
+        if (!a.texture || bcrt_is(a.texture) || (ds ? !cd && !cs : a.loadAction != MTLLoadActionClear)) { if (ds) break; continue; }
+        NSUInteger nl = att_layers(a, ds ? &R.rt.dview : &R.rt.cview[i], ds ? R.rt.has_dview : R.rt.has_cview[i]);
+        if (nl < 2) { if (ds) break; continue; }
+        id cp0 = pass_desc(); MTLRenderPassDescriptor *cp = (MTLRenderPassDescriptor *)cp0;
+        cp.renderTargetArrayLength = nl;
+        if (!ds) { MTLRenderPassColorAttachmentDescriptor *c = cp.colorAttachments[0], *o = pd.colorAttachments[i];
+            c.texture = o.texture; c.level = o.level; c.slice = o.slice; c.depthPlane = o.depthPlane; c.clearColor = o.clearColor; c.loadAction = MTLLoadActionClear; c.storeAction = MTLStoreActionStore;
+            o.loadAction = MTLLoadActionLoad; }
+        else {
+            if (cd) { MTLRenderPassDepthAttachmentDescriptor *d = cp.depthAttachment, *o = pd.depthAttachment;
+                d.texture = o.texture; d.level = o.level; d.slice = o.slice; d.clearDepth = o.clearDepth; d.loadAction = MTLLoadActionClear; d.storeAction = MTLStoreActionStore; o.loadAction = MTLLoadActionLoad; }
+            if (cs) { MTLRenderPassStencilAttachmentDescriptor *s = cp.stencilAttachment, *o = pd.stencilAttachment;
+                s.texture = o.texture; s.level = o.level; s.slice = o.slice; s.clearStencil = o.clearStencil; s.loadAction = MTLLoadActionClear; s.storeAction = MTLStoreActionStore; o.loadAction = MTLLoadActionLoad; }
+        }
+        if (!g_lyc_n++) MLOG("layered clear: a clear of a %lu-layer target in a pass that is not layered is made on every layer in a pass of its own (first case pass %llu %s%d; DM_NVN_LAYER_CLEAR=0 turns it off)",
+                             (unsigned long)nl, g_stat_pass + 1, ds ? "d" : "c", ds ? 0 : i);
+        PD("C %llu %s%d cleared in a pass of its own (%lu layers from slice %lu)", g_stat_pass + 1, ds ? "d" : "c", ds ? 0 : i, (unsigned long)nl, (unsigned long)a.slice);
+        if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
+        ser_gate(); enc_r_end(enc_r_begin(cp0));
+        if (ds) break;
+    }
+}
 // mode 1 (clear_only): a pass opened only to land pending clears, attaching only the attachments that have clears; mode 2: the lookahead proves this pass does not use depth-stencil, so depth is not attached.
 // clear_only: a pass opened only to land pending clears, attaching only the attachments that have clears - the other attachments are not touched by this pass, and attaching them costs a pointless load and store on TBDR
 // (Mac character select screen: the color-clear pass drags along a 400x225 depth load and store)
@@ -6512,6 +6558,7 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
             if (R.clear_d && (!pd.stencilAttachment.texture || R.clear_s)) rt_fresh_mark(R.rt.depth);
         }
     }
+    if (!g_rp_layered) layer_clears(pd);   // a clear of a target view with several layers, in a pass that is not layered: every layer, in a pass of its own (see layer_clears)
     // The attachments this pass writes (gpw_mark: their guest bytes go stale); the attached level, the attached layer (a layered pass: every layer from it)
     for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i] && pd.colorAttachments[i].texture) gpw_mark_view(R.rt.color[i], &R.rt.cview[i], R.rt.has_cview[i], g_rp_layered);
     if (R.rt.depth && (pd.depthAttachment.texture || pd.stencilAttachment.texture)) gpw_mark_view(R.rt.depth, &R.rt.dview, R.rt.has_dview, g_rp_layered);
