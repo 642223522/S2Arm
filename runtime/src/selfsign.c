@@ -14,6 +14,7 @@
 #include <string.h>
 #include <time.h>
 #include "native.h"
+#include <sys/stat.h>
 
 #define CS_PAGE_SHIFT 14
 #define CS_PAGE (1u << CS_PAGE_SHIFT)
@@ -271,6 +272,7 @@ void s2a_selfsign_probe(void) {
     clock_gettime(CLOCK_MONOTONIC, &t2);
     long nchain = (long)CFArrayGetCount(chain); free(ib); CFRelease(key); CFRelease(chain);
     if (rc) { LOG("【红】手机端自签：签名失败：%s", why); return; }
+    for (char *q = po + 1; *q; q++) if (*q == '/') { *q = 0; mkdir(po, 0755); *q = '/'; }   // 上级目录可能还没建（program/）
     char tmp[1100]; snprintf(tmp, sizeof tmp, "%s.tmp", po);
     FILE *f = fopen(tmp, "wb"); int ok = f && fwrite(ob, 1, on, f) == on; if (f && fclose(f)) ok = 0; free(ob);
     if (!ok || rename(tmp, po)) { LOG("【红】手机端自签：写不进 %s", po); return; }
