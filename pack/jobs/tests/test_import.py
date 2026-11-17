@@ -94,6 +94,18 @@ class ImportTests(JobCase):
         _, terminal = self.worker("import", paths=[str(source)])
         diagnostic = self.assert_failure(terminal, "keys_outdated")
         self.assertIn("解不开", diagnostic["summary"]); self.assertNotIn("换一份", diagnostic["summary"])
+        self.assertNotIn("master_key_", diagnostic["summary"])   # 读取器没给密钥代：不补那句
+
+    def test_wrong_keys_names_key_generation(self):
+        # #1511：读取器给了【密钥代】（要的代、prod.keys 有到的代，十六进制）→ 玩家句补一句；期望句子手写
+        self.import_keys(); self.install_reader_fixture()
+        cases = [("0f|0e|1", "这份文件要 master_key_0f，你的 prod.keys 只到 master_key_0e：不够新。"),
+                 ("03|15|0", "这份文件要 master_key_03，你的 prod.keys 有到 master_key_15：代数够，多半是这一行的值不对。")]
+        for i, (line, want) in enumerate(cases):
+            source = self.root / f"gen{i}.xci"; source.write_bytes(b"magic fixture " + line.encode())
+            _, terminal = self.worker("import", paths=[str(source)])
+            diagnostic = self.assert_failure(terminal, "keys_outdated")
+            self.assertIn(want, diagnostic["summary"], line)
 
     def test_identity_from_content_ids_without_reading_whole_file(self):
         # 11-09 玩家反馈「只是添加也要跑几分钟」：读取器给了 content ID 就按 titleId / 类型 / 版本 / 排序后的 content ID / 文件大小算身份，不整份算 SHA-256；

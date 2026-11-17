@@ -158,6 +158,7 @@ static partial class P {
             Console.Error.WriteLine("Container metadata could not be decrypted or verified. Check keys, tickets and file integrity.");
             var (code, message) = Explain(e);
             Console.Error.WriteLine($"【原因 {code}】{message}");
+            KeyGenLine(code);
             if (Trace()) Console.Error.WriteLine(e.ToString());
             return 3;
         }

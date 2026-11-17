@@ -10210,5 +10210,13 @@
  {
   "source": "在 iPhone 上从后台划掉 S2Arm（或回到主屏后等几秒），再点一次还原。",
   "en": "Close S2Arm on the iPhone (swipe it away from the app switcher), then restore again."
+ },
+ {
+  "source": "这份文件要 master_key_{0}，你的 prod.keys 只到 master_key_{1}：不够新。",
+  "en": "This file needs master_key_{0}, but your prod.keys only goes up to master_key_{1}: it is not new enough."
+ },
+ {
+  "source": "这份文件要 master_key_{0}，你的 prod.keys 有到 master_key_{1}：代数够，多半是这一行的值不对。",
+  "en": "This file needs master_key_{0}, and your prod.keys goes up to master_key_{1}: the generation is there, so that key's value is most likely wrong."
  }
 ]
