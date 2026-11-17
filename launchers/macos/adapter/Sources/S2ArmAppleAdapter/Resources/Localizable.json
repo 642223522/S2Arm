@@ -10138,5 +10138,13 @@
  {
   "source": "导入时这款数据校验不过（多半是改版 / 整合版或个别块损坏），这次失败可能与此有关；换一份原版完整的文件再试。",
   "en": "This game's data failed the integrity check when it was imported (usually a modded or merged build, or a damaged block), which may be related to this failure. Try again with a complete original file."
+ },
+ {
+  "source": "「{0}」（{1}）里是另一个游戏库，有 {2} 款游戏，不是 S2Arm 上次记下的那个。点「仍然继续」就改用它；不是你要的，就到设置里重新选游戏库。",
+  "en": "“{0}” ({1}) holds a different game library with {2} games, not the one S2Arm remembered. Click Continue anyway to use it; if it isn’t the one you want, choose your game library again in Settings."
+ },
+ {
+  "source": "点「仍然继续」改用这个游戏库；不是你要的，就到设置里重新选游戏库。",
+  "en": "Click Continue anyway to use this game library; if it isn’t the one you want, choose your game library again in Settings."
  }
 ]

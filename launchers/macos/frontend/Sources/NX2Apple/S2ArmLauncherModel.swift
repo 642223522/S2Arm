@@ -523,6 +523,12 @@ public final class S2ArmLauncherModel: ObservableObject {
                 self.libraryError = error.message
                 if error.message == LibraryProvider.noLibraryMessage {   // 没有游戏库（含文件夹被删、适配层已忘掉，#1412）：不留旧列表，回欢迎页
                     self.games = []; self.selectedID = nil; self.showingSnapshot = false
+                } else if error.code == "library_id_mismatch", !self.provider.client.environment.library.isEmpty {
+                    // 这个位置是另一个游戏库（库号和记下的不同，11-17 维护者：说清是哪个、玩家点一下确认）：沿用换库确认，
+                    //   「仍然继续」= 对这个文件夹重走选库（已有库直接打开、记下它的库号）后重读；「先不」= 照旧显示上次的列表
+                    self.showingSnapshot = !self.games.isEmpty
+                    self.libraryConfirm = LibraryConfirm(url: URL(fileURLWithPath: self.provider.client.environment.library), move: false,
+                                                         message: error.message, code: "library_id_mismatch")
                 } else {
                     self.showingSnapshot = !self.games.isEmpty   // 列表没换：还是上次的
                 }
