@@ -41,8 +41,8 @@
 "cheats.status.packed" = "Actif";
 "cheats.status.off" = "Désactivé";
 "cheats.status.pending" = "En attente de prise d'effet…";
-"cheats.status.versionMismatch" = "Version incompatible";
-"cheats.status.versionMismatch.file" = "Version incompatible, ne prendra pas effet";
+"cheats.status.versionMismatch" = "Ne correspond pas à cette version du jeu, désactivé";
+"cheats.status.versionMismatch.file" = "Ne correspond pas à cette version du jeu, désactivé (le jeu fonctionne normalement)";
 "cheats.title" = "Codes de triche";
 "cheats.unnamed" = "Sans titre";
 "common.cancel" = "Annuler";

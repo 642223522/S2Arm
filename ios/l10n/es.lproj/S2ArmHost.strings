@@ -41,8 +41,8 @@
 "cheats.status.packed" = "Activo";
 "cheats.status.off" = "Desactivado";
 "cheats.status.pending" = "Esperando aplicarse…";
-"cheats.status.versionMismatch" = "Versión no coincide";
-"cheats.status.versionMismatch.file" = "Versión no coincide, no se aplicará";
+"cheats.status.versionMismatch" = "No coincide con esta versión del juego, desactivado";
+"cheats.status.versionMismatch.file" = "No coincide con esta versión del juego, desactivado (el juego funciona con normalidad)";
 "cheats.title" = "Trucos";
 "cheats.unnamed" = "Sin título";
 "common.cancel" = "Cancelar";

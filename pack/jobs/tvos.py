@@ -334,10 +334,11 @@ def assemble(c, gid, others, shell, sid):
         raise
     packer.finish_container(c, app, log)
     games = [g["title_id"] for g in json.loads((app / "s2a_catalogue.json").read_text(encoding="utf-8"))["games"]]
-    if gid not in games:   # 同 ipa.assemble：程序文件和游戏包的程序号对不上，设备侧目录按程序号，放过去就推错地方
+    try:   # 同 ipa.assemble：程序号和游戏包号对不上时按程序号放、资源取回游戏包号那款（认不出是哪个才停）
+        packer.title_mismatch(c, gid, list(others), games)
+    except Failure:
         shutil.rmtree(out, ignore_errors=True)
-        raise Failure(f"这款游戏的程序文件和游戏包对不上（程序里是 {' '.join(games)}，游戏包是 {gid}），可能是游戏文件被改过或混了别的游戏。请用原版游戏文件重新导入。",
-                      code="game_files_mismatch")
+        raise
     return out, app, games
 
 
@@ -758,7 +759,7 @@ def install_tv(c):
         install_app(c, dev["identifier"], app)
     finally:
         shutil.rmtree(out, ignore_errors=True)
-    packs = {g: (tv_pack(c, g) if (tv_pack(c, g) / "manifest.json").is_file() else None) for g in games}
+    packs = {g: (tv_pack(c, packer.library_id(c, g)) if (tv_pack(c, packer.library_id(c, g)) / "manifest.json").is_file() else None) for g in games}
     moved = rec.get("bundleId") not in ("", bid)
     stale = [g for g in games if packs[g] is not None and (moved or g == gid or install.pack_id(packs[g]) != (rec["games"].get(g) or {}).get("pack"))]
     c.begin("把游戏推进 Apple TV（只推变了的文件；第一次大游戏要几分钟）", 6, 6)

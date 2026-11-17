@@ -42,8 +42,8 @@
 "cheats.status.packed" = "已生效";
 "cheats.status.off" = "关";
 "cheats.status.pending" = "等待生效…";
-"cheats.status.versionMismatch" = "版本不符";
-"cheats.status.versionMismatch.file" = "版本不符，不会生效";
+"cheats.status.versionMismatch" = "和当前游戏版本不符，已停用";
+"cheats.status.versionMismatch.file" = "和当前游戏版本不符，已停用（游戏照常玩）";
 "cheats.title" = "金手指";
 "cheats.unnamed" = "未命名";
 "common.cancel" = "取消";
