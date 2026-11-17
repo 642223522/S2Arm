@@ -25,7 +25,7 @@ public struct S2ArmShellHostView: View {
                 }
             }
             .onAppear {
-                model.startControllers(); s2a_shell_library_appeared()
+                model.startControllers(); s2a_shell_library_appeared(); model.rescanCatalogue()   // 游戏库页出现：重读清单（电脑端推进来的新款，0.6.0）
                 // 主屏快捷操作「设置」冷启动：库界面出现后打开游戏库设置（LibraryView 已经订阅，下一拍再发）
                 if s2a_shell_take_open_settings() != 0 { DispatchQueue.main.async { NotificationCenter.default.post(name: .shellOpenSettings, object: nil) } }
             }
@@ -58,7 +58,7 @@ public struct S2ArmShellHostView: View {
             .animation(.smooth(duration: 0.25), value: model.guideOpen)
         #if canImport(UIKit) && !os(tvOS)
             // 回前台重判资源包：玩家去「文件」/ 访达拷完资源包回来，不用重开 App
-            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in model.refreshGameData() }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in model.rescanCatalogue() }
             // 虚拟手柄布局编辑页（设置里「按键布局 → 调整位置…」）：盖在库界面上，关了回到设置
             .overlay {
                 if let id = model.editingLayout {
@@ -72,7 +72,7 @@ public struct S2ArmShellHostView: View {
                 }
             }
         #elseif os(tvOS)
-            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in model.refreshGameData() }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in model.rescanCatalogue() }
         #endif
     }
 
@@ -164,7 +164,7 @@ import UIKit
 @MainActor @_cdecl("s2a_shell_library_vc")
 public func s2a_shell_library_vc(_ cataloguePath: UnsafePointer<CChar>?) -> UnsafeMutableRawPointer {
     let path = cataloguePath.map { String(cString: $0) } ?? ""
-    let model = S2ArmShellHostModel(catalogue: Catalogue.load(path: path))
+    let model = S2ArmShellHostModel(catalogue: Catalogue.load(path: path), reloadCatalogue: { Catalogue.load(path: path) })
     // 宿主「重新检查」/ 后台解包完成 → 重判资源包。登记给 C 的是不持有的指针，所以由 g_refreshModel 强持有当前这份模型：
     //   原先假定「vc 由 app.m 持有到进程结束」，可开游戏时 window.rootViewController 换成游戏页，库的 vc 与模型随之释放，
     //   游戏里后台解包完成再回调就是用已释放的模型（11-14 诊断#7f30f6：refreshGameData+0x9c 读 0x10）。再建库页时换成新的那份，只留一个
