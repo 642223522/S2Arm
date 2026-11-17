@@ -48,6 +48,7 @@ cp -R "$H/pack/stages" $R/pack/
 cp "$H/tools/clonedir.py" "$H/tools/safe_killpg.sh" "$H/tools/plock.sh" "$H/tools/flock_hold.py" $R/tools/   # roots.sh 提交锁用 tools/plock.sh（审计 P1-27）
 # romfs_list.py：仓库里唯一的 RomFS 遍历（11-03），被测脚本经它列 RomFS
 cp "$H/graphics/tools/timeout_snap.sh" $R/graphics/tools/; cp "$H/graphics/nvn/tools/gfx_api.py" "$H/graphics/nvn/tools/romfs_list.py" $R/graphics/nvn/tools/
+mkdir -p "$R/tools"; cp "$H/tools/pool_workers.py" "$R/tools/"   # romfs_list / pak_crypto 经它取核数（#1332：核数唯一来源）
 printf 'import sys\nprint("nvn\\tfake")\n' > $R/graphics/nvn/tools/gfx_api.py
 printf '#!/bin/bash\nshift 2\nexec "$@"\n' > $R/graphics/tools/timeout_snap.sh
 chmod +x $R/graphics/tools/timeout_snap.sh
