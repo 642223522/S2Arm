@@ -701,6 +701,24 @@ int main(void) {
           CHECK(ra == 0, "⑭g 随后解开成功（实际 %d）", ra);
           CHECK(s2a_img_scan(D7) == 1 && s2a_pack_apply(g7) == 0, "⑭g 解开后再扫：套上更新包、再解开仍成功");
           snprintf(c, sizeof c, "test \"$(cat '%s/资源包/shaders/a.metallib')\" = y", g7); CHECK(sh(c) == 0, "⑭g 最终 a.metallib = y"); }
+        { // ⑭i D-455Z / D-MACF：着色器更新包带 200 个派生件（原先换件的回滚记录固定 64 格，超过就报 E2BIG、整份拒收）。
+          //   期望手写：认领 1 个、200 个派生件全部落盘、抽查的内容对、index.tsv 记 200 行这类派生件、再解开仍成功
+          char D10[1300]; snprintf(D10, sizeof D10, "%s/img_docs10", T);
+          snprintf(c, sizeof c, "mkdir -p '%s/放这里导入' '%s/src/u200' && for i in $(seq -w 0 199); do printf \"v$i\" > '%s/src/u200/'$i;"
+                   " printf 'shaders/direct/b-x/lib.%%s.pak\t%s/src/u200/%%s\n' $i $i; done > '%s/src/upd200.tsv'"
+                   " && python3 '%s/pack/img.py' build - '%s/src/others_sh.tsv' '%s/放这里导入/完整.img' --gid 0100abcd0000000c --pack-id img1001 > /dev/null", D10, D, D, D, D, R, D, D10);
+          CHECK(sh(c) == 0, "⑭i 造完整包与 200 个派生件的清单");
+          char g10[1500]; snprintf(g10, sizeof g10, "%s/games/0100ABCD0000000C", D10);
+          CHECK(s2a_img_scan(D10) == 1 && s2a_pack_apply(g10) == 0, "⑭i 完整包认领并解开");
+          snprintf(c, sizeof c, "python3 '%s/pack/img.py' build - '%s/src/upd200.tsv' '%s/放这里导入/完整 着色器更新包.img' --gid 0100abcd0000000c --pack-id img1001 > /dev/null"
+                   " && printf '\002' | dd of='%s/放这里导入/完整 着色器更新包.img' bs=1 seek=8 conv=notrunc 2>/dev/null", R, D, D10, D10);
+          CHECK(sh(c) == 0, "⑭i 造 200 个派生件的更新包（格式号 2）");
+          int got = s2a_img_scan(D10);
+          CHECK(got == 1, "⑭i 更新包认领 1 个（实际 %d，%s「%s」）", got, s2a_img_scan_code(), s2a_img_scan_failure());
+          snprintf(c, sizeof c, "g='%s/资源包'; test \"$(ls \"$g/shaders/direct/b-x\" | wc -l | tr -d ' ')\" = 200 && test \"$(cat \"$g/shaders/direct/b-x/lib.137.pak\")\" = v137"
+                   " && test \"$(grep -c '^shaders/direct/b-x/lib\\.' \"$g/index.tsv\")\" = 200", g10);
+          CHECK(sh(c) == 0, "⑭i 200 个派生件全部落盘、lib.137 = v137、index.tsv 记 200 行");
+          CHECK(s2a_pack_apply(g10) == 0, "⑭i 套更新包后再解开成功"); }
         { // ⑭f 审计 P1-169：更新包写派生件失败（派生件 shaders/a.metallib 的位置被一个非空目录占着，改名进不去）→ 失败、不能把这款从库里弄没：
           //   期望手写：返回 0 个、给失败码；清单 manifest.json 与 .applied 都还在、内容不变；本体 game.img 逐字节不变；更新包留在导入文件夹
           snprintf(c, sizeof c, "set -e; g='%s/资源包'; cp \"$g/manifest.json\" '%s/mf.bak'; cp \"$g/.applied\" '%s/ap.bak'; cp \"$g/game.img\" '%s/img.bak';"
