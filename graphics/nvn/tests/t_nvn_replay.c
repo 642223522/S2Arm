@@ -1886,6 +1886,8 @@ static void t_report_position(void) {
     rp_timestamp_fallback_take(); g_ts_calls = 0; submit1(&many); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_ts_calls == 64 && records[63][0] == 740 && records[64][0] == g_tick);
     CHECK(rp_timestamp_fallback_take() == 1);
+    records[64][0] = 54321; g_ts_calls = 0; submit1(&many); fake_complete(NVN_GPU_DONE_FAULT);
+    CHECK(records[0][0] == 110 && records[64][0] == 54321);
     // CALL then JUMP preserves execution order and address-to-slot mapping.
     stream child = {0}, tail = {0}, root = {0}; ts_report(&child, rec[0]); end(&child);
     ts_report(&tail, rec[1]); end(&tail); uint64_t ptr = (uint64_t)(uintptr_t)child.b;
