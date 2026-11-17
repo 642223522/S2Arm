@@ -1,6 +1,6 @@
 // S2Arm（不是上游文件）：游戏库还是空的时候的欢迎页，同时就是环境检查（11-08 维护者：不做卡片引导，玩家照着做就行）。
-// 准备这台 Mac → 添加游戏 → 放入密钥（只有 NSP / XCI 要）；三步完成后可进入游戏库。
-// 当前步骤提供主操作；底部的游戏库入口在准备完成前置灰。下载进度和操作就在对应工具的说明下方。
+// 准备这台 Mac → 添加游戏 → 放入密钥（只有 NSP / XCI 要）；首次导入后可一键出包，已有游戏时随时回库。
+// 当前步骤提供唯一主操作；已有游戏时可从底部次按钮回库。下载进度和操作就在对应工具的说明下方。
 // 工具来自 preflight 作业（model.checks），只列要玩家动手的；文案在共享规格 launcher.items（welcome.*）。
 // 回到 App 自动重查；还没装 Xcode 时每 5 秒看一眼，装好了 Metal / iOS 组件那两行自动亮起，玩家不用点「重新检查」。
 import AppKit
@@ -31,10 +31,9 @@ struct WelcomeView: View {
 
     private var macReady: Bool { model.environmentState == .ready || model.environmentState == .readyMac }
     private var keysReady: Bool { model.keysReady == true && !model.keysRejected }
-    private var chosenGame: GameSummary? { model.welcomeGame ?? (model.pendingImport.isEmpty ? model.selected : nil) }
+    private var chosenGame: GameSummary? { model.welcomeGame }
     private var gamesChosen: Bool { !model.pendingImport.isEmpty || chosenGame != nil }
     private var keysSettled: Bool { keysReady || chosenGame != nil }
-    private var libraryReady: Bool { macReady && gamesChosen && keysSettled && !model.games.isEmpty }
     private var current: Step { !macReady ? .mac : !gamesChosen ? .games : .keys }
     private func isDone(_ s: Step) -> Bool {
         switch s { case .mac: return macReady; case .games: return gamesChosen; case .keys: return keysSettled }
@@ -129,17 +128,17 @@ struct WelcomeView: View {
                 Text(loc.backend(error)).font(.manrope(12.5)).foregroundStyle(LauncherPalette.danger)
                     .fixedSize(horizontal: false, vertical: true).padding(.leading, 46).padding(.top, 14)
             }
-            Button(loc.t("library.enter")) { model.goToLibrary() }
-                .controllerButtonStyle(LauncherPrimaryButtonStyle()).controllerID("welcome.library")
-                .keyboardShortcut(.defaultAction).controllerShortcut(.rightTrigger)
-                .disabled(!libraryReady)
-                .padding(.leading, 46).padding(.top, 24)
             if macReady, model.welcomeGame != nil {
                 Button(w("oneclick")) { model.oneClickExport() }
-                    .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("welcome.oneclick").disabled(model.busy)
-                    .padding(.leading, 46).padding(.top, 12)
+                    .controllerButtonStyle(LauncherPrimaryButtonStyle()).controllerID("welcome.oneclick")
+                    .keyboardShortcut(.defaultAction).controllerShortcut(.rightTrigger).disabled(model.busy)
+                    .padding(.leading, 46).padding(.top, 24)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+            Button(loc.t("library.enter")) { model.goToLibrary() }
+                .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("welcome.library")
+                .disabled(model.games.isEmpty)
+                .padding(.leading, 46).padding(.top, macReady && model.welcomeGame != nil ? 12 : 24)
         }
     }
 
@@ -231,10 +230,8 @@ struct WelcomeView: View {
 
     @ViewBuilder private func toolRow(_ tool: Tool) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            if tool.id != "ios" {
-                Image(systemName: tool.symbol).font(.system(size: 18, weight: .light)).foregroundStyle(LauncherPalette.cream)
-                    .frame(width: 24)
-            }
+            Image(systemName: tool.symbol).font(.system(size: 18, weight: .light)).foregroundStyle(LauncherPalette.cream)
+                .frame(width: 24)
             VStack(alignment: .leading, spacing: 3) {
                 Text(tool.name).font(.manrope(14.5, .bold))
                 if !tool.isOK {

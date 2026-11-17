@@ -178,8 +178,6 @@ extension LauncherView {
         VStack(alignment: .leading, spacing: 2) {
             homeMoreRow(loc.t("s2arm.library.refresh"), "arrow.clockwise", id: "home.refresh") { model.refresh() }
                 .disabled(model.loading)
-            Divider().opacity(0.3).padding(.vertical, 4)
-            homeMoreRow(txt("report.button"), "exclamationmark.bubble", id: "top.report") { model.diagUploadFor = "" }
         }
         .padding(8).frame(width: 220).font(.manrope(13.5, .semibold)).preferredColorScheme(.dark)
     }

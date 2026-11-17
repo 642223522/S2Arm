@@ -74,7 +74,8 @@ import LauncherPadBridge
         XCTAssertLessThan(cards.map(\.frame.maxY).max()! - cards.map(\.frame.maxY).min()!, 2, "全部封面必须在同一横排顶对齐")
         let secondCard = try XCTUnwrap(cards.first { $0.id == "card." + String(format: "%016X", 1) })
         XCTAssertGreaterThan(firstCard.frame.width, secondCard.frame.width * 1.2, "选中封面必须明显放大")
-        for id in ["top.library", "top.settings", "top.report", "top.controller", "top.messages", "top.player"] {
+        XCTAssertFalse(targets.contains { $0.id == "top.library" }, "回库由各页返回和欢迎页入口提供，标题栏不重复放置")
+        for id in ["top.settings", "top.report", "top.controller", "top.messages", "top.player"] {
             let target = try XCTUnwrap(targets.first { $0.id == id }, id)
             XCTAssertLessThanOrEqual(target.frame.width, 44, "顶栏操作尽量图标化：\(id)")
             XCTAssertGreaterThanOrEqual(target.frame.height, 32)

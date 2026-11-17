@@ -298,7 +298,7 @@ struct LauncherView: View {
                                             lang: loc.lang.code)
                     messagesButton
                     Button { model.showEnvironment = true } label: {
-                        Image(systemName: "slider.horizontal.3").overlay(alignment: .topTrailing) {
+                        Image(systemName: "gearshape").overlay(alignment: .topTrailing) {
                             Circle().fill(environmentColor).frame(width: 5, height: 5).offset(x: 5, y: -3)
                         }
                     }
@@ -306,6 +306,12 @@ struct LauncherView: View {
                     .help(txt("nav.settings")).accessibilityLabel(txt("nav.settings")).controllerID("top.settings")
                 }
                 PlayerToolbarButton(loc: loc)   // 标题栏另起视图树，显式传入本地化对象。
+                // 报错页的 ReportHint 指向这里：所有页面保持同一个全局入口。
+                Button { model.diagUploadFor = "" } label: {
+                    Label(txt("report.button"), systemImage: "exclamationmark.bubble")
+                }
+                .controllerButtonStyle(ConsoleIconButtonStyle(backgroundless: true)).help(txt("report.button"))
+                .controllerID("top.report").accessibilityIdentifier("top.report")
         }
         .padding(.trailing, 6)
         .fixedSize()   // 放在标题栏里没有宽度约束，不固定的话按钮文字会被压成省略号
