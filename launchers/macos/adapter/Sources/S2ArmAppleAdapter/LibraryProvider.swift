@@ -187,7 +187,29 @@ public final class LibraryProvider {
 
     private var snapshotFile: URL { client.environment.privateRoot.appendingPathComponent("library-snapshot.json") }
 
-    /// 上一次读到的游戏列表：启动时先显示它，catalog 作业在后台跑完再替换。换了游戏库（libraryId 不符）或没读过时为 nil。
+    /// 配着的游戏库文件夹整个不在了（玩家在访达里删了 / 挪走了，#1412）：库所在的盘连着、文件夹本身没有。
+    ///   外接盘没插上不算（作业层照旧报「磁盘没连上」，插上就回来，不能忘掉）
+    public var libraryFolderGone: Bool {
+        let path = client.environment.library
+        guard !path.isEmpty else { return false }
+        let parts = URL(fileURLWithPath: path).pathComponents
+        if parts.count > 2, parts[1] == "Volumes", !FileManager.default.fileExists(atPath: "/Volumes/" + parts[2]) { return false }
+        return !FileManager.default.fileExists(atPath: path)
+    }
+
+    /// 读游戏库失败、且游戏库文件夹确实没了：忘掉它（preferences.json 的游戏库两项清空、删上次列表快照），回到新玩家的样子——欢迎页，
+    ///   放密钥 / 添加游戏时按 ensureLibrary 在 ~/S2Arm 重建（#1412：原先照旧显示上次的列表，顶上报「游戏库未连接或标识不符」，点删除也只是重复报错）。
+    ///   只在作业层也读不了时才忘（作业层是游戏库连没连上的权威判断）；返回忘没忘
+    private func forgetLibraryIfGone() -> Bool {
+        guard libraryFolderGone else { return false }
+        try? JobEnvironment.saveLibrary(privateRoot: client.environment.privateRoot, library: "", libraryId: "")
+        client.environment.library = ""
+        client.environment.libraryId = ""
+        try? FileManager.default.removeItem(at: snapshotFile)
+        return true
+    }
+
+    /// 上一次读到的游戏列表：启动时先显示它，catalog 作业在后台跑完再替换。换了游戏库（libraryId 不符）、游戏库文件夹没了或没读过时为 nil。
     public func lastKnownGames() -> [GameSummary]? {
         guard !client.environment.libraryId.isEmpty, !client.environment.library.isEmpty else { return nil }
         // 库标记不在（库被删 / 搬走）或库号不符：缓存列表不能当成还在。只核 libraryId 会让删库后的旧列表一直挂着，删除 / 刷新都报 library_not_connected。
@@ -223,6 +245,7 @@ public final class LibraryProvider {
         do {
             return try client.start(operation: "catalog", extra: startup ? ["startup": true] : [:], onFinish: { outcome in
                 guard outcome.state == .completed else {
+                    if outcome.state == .failed, self.forgetLibraryIfGone() { completion(.failure(JobClientError(Self.noLibraryMessage))); return }
                     completion(.failure(JobClientError(outcome.message.isEmpty ? JobOutcome.interruptedMessage : outcome.message)))
                     return
                 }
@@ -241,7 +264,9 @@ public final class LibraryProvider {
     /// 同 load，async（EngineProvider 用）：没配游戏库直接抛错，不起作业。
     public func games() async throws -> [GameSummary] {
         guard !client.environment.library.isEmpty else { throw JobClientError(Self.noLibraryMessage) }
-        let result = try await client.perform("catalog").result
+        let result: [String: Any]
+        do { result = try await client.perform("catalog").result }
+        catch { if forgetLibraryIfGone() { throw JobClientError(Self.noLibraryMessage) }; throw error }
         remember(result)
         return Self.games(in: result)
     }

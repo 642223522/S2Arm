@@ -495,7 +495,11 @@ public final class S2ArmLauncherModel: ObservableObject {
                 if self.selectedID == nil || !games.contains(where: { $0.id == self.selectedID }) { self.selectedID = games.first?.id }
             case .failure(let error):
                 self.libraryError = error.message
-                self.showingSnapshot = !self.games.isEmpty   // 列表没换：还是上次的
+                if error.message == LibraryProvider.noLibraryMessage {   // 没有游戏库（含文件夹被删、适配层已忘掉，#1412）：不留旧列表，回欢迎页
+                    self.games = []; self.selectedID = nil; self.showingSnapshot = false
+                } else {
+                    self.showingSnapshot = !self.games.isEmpty   // 列表没换：还是上次的
+                }
             }
             let waiters = self.refreshWaiters; self.refreshWaiters = []
             waiters.forEach { $0() }
