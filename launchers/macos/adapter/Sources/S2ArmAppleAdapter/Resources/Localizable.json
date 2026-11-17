@@ -8916,6 +8916,14 @@
   "en": "Can't read the title ID of the unpacked folder ({0}): {1}"
  },
  {
+  "source": "程序文件 {0} 的 {1} 段解不开：这个程序文件坏了或被改过，请重新导出（最好导成 NSP / XCI）。",
+  "en": "The {1} segment of program file {0} can't be decompressed: this program file is damaged or has been modified. Export it again (preferably as an NSP / XCI)."
+ },
+ {
+  "source": "程序文件 {0} 的 {1} 段数据和文件头记录的哈希对不上：这个程序文件坏了或被改过，请重新导出（最好导成 NSP / XCI）。",
+  "en": "The {1} segment of program file {0} doesn't match the hash recorded in its header: this program file is damaged or has been modified. Export it again (preferably as an NSP / XCI)."
+ },
+ {
   "source": "读不出这个 NUP 容器（{0}）：{1}",
   "en": "Can't read this NUP container ({0}): {1}"
  },

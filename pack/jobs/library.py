@@ -388,6 +388,20 @@ def extract_inspect(c, source, icon_dir):
         main_path = source / "exefs" / "main"
         npdm_path = source / "exefs" / "main.npdm"
 
+    # 散文件 / Switch 2 导出没有整包校验：导入时先把程序文件（NSO）试解一遍、核段哈希，坏了当场点名（#1522：原先到出包解包才抛 LZ4 的 Python 栈）
+    if fmt in ("dump", "loose"):
+        exefs_dirs = [main_path.parent] + ([source / "updates" / n / "exefs" for n in dump.numdirs(str(source / "updates"))] if fmt == "dump" else [])
+        for exefs in exefs_dirs:
+            if not exefs.is_dir():
+                continue
+            try:
+                dump.check_exefs(str(exefs))
+            except dump.NsoDamaged as e:
+                where = f"{exefs.relative_to(source).as_posix()}/{e.name}"
+                if e.what == "解不开":  # 非玩家句
+                    raise Failure(f"程序文件 {where} 的 {e.seg} 段解不开：这个程序文件坏了或被改过，请重新导出（最好导成 NSP / XCI）。", code="content_invalid") from None
+                raise Failure(f"程序文件 {where} 的 {e.seg} 段数据和文件头记录的哈希对不上：这个程序文件坏了或被改过，请重新导出（最好导成 NSP / XCI）。", code="content_invalid") from None
+
     # 读名称与显示版本；english = 文件夹取名用的英文名（unpack.tsv 的 name / NACP 美式 → 英式英语），没有就空
     english = ""
     if fmt == "extract" and (source / "unpack.tsv").is_file():

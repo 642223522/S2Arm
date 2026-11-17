@@ -110,6 +110,8 @@ def normalize_exefs(exsrc, dst, tid, nxu=None):
             if fl & ~0xFF:
                 raise ValueError(f'{src}：NSO 标志 0x{fl:x} 有不认识的位 0x{fl & ~0xFF:x}，压缩方式不明不收')
             builds.append(f'{rel}:{hdr[0x40:0x50].hex()}')
+            if not fl & 0x80:
+                nso_segments(src)   # 坏了在这里就点名报（不等到后面找符号名时抛 Python 栈，#1522）
             if fl & 0x80:
                 nxu = nxu or os.environ.get('S2A_NX_UNPACK')
                 if not nxu or not os.path.isfile(nxu):
@@ -142,22 +144,57 @@ SAVE_KINDS = (   # （nn::fs 修饰名片段，[(nacp 偏移, 值)…]，说明�
 )
 
 
-def nso_image(path):
-    """NSO 三段解开后拼起来（只为找符号名，不按内存布局摆）。段压缩（标志 0–2 位）是 LZ4 块；ZBIC 已在上面交 nx_unpack 解成不压缩"""
+NSO_SEGS = ('text', 'rodata', 'data')
+DAMAGED = '这个程序文件坏了或被改过，请重新导出（最好导成 NSP / XCI）'
+
+
+def nso_segments(path):
+    """NSO 三段解开（段压缩：标志 0–2 位，LZ4 块）；标志 3–5 位要求核段哈希（头 0xA0 起每段 SHA-256，按解开后的内容）就核。
+    → [(段名, 字节)…]。解不开 / 哈希对不上 → NsoDamaged（点名文件、哪一段）。ZBIC（0x80）不在这里解（交 nx_unpack）"""
     d = open(path, 'rb').read()
-    if d[:4] != b'NSO0' or len(d) < 0x100:
-        return d
     fl = struct.unpack_from('<I', d, 0x0C)[0]
     out = []
-    for i in range(3):
+    for i, seg in enumerate(NSO_SEGS):
         fo, _, size = struct.unpack_from('<III', d, 0x10 + i * 16)
         csz = struct.unpack_from('<I', d, 0x60 + i * 4)[0]
         raw = d[fo:fo + (csz if fl & (1 << i) else size)]
         if fl & (1 << i) and raw:
             import lz4.block   # 出包 Python 依赖（launchers/macos/requirements-runtime.txt）
-            raw = lz4.block.decompress(raw, uncompressed_size=size)
-        out.append(raw)
-    return b''.join(out)
+            try:
+                raw = lz4.block.decompress(raw, uncompressed_size=size)
+            except lz4.block.LZ4BlockError:
+                raise NsoDamaged(os.path.basename(path), seg, '解不开') from None
+        if fl & (8 << i) and hashlib.sha256(raw).digest() != d[0xA0 + i * 32:0xC0 + i * 32]:
+            raise NsoDamaged(os.path.basename(path), seg, '数据和文件头记录的哈希对不上')
+        out.append((seg, raw))
+    return out
+
+
+class NsoDamaged(ValueError):
+    def __init__(self, name, seg, what):
+        self.name, self.seg, self.what = name, seg, what
+        super().__init__(f'程序文件 {name} 的 {seg} 段{what}：{DAMAGED}')
+
+
+def nso_image(path):
+    """NSO 三段解开后拼起来（只为找符号名，不按内存布局摆）。ZBIC 已在上面交 nx_unpack 解成不压缩"""
+    with open(path, 'rb') as f:
+        if f.read(4) != b'NSO0' or os.path.getsize(path) < 0x100:
+            return open(path, 'rb').read()
+    return b''.join(raw for _, raw in nso_segments(path))
+
+
+def check_exefs(exefs):
+    """导入 / 整理时先把 exefs 里每个 NSO 试解一遍（散文件没有整包校验，坏了要到出包才发现，#1522）：坏的抛 NsoDamaged。
+    ZBIC（标志 0x80）交 nx_unpack 解时自己会报，这里跳过"""
+    for f in sorted(os.listdir(exefs)):
+        p = os.path.join(exefs, f)
+        if not os.path.isfile(p) or os.path.getsize(p) < 0x100:
+            continue
+        with open(p, 'rb') as h:
+            hdr = h.read(0x10)
+        if hdr[:4] == b'NSO0' and not struct.unpack_from('<I', hdr, 0x0C)[0] & 0x80:
+            nso_segments(p)
 
 
 def save_kinds(exefs):
@@ -337,6 +374,7 @@ def convert(dump, out, name=None):
     try:
         builds = normalize_exefs(exsrc, os.path.join(tmp, 'exefs'), tid)
     except (OSError, ValueError, RuntimeError, struct.error) as e:
+        shutil.rmtree(tmp, ignore_errors=True)   # 程序文件坏了等：不留半成品
         red(str(e))
 
     # romfs
