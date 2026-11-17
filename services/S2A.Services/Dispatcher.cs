@@ -301,17 +301,21 @@ namespace S2A.Services
                             return SvcResult.Handled;
                         }
 
+                        if (SnapSwitch.Save) SnapLog.Connect();   // 即时存档：sm: 会话的建立也进请求日志（句柄按序号打标）
                         uint h = NewSessionHandle(Sm);
+                        if (SnapSwitch.Save) SnapLog.End();
                         r[0] = h != 0 ? 0u : 0xD201u; // 句柄表满：OutOfHandles
                         r[1] = h;
                         return SvcResult.Handled;
                     }
 
                 case 0x21: // SendSyncRequest(会话)：消息在 TLR
+                    _snapNum = 0x21;
                     r[0] = Request(c->Obj, c->Tlr, 0x100);
                     return SvcResult.Handled;
 
                 case 0x22: // SendSyncRequestWithUserBuffer(x0 = 缓冲, x1 = 大小, 会话)
+                    _snapNum = 0x22;
                     r[0] = Request(c->Obj, (byte*)r[0], (int)Math.Min(r[1], 0x10000));
                     return SvcResult.Handled;
 
@@ -319,6 +323,12 @@ namespace S2A.Services
                     return SvcResult.Unhandled; // 原生层报红（调用号）
             }
         }
+
+        // 即时存档：当前请求的调用号（0x21 / 0x22），记日志用
+        [ThreadStatic] private static uint _snapNum;
+        // 即时存档恢复重放入口（SnapLog.Replay 调）：同生产 Svc 的会话建立 / 请求路径
+        internal uint SnapConnect() { EnterServiceThread(); return NewSessionHandle(Sm); }
+        internal uint SnapRequest(uint num, ulong cookie, byte* msg, int size) { EnterServiceThread(); _snapNum = num; return Request(cookie, msg, size); }
 
         // 服务级请求跟踪（S2A_IPC_TRACE=1，定位用，开着会分配）：每条请求打服务名、请求原始字节、应答原始字节
         internal static readonly bool TraceIpc = Environment.GetEnvironmentVariable("S2A_IPC_TRACE") == "1";
@@ -586,6 +596,19 @@ namespace S2A.Services
             }
 
             System.Threading.Volatile.Write(ref f.T, t);
+
+            if (SnapSwitch.Save)
+            {
+                SnapLog.Begin(_snapNum, cookie, t, msg, size, CommandId(msg, size));
+                try { return RequestCoreTail(t, msg, size); }
+                finally { SnapLog.End(); }
+            }
+
+            return RequestCoreTail(t, msg, size);
+        }
+
+        private uint RequestCoreTail(SessionTarget t, byte* msg, int size)
+        {
 
             if (TraceAlloc)
             {

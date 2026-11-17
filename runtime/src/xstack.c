@@ -105,3 +105,6 @@ int sw_is_host_code(uint64_t a) {
     return a >= lo && a < hi;
 }
 #endif
+
+// 即时存档续跑：本线程切栈槽 {cur, top, bottom, gtop} 的地址（没登记 = NULL）
+void *sw_xstack_slot(void) { return pthread_getspecific((pthread_key_t)g_xs_key); }

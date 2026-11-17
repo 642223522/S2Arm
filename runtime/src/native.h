@@ -75,6 +75,8 @@ void s2a_log_session_start(void);   // iOS 主线程：正式激活才轮换日�
 // energy.c：进程能耗分账（快照单位：纳秒 / 纳焦；s2a_energy_log 打「上次调用以来」一行）
 typedef struct { uint64_t wall, cpu, pcpu, nj, pnj, cyc, pcyc, intr, idle; double gpu_ms, gpu_clk_ms; int ok_g; } s2a_esnap;   // gpu_ms：直连层 GPU 忙累计毫秒（时间，非能耗；ok_g = 有直连层）
 int s2a_energy_snap(s2a_esnap *s);
+// 即时存档开关（runtime/src/snapshot.c，唯一定义处）：存档中 / 恢复中 / 两者之一。关着时三者都是 0
+int s2a_snap_saving(void); int s2a_snap_restoring(void); int s2a_snap_mode(void); int s2a_snap_logging(void);
 // 两次采样之间的 GPU 忙 ms/s：分母取 GPU 时钟差（gpu_clk_ms，已入账各帧最晚 GPU 结束），不取墙钟——GPU 忙晚 8 帧在 CPU 帧边界入账，墙钟窗口会把慢帧前的时间挤进来；
 //   读不到（没有直连层）返回 -1，这段时间没有帧入账返回 0
 double s2a_gpu_busy_rate(const s2a_esnap *a, const s2a_esnap *b);
@@ -227,6 +229,7 @@ void s2a_thread_set_hw_cores(int n); int s2a_thread_hw_cores(void);   // thread.
 // 游戏时钟按原因冻结（1 后台会话、2 系统键盘、3 Mac 失焦、4 安卓退后台），全部解除才接着走（os.c）。
 void guest_clock_freeze_for(int reason, int on);
 void guest_clock_freeze(int on);                    // = 原因 1
+void s2a_guest_clock_set(uint64_t gns);   // 即时存档恢复：游戏时间接到快照时刻
 uint64_t s2a_entropy64(void);
 
 // ---------- 模块（loader.c）----------
