@@ -40,7 +40,8 @@ struct SGradeCard: View {
 
     var body: some View {
         SGradeCardView(match: match, failed: failed, zh: loc.cjkPunctuation, on: Binding(get: { model.sgradeOn(gameID) }, set: { model.setSgrade(gameID, $0) }),
-                       importMod: importMod, modNotes: modNotes) {
+                       importMod: importMod, modNotes: modNotes,
+                       modHelp: (BackendText.launcherText("mods.help", language: loc.lang.sharedCode), BackendText.launcherText("mods.help.label", language: loc.lang.sharedCode))) {
             BackendText.launcherText("export.sgrade." + $0, language: loc.lang.sharedCode) }
             .task(id: gameID) { modNotes = []; await refresh() }
     }
@@ -78,6 +79,8 @@ struct SGradeCardView: View {
     /// 打包页「导入 Mod」按钮（nil = 不出，单测旧图）与刚导入的说明（导入了哪几份、哪些没收、代码补丁几份）
     var importMod: (() -> Void)? = nil
     var modNotes: [String] = []
+    /// 「导入 Mod」旁的 mod 格式说明「？」（11-17 维护者，ModHelpButton）：(说明全文, 辅助标签)；nil = 不出
+    var modHelp: (text: String, label: String)? = nil
     /// export.sgrade.<键> → 当前语言的文字
     let x: (String) -> String
     /// 金色 S（缺省读 App 资源 s-gold.png；单测传仓库里的原图）
@@ -157,6 +160,7 @@ struct SGradeCardView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
                     note(x("mod.note"))
                     Spacer(minLength: 8)
+                    if let modHelp { ModHelpButton(text: modHelp.text, label: modHelp.label) }   // mod 格式说明（11-17）
                     Button(x("mod.import"), action: importMod).buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("export.sgrade.mod.import")
                 }
                 ForEach(modNotes, id: \.self) { note($0) }
