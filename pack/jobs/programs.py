@@ -34,16 +34,18 @@ LEVEL = 9
 OUTPUTS = ("patched.bin", "fixups.tsv", "gates.tsv", "sites.tsv", "gaps.tsv", "widen.tsv", "code_patch.tsv")   # 同 rewrite_refresh.OUTPUTS
 
 
-def _rename_dir(src, dst):
+def _rename_dir(c, src, dst):
     """目录改名按 #361 同一套退避重试（pack/orch/dirrename.py：Windows 上杀软 / 索引程序开着刚写完的文件时报 WinError 5 / 32，扫完会放开）"""
-    root = str(Path(__file__).resolve().parents[2])   # 作业主程序只把 pack/jobs 放进 sys.path：pack.orch 从引擎根导入（同 library._rename_library_path）
+    # 作业主程序只把 pack/jobs 放进 sys.path：pack.orch 从作业的引擎根 c.engine 导入（同 library._rename_library_path）。
+    # 不能按本文件位置推：App 里作业层在 Resources/Jobs、引擎在 Resources/Engine，往上两级没有 pack，出包落程序件即 No module named 'pack'
+    root = str(c.engine)
     if root not in sys.path:
         sys.path.append(root)
     from pack.orch.dirrename import rename_dir
     rename_dir(src, dst)
 
 
-def _put_dir(part, dest):
+def _put_dir(c, part, dest):
     """part 换成 dest。原先 rmtree(dest, ignore_errors) + os.replace：Windows 上 dest 里有文件被开着时 rmtree 静默删不干净，
     os.replace 再报 WinError 5 / 183，整单失败。改为先把旧的改名挪开、再改名就位，两次改名都退避重试；挪开的旧目录最后尽力删"""
     part, dest = Path(part), Path(dest)
@@ -52,8 +54,8 @@ def _put_dir(part, dest):
     old = None
     if dest.exists():
         old = dest.with_name(f"{dest.name}.old-{os.getpid()}")
-        _rename_dir(dest, old)
-    _rename_dir(part, dest)
+        _rename_dir(c, dest, old)
+    _rename_dir(c, part, dest)
     if old is not None:
         shutil.rmtree(old, ignore_errors=True)
 MODULES = ("main", "sdk") + tuple(f"subsdk{i}" for i in range(10))
@@ -117,7 +119,7 @@ def _replace_file(tmp, path):
             time.sleep(delay)
 
 
-def _extract(path, dest):
+def _extract(c, path, dest):
     """归档解到 dest（先解到 dest.partial 再改名，中途断了不留半个）；只认普通文件、相对路径不出界"""
     part = dest.with_name(f"{dest.name}.{os.getpid()}.{threading.get_ident()}.partial")   # 各自的临时目录：并发解同一份不互相删
     shutil.rmtree(part, ignore_errors=True)
@@ -131,7 +133,7 @@ def _extract(path, dest):
             out.parent.mkdir(parents=True, exist_ok=True)
             with t.extractfile(m) as src, open(out, "wb") as dst:
                 shutil.copyfileobj(src, dst)
-    _put_dir(part, dest)
+    _put_dir(c, part, dest)
 
 
 def exefs_modules(exefs):
@@ -148,7 +150,7 @@ def save_exefs(c, gid, exefs):
         part = dest.with_name("exefs.partial"); shutil.rmtree(part, ignore_errors=True); part.mkdir(parents=True)
         for f in files:
             shutil.copyfile(f, part / f.name)
-        _put_dir(part, dest)
+        _put_dir(c, part, dest)
     kit = cache(c, gid) / "kit"
     if (kit / "main.npdm").is_file():
         save_recipe(c, gid)
@@ -162,7 +164,7 @@ def exefs_dir(c, gid):
         return d
     arc = layout.program_store(c, gid) / EXEFS
     if arc.is_file():
-        _extract(arc, d)
+        _extract(c, arc, d)
         return d
     return None
 
@@ -207,7 +209,7 @@ def rebuild(c, gid):
     work = Path(tempfile.mkdtemp(prefix=".kit-", dir=cache(c, gid).parent))
     try:
         built = work / "kit"
-        _extract(arc, built)
+        _extract(c, arc, built)
         exefs = exefs_dir(c, gid) if (layout.program_store(c, gid) / EXEFS).is_file() else None
         mods = [m for m in exefs_modules(exefs) if not (built / f"{m}.patched.bin").is_file()]   # 配方里已带产物的模块（整份存的老 kit）不重跑
         if mods:
@@ -217,7 +219,7 @@ def rebuild(c, gid):
                 env["S2A_CPATCH_TSV"] = str(rows)
             rr.rewrite_modules(rr.rewriter_bin(c), env, exefs, built, built / "widen_sites.tsv")
         kit.parent.mkdir(parents=True, exist_ok=True)
-        _put_dir(built, kit)
+        _put_dir(c, built, kit)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     return kit
@@ -277,7 +279,7 @@ def _rebuilds_same(c, gid, kit):
     """按刚存的配方现建到临时目录，与 kit 逐文件逐字节比；改写器跑不起来也算对不上"""
     keep = cache(c, gid) / "kit.verify"
     shutil.rmtree(keep, ignore_errors=True)
-    _put_dir(kit, keep)
+    _put_dir(c, kit, keep)
     try:
         try:
             built = rebuild(c, gid)
@@ -289,7 +291,7 @@ def _rebuilds_same(c, gid, kit):
         a, b = files(keep), files(built)
         return a == b and all((keep / f).read_bytes() == (built / f).read_bytes() for f in a)
     finally:
-        _put_dir(keep, kit)
+        _put_dir(c, keep, kit)
 
 
 def drop(c, gid):

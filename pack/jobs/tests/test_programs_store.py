@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -49,6 +50,7 @@ class ProgramStoreTests(unittest.TestCase):
         self.root = Path(t.name)
         self.c = jobcase.fake_context(self.root, library=self.root / "library", work_root=self.root / "work", engine=self.root, env=lambda: {})
         self.c.library.mkdir()
+        (self.root / "pack").symlink_to(Path(programs.__file__).resolve().parents[1], target_is_directory=True)   # 替身引擎根也带 pack（换目录从 c.engine 导入 pack.orch）
         self.store = self.c.library / ".programs" / GID
         self.cache = self.root / "work/cache/programs" / GID
         for p in (mock.patch.object(rewrite_refresh, "rewrite_modules", fake_rewrite), mock.patch.object(rewrite_refresh, "rewriter_bin", lambda c: "rw"),
@@ -291,9 +293,10 @@ class PutDir(unittest.TestCase):
         self.part, self.dest = self.t / "kit.partial", self.t / "kit"
         self.part.mkdir(); (self.part / "new.txt").write_text("新")
         self.dest.mkdir(); (self.dest / "old.txt").write_text("旧")
+        self.c = SimpleNamespace(engine=Path(programs.__file__).resolve().parents[2])   # 仓库树里引擎根 = 仓库根
 
     def test_existing_dest_is_replaced_whole(self):
-        programs._put_dir(self.part, self.dest)
+        programs._put_dir(self.c, self.part, self.dest)
         self.assertEqual(sorted(p.name for p in self.dest.iterdir()), ["new.txt"])
         self.assertEqual(sorted(p.name for p in self.t.iterdir()), ["kit"])   # 没留 kit.partial / kit.old-*
 
@@ -308,9 +311,23 @@ class PutDir(unittest.TestCase):
             return real(src, dst)
         with mock.patch.object(dirrename, "os", SimpleNamespace(name="nt")), mock.patch.object(dirrename, "DIR_RENAME_RETRIES", (0, 0)), \
              mock.patch.object(Path, "rename", rename):
-            programs._put_dir(self.part, self.dest)
+            programs._put_dir(self.c, self.part, self.dest)
         self.assertEqual(calls, ["kit", "kit", "kit.partial"])   # 挪开旧的：第一次被拒、第二次成功；再把新的改名就位
         self.assertEqual((self.dest / "new.txt").read_text(), "新")
+
+    def test_app_layout_imports_from_engine_root(self):
+        # App 里作业层（Resources/Jobs）和引擎（Resources/Engine）是兄弟目录：按本文件位置往上推找不到 pack，
+        # 必须从 c.engine 导入（11-16 第 4 份候选出包即 No module named 'pack'）。独立进程、只把作业层放进 sys.path，同作业主程序
+        res = self.t / "Resources"; jobs = res / "Jobs"
+        shutil.copytree(Path(programs.__file__).resolve().parent, jobs, ignore=shutil.ignore_patterns("tests", "__pycache__"))
+        (res / "Engine").symlink_to(self.c.engine, target_is_directory=True)
+        code = ("import sys; from pathlib import Path; from types import SimpleNamespace; import programs; "
+                "t = Path(sys.argv[1]); programs._put_dir(SimpleNamespace(engine=Path(sys.argv[2])), t / 'kit.partial', t / 'kit'); "
+                "print(sorted(p.name for p in (t / 'kit').iterdir()))")
+        r = subprocess.run([sys.executable, "-I", "-c", f"import sys; sys.path.insert(0, {str(jobs)!r}); exec({code!r})", str(self.t), str(res / "Engine")],
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr[-600:])
+        self.assertEqual(r.stdout.strip(), "['new.txt']")
 
 
 if __name__ == "__main__":
