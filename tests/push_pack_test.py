@@ -261,6 +261,26 @@ See 'devicectl device process launch --help' for more information.
         self.assertIsInstance(r, push.NeedsPlayer); self.assertIn("锁着屏", str(r)); self.assertNotIn("开发者模式", str(r))
         self.assertIn(f"资源包已传完。{push.LOCKED_WAIT}", self.log)
 
+    def test_unwritable_reads_owner_and_mode_of_dir_and_file(self):
+        # 期望（手写，D-A76N）：写不进时按 devicectl info files --no-recurse 的 JSON 读出「目录」与「文件」各自的属主和权限（八进制），
+        #   目录 0555（权限 365）、文件 0444（权限 292）；列不出的那一项说「读不到」，不抛
+        import stat
+        fake = Path(self.w) / "devicectl"
+        fake.write_text("#!/bin/sh\n" + f"exec {sys.executable} - \"$@\" <<'PY'\n" + """import json, sys
+a = sys.argv[1:]
+sub = a[a.index('--subdirectory') + 1] if '--subdirectory' in a else ''
+out = a[a.index('--json-output') + 1]
+table = {'L/games/X': [{'name': '资源包', 'relativePath': '资源包', 'metadata': {'ownerUid': 501, 'permissions': 365}}]}
+if sub in table: json.dump({'result': {'files': table[sub]}}, open(out, 'w'))
+else: sys.exit(1)
+PY
+""")
+        fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+        d = push.Devicectl("DEV", "io.s2arm.x", self.w, env=dict(os.environ, S2A_DEVICECTL=str(fake)))
+        note = d.owner_note("L/games/X/资源包/game.img")
+        self.assertIn("L/games/X/资源包：属主 uid 501、权限 555", note)
+        self.assertIn("L/games/X/资源包/game.img：读不到（devicectl rc=1）", note)
+
     def test_mac_launch_without_env_omits_flag(self):   # 多款容器拉起到游戏库 env 为空：devicectl 收 '{}' 会拒，得不带这个参数（11-10 测试设备实测）
         import stat
         argv = Path(self.w) / "argv.txt"; fake = Path(self.w) / "devicectl"

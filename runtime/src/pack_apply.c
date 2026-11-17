@@ -434,6 +434,32 @@ const char *s2a_install_code(int rc, int err, int truncated, int from_img) {
 }
 const char *s2a_pack_apply_code(void) { return g_apply_code; }
 // 返回进程退出码（0 成功）；docs = Documents 目录
+// ---- 资源包里「App 自己的、但缺写权限」的目录 / 文件补回属主读写（D-A76N，11-17 测试设备复现）：
+//   电脑端把 0555 的目录拷进手机后，那条目录仍归 App（uid 501）但没有写位：afc 在里面建 / 删 / 覆盖全被拒（Permission denied），devicectl 却写得进，
+//   玩家看到「删掉重写也写不进」。属主是自己就能 chmod 回来，不必删除重装；归别的用户的（#569，root）不动，照旧走下面的「目录 App 写不进」。
+//   只补属主位（目录 u+rwx、普通文件 u+rw），不碰组 / 其他位。docs（本款文档根）只看自己这一层，资源包根整棵查。返回补了几个
+static unsigned g_repair_n, g_repair_self;
+static int repair_one(const char *p, const struct stat *st, int flag, struct FTW *w) {
+    (void)w; if (flag == FTW_NS || st->st_uid != g_repair_self) return 0;
+    mode_t m = st->st_mode & 07777, want = S_ISDIR(st->st_mode) ? (m | S_IRWXU) : S_ISREG(st->st_mode) ? (m | S_IRUSR | S_IWUSR) : m;
+    if (want != m && !chmod(p, want)) g_repair_n++;
+    return 0;
+}
+#ifdef S2A_UNIT_TEST
+unsigned s2a_pack_repair_self_override;   // 单测：非 0 时把它当「App 自己」（模拟 #569 条目归别的用户：测试进程改不了属主，只能把自己当外人）
+#endif
+static unsigned repair_self(void) {
+#ifdef S2A_UNIT_TEST
+    if (s2a_pack_repair_self_override) return s2a_pack_repair_self_override;
+#endif
+    return (unsigned)getuid();
+}
+unsigned s2a_pack_repair_modes_as(const char *docs, const char *root, unsigned self_uid) {
+    g_repair_n = 0; g_repair_self = self_uid; struct stat st;
+    if (!lstat(docs, &st) && S_ISDIR(st.st_mode)) repair_one(docs, &st, FTW_D, NULL);
+    if (!lstat(root, &st) && S_ISDIR(st.st_mode)) nftw(root, repair_one, 32, FTW_PHYS);
+    return g_repair_n;
+}
 int s2a_pack_apply(const char *docs) {
     char root[2048], inc[2100], logp[2100]; s2a_pack_root(root, sizeof root, docs); snprintf(inc, sizeof inc, "%s/.incoming", root); snprintf(logp, sizeof logp, "%s/unpack.log", docs);
     if (pack_in_bundle(root, "解开资源包")) return -12;   // 同「目录写不进」的码
@@ -441,6 +467,7 @@ int s2a_pack_apply(const char *docs) {
     //   原先建不了日志、解开了也没有完成行，电脑端（tools/push_pack.py 只认日志完成行）白等 180 秒后误报「解包没有开始」。建不了时 mkdirs 记的现场由下一行清掉，失败照旧走下面「unpack.log 建不了」那句
     mkdirs(logp);
     uint64_t t0 = now_ns(); unsigned ntar = 0, nf = 0; uint64_t nb = 0; int rc = 0, from_img = 0; char what[2300] = ""; g_fail_errno = 0; g_untar_trunc = 0; g_untar_err[0] = 0;
+    { unsigned fixed = s2a_pack_repair_modes_as(docs, root, repair_self()); if (fixed) LOG("资源包：%u 个目录 / 文件是 App 自己的但缺写权限，已补回属主读写（D-A76N）", fixed); }
     // 本款目录 / 资源包 / 待解包目录 App 写不进（#569：玩家机上这一串归 root、0755，App 是 501）：一个包都不解，先把真实原因说清楚，
     //   不再去解包、报一句含糊的「解 xxx.tar」。不迁移（App 改不了删不掉，只有删除重装能清）：给码 ios_install_dir_unwritable，界面说「先导出存档再重装」
     { const char *dirs[] = {docs, root, inc}; struct stat ds;
