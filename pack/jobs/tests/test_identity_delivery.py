@@ -76,6 +76,12 @@ class FakeClient:
     def mv(self, src, dst):
         self.ops.append(("mv", src, dst)); self.files[dst] = self.files.pop(src); return True, ""
 
+    def get(self, rel, dst):   # 手机上的文件：按 files 里有的回给调用方
+        self.ops.append(("get", rel))
+        if rel not in self.files:
+            return False
+        Path(dst).write_bytes(self.files[rel]); return True
+
 
 class DeliverIdentity(unittest.TestCase):
     """作业层：第一次交三份（identity.json 最后改名就位、不含私钥）、记下私钥指纹；指纹没变不联网不重交；交不出 / 推不进不挡推送"""
@@ -95,8 +101,9 @@ class DeliverIdentity(unittest.TestCase):
         cl = client or FakeClient()
         return types.SimpleNamespace(W=W, key="UDID1", client=lambda w: cl), calls, cl
 
-    def deliver(self, ph, devcert=False):
-        with patch.object(install.layout, "load_device", lambda c, k: dict(self.store.get(k, {}))), \
+    def deliver(self, ph, devcert=False, shell=True):
+        import program_pack
+        with patch.object(program_pack, "enabled", lambda c: shell), patch.object(install.layout, "load_device", lambda c, k: dict(self.store.get(k, {}))), \
                 patch.object(install.layout, "save_device", lambda c, k, rec: self.store.__setitem__(k, rec)), \
                 patch.object(install.devcert, "active", lambda c: devcert), patch.object(install, "trace", lambda *a, **k: None):
             return install.deliver_identity(self.c, ph)
@@ -106,6 +113,7 @@ class DeliverIdentity(unittest.TestCase):
         sha1 = hashlib.sha1(self.IDENT["cert"]).hexdigest()
         self.assertEqual(self.deliver(ph), sha1)
         base = install.IDENTITY_INCOMING
+        self.assertEqual(base, "Library/Application Support/S2Arm/identity/incoming")
         self.assertEqual(cl.ops, [("put", f"{base}/key.der"), ("put", f"{base}/cert.der"), ("put", f"{base}/identity.json.pc.tmp"),
                                   ("mv", f"{base}/identity.json.pc.tmp", f"{base}/identity.json")])
         self.assertEqual(cl.files[f"{base}/key.der"], self.IDENT["key"])
@@ -116,12 +124,43 @@ class DeliverIdentity(unittest.TestCase):
         self.assertEqual((rec["team"], rec["key_fp"], rec["cert_sha1"]), (TEAM, "fp1", sha1))
         self.assertEqual(calls, [("C:/plumesign.exe", TEAM)])
 
-    def test_same_key_not_redelivered_no_network(self):
+    def test_same_key_pending_import_not_redelivered_no_network(self):
+        # 交过、App 还没导入（incoming 清单还在）：不联网、不重交，只读了一下手机上的清单
         ph, calls, cl = self.phone()
         self.deliver(ph)
-        ph2, calls2, cl2 = self.phone()
+        ph2, calls2, _ = self.phone(client=cl)
+        n = len(cl.ops)
         self.assertIsNone(self.deliver(ph2))
-        self.assertEqual((calls2, cl2.ops), ([], []))
+        self.assertEqual(calls2, [])
+        self.assertTrue(all(op[0] == "get" for op in cl.ops[n:]), cl.ops[n:])
+
+    def test_imported_by_app_not_redelivered(self):
+        # App 已导入：incoming 删了、写了 current.json（同一张证书）→ 不联网、不重交
+        ph, calls, cl = self.phone()
+        sha1 = self.deliver(ph)
+        cl.files = {install.IDENTITY_CURRENT: json.dumps(dict(team=TEAM, cert_sha1=sha1)).encode()}
+        ph2, calls2, _ = self.phone(client=cl)
+        n = len(cl.ops)
+        self.assertIsNone(self.deliver(ph2))
+        self.assertEqual(calls2, []); self.assertFalse(any(op[0] == "put" for op in cl.ops[n:]))
+
+    def test_phone_has_neither_delivered_again(self):
+        # 手机上两样都没有（App 删了重装、数据容器换新）：同一把私钥也重交
+        ph, calls, cl = self.phone()
+        self.deliver(ph)
+        cl.files = {}
+        ph2, calls2, _ = self.phone(client=cl)
+        n = len(cl.ops)
+        self.assertIsNotNone(self.deliver(ph2))
+        self.assertEqual(calls2, [("C:/plumesign.exe", TEAM)])
+        self.assertEqual([op[0] for op in cl.ops[n:]].count("put"), 3)
+
+    def test_switch_off_writes_nothing(self):
+        # 通用壳开关关着（0.6.0 前缺省）：手机上一个字节都不写，也不读、不联网
+        ph, calls, cl = self.phone()
+        self.assertIsNone(self.deliver(ph, shell=False))
+        self.assertEqual((calls, cl.ops), ([], []))
+        self.assertNotIn("UDID1", self.store)
 
     def test_new_key_delivered_again(self):
         self.deliver(self.phone()[0])
