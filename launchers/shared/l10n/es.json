@@ -3871,6 +3871,9 @@
   "这款选的下游方案是独立 App，资源要由电脑推进去：连上手机后点「装到 iPhone」；想导出自签包就在确认页改选「仍用原版方案」。": "La adaptación elegida para este juego es una app independiente cuyos recursos se copian desde tu ordenador: conecta el teléfono y haz clic en Instalar en iPhone. Para exportar un paquete autofirmado, elige Mantener la ruta estándar en la página de confirmación.",
   "这款用的是 {0} 方案（独立 App），现在只能「装到 iPhone」，还不能导出自签包。": "Este juego usa {0} (una app independiente): por ahora solo se puede instalar con Instalar en iPhone, no exportar como paquete autofirmado.",
   "下游方案只能装到 iPhone": "Esta adaptación solo se puede instalar en el iPhone",
-  "这款选了下游深度方案（独立 App），它的资源要由电脑推进手机，导出的自签包里装不下。": "Este juego usa una adaptación dedicada (una app independiente). Sus recursos se copian al teléfono desde tu ordenador, así que no caben en un paquete autofirmado exportado."
+  "这款选了下游深度方案（独立 App），它的资源要由电脑推进手机，导出的自签包里装不下。": "Este juego usa una adaptación dedicada (una app independiente). Sus recursos se copian al teléfono desde tu ordenador, así que no caben en un paquete autofirmado exportado.",
+  "用数据线把这台 iPhone 连到这台 Mac，解锁后在手机上点「信任」；打开开发者模式（设置 → 隐私与安全性 → 开发者模式，开了要重启手机）；等 Xcode 菜单「窗口 → 设备与模拟器」里出现这台，再点一次「装到 iPhone」。": "Conecta este iPhone a este Mac con un cable, desbloquéalo y toca «Confiar» en el teléfono. Activa el Modo de desarrollador (Ajustes → Privacidad y seguridad → Modo de desarrollador; el teléfono se reinicia). Cuando aparezca en Xcode en Ventana → Dispositivos y simuladores, reintenta la instalación.",
+  "Xcode 看不到这台 iPhone": "Xcode no ve este iPhone",
+  "这台 iPhone 没连到这台 Mac，账号上也还没登记过它，申请不到能装到它上面的开发描述文件。": "Este iPhone no está conectado a este Mac y aún no se ha registrado en tu cuenta, así que no se puede crear un perfil de desarrollo para él."
  }
 }

@@ -3871,6 +3871,9 @@
   "这款选的下游方案是独立 App，资源要由电脑推进去：连上手机后点「装到 iPhone」；想导出自签包就在确认页改选「仍用原版方案」。": "Le portage choisi pour ce jeu est une app distincte dont les ressources sont copiées depuis votre ordinateur : branchez votre téléphone et cliquez sur Installer sur l'iPhone. Pour exporter un paquet à signer vous-même, choisissez Garder la voie standard sur la page de confirmation.",
   "这款用的是 {0} 方案（独立 App），现在只能「装到 iPhone」，还不能导出自签包。": "Ce jeu utilise {0} (une app distincte) : pour l'instant il ne peut être installé qu'avec Installer sur l'iPhone, pas exporté en paquet à signer vous-même.",
   "下游方案只能装到 iPhone": "Ce portage ne peut être installé que sur l'iPhone",
-  "这款选了下游深度方案（独立 App），它的资源要由电脑推进手机，导出的自签包里装不下。": "Ce jeu utilise un portage dédié (une app distincte). Ses ressources sont copiées sur le téléphone depuis votre ordinateur, elles ne peuvent donc pas aller dans un paquet exporté à signer vous-même."
+  "这款选了下游深度方案（独立 App），它的资源要由电脑推进手机，导出的自签包里装不下。": "Ce jeu utilise un portage dédié (une app distincte). Ses ressources sont copiées sur le téléphone depuis votre ordinateur, elles ne peuvent donc pas aller dans un paquet exporté à signer vous-même.",
+  "用数据线把这台 iPhone 连到这台 Mac，解锁后在手机上点「信任」；打开开发者模式（设置 → 隐私与安全性 → 开发者模式，开了要重启手机）；等 Xcode 菜单「窗口 → 设备与模拟器」里出现这台，再点一次「装到 iPhone」。": "Branchez cet iPhone à ce Mac avec un câble, déverrouillez-le et touchez « Se fier » sur le téléphone. Activez le mode développeur (Réglages → Confidentialité et sécurité → Mode développeur ; le téléphone redémarre). Quand il apparaît dans Xcode sous Fenêtre → Appareils et simulateurs, relancez l'installation.",
+  "Xcode 看不到这台 iPhone": "Xcode ne voit pas cet iPhone",
+  "这台 iPhone 没连到这台 Mac，账号上也还没登记过它，申请不到能装到它上面的开发描述文件。": "Cet iPhone n'est pas branché à ce Mac et n'est pas encore enregistré sur votre compte : impossible de créer un profil de développement pour lui."
  }
 }
