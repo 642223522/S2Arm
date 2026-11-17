@@ -156,6 +156,7 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
             del c.job["diagnostics"][kept:]
             return _finish_cancelled(c)
         message = diagnostic["summary"]
+        integrity_note(c)
         if c.operation in CLEANS_AFTER_STOP:   # 错误摘要要读产物根里的日志，所以排在它后面
             library.clean_after_stop(c)
         c.finish("failed", message, partial_import_result(c))
@@ -163,6 +164,20 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
     finally:
         ended.set()
         _drop_job_tmp(c)
+
+
+def integrity_note(c):
+    """出包 / 起局等带游戏号的作业失败时：这款导入时有内容跳过了完整性校验 → 补一条 warning 级诊断（总指挥 11-17：免得难查）。
+    读不到游戏库或不是游戏作业就不补，不让补充说明本身把失败收尾弄坏"""
+    gid = c.r.get("gameId")
+    if not gid:
+        return
+    try:
+        game = next((g for g in c.catalog()["games"] if g["id"] == gid), None)
+        if library.integrity_skipped(game):
+            c.diagnostic(library.SOURCE_INTEGRITY_FAILED_NOTE, code="source_integrity_skipped", severity="warning")
+    except (Failure, OSError, ValueError, KeyError, TypeError):
+        pass
 
 
 def _finish_cancelled(c):

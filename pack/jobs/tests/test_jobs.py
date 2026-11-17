@@ -468,6 +468,47 @@ class JobsTests(unittest.TestCase):
                 with self.assertRaises(Failure) as e: library.inspect(self.c, self.root / "a.xci", self.root, keys)
                 self.assertEqual(str(e.exception), "S2Arm 工具退出，当前阶段未完成。")
 
+    def test_inspect_success_after_integrity_skip_warns_not_fails(self):
+        # 维护者 11-17：校验不过不再整单拒收（#1467）。读取器哈希不符后跳过完整性校验照常读出、退出 0，输出里带「🟡 原件有数据和原版对不上…」→
+        #   期望（手写）：照常返回包信息，并发一条 warning 级诊断 source_integrity_skipped（句子 = library.SOURCE_INTEGRITY_SKIPPED）；没有这行就不发
+        import unittest.mock as um
+        keys = self.root / "prod.keys"; keys.write_text("header_key = " + "0" * 64 + "\n")
+        pkg = '{"schema": 1, "packages": [{"titleId": "0100000000010000", "baseId": "0100000000010000", "type": "base", "version": 0}]}'
+        def fake(*msgs):
+            def run(args, log=None, env=None, cwd=None, on_line=None):
+                for m in msgs: on_line(m)
+            return run
+        for skipped in (True, False):
+            lines = (["🟡 原件有数据和原版对不上（导入检查：控制数据（内容 aabbccdd），内容 aabbccdd）：…", "【校验跳过】导入检查：控制数据（内容 aabbccdd）\taabbccdd00\t文件 /control.nacp"] if skipped else []) + [pkg]
+            with um.patch.object(library.toolchain, "reader", return_value="nx_unpack.dll"), um.patch.object(self.c, "run", fake(*lines)), \
+                 um.patch.object(self.c, "diagnostic", create=True) as diag:
+                got = library.inspect(self.c, self.root / "a.xci", self.root, keys)
+            self.assertEqual(got[0]["titleId"], "0100000000010000")
+            want = [dict(stage="导入检查：控制数据（内容 aabbccdd）", contents="aabbccdd00", place="文件 /control.nacp")]
+            if skipped:
+                diag.assert_called_once_with(library.SOURCE_INTEGRITY_SKIPPED, code="source_integrity_skipped", severity="warning",
+                                             internal="导入检查：控制数据（内容 aabbccdd） aabbccdd00 文件 /control.nacp")
+                self.assertEqual(got[0]["integritySkipped"], want)   # 记进包记录：游戏库标「数据校验不过」、之后失败补说明都按它
+                self.assertTrue(library.integrity_skipped(dict(packages=got)))
+            else:
+                diag.assert_not_called(); self.assertNotIn("integritySkipped", got[0]); self.assertFalse(library.integrity_skipped(dict(packages=got)))
+
+    def test_failure_of_integrity_skipped_game_adds_note(self):
+        # 总指挥 11-17：导入时数据校验不过的款，之后出包 / 起局失败要补一句。期望（手写）：游戏有包带 integritySkipped → 补一条
+        #   warning 级 source_integrity_skipped（句子 = SOURCE_INTEGRITY_FAILED_NOTE）；没有、或请求没带游戏号 → 不补；读游戏库出错 → 不补、不抛
+        import unittest.mock as um, main
+        games = {"games": [{"id": "A", "packages": [{"integritySkipped": [{"stage": "x", "contents": "", "place": ""}]}]}, {"id": "B", "packages": [{}]}]}
+        for gid, want in (("A", True), ("B", False), (None, False)):
+            with um.patch.object(self.c, "r", {"gameId": gid} if gid else {}), um.patch.object(self.c, "catalog", return_value=games), \
+                 um.patch.object(self.c, "diagnostic", create=True) as diag:
+                main.integrity_note(self.c)
+            if want: diag.assert_called_once_with(library.SOURCE_INTEGRITY_FAILED_NOTE, code="source_integrity_skipped", severity="warning")
+            else: diag.assert_not_called()
+        with um.patch.object(self.c, "r", {"gameId": "A"}), um.patch.object(self.c, "catalog", side_effect=OSError("坏")), \
+             um.patch.object(self.c, "diagnostic", create=True) as diag:
+            main.integrity_note(self.c)
+        diag.assert_not_called()
+
     def test_connected_counts_wired_paired_with_idle_tunnel(self):
         # 10-26 测试设备2：数据线连着、已配对，隧道空闲 disconnected → 算连着。11-13 起（维护者：插着手机别说识别不了）：
         #   无线且隧道没通的（N）、插着线还没配对的（U）也列出来给玩家选——在不在线、配没配对由各行连接状态显示，装的那一步会去配对
