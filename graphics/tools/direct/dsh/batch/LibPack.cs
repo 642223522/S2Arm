@@ -19,6 +19,10 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
+/// <summary>按名取字节的表里，哪些名字其实是同一份字节（同一存储位置）：PackFiles 同一份只读一次、只算一次摘要。
+/// 出库侧（Side）的影子输入库 _bv 是整批共用一份批库字节、按键各挂一个名字；不认的话每个键都把整批读一遍、算一遍 SHA-256（#1331）</summary>
+interface ISharedBytes { string Ident(string name); }
+
 static class LibPack
 {
     /// <summary>Python 那边 sys.exit(文本) 的情形（ps_inputs.write 报红）</summary>
@@ -253,7 +257,9 @@ static class LibPack
     /// vkfp（#783 合入线 11-03 答 ①）：给了 = Vulkan 库，16 位小写十六进制的 Vulkan 侧指纹按 u64 写进头部 36–43（44–47 仍为 0），只收 _b.json / _b.spv；
     ///   不给 = Metal 库，头部 36–47 全 0、不收 _b.spv（与改前逐字节相同）
     /// </summary>
-    public static (List<string> Bad, string Line) PackFiles(IEnumerable<string> names, Func<string, byte[]> get, string d, string chain, string vkfp = null)
+    /// ident（可无）：名字 → 它那份字节的存储身份（同身份 = 同一份字节，见 ISharedBytes）；同身份的第二个起不再读、不再算摘要，直接指向第一个落的段。
+    ///   产物与不给 ident 逐字节相同（原先同字节的段也只存一次，只是每个都读一遍、算一遍才认出来）
+    public static (List<string> Bad, string Line) PackFiles(IEnumerable<string> names, Func<string, byte[]> get, string d, string chain, string vkfp = null, Func<string, string> ident = null)
     {
         if (!CHAIN.IsMatch(chain)) return (new() { $"链版本 {chain} 不对（至多 12 位）" }, "");
         if (vkfp != null && !VKFP.IsMatch(vkfp)) return (new() { $"Vulkan 侧指纹 {vkfp} 不对（16 位小写十六进制）" }, "");
@@ -326,6 +332,7 @@ static class LibPack
         var recs = new List<(ulong Key, int K, int S, uint Len, ulong Off)>(); var shards = new List<string>();
         var digest = new Dictionary<(ulong, int), string>(); var libDigest = new Dictionary<string, string>();
         var same = new Dictionary<string, (int S, long Off, long Len)>(); var put = new Dictionary<string, (int S, long Off, long Len)>();
+        var byId = new Dictionary<string, (int S, long Off, long Len, string H)>(StringComparer.Ordinal);   // 存储身份 → 已落的段与摘要（ident）
         FileStream cur = null; int sh = -1, dup = 0; bool ok = false; string idxTmp = Path.Combine(d, "lib.idx.tmp");
         var sizes = new List<long>(); byte[] idx = null;
         try
@@ -335,6 +342,9 @@ static class LibPack
                 src.TryGetValue(n, out var sn);
                 if (sn != null && put.TryGetValue(sn, out var p0))   // 同一批库已写过：指向那一段
                 { recs.Add((key, k, p0.S, (uint)p0.Len, (ulong)p0.Off)); digest[(key, k)] = libDigest[sn]; continue; }
+                var id = sn == null ? ident?.Invoke(n) : null;
+                if (id != null && byId.TryGetValue(id, out var i0))   // 同一份字节已落过（批共用的 _bv）：不读、不算，指向那一段；同下面字节相同的段，计进「只存一次」
+                { recs.Add((key, k, i0.S, (uint)i0.Len, (ulong)i0.Off)); digest[(key, k)] = i0.H; dup++; continue; }
                 var b = get(sn ?? n);
                 if (b == null) return (new() { $"取不到 {sn ?? n}" }, "");
                 string h = Convert.ToHexString(SHA256.HashData(b));
@@ -342,6 +352,7 @@ static class LibPack
                 {
                     recs.Add((key, k, s0.S, (uint)s0.Len, (ulong)s0.Off)); digest[(key, k)] = h; dup++;
                     if (sn != null) { put[sn] = s0; libDigest[sn] = h; }
+                    if (id != null) byId[id] = (s0.S, s0.Off, s0.Len, h);
                     continue;
                 }
                 if (cur == null || (cur.Position != 0 && cur.Position + b.Length > SHARD_MAX))
@@ -353,6 +364,7 @@ static class LibPack
                 long off = cur.Position;
                 recs.Add((key, k, sh, (uint)b.Length, (ulong)off)); digest[(key, k)] = h; same[h] = (sh, off, b.Length);
                 if (sn != null) { put[sn] = (sh, off, b.Length); libDigest[sn] = h; }
+                if (id != null) byId[id] = (sh, off, b.Length, h);
                 cur.Write(b);
             }
             sizes.Add(cur.Position); cur.Dispose(); cur = null;
@@ -449,7 +461,7 @@ static class LibPack
         try { nps = PsInputsWrite(items, Path.Combine(top, "ps_inputs.tsv")); } catch (Exit e) { return e.Message; }
         sourcesDone?.Invoke();
         string line;
-        (bad, line) = PackFiles(pub.Keys.Where(IsLibFile).ToList(), n => pub.TryGetValue(n, out var b) ? b : null, iosOut, chain);
+        (bad, line) = PackFiles(pub.Keys.Where(IsLibFile).ToList(), n => pub.TryGetValue(n, out var b) ? b : null, iosOut, chain, ident: pub is ISharedBytes sb ? sb.Ident : null);
         if (bad.Count > 0) return string.Join("\n", bad.Take(20).Select(b => $"[RED] {b}"));
         log.WriteLine(line);
         log.WriteLine($"ps_inputs.tsv: {nps} pixel shaders");
