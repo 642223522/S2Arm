@@ -66,7 +66,7 @@ IMG = re.compile(r"(^|.*/)romfs\.img$|game\.img")   # 单文件镜像（旧形�
 #   批次 tar（≤1 GB）照旧可以退回
 DC_FALLBACK_MAX = 2 << 30
 DENIED = "Permission denied"   # afc 打开写被拒的原文（s2a-devpush「打不开 <远端>：afc error: Permission denied」）
-REINSTALL_STEP = "重试没用，要删掉 iPhone 上的 S2Arm App 再重装：①先在游戏菜单「存档管理」里导出存档，存到 S2Arm 文件夹以外（比如 iCloud 云盘）；②在 iPhone 桌面长按 S2Arm，删除 App；③在电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」；④装好后在「存档管理」里导回存档。电脑上的游戏和 S2Arm 都不用删。"   # 机上目录 App 写不进时唯一走得通的下一步（同失败码 ios_install_dir_unwritable）
+REINSTALL_STEP = "先试这两步：①在 iPhone 上打开一次 S2Arm，等游戏库界面出来；②回电脑对这款游戏再点一次「装到 iPhone」，会接着已传的部分继续，不用从头来。还是写不进，就要删掉 iPhone 上的 S2Arm App 再重装：先在游戏菜单「存档管理」里导出存档，存到 S2Arm 文件夹以外（比如 iCloud 云盘）；再在 iPhone 桌面长按 S2Arm，删除 App；然后在电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」；装好后在「存档管理」里导回存档。电脑上的游戏和 S2Arm 都不用删。"   # 机上目录 App 写不进时唯一走得通的下一步（同失败码 ios_install_dir_unwritable）
 
 
 def push_reason(text):
