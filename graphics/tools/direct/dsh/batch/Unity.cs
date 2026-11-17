@@ -521,7 +521,7 @@ static class Unity
         try
         {
             Store.Open(cas);
-            Metal.Init((Priv<string[]>("MacMetal"), Priv<string>("MacRecord"), "macosx"), null, work, nj);
+            if (Metal.Init((Priv<string[]>("MacMetal"), Priv<string>("MacRecord"), "macosx"), null, work, nj) is { } broken) { Console.Error.WriteLine(broken); return 1; }
             Build.Spill = new BlobFile(Path.Combine(work, "spill.dat"), compress: true); Build.MAC = new Side(work);
             foreach (var f in Directory.GetFiles(inDir).OrderBy(x => x, StringComparer.Ordinal))
             {
