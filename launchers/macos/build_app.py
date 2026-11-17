@@ -164,7 +164,8 @@ def main():
     copy_launcher_resources(Path(bindir), resources)
     if front["nx2apple_resources"]:
         print("前端资源：" + " ".join(frontend_layout.stage_apple_resources(ROOT, resources)))
-    shutil.copytree(ROOT / "pack/jobs", resources / "Jobs", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    import jobs_bundle   # 作业层布局只此一份（门禁 tools/app_layout_check.py 用同一个函数搭布局）
+    jobs_bundle.stage_jobs(ROOT, resources)
     # 补丁库随发版（补丁包部署方案 v2，满屏补丁线 11-04）：S2A_RELEASE_PATCHES 指本机补丁库（不进仓库），只收真机验过的（tools/patch_bundle.py）；
     #   启动器出包时 pack/jobs/core.py 见 Resources/Patches/INDEX.tsv 就把它交给 pack/stage_rewrite.sh。没给就不带、响亮说一行
     lib = os.environ.get("S2A_RELEASE_PATCHES")
@@ -179,10 +180,6 @@ def main():
     sys.path.insert(0, str(ROOT / "tools")); import patch_pack
     why = patch_pack.stage_snapshot(str(resources / "CommunityPatches"))
     print("社区补丁快照：" + ("已放进 Resources/CommunityPatches" if not why else f"🟡 {why}，本版启动器不带本地补丁库"))
-    # 脱敏规则只有一份（tools/redact.py，诊断报告与任务日志共用）：任务代码在引擎准备好之前也要脱敏，随 Jobs 一起带
-    shutil.copy2(ROOT / "tools/redact.py", resources / "Jobs" / "redact.py")
-    shutil.copy2(ROOT / "tools/sha256_fast.py", resources / "Jobs" / "sha256_fast.py")   # 导入算原件 SHA（pack/jobs/core.py digest，Windows 走 CNG）
-    shutil.copy2(ROOT / "graphics/nvn/tools/romfs_list.py", resources / "Jobs" / "romfs_list.py")   # clone_tree 统一盘点用：出包后 Jobs 的 parents[2] 是 Contents（没有 gfx），随 Jobs 带（pack/jobs/build.py romfs_list_path 先取同目录）
     shutil.copytree(ROOT / "launchers/macos/gui_jobs", resources / "GUIJobs", ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "tests"))
     shutil.copy2(ROOT / "launchers/macos/README.md", resources / "README.md")
     # 给玩家的 AI 用（维护者 10-23）：控制客户端 + 说明；s2armctl 用 App 自带 Python 跑，玩家不用另装 Python

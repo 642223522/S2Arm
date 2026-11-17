@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Opt-in versioned target entry. CLI/request privacy/cancellation stay in main.py."""
+# 应用布局：版本化目标入口，只在源码树 / 引擎快照里跑（两端启动器都不起它）；pack.* 从仓库根导入
 from __future__ import annotations
 
 import json
