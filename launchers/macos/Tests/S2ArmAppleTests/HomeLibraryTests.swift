@@ -80,15 +80,16 @@ import LauncherPadBridge
             XCTAssertGreaterThanOrEqual(target.frame.height, 32)
         }
         let firstID = String(format: "%016X", 0)
-        let firstPixel = try pixel(host, x: 0.88, y: 0.5)
+        let firstPixel = try await waitPixel(host, x: 0.88, y: 0.5) { $0.redComponent > $0.blueComponent + 0.15 }
         XCTAssertGreaterThan(firstPixel.redComponent, firstPixel.blueComponent + 0.15, "第一款红色 banner 必须铺到窗口右半侧（没自定义过封面时用横幅）")
         model.gamepad.focus("card." + firstID)
         model.gamepad.handle(.left)
         XCTAssertEqual(model.selectedID, firstID, "第一款向左不能越界或跳进其他操作")
         model.gamepad.handle(.right)
-        try await Task.sleep(for: .milliseconds(400))
-        XCTAssertEqual(model.selectedID, String(format: "%016X", 1), "右键选择下一款游戏")
-        let secondPixel = try pixel(host, x: 0.88, y: 0.5)
+        let secondID = String(format: "%016X", 1)
+        for _ in 0..<300 where model.selectedID != secondID { try await Task.sleep(for: .milliseconds(10)) }   // 先等选中真的换到第二款
+        XCTAssertEqual(model.selectedID, secondID, "右键选择下一款游戏")
+        let secondPixel = try await waitPixel(host, x: 0.88, y: 0.5) { $0.blueComponent > $0.redComponent + 0.15 }   // 再等背景换图的动画走完
         XCTAssertGreaterThan(secondPixel.blueComponent, secondPixel.redComponent + 0.15, "选择第二款后全屏背景必须换成蓝色 banner")
         model.gamepad.handle(.down)
         XCTAssertEqual(model.gamepad.focusedID, "hero.play", "封面向下进入游戏操作")
@@ -176,8 +177,7 @@ import LauncherPadBridge
             let window = NSWindow(contentRect: NSRect(x: 50, y: 50, width: 1000, height: 720), styleMask: [.borderless], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false; window.contentView = host; window.orderBack(nil)
             host.layoutSubtreeIfNeeded()
-            try await Task.sleep(for: .milliseconds(80))
-            let color = try pixel(host, x: 0.88, y: 0.5)
+            let color = try await waitPixel(host, x: 0.88, y: 0.5) { $0.greenComponent > $0.redComponent + 0.15 }
             XCTAssertGreaterThan(color.greenComponent, color.redComponent + 0.15, "banner 缺失或无法解码时仍显示有效封面")
             window.close()
         }
@@ -188,10 +188,22 @@ import LauncherPadBridge
         let window = NSWindow(contentRect: NSRect(x: 50, y: 50, width: 1000, height: 720), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = host; window.orderBack(nil)
         host.layoutSubtreeIfNeeded()
-        try await Task.sleep(for: .milliseconds(80))
-        let color = try pixel(host, x: 0.88, y: 0.5)
+        let color = try await waitPixel(host, x: 0.88, y: 0.5) { $0.greenComponent > $0.redComponent + 0.15 }
         XCTAssertGreaterThan(color.greenComponent, color.redComponent + 0.15, "自定义封面优先于自带横幅")
         window.close()
+    }
+
+    /// 取像素前等画面真的到位：每 30 毫秒重排、重画、取一次，满足条件就返回，最多等 timeout 秒（到点返回最后一次，交给断言报红）。
+    ///   原先固定等 80 / 400 毫秒再取，门禁主机负载高时换图动画、图片解码没走完，偶发报红（11-17 bab00cb5c 上那次）
+    private func waitPixel(_ host: NSView, x: CGFloat, y: CGFloat, timeout: TimeInterval = 5, until ok: (NSColor) -> Bool) async throws -> NSColor {
+        let deadline = Date().addingTimeInterval(timeout)
+        var color = try pixel(host, x: x, y: y)
+        while !ok(color), Date() < deadline {
+            try await Task.sleep(for: .milliseconds(30))
+            host.layoutSubtreeIfNeeded()
+            color = try pixel(host, x: x, y: y)
+        }
+        return color
     }
 
     private func pixel(_ host: NSView, x: CGFloat, y: CGFloat) throws -> NSColor {
