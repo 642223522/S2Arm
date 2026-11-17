@@ -36,6 +36,8 @@ static char g_tables_dir[1024];
 const char *s2a_cpatch_tables_dir(void) { return g_tables_dir; }
 static _Atomic int g_nfps;   // 设置页可与会话装载 / 释放并发查询
 static int g_fps_target;   // 当前选中档的目标帧率（fps_pick 定；s2a_cpatch_fps_follow → fps_link 按它定出图上限与节拍）
+static int g_itv_cap;   // 交给直连层的出图间隔上限（0 = 不封；选中的帧率补丁改在 sdk 模块时 1，见 s2a_cpatch_fps_follow）
+int s2a_cpatch_itv_cap(void) { return g_itv_cap; }
 static int g_fps_on = -1, g_fps_want;   // 跟随开关的最近状态（-1 = 还没跟随过）；玩家选的档（0 = 没选：默认取不超过屏幕最高刷新率的最高一档）
 // 金手指（编号 cheat:，pack/cpatch.py scan_cheats；11-12）：缺省全关、不看 S2A_CPATCH_ON，由服务层金手指线程（services/S2A.Services/Cheats.cs）按玩家开关逐条调 s2a_cpatch_cheat。
 //   「位」列是逗号表（共享挂钩按「共用这条改动的条目集合」分位，见 cpatch.py）或「-」（只写填充 / 数据、不占位）。
@@ -605,6 +607,13 @@ void s2a_cpatch_fps_follow(int on) {
         atomic_fetch_or(u->slot, u->bits);
     }
     if (g_nfu) LOG("社区补丁：帧率类 %d 份，%s", g_nfps, on && pick ? "" : "全关");
+    // 选中的帧率补丁里有改在 sdk 模块的（D-36F4：enabler_sdk 一类把驱动的交换间隔 2 → 1）：直连层接管了 NVN，sdk 里那段驱动不执行，
+    //   改由直连层把出图间隔封到 1（graphics/nvn/gfx/nvn/hle_nvn.c nvn_present_itv_cap）；关 / 没选中回 0。不链直连层（通用图形）时 sdk 驱动照常跑，补丁本身生效，这里找不到符号即不做
+    int sdk = 0;
+    for (int i = 0; on && i < g_nfu && !sdk; i++) sdk = g_fu[i].slot && fps_chosen(&g_fu[i], on, pick, grp) && !strcmp(g_fu[i].m->name, "sdk");
+    g_itv_cap = sdk ? 1 : 0;
+    void (*itv_cap)(int) = (void (*)(int))dlsym(RTLD_DEFAULT, "nvn_present_itv_cap");
+    if (itv_cap) itv_cap(g_itv_cap);
     // 60 帧开关开着、包里却没有可用的帧率补丁（11-15 #934：日志「本局 60 帧开」只说明开关，玩家据此以为在 60 帧）：写明实际怎么跑
     if (!g_nfu && on) { static int said; const char *fi = getenv("DM_PRESENT_FI");
         if (!said++) LOG("社区补丁：60 帧开关开着，但包里没有可用的帧率补丁——%s", fi && !strcmp(fi, "1") ? "改用补帧（画面插帧到 60，游戏逻辑仍按原帧率）" : "按游戏原帧率跑"); }
