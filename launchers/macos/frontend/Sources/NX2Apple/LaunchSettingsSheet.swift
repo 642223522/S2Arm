@@ -301,7 +301,7 @@ struct LaunchSettingsSheet: View {
         case "mods":
             CardRow(title, detail: modsNote(item)) {
                 HStack(spacing: 10) {
-                    ModHelpButton(text: t("mods.help"), label: t("mods.help.label"))   // mod 格式说明（11-17 维护者：玩家不知道支持什么、去哪找）
+                    ModHelpButton(text: t("mods.help"), label: t("mods.help.label"), id: "launch.mods.help")   // mod 格式说明（11-17 维护者：玩家不知道支持什么、去哪找）
                     Button(t("display.mods.import")) { importMods() }.controllerButtonStyle(LauncherSecondaryButtonStyle())
                         .controllerID("launch.mods.import").disabled(saving || model.busy)
                 }

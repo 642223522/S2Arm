@@ -160,7 +160,7 @@ struct SGradeCardView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
                     note(x("mod.note"))
                     Spacer(minLength: 8)
-                    if let modHelp { ModHelpButton(text: modHelp.text, label: modHelp.label) }   // mod 格式说明（11-17）
+                    if let modHelp { ModHelpButton(text: modHelp.text, label: modHelp.label, id: "export.sgrade.mod.help") }   // mod 格式说明（11-17）
                     Button(x("mod.import"), action: importMod).buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("export.sgrade.mod.import")
                 }
                 ForEach(modNotes, id: \.self) { note($0) }
