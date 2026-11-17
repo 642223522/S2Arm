@@ -244,8 +244,13 @@ def derive(c, gid, extraction):
         c.emit("message", "这款没有 RomFS，Apple TV 包不用预转贴图")
     sid = tv_shell_id(c)
     shell = Path(c.env().get("S2A_RUN_ROOT") or Path.home() / ".s2arm/run") / "s2arm/cache/shell-tvos" / sid
-    if not (shell / "manifest.json").is_file() and not c.r.get("tvShellDir") and not (c.engine / "Shell-tvOS").is_dir():
-        if sys.platform != "darwin":   # 现出壳要 Xcode：Windows 只能用安装包带的 Shell-tvOS（启动器作 tvShellDir 交来，launchers/windows/bundle_win.py --tv-shell）
+    try:   # 有没有壳按装机 / 组装同一个取法判（tv_shell：tvShellDir > 发版应用 <resources>/Shell-tvOS > 开发树缓存）；原先看 <引擎>/Shell-tvOS，发版应用放在 Resources/Shell-tvOS 判成没有
+        tv_shell(c)
+        have = True
+    except Failure:
+        have = False
+    if not have:
+        if sys.platform != "darwin" or c.r.get("engineBundle"):   # 现出壳要 Xcode 和开发树：Windows 与发版应用只能用安装包带的 Shell-tvOS（launchers/macos/build_app.py、launchers/windows/bundle_win.py --tv-shell）
             raise Failure("这个 S2Arm 安装包没带 Apple TV 预编壳，这台电脑出不了 Apple TV 包：请更新到带 Apple TV 支持的 S2Arm 版本。", code="engine_incomplete")
         c.begin("出 Apple TV 预编壳（本版第一次）")
         tmp = shell.parent / (".tmp." + sid + "." + str(os.getpid()))

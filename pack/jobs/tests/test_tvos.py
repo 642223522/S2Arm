@@ -524,6 +524,31 @@ class DeriveTest(TvCase):
         self.assertEqual(e.exception.code, "engine_incomplete")
         self.assertFalse([r for r in runs if "shell_build.sh" in " ".join(r)])
 
+    def test_derive_release_app_uses_resources_shell(self):
+        """发版应用（请求带 engineBundle）：壳在 <resources>/Shell-tvOS（同 tv_shell 取法）就不现出壳；没带就明说出不了，不去跑 shell_build.sh（发版应用里跑不了）"""
+        self.make_ios()
+        ex = self.root / "extract"; (ex / "romfs").mkdir(parents=True)
+        res = self.root / "Resources"
+        self.c.r.update(engineBundle=True, resources=str(res))
+        for has_shell in (True, False):
+            runs = []
+            def run(argv, log, env=None, **k):
+                runs.append([str(a) for a in argv])
+                if "astc_pack.py" in str(argv[4]): Path(argv[7]).write_bytes(b"ASTC" * 4)
+            if has_shell:
+                (res / "Shell-tvOS").mkdir(parents=True); (res / "Shell-tvOS/manifest.json").write_text(json.dumps(dict(details=dict(shellId="sid1"))))
+            else:
+                shutil.rmtree(res, ignore_errors=True)
+            with um.patch.object(self.c, "run", side_effect=run), um.patch.object(tvos, "tv_shell_id", return_value="sid1"), \
+                 um.patch.object(self.c, "env", return_value={"S2A_RUN_ROOT": str(self.root / "run")}):
+                if has_shell:
+                    tvos.derive(self.c, G, ex)
+                else:
+                    with self.assertRaises(Failure) as e:
+                        tvos.derive(self.c, G, ex)
+                    self.assertEqual(e.exception.code, "engine_incomplete")
+            self.assertFalse([r for r in runs if "shell_build.sh" in " ".join(r)], has_shell)
+
     def test_derive_needs_ios_first(self):
         with self.assertRaises(Failure) as e:
             tvos.derive(self.c, G, self.root / "extract")
