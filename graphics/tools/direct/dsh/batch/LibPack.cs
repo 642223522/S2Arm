@@ -23,7 +23,7 @@ using System.Text.RegularExpressions;
 /// 出库侧（Side）的影子输入库 _bv 是整批共用一份批库字节、按键各挂一个名字；不认的话每个键都把整批读一遍、算一遍 SHA-256（#1331）</summary>
 interface ISharedBytes { string Ident(string name); }
 
-static class LibPack
+static partial class LibPack
 {
     /// <summary>Python 那边 sys.exit(文本) 的情形（ps_inputs.write 报红）</summary>
     public sealed class Exit : Exception { public Exit(string m) : base(m) { } }
@@ -638,19 +638,13 @@ static class LibPack
         var ids = new Dictionary<string, string> { [names[0]] = "A", [names[1]] = "A", [names[2]] = "A", [names[3]] = "B", [names[4]] = "C" };
         Case("stub", n => bytes.TryGetValue(n, out var b) ? b.ToArray() : null, n => ids.GetValueOrDefault(n), names[..3]);
 
-        // ② 真 Side：身份 = 数据文件里的偏移:长度
-        var sideDir = Path.Combine(tmp, "side"); Directory.CreateDirectory(sideDir);
-        var side = new Side(sideDir);
-        side.Put(names[0], x); side.Put(names[1], x); side.Alias(names[0], names[2]); side.Put(names[3], x.ToArray()); side.Put(names[4], y);
-        string i0 = side.Ident(names[0]);
-        Check(i0 != null && side.Ident(names[1]) == i0 && side.Ident(names[2]) == i0 && side.Ident(names[3]) != i0 && side.Ident(names[3]) != null && side.Ident(names[4]) != i0,
-            $"Side.Ident：同一数组两名与 Alias 同身份，等值新数组另一身份（{string.Join(" ", names.Select(n => side.Ident(n)))}）");
-        Check(side.Ident("0000000000000001_b.metal") == null && side.Ident("ffffffffffffffff_bv.metallib") == null, "Side.Ident：源码 / 不在的名字 → null");
-        var view = side.All;
-        Check(view is ISharedBytes, "Side.All 实现 ISharedBytes（发布打包据此给 ident）");
-        Case("side", side.Get, view is ISharedBytes sb ? sb.Ident : null, names[..3]);
+        // ② 真 Side：在 Build.cs（SideIdentCases）。出包 Vulkan 独立入口工程只编本文件、不编 Build.cs，那边这一段由编译器略去（分部方法没有实现）
+        SideIdentCases(tmp, names, x, y, Check, Case);
 
         Console.Out.WriteLine(fails == 0 ? "ident-test: ok" : $"ident-test: {fails} 处不符");
         return fails == 0 ? 0 : 1;
     }
+
+    /// <summary>IdentTest 第 ② 组（真 Side 的 Ident），实现在 Build.cs（Side 定义在那里）；只编 LibPack.cs 的工程里没有实现，调用整句略去</summary>
+    static partial void SideIdentCases(string tmp, string[] names, byte[] x, byte[] y, Action<bool, string> check, Action<string, Func<string, byte[]>, Func<string, string>, string[]> @case);
 }
