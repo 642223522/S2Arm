@@ -687,6 +687,7 @@ def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None, pack_root=Non
         if m: c.emit(message=f"机上解包 {m.group(1)}/{m.group(2)}", done=int(m.group(1)), total=int(m.group(2)), unit="包")  # 非玩家句
     env = dict(c.env(), S2A_DEVICECTL=str(diag.COREDEVICE / "Resources/bin/devicectl"))
     if c.r.get("acceptLowSpace") is True: env["S2A_PUSH_ACCEPT_LOW_SPACE"] = "1"   # 玩家在「手机空间看起来不够」那页点了「仍然继续」（device_space_low）
+    if getattr(c, "trust_name", ""): env["S2A_TRUST_NAME"] = c.trust_name   # 推完拉不起 App、手机说没信任时，提示里写要点哪一项（tools/push_pack.py untrusted_why）
     if udid: env["S2A_PUSH_UDID"] = udid   # 有 UDID + App 内置 s2a-devpush（S2A_PREBUILT_TOOLS/devpush）→ 每批流式写手机，否则退回 devicectl（11-06）
     log = c.logs / (c.task + "-push" + (f"-{docs.rsplit('/', 1)[-1]}" if docs else "") + ".log")
     extra = (["--docs", docs] if docs else []) + (["--pack-root", pack_root] if pack_root else []) + (["--launch-ctx", ctx] if ctx else [])
@@ -1724,6 +1725,24 @@ def app_has_widget(app):
     return any((Path(app) / "PlugIns").glob("*.appex")) if (Path(app) / "PlugIns").is_dir() else False
 
 
+def profile_trust_name(profile, env=None):
+    """签好的 App 里 embedded.mobileprovision 的签名证书名（如「Apple Development: someone@example.com (ABCDE12345)」）：
+    iPhone「设置 → 通用 → VPN 与设备管理 → 开发者 App」下列的就是它，玩家照着点「信任」。读不到（非 Mac、文件没有、解不开）回 ""，界面退回不带名字的说法"""
+    try:
+        p = subprocess.run(["security", "cms", "-D", "-i", str(profile)], capture_output=True, env=env, timeout=5)
+        if p.returncode:
+            return ""
+        certs = plistlib.loads(p.stdout).get("DeveloperCertificates") or []
+        if not certs:
+            return ""
+        x = subprocess.run(["/usr/bin/openssl", "x509", "-inform", "DER", "-noout", "-subject", "-nameopt", "utf8,sep_multiline"],
+                           input=bytes(certs[0]), capture_output=True, env=env, timeout=5)
+        m = re.search(r"^\s*CN=(.+)$", x.stdout.decode("utf-8", "replace"), re.M)
+        return m.group(1).strip() if x.returncode == 0 and m else ""
+    except (OSError, subprocess.TimeoutExpired, ValueError, TypeError, AttributeError):
+        return ""
+
+
 def sign_and_install(c, ipa, team, dev, udid, bid, games, steps=True):
     """steps=False：不报主进度（出包重叠早装在后台线程里调，进度条归出包）。解 ipa → 改包名 → 申请开发描述文件 → 用玩家 Apple ID 签名 →
     按各款文档根 Documents/games/<游戏号> 拉跑局知识与存档备份 → devicectl 覆盖装（不卸载，Documents 保留）"""
@@ -1754,6 +1773,7 @@ def sign_and_install(c, ipa, team, dev, udid, bid, games, steps=True):
             devcert.export_ipa(c, stage / "Payload")
         else:
             sign_with_apple_id(c, app, team, bid, ents, udid, log, steps, vision=is_vision(dev), widget=widget)
+        c.trust_name = profile_trust_name(app / "embedded.mobileprovision")   # 完成页「信任」那一步要点的名字（装机结果 trustName）
         if steps: c.begin("装到 iPhone", 5, 6)
         from diag import devicectl
         for g in games:
@@ -2068,6 +2088,8 @@ class MacPhone:
             sign_and_install(self.c, ipa, self.team, self.dev, self.udid, self.bid, games, steps=steps)
             bundle_switched(self.c, self.team["id"], self.bid)
             self.c.diagnostic(f"包名 {old} 已被别的签名占用，这次自动改用 {self.bid} 装好了", code="bundle_id_switched", severity="warning")
+        if getattr(self.c, "trust_name", ""):
+            self.info["trustName"] = self.c.trust_name   # 装机结果带上（**ph.info）：完成页写「点「<证书名>」→ 信任」
 
     def before_push(self, packs):
         mbps = usb_mbps(self.udid, self.c.env())

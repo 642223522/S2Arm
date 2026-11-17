@@ -103,6 +103,8 @@ public struct InstallResult: Equatable {
     public var exportReused: Int = 0
     /// 只新写点的那款时，别的款里这次没写 .img 的（游戏名，作业结果 unwritten）：手机上已有照常能玩，没有要点那款再导出
     public var exportUnwritten: [String] = []
+    /// 签名证书名（作业结果 trustName，如「Apple Development: someone@example.com (ABCDE12345)」）：iPhone「VPN 与设备管理」里要点「信任」的那一项；读不到为空
+    public var trustName: String = ""
 }
 
 /// 从手机删一款的结果（installRemove 作业，pack/jobs/install.py remove_from_phone）。
@@ -165,7 +167,8 @@ public final class InstallService {
                              exportGames: (r["games"] as? [Any])?.count ?? 0, exportBytes: (r["exportBytes"] as? NSNumber)?.int64Value,
                              skipped: r["skipped"] as? [String] ?? [],
                              exportFresh: r["fresh"] as? [String] ?? [], exportReused: (r["reused"] as? NSNumber)?.intValue ?? 0,
-                             exportUnwritten: r["unwritten"] as? [String] ?? [])
+                             exportUnwritten: r["unwritten"] as? [String] ?? [],
+                             trustName: r["trustName"] as? String ?? "")
     }
 
     /// 推到手机（exportPush，pack/jobs/install.py push_export_job）：把「S2Arm 自签导出」里的完整 .img 推进手机上自签 S2Arm 的「放这里导入」。

@@ -951,6 +951,7 @@
   "install.done.title": "Installé sur {0}",
   "install.done.open": "Envoyé à votre iPhone. Ouvrez S2Arm et l'installation se termine automatiquement.",
   "install.done.trust": "Avant de l'ouvrir la première fois, faites confiance à votre Apple ID dans Réglages › Général › Gestion des VPN et appareils sur votre iPhone ou iPad.",
+  "install.done.trustNamed": "Avant la première ouverture, sur l'iPhone allez dans Réglages → Général → VPN et gestion de l'appareil → touchez « {0} » → Faire confiance, puis ouvrez S2Arm.",
   "install.done.free": "Les apps signées avec un Apple ID gratuit expirent après 7 jours. Revenez et touchez Renouveler.",
   "install.apple.open": "Ouvrir Xcode",
   "install.close": "Terminé",

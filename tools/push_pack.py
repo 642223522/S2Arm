@@ -921,6 +921,14 @@ CANT_OPEN_WHY = ("电脑拉不起手机上的 App，常见原因：iPhone 没开
 NO_DEVMODE_WHY = "电脑连不上手机的开发服务：请在 iPhone 上打开开发者模式（设置 → 隐私与安全性 → 开发者模式，要 iOS 17 以上）。处理好后"
 LOCKED_SIGNS = ("XPC response missing CoreDevice.output", "locked", "Locked")   # 锁屏时拉 App 的报错（Windows s2a-devpush 实测原文；devicectl 带 locked 字样）
 DEVMODE_SIGNS = ("CoreDeviceProxy",)   # s2a-devpush 建不了隧道（没开开发者模式 / iOS 17 以下）
+# 手机拒绝打开 App（devicectl 原文「…invalid code signature, inadequate entitlements or its profile has not been explicitly trusted by the user」）：
+#   一句里包了三种原因——还没信任开发者、签名 / 描述文件过期、换了团队。照着做的两步都写上；装机时读到的证书名（S2A_TRUST_NAME，install.py profile_trust_name）填进要点的那一项
+UNTRUSTED_SIGNS = ("explicitly trusted", "invalid code signature")
+def untrusted_why(name=None):
+    name = os.environ.get("S2A_TRUST_NAME", "") if name is None else name
+    item = f"点「{name}」" if name else "点你的开发者 App"
+    return (f"iPhone 拒绝打开 S2Arm：第一次装或换了 Apple ID，要在 iPhone 上：设置 → 通用 → VPN 与设备管理 → {item} → 信任；"
+            "如果签名已经过期，在启动器点「续签 S2Arm」。处理好后")
 RELAUNCH_S = 10   # 拉不起时每隔几秒再拉一次（拉一次约 1 秒；等待总长仍按 STALL_S 无进展判）
 PROGRESS = re.compile(r"进度：解开 \S+（(\d+)/(\d+)）")
 FAILED = re.compile(r"解包失败：(.+)")   # App 解开失败时写进解包日志的那一行（runtime/src/pack_apply.c s2a_pack_apply 收尾）：原因原样带回
@@ -986,7 +994,8 @@ def apply(dev, pack, work, nb, say=print, sleep=time.sleep, now=time.time, stall
             break
         sleep(3)
     if cant_open:
-        why = LOCKED_WHY if was_locked else NO_DEVMODE_WHY if any(k in cant_open for k in DEVMODE_SIGNS) else CANT_OPEN_WHY
+        why = (LOCKED_WHY if was_locked else NO_DEVMODE_WHY if any(k in cant_open for k in DEVMODE_SIGNS)
+               else untrusted_why() if any(k in cant_open for k in UNTRUSTED_SIGNS) else CANT_OPEN_WHY)
         raise NeedsPlayer(f"资源包已传完，还差最后一步：{why}{OPEN_BY_HAND}（电脑这边打不开手机上的 App：{cant_open}）")
     # 解包停住（装机原则 11-11）：资源已经全在手机上，玩家打开 App 会接着装——和拉不起 App 同一口径（传输成功 + 提醒），不报装机失败
     raise NeedsPlayer(f"资源包已传完，还差最后一步：机上解包 {stall} 秒没有新进展（停在第 {seen} 包）。{OPEN_BY_HAND}" if seen else

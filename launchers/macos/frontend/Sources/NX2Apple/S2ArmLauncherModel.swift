@@ -291,6 +291,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var installDone: String?
     /// 刚装完的那次是单一 IMG：成功页多写一句「打开 S2Arm 会自动完成安装」
     @Published var installOpenToFinish = false
+    @Published var installTrustName = ""   // 这次签名的证书名（装机 / 更新结果 trustName）：完成页「点「<名字>」→ 信任」；空 = 退回不带名字的说法
     /// 最近一次手机作业（装到 iPhone / 从手机删 / 装回上一版）的结局，玩家还没回去看：顶部胶囊「已装好 · 查看结果」靠它（#308：关掉装机弹窗后找不回结果）。
     /// 新的手机作业开始、或打开这款的装机弹窗时清掉。
     @Published var phoneResult: (gameID: String, name: String, ok: Bool)?
@@ -1190,6 +1191,7 @@ public final class S2ArmLauncherModel: ObservableObject {
                     self?.phoneOutcome = PhoneOutcome(device: Self.deviceLabel(kind: r.deviceKind, name: r.deviceName), packFiles: r.packFiles, packBytes: r.packBytes)
                 }
                 self?.installOpenToFinish = r?.openToFinish ?? false
+                self?.installTrustName = r?.trustName ?? ""
             }
             catch let f as JobFailure where ask && Self.confirmCodes[f.code ?? ""] != nil {
                 self?.dropConfirm = DropConfirm(kind: .install, game: game, message: f.errorDescription ?? "", code: f.code ?? "",
