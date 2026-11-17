@@ -389,6 +389,21 @@ static int alias_full_path(char *out, size_t n, uint64_t pid) {
     const char *ov = getenv("S2A_ALIAS_FULL"); if (ov && *ov) { snprintf(out, n, "%s", ov); return 1; }   // 单测 / 诊断指定
     return pid ? s2a_docs_path(out, n, "wire/%016llX/alias_full", (unsigned long long)pid) : 0;
 }
+// 这款真要过的普通堆（字节，十进制一行）：SetHeapSize 超出堆区时记（只增不减），起局布局前读回给 layout.c s2a_layout_heap_floor_set（D-NGH9 / #947）
+static int heap_need_path(char *out, size_t n, uint64_t pid) {
+    const char *ov = getenv("S2A_HEAP_NEED"); if (ov && *ov) { snprintf(out, n, "%s", ov); return 1; }   // 单测 / 诊断指定
+    return pid ? s2a_docs_path(out, n, "wire/%016llX/heap_need", (unsigned long long)pid) : 0;
+}
+static uint64_t heap_need_read(uint64_t pid) {
+    char p[1024]; unsigned long long v = 0; FILE *f = heap_need_path(p, sizeof p, pid) ? fopen(p, "r") : NULL;
+    if (f) { if (fscanf(f, "%llu", &v) != 1) v = 0; fclose(f); }
+    return v;
+}
+static int heap_need_note(uint64_t pid, uint64_t size) {   // → 1 = 记下了（比原记录大才写）
+    if (size <= heap_need_read(pid)) return 1;
+    char p[1024]; FILE *f = heap_need_path(p, sizeof p, pid) ? fopen(p, "w") : NULL;
+    return f && fprintf(f, "%llu\n", (unsigned long long)size) > 0 && !fclose(f);
+}
 static int alias_full_seen(uint64_t pid) { char p[1024]; FILE *f = alias_full_path(p, sizeof p, pid) ? fopen(p, "r") : NULL; if (f) fclose(f); return f != NULL; }   // 只用 fopen / fclose：安卓 VM 端点集合（check_endpoints.py）
 // 收小后游戏照旧映射到收掉的那段（它没按报的大小来，比如写死了 64 GiB）：这一局照常服务（那段在 L.alias_size 内，伸出窗口的走远端，同收小前），
 //   报一次红并记下本款，下次起局恢复原值——宁慢不写错
@@ -425,6 +440,8 @@ static void layout_prepare(const char *npdm) {
       uint64_t cap = span_seen && for_span ? for_span(span_seen(pid)) : 0;
       if (ws < g_lay_need && cap && cap < ws) { LOG("地址窗口：按本款（%016llx）学到的跨度收到 %llu MB（原 %llu MB），其余还给宿主", (unsigned long long)pid, (unsigned long long)(cap >> 20), (unsigned long long)(ws >> 20)); ws = cap; } }
     int alias_gb = alias_first_hint(npdm, pid);
+    { void s2a_layout_heap_floor_set(uint64_t); uint64_t hn = heap_need_read(pid); s2a_layout_heap_floor_set(hn);   // 上一局真要过的普通堆（见 heap_need_path）
+      if (hn) LOG("地址布局：本款上一局要过 %llu MB 普通堆（wire/%016llX/heap_need），堆区至少给到这么多", (unsigned long long)(hn >> 20), (unsigned long long)pid); }
     int rc = s2a_layout_compute(t, sr, mod, alias_gb, wb, ws, &L, &g_mod_base, &g_shadow_base);
     if (rc == -1) die("【红】NPDM 地址空间类型 %u（%s）暂不支持（布局只支持类型 1 = 36 位、3 = 39 位）", t, s2a_as_type_bits(t));
     if (rc == -2) {   // 窗口按学到的跨度收窄了（#783）：当场放宽回缺省给法、重算一次（vawin.c；安卓 / 单测没有这个就不调）
@@ -1471,9 +1488,10 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
         if (size > g_pk_heap_request) { g_pk_heap_request = size; addr_need_report(); }
         if (size > heap_region()) {
             GMU_UNLOCK();
-            // 诊断兜底，不是玩家路径：出包时堆按应用池上限给、别名优先的款按静态识别让堆——到这里说明那两条都没覆盖到（本局需求已记进日志）
-            char b[256]; snprintf(b, sizeof b, "普通堆需要 %llu 字节，堆区只有 %llu 字节（诊断：出包缺省 / 静态识别没覆盖到这款，本局需求已记；请报给维护方）",
-                (unsigned long long)size, (unsigned long long)heap_region());
+            // 出包时堆按应用池上限给、别名优先的款按静态识别让堆——到这里说明那两条都没覆盖到（堆大小是运行时算的，D-NGH9）：记下本款要的堆，下一局布局至少给到这么多
+            int noted = heap_need_note(g_lay_pid, size);
+            char b[320]; snprintf(b, sizeof b, "普通堆需要 %llu 字节，堆区只有 %llu 字节（出包缺省 / 静态识别没覆盖到这款）：%s",
+                (unsigned long long)size, (unsigned long long)heap_region(), noted ? "已记下本款要的堆，下次起局堆区按它给" : "记录写不进，下次起局仍按缺省");
             svc_fail_log(num, 0xD001, b); regs[0] = 0xD001; return 1;
         }
         if (size > g_heap_cur && map_find((uint64_t)g_heap + g_heap_cur, size - g_heap_cur)) { GMU_UNLOCK(); regs[0] = 0xD401; return 1; }
