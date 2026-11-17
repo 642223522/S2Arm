@@ -140,15 +140,15 @@ namespace S2A.Services.Tests
                 var s6 = RomFsIndex.OpenImg(game3);
                 Ck(s6 != null && s6.GetType().Name != "IndexedStorage" && Encoding.UTF8.GetString(ReadRom(s6, "/a/s.txt")) == "overlay!!" && ReadRom(s6, "/a/big.bin").AsSpan().SequenceEqual(big),
                    $"⑤ 偏移表过期（镜像长不符）→ 退回现建（{s6?.GetType().Name}），内容照样对");
-                // ⑥ Mac 运行目录的 game.img 是 iPhone 资源包那份的硬链接：iPhone 资源包 = game3（带 iPhone 偏移表、索引、romfs_overlay），Mac 目录 = mac
+                // ⑥ Mac 运行目录的 game.img 与 iPhone 资源包那份同一份字节（产品里是硬链接）：iPhone 资源包 = game3（带 iPhone 偏移表、索引、romfs_overlay），Mac 目录 = mac
                 string mac = Path.Combine(root, "mac");
                 Directory.CreateDirectory(Path.Combine(mac, "ui_overlay", "romfs", "a"));
-                File.CreateHardLink(Path.Combine(mac, RomFsIndex.ImgName), img3);
+                File.Copy(img3, Path.Combine(mac, RomFsIndex.ImgName));   // 产品里是硬链接（同一个文件）；读法只看这个名字下的字节，拷一份同样的字节等价
                 File.WriteAllBytes(Path.Combine(mac, "ui_overlay", "romfs", "a", "s.txt"), "mac!!"u8.ToArray());
                 var s7 = RomFsIndex.OpenImg(mac, Path.Combine(mac, "ui_overlay", "romfs"));
                 Ck(s7 != null && s7.GetType().Name != "IndexedStorage" && Encoding.UTF8.GetString(ReadRom(s7, "/a/s.txt")) == "mac!!"
                    && ReadRom(s7, "/a/big.bin").AsSpan().SequenceEqual(big) && ReadRom(s7, "/top.dat").AsSpan().SequenceEqual(files["top.dat"]),
-                   $"⑥ Mac 目录（硬链接同一个 IMG）：覆盖层用 Mac 的（mac!!）、其余读 IMG 原件、不走 iPhone 的偏移表（{s7?.GetType().Name}）");
+                   $"⑥ Mac 目录（与 iPhone 同一份 IMG 字节）：覆盖层用 Mac 的（mac!!）、其余读 IMG 原件、不走 iPhone 的偏移表（{s7?.GetType().Name}）");
                 var s8 = RomFsIndex.OpenImg(mac, null);
                 Ck(s8 != null && ReadRom(s8, "/a/s.txt").AsSpan().SequenceEqual(files["a/s.txt"]), "⑥ Mac 不给覆盖层（目录里也没有 romfs_overlay）→ 直接交 RomFS 段，读到原件");
             }
