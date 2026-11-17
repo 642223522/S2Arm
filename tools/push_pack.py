@@ -217,6 +217,10 @@ class Devpush:
         rc, out = self.call("rm", rel)
         return rc == 0, out
 
+    def mv(self, src, dst):   # 容器内改名（目标在就覆盖；通用壳程序包 catalogue.json 先写临时名再改名就位）。→ (成功?, 输出)
+        rc, out = self.call("mv", src, dst)
+        return rc == 0, out
+
     put_big = put
 
     def head(self, rel, n):   # 机上文件的（长度, 开头至多 n 字节）；不在 → (-1, b"")；工具太旧不认 head / 读不了 → None（调用方不续传）
