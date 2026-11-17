@@ -134,3 +134,67 @@ class IosInputsImage(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RechainIos(unittest.TestCase):
+    """0.6.0（11-17 维护者定）：着色器链变了只重编这款的着色器库、不重出整款（sgrade_bf.rechain_ios）。资源包与 game.json 是合成的，
+    rebuild（跑出包阶段脚本）与 ios_inputs（取原料）桩掉；期望按写进去的内容手算"""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        t = Path(self.tmp.name)
+        self.pack = t / "pack"
+        (self.pack / "romfs").mkdir(parents=True); (self.pack / "romfs/a").write_bytes(b"12345")
+        old = self.pack / "shaders/direct/b-old"; old.mkdir(parents=True)
+        (old / "lib.idx").write_bytes(b"OLD"); (self.pack / "shaders/direct/keys.tsv").write_text("k\n")
+        rows = ["romfs/a\t5\th1", "shaders/direct/b-old/lib.idx\t3\th2", "shaders/direct/keys.tsv\t2\th3"]
+        (self.pack / "index.tsv").write_text("".join(r + "\n" for r in rows), encoding="utf-8")
+        (self.pack / "manifest.json").write_text(json.dumps({"version": 2, "files": 3, "total": 10, "index_sha256": "pid0"}), encoding="utf-8")
+        self.new = t / "built/shaders/direct"
+        (self.new / "b-new").mkdir(parents=True); (self.new / "b-new/lib.idx").write_bytes(b"NEWLIB"); (self.new / "keys.tsv").write_text("k2\n")
+        self.info = {"ios": {"dmshChain": "old", "pack": "pid0", "bfGen": 0, "shellId": "S"}}
+        self.c = types.SimpleNamespace(emit=lambda *a, **k: None, private=str(t), logs=str(t), task="t")
+
+    def run_rechain(self, chain="new", src=True, rebuilt=None):
+        calls = []
+        def inputs(c, gid, work):
+            return (Path(work) / "root", "game.img") if src else (None, "none")
+        def build(c, gid, s, plat, work):
+            calls.append(plat); return rebuilt or self.new
+        with patch("host_update.engine_compat", lambda c: dict(hostAbi=1, dmshChain=chain)), \
+                patch.object(sgrade_bf.layout, "game_info", lambda c, g: self.info), patch.object(sgrade_bf.layout, "ios_pack", lambda c, g: self.pack), \
+                patch.object(sgrade_bf.layout, "update_info", lambda c, g, ios: self.info.update(ios=ios)), \
+                patch.object(sgrade_bf, "ios_inputs", inputs), patch.object(sgrade_bf, "rebuild", build):
+            return sgrade_bf.rechain_ios(self.c, "0100AAAA00000000"), calls
+
+    def test_same_chain_skips(self):
+        r, calls = self.run_rechain(chain="old")
+        self.assertEqual((r, calls), ("skip", []))
+
+    def test_chain_changed_rebuilds_only_shader_library(self):
+        r, calls = self.run_rechain()
+        self.assertEqual((r, calls), ("updated", ["ios"]))
+        d = self.pack / "shaders/direct"
+        self.assertEqual(sorted(p.name for p in d.iterdir()), ["b-new", "keys.tsv"], "旧库目录整份换掉")
+        self.assertEqual((d / "b-new/lib.idx").read_bytes(), b"NEWLIB")
+        self.assertEqual((self.pack / "romfs/a").read_bytes(), b"12345", "资源本体不动")
+        want_rows = ["romfs/a\t5\th1", f"shaders/direct/b-new/lib.idx\t6\t{hashlib.sha256(b'NEWLIB').hexdigest()}",
+                     f"shaders/direct/keys.tsv\t3\t{hashlib.sha256(b'k2' + bytes([10])).hexdigest()}"]
+        ix = (self.pack / "index.tsv").read_text(encoding="utf-8")
+        self.assertEqual(ix, "".join(r + "\n" for r in want_rows))
+        pid = hashlib.sha256(ix.encode()).hexdigest()
+        self.assertEqual(json.loads((self.pack / "manifest.json").read_text(encoding="utf-8"))["index_sha256"], pid)
+        self.assertEqual(self.info["ios"], {"dmshChain": "new", "pack": pid, "bfGen": sgrade_bf.BF_GEN, "shellId": "S"})
+        self.assertFalse((self.pack / "shaders/.direct-old").exists() or (self.pack / "shaders/.direct-new").exists(), "不留临时目录")
+
+    def test_no_material_unavailable_and_untouched(self):
+        before = (self.pack / "index.tsv").read_text(encoding="utf-8")
+        r, calls = self.run_rechain(src=False)
+        self.assertEqual((r, calls), ("unavailable", []))
+        self.assertEqual((self.pack / "index.tsv").read_text(encoding="utf-8"), before)
+        self.assertEqual(self.info["ios"]["dmshChain"], "old", "没重编就不记新链号（「建议更新」照旧提示）")
+
+    def test_incomplete_rebuild_raises_and_keeps_old(self):
+        bad = Path(self.tmp.name) / "bad/shaders/direct"; bad.mkdir(parents=True)
+        with self.assertRaises(Failure):
+            self.run_rechain(rebuilt=bad)
+        self.assertTrue((self.pack / "shaders/direct/b-old/lib.idx").is_file(), "重编不完整不动旧库")
