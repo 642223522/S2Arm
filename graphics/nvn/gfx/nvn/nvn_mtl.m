@@ -15247,7 +15247,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
             draw_widen(geometry_program, dw, di); geo_draw(geometry_program, dw, di); return;
         }
     }
-    if (!g_geo_program) geo_run_flush();   // any other draw ends a geometry run (nvn_geometry.inc ①)
+    if (!g_geo_program && g_gr.active) { g_gr_why = GEO_END_DRAW; geo_run_flush(); }   // any other draw ends a geometry run (nvn_geometry.inc ①)
     int mdx_on = (dw && dw->mdi_cnt) || (di && di->mdi_cnt) ? mdx_wanted(dw, di) : 0;   // an indirect-count multi-draw's record masked on the GPU (mdx_run), else read after a wait
     if (!mdx_on && ((di && di->mdi_cnt && !mdi_live(di->mdi_cnt, di->mdi_i)) || (dw && dw->mdi_cnt && !mdi_live(dw->mdi_cnt, dw->mdi_i)))) return;   // past the multi-draw's count
     if (mdx_on && mdx_next(dw, di)) return;   // the next draw of a masked multi-draw: only the draw is encoded
@@ -16808,7 +16808,7 @@ void nvn_be_exec(const uint8_t *p) {
         const void *a = p + 8;
         if (g_unb && !unb_keeps(h.op) && !(h.op == OP_END && g_ret_n)) { g_unb_land++; PD("M %llu held unbind lands before op %u", g_stat_pass, (unsigned)h.op); rp_flush(); }   // see unb_on
         if (g_nlc && !lc_keeps(h.op) && !(h.op == OP_END && g_ret_n)) lc_land();   // see lc_keeps (a sub-list's end returns to its caller)
-        if (g_gr.active && !geo_run_keeps(h.op)) geo_run_flush();   // only state settings and draws stay inside a geometry run (nvn_geometry.inc ①)
+        if (g_gr.active && !geo_run_keeps(h.op)) { g_gr_why = GEO_END_OP; g_gr_why_op = (int)h.op; geo_run_flush(); }   // only state settings and draws stay inside a geometry run (nvn_geometry.inc ①)
         switch (h.op) {
             case OP_END: g_exec_cur = NULL;
                 if (g_ret_n > base) { g_ret_n--; p = g_cstk_ret[g_ret_n]; list = g_cstk_list[g_ret_n]; prev = NULL; continue; }   // 子列表结束：回调用方 CALL 之后
