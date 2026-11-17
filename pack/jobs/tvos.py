@@ -4,7 +4,7 @@
   ① 设备：devicectl 设备表里 deviceType / platform 是 Apple TV 的（diag.is_tv，不写死型号）；配对靠 Xcode 自己完成（Apple TV 没有数据线，同网配对一次）
   ② 现组容器：本版 tvOS 预编壳 + 这款和这台电视上已有各款的 tvOS 容器件（每款 image/tvos/kit，同 iPhone 的 image/ios/kit），pack/ship_ext.py container
   ③ 签名：pack/prov 的申请工程改成 tvOS 目标，xcodebuild -allowProvisioningUpdates 让 Xcode 申请 tvOS 开发描述文件（同 TVPort backend.py:1081 自动签名），
-     再用 pack/dev_sign.py 签；权限用 pack/app_tvos.entitlements（提高内存上限 + 扩展虚拟寻址，两项都要付费开发者账号）。包名 io.s2arm.tv.<团队号小写>：和 iPhone 的容器分开（开发描述文件按平台出，同一包名 dev_sign 会挑到 iOS 的那份）
+     再用 pack/dev_sign.py 签；权限按款（entitlements_for）：「提高内存上限」照带（免费账号在 tvOS 上被系统丢掉，不挡），「扩展虚拟寻址」只给 Switch 2 款（只有付费账号签得了）。包名 io.s2arm.tv.<团队号小写>：和 iPhone 的容器分开（开发描述文件按平台出，同一包名 dev_sign 会挑到 iOS 的那份）
   ④ 覆盖装之前把电视上各款的存档备份到 Mac（同下面的自动备份）；devicectl device install app（TVPort :1368）
   ⑤ tools/push_pack.py 按内容增量推资源包到 App 数据容器 Library/Caches/S2Arm/games/<程序号>/资源包（TVPort :1353 送进 Library/Caches）
      → 列电视上的文件、逐个核对大小（TVPort :1353 核两边大小）
@@ -353,37 +353,68 @@ def prov_project(engine, dest, bid, team, ents):
     return pbx
 
 
-ENTITLEMENTS = "pack/app_tvos.entitlements"   # tvOS 版权限：提高内存上限 + 扩展虚拟寻址（照 TVPort build_ipa.sh:205,258；iOS 仍用 pack/app.entitlements）
-# 这两项在 tvOS 上只有付费开发者账号签得了（免费账号签出来会被系统丢掉）：申请 / 签名失败的原文里认出这类情况，就明说「要付费开发者账号」
-PAID_SIGNS = re.compile(r"Personal development teams[^\n]{0,160}do not support|描述文件不允许这些权限|签名里没有[^\n]{0,80}权限|"  # 非玩家句
-                        r"(?:increased-memory-limit|extended-virtual-addressing)[^\n]{0,160}(?:not (?:supported|allowed|included)|requires|paid)", re.I)
-S_PAID = ("Apple TV 版要付费的 Apple 开发者账号：tvOS 上「提高内存上限」和「扩展虚拟寻址」两项权限只有付费开发者账号签得了，"
-          "免费账号签出来会被系统丢掉、大游戏开不了。在 Xcode 的「设置 → 账户」里登录付费开发者账号（或在团队里选付费团队），再装一次。")
+ENTITLEMENTS = "pack/app_tvos.entitlements"   # tvOS 版权限底本：只有「提高内存上限」（iOS 用 pack/app.entitlements）；扩展虚拟寻址按款加（entitlements_for）
+IML = "com.apple.developer.kernel.increased-memory-limit"
+EVA = "com.apple.developer.kernel.extended-virtual-addressing"
+
+
+def is_switch2(npdm):
+    """main.npdm 是不是 Switch 2 程序：ACID 用 RSA-3072 签名，魔数在 ACID +0x300（Switch 1 在 +0x200；同 runtime/src/svc_mem.c npdm_read）。读不出按否"""
+    try:
+        b = Path(npdm).read_bytes()
+    except OSError:
+        return False
+    if b[:4] != b"META" or len(b) < 0x80:
+        return False
+    acid = int.from_bytes(b[0x78:0x7C], "little")
+    return b[acid + 0x300:acid + 0x304] == b"ACID"
+
+
+def entitlements_for(c, app, dest):
+    """这个 App 要的权限 → 写到 dest（plist）。底本「提高内存上限」照带（免费账号的描述文件没有这项时 dev_sign 不带、不挡）；
+    「扩展虚拟寻址」只在包里有 Switch 2 款时带：Switch 2 客体要约 12.5 GB 地址，tvOS / iOS 不给这项权限就不让占（TVPort build_ipa.sh:206 同判据：
+    超过 6 GB 才带），Switch 1 款不要，免费账号也就签得了。→ (路径, 带没带扩展虚拟寻址)"""
+    import plistlib
+    base = c.engine / ENTITLEMENTS
+    if not base.is_file():
+        raise Failure("这个 S2Arm 安装包不完整（缺 Apple TV 签名权限文件），请重新下载 S2Arm。", code="engine_incomplete", internal=str(base))
+    ents = plistlib.loads(base.read_bytes())
+    eva = any(is_switch2(n) for n in Path(app).glob("Games/*/main.npdm"))
+    if eva:
+        ents[EVA] = True
+    Path(dest).write_bytes(plistlib.dumps(ents))
+    return Path(dest), eva
+
+
+# Switch 2 款要的「扩展虚拟寻址」只有付费开发者账号的描述文件允许：申请 / 签名失败的原文里认出是这一项，就照实说（只在真带了这一项时判）
+EVA_SIGNS = re.compile(r"Personal development teams[^\n]{0,160}Extended Virtual Addressing|描述文件不允许这些权限[^\n]{0,200}extended-virtual-addressing|"  # 非玩家句
+                       r"签名里没有[^\n]{0,80}extended-virtual-addressing", re.I)
+S_EVA = ("这款是 Switch 2 游戏，要「扩展虚拟寻址」权限才能在 Apple TV 上占到够用的地址，这项权限只有付费的 Apple 开发者账号签得了。"
+         "在 Xcode 的「设置 → 账户」里登录付费开发者账号（或在团队里选付费团队）再装；Switch 1 游戏用免费 Apple ID 就能装。")
 
 
 def sign(c, app, team, bid, udid, log):
-    """申请 tvOS 开发描述文件（带这台电视的 UDID：登记设备）→ pack/dev_sign.py 签（S2A_SIGN_PLATFORM=tvos：只挑 tvOS 描述文件、核两项权限）。
-    失败按日志原文归码，同 iPhone 装机；认出是免费账号签不了这两项权限 → tvos_paid_team_required，说清要付费开发者账号"""
+    """申请 tvOS 开发描述文件（带这台电视的 UDID：登记设备）→ pack/dev_sign.py 签（S2A_SIGN_PLATFORM=tvos：只挑 tvOS 描述文件）。
+    权限按款（entitlements_for）。失败按日志原文归码，同 iPhone 装机；带了扩展虚拟寻址（Switch 2 款）而账号签不了这一项 → tvos_eva_required，照实说"""
     from errors import recovery, tool_reason
-    ents = c.engine / ENTITLEMENTS
-    if not ents.is_file():
-        raise Failure("这个 S2Arm 安装包不完整（缺 Apple TV 签名权限文件），请重新下载 S2Arm。", code="engine_incomplete", internal=str(ents))
     c.begin("申请 Apple TV 开发描述文件（第一次要几十秒）", 3, 6, keychain=True)
     try:
         with tempfile.TemporaryDirectory(dir=c.private) as d:
-            prov_project(c.engine, d, bid, team["id"], ents)
+            ents, eva = entitlements_for(c, app, Path(d) / "tv.entitlements")
+            prov = Path(d) / "prov"
+            prov_project(c.engine, prov, bid, team["id"], ents)
             dest = ["-destination", f"platform=tvOS,id={udid}", "-allowProvisioningDeviceRegistration", "-destination-timeout", "120"] if udid else \
                 ["-destination", "generic/platform=tvOS"]
             c.run(["xcodebuild", "-project", "Prov.xcodeproj", "-scheme", "Prov", "-configuration", "Debug", *dest, "-derivedDataPath", "dd",
-                   "-allowProvisioningUpdates", "build"], log, cwd=d, timeout=600)
-        c.begin("用你的 Apple ID 签名", 4, 6, keychain=True)
-        c.run([sys.executable, c.engine / "pack/dev_sign.py", app, bid, team["id"], ents], log, env=dict(c.env(), S2A_SIGN_PLATFORM=PLATFORM))
+                   "-allowProvisioningUpdates", "build"], log, cwd=prov, timeout=600)
+            c.begin("用你的 Apple ID 签名", 4, 6, keychain=True)
+            c.run([sys.executable, c.engine / "pack/dev_sign.py", app, bid, team["id"], ents], log, env=dict(c.env(), S2A_SIGN_PLATFORM=PLATFORM))
     except Failure as e:
         if e.code != "tool_exit":
             raise
         text = log.read_text(errors="replace")[-8000:] if log.is_file() else ""
-        if PAID_SIGNS.search(text):
-            raise Failure(S_PAID, code="tvos_paid_team_required", internal=tool_reason(log)) from e
+        if eva and EVA_SIGNS.search(text):
+            raise Failure(S_EVA, code="tvos_eva_required", internal=tool_reason(log)) from e
         code = install.classify(text)
         raise Failure("签名没成：" + tool_reason(log) + "；" + recovery(code, packaged=bool(c.r.get("engineBundle"))), code=code) from e  # 非玩家句
 

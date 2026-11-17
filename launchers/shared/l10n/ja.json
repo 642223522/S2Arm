@@ -1027,7 +1027,7 @@
   "phone.done.export.fresh": "今回コピーが必要な .img：{0}。残りの {1} 本は前回の書き出しと同じなので、すでに iPhone にあればコピーし直す必要はありません。",
   "phone.done.export.same": "すべての .img が前回の書き出しと同じです。すでに iPhone にあればコピーし直す必要はありません。",
   "export.platform.tvos": "Apple TV",
-  "export.note.tvos": "Apple TV にインストール（同じネットワーク、Xcode で一度ペアリング）。有料の Apple Developer アカウントが必要です",
+  "export.note.tvos": "Apple TV にインストール（同じネットワーク、Xcode で一度ペアリング）。無料の Apple ID で使えます。Switch 2 のゲームには有料の Apple Developer アカウントが必要です",
   "export.installAppleTV": "Apple TV にインストール",
   "export.done.tvos": "Apple TV 版ができました。「Apple TV にインストール」を押してテレビに入れてください。",
   "export.appleTV.device": "インストール先の Apple TV",

@@ -139,7 +139,7 @@ RECOVERY = {
     'developer_mode_required': '在 iPhone「设置 → 隐私与安全性 → 开发者模式」按系统提示开启开发者模式，再重新安装。',
     'device_pairing_required': '重新用数据线连接并解锁 iPhone，在手机上确认「信任此电脑」，然后重新检查设备并安装。',
     'free_team_capability': '免费个人开发者团队签不了这个 App 申请的某项权限（例如「扩展虚拟寻址」）；更新 S2Arm 后重新安装（新版对免费团队只申请能签的权限），或在 Xcode 改用付费开发者团队。',
-    'tvos_paid_team_required': 'Apple TV 版的两项权限（提高内存上限、扩展虚拟寻址）只有付费 Apple 开发者账号签得了：在 Xcode「设置 → 账户」登录付费开发者账号或选付费团队，再装到 Apple TV。',
+    'tvos_eva_required': 'Switch 2 游戏在 Apple TV 上要「扩展虚拟寻址」权限，只有付费 Apple 开发者账号签得了：在 Xcode「设置 → 账户」登录付费开发者账号或选付费团队，再装到 Apple TV（Switch 1 游戏用免费 Apple ID 就能装）。',
     'provisioning_expired': '开发描述文件已过期；在 Xcode 重新登录签名账号、重新申请描述文件并签名安装，保留原 App 存档。',
     'compiler_cache_incomplete': '已完成的安装包可以保留；检查磁盘余量与缓存目录权限后再清理缓存，不要删除游戏或存档。',
     'stage_timeout': '当前阶段已超时；检查该阶段日志和设备连接，确认原因后重试，不要同时重复启动同一任务。',

@@ -282,7 +282,7 @@
   "export.platform.android": "安卓",
   "export.platform.ohos": "鴻蒙",
   "export.platform.tvos": "Apple TV",
-  "export.note.tvos": "裝到 Apple TV（同一網路、在 Xcode 裡配對一次）；需要付費的 Apple 開發者帳號",
+  "export.note.tvos": "裝到 Apple TV（同一網路、在 Xcode 裡配對一次）；免費 Apple ID 就能裝，Switch 2 遊戲要付費開發者帳號",
   "export.installAppleTV": "裝到 Apple TV",
   "export.done.tvos": "Apple TV 版做好了，點「裝到 Apple TV」裝到電視上。",
   "export.appleTV.device": "裝到哪台 Apple TV",

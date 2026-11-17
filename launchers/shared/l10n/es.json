@@ -1027,7 +1027,7 @@
   "phone.done.export.fresh": "Archivos .img que debes copiar esta vez: {0}. Los otros {1} son iguales que en la última exportación; si ya están en tu teléfono, no hace falta copiarlos de nuevo.",
   "phone.done.export.same": "Todos los .img son iguales que en la última exportación; si ya están en tu teléfono, no hace falta copiarlos de nuevo.",
   "export.platform.tvos": "Apple TV",
-  "export.note.tvos": "Se instala en el Apple TV (misma red, enlazado una vez en Xcode); requiere una cuenta de desarrollador de Apple de pago",
+  "export.note.tvos": "Se instala en el Apple TV (misma red, enlazado una vez en Xcode); basta con un Apple ID gratuito, los juegos de Switch 2 requieren una cuenta de desarrollador de Apple de pago",
   "export.installAppleTV": "Instalar en el Apple TV",
   "export.done.tvos": "La compilación para Apple TV está lista. Pulsa Instalar en el Apple TV para llevarla al televisor.",
   "export.appleTV.device": "Apple TV de destino",

@@ -175,34 +175,63 @@ class ProvProjectTest(unittest.TestCase):
         self.assertIn('"io.s2arm.tv.team"', pbx); self.assertNotIn("S2ABID", pbx); self.assertNotIn("S2ATEAM", pbx)
 
 
+def npdm(switch2):
+    """最小 main.npdm：META 头 0x80，ACID 偏移写在 +0x78；Switch 2 的 ACID 魔数在 ACID +0x300，Switch 1 在 +0x200（switchbrew NPDM）"""
+    acid = 0x100
+    b = bytearray(acid + 0x400)
+    b[:4] = b"META"; b[0x78:0x7C] = acid.to_bytes(4, "little")
+    b[acid + (0x300 if switch2 else 0x200):acid + (0x304 if switch2 else 0x204)] = b"ACID"
+    return bytes(b)
+
+
 class SignTest(TvCase):
-    def sign_with_log(self, text, step="dev_sign"):
-        """xcodebuild 申请成功、dev_sign 那步按 text 失败（退出非 0）；→ 抛出的 Failure 与 dev_sign 收到的环境"""
+    def app_with(self, switch2):
+        app = self.root / ("app2" if switch2 else "app1"); (app / "Games/0100000000AAAA00").mkdir(parents=True, exist_ok=True)
+        (app / "Games/0100000000AAAA00/main.npdm").write_bytes(npdm(switch2))
+        return app
+
+    def sign_with_log(self, text, step="dev_sign", switch2=True):
+        """xcodebuild 申请成功、dev_sign 那步按 text 失败（退出非 0）；→ 抛出的 Failure、各步收到的环境、交给 dev_sign 的权限"""
         log, seen = self.root / "sign.log", {}
+        import plistlib
         def run(args, log_path=None, env=None, cwd=None, timeout=None, **kw):
             name = "dev_sign" if str(args[1]).endswith("dev_sign.py") else "xcodebuild"
             seen[name] = env
+            if name == "dev_sign": seen["ents"] = plistlib.loads(Path(args[5]).read_bytes())
             if name == step:
                 Path(log_path).write_text(text); raise Failure("tool", code="tool_exit")
-        with um.patch.object(self.c, "run", run), um.patch.object(tvos, "ENTITLEMENTS", "pack/app.entitlements"), self.assertRaises(Failure) as e:
-            tvos.sign(self.c, self.root, TEAM, "io.s2arm.tv.x", "TV-UDID", log)
+        with um.patch.object(self.c, "run", run), self.assertRaises(Failure) as e:
+            tvos.sign(self.c, self.app_with(switch2), TEAM, "io.s2arm.tv.x", "TV-UDID", log)
         return e.exception, seen
 
-    def test_paid_account_named_plainly(self):
-        # 免费账号：dev_sign 报描述文件不允许扩展虚拟寻址 / Xcode 报个人团队不支持 → tvos_paid_team_required，原话里写「付费」
+    def test_switch2_without_eva_named_plainly(self):
+        # Switch 2 款带扩展虚拟寻址、账号签不了这一项 → tvos_eva_required，照实说是 Switch 2 要、Switch 1 用免费账号就行
         for text, step in (("描述文件不允许这些权限：['com.apple.developer.kernel.extended-virtual-addressing']", "dev_sign"),
                            ('error: Personal development teams, including "甲", do not support the Extended Virtual Addressing capability.', "xcodebuild")):
             e, seen = self.sign_with_log(text, step)
-            self.assertEqual(e.code, "tvos_paid_team_required")
-            self.assertIn("付费", str(e))
-            if step == "dev_sign":   # dev_sign 按 tvOS 挑描述文件、核两项权限
+            self.assertEqual(e.code, "tvos_eva_required")
+            self.assertIn("Switch 2", str(e)); self.assertIn("付费", str(e))
+            if step == "dev_sign":   # dev_sign 按 tvOS 挑描述文件
                 self.assertEqual(seen["dev_sign"]["S2A_SIGN_PLATFORM"], "tvos")
         e, _ = self.sign_with_log("No signing certificate for team")   # 别的签名失败照旧按原文归码
         self.assertEqual(e.code, "signing_certificate_missing")
 
+    def test_switch1_never_told_to_pay(self):
+        # Switch 1 款不带扩展虚拟寻址：交给 dev_sign 的权限只有「提高内存上限」；同样的失败原文不归成「要付费」
+        e, seen = self.sign_with_log("描述文件不允许这些权限：['com.apple.developer.kernel.extended-virtual-addressing']", switch2=False)
+        self.assertNotEqual(e.code, "tvos_eva_required")
+        self.assertEqual(seen["ents"], {tvos.IML: True})
+
+    def test_entitlements_per_game(self):
+        import plistlib
+        for switch2, want in ((False, {tvos.IML: True}), (True, {tvos.IML: True, tvos.EVA: True})):
+            path, eva = tvos.entitlements_for(self.c, self.app_with(switch2), self.root / f"e{int(switch2)}.plist")
+            self.assertEqual((plistlib.loads(path.read_bytes()), eva), (want, switch2))
+        self.assertFalse(tvos.is_switch2(self.root / "no-such.npdm"))
+
     def test_missing_entitlements_file(self):
         with um.patch.object(tvos, "ENTITLEMENTS", "pack/no-such.entitlements"), self.assertRaises(Failure) as e:
-            tvos.sign(self.c, self.root, TEAM, "io.s2arm.tv.x", "TV-UDID", self.root / "l.log")
+            tvos.sign(self.c, self.app_with(False), TEAM, "io.s2arm.tv.x", "TV-UDID", self.root / "l.log")
         self.assertEqual(e.exception.code, "engine_incomplete")
 
 
