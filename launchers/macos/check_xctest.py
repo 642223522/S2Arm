@@ -12,7 +12,8 @@ def main():
     # Keep the module in each identity so equal case names in two modules remain distinct.
     module = r"[A-Za-z_][A-Za-z0-9_]*"
     expected = set(re.findall(rf"^({module}\.[^\s/]+/[^\s]+)$", discovery, re.M))
-    finished = re.findall(rf"^Test Case '-\[({module}\.[^\s]+) ([^\s]+)\]' (passed|failed|skipped)", execution, re.M)
+    # 结局行不要求在行首：用例自己打的调试输出没换行时，「Test Case '-[…]' passed」会接在同一行后面（11-17 门禁假红「未完成」）
+    finished = re.findall(rf"Test Case '-\[({module}\.[^\s]+) ([^\s]+)\]' (passed|failed|skipped)", execution)
     observed = Counter(f"{suite}/{method}" for suite, method, _ in finished)
     missing = sorted(expected - observed.keys())
     unexpected = sorted(observed.keys() - expected)
