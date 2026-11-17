@@ -90,7 +90,7 @@ static void boundary_cases(const char *T) {
     CHECK(f && fread(value, 1, 2, f) == 2 && !strcmp(value, "ok"), "合法 pax path 内容不符"); if (f) fclose(f);
 }
 
-unsigned s2a_pack_repair_modes_as(const char *docs, const char *root, unsigned self_uid); extern unsigned s2a_pack_repair_self_override;
+unsigned s2a_pack_repair_modes_as(const char *docs, const char *root, unsigned self_uid); extern unsigned s2a_pack_repair_self_override; unsigned s2a_pack_repair_tree(const char *dir);
 const char *s2a_img_scan_skipped(void);
 unsigned s2a_foreign_scan(const char *home, uint64_t *bytes, char *line, size_t n); unsigned s2a_foreign_scan_as(const char *home, unsigned self_uid, uint64_t *bytes, char *line, size_t n);
 // 压缩传输的 game.img 块（v0.5.0，runtime/src/pack_apply.c img_unzst；块大小本单测编成 64 KB，见 runtime/tests/mk/pack_apply.mk）。
@@ -954,6 +954,19 @@ int main(void) {
             "补权限：D / s 0755、s/f 0644、g 不动 0644（实际 %o %o %o %o）", a.st_mode & 0777, b.st_mode & 0777, cst.st_mode & 0777, d.st_mode & 0777);
       FILE *w = fopen(nf, "w"); CHECK(w != NULL, "补完后能在原只读目录里建文件"); if (w) fclose(w);
       snprintf(c, sizeof c, "chmod -R u+w '%s' 2>/dev/null; rm -rf '%s'", D, D); sh(c); }
+    { // 启动时整棵补（D-A76N 第二回：推送报写不进就停，走不到解包那次补）。期望手写：树 L 下 a（0555）/ a/b（0555）/ a/b/f（0444）→ 补 3 个，
+      //   a、a/b 变 0755、f 变 0644、补完能在 a/b 里建文件；把「自己」当成别的 uid 再造一份 → 一个都不补；目录不存在 → 0、不崩
+      char L[1200], A[1300], B[1400], F[1500]; struct stat sa, sb, sf;
+      snprintf(L, sizeof L, "%s/launch_tree", T); snprintf(A, sizeof A, "%s/a", L); snprintf(B, sizeof B, "%s/b", A); snprintf(F, sizeof F, "%s/f", B);
+      snprintf(c, sizeof c, "mkdir -p '%s' && echo x > '%s' && chmod 444 '%s' && chmod 555 '%s' '%s'", B, F, F, B, A); CHECK(sh(c) == 0, "造启动补权限样本");
+      s2a_pack_repair_self_override = (unsigned)getuid() + 1; unsigned n0 = s2a_pack_repair_tree(L); s2a_pack_repair_self_override = 0;
+      CHECK(n0 == 0, "启动补权限：属主不是自己 → 一个都不动（实际 %u）", n0);
+      unsigned n = s2a_pack_repair_tree(L); stat(A, &sa); stat(B, &sb); stat(F, &sf);
+      CHECK(n == 3 && (sa.st_mode & 0777) == 0755 && (sb.st_mode & 0777) == 0755 && (sf.st_mode & 0777) == 0644,
+            "启动补权限：补 3 个、a / b 0755、f 0644（实际 %u，%o %o %o）", n, sa.st_mode & 0777, sb.st_mode & 0777, sf.st_mode & 0777);
+      snprintf(c, sizeof c, "%s/new", B); FILE *w = fopen(c, "w"); CHECK(w != NULL, "启动补权限：补完能在 a/b 里建文件"); if (w) fclose(w);
+      snprintf(c, sizeof c, "%s/不存在", T); CHECK(s2a_pack_repair_tree(c) == 0, "启动补权限：目录不存在 → 0");
+      snprintf(c, sizeof c, "chmod -R u+w '%s' 2>/dev/null; rm -rf '%s'", L, L); sh(c); }
 zst_cases(T);
 printf("%s t_pack_apply：%d 处不符\n", bad ? "✗" : "✓", bad); return bad != 0;
 }
