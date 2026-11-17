@@ -266,6 +266,20 @@ void s2a_selfsign_probe(void) {
     SecKeyRef key = NULL; CFArrayRef chain = NULL;
     int rc = s2a_selfsign_identity(pb, pn, getenv("S2A_SELFSIGN_PW"), &key, &chain); free(pb);
     if (rc) { LOG("【红】手机端自签：p12 导入失败（%d）", rc); free(ib); return; }
+    // iOS 的 SecPKCS12Import 只给 p12 里的证书（玩家导出的 p12 通常只有叶证书），macOS 会从系统补齐链。
+    //   签名里缺 WWDR 中间证书，内核注册签名就验不过链（真机 errno=1）。S2A_SELFSIGN_CHAIN = 冒号分隔的 DER 证书（中间证书、根证书），叶证书之后接上。
+    //   做成产品时这几张苹果公开证书随 App 带，按叶证书的签发者挑 WWDR 那一代
+    const char *ce = getenv("S2A_SELFSIGN_CHAIN");
+    if (ce && *ce && CFArrayGetCount(chain) == 1) {
+        CFMutableArrayRef full = CFArrayCreateMutableCopy(NULL, 0, chain); char list[4096]; snprintf(list, sizeof list, "%s", ce);
+        for (char *sv = NULL, *tok = strtok_r(list, ":", &sv); tok; tok = strtok_r(NULL, ":", &sv)) {
+            char cp[1024]; size_t cn = 0; uint8_t *cb = home_path(cp, sizeof cp, tok) ? NULL : slurp(cp, &cn);
+            CFDataRef cd = cb ? CFDataCreate(NULL, cb, (CFIndex)cn) : NULL; free(cb);
+            SecCertificateRef c = cd ? SecCertificateCreateWithData(NULL, cd) : NULL; if (cd) CFRelease(cd);
+            if (c) { CFArrayAppendValue(full, c); CFRelease(c); } else LOG("【黄】手机端自签：链证书读不了 %s", tok);
+        }
+        CFRelease(chain); chain = full;
+    }
     clock_gettime(CLOCK_MONOTONIC, &t1);
     uint8_t *ob = NULL; size_t on = 0;
     rc = s2a_selfsign_macho(ib, n, NULL, getenv("S2A_SELFSIGN_TEAM"), key, chain, &ob, &on, why, sizeof why);
