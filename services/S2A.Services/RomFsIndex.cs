@@ -552,8 +552,8 @@ namespace S2A.Services
         public static Source Decide(bool imageOpened, bool imageFileExists, bool romfsDirExists, string programDir)
         {
             if (imageOpened) return Source.Image;
-            if (imageFileExists && !romfsDirExists)
-                throw new InvalidDataException($"RomFS 单文件镜像不完整（长度与对照表不符或缺对照表 / 索引，多半推到一半），也没有 romfs/ 可退：{programDir}；请重新装到 iPhone");
+            if (imageFileExists && !romfsDirExists)   // 11-17 维护者：不整个拒——黄字记下、照常开局，游戏读不到文件时按原因报（报红带上这条）
+                Red.Waive("RomFS 单文件镜像不完整（长度与对照表不符或缺对照表 / 索引，多半推到一半），也没有 romfs/ 可退，照常开局（可能缺文件或闪退，重新装到 iPhone 可解）", programDir);
             return romfsDirExists ? Source.Directory : Source.Missing;
         }
 

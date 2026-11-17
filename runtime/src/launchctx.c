@@ -465,14 +465,14 @@ const char *s2a_launch_ctx_select(const char *gid) {
         char prog[S2A_LCTX_PATH], app[S2A_LCTX_PATH]; int have = 0;
         int k = join(app, g_bundle, "s2a_catalogue.json") ? -1 : s2a_host_abi_check(s2a_program_catalogue_path(prog, sizeof prog, c.game_data) ? NULL : prog, app, gid, &have, w, sizeof w);
         // 11-17 维护者：校验不过不再整个拒绝，黄字提示照常进，之后出问题时报错带上这条（waived.c）
-        if (k == 1) waive("游戏 %s 的程序按宿主约定号 %d 出，本宿主是 %d（ios_host_abi_mismatch；出问题先在电脑上按新版更新这款）", gid, have, S2A_HOST_ABI);
+        if (k == 1) waive("游戏 %s 的程序按宿主约定号 %d 出，本宿主是 %d：版本不配，可能闪退，在电脑上重新出包 / 装到 iPhone 可解（ios_host_abi_mismatch）", gid, have, S2A_HOST_ABI);
         if (k < 0) waive("游戏 %s 的宿主约定号核不了：%s", gid, w[0] ? w : "App 包目录太长");
     }
     {   // 程序签名（通用壳 11-16）：程序包里的程序库要和清单 image_sha256 一致（推了一半 / 换了别的版本 = 清单和库不是同一次出的），
         //   且能被本机这份 App 注册签名 + 库校验（同团队）。对不上 → 回游戏库标「要在电脑上重新签名」，不进宿主（原先进局后 loader.c die「外置镜像包打不开」，
         //   App 无提示直接退回主屏，11-16 Duo 实测 ad-hoc 程序库 errno=1）。注册在这里先做一次，进局后 s2a_imgpack_open 同一路径回同一个包
         int ks = c.from_program ? program_sha_check(c.game_data, gid, c.images, w, sizeof w) : 0;
-        if (ks > 0) waive("%s（ios_program_resign）", w);   // 校验不过照常进（11-17 维护者）；签名系统不认（下面 rc == 3）物理上加载不了，照旧拒
+        if (ks > 0) waive("%s：版本不配，可能闪退，在电脑上重新签名 / 装到 iPhone 可解（ios_program_resign）", w);   // 校验不过照常进（11-17 维护者）；签名系统不认（下面 rc == 3）物理上加载不了，照旧拒
         if (ks < 0) waive("游戏 %s 的程序包核不了：%s", gid, w);
         int (*open_pk)(const char *, void **, char *, size_t) = (int (*)(const char *, void **, char *, size_t))dlsym(RTLD_DEFAULT, "s2a_imgpack_open");
         void *pk = NULL; int rc = c.from_program && open_pk ? open_pk(c.images, &pk, w, sizeof w) : 0;   // 只对程序包里的款：App 包里的款（0.6.0 前玩家手上全是这种）照旧进局后由装载器打开，行为同改造前
