@@ -2,10 +2,11 @@
 // the device-info items whose cases 0 / 1 return the API major / minor as immediates. Games compare against the version of the headers they were built with,
 // some for exact equality (Raiden V Director's Cut, SDK 6.5: main+0x173914 requires 53 and 310 exactly and asserts otherwise; the SDK-based guess said 53.313).
 // Shape, the same in every SDK checked (4.4 to 20.5): cmp wI, #items ; b.hi default ; <jump table dispatch> ; movz w0, #major ; br xT, with case 1's target
+// (SDK 0.12, 01007EF00011E000 v1.0.0's driver in subsdk0: movz w0, #52 sits before the table load, up to two instructions ahead of br; its game requires major 52 exactly)
 // starting movz w0, #minor. Dispatch is either adrp/add T ; ldrsw xE, [T, xI, lsl #2] ; add xT, xE, T (entry = T + s32) or adrp/add T ; adr L ; ldrb / ldrh
 // wE, [T, xI(, lsl #1)] ; add xT, L, xE, lsl #2 (entry = L + 4 * u8 / u16). img = the module image (offset 0 = base, page-aligned), text = [0, text_end).
 // nvn_drv_items_scan: every case of that switch whose target is movz w0, #imm gives items[case] = imm (−1: the case computes its value, reads the device, or is out of range);
-//   items[0] is the major (preset before the branch). Returns the number of cases on exactly one match with major 53 or 55 (two matches with the same table count as one); 0 otherwise.
+//   items[0] is the major (preset before the branch). Returns the number of cases on exactly one match with major 52, 53 or 55 (two matches with the same table count as one); 0 otherwise.
 //   11-02 Mario + Rabbids Sparks of Hope (SDK 13.3.5): its driver reports the newest GPU code version as 1.16 (items 0x2E / 0x30), the host's SMO-era table said 1.14, and the game
 //   checks each of its 1120 shaders against that range: the compute shader for Quarter Depth was refused, its resource stayed null and main+0x963c28 read it.
 // nvn_drv_api_scan: items 0 / 1 (the API version); returns 1 and fills api[] on a match
@@ -98,11 +99,13 @@ static inline int32_t drv_nested_item(const uint8_t *img, size_t text_end, size_
 static inline int nvn_drv_items_scan(const uint8_t *img, size_t text_end, size_t size, int32_t *items, int nmax) {
     int found = 0; static int32_t cur[256];
     for (size_t o = 32; o + 8 <= text_end; o += 4) {
-        uint32_t mv = drv_w(img, o), br = drv_w(img, o + 4);
-        if ((mv & 0xffe0001f) != 0x52800000 || (br & 0xfffffc1f) != 0xd61f0000) continue;   // movz w0, #imm ; br xT
-        int major = (int)((mv >> 5) & 0xffff);
-        if (major != 53 && major != 55) continue;
-        size_t cmp = 0; for (size_t k = 4; k <= 9 * 4 && k <= o; k += 4) {
+        // br xT at o + 4, movz w0, #major right before it; the earliest drivers (SDK 0.12) set it before the table load instead: movz w0, #52 ; ldrsw ; add ; br
+        if ((drv_w(img, o + 4) & 0xfffffc1f) != 0xd61f0000) continue;
+        size_t mv = 0; for (size_t k = 0; k <= 2 * 4 && k <= o; k += 4) if ((drv_w(img, o - k) & 0xffe0001f) == 0x52800000) { mv = o - k; break; }
+        if (!mv) continue;
+        int major = (int)((drv_w(img, mv) >> 5) & 0xffff);
+        if (major != 52 && major != 53 && major != 55) continue;
+        size_t cmp = 0; for (size_t k = 4; k <= 11 * 4 && k <= o; k += 4) {
             uint32_t c = drv_w(img, o - k), b = drv_w(img, o - k + 4);
             if ((c & 0xffc0001f) == 0x7100001f && (b & 0xff00001f) == 0x54000008) { cmp = o - k; break; }   // cmp wI, #items ; b.hi
         }
@@ -110,7 +113,7 @@ static inline int nvn_drv_items_scan(const uint8_t *img, size_t text_end, size_t
         int ncase = (int)((drv_w(img, cmp) >> 10) & 0xfff) + 1;
         if (ncase < 2 || ncase > 256) continue;
         int64_t T = -1, L = -1; int kind = 0;   // 1 ldrsw (T-relative), 2 ldrb, 3 ldrh (L-relative)
-        for (size_t p = cmp + 8; p < o; p += 4) {
+        for (size_t p = cmp + 8; p <= o; p += 4) {
             uint32_t w = drv_w(img, p);
             if ((w & 0x9f000000) == 0x90000000 && p + 4 < o) {   // adrp ; add
                 uint32_t a = drv_w(img, p + 4); if ((a & 0xffc00000) != 0x91000000) continue;
