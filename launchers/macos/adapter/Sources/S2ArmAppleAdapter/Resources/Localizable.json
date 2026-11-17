@@ -6252,6 +6252,18 @@
   "en": "No iPhone found: connect the cable, unlock it and tap Trust on the phone."
  },
  {
+  "source": "这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。如果你的账号证书已满，苹果会撤掉列表里的第一张「{0}」（在 {1} 上创建，{2} 生效），用它签的 App（可能是 Xcode 或 AltStore 装的）会打不开；没满就什么都不撤。",
+  "en": "This computer has no usable development certificate for this Apple ID, so it needs to create one. If your account's certificates are full, Apple will revoke the first one in the list, “{0}” (created on {1}, valid from {2}), and apps signed with it (possibly installed by Xcode or AltStore) will stop opening; if they are not full, nothing is revoked."
+ },
+ {
+  "source": "这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。如果你的账号证书已满，苹果会撤掉列表里的第一张「{0}」（{1} 生效），用它签的 App（可能是 Xcode 或 AltStore 装的）会打不开；没满就什么都不撤。",
+  "en": "This computer has no usable development certificate for this Apple ID, so it needs to create one. If your account's certificates are full, Apple will revoke the first one in the list, “{0}” (valid from {1}), and apps signed with it (possibly installed by Xcode or AltStore) will stop opening; if they are not full, nothing is revoked."
+ },
+ {
+  "source": "点「仍然继续」就照签。想保住那一张，要先删掉一张不用的开发证书：有 Mac 的话，在 Mac 上 Xcode 的「设置 → 账户 → 管理证书」里删，删完回来再装一次。",
+  "en": "Click Continue anyway to sign. To keep that one, first delete a development certificate you no longer use: if you have a Mac, delete it in Xcode on the Mac under Settings → Accounts → Manage Certificates, then come back and install again."
+ },
+ {
   "source": "点「仍然继续」照传：手机报的空闲不含系统随时能清掉的空间，实际多半放得下，真写满了会停下并说明还差多少；也可以先在「设置 → 通用 → iPhone 储存空间」腾出空间。",
   "en": "Tap Continue Anyway to send it: the free space the iPhone reports leaves out space iOS can clear at any time, so it usually fits, and it stops and says how much is missing only if storage really fills up. You can also free up space first in Settings → General → iPhone Storage."
  },
