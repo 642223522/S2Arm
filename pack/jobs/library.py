@@ -2578,12 +2578,10 @@ def delete(c):
         #   下次再删又卡在同一个文件上（11-11 玩家反馈「删除有时生效有时不生效」，真 App 复现）。挪走的删不干净只记黄字，空闲时 sweep_trash 接着删
         trashed = []
         if gdir and gdir.exists():
-            # 存档有内容就保留
-            saves = gdir / "saves"
-            backups = gdir / "save-backups"
-            has_saves = layout.has_content(saves) or layout.has_content(backups)   # 只有 .DS_Store 之类不算有存档
+            # 存档类（layout.save_entries 唯一来源：saves/、save-backups/、save_backup/、SaveData*）有内容就全部保留，其余照删（金手指、mod 不算存档）
+            has_saves = any(layout.has_content(p) for p in layout.save_entries(gdir))   # 只有 .DS_Store 之类不算有存档
             root = gdir.parent.parent   # 这款所在存放位置的根（root_of 靠 find_game，认不出时会退回默认位置）
-            for item in ([i for i in gdir.iterdir() if i.name not in ("saves", "save-backups")] if has_saves else [gdir]):
+            for item in ([i for i in gdir.iterdir() if not layout.is_save_entry(i.name)] if has_saves else [gdir]):
                 moved = _to_trash(c, root, item, gid)
                 if moved:
                     trashed.append((root, moved))
@@ -2774,7 +2772,7 @@ def space_parts(c, gid):
         "shaders": [p for p in game_caches(c, gid) if p not in shared] + [Path(c.work_root) / "cache" / "programs" / gid.upper()],   # 程序缓存：缺了按常驻配方现建（pack/jobs/programs.py）；出包收尾不清它
         "mac": [layout.image_mac(c, gid, create=False)] if gdir and gdir.exists() else [],
         "ipa": ipa,
-        "saves": [layout.path(c, gid, "saves", create=False)],
+        "saves": layout.save_entries(gdir) if gdir else [],   # 只报不删（SPACE_KEPT）；存档类唯一来源 layout.save_entries
         "logs": [out / "logs"],
     }
     return {k: [p for p in v if p.exists() or p.is_symlink()] for k, v in parts.items()}

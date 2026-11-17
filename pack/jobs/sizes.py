@@ -61,7 +61,7 @@ def measure(c, gid, games=None):
         sizes["cache"] = _bytes([*_build_entries(c, gid), d / "shader-cache"], state=state)   # iPhone 出包日志 build/ios/logs 不算（释放空间的保留项）
         sizes["imageMac"] = _bytes([d / "image" / "mac"], state=state)
         sizes["imageIos"] = _bytes([d / "image" / "ios"], state=state)
-        sizes["saves"] = _bytes([d / "saves", d / "save-backups"], state=state)
+        sizes["saves"] = _bytes(layout.save_entries(d), state=state)   # 存档类唯一来源（含 save_backup/、SaveData*）
     sizes["sources"] = _source_share(gid, games)
     return sizes
 
