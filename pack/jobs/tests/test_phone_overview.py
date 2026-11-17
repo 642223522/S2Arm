@@ -117,6 +117,15 @@ class PhoneOverview(unittest.TestCase):
         p3 = next(p for p in self.overview()["phones"] if p["device"] == "PHONE-3")
         self.assertEqual(p3["games"][0], dict(gameId=self.A, state="suggested", reasons=["missing"]))
 
+    def test_can_sign(self):
+        # 交过身份 → True；我们装过 App 却没交过 → False；只有推过游戏、没有壳号（判不出 App 是谁装的）→ None
+        self.c.catalog = lambda: {"games": []}
+        layout.save_device(self.c, "P-ID", dict(shellId="S", identity=dict(team="T", key_fp="k", cert_sha1="c")))
+        layout.save_device(self.c, "P-NO", dict(shellId="S"))
+        layout.save_device(self.c, "P-UNK", dict(games={self.A: dict(pack="P")}))
+        got = {p["device"]: p["canSign"] for p in self.overview()["phones"]}
+        self.assertEqual(got, {"P-ID": True, "P-NO": False, "P-UNK": None})
+
     def test_switch_off(self):
         self.fixture()
         self.assertEqual(self.overview(on=False), dict(enabled=False, phones=[]))
