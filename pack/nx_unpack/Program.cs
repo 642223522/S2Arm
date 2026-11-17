@@ -45,7 +45,7 @@ static partial class P {
     static KeySet Ks;
     // 内容号（32 位十六进制）→ 打开它的办法（每次调用都从源文件新开一份读视图，给并行线程各用各的）
     static readonly Dictionary<string, Func<IStorage>> Where = new();
-    // 完整性校验（维护者 11-17：「校验不过就整个拒绝」一律撤掉，总指挥定口径）：缺省按 LibHac ErrorOnInvalid 核；某个阶段读到数据哈希不符，
+    // 完整性校验（维护者 11-17：「校验不过就整个拒绝」一律撤掉）：缺省按 LibHac ErrorOnInvalid 核；某个阶段读到数据哈希不符，
     //   只把这个阶段用到的内容（StageIds，本体 / 更新 / 控制 / 元数据各自的内容号）记进 LenientIds，打一行黄 + 一行【校验跳过】机读行，整次重跑——
     //   重跑时只有这几份内容按 None 读，别的照常核。#1467：整合包模拟器能玩、我们整单拒收。RomFS 与 DLC 各自就地降级（RomfsExtraction / aocBypass）
     static readonly HashSet<string> LenientIds = new();

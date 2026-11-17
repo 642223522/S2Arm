@@ -167,7 +167,7 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
 
 
 def integrity_note(c):
-    """出包 / 起局等带游戏号的作业失败时：这款导入时有内容跳过了完整性校验 → 补一条 warning 级诊断（总指挥 11-17：免得难查）。
+    """出包 / 起局等带游戏号的作业失败时：这款导入时有内容跳过了完整性校验 → 补一条 warning 级诊断（维护者 11-17：免得难查）。
     读不到游戏库或不是游戏作业就不补，不让补充说明本身把失败收尾弄坏"""
     gid = c.r.get("gameId")
     if not gid:

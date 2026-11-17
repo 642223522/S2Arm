@@ -494,7 +494,7 @@ class JobsTests(unittest.TestCase):
                 diag.assert_not_called(); self.assertNotIn("integritySkipped", got[0]); self.assertFalse(library.integrity_skipped(dict(packages=got)))
 
     def test_failure_of_integrity_skipped_game_adds_note(self):
-        # 总指挥 11-17：导入时数据校验不过的款，之后出包 / 起局失败要补一句。期望（手写）：游戏有包带 integritySkipped → 补一条
+        # 维护者 11-17：导入时数据校验不过的款，之后出包 / 起局失败要补一句。期望（手写）：游戏有包带 integritySkipped → 补一条
         #   warning 级 source_integrity_skipped（句子 = SOURCE_INTEGRITY_FAILED_NOTE）；没有、或请求没带游戏号 → 不补；读游戏库出错 → 不补、不抛
         import unittest.mock as um, main
         games = {"games": [{"id": "A", "packages": [{"integritySkipped": [{"stage": "x", "contents": "", "place": ""}]}]}, {"id": "B", "packages": [{}]}]}
