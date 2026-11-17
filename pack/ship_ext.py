@@ -340,6 +340,40 @@ def _place_banner(gid, root, gd, entry, banner=None):
         return
 
 
+# 程序包（通用壳，11-16）：一款的程序挪出 App，放手机数据容器 Library/Application Support/S2Arm/games/<游戏号>/program/。这里只出未签名的两样：
+#   S2AImages-<游戏号>.dylib（同容器里的 Frameworks/S2AImages-<游戏号>.dylib，embed.py 写）与 Games/<游戏号>/（随行表 + icon.jpg，同容器里的 Games/<游戏号>/；
+#   不带 launch.ctx：手机选游戏时上下文由宿主按布局算，launch.ctx 只给自动化起局用）；
+#   签名、catalogue.json 由作业层（pack/jobs/program_pack.py）按装到哪台手机的团队做。布局与清单字段见 cmdr 通用壳方案「和开发乙之间的约定」
+def program_image(gid):
+    return f"S2AImages-{gid}.dylib"
+
+
+def cmd_program(a):
+    """壳（只取随包表清单、核壳编号）+ 一款产物根 / 程序件 → <out>/{S2AImages-<游戏号>.dylib, Games/<游戏号>/}；先写同目录临时名、整目录改名就位。
+    out 已存在报红（不覆盖）。打印一行 JSON：{"gid", "image", "ast", "name", "display_version"}（游戏名 / 界面版本同容器目录清单的读法，读不到给空串）"""
+    _, tables, _ = shell_checked(a.shell)
+    root, out = Path(a.root), Path(a.out)
+    check_root(root)
+    gid, ast = npdm_ident(root / "main.npdm")
+    if os.path.lexists(out):
+        red(f"不覆盖已有目标：{out}")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(prefix=".program-", dir=out.parent))
+    try:
+        place_game(root, tmp / GAMES / gid, tmp / program_image(gid), tables)
+        if (root / "icon.jpg").is_file():   # 游戏库卡片图标（同容器 Games/<游戏号>/icon.jpg）：游戏库改由各款 program/catalogue.json 拼时从这里取
+            shutil.copyfile(root / "icon.jpg", tmp / GAMES / gid / "icon.jpg")
+        os.replace(tmp, out)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    try:
+        name = title(str(root))
+    except NoTitle:
+        name = ""
+    print(json.dumps(dict(gid=gid, image=program_image(gid), ast=ast, name=name, display_version=display_version(root) or ""), ensure_ascii=False))
+
+
 def cmd_container(a):
     shell, tables, sid = shell_checked(a.shell)
     roots = [Path(r) for r in a.game]
@@ -475,8 +509,9 @@ def main():
     # sign：只签名（组好的 App 再改 Info.plist 之后统一签，如 #845 容器摘要；签完再改会破坏签名，v0.3.6 候选 ⑥ codesign 不过）
     g = sub.add_parser("sign"); g.add_argument("--app", required=True); g.add_argument("--sign", choices=("none", "adhoc", "dev"), required=True)
     g.add_argument("--bundle-id", default=""); g.add_argument("--team", default="")
+    q = sub.add_parser("program"); q.add_argument("--shell", required=True); q.add_argument("--root", required=True); q.add_argument("--out", required=True)
     a = ap.parse_args()
-    {"shell": cmd_shell, "build": cmd_build, "container": cmd_container, "container-drop": cmd_container_drop,
+    {"shell": cmd_shell, "build": cmd_build, "container": cmd_container, "container-drop": cmd_container_drop, "program": cmd_program,
      "sign": lambda a: sign_app(Path(a.app), a.sign, a.bundle_id, a.team)}[a.cmd](a)
 
 

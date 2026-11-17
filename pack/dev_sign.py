@@ -8,7 +8,11 @@ dev_sign.py <NxIOS.app> <包名> <团队号> <基础权限 Gen/NxIOS.entitlement
 ④ 嵌入 embedded.mobileprovision → 先签内嵌 *.dylib / *.framework → 再带权限签 App → 核「提高内存上限」在签名里。
 找不到合适的描述文件或身份、描述文件缺 S2A_PROFILE_NEED_UDIDS 里的测试设备，退出码 3（调用方退回 Xcode 导出）；本机描述文件解不出（安全服务不可用）退出码 4（调用方不申请、照报）；其余失败退出码 1。"""
 import glob, hashlib, os, plistlib, shutil, subprocess, sys, tempfile
-app, bid, team, base = sys.argv[1:5]
+# 只签一个程序 dylib（通用壳程序包，pack/jobs/program_pack.py mac_signer，11-16）：dev_sign.py --dylib <文件> <包名> <团队>
+#   挑描述文件与身份同签 App（这台手机上装的 S2Arm 用的那一个，库校验要同团队），只签这个文件、不嵌描述文件、不核权限；末行打印完整身份 SHA-1
+DYLIB = sys.argv[1:2] == ['--dylib']
+if DYLIB: (dylib, bid, team), app, base = sys.argv[2:5], None, None
+else: app, bid, team, base = sys.argv[1:5]
 EXTENSION = '--extension' in sys.argv[5:]
 NEED = ['com.apple.developer.kernel.increased-memory-limit']   # 10-19 维护者定案（docs/研究/免费账号.md）：只带这一项就有整块 64 GB 窗口 + 6144 MB 内存上限；扩展寻址多余且免费账号签不了
 # 平台（11-15 tvOS 版）：S2A_SIGN_PLATFORM=tvos（pack/jobs/tvos.py 传）或 App 的 CFBundleSupportedPlatforms 写着 AppleTVOS → 只挑 tvOS 的开发描述文件
@@ -16,7 +20,7 @@ NEED = ['com.apple.developer.kernel.increased-memory-limit']   # 10-19 维护者
 #   （免费账号在 tvOS 上本来就会被系统丢掉，TVPort tvport/README.md「Memory」；游戏靠客体内存文件后备压在上限下），不挡签名；
 #   「扩展虚拟寻址」只有 Switch 2 款带，带了就必须被描述文件允许、签进去（只有付费账号的描述文件有），缺了照实报
 IML, EVA = 'com.apple.developer.kernel.increased-memory-limit', 'com.apple.developer.kernel.extended-virtual-addressing'
-try: _plats = plistlib.load(open(os.path.join(app, 'Info.plist'), 'rb')).get('CFBundleSupportedPlatforms') or []
+try: _plats = plistlib.load(open(os.path.join(app, 'Info.plist'), 'rb')).get('CFBundleSupportedPlatforms') or [] if app else []
 except Exception: _plats = []
 TVOS = os.environ.get('S2A_SIGN_PLATFORM') == 'tvos' or 'AppleTVOS' in _plats
 def cms(f):
@@ -45,6 +49,10 @@ certs = {hashlib.sha1(c).hexdigest().upper() for c in prof.get('DeveloperCertifi
 ids = subprocess.run(['security', 'find-identity', '-v', '-p', 'codesigning'], capture_output=True, text=True).stdout.split('\n')
 ident = next((l.split()[1] for l in ids if len(l.split()) > 1 and l.split()[1] in certs), None)
 if not ident: print(f'本机钥匙串没有描述文件 {os.path.basename(pf)} 里的开发证书'); sys.exit(3)
+if DYLIB:
+    r = subprocess.run(['codesign', '--force', '--sign', ident, '--timestamp=none', dylib], capture_output=True, text=True)
+    if r.returncode: print(f'签名失败 {dylib}：{r.stderr.strip()[:300]}'); sys.exit(1)
+    print(f'程序库签名：{os.path.basename(dylib)}，描述文件 {os.path.basename(pf)}，身份 {ident}'); sys.exit(0)
 ents = plistlib.load(open(base, 'rb'))
 ents.update({'application-identifier': f'{team}.{bid}', 'com.apple.developer.team-identifier': team, 'get-task-allow': True})
 allow = prof['Entitlements']

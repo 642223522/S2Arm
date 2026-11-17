@@ -336,6 +336,43 @@ class ContainerTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1); self.assertIn("要按本壳重出", r.stderr); self.assertIn(self.B, r.stderr)   # 已有款 B 是别的壳组装的：不混装
 
 
+class ProgramPackTest(unittest.TestCase):
+    """程序包（通用壳，ship_ext.py program）：一款程序出成 <out>/{S2AImages-<游戏号>.dylib, Games/<游戏号>/}，不签名、不写清单。
+       期望不靠被测代码算：同一份产物根用现有的 container 组一次，程序包里的 dylib 与容器里 Frameworks/S2AImages-<游戏号>.dylib 逐字节相同、
+       随行目录逐文件相同（同一个 place_game，只差容器自己的 launch.ctx）；目标已在报红；失败不留半个目录"""
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory(); self.d = Path(self.td.name)
+        self.shell = ShipExtTest.shell(None, self.d)
+        self.root = ContainerTest.game(None, self.d, "a", 3, 0, 0x0100000000010000, "甲游戏")
+
+    def tearDown(self): self.td.cleanup()
+
+    def run_p(self, root, out):
+        return subprocess.run([sys.executable, str(REPO / "pack/ship_ext.py"), "program", "--shell", str(self.shell), "--root", str(root), "--out", str(out)],
+                              capture_output=True, text=True)
+
+    def test_program_matches_container_bytes(self):
+        out = self.d / "p/program"
+        r = self.run_p(self.root, out); self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        gid = ContainerTest.A
+        self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1]), {"gid": gid, "image": f"S2AImages-{gid}.dylib", "ast": 3, "name": "甲游戏", "display_version": "1.2.0"})
+        self.assertEqual(sorted(p.name for p in out.iterdir()), ["Games", f"S2AImages-{gid}.dylib"])
+        app = self.d / "c/S2Arm.app"
+        c = ContainerTest.run_c(None, self.d, self.shell, app, [self.root]); self.assertEqual(c.returncode, 0, c.stdout + c.stderr)
+        self.assertEqual((out / f"S2AImages-{gid}.dylib").read_bytes(), (app / f"Frameworks/S2AImages-{gid}.dylib").read_bytes())
+        mine = {p.relative_to(out / "Games" / gid): p.read_bytes() for p in (out / "Games" / gid).rglob("*") if p.is_file()}
+        theirs = {p.relative_to(app / "Games" / gid): p.read_bytes() for p in (app / "Games" / gid).rglob("*") if p.is_file() and p.name != "launch.ctx"}
+        self.assertEqual(mine, theirs)   # 只差容器自己的启动上下文 launch.ctx（自动化起局用，程序包不带）
+        self.assertIn(Path("main.npdm"), mine); self.assertIn(Path("main.fixups.tsv"), mine); self.assertIn(Path("addr_need.tsv"), mine); self.assertIn(Path("icon.jpg"), mine)
+
+    def test_program_refuses_existing_and_leaves_nothing_on_failure(self):
+        out = self.d / "p/program"; out.mkdir(parents=True)
+        r = self.run_p(self.root, out); self.assertNotEqual(r.returncode, 0); self.assertIn("不覆盖已有目标", r.stdout + r.stderr)
+        (self.root / "main.npdm").unlink(); out2 = self.d / "q/program"
+        r = self.run_p(self.root, out2); self.assertNotEqual(r.returncode, 0)
+        self.assertFalse(out2.exists()); self.assertFalse(any((self.d / "q").glob(".program-*")) if (self.d / "q").exists() else False)
+
+
 class BannerPlaceTest(unittest.TestCase):
     """_place_banner 的联网分支打桩测（进程内直调 ship_ext，mock 掉 banner_fetch.fetch_banner，零真联网；#101 评审 1 项）。
     子进程组装测（ContainerTest）已用 S2A_BANNER_FETCH=0 + 产物根自带图保证离线确定性，这里补抓图分支本身。"""
