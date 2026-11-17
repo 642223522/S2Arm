@@ -335,6 +335,8 @@
 "img.scanFailed.title" = "没能导入游戏文件";
 "img.noShaders.title" = "这个游戏文件不完整";
 "img.noShaders.body" = "「%@」不完整。请换成电脑上「S2Arm 自签导出」文件夹里的「<游戏名>.img」，或者在电脑的 S2Arm 里连着手机点「推到手机」。";
+"img.updateSkipped.title" = "这份着色器更新已跳过";
+"img.updateSkipped.body" = "「%@」和当前游戏版本不配套，已跳过、没有套用。游戏照常能玩；要用这份更新，请把电脑上同一次导出的完整 .img 和它一起放进来。";
 "container.locked.title" = "S2Arm 的部分文件被系统锁住了";
 "container.locked.body" = "这台设备上有 %@ GB 的 S2Arm 旧文件被系统锁住，S2Arm 改不了也删不掉，只能删除 App 时一起清掉。\n\n要腾出这些空间：\n1. 在每款游戏里打开菜单 →「存档管理」→「导出当前存档…」，存到「文件」里 S2Arm 文件夹以外（比如 iCloud 云盘；删除 App 时 S2Arm 文件夹会一起被删）\n2. 删除并重新安装 S2Arm\n3. 用「存档管理」→「选择备份并检查…」导回存档";
 "diag.fileWord" = "诊断";
