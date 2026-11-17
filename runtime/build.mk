@@ -217,6 +217,8 @@ ios: ios-ns2pro
 	  if [ $(S2A_APPLE_OS) = ios ]; then \
 	  /usr/bin/plutil -insert UIFileSharingEnabled -bool YES $(IOS_APP)/Info.plist; \
 	  /usr/bin/plutil -insert LSSupportsOpeningDocumentsInPlace -bool YES $(IOS_APP)/Info.plist; \
+	  /usr/bin/plutil -insert UTExportedTypeDeclarations -json '[{"UTTypeIdentifier":"com.s2arm.game","UTTypeDescription":"S2Arm game package","UTTypeConformsTo":["public.data"],"UTTypeTagSpecification":{"public.filename-extension":["s2arm"]}}]' $(IOS_APP)/Info.plist; \
+	  /usr/bin/plutil -insert CFBundleDocumentTypes -json '[{"CFBundleTypeName":"S2Arm game package","CFBundleTypeRole":"Viewer","LSHandlerRank":"Owner","LSItemContentTypes":["com.s2arm.game"]}]' $(IOS_APP)/Info.plist; \
 	  /usr/bin/plutil -insert CADisableMinimumFrameDurationOnPhone -bool YES $(IOS_APP)/Info.plist; \
 	  /usr/bin/plutil -insert UIApplicationShortcutItems -json "$$(cat ios/shortcuts.json)" $(IOS_APP)/Info.plist; \
 	  fi; \

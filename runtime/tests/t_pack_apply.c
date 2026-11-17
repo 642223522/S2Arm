@@ -166,9 +166,61 @@ static void zst_cases(const char *T) {
     }
     free(src);
 }
+// 小游戏包 .s2arm 导入（s2a_s2arm_import，0.6.0 通用壳）：合成包（无游戏数据），期望手写：
+//   ① 导好：程序进 program/v-<image_sha256 前 16 位>-s2arm/、清单补上 dir 换上、派生件进 资源包/、临时 tar 不留；游戏号按大写
+//   ② 帧没到尾（拷了一半）→ 1、什么都不写 ③ 第一个条目不是 s2arm.json → -2 / ios_install_manifest_bad ④ 条目路径带 .. → -2、清单不换
+//   ⑤ 放进「放这里导入」：扫描导入、导好删掉原文件
+int s2a_s2arm_import(const char *proc_docs, const char *src, char *gid_out, size_t gid_n); const char *s2a_s2arm_import_code(void);
+static void s2arm_pack(const char *T, const char *out, const char *first, const char *bad_name) {
+    char tp[1024]; snprintf(tp, sizeof tp, "%s/s2arm.tar", T); FILE *f = fopen(tp, "wb"); CHECK(f != NULL, "造 .s2arm tar 失败"); if (!f) return;
+    const char *j = "{\n \"format\": \"s2arm\",\n \"schema\": 1,\n \"title_id\": \"0100abcde0000000\",\n \"image_sha256\": \"0123456789abcdefffff\"\n}";
+    tar_entry(f, first, '0', j, strlen(j));
+    const char *cat = "{\"schema\": 1, \"title_id\": \"0100ABCDE0000000\", \"team\": null}";
+    tar_entry(f, "program/catalogue.json", '0', cat, strlen(cat));
+    tar_entry(f, "program/S2AImages-0100ABCDE0000000.dylib", '0', "DYLIB", 5);
+    tar_entry(f, "program/Games/0100ABCDE0000000/x.txt", '0', "x", 1);
+    tar_entry(f, "pack/index.tsv", '0', "shaders/a\t1\t-\n", 14);
+    tar_entry(f, bad_name ? bad_name : "pack/ctl/control.nacp", '0', "N", 1);
+    uint8_t zero[1024] = {0}; fwrite(zero, 1, sizeof zero, f); fclose(f);
+    CHECK(zcomp(tp, out) == 0, "压 .s2arm 失败");
+}
+static int s2arm_read_is(const char *p, const char *want) { char b[256] = ""; FILE *f = fopen(p, "rb"); if (!f) return 0; size_t n = fread(b, 1, sizeof b - 1, f); fclose(f); b[n] = 0; return !strcmp(b, want); }
+static void s2arm_cases(const char *T) {
+    if (!zstd_pick()) { printf("（跳过 .s2arm 导入：本机既没有 zstd 命令行也没有 Python zstd 模块）\n"); return; }
+    char docs[1024], c[2400], src[1200], g[17], base[1200], p[2400]; snprintf(docs, sizeof docs, "%s/s2h/Documents", T);
+    snprintf(c, sizeof c, "mkdir -p '%s/放这里导入'", docs); CHECK(sh(c) == 0, "布置 .s2arm 文档根");
+    snprintf(base, sizeof base, "%s/s2h/Library/Application Support/S2Arm/games/0100ABCDE0000000", T);
+    snprintf(src, sizeof src, "%s/a.s2arm", T); s2arm_pack(T, src, "s2arm.json", NULL);
+    int rc = s2a_s2arm_import(docs, src, g, sizeof g);
+    CHECK(rc == 0 && !strcmp(g, "0100ABCDE0000000"), "① 导入：返回 %d、游戏号「%s」（期望 0、0100ABCDE0000000）", rc, g);
+    snprintf(p, sizeof p, "%s/program/v-0123456789abcdef-s2arm/S2AImages-0100ABCDE0000000.dylib", base); CHECK(s2arm_read_is(p, "DYLIB"), "① 程序库进了 v-0123456789abcdef-s2arm/");
+    snprintf(p, sizeof p, "%s/program/v-0123456789abcdef-s2arm/Games/0100ABCDE0000000/x.txt", base); CHECK(s2arm_read_is(p, "x"), "① 随行目录进了版本目录");
+    snprintf(p, sizeof p, "%s/program/catalogue.json", base);
+    CHECK(s2arm_read_is(p, "{\"dir\": \"v-0123456789abcdef-s2arm\",\"schema\": 1, \"title_id\": \"0100ABCDE0000000\", \"team\": null}"), "① 清单补上 dir 换上");
+    snprintf(p, sizeof p, "%s/资源包/index.tsv", base); CHECK(s2arm_read_is(p, "shaders/a\t1\t-\n"), "① 派生件 index.tsv 进了资源包");
+    snprintf(p, sizeof p, "%s/资源包/ctl/control.nacp", base); CHECK(s2arm_read_is(p, "N"), "① 派生件 ctl/control.nacp 进了资源包");
+    snprintf(c, sizeof c, "ls -a '%s/s2h/Library/Application Support/S2Arm' | grep -c s2arm-import", T); CHECK(sh(c) != 0, "① 临时 tar 不留");
+    // ② 拷了一半：截掉后半
+    { char half[1200]; snprintf(half, sizeof half, "%s/half.s2arm", T); struct stat st; stat(src, &st);
+      snprintf(c, sizeof c, "head -c %lld '%s' > '%s'", (long long)st.st_size / 2, src, half); sh(c);
+      rc = s2a_s2arm_import(docs, half, g, sizeof g); CHECK(rc == 1, "② 拷了一半：返回 %d（期望 1，原样留着下次再看）", rc); }
+    // ③ 第一个条目不对
+    snprintf(src, sizeof src, "%s/b.s2arm", T); s2arm_pack(T, src, "readme.txt", NULL);
+    rc = s2a_s2arm_import(docs, src, g, sizeof g); CHECK(rc == -2 && !strcmp(s2a_s2arm_import_code(), "ios_install_manifest_bad"), "③ 不是小游戏包：返回 %d、码 %s", rc, s2a_s2arm_import_code());
+    // ④ 路径带 ..：清单不换（还是①那份）
+    snprintf(p, sizeof p, "%s/program/catalogue.json", base); unlink(p);
+    snprintf(src, sizeof src, "%s/c.s2arm", T); s2arm_pack(T, src, "s2arm.json", "pack/../evil");
+    rc = s2a_s2arm_import(docs, src, g, sizeof g); struct stat st;
+    CHECK(rc == -2 && stat(p, &st) != 0, "④ 条目路径带 ..：返回 %d（期望 -2），清单没换上", rc);
+    // ⑤ 放进导入文件夹：扫描导入、原文件删掉
+    snprintf(src, sizeof src, "%s/放这里导入/d.s2arm", docs); s2arm_pack(T, src, "s2arm.json", NULL);
+    s2a_img_scan(docs);
+    CHECK(stat(src, &st) != 0 && stat(p, &st) == 0, "⑤ 导入文件夹里的 .s2arm：导好、原文件删掉");
+}
 int main(void) {
     char T[] = "/tmp/s2a_t_pack_XXXXXX"; if (!mkdtemp(T)) return 1;
     boundary_cases(T);
+    s2arm_cases(T);
     // 失败给码（11-11 维护者「补上说人话的原因」）：返回码 / errno / 截短 / 是否出在 game.img 那步 → 规格码。期望按码表含义手写：
     //   目录写不进优先（重开 App 会迁）；其次空间满（不管哪步）；截短或包头坏 = 没传完；格式号 / IMG 坏；核对缺文件；清单读不出；其余写失败；认不出的 unknown
     { struct { int rc, err, trunc, img; const char *want; } m[] = {
