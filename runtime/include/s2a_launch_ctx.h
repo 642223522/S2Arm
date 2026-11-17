@@ -76,6 +76,8 @@ int s2a_program_games_root(char *out, size_t n, const char *home);
 // 程序包版本目录清理（App 启动时调）：删没被清单 dir 指着、且最新文件超过 1 小时没写入的 program/v-* 与推断了留下的 catalogue.json.*.tmp。返回删掉的条目数
 #include <time.h>
 int s2a_program_gc(const char *home, time_t now);
+// 程序包款随行目录快照（选中游戏时调）：克隆到 <HOME>/tmp/s2a-mod-<号>-<pid>，成功写 out（S2A_LCTX_PATH 字节）回 0
+int s2a_program_snapshot(const char *home, const char *gid, const char *module_dir, char *out);
 // 游戏库画卡片时预判（主线程，多款容器）：本进程 App 包里这款的程序约定号对不上本宿主 → 1（卡片标「需要在电脑上更新」）；对得上 / 不是容器 /
 //   核不了（路径太长、清单读不了：交给点开时 s2a_launch_ctx_select 的完整校验报）→ 0。只读文件，不冻结、不改任何状态
 int s2a_launch_ctx_game_needs_update(const char *gid);

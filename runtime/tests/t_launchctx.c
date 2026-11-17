@@ -273,6 +273,16 @@ int main(int argc, char **argv) {
             snprintf(w8, sizeof w8, "test -d '%s/v-aaaaaaaaaaaaaaaa-pc' && test ! -e '%s/v-bbbbbbbbbbbbbbbb-pc' && test -d '%s/v-cccccccccccccccc-import' && test ! -e '%s/catalogue.json.pc.tmp' && test -f '%s/catalogue.json'", p8, p8, p8, p8, p8);
             ck(rm == 2 && system(w8) == 0, "清理：删没被指着且一小时没写入的 v-bbb 与临时清单（2 项），留被指着的 v-aaa、刚写过的 v-ccc 与清单");
             ck(s2a_program_gc(home, now) == 0, "清理：再跑一次没得删（0 项）");
+            // 随行目录快照（双保险）：克隆 v-aaa/Games/<号> 到 <HOME>/tmp/s2a-mod-<号>-<pid>；删掉原目录后快照里的文件照样在；
+            //   清理只删别的进程留下的快照（造一个 pid 1 的），本进程的留
+            snprintf(q8, sizeof q8, "%s/v-aaaaaaaaaaaaaaaa-pc/Games/0100000000000008/s2a_caps.tsv", p8); write_file(q8, "widen\t1\n");
+            char snap[1024]; snprintf(q8, sizeof q8, "%s/v-aaaaaaaaaaaaaaaa-pc/Games/0100000000000008", p8);
+            ck(s2a_program_snapshot(home, "0100000000000008", q8, snap) == 0 && strstr(snap, "/tmp/s2a-mod-0100000000000008-"), "快照：拍到 <HOME>/tmp/s2a-mod-<号>-<pid>");
+            snprintf(w8, sizeof w8, "rm -rf '%s' && test -s '%s/s2a_caps.tsv'", q8, snap);
+            ck(system(w8) == 0, "快照：原随行目录删掉后，快照里的 s2a_caps.tsv 还在");
+            snprintf(w8, sizeof w8, "mkdir -p '%s/tmp/s2a-mod-0100000000000008-1' && touch '%s/tmp/s2a-mod-0100000000000008-1/x'", home, home); ck(system(w8) == 0, "快照：造别的进程的旧快照");
+            ck(s2a_program_gc(home, now) == 1, "快照：清理删掉别的进程的旧快照（1 项）");
+            snprintf(w8, sizeof w8, "test -d '%s' && test ! -e '%s/tmp/s2a-mod-0100000000000008-1'", snap, home); ck(system(w8) == 0, "快照：本进程的快照留着");
         }
         // 第 7 款给进程级用例：程序库内容 "y"、清单 image_sha256 全 0（一定不等）
         snprintf(pr, sizeof pr, "%s/Library/Application Support/S2Arm/games/0100000000000007/program", home);
