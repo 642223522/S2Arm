@@ -28,6 +28,9 @@ from core import Failure
 import programs
 
 SCHEMA = 1
+# 通用壳开关（0.6.0 核心功能，11-17 维护者定）：0.6.0 之前缺省关、玩家行为不变；开 = 装机时程序包推进 program/（install.push_programs）。
+#   S2A_UNIVERSAL_SHELL=1 / 0 覆盖缺省；0.6.0 切版本时把 ON_BY_DEFAULT 翻成 True
+ON_BY_DEFAULT = False
 PACKAGE, SIGNED, CATALOGUE, KEY, META = "package", "signed", "catalogue.json", ".key", "meta.json"
 REASONS = ("missing", "abi", "rewriter", "sha", "team", "cert")   # need() 可能给的原因
 
@@ -176,3 +179,31 @@ def win_signer(c, exe, shell_app):
     def run(dylib, team, bundle):
         install_win.sign_dylibs(exe, shell_app, [Path(dylib)], bundle, c.logs / (c.task + "-program-sign.log"))
     return run
+
+
+def devcert_signer(c):
+    """开发者证书模式（玩家导入的 .p12，devcert.active）：rcodesign 读 p12 只签这一个 dylib——不嵌描述文件、不带权限，两端同一份
+    （同 devcert.sign_app 的参数：--team-name 显式给团队号、--timestamp-url none 不向苹果时间戳服务器要时间戳）"""
+    import devcert
+    def run(dylib, team, bundle):
+        p12, _, pw = devcert.stored(c)
+        with devcert.pwfile(devcert.folder(c), pw) as pf:
+            c.run([devcert.rcodesign_path(c), "sign", "--p12-file", p12, "--p12-password-file", pf, "--team-name", team,
+                   "--timestamp-url", "none", Path(dylib)], c.logs / (c.task + "-program-sign.log"))
+    return run
+
+
+def signer_for(c, *, win_exe=None, shell_app=None):
+    """按签名模式选签名器（同装机签 App 的那一处）：开发者证书 → devcert_signer；否则 Windows → win_signer（要 plumesign 与壳）、Mac → mac_signer"""
+    import devcert
+    if devcert.active(c):
+        return devcert_signer(c)
+    if os.name == "nt":
+        return win_signer(c, win_exe, shell_app)
+    return mac_signer(c)
+
+
+def enabled(c):
+    """通用壳装机开没开（见 ON_BY_DEFAULT）"""
+    v = (c.env() or {}).get("S2A_UNIVERSAL_SHELL", "")
+    return v == "1" if v in ("0", "1") else ON_BY_DEFAULT

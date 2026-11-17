@@ -2302,6 +2302,55 @@ def put_game(c, gid, ph, steps=True, others=None, skipped=()):
                 sgrade=patches_results(c))   # 这次补进 S 级优化的各款：打上 / 没打上（升级结果页列，11-14）
 
 
+def program_root(pack_root):
+    """这款程序包在手机上的目录：资源包根的同级 program/（宿主同口径：runtime/src/launchctx.c s2a_program_catalogue_path）"""
+    return pack_root.rstrip("/").rsplit("/", 1)[0] + "/program"
+
+
+def push_program(cl, gid, pkg, pack_root):
+    """签好的程序包（program_pack.sign 的目录）推进手机 <program_root>/（通用壳，cmdr 方案「和开发乙之间的约定」）。顺序：
+    先删机上的 catalogue.json 与 Games/（推到一半宿主见不到清单就不拿去加载）→ dylib → Games/<号>/ 各文件 → catalogue.json 先写临时名、再改名就位。
+    cl = s2a-devpush 客户端（AFC 自己建目录，不让 devicectl 先建，#1391）。→ 设备记录里这款的 program 记录 {sha, team, host_abi, rewriter_id}"""
+    gid, pkg = gid.upper(), Path(pkg)
+    root = program_root(pack_root)
+    cat = json.loads((pkg / "catalogue.json").read_text(encoding="utf-8"))
+    for rel in (f"{root}/catalogue.json", f"{root}/Games"):
+        ok, out = cl.rm(rel)
+        if not ok:
+            raise Failure(f"删不掉手机上 {gid} 的旧程序（{(out.splitlines() or [''])[-1]}）：解锁手机、数据线插稳后再试一次。", code="resource_transfer_failed")
+    try:
+        cl.put(pkg / cat["image"], f"{root}/{cat['image']}")
+        for f in sorted(p for p in (pkg / "Games" / gid).rglob("*") if p.is_file()):
+            cl.put(f, f"{root}/Games/{gid}/{f.relative_to(pkg / 'Games' / gid).as_posix()}")
+        cl.put(pkg / "catalogue.json", f"{root}/catalogue.json.partial")
+    except Exception as e:   # push_pack.Fail：已是给玩家的话
+        if isinstance(e, Failure):
+            raise
+        raise Failure(str(e), code=getattr(e, "err", None) or "resource_transfer_failed") from e
+    ok, out = cl.mv(f"{root}/catalogue.json.partial", f"{root}/catalogue.json")
+    if not ok:
+        raise Failure(f"{gid} 的程序清单在手机上就不了位（{(out.splitlines() or [''])[-1]}）：再试一次；还不行请更新电脑上的 S2Arm。", code="resource_transfer_failed")
+    return dict(sha=cat["image_sha256"], team=cat["team"], host_abi=cat["host_abi"], rewriter_id=cat.get("rewriter_id", ""))
+
+
+def push_programs(c, cl, games, rec, team, bundle, signer, pack_roots):
+    """通用壳装机（program_pack.enabled）：每款按设备记录判要不要推（program_pack.need），要推的出包、按这台的团队签、推进 program/。
+    rec = 设备记录；pack_roots = {游戏号: 手机上资源包根}。→ {游戏号: program 记录}（没推的照旧记录原样带回）；推到一半失败照抛，已推好的由调用方记下"""
+    import program_pack
+    out = {}
+    for g in games:
+        old = (rec.get("games", {}).get(g) or {}).get("program")
+        pkg = program_pack.sign(c, g, team, bundle, signer)
+        want = json.loads((Path(pkg) / "catalogue.json").read_text(encoding="utf-8"))
+        why = program_pack.need(c, g, old, team, want=want)
+        if not why:
+            out[g] = old
+            continue
+        note(c, f"{g} 的程序推进手机（{'、'.join(sorted(why))}）")  # 非玩家句
+        out[g] = push_program(cl, g, pkg, pack_roots[g])
+    return out
+
+
 SAME_APP_FRESH = (3 * 86400, 30 * 86400)   # 跳过重签的签名新鲜度：免费账号描述文件 7 天到期，签了不到 3 天才跳过（照常装机就顺手续签）；付费 / 证书 30 天
 
 

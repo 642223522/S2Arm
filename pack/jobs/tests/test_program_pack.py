@@ -5,6 +5,10 @@
   ③ need：六种原因各一例 + 都对得上 = 空集
   ④ sign_dylibs：假 plumesign 收到 --custom-identifier <包名>、没有 --register-and-install；小 IPA 里没有 PlugIns/；签好的 dylib 原地换回
   ⑤ Devpush.mv：假工具收到「mv <源> <目标>」
+  ⑥ 开关（第 2 段）：缺省关；S2A_UNIVERSAL_SHELL=1 开、=0 关、别的值按缺省
+  ⑦ 签名器按模式选：开发者证书 → rcodesign 读 p12 只签这个 dylib（不带 -e 权限、不嵌描述文件）；否则 Mac → dev_sign --dylib
+  ⑧ install.push_program：手写的调用顺序（先删清单与 Games/ → dylib → Games 各文件 → 清单临时名 → 改名）；改名失败报红
+  ⑨ install.push_programs：设备记录与要推的包对得上 → 不推、记录原样；没推过 → 推、记录换成这次的
 """
 import hashlib
 import json
@@ -144,6 +148,81 @@ class DevpushMvTests(unittest.TestCase):
             ok, _ = dp.mv("Library/x/catalogue.json.tmp", "Library/x/catalogue.json")
             self.assertTrue(ok)
             self.assertEqual(json.loads(rec.read_text())[-3:], ["mv", "Library/x/catalogue.json.tmp", "Library/x/catalogue.json"])
+
+
+class SwitchAndSignerTests(JobCase):
+    def test_switch_default_off(self):
+        self.assertFalse(program_pack.ON_BY_DEFAULT, "0.6.0 之前缺省关（维护者 11-17 定）")
+        for v, want in (("", False), ("1", True), ("0", False), ("yes", False)):
+            self.c.env = lambda v=v: dict(os.environ, S2A_UNIVERSAL_SHELL=v)
+            self.assertEqual(program_pack.enabled(self.c), want, repr(v))
+
+    def test_signer_by_mode(self):
+        import devcert
+        from unittest import mock
+        dylib = self.root / "a.dylib"; dylib.write_bytes(b"x")
+        runs = []
+        self.c.run = lambda args, log=None, env=None, **k: runs.append([str(a) for a in args])
+        with mock.patch.object(devcert, "active", lambda c: True), mock.patch.object(devcert, "stored", lambda c: (Path("/p/cert.p12"), b"prof", "pw")), \
+             mock.patch.object(devcert, "rcodesign_path", lambda c: "/bin/rcodesign"), mock.patch.object(devcert, "folder", lambda c: self.root):
+            program_pack.signer_for(self.c)(dylib, "TEAMA", "io.example.games")
+        a = runs[-1]
+        self.assertEqual(a[:4], ["/bin/rcodesign", "sign", "--p12-file", "/p/cert.p12"])
+        self.assertEqual(a[a.index("--team-name") + 1], "TEAMA"); self.assertEqual(a[a.index("--timestamp-url") + 1], "none")
+        self.assertEqual(a[-1], str(dylib)); self.assertNotIn("-e", a, "只签 dylib：不带权限")
+        if os.name != "nt":
+            with mock.patch.object(devcert, "active", lambda c: False):
+                program_pack.signer_for(self.c)(dylib, "TEAMA", "io.example.games")
+            self.assertEqual(runs[-1][1:], [str(Path(self.c.engine) / "pack/dev_sign.py"), "--dylib", str(dylib), "io.example.games", "TEAMA"])
+
+
+class FakeClient:
+    def __init__(self, mv_ok=True):
+        self.calls, self.mv_ok = [], mv_ok
+    def rm(self, rel):
+        self.calls.append(("rm", rel)); return True, ""
+    def put(self, src, rel):
+        self.calls.append(("put", Path(src).name, rel))
+    def mv(self, a, b):
+        self.calls.append(("mv", a, b)); return self.mv_ok, "" if self.mv_ok else "afc error"
+
+
+class PushProgramTests(JobCase):
+    def setUp(self):
+        super().setUp()
+        import install
+        self.install = install
+        pkg = self.root / "pkg"; (pkg / "Games" / GID / "sub").mkdir(parents=True)
+        (pkg / f"S2AImages-{GID}.dylib").write_bytes(b"dy")
+        (pkg / "Games" / GID / "main.npdm").write_bytes(b"n"); (pkg / "Games" / GID / "sub/t.tsv").write_text("t")
+        (pkg / "catalogue.json").write_text(json.dumps(dict(image=f"S2AImages-{GID}.dylib", image_sha256="s1", team="T", host_abi=7, rewriter_id="rw")))
+        self.pkg = pkg
+        self.pr = f"Library/Application Support/S2Arm/games/{GID}/资源包"
+
+    def test_order(self):
+        cl = FakeClient()
+        got = self.install.push_program(cl, GID.lower(), self.pkg, self.pr)
+        P = f"Library/Application Support/S2Arm/games/{GID}/program"
+        self.assertEqual(cl.calls, [("rm", f"{P}/catalogue.json"), ("rm", f"{P}/Games"),
+                                    ("put", f"S2AImages-{GID}.dylib", f"{P}/S2AImages-{GID}.dylib"),
+                                    ("put", "main.npdm", f"{P}/Games/{GID}/main.npdm"), ("put", "t.tsv", f"{P}/Games/{GID}/sub/t.tsv"),
+                                    ("put", "catalogue.json", f"{P}/catalogue.json.partial"), ("mv", f"{P}/catalogue.json.partial", f"{P}/catalogue.json")])
+        self.assertEqual(got, dict(sha="s1", team="T", host_abi=7, rewriter_id="rw"))
+
+    def test_mv_failure_raises(self):
+        with self.assertRaises(self.install.Failure):
+            self.install.push_program(FakeClient(mv_ok=False), GID, self.pkg, self.pr)
+
+    def test_push_programs_skips_matching_record(self):
+        from unittest import mock
+        same = dict(sha="s1", team="T", host_abi=7, rewriter_id="rw")
+        with mock.patch.object(program_pack, "sign", lambda c, g, team, bundle, signer: self.pkg):
+            cl = FakeClient()
+            got = self.install.push_programs(self.c, cl, [GID], dict(games={GID: dict(program=same)}), "T", "io.b", None, {GID: self.pr})
+            self.assertEqual((cl.calls, got), ([], {GID: same}), "对得上：一个文件都不推")
+            cl = FakeClient()
+            got = self.install.push_programs(self.c, cl, [GID], dict(games={}), "T", "io.b", None, {GID: self.pr})
+            self.assertEqual(cl.calls[-1][0], "mv"); self.assertEqual(got, {GID: same}, "没推过：推了、记录换成这次的")
 
 
 if __name__ == "__main__":
