@@ -172,17 +172,23 @@ workflows:
           FF_WORK="$HOME/ff-work"
           D="$FF_WORK/deliver"
           mkdir -p "$D/logs"
-          cp pack/app.entitlements "$D/" 2>/dev/null
-          find "$FF_WORK/out" -maxdepth 2 -name '*.ipa' -exec cp {} "$D/" \; 2>/dev/null
-          cp "$FF_WORK/ship/game.img" "$D/" 2>/dev/null
-          cp "$FF_WORK/img-convert.log" "$FF_WORK/img-export.log" "$FF_WORK/img-ls.txt" "$D/logs/" 2>/dev/null
-          cp "$FF_WORK/events.jsonl" "$D/logs/" 2>/dev/null
-          cp "$FF_WORK/pack-console.log" "$D/logs/" 2>/dev/null
-          cp -R "$FF_WORK/out/logs" "$D/logs/out" 2>/dev/null
+          # Diagnostic copies must NEVER kill the step: under set -e a
+          # missing log/caps file used to abort the whole upload (build #4
+          # died here with the 13.5 GB img still on the runner). Only the
+          # two real deliverables (game.img, IPA) are fatal when missing.
+          cp pack/app.entitlements "$D/" 2>/dev/null || true
+          find "$FF_WORK/out" -maxdepth 2 -name '*.ipa' -exec cp {} "$D/" \; 2>/dev/null || true
+          [ -f "$FF_WORK/ship/game.img" ] || { echo "FATAL: ship/game.img missing"; exit 1; }
+          cp "$FF_WORK/ship/game.img" "$D/"
+          [ -n "$(ls "$D"/*.ipa 2>/dev/null)" ] || { echo "FATAL: no IPA found in out/"; exit 1; }
+          cp "$FF_WORK/img-convert.log" "$FF_WORK/img-export.log" "$FF_WORK/img-ls.txt" "$D/logs/" 2>/dev/null || true
+          cp "$FF_WORK/events.jsonl" "$D/logs/" 2>/dev/null || true
+          cp "$FF_WORK/pack-console.log" "$D/logs/" 2>/dev/null || true
+          cp -R "$FF_WORK/out/logs" "$D/logs/out" 2>/dev/null || true
           for r in "$FF_WORK/out/roots"/*@*; do
             [ -d "$r" ] || continue
             for f in s2a_caps.tsv s2a_caps.all.tsv widen_sites.tsv caps.log; do
-              cp "$r/$f" "$D/logs/" 2>/dev/null
+              cp "$r/$f" "$D/logs/" 2>/dev/null || true
             done
           done
           {
