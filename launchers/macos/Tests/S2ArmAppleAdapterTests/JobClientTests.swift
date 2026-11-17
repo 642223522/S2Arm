@@ -195,27 +195,38 @@ final class JobClientTests: XCTestCase {
         XCTAssertEqual(box.begun, 2); XCTAssertEqual(box.ended, 2)
     }
 
-    /// 自动起的后台任务（JobTrigger）：不开防降级活动；玩家点的照开（11-17 维护者：自动任务让路，玩家的作业不被降级）。期望手写
+    /// 自动起的后台任务（JobTrigger.automaticOperations）：不开防降级活动；玩家点的照开（11-17 维护者：自动任务让路）。期望手写
     func testAutomaticJobsDoNotHoldActivity() throws {
         final class Box { var begun = 0, ended = 0 }
         let box = Box(), token = NSObject()
         let runner = SystemJobProcessRunner(beginActivity: { box.begun += 1; return token }, endActivity: { _ in box.ended += 1 })
         let done = expectation(description: "exit")
-        _ = try runner.start(executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", "true"],
-                             environment: [JobTrigger.environmentKey: JobTrigger.automatic],
+        _ = try runner.start(executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", "true"], environment: [:], automatic: true,
                              onLine: { _ in }, onStderr: { _ in }, onExit: { _ in done.fulfill() })
         wait(for: [done], timeout: 10)
         XCTAssertEqual(box.begun, 0); XCTAssertEqual(box.ended, 0)
     }
 
-    /// JobClient：automatic 才把触发标记交给作业进程；缺省（玩家点的）不带
-    func testClientMarksOnlyAutomaticJobs() throws {
+    /// JobClient 按作业名认：只有作业层那两项自动重活算 automatic
+    func testClientMarksOnlyAutomaticOperations() throws {
+        final class Spy: JobProcessRunner {
+            var seen: [Bool] = []
+            final class H: JobProcessHandle { func terminate() {} }
+            func start(executable: URL, arguments: [String], environment: [String: String],
+                       onLine: @escaping (Data) -> Void, onStderr: @escaping (Data) -> Void, onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle {
+                try start(executable: executable, arguments: arguments, environment: environment, automatic: false, onLine: onLine, onStderr: onStderr, onExit: onExit)
+            }
+            func start(executable: URL, arguments: [String], environment: [String: String], automatic: Bool,
+                       onLine: @escaping (Data) -> Void, onStderr: @escaping (Data) -> Void, onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle {
+                seen.append(automatic); return H()
+            }
+        }
         let box = try Sandbox(); defer { box.remove() }
-        let runner = FakeRunner()
-        let client = self.client(box, runner)
-        _ = try client.start(operation: "installUpdatePrepare", automatic: true)
-        _ = try client.start(operation: "install")
-        XCTAssertEqual(runner.starts.map { $0.environment[JobTrigger.environmentKey] }, [JobTrigger.automatic, nil])
+        let spy = Spy()
+        let client = JobClient(environment: box.environment(), runner: spy)
+        for op in ["installUpdatePrepare", "sgradeMac", "install", "build"] { _ = try client.start(operation: op) }
+        XCTAssertEqual(spy.seen, [true, true, false, false])
+        XCTAssertEqual(JobTrigger.automaticOperations, ["installUpdatePrepare", "sgradeMac"])
     }
 
     /// 真进程：行都到了才报退出（快结束的作业最后一条结果不能被退出抢先）。
