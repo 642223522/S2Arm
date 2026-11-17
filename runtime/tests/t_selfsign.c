@@ -88,7 +88,7 @@ static int store_stub(SecKeyRef k, SecCertificateRef c, char *why, size_t n) { (
 static int exists(const char *d, const char *f) { char p[700]; snprintf(p, sizeof p, "%s/%s", d, f); return access(p, F_OK) == 0; }
 static void id_case(const char *dir, const char *tag, const char *sha_in_json, int corrupt_key, int want_rc, const char *real_sha) {
     char home[600], inc[700], c[2400]; snprintf(home, sizeof home, "%s/home_%s", dir, tag);
-    snprintf(inc, sizeof inc, "%s/Library/Application Support/S2Arm/identity/incoming", home);
+    snprintf(inc, sizeof inc, "%s/Library/Caches/S2Arm/identity/incoming", home);
     snprintf(c, sizeof c, "mkdir -p '%s' && cp %s/key.der '%s/key.der' && cp %s/cert.der '%s/cert.der' && printf '{\"schema\": 1, \"team\": \"ABCDE12345\", \"cert_sha1\": \"%s\"}' > '%s/identity.json'",
              inc, dir, inc, dir, inc, sha_in_json, inc);
     system(c);
@@ -99,8 +99,11 @@ static void id_case(const char *dir, const char *tag, const char *sha_in_json, i
         char cur[800]; snprintf(cur, sizeof cur, "%s/current.json", idd); size_t n = 0; FILE *f = fopen(cur, "rb"); char buf[400] = {0}; if (f) { n = fread(buf, 1, sizeof buf - 1, f); fclose(f); }
         CHECK(rc == 1 && g_store_n == 1 && n && strstr(buf, real_sha) && !strstr(buf, "BEGIN") && !exists(inc, "key.der") && !exists(inc, "identity.json"),
               "身份交接 %s：返回 %d（期望 1）、存钥匙串 %d 次、current.json 带 sha1 %s、incoming/ 删掉", tag, rc, g_store_n, real_sha);
-    } else CHECK(rc == want_rc && g_store_n == 0 && exists(idd, "import_error.txt") && exists(inc, "key.der") && exists(inc, "identity.json"),
-                 "身份交接 %s：返回 %d（期望 %d）、不存钥匙串、写了 import_error.txt、incoming/ 留着", tag, rc, want_rc);
+    } else {
+        char x[900]; snprintf(x, sizeof x, "xattr -p com.apple.metadata:com_apple_backup_excludeItem '%s' > /dev/null 2>&1", inc); int nobak = system(x) == 0;
+        CHECK(rc == want_rc && g_store_n == 0 && exists(idd, "import_error.txt") && exists(inc, "key.der") && exists(inc, "identity.json") && nobak,
+              "身份交接 %s：返回 %d（期望 %d）、不存钥匙串、写了 import_error.txt、incoming/ 留着且标了不进备份（%d）", tag, rc, want_rc, nobak);
+    }
 }
 int main(void) {
     char dir[] = "/tmp/t_selfsign.XXXXXX"; if (!mkdtemp(dir)) { puts("【红】建不了临时目录"); return 1; }
