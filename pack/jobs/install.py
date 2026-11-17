@@ -1079,13 +1079,70 @@ def export_available(c):
     return callable(globals().get("export_phone"))
 
 
+SIGN_CHOICE = "sign_mode.json"   # 玩家选的签名方式里「自己用别的工具签」（私有目录）；Apple ID / 自己的证书沿用开发者证书的「在用」开关（devcert state.json active）
+SIGN_MODES = ("appleId", "devCert", "external")
+
+
+def chosen_sign_mode(c):
+    """玩家在设置里选的签名方式（11-17 维护者：登录过 Apple ID 的玩家也可能这次想自签，权利交给用户）：
+    external = 自己用 AltStore 等工具签；devCert = 用自己的开发者证书；其余 appleId"""
+    if (read(c.private / SIGN_CHOICE, {}) or {}).get("mode") == "external":
+        return "external"
+    return "devCert" if devcert.active(c) else "appleId"
+
+
+def export_sign_mode(c):
+    """这次导出按什么签：完成页「这次换成…」带的 signMode 优先（只管这一次，不改设置），否则按设置里选的"""
+    want = c.r.get("signMode")
+    return want if want in SIGN_MODES else chosen_sign_mode(c)
+
+
+def export_signer(c, mode):
+    """导出 .s2arm 时签程序包要的 → (团队号, 包名, 签名器, 账号名)，同推到 iPhone 的签法（phone_signing）但不要手机：
+    包名就是装 App 的那个 container_bundle_id(团队)；证书用户用证书的团队与描述文件的包名。做不到（没登录、证书缺件）照实报"""
+    import program_pack
+    if mode == "devCert":
+        devcert.stored(c)   # 证书缺件 → devcert_missing
+        t = devcert.team(c) or dict(id=devcert.state(c).get("teamId"), name=devcert.state(c).get("teamName") or "")
+        return t["id"], devcert.state(c)["bundleId"], program_pack.devcert_signer(c), t.get("name") or t["id"]
+    if os.name == "nt":
+        W = win_install_mod(c)
+        team = W.impactor.selected_team() if hasattr(W.impactor, "selected_team") else None
+        if not team:
+            raise Failure("读不到 Impactor 里登录的 Apple ID：在 Impactor 里登录后再导出，或者这次改成「自己用别的工具签」。", code="xcode_account_missing")
+        import ipa as packer
+        exe = W.plumesign_path((W.impactor.bundled(c.r.get("resources")) or {}).get("plumesign"))
+        win_cert_gate(c, W, exe)
+        shell = Path(packer.container_shell(c, packer.current_shell_id(c))) / "root"
+        return team, container_bundle_id(team), program_pack.win_signer(c, exe, shell), team
+    t = pick_team(xcode_teams(c.env()), c.r.get("teamId"))
+    return t["id"], container_bundle_id(t["id"], c), program_pack.mac_signer(c), t.get("name") or t["id"]
+
+
+def sign_mode_set(c):
+    """作业 signModeSet（设置里「签名方式」，请求 mode = appleId / devCert / external）：选了就记下，之后导出 .s2arm 照这个签。
+    devCert 要先导入过证书（没有 → devcert_missing）；appleId / devCert 顺带切开发者证书的「在用」开关（同 devCert use）。→ {signMode}"""
+    mode = c.r.get("mode")
+    if mode not in SIGN_MODES:
+        raise Failure("签名方式只能是 Apple ID、自己的证书或自己用别的工具签。", code="job_failed")  # 非玩家句（只有启动器传错参数才会到）
+    if mode == "devCert":
+        devcert.stored(c)
+    if mode == "external":
+        atomic(c.private / SIGN_CHOICE, dict(mode="external"))
+    else:
+        (c.private / SIGN_CHOICE).unlink(missing_ok=True)
+        if devcert.state(c).get("certSha1") and devcert.active(c) != (mode == "devCert"):
+            atomic(devcert.folder(c) / "state.json", dict(devcert.state(c), active=mode == "devCert"))
+    return dict(signMode=chosen_sign_mode(c))
+
+
 def install_mode_job(c):
     """作业 installMode：只读签名身份 → {signMode, exportAvailable}；旧版留下的装法设置 install.json 删掉（迁移一次）"""
     try:   # 删不掉（Windows 上被杀软 / 别的进程占着）不碍事：wants_export 已经不看它，下次启动再删；这个作业是启动时读签名身份的，不能因此失败
         (c.private / "install.json").unlink(missing_ok=True)
     except OSError:
         pass
-    return dict(exportAvailable=export_available(c), signMode="devcert" if devcert.active(c) else "appleId")
+    return dict(exportAvailable=export_available(c), signMode="devcert" if devcert.active(c) else "appleId", signChoice=chosen_sign_mode(c))
 
 
 # 导出给自签玩家（v0.3.1，维护者 11-12「导出，自己签名安装」）：游戏库根下这个文件夹放未签名 S2Arm.ipa + 各款 <游戏名>.img + 一份说明。
@@ -1164,10 +1221,18 @@ def export_s2arm(c, gid):
         pkg = Path(program_pack.build(c, gid))
         meta = json.loads((pkg / program_pack.META).read_text(encoding="utf-8"))
         image = pkg / program_pack.image_name(gid)
-        cat = program_pack.catalogue(gid, meta, image, None)
+        source_sha = program_pack.catalogue(gid, meta, image, None)["image_sha256"]
+        mode = export_sign_mode(c)
+        signed_with = None
+        if mode != "external":   # 玩家选了用 Apple ID / 自己的证书签：导出前就签好，手机导入看清单 team 非空不再签（11-17 维护者定）
+            team, bundle, signer, who = export_signer(c, mode)
+            pkg = Path(program_pack.sign(c, gid, team, bundle, signer, pkg=pkg))
+            image = pkg / program_pack.image_name(gid)
+            signed_with = dict(mode=mode, team=team, account=who)
+        cat = json.loads((pkg / program_pack.CATALOGUE).read_text(encoding="utf-8")) if signed_with else program_pack.catalogue(gid, meta, image, None)
         c.begin("打包 .s2arm", 2, 3)
         files = [("program/" + p.relative_to(pkg).as_posix(), p) for p in sorted(pkg.rglob("*"))
-                 if p.is_file() and p.name not in (program_pack.META, program_pack.KEY)]
+                 if p.is_file() and p.name not in (program_pack.META, program_pack.KEY, program_pack.CATALOGUE)]
         derived = [("pack/" + p.relative_to(pack).as_posix(), p) for p in sorted(Path(pack).rglob("*"))
                    if p.is_file() and p.relative_to(pack).as_posix() != "game.img"]
         manifest = read(Path(pack) / "manifest.json", {})
@@ -1175,8 +1240,8 @@ def export_s2arm(c, gid):
         total = len(cat_bytes) + sum(p.stat().st_size for _, p in files + derived)   # 解压后其余条目内容字节合计（手机导入前看空间、显示进度）
         head = dict(format=S2ARM_FORMAT, schema=1, title_id=gid, name=cat["name"], display_version=cat["display_version"],
                     host_abi=cat["host_abi"], chain=cat["chain"], rewriter_id=cat["rewriter_id"], image=cat["image"],
-                    image_sha256=cat["image_sha256"], source_sha256=cat["image_sha256"], pack=(manifest or {}).get("index_sha256", ""),
-                    bytes=total, signer=None)
+                    image_sha256=cat["image_sha256"], source_sha256=source_sha, pack=(manifest or {}).get("index_sha256", ""),
+                    bytes=total, signer=dict(mode=signed_with["mode"], team=signed_with["team"]) if signed_with else None)
         buf = _io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as t:
             def add(name, data=None, path=None):
@@ -1209,7 +1274,7 @@ def export_s2arm(c, gid):
     (folder / S2ARM_READMES[lang]).write_text(S2ARM_README_TEXT[lang], encoding="utf-8-sig" if os.name == "nt" else "utf-8")
     game_img = Path(pack) / "game.img"
     return dict(gameId=gid, s2armPath=str(out), s2armBytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
-                resourcePath=str(game_img) if game_img.is_file() else "", exported=True)
+                resourcePath=str(game_img) if game_img.is_file() else "", exported=True, signedWith=signed_with)
 
 
 def _img_name(name, gid, used):

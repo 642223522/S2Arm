@@ -9600,6 +9600,10 @@
   "en": "single IMG {0}"
  },
  {
+  "source": "读不到 Impactor 里登录的 Apple ID：在 Impactor 里登录后再导出，或者这次改成「自己用别的工具签」。",
+  "en": "Couldn't read the Apple ID signed in to Impactor. Sign in to Impactor and export again, or switch this export to “Sign it myself with another tool”."
+ },
+ {
   "source": "单一 IMG 边写边腾解包、不另占",
   "en": "single IMG written while freeing the unpacked files, no extra space"
  },
