@@ -79,6 +79,7 @@ public enum BackendText {
         for name in names where name.hasPrefix("l10n.") && name.hasSuffix(".json") {
             _ = overlay(String(name.dropFirst("l10n.".count).dropLast(".json".count)))
         }
+        for language in ["zh-Hans", "en"] { _ = overlay(language) }   // 简中 / 英文没有叠加文件：也先查一次、记空，之后不再去读资源包（同 510a74d1d 那份）
     }
 
     /// 这门语言还没翻的回落：繁中回落简中（中文读者看简中比英文顺），其余回落英文（11-14 i18n）
@@ -136,22 +137,6 @@ public enum BackendText {
     /// 读资源包的次数（单测核：preload 之后再翻译 / 取界面文案一次都不读盘）
     private static let resourceReadsLock = NSLock()
     nonisolated(unsafe) static var resourceReads = 0
-
-    /// 启动时把要从资源包读的文案一次读进内存：对照表 + 共享规格（entries）、界面文案（launcherItems）、各语言叠加文件（overlay）。
-    /// 11-17 0.5.1 崩溃（Sparkle「更新并重启」退出时 EXC_BREAKPOINT）：这些原先是第一次用到才读，退出前重画界面时才第一次翻译，
-    ///   此刻 Sparkle 正把磁盘上的 .app 换成新版，资源包读不到 → entries 的 preconditionFailure 停进程，新版装上了却没被拉起。
-    ///   在 App 启动（磁盘上就是本进程这一版）时读完，之后不再碰资源包；资源坏了照旧在启动时停（装包错误）
-    public static func preload() {
-        _ = entries
-        _ = english
-        _ = launcherItems
-        if let bundle = try? resourceBundle() {
-            let langs = (bundle.urls(forResourcesWithExtension: "json", subdirectory: nil) ?? [])
-                .map { $0.deletingPathExtension().lastPathComponent }
-                .filter { $0.hasPrefix("l10n.") }.map { String($0.dropFirst("l10n.".count)) }
-            for language in Set(langs + ["zh-Hans", "en"]) { _ = overlay(language) }   // 简中 / 英文没有叠加文件：也先查一次、记空，之后不再去读
-        }
-    }
 
     /// 对照表 + 共享规格。读一次（App 启动时 preload 读）；资源缺了或坏了是装包错误，直接停（同旧启动器）。
     public static let entries: [Entry] = {
