@@ -15,7 +15,7 @@ static void release_in_bind(nvn_gpu_pool_table t) { nvn_gpu_pool_release(t); }
 // 扣住期间后端看到的就是一个真实未发的围栏（vkGetFenceStatus = VK_NOT_READY），与在途等价。
 #define POOL_HOLD_MAX 4
 static int pool_test_hold;       // 置 1：下一次提交扣住
-static int pool_test_held;       // 已扣住、未放行
+static int pool_test_held;       // 已扣住、未放行（等待线程也读，原子访问）
 static VkFence pool_test_fence;
 static VkQueue pool_hold_queue;
 static uint32_t pool_hold_count;
@@ -46,13 +46,19 @@ VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkQueueSubmit(VkQueue q, uint32_t count, c
         pool_hold_submits[i].pWaitDstStageMask = pool_hold_stages[i];
         pool_hold_submits[i].pSignalSemaphores = pool_hold_signals[i];
     }
-    pool_hold_queue = q; pool_hold_count = count; pool_test_fence = fence; pool_test_held = 1;
+    pool_hold_queue = q; pool_hold_count = count; pool_test_fence = fence;
+    __atomic_store_n(&pool_test_held, 1, __ATOMIC_RELEASE);
     return VK_SUCCESS;
 }
+static int pool_fence_held(VkFence f) {
+    return __atomic_load_n(&pool_test_held, __ATOMIC_ACQUIRE) && f == pool_test_fence;
+}
 static VkResult pool_hold_release(void) {
-    if (!pool_test_held) return VK_ERROR_UNKNOWN;
-    pool_test_held = 0;
-    return __real_vkQueueSubmit(pool_hold_queue, pool_hold_count, pool_hold_submits, pool_test_fence);
+    if (!__atomic_load_n(&pool_test_held, __ATOMIC_ACQUIRE)) return VK_ERROR_UNKNOWN;
+    // 先真正提交、再撤「扣住」：等待线程只在提交返回之后才会进驱动等这个围栏
+    VkResult r = __real_vkQueueSubmit(pool_hold_queue, pool_hold_count, pool_hold_submits, pool_test_fence);
+    __atomic_store_n(&pool_test_held, 0, __ATOMIC_RELEASE);
+    return r;
 }
 
 int main(int argc, char **argv) {
@@ -169,7 +175,7 @@ int main(int argc, char **argv) {
         nvn_gpu_pool_table newer = NULL; r = nvn_gpu_pool_create(&rd, &newer, &err);
         CHECK(nvn_gpu_ok(r) && newer, "replacement pool create: %d %s", r.code, err.why);
         if (pipe && output && output2 && newer) {
-            pool_test_fence = VK_NULL_HANDLE;
+            pool_test_fence = VK_NULL_HANDLE; g_fence_held = pool_fence_held;
             nvn_gpu_cmd c = begin_cmd();
             const uint8_t zero[4] = {0}, gradient[8] = {255,0,0,255, 0,255,0,255}, blue_px[4] = {0,0,255,255};
             nvn_gpu_tex_upload(c, dummy, 0, 0, NULL, zero, 4, 4);
@@ -220,6 +226,7 @@ int main(int argc, char **argv) {
 gpu_done:
             pool_test_hold = 0;
             if (pool_test_held) (void)pool_hold_release();   // 中途失败也要把扣住的提交交出去，围栏才会到
+            g_fence_held = NULL;
         }
         if (newer) nvn_gpu_pool_release(newer);
         if (output2) nvn_gpu_buf_release(output2, NULL, NULL);
