@@ -396,6 +396,15 @@ static void layout_prepare(const char *npdm) {
     if (platform_result != ENOTSUP) die("【红】平台地址布局失败：%s", detail);
     uint64_t mod = s2a_module_span(npdm_dir(npdm));
     g_lay_need = s2a_layout_need(t, sr, mod);
+    // 多款容器选定游戏后按这一款自己学到的跨度收窗口（#55248c）：构造期还没选游戏，窗口按包内各款学到跨度的最大值给（vawin.c），
+    //   一款跨度大的（或没记录、按标准布局算的）会把别款的窗口撑大、宿主被饿——11-16 马车世界三台：本款只碰到 13.6 GB，窗口却按别款 40 GB 给，
+    //   宿主只剩 11 GB，虚拟池预留减半到 16 MB 也占不到、Metal 拿到空数据崩。布局按收窄后的大小算，多出的尾部由下面 s2a_window_trim 还给宿主；
+    //   只在窗口本来就放不下标准布局（按需档）时收：放得下的款照旧给满标准布局，不因学到的跨度小而改成按需。
+    //   收窄后放不下走原有自愈（-2 → 删记录、放宽重算）。单款包构造期已按本款跨度给，这里至多再收 1 GiB 取整的零头
+    { uint64_t (*span_seen)(uint64_t) = (uint64_t (*)(uint64_t))dlsym(RTLD_DEFAULT, "s2a_window_span_seen");   // vawin.c；安卓 / 单测没有就不收
+      uint64_t (*for_span)(uint64_t) = (uint64_t (*)(uint64_t))dlsym(RTLD_DEFAULT, "s2a_window_for_span");
+      uint64_t cap = span_seen && for_span ? for_span(span_seen(pid)) : 0;
+      if (ws < g_lay_need && cap && cap < ws) { LOG("地址窗口：按本款（%016llx）学到的跨度收到 %llu MB（原 %llu MB），其余还给宿主", (unsigned long long)pid, (unsigned long long)(cap >> 20), (unsigned long long)(ws >> 20)); ws = cap; } }
     int alias_gb = alias_first_hint(npdm, pid);
     int rc = s2a_layout_compute(t, sr, mod, alias_gb, wb, ws, &L, &g_mod_base, &g_shadow_base);
     if (rc == -1) die("【红】NPDM 地址空间类型 %u（%s）暂不支持（布局只支持类型 1 = 36 位、3 = 39 位）", t, s2a_as_type_bits(t));

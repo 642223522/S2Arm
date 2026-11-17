@@ -642,11 +642,17 @@ int s2a_process_prewarmed(void) {
 // 放不下标准布局时窗口下方留给宿主多少（#783，纯函数，t_vawin_learned 测）：没学到跨度（learned = 0）→ HOST_BELOW；学到了 → 窗口只给
 //   learned × 1.25 + 2 GiB（1 GiB 向上取整，游戏后面还会碰得更高、留余量），这块空洞里其余都给宿主，至少 HOST_BELOW。
 //   iPad Pro M2 iPadOS 27.2.1：64 GB 空洞放不下 76 GB 标准布局，固定留 3 GiB，宿主低区开局 3.4 GB、玩 10–40 分钟 mmap 碰底闪退；那款整局只碰到 16.4 GB
+// 按学到的跨度该给多大窗口（纯函数，t_vawin_learned 测）：learned × 1.25 + 2 GiB，1 GiB 向上取整、至少 MIN_WIN；没学到（0）回 0 = 不限
+uint64_t s2a_window_for_span(uint64_t learned) {
+    const uint64_t G = 1ull << 30;
+    if (!learned) return 0;
+    uint64_t win = (learned + learned / 4 + 2 * G + G - 1) & ~(G - 1);
+    return win < MIN_WIN ? MIN_WIN : win;
+}
 uint64_t s2a_window_host_below(uint64_t fit, uint64_t learned) {
     const uint64_t G = 1ull << 30;
     if (!learned) return HOST_BELOW;
-    uint64_t win = (learned + learned / 4 + 2 * G + G - 1) & ~(G - 1);
-    if (win < MIN_WIN) win = MIN_WIN;
+    uint64_t win = s2a_window_for_span(learned);
     uint64_t host = fit > win ? (fit - win) & ~(G - 1) : 0;
     return host > HOST_BELOW ? host : HOST_BELOW;
 }
