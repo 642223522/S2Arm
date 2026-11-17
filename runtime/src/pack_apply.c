@@ -19,6 +19,7 @@ __attribute__((weak)) int s2a_ui_zh(void) { return 1; }   // 界面语言（s2a_
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+static int img_whole_or_absent(const char *root);   // 本体 game.img 在就核长度（定义在游戏库快判旁）
 #include <string.h>
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
@@ -477,6 +478,8 @@ int s2a_pack_apply(const char *docs) {
     //   库却一直判「等解开」、每秒重解一次、失败原因为空（#1059 D-PB7S：installing → failed(reason nil) 循环、Play 被拒）。两边判据合成一条：这里核不过就按缺文件失败、说清缺的是它
     if (!rc) { char np[2100]; struct stat ns; snprintf(np, sizeof np, "%s/exefs/main.npdm", root);
         if (stat(np, &ns) || !S_ISREG(ns.st_mode) || ns.st_size <= 0) { rc = -8; snprintf(what, sizeof what, "核对：程序描述 exefs/main.npdm %s，不记已应用，请回电脑重新装到设备", stat(np, &ns) ? "不在" : !S_ISREG(ns.st_mode) ? "不是文件" : "是空的"); } }
+    // 本体 game.img 在就核长度（D-YGEC：本体只剩 5 MB 也照写 .applied，游戏库判就绪、点开服务层才报没传完）：同快判 img_whole_or_absent，核不过按缺文件失败
+    if (!rc && !img_whole_or_absent(root)) { rc = -8; snprintf(what, sizeof what, "核对：本体 game.img 不完整（实际长度与头里写的整个文件长不符），不记已应用，请回电脑重新装到设备"); }
     if (!rc) { unsigned nd = 0; uint64_t db = 0; int r2 = prune(root, &nd, &db);   // 清旧文件：资源包下不在 index.tsv 里的（旧版分卷等）
         if (r2) { rc = r2; snprintf(what, sizeof what, "清旧文件（读 index.tsv）"); }
         else if (nd) log_line(logp, "进度：清掉不在 index.tsv 里的旧文件 %u 个 %llu MB", nd, (unsigned long long)(db >> 20)); }
@@ -558,6 +561,7 @@ int s2a_import_state(const char *docs) {
     unsigned core = 0; g_pack_bad = (int)index_check_core(root, g_pack_first, sizeof g_pack_first, 0, &core);
     if (g_pack_bad && !core) { LOG("资源导入：缺 %d 个非必需文件（如 %s），部分可玩：玩家确认后照玩", g_pack_bad, g_pack_first); return S2A_IMPORT_PARTIAL; }
     if (g_pack_bad) { LOG("资源导入：资源包不完整，缺 / 不对 %d 个文件（如 %s，其中核心 %u 个）", g_pack_bad, g_pack_first, core); return S2A_IMPORT_BROKEN; }
+    if (!img_whole_or_absent(root)) { snprintf(g_pack_first, sizeof g_pack_first, "game.img"); g_pack_bad = 1; return S2A_IMPORT_BROKEN; }   // D-YGEC：本体截短 = 资源不完整，不起局
     if (img_needs_apply(root)) return S2A_IMPORT_PENDING;   // game.img 到了、小文件还没解：先解开再就绪
     return S2A_IMPORT_READY;
 }
@@ -1027,13 +1031,24 @@ int s2a_import_state_game(const char *proc_docs, const char *gid) {
 // 游戏库快判：解包成功时写的 .applied 等于当前清单 = 这份已核对过每个文件，直接算就绪。
 //   库界面在主线程、每次回前台都判，逐文件 stat 一款 10 万文件的游戏要 2.5 秒以上（冷缓存更久，玩家「每次打开都要等」）；
 //   完整核对仍在点 Play 后的导入闸门（s2a_import_state）做
+// 本体 game.img 在就核长度（D-YGEC 11-17 iOS 0.5.1：本体只剩 5 MB、头里写 3.47 GB，.applied 照样等于清单，快判说就绪，点开服务层报「IMG 没传完」崩）：
+//   头里 128 起的「整个文件长」不等于实际长度 = 没传完 / 被截断 → 不算就绪（同 init_fail.c 的判据）。只读 136 字节头；没有 game.img（散文件老包）照旧不管
+static int img_whole_or_absent(const char *root) {
+    char p[2300]; snprintf(p, sizeof p, "%s/game.img", root);
+    int fd = open(p, O_RDONLY); if (fd < 0) return errno == ENOENT;
+    uint8_t h[136]; struct stat st = {0}; uint64_t total = 0;
+    int ok = pread(fd, h, sizeof h, 0) == (ssize_t)sizeof h && !memcmp(h, "S2AIMG01", 8) && !fstat(fd, &st) && (memcpy(&total, h + 128, 8), total == (uint64_t)st.st_size);
+    close(fd);
+    if (!ok) { static int said; if (said++ < 4) LOG("【红】资源包：%s 不完整（实际 %lld 字节，头里写 %llu 字节，或头读不出）：不算就绪，游戏库显示「需要游戏数据」", p, (long long)st.st_size, (unsigned long long)total); }
+    return ok;
+}
 static int applied_ready(const char *root) {   // 资源包目录 root：.applied 等于清单的 index_sha256、程序描述在
     char mf[2300], ap[2300], np[2300], want[200], got[200] = ""; struct stat ns;
     snprintf(mf, sizeof mf, "%s/manifest.json", root); snprintf(ap, sizeof ap, "%s/.applied", root); snprintf(np, sizeof np, "%s/exefs/main.npdm", root);
     FILE *f = fopen(ap, "r");
     if (f) { size_t k = fread(got, 1, sizeof got - 1, f); fclose(f); got[k] = 0; got[strcspn(got, "\r\n")] = 0; }
     // 快判也核程序描述 exefs/main.npdm 在、是普通文件（审计 P2-212：只认 .applied 时删掉它库里仍显示可玩，点开始才报缺）；只 stat 一个文件，不逐文件核
-    return got[0] && !manifest_sha(mf, want, sizeof want) && !strcmp(got, want) && !stat(np, &ns) && S_ISREG(ns.st_mode) && ns.st_size > 0;
+    return got[0] && !manifest_sha(mf, want, sizeof want) && !strcmp(got, want) && !stat(np, &ns) && S_ISREG(ns.st_mode) && ns.st_size > 0 && img_whole_or_absent(root);
 }
 // 部分可玩（v0.3.1）：解包时只缺非核心文件写的 .partial 第一行 = 当前清单 sha、程序描述在
 static int partial_ready(const char *root) {
@@ -1041,7 +1056,7 @@ static int partial_ready(const char *root) {
     snprintf(mf, sizeof mf, "%s/manifest.json", root); snprintf(pp, sizeof pp, "%s/.partial", root); snprintf(np, sizeof np, "%s/exefs/main.npdm", root);
     FILE *f = fopen(pp, "r"); if (!f) return 0;
     size_t k = fread(got, 1, sizeof got - 1, f); fclose(f); got[k] = 0; got[strcspn(got, "\r\n")] = 0;
-    return got[0] && !manifest_sha(mf, want, sizeof want) && !strcmp(got, want) && !stat(np, &ns) && S_ISREG(ns.st_mode) && ns.st_size > 0;
+    return got[0] && !manifest_sha(mf, want, sizeof want) && !strcmp(got, want) && !stat(np, &ns) && S_ISREG(ns.st_mode) && ns.st_size > 0 && img_whole_or_absent(root);
 }
 int s2a_import_state_game_quick(const char *proc_docs, const char *gid) {
     if (proc_docs && *proc_docs && gid && *gid && !strchr(gid, '/') && gid[0] != '.') {
