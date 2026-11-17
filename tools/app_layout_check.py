@@ -12,6 +12,8 @@ Path(__file__).parents[2] 推引擎根，源码树里都对，打出来的应用
      引擎包 pack.*：所在函数（没有就整个文件）里要把 c.engine / engine 放进 sys.path，不能按 __file__ 推（Mac 应用里推不到引擎）；
      包在 try … except ImportError / Exception 里的可选依赖不算
   ③ 最小作业：Mac 布局下照应用的起法（python -B -I Jobs/main.py run --request）跑 setup、catalog，HOME 与游戏库都在临时目录
+  ④ 引擎包导入不靠 sys.path 先后（#1424）：Mac 布局、Engine/pack（有 pack.py）插在 sys.path 最前，作业层从引擎根取 pack.orch 的
+     地方（programs._put_dir 换目录）照样成功——pack/ 是命名空间包，会被路径上任何同名模块压过
 用法：python3 tools/app_layout_check.py [--repo 仓库根] [--keep 目录]   → 退出 0 过、1 红
 """
 import argparse, ast, json, os, re, shutil, subprocess, sys, tempfile
@@ -202,6 +204,22 @@ def mini_jobs(resources, jobs, engine, tmp):
     return bad
 
 
+def engine_import_order(jobs, engine, tmp):
+    """④ Engine/pack 在 sys.path 最前时，作业层换目录（programs._put_dir → pack/orch/dirrename.py）照样成功 → [说明]；空 = 过"""
+    t = tmp / "order"; (t / "kit.partial").mkdir(parents=True, exist_ok=True); (t / "kit.partial" / "x").write_text("x")
+    code = ("import sys; from pathlib import Path; from types import SimpleNamespace; "
+            "sys.path.insert(0, sys.argv[3]); sys.path.insert(0, sys.argv[2] + '/pack'); import programs; "
+            "t = Path(sys.argv[1]); programs._put_dir(SimpleNamespace(engine=Path(sys.argv[2])), t / 'kit.partial', t / 'kit'); "
+            "print(sorted(p.name for p in (t / 'kit').iterdir()))")
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME")}
+    r = subprocess.run([sys.executable, "-B", "-I", "-c", code, str(t), str(engine), str(jobs)], cwd=tmp, env=env,
+                       capture_output=True, text=True, timeout=120)
+    if r.returncode or r.stdout.strip() != "['x']":
+        last = ((r.stderr or "").strip().splitlines() or [""])[-1]
+        return [f"Engine/pack 在 sys.path 最前时换目录失败（programs._put_dir）：{last[:300] or r.stdout[-200:]}"]
+    return []
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", default=str(Path(__file__).resolve().parents[1]))
@@ -222,6 +240,8 @@ def main(argv=None):
             red.append(f"② {where}：{why}")
         for op, why in mini_jobs(resources, jobs, mac_engine, tmp):
             red.append(f"③ 最小作业 {op}：{why}")
+        for why in engine_import_order(jobs, mac_engine, tmp):
+            red.append(f"④ {why}")
         if red:
             print("【红】发版应用布局下作业层导入不过：")
             for r in red:
