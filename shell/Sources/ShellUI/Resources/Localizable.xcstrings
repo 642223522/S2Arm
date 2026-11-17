@@ -21664,6 +21664,86 @@
           }
         }
       }
+    },
+    "Update on your computer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update on your computer"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actualízalo en tu ordenador"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "À mettre à jour sur l'ordinateur"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "パソコンで更新が必要"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要在电脑上更新"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要在電腦上更新"
+          }
+        }
+      }
+    },
+    "This game was built with an older S2Arm and doesn't match the new version on your phone, so it can't open. Connect your phone to your computer and click \"Update S2Arm on iPhone\" in S2Arm; this game will be rebuilt for the new version.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This game was built with an older S2Arm and doesn't match the new version on your phone, so it can't open. Connect your phone to your computer and click \"Update S2Arm on iPhone\" in S2Arm; this game will be rebuilt for the new version."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este juego se generó con una versión anterior de S2Arm y no coincide con la nueva versión del teléfono, así que no puede abrirse. Conecta el teléfono al ordenador y, en S2Arm, pulsa «Actualizar S2Arm en el iPhone»; el juego se volverá a generar para la nueva versión."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ce jeu a été généré avec une ancienne version de S2Arm et ne correspond plus à la nouvelle version du téléphone : il ne peut pas s'ouvrir. Branchez le téléphone à l'ordinateur et, dans S2Arm, cliquez sur « Mettre à jour S2Arm sur l'iPhone » ; le jeu sera régénéré pour la nouvelle version."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このゲームは古い S2Arm で作られたため、スマホの新しいバージョンと合わず開けません。スマホをパソコンにつなぎ、S2Arm で「iPhone の S2Arm を更新」を押すと、このゲームが新しいバージョン向けに作り直されます。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这款游戏是按旧版 S2Arm 出的包，和手机上的新版对不上，打不开。连上电脑，在 S2Arm 里点「更新 iPhone 上的 S2Arm」，这款会按新版重新出一次。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "這款遊戲是按舊版 S2Arm 出的包，和手機上的新版對不上，打不開。連上電腦，在 S2Arm 裡點「更新 iPhone 上的 S2Arm」，這款會按新版重新出一次。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

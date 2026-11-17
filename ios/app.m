@@ -902,6 +902,8 @@ static void library_play(const char *gid, void *ctx) {   // 主线程（s2a_shel
     if (!atomic_load(&g_game_picked)) crash_auto_off(gid);
     library_play_go(gid, sd);
 }
+// 程序约定号对不上本宿主的款（游戏号 → 1 / 0）：s2a_shell_game_needs_host_update 的缓存，点开被拒时也写进来
+static NSMutableDictionary<NSString *, NSNumber *> *g_host_update;
 static void library_play_go(const char *gid, S2ASceneDelegate *sd) {
     if (atomic_load(&g_game_picked)) {
         LOG("游戏库：同一进程第二次 Play %s，拒绝（一进程一款）", gid);
@@ -911,6 +913,12 @@ static void library_play_go(const char *gid, S2ASceneDelegate *sd) {
     // why 是 launchctx.c 的内部原因（路径 / errno，已进 host.log「选游戏…被拒」）：屏上按类别说人话 + 下一步，原文只进日志 / 诊断（v0.3.1）
     if (why) {
         int kind = s2a_launch_ctx_select_kind();
+        if (kind == S2A_SELECT_NEEDS_UPDATE) {   // 程序按别的约定号出：不弹窗，回游戏库在这款卡片上标「需要在电脑上更新」（预判没读到时的兜底；原因已进 host.log）
+            if (!g_host_update) g_host_update = [NSMutableDictionary dictionary];
+            g_host_update[@(gid)] = @1;
+            if (s2a_shell_refresh) s2a_shell_refresh();
+            return;
+        }
         top_alert(sd.window, S2AL(@"app.library.cantOpen"), kind == S2A_SELECT_APP_INCOMPLETE ? S2AL(@"app.library.cantOpen.incomplete")
                   : kind == S2A_SELECT_STORAGE ? S2AL(@"app.library.cantOpen.storage") : S2AL(@"app.library.cantOpen.message"));
         return;
@@ -931,6 +939,15 @@ static void test_picker(void);
 void s2a_shell_library_appeared(void) { static int once; if (!once++) { BOOT_MARK("游戏库界面可操作"); test_picker(); } }
 int s2a_game_install_state(const char *proc_docs, const char *gid);   // pack_apply.c
 int s2a_shell_game_install_state(const char *gid) { char d[1024]; s2a_container_docs(d, sizeof d); return s2a_game_install_state(d, gid); }
+// 程序约定号对不上本宿主（runtime s2a_launch_ctx_game_needs_update）：每款读一次清单后记下，点开被拒的（S2A_SELECT_NEEDS_UPDATE）也记上；
+//   库每秒重判只查这里。主线程（s2a_shell.h）
+int s2a_shell_game_needs_host_update(const char *gid) {
+    if (!gid || !*gid) return 0;
+    if (!g_host_update) g_host_update = [NSMutableDictionary dictionary];
+    NSString *k = @(gid); NSNumber *v = g_host_update[k];
+    if (!v) { v = @(s2a_launch_ctx_game_needs_update(gid)); g_host_update[k] = v; if (v.intValue) LOG("游戏库：%s 的程序约定号对不上本宿主，卡片标「需要在电脑上更新」", gid); }
+    return v.intValue;
+}
 // 库里后台解开传完的那款（装机阶段 2，s2a_shell.h）：同一条 s2a_pack_apply（解包日志、.applied、清旧文件都同起局闸门），同时只解一款；
 //   解的时候关自动锁屏（锁屏 = 挂起 = 解包停住），进度经 s2a_pack_apply_progress 记下给库画蒙版，解完回主线程让库重判
 int s2a_pack_apply(const char *docs); extern void (*s2a_pack_apply_progress)(int done, int total); const char *s2a_pack_apply_failure(void); const char *s2a_pack_apply_code(void);   // pack_apply.c

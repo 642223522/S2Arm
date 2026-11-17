@@ -11,6 +11,7 @@ EXTRA = (
     ("tools/sha256_fast.py", "sha256_fast.py"),     # 导入算原件 SHA（pack/jobs/core.py digest，Windows 走 CNG）
     ("graphics/nvn/tools/romfs_list.py", "romfs_list.py"),   # clone_tree 统一盘点用（pack/jobs/build.py）
     ("pack/romfs_img.py", "romfs_img.py"),          # romfs_list 读 RomFS 镜像（romfs.std）用：它先找同目录，应用里同目录就是 Jobs
+    ("runtime/include/s2a_host_abi.h", "s2a_host_abi.h"),   # 宿主约定号（pack/jobs/host_update.py HOST_ABI 读它）：先找同目录，应用里同目录就是 Jobs；Windows 作业层在引擎快照里、按仓库路径读
 )
 
 

@@ -539,6 +539,7 @@ public struct LibraryView: View {
         case .playable: actions.onPlay(detail.id)
         case .needsGameData: actions.onPickGameData(detail.id)
         case .needsAppUpdate: actions.onAppUpdate?()
+        case .needsGameUpdate: break   // needsHelp：上面已展开说明
         case .broken: actions.onShowLog?(detail.id)
         case .installing(let stage): if stage.phase == .failed { actions.onPlay(detail.id) }   // 重试解开；传着 / 解着按了不动
         }
