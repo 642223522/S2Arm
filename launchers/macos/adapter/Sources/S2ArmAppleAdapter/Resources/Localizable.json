@@ -9958,5 +9958,9 @@
  {
   "source": "这款的 Apple TV 资源包不完整（缺 {0} 或大小不对）：请重新出 Apple TV 包后再导出。",
   "en": "This game's Apple TV resource pack is incomplete ({0} is missing or the wrong size). Build the Apple TV version again, then export."
+ },
+ {
+  "source": "{0} 还没有 iPhone 程序件：先「打 iPhone 包」",
+  "en": "{0} has no iPhone program files yet. Use \"Pack for iPhone\" first."
  }
 ]
