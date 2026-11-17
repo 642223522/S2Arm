@@ -52,7 +52,7 @@ class PhoneUsage(unittest.TestCase):
     def files(self):
         return {f"{P}/{A}/program/S2AImages-{A}.dylib": 100, f"{P}/{A}/program/catalogue.json": 5, f"{P}/{A}/pack/game.img": 4000,
                 f"{install.game_docs(A)}/{SAVE}/0000000000000001/0/save.dat": 30, f"{install.game_docs(A)}/cheats/x.txt": 2,
-                f"{ALT}/{B}/pack/game.img": 700, f"{ALT}/{B}/program/S2AImages-{B}.dylib": 50,
+                f"{P}/{A}/snapshot/state.bin": 300, f"{ALT}/{B}/pack/game.img": 700, f"{ALT}/{B}/program/S2AImages-{B}.dylib": 50,
                 "Documents/games/README.txt": 1}
 
     def usage(self, fs, connected=True, on=True):
@@ -70,8 +70,8 @@ class PhoneUsage(unittest.TestCase):
         r = self.usage(FakePhoneFs(self.files()))
         (p,) = r["phones"]
         self.assertEqual((p["device"], p["at"], p["live"]), ("PHONE-1", 1_800_000_000.0, True))
-        self.assertEqual(p["games"], [dict(gameId=A, program=105, resources=4002, saves=30, snapshots=None, files=5),
-                                      dict(gameId=B, program=50, resources=700, saves=0, snapshots=None, files=2)])
+        self.assertEqual(p["games"], [dict(gameId=A, program=105, resources=4002, saves=30, snapshots=300, files=6),
+                                      dict(gameId=B, program=50, resources=700, saves=0, snapshots=0, files=2)])
         self.assertEqual(layout.load_device(self.c, "PHONE-1")["usage"]["games"][A]["resources"], 4002, "量完记进设备记录")
 
     def test_not_connected_gives_last(self):

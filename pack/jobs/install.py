@@ -2764,12 +2764,14 @@ def _usage_games(cl):
 
 
 def _usage_measure(cl, games):
-    """→ {游戏号: {program, resources, saves, files}}（字节）；量不了（工具旧 / 断开 / 锁屏）→ None。
-    程序 = 两处资源根下 <号>/program/；存档 = 文档根 <号>/S2A/…/save；资源 = 这款其余全部（资源包、旧位置的资源、金手指、日志等）"""
+    """→ {游戏号: {program, resources, saves, snapshots, files}}（字节）；量不了（工具旧 / 断开 / 锁屏）→ None。
+    程序 = 两处资源根下 <号>/program/；快照 = 两处资源根下 <号>/snapshot/（《文件与程序管理体系》H 项定的落点，没有给 0）；
+    存档 = 文档根 <号>/S2A/…/save；资源 = 这款其余全部（资源包、旧位置的资源、金手指、日志等）"""
     roots = {}
     for g in games:
         roots[g] = dict(total=[f"{PACK_GAMES}/{g}", f"{PACK_GAMES_ALT}/{g}", game_docs(g)],
-                        program=[f"{PACK_GAMES}/{g}/program", f"{PACK_GAMES_ALT}/{g}/program"], saves=[f"{game_docs(g)}/{SAVE_REL}"])
+                        program=[f"{PACK_GAMES}/{g}/program", f"{PACK_GAMES_ALT}/{g}/program"], saves=[f"{game_docs(g)}/{SAVE_REL}"],
+                        snapshots=[f"{PACK_GAMES}/{g}/snapshot", f"{PACK_GAMES_ALT}/{g}/snapshot"])
     got = cl.du(*[r for v in roots.values() for rs in v.values() for r in rs]) if games else {}
     if got is None:
         return None
@@ -2777,15 +2779,15 @@ def _usage_measure(cl, games):
         return sum((got.get(r) or (0, 0))[i] for r in rs)
     out = {}
     for g, v in roots.items():
-        total, prog, saves = size(v["total"]), size(v["program"]), size(v["saves"])
-        out[g] = dict(program=prog, resources=total - prog - saves, saves=saves, files=size(v["total"], 1))
+        total, prog, saves, snaps = size(v["total"]), size(v["program"]), size(v["saves"]), size(v["snapshots"])
+        out[g] = dict(program=prog, resources=total - prog - saves - snaps, saves=saves, snapshots=snaps, files=size(v["total"], 1))
     return out
 
 
 def phone_usage(c):
     """作业 phoneUsage（总控台「空间」手机那一列，0.6.0 通用壳）：连着的这台手机上每款占多少——程序 / 资源 / 存档（字节），量完记进设备记录 usage（带时刻）。
-    快照还没有手机上的固定位置，snapshots 给 None。没连 / 量不了 → 给各台上次量的（live 假）。只读：不推、不删、不拉起 App。
-    → {enabled, phones: [{device, at, live, games: [{gameId, program, resources, saves, snapshots, files}]}]}；开关关着 → {enabled: False, phones: []}"""
+    没连 / 量不了 → 给各台上次量的（live 假）。只读：不推、不删、不拉起 App。
+    → {enabled, phones: [{device, at, live, games: [{gameId, program, resources, saves, snapshots, files}]}]}（旧记录没量快照的给 None）；开关关着 → {enabled: False, phones: []}"""
     import program_pack
     if not program_pack.enabled(c):
         return dict(enabled=False, phones=[])
@@ -2808,7 +2810,7 @@ def phone_usage(c):
         u = rec.get("usage") or {}
         if not u:
             continue
-        games = [dict(gameId=g, snapshots=None, **v) for g, v in sorted((u.get("games") or {}).items())]
+        games = [dict(dict(snapshots=None), **v, gameId=g) for g, v in sorted((u.get("games") or {}).items())]
         phones.append(dict(device=key, at=u.get("at"), live=key == live, games=games))
     return dict(enabled=True, phones=phones)
 
