@@ -23,6 +23,7 @@ public sealed partial class EnvironmentWindow
         if (catalog is null || ReferenceEquals(updateHintsFor, catalog)) return;
         updateHintsFor = catalog;
         _ = RefreshUpdateHintsAsync();
+        _ = RefreshPhoneOverviewAsync();   // 总控台（PhoneConsole.cs）：只读设备记录，秒回；选中首位卡时再探 USB
     }
 
     private async Task RefreshUpdateHintsAsync()

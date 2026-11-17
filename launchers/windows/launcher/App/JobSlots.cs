@@ -47,6 +47,7 @@ public partial class EnvironmentWindow
         // 有排着的出包、这个作业又可能是挡着它的那个（如出包收尾的刷新游戏库）：排到这次收尾之后再看能不能接着出（ExportPages.PumpExportQueue）
         if (exportQueue.Count > 0) Avalonia.Threading.Dispatcher.UIThread.Post(PumpExportQueue);
         if (phoneQueue.Count > 0) Avalonia.Threading.Dispatcher.UIThread.Post(PumpPhoneQueue);   // 手机槽空了 / 出包那款出完：接上排着的手机作业
+        else if (consoleBatch.Count > 0) Avalonia.Threading.Dispatcher.UIThread.Post(ConsoleBatchStep);   // 总控台「更新所选」这一轮推完就收尾（PhoneConsole.cs）
     }
 
     /// <summary>手机作业排队（11-16 维护者「出包的时候没办法同时安装其他游戏到 iPhone 上，这个控制纯属多余」；同 Mac phoneQueue）：

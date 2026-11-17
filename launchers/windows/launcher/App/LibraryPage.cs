@@ -235,7 +235,8 @@ public sealed partial class EnvironmentWindow
 
         EnsureUpdateHints();
         var games = catalog?.Games.Where(g => !g.Hidden).ToArray() ?? [];
-        var hero = games.FirstOrDefault(g => g.Id == selectedGame) ?? games.FirstOrDefault();
+        var hero = ConsoleSelected ? null : games.FirstOrDefault(g => g.Id == selectedGame) ?? games.FirstOrDefault();
+        if (ConsoleSelected) body.Children.Add(ConsolePanel());   // 选中首位「S2Arm」：大图区换成 iPhone 总控台
         if (hero is not null && HeroBanner(hero) is { } heroBanner)
         {
             // 顶部大图（11-14 维护者：「换成用 banner」）：商店横图 1920×1080 铺满整条，标题压在底部渐变上；没有横图的款退回下面的封面卡片
@@ -299,6 +300,7 @@ public sealed partial class EnvironmentWindow
 
         if (catalog is not null && games.Length > 0)   // 「S 级优化升级」入口（同 Mac 游戏库标题行，v0.4.0）
             body.Children.Add(new StackPanel { HorizontalAlignment = HorizontalAlignment.Right, Children = { SGradeUpgradeEntry() } });
+        if (catalog is not null && phoneOverview is not null) body.Children.Add(ConsoleRow());   // 首位固定「S2Arm」（0.6.0 开关后面），不算进游戏数
         foreach (var game in games)
         {
             var line = new Grid { ColumnDefinitions = new ColumnDefinitions("72,*,Auto"), ColumnSpacing = 18 };
