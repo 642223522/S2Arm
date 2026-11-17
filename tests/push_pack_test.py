@@ -116,8 +116,10 @@ class PlanRules(Base):
         self.go(self.on_phone("a", "b"), full=True); self.assertEqual(self.dev.lists, [["a", "b"]])
 
     def test_not_v2(self):
+        # 维护者 11-17：「校验不过就整个拒绝」一律撤掉——清单版本不认只打一行黄、照常算批次推送（期望手写：不抛、日志有那行黄）
         (self.pk / "manifest.json").write_text('{"version": 1}')
-        with self.assertRaises(push.Fail): self.go({})
+        self.go({})
+        self.assertTrue(any(s.startswith("【黄】资源包清单版本 1 这个工具不认") and s.endswith("照常推送") for s in self.log), self.log)
 
 
 class Pending(Base):

@@ -446,7 +446,8 @@ int main(void) {
       w = (struct s2a_gate_watch){0};
       CHECK(s2a_import_decide(D, &w, 100, why, sizeof why) == S2A_GATE_BROKEN, "⑫ 不完整、首轮：应直接说明页");
       snprintf(c2, sizeof c2, "printf 12 > '%s/exefs/main'", R); sh(c2);
-      CHECK(s2a_import_decide(D, &w, 103, why, sizeof why) == S2A_GATE_BROKEN, "⑫ 剃刀 #33：不完整、文件变了也不等，仍是说明页");
+      // 维护者 11-17 撤掉「校验不过就整个拒绝」：核心文件在、只是大小和清单不符 → 部分可玩（起局时问玩家仍要启动），不再是说明页
+      CHECK(s2a_import_decide(D, &w, 103, why, sizeof why) == S2A_GATE_READY, "⑫ 核心文件在但大小不符：按部分可玩放行（问玩家），不再拦成说明页");
       snprintf(c2, sizeof c2, "printf 12345 > '%s/exefs/main'", R); sh(c2);
       CHECK(s2a_import_decide(D, &w, 170, why, sizeof why) == S2A_GATE_READY, "⑫ 补齐：应就绪");
       snprintf(D, sizeof D, "%s/imp8", T); mkdir(D, 0755); w = (struct s2a_gate_watch){0};
@@ -555,8 +556,7 @@ int main(void) {
       snprintf(c, sizeof c, "test \"$(stat -f %%m '%s/exefs/main.npdm' 2>/dev/null || stat -c %%Y '%s/exefs/main.npdm')\" = \"$(date -j -f %%Y%%m%%d%%H%%M%%S 20200101000000 +%%s 2>/dev/null || date -d 2020-01-01T00:00 +%%s)\"", G, G);
       CHECK(sh(c) == 0, "⑬d 已在且长度对的不重写（修改时间不变）");
       snprintf(c, sizeof c, "printf '\\011' | dd of='%s/game.img' bs=1 seek=8 conv=notrunc 2>/dev/null && rm -rf '%s/exefs' && printf '' > '%s/.applied'", G, G, G); sh(c);
-      CHECK(s2a_pack_apply(D) != 0, "⑬e 格式号 9 → 解包失败");
-      snprintf(c, sizeof c, "grep -q '格式号' '%s/unpack.log'", D); CHECK(sh(c) == 0, "⑬e 解包日志带「格式号」"); 
+      CHECK(s2a_pack_apply(D) == 0, "⑬e 格式号 9（维护者 11-17：版本号不认不再整个拒绝）→ 打一行后按格式 1 照常解开");
       { // ⑬f D-4VAX（本体目录表路径区错位：表里出现「…/0100000000000823/」这种相邻两条路径首尾拼成的一截，原先当文件写 → 每次同一处 -4 EISDIR）：
         //   读表自检，路径以「/」结尾 / 有重复路径 = 本体被改坏 → 不硬解，判 IMG 坏（码 ios_install_img_corrupt），现场写明。期望手写
         // 两条都先用 img.py 造合法表、再在文件里改字节（img.py 自己不写「/」结尾项、也不写重复项，见 pack/img.py toc_bytes）：
@@ -647,8 +647,9 @@ int main(void) {
       snprintf(f4, sizeof f4, "%s/Import Here/新格式.img", D4);   // 英文界面建的导入文件夹名也认
       FILE *o4 = fopen(f4, "wb"); uint8_t h4[8192] = {0}; memcpy(h4, "S2AIMG01", 8); h4[8] = 9; memcpy(h4 + 16, "0100ABCD00000000", 16); uint64_t tot = sizeof h4; memcpy(h4 + 128, &tot, 8);
       CHECK(o4 && fwrite(h4, 1, sizeof h4, o4) == sizeof h4 && !fclose(o4), "造格式号 9 的 IMG");
-      CHECK(s2a_img_scan(D4) == 0 && !access(f4, F_OK) && !strcmp(s2a_img_scan_code(), "ios_install_img_format"),
-            "格式号 9：不挪、给码 ios_install_img_format（实际 %s「%s」）", s2a_img_scan_code(), s2a_img_scan_failure());
+      { int r9 = s2a_img_scan(D4);   // 维护者 11-17：版本号不认不再整个拒收——按格式 1 照常收进库（真读不出的在解包 / 起局时按原因报）
+        CHECK(r9 == 1 && access(f4, F_OK) && !*s2a_img_scan_code(), "格式号 9：照常导入 1 个、文件挪进库、不给拒收码（实际 %d、%s、码「%s」）",
+              r9, access(f4, F_OK) ? "已挪走" : "还在", s2a_img_scan_code()); }
       // ⑭c 着色器更新包（格式号 2，维护者 11-13）：先导完整包（带 shaders/a.metallib = 'x'）并解开；再导更新包（同游戏号同资源包号，a.metallib = 'y'——
       //   同长度：旧的若还在本体目录表里，下次解包会按「长度对就跳过 / 照目录表回写」把它弄回 'x'）。期望手写：
       //   认领 1 个、更新包从导入文件夹删掉、a.metallib = 'y'、本体目录表里不再有 shaders/ 条目、本体头里整长 = 文件长、再次应用后仍是 'y'；

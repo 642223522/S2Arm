@@ -166,7 +166,8 @@ static int img_toc_file(const char *p, img_ent **out, size_t *n) {   // 同上�
     int fd = open(p, O_RDONLY); if (fd < 0) return 1;
     uint8_t h[136]; struct stat st; int rc = -10;
     if (pread(fd, h, sizeof h, 0) != (ssize_t)sizeof h || memcmp(h, "S2AIMG01", 8) || fstat(fd, &st)) goto out;
-    uint32_t fmt; memcpy(&fmt, h + 8, 4); if (fmt != 1) { rc = -11; goto out; }
+    uint32_t fmt; memcpy(&fmt, h + 8, 4);
+    if (fmt != 1) LOG("资源包：game.img 格式号 %u 这个 S2Arm 不认识（只认 1），按格式 1 照常读；读不出来再报（维护者 11-17：校验不过不整个拒绝）", fmt);
     uint64_t to, tl, total; memcpy(&to, h + 112, 8); memcpy(&tl, h + 120, 8); memcpy(&total, h + 128, 8);
     if (total != (uint64_t)st.st_size || tl < 8 || tl > (64u << 20) || to + tl > total) goto out;
     uint8_t *t = malloc(tl); if (!t || pread(fd, t, tl, (off_t)to) != (ssize_t)tl) { free(t); goto out; }
@@ -376,7 +377,9 @@ static unsigned index_check_core(const char *root, char *ex, size_t exn, int pro
         snprintf(p, sizeof p, "%s/%s", root, line);
         int gone = stat(p, &st) != 0;
         if (gone || !S_ISREG(st.st_mode) || st.st_size != want) { if (!miss++ && exn) snprintf(ex, exn, "%s（%s）", line, gone ? "不在" : !S_ISREG(st.st_mode) ? "不是文件" : "大小不符");
-            if (core && s2a_pack_core_path(line)) (*core)++; }
+            // 只有真缺（不在 / 不是文件）才算核心缺件挡起局；在、只是大小和清单不符的按「部分可玩」：解包记 .partial、起局问玩家仍要启动、下次推送照补
+            //   （维护者 11-17：「校验不过就整个拒绝」一律撤掉）
+            if (core && (gone || !S_ISREG(st.st_mode)) && s2a_pack_core_path(line)) (*core)++; }
     }
     if (ferror(f)) { if (exn) snprintf(ex, exn, "index.tsv 读失败：%s", strerror(errno)); miss++; if (core) (*core)++; }
     fclose(f); return miss;
@@ -870,7 +873,7 @@ static int img_place(const char *proc_docs, const char *path, int pass) {   // 0
         int bad = ufd < 0 || upd_read_toc(ufd, uto, utl, &ue, &un) || !un; if (ufd >= 0) close(ufd); if (ue) upd_free(ue, un); if (bad) return 1; }
     if ((fmt == 2) != (pass == 1)) return 1;
     if (fmt == 2) return img_update(proc_docs, path, h, total);   // 着色器更新包
-    if (fmt != 1) { snprintf(g_img_err, sizeof g_img_err, "%s 是格式号 %u 的资源包，这个 S2Arm 只认 1、2：请更新 S2Arm", path, fmt); return -11; }
+    if (fmt != 1) LOG("导入：%s 是格式号 %u 的资源包，这个 S2Arm 只认 1、2，按格式 1 照常导入；读不出来再报（维护者 11-17：校验不过不整个拒绝）", path, fmt);
     char gid[17], pid[65]; memcpy(gid, h + 16, 16); gid[16] = 0; memcpy(pid, h + 32, 64); pid[64] = 0;
     for (int i = 0; i < 16; i++) if (!((gid[i] >= '0' && gid[i] <= '9') || (gid[i] >= 'A' && gid[i] <= 'F'))) { snprintf(g_img_err, sizeof g_img_err, "%s 头里的游戏号不对", path); return -10; }
     if (!pid[0]) snprintf(pid, sizeof pid, "img-%llx", (unsigned long long)total);   // 没写资源包号的（老工具）：按长度给一个，至少换了文件能触发重新应用

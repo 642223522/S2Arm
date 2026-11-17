@@ -492,7 +492,8 @@ def plan(dev, pack, work, full=False, say=print):
     for f in work.glob("push_*.tsv"): f.unlink()
     ver = jver((pack / "manifest.json").read_text(encoding="utf-8") if (pack / "manifest.json").is_file() else "")
     if ver not in (2, 3):   # 3 = v0.3.0 单一 IMG（pack/img.py convert：game.img + 照旧按文件的着色器库 / 覆盖层）
-        say(f"【红】资源包清单版本 {ver} 不认（只认 2、3：{pack}/manifest.json）"); raise Fail("资源包清单版本不认")
+        # 维护者 11-17：「校验不过就整个拒绝」一律撤掉——版本不认只打黄、照常按清单推；真推不了（缺 index.tsv 等）在后面按原因报
+        say(f"【黄】资源包清单版本 {ver} 这个工具不认（只认 2、3：{pack}/manifest.json），照常推送")
     if full:
         have, pushed, keep = {}, {}, []
         say("资源包：S2A_PUSH_FULL=1，整包推送")
