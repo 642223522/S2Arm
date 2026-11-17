@@ -2296,6 +2296,11 @@ class WinPhone:
             return purge_game(self.client(w), g)
 
 
+def sign_mode(c):
+    """这次用什么签的 App（设备记录 signed.mode，总控台写签名方式）：自己的开发者证书 → devCert；Apple ID（Xcode / Impactor）→ appleId"""
+    return "devCert" if devcert.active(c) else "appleId"
+
+
 def phone_for(c):
     return WinPhone(c) if os.name == "nt" else MacPhone(c)
 
@@ -2552,7 +2557,7 @@ def put_game(c, gid, ph, steps=True, others=None, skipped=()):
     finally:   # 推到一半失败：已推好的记下，没推的下次照推
         rec = layout.load_device(c, ph.key)
         # signed：这次签名（游戏库页的「还有几天到期 / 续签」读 layout.install_record）：免费账号的描述文件 7 天到期，容器里每款同一次签名
-        signed = dict(signed=dict(at=time.time(), free=bool(ph.info["free"]), device=ph.info["device"])) if "free" in ph.info and not skipped else {}   # 跳过安装 = 没重签：到期时间照旧
+        signed = dict(signed=dict(at=time.time(), free=bool(ph.info["free"]), device=ph.info["device"], mode=sign_mode(c))) if "free" in ph.info and not skipped else {}   # 跳过安装 = 没重签：到期时间照旧
         layout.save_device(c, ph.key, dict(rec, games={g: dict(pack=pushed[g], **({"mods": modset[g]} if modset[g] else {})) for g in games},
                                            deleted=[g for g in rec.get("deleted") or [] if g not in games], shellId=sid, bundleId=ph.bid or rec.get("bundleId", ""), at=time.time(),
                                            staleAgreed={sid: left_out} if left_out else {}, **signed))
@@ -2870,7 +2875,7 @@ def install_shell(c, ph, steps=True):
     if steps: c.begin("签名并装到 iPhone", 3, 3)
     ph.install(ipa, [], steps=False)
     rec = layout.load_device(c, ph.key)
-    signed = dict(signed=dict(at=time.time(), free=bool(ph.info["free"]), device=ph.info["device"])) if "free" in ph.info else {}
+    signed = dict(signed=dict(at=time.time(), free=bool(ph.info["free"]), device=ph.info["device"], mode=sign_mode(c))) if "free" in ph.info else {}
     layout.save_device(c, ph.key, dict(rec, shellId=sid, bundleId=ph.bid or rec.get("bundleId", ""), at=time.time(), **signed))
     packer.commit_phone_ipa(c, ipa, sid)
     return dict(updated=True, outputPath=str(layout.phone_ipa(c)), bundleId=ph.bid, games=[], toShell=sid, **ph.info)
