@@ -124,11 +124,23 @@ def _has_game_img(c, gid):
         return False
 
 
+def _sign_mode(c, rec, signed):
+    """这台的 S2Arm 是怎么签的：appleId | devCert（我们签的，记在 signed.mode）| external（推过游戏、却没有我们的签名记录 = 玩家用别的工具装的）| None（判不出）。
+    signed.mode 之前的旧记录（只有 free）：按这台电脑现在的签名方式算（证书模式是玩家在设置里选的，平时不换）"""
+    if signed:
+        mode = signed.get("mode")
+        if mode in ("appleId", "devCert"):
+            return mode
+        import devcert
+        return "devCert" if devcert.active(c) else "appleId"
+    return "external" if rec.get("games") or rec.get("shellId") else None
+
+
 def phone_overview(c):
     """0.6.0 通用壳（开关后面）：「iPhone 总控台」的只读总览。每台见过的手机（设备记录）：名字、App 装没装、壳是不是本版、签名时刻 /
     免费账号与否 / 按苹果规则估的到期时刻 / 上次连上（lastSeen = 设备记录最后一次写入：装 App、推游戏时连着才会写）；每款状态 latest（最新）|
-    suggested（建议更新，附 reasons，同 update_hints）| notPushed（游戏库里有、这台没推过）| needsData（程序推过、资源没推；dataOnComputer =
-    游戏库里还有没有 game.img）。缺省只读记录（几 KB，秒回）；请求带 probe: true 才查现在连着的手机（可能要几秒），
+    suggested（建议更新，附 reasons，同 update_hints）| notPushed（游戏库里有、这台没推过）| needsData（程序推过、资源没推）；notPushed / needsData 带 dataOnComputer =
+    游戏库里还有没有 game.img；signMode 见 _sign_mode。缺省只读记录（几 KB，秒回）；请求带 probe: true 才查现在连着的手机（可能要几秒），
     结果里 online = 'usb' | 'network' | None（没查时没有这个键）。不改任何东西、不排后台活。开关关着 → {enabled: False, phones: []}"""
     import program_pack
     if not program_pack.enabled(c):
@@ -159,7 +171,7 @@ def phone_overview(c):
         for g in library:
             r = recs.get(g)
             if r is None or not (r.get("program") or r.get("pack")):
-                games.append(dict(gameId=g, state="notPushed"))
+                games.append(dict(gameId=g, state="notPushed", dataOnComputer=_has_game_img(c, g)))
             elif not r.get("pack"):   # 电脑上还有没有资源本体（只看文件在不在，不打开）：界面分「点推到 iPhone 就行」和「要原件」
                 games.append(dict(gameId=g, state="needsData", dataOnComputer=_has_game_img(c, g)))
             else:
@@ -171,7 +183,7 @@ def phone_overview(c):
                     why.append("rewriter")
                 games.append(dict(gameId=g, state="suggested", reasons=why) if why else dict(gameId=g, state="latest"))
         phone = dict(device=key, name=signed.get("device") or "", installed=bool(rec.get("shellId")), bundleId=rec.get("bundleId") or "",
-                     shellCurrent=bool(sid) and rec.get("shellId") == sid, signedAt=at, free=free,
+                     shellCurrent=bool(sid) and rec.get("shellId") == sid, signedAt=at, free=free, signMode=_sign_mode(c, rec, signed),
                      expiresAtEstimate=(at + SIGN_LIFETIME["free" if free else "paid"]) if at else None,
                      lastSeen=rec.get("at") if isinstance(rec.get("at"), (int, float)) else None, games=games)
         if online is not None:

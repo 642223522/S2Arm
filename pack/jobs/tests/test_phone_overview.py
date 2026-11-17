@@ -68,6 +68,8 @@ class PhoneOverview(unittest.TestCase):
         self.assertEqual((p1["lastSeen"], p2["lastSeen"]), (T + 60, None))
         self.assertEqual((p2["shellCurrent"], p2["free"], p2["expiresAtEstimate"]), (False, True, T + 7 * 86400))
         self.assertEqual({g["state"] for g in p2["games"]}, {"notPushed"})   # 手机 2 一款都没推
+        # 没推过的也带电脑上资源在不在（A、C 放了 game.img）：界面提前说「要原件」
+        self.assertEqual({g["gameId"]: g["dataOnComputer"] for g in p2["games"]}, {self.A: True, self.B: False, self.C: True, self.D: False, self.E: False})
         self.assertNotIn("online", p1, "没带 probe：不查连接、不出 online")
 
     def test_probe_reports_connection(self):
@@ -88,6 +90,19 @@ class PhoneOverview(unittest.TestCase):
             self.overview()
         self.assertEqual([p for p in opened if "game.img" in p or "/.pack/" in p], [])
         self.assertTrue(any(p.endswith(".json") for p in opened))
+
+    def test_sign_mode(self):
+        # 我们签的记 signed.mode；旧记录（只有 free）按现在的签名方式；推过游戏却没有签名记录 = 别的工具装的；什么都没有 = 判不出
+        import devcert
+        layout.save_device(self.c, "P-NEW", dict(shellId="S", signed=dict(at=T, free=False, mode="devCert"), games={}))
+        layout.save_device(self.c, "P-OLD", dict(shellId="S", signed=dict(at=T, free=True), games={}))
+        layout.save_device(self.c, "P-EXT", dict(games={self.A: dict(pack="P")}))
+        layout.save_device(self.c, "P-NONE", dict(at=T))
+        self.c.catalog = lambda: {"games": []}
+        for active, old in ((False, "appleId"), (True, "devCert")):
+            with patch.object(devcert, "active", lambda c, a=active: a):
+                got = {p["device"]: p["signMode"] for p in self.overview()["phones"]}
+            self.assertEqual(got, {"P-NEW": "devCert", "P-OLD": old, "P-EXT": "external", "P-NONE": None})
 
     def test_switch_off(self):
         self.fixture()
