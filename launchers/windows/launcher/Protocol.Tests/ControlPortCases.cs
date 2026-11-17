@@ -55,13 +55,18 @@ public static class ControlPortCases
         File.WriteAllText(Path.Combine(jobs, "c.request.json"), "{\"id\":\"x\",\"operation\":\"ipa\"}");
         // s2armctl delete 等 delete 作业结束（wait_op）：delete 作业要看得见，否则删完了命令还等到超时（v0.5.1 实测）
         File.WriteAllText(Path.Combine(jobs, "d.json"), "{\"id\":\"d\",\"operation\":\"delete\",\"state\":\"completed\",\"started\":4}");
+        // 不再白名单：没登记过的新作业也给出去（以后加作业不用再来改这里）；只挡启动器自己每次刷新都起的只读小作业
+        File.WriteAllText(Path.Combine(jobs, "e.json"), "{\"id\":\"e\",\"operation\":\"someFutureJob\",\"state\":\"completed\",\"started\":5}");
+        File.WriteAllText(Path.Combine(jobs, "f.json"), "{\"id\":\"f\",\"operation\":\"storageOverview\",\"state\":\"completed\",\"started\":6}");
         // 剃刀 W9：进程号被复用时按起始时刻认出不是同一个（作业层 winproc.pid_start 记 FILETIME 十进制）；旧记录没写起始时刻按同一个算
         check(ControlJournal.SameStart(133000000000000000, "133000000000000000"), "control journal: same pid start time is the same process");
         check(!ControlJournal.SameStart(133000000000000001, "133000000000000000"), "control journal: reused pid with another start time is not the job");
         check(ControlJournal.SameStart(133000000000000001, null), "control journal: record without pidStart keeps the pid check");
         var tasks = ControlJournal.Tasks(root);
-        check(tasks.Count == 3 && tasks[0].GetProperty("id").GetString() == "b" && tasks[0].GetProperty("state").GetString() == "running", "journal: live job stays running, hidden and request files skipped");
+        check(tasks.Count == 4 && tasks[0].GetProperty("id").GetString() == "b" && tasks[0].GetProperty("state").GetString() == "running", "journal: live job stays running, hidden and request files skipped");
         check(tasks[2].GetProperty("id").GetString() == "d" && tasks[2].GetProperty("state").GetString() == "completed", "journal: delete job is visible so s2armctl delete returns");
+        check(tasks[3].GetProperty("id").GetString() == "e", "journal: an operation nobody listed is still visible (no allow-list to forget)");
+        check(tasks.All(t => t.GetProperty("operation").GetString() is not ("catalog" or "storageOverview")), "journal: launcher refresh jobs stay out so real jobs keep the 60-record window");
         check(tasks[1].GetProperty("state").GetString() == "interrupted", "journal: running job with a dead process reads interrupted");
         // 剃刀 H6：日志与作业记录固定 私有目录\logs，库建没建好都不变（同作业层 core.logs_root）
         var lib = Path.Combine(root, "lib");
