@@ -175,35 +175,148 @@ class ProvProjectTest(unittest.TestCase):
         self.assertIn('"io.s2arm.tv.team"', pbx); self.assertNotIn("S2ABID", pbx); self.assertNotIn("S2ATEAM", pbx)
 
 
+def npdm(switch2):
+    """最小 main.npdm：META 头 0x80，ACID 偏移写在 +0x78；Switch 2 的 ACID 魔数在 ACID +0x300，Switch 1 在 +0x200（switchbrew NPDM）"""
+    acid = 0x100
+    b = bytearray(acid + 0x400)
+    b[:4] = b"META"; b[0x78:0x7C] = acid.to_bytes(4, "little")
+    b[acid + (0x300 if switch2 else 0x200):acid + (0x304 if switch2 else 0x204)] = b"ACID"
+    return bytes(b)
+
+
 class SignTest(TvCase):
-    def sign_with_log(self, text, step="dev_sign"):
-        """xcodebuild 申请成功、dev_sign 那步按 text 失败（退出非 0）；→ 抛出的 Failure 与 dev_sign 收到的环境"""
+    def app_with(self, switch2):
+        app = self.root / ("app2" if switch2 else "app1"); (app / "Games/0100000000AAAA00").mkdir(parents=True, exist_ok=True)
+        (app / "Games/0100000000AAAA00/main.npdm").write_bytes(npdm(switch2))
+        return app
+
+    def sign_with_log(self, text, step="dev_sign", switch2=True):
+        """xcodebuild 申请成功、dev_sign 那步按 text 失败（退出非 0）；→ 抛出的 Failure、各步收到的环境、交给 dev_sign 的权限"""
         log, seen = self.root / "sign.log", {}
+        import plistlib
         def run(args, log_path=None, env=None, cwd=None, timeout=None, **kw):
             name = "dev_sign" if str(args[1]).endswith("dev_sign.py") else "xcodebuild"
             seen[name] = env
+            if name == "dev_sign": seen["ents"] = plistlib.loads(Path(args[5]).read_bytes())
             if name == step:
                 Path(log_path).write_text(text); raise Failure("tool", code="tool_exit")
-        with um.patch.object(self.c, "run", run), um.patch.object(tvos, "ENTITLEMENTS", "pack/app.entitlements"), self.assertRaises(Failure) as e:
-            tvos.sign(self.c, self.root, TEAM, "io.s2arm.tv.x", "TV-UDID", log)
+        with um.patch.object(self.c, "run", run), self.assertRaises(Failure) as e:
+            tvos.sign(self.c, self.app_with(switch2), TEAM, "io.s2arm.tv.x", "TV-UDID", log)
         return e.exception, seen
 
-    def test_paid_account_named_plainly(self):
-        # 免费账号：dev_sign 报描述文件不允许扩展虚拟寻址 / Xcode 报个人团队不支持 → tvos_paid_team_required，原话里写「付费」
+    def test_switch2_without_eva_named_plainly(self):
+        # Switch 2 款带扩展虚拟寻址、账号签不了这一项 → tvos_eva_required，照实说是 Switch 2 要、Switch 1 用免费账号就行
         for text, step in (("描述文件不允许这些权限：['com.apple.developer.kernel.extended-virtual-addressing']", "dev_sign"),
                            ('error: Personal development teams, including "甲", do not support the Extended Virtual Addressing capability.', "xcodebuild")):
             e, seen = self.sign_with_log(text, step)
-            self.assertEqual(e.code, "tvos_paid_team_required")
-            self.assertIn("付费", str(e))
-            if step == "dev_sign":   # dev_sign 按 tvOS 挑描述文件、核两项权限
+            self.assertEqual(e.code, "tvos_eva_required")
+            self.assertIn("Switch 2", str(e)); self.assertIn("付费", str(e))
+            if step == "dev_sign":   # dev_sign 按 tvOS 挑描述文件
                 self.assertEqual(seen["dev_sign"]["S2A_SIGN_PLATFORM"], "tvos")
         e, _ = self.sign_with_log("No signing certificate for team")   # 别的签名失败照旧按原文归码
         self.assertEqual(e.code, "signing_certificate_missing")
 
+    def test_switch1_never_told_to_pay(self):
+        # Switch 1 款不带扩展虚拟寻址：交给 dev_sign 的权限只有「提高内存上限」；同样的失败原文不归成「要付费」
+        e, seen = self.sign_with_log("描述文件不允许这些权限：['com.apple.developer.kernel.extended-virtual-addressing']", switch2=False)
+        self.assertNotEqual(e.code, "tvos_eva_required")
+        self.assertEqual(seen["ents"], {tvos.IML: True})
+
+    def test_entitlements_per_game(self):
+        import plistlib
+        for switch2, want in ((False, {tvos.IML: True}), (True, {tvos.IML: True, tvos.EVA: True})):
+            path, eva = tvos.entitlements_for(self.c, self.app_with(switch2), self.root / f"e{int(switch2)}.plist")
+            self.assertEqual((plistlib.loads(path.read_bytes()), eva), (want, switch2))
+        self.assertFalse(tvos.is_switch2(self.root / "no-such.npdm"))
+
     def test_missing_entitlements_file(self):
         with um.patch.object(tvos, "ENTITLEMENTS", "pack/no-such.entitlements"), self.assertRaises(Failure) as e:
-            tvos.sign(self.c, self.root, TEAM, "io.s2arm.tv.x", "TV-UDID", self.root / "l.log")
+            tvos.sign(self.c, self.app_with(False), TEAM, "io.s2arm.tv.x", "TV-UDID", self.root / "l.log")
         self.assertEqual(e.exception.code, "engine_incomplete")
+
+
+class ExportTvTest(TvCase):
+    """导出 Apple TV 安装包（tvos.export_tv）：资源包整份进 App 本体 Payload/S2Arm.app/Games/<号>/资源包/、补 .applied / index.applied.tsv、
+    每款一个包名、Switch 2 款才加扩展虚拟寻址。期望按下面写进去的输入手写"""
+    FILES = {"game.img": b"IMG" * 5, "shaders/direct/lib.idx": b"idx", "romfs.s2aidx": b"s2aidx"}
+
+    def make(self, switch2=False, broken=None):
+        import hashlib
+        image = layout.path(self.c, G, "image", "tvos")
+        (image / "kit").mkdir(parents=True); (image / "kit/main.npdm").write_bytes(npdm(switch2))
+        pack = image / ".pack"; pack.mkdir()
+        rows = []
+        for rel, data in self.FILES.items():
+            (pack / rel).parent.mkdir(parents=True, exist_ok=True); (pack / rel).write_bytes(data)
+            rows.append(f"{rel}\t{len(data) + (1 if rel == broken else 0)}\t{hashlib.sha256(data).hexdigest()}")
+        (pack / "index.tsv").write_text("\n".join(rows) + "\n", encoding="utf-8")
+        (pack / "manifest.json").write_text(json.dumps(dict(format="img", index_sha256="SHA-OF-INDEX")), encoding="utf-8")
+        (pack / "game.imgmap").write_bytes(b"not in index")   # 不在 index.tsv 里的（电视推包也不推）：不进 ipa
+        return pack
+
+    def run_export(self, switch2=False, broken=None):
+        import zipfile, ipa as packer
+        self.make(switch2, broken)
+        seen = {}
+        def assemble(c, gid, others, shell, sid):
+            out = self.root / "asm"; app = out / "S2Arm.app"; (app / f"Games/{gid}").mkdir(parents=True)
+            (app / "Info.plist").write_bytes(plistlib.dumps(dict(CFBundleIdentifier="io.s2arm.games", CFBundleExecutable="S2Arm")))
+            (app / "S2Arm").write_bytes(b"exe"); (app / f"Games/{gid}/main.npdm").write_bytes(npdm(switch2))
+            seen["assemble"] = (gid, tuple(others))
+            return out, app, [gid]
+        def write_ipa(c, app, ipa, log):   # 同 pack/app_bundle.py write_ipa 的包内布局：Payload/S2Arm.app/…
+            with zipfile.ZipFile(ipa, "w") as z:
+                for f in sorted(Path(app).rglob("*")):
+                    if f.is_file(): z.write(f, "Payload/S2Arm.app/" + f.relative_to(app).as_posix())
+        def entitle(c, app, ents, log):
+            seen["ents"] = plistlib.loads(Path(ents).read_bytes())
+        self.c.r["gameId"] = G
+        with um.patch.object(tvos, "assemble", assemble), um.patch.object(tvos, "tv_shell", return_value=(self.root, "SID")), \
+             um.patch.object(packer, "write_container_ipa", write_ipa), um.patch.object(packer, "sign_container", lambda *a: None), \
+             um.patch.object(tvos, "adhoc_entitle", entitle):
+            res = tvos.export_tv(self.c)
+        return res, seen
+
+    def test_ipa_carries_pack_inside_app(self):
+        import zipfile
+        res, seen = self.run_export()
+        ipa = Path(res["ipa"])
+        self.assertEqual(ipa, self.c.library / "S2Arm Apple TV 导出" / "甲 Apple TV.ipa")
+        self.assertEqual(seen["assemble"], (G, ()))   # 单款一个 App
+        root = f"Payload/S2Arm.app/Games/{G}/资源包/"
+        with zipfile.ZipFile(ipa) as z:
+            names = set(z.namelist())
+            for rel, data in self.FILES.items():
+                self.assertEqual(z.read(root + rel), data)
+            pack = layout.path(self.c, G, "image", "tvos", ".pack")
+            self.assertEqual(z.read(root + ".applied"), b"SHA-OF-INDEX\n")   # = 清单 index_sha256：电视上的闸门判「已应用」，不用在只读区写
+            self.assertEqual(z.read(root + "index.applied.tsv"), (pack / "index.tsv").read_bytes())
+            self.assertEqual(z.read(root + "manifest.json"), (pack / "manifest.json").read_bytes())
+            self.assertNotIn(root + "game.imgmap", names)
+            self.assertTrue(all(i.compress_type == zipfile.ZIP_STORED for i in z.infolist() if i.filename.startswith(root)))
+            self.assertEqual(plistlib.loads(z.read("Payload/S2Arm.app/Info.plist"))["CFBundleIdentifier"], "io.s2arm.tv.0100abcd00010000")
+        self.assertEqual((res["bundleId"], res["zip64"], res["eva"]), ("io.s2arm.tv.0100abcd00010000", False, False))
+        self.assertNotIn("ents", seen)   # Switch 1 款：壳主程序自带「提高内存上限」，不重签
+        self.assertFalse(list((self.c.library / "S2Arm Apple TV 导出").glob(".partial-*")))
+
+    def test_switch2_adds_eva(self):
+        res, seen = self.run_export(switch2=True)
+        self.assertTrue(res["eva"])
+        self.assertEqual(seen["ents"], {tvos.IML: True, tvos.EVA: True})
+
+    def test_big_ipa_flagged_zip64(self):
+        # 超过 zip 32 位上限（单个文件或整包 > 4 GB）只能写 zip64，有的侧载工具读不了：结果里照实标出（门槛压到 10 字节代替造 4 GB 文件）
+        with um.patch.object(tvos, "ZIP32_MAX", 10):
+            res, _ = self.run_export()
+        self.assertTrue(res["zip64"])
+
+    def test_incomplete_pack_stops_without_leftovers(self):
+        with self.assertRaises(Failure) as e:
+            self.run_export(broken="shaders/direct/lib.idx")
+        self.assertEqual(e.exception.code, "pack_missing")
+        d = self.c.library / "S2Arm Apple TV 导出"
+        self.assertEqual(list(d.iterdir()) if d.exists() else [], [])
+        self.assertFalse((self.root / "asm").exists())
 
 
 class BackupTest(TvCase):
@@ -364,6 +477,46 @@ class DeriveTest(TvCase):
         self.assertFalse([r for r in runs if "shell_build.sh" in " ".join(r)])
         info = layout.game_info(self.c, G)["tvos"]
         self.assertEqual((info["shellId"], info["pack"], info["astc"]), ("sid1", m["index_sha256"], True))
+
+    def test_derive_on_windows_copies_without_cp_and_uses_given_shell(self):
+        """Windows（没有 cp）：kit / 资源包整份拷贝，不调 cp；启动器给了 tvShellDir 就不现出壳"""
+        img = self.make_ios()
+        ex = self.root / "extract"; (ex / "romfs").mkdir(parents=True)
+        runs = []
+        def run(argv, log, env=None, **k):
+            runs.append([str(a) for a in argv])
+            if "astc_pack.py" in str(argv[4]): Path(argv[7]).write_bytes(b"ASTC" * 4)
+        real = tvos.subprocess.run
+        def no_cp(argv, *a, **k):
+            if argv and argv[0] == "cp": raise AssertionError("Windows 上不该调 cp")
+            return real(argv, *a, **k)
+        given = self.root / "Shell-tvOS"; given.mkdir(); (given / "manifest.json").write_text("{}")
+        self.c.r["tvShellDir"] = str(given)
+        with um.patch.object(tvos.sys, "platform", "win32"), um.patch.object(tvos.subprocess, "run", side_effect=no_cp), \
+             um.patch.object(self.c, "run", side_effect=run), um.patch.object(tvos, "tv_shell_id", return_value="sid1"), \
+             um.patch.object(self.c, "env", return_value={"S2A_RUN_ROOT": str(self.root / "run")}):
+            tvos.derive(self.c, G, ex)
+        tv = layout.path(self.c, G, "image", "tvos", create=False)
+        self.assertEqual((tv / "kit/main.npdm").read_bytes(), b"npdm")
+        self.assertEqual((tv / ".pack/game.img").read_bytes(), b"IMG")
+        (tv / ".pack/game.img").write_bytes(b"CHANGED")   # 整份拷贝：改 tvOS 这份不动 iPhone 那份
+        self.assertEqual((img / ".pack/game.img").read_bytes(), b"IMG")
+        self.assertFalse([r for r in runs if "shell_build.sh" in " ".join(r)])
+
+    def test_derive_on_windows_without_tv_shell_stops(self):
+        """Windows 安装包没带 Shell-tvOS：明说出不了，不去现出壳（要 Xcode）"""
+        self.make_ios()
+        ex = self.root / "extract"; (ex / "romfs").mkdir(parents=True)
+        runs = []
+        def run(argv, log, env=None, **k):
+            runs.append([str(a) for a in argv])
+            if "astc_pack.py" in str(argv[4]): Path(argv[7]).write_bytes(b"ASTC" * 4)
+        with um.patch.object(tvos.sys, "platform", "win32"), um.patch.object(self.c, "run", side_effect=run), \
+             um.patch.object(tvos, "tv_shell_id", return_value="sid1"), \
+             um.patch.object(self.c, "env", return_value={"S2A_RUN_ROOT": str(self.root / "run")}), self.assertRaises(Failure) as e:
+            tvos.derive(self.c, G, ex)
+        self.assertEqual(e.exception.code, "engine_incomplete")
+        self.assertFalse([r for r in runs if "shell_build.sh" in " ".join(r)])
 
     def test_derive_needs_ios_first(self):
         with self.assertRaises(Failure) as e:

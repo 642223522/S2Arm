@@ -72,6 +72,9 @@ struct ExportView: View {
                     Button(x("installAppleTV")) { model.installAppleTV(game) }
                         .controllerButtonStyle(.plain).font(.manrope(12.5, .semibold)).foregroundStyle(LauncherPalette.cream.opacity(0.85))
                         .disabled(model.busy).controllerID("export.installAppleTV")
+                    Button(x("exportAppleTV")) { model.exportAppleTV(game) }   // 导出安装包（.ipa，资源在包里）：玩家用自己的签名工具签名装（11-16）
+                        .controllerButtonStyle(.plain).font(.manrope(12.5, .semibold)).foregroundStyle(LauncherPalette.cream.opacity(0.85))
+                        .disabled(model.busy).controllerID("export.exportAppleTV")
                 }
             }
             HStack(alignment: .top, spacing: 12) {

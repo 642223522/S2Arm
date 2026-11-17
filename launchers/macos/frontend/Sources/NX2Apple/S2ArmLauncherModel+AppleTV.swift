@@ -31,6 +31,16 @@ extension S2ArmLauncherModel {
         }
     }
 
+    /// 导出 Apple TV 安装包（tvExport 作业，11-16）：.ipa 带游戏资源，玩家用自己的签名工具签名后装到电视；不连电视、不签名
+    func exportAppleTV(_ game: GameSummary) {
+        guard !busy else { return }
+        failAction(nil, game: nil)
+        start(.exportTV, game: game, name: game.name) { [weak self] sink in
+            _ = try await self?.provider.exportAppleTV(gameId: game.id, events: sink)
+            return nil
+        }
+    }
+
     /// 启动器开着时每 30 分钟备份一轮电视上的存档（作业层自己判连没连电视；没连 / 有任务在跑就跳过这一轮）
     func appleTVBackupLoop() {
         guard !tvBackupStarted else { return }

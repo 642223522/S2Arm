@@ -242,6 +242,11 @@ public final class S2ArmEngineProvider: EngineProvider {
         return try await client.perform("tvInstall", extra: extra, events: events).result
     }
 
+    /// 导出 Apple TV 安装包（tvExport 作业，11-16）：未签名 .ipa、游戏资源在 App 本体里，玩家用自己的签名工具签名装；结果 ipa = 文件位置。
+    public func exportAppleTV(gameId: String, events: EventSink = .discard) async throws -> [String: Any] {
+        try await client.perform("tvExport", extra: ["gameId": gameId], events: events).result
+    }
+
     /// 电视存档自动备份一轮（tvSaveBackup 作业）：没连电视不算错（state = unreachable）。
     public func appleTVSaveBackup() async throws -> [String: Any] {
         try await client.perform("tvSaveBackup").result

@@ -4,7 +4,7 @@
   ① 设备：devicectl 设备表里 deviceType / platform 是 Apple TV 的（diag.is_tv，不写死型号）；配对靠 Xcode 自己完成（Apple TV 没有数据线，同网配对一次）
   ② 现组容器：本版 tvOS 预编壳 + 这款和这台电视上已有各款的 tvOS 容器件（每款 image/tvos/kit，同 iPhone 的 image/ios/kit），pack/ship_ext.py container
   ③ 签名：pack/prov 的申请工程改成 tvOS 目标，xcodebuild -allowProvisioningUpdates 让 Xcode 申请 tvOS 开发描述文件（同 TVPort backend.py:1081 自动签名），
-     再用 pack/dev_sign.py 签；权限用 pack/app_tvos.entitlements（提高内存上限 + 扩展虚拟寻址，两项都要付费开发者账号）。包名 io.s2arm.tv.<团队号小写>：和 iPhone 的容器分开（开发描述文件按平台出，同一包名 dev_sign 会挑到 iOS 的那份）
+     再用 pack/dev_sign.py 签；权限按款（entitlements_for）：「提高内存上限」照带（免费账号在 tvOS 上被系统丢掉，不挡），「扩展虚拟寻址」只给 Switch 2 款（只有付费账号签得了）。包名 io.s2arm.tv.<团队号小写>：和 iPhone 的容器分开（开发描述文件按平台出，同一包名 dev_sign 会挑到 iOS 的那份）
   ④ 覆盖装之前把电视上各款的存档备份到 Mac（同下面的自动备份）；devicectl device install app（TVPort :1368）
   ⑤ tools/push_pack.py 按内容增量推资源包到 App 数据容器 Library/Caches/S2Arm/games/<程序号>/资源包（TVPort :1353 送进 Library/Caches）
      → 列电视上的文件、逐个核对大小（TVPort :1353 核两边大小）
@@ -194,11 +194,22 @@ def tv_shell(c):
 ASTC_PACK = "astc.pack"   # 资源包里的 BC → ASTC 预转包（pack/astc_pack.py 出；宿主在电视上见到就设 NXGAL_ASTC_PACK，ios/tv_host.m）
 
 
+def clone_tree(src, dst):
+    """整棵目录拷一份：Mac 用 cp -cR（APFS 克隆，不占空间；不同卷时 cp 自动退成整份拷贝），Windows 没有 cp，整份拷贝（NTFS 没有写时复制，
+    不用硬链接：之后改 tvOS 这份不能动到 iPhone 那份）"""
+    if sys.platform == "darwin":
+        r = subprocess.run(["cp", "-cR", str(src), str(dst)], capture_output=True, text=True)
+        if r.returncode:
+            raise OSError((r.stderr.strip().splitlines() or ["cp 失败"])[-1])  # 非玩家句
+        return
+    shutil.copytree(src, dst)
+
+
 def derive(c, gid, extraction):
     """出 Apple TV 包（ipa 作业带 platform = "tvos"，iPhone 版刚交付、解包目录还没清时调）：电视与 iPhone 跑同一份改写产物，差别只在
     组装时镜像包标的平台（ios/embed.py 按 S2A_APPLE_OS 写）、tvOS 壳、和多一个 ASTC 预转包（A15 不支持 BC 贴图，不转会在 CPU 上整张解成未压缩、
     贴图内存涨 4–8 倍，电视约 2 GB 就被系统结束）。所以：
-      ① image/tvos/kit、image/tvos/.pack 从 image/ios 克隆（APFS 克隆不占空间；资源包同一份，电视上按 Library/Caches 推）
+      ① image/tvos/kit、image/tvos/.pack 从 image/ios 拷一份（clone_tree：Mac APFS 克隆不占空间，Windows 整份拷贝；资源包同一份，电视上按 Library/Caches 推）
       ② 解开的 romfs → image/tvos/.pack/astc.pack（只给电视推，iPhone 资源包不带）
       ③ 开发树本机还没有本版 tvOS 壳就出一个（发版应用自带 Shell-tvOS/）
       ④ game.json 记 tvos：壳号、兼容判据、资源包号（usable_kit 按它判）"""
@@ -211,10 +222,11 @@ def derive(c, gid, extraction):
     for name in (layout.IOS_KIT, layout.IOS_PACK):
         tmp = dst / (name + ".partial")
         shutil.rmtree(tmp, ignore_errors=True)
-        r = subprocess.run(["cp", "-cR", str(src / name), str(tmp)], capture_output=True, text=True)   # APFS 克隆；不同卷时 cp 自动退成整份拷贝
-        if r.returncode:
+        try:
+            clone_tree(src / name, tmp)
+        except (OSError, shutil.Error) as e:
             shutil.rmtree(tmp, ignore_errors=True)
-            raise Failure("Apple TV 包的文件拷不出来：" + (r.stderr.strip().splitlines() or ["?"])[-1], code="package_failed")  # 非玩家句
+            raise Failure("Apple TV 包的文件拷不出来：" + (str(e).strip().splitlines() or ["?"])[-1], code="package_failed") from e  # 非玩家句
         shutil.rmtree(dst / name, ignore_errors=True)
         os.replace(tmp, dst / name)
     romfs = Path(extraction) / "romfs"
@@ -230,6 +242,8 @@ def derive(c, gid, extraction):
     sid = tv_shell_id(c)
     shell = Path(c.env().get("S2A_RUN_ROOT") or Path.home() / ".s2arm/run") / "s2arm/cache/shell-tvos" / sid
     if not (shell / "manifest.json").is_file() and not c.r.get("tvShellDir") and not (c.engine / "Shell-tvOS").is_dir():
+        if sys.platform != "darwin":   # 现出壳要 Xcode：Windows 只能用安装包带的 Shell-tvOS（启动器作 tvShellDir 交来，launchers/windows/bundle_win.py --tv-shell）
+            raise Failure("这个 S2Arm 安装包没带 Apple TV 预编壳，这台电脑出不了 Apple TV 包：请更新到带 Apple TV 支持的 S2Arm 版本。", code="engine_incomplete")
         c.begin("出 Apple TV 预编壳（本版第一次）")
         tmp = shell.parent / (".tmp." + sid + "." + str(os.getpid()))
         shutil.rmtree(tmp, ignore_errors=True); shell.parent.mkdir(parents=True, exist_ok=True)
@@ -339,37 +353,68 @@ def prov_project(engine, dest, bid, team, ents):
     return pbx
 
 
-ENTITLEMENTS = "pack/app_tvos.entitlements"   # tvOS 版权限：提高内存上限 + 扩展虚拟寻址（照 TVPort build_ipa.sh:205,258；iOS 仍用 pack/app.entitlements）
-# 这两项在 tvOS 上只有付费开发者账号签得了（免费账号签出来会被系统丢掉）：申请 / 签名失败的原文里认出这类情况，就明说「要付费开发者账号」
-PAID_SIGNS = re.compile(r"Personal development teams[^\n]{0,160}do not support|描述文件不允许这些权限|签名里没有[^\n]{0,80}权限|"  # 非玩家句
-                        r"(?:increased-memory-limit|extended-virtual-addressing)[^\n]{0,160}(?:not (?:supported|allowed|included)|requires|paid)", re.I)
-S_PAID = ("Apple TV 版要付费的 Apple 开发者账号：tvOS 上「提高内存上限」和「扩展虚拟寻址」两项权限只有付费开发者账号签得了，"
-          "免费账号签出来会被系统丢掉、大游戏开不了。在 Xcode 的「设置 → 账户」里登录付费开发者账号（或在团队里选付费团队），再装一次。")
+ENTITLEMENTS = "pack/app_tvos.entitlements"   # tvOS 版权限底本：只有「提高内存上限」（iOS 用 pack/app.entitlements）；扩展虚拟寻址按款加（entitlements_for）
+IML = "com.apple.developer.kernel.increased-memory-limit"
+EVA = "com.apple.developer.kernel.extended-virtual-addressing"
+
+
+def is_switch2(npdm):
+    """main.npdm 是不是 Switch 2 程序：ACID 用 RSA-3072 签名，魔数在 ACID +0x300（Switch 1 在 +0x200；同 runtime/src/svc_mem.c npdm_read）。读不出按否"""
+    try:
+        b = Path(npdm).read_bytes()
+    except OSError:
+        return False
+    if b[:4] != b"META" or len(b) < 0x80:
+        return False
+    acid = int.from_bytes(b[0x78:0x7C], "little")
+    return b[acid + 0x300:acid + 0x304] == b"ACID"
+
+
+def entitlements_for(c, app, dest):
+    """这个 App 要的权限 → 写到 dest（plist）。底本「提高内存上限」照带（免费账号的描述文件没有这项时 dev_sign 不带、不挡）；
+    「扩展虚拟寻址」只在包里有 Switch 2 款时带：Switch 2 客体要约 12.5 GB 地址，tvOS / iOS 不给这项权限就不让占（TVPort build_ipa.sh:206 同判据：
+    超过 6 GB 才带），Switch 1 款不要，免费账号也就签得了。→ (路径, 带没带扩展虚拟寻址)"""
+    import plistlib
+    base = c.engine / ENTITLEMENTS
+    if not base.is_file():
+        raise Failure("这个 S2Arm 安装包不完整（缺 Apple TV 签名权限文件），请重新下载 S2Arm。", code="engine_incomplete", internal=str(base))
+    ents = plistlib.loads(base.read_bytes())
+    eva = any(is_switch2(n) for n in Path(app).glob("Games/*/main.npdm"))
+    if eva:
+        ents[EVA] = True
+    Path(dest).write_bytes(plistlib.dumps(ents))
+    return Path(dest), eva
+
+
+# Switch 2 款要的「扩展虚拟寻址」只有付费开发者账号的描述文件允许：申请 / 签名失败的原文里认出是这一项，就照实说（只在真带了这一项时判）
+EVA_SIGNS = re.compile(r"Personal development teams[^\n]{0,160}Extended Virtual Addressing|描述文件不允许这些权限[^\n]{0,200}extended-virtual-addressing|"  # 非玩家句
+                       r"签名里没有[^\n]{0,80}extended-virtual-addressing", re.I)
+S_EVA = ("这款是 Switch 2 游戏，要「扩展虚拟寻址」权限才能在 Apple TV 上占到够用的地址，这项权限只有付费的 Apple 开发者账号签得了。"
+         "在 Xcode 的「设置 → 账户」里登录付费开发者账号（或在团队里选付费团队）再装；Switch 1 游戏用免费 Apple ID 就能装。")
 
 
 def sign(c, app, team, bid, udid, log):
-    """申请 tvOS 开发描述文件（带这台电视的 UDID：登记设备）→ pack/dev_sign.py 签（S2A_SIGN_PLATFORM=tvos：只挑 tvOS 描述文件、核两项权限）。
-    失败按日志原文归码，同 iPhone 装机；认出是免费账号签不了这两项权限 → tvos_paid_team_required，说清要付费开发者账号"""
+    """申请 tvOS 开发描述文件（带这台电视的 UDID：登记设备）→ pack/dev_sign.py 签（S2A_SIGN_PLATFORM=tvos：只挑 tvOS 描述文件）。
+    权限按款（entitlements_for）。失败按日志原文归码，同 iPhone 装机；带了扩展虚拟寻址（Switch 2 款）而账号签不了这一项 → tvos_eva_required，照实说"""
     from errors import recovery, tool_reason
-    ents = c.engine / ENTITLEMENTS
-    if not ents.is_file():
-        raise Failure("这个 S2Arm 安装包不完整（缺 Apple TV 签名权限文件），请重新下载 S2Arm。", code="engine_incomplete", internal=str(ents))
     c.begin("申请 Apple TV 开发描述文件（第一次要几十秒）", 3, 6, keychain=True)
     try:
         with tempfile.TemporaryDirectory(dir=c.private) as d:
-            prov_project(c.engine, d, bid, team["id"], ents)
+            ents, eva = entitlements_for(c, app, Path(d) / "tv.entitlements")
+            prov = Path(d) / "prov"
+            prov_project(c.engine, prov, bid, team["id"], ents)
             dest = ["-destination", f"platform=tvOS,id={udid}", "-allowProvisioningDeviceRegistration", "-destination-timeout", "120"] if udid else \
                 ["-destination", "generic/platform=tvOS"]
             c.run(["xcodebuild", "-project", "Prov.xcodeproj", "-scheme", "Prov", "-configuration", "Debug", *dest, "-derivedDataPath", "dd",
-                   "-allowProvisioningUpdates", "build"], log, cwd=d, timeout=600)
-        c.begin("用你的 Apple ID 签名", 4, 6, keychain=True)
-        c.run([sys.executable, c.engine / "pack/dev_sign.py", app, bid, team["id"], ents], log, env=dict(c.env(), S2A_SIGN_PLATFORM=PLATFORM))
+                   "-allowProvisioningUpdates", "build"], log, cwd=prov, timeout=600)
+            c.begin("用你的 Apple ID 签名", 4, 6, keychain=True)
+            c.run([sys.executable, c.engine / "pack/dev_sign.py", app, bid, team["id"], ents], log, env=dict(c.env(), S2A_SIGN_PLATFORM=PLATFORM))
     except Failure as e:
         if e.code != "tool_exit":
             raise
         text = log.read_text(errors="replace")[-8000:] if log.is_file() else ""
-        if PAID_SIGNS.search(text):
-            raise Failure(S_PAID, code="tvos_paid_team_required", internal=tool_reason(log)) from e
+        if eva and EVA_SIGNS.search(text):
+            raise Failure(S_EVA, code="tvos_eva_required", internal=tool_reason(log)) from e
         code = install.classify(text)
         raise Failure("签名没成：" + tool_reason(log) + "；" + recovery(code, packaged=bool(c.r.get("engineBundle"))), code=code) from e  # 非玩家句
 
@@ -549,6 +594,114 @@ def require_pack(c, gid):
     if not (pack / "manifest.json").is_file():
         raise Failure(f"没找到这款的 Apple TV 资源包（{pack}），没有装。请重新出 Apple TV 包后再装。", code="pack_missing")
     return pack
+
+
+# ---- 导出 Apple TV 安装包（.ipa，11-16 维护者：玩家用自己的工具签名、自己装，Mac / Windows 同一套；没上电视验过）----
+#   电视没有「文件」App、没有文件共享，资源推不进去 → 这款的资源包整份打进 App 本体 S2Arm.app/Games/<号>/资源包/（同电视上推好、解好的样子：
+#   index.tsv 列的文件 + index.tsv / manifest.json + index.applied.tsv + .applied = 清单 index_sha256），电视宿主先找包内、没有再找 Library/Caches
+#   （runtime/include/s2a_docs.h s2a_pack_root）。资源包不先拷进 App：组好不带资源的容器 → 打成 ipa → 资源文件从游戏库原地流式追加进 zip，
+#   盘上只多出 ipa 本身（不复制 2–3 倍）。单款一个 App，包名 io.s2arm.tv.<程序号小写>（几款能同时装在电视上；玩家的签名工具一般会自己改包名）。
+#   主程序 ad-hoc 签名里带权限（同 TVPort build_ipa.sh:253：侧载工具换签名时保留权限）：提高内存上限照带，Switch 2 款再带扩展虚拟寻址。
+#   单个文件或整包超过 4 GB 时只能写成 zip64：这类大 ipa 有的侧载工具读不了（pack/app_bundle.py write_ipa 的口径），结果里照实标出
+TV_EXPORT_DIRS = {"zh": "S2Arm Apple TV 导出", "en": "S2Arm Apple TV Export"}  # 非玩家句
+ZIP32_MAX = 0xFFFFFFFF
+
+
+def tv_export_bundle_id(gid):
+    return f"io.s2arm.tv.{gid.lower()}"
+
+
+def pack_entries(pack):
+    """电视上推好、解好的资源包里有的文件 → [(包内相对路径, 本地文件)]：index.tsv 列的每个文件 + index.tsv / manifest.json（同 tools/push_pack.py 推的口径）；
+    列着的文件不在 → 停（导出的包缺资源，电视上起局才报，不如这里说清）"""
+    rows = [l.split("\t") for l in (pack / "index.tsv").read_text(encoding="utf-8").splitlines() if l.count("\t") == 2]
+    out = []
+    for rel, size, _ in rows:
+        f = pack / rel
+        if not f.is_file() or f.stat().st_size != int(size):
+            raise Failure(f"这款的 Apple TV 资源包不完整（缺 {rel} 或大小不对）：请重新出 Apple TV 包后再导出。", code="pack_missing", internal=str(f))
+        out.append((rel, f))
+    return out + [("index.tsv", pack / "index.tsv"), ("manifest.json", pack / "manifest.json")]
+
+
+def adhoc_entitle(c, app, ents, log):
+    """主程序 ad-hoc 签名换成这款要的权限（只在要加扩展虚拟寻址时调）：Mac 用 codesign 整包重签，Windows 用随包 rcodesign 签主程序"""
+    import plistlib
+    exe = app / plistlib.loads((app / "Info.plist").read_bytes())["CFBundleExecutable"]
+    if sys.platform == "darwin":
+        c.run(["codesign", "--force", "--sign", "-", "--entitlements", ents, app], log)
+    else:
+        import devcert
+        c.run([devcert.rcodesign_path(c), "sign", "--entitlements-xml-path", ents, exe], log)
+
+
+def write_tv_ipa(c, app, gid, pack, ipa, log):
+    """容器 App（不带资源）→ ipa（pack/app_bundle.py write_ipa，同 iPhone 口径）→ 追加这款资源包（流式、不压缩、包内路径 Payload/S2Arm.app/Games/<号>/资源包/）
+    → (总字节, 是不是 zip64)"""
+    import zipfile
+    import ipa as packer
+    packer.write_container_ipa(c, app, ipa, log)
+    entries = pack_entries(pack)
+    sha = (read(pack / "manifest.json", {}) or {}).get("index_sha256") or ""
+    if not sha:
+        raise Failure("这款的 Apple TV 资源包清单没写资源包号：请重新出 Apple TV 包后再导出。", code="pack_missing")
+    root = f"Payload/S2Arm.app/Games/{gid}/资源包/"  # 非玩家句
+    total = sum(f.stat().st_size for _, f in entries)
+    done = 0
+    with zipfile.ZipFile(ipa, "a", compression=zipfile.ZIP_STORED, allowZip64=True) as z:
+        for rel, f in entries:
+            z.write(f, root + rel)   # 按块读写，不整份读进内存
+            done += f.stat().st_size
+            c.progress(done, total)   # 也核取消
+        z.writestr(root + "index.applied.tsv", (pack / "index.tsv").read_bytes())
+        z.writestr(root + ".applied", sha + "\n")
+    size = Path(ipa).stat().st_size
+    big = size > ZIP32_MAX or any(f.stat().st_size > ZIP32_MAX for _, f in entries)
+    return size, big
+
+
+def export_tv(c):
+    """作业 tvExport：导出这款的 Apple TV 安装包（未签名 .ipa，资源包在 App 本体里），到游戏库根「S2Arm Apple TV 导出」。不连电视、不签名"""
+    import ipa as packer
+    gid = (c.r.get("gameId") or "").upper()
+    c.begin("核对这款的 Apple TV 包", 1, 4)
+    pack = require_pack(c, gid)
+    shell, sid = tv_shell(c)
+    with packer.program_locks(c, [gid]):   # 读这款的程序件与资源包：整段持有程序锁，出包交付换件时等它写完（同 iPhone 自签导出 install.export_phone）
+        dest, size, big, eva = _export_tv(c, gid, pack, shell, sid)
+    c.begin("导出完成", 4, 4)
+    return dict(outputPath=str(dest), ipa=str(dest), ipaBytes=size, bundleId=tv_export_bundle_id(gid), zip64=big, eva=eva, deviceKind=KIND)
+
+
+def _export_tv(c, gid, pack, shell, sid):
+    import plistlib
+    import ipa as packer
+    from install import _BAD_NAME, ui_lang
+    names = {g["id"].upper(): g.get("name") or g["id"] for g in c.catalog()["games"]}
+    c.begin("组装 Apple TV 版 S2Arm（未签名）", 2, 4)
+    out, app, _ = assemble(c, gid, [], shell, sid)
+    log = c.logs / (c.task + "-tvexport.log")
+    dest_dir = c.library / TV_EXPORT_DIRS[ui_lang(c)]
+    tmp = dest_dir / (".partial-" + gid + ".ipa")
+    try:
+        info = app / "Info.plist"
+        pl = plistlib.loads(info.read_bytes()); pl["CFBundleIdentifier"] = tv_export_bundle_id(gid); info.write_bytes(plistlib.dumps(pl))
+        if sys.platform == "darwin":
+            packer.sign_container(c, app, log)   # 改了 Info.plist：Mac 重签 ad-hoc（同 finish_container）
+        ents, eva = entitlements_for(c, app, out / "tv.entitlements")
+        if eva:
+            adhoc_entitle(c, app, ents, log)
+        c.begin("把游戏资源打进安装包（.ipa）", 3, 4)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        base = _BAD_NAME.sub(" ", names.get(gid, gid)).strip().strip(".") or gid
+        dest = dest_dir / f"{base} Apple TV.ipa"
+        tmp.unlink(missing_ok=True)
+        size, big = write_tv_ipa(c, app, gid, pack, tmp, log)
+        os.replace(tmp, dest)
+    finally:
+        shutil.rmtree(out, ignore_errors=True)
+        tmp.unlink(missing_ok=True)   # 成功时已换名，不在
+    return dest, size, big, eva
 
 
 def install_app(c, dev_id, app):

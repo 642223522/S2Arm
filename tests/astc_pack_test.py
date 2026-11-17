@@ -224,5 +224,29 @@ class AstcPackTests(unittest.TestCase):
         self.assertEqual({k for k, _, _ in rows}, set(self.rows))
 
 
+class UnzstdCliTest(unittest.TestCase):
+    """没有 compression.zstd 时（Windows 随包 Python 3.12）退到 zstd 命令行：带字典的帧也要解得开"""
+
+    def test_dict_frame_via_cli(self):
+        try:
+            from compression import zstd
+        except ImportError:
+            self.skipTest('这台机器的 Python 没有 compression.zstd，造不了带字典的样本')
+        if not shutil.which('zstd'):
+            self.skipTest('没有 zstd 命令行')
+        plain = b'texture-' * 512 + bytes(range(256)) * 8
+        zd = zstd.train_dict([plain[i:i + 300] + bytes([i % 251]) * 40 for i in range(0, 4000, 37)], 2048)
+        frame = zstd.compress(plain, zstd_dict=zd)
+        did = zd.dict_id
+        self.assertNotEqual(did, 0, '训练出的字典应带编号')
+        real = ap._zstd
+        ap._zstd = lambda: None   # 装作没有 compression.zstd
+        try:
+            self.assertEqual(ap.unzstd(frame, {did: zd.dict_content}), plain)
+            self.assertEqual(ap.unzstd(zstd.compress(plain), {}), plain)
+        finally:
+            ap._zstd = real
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
