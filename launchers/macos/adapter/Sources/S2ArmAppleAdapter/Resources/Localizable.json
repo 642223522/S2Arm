@@ -1600,6 +1600,26 @@
   "en": "Choose a supported base NSP, required updates, and optional DLC, or scan their folder. Keys and file contents are verified on import. Missing versions are listed explicitly."
  },
  {
+  "source": "把存档还原到 iPhone",
+  "en": "Restoring saves to the iPhone"
+ },
+ {
+  "source": "写回存档文件",
+  "en": "Writing the save files back"
+ },
+ {
+  "source": "找不到这份存档备份：请在列表里重新选一份。",
+  "en": "This save backup was not found: pick another one in the list."
+ },
+ {
+  "source": "先在 iPhone 上退出 S2Arm，再还原存档。",
+  "en": "Close S2Arm on the iPhone first, then restore the saves."
+ },
+ {
+  "source": "在 iPhone 上从后台划掉 S2Arm（或回到主屏后等几秒），再点一次还原。",
+  "en": "Close S2Arm on the iPhone (swipe it away from the app switcher), then restore again."
+ },
+ {
   "source": "文件齐全后加入准备队列；完成后由你点击“启动游戏”。可在设置中关闭自动准备。",
   "en": "Games with complete files enter the preparation queue. Click “Launch game” when ready. You can disable automatic preparation in Settings."
  },
@@ -6290,26 +6310,6 @@
  {
   "source": "点「仍然继续」就照签。想保住那一张，要先删掉一张不用的开发证书：有 Mac 的话，在 Mac 上 Xcode 的「设置 → 账户 → 管理证书」里删，删完回来再装一次。",
   "en": "Click Continue anyway to sign. To keep that one, first delete a development certificate you no longer use: if you have a Mac, delete it in Xcode on the Mac under Settings → Accounts → Manage Certificates, then come back and install again."
- },
- {
-  "source": "把存档还原到 iPhone",
-  "en": "Restoring saves to the iPhone"
- },
- {
-  "source": "写回存档文件",
-  "en": "Writing the save files back"
- },
- {
-  "source": "找不到这份存档备份：请在列表里重新选一份。",
-  "en": "This save backup was not found: pick another one in the list."
- },
- {
-  "source": "先在 iPhone 上退出 S2Arm，再还原存档。",
-  "en": "Close S2Arm on the iPhone first, then restore the saves."
- },
- {
-  "source": "在 iPhone 上从后台划掉 S2Arm（或回到主屏后等几秒），再点一次还原。",
-  "en": "Close S2Arm on the iPhone (swipe it away from the app switcher), then restore again."
  },
  {
   "source": "点「仍然继续」照传：手机报的空闲不含系统随时能清掉的空间，实际多半放得下，真写满了会停下并说明还差多少；也可以先在「设置 → 通用 → iPhone 储存空间」腾出空间。",
