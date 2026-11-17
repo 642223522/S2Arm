@@ -136,7 +136,12 @@ internal static class RealTests
             Pass("export real private save copy and validate CRC/hash/index");
             Reject(Request(root, work, "export", archive), "save_exists"); Pass("exclusive export");
             var stale = Confirm(root, work, archive);
-            MutateProgress(root); Reject(stale, "save_changed"); Pass("changed target after preview");
+            // 维护者 11-17（按新规矩改：原先检查后目标又变就拒绝）：iCloud 自动同步（sync）照旧拒绝；手动恢复照常恢复，恢复前副本在执行时现拍
+            MutateProgress(root);
+            var staleSync = stale.DeepClone().AsObject(); staleSync["sync"] = true; Reject(staleSync, "save_changed");
+            var staleDone = Call(stale); Assert(staleDone["committed"].GetValue<bool>() && File.Exists(staleDone["previousBackup"].GetValue<string>()), "stale manual restore proceeds with a fresh previous backup");
+            Call(Request(root, work, "recover"));
+            Pass("changed target after preview: sync rejects, manual restore proceeds");
             var restored = Call(Confirm(root, work, archive));
             Assert(restored["committed"].GetValue<bool>() && Equal(original, Hashes(root)), "byte-for-byte restore including nonwhitelisted original data");
             Assert(File.Exists(restored["previousBackup"].GetValue<string>()), "Previous archive");
@@ -149,11 +154,19 @@ internal static class RealTests
                 Assert(Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(Path.Combine(emptyRoot, file["path"].GetValue<string>())))) == file["sha256"].GetValue<string>(), "G05 imported bytes");
             Pass("restore actual G05 archive into empty target");
             var wrong = Request(root, work, "inspect", archive); wrong["game"]["id"] = "0000000000000000"; Reject(wrong, "save_wrong_game");
-            wrong = Request(root, work, "inspect", archive); wrong["game"]["version"] = game["version"].GetValue<long>() + 1; Reject(wrong, "save_version");
-            wrong = Request(root, work, "inspect", archive); wrong["game"]["contentIdentity"] = new string('0', 64); Reject(wrong, "save_version");
-            Pass("reject game/version/contentIdentity mismatch");
+            // 版本 / DLC 组合、账号归属对不上：手动检查照常通过并带一句提示；sync（iCloud 自动同步）照旧拒绝
+            foreach (var change in new Action<JsonObject>[] { r => r["game"]["version"] = game["version"].GetValue<long>() + 1, r => r["game"]["contentIdentity"] = new string('0', 64) })
+            {
+                wrong = Request(root, work, "inspect", archive); change(wrong);
+                var warned = Call(wrong); Assert(warned["warnings"].AsArray().Count == 1, "version mismatch warns once");
+                wrong = Request(root, work, "inspect", archive); change(wrong); wrong["sync"] = true; Reject(wrong, "save_version");
+            }
+            Assert(Call(Request(root, work, "inspect", archive))["warnings"].AsArray().Count == 0, "matching backup has no warnings");
+            Pass("reject other game; version/contentIdentity mismatch warns (sync still rejects)");
             string other = Path.Combine(scratch, "other-owner"); Copy(source, other); OwnershipVariant.Change(other);
-            Reject(Request(other, work + "-other", "inspect", archive), "save_wrong_user"); Pass("reject changed actual LibHac account owner");
+            Assert(Call(Request(other, work + "-other", "inspect", archive))["warnings"].AsArray().Count == 1, "owner mismatch warns once");
+            var syncOther = Request(other, work + "-other", "inspect", archive); syncOther["sync"] = true; Reject(syncOther, "save_wrong_user");
+            Pass("changed actual LibHac account owner warns (sync still rejects)");
             string duplicate = Path.Combine(scratch, "duplicate-index"); Copy(source, duplicate);
             string indexPath = Path.Combine(duplicate, "bis/system/save/8000000000000000/0/imkvdb.arc");
             byte[] indexBytes = File.ReadAllBytes(indexPath);

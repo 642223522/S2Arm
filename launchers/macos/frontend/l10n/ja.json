@@ -1639,6 +1639,7 @@
   "s2arm.cloud.conflict.later": "後で",
   "s2arm.cloud.error.notDownloaded": "iCloud がまだ {0} をこのデバイスにダウンロードしていないため、セーブデータは変更されませんでした。インターネットに接続してしばらく待ってから再試行してください。",
   "s2arm.cloud.error.corrupt": "iCloud 上の {0} が不完全なため、セーブデータは変更されませんでした。別のデバイスで再度同期してください。",
+  "s2arm.cloud.error.notApplied": "iCloud のセーブデータはバージョンが異なるか、別のアカウントのものか、破損したファイルを含むため、この Mac の進行状況は上書きしませんでした。使う場合はセーブデータ管理から手動で復元してください",
   "s2arm.cloud.error.writeBack": "{0} の進行状況に切り替えましたが、iCloud に書き戻せませんでした（{1}）。セーブデータ自体は問題ありません。次回の同期で再度書き込まれます。",
   "s2arm.cloud.failed": "iCloud セーブデータを同期できませんでした：{0}",
   "s2arm.cloud.syncing": "iCloud セーブデータを同期中…",

@@ -1639,6 +1639,7 @@
   "s2arm.cloud.conflict.later": "Ahora no",
   "s2arm.cloud.error.notDownloaded": "iCloud aún no ha descargado {0} a este dispositivo, así que tu partida guardada no cambió. Conéctate a internet, espera un momento e inténtalo de nuevo.",
   "s2arm.cloud.error.corrupt": "{0} en iCloud está incompleto, así que tu partida guardada no cambió. Sincroniza de nuevo en el otro dispositivo.",
+  "s2arm.cloud.error.notApplied": "La partida de iCloud es de otra versión, pertenece a otra cuenta o tiene archivos dañados, así que no sobrescribió tu progreso en este Mac. Para usarla, restáurala manualmente en la gestión de partidas",
   "s2arm.cloud.error.writeBack": "Se cambió al progreso de {0}, pero no se pudo escribir de vuelta a iCloud ({1}). La partida guardada está bien; la próxima sincronización la escribirá de nuevo.",
   "s2arm.cloud.failed": "Las partidas guardadas de iCloud no se sincronizaron: {0}",
   "s2arm.cloud.syncing": "Sincronizando partidas guardadas de iCloud…",

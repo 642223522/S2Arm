@@ -1640,6 +1640,7 @@
   "s2arm.cloud.conflict.later": "先不处理",
   "s2arm.cloud.error.notDownloaded": "{0} 尚未下载到本机，请联网稍等后重试，存档未改动",
   "s2arm.cloud.error.corrupt": "iCloud 中的 {0} 不完整，请在另一台设备重新同步，存档未改动",
+  "s2arm.cloud.error.notApplied": "云端有一份和本机不同版本、属于另一个账号或有文件损坏的存档，没有自动覆盖你本机的进度；要用它可以在存档管理里手动恢复",
   "s2arm.cloud.error.writeBack": "已使用 {0} 的进度，写回 iCloud 失败（{1}），下次同步会重试",
   "s2arm.cloud.failed": "iCloud 存档没有同步：{0}",
   "s2arm.cloud.syncing": "正在同步 iCloud 存档…",

@@ -329,22 +329,33 @@ class SaveTests(unittest.TestCase):
         self.assertFalse(self.archive.exists())
         self.assertFalse(self.root.exists())
 
-    def test_wrong_game_version_and_user_are_rejected(self):
+    def test_wrong_game_rejected_version_and_user_warn(self):
+        """维护者 11-17：版本 / DLC 组合、用户归属对不上不再拒绝恢复。期望手写：
+        另一款游戏 → 照旧拒绝；版本 / contentIdentity 不符、用户不符 → 检查照常通过、提示里有对应那句、发 warning，恢复照常完成、恢复前副本在；
+        请求带 sync（云存档自动同步）→ 照旧拒绝；任何拒绝都不动当前存档"""
         self.backup()
         original = self.archive.read_bytes()
-        for field, value in (
-            ("id", "0100000000000001"),
-            ("version", 2),
-            ("contentIdentity", "b" * 64),
-        ):
+        def sync_preview():
+            return saves.inspect(self.context(operation="saveInspect", path=str(self.archive), sync=True))
+        self.archive.write_bytes(original)
+        self.rewrite_archive(lambda m: m["game"].update({"id": "0100000000000001"}))
+        with self.assertRaises(Failure):
+            self.preview()
+        for field, value in (("version", 2), ("contentIdentity", "b" * 64)):
             with self.subTest(field=field):
                 self.archive.write_bytes(original)
-                self.rewrite_archive(
-                    lambda m, field=field, value=value: m["game"].update({field: value})
-                )
+                self.rewrite_archive(lambda m, field=field, value=value: m["game"].update({field: value}))
                 with self.assertRaises(Failure):
-                    self.preview()
+                    sync_preview()
+                c = self.context(operation="saveInspect", path=str(self.archive))
+                got = saves.inspect(c)
+                self.assertIn(saves.VERSION_NOTICE, got["notice"])
+                self.assertEqual([(d["code"], d["severity"]) for d in c.job["diagnostics"]], [("save_version", "warning")])
                 self.assertEqual((self.root / PROGRESS).read_bytes(), b"checkpoint-one")
+                r = self.context(operation="saveRestore", path=str(self.archive), **got)
+                result = saves.restore(r)
+                self.assertTrue(result.get("previousBackup"))
+                self.assertTrue(Path(result["previousBackup"]).exists())
         self.archive.write_bytes(original)
         other = "00000000000000020000000000000000"
         self.put(
@@ -353,7 +364,11 @@ class SaveTests(unittest.TestCase):
         )
         self.put(saves.SAVE_INDEX, synthetic_index([(1, GID, 1, other)]))
         with self.assertRaises(Failure):
-            self.preview()
+            sync_preview()
+        c = self.context(operation="saveInspect", path=str(self.archive))
+        got = saves.inspect(c)
+        self.assertIn(saves.USER_NOTICE, got["notice"])
+        self.assertEqual([(d["code"], d["severity"]) for d in c.job["diagnostics"]], [("save_wrong_user", "warning")])
 
     def test_index_owners_override_current_profile_and_profiles_are_labels_only(self):
         owner = "78626c000000000153574e4154495645"
@@ -452,17 +467,59 @@ class SaveTests(unittest.TestCase):
         with self.assertRaises(Failure):
             self.backup()
 
-    def test_changed_archive_or_target_requires_a_new_preview(self):
+    def test_changed_archive_or_target_after_preview_warns_and_restores(self):
+        """维护者 11-17（按新规矩改：原先检查后当前存档 / 备份又变了就拒绝、要重新检查）。期望手写：
+        检查后当前存档又存了一次（three）→ 照常恢复成备份里的 one、发 warning save_changed，执行时现拍的恢复前副本里是 three；
+        检查后备份又被改过（按现在内容重新校验通过）→ 同样照常恢复；云存档自动同步（sync）照旧拒绝、不动当前存档"""
         c = self.prepare_restore()
         self.put(PROGRESS, b"checkpoint-three")
+        sync = self.context(**(c.r | dict(taskId=uuid.uuid4().hex, sync=True)))
         with self.assertRaises(Failure):
-            saves.restore(c)
+            saves.restore(sync)
         self.assertEqual((self.root / PROGRESS).read_bytes(), b"checkpoint-three")
-        c.r.update(self.preview())
+        result = saves.restore(c)
+        self.assertEqual((self.root / PROGRESS).read_bytes(), b"checkpoint-one")
+        self.assertIn(("save_changed", "warning"), [(d["code"], d["severity"]) for d in c.job["diagnostics"]])
+        with zipfile.ZipFile(result["previousBackup"]) as z:
+            self.assertEqual(z.read("payload/" + PROGRESS), b"checkpoint-three")
+        c2 = self.context(operation="saveRestore", path=str(self.archive), **self.preview())
         self.rewrite_archive(lambda m: m.update(createdAt="changed"))
+        saves.restore(c2)
+        self.assertEqual((self.root / PROGRESS).read_bytes(), b"checkpoint-one")
+        self.assertIn(("save_changed", "warning"), [(d["code"], d["severity"]) for d in c2.job["diagnostics"]])
+
+    def corrupt_payload(self, name):
+        """备份里 payload/<name> 换成同长的别的字节（CRC 与 SHA 都对不上，大小不变）"""
+        with zipfile.ZipFile(self.archive) as z:
+            data = {i.filename: z.read(i) for i in z.infolist()}
+        raw = bytearray(data["payload/" + name]); raw[-1] ^= 0xFF; data["payload/" + name] = bytes(raw)
+        with zipfile.ZipFile(self.archive, "w") as z:
+            for n, content in data.items():
+                z.writestr(n, content)
+
+    def test_damaged_file_keeps_target_original_and_restores_the_rest(self):
+        """维护者 11-17：备份里个别文件 CRC / SHA 坏了不再整份拒绝。期望手写：进度文件坏 → 检查照常通过、提示点名它、发 warning save_damaged；
+        恢复后这个文件保留当前存档原来的 two，其余照常恢复；账号索引坏 → 照旧拒绝；云存档自动同步照旧拒绝"""
+        self.backup()
+        other = "bis/user/save/0000000000000001/0/other.bin"
+        self.put(other, b"other-one")
+        self.archive.unlink(); self.backup()
+        original = self.archive.read_bytes()
+        self.put(PROGRESS, b"checkpoint-two"); self.put(other, b"other-two")
+        self.corrupt_payload(PROGRESS)
         with self.assertRaises(Failure):
-            saves.restore(c)
-        self.assertEqual((self.root / PROGRESS).read_bytes(), b"checkpoint-three")
+            saves.inspect(self.context(operation="saveInspect", path=str(self.archive), sync=True))
+        c = self.context(operation="saveInspect", path=str(self.archive))
+        got = saves.inspect(c)
+        self.assertIn(PROGRESS, got["notice"])
+        self.assertIn(("save_damaged", "warning"), [(d["code"], d["severity"]) for d in c.job["diagnostics"]])
+        saves.restore(self.context(operation="saveRestore", path=str(self.archive), **got))
+        self.assertEqual((self.root / PROGRESS).read_bytes(), b"checkpoint-two")   # 坏的不写，留原来的
+        self.assertEqual((self.root / other).read_bytes(), b"other-one")   # 其余照常恢复成备份里的
+        self.archive.write_bytes(original)
+        self.corrupt_payload(saves.SAVE_INDEX)
+        with self.assertRaises(Failure):
+            self.preview()
 
     def test_unsafe_and_corrupt_archives_are_rejected_without_writes(self):
         self.backup()
