@@ -222,13 +222,16 @@ def lz4nso(build, payload, plain_for_hash):   # 第一段 LZ4 压缩、三段都
     struct.pack_into('<I', b, 0x0C, 0x3F); seghash(b, 0, plain_for_hash); return bytes(b) + payload
 good = lz4.block.compress(plain, store_size=False)
 broken = bytes([0xFF]) * 8 + good[8:]   # 前 8 字节改成 0xFF：LZ4 块解不开
-for tag, payload, hplain, want in (('lz4', broken, plain, 'subsdk0 的 text 段解不开'), ('hash', good, plain + b'x', 'subsdk0 的 text 段数据和文件头记录的哈希对不上')):
-    dd = f'{T}/Bad{tag}'; mk(dd); w(f'{dd}/updates/458752/exefs/subsdk0', lz4nso(b'\x58' * 16, payload, hplain)); od = f'{T}/xbad{tag}'
-    rc, out = run(dd, od)
-    chk(f'⑪ {tag}：退出 1、红字点名「{want}」、给重新导出（最好 NSP / XCI）', rc == 1 and want in out and '请重新导出（最好导成 NSP / XCI）' in out, out)
-    chk(f'⑪ {tag}：不出 Python 栈、不留产物', 'Traceback' not in out and not os.path.exists(od) and not os.path.exists(od + '.tmp'), out)
+dd = f'{T}/Badlz4'; mk(dd); w(f'{dd}/updates/458752/exefs/subsdk0', lz4nso(b'\x58' * 16, broken, plain)); od = f'{T}/xbadlz4'
+rc, out = run(dd, od)
+chk('⑪ LZ4 解不开：退出 1、红字点名「subsdk0 的 text 段解不开」、给重新导出（最好 NSP / XCI）', rc == 1 and 'subsdk0 的 text 段解不开' in out and '请重新导出（最好导成 NSP / XCI）' in out, out)
+chk('⑪ LZ4 解不开：不出 Python 栈、不留产物', 'Traceback' not in out and not os.path.exists(od) and not os.path.exists(od + '.tmp'), out)
+dd = f'{T}/Badhash'; mk(dd); w(f'{dd}/updates/458752/exefs/subsdk0', lz4nso(b'\x58' * 16, good, plain + b'x')); od = f'{T}/xbadhash'
+rc, out = run(dd, od)   # 维护者 11-17：校验不过不拒收（可能是打过补丁 / mod 的程序）
+chk('⑪ 哈希对不上：照常整理（退出 0）、黄字点名「subsdk0 的 text 段数据和文件头记录的哈希对不上」', rc == 0 and '🟡 程序文件 subsdk0 的 text 段数据和文件头记录的哈希对不上' in out and os.path.isfile(f'{od}/exefs/subsdk0'), out)
 sys.path.insert(0, os.path.dirname(tool)); import ns2_dump as nd
-chk('⑪ 好的那份（同压缩、哈希对）check_exefs 通过', (w(f'{T}/okx/exefs/subsdk0', lz4nso(b'\x59' * 16, good, plain)), nd.check_exefs(f'{T}/okx/exefs')) == (None, None))
+w(f'{T}/okx/exefs/subsdk0', lz4nso(b'\x59' * 16, good, plain)); w(f'{T}/okh/exefs/subsdk0', lz4nso(b'\x59' * 16, good, plain + b'x'))
+chk('⑪ check_exefs：好件 → 没有对不上的段；哈希对不上 → [(subsdk0, text)]、不抛', nd.check_exefs(f'{T}/okx/exefs') == [] and nd.check_exefs(f'{T}/okh/exefs') == [('subsdk0', 'text')])
 print(f'ns2_dump：{ok} 过 / {bad} 红'); sys.exit(1 if bad else 0)
 PY
 r=$?

@@ -143,9 +143,8 @@ class ExtractImportTests(JobCase):
                          (f"{tid:016X}", "Splatoon", "base", "loose"))
         self.assertEqual((self.c.library / "games" / "Splatoon" / "cover.jpg").read_bytes(), b"LOOSE_ICON")
 
-    def test_damaged_program_file_named_at_import(self):
-        # #1522：导出目录 / 散文件没有整包校验，程序文件（NSO）坏了原先到出包才抛 LZ4 的 Python 栈；导入时先试解、核段哈希，
-        #   坏了当场点名哪个文件、哪一段，给「重新导出」的下一步。夹具：第一段不压缩（标志 0x38 = 三段都核哈希，同真件的核验位），期望句手写
+    def test_program_hash_mismatch_imports_with_warning(self):
+        # #1522：导出目录 / 散文件导入时先试解程序文件（NSO）、核段哈希。解不开（LZ4）的分支要 lz4，在 tests/ns2_dump_test.sh（钉版解释器）测；夹具：第一段不压缩（标志 0x38 = 三段都核哈希，同真件的核验位），期望句手写
         import hashlib
         import struct
 
@@ -156,14 +155,13 @@ class ExtractImportTests(JobCase):
                 b[0xA0 + i * 32:0xC0 + i * 32] = hashlib.sha256(seg if (good or i) else seg + b"x").digest()
             return bytes(b) + text
         tid = 0x0400A3A01EE4C000
-        bad = self.make_dump(self.root / "bad", tid); (bad / "base" / "exefs" / "main").write_bytes(nso(b"CODE" * 64, good=False))
-        _, terminal = self.worker("import", paths=[str(bad)])
-        diagnostic = self.assert_failure(terminal, "content_invalid")
-        self.assertIn("程序文件 base/exefs/main 的 text 段数据和文件头记录的哈希对不上：这个程序文件坏了或被改过，请重新导出（最好导成 NSP / XCI）。", diagnostic["summary"])
-        self.assertEqual(self.c.catalog()["games"], [])
-        ok = self.make_dump(self.root / "ok", tid); (ok / "base" / "exefs" / "main").write_bytes(nso(b"CODE" * 64))
-        _, done = self.worker("import", paths=[str(ok)])
+        # 段哈希对不上但解得开（打过补丁 / mod 的程序）：照常入库，记一条黄色诊断（维护者 11-17：校验不过不拒收）
+        off = self.make_dump(self.root / "off", tid); (off / "base" / "exefs" / "main").write_bytes(nso(b"CODE" * 64, good=False))
+        _, done = self.worker("import", paths=[str(off)])
         self.assertEqual(done["state"], "succeeded")
+        warn = [d for d in done.get("diagnostics", []) if d.get("code") == "source_integrity_skipped"]
+        self.assertEqual(len(warn), 1, done.get("diagnostics")); self.assertEqual(warn[0]["severity"], "warning")
+        self.assertEqual(len(self.c.catalog()["games"]), 1)
 
     def test_extract_dir_in_subfolder(self):
         # 解包目录嵌在子目录里：扫描时能找到，认到就不再往里走
