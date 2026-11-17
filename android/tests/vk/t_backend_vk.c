@@ -323,8 +323,16 @@ extern uint64_t s2a_vk_easu_hits(void);   // backend_vulkan_easu.inc
 static int g_bc_inject_wait, g_bc_unproven, g_bc_early_destroy;
 static VkFence g_bc_injected_fence;
 static int g_bc_early_n, g_bc_early_seen;
+// 派生夹具（t_pool_table.c）用：返回 1 表示这个围栏的提交还扣在主机侧，按真超时处理、不进驱动——
+// 否则后端等待线程的 vkWaitForFences 会和主线程放行时的 vkQueueSubmit 同时用这个围栏（线程校验报 MultipleThreads）。
+static int (*g_fence_held)(VkFence);
 VKAPI_ATTR VkResult VKAPI_CALL vkWaitForFences(VkDevice d, uint32_t n, const VkFence *f, VkBool32 all, uint64_t timeout) {
     PFN_vkWaitForFences real = (PFN_vkWaitForFences)vkGetDeviceProcAddr(d, "vkWaitForFences");
+    if (g_fence_held && n == 1 && g_fence_held(f[0])) {
+        uint64_t ns = timeout < 1000000ull ? timeout : 1000000ull;   // 最多睡 1 毫秒，调用方会接着等
+        struct timespec ts = {0, (long)ns}; nanosleep(&ts, NULL);
+        return VK_TIMEOUT;
+    }
     if (g_bc_inject_wait && n == 1) {   // 真超时：睡满调用方给的时限再报超时（等栅栏的包装按墙钟判，不睡满它会接着等）
         g_bc_inject_wait = 0; g_bc_unproven = 1; g_bc_injected_fence = f[0];
         struct timespec ts = {(time_t)(timeout / 1000000000ull), (long)(timeout % 1000000000ull)}; nanosleep(&ts, NULL);
