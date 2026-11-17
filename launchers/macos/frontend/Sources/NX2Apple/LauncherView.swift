@@ -46,6 +46,7 @@ struct LauncherView: View {
     @State private var updateErrorDismissed = false   // 更新失败 toast 按 × 关掉；状态一变（重试 / 再失败）就重置
     @State private var titlebarActionsWidth: CGFloat = 0
     @State var showHomeSearch = false
+    @State var showHomeMore = false
     let brand: String
 
     init(model: S2ArmLauncherModel, brand: String) {
@@ -292,37 +293,21 @@ struct LauncherView: View {
                 PhoneUpdateButton(model: model, language: uiLanguage)
                 phonePill
                 updateButton
-                // 玩家、手柄跟右边的圆钮放在一起（文字胶囊在左），右侧一排都是圆钮
-                PlayerToolbarButton(loc: loc)   // 本地玩家（#623）：这次用谁的身份玩，点开切换 / 添加；标题栏另起视图树、环境对象传不进去，显式给
-                ControllerToolbarButton(controller: model.controller, show: $showController,
-                                        lang: loc.lang.code)
-                messagesButton
-                Button { installFor = nil; model.goToLibrary() } label: {
-                    Label(loc.t("s2arm.nav.library"), systemImage: "square.grid.2x2")
-                }
-                .controllerButtonStyle(ConsoleIconButtonStyle()).help(loc.t("s2arm.nav.library"))
-                .controllerID("top.library")
-                Button { model.showAddGames = true } label: {
-                    Label(loc.t("s2arm.action.import"), systemImage: "plus")
-                }
-                .controllerButtonStyle(ConsoleIconButtonStyle()).disabled(model.busy)
-                .help(loc.t("s2arm.action.import")).controllerID("top.import")
-                Button { model.showEnvironment = true } label: {
-                    Image(systemName: "gearshape").overlay(alignment: .topTrailing) {
-                        Circle().fill(environmentColor).frame(width: 5, height: 5).offset(x: 5, y: -3)
+                HStack(spacing: 4) {
+                    ControllerToolbarButton(controller: model.controller, show: $showController,
+                                            lang: loc.lang.code)
+                    messagesButton
+                    Button { model.showEnvironment = true } label: {
+                        Image(systemName: "slider.horizontal.3").overlay(alignment: .topTrailing) {
+                            Circle().fill(environmentColor).frame(width: 5, height: 5).offset(x: 5, y: -3)
+                        }
                     }
+                    .controllerButtonStyle(ConsoleIconButtonStyle(backgroundless: true))
+                    .help(txt("nav.settings")).accessibilityLabel(txt("nav.settings")).controllerID("top.settings")
                 }
-                .controllerButtonStyle(ConsoleIconButtonStyle())
-                .help(txt("nav.settings")).accessibilityLabel(txt("nav.settings")).controllerID("top.settings")
-                // 故障报修（11-13）：任何页面同一位置（顶栏最右，Windows 同位），点开就是全局「上传给开发者」弹窗（不针对某款，
-                //   作业层自动附最近一次失败的错误摘要）；报错页的指引 ReportHint 指的就是它
-                Button { model.diagUploadFor = "" } label: {
-                    Label(BackendText.launcherText("report.button", language: uiLanguage), systemImage: "exclamationmark.bubble")
-                }
-                .controllerButtonStyle(ConsoleIconButtonStyle()).help(txt("report.button"))
-                .controllerID("top.report").accessibilityIdentifier("top.report")
+                PlayerToolbarButton(loc: loc)   // 标题栏另起视图树，显式传入本地化对象。
         }
-        .padding(.trailing, LauncherTheme.Metrics.libraryInset)
+        .padding(.trailing, 6)
         .fixedSize()   // 放在标题栏里没有宽度约束，不固定的话按钮文字会被压成省略号
         .labelStyle(.titleAndIcon)   // Popovers keep their text; icon styles are local to each toolbar button.
         .tint(LauncherPalette.cream)
@@ -493,7 +478,7 @@ struct LauncherView: View {
                 }
             }
         }
-        .controllerButtonStyle(ConsoleIconButtonStyle()).help(txt("messages.button"))
+        .controllerButtonStyle(ConsoleIconButtonStyle(backgroundless: true)).help(txt("messages.button"))
         .accessibilityLabel(txt("messages.button")).accessibilityValue("\(model.unreadMessages)").controllerID("top.messages")
         .popover(isPresented: $showMessages, arrowEdge: .bottom) { MessagesPanel(model: model, language: uiLanguage) }
     }
@@ -610,7 +595,7 @@ private struct ControllerToolbarButton: View {
                 Circle().fill(Color(nsColor: controller.buttonColor)).frame(width: 5, height: 5).offset(x: 5, y: -3)
             }
         }
-        .controllerButtonStyle(ConsoleIconButtonStyle())
+        .controllerButtonStyle(ConsoleIconButtonStyle(backgroundless: true))
         .help(controller.title(lang: lang) + "：" + toolbarStatus)   // #901：顶栏提示写实际连着的手柄名（两条通道合并看）
         .accessibilityLabel(controller.title(lang: lang) + "：" + toolbarStatus)
         .controllerID("top.controller")

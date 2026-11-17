@@ -75,7 +75,8 @@ struct WelcomeView: View {
             if geometry.size.width >= 1000 {
                 HStack(spacing: 0) {
                     ScrollView {
-                        intro.frame(maxWidth: .infinity, minHeight: geometry.size.height, alignment: .leading)
+                        intro(rightAligned: true)
+                            .frame(maxWidth: .infinity, minHeight: geometry.size.height, alignment: .trailing)
                     }
                     ScrollView {
                         checklist
@@ -87,7 +88,7 @@ struct WelcomeView: View {
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
-                        intro
+                        intro()
                         checklist.padding(.horizontal, 48).padding(.bottom, 44)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -144,8 +145,8 @@ struct WelcomeView: View {
 
     // ---- 左：这是什么 ----
 
-    private var intro: some View {
-        VStack(alignment: .leading, spacing: 0) {
+    private func intro(rightAligned: Bool = false) -> some View {
+        VStack(alignment: rightAligned ? .trailing : .leading, spacing: 0) {
             journey.padding(.bottom, 34)
             Text(w("title")).font(.manrope(44, .heavy)).tracking(-1.4)
                 .fixedSize(horizontal: false, vertical: true)
@@ -155,6 +156,8 @@ struct WelcomeView: View {
                 .font(.manrope(13, .semibold)).foregroundStyle(LauncherPalette.cream.opacity(0.75))
                 .fixedSize(horizontal: false, vertical: true).padding(.top, 24)
         }
+        .multilineTextAlignment(rightAligned ? .trailing : .leading)
+        .frame(maxWidth: .infinity, alignment: rightAligned ? .trailing : .leading)
         .padding(48)
     }
 
