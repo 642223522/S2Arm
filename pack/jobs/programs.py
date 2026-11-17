@@ -75,13 +75,15 @@ def _put_dir(c, part, dest):
 MODULES = ("main", "sdk") + tuple(f"subsdk{i}" for i in range(10))
 
 
-def _compress(data):
+def _compress(data, checksum=False):
+    """zstd 一帧；checksum：带内容校验（.s2arm 小游戏包要，手机解完按它判包坏没坏）"""
     try:
         from compression import zstd   # Python 3.14
-        return zstd.compress(data, options={zstd.CompressionParameter.compression_level: LEVEL, zstd.CompressionParameter.nb_workers: os.cpu_count() or 1})
+        return zstd.compress(data, options={zstd.CompressionParameter.compression_level: LEVEL, zstd.CompressionParameter.nb_workers: os.cpu_count() or 1,
+                                            zstd.CompressionParameter.checksum_flag: 1 if checksum else 0})
     except ImportError:
         import zstandard   # 随包 Python 3.12（pack/jobs/toolchain.py 核过有它）
-        return zstandard.ZstdCompressor(level=LEVEL, threads=-1).compress(data)
+        return zstandard.ZstdCompressor(level=LEVEL, threads=-1, write_checksum=checksum).compress(data)
 
 
 def _decompress(data):
