@@ -318,8 +318,15 @@ namespace S2A.Services
         //   按 romfs.s2aidx 的文件顺序给每个文件在 game.img 里的绝对偏移，-1 = 读界面覆盖层。和 romfs.s2aidx 一起在就走单文件镜像同一条预建路径（IndexedStorage），
         //   起局不重建 RomFS 目录表（11-11 真机对比：有覆盖层时 RomFsBuilder 重建约 10 万条目 138.6 ms，预建路径 7.9 ms）
         public const string ImgMapName = "game.imgmap";
+        // 一款一份资源（0.6.0）：Mac 运行目录 image/mac 不再放 romfs.std，放一个 game.img——它是 iPhone 资源包 .pack/game.img 的硬链接（同一个文件）。
+        //   Mac 目录不放偏移表 / 索引：起局走下面现建那条（同原先 romfs.std 的 OpenStd：没有覆盖层直接交 RomFS 段，有覆盖层按 IMG 目录表里的 romfs.list 现建），
+        //   起局耗时与原先一致；Mac 的界面覆盖层在 ui_overlay/romfs，由调用方传进来
         private static ReadOnlySpan<byte> ImgMagic => "S2AIMG01"u8;
-        public static IStorage OpenImg(string programDir)
+
+        public static IStorage OpenImg(string programDir) => OpenImg(programDir, null);
+
+        /// <summary>overlayDir：界面覆盖层目录（Mac = ui_overlay/romfs）；null = 本目录的 romfs_overlay（iPhone 资源包）</summary>
+        public static IStorage OpenImg(string programDir, string overlayDir)
         {
             string path = Path.Combine(programDir, ImgName);
             if (!File.Exists(path)) return null;
@@ -337,7 +344,7 @@ namespace S2A.Services
                 if (Directory.Exists(Path.Combine(programDir, "romfs"))) { Red.Report($"资源包 IMG 不完整（{have} / {total} 字节，多半推到一半），这局改读 romfs/ 目录", path); return null; }
                 throw new InvalidDataException($"资源包 IMG 没传完（{have} / {total} 字节）：请在电脑上的 S2Arm 里对这款游戏重新「装到 iPhone」（{path}）");
             }
-            Dictionary<string, string> overlay = OverlayFiles(Path.Combine(programDir, ImageOverlayDir));
+            Dictionary<string, string> overlay = OverlayFiles(overlayDir ?? Path.Combine(programDir, ImageOverlayDir));
             string map = Path.Combine(programDir, ImgMapName), index = Path.Combine(programDir, FileName);
             if (File.Exists(map) && File.Exists(index))
             {

@@ -508,6 +508,8 @@ def deliver(c, gid, root, pack_dir, ipa):
         raise Failure(f"资源包缺清单或清单没有 index_sha256（{pack_dir}）：请重新打 iPhone 包。", code="package_failed")
     with program_locks(c, [gid]):   # 换资源包 + 记 ios：装机正在推 / 读这款时等它那段做完
         _swap_pack(c, gid, pack_dir, want)
+    import onerom   # 一款一份资源（0.6.0）：这款也有 Mac 版、RomFS 是同一份 → Mac 运行版本改链到这份 game.img、删掉它的 romfs.std（出包本来就在等，玩家不多等）
+    onerom.note(c, gid, onerom.dedupe(c, gid))
     Path(ipa).unlink(missing_ok=True)
 
 

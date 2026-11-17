@@ -10190,5 +10190,33 @@
  {
   "source": "再点一次「开始」就能进：这一局已记下这款要的内存，下次起局按它给。",
   "en": "Click Start again to play: this session noted how much memory the game needs, and the next start uses it."
+ },
+ {
+  "source": "把存档还原到 iPhone",
+  "en": "Restoring saves to the iPhone"
+ },
+ {
+  "source": "写回存档文件",
+  "en": "Writing the save files back"
+ },
+ {
+  "source": "找不到这份存档备份：请在列表里重新选一份。",
+  "en": "This save backup was not found: pick another one in the list."
+ },
+ {
+  "source": "先在 iPhone 上退出 S2Arm，再还原存档。",
+  "en": "Close S2Arm on the iPhone first, then restore the saves."
+ },
+ {
+  "source": "在 iPhone 上从后台划掉 S2Arm（或回到主屏后等几秒），再点一次还原。",
+  "en": "Close S2Arm on the iPhone (swipe it away from the app switcher), then restore again."
+ },
+ {
+  "source": "这份文件要 master_key_{0}，你的 prod.keys 只到 master_key_{1}：不够新。",
+  "en": "This file needs master_key_{0}, but your prod.keys only goes up to master_key_{1}: it is not new enough."
+ },
+ {
+  "source": "这份文件要 master_key_{0}，你的 prod.keys 有到 master_key_{1}：代数够，多半是这一行的值不对。",
+  "en": "This file needs master_key_{0}, and your prod.keys goes up to master_key_{1}: the generation is there, so that key's value is most likely wrong."
  }
 ]

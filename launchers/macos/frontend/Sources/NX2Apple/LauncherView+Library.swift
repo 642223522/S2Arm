@@ -170,6 +170,28 @@ extension LauncherView {
         return (parts.joined(separator: " · "), expired ? LauncherPalette.danger : LauncherPalette.ready)
     }
 
+    /// 「建议更新」（0.6.0 通用壳开关后面）：对不上几样写几行原因，末行说点了会怎样，旁边「更新这款」（只做这一款，就是推到 iPhone）。
+    ///   不点照旧能用；开关关着 updateReasons 恒空，这里什么都不出
+    @ViewBuilder func updateHintLines(_ game: GameSummary) -> some View {
+        let reasons = model.updateReasons(game).compactMap(S2ArmLauncherModel.updateReasonKey)
+        if !reasons.isEmpty {
+            let lang = loc.lang.sharedCode
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(reasons, id: \.self) { key in
+                    Label(BackendText.launcherText(key, language: lang), systemImage: "arrow.triangle.2.circlepath")
+                        .font(.manrope(12, .medium)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                }
+                HStack(spacing: 10) {
+                    Text(BackendText.launcherText("update.hint.tail", language: lang)).font(.manrope(11.5)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button(BackendText.launcherText("update.hint.button", language: lang)) { model.updateSuggested(game) }
+                        .controllerButtonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("update.hint.button." + game.id)
+                }
+            }
+            .accessibilityIdentifier("update.hint." + game.id)
+        }
+    }
+
     func status(_ game: GameSummary, prominent: Bool = false) -> some View {
         let (text, color) = statusLine(game)
         return VStack(alignment: .leading, spacing: 4) {
@@ -188,8 +210,9 @@ extension LauncherView {
             Label(loc.backend(LauncherView.integritySkippedNote), systemImage: "exclamationmark.triangle.fill")
                 .font(.manrope(12, .medium)).foregroundStyle(.yellow).fixedSize(horizontal: false, vertical: true)
         }
+        updateHintLines(game)
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
     }
 }
 
