@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <mach-o/dyld.h>
 
 static int fails = 0;
@@ -246,6 +247,33 @@ int main(int argc, char **argv) {
         write_file(q, "{\"title_id\":\"0100000000000006\",\"image\":\"S2AImages-0100000000000006.dylib\"}\n");
         snprintf(q, sizeof q, "%s/Games/0100000000000006", pr); rmdir(q);
         ck(s2a_launch_ctx_resolve_game(&c, app, home, "0100000000000006", why, sizeof why) == -1 && strstr(why, "程序包随行目录"), "程序包拒绝：随行目录缺");
+        // 第 8 款：写入规则（0.6.0）——清单 dir 指向版本目录 program/v-<sha16>-pc/。期望按规则手写：模块目录 / 镜像包都在 v-… 下；dir 不合规拒；
+        //   清理只删没被指着且最新文件 1 小时以上没写入的 v-* 与 catalogue.json.*.tmp，被指着的、刚写过的都留
+        {
+            char p8[1300], q8[1500], w8[1600]; snprintf(p8, sizeof p8, "%s/Library/Application Support/S2Arm/games/0100000000000008/program", home);
+            const char *vs[3] = {"v-aaaaaaaaaaaaaaaa-pc", "v-bbbbbbbbbbbbbbbb-pc", "v-cccccccccccccccc-import"};
+            for (int i = 0; i < 3; i++) { snprintf(q8, sizeof q8, "%s/%s/Games/0100000000000008", p8, vs[i]); mkdirs(q8);
+                snprintf(q8, sizeof q8, "%s/%s/S2AImages-0100000000000008.dylib", p8, vs[i]); write_file(q8, "x"); }
+            snprintf(q8, sizeof q8, "%s/catalogue.json", p8);
+            write_file(q8, "{\"title_id\":\"0100000000000008\",\"host_abi\":1,\"image\":\"S2AImages-0100000000000008.dylib\",\"dir\":\"v-aaaaaaaaaaaaaaaa-pc\"}\n");
+            snprintf(q8, sizeof q8, "%s/catalogue.json.pc.tmp", p8); write_file(q8, "{}");
+            ck(!s2a_launch_ctx_resolve_game(&c, app, home, "0100000000000008", why, sizeof why) && c.from_program == 1, "写入规则：清单带 dir 照样解析成功");
+            snprintf(w8, sizeof w8, "%s/v-aaaaaaaaaaaaaaaa-pc/S2AImages-0100000000000008.dylib", p8); ck(eq(c.images, w8), "写入规则：镜像包 = program/<dir>/<image>");
+            snprintf(w8, sizeof w8, "%s/v-aaaaaaaaaaaaaaaa-pc/Games/0100000000000008", p8); ck(eq(c.module_dir, w8), "写入规则：模块目录 = program/<dir>/Games/<gid>");
+            snprintf(q8, sizeof q8, "%s/catalogue.json", p8);
+            write_file(q8, "{\"title_id\":\"0100000000000008\",\"image\":\"S2AImages-0100000000000008.dylib\",\"dir\":\"../v-x\"}\n");
+            ck(s2a_launch_ctx_resolve_game(&c, app, home, "0100000000000008", why, sizeof why) == -1 && strstr(why, "dir"), "写入规则：dir 不合规（带 ..、不以 v- 开头）→ 拒");
+            write_file(q8, "{\"title_id\":\"0100000000000008\",\"image\":\"S2AImages-0100000000000008.dylib\",\"dir\":\"v-aaaaaaaaaaaaaaaa-pc\"}\n");
+            // 清理：v-aaa 被指着（改旧也留）；v-bbb 没被指着、两小时前写的 → 删；v-ccc 没被指着、刚写过 → 留；临时清单两小时前 → 删
+            time_t now = time(NULL), old = now - 2 * 3600;
+            snprintf(w8, sizeof w8, "find '%s/v-aaaaaaaaaaaaaaaa-pc' '%s/v-bbbbbbbbbbbbbbbb-pc' '%s/catalogue.json.pc.tmp' -exec touch -t %s {} +", p8, p8, p8, "200001010000");
+            ck(system(w8) == 0, "清理：造旧文件");
+            (void)old;
+            int rm = s2a_program_gc(home, now);
+            snprintf(w8, sizeof w8, "test -d '%s/v-aaaaaaaaaaaaaaaa-pc' && test ! -e '%s/v-bbbbbbbbbbbbbbbb-pc' && test -d '%s/v-cccccccccccccccc-import' && test ! -e '%s/catalogue.json.pc.tmp' && test -f '%s/catalogue.json'", p8, p8, p8, p8, p8);
+            ck(rm == 2 && system(w8) == 0, "清理：删没被指着且一小时没写入的 v-bbb 与临时清单（2 项），留被指着的 v-aaa、刚写过的 v-ccc 与清单");
+            ck(s2a_program_gc(home, now) == 0, "清理：再跑一次没得删（0 项）");
+        }
         // 第 7 款给进程级用例：程序库内容 "y"、清单 image_sha256 全 0（一定不等）
         snprintf(pr, sizeof pr, "%s/Library/Application Support/S2Arm/games/0100000000000007/program", home);
         snprintf(q, sizeof q, "%s/Games/0100000000000007", pr); mkdirs(q);

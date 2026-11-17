@@ -14,6 +14,9 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <dirent.h>
+#include <ftw.h>
+#include <time.h>
 #include <mach-o/dyld.h>
 
 #define WHY(...) do { if (why && why_n) snprintf(why, why_n, __VA_ARGS__); } while (0)
@@ -251,14 +254,62 @@ static int program_paths(const char *game_data, const char *gid, char *module_di
     if (s2a_program_catalogue_path(pc, sizeof pc, game_data) || !is_file(pc)) return 0;
     char *buf = slurp(pc, &n, why, why_n);
     if (!buf) return -1;
-    const char *os, *oe; int hit = find_obj(buf, n, gid, &os, &oe), ok = hit && obj_str(os, oe, "image", img, sizeof img); free(buf);
+    char dir[160] = "";
+    const char *os, *oe; int hit = find_obj(buf, n, gid, &os, &oe), ok = hit && obj_str(os, oe, "image", img, sizeof img);
+    if (hit) obj_str(os, oe, "dir", dir, sizeof dir);
+    free(buf);
     if (!hit) { WHY("程序包清单 %s 里没有 %s：清单和程序不是同一次出的", pc, gid); return -1; }
     if (!ok || !id_ok(img) || img[0] == '.') { WHY("程序包清单 %s 的 image 不合规（只收 [A-Za-z0-9._-]、不以 . 开头）", pc); return -1; }
+    // 写入规则（0.6.0 通用壳，cmdr 方案「写入规则」）：每个写入方把整份程序写进自己的版本目录 program/v-<sha16>-<写入方>/，最后改名覆盖 catalogue.json 换上，
+    //   清单的 dir 指向这一份。dir 不合规（只收 v- 开头的 [A-Za-z0-9._-]）→ 拒；没写 dir（第 1 段的布局）→ 程序直接在 program/ 下
+    if (dir[0] && (strncmp(dir, "v-", 2) || !id_ok(dir) || strstr(dir, ".."))) { WHY("程序包清单 %s 的 dir「%s」不合规（只收 v- 开头的 [A-Za-z0-9._-]）", pc, dir); return -1; }
     char *sl = strrchr(pc, '/'); *sl = 0;   // pc → 程序包目录
+    if (dir[0] && (strlen(pc) + 1 + strlen(dir) >= sizeof pc)) { WHY("程序包路径太长"); return -1; }
+    if (dir[0]) { strcat(pc, "/"); strcat(pc, dir); }   // → 清单指着的那个版本目录
     snprintf(rel, sizeof rel, "Games/%s", gid);
     if (join(module_dir, pc, rel) || !is_dir(module_dir)) { WHY("游戏 %s 的程序包随行目录 %s 不在", gid, module_dir); return -1; }
     if (join(images, pc, img) || !is_file(images)) { WHY("游戏 %s 的程序包镜像包 %s 不在", gid, images); return -1; }
     return 1;
+}
+// ---- 程序包版本目录清理（0.6.0 通用壳写入规则）：电脑端换上新版后不删旧版本目录（App 可能正开着那一版），由 App 启动时清。
+//   清：没被本款 catalogue.json 的 dir 指着、且目录里最新一个文件的修改时间离现在超过 1 小时的 program/v-* 目录（大文件边写边刷新修改时间，
+//   这样避开电脑正在推的那份）；catalogue.json.*.tmp 同一判据（每次推都会被覆盖，留着的是推断了的）。返回删掉的条目数；纯文件操作，单测 t_launchctx
+static time_t g_gc_newest;
+static int gc_newest_one(const char *p, const struct stat *st, int flag, struct FTW *w) { (void)p; (void)flag; (void)w; if (st->st_mtime > g_gc_newest) g_gc_newest = st->st_mtime; return 0; }
+static int gc_rm_one(const char *p, const struct stat *st, int flag, struct FTW *w) { (void)st; (void)w; return flag == FTW_DP ? rmdir(p) : unlink(p); }
+#define S2A_PROGRAM_GC_IDLE (60 * 60)
+int s2a_program_gc(const char *home, time_t now) {
+    char root[S2A_LCTX_PATH]; int removed = 0;
+    if (s2a_program_games_root(root, sizeof root, home)) return 0;
+    DIR *g = opendir(root); if (!g) return 0;
+    struct dirent *e;
+    while ((e = readdir(g))) {
+        if (e->d_name[0] == '.' || !id_ok(e->d_name)) continue;
+        char pd[S2A_LCTX_PATH], cat[S2A_LCTX_PATH], dir[160] = "";
+        if (snprintf(pd, sizeof pd, "%s/%s/program", root, e->d_name) >= (int)sizeof pd || !is_dir(pd)) continue;
+        snprintf(cat, sizeof cat, "%s/catalogue.json", pd);
+        if (is_file(cat)) { size_t n; char w[200]; char *buf = slurp(cat, &n, w, sizeof w); const char *os, *oe;
+            if (buf && find_obj(buf, n, e->d_name, &os, &oe)) obj_str(os, oe, "dir", dir, sizeof dir);
+            free(buf); }
+        DIR *d = opendir(pd); if (!d) continue;
+        struct dirent *v;
+        while ((v = readdir(d))) {
+            int vdir = !strncmp(v->d_name, "v-", 2), tmp = !strncmp(v->d_name, "catalogue.json.", 15) && strlen(v->d_name) > 19 && !strcmp(v->d_name + strlen(v->d_name) - 4, ".tmp");
+            if (!vdir && !tmp) continue;
+            if (vdir && dir[0] && !strcmp(v->d_name, dir)) continue;   // 清单正指着的这一版
+            char vp[S2A_LCTX_PATH]; if (snprintf(vp, sizeof vp, "%s/%s", pd, v->d_name) >= (int)sizeof vp) continue;
+            g_gc_newest = 0; struct stat st;
+            if (vdir) { if (!is_dir(vp) || nftw(vp, gc_newest_one, 16, FTW_PHYS)) continue; }
+            else { if (stat(vp, &st)) continue; g_gc_newest = st.st_mtime; }
+            if (now - g_gc_newest <= S2A_PROGRAM_GC_IDLE) continue;   // 一小时内还有写入：可能是电脑正在推的那份，不动
+            int r = vdir ? nftw(vp, gc_rm_one, 16, FTW_DEPTH | FTW_PHYS) : unlink(vp);
+            LOG("程序包清理：%s %s/%s（%s，最新文件 %ld 分钟前）", r ? "【黄】删不掉" : "删掉", e->d_name, v->d_name, vdir ? "没被清单指着的版本目录" : "推断了留下的临时清单", (long)((now - g_gc_newest) / 60));
+            if (!r) removed++;
+        }
+        closedir(d);
+    }
+    closedir(g);
+    return removed;
 }
 int s2a_program_game_paths(const char *home, const char *gid, char *module_dir, char *images, char *why, size_t why_n) {
     char hd[S2A_LCTX_PATH], docs[S2A_LCTX_PATH], gd[S2A_LCTX_PATH], rel[300];
