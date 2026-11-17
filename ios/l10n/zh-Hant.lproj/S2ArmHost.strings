@@ -40,8 +40,8 @@
 "cheats.status.notPacked" = "要修改遊戲程式碼，這次出包沒編進去（同一模組的補丁太多等，原因見電腦上出包完成頁）";
 "cheats.status.off" = "關";
 "cheats.status.pending" = "等待生效…";
-"cheats.status.versionMismatch" = "版本不符";
-"cheats.status.versionMismatch.file" = "版本不符，不會生效";
+"cheats.status.versionMismatch" = "和當前遊戲版本不符，已停用";
+"cheats.status.versionMismatch.file" = "和當前遊戲版本不符，已停用（遊戲照常玩）";
 "cheats.title" = "金手指";
 "cheats.unnamed" = "未命名";
 "common.cancel" = "取消";

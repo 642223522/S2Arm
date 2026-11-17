@@ -41,8 +41,8 @@
 "cheats.status.packed" = "有効";
 "cheats.status.off" = "オフ";
 "cheats.status.pending" = "反映待ち…";
-"cheats.status.versionMismatch" = "バージョン不一致";
-"cheats.status.versionMismatch.file" = "バージョン不一致のため反映されません";
+"cheats.status.versionMismatch" = "このゲームのバージョンと一致しないため無効";
+"cheats.status.versionMismatch.file" = "このゲームのバージョンと一致しないため無効（ゲームは通常どおり遊べます）";
 "cheats.title" = "チート";
 "cheats.unnamed" = "無題";
 "common.cancel" = "キャンセル";

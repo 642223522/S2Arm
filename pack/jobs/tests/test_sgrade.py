@@ -92,7 +92,8 @@ class SGradeTests(unittest.TestCase):
         for g in ("0100A", "0100B"):
             nso(self.t / "lib" / g / "image/mac/exefs", "1111111111111111")
         import rewrite_refresh
-        def refresh(c, gid, rt, hold=None):
+        def refresh(c, gid, rt, hold=None, ignore_rewriter=False):
+            assert ignore_rewriter is True, "后台补 S 级不因改写器指纹单独变了重改写（11-17 维护者定）"
             if gid == "0100A": raise Failure("坏了")
             return True
         with patch.object(rewrite_refresh, "refresh_mac", side_effect=refresh):
@@ -118,7 +119,7 @@ class SGradeTests(unittest.TestCase):
         self.c.lock = lambda name: (_ for _ in ()).throw(AssertionError("后台不该排队等锁"))
         seen = []
         import rewrite_refresh
-        def refresh(c, gid, rt, hold=None):
+        def refresh(c, gid, rt, hold=None, ignore_rewriter=False):
             with hold() as ok:
                 seen.append(ok)
             return True

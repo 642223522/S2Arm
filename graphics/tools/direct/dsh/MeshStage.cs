@@ -47,6 +47,7 @@ namespace S2A.Dsh
         public const int FIRST_SLOT = 29;                                      // 宿主放「本次绘制起始工作组号」的缓冲槽（接口约定 3）
         public const int METAL_MAX_PAYLOAD = 0x4000;                           // Metal 对象→网格载荷（object_data）上限 16 KB
         public const int RELAY_SLOT = 27;                                      // 载荷中转缓冲的槽（对象 / 网格两表；同计算核溢出槽 SPILL_SLOT，网格表这一格是顶点流 11，宿主经 enc_r_vbuf 绑）
+        public const int EMU_SLOT = 28;                                        // #770 宿主自跑任务阶段（S2A_MESH_EMU）：任务 compute 出口 / 纯网格入口读的交换缓冲槽（对象 / 网格两表都是这一格；网格表这一格是顶点流 12，宿主经 enc_r_vbuf 绑）
         public const int RELAY_HEAD = 8;                                       // 中转缓冲头（字，宿主写）：[0] 网格片起点（字），[1] 本次绘制任务组数，[2] 每个任务组的网格片数（= 任务线程数）
 
         /// <summary>载荷超 Metal 对象载荷上限：走设备内存中转（任务把载荷写进中转缓冲、object_data 只带任务组号；网格的阶段内存整段放中转缓冲里一片）。
@@ -143,9 +144,28 @@ namespace S2A.Dsh
             return o;
         }
 
+        /// <summary>#770 宿主自跑任务 / 网格阶段时（S2A_MESH_EMU）每个循环最多 4096 圈：着色器读到冷池 / 未映射内存得 0 时，任务 de3befe4936cac83 的循环次数按 (n−1)>>5 下溢成 2^27 圈，
+        ///   走驱动的对象阶段会被 GPU 挂死保护杀掉，放进普通计算核却一直跑、把 WindowServer 饿死（M1 Pro 11-17 两次看门狗）。本游戏这类循环正常最多几圈。
+        ///   不定义 S2A_MESH_EMU（出包的库）时宏为空，行为不变</summary>
+        public const int EMU_LOOP_GUARD = 4096;
+        static string GuardLoops(string msl)
+        {
+            var lines = msl.Split('\n').ToList(); int k = 0;
+            for (int n = 0; n + 1 < lines.Count; n++)
+            {
+                string t = lines[n].TrimStart();
+                if (!(t.StartsWith("for (") || t.StartsWith("while (") || t == "do") || lines[n + 1].Trim() != "{") continue;
+                string ind = lines[n][..(lines[n].Length - t.Length)];
+                lines.Insert(n, $"{ind}DM_LG_DECL({k})"); lines.Insert(n + 3, $"{ind}    DM_LG({k})"); n += 3; k++;
+            }
+            if (k == 0) return msl;
+            return $"#ifdef S2A_MESH_EMU\n#define DM_LG_DECL(k) uint dm_lg##k = 0u;\n#define DM_LG(k) if (++dm_lg##k > {EMU_LOOP_GUARD}u) break;\n#else\n#define DM_LG_DECL(k)\n#define DM_LG(k)\n#endif\n" + string.Join("\n", lines);
+        }
+
         /// <summary>翻好的计算核包成对象函数 main0（ts），或网格函数 main0 与 main0_z（ms：两种深度约定，同顶点着色器 VsDepth：main0 近平面 -w、main0_z 近平面 0）</summary>
         public static string ToStage(string msl, MeshInfo i)
         {
+            msl = GuardLoops(msl);
             string kind = i.Kind;
             var m = s_kernel.Match(msl);
             if (!m.Success) throw new DshError("mesh stage failed", kind + ": 没有以阶段内存开头的 kernel main0");
@@ -183,6 +203,10 @@ namespace S2A.Dsh
                       + $"    for (uint i = {lid}; i < {words}u; i += {thr}u) {mem}[i] = 0u;\n" + bar;
             }
             string sig = string.Join(", ", ps.Concat(extra));
+            // 计算核入口（S2A_MESH_EMU）里线程位置一族的参数须同为标量或同维向量：计算核自带 uint3 的线程号时，包装补的线程组号 / 线程号也用 uint3，进门取 .x
+            bool vec3 = ps.Any(p => { var t = s_thread.Match(p); return t.Success && t.Groups[1].Value == "uint3"; });
+            string sigK = vec3 ? string.Join(", ", ps.Concat(extra.Select(x => x.StartsWith("uint dm_tg ") ? "uint3 dm_tg3 [[threadgroup_position_in_grid]]" : x.StartsWith("uint dm_lid ") ? "uint3 dm_lid3 [[thread_position_in_threadgroup]]" : x))) : sig;
+            string preK = vec3 ? string.Concat(extra.Select(x => x.StartsWith("uint dm_tg ") ? "    uint dm_tg = dm_tg3.x;\n" : x.StartsWith("uint dm_lid ") ? "    uint dm_lid = dm_lid3.x;\n" : "")) : "";
             string first = $"constant uint* dm_first [[buffer({FIRST_SLOT})]]";   // 本次绘制起始工作组号，宿主绑（接口约定 3）
             if (kind == "ts" && relay)
                 return src + "\n" + head
@@ -193,6 +217,21 @@ namespace S2A.Dsh
                     + $"    device uint* dm_p = dm_relay + {RELAY_HEAD}u + {tg} * {payw}u;\n"
                     + $"    if (dm_in) for (uint i = {lid}; i < {pay}u; i += {thr}u) dm_p[i] = {mem}[{outw}u + i];\n"
                     + $"    if ({lid} == 0u) {{ dm_payload.tg = {tg}; dm_grid.set_threadgroups_per_grid(uint3(dm_in ? min({mem}[{outw + 1}], {i.Threads}u) : 0u, 1u, 1u)); }}\n}}\n";
+            // #770：没有硬件网格着色的 GPU（M1 / M2）上驱动的软件网格在带任务的网格绘制上挂死（11-17 M1 Pro：任务交宿主、网格交驱动照挂）。这些 GPU 上任务与网格两段都由宿主跑：
+            //   任务按计算核跑（main0_tc，载荷与派生数写进交换缓冲），宿主排好每个网格组属于哪个任务组，网格也按计算核跑（main0_mc，顶点 / 索引写进交换缓冲），再用顶点函数 main0_mv
+            //   普通索引绘制。只在 S2A_MESH_EMU 下编进去（出包的库照旧，宿主现编时定义它）。
+            //   交换缓冲头（字）：[0] 派生数起点 [1] 载荷起点 [2] 网格组表起点 [3] 任务组上限 [4] 网格组上限 [5] 每份载荷字数 [6] 直接绘制的任务组数 [7] 每组索引上限，[8..10] 网格组数，
+            //   [11] 顶点区起点 [12] 索引区起点，[13..17] 索引绘制的间接参数，[18] / [19] 实际要的网格组 / 任务组数（宿主据此定下次的大小）；网格组表一项 = 任务组 << 10 | 组内序号
+            string emuArg = $"device uint* dm_xo [[buffer({EMU_SLOT})]]";
+            bool emuOk = !relay && !sig.Contains($"[[buffer({EMU_SLOT})]]");
+            if (kind == "ts" && emuOk)
+                src += "\n#ifdef S2A_MESH_EMU\n"
+                    + $"kernel void main0_tc({sigK}, {emuArg}, {first})\n{{\n{preK}{start}"
+                    + $"    if ({lid} == 0u) {mem}[{wg}] = dm_first[0] + {tg};\n"
+                    + $"    threadgroup_barrier(mem_flags::mem_threadgroup);\n    {call}\n    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+                    + $"    if ({tg} < dm_xo[3])\n    {{\n        device uint* dm_p = dm_xo + dm_xo[1] + {tg} * {Math.Max(pay, 1)}u;\n"
+                    + $"        for (uint i = {lid}; i < {pay}u; i += {thr}u) dm_p[i] = {mem}[{outw}u + i];\n"
+                    + $"        if ({lid} == 0u) dm_xo[dm_xo[0] + {tg}] = min({mem}[{outw + 1}], {METAL_MAX_GRID}u);\n    }}\n}}\n#endif\n";
             if (kind == "ts")
                 return src + "\n" + head
                     + $"[[object]] void main0({sig}, object_data dm_payload_t& dm_payload [[payload]], mesh_grid_properties dm_grid, {first})\n{{\n{start}"
@@ -219,6 +258,9 @@ namespace S2A.Dsh
             string PBlock(string p) => $"{outw + pbase}u + ({p} / {BLOCK}u) * {pstride}u + {p} % {BLOCK}u";
             string sets = string.Concat(vm.Select(x => $"        v.{(x.N == null ? "position" : $"a{x.N}")} = {Component(Word(x.Idx))};\n"));
             string psets = string.Concat(pm.Select(x => $"        p.p{x.N} = {Component(Word(x.Idx))};\n"));
+            // 宿主网格入口（S2A_MESH_EMU，main0_mc）里本组的「工作组号」是组内序号 dm_j，不是计算核的线程组号：本体参数里的线程组号换成它
+            string tgParam = own.TryGetValue("threadgroup_position_in_grid", out var tgv) ? tgv : null;
+            string callEmu = "dm_stage_body(" + string.Join(", ", names.Select(n => tgParam != null && n == tgParam.Split('.')[0] ? (tgParam.EndsWith(".x") ? "uint3(dm_j, 0u, 0u)" : "dm_j") : n).Append(mem)) + ");";
             string Entry(string name, bool gl)
             {
                 // 有任务时输入是载荷，字 0 = 本组在其任务派生里的序号（硬件放的；任务从 +4 起写，+0 不是它写的字）
@@ -238,7 +280,32 @@ namespace S2A.Dsh
                     + (pm.Count > 0 ? $"    for (uint n = {lid}; n < np; n += {thr}u)\n    {{\n        uint b = {PBlock("n")};\n        dm_prim_t p;\n{psets}        dm_out.set_primitive(n, p);\n    }}\n" : "")
                     + $"    for (uint n = {lid}; n < np * 3u; n += {thr}u)\n    {{\n        uint at = {prim + 4}u + n;\n        dm_out.set_index(n, ({mem}[at >> 2] >> ((at & 3u) * 8u)) & 0xffu);\n    }}\n}}\n";
             }
-            return src + "\n" + head + Entry("main0", true) + "\n" + Entry("main0_z", false);
+            // 网格阶段也由宿主跑（M1 上驱动跑带任务的网格本身也挂：11-17 宿主跑任务、网格交驱动照挂）：计算核 main0_mc 把本组顶点写进交换缓冲 [11] 起的顶点区（每组 MaxV 个
+            //   dm_vertex_t）、索引写进 [12] 起的索引区（每组 MaxP × 3 个，不足的补成退化三角形），宿主用顶点函数 main0_mv 按顶点号读出、普通索引绘制画。逐图元属性没有承载处：不出
+            string EntryMc(string name, bool gl)
+            {
+                string fill = $"    uint dm_e = dm_xo[dm_xo[2] + {tg}], dm_t = dm_e >> 10, dm_j = dm_e & 1023u;\n"
+                    + $"    for (uint i = {lid}; i < {pay}u; i += {thr}u) {mem}[{inp}u + i] = dm_xo[dm_xo[1] + dm_t * dm_xo[5] + i];\n"
+                    + bar + $"    if ({lid} == 0u) {{ {mem}[{wg}] = dm_j; {mem}[{inp}] = dm_j; }}\n";
+                return $"kernel void {name}({sigK}, device uint* dm_xo [[buffer({EMU_SLOT})]])\n{{\n{preK}{start}{fill}"
+                    + $"{bar}    {callEmu}\n{bar}"
+                    + $"    uint np = min({mem}[{prim >> 2}] >> 24, {i.MaxP}u);\n"
+                    + $"    device dm_vertex_t* dm_vb = (device dm_vertex_t*)(dm_xo + dm_xo[11]) + {tg} * {i.MaxV}u;\n"
+                    + $"    for (uint n = {lid}; n < {i.MaxV}u; n += {thr}u)\n    {{\n        uint b = {Block("n")};\n        dm_vertex_t v;\n{sets}"
+                    + (gl ? "        v.position.z = fma(v.position.z, 0.5, v.position.w * 0.5);\n" : "")
+                    + "        dm_vb[n] = v;\n    }\n"
+                    // 索引紧排：本组的三角形在索引区里占一段，起点由 [13]（绘制的索引数，排表核清 0）原子累加得出
+                    + $"    threadgroup uint dm_ibase;\n    if ({lid} == 0u) dm_ibase = atomic_fetch_add_explicit((device atomic_uint*)(dm_xo + 13), np * 3u, memory_order_relaxed);\n"
+                    + "    threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+                    + $"    device uint* dm_ib = dm_xo + dm_xo[12] + dm_ibase; uint dm_v0 = {tg} * {i.MaxV}u;\n"
+                    + $"    for (uint n = {lid}; n < np * 3u; n += {thr}u)\n    {{\n        uint at = {prim + 4}u + n;\n"
+                    + $"        dm_ib[n] = dm_v0 + min(({mem}[at >> 2] >> ((at & 3u) * 8u)) & 0xffu, {i.MaxV - 1}u);\n    }}\n}}\n";
+            }
+            string emuMc = pm.Count == 0
+                ? EntryMc("main0_mc", true) + "\n" + EntryMc("main0_mc_z", false) + "\nvertex dm_vertex_t main0_mv(const device dm_vertex_t* dm_vb [[buffer(" + EMU_SLOT + ")]], uint dm_vid [[vertex_id]]) { return dm_vb[dm_vid]; }\n"
+                : "";
+            string emuMs = i.Task && emuOk && emuMc.Length > 0 ? "\n#ifdef S2A_MESH_EMU\n" + emuMc + "#endif\n" : "";
+            return src + "\n" + head + Entry("main0", true) + "\n" + Entry("main0_z", false) + emuMs;
         }
     }
 }

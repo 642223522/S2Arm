@@ -326,9 +326,9 @@ def _move_folder(c, gid, src, dest_root):
         try:
             copy_tree_links(src, temporary)
             _verify_copy(src, temporary, strict=False)
-            for sub in ("saves", "save-backups"):
-                if (src / sub).is_dir():
-                    _verify_copy(src / sub, temporary / sub, strict=True)
+            for sub in save_entries(src):   # 存档类逐字节核（唯一来源 save_entries）
+                if sub.is_dir():
+                    _verify_copy(sub, temporary / sub.name, strict=True)
         except Failure:
             shutil.rmtree(temporary, ignore_errors=True)
             raise Failure("拷到新位置后核对不一致，没有移动（原位置的文件都还在）。", code="job_failed")
@@ -1011,6 +1011,27 @@ def entries(d, pattern="*", recursive=False):
         return []
     found = d.rglob(pattern) if recursive else d.glob(pattern)
     return sorted(p for p in found if not any(os_junk(part) for part in p.relative_to(d).parts))
+
+
+# 每款游戏文件夹里「存档类」的东西：唯一来源（维护者 11-17：删除游戏只留了 saves/、save-backups/，把 SaveData*（Mac 原生格式存档位置）
+#   和 save_backup/（iPhone / Apple TV 装机前拉回的存档备份，手机存档在电脑上唯一的一份）一起删了）。删除游戏、腾空间、换位置核对、空间统计都读这一份。
+#   saves/：Ryujinx 数据根（build.py）；save-backups/：存档管理的备份；save_backup/：装机前 / 电视拉回（install.py、tvos.py）；
+#   SaveData、SaveData-<玩家>：原生格式存档位置（build.py、saves.py）。金手指、mod 不算存档
+SAVE_DIRS = ("saves", "save-backups", "save_backup")
+SAVE_DATA = re.compile(r"SaveData(-.+)?")
+
+
+def is_save_entry(name):
+    """游戏文件夹里这一项（名字）是不是存档类"""
+    return name in SAVE_DIRS or bool(SAVE_DATA.fullmatch(name))
+
+
+def save_entries(gdir):
+    """游戏文件夹里现有的存档类各项（不跟软链认不认：按名字认，删除 / 保留由调用方定）；文件夹不在 → []"""
+    try:
+        return sorted(p for p in Path(gdir).iterdir() if is_save_entry(p.name))
+    except (FileNotFoundError, NotADirectoryError):
+        return []
 
 
 def has_content(d):

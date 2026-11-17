@@ -87,6 +87,23 @@ class JobsTests(unittest.TestCase):
         self.redirect.__exit__(None, None, None)
         self.tmp.cleanup()
 
+    def test_other_library_in_place_asks_instead_of_rejecting(self):
+        # 11-17 维护者：游戏库标识和记下的库号不同，不直接拒、也不悄悄改用：说清是哪个（文件夹名 + 路径）、有几款，前端问玩家。
+        #   期望手写：库里 2 款、其中 1 款隐藏 → 「有 1 款游戏」，码 library_id_mismatch，facts 带它的库号；标识文件没了 → 照旧「未连接或标识不符」
+        lib = Path(self.request["library"])
+        marker = json.loads((lib / ".s2arm-library.json").read_text(encoding="utf-8"))
+        (lib / "catalog.json").write_text(json.dumps({"games": [{"id": "a"}, {"id": "b", "hidden": True}]}), encoding="utf-8")
+        c = Context(self.request | dict(taskId="other-lib", libraryId="remembered-elsewhere"))
+        with self.assertRaises(Failure) as e:
+            c.require_library()
+        self.assertEqual(e.exception.code, "library_id_mismatch")
+        self.assertEqual(e.exception.facts, {"libraryId": marker["id"]})
+        self.assertIn(f"「{lib.resolve().name}」（{lib.resolve()}）里是另一个游戏库，有 1 款游戏", str(e.exception))
+        (lib / ".s2arm-library.json").unlink()
+        with self.assertRaises(Failure) as e:
+            c.require_library()
+        self.assertEqual((e.exception.code, str(e.exception)), ("job_failed", "游戏库未连接或标识不符，请重新选择游戏库。"))
+
     def test_game_required_when_request_has_no_game(self):
         """客户端不再按名单拦「要不要游戏号」（自己人之间不设允许清单，#1149）：要游戏的作业请求里没带游戏号，
         作业层说清缺的是游戏号，不是「游戏未登记」；带了但库里没有照旧是未登记"""
@@ -1618,7 +1635,7 @@ class JobsTests(unittest.TestCase):
             for name in ("S2A_SAVE_DIR", "S2A_AUTOPLAY", "S2A_ROUTE"):
                 os.environ.pop(name)
         self.assertEqual(env["S2A_SYSTEM_LANGUAGE"], "TraditionalChinese")
-        self.assertEqual(env["S2A_DOCKED"], "1")
+        self.assertEqual(env["S2A_DOCKED"], "1")   # 请求明给 docked=True
         self.assertEqual(env["S2A_AUTOPLAY"], "0")
         self.assertNotIn("S2A_SAVE_DIR", env)
         self.assertNotIn("S2A_ROUTE", env)
@@ -1633,9 +1650,11 @@ class JobsTests(unittest.TestCase):
         finally:
             os.environ.pop("S2A_SYSTEM_LANGUAGE")
         self.assertNotIn("S2A_SYSTEM_LANGUAGE", env)
-        self.assertEqual(env["S2A_DOCKED"], "1")
+        self.assertEqual(env["S2A_DOCKED"], "0")   # 没选过：缺省掌机
         self.c.r["docked"] = False
         self.assertEqual(build.runtime_env(self.c, self.game(), self.root / "runtime")["S2A_DOCKED"], "0")
+        self.c.r["docked"] = True   # 请求明给主机照给的
+        self.assertEqual(build.runtime_env(self.c, self.game(), self.root / "runtime")["S2A_DOCKED"], "1")
 
     def test_invalid_language_is_rejected(self):
         self.c.r["gameLanguage"] = "zhHans; command"
@@ -2105,6 +2124,24 @@ class JobsTests(unittest.TestCase):
         self.assertEqual(save.read_text(), "keep")
         self.assertTrue((self.c.library / package["path"]).exists())
         self.assertTrue(all(f.exists() for f in other))
+
+    def test_delete_keeps_every_kind_of_save(self):
+        # 维护者 11-17：「删除游戏」原先只留 saves/、save-backups/，把 SaveData*（Mac 原生格式存档位置）和 save_backup/（装机前从 iPhone /
+        #   Apple TV 拉回的存档备份）一起删了。期望（手写）：带齐四种存档（另加一个玩家的 SaveData-<玩家>）的款删完，五样都在、内容不变；
+        #   金手指、mod、封面、Mac 运行版本这些照删；清单里没有这款。存档类以 layout.save_entries 为唯一来源
+        package = self.package(); game = self.game(packages=[package]); self.catalogue([game])
+        g = layout.game_dir(self.c, game["id"])
+        saves = {"saves/a.sav": "s", "save-backups/20261117/a.sav": "b", "save_backup/20261117-080000/0000000000000001/0/x.bin": "p",
+                 "SaveData/account/x.bin": "n", "SaveData-Player2/account/y.bin": "m"}
+        others = ["cheats/c.txt", "mods/m/romfs/a.bin", "cover.jpg", "image/mac/main.patched.bin", "seen/dev.tsv"]
+        for rel, text in list(saves.items()) + [(r, "x") for r in others]:
+            (g / rel).parent.mkdir(parents=True, exist_ok=True); (g / rel).write_text(text)
+        self.assertEqual(sorted(p.name for p in layout.save_entries(g)), ["SaveData", "SaveData-Player2", "save-backups", "save_backup", "saves"])
+        self.c.r["gameId"] = game["id"]
+        library.delete(self.c)
+        self.assertEqual({rel: (g / rel).read_text() for rel in saves if (g / rel).is_file()}, saves)
+        self.assertEqual([r for r in others if (g / r).exists()], [])
+        self.assertEqual([x["id"] for x in self.c.catalog()["games"]], [])
 
     def test_delete_removes_the_program_store_too(self):
         # 期望（手写）：「删除游戏」= 从库里删、也从手机记录摘掉，这款在游戏程序专用文件夹 .programs/<程序号>/ 的 kit / 原始程序 / 兼容记录一并删；别款的不动

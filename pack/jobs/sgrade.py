@@ -142,7 +142,8 @@ def mac_all(c):
                 pass
             if not free:
                 continue
-            if refresh_mac(c, g["id"], layout.image_mac(c, g["id"], create=False), hold=lambda: c.idle("execution")):
+            # 后台：只补补丁记号变了的；改写器指纹单独变了不重改写（11-17 维护者定），开始游戏起局前 build.launch 前台会做这一款
+            if refresh_mac(c, g["id"], layout.image_mac(c, g["id"], create=False), hold=lambda: c.idle("execution"), ignore_rewriter=True):
                 done.append(g["id"].upper())
             # 老包直连库缺可读瓦片版着色器（_bf）：整份重出在锁外做（几分钟到几十分钟），换进运行版本前同样进 c.idle，玩家正在开局就这次放弃
             if sgrade_bf.upgrade_mac(c, g["id"], layout.image_mac(c, g["id"], create=False), hold=lambda: c.idle("execution")) and g["id"].upper() not in done:

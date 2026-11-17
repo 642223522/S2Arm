@@ -69,7 +69,7 @@ struct SGradeCard: View {
     }
 }
 
-/// 卡片本身（只看数据，离屏渲染单测 SGradeCardTests 直接喂 PatchMatch 出图）
+    /// 卡片本身（只看数据，离屏渲染单测 SGradeCardTests 直接喂 PatchMatch 出图）
 struct SGradeCardView: View {
     let match: PatchMatch?
     let failed: Bool
@@ -85,28 +85,46 @@ struct SGradeCardView: View {
     let x: (String) -> String
     /// 金色 S（缺省读 App 资源 s-gold.png；单测传仓库里的原图）
     var sImage: NSImage = SGradeCardView.sGold
+    @State private var detailsOpen = false
     private func catName(_ c: String) -> String { x("cat." + c) }
 
     // 金色（11-13 维护者：这个功能很牛，做得精致高级、显眼一点，用金色版 logo 的 S）：高光 / 主金 / 古铜三档，命中时整张卡亮起来
     //   配色跟金色 S 同一套双色：上半香槟金、下半玫瑰金（launchers/macos/Branding/make_s_gold.py），标题 / 描边 / 图标钮都从香槟金过渡到玫瑰金
-    static let goldHi = Color(red: 1, green: 0.92, blue: 0.70), gold = Color(red: 0.93, green: 0.77, blue: 0.42), rose = Color(red: 0.93, green: 0.62, blue: 0.52), goldDeep = Color(red: 0.55, green: 0.36, blue: 0.24)
+    static let goldHi = Color(red: 1, green: 0.92, blue: 0.70), gold = Color(red: 0.93, green: 0.77, blue: 0.42), rose = Color(red: 0.86, green: 0.66, blue: 0.35), goldDeep = Color(red: 0.55, green: 0.36, blue: 0.24)
     static let sGold: NSImage = Bundle.main.url(forResource: "s-gold", withExtension: "png").flatMap(NSImage.init(contentsOf:)) ?? NSImage()
     private var lit: Bool { ((match?.total ?? 0) > 0 || match?.port == true || match?.ownWiden == true) && on?.wrappedValue != false }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 18) {
+        HStack(alignment: .top, spacing: 16) {
             Image(nsImage: sImage).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
-                .frame(width: lit ? 56 : 44, height: lit ? 56 : 44)
+                .frame(width: lit ? 50 : 40, height: lit ? 50 : 40)
                 .shadow(color: Self.gold.opacity(lit ? 0.55 : 0.18), radius: lit ? 16 : 6)
                 .saturation(match == nil || lit ? 1 : 0.55)
             VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .firstTextBaseline, spacing: 9) {
+                HStack(alignment: .center, spacing: 9) {
                     Text(x("title")).font(.manrope(18, .bold))
                         .foregroundStyle(LinearGradient(colors: [Self.goldHi, Self.gold, Self.rose], startPoint: .leading, endPoint: .trailing))
                     Text("BETA").font(.manrope(9.5, .bold)).tracking(1.4).padding(.horizontal, 7).padding(.vertical, 2.5)
                         .foregroundStyle(Self.gold).overlay(Capsule().strokeBorder(Self.gold.opacity(0.55), lineWidth: 1))
+                    if hasCollapsibleDetails {
+                        Button {
+                            withAnimation(.easeOut(duration: 0.2)) { detailsOpen.toggle() }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "info.circle").font(.system(size: 11, weight: .semibold))
+                                Text(x(detailsOpen ? "details.hide" : "details.show"))
+                                    .font(.manrope(11.5, .medium))
+                                Image(systemName: detailsOpen ? "chevron.up" : "chevron.down").font(.system(size: 9, weight: .semibold))
+                            }
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 8).padding(.vertical, 3.5)
+                            .background(Color.white.opacity(0.06), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("export.sgrade.details")
+                    }
+                    Spacer(minLength: 12)
                     if let on {
-                        Spacer(minLength: 12)
                         Toggle(x("toggle"), isOn: on).toggleStyle(.checkbox).font(.manrope(12.5, .medium)).tint(Self.gold)
                             .controllerControl(id: "export.sgrade.toggle", activate: { on.wrappedValue.toggle() })
                             .accessibilityIdentifier("export.sgrade.toggle")
@@ -114,9 +132,8 @@ struct SGradeCardView: View {
                 }
                 if on?.wrappedValue == false { note(x("off")) } else { content }
             }
-            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 22).padding(.vertical, 20)
+        .padding(.horizontal, 22).padding(.vertical, 16)
         .background {
             ZStack {
                 RoundedRectangle(cornerRadius: 16).fill(LauncherPalette.surface.opacity(0.92))
@@ -135,34 +152,86 @@ struct SGradeCardView: View {
     /// 玩家这份游戏的版本：显示版本号优先，没有就用构建号前 16 位
     private func mine(_ m: PatchMatch) -> String { m.version.isEmpty ? m.build.prefix(16).uppercased() : m.version }
 
+    private struct HitChip: Identifiable {
+        let id: String
+        let symbol: String
+        let title: String
+        let badge: String?
+        let status: String
+    }
+
+    private func hitChips(_ m: PatchMatch) -> [HitChip] {
+        var chips: [HitChip] = []
+        for c in ["widescreen", "fps", "gfx", "cheat", "mod"] {
+            let sym = Self.catSymbol[c] ?? "checkmark"
+            let title = catName(c)
+            if let n = m.exact[c], n > 0 {
+                let status: String = switch c {
+                case "widescreen", "fps": x("status.on")
+                case "gfx": x("status.macOn")
+                case "cheat": x("status.off")
+                case "mod": x("status.builtIn")
+                default: ""
+                }
+                chips.append(HitChip(id: c, symbol: sym, title: title, badge: "\(n)", status: status))
+            } else if c == "widescreen", !m.port, m.ownWiden {
+                chips.append(HitChip(id: "ownWiden", symbol: sym, title: title, badge: x("badge.auto"), status: x("status.off")))
+            } else if c == "widescreen", m.port {
+                chips.append(HitChip(id: "port", symbol: sym, title: title, badge: x("badge.port"), status: x("status.on")))
+            }
+        }
+        return chips
+    }
+
+    private var hasCollapsibleDetails: Bool {
+        guard on?.wrappedValue != false, !failed, let m = match else { return false }
+        return m.total > 0 || m.port || m.ownWiden || importMod != nil
+    }
+
     @ViewBuilder private var content: some View {
         if failed {
             note(x("unknown"))
         } else if let m = match {
-            if m.total > 0 || m.port || m.ownWiden {
-                VStack(alignment: .leading, spacing: 9) {
-                    ForEach(["widescreen", "fps", "gfx", "cheat", "mod"], id: \.self) { c in
-                        if let n = m.exact[c], n > 0 { hitRow(x("hit." + c).replacingOccurrences(of: "{0}", with: String(n)), symbol: Self.catSymbol[c] ?? "checkmark") }
-                        if c == "widescreen", (m.exact[c] ?? 0) == 0, !m.port, m.ownWiden { hitRow(x("ownWiden"), symbol: Self.catSymbol[c] ?? "checkmark") }
-                        if c == "widescreen", m.port { hitRow(x("port").replacingOccurrences(of: "{0}", with: m.portVersions.isEmpty ? x("port.any") : m.portVersions.prefix(3).joined(separator: zh ? "、" : ", ")), symbol: Self.catSymbol[c] ?? "checkmark") }
+            let chips = hitChips(m)
+            if !chips.isEmpty {
+                HStack(alignment: .top, spacing: 12) {
+                    ForEach(chips) { chip in
+                        hitChipView(chip)
                     }
                 }
-                if m.total > 0 { note(x("hit.version").replacingOccurrences(of: "{0}", with: mine(m))) } else if m.build.isEmpty { note(x("later")) }
-                note(x("hit.note"))
             } else {
-                note(m.build.isEmpty ? x("later") : x("none").replacingOccurrences(of: "{0}", with: mine(m)))
+                VStack(alignment: .leading, spacing: 4) {
+                    note(m.build.isEmpty ? x("later") : x("none").replacingOccurrences(of: "{0}", with: mine(m)))
+                    if !m.others.isEmpty {
+                        note(x(m.build.isEmpty ? "listed" : "others") + m.others.prefix(6).map { "\($0.version)\(zh ? "（" : " (")\($0.cats.map(catName).joined(separator: zh ? "、" : ", "))\(zh ? "）" : ")")" }
+                            .joined(separator: zh ? "；" : "; "))
+                    }
+                }
             }
-            if m.total == 0, !m.others.isEmpty {   // 补丁按版本生效（11-14 维护者）：列出的版本和玩家这份不同（或还不知道玩家是哪版）就不会打入，说清楚
-                note(x(m.build.isEmpty ? "listed" : "others") + m.others.prefix(6).map { "\($0.version)\(zh ? "（" : " (")\($0.cats.map(catName).joined(separator: zh ? "、" : ", "))\(zh ? "）" : ")")" }
-                    .joined(separator: zh ? "；" : "; "))
+            if detailsOpen {
+                VStack(alignment: .leading, spacing: 5) {
+                    if !chips.isEmpty {
+                        if m.total > 0 { note(x("hit.version").replacingOccurrences(of: "{0}", with: mine(m))) }
+                        else if m.build.isEmpty { note(x("later")) }
+                        if m.port {
+                            note(x("port").replacingOccurrences(of: "{0}", with: m.portVersions.isEmpty ? x("port.any") : m.portVersions.prefix(3).joined(separator: zh ? "、" : ", ")))
+                        } else if m.ownWiden, m.total == 0 {
+                            note(x("ownWiden"))
+                        }
+                        note(x("hit.note"))
+                    }
+                    if importMod != nil { note(x("mod.note")) }
+                }
+                .padding(.top, 2)
+                .transition(.opacity)
             }
-            if let importMod {   // 导入 Mod（11-15）：带代码补丁的 mod 这次出包编进程序；资源替换照常起局叠上
-                HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    note(x("mod.note"))
-                    Spacer(minLength: 8)
-                    if let modHelp { ModHelpButton(text: modHelp.text, label: modHelp.label, id: "export.sgrade.mod.help") }   // mod 格式说明（11-17）
+            if let importMod {
+                HStack(spacing: 8) {
+                    Spacer(minLength: 0)
+                    if let modHelp { ModHelpButton(text: modHelp.text, label: modHelp.label, id: "export.sgrade.mod.help") }
                     Button(x("mod.import"), action: importMod).buttonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("export.sgrade.mod.import")
                 }
+                .padding(.top, 2)
                 ForEach(modNotes, id: \.self) { note($0) }
             }
         } else {
@@ -170,15 +239,24 @@ struct SGradeCardView: View {
         }
     }
 
-    // 命中的一类：金色图标钮 + 一句话（几条、打进去了、默认开 / 关）
-    private func hitRow(_ text: String, symbol: String) -> some View {
-        HStack(spacing: 11) {
-            Image(systemName: symbol).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Self.goldHi)
-                .frame(width: 26, height: 26)
-                .background(Circle().fill(LinearGradient(colors: [Self.gold.opacity(0.30), Self.rose.opacity(0.22)], startPoint: .topLeading, endPoint: .bottomTrailing)))
-                .overlay(Circle().strokeBorder(LinearGradient(colors: [Self.goldHi.opacity(0.6), Self.rose.opacity(0.45)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.8))
-            Text(text).font(.manrope(13.5, .medium)).foregroundStyle(LauncherPalette.cream)
+    private func hitChipView(_ chip: HitChip) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: chip.symbol).font(.system(size: 11, weight: .semibold)).foregroundStyle(Self.goldHi)
+                Text(chip.title).font(.manrope(13, .semibold)).foregroundStyle(LauncherPalette.cream).lineLimit(1).fixedSize()
+                if let badge = chip.badge {
+                    Text(badge).font(.manrope(11.5, .bold)).monospacedDigit().foregroundStyle(Self.goldHi)
+                        .lineLimit(1).fixedSize()
+                        .padding(.horizontal, 6.5).padding(.vertical, 1)
+                        .background(Self.gold.opacity(0.22), in: Capsule())
+                }
+            }
+            Text(chip.status).font(.manrope(10.5, .medium)).foregroundStyle(LauncherTheme.Colors.secondary).lineLimit(1).fixedSize()
         }
+        .fixedSize()
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(LinearGradient(colors: [Self.gold.opacity(0.18), Self.rose.opacity(0.12)], startPoint: .topLeading, endPoint: .bottomTrailing)))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(LinearGradient(colors: [Self.goldHi.opacity(0.48), Self.rose.opacity(0.32)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.9))
     }
     private func note(_ text: String) -> some View {
         Text(text).font(.manrope(12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

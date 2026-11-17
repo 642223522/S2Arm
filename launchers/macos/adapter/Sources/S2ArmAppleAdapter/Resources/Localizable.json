@@ -4068,6 +4068,22 @@
   "en": "The backup is damaged, unsupported or contains unsafe paths. Restoration was refused."
  },
  {
+  "source": "备份里有文件校验对不上；手动恢复会跳过坏的那几个、保留当前存档里原来的，其余照常恢复。",
+  "en": "Some files in the backup failed the integrity check. A manual restore skips the damaged ones, keeps the current save's originals for them, and restores everything else."
+ },
+ {
+  "source": "确认之后当前存档又变了，已把当前进度另存一份恢复前副本，照常恢复。",
+  "en": "The current save changed after you confirmed. The current progress was saved as an extra pre-restore copy, and the restore continued."
+ },
+ {
+  "source": "备份文件 CRC 或 SHA-256 校验失败，已拒绝恢复。",
+  "en": "A backup file failed the CRC or SHA-256 check, so the restore was declined."
+ },
+ {
+  "source": "备份里有 {0} 个文件校验对不上（{1}），这几个不恢复、保留当前存档里原来的，其余照常恢复。",
+  "en": "{0} files in the backup failed the integrity check ({1}). Those files are not restored and the current save's originals are kept; everything else is restored."
+ },
+ {
   "source": "备份时间",
   "en": "Backup time"
  },
@@ -4144,8 +4160,16 @@
   "en": "The current save changed. Stop the game and check the backup again."
  },
  {
-  "source": "当前游戏存档将替换为已检查的备份。恢复前的存档会自动保留；游戏、用户或版本不符时不会恢复。",
-  "en": "The current save will be replaced with the checked backup. The previous save is retained automatically. A game, user or version mismatch prevents restoration."
+  "source": "当前游戏存档将替换为已检查的备份。恢复前的存档会自动保留；备份属于另一款游戏时不会恢复，用户或版本不符会先提示。",
+  "en": "The current game save will be replaced with the checked backup. The save from before the restore is kept automatically; a backup from a different game won't be restored, and a user or version mismatch is shown first."
+ },
+ {
+  "source": "备份与当前游戏版本或更新、DLC 组合不符，仍可恢复；游戏可能读不到这份进度，恢复前的存档会自动保留一份副本。",
+  "en": "The backup doesn't match the current game version, update or DLC combination. You can still restore it; the game may not be able to read this progress. The save from before the restore is kept automatically."
+ },
+ {
+  "source": "备份用户与当前存档用户不符，仍可恢复；恢复后当前用户的进度会换成备份里的，恢复前的存档会自动保留一份副本。",
+  "en": "The backup's users don't match the current save's users. You can still restore it; the current user's progress will be replaced with the one in the backup. The save from before the restore is kept automatically."
  },
  {
   "source": "恢复存档",
@@ -6164,6 +6188,10 @@
   "en": "The S2Arm reader tool is missing or does not match the engine version. Reinstall the full S2Arm."
  },
  {
+  "source": "这款游戏的程序号（{0}）和游戏包（{1}）对不上，多半是游戏文件被改过；已按程序号放进设备，照常安装。玩不了时请用原版游戏文件重新导入。",
+  "en": "This game's program ID ({0}) doesn't match its game package ({1}), usually because the game files were modified. It was placed on the device by program ID and installed as usual. If it doesn't play, import the original game files again."
+ },
+ {
   "source": ".NET SDK 装完了但没找到，请查看日志。",
   "en": "The .NET SDK was installed but cannot be found. See the log."
  },
@@ -8096,6 +8124,10 @@
   "en": "Couldn't back up the saves on the phone before this install ({0}). Without a backup, saves could be lost if the install goes wrong. Click again to continue anyway."
  },
  {
+  "source": "iPhone 锁着，读不了存档：请解锁手机，解锁后会自动继续",
+  "en": "The iPhone is locked, so its saves can't be read. Unlock the phone and this will continue automatically"
+ },
+ {
   "source": "读不懂 iPhone 返回的存档文件清单（{0} 条没有路径字段，多半是 Xcode 版本不同）",
   "en": "Couldn't understand the save file list from the iPhone ({0} entries have no path; usually a different Xcode version)"
  },
@@ -9080,8 +9112,12 @@
   "en": "Couldn't download {0}'s package: {1}. Check your network and try again."
  },
  {
-  "source": "{0} 的包件内容和登记的不一致（提交 {1}）：没有用它。",
-  "en": "{0}'s package doesn't match its registration (commit {1}), so it wasn't used."
+  "source": "{0} 的包件内容和登记的不一致（提交 {1}），重新下载后还是不对：没有用它。",
+  "en": "The {0} package doesn't match its registered contents (commit {1}), even after downloading it again, so it wasn't used."
+ },
+ {
+  "source": "{0} 的包件解不开，重新下载后还是不对：没有用它。",
+  "en": "The {0} package couldn't be extracted, even after downloading it again, so it wasn't used."
  },
  {
   "source": "解包出的游戏程序 {0} 不是 {1} 要的那一版（{2}），做不出来。导入 {3} 更新后再导出。",
@@ -9772,10 +9808,6 @@
   "en": "Invalid mod switch request."
  },
  {
-  "source": "重试没用，要删掉 iPhone 上的 S2Arm App 再重装：①先在游戏菜单「存档管理」里导出存档，存到 S2Arm 文件夹以外（比如 iCloud 云盘）；②在 iPhone 桌面长按 S2Arm，删除 App；③在电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」；④装好后在「存档管理」里导回存档。电脑上的游戏和 S2Arm 都不用删。",
-  "en": "Retrying won’t help. You need to delete the S2Arm app on your iPhone and install it again: 1) First export your saves from the game menu (Manage saves) to a place outside the S2Arm folder, such as iCloud Drive; 2) On the iPhone Home Screen, touch and hold S2Arm and delete the app; 3) In S2Arm on your computer, click Install on iPhone for this game again; 4) Once it’s installed, import your saves again in Manage saves. You don’t need to delete the games or S2Arm on your computer."
- },
- {
   "source": "iPhone 上的 S2Arm 写不进 {0}，也删不掉它（{1}；删除：{2}）。{3}",
   "en": "S2Arm on the iPhone can’t write {0} and can’t delete it either ({1}; delete: {2}). {3}"
  },
@@ -10091,16 +10123,28 @@
   "source": "手机空间写满了",
   "en": "iPhone storage is full"
  },
-{
+ {
   "source": "这份游戏文件里有数据和原版对不上（多半是改版 / 整合版，或个别块损坏），已跳过完整性校验照常导入。",
   "en": "Some data in this game file does not match the original (usually a modded or merged build, or a damaged block). The integrity check was skipped and the game was imported anyway."
  },
-{
+ {
   "source": "能玩就照常用；出包或游戏里出现花屏、闪退时，换一份原版完整的文件（本体与更新 / DLC 分开的那种）再试。",
   "en": "If it plays, keep using it. If you see graphics glitches or crashes when building or playing, try again with a complete original file (base game and updates / DLC as separate files)."
  },
-{
+ {
   "source": "导入时这款数据校验不过（多半是改版 / 整合版或个别块损坏），这次失败可能与此有关；换一份原版完整的文件再试。",
   "en": "This game's data failed the integrity check when it was imported (usually a modded or merged build, or a damaged block), which may be related to this failure. Try again with a complete original file."
+ },
+ {
+  "source": "「{0}」（{1}）里是另一个游戏库，有 {2} 款游戏，不是 S2Arm 上次记下的那个。点「仍然继续」就改用它；不是你要的，就到设置里重新选游戏库。",
+  "en": "“{0}” ({1}) holds a different game library with {2} games, not the one S2Arm remembered. Click Continue anyway to use it; if it isn’t the one you want, choose your game library again in Settings."
+ },
+ {
+  "source": "点「仍然继续」改用这个游戏库；不是你要的，就到设置里重新选游戏库。",
+  "en": "Click Continue anyway to use this game library; if it isn’t the one you want, choose your game library again in Settings."
+ },
+ {
+  "source": "先试这两步：①在 iPhone 上打开一次 S2Arm，等游戏库界面出来；②回电脑对这款游戏再点一次「装到 iPhone」，会接着已传的部分继续，不用从头来。还是写不进，就要删掉 iPhone 上的 S2Arm App 再重装：先在游戏菜单「存档管理」里导出存档，存到 S2Arm 文件夹以外（比如 iCloud 云盘）；再在 iPhone 桌面长按 S2Arm，删除 App；然后在电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」；装好后在「存档管理」里导回存档。电脑上的游戏和 S2Arm 都不用删。",
+  "en": "Try these two steps first: 1) Open S2Arm on the iPhone once and wait for the game library to appear; 2) Back on your computer, click “Install on iPhone” for this game again. It picks up from what was already copied, so it won’t start over. If it still can’t write, delete the S2Arm app on your iPhone and install it again: export your saves from the game menu (Manage saves) to a place outside the S2Arm folder, such as iCloud Drive; on the iPhone Home Screen, touch and hold S2Arm and delete the app; in S2Arm on your computer, click Install on iPhone for this game again; once it’s installed, import your saves again in Manage saves. You don’t need to delete the games or S2Arm on your computer."
  }
 ]

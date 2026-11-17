@@ -7,8 +7,21 @@ if [ "$(uname -s)" = Darwin ]; then
     export S2A_VULKAN_CACHE="$repo/build/vulkan-cache"
     exec bash "$repo/android/tests/vk/run.sh" "--pool-table${1:-}"
 fi
-icd=${S2A_LAVAPIPE_ICD:-/usr/share/vulkan/icd.d/lvp_icd.x86_64.json}
-layer=${S2A_VK_LAYER_DIR:-/usr/share/vulkan/explicit_layer.d}
+# 找 lavapipe / validation 与 run.sh 的 find_icd / find_layer 同口径：Mesa 25 起 ICD 文件名不带架构（lvp_icd.json），
+# 只认 lvp_icd.x86_64.json 会在新系统上整套报「missing lavapipe or validation」（11-17 GitHub android-vk 全片 rc=2）。
+icd=${S2A_LAVAPIPE_ICD:-}
+if [ -z "$icd" ]; then
+    for f in "$HOME/.local/share/vulkan/icd.d/lvp_icd.json" "$HOME/.local/share/vulkan/icd.d/lvp_icd."*.json \
+             /usr/share/vulkan/icd.d/lvp_icd.json /usr/share/vulkan/icd.d/lvp_icd.*.json; do
+        [ -f "$f" ] && { icd=$f; break; }
+    done
+fi
+layer=${S2A_VK_LAYER_DIR:-}
+if [ -z "$layer" ]; then
+    for d in "$HOME/.local/share/vulkan/explicit_layer.d" /usr/share/vulkan/explicit_layer.d; do
+        [ -f "$d/VkLayer_khronos_validation.json" ] && { layer=$d; break; }
+    done
+fi
 [ -f "$icd" ] && [ -f "$layer/VkLayer_khronos_validation.json" ] || { echo 'missing lavapipe or validation' >&2; exit 2; }
 [ -f "$repo/build/c883-ndk/vulkan/vulkan_core.h" ] || { echo 'NDK 29 headers not staged' >&2; exit 2; }
 out="$repo/build/vk-pool-table"; mkdir -p "$out"

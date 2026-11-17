@@ -6,6 +6,7 @@
 #include "nvn_mtl.h"
 #include "../replay/rp_state.h"
 #include "../replay/rp_exec.h"
+#include "../replay/rp_fps_seg.h"
 #include "../replay/rp_res.h"
 #include "../replay/rp_shader.h"
 #include "nvn_refl.h"
@@ -26,15 +27,18 @@ static int g_fail, g_checks;
 static int g_red_lines; static char g_last_red[200];
 static int g_arena_truncated_lines;
 static int g_arena_detail_lines; static char g_arena_detail[256]; static char g_arena697_lines[32][256];
-void nvn_plat_log(int level, const char *cls, const char *text) { (void)cls; if(level == NVN_PLAT_LOG_RED && strstr(text,"后续不同原因详情省略（最多8）"))g_arena_truncated_lines++; if (level == NVN_PLAT_LOG_RED && strstr(text,"arena_alloc_failed rc=")) { if(g_arena_detail_lines<32)snprintf(g_arena697_lines[g_arena_detail_lines],256,"%s",text); g_arena_detail_lines++; snprintf(g_arena_detail,sizeof g_arena_detail,"%s",text); } if (level == NVN_PLAT_LOG_RED) { g_red_lines++; snprintf(g_last_red, sizeof g_last_red, "%s", text); } }
+static char g_ps_lines[8][320]; static int g_ps_n;   // 池统计行（cls "poolstats"）收下来给 t_pool_stats 核
+void nvn_plat_log(int level, const char *cls, const char *text) { if (cls && !strcmp(cls, "poolstats")) { if (g_ps_n < 8) snprintf(g_ps_lines[g_ps_n], 320, "%s", text); g_ps_n++; return; } if(level == NVN_PLAT_LOG_RED && strstr(text,"后续不同原因详情省略（最多8）"))g_arena_truncated_lines++; if (level == NVN_PLAT_LOG_RED && strstr(text,"arena_alloc_failed rc=")) { if(g_arena_detail_lines<32)snprintf(g_arena697_lines[g_arena_detail_lines],256,"%s",text); g_arena_detail_lines++; snprintf(g_arena_detail,sizeof g_arena_detail,"%s",text); } if (level == NVN_PLAT_LOG_RED) { g_red_lines++; snprintf(g_last_red, sizeof g_last_red, "%s", text); } }
 static int g_flag_finish_lag;   // 用例设：开关 nvk_finish_lag 的值
 static int g_flag_sync_lag;     // 用例设：开关 nvk_sync_lag 的值（产品缺省 1＝允许一格在飞；用例固定 0，测的是「真等」这条契约）
 static int g_flag_state_keep = 1, g_flag_rt_cont = 1, g_flag_clear_park = 1, g_flag_pass_area = 1;   // 用例设：开关 nvk_state_keep / nvk_rt_cont / nvk_clear_park / nvk_pass_area 的值（缺省同产品：都开）
 static int g_flag_pool_memo = 1;   // 用例设：开关 nvk_pool_memo 的值（缺省同产品：开）；备忘每 4096 次查找才重读一次，换值后要用 pm_flag() 推一下
 static int g_flag_buf_blocks;      // 分块验证只在明确开启时尝试；产品默认关闭。
 static int g_flag_vf_key = 1;      // 用例设：开关 nvk_vf_key 的值（缺省同产品：视图表按存储认视图）；每 256 次取视图重读一次，换值后要用 vf_push() 推一下
+static int g_flag_pool_stats;   // 用例设：开关 pool_stats（缺省同产品：关）
 int nvn_plat_flag(const char *name, int dflt) {
     if (!strcmp(name, "nvk_buf_blocks")) return g_flag_buf_blocks;
+    if (!strcmp(name, "pool_stats")) return g_flag_pool_stats;
     if (!strcmp(name, "nvk_pool_memo")) return g_flag_pool_memo;
     if (!strcmp(name, "nvk_vf_key")) return g_flag_vf_key;
     if (!strcmp(name, "nvk_finish_lag")) return g_flag_finish_lag;
@@ -4284,6 +4288,100 @@ static void t_sync_reuse_after_gpu_write(void) {
     nvn_be_pool_del(g_pmem); g_buf_cpu_auto = 0;
 }
 
+// ---------- 「分时」按游戏申请的帧率分段（rp_fps_seg.h）----------
+// 一个窗口里 60 → 30 → 60：各段的目标、帧数、实际帧率、达标比例、慢帧计数都按手算的对；空窗口 0 值也打。时间都是整纳秒，期望值手算：
+//   段 1 间隔 1：100.000 秒起每 1/60 秒一帧共 100 帧，再隔 120 毫秒一帧（101 帧；慢帧 1.5 倍 1、100 毫秒 1）；101.800 秒游戏设间隔 2
+//   段 2 间隔 2：101.800 起每 1/30 秒一帧 30 帧（第一帧离上一帧 63 毫秒 > 50），再隔 60 毫秒一帧（31 帧；1.5 倍 2、100 毫秒 0）；102.900 秒设回 1
+//   段 3 间隔 1：102.900 起每 1/60 秒一帧 60 帧（第一帧离上一帧 57 毫秒 > 25；1.5 倍 1），收尾在 103.900 秒
+//   实际帧率：101 / 1.8 = 56.1（达标 94%），31 / 1.1 = 28.2（94%），60 / 1.0 = 60.0（100%）
+static char g_fseg_lines[6][400]; static int g_fseg_n;
+static void fseg_cap(const char *l) { if (g_fseg_n < 6) snprintf(g_fseg_lines[g_fseg_n], 400, "%s", l); g_fseg_n++; }
+static void t_fps_target_segments(void) {
+    struct fseg_win w; memset(&w, 0, sizeof w); g_fseg_n = 0;
+    const uint64_t S = 1000000000ull, T0 = 100 * S;
+    uint64_t t = 0;
+    for (uint64_t k = 0; k < 100; k++) { t = T0 + k * S / 60; fseg_frame(&w, t, 1, 0); }
+    t += 120000000ull; fseg_frame(&w, t, 1, 0);
+    const uint64_t set2 = T0 + 1800000000ull, set3 = T0 + 2900000000ull;
+    for (uint64_t j = 1; j <= 30; j++) { t = set2 + j * S / 30; fseg_frame(&w, t, 2, set2); }
+    t += 60000000ull; fseg_frame(&w, t, 2, set2);
+    for (uint64_t m = 1; m <= 60; m++) { t = set3 + m * S / 60; fseg_frame(&w, t, 1, set3); }
+    CHECK(w.n == 3 && w.s[0].frames == 101 && w.s[1].frames == 31 && w.s[2].frames == 60);
+    CHECK(w.s[1].t0 == set2 && w.s[2].t0 == set3);                       // 断段在游戏设间隔的时刻，不在下一帧
+    fseg_emit(&w, t, fseg_cap);
+    CHECK(g_fseg_n == 3);
+    CHECK(strstr(g_fseg_lines[0], "第 1/3 段 100.000–101.800 秒（1.80 秒）：游戏申请交换间隔 1（目标 60.0 帧/秒、帧间隔 16.7 毫秒）；上屏 101 帧、实际 56.1 帧/秒、达标 94%；超过目标间隔 1.5 倍 1 帧、超过 100 毫秒 1 帧") != NULL);
+    CHECK(strstr(g_fseg_lines[1], "第 2/3 段 101.800–102.900 秒（1.10 秒）：游戏申请交换间隔 2（目标 30.0 帧/秒、帧间隔 33.3 毫秒）；上屏 31 帧、实际 28.2 帧/秒、达标 94%；超过目标间隔 1.5 倍 2 帧、超过 100 毫秒 0 帧") != NULL);
+    CHECK(strstr(g_fseg_lines[2], "第 3/3 段 102.900–103.900 秒（1.00 秒）：游戏申请交换间隔 1（目标 60.0 帧/秒、帧间隔 16.7 毫秒）；上屏 60 帧、实际 60.0 帧/秒、达标 100%；超过目标间隔 1.5 倍 1 帧、超过 100 毫秒 0 帧") != NULL);
+    // 下一窗口沿用最后的间隔；一帧没上屏也打一行（0 值）
+    CHECK(w.n == 1 && w.s[0].itv == 1 && w.s[0].frames == 0 && w.s[0].t0 == t);
+    fseg_emit(&w, t + 5 * S, fseg_cap);
+    CHECK(g_fseg_n == 4 && strstr(g_fseg_lines[3], "第 1/1 段") && strstr(g_fseg_lines[3], "上屏 0 帧、实际 0.0 帧/秒、达标 0%；超过目标间隔 1.5 倍 0 帧、超过 100 毫秒 0 帧"));
+    // 设的时刻不在当前段里（早于段起点）：断在这一帧
+    memset(&w, 0, sizeof w); fseg_frame(&w, T0, 1, 0); fseg_frame(&w, T0 + S, 2, T0 - S);
+    CHECK(w.n == 2 && w.s[1].t0 == T0 + S);
+    g_fseg_n = 0; fseg_emit(&w, T0 + 2 * S, fseg_cap);
+    CHECK(g_fseg_n == 2 && w.n == 1 && w.s[0].itv == 2);             // 窗口收在间隔 2：下一窗口从间隔 2 起（不回到 1）
+    nvn_be_present_target(1, 0);                                         // 回放核心接了前端的钩子（链得上即可；上屏节拍不受它影响）
+}
+
+// ---------- 池查找统计（rp_present.c rp_pool_stats_*，开关 pool_stats；#1368 读数）----------
+// 契约：关着一行不打；开着每 1024 帧一行（0 值也打）、会话收尾一行 why=end。各字段等于对应的累计读数：
+// fast_hits = rp_pool_fast_hits()，memo_hits / lookups = rp_pool_memo_stats，span_index_hits = nvn_dirty_span_stats，
+// submits = 开着以来的队列提交次数。fast_hits 与 lookups 是两个数：夹具先关备忘查一批（只走快路，不计 lookups）再开备忘查一批，让两者不等。
+static uint64_t ps_field(const char *line, const char *k) { const char *q = strstr(line, k); return q ? strtoull(q + strlen(k), NULL, 10) : ~0ull; }
+static void t_pool_stats(void) {
+    static uint8_t mem[0x1000]; const uint64_t b = (uint64_t)(uintptr_t)mem;
+    g_ps_n = 0; g_flag_pool_stats = 0;
+    for (int i = 0; i < 2048; i++) nvn_be_present(NULL, 0, NULL);
+    CHECK(g_ps_n == 0);                                    // 关着：0 行
+    nvn_be_pool_add(mem, sizeof mem);
+    pm_flag(0); for (int i = 0; i < 64; i++) rp_pool_find(b + 0x10, 0x10, NULL, NULL);
+    pm_flag(1); for (int i = 0; i < 8; i++) rp_pool_find(b + 0x20, 0x10, NULL, NULL);
+    g_flag_pool_stats = 1;
+    for (int i = 0; i < 1024; i++) nvn_be_present(NULL, 0, NULL);
+    CHECK(g_ps_n == 1);                                    // 开着：第 1024 帧一行，这时还没有回放，0 值也打
+    const char *l = g_ps_lines[0];
+    CHECK(strncmp(l, "S2A_POOLSTATS v=1 why=frame frames=1024 ", 40) == 0);
+    CHECK(ps_field(l, " submits=") == 0 && ps_field(l, " exec_ns=") == 0);
+    uint64_t mh = 0, ml = 0, xh = 0, xs = 0, xn = 0; rp_pool_memo_stats(&mh, &ml); nvn_dirty_span_stats(&xh, &xs, &xn);
+    CHECK(ps_field(l, " memo_hits=") == mh && ps_field(l, " lookups=") == ml && ps_field(l, " span_index_hits=") == xh);
+    CHECK(rp_pool_fast_hits() != ml);                      // 前提：两个数确实不同（不然下面那条分不出混没混）
+    CHECK(ps_field(l, " fast_hits=") == rp_pool_fast_hits());
+    stream a = {0}; end(&a); submit1(&a); submit1(&a);
+    rp_pool_stats_end();
+    CHECK(g_ps_n == 2 && strncmp(g_ps_lines[1], "S2A_POOLSTATS v=1 why=end frames=1024 ", 38) == 0 && ps_field(g_ps_lines[1], " submits=") == 2);
+    g_flag_pool_stats = 0;
+    for (int i = 0; i < 1024; i++) nvn_be_present(NULL, 0, NULL);
+    CHECK(g_ps_n == 2);                                    // 关回去：不再打
+    nvn_be_pool_del(mem);
+}
+
+// 长帧日志的帧级账（rp_frame_take）：累计计数改成「与上次取时相减」后，取走的仍是本帧的量（取完再取为 0，不跨帧累加）。
+static void t_frame_take_delta(void) {
+    uint64_t ns = 0, dr = 0, sb = 0, tn = 0, ts = 0;
+    rp_frame_take(&ns, &dr, &sb);                          // 先清掉之前用例留下的账
+    stream a = {0}; end(&a); submit1(&a); submit1(&a);
+    rp_frame_take(&ns, &dr, &sb); CHECK(sb == 2 && dr == 0);
+    rp_frame_take(&ns, &dr, &sb); CHECK(sb == 0 && dr == 0 && ns == 0);   // 取过就是 0：不再把上一帧算进来
+    submit1(&a);
+    rp_frame_take(&ns, &dr, &sb); CHECK(sb == 1);
+    rp_exec_totals(&tn, &ts); CHECK(ts >= 3);              // 累计只增：至少有本例这 3 次
+}
+
+// 会话收尾那一行走真实收尾路径（nvn_be_shutdown_session），不直接调 rp_pool_stats_end：收尾里漏接这一调用时本例必红。
+// 收尾会把回放核心整份复位，所以放在 main 的最后、所有别的用例之后。
+static void t_pool_stats_shutdown(void) {
+    g_ps_n = 0; g_flag_pool_stats = 1;
+    nvn_be_present(NULL, 0, NULL);                         // 帧边界：打开
+    stream a = {0}; end(&a); submit1(&a);
+    CHECK(g_ps_n == 0);                                    // 还没到 1024 帧：没有行
+    CHECK(nvn_be_shutdown_session() == 0);
+    CHECK(g_ps_n == 1 && strncmp(g_ps_lines[0], "S2A_POOLSTATS v=1 why=end frames=1 ", 35) == 0 && ps_field(g_ps_lines[0], " submits=") == 1);
+    g_flag_pool_stats = 0;
+    CHECK(nvn_be_shutdown_session() == 0 && g_ps_n == 1);  // 收尾后已关：再收尾不重复打
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1], "--sync-reuse")) { t_sync_reuse_after_gpu_write(); printf("sync reuse: %d checks, %d failures\n", g_checks, g_fail); return g_fail != 0; }
     t_invalidated_attachment_pin();
@@ -4374,8 +4472,12 @@ int main(int argc, char **argv) {
     t_pass_3d_slice_view();
     t_bind_reuse();
     t_begin_fail();
+    t_fps_target_segments();
+    t_pool_stats();
+    t_frame_take_delta();
     if (argc > 1 && t_table(argv[1])) g_fail++;
-    t_tex_linear_dirty_rows();   // 放在最后：它推高全局上传计数，前面有用例按「从 0 起」断言
+    t_tex_linear_dirty_rows();   // 放在倒数第二：它推高全局上传计数，前面有用例按「从 0 起」断言
+    t_pool_stats_shutdown();   // 会话收尾会复位整个回放核心：必须是最后一个用例（不看上传计数）
     printf("t_nvn_replay：%d 项检查，%d 项红\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

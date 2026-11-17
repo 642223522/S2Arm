@@ -13,6 +13,7 @@ struct InstallView: View {
     @EnvironmentObject var loc: Localizer
     @Environment(\.dismiss) private var dismiss
     let gameID: String
+    var onOpenSettings: (() -> Void)? = nil
     @State private var showRemoveConfirm = false
     @State private var showRestoreConfirm = false
 
@@ -71,7 +72,9 @@ struct InstallView: View {
                                         // 团队号手填 / 引导项目收进环境检查「装到 iPhone 的方式」（v0.3.0）：这里只给一个去设置
                                         LauncherRowActions {
                                             Button(BackendText.launcherText("install.mode.go_settings", language: loc.lang.sharedCode)) {
-                                                dismiss(); DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { model.showEnvironment = true }
+                                                onOpenSettings?()
+                                                dismiss()
+                                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { model.showEnvironment = true }
                                             }
                                             .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("install.goSettings")
                                             Button(text("install.apple.open")) {

@@ -1952,6 +1952,7 @@ def catalog(c):
     if startup:
         sweep_residue(c)   # 崩溃 / 断电 / 被杀留下的解包与中间产物：启动时扫一次（剃刀 H14：原先每次刷新都扫两遍；正常失败与取消由 clean_after_stop 当场清）
         sweep_trash(c)   # 删除时挪进 .s2a-trash 而当时没删干净的：同在启动时清一次（玩家反馈 11-11 删除先挪再删）
+        sweep_private_tmp(c)   # 作业被打断（卡死 / 强退 / 断电）留在私有目录的临时目录：同在启动时清一次（#1471）
         unseal_builds(c)   # 旧版本留下的只读 RomFS 共享存储：每款一次加回写权限，玩家手动删旧产物不再被挡
     cat = c.catalog()
     input_supported, input_reason = toolchain.input_interface(c)
@@ -2400,7 +2401,8 @@ def _keep_stage_logs(c, gid):
     roots = [*work.glob("roots/*@现行"), *work.glob("work/pkg/product"), *layout.build_dir(c, gid, create=False).glob("*/roots/*@现行"),  # 非玩家句
              *work.glob("work"),   # Windows 一键出包各步的日志（seed.log 等，pack/orch/oneclick_win.py Run.sh 写在工作目录下）：#754 失败后随 build/ 删掉，诊断包里没有
              # 阶段失败时各阶段把自己的日志拷进产物根旁的 .failed/（如改写 pack/stage_rewrite.sh 的 <款>_<模块>.log）：玩家报出包超时 / 改写失败时要的就是它（#251 诊断包里没有）
-             *work.glob("roots/.failed"), *layout.build_dir(c, gid, create=False).glob("*/roots/.failed")]
+             *work.glob("roots/.failed"), *layout.build_dir(c, gid, create=False).glob("*/roots/.failed"),
+             *work.glob("work/roots/.failed")]   # Windows 一键出包的产物根在工作目录下（pack/jobs/ipa.py win_oneclick --out <工作目录>/work）：改写失败留的 <款>_<模块>.rewrite.log（#1476 诊断包里只有 light.log）
     dest = c.logs / (c.task + "-stages")
     count = 0
     for root in roots:
@@ -2576,12 +2578,10 @@ def delete(c):
         #   下次再删又卡在同一个文件上（11-11 玩家反馈「删除有时生效有时不生效」，真 App 复现）。挪走的删不干净只记黄字，空闲时 sweep_trash 接着删
         trashed = []
         if gdir and gdir.exists():
-            # 存档有内容就保留
-            saves = gdir / "saves"
-            backups = gdir / "save-backups"
-            has_saves = layout.has_content(saves) or layout.has_content(backups)   # 只有 .DS_Store 之类不算有存档
+            # 存档类（layout.save_entries 唯一来源：saves/、save-backups/、save_backup/、SaveData*）有内容就全部保留，其余照删（金手指、mod 不算存档）
+            has_saves = any(layout.has_content(p) for p in layout.save_entries(gdir))   # 只有 .DS_Store 之类不算有存档
             root = gdir.parent.parent   # 这款所在存放位置的根（root_of 靠 find_game，认不出时会退回默认位置）
-            for item in ([i for i in gdir.iterdir() if i.name not in ("saves", "save-backups")] if has_saves else [gdir]):
+            for item in ([i for i in gdir.iterdir() if not layout.is_save_entry(i.name)] if has_saves else [gdir]):
                 moved = _to_trash(c, root, item, gid)
                 if moved:
                     trashed.append((root, moved))
@@ -2638,6 +2638,39 @@ def _to_trash(c, root, item, gid):
     except OSError as e:
         raise Failure(f"删不掉「{item.name}」：{e.strerror or e}。确认这块盘没被设成只读、文件没被别的程序锁住，再删一次。", code="job_failed") from e
     return dest
+
+
+# 私有目录里作业建的临时目录：TemporaryDirectory(dir=c.private) 的缺省名 tmp + 8 位，装机 / 下游装机的 mkdtemp 前缀。只认这几种名字（我们自己建的）
+PRIVATE_TMP = re.compile(r"(tmp|s2a-install-|s2a-ds-install-)[a-z0-9_]{8}")
+PRIVATE_TMP_AGE_S = 24 * 3600
+
+
+def sweep_private_tmp(c, now=None):
+    """作业被打断后留在私有目录的临时目录（#1471：S 级优化给 Mac 补着色器的临时产物根 tmp*/roots 被打断就留下，玩家看到几十 GB）。
+    启动器开局时清：只清我们自己建的名字（PRIVATE_TMP）、真目录（不跟软链）、本库没有任务在跑（执行锁与自动重活锁都拿得到）、
+    且它和第一层内容超过一天没动过（防另一份游戏库 / 另一个启动器实例的任务还在用）。删不掉的下次再试；→ 删了几个"""
+    now = time.time() if now is None else now
+    try:
+        cands = [p for p in c.private.iterdir() if PRIVATE_TMP.fullmatch(p.name) and p.is_dir() and not _is_link(p)]
+    except OSError:
+        return 0
+    if not cands:
+        return 0
+    n = 0
+    with c.idle("execution") as free, c.idle("auto-heavy") as auto_free:
+        if not (free and auto_free):
+            return 0
+        for p in cands:
+            try:
+                newest = max([p.lstat().st_mtime] + [e.stat(follow_symlinks=False).st_mtime for e in os.scandir(p)])
+                if now - newest < PRIVATE_TMP_AGE_S:
+                    continue
+                _rm(c, c.private, p); n += 1
+            except (Failure, OSError):
+                continue
+    if n:
+        print(f"清掉私有目录里作业被打断留下的临时目录 {n} 个", file=sys.stderr)  # 非玩家句
+    return n
 
 
 def sweep_trash(c):
@@ -2739,7 +2772,7 @@ def space_parts(c, gid):
         "shaders": [p for p in game_caches(c, gid) if p not in shared] + [Path(c.work_root) / "cache" / "programs" / gid.upper()],   # 程序缓存：缺了按常驻配方现建（pack/jobs/programs.py）；出包收尾不清它
         "mac": [layout.image_mac(c, gid, create=False)] if gdir and gdir.exists() else [],
         "ipa": ipa,
-        "saves": [layout.path(c, gid, "saves", create=False)],
+        "saves": layout.save_entries(gdir) if gdir else [],   # 只报不删（SPACE_KEPT）；存档类唯一来源 layout.save_entries
         "logs": [out / "logs"],
     }
     return {k: [p for p in v if p.exists() or p.is_symlink()] for k, v in parts.items()}

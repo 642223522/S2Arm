@@ -276,7 +276,7 @@ def sgrade_pending(c, games):
         return False
     if any(rewrite_refresh.kept_todo(c, g, layout.ios_kit(c, g)) for g in games if g):   # 运行时留下、还没进 iPhone 件的 NRO（#8be819）：要重组容器补上
         return True
-    pend = rewrite_refresh.pending_ios(c, [g for g in games if g], rid)
+    pend = rewrite_refresh.pending_ios(c, [g for g in games if g], rid, ignore_rewriter=True)   # 改写器指纹单独变了不因此重组容器（11-17 维护者定）
     # 这一版记号下已经试过、缺原件补不上的不算（不然每次「更新 iPhone」都白重装一遍）
     if any((layout.game_info(c, g).get("ios") or {}).get("sgradeMissing") != (rewrite_refresh.ios_key(c, g, rid) or "") for g in pend):
         return True
@@ -922,13 +922,34 @@ def backup_failed(c, why):
                   code="save_backup_failed", internal=why)
 
 
+# 手机锁着（devicectl：com.apple.dt.RemotePairingError 1016「…has not been unlocked recently」等）：读不了 App 数据容器，解锁后就能读。
+#   维护者 11-17（玩家判断不了的我们替他判）：不先问「仍然继续 / 先不」，提示解锁、每几秒自动重试，等到了照常备份；等满 2 分钟还锁着才走原来的确认
+LOCKED = re.compile(r"RemotePairingError.{0,40}\b1016\b|not been unlocked|device is locked|passcode.{0,20}locked", re.I | re.S)
+UNLOCK_WAIT_S, UNLOCK_POLL_S = 120, 5   # 等满 2 分钟还锁着才退回确认框
+
+
+def wait_unlocked(c, call):
+    """call() → (rc, data, err)。锁屏才等：rc 非 0 且错误是锁屏 → 提示解锁、每 UNLOCK_POLL_S 秒重试，直到不再是锁屏错误或等满 UNLOCK_WAIT_S；返回最后一次结果"""
+    rc, data, err = call()
+    if not rc or not LOCKED.search(err or ""):
+        return rc, data, err
+    c.emit("message", "iPhone 锁着，读不了存档：请解锁手机，解锁后会自动继续")
+    end = time.monotonic() + UNLOCK_WAIT_S
+    while rc and LOCKED.search(err or "") and time.monotonic() < end:
+        c.check()   # 玩家取消照常能停
+        time.sleep(UNLOCK_POLL_S)
+        rc, data, err = call()
+    note(c, "存档备份等手机解锁：" + ("已解锁，继续" if not (rc and LOCKED.search(err or "")) else f"等了 {UNLOCK_WAIT_S} 秒仍锁着"))  # 非玩家句
+    return rc, data, err
+
+
 def backup_saves(c, ident, bid, gid, docs="Documents"):
     """覆盖装前把机上这款的整个存档目录（bis/user/save）逐文件拉回游戏库 games/<程序号>/save_backup/<时刻>/（10-27 运维线：
     斯普拉遁3 体感包覆盖装后进了选形象页，原档没有备份、无从比对）。第一次装 / 机上没有存档 = 不备份；拉失败报红停装，宁可不装也不冒丢档的险"""
     from diag import devicectl
     save_dir = f"{docs}/{SAVE_REL}"
-    rc, data, err = devicectl(c, "device", "info", "files", "--device", ident, "--domain-type", "appDataContainer", "--domain-identifier", bid,
-                              "--subdirectory", save_dir, timeout=120)
+    rc, data, err = wait_unlocked(c, lambda: devicectl(c, "device", "info", "files", "--device", ident, "--domain-type", "appDataContainer",
+                                                       "--domain-identifier", bid, "--subdirectory", save_dir, timeout=120))
     # 文件清单的路径字段（#908：玩家 Xcode 16.0 的 devicectl 有条目不带 relativePath，原先 f["relativePath"] 抛 KeyError、整个装机作业崩成
     #   「本地任务失败」，每次都装不上）：relativePath / path 都认；都没有的条目读不懂 → 走「备份不了存档、确认后照装」，条目字段名记进日志，不再崩
     entries = [f for f in ((data.get("result") or {}).get("files") or []) if isinstance(f, dict)]
@@ -942,7 +963,7 @@ def backup_saves(c, ident, bid, gid, docs="Documents"):
         # 列不出：App 不在机上（第一次装）才算没有存档；App 在却列不出要分清两种——devicectl 对「目录不存在」和「锁屏 / 隧道断」报同一个错
         #   （11-07 满屏线 Duo 实测：容器第一次装半途失败 / 从没进过游戏，机上 Documents/games 是空目录，原先每次都拒装、玩家永久卡死）。
         #   往上逐级列父目录，第一个列得出的父目录定：里面看不到存档目录 = 没有存档，照装；看得到却列不出 / 父目录一个都列不出 = 停装
-        arc, apps, aerr = devicectl(c, "device", "info", "apps", "--device", ident, "--bundle-id", bid, timeout=60)
+        arc, apps, aerr = wait_unlocked(c, lambda: devicectl(c, "device", "info", "apps", "--device", ident, "--bundle-id", bid, timeout=60))
         if arc:   # 连「装没装过」都问不出（锁屏 / 超时 / 断开）：不能当成第一次装，否则跳过备份直接覆盖（#333）
             return backup_failed(c, "确认不了 iPhone 上有没有装过这款：" + (aerr.splitlines()[-1] if aerr else f"devicectl 退出 {arc}"))  # 非玩家句
         if any(a.get("bundleIdentifier") == bid for a in (apps.get("result") or {}).get("apps") or []):
@@ -1369,7 +1390,8 @@ def export_phone(c, gid=None):
     import contextlib
     held = contextlib.ExitStack()   # 导出读各款程序件与资源包（写 .img）：整段持有这几款的程序锁，出包交付换件时等它写完
     held.enter_context(packer.program_locks(c, ([gid] if gid else []) + others))
-    refresh_ios(c, ([gid] if gid else []) + others)
+    refresh_ios(c, [gid] if gid else [])   # 导出：这一款按本引擎核；别款改写器指纹单独变了不批量重改写（11-17 维护者定）
+    refresh_ios(c, [g for g in others if g != gid], ignore_rewriter=c.r.get("sgradeUpgrade") is not True)
     c.begin("组装 S2Arm.ipa（未签名）", 2, 4)
     work = Path(tempfile.mkdtemp(prefix=".export-", dir=c.library))
     try:
@@ -1388,7 +1410,7 @@ def export_phone(c, gid=None):
         old_stamps = read(c.private / EXPORT_STAMPS, {}) or {}
         for g in games:
             f = _img_name(names.get(g, g), g, used)
-            stamp = _pack_stamp(c, layout.ios_pack(c, g))
+            stamp = _pack_stamp(c, layout.ios_pack(c, packer.library_id(c, g)))
             if not _reuse_export(prev / f, out / f, old_stamps.get(f), stamp):
                 # 点了哪款只新写那一款（库大时第一次导出 / 换版本不再把每款几 GB 全写一遍）：别的款上次导出的 .img 来源没变就沿用，
                 #   变了或没有就这次不写，完成页点名（unwritten）。程序都在 S2Arm.ipa 里；手机上已有的旧 .img 照常能玩（game.img 不随壳变）
@@ -2331,7 +2353,10 @@ def put_game(c, gid, ph, steps=True, others=None, skipped=()):
     from rewrite_refresh import refresh_ios
     ph.pull_kept([g for g in ([gid] if gid else []) + list(others) if g])   # 先收回机上留下的 NRO，refresh_ios 才补得进（#8be819）
     with packer.program_locks(c, ([gid] if gid else []) + list(others)):   # 各款程序件这段不让出包交付换（ipa.program_locks）
-        refresh_ios(c, [g for g in ([gid] if gid else []) + list(others) if g])
+        # 玩家点的这一款按本引擎改写器核；同容器的别款只在补丁记号变了时补，改写器指纹单独变了不批量重改写（11-17 维护者定），
+        #   玩家在「S 级优化升级」页显式点了（sgradeUpgrade）照旧全核
+        refresh_ios(c, [gid] if gid else [])
+        refresh_ios(c, [g for g in others if g and g != gid], ignore_rewriter=c.r.get("sgradeUpgrade") is not True)
         # 已同意过「这次不带」的款（#479）：按壳号记在设备记录 staleAgreed，同一版壳不再每次问；换了壳号重新问。重新打过 iPhone 包的款组装时带得进，自然不在名单里
         ipa, games, sid = packer.assemble(c, gid, others, failed=rec.get("failedShells", []), agreed=rec.get("staleAgreed") or {})
     left_out = sorted({g.upper() for g in list(others) + list(skipped) if g} - set(games))   # 这次没带进去的（玩家已同意；游戏库删掉的也在里面，不碍事：它们组装时本来就不带、不问）
@@ -2340,9 +2365,9 @@ def put_game(c, gid, ph, steps=True, others=None, skipped=()):
     packs = {}
     for g in games:
         try:
-            packs[g] = ios_pack(c, g)
+            packs[g] = ios_pack(c, packer.library_id(c, g))
         except Failure as e:
-            if gid and g.upper() == gid.upper():
+            if gid and packer.library_id(c, g).upper() == gid.upper():
                 raise
             packs[g] = None
             note(c, f"{g} 本机没有资源包（{e}）：这次不推它，手机上已有的照旧")
@@ -2510,6 +2535,56 @@ def phone_busy(ph, games):
     return got is not False
 
 
+IDENTITY_INCOMING = "Library/Application Support/S2Arm/identity/incoming"   # App 启动时导入钥匙串、导入成功就删（手机侧，0.6.0）
+
+
+def deliver_identity(c, ph):
+    """0.6.0 通用壳：把手机自签要的私钥 + 叶证书交给 App（cmdr 方案「私钥怎么交给 App」，开发乙 11-17 真机验过 DER 两份能配成签名身份）。
+    只走本机 USB（s2a-devpush），写进 App 数据容器 IDENTITY_INCOMING：key.der（PKCS#1）、cert.der、最后改名就位的 identity.json（不含私钥）。
+    交得出的只有 Windows Apple ID 模式（Impactor / plumesign 的 keys/<团队>/key.pem）；Mac 现在借 Xcode 钥匙串、证书模式另做，都照旧电脑签。
+    设备记录 identity.key_fp 与本机私钥文件指纹相同 = 交过了，不联网列证书、不重交。交不出 / 推不进都不挡推送：记一行，照旧电脑签。→ 交了的证书 sha1 | None"""
+    import hashlib
+    if not hasattr(ph, "W") or devcert.active(c):   # 只有 Windows 的手机对象（WinPhone）带 W（Impactor / plumesign）
+        return None
+    try:
+        team = ph.W.impactor.selected_team()
+        fp = ph.W.key_fingerprint(team) if team else None
+        if not fp:
+            return None
+        done = layout.load_device(c, ph.key).get("identity") or {}
+        if done.get("team") == team and done.get("key_fp") == fp:
+            return None
+        exe = ph.W.plumesign_path((ph.W.impactor.bundled(c.r.get("resources")) or {}).get("plumesign"))
+        ident = ph.W.plume_identity(exe, team, log=c.logs / (c.task + "-identity.log")) if exe else None
+        if not ident:
+            trace(c, "私钥没交给 App：苹果列表里没有本机私钥对应的证书（或列不出），照旧在电脑签")  # 非玩家句
+            return None
+        sha1 = hashlib.sha1(ident["cert"]).hexdigest()
+        meta = dict(schema=1, team=team, cert_sha1=sha1, created=ident["created"], source="appleId")
+        with tempfile.TemporaryDirectory(dir=c.private) as w:
+            d = Path(w) / "identity"
+            d.mkdir()
+            key = d / "key.der"
+            key.touch(mode=0o600)
+            key.write_bytes(ident["key"])
+            (d / "cert.der").write_bytes(ident["cert"])
+            (d / "identity.json").write_text(json.dumps(meta), encoding="utf-8")
+            cl = ph.client(w)
+            cl.put(key, f"{IDENTITY_INCOMING}/key.der")
+            cl.put(d / "cert.der", f"{IDENTITY_INCOMING}/cert.der")
+            cl.put(d / "identity.json", f"{IDENTITY_INCOMING}/identity.json.pc.tmp")
+            ok, out = cl.mv(f"{IDENTITY_INCOMING}/identity.json.pc.tmp", f"{IDENTITY_INCOMING}/identity.json")
+            if not ok:
+                raise OSError(f"identity.json 改名就位失败：{out[-200:]}")
+        rec = layout.load_device(c, ph.key)
+        layout.save_device(c, ph.key, dict(rec, identity=dict(team=team, key_fp=fp, cert_sha1=sha1, at=time.time())))
+        trace(c, f"私钥与证书已交给 App（证书 sha1 {sha1[:12]}）")  # 非玩家句
+        return sha1
+    except Exception as e:   # 不挡推送：交不出就照旧电脑签（推送工具的失败类型在 tools/push_pack.py，作业层不单独 import）
+        trace(c, f"私钥没交给 App（照旧在电脑签）：{type(e).__name__} {str(e)[:200]}")  # 非玩家句
+        return None
+
+
 def push_game(c, gid, ph, steps=True):
     """通用壳「推到 iPhone」（program_pack.enabled）：只推这一款的程序包与资源包，绝不签名装壳（11-17 维护者定：装 App 与推游戏是两个独立作业）。
     手机上没装 S2Arm（这台没有装壳记录）或壳不是本版 → 报「先安装 / 更新 S2Arm」、不推。程序包按设备记录判要不要推（program_pack.need），
@@ -2534,6 +2609,7 @@ def push_game(c, gid, ph, steps=True):
     old = rec.get("games", {}).get(gid) or {}
     rec = layout.load_device(c, ph.key)
     layout.save_device(c, ph.key, dict(rec, games=dict(rec.get("games") or {}, **{gid: dict(old, program=progs[gid])}), at=time.time()))
+    deliver_identity(c, ph)   # 0.6.0：手机自签要的私钥交给 App（交过了 / 交不出都直接跳过，不挡推送）
     if steps: c.begin("把这款的资源推进 iPhone（只推变了的文件；第一次大游戏要几分钟）", 3, 3)
     files = size = 0
     pushed, mods = old.get("pack", ""), old.get("mods") or {}
@@ -2789,7 +2865,7 @@ def update_prepare(c):
             trace(c, "前台装机作业在跑：准备更新先停，剩下的由它按正常优先级做")
             break
         with packer.program_locks(c, [g]):
-            updated += refresh_ios(c, [g])
+            updated += refresh_ios(c, [g], ignore_rewriter=True)   # 后台：改写器指纹单独变了不重改写（11-17 维护者定），留到玩家对这一款操作时前台做
         done.append(g)
     return dict(prepared=done, updated=sorted(set(updated)))
 

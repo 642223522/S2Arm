@@ -250,6 +250,25 @@ public final class S2ArmLauncherModel: ObservableObject {
     var installWhenReady = false
     /// 更新失败时 Sparkle 给的原因（界面在错误码文案之外照原话显示，控制口 /state 的 update.reason）
     @Published var updateFailure: String?
+    /// 自动检查更新（默认开）：开启后启动时静默向服务端确认是否有新版本
+    static let autoCheckUpdatesOffKey = "S2AAutoCheckUpdatesOff"
+    @Published var autoCheckUpdates: Bool = !UserDefaults.standard.bool(forKey: S2ArmLauncherModel.autoCheckUpdatesOffKey) {
+        didSet { UserDefaults.standard.set(!autoCheckUpdates, forKey: Self.autoCheckUpdatesOffKey) }
+    }
+    /// 自动下载更新（默认关）：仅在「自动检查更新」也开启时生效；开启后后台自动下载并在下好后弹窗，关闭则查到新版即弹窗让用户自己选下载或跳过
+    static let autoDownloadUpdatesKey = "S2AAutoDownloadUpdates"
+    @Published var autoDownloadUpdates: Bool = UserDefaults.standard.bool(forKey: S2ArmLauncherModel.autoDownloadUpdatesKey) {
+        didSet { UserDefaults.standard.set(autoDownloadUpdates, forKey: Self.autoDownloadUpdatesKey) }
+    }
+    /// 用户主动点「跳过此版本」记下的版本号：以后自动检查不再弹这一版（手动点检查仍可查看）
+    static let skippedUpdateVersionKey = "S2ASkippedUpdateVersion"
+    @Published var skippedUpdateVersion: String? = UserDefaults.standard.string(forKey: S2ArmLauncherModel.skippedUpdateVersionKey) {
+        didSet { UserDefaults.standard.set(skippedUpdateVersion, forKey: Self.skippedUpdateVersionKey) }
+    }
+    /// 设置页手动「检查更新」的实时反馈（checking / upToDate / available / failed）
+    @Published var updateCheckFeedback: String?
+    /// 自动下载完成后待弹出的更新提示（仅在自动检查 + 自动下载模式下为 true）
+    var autoDownloadPopupPending = false
     /// 应用内更新（Sparkle 2）：第一次用时起，起来后整个 App 生命周期只一份
     lazy var sparkleUpdate = SparkleUpdate(model: self)
     @Published var showAddGames = false
@@ -385,6 +404,13 @@ public final class S2ArmLauncherModel: ObservableObject {
         controller = NS2LauncherController(
             socketURL: provider.client.environment.privateRoot.appendingPathComponent("ns2-relay.sock"), watchGame: true)   // 游戏的手柄设置画面交给面板分配玩家（#520 E）
         exportChoice = provider.settings.exportTargets
+        // 启动首帧即先载入上次列表快照，避免先闪出加载占位页再切换成首页卡片排
+        if let known = provider.library.lastKnownGames(), !known.isEmpty {
+            games = known
+            selectedID = known.first?.id
+            libraryLoaded = true
+            showingSnapshot = true
+        }
     }
 
     var selected: GameSummary? { games.first { $0.id == selectedID } ?? games.first }
@@ -497,6 +523,12 @@ public final class S2ArmLauncherModel: ObservableObject {
                 self.libraryError = error.message
                 if error.message == LibraryProvider.noLibraryMessage {   // 没有游戏库（含文件夹被删、适配层已忘掉，#1412）：不留旧列表，回欢迎页
                     self.games = []; self.selectedID = nil; self.showingSnapshot = false
+                } else if error.code == "library_id_mismatch", !self.provider.client.environment.library.isEmpty {
+                    // 这个位置是另一个游戏库（库号和记下的不同，11-17 维护者：说清是哪个、玩家点一下确认）：沿用换库确认，
+                    //   「仍然继续」= 对这个文件夹重走选库（已有库直接打开、记下它的库号）后重读；「先不」= 照旧显示上次的列表
+                    self.showingSnapshot = !self.games.isEmpty
+                    self.libraryConfirm = LibraryConfirm(url: URL(fileURLWithPath: self.provider.client.environment.library), move: false,
+                                                         message: error.message, code: "library_id_mismatch")
                 } else {
                     self.showingSnapshot = !self.games.isEmpty   // 列表没换：还是上次的
                 }
