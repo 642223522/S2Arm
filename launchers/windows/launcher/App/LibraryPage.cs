@@ -111,7 +111,7 @@ public sealed partial class EnvironmentWindow
 
     private Control GameCover(LibraryGame game, int size)
     {
-        var cover = WithIntegrityBadge(game, GameCoverImage(game, size), size);
+        var cover = WithUpdateHintBadge(game, WithIntegrityBadge(game, GameCoverImage(game, size), size), size);
         if (!game.SGrade) return cover;
         var s = Math.Max(20, size / 3.2);
         var badge = new Panel { Width = s, Height = s, Margin = new Thickness(3), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top,
@@ -233,6 +233,7 @@ public sealed partial class EnvironmentWindow
                 Padding = new Thickness(16, 12), Child = capsuleBar });
         }
 
+        EnsureUpdateHints();
         var games = catalog?.Games.Where(g => !g.Hidden).ToArray() ?? [];
         var hero = games.FirstOrDefault(g => g.Id == selectedGame) ?? games.FirstOrDefault();
         if (hero is not null && HeroBanner(hero) is { } heroBanner)
@@ -247,6 +248,7 @@ public sealed partial class EnvironmentWindow
             overlay.Children.Add(Label(hero.Name, 32));
             overlay.Children.Add(Muted(T("library.version") + " · " + hero.Version, 14));
             if (IntegrityLine(hero) is { } heroNote) overlay.Children.Add(heroNote);
+            if (UpdateHintLines(hero) is { } heroHint) overlay.Children.Add(heroHint);
             overlay.Children.Add(HeroActions(hero));   // 有横图时按钮也叠在底部渐变上（v0.4.5 修：说明写着「常驻」，之前只画了大图）
             art.Children.Add(overlay);
             body.Children.Add(new Border { CornerRadius = new CornerRadius(16), ClipToBounds = true, Child = art });
@@ -260,6 +262,7 @@ public sealed partial class EnvironmentWindow
             title.Children.Add(Label(hero.Name, 28));
             title.Children.Add(Label(T("library.version") + " · " + hero.Version));
             if (IntegrityLine(hero) is { } heroNote) title.Children.Add(heroNote);
+            if (UpdateHintLines(hero) is { } heroHint) title.Children.Add(heroHint);
             title.Children.Add(HeroActions(hero));
             Grid.SetColumn(title, 1); banner.Children.Add(title); body.Children.Add(Card(banner, 20));
         }
