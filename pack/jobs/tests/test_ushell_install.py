@@ -112,6 +112,19 @@ class PushGameTests(JobCase):
         self.assertEqual(r["games"], [GID])
 
 
+    def test_shader_chain_rebuilt_on_push_before_programs(self):
+        # 11-17 维护者定：着色器链变了在玩家推这一款时只重编着色器库（sgrade_bf.rechain_ios），在改写核对与推程序之前；没原料不挡推送
+        import sgrade_bf
+        layout.save_device(self.c, self.ph.key, dict(shellId="S1", bundleId=self.ph.bid, games={}))
+        for result in ("updated", "unavailable"):
+            order = []
+            with mock.patch.object(sgrade_bf, "SUPPORTED", True), mock.patch.object(sgrade_bf, "rechain_ios", lambda c, g, r=result: order.append(("rechain", g)) or r), \
+                    mock.patch("rewrite_refresh.refresh_ios", lambda c, gs: order.append(("refresh", list(gs)))), \
+                    mock.patch.object(install, "push_programs", lambda *a, **k: order.append(("programs",)) or {GID: self.prog}):
+                r = install.push_game(self.c, GID, self.ph, steps=False)
+            self.assertEqual(order, [("rechain", GID), ("refresh", [GID]), ("programs",)], result)
+            self.assertEqual(r["games"], [GID])
+
 class InstallShellTests(JobCase):
     def setUp(self):
         super().setUp()
