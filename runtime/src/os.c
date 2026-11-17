@@ -109,8 +109,8 @@ void s2a_log_session_start(void) {
 #endif
 }
 // 开发设施总开关（11-07 质量线，维护者：壳里为开发测试集成的设施是能耗来源；方案见 cmdr/壳内开发设施盘点.md）。
-//   判定只此一处：环境变量 S2A_DEV_FACILITIES（0 / 1，排查玩家问题时强制打开）> Info.plist 的 S2ADevFacilities（启动器给玩家出包 S2A_PACK_PURPOSE=user 时
-//   pack/ipa_tail.py 写 "0"）> 缺省开（开发包 / Mac 开发局 / 普查都没有这个键）。管：停住现场看门（ap_host.c）、地址走势（vawin.c va_watch）、
+//   判定只此一处：环境变量 S2A_DEV_FACILITIES（0 / 1，排查玩家问题 / 开发局时显式打开）> Info.plist 的 S2ADevFacilities（pack/ipa_tail.py：
+//   只有 S2A_PACK_PURPOSE=dev 写 "1"，其余一律 "0"）> 缺省关（11-17：原先缺省开，漏写的出包路径就漏开，玩家手机 padrec 一小时长 3 GB）。管：停住现场看门（ap_host.c）、地址走势（vawin.c va_watch）、
 //   C# 的 MemDiag 周期账与 AudioDiag、iOS 录手柄（ios/vpad.m padrec，#845）。不管安全网：崩溃现场、直连异常看门、低区腾退、GPU 看门狗、帧率表写入照起
 int s2a_dev_on(void) {
     static _Atomic int v = -1; int r = atomic_load(&v); if (r >= 0) return r;

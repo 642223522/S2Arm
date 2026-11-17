@@ -99,9 +99,9 @@ int main(void) {
         if (m1 != 2 || m0 != 1 || mz != 1) { printf("✗ ⑧c 看门模式 开发包 %d（期望 2）/ 玩家包 %d（期望 1）/ 现场关 %d（期望 1）\n", m1, m0, mz); bad++; }
         else printf("✓ ⑧c 看门模式：开发包全套、玩家包只救场、现场关也只救场\n");
     }
-    {   // ⑧b 判定矩阵（native.h s2a_dev_decide）：环境变量 > Info.plist > 缺省开；期望按约定手写
+    {   // ⑧b 判定矩阵（native.h s2a_dev_decide）：环境变量 > Info.plist > 缺省关；期望按约定手写
         struct { const char *env; int has, on, want; const char *what; } dm[] = {
-            {NULL, 0, 1, 1, "都没有 → 开（开发包缺省）"}, {NULL, 1, 0, 0, "plist 0 → 关（玩家包）"}, {NULL, 1, 1, 1, "plist 1 → 开"},
+            {NULL, 0, 1, 0, "都没有 → 关（11-17 缺省关：漏写的出包路径也不漏开）"}, {NULL, 1, 0, 0, "plist 0 → 关（玩家包）"}, {NULL, 1, 1, 1, "plist 1 → 开"},
             {"1", 1, 0, 1, "环境变量 1 盖过 plist 0 → 开（排查玩家问题）"}, {"0", 0, 1, 0, "环境变量 0 → 关"}, {"", 1, 0, 0, "空环境变量不算 → 按 plist 0 关"} };
         for (unsigned i = 0; i < sizeof dm / sizeof *dm; i++) {
             int got = s2a_dev_decide(dm[i].env, dm[i].has, dm[i].on);
