@@ -1618,7 +1618,7 @@ class JobsTests(unittest.TestCase):
             for name in ("S2A_SAVE_DIR", "S2A_AUTOPLAY", "S2A_ROUTE"):
                 os.environ.pop(name)
         self.assertEqual(env["S2A_SYSTEM_LANGUAGE"], "TraditionalChinese")
-        self.assertEqual(env["S2A_DOCKED"], "1")
+        self.assertEqual(env["S2A_DOCKED"], "1")   # 请求明给 docked=True
         self.assertEqual(env["S2A_AUTOPLAY"], "0")
         self.assertNotIn("S2A_SAVE_DIR", env)
         self.assertNotIn("S2A_ROUTE", env)
@@ -1633,9 +1633,11 @@ class JobsTests(unittest.TestCase):
         finally:
             os.environ.pop("S2A_SYSTEM_LANGUAGE")
         self.assertNotIn("S2A_SYSTEM_LANGUAGE", env)
-        self.assertEqual(env["S2A_DOCKED"], "1")
+        self.assertEqual(env["S2A_DOCKED"], "0")   # 没选过：缺省掌机
         self.c.r["docked"] = False
         self.assertEqual(build.runtime_env(self.c, self.game(), self.root / "runtime")["S2A_DOCKED"], "0")
+        self.c.r["docked"] = True   # 请求明给主机照给的
+        self.assertEqual(build.runtime_env(self.c, self.game(), self.root / "runtime")["S2A_DOCKED"], "1")
 
     def test_invalid_language_is_rejected(self):
         self.c.r["gameLanguage"] = "zhHans; command"

@@ -251,7 +251,7 @@ class MacDisplayTests(unittest.TestCase):
         self.assertEqual((m["widescreen"]["available"], m["widescreen"]["value"]), (True, False))   # 清单 widen 0「缺省关」：没选过显示关、可以开
         self.assertEqual((m["quality"]["available"], m["quality"]["value"], m["quality"].get("blocked")), (True, "Bilinear", None))   # 画质提升缺省标准，三档都能选
         self.assertEqual((m["docked"]["value"], m["rumble"]["value"], m["rumbleLevel"]["value"], m["motion"]["value"], m["hud"]["value"]),
-                         ("docked", True, "2", True, False))   # 定义表缺省：Mac 主机模式、震动开标准档、体感开、浮层关
+                         ("handheld", True, "2", True, False))   # 定义表缺省：掌机模式（11-17 起同 iPhone）、震动开标准档、体感开、浮层关
         self.assertEqual(community.launch_env(self.c, GID), {})
 
     def test_fps60_default_follows_the_verified_reason_like_the_host(self):
@@ -428,6 +428,14 @@ class MacDisplayTests(unittest.TestCase):
         self.assertFalse(self.mac()["fps60"]["value"])
         self.assertEqual(self.launch_file()["settings"], {"quality": "MetalFX"})
         self.assertEqual(community.launch_env(self.c, GID), {"S2A_SCALING_FILTER": "MetalFX"})
+
+    def test_chosen_docked_survives_the_handheld_default(self):
+        # 11-17 缺省改掌机：玩家在这款设置里选过主机的，launch.json 里存着 docked，起局照旧主机（build.launch 在缺省之后合并 launch_env）；没选过的不写，走缺省
+        self.caps()
+        self.assertNotIn("S2A_DOCKED", community.launch_env(self.c, GID))
+        self.save(docked="docked")
+        self.assertEqual(community.launch_env(self.c, GID)["S2A_DOCKED"], "1")
+        self.assertEqual(self.mac()["docked"]["value"], "docked")
 
     def test_controls_and_mode_reach_the_host(self):
         # 掌机 → S2A_DOCKED=0；浮层开 → S2A_HUD=1；震动关 → S2A_RUMBLE=0；强度「强」(4) → 倍率 1.8；体感关 → S2A_MOTION=0
