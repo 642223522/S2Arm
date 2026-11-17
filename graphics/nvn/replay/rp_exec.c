@@ -180,13 +180,15 @@ static void sub_done(void *user, const nvn_gpu_done *d) {
                 // 其余管线统计类计数值写 0（同 nvn_mtl.m 提交完成回调里的写法）。无时间戳能力或槽满时明确回落既有 guest tick。
                 // 条件渲染开着时时间戳类的计数值也写 0，同真机（游戏拿两条报告的计数值做条件，见 rc_value）
                 uint64_t t;
-                if (s->p[i].slot == UINT32_MAX) continue; // 槽表分配失败，不伪造完成时刻
-                if (d->status == NVN_GPU_DONE_FAULT && !s->p[i].ts &&
-                    (s->p[i].type == NVN_COUNTER_TYPE_TIMESTAMP || s->p[i].type == NVN_COUNTER_TYPE_TIMESTAMP_TOP)) continue;
-                if (s->p[i].ts) {
+                const int timestamp = s->p[i].type == NVN_COUNTER_TYPE_TIMESTAMP || s->p[i].type == NVN_COUNTER_TYPE_TIMESTAMP_TOP;
+                if (timestamp && d->status == NVN_GPU_DONE_FAULT) {
+                    nvn_unimpl("timestamp", "fault", NULL); t = s2a_guest_tick();
+                } else if (s->p[i].slot == UINT32_MAX) {
+                    nvn_unimpl("timestamp", "slot_oom", NULL); t = s2a_guest_tick();
+                } else if (s->p[i].ts) {
                     const nvn_gpu_timestamp_result *v = &s->p[i].ts->values[s->p[i].slot];
                     if (!v->valid || !s2a_guest_tick_from_host_ns(v->host_ns, &t)) {
-                        nvn_unimpl("timestamp", "result_unavailable", NULL); continue; // 不用回调 CPU now 冒充采样点；FAULT 仅有效槽可写
+                        nvn_unimpl("timestamp", "result_unavailable", NULL); t = s2a_guest_tick();
                     }
                 } else t = s2a_guest_tick(); // 无能力 / 超额：明确计数的既有回落
                 uint64_t rec[2] = {(s->p[i].type == NVN_COUNTER_TYPE_TIMESTAMP || s->p[i].type == NVN_COUNTER_TYPE_TIMESTAMP_TOP) && !s2a_nvn_render_cond() ? t : 0, t};
@@ -528,9 +530,14 @@ static void post_report(uint64_t addr, uint32_t type) {
         nvn_gpu_caps caps; nvn_gpu_caps_get(&caps);
         if (g_cmd && (caps.caps & NVN_GPU_CAP_REPORT_TIMESTAMP)) {
             if (!s->ts_current) {
+#ifdef S2A_TEST_TS_ALLOC
+                extern int s2a_test_fail_ts_alloc;
+                struct ts_segment *t = s2a_test_fail_ts_alloc ? NULL : calloc(1, sizeof *t);
+#else
                 struct ts_segment *t = calloc(1, sizeof *t);
+#endif
                 if (t) { t->next = s->ts_head; s->ts_head = s->ts_current = t; }
-                else { p.slot = UINT32_MAX; nvn_unimpl("timestamp", "slot_table_oom", NULL); }
+                else { p.slot = UINT32_MAX; }
             }
             if (s->ts_current && s->ts_current->count < NVN_GPU_TIMESTAMP_SLOTS) {
                 p.ts = s->ts_current; p.slot = p.ts->count++;

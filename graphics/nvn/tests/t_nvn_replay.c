@@ -79,6 +79,9 @@ static uint64_t g_fdone;
 static uint32_t g_occ_slots_decl; static int g_occ_log[32], g_nocc_log; static int g_rcond;
 int s2a_nvn_render_cond(void) { return g_rcond; }
 static int g_ts_calls; static uint32_t g_ts_types[128];
+#ifdef S2A_TEST_TS_ALLOC
+int s2a_test_fail_ts_alloc;
+#endif
 void nvn_gpu_timestamp(nvn_gpu_cmd c, uint32_t slot, uint32_t type) {
     CHECK(slot < 64); if (slot >= 64) return;
     if (g_ts_calls < 128) g_ts_types[g_ts_calls] = type;
@@ -216,7 +219,8 @@ static struct { nvn_gpu_clear d; int npd, ends; } g_cr[8]; static int g_ncr;   /
 void nvn_gpu_clear_rect(nvn_gpu_cmd c, const nvn_gpu_clear *d) { (void)c; if (g_ncr < 8) { g_cr[g_ncr].d = *d; g_cr[g_ncr].npd = g_npd; g_cr[g_ncr].ends = g_pass_ends; } g_ncr++; }
 static uint64_t g_tick;   // 游戏时钟替身
 uint64_t s2a_guest_tick(void) { return g_tick; }
-int s2a_guest_tick_from_host_ns(uint64_t ns, uint64_t *out) { *out = ns / 10; return 1; }
+static int g_ts_convert_fail;
+int s2a_guest_tick_from_host_ns(uint64_t ns, uint64_t *out) { if (g_ts_convert_fail) return 0; *out = ns / 10; return 1; }
 
 // 上屏替身：取图结果按脚本给，呈现记下描述并按「没有上屏时刻」回调
 struct nvn_gpu_surface_s { int x; };
@@ -1873,11 +1877,33 @@ static void t_report_position(void) {
     CHECK(rec[0][0] == 99 && rec[1][0] == 88); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_ts_calls == 2); CHECK(g_ts_types[0] == NVN_COUNTER_TYPE_TIMESTAMP && g_ts_types[1] == NVN_COUNTER_TYPE_TIMESTAMP_TOP);
     CHECK(rec[0][0] == 110 && rec[0][1] == 110); CHECK(rec[1][0] == 120 && rec[1][1] == 120);
-    // Explicit valid bit: zero is a sample; an unavailable FAULT slot must not write.
-    rec[0][0] = 99; rec[1][0] = 88; submit1(&a);
+    // Zero remains a valid sample; an unavailable result falls back and records the reason.
+    uint64_t unavail0 = nvn_unimpl_count("timestamp", "result_unavailable");
+    rec[0][0] = rec[0][1] = 99; rec[1][0] = rec[1][1] = 88; submit1(&a);
     g_pend[0].ts[0] = (nvn_gpu_timestamp_result){.host_ns=0, .valid=1};
-    g_pend[0].ts[1].valid = 0; fake_complete(NVN_GPU_DONE_FAULT);
-    CHECK(rec[0][0] == 0 && rec[0][1] == 0); CHECK(rec[1][0] == 88);
+    g_pend[0].ts[1].valid = 0; fake_complete(NVN_GPU_DONE_OK);
+    CHECK(rec[0][0] == 0 && rec[0][1] == 0);
+    CHECK(rec[1][0] == g_tick && rec[1][1] == g_tick);
+    CHECK(nvn_unimpl_count("timestamp", "result_unavailable") == unavail0 + 1);
+    rec[0][0] = rec[0][1] = 99; rec[1][0] = rec[1][1] = 88;
+    g_ts_convert_fail = 1; submit1(&a); fake_complete(NVN_GPU_DONE_OK); g_ts_convert_fail = 0;
+    CHECK(rec[0][0] == g_tick && rec[0][1] == g_tick);
+    CHECK(rec[1][0] == g_tick && rec[1][1] == g_tick);
+    CHECK(nvn_unimpl_count("timestamp", "result_unavailable") == unavail0 + 3);
+    uint64_t fault0 = nvn_unimpl_count("timestamp", "fault");
+    rec[0][0] = rec[0][1] = 99; rec[1][0] = rec[1][1] = 88; submit1(&a);
+    fake_complete(NVN_GPU_DONE_FAULT);
+    CHECK(rec[0][0] == g_tick && rec[0][1] == g_tick);
+    CHECK(rec[1][0] == g_tick && rec[1][1] == g_tick);
+    CHECK(nvn_unimpl_count("timestamp", "fault") == fault0 + 2);
+#ifdef S2A_TEST_TS_ALLOC
+    nvn_be_shutdown_session(); uint64_t oom0 = nvn_unimpl_count("timestamp", "slot_oom");
+    rec[0][0] = rec[0][1] = 99; rec[1][0] = rec[1][1] = 88;
+    s2a_test_fail_ts_alloc = 1; submit1(&a); s2a_test_fail_ts_alloc = 0; fake_complete(NVN_GPU_DONE_OK);
+    CHECK(rec[0][0] == g_tick && rec[0][1] == g_tick);
+    CHECK(rec[1][0] == g_tick && rec[1][1] == g_tick);
+    CHECK(nvn_unimpl_count("timestamp", "slot_oom") == oom0 + 2);
+#endif
     rec[0][0] = 99; submit1(&a); fake_complete(NVN_GPU_DONE_FAILED); CHECK(rec[0][0] == 99);
     // Slot budget is per actual segment, never a reason to drop the submission.
     stream many = {0}; uint64_t records[65][2]; memset(records, 0, sizeof records);
@@ -1887,7 +1913,7 @@ static void t_report_position(void) {
     CHECK(g_ts_calls == 64 && records[63][0] == 740 && records[64][0] == g_tick);
     CHECK(rp_timestamp_fallback_take() == 1);
     records[64][0] = 54321; g_ts_calls = 0; submit1(&many); fake_complete(NVN_GPU_DONE_FAULT);
-    CHECK(records[0][0] == 110 && records[64][0] == 54321);
+    CHECK(records[0][0] == g_tick && records[64][0] == g_tick);
     // CALL then JUMP preserves execution order and address-to-slot mapping.
     stream child = {0}, tail = {0}, root = {0}; ts_report(&child, rec[0]); end(&child);
     ts_report(&tail, rec[1]); end(&tail); uint64_t ptr = (uint64_t)(uintptr_t)child.b;
