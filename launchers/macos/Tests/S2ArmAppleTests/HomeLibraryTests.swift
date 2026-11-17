@@ -246,12 +246,21 @@ private final class HomeCatalogRunner: JobProcessRunner {
         var result: [String: Any] = [:]
         if request["operation"] as? String == "launch" { lock.withLock { launch = request["gameId"] as? String } }
         if request["operation"] as? String == "catalog" {
-            result = ["games": (0..<21).map { ["id": String(format: "%016X", $0),
-                "name": $0 == 19 ? "Original Fixture 19 — A Very Long Adventure Across the Mountains and the Distant Sea" : "Original Fixture \($0)",
-                "ready": true, "missing": [],
-                "customCover": false, "cover": artwork.appendingPathComponent("cover.png").path,
-                "banner": artwork.appendingPathComponent($0 % 2 == 0 ? "banner-red.png" : "banner-blue.png").path,
-                "iphoneInstall": installs[$0].map { ["at": $0, "free": true] as Any } ?? NSNull()] as [String: Any] }, "keys": [:]]
+            // 分开异构 JSON 的类型推断，避免 CI 工具链在整条 map 表达式上耗尽求解预算。
+            let games = (0..<21).map { index -> [String: Any] in
+                var game: [String: Any] = ["id": String(format: "%016X", index),
+                    "name": index == 19 ? "Original Fixture 19 — A Very Long Adventure Across the Mountains and the Distant Sea" : "Original Fixture \(index)",
+                    "ready": true, "missing": [],
+                    "customCover": false, "cover": artwork.appendingPathComponent("cover.png").path,
+                    "banner": artwork.appendingPathComponent(index % 2 == 0 ? "banner-red.png" : "banner-blue.png").path]
+                if let at = installs[index] {
+                    game["iphoneInstall"] = ["at": at, "free": true] as [String: Any]
+                } else {
+                    game["iphoneInstall"] = NSNull()
+                }
+                return game
+            }
+            result = ["games": games, "keys": [:]]
         }
         let event: [String: Any] = ["schema": 1, "taskId": request["taskId"] ?? "", "type": "result", "state": "succeeded", "result": result]
         DispatchQueue.main.async { onLine(try! JSONSerialization.data(withJSONObject: event)); onExit(0) }

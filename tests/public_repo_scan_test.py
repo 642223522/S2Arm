@@ -674,6 +674,24 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(r['blocking_count'], len(names))
         self.assertEqual(r['uncovered'], [])
 
+    def test_reviewed_extract_failure_log_is_scanned_and_other_logs_stay_unread(self):
+        name = 'pack/jobs/tests/fixtures/extract_hash_mismatch_1411.log'
+        other = 'pack/jobs/tests/fixtures/unreviewed.log'
+        self.commit({name: (ROOT / name).read_bytes(), other: b'original unread fixture'})
+        report = self.mod.scan(self.root, 'HEAD', [name])
+        self.assertEqual(report['coverage'].get('text'), 1)
+        self.assertEqual(report['findings'], [])
+        self.assertEqual(report['uncovered'], [])
+
+        self.commit({name: '/home/fixtureperson/source\n'})
+        report = self.mod.scan(self.root, 'HEAD', [name])
+        self.assertEqual(report['blocking_count'], 1, 'reviewed text must still scan its contents')
+        self.assertEqual([f['category'] for f in report['findings']], ['home_path'])
+        with patch.object(self.mod.Blobs, 'read', side_effect=AssertionError('unreviewed log read')):
+            unread = self.mod.scan(self.root, 'HEAD', [other])
+        self.assertEqual(unread['coverage'].get('excluded_payload'), 1)
+        self.assertEqual([row['path'] for row in unread['uncovered_blocking']], [other])
+
     def test_unread_payload_and_unknown_are_warning_only(self):
         base = self.commit({'safe.md': 'safe\n'})
         self.commit({'game.nsp': b'synthetic', 'unknown.xyz': b'synthetic',
