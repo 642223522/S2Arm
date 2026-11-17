@@ -8136,6 +8136,14 @@
   "en": "Couldn't confirm whether this game is installed on the iPhone: {0}"
  },
  {
+  "source": "这款存档在 iCloud 云存档里有一份（{0}），覆盖装不会碰它：这次不另备份，照装",
+  "en": "This game's saves have a copy in your iCloud cloud saves ({0}), which overwriting the app won't touch: installing without a separate backup this time"
+ },
+ {
+  "source": "这台 Mac 空间不够，存档备份放不下（只剩 {0} MB）：腾出 {1} GB 再试，或者确认后继续",
+  "en": "This Mac is out of space and the save backup doesn't fit (only {0} MB left): free up {1} GB and try again, or confirm to continue"
+ },
+ {
   "source": "读不到 iPhone 上这款的存档目录：{0}",
   "en": "Couldn't read this game's save folder on the iPhone: {0}"
  },

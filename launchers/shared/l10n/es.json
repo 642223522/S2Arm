@@ -3119,6 +3119,8 @@
   "iPhone 锁着，读不了存档：请解锁手机，解锁后会自动继续": "El iPhone está bloqueado, así que no se pueden leer sus partidas guardadas. Desbloquea el teléfono y continuará automáticamente",
   "读不懂 iPhone 返回的存档文件清单（{0} 条没有路径字段，多半是 Xcode 版本不同）": "No se pudo entender la lista de archivos de partidas guardadas del iPhone ({0} entradas no tienen ruta; normalmente por una versión diferente de Xcode)",
   "确认不了 iPhone 上有没有装过这款：{0}": "No se pudo confirmar si este juego está instalado en el iPhone: {0}",
+  "这款存档在 iCloud 云存档里有一份（{0}），覆盖装不会碰它：这次不另备份，照装": "Las partidas de este juego tienen una copia en tus partidas en iCloud ({0}), que sobrescribir la app no toca: esta vez se instala sin copia de seguridad aparte",
+  "这台 Mac 空间不够，存档备份放不下（只剩 {0} MB）：腾出 {1} GB 再试，或者确认后继续": "Este Mac no tiene espacio y la copia de las partidas no cabe (solo quedan {0} MB): libera {1} GB y vuelve a intentarlo, o confirma para continuar",
   "读不到 iPhone 上这款的存档目录：{0}": "No se pudo leer la carpeta de partidas guardadas de este juego en el iPhone: {0}",
   "拉存档失败（{0}）：{1}": "No se pudieron copiar las partidas guardadas ({0}): {1}",
   "拉存档失败：{0}": "No se pudieron copiar las partidas guardadas: {0}",
