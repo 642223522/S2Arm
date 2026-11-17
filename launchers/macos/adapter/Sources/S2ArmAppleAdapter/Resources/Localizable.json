@@ -5600,6 +5600,26 @@
   "en": "New Mac hosts show this run's controls from the game menu or menu-bar controller icon. Rebuild old packages; binding changes apply next launch."
  },
  {
+  "source": "证书里的私钥读不出来，没能交给 iPhone 上的 S2Arm：在设置里重新导入一次证书。",
+  "en": "Couldn't read the private key in your certificate, so it wasn't handed to S2Arm on your iPhone. Import the certificate again in Settings."
+ },
+ {
+  "source": "把证书交给 iPhone 上的 S2Arm",
+  "en": "Handing the certificate to S2Arm on your iPhone"
+ },
+ {
+  "source": "现在没在用你自己的开发者证书签名，没有要交给 iPhone 的证书：先在设置里导入并选用你的证书。",
+  "en": "You're not signing with your own developer certificate, so there's no certificate to hand to your iPhone. Import and select your certificate in Settings first."
+ },
+ {
+  "source": "苹果的证书列表里找不到这台电脑签名用的那张证书，没能交给 iPhone 上的 S2Arm：先在电脑上「安装 S2Arm」一次。",
+  "en": "Apple's certificate list doesn't have the certificate this computer signs with, so it wasn't handed to S2Arm on your iPhone. Run “Install S2Arm” on this computer once first."
+ },
+ {
+  "source": "没能把证书写进 iPhone 上的 S2Arm：确认 iPhone 连着、已解锁，再试一次。",
+  "en": "Couldn't write the certificate into S2Arm on your iPhone. Make sure the iPhone is connected and unlocked, then try again."
+ },
+ {
   "source": "开发中：现有构建只出原生目标文件，还没有 HAP 编译",
   "en": "In development: the current build only produces native object files; HAP packaging is not available yet"
  },
@@ -10138,26 +10158,6 @@
  {
   "source": "点「仍然继续」改用这个游戏库；不是你要的，就到设置里重新选游戏库。",
   "en": "Click Continue anyway to use this game library; if it isn’t the one you want, choose your game library again in Settings."
- },
- {
-  "source": "证书里的私钥读不出来，没能交给 iPhone 上的 S2Arm：在设置里重新导入一次证书。",
-  "en": "Couldn't read the private key in your certificate, so it wasn't handed to S2Arm on your iPhone. Import the certificate again in Settings."
- },
- {
-  "source": "把证书交给 iPhone 上的 S2Arm",
-  "en": "Handing the certificate to S2Arm on your iPhone"
- },
- {
-  "source": "现在没在用你自己的开发者证书签名，没有要交给 iPhone 的证书：先在设置里导入并选用你的证书。",
-  "en": "You're not signing with your own developer certificate, so there's no certificate to hand to your iPhone. Import and select your certificate in Settings first."
- },
- {
-  "source": "苹果的证书列表里找不到这台电脑签名用的那张证书，没能交给 iPhone 上的 S2Arm：先在电脑上「安装 S2Arm」一次。",
-  "en": "Apple's certificate list doesn't have the certificate this computer signs with, so it wasn't handed to S2Arm on your iPhone. Run “Install S2Arm” on this computer once first."
- },
- {
-  "source": "没能把证书写进 iPhone 上的 S2Arm：确认 iPhone 连着、已解锁，再试一次。",
-  "en": "Couldn't write the certificate into S2Arm on your iPhone. Make sure the iPhone is connected and unlocked, then try again."
  },
  {
   "source": "先试这两步：①在 iPhone 上打开一次 S2Arm，等游戏库界面出来；②回电脑对这款游戏再点一次「装到 iPhone」，会接着已传的部分继续，不用从头来。还是写不进，就要删掉 iPhone 上的 S2Arm App 再重装：先在游戏菜单「存档管理」里导出存档，存到 S2Arm 文件夹以外（比如 iCloud 云盘）；再在 iPhone 桌面长按 S2Arm，删除 App；然后在电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」；装好后在「存档管理」里导回存档。电脑上的游戏和 S2Arm 都不用删。",
