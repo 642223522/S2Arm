@@ -6,6 +6,7 @@
 已提交输入在一次阶段操作内保持不变。--clone-result只接root_begin的
 成功输出；生产由roots.sh在暴露新根/写owner之前统一迁移，不接受任意目录作克隆证明。
 """
+import os as _pw_os, sys as _pw_sys; _pw_sys.path.append(_pw_os.path.join(_pw_os.path.dirname(_pw_os.path.abspath(__file__)), '..', 'tools')); from pool_workers import env_jobs  # noqa: E402  核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
@@ -253,7 +254,7 @@ def resource_key(root):
                if name != 'exefs/main' and name not in old and name in same and same[name][:2] == [sig[2], sig[3]] and same[name][2:4] != [sig[0], sig[1]]}
         entries.update(hit)
         changed = [row for row in changed if row[0] not in hit]
-    workers = min(max(1, int(os.environ.get('S2A_JOBS', os.cpu_count() or 1))), max(1, len(changed)))
+    workers = min(env_jobs('S2A_JOBS'), max(1, len(changed)))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         entries.update(pool.map(sample, changed))
     if inventory(root) != current:

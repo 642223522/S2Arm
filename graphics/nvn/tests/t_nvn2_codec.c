@@ -62,6 +62,9 @@ uint64_t s2a_event_create(uint32_t *hr, uint32_t *hw) { int i = g_nev++; g_ev[i]
 // 读档自中止复现钩子（11-06 时之笛）：对 g_hook_ev 的下一次触发，先让 g_hook_fn 在另一条线程上跑、最多等它 300 ms，再真正置位。
 //   旧实现在锁外触发，另一条线程这时能完成「取消 + 重新请求」，迟到的触发落在新请求上；修好后触发在锁内，另一条线程要等它
 static _Atomic uint64_t g_hook_ev; static void *(*g_hook_fn)(void *); static _Atomic int g_hook_done, g_hook_fired;
+// 出图节奏挂点（hle_nvn.c s2a_video_frame 的替身）：数 Switch 2 解码交出的新帧
+static _Atomic unsigned g_vframes;
+void s2a_video_frame(void) { atomic_fetch_add(&g_vframes, 1); }
 void s2a_event_signal(uint64_t ev) {
     if (ev && atomic_load(&g_hook_ev) == ev && atomic_exchange(&g_hook_ev, 0) == ev) {
         pthread_t th; CHECK(!pthread_create(&th, NULL, g_hook_fn, NULL)); pthread_detach(th);
@@ -386,11 +389,12 @@ int main(int argc, char **argv) {
     // ---------- VP9（libvpx，无损）：两帧红，按登记次序填 ----------
     {
         rig r; rig_up(&r, &VP9, 64, 64);
-        uint64_t id = 0;
+        uint64_t id = 0; unsigned vf0 = atomic_load(&g_vframes);
         CHECK(((f_sub)E(VP9.sub))(&id, r.obj, red_vp9_0, sizeof red_vp9_0, 33333000, 0) == 0 && id == 1);
         CHECK(((f_sub)E(VP9.sub))(&id, r.obj, red_vp9_1, sizeof red_vp9_1, 66666999, 0) == 0 && id == 2);
         sync_h h1, h2; uint32_t i1 = take(&r, &VP9, &spev, &h1), i2 = take(&r, &VP9, &spev, &h2);
         CHECK(i1 == 0 && i2 == 1 && h2.value == h1.value + 1 && h1.id_inv == h2.id_inv);
+        CHECK(atomic_load(&g_vframes) - vf0 == 2);   // 两帧新解码的画面各报一次出图节奏（nvn_vpace：≤30 帧片源据此封顶）
         uint16_t w, h, w2, h2_; int64_t pts; uint8_t eos;
         CHECK(((f_props)E(VP9.props))(&w, &h, &w2, &h2_, &pts, &eos, r.obj, i1) == 0 && w == 64 && h == 64 && w2 == 64 && h2_ == 64 && pts == 33333000 && !eos);
         CHECK(((f_props)E(VP9.props))(&w, &h, &w2, &h2_, &pts, &eos, r.obj, i2) == 0 && pts == 66666000 && !eos);
@@ -414,6 +418,7 @@ int main(int argc, char **argv) {
         sync_h h3; uint32_t i3 = take(&r, &VP9, &spev, &h3);
         CHECK(i3 == i1 && h3.value == h2.value + 1);
         CHECK(((f_props)E(VP9.props))(&w, &h, &w2, &h2_, &pts, &eos, r.obj, i3) == 0 && eos == 1 && w == 64);
+        CHECK(atomic_load(&g_vframes) - vf0 == 2);   // 流结束标记（重复上一帧）不报
         rig_down(&r, &VP9);
     }
 

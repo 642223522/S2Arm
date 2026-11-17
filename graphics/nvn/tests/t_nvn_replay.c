@@ -117,7 +117,7 @@ static int g_vid; static int g_released_id[8192]; static int g_nrel;   // 视图
 static int was_view_released(int rid) { for (int i = 0; i < g_nrel; i++) if (g_released_id[i] == rid) return 1; return 0; }
 static uint32_t g_last_usage; static uint16_t g_last_swz;
 static view_t g_vw_last; static int g_vw_last_has;   // 最近一次 view_create 收到的视图记录（NULL = 没带）
-static struct { uint32_t level, layer; uint64_t pitch, img; int w, h, pre; uint8_t first[64]; } g_up[16]; static int g_nup;
+static struct { uint32_t level, layer; uint64_t pitch, img; int y, w, h, pre; uint8_t first[64]; } g_up[16]; static int g_nup;
 nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_gpu_err *err) {
     if (g_tex_create_fail) { snprintf(err->why, sizeof err->why, "替身：不支持"); *out = NULL; return (nvn_gpu_rc){NVN_GPU_E_UNSUPPORTED}; }
     g_tex_creates++; g_last_usage = d->usage; g_last_swz = d->swz; *out = calloc(1, sizeof **out); (*out)->d = *d; (*out)->ord = ++g_tex_ord; return (nvn_gpu_rc){NVN_GPU_OK}; }
@@ -149,7 +149,7 @@ uint32_t nvn_gpu_format_caps(uint32_t f) { if (f == g_caps_nosample) return 0;
     return c; }
 void nvn_gpu_tex_upload(nvn_gpu_cmd c, nvn_gpu_tex t, uint32_t level, uint32_t layer, const NVNcopyRegion *r, const void *src, uint64_t row_bytes, uint64_t image_bytes) {
     (void)t; if (g_nup == 16) return;
-    g_up[g_nup].pre = c->is_pre; g_up[g_nup].level = level; g_up[g_nup].layer = layer; g_up[g_nup].pitch = row_bytes; g_up[g_nup].img = image_bytes; g_up[g_nup].w = r->width; g_up[g_nup].h = r->height;
+    g_up[g_nup].pre = c->is_pre; g_up[g_nup].level = level; g_up[g_nup].layer = layer; g_up[g_nup].pitch = row_bytes; g_up[g_nup].img = image_bytes; g_up[g_nup].y = r->yoffset; g_up[g_nup].w = r->width; g_up[g_nup].h = r->height;
     memcpy(g_up[g_nup].first, src, image_bytes < 64 ? image_bytes : 64); g_nup++; }
 // 脏页替身：代号由用例推进
 static uint64_t g_dirty_now = 100, g_dirty_written; static int g_protects;
@@ -206,6 +206,17 @@ const void *nvn_dirty_span(const void *addr, size_t len) {
     if (!g_pg_tracked || e < a) return NULL;
     if (g_block_mem && a >= (uintptr_t)g_block_mem && e <= (uintptr_t)g_block_mem + BLOCK_TEST_PAGES * PG) return g_block_mem;
     return a >= (uintptr_t)g_pmem && e <= (uintptr_t)g_pmem + sizeof g_pmem ? g_pmem : NULL;
+}
+// 脏页位图替身：g_wp_on 开着时按 g_wp_dirty（g_block_mem 起算的页号）答，关着答 -1（「位图不可用」→ 调用方整张传，老用例行为不变）
+static int g_wp_on; static uint8_t g_wp_dirty[BLOCK_TEST_PAGES];
+long nvn_dirty_written_pages(const void *span, const void *addr, size_t len, uint64_t stamp, uint64_t *bits, size_t nbits) {
+    (void)stamp;
+    if (!g_wp_on || !g_block_mem || span != g_block_mem || !len) return -1;
+    size_t p = (size_t)((const uint8_t *)addr - g_block_mem) / PG, q = (size_t)((const uint8_t *)addr + len - 1 - g_block_mem) / PG, n = q - p + 1;
+    if (q >= BLOCK_TEST_PAGES || n > nbits) return -1;
+    memset(bits, 0, (n + 63) / 64 * sizeof *bits);
+    for (size_t i = 0; i < n; i++) if (g_wp_dirty[p + i]) bits[i >> 6] |= 1ull << (i & 63);
+    return (long)n;
 }
 long nvn_dirty_page_gens(const void *span, const void *addr, size_t len, uint64_t *gens, size_t n) {
     if (!span || !g_pg_tracked || g_block_unreliable) return -1;
@@ -791,6 +802,40 @@ static void t_pool_nested(void) {
             if (h1 && h2) CHECK(mm == (const uint8_t *)bb && oo == B + qo[i] - (uint64_t)(uintptr_t)mm && nn == BIG);
         }
     }
+    // ⑨ 快路：小池放回来，关掉备忘，查大池内、小池之后的地址两次——第二次必须走快路
+    nvn_be_pool_add(g_pn_arena + SMALL_OFF, SMALL);
+    CHECK(rp_pool_count() == n0 + 2);
+    pm_flag(0);
+    uint64_t fh0 = rp_pool_fast_hits();
+    m = NULL; n = 0;
+    CHECK(rp_pool_find(B + SMALL_OFF + 0x4000, 0x20, &m, &n) == 1 && (uint64_t)(uintptr_t)m == B && n == BIG);
+    CHECK(rp_pool_fast_hits() == fh0);
+    m = NULL; n = 0;
+    CHECK(rp_pool_find(B + SMALL_OFF + 0x4000, 0x20, &m, &n) == 1 && (uint64_t)(uintptr_t)m == B && n == BIG);
+    CHECK(rp_pool_fast_hits() == fh0 + 1);
+    // ⑩ 备忘：开着时同地址连查 3 次，备忘命中数要增加（可答区间没被小池切断）
+    pm_flag(1);
+    uint64_t hz0 = pm_hits();
+    // 先查一次小池内地址：把快路/备忘指向小池，随后的大池地址装不下，只能回落锁内并写入大池的记录
+    m = NULL; n = 0;
+    CHECK(rp_pool_find(B + SMALL_OFF + 0x20, 0x40, &m, &n) == 1 && (uint64_t)(uintptr_t)m == B + SMALL_OFF && n == SMALL);
+    for (int i = 0; i < 3; i++) {
+        m = NULL; n = 0;
+        CHECK(rp_pool_find(B + SMALL_OFF + 0x4100, 0x20, &m, &n) == 1 && (uint64_t)(uintptr_t)m == B && n == BIG);
+    }
+    CHECK(pm_hits() >= hz0 + 2);   // 后两次从备忘答出
+    // ⑪ 左端：[大池起点, 小池起点) 的地址连查两次，第二次走快路
+    pm_flag(0);
+    uint64_t fh1 = rp_pool_fast_hits();
+    m = NULL; n = 0;
+    CHECK(rp_pool_find(B + 0x800, 0x20, &m, &n) == 1 && (uint64_t)(uintptr_t)m == B && n == BIG);
+    CHECK(rp_pool_fast_hits() == fh1);
+    m = NULL; n = 0;
+    CHECK(rp_pool_find(B + 0x800, 0x20, &m, &n) == 1 && (uint64_t)(uintptr_t)m == B && n == BIG);
+    CHECK(rp_pool_fast_hits() == fh1 + 1);
+    pm_flag(1);
+    nvn_be_pool_del(g_pn_arena + SMALL_OFF);
+    CHECK(rp_pool_count() == n0 + 1);
     nvn_be_pool_del(g_pn_arena);
     CHECK(rp_pool_count() == n0);
 }
@@ -803,6 +848,38 @@ static tex_t mk_tex(uint64_t serial, int64_t off, int fmt, uint32_t w, uint32_t 
 }
 static void res_fresh(void) { rp_res_reset(); memset(g_tmem, 0, sizeof g_tmem); memset(&g_tp, 0, sizeof g_tp); g_tp.mem = g_tmem; g_tp.size = sizeof g_tmem; g_tp.flags = NVN_MEMORY_POOL_FLAGS_CPU_CACHED | NVN_MEMORY_POOL_FLAGS_GPU_CACHED;
     g_nup = 0; g_dirty_written = 0; }
+
+// 线性单级二维 CPU 贴图只重传脏行（upload_linear_dirty）：一行 4096 字节 = 一页。第一次整张传；第 10、11、40 页脏 → 两段（y 10 共 2 行、y 40 共 1 行），
+//   内容取新写的；脏页过半 → 整张；位图不可用（-1）→ 整张。
+static void t_tex_linear_dirty_rows(void) {
+    nvn_be_sub_begin();
+    res_fresh();
+    g_block_mem = (uint8_t *)(((uintptr_t)g_block_arena + BLOCK_TEST_ALIGN - 1) & ~(uintptr_t)(BLOCK_TEST_ALIGN - 1));
+    memset(g_wp_dirty, 0, sizeof g_wp_dirty); g_wp_on = 0;
+    tex_t t = mk_tex(7101, 0, NVN_FORMAT_R8, 4096, 64, 1, NVN_TEXTURE_FLAGS_LINEAR);
+    t.mem = g_block_mem; g_tp.size = sizeof g_tmem;
+    CHECK(t.L.size == 4096u * 64u);
+    for (uint32_t y = 0; y < 64; y++) memset(g_block_mem + (size_t)y * 4096, (int)(y + 1), 4096);
+    nvn_be_tex_init(&t);
+    uint64_t u0 = rp_res_uploads();
+    CHECK(rp_tex_resolve(&t, &g_fake_cmd) != NULL && rp_res_uploads() - u0 == 1 && g_nup == 1 && g_up[0].y == 0 && g_up[0].h == 64);   // 第一次：整张
+    g_wp_on = 1; g_wp_dirty[10] = g_wp_dirty[11] = g_wp_dirty[40] = 1;
+    memset(g_block_mem + 10 * 4096, 0xA1, 2 * 4096); memset(g_block_mem + 40 * 4096, 0xB2, 4096);
+    g_nup = 0; g_dirty_written = g_dirty_now + 1; g_dirty_now += 2;
+    CHECK(rp_tex_resolve(&t, &g_fake_cmd) != NULL && rp_res_uploads() - u0 == 2);
+    CHECK(g_nup == 2);
+    CHECK(g_nup >= 1 && g_up[0].y == 10 && g_up[0].h == 2 && g_up[0].w == 4096 && g_up[0].pitch == 4096 && g_up[0].first[0] == 0xA1);
+    CHECK(g_nup >= 2 && g_up[1].y == 40 && g_up[1].h == 1 && g_up[1].first[0] == 0xB2);
+    memset(g_wp_dirty, 0, sizeof g_wp_dirty); for (int k = 0; k < 40; k++) g_wp_dirty[k] = 1;   // 脏 40 行（过半）→ 整张
+    g_nup = 0; g_dirty_written = g_dirty_now + 1; g_dirty_now += 2;
+    CHECK(rp_tex_resolve(&t, &g_fake_cmd) != NULL && g_nup == 1 && g_up[0].y == 0 && g_up[0].h == 64);
+    g_wp_on = 0; memset(g_wp_dirty, 0, sizeof g_wp_dirty);   // 位图不可用 → 整张
+    g_nup = 0; g_dirty_written = g_dirty_now + 1; g_dirty_now += 2;
+    CHECK(rp_tex_resolve(&t, &g_fake_cmd) != NULL && g_nup == 1 && g_up[0].h == 64);
+    nvn_be_tex_release(&t);
+    g_block_mem = NULL;
+    nvn_be_sub_commit();
+}
 
 // 结论 A：贴图初始化和登记都不建图；只有被用到的那一个建。
 static void t_tex_init_registers_only(void) {
@@ -4298,6 +4375,7 @@ int main(int argc, char **argv) {
     t_bind_reuse();
     t_begin_fail();
     if (argc > 1 && t_table(argv[1])) g_fail++;
+    t_tex_linear_dirty_rows();   // 放在最后：它推高全局上传计数，前面有用例按「从 0 起」断言
     printf("t_nvn_replay：%d 项检查，%d 项红\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

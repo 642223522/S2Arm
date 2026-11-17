@@ -12,16 +12,19 @@ public struct GamePackage: Equatable {
     public let sha256: String
     /// 原件形态：空 = NSP / XCI（要密钥）；nup / dump / extract / loose 不加密，不要密钥。
     public let format: String
+    /// 导入时有内容哈希对不上、跳过完整性校验照常导入了（catalog packages[].integritySkipped 非空，11-17 维护者：校验不过不再拒收）
+    public let integritySkipped: Bool
 
-    public init(type: String, titleId: String = "", version: Int = 0, display: String = "", size: Int64 = 0, sha256: String = "", format: String = "") {
+    public init(type: String, titleId: String = "", version: Int = 0, display: String = "", size: Int64 = 0, sha256: String = "", format: String = "", integritySkipped: Bool = false) {
         self.type = type; self.titleId = titleId; self.version = version; self.display = display; self.size = size; self.sha256 = sha256; self.format = format
+        self.integritySkipped = integritySkipped
     }
 
     init?(catalog p: [String: Any]) {
         guard let type = p["type"] as? String else { return nil }
         self.init(type: type, titleId: p["titleId"] as? String ?? "", version: (p["version"] as? NSNumber)?.intValue ?? 0,
                   display: p["display"] as? String ?? "", size: (p["size"] as? NSNumber)?.int64Value ?? 0, sha256: p["sha256"] as? String ?? "",
-                  format: p["format"] as? String ?? "")
+                  format: p["format"] as? String ?? "", integritySkipped: !((p["integritySkipped"] as? [Any]) ?? []).isEmpty)
     }
 }
 
@@ -139,6 +142,8 @@ public struct GameSummary: Identifiable, Equatable {
     }
 
     /// DLC 个数（按程序号去重）。
+    /// 这款有原件导入时跳过了完整性校验（游戏库卡片标「数据校验不过」）
+    public var integritySkipped: Bool { packages.contains(where: \.integritySkipped) }
     public var dlcCount: Int { Set(packages.filter { $0.type == "dlc" }.map(\.titleId)).count }
 
     /// 原件总大小（同一个文件里的多项只算一次，同旧启动器 ExportGameCard）。

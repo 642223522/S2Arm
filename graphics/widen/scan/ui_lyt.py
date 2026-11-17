@@ -261,8 +261,8 @@ def main():
             todo += [(os.path.join(dp, fn), os.path.relpath(os.path.join(dp, fn), src)) for fn in sorted(fns)]
     # 逐包互不相干（各自解压、解析、写各自的覆盖文件）：按包多进程并行，结果按原顺序收（日志行序、计数与串行逐字节相同）。
     #   11-03 Switch 2 出包线：火纹 4,593 个包单线程 Spare-host 174 秒。J = 本阶段分到的路数（缺省本机核数）；字典表经 initializer 交给子进程（spawn 不继承全局）
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', 'tools')); from pool_workers import process_pool_size
-    jobs = process_pool_size(int(os.environ.get('J') or os.cpu_count() or 1))   # Windows 进程池至多 61 路（#1332）
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', 'tools')); from pool_workers import process_pool_size, env_jobs
+    jobs = process_pool_size(env_jobs('J'))   # Windows 进程池至多 61 路（#1332）
     with cf.ProcessPoolExecutor(jobs, initializer=_set_dicts, initargs=(dict(_DICTS),)) as ex:
         for got, nf, c, lines, err in ex.map(_one, [(p, rel, dst, W) for p, rel in todo], chunksize=16):
             files += got; flyt[0] += nf; changed += c; errs += err; log += lines

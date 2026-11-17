@@ -291,6 +291,10 @@ class FakeW:
                                               unselected_accounts=lambda: self.unselected, select_only_account=select_only)
         self.logged = False
         self.plumesign_path = lambda given=None: "C:/plumesign.exe" if plume else None
+        self.cert_hit, self.cert_calls = None, []   # cert_check（签前核开发证书）：缺省「不用问」；用例给 {name, machine, created} 测问玩家
+    def cert_check(self, exe, team, log=None):
+        self.cert_calls.append((exe, team))
+        return self.cert_hit
     def mux_devices(self):
         if isinstance(self.devs, Exception): raise self.devs
         return self.devs
@@ -470,6 +474,19 @@ class WinInstall(unittest.TestCase):
         with self.assertRaises(core.Failure) as e:
             self.go(FakeW([("U1", "USB", 3)], fail="login_identity_rejected"))
         self.assertEqual(e.exception.code, "login_identity_rejected")
+
+    def test_cert_revoke_asked_before_signing(self):
+        # plumesign 要新建证书、列表里有别人的：签名装机之前停下问（cert_revoke_confirm），不调 install_app；玩家点继续（acceptCertRevoke）照装
+        w = FakeW([("U1", "USB", 3)]); w.cert_hit = dict(name="Apple Development: Fake Xcode", machine="Fake-Mac", created="2025-03-01")
+        p = patch.object(self.m.WinPhone, "backup", lambda self, g: None); p.start(); self.addCleanup(p.stop)
+        with self.assertRaises(core.Failure) as e:
+            self.go(w)
+        self.assertEqual(e.exception.code, "cert_revoke_confirm")
+        self.assertIn("「Apple Development: Fake Xcode」", str(e.exception))
+        self.assertEqual(w.calls, [])
+        self.assertEqual(w.cert_calls, [("C:/plumesign.exe", w.team)])
+        self.go(w, acceptCertRevoke=True)
+        self.assertEqual(len(w.calls), 1)
 
     def test_appid_limit_shows_plain_reason_not_plumesign_english(self):
         """Apple 9120（Windows 实机原文：Developer API error 9120 … maximum App ID limit）：上屏是 free_appid_limit 的人话原因与办法，英文原文只进诊断"""

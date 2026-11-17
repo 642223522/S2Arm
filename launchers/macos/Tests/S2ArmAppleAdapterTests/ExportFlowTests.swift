@@ -78,6 +78,17 @@ final class ExportFlowTests: XCTestCase {
         XCTAssertEqual(g.totalBytes, 1000 + 200 + 300 + 50 + 70)
     }
 
+    func testIntegritySkippedPackageMarksTheGame() {
+        // 11-17：导入时数据校验不过照常导入（catalog packages[].integritySkipped 非空数组）→ 这款标「数据校验不过」；空数组 / 没有这个字段都不标。期望手写
+        let skipped = GameSummary(catalog: ["id": "0100A", "name": "Alpha", "packages": [
+            ["type": "base", "sha256": "a"],
+            ["type": "update", "sha256": "b", "integritySkipped": [["stage": "import", "contents": ["x"], "place": "romfs"]]]]])!
+        XCTAssertEqual(skipped.packages.map(\.integritySkipped), [false, true])
+        XCTAssertTrue(skipped.integritySkipped)
+        let clean = GameSummary(catalog: ["id": "0100B", "name": "Beta", "packages": [["type": "base", "sha256": "c", "integritySkipped": []], ["type": "dlc", "sha256": "d"]]])!
+        XCTAssertFalse(clean.integritySkipped)
+    }
+
     func testReemittedPlanKeepsStartedTimes() {
         // 作业层改标复用后重发同一组步：只换预计，已走的时间照留；换了一组步才从头记
         var track = MilestoneTrack()

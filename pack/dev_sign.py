@@ -2,7 +2,8 @@
 """测试包本机开发签名（底本旧库 tools/dev_sign.py；10-19 出包线，维护者定：测试装包不走 xcodebuild 导出 Ad Hoc，那一步 64 秒）：
 dev_sign.py <NxIOS.app> <包名> <团队号> <基础权限 Gen/NxIOS.entitlements> [--extension]
   --extension：签的是 App 扩展（主屏小组件 PlugIns/*.appex，11-16）：只带它自己的权限（共享组），不核「提高内存上限」（那是主程序的）；主程序随后另签。
-① 挑描述文件：~/Library/MobileDevice/Provisioning Profiles 与 Xcode UserData 里 application-identifier = <团队号>.<包名>、带 ProvisionedDevices、get-task-allow 真（开发描述文件），取到期最晚的；
+① 挑描述文件：~/Library/MobileDevice/Provisioning Profiles 与 Xcode UserData 里 application-identifier = <团队号>.<包名>、带 ProvisionedDevices、get-task-allow 真（开发描述文件），
+   逐项核过（没过期、平台、含 S2A_PROFILE_NEED_UDIDS 的设备、本机有签名身份、权限都允许）的里面取到期最晚的；
 ② 挑签名身份：本机 codesigning 身份里，证书（DER 的 SHA-1）在该描述文件 DeveloperCertificates 中的；
 ③ 权限 = 基础权限 + application-identifier / team-identifier / get-task-allow，且每项必须被描述文件允许（否则装不上）；
 ④ 嵌入 embedded.mobileprovision → 先签内嵌 *.dylib / *.framework → 再带权限签 App → 核「提高内存上限」在签名里。
@@ -27,43 +28,61 @@ def cms(f):
     r = subprocess.run(['security', 'cms', '-D', '-i', f], capture_output=True)
     try: return plistlib.loads(r.stdout)
     except Exception: return None
-best, unread, expired = None, [], []
+# 挑描述文件（11-17 #1447 / #1448：0.5.2 起装机先用本机已有的，原先只取到期最晚的那份、再只核它缺不缺设备——到期最晚的不一定能用，
+#   签得出来、手机报 0xe8008015「A valid provisioning profile for this executable was not found」）：本机每一份同包名的开发描述文件都逐项核，
+#   全过的里面取到期最晚的；一项不过就不算这份（不是整个退 3），都不过才退 3 让调用方重申。逐项 = 没过期 / 一天内不到期、平台对（iOS / tvOS）、
+#   含 S2A_PROFILE_NEED_UDIDS 里的设备、本机钥匙串有它 DeveloperCertificates 里的签名身份、要签的每项权限都被它允许
+now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+need_udids = set(os.environ.get('S2A_PROFILE_NEED_UDIDS', '').split())
+ids = [l.split()[1] for l in subprocess.run(['security', 'find-identity', '-v', '-p', 'codesigning'], capture_output=True, text=True).stdout.split('\n') if len(l.split()) > 1 and len(l.split()[1]) == 40]
+_base = []
+def base_ents():
+    """要签的基础权限（第一次用到才读：设备 / 身份不过的描述文件用不着它）"""
+    if not _base:
+        b = plistlib.load(open(base, 'rb'))
+        b.update({'application-identifier': f'{team}.{bid}', 'com.apple.developer.team-identifier': team, 'get-task-allow': True})
+        _base.append(b)
+    return _base[0]
+def entitlements_for(prof):
+    """这份描述文件下要签的权限（tvOS：描述文件不允许「提高内存上限」就不带，见文件头）→ (权限, 不允许的项)"""
+    ents = dict(base_ents())
+    if TVOS and IML in ents and IML not in prof['Entitlements']: ents.pop(IML)
+    return ents, [k for k in ents if k not in prof['Entitlements']]
+best, unread, why = None, [], []
 for f in glob.glob(os.path.join(glob.escape(os.path.expanduser('~/Library/MobileDevice/Provisioning Profiles')), '*.mobileprovision')) + glob.glob(os.path.join(glob.escape(os.path.expanduser('~/Library/Developer/Xcode/UserData/Provisioning Profiles')), '*.mobileprovision')):
     p = cms(f)
     if not p: unread.append(os.path.basename(f)); continue
     e = p.get('Entitlements', {})
     if e.get('application-identifier') != f'{team}.{bid}' or not p.get('ProvisionedDevices') or e.get('get-task-allow') is not True: continue
-    if TVOS and 'tvOS' not in (p.get('Platform') or []): continue
-    # 过期或一天内到期的不算有（11-16 诊断 D-44DP：装机改成「先签、退出码 3 才申请」后，本机这份就是装上去用的那份，过期的签了也装不上）→ 都不合适就退 3 让调用方重申
-    if p['ExpirationDate'] <= datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) + datetime.timedelta(days=1): expired.append(os.path.basename(f)); continue
-    if best is None or p['ExpirationDate'] > best[1]['ExpirationDate']: best = (f, p)
+    name, plat = os.path.basename(f), p.get('Platform') or []
+    if TVOS and 'tvOS' not in plat: continue
+    if not TVOS and plat and 'iOS' not in plat: why.append(f'{name} 不是 iOS 的'); continue
+    if p['ExpirationDate'] <= now + datetime.timedelta(days=1): why.append(f'{name} 已过期或一天内到期'); continue
+    miss = sorted(need_udids - set(p['ProvisionedDevices']))
+    if miss: why.append(f'{name} 不含测试设备 {" ".join(miss)}'); continue
+    certs = {hashlib.sha1(c).hexdigest().upper() for c in p.get('DeveloperCertificates', [])}
+    ident = next((i for i in ids if i in certs), None)
+    if not ident: why.append(f'{name} 里的开发证书本机钥匙串没有'); continue
+    if not DYLIB:
+        ents, bad = entitlements_for(p)
+        if bad: why.append(f'{name} 不允许权限 {bad}'); continue
+    if best is None or p['ExpirationDate'] > best[1]['ExpirationDate']: best = (f, p, ident)
 # 解不出的描述文件不等于没有（10-30 出包线：凌晨内存耗尽、trustd 等安全服务被 Jetsam 杀，security cms 全解不出，这里报「没有」，
 #   调用方去申请新描述文件、原因空白，真因被盖住）：一个都没挑中且有解不出的 → 退出码 4、点名，调用方不申请、照原样报红
 if not best and unread:
     print(f'【红】读不出本机描述文件 {len(unread)} 个（security cms -D 失败，系统安全服务 trustd / securityd 不可用或内存耗尽被杀？如 {unread[0]}）：不当作「没有描述文件」'); sys.exit(4)
-if not best: print(f'没有 {team}.{bid} 的开发描述文件' + (f'（{len(expired)} 份已过期或一天内到期，如 {expired[0]}）' if expired else '')); sys.exit(3)
-pf, prof = best
-# 描述文件要含我方全部测试设备（S2A_PROFILE_NEED_UDIDS，pack/ipa_tail.py 从 tools/devices.sh 名单给；没给不核）：设备登记晚于申请的旧描述文件缺它，
-#   装上去报「This provisioning profile cannot be installed on this device」（11-07 惊奇装 Duo）→ 退 3，调用方 ensure_profile.sh 移走旧的、按账号现有设备重申
-miss = sorted(set(os.environ.get('S2A_PROFILE_NEED_UDIDS', '').split()) - set(prof['ProvisionedDevices']))
-if miss: print(f'描述文件 {os.path.basename(pf)} 不含测试设备 {" ".join(miss)}（设备登记晚于申请），要换新'); sys.exit(3)
-certs = {hashlib.sha1(c).hexdigest().upper() for c in prof.get('DeveloperCertificates', [])}
-ids = subprocess.run(['security', 'find-identity', '-v', '-p', 'codesigning'], capture_output=True, text=True).stdout.split('\n')
-ident = next((l.split()[1] for l in ids if len(l.split()) > 1 and l.split()[1] in certs), None)
-if not ident: print(f'本机钥匙串没有描述文件 {os.path.basename(pf)} 里的开发证书'); sys.exit(3)
+if not best: print(f'没有能用的 {team}.{bid} 开发描述文件' + (f'（{"；".join(why[:4])}）' if why else '')); sys.exit(3)
+pf, prof, ident = best
+if os.environ.get('S2A_DEV_SIGN_PICKED'):   # 调用方（install.sign_and_install）记下这次用了哪份：手机仍拒（0xe8008015）就把它挪开再重申
+    with open(os.environ['S2A_DEV_SIGN_PICKED'], 'a', encoding='utf-8') as pk: pk.write(pf + '\n')
 if DYLIB:
     r = subprocess.run(['codesign', '--force', '--sign', ident, '--timestamp=none', dylib], capture_output=True, text=True)
     if r.returncode: print(f'签名失败 {dylib}：{r.stderr.strip()[:300]}'); sys.exit(1)
     print(f'程序库签名：{os.path.basename(dylib)}，描述文件 {os.path.basename(pf)}，身份 {ident}'); sys.exit(0)
-ents = plistlib.load(open(base, 'rb'))
-ents.update({'application-identifier': f'{team}.{bid}', 'com.apple.developer.team-identifier': team, 'get-task-allow': True})
-allow = prof['Entitlements']
+ents, _ = entitlements_for(prof)
 if TVOS:
     NEED = [EVA] if EVA in ents else []
-    if IML in ents and IML not in allow:
-        ents.pop(IML); print('描述文件没有「提高内存上限」（免费账号常见）：tvOS 上照签不带这项，游戏靠客体内存文件后备压在单进程上限下')
-bad = [k for k in ents if k not in allow]
-if bad: print(f'描述文件不允许这些权限：{bad}'); sys.exit(3)
+    if IML in base_ents() and IML not in ents: print('描述文件没有「提高内存上限」（免费账号常见）：tvOS 上照签不带这项，游戏靠客体内存文件后备压在单进程上限下')
 shutil.copyfile(pf, os.path.join(app, 'embedded.mobileprovision'))
 tf = tempfile.NamedTemporaryFile(suffix='.plist', delete=False); plistlib.dump(ents, tf); tf.close()
 def sign(path, extra=()):

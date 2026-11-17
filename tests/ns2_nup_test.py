@@ -6,7 +6,7 @@
 ② 接 pack/ns2_dump.py：出的解包目录 exefs/main.npdm 程序号 = 合成值，ctl/control.nacp = 原件（不是合成件），romfs 取最新更新
 ③ 同一容器再跑：复用（打「NUP 没变」），输出目录 inode 不变
 ④ 没有本体（更新带 standalone_update）：打黄字，最新更新同时写成 base/
-⑤ 改坏数据区一个字节 → 报红（SHA-256 对不上），不留输出
+⑤ 改坏数据区一个字节 → 打黄（SHA-256 对不上）照常展开（维护者 11-17 撤掉校验不过即拒绝）
 ⑥ --detect：.nup 文件、含一个 .nup 的文件夹 → 退出 0；普通文件、含两个 .nup 的文件夹 → 退出 1
 """
 import hashlib
@@ -233,7 +233,8 @@ with tempfile.TemporaryDirectory() as t:
     build(src3, pk, corrupt=True)
     out3 = os.path.join(t, 'dump3')
     r5 = run(NUP, src3, out3)
-    chk('⑤ 坏字节报红', (r5.returncode, 'SHA-256' in r5.stderr, os.path.exists(out3)), (1, True, False))
+    # 维护者 11-17：「校验不过就整个拒绝」一律撤掉——数据区改坏一个字节（大小不变）只打黄 + 【校验跳过】，照常展开
+    chk('⑤ 坏字节：退出 0、打黄点名、机读行、照常出', (r5.returncode, 'SHA-256 和目录表对不上' in r5.stdout, '【校验跳过】NUP 容器' in r5.stdout, os.path.exists(out3)), (0, True, True, True))
     # ⑥
     plain = os.path.join(t, 'plain.bin')
     open(plain, 'wb').write(b'not a nup')
@@ -384,14 +385,15 @@ else:
         r = subprocess.run([PY, NUP, src, dump], capture_output=True, text=True, env=env)
         chk('⑪ 展开：只有 romfs.nupmap、没有 romfs/ 目录', (r.returncode, sorted(p for p in tree(dump, '.') if 'romfs' in p and not p.startswith('dlc'))),
             (0, ['base/romfs.nupmap', 'updates/131072/romfs.nupmap']))
-        # 容器里更新的 romfs 文件 a.bin（原样存，内容 upd-a）坏一个字节：镜像形态报红、不留产物
+        # 容器里更新的 romfs 文件 a.bin（原样存，内容 upd-a）坏一个字节：镜像形态照常出（维护者 11-17）
         bad_src = os.path.join(t, 'bad-img.nup')
         body = bytearray(rd(src))
         body[body.index(b'upd-a') + 2] ^= 0xFF
         open(bad_src, 'wb').write(body)
         out_bad = os.path.join(t, 'bad-img')
         r = extract(bad_src, out_bad, True)
-        chk('⑪ 容器里 romfs 数据坏：报红（SHA-256）、不留产物', (r.returncode != 0, 'SHA-256' in r.stderr + r.stdout, os.path.exists(out_bad)), (True, True, False))
+        # 维护者 11-17：「校验不过就整个拒绝」一律撤掉——镜像形态下坏的那份只在建镜像时核（nx_unpack --romfs-image 打黄 + 【校验跳过】），照常出产物
+        chk('⑪ 容器里 romfs 数据坏（大小不变）：照常出产物、退出 0', (r.returncode, os.path.exists(out_bad)), (0, True))
 
 print(f'{"✓" if not bad else "✗"} ns2_nup：{ok} 过 / {bad} 不过')
 sys.exit(1 if bad else 0)

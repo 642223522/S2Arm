@@ -9,6 +9,7 @@
 #   按全内容进包键的那几类（系统数据、RomFS 索引、npdm / nacp 等，pack/pkg_inputs_key.py content_keyed，合计几十 MB）不走增量、每次逐字节比（审计 #1534 P1-54：
 #   源只换内容、保住大小与修改时间时，签名全同，旧核对记录会让包里的上一版照样过）
 # 源是标准 RomFS 镜像（源目录不在、旁边有 <源目录>.std，pack.py 包里放镜像克隆 <前缀>.std）：逐文件照旧核，包里那份按包里镜像自己的文件表读；签名取源 / 包两份镜像
+import os as _pw_os, sys as _pw_sys; _pw_sys.path.append(_pw_os.path.join(_pw_os.path.dirname(_pw_os.path.abspath(__file__)), '..', 'tools')); from pool_workers import env_jobs  # noqa: E402  核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
 import hashlib, json, os, stat, struct, sys
 from concurrent.futures import ThreadPoolExecutor
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tools'))
@@ -19,7 +20,7 @@ from pkg_inputs_key import content_keyed   # 哪些源按全内容进包键（�
 from romfs_img import RomfsImage, RomfsError   # 标准 RomFS 镜像读取（包里那份镜像的文件表）
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'graphics', 'nvn', 'tools'))
 import romfs_list   # 源目录遍历一律经它（tools/romfs_walk_lint.py）；目录不在、旁边有 <目录>.std 时从标准 RomFS 镜像列（同 pack.py）
-NJ = int(os.environ.get('J') or os.environ.get('S2A_JOBS') or os.cpu_count() or 1)   # 并行路数（tools/cores.sh S2A_JOBS）
+NJ = env_jobs('J', 'S2A_JOBS')   # 并行路数（tools/cores.sh S2A_JOBS）
 if len(sys.argv) < 3: sys.exit('用法：verify.py <包目录> <前缀>=<源目录> …')
 P = sys.argv[1]
 SRCS = [l for a in sys.argv[2:] for l in (open(a[1:], encoding='utf-8').read().splitlines() if a.startswith('@') else [a]) if l]   # @<文件>：源清单从文件读（同 pack.py）

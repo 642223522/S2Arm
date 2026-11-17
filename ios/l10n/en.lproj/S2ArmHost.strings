@@ -335,6 +335,8 @@
 "img.scanFailed.title" = "Couldn't import the game file";
 "img.noShaders.title" = "This game file is incomplete";
 "img.noShaders.body" = "“%@” is incomplete. Replace it with the “<game name>.img” from the “S2Arm Self-Sign Export” folder on your computer, or connect your phone and click “Send to iPhone” in S2Arm on your computer.";
+"img.updateSkipped.title" = "Shader update skipped";
+"img.updateSkipped.body" = "“%@” doesn’t match the current version of this game, so it was skipped and not applied. The game still plays normally. To use this update, add the full .img from the same export on your computer together with it.";
 "container.locked.title" = "Some S2Arm files are locked by the system";
 "container.locked.body" = "%@ GB of old S2Arm files on this device are locked by the system. S2Arm can neither change nor delete them; they are only removed when the app is deleted.\n\nTo free this space:\n1. In each game, open the menu → Manage saves → Export current save…, to a place in Files outside the S2Arm folder (for example iCloud Drive; the S2Arm folder is deleted together with the app)\n2. Delete and reinstall S2Arm\n3. Use Manage saves → Choose a backup to check… to bring your saves back";
 "diag.fileWord" = "diag";
@@ -344,7 +346,7 @@
 "diag.error.zip" = "Couldn’t create the bundle (writing the zip failed; the phone may be out of space)";
 "diag.export" = "Export diagnostics";
 "diag.prompt.abnormalExit" = "S2Arm didn’t quit normally last time (it crashed, froze or was closed by the system)";
-"diag.prompt.imlLost" = "S2Arm didn’t quit normally last time. This install lost the “Increased Memory Limit” permission, so a large game quitting is most likely running out of memory. Reinstall with “Install on iPhone” in S2Arm on your computer (a free Apple ID keeps this permission too). If you sign it yourself, use Xcode or AltStore Classic 2.2 or later; re-signing with SideStore 0.7.0 drops it. For an existing install, you can also add the permission to the App ID with GetMoreRam and reinstall";
+"diag.prompt.imlLost" = "S2Arm didn’t quit normally last time. This install lost the “Increased Memory Limit” permission, so a large game quitting is most likely running out of memory. Fix it the way you installed S2Arm:\n· S2Arm on your computer (free or paid Apple ID): click “Install on iPhone” for this game to reinstall. If you still see this message afterwards, add the permission with GetMoreRam below, then click “Install on iPhone” again.\n· Your own developer certificate (.p12 + provisioning profile): on the Apple Developer website, turn on “Increased Memory Limit” for S2Arm’s App ID (the identity Apple registers for each app), regenerate the provisioning profile, then re-sign and install with the new profile.\n· AltStore: reinstall (not refresh) with AltStore Classic 2.2 or later.\n· SideStore 0.7.0: its signing drops this permission; add it with GetMoreRam below, then reinstall in SideStore.\n· Sideloadly: not supported for now; it doesn’t say it keeps this permission with a free Apple ID, and custom entitlements need a paid Apple Developer account.\n· GetMoreRam: sideload it with the same Apple ID you used for S2Arm (it takes one of a free account’s app slots; delete it afterwards), sign in, open App IDs, tap Refresh, choose S2Arm, tap “Add Increased Memory Limit”, then reinstall S2Arm the way you did before.";
 "diag.prompt.crash" = "The system reported that S2Arm crashed or froze last time";
 "diag.prompt.message" = "%@. This uploads run logs, crash reports and the list of graphics pipelines the games used (shader IDs only) — no saves, keys or game files — and gives you a short code.";
 "diag.prompt.no" = "No thanks";
@@ -372,6 +374,8 @@
 "dprompt.expiry.hours" = "about %d hours";
 "dprompt.expiry.lessThanHour" = "less than 1 hour";
 "dprompt.expiry.title" = "Signature expires soon";
+"dprompt.input.bad.body" = "This game starts with the default buttons (%@).";
+"dprompt.input.bad.title" = "Couldn't read the button settings";
 "dprompt.ns2pro.body" = "Hold four fingers on the screen for 1.5 seconds to open Settings, turn on “Enable Switch 2 Pro Controller”, then press the pairing button on the controller.";
 "dprompt.ns2pro.title" = "Using a Switch 2 Pro Controller?";
 "dprompt.motion.title" = "Motion controls";
@@ -391,7 +395,7 @@
 "gfx.fpsLimit" = "Frame rate limit";
 "gfx.fpsLimit.none" = "Unlimited";
 "gfx.resolution" = "Render resolution";
-"iml.lost.body" = "Large games may run out of memory and quit or slow down. Reinstall with “Install on iPhone” in S2Arm on your computer (a free Apple ID keeps this permission too). If you sign it yourself, use Xcode or AltStore Classic 2.2 or later; re-signing with SideStore 0.7.0 drops it. For an existing install, you can also add the permission to the App ID with GetMoreRam and reinstall.";
+"iml.lost.body" = "Large games may run out of memory and quit or slow down. Fix it the way you installed S2Arm:\n· S2Arm on your computer (free or paid Apple ID): click “Install on iPhone” for this game to reinstall. If you still see this message afterwards, add the permission with GetMoreRam below, then click “Install on iPhone” again.\n· Your own developer certificate (.p12 + provisioning profile): on the Apple Developer website, turn on “Increased Memory Limit” for S2Arm’s App ID (the identity Apple registers for each app), regenerate the provisioning profile, then re-sign and install with the new profile.\n· AltStore: reinstall (not refresh) with AltStore Classic 2.2 or later.\n· SideStore 0.7.0: its signing drops this permission; add it with GetMoreRam below, then reinstall in SideStore.\n· Sideloadly: not supported for now; it doesn’t say it keeps this permission with a free Apple ID, and custom entitlements need a paid Apple Developer account.\n· GetMoreRam: sideload it with the same Apple ID you used for S2Arm (it takes one of a free account’s app slots; delete it afterwards), sign in, open App IDs, tap Refresh, choose S2Arm, tap “Add Increased Memory Limit”, then reinstall S2Arm the way you did before.";
 "iml.lost.short" = "Large games may run out of memory and close. Tap “Learn more” to see how to sign S2Arm again with this permission.";
 "iml.lost.title" = "This install lost the “Increased Memory Limit” permission";
 "lan.denied.later" = "Not now";

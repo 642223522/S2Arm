@@ -44,6 +44,7 @@
 候选表列：模块<TAB>偏移<TAB>种类<TAB>证据（十六进制指令字或浮点对）。
 并行（10-25 维护者「多核加速……要适配机器的核心数」：动森出包这一步单进程 88 秒）：指令按区间分块、按本机核数（S2A_JOBS，缺省 os.cpu_count）开进程，
   每块只产出起点在本块的候选、前后窗口照读全段，结果合并后与逐条串行逐字节相同；capsz 要全段的 lytsz 位置，先并行出 lytsz 再并行出 capsz。"""
+import os as _pw_os, sys as _pw_sys; _pw_sys.path.append(_pw_os.path.join(_pw_os.path.dirname(_pw_os.path.abspath(__file__)), '..', '..', '..', 'tools')); from pool_workers import process_pool_size, env_jobs  # noqa: E402  核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
 import multiprocessing, os, struct, sys
 import os as _os, sys as _sys; _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '../../../tools')); from nso_plain import plain as _nso_plain   # ZBIC（NSO 标志 0x80）先经 nx_unpack 规整成不压缩段，不各写一份解码（tools/nso_plain.py）
 
@@ -362,7 +363,7 @@ def _parts(fn, n, jobs, shm=None, start=None):
 def scan(b, jobs=None, start=None):
     """返回 [(偏移, 种类, 证据)]，按偏移排序。jobs：并行进程数（缺省 S2A_JOBS / 本机核数）；start：进程起法（单测用，缺省按平台）"""
     global _W, _N, _LS
-    jobs = jobs or int(os.environ.get('J') or os.environ.get('S2A_JOBS') or os.cpu_count() or 1)   # 进程数（J / S2A_JOBS / 本机核数）
+    jobs = process_pool_size(jobs or env_jobs('J', 'S2A_JOBS'))   # 进程数（J / S2A_JOBS / 本机核数）；Windows 进程池至多 61 路（#1332：88 核 Pool(88) 卡死在八个轻阶段）
     n = min(len(b), 0x6000000) // 4; _N = n
     spawn = jobs > 1 and n >= 1 << 16 and (start or ('fork' if 'fork' in multiprocessing.get_all_start_methods() else 'spawn')) == 'spawn'
     shm = None

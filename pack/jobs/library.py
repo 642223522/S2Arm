@@ -1072,6 +1072,26 @@ def keys(c):
 
 # 候选游戏文件自身有毛病（截断、缺票据）：密钥验不了，但不能据此判密钥无效；导入照常、记 verified=false，源文件错误留到读那款游戏时报
 KEYS_UNVERIFIABLE = ("content_truncated", "ticket_missing")
+def integrity_skips(lines):
+    """读取器的「【校验跳过】阶段\t内容号\t第一处坏块」行 → [{stage, contents, place}]（同一处只记一次，按出现顺序）"""
+    out = []
+    for line in lines:
+        if line.startswith("【校验跳过】"):  # 非玩家句
+            stage, _, rest = line[len("【校验跳过】"):].partition("\t")  # 非玩家句
+            contents, _, place = rest.partition("\t")
+            item = dict(stage=stage.strip(), contents=contents.strip(), place=place.strip())
+            if item not in out:
+                out.append(item)
+    return out
+
+
+def integrity_skipped(game):
+    """这款导入时有内容跳过了完整性校验（任一个包记了 integritySkipped）"""
+    return any(p.get("integritySkipped") for p in (game or {}).get("packages", []))
+
+
+SOURCE_INTEGRITY_FAILED_NOTE = "导入时这款数据校验不过（多半是改版 / 整合版或个别块损坏），这次失败可能与此有关；换一份原版完整的文件再试。"
+SOURCE_INTEGRITY_SKIPPED = "这份游戏文件里有数据和原版对不上（多半是改版 / 整合版，或个别块损坏），已跳过完整性校验照常导入。"
 KEYS_CANNOT_DECRYPT = ("无法读取游戏内容：可能是文件不完整、缺票据或密钥不匹配。请核对原始文件；"
                        "若已确认 Switch 密钥版本不足，再重新导出，到「设置 → 玩家密钥」重新导入。")
 
@@ -1119,6 +1139,12 @@ def inspect(c, source, icon_dir, keyfile=None, *, source_id=None):
         scratch.cleanup()
     if "【内容截断】" in lines:  # 非玩家句
         raise Failure("游戏文件不完整，部分内容超出文件末尾。", code="content_truncated")
+    # 读取器哈希不符后只对那份内容跳过完整性校验、照常读出（维护者 11-17：校验不过不再整单拒收，#1467）：每处一行「【校验跳过】阶段\t内容号\t第一处坏块」。
+    #   记进这份原件的每个包（integritySkipped），游戏库据此标「数据校验不过」，之后出包 / 起局失败时报错补一句（main.py）；同时发一条 warning 级诊断
+    skipped = integrity_skips(lines)
+    if skipped:
+        c.diagnostic(SOURCE_INTEGRITY_SKIPPED, code="source_integrity_skipped", severity="warning",
+                     internal="；".join(" ".join(x for x in s.values() if x) for s in skipped))
     try:
         output = json.loads(next(line for line in reversed(lines) if line.startswith("{")))
         if output.get("schema") != 1 or not output["packages"]:
@@ -1128,6 +1154,9 @@ def inspect(c, source, icon_dir, keyfile=None, *, source_id=None):
                 raise ValueError()
             if package["type"] not in ("base", "update", "dlc") or not isinstance(package["version"], int):
                 raise ValueError()
+        if skipped:
+            for package in output["packages"]:
+                package["integritySkipped"] = skipped
         return output["packages"]
     except (KeyError, ValueError, StopIteration, TypeError):
         raise Failure("内容读取器返回的元数据不完整。", code="content_invalid") from None
