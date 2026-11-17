@@ -7,7 +7,6 @@
 // 输入可以已有签名（ad-hoc 或别的证书）：在原 LC_CODE_SIGNATURE 处截断、按新签名大小改该命令与 __LINKEDIT 尺寸后重写，代码页本身不动。
 #include <CommonCrypto/CommonDigest.h>
 #include <Security/Security.h>
-#include <mach-o/loader.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,6 +14,14 @@
 #include <time.h>
 #include "native.h"
 #include <sys/stat.h>
+
+// Mach-O 文件格式里用到的几样（照 <mach-o/loader.h> 的布局，按文件格式自己写，不包含苹果系统头：分层规则 R-02，共用文件不直接包含苹果头）
+enum { SS_MH_MAGIC_64 = 0xfeedfacf, SS_MH_EXECUTE = 0x2, SS_CPU_TYPE_ARM64 = 0x0100000c, SS_LC_SEGMENT_64 = 0x19, SS_LC_CODE_SIGNATURE = 0x1d };
+struct ss_mach_header_64 { uint32_t magic; int32_t cputype, cpusubtype; uint32_t filetype, ncmds, sizeofcmds, flags, reserved; };
+struct ss_load_command { uint32_t cmd, cmdsize; };
+struct ss_segment_command_64 { uint32_t cmd, cmdsize; char segname[16]; uint64_t vmaddr, vmsize, fileoff, filesize; int32_t maxprot, initprot; uint32_t nsects, flags; };
+struct ss_linkedit_data_command { uint32_t cmd, cmdsize, dataoff, datasize; };
+_Static_assert(sizeof(struct ss_mach_header_64) == 32 && sizeof(struct ss_segment_command_64) == 72 && sizeof(struct ss_linkedit_data_command) == 16, "Mach-O 结构与文件格式不符");
 
 #define CS_PAGE_SHIFT 14
 #define CS_PAGE (1u << CS_PAGE_SHIFT)
@@ -206,17 +213,17 @@ int s2a_selfsign_identity(const void *p12, size_t n, const char *password, SecKe
 int s2a_selfsign_macho(const uint8_t *in, size_t n, const char *ident, const char *team, const char *appid, SecKeyRef key, CFArrayRef chain, uint8_t **out, size_t *out_n, char *why, size_t why_n) {
 #define FAIL(...) do { snprintf(why, why_n, __VA_ARGS__); free(cd.p); free(cms.p); free(req.p); free(sb.p); free(o.p); free(ex.p); free(ed.p); return -1; } while (0)
     buf cd = {0}, cms = {0}, req = {0}, sb = {0}, o = {0}, ex = {0}, ed = {0};
-    if (n < sizeof(struct mach_header_64)) FAIL("文件太小");
-    const struct mach_header_64 *mh = (const void *)in;
-    if (mh->magic != MH_MAGIC_64 || mh->cputype != CPU_TYPE_ARM64) FAIL("不是 arm64 单架构 Mach-O（magic %#x）", mh->magic);
-    const uint8_t *lc = in + sizeof *mh; struct linkedit_data_command *sig = NULL; struct segment_command_64 *le = NULL; uint64_t text_off = 0, text_size = 0;
+    if (n < sizeof(struct ss_mach_header_64)) FAIL("文件太小");
+    const struct ss_mach_header_64 *mh = (const void *)in;
+    if (mh->magic != SS_MH_MAGIC_64 || mh->cputype != SS_CPU_TYPE_ARM64) FAIL("不是 arm64 单架构 Mach-O（magic %#x）", mh->magic);
+    const uint8_t *lc = in + sizeof *mh; struct ss_linkedit_data_command *sig = NULL; struct ss_segment_command_64 *le = NULL; uint64_t text_off = 0, text_size = 0;
     for (uint32_t i = 0; i < mh->ncmds; i++) {
-        const struct load_command *c = (const void *)lc;
-        if (c->cmd == LC_CODE_SIGNATURE) sig = (void *)c;
-        if (c->cmd == LC_SEGMENT_64) { struct segment_command_64 *s = (void *)c; if (!strcmp(s->segname, "__LINKEDIT")) le = s; if (!strcmp(s->segname, "__TEXT")) { text_off = s->fileoff; text_size = s->filesize; } }
+        const struct ss_load_command *c = (const void *)lc;
+        if (c->cmd == SS_LC_CODE_SIGNATURE) sig = (void *)c;
+        if (c->cmd == SS_LC_SEGMENT_64) { struct ss_segment_command_64 *s = (void *)c; if (!strcmp(s->segname, "__LINKEDIT")) le = s; if (!strcmp(s->segname, "__TEXT")) { text_off = s->fileoff; text_size = s->filesize; } }
         lc += c->cmdsize;
     }
-    if (!sig || !le) FAIL("没有 LC_CODE_SIGNATURE / __LINKEDIT（要先有一份签名，ad-hoc 也行）");
+    if (!sig || !le) FAIL("没有 SS_LC_CODE_SIGNATURE / __LINKEDIT（要先有一份签名，ad-hoc 也行）");
     uint32_t limit = sig->dataoff;
     if (limit > n || le->fileoff > limit) FAIL("签名偏移越界");
     // 带权限时签名标识取 appid 的包名部分：免费团队按描述文件校验，libmis 拿「团队号.签名标识」对描述文件的 application-identifier
@@ -248,13 +255,13 @@ int s2a_selfsign_macho(const uint8_t *in, size_t n, const char *ident, const cha
     uint32_t est = 0;
     for (int pass = 0; pass < 2; pass++) {
         free(cd.p); cd = (buf){0}; free(cms.p); cms = (buf){0};
-        if (pass == 1) {   // 按估好的大小改 LC_CODE_SIGNATURE 与 __LINKEDIT
-            struct linkedit_data_command *s2 = (void *)(code + ((const uint8_t *)sig - in));
-            struct segment_command_64 *l2 = (void *)(code + ((const uint8_t *)le - in));
+        if (pass == 1) {   // 按估好的大小改 SS_LC_CODE_SIGNATURE 与 __LINKEDIT
+            struct ss_linkedit_data_command *s2 = (void *)(code + ((const uint8_t *)sig - in));
+            struct ss_segment_command_64 *l2 = (void *)(code + ((const uint8_t *)le - in));
             s2->datasize = est; l2->filesize = (uint64_t)limit + est - l2->fileoff;
             l2->vmsize = (l2->filesize + CS_PAGE - 1) & ~(uint64_t)(CS_PAGE - 1);
         }
-        if (build_cd(code, limit, ident, team, req_hash, ents ? ent_hash : NULL, ents ? ent_der_hash : NULL, text_off, text_size, mh->filetype == MH_EXECUTE ? 1 : 0, &cd)) { free(code); FAIL("出 CodeDirectory 失败"); }
+        if (build_cd(code, limit, ident, team, req_hash, ents ? ent_hash : NULL, ents ? ent_der_hash : NULL, text_off, text_size, mh->filetype == SS_MH_EXECUTE ? 1 : 0, &cd)) { free(code); FAIL("出 CodeDirectory 失败"); }
         uint8_t h[32]; CC_SHA256(cd.p, (CC_LONG)cd.n, h);
         if (build_cms(h, key, chain, &cms)) { free(code); FAIL("出 CMS 签名失败（私钥签不了或证书解析失败）"); }
         uint32_t need = (uint32_t)(12 + nblob * 8 + cd.n + req.n + ents_n + cms.n + 8);

@@ -9,6 +9,9 @@
 #include <sys/wait.h>
 #include <unistd.h>
 void *sw_xstack_wrap(const char *name, void *fn);
+void *sw_xstack_leaf(const char *name, void *fn);
+#include <time.h>
+__attribute__((noinline)) long add1(long x, long y) { return x + y; }
 const char *s2a_xs_leaf_name(unsigned i);
 extern const uint32_t xs_leaf_stubs[];
 // entry.S 别的入口（门、线程起点、惰性取核钩子）引用的运行时符号：本测不走那些入口，给占位定义让它链得上
@@ -57,6 +60,19 @@ int main(void) {
     if (p == 0) { int ok; call_at(raw, 5, 7, 24, &ok); _exit(0); }
     int st; waitpid(p, &st, 0);
     CHECK(WIFSIGNALED(st) && (WTERMSIG(st) == SIGBUS || WTERMSIG(st) == SIGSEGV), "④ 反证：不对齐 sp 直接调裸函数应崩（实 %s %d）", WIFSIGNALED(st) ? "信号" : "退出", WIFSIGNALED(st) ? WTERMSIG(st) : WEXITSTATUS(st));
+    // ⑤ 微基准（11-17 维护者：每帧上万次，量 sp 对齐时经桩每次多几纳秒，写进提交说明；不设阈值以外的判据，只防数量级出错）
+    {
+        __attribute__((noinline)) long add1(long x, long y);
+        void *astub = sw_xstack_leaf("bench_add", (void *)add1);
+        long (*direct)(long, long) = add1, (*viastub)(long, long) = (long (*)(long, long))astub;
+        enum { N = 20000000 }; volatile long acc = 0; struct timespec t0, t1, t2;
+        clock_gettime(CLOCK_MONOTONIC, &t0); for (long i = 0; i < N; i++) acc += direct(i, 1);
+        clock_gettime(CLOCK_MONOTONIC, &t1); for (long i = 0; i < N; i++) acc += viastub(i, 1);
+        clock_gettime(CLOCK_MONOTONIC, &t2);
+        double d0 = ((t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec)) / N, d1 = ((t2.tv_sec - t1.tv_sec) * 1e9 + (t2.tv_nsec - t1.tv_nsec)) / N;
+        printf("⑤ 微基准：直接调 %.2f ns/次、经叶子桩（sp 对齐）%.2f ns/次，多 %.2f ns/次（%d 次，acc %ld）\n", d0, d1, d1 - d0, N, (long)acc);
+        CHECK(d1 - d0 < 20, "⑤ 经叶子桩每次多出的时间应远小于 20 ns（实 %.2f）", d1 - d0);
+    }
     printf("%s t_xstack_leaf：%d 项不通\n", bad ? "✗" : "✓", bad);
     return bad != 0;
 }
