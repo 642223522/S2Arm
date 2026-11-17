@@ -2370,7 +2370,17 @@ def program_root(pack_root):
 PROGRAM_WRITER = "pc"   # 写入方名（版本目录 v-<sha16>-<写入方>/、临时清单 catalogue.json.<写入方>.tmp）；手机上的导入是 import
 
 
-def push_program(cl, gid, pkg, pack_root, keep_old=False):
+def look_of(custom):
+    """启动器里改的游戏名 / 封面（ipa.container_custom 的一项）→ 指纹（名字 + 封面内容摘要；没改 = 原名原图同样有指纹，变了才重推）"""
+    custom = custom or {}
+    cover = Path(custom["cover"]) if custom.get("cover") else None
+    h = hashlib.sha256((custom.get("name") or "").encode("utf-8"))
+    if cover is not None and cover.is_file():
+        h.update(hashlib.sha256(cover.read_bytes()).digest())
+    return h.hexdigest()[:16]
+
+
+def push_program(cl, gid, pkg, pack_root, keep_old=False, custom=None):
     """签好的程序包（program_pack.sign 的目录）推进手机。写入规则（通用壳方案「写入规则」，11-17 与 iOS 加载侧定稿；来源 D-YGEC：
     电脑推送与手机导入同时写同一款，清单和本体成了两版）：同一款各写入方各写自己的版本目录，用一次原子改名换上，后换上的为准，不靠「看见谁在写就让路」：
       ① 整份写进 <program>/v-<image_sha256 前 16 位>-pc/（dylib、Games/<号>/）——同一份续推时机上已完整的文件（长度与开头一页都对）跳过，只补没写完的；
@@ -2403,8 +2413,15 @@ def push_program(cl, gid, pkg, pack_root, keep_old=False):
                     old = json.loads(prev.read_text(encoding="utf-8")).get("dir")
                 except ValueError:
                     old = None
+            # 启动器里改的名字 / 封面（只有壳的 App 不再带各款条目，游戏库从这份清单拼）：名字写进清单，封面盖到版本目录的 Games/<号>/icon.jpg
+            shown = dict(cat, dir=vdir)
+            if custom and custom.get("name"):
+                shown["name"] = custom["name"]
+            if custom and custom.get("cover") and Path(custom["cover"]).is_file():
+                cl.put(Path(custom["cover"]), f"{root}/{vdir}/Games/{gid}/icon.jpg")
+                shown["icon"] = f"Games/{gid}/icon.jpg"
             tmp = Path(w) / "catalogue.json"
-            tmp.write_text(json.dumps(dict(cat, dir=vdir), ensure_ascii=False, indent=1), encoding="utf-8")
+            tmp.write_text(json.dumps(shown, ensure_ascii=False, indent=1), encoding="utf-8")
             cl.put(tmp, f"{root}/catalogue.json.{PROGRAM_WRITER}.tmp")
     except Exception as e:   # push_pack.Fail：已是给玩家的话
         if isinstance(e, Failure):
@@ -2415,24 +2432,27 @@ def push_program(cl, gid, pkg, pack_root, keep_old=False):
         raise Failure(f"{gid} 的程序清单在手机上就不了位（{(out.splitlines() or [''])[-1]}）：再试一次；还不行请更新电脑上的 S2Arm。", code="resource_transfer_failed")
     if not keep_old and isinstance(old, str) and old.startswith("v-") and "/" not in old and old != vdir:
         cl.rm(f"{root}/{old}")   # 删不掉不算失败：没被指着，App 启动时清
-    return dict(sha=cat["image_sha256"], team=cat["team"], host_abi=cat["host_abi"], rewriter_id=cat.get("rewriter_id", ""), dir=vdir)
+    return dict(sha=cat["image_sha256"], team=cat["team"], host_abi=cat["host_abi"], rewriter_id=cat.get("rewriter_id", ""), dir=vdir, look=look_of(custom))
 
 
 def push_programs(c, cl, games, rec, team, bundle, signer, pack_roots, keep_old=False):
     """通用壳装机（program_pack.enabled）：每款按设备记录判要不要推（program_pack.need），要推的出包、按这台的团队签、推进 program/。
     rec = 设备记录；pack_roots = {游戏号: 手机上资源包根}；keep_old = 手机上 App 开着 / 判不清（旧版本目录留给 App 清，见 push_program ③）。→ {游戏号: program 记录}（没推的照旧记录原样带回）；推到一半失败照抛，已推好的由调用方记下"""
     import program_pack
+    import ipa as packer
+    looks = packer.container_custom(c)
     out = {}
     for g in games:
         old = (rec.get("games", {}).get(g) or {}).get("program")
         pkg = program_pack.sign(c, g, team, bundle, signer)
-        want = json.loads((Path(pkg) / "catalogue.json").read_text(encoding="utf-8"))
+        custom = next((v for k, v in looks.items() if k.upper() == g.upper()), None)
+        want = dict(json.loads((Path(pkg) / "catalogue.json").read_text(encoding="utf-8")), look=look_of(custom))
         why = program_pack.need(c, g, old, team, want=want)
         if not why:
             out[g] = old
             continue
         note(c, f"{g} 的程序推进手机（{'、'.join(sorted(why))}）")  # 非玩家句
-        out[g] = push_program(cl, g, pkg, pack_roots[g], keep_old=keep_old)
+        out[g] = push_program(cl, g, pkg, pack_roots[g], keep_old=keep_old, custom=custom)
     return out
 
 
