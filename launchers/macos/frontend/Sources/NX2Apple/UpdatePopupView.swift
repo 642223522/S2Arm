@@ -25,6 +25,9 @@ struct UpdatePopupView: View {
     private var version: String { popup["version"] as? String ?? "" }
     private var notes: [String: Any] { popup["notes"] as? [String: Any] ?? [:] }
     private var after: Bool { popup["kind"] as? String == "afterUpdate" }
+    private var isEnglish: Bool { language == "en" }
+    private var isWorking: Bool { if case .working = model.updateState { return true }; return false }
+    private var isReady: Bool { model.updateState == .ready }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -63,8 +66,15 @@ struct UpdatePopupView: View {
                 }
                 .frame(maxHeight: 340)
             }
-            if case .working = model.updateState {
-                Text(t("update.popup.downloading")).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary)
+            if case .working(let id, let percent) = model.updateState {
+                VStack(alignment: .leading, spacing: 6) {
+                    LauncherProgressBar(value: percent.map { Double($0) / 100.0 }, height: 6)
+                    Text(t(id).replacingOccurrences(of: "{0}", with: "\(percent ?? 0)"))
+                        .font(LauncherTheme.TypeStyle.detail).monospacedDigit().foregroundStyle(.secondary)
+                }
+            } else if case .failed(let code) = model.updateState {
+                Text(t("update.error." + code)).font(LauncherTheme.TypeStyle.detail).foregroundStyle(LauncherPalette.danger)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if let gate = model.updateGate {   // 草图④：点了「现在更新并重启」但有局 / 任务在跑，先拦下、说清，弹窗不关
                 VStack(alignment: .leading, spacing: 4) {
@@ -75,19 +85,34 @@ struct UpdatePopupView: View {
                 .background(LauncherPalette.building.opacity(0.14), in: RoundedRectangle(cornerRadius: 12))
                 .accessibilityIdentifier("update.gate")
             }
-            HStack {
+            HStack(spacing: 10) {
                 if let link = releasePage(version) {
                     Button { NSWorkspace.shared.open(link) } label: { Text(t("update.popup.fullLog")).font(LauncherTheme.TypeStyle.detail).underline() }
                         .controllerButtonStyle(.plain).foregroundStyle(LauncherPalette.cream).controllerShortcut(.secondary)
                 }
                 Spacer()
+                if !isWorking {
+                    Button(isEnglish ? "Skip this version" : "跳过此版本") { model.skipUpdateVersion() }
+                        .controllerButtonStyle(LauncherSecondaryButtonStyle())
+                        .accessibilityIdentifier("update.popup.skip")
+                }
                 Button(t("update.popup.later")) { model.closeUpdatePopup() }.controllerButtonStyle(LauncherSecondaryButtonStyle())
                     .keyboardShortcut(.cancelAction).accessibilityIdentifier("update.popup.later").controllerShortcut(.back)
-                Button(t("update.popup.now")) { model.restartToUpdate() }   // 没下就先下、下好接着换（玩家点了才下，#1283）；手动更新（11-16）：启动器升级不再顺带装手机，按钮不再写「和 iPhone App」
-                    .controllerButtonStyle(LauncherPrimaryButtonStyle()).disabled({ if case .working = model.updateState { return true } else { return false } }())
-                    .accessibilityIdentifier("update.popup.now").controllerShortcut(.rightTrigger)
+                Button(primaryActionTitle) {
+                    if isReady { model.restartToUpdate() }
+                    else { model.downloadUpdate() }
+                }
+                .controllerButtonStyle(LauncherPrimaryButtonStyle()).disabled(isWorking)
+                .accessibilityIdentifier("update.popup.now").controllerShortcut(.rightTrigger)
             }
         }
+    }
+
+    private var primaryActionTitle: String {
+        if isReady { return t("update.popup.now") }
+        if isWorking { return isEnglish ? "Downloading..." : "下载中..." }
+        if case .failed = model.updateState { return isEnglish ? "Retry download" : "重试下载" }
+        return isEnglish ? "Download update" : "下载更新"
     }
 
     private var afterBody: some View {

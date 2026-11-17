@@ -28,6 +28,7 @@ struct ExportGameHeader: View {
                 } else { artwork }
                 VStack(alignment: .leading, spacing: 10) {
                     let version = String(format: loc.t("s2arm.export.version"), game.display.isEmpty ? (game.version("base") ?? "-") : game.display)
+                    let subtitle = game.version("update") == nil && !game.id.isEmpty ? "\(version) · \(game.id)" : version
                     LauncherHeadingLine {
                         if editable {
                             ExportNameControl(name: game.name, custom: game.customName) { model.customize(game, name: $0) }
@@ -37,7 +38,7 @@ struct ExportGameHeader: View {
                                 .lineLimit(1).help(game.name)
                         }
                     } subtitle: {
-                        Text(version).font(.manrope(14)).foregroundStyle(.secondary).help(version)
+                        Text(subtitle).font(.manrope(14)).foregroundStyle(.secondary).help(subtitle)
                     }
                     if editable, game.customCover {
                         Button(loc.t("s2arm.custom.cover.reset")) { model.customize(game, coverPath: "") }

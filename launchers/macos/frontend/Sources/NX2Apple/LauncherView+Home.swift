@@ -14,14 +14,14 @@ extension LauncherView {
         VStack(alignment: .leading, spacing: 0) {
             staleBanner
             renewBanner
-            homeControls(size: size).padding(.horizontal, LauncherTheme.Metrics.libraryInset).padding(.top, size.height < 740 ? 12 : 22).padding(.bottom, 18)
+            homeControls(size: size).padding(.leading, LauncherTheme.Metrics.libraryInset).padding(.trailing, LauncherTheme.Space.section).padding(.top, size.height < 740 ? 12 : 22).padding(.bottom, 18)
             if homeGames.isEmpty {
                 homeEmptyPreview
             } else {
                 homeCoverStrip(size: size)
                 Spacer(minLength: 12)
                 if let game = homeSelected {
-                    homePreview(game, size: size).padding(.horizontal, 54).padding(.bottom, size.height < 740 ? 24 : 42)
+                    homePreview(game, size: size).padding(.horizontal, LauncherTheme.Metrics.libraryInset).padding(.bottom, size.height < 740 ? 52 : 74)
                 }
             }
             homeFooter
@@ -74,13 +74,15 @@ extension LauncherView {
         let compact = size.height < 740
         return VStack(alignment: .leading, spacing: compact ? 10 : 16) {
             Text(game.name).font(.manrope(compact ? 34 : min(48, size.width * 0.04), .bold)).tracking(-1)
-                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                .lineLimit(1).minimumScaleFactor(0.62)
                 .shadow(color: .black.opacity(0.3), radius: 14, y: 2)
             VStack(alignment: .leading, spacing: 8) {
                 if !compact {
                     Text(game.id).font(.manrope(12, .medium)).monospaced().tracking(1.5).foregroundStyle(.white.opacity(0.65))
+                        .shadow(color: .black.opacity(0.45), radius: 6, y: 1)
                 }
                 status(game).lineLimit(2)
+                    .shadow(color: .black.opacity(0.45), radius: 6, y: 1)
             }
             if let playtime = game.playtime { playtimeBadge(playtime) }
             if game.playable, game.hostUpdate == "incompatible" {
@@ -118,6 +120,13 @@ extension LauncherView {
                     .controllerButtonStyle(ConsolePillButtonStyle()).controllerID("hero.install")   // 只开装机窗：别的作业在跑，窗里点装机会排队
                     .help(txt(game.iphoneInstalledAt != nil && game.iphoneFree ? "library.hero.renew" : "library.hero.install"))
                 }
+                if game.playable || game.iphoneReady {
+                    Button { model.exportFor = game.id } label: {
+                        fitLabel(loc.t("s2arm.export.action"), "shippingbox")
+                    }
+                    .controllerButtonStyle(ConsolePillButtonStyle()).controllerID("hero.export")
+                    .help(loc.t("s2arm.export.action")).accessibilityLabel(loc.t("s2arm.export.action"))
+                }
                 // 只留两个人人认得的圆钮（…、♡）；「查看出包结果」「启动设置」收进「…」菜单（11-16 维护者：三条横杠看不出是启动设置，一行三种形状不统一）
                 Button { moreFor = game.id } label: { Image(systemName: "ellipsis") }
                     .controllerButtonStyle(ConsoleIconButtonStyle(size: 52)).controllerID("hero.more")
@@ -131,7 +140,7 @@ extension LauncherView {
                     .accessibilityAddTraits(home.favorites.contains(game.id) ? .isSelected : [])
             }.padding(.top, compact ? 4 : 10)
         }
-        .frame(maxWidth: min(740, size.width * 0.64), alignment: .leading)
+        .frame(maxWidth: min(920, size.width * 0.78), alignment: .leading)
         .accessibilityElement(children: .contain).accessibilityIdentifier("home.preview")
     }
 
@@ -148,7 +157,8 @@ extension LauncherView {
             homeGroups(compact: size.width < 1000)
             Spacer(minLength: 16)
             Text("\(homeGames.count) / \(model.games.count)").font(.manrope(11.5)).monospacedDigit()
-                .foregroundStyle(.white.opacity(0.6)).fixedSize().accessibilityIdentifier("home.count").padding(.trailing, 6)
+                .foregroundStyle(.white.opacity(0.78)).shadow(color: .black.opacity(0.35), radius: 4, y: 1)
+                .fixedSize().accessibilityIdentifier("home.count").padding(.trailing, 6)
             Button { model.sgradeUpgradeOpen = true } label: {
                 Image(nsImage: SGradeCardView.sGold).resizable().interpolation(.high).aspectRatio(contentMode: .fit).frame(width: 18, height: 18)
             }.controllerButtonStyle(ConsoleIconButtonStyle()).disabled(model.busy || model.games.isEmpty)
@@ -175,6 +185,7 @@ extension LauncherView {
                         homeCard(game, side: side).id("card." + game.id)
                     }
                 }.padding(.horizontal, LauncherTheme.Metrics.libraryInset).padding(.top, 6).padding(.bottom, 20)
+                    .background(HorizontalWheelScroll())
             }
             .frame(height: side * 1.36 + 36, alignment: .top)
             .accessibilityIdentifier("home.covers")
@@ -237,29 +248,28 @@ extension LauncherView {
             navigation.focus("card." + game.id)
             if game.location.state == "missing" { missingFor = game }
         } label: {
-            GameArtwork(covers: covers, cover: game.cover).frame(width: artworkSide, height: artworkSide)
-                .clipped().clipShape(RoundedRectangle(cornerRadius: 15))
-                .overlay(alignment: .topLeading) {
-                    if game.sgrade { SGradeBadge(size: max(24, artworkSide / 9)) }
-                }
-                .overlay(alignment: .topTrailing) {
-                    if home.favorites.contains(game.id) {
-                        Image(systemName: "heart.fill").font(.system(size: 10)).padding(6).background(.black.opacity(0.6), in: Circle()).padding(8)
+            HomeCardSurface(selected: selected, focused: focused) {
+                GameArtwork(covers: covers, cover: game.cover).frame(width: artworkSide, height: artworkSide)
+                    .clipped().clipShape(RoundedRectangle(cornerRadius: 15))
+                    .overlay(alignment: .topLeading) {
+                        if game.sgrade { SGradeBadge(size: max(24, artworkSide / 9)) }
                     }
-                }
-                .overlay(alignment: .bottomLeading) { expiryBadge(game) }
-                .overlay(alignment: .bottomTrailing) {   // 导入时数据校验不过、照常导入的款（11-17）：黄色提示角标，悬停 / 读屏说明见卡片 help
-                    if game.integritySkipped {
-                        Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 11, weight: .semibold)).foregroundStyle(.yellow)
-                            .padding(6).background(.black.opacity(0.6), in: Circle()).padding(8).accessibilityHidden(true)
+                    .overlay(alignment: .topTrailing) {
+                        if home.favorites.contains(game.id) {
+                            Image(systemName: "heart.fill").font(.system(size: 10)).padding(6).background(.black.opacity(0.6), in: Circle()).padding(8)
+                        }
                     }
-                }
-                .padding(5)
-                .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(.white.opacity(focused ? 1 : selected ? 0.9 : 0), lineWidth: focused ? 3 : 2))
-                .shadow(color: .black.opacity(selected ? 0.4 : 0.2), radius: selected ? 12 : 6, y: 6)
-                .contentShape(RoundedRectangle(cornerRadius: 20))
+                    .overlay(alignment: .bottomLeading) { expiryBadge(game) }
+                    .overlay(alignment: .bottomTrailing) {   // 导入时数据校验不过、照常导入的款（11-17）：黄色提示角标，悬停 / 读屏说明见卡片 help
+                        if game.integritySkipped {
+                            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 11, weight: .semibold)).foregroundStyle(.yellow)
+                                .padding(6).background(.black.opacity(0.6), in: Circle()).padding(8).accessibilityHidden(true)
+                        }
+                    }
+                    .animation(reduceMotion ? nil : .spring(response: 0.30, dampingFraction: 0.84), value: selected)
+            }
         }.controllerButtonStyle(.plain)
-            .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.86), value: selected)
+            .animation(reduceMotion ? nil : .spring(response: 0.30, dampingFraction: 0.84), value: selected)
             .help(game.name + " · " + statusLine(game).text + (game.integritySkipped ? "\n" + loc.backend(Self.integritySkippedNote) : ""))
             .accessibilityLabel(game.name).accessibilityValue(statusLine(game).text + (game.integritySkipped ? "\n" + loc.backend(Self.integritySkippedNote) : ""))
             .accessibilityAddTraits(selected ? .isSelected : []).controllerID("card." + game.id)
@@ -290,7 +300,7 @@ extension LauncherView {
             homeHint(.rightTrigger, homeSelected.map(homePrimaryTitle) ?? loc.t("home.select"))
             homeHint(.back, loc.t("home.back"))
             homeHint(.tertiary, loc.t("home.details"))
-        }.foregroundStyle(.white.opacity(0.6)).padding(.horizontal, 54).frame(height: 48)
+        }.foregroundStyle(.white.opacity(0.6)).padding(.horizontal, LauncherTheme.Metrics.libraryInset).frame(height: 48)
             .accessibilityIdentifier("home.controller-hints").controllerConnectedOnly()
     }
     private func homeHint(_ shortcut: PadShortcut, _ title: String) -> some View {
@@ -369,7 +379,9 @@ extension LauncherView {
             if action == .up, navigation.focusedID?.hasPrefix("hero.") == true, let game = homeSelected {
                 navigation.focus("card." + game.id); return true
             }
-            if action == .down, navigation.focusedID == "home.search", let game = homeSelected {
+            if action == .down, let focused = navigation.focusedID,
+               focused == "home.search" || focused == "home.refresh" || focused == "library.sgradeUpgrade" || focused.hasPrefix("home.group."),
+               let game = homeSelected {
                 navigation.focus("card." + game.id); return true
             }
             guard let id = navigation.focusedID, id.hasPrefix("card."),
@@ -409,5 +421,84 @@ private struct HomeControllerHint: View {
 struct ConsoleBadgeLabelStyle: LabelStyle {
     func makeBody(configuration: Configuration) -> some View {
         HStack(spacing: 4) { configuration.icon.font(.system(size: 10, weight: .bold)); configuration.title }
+    }
+}
+
+private struct HomeCardSurface<Label: View>: View {
+    let selected: Bool
+    let focused: Bool
+    @ViewBuilder let label: () -> Label
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hovered = false
+
+    var body: some View {
+        // 选中卡片无论当前是否持有控制器/鼠标焦点，保持完全一致的清晰奶油色边框与层次感；
+        // 避免「点击时亮白框、一失焦边框就消失」的割裂感。
+        let active = selected || focused
+        let rimOpacity = active ? 0.82 : (hovered ? 0.45 : 0.14)
+        let rimWidth: CGFloat = active ? 1.5 : (hovered ? 1.25 : 1.0)
+        let rimColor: Color = active ? LauncherPalette.cream : .white
+        label()
+            .overlay(
+                RoundedRectangle(cornerRadius: 15)
+                    .strokeBorder(rimColor.opacity(rimOpacity), lineWidth: rimWidth)
+            )
+            .scaleEffect(!reduceMotion && hovered && !active ? 1.03 : 1)
+            .shadow(color: active ? LauncherPalette.cream.opacity(0.18) : .clear, radius: 10, y: 2)
+            .shadow(color: .black.opacity(active ? 0.48 : (hovered ? 0.34 : 0.22)), radius: active ? 18 : (hovered ? 10 : 6), y: active ? 9 : 5)
+            .padding(5)
+            .contentShape(RoundedRectangle(cornerRadius: 20))
+            .animation(reduceMotion ? nil : .spring(response: 0.30, dampingFraction: 0.84), value: active)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: hovered)
+            .onHover { hovered = $0 }
+    }
+}
+
+/// 将桌面鼠标的垂直滚轮事件转为首页封面横排的横向滚动，方便无触控板用户浏览全部游戏。
+private struct HorizontalWheelScroll: NSViewRepresentable {
+    func makeNSView(context: Context) -> Host { Host() }
+    func updateNSView(_ view: Host, context: Context) {}
+    static func dismantleNSView(_ view: Host, coordinator: ()) { view.stopObserving() }
+
+    final class Host: NSView {
+        private var monitor: Any?
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func isAccessibilityElement() -> Bool { false }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            stopObserving()
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+                self?.handle(event) ?? event
+            }
+        }
+        private func handle(_ event: NSEvent) -> NSEvent? {
+            guard let scrollView = enclosingScrollView,
+                  let window = scrollView.window,
+                  event.window === window,
+                  !scrollView.isHiddenOrHasHiddenAncestor,
+                  abs(event.scrollingDeltaY) > 0.01,
+                  abs(event.scrollingDeltaX) < abs(event.scrollingDeltaY) else {
+                return event
+            }
+            let point = scrollView.convert(event.locationInWindow, from: nil)
+            guard scrollView.bounds.contains(point) else { return event }
+            let clipView = scrollView.contentView
+            guard let documentView = scrollView.documentView else { return event }
+            let maxX = max(0, documentView.frame.width - clipView.bounds.width)
+            guard maxX > 0 else { return event }
+            let delta = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.scrollingDeltaY * 24
+            let current = clipView.bounds.origin
+            let nextX = min(max(0, current.x - delta), maxX)
+            guard abs(nextX - current.x) > 0.01 else { return event }
+            clipView.scroll(to: NSPoint(x: nextX, y: current.y))
+            scrollView.reflectScrolledClipView(clipView)
+            return nil
+        }
+        func stopObserving() {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+        }
+        deinit { stopObserving() }
     }
 }
