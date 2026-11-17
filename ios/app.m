@@ -913,7 +913,8 @@ static void library_play_go(const char *gid, S2ASceneDelegate *sd) {
     // why 是 launchctx.c 的内部原因（路径 / errno，已进 host.log「选游戏…被拒」）：屏上按类别说人话 + 下一步，原文只进日志 / 诊断（v0.3.1）
     if (why) {
         int kind = s2a_launch_ctx_select_kind();
-        if (kind == S2A_SELECT_NEEDS_UPDATE) {   // 程序按别的约定号出：不弹窗，回游戏库在这款卡片上标「需要在电脑上更新」（预判没读到时的兜底；原因已进 host.log）
+        if (kind == S2A_SELECT_NEEDS_UPDATE || kind == S2A_SELECT_NEEDS_RESIGN) {   // 程序包签名本机不认（通用壳 11-16）同样回游戏库标「需要在电脑上更新」：电脑端「更新 iPhone」按 need() 只重签这几款推回去
+            // 程序按别的约定号出：不弹窗，回游戏库在这款卡片上标「需要在电脑上更新」（预判没读到时的兜底；原因已进 host.log）
             if (!g_host_update) g_host_update = [NSMutableDictionary dictionary];
             g_host_update[@(gid)] = @1;
             if (s2a_shell_refresh) s2a_shell_refresh();

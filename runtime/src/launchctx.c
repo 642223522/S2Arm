@@ -3,13 +3,16 @@
 #include "native.h"
 #include "s2a_launch_ctx.h"
 #include "s2a_docs.h"   // 多款容器每款资源包根（s2a_pack_root）
-#include "s2a_host_abi.h"   // S2A_HOST_ABI：宿主读产物的约定号（选游戏时核）
+#include "s2a_host_abi.h"
+#include <CommonCrypto/CommonDigest.h>   // 程序包 image_sha256 核对（program_sha_check）
+#include <dlfcn.h>                       // s2a_imgpack_open：宿主才链（imgpack.c），单测不链 → 不预注册   // S2A_HOST_ABI：宿主读产物的约定号（选游戏时核）
 #include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <mach-o/dyld.h>
 
@@ -151,6 +154,28 @@ static const char *obj_value(const char *s, const char *e, const char *key) {
     }
     return NULL;
 }
+// 整份清单里 title_id == gid 的那个对象 [*os, *oe)；回 1 找到、0 没这款
+static int find_obj(const char *buf, size_t n, const char *gid, const char **os, const char **oe) {
+    const char *e = buf + n, *st[32]; int sp = 0; size_t gl = strlen(gid);
+    for (const char *p = buf; p < e; ) {
+        if (*p == '"') { p = skip_str(p, e); if (!p) return 0; continue; }
+        if (*p == '{') { if (sp < 32) st[sp] = p; sp++; }
+        else if (*p == '}' && sp > 0) {
+            sp--;
+            if (sp < 32) { const char *v = obj_value(st[sp], p + 1, "title_id");
+                if (v && *v == '"' && v + 1 + gl < e && !memcmp(v + 1, gid, gl) && v[1 + gl] == '"') { *os = st[sp]; *oe = p + 1; return 1; } }
+        }
+        p++;
+    }
+    return 0;
+}
+// 对象里字符串键 key 的值（不含转义的简单串）拷进 out；没有 / 不是串 / 放不下 → 0
+static int obj_str(const char *s, const char *e, const char *key, char *out, size_t n) {
+    const char *v = obj_value(s, e, key); if (!v || *v != '"') return 0;
+    const char *q = v + 1; while (q < e && *q != '"' && *q != '\\') q++;
+    if (q >= e || *q != '"' || (size_t)(q - v - 1) >= n) return 0;
+    memcpy(out, v + 1, (size_t)(q - v - 1)); out[q - v - 1] = 0; return 1;
+}
 // 整份清单里 title_id == gid 的那个对象 → 它的 host_abi（没记 = 1，记成非数字 = -1）；回 1 找到、0 没这款
 static int find_abi(const char *buf, size_t n, const char *gid, int *abi) {
     const char *e = buf + n, *st[32]; int sp = 0; size_t gl = strlen(gid);
@@ -202,6 +227,23 @@ int s2a_program_catalogue_path(char *out, size_t n, const char *game_data) {
     return 0;
 }
 
+// 程序包清单里这款的 image_sha256（64 位十六进制）与程序库整份文件的 SHA-256 比：→ 0 一致或清单没写这一项；1 不一致；-1 读不了（why 写原因）
+static int program_sha_check(const char *game_data, const char *gid, const char *image, char *why, size_t why_n) {
+    char pc[S2A_LCTX_PATH], want[80] = ""; size_t n;
+    if (s2a_program_catalogue_path(pc, sizeof pc, game_data)) { WHY("资源包根太长"); return -1; }
+    char *buf = slurp(pc, &n, why, why_n); if (!buf) return -1;
+    const char *os, *oe; int has = find_obj(buf, n, gid, &os, &oe) && obj_str(os, oe, "image_sha256", want, sizeof want); free(buf);
+    if (!has) return 0;
+    if (strlen(want) != 64) { WHY("程序包清单 image_sha256 不是 64 位十六进制"); return 1; }
+    FILE *f = fopen(image, "rb"); if (!f) { WHY("程序库 %s 打不开（errno %d）", image, errno); return -1; }
+    CC_SHA256_CTX x; CC_SHA256_Init(&x); unsigned char blk[1 << 16]; size_t got;
+    while ((got = fread(blk, 1, sizeof blk, f)) > 0) CC_SHA256_Update(&x, blk, (CC_LONG)got);
+    int err = ferror(f); fclose(f); if (err) { WHY("程序库 %s 读失败", image); return -1; }
+    unsigned char d[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_Final(d, &x); char hex[65];
+    for (int i = 0; i < 32; i++) snprintf(hex + 2 * i, 3, "%02x", d[i]);
+    if (strcasecmp(hex, want)) { WHY("游戏 %s 的程序库和程序包清单不是同一次出的（SHA-256 %.12s…，清单 %.12s…）：要在电脑上重新签名推回去", gid, hex, want); return 1; }
+    return 0;
+}
 int s2a_launch_ctx_resolve_game(s2a_launch_ctx *c, const char *b, const char *home, const char *gid, char *why, size_t why_n) {
     memset(c, 0, sizeof *c);
     if (why && why_n) why[0] = 0;
@@ -209,19 +251,36 @@ int s2a_launch_ctx_resolve_game(s2a_launch_ctx *c, const char *b, const char *ho
     if (!home || !*home) home = ".";
     // gid 进路径（Games/<gid>、S2AImages-<gid>.dylib、Documents/games/<gid>）：只收 [A-Za-z0-9._-]、不以 . 开头（挡 .. 与隐藏目录）
     if (!gid || !id_ok(gid) || gid[0] == '.' || strlen(gid) >= sizeof c->game_id) { WHY("游戏编号「%s」不合规（只收 [A-Za-z0-9._-]、不以 . 开头、≤127 字）", gid ? gid : ""); return -1; }
-    char p[S2A_LCTX_PATH], rel[300];
-    if (join(p, b, "s2a_catalogue.json")) { WHY("App 包目录太长"); return -1; }
-    int has = catalogue_has(p, gid, why, why_n);
-    if (has < 0) return -1;
-    if (!has) { WHY("游戏 %s 不在本包游戏清单 %s 里", gid, p); return -1; }
-    snprintf(rel, sizeof rel, "Games/%s", gid);
-    if (join(c->module_dir, b, rel) || !is_dir(c->module_dir)) { WHY("游戏 %s 的随行目录 %s 不在", gid, c->module_dir); memset(c, 0, sizeof *c); return -1; }
-    snprintf(rel, sizeof rel, "Frameworks/S2AImages-%s.dylib", gid);
-    if (join(c->images, b, rel) || !is_file(c->images)) { WHY("游戏 %s 的镜像包 %s 不在", gid, c->images); memset(c, 0, sizeof *c); return -1; }
-    char hd[S2A_LCTX_PATH]; snprintf(rel, sizeof rel, "games/%s", gid);
-    // 资源包根：Library/Application Support/S2Arm/games/<游戏号>/资源包（s2a_docs.h s2a_pack_root，v0.3.0 挪出 Documents）；存档仍在本款文档根下
-    if (join(hd, home, S2A_CONTAINER_DOCS_REL) || join(c->docs, hd, rel) || s2a_pack_root(c->game_data, sizeof c->game_data, c->docs) >= (int)sizeof c->game_data
-        || join(c->ryu_data, c->docs, "S2A/ryujinx")
+    char p[S2A_LCTX_PATH], rel[300], hd[S2A_LCTX_PATH], pc[S2A_LCTX_PATH];
+    // 文档根 / 资源包根先算：资源包根：Library/Application Support/S2Arm/games/<游戏号>/资源包（s2a_docs.h s2a_pack_root，v0.3.0 挪出 Documents）；存档仍在本款文档根下
+    snprintf(rel, sizeof rel, "games/%s", gid);
+    if (join(hd, home, S2A_CONTAINER_DOCS_REL) || join(c->docs, hd, rel) || s2a_pack_root(c->game_data, sizeof c->game_data, c->docs) >= (int)sizeof c->game_data) {
+        WHY("HOME 太长"); memset(c, 0, sizeof *c); return -1; }
+    // 通用壳（11-16）：资源包根旁有程序包 program/catalogue.json → 这款的程序（镜像包 + 随行目录）从程序包取，App 包里没有它也行；
+    //   清单是写入的最后一步（电脑端先写 dylib、Games/，最后改名写清单），清单在 = 程序包写完。没有清单 → 照旧取 App 包内（过渡：程序都挪出 App
+    //   且各台手机推过一次新壳后删掉这一支）
+    if (!s2a_program_catalogue_path(pc, sizeof pc, c->game_data) && is_file(pc)) {
+        size_t n; char *buf = slurp(pc, &n, why, why_n), img[160] = "";
+        if (!buf) { memset(c, 0, sizeof *c); return -1; }
+        const char *os, *oe; int hit = find_obj(buf, n, gid, &os, &oe), ok = hit && obj_str(os, oe, "image", img, sizeof img); free(buf);
+        if (!hit) { WHY("程序包清单 %s 里没有 %s：清单和程序不是同一次出的", pc, gid); memset(c, 0, sizeof *c); return -1; }
+        if (!ok || !id_ok(img) || img[0] == '.') { WHY("程序包清单 %s 的 image 不合规（只收 [A-Za-z0-9._-]、不以 . 开头）", pc); memset(c, 0, sizeof *c); return -1; }
+        char *sl = strrchr(pc, '/'); *sl = 0;   // pc → 程序包目录
+        snprintf(rel, sizeof rel, "Games/%s", gid);
+        if (join(c->module_dir, pc, rel) || !is_dir(c->module_dir)) { WHY("游戏 %s 的程序包随行目录 %s 不在", gid, c->module_dir); memset(c, 0, sizeof *c); return -1; }
+        if (join(c->images, pc, img) || !is_file(c->images)) { WHY("游戏 %s 的程序包镜像包 %s 不在", gid, c->images); memset(c, 0, sizeof *c); return -1; }
+        c->from_program = 1;
+    } else {
+        if (join(p, b, "s2a_catalogue.json")) { WHY("App 包目录太长"); memset(c, 0, sizeof *c); return -1; }
+        int has = catalogue_has(p, gid, why, why_n);
+        if (has < 0) { memset(c, 0, sizeof *c); return -1; }
+        if (!has) { WHY("游戏 %s 不在本包游戏清单 %s 里", gid, p); memset(c, 0, sizeof *c); return -1; }
+        snprintf(rel, sizeof rel, "Games/%s", gid);
+        if (join(c->module_dir, b, rel) || !is_dir(c->module_dir)) { WHY("游戏 %s 的随行目录 %s 不在", gid, c->module_dir); memset(c, 0, sizeof *c); return -1; }
+        snprintf(rel, sizeof rel, "Frameworks/S2AImages-%s.dylib", gid);
+        if (join(c->images, b, rel) || !is_file(c->images)) { WHY("游戏 %s 的镜像包 %s 不在", gid, c->images); memset(c, 0, sizeof *c); return -1; }
+    }
+    if (join(c->ryu_data, c->docs, "S2A/ryujinx")
         || put(c->caps_dir, c->module_dir) || put(c->bundle_dir, b) || put(c->log_dir, hd)) { WHY("HOME 或 App 包目录太长"); memset(c, 0, sizeof *c); return -1; }
     strcpy(c->game_id, gid);
     c->source = S2A_LCTX_CONTAINER;
@@ -300,6 +359,17 @@ const char *s2a_launch_ctx_select(const char *gid) {
             g_sel_kind = S2A_SELECT_NEEDS_UPDATE; r = why; goto out;   // 被拒原因由 out 处统一记【红】行（带诊断码进诊断包）
         }
         if (k < 0) { snprintf(why, sizeof why, "宿主约定号核不了：%s", w[0] ? w : "App 包目录太长"); g_sel_kind = S2A_SELECT_APP_INCOMPLETE; r = why; goto out; }
+    }
+    {   // 程序签名（通用壳 11-16）：程序包里的程序库要和清单 image_sha256 一致（推了一半 / 换了别的版本 = 清单和库不是同一次出的），
+        //   且能被本机这份 App 注册签名 + 库校验（同团队）。对不上 → 回游戏库标「要在电脑上重新签名」，不进宿主（原先进局后 loader.c die「外置镜像包打不开」，
+        //   App 无提示直接退回主屏，11-16 Duo 实测 ad-hoc 程序库 errno=1）。注册在这里先做一次，进局后 s2a_imgpack_open 同一路径回同一个包
+        int ks = c.from_program ? program_sha_check(c.game_data, gid, c.images, w, sizeof w) : 0;
+        if (ks > 0) { snprintf(why, sizeof why, "ios_program_resign：%s", w); g_sel_kind = S2A_SELECT_NEEDS_RESIGN; r = why; goto out; }
+        if (ks < 0) { snprintf(why, sizeof why, "程序包核不了：%s", w); g_sel_kind = S2A_SELECT_APP_INCOMPLETE; r = why; goto out; }
+        int (*open_pk)(const char *, void **, char *, size_t) = (int (*)(const char *, void **, char *, size_t))dlsym(RTLD_DEFAULT, "s2a_imgpack_open");
+        void *pk = NULL; int rc = open_pk ? open_pk(c.images, &pk, w, sizeof w) : 0;
+        if (rc == 3) { snprintf(why, sizeof why, "ios_program_resign：游戏 %s 的程序库签名本机不认（%s）：要在电脑上重新签名这款", gid, w); g_sel_kind = S2A_SELECT_NEEDS_RESIGN; r = why; goto out; }   // 3 = S2A_IMG_ESIGN（runtime/src/imgpack.h）
+        if (rc) { snprintf(why, sizeof why, "游戏 %s 的程序库打不开（返回 %d）：%s", gid, rc, w); g_sel_kind = S2A_SELECT_APP_INCOMPLETE; r = why; goto out; }
     }
     // 本款文档根第一次用时还不在（存档 / wire / 加载页标记各自只建最后一级）：逐级建好
     for (char *q = c.docs + 1; ; q++) {

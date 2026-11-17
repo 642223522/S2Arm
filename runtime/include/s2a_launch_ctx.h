@@ -28,6 +28,7 @@ enum { S2A_LCTX_COMPAT = 0, S2A_LCTX_FILE = 1, S2A_LCTX_CONTAINER = 2 };
 #define S2A_LCTX_PATH 1024
 typedef struct s2a_launch_ctx {
     int source;                       // S2A_LCTX_COMPAT / S2A_LCTX_FILE
+    int from_program;                 // 多款容器：1 = 这款程序从资源包旁的程序包 program/ 取（通用壳，11-16），0 = App 包内
     char ctx_path[S2A_LCTX_PATH];     // 上下文文件（兼容 = 空）
     char game_id[128], build_id[128]; // 兼容 = 空（单款包不需要）
     char bundle_dir[S2A_LCTX_PATH];   // 可执行文件目录（iOS = App 包）
@@ -57,7 +58,8 @@ const char *s2a_launch_ctx_select(const char *gid);
 // 上一次 s2a_launch_ctx_select 被拒的类别（给玩家看的话按它选，原文只进日志）：
 //   APP_INCOMPLETE = 这款在 App 里不完整（不在清单、随行目录 / 镜像包不在）→ 在电脑上重新装到 iPhone；STORAGE = 建不了本款文档目录（多半存储满）；OTHER = 其余
 //   NEEDS_UPDATE = 这款程序是按别的宿主约定号出的（s2a_host_abi_check 对不上，诊断码 ios_host_abi_mismatch）→ 在电脑上按新版更新这款
-enum { S2A_SELECT_OTHER = 0, S2A_SELECT_APP_INCOMPLETE = 1, S2A_SELECT_STORAGE = 2, S2A_SELECT_NEEDS_UPDATE = 3 };
+//   NEEDS_RESIGN = 这款程序包签名对不上本机这份 App（注册签名 / 库校验失败、或程序库和清单 image_sha256 不符）→ 在电脑上重新签名推回去
+enum { S2A_SELECT_OTHER = 0, S2A_SELECT_APP_INCOMPLETE = 1, S2A_SELECT_STORAGE = 2, S2A_SELECT_NEEDS_UPDATE = 3, S2A_SELECT_NEEDS_RESIGN = 4 };
 int s2a_launch_ctx_select_kind(void);
 // 宿主约定号核对（11-16，runtime/include/s2a_host_abi.h S2A_HOST_ABI）：这款产物上记的号——程序包自带的清单 program_catalogue
 //   （程序挪出 App 后随程序走的 program/catalogue.json：{schema, title_id, host_abi, chain, rewriter_id, image, image_sha256}）优先；
