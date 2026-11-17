@@ -1186,6 +1186,21 @@ S2ARM_README_TEXT = {
 }
 
 
+# 文件夹里导出过通用 S2Arm.ipa（export_shell_ipa）时，说明最前面加这一句；没导出就不出现（11-17 维护者定稿原话）
+S2ARM_README_IPA = {
+    "zh": "S2Arm.ipa：用你自己的签名工具（AltStore、SideStore 等）签好装到手机。只装一次，S2Arm 升级时再装一次。\n",  # 非玩家句（说明文件按界面语言直接写，英文见下一项）
+    "en": "S2Arm.ipa: sign it with your own tool (AltStore, SideStore, etc.) and install it on your iPhone. You only need to do this once, and again when S2Arm updates.\n",
+}
+
+
+def write_s2arm_readme(folder, lang):
+    """「S2Arm 游戏包」文件夹的说明：导出 .s2arm、导出通用 S2Arm.ipa 都按这一处写（谁后写都一样）；文件夹里有 S2Arm.ipa 才带 ipa 那句。→ 说明的路径"""
+    readme = folder / S2ARM_READMES[lang]
+    text = (S2ARM_README_IPA[lang] if (folder / "S2Arm.ipa").is_file() else "") + S2ARM_README_TEXT[lang]
+    readme.write_text(text, encoding="utf-8-sig" if os.name == "nt" else "utf-8")
+    return readme
+
+
 def s2arm_dir(c):
     for name in S2ARM_DIRS.values():
         if (c.library / name).is_dir():
@@ -1271,7 +1286,7 @@ def export_s2arm(c, gid):
     tmp.write_bytes(data)
     os.replace(tmp, out)
     lang = ui_lang(c)   # 这份文件夹的说明（玩家删了下次导出照样写回）
-    (folder / S2ARM_READMES[lang]).write_text(S2ARM_README_TEXT[lang], encoding="utf-8-sig" if os.name == "nt" else "utf-8")
+    write_s2arm_readme(folder, lang)
     game_img = Path(pack) / "game.img"
     return dict(gameId=gid, s2armPath=str(out), s2armBytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
                 resourcePath=str(game_img) if game_img.is_file() else "", exported=True, signedWith=signed_with)
@@ -1561,6 +1576,34 @@ def swap_export_dir(out, dest, old, tries=None, wait=None):
     return alt
 
 
+def export_shell_ipa(c):
+    """0.6.0 通用壳（program_pack.enabled）「导出通用 S2Arm.ipa」：只有壳、不带任何一款游戏（ipa.assemble_shell，同「安装 S2Arm」装的那个），未签名，
+    写成「S2Arm 游戏包」文件夹（s2arm_dir，和各款 .s2arm 同一处）里的 S2Arm.ipa，就地换掉上一份；同文件夹里别的东西不动。
+    0.5.x 的「S2Arm 自签导出」文件夹不碰。不读游戏库、不出游戏的程序包，所以游戏多少都一样快。玩家关了主屏小组件就去掉扩展再交（同 export_phone）。
+    结果字段同 export_phone（完成页照用），games / files 为空"""
+    import ipa as packer
+    c.begin("组 S2Arm（不带游戏）", 1, 2)
+    work, tmp = Path(tempfile.mkdtemp(prefix=".export-", dir=c.library)), None
+    try:
+        ipa, _, sid = packer.assemble_shell(c, dest=work / "assemble")
+        c.begin("写进「S2Arm 游戏包」文件夹", 2, 2)
+        folder = s2arm_dir(c)
+        folder.mkdir(parents=True, exist_ok=True)   # 玩家删了文件夹也照样重建
+        out = folder / "S2Arm.ipa"
+        tmp = folder / f".S2Arm.ipa.{os.getpid()}.partial"
+        if not (c.r.get("widget") is False and ipa_strip_widget(ipa, tmp)):
+            shutil.move(str(ipa), str(tmp))   # 临时目录和文件夹都在游戏库所在盘上：通常是改名
+        os.replace(tmp, out)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)   # 半路失败不留半个文件（换上去了就已不在）
+    lang = ui_lang(c)
+    readme = write_s2arm_readme(folder, lang)
+    return dict(exported=True, outputPath=str(folder), ipa=str(out), readme=str(readme), shellId=sid, sgrade=patches_results(c),
+                games=[], files=[], skipped=[], exportBytes=out.stat().st_size, fresh=[], reused=0, unwritten=[])
+
+
 def export_phone(c, gid=None):
     """导出，自己签名安装：本版壳 + 游戏库里能放进本壳、已出成单一 IMG 的各款组一个容器（ipa.assemble，同一键装），
     出未签名 S2Arm.ipa + 每款一个 <游戏名>.img + 说明到游戏库根「S2Arm 自签导出」（英文界面「S2Arm Self-Sign Export」）。不连手机、不签名。
@@ -1568,7 +1611,10 @@ def export_phone(c, gid=None):
     带 gid 时 .img 只新写这一款，别的款能沿用上次导出的就沿用、不能就不写（结果 unwritten 点名）；None 时照旧每款都写。
     放不进本壳（要按新版重新出包）/ 还不是单一 IMG 形态的别的款不带，结果 skipped 点名"""
     import ipa as packer
+    import program_pack
     gid = gid.upper() if gid else None
+    if gid is None and program_pack.enabled(c):   # 0.6.0 通用壳：「导出新版 S2Arm」只出不带游戏的通用 S2Arm.ipa（游戏走 .s2arm）
+        return export_shell_ipa(c)
     c.begin("核对要导出的游戏", 1, 4)
     sid = packer.current_shell_id(c)
     if gid:
@@ -3036,6 +3082,16 @@ def push_selected(c):
     return dict(enabled=True, games=rows, done=len(state["done"]), failed=len(state["failed"]), remaining=len(games) - len(state["done"]))
 
 
+def forget_other_app(c, ph):
+    """刚装上的 S2Arm 和设备记录里的不是同一个 App（换了团队 / 签名方式 = 换包名 = 新沙盒）：记录里各款的程序包、资源包、交过的证书、
+    量过的占用都在原来那个 App 里，这个 App 里没有 → 清掉，之后「推到 iPhone」按没推过整款推（同 0.5.x _put 的 moved）。
+    原来那个 App 和它的游戏留在手机上不动；包名没变什么都不做"""
+    rec = layout.load_device(c, ph.key)
+    if rec.get("bundleId") and ph.bid and rec["bundleId"] != ph.bid:
+        note(c, f"手机上装的是另一个 App（{rec['bundleId']} → {ph.bid}）：各款按没推过算")  # 非玩家句
+        layout.save_device(c, ph.key, {k: v for k, v in rec.items() if k not in ("games", "identity", "usage")})
+
+
 def install_shell(c, ph, steps=True):
     """通用壳「安装 / 续签 / 更新 S2Arm」（program_pack.enabled）：只组只有壳的容器、签名、装壳，绝不推任何一款的程序包与资源包（11-17 维护者定）。
     手机上已是这一版壳、签名离到期还早（same_app）→ 不装，updated = False。装上后记壳号、包名、签名时刻；各款记录原样留着（程序包在手机上不受装壳影响）"""
@@ -3049,6 +3105,7 @@ def install_shell(c, ph, steps=True):
         return dict(updated=False, bundleId=ph.bid, games=[], **ph.info)
     if steps: c.begin("签名并装到 iPhone", 3, 3)
     ph.install(ipa, [], steps=False)
+    forget_other_app(c, ph)
     rec = layout.load_device(c, ph.key)
     signed = dict(signed=dict(at=time.time(), free=bool(ph.info["free"]), device=ph.info["device"], mode=sign_mode(c))) if "free" in ph.info else {}
     layout.save_device(c, ph.key, dict(rec, shellId=sid, bundleId=ph.bid or rec.get("bundleId", ""), at=time.time(), **signed))
@@ -3161,6 +3218,68 @@ def phone_kept_pull(c):
             return _kept_pull_many(c)
         return _kept_pull_none()
     return _kept_pull_on(c, ph)
+
+
+def _usage_games(cl):
+    """手机上有哪几款（资源根两处 + 文档根下的游戏号目录，以手机为准，不只看这台电脑推过的）"""
+    found = set()
+    for root in (PACK_GAMES, PACK_GAMES_ALT, DOCS_GAMES):
+        rc, out = cl.call("ls", root)
+        if not rc:
+            found.update(n.upper() for n in out.splitlines() if GID_RE.fullmatch(n.strip().upper()))
+    return sorted(found)
+
+
+def _usage_measure(cl, games):
+    """→ {游戏号: {program, resources, saves, snapshots, files}}（字节）；量不了（工具旧 / 断开 / 锁屏）→ None。
+    程序 = 两处资源根下 <号>/program/；快照 = 两处资源根下 <号>/snapshot/（《文件与程序管理体系》H 项定的落点，没有给 0）；
+    存档 = 文档根 <号>/S2A/…/save；资源 = 这款其余全部（资源包、旧位置的资源、金手指、日志等）"""
+    roots = {}
+    for g in games:
+        roots[g] = dict(total=[f"{PACK_GAMES}/{g}", f"{PACK_GAMES_ALT}/{g}", game_docs(g)],
+                        program=[f"{PACK_GAMES}/{g}/program", f"{PACK_GAMES_ALT}/{g}/program"], saves=[f"{game_docs(g)}/{SAVE_REL}"],
+                        snapshots=[f"{PACK_GAMES}/{g}/snapshot", f"{PACK_GAMES_ALT}/{g}/snapshot"])
+    got = cl.du(*[r for v in roots.values() for rs in v.values() for r in rs]) if games else {}
+    if got is None:
+        return None
+    def size(rs, i=0):
+        return sum((got.get(r) or (0, 0))[i] for r in rs)
+    out = {}
+    for g, v in roots.items():
+        total, prog, saves, snaps = size(v["total"]), size(v["program"]), size(v["saves"]), size(v["snapshots"])
+        out[g] = dict(program=prog, resources=total - prog - saves - snaps, saves=saves, snapshots=snaps, files=size(v["total"], 1))
+    return out
+
+
+def phone_usage(c):
+    """作业 phoneUsage（总控台「空间」手机那一列，0.6.0 通用壳）：连着的这台手机上每款占多少——程序 / 资源 / 存档（字节），量完记进设备记录 usage（带时刻）。
+    没连 / 量不了 → 给各台上次量的（live 假）。只读：不推、不删、不拉起 App。
+    → {enabled, phones: [{device, at, live, games: [{gameId, program, resources, saves, snapshots, files}]}]}（旧记录没量快照的给 None）；开关关着 → {enabled: False, phones: []}"""
+    import program_pack
+    if not program_pack.enabled(c):
+        return dict(enabled=False, phones=[])
+    live = None
+    try:
+        ph = phone_for(c)
+    except Failure as e:
+        trace(c, f"没量手机（给上次的）：{e.code}")  # 非玩家句
+        ph = None
+    if ph is not None and phone_bid(ph):
+        with tempfile.TemporaryDirectory(dir=c.private) as w:
+            cl = devpush_client(c, ph.udid, phone_bid(ph), w)
+            got = _usage_measure(cl, _usage_games(cl))
+        if got is not None:
+            rec = layout.load_device(c, ph.key)
+            layout.save_device(c, ph.key, dict(rec, usage=dict(at=time.time(), games=got)))
+            live = ph.key
+    phones = []
+    for key, rec in layout.devices(c):
+        u = rec.get("usage") or {}
+        if not u:
+            continue
+        games = [dict(dict(snapshots=None), **v, gameId=g) for g, v in sorted((u.get("games") or {}).items())]
+        phones.append(dict(device=key, at=u.get("at"), live=key == live, games=games))
+    return dict(enabled=True, phones=phones)
 
 
 def _kept_pull_none():   # 没连手机 / 都问不到：每次一份新的（列表不共用）

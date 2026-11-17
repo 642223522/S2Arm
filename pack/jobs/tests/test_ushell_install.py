@@ -144,6 +144,17 @@ class InstallShellTests(JobCase):
         self.assertEqual(rec["shellId"], "S2"); self.assertEqual(rec["games"][GID], dict(pack="P", program=dict(sha="s")), "各款记录原样")
         self.assertTrue(r["updated"])
 
+    def test_other_app_forgets_games(self):
+        # 换了团队装上的是另一个 App（包名变了）：原来那个 App 里的程序包、资源包、交过的证书这个 App 里都没有 → 各款按没推过算；包名没变照旧留着
+        for old_bid, kept in (("io.example.other", False), (self.ph.bid, True)):
+            layout.save_device(self.c, self.ph.key, dict(shellId="S1", bundleId=old_bid, games={GID: dict(pack="P", program=dict(sha="s"))},
+                                                         identity=dict(cert_sha1="x"), usage=dict(at=1)))
+            with mock.patch.object(install, "same_app", lambda c, ph, rec, d: False):
+                install.install_shell(self.c, self.ph, steps=False)
+            rec = layout.load_device(self.c, self.ph.key)
+            self.assertEqual((GID in (rec.get("games") or {}), "identity" in rec, "usage" in rec), (kept, kept, kept), old_bid)
+            self.assertEqual(rec["bundleId"], self.ph.bid)
+
     def test_same_app_skips(self):
         with mock.patch.object(install, "same_app", lambda c, ph, rec, d: True):
             r = install.install_shell(self.c, self.ph, steps=False)
