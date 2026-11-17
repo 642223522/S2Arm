@@ -497,6 +497,14 @@ int main(void) {
           IS(2, ".applied 等于清单但缺 main.npdm（审计 P2-212）→ 2 待解开（库解开时核对报出缺文件；原先经「新清单没到」判在传、又没有 .transfer → 0 从库里消失，剃刀 #24 / #26）");
           snprintf(qc, sizeof qc, "printf x > '%s/exefs/main.npdm'", qr); sh(qc);
           IS(1, ".applied 等于清单、main.npdm 在 → 1 就绪");
+          // D-YGEC（11-17 iOS 0.5.1）：本体 game.img 被截短——头里写整个文件长 1000、实际只有 136 字节头，.applied 仍等于清单。期望：快判、装机阶段都不判就绪；
+          //   补回完整（头里写 136）后又就绪。改前：照判就绪（1 / 快判 0），点开服务层才报 IMG 没传完
+          snprintf(qc, sizeof qc, "{ printf S2AIMG01; head -c 120 /dev/zero; printf '\\350\\003\\0\\0\\0\\0\\0\\0'; } > '%s/game.img'", qr); sh(qc);
+          IS(2, "D-YGEC：本体 game.img 截短（头写 1000、实际 136）→ 不就绪，落到 2 由库重新解开核对");
+          CHECK(s2a_import_state_game_quick(pd, "0100FD70134FA000") != 0, "D-YGEC：快判也不判就绪（实际 %d）", s2a_import_state_game_quick(pd, "0100FD70134FA000"));
+          snprintf(qc, sizeof qc, "{ printf S2AIMG01; head -c 120 /dev/zero; printf '\\210\\0\\0\\0\\0\\0\\0\\0'; } > '%s/game.img'", qr); sh(qc);
+          IS(1, "D-YGEC：本体补回完整（头写 136、实际 136）→ 1 就绪");
+          snprintf(qc, sizeof qc, "rm '%s/game.img'", qr); sh(qc);
           snprintf(qc, sizeof qc, "rm '%s/exefs/main.npdm'", qr); sh(qc);
           // 推送包齐了只等解开（11-09 根修 Windows 装完游戏库空：推完起 App 解包没成，.applied 仍是推送开头清空的空文件）
           snprintf(qc, sizeof qc, "mkdir -p '%s/.incoming' && head -c 1024 /dev/zero > '%s/.incoming/1_000.tar' && touch '%s/index.tsv' && printf '' > '%s/.applied'", qr, qr, qr, qr); CHECK(sh(qc) == 0, "造待解开夹具失败");
@@ -872,10 +880,11 @@ int main(void) {
         sh(c);
         // ⑧e 审计 P1-169 余项（改前读数要的那一款）：新位置已就绪（清单 abc、.applied abc、本体 game.img 在），旧位置 .incoming 里只有一个 1024 字节全零 tar
         //   （空包：只有归档结束块，没有一个条目）、没有清单。期望按规则手写：空包不算新推送 → 新位置已就绪 → 删旧的重复（返回 1）；新位置的 game.img 还在、清单还是 abc
-        snprintf(c, sizeof c, "set -e; printf img > '%s/game.img'; mkdir -p '%s/资源包/.incoming'; head -c 1024 /dev/zero > '%s/资源包/.incoming/1_000.tar'", N1, G1, G1);
+        // game.img 用最小合法 IMG：136 字节头（魔数 S2AIMG01、+128 整个文件长 = 136），快判核长度（D-YGEC）也认它完整
+        snprintf(c, sizeof c, "set -e; { printf S2AIMG01; head -c 120 /dev/zero; printf '\\210\\0\\0\\0\\0\\0\\0\\0'; } > '%s/game.img'; mkdir -p '%s/资源包/.incoming'; head -c 1024 /dev/zero > '%s/资源包/.incoming/1_000.tar'", N1, G1, G1);
         CHECK(sh(c) == 0, "⑮⑧e 造：新位置就绪带 game.img + 旧位置只有一个空 tar");
         int r8e = s2a_pack_migrate_one(G1);
-        snprintf(c, sizeof c, "test \"$(cat '%s/game.img')\" = img && grep -q abc '%s/manifest.json' && test ! -e '%s/资源包'", N1, N1, G1);
+        snprintf(c, sizeof c, "test \"$(head -c 8 '%s/game.img')\" = S2AIMG01 && grep -q abc '%s/manifest.json' && test ! -e '%s/资源包'", N1, N1, G1);
         CHECK(r8e == 1 && sh(c) == 0, "⑮⑧e 空 tar 不算新推送：返回 1（实际 %d）、新位置 game.img 与清单都在、旧位置删掉", r8e);
         snprintf(c, sizeof c, "rm -f '%s/game.img'", N1); sh(c);
         // ⑤ 迁到一半被杀：30 款，子进程迁、几毫秒后 SIGKILL，再迁一次 → 30 款都在新位置、每款 50 个文件一个不少、存档都在
