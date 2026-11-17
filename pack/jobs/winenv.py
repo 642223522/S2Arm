@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 S2Arm contributors
 """Read-only Windows packaging inventory: the launcher's single start-of-job check (bundled packing items from oneclick_win.env_items + Impactor + system components). See WINDOWS_ENV.md."""
+# 应用布局：只从引擎快照里的 pack/jobs 起（toolchain.py 用 c.engine/pack/jobs/winenv.py 当脚本跑），不从应用的 Jobs 里跑；这里的 ROOT 就是引擎根
 from __future__ import annotations
 
 import argparse
