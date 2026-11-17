@@ -2707,6 +2707,16 @@ def push_game(c, gid, ph, steps=True):
     return dict(bundleId=ph.bid, games=[gid], packFiles=files, packBytes=size, **ph.info, **extra, openToFinish=True)
 
 
+def forget_other_app(c, ph):
+    """刚装上的 S2Arm 和设备记录里的不是同一个 App（换了团队 / 签名方式 = 换包名 = 新沙盒）：记录里各款的程序包、资源包、交过的证书、
+    量过的占用都在原来那个 App 里，这个 App 里没有 → 清掉，之后「推到 iPhone」按没推过整款推（同 0.5.x _put 的 moved）。
+    原来那个 App 和它的游戏留在手机上不动；包名没变什么都不做"""
+    rec = layout.load_device(c, ph.key)
+    if rec.get("bundleId") and ph.bid and rec["bundleId"] != ph.bid:
+        note(c, f"手机上装的是另一个 App（{rec['bundleId']} → {ph.bid}）：各款按没推过算")  # 非玩家句
+        layout.save_device(c, ph.key, {k: v for k, v in rec.items() if k not in ("games", "identity", "usage")})
+
+
 def install_shell(c, ph, steps=True):
     """通用壳「安装 / 续签 / 更新 S2Arm」（program_pack.enabled）：只组只有壳的容器、签名、装壳，绝不推任何一款的程序包与资源包（11-17 维护者定）。
     手机上已是这一版壳、签名离到期还早（same_app）→ 不装，updated = False。装上后记壳号、包名、签名时刻；各款记录原样留着（程序包在手机上不受装壳影响）"""
@@ -2719,13 +2729,9 @@ def install_shell(c, ph, steps=True):
         return dict(updated=False, bundleId=ph.bid, games=[], **ph.info)
     if steps: c.begin("签名并装到 iPhone", 3, 3)
     ph.install(ipa, [], steps=False)
+    forget_other_app(c, ph)
     rec = layout.load_device(c, ph.key)
     signed = dict(signed=dict(at=time.time(), free=bool(ph.info["free"]), device=ph.info["device"])) if "free" in ph.info else {}
-    if rec.get("bundleId") and ph.bid and rec["bundleId"] != ph.bid:
-        # 装上的是另一个 App（换了团队 / 签名方式 = 换包名 = 新沙盒）：记录里各款的程序包、资源包、交过的证书都在原来那个 App 里，这个 App 里没有。
-        #   清掉，之后「推到 iPhone」按没推过整款推（同 0.5.x _put 的 moved）；原来那个 App 和它的游戏留在手机上不动
-        note(c, f"手机上装的是另一个 App（{rec['bundleId']} → {ph.bid}）：各款按没推过算")  # 非玩家句
-        rec = {k: v for k, v in rec.items() if k not in ("games", "identity", "usage")}
     layout.save_device(c, ph.key, dict(rec, shellId=sid, bundleId=ph.bid or rec.get("bundleId", ""), at=time.time(), **signed))
     packer.commit_phone_ipa(c, ipa, sid)
     return dict(updated=True, outputPath=str(layout.phone_ipa(c)), bundleId=ph.bid, games=[], toShell=sid, **ph.info)
