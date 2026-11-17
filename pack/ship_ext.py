@@ -371,6 +371,13 @@ def cmd_program(a):
         place_game(root, tmp / GAMES / gid, tmp / program_image(gid), tables)
         if (root / "icon.jpg").is_file():   # 游戏库卡片图标（同容器 Games/<游戏号>/icon.jpg）：游戏库改由各款 program/catalogue.json 拼时从这里取
             shutil.copyfile(root / "icon.jpg", tmp / GAMES / gid / "icon.jpg")
+        # 存档游戏身份（同容器，核过才放）：程序包款宿主按模块目录 = program/Games/<号>/ 读它（ios/save_transfer.m），11-17 和开发乙定随程序包走
+        si = root / "save-identity.json"
+        if si.is_file():
+            r = subprocess.run([sys.executable, str(HERE / "save_identity.py"), "--check", str(si), "--output", str(tmp / GAMES / gid / "save-identity.json")],
+                               capture_output=True, text=True)
+            if r.returncode:
+                red(f"{gid} 存档游戏身份校验失败：{(r.stderr or r.stdout).strip()[-200:]}")
         os.replace(tmp, out)
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)

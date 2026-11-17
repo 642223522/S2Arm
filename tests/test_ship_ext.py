@@ -377,6 +377,21 @@ class ProgramPackTest(unittest.TestCase):
         self.assertEqual(mine, theirs)   # 只差容器自己的启动上下文 launch.ctx（自动化起局用，程序包不带）
         self.assertIn(Path("main.npdm"), mine); self.assertIn(Path("main.fixups.tsv"), mine); self.assertIn(Path("addr_need.tsv"), mine); self.assertIn(Path("icon.jpg"), mine)
 
+    def test_program_carries_save_identity_like_container(self):
+        # 11-17 和开发乙定：程序包款宿主按模块目录（program/Games/<号>/）读存档身份（ios/save_transfer.m），所以随程序包走；
+        #   期望 = 同一份产物根组出的容器里 Games/<号>/save-identity.json（逐字节）；身份不合法 → 报红、不留目录
+        gid = ContainerTest.A
+        (self.root / "save-identity.json").write_text(json.dumps(dict(id=gid, name="甲游戏", version=65536, contentIdentity="ab" * 32)))
+        out = self.d / "p/program"
+        r = self.run_p(self.root, out); self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        app = self.d / "c/S2Arm.app"
+        c = ContainerTest.run_c(None, self.d, self.shell, app, [self.root]); self.assertEqual(c.returncode, 0, c.stdout + c.stderr)
+        self.assertEqual((out / "Games" / gid / "save-identity.json").read_bytes(), (app / "Games" / gid / "save-identity.json").read_bytes())
+        (self.root / "save-identity.json").write_text(json.dumps(dict(id=gid, name="甲游戏")))
+        out2 = self.d / "q/program"
+        r = self.run_p(self.root, out2); self.assertNotEqual(r.returncode, 0); self.assertIn("存档游戏身份校验失败", r.stdout + r.stderr)
+        self.assertFalse(out2.exists())
+
     def test_program_refuses_existing_and_leaves_nothing_on_failure(self):
         out = self.d / "p/program"; out.mkdir(parents=True)
         r = self.run_p(self.root, out); self.assertNotEqual(r.returncode, 0); self.assertIn("不覆盖已有目标", r.stdout + r.stderr)
