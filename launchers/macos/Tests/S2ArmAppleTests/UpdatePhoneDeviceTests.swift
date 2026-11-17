@@ -67,7 +67,9 @@ import S2ArmAppleAdapter
             try FileManager.default.createDirectory(at: root.appendingPathComponent("Jobs"), withIntermediateDirectories: true)
             try Data().write(to: root.appendingPathComponent("Jobs/main.py"))
             try FileManager.default.createDirectory(at: root.appendingPathComponent("apple-frontend"), withIntermediateDirectories: true)
-            let settings: [String: Any] = folder.map { ["cloudSavesFolder": $0] } ?? [:]
+            // 同真 App 写出的设置文件（SettingsProvider.write 总带 schema: 1；读的一方不认没有 schema 的文件，SettingsProvider.object）
+            var settings: [String: Any] = ["schema": 1]
+            if let folder { settings["cloudSavesFolder"] = folder }
             try JSONSerialization.data(withJSONObject: settings).write(to: root.appendingPathComponent("apple-frontend/launch-settings.json"))
             let runner = RequestRunner()
             let model = S2ArmLauncherModel(client: JobClient(environment: JobEnvironment(
