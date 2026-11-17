@@ -9,7 +9,7 @@
 #   ④ CMS 签名对 CodeDirectory 验得过（openssl cms -verify，信任这张测试证书）
 #   ⑤ 私钥两种 PEM（PKCS#1 / PKCS#8）签出的 CodeDirectory 相同；⑥ 参数缺 → 退出码 2；坏文件 → 退出码 1、一行原因
 set -u; cd "$(dirname "$0")/.." || exit 1
-[ "$(uname)" = Darwin ] || { echo "（跳过：只 Mac）"; exit 0; }
+[ "$(uname)" = Darwin ] || { echo "（环境未就绪：只 Mac）"; exit 75; }
 T=$(mktemp -d "${TMPDIR:-/tmp}/pc_selfsign.XXXXXX"); trap 'rm -rf "$T"' EXIT; bad=0
 ck() { if eval "$2"; then echo "  通 $1"; else echo "  【红】$1"; bad=1; fi; }
 B=${S2A_SELFSIGN_BIN:-build/selfsign/release/s2a-selfsign}
