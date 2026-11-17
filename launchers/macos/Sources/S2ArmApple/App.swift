@@ -81,6 +81,8 @@ struct S2ArmAppleApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var model = S2ArmLauncherModel(client: JobClient(environment: AppSetup.environment()))
 
+    init() { BackendText.preload() }
+
     var body: some Scene {
         WindowGroup(Brand.name) {
             S2ArmAppleRootView(model: model, brand: Brand.name)
