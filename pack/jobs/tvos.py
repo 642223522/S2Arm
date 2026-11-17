@@ -691,8 +691,9 @@ def _export_tv(c, gid, pack, shell, sid):
         pl = plistlib.loads(info.read_bytes()); pl["CFBundleIdentifier"] = tv_export_bundle_id(gid); info.write_bytes(plistlib.dumps(pl))
         ctx = app / "Games" / gid / "launch.ctx"   # 资源包在 App 本体里：按启动上下文直接起这一款时（S2A_LAUNCH_CTX）也读包内（游戏库选游戏走 s2a_pack_root，本来就先找包内）
         if ctx.is_file():
-            ctx.write_text("".join(f"game_data\t@bundle/Games/{gid}/资源包\n" if l.startswith("game_data\t") else l
-                                   for l in ctx.read_text(encoding="utf-8").splitlines(keepends=True)), encoding="utf-8", newline="\n")  # 非玩家句
+            line = f"game_data\t@bundle/Games/{gid}/资源包\n"  # 非玩家句
+            ctx.write_text("".join(line if l.startswith("game_data\t") else l for l in ctx.read_text(encoding="utf-8").splitlines(keepends=True)),
+                           encoding="utf-8", newline="\n")
         if sys.platform == "darwin":
             packer.sign_container(c, app, log)   # 改了 Info.plist：Mac 重签 ad-hoc（同 finish_container）
         ents, eva = entitlements_for(c, app, out / "tv.entitlements")
