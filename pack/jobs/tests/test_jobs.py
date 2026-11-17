@@ -69,6 +69,9 @@ class JobsTests(unittest.TestCase):
         p.start(); self.addCleanup(p.stop)
         self.tmp = tempfile.TemporaryDirectory(prefix="s2arm job test ")
         self.root = Path(self.tmp.name)
+        # 诊断导出收本机崩溃报告（library.MAC_CRASH_DIR）：指到空的临时目录，同 jobcase.JobCase。不隔离就读跑测试这台 Mac 真实的
+        #   ~/Library/Logs/DiagnosticReports——那里有近 7 天的 s2arm-host 崩溃报告时，整包预算先被它们占满，诊断包用例按机器忽红忽绿（11-16）
+        crash_dir = patch.object(library, "MAC_CRASH_DIR", self.root / "no-crash-reports"); crash_dir.start(); self.addCleanup(crash_dir.stop)
         self.output = io.StringIO()
         self.redirect = contextlib.redirect_stdout(self.output)
         self.redirect.__enter__()
