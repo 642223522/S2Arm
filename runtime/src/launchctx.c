@@ -14,6 +14,8 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <sys/clonefile.h>
+#include <unistd.h>
 #include <dirent.h>
 #include <ftw.h>
 #include <time.h>
@@ -278,10 +280,35 @@ static time_t g_gc_newest;
 static int gc_newest_one(const char *p, const struct stat *st, int flag, struct FTW *w) { (void)p; (void)flag; (void)w; if (st->st_mtime > g_gc_newest) g_gc_newest = st->st_mtime; return 0; }
 static int gc_rm_one(const char *p, const struct stat *st, int flag, struct FTW *w) { (void)st; (void)w; return flag == FTW_DP ? rmdir(p) : unlink(p); }
 #define S2A_PROGRAM_GC_IDLE (60 * 60)
+// 程序包款的随行目录快照（0.6.0 写入规则的双保险）：选中游戏时把 program/<dir>/Games/<号>/ 用 APFS 克隆拍一份到本进程临时目录
+//   （<HOME>/tmp/s2a-mod-<号>-<pid>，瞬间完成、不占空间），这局的模块目录 / 能力清单目录改指快照。电脑端换上新版后删旧版本目录，
+//   正在玩的这局读的是快照：设置页再读 s2a_caps.tsv / cpatch.tsv / sgrade_state.json 也读得到。克隆不了（不是 APFS 等）→ 原样用原目录、记一行黄。
+//   旧进程留下的快照由 s2a_program_gc 清。成功写 out（S2A_LCTX_PATH）回 0
+int s2a_program_snapshot(const char *home, const char *gid, const char *module_dir, char *out) {
+    char t[S2A_LCTX_PATH];
+    if (!module_dir || !*module_dir || !gid || !id_ok(gid) || snprintf(t, sizeof t, "%s/tmp", home && *home ? home : ".") >= (int)sizeof t) return -1;
+    mkdir(t, 0755);
+    if (snprintf(out, S2A_LCTX_PATH, "%s/s2a-mod-%s-%d", t, gid, (int)getpid()) >= S2A_LCTX_PATH) return -1;
+    if (is_dir(out)) { g_gc_newest = 0; nftw(out, gc_rm_one, 16, FTW_DEPTH | FTW_PHYS); }   // 同 pid 的旧快照（pid 复用）
+#if defined(__APPLE__)
+    if (clonefile(module_dir, out, 0)) { LOG("【黄】启动上下文：随行目录 %s 拍快照失败（errno %d），这局直接用原目录（电脑端运行中删旧版时设置页可能读不到）", module_dir, errno); out[0] = 0; return -1; }
+    return 0;
+#else
+    out[0] = 0; return -1;
+#endif
+}
 int s2a_program_gc(const char *home, time_t now) {
     char root[S2A_LCTX_PATH]; int removed = 0;
-    if (s2a_program_games_root(root, sizeof root, home)) return 0;
-    DIR *g = opendir(root); if (!g) return 0;
+    {   // 旧进程留下的随行目录快照（s2a_program_snapshot）：<HOME>/tmp/s2a-mod-<号>-<pid>，不是本进程的都删
+        char t[S2A_LCTX_PATH]; snprintf(t, sizeof t, "%s/tmp", home && *home ? home : ".");
+        DIR *td = opendir(t); struct dirent *te; char mine[64]; snprintf(mine, sizeof mine, "-%d", (int)getpid());
+        while (td && (te = readdir(td))) { size_t L = strlen(te->d_name), M = strlen(mine);
+            if (strncmp(te->d_name, "s2a-mod-", 8) || (L > M && !strcmp(te->d_name + L - M, mine))) continue;
+            char sp[S2A_LCTX_PATH]; if (snprintf(sp, sizeof sp, "%s/%s", t, te->d_name) >= (int)sizeof sp) continue;
+            if (!nftw(sp, gc_rm_one, 16, FTW_DEPTH | FTW_PHYS)) removed++; }
+        if (td) closedir(td); }
+    if (s2a_program_games_root(root, sizeof root, home)) return removed;
+    DIR *g = opendir(root); if (!g) return removed;
     struct dirent *e;
     while ((e = readdir(g))) {
         if (e->d_name[0] == '.' || !id_ok(e->d_name)) continue;
@@ -453,6 +480,8 @@ const char *s2a_launch_ctx_select(const char *gid) {
         if (bad) { snprintf(why, sizeof why, "建不了游戏 %s 的文档根 %s（errno %d）", c.game_id, c.docs, errno); g_sel_kind = S2A_SELECT_STORAGE; r = why; goto out; }
         if (!k) break;
     }
+    if (c.from_program) { char snap[S2A_LCTX_PATH];   // 程序包款：随行目录拍快照，这局读快照（电脑端换上新版后删旧版本目录也不影响，见 s2a_program_snapshot）
+        if (!s2a_program_snapshot(getenv("HOME"), gid, c.module_dir, snap)) { LOG("启动上下文：%s 的随行目录拍了快照 %s（原目录 %s）", gid, snap, c.module_dir); put(c.module_dir, snap); put(c.caps_dir, snap); } }
     g_ctx = c;
     if (export_env()) { snprintf(why, sizeof why, "%s", g_err); memset(&g_ctx, 0, sizeof g_ctx); r = why; goto out; }
     g_selected = 1; atomic_store(&g_ok, 1);
