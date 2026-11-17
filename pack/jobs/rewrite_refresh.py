@@ -266,7 +266,8 @@ def _has_fpsl(c, gid, main_bid):
     """这款在补丁库里有没有 FPSLocker 配置（kind fpsl / .yaml）；取不到补丁库 → False（记号照旧）"""
     import patches
     try:
-        return any(it.get("kind") == "fpsl" or str(it.get("name", "")).lower().endswith(".yaml") for it in patches.items_for(c, gid, main_bid))
+        # items_for 返回 [(条目字典, 内容字节)]（patches.py）：11-17 原先按字典直接 .get，元组上 AttributeError、补丁库里有条目的款 sgrade_key 都抛
+        return any(it.get("kind") == "fpsl" or str(it.get("name", "")).lower().endswith(".yaml") for it, _ in patches.items_for(c, gid, main_bid))
     except (OSError, ValueError, Failure):
         return False
 

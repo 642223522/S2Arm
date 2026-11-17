@@ -603,10 +603,11 @@ class FpslKey(unittest.TestCase):
             return rr.sgrade_key(c, "0100AD80208A8000", "rid", "68E3A0EA176A79F4")
 
     def test_key(self):
+        # 替身与真函数同形：patches.items_for 返回 [(条目字典, 内容字节)]（11-17 原先替身给字典，真函数给元组，单测绿、真游戏上 AttributeError）
         base = "rid:pc:vk:-"
-        self.assertEqual(self.key([{"kind": "fpsl", "name": "68E3A0EA176A79F4.yaml"}]), base + ":fpslaaaaaaaaaaaa")
-        self.assertNotEqual(self.key([{"kind": "fpsl"}], fp="bbbbbbbbbbbb"), self.key([{"kind": "fpsl"}]), "转换代码变了记号跟着变")
-        self.assertEqual(self.key([{"kind": "pchtxt", "name": "x.pchtxt"}]), base, "不带 FPSLocker 配置：记号不变")
+        self.assertEqual(self.key([({"kind": "fpsl", "name": "68E3A0EA176A79F4.yaml"}, b"MASTER_WRITE:")]), base + ":fpslaaaaaaaaaaaa")
+        self.assertNotEqual(self.key([({"kind": "fpsl"}, b"")], fp="bbbbbbbbbbbb"), self.key([({"kind": "fpsl"}, b"")]), "转换代码变了记号跟着变")
+        self.assertEqual(self.key([({"kind": "pchtxt", "name": "x.pchtxt"}, b"")]), base, "不带 FPSLocker 配置：记号不变")
         def gone(*a):
             raise OSError("补丁库取不到")
         self.assertEqual(self.key(gone), base, "补丁库取不到：当没带")
