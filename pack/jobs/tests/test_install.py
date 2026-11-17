@@ -432,9 +432,10 @@ class FlowTests(unittest.TestCase):
             with self.assertRaises(Failure) as e: packer.assemble(self.c, "0100000000090000")
         self.assertEqual(e.exception.code, "container_stale")
 
-    def test_container_program_number_mismatch_says_files_dont_match(self):
-        """组装结果里这款的程序号（main.npdm）和游戏库的号（导入时 CNMT 发行号）不一样 → game_files_mismatch，原因说人话、两个号都给出；
-        核对本身保留（玩家实报：把别的游戏的程序换进了这款的包里，放过去就推到手机上错的目录）"""
+    def test_container_program_number_mismatch_routes_by_program_number(self):
+        """组装结果里这款的程序号（main.npdm）和游戏库的号（导入时 CNMT 发行号）不一样（玩家实报：把别的游戏的程序换进了这款的包里）。
+        维护者 11-17（按新规矩改：原先 game_files_mismatch 拒绝）：多出来的程序号只有一个 → 就是这款，照常组装、按程序号放、资源取回游戏包号那款；
+        发 warning 级 game_files_mismatch、两个号都给出；多出来不止一个（认不出是哪个）→ 照旧报错。期望手写"""
         import ipa as packer
         A, OTHER = "0100DD2053220000", "010051F0207B2000"
         ios_fixture(self.c, A, shell="SID1")
@@ -451,11 +452,16 @@ class FlowTests(unittest.TestCase):
              um.patch.object(packer, "container_shell", return_value=shell), \
              um.patch.object(packer, "release_version", return_value="9.8.7"), \
              um.patch.object(self.c, "run", run):
-            with self.assertRaises(Failure) as e: packer.assemble(self.c, A)
-        self.assertEqual(e.exception.code, "game_files_mismatch")
-        text = str(e.exception)
-        self.assertIn(OTHER, text); self.assertIn(A, text); self.assertIn("原版游戏文件重新导入", text)
-        self.assertNotIn("产物根", text)
+            diags = []
+            with um.patch.object(self.c, "diagnostic", create=True, side_effect=lambda m, **kw: diags.append(dict(kw, message=m))):
+                _, games, _ = packer.assemble(self.c, A)
+        self.assertEqual(games, [OTHER])
+        self.assertEqual(packer.library_id(self.c, OTHER), A); self.assertEqual(packer.library_id(self.c, A), A)
+        self.assertEqual([(d["code"], d["severity"]) for d in diags], [("game_files_mismatch", "warning")])
+        self.assertIn(OTHER, diags[0]["message"]); self.assertIn(A, diags[0]["message"]); self.assertNotIn("产物根", diags[0]["message"])
+        with self.assertRaises(Failure) as e:
+            packer.title_mismatch(self.c, A, (), [OTHER, "0100000000000BBB"])
+        self.assertEqual(e.exception.code, "game_files_mismatch"); self.assertIn("原版游戏文件重新导入", str(e.exception))
 
     def _ready(self, devices, teams=(dict(id="team-a", name="我", free=True),), rc=0, usb=(), raises=None, want="测试设备2"):
         """跑装机前清单：devicectl list devices 回 devices（手造的 devicectl 行），Xcode 团队 teams；want = 玩家选的那台（None = 没选）"""

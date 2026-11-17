@@ -1388,7 +1388,7 @@ def export_phone(c, gid=None):
         old_stamps = read(c.private / EXPORT_STAMPS, {}) or {}
         for g in games:
             f = _img_name(names.get(g, g), g, used)
-            stamp = _pack_stamp(c, layout.ios_pack(c, g))
+            stamp = _pack_stamp(c, layout.ios_pack(c, packer.library_id(c, g)))
             if not _reuse_export(prev / f, out / f, old_stamps.get(f), stamp):
                 # 点了哪款只新写那一款（库大时第一次导出 / 换版本不再把每款几 GB 全写一遍）：别的款上次导出的 .img 来源没变就沿用，
                 #   变了或没有就这次不写，完成页点名（unwritten）。程序都在 S2Arm.ipa 里；手机上已有的旧 .img 照常能玩（game.img 不随壳变）
@@ -2340,9 +2340,9 @@ def put_game(c, gid, ph, steps=True, others=None, skipped=()):
     packs = {}
     for g in games:
         try:
-            packs[g] = ios_pack(c, g)
+            packs[g] = ios_pack(c, packer.library_id(c, g))
         except Failure as e:
-            if gid and g.upper() == gid.upper():
+            if gid and packer.library_id(c, g).upper() == gid.upper():
                 raise
             packs[g] = None
             note(c, f"{g} 本机没有资源包（{e}）：这次不推它，手机上已有的照旧")
