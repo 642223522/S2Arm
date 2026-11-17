@@ -1262,6 +1262,38 @@ int main(int argc, const char **argv) {
         uint8_t simple[12]; memcpy(simple, rep, sizeof simple); simple[0] = 0x3F;
         expect(s2a_pro_parse(simple, sizeof simple, &d, &d, &bt, ax) == 0, "Pro parser leaves the simple HID report (0x3F) to the element path");
         expect(s2a_pro_player_lights(0) == 0x1 && s2a_pro_player_lights(1) == 0x3 && s2a_pro_player_lights(3) == 0xF, "Pro player lights: first n lit for player n");
+        // Xbox 有线手柄 GIP 协议纯函数验证（#1406）
+        expect(s2a_is_xbox_gip(0x045E, 0x02D1) == 1, "Xbox GIP: 0x045E:0x02D1 (Xbox One)");
+        expect(s2a_is_xbox_gip(0x045E, 0x0B12) == 1, "Xbox GIP: 0x045E:0x0B12 (Xbox Series)");
+        expect(s2a_is_xbox_gip(0x045E, 0x028E) == 0, "Xbox GIP: 0x045E:0x028E (Xbox 360 XUSB, 非 GIP) 返回 0");
+        expect(s2a_usb_has_hid_child(0) == 0, "USB has HID child: 空句柄返回 0");
+        expect(s2a_is_xbox_gip(0x045E, 0x9999) == 0, "Xbox GIP: 非 Xbox 手柄 PID 返回 0");
+        expect(s2a_is_xbox_gip(0x054C, 0x0CE6) == 0, "Xbox GIP: 非微软 VID 返回 0");
+
+        uint8_t ack_pkt[13];
+        const uint8_t req_ack[4] = {0x02, 0x10, 0x05, 0x01};
+        expect(s2a_gip_ack(req_ack, sizeof req_ack, ack_pkt) == 13 &&
+               ack_pkt[0] == 0x01 && ack_pkt[1] == 0x20 && ack_pkt[2] == 0x05 && ack_pkt[5] == 0x02,
+               "Xbox GIP ACK: 置有 ACK 标志时正确生成 13 字节应答包");
+        const uint8_t no_ack[4] = {0x20, 0x00, 0x05, 0x01};
+        expect(s2a_gip_ack(no_ack, sizeof no_ack, ack_pkt) == 0, "Xbox GIP ACK: 无 ACK 标志返回 0");
+
+        const uint8_t gip_rep[18] = {
+            0x20, 0x00, 0x01, 0x0E,
+            0x14, 0x10,             // buttons: Xbox A (0x0010), Menu (+, 0x0004), LB (0x1000)
+            0x00, 0x01,             // LT: 256 (> 200 -> ZL)
+            0x00, 0x00,             // RT: 0
+            0x00, 0x40,             // lx: 16384
+            0x00, 0xC0,             // ly: -16384
+            0x00, 0x00,             // rx: 0
+            0x00, 0x00              // ry: 0
+        };
+        uint32_t gip_bt = 0; int16_t gip_ax[4] = {0};
+        expect(s2a_gip_parse(gip_rep, sizeof gip_rep, &gip_bt, gip_ax) == 1, "Xbox GIP parse: valid 0x20 report");
+        expect(gip_bt == ((1u << 0) | (1u << 10) | (1u << 6) | (1u << 8)), "Xbox GIP parse buttons: A, +, L, ZL");
+        expect(gip_ax[0] == 16384 && gip_ax[1] == -16384 && gip_ax[2] == 0 && gip_ax[3] == 0, "Xbox GIP parse axes: lx, ly, rx, ry");
+        uint8_t invalid_gip[18]; memcpy(invalid_gip, gip_rep, sizeof invalid_gip); invalid_gip[0] = 0x07;
+        expect(s2a_gip_parse(invalid_gip, sizeof invalid_gip, &gip_bt, gip_ax) == 0, "Xbox GIP parse: non-0x20 report returns 0");
     }
     char relayPath[96];
     snprintf(relayPath, sizeof relayPath, "/tmp/s2arm-motion-%d.sock", getpid());

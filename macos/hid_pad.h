@@ -42,4 +42,16 @@ int16_t s2a_pro_axis(int v, int center, int above, int below);
 int s2a_pro_parse(const uint8_t *r, size_t n, const s2a_pro_cal *l, const s2a_pro_cal *rc, uint32_t *buttons, int16_t ax[4]);
 // 纯函数（单测用）：第 slot 个玩家（0 起）的玩家灯参数：点前 slot + 1 盏
 uint8_t s2a_pro_player_lights(int slot);
+// ---- Xbox 有线手柄 GIP 协议 ----
+// 纯函数（单测用）：一条 0x20 GIP 输入报告（含报告号）→ buttons 位（同 s2a_hid_pad 的位序）与四个摇杆值（-32768..32767，上/右为正）；不是 GIP 输入报告回 0
+int s2a_gip_parse(const uint8_t *r, size_t n, uint32_t *buttons, int16_t ax[4]);
+// 纯函数（单测用）：GIP 数据包若置有 ACK 标志（r[1] & 0x10），组出 13 字节 ACK 应答包并回 13；否则回 0
+int s2a_gip_ack(const uint8_t *r, size_t n, uint8_t ack[13]);
+// 纯函数（单测用）：判断 VID / PID 是否为已知的微软或兼容有线 Xbox GIP 手柄
+int s2a_is_xbox_gip(int vid, int pid);
+#if defined(__APPLE__)
+#include <IOKit/IOTypes.h>
+// 检查 USB 设备树下是否已有系统加载的 HID 子节点（IOHIDInterface / IOHIDDevice），避免抢占已由系统 / GameController 认领的手柄
+int s2a_usb_has_hid_child(io_service_t dev);
+#endif
 #endif
