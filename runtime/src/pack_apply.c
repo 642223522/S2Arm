@@ -29,6 +29,16 @@ static char g_untar_err[2400];
 static int g_untar_trunc;   // 本次解包碰到截短（读到的少于条目 / 包尾结束块）
 static int g_fail_errno;   // 最近一次失败的 errno（只用来判「空间满」给码，s2a_install_code）
 static void untar_err(const char *step, const char *path, int e) { g_fail_errno = e; snprintf(g_untar_err, sizeof g_untar_err, "%s %s：errno %d %s", step, path, e, strerror(e)); }
+// App 包内的资源包（11-16 Apple TV 安装包导出，s2a_docs.h s2a_pack_root_in_bundle）只读：下面四个写资源包根的入口（s2a_pack_apply、s2a_pack_migrate_one、
+//   img_place / img_update、partial_ask）先判，在包内就打一行【红】说明写不进只读区、跳过这次写，不去碰也不崩。正常路径走不到这些入口
+//   （包内带 .applied = 清单 sha，闸门 / 游戏库判已就绪；写操作审计见合入说明）；没上电视验过，将来电视上跑，这一行就是定位依据
+static int pack_in_bundle(const char *root, const char *what) {
+#if defined(__APPLE__) && TARGET_OS_TV
+    const char *b = s2a_launch_ctx_bundle_dir ? s2a_launch_ctx_bundle_dir() : NULL; size_t n = b ? strlen(b) : 0;
+    if (n && root && !strncmp(root, b, n) && root[n] == '/') { LOG("【红】%s：资源包在 App 包内（只读区，Apple TV 安装包），写不进，这次跳过：%s", what, root); return 1; }
+#endif
+    (void)root; (void)what; return 0;
+}
 #include <ftw.h>
 static int mkdirs(char *p) {   // 建 p 的各级父目录（p 是文件路径）；已存在但不是目录（同名文件挡路）也算失败
     for (char *s = p + 1; *s; s++) if (*s == '/') { *s = 0; int r = mkdir(p, 0755), e = errno; struct stat st;
@@ -425,6 +435,7 @@ const char *s2a_pack_apply_code(void) { return g_apply_code; }
 // 返回进程退出码（0 成功）；docs = Documents 目录
 int s2a_pack_apply(const char *docs) {
     char root[2048], inc[2100], logp[2100]; s2a_pack_root(root, sizeof root, docs); snprintf(inc, sizeof inc, "%s/.incoming", root); snprintf(logp, sizeof logp, "%s/unpack.log", docs);
+    if (pack_in_bundle(root, "解开资源包")) return -12;   // 同「目录写不进」的码
     // 多款容器第一次装一款时本款文档根 Documents/games/<游戏号>/ 还不在（资源包在 Library 下）：先建出来，解包日志才写得下。
     //   原先建不了日志、解开了也没有完成行，电脑端（tools/push_pack.py 只认日志完成行）白等 180 秒后误报「解包没有开始」。建不了时 mkdirs 记的现场由下一行清掉，失败照旧走下面「unpack.log 建不了」那句
     mkdirs(logp);
@@ -605,6 +616,7 @@ int s2a_pack_migrate_one(const char *docs) {
     s2a_pack_legacy_root(old, sizeof old, docs);
     if (s2a_pack_root(neu, sizeof neu, docs) >= (int)sizeof neu || !strcmp(old, neu)) return 0;   // 单款兼容 / Mac：资源包本来就在文档根下
     if (lstat(old, &st) || !S_ISDIR(st.st_mode)) return 0;
+    if (pack_in_bundle(neu, "资源包挪位置（Library/Caches 里还有一份旧的）")) return 0;   // 不挪进只读区；包内那份照用，Caches 旧的不动
     if (!lstat(neu, &st)) {
         // 两处都有：旧位置若是一次「新推送」（老版本电脑端推到了旧位置：.incoming 里有包，或清单不是新位置已应用的那份）→ 它新，换掉新位置；
         //   否则旧位置是重复 / 删到一半的残留：新位置已就绪 → 删旧的；新位置没就绪 → 两处都不动、下次再判（不丢任何一份）
@@ -753,6 +765,7 @@ static int img_update(const char *proc_docs, const char *path, const uint8_t *h,
     char gid[17], pid[65]; memcpy(gid, h + 16, 16); gid[16] = 0; memcpy(pid, h + 32, 64); pid[64] = 0;
     const char *fn = strrchr(path, '/') ? strrchr(path, '/') + 1 : path;
     char root[1400], base[1500], gdocs[1200]; snprintf(gdocs, sizeof gdocs, "%s/games/%s", proc_docs, gid); s2a_pack_root(root, sizeof root, gdocs);
+    if (pack_in_bundle(root, "认领着色器更新包")) { snprintf(g_img_err, sizeof g_img_err, "%s：这款的资源包在 App 包内，不能更新", fn); return -4; }
     snprintf(base, sizeof base, "%s/game.img", root);
     uint8_t bh[136]; int bfd = open(base, O_RDONLY); int ok = bfd >= 0 && pread(bfd, bh, sizeof bh, 0) == (ssize_t)sizeof bh && !memcmp(bh, "S2AIMG01", 8); if (bfd >= 0) close(bfd);
     if (!ok) { snprintf(g_img_err, sizeof g_img_err, "%s 是着色器更新包，手机上还没有这款游戏（%s）的本体：先放导出文件夹里这款的完整 .img", fn, gid); return -13; }
@@ -858,6 +871,7 @@ static int img_place(const char *proc_docs, const char *path, int pass) {   // 0
     for (int i = 0; i < 16; i++) if (!((gid[i] >= '0' && gid[i] <= '9') || (gid[i] >= 'A' && gid[i] <= 'F'))) { snprintf(g_img_err, sizeof g_img_err, "%s 头里的游戏号不对", path); return -10; }
     if (!pid[0]) snprintf(pid, sizeof pid, "img-%llx", (unsigned long long)total);   // 没写资源包号的（老工具）：按长度给一个，至少换了文件能触发重新应用
     char root[1400], p[2400], old[2400], gdocs[1200]; snprintf(gdocs, sizeof gdocs, "%s/games/%s", proc_docs, gid); s2a_pack_root(root, sizeof root, gdocs);
+    if (pack_in_bundle(root, "认领 IMG")) { snprintf(g_img_err, sizeof g_img_err, "%s：这款的资源包在 App 包内，不能换", path); return -4; }
     snprintf(p, sizeof p, "%s/game.img", root); if (mkdirs(p)) { snprintf(g_img_err, sizeof g_img_err, "建 %s 失败：%s", root, g_untar_err); return -4; }
     (void)old; tx_t *tx = calloc(1, sizeof *tx); if (!tx) { snprintf(g_img_err, sizeof g_img_err, "内存不够"); return -4; }
     mf_aside(root, 0);   // 先作废（留退路）：挪到一半断了不会判成就绪
@@ -1146,7 +1160,7 @@ static int partial_ask(void) {
     if (partial_confirmed(root)) { LOG("资源导入：缺 %d 个非必需文件，这份资源包玩家已确认过，照常起局", g_pack_bad); return 1; }
     if (!s2a_ios_ask_continue("exclamationmark.triangle.fill", S2A_UI(S2A_UI_PACK_PARTIAL_TITLE), S2A_UI(S2A_UI_PACK_PARTIAL_ASK), S2A_UI(S2A_UI_PACK_PARTIAL_GO))) return 0;
     snprintf(mf, sizeof mf, "%s/manifest.json", root);
-    if (!manifest_sha(mf, sha, sizeof sha) && write_atomic(root, ".partial_ok", sha)) LOG("【黄】资源导入：记不下「已确认」（%s），下次还会再问", strerror(errno));
+    if (!pack_in_bundle(root, "记「仍要启动」") && !manifest_sha(mf, sha, sizeof sha) && write_atomic(root, ".partial_ok", sha)) LOG("【黄】资源导入：记不下「已确认」（%s），下次还会再问", strerror(errno));
     LOG("资源导入：缺 %d 个非必需文件（如 %s），玩家点了「仍要启动」，照常起局；真读到缺的文件时游戏 Break → 说明页", g_pack_bad, g_pack_first);
     return 1;
 }
