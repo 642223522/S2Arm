@@ -1801,13 +1801,7 @@ public sealed partial class EnvironmentWindow
         return extra.Count > 0 ? extra : null;
     }
 
-    private static string? JobCode(LibraryJobOutput job)
-    {
-        if (job.Report.Diagnostics.ValueKind != JsonValueKind.Array) return null;
-        foreach (var d in job.Report.Diagnostics.EnumerateArray())
-            if (d.TryGetProperty("code", out var code) && code.ValueKind == JsonValueKind.String) return code.GetString();
-        return null;
-    }
+    private static string? JobCode(LibraryJobOutput job) => job.Report.FailureCode;
 
     private async Task ChooseCoverAsync(LibraryGame game)
     {
