@@ -259,6 +259,7 @@ NVN(nvnDeviceGetInteger, void, const NVNdevice *d, NVNdeviceInfo what, int *out)
     if (w == 0x67) { *out = 256; return; }
     if (w >= sizeof g_devinfo / sizeof *g_devinfo) { LOG("【红】 nvnDeviceGetInteger unknown item %#x, returning 0", w); *out = 0; return; }
     *out = g_devinfo[w];
+    if (w == NVN_DEVICE_INFO_SEPARATE_SAMPLER_BINDINGS_PER_STAGE) { int dv; if (dm_nvn_driver_item((int)w, &dv)) *out = dv; }
     // 0x2E / 0x30, the newest GPU code version the driver runs: the table's 1.14 is SMO's SDK 7 driver, while each SDK's driver runs the code of the GLSLC in the same SDK. A game that compiles
     // at run time checks its GLSLC's version against this range first (Catherine: Full Body, SDK 8.2.1: its GLSLC writes 1.15, main+0x330dcc refused it, no built-in program was compiled
     // and the first uniform lookup read a null program, main+0x3316dc), so the host reports at least the version of the GLSLC the game carries
