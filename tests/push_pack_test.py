@@ -1245,5 +1245,55 @@ class SendFail(Base):
         self.assertIn("测试设备空间不足", str(e.exception)); self.assertNotIn(f"{RP}/.pushed", self.dev.files)   # 没写完的批不记账
 
 
+
+class AppDirs(unittest.TestCase):
+    """a48655：推之前以 App 身份（AFC）建好资源包 / .incoming；归了别的用户（iOS 26.2 上 devicectl 代建的 root 目录）的那一级在原父目录里改名挪开再建。
+    假 s2a-devpush 按脚本回 mkdir / mv 的结果，期望手写"""
+    G = "Library/Application Support/S2Arm/games/0100ABCDE0000000"
+
+    class Dp(push.Devpush):
+        def __init__(self, script):
+            super().__init__("devpush", "U", "B", tempfile.mkdtemp()); self.script, self.calls = list(script), []
+        def call(self, *args):
+            self.calls.append(args); return self.script.pop(0) if self.script else (0, "")
+
+    def go(self, script):
+        dp, said = self.Dp(script), []
+        with mock.patch.object(push.time, "time", return_value=1700000000):
+            try: push.app_dirs(dp, f"{self.G}/资源包/.incoming", said.append); err = None
+            except push.DirUnwritable as e: err = e
+        return dp.calls, said, err
+
+    def test_writable_no_move(self):   # 建好可写：只调一次 mkdir，不挪任何东西
+        calls, said, err = self.go([(0, "mkdir x")])
+        self.assertEqual(calls, [("mkdir", f"{self.G}/资源包/.incoming")]); self.assertEqual(said, []); self.assertIsNone(err)
+
+    def test_root_pack_dir_moved_aside(self):   # 资源包归 root：同父目录改名为 .s2a-foreign-资源包-<时刻>，再建一次就成
+        calls, said, err = self.go([(1, f"S2A_DIR_UNWRITABLE {self.G}/资源包\n建不了"), (0, "mv"), (0, "mkdir")])
+        self.assertIsNone(err)
+        self.assertEqual(calls[1], ("mv", f"{self.G}/资源包", f"{self.G}/.s2a-foreign-资源包-1700000000"))
+        self.assertEqual(calls[2], ("mkdir", f"{self.G}/资源包/.incoming")); self.assertEqual(len(said), 1)
+
+    def test_parent_also_root_climbs(self):   # 资源包挪不动（它的父目录也归 root）→ 挪游戏目录本身
+        calls, said, err = self.go([(1, f"S2A_DIR_UNWRITABLE {self.G}/资源包"), (1, "改名失败"), (0, "mv"), (0, "mkdir")])
+        self.assertIsNone(err)
+        self.assertEqual(calls[2], ("mv", self.G, "Library/Application Support/S2Arm/games/.s2a-foreign-0100ABCDE0000000-1700000000"))
+
+    def test_skeleton_never_moved(self):   # 写不进的是容器骨架（S2Arm 目录）：不挪，报目录写不进
+        calls, said, err = self.go([(1, "S2A_DIR_UNWRITABLE Library/Application Support/S2Arm")])
+        self.assertIsInstance(err, push.DirUnwritable); self.assertEqual([c[0] for c in calls], ["mkdir"])
+
+    def test_old_tool_or_no_link_skips(self):   # 工具太旧（不认 mkdir、打用法退 2）/ 连不上：不挪不报，照旧推
+        calls, said, err = self.go([(2, "用法：s2a-devpush …")])
+        self.assertIsNone(err); self.assertEqual(len(calls), 1)
+
+    def test_devicectl_put_makes_parent_as_app_once(self):   # devicectl 拷文件前先以 App 身份建父目录，同一目录只建一次
+        dev = push.Devicectl("D", "B", tempfile.mkdtemp()); dev.dp = self.Dp([])
+        src = Path(tempfile.mkdtemp()) / "f"; src.write_bytes(b"ok")
+        with mock.patch.object(dev, "dcp", return_value=(0, "")):
+            dev.put(str(src), f"{self.G}/资源包/a"); dev.put(str(src), f"{self.G}/资源包/b")
+        self.assertEqual(dev.dp.calls, [("mkdir", f"{self.G}/资源包")])
+
+
 if __name__ == "__main__":
     unittest.main()

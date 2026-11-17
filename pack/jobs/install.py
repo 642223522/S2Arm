@@ -723,13 +723,15 @@ def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None, pack_root=Non
     return got.get("files", 0), got.get("mb", 0) << 20
 
 
-def push_cheats(c, device, bid, gid, docs):
+def push_cheats(c, device, bid, gid, docs, mkdir=None):
     """金手指（11-12）：这款文件夹 cheats/ 里的 txt（出包时从公开库取的 + 玩家导入的）拷到机上本款文档根 cheats/，
     游戏内金手指菜单（ios/vpad_cheats.m）与服务层 Cheats.cs 读那里；改代码的条目出包时已编进包。开关 enabled.txt / 状态 status.txt 不推（不盖玩家在手机上的选择）。
     拷不进只记黄、不挡装机"""
     import cheats
     d = cheats.cheats_dir(c, gid.upper(), create=False)
     files = [f for f in layout.entries(d, "*.txt") if f.name not in cheats.SKIP]   # ._<名>.txt（exFAT 附属文件）不推进手机金手指目录
+    if files and mkdir:   # devicectl 会代建缺的目录，iOS 26.x 上代建的归 root、App 写不进开关文件（a48655）：先以 App 身份（s2a-devpush）建好；建不成照旧拷
+        mkdir(f"{docs}/cheats")
     bad = 0
     for f in files:
         r = subprocess.run(["xcrun", "devicectl", "device", "copy", "to", "--device", device, "--domain-type", "appDataContainer",
@@ -1929,7 +1931,10 @@ class MacPhone:
     def push(self, g, pack):
         n0 = len(self.c.job["diagnostics"])
         r = push_pack(self.c, self.dev["id"], self.bid, pack, udid=self.udid, docs=game_docs(g), ctx=game_ctx(g), pack_root=pick_pack_root(self.c, self, g))
-        push_cheats(self.c, self.dev["id"], self.bid, g, game_docs(g))
+        with tempfile.TemporaryDirectory(dir=self.c.private) as w:
+            try: dp = self.client(w) if self.udid else None
+            except Failure: dp = None
+            push_cheats(self.c, self.dev["id"], self.bid, g, game_docs(g), mkdir=dp.mkdir if dp else None)
         hit = [d for d in self.c.job["diagnostics"][n0:] if d.get("code") == "manual_unpack_required"]   # push_pack 按「需要玩家操作」收尾时记的那条
         if hit: self.pending = hit[-1].get("summary") or ""
         return r
