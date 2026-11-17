@@ -90,6 +90,7 @@ static void boundary_cases(const char *T) {
     CHECK(f && fread(value, 1, 2, f) == 2 && !strcmp(value, "ok"), "合法 pax path 内容不符"); if (f) fclose(f);
 }
 
+unsigned s2a_pack_repair_modes_as(const char *docs, const char *root, unsigned self_uid); extern unsigned s2a_pack_repair_self_override;
 unsigned s2a_foreign_scan(const char *home, uint64_t *bytes, char *line, size_t n); unsigned s2a_foreign_scan_as(const char *home, unsigned self_uid, uint64_t *bytes, char *line, size_t n);
 // 压缩传输的 game.img 块（v0.5.0，runtime/src/pack_apply.c img_unzst；块大小本单测编成 64 KB，见 runtime/tests/mk/pack_apply.mk）。
 //   夹具：合成单一 IMG（头 + 规律字节 + 文件尾 40 字节空目录表，长 2 × 64 KB + 5000），按 64 KB 切 3 块，每块用 zstd 命令行（没有就 Python zstd 模块）
@@ -242,7 +243,8 @@ int main(void) {
         "cd src4 && COPYFILE_DISABLE=1 tar " TAR_OPTIONS " -cf ../docs/资源包/.incoming/3_002.tar locked/e.bin", T);
     CHECK(sh(c) == 0, "造只读目录包失败");
     { char lg[1100]; snprintf(lg, sizeof lg, "%s/host_locked.log", T); int lfd = open(lg, O_WRONLY | O_CREAT | O_TRUNC, 0644), keep = g_s2a_logfd; g_s2a_logfd = lfd;
-      CHECK(s2a_pack_apply(docs) != 0, "只读目录应判失败"); g_s2a_logfd = keep; close(lfd);
+      s2a_pack_repair_self_override = (unsigned)getuid() + 1;   // 这条测「别人的只读目录」写失败带现场：自己的只读目录现在会被补回写权限（D-A76N）
+      CHECK(s2a_pack_apply(docs) != 0, "只读目录应判失败"); s2a_pack_repair_self_override = 0; g_s2a_logfd = keep; close(lfd);
       snprintf(c, sizeof c, "tail -1 %s/docs/unpack.log | grep -q '返回 -4.*现场：建临时文件 .*/资源包/locked/e.bin.part：errno 13'", T); CHECK(sh(c) == 0, "失败行应含「返回 -4」与建临时文件现场（errno 13）");
       snprintf(c, sizeof c, "grep -q '资源包收推送：失败.*现场：建临时文件 .*locked/e.bin.part：errno 13' %s", lg); CHECK(sh(c) == 0, "host 日志的失败行也应带现场（errno 原文）"); }
     snprintf(c, sizeof c, "cd %s && chmod 0755 docs/资源包/locked && rm -rf docs/资源包/locked docs/资源包/.incoming/*.tar", T); sh(c);
@@ -825,7 +827,8 @@ int main(void) {
         snprintf(c, sizeof c, "mkdir -p '%s/games/%s/资源包/.incoming' && printf 'hello' > '%s/games/%s/资源包/romfs.img' && printf 'x' > '%s/games/%s/资源包/.incoming/a.tar'", base, gid, base, gid, base, gid); sh(c);
         char root[600]; snprintf(root, sizeof root, "%s/games/%s/资源包", base, gid); chmod(root, 0555);
         char gd[600]; snprintf(gd, sizeof gd, "%s/games/%s", base, gid);
-        int arc = s2a_pack_apply(gd);
+        s2a_pack_repair_self_override = (unsigned)getuid() + 1;   // #569 是「归 root」：测试改不了属主，把自己当外人，补权限不动它
+        int arc = s2a_pack_apply(gd); s2a_pack_repair_self_override = 0;
         CHECK(arc != 0 && strstr(s2a_pack_apply_failure(), "目录 App 写不进") && strstr(s2a_pack_apply_failure(), "资源包") && strstr(s2a_pack_apply_failure(), "权限 555"),
               "资源包目录写不进：解包先报目录与权限（实际 %d「%s」）", arc, s2a_pack_apply_failure());
         CHECK(!strcmp(s2a_pack_apply_code(), "ios_install_dir_unwritable"), "目录写不进给码 ios_install_dir_unwritable（实际 %s）", s2a_pack_apply_code());
@@ -915,6 +918,21 @@ int main(void) {
       char want[64]; snprintf(want, sizeof want, "属主 uid %u", (unsigned)getuid());
       CHECK(n0 == 0 && b0 == 0, "清点：全是自己的 → 0 个、0 字节（实际 %u、%llu）", n0, (unsigned long long)b0);
       CHECK(n1 == 4 && b1 >= 4096 && strstr(l1, want) && strstr(l1, "4 个"), "清点：把自己当外人 → 4 个、≥4096 字节、读数行带属主（实际 %u、%llu「%s」）", n1, (unsigned long long)b1, l1); }
+    { // 资源包里 App 自己的、缺写权限的目录 / 文件补回属主读写（D-A76N）。期望手写：
+      //   文档根 D（0555）、资源包根 R 下子目录 s（0555）、文件 s/f（0444）、文件 g（0644）→ 按真 uid 补 3 个（D、s、s/f），D / s 变 0755、s/f 变 0644、g 不动；
+      //   补完后在 s 里能建文件；把「自己」当成别的 uid 再跑 → 一个都不补
+      char D[1200], R[1300], s[1400], f[1500], g[1400], nf[1500]; struct stat a, b, cst, d;
+      snprintf(D, sizeof D, "%s/repair_docs", T); snprintf(R, sizeof R, "%s/pack", D); snprintf(s, sizeof s, "%s/s", R);
+      snprintf(f, sizeof f, "%s/f", s); snprintf(g, sizeof g, "%s/g", R); snprintf(nf, sizeof nf, "%s/new", s);
+      snprintf(c, sizeof c, "mkdir -p '%s' && echo x > '%s' && echo y > '%s' && chmod 444 '%s' && chmod 555 '%s' && chmod 555 '%s'", s, f, g, f, s, D); CHECK(sh(c) == 0, "造只读样本");
+      CHECK(s2a_pack_repair_modes_as(D, R, (unsigned)getuid() + 1) == 0, "补权限：属主不是自己 → 一个都不动");
+      unsigned n = s2a_pack_repair_modes_as(D, R, (unsigned)getuid());
+      stat(D, &a); stat(s, &b); stat(f, &cst); stat(g, &d);
+      CHECK(n == 3, "补权限：补 3 个（实际 %u）", n);
+      CHECK((a.st_mode & 0777) == 0755 && (b.st_mode & 0777) == 0755 && (cst.st_mode & 0777) == 0644 && (d.st_mode & 0777) == 0644,
+            "补权限：D / s 0755、s/f 0644、g 不动 0644（实际 %o %o %o %o）", a.st_mode & 0777, b.st_mode & 0777, cst.st_mode & 0777, d.st_mode & 0777);
+      FILE *w = fopen(nf, "w"); CHECK(w != NULL, "补完后能在原只读目录里建文件"); if (w) fclose(w);
+      snprintf(c, sizeof c, "chmod -R u+w '%s' 2>/dev/null; rm -rf '%s'", D, D); sh(c); }
 zst_cases(T);
 printf("%s t_pack_apply：%d 处不符\n", bad ? "✗" : "✓", bad); return bad != 0;
 }
