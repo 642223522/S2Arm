@@ -294,6 +294,7 @@ struct LauncherView: View {
                 phonePill
                 updateButton
                 HStack(spacing: 4) {
+                    PlayerToolbarButton(loc: loc)   // 标题栏另起视图树，显式传入本地化对象。
                     ControllerToolbarButton(controller: model.controller, show: $showController,
                                             lang: loc.lang.code)
                     messagesButton
@@ -305,7 +306,6 @@ struct LauncherView: View {
                     .controllerButtonStyle(ConsoleIconButtonStyle(backgroundless: true))
                     .help(txt("nav.settings")).accessibilityLabel(txt("nav.settings")).controllerID("top.settings")
                 }
-                PlayerToolbarButton(loc: loc)   // 标题栏另起视图树，显式传入本地化对象。
                 // 报错页的 ReportHint 指向这里：所有页面保持同一个全局入口。
                 Button { model.diagUploadFor = "" } label: {
                     Label(txt("report.button"), systemImage: "exclamationmark.bubble")
@@ -430,7 +430,7 @@ struct LauncherView: View {
             Button { model.showUpdatePopup() } label: {
                 Label(txt("update.top.available").replacingOccurrences(of: "{0}", with: model.availableUpdate?["version"] as? String ?? ""), systemImage: "arrow.down.circle")
             }
-            .controllerButtonStyle(ConsoleIconButtonStyle())
+            .controllerButtonStyle(ConsoleIconButtonStyle(backgroundless: true))
             .help(txt("update.top.available").replacingOccurrences(of: "{0}", with: model.availableUpdate?["version"] as? String ?? ""))
             .controllerID("top.update")
         case .failed(let code):
