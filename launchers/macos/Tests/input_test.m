@@ -683,6 +683,33 @@ static void test_pad_slots(void) {
     expect(s2a_slot_plan(owners, live, 0, 4, slot_of) == 1, "no pads: back to one slot for keyboard and mouse");
 }
 
+// #1264（D-7VG4 现场）：兜底手柄 a（PowerA，顺序表认不到它）先占槽 0；游戏中途连上 DualSense b 进槽 1；面板把 b 登记成 P1（顺序表 rank 0）。
+//   期望手算：钉住后 b 在槽 0、a 被挤到槽 1；再关掉 a，b 仍在槽 0（单人游戏读玩家 1 就是它）。没登记的手柄不受钉住影响、照旧留原槽
+static void test_pad_slot_pin(void) {
+    int ids[3] = {1, 2, 3};
+    const void *a = &ids[0], *b = &ids[1], *c = &ids[2];
+    const void *owners[4] = {a, b, NULL, NULL};
+    int slot_of[3];
+    const void *ab[2] = {a, b}; int rank_ab[2] = {S2A_PAD_ORDER_UNLISTED, 0};
+    s2a_slot_pin(owners, ab, rank_ab, 2, 4);
+    expect(s2a_slot_plan(owners, ab, 2, 4, slot_of) == 2 && slot_of[1] == 0 && slot_of[0] == 1,
+        "a pad the panel lists as P1 takes slot 0; the unlisted one moves to slot 1");
+    apply_slots(owners, ab, slot_of, 2, 4);
+    const void *only_b[1] = {b}; int rank_b[1] = {0};
+    s2a_slot_pin(owners, only_b, rank_b, 1, 4);
+    expect(s2a_slot_plan(owners, only_b, 1, 4, slot_of) == 1 && slot_of[0] == 0, "turning the old pad off leaves the listed P1 in slot 0");
+    // 没登记的两只（a 槽 1、c 槽 2）+ 登记 P1 的 b 已在槽 0：钉住什么都不动
+    const void *owners2[4] = {b, a, c, NULL};
+    const void *bac[3] = {b, a, c}; int rank_bac[3] = {0, S2A_PAD_ORDER_UNLISTED, S2A_PAD_ORDER_UNLISTED};
+    s2a_slot_pin(owners2, bac, rank_bac, 3, 4);
+    expect(owners2[0] == b && owners2[1] == a && owners2[2] == c && owners2[3] == NULL, "pinning leaves pads already in place and unlisted pads alone");
+    // 登记成 P2（rank 1）、P1 不在：钉在槽 1，不提前到槽 0（同原机：玩家号不跳）
+    const void *owners3[4] = {NULL, NULL, NULL, NULL};
+    const void *only_c[1] = {c}; int rank_c[1] = {1};
+    s2a_slot_pin(owners3, only_c, rank_c, 1, 4);
+    expect(s2a_slot_plan(owners3, only_c, 1, 4, slot_of) == 2 && slot_of[0] == 1, "a listed P2 stays in slot 1 when P1 is absent");
+}
+
 // 只有通用物理描述的手柄（没有扩展手柄档）：按标准键名从 physicalInputProfile 读、回调装在 valueDidChangeHandler 上。
 //   用系统自带的虚拟简易手柄（controllerWithMicroGamepad：只有 A / X / Menu / 方向键）当这种手柄。期望手算：
 //   它的类别是「Siri Remote」，认不出类型按缺省「自动」照字母（pad.c s2a_pad_abxy_order）：系统 A = Switch A，默认配置第 0 位（1）；
@@ -1508,6 +1535,7 @@ int main(int argc, const char **argv) {
         test_active_pad();
         test_pro_sensor_control();
         test_pad_slots();
+    test_pad_slot_pin();
         // 同一个真实前端实现：通用 attach 先发布层，detach 先通知再清层；
         // 直连只发布/清层，不通知尚未初始化且不应初始化的通用 NxGal。
         CAMetalLayer *front = [CAMetalLayer layer];
