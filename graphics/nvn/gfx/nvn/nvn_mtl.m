@@ -731,7 +731,7 @@ static int g_link_base = 1;   // 不算补帧时的出图方式（环境 DM_PRES
 static const char *metal_hud_source(void) {
     const char *e = getenv("MTL_HUD_ENABLED"); if (e && !strcmp(e, "1")) return "环境变量 MTL_HUD_ENABLED";
     if ([NSUserDefaults.standardUserDefaults boolForKey:@"MetalForceHudEnabled"]) return "偏好 MetalForceHudEnabled";
-    for (uint32_t i = 0, n = _dyld_image_count(); i < n; i++) { const char *nm = _dyld_image_name(i); if (nm && strstr(nm, "libMTLHud")) return "浮层库 libMTLHud 已载入"; }
+    for (uint32_t i = 0, n = _dyld_image_count(); i < n; i++) { const char *nm = _dyld_get_image_name(i); if (nm && strstr(nm, "libMTLHud")) return "浮层库 libMTLHud 已载入"; }
     return NULL;
 }
 #endif
