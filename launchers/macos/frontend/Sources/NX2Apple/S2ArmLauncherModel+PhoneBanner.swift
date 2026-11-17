@@ -32,7 +32,7 @@ extension S2ArmLauncherModel {
         Task { [weak self] in
             guard let self else { return }
             var ok = false
-            do { _ = try await self.provider.client.perform("installUpdatePrepare", automatic: true); ok = true; self.notePhoneAuto("installUpdatePrepare", nil) }
+            do { _ = try await self.provider.client.perform("installUpdatePrepare"); ok = true; self.notePhoneAuto("installUpdatePrepare", nil) }
             catch { self.notePhoneAuto("installUpdatePrepare", String(describing: error)) }
             if self.phoneBanner == nil { self.phoneBanner = ok ? .ready : .onConnect }
         }

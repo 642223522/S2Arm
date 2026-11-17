@@ -6,6 +6,19 @@ public protocol JobProcessRunner {
     func start(executable: URL, arguments: [String], environment: [String: String],
                onLine: @escaping (Data) -> Void, onStderr: @escaping (Data) -> Void,
                onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle
+    /// automatic：打开启动器时自动起的后台任务（JobTrigger.automaticOperations），要让路
+    func start(executable: URL, arguments: [String], environment: [String: String], automatic: Bool,
+               onLine: @escaping (Data) -> Void, onStderr: @escaping (Data) -> Void,
+               onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle
+}
+
+extension JobProcessRunner {
+    /// 不区分前后台的实现（单测的假 runner）：照常起
+    public func start(executable: URL, arguments: [String], environment: [String: String], automatic: Bool,
+                      onLine: @escaping (Data) -> Void, onStderr: @escaping (Data) -> Void,
+                      onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle {
+        try start(executable: executable, arguments: arguments, environment: environment, onLine: onLine, onStderr: onStderr, onExit: onExit)
+    }
 }
 
 /// 起来的作业进程：只认「请它停」（SIGTERM，作业层收到后记取消、退出码 130）。
@@ -34,12 +47,11 @@ struct LineSplitter {
     }
 }
 
-/// 作业是谁触发的（给 SystemJobProcessRunner 看的环境变量，JobClient.start 按 automatic 写）：
-///   玩家点出来的（出包、推到 iPhone）要快，持有防降级活动；打开启动器时自动起的后台任务（准备更新 iPhone、重出着色器库）要让路——
-///   按 utility 低优先级跑、不开活动（11-17 维护者：玩家在用电脑时它们该让路，#1442 自动任务把整台 Mac 压垮）
+/// 打开启动器时自动起的后台重活（不是玩家点的）：按作业名认，和作业层 pack/jobs/main.py AUTO_HEAVY 是同一份名单
+///   （作业层对它们串行、nice 19 + 后台档；这里对它们不开防降级活动、进程按 utility 起，玩家在用电脑时让路。11-17 维护者：自动任务该让路）。
+///   两边名单要一致：作业层那份合入后，在 pack/jobs/tests 里加单测读本文件这一行对照
 public enum JobTrigger {
-    public static let environmentKey = "S2A_JOB_TRIGGER"
-    public static let automatic = "auto"
+    public static let automaticOperations: Set<String> = ["installUpdatePrepare", "sgradeMac"]
 }
 
 /// 真的：Foundation.Process + 两条管道。
@@ -68,6 +80,13 @@ public final class SystemJobProcessRunner: JobProcessRunner {
     public func start(executable: URL, arguments: [String], environment: [String: String],
                       onLine: @escaping (Data) -> Void, onStderr: @escaping (Data) -> Void,
                       onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle {
+        try start(executable: executable, arguments: arguments, environment: environment, automatic: false, onLine: onLine, onStderr: onStderr, onExit: onExit)
+    }
+
+    /// automatic（自动起的后台任务）：进程按 utility 起、不开防降级活动；其余（玩家点的）开 userInitiated 活动
+    public func start(executable: URL, arguments: [String], environment: [String: String], automatic: Bool,
+                      onLine: @escaping (Data) -> Void, onStderr: @escaping (Data) -> Void,
+                      onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
@@ -78,7 +97,6 @@ public final class SystemJobProcessRunner: JobProcessRunner {
         let queue = DispatchQueue(label: "s2arm.job.events")
         let readers = DispatchGroup()
         readers.enter(); readers.enter()
-        let automatic = environment[JobTrigger.environmentKey] == JobTrigger.automatic
         if automatic { process.qualityOfService = .utility }
         let activity: NSObjectProtocol? = automatic ? nil : beginActivity()
         let end: (NSObjectProtocol?) -> Void = { [endActivity] in if let a = $0 { endActivity(a) } }
