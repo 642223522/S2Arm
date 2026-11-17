@@ -16,6 +16,8 @@ import re
 import shutil
 import stat
 import subprocess
+import time
+import math
 import sys
 from pathlib import Path
 
@@ -185,6 +187,7 @@ def phone_overview(c):
         phone = dict(device=key, name=signed.get("device") or "", installed=bool(rec.get("shellId")), bundleId=rec.get("bundleId") or "",
                      shellCurrent=bool(sid) and rec.get("shellId") == sid, signedAt=at, free=free, signMode=_sign_mode(c, rec, signed),
                      expiresAtEstimate=(at + SIGN_LIFETIME["free" if free else "paid"]) if at else None,
+                     remainingDays=max(0, math.ceil((at + SIGN_LIFETIME["free" if free else "paid"] - time.time()) / 86400)) if at else None,
                      lastSeen=rec.get("at") if isinstance(rec.get("at"), (int, float)) else None, games=games)
         if online is not None:
             phone["online"] = online.get(key)

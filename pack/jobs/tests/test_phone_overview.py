@@ -67,6 +67,12 @@ class PhoneOverview(unittest.TestCase):
                                        dict(gameId=self.E, state="needsData", dataOnComputer=False)])
         self.assertEqual((p1["lastSeen"], p2["lastSeen"]), (T + 60, None))
         self.assertEqual((p2["shellCurrent"], p2["free"], p2["expiresAtEstimate"]), (False, True, T + 7 * 86400))
+        # 剩余天数按估的到期时刻往上取整（还剩 6 天 1 秒 → 7）；过期了给 0
+        import time as _t
+        for now, want in ((T + 86400 - 1, 7), (T + 7 * 86400 + 5, 0)):
+            with patch.object(_t, "time", lambda n=now: n):
+                p = next(x for x in self.overview()["phones"] if x["device"] == "PHONE-2")
+            self.assertEqual(p["remainingDays"], want)
         self.assertEqual({g["state"] for g in p2["games"]}, {"notPushed"})   # 手机 2 一款都没推
         # 没推过的也带电脑上资源在不在（A、C 放了 game.img）：界面提前说「要原件」
         self.assertEqual({g["gameId"]: g["dataOnComputer"] for g in p2["games"]}, {self.A: True, self.B: False, self.C: True, self.D: False, self.E: False})
