@@ -510,6 +510,12 @@ static void geo_runset_gsr(const geo_runset *s) {
     pthread_mutex_unlock(&g_gsr_mu);
 }
 static struct { int active, gpc, gpk; id cap, gs, cap_pso; uint64_t runs, draws, kernels, barriers, cut, hazard; geo_hz hz; geo_runset rs; id pack; uint64_t *jobs; size_t njobs, cjobs; } g_gr;   // cap_pso: the capture lane's current pipeline (only captures set one there; cleared when the lanes begin)   // gpc / gpk: the lane encoders' GPUPROF labels (gp_lane_begin); jobs: the run's compactions, encoded at its end
+// 段为什么结束（诊断，随「geometry run」那行出）：调用方在结束段之前把原因放进 g_gr_why，geo_run_flush 取走并清零；没放的算「结束主遍 / 开别的编码器 / 提交 / 等 GPU」。
+//   一帧几百笔几何绘制而每段只装一笔时（每段都断主遍、附件整张读进写出），这一行说清是谁断的
+enum { GEO_END_OTHER, GEO_END_OP, GEO_END_DRAW, GEO_END_INELIG, GEO_END_CUT, GEO_END_HAZARD, GEO_END_N };
+enum { GEO_INEL_WAIT, GEO_INEL_UBD, GEO_INEL_DEFER, GEO_INEL_HOIST, GEO_INEL_FSW, GEO_INEL_REST, GEO_INEL_N };
+static int g_gr_why, g_gr_why_op, g_gr_why_inel;
+static uint64_t g_gr_end[GEO_END_N], g_gr_end_op[128], g_gr_inel[GEO_INEL_N];
 static int geo_run_active(void) { return g_gr.active; }   // for pass_color_unwritten (nvn_mtl.m, before this include)
 static int geo_fs_writes(NvShader *fs) {
     if (!fs) return 0;
@@ -518,7 +524,11 @@ static int geo_fs_writes(NvShader *fs) {
     return 0;
 }
 static void geo_run_flush(void) {
+    int why = g_gr_why; g_gr_why = 0;   // 先取走：没在段里时也清，免得留给下一次
     if (!g_gr.active) return;
+    g_gr_end[why]++;
+    if (why == GEO_END_OP) g_gr_end_op[(unsigned)g_gr_why_op < 128 ? g_gr_why_op : 127]++;
+    if (why == GEO_END_INELIG) g_gr_inel[g_gr_why_inel]++;
     if (g_rlane) MDIE("geometry run: flushed from lane %d (an encoder, commit or wait inside a lane)", g_rlane);
     g_gr.active = 0;   // first: the calls below must not come back here
     gp_lane_end(g_gr.cap, g_gr.gpc, (uint32_t)g_gr.draws); enc_full_barrier_end(g_gr.cap); [g_gr.cap endEncoding];
@@ -534,6 +544,18 @@ static void geo_run_flush(void) {
     g_gr.cap = g_gr.gs = g_gr.cap_pso = nil; g_vt_valid = 0; args_dirty_all();
     if (g_gr.runs == 1 || g_gr.runs % 2000 == 0) MLOG("geometry run: %llu runs, %llu geometry draws in them, barriers before %llu of %llu geometry kernels, %llu runs ended to cut the segment for scratch, %llu ended for a read / write across the run's reordering (a run: captures, geometry kernels and main-pass draws each in one encoder)",
         (unsigned long long)g_gr.runs, (unsigned long long)g_gr.draws, (unsigned long long)g_gr.barriers, (unsigned long long)g_gr.kernels, (unsigned long long)g_gr.cut, (unsigned long long)g_gr.hazard);
+    if (g_gr.runs == 1 || g_gr.runs % 2000 == 0) {
+        int top[3] = {-1, -1, -1};   // 结束段次数最多的三种操作
+        for (int o = 0; o < 128; o++) if (g_gr_end_op[o]) for (int k = 0; k < 3; k++) if (top[k] < 0 || g_gr_end_op[o] > g_gr_end_op[top[k]]) { for (int j = 2; j > k; j--) top[j] = top[j - 1]; top[k] = o; break; }
+        char ops[96] = ""; size_t n = 0;
+        for (int k = 0; k < 3 && top[k] >= 0 && n < sizeof ops; k++) n += (size_t)snprintf(ops + n, sizeof ops - n, "%sop %d%s %llu", k ? ", " : "", top[k], top[k] == OP_UPDATE_UB ? " (inline uniform update)" : "", (unsigned long long)g_gr_end_op[top[k]]);
+        MLOG("geometry run ends by cause: a state-changing operation %llu (%s), a non-geometry draw %llu, the next geometry draw not eligible %llu (waits for GPU-written index / vertex data %llu, "
+             "inline uniform updates pending %llu, deferred pass %llu, hoisted / merged pass %llu, fragment stage writes memory %llu, other %llu), scratch cut %llu, read / write hazard %llu, "
+             "pass end / other encoder / commit / wait %llu", (unsigned long long)g_gr_end[GEO_END_OP], n ? ops : "-", (unsigned long long)g_gr_end[GEO_END_DRAW], (unsigned long long)g_gr_end[GEO_END_INELIG],
+             (unsigned long long)g_gr_inel[GEO_INEL_WAIT], (unsigned long long)g_gr_inel[GEO_INEL_UBD], (unsigned long long)g_gr_inel[GEO_INEL_DEFER], (unsigned long long)g_gr_inel[GEO_INEL_HOIST],
+             (unsigned long long)g_gr_inel[GEO_INEL_FSW], (unsigned long long)g_gr_inel[GEO_INEL_REST], (unsigned long long)g_gr_end[GEO_END_CUT], (unsigned long long)g_gr_end[GEO_END_HAZARD],
+             (unsigned long long)g_gr_end[GEO_END_OTHER]);
+    }
 }
 // The run begins: no encoder is open (geo_draw ended the pass); the two lane encoders begin with a full barrier, not through main_barrier_begin (its state follows the main stream)
 static void geo_run_begin(void) {
@@ -550,7 +572,7 @@ static void geo_run_begin(void) {
 //   ARENA_WAIT_S for the GPU ("frame scratch: waited 2 s", a 2.1 s freeze)
 static void geo_scratch_cut(int run, uint64_t total) {
     if (g_arena_seg + total < ARENA_CUT) return;
-    if (run && g_gr.active) { geo_run_flush(); rp_end(); g_gr.cut++; }
+    if (run && g_gr.active) { g_gr_why = GEO_END_CUT; geo_run_flush(); rp_end(); g_gr.cut++; }
     sub_cut();
 }
 // Exec loop: the ops a run lets through (state only; draws decide in draw())
@@ -638,9 +660,13 @@ static void geo_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) {
         int fk = geo_stage_ranges(pr->sh[1], 1, h_fr, &h_nfr, h_fw, &h_nfw, 32); h_fk = !!(fk & GEO_RK); h_fwk = !!(fk & GEO_WK);   // B 看片元读；片元的写入段的只有预测下的原始池表写（geo_fs_writes），C 看它
         int why = 0;
         if (g_gr.active && !(why = geo_runset_gml(&g_gr.rs)) && !(why = geo_run_hazard(&g_gr.rs, h_cap, h_ncap, h_ck, h_gw, h_ngw, h_gk))) why = geo_run_hazard_fw(&g_gr.rs, h_cap, h_ncap, h_ck, h_gr, h_ngr, h_grk, h_gw, h_ngw, h_gk);
-        if (why) { geo_run_flush(); if (g_gr.hazard++ < 8) MLOG("geometry run ended before a draw (%llu ends so far): %s (geometry %s)", (unsigned long long)g_gr.hazard, geo_hazard_why[why], base->key); }
+        if (why) { g_gr_why = GEO_END_HAZARD; geo_run_flush(); if (g_gr.hazard++ < 8) MLOG("geometry run ended before a draw (%llu ends so far): %s (geometry %s)", (unsigned long long)g_gr.hazard, geo_hazard_why[why], base->key); }
     }
-    if (!run) geo_run_flush();
+    if (!run) {
+        g_gr_why = GEO_END_INELIG;
+        g_gr_why_inel = wait ? GEO_INEL_WAIT : g_nubd ? GEO_INEL_UBD : defer_has_active() ? GEO_INEL_DEFER : (g_hoist_n || g_fz.active) ? GEO_INEL_HOIST : geo_fs_writes(pr->sh[1]) ? GEO_INEL_FSW : GEO_INEL_REST;
+        geo_run_flush();
+    }
     if (!(run && g_gr.active)) {
         if (defer_has_active()) defer_fallback();
         lc_land(); rp_flush(); rp_end(); ubd_land();
