@@ -532,7 +532,9 @@ public sealed partial class EnvironmentWindow
             var modBtn = new Button { Content = T("export.sgrade.mod.import"), FontSize = 12.5 };
             modBtn.Click += (_, _) => OpenMods(game);
             Avalonia.Automation.AutomationProperties.SetAutomationId(modBtn, "export.sgrade.mod.import");
-            Row(T("export.sgrade.cat.mod"), Hit("mod") > 0 ? T("export.sgrade.hit.mod").Replace("{0}", Hit("mod").ToString()) : T("export.sgrade.mod.note"), action: modBtn);
+            var modAct = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };   // mod 格式说明「？」放在「导入 Mod」旁（11-17，ModsPage.cs ModHelp）
+            modAct.Children.Add(ModHelp()); modAct.Children.Add(modBtn);
+            Row(T("export.sgrade.cat.mod"), Hit("mod") > 0 ? T("export.sgrade.hit.mod").Replace("{0}", Hit("mod").ToString()) : T("export.sgrade.mod.note"), action: modAct);
             var build = r.TryGetProperty("build", out var b) ? b.GetString() ?? "" : "";
             // 补丁按版本生效（11-14 维护者）：写明对应玩家这份游戏的哪个版本；列出的别的版本不会打入（同 Mac SGradeCard）
             var ver = r.TryGetProperty("version", out var vv) ? vv.GetString() ?? "" : "";
