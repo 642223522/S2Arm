@@ -6628,6 +6628,10 @@
   "en": "Your prod.keys file is missing keys needed to read this file."
  },
  {
+  "source": "这份文件的内容被改过或损坏了：同一份文件里用同一代密钥的其它内容能正常解开，密钥是对的。请换一份原版完整的文件（XCI / NSP）再导入。",
+  "en": "This file's content has been modified or is damaged: other content in the same file uses the same key generation and decrypts fine, so your keys are correct. Import an original, complete file (XCI / NSP) instead."
+ },
+ {
   "source": "现有 prod.keys 解不开这份文件：解出来的数据对不上，多半是这款用的那一代密钥不对。请用升级到最新系统的 Switch 重新导出 prod.keys 再导入。",
   "en": "Your current prod.keys can't decrypt this file: the decrypted data doesn't match, most likely because the key generation this game uses is wrong. Re-export prod.keys from a Switch updated to the latest system version, then import again."
  },
