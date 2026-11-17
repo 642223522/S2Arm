@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 S2Arm contributors
+using System.Text.Json;
 using S2Arm.Launcher.Protocol;
 
 internal static class LibraryJobCases
