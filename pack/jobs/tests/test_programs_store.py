@@ -315,6 +315,45 @@ class PutDir(unittest.TestCase):
         self.assertEqual(calls, ["kit", "kit", "kit.partial"])   # 挪开旧的：第一次被拒、第二次成功；再把新的改名就位
         self.assertEqual((self.dest / "new.txt").read_text(), "新")
 
+    def test_mounted_volume_rename_error_is_retried_without_copy_fallback(self):
+        sys.path.append(str(Path(programs.__file__).resolve().parents[2]))
+        from pack.orch import dirrename
+        real, calls = Path.rename, []
+        def rename(src, dst):
+            calls.append((src.name, dst.name))
+            if len(calls) == 1:
+                error = OSError(22, "不支持该请求")
+                error.winerror = 50
+                raise error
+            return real(src, dst)
+        with mock.patch.object(dirrename, "os", SimpleNamespace(name="nt")), \
+             mock.patch.object(dirrename, "DIR_RENAME_UNSUPPORTED_RETRIES", (0,)), \
+             mock.patch.object(Path, "rename", rename):
+            programs._put_dir(self.c, self.part, self.dest)
+        self.assertEqual(calls, [("kit", "kit.old-" + str(os.getpid())),
+                                 ("kit", "kit.old-" + str(os.getpid())),
+                                 ("kit.partial", "kit")])
+        self.assertEqual(sorted(p.name for p in self.dest.iterdir()), ["new.txt"])
+        self.assertEqual(sorted(p.name for p in self.t.iterdir()), ["kit"])
+
+    def test_persistent_mounted_volume_rename_error_is_reported(self):
+        sys.path.append(str(Path(programs.__file__).resolve().parents[2]))
+        from pack.orch import dirrename
+        calls = []
+        def rename(src, dst):
+            calls.append((src.name, dst.name))
+            error = OSError(22, "不支持该请求")
+            error.winerror = 50
+            raise error
+        with mock.patch.object(dirrename, "os", SimpleNamespace(name="nt")), \
+             mock.patch.object(dirrename, "DIR_RENAME_UNSUPPORTED_RETRIES", (0, 0)), \
+             mock.patch.object(Path, "rename", rename):
+            with self.assertRaisesRegex(OSError, "WinError 50.*卷不支持"):
+                programs._put_dir(self.c, self.part, self.dest)
+        self.assertEqual(len(calls), 3)   # 原目录挪开重试后失败；不尝试复制或覆盖
+        self.assertTrue((self.dest / "old.txt").is_file())
+        self.assertTrue((self.part / "new.txt").is_file())
+
     def test_app_layout_imports_from_engine_root(self):
         # App 里作业层（Resources/Jobs）和引擎（Resources/Engine）是兄弟目录：按本文件位置往上推找不到 pack，
         # 必须从 c.engine 导入（11-16 第 4 份候选出包即 No module named 'pack'）。独立进程、只把作业层放进 sys.path，同作业主程序
