@@ -629,7 +629,9 @@ static void vma_report_start(void) {
 #endif
 static void free_span(uint64_t addr, uint64_t *base, uint64_t *size, uint32_t *state) {
     // 地址空间上界：本款类型的位宽（36 位款 2^36，39 位款 2^39，as_type.h）；别名区承诺末端越过它时（只在 Mac 上 macOS 27 模拟 iOS 26 时出现，真机别名区末远低于它）按别名区末
-    const uint64_t AS_TOP = s2a_as_type_top(L.as_type) ? s2a_as_type_top(L.as_type) : 1ull << 39;
+    //   36 位款窗口放在 2^36 以上那一块时（#1419，as_type.h s2a_as_type_end）按那一块的末端
+    const uint64_t AS_TOP = L.as_type == 1 && L.win_base >= 1ull << 36 && s2a_as_type_end(1, L.win_base, L.win_size) ? s2a_as_type_end(1, L.win_base, L.win_size)
+                          : s2a_as_type_top(L.as_type) ? s2a_as_type_top(L.as_type) : 1ull << 39;
     const uint64_t AS_END = L.alias_base + L.alias_size > AS_TOP ? L.alias_base + L.alias_size : AS_TOP;
     if (addr >= AS_END) { *base = AS_END; *size = 0 - AS_END; *state = ST_INACCESSIBLE; return; }
     uint64_t lo = 0, hi = AS_END;
@@ -769,9 +771,13 @@ int s2a_mem_mapped(uint64_t addr, uint64_t size) {
 //   只在「不是 0、本身不是游戏地址、补上第 39 位正好是游戏已映射的地址」时补——macOS 上窗口以下是宿主自己的内存，不会是游戏地址，没有歧义；
 //   iOS 的窗口在低位、2^39 之上没有游戏地址，原样返回
 static int in_as(uint64_t a, uint64_t n);
+//   36 位款窗口放在 2^36 以上那一块时（#1419，as_type.h s2a_as_type_end）：老 SDK 打包描述符只写地址 32–35 位（sdk HipcMessageBufferAccessor::SetSend），
+//   游戏地址的 36 位以上全丢。同一判据按窗口所在块补回：不是 0、本身不是游戏地址、补上块基址正好是游戏已映射的地址才补（块以下是宿主自己的内存，没有歧义）
 __attribute__((visibility("default"), used)) uint64_t s2a_ipc_addr39(uint64_t a) {
-    const uint64_t B39 = 1ull << 39;
-    if (!a || a >= B39 || in_as(a, 1)) return a;
+    const uint64_t B36 = 1ull << 36, B39 = 1ull << 39;
+    if (!a || in_as(a, 1)) return a;
+    if (L.as_type == 1 && L.win_base >= B36 && a < B36) { uint64_t hi = L.win_base & ~(B36 - 1); return s2a_mem_mapped(a | hi, 1) ? a | hi : a; }
+    if (a >= B39) return a;
     return s2a_mem_mapped(a | B39, 1) ? a | B39 : a;
 }
 // The copy provider needs a permission predicate, not QueryMemory's complete

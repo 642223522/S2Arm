@@ -821,10 +821,10 @@ static void need_zero_red(void) {
     if (!s2a_as_type_top((uint32_t)t)) LOG("【红】地址窗口：NPDM 地址空间类型 %d（%s）暂不支持（布局只支持类型 1 = 36 位、3 = 39 位），不占窗口", t, s2a_as_type_bits((uint32_t)t));
     else LOG("【红】地址窗口：main.npdm 是类型 %d（%s），但算不出本款跨度（模块段读不到或太大），不占窗口", t, s2a_as_type_bits((uint32_t)t));
 }
-// 2^39（或地址上限）以下的空洞，按 1 GB 对齐收成可用段；挑能放下 want 的地址最高的一段（都放不下 → *sz = 0），*fit / *fit_at 记最大一段（同大取地址高的），
+// [lo, hi) 里的空洞（lo = 0 从 4 GB 起；hi = 2^39 或地址上限），按 1 GB 对齐收成可用段；挑能放下 want 的地址最高的一段（都放不下 → *sz = 0），*fit / *fit_at 记最大一段（同大取地址高的），
 //   *low_at 记放得下 low_want 的地址最低的一段（low_want = 0 不找）
-static void pick_hole(uint64_t hi, uint64_t want, uint64_t *at, uint64_t *sz, uint64_t *fit, uint64_t *fit_at, uint64_t low_want, uint64_t *low_at) {
-    const uint64_t G = 1ull << 30; uint64_t prev = 0x100000000ull; vm_address_t a = prev; *at = *sz = *fit = *fit_at = *low_at = 0;
+static void pick_hole_in(uint64_t lo, uint64_t hi, uint64_t want, uint64_t *at, uint64_t *sz, uint64_t *fit, uint64_t *fit_at, uint64_t low_want, uint64_t *low_at) {
+    const uint64_t G = 1ull << 30; uint64_t prev = lo > 0x100000000ull ? lo : 0x100000000ull; vm_address_t a = prev; *at = *sz = *fit = *fit_at = *low_at = 0;
     for (;;) {
         vm_size_t rs = 0; vm_region_basic_info_data_64_t info; mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t obj = MACH_PORT_NULL;
         int ok = vm_region_64(mach_task_self(), &a, &rs, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &cnt, &obj) == KERN_SUCCESS;
@@ -834,6 +834,9 @@ static void pick_hole(uint64_t hi, uint64_t want, uint64_t *at, uint64_t *sz, ui
         if (a + rs > prev) prev = a + rs;
         a += rs;
     }
+}
+static void pick_hole(uint64_t hi, uint64_t want, uint64_t *at, uint64_t *sz, uint64_t *fit, uint64_t *fit_at, uint64_t low_want, uint64_t *low_at) {
+    pick_hole_in(0, hi, want, at, sz, fit, fit_at, low_want, low_at);
 }
 static void cmd_arena_reserve(void);
 static void vawin_reserve(void) {
@@ -858,6 +861,22 @@ static void vawin_reserve(void) {
     const char *ce = getenv("S2A_VA_CAP_MB"); uint64_t cap = ce && atoll(ce) > 0 ? (uint64_t)atoll(ce) << 20 : 0, fat, lat, want;
     pick_hole(hi, g_need, &at, &sz, &g_fit, &fat, cap, &lat);
     if (cap) { if (lat) { fat = lat; g_fit = cap; } else g_fit = 0; sz = 0; }
+    // 36 位款 2^36 以下放不下（#1419：macOS 27 / iOS 27 的 [6, 64) GB 是系统只读区与保护区，只剩 [4, 6) GB 零散 1.8 GB）：改在 2^36 以上找一块按 2^36 对齐的 64 GiB，
+    //   窗口整段落在这一块里（as_type.h s2a_as_type_end）。游戏地址仍等于宿主地址；老 SDK 打包 IPC 描述符丢掉的 36 位以上由服务层按块补回（svc_mem.c s2a_ipc_addr39）。
+    //   先找放得下整个标准布局的、地址最低的一块；都放不下就记各块里最大的一段，走下面「按需」那条
+    if (ast == 1 && !cap && !sz && g_fit < MIN_WIN + HOST_BELOW) {
+        const uint64_t B = 1ull << 36; uint64_t lim = top ? top : 1ull << 47, bfit = 0, bfat = 0;
+        for (uint64_t k = B; k < lim && !sz; k += B) {
+            uint64_t a2, s2, f2, fa2, la2; pick_hole_in(k, k + B < lim ? k + B : lim, g_need, &a2, &s2, &f2, &fa2, 0, &la2);
+            if (s2) { at = a2; sz = s2; g_fit = f2; fat = fa2; }
+            else if (f2 > bfit) { bfit = f2; bfat = fa2; }
+        }
+        if (!sz && bfit > g_fit) { g_fit = bfit; fat = bfat; }
+        uint64_t blk = (sz ? at : fat) & ~(B - 1);
+        if (sz || g_fit >= MIN_WIN + HOST_BELOW) { hb = "所在 2^36 块";
+            LOG("地址窗口：36 位款 2^36 以下放不下，改放 2^36 以上按 2^36 对齐的一块 %#llx–%#llx（%s；IPC 描述符丢掉的 36 位以上由服务层按这一块补回）",
+                (unsigned long long)blk, (unsigned long long)(blk + B), sz ? "放得下整个标准布局" : "按需：放最大一段"); }
+    }
     // S2A_VA_IOS26=1（Mac 诊断 / iOS 27 测试设备复现）：模拟 iOS 26 大地址档——最大空洞 [0x300000000, 0xfc0000000)（共享区末到大地址档上限，52224 MiB = #61 读数），其上越过地址上限。
     //   Mac 上取同位置的 [0x3_0000_0000, 0xF_C000_0000)（护栏库拦住 xzm 的 24 GB 保留后构造函数时刻是空的），之上到 2^39 占死
     //   macOS 27（gate-host / Spare-host）的共享缓存铺满 [6, 57) GB，低区没有这段：改在 0x70 那块 64 GB 空洞开头模拟同样大小（别名区承诺末端会越过 2^39，

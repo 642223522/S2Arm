@@ -1,6 +1,7 @@
 // 布局回归（layout.c，docs/方案_地址空间根修.md）：期望值按 SDK 别名区规则（元数据 0x3FE00000、≥1 GiB 按 GiB 对齐、前后 4 KiB 保护页）、
 //   应用池 3284 MiB、宿主保留 768 MiB 手算，不调被测算式。模块段一律取 300 MiB。
 #include "../src/native.h"
+#include "../src/as_type.h"
 #define GB (1ull << 30)
 #define MB (1ull << 20)
 #define W 0x7000000000ull
@@ -132,8 +133,21 @@ int main(void) {
       EQ(s2a_layout_compute(1,0,MOD,0,W36,14*GB-1*MB,&L,&mb,&sb),(uint64_t)-2);
       EQ(s2a_layout_compute(1,0,MOD,0,(1ull<<36)-32*GB,32*GB,&L,&mb,&sb),0);            // 顶正好到 2^36
       EQ(s2a_layout_compute(1,0,MOD,0,(1ull<<36)-32*GB,33*GB,&L,&mb,&sb),(uint64_t)-2);   // 越过 2^36
-      EQ(s2a_layout_compute(1,0,MOD,0,W,34*GB,&L,&mb,&sb),(uint64_t)-2);                 // 0x70_0000_0000 的窗口（39 位款的位置）对 36 位款不合法
+      // #1419：macOS 27 / iOS 27 的 2^36 以下被系统占满，36 位款窗口可整段放进 2^36 以上按 2^36 对齐的一块（游戏地址 = 宿主地址，IPC 描述符丢的高位服务层补回）。
+      //   0x70_0000_0000 = 7 × 2^36（39 位款的位置）：同一套 36 位布局平移到这一块，各区仍在块里；跨块的窗口不合法
+      EQ(s2a_layout_compute(1,0,MOD,0,W,34*GB,&L,&mb,&sb),0);
+      EQ(mb,W); EQ(L.tlsio_base,W+300*MB); EQ(L.stack_base+L.stack_size,W+0x78000000ull); EQ(L.heap_base,W+2*GB); EQ(L.alias_base,W+8*GB); EQ(L.alias_size,6*GB);
+      EQ(L.aslr_base,W); EQ(L.aslr_size,32*GB); EQ(L.aslr_base+L.aslr_size <= W+(1ull<<36),1); sane(&L,mb);
+      EQ(s2a_layout_compute(1,0,MOD,0,W+(1ull<<36)-32*GB,32*GB,&L,&mb,&sb),0);              // 顶正好到这一块末（2^39）
+      EQ(s2a_layout_compute(1,0,MOD,0,W+(1ull<<36)-32*GB,33*GB,&L,&mb,&sb),(uint64_t)-2);   // 越过这一块末
+      EQ(s2a_layout_compute(1,0,MOD,0,(1ull<<36)-16*GB,34*GB,&L,&mb,&sb),(uint64_t)-2);      // 跨 2^36 那条线
       EQ(s2a_layout_compute(1,0,1918*MB,0,W36,34*GB,&L,&mb,&sb),(uint64_t)-2); }
+    // s2a_as_type_end（as_type.h）：窗口所在地址空间的末端，0 = 本类型放不了。期望按定义手写
+    EQ(s2a_as_type_end(3,W,64*GB),1ull<<39); EQ(s2a_as_type_end(3,W,65*GB),0); EQ(s2a_as_type_end(3,1ull<<39,GB),0);
+    EQ(s2a_as_type_end(1,0x300000000ull,34*GB),1ull<<36);                       // 2^36 以下照旧
+    EQ(s2a_as_type_end(1,W,34*GB),W+(1ull<<36));                                 // 7 × 2^36 那一块
+    EQ(s2a_as_type_end(1,(1ull<<39)+GB,GB),(1ull<<39)+(1ull<<36));               // 2^39 以上的块也行（地址上限内由放窗口那边管）
+    EQ(s2a_as_type_end(1,(1ull<<36)-GB,2*GB),0); EQ(s2a_as_type_end(1,W,0),0); EQ(s2a_as_type_end(0,W,GB),0); EQ(s2a_as_type_end(1,~0ull-GB,2*GB),0);
     // 拒绝：地址空间类型不支持、窗口基址不按 GiB 对齐、窗口越过 2^39
     EQ(s2a_layout_compute(0,0,MOD,0,W,64*GB,&L,&mb,&sb),(uint64_t)-1);
     EQ(s2a_layout_compute(2,0,MOD,0,W,64*GB,&L,&mb,&sb),(uint64_t)-1);

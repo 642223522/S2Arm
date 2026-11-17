@@ -85,7 +85,7 @@ int s2a_layout_compute(uint32_t as_type, uint64_t sys_resource_size, uint64_t mo
     memset(o, 0, sizeof *o); *mod_base = *shadow_base = 0;
     uint64_t top = s2a_as_type_top(as_type);
     if (!top) return -1;
-    if ((W & (GB - 1)) || module_span > 64 * GB || W > top || S > top - W) return -2;
+    if ((W & (GB - 1)) || module_span > 64 * GB || !s2a_as_type_end(as_type, W, S)) return -2;   // 36 位款可在 2^36 以上按 2^36 对齐的一块里（as_type.h）
     uint64_t mod = A2M(module_span);
     o->win_base = W; o->as_type = as_type; o->sys_resource_size = sys_resource_size;
     if (as_type == 1) { if (as36(o, W, S, mod, mod_base)) { memset(o, 0, sizeof *o); return -2; } return 0; }
