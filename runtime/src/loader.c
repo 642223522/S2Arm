@@ -253,10 +253,10 @@ static void read_layout_text(module_t *m, struct loader_text *text) {
             m->traps = calloc(n ? n : 1, sizeof *m->traps); m->ntrap = 0; trap_cap = (unsigned)n; have_traps = 1;
         }
         else if (!strcmp(key, "TRAP")) {   // # TRAP <偏移> <种类> <寄存器> <原字>
-            char kind[16]; unsigned reg; unsigned long orig; static const char *const kinds[] = {"tpidr_r", "tpidrro_r", "tpidr_w", "ctr"};
+            char kind[16]; unsigned reg; unsigned long orig; static const char *const kinds[S2A_TRAP_NKIND] = {"tpidr_r", "tpidrro_r", "tpidr_w", "ctr", "as_aslr_lo", "as_aslr_hi", "as_stack_lo", "as_stack_hi"};
             if (!have_traps || m->ntrap >= trap_cap || sscanf(line, "# TRAP %lx %15s %u %lx", &v, kind, &reg, &orig) != 4 || reg > 31 || (v & 3))
                 die("%s: TRAP 行格式错或多于 TRAP_SITES", path);
-            int k = -1; for (int j = 0; j < 4; j++) if (!strcmp(kind, kinds[j])) k = j;
+            int k = -1; for (int j = 0; j < S2A_TRAP_NKIND; j++) if (!strcmp(kind, kinds[j])) k = j;
             if (k < 0) die("%s: TRAP 种类 %s 不认", path, kind);
             m->traps[m->ntrap++] = (struct s2a_trap){.off = v, .orig = (uint32_t)orig, .kind = (uint8_t)k, .reg = (uint8_t)reg};
         }

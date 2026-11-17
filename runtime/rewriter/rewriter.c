@@ -3684,6 +3684,122 @@ static void sdk_aregion(void) {
   }
   g->guarding = 0;
 }
+/* 36 位老 SDK 写死的两段地址区间（#1503）：nnosInitialize 用常数构造两个 nn::os::detail::AddressSpaceAllocator(起点, 终点, 保护区 0x4000)——
+ *   可随机区 [0x8000000, 2^36)、线程栈区 [0x8000000, 0x80000000)，就是 Horizon 36 位布局里的这两区，没问 GetInfo
+ *   （新 SDK 同两处取 GetInfo AslrRegion / StackRegion）。游戏地址 = 宿主地址，苹果 4 GB 以下是 __PAGEZERO，这两段宿主给不出。
+ *   认出后把装起点 / 终点的四条常数指令各写成一条 brk 兜底，运行时按本局布局填可随机区 / 栈区的起止（runtime/src/traps.c），每条只写自己的寄存器、pc + 4，
+ *   不假设别处不跳进这几条之间。只认代码形状：bl 前紧挨着最多 4 条，x1 = 0x8000000、x2 = 2^36 或 2^31、x3 = 0x4000 都由常数指令写
+ *   （MOVZ / MOVN / ORR 立即数），其余只许不碰 x1–x3 的 add x0, xN, #imm；两段都认出、调的是同一个函数才改，否则一处不改（记一行黄）。
+ *   样本：两个 36 位款的 SDK（构建号 99d55fb2…、cc774be5…）同形，都在 sdk+0x8c6xx，被调是 AddressSpaceAllocatorC1Emmm 的 PLT 桩 */
+static int xconst(uint32_t w, int* rd, uint64_t* v) {   /* mov 别名的常数写：MOVZ / MOVN / ORR Rd, ZR, #位掩码（32 位写零扩展） */
+  int sf = (int)(w >> 31);
+  uint64_t mask = sf ? ~0ull : 0xffffffffull;
+  *rd = (int)(w & 31);
+  if (((w >> 23) & 0x3f) == 0x25 && (((w >> 29) & 3) == 0 || ((w >> 29) & 3) == 2)) {
+    unsigned hw = (w >> 21) & 3;
+    if (!sf && hw > 1)
+      return 0;
+    uint64_t x = (uint64_t)((w >> 5) & 0xffff) << (16 * hw);
+    *v = ((w >> 29) & 3) == 0 ? ~x & mask : x;
+    return 1;
+  }
+  if (((w >> 23) & 0x3f) == 0x24 && ((w >> 29) & 3) == 1 && ((w >> 5) & 31) == 31) {
+    unsigned n = (w >> 22) & 1, immr = (w >> 16) & 0x3f, imms = (w >> 10) & 0x3f, len = 6;
+    if (!sf && n)
+      return 0;
+    while (len && !(((n << 6) | (~imms & 0x3f)) >> len & 1))
+      len--;
+    if (!len)
+      return 0;
+    unsigned esize = 1u << len, s = imms & (esize - 1), r = immr & (esize - 1);
+    if (s == esize - 1)
+      return 0;
+    uint64_t emask = esize == 64 ? ~0ull : (1ull << esize) - 1, e = (1ull << (s + 1)) - 1;
+    if (r)
+      e = ((e >> r) | (e << (esize - r))) & emask;
+    uint64_t x = 0;
+    for (unsigned k = 0; k < (sf ? 64u : 32u); k += esize)
+      x |= e << k;
+    *v = x & mask;
+    return 1;
+  }
+  return 0;
+}
+static void hex(FILE* f, A a);
+static void trap_rows(FILE* f) {   /* 序号 = 出现顺序（brk #(0x8000 + 序号)）：偏移 / 种类 / 寄存器 / 原字 */
+  for (size_t i = 0; i < g->traps.n; i++) {
+    fprintf(f, "# TRAP\t");
+    hex(f, g->traps.v[i].at);
+    fprintf(f, "\t%s\t%d\t0x%08x\n", g->traps.v[i].kind, g->traps.v[i].reg, g->traps.v[i].w);
+  }
+}
+static void sdk_as36_ranges(void) {
+  typedef struct {
+    A at[2], call;
+    int reg[2], stack;
+  } Ctor;
+  Ctor m[8];
+  int nm = 0, naslr = 0, nstack = 0, many = 0;
+  for (A b = 16; b + 4 <= (A)g->text; b += 4) {
+    uint32_t w = iw(b);
+    if ((w >> 26) != 0x25)   /* bl */
+      continue;
+    A at[4] = {-1, -1, -1, -1};
+    uint64_t v[4] = {0};
+    for (A p = b - 4; p >= 0 && p >= b - 16; p -= 4) {
+      uint32_t x = iw(p);
+      int rd;
+      uint64_t c;
+      if (xconst(x, &rd, &c) && rd >= 1 && rd <= 3) {
+        if (at[rd] < 0) {   /* 离 bl 最近的那次写才是实参 */
+          at[rd] = p;
+          v[rd] = c;
+        }
+        continue;
+      }
+      if ((x & 0xff80001fu) == 0x91000000u)   /* add x0, xN, #imm */
+        continue;
+      break;
+    }
+    if (at[1] < 0 || at[2] < 0 || at[3] < 0 || v[1] != 0x8000000 || v[3] != 0x4000 ||
+        (v[2] != 1ull << 36 && v[2] != 1ull << 31))
+      continue;
+    if (nm == 8) {
+      many = 1;
+      break;
+    }
+    int32_t imm = (int32_t)(w << 6) >> 6;
+    Ctor c = {{at[1], at[2]}, b + (A)imm * 4, {1, 2}, v[2] == 1ull << 31};
+    m[nm++] = c;
+    if (c.stack)
+      nstack++;
+    else
+      naslr++;
+  }
+  if (!nm)
+    return;
+  int same = 1, free_ = 1;
+  for (int i = 0; i < nm; i++) {
+    same &= m[i].call == m[0].call;
+    free_ &= !consumed(m[i].at[0]) && !consumed(m[i].at[1]);
+  }
+  if (many || !naslr || !nstack || !same || !free_ || g->traps.n + 2 * (size_t)nm > TRAP_MAX) {
+    msg("[黄] %s 36 位老 SDK 地址区间：认出 %d 处（可随机区 %d、栈区 %d）%s，不改\n", g->r.module, nm, naslr, nstack,
+        many ? "，超过 8 处" : !naslr || !nstack ? "，两段没认全" : !same ? "，调的不是同一个函数" : !free_ ? "，常数指令已被别的改写单元搬走" : "，兜底点已满");
+    return;
+  }
+  for (int i = 0; i < nm; i++)
+    for (int k = 0; k < 2; k++) {
+      static const char* const kinds[2][2] = {{"as_aslr_lo", "as_aslr_hi"}, {"as_stack_lo", "as_stack_hi"}};
+      Trap t = {m[i].at[k], kinds[m[i].stack][k], m[i].reg[k], iw(m[i].at[k])};
+      put(t.at, 0xd4200000u | ((uint32_t)(TRAP_IMM0 + g->traps.n) << 5));
+      PUSH(g->traps, t);
+      bump("sdk_as36_range");
+    }
+  for (int i = 0; i < nm; i++)
+    msg("36 位老 SDK %s：+0x%" PRIx64 " / +0x%" PRIx64 " 改 brk 兜底（构造函数 +0x%" PRIx64 "）\n", m[i].stack ? "栈区" : "可随机区",
+        (uint64_t)m[i].at[0], (uint64_t)m[i].at[1], (uint64_t)m[i].call);
+}
 /* Wide-screen recipe input is explicit; the library never discovers game data. */
 /* 帧率表改指令（S2A_FPS_TSV = 产物根里的 fps.tsv，帧率能耗线 10-26；体系提升方案 D）：按构建号把社区资料指出的位置按语义改成我方的写法，
  * 改前核原字（本模块有一行不符就整组不改、记黄，见 fps_precheck）。行：c <模块> <偏移> <种类> <原字> [参数…]，种类：
@@ -5066,16 +5182,16 @@ static int outputs(void) {
     char b[24];
     fprintf(f, "# PATCH2_OFF\t%s\n# PATCH2_LEN\t0x%zx\n# TRAP_SITES\t%zu\n# SPIN_UNREACHED\t%zu\n", shx(b, g->po2), g->patch2.n * 4,
             g->traps.n, g->spin_miss.n);
-    for (size_t i = 0; i < g->traps.n; i++) {   /* 序号 = 出现顺序（brk #(0x8000 + 序号)）：偏移 / 种类 / 寄存器 / 原字 */
-      fprintf(f, "# TRAP\t");
-      hex(f, g->traps.v[i].at);
-      fprintf(f, "\t%s\t%d\t0x%08x\n", g->traps.v[i].kind, g->traps.v[i].reg, g->traps.v[i].w);
-    }
+    trap_rows(f);
     if (g->fars.n) {   /* 远跳（brk #FAR_IMM）：<从> <到>（相对基址，有符号）<E 入口 | X 出口>；装载器按 <从> 二分查 */
       fprintf(f, "# FAR_JUMPS\t%zu\n", g->fars.n);
       for (size_t i = 0; i < g->fars.n; i++)
       { char b2[24]; fprintf(f, "# FAR\t%s\t%s\t%c\n", shx(b, g->fars.v[i].from), shx(b2, g->fars.v[i].to), g->fars.v[i].entry ? 'E' : 'X'); }
     }
+  }
+  if (!g->dual && g->traps.n) {   /* 单岛只有 36 位老 SDK 地址区间（sdk_as36_ranges）会出兜底点；没有时表头不变 */
+    fprintf(f, "# TRAP_SITES\t%zu\n", g->traps.n);
+    trap_rows(f);
   }
   fprintf(f, "# KEY_K18_IDX\t0\n# KEY_KTLS_IDX\t1\n# KEY_KTLR_IDX\t2\n# KEY_KGATE_IDX\t3\n");
   if (g->ohos)
@@ -5422,6 +5538,7 @@ static int attempt(const s2a_rewrite_request* r, const s2a_rewrite_options* opti
     analyze();
     generate();
     sdk_aregion();
+    sdk_as36_ranges();
     widen();
     fps_rows(1);
     cpatch_rows(1);
