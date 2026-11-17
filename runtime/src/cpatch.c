@@ -244,6 +244,16 @@ static int cp_ios_blocked(const char *id, const char *dir) {   // iOS 上不开�
 //   这里放进这款文档根 cheats/<原文件名>——iPhone 金手指页（ios/game_options.m）与服务层 Cheats.cs 只读那里。没有的照放；已有的只在是上次随包放的
 //   （cheats/.packed 记了名字）且内容变了时换新，玩家自己导入的同名文件不碰。Mac 读游戏文件夹 cheats/（启动器管），不走这里
 #define CHEAT_SHIP "cheat-src."
+// 随包这一份 name 这次怎么办（纯函数，单测 t_cpatch_seed）：packed = .packed（上次随包放过的名字，每行一个），deleted = .deleted（玩家删过的），exists = 文档根里现在有没有这个文件。
+//   → 0 放（新的 / 上次随包放的、内容可能要换新）；1 不放：玩家自己放的同名文件；2 不放：玩家删过；3 不放并记进 .deleted：上次随包放过、现在不在了 = 玩家刚删（#1517 原先下次起局又放回来）
+int s2a_cheat_seed_action(const char *packed, const char *deleted, const char *name, int exists) {
+    char key[300], w[8200]; snprintf(key, sizeof key, "\n%s\n", name);
+    snprintf(w, sizeof w, "\n%s", deleted ? deleted : ""); if (strstr(w, key)) return 2;
+    snprintf(w, sizeof w, "\n%s", packed ? packed : ""); int ours = strstr(w, key) != NULL;
+    if (ours && !exists) return 3;
+    if (exists && !ours) return 1;
+    return 0;
+}
 static void seed_cheats(const char *dir) {
 #if TARGET_OS_IPHONE
     DIR *dp = opendir(dir); if (!dp) return;
@@ -251,15 +261,22 @@ static void seed_cheats(const char *dir) {
     if (s2a_docs_path(cd, sizeof cd, "cheats") >= (int)sizeof cd) { closedir(dp); return; }
     mkdir(cd, 0755); snprintf(rec, sizeof rec, "%s/.packed", cd);
     FILE *rf = fopen(rec, "r"); if (rf) { size_t k = fread(have, 1, sizeof have - 1, rf); have[k] = 0; fclose(rf); }
+    // 玩家删过的（#1517：在「文件」里删了随包那份，原先下次起局又放回来——「删不掉」）：.packed 记着、文件却不在 = 玩家删的，记进 .deleted，之后不再放
+    char drec[1100], gone[8192] = ""; snprintf(drec, sizeof drec, "%s/.deleted", cd);
+    FILE *df = fopen(drec, "r"); if (df) { size_t k = fread(gone, 1, sizeof gone - 1, df); gone[k] = 0; fclose(df); }
+    int gone_changed = 0;
     char list[8192] = ""; int n = 0; struct dirent *e;
     while ((e = readdir(dp))) {
         const char *nm = e->d_name; size_t pl = strlen(CHEAT_SHIP);
         if (strncmp(nm, CHEAT_SHIP, pl) || !nm[pl] || strchr(nm + pl, '/')) continue;
         const char *dn = nm + pl; char src[1100], dst[1100], tmp[1110];
         snprintf(src, sizeof src, "%s/%s", dir, nm); snprintf(dst, sizeof dst, "%s/%s", cd, dn); snprintf(tmp, sizeof tmp, "%s.tmp", dst);
-        char key[300]; snprintf(key, sizeof key, "\n%s\n", dn); char wrapped[8200]; snprintf(wrapped, sizeof wrapped, "\n%s", have);
-        int ours = strstr(wrapped, key) != NULL, exists = access(dst, F_OK) == 0;
-        if (exists && !ours) { LOG("金手指：%s 是玩家自己放的，随包那份不覆盖", dn); continue; }
+        int exists = access(dst, F_OK) == 0, act = s2a_cheat_seed_action(have, gone, dn, exists);
+        if (act == 2) continue;   // 玩家删过：不再放
+        if (act == 3) {   // 上次随包放的、现在没了 = 玩家在「文件」里删了：记下、不放回
+            if (strlen(gone) + strlen(dn) + 2 < sizeof gone) { strcat(gone, dn); strcat(gone, "\n"); gone_changed = 1; }
+            LOG("金手指：随包那份 %s 被玩家删了，以后不再放回（文档根 cheats/.deleted）", dn); continue; }
+        if (act == 1) { LOG("金手指：%s 是玩家自己放的，随包那份不覆盖", dn); continue; }
         if (strlen(list) + strlen(dn) + 2 < sizeof list) { strcat(list, dn); strcat(list, "\n"); }   // 只记随包放的（玩家的同名文件以后也不碰）
         FILE *in = fopen(src, "rb"); if (!in) continue;
         static char buf[4 << 20]; size_t len = fread(buf, 1, sizeof buf, in); fclose(in);
@@ -273,6 +290,7 @@ static void seed_cheats(const char *dir) {
     }
     closedir(dp);
     if (strcmp(list, have)) { FILE *w = fopen(rec, "w"); if (w) { fputs(list, w); fclose(w); } }
+    if (gone_changed) { FILE *w = fopen(drec, "w"); if (w) { fputs(gone, w); fclose(w); } }
     (void)n;
 #else
     (void)dir;
