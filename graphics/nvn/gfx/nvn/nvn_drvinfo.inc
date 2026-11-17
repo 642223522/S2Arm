@@ -28,12 +28,16 @@ static int32_t g_drv_items[256]; static int g_drv_n = -1;
 static int drv_items(void) {
     if (g_drv_n >= 0) return g_drv_n;
     g_drv_n = 0;
-    for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "sdk") && g_mod[i].base) {
-        g_drv_n = nvn_drv_items_scan(g_mod[i].base, (size_t)g_mod[i].text_end, g_mod[i].size, g_drv_items, 256);
-        if (!g_drv_n) LOG("直连：sdk 里没认出驱动的设备信息表，按 SDK 版本 / 宿主表报");
-        else LOG("直连：游戏自带驱动报 NVN API %d.%d、GPU 代码版本 %d.%d–%d.%d（sdk 驱动常量，%d 项）", g_drv_items[0], g_drv_items[1],
-                 g_drv_n > 0x31 ? g_drv_items[0x2F] : -1, g_drv_n > 0x31 ? g_drv_items[0x31] : -1, g_drv_n > 0x31 ? g_drv_items[0x2E] : -1, g_drv_n > 0x31 ? g_drv_items[0x30] : -1, g_drv_n);
-    }
+    // 驱动通常链在 sdk 模块里；最早的 SDK（0.12）链在 subsdk 里（01007EF00011E000 v1.0.0：subsdk0），sdk 里没认出再按序找 subsdk*
+    for (int pass = 0; pass < 2 && !g_drv_n; pass++)
+        for (int i = 0; i < g_nmod && !g_drv_n; i++) {
+            if (!g_mod[i].base || (pass == 0 ? strcmp(g_mod[i].name, "sdk") : strncmp(g_mod[i].name, "subsdk", 6))) continue;
+            g_drv_n = nvn_drv_items_scan(g_mod[i].base, (size_t)g_mod[i].text_end, g_mod[i].size, g_drv_items, 256);
+            if (g_drv_n) LOG("直连：游戏自带驱动报 NVN API %d.%d、GPU 代码版本 %d.%d–%d.%d（%s 驱动常量，%d 项）", g_drv_items[0], g_drv_items[1],
+                             g_drv_n > 0x31 ? g_drv_items[0x2F] : -1, g_drv_n > 0x31 ? g_drv_items[0x31] : -1, g_drv_n > 0x31 ? g_drv_items[0x2E] : -1, g_drv_n > 0x31 ? g_drv_items[0x30] : -1,
+                             g_mod[i].name, g_drv_n);
+        }
+    if (!g_drv_n) LOG("直连：sdk / subsdk 里没认出驱动的设备信息表，按 SDK 版本 / 宿主表报");
     return g_drv_n;
 }
 int dm_nvn_driver_api(int *major, int *minor) {
