@@ -66,6 +66,9 @@ int s2a_launch_ctx_select_kind(void);
 int s2a_host_abi_check(const char *program_catalogue, const char *app_catalogue, const char *gid, int *have, char *why, size_t why_n);
 // 本款程序包清单的位置：<资源包根的上一级>/program/catalogue.json（资源包根见 s2a_docs.h s2a_pack_root）；程序挪出 App 之前不存在
 int s2a_program_catalogue_path(char *out, size_t n, const char *game_data);
+// 游戏库画卡片时预判（主线程，多款容器）：本进程 App 包里这款的程序约定号对不上本宿主 → 1（卡片标「需要在电脑上更新」）；对得上 / 不是容器 /
+//   核不了（路径太长、清单读不了：交给点开时 s2a_launch_ctx_select 的完整校验报）→ 0。只读文件，不冻结、不改任何状态
+int s2a_launch_ctx_game_needs_update(const char *gid);
 // 进程内冻结一次（线程安全）：可执行文件目录取 _NSGetExecutablePath，home 取 $HOME（没有 = "."），文件取 S2A_LAUNCH_CTX。
 //   文件来源时把四个根写进进程环境。失败回 NULL，原因见 s2a_launch_ctx_error()（宿主 main 开头据此停）。
 //   多款容器模式：s2a_launch_ctx_select 成功之前一律回 NULL（error =「还没选游戏」），之后回本款

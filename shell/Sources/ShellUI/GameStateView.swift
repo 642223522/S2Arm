@@ -43,6 +43,7 @@ public struct GameStateView: View {
         case .playable: actions.onPlay(game.id)
         case .needsGameData: actions.onPickGameData(game.id)
         case .needsAppUpdate: actions.onAppUpdate?()
+        case .needsGameUpdate: break   // needsHelp：上面已展开说明
         case .broken: actions.onShowLog?(game.id)
         case .installing(let stage): if stage.phase == .failed { actions.onPlay(game.id) }   // 重试解开；传着 / 解着按钮按不动
         }
@@ -117,6 +118,7 @@ public struct StateHelpView: View {
         case .broken(_, let detail, _) where !detail.isEmpty: detail
         case .broken: ShellStrings.text("Build this game again on your Mac and install it on this device. The Mac app checks every file while it builds, so the new copy is complete.")
         case .needsAppUpdate: ShellStrings.text("This game needs a newer version of this app. Update it with the Mac app on your Mac, then install it on this device again.")
+        case .needsGameUpdate: ShellStrings.text("This game was built with an older S2Arm and doesn't match the new version on your phone, so it can't open. Connect your phone to your computer and click \"Update S2Arm on iPhone\" in S2Arm; this game will be rebuilt for the new version.")
         default: ""
         }
     }

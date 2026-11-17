@@ -47,6 +47,9 @@ static int child_container(const char *home) {
     CK(r && strstr(r, "镜像包"), "清单里有、镜像包缺 → 拒绝");
     CK(s2a_launch_ctx_select_kind() == S2A_SELECT_APP_INCOMPLETE, "镜像包缺 → 类别 APP_INCOMPLETE");
     CK(!s2a_launch_ctx_get() && !getenv("S2A_DOCS"), "选失败不冻结、不写环境");
+    CK(s2a_launch_ctx_game_needs_update("0100000000000005") == 1 && s2a_launch_ctx_game_needs_update("0100000000000001") == 0
+       && s2a_launch_ctx_game_needs_update("0100000000000BAD") == 0, "库界面预判：约定号对不上的那款 → 1；对得上 / 不在清单 → 0（不在清单交给点开时报）");
+    CK(!s2a_launch_ctx_get(), "预判不冻结");
     r = s2a_launch_ctx_select("0100000000000005");
     CK(r && strstr(r, "ios_host_abi_mismatch"), "清单里这款的 host_abi ≠ 本宿主 S2A_HOST_ABI → 拒绝，原因带诊断码 ios_host_abi_mismatch");
     CK(s2a_launch_ctx_select_kind() == S2A_SELECT_NEEDS_UPDATE, "约定号对不上 → 类别 NEEDS_UPDATE（游戏库标「要在电脑上按新版更新」）");

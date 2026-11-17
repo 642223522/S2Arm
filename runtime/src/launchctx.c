@@ -272,6 +272,14 @@ const char *s2a_launch_ctx_error(void) { return s2a_launch_ctx_get() ? NULL : g_
 int s2a_launch_ctx_container(void) { pthread_once(&g_once, decide); return g_container; }
 const char *s2a_launch_ctx_bundle_dir(void) { pthread_once(&g_once, decide); return g_bundle; }
 
+int s2a_launch_ctx_game_needs_update(const char *gid) {
+    pthread_once(&g_once, decide);
+    if (!g_container) return 0;
+    s2a_launch_ctx c; char w[600], prog[S2A_LCTX_PATH], app[S2A_LCTX_PATH];
+    if (s2a_launch_ctx_resolve_game(&c, g_bundle, getenv("HOME"), gid, w, sizeof w) || join(app, g_bundle, "s2a_catalogue.json")) return 0;
+    return s2a_host_abi_check(s2a_program_catalogue_path(prog, sizeof prog, c.game_data) ? NULL : prog, app, gid, NULL, w, sizeof w) == 1;
+}
+
 static int g_sel_kind;   // 上一次 s2a_launch_ctx_select 被拒的类别（S2A_SELECT_*）：库界面按它给玩家说人话，原文只进日志
 int s2a_launch_ctx_select_kind(void) { return g_sel_kind; }
 const char *s2a_launch_ctx_select(const char *gid) {
