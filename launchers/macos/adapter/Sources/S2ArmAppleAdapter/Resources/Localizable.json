@@ -9300,10 +9300,6 @@
   "en": ".NET 10 SDK not found: {0}"
  },
  {
-  "source": "这份 S2Arm 没装完整：程序的两部分来自不同版本（多半是应用内更新中途失败、回滚没退干净）。请从发布页下载最新的安装包，覆盖安装一次（游戏库、存档、密钥都在别处，不受影响），再出包。",
-  "en": "This S2Arm isn't fully installed: two parts of the program are from different versions (usually an in-app update failed midway and didn't roll back cleanly). Download the latest installer from the release page and install over it (the library, saves and keys are stored elsewhere and won't be affected), then build again."
- },
- {
   "source": "【黄】原始程序没存下（以后升级要回原件）：{0}",
   "en": "【黄】The original program wasn't saved (future upgrades will need the original game files): {0}"
  },
@@ -10146,5 +10142,17 @@
  {
   "source": "先试这两步：①在 iPhone 上打开一次 S2Arm，等游戏库界面出来；②回电脑对这款游戏再点一次「装到 iPhone」，会接着已传的部分继续，不用从头来。还是写不进，就要删掉 iPhone 上的 S2Arm App 再重装：先在游戏菜单「存档管理」里导出存档，存到 S2Arm 文件夹以外（比如 iCloud 云盘）；再在 iPhone 桌面长按 S2Arm，删除 App；然后在电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」；装好后在「存档管理」里导回存档。电脑上的游戏和 S2Arm 都不用删。",
   "en": "Try these two steps first: 1) Open S2Arm on the iPhone once and wait for the game library to appear; 2) Back on your computer, click “Install on iPhone” for this game again. It picks up from what was already copied, so it won’t start over. If it still can’t write, delete the S2Arm app on your iPhone and install it again: export your saves from the game menu (Manage saves) to a place outside the S2Arm folder, such as iCloud Drive; on the iPhone Home Screen, touch and hold S2Arm and delete the app; in S2Arm on your computer, click Install on iPhone for this game again; once it’s installed, import your saves again in Manage saves. You don’t need to delete the games or S2Arm on your computer."
+ },
+ {
+  "source": "S2Arm 读取工具与引擎版本不符，这次照常使用；解包出错时请重新安装完整的 S2Arm。",
+  "en": "The S2Arm reader tool doesn't match the engine version. It will be used anyway this time; if unpacking fails, reinstall the complete S2Arm."
+ },
+ {
+  "source": "之前出包时这款的资源包核对没对上（包里有文件和原件不一致），这次失败可能与此有关；重新出包一次再试。",
+  "en": "When this game was last packaged, the resource pack check found a mismatch (some files in the pack differ from the source). This failure may be related; package it again and retry."
+ },
+ {
+  "source": "这份 S2Arm 没装完整：程序的两部分来自不同版本（多半是应用内更新中途失败、回滚没退干净）。这次照常出包；出包失败或游戏起不来时，请从发布页下载最新的安装包，覆盖安装一次（游戏库、存档、密钥都在别处，不受影响）。",
+  "en": "This S2Arm isn't fully installed: two parts of the program are from different versions (usually an in-app update failed midway and didn't roll back cleanly). Packaging continues anyway; if packaging fails or the game won't start, download the latest installer from the release page and install over it (your library, saves and keys are stored elsewhere and are not affected)."
  }
 ]

@@ -2580,7 +2580,7 @@ def deliver_identity(c, ph):
             cl.put(d / "identity.json", f"{IDENTITY_INCOMING}/identity.json.pc.tmp")
             ok, out = cl.mv(f"{IDENTITY_INCOMING}/identity.json.pc.tmp", f"{IDENTITY_INCOMING}/identity.json")
             if not ok:
-                raise OSError(f"identity.json 改名就位失败：{out[-200:]}")
+                raise OSError(f"identity.json 改名就位失败：{out[-200:]}")  # 非玩家句（下面的 except 只记日志，不上屏）
         rec = layout.load_device(c, ph.key)
         layout.save_device(c, ph.key, dict(rec, identity=dict(team=team, key_fp=fp, cert_sha1=sha1, at=time.time())))
         trace(c, f"私钥与证书已交给 App（证书 sha1 {sha1[:12]}）")  # 非玩家句

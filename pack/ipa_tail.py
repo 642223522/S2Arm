@@ -189,7 +189,8 @@ def assemble(a):
     want = sorted((n for n in os.listdir(hl) if n.endswith('.metallib')), key=lambda s: s.encode()) if os.path.isdir(hl) else []
     with zipfile.ZipFile(ipa) as z:
         got = sorted((n.rsplit('/', 1)[1] for n in z.namelist() if re.match(r'Payload/[^/]+\.app/gal_helpers/m3/[^/]+\.metallib$', n)), key=lambda s: s.encode())
-    if not want or want != got: raise Red(f'ipa 里 Metal 3 兼容辅助库与构建目录不符（构建 {len(want)} 个、包里 {len(got)} 个）')
+    if not want or want != got:   # 维护者 11-17：校验不过不再整个拒绝——只影响这款，黄字说清后照常出包
+        print(f'🟡 ipa 里 Metal 3 兼容辅助库与构建目录不符（构建 {len(want)} 个、包里 {len(got)} 个），照常继续；Metal 3 机型首次进新场景可能现编卡顿')
     if a.app_only: return ipa
     check_pack_inputs(w, g)
     srcs = os.path.join(pkg, 'srcs.txt')

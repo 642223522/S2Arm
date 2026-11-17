@@ -203,17 +203,25 @@ class ShipExtTest(unittest.TestCase):
             self.assertNotIn(no, got)
         self.assertFalse([x for x in got if x.startswith("programs/3/")])   # 序号 2 不在 → 3 不算（同运行时连续段规则）
 
-    def test_build_refuses_foreign_shell(self):
+    # 维护者 11-17：校验不过不再拒绝出包。期望手写：壳编号不配套 / 壳文件被改 → 黄字点名、照常组装出 App；清单读不了 → 照旧报红
+    def test_build_warns_on_foreign_shell(self):
         with tempfile.TemporaryDirectory() as d:
             r = self.run_build(d, self.shell(d, commit_ok=False))
-            self.assertEqual(r.returncode, 1); self.assertIn("不能用", r.stderr)
-            self.assertFalse((Path(d) / "out/S2Arm.app").exists())
+            self.assertEqual(r.returncode, 0, r.stderr); self.assertIn("🟡", r.stderr); self.assertIn("游戏包要壳", r.stderr)
+            self.assertTrue((Path(d) / "out/S2Arm.app").exists())
 
-    def test_build_refuses_tampered_shell(self):
+    def test_build_warns_on_tampered_shell(self):
         with tempfile.TemporaryDirectory() as d:
             s = self.shell(d); (s / "root/S2Arm").write_bytes(b"\xcf\xfa\xed\xfe" + bytes(59) + b"\x01")
             r = self.run_build(d, s)
+            self.assertIn("🟡", r.stderr); self.assertIn("被改：S2Arm", r.stderr); self.assertNotIn("不能用", r.stderr)
+
+    def test_build_refuses_unreadable_shell_manifest(self):
+        with tempfile.TemporaryDirectory() as d:
+            s = self.shell(d); (s / "manifest.json").write_text("{")
+            r = self.run_build(d, s)
             self.assertEqual(r.returncode, 1); self.assertIn("不能用", r.stderr)
+            self.assertFalse((Path(d) / "out/S2Arm.app").exists())
 
 
 def make_npdm(path, as_type, sysres, pid):
