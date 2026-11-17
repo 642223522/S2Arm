@@ -1060,6 +1060,104 @@ def wants_export(c):
     return c.r.get("mode") == "export"
 
 
+S2ARM_SUFFIX = ".s2arm"
+S2ARM_FORMAT = "s2arm"   # .s2arm 第一个条目 s2arm.json 的 format 字段（手机导入按它认文件）
+# 游戏库根的固定文件夹（11-17 体验梳理定，单独一个、不放进 0.5.x 的「S2Arm 自签导出」：那里几 GB 的整包 0.6.0 起该删，放一起玩家分不清）。
+#   只按第一次建的时候的界面语言选名字；库根已有其中一个就一直用它，换界面语言也不建第二个
+S2ARM_DIRS = {"zh": "S2Arm 游戏包", "en": "S2Arm Game Packs"}  # 非玩家句
+
+
+def s2arm_dir(c):
+    for name in S2ARM_DIRS.values():
+        if (c.library / name).is_dir():
+            return c.library / name
+    return c.library / S2ARM_DIRS[ui_lang(c)]
+
+
+def s2arm_name(c, gid):
+    """<游戏名>.s2arm（同 _img_name 的取名）；游戏库里有别款同名时带上 [游戏号尾 4 位]，免得两款互相覆盖"""
+    games = c.catalog()["games"]
+    name = next((g.get("name") for g in games if g["id"].upper() == gid.upper()), "") or ""
+    base = _BAD_NAME.sub(" ", name).strip().strip(".") or gid
+    clash = sum(1 for g in games if (_BAD_NAME.sub(" ", g.get("name") or "").strip().strip(".") or g["id"]).lower() == base.lower()) > 1
+    return (f"{base} [{gid[-4:]}]" if clash else base) + S2ARM_SUFFIX
+
+
+def _zstd_checked(data):
+    """一个 zstd 帧、带内容校验（手机解完按它判包坏没坏，11-17 与 iOS 导入侧对定）"""
+    try:
+        from compression import zstd   # Python 3.14
+        return zstd.compress(data, options={zstd.CompressionParameter.compression_level: 9, zstd.CompressionParameter.checksum_flag: 1,
+                                            zstd.CompressionParameter.nb_workers: os.cpu_count() or 1})
+    except ImportError:
+        import zstandard   # 随包 Python 3.12
+        return zstandard.ZstdCompressor(level=9, write_checksum=True, threads=-1).compress(data)
+
+
+def export_s2arm(c, gid):
+    """0.6.0 通用壳（开关后面）两件套导出里的小游戏包 .s2arm（《文件与程序管理体系》B 项、⑦ ①，11-17 维护者定）：
+    tar（只用 ustar、只有普通文件条目；路径放不进 ustar 就报错）整体压一个带内容校验的 zstd 帧；
+    第一个条目 s2arm.json（格式、程序号、名字版本、约定号、改写器指纹、程序 sha、资源包号、bytes = 其余条目内容字节合计、signer），
+    program/（同推送的程序包：dylib、Games/<号>/、catalogue.json，未签名，留给手机签），pack/（资源包目录里除 game.img 以外的派生件）。
+    资源本体 game.img 不拷：结果给出它在游戏库里的原位置（界面「显示资源文件」）。放游戏库根的固定文件夹（s2arm_dir），
+    不加锁不加权限，玩家删了下次导出重新生成；只换这一款自己的 .s2arm，同文件夹里别的东西不动。这一款的改写、出程序包都在这里前台按需做"""
+    import hashlib, io as _io, tarfile
+    import program_pack
+    import ipa as packer
+    from rewrite_refresh import refresh_ios
+    gid = gid.upper()
+    c.begin("准备这款的程序（按需更新）", 1, 3)
+    pack = ios_pack(c, gid)
+    with packer.program_locks(c, [gid]):
+        refresh_ios(c, [gid])
+        pkg = Path(program_pack.build(c, gid))
+        meta = json.loads((pkg / program_pack.META).read_text(encoding="utf-8"))
+        image = pkg / program_pack.image_name(gid)
+        cat = program_pack.catalogue(gid, meta, image, None)
+        c.begin("打包 .s2arm", 2, 3)
+        files = [("program/" + p.relative_to(pkg).as_posix(), p) for p in sorted(pkg.rglob("*"))
+                 if p.is_file() and p.name not in (program_pack.META, program_pack.KEY)]
+        derived = [("pack/" + p.relative_to(pack).as_posix(), p) for p in sorted(Path(pack).rglob("*"))
+                   if p.is_file() and p.relative_to(pack).as_posix() != "game.img"]
+        manifest = read(Path(pack) / "manifest.json", {})
+        cat_bytes = json.dumps(cat, ensure_ascii=False, indent=1).encode("utf-8")
+        total = len(cat_bytes) + sum(p.stat().st_size for _, p in files + derived)   # 解压后其余条目内容字节合计（手机导入前看空间、显示进度）
+        head = dict(format=S2ARM_FORMAT, schema=1, title_id=gid, name=cat["name"], display_version=cat["display_version"],
+                    host_abi=cat["host_abi"], chain=cat["chain"], rewriter_id=cat["rewriter_id"], image=cat["image"],
+                    image_sha256=cat["image_sha256"], source_sha256=cat["image_sha256"], pack=(manifest or {}).get("index_sha256", ""),
+                    bytes=total, signer=None)
+        buf = _io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as t:
+            def add(name, data=None, path=None):
+                info = tarfile.TarInfo(name)
+                info.mode, info.mtime = 0o644, 0
+                if path is not None:
+                    info.size = path.stat().st_size
+                    with open(path, "rb") as f:
+                        t.addfile(info, f)
+                else:
+                    info.size = len(data)
+                    t.addfile(info, _io.BytesIO(data))
+            try:
+                add("s2arm.json", json.dumps(head, ensure_ascii=False, indent=1).encode("utf-8"))
+                add("program/catalogue.json", cat_bytes)
+                for name, p in files + derived:
+                    add(name, path=p)
+            except ValueError as e:   # ustar 放不下的路径（name 100 + prefix 155）：不改用 pax / GNU 长名（手机只认 ustar）
+                raise Failure(f"{gid} 有文件路径太长，打不进 .s2arm：{e}", code="job_failed") from e  # 非玩家句
+    c.begin("写进自签导出文件夹", 3, 3)
+    data = _zstd_checked(buf.getvalue())
+    folder = s2arm_dir(c)
+    folder.mkdir(parents=True, exist_ok=True)   # 玩家删了文件夹也照样重建；不设特殊权限
+    out = folder / s2arm_name(c, gid)
+    tmp = folder / f".{out.name}.{os.getpid()}.partial"
+    tmp.write_bytes(data)
+    os.replace(tmp, out)
+    game_img = Path(pack) / "game.img"
+    return dict(gameId=gid, s2armPath=str(out), s2armBytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
+                resourcePath=str(game_img) if game_img.is_file() else "", exported=True)
+
+
 def _img_name(name, gid, used):
     """game.img 在导出文件夹里的名字：<游戏名>.img（玩家在「文件」App 里认得出）；名字不能做文件名 / 重名时带上游戏号。
     手机上按文件头认游戏（pack_apply.c s2a_img_scan 认 S2AIMG01 魔数与头里的游戏号），文件叫什么都行"""
@@ -2936,6 +3034,8 @@ def _install(c):
             raise Failure(f"这款用的是 {scheme['name']} 方案（独立 App），现在只能「装到 iPhone」，还不能导出自签包。", code="downstream_export_unsupported")
         return downstream.install_ios(c, next((g for g in c.catalog()["games"] if g["id"].upper() == gid.upper()), dict(id=gid)), scheme)
     ios_pack(c, gid)
+    if wants_export(c) and gid and __import__("program_pack").enabled(c):   # 0.6.0 通用壳：一款导出成小游戏包 .s2arm + 资源本体原位（两件套）
+        return export_s2arm(c, gid)
     if wants_export(c):   # 这次是「导出自签包」：不连手机、不签名，出到文件夹；推不推到手机由玩家在完成页选（exportPush）
         return export_phone(c, gid)
     c.begin("找签名账号与 iPhone", 1, 6)
