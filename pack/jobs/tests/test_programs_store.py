@@ -329,6 +329,26 @@ class PutDir(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr[-600:])
         self.assertEqual(r.stdout.strip(), "['new.txt']")
 
+    def test_after_iml_check_loaded_by_path(self):
+        # #1424（0.5.1 Mac 出包选了设备）：ipa._iml_device_hint 按路径加载 Engine/pack/iml_check.py，它原先把 Engine/pack 插到 sys.path 最前，
+        #   那里有 pack.py（模块）→ 之后 import pack 命中它，换目录报「'pack' is not a package」。两种先后都要过：
+        #   a 引擎根还不在 sys.path（_rename_dir 现加）；b 引擎根早已在 sys.path（library 等先插过），iml_check 后加载又插到它前面
+        res = self.t / "Resources"; jobs = res / "Jobs"
+        shutil.copytree(Path(programs.__file__).resolve().parent, jobs, ignore=shutil.ignore_patterns("tests", "__pycache__"))
+        (res / "Engine").symlink_to(self.c.engine, target_is_directory=True)
+        for case, pre in (("a", ""), ("b", "sys.path.insert(0, sys.argv[2]); ")):
+            with self.subTest(case=case):
+                shutil.rmtree(self.t / "kit", ignore_errors=True); (self.t / "kit.partial").mkdir(exist_ok=True); (self.t / "kit.partial" / "new.txt").write_text("新")
+                code = (pre + "import importlib.util; from pathlib import Path; from types import SimpleNamespace; import programs; "
+                        "e = Path(sys.argv[2]); s = importlib.util.spec_from_file_location('iml_check', e / 'pack' / 'iml_check.py'); "
+                        "m = importlib.util.module_from_spec(s); s.loader.exec_module(m); "
+                        "t = Path(sys.argv[1]); programs._put_dir(SimpleNamespace(engine=e), t / 'kit.partial', t / 'kit'); "
+                        "print(sorted(p.name for p in (t / 'kit').iterdir()))")
+                r = subprocess.run([sys.executable, "-I", "-c", f"import sys; sys.path.insert(0, {str(jobs)!r}); exec({code!r})", str(self.t), str(res / "Engine")],
+                                   capture_output=True, text=True, timeout=60)
+                self.assertEqual(r.returncode, 0, r.stderr[-600:])
+                self.assertEqual(r.stdout.strip(), "['new.txt']")
+
 
 if __name__ == "__main__":
     unittest.main()
