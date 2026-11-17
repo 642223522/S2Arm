@@ -471,6 +471,7 @@ unsigned s2a_pack_repair_tree(const char *dir) {
     if (dir && !lstat(dir, &st) && S_ISDIR(st.st_mode)) nftw(dir, repair_one, 32, FTW_PHYS);
     return g_repair_n;
 }
+static void img_shed(const char *root, const char *logp);   // 截掉导入本体里重复的派生件（定义在着色器更新包那段之后）
 int s2a_pack_apply(const char *docs) {
     char root[2048], inc[2100], logp[2100]; s2a_pack_root(root, sizeof root, docs); snprintf(inc, sizeof inc, "%s/.incoming", root); snprintf(logp, sizeof logp, "%s/unpack.log", docs);
     if (pack_in_bundle(root, "解开资源包")) return -12;   // 同「目录写不进」的码
@@ -508,6 +509,7 @@ int s2a_pack_apply(const char *docs) {
         else { unlink(t); ntar++; if (s2a_pack_apply_progress) s2a_pack_apply_progress(i + 1, nn); PHASE(1, (uint64_t)(i + 1), (uint64_t)nn); log_line(logp, "进度：解开 %s（%u/%d）%u 个文件 %llu MB（%.1f 秒）", names[i], i + 1, nn, nf - f0, (unsigned long long)((nb - b0) >> 20), (now_ns() - t1) / 1e9); }
     }
     if (!rc) { int r = img_extract(root, &nf, &nb); if (r) { rc = r; from_img = 1; snprintf(what, sizeof what, "从 game.img 解小文件（%s）", r == -11 ? "格式号不认识，请更新 S2Arm" : r == -10 ? "IMG 坏或没传完" : "写失败"); } }
+    if (!rc) img_shed(root, logp);   // 玩家导入的完整 IMG：派生件解出来以后，截掉本体尾部那份重复的（0.6.0）
     unsigned partial = 0; char pex[2200] = "";
     if (!rc) { char ex[2200]; unsigned core = 0, miss = index_check_core(root, ex, sizeof ex, 1, &core);
         if (miss && !core) { partial = miss; snprintf(pex, sizeof pex, "%s", ex); }   // v0.3.1 缺件照玩：只缺非核心文件 → 记部分可玩（.partial），不记已应用，执行器下次照样补推
@@ -777,6 +779,67 @@ static int64_t upd_strip_base(const char *base) {
     rc = (int64_t)ntotal;
 out:
     if (e) upd_free(e, n); close(fd); return rc;
+}
+// 玩家导入的完整 IMG（导出格式：派生件追加在本体尾部、进了目录表，pack/img.py export）解完小文件后，截掉本体里那份重复的派生件（0.6.0，体系文档 B / C：
+//   着色器库原先在手机上占两份——本体尾部一份、解出来的文件一份）：
+//   ① 派生件（shaders/、romfs_overlay/、romfs.s2aidx、game.imgmap）补进 index.tsv（「路径\t字节\t-」）：它们只在目录表里、不在 index.tsv，摘掉目录表条目后清旧文件会删、核对会漏；
+//   ② upd_strip_base 摘目录表条目、截短本体（断电安全，见那里）；③ index.tsv 里 game.img 那行的长度、game.imgmap 头里记的整个文件长改成截短后的（服务层 OpenImg 核它，不对就走慢路径）。
+//   只对玩家导入的（came_from_import）做；每步断了下次进来接着对齐（②做过了目录表里就没有派生件，①跳过，③照样对齐）。电脑推的本体目录表里本来就没有派生件
+static int index_fix(const char *root, const upd_ent *add, size_t nadd, uint64_t img_len) {   // 改写 index.tsv：game.img 那行长度换成 img_len（0 = 不动），补上 add 里不在表里的行
+    char ip[2400], tp[2500], line[4600]; snprintf(ip, sizeof ip, "%s/index.tsv", root); snprintf(tp, sizeof tp, "%s.shed", ip);
+    FILE *in = fopen(ip, "r"); if (!in) return -1;
+    FILE *o = fopen(tp, "w"); if (!o) { fclose(in); return -1; }
+    char *have = calloc(nadd ? nadd : 1, 1);
+    while (fgets(line, sizeof line, in)) {
+        char *tab = strchr(line, '\t'); size_t pl = tab ? (size_t)(tab - line) : strcspn(line, "\n");
+        for (size_t i = 0; i < nadd; i++) if (strlen(add[i].rel) == pl && !strncmp(add[i].rel, line, pl)) have[i] = 1;
+        if (img_len && pl == 8 && !strncmp(line, "game.img", 8) && tab) { char *rest = strchr(tab + 1, '\t'); fprintf(o, "game.img\t%llu%s", (unsigned long long)img_len, rest ? rest : "\n"); }
+        else fputs(line, o);
+    }
+    for (size_t i = 0; i < nadd; i++) if (!have[i]) fprintf(o, "%s\t%llu\t-\n", add[i].rel, (unsigned long long)add[i].len);
+    free(have); fclose(in);
+    if (fclose(o) || rename(tp, ip)) { unlink(tp); return -1; }
+    return 0;
+}
+static uint64_t index_img_len(const char *root) {   // index.tsv 里 game.img 那行记的长度；没有 → 0
+    char ip[2400], line[4600]; snprintf(ip, sizeof ip, "%s/index.tsv", root); FILE *f = fopen(ip, "r"); uint64_t v = 0; if (!f) return 0;
+    while (fgets(line, sizeof line, f)) if (!strncmp(line, "game.img\t", 9)) { v = strtoull(line + 9, NULL, 10); break; }
+    fclose(f); return v;
+}
+static void img_shed(const char *root, const char *logp) {
+    if (!came_from_import(root)) return;
+    char ip[2400]; snprintf(ip, sizeof ip, "%s/game.img", root);
+    int fd = open(ip, O_RDONLY); if (fd < 0) return;
+    uint8_t h[136]; upd_ent *e = NULL; size_t n = 0; uint64_t to, tl, total0;
+    int ok = pread(fd, h, sizeof h, 0) == (ssize_t)sizeof h && !memcmp(h, "S2AIMG01", 8);
+    if (ok) { memcpy(&to, h + 112, 8); memcpy(&tl, h + 120, 8); memcpy(&total0, h + 128, 8); ok = !upd_read_toc(fd, to, tl, &e, &n); }
+    close(fd); if (!ok) return;
+    size_t k = 0; for (size_t i = 0; i < n; i++) { if (upd_is_extra(e[i].rel)) e[k++] = e[i]; else free(e[i].rel); }
+    n = k;
+    for (size_t i = 0; i < n; i++) { char fp[2600]; struct stat st; snprintf(fp, sizeof fp, "%s/%s", root, e[i].rel);   // 派生件得已经解出来、长度对，才能摘本体里那份
+        if (stat(fp, &st) || !S_ISREG(st.st_mode) || (uint64_t)st.st_size != e[i].len) { upd_free(e, n); return; } }
+    if (n) {
+        if (index_fix(root, e, n, 0)) { log_line(logp, "【黄】截本体重复的派生件：补 index.tsv 失败（%s），这次不截", strerror(errno)); upd_free(e, n); return; }
+        int64_t nt = upd_strip_base(ip);
+        if (nt < 0) { log_line(logp, "【黄】截本体重复的派生件：改本体失败（%s），照原样留着", strerror(errno)); upd_free(e, n); return; }
+        log_line(logp, "进度：截掉导入本体里重复的派生件 %zu 个，本体 %llu MB → %llu MB", n, (unsigned long long)(total0 >> 20), (unsigned long long)((uint64_t)nt >> 20));
+    }
+    upd_free(e, n);
+    struct stat st; uint64_t total;
+    fd = open(ip, O_RDWR); if (fd < 0) return;
+    if (fstat(fd, &st) || pread(fd, h, sizeof h, 0) != (ssize_t)sizeof h) { close(fd); return; }
+    memcpy(&total, h + 128, 8);
+    if (total < (uint64_t)st.st_size && ftruncate(fd, (off_t)total) == 0) st.st_size = (off_t)total;   // 改头后、截短前断了：按头截完
+    close(fd);
+    if ((uint64_t)st.st_size != total) return;
+    if (index_img_len(root) != total) index_fix(root, NULL, 0, total);
+    char mp[2400]; snprintf(mp, sizeof mp, "%s/game.imgmap", root);
+    int mfd = open(mp, O_RDWR); if (mfd < 0) return;
+    uint8_t mh[20]; uint64_t mt;
+    if (pread(mfd, mh, sizeof mh, 0) == (ssize_t)sizeof mh && !memcmp(mh, "S2ARIM01", 8) && (memcpy(&mt, mh + 8, 8), mt != total)) {
+        if (pwrite(mfd, &total, 8, 8) != 8 || fsync(mfd)) log_line(logp, "【黄】截本体重复的派生件：改 game.imgmap 的整长失败（%s），起局走慢路径", strerror(errno));
+    }
+    close(mfd);
 }
 // 作废旧清单但留退路（审计 P1-169）：manifest.json / .applied 先改名成 *.s2a-prev，换本体 / 写派生件这一步失败就改回原名（本体没动，这款照旧在库里能玩）；
 //   清单写成了才删退路。原先先删清单：改名进不去或派生件写失败，清单已经没了、库里这款消失，源 IMG 还在导入文件夹

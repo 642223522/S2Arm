@@ -645,6 +645,33 @@ int main(void) {
         snprintf(c, sizeof c, "grep -q 'shaders/a.metallib' '%s/games/0100ABCD00000007/资源包/index.tsv'", D5);
         CHECK(sh(c) == 0, "⑭b 机上已有的着色器库行保留在 index.tsv");
         { const char *s2a_img_scan_noshaders(void); CHECK(!strcmp(s2a_img_scan_noshaders(), "game.img"), "⑭b 不带着色器的文件名给界面 = game.img（实际「%s」）", s2a_img_scan_noshaders()); } }
+      // ⑭i 0.6.0 截掉导入本体里重复的派生件：导出格式的 .img（pack/img.py export：电脑资源包的 game.img + 尾部追加 shaders/、game.imgmap 进目录表）导入并解开后，
+      //   派生件解成文件、本体尾部那份截掉。期望手写：解开成功；本体比导入时小；本体目录表里没有 shaders/ 与 game.imgmap、其余条目与原资源包 game.img 的完全一样；
+      //   头里整长 = 文件长；index.tsv 有 shaders/a.metallib 行、game.img 那行长度 = 文件长；解出的 game.imgmap 头里记的整长 = 本体文件长；再应用一次仍成功、本体不变
+      { char Di[1300]; snprintf(Di, sizeof Di, "%s/img_docsi", T);
+        snprintf(c, sizeof c, "set -e; P='%s/pk'; mkdir -p \"$P/shaders\" '%s/放这里导入'; printf 'metallib-bytes-xyz' > \"$P/shaders/a.metallib\""
+                 " && python3 '%s/pack/img.py' build - '%s/src/others.tsv' \"$P/game.img\" --gid 0100abcd0000000c --pack-id imgc01 > /dev/null"
+                 " && python3 -c \"import struct,sys,os;p=sys.argv[1];t=os.path.getsize(p+'/game.img');open(p+'/game.imgmap','wb').write(b'S2ARIM01'+struct.pack('<qi',t,0));"
+                 "open(p+'/index.tsv','w').write('game.img\\t%%d\\timgc01\\nshaders/a.metallib\\t18\\t-\\n' %% t)\" \"$P\""
+                 " && python3 -c \"import sys;sys.path.insert(0,sys.argv[1]+'/pack');import img;img.export(sys.argv[2],sys.argv[3])\" '%s' \"$P\" '%s/放这里导入/导出.img'"
+                 " && python3 '%s/pack/img.py' ls \"$P/game.img\" | sort > '%s/orig.ls'", Di, Di, R, D, R, Di, R, Di);
+        CHECK(sh(c) == 0, "⑭i 造导出格式的 .img（本体 + shaders/a.metallib + game.imgmap）");
+        struct stat ei; char ef[1500]; snprintf(ef, sizeof ef, "%s/放这里导入/导出.img", Di); long long big = stat(ef, &ei) ? -1 : (long long)ei.st_size;
+        CHECK(s2a_img_scan(Di) == 1, "⑭i 认领");
+        char gi[1500]; snprintf(gi, sizeof gi, "%s/games/0100ABCD0000000C", Di);
+        CHECK(s2a_pack_apply(gi) == 0, "⑭i 解开（%s）", s2a_pack_apply_failure());
+        snprintf(c, sizeof c, "set -e; g='%s/资源包'; s=$(stat -f %%z \"$g/game.img\"); test \"$s\" -lt %lld"
+                 " && python3 '%s/pack/img.py' ls \"$g/game.img\" | sort | cmp -s - '%s/orig.ls'"
+                 " && python3 -c \"import sys,struct;b=open(sys.argv[1],'rb').read();sys.exit(0 if struct.unpack_from('<Q',b,128)[0]==len(b) else 1)\" \"$g/game.img\""
+                 " && grep -q \"^game.img\t$s\t\" \"$g/index.tsv\" && grep -q '^shaders/a.metallib\t18\t-' \"$g/index.tsv\""
+                 " && test \"$(cat \"$g/shaders/a.metallib\")\" = metallib-bytes-xyz"
+                 " && python3 -c \"import sys,struct;sys.exit(0 if struct.unpack_from('<q',open(sys.argv[1],'rb').read(),8)[0]==int(sys.argv[2]) else 1)\" \"$g/game.imgmap\" \"$s\"",
+                 gi, big, R, Di);
+        CHECK(sh(c) == 0, "⑭i 本体变小、目录表只剩原条目、头里整长 = 文件长、index.tsv 记派生件且 game.img 长度对、着色器内容对、偏移表整长 = 本体长");
+        snprintf(c, sizeof c, "shasum '%s/资源包/game.img' > '%s/after1.sha'", gi, Di); sh(c);
+        CHECK(s2a_pack_apply(gi) == 0, "⑭i 再应用一次仍成功");
+        snprintf(c, sizeof c, "shasum '%s/资源包/game.img' | cmp -s - '%s/after1.sha'", gi, Di);
+        CHECK(sh(c) == 0, "⑭i 再应用一次本体不变"); }
       // 格式号 9（更新版 S2Arm 做的；2 是着色器更新包，见 ⑭c）：不认、原样留着，给码 ios_install_img_format
       char D4[1300], f4[1400]; snprintf(D4, sizeof D4, "%s/img_docs4", T); mkdir(D4, 0755); snprintf(f4, sizeof f4, "%s/Import Here", D4); mkdir(f4, 0755);
       snprintf(f4, sizeof f4, "%s/Import Here/新格式.img", D4);   // 英文界面建的导入文件夹名也认
