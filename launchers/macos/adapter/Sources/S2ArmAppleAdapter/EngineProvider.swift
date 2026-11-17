@@ -18,6 +18,8 @@ public enum EngineTarget: String, CaseIterable {
     case mac = "macos-arm64"
     /// iPhone / iPad 安装包（IPA + 资源包）。
     case iPhone = "ios-arm64"
+    /// Apple TV（tvOS）安装包：同 iPhone 一样出容器件 + 资源包（作业层 ipa 作业带 platform = "tvos"）。
+    case appleTV = "tvos-arm64"
 }
 
 /// 引擎能力（设计稿：targets、Switch 2、120 fps、render scale、cheats、cloud saves、runtime shaders）。

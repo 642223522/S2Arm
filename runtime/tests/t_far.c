@@ -25,8 +25,9 @@ int main(void) {
     // 影子区：布局给的堆区（窗口里的不可访问保留，这里自己占 64 MiB，没有堆）；远端：只取地址、不预先映射，s2a_far_set 自己把空洞占成不可访问
     const uint64_t SH = 64 * MB; uint8_t *sraw = mmap(NULL, SH + 2 * MB, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
     uint8_t *shadow = (uint8_t *)(((uint64_t)sraw + 2 * MB - 1) & ~(2 * MB - 1));   // 同真实布局：堆区起止按 2 MiB 对齐
-    uint8_t *raw = mmap(NULL, SPAN + 2 * MB, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0); munmap(raw, SPAN + 2 * MB);
-    uint64_t G = ((uint64_t)raw + 2 * MB - 1) & ~(2 * MB - 1);   // 远端起点按 2 MiB 对齐（同布局：别名区伸出窗口处在 GiB 边界上）
+    uint8_t *raw = mmap(NULL, SPAN + 4 * MB, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    uint64_t G = ((uint64_t)raw + 0x4000 + 2 * MB - 1) & ~(2 * MB - 1);   // 远端起点按 2 MiB 对齐（同布局：别名区伸出窗口处在 GiB 边界上）
+    munmap((void *)G, SPAN);   // 只把远端那段放出去（s2a_far_set 自己占）；G 下方那页仍是本单测的保留，跨窗口末尾用例拿它当窗口末页
     s2a_far_set(G, G + SPAN, (uint64_t)shadow, (uint64_t)shadow + SH);
     typedef struct { uint64_t lo; int64_t *dir; } far_desc_t;   // 同 far.c s2a_far_desc 布局（C# Native.FarDesc 照它声明）
     const far_desc_t *fd = s2a_far_desc_get();
@@ -52,6 +53,22 @@ int main(void) {
     { memset(h0 + 0x80, 0xFF, 64); __asm__ volatile("dc zva, %0" :: "r"(G + 0x80) : "memory");
       uint64_t z = 0; for (int i = 0; i < 64; i++) z |= h0[0x80 + i]; EQ("DC ZVA 清影子 64 字节", 0, z); }
     __asm__ volatile("dc civac, %0" :: "r"(G + 0x100) : "memory"); EQ("DC CIVAC 跳过不崩", 0, g_refused);
+    {   // 11-14 D-52P7：跨窗口末尾的访存（前半在窗口最后一页、后半在远端首页影子）：窗口里游戏地址 = 宿主地址，与远端首页影子并排进槽代执行。
+        //   期望从两边各写了什么直接推：窗口页末 4 字节 11 22 33 44、影子首 4 字节 55 66 77 88 → 8 字节读 = 0x8877665544332211；
+        //   写 8 字节 0xA1..A8 → 窗口页末 4 字节 A1 A2 A3 A4、影子首 4 字节 A5 A6 A7 A8。反证：去掉 far.c 窗口末页那行，两项都被拒绝（走崩溃老路）
+        uint8_t *W = (uint8_t *)(G - 0x4000);   // 本单测自己保留的那页（raw 里 G 下方）
+        if (mprotect(W, 0x4000, PROT_READ | PROT_WRITE)) { bad++; printf("✗ 窗口末页改可读写失败\n"); }
+        else {
+            memcpy(W + 0x3FFC, "\x11\x22\x33\x44", 4); memcpy(h0, "\x55\x66\x77\x88", 4);
+            uint64_t v = 0, zero = 0; g_refused = 0;
+            if (!sigsetjmp(g_jb, 1)) __asm__ volatile("ldr %0, [%1, %2]" : "=r"(v) : "r"(G - 4), "r"(zero) : "memory");
+            EQ("跨窗口末尾读 8 字节（寄存器偏移 LDR）：不拒绝", 0, g_refused); EQ("跨窗口末尾读 8 字节：前半窗口页、后半远端影子", 0x8877665544332211ull, v);
+            uint64_t x = 0xA8A7A6A5A4A3A2A1ull; g_refused = 0;
+            if (!sigsetjmp(g_jb, 1)) __asm__ volatile("str %0, [%1, %2]" :: "r"(x), "r"(G - 4), "r"(zero) : "memory");
+            EQ("跨窗口末尾写 8 字节：不拒绝", 0, g_refused); EQ("跨窗口末尾写：窗口页末 4 字节", 0xA4A3A2A1u, *(uint32_t *)(W + 0x3FFC)); EQ("跨窗口末尾写：影子首 4 字节", 0xA8A7A6A5u, *(uint32_t *)h0);
+            mprotect(W, 0x4000, PROT_NONE);
+        }
+    }
     g_refused = 0; if (!sigsetjmp(g_jb, 1)) { (void)*(volatile uint64_t *)(G + 4 * MB); }
     EQ("碰没映射的远端地址：拒绝代执行（走崩溃老路）", 1, g_refused);
     { EQ("给页 [G+2M−16K, +16K)：与 [G+2M, …) 相邻", 0, s2a_far_map(G + 2 * MB - 0x4000, 0x4000));   // 第一块已分，只放开影子页
@@ -203,6 +220,22 @@ int main(void) {
         EQ("线性：反着先映射高的那块，再映射低的那块也连续", 0, s2a_far_map(A + 6 * MB, 2 * MB) | s2a_far_map(A + 4 * MB, 2 * MB));
         EQ("线性：反序两块连续", 1, s2a_far_g2h(A + 6 * MB) == s2a_far_g2h(A + 4 * MB) + 2 * MB);
         EQ("线性退休", 0, s2a_far_session_reset()); }
+    {   // #442 逐秒账：远端开着，这一秒碰了远端 → 打一行「远端每秒 … 缺页 N、代执行 N」；没碰的秒不出行。期望手写：先静 1.2 秒把前面用例的缺页结掉，
+        //   再碰 5 次远端（5 次读，各缺页一次），等 2.2 秒；截到的日志里恰有一行，缺页 5、代执行 5
+        setenv("S2A_FAR_LINEAR", "1", 1); s2a_far_set(G, G + SPAN, (uint64_t)shadow, (uint64_t)shadow + SH);
+        EQ("逐秒账：给页", 0, s2a_far_map(G, 0x4000));
+        usleep(1200000);
+        char tp[] = "/tmp/t_far_tick.XXXXXX"; int tf = mkstemp(tp), save = dup(g_s2a_logfd);
+        dup2(tf, g_s2a_logfd);
+        for (int i = 0; i < 5; i++) (void)*(volatile uint8_t *)(uintptr_t)(G + 0x100 + (uint64_t)i);
+        usleep(2200000);
+        dup2(save, g_s2a_logfd); close(save);
+        char buf[4096] = {0}; lseek(tf, 0, SEEK_SET); ssize_t rn = read(tf, buf, sizeof buf - 1); close(tf); unlink(tp); (void)rn;
+        int lines = 0; for (const char *q = buf; (q = strstr(q, "远端每秒")); q++) lines++;
+        EQ("逐秒账：恰一行", 1, lines);
+        EQ("逐秒账：缺页 5、代执行 5", 1, strstr(buf, "缺页 5、代执行 5、") != NULL);
+        if (lines != 1 || !strstr(buf, "缺页 5、代执行 5、")) printf("  截到：%s\n", buf);
+        EQ("逐秒账退休", 0, s2a_far_session_reset()); }
     printf("%s t_far：%d / %d 项通过\n", bad ? "✗" : "✓", cnt - bad, cnt);
     return bad != 0;
 }

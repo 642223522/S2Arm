@@ -95,6 +95,20 @@ class PlanRules(Base):
         self.assertEqual(self.go(self.on_phone("a"))[:2], (1, 1)); self.assertEqual(self.dev.lists, [["b"]])
         self.assertTrue(any("机上实况抽查 1 个文件，与已应用索引一致" in l for l in self.log))
 
+    def test_core_file_missing_on_phone_is_repushed(self):
+        # #1059 D-JAT7：已应用索引记着 exefs/main.npdm、机上其实没有；别的小文件都在且抽查都对。期望（手写）：抽查必核 exefs/ 与 ctl/control.nacp，
+        #   main.npdm 对不上 → 按机上清单核账，只补推 main.npdm（a、b 在且大小对，不重推）
+        # 内容刻意挑过：6 个小文件 sha 都以 0–3 开头，main.npdm 的 sha 以 f 开头——原先「按 sha 排序取前 5 个」一定轮不到 main.npdm
+        extra = {f"x{i}": b"X" + bytes([0, n]) for i, n in enumerate((2, 7, 9, 10, 13, 15))}
+        self.data.update(extra); self.data["exefs/main.npdm"] = b"NPDM\x02"
+        assert all(sha(v) < "4" for v in extra.values()) and sha(self.data["exefs/main.npdm"]).startswith("f")
+        (self.pk / "exefs").mkdir()
+        for k, v in self.data.items(): (self.pk / k).write_bytes(v)
+        (self.pk / "index.tsv").write_text("".join(self.row(k) for k in self.data))
+        f = self.on_phone(*self.data); del f[f"{RP}/exefs/main.npdm"]
+        self.go(f, listing=True)
+        self.assertEqual(self.dev.lists, [["exefs/main.npdm"]])
+
     def test_old_app_falls_back_to_index_tsv(self):   # 老 App 没有 index.applied.tsv → 认 index.tsv
         self.go(self.on_phone("a", applied=False)); self.assertEqual(self.dev.lists, [["b"]])
 
@@ -645,6 +659,7 @@ class GameImgResume(Base):
     """v0.3.0 单一 IMG（game.img）断点续传：机上开头一页与本地相同且资源包号不空 → 从机上长度按 16 KB 向下取整处接着写；否则整份重写"""
     def setUp(self):
         super().setUp()
+        z = mock.patch.dict(os.environ, {"S2A_PUSH_ZSTD": "0"}); z.start(); self.addCleanup(z.stop)   # 本组核直写 / 续传原样路；压缩推见 GameImgZstd
         self.local = img()
         self.data = {"game.img": self.local, "b": b"BB"}
         for k, v in self.data.items(): (self.pk / k).write_bytes(v)
@@ -1012,6 +1027,115 @@ print(op + " 8 字节 → " + sys.argv[3])
         push.send(dev, self.pk, self.w, progress=lambda *a: calls.append(a))
         self.assertEqual(calls, [(0, 100, 0, 1), (40, 100, 0, 1), (100, 100, 1, 1)])
         self.assertIsNone(dev.dp.progress)
+
+
+class GameImgZstd(Base):
+    """v0.5.0 压缩传输：game.img 按块（单测把块改成 4 页 = 64 KB）各压成一个 zstd 帧推进 .incoming，机上旧镜像截空；按款省不到 15% 原样直写。
+    期望按块切分手算，块内容用标准库 zstd 独立解开核对，不用被测实现"""
+    Z = 4 * P
+
+    def setUp(self):
+        super().setUp()
+        if push.zstd_compressor() is None: self.skipTest("本机 Python 没有 zstd 模块（compression.zstd / zstandard）")
+        m = mock.patch.object(push, "ZCHUNK", self.Z); m.start(); self.addCleanup(m.stop)
+        e = mock.patch.dict(os.environ); e.start(); self.addCleanup(e.stop); os.environ.pop("S2A_PUSH_ZSTD", None)
+        self.set_img(img(body=b"D"))   # 1 页头 + 3 页 + 100 字节 = 4 页 + 100 字节 → 2 块（64 KB + 100 字节）
+
+    def set_img(self, b):
+        self.local = b; self.data = {"game.img": b, "b": b"BB"}
+        for k, v in self.data.items(): (self.pk / k).write_bytes(v)
+        (self.pk / "index.tsv").write_text("".join(self.row(k) for k in self.data))
+        (self.pk / "manifest.json").write_text('{"version": 3, "format": "img", "imgFile": "game.img", "index_sha256": "x"}')
+
+    def device(self, files=None):
+        dev = Fake(files or {}); dev.big, dev.rms = [], []
+        def put_big(src, rel): dev.big.append(rel); dev.files[rel] = Path(src).read_bytes()
+        def head(rel, n):
+            v = dev.files.get(rel); return (-1, b"") if v is None else (len(v), v[:n])
+        def rm(rel): dev.rms.append(rel); dev.files.pop(rel, None); return True, ""
+        dev.put_big, dev.head, dev.rm = put_big, head, rm
+        return dev
+
+    def push_it(self, dev, **kw):
+        self.dev = dev
+        push.plan(dev, self.pk, self.w, full=True, say=self.log.append); return push.send(dev, self.pk, self.w, say=self.log.append, **kw)
+
+    def chunks(self):
+        s16 = sha(self.local)[:16]
+        return [f"{INC}/game.img.{s16}.{k:04d}.zst" for k in range(2)]
+
+    def test_compressible_pushes_chunks_that_decode_to_image(self):
+        try: from compression.zstd import decompress
+        except ImportError: from zstandard import decompress
+        dev = self.device({f"{RP}/game.img": b"old image bytes"}); self.push_it(dev)
+        self.assertEqual(dev.big, self.chunks())
+        self.assertEqual(dev.files[f"{RP}/game.img"], b"")   # 机上旧镜像截空（App 按块重写）
+        parts = [decompress(dev.files[c]) for c in self.chunks()]
+        self.assertEqual([len(x) for x in parts], [self.Z, 100])
+        self.assertEqual(b"".join(parts), self.local)
+        self.assertTrue(all(dev.files[c][:4] == b"\x28\xb5\x2f\xfd" for c in self.chunks()))   # 每块一个独立 zstd 帧（帧魔数）
+        tr = json.loads(dev.files[f"{RP}/.transfer"])
+        self.assertEqual([f[0] for f in tr["files"]][:2], [c[len(RP) + 1:] for c in self.chunks()])
+        self.assertEqual(tr["total"], sum(f[1] for f in tr["files"]))
+        self.assertIn(f"game.img\t{sha(self.local)}", dev.files[f"{RP}/.pushed"].decode())
+
+    def test_incompressible_goes_direct(self):
+        self.set_img(os.urandom(4 * P + 100))   # 随机字节压不动
+        dev = self.device(); self.push_it(dev)
+        self.assertEqual(dev.big, [f"{RP}/game.img"]); self.assertEqual(dev.files[f"{RP}/game.img"], self.local)
+        self.assertFalse([k for k in dev.files if k.endswith(".zst")])
+        self.assertTrue(any("省不到 15%" in l for l in self.log), self.log)
+
+    def test_opt_out_env_goes_direct(self):
+        os.environ["S2A_PUSH_ZSTD"] = "0"
+        dev = self.device(); self.push_it(dev)
+        self.assertEqual(dev.big, [f"{RP}/game.img"])
+
+    def test_threshold_is_15_percent(self):   # 假压缩器按比例出字节：省 16% → 压；省 14% → 不压
+        row = ["game.img", str(len(self.local)), sha(self.local)]
+        def fake(r): return lambda b: b"z" * round(len(b) * r)
+        # 两块 65536 + 100 字节：0.84 → 55050 + 84 = 55134，省 1 − 55134/65636 = 16.0%；0.86 → 56361 + 86 = 56447，省 14.0%
+        self.assertEqual(push.zstd_plan(self.pk, row, say=self.log.append, comp=fake(0.84)), [55050, 84])
+        (self.pk.parent / "pack.zstd.json").unlink()
+        self.assertIsNone(push.zstd_plan(self.pk, row, say=self.log.append, comp=fake(0.86)))
+
+    def test_measured_once_per_image(self):   # 同一份 game.img 只量一次（记在资源包目录旁）；镜像变了重量
+        row = ["game.img", str(len(self.local)), sha(self.local)]; calls = []
+        def comp(b): calls.append(len(b)); return b"z" * 10
+        push.zstd_plan(self.pk, row, say=self.log.append, comp=comp); push.zstd_plan(self.pk, row, say=self.log.append, comp=comp)
+        self.assertEqual(calls, [self.Z, 100])
+        self.assertEqual(json.loads((self.pk.parent / "pack.zstd.json").read_text())["z"], [10, 10])
+        self.assertFalse((self.pk / "pack.zstd.json").exists())   # 不进资源包目录
+        push.zstd_plan(self.pk, ["game.img", row[1], "0" * 64], say=self.log.append, comp=comp)
+        self.assertEqual(len(calls), 4)
+
+    def test_resume_skips_complete_chunks_and_drops_stale(self):
+        first = self.device(); self.push_it(first)
+        c0, c1 = self.chunks(); stale = f"{INC}/game.img.{'e' * 16}.0000.zst"
+        dev = self.device({c0: first.files[c0], c1: first.files[c1][:-1], stale: b"old"})   # 第 0 块完整、第 1 块短一个字节、另一个版本的块
+        self.log.clear(); self.push_it(dev)
+        self.assertEqual(dev.big, [c1]); self.assertEqual(dev.rms, [stale]); self.assertNotIn(stale, dev.files)
+        self.assertEqual(dev.files[c1], first.files[c1])
+        self.assertTrue(any("机上已有 1/2 个压缩块" in l for l in self.log), self.log)
+
+    def test_progress_counts_raw_bytes(self):
+        calls = []; dev = self.device(); self.push_it(dev, progress=lambda *a: calls.append(a))
+        self.assertEqual(calls[-1][:2], (len(self.local) + 2, len(self.local) + 2))   # 计数口径仍是原始字节（game.img + b 两字节）
+
+    def test_chunk_failure_says_resume(self):
+        dev = self.device()
+        def broken(src, rel): raise push.Fail("找不到设备 x")
+        dev.put_big = broken
+        with self.assertRaises(push.Fail) as e: self.push_it(dev)
+        self.assertIn("game.img 没传完，重新装到 iPhone 会接着已传的部分续传", str(e.exception))
+        self.assertFalse(list(self.w.glob("zchunk_*")))   # 本机临时压缩块不留
+
+
+class ZstdContract(unittest.TestCase):
+    def test_chunk_size_and_name_match_phone(self):   # 块大小与块名是两端契约：手机端 runtime/src/pack_apply.c S2A_ZCHUNK（1 GiB）、块名定长 34 字符
+        src = (Path(__file__).resolve().parents[1] / "runtime/src/pack_apply.c").read_text(encoding="utf-8")
+        self.assertIn("#define S2A_ZCHUNK (1ULL << 30)", src); self.assertEqual(push.ZCHUNK, 1 << 30)
+        self.assertEqual(len(push.zname("0123456789abcdef" * 4, 7)), 34); self.assertEqual(push.zname("0123456789abcdef" * 4, 7), "game.img.0123456789abcdef.0007.zst")
 
 
 class SendFail(Base):

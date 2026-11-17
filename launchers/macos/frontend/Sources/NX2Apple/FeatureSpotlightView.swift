@@ -95,8 +95,12 @@ struct FeatureSpotlightView: View {
                     badges.padding(.horizontal, 24).padding(.top, 18)
                 }
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(text(page["kicker"])).font(.manrope(12.5, .bold)).tracking(0.8).foregroundStyle(Self.gold)
-                    Text(text(page["title"])).font(.manrope(26, .heavy)).padding(.top, 6)
+                    LauncherHeadingLine {
+                        Text(text(page["title"])).font(.manrope(26, .heavy))
+                    } subtitle: {
+                        Text(text(page["kicker"])).font(.manrope(12.5, .bold)).tracking(0.8).foregroundStyle(Self.gold)
+                            .help(Text(text(page["kicker"])))
+                    }
                     HStack(alignment: .top, spacing: 14) {
                         cell("feature.what", page["what"]); cell("feature.how", page["how"]); cell("feature.where", page["where"])
                     }
@@ -164,19 +168,18 @@ struct FeatureSpotlightView: View {
             }
             if let link = (popup["url"] as? String).flatMap(URL.init(string:)) {
                 Button { NSWorkspace.shared.open(link) } label: { Text(t("feature.more")).font(.manrope(13)).underline() }
-                    .buttonStyle(.plain).foregroundStyle(LauncherPalette.cream).padding(.leading, 10).accessibilityIdentifier("feature.more")
+                    .controllerButtonStyle(.plain).foregroundStyle(LauncherPalette.cream).padding(.leading, 10).accessibilityIdentifier("feature.more").controllerShortcut(.secondary)
             }
             Spacer()
             Button(index == 0 ? t("feature.skip") : t("feature.back")) {
                 if index == 0 { model.closeUpdatePopup() } else { go(index - 1) }
             }
-            .buttonStyle(.plain).font(.manrope(14.5, .semibold)).foregroundStyle(.secondary).padding(.horizontal, 8)
+            .controllerButtonStyle(.plain).font(.manrope(14.5, .semibold)).foregroundStyle(.secondary).padding(.horizontal, 8).controllerShortcut(.back)
             .keyboardShortcut(.cancelAction).accessibilityIdentifier("feature.back")
             Button { if last { model.closeFeatureAndExport() } else { go(index + 1) } } label: {
-                Text(last ? t("feature.go") : t("feature.next")).font(.manrope(14.5, .bold)).foregroundStyle(.black)
-                    .padding(.horizontal, 24).frame(height: 42).background(LauncherPalette.cream, in: Capsule())
+                Text(last ? t("feature.go") : t("feature.next")).font(.manrope(14.5, .bold))
             }
-            .buttonStyle(.plain).keyboardShortcut(.defaultAction).accessibilityIdentifier("feature.next")
+            .controllerButtonStyle(LauncherPrimaryButtonStyle()).keyboardShortcut(.defaultAction).accessibilityIdentifier("feature.next").controllerShortcut(.rightTrigger)
         }
     }
 }

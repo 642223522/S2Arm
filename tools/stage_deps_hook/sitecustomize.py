@@ -7,7 +7,12 @@
 import os
 import sys
 
-_OUT = os.environ.get('S2A_DEPS_OUT')
+# 一个进程只装一次（11-14 门禁根修）：别的接续型 sitecustomize（门禁的实读采集等）若按「sys.path 上第一个不是自己的」接续，会回头再执行本文件，
+#   本文件又接续它……来回互相执行到递归上限：每层多装一个审计钩子、多登记一次退出转储，一个空 Python 进程 25 毫秒变 2 秒多、退出时写 140 多份记录，
+#   阶段单测在门禁里每步几百秒到超时、清理临时目录时撞上还在写的记录（Directory not empty）。再次执行时什么都不做（不装钩子、不再接续）
+_AGAIN = getattr(sys, '_s2a_stage_deps_hook', False)
+sys._s2a_stage_deps_hook = True
+_OUT = None if _AGAIN else os.environ.get('S2A_DEPS_OUT')
 if _OUT:
     _seen = set()
     _busy = [False]
@@ -69,10 +74,12 @@ if _OUT:
 # 本钩子靠 PYTHONPATH 排在最前，会遮住解释器自带的 sitecustomize：Homebrew 的 Python 靠它把 /opt/homebrew/lib/pythonX.Y/site-packages 加进 sys.path，
 #   遮住后 meson 这类装在那里的工具导入失败（11-05 dav1d 在阶段里 configure 报 No module named 'mesonbuild'，出根连红 5 次；终端里不设 PYTHONPATH 照常）。
 #   这里接着执行 sys.path 上排在本目录之后的第一个 sitecustomize.py（有就执行、没有就算了），无论记不记依赖都接
+#   只看本目录之后的（原先从头找、只跳过自己：排在前面的那个接续型 sitecustomize 会被再执行一遍）
 def _s2a_chain_sitecustomize():
     import importlib.util
     here = os.path.dirname(os.path.realpath(__file__))
-    for d in sys.path:
+    real = [os.path.realpath(d) if d else '' for d in sys.path]
+    for d in sys.path[real.index(here) + 1:] if here in real else sys.path:
         if not d or os.path.realpath(d) == here:
             continue
         f = os.path.join(d, 'sitecustomize.py')
@@ -83,4 +90,5 @@ def _s2a_chain_sitecustomize():
             return
 
 
-_s2a_chain_sitecustomize()
+if not _AGAIN:
+    _s2a_chain_sitecustomize()

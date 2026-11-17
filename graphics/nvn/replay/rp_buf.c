@@ -40,6 +40,7 @@ static int g_mirror_cur;   // 现在用第几份；只在提交锁里改（Finis
 static pthread_mutex_t g_bmu = PTHREAD_MUTEX_INITIALIZER;
 static nvn_hmap g_shadow = {.klen = 8};   // 池起点 → struct shadow *
 static uint64_t g_sync_bytes, g_sync_runs;
+static nvn_gpu_buf g_null_storage;
 
 int rp_pool_find(uint64_t addr, uint64_t len, const uint8_t **mem, uint64_t *size);   // rp_entry.c
 
@@ -227,9 +228,8 @@ int rp_buf_resolve(nvn_gpu_cmd c, uint64_t addr, uint64_t len, nvn_gpu_buf *buf,
     return r;
 }
 // 批量：一次抢锁解析多段（顶点流 / 存储缓冲），成功写 1、失败写 0。
-int rp_buf_resolve_multi(int n, const uint64_t *addr, const uint64_t *len, nvn_gpu_buf *buf, uint64_t *off, unsigned char *ok) {
+static void resolve_multi_chunk(int n, const uint64_t *addr, const uint64_t *len, nvn_gpu_buf *buf, uint64_t *off, unsigned char *ok) {
     const uint8_t *mem[16]; uint64_t size[16];
-    if (n > 16) n = 16;
     for (int i = 0; i < n; i++) { mem[i] = NULL; size[i] = 0; ok[i] = 0; if (len[i]) rp_pool_find(addr[i], len[i], &mem[i], &size[i]); }
     const uint64_t w0 = (g_res_tm && n) ? res_now() : 0;
     pthread_mutex_lock(&g_bmu);
@@ -242,6 +242,15 @@ int rp_buf_resolve_multi(int n, const uint64_t *addr, const uint64_t *len, nvn_g
         buf[i] = m->buf; off[i] = addr[i] - (uint64_t)(uintptr_t)mem[i]; ok[i] = 1;
     }
     pthread_mutex_unlock(&g_bmu);
+}
+int rp_buf_resolve_multi(int n, const uint64_t *addr, const uint64_t *len, nvn_gpu_buf *buf, uint64_t *off, unsigned char *ok) {
+    // Storage bindings can exceed the 16 vertex streams. Resolve every item;
+    // the fixed scratch arrays bound each lock acquisition, not the request.
+    while (n > 0) {
+        int count = n < 16 ? n : 16;
+        resolve_multi_chunk(count, addr, len, buf, off, ok);
+        n -= count; addr += count; len += count; buf += count; off += count; ok += count;
+    }
     return 1;
 }
 
@@ -252,9 +261,28 @@ void rp_buf_pool_gone(const void *mem) {
     if (s) { if (s->landing > 0) s->dead = 1; else shadow_free(s); }   // 有拷贝在锁外进行：由收尾那边释放（见 rp_buf_gpu_write_land）
     pthread_mutex_unlock(&g_bmu);
 }
+nvn_gpu_buf rp_buf_for_null_storage(void) {
+    pthread_mutex_lock(&g_bmu);
+    if (!g_null_storage) {
+        // 对齐 Ryujinx DescriptorSetUpdater：不支持 nullDescriptor 时，未使用的缓冲绑定用 64 KiB 物理对象。
+        // 只初始化一次；着色器写入后不承诺内容仍为零，也不把写入落到任何 guest 地址。
+        void *zero = calloc(1, 0x10000);
+        nvn_gpu_err err = {0};
+        if (!zero || !nvn_gpu_ok(nvn_gpu_buf_create(0x10000, NVN_GPU_MEM_SHARED, zero, &g_null_storage, &err))) {
+            g_null_storage = NULL;
+            if (nvn_unimpl("gpu", "null_storage_create", NULL) == 1 && err.why[0]) nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", err.why);
+        }
+        free(zero);
+    }
+    nvn_gpu_buf result = g_null_storage;
+    pthread_mutex_unlock(&g_bmu); return result;
+}
+
 void rp_buf_reset(void) {
     pthread_mutex_lock(&g_bmu);
     for (uint32_t i = 0; i < g_shadow.cap; i++) { struct shadow *s = g_shadow.vals[i]; if (s) shadow_free(s); }
+    if (g_null_storage) nvn_gpu_buf_release(g_null_storage, NULL, NULL);
+    g_null_storage = NULL;
     free(g_shadow.keys); free(g_shadow.vals); nvn_hm_init(&g_shadow, 8); g_mirror_cur = 0;
     pthread_mutex_unlock(&g_bmu);
 }
@@ -373,14 +401,23 @@ void rp_op_copy_t2t(nvn_gpu_cmd c, const p_copy_t2t *o, const void *rec) {
         sr = (NVNcopyRegion){0, 0, 0, (int)w, (int)h, 1}; dr = sr;
     } else {
         int nz = sr.depth > 0 ? sr.depth : 1, dnz = dr.depth > 0 ? dr.depth : 1;
-        if (o->flags & (NVN_COPY_FLAGS_MIRROR_X_BIT | NVN_COPY_FLAGS_MIRROR_Y_BIT | NVN_COPY_FLAGS_MIRROR_Z_BIT)) { nvn_unimpl("tex", "t2t_mirror", rec); return; }
-        if (sr.width != dr.width || sr.height != dr.height || sfmt != dfmt) {
-            // 缩放 / 换格式（iOS 是画出来的，copy_t2t_draw；这边后端有原生的缩放拷贝）：只做二维、单层、单采样、两边都不是整数 / 深度模板格式的
+        int mirror = o->flags & (NVN_COPY_FLAGS_MIRROR_X_BIT | NVN_COPY_FLAGS_MIRROR_Y_BIT);
+        if ((o->flags & NVN_COPY_FLAGS_MIRROR_Z_BIT) || (mirror && s->serial == d->serial)) { nvn_unimpl("tex", "t2t_mirror", rec); return; }
+        if (mirror || sr.width != dr.width || sr.height != dr.height || sfmt != dfmt) {
+            // 缩放 / 换格式：二维、单层、单采样。颜色走原生 blit；同格式 D24S8/D32FS8 最近点缩放由后端能力位声明。
             nvn_fmt_info fa, fb; int ia = !nvn_fmt_info_of((uint32_t)sfmt, &fa) || fa.kind == NVN_FMT_UINT || fa.kind == NVN_FMT_SINT || fa.depth || fa.stencil;
             int ib = !nvn_fmt_info_of((uint32_t)dfmt, &fb) || fb.kind == NVN_FMT_UINT || fb.kind == NVN_FMT_SINT || fb.depth || fb.stencil;
-            if (s3 || d3 || nz != 1 || dnz != 1 || s->d.samples > 1 || d->d.samples > 1 || ia || ib) { nvn_unimpl("tex", sfmt != dfmt ? "t2t_format_change" : "t2t_scaled", rec); return; }
+            int depth_pair = sfmt == dfmt && sfmt == s->d.format && dfmt == d->d.format &&
+                (sfmt == NVN_FORMAT_DEPTH24_STENCIL8 || sfmt == NVN_FORMAT_DEPTH32F_STENCIL8) && !mirror && !(o->flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT);
+            if (s3 || d3 || nz != 1 || dnz != 1 || s->d.samples > 1 || d->d.samples > 1 || ((ia || ib) && !depth_pair)) { nvn_unimpl("tex", mirror ? "t2t_mirror" : sfmt != dfmt ? "t2t_format_change" : "t2t_scaled", rec); return; }
             nvn_gpu_caps caps; nvn_gpu_caps_get(&caps);
-            if (!(caps.caps & NVN_GPU_CAP_BLIT_SCALED)) { nvn_unimpl("tex", "t2t_scaled_no_native_blit", rec); return; }
+            if (depth_pair ? !(caps.caps & NVN_GPU_CAP_BLIT_DEPTH_STENCIL) : !(caps.caps & NVN_GPU_CAP_BLIT_SCALED)) {
+                nvn_unimpl("tex", mirror ? "t2t_mirror" : depth_pair ? "t2t_scaled" : "t2t_scaled_no_native_blit", rec); return;
+            }
+            // NVN 区域仍为正尺寸；先防止反向端点的有符号加法溢出。
+            if (mirror && (sr.width <= 0 || sr.height <= 0 || dr.width <= 0 || dr.height <= 0 ||
+                sr.xoffset < 0 || sr.yoffset < 0 || (int64_t)sr.xoffset + sr.width > INT32_MAX ||
+                (int64_t)sr.yoffset + sr.height > INT32_MAX)) { nvn_unimpl("tex", "t2t_mirror", rec); return; }
             // 视图只取级与层：拷贝按存储的格式做
             view_t vs, vd; memset(&vs, 0, sizeof vs); memset(&vd, 0, sizeof vd);
             vs.set_levels = 1; vs.base_level = (int)sl; vs.nlevels = 1; vs.set_layers = 1; vs.min_layer = (int)(sz0 + (uint32_t)sr.zoffset); vs.nlayers = 1;
@@ -391,6 +428,9 @@ void rp_op_copy_t2t(nvn_gpu_cmd c, const p_copy_t2t *o, const void *rec) {
             nvn_gpu_view gv = rp_view_for(s, &vs, c), hv = rp_view_for(d, &vd, c);
             if (!gv || !hv) { rp_view_pin_end(); return; }
             NVNcopyRegion a = sr, b = dr; a.zoffset = b.zoffset = 0; a.depth = b.depth = 1;
+            // Ryujinx ExtentsToOffset3D 同样保留两端次序：镜像沿源矩形反向行走。
+            if (mirror & NVN_COPY_FLAGS_MIRROR_X_BIT) { a.xoffset += a.width; a.width = -a.width; }
+            if (mirror & NVN_COPY_FLAGS_MIRROR_Y_BIT) { a.yoffset += a.height; a.height = -a.height; }
             nvn_gpu_blit(c, gv, &a, hv, &b, (o->flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT) != 0);
             rp_view_pin_end();
             rp_tex_mark_gpu_written(d);

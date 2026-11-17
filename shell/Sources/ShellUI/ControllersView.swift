@@ -38,7 +38,8 @@ public struct ControllersView: View {
                         Image(systemName: "gamecontroller").font(.system(size: 30, weight: .light))
                             .foregroundStyle(ShellPalette.cream).accessibilityHidden(true).padding(.bottom, 4)
                         Text(ShellStrings.text("No controllers connected")).shellText(19, .bold)
-                        Text(ShellStrings.text("Connect a controller in Bluetooth settings. Touch controls are always available in the library."))
+                        // tvOS 没有触屏，后半句不说
+                        Text(ShellStrings.text(Self.noControllerNote))
                             .shellText(14.5).foregroundStyle(.white.opacity(0.6)).fixedSize(horizontal: false, vertical: true)
                     }.frame(maxWidth: .infinity, alignment: .leading).shellCard(padding: 20)
                 } else {
@@ -62,7 +63,7 @@ public struct ControllersView: View {
                     hint(ButtonGlyph(role: .settings), ShellStrings.text("Game settings"))
                     hint(ButtonGlyph(role: .controllers), ShellStrings.text("Controllers"))
                 }.padding(.horizontal, 4)
-            }.padding(24).padding(.bottom, geometry.safeAreaInsets.bottom).frame(maxWidth: 640)
+            }.padding(24).padding(.bottom, geometry.safeAreaInsets.bottom).frame(maxWidth: 640 * ShellFonts.tvScale)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .scrollIndicators(.hidden)
@@ -92,9 +93,17 @@ public struct ControllersView: View {
             if showsMapping {
                 PadMappingEntryRow(gameID: Self.mappingID, rows: PadMappingRows.global(padMap), targetID: "ctl.mapping").id("ctl.mapping")
             }
+            #if !os(tvOS)   // tvOS：A / B / 菜单键被系统焦点接走（B = 返回），按键测试测不全，不出
             ButtonTestEntryRow().id("ctl.test")
+            #endif
         }
     }
+
+    #if os(tvOS)
+    static let noControllerNote: String.LocalizationValue = "Connect a controller in Bluetooth settings."
+    #else
+    static let noControllerNote: String.LocalizationValue = "Connect a controller in Bluetooth settings. Touch controls are always available in the library."
+    #endif
 
     private func hint(_ icon: some View, _ label: String) -> some View {
         HStack(spacing: 14) {

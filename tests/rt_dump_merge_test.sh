@@ -37,4 +37,21 @@ ck "③ 键不符跳过：rc=${r3}、「${o3}」" "[ $r3 = 0 ] && [[ \"\$o3\" ==
 init $T/c; mk $T/c/dump 512 256 > /dev/null
 o4=$("$PY" "$TOOL" $T/c/dump $T/c/pkg $T/c/map.tsv $T/c/facts.tsv 2>&1); r4=$?
 ck "④ 代码长不符跳过：rc=${r4}、「${o4}」" "[ $r4 = 0 ] && [[ \"\$o4\" == *'+0x44'*'跳过这一支'* ]] && [ ! -e $T/c/pkg/cs_rt.bin ]"
+# ⑤ Switch 1 图形阶段（11-15 着色器补料）：合成顶点 / 像素各一支（控制段魔数 0x98761234、+0x20 自报 0x880、+0x704 代码长；代码区魔数 0x12345678、+0x30 SPH 字 0x0461 = 顶点、0x1400 = 像素），
+#   期望按 shader_split.py 公式手写：键 = sha256(控制段 0x880 ‖ 代码区)[:16]；vs_rt.bin / ps_rt.bin 各一条记录；表追加「vs_rt.bin 0 vertex <键>」「ps_rt.bin 0 pixel <键>」；答案表不加
+mk1() {   # mk1 <目录> <SPH 字>
+  "$PY" - "$@" <<'PY'
+import hashlib, os, struct, sys
+d, w = sys.argv[1], int(sys.argv[2], 0)
+code = bytearray(0x100); code[:4] = b'\x78\x56\x34\x12'; struct.pack_into('<I', code, 0x30, w)
+for i in range(0x80, 0x100): code[i] = (i * 5 + w) & 0xff
+ctl = bytearray(0x880); ctl[:4] = b'\x34\x12\x76\x98'; struct.pack_into('<I', ctl, 0x20, 0x880); struct.pack_into('<I', ctl, 0x704, len(code))
+k = hashlib.sha256(bytes(ctl) + bytes(code)).hexdigest()[:16]
+os.makedirs(d, exist_ok=True); open(f'{d}/{k}.ctl', 'wb').write(ctl); open(f'{d}/{k}.code', 'wb').write(code); print(k)
+PY
+}
+init $T/e; KV=$(mk1 $T/e/dump 0x0461); KP=$(mk1 $T/e/dump 0x1400)
+o5=$("$PY" "$TOOL" $T/e/dump $T/e/pkg $T/e/map.tsv $T/e/facts.tsv 2>&1); r5=$?
+ck "⑤ Switch 1 顶点 / 像素并入：rc=${r5}、「${o5}」、表「$(tail -2 $T/e/map.tsv | tr '\n' '|')」" \
+  "[ $r5 = 0 ] && grep -qxF \"\$(printf 'vs_rt.bin\t0\tvertex\t%s\trt-dump:%s' $KV $KV)\" $T/e/map.tsv && grep -qxF \"\$(printf 'ps_rt.bin\t0\tpixel\t%s\trt-dump:%s' $KP $KP)\" $T/e/map.tsv && [ -s $T/e/pkg/vs_rt.bin ] && [ -s $T/e/pkg/ps_rt.bin ] && [ \$(grep -vc '^#' $T/e/facts.tsv) = 0 ]"
 [ $bad = 0 ] && echo "rt_dump_merge 单测全过" || { echo "rt_dump_merge 单测有不通"; exit 1; }

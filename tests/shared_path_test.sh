@@ -1,5 +1,6 @@
 #!/bin/bash
-# 门禁：每次
+# 门禁覆盖：tools/*.sh tools/*.py pack/*.sh pack/*.py tests/*.sh tests/*.py tests/*/*.c tests/*/*.h */gate.sh runtime/run_mac.sh compat/truth/*.sh tools/shared_paths.tsv *.c *.h *.m *.mm *.inc *.cpp *.cs *.swift
+#   （= tools/shared_path_lint.py 的 SCOPE 与 $HOME/Documents 检查的源码后缀；入队预检仍每次跑它，新门禁按这行算输入）
 # 共享位置扫描单测（tools/shared_path_lint.py，约 2 秒）：bash tests/shared_path_test.sh
 # 期望：本仓库共享位置全部登记 → 退出 0；临时仓库里加一个没登记的共享缺省（run/s2arm 下新目录、/tmp 固定名、Python '~/…'）→ 退出 1 且点名这三处；
 # 私有写法（mktemp、$$ 临时名、局目录变量、C 里的按位取反 ~0u）不报

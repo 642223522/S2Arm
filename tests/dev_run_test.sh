@@ -266,7 +266,10 @@ rm -f $C/guest.data; run; ck "机上缺 guest.data → 拉回 3 个、记「不�
 FAKE_SCENE=gc run; ck "红局（分配闸门）也拉" '[[ $RES == RESULT=red* ]] && [ -s $OUT/shcache_rt/shared.toc ]'; }
 g_apcrash() { grp apcrash   # 收推送的 App 起来即崩、没走到解包（10-22 链 SDK 27 没接 UIScene 的包，原先白等到部署预算用完报「收推送超时」）→ 当场红；解得慢但活着的不误判
 run; P=$DV/apps/com.s2arm.test/Documents/资源包; ck "首局 → done" '[[ $RES == RESULT=done* ]]'
-echo 旧包 > $P/.applied; rm -f $DV/launched; t0=$(date +%s); FAKE_APPLY=crash run; ck "收推送 App 起来即崩 → 红 push「App 没走到解包」带 pid、30 秒内收局、没起正式局" '[[ $RES == RESULT=push*App\ 没走到解包* ]] && grep -q "App 没走到解包：收推送的 App（pid [0-9]*）" $OUT/run.log && [ $(( $(date +%s) - t0 )) -lt 30 ] && [ ! -e $DV/launched ]'
+echo 旧包 > $P/.applied; rm -f $DV/launched; t0=$(date +%s); FAKE_APPLY=crash run; dt=$(( $(date +%s) - t0 ))
+# 要证的是「当场收局、不白等到部署预算用完」：判据看它没走预算超时那条路（run.log 没有「机上收推送超 N 秒」），不看墙钟——
+#   11-15 02:25 起 main 上这条连红 30 小时：整套 8 组并行 + 门禁机负载 60 时这一局就要 30 秒以上，单跑 53 秒全过（11-16 维护者）
+ck "收推送 App 起来即崩 → 红 push「App 没走到解包」带 pid、当场收局（没等到部署预算超时）、没起正式局（实得 ${dt} 秒、${RES:0:60}）" '[[ $RES == RESULT=push*App\ 没走到解包* ]] && grep -q "App 没走到解包：收推送的 App（pid [0-9]*）" $OUT/run.log && ! grep -q "机上收推送超" $OUT/run.log && [ ! -e $DV/launched ]'
 echo 旧包 > $P/.applied; FAKE_APPLY=slow run; ck "收推送 App 解得慢（8 秒）但进程活着 → 照常解完、done" '[[ $RES == RESULT=done* ]] && grep -q "机上解开推送包" $OUT/run.log'
 # 11-02 测试设备2 暗黑2：机上 .applied 推之前就等于本包清单（新旧包索引相同）、又推了包；App 先写进度行、3 秒后才解完写完成行 →
 #   只认本次的完成行「解开 N 个包 … .applied = 本包」，期望照常解完 done、不报「收推送包数不符」（旧判法见到第一行进度就数批数判红）
@@ -393,7 +396,9 @@ g_stream() { grp stream
   S2A_DEVPUSH=$G/s2a-devpush FAKE_DEVPUSH_DIR=$DV FAKE_DEVPUSH_FAIL=1 run
   ck "流式推包这批失败 → 退回 devicectl、done" '[[ $RES == RESULT=done* ]] && grep -q "流式推 .* 没成" $OUT/run.log && grep -q "流式 s2a-devpush 0 批 / devicectl 1 批" $OUT/run.log && [ "$(cat $DV/apps/com.s2arm.test/Documents/资源包/romfs/f3.bin)" = changed2 ]'
 }
-GS=${DEV_RUN_GROUPS:-"stream ${S2A_PRIVATE_TOOLS:+prune }incr vpush shot hang gc stall stall2 gpuhang procs crash nomark restart guard apq trunc stalepush livef lag stale recheck screen batt con shc apcrash smoke ownplay alt wire dlib own space vbr pso psod vkspv"}   # 单跑某组：DEV_RUN_GROUPS=hang
+# 起组顺序按用时从长到短（11-14 慢单测提速：最长的 stale ≈ 100 秒、hang ≈ 90 秒原先排在第 6 / 22 位，限 8 组并行时它们起得晚、最后单独拖尾；
+#   长组先起、短组填空，墙钟贴近「总组秒数 / 并行数」）。组集合不变，新组按实测用时插进对应位置
+GS=${DEV_RUN_GROUPS:-"stale hang incr apcrash lag apq ${S2A_PRIVATE_TOOLS:+prune }dlib livef shot ownplay alt gpuhang space con procs vbr own shc screen pso smoke wire trunc stream stalepush vkspv vpush psod stall restart stall2 nomark crash gc batt recheck guard"}   # 单跑某组：DEV_RUN_GROUPS=hang
 # 组并行限流（11-02 体验线定因：每组执行器按 0.2 秒轮询、每轮起一个 python 假 devicectl，单份约 150 个滚动短命进程；
 #   30 组全并行、门禁里两三份并发把 gate-host 负载顶到 200+）：同时最多 DEV_RUN_PAR 组，缺省核数 × 2/3（2–8；本机 18 核 / gate-host 12 核都是 8）。
 #   同负载实测（本机）：全并行 84 秒、子孙进程峰值 244 → 限 8 组 82 秒、峰值 82；限 6 组 93 秒、峰值 60。轮询间隔不动（alt / lag 等组的时序断言按 0.2 秒算）

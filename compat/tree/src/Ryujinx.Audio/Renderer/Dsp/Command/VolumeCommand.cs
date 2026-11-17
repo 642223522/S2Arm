@@ -52,7 +52,7 @@ namespace Ryujinx.Audio.Renderer.Dsp.Command
 
             for (int i = 0; i < inputVec.Length; i++)
             {
-                outputVec[i] = Avx.Ceiling(Avx.Multiply(inputVec[i], volumeVec));
+                outputVec[i] = Avx.RoundToNearestInteger(Avx.Multiply(inputVec[i], volumeVec));
             }
 
             for (int i = sisdStart; i < inputBuffer.Length; i++)
@@ -73,7 +73,7 @@ namespace Ryujinx.Audio.Renderer.Dsp.Command
 
             for (int i = 0; i < inputVec.Length; i++)
             {
-                outputVec[i] = Sse41.Ceiling(Sse.Multiply(inputVec[i], volumeVec));
+                outputVec[i] = Sse41.RoundToNearestInteger(Sse.Multiply(inputVec[i], volumeVec));
             }
 
             for (int i = sisdStart; i < inputBuffer.Length; i++)
@@ -94,7 +94,7 @@ namespace Ryujinx.Audio.Renderer.Dsp.Command
 
             for (int i = 0; i < inputVec.Length; i++)
             {
-                outputVec[i] = AdvSimd.Ceiling(AdvSimd.Multiply(inputVec[i], volumeVec));
+                outputVec[i] = AdvSimd.RoundToNearest(AdvSimd.Multiply(inputVec[i], volumeVec));
             }
 
             for (int i = sisdStart; i < inputBuffer.Length; i++)

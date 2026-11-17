@@ -39,7 +39,11 @@ class EarlyInstallCase(JobCase):
         from unittest.mock import patch as _patch
         p = _patch.object(install, "phone_games", lambda c, ph: set()); p.start(); self.addCleanup(p.stop)   # 读手机游戏清单另有用例
 
-    def run_ipa(self, suffix, *, install_after=True, signal=True, oneclick_fail=False, early_rc=0, push_s=0):
+    def run_ipa(self, suffix, *, install_after=True, signal=True, oneclick_fail=False, early_rc=0, push_s=0, pack_until_early=False):
+        # pack_until_early：替身「编直连库」等到早期资源包推完才结束（至多 60 秒），不按固定 2 秒——验「早装都在出包结束之前」的那条
+        #   不能赌后台线程 2 秒内走完早装件 → 装 App → 推包（11-15 门禁负载下只走完第一步，先红后绿）
+        import threading
+        early_pushed = threading.Event()
         c = Context(self.request | dict(taskId='early-' + suffix, operation='ipa', gameId=GID) | (dict(installAfter=True) if install_after else {}))
         calls, envs = [], []
         stamp = lambda what, *a: calls.append((time.time(), what) + a)
@@ -60,7 +64,7 @@ class EarlyInstallCase(JobCase):
             out = Path(args[args.index('--out') + 1])
             if signal and env.get('S2A_EARLY_READY'):
                 Path(env['S2A_EARLY_READY']).write_text('tfake@rx-1\n')
-            time.sleep(2)
+            early_pushed.wait(60) if pack_until_early else time.sleep(2)
             stamp('出包结束')
             events = Path(args[args.index('--events') + 1])
             if oneclick_fail:
@@ -89,7 +93,9 @@ class EarlyInstallCase(JobCase):
             def inst_(ipa, games, steps=True): stamp('装 App', Path(ipa).name)
             def push_(g, pack):   # 早期资源包 .early/pack，正式的 image/ios/pack：记「上级目录/名字」区分
                 name = Path(pack).parent.name + '/' + Path(pack).name; is_early = name == '.early/pack'
-                time.sleep(push_s if is_early else 0); stamp('推资源包', name); seen_udid.append(udid); return (3, 30) if is_early else (2, 20)
+                time.sleep(push_s if is_early else 0); stamp('推资源包', name); seen_udid.append(udid)
+                if is_early: early_pushed.set()
+                return (3, 30) if is_early else (2, 20)
             ph.install.side_effect = inst_; ph.push.side_effect = push_
             ph.udid = udid; ph.key = udid; ph.bid = install.container_bundle_id('TEAM1')
             ph.info = dict(device=dev['name'], team=team['name'], free=team['free'])
@@ -115,7 +121,7 @@ class EarlyInstallCase(JobCase):
         return c, result, err, calls, envs
 
     def test_overlap_order_and_totals(self):
-        c, r, err, calls, envs = self.run_ipa('ok')
+        c, r, err, calls, envs = self.run_ipa('ok', pack_until_early=True)
         calls = [x for x in calls if x[1] not in ('清理', '返回')]   # 清理 / 返回只给 P1-146 那条用
         self.assertIsNone(err)
         what = [x[1:] for x in calls]

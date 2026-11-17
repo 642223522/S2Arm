@@ -1,6 +1,6 @@
 # native-test-nvn_sd_cap：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += nvn_sd_cap
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # 写回预判附件表到上限（审计 #799 F-sd-att-10）：8 个颜色 + 组合深度模板一次 pass 记 10 条；ASan 编译，表写穿即中止；Metal 3/4、TBDR 关/开四路
 $(BUILD)/tests/t_nvn_sd_cap: graphics/nvn/tests/t_nvn_sd_cap.m $(NVN_MTL_DEPS) graphics/nvn/gfx/nvn/nvn_protos.h $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -fsanitize=address -fno-omit-frame-pointer -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \

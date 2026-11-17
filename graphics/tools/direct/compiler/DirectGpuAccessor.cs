@@ -30,6 +30,7 @@ namespace S2A.DirectCompiler
         public int SamplerSlot = -1;
         // Storage address provenance, resolved from ShaderProgram.Info.SBuffers.
         // Translator guestIndex is deliberately NOT a runtime NVN slot.
+        // 贴图也用 UboSlot / UboOffset：句柄在游戏 UBO 里时的来源（NVN UBO 号、句柄字的字节偏移），此时 Slot = -1。
         public int CbSlot = -1, CbOffset = -1;
         public int NvnSlot = -1, UboPtr = -1, UboSlot = -1, UboOffset = -1;
         public bool Writable;
@@ -212,7 +213,9 @@ namespace S2A.DirectCompiler
         //   S2ARuntimeState 不能走缺省：缺省跟进程开关 TranslatorContext.S2ARuntimeState，同一请求在不同进程会编出不同代码；安卓直连宿主不填 s2a_flags / s2a_point
         public bool QueryGeometryInputFixed() => Record("QueryGeometryInputFixed", "", false, "direct-v1:vs-fs-only (no fixed geometry capture contract)");
         public bool QueryTexelFetch1DWrap() => Record("QueryTexelFetch1DWrap", "", false, "direct-v1:no-tbuf-as-2d host contract");
-        public bool QueryBindlessPhiSeeThrough() => Record("QueryBindlessPhiSeeThrough", "", false, "direct-v1:upstream bindless elimination");
+        // 句柄经多层 phi 汇合（循环 / 分支里每条路各算一次同一个 c2 字 OR）时按值逐层比叶子，认出唯一句柄。
+        //   同 iOS 翻译器 translator/dmsh_xlate/Program.cs（QueryBindlessPhiSeeThrough => true），两端不再分叉。
+        public bool QueryBindlessPhiSeeThrough() => Record("QueryBindlessPhiSeeThrough", "", true, "translator:phi-see-through (same as dmsh_xlate)");
         // 0 = 回退数组一律按池长（上游原样）：安卓宿主 textureArrayLength / samplerArrayLength 就是真实描述符池容量（vk_record.c OP_SET_TEX_POOL），
         //   贴图缓冲 / 图像也按池编号取；没有 nvn_mtl.m TEXD 那种按槽绑的约定，答 32 会把编号 ≥ 32 的贴图缓冲 / 图像夹到第 31 项读错图
         public int QueryBindlessSlotArrayLength() => Record("QueryBindlessSlotArrayLength", "", 0, "direct-v1:pool-length (no per-slot texture-buffer/image binding)");
@@ -264,10 +267,16 @@ namespace S2A.DirectCompiler
 
         // ---------- textures / samplers ----------
         // 直连宿主按 NVN 组合纹理槽给事实：handle=8+2*slot、cbufSlot=-1。着色器把同一个
-        // 句柄经常量缓冲表读取时，查询会带 cbufSlot>=0；handle 仍落在同一个组合槽
-        // （nvn_vk_first_draw 的 handleIndex→nvn_tex_slot 表）。所以 cbuf 查询没有精确
-        // 事实时，回落到同 (stage, handle) 的直接事实；没有同句柄直接事实仍然是缺事实，
-        // 不猜槽位、也不跨句柄借事实。
+        // 句柄经 c2 驱动句柄表读取时，查询会带 cbufSlot=2；handle 仍落在同一个组合槽
+        // （nvn_vk_first_draw 的 handleIndex→nvn_tex_slot 表）。所以只有 c2 查询没有精确
+        // 事实时，才回落到同 (stage, handle) 的直接事实。别的常量缓冲（游戏自己的 UBO，槽 3..18）
+        // 里同一个字偏移只是巧合，不是那个组合槽：不借事实（#999：c4 字节 0x20 的句柄曾被当成组合槽 0 绑上）。
+        // 没有同句柄直接事实仍然是缺事实，不猜槽位、也不跨句柄借事实。
+        private const int HandleTableCbuf = 2;
+        // 立即句柄（cbufSlot −1 = 默认贴图缓冲 c2，Ryujinx TextureHandle.UnpackSlots(−1, TextureBufferIndex)）落在 c2 的分离贴图表
+        //   （0x168 + 8 槽，字 90..344 偶）：读的就是那个分离贴图槽的句柄字（采样器位为 0，取尺寸 / texelFetch 常见），
+        //   宿主按 (字, cbufSlot 2, separate) 给的事实就是它的事实（同 c2 查询回落到 −1 组合事实的对称规则）。空轨 2nd 9000：fs handle 90 / 92 / 124。
+        private static bool IsSeparateTextureWord(int word) => word >= 0x168 / 4 && word < 0x568 / 4 && (word & 1) == 0;
         private DirectTextureFact FindTexture(int handle, int cbufSlot) =>
             _program.Textures.FirstOrDefault(t =>
                 t.Stage == _stage.Stage && t.Handle == handle && t.CbufSlot == cbufSlot);
@@ -275,8 +284,10 @@ namespace S2A.DirectCompiler
         private DirectTextureFact NeedTexture(string method, int handle, int cbufSlot)
         {
             DirectTextureFact fact = FindTexture(handle, cbufSlot);
-            if (fact == null && cbufSlot >= 0)
+            if (fact == null && cbufSlot == HandleTableCbuf)
                 fact = FindTexture(handle, -1);
+            if (fact == null && cbufSlot == -1 && IsSeparateTextureWord(handle))
+                fact = FindTexture(handle, HandleTableCbuf) is DirectTextureFact sep && sep.Separate ? sep : null;
             if (fact == null && cbufSlot >= 0)
             {
                 if (TrySeparateC2(handle, cbufSlot, out int texWord, out _))
@@ -306,7 +317,8 @@ namespace S2A.DirectCompiler
             return true;
         }
 
-        public bool HasDirectTextureFact(int handle) =>
+        // 反射到 cbuf 句柄时能否当作同一个组合槽：只认经 c2 句柄表读的、且有同句柄直接事实
+        public bool HasDirectTextureFact(int handle, int cbufSlot) => cbufSlot == HandleTableCbuf &&
             _program.Textures.Any(t => t.Stage == _stage.Stage && t.Handle == handle && t.CbufSlot == -1);
 
         public SamplerType QuerySamplerType(int handle, int cbufSlot = -1) =>
@@ -363,8 +375,10 @@ namespace S2A.DirectCompiler
         {
             _textureHandle = handle;
             DirectTextureFact fact = FindTexture(handle, cbufSlot);
-            if (fact == null && cbufSlot >= 0)
+            if (fact == null && cbufSlot == HandleTableCbuf)
                 fact = FindTexture(handle, -1);
+            if (fact == null && cbufSlot == -1 && IsSeparateTextureWord(handle))
+                fact = FindTexture(handle, HandleTableCbuf) is DirectTextureFact sep && sep.Separate ? sep : null;
             Queries.Add(new DirectQuery("RegisterTexture", $"handle={handle},cbufSlot={cbufSlot}",
                 fact == null ? "unbound" : "bound", fact == null ? "unbound" : "texture-fact:" + _stage.Stage + ":" + handle + ":" + cbufSlot));
         }

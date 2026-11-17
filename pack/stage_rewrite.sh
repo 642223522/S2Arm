@@ -41,6 +41,8 @@ VT="${S2A_WIDEN_DIR:-$R/graphics/widen/tables}/verified.tsv"; VR=$([ -f "$VT" ] 
 # 同身份的仓库表和最近 30 局真实日志只提高已知下限（不读现行根上一次出的表：采集结果回灌自己会让旧值永不退场）。先采集再判缓存；坏表不可退成无表。
 # 帧率表（10-26，体系提升方案 D）：仓库 runtime/fps/<main 构建号前 16 位>.tsv 有就拷进产物根作 fps.tsv（runtime/src/fps.c 装载后读），按「文件名 + 内容」进键；没有 = 原生帧率
 FT="$R/runtime/fps/${BID:0:16}.tsv"; [ -f "${FT}" ] || FT=
+# 游戏缺陷修补表（11-16，runtime/fix/README.md）：仓库 runtime/fix/<main 构建号前 16 位>.tsv 有就交改写器（S2A_FIX_TSV，fix_rows），按内容进键；不进产物根
+XT="$R/runtime/fix/${BID:0:16}.tsv"; [ -f "${XT}" ] || XT=
 # 社区画面补丁（pack/cpatch.py）：匹配上的补丁编成「双路 + 槽」进包，开关在运行时。
 #   11-12 维护者拍板：出包时自动对接公开库（pack/jobs/patches.py 按真构建号查索引、取文件，交 S2A_CPATCH_DIRS），查到的全部进包、缺省关、玩家在启动设置里开；
 #   10-30「公开发布的包不带上游补丁字节」作废。我方不托管补丁字节，只在玩家本机按需下载
@@ -78,7 +80,7 @@ UB=$(grep '^上限不定原因' "$AN" | cut -f2-); [ -z "$UB" ] || echo "  $G �
 # 改写器进键只取它的编译输入（rewriter.py source：CMakeLists / main.c / rewriter.c / rewriter.h / prepare_deps.py）+ 本阶段调的 nro_to_nso.py，
 #   不取整个 runtime/rewriter 目录的树号（10-31：原先 README / 许可说明改一行，全部款整段重改写）
 SD=$("$PY" "$H/rewriter.py" source) && [ -s "$R/runtime/rewriter/nro_to_nso.py" ] || { echo "【红】取不到改写器编译输入指纹（pack/rewriter.py source）或 runtime/rewriter/nro_to_nso.py"; exit 1; }
-KR=$( { echo "$SD"; cat "$R/runtime/rewriter/nro_to_nso.py"; } | shasum -a 256 | cut -c1-40); [ ${#KR} = 40 ] && KS=$(git -C "$R" rev-parse HEAD:graphics/widen/scan 2>/dev/null) || { echo "【红】改写器指纹不完整或取不到 graphics/widen/scan 的树对象号"; exit 1; }
+KR=$( { echo "$SD"; cat "$R/runtime/rewriter/nro_to_nso.py"; } | shasum -a 256 | cut -c1-40); [ ${#KR} = 40 ] && KS=$(scan_tree "$R") || { echo "【红】改写器指纹不完整或取不到 graphics/widen/scan 的树对象号"; exit 1; }
 RK=$("$PY" "$H/rewriter.py" key) || exit 1
 T=${S2A_TARGET:-apple}; TK=; [ "$T" = apple ] || TK=" target=$T"
 # 自旋闸（S2A_REWRITE_SPIN=1，原生层借鉴上游的一项）改改写产物（多出 S 行与 spin 门），要进键：不进键时私有根从共享现行起步会判「改写没变」跳过，出的包没有自旋区（10-24 测试出包线）
@@ -97,13 +99,16 @@ CP=; PK=; [ -n "${S2A_PATCH_DIR:-}" ] && [ -f "$S2A_PATCH_DIR/$PID/patch.tsv" ] 
 source "$H/patch_ship.sh"; PS=; [ -n "$CP" ] && ipa_patch_ship "$CP" "$BID" && PS=$CP
 [ -z "$PS" ] || PK="$PK ship=$(shasum -a 256 < "$PS" | cut -c1-16)"
 # 改写器进键：替换显式 C 二进制（S2A_REWRITER_C / App 自带）必须重改写，不能复用另一份二进制的阶段戳。
-K=$(printf '%s backend=%s%s%s%s%s' "$K" "$RK" "$CK" "$PK" "$([ -n "${FT}" ] && printf ' fps=%s' "$(shasum -a 256 < "${FT}" | cut -c1-16)")" "$([ -n "$VR" ] && printf ' verified=%s' "$(printf '%s' "$VR" | shasum -a 256 | cut -c1-16)")" | shasum -a 256 | cut -c1-10)
+K=$(printf '%s backend=%s%s%s%s%s' "$K" "$RK" "$CK" "$PK" "$([ -n "${FT}" ] && printf ' fps=%s' "$(shasum -a 256 < "${FT}" | cut -c1-16)")$([ -n "${XT}" ] && printf ' fix=%s' "$(shasum -a 256 < "${XT}" | cut -c1-16)")" "$([ -n "$VR" ] && printf ' verified=%s' "$(printf '%s' "$VR" | shasum -a 256 | cut -c1-16)")" | shasum -a 256 | cut -c1-10)
 # 仓库输入清单不含产物根：main 构建号相同也可能换了 subsdk 或 NRO，按相对路径 + 完整内容进键。
 # NRO 枚举同 nro_to_nso.py：任意深度（含点目录）、后缀不分大小写；分块读取只限内存，不抽样内容。
 # RomFS 遍历经 graphics/nvn/tools/romfs_list.py（仓库里唯一的 RomFS 遍历，walk 同 os.walk）
 # NRR 登记表（*.nrr）同样按内容进键：nro_to_nso.py 按它到 romfs 其余文件（一款第一方格斗游戏 data.arc）里找藏着的 NRO。那些大文件本身不进键（17.6 GB 每次判跳过都重算不可取）：
 #   收进的 NRO 只认 NRR 登记的 SHA-256，内容由登记表定死；只有「NRR 不变、归档里换了位置 / 删了」才会让表里来源列或有无变而键不变。
-IK=$("$PY" - "$CUR" "$R" <<'INPUT_KEY'
+# 运行时留下的 NRO（S2A_NRO_KEPT_DIR，启动器给游戏库 games/<号>/nro_kept/；#8be819 游戏自有加密归档里的 NRO，宿主 LoadNro 缺表时存下游戏解开的那份）：
+#   nro_to_nso.py 第三来源，*.nro 按文件名 + 内容进键（新留下一份 = 要重改写）。没设 / 目录不在 = 无，键与原先相同
+KEPT=${S2A_NRO_KEPT_DIR:-}; [ -n "$KEPT" ] && [ -d "$KEPT" ] || KEPT=
+IK=$("$PY" - "$CUR" "$R" "$KEPT" <<'INPUT_KEY'
 import hashlib, os, sys
 from pathlib import Path
 root = Path(sys.argv[1])
@@ -113,19 +118,23 @@ paths = [p for p in (root / 'exefs').iterdir() if p.is_file()]
 def walk_error(error):
     raise error
 romfs = root / 'romfs'
-if romfs.is_dir():
+if romfs_list.is_dir(romfs):   # RomFS 目录或镜像 romfs.std（romfs_list image_of）；镜像里的 NRO / NRR 下面经 open_file 读
     for directory, _, names in romfs_list.walk(romfs, onerror=walk_error):
         paths.extend(Path(directory) / name for name in names if name.lower().endswith(('.nro', '.nrr')))
 digest = hashlib.sha256(b'rewrite-inputs-v1\0')
 for path in sorted(paths, key=lambda p: os.fsencode(p.relative_to(root).as_posix())):
     relative = os.fsencode(path.relative_to(root).as_posix())
     content = hashlib.sha256()
-    with path.open('rb') as stream:
+    with romfs_list.open_file(path) as stream:   # 盘上的文件同 open；RomFS 只有镜像时从镜像读
         for block in iter(lambda: stream.read(1024 * 1024), b''):
             content.update(block)
     digest.update(len(relative).to_bytes(8, 'little'))
     digest.update(relative)
     digest.update(content.digest())
+if sys.argv[3]:
+    for path in sorted(Path(sys.argv[3]).glob('*.nro'), key=lambda p: os.fsencode(p.name)):
+        content = hashlib.sha256(path.read_bytes()).digest()
+        digest.update(b'kept\0' + len(path.name).to_bytes(8, 'little') + os.fsencode(path.name) + content)
 print(digest.hexdigest())
 INPUT_KEY
 ) || { echo "【红】$G 读不出改写输入内容指纹" >&2; exit 1; }
@@ -146,7 +155,7 @@ t0=$SECONDS; n=0
 #   转成 NSO 放 nroexe/、与 exefs 模块一样改写（模块名 nro0…），运行时 ro LoadNro 按 NRO 文件 SHA-256 查 nro_modules.tsv 映射改写好的映像（runtime/src/loader.c s2a_nro_map）。
 #   零配置：romfs 任意深度的 *.nro；有 .nrr 登记表时还收藏在 romfs 其余文件里（原样 / zstd 帧）、哈希登记过的 NRO（11-03 一款第一方格斗游戏 data.arc）；没有 NRO 不出表。nroexe/ 是中间产物，改写完删
 rm -f "$W/nro_modules.tsv"; rm -rf "$W/nroexe"
-"$PY" "$R/runtime/rewriter/nro_to_nso.py" "$W/romfs" "$W/nroexe" > "$W/nro_to_nso.log" 2>&1 || { echo "【红】$G 转 romfs 里的 NRO 失败（$(tail -1 "$W/nro_to_nso.log")）"; root_abort "$G" "$TAG"; exit 1; }
+"$PY" "$R/runtime/rewriter/nro_to_nso.py" "$W/romfs" "$W/nroexe" ${KEPT:+"$KEPT"} > "$W/nro_to_nso.log" 2>&1 || { echo "【红】$G 转 romfs 里的 NRO 失败（$(tail -1 "$W/nro_to_nso.log")）"; root_abort "$G" "$TAG"; exit 1; }
 [ ! -f "$W/nroexe/nro_modules.tsv" ] || mv "$W/nroexe/nro_modules.tsv" "$W/nro_modules.tsv" || { root_abort "$G" "$TAG"; exit 1; }
 "$PY" "$R/graphics/widen/scan/wide_scan.py" "$W/exefs" --tsv "$W/widen_sites.tsv" > "$W/widen_scan.log" 2>&1 || { echo "【红】$G 宽屏候选扫描失败（$(tail -1 "$W/widen_scan.log")）"; root_abort "$G" "$TAG"; exit 1; }
 for t in ${EN[@]+"${EN[@]}"}; do cp "$t" "$W/" || { root_abort "$G" "$TAG"; exit 1; }; done
@@ -155,6 +164,7 @@ for t in ${EN[@]+"${EN[@]}"}; do cp "$t" "$W/" || { root_abort "$G" "$TAG"; exit
 [ -z "$PS" ] || cp "$PS" "$W/patch.tsv" || { root_abort "$G" "$TAG"; exit 1; }
 # 帧率表的 c 行（按构建号改指令）由改写器读（rewriter.c）；没有帧率表就不给，改写产物与原先逐字节相同
 if [ -n "${FT}" ]; then export S2A_FPS_TSV="$W/fps.tsv"; else unset S2A_FPS_TSV; fi
+if [ -n "${XT}" ]; then export S2A_FIX_TSV="${XT}"; else unset S2A_FIX_TSV; fi
 if [ -n "$CP" ]; then export S2A_CODE_PATCH=$CP S2A_CODE_BUILD=$BID; else unset S2A_CODE_PATCH S2A_CODE_BUILD; fi
 # 各模块并行改写（10-25 维护者「多核加速……要适配机器的核心数」）：改写器只读本模块与 widen_sites.tsv、产物都带模块名前缀（<模块>.patched.bin / .fixups.tsv / …），
 #   互不依赖；同时最多 S2A_JOBS（缺省本机核数，读不出就停：#824 F-pack-sysctl-jobs）个，退出码记临时目录（不进产物根），全部跑完再按模块名顺序判

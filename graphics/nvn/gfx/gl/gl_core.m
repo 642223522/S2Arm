@@ -119,8 +119,28 @@ void *gl_stub(const char *name) {
 }
 void *sw_xstack_wrap(const char *name, void *fn);   // S2Arm 宿主：在宿主栈上跑的切栈桩（单测给替身）
 int gl_is_big(const char *name);
-// 交给游戏的入口（装载器解析的导入、eglGetProcAddress 交出的指针同一条路）：查表，重活（swglb 登记的）套切栈桩
-void *gl_entry(const char *name) { void *fn = gl_lookup(name); return fn && gl_is_big(name) ? sw_xstack_wrap(name, fn) : fn; }
+// 扩展别名 → 核心名（D-RVTY，11-16）：被核心吸收的扩展函数（glBindBufferARB、glActiveTextureARB、glCompressedTexImage2DARB、glBlitFramebufferEXT …）
+//   与核心同签名同语义，真机驱动对别名照样交出可用的函数；GLEW 一类装载器按别名取指针、拿到空就跳 0。名字以 ARB / EXT / OES / KHR 结尾、
+//   去掉后缀的核心名宿主有实现，就交核心实现。除外：签名或语义与同名核心不同的（ARB_vertex_program 的 glGetProgramivARB / glIsProgramARB，
+//   EXT_vertex_array 的 *PointerEXT 多一个 count 参数）。厂商后缀（NV / AMD / INTEL …）不认：那是各家自己的语义
+int gl_core_alias(const char *name, char *core, size_t cap) {
+    static const char *const suf[] = {"ARB", "EXT", "OES", "KHR"};
+    static const char *const differ[] = {"glGetProgramivARB", "glIsProgramARB", "glVertexPointerEXT", "glNormalPointerEXT", "glColorPointerEXT",
+                                         "glIndexPointerEXT", "glTexCoordPointerEXT", "glEdgeFlagPointerEXT"};
+    size_t l = name ? strlen(name) : 0;
+    if (l < 6 || l - 3 >= cap) return 0;
+    int hit = 0; for (unsigned i = 0; i < sizeof suf / sizeof *suf; i++) hit |= !strcmp(name + l - 3, suf[i]);
+    if (!hit) return 0;
+    for (unsigned i = 0; i < sizeof differ / sizeof *differ; i++) if (!strcmp(name, differ[i])) return 0;
+    memcpy(core, name, l - 3); core[l - 3] = 0;
+    return gl_core_name(core);
+}
+// 交给游戏的入口（装载器解析的导入、eglGetProcAddress 交出的指针同一条路）：查表，没有时按扩展别名查核心实现，重活（swglb 登记的）套切栈桩
+void *gl_entry(const char *name) {
+    const char *use = name; void *fn = gl_lookup(name); char core[128];
+    if (!fn && gl_core_alias(name, core, sizeof core) && (fn = gl_lookup(core))) { use = core; GLOG("lookup %s → 按核心 %s 交出", name, core); }
+    return fn && gl_is_big(use) ? sw_xstack_wrap(use, fn) : fn;
+}
 // eglGetProcAddress 交出的：真实现（同 gl_entry），没有时核心名给安全空实现（游戏按报的 GL 版本直接调，回空就跳到地址 0）
 void *gl_entry_or_stub(const char *name) { void *fn = gl_entry(name); return fn ? fn : gl_stub(name); }
 // __DATA,swglb：要跑在宿主栈上的名字（适配层交给游戏前套切栈桩）

@@ -681,6 +681,53 @@ static int wconst(A at, int* reg, uint32_t* value) {
 static uint32_t movz_hi(int reg, uint32_t value) {
   return 0x52a00000 | ((value >> 16) << 5) | reg;
 }
+/* 游戏缺陷修补表（S2A_FIX_TSV = 仓库 runtime/fix/<main 构建号前 16 位>.tsv，11-16）：游戏自己代码里的缺陷、宿主调度挡不住的，按构建号精确改字。
+ * 改写器别处只认代码形状、不认具体游戏；这里是例外，所以只许最窄的一种：行格式同帧率表 c 行，只收 word 种类——
+ *   c <模块> <偏移> word <原字> <新字>    # 理由
+ * 原字不符（不是这一版）、点不在代码段 → 记缺口不改。分析前改（后面的分析看到的就是改好的代码）。与帧率表分开放：帧率表的存在本身有含义
+ * （「本款已有我方帧率表」→ 社区帧率补丁不收，pack/cpatch.py），修补表不该带上它。以后与按款旋钮表并成一套时按同一格式合并 */
+static void fix_rows(void) {
+  const char* path = g->r.fix_tsv;
+  if (!path || !*path)
+    return;
+  FILE* f = fopen(path, "rb");
+  if (!f) {
+    int error = errno;
+    if (error != ENOENT)
+      fail("无法打开游戏缺陷修补表：%s", strerror(error));
+    msg("[黄] %s 游戏缺陷修补表不存在，跳过\n", g->r.module);
+    return;
+  }
+  char line[512];
+  while (fgets(line, sizeof(line), f)) {
+    char* h = strchr(line, '#');
+    if (h)
+      *h = 0;
+    char *t0 = strtok(line, " \t\r\n"), *mod = strtok(NULL, " \t\r\n"), *offs = strtok(NULL, " \t\r\n"), *kind = strtok(NULL, " \t\r\n"),
+         *origs = strtok(NULL, " \t\r\n"), *news = strtok(NULL, " \t\r\n");
+    if (!t0 || !eq(t0, "c") || !mod || !eq(mod, g->r.module))
+      continue;
+    if (!offs || !kind || !eq(kind, "word") || !origs || !news) {
+      gap(0, "fix", "游戏缺陷修补表行不全或不是 word 种类");
+      continue;
+    }
+    A off = strtoll(offs, NULL, 16);
+    uint32_t orig = (uint32_t)strtoul(origs, NULL, 16), nw = (uint32_t)strtoul(news, NULL, 16), w = 0;
+    if (off < 0 || off % 4 || off + 4 > (A)g->text) {
+      gap(off, "fix", "修补点不在代码段");
+      continue;
+    }
+    memcpy(&w, g->img + off, 4);
+    if (w != orig) {
+      gap(off, "fix", "修补点原字 0x%x，表里写的是 0x%x（不是这一版）", w, orig);
+      continue;
+    }
+    memcpy(g->img + off, &nw, 4);
+    bump("game_fix");
+    msg("游戏缺陷修补：%s+%#llx %08x → %08x\n", g->r.module, (unsigned long long)off, w, nw);
+  }
+  fclose(f);
+}
 /* Recognize the SDK code shape, never a game identity or fixed address. Scan
  * and collect every constructor before changing any instruction, as Python does. */
 static void sdk_addr_cut(void) {
@@ -3837,8 +3884,10 @@ static const char* cp_check(uint32_t w, A a) {
       (w & 0x7e000000u) == 0x36000000u || (w & 0x1f000000u) == 0x10000000u)
     return NULL;
   if ((w & 0x3b000000u) == 0x18000000u) return ((w >> 26) & 1) && (w >> 30) == 3 ? "字面量编码不认" : NULL;
-  Ins x = dis(w, a);
-  if (!x.valid) return "解不出";
+  /* 解不出要回「解不出」记缺口（pack/cpatch.py prune 剔掉那份补丁重来），不能走 dis()：它对解不出的字 REQUIRE 整个改写器断言退出
+     （诊断 D-Z5E3 / #1234：画面补丁往代码段写浮点常数 0x3f800000，整款出包红在「条件不成立：decode(w, a, &x)」） */
+  Ins x;
+  if (!decode(w, a, &x)) return "解不出";
   if (has18(&x) || eq(x.m, "svc") || ((eq(x.m, "mrs") || eq(x.m, "msr")) && strstr(operand_text(&x), "tpidr"))) return "要翻译";
   return NULL;
 }
@@ -4125,6 +4174,22 @@ static void gen_widen(void* p) {
   }
   put(off, branch(off, start));
 }
+/* f2h / i2h（打包宽高的高半）的搭档：往回 16 条内第一条写 Xd 的指令（同 runtime/src/widen.c 配对规则）。高半跳板装整个 8 字节，
+   低半只能从搭档来：搭档是已收下的 f2w / movz 宽屏点（取它的值槽），或原样留着的 MOVZ Xd。搭档让给了社区补丁 / 别的改写点
+   （那条指令被换成跳转，运行时认不出）、或找不到，高半也不改——否则低半无从得知，装成 0 → 宽 0 黑屏（#1180） */
+static int wide_partner_ok(A off, uint32_t w, int fl) {
+  uint32_t d = w & 31, mz = (fl ? 0xd2a00000u : 0xd2800000u) | d;
+  const char* pk = fl ? "f2w" : "movz";
+  for (A j = 1; j <= 16 && off >= 4 * j; j++) {
+    A o = off - 4 * j;
+    for (int i = 0; i < (int)g->wide.n; i++)
+      if (g->wide.v[i].off == o && eq(g->wide.v[i].kind, pk) && (g->wide.v[i].w & 31) == d) return 1;
+    uint32_t z = iw(o);
+    if ((z & 0xffe0001f) == mz) return !site_at(o) && !consumed(o) && !cp_claimed(o, 4);
+    if ((z & 31) == d) return 0;
+  }
+  return 0;
+}
 static void widen(void) {
   if (!g->r.widen_tsv)
     return;
@@ -4197,10 +4262,16 @@ static void widen(void) {
       if ((w & 0xffe00000) != 0xf2e00000 || (w & 31) == 31) {
         wskip(off, "f2h 点原字 0x%x 不是 MOVK Xd,#imm,LSL#48", w);
         valid = 0;
+      } else if (!wide_partner_ok(off, w, 1)) {
+        wskip(off, "f2h 点的搭档 MOVZ 没收下（让给社区补丁 / 别的改写点或找不到），高半不改");
+        valid = 0;
       }
     } else if (eq(kind, "i2h")) {   // 整数宽高打包的高半：MOVK Xd,#imm,LSL#32 → 同 f2h 装整个 8 字节
       if ((w & 0xffe00000) != 0xf2c00000 || (w & 31) == 31) {
         wskip(off, "i2h 点原字 0x%x 不是 MOVK Xd,#imm,LSL#32", w);
+        valid = 0;
+      } else if (!wide_partner_ok(off, w, 0)) {
+        wskip(off, "i2h 点的搭档 MOVZ 没收下（让给社区补丁 / 别的改写点或找不到），高半不改");
         valid = 0;
       }
     } else if (eq(kind, "asp")) {
@@ -5016,7 +5087,7 @@ static int outputs(void) {
   closeout();
   if (g->wide.n) {
     f = output("widen.tsv");
-    for (size_t i = 0; i < g->wide.n; i++) {
+    for (int i = 0; i < (int)g->wide.n; i++) {
       Wide* x = g->wide.v + i;
       fprintf(f, "%d\t", x->idx);
       hex(f, x->off);
@@ -5332,6 +5403,7 @@ static int attempt(const s2a_rewrite_request* r, const s2a_rewrite_options* opti
     g->one = cs_malloc(g->cs);
     REQUIRE(g->one);
     load();
+    fix_rows();
     fps_rows(0);
     cpatch_rows(0);
     code_rows();

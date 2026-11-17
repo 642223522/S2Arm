@@ -1,6 +1,6 @@
 # native-test-programs：多程序合集的序号登记（runtime/src/programs.c；ExecuteProgram(n) 切到包里 programs/<n>/ 那支程序）
 NATIVE_TEST_OWN += programs
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 .PHONY: native-test-programs
 native-test-programs:
 	@mkdir -p $(BUILD)/tests

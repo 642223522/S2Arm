@@ -1,6 +1,6 @@
 # native-test-nvn_mem_kinds：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += nvn_mem_kinds
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # 我方内存按种类（nvn_be_mem_kinds，S2A_MEM_SPLIT 跳变行用）：驻留集对象分类与池常驻页；Metal 4 / 3 两路
 $(BUILD)/tests/t_nvn_mem_kinds: graphics/nvn/tests/t_nvn_mem_kinds.m graphics/nvn/gfx/nvn/nvn_mtl.m $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \

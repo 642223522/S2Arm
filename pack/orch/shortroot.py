@@ -35,12 +35,27 @@ def codes(target):
         yield s
 
 
-def group_targets(paths):
-    """要访问的工作区 → 联接目标：同盘的取公共上级（通常是游戏库目录），一个入口够用"""
+def _holds(parent, path):
+    """path 就是 parent 或在它下面（不分大小写、/ 当 \\）"""
+    if not parent or not path:
+        return False
+    a, b = ntpath.normcase(parent).rstrip("\\"), ntpath.normcase(path).rstrip("\\")
+    return b == a or b.startswith(a + "\\")
+
+
+def group_targets(paths, avoid=None):
+    """要访问的工作区 → 联接目标：同盘的取公共上级（通常是游戏库目录），一个入口够用。
+    avoid = 短入口目录自己：公共上级把它包进去（游戏库设在盘根 / 用户目录，或一个路径已经是别的入口下的短路径）时不合并、各建各的——
+    联接指向自己的上级，遍历顺着入口绕圈到 WinError 1921、一直走不完（Windows 单测 600 秒超时，入口 i8wr → AppData\\Local）；
+    已经在入口目录下的路径（本来就短）不再套一层入口"""
     by_drive = {}
     for p in paths:
         by_drive.setdefault(ntpath.normcase(ntpath.splitdrive(p)[0]), []).append(p)
-    return [ntpath.commonpath(g) if len(g) > 1 else g[0] for g in by_drive.values()]
+    out = []
+    for g in by_drive.values():
+        common = ntpath.commonpath(g) if len(g) > 1 else g[0]
+        out += g if len(g) > 1 and _holds(common, avoid) else [common]
+    return [t for t in dict.fromkeys(out) if not _holds(t, avoid) and not _holds(avoid, t)]
 
 
 def is_network_path(path):
@@ -64,15 +79,15 @@ def _remote_drive(drive):
     return ctypes.windll.kernel32.GetDriveTypeW(drive + "\\") == 4   # DRIVE_REMOTE
 
 
-def junction_targets(paths):
-    """目录联接只支持本地卷；网络位置（UNC / 映射盘）保留原路径，不能映射到坏掉的联接。"""
-    return [target for target in group_targets(paths) if not is_network_path(target)]
+def junction_targets(paths, avoid=None):
+    """目录联接只支持本地卷；网络位置（UNC / 映射盘）保留原路径，不能映射到坏掉的联接。avoid 见 group_targets"""
+    return [target for target in group_targets(paths, avoid) if not is_network_path(target)]
 
 
 def to_long(path, table):
     """短路径 → 玩家路径（界面、日志、产物里的联接目标都用它）"""
     text = str(path)
-    low = ntpath.normcase(text)
+    low = ntpath.normcase(text)   # normcase：不分大小写、/ 一律当 \
     for _, long, short in table:
         key = ntpath.normcase(short)
         if low == key or low.startswith(key + "\\"):
@@ -84,11 +99,28 @@ def table_now():
     return parse_table(os.environ.get(ENV, ""))
 
 
-def show(text):
-    """给玩家看的文字里，短入口一律换回玩家路径"""
+def show(text, readlink=None):
+    """给玩家看的文字里，短入口一律换回玩家路径（也给父进程：oneclick_win 结果事件里的产物路径，子进程退出入口就拆）。
+    先按表换（不分大小写：Windows 路径大小写不敏感，表里与路径里的用户目录大小写可能不同）；表没覆盖到的残留入口
+    （<LOCALAPPDATA>\\S2A\\j\\<短号>）按磁盘上联接的真实目标换——#1173 / 诊断#0e3bd5：结果里 ipa 还是 …\\S2A\\j\\gkam\\…，
+    父进程在子进程退出、入口拆掉后按它拷 → WinError 3，出包全程跑完却报「S2Arm 自己的文件找不到了」"""
+    import re
     out = str(text)
     for _, long, short in table_now():
-        out = out.replace(short, long)
+        out = re.sub(re.escape(short), lambda m, long=long: long, out, flags=re.IGNORECASE)
+    root = entry_dir()
+    if root and ntpath.normcase(root) in ntpath.normcase(out):
+        def target(m):
+            try:
+                t = (readlink or os.readlink)(m.group(0))
+            except (OSError, ValueError, NotImplementedError):
+                return m.group(0)
+            t = str(t)
+            for prefix in ("\\\\?\\", "\\??\\"):
+                if t.startswith(prefix):
+                    t = t[len(prefix):]
+            return t.rstrip("\\") or m.group(0)
+        out = re.sub(re.escape(root) + r"\\[0-9a-z]{4}(?![0-9a-z])", target, out, flags=re.IGNORECASE)
     return out
 
 
@@ -197,7 +229,7 @@ def enter(*paths):
         rows, mapping = [], {}
         for p in full:
             os.makedirs(p, exist_ok=True)
-        for target in junction_targets(full):
+        for target in junction_targets(full, root):
             for code in codes(target):
                 link = ntpath.join(root, code)
                 if os.path.lexists(link):

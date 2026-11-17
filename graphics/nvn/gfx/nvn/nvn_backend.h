@@ -105,6 +105,9 @@ enum {
     NVN_GPU_CAP_DYN_RASTER        = 1u << 17,  // 剔除 / 正反面 / 多边形模式是动态状态（Metal 恒有 / Vulkan extended_dynamic_state(3)）
     NVN_GPU_CAP_BLIT_SCALED       = 1u << 18,  // 带缩放 / 格式转换的贴图拷贝原生（Metal 无，核心 copy_t2t_draw 用绘制做；vkCmdBlitImage）
     NVN_GPU_CAP_GPU_DESWIZZLE     = 1u << 19,  // 后端能在 GPU 上解 NVN 块线性排布（Metal 现有 nvn_deswizzle_gpu.h；定稿 #3）
+    NVN_GPU_CAP_BLIT_DEPTH_STENCIL = 1u << 20, // 同格式 D24S8/D32FS8、二维单采样、最近点缩放（含全部模板位）
+    NVN_GPU_CAP_NO_ATTACH_PASS    = 1u << 21,  // 能开一个附件都不挂的渲染通道（NVN 不挂目标照样绘制：片元只写存储 / 只为遮挡计数）。尺寸由 pass_desc 的 w / h 给；
+                                               //   Vulkan 核心 1.0 恒有（零附件子通道 + 带宽高的帧缓冲）；Metal 的 renderTargetWidth / Height 没接，不置位 → 核心照旧跳过并记账
 };
 // 绑定资源类别（布局项 cls；描述符上限按它分）
 enum { NVN_GPU_RES_UBO = 0, NVN_GPU_RES_SSBO, NVN_GPU_RES_TEX, NVN_GPU_RES_SAMP, NVN_GPU_RES_TEX_SAMP, NVN_GPU_RES_IMAGE,
@@ -296,7 +299,12 @@ enum {
 };
 // 取（或建）图形管线。核心从不因 PENDING 跳绘制：拿不到就改用 SYNC 等。线程：[提交] 与 [后台]。生命周期：后端缓存持有，核心不 release。
 // 出错：NVN_GPU_E_COMPILE / NVN_GPU_E_PENDING / NVN_GPU_E_LAYOUT（阶段布局合并冲突）/ NVN_GPU_E_ARG（顶点 / 片元接口不配对，同 pso_pair_ok）。
+// 注：VK 后端本身把 ASYNC / PROVISIONAL 按 SYNC 处理（本层不内建后台建管线）。真正的「后台建 + 可跳首用」在其上的
+//   安卓 demand 层（android/native/nvn/nvn_vk_pipe_demand.c）：它用 nvn_gpu_pipe_lookup 判命中、用后台线程调 SYNC 建，
+//   由回放层 rp_draw 按 iOS skip_safe / 帧预算 / late-stuck 决定跳过或限时等。
 nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *out, nvn_gpu_err *err);
+// 只查缓存、不建：1 = 已有（*out 有效，后端缓存持有），0 = 没有。给异步首用 / 预热等「先看有没有」的调用方。线程：[提交] / [后台]。
+int nvn_gpu_pipe_lookup(const nvn_gpu_pipe_desc *d, nvn_gpu_pipe *out);
 nvn_gpu_rc nvn_gpu_cpipe_get(const nvn_gpu_stage_desc *cs, int mode, nvn_gpu_pipe *out, nvn_gpu_err *err);   // 计算管线；mode 只认 SYNC / ASYNC
 
 // ---------- 命令：开段、丢弃、通道、状态、绑定、绘制、派发、拷贝 ----------
@@ -327,6 +335,7 @@ typedef struct {
     uint8_t fb_fetch;     // 本通道有片元读本像素颜色（各颜色附件格式须有 NVN_GPU_FMT_FB_FETCH）
     uint8_t _rsv[2];
 } nvn_gpu_pass_desc;
+// 一个附件都不挂（ncolor 个槽全空、无深度模板）只在 caps 有 NVN_GPU_CAP_NO_ATTACH_PASS 时合法，此时 w / h 就是帧缓冲尺寸（核心按视口给）。
 // 开 / 关渲染通道。load / store 全由核心定（TBDR 策略在核心）。通道内只许状态 / 绑定 / 绘制 / 遮挡查询。线程：[提交]。出错：粘滞 ORDER / ARG。
 void nvn_gpu_pass_begin(nvn_gpu_cmd c, const nvn_gpu_pass_desc *d);
 void nvn_gpu_pass_end(nvn_gpu_cmd c);
@@ -388,6 +397,9 @@ void nvn_gpu_copy_tex_buf(nvn_gpu_cmd c, nvn_gpu_tex src, uint32_t level, uint32
                           nvn_gpu_buf dst, uint64_t off, uint64_t row_bytes, uint64_t image_bytes);
 void nvn_gpu_copy_tex(nvn_gpu_cmd c, nvn_gpu_tex src, uint32_t slevel, uint32_t slayer, const NVNcopyRegion *sr,
                       nvn_gpu_tex dst, uint32_t dlevel, uint32_t dlayer, const NVNcopyRegion *dr);
+// 颜色 blit 的源区域可用负 width/height 表示反向端点：xoffset/yoffset 是起点，
+// 另一端为 offset+extent；后端先校验归一化矩形，再保留端点次序。目标仍为正尺寸。
+// 该约定不扩展多采样解析、深度模板复制及三维复制。
 void nvn_gpu_blit(nvn_gpu_cmd c, nvn_gpu_view src, const NVNcopyRegion *sr, nvn_gpu_view dst, const NVNcopyRegion *dr, int linear);   // 要 CAP_BLIT_SCALED
 void nvn_gpu_clear_view(nvn_gpu_cmd c, nvn_gpu_view v, const float rgba[4], const uint32_t uint4[4], int is_int);
 // v4：通道内把当前通道的附件按矩形清成给定值（NVN 带裁剪或带写掩码的 ClearColor / ClearDepthStencil；整屏全掩码的清除由核心折成 load = CLEAR，不走这里）。

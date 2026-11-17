@@ -26,6 +26,7 @@ struct s2a_vk_device {
     VkCommandPool command_pool;
     char driver_name[128];
     char driver_info[128];
+    int driver_id;   // VkDriverId（VkPhysicalDeviceDriverProperties.driverID）：区分厂商驱动与 Mesa 实现
     int has_android_surface;
     int has_swapchain;
     // VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT（Vulkan 1.1 / VK_KHR_maintenance1）：
@@ -36,9 +37,21 @@ struct s2a_vk_device {
     int timeline_semaphore_enabled;
     int index_type_uint8_enabled;
     int draw_indirect_count_enabled; // KHR extension actually enabled, both entry points present
+    // #977：VK_EXT_vertex_attribute_divisor 的 vertexAttributeInstanceRateDivisor 已启用（实例除数大于 1 要它）；
+    // max_vertex_attrib_divisor 是设备上限（未启用时为 0）。
+    int vertex_divisor_enabled;
+    uint32_t max_vertex_attrib_divisor;
     PFN_vkCmdDrawIndirectCountKHR draw_indirect_count;
     PFN_vkCmdDrawIndexedIndirectCountKHR draw_indexed_indirect_count;
     int shader_draw_parameters_enabled;
+    // VK_KHR_sampler_mirror_clamp_to_edge 已启用：采样器可用 MIRROR_CLAMP_TO_EDGE（实例按 1.1 建，用不到 1.2 核心里的同名特性）。
+    int sampler_mirror_clamp_enabled;
+    // VK_EXT_custom_border_color 已启用且 customBorderColors 特性开着：CLAMP_TO_BORDER 的采样器可用任意边框色（#976）。
+    // custom_border_without_format：customBorderColorWithoutFormat 也开着，建采样器时可以不给视图格式。
+    // custom_border_max：maxCustomBorderColorSamplers，同时存活的自定义边框色 VkSampler 个数上限。
+    int custom_border_enabled;
+    int custom_border_without_format;
+    uint32_t custom_border_max;
     // 0 = 没有校准扩展；1 = VK_KHR_calibrated_timestamps；2 = VK_EXT_calibrated_timestamps。
     // GPU 时间戳换算到游戏时钟需要用它求 GPU 域与 CLOCK_MONOTONIC 的偏移。
     int calibrated_timestamps;
@@ -52,6 +65,13 @@ struct s2a_vk_device {
     uint32_t depth_subst_mask;
     // #975：VK_EXT_4444_formats 已启用（formatA4B4G4R4）；16 位打包格式走退回格式的位（nvn_vk_format.h k_p16 序）。
     int formats_4444_enabled;
+    // VK_EXT_depth_clip_control 已启用（depthClipControl）：管线可把裁剪深度设成 [-1, 1]（nvn_backend.h NVN_GPU_CAP_DEPTH_CLIP_CTL）
+    int depth_clip_control_enabled;
+    // #1070 第 2 步探针：VK_EXT_map_memory_placed（把设备内存映射到指定 CPU 地址，池镜像零拷贝要它）。只查不启用：
+    //   placed_ext = 设备列出了扩展；placed_map / range / unmap_reserve = 三项特性；placed_align = minPlacedMemoryMapAlignment；
+    //   map_memory2_ext = 列出 VK_KHR_map_memory2（placed 依赖它）；max_alloc = maxMemoryAllocationSize（大池要按它拆段）
+    int placed_ext, placed_map, placed_range, placed_unmap_reserve, map_memory2_ext;
+    uint64_t placed_align, max_alloc;
     uint32_t p16_fallback_mask;
     int bc_decode_forced;   // S2A_VK_BC_DECODE=force（仅 debug 构建生效）
     // VK_EXT_external_memory_host：把 host 指针（guest 内存池直映射地址）导入成 VkBuffer 内存的零拷贝路径。

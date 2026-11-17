@@ -81,6 +81,18 @@ _root_identity_shared() {
   shared=$(_root_resolve_dir "$S2A_ROOTS_SHARED") || return 1
   [ "$actual" = "$shared" ]
 }
+# 本树提交号（.root_src）：发布快照不带 .git，读打包时写进 engine.json 的 commit；快照只有那一个提交，「a 是 b 的祖先」只在两者都是它时成立（与原先在快照库里跑 merge-base 结果相同）
+_root_snap_commit() {
+  local e; e=$(dirname "${BASH_SOURCE[0]}")/../engine.json; [ -f "$e" ] || return 1
+  "${S2A_PYTHON:-${S2A_PY:-python3}}" -B -I -c 'import json, sys
+c = json.load(open(sys.argv[1], encoding="utf-8")).get("commit")
+if not c: sys.exit(1)
+print(c)' "$e"
+}
+_root_head() { _root_snap_commit || git -C "$(dirname "${BASH_SOURCE[0]}")/.." rev-parse HEAD 2> /dev/null; }
+_root_is_ancestor() {
+  local h; if h=$(_root_snap_commit); then [ "$1" = "$h" ] && [ "$2" = "$h" ]; else git -C "$(dirname "${BASH_SOURCE[0]}")/.." merge-base --is-ancestor "$1" "$2" 2> /dev/null; fi
+}
 _root_tree_ok() {   # 本树能不能改共享现行（$1 = 款）：HEAD 是 origin/main 上的提交（不是分支）、阶段相关目录干净、不比现行的来源提交旧（只许往前，不乒乓）
   local r why= src cur; r=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
   # 不联网：main 的每个提交都是本机列车合出来再推上去的，origin/main 本机已是最新（11-02 维护者「咱们是唯一的合并者」）
@@ -233,7 +245,7 @@ root_begin() {
   else mkdir -p "$w.tmp"; fi
   ( cd "$w.tmp" && for f in .stage_*; do [ -f "$f" ] && printf '%s\t%s\n' "$f" "$(cat "$f")"; done ) > "$w.tmp/.root_base_stages" 2> /dev/null   # 开工时各阶段键（root_commit 判别的树动没动过同一阶段）
   _root_owner > "$w.tmp/.root_pid"   # 持有者（root_gc 只删持有者已死的 .tmp；10-23 排烘焙道 2 小时的 .tmp 被按时间删掉、出包中途失败）
-  basename "${cur:-无}" > "$w.tmp/.root_base"; git -C "$(dirname "${BASH_SOURCE[0]}")/.." rev-parse HEAD > "$w.tmp/.root_src" 2> /dev/null   # 来源提交：护栏判「只许往前」
+  basename "${cur:-无}" > "$w.tmp/.root_base"; _root_head > "$w.tmp/.root_src"   # 来源提交：护栏判「只许往前」
   echo "$w.tmp"
 }
 _root_shards() {   # _root_shards <目录> <标签>：记一行直连库分片清点（11-01 究极4 分片丢在出包之后某步，要能定位）；记不成不影响提交。日志 ${S2A_SHARD_LOG}（缺省 ${S2A_ROOTS}/.shard_inventory.log）
@@ -274,7 +286,7 @@ _root_replay() {   # _root_replay <W.tmp> <新现行> <路径…>：新现行克
   done
   # 来源提交取两边较新的：新现行来自更新的 main 时留它的（旧树重放一个没被动过的阶段，不把共享现行的来源退回旧提交）
   local ns ms; ns=$(cat "$r/.root_src" 2> /dev/null); ms=$(cat "$w/.root_src" 2> /dev/null)
-  { [ -z "$ns" ] || git -C "$(dirname "${BASH_SOURCE[0]}")/.." merge-base --is-ancestor "$ns" "$ms" 2> /dev/null; } && cp "$w/.root_src" "$r/.root_src" 2> /dev/null
+  { [ -z "$ns" ] || _root_is_ancestor "$ns" "$ms"; } && cp "$w/.root_src" "$r/.root_src" 2> /dev/null
   basename "$now" > "$r/.root_base"
   _root_shards "$r" "replay·换完路径后"
   _root_trash "$w" && mv "$r" "$w"
@@ -293,7 +305,7 @@ root_commit() {
     if _root_shared && [ "$now" != 无 ]; then local ns ms st touched=; ns=$(cat "$(root_cur "$g")/.root_src" 2> /dev/null); ms=$(cat "$w.tmp/.root_src" 2> /dev/null)
       for st in ${ROOT_REPLAY:-}; do case $st in .stage_*) [ "$(cat "$(root_cur "$g")/$st" 2> /dev/null)" = "$(awk -F'\t' -v k="$st" '$1 == k { print $2 }' "$w.tmp/.root_base_stages" 2> /dev/null)" ] || touched=$st;; esac; done
       [ -z "${ROOT_REPLAY:-}" ] && touched=整份   # 不声明产物路径的阶段本来就不重放
-      if [ -n "$touched" ] && [ -n "$ns" ] && [ -n "$ms" ] && ! git -C "$(dirname "${BASH_SOURCE[0]}")/.." merge-base --is-ancestor "$ns" "$ms" 2> /dev/null; then
+      if [ -n "$touched" ] && [ -n "$ns" ] && [ -n "$ms" ] && ! _root_is_ancestor "$ns" "$ms"; then
         _root_unlock "$g"; _root_rm "$w.tmp"
         echo "【红】$g 现行在本阶段期间已由更新的 main ${ns:0:9} 刷过（本树 ${ms:0:9}）：共享现行只许往前，丢弃 $(basename "$w")、不重放；要用本树产物走私有根 S2A_ROOTS=${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/roots_priv/<名>" >&2; return 1; fi
     fi
@@ -367,18 +379,7 @@ root_tag() { local t=${2:?标签} n=1 c; c=$t; while [ -e "$(_root_dir "${1:?款
 root_stage_done() {   # S2A_STAGE_KEYS=<文件>：只算键模式——记「阶段<TAB>键」后当作已是该键（阶段脚本随即退出，不出任何产物）
   if [ -n "${S2A_STAGE_KEYS:-}" ]; then printf '%s\t%s\n' "${2:?阶段}" "${3:?键}" >> "$S2A_STAGE_KEYS"; return 0; fi
   [ -n "${1:-}" ] && [ "$(cat "$1/.stage_${2:?阶段}" 2>/dev/null)" = "${3:?键}" ]; }
-# 管线归档 0 KB 判据（10-21 维护者：d2r / d3 / mhrise 管线归档全片失败、0 KB 照样当部分包成了现行并登记，玩家首遇的管线全部现编）：
-#   root_pso0 <产物根或其 shaders 的上一级>：有管线分片（shader_pack.json 的 pso.chunks > 0）而归档 0 KB → 打印分片数、返回 0（= 是坏的）；
-#   没有分片（程序 0）、没有 shader_pack.json、旧版没有这两个字段 → 返回 1（不算 0 KB）
-#   直连款（包里有直连库，root_has_direct）→ 返回 1：双轨口径下通用段本来就不出管线归档（pack/refresh.sh S2A_SHADER_NO_PSO=1），
-#   shader_pack.json 照记计划分片数、归档 0 KB 是有意的（10-25 01006F8002326000 3.0.3 正式包「4000 片全部失败」误红、没登记）；直连库没出成时通用走全量、照判
 # root_has_direct <产物根>：现行有直连库——keys.tsv 非空，或离线 0 支的三种形态：OpenGL 只有 gl/gl_shaders.tsv 表头、Vulkan 只有 vk/vk_shaders.tsv 表头
 #   （运行时生成 SPIR-V、出包不起局，11-05）、抽取缺口的运行时现编空库 runtime_only.txt。与 pack/stage_direct.sh「算出了库」同一口径
 #   （11-05：原先只认 keys.tsv 非空，这三种都会被当成通用款去查管线归档 0 KB、登记闸门误红）
 root_has_direct() { local d=${1:?根}/shaders/direct; [ -s "$d/keys.tsv" ] || [ -s "$d/gl/gl_shaders.tsv" ] || [ -s "$d/vk/vk_shaders.tsv" ] || [ -f "$d/runtime_only.txt" ]; }
-root_pso0() { root_has_direct "${1:?根}" && return 1; local n; n=$(python3 -c "import json,sys;d=json.load(open(sys.argv[1]));n=(d.get('pso') or {}).get('chunks') or 0;print(n if n > 0 and d.get('pso_archive_kb') == 0 else '')" "${1:?根}/shaders/shader_pack.json" 2> /dev/null); [ -n "$n" ] && echo "$n"; }
-# 登记前闸门：root_pso0_gate <产物根> <款>：不是 0 KB → 返回 0（放行，不打印）；0 KB → 打【红】返回 1；
-#   例外只能显式开：S2A_ALLOW_PSO0=<原因>（10-21 维护者：暗黑3 录按键包只录制、不评流畅度，例外登记一次）→ 打 🟡 一行、返回 0，调用方把原因写进登记说明
-root_pso0_gate() { local n; n=$(root_pso0 "${1:?根}") || return 0
-  if [ -n "${S2A_ALLOW_PSO0:-}" ]; then echo "🟡 ${2:-?} 管线归档 0 KB（${n} 片全部失败）：按 S2A_ALLOW_PSO0 例外登记——${S2A_ALLOW_PSO0}"; return 0; fi
-  echo "【红】${2:-?} 管线归档 0 KB（${n} 片全部失败）：包已出、不登记（只录制等确需例外时显式设 S2A_ALLOW_PSO0=<原因>）"; return 1; }

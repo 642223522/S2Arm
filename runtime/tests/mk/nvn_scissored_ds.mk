@@ -1,5 +1,5 @@
 NATIVE_TEST_OWN += nvn_scissored_ds
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 NVN_SCISSORED_DS_BINARY ?= $(BUILD)/tests/t_nvn_scissored_ds
 $(NVN_SCISSORED_DS_BINARY): graphics/nvn/tests/t_nvn_scissored_ds.m $(NVN_MTL_DEPS) graphics/nvn/gfx/nvn/nvn_protos.h $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \

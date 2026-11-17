@@ -73,9 +73,8 @@ public sealed class JobEventReader(string jobId, string operation)
 /// </summary>
 public static class PackJobClient
 {
-    public static readonly IReadOnlySet<string> Operations =
-        new HashSet<string>(StringComparer.Ordinal) { "export", "ipa", "installCheck", "install", "installRemove", "installRestore", "installMode", "installUpdate", "customize",
-            "moveGame", "relinkGame", "forgetGame", "clean", "delete", "spaceFree", "devCert" };
+    // 操作名不在前端设白名单（11-15：前端清单是自己给自己加的卡点——0.4.0 漏登记两页，请求进引擎前就被拒，#1149 卡死）：
+    //   请求原样交给引擎，引擎不认识的操作自己回失败结果（pack/jobs/main.py「不支持的任务类型。」），界面把它当普通失败显示成文字
 
     /// <param name="Secrets">Environment variables for this one job process only (the developer certificate password,
     /// pack/jobs/devcert.py); never written into the request file, and main.run_request drops them from its environment first.</param>
@@ -85,11 +84,10 @@ public static class PackJobClient
     /// <summary>The request body the backend reads (pure; unit-tested).</summary>
     public static Dictionary<string, object?> Payload(Request request, string jobId)
     {
-        if (!Operations.Contains(request.Operation)) throw new ArgumentException("Unsupported pack operation.", nameof(request));
         // The developer certificate and the install mode belong to this computer, installUpdate to the phone (install.update_phone): no game.
         // export 的游戏在计划里（plan.items，ExportStream），信封上不带
-        var perGame = request.Operation is not ("devCert" or "installMode" or "installUpdate" or "export");
-        if (perGame && string.IsNullOrWhiteSpace(request.GameId)) throw new ArgumentException("A game is required.", nameof(request));
+        // 要不要游戏号由作业层自己判（自己人之间不设允许清单，#1149）：有就带，没有就不带；要游戏的作业缺了由作业层报「请求里没有游戏号」。
+        //   原先这里按名单要求带游戏号，名单漏登的 phoneKeptPull / installUpdatePrepare 在这一步抛异常、被循环吞掉，Windows 上自动更新一次都没发出去（0.5.0 候选验收）
         var payload = new Dictionary<string, object?>
         {
             ["schema"] = 1, ["jobId"] = jobId, ["operation"] = request.Operation,
@@ -98,14 +96,15 @@ public static class PackJobClient
             // The job stops itself when this launcher process is gone (main.py supervise).
             ["parentPid"] = Environment.ProcessId
         };
-        if (perGame) payload["gameId"] = request.GameId;
+        if (!string.IsNullOrWhiteSpace(request.GameId)) payload["gameId"] = request.GameId;
         // The bundled iPhone shell is a launcher path setting (Settings → Shell); ipa.bundled_shell reads shellDir.
         // export 的每一步子作业沿用这份请求（pack/jobs/export_plan.py），iPhone 那步要的壳与随包资源一并带上
         if (request.Operation is "ipa" or "install" or "installUpdate" or "export") payload["shellDir"] = Path.GetFullPath(request.Paths.Shell);
-        // Bundled resources next to S2Arm.exe (bundle_win.py layout): ipa reads the shared fonts from resources/Fonts (core.fonts_dir; without it
+        // Bundled resources next to S2Arm.exe (bundle_win.py layout): sgradeScan reads CommunityPatches/patches-v3.tar (v2 on older installs);
+        // ipa reads the shared fonts from resources/Fonts (core.fonts_dir; without it
         // "shared fonts missing", tianyan 11-07); installCheck / install use the Impactor + plumesign shipped in resources/ThirdParty/Impactor
         // (pack/jobs/impactor.py bundled, 11-07 维护者: no download detour for players).
-        if (request.Operation is "ipa" or "export" or "installCheck" or "install" or "installRemove" or "installRestore" or "installMode" or "installUpdate") payload["resources"] = Path.GetFullPath(AppContext.BaseDirectory);
+        if (request.Operation is "ipa" or "export" or "installCheck" or "install" or "installRemove" or "installRestore" or "installMode" or "installUpdate" or "sgradeScan") payload["resources"] = Path.GetFullPath(AppContext.BaseDirectory);
         foreach (var (key, value) in request.Extra ?? new Dictionary<string, object?>())
         {
             if (payload.ContainsKey(key)) throw new ArgumentException("Extra field overrides the request envelope: " + key);
@@ -127,7 +126,7 @@ public static class PackJobClient
         cancellationToken.ThrowIfCancellationRequested();
         jobId ??= "win-" + Guid.NewGuid().ToString("N");   // 前端作业登记先取好的任务号（控制口 /cancel 按它核对）；不给就现取
         var privateRoot = Path.GetFullPath(request.PrivateRoot);
-        using var file = PrivateJobRequest.Create(privateRoot, JsonSerializer.Serialize(Payload(request, jobId)));
+        using var file = PrivateJobRequest.Create(privateRoot, JsonOut.Serialize(Payload(request, jobId)));
         var info = EnvironmentProbe.StartInfo(request.Paths, file.FilePath);
         info.Arguments = "/d /v:off /s /c \"\"%S2A_UI_RUNTIME%\\s2arm_env.cmd\" && cd /d \"%S2A_UI_ENGINE%\" && python -X utf8 pack/jobs/main.py run --request \"%S2A_UI_REQUEST%\"\"";
         foreach (var (key, value) in request.Secrets ?? new Dictionary<string, string>()) info.Environment[key] = value;

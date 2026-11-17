@@ -38,7 +38,7 @@ struct GameInfoPanel: View {
     @EnvironmentObject var loc: Localizer
     let game: GameSummary
 
-    private func t(_ id: String) -> String { BackendText.launcherText("export.info." + id, language: loc.lang == .zh ? "zh-Hans" : "en") }
+    private func t(_ id: String) -> String { BackendText.launcherText("export.info." + id, language: loc.lang.sharedCode) }
 
     private var dlc: String {
         guard game.dlcCount > 0 else { return t("none") }

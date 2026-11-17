@@ -46,7 +46,8 @@ public sealed partial class EnvironmentWindow
 
     private void RenderWelcome(StackPanel body)
     {
-        var outer = new Grid { ColumnDefinitions = new ColumnDefinitions("*,580") };
+        // 宽窗左右两栏；窗宽不够左栏放下大标题时（右栏固定 580，左栏会被挤到一两个字宽）改上下排：介绍在上、三步在下（11-14 体验梳理）
+        var outer = new Grid { ColumnDefinitions = new ColumnDefinitions("*,580"), RowDefinitions = new RowDefinitions("Auto,Auto") };
 
         // ── 左列：介绍 ──────────────────────────────────────────────────
         var intro = new StackPanel { Spacing = 0 };
@@ -93,6 +94,19 @@ public sealed partial class EnvironmentWindow
             steps.Children.Add(oneclick);
         }
         Grid.SetColumn(steps, 1); outer.Children.Add(steps);
+        bool? stacked = null;
+        void Arrange(double width)
+        {
+            var narrow = width < WelcomeTwoColumnMinWidth;
+            if (stacked == narrow) return;
+            stacked = narrow;
+            outer.ColumnDefinitions = new ColumnDefinitions(narrow ? "*" : "*,580");
+            Grid.SetColumn(steps, narrow ? 0 : 1); Grid.SetRow(steps, narrow ? 1 : 0);
+            intro.Margin = narrow ? new Thickness(48, 48, 48, 8) : new Thickness(48);
+            steps.Margin = narrow ? new Thickness(48, 24, 48, 44) : new Thickness(0, 44, 48, 44);
+        }
+        Arrange(Bounds.Width);
+        outer.SizeChanged += (_, e) => Arrange(e.NewSize.Width);
         body.Children.Add(outer);
     }
 
@@ -116,9 +130,10 @@ public sealed partial class EnvironmentWindow
 
     private string EnvironmentSummary()
     {
-        var lines = new List<string> { "S2Arm 环境检查未通过", "", "S2Arm：" + AppVersion,
-            "系统：" + System.Runtime.InteropServices.RuntimeInformation.OSDescription, "" };
-        lines.AddRange((report?.Checks ?? []).Where(c => c.Status != "ok").Select(c => $"{c.Name}（{c.Status}，{c.Code ?? "-"}）：{c.Message}"));
+        var lines = new List<string> { T("envcopy.title"), "", T("envcopy.app").Replace("{0}", AppVersion),
+            T("envcopy.system").Replace("{0}", System.Runtime.InteropServices.RuntimeInformation.OSDescription), "" };
+        lines.AddRange((report?.Checks ?? []).Where(c => c.Status != "ok").Select(c => T("envcopy.check")
+            .Replace("{0}", c.Name).Replace("{1}", c.Status).Replace("{2}", c.Code ?? "-").Replace("{3}", c.Message)));
         lines.Add(""); lines.Add(diagnostics);
         return string.Join("\n", lines).Replace(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "~");
     }
@@ -266,6 +281,9 @@ public sealed partial class EnvironmentWindow
         Navigate("build");
     }
 
+    // 两栏的下限：右栏 580 + 左栏放得下「大标题一行至少一个完整词」约 380 + 左右边距
+    private const double WelcomeTwoColumnMinWidth = 1060;
+
     private static Canvas Spacer(double height) => new() { Height = height };
 
     private static TextBlock BigTitle(string text) => new()
@@ -372,5 +390,5 @@ public sealed partial class EnvironmentWindow
     }
 
     private string LibraryFailed(string folder, string reason) =>
-        T("welcome.sheet.libraryFailed").Replace("{0}", folder).Replace("{1}", reason.Length > 0 ? reason : T("library.failed"));
+        T("welcome.sheet.libraryFailed").Replace("{0}", folder).Replace("{1}", reason.Length > 0 ? B(reason) : T("library.failed"));   // 作业层原句按界面语言翻
 }

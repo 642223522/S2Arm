@@ -1,6 +1,6 @@
 # native-test-ext_display：外接显示器原生全屏的接线（ios/extdisplay.m 登记场景配件、ios/app.m S2AGameVC、graphics/nvn/host_adapt.m 出图视图）
 NATIVE_TEST_OWN += ext_display
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 .PHONY: native-test-ext_display
 native-test-ext_display:
 	@bash runtime/tests/t_ext_display.sh

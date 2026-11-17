@@ -10,9 +10,11 @@ final class LauncherLanguageTests: XCTestCase {
 
     func testFirstLaunchFollowsSystem() {
         XCTAssertEqual(Lang.initial(preferred: ["zh-Hans-CN"]), .zh, "简中系统")
-        XCTAssertEqual(Lang.initial(preferred: ["zh-Hant-TW"]), .zh, "繁中系统暂时落简中")
+        XCTAssertEqual(Lang.initial(preferred: ["zh-Hant-TW"]), Lang("zh-Hant"), "繁中系统落繁中（11-14 加繁中）")
+        XCTAssertEqual(Lang.initial(preferred: ["zh-TW"]), Lang("zh-Hant"), "台湾地区码也落繁中")
         XCTAssertEqual(Lang.initial(preferred: ["en-US"]), .en, "英文系统")
-        XCTAssertEqual(Lang.initial(preferred: ["ja-JP"]), .en, "日文系统落英文")
+        XCTAssertEqual(Lang.initial(preferred: ["ja-JP"]), Lang("ja"), "日文系统落日文（11-14 加日文）")
+        XCTAssertEqual(Lang.initial(preferred: ["ko-KR"]), .en, "没有文案的语言落英文")
     }
 
     func testChoiceRemembered() {
@@ -27,6 +29,6 @@ final class LauncherLanguageTests: XCTestCase {
         Lang.saved = Lang.find("")   // 设置里选「跟随系统」（Localizer.choose("")）
         XCTAssertNil(Lang.saved)
         XCTAssertEqual(Lang.initial(preferred: ["zh-Hans-CN"]), .zh, "回到跟随系统")
-        XCTAssertEqual(Lang.initial(preferred: ["ja-JP"]), .en)
+        XCTAssertEqual(Lang.initial(preferred: ["ko-KR"]), .en)
     }
 }

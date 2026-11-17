@@ -7,8 +7,10 @@ public struct S2ArmShellHostView: View {
     let model: S2ArmShellHostModel
     public init(model: S2ArmShellHostModel) { self.model = model }
     public var body: some View {
-        LibraryView(games: model.games, controllers: model.controllers, actions: model.actions, input: model.input,
-                    padSnapshot: model.padSnapshot)
+        library
+            #if os(tvOS)
+            .disabled(model.playersOpen)   // 玩家页开着时焦点不落到背后的库界面上
+            #endif
             // 本地玩家（#623）：顶部玩家按钮显示这次用谁的身份玩，点开切换页
             .environment(\.shellPlayer, ShellPlayer(name: model.currentPlayer.displayName, open: { model.openPlayers() }))
             .overlay {
@@ -17,6 +19,9 @@ public struct S2ArmShellHostView: View {
                                      select: { model.selectPlayer($0) }, add: { model.addPlayer($0) },
                                      rename: { model.renamePlayer($0, $1) }, remove: { model.removePlayer($0) },
                                      close: { model.closePlayers() })
+                    #if os(tvOS)
+                        .onExitCommand { model.closePlayers() }   // 遥控器「返回」/ 手柄 B 关玩家页，不退到主屏
+                    #endif
                 }
             }
             .onAppear {
@@ -25,15 +30,29 @@ public struct S2ArmShellHostView: View {
                 if s2a_shell_take_open_settings() != 0 { DispatchQueue.main.async { NotificationCenter.default.post(name: .shellOpenSettings, object: nil) } }
             }
             .onDisappear { model.stopControllers() }
-            // 删除游戏的进度与结果（正在删除 → 已删除，释放多少 / 失败原因）：库顶上一条，点一下收起结果
+            // 库顶上的提示：这次安装丢了「提高内存上限」权限（可关，只管这次打开；「了解详情」看各装法怎么带上）；删除游戏的进度与结果（点一下收起结果）
             .overlay(alignment: .top) {
-                if let notice = model.deleteNotice {
-                    DeleteNoticeBar(notice: notice).onTapGesture { model.dismissDeleteNotice() }
-                        .padding(.top, 12).padding(.horizontal, 16)
-                        .transition(.move(edge: .top).combined(with: .opacity))
+                VStack(spacing: 10) {
+                    if let iml = model.imlNotice, !model.guideOpen {   // 首次引导开着时先不出（引导盖在上面、点不到关闭），引导关了再出
+                        IMLNoticeBar(notice: iml, close: { model.closeIMLNotice() }, more: { model.openIMLGuide() })
+                            .onAppear { s2a_shell_iml_notice_seen() }   // 真显示出来才记（起局那条不再重复）
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                    if let nro = model.nroNotice, !model.guideOpen {   // 待补文件（#8be819）：连电脑开启动器自动补上；补好后自动消失
+                        IMLNoticeBar(notice: nro, close: { model.closeNRONotice() }, symbol: "puzzlepiece.extension", id: "nro.notice")
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                    if let notice = model.deleteNotice {
+                        DeleteNoticeBar(notice: notice).onTapGesture { model.dismissDeleteNotice() }
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
                 }
+                .padding(.top, 56).padding(.horizontal, 16)   // 让开游戏库顶栏（LibraryView：安全区下 6 pt + 高 44 pt），不挡玩家 / 手柄 / 设置按钮
             }
             .animation(.smooth(duration: 0.25), value: model.deleteNotice)
+            .animation(.smooth(duration: 0.25), value: model.imlNotice)
+            .sheet(isPresented: Binding(get: { model.imlGuideOpen }, set: { model.imlGuideOpen = $0 })) { IMLGuideView() }
+            .animation(.smooth(duration: 0.25), value: model.nroNotice)
             // 首次进入引导（三页横滑：设置 / 金手指 / 故障报修），盖在最上面；看过一次就不再弹
             .overlay {
                 if model.guideOpen {
@@ -42,7 +61,7 @@ public struct S2ArmShellHostView: View {
                 }
             }
             .animation(.smooth(duration: 0.25), value: model.guideOpen)
-        #if canImport(UIKit)
+        #if canImport(UIKit) && !os(tvOS)
             // 回前台重判资源包：玩家去「文件」/ 访达拷完资源包回来，不用重开 App
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in model.refreshGameData() }
             // 虚拟手柄布局编辑页（设置里「按键布局 → 调整位置…」）：盖在库界面上，关了回到设置
@@ -57,7 +76,58 @@ public struct S2ArmShellHostView: View {
                                           save: { model.saveIdentity(id, name: $0, cover: $1) }, reset: { model.resetIdentity(id) }, close: { model.closeIdentityEditor(id) })
                 }
             }
+        #elseif os(tvOS)
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in model.refreshGameData() }
         #endif
+    }
+
+    /// iOS：触屏 + 自绘手柄焦点的库界面；tvOS：遥控器 / 手柄走系统焦点的电视库界面（TVLibraryView）。两边同一个模型、同一套 actions
+    @ViewBuilder private var library: some View {
+        #if os(tvOS)
+        TVLibraryView(games: model.games, controllers: model.controllers, actions: model.actions, input: model.input)
+        #else
+        LibraryView(games: model.games, controllers: model.controllers, actions: model.actions, input: model.input,
+                    padSnapshot: model.padSnapshot)
+        #endif
+    }
+}
+
+/// 丢了「提高内存上限」权限的提示：黄色警示、发生了什么（标题）+ 后果与怎么办（正文），右上角关闭；不挡库里的操作
+struct IMLNoticeBar: View {
+    let notice: S2ArmShellHostModel.IMLNotice
+    let close: () -> Void
+    var more: (() -> Void)? = nil   // 「了解详情」：给了才出这个按钮
+    var symbol = "memorychip"
+    var id = "iml.notice"
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: symbol).font(.system(size: 18, weight: .semibold)).foregroundStyle(Color(red: 1, green: 0.78, blue: 0.28))
+                .padding(.top, 2).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(notice.title).font(.system(size: 15, weight: .semibold)).foregroundStyle(.white).fixedSize(horizontal: false, vertical: true)
+                Text(notice.body).font(.system(size: 13)).foregroundStyle(.white.opacity(0.72)).fixedSize(horizontal: false, vertical: true)
+                if let more {
+                    Button(action: more) {
+                        Text(shellText("Learn more")).font(.system(size: 13, weight: .semibold)).foregroundStyle(Color(red: 1, green: 0.78, blue: 0.28))
+                            .padding(.top, 2).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).accessibilityIdentifier(id + ".more")
+                }
+            }
+            Spacer(minLength: 0)
+            Button(action: close) {
+                Image(systemName: "xmark").font(.system(size: 13, weight: .bold)).foregroundStyle(.white.opacity(0.7)).frame(width: 30, height: 30)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).accessibilityLabel(shellText("Close")).accessibilityIdentifier(id + ".close")
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .background(Color(red: 0.075, green: 0.075, blue: 0.082).opacity(0.96), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color(red: 1, green: 0.78, blue: 0.28).opacity(0.45)))
+        .shadow(color: .black.opacity(0.45), radius: 20)
+        .frame(maxWidth: 620)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("iml.notice")
     }
 }
 
@@ -71,14 +141,14 @@ struct DeleteNoticeBar: View {
             case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
             case .failed: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Color(red: 1, green: 0.42, blue: 0.40))
             }
-            Text(Self.text(notice)).font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
+            Text(Self.text(notice)).font(.system(size: 15 * ShellFonts.tvScale, weight: .semibold)).foregroundStyle(.white)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 18).padding(.vertical, 12)
         .background(Color(red: 0.075, green: 0.075, blue: 0.082).opacity(0.96), in: Capsule())
         .overlay(Capsule().strokeBorder(.white.opacity(0.12)))
         .shadow(color: .black.opacity(0.45), radius: 20)
-        .frame(maxWidth: 560)
+        .frame(maxWidth: 560 * ShellFonts.tvScale)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("delete.notice")
     }

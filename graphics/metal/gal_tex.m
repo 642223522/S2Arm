@@ -11,6 +11,7 @@
 #include "gal_formats.h"
 
 #include "gal_samp_caps.h"   // 采样器 LOD 偏置在本机 GPU 上原生生效没有（s2a_lodbias_native，直连同一份判法，#800）
+#include "gal_astc.h"        // BC → ASTC 预转包（「BC → ASTC」一节）
 
 // 三分量、缩放整数（Uscaled / Sscaled）、R4G4 等 Metal 没有的格式：Capabilities 里报不支持，Gpu 层自己转成支持的格式再交来，这里不映射。
 GAL_MTL4_ZONE_BEGIN   // Metal 4 可用性区（gal_internal.h）
@@ -104,7 +105,13 @@ static void fmt_perm(int32_t f, int perm[4], int *alpha_one) {
 // ---------- 贴图表 ----------
 static gal_tex *g_tex; static uint32_t g_ntex, g_captex;
 static uint32_t *g_tex_free; static uint32_t g_ntex_free, g_cap_free;
-gal_tex *gal_tex_get(uint32_t tid) { return tid && tid < g_ntex && g_tex[tid].live ? &g_tex[tid] : NULL; }
+static gal_tex *tex_raw(uint32_t tid) { return tid && tid < g_ntex && g_tex[tid].live ? &g_tex[tid] : NULL; }
+static int bce_root_make(gal_tex *t, int to_astc);
+static int bce_reroot_dec(gal_tex *any);
+static void bce_pair(uint32_t a, uint32_t b);
+static int bce_astc_format(int32_t f, nxgal_tex_info *i);
+// 待定的 BC 贴图（GAL_BCE_PEND）被上传以外的任何用法碰到（建视图、拷贝、绑定采样、读回……）就定成解压格式：同旧路，保证不坏
+gal_tex *gal_tex_get(uint32_t tid) { gal_tex *t = tex_raw(tid); if (t && t->bce == GAL_BCE_PEND && !bce_root_make(t, 0)) return NULL; return t; }
 static uint32_t tex_alloc(void) {   // 0 = 表扩不了（已报红），调用方按建失败返回 0
     if (g_ntex_free) return g_tex_free[--g_ntex_free];
     if (!g_ntex) g_ntex = 1;   // 0 = 空
@@ -206,20 +213,8 @@ void gal_uw_sample(uint32_t tid, const char *where) {
              (unsigned long long)g_uw_n, (unsigned long long)gal_draw_count()); }
 }
 
-NXGAL_API uint32_t nxgal_tex_create(const nxgal_tex_info *info_in) { GAL_API_LOCK();
-    // 级数截到尺寸允许的上限 ⌊log2(最大边)⌋ + 1（Metal 校验；Ryujinx 渲染目标缩放 S2A_RES_SCALE 时 128 级链缩成 118 仍报 8 级 → 断言中止）。
-    // 存表的 info 也用截过的，之后按级数的视图 / 上传 / 拷贝都不越界；超出的那级上传按已有级数判断跳过
-    nxgal_tex_info ci = *info_in; const nxgal_tex_info *info = &ci;
-    { int m = ci.width > ci.height ? ci.width : ci.height; if (ci.target == 2 && ci.depth > m) m = ci.depth; int ml = 1; while (m > 1) { m >>= 1; ml++; } if (ci.levels > ml) ci.levels = ml; }
-    gal_pass_rt_dirty();
-    g_obj_gen++;   // 同号换对象：按集复用的参数缓冲作废
-    MTLPixelFormat pf = gal_fmt_mtl(info->format);
-    if (pf == MTLPixelFormatInvalid) { GLOG("【红】贴图格式 %d 没有 Metal 映射（%dx%d 目标 %d）", info->format, info->width, info->height, info->target); return 0; }
-    if (info->target == 9) {   // 贴图缓冲：Metal 贴图在 SetStorage 时由缓冲直接建
-        uint32_t tid = tex_alloc(); if (!tid) return 0;
-        g_tex[tid] = (gal_tex){.info = *info, .live = 1, .gen = 1};
-        return tid;
-    }
+// 底层存储贴图（建贴图与 BC 经 ASTC 包定格式 / 换格式共用）；失败已报红、返回 nil
+static id<MTLTexture> new_root(const nxgal_tex_info *info, MTLPixelFormat pf) {
     @autoreleasepool {
         MTLTextureDescriptor *d = [MTLTextureDescriptor new];
         d.textureType = tex_type(info->target); d.pixelFormat = pf;
@@ -239,14 +234,44 @@ NXGAL_API uint32_t nxgal_tex_create(const nxgal_tex_info *info_in) { GAL_API_LOC
         d.usage = u;   // 底层贴图恒等交换：交换通道只在采样视图上（Metal：带交换的贴图不能有渲染目标 / 着色器写用途）
         id<MTLTexture> t; { RS_SCOPE(RS_TEX); t = [g_gdev newTextureWithDescriptor:d]; }
         if (t) RS_BYTES(RS_TEX, t.allocatedSize);
-        if (!t) { GLOG("【红】建贴图失败：格式 %d %dx%dx%d 级 %d 目标 %d", info->format, info->width, info->height, info->depth, info->levels, info->target); return 0; }
-        gal_res_add(t);
-        uint32_t tid = tex_alloc(); if (!tid) { gal_res_remove(t); return 0; }
-        g_tex[tid] = (gal_tex){.tex = t, .info = *info, .live = 1, .gen = 1, .root = t};
-        g_tex[tid].smp = make_smp(&g_tex[tid]);
-        gal_tex_rid(&g_tex[tid]);
+        if (!t) { GLOG("【红】建贴图失败：格式 %d %dx%dx%d 级 %d 目标 %d", info->format, info->width, info->height, info->depth, info->levels, info->target); return nil; }
+        return t;
+    }
+}
+static int bce_dec_format(int32_t f, nxgal_tex_info *i);
+NXGAL_API uint32_t nxgal_tex_create(const nxgal_tex_info *info_in) { GAL_API_LOCK();
+    // 级数截到尺寸允许的上限 ⌊log2(最大边)⌋ + 1（Metal 校验；Ryujinx 渲染目标缩放 S2A_RES_SCALE 时 128 级链缩成 118 仍报 8 级 → 断言中止）。
+    // 存表的 info 也用截过的，之后按级数的视图 / 上传 / 拷贝都不越界；超出的那级上传按已有级数判断跳过
+    nxgal_tex_info ci = *info_in; const nxgal_tex_info *info = &ci;
+    { int m = ci.width > ci.height ? ci.width : ci.height; if (ci.target == 2 && ci.depth > m) m = ci.depth; int ml = 1; while (m > 1) { m >>= 1; ml++; } if (ci.levels > ml) ci.levels = ml; }
+    gal_pass_rt_dirty();
+    g_obj_gen++;   // 同号换对象：按集复用的参数缓冲作废
+    MTLPixelFormat pf = gal_fmt_mtl(info->format);
+    if (pf == MTLPixelFormatInvalid) { GLOG("【红】贴图格式 %d 没有 Metal 映射（%dx%d 目标 %d）", info->format, info->width, info->height, info->target); return 0; }
+    if (info->target == 9) {   // 贴图缓冲：Metal 贴图在 SetStorage 时由缓冲直接建
+        uint32_t tid = tex_alloc(); if (!tid) return 0;
+        g_tex[tid] = (gal_tex){.info = *info, .live = 1, .gen = 1};
         return tid;
     }
+    // BC 经 ASTC 包（设备不支持 BC，能力表照报支持，Gpu 层交来原始 BC）：包能存的族（BC1/2/3/7、无符号 BC5，见 gal_astc_family）的 2D / 2D 数组 / 立方体先待定，
+    //   首次整张上传时按包命中与否定成 ASTC 4x4 或解压格式；其余（BC4、带符号 BC5、BC6H、别的目标）直接解压格式
+    int32_t bcf = 0;
+    if (info->format >= F_Bc1RgbaUnorm && info->format <= F_Bc6HUfloat && gal_bce_on()) {
+        bcf = info->format;
+        if (gal_astc_family(bcf) && (ci.target == 1 || ci.target == 4 || ci.target == 7 || ci.target == 8)) {
+            uint32_t tid = tex_alloc(); if (!tid) return 0;
+            g_tex[tid] = (gal_tex){.info = *info, .live = 1, .gen = 1, .bce = GAL_BCE_PEND, .bc_fmt = bcf};
+            return tid;
+        }
+        bce_dec_format(bcf, &ci); pf = gal_fmt_mtl(ci.format);
+    }
+    id<MTLTexture> t = new_root(info, pf); if (!t) return 0;
+    gal_res_add(t);
+    uint32_t tid = tex_alloc(); if (!tid) { gal_res_remove(t); return 0; }
+    g_tex[tid] = (gal_tex){.tex = t, .info = *info, .live = 1, .gen = 1, .root = t, .bce = bcf ? GAL_BCE_DEC : GAL_BCE_NONE, .bc_fmt = bcf};
+    g_tex[tid].smp = make_smp(&g_tex[tid]);
+    gal_tex_rid(&g_tex[tid]);
+    return tid;
 }
 
 NXGAL_API uint32_t nxgal_tex_view(uint32_t parent, const nxgal_tex_info *info_in, int32_t first_layer, int32_t first_level) { GAL_API_LOCK();
@@ -256,6 +281,15 @@ NXGAL_API uint32_t nxgal_tex_view(uint32_t parent, const nxgal_tex_info *info_in
     // 父贴图级数可能被截过（见 nxgal_tex_create）：视图的起始级与级数截到父贴图范围内
     nxgal_tex_info ci = *info_in; const nxgal_tex_info *info = &ci;
     { int pl = p->info.levels > 0 ? p->info.levels : 1; if (first_level >= pl) first_level = pl - 1; if (ci.levels > pl - first_level) ci.levels = pl - first_level; }
+    // BC 经 ASTC 包的父贴图：视图的 BC 格式换成父贴图那一侧的宿主格式（ASTC 4x4 / 解压格式）；不是 BC 的视图同旧路（压缩与非压缩之间不建）
+    int32_t vbc = 0;
+    if (p->bce) {
+        if (!(ci.format >= F_Bc1RgbaUnorm && ci.format <= F_Bc6HUfloat)) { GLOG("【红】BC 贴图（经 ASTC 包）上不建非 BC 视图：父 %u 原格式 %d → %d", parent, p->bc_fmt, ci.format); return 0; }
+        vbc = ci.format;
+        if (p->bce == GAL_BCE_ASTC && !gal_astc_family(vbc)) { bce_reroot_dec(p); p = gal_tex_get(parent); if (!p) return 0; }   // 包存不了的族（带符号 / BC6H）只有解压格式
+        if (p->bce == GAL_BCE_ASTC) bce_astc_format(vbc, &ci); else bce_dec_format(vbc, &ci);
+        if (ci.bpp != p->info.bpp) { GLOG("【红】BC 视图 %d 与父贴图 %u（原格式 %d）的宿主格式每块字节不同，不建", vbc, parent, p->bc_fmt); return 0; }
+    }
     MTLPixelFormat pf = gal_fmt_mtl(info->format);
     if (pf == MTLPixelFormatInvalid) { GLOG("【红】视图格式 %d 没有 Metal 映射", info->format); return 0; }
     if (p->info.target == 9 || info->target == 9) { GLOG("【红】贴图缓冲不能建视图（父 %u）", parent); return 0; }
@@ -269,6 +303,7 @@ NXGAL_API uint32_t nxgal_tex_view(uint32_t parent, const nxgal_tex_info *info_in
         if (!t) { GLOG("【红】建视图失败：父 %u 格式 %d→%d 目标 %d 层 %d 级 %d+%d", parent, p->info.format, info->format, info->target, first_layer, first_level, info->levels); return 0; }
         uint32_t tid = tex_alloc(); if (!tid) return 0;
         tmp.tex = t; tmp.parent = parent; tmp.live = 1; tmp.gen = 1;
+        if (vbc) { tmp.bce = gal_tex_get(parent)->bce; tmp.bc_fmt = vbc; }
         g_tex[tid] = tmp;
         p = NULL;   // tex_alloc 可能搬动了表
         g_tex[tid].smp = make_smp(&g_tex[tid]);
@@ -279,9 +314,9 @@ NXGAL_API uint32_t nxgal_tex_view(uint32_t parent, const nxgal_tex_info *info_in
 
 NXGAL_API void nxgal_tex_release(uint32_t tid) { GAL_API_LOCK();
     gal_pass_rt_dirty();
-    { gal_tex *rt_ = gal_tex_get(tid); if (rt_ && gal_pass_clears_any()) gal_pass_clears_touch(rt_->root); }   // 同底层的别的视图可能还要读：放之前落实
+    { gal_tex *rt_ = tex_raw(tid); if (rt_ && rt_->root && gal_pass_clears_any()) gal_pass_clears_touch(rt_->root); }   // 同底层的别的视图可能还要读：放之前落实
     g_obj_gen++;   // 同号换对象：按集复用的参数缓冲作废
-    gal_tex *t = gal_tex_get(tid); if (!t) return;
+    gal_tex *t = tex_raw(tid); if (!t) return;   // 不经 gal_tex_get：待定的 BC 贴图直接放，不为放而建存储
     if (t->smp && t->smp != t->tex) gal_release_later(t->smp, 0);
     if (t->tex) gal_release_later(t->tex, t->parent == 0 && t->info.target != 9);   // 视图 / 贴图缓冲不进驻留集（底层贴图 / 缓冲在）
     t->tex = nil; t->smp = nil; t->root = nil; t->live = 0; t->rid_tex = t->rid_smp = 0;
@@ -924,7 +959,7 @@ static void copy_core(const gal_tex *s, const gal_tex *d, int s_layer, int d_lay
     }
 }
 
-NXGAL_API void nxgal_tex_copy(uint32_t src, uint32_t dst, int32_t first_layer, int32_t first_level) { GAL_API_LOCK(); gal_uw_write(dst);
+NXGAL_API void nxgal_tex_copy(uint32_t src, uint32_t dst, int32_t first_layer, int32_t first_level) { GAL_API_LOCK(); bce_pair(src, dst); gal_uw_write(dst);
     SW_SCOPE(SW_TEXCOPY, sw_tex_wr(src) || sw_tex_rw(dst));   // 调度测算：源是本遍画的、或目标本遍用过，才是真依赖
     tex_touch(src); tex_touch(dst);   // 碰到的贴图有挂起清屏先落实（只落实涉及的，别的继续挂着等下次当附件吃掉）
     GP_SCOPE(GP_COPY);
@@ -933,7 +968,7 @@ NXGAL_API void nxgal_tex_copy(uint32_t src, uint32_t dst, int32_t first_layer, i
     cp_pre_arm(s, d); struct { int z; } _cpr __attribute__((cleanup(cp_pre_end))) = {0}; (void)_cpr;
     @autoreleasepool { gal_tex sc = *s, dc = *d; copy_core(&sc, &dc, 0, first_layer, 0, first_level, depth_or_layers(&s->info), imax(1, s->info.levels)); }
 }
-NXGAL_API void nxgal_tex_copy_slice(uint32_t src, uint32_t dst, int32_t src_layer, int32_t dst_layer, int32_t src_level, int32_t dst_level) { GAL_API_LOCK(); gal_uw_write(dst);
+NXGAL_API void nxgal_tex_copy_slice(uint32_t src, uint32_t dst, int32_t src_layer, int32_t dst_layer, int32_t src_level, int32_t dst_level) { GAL_API_LOCK(); bce_pair(src, dst); gal_uw_write(dst);
     SW_SCOPE(SW_TEXCOPY, sw_tex_wr(src) || sw_tex_rw(dst));
     tex_touch(src); tex_touch(dst);   // 碰到的贴图有挂起清屏先落实（只落实涉及的，别的继续挂着等下次当附件吃掉）
     GP_SCOPE(GP_COPY);
@@ -958,7 +993,7 @@ static void resolve_layer(const gal_tex *s, int ss, const gal_tex *d, int dl, in
     gal_pass_close(); gal_render_begin_desc(pd); gal_enc_end(); g_genc_serial++;
 }
 
-NXGAL_API void nxgal_tex_copy_region(uint32_t src, uint32_t dst, const nxgal_rect *sr, const nxgal_rect *dr, int32_t linear) { GAL_API_LOCK(); gal_uw_write(dst);
+NXGAL_API void nxgal_tex_copy_region(uint32_t src, uint32_t dst, const nxgal_rect *sr, const nxgal_rect *dr, int32_t linear) { GAL_API_LOCK(); bce_pair(src, dst); gal_uw_write(dst);
     SW_SCOPE(SW_TEXCOPY, sw_tex_wr(src) || sw_tex_rw(dst));
     tex_touch(src); tex_touch(dst);   // 碰到的贴图有挂起清屏先落实（只落实涉及的，别的继续挂着等下次当附件吃掉）
     GP_SCOPE(GP_COPY);
@@ -1302,8 +1337,159 @@ NXGAL_API void nxgal_tarr_release(uint32_t a) { GAL_API_LOCK();
     if (g_ntarr_free == g_captarr_free) { g_captarr_free = g_captarr_free ? g_captarr_free * 2 : 64; g_tarr_free = realloc(g_tarr_free, g_captarr_free * sizeof *g_tarr_free); }
     g_tarr_free[g_ntarr_free++] = a;
 }
+// ---------- BC → ASTC（Apple TV 等不支持 BC 压缩贴图的设备；机制参考 brad-n/TVPort（MIT）的出包预转 + 运行时查包，代码按本渲染器重写）----------
+// 设了 NXGAL_ASTC_PACK=<出包时 pack/astc_pack.py 产的包>、包可用、设备不支持 BC 而支持 ASTC 时（gal_bce_on），能力表照报支持 BC：
+//   Gpu 层不再在 CPU 上把 BC 整张解成未压缩（贴图内存涨 4–8 倍，Apple TV 进程约 2.1 GB 就被系统杀），而是把原始 BC 交到这里。
+// 一张 BC 贴图（底层存储 + 它的视图共用一个状态，见 GAL_BCE_*）：
+//   待定：建贴图时还没数据，先不建存储；首次整张上传（nxgal_tex_set_bc）每个平面（级 × 层）按 gal_astc.h 的键查包，全部命中 → 建 ASTC 4x4 存储、直接传包里的块；
+//         有一个没命中 / 首次不是整张 / 上传以外的用法先碰到（gal_tex_get）→ 解压格式（同旧路 Gpu 层解压后的宿主格式），C# 端用 Ryujinx 原解码器解压后照常上传。
+//   ASTC：之后的上传仍逐平面查包，全命中照传；有没命中的 → 换成解压格式（现有各级各层在 GPU 上采样 ASTC 画进新存储，视图跟着重建），本次由 C# 端解压上传。
+//   解压：不再查包（同旧路）。
+//   拷贝：一边 ASTC、另一边不是 → 待定的那边跟着定成 ASTC（Gpu 层换存储时新存储从旧的拷），否则 ASTC 那边换成解压格式，两边格式一致再拷。
+// 不改的：读回（GetData / 拷进缓冲）给的是宿主格式的字节（ASTC 块 / 解压后像素），同旧路解压后读回不是 BC 一样；Gpu 层只在 BC 贴图被 GPU 写过才读回，罕见。
+static gal_astc_pack *g_bce_pack; static int g_bce_state = -1;
+int gal_bce_test_nobc;
+static uint64_t g_bce_n[3];   // 命中的平面 / 没命中的上传 / 换成解压格式的贴图
+int gal_bce_on(void) {
+    if (g_bce_state >= 0) return g_bce_state;
+    { const char *f = getenv("NXGAL_ASTC_FORCE"); if (f && *f == '1') gal_bce_test_nobc = 1; }   // Mac 复现：本机当成不支持 BC（能力表也照此报）
+    const char *path = getenv("NXGAL_ASTC_PACK");
+    if (!path || !*path) return g_bce_state = 0;
+    if (!g_gdev) return 0;   // 设备还没起：下次再判
+    g_bce_state = 0;
+    if (g_gdev.supportsBCTextureCompression && !gal_bce_test_nobc) { GLOG("BC 贴图：设备原生支持 BC，ASTC 包 %s 不用", path); return 0; }
+    if (![g_gdev supportsFamily:MTLGPUFamilyApple2]) { GLOG("【红】BC 贴图：设备不支持 ASTC，ASTC 包 %s 不用，BC 照旧在 CPU 上解压", path); return 0; }
+    char why[160] = {0};
+    g_bce_pack = gal_astc_open(path, why, sizeof why);
+    if (!g_bce_pack) { GLOG("【红】BC 贴图：ASTC 包 %s 不可用（%s），整包不用，BC 照旧在 CPU 上解压", path, why); return 0; }
+    GLOG("BC 贴图：设备不支持 BC，经 ASTC 包 %s（%llu 个平面）：能力表报支持 BC，上传时按平面查包", path, (unsigned long long)gal_astc_count(g_bce_pack));
+    return g_bce_state = 1;
+}
+void gal_bce_reset(void) {
+    if (g_bce_state == 1) GLOG("BC 贴图经 ASTC 包（本局合计）：命中平面 %llu，没命中的上传 %llu 次（照旧解压），换成解压格式的贴图 %llu 张",
+                               (unsigned long long)g_bce_n[0], (unsigned long long)g_bce_n[1], (unsigned long long)g_bce_n[2]);
+    gal_astc_close(g_bce_pack); g_bce_pack = NULL; g_bce_state = -1; memset(g_bce_n, 0, sizeof g_bce_n);
+}
+NXGAL_API int32_t nxgal_bce_active(void) { GAL_API_LOCK(); return gal_bce_on(); }
+
+static int bc_srgb(int32_t f) { return f == F_Bc1RgbaSrgb || f == F_Bc2Srgb || f == F_Bc3Srgb || f == F_Bc7Srgb; }
+// 解压格式：照 Ryujinx TextureCompatibility.ToHostCompatibleFormat（BCnDecoder 的输出），旧路设备不支持 BC 时宿主贴图就是它
+static int bce_dec_format(int32_t f, nxgal_tex_info *i) {
+    int32_t d; int bpp;
+    switch (f) {
+    case F_Bc1RgbaSrgb: case F_Bc2Srgb: case F_Bc3Srgb: case F_Bc7Srgb: d = F_R8G8B8A8Srgb; bpp = 4; break;
+    case F_Bc1RgbaUnorm: case F_Bc2Unorm: case F_Bc3Unorm: case F_Bc7Unorm: d = F_R8G8B8A8Unorm; bpp = 4; break;
+    case F_Bc4Unorm: d = F_R8Unorm; bpp = 1; break;
+    case F_Bc4Snorm: d = F_R8Snorm; bpp = 1; break;
+    case F_Bc5Unorm: d = F_R8G8Unorm; bpp = 2; break;
+    case F_Bc5Snorm: d = F_R8G8Snorm; bpp = 2; break;
+    case F_Bc6HSfloat: case F_Bc6HUfloat: d = F_R16G16B16A16Float; bpp = 8; break;
+    default: return 0;
+    }
+    i->format = d; i->block_w = i->block_h = 1; i->bpp = bpp;
+    return 1;
+}
+// ASTC 4x4：块与 BC 一样 4x4（级 / 区域按块对齐的拷贝不变），每块 16 字节
+static int bce_astc_format(int32_t f, nxgal_tex_info *i) {
+    if (!gal_astc_family(f)) return 0;
+    i->format = bc_srgb(f) ? F_Astc4x4Srgb : F_Astc4x4Unorm; i->block_w = i->block_h = 4; i->bpp = 16;
+    return 1;
+}
+// 这张（或这个视图）按原 BC 格式的几何：上传数据的平面切分用它
+static nxgal_tex_info bce_bc_info(const gal_tex *t) {
+    nxgal_tex_info i = t->info; i.format = t->bc_fmt; i.block_w = i.block_h = 4;
+    i.bpp = t->bc_fmt == F_Bc1RgbaUnorm || t->bc_fmt == F_Bc1RgbaSrgb || t->bc_fmt == F_Bc4Unorm || t->bc_fmt == F_Bc4Snorm ? 8 : 16;
+    return i;
+}
+// 待定 → 建存储（ASTC 4x4 或解压格式）。只有底层贴图会待定（待定的没法建视图：建视图先经 gal_tex_get 定成解压格式）
+static int bce_root_make(gal_tex *t, int to_astc) {
+    nxgal_tex_info i = t->info;   // 待定时 info 还是原 BC
+    if (to_astc ? !bce_astc_format(t->bc_fmt, &i) : !bce_dec_format(t->bc_fmt, &i)) return 0;
+    id<MTLTexture> m = new_root(&i, gal_fmt_mtl(i.format)); if (!m) return 0;
+    gal_res_add(m);
+    t->info = i; t->tex = t->root = m; t->bce = to_astc ? GAL_BCE_ASTC : GAL_BCE_DEC; t->gen++;
+    t->smp = make_smp(t); gal_tex_rid(t);
+    g_obj_gen++;   // 同号换对象：按集复用的参数缓冲作废
+    return 1;
+}
+// ASTC → 解压格式：新建解压格式的底层存储，现有各级各层在 GPU 上采样 ASTC 画过去（同 blit 的 fs_f，最近点、整格对齐即逐 texel 解码），
+//   共用这个底层存储的贴图与视图全部换到新存储（编号不变，gen / 对象代数递增让绑定处重写参数缓冲）
+static int bce_reroot_dec(gal_tex *any) {
+    if (!any || any->bce != GAL_BCE_ASTC) return any != NULL;
+    id<MTLTexture> old = any->root; gal_tex *r = NULL;
+    for (uint32_t k = 1; k < g_ntex && !r; k++) if (g_tex[k].live && g_tex[k].root == old && !g_tex[k].parent) r = &g_tex[k];
+    if (!r) { GRED_ONCE("BC 贴图换解压格式：找不到底层贴图"); return 0; }
+    nxgal_tex_info di = r->info; bce_dec_format(r->bc_fmt, &di);
+    id<MTLTexture> m = new_root(&di, gal_fmt_mtl(di.format)); if (!m) return 0;
+    gal_res_add(m);
+    gal_tex dst = {.tex = m, .root = m, .info = di};
+    int levels = (int)m.mipmapLevelCount, slices = tex_layers(&di);
+    for (int l = 0; l < levels; l++) {
+        int w = mipsz(di.width, l), h = mipsz(di.height, l); const float rg[4] = {0, 1, 0, 1}; MTLViewport vp = {0, 0, w, h, 0, 1};
+        for (int sl = 0; sl < slices; sl++) helper_blit(r, l, sl, &dst, l, sl, rg, vp, 0, FS_F, -1, -1, NULL);
+    }
+    for (uint32_t k = 1; k < g_ntex; k++) {
+        gal_tex *e = &g_tex[k]; if (!e->live || e->root != old) continue;
+        nxgal_tex_info ni = e->info; bce_dec_format(e->bc_fmt, &ni);
+        id<MTLTexture> nt = m;
+        if (e->parent) {
+            if (ni.bpp != di.bpp) { GLOG("【红】BC 视图 %u（原格式 %d）与底层（原格式 %d）解压后每像素字节不同：按底层格式重建", k, e->bc_fmt, r->bc_fmt); ni.format = di.format; ni.bpp = di.bpp; }
+            gal_tex tmp = *e; tmp.root = m; tmp.info = ni;
+            nt = root_view(&tmp, gal_fmt_mtl(ni.format), tex_type(ni.target), 0, ni.levels > 0 ? ni.levels : 1, 0, view_slices(&ni), MTLTextureSwizzleChannelsDefault);
+            if (!nt) GLOG("【红】BC 视图 %u 换解压格式后重建失败", k);
+            if (e->tex) gal_release_later(e->tex, 0);
+        }
+        if (e->smp && e->smp != e->tex) gal_release_later(e->smp, 0);
+        e->root = m; e->tex = nt; e->info = ni; e->bce = GAL_BCE_DEC; e->gen++;
+        e->smp = nt ? make_smp(e) : nil; gal_tex_rid(e);
+    }
+    gal_release_later(old, 1);
+    g_obj_gen++; gal_pass_rt_dirty();
+    if (g_bce_n[2]++ < 8) GLOG("BC 贴图换成解压格式（ASTC 包里缺它后来上传的数据，或与非 ASTC 贴图互拷）：原格式 %d %dx%d 级 %d 层 %d", r->bc_fmt, di.width, di.height, levels, slices);
+    return 1;
+}
+static void bce_pair(uint32_t a, uint32_t b) {
+    gal_tex *ta = tex_raw(a), *tb = tex_raw(b); if (!ta || !tb) return;
+    if ((ta->bce == GAL_BCE_ASTC) == (tb->bce == GAL_BCE_ASTC)) return;   // 都是 / 都不是 ASTC：格式一致或同旧路
+    gal_tex *y = ta->bce == GAL_BCE_ASTC ? ta : tb, *x = y == ta ? tb : ta;   // y：ASTC 那边；x：另一边
+    if (x->bce == GAL_BCE_PEND && gal_astc_family(x->bc_fmt) && bce_root_make(x, 1)) return;
+    bce_reroot_dec(y);
+}
+// 上传 BC 数据（C# 端 NxTexture 对经包的 BC 贴图先调这里）：1 = 包里全命中、已传 ASTC；0 = 没命中，贴图已是解压格式，调用方解压后走 nxgal_tex_set_data；
+//   -1 = 不是经包的 BC 贴图，调用方照常上传
+NXGAL_API int32_t nxgal_tex_set_bc(uint32_t tid, int32_t layer, int32_t level, const nxgal_rect *region, const void *data, uint64_t len) { GAL_API_LOCK(); @autoreleasepool {
+    gal_tex *t = tex_raw(tid);
+    if (!t || !t->bce) return -1;
+    if (t->bce == GAL_BCE_DEC) return 0;
+    int full = layer < 0 || level < 0;
+    int32_t fam = gal_astc_family(t->bc_fmt);
+    int ok = fam && !region && (full || t->bce == GAL_BCE_ASTC) && g_bce_pack;
+    nxgal_tex_info bi = bce_bc_info(t), ai = bi; bce_astc_format(t->bc_fmt, &ai);
+    sub *s = NULL, *sa = NULL; int n = 0, na = 0; uint64_t total = 0, atotal = 0; id<MTLBuffer> b = nil;
+    if (ok) { s = subs_of(&bi, layer, level, NULL, &n, &total); sa = subs_of(&ai, layer, level, NULL, &na, &atotal); ok = n == na && len >= total; }
+    if (ok) { RS_SCOPE(RS_STAGING); b = [g_gdev newBufferWithLength:atotal ? atotal : 16 options:MTLResourceStorageModeShared]; ok = b != nil; }
+    for (int k = 0; ok && k < n; k++) {
+        uint8_t key[32]; gal_astc_key((uint32_t)fam, (uint32_t)s[k].w, (uint32_t)s[k].h, (const uint8_t *)data + s[k].off, (size_t)s[k].img, key);
+        ok = gal_astc_read(g_bce_pack, key, (uint8_t *)b.contents + sa[k].off, sa[k].img);
+        if (!ok && g_bce_n[1] < 8) GLOG("BC 贴图查包没命中：贴图 %u 原格式 %d %dx%d 级 %d 层 %d（本次 %d 个平面的第 %d 个，级 %d 层 %d %dx%d）",
+                                        tid, t->bc_fmt, bi.width, bi.height, bi.levels, tex_layers(&bi), n, k + 1, s[k].level, s[k].slice, s[k].w, s[k].h);
+    }
+    free(s); free(sa);
+    if (ok && (t->bce == GAL_BCE_ASTC || bce_root_make(t, 1))) {
+        g_bce_n[0] += (uint64_t)n;
+        gal_uw_write(tid);
+        tex_set_data_impl(tid, layer, level, NULL, b.contents, atotal, b, 0, -1);   // 独立缓冲当暂存直接拷进贴图，随栅栏放
+        return 1;
+    }
+    g_bce_n[1]++;
+    t = tex_raw(tid);
+    if (t->bce == GAL_BCE_PEND) bce_root_make(t, 0); else bce_reroot_dec(t);
+    return 0;
+} }
+
 // Called only after GPU completion, deferred-object reaping and all API producer joins.
 void gal_tex_reset_session(void) {
+    gal_bce_reset();   // 下一局按它自己的环境重新判 BC 走不走 ASTC 包
     pthread_mutex_lock(&g_ul_mu);
     g_ul_generation++;
     for (uint32_t i = 1; i < g_nul; i++)

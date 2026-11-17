@@ -74,21 +74,21 @@
             <key>Type</key>
             <string>PSGroupSpecifier</string>
             <key>FooterText</key>
-            <string>Used to scale the game picture to the screen; doesn’t change the internal render resolution.</string>
+            <string>Used to scale the game picture to the screen; doesn’t change the internal render resolution. Sharp Upscaling (MetalFX) adds a little GPU time every frame, so frame rate and battery use may be slightly affected.</string>
         </dict>
         <dict>
             <key>Type</key>
             <string>PSMultiValueSpecifier</string>
             <key>Title</key>
-            <string>Scaling Filter</string>
+            <string>Picture Quality</string>
             <key>Key</key>
             <string>S2AScalingFilter</string>
             <key>DefaultValue</key>
             <string>Bilinear</string>
             <key>Titles</key>
-            <array><string>Bilinear (Smooth)</string><string>Nearest Neighbor (Crisp Pixels)</string></array>
+            <array><string>Standard</string><string>For 2D Games</string><string>Sharp Upscaling (MetalFX)</string></array>
             <key>Values</key>
-            <array><string>Bilinear</string><string>Nearest</string></array>
+            <array><string>Bilinear</string><string>Nearest</string><string>MetalFX</string></array>
         </dict>
         <dict>
             <key>Type</key>

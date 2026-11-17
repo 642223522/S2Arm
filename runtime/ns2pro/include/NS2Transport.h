@@ -58,6 +58,9 @@ ns2_assign_gesture ns2_assign_gesture_of(ns2_kind kind, uint64_t buttons, int si
 int ns2_scan_wants_other_side(ns2_kind only, int only_ready, int only_failed);
 //   一条链路失败时停不停扫描——Pro 停（同改前）；Joy-Con 不停，另一侧可能正在扫描窗口里等着被找到
 int ns2_link_failure_stops_scan(ns2_kind failed);
+// Switch 2 Pro 直连期间扫描 / 扫到配对广播接管 / 直连没就绪就断了转扫描（NS2JoyCon.c）。ns2_wake 定义在下面，这里只用整数比较
+int ns2_pro_direct_pending(ns2_kind only, int only_ready, int only_failed);
+int ns2_pro_rescan_after_drop(ns2_kind lost, int was_ready, int rearmed);
 // 对外输出形态（纯函数）：两条链路都在出输入且一左一右 → 一对；否则取在出输入的那条的型号；都没有 → NONE。
 //   与 NS2Transport.m 的 pair_locked / 单只横握判断同一条规则，宿主据此显示型号、选手柄样式（#520）
 ns2_kind ns2_output_kind(ns2_kind a, int a_present, ns2_kind b, int b_present);
@@ -83,6 +86,7 @@ ns2_kind ns2_get_output_kind(void);
 //   广播里手柄要唤醒的主机：PAIRING = 长按 SYNC 的配对广播（主机全 0）、US = 唤醒 our_host、OTHER = 唤醒别的主机、UNKNOWN = 厂商数据不够 18 字节或不是认得出的手柄型号
 typedef enum { NS2_WAKE_UNKNOWN, NS2_WAKE_PAIRING, NS2_WAKE_US, NS2_WAKE_OTHER } ns2_wake;
 ns2_wake ns2_advert_wake(const uint8_t *manufacturer, size_t length, const uint8_t *our_host);
+int ns2_pro_take_pairing(ns2_kind waiting, int waiting_ready, int waiting_linked, ns2_kind found, ns2_wake wake);   // 挂着直连的 Pro 被扫到的配对广播接管（NS2JoyCon.c）
 enum { NS2_BOND_STEPS = 4, NS2_BOND_COMMAND_MAX = 25 };
 //   第 step（0..3）条绑定指令：01 主机地址、04 钥匙一、02 钥匙二、03 结束；返回帧长，参数不对返回 0
 size_t ns2_bond_command(unsigned step, const uint8_t host[6], const uint8_t key1[16], const uint8_t key2[16], uint8_t out[NS2_BOND_COMMAND_MAX]);
@@ -174,6 +178,13 @@ int ns2_get_joycon_split(void);   // 现在是不是两只各一位玩家
 typedef void (*ns2_assign_callback)(int link, ns2_kind kind, ns2_assign_gesture gesture, const char *identifier, void *context);
 void ns2_set_assign_callback(ns2_assign_callback callback);
 void ns2_set_assign_mode(int on);
+// 认手柄（启动器玩家列表）：开着时任一只手柄有新按下的键就回调一次（link 是链路槽 0 / 1、identifier 是 CoreBluetooth 设备 id；
+//   buttons = 这一下新按下的按键位（同 ns2_state.buttons 的位序，见下面扩展位；另加摇杆推过一半：第 32–35 位 = 上 / 下 / 左 / 右，两根摇杆合并）、
+//   side = 新按下的 NS2_SIDE_* 位），
+//   启动器据此让那位玩家亮一下、显示按了哪个键。只报「新按下」，按着不放不重复报
+typedef void (*ns2_press_callback)(int link, const char *identifier, uint64_t buttons, int side, void *context);
+void ns2_set_press_callback(ns2_press_callback callback);
+void ns2_set_press_watch(int on);
 void ns2_set_player_order(int first_link);   // 两只拆开时哪条链路是玩家 1（缺省 0）
 typedef struct { int link; ns2_kind kind; char identifier[64]; } ns2_device;
 int ns2_get_devices(ns2_device out[2]);   // 已就绪的链路（最多 2），返回几条

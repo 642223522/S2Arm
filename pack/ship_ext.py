@@ -39,6 +39,7 @@ if sys.path and Path(sys.path[0]).resolve() == HERE:   # 直接按脚本跑时 p
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / 'tools'))
 from pack import app_bundle  # noqa: E402
+from pack import widget_ext  # noqa: E402
 from pack.container_custom import apply_custom  # noqa: E402
 from pack.shell import manifest as shell_manifest  # noqa: E402
 from pack.display_name import NoTitle, ascii_display_name, display_name, localized_names, nacp_path, title  # noqa: E402
@@ -67,7 +68,9 @@ def program_dirs(root):
 
 def modules(root):
     # 偏移表顺序与运行时装载序一致（host_main.c 候选名单 main → subsdk0..9 → sdk）：字母序会把 sdk 排到 subsdk* 前
-    return load_order(p.name[:-len(".fixups.tsv")] for p in Path(root).glob("*.fixups.tsv"))
+    # 跳过 ._*：工作目录在 exFAT / FAT / 网络盘上时 macOS 给每个文件配一份 AppleDouble 附属文件 ._<名>（二进制头 00 05 16 07），
+    #   当成模块 "._main" 交给 embed.py 按文本读，报 UnicodeDecodeError 0xb0 position 37（Finder 信息长度 0x0EB0 的低字节）
+    return load_order(p.name[:-len(".fixups.tsv")] for p in Path(root).glob("*.fixups.tsv") if not p.name.startswith("._"))
 
 
 def per_game(app, tables):
@@ -123,6 +126,7 @@ def cmd_shell(a):
             info.pop(k, None)
         info.update(CFBundleIdentifier=PLACEHOLDER_ID, CFBundleDisplayName=PLACEHOLDER_NAME)
         (r / "Info.plist").write_bytes(plistlib.dumps(info, fmt=plistlib.FMT_XML, sort_keys=True))
+        widget_ext.retarget(r, PLACEHOLDER_ID)   # 主屏小组件扩展包名跟着占位包名（组装 / 装机换包名时再跟一次）
         (r / TABLES).write_text("".join(t + "\n" for t in tables), encoding="utf-8", newline="\n")
         exe = r / info["CFBundleExecutable"]
         n = swidx_count(exe)
@@ -132,12 +136,26 @@ def cmd_shell(a):
         if left:
             red(f"出壳门：壳里还有游戏镜像 {left}")
         ent = Path(a.entitlements or REPO / "pack/app.entitlements")
+        wx = widget_ext.appexes(r)
         with tempfile.TemporaryDirectory() as t:   # 在包外签单个文件：不生成 _CodeSignature（壳是未签名模板，整包签名留给玩家的侧载工具）
+            # 带主屏小组件的壳（11-16）：主程序与扩展都声明共享组 group.s2arm.widget——侧载工具（AltStore / SideStore / Windows 的 plumesign）
+            #   按签名里的权限注册共享组（改名成 group.s2arm.widget.<团队号>）。pack/app.entitlements 不加：Mac「装到 iPhone」按它申请描述文件，
+            #   全苹果唯一的组名不能让每个玩家都去注册同一个
+            if wx:
+                merged = plistlib.loads(ent.read_bytes()); merged.update(plistlib.loads((REPO / "pack/widget.entitlements").read_bytes()))
+                ent = Path(t) / "app+widget.entitlements"; ent.write_bytes(plistlib.dumps(merged))
             c = Path(t) / exe.name; shutil.copy2(exe, c)
             rc = subprocess.run(["codesign", "-f", "-s", "-", "--entitlements", str(ent), str(c)], capture_output=True, text=True)
             if rc.returncode:
                 red(f"主程序 ad-hoc 签名失败：{rc.stderr.strip()}")
             shutil.copy2(c, exe)
+            for x in wx:   # 扩展程序同样在包外签（不留 _CodeSignature），只带共享组
+                xe = x / plistlib.loads((x / "Info.plist").read_bytes())["CFBundleExecutable"]
+                c = Path(t) / ("widget-" + xe.name); shutil.copy2(xe, c)
+                rc = subprocess.run(["codesign", "-f", "-s", "-", "--entitlements", str(REPO / "pack/widget.entitlements"), str(c)], capture_output=True, text=True)
+                if rc.returncode:
+                    red(f"主屏小组件扩展 ad-hoc 签名失败：{rc.stderr.strip()}")
+                shutil.copy2(c, xe)
         root_final = tmp / "shell" / "root"; root_final.parent.mkdir()
         os.replace(r, root_final)
         doc = shell_manifest.seal(root_final, tmp / "shell" / "manifest.json", *shell_manifest._defaults())

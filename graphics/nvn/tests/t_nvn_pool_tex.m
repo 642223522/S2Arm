@@ -46,14 +46,14 @@ static tex_t *texture(int id, uint32_t w, uint32_t h, int flags) { return textur
 static uint64_t table_entry(int tid, int unused, uint64_t *gpu) {
     (void)unused; const pool_tab *tp = NULL; for (int i = 0; i < POOL_TABS; i++) if (g_ptab[i].used && !g_ptab[i].samp && g_ptab[i].base == 0) tp = &g_ptab[i];
     REQUIRE(tp);
-    pthread_mutex_lock(&g_rmu);
+    os_unfair_lock_lock(&g_rmu);
     __unsafe_unretained id<MTLBuffer> b = nil; uint64_t a = pool_gpu(0, tp->dtt, tp->dpf, 0, &b); REQUIRE(b);
     uint64_t e = ((const uint64_t *)((const uint8_t *)b.contents + DMSH_POOL_HEAD))[tid];
-    pthread_mutex_unlock(&g_rmu);
+    os_unfair_lock_unlock(&g_rmu);
     if (gpu) *gpu = a;
     return e;
 }
-static uint64_t cur_rid(int tid) { pthread_mutex_lock(&g_rmu); uint64_t r = tex_fast_rid(tid, NULL); pthread_mutex_unlock(&g_rmu); return r; }
+static uint64_t cur_rid(int tid) { os_unfair_lock_lock(&g_rmu); uint64_t r = tex_fast_rid(tid, NULL); os_unfair_lock_unlock(&g_rmu); return r; }
 static int resident(id<MTLResource> r) { pthread_mutex_lock(&g_res_mu); int k = [g_res_objects containsObject:r]; pthread_mutex_unlock(&g_res_mu); return k; }
 static void empty_sub(void) { nvn_be_sub_begin(); uint64_t f = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f, 10000000000ull)); }
 static int made(int id) { return tex_get(texs[id].serial) != nil; }
@@ -209,6 +209,76 @@ int main(void) { @autoreleasepool {
         VERIFY(res1 && e91 == dmy && res2 && !res3, "⑩ 池销毁后的旧贴图 X：退役栅栏过后仍常驻 %d（期望 1，表还指着它）；取表时第 91 项换成占位 %d（期望 1）、X 仍常驻 %d（期望 1）；取表那次提交做完后出常驻集合 %d（期望 1）",
                res1, e91 == dmy, res2, !res3);
     }
+    // ⑩b 退役请求晚到（11-14 ⑩ 偶发红的根因，确定性复现）：完成回调在自己的线程上清延迟队列，先把对象取出队列、之后才 res_remove；
+    //   提交线程在这中间把表项换走、钉子拔掉，res_remove 就看不到钉子，把本次提交还指着的贴图移出常驻集合。这里直接按「表项先换走、res_remove 后到」的次序做
+    {   atomic_fetch_add(&g_cur_frame, 1);
+        pool_t *pool3 = calloc(1, sizeof *pool3); REQUIRE(pool3);
+        *pool3 = (pool_t){.magic = MAGIC('P', 'O', 'O', 'L'), .flags = pool->flags, .mem = memory, .size = MEM};
+        pool_t *keep = pool; pool = pool3; texture_ex(92, 4, 4, NVN_TEXTURE_FLAGS_IMAGE, 92.5f); pool = keep;
+        read4(cs, 92u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20);
+        REQUIRE(near(out4[0], 92.5f));
+        id<MTLTexture> Z = tex_get(texs[92].serial); REQUIRE([Z conformsToProtocol:@protocol(MTLTexture)]);
+        nvn_be_sub_begin(); REQUIRE(table_entry(92, 0, NULL) == Z.gpuResourceID._impl); { uint64_t f = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f, 10000000000ull)); }
+        nvn_be_sub_begin();
+        uint64_t before = table_entry(92, 0, NULL);   // 本次提交指着 Z（之前编码的绘制可能读它）
+        nvn_be_alias_drop_pool(pool3); pool3->magic = 0; serial_del(texs[92].serial);
+        uint64_t e92 = table_entry(92, 0, NULL);   // 同一次提交里表项换成占位：最后一根钉子拔掉
+        res_remove(Z);   // 晚到的退役请求（回调线程 defer_drain 取出后才调）
+        int r1 = resident(Z);
+        { uint64_t f = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f, 10000000000ull)); }
+        empty_sub(); empty_sub();   // 开头清队列：本次提交已做完
+        int r2 = resident(Z);
+        uint64_t dmy = g_dummy_tex_rid[MTLTextureType2D][0];
+        VERIFY(before == Z.gpuResourceID._impl && e92 == dmy && r1 && !r2, "⑩b 表项换走后才到的退役请求：本次提交指过 %d、换成占位 %d（期望 1 / 1）；res_remove 后仍常驻 %d（期望 1，本次提交还没做完）；提交做完后出常驻集合 %d（期望 1）",
+               before == Z.gpuResourceID._impl, e92 == dmy, r1, !r2);
+    }
+    // ⑩c 两次退役请求、一次在拔钉前一次晚到（池销毁、serial_del 各排一个；⑩ 并发跑时剩下的那种偶发）。仿 ⑩b：完成回调在自己的线程上清延迟队列，先把对象取出队列、之后才 res_remove；
+    //   提交线程在这中间把表项换走、钉子拔掉，res_remove 就看不到钉子，把本次提交还指着的贴图移出常驻集合。这里直接按「表项先换走、res_remove 后到」的次序做
+    {   atomic_fetch_add(&g_cur_frame, 1);
+        pool_t *pool4 = calloc(1, sizeof *pool4); REQUIRE(pool4);
+        *pool4 = (pool_t){.magic = MAGIC('P', 'O', 'O', 'L'), .flags = pool->flags, .mem = memory, .size = MEM};
+        pool_t *keep = pool; pool = pool4; texture_ex(93, 4, 4, NVN_TEXTURE_FLAGS_IMAGE, 93.5f); pool = keep;
+        read4(cs, 93u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20);
+        REQUIRE(near(out4[0], 93.5f));
+        id<MTLTexture> W = tex_get(texs[93].serial); REQUIRE([W conformsToProtocol:@protocol(MTLTexture)]);
+        nvn_be_sub_begin(); REQUIRE(table_entry(93, 0, NULL) == W.gpuResourceID._impl); { uint64_t f = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f, 10000000000ull)); }
+        nvn_be_sub_begin();
+        uint64_t before = table_entry(93, 0, NULL);   // 本次提交指着 W（之前编码的绘制可能读它）
+        nvn_be_alias_drop_pool(pool4); pool4->magic = 0; serial_del(texs[93].serial);
+        res_remove(W);   // 第一个退役请求在拔钉前到：钉着，只记下
+        uint64_t e93 = table_entry(93, 0, NULL);   // 同一次提交里表项换成占位：最后一根钉子拔掉
+        res_remove(W);   // 晚到的第二个退役请求（回调线程 defer_drain 取出后才调）
+        int r1 = resident(W);
+        { uint64_t f = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f, 10000000000ull)); }
+        empty_sub(); empty_sub();   // 开头清队列：本次提交已做完
+        int r2 = resident(W);
+        uint64_t dmy = g_dummy_tex_rid[MTLTextureType2D][0];
+        VERIFY(before == W.gpuResourceID._impl && e93 == dmy && r1 && !r2, "⑩c 表项换走后才到的退役请求：本次提交指过 %d、换成占位 %d（期望 1 / 1）；res_remove 后仍常驻 %d（期望 1，本次提交还没做完）；提交做完后出常驻集合 %d（期望 1）",
+               before == W.gpuResourceID._impl, e93 == dmy, r1, !r2);
+    }
+    // ⑩d 拔钉后两个退役请求都晚到（池销毁、serial_del 各一个，回调线程先后处理）：第一个延后时不能把记下的栅栏用掉，否则第二个直接移出。仿 ⑩b：完成回调在自己的线程上清延迟队列，先把对象取出队列、之后才 res_remove；
+    //   提交线程在这中间把表项换走、钉子拔掉，res_remove 就看不到钉子，把本次提交还指着的贴图移出常驻集合。这里直接按「表项先换走、res_remove 后到」的次序做
+    {   atomic_fetch_add(&g_cur_frame, 1);
+        pool_t *pool5 = calloc(1, sizeof *pool5); REQUIRE(pool5);
+        *pool5 = (pool_t){.magic = MAGIC('P', 'O', 'O', 'L'), .flags = pool->flags, .mem = memory, .size = MEM};
+        pool_t *keep = pool; pool = pool5; texture_ex(94, 4, 4, NVN_TEXTURE_FLAGS_IMAGE, 94.5f); pool = keep;
+        read4(cs, 94u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20);
+        REQUIRE(near(out4[0], 94.5f));
+        id<MTLTexture> V = tex_get(texs[94].serial); REQUIRE([V conformsToProtocol:@protocol(MTLTexture)]);
+        nvn_be_sub_begin(); REQUIRE(table_entry(94, 0, NULL) == V.gpuResourceID._impl); { uint64_t f = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f, 10000000000ull)); }
+        nvn_be_sub_begin();
+        uint64_t before = table_entry(94, 0, NULL);   // 本次提交指着 V（之前编码的绘制可能读它）
+        nvn_be_alias_drop_pool(pool5); pool5->magic = 0; serial_del(texs[94].serial);
+        uint64_t e94 = table_entry(94, 0, NULL);   // 同一次提交里表项换成占位：最后一根钉子拔掉
+        res_remove(V); res_remove(V);   // 两个晚到的退役请求
+        int r1 = resident(V);
+        { uint64_t f = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f, 10000000000ull)); }
+        empty_sub(); empty_sub();   // 开头清队列：本次提交已做完
+        int r2 = resident(V);
+        uint64_t dmy = g_dummy_tex_rid[MTLTextureType2D][0];
+        VERIFY(before == V.gpuResourceID._impl && e94 == dmy && r1 && !r2, "⑩d 表项换走后才到的退役请求：本次提交指过 %d、换成占位 %d（期望 1 / 1）；res_remove 后仍常驻 %d（期望 1，本次提交还没做完）；提交做完后出常驻集合 %d（期望 1）",
+               before == V.gpuResourceID._impl, e94 == dmy, r1, !r2);
+    }
     // ⑪ 表长大后对象数组和登记的容量一样长：越过缓冲（按 64 KB 取整）的长大换新缓冲，之后在新缓冲容量内再长大不再 realloc，
     //    所以对象数组必须一次给够 t->cap 项（修前只给 n + n/4 + 1 项，第二次长大后 pool_ent_put 读越界，第47版 objc_retain 0x1f7 崩）
     { int ti = -1; for (int k = 0; k < POOL_TABS; k++) if (g_ptab[k].used && !g_ptab[k].samp) { ti = k; break; }
@@ -223,6 +293,23 @@ int main(void) { @autoreleasepool {
     err[0] = 0; NvShader *old = shader(SLOT_SRC, refl_slot, err, sizeof err);
     if (old) { read4(old, 40u | 40u << 20, 0, 0, 0); }
     VERIFY(old && old->rf.dyn && near(out4[0], 0.0f), "⑧ 对照：同一句柄 40 经 32 项槽位数组 → %.2f（旧语义夹到槽 31、读占位 0.00，不是 40.50；%s）", old ? out4[0] : -1.0f, old ? "TEXD" : err);
+    // ⑫ #1117 驻留集按类拆（nvn_res_by_kind，显存账行用的同一个函数）：期望手写——往驻留集里加一张 1024×1024 RGBA8 私有纹理（4 MiB）和一个
+    //   2 MiB 私有缓冲，前后两次读数里纹理至少涨 4 MB、私有缓冲至少涨 2 MB。反证：分类写反（私有 / 共享对调）→ 私有缓冲不涨
+    {
+        int64_t tex0 = -1, buf0 = -1, tex1 = -1, buf1 = -1;
+        for (int round = 0; round < 2; round++) {
+            if (round == 1) {
+                MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:1024 height:1024 mipmapped:NO];
+                d.storageMode = MTLStorageModePrivate; d.usage = MTLTextureUsageShaderRead;
+                id<MTLTexture> T = [g_dev newTextureWithDescriptor:d]; id<MTLBuffer> B = [g_dev newBufferWithLength:2u << 20 options:MTLResourceStorageModePrivate];
+                REQUIRE(T && B); res_add(T); res_add(B);
+            }
+            uint64_t k[8]; nvn_res_by_kind(k); long long tb = (long long)(k[1] >> 20), pb = (long long)(k[3] >> 20);
+            if (round == 0) { tex0 = tb; buf0 = pb; } else { tex1 = tb; buf1 = pb; }
+        }
+        VERIFY(tex1 - tex0 >= 4 && buf1 - buf0 >= 2, "⑫ 驻留集按类：加 4 MiB 私有纹理后纹理 %lld → %lld MB（期望至少 +4）、加 2 MiB 私有缓冲后私有缓冲 %lld → %lld MB（期望至少 +2）",
+               (long long)tex0, (long long)tex1, (long long)buf0, (long long)buf1);
+    }
     printf("%s t_nvn_pool_tex：%u 项，%u 项失败（追不到槽的句柄按编号读池：池表 + 已读位图 + 未写渲染目标不建 + 小贴图预建 + 表复用）\n", fails ? "✗" : "✓", checks, fails);
     return fails != 0;
 } }

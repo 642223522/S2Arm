@@ -46,11 +46,9 @@ public sealed record ControlRequest(string Method, string Path, IReadOnlyDiction
 
 public sealed record ControlReply(int Code, string Type, byte[] Body)
 {
-    // 错误文字是 s2armctl 原样打给 AI 和玩家看的，中文不转义
-    private static readonly JsonSerializerOptions Readable = new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
-
+    // 错误文字是 s2armctl 原样打给 AI 和玩家看的，中文不转义（JsonOut.SerializeRelaxed）
     public static ControlReply Json(object? value, int code = 200) =>
-        new(code, "application/json; charset=utf-8", JsonSerializer.SerializeToUtf8Bytes(value, Readable));
+        new(code, "application/json; charset=utf-8", JsonOut.SerializeRelaxed(value));
     public static ControlReply Ok(string? note = null) =>
         Json(note is null ? new Dictionary<string, object?> { ["ok"] = true } : new Dictionary<string, object?> { ["ok"] = true, ["note"] = note });
     public static ControlReply Bad(string message, int code = 400) => Json(new Dictionary<string, object?> { ["error"] = message }, code);
@@ -82,7 +80,7 @@ public sealed class ControlPort : IDisposable
         Port = ((IPEndPoint)listener.LocalEndpoint).Port;
         // 先写临时文件再换名：客户端按修改时间等新文件，不能读到半截
         var temporary = ControlFile + ".tmp";
-        File.WriteAllText(temporary, JsonSerializer.Serialize(new Dictionary<string, object?>
+        File.WriteAllText(temporary, JsonOut.Serialize(new Dictionary<string, object?>
             { ["port"] = Port, ["token"] = Token, ["pid"] = Environment.ProcessId }));
         File.Move(temporary, ControlFile, overwrite: true);
         try { File.Delete(Path.Combine(privateRoot, ErrorFileName)); }
@@ -169,7 +167,8 @@ public static class ControlJournal
             Alive(id, task.TryGetProperty("pidStart", out var started) && started.ValueKind == JsonValueKind.String ? started.GetString() : null)) return task.Clone();
         var node = System.Text.Json.Nodes.JsonNode.Parse(task.GetRawText())!.AsObject();
         node["state"] = "interrupted"; node["message"] = "作业进程已不在";
-        return JsonSerializer.SerializeToElement(node);
+        using var doc = JsonDocument.Parse(node.ToJsonString());
+        return doc.RootElement.Clone();
     }
 
     private static bool Alive(int pid, string? pidStart)

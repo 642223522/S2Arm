@@ -38,7 +38,7 @@ static const char *env_nonempty(const char *k) { const char *v = getenv(k); retu
 
 static int resolve_compat(s2a_launch_ctx *c, const char *exe_dir, const char *home, char *why, size_t why_n) {
     char hd[S2A_LCTX_PATH]; const char *v;
-    if (join(hd, home, "Documents")) { WHY("HOME 太长"); return -1; }
+    if (join(hd, home, S2A_CONTAINER_DOCS_REL)) { WHY("HOME 太长"); return -1; }
     if (put(c->bundle_dir, exe_dir) || put(c->module_dir, exe_dir) || put(c->caps_dir, exe_dir)
         || join(c->images, exe_dir, "Frameworks/S2AImages.dylib")) { WHY("可执行文件目录太长"); return -1; }
     if ((v = env_nonempty("S2A_GAME_DATA")) ? put(c->game_data, v) : join(c->game_data, hd, "资源包")) { WHY("S2A_GAME_DATA 太长"); return -1; }
@@ -83,7 +83,7 @@ static int resolve_file(s2a_launch_ctx *c, const char *exe_dir, const char *home
     if (miss) { WHY("上下文文件 %s 缺必填键 %s", c->ctx_path, miss); return -1; }
     if (!c->caps_dir[0]) put(c->caps_dir, c->module_dir);
     if (!c->ryu_data[0] && join(c->ryu_data, c->docs, "S2A/ryujinx")) { WHY("docs 太长"); return -1; }
-    if (put(c->bundle_dir, exe_dir) || join(c->log_dir, home, "Documents")) { WHY("可执行文件目录或 HOME 太长"); return -1; }
+    if (put(c->bundle_dir, exe_dir) || join(c->log_dir, home, S2A_CONTAINER_DOCS_REL)) { WHY("可执行文件目录或 HOME 太长"); return -1; }
     c->source = S2A_LCTX_FILE;
     return 0;
 }
@@ -146,7 +146,7 @@ int s2a_launch_ctx_resolve_game(s2a_launch_ctx *c, const char *b, const char *ho
     if (join(c->images, b, rel) || !is_file(c->images)) { WHY("游戏 %s 的镜像包 %s 不在", gid, c->images); memset(c, 0, sizeof *c); return -1; }
     char hd[S2A_LCTX_PATH]; snprintf(rel, sizeof rel, "games/%s", gid);
     // 资源包根：Library/Application Support/S2Arm/games/<游戏号>/资源包（s2a_docs.h s2a_pack_root，v0.3.0 挪出 Documents）；存档仍在本款文档根下
-    if (join(hd, home, "Documents") || join(c->docs, hd, rel) || s2a_pack_root(c->game_data, sizeof c->game_data, c->docs) >= (int)sizeof c->game_data
+    if (join(hd, home, S2A_CONTAINER_DOCS_REL) || join(c->docs, hd, rel) || s2a_pack_root(c->game_data, sizeof c->game_data, c->docs) >= (int)sizeof c->game_data
         || join(c->ryu_data, c->docs, "S2A/ryujinx")
         || put(c->caps_dir, c->module_dir) || put(c->bundle_dir, b) || put(c->log_dir, hd)) { WHY("HOME 或 App 包目录太长"); memset(c, 0, sizeof *c); return -1; }
     strcpy(c->game_id, gid);

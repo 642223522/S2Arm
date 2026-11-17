@@ -1,10 +1,7 @@
 # macOS 专有命令用法（cp -c / stat -f / sed -i ''）白名单：只在 Mac 上跑的存量脚本，路径<TAB>理由（tests/macos_only_lint.py 读）
 # 11-01 建表时的存量 39 个，没有逐个核它们是否真的只在 Mac 跑；新脚本不许往这里加，除非写明为什么只在 Mac 跑（例：要 Xcode / devicectl / APFS）
 graphics/metal/tests/t_m3pack.sh	存量（11-01 建表）
-graphics/tools/shader_pack.sh	存量（11-01 建表）
 graphics/tools/shbake/pso_chunk.sh	存量（11-01 建表）
-graphics/tools/shbake/pso_dist.sh	存量（11-01 建表）
-graphics/tools/shbake/tests/t_out_fp.sh	存量（11-01 建表）
 graphics/tools/shbake/xc_key.sh	存量（11-01 建表）
 graphics/tools/timeout_snap.sh	存量（11-01 建表）
 pack/ensure_profile.sh	存量（11-01 建表）

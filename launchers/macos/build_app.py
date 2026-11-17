@@ -98,6 +98,8 @@ def bundle_shell(engine_json, dest, env):
         raise SystemExit(f"【红】发版壳 {cache} 链接的 iOS SDK 是 {linked_sdk(cache / 'root/S2Arm')}，不是本机最新 Xcode 的 {want}")
     print(f"发版壳：{sid}，iOS SDK {'.'.join(map(str, want))}（{newest}）")
     shutil.copytree(cache, dest, symlinks=True)
+    if os.environ.get("S2A_SYMBOLS_OUT") and (cache.parent / (cache.name + ".symbols")).is_dir():   # 壳的未去符号原件（pack/shell_build.sh 放在壳目录旁）随发版存档
+        shutil.copytree(cache.parent / (cache.name + ".symbols"), Path(os.environ["S2A_SYMBOLS_OUT"]) / "Shell", dirs_exist_ok=True)
 
 
 SPARKLE_FEED = "https://dl.s2arm.com/appcast/mac.xml"
@@ -172,7 +174,7 @@ def main():
         print(f"补丁库：收 {len(took)} 款（{' '.join(took) or '无'}），跳过 {len(skipped)} 款（没验过）")
     else:
         print("🟡 没设 S2A_RELEASE_PATCHES：本版启动器不带补丁库")
-    # 社区补丁与金手指本地库（11-13 维护者：随启动器装在本地、云端兜底）：完整快照放 Resources/CommunityPatches/patches-v2.tar，
+    # 社区补丁与金手指本地库（11-13 维护者：随启动器装在本地、云端兜底）：完整快照放 Resources/CommunityPatches/patches-v3.tar（v2 发版时转成分块 xz，11-16 瘦身），
     #   出包时 pack/jobs/patches.py 本地优先、按云端清单增量。来源 S2A_PATCH_SNAPSHOT（本机文件）> 下载站；取不到不挡打包（出包时照样向云端要）
     sys.path.insert(0, str(ROOT / "tools")); import patch_pack
     why = patch_pack.stage_snapshot(str(resources / "CommunityPatches"))
@@ -212,16 +214,25 @@ def main():
     expected = dict(line.split("==") for line in (ROOT / "launchers/macos/requirements-runtime.txt").read_text().splitlines() if "==" in line and not line.startswith("#"))
     versions = json.loads((runtime / "versions.json").read_text()) if (runtime / "versions.json").is_file() else {}
     # Runtime 跨次复用：schema、依赖指纹或 C 改写器源码变了都要重收。
-    # schema 3 的目录仍带 oead 和 GNU timeout，requirements 版本对得上也不许复用。
+    # schema 3 的目录仍带 oead 和 GNU timeout，schema 4 的仍带 .NET 运行时（5 起出包工具全为引擎 Binaries/ 里的 NativeAOT 单文件，不再带），
+    # requirements 版本对得上也不许复用。
     # 按包导入（不把 pack/ 目录放进模块路径：那样 pack/pack.py 会顶替 pack 包，后面 bundle_engine.write_manifest 的 from pack.shell import 报
     #   「'pack' is not a package」，11-07 本机打 App 实测）
     os.sys.path.insert(0, str(ROOT))
     from pack import rewriter
-    if (versions.get("runtimeSchema") != 4 or versions.get("runtimeDeps") != runtime_deps_fingerprint()
-            or versions.get("rewriter") != rewriter.source_digest()
-            or any(versions.get(name) != version for name, version in expected.items())
-            or any(not (runtime / "bin" / name).is_file() for _, name in TOOLS)):   # 工具表加了新命令（10-26 bash / spirv-cross / glslangValidator）旧运行环境也要重打
-        subprocess.run([os.sys.executable, str(ROOT / "launchers/macos/bundle_runtime.py")], env=env, check=True)
+
+    if (
+        versions.get("runtimeSchema") != 5
+        or versions.get("runtimeDeps") != runtime_deps_fingerprint()
+        or versions.get("rewriter") != rewriter.source_digest()
+        or any(versions.get(name) != version for name, version in expected.items())
+        or any(not (runtime / "bin" / name).is_file() for _, name in TOOLS)
+    ):  # 工具表加了新命令（10-26 bash / spirv-cross / glslangValidator）旧运行环境也要重打
+        subprocess.run(
+            [os.sys.executable, str(ROOT / "launchers/macos/bundle_runtime.py")],
+            env=env,
+            check=True,
+        )
     verify_portable_runtime(runtime)
     shutil.copytree(runtime, resources / "Runtime", symlinks=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     seal_runtime(resources)   # 预编 .pyc 签进包 + 内置 Python 关写字节码：运行时谁调都写不进包（Engine 在 bundle 里写清单前预编）
@@ -229,16 +240,26 @@ def main():
     bundle_shell(resources / "Engine/engine.json", resources / "Shell", env)
     info = dict(**frontend_layout.info_identity(front), CFBundlePackageType="APPL",
                 CFBundleIconFile="S2Arm", LSMinimumSystemVersion=runtime_sources.deployment_target(),
-                NSHighResolutionCapable=True, CFBundleDevelopmentRegion="en", CFBundleLocalizations=["en", "zh-Hans"],
-                NSBluetoothAlwaysUsageDescription="连接 Switch 2 Pro 手柄，接收按键与体感并发送游戏震动。",
+                NSHighResolutionCapable=True, CFBundleDevelopmentRegion="en", CFBundleLocalizations=["en", "zh-Hans", "zh-Hant", "ja", "es", "fr"],   # 同界面语言（frontend/l10n）；系统语言不在其中时照 CFBundleDevelopmentRegion 用英文
+                NSBluetoothAlwaysUsageDescription=json.loads((ROOT / "launchers/macos/frontend/l10n/en.json").read_text())["bluetooth.usage"],
                 **release_identity(resources / "Engine/engine.json"))
     # Sparkle：appcast 地址、验签公钥（Ed25519，私钥只在发版机 ~/.s2arm/.secrets/sparkle_ed25519）；不开定时检查（查新版走启动时的公告 / 消息）
     info.update(SUFeedURL=SPARKLE_FEED, SUPublicEDKey=SPARKLE_PUBLIC_KEY, SUEnableAutomaticChecks=False, SUAutomaticallyUpdate=False)
     info["UTExportedTypeDeclarations"] = [dict(UTTypeIdentifier="org.s2arm.save-backup", UTTypeDescription="S2Arm Save Backup",
         UTTypeConformsTo=["public.zip-archive"], UTTypeTagSpecification={"public.filename-extension": ["s2asave"]})]
     (app / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
+    # 蓝牙授权框的说明文字：每种界面语言一份 <lproj>/InfoPlist.strings（文字取 frontend/l10n 的 bluetooth.usage）。
+    #   授权框由系统画、整个框跟系统语言走（11-15 实机：App 设中文、系统英文 → 整框英文），App 改不了；说明文字随系统挑同一种语言
+    for lproj, l10n in (("en", "en"), ("zh-Hans", "zh"), ("zh-Hant", "zh-Hant"), ("es", "es"), ("fr", "fr"), ("ja", "ja")):
+        text = json.loads((ROOT / f"launchers/macos/frontend/l10n/{l10n}.json").read_text())["bluetooth.usage"]
+        (resources / f"{lproj}.lproj").mkdir(exist_ok=True)
+        (resources / f"{lproj}.lproj/InfoPlist.strings").write_text(f"NSBluetoothAlwaysUsageDescription = {json.dumps(text, ensure_ascii=False)};\n", encoding="utf-8")
     # 启动器本体同样去掉调试映射（见 bundle_engine.strip_debug_maps），再签整个 App
-    subprocess.run(["xcrun", "strip", "-S", str(app / "Contents/MacOS" / front["executable"])], env=env, check=True)
+    exe = app / "Contents/MacOS" / front["executable"]
+    if os.environ.get("S2A_SYMBOLS_OUT"):   # 未去符号原件随发版存档（同 bundle_engine.strip_debug_maps）
+        (Path(os.environ["S2A_SYMBOLS_OUT"]) / "MacOS").mkdir(parents=True, exist_ok=True)
+        shutil.copy2(exe, Path(os.environ["S2A_SYMBOLS_OUT"]) / "MacOS" / exe.name)
+    subprocess.run(["xcrun", "strip", "-S", "-x", str(exe)], env=env, check=True)
     subprocess.run(["codesign", "--force", "--sign", "-", str(macos / "S2ArmNS2Connection")], env=env, check=True)
     # Sparkle 里面的程序由里往外签（发版签名 sign_release.sh 同样由里往外）：XPC 服务 / Updater.app / Autoupdate → 框架本身
     fw = app / "Contents/Frameworks/Sparkle.framework"

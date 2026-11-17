@@ -85,4 +85,8 @@ c1=$(gr); t0=$SECONDS; c2=$(gr); dt=$((SECONDS - t0)); c0=$(cd "$T/c" && GATE_RO
 echo 'python3 "$H/tools/l10n_merge.py" --help > /dev/null 2>&1 || :' >> "$T/c/tests/os_junk_sync_test.sh"; c3=$(gr)
 ck "覆盖面缓存：二次调用 ${dt} 秒、与关缓存逐字相同；单测新点名文件后立刻路由到它" '[ "$c1" = "$c2" ] && [ "$c2" = "$c0" ] && [ $dt -le 2 ] && ! grep -q os_junk_sync_test <<< "$c1" && grep -q os_junk_sync_test <<< "$c3"'
 rm -rf "$T"
+# 只拷进假仓库跑的脚本不顺闭包展开、拷走的目录算输入（11-14 门禁减负）：gate_budget_test 只把 tools/gate.sh 拷进假仓库跑，
+#   旧口径顺着拷贝一路吃进 tests/gcbench/scan.py 这类无关文件；dev_run_test 用 cp -R 拷走整个 pack/，旧口径改 pack/orch/__init__.py 却不跑它
+r1=$(GATE_ROUTE_CACHE=0 python3 "$H/tools/gate_route.py" tests tests/gcbench/scan.py 2> /dev/null); r2=$(GATE_ROUTE_CACHE=0 python3 "$H/tools/gate_route.py" tests pack/orch/__init__.py 2> /dev/null)
+ck "只拷不跑的脚本不牵出无关文件（改 tests/gcbench/scan.py 不跑 gate_budget_test）；cp -R 拷走的目录算输入（改 pack/orch/__init__.py 跑 dev_run_test）" '! grep -q gate_budget_test <<< "$r1" && grep -q dev_run_test <<< "$r2"'
 [ $bad = 0 ] && echo "gate_route 单测全过" || { echo "gate_route 单测有不通"; exit 1; }

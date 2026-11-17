@@ -49,8 +49,32 @@ public enum BackendText {
         return Dictionary(items.compactMap { i in i["id"].map { ($0, i) } }, uniquingKeysWith: { a, _ in a })
     }()
 
+    /// 各语言叠加文案（launchers/shared/l10n/<语言>.json，资源包里叫 l10n.<语言>.json）：launcher 按 id、text 按简中原句。
+    ///   读不到某门语言就当它还没翻（回落），不当装包错误：新语言可以分批补
+    struct Overlay { var launcher: [String: String] = [:]; var text: [String: String] = [:] }
+    private static let overlayLock = NSLock()
+    nonisolated(unsafe) private static var overlays: [String: Overlay] = [:]
+    static func overlay(_ language: String) -> Overlay {
+        overlayLock.lock(); defer { overlayLock.unlock() }
+        if let o = overlays[language] { return o }
+        var o = Overlay()
+        if let url = try? resourceBundle().url(forResource: "l10n." + language, withExtension: "json"),
+           let data = try? Data(contentsOf: url),
+           let doc = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            o.launcher = doc["launcher"] as? [String: String] ?? [:]
+            o.text = doc["text"] as? [String: String] ?? [:]
+        }
+        overlays[language] = o
+        return o
+    }
+
+    /// 这门语言还没翻的回落：繁中回落简中（中文读者看简中比英文顺），其余回落英文（11-14 i18n）
+    static func fallback(_ language: String) -> String { language == "zh-Hant" ? "zh-Hans" : "en" }
+
+    /// 界面文案：叠加文件 → 文案表里这门语言的列 → 回落语言 → 英文；键本身不存在才显示 [键名]
     public static func launcherText(_ id: String, language: String) -> String {
-        launcherItems[id]?[language] ?? "[\(id)]"
+        guard let item = launcherItems[id] else { return "[\(id)]" }
+        return overlay(language).launcher[id] ?? item[language] ?? item[fallback(language)] ?? item["en"] ?? "[\(id)]"
     }
 
     /// 报错页统一的一句「故障报修」指引（11-13）：文字只在共享规格 report.hint 一处，{button} 换成顶栏按钮名 report.button（Windows SharedText.ReportHint 同一取法）
@@ -162,11 +186,41 @@ public enum BackendText {
     private static let forward = entries.sorted { specificity($0.source) > specificity($1.source) }.compactMap { Pattern($0.source, replacement: $0.en) }
     private static let reverse = entries.sorted { specificity($0.en) > specificity($1.en) }.compactMap { Pattern($0.en, replacement: $0.source) }
 
-    /// 一句作业层文字在 language（"en" = 英文，其余 = 中文）下的显示。
+    /// 一句作业层文字在 language 下的显示：en 英文；zh-Hans（及没认出的值）中文原句；其余（zh-Hant / ja / es / fr …）查这门语言的叠加文件，
+    ///   没翻的句子回落（繁中回落简中原句、其余回落英文）
     public static func translate(_ text: String, language: String) -> String { translate(text, language: language, depth: 0) }
+
+    /// 叠加语言的整句表与句式：原句 → 叠加译文，没有就回落
+    private struct Localized { let whole: [String: String]; let patterns: [Pattern] }
+    private static let localizedLock = NSLock()
+    nonisolated(unsafe) private static var localized: [String: Localized] = [:]
+    private static func localizedTable(_ language: String) -> Localized {
+        localizedLock.lock(); defer { localizedLock.unlock() }
+        if let t = localized[language] { return t }
+        let text = overlay(language).text, chineseFallback = fallback(language) == "zh-Hans"
+        func target(_ e: Entry) -> String { text[e.source] ?? (chineseFallback ? e.source : e.en) }
+        let whole = Dictionary(entries.map { ($0.source, target($0)) }, uniquingKeysWith: { first, _ in first })
+        let patterns = entries.sorted { specificity($0.source) > specificity($1.source) }.compactMap { Pattern($0.source, replacement: target($0)) }
+        let t = Localized(whole: whole, patterns: patterns)
+        localized[language] = t
+        return t
+    }
 
     static func translate(_ text: String, language: String, depth: Int) -> String {
         guard !text.isEmpty, depth < 4 else { return text }
+        if language != "en" && !(language.hasPrefix("zh") && language != "zh-Hant") {   // 叠加语言（含还没翻的：整表回落）
+            let table = localizedTable(language)
+            if let result = table.whole[text] { return result }
+            for pattern in table.patterns {
+                if let result = pattern.apply(text, language: language, depth: depth) { return result }
+            }
+            for separator in ["\n", "；"] where text.contains(separator) {
+                let pieces = text.components(separatedBy: separator)
+                let translated = pieces.map { translate($0, language: language, depth: depth + 1) }
+                if translated != pieces { return translated.joined(separator: separator == "；" && !language.hasPrefix("zh") && language != "ja" ? "; " : separator) }
+            }
+            return text
+        }
         if language == "en" {
             if let result = english[text] { return result }
             if text.range(of: #"[\p{Han}]"#, options: .regularExpression) == nil { return text }

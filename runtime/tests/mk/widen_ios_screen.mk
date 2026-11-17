@@ -2,7 +2,7 @@
 # 用假 TargetConditionals.h（support/ios_prewarm：TARGET_OS_IPHONE 置 1）在 Mac 上执行真实 iOS 分支：
 #   s2a_screen_w / s2a_screen_h 的「窗口场景还没连上」只读不缓存，在 Mac 上不打开这道门就永远测不到。
 NATIVE_TEST_OWN += widen_ios_screen
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 .PHONY: native-test-widen_ios_screen
 native-test-widen_ios_screen:
 	@mkdir -p $(BUILD)/tests

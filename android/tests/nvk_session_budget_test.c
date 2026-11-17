@@ -24,6 +24,8 @@ int __android_log_print(int level, const char *tag, const char *fmt, ...) {
 void nvk_shader_stop(void) { atomic_store(&stop_seen, 1); }
 unsigned nvk_shader_inflight(void) { return atomic_load(&outstanding); }
 int nvk_shader_open(void) { return 0; }
+int nvk_warm_stop(void) { return 0; }   // #996 起停局先停预热带与需求建管线（本用例只量会话收尾等待）
+void nvn_vk_pipe_demand_stop(void) {}
 void nvn_dirty_set_chunk_pages(uint32_t n) { (void)n; }
 int nvn_plat_flag(const char *name, int dflt) { (void)name; return dflt; }
 double s2a_direct_vk_display_refresh(void) { return 60; }

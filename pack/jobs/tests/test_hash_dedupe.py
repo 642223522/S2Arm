@@ -33,7 +33,7 @@ class HashDedupe(JobCase):
         # 预检清单 #16（11-13）：清单没写 index_sha256 不再整单不装；资源包号按推送实际用的 index.tsv 现算（期望用 hashlib 独立算）
         import hashlib
         gid = "0100000000000001"
-        kit = layout.ios_kit(self.c, gid); kit.mkdir(parents=True); (kit / "main.npdm").write_bytes(b"n")
+        kit = layout.ios_kit(self.c, gid); kit.mkdir(parents=True); (kit / "main.npdm").write_bytes(b"n"); (kit / "main.fixups.tsv").write_text("")
         pack = layout.ios_pack(self.c, gid); pack.mkdir(parents=True); atomic(pack / "manifest.json", {"version": 2})
         self.assertEqual(install.ios_pack(self.c, gid), pack)
         self.assertEqual(install.pack_id(pack), "")   # 连 index.tsv 都没有：没有号（推送那一步会因缺 index.tsv 照实报）

@@ -1,6 +1,6 @@
 # Real VA reservation, boot continuation and Foundation preferences; UIKit remains a device check.
 NATIVE_TEST_OWN += ios_prewarm
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 .PHONY: native-test-ios_prewarm
 native-test-ios_prewarm: $(TEST_VAGUARD)
 	@mkdir -p $(BUILD)/tests/ios_prewarm

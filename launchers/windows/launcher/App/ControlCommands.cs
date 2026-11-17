@@ -19,6 +19,21 @@ public sealed partial class EnvironmentWindow
     private static readonly bool ControlForced = Environment.GetCommandLineArgs().Contains("--control") ||
         Environment.GetEnvironmentVariable("S2ARM_CONTROL") == "1";
     private string ControlSwitchFile => Path.Combine(privateRoot, "ai-control.on");
+    // 「装到 iPhone 时带主屏小组件」（11-16，缺省开）：私有目录里有 home-widget.off 即关；关掉时装机 / 更新 / 导出请求带 widget: false
+    private string HomeWidgetOffFile => Path.Combine(privateRoot, "home-widget.off");
+    private bool HomeWidget => !File.Exists(HomeWidgetOffFile);
+    private string homeWidgetError = "";
+    private void SetHomeWidget(bool on)
+    {
+        homeWidgetError = "";
+        try
+        {
+            PrivateJobRequest.EnsurePrivateRoot(privateRoot);
+            if (on) File.Delete(HomeWidgetOffFile); else File.WriteAllBytes(HomeWidgetOffFile, []);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { homeWidgetError = error.Message; }
+        Render();
+    }
 
     /// <summary>崩溃日志用（LauncherCrash）：同 ResolvePrivateRoot，算不出（参数坏了）退回系统临时目录。</summary>
     internal static string PrivateRootForLogs()
@@ -104,12 +119,14 @@ public sealed partial class EnvironmentWindow
         return ControlReply.Ok();
     }
 
-    private ControlReply ControlInstall(LibraryGame game, IReadOnlySet<string> accept)
+    /// <param name="export">mode = export（同游戏库「导出自签包」）：不连手机、出到文件夹</param>
+    private ControlReply ControlInstall(LibraryGame game, IReadOnlySet<string> accept, bool export = false)
     {
-        if (ControlBusy) return Busy();
+        // 同游戏库「装到 iPhone」按钮（PhoneBlockedFor）：出包在跑照样能装，手机上装机在跑 / 这款正在出包由 InstallAsync 排队（11-16 维护者）
+        if (PhoneBlockedFor(game)) return Busy();
         selectedGame = game.Id;
+        _ = InstallAsync(game, accept, ask: false, export: export);
         Navigate("install");
-        _ = InstallAsync(game, accept, ask: false);
         return ControlReply.Ok();
     }
 
@@ -154,6 +171,11 @@ public sealed partial class EnvironmentWindow
             }
             case ("POST", "/ipa"):
                 return ControlGame(r) is { } ipaGame ? ControlExport(ipaGame, r.Flag("spaceOverride")) : NoGame;
+            case ("POST", "/selfsign"):   // 同游戏库「导出自签包」（同 Mac 控制口）
+                if (ControlBusy) return Busy();
+                if (ControlGame(r) is not { } selfSignGame) return NoGame;
+                ExportSelfSign(selfSignGame);
+                return ControlReply.Ok();
             case ("POST", "/batch"):   // 批量出包（同 Mac 控制口、同界面清单页）：建批次后一款接一款地出，进度看 GET /state 的 batch
             {
                 if (ControlBusy || batchRunning) return Busy();
@@ -170,7 +192,9 @@ public sealed partial class EnvironmentWindow
                 var skipped = batchDraft.Where(row => row.Problem is not null)
                     .Select(row => new Dictionary<string, object?> { ["gameId"] = row.Id, ["reason"] = row.Problem }).ToList();
                 if (batchDraft.All(row => row.Problem is not null)) { batchControlPlatforms = null; return ControlReply.Json(new Dictionary<string, object?> { ["ok"] = false, ["skipped"] = skipped }, 409); }
-                _ = StartBatchAsync();
+                // 等批次真建成、编排作业起了再回 ok（审计 P1-166：原先先回 ok、后台才建，建失败时 s2armctl batch 空等或按上一批退出；同 Mac createBatch）
+                if (!await StartBatchAsync())
+                    return ControlReply.Json(new Dictionary<string, object?> { ["ok"] = false, ["error"] = batchError.Length > 0 ? batchError : "批次没建成", ["skipped"] = skipped }, 409);
                 return ControlReply.Json(new Dictionary<string, object?> { ["ok"] = true, ["skipped"] = skipped });
             }
             case ("POST", "/build"):
@@ -190,6 +214,29 @@ public sealed partial class EnvironmentWindow
                 if (ControlGame(r) is not { } customized) return NoGame;
                 _ = CustomizeAsync(customized, r.Text("name"), r.Text("coverPath"));
                 return ControlReply.Ok();
+            }
+            case ("POST", "/mods"):   // 资源替换 mod（同游戏库「Mod…」页 ModsPage.cs、同 Mac 控制口）：import [路径] / enable {名字: 真/假} / remove [名字]；都不给只列
+            {
+                if (ControlBusy) return Busy();
+                if (ControlGame(r) is not { } modded) return NoGame;
+                var extra = new Dictionary<string, object?>();
+                if (r.Strings("import") is { Length: > 0 } imp) extra["modsImport"] = imp.Cast<object?>().ToList();
+                if (r.Strings("remove") is { Length: > 0 } rem) extra["modsRemove"] = rem.Cast<object?>().ToList();
+                if (r.Body.ValueKind == System.Text.Json.JsonValueKind.Object && r.Body.TryGetProperty("enable", out var en) && en.ValueKind == System.Text.Json.JsonValueKind.Object)
+                {
+                    var want = new Dictionary<string, object?>();
+                    foreach (var kv in en.EnumerateObject()) if (kv.Value.ValueKind is System.Text.Json.JsonValueKind.True or System.Text.Json.JsonValueKind.False) want[kv.Name] = kv.Value.GetBoolean();
+                    if (want.Count > 0) extra["modsEnable"] = want;
+                }
+                var job = await PackJobClient.RunAsync(PackRequest(extra.Count == 0 ? "community" : "communitySave", modded.Id, extra.Count == 0 ? null : extra), null, CancellationToken.None);
+                if (!job.Report.Succeeded) return ControlReply.Bad(job.Report.Message.Length > 0 ? job.Report.Message : job.Report.State);
+                var res = job.Report.Result;
+                if (modsFor?.Id == modded.Id) { modsList = null; Dispatcher.UIThread.Post(Render); }   // 「Mod…」页开着就重读
+                return ControlReply.Json(new Dictionary<string, object?>
+                {
+                    ["mods"] = res.TryGetProperty("mods", out var m) ? m.Clone() : null,
+                    ["modsImported"] = res.TryGetProperty("modsImported", out var d) ? d.Clone() : null
+                });
             }
             case ("POST", "/delete"):   // 同界面「删除这款游戏」（delete 作业）；控制口不弹确认，由 AI 先问过玩家
             {
@@ -216,7 +263,7 @@ public sealed partial class EnvironmentWindow
                 return ControlReply.Ok();
             }
             case ("POST", "/install"):
-                return ControlGame(r) is { } installGame ? ControlInstall(installGame, AcceptFlags(r)) : NoGame;
+                return ControlGame(r) is { } installGame ? ControlInstall(installGame, AcceptFlags(r), r.Text("mode") == "export") : NoGame;
             case ("POST", "/uninstall"):
             {
                 if (ControlGame(r) is not { } game) return NoGame;
@@ -263,7 +310,7 @@ public sealed partial class EnvironmentWindow
                 switch (r.Text("action"))
                 {
                     case "restart":
-                        if (updateReady is null) return ControlReply.Bad("新版还没下载好", 409);
+                        if (updateReady is null && availableUpdate is null) return ControlReply.Bad("没有新版", 409);   // 还没下好：同玩家点「现在更新」，先下、下完接着装
                         if (ControlBusy) return Busy();
                         Dispatcher.UIThread.Post(RestartToUpdate, DispatcherPriority.Background);   // 先把回复发出去，再退出
                         return ControlReply.Ok();
@@ -316,6 +363,7 @@ public sealed partial class EnvironmentWindow
     [
         ("GET /state", "当前界面状态：环境检查（checks）、密钥、游戏列表、作业记录（tasks）"),
         ("GET /snapshot", "主窗口截图（PNG）"),
+        ("POST /mods {gameId, import?:[路径], enable?:{名字: 真/假}, remove?:[名字]}", "资源替换 mod（同游戏库「Mod…」页）：导入 zip / 文件夹、开关、删除；都不给只列；下次装到 iPhone 时推过去"),
         ("POST /keys {path}", "导入 prod.keys"),
         ("POST /games {paths:[…]}", "放入游戏（NSP / XCI 文件、游戏文件夹或解包好的游戏文件夹）"),
         ("POST /build {gameId, target, spaceOverride?}", "出包：spaceOverride = true 同界面「仍然继续」；target = ios（iPhone / iPad，缺省）；android / harmony 回 409「即将上线」"),

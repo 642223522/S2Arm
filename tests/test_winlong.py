@@ -69,6 +69,29 @@ class LongPathTest(unittest.TestCase):
         self.assertEqual(sr.to_long(link + "\\work", t), long + "\\work")
         self.assertEqual(sr.to_long("C:\\x", t), "C:\\x")
 
+    def test_show_maps_leftover_entry_to_long_path(self):
+        # #1173 / 诊断#0e3bd5：oneclick_win 结果事件里的 ipa 路径还是 …\S2A\j\gkam\…，父进程在入口拆掉后拷 → WinError 3。
+        #   show 先按表换（不分大小写），表没覆盖的残留入口按联接真实目标换；读不出联接就原样
+        from pack.orch import shortroot as sr
+        from unittest import mock
+        lib = "D:\\Games\\Lib"
+        link = "C:\\Users\\Flacko\\AppData\\Local\\S2A\\j\\gkam"
+        ipa = "\\s2arm\\games\\re4\\build\\ios\\work\\pkg\\t0100.ipa"
+        env = {"LOCALAPPDATA": "C:\\Users\\Flacko\\AppData\\Local", sr.ENV: f"{lib}\t{link}"}
+        with mock.patch.dict(os.environ, env, clear=False):
+            self.assertEqual(sr.show(link + ipa), lib + ipa, "表里有：照旧换")
+            self.assertEqual(sr.show(link.replace("Flacko", "flacko") + ipa), lib + ipa, "大小写不同也换")
+        env2 = {"LOCALAPPDATA": "C:\\Users\\Flacko\\AppData\\Local", sr.ENV: ""}
+        with mock.patch.dict(os.environ, env2, clear=False):
+            seen = []
+            def readlink(p):
+                seen.append(p); return "\\??\\" + lib + "\\"
+            self.assertEqual(sr.show(link + ipa, readlink=readlink), lib + ipa, "表没覆盖：按联接真实目标换")
+            self.assertEqual(seen, [link])
+            def gone(p): raise OSError(2, "gone")
+            self.assertEqual(sr.show(link + ipa, readlink=gone), link + ipa, "联接读不出：原样")
+            self.assertEqual(sr.show("C:\\x\\y"), "C:\\x\\y", "不相干路径不动")
+
     def test_remap_env_moves_tool_cache_vars_under_short_root(self):
         # v0.3.0 win_cases deep：工具缓存 <库>/tool-cache 经环境变量传给出包链，库在深目录时要一并换成短入口。期望手写
         from pack.orch import shortroot
@@ -93,6 +116,20 @@ class LongPathTest(unittest.TestCase):
         from pack.orch import shortroot as sr
         self.assertEqual(sr.group_targets(["R:\\lib\\iPhone\\g\\work", "R:\\lib\\cache\\g\\extract"]), ["R:\\lib"])
         self.assertEqual(sorted(sr.group_targets(["R:\\lib\\w", "D:\\x"])), ["D:\\x", "R:\\lib\\w"])
+
+    def test_target_never_holds_entry_dir(self):
+        # 公共上级把短入口目录自己包进去 → 联接指向自己的上级、遍历绕圈（Windows 单测：工作区在 Temp、工具缓存已是 S2A\j\<短号> 下的短路径，
+        #   公共上级 = AppData\Local → 入口 i8wr 指向 Local，WinError 1921、600 秒超时）。期望手写：不合并、各建各的；已在入口下的不再套
+        from pack.orch import shortroot as sr
+        local = r"R:\profile\AppData\Local"   # 应用数据目录（LOCALAPPDATA）
+        j = local + r"\S2A\j"
+        tmp, short = local + r"\Temp\t1\out", j + r"\zqgx\s2a_run"
+        self.assertEqual(sr.group_targets([tmp, short], j), [tmp])
+        lib = r"R:\profile"   # 游戏库设在用户目录：工作区与工具缓存的公共上级 = 用户目录，包住 AppData\Local\S2A\j
+        work, cache = lib + r"\iPhone\g\work", lib + r"\tool-cache"
+        self.assertEqual(sr.group_targets([work, cache], j), [work, cache])
+        self.assertEqual(sr.group_targets([r"R:\lib\w", r"R:\lib\c"], j), [r"R:\lib"])   # 不包入口的照旧合并
+        self.assertEqual(sr.junction_targets([tmp, short], j), [tmp])
 
     def test_unc_share_is_not_used_as_junction_target(self):
         from pack.orch import shortroot as sr

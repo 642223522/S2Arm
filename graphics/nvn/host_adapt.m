@@ -123,6 +123,10 @@ void dm_fault_hook_register(int (*fn)(void *addr, int is_write, void *uc)) { s2a
 static void (*g_wprep)(void *addr, size_t len);
 static void wprep_tramp(uint64_t addr, uint64_t len) { g_wprep((void *)(uintptr_t)addr, (size_t)len); }
 void dm_guest_write_prep_register(void (*fn)(void *addr, size_t len)) { g_wprep = fn; s2a_guest_write_prep_register(wprep_tramp); }
+// 远端别名区里的内存池不让 nvn_dirty 写保护（11-14 D-GCMY，见 nvn_dirty.c nvn_dirty_add_range）：判定用原生层的远端表
+int s2a_far_has(uint64_t a, uint64_t n) __attribute__((weak));   // runtime/src/far.c（没开远端时恒 0）；弱引用：只链 libnvn 不链原生层的单测没有它（登记见 nvn_dirty.c）
+extern int (*nvn_dirty_far_fn)(uint64_t a, uint64_t n);
+__attribute__((constructor)) static void dirty_far_init(void) { if (s2a_far_has) nvn_dirty_far_fn = s2a_far_has; }
 // 直连层自己要写游戏内存前（贴图回写）：走 S2Arm 宿主写游戏内存的同一个入口，登记的写前回调从那里收到
 void dm_guest_write_prepare(void *addr, size_t len) { s2a_track_write_quiet((uint64_t)(uintptr_t)addr, (uint64_t)len); }
 // 崩溃等待点 / 资源行：直连层在 Metal 初始化时登记
@@ -175,6 +179,7 @@ UIView *s2a_ios_root_view(void) __attribute__((weak_import));
 UIView *s2a_ios_present_view(void) __attribute__((weak_import));
 static UIView *present_view(void) { return s2a_ios_present_view ? s2a_ios_present_view() : s2a_ios_root_view ? s2a_ios_root_view() : nil; }
 CGRect s2a_ios_game_area(void) __attribute__((weak_import));
+int s2a_ios_game_top(void) __attribute__((weak_import));
 // 出图层摆放的范围（#300 统一游戏区域）：挂在手机根视图上时取 App 壳给的游戏区域（分屏等），挂在外接屏窗口的视图上或壳没这个符号 / 区域为空时取视图自身
 static CGRect game_rect(UIView *v) {
     if (s2a_ios_game_area && s2a_ios_root_view && v == s2a_ios_root_view()) { CGRect r = s2a_ios_game_area(); if (!CGRectIsEmpty(r)) return r; }
@@ -213,6 +218,8 @@ static void layout_layer(UIView *v, CAMetalLayer *l) {
     // 等比居中；出图比例与视图比例差 < 1% 时铺满视图（10-29：宽屏开着时出图比例来自取整后的屏幕宽，如 2346 / 1080 = 2.1722 对屏幕 2.1727，
     //   旧写法层比视图窄零点几个点，右侧露一条 ≤ 1 像素的黑缝；同 the reference port present_viewport 的 1% 容差）
     pf_vp f = pf_viewport(b.size.width, b.size.height, a, 1); CGFloat w = f.w, h = f.h;
+    // 分屏放宽到整屏宽的上区（iPhone Duo 外屏竖屏，ios/play_layout.m S2APlayLayoutMake 的 top）：画面贴顶，空余留在画面与手柄之间
+    if (s2a_ios_game_top && s2a_ios_root_view && v == s2a_ios_root_view() && s2a_ios_game_top()) f.y = 0;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     l.frame = CGRectMake(b.origin.x + f.x, b.origin.y + f.y, w, h);
     // 出图层像素倍数（S2A_OUT_SCALE，缺省 1 = 屏幕原生；帧率能耗线 10-26 维护者要量）：最后上屏这一层按原生全分辨率画，每帧多一次整屏读写；
@@ -532,10 +539,13 @@ void s2a_gpu_safe_stop(const char *why) {
     LOG("【红】GPU 挂死安全停：iOS 壳没有错误页入口，改为收局");
 #endif
     char *w = strdup(why ? why : "-");
+    // 退出码 86（同 gal_core.m 命令缓冲出错）：作业层（pack/jobs/build.py）按它告诉玩家这局是被安全停下的，不显示「操作完成」（#1257）
+    void (*code)(int) = (void (*)(int))dlsym(RTLD_DEFAULT, "s2a_host_exit_code");
+    if (code) code(86);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
         void (*down)(const char *) = (void (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_host_shutdown");
         char m[300]; snprintf(m, sizeof m, "GPU 挂死安全停（%.200s）", w);
-        if (down) down(m); else _exit(70);
+        if (down) down(m); else _exit(86);
     });
 }
 // GPU 卡住暂停的宿主一侧（11-13；判据在 nvn_mtl.m gpu_frame_stuck：连续 3 帧各过 3 秒）：iOS 盖「继续玩 / 退出」页（app.m s2a_ios_gpu_stuck），
@@ -564,7 +574,10 @@ static void *fail_watch(void *arg) {
     unsigned long long last = 0; double idle = 0, wait_first = 0;
     for (;;) {
         sleep(1);
-        if (atomic_load(&g_suspended)) { idle = 0; base = 0; continue; }
+        // 客机冻结（Mac 失焦暂停 / iOS 后台 / 重启屏障，runtime/src/thread.c s2a_guest_frozen）按设计不出帧，不算停住
+        //   （11-15 v0.4.2 候选一局：窗口失焦冻结 45 秒被报「出帧停住 45 秒」假红；停帧救场 runtime/src/ap_host.c 早已同口径）
+        static int (*frozen)(void); static int looked; if (!looked) { frozen = (int (*)(void))dlsym(RTLD_DEFAULT, "s2a_guest_frozen"); looked = 1; }
+        if (atomic_load(&g_suspended) || (frozen && frozen())) { idle = 0; base = 0; continue; }
         unsigned long long f = direct_frames();
         if (!f) {
             if (++wait_first != 90) continue;   // 只在第 90 秒报一次、打一次现场，之后照常等首帧

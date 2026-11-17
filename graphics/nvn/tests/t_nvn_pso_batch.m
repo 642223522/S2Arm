@@ -72,6 +72,23 @@ int main(void) { @autoreleasepool {
     s2a_pso_archive_exit();
     VERIFY([NSFileManager.defaultManager fileExistsAtPath:wflag], "⑫ 起局就判不再写的一局正常收局：标记留着（#756 保护不被清掉）");
     [NSFileManager.defaultManager removeItemAtPath:g_par_dir error:nil];
+    // ⑬ #756 版本先验（期望按玩家诊断定的区间手写）：iOS 18.0–18.3 不写；18.4、17.7、26.0 与非 iOS 的 18.2 照写
+    VERIFY(par_os_gate(1, 18, 0) && par_os_gate(1, 18, 3) && !par_os_gate(1, 18, 4) && !par_os_gate(1, 17, 7) && !par_os_gate(1, 26, 0) && !par_os_gate(0, 18, 2),
+           "⑬ 版本先验：iOS 18.0 / 18.3 不写，18.4 / 17.7 / 26.0 / 非 iOS 18.2 照写");
+    // ⑭ 全机学习：崩溃线程不在写归档时崩溃钩子不记；在写时记本系统版本串 → 同机任一款（同一标记文件）起局都不写；系统版本串变了（升级）不再命中
+    {
+        char t2[] = "/tmp/t_pso_dead.XXXXXX"; REQUIRE(mkdtemp(t2));
+        snprintf(g_par_dead_path, sizeof g_par_dead_path, "%s/pso_archive_dead.txt", t2);
+        snprintf(g_par_os_key, sizeof g_par_os_key, "Version 18.9 (Build 22Z1)");
+        g_par_in_write = 0; s2a_pso_archive_crash_note();
+        int before = par_gate_or_learned(1, 26, 1);
+        g_par_in_write = 1; s2a_pso_archive_crash_note(); g_par_in_write = 0;
+        int learned = par_gate_or_learned(1, 26, 1);
+        snprintf(g_par_os_key, sizeof g_par_os_key, "Version 18.10 (Build 22Z9)");
+        int after_upgrade = par_gate_or_learned(1, 26, 1);
+        VERIFY(!before && learned && !after_upgrade, "⑭ 全机学习：不在写时崩不记（命中 %d，应 0）、在写时崩后同系统版本不写（%d，应 1）、升级后重判（%d，应 0）", before, learned, after_upgrade);
+        g_par_dead_path[0] = 0; char cmd[256]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", t2); system(cmd);
+    }
     if (failures) { printf("✗ t_nvn_pso_batch：%u 项里 %u 项不符\n", checks, failures); return 1; }
     printf("✓ t_nvn_pso_batch：%u 项全过（70 条管线写成 3 个批文件，按键全部取回；死在写里的标记生效；正常收局不留标记）\n", checks); return 0;
 } }

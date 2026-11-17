@@ -6,12 +6,12 @@
 // 公开 NVN 接口 + 生产 nvn_mtl.m（包含）+ 真 Metal 设备 + 真写保护缺页。期望按 NVN 语义和「谁读了存储」手写，与被测实现无关：
 //   贴图 16×16 RGBA8，存储整块填同一字节 v → 读出 v / 255。测试把 nvn_dirty_protect 包一层：对「布防」的那页，在正常加写保护之后再设成不可访问，
 //   第一个读它的线程进信号处理，记下是哪个线程、放开成只读后接着读。
-//   ① 首次上传：提交线程（本测试的主线程）不读贴图存储；读它的是别的线程。读出 0x40
-//   ② 首次上传之后 CPU 往同页写同样的字节：下一次提交「同字节跳过」+1、不重传，仍读 0x40（后台算的哈希是对的）
-//   ③ 第二张贴图首次上传：后台哈希读存储时先被扣住；这次提交的 GPU 已读走 0x40，再由 CPU 改成 0xA0、放行后台哈希 → 下一次提交读到 0xA0
+//   ① 首次上传：提交线程（本测试的主线程）不读贴图存储（布防页上主线程不缺页）；读出 0x40。后台哈希经 vm_read_overwrite 读、布防页读不了只作废哈希，不缺页（#b5a081）
+//   ② 另一张贴图首次上传（不布防）之后 CPU 往同页写同样的字节：下一次提交「同字节跳过」+1、不重传，仍读 0x40（后台算的哈希是对的）
+//   ③ 第二张贴图首次上传：后台哈希先被扣住（往 ph_queue 塞一个等放行的块）；这次提交的 GPU 已读走 0x40，再由 CPU 改成 0xA0、放行后台哈希 → 下一次提交读到 0xA0
 //      （哈希若在 GPU 读之后才取到新字节、又被当成有效，查脏页时新旧一致，旧上传就被留下）
-// 反证（11-13 手工核过）：同一测试编 main 的 nvn_mtl.m：① 读存储的是主线程（红），②③ 通；去掉 pkg_upload_ 里后台哈希结束时的 nvn_dirty_since_span
-//   判定（一律当有效）：③ 读到 0x40（红）
+// 反证（11-13 手工核过）：同一测试编当时 main 的 nvn_mtl.m：① 读存储的是主线程（红），②③ 通；去掉 pkg_upload_ 里后台哈希结束时的 nvn_dirty_since_span
+//   判定（一律当有效）：③ 读到 0x40（红）。后台不可读页（#b5a081）的反证在 t_nvn_ph_hash
 #define nvn_dirty_protect test_dirty_protect
 #include "../gfx/nvn/nvn_mtl.m"
 #undef nvn_dirty_protect
@@ -23,7 +23,7 @@ extern void *h_nvnBootstrapLoader(const char *name);
 int s2a_direct_fault(void *addr, int is_write, void *uctx);
 static NVNdevice device; static NVNqueue queue; static NVNmemoryPool pool; static NVNtexturePool tpool;
 static uint8_t *memory; static unsigned checks, fails;
-enum { POOL_SIZE = 16 << 20, TEX_OFF = 5 << 20, TEX2_OFF = 6 << 20, TEX_BYTES = 1 << 16, OUT_OFF = 4 << 20 };
+enum { POOL_SIZE = 16 << 20, TEX_OFF = 5 << 20, TEX2_OFF = 6 << 20, TEX3_OFF = 7 << 20, TEX_BYTES = 1 << 16, OUT_OFF = 4 << 20 };
 #define REQUIRE(x) do { if (!(x)) { fprintf(stderr, "FAIL setup %s:%d %s\n", __FILE__, __LINE__, #x); exit(2); } } while (0)
 #define VERIFY(c, ...) do { checks++; int ok_ = !!(c); if (!ok_) fails++; printf("%s ", ok_ ? "PASS" : "FAIL"); printf(__VA_ARGS__); putchar('\n'); fflush(stdout); } while (0)
 static void *api(const char *name) { void *p = h_nvnBootstrapLoader(name); REQUIRE(p); return p; }
@@ -82,7 +82,7 @@ int main(void) { @autoreleasepool {
     API(nvnMemoryPoolBuilderSetStorage)(&pb, memory, POOL_SIZE); API(nvnMemoryPoolBuilderSetFlags)(&pb, NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED | NVN_MEMORY_POOL_FLAGS_GPU_CACHED);
     REQUIRE(API(nvnMemoryPoolInitialize)(&pool, &pb));
     REQUIRE(API(nvnTexturePoolInitialize)(&tpool, &pool, 1 << 20, 512));
-    NVNtexture t1 = {0}, t2 = {0}; tex_make(&t1, TEX_OFF, 0, 0x40); tex_make(&t2, TEX2_OFF, 1, 0x40);
+    NVNtexture t1 = {0}, t2 = {0}, t3 = {0}; tex_make(&t1, TEX_OFF, 0, 0x40); tex_make(&t2, TEX2_OFF, 1, 0x40); tex_make(&t3, TEX3_OFF, 2, 0x40);
     NSError *err = nil; MTLCompileOptions *o = [MTLCompileOptions new]; o.languageVersion = MTLLanguageVersion2_3;
     id<MTLLibrary> lib = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nstruct Args { texture2d<float> t [[id(0)]]; device float4 *out [[id(1)]]; };\n"
         "kernel void rd(constant Args &a [[buffer(0)]], uint3 p [[thread_position_in_grid]]) { if (p.x == 0) a.out[0] = a.t.read(uint2(0)); }\n" options:o error:&err];
@@ -97,18 +97,22 @@ int main(void) { @autoreleasepool {
     g_out = (float *)(memory + OUT_OFF);
     uint8_t *st1 = memory + TEX_OFF, *st2 = memory + TEX2_OFF;
 
-    arm(st1); float v = read_once(0); int n = wait_reads(), m = atomic_load(&g_reader_main);
-    VERIFY(n && m == 0, "① 首次上传：读贴图存储的%s（期望 别的线程；读了 %d 次）", !n ? "线程 没有" : m ? "是提交线程" : "是别的线程", n);
+    arm(st1); float v = read_once(0); dispatch_sync(ph_queue(), ^{}); int m = atomic_load(&g_reader_main);
+    VERIFY(m != 1, "① 首次上传：提交线程%s读贴图存储（期望 不读）", m == 1 ? "" : "没");
     VERIFY(near(v, 0x40), "① 读到 0x40（得 %.4f）", v);
+    { size_t pg = nvn_dirty_page_size(); atomic_store(&g_armed, 0); atomic_store(&g_closed, 0); mprotect((void *)((uintptr_t)st1 & ~(pg - 1)), pg, PROT_READ | PROT_WRITE); }   // 撤防
 
+    uint8_t *st3 = memory + TEX3_OFF;
+    v = read_once(2); dispatch_sync(ph_queue(), ^{});   // 首次上传，后台哈希算完
     uint64_t s0 = g_pkg_same, u0 = g_pkg_reuploads;
-    memset(st1, 0x40, TEX_BYTES); v = read_once(0);
+    memset(st3, 0x40, TEX_BYTES); v = read_once(2);
     VERIFY(g_pkg_same == s0 + 1 && g_pkg_reuploads == u0 && near(v, 0x40), "② 同页写同样字节：同字节跳过 %llu → %llu（期望 +1）、重传 %llu → %llu（期望不变）、读 %.4f（期望 0x40）",
            (unsigned long long)s0, (unsigned long long)g_pkg_same, (unsigned long long)u0, (unsigned long long)g_pkg_reuploads, v);
 
-    atomic_store(&g_hold, 1); arm(st2); v = read_once(1);
+    __block _Atomic int hold = 1; dispatch_async(ph_queue(), ^{ while (atomic_load(&hold)) usleep(1000); });   // 扣住 ph_queue：第二张的哈希排在它后面
+    v = read_once(1);
     VERIFY(near(v, 0x40), "③ 第二张首次上传：这次提交读到 0x40（得 %.4f）", v);
-    memset(st2, 0xA0, TEX_BYTES); atomic_store(&g_hold, 0); (void)wait_reads();
+    memset(st2, 0xA0, TEX_BYTES); atomic_store(&hold, 0); dispatch_sync(ph_queue(), ^{});
     v = read_once(1);
     VERIFY(near(v, 0xA0), "③ GPU 读走之后 CPU 改成 0xA0、后台哈希才取 → 下一次提交读到 0xA0（得 %.4f）", v);
 

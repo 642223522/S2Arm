@@ -81,7 +81,7 @@ struct ChoicePickerView: View {
             content(scrolls: false)
             content(scrolls: true)
         }
-        .frame(maxWidth: 460)
+        .frame(maxWidth: 460 * ShellFonts.tvScale)
         .background(Color(red: 0.075, green: 0.075, blue: 0.082), in: RoundedRectangle(cornerRadius: 26))
         .overlay(RoundedRectangle(cornerRadius: 26).strokeBorder(.white.opacity(0.10)))
         .shadow(color: .black.opacity(0.5), radius: 40)

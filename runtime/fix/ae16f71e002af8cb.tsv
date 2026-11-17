@@ -1,0 +1,3 @@
+# 01006BB00C6F0000 1.0.0 main ae16f71e002af8cb059a9a74c4d90f34：同 909e904af78ac1b8.tsv 的缺陷（玩家 2 份诊断崩在 main+0x10cce58 / lr 0x13c229c；本机 Mac 高负载下第 9904 帧复现）。
+# 这一版的 release 在 main+0x10ccfa0（ldr x8,[x0]; ldr x1,[x8]; br x1），虚表 main+0x1c51308 第 7 槽 0x1c51340 是唯一指向它的重定位
+c	main	10ccfa0	word	f9400008	d65f03c0	# 物理完成任务 release：ldr x8,[x0] → ret

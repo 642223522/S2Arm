@@ -55,8 +55,8 @@ public static class EnvironmentProbe
         var requestFile = Path.GetTempFileName();
         try
         {
-            await File.WriteAllTextAsync(requestFile, JsonSerializer.Serialize(new
-                { schema = 1, target = "ios", shell = Path.GetFullPath(paths.Shell), resources = Path.GetFullPath(AppContext.BaseDirectory) }), cancellationToken);
+            await File.WriteAllTextAsync(requestFile, JsonOut.Serialize(new Dictionary<string, object?>
+                { ["schema"] = 1, ["target"] = "ios", ["shell"] = Path.GetFullPath(paths.Shell), ["resources"] = Path.GetFullPath(AppContext.BaseDirectory) }), cancellationToken);
             return await RunProcessAsync(StartInfo(paths, requestFile), cancellationToken);
         }
         finally { File.Delete(requestFile); }

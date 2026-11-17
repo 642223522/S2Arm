@@ -1,0 +1,125 @@
+diff --git a/src/Ryujinx.Audio.Backends.Apple/S2AOutputDiag.cs b/src/Ryujinx.Audio.Backends.Apple/S2AOutputDiag.cs
+index 68c2e3fc0f7a16e7e2e69a749da5dcbfa0e21eb3..a576ff185d5aee9e9ffe1f0109480c1e3b17c51d 100644
+--- a/src/Ryujinx.Audio.Backends.Apple/S2AOutputDiag.cs
++++ b/src/Ryujinx.Audio.Backends.Apple/S2AOutputDiag.cs
+@@ -138,6 +138,9 @@ namespace Ryujinx.Audio.Backends.Apple
+         private readonly int _bitsPerSample;
+ 
+         private long _callbacks;
++        // S2Arm (#1182 无声诊断)：本 10 秒交设备样本的峰值（int16 绝对值最大，已乘音量；只算 16 位会话，别的位宽行里写「不适用」）。
++        //   OnSubmit 在泵锁内写，reporter 取走清零（Interlocked.Exchange）：交界那一笔的峰值可能记进下一窗，不影响「整窗全 0」的判断
++        private int _peak;
+         private long _framesSubmitted;
+         private long _framesPlayed;
+         private long _underruns;
+@@ -305,6 +308,23 @@ namespace Ryujinx.Audio.Backends.Apple
+ 
+             _framesSubmitted += frames;
+ 
++            if (_bitsPerSample == 16)
++            {
++                int peak = Volatile.Read(ref _peak);
++
++                foreach (short sample in MemoryMarshal.Cast<byte, short>(data))
++                {
++                    int magnitude = sample < 0 ? -sample : sample;
++
++                    if (magnitude > peak)
++                    {
++                        peak = magnitude;
++                    }
++                }
++
++                Volatile.Write(ref _peak, peak);
++            }
++
+             if (_latW - _latR < LatRing)
+             {
+                 _latDue[_latW++ % LatRing] = now + (inFlightBefore + data.Length) / _bytesPerFrame * Stopwatch.Frequency / _rate;
+@@ -536,6 +556,7 @@ namespace Ryujinx.Audio.Backends.Apple
+                 _repFreezeSeq = freezeSeq;
+ 
+                 long skipped = Interlocked.Exchange(ref AudioProcessor.S2ASkippedPeriods, 0);
++                long nanSamples = Interlocked.Exchange(ref Ryujinx.Audio.Renderer.Dsp.Command.DeviceSinkCommand.S2ANaNSamples, 0);
+                 long lateNs = Interlocked.Exchange(ref AudioProcessor.S2AMaxLateNs, 0);
+                 HudAudio(-1, 0, skipped);   // 渲染丢周期是整个渲染器的，不分会话：单报一次
+ 
+@@ -581,6 +602,10 @@ namespace Ryujinx.Audio.Backends.Apple
+                         continue;
+                     }
+ 
++                    int peak = Interlocked.Exchange(ref d._peak, 0);
++                    // S2Arm (#1182)：峰值 0 且交设备帧数正常 = 交出去的全是静音（渲染出 0 / NaN 被饱和成 0），不是设备没播；NaN 数 > 0 指向渲染器混音 / DSP
++                    string level = $"；交设备峰值 {(d._bitsPerSample == 16 ? peak.ToString() : $"不适用（{d._bitsPerSample} 位）")}（int16 绝对值，已乘音量；0 = 交出去的全是静音）、渲染 NaN 样本 {nanSamples}（饱和转 int16 前，全渲染器）";
++
+                     long minInFlight = d._minInFlight;
+                     double maxStarveMs = d._maxStarveTicks * 1000.0 / Stopwatch.Frequency;
+                     double maxGapMs = d._maxGapTicks * 1000.0 / Stopwatch.Frequency;
+@@ -598,7 +623,7 @@ namespace Ryujinx.Audio.Backends.Apple
+                     Console.Error.WriteLine(
+                         $"[声] 输出 #{d.Index} 10 秒：回调 {cb - d._repCallbacks} 次，交设备 {sub - d._repSubmitted} 帧、播完 {pl - d._repPlayed} 帧，" +
+                         $"账上在途归零 {und - d._repUnderruns} 次（最长 {maxStarveMs:F1} ms；设备交还早于播完，归零时设备内部仍有缓冲，断音看真缺口与交还迟到）、停流 {pau - d._repPauses} 次，回调后最少在途 {(minInFlight == long.MaxValue ? -1 : minInFlight)} 帧，" +
+-                        $"回调最长间隔 {maxGapMs:F1} ms；渲染丢周期 {skipped}、周期最晚 {lateNs / 1e6:F1} ms；真缺口 {gap - d._repGapFrames} 帧（{(gap - d._repGapFrames) * 1000.0 / d._rate:F1} ms）；放回提前量 {Volatile.Read(ref d._leadFrames)} 帧；交还迟到 {lb - d._repLateBursts} 次（最多比一拉晚 {lateOverMs:F1} ms）{lat}{(d._ring != null ? $"；wav 丢 {d._ringDropped} B" : "")}");
++                        $"回调最长间隔 {maxGapMs:F1} ms；渲染丢周期 {skipped}、周期最晚 {lateNs / 1e6:F1} ms；真缺口 {gap - d._repGapFrames} 帧（{(gap - d._repGapFrames) * 1000.0 / d._rate:F1} ms）；放回提前量 {Volatile.Read(ref d._leadFrames)} 帧；交还迟到 {lb - d._repLateBursts} 次（最多比一拉晚 {lateOverMs:F1} ms）{lat}{level}{(d._ring != null ? $"；wav 丢 {d._ringDropped} B" : "")}");
+ 
+                     HudAudio(d.Index, gap * 1000 / d._rate, 0);
+ 
+diff --git a/src/Ryujinx.Audio/Renderer/Dsp/Command/DeviceSinkCommand.cs b/src/Ryujinx.Audio/Renderer/Dsp/Command/DeviceSinkCommand.cs
+index a58eabbbfde6d9c3347f3ed4b8b22cd4f2cac8ab..d2f266033c1ab8f696e10a03dd0488df42ee0878 100644
+--- a/src/Ryujinx.Audio/Renderer/Dsp/Command/DeviceSinkCommand.cs
++++ b/src/Ryujinx.Audio/Renderer/Dsp/Command/DeviceSinkCommand.cs
+@@ -4,6 +4,7 @@ using System;
+ using System.Buffers;
+ using System.Runtime.CompilerServices;
+ using System.Text;
++using System.Threading;
+ 
+ namespace Ryujinx.Audio.Renderer.Dsp.Command
+ {
+@@ -26,6 +27,26 @@ namespace Ryujinx.Audio.Renderer.Dsp.Command
+ 
+         public Memory<float> Buffers { get; private set; }
+ 
++        // S2Arm (#1182 无声诊断)：交设备前（饱和转 int16 之前）混音结果里的 NaN 样本累计数。饱和把 NaN 变 0，到设备那边已分不出
++        //   「渲染出 NaN」与「渲染出真 0」，只能在 float 阶段数。全渲染器共用一个计数：本命令只在音频渲染线程上跑，有 NaN 时才原子加一次；
++        //   Apple 后端的 10 秒 [声] 行（S2AOutputDiag）取走清零。
++        public static long S2ANaNSamples;
++
++        private static int S2ACountNaN(ReadOnlySpan<float> buffer)
++        {
++            int count = 0;
++
++            foreach (float sample in buffer)
++            {
++                if (float.IsNaN(sample))
++                {
++                    count++;
++                }
++            }
++
++            return count;
++        }
++
+         public DeviceSinkCommand()
+         {
+             
+@@ -102,6 +123,19 @@ namespace Ryujinx.Audio.Renderer.Dsp.Command
+                     inputCount = bufferCount;
+                 }
+ 
++                // S2Arm (#1182)：饱和前数 NaN（见 S2ANaNSamples）
++                int nanSamples = 0;
++
++                for (int i = 0; i < bufferCount; i++)
++                {
++                    nanSamples += S2ACountNaN(GetBuffer(InputBufferIndices[i], SampleCount));
++                }
++
++                if (nanSamples != 0)
++                {
++                    Interlocked.Add(ref S2ANaNSamples, nanSamples);
++                }
++
+                 short[] outputBuffer = ArrayPool<short>.Shared.Rent((int)inputCount * SampleCount);
+                 Array.Fill(outputBuffer, (short)0, 0, (int)inputCount * SampleCount);
+ 

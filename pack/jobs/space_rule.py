@@ -9,7 +9,7 @@
 CLI：space_rule.py direct-check <产物根> <直连缓存目录> <输出目录> → 恒退 0（复核自己没跑成退 2）：预估不够只打一行【黄】提示、不拦（不许堵门，11-14）"""
 import os, shutil, sys
 
-CONTENT_DIRS = ("romfs", "exefs", "aoc")
+CONTENT_DIRS = ("romfs", "romfs.std", "exefs", "aoc")   # romfs.std：RomFS 不落散文件时的镜像（与 romfs/ 二选一，tree_bytes 对单个文件同样量）
 
 
 def tree_bytes(path):

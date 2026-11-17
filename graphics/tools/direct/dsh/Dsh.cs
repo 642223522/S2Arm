@@ -203,6 +203,10 @@ namespace S2A.Dsh
                 if (stage == "cs") j["tensor_mma_count"] = DshTensor.Count(code);
                 // 计算阶段的驱动常量在 c[0] 里按程序排（推送常量字数 +0xa9，uniform / storage / 纹理项数 +0xb1..+0xb3，分离纹理 / 分离采样器项数 +0xb4 / +0xb5（图像在它们之后，上游参考实现（MIT）67f1d0055），大小 +0xba），翻译器按它映射（InstEmitAmpere.cs AMapC0）
                 if (stage == "cs") j["nvn2_cs"] = new JsonArray(ctl[0xb1], ctl[0xb2], ctl[0xb3], BitConverter.ToUInt16(ctl, 0xba), ctl[0xa9] * 4, ctl[0xb4], ctl[0xb5]);
+                // 早期深度（NVN2）：像素着色器控制段 +0x5b（NVN1 在 +0x718，见上）。原先 NVN2 不读，Switch 2 款里该先测深度再着色的像素着色器（先写内存、后测深度）全部晚测，
+                //   被遮挡的像素也整片着色。搬 nxnative a888e668（MIT）：NVN2 驱动按单字节读 +0x58..+0x62 的片元标志，+0x5b 即早测；对方读数（一款第三方 Switch 2 游戏，M4 Pro）GPU 19.0 → 16.6 ms、
+                //   p95 64 → 26 ms；040074A01BF12000 的 13546 支像素着色器里 2855 支、0400486024DEC000 的 22352 支里 746 支带它。自己写深度的（SPH 字 19 位 1，OmapDepth）不提前：先测的深度不是它算出的那个
+                if (stage == "ps" && ctl.Length > 0x5b && ctl[0x5b] != 0 && !(code.Length >= 0x50 && (BitConverter.ToUInt32(code, 19 * 4) & 2) != 0)) j["early_z"] = true;
                 if (stage == "ds") j["tess_mode"] = (long)Nvn2.TessMode(ctl);
                 if (stage == "hs") j["tess_mode"] = T.TessModes.Count > 0 ? (long)T.TessModes.First().Value : 1L;
                 j["debug"] = stage is "gs" or "cs"; j["reduced"] = true;
@@ -1324,8 +1328,13 @@ namespace S2A.Dsh
         // 11-07 卡顿线：原先按文本模板认（P.* 必须是单个临时量、_a = _b * 0.5、_b = _c + _d 逐层），关 DebugMode 后表达式内联成 (_237 + _239) * 0.5，
         //   旷野之息 819 支顶点着色器识别全落空。改成形态无关：各分量右边解析成线性式（原子 → 系数 + 常数），只代回「顶层单次定义、块里没再赋值」的临时量，
         //   非线性片段（函数调用、两个非常量相乘）按文本当原子；判定 = 线性式相等。两种写法、任意内联程度结论相同
-        internal static List<object> ScrUvLocns(string src)
+        internal static List<object> ScrUvLocns(string src) => ScrLocns(src).Uv;
+        // #1152：插值量 locn L 是不是「本顶点裁剪坐标本身」（.x = P.x、.y = P.y、.w = P.w，main0 与 main0_z 都成立）：片元自己做 (x / w) * 0.5 + 0.5、
+        //   (y / w) * -0.5 + 0.5（异度之刃 3 / DE 的 G-buffer 贴花、灯光），算出来就是本像素的屏幕坐标，与 scr_uv 同一件事换个地方算。返回升序 locn 列表
+        internal static List<object> ScrPosLocns(string src) => ScrLocns(src).Pos;
+        internal static (List<object> Uv, List<object> Pos) ScrLocns(string src)
         {
+            var none = (new List<object>(), new List<object>());
             static (string Top, List<string> Blocks) SplitDepth(string body)
             {
                 var top = new StringBuilder(); var blocks = new List<string>(); var cur = new StringBuilder(); int d = 0;
@@ -1344,17 +1353,17 @@ namespace S2A.Dsh
                 if (seen.ContainsKey(m.Groups[1].Value)) locn[seen[m.Groups[1].Value]] = (m.Groups[1].Value, Int(m.Groups[2].Value));   // dict 同键后写覆盖、位置不变
                 else { seen[m.Groups[1].Value] = locn.Count; locn.Add((m.Groups[1].Value, Int(m.Groups[2].Value))); }
             }
-            SortedSet<int> res = null;
+            SortedSet<int> res = null, resP = null;
             foreach (string entry in new[] { "main0", "main0_z" })
             {
                 string body = FnBody(src, entry);
-                if (body == null) { if (entry == "main0") return new List<object>(); continue; }
+                if (body == null) { if (entry == "main0") return none; continue; }
                 var (top, blocks) = SplitDepth(body);
                 var notDef = new HashSet<string>();   // 块里又赋过值的临时量：值随路径变，不能代回
                 foreach (string blk in blocks)
                 {
                     if (Has(blk, "s2a_push")) continue;
-                    if (Search(@"out\.(gl_Position|m_\d+)\.?[xyzw]?\s*=[^=]", blk).Success) return new List<object>();
+                    if (Search(@"out\.(gl_Position|m_\d+)\.?[xyzw]?\s*=[^=]", blk).Success) return none;
                     foreach (Match m in All(@"(?<![\w.])(_\d+)\s*=(?!=)", blk)) notDef.Add(m.Groups[1].Value);
                 }
                 var defs = new Dictionary<string, string>();
@@ -1367,20 +1376,22 @@ namespace S2A.Dsh
                 string Last(string lhs) { string v = null; foreach (Match m in All(Esc(lhs) + @"\s*=(?!=)\s*([^;]+);", top)) v = m.Groups[1].Value.Trim(); return v; }
                 var lin = new LinForm(defs);
                 string px = Last("out.gl_Position.x"), py = Last("out.gl_Position.y"), pw = Last("out.gl_Position.w");
-                if (px == null || py == null || pw == null) return new List<object>();
+                if (px == null || py == null || pw == null) return none;
                 var lx = lin.Of(px); var ly = lin.Of(py); var lw = lin.Of(pw);
-                if (lx == null || ly == null || lw == null || lx.IsConst || ly.IsConst || lw.IsConst) return new List<object>();
+                if (lx == null || ly == null || lw == null || lx.IsConst || ly.IsConst || lw.IsConst) return none;
                 var wantX = lx.Scale(0.5).Plus(lw.Scale(0.5)); var wantY = ly.Scale(-0.5).Plus(lw.Scale(0.5));
-                var ok = new SortedSet<int>();
+                var ok = new SortedSet<int>(); var okP = new SortedSet<int>();
                 foreach (var (mem, k) in locn)
                 {
                     string vx = Last("out." + mem + ".x"), vy = Last("out." + mem + ".y"), vw = Last("out." + mem + ".w");
                     if (vx == null || vy == null || vw == null) continue;
                     if (lw.Same(lin.Of(vw)) && wantX.Same(lin.Of(vx)) && wantY.Same(lin.Of(vy))) ok.Add(k);
+                    if (lw.Same(lin.Of(vw)) && lx.Same(lin.Of(vx)) && ly.Same(lin.Of(vy))) okP.Add(k);
                 }
                 if (res == null) res = ok; else res.IntersectWith(ok);
+                if (resP == null) resP = okP; else resP.IntersectWith(okP);
             }
-            return (res ?? new SortedSet<int>()).Select(x => (object)(long)x).ToList();
+            return ((res ?? new SortedSet<int>()).Select(x => (object)(long)x).ToList(), (resP ?? new SortedSet<int>()).Select(x => (object)(long)x).ToList());
         }
 
         /// <summary>MSL 标量表达式的线性式（ScrUvLocns 用）：Σ 系数·原子 + 常数。+、−（二元 / 一元）、乘除常数、括号逐层解析；临时量 _N 在 defs 里就代回其定义
@@ -1484,9 +1495,9 @@ namespace S2A.Dsh
                 return new PyDict { ["discard"] = (long)(Has(src, "discard_fragment") ? 1 : 0), ["sample_mask"] = (long)(Has(og, "sample_mask") ? 1 : 0), ["colors"] = cols.Select(x => (object)(long)x).ToList() };
             }
             if (stage != "vs") return new PyDict();
-            var scr = ScrUvLocns(src);   // 10-30：屏幕坐标插值量（与下面的整片覆盖证明无关，带分支的顶点着色器也照判；同 dmsh_build.py）
+            var (scr, scrPos) = ScrLocns(src);   // 10-30：屏幕坐标插值量（与下面的整片覆盖证明无关，带分支的顶点着色器也照判；同 dmsh_build.py）
             var body = Search(@"\bvertex\s+\w+\s+\w+\s*\(.*?\)\s*\{(.*)\}\s*$", src, RegexOptions.Singleline);
-            var neg = new PyDict { ["pos_attr"] = -1L, ["scr_uv"] = scr };
+            var neg = new PyDict { ["pos_attr"] = -1L, ["scr_uv"] = scr, ["scr_pos"] = scrPos };
             if (!body.Success || Search(@"\b(if|for|while|switch|do)\b|clip_distance|ClipDistance", body.Groups[1].Value).Success) return neg;
             string b = body.Groups[1].Value;
             var attr = new Dictionary<string, int>(); foreach (Match m in All(@"(\w+)\s+(\w+)\s*\[\[attribute\((\d+)\)\]\]", src)) attr[m.Groups[2].Value] = Int(m.Groups[3].Value);
@@ -1522,7 +1533,7 @@ namespace S2A.Dsh
                     && new[] { (long)fx.Value.A[0], (long)fx.Value.B[0], (long)fy.Value.A[0], (long)fy.Value.B[0] }.Min() >= 0)
                     aff[k.ToString()] = new PyDict { ["attr"] = (long)attr[fx.Value.V.Item1], ["sx"] = fx.Value.A, ["ox"] = fx.Value.B, ["sy"] = fy.Value.A, ["oy"] = fy.Value.B };
             }
-            return new PyDict { ["pos_attr"] = (long)attr[m0.Value.Item1], ["pos_w"] = wv, ["uv_from_attr"] = uv, ["uv_affine"] = aff, ["scr_uv"] = scr };
+            return new PyDict { ["pos_attr"] = (long)attr[m0.Value.Item1], ["pos_w"] = wv, ["uv_from_attr"] = uv, ["uv_affine"] = aff, ["scr_uv"] = scr, ["scr_pos"] = scrPos };
         }
 
         // 同 dmsh_build.py resolution_scale_contract；现编直接编入正式 Program，
@@ -1700,6 +1711,7 @@ namespace S2A.Dsh
                 else if (nm == UVX) e.Set("kind", "uvx");   // 宽屏 16:9 采样换算（FsUvx）
                 else if (nm == LB) e.Set("kind", "lb");   // #800 采样器偏置表（FsLb）
                 else if (nm == "gal_ubo_len") e.Set("kind", "ubolen");   // #1204 T1 常量缓冲界长表（gal_spvx.m 直连口径：uint[NVN 统一缓冲槽] = 绑定的 vec4 个数，宿主按当前绑定填）
+                else if (nm.StartsWith("gal_tbl_", StringComparison.Ordinal)) e.Set("kind", "tblead").Set("for", nm["gal_tbl_".Length..]);   // #798 纹素缓冲前导元素数（gal_spvx.c spv_tbias：for = 那个纹素缓冲的成员名；宿主指向常量表里值为前导数的一格）
                 else if (nm == "spvBufferSizeConstants") e.Set("kind", "sbsize");   // SPIRV-Cross 存储缓冲字节数表（uint[存储缓冲的 [[id]]]，加固取运行时数组长度用；宿主按当前绑定填）
                 else if ((mm = Full(@"[a-z]+_c(\d+)", nm)).Success)
                 {

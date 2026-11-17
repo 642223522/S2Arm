@@ -127,12 +127,34 @@ def spirv_cross_identity(path):
 def tools_now():
     """Actual tool fingerprints: translator dll (including the Ryujinx shader library), spirv-cross, metal compiler (macOS / iOS)"""
     t = {}
-    for dll in ('dmsh_xlate.dll', 'Ryujinx.Graphics.Shader.dll', 'Ryujinx.Common.dll', 'S2Arm.Gfx.Widen.Shader.dll'): t[dll] = sha16(os.path.join(XLATE_DIR, dll))   # the last: graphics/widen/shader analyses
-    # 经 dotnet 跑托管的 dmsh_xlate.dll，不执行同目录只有 arm64 的启动壳 dmsh_xlate（11-01：Intel Mac 命令行出 iPhone 包在 README 支持范围内，启动壳在 Intel 上 Bad CPU type）
-    dn = os.environ.get('DOTNET') or (os.path.expanduser('~/.dotnet/dotnet') if os.path.exists(os.path.expanduser('~/.dotnet/dotnet')) else shutil.which('dotnet'))
-    t['xlate_source'] = subprocess.run([dn or 'dotnet', os.path.join(XLATE_DIR, 'dmsh_xlate.dll'), '--source-sha'], capture_output=True, text=True).stdout.strip()
-    sc = shutil.which('spirv-cross') or ''   # 不调 which 命令：Windows 没有（#1100 W6）
-    t['spirv-cross'] = spirv_cross_identity(sc)   # its release version (see spirv_cross_identity)
+    for dll in (
+        "dmsh_xlate.dll",
+        "Ryujinx.Graphics.Shader.dll",
+        "Ryujinx.Common.dll",
+        "S2Arm.Gfx.Widen.Shader.dll",
+    ):
+        t[dll] = sha16(os.path.join(XLATE_DIR, dll))  # the last: graphics/widen/shader analyses
+    if os.environ.get("S2A_PREBUILT_TOOLS"):
+        # App 出包作业里没有 .NET 运行时（工具全为预编原生件），执行不了 dll --source-sha：读 publish.sh 随二进制写的 .source_sha（值 = 仓库源码算出的 xlate_source_sha，
+        #   发布侧与 tests/dmsh_lock_consistency_test.sh 核；读不出留空 → 对不上照常报红）
+        try:
+            t["xlate_source"] = open(os.path.join(XLATE_DIR, ".source_sha")).read().strip()
+        except OSError:
+            t["xlate_source"] = ""
+    else:
+        # 经 dotnet 跑托管的 dmsh_xlate.dll，不执行同目录只有 arm64 的启动壳 dmsh_xlate（11-01：Intel Mac 命令行出 iPhone 包在 README 支持范围内，启动壳在 Intel 上 Bad CPU type）
+        dn = os.environ.get("DOTNET") or (
+            os.path.expanduser("~/.dotnet/dotnet")
+            if os.path.exists(os.path.expanduser("~/.dotnet/dotnet"))
+            else shutil.which("dotnet")
+        )
+        t["xlate_source"] = subprocess.run(
+            [dn or "dotnet", os.path.join(XLATE_DIR, "dmsh_xlate.dll"), "--source-sha"],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    sc = shutil.which("spirv-cross") or ""  # 不调 which 命令：Windows 没有（#1100 W6）
+    t["spirv-cross"] = spirv_cross_identity(sc)  # its release version (see spirv_cross_identity)
     # Windows（#1100 W6）：没有 xcrun，读苹果官方 Metal Developer Tools for Windows 的 metal.exe（同 Build.cs Metal.WinBin：S2A_METAL_BIN，缺省 Program Files 下）；
     #   版本与锁（Mac 的 Xcode）不同时由 own_compilers 打 note 放行，与换 Xcode 同一口径（维护者 11-03 #788：编译器版本只 note、不进链号）
     win = os.environ.get('S2A_METAL_BIN') or r'C:\Program Files\Metal Developer Tools\bin' if os.name == 'nt' else None

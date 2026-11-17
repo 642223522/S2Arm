@@ -9,6 +9,7 @@ public static class JobLanguage
     public static string Current { get; set; } = "zh-Hans";
     internal static void Stamp(IDictionary<string, object?> payload)
     {
-        if (Current is "zh-Hans" or "en" && !payload.ContainsKey("uiLanguage")) payload["uiLanguage"] = Current;
+        // 界面语言照原样带、由作业层认（中文界面中文定名，其余英文）。原先只带 zh-Hans / en，法 / 日 / 西 / 繁中界面不带、作业层回落成中文（#502，11-16 维护者）
+        if (!string.IsNullOrEmpty(Current) && !payload.ContainsKey("uiLanguage")) payload["uiLanguage"] = Current;
     }
 }

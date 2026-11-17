@@ -107,7 +107,9 @@ EXPLAIN = (
     (r'mismatchedapplicationidentifierentitlement|application-identifier entitlement string[^\n]{0,240}does not match', 'app_other_signer'),   # 同 install.SIGN_ERRORS（文本已转小写）
     (r'developer mode', 'developer_mode_required'),
     (r'device is locked|passcode|unlock', 'device_locked'),
-    (r'pairing|not paired|invalidhostid|trust', 'device_pairing_required'),
+    # 苹果设备服务里没有这台的配对记录（#1198 plumesign 原文「unexpected response from device: missing PairRecordData in pair record response」）：
+    #   也是没配好对，原先落到 device_install_failed、建议成「检查设备连接与包」
+    (r'pairing|not paired|invalidhostid|trust|pair ?record', 'device_pairing_required'),
     (r'no device|not connected|usbmux', 'device_not_connected'),
 )
 
@@ -210,8 +212,8 @@ def guide_html(ipa=None, st=None, lang='zh-Hans'):
         note = f'<p class="note">{esc(s["note"][lang])}</p>' if s.get('note') else ''
         rows.append(f'<section><h2>{i}. {esc(s["title"][lang])}</h2><ol>{items}</ol>{note}</section>')
     errs = ''.join(f'<tr><td><code>{esc(e["match"])}</code></td><td>{esc(e["means"][lang])}</td><td>{esc(recovery(e["code"], packaged=True))}</td></tr>' for e in g['errors'])
-    ipa_line = f'<p>本次出好的包：<code>{esc(os.path.abspath(ipa))}</code>（已在资源管理器里选中）</p>' if ipa else ''
-    return f'''<!doctype html><html lang="zh-Hans"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    ipa_line = f'<p>本次出好的包：<code>{esc(os.path.abspath(ipa))}</code>（已在资源管理器里选中）</p>' if ipa else ''  # 非玩家句
+    return f'''<!doctype html><html lang="zh-Hans"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">  # 非玩家句
 <title>{esc(g["title"][lang])}</title>
 <style>:root{{--bg:#fff;--fg:#1d1d1f;--mut:#6e6e73;--card:#f5f5f7;--acc:#0a66d6;--warn:#b25000}}
 @media (prefers-color-scheme:dark){{:root{{--bg:#111;--fg:#f2f2f2;--mut:#a1a1a6;--card:#1c1c1e;--acc:#4ea1ff;--warn:#ffb15c}}}}

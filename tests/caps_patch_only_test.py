@@ -3,6 +3,7 @@
   ① 有社区帧率补丁（cpatch.tsv 编号 fps:）+ 我方帧率表 fps.tsv + 我方宽屏表 → fps60 1（原因含「社区帧率补丁」，宿主 caps.c 据此认已验证）、widen 0、fps60_display 0
   ② 只有我方帧率表与宽屏表、没有社区补丁 → fps60 0、widen 0、fps60_display 0
   ③ 只有社区宽屏补丁 → fps60 0、widen 0（社区宽屏补丁走自己的开关，不看这一键）
+  ④ 在宽屏已验证名单（产物根 widen_verified.tsv）、没有社区补丁 → widen 1（11-15 维护者「两者合成一套」：验过的款用我方通用满屏）
   反证：S2A_CAPS_OWN=1 时 ② 的 fps60 回到 1（我方帧率表算来源）"""
 import os, sys, tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tools'))
@@ -14,7 +15,7 @@ def ck(name, ok):
     global bad, n
     n += 1; bad += 0 if ok else 1; print(('✓ ' if ok else '✗ ') + name)
 
-def root(t, fps_patch=False, ws_patch=False, own=False):
+def root(t, fps_patch=False, ws_patch=False, own=False, verified=False):
     os.makedirs(t, exist_ok=True)
     rows = ['编号\t模块\t位\t类别\t段名\t许可\t来源\t数据写入\t缺省开\t目标帧率\t画幅']
     if fps_patch: rows.append('fps:aaaa\tsdk\t0\tfps\tx\t\to\t\t1\t120\t')
@@ -23,6 +24,7 @@ def root(t, fps_patch=False, ws_patch=False, own=False):
     if own:
         open(os.path.join(t, 'fps.tsv'), 'w').write('# x\npresent\tdisplay\n')
         open(os.path.join(t, 'widen_enable.handheld.tsv'), 'w').write('a\t1\n')
+    if verified: open(os.path.join(t, 'widen_verified.tsv'), 'w').write('0100000000000000\t' + '0' * 32 + '\tx\tapple\n')
     return t
 
 os.environ.pop('S2A_CAPS_OWN', None)
@@ -34,6 +36,8 @@ with tempfile.TemporaryDirectory() as d:
     ck(f'② 只有我方表 → 全 0（{r2}）', r2['fps60'][0] == 0 and r2['widen'][0] == 0 and r2['fps60_display'] == 0)
     r3 = cp.decide(REPO, root(os.path.join(d, 'r3'), ws_patch=True))
     ck(f'③ 只有宽屏补丁 → fps60 0、widen 0（{r3}）', r3['fps60'][0] == 0 and r3['widen'][0] == 0)
+    r5 = cp.decide(REPO, root(os.path.join(d, 'r5'), verified=True))
+    ck(f'④ 在宽屏已验证名单、没有补丁 → widen 1（{r5["widen"]}）', r5['widen'][0] == 1 and '已验证名单' in r5['widen'][1])
     os.environ['S2A_CAPS_OWN'] = '1'
     try:
         r4 = cp.decide(REPO, os.path.join(d, 'r2'), all_caps=True)

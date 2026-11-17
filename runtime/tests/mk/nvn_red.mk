@@ -1,6 +1,6 @@
 # native-test-nvn_red：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += nvn_red
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # 采样器归约 / LOD 偏置按 GPU 能力原生或着色器模拟端到端（10-28，#800）：生产 dispatch + draw → se_want（判模拟位、从兜底目录载设备端变体 <键>_se.metal、按 function constant 特化）
 #   → encode_args → se_bind（26 号槽）/ samp_by_id，本机能力（M5：原生 reductionMode / lodBias）vs S2A_SAMP_EMU=1（非 Apple10 那一路：着色器归约、加偏置）× Metal 4 / 3，
 #   计算路径每路逐位等于 CPU 按定义手算的期望（含带偏置的归约 / 普通采样器）、片元路径两笔读数逐位等于手算；守卫：每条管线的模拟位 = 按定义要的、两项都原生时恒 0。

@@ -25,7 +25,7 @@ import Sparkle
         ProcessInfo.processInfo.environment["S2A_UPDATE_FEED"].flatMap { $0.isEmpty ? nil : $0 }
     }
 
-    /// 玩家点了才下载（同原流程：有新版就后台下好，换版要玩家点）
+    /// 玩家点了「现在更新」才下载（S2ArmLauncherModel.restartToUpdate）：Sparkle 下好解开的新版在 App 退出时一定会装上，不能先下
     func checkAndDownload() {
         guard updater.canCheckForUpdates else { return }
         updater.checkForUpdates()
@@ -63,7 +63,13 @@ import Sparkle
     }
     func showUpdaterError(_ error: Error, acknowledgement: @escaping () -> Void) {
         let ns = error as NSError
-        log("更新失败（Sparkle \(ns.domain) \(ns.code)）：\(ns.localizedDescription)\(ns.localizedFailureReason.map { "；" + $0 } ?? "")")
+        // 底层错误逐层带上（#1218：2001 只说「下载更新时出现错误」，真正原因——写盘失败 / 网络 / 证书——在 NSUnderlyingError 里，原先不记、查不了）
+        var chain = "", cur = ns.userInfo[NSUnderlyingErrorKey] as? NSError, depth = 0
+        while let u = cur, depth < 4 {
+            chain += "；底层 \(u.domain) \(u.code)：\(u.localizedDescription)"
+            cur = u.userInfo[NSUnderlyingErrorKey] as? NSError; depth += 1
+        }
+        log("更新失败（Sparkle \(ns.domain) \(ns.code)）：\(ns.localizedDescription)\(ns.localizedFailureReason.map { "；" + $0 } ?? "")\(chain)")
         model?.updateFailure = ns.localizedDescription
         model?.updateState = .failed("update_failed")
         installReply = nil
@@ -78,9 +84,10 @@ import Sparkle
     func showDownloadDidStartExtractingUpdate() { model?.updateState = .working("update.verifying", nil) }
     func showExtractionReceivedProgress(_ progress: Double) { model?.updateState = .working("update.unpacking", Int(progress * 100)) }
     func showReady(toInstallAndRelaunch reply: @escaping (SPUUserUpdateChoice) -> Void) {
-        log("新版 \(foundVersion ?? "?") 已下载并验签，等玩家点更新并重启")
+        log("新版 \(foundVersion ?? "?") 已下载并验签")
         installReply = reply
         model?.updateState = .ready
+        if model?.installWhenReady == true { model?.restartToUpdate() }   // 玩家点「现在更新」时还没下：下好接着换
     }
     func showInstallingUpdate(withApplicationTerminated applicationTerminated: Bool, retryTerminatingApplication: @escaping () -> Void) {
         log("Sparkle 正在替换（App 已退出：\(applicationTerminated)）")

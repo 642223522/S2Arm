@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 S2Arm contributors
 #import "play_reflection.h"
+#import "tv_compat.h"
 
 CGRect S2APlayReflectionFrame(S2APlayLayout l) {
     if (!l.split || CGRectIsEmpty(l.game) || CGRectIsEmpty(l.controls)) return CGRectNull;
@@ -44,7 +45,7 @@ static int g_inflight; static uint64_t g_taken_ns;   // Under g_mu: reflection d
     _mirror.transform=CATransform3DMakeScale(1,-1,1);   // Drawn upright by the renderer, shown upside down
     [self.layer addSublayer:_mirror];
     // Keep the effect and its ancestors at alpha 1; fade with a separate black overlay.
-    _blur=[[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialDark]];
+    _blur=[[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:S2A_BLUR_ULTRATHIN_DARK]];
     _blur.userInteractionEnabled=NO; [self addSubview:_blur];
     _shade=[CAGradientLayer layer];
     _shade.colors=@[(id)[UIColor colorWithWhite:0 alpha:.35].CGColor,(id)UIColor.blackColor.CGColor];

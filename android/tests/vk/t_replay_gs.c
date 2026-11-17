@@ -12,6 +12,7 @@
 #include "direct/s2a_direct.h"
 #include "direct/sha256.h"
 #include "direct/jv.h"
+#include "compiler_cli.h"
 #include <spawn.h>
 #include <sys/wait.h>
 extern char **environ;
@@ -33,10 +34,13 @@ const prog_t *nvn_prog_snap_get(uint64_t serial, uint8_t keys[6][8], uint8_t *ok
 int rp_depth_zero(void) { return 0; }
 int rp_origin_lower_left(void) { return 0; }
 void rp_perf_add(int index, uint64_t value) { (void)index; (void)value; }
+uint64_t rp_frame(void) { return 1; }   // #996：rp_draw 首用策略按帧号判（rp_entry.c 的替身）
 uint64_t rp_seg_serial(void) { return 1; }
 void rp_occl_draw(nvn_gpu_cmd c) { (void)c; }
 int rp_post_gpu_write(uint64_t a, uint64_t n) { (void)a; (void)n; return 0; }
 int rp_pool_find(uint64_t a, uint64_t n, const uint8_t **m, uint64_t *s) { (void)a; (void)n; (void)m; (void)s; return 0; }
+// 本夹具没有存储缓冲声明；空存储语义由真实 rp_buf GPU 用例验证。
+nvn_gpu_buf rp_buf_for_null_storage(void) { return NULL; }
 int rp_buf_resolve(nvn_gpu_cmd c, uint64_t a, uint64_t n, nvn_gpu_buf *b, uint64_t *o) { (void)c; (void)a; (void)n; (void)b; (void)o; return 0; }
 // #958 批量解析：逐段转给上面的单段替身（口径一致）
 int rp_buf_resolve_multi(int n, const uint64_t *a, const uint64_t *l, nvn_gpu_buf *b, uint64_t *o, unsigned char *ok) {
@@ -57,6 +61,7 @@ nvn_gpu_tex rp_tex_backend_by_serial(uint64_t s) { (void)s; return NULL; }
 const p_set_rt *rp_pass_target(void) { return &target; }
 int rp_pass_slot_attached(int i) { return i == 0; }
 void rp_pass_slot_size(int i, uint32_t *w, uint32_t *h) { (void)i; *w = *h = 4; }
+void rp_pass_noatt_size(uint32_t *w, uint32_t *h) { (void)w; (void)h; }   // 有附件的通道：不动尺寸
 void rp_pass_note_draw(int d) { (void)d; }
 // #950 新增的回放核心依赖：替身取保守中性值（写日志恒报「写过」= 不让暂存命中；没有待折清除、不缩渲染区域）
 uint64_t rp_write_mark(void) { return 0; }
@@ -86,21 +91,7 @@ static int32_t compiled_result(uint64_t session, uint64_t generation, s2a_direct
     snprintf(result_path, sizeof result_path, "%s/core-compiler/program.json", case_dir);
     FILE *f = fopen(req_path, "wb"); if (!f) return -1;
     if (fwrite(req.data, 1, (size_t)req.bytes, f) != (size_t)req.bytes || fclose(f)) return -1;
-    // CLI 产物路径不写死（原来写死 /src/... 只在原作者的容器里成立，CI / 别的检出位置必失败）：
-    // 优先环境变量 S2A_DIRECT_COMPILER_CLI；默认按 run.sh 的约定 case_dir=<repo>/build/696-real-compiler
-    // 上溯两级定位仓库根，再拼出 gs_compiler_chain_test.py 落产物的固定相对路径。
-    const char *cli_env = getenv("S2A_DIRECT_COMPILER_CLI");
-    if (cli_env && *cli_env) {
-        snprintf(cli_dll, sizeof cli_dll, "%s", cli_env);
-    } else {
-        char repo_dir[1024]; snprintf(repo_dir, sizeof repo_dir, "%s", case_dir);
-        for (int i = 0; i < 2; i++) { char *slash = strrchr(repo_dir, '/'); if (slash) *slash = 0; }
-        snprintf(cli_dll, sizeof cli_dll, "%s/graphics/tools/direct/compiler/cli/bin/Release/net10.0/S2A.DirectCompiler.Cli.dll", repo_dir);
-    }
-    if (access(cli_dll, R_OK) != 0) {
-        fprintf(stderr, "FAIL: 找不到编译器 CLI 产物 %s（先跑 python3 android/tests/gs_compiler_chain_test.py 出产物，或用环境变量 S2A_DIRECT_COMPILER_CLI 指路）\n", cli_dll);
-        return -1;
-    }
+    if (s2a_test_compiler_cli(case_dir, cli_dll, sizeof cli_dll)) return -1;
     char *const argv[] = {"dotnet", cli_dll,
                           "compile", "--request", req_path, "--output", out_dir, NULL};
     pid_t pid; int status = 0;

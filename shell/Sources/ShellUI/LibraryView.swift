@@ -1,3 +1,4 @@
+#if !os(tvOS)   // tvOS 不编本文件：iOS 库界面与自绘焦点引擎（电视用系统焦点）（电视版库界面见 TVLibraryView.swift，UPSTREAM.md「我方改动」）
 // S2Arm modification: present a dedicated sorting list and guard background library input while it is open.
 import SwiftUI
 
@@ -874,3 +875,4 @@ private struct CoverThumbnail: View {
         .accessibilityHidden(true)
     }
 }
+#endif   // !os(tvOS)

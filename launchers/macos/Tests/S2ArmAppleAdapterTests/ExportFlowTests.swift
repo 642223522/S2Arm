@@ -8,7 +8,9 @@ final class ExportFlowTests: XCTestCase {
         // 存的顺序是 mac、android、ios：排队按页面顺序 iPhone / iPad → macOS；安卓没开放，存了也不算
         XCTAssertEqual(ExportPlatform.picked(["mac", "android", "ios"]), [.ios, .mac])
         XCTAssertEqual(ExportPlatform.picked([]), [])
-        XCTAssertEqual(ExportPlatform.allCases.filter(\.released), [.ios, .mac])
+        XCTAssertEqual(ExportPlatform.allCases.filter(\.released), [.ios, .tvos, .mac])   // Apple TV（11-15）与 iPhone 并列、排在它后面
+        XCTAssertEqual(ExportPlatform.picked(["mac", "tvos"]), [.tvos, .mac])
+        XCTAssertEqual(ExportPlatform.tvos.target, .appleTV)
     }
 
     func testToggleIgnoresUnreleased() {

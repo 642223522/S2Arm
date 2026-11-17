@@ -18,6 +18,10 @@ public sealed partial class EnvironmentWindow
     private JsonElement? cheatsList;
     private string cheatsError = "";
     private bool cheatsLoading;
+    // 玩家分享（11-15）：导入时勾了「分享给其他玩家」就把原文 + 游戏版本传给我们（pack/jobs/cheats.py share）；缺省勾不勾维护者定，改这一行
+    //   （同 pack/jobs/cheats.py SHARE_DEFAULT、Mac LaunchSettingsSheet.shareDefault、iOS kS2ACheatsShareDefault）
+    private const bool CheatsShareDefault = false;   // 11-15 维护者「金手指分享缺省不勾」
+    private bool cheatsShare = CheatsShareDefault;
 
     private void OpenCheats(LibraryGame game)
     {
@@ -36,7 +40,7 @@ public sealed partial class EnvironmentWindow
                 cheatsList = ch.Clone();
             else cheatsError = job.Report.Message.Length > 0 ? job.Report.Message : job.Report.State;
         }
-        catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or InvalidOperationException or OperationCanceledException)
+        catch (Exception error)   // 任何失败都要落成错误文字：页面渲染时见「没结果、没在查、没错误」就再发，漏掉一类异常 = 无限重发卡死 UI（#1149）
         { cheatsError = error.Message; }
         finally { cheatsLoading = false; Dispatcher.UIThread.Post(Render); }
     }
@@ -54,10 +58,10 @@ public sealed partial class EnvironmentWindow
         cheatsError = ""; cheatsList = null; cheatsLoading = true; Render();
         try
         {
-            var job = await PackJobClient.RunAsync(PackRequest("communitySave", game.Id, new Dictionary<string, object?> { ["cheatsImport"] = paths }), null, CancellationToken.None);
+            var job = await PackJobClient.RunAsync(PackRequest("communitySave", game.Id, new Dictionary<string, object?> { ["cheatsImport"] = paths, ["cheatsShare"] = cheatsShare }), null, CancellationToken.None);
             if (!job.Report.Succeeded) cheatsError = job.Report.Message.Length > 0 ? job.Report.Message : job.Report.State;
         }
-        catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or InvalidOperationException or OperationCanceledException)
+        catch (Exception error)   // 任何失败都要落成错误文字：页面渲染时见「没结果、没在查、没错误」就再发，漏掉一类异常 = 无限重发卡死 UI（#1149）
         { cheatsError = error.Message; }
         cheatsLoading = false;
         await LoadCheatsAsync();
@@ -76,6 +80,11 @@ public sealed partial class EnvironmentWindow
         var box = new StackPanel { Spacing = 10 };
         AutomationId(box, "cheats.page");
         box.Children.Add(WrappedMuted(T("cheats.page.note"), 13));
+        var share = new CheckBox { Content = T("display.cheats.share"), IsChecked = cheatsShare };
+        share.IsCheckedChanged += (_, _) => cheatsShare = share.IsChecked == true;
+        AutomationId(share, "cheats.share");
+        box.Children.Add(share);
+        box.Children.Add(WrappedMuted(T("display.cheats.share.note"), 12));
         if (cheatsError.Length > 0) box.Children.Add(WrappedMuted("⚠ " + B(cheatsError), 13));
         if (cheatsList is not { } list)
         {

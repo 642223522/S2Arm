@@ -42,7 +42,7 @@ class BatchActivity:
             if any(type(data.get(k)) is not int for k in ['pid', 'target', 'pool']):
                 return
             if (data['pid'] <= 0 or data['target'] <= 0 or data['pool'] < data['target']
-                    or not isinstance(data.get('stage'), str) or not data['stage'].startswith('直连库·')
+                    or not isinstance(data.get('stage'), str) or not data['stage'].startswith('直连库·')  # 非玩家句
                     or data.get('state') not in ['active', 'ended']):
                 return
         except (ValueError, TypeError):
@@ -86,5 +86,5 @@ class BatchActivity:
 
     @staticmethod
     def describe(data):
-        active = data['inFlight'] if data['inFlight'] is not None else '未知'
+        active = data['inFlight'] if data['inFlight'] is not None else '未知'  # 非玩家句
         return f"目标 {data['target']} · 任务池 {data['pool']} · Metal 进程（采样）{active}"

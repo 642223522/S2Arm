@@ -57,12 +57,17 @@ int s2a_ui_zh(void);
 // ---------- 画面停住提示（runtime/src/ap_host.c → ios/app.m s2a_ios_show_message：第一段当标题） ----------
 #define S2A_UI_STALL_EXIT               "游戏画面卡住了\n\n请从后台划掉本 App，再重新打开。还是卡住的话，四指长按屏幕打开设置，导出诊断包发给我们。"
 #define S2A_UI_STALL_EXIT_EN            "The game picture is stuck\n\nSwipe this app away in the app switcher and open it again. If it’s still stuck, hold four fingers on the screen to open Settings, then export diagnostics and send them to us."
+// 停帧救场（runtime/src/cpatch.c s2a_cpatch_stall_rescue）：画面停住时帧率补丁开着，当场关掉后给的一句（第一段当标题）
+#define S2A_UI_STALL_PATCH_OFF          "帧率补丁让画面卡住了，已为你关掉\n\n画面还是不动的话，请关掉游戏重新打开。想再用，可以在设置里重新打开「帧率」。"
+#define S2A_UI_STALL_PATCH_OFF_EN       "The frame-rate patch froze the picture, so it’s been turned off\n\nIf the picture still doesn’t move, close the game and open it again. You can turn Frame Rate back on in Settings."
 #define S2A_UI_STALL_WAIT               "游戏画面卡住了\n\n可能还在加载，可以再等一会儿；一直不动的话，请从后台划掉本 App，再重新打开。"
 #define S2A_UI_STALL_WAIT_EN            "The game picture is stuck\n\nIt may still be loading, so you can wait a little longer. If nothing changes, swipe this app away in the app switcher and open it again."
 
 // ---------- 齿轮菜单「性能浮层」那一行（runtime/src/hud.c s2a_hud_brief → ios/hud.m） ----------
 #define S2A_UI_HUD_BRIEF                "%llu 帧 · %s"
 #define S2A_UI_HUD_BRIEF_EN             "%llu FPS · %s"
+#define S2A_UI_HUD_BRIEF_FI             "屏上 %llu 帧（游戏 %llu）· %s"   // 补帧开着：补出的帧算进屏上帧率
+#define S2A_UI_HUD_BRIEF_FI_EN          "%llu FPS on screen (game %llu) · %s"
 #define S2A_UI_HUD_MEM_FAIL             "内存读取失败"
 #define S2A_UI_HUD_MEM_FAIL_EN          "Memory unavailable"
 // 两本账一起写（11-13 玩家复盘：GPU 已分配撞上系统上限报 OutOfMemory，浮层只写进程实占 0.9 GB，看着像内存没吃多少）

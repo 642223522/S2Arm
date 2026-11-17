@@ -356,7 +356,9 @@ def verify_manifest(root, apk, resources, ledger):
 
 def export_sources(destination, env):
     """Build from a committed source export outside the repository checkout."""
-    if subprocess.run(['git', '-C', str(ROOT), 'diff', '--quiet', 'HEAD', '--'], env=env).returncode:
+    # 发版快照（根有 engine.json）：工作区和 HEAD 的差异只来自打包时重签名的 Mac 二进制，不是安卓构建输入；
+    # archive HEAD 本来就只导出已提交内容。只在开发树上拦「改了没提交」（与 ipa.sh src_dirty 同一判据）
+    if not (ROOT / 'engine.json').is_file() and subprocess.run(['git', '-C', str(ROOT), 'diff', '--quiet', 'HEAD', '--'], env=env).returncode:
         raise ValueError('引擎源码有未提交的修改，无法固定安卓构建输入。')
     destination.mkdir(mode=0o700)
     archive = destination.parent / 'source.tar'

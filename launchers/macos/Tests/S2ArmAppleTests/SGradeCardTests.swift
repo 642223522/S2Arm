@@ -13,6 +13,7 @@ import XCTest
                         "none": "你这份游戏是 {0} 版，补丁库里没有这个版本的补丁，这次不会打入。", "others": "补丁库里有补丁的其他版本（帧率、画面、金手指要版本一致，和你这份不同的不会打入）：",
                         "listed": "补丁库里有补丁的版本：", "later": "帧率补丁和金手指按游戏版本生效：出包时核对你这份游戏的版本，对得上的才打入。满屏补丁版本不同也会尝试移植。",
                         "port": "满屏：补丁库里是 {0} 版的，出包时尝试移植到你这份游戏，移植成功就打入并默认开启", "port.any": "其他",
+                        "ownWiden": "满屏：这款没有社区满屏补丁，用 S2Arm 通用满屏（S2Arm 验过能铺满），默认开启",
                         "hit.version": "以上补丁对应你这份游戏的版本 {0}，打入前逐处核对原字节，对不上的那条不打入。", "cat.fps": "帧率", "cat.widescreen": "满屏", "cat.cheat": "金手指",
                         "toggle": "出包时打入", "off": "这次出包不带社区补丁和金手指，游戏按原生画面与帧率运行。重新勾上，下次出包再打入。"]
     func render(_ m: PatchMatch?, _ name: String, on: Binding<Bool>? = nil) throws -> NSBitmapImageRep {
@@ -46,6 +47,16 @@ import XCTest
         _ = try render(portLater, "port_later")
         let h = goldPixels(try render(hit, "hit")), o = goldPixels(try render(others, "others")), l = goldPixels(try render(nil, "loading"))
         XCTAssertGreaterThan(h, 0); XCTAssertGreaterThan(h, o, "命中态应比只命中别的版本更亮（金色像素 \(h) 对 \(o)）"); XCTAssertGreaterThan(o, 0); XCTAssertGreaterThan(l, 0)
+    }
+
+    // S2Arm 通用满屏（作业层 feat/sgrade-state ownWiden，维护者 11-15「两者合成一套」）：没有社区补丁、只有我方满屏的款卡片也点亮、写满屏来源
+    func testOwnWidenLightsCard() throws {
+        XCTAssertTrue(PatchMatch(["build": "aa11bb22cc33dd44", "ownWiden": true]).ownWiden)
+        XCTAssertFalse(PatchMatch(["build": "aa11bb22cc33dd44"]).ownWiden)
+        var own = PatchMatch(); own.build = "aa11bb22cc33dd44"; own.version = "1.0.2"; own.ownWiden = true
+        var none = PatchMatch(); none.build = "aa11bb22cc33dd44"; none.version = "1.0.2"
+        let o = goldPixels(try render(own, "own_widen")), n = goldPixels(try render(none, "none_cmp"))
+        XCTAssertGreaterThan(o, n, "只有 S2Arm 通用满屏也应点亮（金色像素 \(o) 对 \(n)）")
     }
 
     // 出包时打入（v0.4.0：默认勾上、玩家可取消）：勾着同命中态一样亮；取消后卡片不亮（金色像素明显少），内容换成「这次不带」一句
@@ -94,9 +105,18 @@ import XCTest
             patchesTitle: "社区补丁", patchesNote: "出包时按这个版本匹配打入的社区补丁（满屏、帧率、画面）；同组只能开一个，下次启动生效。",
             patches: [SGradeToggle(id: "wsauto:1", label: "自适应满屏（13 种画幅合成）", detail: "已生效：上一局画面铺满", on: true),
                       SGradeToggle(id: "fps:1", label: "60 帧（FPSLocker）", detail: "已生效：上一局实测 60 帧", on: true)],
-            cheatsTitle: "金手指", cheatsNote: "逐条开关，改完马上生效。", cheats: cheats, importTitle: "导入…", startOpen: open)
+            cheatsTitle: "金手指", cheatsNote: "逐条开关，改完马上生效。", cheats: cheats, importTitle: "导入…", startOpen: open,
+            cheatsIcon: NSImage(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../../Branding/s-gold.png").standardized))
         let src = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../../Branding/s-gold.png").standardized
-        let view = SGradeGroupCard("S 级优化", note: SGradeCardTests.texts["hit.note"] ?? "", sImage: try XCTUnwrap(NSImage(contentsOf: src))) { rows }
+        let s = try XCTUnwrap(NSImage(contentsOf: src))
+        // 11-15：满屏 / 帧率解锁两行在金卡最上面（同启动设置 LaunchSettingsSheet.topRow），社区补丁明细默认收起
+        let view = SGradeGroupCard("S 级优化", note: SGradeCardTests.texts["hit.note"] ?? "", sImage: s) {
+            SGradeTopRow("满屏", note: "社区补丁 · 按屏幕比例自动选", sImage: s) { Toggle("", isOn: .constant(true)).toggleStyle(.switch).labelsHidden() }
+            Divider()
+            SGradeTopRow("帧率解锁", note: "补帧：30 帧补到 60 帧（这款没有社区补丁）", sImage: s) { Toggle("", isOn: .constant(true)).toggleStyle(.switch).labelsHidden() }
+            Divider()
+            rows
+        }
             .frame(width: 540).padding(30).background(Color(red: 0.055, green: 0.055, blue: 0.06)).environment(\.colorScheme, .dark)
         // 放进真的 AppKit 视图再截（ImageRenderer 画不了输入框 / 滚动区这类原生控件）
         let host = NSHostingView(rootView: view); host.appearance = NSAppearance(named: .darkAqua)

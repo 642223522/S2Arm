@@ -1,6 +1,6 @@
 # native-test-nvn_rec_lane：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += nvn_rec_lane
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # 录制分道：道 1 / 2 接在主流后执行（几何绘制段，金刚 11-06）
 $(BUILD)/tests/t_nvn_rec_lane: graphics/nvn/tests/t_nvn_rec_lane.m $(NVN_MTL_DEPS) $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \

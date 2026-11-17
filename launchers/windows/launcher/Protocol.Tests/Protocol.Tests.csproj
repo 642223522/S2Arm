@@ -12,5 +12,7 @@
   </ItemGroup>
   <ItemGroup>
     <None Update="Fixtures/*" CopyToOutputDirectory="PreserveNewest" />
+    <!-- 手动更新守门（PackCases：自动更新循环只发现、不装机）读 App 源码，只拷不编 -->
+    <None Include="../App/PhoneAutoUpdate.cs" Link="AppSource/PhoneAutoUpdate.cs" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

@@ -218,6 +218,15 @@ static void line_mem(char *o, size_t n) {
 }
 
 // 简版一行：近 1 秒上屏帧数 + 本进程物理内存占用（与开发浮层同源：上屏时间戳环、phys_footprint）
+// 补帧：补出来的那一帧真上了屏的时刻（graphics/nvn/gfx/nvn/nvn_present_fi.inc fi_count_on 调）。浮层「帧」原先只数游戏帧，补帧开着时一直显示 30（11-14 手测）
+#define MR 256
+static _Atomic uint64_t g_mt[MR], g_mn;
+__attribute__((visibility("default"))) void s2a_hud_mid_frame(void) { uint64_t i = atomic_fetch_add(&g_mn, 1); atomic_store_explicit(&g_mt[i % MR], mono_ns(), memory_order_relaxed); }
+static uint64_t mids_last_second(uint64_t now) {
+    uint64_t end = atomic_load(&g_mn), c = 0;
+    for (uint64_t i = end; i > 0 && end - i < MR - 1; i--) { uint64_t t = atomic_load_explicit(&g_mt[(i - 1) % MR], memory_order_relaxed); if (!t || now - t > 1000000000ull) break; c++; }
+    return c;
+}
 int s2a_hud_brief(char *out, size_t n) {
     uint64_t end = atomic_load_explicit(&g_fn, memory_order_acquire), now = mono_ns(), f1 = 0;
     for (uint64_t i = end; i > 0 && end - i < HR - 1; i--) {
@@ -229,6 +238,8 @@ int s2a_hud_brief(char *out, size_t n) {
     double gb = task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &c) == KERN_SUCCESS ? vi.phys_footprint / 1073741824.0 : -1;
     char m[64]; snprintf(m, sizeof m, "%s", S2A_UI(S2A_UI_HUD_MEM_FAIL)); uint64_t g = s2a_gpu_alloc_bytes();
     if (gb >= 0 && g) snprintf(m, sizeof m, S2A_UI(S2A_UI_HUD_MEM_GPU), gb, g / 1073741824.0); else if (gb >= 0) snprintf(m, sizeof m, "%.1f GB", gb);
+    uint64_t mid = mids_last_second(now);
+    if (mid) return snprintf(out, n, S2A_UI(S2A_UI_HUD_BRIEF_FI), (unsigned long long)(f1 + mid), (unsigned long long)f1, m);
     return snprintf(out, n, S2A_UI(S2A_UI_HUD_BRIEF), (unsigned long long)f1, m);
 }
 

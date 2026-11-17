@@ -10,14 +10,18 @@ on:
       - pack/jobs/library.py
       - pack/jobs/layout.py
       - pack/jobs/core.py
+      - pack/jobs/winproc.py
       - pack/jobs/tests/test_cleanup_links.py
+      - pack/jobs/tests/test_win_journal.py
   pull_request:
     paths:
       - .github/workflows/windows-cleanup.yml
       - pack/jobs/library.py
       - pack/jobs/layout.py
       - pack/jobs/core.py
+      - pack/jobs/winproc.py
       - pack/jobs/tests/test_cleanup_links.py
+      - pack/jobs/tests/test_win_journal.py
   workflow_dispatch:
 
 permissions:
@@ -52,4 +56,19 @@ jobs:
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           if result.skipped:
               print("Windows cleanup coverage must not be skipped", file=sys.stderr)
+          sys.exit(0 if result.wasSuccessful() and result.testsRun and not result.skipped else 1)
+      - name: 验证任务记录在读方开着时照样能替换（#245 / #561，不允许跳过）
+        shell: python
+        run: |
+          import os
+          import sys
+          import unittest
+
+          assert os.name == "nt", "This check requires a real Windows host"
+          suite = unittest.defaultTestLoader.discover(
+              "pack/jobs/tests", pattern="test_win_journal.py"
+          )
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if result.skipped:
+              print("Windows journal coverage must not be skipped", file=sys.stderr)
           sys.exit(0 if result.wasSuccessful() and result.testsRun and not result.skipped else 1)

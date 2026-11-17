@@ -64,6 +64,7 @@ struct DeletePillStyle: ButtonStyle {
             .opacity(configuration.isPressed ? 0.78 : 1)
             .scaleEffect(configuration.isPressed ? 0.98 : 1)
             .contentShape(Capsule())
+            .tvFocusLift()
     }
 }
 

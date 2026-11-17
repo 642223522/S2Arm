@@ -203,6 +203,7 @@ static MTLClearColor clear_color(VkFormat f, const VkClearColorValue *v) {   // 
         if (fmt_sint(f)) return MTLClearColorMake(v->int32[0], v->int32[1], v->int32[2], v->int32[3]);
         return MTLClearColorMake(v->uint32[0], v->uint32[1], v->uint32[2], v->uint32[3]);
     }
+    if (rb_swapped(f)) return MTLClearColorMake(v->float32[2], v->float32[1], v->float32[0], v->float32[3]);   // 存储里 R / B 对调（hle_vk.m 格式表 B4G4R4A4）
     return MTLClearColorMake(v->float32[0], v->float32[1], v->float32[2], v->float32[3]);
 }
 // vkCmdClearColorImage / vkCmdClearDepthStencilImage (outside a render pass): one Metal pass per level and layer (per slice of a 3D image) that only clears.

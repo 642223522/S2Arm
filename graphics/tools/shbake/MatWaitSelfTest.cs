@@ -25,43 +25,29 @@ using System.Threading;
 namespace S2A.ShBake
 {
     // 假后端：CreateProgram 出慢程序（阻塞查询等闸门）；LoadProgramBinary 按首字节出成功（0x01）/ 失败（0xFA）的程序；Pipeline 是空实现
-    public class MwRenderer : System.Reflection.DispatchProxy
+    public class MwRenderer : StubRenderer   // 手写替身（GalStubs.cs），其余成员返回缺省值
     {
         public static readonly ManualResetEventSlim Gate = new(false);
         public static readonly ManualResetEventSlim Blocked = new(false);   // 有阻塞查询进了「等闸门」（渲染线程确实卡住了）：测试按它等，不靠睡眠
         public static Capabilities Caps;
-        protected override object Invoke(System.Reflection.MethodInfo m, object[] a)
-        {
-            switch (m.Name)
-            {
-                case "GetCapabilities": return Caps;
-                case "get_Pipeline": return Create<IPipeline, MwNoop>();
-                case "CreateProgram": return MwProgram.Make(slow: true, ProgramLinkStatus.Success);
-                case "LoadProgramBinary": return MwProgram.Make(slow: false, ((byte[])a[0])[0] == 0xFA ? ProgramLinkStatus.Failure : ProgramLinkStatus.Success, (byte[])a[0]);
-            }
-            return m.ReturnType.IsValueType && m.ReturnType != typeof(void) ? Activator.CreateInstance(m.ReturnType) : null;
-        }
+        public override Capabilities GetCapabilities() => Caps;
+        public override IPipeline Pipeline => new NoopPipeline();   // 空管线（原 MwNoop 代理）
+        public override IProgram CreateProgram(ShaderSource[] shaders, ShaderInfo info) => MwProgram.Make(slow: true, ProgramLinkStatus.Success);
+        public override IProgram LoadProgramBinary(byte[] programBinary, bool hasFragmentShader, ShaderInfo info) =>
+            MwProgram.Make(slow: false, programBinary[0] == 0xFA ? ProgramLinkStatus.Failure : ProgramLinkStatus.Success, programBinary);
     }
 
-    public class MwNoop : System.Reflection.DispatchProxy
-    {
-        protected override object Invoke(System.Reflection.MethodInfo m, object[] a) => m.ReturnType.IsValueType && m.ReturnType != typeof(void) ? Activator.CreateInstance(m.ReturnType) : null;
-    }
-
-    public class MwProgram : System.Reflection.DispatchProxy
+    public class MwProgram : StubProgram
     {
         bool _slow; ProgramLinkStatus _result; byte[] _bin = Array.Empty<byte>();
-        public static IProgram Make(bool slow, ProgramLinkStatus result, byte[] bin = null) { IProgram p = Create<IProgram, MwProgram>(); MwProgram m = (MwProgram)(object)p; m._slow = slow; m._result = result; m._bin = bin ?? m._bin; return p; }
-        protected override object Invoke(System.Reflection.MethodInfo m, object[] a)
+        public static IProgram Make(bool slow, ProgramLinkStatus result, byte[] bin = null) => new MwProgram { _slow = slow, _result = result, _bin = bin ?? Array.Empty<byte>() };
+        public override ProgramLinkStatus CheckProgramLink(bool blocking)
         {
-            if (m.Name == "CheckProgramLink")
-            {
-                if (!_slow) return _result;
-                if ((bool)a[0]) { MwRenderer.Blocked.Set(); MwRenderer.Gate.Wait(); return _result; }
-                return MwRenderer.Gate.IsSet ? _result : ProgramLinkStatus.Incomplete;
-            }
-            return m.Name == "GetBinary" ? _bin : null;
+            if (!_slow) return _result;
+            if (blocking) { MwRenderer.Blocked.Set(); MwRenderer.Gate.Wait(); return _result; }
+            return MwRenderer.Gate.IsSet ? _result : ProgramLinkStatus.Incomplete;
         }
+        public override byte[] GetBinary() => _bin;
     }
 
     static class MatWaitSelfTest
@@ -95,7 +81,7 @@ namespace S2A.ShBake
                 ulong ts = BinaryPrimitives.ReadUInt64LittleEndian(toc.AsSpan(16));
                 ulong[] offs = { BinaryPrimitives.ReadUInt64LittleEndian(toc.AsSpan(32)), BinaryPrimitives.ReadUInt64LittleEndian(toc.AsSpan(32 + 8)) };
 
-                IRenderer fake = System.Reflection.DispatchProxy.Create<IRenderer, MwRenderer>();
+                IRenderer fake = new MwRenderer();
                 ThreadedRenderer tr = new(fake);
                 GpuContext ctx = new(tr, new Ryujinx.Common.Configuration.DirtyHacks(Array.Empty<ulong>())) { Capabilities = caps };
 

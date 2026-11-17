@@ -1,6 +1,7 @@
 // 游戏内提示条（iOS；文案在 s2a_direct_prompt.h，Mac 同款在 macos/front_mac.m）：存档不能原子提交、签名快到期（prov_expiry.m，描述文件剩不到 48 小时）等。
 //   贴画面顶部居中（两侧肩键之间），只占自己那一块，别处的触摸照常给游戏和虚拟手柄；带两个按钮的 seconds 秒没理会按「否」收起。
 #import <UIKit/UIKit.h>
+#import "tv_compat.h"
 #import "s2a_l10n.h"
 #import <GameController/GameController.h>
 #include "s2a_direct_prompt.h"
@@ -37,6 +38,13 @@ static void show(NSString *title, NSString *body, NSString *accept, NSString *de
 static void poll(void) {
     // 存档不能原子提交（审计 P2-45，Mac 同款判定 runtime/src/direct_prompt.c）：第一次读到非 0 时用这条横幅提示一次
     if (s2a_save_atomic_poll()) s2a_dprompt_notice(S2APICK(S2A_DPROMPT_SAVE_ATOMIC_TITLE), S2APICK(S2A_DPROMPT_SAVE_ATOMIC_IOS), 0, 15);
+    // 画面没出来（体验梳理线 11-14：直连现编全失败、起局 20 秒一次绘制都没画）：游戏上方横幅，不挡游戏；「故障报修」走现有报修（诊断包带上现编失败次数那行日志），
+    //   「知道了」收起；一局只提示一次（s2a_no_picture_poll 只返回一次 1）
+    if (s2a_no_picture_poll()) {
+        void s2a_diag_report(void);   // ios/diag.m
+        g_onAnswer = ^(BOOL report) { if (report) s2a_diag_report(); };
+        show(S2APICK(S2A_DPROMPT_NOPIC_TITLE), S2APICK(S2A_DPROMPT_NOPIC_BODY), S2AL(@"diag.report.title"), S2APICK(S2A_DPROMPT_OK), 60);
+    }
 }
 
 static UIButton *button(SEL action, BOOL primary) {
@@ -47,7 +55,7 @@ static UIButton *button(SEL action, BOOL primary) {
 }
 // 游戏画面建好后调（app.m 场景代理，提示页不调）
 void s2a_dprompt_attach(UIView *root) {
-    g_banner = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterialDark]];
+    g_banner = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:S2A_BLUR_MATERIAL_DARK]];
     g_banner.layer.cornerRadius = 16; g_banner.clipsToBounds = YES; g_banner.hidden = YES; g_banner.translatesAutoresizingMaskIntoConstraints = NO;
     g_title = [UILabel new]; g_title.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold]; g_title.textColor = UIColor.whiteColor;
     g_body = [UILabel new]; g_body.font = [UIFont systemFontOfSize:14]; g_body.textColor = [UIColor colorWithWhite:1 alpha:0.75]; g_body.numberOfLines = 0;
@@ -82,6 +90,13 @@ void s2a_dprompt_attach(UIView *root) {
 }
 
 // 只有「知道了」的提示条（别的模块用，主线程）：delay 秒后显示；横幅正被别的提示占着就再等 5 秒，不顶掉（审计 P2-3 IML 权限丢失）
+// C 入口（runtime/src/ap_host.c 停帧救场经 dlsym 调，任意线程）：「标题\n\n正文」拆开交 s2a_dprompt_notice，显示 seconds 秒
+void s2a_ios_banner(const char *m, double seconds) {
+    if (!m) return;
+    NSString *s = @(m); NSRange r = [s rangeOfString:@"\n"];
+    NSString *t = r.location == NSNotFound ? s : [s substringToIndex:r.location], *b = r.location == NSNotFound ? @"" : [[s substringFromIndex:r.location] stringByTrimmingCharactersInSet:NSCharacterSet.newlineCharacterSet];
+    s2a_dprompt_notice(t, b, 0, seconds);
+}
 void s2a_dprompt_notice(NSString *title, NSString *body, double delay, double seconds) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if (!g_banner) return;

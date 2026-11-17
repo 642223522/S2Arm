@@ -1,3 +1,5 @@
+// Derived from NX2Apple (MIT; see frontend/NOTICE).
+// S2Arm: shared theme spacing and typography; inline page subtitles; card actions participate in controller navigation.
 import SwiftUI
 import AppKit
 import NXCore
@@ -17,7 +19,7 @@ extension StepState {
     }
 }
 
-/// The big title of a page with a note under it.
+/// The big title of a page with an inline subtitle.
 package struct CardPageHeading: View {
     let title: String
     let note: String
@@ -28,9 +30,10 @@ package struct CardPageHeading: View {
     }
 
     package var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        LauncherHeadingLine {
             Text(title).font(.manrope(44, .heavy)).tracking(-1.3)
-            Text(note).font(.manrope(15)).foregroundStyle(.secondary)
+        } subtitle: {
+            Text(note).font(.manrope(15)).foregroundStyle(.secondary).help(note)
         }
     }
 }
@@ -49,21 +52,24 @@ package struct CardGroup<Content: View>: View {
 
     package var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(label).font(.manrope(15, .semibold)).foregroundStyle(.secondary)
-                .padding(.leading, 2)
+            Text(label).font(LauncherTheme.TypeStyle.section).foregroundStyle(.secondary)
+                .padding(.leading, LauncherTheme.Metrics.cardInset)
+                .accessibilityAddTraits(.isHeader)
             VStack(spacing: 0) { content }
-                .background(LauncherPalette.surface.opacity(0.75), in: RoundedRectangle(cornerRadius: 14))
-                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.white.opacity(0.06)))
+                .frame(maxWidth: .infinity)
+                .launcherPanel()
             if !footnote.isEmpty {
-                Text(footnote).font(.manrope(12)).foregroundStyle(.secondary).padding(.leading, 2)
+                Text(LauncherCopy.note(footnote)).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary)
+                    .padding(.horizontal, LauncherTheme.Metrics.cardInset)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+        .accessibilityElement(children: .contain)
     }
 }
 
-/// One line of a card: a status dot (its place kept when there is none, so every title starts on one line),
-/// the title (with a disclosure chevron beside it when `open` is given), a secondary detail, and its controls.
+/// A card row: title, optional status/disclosure indicator, description, and one trailing control column.
+/// Rows without status indicators keep the full reading width instead of reserving an empty icon slot.
 /// Its buttons and dropdowns are all LauncherControl.width wide, so they line up in one column across the cards.
 package struct CardRow<Trailing: View>: View {
     let title: String
@@ -72,10 +78,13 @@ package struct CardRow<Trailing: View>: View {
     let dot: Color?
     let help: String
     let open: Bool?
+    /// 控件另起一行（11-14 体验梳理第二轮）：说明长、右边又有两个按钮时，横排会把说明挤成一条窄栏折五六行
+    let stacked: Bool
     let trailing: Trailing
 
     package init(_ title: String, detail: String = "", detail2: String = "", dot: Color? = nil, help: String = "", open: Bool? = nil,
-                 @ViewBuilder trailing: () -> Trailing) {
+                 stacked: Bool = false, @ViewBuilder trailing: () -> Trailing) {
+        self.stacked = stacked
         self.title = title
         self.detail = detail
         self.detail2 = detail2
@@ -86,11 +95,28 @@ package struct CardRow<Trailing: View>: View {
     }
 
     package var body: some View {
-        HStack(spacing: 12) {
-            Circle().fill(dot ?? .clear).frame(width: 7, height: 7)
-            VStack(alignment: .leading, spacing: 3) {
+        Group {
+            if stacked {
+                VStack(alignment: .leading, spacing: LauncherTheme.Space.medium) {
+                    texts
+                    HStack { Spacer(minLength: 0); trailing.launcherRowControls() }
+                }
+            } else {
+                HStack(spacing: LauncherTheme.Space.section) {
+                    texts
+                    trailing.launcherRowControls()
+                }
+            }
+        }
+        .padding(.horizontal, LauncherTheme.Metrics.cardInset).padding(.vertical, LauncherTheme.Space.large)
+        .frame(minHeight: 68)
+    }
+
+    private var texts: some View {
+            VStack(alignment: .leading, spacing: LauncherTheme.Space.xSmall) {
                 HStack(spacing: 6) {
-                    Text(title).font(.manrope(14)).fixedSize(horizontal: false, vertical: true)
+                    if let dot { Circle().fill(dot).frame(width: 7, height: 7).accessibilityHidden(true) }
+                    Text(title).font(LauncherTheme.TypeStyle.body).fixedSize(horizontal: false, vertical: true)
                     if let open {
                         Image(systemName: "chevron.right").font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
                             .rotationEffect(.degrees(open ? 90 : 0))
@@ -102,8 +128,8 @@ package struct CardRow<Trailing: View>: View {
                     if detail.hasPrefix("/") || detail.hasPrefix("~") {
                         PathLink(detail, help: help)
                     } else {
-                        Text(detail).font(.manrope(12.5)).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true).help(help.isEmpty ? detail : help)
+                        Text(LauncherCopy.note(detail)).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true).help(LauncherCopy.note(help.isEmpty ? detail : help))
                     }
                 }
                 if !detail2.isEmpty {
@@ -111,11 +137,7 @@ package struct CardRow<Trailing: View>: View {
                     else { Text(detail2).font(.mono(12)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).help(detail2) }
                 }
             }
-            Spacer(minLength: 12)
-            trailing.launcherRowControls()
-        }
-        .padding(.horizontal, 18).padding(.vertical, 13)
-        .frame(minHeight: 52)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -141,7 +163,7 @@ package struct PathLink: View {
             } label: {
                 text.underline(hovering).foregroundStyle(hovering ? Color.primary : Color.secondary)
             }
-            .buttonStyle(.plain)
+            .controllerButtonStyle(.plain)
             .onHover { inside in
                 hovering = inside
                 if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
@@ -156,7 +178,10 @@ package struct PathLink: View {
 
 package struct CardDivider: View {
     package init() {}
-    package var body: some View { Divider().opacity(0.25).padding(.leading, 18) }
+    package var body: some View {
+        Rectangle().fill(LauncherTheme.Colors.border).frame(height: 1)
+            .padding(.horizontal, LauncherTheme.Metrics.cardInset).accessibilityHidden(true)
+    }
 }
 
 /// A row that opens the rows under it.
@@ -178,7 +203,7 @@ package struct CardDisclosure: View {
             CardRow(title, detail: detail, open: isOpen) { EmptyView() }
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .controllerButtonStyle(.plain)
     }
 }
 
@@ -192,8 +217,8 @@ package struct LauncherPageScroll<Content: View>: View {
     package var body: some View {
         ScrollViewReader { proxy in
             ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: 34) { content }
-                    .padding(.horizontal, 40).padding(.top, 40).padding(.bottom, 48)
+                VStack(alignment: .leading, spacing: LauncherTheme.Space.section) { content }
+                    .padding(LauncherTheme.Space.page)
                     .frame(maxWidth: 900)
                     .frame(maxWidth: .infinity)
             }
@@ -201,7 +226,7 @@ package struct LauncherPageScroll<Content: View>: View {
                 if let id, id.hasPrefix("set.") { withAnimation(.easeInOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .center) } }
             }
         }
-        .buttonStyle(LauncherSecondaryButtonStyle())
+        .controllerButtonStyle(LauncherSecondaryButtonStyle())
     }
 }
 

@@ -21,7 +21,7 @@
      机上待解批按完整性分：推到一半的盖掉，推完整的留着、其中文件（.pushed）不重推；没有待解批时 .pushed 不算数；机上 .incoming 有 <时刻>_<序号>.tar 残留 → 逐个用 1024 字节全零同名包覆盖、别的名字不碰；
      盖过残留或 unpack.log 末行是截短包 → 不认机上 index.tsv（上次推上去、没落地），按已应用索引（没有 = 全推）
 反证：选款逻辑内嵌在 oneclick.sh 时没有 pack/source_pick.py（① 全红）。"""
-import contextlib, json, os, re, subprocess, sys, tempfile, unittest
+import contextlib, io, json, os, re, subprocess, sys, tempfile, unittest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -205,6 +205,31 @@ test "$S2A_METAL_BIN" = "$S2A_EXPECT_METAL_BIN"
                 oneclick_win.direct(run, cur, 'mac', 1)
             finally:
                 run.timing.close()
+
+
+class RmtreeLoud(unittest.TestCase):
+    """11-16 维护者：rmtree(ignore_errors=True) 遇到只读文件会静默留残留。期望手写：① 不在的目录不报错；② 只读的项（Windows 只读位 / 别处父目录无写权限）
+    去掉只读后删干净；③ 还删不掉：strict 抛 OSError 且带「删不掉」和路径，非 strict 只说一句黄、不抛"""
+    def test_missing_readonly_and_failure(self):
+        import stat
+        with tempfile.TemporaryDirectory() as t:
+            oneclick_win.rmtree_loud(Path(t) / 'none')
+            d = Path(t) / 'out'; (d / 'sub').mkdir(parents=True); (d / 'sub/a.bin').write_bytes(b'a')
+            if os.name == 'nt':
+                os.chmod(d / 'sub/a.bin', stat.S_IREAD)
+            else:
+                os.chmod(d / 'sub', 0o500)
+            oneclick_win.rmtree_loud(d)
+            self.assertFalse(d.exists())
+            d.mkdir()
+            with patch.object(oneclick_win.shutil, 'rmtree', side_effect=PermissionError(13, '拒绝访问', str(d))):
+                with self.assertRaises(OSError) as cm:
+                    oneclick_win.rmtree_loud(d)
+                self.assertIn('删不掉', str(cm.exception)); self.assertIn(str(d), str(cm.exception))
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    oneclick_win.rmtree_loud(d, strict=False)
+                self.assertIn('【黄】没删干净', err.getvalue())
 
 
 class StepRc(unittest.TestCase):
@@ -643,6 +668,18 @@ class InstallWin(unittest.TestCase):
             e, got, _ = self.run_fake(body)
         self.assertIsInstance(e, install_win.Fail); self.assertEqual(e.err, 'signing_server_unreachable'); self.assertNotIn('push', got)
         self.assertIn('os error 11001', str(e))
+
+    def test_signing_server_unreachable_then_panic_keeps_code(self):
+        # 诊断#3fc02b D-5A5K（Windows 0.4.0）：第一次 Anisette 连不上，重试那次 plumesign 直接 panic、输出里认不出原因。
+        #   期望（手写）：仍以 signing_server_unreachable 失败（报第一次的原话），不落回 device_install_failed，不推包
+        body = ("import os\nmark = os.path.join(os.path.dirname(sys.argv[0]), 'tried')\n"
+                "if not os.path.exists(mark):\n    open(mark, 'w').close(); print(%r); sys.exit(1)\n"
+                "print(\"thread 'main' (6788) panicked at 3rdparty/omnisette/src/remote_anisette_v3.rs:521:21:\\nexplicit panic\\n"
+                "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\"); sys.exit(101)\n") % self.ANISETTE_DNS
+        with patch.object(install_win, 'RETRY_WAIT', 0):
+            e, got, log = self.run_fake(body)
+        self.assertIsInstance(e, install_win.Fail); self.assertEqual(e.err, 'signing_server_unreachable'); self.assertNotIn('push', got)
+        self.assertNotIn('RUST_BACKTRACE', str(e)); self.assertIn('os error 11001', str(e))
 
     def test_legacy_case_bundle(self):
         self.assertEqual(install_win.legacy_case_bundle('io.s2arm.games.abcde12345'), 'io.s2arm.games.ABCDE12345')

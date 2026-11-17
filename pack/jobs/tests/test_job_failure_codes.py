@@ -34,6 +34,19 @@ def oneclick_stages(source):
 REAL_ONECLICK_STAGES = oneclick_stages((ROOT / "pack/oneclick/oneclick.sh").read_text())
 
 
+# 导入路径跑完还原（11-16）：本文件有用例在进程内加载 pack/iml_check.py（它把自己所在的 pack/ 插到 sys.path 最前）、经作业层把 tools/ 插进 sys.path；
+#   不还原，同一进程里后跑的 test_win_jobs 导入 pack.orch 时 pack 解析成 pack/pack.py（「pack is not a package」），全量 discover 才红
+_SYS_PATH = []
+
+
+def setUpModule():
+    _SYS_PATH[:] = sys.path
+
+
+def tearDownModule():
+    sys.path[:] = _SYS_PATH
+
+
 class PackageFailures(JobCase):
     def setUp(self):
         super().setUp()

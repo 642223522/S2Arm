@@ -253,6 +253,7 @@ static inline void thr_lv_add(int who, uint64_t a[2][4], uint64_t b[2][4]) {
     for (int k = 0; k < 2; k++) { atomic_fetch_add(&g_thr_lv[who][k][0], (b[k][2] + b[k][3]) - (a[k][2] + a[k][3])); atomic_fetch_add(&g_thr_lv[who][k][1], b[k][1] - a[k][1]); }
 }
 void dm_thread_lv_stats(uint64_t out[2][2][2]) { for (int w = 0; w < 2; w++) for (int k = 0; k < 2; k++) for (int j = 0; j < 2; j++) out[w][k][j] = atomic_load(&g_thr_lv[w][k][j]); }
+__attribute__((weak)) void dm_rt_encode_tick(void);
 static void *rec_thread(void *arg) {
     (void)arg; pthread_setname_np("dm-encode");
     s2a_qos_set_self(S2A_QOS_ENCODE);
@@ -264,6 +265,7 @@ static void *rec_thread(void *arg) {
         uint64_t lv0[2][4], lv1[2][4]; thr_lv_take(lv0);
         @autoreleasepool { for (int i = 0; i < b->n; i++) rec_exec(&b->r[i]); }
         thr_lv_take(lv1); thr_lv_add(0, lv0, lv1);
+        if (dm_rt_encode_tick) dm_rt_encode_tick();   // DM_RT_SUBMIT 含 2 时给本线程实时声明（hle_nvn.c rt_work_tick；单测里没有 hle_nvn.c）
         pthread_mutex_lock(&g_rb_mu);
         b->n = 0; b->next = g_rb_free; g_rb_free = b; g_rb_busy = 0;
         if (!g_rb_head) pthread_cond_broadcast(&g_rb_idle);

@@ -15,7 +15,7 @@ namespace S2A.Services.Tests
     //   驱动链同宿主：兼容层（Ryujinx 自己包）→ 声音峰值包装（Exports.cs）→ 假设备（第一版只认直接会话，宿主里经两层包装深度读不到、整个修复没生效，Mac 局才看出来）。
     //   假设备按 48 kHz 墙钟消耗（在途 = 交过的 − 已播的，播不出没交的）。每「渲染」一次 = 真路径 HardwareDeviceImpl.AppendBuffer 交 240 帧，再调 Wait。
     //   期望手算（不跑被测实现）：
-    //   ① 稳态 300 ms：先连续补到 1440 帧（6 拍），之后设备每 5 ms 吃 240 帧、补一拍 → 渲染 6 + 60 = 66 次（取 58–74）；收尾在途 = Wait 刚放行时（刚跌破 1440）再扣睡醒误差（非实时线程约 ≤ 10 ms = 480 帧）→ 960–1920
+    //   ① 稳态 300 ms：先连续补到 1440 帧（6 拍），之后设备每 5 ms 吃 240 帧、补一拍 → 渲染 6 + 60 = 66 次（取 58–74）；每拍交完的在途帧（取中位数） = Wait 刚放行时（刚跌破 1440）再扣睡醒误差（非实时线程约 ≤ 10 ms = 480 帧）→ 960–1920
     //   ② 稳态后线程停 60 ms（设备吃掉 2880 帧 > 在途，排空）：不扔拍（S2ASkippedPeriods 仍 0），连续补 6 拍到 ≥ 1440 帧，补满用时 < 5 ms（不等墙钟）
     //   ③ 设备交还即丢（iOS 时间轴跑前，在途永远 0）：不空转。墙钟上限 = 欠 8 拍起算、可超前深度 + 1 拍：先连续 8 + 6 + 1 = 15 拍，之后 5 ms 一拍
     //      → 300 ms 共 15 + 60 = 75 次（取 60–85；空转会是成千上万次）
@@ -108,7 +108,7 @@ namespace S2A.Services.Tests
             p.Wait();
         }
 
-        private static int RenderFor(AudioProcessor p, long ms)
+        private static int RenderFor(AudioProcessor p, long ms, FakeSession s = null, System.Collections.Generic.List<long> depths = null)
         {
             long end = Stopwatch.GetTimestamp() + ms * Stopwatch.Frequency / 1000;
             int n = 0;
@@ -117,6 +117,7 @@ namespace S2A.Services.Tests
             {
                 Render(p);
                 n++;
+                if (s != null) depths?.Add(s.S2ABufferedFrames);   // 每拍交完立刻记一次在途帧（判中位数，见 ①）
             }
 
             return n;
@@ -139,10 +140,14 @@ namespace S2A.Services.Tests
             p.Start(chain);
             Interlocked.Exchange(ref AudioProcessor.S2ASkippedPeriods, 0);
 
-            int n1 = RenderFor(p, 300);
-            long b1 = drv.Session0.S2ABufferedFrames;
+            // 在途帧取「每拍交完那一刻」读数的中位数（合入运维 11-15：原先只在收尾读一次，测试线程那一刻被系统晚调度十几毫秒就读到 771、同一输入先红后绿；
+            //   被测性质是节拍把深度维持在目标附近，一次瞬时读数不代表它）。期望区间不变：每拍交完 ≈ 目标 1440 ± 一拍 → 960–1920
+            var depths = new System.Collections.Generic.List<long>();
+            int n1 = RenderFor(p, 300, drv.Session0, depths);
+            depths.Sort();
+            long b1 = depths.Count > 0 ? depths[depths.Count / 2] : -1;
             Row("① 稳态 300 ms 渲染次数", "58–74", n1.ToString(), n1 >= 58 && n1 <= 74);
-            Row("① 稳态收尾在途帧", "960–1920", b1.ToString(), b1 >= 960 && b1 <= 1920);
+            Row("① 稳态每拍交完的在途帧中位数", "960–1920", $"{b1}（{depths.Count} 拍，最小 {(depths.Count > 0 ? depths[0] : -1)}、最大 {(depths.Count > 0 ? depths[^1] : -1)}）", b1 >= 960 && b1 <= 1920);
 
             Thread.Sleep(60);
             long b2 = drv.Session0.S2ABufferedFrames;

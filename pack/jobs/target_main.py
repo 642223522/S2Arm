@@ -22,7 +22,7 @@ class TargetContext(Context):
         # Reject unsupported contracts before Context creates any job files.
         target = request.get("targetId")
         if target not in ("ios", "android"):
-            raise ContractError("不支持的宿主目标。")
+            raise ContractError("不支持的宿主目标。")  # 非玩家句
         if target == "ios":
             ios_adapter.check_request(request)
         else:

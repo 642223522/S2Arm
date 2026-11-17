@@ -10,6 +10,8 @@
 # 环境：
 #   S2A_VK_PROFILE_LAYER_DIR  已构建好的 profiles 层目录（含 VkLayer_khronos_profiles.json）；不给就按下面钉的版本构建
 #   S2A_VK_PROFILES_CACHE     构建目录（默认 ${XDG_CACHE_HOME:-~/.cache}/s2arm/vk-profiles-<版本>）
+#   S2A_SIM_SHARD             k/n：只跑第 k 片（档在全表里的序号 % n == k；基线只在第 0 片跑）。CI 按片并行，
+#                             每档都要整套 run.sh，单个 job 串行十几档会超 30 分钟时限。
 # 退出码：0 全部符合期望；1 有档不符（测试失败）；75 环境不齐（缺系统包 / 层构建不出来），不记成测试失败。
 set -euo pipefail
 
@@ -19,11 +21,25 @@ tiers_json="$repo/android/tests/vk/profiles/s2a_sim_tiers.json"
 profiles_sha=b502e9b0d7508e06e6300af272548cf0ee32f380
 profiles_url=https://github.com/KhronosGroup/Vulkan-Profiles.git
 
-all=(no_bc no_d24 no_vertex_stores no_dual_src_blend no_calibrated_timestamps no_exact16 no_depth_clamp)
+all=(no_bc no_d24 no_vertex_stores no_clip_distance no_dual_src_blend no_calibrated_timestamps no_mirror_clamp no_exact16 no_depth_clamp no_vertex_divisor no_custom_border)
 want=("$@"); [ ${#want[@]} -gt 0 ] || want=("${all[@]}")
 for t in "${want[@]}"; do
     case " ${all[*]} " in *" $t "*) ;; *) echo "未知档：${t}（可用：${all[*]}）" >&2; exit 64 ;; esac
 done
+run_baseline=1
+# 一轮十几次 run.sh 共用一份 TBUF 编译链产物（第一次缺了就出，之后复用；run.sh 只在这个变量下复用）
+export S2A_TBUF_REUSE=1
+if [ -n "${S2A_SIM_SHARD:-}" ]; then
+    shard_k=${S2A_SIM_SHARD%/*}; shard_n=${S2A_SIM_SHARD#*/}
+    if ! [[ "$shard_k" =~ ^[0-9]+$ && "$shard_n" =~ ^[1-9][0-9]*$ ]] || [ "$shard_k" -ge "$shard_n" ]; then
+        echo "S2A_SIM_SHARD 要写成 k/n（0 <= k < n）：${S2A_SIM_SHARD}" >&2; exit 64
+    fi
+    picked=()
+    for i in "${!want[@]}"; do [ $((i % shard_n)) -ne "$shard_k" ] || picked+=("${want[$i]}"); done
+    want=("${picked[@]}")
+    [ "$shard_k" -eq 0 ] || run_baseline=0
+    echo "分片 ${shard_k}/${shard_n}：基线$([ "$run_baseline" -eq 1 ] && echo 跑 || echo 不跑)，档 ${want[*]:-（无）}"
+fi
 
 env_missing() { echo "【环境不齐】$*" >&2; exit 75; }
 
@@ -120,7 +136,15 @@ check_tier() {
         no_vertex_stores)
             run_tier no_vertex_stores "$log" || rc=$?
             [ "$rc" -eq 0 ] || red no_vertex_stores "run.sh rc=${rc}，期望发行宏下仍建得了设备、契约绿"
-            has "$log" "vertexPipelineStoresAndAtomics=0" || red no_vertex_stores "层没藏住 vertexPipelineStoresAndAtomics" ;;
+            has "$log" "vertexPipelineStoresAndAtomics=0" || red no_vertex_stores "层没藏住 vertexPipelineStoresAndAtomics"
+            has "$log" "【红】设备没启用 vertexPipelineStoresAndAtomics" || red no_vertex_stores "没看到顶点阶段写存储按特性点名报红（#1072）"
+            has "$log" "C1072a 缺特性时 UNSUPPORTED 并点名特性" || red no_vertex_stores "C1072a 没跑完" ;;
+        no_clip_distance)
+            run_tier no_clip_distance "$log" || rc=$?
+            [ "$rc" -eq 0 ] || red no_clip_distance "run.sh rc=${rc}，期望契约绿、0 条 validation"
+            has "$log" "shaderClipDistance=0 shaderCullDistance=0" || red no_clip_distance "层没藏住 shaderClipDistance / shaderCullDistance"
+            has "$log" "【红】设备没启用 shaderClipDistance" || red no_clip_distance "没看到写裁剪距离按特性点名报红（#1072）"
+            has "$log" "C1072a 缺特性时 UNSUPPORTED 并点名特性" || red no_clip_distance "C1072a 没跑完" ;;
         no_dual_src_blend)
             run_tier no_dual_src_blend "$log" || rc=$?
             [ "$rc" -eq 0 ] || red no_dual_src_blend "run.sh rc=$rc"
@@ -130,6 +154,16 @@ check_tier() {
                 VK_KHRONOS_PROFILES_EXCLUDE_DEVICE_EXTENSIONS=VK_KHR_calibrated_timestamps,VK_EXT_calibrated_timestamps || rc=$?
             [ "$rc" -eq 0 ] || red no_calibrated_timestamps "run.sh rc=$rc"
             has "$log" "calibrated_timestamps=0" || red no_calibrated_timestamps "层没去掉校准时间戳扩展（期望走完成点兜底）" ;;
+        no_vertex_divisor)
+            run_tier no_vertex_divisor "$log" VK_KHRONOS_PROFILES_EXCLUDE_DEVICE_EXTENSIONS=VK_EXT_vertex_attribute_divisor || rc=$?
+            [ "$rc" -eq 0 ] || red no_vertex_divisor "run.sh rc=$rc"
+            has "$log" "vk vertex divisor: enabled=0" || red no_vertex_divisor "层没去掉 VK_EXT_vertex_attribute_divisor"
+            has "$log" "C977b 实例除数：本设备没有 VK_EXT_vertex_attribute_divisor，除数 2 具名 UNSUPPORTED" || red no_vertex_divisor "C977b 没在缺除数扩展的设备上具名报 UNSUPPORTED（不能静默退回每实例一次）" ;;
+        no_mirror_clamp)
+            run_tier no_mirror_clamp "$log" VK_KHRONOS_PROFILES_EXCLUDE_DEVICE_EXTENSIONS=VK_KHR_sampler_mirror_clamp_to_edge || rc=$?
+            [ "$rc" -eq 0 ] || red no_mirror_clamp "run.sh rc=${rc}，期望契约绿"
+            has "$log" "C976m 镜像夹取：设备 mirror_clamp_to_edge=0" || red no_mirror_clamp "层没去掉 VK_KHR_sampler_mirror_clamp_to_edge"
+            has "$log" "C976m 没有扩展：MIRROR_CLAMP_TO_EDGE 建采样器 rc=-1002（sampler_mirror_clamp_to_edge" || red no_mirror_clamp "缺扩展时 MIRROR_CLAMP_TO_EDGE 没回 UNSUPPORTED（#976：不静默换别的环绕）" ;;
         no_exact16)
             run_tier no_exact16 "$log" VK_KHRONOS_PROFILES_EXCLUDE_DEVICE_EXTENSIONS=VK_EXT_4444_formats || rc=$?
             [ "$rc" -eq 0 ] || red no_exact16 "run.sh rc=${rc}，期望契约绿（16 位打包格式走退回格式 + 通道补偿）"
@@ -138,6 +172,11 @@ check_tier() {
                 grep -qE "C975 ${f}：设备 路由 vk=[0-9]+ 通道补偿=1" "$log" || red no_exact16 "C975 ${f} 没在设备路由上走退回格式"
                 has "$log" "C975 ${f} 渲染目标：退回格式具名拒绝" || red no_exact16 "C975 ${f} 当渲染目标没具名报红"
             done ;;
+        no_custom_border)
+            run_tier no_custom_border "$log" VK_KHRONOS_PROFILES_EXCLUDE_DEVICE_EXTENSIONS=VK_EXT_custom_border_color || rc=$?
+            [ "$rc" -eq 0 ] || red no_custom_border "run.sh rc=${rc}，期望契约绿"
+            has "$log" "C976b 自定义边框色：设备 custom_border=0" || red no_custom_border "层没去掉 VK_EXT_custom_border_color"
+            has "$log" "C976b 没有扩展：自定义边框色建采样器 rc=-1002（sampler_border_color_custom：" || red no_custom_border "缺扩展时自定义边框色没回 UNSUPPORTED（#976：不静默换成不透明黑）" ;;
         no_depth_clamp)
             run_tier no_depth_clamp "$log" || rc=$?
             [ "$rc" -ne 0 ] || red no_depth_clamp "负对照竟然绿了：缺硬门槛 depthClamp 应建设备失败"
@@ -149,17 +188,19 @@ check_tier() {
 }
 
 
-start=$SECONDS; before=$fails
-rc=0; run_tier "" "$out/baseline.log" || rc=$?
-if [ "$rc" -eq 2 ] && grep -q "找不到" "$out/baseline.log"; then
-    cat "$out/baseline.log" >&2; env_missing "run.sh 找不到依赖（见上）"
+if [ "$run_baseline" -eq 1 ]; then
+    start=$SECONDS; before=$fails
+    rc=0; run_tier "" "$out/baseline.log" || rc=$?
+    if [ "$rc" -eq 2 ] && grep -q "找不到" "$out/baseline.log"; then
+        cat "$out/baseline.log" >&2; env_missing "run.sh 找不到依赖（见上）"
+    fi
+    if [ "$rc" -ne 0 ]; then red 基线 "run.sh rc=$rc"; tail -40 "$out/baseline.log" >&2; else echo "【绿】基线（不挂层，$((SECONDS - start))s）"; fi
 fi
-if [ "$rc" -ne 0 ]; then red 基线 "run.sh rc=$rc"; tail -40 "$out/baseline.log" >&2; else echo "【绿】基线（不挂层，$((SECONDS - start))s）"; fi
 
-for tier in "${want[@]}"; do
+for tier in ${want[@]+"${want[@]}"}; do
     start=$SECONDS; before=$fails
     check_tier "$tier"
 done
 
 if [ "$fails" -ne 0 ]; then echo "【红】模拟机型档：$fails 处不符" >&2; exit 1; fi
-echo "【绿】模拟机型档：基线 + ${want[*]} 全部符合期望（profiles 层 ${profiles_sha:0:12}）"
+echo "【绿】模拟机型档：$([ "$run_baseline" -eq 1 ] && echo '基线 + ')${want[*]:-（本片无档）} 全部符合期望（profiles 层 ${profiles_sha:0:12}）"

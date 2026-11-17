@@ -1,6 +1,6 @@
 # native-test-nvn_call_depth：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += nvn_call_depth
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # 命令列表嵌套调用不吃宿主栈（显式返回栈）：200 层与自己调自己，跑在 256 KB 栈的线程上
 $(BUILD)/tests/t_nvn_call_depth: graphics/nvn/tests/t_nvn_call_depth.m graphics/nvn/gfx/nvn/nvn_mtl.m $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \

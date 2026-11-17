@@ -81,6 +81,8 @@ final class BootContract {
         final String titleId, contentRoot, revisionDir, artifact, artifactSha256;
         final String rewriteAbi, runtimeVersion, backend;
         final String npdm, control, romfs, modulesDir;
+        /** 原地来源：游戏文件所在的共享存储根目录（玩家选定、登记在私有版本目录的 in-place.json 里）；null = 文件在私有版本目录里。 */
+        final String inPlaceRoot;
         final long packageFiles, packageBytes;
         final List<Module> modules;
         final Apk apk;
@@ -89,7 +91,7 @@ final class BootContract {
 
         Game(String titleId, String contentRoot, String revisionDir, String artifact, String artifactSha256,
              String rewriteAbi, String runtimeVersion, String backend, String npdm, String control,
-             String romfs, String modulesDir, long packageFiles, long packageBytes,
+             String romfs, String modulesDir, String inPlaceRoot, long packageFiles, long packageBytes,
              List<Module> modules, Apk apk, Graphics graphics) {
             this.titleId = titleId;
             this.contentRoot = contentRoot;
@@ -103,11 +105,18 @@ final class BootContract {
             this.control = control;
             this.romfs = romfs;
             this.modulesDir = modulesDir;
+            this.inPlaceRoot = inPlaceRoot;
             this.packageFiles = packageFiles;
             this.packageBytes = packageBytes;
             this.modules = modules;
             this.apk = apk;
             this.graphics = graphics;
+        }
+
+        /** 内容文件（romfs / exefs / 模块 …）所在目录：原地来源是登记的根目录，否则是私有版本目录。
+         *  元数据（manifest / index / artifact / 指纹表）总在私有版本目录 gameRoot/revisionDir。 */
+        File contentDir(File gameRoot) {
+            return inPlaceRoot != null ? new File(inPlaceRoot) : new File(gameRoot, revisionDir);
         }
 
         boolean hasApkModules() {
@@ -132,6 +141,9 @@ final class BootContract {
     private static final Pattern FEATURE_NAME = Pattern.compile("[a-z][a-z0-9_-]*(\\.[a-z][a-z0-9_-]*)+");
     static final String GRAPHICS_FEATURE = "org.s2arm.graphics.v1";
     static final String GRAPHICS_MANIFEST = "shaders/vulkan/direct/graphics.v1.json";
+    /** 私有版本目录里的原地登记：{"version":1,"root":"<共享存储上的绝对路径>"}。只有 App 自己写（私有目录），
+     *  在就表示内容文件不在本目录、在 root 下原地读；起局只认 root 之下的文件（canonical 不出根）。 */
+    static final String IN_PLACE = "in-place.json";
     private static final int MAX_GRAPHICS_DESCRIPTOR = 1 << 20;
 
     /** Maps the validated module list; the app passes its exact images to NativeBridge.checkModulePaths. */
@@ -299,6 +311,9 @@ final class BootContract {
         if (packageBytes < 1) throw new BadGame("artifact package.bytes is not positive");
         requireFile(revision, "manifest.json", "package manifest");
         requireFile(revision, "index.tsv", "package index");
+        String inPlaceRoot = inPlaceRoot(revision, root.getParentFile());
+        // 内容文件的根：原地来源是登记的共享存储目录，否则就是版本目录本身
+        File content = inPlaceRoot == null ? revision : new File(inPlaceRoot);
 
         Apk apk = null;
         if (art.containsKey("apk")) {
@@ -321,10 +336,12 @@ final class BootContract {
         String npdm = path(art, "npdm", artifactRel);
         String control = path(art, "control", artifactRel);
         String romfs = path(art, "romfs", artifactRel);
-        requireFile(revision, npdm, "npdm");
-        requireFile(revision, control, "control");
-        requireDirectory(revision, romfs, "romfs");
-        if (art.containsKey("systemData")) requireDirectory(revision, path(art, "systemData", artifactRel), "systemData");
+        requireFile(content, npdm, "npdm");
+        requireFile(content, control, "control");
+        // 镜像形态（make_pack.romfs_image）：artifact 写 romfs.std，是文件；否则是 romfs/ 目录
+        if (romfs.equals("romfs.std")) requireFile(content, romfs, "romfs");
+        else requireDirectory(content, romfs, "romfs");
+        if (art.containsKey("systemData")) requireDirectory(content, path(art, "systemData", artifactRel), "systemData");
 
         List<Object> modules = array(art, "modules", artifactRel);
         if (modules.isEmpty()) throw new BadGame("artifact has no modules");
@@ -362,10 +379,10 @@ final class BootContract {
             if (source.equals("apk-asset")) {
                 if (apk == null) throw new BadGame(where + ".source is apk-asset but artifact has no apk object");
             } else {
-                requireFile(revision, image, where + ".image");
-                File fixupFile = requireFile(revision, fixups, where + ".fixups");
-                requireFile(revision, gates, where + ".gates");
-                if (!widen.isEmpty()) requireFile(revision, widen, where + ".widen");
+                requireFile(content, image, where + ".image");
+                File fixupFile = requireFile(content, fixups, where + ".fixups");
+                requireFile(content, gates, where + ".gates");
+                if (!widen.isEmpty()) requireFile(content, widen, where + ".widen");
                 Map<String, String> h = fixupHeaders(readText(fixupFile), where + ".fixups");
                 if (!"android".equals(h.get("TARGET")))
                     throw new BadGame(where + ".fixups has no '# TARGET android'");
@@ -407,7 +424,7 @@ final class BootContract {
             long bytes = number(graphicsExtension, "bytes", where);
             if (bytes < 1 || bytes > MAX_GRAPHICS_DESCRIPTOR)
                 throw new BadGame(where + ".bytes is outside 1.." + MAX_GRAPHICS_DESCRIPTOR);
-            File descriptor = requireFile(revision, manifest, "graphics manifest");
+            File descriptor = requireFile(content, manifest, "graphics manifest");
             if (descriptor.length() != bytes)
                 throw new BadGame(where + ".bytes " + bytes + " != file length " + descriptor.length());
             if (!sha256(descriptor).equals(hash))
@@ -417,7 +434,45 @@ final class BootContract {
 
         return new Game(titleId, contentRoot, revisionDir, artifactRel, artifactSha,
             rewriteAbi, runtimeVersion, backend, npdm, control, romfs,
-            new File(revision, "modules").getPath(), packageFiles, packageBytes, out, apk, graphics);
+            new File(content, "modules").getPath(), inPlaceRoot, packageFiles, packageBytes, out, apk, graphics);
+    }
+
+    /**
+     * 版本目录的原地登记（in-place.json），没有返回 null。登记的根必须是绝对、规范（canonical 等于自身：路径上没有符号链接、
+     * 没有 . / ..）、不含控制字符 / 引号 / 反斜杠的目录，且不在本 App 的游戏库（gamesDir）里：内容文件只按这个根解析，
+     * under() 的 canonical 检查保证读不出根。根不在或读不到时具名报错（玩家挪走 / 删了文件夹、没开「所有文件访问」）。
+     */
+    static String inPlaceRoot(File revision, File gamesDir) throws BadGame, IOException {
+        File marker = new File(revision, IN_PLACE);
+        if (!java.nio.file.Files.exists(marker.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) return null;
+        if (!java.nio.file.Files.isRegularFile(marker.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS))
+            throw new BadGame(IN_PLACE + " is not a regular file");
+        Map<String, Object> doc = json(marker, IN_PLACE);
+        if (number(doc, "version", IN_PLACE) != 1) throw new BadGame(IN_PLACE + " version is not 1");
+        String root = string(doc, "root", IN_PLACE);
+        checkInPlaceRoot(root, gamesDir);
+        File dir = new File(root);
+        if (!dir.isDirectory())
+            throw new BadGame("in-place game folder is missing or unreadable: " + root);
+        if (!dir.getCanonicalPath().equals(root))
+            throw new BadGame("in-place game folder is no longer its registered path (moved or replaced by a link): " + root);
+        return root;
+    }
+
+    /** 登记前 / 起局时都过的同一条路径规则（只看字面 + 不在游戏库里；目录在不在由调用方核）。 */
+    static void checkInPlaceRoot(String root, File gamesDir) throws BadGame, IOException {
+        if (root.length() < 2 || root.charAt(0) != '/' || root.endsWith("/"))
+            throw new BadGame("in-place root is not an absolute directory path: " + root);
+        for (int i = 0; i < root.length(); i++) {
+            char c = root.charAt(i);
+            if (c < 0x20 || c == '"' || c == '\\') throw new BadGame("in-place root contains an unsupported character: " + root);
+        }
+        checkRelative(root.substring(1), "in-place root");
+        if (gamesDir != null) {
+            File games = gamesDir.getCanonicalFile();
+            if (isUnder(new File(root), games) || isUnder(games, new File(root)))
+                throw new BadGame("in-place root overlaps the private game library: " + root);
+        }
     }
 
     // Horizon 装载序（tools/module_order.py / runtime/src/loader.c s2a_module_order_ok 同一份规则）：

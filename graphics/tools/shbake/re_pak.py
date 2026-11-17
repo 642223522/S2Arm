@@ -5,15 +5,16 @@
 # 补丁链：<基名>.pak 先读，<基名>.pak.patch_<号>.pak 按号升序后读，同一路径哈希后读的盖掉先读的（引擎打补丁就是这样换文件的）。
 #   10-21 怪猎：18 个 pak 共 12.7 万条、9.2 万个路径，3.5 万条是被后续补丁换掉的旧版；旧版着色器游戏读不到，不该进包（旧做法整包盲扫 zstd 帧，旧版也配出程序）。
 # 特性位非 0（条目表加密等）/ 主版本不是 4 / 不认识的压缩方式一律抛 Unsupported，由调用方计数报出，不猜。
-import os, re, struct, zlib
+import os, re, struct, sys, zlib
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'nvn', 'tools')); import romfs_list   # 按路径读经 romfs_list（目录形态同 open；RomFS 不落散文件、只有镜像时从镜像读）
 class Unsupported(Exception): pass
 def is_pak(path):
     try:
-        with open(path, 'rb') as f: return f.read(4) == b'KPKA'
+        with romfs_list.open_file(path) as f: return f.read(4) == b'KPKA'
     except OSError: return False
 def entries(path):
     """[(路径哈希 u64 = 高 << 32 | 低, 偏移, 存储长, 原长, 属性)]"""
-    with open(path, 'rb') as f:
+    with romfs_list.open_file(path) as f:
         h = f.read(16)
         if h[:4] != b'KPKA': raise Unsupported('不是 KPKA')
         maj, mnr, feat, n = struct.unpack_from('<BBHI', h, 4)

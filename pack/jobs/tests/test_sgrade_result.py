@@ -59,6 +59,30 @@ class OutcomeTests(unittest.TestCase):
         self.write([], "移植不了\twidescreen:x1\tmain\t21:9\t自 AAAA → BBBB：画幅值找不到\n")
         self.assertEqual([(f["id"], f["why"]) for f in patches.outcome(self.root)["failed"]], [("widescreen:x1", "result.why.port")])
 
+    def test_mod_applied_and_wrong_version_listed(self):
+        # 玩家导入的 mod 代码补丁（11-15）：打上的列在 mod 一类；构建号对不上的（pack/cpatch.py mod_miss）列「没打上：Mod 是别的版本的」——社区补丁版本不对照旧不列
+        self.write([("mod:aa", "main", "1", "mod", "60 FPS", "", "Smooth/m.pchtxt", "", "0")],
+                   "收\tmod:aa\tmain\t60 FPS\t位 1\n"
+                   "不收\tmod:bb\t-\tOld/x.pchtxt\tmod 构建号对不上：mod 是 1111，这份游戏的主程序是 2222\n"
+                   "不收\tgfx:old\tmain\t旧版画质\t版本不对：补丁是 1111，这份是 2222\n")
+        r = patches.outcome(self.root)
+        self.assertEqual([(a["id"], a["cat"]) for a in r["applied"]], [("mod:aa", "mod")])
+        self.assertEqual([(f["id"], f["cat"], f["name"], f["why"]) for f in r["failed"]], [("mod:bb", "mod", "Old/x.pchtxt", "result.why.version")])
+
+    def test_cheat_without_build_id_listed_per_file(self):
+        # #1321：没写构建号的金手指文件（pack/cpatch.py scan_cheats「不收 cheat:<文件名> … 没写构建号」）→ 完成页逐份列「没打上：金手指文件没写构建号」，
+        #   两份就两条；库里别的版本（版本不对）照旧不列。期望手写
+        self.write([], "不收\tcheat:a.txt\tmain\ta.txt\t没写构建号：文件名不是 16 位构建号、首行也没有 BID=，核不了版本\n"
+                       "不收\tcheat:b.txt\tmain\tb.txt\t没写构建号：文件名不是 16 位构建号、首行也没有 BID=，核不了版本\n"
+                       "不收\tcheat\tmain\t1111222233334444.txt\t版本不对：金手指是 1111222233334444，这份游戏的主程序是 AABBCCDD00112233\n")
+        self.assertEqual([(f["id"], f["cat"], f["name"], f["why"]) for f in patches.outcome(self.root)["failed"]],
+                         [("cheat:a.txt", "cheat", "a.txt", "result.why.nobid"), ("cheat:b.txt", "cheat", "b.txt", "result.why.nobid")])
+
+    def test_fpslocker_unsupported_listed(self):
+        # 11-15 #934：FPSLocker 配置里有 S2Arm 不支持的写法（pack/cpatch.py 记「不收 … FPSLocker 配置不支持」）→ 完成页列「没打上：补丁用了 S2Arm 还不支持的写法」
+        self.write([], "不收\tfps:ab\tmain\tFPSLocker\tFPSLocker 配置不支持：调用 _fpsLock()：FPSLocker 自带的帮助函数，S2Arm 没有\n")
+        self.assertEqual([(f["id"], f["cat"], f["why"]) for f in patches.outcome(self.root)["failed"]], [("fps:ab", "fps", "result.why.unsupported")])
+
     def test_no_records_is_empty(self):
         self.assertEqual(patches.outcome(self.root), dict(applied=[], failed=[], cheats=0))
 
@@ -82,14 +106,21 @@ class PendingTests(unittest.TestCase):
     def test_pending_ignores_known_missing_original(self):
         import install, rewrite_refresh
         info = {"0100A": {"ios": {"sgradeKey": "old"}}, "0100B": {"ios": {"sgradeKey": "old", "sgradeMissing": "new"}}}
-        c = types.SimpleNamespace()
+        import sgrade_bf
+        c = types.SimpleNamespace(); kept = {}; bf_due = set()
         with patch.object(rewrite_refresh, "rewriter_id", return_value="rid"), \
              patch.object(rewrite_refresh, "pending_ios", side_effect=lambda c, gs, rid: [g for g in gs if info[g]["ios"]["sgradeKey"] != "new"]), \
-             patch.object(rewrite_refresh, "ios_key", return_value="new"), patch.object(layout, "game_info", side_effect=lambda c, g: info[g]):
+             patch.object(rewrite_refresh, "ios_key", return_value="new"), patch.object(layout, "game_info", side_effect=lambda c, g: info[g]), \
+             patch.object(rewrite_refresh, "kept_todo", side_effect=lambda c, g, base: kept.get(g, [])), patch.object(layout, "ios_kit", return_value=None), \
+             patch.object(sgrade_bf, "due", side_effect=lambda c, g: g in bf_due):   # 缺可读瓦片版（_bf）那条判据：这里的假游戏库没有资源包，按 bf_due 给（判据本身另有单测 test_sgrade_bf）
             self.assertTrue(install.sgrade_pending(c, ["0100A", "0100B"]), "甲要补（记号 old → new）")
             self.assertFalse(install.sgrade_pending(c, ["0100B"]), "乙在 new 这一版下已确认缺原件：不因它重组")
             info["0100B"]["ios"]["sgradeMissing"] = "older"
             self.assertTrue(install.sgrade_pending(c, ["0100B"]), "记号又变了（补丁库更新 / 导入了金手指）：再试")
+            info["0100B"]["ios"]["sgradeMissing"] = "new"; kept["0100B"] = ["x.nro"]
+            self.assertTrue(install.sgrade_pending(c, ["0100B"]), "乙有运行时留下、还没进 iPhone 件的 NRO（#8be819）：要重组补上")
+            kept.pop("0100B"); self.assertFalse(install.sgrade_pending(c, ["0100B"]), "乙回到「已确认缺原件、没有留下的 NRO」：不重组")
+            bf_due.add("0100B"); self.assertTrue(install.sgrade_pending(c, ["0100B"]), "乙的直连库缺可读瓦片版（_bf）、这一代没因缺原料试过：要重组补上")
 
 
 if __name__ == "__main__":

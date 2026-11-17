@@ -91,7 +91,6 @@ run	测试出包	记分板 / 全绿 / 里程碑 tsv	只追加单行（< 4 KB 原
 ~/Downloads	测试出包	游戏原始包（xci / nsp）所在目录，tools/game_icons.sh 只读（S2A_GAME_SRC 可改）	只读，不写
 ~/.s2arm/run/s2arm/cache/csclosure	测试出包	着色器阶段键：C# 编译闭包文件清单缓存 <粗键>.files（tools/csproj_closure.py）	同粗键并发只求值一份（<粗键>.files.lock，pid 存活检查）；写临时名再原子改名
 ~/.s2arm/run/s2arm/cache/xckey	测试出包	着色器阶段键：GAL 翻译代码二进制哈希 <树号组>、SPIRV-Cross 目标文件 spvc-<键>/（graphics/tools/shbake/xc_key.sh）	同组并发只编一份（<组>.lock，pid 存活检查）；写临时名再原子改名
-~/.s2arm/run/s2arm/cache/shx	测试出包	着色器包抽取缓存 <程序号>-<键>/（graphics/tools/shader_pack.sh ①：抽出集 + 程序配对 + 透明测试）	写 <键>.<pid> 再原子改名；每程序号留 2 份
 ~/.s2arm/run/s2arm/wip/gate_scene	测试出包线	单测不通时的文本现场（tests/keep_scene.sh：<单测>_<时刻>_<pid>，只拷 *.log *.tsv *.txt *.json）	每次新建带 pid 的子目录、不覆盖；wip/ 下 6 小时由 tools/gc.sh 清
 ~/.s2arm/run/gal_pso_cache	画面·着色器线 / 测试出包	管线归档分片缓存（graphics/tools/shbake/pso_chunk.sh 按内容寻址：键 = 分片输入 + 编译器版本）	按键写临时文件再改名（同键并发只是重复编）；10-23 起 tools/gc.sh 不再按盘余量删（条目全和产物根共享、独占 0，删了腾不出空间）
 ~/.s2arm/run/gal_air_cache	画面·着色器线 / 测试出包	.air 内容寻址缓存（graphics/metal/tools/gal_offline.py：键 = MSL 源码 + 平台 + metal 编译器版本；链接 metallib 的中间产物，产物根里不留）	按键写临时文件再改名；tools/gc.sh 超过 72 小时删、ios/ 下非 u?? 合编目录的逐支条目超过 6 小时删、盘紧按修改时间从旧到新补缺口（1 小时内动过的不动）；烘焙道有活持有者时 gc 跳过

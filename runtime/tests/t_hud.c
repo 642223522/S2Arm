@@ -92,6 +92,14 @@ int main(void) {
         int ok3 = strstr(b, "· 0.1 GB") && !strstr(b, "GPU");
         printf("没有直连层：简版期望只写「0.1 GB」→ %s\n", b); if (!ok3) fails++;
     }
+    {   // 补帧（11-14）：补出的帧真上了屏就算进屏上帧率。期望手写：1 秒内补出 24 帧、游戏帧环里 1 帧 → 「屏上 25 帧（游戏 1）」；没补帧时不出「屏上」（上一段已核）
+        void s2a_hud_mid_frame(void); char b[256];
+        mach_timebase_info_data_t tb; mach_timebase_info(&tb);
+        atomic_store(&g_s2a_hud_ft[0], mach_absolute_time() * tb.numer / tb.denom); atomic_store(&g_s2a_hud_fn, 1);
+        for (int i = 0; i < 24; i++) s2a_hud_mid_frame();
+        s2a_hud_brief(b, sizeof b); int ok = strstr(b, "屏上 25 帧（游戏 1）") != NULL;
+        printf("补帧：补出 24 帧 + 游戏 1 帧，简版期望含「屏上 25 帧（游戏 1）」→ %s\n", b); if (!ok) fails++;
+    }
     if (fails) printf("✗ t_hud：%d 项不符\n", fails); else printf("✓ t_hud：浮层目标 = min(游戏帧率, 上限)，GL 不锁时 = 上限，非法上限不进浮层，全过\n");
     return fails != 0;
 }

@@ -13,6 +13,12 @@ void dm_guest_write_prep_register(void (*fn)(void *addr, size_t len)) { (void)fn
 void dm_log(const char *fmt, ...) { (void)fmt; }
 static void on_sig(int s, siginfo_t *si, void *uc) { if (g_hook && g_hook(si->si_addr, 1, uc)) return; signal(s, SIG_DFL); }
 
+// 远端别名区替身（真身 runtime/src/far.c）：[g_far_lo, g_far_hi) 算远端
+static uintptr_t g_far_lo, g_far_hi;
+static int far_stub(uint64_t a, uint64_t n) { return g_far_hi && a >= g_far_lo && a + n <= g_far_hi; }
+extern int (*nvn_dirty_mp_hook)(void *addr, size_t len, int prot);
+static int g_mp_calls;
+static int count_mp(void *addr, size_t len, int prot) { (void)addr; (void)len; (void)prot; g_mp_calls++; return 0; }
 static int fails;
 #define CK(c, ...) do { if (!(c)) { fails++; printf("✗ "); printf(__VA_ARGS__); printf("\n"); } } while (0)
 
@@ -41,6 +47,21 @@ int main(void) {
     uint8_t *other = mmap(NULL, pg, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
     CK(nvn_dirty_written_pages(NULL, other, 64, st, bits, 64) == -1, "没登记的内存：返回 -1（调用方按全写过处理）");
     if (fails) { printf("✗ t_dirty_pages：%d 处不符\n", fails); return 1; }
-    printf("✓ t_dirty_pages：6 组用例全符（真写保护缺页；同页别的数据写过也标脏）\n");
+    {   // 第 7 组（11-14 D-GCMY）：远端别名区里的内存池不登记、不加保护——iPhone 上对它 mprotect 回 ENOMEM，一次失败就把全局「跟踪不可靠」置位、
+        //   此后所有纹理一律当脏重传。期望手写：远端池查跟踪 0（未登记）、加保护不调 mprotect、跟踪不可靠仍 0、判写过 = 1（未跟踪按脏，用到时重传）；
+        //   反证：去掉 nvn_dirty_add_range 的远端跳过，远端池被登记（查跟踪 1）、加保护调了 mprotect
+        uint8_t *f = mmap(NULL, 4 * pg, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+        g_far_lo = (uintptr_t)f; g_far_hi = (uintptr_t)f + 4 * pg; nvn_dirty_far_fn = far_stub;
+        nvn_dirty_add_range(f, 4 * pg);
+        g_mp_calls = 0; nvn_dirty_mp_hook = count_mp;
+        nvn_dirty_protect(f, 2 * pg);
+        nvn_dirty_mp_hook = NULL;
+        int tr = nvn_dirty_tracked(f, pg), un = nvn_dirty_tracking_unreliable(), si = nvn_dirty_since(f, pg, nvn_dirty_now());
+        CK(tr == 0 && g_mp_calls == 0 && un == 0 && si == 1, "远端池：查跟踪 %d（期望 0）、mprotect %d 次（期望 0）、跟踪不可靠 %d（期望 0）、判写过 %d（期望 1）", tr, g_mp_calls, un, si);
+        CK(nvn_dirty_tracked(tex, len) == 1, "普通池照常跟踪");
+        g_far_hi = 0; nvn_dirty_far_fn = NULL;
+    }
+    if (fails) { printf("✗ t_dirty_pages：%d 处不符\n", fails); return 1; }   // 原先有不符也照打 ✓、退出 0
+    printf("✓ t_dirty_pages：7 组用例全符（真写保护缺页；同页别的数据写过也标脏；远端池不登记不加保护）\n");
     return 0;
 }

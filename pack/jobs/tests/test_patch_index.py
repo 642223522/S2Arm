@@ -1,5 +1,5 @@
 """补丁索引生成（tools/patch_index.py，11-13：压缩包里的补丁与金手指、按内容去重）。临时镜像目录，期望按规则手写"""
-import hashlib, io, json, os, shutil, sys, tempfile, unittest, zipfile
+import hashlib, io, json, os, shutil, sys, tempfile, unittest, unittest.mock, zipfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tools"))
 import patch_index
@@ -14,7 +14,7 @@ class PatchIndexTests(unittest.TestCase):
         with zipfile.ZipFile(buf, "w") as z:
             z.writestr("[21x9 Ultrawide]/exefs/1.0.pchtxt", ws)
             z.writestr("[60FPS]/cheats/FF1D1C05670DB602.txt", b"[x]\n04000000 00000010 00000001\n")
-            z.writestr("[21x9 Ultrawide]/romfs/ui.bfres", b"data")          # 游戏数据：不收
+            z.writestr("[HD Textures]/romfs/ui.bfres", b"data")             # 游戏数据：不收（另一个 mod，不带 exefs）
             z.writestr("readme.md", b"hi")
         for repo in ("orig__mods", "ADEMOLA200__mods"):                   # 合集库里是同一个包
             d = self.m / repo / "Game [01006F8002326000]"; d.mkdir(parents=True)
@@ -44,6 +44,68 @@ class PatchIndexTests(unittest.TestCase):
         r = next(r for r in rows if r["kind"] == "pchtxt")
         self.assertEqual((r["path"], r["sha256"], r["archive_sha256"]),
                          ("Game [01006F8002326000]/mods.zip", hashlib.sha256(self.ws).hexdigest(), hashlib.sha256((self.m / "orig__mods/Game [01006F8002326000]/mods.zip").read_bytes()).hexdigest()))
+
+    def test_mod_with_romfs_companion_is_not_half_indexed(self):
+        # 11-16 D-Q3QJ（王国之泪 1800p：exefs 改分辨率 + romfs 调大显存堆，只收 exefs 半边 → 按 1800p 建缓冲分配失败崩溃）。期望手写：
+        #   ① 包里 1800p/ 有 exefs 补丁、romfs 配套是显存堆配置（HeapSize）→ 它的补丁不收；② 散文件 Big/exefs + Big/romfs/System/HeapSize → 不收；
+        #   ③ 别的库里单独放着同一份 1800p 补丁（内容一样）→ 也不收；④ 同包里不带 romfs 的 Plain/exefs → 照收；
+        #   ⑤ 配套只是界面布局（Wide/romfs/UI/LayoutArchive，缺了只是界面没拉宽、不崩；维护者定：超宽屏不一刀切）→ 照收
+        p1800 = b"@nsobid-AABBCCDDEEFF00112233445566778899\n@enabled\n"
+        plain = b"@nsobid-AABBCCDDEEFF00112233445566778899\n// plain\n@enabled\n"
+        big = b"@nsobid-AABBCCDDEEFF00112233445566778899\n// big\n@enabled\n"
+        wide = b"@nsobid-AABBCCDDEEFF00112233445566778899\n// wide\n@enabled\n"
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("1800p/exefs/1.2.1.pchtxt", p1800)
+            z.writestr("1800p/romfs/System/HeapSize/Product.HeapDef.byml.zs", b"heap")
+            z.writestr("Plain/exefs/1.2.1.pchtxt", plain)
+            z.writestr("Wide/exefs/1.2.1.pchtxt", wide)
+            z.writestr("Wide/romfs/UI/LayoutArchive/Common.Product.blarc.zs", b"ui")
+        g = self.m / "orig__mods" / "Zelda [0100F2C0115B6000]"; g.mkdir(parents=True)
+        (g / "res.zip").write_bytes(buf.getvalue())
+        (g / "Big/exefs").mkdir(parents=True); (g / "Big/exefs/1.2.1.pchtxt").write_bytes(big)
+        (g / "Big/romfs/System/HeapSize").mkdir(parents=True); (g / "Big/romfs/System/HeapSize/x.zs").write_bytes(b"x")
+        (g / "Wide2/exefs").mkdir(parents=True); (g / "Wide2/exefs/1.2.1.pchtxt").write_bytes(wide + b"// 2\n")
+        (g / "Wide2/romfs/UI").mkdir(parents=True); (g / "Wide2/romfs/UI/x.blarc").write_bytes(b"ui")
+        o = self.m / "other__mods" / "Zelda [0100F2C0115B6000]/1800p/exefs"; o.mkdir(parents=True)
+        (o / "1.2.1.pchtxt").write_bytes(p1800)
+        (self.m / "SOURCES.tsv").write_text("来源\tURL\t提交号\n" + "".join(f"{r}\tu\t{'c' * 40}\n" for r in ("orig__mods", "ADEMOLA200__mods", "other__mods")))
+        got = sorted(r["sha256"] for r in patch_index.dedupe(patch_index.scan(str(self.m))) if "0100F2C0115B6000" in r["gids"])
+        self.assertEqual(got, sorted(hashlib.sha256(x).hexdigest() for x in (plain, wide, wide + b"// 2\n")))
+        self.assertEqual(sorted(h for _, _, h in patch_index.HALVES), sorted(hashlib.sha256(x).hexdigest() for x in (p1800, big)))
+
+    def test_widescreen_that_raises_render_resolution_is_not_indexed(self):
+        # 11-16 #b824d1（阿尔宙斯「3440x1440」变体把内部渲染分辨率提到 3440×1440，渲染目标放大、堆放不下 → 空指针崩）。期望手写：
+        #   ① pchtxt 写 movz w8,#3440 / movz w9,#1440 → 不收；② IPS 写同样两条 → 不收；③ 只改画幅的（movz #1920 / #1080、浮点画幅）→ 照收；
+        #   ④ 名字带 3440x1440、正文没写分辨率常数 → 照收（名字只是目标显示器）；⑤ 注释掉的行不算
+        mz = lambda rd, imm: (0x52800000 | (imm << 5) | rd).to_bytes(4, "little").hex().upper()
+        up = f"@nsobid-CCDDEEFF00112233445566778899AABB\n@enabled\n00001000 {mz(8, 3440)}\n00001004 {mz(9, 1440)}\n".encode()
+        ok = f"@nsobid-CCDDEEFF00112233445566778899AABB\n@enabled\n00001000 {mz(8, 1920)}\n00001004 {mz(9, 1080)}\n00002000 3F2AAAAB\n".encode()
+        named = b"@nsobid-CCDDEEFF00112233445566778899AABB\n@enabled\n00002000 3F2AAAAB\n"
+        commented = f"@nsobid-CCDDEEFF00112233445566778899AABB\n@enabled\n//00001000 {mz(8, 3440)}\n//00001004 {mz(9, 1440)}\n00002000 3F2AAAAC\n".encode()
+        ips = b"PATCH" + (0x1100).to_bytes(3, "big") + (8).to_bytes(2, "big") + bytes.fromhex(mz(8, 2560) + mz(9, 1440)) + b"EOF"
+        g = self.m / "orig__mods" / "Arceus [01001F5010DFA000]"
+        for d, data in (("[3440x1440 Ultrawide]/exefs/1.1.1.pchtxt", up), ("[21x9 Ultrawide]/exefs/1.1.1.pchtxt", ok), ("[21.9 (3440x1440)]/exefs/1.1.1.pchtxt", named),
+                        ("[21x9 Commented]/exefs/1.1.1.pchtxt", commented), ("[2560x1440 Ultrawide]/exefs/CCDDEEFF00112233.ips", ips)):
+            (g / d).parent.mkdir(parents=True, exist_ok=True); (g / d).write_bytes(data)
+        o = self.m / "other__mods" / "Arceus [01001F5010DFA000]/[4K Docked]/exefs"; o.mkdir(parents=True)   # ⑥ 同一份内容在别的库里被分成画面类 → 也不收
+        (o / "1.1.1.pchtxt").write_bytes(up)
+        (self.m / "SOURCES.tsv").write_text("来源\tURL\t提交号\n" + "".join(f"{r}\tu\t{'c' * 40}\n" for r in ("orig__mods", "ADEMOLA200__mods", "other__mods")))
+        rows = [r for r in patch_index.dedupe(patch_index.scan(str(self.m))) if "01001F5010DFA000" in r["gids"]]
+        self.assertEqual(sorted(r["sha256"] for r in rows if r["cat"] == "widescreen"), sorted(hashlib.sha256(x).hexdigest() for x in (ok, named, commented)))
+        self.assertNotIn(hashlib.sha256(up).hexdigest(), {r["sha256"] for r in rows})
+        self.assertEqual(sorted(x[2] for x in patch_index.UPRES), [(2560, 1440), (3440, 1440)])
+
+    def test_known_bad_patches_are_not_indexed(self):
+        # 11-16：已定因会崩的单份补丁按内容编号（sha256 前 16 位）不收，别的照收。期望手写：表里那份不在索引里、旁边那份在
+        bad, good = b"@nsobid-AABBCCDDEEFF00112233445566778899\n@enabled\n00001000 1F2003D5\n", b"@nsobid-AABBCCDDEEFF00112233445566778899\n@enabled\n00001004 1F2003D5\n"
+        g = self.m / "orig__mods" / "Odyssey [0100000000010000]"
+        (g / "GQ3/exefs").mkdir(parents=True); (g / "GQ3/exefs/1.3.0.pchtxt").write_bytes(bad)
+        (g / "Other/exefs").mkdir(parents=True); (g / "Other/exefs/1.3.0.pchtxt").write_bytes(good)
+        with unittest.mock.patch.dict(patch_index.KNOWN_BAD, {hashlib.sha256(bad).hexdigest()[:16]: "测试"}):
+            got = {r["sha256"] for r in patch_index.dedupe(patch_index.scan(str(self.m))) if "0100000000010000" in r["gids"]}
+        self.assertEqual(got, {hashlib.sha256(good).hexdigest()})
+        self.assertEqual(set(patch_index.KNOWN_BAD), {"e8b51176ead1bcd3"})
 
     def test_cheat_libraries_are_not_indexed_twice(self):
         os.rename(self.m / "orig__mods", self.m / "ChanseyIsTheBest__NX-60FPS-RES-GFX-Cheats")
@@ -113,11 +175,20 @@ class PatchPackTests(unittest.TestCase):
         os.environ["S2A_PATCH_SNAPSHOT"] = str(self.o / "snapshot.tar")
         try:
             self.assertIsNone(self.pp.stage_snapshot(str(res / "CommunityPatches")))
-            self.assertEqual((res / "CommunityPatches/patches-v2.tar").read_bytes(), s1)
+            # 随包放 v3（11-16 安装包瘦身）：v2 中间件不留；v3 同输入同字节、自洽；各包原文与 v2 里 gz 解出来的逐字节相同
+            self.assertEqual(sorted(p.name for p in (res / "CommunityPatches").iterdir()), ["patches-v3.tar"])
+            v3 = (res / "CommunityPatches/patches-v3.tar").read_bytes()
+            self.assertIsNone(self.pp.stage_snapshot(str(res / "again")))
+            self.assertEqual((res / "again/patches-v3.tar").read_bytes(), v3)
+            idx3, why = self.pp.check_v3(str(res / "CommunityPatches/patches-v3.tar"))
+            self.assertIsNone(why); self.assertEqual(idx3["schema"], 3); self.assertEqual(sorted(idx3["bundles"]), sorted(idx["bundles"]))
+            for k, v in idx3["bundles"].items():
+                self.assertEqual(v["sha256"], idx["bundles"][k]["sha256"])   # 和云端比用的 gz sha 原样保留
+                self.assertEqual(v["raw_sha256"], hashlib.sha256(gzip.decompress((self.o / (k + ".json.gz")).read_bytes())).hexdigest())
             bad = bytearray(s1); i = bad.index(b"\x1f\x8b"); bad[i + 40] ^= 0xFF; (self.o / "bad.tar").write_bytes(bytes(bad))
             os.environ["S2A_PATCH_SNAPSHOT"] = str(self.o / "bad.tar")
             self.assertIsNotNone(self.pp.stage_snapshot(str(res / "x")))
-            self.assertFalse((res / "x/patches-v2.tar").exists())
+            self.assertFalse((res / "x/patches-v2.tar").exists()); self.assertFalse((res / "x/patches-v3.tar").exists())
         finally:
             os.environ.pop("S2A_PATCH_SNAPSHOT", None); shutil.rmtree(res, ignore_errors=True)
 
