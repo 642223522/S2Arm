@@ -1092,8 +1092,9 @@ def chosen_sign_mode(c):
 
 
 def export_sign_mode(c):
-    """这次导出按什么签：完成页「这次换成…」带的 signMode 优先（只管这一次，不改设置），否则按设置里选的"""
-    want = c.r.get("signMode")
+    """这次导出按什么签：请求带的 sign（appleId / devCert / none，界面「这次换成…」就是带另一个 sign 再导一次）优先，只管这一次、不改设置；
+    没带按设置里选的。none = 不签（同 external）"""
+    want = {"none": "external"}.get(c.r.get("sign"), c.r.get("sign"))
     return want if want in SIGN_MODES else chosen_sign_mode(c)
 
 
@@ -1243,7 +1244,7 @@ def export_s2arm(c, gid):
             team, bundle, signer, who = export_signer(c, mode)
             pkg = Path(program_pack.sign(c, gid, team, bundle, signer, pkg=pkg))
             image = pkg / program_pack.image_name(gid)
-            signed_with = dict(mode=mode, team=team, account=who)
+            signed_with = dict(mode=mode, name=who, team=team)
         cat = json.loads((pkg / program_pack.CATALOGUE).read_text(encoding="utf-8")) if signed_with else program_pack.catalogue(gid, meta, image, None)
         c.begin("打包 .s2arm", 2, 3)
         files = [("program/" + p.relative_to(pkg).as_posix(), p) for p in sorted(pkg.rglob("*"))
@@ -1289,7 +1290,8 @@ def export_s2arm(c, gid):
     write_s2arm_readme(folder, lang)
     game_img = Path(pack) / "game.img"
     return dict(gameId=gid, s2armPath=str(out), s2armBytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
-                resourcePath=str(game_img) if game_img.is_file() else "", exported=True, signedWith=signed_with)
+                resourcePath=str(game_img) if game_img.is_file() else "", exported=True,
+                signedWith=signed_with or dict(mode="none", name="", team=None))   # 完成页：「已用 Apple ID {name} 签好」/「未签名，导入后由手机签」
 
 
 def _img_name(name, gid, used):

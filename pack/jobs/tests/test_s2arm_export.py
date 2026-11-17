@@ -81,7 +81,7 @@ class S2armExport(unittest.TestCase):
 
     def signed_export(self, choice="appleId", once=None):
         # 玩家选了用 Apple ID 签（或这次换成…）：签名器替身在 dylib 尾部加一段（真签名同样只改头尾），期望按加的字节手算
-        self.c.r.update(gameId=self.A, mode="export", **({"signMode": once} if once else {}))
+        self.c.r.update(gameId=self.A, mode="export", **({"sign": once} if once else {}))
         if choice == "external":
             (Path(self.c.private) / install.SIGN_CHOICE).write_text('{"mode": "external"}')
         def signer(dylib, team, bundle):
@@ -102,18 +102,20 @@ class S2armExport(unittest.TestCase):
                          (dict(mode="appleId", team="TEAMX"), hashlib.sha256(signed).hexdigest(), hashlib.sha256(DYLIB).hexdigest()))
         self.assertEqual(json.loads(data["program/catalogue.json"])["team"], "TEAMX", "手机看 team 非空就不再签")
         self.assertEqual(names.count("program/catalogue.json"), 1, "签好的包自带清单，不重复打进去")
-        self.assertEqual(r["signedWith"], dict(mode="appleId", team="TEAMX", account="测试账号"))
+        self.assertEqual(r["signedWith"], dict(mode="appleId", name="测试账号", team="TEAMX"))
 
     def test_external_choice_and_one_off_switch(self):
         # 设置里选了「自己用别的工具签」：登录着也不签；完成页「这次换成用 Apple ID」只管这一次
         self.fixture()
         r = self.signed_export(choice="external")
         _, data, _ = self.members(r["s2armPath"])
-        self.assertEqual((json.loads(data["s2arm.json"])["signer"], r["signedWith"]), (None, None))
+        self.assertEqual((json.loads(data["s2arm.json"])["signer"], r["signedWith"]), (None, dict(mode="none", name="", team=None)))
         self.assertEqual(data[f"program/{program_pack.image_name(self.A)}"], DYLIB)
         r = self.signed_export(choice="external", once="appleId")
         self.assertEqual(r["signedWith"]["mode"], "appleId")
         self.assertEqual(install.chosen_sign_mode(self.c), "external", "这次换成不改设置")
+        r = self.signed_export(choice="appleId", once="none")
+        self.assertEqual(r["signedWith"]["mode"], "none", "选了 Apple ID 这次也能不签")
 
     def test_sign_mode_set(self):
         from core import Failure
