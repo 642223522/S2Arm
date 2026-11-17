@@ -194,8 +194,10 @@ import LauncherPadBridge
     }
 
     /// 取像素前等画面真的到位：每 30 毫秒重排、重画、取一次，满足条件就返回，最多等 timeout 秒（到点返回最后一次，交给断言报红）。
-    ///   原先固定等 80 / 400 毫秒再取，门禁主机负载高时换图动画、图片解码没走完，偶发报红（11-17 bab00cb5c 上那次）
-    private func waitPixel(_ host: NSView, x: CGFloat, y: CGFloat, timeout: TimeInterval = 5, until ok: (NSColor) -> Bool) async throws -> NSColor {
+    ///   原先固定等 80 / 400 毫秒再取，门禁主机负载高时换图动画、图片解码没走完，偶发报红（11-17 bab00cb5c 上那次）。
+    ///   上限 20 秒：背景图在后台队列读盘解码（CoverCache），本机负载 82 时等满 5 秒仍没换上（11-17 05:34 那次读数红 0.19 / 蓝 0.05）；
+    ///   满足条件就返回，平时不多等，判据不变
+    private func waitPixel(_ host: NSView, x: CGFloat, y: CGFloat, timeout: TimeInterval = 20, until ok: (NSColor) -> Bool) async throws -> NSColor {
         let deadline = Date().addingTimeInterval(timeout)
         var color = try pixel(host, x: x, y: y)
         while !ok(color), Date() < deadline {
