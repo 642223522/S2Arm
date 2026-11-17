@@ -105,4 +105,37 @@ extension S2ArmLauncherModel {
         consoleBatch = []
         refreshPhoneOverview()
     }
+
+    // ---- 顶栏动态窗口（《0.6.0 极简流程》iPhone 总控台「五」）：正在做和 App 相关的作业时显示进度，做完闪 ✓，失败留橙色「!」 ----
+
+    /// 正在跑的手机作业：进度（拿不到为 nil）+ 一行小字；没有 = 普通图标
+    var dynamicJob: (fraction: Double?, label: String)? {
+        guard phoneOverview != nil, phoneBusy, let s = phoneSession else { return nil }
+        if !consoleBatch.isEmpty {   // 更新所选算一件：总进度 = 已推完的款 + 正在推那款的进度
+            let total = consoleBatch.count, done = consoleBatchDone
+            let text = BackendText.launcherText("dynamic.batch", language: dynamicLanguage).replacingOccurrences(of: "{0}", with: "\(min(done + 1, total))").replacingOccurrences(of: "{1}", with: "\(total)")
+            return ((Double(done) + (s.progress.fraction ?? 0)) / Double(total), text)
+        }
+        return (s.progress.fraction, s.name)
+    }
+
+    /// 界面语言（setUILanguage 写进作业环境的那个，共享文案同一套语言码）
+    var dynamicLanguage: String { provider.client.environment.uiLanguage.flatMap { $0.isEmpty ? nil : $0 } ?? "zh-Hans" }
+
+    func dynamicFinished(_ state: JobOutcome.State) {
+        guard phoneOverview != nil else { return }
+        if state == .completed {
+            if phoneQueue.isEmpty {   // 一轮里还有排着的就不闪，等最后一单
+                dynamicDone = true
+                Task { try? await Task.sleep(for: .seconds(2)); dynamicDone = false }
+            }
+        } else { dynamicAlert = true }
+    }
+
+    /// 点动态窗口：直接到总控台（选中首位卡），看过就收起橙色「!」
+    func openConsoleFromTopBar() {
+        dynamicAlert = false
+        goToLibrary()
+        selectedID = Self.consoleID
+    }
 }

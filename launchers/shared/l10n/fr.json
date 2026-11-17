@@ -482,6 +482,7 @@
   "console.stop": "Arrêter",
   "console.help.guide": "Revoir le guide de démarrage",
   "console.help.report": "Signaler un problème",
+  "dynamic.batch": "Envoi {0}/{1}",
   "update.popup.download": "Télécharger la mise à jour",
   "update.popup.retryDownload": "Réessayer le téléchargement",
   "update.gate.playing": "Un jeu est toujours en cours. Mettre à jour après cette session",

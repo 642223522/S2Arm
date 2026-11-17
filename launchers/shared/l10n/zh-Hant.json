@@ -491,6 +491,7 @@
   "console.stop": "停下",
   "console.help.guide": "重看第一次的引導",
   "console.help.report": "故障報修",
+  "dynamic.batch": "推送 {0}/{1}",
   "update.popup.download": "下載更新",
   "update.popup.retryDownload": "重新下載",
   "update.gate.playing": "遊戲還在執行，這局結束後再更新",

@@ -219,6 +219,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var consoleSelection: Set<String> = []   // ② 游戏同步里勾上的款（游戏号大写）
     @Published var consoleBatch: [String] = []           // 「更新所选」这一轮要推的款（按顺序）；空 = 没在更新
     var consoleSeeded: Set<String> = []                  // 上次自动勾过的建议更新款（玩家取消的不重勾）
+    @Published var dynamicDone = false    // 顶栏动态窗口：手机作业刚做完，闪一下 ✓（2 秒后回普通图标，S2ArmLauncherModel+PhoneConsole）
+    @Published var dynamicAlert = false   // 手机作业失败 / 停下：橙色「!」一直留着，直到玩家点开看过
     @Published var phoneUpdates: [PhoneUpdate] = []
     @Published var phoneDevices = 0   // catalog phoneDevices：这台电脑往几台手机装过游戏（更新弹窗按钮写「更新启动器和 iPhone App」）
     @Published var phoneBanner: PhoneBanner?   // 新版启动器首次启动后的「iPhone 版 S2Arm」横幅（S2ArmLauncherModel+PhoneBanner.swift）
@@ -1688,7 +1690,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         session.progress.finish()
         session.ended = Date()
         setJob(slot, session)
-        if session.isPhoneJob { lastPhoneSession = session }
+        if session.isPhoneJob { lastPhoneSession = session; dynamicFinished(state) }
         if slot == .main { running = nil; work = nil } else { phoneWork = nil }
         defer { pumpPhone() }   // 手机槽空了 / 主槽这单不再占着那款：起排着的手机作业
         if session.kind == .play, controllerGameStarted {

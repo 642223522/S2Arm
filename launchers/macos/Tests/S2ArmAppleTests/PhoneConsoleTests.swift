@@ -90,6 +90,22 @@ import S2ArmAppleAdapter
         XCTAssertEqual(m.consoleSelection, ["0100B"], "新出现的建议更新款补勾")
     }
 
+    // 顶栏动态窗口：做完闪 ✓（2 秒后收起，一轮里还有排着的不闪），失败 / 停下留橙色「!」直到点开；开关关着都不出。期望手写
+    func testDynamicWindowDoneAndAlert() async throws {
+        let m = try makeModel()
+        m.dynamicFinished(.completed)
+        XCTAssertFalse(m.dynamicDone, "开关关着不出")
+        m.phoneOverview = PhoneOverview(phones: [phone()])
+        m.dynamicFinished(.completed)
+        XCTAssertTrue(m.dynamicDone, "做完闪一下")
+        for _ in 0..<300 where m.dynamicDone { try? await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertFalse(m.dynamicDone, "2 秒后回普通图标")
+        m.dynamicFinished(.failed)
+        XCTAssertTrue(m.dynamicAlert, "失败留橙色「!」")
+        m.openConsoleFromTopBar()
+        XCTAssertFalse(m.dynamicAlert, "点开看过就收起"); XCTAssertTrue(m.consoleSelected, "点它直接到总控台")
+    }
+
     func testUpdateSelectedPushesInOrderToThisPhoneAndStop() async throws {
         let runner = ConsoleRunner(holdFirst: true)
         let m = try makeModel(runner)

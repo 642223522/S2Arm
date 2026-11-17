@@ -1240,6 +1240,7 @@
       {"id": "console.stop", "zh-Hans": "停下", "en": "Stop"},
       {"id": "console.help.guide", "zh-Hans": "重看第一次的引导", "en": "Show the first-time guide again"},
       {"id": "console.help.report", "zh-Hans": "故障报修", "en": "Report a problem"},
+      {"id": "dynamic.batch", "zh-Hans": "推送 {0}/{1}", "en": "Sending {0}/{1}"},
       {"id": "update.popup.download", "zh-Hans": "下载更新", "en": "Download update"},
       {"id": "update.popup.retryDownload", "zh-Hans": "重新下载", "en": "Retry download"},
       {"id": "update.gate.playing", "zh-Hans": "游戏还在运行，这局结束后再更新", "en": "Update after the current game session finishes"},

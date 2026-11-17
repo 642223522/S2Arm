@@ -203,4 +203,43 @@ public sealed partial class EnvironmentWindow
         Avalonia.Automation.AutomationProperties.SetAutomationId(page, "console.panel");
         return Card(page, 24);
     }
+
+    // ---- 顶栏动态窗口（同 Mac S2ArmLauncherModel+PhoneConsole「顶栏动态窗口」）：有和 App 相关的作业时「游戏库」那颗显示进度，做完闪 ✓，失败 / 停下留「!」直到点开 ----
+    private bool dynamicDone, dynamicAlert;
+
+    private void DynamicFinished(string state)
+    {
+        if (phoneOverview is null) return;
+        if (state is "succeeded" or "needsPlayer")
+        {
+            if (phoneQueue.Count > 0) return;   // 一轮里还有排着的不闪，等最后一单
+            dynamicDone = true;
+            _ = Task.Delay(2000).ContinueWith(_ => Avalonia.Threading.Dispatcher.UIThread.Post(() => { dynamicDone = false; Render(); }));
+        }
+        else if (state is "failed" or "interrupted" or "cancelled" or "invalid") dynamicAlert = true;
+    }
+
+    /// <summary>顶栏「游戏库」那颗此刻显示什么；null = 照旧</summary>
+    private string? DynamicLibraryText()
+    {
+        if (phoneOverview is null) return null;
+        if (installBusy || phoneUpdating)
+        {
+            var pct = installDone is { } d && installTotal is { } t && t > 0 ? " " + (100 * d / t) + "%" : "";
+            if (consoleBatch.Count > 0)
+                return "⟳ " + Tf("dynamic.batch", Math.Min(ConsoleBatchDone + 1, consoleBatch.Count), consoleBatch.Count) + pct;
+            return "⟳ " + (installGameName is { Length: > 0 } n && installBusy ? n : T("console.button.update")) + pct;
+        }
+        if (dynamicAlert) return "! " + T("nav.library");
+        if (dynamicDone) return "✓ " + T("nav.library");
+        return null;
+    }
+
+    /// <summary>点动态窗口：直接到总控台（选中首位「S2Arm」），看过就收起「!」</summary>
+    private void OpenConsoleFromTopBar()
+    {
+        dynamicAlert = false;
+        selectedGame = ConsoleId;
+        Navigate("library");
+    }
 }
