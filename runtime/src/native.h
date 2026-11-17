@@ -313,8 +313,10 @@ static inline int s2a_guest_where(uint64_t a, char *b, size_t n) {
     if (w >= (int)n) s2a_utf8_trim(b, n);
     return 1;
 }
-// brk 兜底点（改写器双岛模式下两岛都够不着的必改点）：种类与序号见 traps.c
-enum { S2A_TRAP_TPIDR_R, S2A_TRAP_TPIDRRO_R, S2A_TRAP_TPIDR_W, S2A_TRAP_CTR };
+// brk 兜底点（改写器双岛模式下两岛都够不着的必改点；36 位老 SDK 写死的可随机区 / 栈区起止，#1503）：种类与序号见 traps.c
+enum { S2A_TRAP_TPIDR_R, S2A_TRAP_TPIDRRO_R, S2A_TRAP_TPIDR_W, S2A_TRAP_CTR, S2A_TRAP_ASLR_LO, S2A_TRAP_ASLR_HI, S2A_TRAP_STACK_LO, S2A_TRAP_STACK_HI, S2A_TRAP_NKIND };
+// 本局布局的可随机区（stack = 0）/ 栈区（1）起止 [*lo, *hi)，给 36 位老 SDK 兜底点用（svc_mem.c）；布局没定回 -1
+int s2a_mem_as_region(int stack, uint64_t *lo, uint64_t *hi);
 struct s2a_trap { uint64_t off, hits; uint32_t orig; uint8_t kind, reg; };
 #define S2A_TRAP_IMM0 0x8000u
 #define S2A_TRAP_MAX 0x2000u   // 按编号的 brk #0x8000–0x9FFF；0xA000 是远跳

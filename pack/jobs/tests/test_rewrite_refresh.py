@@ -603,10 +603,11 @@ class FpslKey(unittest.TestCase):
             return rr.sgrade_key(c, "0100AD80208A8000", "rid", "68E3A0EA176A79F4")
 
     def test_key(self):
+        # 替身与真函数同形：patches.items_for 返回 [(条目字典, 内容字节)]（11-17 原先替身给字典，真函数给元组，单测绿、真游戏上 AttributeError）
         base = "rid:pc:vk:-"
-        self.assertEqual(self.key([{"kind": "fpsl", "name": "68E3A0EA176A79F4.yaml"}]), base + ":fpslaaaaaaaaaaaa")
-        self.assertNotEqual(self.key([{"kind": "fpsl"}], fp="bbbbbbbbbbbb"), self.key([{"kind": "fpsl"}]), "转换代码变了记号跟着变")
-        self.assertEqual(self.key([{"kind": "pchtxt", "name": "x.pchtxt"}]), base, "不带 FPSLocker 配置：记号不变")
+        self.assertEqual(self.key([({"kind": "fpsl", "name": "68E3A0EA176A79F4.yaml"}, b"MASTER_WRITE:")]), base + ":fpslaaaaaaaaaaaa")
+        self.assertNotEqual(self.key([({"kind": "fpsl"}, b"")], fp="bbbbbbbbbbbb"), self.key([({"kind": "fpsl"}, b"")]), "转换代码变了记号跟着变")
+        self.assertEqual(self.key([({"kind": "pchtxt", "name": "x.pchtxt"}, b"")]), base, "不带 FPSLocker 配置：记号不变")
         def gone(*a):
             raise OSError("补丁库取不到")
         self.assertEqual(self.key(gone), base, "补丁库取不到：当没带")
@@ -615,3 +616,35 @@ class FpslKey(unittest.TestCase):
         c = types.SimpleNamespace(engine=Path(__file__).resolve().parents[3])
         a = rr.fpsl_code_id(c)
         self.assertRegex(a, r"^[0-9a-f]{12}$")
+
+
+class FpslKeyRealLibrary(unittest.TestCase):
+    """补丁记号拿真补丁库条目算（11-17 维护者：替身与真函数不同形，单测绿、真游戏上 AttributeError）：造一份与随启动器装的快照同格式的补丁库
+    （tools/patch_pack.py snapshot：index.json + 各款 g/<程序号>.json.gz），不替换 patches.items_for，走真函数读条目。期望手写——
+    带 FPSLocker 配置（kind fpsl、*.yaml）的款记号以 :fpsl<转换代码指纹> 结尾；只有别的补丁的款没有这段；补丁库里没有的款没有这段；都不抛异常"""
+    def test_key_from_real_items_for(self):
+        import base64, gzip, hashlib, io, json, tarfile, tempfile
+        import patches
+        def item(name, kind, data):
+            return dict(name=name, kind=kind, cat="fps", data=base64.b64encode(data).decode(), sha256=hashlib.sha256(data).hexdigest())
+        bundles = {"g/0100AAAA00000000": [item("68E3A0EA176A79F4.yaml", "fpsl", b"MASTER_WRITE:\n")],
+                   "g/0100BBBB00000000": [item("60fps.pchtxt", "pchtxt", b"@nsobid-0000\n")]}
+        with tempfile.TemporaryDirectory() as t:
+            snap = Path(t) / "patches-v2.tar"; man, blobs = {}, {}
+            for k, items in bundles.items():
+                blob = gzip.compress(json.dumps(dict(schema=2, key=k, items=items)).encode()); blobs[k] = blob
+                man[k] = dict(sha256=hashlib.sha256(blob).hexdigest(), size=len(blob), items=len(items))
+            with tarfile.open(snap, "w") as tf:
+                for n, data in [("index.json", json.dumps(dict(schema=2, generated=1, upstreams={}, bundles=man)).encode())] + [(k + ".json.gz", b) for k, b in blobs.items()]:
+                    ti = tarfile.TarInfo(n); ti.size = len(data); tf.addfile(ti, io.BytesIO(data))
+            c = types.SimpleNamespace(engine=Path(__file__).resolve().parents[3], private=Path(t) / "private", r={})
+            env = dict(os.environ, S2A_PATCH_SNAPSHOT=str(snap))
+            with patch.dict(os.environ, env), patch.object(patches, "cloud_manifest", return_value=None), patch.dict(patches._MANIFEST, clear=True), \
+                 patch.object(rr, "cheats_digest", return_value="-"), patch("mods.code_digest", return_value="-"):
+                self.assertEqual(len(patches.items_for(c, "0100AAAA00000000", "")), 1, "夹具自证：真 items_for 读得到快照里的条目")
+                fp = rr.fpsl_code_id(c)
+                a = rr.sgrade_key(c, "0100AAAA00000000", "rid", "")
+                b = rr.sgrade_key(c, "0100BBBB00000000", "rid", "")
+                n = rr.sgrade_key(c, "0100CCCC00000000", "rid", "")
+        self.assertTrue(a.endswith(":fpsl" + fp), a)
+        self.assertNotIn(":fpsl", b); self.assertNotIn(":fpsl", n)

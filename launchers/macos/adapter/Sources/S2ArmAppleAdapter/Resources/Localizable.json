@@ -10186,5 +10186,29 @@
  {
   "source": "这台 Mac 空间不够，存档备份放不下（只剩 {0} MB）：腾出 {1} GB 再试，或者确认后继续",
   "en": "This Mac is out of space and the save backup doesn't fit (only {0} MB left): free up {1} GB and try again, or confirm to continue"
+ },
+ {
+  "source": "按顺序把所选游戏推到 iPhone",
+  "en": "Pushing the selected games to your iPhone one by one"
+ },
+ {
+  "source": "准备这款的程序（按需更新）",
+  "en": "Preparing this game’s program (updating it if needed)"
+ },
+ {
+  "source": "打包 .s2arm",
+  "en": "Packing the .s2arm file"
+ },
+ {
+  "source": "写进「S2Arm 游戏包」文件夹",
+  "en": "Writing it to the “S2Arm Game Packs” folder"
+ },
+ {
+  "source": "这款需要更多内存：已经记下要多少，再点一次开始就能进。",
+  "en": "This game needs more memory: how much has been noted, so start it again and it will run."
+ },
+ {
+  "source": "再点一次「开始」就能进：这一局已记下这款要的内存，下次起局按它给。",
+  "en": "Click Start again to play: this session noted how much memory the game needs, and the next start uses it."
  }
 ]

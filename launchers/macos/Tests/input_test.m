@@ -518,6 +518,8 @@ static void test_capture_key_order(void) {
 static FakeController *fake_controller(FakePad *pad) { FakeController *c = [FakeController new]; c.extendedGamepad = pad; pad.controller = c; return c; }
 @interface FakeProSensor : NSObject
 @property BOOL sensorsRequireManualActivation, hasRotationRate, hasGravityAndUserAcceleration, sensorsActive;
+@property GCRotationRate rotationRate;
+@property GCAcceleration gravity, userAcceleration, acceleration;
 @end
 @implementation FakeProSensor
 @end
@@ -527,13 +529,13 @@ static void test_pro_sensor_control(void) {
     atomic_store(&g_motion_wanted, 1);
     sample_motion((GCExtendedGamepad *)pad);
     expect(m.sensorsActive, "Pro public sensor control is requested even without separated gravity / usable calibrated samples");
-    expect(!g_motion_known, "uncalibrated Pro data still uses the existing raw sample path, not fabricated GC values");
+    expect(g_motion_known == 1, "rotation without separated gravity gives an acceleration-only sample (DualSense), ranked below the Pro raw HID path in s2a_pad_read_motion");
     atomic_store(&g_motion_wanted, 0); sample_motion(nil);
     expect(!m.sensorsActive, "motion disable releases public Pro sensor request");
     sample_motion(nil);
     GCController *old = pad_owner[1]; pad_owner[1] = (GCController *)c;
     atomic_store(&g_motion_wanted, 1); sample_slot_motion(NULL);
-    expect(m.sensorsActive && !g_slot_motion_known[1], "P2 sensor control also stays independent of calibrated sample availability");
+    expect(m.sensorsActive && g_slot_motion_known[1] == 1, "P2 sensor control stays independent of calibrated samples; an acceleration-only sample still reaches P2 (DualSense)");
     atomic_store(&g_motion_wanted, 0); sample_slot_motion(NULL);
     expect(!m.sensorsActive, "P2 motion disable releases its public request");
     pad_owner[1] = old;

@@ -37,6 +37,12 @@ static void vamm_small(s2a_layout *o, uint64_t at, uint64_t stack, uint64_t heap
     o->heap_base = at + stack;         o->heap_size = heap;
     o->aslr_base = at;                 o->aslr_size = stack + heap + VAMM_SHARED;
 }
+// 这款上一局真要过的普通堆（svc_mem.c SetHeapSize 超出堆区时记进 wire/<程序号>/heap_need，起局布局前读回设到这里；0 = 没记过）：
+//   别名优先的款堆区按静态识别压小（ALIAS_FIRST_HEAP），堆大小是运行时算出来的款（D-NGH9：开局要 3.1 GB）静态认不出、每局都在 nninitStartup 里 abort。
+//   记过就至少给到这么多（乙再加远端影子余量），下一局起得来
+static uint64_t g_heap_floor;
+void s2a_layout_heap_floor_set(uint64_t v) { g_heap_floor = v; }
+static uint64_t alias_first_heap(void) { uint64_t f = A2M(g_heap_floor) + (ALIAS_FIRST_HEAP - 64 * MB); return f > ALIAS_FIRST_HEAP ? f : ALIAS_FIRST_HEAP; }   // 堆 + 影子余量 128 MiB
 static uint64_t g_app_pool = 0xCD500000ull;
 uint64_t s2a_app_pool(void) { return g_app_pool; }
 void s2a_app_pool_set(uint64_t v) { g_app_pool = v; }
@@ -105,9 +111,11 @@ int s2a_layout_compute(uint32_t as_type, uint64_t sys_resource_size, uint64_t mo
         // 甲：别名区在前、整段有宿主地址；其后栈 / 堆 / 余量 / 模块。堆只对别名优先的款让位（从应用池上限往下让到窗口放得下，至少 32 MiB）——
         //   别的款不知道要多大堆（王国之泪首次就要 2.05 GB），放不下「别名 + 满额堆」就走乙：堆给满放前段、别名区伸出窗口（承诺，远端翻译兜底）
         uint64_t stack = alias_gb ? ALIAS_FIRST_STACK : VAMM_STACK, fixed = VAMM_ALIAS + 2 * MB + stack + VAMM_SHARED + mod;
-        if (alias_gb ? S >= fixed + MIN_HEAP : S >= fixed + S2A_HEAP_DEFAULT) {
+        uint64_t min_heap = A2M(g_heap_floor) > MIN_HEAP ? A2M(g_heap_floor) : MIN_HEAP;   // 记过真要的堆（g_heap_floor）：甲放不下它就走乙（堆给够、别名区伸出窗口走远端）——慢一点也要起得来
+        if (alias_gb ? S >= fixed + min_heap : S >= fixed + S2A_HEAP_DEFAULT) {
             uint64_t heap = S >= fixed + HOST_KEEP + MIN_HEAP ? (S - fixed - HOST_KEEP) & ~(2 * MB - 1) : MIN_HEAP;
             if (heap > S2A_HEAP_DEFAULT) heap = S2A_HEAP_DEFAULT;
+            if (alias_gb && A2M(g_heap_floor) > heap && S >= fixed + A2M(g_heap_floor)) heap = A2M(g_heap_floor);   // 上一局真要过这么多（见 g_heap_floor），窗口放得下就给
             vamm_alias(o, W);
             vamm_small(o, W + VAMM_ALIAS + 2 * MB, stack, heap);
             *mod_base = o->aslr_base + o->aslr_size;
@@ -119,7 +127,7 @@ int s2a_layout_compute(uint32_t as_type, uint64_t sys_resource_size, uint64_t mo
         //   别名优先（出包静态认出「开局在别名区要一整块巨大地址区」= 内存走 VAMM 自管，tools/addr_need.py static_alias_gb）：堆区 64 MiB +
         //   影子余量 128 MiB，别名区紧接前段、不按 GiB 对齐，窗口里放不下要的时承诺放到 64 GiB（元数据 ≤1 GiB + 对齐浪费 ≤1 GiB + 62 GiB 照样放下，SDK 对齐没被削也成立）——
         //   巫师3 碰到 49.1 GB，iOS 26 的 [12, 63) GB 空洞（下方 1 GiB 留宿主）放得下的前提
-        vamm_small(o, W + mod, stack, alias_gb ? ALIAS_FIRST_HEAP : S2A_HEAP_DEFAULT + S2A_FAR_SLACK);
+        vamm_small(o, W + mod, stack, alias_gb ? alias_first_heap() : S2A_HEAP_DEFAULT + S2A_FAR_SLACK);
         uint64_t t = alias_gb ? A2M(o->aslr_base + o->aslr_size) : AGB(o->aslr_base + o->aslr_size);
         if (t + 2 * MB > W + S) { memset(o, 0, sizeof *o); return -2; }   // 前段 + TLS/IO 都放不下
         vamm_alias(o, t);
