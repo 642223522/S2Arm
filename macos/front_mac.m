@@ -1907,6 +1907,43 @@ static __weak S2AMacDelegate *g_delegate;
     [self shutdown];
 }
 - (BOOL)windowShouldClose:(NSWindow *)sender { (void)sender; [self shutdown]; return NO; }
+// ---------- 0.6.0 快照：菜单栏「存下这一刻」⌘S / 「回到上次存下的这一刻」（起局带了存档开关才有） ----------
+static __weak S2AMacDelegate *g_snap_mac;
+- (void)snapNote:(NSString *)text {   // 轻提示：窗口副标题 2 秒，不弹框、不挡操作
+    NSWindow *w = self.window; if (!w) return; w.subtitle = text;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ if ([w.subtitle isEqualToString:text]) w.subtitle = @""; });
+}
+static void snap_mac_done(int ok, const char *dir) { (void)dir; dispatch_async(dispatch_get_main_queue(), ^{ [g_snap_mac snapNote:ok ? (s2a_ui_zh() ? @"已存下这一刻" : @"Moment saved") : (s2a_ui_zh() ? @"这次没存成，稍后再试一次" : @"Couldn’t save this time")]; }); }
+- (void)snapSave:(id)sender {
+    (void)sender; char d[2048]; int s2a_snap_dir_for(const char *, char *, size_t), s2a_snap_request_save(const char *); void s2a_snap_on_done(void (*)(int, const char *));
+    if (s2a_snap_dir_for(NULL, d, sizeof d)) return;
+    g_snap_mac = self; s2a_snap_on_done(snap_mac_done);
+    int rc = s2a_snap_request_save(d);
+    [self snapNote:rc == 0 ? (s2a_ui_zh() ? @"正在存下这一刻…" : @"Saving this moment…") : rc == -2 ? (s2a_ui_zh() ? @"还在存上一次，稍等" : @"Still saving the last one") : (s2a_ui_zh() ? @"这次没存成，稍后再试一次" : @"Couldn’t save this time")];
+}
+static void snap_mac_restart(int result, const char *detail, void *ctx) {
+    (void)ctx; if (!result) return; NSString *why = detail ? @(detail) : @"";
+    dispatch_async(dispatch_get_main_queue(), ^{ [g_snap_mac snapNote:[(s2a_ui_zh() ? @"这次回不去：" : @"Couldn’t go back: ") stringByAppendingString:why]]; });
+}
+- (void)snapRestoreNow:(NSString *)dir rollback:(BOOL)rollback {
+    setenv("S2A_SNAP_RESTORE", dir.fileSystemRepresentation, 1);
+    if (rollback) setenv("S2A_SNAP_SAVE_ROLLBACK", "1", 1); else unsetenv("S2A_SNAP_SAVE_ROLLBACK");
+    g_snap_mac = self; int s2a_host_restart(void (*)(int, const char *, void *), void *);   // 进程内重启（runtime/include/s2a_session.h）
+    int rc = s2a_host_restart(snap_mac_restart, NULL);
+    if (rc) { unsetenv("S2A_SNAP_RESTORE"); unsetenv("S2A_SNAP_SAVE_ROLLBACK"); [self snapNote:s2a_ui_zh() ? @"这次回不去，稍后再试" : @"Couldn’t go back right now"]; }
+}
+- (void)snapRestore:(id)sender {
+    (void)sender; char d[2048]; int s2a_snap_dir_for(const char *, char *, size_t), s2a_snap_exists(const char *), s2a_snap_save_changed(const char *);
+    if (s2a_snap_dir_for(NULL, d, sizeof d) || !s2a_snap_exists(d)) { [self snapNote:s2a_ui_zh() ? @"还没有存下的那一刻" : @"No saved moment yet"]; return; }
+    NSString *dir = @(d);
+    if (s2a_snap_save_changed(d) != 1) { [self snapRestoreNow:dir rollback:NO]; return; }
+    // 存快照之后游戏又存过档：回去会把游戏存档退回那一刻——先问（当前存档会先整棵备份）
+    NSAlert *a = [NSAlert new]; a.messageText = s2a_ui_zh() ? @"回到存下的那一刻？" : @"Go back to the saved moment?";
+    a.informativeText = s2a_ui_zh() ? @"存下那一刻之后游戏又存过档。回去会把游戏存档也退回那一刻；现在的存档会先备份。" : @"The game saved after that moment. Going back also takes the game’s save back to that moment; your current save is backed up first.";
+    [a addButtonWithTitle:s2a_ui_zh() ? @"回去" : @"Go back"]; [a addButtonWithTitle:s2a_ui_zh() ? @"取消" : @"Cancel"];
+    __weak S2AMacDelegate *ws = self;
+    [a beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse r) { if (r == NSAlertFirstButtonReturn) [ws snapRestoreNow:dir rollback:YES]; }];
+}
 - (void)toggleFullScreenItem:(id)sender { (void)sender; fullscreen_toggle(self.window); }
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
     if (item.action == @selector(toggleFullScreenItem:))
@@ -2011,6 +2048,13 @@ void s2a_front_run(void (*guest_main)(void)) {
             NSMenuItem *sw = [application addItemWithTitle:s2a_ui_zh() ? @S2A_DPROMPT_SWITCH_GAME_TITLE : @S2A_DPROMPT_SWITCH_GAME_TITLE_EN action:@selector(switchGame:) keyEquivalent:@""];
             sw.target = delegate;
         }
+        { int s2a_snap_logging(void);   // 0.6.0 快照：起局带了存档开关才有这两项
+          if (s2a_snap_logging()) {
+              [application addItem:NSMenuItem.separatorItem];
+              [application addItemWithTitle:s2a_ui_zh() ? @"存下这一刻" : @"Save This Moment" action:@selector(snapSave:) keyEquivalent:@"s"].target = delegate;
+              [application addItemWithTitle:s2a_ui_zh() ? @"回到上次存下的这一刻" : @"Go Back to the Saved Moment" action:@selector(snapRestore:) keyEquivalent:@""].target = delegate;
+              [application addItem:NSMenuItem.separatorItem];
+          } }
         [application addItemWithTitle:@"Quit S2Arm Game" action:@selector(terminate:) keyEquivalent:@"q"];
         root.submenu = application;
         NSMenuItem *inputRoot = [NSMenuItem new]; NSMenu *inputMenu = [[NSMenu alloc] initWithTitle:@"输入"];

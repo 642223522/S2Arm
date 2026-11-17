@@ -578,3 +578,15 @@
 "sgrade.cpatch.detail" = "社区补丁明细";
 "sgrade.state.off_auto.widen_fit" = "已自动关：%1$@ 满屏没铺满或画面被拉伸";
 "sgrade.notice.fullscreen_off" = "S2Arm 通用满屏这局没成功，已自动关掉，游戏照常玩。想再试可以在齿轮菜单里重新打开。";
+
+/* 0.6.0 快照：游戏中菜单 */
+"vpad.snap.save" = "存下这一刻";
+"vpad.snap.restore" = "回到上次存下的这一刻";
+"vpad.snap.saving" = "正在存下这一刻…";
+"vpad.snap.saved" = "已存下这一刻";
+"vpad.snap.notSaved" = "这次没存成，稍后再试一次";
+"vpad.snap.busy" = "还在存上一次，稍等";
+"vpad.snap.restoreFailed" = "这次回不去：%@";
+"vpad.snap.saveChanged.title" = "回到存下的那一刻？";
+"vpad.snap.saveChanged.body" = "存下那一刻之后游戏又存过档。回去会把游戏存档也退回那一刻；现在的存档会先备份。";
+"vpad.snap.saveChanged.go" = "回去";
