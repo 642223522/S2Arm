@@ -10034,5 +10034,21 @@
  {
   "source": "手机上的 S2Arm 是别的版本，这一版的游戏程序放上去打不开。",
   "en": "S2Arm on the phone is a different version, so game programs prepared by this version would not open there."
+ },
+ {
+  "source": "按估算，iPhone 剩余空间可能不够：这次要传约 {0} GB，连同解开时临时多占的约要 {1} GB，手机报的空闲约 {2} GB，还差约 {3} GB。「设置 → 通用 → iPhone 储存空间」里的「可用」还包括系统随时能清掉的空间，实际多半放得下；点「仍然继续」照传，真写满了会停下并说明还差多少。",
+  "en": "By estimate, iPhone storage may be low: this transfer is about {0} GB, about {1} GB including the temporary space used while unpacking, and the iPhone reports about {2} GB free, about {3} GB short. The Available figure in Settings → General → iPhone Storage also counts space iOS can clear at any time, so it usually fits; tap Continue Anyway to send it, and it stops and says how much is missing only if storage really fills up."
+ },
+ {
+  "source": "按估算，iPhone 剩余空间可能不够：这次要传约 {0} GB，连同解开时临时多占的约要 {1} GB，手机可用约 {2} GB（含系统随时能清掉的空间），还差约 {3} GB。可以先在「设置 → 通用 → iPhone 储存空间」腾出一些，或者点「仍然继续」照传，真写满了会停下并说明还差多少。",
+  "en": "By estimate, iPhone storage may be low: this transfer is about {0} GB, about {1} GB including the temporary space used while unpacking, and the iPhone has about {2} GB available (including space iOS can clear at any time), about {3} GB short. You can free some up first in Settings → General → iPhone Storage, or tap Continue Anyway to send it; it stops and says how much is missing only if storage really fills up."
+ },
+ {
+  "source": "iPhone 空间写满了，传到一半停下：这次要传约 {0} GB。在「设置 → 通用 → iPhone 储存空间」腾出空间后再装一次（已传完的文件不用重传）。",
+  "en": "iPhone storage is full, so the transfer stopped partway: this transfer is about {0} GB. Free up space in Settings → General → iPhone Storage, then install again (files already sent are not sent again)."
+ },
+ {
+  "source": "手机空间写满了",
+  "en": "iPhone storage is full"
  }
 ]

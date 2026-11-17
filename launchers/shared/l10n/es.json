@@ -3890,6 +3890,10 @@
   "手机上还没装 S2Arm": "S2Arm no está instalado en el teléfono",
   "「推到 iPhone」只推游戏，不装 App；这台手机上还没有 S2Arm。": "«Enviar al iPhone» solo envía el juego y no instala la App; este teléfono aún no tiene S2Arm.",
   "手机上的 S2Arm 要先更新": "Primero hay que actualizar S2Arm en el teléfono",
-  "手机上的 S2Arm 是别的版本，这一版的游戏程序放上去打不开。": "El S2Arm del teléfono es otra versión, así que los programas de juego preparados con esta versión no se abrirían."
+  "手机上的 S2Arm 是别的版本，这一版的游戏程序放上去打不开。": "El S2Arm del teléfono es otra versión, así que los programas de juego preparados con esta versión no se abrirían.",
+  "按估算，iPhone 剩余空间可能不够：这次要传约 {0} GB，连同解开时临时多占的约要 {1} GB，手机报的空闲约 {2} GB，还差约 {3} GB。「设置 → 通用 → iPhone 储存空间」里的「可用」还包括系统随时能清掉的空间，实际多半放得下；点「仍然继续」照传，真写满了会停下并说明还差多少。": "Según una estimación, puede que falte almacenamiento en el iPhone: esta transferencia ocupa unos {0} GB, unos {1} GB contando el espacio temporal al descomprimir, y el iPhone indica unos {2} GB libres, faltan unos {3} GB. El valor Disponible de Ajustes → General → Almacenamiento del iPhone incluye también el espacio que iOS puede liberar en cualquier momento, así que normalmente cabe; toca Continuar de todos modos para enviarlo, y solo se detendrá e indicará cuánto falta si el almacenamiento se llena de verdad.",
+  "按估算，iPhone 剩余空间可能不够：这次要传约 {0} GB，连同解开时临时多占的约要 {1} GB，手机可用约 {2} GB（含系统随时能清掉的空间），还差约 {3} GB。可以先在「设置 → 通用 → iPhone 储存空间」腾出一些，或者点「仍然继续」照传，真写满了会停下并说明还差多少。": "Según una estimación, puede que falte almacenamiento en el iPhone: esta transferencia ocupa unos {0} GB, unos {1} GB contando el espacio temporal al descomprimir, y el iPhone tiene unos {2} GB disponibles (incluido el espacio que iOS puede liberar en cualquier momento), faltan unos {3} GB. Puedes liberar espacio primero en Ajustes → General → Almacenamiento del iPhone, o tocar Continuar de todos modos para enviarlo; solo se detendrá e indicará cuánto falta si el almacenamiento se llena de verdad.",
+  "iPhone 空间写满了，传到一半停下：这次要传约 {0} GB。在「设置 → 通用 → iPhone 储存空间」腾出空间后再装一次（已传完的文件不用重传）。": "El almacenamiento del iPhone está lleno y la transferencia se detuvo a medias: esta transferencia ocupa unos {0} GB. Libera espacio en Ajustes → General → Almacenamiento del iPhone y vuelve a instalar (los archivos ya enviados no se vuelven a enviar).",
+  "手机空间写满了": "El almacenamiento del iPhone está lleno"
  }
 }
