@@ -9832,6 +9832,10 @@
   "en": "No mod found in \"{0}\": asset mods need a romfs/ folder (for example atmosphere/contents/{0}/romfs); code mods need pchtxt / IPS files in exefs/ (or atmosphere/exefs_patches/<name>/)."
  },
  {
+  "source": "「{0}」是整份替换游戏程序的 mod，S2Arm 不支持：S2Arm 出包时要改写游戏程序，只能把 exefs/ 里的 pchtxt / IPS 补丁编进去；资源替换类（romfs/）照常能用。",
+  "en": "\"{0}\" replaces the whole game program, which S2Arm does not support: S2Arm rewrites the game program when packing, so only pchtxt / IPS patches in exefs/ can be built in. Asset mods (romfs/) still work."
+ },
+ {
   "source": "「{0}」是空的，没收",
   "en": "\"{0}\" is empty, skipped"
  },

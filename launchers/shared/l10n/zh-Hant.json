@@ -3896,6 +3896,7 @@
   "把贴图预转成 Apple TV 能直接用的格式（BC → ASTC，只做一次）": "把貼圖預轉成 Apple TV 能直接用的格式（BC → ASTC，只做一次）",
   "这款没有 RomFS，Apple TV 包不用预转贴图": "這款沒有 RomFS，Apple TV 包不用預轉貼圖",
   "「{0}」里没找到 mod：资源替换要带 romfs/（如 atmosphere/contents/{0}/romfs），代码补丁要带 exefs/ 里的 pchtxt / IPS（或 atmosphere/exefs_patches/<名字>/）。": "「{0}」裡沒找到 mod：資源替換要帶 romfs/（如 atmosphere/contents/{0}/romfs），程式碼補丁要帶 exefs/ 裡的 pchtxt / IPS（或 atmosphere/exefs_patches/<名字>/）。",
+  "「{0}」是整份替换游戏程序的 mod，S2Arm 不支持：S2Arm 出包时要改写游戏程序，只能把 exefs/ 里的 pchtxt / IPS 补丁编进去；资源替换类（romfs/）照常能用。": "「{0}」是整份替換遊戲程式的 mod，S2Arm 不支援：S2Arm 打包時要改寫遊戲程式，只能把 exefs/ 裡的 pchtxt / IPS 補丁編進去；資源替換類（romfs/）照常能用。",
   "「{0}」是空的，没收": "「{0}」是空的，沒收",
   "「{0}」带 {0} 份代码补丁：重新打包这款（或 S 级优化升级）后生效": "「{0}」帶 {0} 份程式碼補丁：重新打包這款（或 S 級優化升級）後生效",
   "游戏卡住了，S2Arm 把这局安全停下了。": "遊戲卡住了，S2Arm 已把這局安全停下。",

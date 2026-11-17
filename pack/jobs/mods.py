@@ -88,6 +88,16 @@ def _parts(d):
     return _child(d, "romfs"), code
 
 
+PROGRAM_FILES = ("main", "main.npdm", "rtld", "sdk") + tuple("subsdk%d" % i for i in range(10))   # exefs 里的游戏程序件（不是补丁）
+
+
+def _whole_program(root):
+    """root 下（含 root 本身）有名为 exefs 的文件夹、里面有游戏程序件而没有 pchtxt / IPS：整份替换游戏程序的 mod"""
+    root = Path(root)
+    dirs = ([root] if root.name.lower() == "exefs" else []) + [p for p in root.rglob("*") if p.is_dir() and not p.is_symlink() and p.name.lower() == "exefs"]
+    return any(not _code_files(d) and any(f.is_file() and f.name.lower() in PROGRAM_FILES for f in d.iterdir()) for d in dirs)
+
+
 def _find(root, gid):
     """→ ([(mod 名, romfs 目录或 None, 代码补丁目录或 None)], [说明]）。mod 根 = 下面有 romfs/ 或带代码补丁的 exefs/ 的文件夹（大小写都认；
     玩家直接选 romfs / exefs 本身也认），或 Atmosphere 的 exefs_patches/<名>/（IPS 文件名是构建号、不带程序号：对不上这款的出包时自然不打）。
@@ -128,6 +138,8 @@ def import_paths(c, game, paths):
             found, why = _find(root, gid)
             notes += why
             if not found:
+                if _whole_program(root):   # exefs/ 里只有整份游戏程序（main / subsdk / main.npdm 等）、没有补丁：直说不支持（D-P4F5）
+                    raise Failure("「%s」是整份替换游戏程序的 mod，S2Arm 不支持：S2Arm 出包时要改写游戏程序，只能把 exefs/ 里的 pchtxt / IPS 补丁编进去；资源替换类（romfs/）照常能用。" % src.name, code="job_failed")
                 raise Failure("「%s」里没找到 mod：资源替换要带 romfs/（如 atmosphere/contents/%s/romfs），代码补丁要带 exefs/ 里的 pchtxt / IPS（或 atmosphere/exefs_patches/<名字>/）。" % (src.name, gid), code="job_failed")
             for label, rd, cd in found:
                 name = _safe_name(base if len(found) == 1 or not label else "%s - %s" % (base, label.replace("/", " - ")))

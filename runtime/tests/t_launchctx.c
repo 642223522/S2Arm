@@ -8,12 +8,14 @@
 #include "../src/native.h"
 #include "s2a_launch_ctx.h"
 #include "s2a_docs.h"
+#include "s2a_host_abi.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <mach-o/dyld.h>
 
 static int fails = 0;
@@ -26,6 +28,10 @@ static void write_file(const char *p, const char *body) {
 }
 
 // ---------- 多款容器：进程级用例（在拷进临时 App 包的副本里跑）----------
+// 宿主的 s2a_imgpack_open（imgpack.c，本单测不链）的桩：launchctx.c 选游戏时按名字 dlsym 它。记调用次数，恒回 3（= S2A_IMG_ESIGN，签名本机不认）——
+//   App 包里的款（没有程序包，0.6.0 前玩家手上全是这种）选游戏时不许调它（行为同改造前：进局后由装载器打开）；改造前的写法对所有款都预开，这一桩会把合规款判成「要重签」
+static int g_imgpack_calls;
+__attribute__((visibility("default"), used)) int s2a_imgpack_open(const char *path, void **out, char *why, size_t n) { (void)path; (void)out; if (why && n) why[0] = 0; g_imgpack_calls++; return 3; }
 static int g_ctor_ran, g_ctor_container, g_ctor_frozen;
 // 同 vawin.c constructor(101)：构造期第一次取上下文。只在 exec 出来的副本里取（父进程取了会把兼容冻结带进下面 fork 的子进程）
 __attribute__((constructor(101))) static void t_ctor(int argc, char **argv) {
@@ -46,8 +52,20 @@ static int child_container(const char *home) {
     CK(r && strstr(r, "镜像包"), "清单里有、镜像包缺 → 拒绝");
     CK(s2a_launch_ctx_select_kind() == S2A_SELECT_APP_INCOMPLETE, "镜像包缺 → 类别 APP_INCOMPLETE");
     CK(!s2a_launch_ctx_get() && !getenv("S2A_DOCS"), "选失败不冻结、不写环境");
+    CK(s2a_launch_ctx_game_needs_update("0100000000000005") == 1 && s2a_launch_ctx_game_needs_update("0100000000000001") == 0
+       && s2a_launch_ctx_game_needs_update("0100000000000BAD") == 0, "库界面预判：约定号对不上的那款 → 1；对得上 / 不在清单 → 0（不在清单交给点开时报）");
+    CK(!s2a_launch_ctx_get(), "预判不冻结");
+    r = s2a_launch_ctx_select("0100000000000005");
+    CK(r && strstr(r, "ios_host_abi_mismatch"), "清单里这款的 host_abi ≠ 本宿主 S2A_HOST_ABI → 拒绝，原因带诊断码 ios_host_abi_mismatch");
+    CK(s2a_launch_ctx_select_kind() == S2A_SELECT_NEEDS_UPDATE, "约定号对不上 → 类别 NEEDS_UPDATE（游戏库标「要在电脑上按新版更新」）");
+    CK(!s2a_launch_ctx_get() && !getenv("S2A_DOCS"), "约定号对不上：不冻结、不写环境（还能换一款选）");
+    r = s2a_launch_ctx_select("0100000000000007");   // 通用壳：程序包清单的 image_sha256 是全 0、程序库内容 "y"（父进程写）→ 不一致
+    CK(r && strstr(r, "ios_program_resign") && strstr(r, "不是同一次出的"), "程序包：程序库和清单 image_sha256 不一致 → 拒绝，原因带 ios_program_resign");
+    CK(s2a_launch_ctx_select_kind() == S2A_SELECT_NEEDS_RESIGN, "程序包校验值不一致 → 类别 NEEDS_RESIGN（游戏库标「要在电脑上重新签名」）");
+    CK(!s2a_launch_ctx_get() && !getenv("S2A_DOCS"), "校验值不一致：不冻结、不写环境");
     r = s2a_launch_ctx_select("0100000000000001");
     CK(!r, "合规的那款 → 选中");
+    CK(g_imgpack_calls == 0, "App 包里的款（没有程序包）选游戏时不预开程序库：行为同改造前（桩恒回签名不认，预开了就会被拒）");
     if (r) printf("    原因：%s\n", r);
     const s2a_launch_ctx *g = s2a_launch_ctx_get();
     char want[1200]; snprintf(want, sizeof want, "%s/Documents/games/0100000000000001", home);
@@ -187,10 +205,13 @@ int main(int argc, char **argv) {
     snprintf(p2, sizeof p2, "%s/Frameworks", app); mkdirs(p2);
     ck(!s2a_launch_ctx_is_container_dir(app), "容器判定：只有 Games/、没有清单 → 不是容器");
     snprintf(p2, sizeof p2, "%s/s2a_catalogue.json", app);
-    write_file(p2, "{\"schema\":1,\"games\":[\n {\"title_id\" : \"0100000000000001\",\"name\":\"title_id\"},\n {\"title_id\":\"0100000000000002\",\"name\":\"二\"},\n"
-                   " {\"name\":\"0100000000000003\",\"title_id\":\"0100000000000004\"}]}\n");
+    { char cat[700]; snprintf(cat, sizeof cat, "{\"schema\":1,\"games\":[\n {\"title_id\" : \"0100000000000001\",\"name\":\"title_id\"},\n {\"title_id\":\"0100000000000002\",\"name\":\"二\"},\n"
+                   " {\"name\":\"0100000000000003\",\"title_id\":\"0100000000000004\"},\n {\"title_id\":\"0100000000000005\",\"host_abi\":%d}]}\n", S2A_HOST_ABI + 1);
+      write_file(p2, cat); }
     ck(s2a_launch_ctx_is_container_dir(app), "容器判定：有清单且有 Games/ → 容器");
     snprintf(p2, sizeof p2, "%s/Frameworks/S2AImages-0100000000000001.dylib", app); write_file(p2, "x");
+    snprintf(p2, sizeof p2, "%s/Games/0100000000000005", app); mkdirs(p2);   // 第 5 款：随行目录、镜像包都在，只是 host_abi 对不上（进程级用例核拒载）
+    snprintf(p2, sizeof p2, "%s/Frameworks/S2AImages-0100000000000005.dylib", app); write_file(p2, "x");
     ck(!s2a_launch_ctx_resolve_game(&c, app, home, "0100000000000001", why, sizeof why), "容器解析：合规的那款成功");
     if (why[0]) printf("  原因：%s\n", why);
     char w[600];
@@ -201,6 +222,75 @@ int main(int argc, char **argv) {
     ck(eq(c.game_data, w), "容器解析：资源包根 = Library/Application Support/S2Arm/games/<游戏号>/资源包（v0.3.0 挪出 Documents，s2a_pack_root）");
     snprintf(w, sizeof w, "%s/Documents/games/0100000000000001/S2A/ryujinx", home); ck(eq(c.ryu_data, w), "容器解析：Ryujinx 数据根 = <文档根>/S2A/ryujinx");
     snprintf(w, sizeof w, "%s/Documents", home); ck(eq(c.log_dir, w) && eq(c.bundle_dir, app) && eq(c.game_id, "0100000000000001"), "容器解析：host.log 目录进程级、包目录、game_id");
+    {   // 通用壳（11-16）：程序包在资源包根旁 program/（清单 + 镜像包 + Games/<gid>），这款不在 App 包清单、App 包里也没有它的程序。期望手写：
+        //   镜像包 = <程序包>/S2AImages-<gid>.dylib（清单 image 原样）、模块目录 = <程序包>/Games/<gid>、from_program = 1；文档根 / 资源包根同 App 包内那支
+        char pr[900], q[1000];
+        snprintf(pr, sizeof pr, "%s/Library/Application Support/S2Arm/games/0100000000000006/program", home);
+        snprintf(q, sizeof q, "%s/Games/0100000000000006", pr); mkdirs(q);
+        snprintf(q, sizeof q, "%s/S2AImages-0100000000000006.dylib", pr); write_file(q, "x");
+        snprintf(q, sizeof q, "%s/catalogue.json", pr);
+        write_file(q, "{\"schema\":1,\"title_id\":\"0100000000000006\",\"name\":\"六\",\"host_abi\":1,\"image\":\"S2AImages-0100000000000006.dylib\"}\n");
+        ck(!s2a_launch_ctx_resolve_game(&c, app, home, "0100000000000006", why, sizeof why) && c.from_program == 1, "程序包：不在 App 清单的那款照样解析成功，来源标 from_program");
+        if (why[0]) printf("  原因：%s\n", why);
+        snprintf(q, sizeof q, "%s/S2AImages-0100000000000006.dylib", pr); ck(eq(c.images, q), "程序包：镜像包 = <程序包>/<清单 image>");
+        snprintf(q, sizeof q, "%s/Games/0100000000000006", pr); ck(eq(c.module_dir, q) && eq(c.caps_dir, q), "程序包：模块目录 = 能力清单目录 = <程序包>/Games/<gid>");
+        snprintf(q, sizeof q, "%s/Documents/games/0100000000000006", home); ck(eq(c.docs, q), "程序包：文档根照旧 $HOME/Documents/games/<gid>");
+        ck(!s2a_launch_ctx_resolve_game(&c, app, home, "0100000000000001", why, sizeof why) && c.from_program == 0, "没有程序包的那款：照旧取 App 包内，from_program = 0");
+        // 拒绝：清单不是这一款 / image 带路径 / 镜像包缺 / 随行目录缺
+        snprintf(q, sizeof q, "%s/catalogue.json", pr);
+        write_file(q, "{\"title_id\":\"0100000000000009\",\"image\":\"S2AImages-0100000000000006.dylib\"}\n");
+        ck(s2a_launch_ctx_resolve_game(&c, app, home, "0100000000000006", why, sizeof why) == -1 && strstr(why, "清单和程序不是同一次出的") && !c.images[0], "程序包拒绝：清单里没有这款");
+        write_file(q, "{\"title_id\":\"0100000000000006\",\"image\":\"../x.dylib\"}\n");
+        ck(s2a_launch_ctx_resolve_game(&c, app, home, "0100000000000006", why, sizeof why) == -1 && strstr(why, "不合规"), "程序包拒绝：image 带路径");
+        write_file(q, "{\"title_id\":\"0100000000000006\",\"image\":\"S2AImages-missing.dylib\"}\n");
+        ck(s2a_launch_ctx_resolve_game(&c, app, home, "0100000000000006", why, sizeof why) == -1 && strstr(why, "程序包镜像包"), "程序包拒绝：镜像包缺");
+        write_file(q, "{\"title_id\":\"0100000000000006\",\"image\":\"S2AImages-0100000000000006.dylib\"}\n");
+        snprintf(q, sizeof q, "%s/Games/0100000000000006", pr); rmdir(q);
+        ck(s2a_launch_ctx_resolve_game(&c, app, home, "0100000000000006", why, sizeof why) == -1 && strstr(why, "程序包随行目录"), "程序包拒绝：随行目录缺");
+        // 第 8 款：写入规则（0.6.0）——清单 dir 指向版本目录 program/v-<sha16>-pc/。期望按规则手写：模块目录 / 镜像包都在 v-… 下；dir 不合规拒；
+        //   清理只删没被指着且最新文件 1 小时以上没写入的 v-* 与 catalogue.json.*.tmp，被指着的、刚写过的都留
+        {
+            char p8[1300], q8[1500], w8[1600]; snprintf(p8, sizeof p8, "%s/Library/Application Support/S2Arm/games/0100000000000008/program", home);
+            const char *vs[3] = {"v-aaaaaaaaaaaaaaaa-pc", "v-bbbbbbbbbbbbbbbb-pc", "v-cccccccccccccccc-import"};
+            for (int i = 0; i < 3; i++) { snprintf(q8, sizeof q8, "%s/%s/Games/0100000000000008", p8, vs[i]); mkdirs(q8);
+                snprintf(q8, sizeof q8, "%s/%s/S2AImages-0100000000000008.dylib", p8, vs[i]); write_file(q8, "x"); }
+            snprintf(q8, sizeof q8, "%s/catalogue.json", p8);
+            write_file(q8, "{\"title_id\":\"0100000000000008\",\"host_abi\":1,\"image\":\"S2AImages-0100000000000008.dylib\",\"dir\":\"v-aaaaaaaaaaaaaaaa-pc\"}\n");
+            snprintf(q8, sizeof q8, "%s/catalogue.json.pc.tmp", p8); write_file(q8, "{}");
+            ck(!s2a_launch_ctx_resolve_game(&c, app, home, "0100000000000008", why, sizeof why) && c.from_program == 1, "写入规则：清单带 dir 照样解析成功");
+            snprintf(w8, sizeof w8, "%s/v-aaaaaaaaaaaaaaaa-pc/S2AImages-0100000000000008.dylib", p8); ck(eq(c.images, w8), "写入规则：镜像包 = program/<dir>/<image>");
+            snprintf(w8, sizeof w8, "%s/v-aaaaaaaaaaaaaaaa-pc/Games/0100000000000008", p8); ck(eq(c.module_dir, w8), "写入规则：模块目录 = program/<dir>/Games/<gid>");
+            snprintf(q8, sizeof q8, "%s/catalogue.json", p8);
+            write_file(q8, "{\"title_id\":\"0100000000000008\",\"image\":\"S2AImages-0100000000000008.dylib\",\"dir\":\"../v-x\"}\n");
+            ck(s2a_launch_ctx_resolve_game(&c, app, home, "0100000000000008", why, sizeof why) == -1 && strstr(why, "dir"), "写入规则：dir 不合规（带 ..、不以 v- 开头）→ 拒");
+            write_file(q8, "{\"title_id\":\"0100000000000008\",\"image\":\"S2AImages-0100000000000008.dylib\",\"dir\":\"v-aaaaaaaaaaaaaaaa-pc\"}\n");
+            // 清理：v-aaa 被指着（改旧也留）；v-bbb 没被指着、两小时前写的 → 删；v-ccc 没被指着、刚写过 → 留；临时清单两小时前 → 删
+            time_t now = time(NULL), old = now - 2 * 3600;
+            snprintf(w8, sizeof w8, "find '%s/v-aaaaaaaaaaaaaaaa-pc' '%s/v-bbbbbbbbbbbbbbbb-pc' '%s/catalogue.json.pc.tmp' -exec touch -t %s {} +", p8, p8, p8, "200001010000");
+            ck(system(w8) == 0, "清理：造旧文件");
+            (void)old;
+            int rm = s2a_program_gc(home, now);
+            snprintf(w8, sizeof w8, "test -d '%s/v-aaaaaaaaaaaaaaaa-pc' && test ! -e '%s/v-bbbbbbbbbbbbbbbb-pc' && test -d '%s/v-cccccccccccccccc-import' && test ! -e '%s/catalogue.json.pc.tmp' && test -f '%s/catalogue.json'", p8, p8, p8, p8, p8);
+            ck(rm == 2 && system(w8) == 0, "清理：删没被指着且一小时没写入的 v-bbb 与临时清单（2 项），留被指着的 v-aaa、刚写过的 v-ccc 与清单");
+            ck(s2a_program_gc(home, now) == 0, "清理：再跑一次没得删（0 项）");
+            // 随行目录快照（双保险）：克隆 v-aaa/Games/<号> 到 <HOME>/tmp/s2a-mod-<号>-<pid>；删掉原目录后快照里的文件照样在；
+            //   清理只删别的进程留下的快照（造一个 pid 1 的），本进程的留
+            snprintf(q8, sizeof q8, "%s/v-aaaaaaaaaaaaaaaa-pc/Games/0100000000000008/s2a_caps.tsv", p8); write_file(q8, "widen\t1\n");
+            char snap[1024]; snprintf(q8, sizeof q8, "%s/v-aaaaaaaaaaaaaaaa-pc/Games/0100000000000008", p8);
+            ck(s2a_program_snapshot(home, "0100000000000008", q8, snap) == 0 && strstr(snap, "/tmp/s2a-mod-0100000000000008-"), "快照：拍到 <HOME>/tmp/s2a-mod-<号>-<pid>");
+            snprintf(w8, sizeof w8, "rm -rf '%s' && test -s '%s/s2a_caps.tsv'", q8, snap);
+            ck(system(w8) == 0, "快照：原随行目录删掉后，快照里的 s2a_caps.tsv 还在");
+            snprintf(w8, sizeof w8, "mkdir -p '%s/tmp/s2a-mod-0100000000000008-1' && touch '%s/tmp/s2a-mod-0100000000000008-1/x'", home, home); ck(system(w8) == 0, "快照：造别的进程的旧快照");
+            ck(s2a_program_gc(home, now) == 1, "快照：清理删掉别的进程的旧快照（1 项）");
+            snprintf(w8, sizeof w8, "test -d '%s' && test ! -e '%s/tmp/s2a-mod-0100000000000008-1'", snap, home); ck(system(w8) == 0, "快照：本进程的快照留着");
+        }
+        // 第 7 款给进程级用例：程序库内容 "y"、清单 image_sha256 全 0（一定不等）
+        snprintf(pr, sizeof pr, "%s/Library/Application Support/S2Arm/games/0100000000000007/program", home);
+        snprintf(q, sizeof q, "%s/Games/0100000000000007", pr); mkdirs(q);
+        snprintf(q, sizeof q, "%s/S2AImages-0100000000000007.dylib", pr); write_file(q, "y");
+        snprintf(q, sizeof q, "%s/catalogue.json", pr);
+        write_file(q, "{\"title_id\":\"0100000000000007\",\"host_abi\":1,\"image\":\"S2AImages-0100000000000007.dylib\",\"image_sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}\n");
+    }
     static const struct { const char *gid, *needle, *what; } rej[] = {
         {"0100000000000BAD", "不在本包游戏清单", "gid 不在清单"},
         {"0100000000000003", "不在本包游戏清单", "只在 name 值里出现、不是 title_id"},
@@ -231,6 +321,31 @@ int main(int argc, char **argv) {
     if (!p) { unset_roots(); setenv("HOME", home, 1); setenv("S2A_LAUNCH_CTX", f1, 1); execl(copy, copy, "ctxfile", (char *)NULL); _exit(98); }
     waitpid(p, &st, 0); rc8 = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
     ck(rc8 == 0, "容器包里设了 S2A_LAUNCH_CTX：按文件构造期冻结、不进容器模式、select 拒绝");
+    // 9) 宿主约定号核对（11-16，纯函数）：期望按约定手写——程序清单优先、不在退回 App 清单、都没记按 1；对得上回 0、对不上回 1 并给出产物上的号
+    {
+        const int H = S2A_HOST_ABI;
+        char pc[500], ac[500], body[600]; int have;
+        snprintf(pc, sizeof pc, "%s/abi_prog.json", dir); snprintf(ac, sizeof ac, "%s/abi_app.json", dir);
+        snprintf(body, sizeof body, "{\"games\":[{\"title_id\":\"G1\",\"host_abi\":%d},{\"title_id\":\"G2\"},{\"title_id\":\"G3\",\"host_abi\":%d},"
+                 "{\"title_id\":\"G4\",\"name\":\"a{b}\\\"c\",\"x\":{\"host_abi\":%d}},{\"title_id\":\"G5\",\"host_abi\":\"x\"}]}", H, H + 1, H + 1);
+        write_file(ac, body);
+        have = -9; ck(s2a_host_abi_check(NULL, ac, "G1", &have, why, sizeof why) == 0 && have == H, "约定号：App 清单记的号 = 本宿主 → 0");
+        have = -9; ck(s2a_host_abi_check(NULL, ac, "G2", &have, why, sizeof why) == (H == 1 ? 0 : 1) && have == 1, "约定号：条目没记 host_abi = 旧包，按 1");
+        have = -9; ck(s2a_host_abi_check(NULL, ac, "G3", &have, why, sizeof why) == 1 && have == H + 1, "约定号：App 清单记的号 ≠ 本宿主 → 1，给出产物上的号");
+        have = -9; ck(s2a_host_abi_check(NULL, ac, "G4", &have, why, sizeof why) == (H == 1 ? 0 : 1) && have == 1, "约定号：名字里带 { } \\\" 不乱，嵌套对象里的 host_abi 不算这款的");
+        have = -9; ck(s2a_host_abi_check(NULL, ac, "G5", &have, why, sizeof why) == 1 && have == -1, "约定号：记成非数字 → 对不上（号记 -1）");
+        have = -9; ck(s2a_host_abi_check(NULL, ac, "G9", &have, why, sizeof why) == (H == 1 ? 0 : 1) && have == 1, "约定号：App 清单里没这款 = 没记，按 1（成员另由清单核对拒）");
+        snprintf(body, sizeof body, "{\"schema\":1,\"title_id\":\"G1\",\"host_abi\":%d,\"image\":\"S2AImages-G1.dylib\"}", H + 1);
+        write_file(pc, body);
+        have = -9; ck(s2a_host_abi_check(pc, ac, "G1", &have, why, sizeof why) == 1 && have == H + 1, "约定号：程序清单在 → 以它为准（App 清单对得上也不看）");
+        why[0] = 0; ck(s2a_host_abi_check(pc, ac, "G3", &have, why, sizeof why) == -1 && strstr(why, "不是同一次"), "约定号：程序清单不是这一款 → -1（清单和程序不是一套）");
+        char gone[520]; snprintf(gone, sizeof gone, "%s/abi_none.json", dir);
+        have = -9; ck(s2a_host_abi_check(gone, ac, "G1", &have, why, sizeof why) == 0 && have == H, "约定号：程序清单不存在 → 退回 App 清单");
+        have = -9; ck(s2a_host_abi_check(NULL, gone, "G1", &have, why, sizeof why) == -1, "约定号：App 清单打不开 → -1");
+        char out[300]; ck(!s2a_program_catalogue_path(out, sizeof out, "/H/Library/Application Support/S2Arm/games/G1/资源包")
+                          && eq(out, "/H/Library/Application Support/S2Arm/games/G1/program/catalogue.json"), "程序清单位置 = 资源包根的上一级 /program/catalogue.json");
+        unlink(pc); unlink(ac);
+    }
     { char b[400]; snprintf(b, sizeof b, "rm -rf '%s/App' '%s'", dir, home); if (system(b)) printf("  （清理 %s 失败）\n", dir); }
 
     unlink(f1); rmdir(dir);

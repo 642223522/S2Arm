@@ -331,7 +331,9 @@ static int host_run(int argc, char **argv) {
         if (!nvn_pso_harvest) die("【红】S2A_PSO_HARVEST：这个宿主没链直连后端（nvn_pso_harvest）");
         exit(nvn_pso_harvest(hv)); } }
 #endif
-    if (!s2a_window_ok()) die("【红】地址窗口不足：首选位置整块 64 GB 与退路（2^39 以下 ≥ 32 GB 的空洞）都没占到，起不了局（见上面的地址表）");
+    // 窗口没占到：按本局实际的跨度与上界说（vawin.c s2a_window_fatal_msg；原先写死「首选 64 GB / 退路 2^39」，36 位款对不上）
+    if (!s2a_window_ok()) { char m[512]; uint64_t need = 0, fit = 0; s2a_window_need(&need, &fit);
+        s2a_window_fatal_msg(m, sizeof m, need, fit, s2a_window_hole_top(), s2a_window_hi36_tried()); die("%s", m); }
     s2a_crash_install(); s2a_term_install();
 #if !TARGET_OS_IPHONE
     // 帧回放（S2A_FRAME_REPLAY=<录像目录>，graphics/nvn/docs/frame_replay.md）：地址窗口占好后不装游戏、不起游戏线程，把录下的一帧喂给直连回放层，出截图 / 满屏判据 / 每笔指令数就退出

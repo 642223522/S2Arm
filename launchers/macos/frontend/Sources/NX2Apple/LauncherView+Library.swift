@@ -96,6 +96,10 @@ extension LauncherView {
             }
             moreRow(loc.t("s2arm.export.action"), "shippingbox") { model.exportFor = game.id }
                 .controllerShortcut(.rightTrigger)
+            if game.appleTvReady {   // #1429：出好 Apple TV 包的款，游戏库里也有「装到 Apple TV」（原先只在出包页 / 出包结果页，离开就找不到）
+                moreRow(BackendText.launcherText("export.installAppleTV", language: loc.lang.sharedCode), "appletv") { model.installAppleTV(game) }
+                    .disabled(model.busy)
+            }
             moreRow(loc.t("s2arm.action.freeSpace"), "externaldrive") { spaceFor = game.id }
             moreRow(txt("game.display"), "slider.horizontal.3") { displayFor = game.id }
             moreRow(txt("game.saves"), "tray.full") { saveFor = game.id }

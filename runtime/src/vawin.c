@@ -701,6 +701,19 @@ int s2a_window_span_widen(void) {
 }
 static uint64_t g_need, g_fit;   // 本款要的跨度；2^39 以下最大能放的一块（1 GB 对齐后）——自检提示「本款需要 N GB，本机最多 M GB」用
 void s2a_window_need(uint64_t *need, uint64_t *fit) { *need = g_need; *fit = g_fit; }
+static uint64_t g_hole_top;   // 2^39 / 2^36 以下那次找空洞的上界（本款地址空间上界与系统地址上限取小；没算到 0）
+static int g_hi36;            // 36 位款 2^36 以下放不下、又在 2^36 以上按 2^36 对齐的各块里找过（#1419）：g_fit 是两处合起来最大的一段
+uint64_t s2a_window_hole_top(void) { return g_hole_top; }
+int s2a_window_hi36_tried(void) { return g_hi36; }
+// 窗口没占到时的 FATAL 文字（纯函数，t_vawin_fatal 测）：按本款跨度 need、最大能放的一块 fit、找空洞的上界 hole_top、是否找过 2^36 以上 hi36 说。
+//   原先写死「首选位置整块 64 GB 与退路（2^39 以下 ≥ 32 GB）」，与实际判据对不上（#1419：36 位款 01007EF00011E000，macOS 27.3 beta 26C5047e 上 2^36 以下最大能放 0 MB）
+void s2a_window_fatal_msg(char *out, size_t cap, uint64_t need, uint64_t fit, uint64_t hole_top, int hi36) {
+    if (!need) { snprintf(out, cap, "【红】地址窗口：不知道本款要多大，没占窗口，起不了局（原因见上面「地址窗口」红行）"); return; }
+    if (hi36) { snprintf(out, cap, "【红】地址窗口不足：本款是 36 位地址空间（NPDM 地址空间类型 1），2^36 以下与 2^36 以上按 2^36 对齐的一块都没占到；"
+        "本款要 %llu MB，这些地方最大能放的一块 %llu MB，起不了局（见上面「地址窗口」红行）", (unsigned long long)(need >> 20), (unsigned long long)(fit >> 20)); return; }
+    snprintf(out, cap, "【红】地址窗口不足：本款要 %llu MB，本机 %#llx 以下最大能放的一块 %llu MB，起不了局（见上面「地址窗口」红行）",
+        (unsigned long long)(need >> 20), (unsigned long long)hole_top, (unsigned long long)(fit >> 20));
+}
 static char g_npdm[1100];   // 本款 main.npdm 路径（找不到可执行文件目录 / 模块目录时为空）：跨度算不出时按它说清原因
 static int g_ctr, g_ctr_astype = -1;   // 多款容器构造期（launchctx.c ③）：g_ctr = 1；g_ctr_astype = 包内各款一致的地址空间类型（不一致 / 读不到 = -1）
 static int astype_of(const char *npdm) {   // main.npdm 的地址空间类型（同 svc_mem.c npdm_read：+0x0C 位 1–3，只读头 16 字节）；读不到 / 不是 META 为 -1
@@ -738,41 +751,71 @@ static uint64_t need_dir(const char *dir) {
 //   不一致 / 任何一款读不到或算不出 / Games/ 下没有游戏 → 0（报红、不占窗口，自检页拦）。构造期逐款读：main.npdm 头 16 字节（类型）+ NPDM 头 0x80、ACID +0x300 处 4 字节、
 //   ACI0 0x38（svc_mem.c npdm_read 不写本局状态的读法）+ 各模块 <名>.fixups.tsv（只有表头几行，实测约 240 字节）+ 镜像包头与偏移表（32 + load commands + 16 + 88 × 模块数）。
 //   应用池（Switch 2 9 GiB）在每款算完后放回读之前的值：别款的池不带进下一款的算法，也不带进玩家选的那款（起局时 layout_prepare 按本款 NPDM 重新设）
-uint64_t s2a_window_container_need(const char *bundle) {
+// 通用壳（11-16）：程序可以不在 App 包里、只在程序包（<程序包根>/<游戏号>/program/，launchctx.c s2a_program_game_paths）——构造期也把这些款算进来：
+//   游戏 = App 包 Games/ 下各款 ∪ 程序包根下带 program/catalogue.json 的各款；每款的随行目录与镜像包按起局同一套取法（有程序包取程序包，否则取 App 包内）。
+//   原先只扫 App 包，只在程序包里的那款构造期算不到，窗口按别款占，进局可能装不下
+#define CTR_MAX 256
+static int ctr_add(char (*ids)[208], int *n, const char *gid) {
+    for (int i = 0; i < *n; i++) if (!strcmp(ids[i], gid)) return 0;
+    if (*n >= CTR_MAX) return -1;
+    snprintf(ids[(*n)++], 208, "%s", gid); return 0;
+}
+uint64_t s2a_window_container_need(const char *bundle, const char *home) {
     g_ctr_astype = -1; g_ctr_pool = 0;
+    int (*ppaths)(const char *, const char *, char *, char *, char *, size_t) = (int (*)(const char *, const char *, char *, char *, char *, size_t))dlsym(RTLD_DEFAULT, "s2a_program_game_paths");
+    int (*proot)(char *, size_t, const char *) = (int (*)(char *, size_t, const char *))dlsym(RTLD_DEFAULT, "s2a_program_games_root");
+    static char ids[CTR_MAX][208]; int nid = 0; struct dirent *e;
     char gd[1100]; snprintf(gd, sizeof gd, "%s/Games", bundle);
     DIR *d = opendir(gd);
-    if (!d) { LOG("【红】地址窗口：多款容器读不了 %s（errno %d），不知道要多大，不占窗口", gd, errno); return 0; }
+    if (d) {
+        while ((e = readdir(d))) { char dir[1400]; struct stat st;
+            if (e->d_name[0] == '.' || strlen(e->d_name) > 200) continue;
+            snprintf(dir, sizeof dir, "%s/%s", gd, e->d_name);
+            if (!stat(dir, &st) && S_ISDIR(st.st_mode) && ctr_add(ids, &nid, e->d_name)) { LOG("【红】地址窗口：多款容器游戏超过 %d 款，不占窗口", CTR_MAX); closedir(d); return 0; } }
+        closedir(d);
+    } else if (errno != ENOENT) { LOG("【红】地址窗口：多款容器读不了 %s（errno %d），不知道要多大，不占窗口", gd, errno); return 0; }
+    char pr[1100];
+    if (proot && !proot(pr, sizeof pr, home) && (d = opendir(pr))) {
+        while ((e = readdir(d))) { char cat[1400]; struct stat st;
+            if (e->d_name[0] == '.' || strlen(e->d_name) > 200) continue;
+            snprintf(cat, sizeof cat, "%s/%s/program/catalogue.json", pr, e->d_name);
+            if (!stat(cat, &st) && S_ISREG(st.st_mode) && ctr_add(ids, &nid, e->d_name)) { LOG("【红】地址窗口：多款容器游戏超过 %d 款，不占窗口", CTR_MAX); closedir(d); return 0; } }
+        closedir(d);
+    }
     int (*span)(const char *, char *, size_t) = (int (*)(const char *, char *, size_t))dlsym(RTLD_DEFAULT, "s2a_loader_span_images");
     uint64_t (*poolf)(void) = (uint64_t (*)(void))dlsym(RTLD_DEFAULT, "s2a_app_pool");
     void (*pools)(uint64_t) = (void (*)(uint64_t))dlsym(RTLD_DEFAULT, "s2a_app_pool_set");
-    uint64_t pool0 = poolf ? poolf() : 0, top = 0, span_max = 0; int n = 0, ast = -1, ok = 1; char first[256] = ""; struct dirent *e;
-    while (ok && (e = readdir(d))) {
-        char dir[1400], img[1400], why[400] = ""; struct stat st;
-        if (e->d_name[0] == '.' || strlen(e->d_name) > 200) continue;
-        snprintf(dir, sizeof dir, "%s/%s", gd, e->d_name);
-        if (stat(dir, &st) || !S_ISDIR(st.st_mode)) continue;
+    uint64_t pool0 = poolf ? poolf() : 0, top = 0, span_max = 0; int n = 0, ast = -1, ok = 1; char first[256] = "";
+    for (int gi = 0; ok && gi < nid; gi++) {
+        const char *gid = ids[gi];
+        char dir[1400], img[1400], why[400] = "";
+        int fp = ppaths ? ppaths(home, gid, dir, img, why, sizeof why) : 0;   // dir / img 各 1400 字节 ≥ S2A_LCTX_PATH
+        if (fp < 0) { LOG("【红】地址窗口：多款容器里 %s 的程序包读不了：%s，不占窗口", gid, why); ok = 0; break; }
+        if (!fp) { snprintf(dir, sizeof dir, "%s/%s", gd, gid); snprintf(img, sizeof img, "%s/Frameworks/S2AImages-%s.dylib", bundle, gid); }
+        // 通用壳：App 包的 Games/<号>/ 只放游戏库界面用的小文件、程序包还没推到这台（或推了一半、清单最后才写）——这款程序不在：跳过，
+        //   不拖累别的款（原先整个容器「读不到 main.npdm、不占窗口」，已装好的款也起不来）。玩家点它时起局取路径报「App 不完整」（S2A_SELECT_APP_INCOMPLETE）
+        if (!fp) { char np[1500]; struct stat ns; snprintf(np, sizeof np, "%s/main.npdm", dir);
+            if (stat(np, &ns)) { LOG("【黄】地址窗口：多款容器里 %s 的程序不在这台（程序包没推到、App 包里也没有 main.npdm），构造期跳过，不影响别的款", gid); continue; } }
         snprintf(g_npdm, sizeof g_npdm, "%s/main.npdm", dir);
         int t = astype_of(g_npdm);
-        if (t < 0) { LOG("【红】地址窗口：多款容器里 %s 读不到 main.npdm（或不是 META），不知道要多大，不占窗口", e->d_name); ok = 0; break; }
+        if (t < 0) { LOG("【红】地址窗口：多款容器里 %s 读不到 main.npdm（或不是 META），不知道要多大，不占窗口", gid); ok = 0; break; }
         if (ast >= 0 && t != ast) {
             LOG("【红】地址窗口：多款容器里各款 NPDM 地址空间类型不一致（%s 类型 %d（%s）、%s 类型 %d（%s）），装不进同一个窗口，不占窗口",
-                first, ast, s2a_as_type_bits((uint32_t)ast), e->d_name, t, s2a_as_type_bits((uint32_t)t));
+                first, ast, s2a_as_type_bits((uint32_t)ast), gid, t, s2a_as_type_bits((uint32_t)t));
             ast = -1; ok = 0; break; }
-        if (ast < 0) { ast = t; snprintf(first, sizeof first, "%s", e->d_name); }
-        snprintf(img, sizeof img, "%s/Frameworks/S2AImages-%s.dylib", bundle, e->d_name);
-        if (span && span(img, why, sizeof why)) { LOG("【红】地址窗口：多款容器里 %s 的镜像包读不了偏移表：%s，不占窗口", e->d_name, why); ok = 0; break; }
+        if (ast < 0) { ast = t; snprintf(first, sizeof first, "%s", gid); }
+        if (span && span(img, why, sizeof why)) { LOG("【红】地址窗口：多款容器里 %s 的镜像包读不了偏移表：%s，不占窗口", gid, why); ok = 0; break; }
         uint64_t ni = need_dir(dir);
         if (span) span(NULL, NULL, 0);
         { uint64_t pg = poolf ? poolf() : 0; if (pg > g_ctr_pool) g_ctr_pool = pg; }
         if (pools && pool0) pools(pool0);
-        if (!ni) { LOG("【红】地址窗口：多款容器里 %s 的跨度算不出（类型 %d（%s）；%s 读不到、模块段读不到或类型不支持），不占窗口", e->d_name, t, s2a_as_type_bits((uint32_t)t), g_npdm); ok = 0; break; }
-        LOG("地址窗口：多款容器 %s 要 %llu MB（地址空间类型 %d）", e->d_name, (unsigned long long)(ni >> 20), t);
+        if (!ni) { LOG("【红】地址窗口：多款容器里 %s 的跨度算不出（类型 %d（%s）；%s 读不到、模块段读不到或类型不支持），不占窗口", gid, t, s2a_as_type_bits((uint32_t)t), g_npdm); ok = 0; break; }
+        LOG("地址窗口：多款容器 %s 要 %llu MB（地址空间类型 %d）", gid, (unsigned long long)(ni >> 20), t);
         // 学到的跨度在这款自己的文档根下（选了游戏后 S2A_DOCS = Documents/games/<游戏号>，心跳 span_note 写在那里）；构造期还没选游戏、S2A_DOCS 没设，
         //   原先按 Documents/wire/... 读，永远读不到：多款容器从来学不到跨度，窗口下方一直只留 3 GB（11-13 0400486024DEC000 三台设备开局约 2–4 分钟宿主地址耗尽崩溃）。
         //   这款文档根下没有时再看旧位置（单款包时代留下的记录）
-        { uint64_t pid = strtoull(e->d_name, NULL, 16), sl = 0; char sp[1400];
-          if (pid) { s2a_docs_path(sp, sizeof sp, "games/%s/wire/%016llX/span_peak", e->d_name, (unsigned long long)pid); sl = read_u64(sp); }
+        { uint64_t pid = strtoull(gid, NULL, 16), sl = 0; char sp[1400];
+          if (pid) { s2a_docs_path(sp, sizeof sp, "games/%s/wire/%016llX/span_peak", gid, (unsigned long long)pid); sl = read_u64(sp); }
           if (!sl) sl = s2a_window_span_seen(pid);
           // 这款还没玩过、没有记录：它的跨度不会超过它自己的布局需求 ni，按 ni 算（原先整容器取 0，一款没玩过就把别款也打回 3 GB）。
           //   ni 比空洞还大的（乙布局款）照旧落到 s2a_window_host_below 的 HOST_BELOW
@@ -781,8 +824,7 @@ uint64_t s2a_window_container_need(const char *bundle) {
         if (ni > top) top = ni;
         n++;
     }
-    closedir(d);
-    if (ok && !n) LOG("【红】地址窗口：多款容器 %s 下没有游戏，不占窗口", gd);
+    if (ok && !n) LOG("【红】地址窗口：多款容器 %s 下没有游戏（程序包里也没有），不占窗口", gd);
     g_ctr_astype = ast;
     if (!ok || !n) return 0;
     g_span_learned = span_max;
@@ -797,7 +839,7 @@ static uint64_t need_from_npdm(void) {
 #if TARGET_OS_IPHONE
     // iOS：main.npdm 在启动上下文的模块目录（单款兼容 = 可执行文件同目录，同改造前）
     // 多款容器（launchctx.c ③）：构造期玩家还没选游戏、上下文不冻结——对包内每一款算，取最大（s2a_window_container_need）
-    if (s2a_launch_ctx_container()) { g_ctr = 1; return s2a_window_container_need(s2a_launch_ctx_bundle_dir()); }
+    if (s2a_launch_ctx_container()) { g_ctr = 1; return s2a_window_container_need(s2a_launch_ctx_bundle_dir(), getenv("HOME")); }
     const s2a_launch_ctx *lc = s2a_launch_ctx_get();
     if (!lc) { LOG("【红】地址窗口：启动上下文不可用（%s）", s2a_launch_ctx_error()); return 0; }
     strlcpy(dir, lc->module_dir, sizeof dir);
@@ -856,6 +898,7 @@ static void vawin_reserve(void) {
     int ast = npdm_astype(); uint64_t astop = ast >= 0 && s2a_as_type_top((uint32_t)ast) ? s2a_as_type_top((uint32_t)ast) : 1ull << 39;
     const char *hb = astop == 1ull << 36 ? "2^36" : "2^39";
     uint64_t top = s2a_va_top(), hi = astop, at, sz; if (top && top < hi) hi = top;
+    g_hole_top = hi;
     // S2A_VA_CAP_MB（Mac 诊断）：复现小地址机型（iOS 26 不开扩展寻址约 17.4 GiB）——取地址最低、放得下这么大的空洞当「本机最大一块」，
     //   窗口照下面「放不下」的取法占，之后到 2^39 的空洞占死：别名区伸出段落进 Mac 的 GPU 保留区（不可访问），同设备上伸出段越过地址上限
     const char *ce = getenv("S2A_VA_CAP_MB"); uint64_t cap = ce && atoll(ce) > 0 ? (uint64_t)atoll(ce) << 20 : 0, fat, lat, want;
@@ -865,6 +908,7 @@ static void vawin_reserve(void) {
     //   窗口整段落在这一块里（as_type.h s2a_as_type_end）。游戏地址仍等于宿主地址；老 SDK 打包 IPC 描述符丢掉的 36 位以上由服务层按块补回（svc_mem.c s2a_ipc_addr39）。
     //   先找放得下整个标准布局的、地址最低的一块；都放不下就记各块里最大的一段，走下面「按需」那条
     if (ast == 1 && !cap && !sz && g_fit < MIN_WIN + HOST_BELOW) {
+        g_hi36 = 1;
         const uint64_t B = 1ull << 36; uint64_t lim = top ? top : 1ull << 47, bfit = 0, bfat = 0;
         for (uint64_t k = B; k < lim && !sz; k += B) {
             uint64_t a2, s2, f2, fa2, la2; pick_hole_in(k, k + B < lim ? k + B : lim, g_need, &a2, &s2, &f2, &fa2, 0, &la2);
