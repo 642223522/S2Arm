@@ -2734,6 +2734,7 @@
   "缺少内容对应的票据或标题密钥，请检查源文件是否完整。": "Falta el ticket o la clave de título del contenido. Comprueba que el archivo de origen esté completo.",
   "核对源文件是否含有所需票据。": "Comprueba si el archivo de origen incluye el ticket necesario.",
   "现有 prod.keys 缺少读取此文件所需的密钥。": "Tu archivo prod.keys no contiene las claves necesarias para leer este archivo.",
+  "现有 prod.keys 解不开这份文件：解出来的数据对不上，多半是这款用的那一代密钥不对。请用升级到最新系统的 Switch 重新导出 prod.keys 再导入。": "Tu prod.keys actual no puede descifrar este archivo: los datos descifrados no coinciden, probablemente porque la generación de claves que usa este juego es incorrecta. Vuelve a exportar prod.keys desde una Switch actualizada a la última versión del sistema e impórtalo de nuevo.",
   "无法读取游戏内容：可能是文件不完整、缺票据或密钥不匹配。请核对原始文件；若已确认 Switch 密钥版本不足，再重新导出，到「设置 → 玩家密钥」重新导入。": "No se pudo leer el contenido del juego. El archivo puede estar incompleto, faltar un ticket o las claves no coincidir. Comprueba el archivo original. Si has confirmado que las claves de Switch están obsoletas, expórtalas de nuevo y añádelas en Ajustes → Claves del jugador.",
   "读不到设备列表：打开一次 Xcode，等它装完附加组件后再试。": "No se puede leer la lista de dispositivos. Abre Xcode una vez, espera a que instale sus componentes adicionales y vuelve a intentarlo.",
   "同一网络上有多台配对过的 iPhone / iPad：用数据线连上要装的那一台。": "Hay varios iPhone / iPad emparejados en esta red. Conecta con cable el que quieras usar para la instalación.",
