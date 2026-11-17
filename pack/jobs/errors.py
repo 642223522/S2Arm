@@ -572,7 +572,7 @@ def tool_reason(log):
                 lines = stream.read().decode("utf-8", errors="replace").splitlines()
             # 作业层自己往工具日志里追加的记录（[s2a] 开头，如收掉残留进程）不是工具的报错，不当失败原因（#711：真报错被它盖住）
             nonempty = [line.strip() for line in lines if line.strip() and not line.strip().startswith("[s2a] ")]
-            red = [line for line in nonempty if "【红】" in line]  # 非玩家句
+            red = [line for line in nonempty if any(mark in line for mark in _RED)]  # #1411：读取器打的是「🔴」，原先只认「【红】」，摘要取到末行「第 0 段数据 通过」
             if nonempty:
                 return (red or nonempty)[-1][-1500:]
         except OSError:
