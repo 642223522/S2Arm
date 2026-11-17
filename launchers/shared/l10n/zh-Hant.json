@@ -398,6 +398,7 @@
   "update.error.update_download_failed": "下載一直斷開，當前版本沒有變化。請檢查網路後重試，或手動下載新版。",
   "update.error.update_unpack_failed": "打不開下載好的安裝包，當前版本沒有變化。可以手動下載新版。",
   "update.error.update_failed": "更新沒有完成，當前版本沒有變化。請檢查網路後重試。",
+  "update.error.update_install_failed": "上次更新到 v{0} 沒裝上，現在還是原來的版本",
   "update.error.update_swap_failed": "替換檔案失敗，已保留當前版本。",
   "update.error.update_rolled_back": "新版沒能啟動，已回到原來的版本。",
   "update.error.update_rollback_failed": "新版沒能啟動，舊版也沒能恢復。請重新下載 S2Arm，你的遊戲庫不受影響。",

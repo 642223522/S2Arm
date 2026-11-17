@@ -389,6 +389,7 @@
   "update.error.update_download_failed": "ダウンロードが何度も中断されました。現在のバージョンは変更されていません。ネットワークを確認して再試行するか、新バージョンを手動でダウンロードしてください。",
   "update.error.update_unpack_failed": "ダウンロードしたパッケージを開けませんでした。現在のバージョンは変更されていません。新バージョンを手動でダウンロードできます。",
   "update.error.update_failed": "アップデートが完了しませんでした。変更はありません。ネットワークを確認して再試行してください。",
+  "update.error.update_install_failed": "前回の v{0} へのアップデートはインストールされませんでした。以前のバージョンのままです",
   "update.error.update_swap_failed": "ファイルの置き換えに失敗しました。現在のバージョンを維持しています。",
   "update.error.update_rolled_back": "新バージョンが起動しませんでした。以前のバージョンに戻しました。",
   "update.error.update_rollback_failed": "新バージョンが起動せず、旧バージョンも復元できませんでした。S2Arm を再ダウンロードしてください。ライブラリは安全です。",
