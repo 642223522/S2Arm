@@ -701,6 +701,19 @@ int s2a_window_span_widen(void) {
 }
 static uint64_t g_need, g_fit;   // 本款要的跨度；2^39 以下最大能放的一块（1 GB 对齐后）——自检提示「本款需要 N GB，本机最多 M GB」用
 void s2a_window_need(uint64_t *need, uint64_t *fit) { *need = g_need; *fit = g_fit; }
+static uint64_t g_hole_top;   // 2^39 / 2^36 以下那次找空洞的上界（本款地址空间上界与系统地址上限取小；没算到 0）
+static int g_hi36;            // 36 位款 2^36 以下放不下、又在 2^36 以上按 2^36 对齐的各块里找过（#1419）：g_fit 是两处合起来最大的一段
+uint64_t s2a_window_hole_top(void) { return g_hole_top; }
+int s2a_window_hi36_tried(void) { return g_hi36; }
+// 窗口没占到时的 FATAL 文字（纯函数，t_vawin_fatal 测）：按本款跨度 need、最大能放的一块 fit、找空洞的上界 hole_top、是否找过 2^36 以上 hi36 说。
+//   原先写死「首选位置整块 64 GB 与退路（2^39 以下 ≥ 32 GB）」，与实际判据对不上（#1419：36 位款 01007EF00011E000，macOS 27.3 beta 26C5047e 上 2^36 以下最大能放 0 MB）
+void s2a_window_fatal_msg(char *out, size_t cap, uint64_t need, uint64_t fit, uint64_t hole_top, int hi36) {
+    if (!need) { snprintf(out, cap, "【红】地址窗口：不知道本款要多大，没占窗口，起不了局（原因见上面「地址窗口」红行）"); return; }
+    if (hi36) { snprintf(out, cap, "【红】地址窗口不足：本款是 36 位地址空间（NPDM 地址空间类型 1），2^36 以下与 2^36 以上按 2^36 对齐的一块都没占到；"
+        "本款要 %llu MB，这些地方最大能放的一块 %llu MB，起不了局（见上面「地址窗口」红行）", (unsigned long long)(need >> 20), (unsigned long long)(fit >> 20)); return; }
+    snprintf(out, cap, "【红】地址窗口不足：本款要 %llu MB，本机 %#llx 以下最大能放的一块 %llu MB，起不了局（见上面「地址窗口」红行）",
+        (unsigned long long)(need >> 20), (unsigned long long)hole_top, (unsigned long long)(fit >> 20));
+}
 static char g_npdm[1100];   // 本款 main.npdm 路径（找不到可执行文件目录 / 模块目录时为空）：跨度算不出时按它说清原因
 static int g_ctr, g_ctr_astype = -1;   // 多款容器构造期（launchctx.c ③）：g_ctr = 1；g_ctr_astype = 包内各款一致的地址空间类型（不一致 / 读不到 = -1）
 static int astype_of(const char *npdm) {   // main.npdm 的地址空间类型（同 svc_mem.c npdm_read：+0x0C 位 1–3，只读头 16 字节）；读不到 / 不是 META 为 -1
@@ -856,6 +869,7 @@ static void vawin_reserve(void) {
     int ast = npdm_astype(); uint64_t astop = ast >= 0 && s2a_as_type_top((uint32_t)ast) ? s2a_as_type_top((uint32_t)ast) : 1ull << 39;
     const char *hb = astop == 1ull << 36 ? "2^36" : "2^39";
     uint64_t top = s2a_va_top(), hi = astop, at, sz; if (top && top < hi) hi = top;
+    g_hole_top = hi;
     // S2A_VA_CAP_MB（Mac 诊断）：复现小地址机型（iOS 26 不开扩展寻址约 17.4 GiB）——取地址最低、放得下这么大的空洞当「本机最大一块」，
     //   窗口照下面「放不下」的取法占，之后到 2^39 的空洞占死：别名区伸出段落进 Mac 的 GPU 保留区（不可访问），同设备上伸出段越过地址上限
     const char *ce = getenv("S2A_VA_CAP_MB"); uint64_t cap = ce && atoll(ce) > 0 ? (uint64_t)atoll(ce) << 20 : 0, fat, lat, want;
@@ -865,6 +879,7 @@ static void vawin_reserve(void) {
     //   窗口整段落在这一块里（as_type.h s2a_as_type_end）。游戏地址仍等于宿主地址；老 SDK 打包 IPC 描述符丢掉的 36 位以上由服务层按块补回（svc_mem.c s2a_ipc_addr39）。
     //   先找放得下整个标准布局的、地址最低的一块；都放不下就记各块里最大的一段，走下面「按需」那条
     if (ast == 1 && !cap && !sz && g_fit < MIN_WIN + HOST_BELOW) {
+        g_hi36 = 1;
         const uint64_t B = 1ull << 36; uint64_t lim = top ? top : 1ull << 47, bfit = 0, bfat = 0;
         for (uint64_t k = B; k < lim && !sz; k += B) {
             uint64_t a2, s2, f2, fa2, la2; pick_hole_in(k, k + B < lim ? k + B : lim, g_need, &a2, &s2, &f2, &fa2, 0, &la2);
