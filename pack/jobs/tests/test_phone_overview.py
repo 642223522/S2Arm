@@ -110,6 +110,13 @@ class PhoneOverview(unittest.TestCase):
                 got = {p["device"]: p["signMode"] for p in self.overview()["phones"]}
             self.assertEqual(got, {"P-NEW": "devCert", "P-OLD": old, "P-EXT": "external", "P-NONE": None})
 
+    def test_old_container_games_need_program(self):
+        # 0.5.x 整包 App 装的款：设备记录只有 pack、没有 program → 建议更新（只补程序），不是「最新」
+        self.fixture()
+        layout.save_device(self.c, "PHONE-3", dict(shellId="SNOW", signed=dict(at=T, free=True), games={self.A: dict(pack="P")}))
+        p3 = next(p for p in self.overview()["phones"] if p["device"] == "PHONE-3")
+        self.assertEqual(p3["games"][0], dict(gameId=self.A, state="suggested", reasons=["missing"]))
+
     def test_switch_off(self):
         self.fixture()
         self.assertEqual(self.overview(on=False), dict(enabled=False, phones=[]))

@@ -176,6 +176,8 @@ def phone_overview(c):
                 games.append(dict(gameId=g, state="notPushed", dataOnComputer=_has_game_img(c, g)))
             elif not r.get("pack"):   # 电脑上还有没有资源本体（只看文件在不在，不打开）：界面分「点推到 iPhone 就行」和「要原件」
                 games.append(dict(gameId=g, state="needsData", dataOnComputer=_has_game_img(c, g)))
+            elif not r.get("program"):   # 资源推过、手机上没有这款的程序包（0.5.x 整包 App 装的款：装上通用 App 后程序不在了）→ 点「推到 iPhone」只补程序
+                games.append(dict(gameId=g, state="suggested", reasons=["missing"]))
             else:
                 why = list(hints[g])
                 prog = r.get("program") or {}
