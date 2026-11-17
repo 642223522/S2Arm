@@ -474,6 +474,12 @@ static void layout_prepare(const char *npdm) {
     g_lay_ok = 1;
 }
 uint64_t s2a_mem_mod_base(const char *npdm) { layout_prepare(npdm); return g_mod_base; }
+// 36 位老 SDK 兜底点（traps.c，#1503）：老 SDK 写死的两段 = 新 SDK 问 GetInfo 拿到的可随机区 / 栈区，这里给同一组值（同下面 GetInfo 0x0C–0x0F）
+int s2a_mem_as_region(int stack, uint64_t *lo, uint64_t *hi) {
+    if (!g_lay_ok) return -1;
+    *lo = stack ? L.stack_base : L.aslr_base; *hi = *lo + (stack ? L.stack_size : L.aslr_size);
+    return 0;
+}
 // 本局已碰到的地址跨度（#783）：同「地址按需」行的「本局所需跨度」口径（碰到的最高地址 − 窗口基址），但只读局内峰值、不扫别名区位图，心跳每 10 秒调也便宜：
 //   别名区高水位、堆峰值、栈区 / 可随机区用到的最高偏移、模块末（在窗口内的）。vawin.c 记进 wire/<程序号>/span_peak，下一局窗口放不下标准布局时按它给窗口。布局没定 = 0
 uint64_t s2a_mem_span_now(void) {
@@ -1787,7 +1793,7 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
         if (L.as_type == 1 && regs[2] >= 0x8000000ull && regs[2] < 0x100000000ull && regs[2] < L.win_base) {
             static _Atomic int said; if (!atomic_exchange(&said, 1))
                 LOG("【红】36 位款查询 Horizon 固定代码 / 栈区地址 %#llx（[0x8000000, 0x80000000)，老 SDK 写死不问 GetInfo）：宿主 4 GB 以下是 __PAGEZERO，游戏地址 = 宿主地址给不出，报不可访问；"
-                    "这款要地址转换才能跑，36 位布局本身管不了", (unsigned long long)regs[2]); }
+                    "出包改写器没认出写死这段的代码形状（runtime/rewriter sdk_as36_ranges：认出时换成本局可随机区 / 栈区，#1503）", (unsigned long long)regs[2]); }
         if (regs[0]) { host_write(regs[0], 0x28); uint8_t *o = (uint8_t *)regs[0]; memset(o, 0, 0x28); memcpy(o, &mi.base, 8); memcpy(o + 8, &mi.size, 8); memcpy(o + 0x10, &mi.state, 4); memcpy(o + 0x14, &mi.attr, 4); memcpy(o + 0x18, &mi.perm, 4); }
         regs[0] = 0; regs[1] = 0; return 1;
     }
