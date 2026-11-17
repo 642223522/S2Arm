@@ -291,6 +291,8 @@ static uint8_t *slurp(const char *p, size_t *n) {
     uint8_t *b = l > 0 ? malloc((size_t)l) : NULL; if (b && fread(b, 1, (size_t)l, f) != (size_t)l) { free(b); b = NULL; }
     fclose(f); *n = (size_t)l; return b;
 }
+// 弱链接[host,nvntest]：s2a_prov_signing_ids_self（ios/prov_expiry.m 只在 iOS App 里；Mac 宿主与单测链接行按这行放行未定义）
+int s2a_prov_signing_ids_self(char *team, size_t team_n, char *appid, size_t appid_n) __attribute__((weak_import));   // ios/prov_expiry.m（只在 iOS App 里）
 void s2a_selfsign_probe(void) {
     const char *p12 = getenv("S2A_SELFSIGN_P12"), *in = getenv("S2A_SELFSIGN_IN"), *out = getenv("S2A_SELFSIGN_OUT");
     if (!p12 || !in || !out) return;
@@ -318,7 +320,15 @@ void s2a_selfsign_probe(void) {
     }
     clock_gettime(CLOCK_MONOTONIC, &t1);
     uint8_t *ob = NULL; size_t on = 0;
-    rc = s2a_selfsign_macho(ib, n, NULL, getenv("S2A_SELFSIGN_TEAM"), getenv("S2A_SELFSIGN_APPID"), key, chain, &ob, &on, why, sizeof why);
+    // 团队号 / appid：开发用环境变量优先；没给就读包里的描述文件（ios/prov_expiry.m，产品路径；Mac 宿主与单测没有它，弱引用取不到就按没给）
+    const char *team = getenv("S2A_SELFSIGN_TEAM"), *appid = getenv("S2A_SELFSIGN_APPID"); char pt[64], pa[512];
+    if (!(team && *team) && s2a_prov_signing_ids_self) {
+        int pr = s2a_prov_signing_ids_self(pt, sizeof pt, pa, sizeof pa);
+        if (pr >= 0) { team = pt; appid = pa; LOG("手机端自签：团队号 %s、appid %s 取自包里的描述文件", pt, pa); }
+        if (pr == 1) LOG("【黄】手机端自签：描述文件的 application-identifier 和本包包名拼出的 %s 不同，照常用本包包名（系统可能拒，见上一行）", pa);
+        if (pr < 0) LOG("【黄】手机端自签：包里读不到描述文件的团队号（TrollStore / ad-hoc 包没有），照常不带团队号与权限签");
+    }
+    rc = s2a_selfsign_macho(ib, n, NULL, team, appid, key, chain, &ob, &on, why, sizeof why);
     clock_gettime(CLOCK_MONOTONIC, &t2);
     long nchain = (long)CFArrayGetCount(chain); free(ib); CFRelease(key); CFRelease(chain);
     if (rc) { LOG("【红】手机端自签：签名失败：%s", why); return; }
