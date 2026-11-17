@@ -100,6 +100,9 @@ public static class PackJobClient
         // The bundled iPhone shell is a launcher path setting (Settings → Shell); ipa.bundled_shell reads shellDir.
         // export 的每一步子作业沿用这份请求（pack/jobs/export_plan.py），iPhone 那步要的壳与随包资源一并带上
         if (request.Operation is "ipa" or "install" or "installUpdate" or "export") payload["shellDir"] = Path.GetFullPath(request.Paths.Shell);
+        // Apple TV 预编壳（启动器目录 Shell-tvOS，安装包带了才有）：tvos.tv_shell / derive 读 tvShellDir，Windows 不能现出壳
+        var tvShell = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(request.Paths.Shell)) ?? "", "Shell-tvOS");
+        if (request.Operation is "ipa" or "export" && Directory.Exists(tvShell)) payload["tvShellDir"] = tvShell;
         // Bundled resources next to S2Arm.exe (bundle_win.py layout): sgradeScan reads CommunityPatches/patches-v3.tar (v2 on older installs);
         // ipa reads the shared fonts from resources/Fonts (core.fonts_dir; without it
         // "shared fonts missing", tianyan 11-07); installCheck / install use the Impactor + plumesign shipped in resources/ThirdParty/Impactor

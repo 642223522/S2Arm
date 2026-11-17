@@ -365,6 +365,46 @@ class DeriveTest(TvCase):
         info = layout.game_info(self.c, G)["tvos"]
         self.assertEqual((info["shellId"], info["pack"], info["astc"]), ("sid1", m["index_sha256"], True))
 
+    def test_derive_on_windows_copies_without_cp_and_uses_given_shell(self):
+        """Windows（没有 cp）：kit / 资源包整份拷贝，不调 cp；启动器给了 tvShellDir 就不现出壳"""
+        img = self.make_ios()
+        ex = self.root / "extract"; (ex / "romfs").mkdir(parents=True)
+        runs = []
+        def run(argv, log, env=None, **k):
+            runs.append([str(a) for a in argv])
+            if "astc_pack.py" in str(argv[4]): Path(argv[7]).write_bytes(b"ASTC" * 4)
+        real = tvos.subprocess.run
+        def no_cp(argv, *a, **k):
+            if argv and argv[0] == "cp": raise AssertionError("Windows 上不该调 cp")
+            return real(argv, *a, **k)
+        given = self.root / "Shell-tvOS"; given.mkdir(); (given / "manifest.json").write_text("{}")
+        self.c.r["tvShellDir"] = str(given)
+        with um.patch.object(tvos.sys, "platform", "win32"), um.patch.object(tvos.subprocess, "run", side_effect=no_cp), \
+             um.patch.object(self.c, "run", side_effect=run), um.patch.object(tvos, "tv_shell_id", return_value="sid1"), \
+             um.patch.object(self.c, "env", return_value={"S2A_RUN_ROOT": str(self.root / "run")}):
+            tvos.derive(self.c, G, ex)
+        tv = layout.path(self.c, G, "image", "tvos", create=False)
+        self.assertEqual((tv / "kit/main.npdm").read_bytes(), b"npdm")
+        self.assertEqual((tv / ".pack/game.img").read_bytes(), b"IMG")
+        (tv / ".pack/game.img").write_bytes(b"CHANGED")   # 整份拷贝：改 tvOS 这份不动 iPhone 那份
+        self.assertEqual((img / ".pack/game.img").read_bytes(), b"IMG")
+        self.assertFalse([r for r in runs if "shell_build.sh" in " ".join(r)])
+
+    def test_derive_on_windows_without_tv_shell_stops(self):
+        """Windows 安装包没带 Shell-tvOS：明说出不了，不去现出壳（要 Xcode）"""
+        self.make_ios()
+        ex = self.root / "extract"; (ex / "romfs").mkdir(parents=True)
+        runs = []
+        def run(argv, log, env=None, **k):
+            runs.append([str(a) for a in argv])
+            if "astc_pack.py" in str(argv[4]): Path(argv[7]).write_bytes(b"ASTC" * 4)
+        with um.patch.object(tvos.sys, "platform", "win32"), um.patch.object(self.c, "run", side_effect=run), \
+             um.patch.object(tvos, "tv_shell_id", return_value="sid1"), \
+             um.patch.object(self.c, "env", return_value={"S2A_RUN_ROOT": str(self.root / "run")}), self.assertRaises(Failure) as e:
+            tvos.derive(self.c, G, ex)
+        self.assertEqual(e.exception.code, "engine_incomplete")
+        self.assertFalse([r for r in runs if "shell_build.sh" in " ".join(r)])
+
     def test_derive_needs_ios_first(self):
         with self.assertRaises(Failure) as e:
             tvos.derive(self.c, G, self.root / "extract")

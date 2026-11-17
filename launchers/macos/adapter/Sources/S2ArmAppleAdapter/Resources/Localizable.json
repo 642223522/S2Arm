@@ -9796,6 +9796,10 @@
   "en": "This game's Apple TV build wasn't made by this version of S2Arm (or hasn't been made yet): build it for Apple TV first, then install on Apple TV."
  },
  {
+  "source": "这个 S2Arm 安装包没带 Apple TV 预编壳，这台电脑出不了 Apple TV 包：请更新到带 Apple TV 支持的 S2Arm 版本。",
+  "en": "This S2Arm installation doesn't include the Apple TV shell, so this computer can't build Apple TV versions. Update to an S2Arm version with Apple TV support."
+ },
+ {
   "source": "这个 S2Arm 安装包不完整（缺 Apple TV 签名权限文件），请重新下载 S2Arm。",
   "en": "This S2Arm installation is incomplete (the Apple TV signing entitlements file is missing). Download S2Arm again."
  },

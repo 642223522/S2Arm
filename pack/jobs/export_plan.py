@@ -33,7 +33,7 @@ from errors import Failure, library_lock_failure
 import filelock
 
 OPERATION = {"mac": "build", "iphone": "ipa", "appletv": "ipa"}   # Apple TV：同一个 ipa 作业，请求带 platform = "tvos"（tvOS 壳与 image/tvos 由出包流程出）
-SUPPORTED = ("mac", "iphone", "appletv") if sys.platform == "darwin" else ("iphone",)   # 这台电脑能出的平台：Mac 版只能在 Mac 上出
+SUPPORTED = ("mac", "iphone", "appletv") if sys.platform == "darwin" else ("iphone", "appletv")   # 这台电脑能出的平台：Mac 版只能在 Mac 上出；Apple TV 包 Windows 也能出（要安装包带的 Shell-tvOS，tvos.derive）
 UNSUPPORTED_MESSAGE = "这台电脑出不了这个平台的包"
 CHILD_ENTRY = Path(__file__).resolve().with_name("main.py")
 CHILD_KEYS_DROPPED = ("plan", "taskId", "jobId", "operation", "gameId", "target", "followUp", "location", "spaceOverride", "parentPid")
