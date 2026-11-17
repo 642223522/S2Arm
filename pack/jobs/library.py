@@ -1140,6 +1140,9 @@ def inspect(c, source, icon_dir, keyfile=None, *, source_id=None):
             raise Failure("缺少内容对应的票据或标题密钥，请检查源文件是否完整。", code="ticket_missing") from None
         if any(line.startswith("【原因 keys_missing】") for line in lines):  # 非玩家句
             raise Failure("现有 prod.keys 缺少读取此文件所需的密钥。", code="keys_outdated") from None
+        # 解不开、但同一份文件里同代密钥的别的内容能解开（#1511 再判：玩家换两组密钥同处坏、控制数据能读）：密钥是对的，是文件本身被改过 / 坏了
+        if any(line.startswith("【原因 content_damaged】") for line in lines):  # 非玩家句
+            raise Failure("这份文件的内容被改过或损坏了：同一份文件里用同一代密钥的其它内容能正常解开，密钥是对的。请换一份原版完整的文件（XCI / NSP）再导入。", code="content_invalid") from None
         # 解出来的数据对不上（分区头魔数不对，#1511）：prod.keys 里这款那一代的密钥不对，同「缺密钥」让玩家重新导出 prod.keys，原话说清是解不开、不是文件被改过
         if any(line.startswith("【原因 keys_wrong】") for line in lines):  # 非玩家句
             raise Failure("现有 prod.keys 解不开这份文件：解出来的数据对不上，多半是这款用的那一代密钥不对。请用升级到最新系统的 Switch 重新导出 prod.keys 再导入。"

@@ -10222,5 +10222,9 @@
  {
   "source": "这份文件要 master_key_{0}，你的 prod.keys 有到 master_key_{1}：代数够，多半是这一行的值不对。",
   "en": "This file needs master_key_{0}, and your prod.keys goes up to master_key_{1}: the generation is there, so that key's value is most likely wrong."
+ },
+ {
+  "source": "这份文件的内容被改过或损坏了：同一份文件里用同一代密钥的其它内容能正常解开，密钥是对的。请换一份原版完整的文件（XCI / NSP）再导入。",
+  "en": "This file's content has been modified or is damaged: other content in the same file uses the same key generation and decrypts fine, so your keys are correct. Import an original, complete file (XCI / NSP) instead."
  }
 ]

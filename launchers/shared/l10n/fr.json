@@ -2787,6 +2787,7 @@
   "缺少内容对应的票据或标题密钥，请检查源文件是否完整。": "Le ticket ou la clé de titre du contenu est manquant. Vérifiez que le fichier source est complet.",
   "核对源文件是否含有所需票据。": "Vérifiez que le fichier source contient le ticket requis.",
   "现有 prod.keys 缺少读取此文件所需的密钥。": "Votre fichier prod.keys ne contient pas les clés nécessaires pour lire ce fichier.",
+  "这份文件的内容被改过或损坏了：同一份文件里用同一代密钥的其它内容能正常解开，密钥是对的。请换一份原版完整的文件（XCI / NSP）再导入。": "Le contenu de ce fichier a été modifié ou est endommagé : d'autres contenus du même fichier utilisent la même génération de clés et se déchiffrent correctement, vos clés sont donc bonnes. Importez plutôt un fichier original et complet (XCI / NSP).",
   "现有 prod.keys 解不开这份文件：解出来的数据对不上，多半是这款用的那一代密钥不对。请用升级到最新系统的 Switch 重新导出 prod.keys 再导入。": "Votre prod.keys actuel ne peut pas déchiffrer ce fichier : les données déchiffrées ne correspondent pas, probablement parce que la génération de clés utilisée par ce jeu est incorrecte. Réexportez prod.keys depuis une Switch à jour avec la dernière version du système, puis importez à nouveau.",
   "这份文件要 master_key_{0}，你的 prod.keys 只到 master_key_{1}：不够新。": "Ce fichier nécessite master_key_{0}, mais votre prod.keys s'arrête à master_key_{1} : il n'est pas assez récent.",
   "这份文件要 master_key_{0}，你的 prod.keys 有到 master_key_{1}：代数够，多半是这一行的值不对。": "Ce fichier nécessite master_key_{0} et votre prod.keys va jusqu'à master_key_{1} : la génération est présente, c'est donc très probablement la valeur de cette ligne qui est incorrecte.",

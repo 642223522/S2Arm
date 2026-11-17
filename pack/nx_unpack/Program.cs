@@ -151,6 +151,8 @@ static partial class P {
                 return ("ticket_missing", "缺少内容对应的票据或标题密钥，请检查源文件是否完整");
             case LibHac.Common.Keys.MissingKeyException m:
                 return ("keys_missing", $"prod.keys 里没有 {m.Name}：这款游戏用了更新的密钥版本，要用系统版本更新的 Switch 重新导出 prod.keys（{first}）");
+            case HorizonResultException h when MagicFail(h) && SiblingDecrypts() is string ok:
+                return ("content_damaged", $"解出来的数据对不上（分区头不是 PFS0 / HFS0，{first}）：同一份文件里{ok}用同一代密钥能正常解开，密钥是对的，是这份内容本身被改过或损坏了。请换一份原版完整的文件（XCI / NSP）再导入");
             case HorizonResultException h when MagicFail(h):
                 return ("keys_wrong", $"解出来的数据对不上（分区头不是 PFS0 / HFS0，{first}）：多半是 prod.keys 里这款用的那一代密钥不对（文件改过不会这样，只会哈希对不上）。{KeyGenNote()}请用升级到最新系统的 Switch 重新导出 prod.keys 再导入");
             case HorizonResultException h when h.Message.Contains("VerificationFailed"):
@@ -202,6 +204,33 @@ static partial class P {
     internal static (int Need, int Top, bool Rights)? KeyGen;   // KeyGenNote 算出来的（读出 NCA 头才有）：随【原因 keys_wrong】多打一行【密钥代】给作业层拼玩家句
     internal static void KeyGenLine(string code) {
         if (code == "keys_wrong" && KeyGen is var (n, t, r)) Console.Error.WriteLine($"【密钥代】{n:x2}\t{(t < 0 ? "-" : t.ToString("x2"))}\t{(r ? 1 : 0)}");
+    }
+    // #1511：解不开不一定是密钥不对。同一次读取里，同一代密钥、同样有无 rights id（同一把密钥区密钥 / 同一种标题密钥）的 NCA，
+    //   有的解出来对、有的不对 → 密钥是对的，是解不对的那份被改过或坏了（玩家换两组密钥同处坏、控制数据照常能读）。
+    //   判「解出来对不对」：每个 NCA 第一个 AesCtr / AesXts 段解密后的开头——PFS0 段是「PFS0」、RomFS 段头长 0x50（不加密的段用什么密钥都能读，不算；
+//   更新的补丁段 AesCtrEx 离了本体读不出，也不算）。
+    //   → 能正常解开的那份的说明（「控制数据（内容 xxxxxxxx）」）；判不出（没有同代对照、或全都解不对）→ null，照旧按密钥报
+    internal static string SiblingDecrypts() {
+        if (Ks == null) return null;
+        var good = new Dictionary<(int, bool), string>(); var bad = new HashSet<(int, bool)>();
+        foreach (var (id, open) in Where.ToList()) {
+            try {
+                var n = new Nca(Ks, open());
+                int s = Enumerable.Range(0, 4).FirstOrDefault(i => n.SectionExists(i) && n.GetFsHeader(i).EncryptionType is NcaEncryptionType.AesCtr or NcaEncryptionType.AesXts, -1);   // 更新的补丁段（AesCtrEx）离了本体单独读不出来，不拿来作对照
+                if (s < 0) continue;
+                var key = (KeyIndex(n.Header.KeyGeneration), n.Header.HasRightsId);
+                var head = new byte[8];
+                bool right;
+                try {
+                    n.OpenStorage(s, IntegrityCheckLevel.None).Read(0, head).ThrowIfFailure();
+                    right = n.GetFsHeader(s).FormatType == NcaFormatType.Pfs0 ? head.AsSpan(0, 4).SequenceEqual("PFS0"u8) : BitConverter.ToUInt64(head) == 0x50;
+                } catch (Exception) { right = false; }
+                if (right) good.TryAdd(key, $"{n.Header.ContentType switch { NcaContentType.Control => "控制数据", NcaContentType.Program => "程序", NcaContentType.Manual => "说明书", NcaContentType.Meta => "内容清单", _ => "数据" }}（内容 {id[..Math.Min(8, id.Length)]}）");
+                else bad.Add(key);
+            } catch (Exception) { }
+        }
+        foreach (var k in bad) if (good.TryGetValue(k, out var who)) return who;
+        return null;
     }
     internal static string KeyGenNote() {
         if (Ks == null) return "";   // 还没读 prod.keys 就失败（单测钩子）：不补这句
