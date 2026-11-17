@@ -9926,5 +9926,25 @@
  {
   "source": "这台电脑连不上苹果的服务器（Impactor 登录和签名都要连），不是 Apple ID 或密码的问题。检查这台电脑的网络：浏览器能打开 appleid.apple.com 就再点一次「装到 iPhone」；打不开就换个 DNS（如 223.5.5.5 或 1.1.1.1）或开 / 关代理后再装。手机、已装的 App 和存档都没动。",
   "en": "This computer cannot reach Apple's servers (Impactor needs them to sign in and to sign). This is not a problem with your Apple ID or password. Check this computer's network: if a browser can open appleid.apple.com, click Install to iPhone again; if it cannot, switch DNS (for example 1.1.1.1) or turn your proxy on or off, then install again. Your phone, installed apps and saves were not touched."
+ },
+ {
+  "source": "有几张开发者证书，这台设备还没选用哪一张：在启动器里给这台选一张证书再装。",
+  "en": "Several developer certificates are saved and none is chosen for this device yet. Choose one for it in the launcher, then install again."
+ },
+ {
+  "source": "在出包页「我的开发者证书」里给这台设备选一张证书，再点「重试」。",
+  "en": "On the export page, under “My developer certificate”, choose a certificate for this device, then click “Retry”."
+ },
+ {
+  "source": "没有这张证书。",
+  "en": "That certificate isn't saved on this computer."
+ },
+ {
+  "source": "这台设备还没选证书",
+  "en": "Choose a certificate for this device"
+ },
+ {
+  "source": "存着几张开发者证书，不知道这台用哪一张。",
+  "en": "Several developer certificates are saved, and none is chosen for this device."
  }
 ]

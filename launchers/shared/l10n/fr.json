@@ -1034,7 +1034,17 @@
   "export.appleTV.none": "Aucune Apple TV jumelée pour l'instant : mettez la TV sur le même réseau que ce Mac et jumelez-la une fois dans Devices and Simulators de Xcode.",
   "export.appleTV.offline": "{0} (hors ligne)",
   "export.appleTV.refresh": "Actualiser",
-  "phone.done.export.unwritten": "Cette fois, seul le .img du jeu choisi a été écrit. Aucun .img pour {0} : s'ils sont déjà sur votre téléphone, ils fonctionnent toujours ; sinon, choisissez ce jeu dans la bibliothèque et exportez à nouveau."
+  "phone.done.export.unwritten": "Cette fois, seul le .img du jeu choisi a été écrit. Aucun .img pour {0} : s'ils sont déjà sur votre téléphone, ils fonctionnent toujours ; sinon, choisissez ce jeu dans la bibliothèque et exportez à nouveau.",
+  "export.sign.change": "Changer le certificat de cet appareil…",
+  "export.sign.add": "Importer un autre certificat…",
+  "export.sign.deleteOneConfirm": "Supprimer ce certificat de développeur avec son profil et son mot de passe ? Les appareils qui l'utilisent passeront à un autre certificat lors de leur prochaine installation",
+  "export.sign.choose.title": "Quel certificat pour « {0} » ?",
+  "export.sign.choose.notListed": "Cet appareil ne figure pas dans le profil : l'app ne s'installera pas",
+  "export.sign.choose.installed": "Le S2Arm de cet appareil l'utilise actuellement",
+  "export.sign.choose.newApp": "Son identifiant de bundle diffère de celui de l'app sur cet appareil : un second S2Arm sera installé, et les jeux et sauvegardes de l'actuel y restent",
+  "export.sign.choose.use": "Utiliser ce certificat",
+  "export.sign.choose.later": "Plus tard",
+  "export.sign.choose.anyway": "L'utiliser quand même"
  },
  "text": {
   "满屏补丁（按屏幕比例自动选）": "Correctif plein écran (choisi selon votre ratio d'écran)",
@@ -3871,6 +3881,11 @@
   "这款选的下游方案是独立 App，资源要由电脑推进去：连上手机后点「装到 iPhone」；想导出自签包就在确认页改选「仍用原版方案」。": "Le portage choisi pour ce jeu est une app distincte dont les ressources sont copiées depuis votre ordinateur : branchez votre téléphone et cliquez sur Installer sur l'iPhone. Pour exporter un paquet à signer vous-même, choisissez Garder la voie standard sur la page de confirmation.",
   "这款用的是 {0} 方案（独立 App），现在只能「装到 iPhone」，还不能导出自签包。": "Ce jeu utilise {0} (une app distincte) : pour l'instant il ne peut être installé qu'avec Installer sur l'iPhone, pas exporté en paquet à signer vous-même.",
   "下游方案只能装到 iPhone": "Ce portage ne peut être installé que sur l'iPhone",
-  "这款选了下游深度方案（独立 App），它的资源要由电脑推进手机，导出的自签包里装不下。": "Ce jeu utilise un portage dédié (une app distincte). Ses ressources sont copiées sur le téléphone depuis votre ordinateur, elles ne peuvent donc pas aller dans un paquet exporté à signer vous-même."
+  "这款选了下游深度方案（独立 App），它的资源要由电脑推进手机，导出的自签包里装不下。": "Ce jeu utilise un portage dédié (une app distincte). Ses ressources sont copiées sur le téléphone depuis votre ordinateur, elles ne peuvent donc pas aller dans un paquet exporté à signer vous-même.",
+  "有几张开发者证书，这台设备还没选用哪一张：在启动器里给这台选一张证书再装。": "Plusieurs certificats de développeur sont enregistrés et aucun n'est encore choisi pour cet appareil. Choisissez-en un dans le lanceur, puis réinstallez.",
+  "在出包页「我的开发者证书」里给这台设备选一张证书，再点「重试」。": "Sur la page d'exportation, sous « Mon certificat de développeur », choisissez un certificat pour cet appareil, puis cliquez sur « Réessayer ».",
+  "没有这张证书。": "Ce certificat n'est pas enregistré sur cet ordinateur.",
+  "这台设备还没选证书": "Choisissez un certificat pour cet appareil",
+  "存着几张开发者证书，不知道这台用哪一张。": "Plusieurs certificats de développeur sont enregistrés et aucun n'est choisi pour cet appareil."
  }
 }

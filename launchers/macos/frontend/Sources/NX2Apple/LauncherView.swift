@@ -172,6 +172,7 @@ struct LauncherView: View {
             Button(txt("update.after.ok"), role: .cancel) { model.updateGate = nil }
         } message: { Text(txt((model.updateGate ?? "update.gate.busy") + ".body")) }
         .sheet(isPresented: $model.showKeys) { ImportSheet(model: model, kind: .keys).environmentObject(loc) }
+        .sheet(item: $model.devCertChoice) { DevCertChooseSheet(model: model, choice: $0).environmentObject(loc) }   // 几张证书：这台第一次连上时问用哪张（#487）
         .sheet(isPresented: $model.showEnvironment) {
             EnvironmentView(model: model).environmentObject(loc)
         }

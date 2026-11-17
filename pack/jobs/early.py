@@ -52,10 +52,10 @@ class EarlyInstall:
     def __init__(self, c, gid, env, out):
         import install as inst
         self.c, self.gid, self.inst, self.env = c, gid, inst, env
-        self.team = inst.devcert.team(c) or inst.pick_team(inst.xcode_teams(env), c.r.get("teamId"))
         self.dev = inst.phone(c)
         self.udid = inst.udid_of(c, self.dev["id"])
-        self.bid = inst.container_bundle_id(self.team["id"], c)
+        inst.devcert.bind(c, self.udid)   # 几张证书时按这台挑（#487）：先认设备再读证书团队
+        self.team = inst.devcert.team(c) or inst.pick_team(inst.xcode_teams(env), c.r.get("teamId"))
         self.ready = c.logs / (c.task + "-early.ready")
         self.ready.unlink(missing_ok=True)
         self.log = c.logs / (c.task + "-early.log")

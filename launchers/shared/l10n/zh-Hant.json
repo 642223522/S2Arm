@@ -1034,7 +1034,17 @@
   "welcome.step.keys.panel": "選擇從你的 Switch 匯出的 prod.keys",
   "welcome.step.keys.done": "金鑰已就緒",
   "welcome.step.games.title": "新增你的遊戲",
-  "welcome.step.games.what": "NSP、XCI、NUP 檔案或解包好的遊戲資料夾都可以。"
+  "welcome.step.games.what": "NSP、XCI、NUP 檔案或解包好的遊戲資料夾都可以。",
+  "export.sign.change": "換這台的憑證…",
+  "export.sign.add": "再匯入一張…",
+  "export.sign.deleteOneConfirm": "刪除這張開發者憑證和它的描述檔、密碼？用它的裝置下次安裝時換用別的憑證",
+  "export.sign.choose.title": "「{0}」用哪張憑證",
+  "export.sign.choose.notListed": "描述檔裡沒有這台，簽出來裝不上",
+  "export.sign.choose.installed": "這台上的 S2Arm 現在用的就是它",
+  "export.sign.choose.newApp": "套件 ID 和這台現裝的不同：會另裝一個 S2Arm，原來那個裡的遊戲和存檔留在原處",
+  "export.sign.choose.use": "用這張",
+  "export.sign.choose.later": "以後再說",
+  "export.sign.choose.anyway": "仍然用這張"
  },
  "text": {
   "直连": "直連",
@@ -3910,6 +3920,11 @@
   "这个免费 Apple ID 7 天内注册的包名已满 10 个，小组件要多注册一个（App 照常装上，额度恢复后再装一次就带上）": "這個免費 Apple ID 7 天內註冊的套件名稱已滿 10 個，小工具要多註冊一個（App 照常裝上，額度恢復後再裝一次就帶上）",
   "这次没装小组件：{0}": "這次沒裝小工具：{0}",
   "用你自己的开发者证书签名只有主程序一份描述文件，签不了小组件": "用你自己的開發者憑證簽名只有主程式一份描述檔，簽不了小工具",
-  "没写构建号：文件名改成「<16 位构建号>.txt」或首行加 BID=<构建号> 才能编进 iPhone 包。": "沒寫構建號：檔名改成「<16 位構建號>.txt」或首行加 BID=<構建號> 才能編進 iPhone 包。"
+  "没写构建号：文件名改成「<16 位构建号>.txt」或首行加 BID=<构建号> 才能编进 iPhone 包。": "沒寫構建號：檔名改成「<16 位構建號>.txt」或首行加 BID=<構建號> 才能編進 iPhone 包。",
+  "有几张开发者证书，这台设备还没选用哪一张：在启动器里给这台选一张证书再装。": "有幾張開發者憑證，這台裝置還沒選用哪一張：在啟動器裡給這台選一張憑證再安裝。",
+  "在出包页「我的开发者证书」里给这台设备选一张证书，再点「重试」。": "在匯出頁「我的開發者憑證」裡給這台裝置選一張憑證，再點「重試」。",
+  "没有这张证书。": "沒有這張憑證。",
+  "这台设备还没选证书": "這台裝置還沒選憑證",
+  "存着几张开发者证书，不知道这台用哪一张。": "存著幾張開發者憑證，不知道這台用哪一張。"
  }
 }
