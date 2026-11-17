@@ -315,6 +315,7 @@ void mtl_sub_fill(uint64_t dst, uint64_t n, uint32_t value);   // in-order buffe
 void nvn_be_exec_rest(const uint64_t *handles, int n);   // Tells which handles in this submission still follow the current handle (used by the pass lookahead across handles)
 // Present: draw the swapchain texture to the front-end CAMetalLayer (only counts when there is no window)
 void nvn_be_present_prepare(const tex_t *t);   // Under the front end's submit lock: initialize a texture first used by present before handing it to the present thread
+void nvn_be_present_target(int interval, uint64_t set_ns);   // Before each present: the present interval the game asks for right now and when it set it (now_ns); logging only (per-target segments in the 5-second timing lines), never changes pacing
 uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]);   // Enqueue a present and return the ticket immediately; period_s: minimum time this image is displayed (= present period, 0 = unlimited)
 void nvn_be_present_wait(uint64_t ticket);                    // Wait until the present with this ticket has been processed (blit committed to the GPU queue)
 void mtl_present_flush(void);                              // Wait until all enqueued presents have been processed
