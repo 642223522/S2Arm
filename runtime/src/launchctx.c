@@ -244,6 +244,37 @@ static int program_sha_check(const char *game_data, const char *gid, const char 
     if (strcasecmp(hex, want)) { WHY("游戏 %s 的程序库和程序包清单不是同一次出的（SHA-256 %.12s…，清单 %.12s…）：要在电脑上重新签名推回去", gid, hex, want); return 1; }
     return 0;
 }
+// 本款程序包（game_data = 这款资源包根）：清单不在 → 0；在 → 写随行目录 <程序包>/Games/<gid> 与镜像包 <程序包>/<清单 image>、回 1；
+//   清单读不了 / 没这款 / image 不合规 / 缺件 → -1（why 写原因）。module_dir、images 各 S2A_LCTX_PATH 字节
+static int program_paths(const char *game_data, const char *gid, char *module_dir, char *images, char *why, size_t why_n) {
+    char pc[S2A_LCTX_PATH], rel[300], img[160] = ""; size_t n;
+    if (s2a_program_catalogue_path(pc, sizeof pc, game_data) || !is_file(pc)) return 0;
+    char *buf = slurp(pc, &n, why, why_n);
+    if (!buf) return -1;
+    const char *os, *oe; int hit = find_obj(buf, n, gid, &os, &oe), ok = hit && obj_str(os, oe, "image", img, sizeof img); free(buf);
+    if (!hit) { WHY("程序包清单 %s 里没有 %s：清单和程序不是同一次出的", pc, gid); return -1; }
+    if (!ok || !id_ok(img) || img[0] == '.') { WHY("程序包清单 %s 的 image 不合规（只收 [A-Za-z0-9._-]、不以 . 开头）", pc); return -1; }
+    char *sl = strrchr(pc, '/'); *sl = 0;   // pc → 程序包目录
+    snprintf(rel, sizeof rel, "Games/%s", gid);
+    if (join(module_dir, pc, rel) || !is_dir(module_dir)) { WHY("游戏 %s 的程序包随行目录 %s 不在", gid, module_dir); return -1; }
+    if (join(images, pc, img) || !is_file(images)) { WHY("游戏 %s 的程序包镜像包 %s 不在", gid, images); return -1; }
+    return 1;
+}
+int s2a_program_game_paths(const char *home, const char *gid, char *module_dir, char *images, char *why, size_t why_n) {
+    char hd[S2A_LCTX_PATH], docs[S2A_LCTX_PATH], gd[S2A_LCTX_PATH], rel[300];
+    if (!gid || !id_ok(gid) || gid[0] == '.' || strlen(gid) > 200) { WHY("游戏编号「%s」不合规", gid ? gid : ""); return -1; }
+    snprintf(rel, sizeof rel, "games/%s", gid);
+    if (join(hd, home && *home ? home : ".", S2A_CONTAINER_DOCS_REL) || join(docs, hd, rel) || s2a_pack_root(gd, sizeof gd, docs) >= (int)sizeof gd) { WHY("HOME 太长"); return -1; }
+    return program_paths(gd, gid, module_dir, images, why, why_n);
+}
+int s2a_program_games_root(char *out, size_t n, const char *home) {
+    char hd[S2A_LCTX_PATH], docs[S2A_LCTX_PATH];   // 按一款占位编号 0 的资源包根 <根>/0/资源包 退两级，和 s2a_pack_root 同一套位置判定（备用位置在就是它）
+    if (join(hd, home && *home ? home : ".", S2A_CONTAINER_DOCS_REL) || join(docs, hd, "games/0")) return -1;
+    int r = s2a_pack_root(out, n, docs); if (r <= 0 || r >= (int)n) return -1;
+    static const char tail[] = "/0/资源包"; size_t l = strlen(out), t = sizeof tail - 1;
+    if (l <= t || strcmp(out + l - t, tail)) return -1;
+    out[l - t] = 0; return 0;
+}
 int s2a_launch_ctx_resolve_game(s2a_launch_ctx *c, const char *b, const char *home, const char *gid, char *why, size_t why_n) {
     memset(c, 0, sizeof *c);
     if (why && why_n) why[0] = 0;
@@ -251,7 +282,7 @@ int s2a_launch_ctx_resolve_game(s2a_launch_ctx *c, const char *b, const char *ho
     if (!home || !*home) home = ".";
     // gid 进路径（Games/<gid>、S2AImages-<gid>.dylib、Documents/games/<gid>）：只收 [A-Za-z0-9._-]、不以 . 开头（挡 .. 与隐藏目录）
     if (!gid || !id_ok(gid) || gid[0] == '.' || strlen(gid) >= sizeof c->game_id) { WHY("游戏编号「%s」不合规（只收 [A-Za-z0-9._-]、不以 . 开头、≤127 字）", gid ? gid : ""); return -1; }
-    char p[S2A_LCTX_PATH], rel[300], hd[S2A_LCTX_PATH], pc[S2A_LCTX_PATH];
+    char p[S2A_LCTX_PATH], rel[300], hd[S2A_LCTX_PATH];
     // 文档根 / 资源包根先算：资源包根：Library/Application Support/S2Arm/games/<游戏号>/资源包（s2a_docs.h s2a_pack_root，v0.3.0 挪出 Documents）；存档仍在本款文档根下
     snprintf(rel, sizeof rel, "games/%s", gid);
     if (join(hd, home, S2A_CONTAINER_DOCS_REL) || join(c->docs, hd, rel) || s2a_pack_root(c->game_data, sizeof c->game_data, c->docs) >= (int)sizeof c->game_data) {
@@ -259,16 +290,9 @@ int s2a_launch_ctx_resolve_game(s2a_launch_ctx *c, const char *b, const char *ho
     // 通用壳（11-16）：资源包根旁有程序包 program/catalogue.json → 这款的程序（镜像包 + 随行目录）从程序包取，App 包里没有它也行；
     //   清单是写入的最后一步（电脑端先写 dylib、Games/，最后改名写清单），清单在 = 程序包写完。没有清单 → 照旧取 App 包内（过渡：程序都挪出 App
     //   且各台手机推过一次新壳后删掉这一支）
-    if (!s2a_program_catalogue_path(pc, sizeof pc, c->game_data) && is_file(pc)) {
-        size_t n; char *buf = slurp(pc, &n, why, why_n), img[160] = "";
-        if (!buf) { memset(c, 0, sizeof *c); return -1; }
-        const char *os, *oe; int hit = find_obj(buf, n, gid, &os, &oe), ok = hit && obj_str(os, oe, "image", img, sizeof img); free(buf);
-        if (!hit) { WHY("程序包清单 %s 里没有 %s：清单和程序不是同一次出的", pc, gid); memset(c, 0, sizeof *c); return -1; }
-        if (!ok || !id_ok(img) || img[0] == '.') { WHY("程序包清单 %s 的 image 不合规（只收 [A-Za-z0-9._-]、不以 . 开头）", pc); memset(c, 0, sizeof *c); return -1; }
-        char *sl = strrchr(pc, '/'); *sl = 0;   // pc → 程序包目录
-        snprintf(rel, sizeof rel, "Games/%s", gid);
-        if (join(c->module_dir, pc, rel) || !is_dir(c->module_dir)) { WHY("游戏 %s 的程序包随行目录 %s 不在", gid, c->module_dir); memset(c, 0, sizeof *c); return -1; }
-        if (join(c->images, pc, img) || !is_file(c->images)) { WHY("游戏 %s 的程序包镜像包 %s 不在", gid, c->images); memset(c, 0, sizeof *c); return -1; }
+    int fp = program_paths(c->game_data, gid, c->module_dir, c->images, why, why_n);
+    if (fp < 0) { memset(c, 0, sizeof *c); return -1; }
+    if (fp) {
         c->from_program = 1;
     } else {
         if (join(p, b, "s2a_catalogue.json")) { WHY("App 包目录太长"); memset(c, 0, sizeof *c); return -1; }

@@ -68,6 +68,11 @@ int s2a_launch_ctx_select_kind(void);
 int s2a_host_abi_check(const char *program_catalogue, const char *app_catalogue, const char *gid, int *have, char *why, size_t why_n);
 // 本款程序包清单的位置：<资源包根的上一级>/program/catalogue.json（资源包根见 s2a_docs.h s2a_pack_root）；程序挪出 App 之前不存在
 int s2a_program_catalogue_path(char *out, size_t n, const char *game_data);
+// 本款程序包（<程序包根>/<游戏号>/program/）：有清单 → 写随行目录与镜像包路径（各 S2A_LCTX_PATH 字节）、回 1；没有程序包 → 0；清单读不了 / 没这款 / 缺件 → -1。
+//   s2a_launch_ctx_resolve_game 同一套取法；多款容器构造期算地址窗口时（vawin.c s2a_window_container_need）逐款调
+int s2a_program_game_paths(const char *home, const char *gid, char *module_dir, char *images, char *why, size_t why_n);
+// 各款程序包 / 资源包所在的根（<容器>/Library/Application Support/S2Arm/games，备用位置在就取它，同 s2a_pack_root）：构造期列出只在程序包里、App 包里没有的游戏
+int s2a_program_games_root(char *out, size_t n, const char *home);
 // 游戏库画卡片时预判（主线程，多款容器）：本进程 App 包里这款的程序约定号对不上本宿主 → 1（卡片标「需要在电脑上更新」）；对得上 / 不是容器 /
 //   核不了（路径太长、清单读不了：交给点开时 s2a_launch_ctx_select 的完整校验报）→ 0。只读文件，不冻结、不改任何状态
 int s2a_launch_ctx_game_needs_update(const char *gid);
