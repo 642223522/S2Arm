@@ -2535,16 +2535,38 @@ def phone_busy(ph, games):
     return got is not False
 
 
-IDENTITY_INCOMING = "Library/Application Support/S2Arm/identity/incoming"   # App 启动时导入钥匙串、导入成功就删（手机侧，0.6.0）
+# App 一打开就导入钥匙串、立刻删这三份（11-17 维护者：私钥是玩家自己的，进他自己账号的加密备份也无妨，不另放 Caches）。
+#   已交没交按手机上的现状判：App 导入后写的 current.json / 还没导入的 incoming 清单里是同一张证书就不重交
+IDENTITY_INCOMING = "Library/Application Support/S2Arm/identity/incoming"
+IDENTITY_CURRENT = "Library/Application Support/S2Arm/identity/current.json"   # App 导入成功后写（团队号、证书 sha1，不含私钥）
+
+
+def _identity_on_phone(c, ph, sha1):
+    """手机上这张证书已导入（current.json）或还等着导入（incoming/identity.json）→ True；都没有（从没交过 / App 删了重装）→ False"""
+    if not sha1:
+        return False
+    with tempfile.TemporaryDirectory(dir=c.private) as w:
+        cl = ph.client(w)
+        for rel in (IDENTITY_CURRENT, f"{IDENTITY_INCOMING}/identity.json"):
+            got = Path(w) / "probe.json"
+            if cl.get(rel, got):
+                try:
+                    if json.loads(got.read_text(encoding="utf-8")).get("cert_sha1") == sha1:
+                        return True
+                except ValueError:
+                    pass
+    return False
 
 
 def deliver_identity(c, ph):
-    """0.6.0 通用壳：把手机自签要的私钥 + 叶证书交给 App（cmdr 方案「私钥怎么交给 App」，开发乙 11-17 真机验过 DER 两份能配成签名身份）。
+    """0.6.0 通用壳：把手机自签要的私钥 + 叶证书交给 App（cmdr 方案「私钥怎么交给 App」，11-17 真机验过 DER 两份能配成签名身份）。
     只走本机 USB（s2a-devpush），写进 App 数据容器 IDENTITY_INCOMING：key.der（PKCS#1）、cert.der、最后改名就位的 identity.json（不含私钥）。
+    通用壳开关关着（0.6.0 前缺省）一个字节都不写。
     交得出的只有 Windows Apple ID 模式（Impactor / plumesign 的 keys/<团队>/key.pem）；Mac 现在借 Xcode 钥匙串、证书模式另做，都照旧电脑签。
-    设备记录 identity.key_fp 与本机私钥文件指纹相同 = 交过了，不联网列证书、不重交。交不出 / 推不进都不挡推送：记一行，照旧电脑签。→ 交了的证书 sha1 | None"""
+    设备记录 identity.key_fp 与本机私钥文件指纹相同、且手机上已导入或还等着导入同一张证书 = 交过了，不联网列证书、不重交。交不出 / 推不进都不挡推送：记一行，照旧电脑签。→ 交了的证书 sha1 | None"""
     import hashlib
-    if not hasattr(ph, "W") or devcert.active(c):   # 只有 Windows 的手机对象（WinPhone）带 W（Impactor / plumesign）
+    import program_pack
+    if not program_pack.enabled(c) or not hasattr(ph, "W") or devcert.active(c):   # 开关关着一个字节都不写；只有 Windows 的手机对象（WinPhone）带 W
         return None
     try:
         team = ph.W.impactor.selected_team()
@@ -2552,8 +2574,8 @@ def deliver_identity(c, ph):
         if not fp:
             return None
         done = layout.load_device(c, ph.key).get("identity") or {}
-        if done.get("team") == team and done.get("key_fp") == fp:
-            return None
+        if done.get("team") == team and done.get("key_fp") == fp and _identity_on_phone(c, ph, done.get("cert_sha1")):
+            return None   # 同一把私钥、手机上已导入或还等着导入：不联网、不重交
         exe = ph.W.plumesign_path((ph.W.impactor.bundled(c.r.get("resources")) or {}).get("plumesign"))
         ident = ph.W.plume_identity(exe, team, log=c.logs / (c.task + "-identity.log")) if exe else None
         if not ident:
