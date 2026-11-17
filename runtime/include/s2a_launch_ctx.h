@@ -56,8 +56,16 @@ const char *s2a_launch_ctx_bundle_dir(void);
 const char *s2a_launch_ctx_select(const char *gid);
 // 上一次 s2a_launch_ctx_select 被拒的类别（给玩家看的话按它选，原文只进日志）：
 //   APP_INCOMPLETE = 这款在 App 里不完整（不在清单、随行目录 / 镜像包不在）→ 在电脑上重新装到 iPhone；STORAGE = 建不了本款文档目录（多半存储满）；OTHER = 其余
-enum { S2A_SELECT_OTHER = 0, S2A_SELECT_APP_INCOMPLETE = 1, S2A_SELECT_STORAGE = 2 };
+//   NEEDS_UPDATE = 这款程序是按别的宿主约定号出的（s2a_host_abi_check 对不上，诊断码 ios_host_abi_mismatch）→ 在电脑上按新版更新这款
+enum { S2A_SELECT_OTHER = 0, S2A_SELECT_APP_INCOMPLETE = 1, S2A_SELECT_STORAGE = 2, S2A_SELECT_NEEDS_UPDATE = 3 };
 int s2a_launch_ctx_select_kind(void);
+// 宿主约定号核对（11-16，runtime/include/s2a_host_abi.h S2A_HOST_ABI）：这款产物上记的号——程序包自带的清单 program_catalogue
+//   （程序挪出 App 后随程序走的 program/catalogue.json：{schema, title_id, host_abi, chain, rewriter_id, image, image_sha256}）优先；
+//   它不在（NULL 或文件不存在）退回 App 包根清单 app_catalogue（s2a_catalogue.json）里这款的条目；都没记 host_abi = 本字段之前出的包，按 1。
+//   → 0 对得上；1 对不上（*have 写产物上的号，记成非数字时写 -1）；-1 读不了或程序清单不是这一款（why 写原因）。纯函数，不碰进程状态
+int s2a_host_abi_check(const char *program_catalogue, const char *app_catalogue, const char *gid, int *have, char *why, size_t why_n);
+// 本款程序包清单的位置：<资源包根的上一级>/program/catalogue.json（资源包根见 s2a_docs.h s2a_pack_root）；程序挪出 App 之前不存在
+int s2a_program_catalogue_path(char *out, size_t n, const char *game_data);
 // 进程内冻结一次（线程安全）：可执行文件目录取 _NSGetExecutablePath，home 取 $HOME（没有 = "."），文件取 S2A_LAUNCH_CTX。
 //   文件来源时把四个根写进进程环境。失败回 NULL，原因见 s2a_launch_ctx_error()（宿主 main 开头据此停）。
 //   多款容器模式：s2a_launch_ctx_select 成功之前一律回 NULL（error =「还没选游戏」），之后回本款

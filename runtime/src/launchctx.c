@@ -3,6 +3,7 @@
 #include "native.h"
 #include "s2a_launch_ctx.h"
 #include "s2a_docs.h"   // 多款容器每款资源包根（s2a_pack_root）
+#include "s2a_host_abi.h"   // S2A_HOST_ABI：宿主读产物的约定号（选游戏时核）
 #include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -128,6 +129,79 @@ static int catalogue_has(const char *path, const char *gid, char *why, size_t wh
     free(buf);
     return hit;
 }
+// ---------- 宿主约定号核对（11-16）：清单 JSON 里找这款的对象，取 host_abi ----------
+// 跳过一个 JSON 字符串（p 指向开头的引号）→ 结尾引号之后；没闭合 → NULL
+static const char *skip_str(const char *p, const char *e) {
+    for (p++; p < e; p++) { if (*p == '\\') { p++; continue; } if (*p == '"') return p + 1; }
+    return NULL;
+}
+static const char *skip_ws(const char *p, const char *e) { while (p < e && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) p++; return p; }
+// 对象 [s, e)（s 指向 {）里本层的键 key 的值的开头；没有 → NULL。嵌套对象 / 数组里的同名键不算
+static const char *obj_value(const char *s, const char *e, const char *key) {
+    size_t kl = strlen(key); int depth = 0;
+    for (const char *p = s; p < e; ) {
+        if (*p == '"') {
+            const char *q = skip_str(p, e); if (!q) return NULL;
+            if (depth == 1) { const char *c = skip_ws(q, e); if (c < e && *c == ':' && (size_t)(q - p - 2) == kl && !memcmp(p + 1, key, kl)) return skip_ws(c + 1, e); }
+            p = q; continue;
+        }
+        if (*p == '{' || *p == '[') depth++;
+        else if (*p == '}' || *p == ']') depth--;
+        p++;
+    }
+    return NULL;
+}
+// 整份清单里 title_id == gid 的那个对象 → 它的 host_abi（没记 = 1，记成非数字 = -1）；回 1 找到、0 没这款
+static int find_abi(const char *buf, size_t n, const char *gid, int *abi) {
+    const char *e = buf + n, *st[32]; int sp = 0; size_t gl = strlen(gid);
+    for (const char *p = buf; p < e; ) {
+        if (*p == '"') { p = skip_str(p, e); if (!p) return 0; continue; }
+        if (*p == '{') { if (sp < 32) st[sp] = p; sp++; }
+        else if (*p == '}' && sp > 0) {
+            sp--;
+            if (sp < 32) {
+                const char *v = obj_value(st[sp], p + 1, "title_id");
+                if (v && *v == '"' && v + 1 + gl < e && !memcmp(v + 1, gid, gl) && v[1 + gl] == '"') {
+                    const char *a = obj_value(st[sp], p + 1, "host_abi");
+                    if (!a) *abi = 1;
+                    else { char *end; long x = strtol(a, &end, 10); *abi = end > a && x >= 0 && x < 1000000 ? (int)x : -1; }
+                    return 1;
+                }
+            }
+        }
+        p++;
+    }
+    return 0;
+}
+static char *slurp(const char *path, size_t *n, char *why, size_t why_n) {
+    FILE *f = fopen(path, "r");
+    if (!f) { WHY("清单 %s 打不开（errno %d）", path, errno); return NULL; }
+    enum { CAP = 4 << 20 }; char *buf = malloc(CAP + 1); *n = buf ? fread(buf, 1, CAP + 1, f) : 0; fclose(f);
+    if (!buf) { WHY("清单：内存不够"); return NULL; }
+    if (*n > CAP) { free(buf); WHY("清单 %s 超过 4 MB", path); return NULL; }
+    buf[*n] = 0; return buf;
+}
+int s2a_host_abi_check(const char *program_catalogue, const char *app_catalogue, const char *gid, int *have, char *why, size_t why_n) {
+    if (why && why_n) why[0] = 0;
+    int abi = 1; size_t n; char *buf;
+    if (program_catalogue && *program_catalogue && is_file(program_catalogue)) {   // 程序包自带的清单：随程序走，以它为准；不是这一款 = 清单和程序不是一套
+        if (!(buf = slurp(program_catalogue, &n, why, why_n))) return -1;
+        int hit = find_abi(buf, n, gid, &abi); free(buf);
+        if (!hit) { WHY("程序清单 %s 里没有 %s：清单和程序不是同一次出的", program_catalogue, gid); return -1; }
+    } else if (app_catalogue && *app_catalogue) {   // 程序还在 App 里：看 App 包根清单这款的条目；没有这款同「没记」（成员另由 catalogue_has 核）
+        if (!(buf = slurp(app_catalogue, &n, why, why_n))) return -1;
+        find_abi(buf, n, gid, &abi); free(buf);
+    }
+    if (have) *have = abi;
+    return abi == S2A_HOST_ABI ? 0 : 1;
+}
+int s2a_program_catalogue_path(char *out, size_t n, const char *game_data) {
+    const char *sl = game_data ? strrchr(game_data, '/') : NULL;
+    if (!sl || (size_t)(sl - game_data) + sizeof "/program/catalogue.json" > n) return -1;
+    snprintf(out, n, "%.*s/program/catalogue.json", (int)(sl - game_data), game_data);
+    return 0;
+}
+
 int s2a_launch_ctx_resolve_game(s2a_launch_ctx *c, const char *b, const char *home, const char *gid, char *why, size_t why_n) {
     memset(c, 0, sizeof *c);
     if (why && why_n) why[0] = 0;
@@ -210,6 +284,15 @@ const char *s2a_launch_ctx_select(const char *gid) {
     if (g_selected) { snprintf(why, sizeof why, "本进程已经选过游戏 %s，同一进程不再起第二款：请关掉 App 重新打开", g_ctx.game_id); r = why; goto out; }
     s2a_launch_ctx c; char w[600];
     if (s2a_launch_ctx_resolve_game(&c, g_bundle, getenv("HOME"), gid, w, sizeof w)) { snprintf(why, sizeof why, "%s", w); g_sel_kind = S2A_SELECT_APP_INCOMPLETE; r = why; goto out; }
+    {   // 宿主约定号（s2a_host_abi.h）：产物是按别的约定出的就不载入——不然改写器与运行时对不上，进游戏后静默崩。对不上 → 回游戏库标「要更新」
+        char prog[S2A_LCTX_PATH], app[S2A_LCTX_PATH]; int have = 0;
+        int k = join(app, g_bundle, "s2a_catalogue.json") ? -1 : s2a_host_abi_check(s2a_program_catalogue_path(prog, sizeof prog, c.game_data) ? NULL : prog, app, gid, &have, w, sizeof w);
+        if (k == 1) {
+            snprintf(why, sizeof why, "ios_host_abi_mismatch：游戏 %s 的程序按宿主约定号 %d 出，本宿主是 %d：要在电脑上按新版更新这款", gid, have, S2A_HOST_ABI);
+            g_sel_kind = S2A_SELECT_NEEDS_UPDATE; r = why; goto out;   // 被拒原因由 out 处统一记【红】行（带诊断码进诊断包）
+        }
+        if (k < 0) { snprintf(why, sizeof why, "宿主约定号核不了：%s", w[0] ? w : "App 包目录太长"); g_sel_kind = S2A_SELECT_APP_INCOMPLETE; r = why; goto out; }
+    }
     // 本款文档根第一次用时还不在（存档 / wire / 加载页标记各自只建最后一级）：逐级建好
     for (char *q = c.docs + 1; ; q++) {
         if (*q && *q != '/') continue;
