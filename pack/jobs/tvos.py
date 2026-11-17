@@ -645,7 +645,7 @@ def write_tv_ipa(c, app, gid, pack, ipa, log):
     sha = (read(pack / "manifest.json", {}) or {}).get("index_sha256") or ""
     if not sha:
         raise Failure("这款的 Apple TV 资源包清单没写资源包号：请重新出 Apple TV 包后再导出。", code="pack_missing")
-    root = f"Payload/S2Arm.app/Games/{gid}/资源包/"
+    root = f"Payload/S2Arm.app/Games/{gid}/资源包/"  # 非玩家句
     total = sum(f.stat().st_size for _, f in entries)
     done = 0
     with zipfile.ZipFile(ipa, "a", compression=zipfile.ZIP_STORED, allowZip64=True) as z:

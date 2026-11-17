@@ -9926,5 +9926,37 @@
  {
   "source": "这台电脑连不上苹果的服务器（Impactor 登录和签名都要连），不是 Apple ID 或密码的问题。检查这台电脑的网络：浏览器能打开 appleid.apple.com 就再点一次「装到 iPhone」；打不开就换个 DNS（如 223.5.5.5 或 1.1.1.1）或开 / 关代理后再装。手机、已装的 App 和存档都没动。",
   "en": "This computer cannot reach Apple's servers (Impactor needs them to sign in and to sign). This is not a problem with your Apple ID or password. Check this computer's network: if a browser can open appleid.apple.com, click Install to iPhone again; if it cannot, switch DNS (for example 1.1.1.1) or turn your proxy on or off, then install again. Your phone, installed apps and saves were not touched."
+ },
+ {
+  "source": "Switch 2 游戏在 Apple TV 上要「扩展虚拟寻址」权限，只有付费 Apple 开发者账号签得了：在 Xcode「设置 → 账户」登录付费开发者账号或选付费团队，再装到 Apple TV（Switch 1 游戏用免费 Apple ID 就能装）。",
+  "en": "Switch 2 games need the Extended Virtual Addressing capability on Apple TV, which only a paid Apple Developer account can sign: sign in to a paid developer account (or pick a paid team) in Xcode's Settings → Accounts, then install on Apple TV again (Switch 1 games install with a free Apple ID)."
+ },
+ {
+  "source": "这款是 Switch 2 游戏，要「扩展虚拟寻址」权限才能在 Apple TV 上占到够用的地址，这项权限只有付费的 Apple 开发者账号签得了。在 Xcode 的「设置 → 账户」里登录付费开发者账号（或在团队里选付费团队）再装；Switch 1 游戏用免费 Apple ID 就能装。",
+  "en": "This is a Switch 2 game. It needs the Extended Virtual Addressing capability to reserve enough address space on Apple TV, and only a paid Apple Developer account can sign it. Sign in to a paid developer account (or pick a paid team) in Xcode's Settings → Accounts and install again; Switch 1 games install with a free Apple ID."
+ },
+ {
+  "source": "核对这款的 Apple TV 包",
+  "en": "Checking this game's Apple TV build"
+ },
+ {
+  "source": "导出完成",
+  "en": "Export finished"
+ },
+ {
+  "source": "组装 Apple TV 版 S2Arm（未签名）",
+  "en": "Assembling the Apple TV version of S2Arm (unsigned)"
+ },
+ {
+  "source": "这款的 Apple TV 资源包清单没写资源包号：请重新出 Apple TV 包后再导出。",
+  "en": "This game's Apple TV resource manifest has no pack ID. Build the Apple TV version again, then export."
+ },
+ {
+  "source": "把游戏资源打进安装包（.ipa）",
+  "en": "Putting the game resources into the installer (.ipa)"
+ },
+ {
+  "source": "这款的 Apple TV 资源包不完整（缺 {0} 或大小不对）：请重新出 Apple TV 包后再导出。",
+  "en": "This game's Apple TV resource pack is incomplete ({0} is missing or the wrong size). Build the Apple TV version again, then export."
  }
 ]

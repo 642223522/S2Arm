@@ -375,9 +375,12 @@ def _build(c):
     patches.record(c, gid, "ios", product_root(c, gid))   # 补丁打入结果（打上 / 没打上，完成页列；deliver 之前产物根还在，11-14）
     deliver(c, gid, product_root(c, gid), pack_dir, ipa)
     finish_kit_state(c, gid)
+    tv_out = None
     if c.r.get("platform") == "tvos":   # Apple TV（11-15）：同一份改写产物派生（pack/jobs/tvos.py derive），要在清解包目录之前（ASTC 预转读 romfs）
         import tvos
         tvos.derive(c, gid, extraction)
+        if c.r.get("tvExport"):   # Windows（export_plan 带）：接着导出 Apple TV 安装包，完成卡给 .ipa 的位置
+            tv_out = tvos.export_tv(c)
     prune_unless_follow_up(c, gid)
     cache_result = trim(c.work_root, current_gid=gid, skip_scan_when_free=True, **compiler_policy)   # 盘不紧就不全量扫（一条都不会删）
     from cache_retention import engine_installed_at, prune_tool_keys
@@ -399,6 +402,8 @@ def _build(c):
     image = layout.image_ios(c, gid)
     result = dict(compilerCache=cache_result, outputPath=str(image), ipa="", ipaBytes=0, packBytes=_part_bytes([image / layout.IOS_PACK]), buildId=res.get("build_id") or "", target=tgt, graphicsMode=res.get("graphics_mode") or "unknown",
                   boost=patches.boost(c, game, image, layout.game_info(c, gid).get("sgradeResult", {}).get("ios")), **({"notes": notes} if notes else {}))
+    if tv_out:
+        result.update(ipa=tv_out["ipa"], ipaBytes=tv_out["ipaBytes"], tvExport=tv_out)
     if early:   # 打完放进容器装到这台：早装推过的不再推，push_pack 按机上已解开的清单只补差量（着色器库 + 变了的小文件）
         import install as inst
         c.begin("装到 iPhone 并补推资源包（出包期间已先推 %d 个文件）" % pre.get("files", 0))

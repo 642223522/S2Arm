@@ -160,6 +160,8 @@ def _run_step(c, child, gid, platform, plan, location, followUp):
         request["target"] = plan["deviceTarget"]
     if platform == "appletv":
         request["platform"] = "tvos"
+        if sys.platform != "darwin":   # Windows 装不到电视：Apple TV 包出好接着导出安装包（.ipa，资源在 App 本体里，玩家自己签名装；tvos.export_tv）
+            request["tvExport"] = True
     if plan.get("sgrade") is False:   # 出包页取消「S 级优化（Beta）」（单款：计划顶层；批量：条目 sgrade，按款记住）：各平台都不带社区补丁与金手指（pack/jobs/patches.py prepare）
         request["sgrade"] = False
     if followUp:
