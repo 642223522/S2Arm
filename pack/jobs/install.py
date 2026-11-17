@@ -1920,6 +1920,27 @@ class MacPhone:
             return purge_game(devpush_client(self.c, self.udid, self.bid, w), g)
 
 
+CERT_REVOKE_ASK = ("这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。如果你的账号证书已满，苹果会撤掉列表里的第一张「{0}」（在 {1} 上创建，{2} 生效），"
+                   "用它签的 App（可能是 Xcode 或 AltStore 装的）会打不开；没满就什么都不撤。")
+CERT_REVOKE_ASK_NO_MACHINE = ("这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。如果你的账号证书已满，苹果会撤掉列表里的第一张「{0}」（{1} 生效），"
+                              "用它签的 App（可能是 Xcode 或 AltStore 装的）会打不开；没满就什么都不撤。")   # 苹果列表里这张没记机器名
+
+
+def win_cert_gate(c, W, exe):
+    """Windows Apple ID 签名前（11-17 维护者定）：plumesign 这次要新建开发证书、而账号里有别人的开发证书时，先问玩家——满了它会不问就撤列表第一张
+    （install_win.cert_check）。玩家点继续（请求带 acceptCertRevoke）才放行；本机私钥的证书还在 / 列表里没有别人的 / 列不出来都不问"""
+    if c.r.get("acceptCertRevoke") is True or devcert.active(c) or not exe:
+        return
+    team = W.impactor.selected_team() if hasattr(W.impactor, "selected_team") else None
+    if not team:
+        return
+    hit = W.cert_check(exe, team, log=c.logs / (c.task + "-certs.log"))
+    if hit:
+        name, created = hit["name"] or "?", hit["created"] or "?"
+        text = CERT_REVOKE_ASK.format(name, hit["machine"], created) if hit["machine"] else CERT_REVOKE_ASK_NO_MACHINE.format(name, created)
+        raise Failure(text, code="cert_revoke_confirm")
+
+
 def win_install_failure(e):
     """Windows plumesign 签名装机失败（install_win.Fail）→ 作业失败。有对应处理建议的码（free_appid_limit = Apple 9120 等）：上屏说人话的原因与办法，
     plumesign 英文原文只进诊断（Windows 实机：原先整句英文「Developer API error 9120 …」直接上屏，玩家只看到签名失败）；没有专门建议的照旧上屏原文。
@@ -2007,6 +2028,7 @@ class WinPhone:
             self.backup(g)
         if devcert.active(self.c):
             return self.install_devcert(ipa, steps)
+        win_cert_gate(self.c, self.W, self.W.plumesign_path(b.get("plumesign")))   # 满了 plumesign 会撤别人的证书：先问（11-17）
         if steps: self.c.begin("签名并装到 iPhone（Impactor 官方命令行 plumesign）", 3, 6)
         log = self.c.logs / (self.c.task + "-install.log")
         self.c.last_log = log
@@ -2472,6 +2494,7 @@ def phone_signing(c, ph):
             raise Failure("读不到 Impactor 里登录的 Apple ID：在 Impactor 里登录后再推到 iPhone。", code="xcode_account_missing")
         import ipa as packer
         exe = ph.W.plumesign_path((ph.W.impactor.bundled(c.r.get("resources")) or {}).get("plumesign"))
+        win_cert_gate(c, ph.W, exe)
         shell = Path(packer.container_shell(c, packer.current_shell_id(c))) / "root"
         return team, ph.bundle_for_signing() or ph.bid, program_pack.win_signer(c, exe, shell)
     return ph.team["id"], ph.bid, program_pack.mac_signer(c)

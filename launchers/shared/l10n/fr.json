@@ -1036,7 +1036,9 @@
   "export.appleTV.none": "Aucune Apple TV jumelée pour l'instant : mettez la TV sur le même réseau que ce Mac et jumelez-la une fois dans Devices and Simulators de Xcode.",
   "export.appleTV.offline": "{0} (hors ligne)",
   "export.appleTV.refresh": "Actualiser",
-  "phone.done.export.unwritten": "Cette fois, seul le .img du jeu choisi a été écrit. Aucun .img pour {0} : s'ils sont déjà sur votre téléphone, ils fonctionnent toujours ; sinon, choisissez ce jeu dans la bibliothèque et exportez à nouveau."
+  "phone.done.export.unwritten": "Cette fois, seul le .img du jeu choisi a été écrit. Aucun .img pour {0} : s'ils sont déjà sur votre téléphone, ils fonctionnent toujours ; sinon, choisissez ce jeu dans la bibliothèque et exportez à nouveau.",
+  "errors.cert_revoke_confirm.title": "Un autre certificat de développement risque d'être révoqué",
+  "errors.cert_revoke_confirm.detail": "Si les certificats de votre compte sont au complet, en créer un nouveau fait révoquer par Apple le premier de la liste, et les apps signées avec lui ne s'ouvrent plus ; sinon, rien n'est révoqué."
  },
  "text": {
   "满屏补丁（按屏幕比例自动选）": "Correctif plein écran (choisi selon votre ratio d'écran)",
@@ -3904,6 +3906,9 @@
   "手机空间写满了": "Le stockage de l'iPhone est plein",
   "这份游戏文件里有数据和原版对不上（多半是改版 / 整合版，或个别块损坏），已跳过完整性校验照常导入。": "Certaines données de ce fichier de jeu ne correspondent pas à l'original (généralement une version modifiée ou fusionnée, ou un bloc endommagé). La vérification d'intégrité a été ignorée et le jeu a quand même été importé.",
   "能玩就照常用；出包或游戏里出现花屏、闪退时，换一份原版完整的文件（本体与更新 / DLC 分开的那种）再试。": "S'il fonctionne, continuez à l'utiliser. En cas de problèmes d'affichage ou de plantages lors de la création du paquet ou en jeu, réessayez avec un fichier original complet (jeu de base et mises à jour / DLC séparés).",
-  "导入时这款数据校验不过（多半是改版 / 整合版或个别块损坏），这次失败可能与此有关；换一份原版完整的文件再试。": "Les données de ce jeu n'ont pas passé la vérification d'intégrité lors de l'import (généralement une version modifiée ou fusionnée, ou un bloc endommagé) ; cet échec peut en venir. Réessayez avec un fichier original complet."
+  "导入时这款数据校验不过（多半是改版 / 整合版或个别块损坏），这次失败可能与此有关；换一份原版完整的文件再试。": "Les données de ce jeu n'ont pas passé la vérification d'intégrité lors de l'import (généralement une version modifiée ou fusionnée, ou un bloc endommagé) ; cet échec peut en venir. Réessayez avec un fichier original complet.",
+  "这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。如果你的账号证书已满，苹果会撤掉列表里的第一张「{0}」（在 {1} 上创建，{2} 生效），用它签的 App（可能是 Xcode 或 AltStore 装的）会打不开；没满就什么都不撤。": "Cet ordinateur n'a aucun certificat de développement utilisable pour cet identifiant Apple : il doit en créer un. Si les certificats de votre compte sont au complet, Apple révoquera le premier de la liste, « {0} » (créé sur {1}, valide depuis le {2}), et les apps signées avec lui (peut-être installées par Xcode ou AltStore) ne s'ouvriront plus ; sinon, rien n'est révoqué.",
+  "这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。如果你的账号证书已满，苹果会撤掉列表里的第一张「{0}」（{1} 生效），用它签的 App（可能是 Xcode 或 AltStore 装的）会打不开；没满就什么都不撤。": "Cet ordinateur n'a aucun certificat de développement utilisable pour cet identifiant Apple : il doit en créer un. Si les certificats de votre compte sont au complet, Apple révoquera le premier de la liste, « {0} » (valide depuis le {1}), et les apps signées avec lui (peut-être installées par Xcode ou AltStore) ne s'ouvriront plus ; sinon, rien n'est révoqué.",
+  "点「仍然继续」就照签。想保住那一张，要先删掉一张不用的开发证书：有 Mac 的话，在 Mac 上 Xcode 的「设置 → 账户 → 管理证书」里删，删完回来再装一次。": "Cliquez sur Continuer quand même pour signer. Pour garder ce certificat, supprimez d'abord un certificat de développement que vous n'utilisez plus : si vous avez un Mac, faites-le dans Xcode sur le Mac, sous Réglages → Comptes → Gérer les certificats, puis revenez et réinstallez."
  }
 }
