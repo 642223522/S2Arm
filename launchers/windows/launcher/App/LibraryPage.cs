@@ -820,6 +820,7 @@ public sealed partial class EnvironmentWindow
         if (operation != "setup" && (connectedFolder is null || libraryId is null)) return;
         var front = BeginJob(JobKind.Library); librarySummary = operation == "catalog" ? "library.loading" : "library.working";
         libraryDiagnostics = ""; Render();
+        string? otherLibrary = null;   // 这个位置是另一个游戏库（library_id_mismatch）时的说明：作业收尾后问玩家要不要改用它
         try
         {
             if (operation == "setup")
@@ -839,11 +840,11 @@ public sealed partial class EnvironmentWindow
             {
                 var output = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder!, libraryId, operation, selectedPaths, front.Token, jobId: front.Next());
                 DisplayJob(output);
-                if (!output.Report.Succeeded) { librarySummary = "library.failed"; return; }
+                if (!output.Report.Succeeded) { librarySummary = "library.failed"; if (JobCode(output) == "library_id_mismatch") otherLibrary = output.Report.Message; return; }
             }
             var listing = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder!, libraryId, "catalog", null, front.Token, jobId: front.Next(), startup: TakeStartupCatalog());
             DisplayJob(listing);
-            if (!listing.Report.Succeeded) { librarySummary = "library.failed"; return; }
+            if (!listing.Report.Succeeded) { librarySummary = "library.failed"; if (JobCode(listing) == "library_id_mismatch") otherLibrary = listing.Report.Message; return; }
             catalog = LibraryCatalog.Parse(listing.Report.Result); ClearCovers();
             if (!catalog.Games.Any(g => g.Id == selectedGame && !g.Hidden)) selectedGame = null;
             librarySummary = "library.completed";
@@ -862,6 +863,14 @@ public sealed partial class EnvironmentWindow
         }
         finally
         { EndJob(front); Render(); }
+        // 另一个游戏库（11-17 维护者：说清是哪个、让玩家点一下确认，不直接拒、不悄悄改用）：「仍然继续」= 对这个文件夹重走选库（已有库直接打开、记下它的库号）
+        if (otherLibrary is not null && connectedFolder is not null && !closingLibrary
+            && await ConfirmInstallActionAsync("install.drop", otherLibrary, ConfirmTitle("library_id_mismatch")))
+        {
+            libraryFolder = connectedFolder;
+            await RunLibraryAsync("setup", null);
+            return;
+        }
         if (catalogAgain && !closingLibrary) { catalogAgain = false; await RunLibraryAsync("catalog", null); }
     }
 

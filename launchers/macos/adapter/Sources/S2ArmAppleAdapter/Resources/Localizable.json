@@ -6028,6 +6028,14 @@
   "en": "The game library is not connected or its ID does not match. Choose the game library again."
  },
  {
+  "source": "「{0}」（{1}）里是另一个游戏库，有 {2} 款游戏，不是 S2Arm 上次记下的那个。点「仍然继续」就改用它；不是你要的，就到设置里重新选游戏库。",
+  "en": "“{0}” ({1}) holds a different game library with {2} games, not the one S2Arm remembered. Click Continue anyway to use it; if it isn’t the one you want, choose your game library again in Settings."
+ },
+ {
+  "source": "点「仍然继续」改用这个游戏库；不是你要的，就到设置里重新选游戏库。",
+  "en": "Click Continue anyway to use this game library; if it isn’t the one you want, choose your game library again in Settings."
+ },
+ {
   "source": "游戏库里没有这款游戏。",
   "en": "This game is not in the game library."
  },
