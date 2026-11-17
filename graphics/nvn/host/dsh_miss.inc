@@ -66,7 +66,7 @@ static void dsh_dump(const char *k, const void *control, uint32_t nctl, uint64_t
     snprintf(path, sizeof path, "%s/%s.ctl", shd, k); if ((f = fopen(path, "wb"))) { fwrite(control, 1, nctl, f); fclose(f); }
     snprintf(path, sizeof path, "%s/%s.code", shd, k); if ((f = fopen(path, "wb"))) { fwrite((const void *)(uintptr_t)code, 1, ncode, f); fclose(f); }
 }
-static int dsh_stage(const uint8_t *cd, const uint8_t *ctl, uint32_t *ncode, uint32_t *nctl) {
+static int dsh_stage_raw(const uint8_t *cd, const uint8_t *ctl, uint32_t *ncode, uint32_t *nctl) {
     // Switch 2 的 NVN2 控制段（graphics/nvn/gfx/nvn/nvn2.h，版本 0xc9）：代码长在 +0x44、阶段在 +0x56（0 顶点 1 像素 2 几何 5 计算 6 任务 7 网格；外壳 / 域现编不支持），
     //   控制段取自报长度（+0x30，文件里 0xd8 / 0xe0、内存里可能是 0）、不足或认不出按最短的 0xd8；现编链（S2A.Dsh Nvn2Job）认 0xc9 走 Ampere 前端
     if (nvn2_on() && nvn2_ctl(ctl)) {
@@ -78,6 +78,28 @@ static int dsh_stage(const uint8_t *cd, const uint8_t *ctl, uint32_t *ncode, uin
     static const uint8_t gfx_magic[4] = {0x78, 0x56, 0x34, 0x12}; int t = (w >> 10) & 0xf; if (t == 0 && (w & 0x1f) == 1) t = 1;
     int st = memcmp(cd, gfx_magic, 4) ? 2 : t == 1 ? 0 : t == 5 ? 1 : t == 4 ? 3 : -1;
     return !*ncode || *ncode >= (1u << 24) || *nctl < 0x100 || *nctl >= (1u << 20) ? -1 : st;
+}
+// [p, p + n) 逐页都能读（诊断#354a81：Switch 2 控制段 +0x30 自报 25116 字节，游戏放在内存里的那段排在一块映射末尾，
+//   memcpy(e->ctl, ctl, nctl) 读到 0x7522000000 SIGBUS——调用方只核过控制段前 0x880）。vm_read_overwrite 读不到只回错，不让进程崩
+#include <mach/mach.h>
+static int dsh_bytes_ok(const void *p, uint64_t n) {
+    if (!p || !n) return 0;
+    uintptr_t a = (uintptr_t)p, e = a + (uintptr_t)n, pg = (uintptr_t)vm_page_size;
+    if (e < a) return 0;
+    for (uintptr_t q = a & ~(pg - 1); q < e; q += pg) {
+        uint8_t b; vm_size_t got = 0; uintptr_t at = q < a ? a : q;
+        if (vm_read_overwrite(mach_task_self(), (vm_address_t)at, 1, (vm_address_t)&b, &got) != KERN_SUCCESS || got != 1) return 0;
+    }
+    return 1;
+}
+// 认阶段并核长度：自报的控制段 / 代码区要整段可读，否则按认不出（-1）——登记、补料、导出、后台预编都经这里，越界的这一份放弃、记一行红
+static int dsh_stage(const uint8_t *cd, const uint8_t *ctl, uint32_t *ncode, uint32_t *nctl) {
+    int st = dsh_stage_raw(cd, ctl, ncode, nctl);
+    if (st >= 0 && (!dsh_bytes_ok(ctl, *nctl) || !dsh_bytes_ok(cd, *ncode))) {
+        static _Atomic int said; if (atomic_fetch_add(&said, 1) < 4) LOG("【红】直连：着色器控制段 %u 字节 / 代码区 %u 字节不是整段可读（自报长度越过映射末尾），这一份放弃（不登记、不补料）", *nctl, *ncode);
+        return -1;
+    }
+    return st;
 }
 #include "dsh_salvage.inc"
 // 着色器补料（dsh_salvage.inc）：k = 16 位十六进制键；control / code = 此刻有效的控制段 / 代码区（认不出阶段就只记索引）
