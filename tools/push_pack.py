@@ -65,6 +65,7 @@ IMG = re.compile(r"(^|.*/)romfs\.img$|game\.img")   # 单文件镜像（旧形�
 #   批次 tar（≤1 GB）照旧可以退回
 DC_FALLBACK_MAX = 2 << 30
 DENIED = "Permission denied"   # afc 打开写被拒的原文（s2a-devpush「打不开 <远端>：afc error: Permission denied」）
+REINSTALL_STEP = "重试没用：先在游戏菜单「存档管理」里导出存档（存到 S2Arm 文件夹以外，比如 iCloud 云盘），再删除并重新安装 S2Arm，装好后导回存档"   # 机上目录 App 写不进时唯一走得通的下一步（同失败码 ios_install_dir_unwritable）
 
 
 def push_reason(text):
@@ -123,6 +124,12 @@ FULL_LEFT = 256 << 20   # 推失败后手机空闲低于它 = 写满了（按写
 
 
 def gb1(n): return f"{n / 2**30:.1f}"
+
+
+class DirUnwritable(Fail):
+    """机上资源包所在的目录 App 写不进（afc Permission denied，删掉重写也一样；部分机上这条目录整条归 root）：重试、续传、改走 devicectl 都没用，
+    唯一走得通的是导出存档后删除重装 S2Arm——调用方报 ios_install_dir_unwritable，不再说「重新装会续传」"""
+    code = "ios_install_dir_unwritable"
 
 
 class NeedsPlayer(Fail):
@@ -188,12 +195,15 @@ class Devpush:
 
     def rewrite(self, src, rel, first):
         """机上这个文件打不开写（afc「Permission denied」，#074d88 三台不同设备：手机上 game.img 写不进，重试 / 续传次次一样）：
-        同一处的旧文件删掉、从头写一份新的（AFC 新建的文件归 App、可写）。删不掉 = 它所在的目录 App 也写不进：报手机原话 + 下一步。→ (rc, 输出)"""
+        同一处的旧文件删掉、从头写一份新的（AFC 新建的文件归 App、可写）。删不掉、或删了新建照样被拒 = 它所在的目录 App 写不进：
+        抛 DirUnwritable（手机原话 + 删除重装那一步，重试 / 续传 / 改走 devicectl 都没用）。→ (rc, 输出)"""
         ok, why = self.rm(rel)
         if not ok:
-            return 1, (f"手机上的 {rel} 写不进也删不掉（{first.splitlines()[-1] if first else DENIED}；删除：{why.splitlines()[-1] if why else '失败'}）。"
-                       "在手机上打开一次 S2Arm（它会把写不进的目录搬到能写的位置），再点「装到 iPhone」")
-        return self.call("put", src, rel)
+            raise DirUnwritable(f"手机上的 {rel} 写不进也删不掉（{first.splitlines()[-1] if first else DENIED}；删除：{why.splitlines()[-1] if why else '失败'}）。" + REINSTALL_STEP)
+        rc, out = self.call("put", src, rel)
+        if rc and DENIED in out:   # 删掉了（或本来就不在）、新建照样被拒 = 它所在的目录 App 写不进，同删不掉（D-CY3B：原先报「重新装会续传」，重装次次一样）
+            raise DirUnwritable(f"手机上的 {rel} 删掉重写也写不进（{out.splitlines()[-1] if out else DENIED}）：它所在的文件夹 App 写不进。" + REINSTALL_STEP)
+        return rc, out
 
     def ls(self, rel):
         rc, out = self.call("ls", rel)
@@ -311,10 +321,14 @@ class Devicectl:
             try:
                 try:
                     return self.dp.put(src, rel)
+                except DirUnwritable:
+                    raise
                 except Fail as first:   # 流式断一次多半是瞬时的（插拔 / 同网切线）：隔 3 秒再流一次，再不行才考虑 devicectl（预检清单 #77）
                     self.say(f"流式写 {Path(rel).name} 断了（{str(first)[-160:]}），3 秒后再试一次")
                     time.sleep(3)
                     return self.dp.put(src, rel)
+            except DirUnwritable:
+                raise
             except Fail as e:
                 # devicectl 会把整个文件读进系统设备服务的内存（#641）：本机可用内存的一半装得下才交给它（至少放行 S2A_DC_FALLBACK_MAX / 2 GiB）
                 size, mem = Path(src).stat().st_size, avail_mem()
@@ -761,6 +775,8 @@ def _send(dev, pack, work, say=print, progress=None, zp=None):
         t1 = time.time()
         try:
             send_zst(w, zp[w[0]])
+        except DirUnwritable:
+            raise
         except Fail as e:
             if dev.nospc(): raise Fail(f"测试设备空间不足（推 {w[0]} 时 POSIX 28）")
             say(f"【红】传 {w[0]} 中断（{e}）；机上这份不完整，不会被当成可用，重新装机会接着已传的部分续传")
@@ -788,6 +804,9 @@ def _send(dev, pack, work, say=print, progress=None, zp=None):
                 got = (dev.head(rel, 0) or (None,))[0]
                 if (got != size) if off else (got is not None and got != size):
                     raise Fail(f"传完后机上 {w[0]} 长度 {got} 字节，应为 {size} 字节")
+        except DirUnwritable as e:
+            say(f"【红】传 {w[0]} 写不进：{e}")
+            raise
         except Fail as e:
             if dev.nospc(): raise Fail(f"测试设备空间不足（推 {w[0]} 时 POSIX 28）")
             if attempt == 1:
@@ -988,7 +1007,7 @@ def run(dev, pack, work, full=False, say=print, env=None, on_plan=None, progress
     return nb, nt, nbytes
 
 
-CODE_PREFIX = "S2A_PUSH_CODE"   # 失败的机器读行：S2A_PUSH_CODE <码>\t<给玩家的话>（device_space_low / ios_install_no_space / device_locked）
+CODE_PREFIX = "S2A_PUSH_CODE"   # 失败的机器读行：S2A_PUSH_CODE <码>\t<给玩家的话>（device_space_low / ios_install_no_space / device_locked / ios_install_dir_unwritable）
 STAGE_CHECK, STAGE_SPACE, STAGE_IMAGE, STAGE_ZSTD = "核对手机上的文件", "检查手机空间", "准备资源（拼镜像）", "准备资源（测压缩率）"   # 装机页的准备子阶段（作业层原样上屏）
 STAGE_PREFIX = "S2A_PUSH_STAGE"   # --progress-lines 打的机器读行：S2A_PUSH_STAGE <名字>\t<已做字节>\t<总字节>（没有字节的两栏为空）
 

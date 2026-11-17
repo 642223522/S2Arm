@@ -271,8 +271,8 @@
 "app.fpsCap.restored" = "60 FPS restablecidos.";
 "app.lowRam.title" = "Es posible que este dispositivo no tenga suficiente memoria";
 "app.lowRam.body" = "Este juego necesita más memoria de la que tiene este dispositivo. Seguirá iniciándose, pero puede ralentizarse o ser cerrado por el sistema.";
-"app.gpuStop.body" = "Desliza esta app en el selector de apps y abre el juego de nuevo.";
-"app.gpuStop.title" = "Error de gráficos — detenido";
+"app.gpuStop.body" = "Cierra esta app desde el selector de apps y vuelve a abrirla; normalmente podrás seguir jugando desde el último guardado del juego. Para ayudarnos a encontrar la causa, toca «Informar de un problema» y envíanos el diagnóstico.";
+"app.gpuStop.title" = "El juego se quedó bloqueado y se detuvo de forma segura";
 "app.library.broken.title" = "Los archivos del juego están incompletos";
 "app.library.cantOpen" = "No se puede abrir este juego";
 "app.library.cantOpen.message" = "No se pudo preparar este juego para iniciarse. Desliza la app en el selector de apps y ábrela de nuevo; si sigue fallando, exporta el diagnóstico y envíanoslo.";
@@ -339,7 +339,7 @@
 "diag.error.zip" = "No se pudo crear el paquete (falló al escribir el zip; el teléfono puede estar sin espacio)";
 "diag.export" = "Exportar diagnóstico";
 "diag.prompt.abnormalExit" = "S2Arm no se cerró normalmente la última vez (se bloqueó, se congeló o fue cerrado por el sistema)";
-"diag.prompt.imlLost" = "S2Arm no se cerró normalmente la última vez. Esta instalación perdió el permiso «Límite de memoria ampliado», así que si un juego grande se cerró, lo más probable es que se quedara sin memoria. Vuelve a instalar con «Instalar en el iPhone» en S2Arm en tu ordenador (un Apple ID gratuito también conserva este permiso). Si lo firmas tú, usa Xcode o AltStore Classic v2.3; al volver a firmar con SideStore 0.7.0 se pierde. Si ya está instalado, también puedes añadir el permiso al App ID con GetMoreRam y reinstalar";
+"diag.prompt.imlLost" = "S2Arm no se cerró normalmente la última vez. Esta instalación perdió el permiso «Límite de memoria ampliado», así que si un juego grande se cerró, lo más probable es que se quedara sin memoria. Vuelve a instalar con «Instalar en el iPhone» en S2Arm en tu ordenador (un Apple ID gratuito también conserva este permiso). Si lo firmas tú, usa Xcode o AltStore Classic 2.2 o posterior; al volver a firmar con SideStore 0.7.0 se pierde. Si ya está instalado, también puedes añadir el permiso al App ID con GetMoreRam y reinstalar";
 "diag.prompt.crash" = "El sistema informó que S2Arm se bloqueó o congeló la última vez";
 "diag.prompt.message" = "%@. Esto sube registros de ejecución, informes de bloqueo y la lista de canales gráficos que usaron los juegos (solo ID de sombreadores), sin partidas guardadas, claves ni archivos de juego, y te da un código corto.";
 "diag.prompt.no" = "No, gracias";

@@ -14,8 +14,6 @@ final class JobClientTests: XCTestCase {
         XCTAssertEqual(s.executable.path, box.resources.appendingPathComponent("Runtime/python/bin/python3").path)
         XCTAssertEqual(s.arguments, ["-B", "-I", box.resources.appendingPathComponent("Jobs/main.py").path, "run", "--request",
                                      box.privateRoot.appendingPathComponent("requests/\(handle.id).json").path])
-        XCTAssertEqual(s.requestMode, 0o600)
-        XCTAssertEqual(s.requestDirMode, 0o700)
         XCTAssertEqual(s.request["schema"] as? Int, 1)
         XCTAssertEqual(s.request["taskId"] as? String, handle.id)
         XCTAssertEqual(s.request["operation"] as? String, "catalog")

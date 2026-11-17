@@ -68,7 +68,6 @@ public struct JobEnvironment: Equatable {
         do {
             try FileManager.default.createDirectory(at: privateRoot, withIntermediateDirectories: true)
             try JSONSerialization.data(withJSONObject: p, options: [.sortedKeys]).write(to: file, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         } catch {
             throw JobClientError("游戏库已建好，但设置没能写进磁盘（\(error.localizedDescription)）：请检查磁盘空间和权限后再换一次。")
         }
@@ -303,11 +302,10 @@ public final class JobClient {
         let dir = environment.privateRoot.appendingPathComponent("requests")
         let file = dir.appendingPathComponent(id + ".json")
         do {
-            try fileManager.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            // 系统缺省权限（~/Library 本来就只归当前用户；11-16 维护者：不再自设权限）
+            try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
             let data = try JSONSerialization.data(withJSONObject: request(id: id, operation: operation, extra: extra))
             try data.write(to: file, options: .atomic)
-            // 作业层只认本人所有、0600 的请求（winproc.request_is_private）
-            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         } catch {
             throw JobClientError("无法写入任务请求：\(error.localizedDescription)")
         }

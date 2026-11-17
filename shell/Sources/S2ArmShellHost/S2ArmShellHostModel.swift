@@ -180,7 +180,6 @@ public final class S2ArmShellHostModel {
             if ledgerChanged { saveLedger() }
             if missing != notOnDevice { notOnDevice = missing; NSLog("S2Arm 游戏库：这台设备上 %d / %d 款可显示", allGames.count - missing.count, allGames.count) }
             exportWidget()   // 主屏小组件的数据（WidgetExport.swift）：内容变了才写
-            refreshNROPending()
             startTicker()
         }
         for i in allGames.indices {
@@ -528,47 +527,6 @@ public final class S2ArmShellHostModel {
     /// 关掉只管这次打开（11-16 维护者：下次打开仍缺就再出，别永久静默）
     public func closeIMLNotice() { imlNotice = nil }
     public func openIMLGuide() { imlGuideOpen = true }
-
-    /// 待补文件（#8be819）：有的游戏把代码模块（NRO）藏在自有加密归档里，出包时取不到；第一次跑到那里宿主把游戏解开的整份存到
-    ///   <文档根>/games/<号>/wire/<号大写>/nro/<SHA-256>.nro（runtime/src/loader.c s2a_nro_keep），这一局随后闪退。
-    ///   玩家连电脑点「更新 iPhone 上的 S2Arm」时，装机作业把它拉回、补进包（pack/jobs/install.py pull_kept_nros），装好后删掉手机上这几份（11-16 起启动器与手机都手动更新，不会自动补）。
-    ///   补好没按包里的表判（nroPending）：存下的哈希不在这款 nro_modules.tsv 里 = 还缺：库顶提示一条（不拦开局；关了这次打开 App 内不再出，补好前下次打开还会出）
-    public private(set) var nroNotice: IMLNotice?
-    @ObservationIgnored private var nroPendingIDs: [String] = []
-    @ObservationIgnored private var nroNoticeClosed = false
-    /// 判据（11-16 开发乙定）：手机上存下的 <sha>.nro，哈希不在这款模块目录 <App 包>/Games/<号>/nro_modules.tsv 第二列里 = 还缺。
-    ///   直接看包里有没有（同 runtime/src/loader.c nro_table 读的那张表），不靠「装好后删手机副本」：删失败（断开 / 锁屏）也不误报；
-    ///   表里没有这张表 = 这款包里一个 NRO 都没有，存下的都算缺。写到一半的 .<pid>.tmp 不算
-    nonisolated static func nroPending(gamesRoot: URL, ids: [String], modulesRoot: URL = Bundle.main.bundleURL.appendingPathComponent("Games", isDirectory: true)) -> [String] {
-        let fm = FileManager.default
-        return ids.filter { id in
-            let dir = gamesRoot.appendingPathComponent(id, isDirectory: true).appendingPathComponent("wire/\(id.uppercased())/nro", isDirectory: true)
-            let kept = ((try? fm.contentsOfDirectory(atPath: dir.path)) ?? []).compactMap { name -> String? in
-                name.range(of: #"^[0-9a-f]{64}\.nro$"#, options: .regularExpression) == nil ? nil : String(name.prefix(64))
-            }
-            guard !kept.isEmpty else { return false }
-            let table = (try? String(contentsOf: modulesRoot.appendingPathComponent(id, isDirectory: true).appendingPathComponent("nro_modules.tsv"), encoding: .utf8)) ?? ""
-            let packed = Set(table.split(whereSeparator: \.isNewline).compactMap { line -> String? in
-                let f = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
-                guard !line.hasPrefix("#"), f.count >= 2, f[1].count == 64 else { return nil }
-                return f[1].lowercased()
-            })
-            return kept.contains { !packed.contains($0) }
-        }
-    }
-    nonisolated static func nroNotice(names: [String]) -> IMLNotice? {
-        guard let first = names.first else { return nil }
-        let title = names.count == 1 ? String(format: shellText("%@ needs one more file"), first)
-                                     : String(format: shellText("%lld games need one more file: %@"), names.count, ListFormatter.localizedString(byJoining: names))
-        return IMLNotice(title: title, body: shellText("Connect your phone to your computer, open the S2Arm launcher and click “Update S2Arm on iPhone”. That adds the file. Until then, the game will close again at the same point."))
-    }
-    private func refreshNROPending() {
-        let ids = Self.nroPending(gamesRoot: gamesRoot, ids: games.map(\.id))
-        guard ids != nroPendingIDs else { return }
-        nroPendingIDs = ids
-        nroNotice = nroNoticeClosed ? nil : Self.nroNotice(names: ids.map { identityName($0).isEmpty ? $0 : identityName($0) })
-    }
-    public func closeNRONotice() { nroNoticeClosed = true; nroNotice = nil }
 
     /// 删除进度与结果（宿主视图在库上方画一条提示）：正在删除 → 已删除（释放多少）/ 失败原因；结果停留 4 秒后自动收起
     public struct DeleteNotice: Equatable, Sendable {

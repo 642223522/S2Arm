@@ -222,12 +222,27 @@ def main():
             ('last-table-kept', 'free(g_last_tab); g_last_tab = NULL;', '(void)g_last_tab;', 1, 'released at session retirement'),
             ('last-table-never-built', 'if (!g_last_tab && !(g_last_tab = calloc(1, sizeof *g_last_tab))) return;',
              'if (!g_last_tab) return;', 1, 'coexist in the fast table'),
+            # 结果合并（#1355）前台路径：每一道判据撤一次，对应的用例必须变红
+            ('alias-fg-disabled', '    if (alias_on()) {\n        int a_adopted = 0;', '    if (0 && alias_on()) {\n        int a_adopted = 0;', 1,
+             'same result -> same program object'),
+            ('alias-result-ignored', 'memcpy(buf, res, 32); n += 32;', 'memset(buf, 0, 32); n += 32;', 1,
+             'different result is not merged'),
+            ('alias-c1-ignored', 'if (k->c1_ok & (1u << st)) { memcpy(buf + n, k->c1[st], 0x100); n += 0x100; }',
+             'if (0) { memcpy(buf + n, k->c1[st], 0x100); n += 0x100; }', 1, 'different c1 is not merged'),
+            ('alias-fact-registration-omitted', 'if (reusable && ae->fact_ok) fact_cache_keep_mask(&id, fact_base, ae->fact_mask, &ae->prog);',
+             '(void)ae->fact_mask;', 1, 'reuses the program (no live compile'),
+            # 预热线程建的那份也要算事实掩码：撤掉后，合并命中它的前台身份登记不上事实复用（真机现编 3 → 198 次的另一半）
+            ('alias-bg-fact-mask-omitted', 'if (e && !e->failed && alias_on()) e->fact_ok = (uint8_t)fact_cache_mask(bytes, len, &e->prog, e->fact_mask);',
+             '(void)0;', 1, 'alias fact-bg[on] s2: identity differing only in an unread texture fact reuses the program'),
+            # 开关关闭态（--alias-off 另起进程）：开关读了不用，关闭态下 B 就会被合并，「B 读自己的文件」必须变红
+            ('alias-flag-ignored', 'if (v < 0) v = nvn_plat_flag("nvk_alias", 1) ? 1 : 0; return v;',
+             'if (v < 0) { (void)nvn_plat_flag("nvk_alias", 1); v = 1; } return v;', 1, 'alias[off] s2: B reads its own file', ('--alias-off',)),
         ]
-        for name, before, after, count, expected in changes:
+        for name, before, after, count, expected, *more in changes:
             assert text.count(before) == count, (name, 'mutation anchor')
             path = out/(name+'.c')
             path.write_text(text.replace(before, after), encoding='utf-8')
-            result = run(name, path)
+            result = run(name, path, args=(more[0] if more else ()))
             assert result.returncode != 0 and expected in result.stderr, (name, result.stdout, result.stderr)
             print(f'{name}: expected assertion failure: {expected}', flush=True)
         print(f'PASS: {len(changes)} negative controls')
@@ -270,7 +285,11 @@ def main():
     result = run('test', original)
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
-    return result.returncode
+    # 结果合并开关关闭态（debug.s2a.nvk_alias=0）：开关在进程内只读一次，单独起一个进程
+    off = run('test-alias-off', original, args=('--alias-off',))
+    sys.stdout.write(off.stdout)
+    sys.stderr.write(off.stderr)
+    return result.returncode or off.returncode
 
 if __name__ == '__main__':
     raise SystemExit(main())

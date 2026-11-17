@@ -276,8 +276,8 @@
 "app.fpsCap.restored" = "60 FPS is back.";
 "app.lowRam.title" = "This device may not have enough memory";
 "app.lowRam.body" = "This game needs more memory than this device has. It will still start, but it may stutter or be closed by the system.";
-"app.gpuStop.body" = "Swipe this app away in the app switcher and open the game again.";
-"app.gpuStop.title" = "Graphics error — stopped";
+"app.gpuStop.body" = "Swipe this app away in the app switcher and open it again — you can usually keep playing from where the game last saved. To help us find the cause, tap “Report a Problem” to send us diagnostics.";
+"app.gpuStop.title" = "The game got stuck and was stopped safely";
 "app.library.broken.title" = "Game files are incomplete";
 "app.library.cantOpen" = "This game can’t be opened";
 "app.library.cantOpen.message" = "This game couldn’t be prepared to start. Swipe the app away in the app switcher and open it again; if it still fails, export diagnostics and send them to us.";
@@ -344,7 +344,7 @@
 "diag.error.zip" = "Couldn’t create the bundle (writing the zip failed; the phone may be out of space)";
 "diag.export" = "Export diagnostics";
 "diag.prompt.abnormalExit" = "S2Arm didn’t quit normally last time (it crashed, froze or was closed by the system)";
-"diag.prompt.imlLost" = "S2Arm didn’t quit normally last time. This install lost the “Increased Memory Limit” permission, so a large game quitting is most likely running out of memory. Reinstall with “Install on iPhone” in S2Arm on your computer (a free Apple ID keeps this permission too). If you sign it yourself, use Xcode or AltStore Classic v2.3; re-signing with SideStore 0.7.0 drops it. For an existing install, you can also add the permission to the App ID with GetMoreRam and reinstall";
+"diag.prompt.imlLost" = "S2Arm didn’t quit normally last time. This install lost the “Increased Memory Limit” permission, so a large game quitting is most likely running out of memory. Reinstall with “Install on iPhone” in S2Arm on your computer (a free Apple ID keeps this permission too). If you sign it yourself, use Xcode or AltStore Classic 2.2 or later; re-signing with SideStore 0.7.0 drops it. For an existing install, you can also add the permission to the App ID with GetMoreRam and reinstall";
 "diag.prompt.crash" = "The system reported that S2Arm crashed or froze last time";
 "diag.prompt.message" = "%@. This uploads run logs, crash reports and the list of graphics pipelines the games used (shader IDs only) — no saves, keys or game files — and gives you a short code.";
 "diag.prompt.no" = "No thanks";

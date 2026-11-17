@@ -946,7 +946,7 @@ sys.exit(0 if pathlib.Path(sys.argv[-1]).exists() else 1)
             dev.put(self.pk / "a", "remote")
         self.assertEqual(seen, [40])
 
-    def denied_helper(self, rm_ok=True):
+    def denied_helper(self, rm_ok=True, dir_denied=False):
         # #074d88 三台设备原文：机上旧 game.img 打开写被拒。假工具：删过之前 put / put-at 一律被拒；rm 按 rm_ok 成 / 败；每次调用记一行
         script = self.w / "denied.py"; ops = self.w / "ops"; gone = self.w / "gone"
         script.write_text(f'''import pathlib, sys
@@ -954,7 +954,7 @@ op = sys.argv[1]; pathlib.Path({str(ops)!r}).open("a").write(op + "\\n")
 if op == "rm":
     if {rm_ok!r}: pathlib.Path({str(gone)!r}).touch(); print("rm " + sys.argv[2]); sys.exit(0)
     print("删不掉 " + sys.argv[2] + "：afc error: Permission denied"); sys.exit(1)
-if op in ("put", "put-at") and not pathlib.Path({str(gone)!r}).exists():
+if op in ("put", "put-at") and ({dir_denied!r} or not pathlib.Path({str(gone)!r}).exists()):
     print("打不开 " + sys.argv[3] + "：afc error: Permission denied"); sys.exit(1)
 print(op + " 8 字节 → " + sys.argv[3])
 ''', encoding="utf-8")
@@ -973,12 +973,22 @@ print(op + " 8 字节 → " + sys.argv[3])
         self.assertEqual(ops.read_text().split(), ["put-at", "rm", "put"])
 
     def test_denied_and_not_removable_reports_phone_words_and_next_step(self):
-        # 期望（手写）：删也被拒 → 不再写，报手机原话（Permission denied）+ 下一步（手机上打开一次 S2Arm）；分类成「App 写不进」
+        # 期望（手写）：删也被拒 → 不再写，报手机原话（Permission denied）+ 下一步（导出存档、删除重装 S2Arm：App 改不了这个目录的属主，迁移 11-15 已撤）；分类成「App 写不进」
         dev, ops = self.denied_helper(rm_ok=False)
         with self.assertRaises(push.Fail) as cm:
             dev.put(self.pk / "a", "Library/S2Arm/games/G/资源包/game.img")
         self.assertEqual(ops.read_text().split(), ["put", "rm"])
-        self.assertIn("Permission denied", str(cm.exception)); self.assertIn("在手机上打开一次 S2Arm", str(cm.exception))
+        self.assertIn("Permission denied", str(cm.exception)); self.assertIn("删除并重新安装 S2Arm", str(cm.exception))
+        self.assertEqual(push.push_reason(str(cm.exception)), "手机上这个文件 App 写不进（Permission denied）")
+
+    def test_denied_again_after_remove_reports_reinstall(self):
+        # 期望（手写，D-CY3B）：删掉了、从头写照样被拒（目录 App 写不进）→ 不再说「重新装会续传」，报手机原话 + 删除重装那一步；只删一次、写两次
+        dev, ops = self.denied_helper(dir_denied=True)
+        with self.assertRaises(push.Fail) as cm:
+            dev.put(self.pk / "a", "Library/S2Arm/games/G/资源包/game.img")
+        self.assertEqual(ops.read_text().split(), ["put", "rm", "put"])
+        self.assertIsInstance(cm.exception, push.DirUnwritable)
+        self.assertIn("Permission denied", str(cm.exception)); self.assertIn("删除并重新安装 S2Arm", str(cm.exception))
         self.assertEqual(push.push_reason(str(cm.exception)), "手机上这个文件 App 写不进（Permission denied）")
 
     def image_plan(self):
@@ -994,6 +1004,18 @@ print(op + " 8 字节 → " + sys.argv[3])
         push.send(dev, self.pk, self.w, progress=lambda *a: calls.append(a))
         self.assertEqual(calls, [(0, 100, 0, 1), (40, 100, 0, 1), (99, 100, 0, 1), (100, 100, 1, 1)])
         self.assertIsNone(dev.progress)
+
+    def test_unwritable_dir_stops_at_once_with_reinstall_code(self):
+        # 期望（手写，D-CY3B）：目录 App 写不进（DirUnwritable）→ 不原地再试、不说「重新装会续传 / 从头传」，原样抛出，码 ios_install_dir_unwritable
+        self.image_plan(); dev = Fake({}); tries = []
+        def put_big(*args):
+            tries.append(1); raise push.DirUnwritable("手机上的 x 删掉重写也写不进（afc error: Permission denied）：它所在的文件夹 App 写不进。" + push.REINSTALL_STEP)
+        dev.put_big = put_big
+        with self.assertRaises(push.DirUnwritable) as cm:
+            push.send(dev, self.pk, self.w)
+        self.assertEqual(len(tries), 1)
+        self.assertEqual(cm.exception.code, "ios_install_dir_unwritable")
+        self.assertNotIn("续传", str(cm.exception)); self.assertNotIn("从头传", str(cm.exception)); self.assertIn("删除并重新安装 S2Arm", str(cm.exception))
 
     def test_partial_image_failure_never_reports_completion(self):
         self.image_plan(); dev = Fake({}); calls = []

@@ -19,7 +19,7 @@ cpatch.tsv：编号 / 模块 / 位 / 类别 / 段名 / 许可 / 来源 / 数据�
 pchtxt：@nsobid-<构建号>；行首偏移是含 0x100 文件头的偏移，@flag offset_shift <整数> 从该行起加位移（常见 0x100 即行首就是映像偏移）；@enabled / @disabled 开一段、空行收段、@stop 整个文件到此为止；
   只收字节行（偏移 + 十六进制），字符串行 / 模板占位（{hex1}）/ 其他写法的段整段不收。IPS / IPS32：文件名是构建号，偏移含 0x100 文件头"""
 import bisect, csv, glob, hashlib, math, os, re, shutil, struct, subprocess, sys, tempfile
-import os as _os, sys as _sys; _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '../tools')); from nso_plain import plain as _nso_plain; from patch_index import upres as _upres   # ZBIC（NSO 标志 0x80）先经 nx_unpack 规整成不压缩段，不各写一份解码（tools/nso_plain.py）
+import os as _os, sys as _sys; _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '../tools')); from nso_plain import plain as _nso_plain; from patch_index import upres as _upres, UPRES_HEIGHTS as _UPRES_H   # ZBIC（NSO 标志 0x80）先经 nx_unpack 规整成不压缩段，不各写一份解码（tools/nso_plain.py）
 
 HDR = 0x100   # NSO 文件头：IPS 与不带 offset_shift 的 pchtxt 偏移都含它
 
@@ -1193,6 +1193,25 @@ def _dec_raw(word, addr):
     return rd, wr, kind, t
 
 
+def res_rewrite(im, words, wh):
+    """满屏补丁写的渲染分辨率（_upres 认出的 movz 宽 wh[0] / 高 wh[1]）就地改成原生：高 = 原版这条指令本来的高（360–1080 的 movz，掌机 720 / 底座 1080 按款就对了），
+    取不到用 PHONE_H；宽 = 高 × 补丁原来的宽高比、取偶。补丁里写分辨率的 movz 只许这一对值（可以出现在多处），还有别的「高 > 1080 + 宽」组合（派生尺寸 / 另一档）
+    → 认不全，不改、返回 None。→ (新宽, 新高)"""
+    mz = lambda x: (x & 0x7F800000) == 0x52800000 and not (x >> 21) & 3
+    W, H = wh; cur = {o: int.from_bytes(bytes(nb), 'little') for o, nb in words.items()}
+    imms = {(x >> 5) & 0xFFFF for x in cur.values() if mz(x)}
+    if imms & _UPRES_H != {H}: return None   # 高 > 1080 的只许这一个（两档 / 派生尺寸 → 认不全）
+    hs = [o for o, x in cur.items() if mz(x) and (x >> 5) & 0xFFFF == H]; ws = [o for o, x in cur.items() if mz(x) and (x >> 5) & 0xFFFF == W]
+    if not hs or not ws: return None
+    nat = {(int.from_bytes(im[o:o + 4], 'little') >> 5) & 0xFFFF for o in hs if mz(int.from_bytes(im[o:o + 4], 'little'))}
+    nat = {h for h in nat if 360 <= h <= 1080}
+    H2 = nat.pop() if len(nat) == 1 else PHONE_H
+    W2 = max(2, int(round(H2 * W / H / 2)) * 2)
+    for o in hs: words[o] = bytearray(((cur[o] & ~(0xFFFF << 5)) | (H2 << 5)).to_bytes(4, 'little'))
+    for o in ws: words[o] = bytearray(((cur[o] & ~(0xFFFF << 5)) | (W2 << 5)).to_bytes(4, 'little'))
+    return W2, H2
+
+
 def nop_stale(im, text_end, words, limit=64):
     """补丁把原版指令改成 nop 后，那条指令原本要写的寄存器在后面（顺序往下、到下次写入前，同一基本块内）被读，而且这个寄存器此前最近一次是被
     函数调用改写的（调用把 x0–x18 改成被调用方留下的值）→ (改动点, 读的点, 寄存器)；没有 → None。
@@ -1642,8 +1661,12 @@ def plan(root, default_on, index_dirs):
         if not why and uid.startswith('widescreen:'):
             r = phone_res(words, wkinds(mod))
             if r: log.append(f'改值\t{uid}\t{mod}\t渲染尺寸按手机口径：{r}')
-        if not why and uid.startswith(('widescreen:', 'wsauto:')) and (wh := _upres([int.from_bytes(bytes(nb), 'little') for nb in words.values()])):   # tools/patch_index.py upres：索引不收，这里再挡一道（玩家机上的旧快照 / 本地补丁）
-            why = f'改了内部渲染分辨率（{wh[0]}x{wh[1]}），不进满屏：渲染目标放大、游戏堆放不下会崩（#b824d1 / D-Q3QJ）'
+        if not why and uid.startswith(('widescreen:', 'wsauto:')) and (wh := _upres([int.from_bytes(bytes(nb), 'little') for nb in words.values()])):   # tools/patch_index.py upres
+            # 改内部渲染分辨率的满屏补丁（#b824d1 / D-Q3QJ：渲染目标放大、游戏堆放不下会崩 / 画坏）：分辨率改回原生高、宽按原比例等比缩（11-16 维护者「让补丁按咱们的需求正确生效，而不是直接拒掉」）；
+            #   画幅照补丁（定画幅变体）或照自适应模板。认不全（不止一对分辨率）才不收
+            done = res_rewrite(im, words, wh)
+            if done: log.append(f'改分辨率\t{uid}\t{mod}\t{u["name"][:40]}\t{wh[0]}x{wh[1]} → {done[0]}x{done[1]}（原生高、按原比例）')
+            else: why = f'改了内部渲染分辨率（{wh[0]}x{wh[1]}），而且不止一对分辨率常数、改写不全，不进满屏：渲染目标放大、游戏堆放不下会崩（#b824d1 / D-Q3QJ）'
         if not why and not cheat and (st := nop_stale(im, text_end, words)):   # 见 nop_stale；金手指另有规则
             why = f'把 {mod}+{st[0]:#x} 改成空指令后，它原本要写的 {st[2]} 在 {mod}+{st[1]:#x} 被读：读到的是残值，可能被当指针读而崩'
         if not why and any(fill(im, o) for o, k in marks.items() if k == 'kv'): why = f'取值点 {mod}+{min(o for o, k in marks.items() if k == "kv" and fill(im, o)):#x} 落在填充区（填充区常写，没有原路可分）'

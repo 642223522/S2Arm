@@ -38,10 +38,6 @@ public struct S2ArmShellHostView: View {
                             .onAppear { s2a_shell_iml_notice_seen() }   // 真显示出来才记（起局那条不再重复）
                             .transition(.move(edge: .top).combined(with: .opacity))
                     }
-                    if let nro = model.nroNotice, !model.guideOpen {   // 待补文件（#8be819）：连电脑开启动器自动补上；补好后自动消失
-                        IMLNoticeBar(notice: nro, close: { model.closeNRONotice() }, symbol: "puzzlepiece.extension", id: "nro.notice")
-                            .transition(.move(edge: .top).combined(with: .opacity))
-                    }
                     if let notice = model.deleteNotice {
                         DeleteNoticeBar(notice: notice).onTapGesture { model.dismissDeleteNotice() }
                             .transition(.move(edge: .top).combined(with: .opacity))
@@ -52,7 +48,6 @@ public struct S2ArmShellHostView: View {
             .animation(.smooth(duration: 0.25), value: model.deleteNotice)
             .animation(.smooth(duration: 0.25), value: model.imlNotice)
             .sheet(isPresented: Binding(get: { model.imlGuideOpen }, set: { model.imlGuideOpen = $0 })) { IMLGuideView() }
-            .animation(.smooth(duration: 0.25), value: model.nroNotice)
             // 首次进入引导（三页横滑：设置 / 金手指 / 故障报修），盖在最上面；看过一次就不再弹
             .overlay {
                 if model.guideOpen {
@@ -97,11 +92,9 @@ struct IMLNoticeBar: View {
     let notice: S2ArmShellHostModel.IMLNotice
     let close: () -> Void
     var more: (() -> Void)? = nil   // 「了解详情」：给了才出这个按钮
-    var symbol = "memorychip"
-    var id = "iml.notice"
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: symbol).font(.system(size: 18, weight: .semibold)).foregroundStyle(Color(red: 1, green: 0.78, blue: 0.28))
+            Image(systemName: "memorychip").font(.system(size: 18, weight: .semibold)).foregroundStyle(Color(red: 1, green: 0.78, blue: 0.28))
                 .padding(.top, 2).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
                 Text(notice.title).font(.system(size: 15, weight: .semibold)).foregroundStyle(.white).fixedSize(horizontal: false, vertical: true)
@@ -111,7 +104,7 @@ struct IMLNoticeBar: View {
                         Text(shellText("Learn more")).font(.system(size: 13, weight: .semibold)).foregroundStyle(Color(red: 1, green: 0.78, blue: 0.28))
                             .padding(.top, 2).contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain).accessibilityIdentifier(id + ".more")
+                    .buttonStyle(.plain).accessibilityIdentifier("iml.notice.more")
                 }
             }
             Spacer(minLength: 0)
@@ -119,7 +112,7 @@ struct IMLNoticeBar: View {
                 Image(systemName: "xmark").font(.system(size: 13, weight: .bold)).foregroundStyle(.white.opacity(0.7)).frame(width: 30, height: 30)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain).accessibilityLabel(shellText("Close")).accessibilityIdentifier(id + ".close")
+            .buttonStyle(.plain).accessibilityLabel(shellText("Close")).accessibilityIdentifier("iml.notice.close")
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
         .background(Color(red: 0.075, green: 0.075, blue: 0.082).opacity(0.96), in: RoundedRectangle(cornerRadius: 16))

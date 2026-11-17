@@ -316,12 +316,22 @@ static const char *host_text(const char *s) {
     for (size_t i = 0; i < sizeof k / sizeof k[0]; i++) if (!strcmp(s, k[i][0])) return k[i][1];
     return s;
 }
+// 提示页正显示着（diag.m 问「把上次的诊断发给我们？」前看：等它收起再问，不叠在一起）。主线程调
+int s2a_ios_note_up(void) { return g_note_view.window != nil; }
+// 反过来：那个询问正开着就等它收起再出提示页（每半秒看一次）。diag.m 不在输入工作台工程里时弱引用为空，直接出
+int s2a_diag_asking(void) __attribute__((weak_import));
+static void after_diag_prompt(void (^show)(void)) {
+    if (s2a_diag_asking && s2a_diag_asking()) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 2), dispatch_get_main_queue(), ^{ after_diag_prompt(show); }); return; }
+    show();
+}
 // 可从任意线程调（导入资源的后台线程用它刷进度）：主线程上直接改，别的线程派回主线程。done / total：total > 0 时画进度条；diag：给「导出诊断包」按钮
 void s2a_ios_show_notice(const char *symbol, const char *title, const char *body, int done, int total, int diag) {
     title = host_text(title); body = host_text(body);
     NSString *sy = @(symbol), *t = @(title), *b = @(body ?: ""), *key = [NSString stringWithFormat:@"%@\n\n%@", t, b];
     NSArray *n = @[sy, t, b, @(total > 0 ? (float)done / total : -1.0f), total > 0 ? [NSString stringWithFormat:S2AL(@"notice.batch"), done < total ? done + 1 : total, total] : @"", @(diag != 0)];
     void (^show)(void) = ^{ g_msg = key; g_note = n; g_note_go = nil; g_note_alt = nil; [g_help removeFromSuperview]; g_help = nil; g_help_args = nil; note_build(); };
+    if (diag) { void (^orig)(void) = show; show = ^{ after_diag_prompt(orig); }; }   // 带「发送诊断」的出错提示页（起局自检等）：询问开着就等它收起
     if (NSThread.isMainThread) show(); else dispatch_async(dispatch_get_main_queue(), show);
 }
 // 带「继续」按钮的提示页，调用线程等玩家点（v0.3.1：起局自检只差内存上限时「仍要启动」）。只在宿主工作线程上用（游戏库已在主线程跑 UIKit）：
@@ -332,11 +342,11 @@ int s2a_ios_ask_continue(const char *symbol, const char *title, const char *body
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
     NSString *sy = @(symbol), *t = @(title), *b = @(body ?: ""), *label = @(go), *key = [NSString stringWithFormat:@"%@\n\n%@", t, b];
     NSArray *n = @[sy, t, b, @(-1.0f), @"", @YES];
-    dispatch_async(dispatch_get_main_queue(), ^{
+    dispatch_async(dispatch_get_main_queue(), ^{ after_diag_prompt(^{
         g_msg = key; g_note = n; g_note_alt = nil; [g_help removeFromSuperview]; g_help = nil; g_help_args = nil;
         g_note_go = @[label, ^{ g_note_go = nil; g_note = nil; g_msg = nil; [g_note_view removeFromSuperview]; g_note_view = nil; dispatch_semaphore_signal(done); }];
         note_build();
-    });
+    }); });
     dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
     return 1;
 }

@@ -72,8 +72,15 @@ int nvk_pipe_warm_build(const struct nvk_pipe_rec *rec);
 void nvk_pipe_warm_note(const nvn_gpu_pipe_desc *d, const uint8_t prog_identity[32]);
 
 // rp_draw 用的入口：程序身份从 rp_prog 取（回放核心里不出现身份解析）。程序没有身份就不记。
-// 返回 1 = 收下或 uses++；0 = 跳过（没身份 / nspec 非 0 / 参数空）。
-int nvk_pipe_warm_note_prog(const nvn_gpu_pipe_desc *d, const struct rp_prog *p);
+// np = 刚取到的后端管线对象（可为 NULL）。一局内 np 与「配方 + 程序身份」一一对应（后端缓存的键含着色器句柄，
+// 局内不淘汰、不复用指针），所以清单把这份配方的（槽号, 槽代号）标签存在 np 上（nvn_gpu_pipe_warm_tag_set）：
+// 之后每次换到同一条管线，标签还对得上（槽仍占用、槽代号没变、槽里那份配方的程序身份就是这次传进来的程序）
+// 就只 uses++ / 刷新最近序号——不序列化 352 字节、不散列、不查备忘和桶链；对不上（第一次见这条 np / 槽被淘汰
+// 或重载后重用过 / 同一条 np 换了程序身份）才走完整路径，入清单（或并进已有条目）后把新标签写回。
+// 槽代号：清单每往一个槽里写一份新配方（入清单、淘汰重用、重载）加一，旧标签随之失效，不会给新配方白加 uses。
+// 清单内容与 uses 的口径与不带标签时逐项相同。
+// 返回 1 = 收下或 uses++（nspec 非 0 照旧计入 rejected 并返回 1）；0 = 跳过（没身份 / 参数空）。
+int nvk_pipe_warm_note_prog(const nvn_gpu_pipe_desc *d, const struct rp_prog *p, nvn_gpu_pipe np);
 
 void nvk_pipe_warm_save(void);   // 内容没变直接返回；有变化才原子写；失败只计数（下次 save 再试）
 
@@ -86,6 +93,7 @@ struct nvk_pipe_warm_stats {
     uint64_t retried;     // 返回 1（等程序发布）的次数
     uint64_t pending;     // 还没有被 take 的条数
     uint64_t draw_hits;   // 转发 backend：真实 draw 命中「后台预建」对象的次数（验收读数）
+    uint64_t tag_hits;    // 换管线时标签对得上、只加了计数的次数（没走序列化 / 散列 / 查表）
 };
 void nvk_pipe_warm_stats(struct nvk_pipe_warm_stats *out);
 
@@ -122,6 +130,10 @@ void nvk_pipe_warm_diag_flush(void);   // 立刻输出当前窗口一行并开�
 void nvn_gpu_pipe_warm_scope(int on);
 uint64_t nvn_gpu_pipe_warm_hits(void);      // 真实 draw 命中预建对象的次数
 uint64_t nvn_gpu_pipe_warm_created(void);   // 预建出来的对象数
+// 清单标签：存在后端管线对象上的一个 64 位值（低 32 位 = 槽号 + 1，高 32 位 = 槽代号；0 = 没设过）。
+// 原子读写、不加锁；标签随管线对象一起销毁（后端局内不淘汰管线），所以不会指到别的管线。
+uint64_t nvn_gpu_pipe_warm_tag(nvn_gpu_pipe p);
+void nvn_gpu_pipe_warm_tag_set(nvn_gpu_pipe p, uint64_t tag);
 
 #ifdef __cplusplus
 }

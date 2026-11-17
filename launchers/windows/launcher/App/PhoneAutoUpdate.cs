@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 S2Arm contributors
 // iPhone 上 S2Arm 的更新：手动更新（11-16 维护者「那改成更稳妥的手动更新吧 启动器和移动端都是」；同 Mac S2ArmLauncherModel.keptModulesTick / +PhoneBanner.swift）。
-//   每 2 分钟跑一次 phoneKeptPull 作业：手机上宿主留下的代码模块拉回游戏库；查到要更新（kept / 壳旧了）只重读游戏库，顶栏亮「更新 iPhone」，不自动装。
+//   每 2 分钟跑一次 phoneKeptPull 作业查手机要不要更新：Windows 自己不从手机收回代码模块（WinPhone.pull_kept 回 0，收回只在 Mac 上做），
+//   kept 只会来自 Mac 收回过的同一个游戏库里还没补进的（一般为空），平时起作用的是壳旧了（shellUpdate）；
+//   查到要更新只重读游戏库，顶栏亮「更新 iPhone」，不自动装。
 //   新版启动器头一次读到要更新的手机 → 后台 installUpdatePrepare（不碰手机，点了以后装得快），准备期间不出横幅；准备完出横幅「有新版，点这里更新」，
 //   点了 = 顶栏「更新 iPhone」；玩家点了更新后横幅显示进度，装完 phoneUpdates 空了横幅自己收起。
 //   开关：privateRoot/auto-update-phone.off 存在 = 玩家关了（缺省开，存的是「关」，同 Mac S2AAutoUpdatePhoneOff）：不准备、不出横幅。
@@ -36,6 +38,22 @@ public sealed partial class EnvironmentWindow
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
     }
     private bool AutoUpdatePhoneOn => !File.Exists(AutoUpdatePhoneOffPath);
+
+    /// <summary>2 分钟循环这一轮跳过的原因（null = 照常收）：原因变了才记一行进 phone-auto-update.log。原先跳过不留痕，
+    /// 11-16 实机验收「8 分钟一单 phoneKeptPull 都没发、日志里什么都没有」，查不出是哪一条拦的</summary>
+    private string? lastPhoneTickSkip = "";
+    private void NotePhoneTick(string? skip)
+    {
+        if (skip == lastPhoneTickSkip) return;
+        lastPhoneTickSkip = skip;
+        try
+        {
+            var dir = Path.Combine(privateRoot, "logs"); Directory.CreateDirectory(dir);
+            File.AppendAllText(Path.Combine(dir, "phone-auto-update.log"),
+                $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz} 2 分钟循环：{(skip is null ? "照常收" : "这一轮跳过（" + skip + "）")}{Environment.NewLine}");
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+    }
 
     /// <summary>横幅状态："" 不显示 / preparing / ready / onConnect</summary>
     private string phoneBanner = "";
@@ -102,13 +120,20 @@ public sealed partial class EnvironmentWindow
         phoneAutoTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(2) };
         phoneAutoTimer.Tick += (_, _) => _ = PhoneAutoUpdateTickAsync();
         phoneAutoTimer.Start();
+        lastPhoneTickSkip = "";   // 起循环记一行：之后每轮按原因变化记（定时器根本没跑起来时，日志里连这行都没有）
+        NotePhoneTick("循环已启动，第一轮 2 分钟后");
     }
 
     /// <summary>一轮：→ 这次有没有发起「更新 iPhone」</summary>
     private async Task<bool> PhoneAutoUpdateTickAsync()
     {
         // 玩家在出包页选了「出完之后导出自签」：不走启动器装机，自动装到手机也不做（玩家选择优先）
-        if (IosAfterPackIsExport || phoneAutoTicking || connectedFolder is null || libraryId is null || ControlBusy || batchRunning) return false;
+        // 只按真冲突跳过（维护者「只按真冲突互斥」）：别的作业在跑照样收（升级首启迁移几分钟，原先「有任何作业就整轮跳过」拖到第 360 秒）；
+        //   和同一台手机上装机 / 推包的冲突由作业层判（phoneKeptPull 拿不到手机锁就这一轮不收）
+        var skip = IosAfterPackIsExport ? "出包页选了导出自签" : phoneAutoTicking ? "上一轮还没完" : connectedFolder is null || libraryId is null ? "游戏库没连上"
+            : batchRunning ? "批量出包在跑" : null;
+        NotePhoneTick(skip);
+        if (skip is not null) return false;
         phoneAutoTicking = true;
         try
         {
@@ -132,7 +157,7 @@ public sealed partial class EnvironmentWindow
             if (!(r.TryGetProperty("running", out var run) && run.ValueKind == JsonValueKind.False)) return false;
             // 只发现、不装（11-16 维护者：「改成更稳妥的手动更新吧，启动器和移动端都是」）：重读游戏库，顶栏 / 更新页按 phoneUpdates 亮「更新 iPhone」，玩家点了才装
             var batch = device + ":" + string.Join(",", kept) + (shellUpdate ? ":shell" : "");
-            if (phoneAutoTried.Contains(batch) || ControlBusy || batchRunning) return false;
+            if (phoneAutoTried.Contains(batch) || batchRunning) return false;
             phoneAutoTried.Add(batch);
             await RefreshLibraryAsync();
             return false;

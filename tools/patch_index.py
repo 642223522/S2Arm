@@ -174,6 +174,39 @@ def upres(words):
     return next(((w, h) for h in sorted(imms & UPRES_HEIGHTS) for w in sorted(imms) if 1.3 * h <= w <= 8192), None)
 
 
+RES_FIX_H = 1080   # 改回的渲染高：发布前没有各款原件、不知道原生高，取 Switch 主机模式最常见的 1080（原生 720 的款高出一些，远低于会崩的 1440 / 2160）
+
+
+def res_fix(kind, data, wh):
+    """把补丁里写渲染分辨率的 movz（upres 认出的 宽 wh[0] / 高 wh[1]）就地改成 高 RES_FIX_H、宽 = 高 × 原宽高比（取偶），其余字节不动
+    （11-16 维护者：「提前把这类补丁中参数改对，这样用户用着的就是对的」，老客户端也受益）。补丁里高 > 1080 的常见高度只许 wh[1] 这一个
+    （另有一档 / 派生尺寸 → 认不全）→ None。→ (新字节, (新宽, 新高))"""
+    W, H = wh
+    if {(w >> 5) & 0xFFFF for w in words_of(kind, data) if (w & 0x7F800000) == 0x52800000 and not (w >> 21) & 3} & UPRES_HEIGHTS != {H}: return None
+    H2 = RES_FIX_H; W2 = max(2, int(round(H2 * W / H / 2)) * 2)
+    def fix(w):
+        if (w & 0x7F800000) != 0x52800000 or (w >> 21) & 3: return w
+        imm = (w >> 5) & 0xFFFF
+        return (w & ~(0xFFFF << 5)) | ((H2 if imm == H else W2 if imm == W else imm) << 5)
+    if kind == 'ips':
+        out = bytearray(data); i = 5 if data[:5] in (b'PATCH', b'IPS32') else 0; wide = data[:5] == b'IPS32'
+        while i + (4 if wide else 3) + 2 <= len(out):
+            n0 = 4 if wide else 3
+            if bytes(out[i:i + n0]) in (b'EOF', b'EEOF'): break
+            size = int.from_bytes(out[i + n0:i + n0 + 2], 'big'); i += n0 + 2
+            if size == 0: i += 3; continue
+            for k in range(0, size - 3, 4):
+                out[i + k:i + k + 4] = fix(int.from_bytes(out[i + k:i + k + 4], 'little')).to_bytes(4, 'little')
+            i += size
+        new = bytes(out)
+    else:
+        def line(m):
+            hx = m.group(2)
+            return m.group(1) + ''.join(fix(int.from_bytes(bytes.fromhex(hx[k:k + 8]), 'little')).to_bytes(4, 'little').hex().upper() for k in range(0, len(hx) - 7, 8)) + hx[len(hx) - len(hx) % 8:]
+        new = re.sub(r'(?m)^(\s*[0-9A-Fa-f]{8}\s+)([0-9A-Fa-f]{8,})\b', line, data.decode('utf-8', 'replace')).encode()
+    return (new, (W2, H2)) if new != data else None
+
+
 def bids_of(path, data):
     name = os.path.splitext(os.path.basename(path))[0]
     if path.lower().endswith('.ips'):
@@ -210,6 +243,7 @@ def half(path, roots):
     return '/exefs/' in low and path.lower().endswith(('.pchtxt', '.ips')) and mod_root(path) in roots
 
 
+ADJUSTED = []   # 本次扫描改过分辨率的满屏补丁：(路径, 包内路径, (原宽, 原高), (新宽, 新高), 原 sha256)
 UPRES = []    # 本次扫描不收的改内部分辨率满屏补丁：(路径, 包内路径, (宽, 高), sha256)；同一份内容在别处（被分成别的类）也不收
 # 已定因会崩的单份补丁（按内容 sha256 前 16 位，同 pack/cpatch.py 编号）：不收。新客户端出包时 pack/cpatch.py nop_stale 已能按数据流挡下它们；
 #   这张表留给没有这条规则的老客户端（0.4.5 及以前，出包时照收）——老客户端淘汰后清空。cucholix 那份（7a1aa34f90ab0756）残值来自游戏自己的 ldr、真机一致，nop_stale 判安全，已移出
@@ -294,7 +328,7 @@ def scan(mirror, keep_local=False, cheat_libs=False):
     """keep_local：每行另记 _local（镜像里的本地相对路径，tools/patch_pack.py 取字节用；不进索引）；汇总库 JSON 拆出的金手指另记 _data（内容是拼出来的，按路径取不回）。
     cheat_libs：金手指专门库（CHEAT_LIBS）的金手指也收（统一包用：11-13 起金手指也由我们的下载站分发，不再由出包端逐库去 GitHub 取）"""
     rows, pinned = [], {}
-    HALVES.clear(); UPRES.clear()
+    HALVES.clear(); UPRES.clear(); ADJUSTED.clear()
     src = os.path.join(mirror, 'SOURCES.tsv')
     if os.path.isfile(src):
         for line in open(src, encoding='utf-8'):
@@ -328,12 +362,18 @@ def scan(mirror, keep_local=False, cheat_libs=False):
                 cat, tfps, aspect = classify(rel + '/' + name if extra else rel, text, repo)
                 gdir = gfx_dir(rel + '/' + name if extra else rel, text) if cat == 'gfx' else ''
                 bids = bids_of(name, data)
-                if cat == 'widescreen' and (wh := upres(words_of(kind, data))):   # 改内部分辨率的满屏补丁不收（见 upres）
-                    UPRES.append((rel, name, wh, hashlib.sha256(data).hexdigest())); return
+                if cat == 'widescreen' and (wh := upres(words_of(kind, data))):   # 改内部分辨率的满屏补丁（见 upres）：发布前就把分辨率改回原生（res_fix），玩家拿到的就是对的；认不全才不收
+                    fixed = res_fix(kind, data, wh) if keep_local else None   # 只有统一包（字节随包分发，tools/patch_pack.py）能发改过的内容；只给元数据、让客户端去上游下的老索引改不了，照旧不收
+                    if not fixed:
+                        UPRES.append((rel, name, wh, hashlib.sha256(data).hexdigest())); return
+                    old_sha, data = hashlib.sha256(data).hexdigest(), fixed[0]
+                    ADJUSTED.append((rel, name, wh, fixed[1], old_sha))
+                    extra = dict(extra or {}, adjusted=dict(res_from=list(wh), res_to=list(fixed[1]), orig_sha256=old_sha))
             rows.append(dict(repo=repo, commit=commit, path=rel, size=len(data), sha256=hashlib.sha256(data).hexdigest(), kind=kind, cat=cat,
                              target_fps=tfps, aspect=aspect, **({'dir': gdir} if gdir else {}), gids=sorted({g.upper() for g in GID.findall(rel + '/' + name)}), bids=bids, license=lic, **(extra or {})))
             if keep_local:
                 rows[-1]['_local'] = local
+                if rows[-1].get('adjusted'): rows[-1]['_data'] = data   # 改过分辨率的字节（tools/patch_pack.py content 取它，不再读镜像原件）
         tree = true_paths(repo, commit) if os.environ.get('S2A_PATCH_INDEX_NO_GH') != '1' else None
         if tree is None:
             print(f'{d}：取不到上游文件树，路径按本地（只差大小写的目录会 404）', file=sys.stderr)
@@ -384,9 +424,9 @@ def scan(mirror, keep_local=False, cheat_libs=False):
                         rows[-1]['_local'] = local
                 else:
                     row(rel, rel, data)
-    gone = {h for _, _, h in HALVES} | {h for *_, h in UPRES}
-    kept = [r for r in rows if r['kind'] == 'cheat' or (r['sha256'] not in gone and r['sha256'][:16] not in KNOWN_BAD)]
-    print(f'改内部渲染分辨率的满屏补丁不收：{len(UPRES)} 份', file=sys.stderr)
+    gone = {h for _, _, h in HALVES} | {h for *_, h in UPRES} | {x[4] for x in ADJUSTED}   # 改过分辨率的：上游原内容在别处（被分成画面类等）原样出现也不收
+    kept = [r for r in rows if r['kind'] == 'cheat' or r.get('adjusted') or (r['sha256'] not in gone and r['sha256'][:16] not in KNOWN_BAD)]   # 改过分辨率的行本身留（内容已变），别处同原内容的照去
+    print(f'改内部渲染分辨率的满屏补丁：改回原生分辨率 {len(ADJUSTED)} 份，认不全不收 {len(UPRES)} 份', file=sys.stderr)
     print(f'已定因会崩的补丁（KNOWN_BAD）不收：{sum(1 for r in rows if r["sha256"][:16] in KNOWN_BAD)} 行', file=sys.stderr)
     print(f'配套是显存 / 堆配置、只能收到 exefs 半边的补丁不收：{len(HALVES)} 份（去掉 {len(rows) - len(kept)} 行，含别的库里同一份内容）', file=sys.stderr)
     return kept

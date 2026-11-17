@@ -391,6 +391,11 @@ s2a_gate_step bash "$android_dir/tools/nvk_pipe_flight_test.sh"
 s2a_gate_step bash "$android_dir/tools/nvk_pipe_pend_test.sh"
 s2a_gate_step bash "$android_dir/tools/nvn_vk_pipe_demand_test.sh"
 s2a_gate_step bash "$android_dir/tools/nvk_shader_lease_test.sh"
+# 按结果合并（#1355 方案 A）：编译结果相同（结果摘要 + 负载长度 + 阶段数 + c1 有无与内容都相同）的身份共用一份
+# 着色器记录与句柄、管线随之合并；真 program_cache.c + 真缓存文件，ASan 下覆盖「收尾后不留悬空」。
+# 比对键每一项各有「只改这一项 → 不合并」的负对照；--mutants 逐项撤掉生产逻辑，每个都必须变红。
+s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_alias_test.py"
+s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_alias_test.py" --mutants
 s2a_gate_step "$PY" "$android_dir/tests/w2_observation_lifecycle_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/w2_observation_adapter_test.py"
 # vk_record host regression links the real Linux Vulkan loader; the dispatch itself is mocked.

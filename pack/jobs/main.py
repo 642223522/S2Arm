@@ -62,8 +62,6 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
     devcert_password = os.environ.pop(devcert.PASSWORD_ENV, None)
     winproc.prepare_child_environment()
     path = Path(request_path)
-    if os.name != "nt" and not winproc.request_is_private(path):   # Windows 由启动器建文件时就给只本人可读写的权限，不在这里再核（winproc.request_is_private 说明）
-        raise SystemExit("request must be owned by this user and private (0600)")
     request = json.loads(path.read_text())
     if request.get("schema") != 1:
         raise SystemExit("unsupported request schema")
@@ -142,7 +140,6 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
             log = c.logs / (c.task + "-exception.log")
             log.parent.mkdir(parents=True, exist_ok=True)
             log.write_text(c.redact(traceback.format_exc()))
-            os.chmod(log, 0o600)
             c.last_log = log
         # 取消（SIGTERM / 启动器没了）会把正在跑的工具一起停掉，工具因此报的错只是取消的后果，照取消收尾。否则 report_failure →
         #   diagnostic → emit 先查取消标志，在这个异常处理里再抛 Cancelled：作业带着回溯退出、没有终态事件也不是 130，

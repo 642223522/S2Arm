@@ -292,8 +292,8 @@ def game_docs(gid):
 
 DOCS_GAMES = "Documents/games"
 PACK_GAMES = "Library/Application Support/S2Arm/games"   # 每款资源包放 <PACK_GAMES>/<游戏号>/资源包（设备侧宿主同口径）
-# 备用位置（v0.3.3）：iOS 27 玩家机上 Library/Application Support/S2Arm 整条归 root、App 写不进，新壳把资源包搬到 Library/S2Arm/games（runtime/src/pack_apply.c
-#   repair_pack_base）；手机上有它就一律推它（宿主同一判据：s2a_docs.h s2a_pack_base_rel 看 Library/S2Arm/games 在不在）
+# 备用位置（v0.3.3）：iOS 27 玩家机上 Library/Application Support/S2Arm 整条归 root、App 写不进，当时的壳把资源包搬到 Library/S2Arm/games
+#   （那段迁移 11-15 已撤，存量手机上可能还留着这个目录）；手机上有它就一律推它（宿主同一判据：s2a_docs.h s2a_pack_base_rel 看 Library/S2Arm/games 在不在）
 PACK_GAMES_ALT = "Library/S2Arm/games"
 
 
@@ -707,7 +707,7 @@ def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None, pack_root=Non
         if m:
             c.diagnostic(m.group(0), code="manual_unpack_required", severity="warning")
             return got.get("files", 0), got.get("mb", 0) << 20
-        m = re.search(r"^S2A_PUSH_CODE (device_space_low|ios_install_no_space)\t([^\n]+)", text, re.M)   # tools/push_pack.py：估算空间不够（玩家可确认继续）/ 真写满了
+        m = re.search(r"^S2A_PUSH_CODE (device_space_low|ios_install_no_space|ios_install_dir_unwritable)\t([^\n]+)", text, re.M)   # tools/push_pack.py：估算空间不够（玩家可确认继续）/ 真写满了 / 机上目录 App 写不进（删除重装）
         if m:
             raise Failure(m.group(2), code=m.group(1)) from e
         m = re.search(r"iPhone 写不进资源包：[^\n]*", text)   # tools/push_pack.py probe：推之前写探针失败、手机确实锁着（#333）  # 非玩家句
@@ -810,13 +810,32 @@ def app_running(c, ident, bid):
     if rc:
         return None
     exe = [p.get("executable") or "" for p in (procs.get("result") or {}).get("runningProcesses") or [] if isinstance(p, dict)]
-    return any(e.startswith(u) for e in exe for u in urls)
+    # 只认主程序本身：<安装目录>/<CFBundleExecutable>。安装目录下还有系统常驻拉起的扩展进程（主屏小组件 PlugIns/S2ArmWidget.appex，11-16 进壳），
+    #   和玩家在不在玩无关——原先「落在安装目录下」就算在跑，phone_kept_pull 一直回 running=true，自动补件 / 提示更新从不发起
+    #   （11-16 真机实测：App 已退出，只剩小组件进程）。按主程序全路径比，以后再加扩展（Live Activity 等）也不会算进来
+    main = main_executable(c)
+    return any(e == u + main for e in exe for u in urls)
+
+
+def main_executable(c):
+    """装到手机上的容器 App 的主程序文件名：游戏库根 S2Arm.ipa（layout.phone_ipa，装机时组装的那份）里 Info.plist 的 CFBundleExecutable；
+    读不到（还没装过 / 文件坏）→ 壳的缺省名 S2Arm"""
+    import zipfile
+    try:
+        with zipfile.ZipFile(layout.phone_ipa(c)) as z:
+            name = next(n for n in z.namelist() if re.fullmatch(r"Payload/[^/]+\.app/Info\.plist", n))
+            exe = plistlib.loads(z.read(name)).get("CFBundleExecutable")
+            if isinstance(exe, str) and exe and "/" not in exe:
+                return exe
+    except (OSError, StopIteration, ValueError, KeyError, zipfile.BadZipFile, plistlib.InvalidFileException):
+        pass
+    return "S2Arm"
 
 
 def pull_kept_nros(c, ident, bid, gid, docs="Documents"):
     """装之前把这台设备上宿主留下的 NRO（runtime/src/loader.c s2a_nro_keep：包里没有改写映像、游戏解开的整份，Documents/wire/<号>/nro/<SHA-256>.nro）
     拉回游戏库 games/<号>/nro_kept/，下次准备这款时改写进包（#8be819）。机上没有 / 列不出 / 拉不到都不算错；只收文件名 = 内容 SHA-256 的。→ 新收的个数
-    Mac：devicectl 列 / 拉；Windows 走 s2a-devpush（WinPhone.pull_kept），收文件这段共用 keep_nros"""
+    Mac：devicectl 列 / 拉，收文件这段在 keep_nros；Windows 不收（WinPhone.pull_kept 回 0）"""
     from diag import devicectl
     rc, data, err = devicectl(c, "device", "info", "files", "--device", ident, "--domain-type", "appDataContainer", "--domain-identifier", bid,
                             "--subdirectory", f"{docs}/wire/{gid.upper()}/nro", timeout=120)
@@ -853,45 +872,11 @@ def keep_nros(c, gid, names, fetch):
                 note(c, f"收回 {gid} 留下的 NRO {name}：内容摘要与文件名不符，丢掉")  # 非玩家句
                 continue
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(got, dest); new += 1
+            part = dest.with_name(f"{dest.name}.{os.getpid()}.partial")   # 临时文件 + 改名：补件（rewrite_refresh.add_kept_nros）同时在读也读不到半个
+            shutil.copyfile(got, part); os.replace(part, dest); new += 1
     if new:
         c.emit("message", f"这款游戏有 {new} 个代码模块要在运行中才能取到，已经从 iPhone 收回，这次装机一并补上")
     return new
-
-
-def in_pack_kept(c, gid):
-    """游戏库收回过、已进这款 iPhone 程序件（nro_modules.tsv 有这条摘要）的 NRO 文件名；程序件里还没有的不算（rewrite_refresh.kept_todo）"""
-    import rewrite_refresh
-    kept = layout.nro_kept(c, gid)
-    if not kept.is_dir():
-        return []
-    todo = {p.name for p in rewrite_refresh.kept_todo(c, gid, layout.ios_kit(c, gid))}
-    return [p.name for p in sorted(kept.glob("*.nro")) if re.fullmatch(r"[0-9a-f]{64}\.nro", p.name) and p.name not in todo]
-
-
-def clear_kept(c, ph, games):
-    """装好之后：这次已带进包的 NRO 从手机上 <文档根>/wire/<号>/nro/ 删掉（#8be819）。手机上这个目录里还有 .nro = 这款还没补好
-    （游戏库提示 / 闪退弹窗按这个判）：装机失败、旧启动器不删，提示照旧；新包还缺的，宿主下次跑到会再存，提示自己回来。
-    只删本机认得、确实进了包的名字；删不掉记一行，不挡装机"""
-    drop = getattr(ph, "drop_kept", None)
-    if drop is None:
-        return
-    for g in games:
-        try:
-            names = in_pack_kept(c, g)
-            if names:
-                drop(g, names)
-        except (Failure, OSError, ImportError) as e:
-            note(c, f"装好后删手机上 {g} 已补进包的 NRO 失败（{e}），游戏库会照旧提示要补，下次装机再删")  # 非玩家句
-
-
-def rm_kept(c, dp, gid, names):
-    """经 s2a-devpush 删手机上这款留下的这几个 NRO（已不在算成功）"""
-    rel = f"{game_docs(gid)}/wire/{gid.upper()}/nro"
-    for name in names:
-        ok, out = dp.rm(f"{rel}/{name}")
-        if not ok:
-            note(c, f"删手机上 {gid} 已补进包的 NRO {name} 没成（{out.splitlines()[-1:] or '失败'}），下次装机再删")  # 非玩家句
 
 
 SAVE_REL = "S2A/ryujinx/bis/user/save"   # 文档根下的存档目录（Ryujinx 数据根 = <文档根>/S2A/ryujinx）
@@ -1831,14 +1816,6 @@ class MacPhone:
                 print(f"[s2a] 收回 {g} 留下的 NRO 失败：{e}", file=sys.stderr)
         return n
 
-    def drop_kept(self, g, names):
-        """装好后删手机上这款已补进包的 NRO（clear_kept）：devicectl 不能删 App 容器里的文件，走 s2a-devpush（两端都随发版带）"""
-        if not (self.udid and self.bid):
-            note(self.c, f"没有设备序列号 / 包名，删不了手机上 {g} 已补进包的 NRO，下次装机再删")  # 非玩家句
-            return
-        with tempfile.TemporaryDirectory(dir=self.c.private) as work:
-            rm_kept(self.c, devpush_client(self.c, self.udid, self.bid, work), g, names)
-
     def backup(self, g):
         backup_saves(self.c, self.dev["id"], self.bid, g, docs=game_docs(g))
 
@@ -1921,37 +1898,8 @@ class WinPhone:
         self.info = dict(device=self.udid, deviceName="", deviceKind=kind)
         self.pending = None   # 资源传完但没拉起 App 解开时的那句（put_game 带进结果 unpackPending）
 
-    def pull_kept(self, games):
-        """这几款在手机上留下的 NRO 都收回游戏库（#8be819，同 Mac pull_kept_nros）：Windows 没有 devicectl，经 s2a-devpush 列目录、逐个拉回，
-        收文件共用 keep_nros。→ 新收的个数；没记过包名 / 连不上 / 列不出（目录还没建、锁屏）都按 0，不挡装机"""
-        if not self.bid:
-            return 0
-        n = 0
-        with tempfile.TemporaryDirectory(dir=self.c.private) as work:
-            try:
-                dp = self.client(work)
-            except (Failure, OSError, ImportError) as e:   # 装机前也调（put_game）：收不到绝不挡装机，但要看得见（工具缺 / 起不来不能静默当「没留下」）
-                note(self.c, f"收回留下的 NRO：s2a-devpush 起不来（{e}），这次没收")  # 非玩家句
-                return 0
-            for g in games:
-                rel = f"{game_docs(g)}/wire/{g.upper()}/nro"
-                try:
-                    rc, out = dp.call("ls", rel)
-                    if rc:
-                        if not dir_missing(out):   # 目录不在 = 这款没留下（常态）；锁屏 / 断开等列不出的记一行
-                            note(self.c, f"收回 {g} 留下的 NRO：列不出手机上的目录（{out.splitlines()[-1:] or rc}），这次没收")  # 非玩家句
-                        continue
-                    n += keep_nros(self.c, g, out.splitlines(), lambda name, dst, rel=rel: dp.get(f"{rel}/{name}", dst))
-                except OSError as e:
-                    note(self.c, f"收回 {g} 留下的 NRO 失败：{e}")  # 非玩家句
-        return n
-
-    def drop_kept(self, g, names):
-        """装好后删手机上这款已补进包的 NRO（clear_kept）"""
-        if not self.bid:
-            return
-        with tempfile.TemporaryDirectory(dir=self.c.private) as work:
-            rm_kept(self.c, self.client(work), g, names)
+    def pull_kept(self, games):   # 留下的 NRO（#8be819）：Windows 不收（0.5.0 维护者定：从手机收回只保留 Mac 已发版的那条，Windows 端这次不上）
+        return 0
 
     def app_running(self):   # 查不了进程（Windows 没有 devicectl）：调用方改用 playing（游玩时间心跳）
         return None
@@ -2336,7 +2284,6 @@ def put_game(c, gid, ph, steps=True, others=None, skipped=()):
                                            deleted=[g for g in rec.get("deleted") or [] if g not in games], shellId=sid, bundleId=ph.bid or rec.get("bundleId", ""), at=time.time(),
                                            staleAgreed={sid: left_out} if left_out else {}, **signed))
     packer.commit_phone_ipa(c, ipa, sid)
-    clear_kept(c, ph, games)   # 已补进包的 NRO 从手机上删掉：手机上不再有 = 补好了（#8be819 提示的判据）
     # 资源传完但电脑没拉起 App 解开（manual_unpack_required，11-09 #336）：不算「已装好」，结果带上还差的一步，两端前端据此显示「还差最后一步」而不是「已装到 iPhone」
     extra = dict(unpackPending=ph.pending) if ph.pending else {}
     if img: extra["openToFinish"] = True   # 两端成功页写「已传到 iPhone，打开 S2Arm 会自动完成安装」（机上解开由 App 打开时游戏库完成）
@@ -2489,7 +2436,13 @@ def _kept_pull_many(c):
 def _kept_pull_on(c, ph):
     rec = layout.load_device(c, ph.key)
     games = [g for g in rec.get("games") or [] if isinstance(g, str)]
-    new = ph.pull_kept(games)
+    # 只和真冲突互斥（维护者「只按真冲突互斥」）：同一台手机上的装机 / 推包 / 续签（ipa.phone_lock）。手机在用就这一轮不收、下一轮再来；
+    #   别的作业（出包、升级首启的程序件迁移……）照跑——原先前端「有任何作业在跑就整轮跳过」，升级首启迁移几分钟，拉回拖到第 360 秒（11-16 候选验收）。
+    #   同一款程序件的迁移 / 现建由 programs-migrate 锁串行（ios_kit 里），收件写 nro_kept 是临时文件 + 改名（keep_nros），读的一方不会读到半个
+    with c.idle("phone") as free:
+        if not free:
+            return _kept_pull_none()
+        new = ph.pull_kept(games)
     import rewrite_refresh
     kept = [g for g in games if rewrite_refresh.kept_todo(c, g, layout.ios_kit(c, g))]   # 没补进的款（手动按钮兜底同 phone_updates）
     # 这台手机上的 S2Arm 壳比本版旧（启动器升级了）：shellUpdate = 可以不问玩家直接更新（没有要按新版重新出包的款）；

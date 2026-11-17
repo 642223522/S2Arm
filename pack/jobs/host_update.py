@@ -78,7 +78,7 @@ def forget_registrations(lsregister=None, wait=False, app=None):
     import hashlib
     import tempfile
     lock = Path(tempfile.gettempdir()) / f"s2a-lsregister-forget-{hashlib.sha1(lsregister.encode()).hexdigest()[:12]}.lock"
-    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o666)
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)

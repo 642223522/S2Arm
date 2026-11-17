@@ -296,6 +296,9 @@ static int host_run(int argc, char **argv) {
       if (!s2a_selfcheck()) {
 #if TARGET_OS_IPHONE
           const char *t, *b; s2a_selfcheck_page(&t, &b);   // 细节（地址上限、内存上限）已在 host.log「【红】自检不过」，随诊断包带走
+          // 弱链接[host]：s2a_iml_claim（ios/iml_probe.m 提供；Mac 宿主与原生单测不链它，取不到就不记）
+          // 这页会说「缺提高内存上限权限」：记下这次打开已说过，诊断询问与游戏里提示条不再重复说（ios/iml_probe.m；输入工作台没链进来时弱引用为空）
+          { extern int s2a_iml_claim(void) __attribute__((weak_import)); if (s2a_iml_claim) (void)s2a_iml_claim(); }
           int s2a_selfcheck_can_continue(void); int s2a_ios_ask_continue(const char *, const char *, const char *, const char *);
           // 只差内存上限：提示页多一个「仍要启动」，玩家点了就照常起局（v0.3.1 装机原则）；物理上起不来的照旧只给提示、不起游戏
           if (s2a_selfcheck_can_continue() && s2a_ios_ask_continue("exclamationmark.triangle.fill", t, b, S2A_SELFCHECK_GO))

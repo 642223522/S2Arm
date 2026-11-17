@@ -57,6 +57,7 @@ static NSString *pack_root(void) {
 static NSString *const kOpenToggle = @"S2ADiagExportOnOpen";   // Settings.bundle 里的开关
 static UIViewController *g_vc;
 static BOOL g_prompted, g_exporting;
+static void ask_after_crash(NSString *why);   // 等宿主提示页收起再问「把上次的诊断发给我们？」（见下）
 // 「故障报修」里玩家写的一句「发生了什么」（选填）：随这一份包写进 manifest.json 顶层 note（收件服务存进元数据、取件写进定位卡「玩家说」），传完清掉
 static NSString *g_report_note;
 static __weak UIAlertController *g_promptAlert;   // 「把上次的诊断发给我们？」正显示着时指向它：导出要先把它关掉再弹分享面板，不叠在一起
@@ -448,7 +449,7 @@ static NSString *mk_dir(void) {
     }
     mk_trim(dir, NO);
     LOG("诊断包：MetricKit 交来 %lu 份诊断（新的崩溃 / 卡顿 %d）", (unsigned long)payloads.count, bad);
-    if (bad) dispatch_async(dispatch_get_main_queue(), ^{ void s2a_diag_prompt(NSString *why); s2a_diag_prompt(S2AL(@"diag.prompt.crash")); });
+    if (bad) dispatch_async(dispatch_get_main_queue(), ^{ ask_after_crash(S2AL(@"diag.prompt.crash")); });
 }
 // 退出原因计数（系统约每天交一次：前台 / 后台各类退出的累计次数）：被看门狗杀、超内存上限被杀不产生崩溃诊断，只在这里看得见——0 崩率要它
 - (void)didReceiveMetricPayloads:(NSArray<MXMetricPayload *> *)payloads {
@@ -478,14 +479,25 @@ static NSString *g_crash_off;
 void s2a_dprompt_notice(NSString *title, NSString *body, double delay, double seconds);   // dprompt.m
 // 弱链接[lab]：s2a_iml_lost
 int s2a_iml_lost(void) __attribute__((weak_import));   // iml_probe.m：这次安装确定丢了「提高内存上限」权限
+// 弱链接[lab]：s2a_iml_claim
+// 弱链接[lab]：s2a_ios_note_up
+int s2a_iml_claim(void) __attribute__((weak_import));  // iml_probe.m：这次打开还没别处说过「丢了权限」→ 取到 1 由这里说（每次打开只说一处）
+int s2a_ios_note_up(void) __attribute__((weak_import)); // app.m：宿主提示页（自检「仍要启动」那页等）正显示着
+// 上次没正常退出、这次要问诊断（进游戏画面 s2a_diag_attach 时定，问过 / 不问了就清）：游戏里的「丢了权限」提示条让给这次询问说，免得提示条和询问框同时在屏幕上（iml_probe.m）
+static BOOL g_will_ask;
+int s2a_diag_will_ask(void) { return g_will_ask; }
+// 「把上次的诊断发给我们？」正显示着（app.m 出提示页前看：等它收起再出，不叠在一起）
+int s2a_diag_asking(void) { return g_promptAlert.presentingViewController != nil; }
 void s2a_diag_note_crash_off(NSString *names) { g_crash_off = [names copy]; }
 // 不弹询问时（已问过 / 自动化局 / 正在导出），关掉了什么仍要告诉玩家：退回只有「知道了」的提示条
 static void crash_off_notice_only(void) {
     if (!g_crash_off) return;
     s2a_dprompt_notice(S2AL(@"crash.off.title"), [NSString stringWithFormat:S2AL(@"crash.off.body"), g_crash_off], 0, 8); g_crash_off = nil;
 }
-// 问一句「把上次的诊断发给我们？」（每次启动最多问一次）；崩溃恢复刚关掉东西时，同一个提示先说关掉了什么
-void s2a_diag_prompt(NSString *why) {
+// 问一句「把上次的诊断发给我们？」（每次启动最多问一次）；崩溃恢复刚关掉东西时，同一个提示先说关掉了什么。
+//   iml：这次安装丢了「提高内存上限」权限、这次打开还没别处说过时，由这个询问说（原因换成 diag.prompt.imlLost；先说关掉了什么的那种在末尾补上怎么重装）
+static void prompt(NSString *why, BOOL iml) {
+    g_will_ask = NO;
     // 已经在导出（或分享面板开着）就不问了：玩家正在发，问了只会和分享面板叠在一起
     if (g_prompted || !g_vc) { crash_off_notice_only(); return; } g_prompted = YES;
     // 自动化 / 开发工具起的局（s2a_unattended.h）不问：日志由工具拉回，弹窗只会挡住整局
@@ -496,12 +508,23 @@ void s2a_diag_prompt(NSString *why) {
     if (g_exporting || [g_vc.presentedViewController isKindOfClass:UIActivityViewController.class]) { crash_off_notice_only(); return; }
 #endif
     NSString *off = g_crash_off; g_crash_off = nil;
+    BOOL say_iml = iml && s2a_iml_claim && s2a_iml_claim();
+    if (say_iml && !off) why = S2AL(@"diag.prompt.imlLost");
+    NSString *msg = off ? [NSString stringWithFormat:S2AL(@"crash.off.prompt"), off] : [NSString stringWithFormat:S2AL(@"diag.prompt.message"), why];
+    if (say_iml && off) msg = [msg stringByAppendingFormat:@"\n\n%@", S2AL(@"iml.lost.body")];
     UIAlertController *a = [UIAlertController alertControllerWithTitle:off ? S2AL(@"crash.off.title") : S2AL(@"diag.prompt.title")
-        message:off ? [NSString stringWithFormat:S2AL(@"crash.off.prompt"), off] : [NSString stringWithFormat:S2AL(@"diag.prompt.message"), why] preferredStyle:UIAlertControllerStyleAlert];
+        message:msg preferredStyle:UIAlertControllerStyleAlert];
     [a addAction:[UIAlertAction actionWithTitle:S2AL(@"diag.prompt.no") style:UIAlertActionStyleCancel handler:nil]];
     [a addAction:[UIAlertAction actionWithTitle:S2AL(@"diag.prompt.send") style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x; upload_now(); }]];
     UIViewController *top = g_vc; while (top.presentedViewController) top = top.presentedViewController;
     g_promptAlert = a; [top presentViewController:a animated:YES completion:nil];
+}
+void s2a_diag_prompt(NSString *why) { prompt(why, NO); }
+// 上次死在前台 / 系统报了崩溃：宿主提示页（自检「仍要启动」那页）正开着就等它收起再问（11-16：两者叠字），每秒看一次；那页一直不收（起不了局的提示页自带「发送诊断」）就不问
+static void ask_after_crash(NSString *why) {
+    if (s2a_ios_note_up && s2a_ios_note_up()) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{ ask_after_crash(why); }); return; }
+    prompt(why, YES);
 }
 
 // 设置页开关开着 → 导出并把开关关回去
@@ -584,16 +607,15 @@ void s2a_diag_attach(UIViewController *vc) {
     //   标记在这里先读后写：读到的是上一局留下的，然后标成本局「前台」；进后台 / 回前台由 app.m 改写，优雅退出（lifecycle.c）删掉
     { uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); int prev = s2a_sesmark_prev(docs().fileSystemRepresentation); s2a_sesmark_set(docs().fileSystemRepresentation, S2A_SESMARK_FG);
       LOG("诊断包：上次会话标记 %s（主线程 %.2f ms，不读日志）→ %s", prev == S2A_SESMARK_FG ? "前台未收尾" : prev == S2A_SESMARK_BG ? "后台" : "无（正常收尾）", (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0) / 1e6, prev == S2A_SESMARK_FG ? "提示导出" : "不提示");
+      g_will_ask = prev == S2A_SESMARK_FG && !getenv("S2A_OPEN_SETTINGS") && !s2a_unattended();   // 同步定：游戏里提示条（iml_probe.m，起局 3 秒后）到点时要看
       dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         check_toggle();
         // 真机自动化（S2A_OPEN_SETTINGS 测试开关在）每局都是被强杀收尾的，上次异常退出的提示会挡住要截的设置页：只在这时不问（玩家给不了这个环境变量）
         if (prev == S2A_SESMARK_FG) crash_auto_off();
         { void s2a_ios_crash_session_begin_single(int); s2a_ios_crash_session_begin_single(prev != S2A_SESMARK_FG); }   // 单款壳：关完再记这局开着的（v0.4.1，game_options.m）
-        // 这次安装丢了「提高内存上限」权限（iml_probe.m，确定丢了才算）：上次异常退出多半是内存不够，原因那句直接说清、给出怎么重装（11-16 维护者「要，做提示」）
-        if (prev == S2A_SESMARK_FG && !getenv("S2A_OPEN_SETTINGS")) {
-            // iml_probe.m 不在输入工作台工程里（ios/lab/project.yml）：弱引用，没链进来就按普通「没有正常退出」问
-            s2a_diag_prompt(s2a_iml_lost && s2a_iml_lost() ? S2AL(@"diag.prompt.imlLost") : S2AL(@"diag.prompt.abnormalExit"));
-        }
+        // 这次安装丢了「提高内存上限」权限（iml_probe.m，确定丢了才算）：上次异常退出多半是内存不够，原因那句直接说清、给出怎么重装（11-16 维护者「要，做提示」）；
+        //   iml_probe.m 不在输入工作台工程里（ios/lab/project.yml）：弱引用，没链进来就按普通「没有正常退出」问
+        if (g_will_ask) ask_after_crash(S2AL(@"diag.prompt.abnormalExit"));
       }); }
 }
 // 进后台 / 回前台（app.m 生命周期通知，主线程）：改写会话标记，在后台被划掉 / 被系统回收不算异常

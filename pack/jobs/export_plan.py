@@ -29,7 +29,7 @@ import sys
 
 import batch as plans
 from core import Cancelled, Paused, atomic, journal
-from errors import Failure
+from errors import Failure, library_lock_failure
 import filelock
 
 OPERATION = {"mac": "build", "iphone": "ipa", "appletv": "ipa"}   # Apple TV：同一个 ipa 作业，请求带 platform = "tvos"（tvOS 壳与 image/tvos 由出包流程出）
@@ -55,7 +55,7 @@ def export(c):
         with filelock.held(c.private / "export.lock", holder=c.lock_holder()):
             return _run(c, plan)
     except filelock.Busy as busy:
-        raise Failure("已经有一个出包在进行：等它出完或取消后再出。", code="library_busy", holder=busy.holder) from None
+        raise library_lock_failure(busy.holder, "已经有一个出包在进行：等它出完或取消后再出。") from None
 
 
 class _Book:
@@ -167,7 +167,6 @@ def _run_step(c, child, gid, platform, plan, location, followUp):
     path = c.logs / "jobs" / (child + ".request.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic(path, request)
-    os.chmod(path, 0o600)
     seen = {}
     def relay(line):
         try:

@@ -72,6 +72,32 @@ import S2ArmAppleAdapter
         XCTAssertTrue(S2ArmLauncherModel.autoUpdatePhoneOn(UserDefaults(suiteName: "s2arm-fresh-" + UUID().uuidString)!), "没碰过开关：缺省开")
     }
 
+    // 启动器打开后第一次读库失败（首次使用还没选游戏库 / 外置游戏库没挂上），之后读成功：后台循环在第一次读成功时开（11-16 Mac 整链：原先跟 startup 那一次绑死，
+    //   第一次失败就整次不开，手机上留了代码模块也一直不亮「更新 iPhone」）
+    func testStartupLoopsStartOnFirstSuccessfulLoad() async throws {
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("s2arm-loops-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("Jobs"), withIntermediateDirectories: true)
+        try Data().write(to: root.appendingPathComponent("Jobs/main.py"))
+        let runner = KeptRunner(); runner.catalogFails = true; runner.catalog = ["games": [[String: Any]]()]
+        let model = S2ArmLauncherModel(client: JobClient(environment: JobEnvironment(
+            privateRoot: root, resources: root, library: root.appendingPathComponent("lib").path, libraryId: "fixture"), runner: runner))
+        model.refresh()
+        for _ in 0..<300 where !model.libraryLoaded { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(model.libraryLoaded); XCTAssertFalse(model.startupLoopsStarted, "第一次读库失败：循环还不开")
+        XCTAssertFalse(model.keptLoopStarted)
+        runner.catalogFails = false
+        model.refresh()
+        for _ in 0..<300 where !model.startupLoopsStarted { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(model.startupLoopsStarted, "之后第一次读成功：开")
+        XCTAssertTrue(model.keptLoopStarted, "自动拉回循环开了")
+        let catalogs = runner.catalogs
+        model.refresh()
+        for _ in 0..<300 where runner.catalogs == catalogs { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(model.keptLoopStarted, "再读成功：不重复开（keptModulesLoop 自带只开一次）")
+    }
+
     // 新版启动器首次读到游戏库：有要更新的手机 → 后台 installUpdatePrepare 一次（不碰手机），准备完出横幅 准备好 / 没准备成（都是「点这里更新」，手动更新 11-16）；
     //   开关关 → 不准备、不显示
     func testPrepareBannerAfterLauncherUpdate() async throws {
@@ -117,6 +143,7 @@ private final class KeptRunner: JobProcessRunner {
     var prepared = 0
     var catalog: [String: Any] = [:]
     var catalogs = 0
+    var catalogFails = false
     func start(executable: URL, arguments: [String], environment: [String: String],
                onLine: @escaping (Data) -> Void, onStderr: @escaping (Data) -> Void,
                onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle {
@@ -130,7 +157,7 @@ private final class KeptRunner: JobProcessRunner {
         }
         let result: [String: Any] = op == "phoneKeptPull" ? ["device": "00008160-FIXTURE", "new": kept.count, "kept": kept, "shellUpdate": shellUpdate, "stale": [String](), "running": running]
             : op == "catalog" ? catalog : [:]
-        let failed = op == "installUpdatePrepare" && prepareFails
+        let failed = (op == "installUpdatePrepare" && prepareFails) || (op == "catalog" && catalogFails)
         let event: [String: Any] = ["schema": 1, "taskId": taskId, "type": "result", "state": failed ? "failed" : "succeeded", "result": result, "message": failed ? "fixture" : ""]
         DispatchQueue.main.async { onLine(try! JSONSerialization.data(withJSONObject: event)); onExit(0) }
         return Handle()

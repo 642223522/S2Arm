@@ -30,6 +30,7 @@
 #include <time.h>
 
 #include "nvn_backend.h"
+#include "nvn_unimpl.h"
 #include "nvn_plat.h"   // 调试开关与一行日志（上屏段的调试色、GPU 时间读数）
 #include "nvn_vk_format.h"
 #include "nvn_pipe_flight.h"   // 配方级在途表（纯逻辑）：同配方合并成一份创建，不同配方不互相排队
@@ -149,6 +150,7 @@ struct nvn_gpu_pipe_s {
     nvn_gpu_pipe_desc key;
     uint32_t actual_samples; // 主机实际管线样本数；key 保留请求以匹配预热与查找。
     uint8_t warm;          // 1 = 这份对象是预热带 / 预热线程建的，真实 draw 第一次命中时计数（见 nvn_gpu_pipe_get）
+    uint64_t warm_tag;     // 管线预热清单的标签（槽号 + 槽代号，见 nvn_vk_pipe_warm.h）；0 = 没设过。原子读写，随对象销毁
     struct nvn_gpu_pipe_s *all_next;
     struct nvn_gpu_pipe_s *hnext;   // 图形管线的散列桶链（g_pipe_ht）
     uint32_t hash;                  // 建管线时的 pipe_hash(描述)：查表先比它、相同才逐字段比（不碰 key 那一大块内存）；重排桶也用它
@@ -156,7 +158,12 @@ struct nvn_gpu_pipe_s {
 
 struct nvn_gpu_samp_s {
     VkSampler sampler;
+    VkSampler average_sampler; // 分离绑定无法核对配对视图时，按需创建同参数的平均采样器
+    VkSamplerCreateInfo average_info;
+    VkSamplerCustomBorderColorCreateInfoEXT average_border;
+    int average_custom;
     VkSampler int_sampler;   // 给整数格式的视图用：最近点、不做各向异性、整数边界色（整数格式不能线性过滤）；参数本来就合规时与 sampler 是同一个
+    uint8_t reduction;       // #976：sampler 带 min / max 归约（NVN_SAMPLER_REDUCTION_MIN / MAX；0 = 平均）。int_sampler 是最近点，不带归约
     int released, refs;
     uint32_t border_slots;   // 占用的自定义边框色配额（sampler 与 int_sampler 各算一个；内置三档为 0）
     struct nvn_gpu_samp_s *all_next;
@@ -238,7 +245,7 @@ struct nvn_gpu_cmd_s {
     uint8_t dyn_dirty;         // 只有动态 UBO 的偏移变了（组内容没变）：这一笔不重写组，只用新偏移重绑
     // 描述符写入影子（开关 nvk_desc_skip，缺省开）：同一个组对象里，内容和上次真正写进去的一样就不再写。
     // 真机上一帧约 1030 次整组重建、每次 11 条描述符；其中大部分条目（贴图句柄、采样器、常量缓冲片）和上一笔相同。
-    struct desc_shadow { uint64_t a, b, c; uint32_t type; uint16_t binding; uint8_t valid; } dsh[4][32];
+    struct desc_shadow { uint64_t a, b, c; uint32_t type; uint16_t binding, elem; uint8_t valid; } dsh[4][32];
     VkDescriptorSet dsh_set[4];
     uint8_t dsh_ok[4];
     uint8_t desc_point;             // 当前这几组绑在哪个绑定点：0 还没绑，1 图形，2 计算
@@ -1053,6 +1060,7 @@ static void destroy_samp_locked(struct nvn_gpu_vk *vk, struct nvn_gpu_samp_s *s)
     while (*pp && *pp != s) pp = &(*pp)->all_next;
     if (*pp) *pp = s->all_next;
     vk->border_live -= s->border_slots;
+    if (s->average_sampler) vkDestroySampler(vk->d, s->average_sampler, NULL);
     if (s->int_sampler && s->int_sampler != s->sampler) vkDestroySampler(vk->d, s->int_sampler, NULL);
     if (s->sampler) vkDestroySampler(vk->d, s->sampler, NULL);
     free(s);
@@ -2123,6 +2131,7 @@ nvn_gpu_rc nvn_gpu_close(uint64_t timeout_ns, nvn_gpu_err *err) {
     g.border_live = 0;
     while (sp) {
         struct nvn_gpu_samp_s *sn = sp->all_next;
+        if (sp->average_sampler) vkDestroySampler(g.d, sp->average_sampler, NULL);
         if (sp->int_sampler && sp->int_sampler != sp->sampler) vkDestroySampler(g.d, sp->int_sampler, NULL);
         if (sp->sampler) vkDestroySampler(g.d, sp->sampler, NULL);
         free(sp);
@@ -2792,6 +2801,10 @@ nvn_gpu_rc nvn_gpu_shader_load(const nvn_gpu_shader_src *s, nvn_gpu_shader *out,
         return fail(err, NVN_GPU_E_UNSUPPORTED, "GS 未启用或探测未通过");
     if (s->kind != NVN_GPU_BLOB_SPIRV) return fail(err, NVN_GPU_E_UNSUPPORTED, "只收 SPIR-V blob（kind=%d）", s->kind);
     if (s->bytes & 3) return fail(err, NVN_GPU_E_ARG, "SPIR-V 字节数不是 4 的倍数");
+    // #1340：shaderInt16 不再是整机门槛。设备没有它时，声明了 OpCapability Int16 的模块不交给驱动（不合法的 SPIR-V），
+    // 按程序报 UNSUPPORTED、why 点名特性；程序层据此记未接清单 shader int16_not_supported。
+    if (!g.dev->core_features.shaderInt16 && s2a_spirv_declares_cap(s->blob, s->bytes, 22) == 1)
+        return fail(err, NVN_GPU_E_UNSUPPORTED, "shaderInt16：设备没有 16 位整数，模块声明了 OpCapability Int16（stage %d）", (int)s->stage);
     struct nvn_gpu_shader_s *sh = calloc(1, sizeof *sh);
     if (!sh) return fail(err, NVN_GPU_E_OOM, "着色器结构分配失败");
     sh->stage = s->stage;
@@ -3088,6 +3101,10 @@ static uint64_t g_warm_hits, g_warm_created, g_pipe_dup;
 void nvn_gpu_pipe_warm_scope(int on) { t_warm_scope = on ? 1 : 0; }
 uint64_t nvn_gpu_pipe_warm_hits(void) { return __atomic_load_n(&g_warm_hits, __ATOMIC_RELAXED); }
 uint64_t nvn_gpu_pipe_warm_created(void) { return __atomic_load_n(&g_warm_created, __ATOMIC_RELAXED); }
+// 清单标签（管线预热清单把「这条管线对应哪一槽」存在对象上，换回同一条管线时只加计数）。后端管线局内不淘汰、
+// 不复用指针（销毁只在会话收尾整批做），所以标签随对象生灭；读写不加锁（单个 64 位原子）。
+uint64_t nvn_gpu_pipe_warm_tag(nvn_gpu_pipe p) { return p ? __atomic_load_n(&((struct nvn_gpu_pipe_s *)p)->warm_tag, __ATOMIC_RELAXED) : 0; }
+void nvn_gpu_pipe_warm_tag_set(nvn_gpu_pipe p, uint64_t tag) { if (p) __atomic_store_n(&((struct nvn_gpu_pipe_s *)p)->warm_tag, tag, __ATOMIC_RELAXED); }
 
 // 缓存里按配方找一条图形管线（调用方持 g_mu）。散列只取描述里一部分字段（都是 same_pipe_desc 比的），
 // 相等与否仍由 same_pipe_desc 定。
@@ -4732,6 +4749,21 @@ static int alloc_sets(struct nvn_gpu_cmd_s *c, const VkDescriptorSetLayout *dsl,
 static VkImageLayout bind_image_layout(struct nvn_gpu_cmd_s *c, struct nvn_gpu_view_s *v) {
     return c->opt && v && v->tex ? lay_cur(c, v->tex) : VK_IMAGE_LAYOUT_GENERAL;
 }
+// 仅在分离绑定时按需建立平均采样器，组合绑定仍使用原归约采样器。
+// s 已被命令引用保活；g_mu 同时保护创建、边框配额和销毁。
+static VkSampler samp_separate_average(struct nvn_gpu_samp_s *s) {
+    pthread_mutex_lock(&g_mu);
+    if (!s->average_sampler && (!s->average_custom || g.border_live < g.dev->custom_border_max)) {
+        if (vkCreateSampler(g.d, &s->average_info, NULL, &s->average_sampler) == VK_SUCCESS && s->average_custom) {
+            g.border_live++;
+            s->border_slots++;
+        }
+    }
+    VkSampler sampler = s->average_sampler;
+    pthread_mutex_unlock(&g_mu);
+    return sampler;
+}
+
 // 把某阶段本笔绑定写进 wr/ii/bi；返回写入条数，出错置粘滞返回 -1。
 // 缺成员的新类别（IMAGE / TBUF / IMAGE_TBUF）报 E_LAYOUT；老类别保持 NULL 句柄空资源写法不变。
 // 只写 dirty 里的组（没变的组沿用上一笔的描述符集对象，不重写）。纹素缓冲的格式核对取决于管线，
@@ -4780,6 +4812,14 @@ static int write_binds(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_pipe_s *p, 
         case NVN_GPU_RES_SAMP:
             memset(im, 0, sizeof *im);
             im->sampler = b->u.samp ? b->u.samp->sampler : VK_NULL_HANDLE;
+            if (b->u.samp && b->u.samp->reduction) {
+                im->sampler = samp_separate_average(b->u.samp);
+                if (!im->sampler) {
+                    set_sticky(c, NVN_GPU_E_UNSUPPORTED, "sampler_reduction_average_separate_create：无法建立平均采样器");
+                    return -1;
+                }
+                nvn_unimpl("gpu", "sampler_reduce_average_separate_unknown_format", NULL);
+            }
             w->pImageInfo = im;
             break;
         case NVN_GPU_RES_TEX_SAMP:
@@ -4787,7 +4827,15 @@ static int write_binds(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_pipe_s *p, 
             memset(im, 0, sizeof *im);
             im->imageView = b->u.ts.view->view;
             { nvn_fmt_info vfi; int vint = nvn_fmt_info_of(b->u.ts.view->nvn_format, &vfi) && (vfi.kind == NVN_FMT_UINT || vfi.kind == NVN_FMT_SINT);
-              im->sampler = vint ? b->u.ts.samp->int_sampler : b->u.ts.samp->sampler; }
+              im->sampler = vint ? b->u.ts.samp->int_sampler : b->u.ts.samp->sampler;
+              if (!vint && b->u.ts.samp->reduction) {   // #976：做 min / max 归约的视图：格式要有 FILTER_MINMAX
+                  VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(g.phys, b->u.ts.view->format, &fp);
+                  if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT_EXT)) {
+                      set_sticky(c, NVN_GPU_E_UNSUPPORTED, "sampler_reduction_view_format：视图格式 0x%x（Vulkan %d）没有 SAMPLED_IMAGE_FILTER_MINMAX，不能做 min / max 归约",
+                                 b->u.ts.view->nvn_format, (int)b->u.ts.view->format);
+                      return -1;
+                  }
+              } }
             im->imageLayout = bind_image_layout(c, b->u.ts.view);
             w->pImageInfo = im;
             break;
@@ -4809,13 +4857,11 @@ static int write_binds(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_pipe_s *p, 
                 set_sticky(c, NVN_GPU_E_ARG, "常量缓冲范围 %llu 超过 maxUniformBufferRange %llu", (unsigned long long)b->u.b.len, (unsigned long long)g.caps.max_ubo_range);
                 return -1; }
             if (e->cls == NVN_GPU_RES_SSBO && b->u.b.len > g.caps.max_ssbo_range) {
-                // Vulkan 的存储缓冲范围上限管的是「范围」而不是缓冲大小：超过上限的绑定用 VK_WHOLE_SIZE
-                // （规范只约束非 WHOLE_SIZE 的 range），有效范围变成 offset 到缓冲尾。这是平台分叉，报一次红行。
-                static int said; if (!said++) {
-                    char m[160]; snprintf(m, sizeof m, "存储缓冲范围 %llu 超过 maxStorageBufferRange %llu：按 VK_WHOLE_SIZE 绑定（Vulkan 无更大范围）",
-                                          (unsigned long long)b->u.b.len, (unsigned long long)g.caps.max_ssbo_range);
-                    nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", m); }
-                bf->range = VK_WHOLE_SIZE; }
+                // 存储缓冲同样只能准确拒绝：改绑 VK_WHOLE_SIZE 并不豁免，有效范围（缓冲尾 − offset）照样受 maxStorageBufferRange 约束
+                // （VUID-VkWriteDescriptorSet-descriptorType-00333，校验层原话「is VK_WHOLE_SIZE, but the effective range … is greater than
+                // maxStorageBufferRange」）。回放核心已按上限夹好窗口（rp_draw.c sb_window），走到这里是调用方没夹。
+                set_sticky(c, NVN_GPU_E_ARG, "存储缓冲范围 %llu 超过 maxStorageBufferRange %llu", (unsigned long long)b->u.b.len, (unsigned long long)g.caps.max_ssbo_range);
+                return -1; }
             w->pBufferInfo = bf;
             break;
         case NVN_GPU_RES_TBUF:
@@ -4947,11 +4993,14 @@ static int bind_descriptor_groups(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_
                 if (set >= 4 || wr[i].dstBinding >= 32) { wr[keep++] = wr[i]; continue; }
                 struct desc_shadow *sh = &c->dsh[set][wr[i].dstBinding];
                 struct desc_shadow nx; memset(&nx, 0, sizeof nx);
-                nx.type = wr[i].descriptorType; nx.binding = (uint16_t)wr[i].dstBinding;
+                nx.type = wr[i].descriptorType; nx.binding = (uint16_t)wr[i].dstBinding; nx.elem = (uint16_t)wr[i].dstArrayElement;
                 if (wr[i].pImageInfo) { nx.a = (uint64_t)(uintptr_t)wr[i].pImageInfo->imageView; nx.b = (uint64_t)(uintptr_t)wr[i].pImageInfo->sampler; nx.c = (uint64_t)wr[i].pImageInfo->imageLayout; }
                 else if (wr[i].pBufferInfo) { nx.a = (uint64_t)(uintptr_t)wr[i].pBufferInfo->buffer; nx.b = wr[i].pBufferInfo->offset; nx.c = wr[i].pBufferInfo->range; }
                 else if (wr[i].pTexelBufferView) nx.a = (uint64_t)(uintptr_t)*wr[i].pTexelBufferView;
-                if (sh->valid && sh->a == nx.a && sh->b == nx.b && sh->c == nx.c && sh->type == nx.type) continue;
+                // 影子一个 binding 只占一格，元素号也得比：数组里相邻两个元素描述符相同（空元素沿用首个
+                // 有效视图、采样器共用首项）时，不比元素就会把后一个元素当「没变」跳过，新分配的组里它从没被写过。
+                // 每条写入 descriptorCount 恒为 1（write_binds），所以按元素比就够。
+                if (sh->valid && sh->elem == nx.elem && sh->a == nx.a && sh->b == nx.b && sh->c == nx.c && sh->type == nx.type) continue;
                 nx.valid = 1; *sh = nx; wr[keep++] = wr[i];
             }
             nw = keep;
@@ -5942,6 +5991,27 @@ nvn_gpu_rc nvn_gpu_samp_create(const samp_par *p, nvn_gpu_samp *out, nvn_gpu_err
         ci.compareEnable = VK_TRUE;
         ci.compareOp = samp_compare(p->cmp_func);
     }
+    // #976：min / max 归约（VK_EXT_sampler_filter_minmax）。只在有线性过滤（放大 / 缩小 / 级间）或各向异性时才挂；全最近点且不开各向异性时足迹单一。
+    int mapping_fallback = 0;
+    VkSamplerReductionModeCreateInfoEXT rm;
+    memset(&rm, 0, sizeof rm);
+    rm.sType = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO_EXT;
+    if (p->reduction != NVN_SAMPLER_REDUCTION_AVERAGE) {
+        const char *rn = p->reduction == NVN_SAMPLER_REDUCTION_MIN ? "min" : p->reduction == NVN_SAMPLER_REDUCTION_MAX ? "max" : NULL;
+        if (!rn) { free(s); return fail(err, NVN_GPU_E_ARG, "sampler_reduction_mode：NVN 归约模式 %u 无映射", p->reduction); }
+        int linear = ci.magFilter == VK_FILTER_LINEAR || ci.minFilter == VK_FILTER_LINEAR || ci.mipmapMode == VK_SAMPLER_MIPMAP_MODE_LINEAR || ci.anisotropyEnable;
+        if (linear) {
+            if (!g.dev->sampler_minmax_enabled) { free(s); return fail(err, NVN_GPU_E_UNSUPPORTED, "sampler_reduction_%s：设备没有 VK_EXT_sampler_filter_minmax", rn); }
+            if (ci.compareEnable) { free(s); return fail(err, NVN_GPU_E_UNSUPPORTED, "sampler_reduction_%s：Vulkan 不允许比较采样同时做 %s 归约", rn, rn); }
+            // 无法证明其他分量安全时按原来的平均过滤画，并在建成后记一次原因。
+            if (!g.dev->minmax_image_mapping) mapping_fallback = 1;
+            else {
+                rm.reductionMode = p->reduction == NVN_SAMPLER_REDUCTION_MIN ? VK_SAMPLER_REDUCTION_MODE_MIN_EXT : VK_SAMPLER_REDUCTION_MODE_MAX_EXT;
+                ci.pNext = &rm;
+                s->reduction = (uint8_t)p->reduction;
+            }
+        }
+    }
     // 边框色只在有一向是 CLAMP_TO_BORDER 时用得到；用不到时不建自定义边框色（不要扩展、不占配额），不是三档的取不透明黑（与改前相同）。
     const int preset = samp_border_preset(p->border);
     const int custom = preset < 0 && (ci.addressModeU == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER ||
@@ -5981,6 +6051,16 @@ nvn_gpu_rc nvn_gpu_samp_create(const samp_par *p, nvn_gpu_samp *out, nvn_gpu_err
         cb.pNext = ci.pNext;
         ci.pNext = &cb;
     }
+    if (s->reduction) {
+        s->average_info = ci;
+        s->average_info.pNext = NULL;
+        s->average_custom = custom;
+        if (custom) {
+            s->average_border = cb;
+            s->average_border.pNext = NULL;
+            s->average_info.pNext = &s->average_border;
+        }
+    }
     if (vkCreateSampler(g.d, &ci, NULL, &s->sampler) != VK_SUCCESS) {
         samp_border_unreserve(s);
         free(s);
@@ -5988,6 +6068,7 @@ nvn_gpu_rc nvn_gpu_samp_create(const samp_par *p, nvn_gpu_samp *out, nvn_gpu_err
     }
     {   // 整数格式视图用的那一个：过滤全改最近点、关各向异性、边界色换整数的同名值
         VkSamplerCreateInfo ii = ci;
+        ii.pNext = NULL;   // 全最近点：归约不起作用，也不要求视图格式有 FILTER_MINMAX
         ii.magFilter = ii.minFilter = VK_FILTER_NEAREST; ii.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
         ii.anisotropyEnable = VK_FALSE; ii.maxAnisotropy = 1.0f;
         ii.borderColor = custom ? VK_BORDER_COLOR_INT_CUSTOM_EXT : fixed_int[preset < 0 ? 1 : preset];
@@ -6005,6 +6086,7 @@ nvn_gpu_rc nvn_gpu_samp_create(const samp_par *p, nvn_gpu_samp *out, nvn_gpu_err
     g.samps = s;
     pthread_mutex_unlock(&g_mu);
     *out = s;
+    if (mapping_fallback) nvn_unimpl("gpu", "sampler_reduction_average_no_component_mapping", NULL);
     return rc(NVN_GPU_OK);
 }
 

@@ -212,6 +212,36 @@ public static class PackCases
             var body = tickAt < 0 ? "" : src[tickAt..];
             check(tickAt >= 0 && !body.Contains("UpdatePhoneAsync(") && !body.Contains("\"installUpdate\"") && body.Contains("RefreshLibraryAsync()"),
                 "phone auto tick: finds updates and refreshes the library, never starts an iPhone install (manual update)");
+            // 只按真冲突互斥：别的作业在跑照样收（升级首启迁移时原先整轮跳过，拉回拖到第 360 秒）；手机在用由作业层的手机锁判
+            check(tickAt >= 0 && !body.Contains("ControlBusy"), "phone auto tick: not skipped just because another job is running");
+            check(tickAt >= 0 && body.Contains("NotePhoneTick(skip)"), "phone auto tick: every skip reason is written to phone-auto-update.log");
+        }
+        // 关窗口让位给安装程序（11-16 第 2 份候选手动更新：安装程序等旧进程 90 秒没等到）：两个关闭处理都按作业登记处等收尾、有上限，
+        //   不再等某个任务变量（它可能被立刻返回的任务盖掉，等完作业其实还在，重入时被取消关闭、再也没人关）
+        {
+            string Method(string file, string name)
+            {
+                var src = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "AppSource", file));
+                var at = src.IndexOf(name, StringComparison.Ordinal);
+                if (at < 0) return "";
+                var end = src.IndexOf("\n    }", at, StringComparison.Ordinal);
+                return end < 0 ? src[at..] : src[at..end];
+            }
+            var lib = Method("LibraryPage.cs", "void CloseLibraryAsync(");
+            var pack = Method("ExportPages.cs", "void ClosePackAsync(");
+            var slots = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "AppSource", "JobSlots.cs"));
+            check(lib.Contains("WaitJobsEndAsync(JobKind.Library)") && !lib.Contains("libraryOperation") && lib.Contains("closeAnyway"),
+                "close: library handler waits on the job registry, not on one task variable");
+            check(pack.Contains("WaitJobsEndAsync(JobKind.Pack)") && !pack.Contains("packOperation") && pack.Contains("closeAnyway"),
+                "close: pack handler waits on the job registry, not on one task variable");
+            check(slots.Contains("CloseWaitLimit = TimeSpan.FromSeconds(20)") && slots.Contains("closeAnyway = true"),
+                "close: waiting for jobs is capped well under the installer's 90 s, then the window closes anyway");
+        }
+        // 更新装完拉起不靠当前目录（NetSparkle 脚本 cd 不带 /d，装在非系统盘时相对的 S2Arm.exe 找不到、静默不拉起）：可执行文件给绝对路径、前缀 cd /d
+        {
+            var upd = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "AppSource", "UpdateFlow.cs"));
+            check(upd.Contains("RestartExecutableName = Path.Combine(InstallDir,") && upd.Contains("RelaunchAfterUpdateCommandPrefix = $\"cd /d"),
+                "update: relaunch uses the absolute exe path and cd /d (works when installed on a non-system drive)");
         }
         // 客户端不判要不要游戏号（自己人之间不设允许清单，#1149）：以后新增一种不带游戏号的作业不用改客户端；
         //   要游戏的作业空着游戏号也照样发出去，由作业层报「请求里没有游戏号」（pack/jobs/core.py Context.game）

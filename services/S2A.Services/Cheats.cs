@@ -263,7 +263,7 @@ namespace S2A.Services
             foreach (Item p in programs) sb.Append(p.Entry.Key).Append('\t').Append(p.Status).Append('\n');
             string path = Path.Combine(dir, "status.txt"), tmp = path + ".tmp";
             // 目录写不进（D-QCTB：iPhone 上 cheats/ 归 root，UnauthorizedAccessException 没接住 → 整局 FailFast）：只记一行红、金手指照常执行，
-            //   状态显示缺了而已；目录归属由宿主起库时的游戏目录修复（runtime/src/pack_apply.c games_unwritable）迁走
+            //   状态显示缺了而已；App 改不了这个目录的属主，只有删除重装能清（宿主不迁移、不改名）
             try { File.WriteAllText(tmp, sb.ToString()); File.Move(tmp, path, true); }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {

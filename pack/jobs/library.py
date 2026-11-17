@@ -2279,6 +2279,29 @@ def sgrade_badge(c, gid, image):
 CONTAINER_KIT = layout.IOS_KIT   # 每款 .programs/<程序号>/kit（11-16 起；之前在 image/ios/kit）：装机组装容器要用的文件，出包成功后从产物根存一份独立副本（游戏库结构 v3；旧布局是 iPhone/<号>/container-kit）
 
 
+RESOURCE_IMAGES = ("romfs.std", "game.img")   # 产物根顶层不进程序件的资源镜像（封闭集合，产出它们的就这几处）
+RESOURCE_SUFFIXES = (".nsp", ".xci", ".nca")   # 原件 / 内容包
+KIT_LOUD_BYTES = 300 * 1024 * 1024   # 程序件除改写产物外（= 常驻配方）的正常上限：11-16 常驻库 14 款都在 50 MB 以内，超过就是混进了不该有的大文件
+
+
+def is_resource_image(name):
+    return name in RESOURCE_IMAGES or Path(name).suffix.lower() in RESOURCE_SUFFIXES
+
+
+def loud_if_kit_oversized(c, gid, kit):
+    """程序件里除各模块原始程序与改写产物以外（即常驻配方那部分）超过 KIT_LOUD_BYTES：出包照常完成，但当场报出来、写出最大的几个文件——
+    下次再有新的大资源混进同层，第一次出包就被看见（11-16 romfs.std 混进配方是事后才发现的）。→ 报了没有"""
+    import programs as progs
+    skip = set(progs.MODULES) | {f"{m}.{o}" for m in progs.MODULES for o in progs.OUTPUTS}
+    files = [(p.stat().st_size, p.relative_to(kit).as_posix()) for p in Path(kit).rglob("*") if p.is_file() and p.name not in skip]
+    total = sum(n for n, _ in files)
+    if total <= KIT_LOUD_BYTES:
+        return False
+    top = "、".join(f"{name}（{n // (1024 * 1024)} MB）" for n, name in sorted(files, reverse=True)[:3])
+    c.diagnostic(f"{gid} 的程序件里混进了大文件，共 {total // (1024 * 1024)} MB（正常不到 50 MB）：{top}", code="kit_oversized", severity="warning")  # 非玩家句
+    return True
+
+
 def save_container_kit(c, gid, root, dest=None):
     """把组装容器要读的文件（ship_ext.place_game / display_name / 随包表：顶层普通文件、ctl/control.nacp、programs/<n>/）存成不依赖产物根的副本。
     root 里的链接按内容拷，之后删产物根、RomFS 存储、Windows 的 work/ 都不影响装机、续签和单壳追加。没有 main.npdm 返回 None，不动旧的。
@@ -2297,9 +2320,9 @@ def save_container_kit(c, gid, root, dest=None):
     def copy_files(source, dest):
         dest.mkdir(parents=True, exist_ok=True)
         for p in source.iterdir():
-            # 产物根顶层的 RomFS 镜像 romfs.std（RomFS 直出，原先是 romfs/ 目录、不在顶层普通文件里）是游戏资源，不是程序件：
-            #   不跳过就整份进程序缓存和常驻配方（11-16 Windows 端到端实测：小款配方 315 MB，组装容器本来也不读它）
-            if p.is_file() and not p.name.startswith(".") and p.suffix != ".log" and p.name != "romfs.std":
+            # 产物根顶层的资源镜像（RESOURCE_IMAGES：RomFS 直出的 romfs.std、资源包、原件）是游戏资源，不是程序件：不跳过就整份进程序缓存和常驻配方
+            #   （11-16 Windows 端到端实测：romfs.std 让小款配方 315 MB，组装容器本来也不读它）。不用白名单：程序件有约 30 种、读写方各不相同，漏一项升级就坏
+            if p.is_file() and not p.name.startswith(".") and p.suffix != ".log" and not is_resource_image(p.name):
                 shutil.copyfile(p, dest / p.name)
     copy_files(root, temporary)
     if (root / "ctl/control.nacp").is_file():
@@ -2310,6 +2333,7 @@ def save_container_kit(c, gid, root, dest=None):
         for p in sorted(programs.iterdir()):
             if p.is_dir() and (p / "main.npdm").is_file():
                 copy_files(p, temporary / "programs" / p.name)
+    loud_if_kit_oversized(c, gid, temporary)
     if kit.exists():
         _rm(c, managed, kit)
     os.replace(temporary, kit)

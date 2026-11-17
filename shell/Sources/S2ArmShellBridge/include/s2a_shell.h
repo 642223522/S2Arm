@@ -34,7 +34,7 @@ void *s2a_shell_library_vc(const char *catalogue_json_path);
 int s2a_shell_game_install_state(const char *game_id);
 int s2a_shell_install_game(const char *game_id);
 int s2a_shell_install_progress(const char *game_id, int *done, int *total);
-// 库起解包被拒（s2a_shell_install_game 返回 0）时为什么：1 另一款正在解（同时只解一款）/ 2 正在整理游戏目录（#569 迁移）/ 0 没有在等的事。
+// 库起解包被拒（s2a_shell_install_game 返回 0）时为什么：1 另一款正在解（同时只解一款）/ 2 正在整理游戏目录（首次清点容器、资源包挪位，ios/app.m img_scan_bg）/ 0 没有在等的事。
 //   库据此在卡片上说「等另一款装完」「正在整理游戏目录」，不再只写「安装中」（iOS 装机剃刀 #46 / #47）。主线程；弱缺省 0
 int s2a_shell_install_wait(void);
 // 库界面第一次出现（启动打点「游戏库界面可操作」）；弱定义缺省什么都不做

@@ -53,7 +53,7 @@ if { [ "$mode" = "--tbuf-compiler-core" ] || [ -z "$mode" ]; } && [ -z "${S2A_VU
      [ ! -f "$repo/build/tbuf-real-red/profile.json" ] || [ ! -f "$tbuf_cli" ]; }; then
     python3 "$repo/android/tests/tbuf_compiler_chain_test.py"
 fi
-if { [ "$mode" = "--shown-only" ] || [ -z "$mode" ] || [[ "$mode" == --tbuf-* ]]; } && [ -z "${S2A_VULKAN_IMAGE_ID:-}" ]; then
+if { [ "$mode" = "--shown-only" ] || [ "$mode" = "--descriptor-indexing" ] || [ -z "$mode" ] || [[ "$mode" == --tbuf-* ]]; } && [ -z "${S2A_VULKAN_IMAGE_ID:-}" ]; then
     . "$repo/android/tools/ndk_toolchain.sh"
     ndk=$(s2a_ndk_resolve) || { echo 'NDK 29 missing' >&2; exit 2; }
     grep -q '^Pkg.Revision = 29\.0\.14206865$' "$ndk/source.properties" || { echo 'NDK 29.0.14206865 required' >&2; exit 2; }
@@ -164,6 +164,29 @@ if [ -z "$glslc" ]; then
 fi
 
 
+# Descriptor indexing capability handshake: use real NDK 29 Vulkan core types,
+# a real device and validation; test wrappers only remove advertised capabilities.
+if [ "$mode" = "--descriptor-indexing" ]; then
+    out="$repo/build/vk-descriptor-indexing"; mkdir -p "$out"
+    cc -D_POSIX_C_SOURCE=200809L -std=c11 -O1 -g -Wall -Wextra -Werror \
+        -Wno-misleading-indentation -ffunction-sections -fdata-sections -DS2A_ANDROID_VK_BACKEND_NVN_VK=1 \
+        -I "$repo/android/tests/vkhost" -I "$repo/build/c883-ndk" -I "$repo/android/native/direct" \
+        "$repo/android/tests/vk/t_descriptor_indexing.c" "$repo/android/native/direct/vk_device.c" \
+        "$repo/android/native/direct/device_caps.c" -Wl,--gc-sections \
+        -Wl,--wrap=vkEnumerateDeviceExtensionProperties -Wl,--wrap=vkGetPhysicalDeviceFeatures2 \
+        -Wl,--wrap=vkCreateDevice -lvulkan -lpthread -lm -o "$out/test"
+    set +e
+    VK_ICD_FILENAMES="$icd" VK_DRIVER_FILES="$icd" VK_LAYER_PATH="$layer" \
+        VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation timeout 120 "$out/test" 2>&1 | tee "$out/run.log"
+    rc=${PIPESTATUS[0]}
+    set -e
+    if [ "$rc" -ne 0 ] || grep -qE 'Validation Error|VUID-' "$out/run.log"; then
+        echo "【红】descriptor indexing: rc=$rc or Vulkan validation error" >&2
+        exit 1
+    fi
+    exit 0
+fi
+
 # FSR1 EASU 专项（--fsr）：合成图 1280x720 → 2133x1200，compute 版 EASU 对照 CPU 双线性。
 # 与上屏路径（backend_vulkan_easu.inc 的片元版）各自独立；这里只验算法更锐且无错。
 # 着色器出处与 MIT 许可见 shaders/fsr_easu.LICENSE.txt。
@@ -266,7 +289,8 @@ src=("$repo/android/tests/vk/t_backend_vk.c"
      "$repo/graphics/nvn/gfx/nvn/nvn_fmt_expand.c"
      "$repo/android/native/nvn/nvn_vk_bcdec.c"
      "$repo/android/native/nvn/nvn_vk_driver_cache.c"
-     "$repo/android/native/direct/sha256.c")
+     "$repo/android/native/direct/sha256.c"
+     "$repo/graphics/nvn/replay/nvn_unimpl.c")
 bc_src=("$repo/android/tests/vk/t_bc_decode.c"
      "$repo/android/native/nvn/nvn_vk_bcdec.c"
      "$repo/android/native/direct/vk_device.c"
@@ -278,7 +302,7 @@ case "$mode" in
     --tsan) cflags+=(-fsanitize=thread) ;;
     --asan) cflags+=(-fsanitize=address,undefined -fno-omit-frame-pointer) ;;
     --shown-only) cflags+=(-DS2A_C883_TEST=1) ;;
-    ""|--msaa-only|--msaa-neg-pick|--msaa-neg-pipe|--msaa-neg-sampled|--msaa-neg-attachment|--present-only|--present-upscale|--separate-core|--separate-neg-sampler|--tbuf-core|--tbuf-compiler-core|--tbuf-neg-resolve|--tbuf-neg-format|--tbuf-neg-elements|--gs-only|--gs-compiler|--gs-core|--gs-no-cap|--gs-neg-stage|--gs-neg-flags|--gs-neg-cap) ;;
+    ""|--sampler-minmax-only|--c63-same-view|--msaa-only|--msaa-neg-pick|--msaa-neg-pipe|--msaa-neg-sampled|--msaa-neg-attachment|--present-only|--present-upscale|--separate-core|--separate-neg-sampler|--tbuf-core|--tbuf-compiler-core|--tbuf-neg-resolve|--tbuf-neg-format|--tbuf-neg-elements|--gs-only|--gs-compiler|--gs-core|--gs-no-cap|--gs-neg-stage|--gs-neg-flags|--gs-neg-cap) ;;
     *) echo "未知参数：${mode}（可用 --tsan / --asan）" >&2; exit 64 ;;
 esac
 # 撤改只写入临时源码副本；逐项必须红在指定行为断言。
@@ -360,8 +384,8 @@ if [ "$mode" = "--separate-neg-sampler" ]; then
     python3 - "$repo/graphics/nvn/replay/rp_draw.c" "$out/rp_draw_mutant.c" <<'PYMUT'
 import pathlib, sys
 s = pathlib.Path(sys.argv[1]).read_text()
-a = 'ts[st][i] = rp_samp_by_id((int)(sh >> 20));'
-b = 'ts[st][i] = rp_samp_by_id((int)(h >> 20)); (void)sh;'
+a = 'ts[st][i] = rp_samp_for_tex((int)(sh >> 20), h ? (int)(h & 0xFFFFF) : rp_S.tex_base);'
+b = 'ts[st][i] = rp_samp_for_tex((int)(h >> 20), h ? (int)(h & 0xFFFFF) : rp_S.tex_base); (void)sh;'
 if s.count(a) != 1: raise SystemExit('sampler negative control anchor changed')
 pathlib.Path(sys.argv[2]).write_text(s.replace(a, b))
 PYMUT
@@ -498,6 +522,37 @@ if [ -z "$mode" ]; then
     fi
 fi
 
+
+if [ "$mode" = "--sampler-minmax-only" ]; then
+    set +e
+    timeout 120 "$out/t_backend_vk" "$out/shaders" --sampler-minmax-only 2>&1 | tee "$out/sampler-minmax-log"
+    rc=${PIPESTATUS[0]}
+    set -e
+    if [ "$rc" -ne 0 ] || grep -qE 'Validation Error|VUID-|SYNC-HAZARD-' "$out/sampler-minmax-log"; then
+        echo "【红】sampler minmax: rc=$rc or Vulkan validation error" >&2; exit 1
+    fi
+    exit 0
+fi
+
+# C63c：同一 view 写进同一描述符数组的两个元素（合法用法），取元素 1 必须读回 128。
+# 两遍都要绿：备忘开（生产缺省）与备忘关（nvk_desc_memo=0，套件第二遍；写入跳过只在这遍生效）。
+if [ "$mode" = "--c63-same-view" ]; then
+    for pass in memo-on memo-off; do
+        if [ "${pass}" = memo-off ]; then export S2A_TEST_DESC_MEMO=0; else unset S2A_TEST_DESC_MEMO; fi
+        set +e
+        timeout 120 "$out/t_backend_vk" "$out/shaders" --c63-same-view 2>&1 | tee "$out/c63-same-view-${pass}.log"
+        rc=${PIPESTATUS[0]}
+        set -e
+        if [ "$rc" -ne 0 ] || ! grep -q 'C63SAMEVIEW failures=0' "$out/c63-same-view-${pass}.log" ||
+           grep -qE 'Validation Error|VUID-|SYNC-HAZARD-' "$out/c63-same-view-${pass}.log"; then
+            echo "【红】C63 同 view 双元素（${pass}）：rc=${rc}，没有 failures=0 或有 validation 报错" >&2; exit 1
+        fi
+        grep 'C63c 同 view 双元素' "$out/c63-same-view-${pass}.log" || true
+    done
+    unset S2A_TEST_DESC_MEMO
+    echo '【绿】C63 同 view 双元素：两遍（备忘开/关）都读回 128，validation 0 条'; exit 0
+fi
+
 if [ "$mode" = "--present-only" ]; then
     for order in rgba bgra; do
     if [ "$order" = bgra ]; then export S2A_TEST_PRESENT_BGRA=1; else unset S2A_TEST_PRESENT_BGRA; fi
@@ -628,6 +683,7 @@ if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run.sh" --tbuf-core; fi
 if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run.sh" --tbuf-compiler-core; fi
 if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run_replay_copy_t2b.sh"; fi
 if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run_replay_clear_tex.sh"; fi
+if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run_replay_ssbo_window.sh"; fi
 
 set +e
 # 整套三遍的超时只用来发现卡死，不量性能：负载高的机器（列车机同时跑多份同类用例，软件渲染）上单遍已接近原先的 180 / 240 秒，

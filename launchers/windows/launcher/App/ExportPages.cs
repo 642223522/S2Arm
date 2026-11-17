@@ -1674,9 +1674,9 @@ public sealed partial class EnvironmentWindow
         var state = new StackPanel { Spacing = 16 };
         state.Children.Add(PhoneJobCard(installTrack, installState, installMessage, installDiagnostics, game.Id, notes, showsOperation: showsOperation,
             switchExport: installState is "failed" or "interrupted" && !installExport && installTrack.Kind == "install" ? () => { IosAfterPack = "export"; ExportSelfSign(game); } : null));
-        if (installState is "failed" && installCode == "apple_session_expired")
+        if (installState is "failed" && installCode is "apple_session_expired" or "apple_not_signed_in")
         {
-            // Apple ID 登录过期（Apple 1100）：打开 Impactor 让玩家自己重新登录（密码不经手），登录好再点一次「装到 iPhone」
+            // Apple ID 登录过期（Apple 1100）/ 还没登录：打开 Impactor 让玩家自己重新登录（密码不经手），登录好再点一次「装到 iPhone」
             var relogin = Action("install.relogin", OpenBundledImpactor, File.Exists(BundledImpactor) && !installBusy);
             AutomationId(relogin, "install.relogin");
             state.Children.Add(relogin);
@@ -1948,11 +1948,11 @@ public sealed partial class EnvironmentWindow
     /// <summary>Closing while a pack runs: cancel through the job control plane first, then close.</summary>
     private async void ClosePackAsync(object? sender, WindowClosingEventArgs args)
     {
-        if (!packRunning) return;
+        if (!packRunning || closeAnyway) return;
         args.Cancel = true;
         batchRunning = false;   // 关窗口不算取消整批：批次里这款留着「正在出」，下次打开 recover 记成被打断、重新排队（同 Mac）
-        packJob?.Cancellation.Cancel();
-        if (packOperation is { } operation) await operation;
+        CloseLog("关窗口：出包在跑，先取消、等它收尾再关");
+        await WaitJobsEndAsync(JobKind.Pack);
         await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
         Close();
     }

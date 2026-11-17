@@ -246,8 +246,8 @@
 "app.fpsCap.restored" = "60 幀已恢復。";
 "app.lowRam.title" = "這台裝置記憶體可能不夠";
 "app.lowRam.body" = "這款遊戲需要的記憶體比這台裝置多。照樣可以開始，但可能卡頓，或被系統關掉。";
-"app.gpuStop.body" = "請從背景滑掉本 App，再重新開啟遊戲。\nPlease reopen the game.";
-"app.gpuStop.title" = "畫面發生錯誤，已停止\nGraphics error — stopped";
+"app.gpuStop.body" = "從背景滑掉本 App 再開啟，一般能接著玩，存檔停在遊戲上次儲存的地方。想讓我們查原因，點「故障報修」把診斷傳給我們。";
+"app.gpuStop.title" = "遊戲卡住了，已經安全停下";
 "app.library.broken.title" = "遊戲資源不完整";
 "app.library.cantOpen" = "這款遊戲無法開啟";
 "app.library.cantOpen.message" = "啟動這款遊戲前的準備工作未完成。請從背景滑掉 App 後重新開啟再試；如果還是不行，請匯出診斷包傳給我們。";
@@ -314,7 +314,7 @@
 "diag.error.zip" = "打包失敗（寫入 zip 時出錯，可能是手機空間不足）";
 "diag.export" = "匯出診斷包";
 "diag.prompt.abnormalExit" = "上次 S2Arm 沒有正常結束（當機、卡住或被系統關閉）";
-"diag.prompt.imlLost" = "上次 S2Arm 沒有正常結束。這次安裝遺失了「提高記憶體上限」權限，玩大型遊戲時結束多半是記憶體不足：在電腦上的 S2Arm 點「裝到 iPhone」重新安裝（免費 Apple ID 也會帶上這項權限）；自己簽署的話用 Xcode 或 AltStore Classic v2.3，SideStore 0.7.0 重新簽署會遺失；已經裝好的也可以用 GetMoreRam 為 App ID 補上權限後重新安裝";
+"diag.prompt.imlLost" = "上次 S2Arm 沒有正常結束。這次安裝遺失了「提高記憶體上限」權限，玩大型遊戲時結束多半是記憶體不足：在電腦上的 S2Arm 點「裝到 iPhone」重新安裝（免費 Apple ID 也會帶上這項權限）；自己簽署的話用 Xcode 或 AltStore Classic 2.2 或更新版，SideStore 0.7.0 重新簽署會遺失；已經裝好的也可以用 GetMoreRam 為 App ID 補上權限後重新安裝";
 "diag.prompt.crash" = "系統回報上次 S2Arm 當機或卡住了";
 "diag.prompt.message" = "%@。會上傳執行紀錄、當機紀錄和遊戲用過的圖形管線清單（只有著色器編號），不會上傳存檔、金鑰和遊戲檔案；上傳完成後會給你一組短碼。";
 "diag.prompt.no" = "不用了";

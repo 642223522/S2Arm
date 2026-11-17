@@ -189,7 +189,6 @@ class SaveTests(unittest.TestCase):
         self.assertEqual(m["users"], dict(ids=[USER], active=USER))
         self.assertTrue(any(f["path"].startswith("bis/system/save/") for f in m["files"]))
         self.assertFalse(any("prod.keys" in f["path"] for f in m["files"]))
-        self.assertEqual(self.archive.stat().st_mode & 0o777, 0o600)
 
     def test_zip64_directory_bounds_are_checked_before_zipfile_loads_it(self):
         self.backup()

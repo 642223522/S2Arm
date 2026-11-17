@@ -70,6 +70,10 @@ static int failed(int error, int services_error, const char *why) {
     g_status.services_error = services_error;
     pthread_mutex_unlock(&g_lock);
     // 既有 HostApi 异步请求退出；此处不销毁仍可能使用中的 guest 内存、服务或 lease。
+    // 结束原因同时进会话日志：stop detail 只交给外壳，外壳关窗后就看不到了。用户停止 / guest 正常返回不算红。
+    int red = error != S2A_RUNTIME_STOP && error != S2A_RUNTIME_RETURNED;
+    fprintf(stderr, "[s2a] %sruntime %s %d (services %d): %s\n", red ? "【红】" : "", red ? "failed" : "ended",
+            error, services_error, why ? why : "");
     g_host->stop->request_stop(g_host->host, S2A_HOST_STOP_ERROR, why);
     return error;
 }
@@ -464,7 +468,6 @@ int s2a_android_runtime_enter_guest_thread(void) {
         else
             snprintf(why, sizeof why, "缺页自检没过：故意制造的缺页没有被 S2Arm 接住（错误 %d），游戏没法起局。请到 GitHub #573 留言告诉我们机型和系统版本 / "
                      "Fault self-check failed (error %d); please report your device on GitHub #573", probe, probe);
-        fprintf(stderr, "[s2a] 【红】%s\n", why);
         return failed(S2A_RUNTIME_SIGNALS, probe, why);
     }
     if (!s2a_track_runtime_ready()) return failed(S2A_RUNTIME_TRACKING, 0, "guest thread final tracking admission failed");

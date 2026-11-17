@@ -258,7 +258,7 @@ def preflight(c):
     checks = []
     c.last_log = c.logs / (c.task + "-preflight.log")
     c.last_log.parent.mkdir(parents=True, exist_ok=True)
-    c.last_log.touch(mode=0o600)
+    c.last_log.touch()
     def add(cid, name, ok, message, scopes=("prepare",), action=None, code=None, group=None):
         # cid：稳定的英文检查项 id（剃刀 M11：前端原先按中文 name 分组判状态，这里一改名四行工具全显示「等待」）；name 只给人看
         check = dict(id=cid, name=name, ok=bool(ok), message=message, requiredFor=list(scopes),

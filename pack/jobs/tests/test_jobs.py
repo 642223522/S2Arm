@@ -69,6 +69,9 @@ class JobsTests(unittest.TestCase):
         p.start(); self.addCleanup(p.stop)
         self.tmp = tempfile.TemporaryDirectory(prefix="s2arm job test ")
         self.root = Path(self.tmp.name)
+        # 诊断导出收本机崩溃报告（library.MAC_CRASH_DIR）：指到空的临时目录，同 jobcase.JobCase。不隔离就读跑测试这台 Mac 真实的
+        #   ~/Library/Logs/DiagnosticReports——那里有近 7 天的 s2arm-host 崩溃报告时，整包预算先被它们占满，诊断包用例按机器忽红忽绿（11-16）
+        crash_dir = patch.object(library, "MAC_CRASH_DIR", self.root / "no-crash-reports"); crash_dir.start(); self.addCleanup(crash_dir.stop)
         self.output = io.StringIO()
         self.redirect = contextlib.redirect_stdout(self.output)
         self.redirect.__enter__()
@@ -2220,6 +2223,21 @@ class JobsTests(unittest.TestCase):
             holder.stdin.write("release\n"); holder.stdin.flush()
             holder.communicate(timeout=5)
 
+    def test_proven_dead_lock_holder_uses_stuck_code(self):
+        import filelock
+        self.c.require_library()
+        self.c.lock_wait = 0
+        lockf = self.c.library / ".catalog.lock"
+        info = dict(taskId="old-task", operation="ipa", gameId="0100000000010000", pid=1,
+                    startedAt=1.0, host="this-host")
+        with filelock.held(lockf, holder=info), patch("filelock.holder_is_stale", return_value=True):
+            with self.assertRaises(Failure) as raised:
+                with self.c.lock():
+                    pass
+        self.assertEqual(raised.exception.code, "library_lock_stuck")
+        self.assertEqual(raised.exception.holder, info)
+        self.assertIn("不要手动删除锁文件", str(raised.exception))
+
     def test_direct_small_batch_progress_replaces_finished_translation(self):
         progress = self.root / "progress.tsv"
         progress.write_text("1\t直连库·翻译着色器\t30\t30\n2\t直连库·已生成库文件\t1\t3\n", encoding="utf-8")
@@ -2961,10 +2979,10 @@ class JobsTests(unittest.TestCase):
         event = json.loads(result.stdout.splitlines()[-1])
         self.assertEqual(event["jobId"], "cli-test")
         self.assertEqual(event["state"], "failed")
-        p.chmod(0o644)
+        p.chmod(0o644)   # 11-16 不再自设权限：系统缺省权限的请求照常收（原先拒收、stdout 为空）
         result = subprocess.run([sys.executable, "-I", "-B", str(JOBS / "main.py"), "--request", str(p)], capture_output=True, text=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(json.loads(result.stdout.splitlines()[-1])["state"], "failed")
 
     def test_invalid_keys_preserve_the_previous_player_key(self):
         self.c.keys.parent.mkdir(parents=True)

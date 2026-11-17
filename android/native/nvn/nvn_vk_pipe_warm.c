@@ -2,8 +2,9 @@
 //
 // 数据：固定槽位数组（上限 debug.s2a.nvk_warm_max，缺省 8192、也是硬顶）+ 每条一个散列桶链。散列只作预筛，
 // 命中要 identity + 紧凑配方整份逐字节相等（旧层按 64 位散列直接命中撞过一次：同 hash 不同配方会
-// 复用不兼容管线）。note 在提交线程（真机约 130 次/帧），所以先算散列、拿最近 4 条 memo 挡掉重复，
-// 只有新配方才整份拷进清单。
+// 复用不兼容管线）。note 在提交线程（每次「管线状态变了」一笔，世界场景里几乎每笔绘制一次），所以：
+// 同一条后端管线第二次起按管线标签只加计数（nvk_pipe_warm_note_prog：不序列化、不散列、不查表）；
+// 标签对不上的才走完整路径——先算散列、拿最近 4 条 memo 挡掉重复，只有新配方才整份拷进清单。
 #define _GNU_SOURCE 1
 #include "nvn_vk_pipe_warm.h"
 
@@ -30,6 +31,8 @@ const char *nvk_session_cache_dir(void) __attribute__((weak));
 void nvn_gpu_pipe_warm_scope(int on) __attribute__((weak));
 uint64_t nvn_gpu_pipe_warm_hits(void) __attribute__((weak));
 uint64_t nvn_gpu_pipe_warm_created(void) __attribute__((weak));
+uint64_t nvn_gpu_pipe_warm_tag(nvn_gpu_pipe p) __attribute__((weak));
+void nvn_gpu_pipe_warm_tag_set(nvn_gpu_pipe p, uint64_t tag) __attribute__((weak));
 
 // ---- 文件格式 ----
 // 头 32 字节：magic(8) + 格式版本 + 描述版本（=紧凑配方字节数）+ 条目大小 + 条数 + FNV-1a 整份校验。
@@ -70,6 +73,8 @@ static struct pw_state {
     struct nvk_pipe_rec *recs;
     uint32_t *uses;         // 与 recs 平行：使用次数（落盘用）
     uint32_t *seen;         // 最近使用序号（同 uses 的淘汰顺序）
+    uint32_t *gen;          // 槽代号：每往槽里写一份新配方（入清单 / 淘汰重用 / 重载）就取一个新值，标签靠它认「还是当初那一份」
+    uint32_t gen_clock;     // 槽代号发号器（从 1 起；0 不会发出去，所以全 0 的标签永远对不上）
     uint64_t *hash;         // 配方散列（桶定位）
     int32_t *next;          // 桶链
     int32_t *bucket;        // 桶头（-1 空）
@@ -256,14 +261,15 @@ static int pw_init_locked(void) {
     g.recs = calloc(g.cap, sizeof *g.recs);
     g.uses = calloc(g.cap, sizeof *g.uses);
     g.seen = calloc(g.cap, sizeof *g.seen);
+    g.gen = calloc(g.cap, sizeof *g.gen);
     g.hash = calloc(g.cap, sizeof *g.hash);
     g.next = calloc(g.cap, sizeof *g.next);
     g.used = calloc(g.cap, 1);
     g.order = calloc(g.cap, sizeof *g.order);
     g.bucket = malloc((size_t)nb * sizeof *g.bucket);
-    if (!g.recs || !g.uses || !g.seen || !g.hash || !g.next || !g.used || !g.order || !g.bucket) {
-        free(g.recs); free(g.uses); free(g.seen); free(g.hash); free(g.next); free(g.used); free(g.order); free(g.bucket);
-        g.recs = NULL; g.uses = NULL; g.seen = NULL; g.hash = NULL; g.next = NULL; g.used = NULL; g.order = NULL; g.bucket = NULL;
+    if (!g.recs || !g.uses || !g.seen || !g.gen || !g.hash || !g.next || !g.used || !g.order || !g.bucket) {
+        free(g.recs); free(g.uses); free(g.seen); free(g.gen); free(g.hash); free(g.next); free(g.used); free(g.order); free(g.bucket);
+        g.recs = NULL; g.uses = NULL; g.seen = NULL; g.gen = NULL; g.hash = NULL; g.next = NULL; g.used = NULL; g.order = NULL; g.bucket = NULL;
         return -1;
     }
     for (uint32_t i = 0; i < nb; i++) g.bucket[i] = -1;
@@ -538,7 +544,14 @@ static uint32_t pw_victim_locked(void) {
     return best;
 }
 
-static void pw_insert_locked(const uint8_t *desc, const uint8_t ident[32], uint64_t h, uint32_t uses) {
+// 槽代号：槽里每换一份配方就取一个新值（0 不发）。标签 = 代号 << 32 | (槽号 + 1)，所以 0 永远不是有效标签。
+static uint32_t pw_next_gen_locked(void) {
+    if (++g.gen_clock == 0) g.gen_clock = 1;   // 回绕后仍不发 0（回绕需要 40 亿次写槽，只为守住「0 = 没设过」这条不变式）
+    return g.gen_clock;
+}
+static uint64_t pw_tag_of_locked(uint32_t slot) { return ((uint64_t)g.gen[slot] << 32) | (uint64_t)(slot + 1u); }
+
+static uint32_t pw_insert_locked(const uint8_t *desc, const uint8_t ident[32], uint64_t h, uint32_t uses) {
     const uint64_t dg_t0 = dg.on > 0 ? pw_dg_now() : 0;
     uint32_t slot = pw_victim_locked();
     if (dg.on > 0) { dg.c.scans++; dg.c.scan_ns += pw_dg_now() - dg_t0; }   // 诊断：只计数，不影响上面的选择
@@ -557,6 +570,7 @@ static void pw_insert_locked(const uint8_t *desc, const uint8_t ident[32], uint6
     r->uses = uses;
     g.uses[slot] = uses;
     g.seen[slot] = (uint32_t)++g.clock;
+    g.gen[slot] = pw_next_gen_locked();
     g.hash[slot] = h;
     g.used[slot] = 1;
     uint32_t b = pw_bucket_of(h, g.nbucket);
@@ -565,6 +579,7 @@ static void pw_insert_locked(const uint8_t *desc, const uint8_t ident[32], uint6
     g.note_gen++;
     g.dirty = 1;
     pw_memo_touch_locked(h, (int32_t)slot);
+    return slot;
 }
 
 static void pw_touch_locked(uint32_t slot) {
@@ -587,6 +602,11 @@ void nvk_pipe_warm_rec_of(const nvn_gpu_pipe_desc *d, const uint8_t prog_identit
 
 static int g_hash_const;   // 用例钩子：见 nvn_vk_pipe_warm.h（读写一律走 __atomic_*）
 
+// 槽里存的散列：note 和 load 都从这里取，钩子开着时两边给同一个常数（否则载入的条目和之后 note 的散列对不上）。
+static uint64_t pw_slot_hash(const uint8_t *desc, const uint8_t ident[32]) {
+    return __atomic_load_n(&g_hash_const, __ATOMIC_ACQUIRE) ? 0x5a5a5a5a5a5a5a5aull : pw_hash(desc, ident);
+}
+
 uint64_t nvk_pipe_warm_hash(const struct nvk_pipe_rec *rec) {
     if (!rec || rec->bytes != NVK_PW_DESC_BYTES) return 0;
     if (__atomic_load_n(&g_hash_const, __ATOMIC_ACQUIRE)) return 0x5a5a5a5a5a5a5a5aull;
@@ -595,8 +615,10 @@ uint64_t nvk_pipe_warm_hash(const struct nvk_pipe_rec *rec) {
 
 void nvk_pipe_warm_test_hash_const(int on) { __atomic_store_n(&g_hash_const, on ? 1 : 0, __ATOMIC_RELEASE); }
 
-// ---- note（提交线程，约 130 次/帧） ----
-void nvk_pipe_warm_note(const nvn_gpu_pipe_desc *d, const uint8_t prog_identity[32]) {
+// ---- note（提交线程；第一次见到一条管线才走完整路径，之后按管线标签只加计数，见 nvk_pipe_warm_note_prog） ----
+// 完整路径。*tag_out（可为 NULL）= 这份配方在清单里的标签；没收下（没身份 / nspec 非 0 / 分配失败）时给 0。
+static void pw_note(const nvn_gpu_pipe_desc *d, const uint8_t prog_identity[32], uint64_t *tag_out) {
+    if (tag_out) *tag_out = 0;
     if (!d || !prog_identity) return;
     if (pw_id_zero(prog_identity)) return;   // 没有身份的程序不进清单（失败项 / 还没算出来）
     for (int st = 0; st < 5; st++)
@@ -606,7 +628,7 @@ void nvk_pipe_warm_note(const nvn_gpu_pipe_desc *d, const uint8_t prog_identity[
         }
     uint8_t desc[NVK_PW_DESC_BYTES];
     pw_desc_write(d, desc);
-    uint64_t h = __atomic_load_n(&g_hash_const, __ATOMIC_ACQUIRE) ? 0x5a5a5a5a5a5a5a5aull : pw_hash(desc, prog_identity);
+    uint64_t h = pw_slot_hash(desc, prog_identity);
     pthread_mutex_lock(&g.mu);
     if (pw_init_locked() != 0) { pthread_mutex_unlock(&g.mu); return; }
     struct pw_dg_out dgo;                         // 诊断：持锁时备好、解锁后输出的东西
@@ -618,6 +640,7 @@ void nvk_pipe_warm_note(const nvn_gpu_pipe_desc *d, const uint8_t prog_identity[
             if (dgon) dg.c.memo_hits++;
             pw_touch_locked((uint32_t)slot);
             pw_memo_touch_locked(h, slot);
+            if (tag_out) *tag_out = pw_tag_of_locked((uint32_t)slot);
             pthread_mutex_unlock(&g.mu);
             if (dgon) pw_dg_out_run(&dgo);
             return;
@@ -630,6 +653,7 @@ void nvk_pipe_warm_note(const nvn_gpu_pipe_desc *d, const uint8_t prog_identity[
                 if (dgon) dg.c.chain_hits++;
                 pw_touch_locked((uint32_t)slot);
                 pw_memo_touch_locked(h, (int32_t)slot);
+                if (tag_out) *tag_out = pw_tag_of_locked((uint32_t)slot);
                 pthread_mutex_unlock(&g.mu);
                 if (dgon) pw_dg_out_run(&dgo);
                 return;
@@ -637,17 +661,44 @@ void nvk_pipe_warm_note(const nvn_gpu_pipe_desc *d, const uint8_t prog_identity[
     }
     __atomic_fetch_add(&g.st.recorded, 1, __ATOMIC_RELAXED);
     if (dgon) pw_dg_new_locked(&dgo, desc, prog_identity, h);   // 先归类 / 抽样（拷下插入前的清单），再插
-    pw_insert_locked(desc, prog_identity, h, 1);
+    const uint32_t slot = pw_insert_locked(desc, prog_identity, h, 1);
+    if (tag_out) *tag_out = pw_tag_of_locked(slot);
     pthread_mutex_unlock(&g.mu);
     if (dgon) pw_dg_out_run(&dgo);   // 解锁之后：打汇总行、抽样的做整表比对
 }
 
-int nvk_pipe_warm_note_prog(const nvn_gpu_pipe_desc *d, const struct rp_prog *p) {
+void nvk_pipe_warm_note(const nvn_gpu_pipe_desc *d, const uint8_t prog_identity[32]) { pw_note(d, prog_identity, NULL); }
+
+// 标签快路径：标签里的槽还占着、槽代号没变（= 还是当初记下的那份配方），并且槽里那份配方的程序身份就是这次
+// 传进来的程序，才只 uses++ / 刷新最近序号——与完整路径命中已有条目时做的事相同，只是不序列化配方、不散列、
+// 不查备忘和桶链。程序身份这一项是前提的保险：今天一局内同一条管线对象（np）只对应一份程序，将来如果有人
+// 让着色器句柄按内容合并、同一条 np 带着另一份程序身份回来，标签就不算命中，走完整路径按新身份入清单。
+static int pw_touch_tag(uint64_t tag, const uint8_t ident[32]) {
+    const uint32_t slot1 = (uint32_t)tag, gen = (uint32_t)(tag >> 32);
+    int ok = 0;
+    pthread_mutex_lock(&g.mu);
+    if (g.inited && slot1 >= 1 && slot1 <= g.cap && g.used[slot1 - 1] && g.gen[slot1 - 1] == gen &&
+        memcmp(g.recs[slot1 - 1].prog_identity, ident, 32) == 0) {
+        pw_touch_locked(slot1 - 1);
+        g.st.tag_hits++;
+        ok = 1;
+    }
+    pthread_mutex_unlock(&g.mu);
+    return ok;
+}
+
+int nvk_pipe_warm_note_prog(const nvn_gpu_pipe_desc *d, const struct rp_prog *p, nvn_gpu_pipe np) {
     uint8_t ident[32];
     if (!d || !p) return 0;
-    if (!rp_shader_prog_identity(p, ident)) return 0;
+    if (!rp_shader_prog_identity(p, ident)) return 0;   // 只读 32 字节，不加锁
     if (pw_id_zero(ident)) return 0;
-    nvk_pipe_warm_note(d, ident);
+    if (np && nvn_gpu_pipe_warm_tag) {
+        const uint64_t t = nvn_gpu_pipe_warm_tag(np);
+        if (t && pw_touch_tag(t, ident)) return 1;
+    }
+    uint64_t tag = 0;
+    pw_note(d, ident, &tag);
+    if (np && tag && nvn_gpu_pipe_warm_tag_set) nvn_gpu_pipe_warm_tag_set(np, tag);
     return 1;
 }
 
@@ -870,6 +921,9 @@ int nvk_pipe_warm_load(void) {
     // 同一进程里第二次 load（测试 / 重新开局）要先清掉上一份的槽位与桶：哈希链是按槽位下标串的，
     // 留着旧链会让新表指到上一份的条目上。
     memset(g.used, 0, g.cap);
+    // 最近 4 条备忘里的槽号也随旧表作废：留着的话，载入前记过的配方在已经空出来的槽上「命中」备忘，
+    // 只给空槽加 uses、不再记进清单（载入文件里没有它）。
+    for (int i = 0; i < NVK_PW_MEMO; i++) { g.memo[i].slot = -1; g.memo[i].h = 0; }
     for (uint32_t i = 0; i < g.nbucket; i++) g.bucket[i] = -1;
     for (uint32_t i = 0; i < g.cap; i++) g.next[i] = -1;
     if (dg.on > 0 && dg.ev) { memset(dg.ev, 0, ((size_t)1 << PW_DG_EV_BITS) * sizeof *dg.ev); dg.ev_n = 0; }   // 诊断：换了一份清单，旧的淘汰记录作废
@@ -882,7 +936,8 @@ int nvk_pipe_warm_load(void) {
         r->uses = pw_r32(e + 32 + NVK_PW_DESC_BYTES);
         g.uses[i] = r->uses;
         g.seen[i] = cnt - i;   // 文件按热点降序写：前面 = 更近
-        g.hash[i] = pw_hash(r->desc, r->prog_identity);
+        g.hash[i] = pw_slot_hash(r->desc, r->prog_identity);
+        g.gen[i] = pw_next_gen_locked();   // 槽里换了一份配方：这之前发出去的标签全部作废
         g.used[i] = 1;
         uint32_t b = pw_bucket_of(g.hash[i], g.nbucket);
         g.next[i] = g.bucket[b];

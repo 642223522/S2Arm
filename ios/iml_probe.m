@@ -40,14 +40,20 @@ static int iml_ent(void) {
 }
 // 上次异常退出后问「把上次的诊断发给我们？」时用（diag.m）：确定丢了才算（读不到不报，防误报）
 int s2a_iml_lost(void) { return iml_ent() == 0; }
-// 游戏库顶上的提示（S2ArmShellHostModel，s2a_shell.h）：确定丢了才给标题与一句短正文（详情在库里的「了解详情」页），调用方 free。
-//   库里真画出这条提示时（s2a_shell_iml_notice_seen）记下：这次打开已经提示过，进游戏后起局那条不再重复弹（11-16 维护者：打开 App 就提示）。
-//   只在真显示时记，取了文字却没画出来就不算（两处都不提示）；下次打开时「上次没正常退出」的诊断询问（diag.m）不看这个
-static int g_iml_notice_shown;
-void s2a_shell_iml_notice_seen(void) { g_iml_notice_shown = 1; }
+// 「丢了这项权限」每次打开只说一处、同一时刻只出一处（11-16）。会说的有四处：自检提示页（只差内存上限时「仍要启动」那页，host_main.c）、
+//   上次异常退出后的诊断询问（diag.m）、游戏库顶上的提示条（s2a_shell_iml_notice）、游戏里的顶部提示条（s2a_iml_probe_check）。
+//   谁先真显示谁说（s2a_iml_claim 取到 1 才说，取到 0 说明别处已说过）；只在真要显示时取，取了没显示出来就两处都不说
+static int g_iml_told;
+int s2a_iml_claim(void) { return s2a_iml_lost() && !__atomic_exchange_n(&g_iml_told, 1, __ATOMIC_SEQ_CST); }
+// 诊断询问这次会问（diag.m，上次没正常退出；进游戏画面时定）：由它说，游戏里提示条让给它，免得提示条和询问框同时在屏幕上
+int s2a_diag_will_ask(void) __attribute__((weak_import));
+static int diag_will_ask(void) { return s2a_diag_will_ask && s2a_diag_will_ask(); }
+// 游戏库顶上的提示（S2ArmShellHostModel，s2a_shell.h）：确定丢了、这次还没别处说过才给标题与一句短正文（详情在库里的「了解详情」页），调用方 free。
+//   库里真画出这条提示时（s2a_shell_iml_notice_seen）记下（11-16 维护者：打开 App 就提示）
+void s2a_shell_iml_notice_seen(void) { __atomic_store_n(&g_iml_told, 1, __ATOMIC_SEQ_CST); }
 char *s2a_shell_iml_notice(void) {
     @autoreleasepool {
-        if (!s2a_iml_lost()) return NULL;
+        if (!s2a_iml_lost() || __atomic_load_n(&g_iml_told, __ATOMIC_SEQ_CST)) return NULL;
         NSData *d = [NSJSONSerialization dataWithJSONObject:@{@"title": S2AL(@"iml.lost.title"), @"body": S2AL(@"iml.lost.short")} options:0 error:nil];
         if (!d) return NULL;
         char *p = malloc(d.length + 1); if (!p) return NULL;
@@ -89,13 +95,15 @@ void s2a_iml_probe_check(void) {
                 jumbo == 0 ? "【黄】带权限却只拿到小地址档，与 R02 不符" : "");
         else
             LOG("【红】[IML] 首启复核：这台机上装的包签名丢了「提高内存上限」权限（%s）；%s，上限 %.1f GB、最大一块 %.1f GB。"
-                "游戏继续运行，超出窗口走远端翻译；请在电脑上的 S2Arm 点「装到 iPhone」重装，或用 Xcode / AltStore Classic v2.3 重签后重装（或 GetMoreRam 给 App ID 补权限后重装）",
+                "游戏继续运行，超出窗口走远端翻译；请在电脑上的 S2Arm 点「装到 iPhone」重装，或用 Xcode / AltStore Classic 2.2 或更新版重签后重装（或 GetMoreRam 给 App ID 补权限后重装）",
                 IML_KEY, va, top / GIB, fit / GIB);
-        // 玩家也要知道（审计 P2-3：原先只写日志）：不挡操作（dprompt.m 顶部提示条，起局 3 秒后）。
-        //   多款容器里游戏库这次打开已经提示过（s2a_shell_iml_notice 给过）就不重复弹；单款壳没有游戏库，每次打开都在游戏里提示（11-16 维护者：别永久静默）
-        if (ent == 0 && !g_iml_notice_shown) {
-            void s2a_dprompt_notice(NSString *title, NSString *body, double delay, double seconds);
-            s2a_dprompt_notice(S2AL(@"iml.lost.title"), S2AL(@"iml.lost.body"), 3, 15);
-        }
+        // 玩家也要知道（审计 P2-3：原先只写日志）：不挡操作（dprompt.m 顶部提示条，起局 3 秒后）。单款壳没有游戏库，每次打开都在游戏里提示（11-16 维护者：别永久静默）；
+        //   到点再定：这次已有别处说过（库顶提示条 / 自检提示页 / 诊断询问）或诊断询问还要问，就不弹
+        if (ent == 0)
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+                if (diag_will_ask() || !s2a_iml_claim()) return;
+                void s2a_dprompt_notice(NSString *title, NSString *body, double delay, double seconds);
+                s2a_dprompt_notice(S2AL(@"iml.lost.title"), S2AL(@"iml.lost.body"), 0, 15);
+            });
     }
 }

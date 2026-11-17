@@ -355,7 +355,6 @@ def write_archive(c, game, root, destination):
     done = 0
     try:
         with temporary.open("xb") as f:
-            os.chmod(temporary, 0o600)
             with zipfile.ZipFile(f, "w", zipfile.ZIP_DEFLATED, compresslevel=3) as z:
                 for name, info in selected.items():
                     h = hashlib.sha256()
@@ -949,7 +948,7 @@ def external_archive(c, game, root, source):
                     "no_target",
                 )
             sid = entries[0]["saveId"]
-            cache.mkdir(parents=True, exist_ok=True, mode=0o700)
+            cache.mkdir(parents=True, exist_ok=True)
             stage = Path(tempfile.mkdtemp(prefix=".import.", dir=cache))
             try:
                 tree = stage / "root"
@@ -1105,7 +1104,7 @@ def seed_restore(c, game, root, source):
     pending = pending_seed(c, game["id"])
     stage = pending.with_name(".pending-seed.new")
     shutil.rmtree(stage, ignore_errors=True)
-    stage.mkdir(parents=True, mode=0o700)
+    stage.mkdir(parents=True)
     with opened_seed(c, game, source) as (data, kind):
         copy_tree(c, Path(data), stage / seed_kind(c, game, kind))
     shutil.rmtree(pending, ignore_errors=True)
@@ -1156,7 +1155,6 @@ def copy_tree(c, source, destination):
         target = destination / name
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("xb") as f:
-            os.chmod(target, 0o600)
             for chunk in file_chunks(c, source / name):
                 f.write(chunk)
             f.flush()
@@ -1179,12 +1177,12 @@ def restore(c):
         ):
             fail(c, "备份或当前存档已变化，请重新检查备份后再确认恢复。", "changed")
         token = uuid.uuid4().hex
-        transactions.mkdir(parents=True, exist_ok=True, mode=0o700)
+        transactions.mkdir(parents=True, exist_ok=True)
         transaction = transactions / token
-        transaction.mkdir(mode=0o700)
+        transaction.mkdir()
         atomic(transaction / "owner.json", dict(schema=1, gameId=game["id"], transaction=token))
         previous = backups / token
-        previous.mkdir(parents=True, mode=0o700)
+        previous.mkdir(parents=True)
         sync_parents(transaction, layout.root_of(c, game["id"]))
         sync_parents(previous, layout.root_of(c, game["id"]))   # 备份目录在这款所在的存放位置下，不一定在默认游戏库里
         new, old = transaction / "new", previous / "data"
@@ -1220,7 +1218,6 @@ def restore(c):
                     path.parent.mkdir(parents=True, exist_ok=True)
                     h = hashlib.sha256()
                     with z.open("payload/" + item["path"]) as src, path.open("xb") as dst:
-                        os.chmod(path, 0o600)
                         while chunk := src.read(CHUNK):
                             c.check()
                             dst.write(chunk)

@@ -15,12 +15,14 @@ import contextlib
 import json
 import os
 import re
+import socket
 import sys
 import shutil
 import time
 from pathlib import Path
 
 from core import Failure, atomic, contained, read, resolve_path
+from errors import library_lock_failure
 
 VERSION = 4   # 2：每款进 games/<英文名>/；3：iPhone 产物进每款 image/ios、装机产物与设备记录进默认位置根（_upgrade_3）；4：库外的工具缓存 / 日志搬进默认位置（_upgrade_4）
 GAME_JSON = "game.json"
@@ -1064,11 +1066,12 @@ def _relocate_lock(private):
         return
     try:
         with filelock.held(private / RELOCATE_LOCK, wait_s=RELOCATE_LOCK_WAIT, poll=0.05,
-                           holder=dict(operation="relocate", pid=os.getpid(), startedAt=round(time.time(), 3))):
+                           holder=dict(operation="relocate", pid=os.getpid(), host=socket.gethostname(),
+                                       startedAt=round(time.time(), 3))):
             yield
     except filelock.Busy as busy:
-        raise Failure("另一个任务正在使用游戏库，请稍后重试。", code="library_busy", holder=busy.holder,
-                      internal=f"等了 {RELOCATE_LOCK_WAIT} 秒，旧默认游戏库搬家锁仍被占（{busy.holder}）") from None  # 非玩家句
+        detail = f"等了 {RELOCATE_LOCK_WAIT} 秒，旧默认游戏库搬家锁仍被占（{busy.holder}）"  # 非玩家句
+        raise library_lock_failure(busy.holder, "另一个任务正在使用游戏库，请稍后重试。", detail) from None  # 非玩家句
 
 
 def _relocate_locked(private, library):

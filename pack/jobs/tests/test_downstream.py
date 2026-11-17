@@ -320,7 +320,7 @@ class WinInstallTest(unittest.TestCase):
         W = FakeWin(team=None)
         with self.assertRaises(Failure) as e:
             self.go(W)
-        self.assertEqual(e.exception.code, "apple_session_expired")
+        self.assertEqual(e.exception.code, "apple_not_signed_in")
         self.assertIsNone(W.ns)
 
     def test_signing_failure_keeps_its_code(self):

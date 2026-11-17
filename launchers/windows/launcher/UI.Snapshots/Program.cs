@@ -399,6 +399,21 @@ SetW(pack, "drivesOverride", (object?)new List<(string Root, string Format, long
 SetW(pack, "importDialog", new ImportDialogState(ImportKind.Games));   // 连不上库时游戏库页是欢迎页，原因显示在「添加游戏」弹窗里
 SetW(pack, "importError", "游戏库没连上（E:\\S2Arm Library）：这个盘是 EXFAT，可以用，但按现有 2 款游戏算，出包会多占约 61 GB；放在 NTFS 格式的盘上更省空间。");
 SaveP("win_24_library_bad_format_drives", () => Navigate(pack, "library"));
+// 数据目录写不进去、本人权限也补不回（11-16 拆自设权限之后的兜底）：不再甩英文异常原文，说哪个文件夹写不进去、可能原因、怎么办；
+//   走真代码路径（WelcomePage.NoWrite + LibraryFailed）。Windows 实机异常原文带文件名（request-….json），NoWrite 取它的上级目录；
+//   快照在非 Windows 上渲染时 Path.GetDirectoryName 不认反斜杠，所以这里直接给目录形式的原文，画面与 Windows 上取完上级目录一致
+SetW(pack, "libraryFailCode", null); SetW(pack, "drivesOverride", null);
+foreach (var (lang, name) in new[] { ("zh-Hans", "win_25_library_no_write"), ("en", "win_25b_library_no_write_en") })
+{
+    var bf = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+    SetW(pack, "language", lang);
+    var denied = new UnauthorizedAccessException(@"Access to the path 'D:\S2Arm Data\S2Arm\WindowsLauncher' is denied.");
+    var reason = (string)pack.GetType().GetMethod("NoWrite", bf)!.Invoke(pack, [denied, @"D:\S2Arm Data\S2Arm\WindowsLauncher"])!;
+    SetW(pack, "importDialog", new ImportDialogState(ImportKind.Games));
+    SetW(pack, "importError", (string)pack.GetType().GetMethod("LibraryFailed", bf)!.Invoke(pack, [@"D:\S2Arm Data\DefaultLibrary", reason])!);
+    SaveP(name, () => Navigate(pack, "library"));
+}
+SetW(pack, "language", "zh-Hans");
 SetW(pack, "importDialog", null); SetW(pack, "importError", "");
 SetW(pack, "libraryFailCode", null); SetW(pack, "drivesOverride", null);
 SetW(pack, "catalog", new LibraryCatalog([atDefault, elsewhere], true, "密钥已就绪")); SetW(pack, "connectedFolder", tidyLib); SetW(pack, "libraryId", "mock-lib-id");

@@ -44,8 +44,7 @@ public sealed partial class EnvironmentWindow : Window
         using var reader = new StreamReader(stream);
         var experience = reader.ReadToEnd();
         text = new SharedText(experience);
-        PrivateJobRequest.Describe = (code, path) => T("private_root." + code).Replace("{0}", path);   // 私有目录用不了时的话按当前界面语言（#672）
-        PrivateJobRequest.Note = note => LauncherCrash.Log(null, note);   // 私有目录自愈 / 收不紧记一笔（#754）
+        PrivateJobRequest.Note = note => LauncherCrash.Log(null, note);   // 旧版收紧过的数据目录补回本人权限时记一笔
         using var table = Assembly.GetExecutingAssembly().GetManifestResourceStream("S2Arm.Localizable.json")
             ?? throw new FileNotFoundException("Localization table resource is missing.");
         using var tableReader = new StreamReader(table);
@@ -440,7 +439,6 @@ public sealed partial class EnvironmentWindow : Window
             ipaReady ? Action("progress.reveal_ipa", () => Reveal(ipa!)) : null, ipaReady ? ipa : null));
         locations.Children.Add(SettingRow(T("settings.locations.space"), libraryId is null ? T("settings.locations.not_set") : null,
             libraryId is null ? null : Action("storage.open", OpenStorage, !libraryBusy)));   // 没库时存储总览只有空页，先写「还没设置」，建好库再给按钮
-        if (PrivateJobRequest.Warning is { } privateWarning) locations.Children.Add(Muted(privateWarning));   // 私有目录收不紧：照常用，这里说一句（#754）
         body.Children.Add(Card(locations));
 
         // 密钥（原在游戏库页状态卡）：状态 + 导入

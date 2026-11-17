@@ -165,4 +165,4 @@ class UnselectedAccountTests(unittest.TestCase):
             self.assertIsNone(impactor.select_only_account("plumesign.exe", self.d))
 
     def test_no_account_selected_text(self):   # D-ZM37 原文
-        self.assertEqual(impactor.explain("Error: No account selected. Please login first using 'plumesign account login'"), "apple_session_expired")
+        self.assertEqual(impactor.explain("Error: No account selected. Please login first using 'plumesign account login'"), "apple_not_signed_in")   # #edc5f5：从没登录 / 没选中不再说成「登录已过期」

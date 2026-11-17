@@ -1257,13 +1257,13 @@ __attribute__((visibility("default"), used)) int s2a_nro_keep(const uint8_t sha[
     strlcat(dir, "/nro", sizeof dir); mkdir(dir, 0755);
     snprintf(p, sizeof p, "%s/%s.nro", dir, hex);
     struct stat st;
-    if (!stat(p, &st) && (uint64_t)st.st_size == size) { LOG("【红】nn::ro：NRO %.8s… 上次已存下（%s），这款还没重新准备，包里仍没有它", hex, p); return 2; }
+    if (!stat(p, &st) && (uint64_t)st.st_size == size) { LOG("【红】nn::ro：NRO %.8s… 上次已存下（%s），这款还没用 Mac 版启动器重新准备，包里仍没有它", hex, p); return 2; }
     snprintf(tmp, sizeof tmp, "%s.%d.tmp", p, (int)getpid());
     int fd = open(tmp, O_CREAT | O_TRUNC | O_WRONLY, 0644); if (fd < 0) { LOG("【红】nn::ro：存 NRO %.8s… 失败（%s：%s）", hex, tmp, strerror(errno)); return 1; }
     uint64_t at = 0; while (at < size) { ssize_t w = write(fd, data + at, (size_t)(size - at > (1u << 26) ? (1u << 26) : size - at)); if (w <= 0) break; at += (uint64_t)w; }
     int ok = at == size && !fsync(fd); close(fd);
     if (!ok || rename(tmp, p)) { unlink(tmp); LOG("【红】nn::ro：存 NRO %.8s… 失败（写了 %llu / %llu 字节）", hex, (unsigned long long)at, (unsigned long long)size); return 1; }
-    LOG("【红】nn::ro：包里没有 NRO %.8s…（%llu 字节），已把游戏解开的这份存到 %s：重新准备这款后就能装上", hex, (unsigned long long)size, p);
+    LOG("【红】nn::ro：包里没有 NRO %.8s…（%llu 字节），已把游戏解开的这份存到 %s：用 Mac 版启动器重新准备这款后就能装上（Windows 版启动器收不回它）", hex, (unsigned long long)size, p);
     return 0;
 }
 // The coordinator replaces guest pages before releasing loader registrations.

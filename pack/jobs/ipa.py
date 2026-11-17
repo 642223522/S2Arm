@@ -374,8 +374,7 @@ def _build(c):
     pack_dir = out / (ipa.stem + "资源包")   # 同 pack/oneclick/oneclick.sh 的交付布局
     patches.record(c, gid, "ios", product_root(c, gid))   # 补丁打入结果（打上 / 没打上，完成页列；deliver 之前产物根还在，11-14）
     deliver(c, gid, product_root(c, gid), pack_dir, ipa)
-    import sgrade   # iPhone 设置页的 S 级状态底料（版本对照 / 满屏来源 / 出包时选不打入；手机上没有补丁库，开关与自动关由手机本机算）
-    sgrade.write_kit_state(c, gid, layout.ios_kit(c, gid))
+    finish_kit_state(c, gid)
     if c.r.get("platform") == "tvos":   # Apple TV（11-15）：同一份改写产物派生（pack/jobs/tvos.py derive），要在清解包目录之前（ASTC 预转读 romfs）
         import tvos
         tvos.derive(c, gid, extraction)
@@ -469,6 +468,16 @@ def phone_lock(c):
 
 
 CONTAINER_BUNDLE = "io.s2arm.games"   # 组装时的占位包名：Mac 装机换成团队专属的 io.s2arm.games.<团队>（install.container_bundle_id）；Windows 由 plumesign 按账号定
+
+
+def finish_kit_state(c, gid):
+    """出 iPhone 包收尾：iPhone 设置页的 S 级状态底料写进 kit（sgrade_state.json：版本对照 / 满屏来源 / 出包时选不打入；手机上没有补丁库，
+    开关与自动关由手机本机算），再把常驻配方重存一次——它在 deliver 存配方之后才写，不重存的话缓存清掉、按配方现建的 kit 缺它，
+    手机 S 级设置页没底料（11-16 Windows 实机按配方现建对比：37 / 38 同，只缺它）"""
+    import programs
+    import sgrade
+    sgrade.write_kit_state(c, gid, layout.ios_kit(c, gid))
+    programs.save_recipe(c, gid)
 
 
 def deliver(c, gid, root, pack_dir, ipa):

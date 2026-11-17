@@ -343,8 +343,8 @@ def launch(c):
                     if broken:   # 起局前没逐个核（v0.3.1）：退出后再核，运行文件缺 / 坏了就直说，别让玩家以为是游戏崩了
                         raise Failure(f"这款游戏的 Mac 运行文件缺了或坏了（例：{broken}），游戏读到它时退出了。重新出一次 Mac 版就能修好；存档不受影响。",
                                       code="runtime_invalid", internal=str(f)) from None
-                    if getattr(c, "last_rc", None) == 86:   # 显卡挂死，运行时安全停下这局（graphics/nvn/host_adapt.m s2a_gpu_safe_stop、gal_core.m 命令缓冲出错），不是玩完（#1257）
-                        raise Failure("显卡卡住了，S2Arm 把这局安全停下了。", code="game_gpu_stopped", internal=str(f)) from None
+                    if getattr(c, "last_rc", None) == 86:   # 游戏卡住后被停下（显卡挂死安全停 graphics/nvn/host_adapt.m s2a_gpu_safe_stop、gal_core.m 命令缓冲出错、卡住暂停时玩家选退出 macos/front_mac.m），不是玩完（#1257、#1378）
+                        raise Failure("游戏卡住了，S2Arm 把这局安全停下了。", code="game_gpu_stopped", internal=str(f)) from None
                     raise Failure(f"游戏运行中意外退出了（退出码 {getattr(c, 'last_rc', '?')}）。", code="game_crashed", internal=str(f)) from None
                 raise
             if trial:
@@ -577,7 +577,6 @@ def collect_degrade(c, root):
     try:
         log = c.logs / f"{c.task}-degrade.log"
         log.write_text(DEGRADE_HEAD + "\n" + "".join("\t".join([r["stage"], r["kind"], str(r["count"]), r["hint"], r["note"]]) + "\n" for r in rows), encoding="utf-8")
-        log.chmod(0o600)
     except OSError as e:
         c.emit("message", f"降级表没存进日志目录（{e}），诊断包里会少这一份；出包结果不受影响")
     return list(dict.fromkeys(r["hint"] for r in rows if r["hint"]))

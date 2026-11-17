@@ -121,7 +121,7 @@ public final class SettingsProvider {
 
     private func write() throws {
         let dir = store.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         var file: [String: Any] = ["schema": 1]
         if let saved = lock.withLock({ targets }) { file["exportTargets"] = saved }
         if let saved = lock.withLock({ location }) { file["exportLocation"] = saved }
@@ -132,6 +132,5 @@ public final class SettingsProvider {
         if !lock.withLock({ widget }) { file["homeWidget"] = false }
         let data = try JSONSerialization.data(withJSONObject: file, options: [.sortedKeys])
         try data.write(to: store, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: store.path)
     }
 }

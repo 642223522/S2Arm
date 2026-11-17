@@ -237,6 +237,36 @@ class ReasonsTest(unittest.TestCase):
             self.assertEqual([(r[1], r[4]) for r in rejected],
                              [(f"gfx:{ids[0]}", "把 main+0x204 改成空指令后，它原本要写的 x8 在 main+0x20c 被读：读到的是残值，可能被当指针读而崩")])
 
+    def test_real_plan_rewrites_raised_render_resolution(self):
+        # 11-16 #b824d1 后续（维护者「补丁按咱们的需求正确生效、不直接拒掉」）：满屏补丁把渲染分辨率写成 3440×1440，原版那条高是 movz #1080。期望手写：
+        #   ① 收、日志「改分辨率 … 3440x1440 → 2580x1080」，表里写的是 movz w8,#2580 / movz w9,#1080；② 另一份写了两对（3440×1440 + 5160×2160）→ 认不全，不收
+        mz = lambda rd, imm: 0x52800000 | (imm << 5) | rd
+        with tempfile.TemporaryDirectory() as temporary:
+            root, _ = fixture(Path(temporary))
+            main = bytearray((root / "exefs/main").read_bytes())
+            struct.pack_into("<II", main, 0x100 + 0x200, mz(8, 1920), mz(9, 1080))
+            struct.pack_into("<II", main, 0x100 + 0x300, mz(8, 1920), mz(9, 1080))
+            (root / "exefs/main").write_bytes(bytes(main))
+            ws = Path(temporary) / "widescreen"; ws.mkdir()
+            hx = lambda v: struct.pack("<I", v).hex().upper()
+            bodies = {"one.pchtxt": [(0x200, mz(8, 3440)), (0x204, mz(9, 1440))],
+                      "two.pchtxt": [(0x300, mz(8, 3440)), (0x304, mz(9, 1440)), (0x308, mz(10, 5160)), (0x30C, mz(11, 2160))]}
+            with (ws / "INDEX.tsv").open("w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f, delimiter="\t", lineterminator="\n"); w.writerow(["title_id", "kind", "path", "sha256", "aspect"])
+                for name, body in bodies.items():
+                    (ws / name).write_text(f"@nsobid-{'A1' * 16}\n@flag offset_shift 0x100\n@enabled\n" + "".join(f"{o:08X} {hx(v)}\n" for o, v in body) + "@stop\n")
+                    w.writerow(["0100000000001000", "pchtxt", name, hashlib.sha256((ws / name).read_bytes()).hexdigest(), "2.333"])
+            result = subprocess.run([sys.executable, str(ROOT / "pack/cpatch.py"), "plan", str(root), "", str(ws)], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            log = (root / "cpatch_plan.log").read_text().splitlines()
+            self.assertEqual([l.split("\t")[4] for l in log if l.startswith("改分辨率\t")], ["3440x1440 → 2580x1080（原生高、按原比例）"])
+            rej = [l.split("\t")[4] for l in log if l.startswith("不收\t")]
+            self.assertEqual(len(rej), 1); self.assertIn("不止一对分辨率常数", rej[0])
+            rows = (root / "cpatch_rows.tsv").read_text()
+            # 0x200 改成 2580；0x204 改回的 movz w9,#1080 与原版那条相同 → 不用改、表里没有这一行；3440 / 1440 都不出现
+            self.assertEqual([l.split("\t")[:5] for l in rows.splitlines() if l.startswith("p\t")], [["p", "main", "200", f"{mz(8, 1920):08x}", f"{mz(8, 2580):08x}"]])
+            self.assertNotIn(f"{mz(9, 1440):08x}", rows)
+
     def test_real_plan_does_not_assume_module_or_hash_whitelist(self):
         with tempfile.TemporaryDirectory() as temporary:
             root, index = fixture(Path(temporary))

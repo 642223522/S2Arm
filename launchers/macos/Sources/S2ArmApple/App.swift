@@ -40,7 +40,7 @@ enum AppSetup {
 
     static func environment() -> JobEnvironment {
         let privateRoot = dataRoot(CommandLine.arguments)
-        try? FileManager.default.createDirectory(at: privateRoot, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try? FileManager.default.createDirectory(at: privateRoot, withIntermediateDirectories: true)
         let resources: URL
         if let r = Bundle.main.resourceURL, Bundle.main.bundleURL.pathExtension == "app" || FileManager.default.fileExists(atPath: r.appendingPathComponent("Jobs/main.py").path) {
             resources = r

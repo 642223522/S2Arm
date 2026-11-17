@@ -99,8 +99,6 @@ final class SettingsProviderTests: XCTestCase {
         let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
         XCTAssertNil(saved["games"])
         XCTAssertEqual(saved["exportTargets"] as? [String], ["ios", "macos"])
-        let mode = (try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber)?.intValue
-        XCTAssertEqual(mode, 0o600)
     }
 
     /// 审计 P2-273：写盘失败时内存改回原值（原先内存已是新值、磁盘还是旧的，之后按没存下的值走、下次启动又回到旧的）。

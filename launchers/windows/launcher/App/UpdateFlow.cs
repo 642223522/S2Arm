@@ -222,6 +222,11 @@ public sealed partial class EnvironmentWindow
             // 静默装进现在这个目录（便携版也原地更新，不另装一份）；数据不在程序目录里（私有目录、游戏库），装新版不碰
             CustomInstallerArguments = $"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR=\"{InstallDir}\"",
             RelaunchAfterUpdateCommandSuffix = string.Join(" ", Environment.GetCommandLineArgs().Skip(1).Select(a => "\"" + a.Replace("\"", "") + "\"")),
+            // 装完拉起不靠当前目录（11-16 第 2 份候选手动更新：装好了却没拉起）：NetSparkle 写的脚本是 cd "<目录>" 再跑 "<可执行文件名>"，
+            //   cd 不带 /d 换不了盘——脚本在系统盘的临时目录里跑，程序装在别的盘（便携版放 D:、测试装在 R:）时 cd 落空，相对的 S2Arm.exe 找不到，静默不拉起。
+            //   可执行文件给绝对路径，前缀再 cd /d 到安装目录（工作目录同安装程序「现在打开」的 WorkingDir {app}）
+            RestartExecutableName = Path.Combine(InstallDir, Path.GetFileName(Environment.ProcessPath ?? "S2Arm.exe")),
+            RelaunchAfterUpdateCommandPrefix = $"cd /d \"{InstallDir}\" && ",
             LogWriter = new UpdateLog(Path.Combine(privateRoot, "logs", "update.log")),
         };
         updater.CloseApplicationAsync += () => { Dispatcher.UIThread.Post(Close); return Task.CompletedTask; };

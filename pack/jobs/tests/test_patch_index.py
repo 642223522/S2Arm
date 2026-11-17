@@ -140,6 +140,28 @@ class PatchPackTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.m, ignore_errors=True); shutil.rmtree(self.o, ignore_errors=True)
 
+    def test_raised_resolution_widescreen_is_fixed_before_publishing(self):
+        # 11-16 #b824d1 后续（维护者「提前把这类补丁中参数改对，这样用户用着的就是对的」）：改内部渲染分辨率的满屏补丁，发布前改成 高 1080、宽按原比例。期望手写：
+        #   ① 3440×1440 那份进 g/（老客户端照常拿到），字节里 movz #3440 / #1440 换成 #2580 / #1080、其余字节不动，sha256 / 编号按新字节，adjusted 记原 / 新尺寸与原文 sha256；
+        #   ② 写了两对（3440×1440 + 5160×2160）的认不全 → 不进包
+        import base64, gzip, json as js
+        mz = lambda rd, imm: (0x52800000 | (imm << 5) | rd).to_bytes(4, "little").hex().upper()
+        up = f"@nsobid-FF1D1C05670DB6021C85B624A710B963\n@enabled\n00001000 {mz(8, 3440)}\n00001004 {mz(9, 1440)}\n".encode()
+        fixed = f"@nsobid-FF1D1C05670DB6021C85B624A710B963\n@enabled\n00001000 {mz(8, 2580)}\n00001004 {mz(9, 1080)}\n".encode()
+        two = f"@nsobid-FF1D1C05670DB6021C85B624A710B963\n@enabled\n00001000 {mz(8, 3440)}\n00001004 {mz(9, 1440)}\n00001008 {mz(8, 5160)}\n0000100C {mz(9, 2160)}\n".encode()
+        a = self.m / "orig__mods" / "G [01006F8002326000]"
+        for d, data in (("[3440x1440 Ultrawide]", up), ("[5160x2160 Ultrawide]", two)):
+            (a / d / "exefs").mkdir(parents=True); (a / d / "exefs/1.0.pchtxt").write_bytes(data)
+        idx = self.pp.build(str(self.m), str(self.o))
+        self.assertEqual(sorted(idx["bundles"]), ["b/AAAABBBBCCCCDDDD", "g/01006F8002326000"])
+        g = js.loads(gzip.decompress((self.o / "g/01006F8002326000.json.gz").read_bytes()))["items"]
+        adj = [i for i in g if i.get("adjusted")]
+        self.assertEqual([(base64.b64decode(i["data"]), i["sha256"], i["id"], i["adjusted"]) for i in adj],
+                         [(fixed, hashlib.sha256(fixed).hexdigest(), hashlib.sha256(fixed).hexdigest()[:16],
+                           dict(res_from=[3440, 1440], res_to=[2580, 1080], orig_sha256=hashlib.sha256(up).hexdigest()))])
+        self.assertNotIn(base64.b64encode(two).decode(), [i["data"] for i in g])
+        self.assertEqual([i["name"] for i in g if i["kind"] == "pchtxt"].count("1.0.pchtxt"), 2)   # 原来那份 21:9 + 改过的这份
+
     def test_bundles(self):
         import base64, gzip, json as js
         idx = self.pp.build(str(self.m), str(self.o))
