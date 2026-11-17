@@ -30,9 +30,9 @@ import ShellUI
 }
 
 @MainActor @Test func imlGuideListsEveryInstallWay() {
-    // 了解详情页：启动器 / AltStore Classic / SideStore / Sideloadly / GetMoreRam 都写到；查不到能保留的写「暂不支持」
+    // 了解详情页：启动器 / 自己的开发者证书（11-17 补）/ AltStore Classic / SideStore / Sideloadly / GetMoreRam 都写到；查不到能保留的写「暂不支持」
     let ways = IMLGuideView.ways
-    #expect(ways.map(\.id) == ["launcher", "altstore", "sidestore", "sideloadly", "getmoreram"])
+    #expect(ways.map(\.id) == ["launcher", "cert", "altstore", "sidestore", "sideloadly", "getmoreram"])
     #expect(ways.first { $0.id == "sideloadly" }?.verdict == .unsupported)
     #expect(ways.first { $0.id == "sidestore" }?.verdict == .drops)
 }

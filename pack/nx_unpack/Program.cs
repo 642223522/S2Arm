@@ -259,7 +259,7 @@ static partial class P {
         }
         if (a.Length >= 3 && a[1] == "--inspect") return Inspect(a);
         if (a.Length < 3) {
-            Console.Error.WriteLine("用法：nx_unpack <prod.keys> <输出目录> [--nacp-only | --aoc-only | --exefs-only] [--aoc-index] [--title-id=<16 hex>] [--program-index=<0..15>] [--title-keys=<title.keys>] <xci/nsp…>");
+            Console.Error.WriteLine("用法：nx_unpack <prod.keys> <输出目录> [--nacp-only | --aoc-only | --exefs-only] [--aoc-index] [--title-id=<16 hex>] [--program-index=<0..15>] [--title-keys=<title.keys>] [--base-only] <xci/nsp…>");
             Console.Error.WriteLine("测试专用：nx_unpack --test-romfs-publish <尚不存在的测试目录>");
             return 2;
         }
@@ -269,10 +269,13 @@ static partial class P {
         if (Environment.GetEnvironmentVariable("S2A_NXUNPACK_TEST_THROW") is "denied-out" or "denied-src")
             throw new IOException($"Access to the path '{(Environment.GetEnvironmentVariable("S2A_NXUNPACK_TEST_THROW") == "denied-out" ? Path.Combine(D, "build", "extract", ".romfs-extract-40b3") : Path.Combine(Path.GetTempPath(), "src.xci"))}' is denied.", unchecked((int)0x80070005));
         var srcs = new List<string>(); ulong? selectedTitle = null; string titleKeys = null; int programIndex = 0;
+        // 只解本体、不叠更新（诊断用：同一份整合包复现旧版本的问题）：--base-only 或环境 S2A_UNPACK_BASE_ONLY=1（出包流水线经环境带下来）。缺省照旧叠最新更新
+        bool baseOnly = Environment.GetEnvironmentVariable("S2A_UNPACK_BASE_ONLY") == "1";
         for (int i = 2; i < a.Length; i++) {
             if (a[i] == "--nacp-only") nacpOnly = true;
             else if (a[i] == "--aoc-index") aocIndex = true;
             else if (a[i] == "--exefs-only") exefsOnly = true;
+            else if (a[i] == "--base-only") baseOnly = true;
             else if (a[i] == "--aoc-only") aocOnly = true;
             else if (a[i].StartsWith("--title-keys=", StringComparison.Ordinal)) titleKeys = a[i].Substring(13);
             // 多程序合集（ProgramPick.cs）：解同一应用里第几支程序（Program / Control 按内容自己的序号挑），缺省 0
@@ -339,6 +342,7 @@ static partial class P {
         }
         Cnmt app = Newest(apps[0], "本体"); ulong tid = app.TitleId;
         Cnmt pat = Newest(metas.Where(m => m.Type == ContentMetaType.Patch && m.ApplicationTitleId == tid), "更新");
+        if (baseOnly && pat != null) { Console.WriteLine($"🟡 只解本体：不叠更新 v{pat.TitleVersion.Version}（--base-only / S2A_UNPACK_BASE_ONLY=1）"); pat = null; }
         var dlc = metas.Where(m => m.Type == ContentMetaType.AddOnContent && (m.TitleId & ~0xFFFUL) == tid + 0x1000).GroupBy(m => m.TitleId).Select(g => g.OrderBy(m => m.TitleVersion.Version).Last())
                      .OrderBy(m => (m.TitleId - tid - 0x1000).ToString(), StringComparer.Ordinal).ToList();   // 按序号的字符串序（= pack.py 遍历 data/<游戏>/aoc 时子目录的排序）
         string baseId = CidAt(app, ContentType.Program), patId = pat == null ? null : CidAt(pat, ContentType.Program);

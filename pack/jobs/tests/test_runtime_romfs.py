@@ -226,16 +226,15 @@ class BundleLayoutRomfsImport(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(prefix="s2arm bundle layout ")
         self.addCleanup(self.tmp.cleanup)
         self.base = Path(self.tmp.name)
-        self.jobs = self.base / "Contents/Resources/Jobs"
-        shutil.copytree(
-            Path(__file__).resolve().parents[1],
-            self.jobs,
-            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-        )
-        shutil.copy2(
-            Path(__file__).resolve().parents[3] / "graphics/nvn/tools/romfs_list.py",
-            self.jobs / "romfs_list.py",
-        )
+        # 布局照发版应用同一个函数摆（launchers/macos/jobs_bundle.stage_jobs：作业层 + EXTRA 单文件），打包加了文件这里自动跟上
+        #   （#1332 后 romfs_list 依赖 pool_workers，原先这里手拷 romfs_list 一份、没跟上）
+        repo = Path(__file__).resolve().parents[3]
+        sys.path.insert(0, str(repo / "launchers/macos"))
+        try:
+            import jobs_bundle
+        finally:
+            sys.path.remove(str(repo / "launchers/macos"))
+        self.jobs = jobs_bundle.stage_jobs(repo, self.base / "Contents/Resources")
         self.source = self.base / "roots/game@v1"
         self.source.mkdir(parents=True)
         (self.source / "a.bin").write_bytes(b"engine file")

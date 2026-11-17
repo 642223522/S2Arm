@@ -2269,7 +2269,8 @@ NVN(nvnCommandBufferBindProgram, void, NVNcommandBuffer *c, const NVNprogram *p,
     // Snapshot only mesh inputs under that final key; SetShaders' mapped=1 key path intentionally skips NVN2.
     if (nvn2_on()) for (unsigned i = 0; i < o->nstage && i < 6; i++) {
         const void *ctl = o->sd[i].control; uint8_t md[8];
-        if (ctl && (uintptr_t)ctl < (1ull << 47) && nvn2_ctl(ctl) && ((const uint8_t *)ctl)[0x56] == 7 &&
+        // #713 D-ZBQS 0007（0.5.1 SIGBUS）：SetShaders 之后游戏可能已放掉控制段那块内存，指针还在、页不可读——先核整段可读再看魔数 / 阶段字节（同 keys_hash 的 shader_bytes_readable）
+        if (ctl && (uintptr_t)ctl < (1ull << 47) && shader_bytes_readable((uint64_t)(uintptr_t)ctl, 0x58) && nvn2_ctl(ctl) && ((const uint8_t *)ctl)[0x56] == 7 &&
             prog_key(o, i, md)) dm_shader_mesh_hold_key(md, o->sd[i].data, ctl);
     }
     prog_t snap; memcpy(&snap, o, sizeof snap);
@@ -3736,10 +3737,22 @@ __attribute__((weak)) int s2a_fps_present_hook(void) { return 0; }
 __attribute__((weak)) int s2a_fps60_display_source(void) { return 0; }   // runtime/src/caps.c；没链能力清单的宿主 / 图形单测没有清单来源
 __attribute__((weak)) void s2a_qp_frame(uint32_t draws, int video, int cutscene, int game_itv) { (void)draws; (void)video; (void)cutscene; (void)game_itv; }   // runtime/src/qprompt_host.c；图形单测没有宿主
 static _Atomic int g_fps_game_itv;   // 这一帧按游戏自己设的间隔（不走 display 模式）
+// 社区帧率补丁改在 sdk 里 NVN 驱动的交换间隔（D-36F4：真机上游戏照旧调 nvnWindowSetPresentInterval(2)，被补丁改过的驱动按 1 交帧）：
+//   直连层接管了 NVN，sdk 里那段驱动代码不执行，游戏传的 2 原样进出图节拍、补丁开着仍 30 帧。补丁开着时 runtime/src/cpatch.c 经这里把间隔封到补丁意图（1），
+//   关掉 / 停帧救场时回 0（不封，跟游戏）。只封出图节拍用的间隔；游戏读回的 nvnWindowGetPresentInterval 仍是它自己设的（同真机：补丁改的是驱动交帧，不改游戏的变量）
+static _Atomic int g_itv_cap;
+void nvn_present_itv_cap(int cap) {
+    if (cap < 0) cap = 0;
+    if (atomic_exchange(&g_itv_cap, cap) != cap) LOG("[nvn] 出图间隔上限 %d（%s）", cap, cap ? "社区帧率补丁改的是 sdk 里的驱动交帧，直连层按补丁意图交帧" : "不封，跟游戏设的间隔");
+}
+static int game_itv(const win_t *o) {
+    int v = o->interval > 0 ? o->interval : 1, cap = atomic_load(&g_itv_cap);
+    return cap > 0 && v > cap ? cap : v;
+}
 static int present_itv(const win_t *o) {   // vsyncs per frame that presentation follows
     int c = fps_step_cap(), k = atomic_load(&g_fs_k);
     if (c) return k && fstep_on() ? k : 60 / c;
-    int itv = g_display_mode && !atomic_load(&g_fps_game_itv) ? 1 : o->interval > 0 ? o->interval : 1;
+    int itv = g_display_mode && !atomic_load(&g_fps_game_itv) ? 1 : game_itv(o);
     return itv < 2 && g_hz > 0 && video_cap() ? 2 : itv;   // 放 ≤ 30 帧视频：至少隔 2 拍（60 Hz 节拍下 30 帧）
 }
 // 显示链等几个 60 Hz vsync（nvn_be_link_wait_tick 的口径；0 = 一个真实链接拍）：出图节拍被放开到 60 Hz 以上（g_hz，社区帧率补丁经 DM_PRESENT_HZ / nvn_present_hz）时，
@@ -3762,7 +3775,7 @@ int nvn_present_fps(void) {
 }
 static uint64_t present_period(const win_t *o) {
     present_cfg(o);
-    int was = atomic_load(&g_game_itv), want = o->interval > 0 ? o->interval : 1;
+    int was = atomic_load(&g_game_itv), want = game_itv(o);
     if (want != was) {
         atomic_store(&g_game_itv, want);
         // 奇数间隔在 30 Hz 链路上没有整刻度（间隔 3 = 1.5 刻度，原先取整成 2 刻度 67 ms）：只有偶数间隔计入「降到 30 Hz」的连续段，

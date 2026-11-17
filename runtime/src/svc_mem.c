@@ -1461,6 +1461,9 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
     switch (num) {
     case 0x01: {  // SetHeapSize(→x1 堆基址; x1 大小)
         uint64_t size = regs[1];
+        // 出参先置 0，失败的每条路都带着它返回（同 Ryujinx Syscall.SetHeapSize / KPageTableBase.SetHeapSize 开头 address = 0）：原先失败时 x1 原样留着请求的大小，
+        //   不看结果码的游戏拿它当堆基址往下写（D-ASK2 iPad mini 6：设堆 0xD001 后照样初始化堆，写进宿主只读代码段 SIGBUS）
+        regs[1] = 0;
         if (size & 0x1fffff) { regs[0] = 0xCA01; return 1; }   // InvalidSize：Horizon 要 2 MB 对齐
         GMU_LOCK();
         uint64_t fixed = pool_fixed();

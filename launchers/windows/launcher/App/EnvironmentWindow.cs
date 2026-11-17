@@ -65,7 +65,14 @@ public sealed partial class EnvironmentWindow : Window
         Width = 1080; Height = 820; MinWidth = 760; MinHeight = 600;
         Background = Canvas; Foreground = Ink;
         FontFamily = new FontFamily("avares://S2Arm/Assets/Fonts#Manrope");
-        Closed += (_, _) => { CancelJob(JobKind.Environment); ClearCovers(); DisposeRetiredCovers(all: true); CloseControl(); };
+        // 关窗每一步记进 update.log、记下走到哪（让位给安装程序时兜底按它报停在哪一步）
+        Closed += (_, _) =>
+        {
+            ExitStep = "Closed：取消环境作业"; CloseLog("关窗口：Closed 开始"); CancelJob(JobKind.Environment);
+            ExitStep = "Closed：释放封面"; ClearCovers(); DisposeRetiredCovers(all: true);
+            ExitStep = "Closed：关控制口"; CloseControl();
+            ExitStep = "Closed 之后：等应用退出"; CloseLog("关窗口：Closed 完");
+        };
         Opened += (_, _) =>
         {
             StartControl(); FinishPendingUpdate(); SyncInstalledVersion(); _ = LoadInboxAsync(); StartPhoneAutoUpdate();

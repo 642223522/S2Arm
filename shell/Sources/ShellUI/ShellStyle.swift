@@ -536,7 +536,7 @@ extension GameState {
     var explanation: String {
         switch self {
         case .playable: ""
-        case .needsGameData: ShellStrings.text("Choose this game's data to get ready to play.")
+        case .needsGameData: ShellStrings.text("Choose this game's data to get ready to play. If it was installed from a computer, connect the iPhone and click “Install on iPhone” for this game in S2Arm: it picks up from what was already copied, so it won’t start over.")
         case .needsAppUpdate: ShellStrings.text("Install a newer version of this app to play this game.")
         case .needsGameUpdate: ShellStrings.text("This game was built with an older S2Arm and doesn't match the new version on your phone, so it can't open. Connect your phone to your computer and click \"Update S2Arm on iPhone\" in S2Arm; this game will be rebuilt for the new version.")
         case .needsGameReinstall: ShellStrings.text("This game's files on your phone didn't finish installing, or were installed from another computer or Apple ID, so they don't match S2Arm on this phone and it can't open. Connect your phone to your computer and click \"Install on iPhone\" for this game in S2Arm to reinstall it.")
@@ -545,7 +545,7 @@ extension GameState {
             switch stage.phase {
             case .transferring: ShellStrings.text("This game is being copied from your computer. Keep the cable connected.")
             case .installing: ShellStrings.text("Getting this game ready. Keep this app open.")
-            case .interrupted: ShellStrings.text("Connect this iPhone to the computer again to continue.")
+            case .interrupted: ShellStrings.text("Connect this iPhone to the computer, then click “Install on iPhone” for this game in S2Arm. It picks up from what was already copied, so it won’t start over.")
             case .failed:
                 (stage.reason.map { $0 + "\n" } ?? "") + ShellStrings.text("Tap Try again. If it still does not finish, install it again from the computer.")
             }
