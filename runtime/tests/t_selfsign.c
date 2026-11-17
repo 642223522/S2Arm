@@ -79,6 +79,31 @@ static void one_case(const char *dir, SecKeyRef key, CFArrayRef chain, const uin
     free(rf); free(out);
 }
 
+// ③ 签名身份交接（s2a_identity_import）：钥匙串换成桩（不碰本机钥匙串）。期望按文件与 openssl 算的 sha1：
+//   齐了 → 返回 1、桩被调 1 次、current.json 里是证书 sha1、incoming/ 三份删掉；sha1 对不上 / 私钥坏 → -1、写 import_error.txt、incoming/ 留着、桩不调；没交 → 0
+int s2a_identity_import(const char *home);
+void s2a_identity_test_store(int (*f)(SecKeyRef, SecCertificateRef, char *, size_t));
+static int g_store_n;
+static int store_stub(SecKeyRef k, SecCertificateRef c, char *why, size_t n) { (void)why; (void)n; g_store_n += k && c; return 0; }
+static int exists(const char *d, const char *f) { char p[700]; snprintf(p, sizeof p, "%s/%s", d, f); return access(p, F_OK) == 0; }
+static void id_case(const char *dir, const char *tag, const char *sha_in_json, int corrupt_key, int want_rc, const char *real_sha) {
+    char home[600], inc[700], c[2400]; snprintf(home, sizeof home, "%s/home_%s", dir, tag);
+    snprintf(inc, sizeof inc, "%s/Library/Application Support/S2Arm/identity/incoming", home);
+    snprintf(c, sizeof c, "mkdir -p '%s' && cp %s/key.der '%s/key.der' && cp %s/cert.der '%s/cert.der' && printf '{\"schema\": 1, \"team\": \"ABCDE12345\", \"cert_sha1\": \"%s\"}' > '%s/identity.json'",
+             inc, dir, inc, dir, inc, sha_in_json, inc);
+    system(c);
+    if (corrupt_key) { char k2[700]; snprintf(k2, sizeof k2, "%s/key.der", inc); FILE *f = fopen(k2, "r+b"); if (f) { fseek(f, 4, SEEK_SET); fputs("\x05\x05\x05\x05", f); fclose(f); } }
+    g_store_n = 0; int rc = s2a_identity_import(home);
+    char idd[700]; snprintf(idd, sizeof idd, "%s/Library/Application Support/S2Arm/identity", home);
+    if (want_rc == 1) {
+        char cur[800]; snprintf(cur, sizeof cur, "%s/current.json", idd); size_t n = 0; FILE *f = fopen(cur, "rb"); char buf[400] = {0}; if (f) { n = fread(buf, 1, sizeof buf - 1, f); fclose(f); }
+        CHECK(rc == 1 && g_store_n == 1 && n && strstr(buf, real_sha) && !strstr(buf, "BEGIN") && !exists(inc, "key.der") && !exists(inc, "identity.json"),
+              "身份交接 %s：返回 %d（期望 1）、存钥匙串 %d 次、current.json 带 sha1 %s、incoming/ 删掉", tag, rc, g_store_n, real_sha);
+    } else {
+        CHECK(rc == want_rc && g_store_n == 0 && exists(idd, "import_error.txt") && exists(inc, "key.der") && exists(inc, "identity.json"),
+              "身份交接 %s：返回 %d（期望 %d）、不存钥匙串、写了 import_error.txt、incoming/ 留着", tag, rc, want_rc);
+    }
+}
 int main(void) {
     char dir[] = "/tmp/t_selfsign.XXXXXX"; if (!mkdtemp(dir)) { puts("【红】建不了临时目录"); return 1; }
     // 输入：arm64 小可执行文件，签名标识 t_selfsign_in；证书：自签名 RSA 2048，OU = 团队号
@@ -100,6 +125,18 @@ int main(void) {
     if (!ir && in) {
         one_case(dir, key, chain, in, n, "ABCDE12345.io.example.selfsign.test");
         one_case(dir, key, chain, in, n, NULL);
+    }
+    {   printf("③ 签名身份交接\n");
+        s2a_identity_test_store(store_stub);
+        char cmd[1600]; snprintf(cmd, sizeof cmd, "cd %s && openssl rsa -in k.pem -traditional -outform DER -out key.der 2>/dev/null && openssl x509 -in c.pem -outform DER -out cert.der && openssl dgst -sha1 -r cert.der | cut -c1-40 > sha.txt", dir);
+        int pr = system(cmd); char sha[64] = {0}; { char p[600]; snprintf(p, sizeof p, "%s/sha.txt", dir); FILE *f = fopen(p, "r"); if (f) { if (fgets(sha, sizeof sha, f)) sha[strcspn(sha, "\n")] = 0; fclose(f); } }
+        CHECK(pr == 0 && strlen(sha) == 40, "备好 PKCS#1 私钥 DER、证书 DER、openssl 算的证书 sha1 %s", sha);
+        id_case(dir, "ok", sha, 0, 1, sha);
+        id_case(dir, "badsha", "0000000000000000000000000000000000000000", 0, -1, sha);
+        id_case(dir, "badkey", sha, 1, -1, sha);
+        char home[600]; snprintf(home, sizeof home, "%s/home_none", dir); g_store_n = 0;
+        CHECK(s2a_identity_import(home) == 0 && g_store_n == 0, "没交（没有 identity.json）：返回 0、不碰钥匙串");
+        s2a_identity_test_store(NULL);
     }
     char c[600]; snprintf(c, sizeof c, "rm -rf %s", dir); system(c);
     return S2A_T_RESULT("t_selfsign", fails);

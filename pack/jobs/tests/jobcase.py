@@ -234,6 +234,10 @@ if source.read_bytes() in (b"outdated fixture", b"ticket fixture"):
     print("Container metadata could not be decrypted or verified. Check keys, tickets and file integrity.")
     print(f"【原因 {code}】")
     raise SystemExit(3)
+if source.read_bytes() == b"magic fixture":   # #1511：分区头魔数不对（解出来是乱码 = 密钥不对），读取器归 keys_wrong
+    print("Container metadata could not be decrypted or verified. Check keys, tickets and file integrity.")
+    print("【原因 keys_wrong】解出来的数据对不上（分区头不是 PFS0 / HFS0）")
+    raise SystemExit(3)
 if source.read_bytes() == b"unreadable fixture":
     print("Container metadata could not be decrypted or verified. Check keys, tickets and file integrity.")
     print("Authorization: Bearer synthetic-bearer")

@@ -242,6 +242,13 @@ class Devpush:
         size = int(m[1])
         return (size, dst.read_bytes() if size >= 0 and dst.is_file() else b"")
 
+    def mkdir(self, rel):
+        """以 App 身份（AFC）逐级建 rel 并核实末级可写。→ None 建好可写；写不进的那一级（相对路径）；工具太旧不认 mkdir / 连不上 → False"""
+        rc, out = self.call("mkdir", rel)
+        if rc == 0: return None
+        m = re.search(r"^S2A_DIR_UNWRITABLE (.*)$", out, re.M)
+        return m.group(1).strip() if m else False
+
     def put_at(self, src, rel, off):   # 本地从 off 起接着写进机上同一文件的 off 处（不截短）
         rc, out = self.call("put-at", src, rel, off)
         if rc and DENIED in out: rc, out = self.rewrite(src, rel, out)   # 已传的那段打不开写：续不了，删掉整份重传
@@ -293,6 +300,7 @@ class Devicectl:
         self.device, self.bid, self.work, self.udid, self.env = device, bid, Path(work), udid, env
         self.dc = shlex.split((env or os.environ).get("S2A_DEVICECTL") or "xcrun devicectl")
         self.dp = Devpush(devpush, udid, bid, work, env) if devpush and udid else None
+        self.made = set()   # 已以 App 身份建好的机上目录（put 前建一次）
 
     def dcp(self, t, *args, log=None):
         s0 = time.time(); margin = int((self.env or os.environ).get("S2A_DC_MARGIN", "30"))
@@ -323,6 +331,10 @@ class Devicectl:
         return rc == 0 and Path(dst).is_file()
 
     def put(self, src, rel):   # 超时 = S2A_CP_T0（缺省 60）秒 + 每 10 MB 1 秒（实测推送约 33 MB/s，留 3 倍余量）
+        # devicectl 会代建缺的父目录，iOS 26.x 上代建的归 root、App 再也写不进（a48655）：有 s2a-devpush 时先以 App 身份把父目录建好（每个目录一次）
+        d = rel.rsplit("/", 1)[0] if "/" in rel else ""
+        if hasattr(self.dp, "mkdir") and d and d not in self.made:
+            self.made.add(d); self.dp.mkdir(d)
         s0 = time.time(); t = int((self.env or os.environ).get("S2A_CP_T0", "60")) + Path(src).stat().st_size // (10 << 20)
         for i in (1, 2):
             rc, _ = self.dcp(t, "device", "copy", "to", *self.container(), "--source", src, "--destination", rel, log="cp.log")
@@ -987,6 +999,32 @@ PROBE = ".s2a-write-probe"   # 推之前写的几字节探针（资源包目录�
 LOCKED_MSG = "iPhone 写不进资源包：手机锁屏了。解锁手机、保持亮屏，再点一次。"
 
 
+FIXED_DIRS = {"", "Documents", "Library", "Library/Application Support", "Library/Application Support/S2Arm"}   # 容器骨架：写不进也不挪
+
+
+def app_dirs(dev, rel, say=print):
+    """推之前以 App 身份（s2a-devpush / AFC）建好 rel（资源包 / .incoming），不让 devicectl 去代建（a48655：iOS 26.2 上 devicectl 代建的目录归 root、
+    权限 755，AFC 和 App 都写不进，原先只能删除重装）。已经归了别的用户的那一级：在原父目录里改名挪开（.s2a-foreign-<名>-<时刻>，同目录改名只要父目录可写），
+    再以 App 身份重建；挪开的那份 App 删不掉，删除重装时随容器一起清。没有 s2a-devpush（只有无线隧道）/ 工具太旧：不做，照旧推"""
+    dp = dev if isinstance(dev, Devpush) else getattr(dev, "dp", None)
+    if not hasattr(dp, "mkdir"): return   # 别的设备对象（假设备、没有 AFC 通道的）：不做
+    for _ in range(4):
+        bad = dp.mkdir(rel)
+        if bad is None or bad is False: return
+        d = bad
+        while True:
+            if d in FIXED_DIRS or "/" not in d:
+                raise DirUnwritable(f"iPhone 上的 S2Arm 写不进 {bad}，也没法把它挪开。" + REINSTALL_STEP)
+            parent, name = d.rsplit("/", 1)
+            aside = f"{parent}/.s2a-foreign-{name}-{int(time.time())}"
+            ok, out = dp.mv(d, aside)
+            if ok:
+                say(f"🟡 手机上 {d} 归别的用户、S2Arm 写不进（多半是旧版推送时 devicectl 代建的）：已挪到 {aside}，以 S2Arm 自己的身份重建后接着装，这款要整份重推")
+                break
+            d = parent
+    raise DirUnwritable(f"iPhone 上的 S2Arm 写不进 {rel}：挪开写不进的目录后还是建不出来。" + REINSTALL_STEP)
+
+
 def probe(dev, work, sleep=None):
     """推之前先往机上写一个几字节的文件：断开时这里就写不进，立刻停（原先要等核账、推到几分钟后才失败，前面推的全作废，#333）。
     写不进不等于锁屏（11-13 测试设备实测：手机亮着、没锁，devicectl 写这几字节连挂两次超时，被报成锁屏；随后同一路径 1 秒写成；
@@ -1019,6 +1057,7 @@ def run(dev, pack, work, full=False, say=print, env=None, on_plan=None, progress
     stage(名字, 已做, 总量)：推之前的准备步骤报给装机页（核对手机上的文件 / 检查手机空间 / 准备资源（拼镜像）按字节），每一刻都看得到在做什么"""
     stage = stage or (lambda name, done=None, total=None: None)
     stage(STAGE_CHECK)
+    app_dirs(dev, inc(dev), say)
     probe(dev, work)
     nb, nt, nbytes = plan(dev, pack, work, full, say)
     if on_plan: on_plan(nb, nt, nbytes)
