@@ -62,6 +62,12 @@ int main(void) {
         char path[] = "/tmp/t_grun_XXXXXX"; int fd = mkstemp(path); close(fd); unlink(path); setenv("S2A_GUEST_RUN_MARK", path, 1);
         int d0 = s2a_guest_run_died(); s2a_guest_run_mark(1); int d1 = s2a_guest_run_died(); s2a_guest_run_mark(0); int d2 = s2a_guest_run_died(); s2a_guest_run_mark(1); s2a_guest_run_mark(1); int d3 = s2a_guest_run_died();
         CHECK(d0 == 0 && d1 == 1 && d2 == 0 && d3 == 1, "㉘ 「在跑」标记：没有 0 → 前台写 1 → 进后台删 0 → 再到前台（两次）1（得 %d %d %d %d）", d0, d1, d2, d3);
+        // #909 11-15：本局闪退（崩溃处理改写成 crash）→ 下一局不算死于内存（0），但标记还在（闪退记录 1）；被系统 SIGKILL 不经崩溃处理 → 仍是 pid → 1。
+        //   期望手写：mark(1) 后 crash → died 0 / crashed 1；再到前台 mark(1) → died 1（新一局覆盖成 pid）/ crashed 0。旧实现：标记在就算死掉 → 第一项红
+        { void s2a_guest_run_mark_crash(void); int s2a_guest_run_crashed(void);
+          s2a_guest_run_mark(1); s2a_guest_run_mark_crash(); int c0 = s2a_guest_run_died(), c1 = s2a_guest_run_crashed();
+          s2a_guest_run_mark(1); int c2 = s2a_guest_run_died(), c3 = s2a_guest_run_crashed();
+          CHECK(c0 == 0 && c1 == 1 && c2 == 1 && c3 == 0, "#909 闪退改写标记：闪退后 不算死于内存 0 / 闪退 1；再到前台 1 / 0（得 %d %d %d %d）", c0, c1, c2, c3); }
         unlink(path); unsetenv("S2A_GUEST_RUN_MARK");
     }
     {   // ㉙ 坏记录：峰值文件在但读不出 / 为 0 → 读出 UINT64_MAX，判开；本局实测覆盖后恢复正常
@@ -114,6 +120,15 @@ int main(void) {
       CHECK(s2a_guest_file_wanted6(NULL, S2, RP, PI, 0, H2, G, 1, &low) == 1 && s2a_guest_file_wanted6(NULL, S2, RP, PI, UINT64_MAX, H2, G, 0, &low) == 1, "51 上局在前台死掉 / 坏记录：开（物理内存不够也开，安全阀）");
       CHECK(s2a_guest_file_wanted6(NULL, S2, RP, PD, 2118 * MB, H2, G, 0, &low) == 0 && s2a_guest_file_wanted6(NULL, S2, RP, PD, 7800 * MB, H2, G, 0, &low) == 1, "52 有实测按实测：2118 关、7800 开（同 ㊵ ㊶）");
       CHECK(s2a_guest_file_wanted6(NULL, S2, 0, PD, 0, H2, G, 1, &low) == 0, "53 Mac（room 0）：关");
+      // #2f79dd 安全阀收窄（D-C73M 6 GB iPhone 读数）：上局前台死掉，但本款实测 + 两份余量 ≤ 剩余 → 不强制开、按实测判关；期望手算：
+      //   2372 + 2×512 = 3396 ≤ 4093 → 关；2600 + 1024 = 3624 ≤ 4093 → 关；3100 + 1024 = 4124 > 4093 → 开（那次可能真超上限、心跳漏记）；
+      //   没实测（0）→ 开（守 51）；实测本身 + 一份余量就超（3700 + 512 > 4093）→ 开
+      CHECK(s2a_guest_file_wanted6(NULL, S1, 4093 * MB, 5667 * MB, 2372 * MB, H2, G, 1, &low) == 0, "55 上局前台死掉、实测 2372 + 1024 ≤ 剩余 4093：关（不是超上限，D-C73M）");
+      CHECK(s2a_guest_file_wanted6(NULL, S1, 4093 * MB, 5667 * MB, 3069 * MB, H2, G, 1, &low) == 0 && s2a_guest_file_wanted6(NULL, S1, 4093 * MB, 5667 * MB, 3070 * MB, H2, G, 1, &low) == 1,
+            "56 边界：3069 + 1024 = 4093 ≤ 4093 关、3070 + 1024 = 4094 > 4093 开");
+      CHECK(s2a_guest_file_wanted6(NULL, S1, 4093 * MB, 5667 * MB, 0, H2, G, 1, &low) == 1, "57 上局前台死掉、没实测：开（安全阀原意）");
+      CHECK(s2a_guest_file_wanted6(NULL, S1, 4093 * MB, 5667 * MB, 3700 * MB, H2, G, 1, &low) == 1 && s2a_guest_file_wanted6(NULL, S1, 4093 * MB, 5667 * MB, 3700 * MB, H2, G, 0, &low) == 1,
+            "58 实测 3700 + 512 > 4093：死没死都开");
       CHECK(s2a_guest_file_wanted6("1", S1, RP, PI, 0, H2, G, 0, &low) == 1 && s2a_guest_file_wanted6("0", S2, R, PD, 0, H2, G, 1, &low) == 0, "54 显式 1 / 0 压过一切"); }
     printf("%s t_guest_file_auto：%d 项不符\n", bad ? "✗" : "✓", bad);
     return bad != 0;

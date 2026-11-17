@@ -7,8 +7,10 @@ public struct S2ArmShellHostView: View {
     let model: S2ArmShellHostModel
     public init(model: S2ArmShellHostModel) { self.model = model }
     public var body: some View {
-        LibraryView(games: model.games, controllers: model.controllers, actions: model.actions, input: model.input,
-                    padSnapshot: model.padSnapshot)
+        library
+            #if os(tvOS)
+            .disabled(model.playersOpen)   // 玩家页开着时焦点不落到背后的库界面上
+            #endif
             // 本地玩家（#623）：顶部玩家按钮显示这次用谁的身份玩，点开切换页
             .environment(\.shellPlayer, ShellPlayer(name: model.currentPlayer.displayName, open: { model.openPlayers() }))
             .overlay {
@@ -17,23 +19,35 @@ public struct S2ArmShellHostView: View {
                                      select: { model.selectPlayer($0) }, add: { model.addPlayer($0) },
                                      rename: { model.renamePlayer($0, $1) }, remove: { model.removePlayer($0) },
                                      close: { model.closePlayers() })
+                    #if os(tvOS)
+                        .onExitCommand { model.closePlayers() }   // 遥控器「返回」/ 手柄 B 关玩家页，不退到主屏
+                    #endif
                 }
             }
             .onAppear {
-                model.startControllers(); s2a_shell_library_appeared()
+                model.startControllers(); s2a_shell_library_appeared(); model.rescanCatalogue()   // 游戏库页出现：重读清单（电脑端推进来的新款，0.6.0）
                 // 主屏快捷操作「设置」冷启动：库界面出现后打开游戏库设置（LibraryView 已经订阅，下一拍再发）
                 if s2a_shell_take_open_settings() != 0 { DispatchQueue.main.async { NotificationCenter.default.post(name: .shellOpenSettings, object: nil) } }
             }
             .onDisappear { model.stopControllers() }
-            // 删除游戏的进度与结果（正在删除 → 已删除，释放多少 / 失败原因）：库顶上一条，点一下收起结果
+            // 库顶上的提示：这次安装丢了「提高内存上限」权限（可关，只管这次打开；「了解详情」看各装法怎么带上）；删除游戏的进度与结果（点一下收起结果）
             .overlay(alignment: .top) {
-                if let notice = model.deleteNotice {
-                    DeleteNoticeBar(notice: notice).onTapGesture { model.dismissDeleteNotice() }
-                        .padding(.top, 12).padding(.horizontal, 16)
-                        .transition(.move(edge: .top).combined(with: .opacity))
+                VStack(spacing: 10) {
+                    if let iml = model.imlNotice, !model.guideOpen {   // 首次引导开着时先不出（引导盖在上面、点不到关闭），引导关了再出
+                        IMLNoticeBar(notice: iml, close: { model.closeIMLNotice() }, more: { model.openIMLGuide() })
+                            .onAppear { s2a_shell_iml_notice_seen() }   // 真显示出来才记（起局那条不再重复）
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                    if let notice = model.deleteNotice {
+                        DeleteNoticeBar(notice: notice).onTapGesture { model.dismissDeleteNotice() }
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
                 }
+                .padding(.top, 56).padding(.horizontal, 16)   // 让开游戏库顶栏（LibraryView：安全区下 6 pt + 高 44 pt），不挡玩家 / 手柄 / 设置按钮
             }
             .animation(.smooth(duration: 0.25), value: model.deleteNotice)
+            .animation(.smooth(duration: 0.25), value: model.imlNotice)
+            .sheet(isPresented: Binding(get: { model.imlGuideOpen }, set: { model.imlGuideOpen = $0 })) { IMLGuideView() }
             // 首次进入引导（三页横滑：设置 / 金手指 / 故障报修），盖在最上面；看过一次就不再弹
             .overlay {
                 if model.guideOpen {
@@ -42,9 +56,9 @@ public struct S2ArmShellHostView: View {
                 }
             }
             .animation(.smooth(duration: 0.25), value: model.guideOpen)
-        #if canImport(UIKit)
+        #if canImport(UIKit) && !os(tvOS)
             // 回前台重判资源包：玩家去「文件」/ 访达拷完资源包回来，不用重开 App
-            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in model.refreshGameData() }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in model.rescanCatalogue() }
             // 虚拟手柄布局编辑页（设置里「按键布局 → 调整位置…」）：盖在库界面上，关了回到设置
             .overlay {
                 if let id = model.editingLayout {
@@ -57,7 +71,56 @@ public struct S2ArmShellHostView: View {
                                           save: { model.saveIdentity(id, name: $0, cover: $1) }, reset: { model.resetIdentity(id) }, close: { model.closeIdentityEditor(id) })
                 }
             }
+        #elseif os(tvOS)
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in model.rescanCatalogue() }
         #endif
+    }
+
+    /// iOS：触屏 + 自绘手柄焦点的库界面；tvOS：遥控器 / 手柄走系统焦点的电视库界面（TVLibraryView）。两边同一个模型、同一套 actions
+    @ViewBuilder private var library: some View {
+        #if os(tvOS)
+        TVLibraryView(games: model.games, controllers: model.controllers, actions: model.actions, input: model.input)
+        #else
+        LibraryView(games: model.games, controllers: model.controllers, actions: model.actions, input: model.input,
+                    padSnapshot: model.padSnapshot)
+        #endif
+    }
+}
+
+/// 丢了「提高内存上限」权限的提示：黄色警示、发生了什么（标题）+ 后果与怎么办（正文），右上角关闭；不挡库里的操作
+struct IMLNoticeBar: View {
+    let notice: S2ArmShellHostModel.IMLNotice
+    let close: () -> Void
+    var more: (() -> Void)? = nil   // 「了解详情」：给了才出这个按钮
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "memorychip").font(.system(size: 18, weight: .semibold)).foregroundStyle(Color(red: 1, green: 0.78, blue: 0.28))
+                .padding(.top, 2).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(notice.title).font(.system(size: 15, weight: .semibold)).foregroundStyle(.white).fixedSize(horizontal: false, vertical: true)
+                Text(notice.body).font(.system(size: 13)).foregroundStyle(.white.opacity(0.72)).fixedSize(horizontal: false, vertical: true)
+                if let more {
+                    Button(action: more) {
+                        Text(shellText("Learn more")).font(.system(size: 13, weight: .semibold)).foregroundStyle(Color(red: 1, green: 0.78, blue: 0.28))
+                            .padding(.top, 2).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).accessibilityIdentifier("iml.notice.more")
+                }
+            }
+            Spacer(minLength: 0)
+            Button(action: close) {
+                Image(systemName: "xmark").font(.system(size: 13, weight: .bold)).foregroundStyle(.white.opacity(0.7)).frame(width: 30, height: 30)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).accessibilityLabel(shellText("Close")).accessibilityIdentifier("iml.notice.close")
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .background(Color(red: 0.075, green: 0.075, blue: 0.082).opacity(0.96), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color(red: 1, green: 0.78, blue: 0.28).opacity(0.45)))
+        .shadow(color: .black.opacity(0.45), radius: 20)
+        .frame(maxWidth: 620)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("iml.notice")
     }
 }
 
@@ -71,14 +134,14 @@ struct DeleteNoticeBar: View {
             case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
             case .failed: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Color(red: 1, green: 0.42, blue: 0.40))
             }
-            Text(Self.text(notice)).font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
+            Text(Self.text(notice)).font(.system(size: 15 * ShellFonts.tvScale, weight: .semibold)).foregroundStyle(.white)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 18).padding(.vertical, 12)
         .background(Color(red: 0.075, green: 0.075, blue: 0.082).opacity(0.96), in: Capsule())
         .overlay(Capsule().strokeBorder(.white.opacity(0.12)))
         .shadow(color: .black.opacity(0.45), radius: 20)
-        .frame(maxWidth: 560)
+        .frame(maxWidth: 560 * ShellFonts.tvScale)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("delete.notice")
     }
@@ -101,7 +164,7 @@ import UIKit
 @MainActor @_cdecl("s2a_shell_library_vc")
 public func s2a_shell_library_vc(_ cataloguePath: UnsafePointer<CChar>?) -> UnsafeMutableRawPointer {
     let path = cataloguePath.map { String(cString: $0) } ?? ""
-    let model = S2ArmShellHostModel(catalogue: Catalogue.load(path: path))
+    let model = S2ArmShellHostModel(catalogue: Catalogue.load(path: path), reloadCatalogue: { Catalogue.load(path: path) })
     // 宿主「重新检查」/ 后台解包完成 → 重判资源包。登记给 C 的是不持有的指针，所以由 g_refreshModel 强持有当前这份模型：
     //   原先假定「vc 由 app.m 持有到进程结束」，可开游戏时 window.rootViewController 换成游戏页，库的 vc 与模型随之释放，
     //   游戏里后台解包完成再回调就是用已释放的模型（11-14 诊断#7f30f6：refreshGameData+0x9c 读 0x10）。再建库页时换成新的那份，只留一个

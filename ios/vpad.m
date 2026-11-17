@@ -21,6 +21,9 @@
 // 弱链接[lab]：s2a_dprompt_notice（dprompt.m 提供的提示条；输入工作台不编 dprompt.m，取不到就不提示）
 // 弱链接[lab]：s2a_dprompt_ask（dprompt.m 提供的带两个按钮的提示条；输入工作台不编 dprompt.m，取不到就退回 s2a_dprompt_notice 或不提示）
 #import "sgrade_style.h"
+#import "sgrade_line.h"
+NSDictionary *s2a_ios_sgrade_state(NSString *gid);   // ios/game_options.m：S 级按类状态（同作业层 sgradeState）
+void s2a_ios_sgrade_counts(NSString *gid, NSInteger *cheatOn, NSInteger *cheatAll, NSInteger *patchOn, NSInteger *patchAll);   // ios/game_options.m
 #import "cpatch_settings.h"
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -34,12 +37,19 @@
 // 弱链接[lab]：s2a_hud_brief_show（ios/hud.m 简版性能浮层；输入工作台不链 hud.m / 原生核，取不到就不显示）
 void s2a_hud_brief_show(UIView *root, BOOL on) __attribute__((weak_import));
 BOOL s2a_ios_ext_connected(void) __attribute__((weak_import));
+// 弱链接[lab]：s2a_fi_set_live（graphics/nvn/gfx/nvn/nvn_present_fi.inc 补帧当场开 / 关；输入工作台不链图形层，取不到就不切）
+void s2a_fi_set_live(int on) __attribute__((weak_import));
+// 弱链接[lab]：S2A_AudioSetVolume（游戏音量当场生效，#1186 开发乙线宿主接线：AppleHardwareDeviceDriver.Volume 逐样本乘；取不到就只记偏好、下次起局生效 S2A_AUDIO_VOLUME）
+void S2A_AudioSetVolume(int percent) __attribute__((weak_import));
 #import "app_settings.h"   // 齿轮菜单：存档管理 / 更多设置（s2a_settings_runtime / s2a_settings_present）
 #import "play_layout.h"
 #include "s2a_docs.h"   // iOS 进程级容器 Documents（s2a_container_docs）
 #include "s2a_pad.h"
 #include "s2a_direct_prompt.h"   // 触屏提示的文案（与 launchers/shared/experience.v1.json prompts 逐字一致）
 #include <stdatomic.h>
+#include <dlfcn.h>
+#include <objc/message.h>
+#import <Metal/Metal.h>
 #include <pthread.h>
 #include <sys/stat.h>
 #include "native.h"
@@ -345,6 +355,9 @@ static NSString *button_label(NSString *identifier) {
     const char *gd = getenv("S2A_DOCS"); NSURL *gameDocs = gd && *gd ? [NSURL fileURLWithPath:@(gd) isDirectory:YES] : docs;
     _layoutDirectory=[gameDocs URLByAppendingPathComponent:@"VPadLayouts" isDirectory:YES];
     _settingsDirectory=[docs URLByAppendingPathComponent:@"VPadLayouts" isDirectory:YES];
+    // 旧版 App 级「我的布局」接进这款（11-15 维护者：每款记自己的布局）：只复制进这款的布局列表、不替玩家选上，每款从默认布局开始（vpad_layout.h）
+    NSUInteger adopted = [S2AVPadLayoutStore adoptLegacyLayoutsFrom:_settingsDirectory into:_layoutDirectory];
+    if (adopted) LOG("触屏布局：旧版 App 级布局 %lu 份复制进这款的布局列表（不自动选上）", (unsigned long)adopted);
     _layoutStore = [[S2AVPadLayoutStore alloc] initWithDirectory:_layoutDirectory settingsDirectory:_settingsDirectory split:_split];
     [self reloadLayout];
     _gear = [UIButton buttonWithType:UIButtonTypeSystem]; _gear.accessibilityIdentifier = @"vpad.settings"; _gear.accessibilityLabel = S2AL(@"common.settings");
@@ -435,10 +448,87 @@ typedef BOOL (^VPFlag)(void);
     __weak S2AVPadView *ws = self;
     [_gear.contextMenuInteraction updateVisibleMenuWithBlock:^UIMenu *(UIMenu *visible) { S2AVPadView *v = ws; return v ? [v refreshedMenu:visible] : visible; }];
 }
+// S 级优化三项（11-15 维护者定：满屏 / 帧率解锁 / 金手指挪到齿轮菜单一级，金色 S，复用现有开关、不加新开关；三端同一套，
+//   三端界面定稿）。副标题一句写现在用的是什么（sgrade_line.m s2a_sgrade_row_note）；系统菜单的字不能上色，金色落在 S 图标上。
+//   满屏 / 带社区帧率补丁的帧率改动下次起局才生效：点完收菜单、问要不要立即重启；纯补帧当场切（s2a_fi_set_live）
+// 这台设备能不能补帧：同运行时（graphics/nvn/gfx/nvn/nvn_present_fi.inc）按名字取 MetalFX 补帧描述类问它；底料里的 fiSupported 是出包机的值，不能信
+static BOOL vp_fi_supported(void) {
+    static BOOL ok; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        dlopen("/System/Library/Frameworks/MetalFX.framework/MetalFX", RTLD_LAZY);
+        Class dc = NSClassFromString(@"MTLFXFrameInterpolatorDescriptor"); id dev = MTLCreateSystemDefaultDevice();
+        ok = dc && dev && [dc respondsToSelector:@selector(supportsDevice:)] && ((BOOL (*)(id, SEL, id))objc_msgSend)(dc, @selector(supportsDevice:), dev);
+    });
+    return ok;
+}
+static NSString *vp_running_gid(void) { const char *g = getenv("S2A_LAUNCH_GAME_ID"); return g && *g ? @(g) : nil; }   // 同 settings.m current_gid：自动关记录按款存
+- (UIMenu *)sgradeSection {
+    __weak S2AVPadView *ws = self;
+    UIImage *gold = [[s2a_sgrade_image() imageByPreparingThumbnailOfSize:CGSizeMake(26, 26)] ?: s2a_sgrade_image() imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+    NSDictionary *sg = s2a_ios_sgrade_state(vp_running_gid());
+    NSArray<S2ACPatchGroup *> *pg = s2a_cpatch_bundled_groups();
+    NSInteger target = 0; BOOL fpsPatch = NO;
+    for (S2ACPatchGroup *g in pg) for (S2ACPatchItem *it in g.items) if (it.followsFps60) { fpsPatch = YES; target = MAX(target, it.targetFps); }
+    NSString *(^when)(NSDate *) = ^NSString *(NSDate *w) { return [NSDateFormatter localizedStringFromDate:w dateStyle:NSDateFormatterShortStyle timeStyle:NSDateFormatterNoStyle]; };
+    NSMutableArray<UIMenuElement *> *rows = [NSMutableArray array];
+    // 满屏：没有社区满屏补丁的款一律走 S2Arm 通用满屏；包内清单判满屏坏（blocked）才置灰
+    BOOL fs = NO; BOOL blocked = s2a_ios_fullscreen_state(nil, &fs) != 0;
+    UIAction *wide = [UIAction actionWithTitle:S2AL(@"cpatch.group.widescreen") image:gold identifier:@"vp.sg.fullscreen" handler:^(__unused UIAction *x) {
+        BOOL on = NO; s2a_ios_fullscreen_state(nil, &on); s2a_ios_set_fullscreen(nil, !on); [ws afterMenu:^{ [ws sgradeRestartPrompt]; }]; }];
+    wide.state = fs ? UIMenuElementStateOn : UIMenuElementStateOff;
+    wide.subtitle = blocked ? S2AL(@"settings.widen.blocked") : s2a_sgrade_row_note(@"widescreen", sg[@"widescreen"], 0, NO, NO, YES, when, NULL);
+    if (blocked) wide.attributes = UIMenuElementAttributesDisabled;
+    [rows addObject:wide];
+    // 帧率解锁：一个开关取最好的来源（有社区帧率补丁用补丁，没有用补帧，不叠加）；开关显示的是帧率此刻有没有被解锁
+    //   开关只写 S2AFps60（settings.m s2a_ios_fi_on 跟着它：明确关 = 补丁和补帧一起关、回原帧率；没选过 = 补帧照旧开）；补帧当场切，补丁下次起局
+    BOOL fiOk = vp_fi_supported();
+    BOOL fpsOff = NO; NSString *fpsNote = s2a_sgrade_row_note(@"fps", sg[@"fps"], target, fpsPatch, s2a_ios_fps60_on(), fiOk, when, &fpsOff);
+    BOOL (^unlocked)(void) = ^BOOL{ return (fpsPatch && s2a_ios_fps60_on()) || (fiOk && s2a_ios_fi_on()); };
+    UIAction *fps = [self live:@"vp.sg.fps" title:S2AL(@"sgrade.row.fps") note:fpsNote on:unlocked disabled:^BOOL{ return fpsOff; } run:^{
+        BOOL on = !unlocked();
+        s2a_ios_set_fps60(on); if (fiOk && s2a_fi_set_live) s2a_fi_set_live(on);
+        if (fpsPatch) [ws afterMenu:^{ [ws sgradeRestartPrompt]; }];   // 补丁要下次起局才换上 / 撤下
+    }];
+    fps.image = gold; [rows addObject:fps];
+    // 金手指：进现有金手指页，不加总开关；这款没有就置灰写去电脑上导入
+    NSInteger con = 0, call = 0, pon = 0, pall = 0; s2a_ios_sgrade_counts(nil, &con, &call, &pon, &pall);
+    UIAction *cheats = vp_act(S2AL(@"cheats.title"), nil, NO, ^{ [ws afterMenu:^{
+        UIViewController *c = ws.window.rootViewController; if (!c || c.presentedViewController) return;
+        [ws setSettingsOpen:YES]; s2a_cheats_present(s2a_top_presenter(c), ^{ [ws setSettingsOpen:NO]; }); }]; });
+    cheats.image = gold;
+    cheats.subtitle = call > 0 ? [NSString stringWithFormat:S2AL(@"sgrade.counts"), (long)con, (long)call] : S2AL(@"sgrade.cheats.none");
+    if (call == 0) cheats.attributes = UIMenuElementAttributesDisabled;
+    [rows addObject:cheats];
+    // 社区补丁明细（逐份开关，这款有才列）：打开的页与整页设置里点进去的是同一页（cpatch_settings.m）
+    if (pg.count) [rows addObject:vp_act([S2AL(@"sgrade.cpatch.detail") stringByAppendingString:@"…"], @"square.stack.3d.up", NO, ^{ [ws afterMenu:^{
+        UIViewController *c = ws.window.rootViewController; if (!c || c.presentedViewController) return;
+        UIViewController *page = s2a_cpatch_settings_controller(pg); if (!page) return;
+        UINavigationController *n = [[UINavigationController alloc] initWithRootViewController:page];
+        page.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone primaryAction:
+            [UIAction actionWithTitle:@"" image:nil identifier:nil handler:^(__unused UIAction *x) { [n dismissViewControllerAnimated:YES completion:^{ [ws setSettingsOpen:NO]; }]; }]];
+        [ws setSettingsOpen:YES]; [c presentViewController:n animated:YES completion:nil]; }]; })];
+    return vp_inline(rows);
+}
+// 改了下次起局才生效的 S 级开关：同整页设置关页时那一问（app_settings.m），能重启就给「立即重启」
+- (void)sgradeRestartPrompt {
+    UIViewController *c = self.window.rootViewController; if (!c) return; c = s2a_top_presenter(c);
+    S2ASettingsRuntime *rt = s2a_settings_runtime(); BOOL can = rt.restart && rt.canRestart && rt.canRestart();
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:S2AL(@"settings.restart.title")
+        message:can ? S2AL(@"settings.restart.message") : S2AL(@"settings.restart.messageLater") preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:can ? S2AL(@"common.restartLater") : S2AL(@"common.done") style:UIAlertActionStyleCancel handler:nil]];
+    if (can) {
+        __weak S2AVPadView *ws = self;
+        UIAlertAction *now = [UIAlertAction actionWithTitle:S2AL(@"common.restartNow") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *x) {
+            rt.restart(^(NSString *error) { if (error) [ws menuError:S2AL(@"app.restart.failed") error:[NSError errorWithDomain:@"S2Arm" code:1 userInfo:@{NSLocalizedDescriptionKey: error}]]; }); }];
+        [a addAction:now]; a.preferredAction = now;
+    }
+    [c presentViewController:a animated:YES completion:nil];
+}
 - (NSArray<UIMenuElement *> *)gearItems {
     __weak S2AVPadView *ws = self; S2AVPadLayoutStore *st = _layoutStore; NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
     _menuLive = [NSMutableDictionary dictionary];
     NSMutableArray<UIMenuElement *> *items = [NSMutableArray array];
+    [items addObject:[self sgradeSection]];
     UIAction *edit = vp_act(S2AL(@"vpad.edit.title"), @"gamecontroller", NO, ^{ [ws afterMenu:^{ [ws beginEditing]; }]; });
     if (_touchOnly) { edit.attributes = UIMenuElementAttributesDisabled; edit.subtitle = S2AL(@"vpad.menu.editDisabled"); }
     [items addObject:edit];
@@ -481,12 +571,27 @@ typedef BOOL (^VPFlag)(void);
     UIAction *motor = [self live:@"vp.rumble.phone" title:S2AL(@"settings.toggle.phoneHaptics") note:nil on:phoneMotor disabled:^BOOL{ return !rumbleOn(); }
                              run:^{ [d setBool:!phoneMotor() forKey:@"S2APhoneHaptics"]; }];
     [items addObject:vp_sub(S2AL(@"vpad.menu.rumble"), @"iphone.radiowaves.left.and.right", @[game, vp_inline(levels), motor, tap])];
+    // 游戏音量（#1186：边听歌边玩时单独压低游戏声，不动系统音量、不影响别的 App）：一行五档、按游戏记、当场生效；静音就是 0 那一档，不另设开关。
+    //   系统菜单放不了滑条，照震动强度一行几档。存 S2AGameVolume（0–100，没设过 = 100；s2a_ios_per_game_keys 按游戏分层）
+    {
+        NSUserDefaults *gd = s2a_ios_settings_defaults();
+        NSInteger (^vol)(void) = ^NSInteger{ id o = [gd objectForKey:@"S2AGameVolume"]; return o ? MAX(0, MIN(100, [o integerValue])) : 100; };
+        NSMutableArray<UIMenuElement *> *vols = [NSMutableArray array];
+        for (NSNumber *p in @[@0, @25, @50, @75, @100]) {
+            NSInteger v = p.integerValue;
+            NSString *title = v == 0 ? S2AL(@"vpad.volume.mute") : [NSString stringWithFormat:@"%ld%%", (long)v];
+            [vols addObject:[self live:[NSString stringWithFormat:@"vp.volume.%ld", (long)v] title:title note:nil on:^BOOL{ return vol() == v; } disabled:nil
+                                   run:^{ [gd setInteger:v forKey:@"S2AGameVolume"]; if (S2A_AudioSetVolume) S2A_AudioSetVolume((int)v); }]];
+        }
+        [items addObject:vp_sub(S2AL(@"vpad.menu.volume"), @"speaker.wave.2", @[vp_inline(vols)])];
+    }
     // 手柄与体感（controller.m / phone_motion.m 监听偏好变化，改完即生效）
     VPFlag gyro = ^BOOL{ id o = [d objectForKey:@"S2APhoneGyro"]; return o ? [o boolValue] : YES; };
     [items addObject:vp_sub(S2AL(@"vpad.menu.pad"), @"scope", @[
         [self live:@"vp.pad.ns2pro" title:S2AL(@"vpad.menu.ns2pro") note:nil on:^BOOL{ return [d boolForKey:@"S2ANS2ProAdapterEnabled"]; } disabled:nil
                run:^{ [d setBool:![d boolForKey:@"S2ANS2ProAdapterEnabled"] forKey:@"S2ANS2ProAdapterEnabled"]; }],
-        [self live:@"vp.pad.gyro" title:S2AL(@"vpad.menu.gyro") note:nil on:gyro disabled:nil run:^{ [d setBool:!gyro() forKey:@"S2APhoneGyro"]; }],
+        // 说明一句第三方手柄（八位堂、盖世小鸡等 Xbox 外形）切到 Switch 模式才有体感（11-16，手柄左右马达 + 第三方体感同版）
+        [self live:@"vp.pad.gyro" title:S2AL(@"vpad.menu.gyro") note:S2AL(@"vpad.menu.gyro.note") on:gyro disabled:nil run:^{ [d setBool:!gyro() forKey:@"S2APhoneGyro"]; }],
         // 手柄按键布局（定义表 game_settings.v1.json 的 padFace，所有游戏共用）：controller.m 监听偏好变化转给 pad.c，下一次按键即按新布局；
         //   勾选看 pad.c 解析后的值（旧值 letter / position 也落到对应一项）
         vp_inline(@[[self live:@"vp.pad.face.auto" title:S2AL(@"vpad.menu.face.auto") note:S2AL(@"vpad.menu.face.auto.note")
@@ -501,6 +606,7 @@ typedef BOOL (^VPFlag)(void);
     // 性能浮层（hud.m 简版：右上角「帧率 · 内存」），改完立即显示 / 收起
     [items addObject:[self live:@"vp.hud.brief" title:S2AL(@"vpad.menu.hud") note:S2AL(@"vpad.menu.hud.note") on:^BOOL{ return [d boolForKey:@"S2APerfHUD"]; } disabled:nil
                             run:^{ BOOL on = ![d boolForKey:@"S2APerfHUD"]; [d setBool:on forKey:@"S2APerfHUD"]; if (s2a_hud_brief_show) s2a_hud_brief_show(ws.superview, on); }]];
+    // 补帧：11-15 并入一级「帧率解锁」（sgradeSection），这里不再单列
     // 只在外接显示器场景存在时提供，避免没有用途的菜单项占位。
     if (s2a_ios_ext_connected && s2a_ios_ext_connected()) {
         UIAction *screenLock = [UIAction actionWithTitle:S2AL(@"vpad.screenLock.title") image:[UIImage systemImageNamed:@"lock.fill"] identifier:@"vpad.screenLock.action" handler:^(__unused UIAction *action) {
@@ -509,24 +615,7 @@ typedef BOOL (^VPFlag)(void);
         screenLock.subtitle = S2AL(@"vpad.screenLock.note");
         [items addObject:screenLock];
     }
-    // S 级优化（11-13 统一入口：同整页设置的「S 级优化」组、游戏库设置、启动器）：金色 S 子菜单，里面「社区补丁…」（这款有才列）与「金手指…」，
-    //   打开的页与整页设置里点进去的是同一页（cpatch_settings.m / vpad_cheats.m）；页开着时虚拟手柄不收触控
-    {
-        NSMutableArray<UIMenuElement *> *sg = [NSMutableArray array];
-        NSArray<S2ACPatchGroup *> *pg = s2a_cpatch_bundled_groups();
-        if (pg.count) [sg addObject:vp_act([S2AL(@"cpatch.title") stringByAppendingString:@"…"], @"square.stack.3d.up.fill", NO, ^{ [ws afterMenu:^{
-            UIViewController *c = ws.window.rootViewController; if (!c || c.presentedViewController) return;
-            UIViewController *page = s2a_cpatch_settings_controller(pg); if (!page) return;
-            UINavigationController *n = [[UINavigationController alloc] initWithRootViewController:page];
-            page.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone primaryAction:
-                [UIAction actionWithTitle:@"" image:nil identifier:nil handler:^(__unused UIAction *x) { [n dismissViewControllerAnimated:YES completion:^{ [ws setSettingsOpen:NO]; }]; }]];
-            [ws setSettingsOpen:YES]; [c presentViewController:n animated:YES completion:nil]; }]; })];
-        [sg addObject:vp_act([S2AL(@"cheats.title") stringByAppendingString:@"…"], @"wand.and.stars", NO, ^{ [ws afterMenu:^{
-            UIViewController *c = ws.window.rootViewController; if (!c || c.presentedViewController) return;
-            [ws setSettingsOpen:YES]; s2a_cheats_present(s2a_top_presenter(c), ^{ [ws setSettingsOpen:NO]; }); }]; })];
-        UIImage *gold = [s2a_sgrade_image() imageByPreparingThumbnailOfSize:CGSizeMake(26, 26)] ?: s2a_sgrade_image();
-        [items addObject:[UIMenu menuWithTitle:S2AL(@"sgrade.title") image:[gold imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal] identifier:nil options:0 children:sg]];
-    }
+    // S 级优化：11-15 起三项（满屏 / 帧率解锁 / 金手指）与「社区补丁明细…」都在菜单最上面（sgradeSection）
     S2ASettingsRuntime *rt = s2a_settings_runtime();
     // 切换游戏（只多款容器有）：确认框与收尾在 app.m，与整页设置「切换游戏」同一个回调
     if (rt.switchGame) [items addObject:vp_act(S2APICK(S2A_DPROMPT_SWITCH_GAME_TITLE), @"square.stack", NO, ^{ [ws afterMenu:^{ UIViewController *c = ws.window.rootViewController; if (c && !c.presentedViewController) rt.switchGame(c); }]; })];
@@ -1360,6 +1449,7 @@ void s2a_vpad_attach(UIView *root) {
     S2AVPadView *v = [[S2AVPadView alloc] initWithFrame:root.bounds];
     g_vpad = v;
     v.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight; [root addSubview:v];
+    if (s2a_fi_set_live) s2a_fi_set_live(s2a_ios_fi_on());   // 补帧开关按游戏记住（起局即按设置，局中由齿轮菜单切）
     if (s2a_hud_brief_show && [NSUserDefaults.standardUserDefaults boolForKey:@"S2APerfHUD"]) s2a_hud_brief_show(root, YES);   // 简版性能浮层（齿轮菜单「性能浮层」）跨局记住
     s2a_controller_attach(root, ^(BOOL enabled) { [v setInputEnabled:enabled]; });
     { int cw0 = 1280, ch0 = 720; if (s2a_game_canvas) s2a_game_canvas(&cw0, &ch0);

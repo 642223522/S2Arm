@@ -32,7 +32,7 @@ LAYOUTS = ("ryujinx", "yuzu", "checkpoint", "jksv", "nx2apple", "raw")
 NX2APPLE_FOLDERS = {"save": None, "save_device": "device"}
 # 说明里带这个词 = 识别没定下来、按保守解释导入（zero_layer 的「结构存疑：…」）；
 # 调用方（pack/jobs/saves.py 的 inspect）靠它把这类说明翻成给玩家的一句提示，不当成导入失败的证据
-DOUBT = "结构存疑"
+DOUBT = "结构存疑"  # 非玩家句
 # 存档包上限（saves.py 我方 .s2asave 的同一套，审计 P1-47：社区 zip 原先 extractall 一次写完，高压缩比的包能写满私有目录）：
 #   解压前按各条声明的未压缩大小加总、条数计数，超了就拒；zipfile 按声明大小读、超出会校验失败，所以声明值就是实际写入的上限
 MAX_FILES = 20000
@@ -74,8 +74,8 @@ def zero_layer(d, ref):
         keep, strip = "0" in ref, bool(inner & ref)
         if strip != keep:
             return strip, ""
-    return False, (DOUBT + "：唯一子目录 0/ 可能是 Ryujinx 提交目录也可能是游戏的存档槽位，"
-                   + ("与这款游戏自己的存档比对不出" if ref else "没有这款游戏自己的存档可比") + "，按不剥导入")
+    return False, (DOUBT + "：唯一子目录 0/ 可能是 Ryujinx 提交目录也可能是游戏的存档槽位，"  # 非玩家句
+                   + ("与这款游戏自己的存档比对不出" if ref else "没有这款游戏自己的存档可比") + "，按不剥导入")  # 非玩家句
 
 
 def latest_child(d):

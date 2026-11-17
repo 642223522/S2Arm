@@ -117,12 +117,30 @@ final class GameSession implements AutoCloseable {
             GameFingerprint.Timing.end(timing, "fingerprint_reference", phase);
             GameFingerprint.ApkStamp apkStamp = fingerprint == null ? null : fingerprint.apk;
             boolean apkStampChanged = false;
-            GameFingerprint.Verification checked = GameFingerprint.verify(revision, entries, indexSha, fingerprint, timing, game.artifact);
+            // 内容文件的根：原地来源是登记的共享存储目录（元数据和指纹表仍在私有版本目录），否则就是版本目录
+            File content = game.inPlaceRoot != null ? new File(game.inPlaceRoot) : revision;
+            // 原地来源：可执行文件（revision 来源模块的 image / fixups / gates / widen、exefs 下的 npdm）共享存储上谁都能写，
+            //   身份（大小 / inode / 修改时间）可以被恢复，所以每次起局整份重算 SHA-256；数据文件照旧按身份命中
+            Map<String, String> executables = new LinkedHashMap<>();
+            if (game.inPlaceRoot != null) {
+                for (BootContract.Module module : game.modules) {
+                    if (!"revision".equals(module.source)) continue;   // apk-asset 模块在 APK 里，按 APK 字节绑定
+                    String[] kinds = {"image", "fixups", "gates", "widen"};
+                    String[] paths = {module.image, module.fixups, module.gates, module.widen};
+                    for (int i = 0; i < paths.length; i++)
+                        if (paths[i] != null && !paths[i].isEmpty()) executables.put(paths[i], "module " + module.name + " " + kinds[i]);
+                }
+                executables.put(game.npdm, "npdm");
+                for (GamePack.Entry entry : entries)
+                    if (entry.path.startsWith("exefs/") && entry.path.endsWith(".npdm")) executables.putIfAbsent(entry.path, "npdm");
+            }
+            GameFingerprint.Verification checked = GameFingerprint.verify(revision, content, entries, indexSha, fingerprint, timing,
+                game.artifact, executables);
             long resourceNanos = System.nanoTime() - resourceStart;
             GameFingerprint.replayStats(timing);
             phase = GameFingerprint.Timing.start(timing);
             // Index paths are already checked clean, so the admitted key is a plain join.
-            String admittedPrefix = revision.toPath().toAbsolutePath().normalize().toString() + File.separator;
+            String admittedPrefix = content.toPath().toAbsolutePath().normalize().toString() + File.separator;
             for (GamePack.Entry entry : entries) {
                 hashes.put(entry.path, entry.sha256); bytes += entry.size;
                 admitted.put(admittedPrefix + entry.path.replace('/', File.separatorChar), entry);
@@ -132,7 +150,7 @@ final class GameSession implements AutoCloseable {
             // Metadata is allowed only as metadata; runtime data must belong to this contentRoot.
             for (String path : new String[]{game.npdm, game.control})
                 if (!hashes.containsKey(path)) throw new IOException("runtime file is outside the content index: " + path);
-            File need = new File(new File(revision, game.npdm).getParentFile(), "addr_need.tsv");
+            File need = new File(new File(content, game.npdm).getParentFile(), "addr_need.tsv");
             if (Files.exists(need.toPath(), LinkOption.NOFOLLOW_LINKS)
                     && !admitted.containsKey(need.toPath().toAbsolutePath().normalize().toString()))
                 throw new IOException("addr_need.tsv is outside the content index");
@@ -272,8 +290,7 @@ final class GameSession implements AutoCloseable {
 
     private void recheckNativeMetadata() throws IOException {
         if (admittedFiles.isEmpty()) return; // Direct constructor is only used by host lifecycle fixtures.
-        File revision = new File(spec.gameRoot, spec.game.revisionDir);
-        File npdm = new File(revision, spec.game.npdm);
+        File npdm = new File(spec.game.contentDir(new File(spec.gameRoot)), spec.game.npdm);
         for (File file : new File[]{npdm, new File(npdm.getParentFile(), "addr_need.tsv")}) {
             String path = file.toPath().toAbsolutePath().normalize().toString();
             GamePack.Entry entry = admittedFiles.get(path);
@@ -312,7 +329,7 @@ final class GameSession implements AutoCloseable {
             region = spec.user.region == null ? "" : spec.user.region;
             timezone = spec.user.timezone;
             assetRoot = spec.game.hasApkModules() ? spec.game.apk.assetRoot : "";
-            revisionDir = new File(spec.gameRoot, spec.game.revisionDir).getPath();
+            revisionDir = spec.game.contentDir(new File(spec.gameRoot)).getPath();   // 原生按它读游戏文件：原地来源是登记的根
             npdmPath = new File(revisionDir, spec.game.npdm).getPath();
             this.stateDir = stateDir;
             programId = Long.parseUnsignedLong(titleId, 16);
@@ -417,6 +434,23 @@ final class GameSession implements AutoCloseable {
         return apkSha256(installedApk, timing).equals(expectedSha256);
     }
 
+    /** 一款游戏的用户根 / 存档根（BootSpecSource 起局时填 BootSpec 用的同一对路径）。 */
+    static File userRoot(File privateRoot) { return new File(privateRoot, "user/0"); }
+    static File saveRoot(File privateRoot, String titleId) { return new File(userRoot(privateRoot), "saves/" + titleId); }
+
+    /** 这款起局时交给原生层的 state 目录（安卓的 S2A_DOCS，runtime.c 绑定）：起局与库页导入 mod（GameMods）共用这一处算法。 */
+    static File stateDir(File privateRoot, String titleId) throws IOException {
+        return prepareState(privateRoot, userRoot(privateRoot), saveRoot(privateRoot, titleId));
+    }
+
+    /** state 目录在存档根下的名字（prepareState 建的就是它）。 */
+    static final String STATE_DIR = "ryujinx-android";
+
+    /** 同一个 state 目录，只算路径：不建目录、不查链接（库页读游玩时间这类只读展示用，起局与导入 mod 仍走 stateDir）。 */
+    static File statePath(File privateRoot, String titleId) {
+        return new File(saveRoot(privateRoot, titleId), STATE_DIR);
+    }
+
     /** Ryujinx 使用自己的持久目录；不把用户 saveRoot 当作导入种子，也不迁移或覆盖旧布局。 */
     static File prepareState(File privateRoot, File userRoot, File saveRoot) throws IOException {
         Path app = privateRoot.toPath().toAbsolutePath().normalize();
@@ -439,9 +473,9 @@ final class GameSession implements AutoCloseable {
         if (old == null) throw new IOException("cannot inspect save root");
         // 存档根目录里的其他东西（玩家放进来的原生格式存档、旧版布局）不挡起局：原样留着、不迁移不覆盖，只记日志（不堵门）
         for (File entry : old)
-            if (!entry.getName().equals("ryujinx-android"))
+            if (!entry.getName().equals(STATE_DIR))
                 System.err.println("S2Arm: save root keeps an existing entry untouched (no migration): " + entry.getName());
-        Path state = save.resolve("ryujinx-android");
+        Path state = save.resolve(STATE_DIR);
         if (Files.isSymbolicLink(state) || (Files.exists(state, LinkOption.NOFOLLOW_LINKS)
                 && !Files.isDirectory(state, LinkOption.NOFOLLOW_LINKS)))
             throw new IOException("Ryujinx state path conflicts with an existing file or link");

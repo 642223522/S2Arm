@@ -12,6 +12,9 @@
 #   ⑧ 拆成「持锁者（门禁主进程）被 kill -9 → 3 秒内空出」与「步被 kill -9 → 收尾 tok_putall 放」；⑨ 级与先来后到
 #   ⑤ show：跑满上限的 124 → 🟡 超时未判、返回 3、记进 $L/timeouts；没到上限的 124、普通失败 → 🔴 返回 1；0 → 🟢 返回 0
 set -u; unset GATE_IN_STEP   # 本单测自己就在门禁的一步里跑：先清掉外层带进来的「在步里」标记
+# 被测函数读的其余门禁配置也一并清掉，各用例只认自己显式给的值（11-14 新门禁 step.sh 给 gate.sh 导出 GATE_STEP_PAR=1，一路继承进本单测：
+#   ⑥ 验缺省令牌数时第 2 个 tok_get 就排不到、无限排队，整步跑满 720 秒被杀；本机直跑没有这个变量，36 秒绿）
+unset GATE_STEP_PAR GATE_TOKEN_DIR GATE_TOK_POLL_S GATE_NOSTALL_S GATE_HARD_X S2A_NOSTALL_POLL TPRIO
 H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d "${TMPDIR:-/tmp}/t_gate_par.XXXXXX"); trap 'rm -rf "$T"' EXIT; bad=0
 chk() { if [ "$2" = "$3" ]; then echo "🟢 $1"; else echo "🔴 $1：期望「$2」→ 真结果「$3」"; bad=1; fi; }
 export GATE_FLOCK_PY=$H/tools/flock_hold.py   # 令牌 = 内核文件锁（tools/flock_hold.py）；单测不在仓库根跑，给绝对路径
@@ -54,7 +57,8 @@ chk "⑤ show：用满上限 124 → 超时未判 3；没到上限 124 / 失败 
   "3 🟡|1 🔴|1 🔴|0 🟢|单测 to|有" "$(r to)|$(r own)|$(r fail)|$(r ok)|$(cat $L/timeouts)|$(grep -q 超时未判 $L/to.out && echo 有)"
 # ⑥ 缺省令牌数 = 核数 × 2/3：假 sysctl 报 12 核 → 前 8 个令牌立刻拿到，第 9 个排队（3 秒内拿不到）
 mkdir -p $T/bin; printf '#!/bin/bash\necho 12\n' > $T/bin/sysctl; chmod +x $T/bin/sysctl; got=0
-for i in $(seq 1 8); do PATH=$T/bin:$PATH GATE_TOKEN_DIR=$T/tok.f tok_get $$ > /dev/null && got=$((got + 1)); done
+#   每次领都限 3 秒（同第 9 个的写法，持有者仍是本单测 $$）：令牌数不对时这里红在当场，不无限排队拖到步时限
+for i in $(seq 1 8); do ( PATH=$T/bin:$PATH; GATE_TOKEN_DIR=$T/tok.f; export PATH GATE_TOKEN_DIR; timeout 3 bash -c "$(declare -f tok_get tok_ahead); tok_get $$" > /dev/null ) && got=$((got + 1)); done
 ( PATH=$T/bin:$PATH; GATE_TOKEN_DIR=$T/tok.f; export PATH GATE_TOKEN_DIR; timeout 3 bash -c "$(declare -f tok_get tok_ahead); tok_get $$" > /dev/null ); r9=$?
 chk "⑥ 缺省（12 核）→ 8 个令牌，第 9 个排队" "8 124" "$got $r9"
 # ⑦ 嵌套不占令牌（11-04 首次自检：外层占满令牌、单测里的门禁等内层令牌 → 互等到超时）

@@ -1,6 +1,6 @@
 # native-test-nvn_pairguard：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += nvn_pairguard
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # 顶点 / 片元配对核对（pso_pair_ok）：不匹配的对不交给 Metal、记 P 行（iOS 上建这种管线 Metal 断言崩溃，巫师3 10-26）
 $(BUILD)/tests/t_nvn_pairguard: graphics/nvn/tests/t_nvn_pairguard.m $(NVN_MTL_DEPS) $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \

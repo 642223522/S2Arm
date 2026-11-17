@@ -90,6 +90,10 @@ NXGAL_API uint32_t nxgal_upload_rent(uint64_t len, void **cpu);
 NXGAL_API void nxgal_upload_drop(uint32_t lease);
 NXGAL_API void nxgal_tex_set_data_lease(uint32_t tex, int32_t layer, int32_t level, const nxgal_rect *region, uint32_t lease, uint64_t len);
 NXGAL_API void nxgal_buf_set_data_lease(uint32_t buf, int32_t offset, uint32_t lease, int32_t size);
+// BC → ASTC 预转包（gal_tex.m「BC → ASTC」；设备不支持 BC 且设了 NXGAL_ASTC_PACK）：bce_active = 本进程 BC 贴图走包没有（能力表这时照报支持 BC）；
+//   set_bc = 经包的 BC 贴图上传原始 BC：1 包里全命中、已传 ASTC；0 没命中，贴图已是解压格式，调用方解压后再 nxgal_tex_set_data；-1 不是经包的 BC 贴图
+NXGAL_API int32_t nxgal_bce_active(void);
+NXGAL_API int32_t nxgal_tex_set_bc(uint32_t tex, int32_t layer, int32_t level, const nxgal_rect *region, const void *data, uint64_t len);
 
 // ---------- 第 5 块：渲染目标与清屏（gal_pass.m）----------
 // colors[i] = 贴图编号（0 = 不挂），n ≤ 8；depth = 深度模板贴图（0 = 无）

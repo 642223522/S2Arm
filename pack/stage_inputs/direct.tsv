@@ -58,6 +58,7 @@
 入	graphics/nvn/tools/lz4blk.py
 入	graphics/nvn/tools/nso_syms.py
 入	graphics/nvn/tools/romfs_list.py	仓库里唯一的 RomFS 遍历与文件头清单（11-03）：抽取 / 直连读哪些 RomFS 文件、文件头由它给（glslc_offline / nxsh_extract / ue_pak / spirv_msl / resource_input_key / direct_lib.sh 经它）
+入	pack/romfs_img.py	标准 RomFS 镜像读取（11-16）：RomFS 目录不在、旁边有 <目录>.std 时 romfs_list.py 从镜像盘点 / 读头经它
 入	graphics/tools/direct/direct_lib.sh
 入	graphics/tools/direct/dsh/Dsh.cs	运行时与离线颜色出口同链失效
 入	graphics/tools/direct/dsh/SpvCross.cs	共用 half 出口改写的互操作入口
@@ -88,6 +89,7 @@
 外	graphics/tools/direct/pso_layout_gen.m	只在 Mac 上导出 pso_layout.json（上一行，已进键）；出库不跑它，改它而 JSON 没变的款不重出
 外	translator/xlock.py	跨平台文件锁（dsh_batch.py / spvc_inproc.py 编库时互斥用），不影响产物
 外	translator/spvc_cli/win/cli.h	只在 Windows 编 spirv-cross 命令行时预包含（输出按二进制写，与 Mac 逐字节同），Mac 出库不经过
+外	translator/spvc_cli/msl_upstream_helpers.txt	只在编 spirv-cross 命令行时用（把 spirv_msl.cpp 的本仓改动段换回上游原文，输出与 Mac Homebrew 版逐字节同），进程内库与 Mac 出库不经过
 外	translator/spvc_cli/win/shim.cpp	Windows 进程内库的输入输出搬运胶水（临时文件），不改 MSL（输出身份不含它，同 Mac 逐字节）；spvc_inproc.py 只用它算 Windows 上的库编号，库内容另由 dsh_batch 的 LibFp 进工具指纹
 入	graphics/tools/direct/se_want.py	采样模拟变体预编请求表（se_want.tsv）：跑局见过的键进库
 入	graphics/tools/direct/merge_extract.py
@@ -132,6 +134,7 @@
 外	tools/machine.sh	本机标识 / 账本开关
 外	tools/nospace.sh	无空格路径别名
 外	tools/progress.py	进度打印
+外	tools/pool_workers.py	进程池路数（Windows 至多 61）
 外	tools/progress.sh	进度打印
 外	tools/toolchain.sh	编译器版本另由 MV（S2A_TC_METAL）进键；目标 iOS 大版本不进（产物按 iOS 18 下限编、与它无关）
 外	tests/dmsh_abi_test.sh	门禁单测（出库反射种类 ⊆ 宿主认的种类、链头 ABI 一致），只被 dmsh_build.py / dmsh_chain.py 的注释提到，不改直连产物

@@ -3,7 +3,7 @@
 # 本测自带「核」替身（host_stubs.h 里那两个入口由 S2A_TEST_OWN_CORE 让出），并且把 nvn_mtl.m 编进测试 TU：
 #   要直接拿产品的 static 锁 g_rmu 当「另一条线程正持着它」，这是唯一能复现 ABBA 的地方。
 NATIVE_TEST_OWN += nvn_abba
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # 宿主替身的宽屏入口按 s2a_widen.h 生成（与 graphics/nvn/Makefile 的 widen-stubs 同一份产物）
 NVN_ABBA_STUBS := $(NVN_TEST_DIR)/nvn/tests/widen_stubs.inc
 $(NVN_ABBA_STUBS):

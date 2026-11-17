@@ -18,6 +18,8 @@
 extern void *h_nvnBootstrapLoader(const char *name);
 extern int mtl_last_commit_error(void);
 extern uint64_t s2a_hle_cmdshadow_live(void), s2a_hle_cmdshadow_live_bytes(void), s2a_hle_cmdshadow_shared(void);
+extern void s2a_hle_cmdshadow_quarantine_flush(void);
+extern int nvn_cmd_call_target(uint64_t h);
 static const char *phase = "准备";
 static unsigned checks;
 #define CHECK(expr) do { checks++; if (!(expr)) { \
@@ -224,6 +226,66 @@ static void release(void) {
     printf("%s：通过\n", phase); fflush(stdout);
 }
 
+// ⑤b #768338 CALL 目标安全阀：长期列表调用的录制被覆盖、隔离期满块被放回后，旧句柄指向已释放的块。
+//   期望手写：录 b（写槽 7）→ 核目标 0（活）；从别处起头的录制盖住 b → 1（隔离中，块完好）；录 z = CALL b + 写槽 8 → 清空隔离区 → -1（落在命令记录区、不是任何录制的句柄）；
+//   回放 z：CALL 跳过、槽 7 不被写，槽 8 照写。反证：去掉回放里的 ck < 0 跳过，CALL 跳进已释放的块执行 b 的旧记录，槽 7 被写成 770
+static void call_guard(void) {
+    phase = "⑤b CALL 目标已被复用 / 释放：跳过这次调用（#768338 安全阀）";
+    const size_t R = 0x60000;
+    NVNcommandBuffer x; new_cmd(&x, R, 4096);
+    API(nvnCommandBufferBeginRecording)(&x); ub(&x, 7, 770); NVNcommandHandle b = API(nvnCommandBufferEndRecording)(&x);
+    CHECK(b && nvn_cmd_call_target(b) == 0);
+    NVNcommandBuffer y; new_cmd(&y, R - 64, 4096);   // 从 R − 64 起头、三条 UB 盖到 R + 64：b 被盖住，但 R 上不再有录制的开头（同地址重录另见 ⑤c）
+    API(nvnCommandBufferBeginRecording)(&y); ub(&y, 9, 990); ub(&y, 15, 1500); ub(&y, 16, 1600); NVNcommandHandle hy = API(nvnCommandBufferEndRecording)(&y);
+    CHECK(hy && nvn_cmd_call_target(b) == 1);
+    NVNcommandBuffer z; new_cmd(&z, 0x68000, 4096);
+    API(nvnCommandBufferBeginRecording)(&z); API(nvnCommandBufferCallCommands)(&z, 1, &b); ub(&z, 8, 880);
+    NVNcommandHandle hz = API(nvnCommandBufferEndRecording)(&z);
+    s2a_hle_cmdshadow_quarantine_flush();
+    int ck = nvn_cmd_call_target(b);
+    if (ck != -1) printf("CALL 目标核对：隔离区清空后期望 -1，实 %d\n", ck);
+    CHECK(ck == -1);
+    CHECK(nvn_cmd_call_target(hz) == 0 && nvn_cmd_call_target((NVNcommandHandle)(uintptr_t)(cmdmem + 16)) == 0);   // 活录制 / 不在命令记录区（游戏内存）都不判
+    memset(datamem, 0, 4096); run(hz);
+    if (slot_is(7, 770) || !slot_is(8, 880)) printf("CALL 目标安全阀：槽 7 %s、槽 8 %s\n", slot_is(7, 770) ? "被写（跳进了已释放的块）" : "没写", slot_is(8, 880) ? "已写" : "没写");
+    CHECK(!slot_is(7, 770)); CHECK(slot_is(8, 880));
+    API(nvnCommandBufferFinalize)(&x); API(nvnCommandBufferFinalize)(&y); API(nvnCommandBufferFinalize)(&z);
+    printf("%s：通过\n", phase); fflush(stdout);
+}
+
+// ⑤c #768338 根修：CALL 按设备地址解析。长期列表 A 调用 B，B 每帧在同一块游戏命令内存里重录（真机上 B 的句柄 = 那块内存的地址、不变，A 不用重录）。
+//   期望按真机语义手写：B 在同一地址重录为写槽 10 = 1000 / 2000 / 3000，A 每次回放读到的都是最新那份（第二次重录前把隔离区清空，块已被放回）；
+//   B 被一条从别处起头的录制盖掉（同地址没有新录制）且隔离期满 → A 的这次 CALL 跳过，槽 10 不再被写，A 自己写的槽 11 照写。
+//   反证：去掉解析里的同地址跳转（nvn_cmd_call_resolve 的 r = 2），第一次重录后 A 读到的仍是 1000（隔离中跑旧内容），本项红
+static void call_redirect(void) {
+    phase = "⑤c CALL 按设备地址解析：同地址重录的 B 被 A 读到最新内容（#768338 根修）";
+    const size_t R = 0xD0000;   // 0xD0000 / 0xD8000：别的用例不碰的区段（⑦ 用 0x70000 / 0x80000）
+    NVNcommandBuffer b1; new_cmd(&b1, R, 4096);
+    API(nvnCommandBufferBeginRecording)(&b1); ub(&b1, 10, 1000); NVNcommandHandle hb = API(nvnCommandBufferEndRecording)(&b1);
+    NVNcommandBuffer a; new_cmd(&a, 0xD8000, 4096);
+    API(nvnCommandBufferBeginRecording)(&a); API(nvnCommandBufferCallCommands)(&a, 1, &hb); ub(&a, 11, 1100);
+    NVNcommandHandle ha = API(nvnCommandBufferEndRecording)(&a);
+    memset(datamem, 0, 4096); run(ha); CHECK(slot_is(10, 1000)); CHECK(slot_is(11, 1100));
+    static const uint32_t v[3] = {2000, 3000, 4000};
+    for (int i = 0; i < 3; i++) {
+        if (i == 1) s2a_hle_cmdshadow_quarantine_flush();   // 旧录制的块放回块池：A 记的旧句柄不再是任何录制，仍要按设备地址找到新录制
+        NVNcommandBuffer bn; new_cmd(&bn, R, 4096);
+        API(nvnCommandBufferBeginRecording)(&bn); ub(&bn, 10, v[i]); CHECK(API(nvnCommandBufferEndRecording)(&bn) != 0);
+        memset(datamem, 0, 4096); run(ha);
+        if (!slot_is(10, v[i])) printf("CALL 按设备地址：第 %d 次重录后槽 10 = %u（期望 %u）\n", i + 1, *(uint32_t *)(datamem + 10 * 16), v[i]);
+        CHECK(slot_is(10, v[i])); CHECK(slot_is(11, 1100));
+        API(nvnCommandBufferFinalize)(&bn);
+    }
+    NVNcommandBuffer w; new_cmd(&w, R - 64, 4096);   // 从 R − 64 起头：盖住 R 上的 B，但 R 上不再有录制的开头
+    API(nvnCommandBufferBeginRecording)(&w); ub(&w, 12, 1200); ub(&w, 13, 1300); ub(&w, 14, 1400); CHECK(API(nvnCommandBufferEndRecording)(&w) != 0);
+    s2a_hle_cmdshadow_quarantine_flush();
+    memset(datamem, 0, 4096); run(ha);
+    if (slot_is(10, 4000) || !slot_is(11, 1100)) printf("CALL 按设备地址：B 被别处起头的录制盖掉后槽 10 %s、槽 11 %s\n", slot_is(10, 4000) ? "仍被写（跑了旧块）" : "没写", slot_is(11, 1100) ? "已写" : "没写");
+    CHECK(!slot_is(10, 4000)); CHECK(*(uint32_t *)(datamem + 10 * 16) == 0); CHECK(slot_is(11, 1100));
+    API(nvnCommandBufferFinalize)(&b1); API(nvnCommandBufferFinalize)(&a); API(nvnCommandBufferFinalize)(&w);
+    printf("%s：通过\n", phase); fflush(stdout);
+}
+
 // ⑥ CopyCommands 复制记录：之后源内存被游戏重用（重录 + 清零），副本照样回放拷贝时的内容；目标已用 = 源已用（END 不拷、目标自己的 END 补上）
 // ⑫ 不占命令内存、只含池绑定 / END 的录制按内容共用（#783：某款每帧约 10 个这种录制，各挂 1 字节锚点、落在游戏从不写的段尾，永远不释放）。
 //   期望按规则手写：连录 1000 个空录制 → 活录制数与宿主字节都不变、共用 +1000、句柄全相同；回放空表什么都不做，别的录制 CALL 它照常往下跑；
@@ -404,7 +466,7 @@ int main(int argc, char **argv) {
     NVNqueueBuilder qb = {{0}}; API(nvnQueueBuilderSetDefaults)(&qb); API(nvnQueueBuilderSetDevice)(&qb, &device); CHECK(API(nvnQueueInitialize)(&queue, &qb));
     new_pool(&cmdpool, &cmdmem, CMD_BYTES); new_pool(&datapool, &datamem, DATA_BYTES);
     data_ga = API(nvnMemoryPoolGetBufferAddress)(&datapool);
-    guest_untouched(); used_by_device(); callback_timing(); totk_slots(); release(); copy_then_reuse(); spanning(); lm3_patch(); pool_binds_no_cmd_memory(); interned(); replayable(argv[0]);
+    guest_untouched(); used_by_device(); callback_timing(); totk_slots(); release(); call_guard(); call_redirect(); copy_then_reuse(); spanning(); lm3_patch(); pool_binds_no_cmd_memory(); interned(); replayable(argv[0]);
     API(nvnQueueFinish)(&queue);
     API(nvnMemoryPoolFinalize)(&cmdpool); API(nvnMemoryPoolFinalize)(&datapool); API(nvnQueueFinalize)(&queue); API(nvnDeviceFinalize)(&device);
     printf("✓ t_nvn_cmdshadow：%u 条断言（10 组：游戏内存不动、设备口径已用、回调时机、王国之泪排槽、覆盖释放、复制后重用、跨段跨块、录后改写句柄、池绑定不占命令内存、回放放回影子块）\n", checks);

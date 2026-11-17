@@ -106,6 +106,7 @@ static void *stopper(void *unused) {
     return NULL;
 }
 int main(void) {
+    setenv("S2A_CAPS_OWN", "1", 1);   // 测我方帧率表装载机制本身（11-14 起缺省不装，S2A_CAPS_OWN=1 才装）
     require(plat_mem_write32(1, 7) != 0, "invalid write rejected without crashing");
     module_t *m = &g_mod[g_nmod++];
     snprintf(m->name, sizeof m->name, "main"); m->base = img; m->size = sizeof img;

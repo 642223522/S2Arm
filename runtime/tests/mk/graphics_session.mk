@@ -1,7 +1,7 @@
 # Explicit real-resource probe. The native retirement stage is called only by
 # this guest-free process; production restart must first join every guest thread.
 NATIVE_TEST_OWN += graphics_session
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 .PHONY: native-graphics-session-probe native-test-graphics_session
 # 探针自己从 HOST_SRCS 整编整链，不执行 s2arm-host：前置只要宿主的源码 / 头 / 配置戳与它链的库（同 $(BUILD)/s2arm-host 的前置），
 #   不再先把 s2arm-host 整编一遍（单线程整编约 14 秒，探针再编一遍又 15 秒；判据与运行不变）

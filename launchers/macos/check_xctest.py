@@ -8,10 +8,12 @@ import sys
 
 def main():
     discovery, execution = (Path(p).read_text() for p in sys.argv[1:])
-    # 旧启动器与 S2Arm × NX2Apple 适配层（launchers/macos/adapter）两个 XCTest 模块都要跑完
-    modules = r"(?:S2ArmLauncherTests|S2ArmAppleAdapterTests)"
-    expected = set(re.findall(rf"^{modules}\.([^\s/]+/[^\s]+)$", discovery, re.M))
-    finished = re.findall(rf"^Test Case '-\[{modules}\.([^\s]+) ([^\s]+)\]' (passed|failed|skipped)", execution, re.M)
+    # Discover modules from the actual package, including frontend dependency-package tests.
+    # Keep the module in each identity so equal case names in two modules remain distinct.
+    module = r"[A-Za-z_][A-Za-z0-9_]*"
+    expected = set(re.findall(rf"^({module}\.[^\s/]+/[^\s]+)$", discovery, re.M))
+    # 结局行不要求在行首：用例自己打的调试输出没换行时，「Test Case '-[…]' passed」会接在同一行后面（11-17 门禁假红「未完成」）
+    finished = re.findall(rf"Test Case '-\[({module}\.[^\s]+) ([^\s]+)\]' (passed|failed|skipped)", execution)
     observed = Counter(f"{suite}/{method}" for suite, method, _ in finished)
     missing = sorted(expected - observed.keys())
     unexpected = sorted(observed.keys() - expected)
@@ -25,7 +27,7 @@ def main():
         failed_names = [f"{suite}/{method}" for suite, method, state in finished if state == "failed"]
         for name in failed_names:
             suite, method = name.split("/", 1)
-            why = re.findall(rf"^(.*error: -\[{modules}\.{re.escape(suite)} {re.escape(method)}\] : .*)$", execution, re.M)
+            why = re.findall(rf"^(.*error: -\[{re.escape(suite)} {re.escape(method)}\] : .*)$", execution, re.M)
             print(f"失败：{name}" + "".join(f"\n    {line.strip()[:400]}" for line in why[:3]), file=sys.stderr)
         for label, names in (("未完成", missing), ("未登记", unexpected), ("重复", repeated), ("跳过", skipped_names)):
             if names:

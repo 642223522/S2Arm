@@ -15,7 +15,7 @@
 包：{schema: 2, key, items: [条目]}；条目：
   id（内容 sha256 前 16 位，同 pack/cpatch.py 编号口径）、kind（pchtxt | ips | fpsl | cheat | pso）、cat（fps | widescreen | gfx | cheat | pso）、
   name（文件名：ips / FPSLocker / 金手指靠文件名认构建号，原样保留；pchtxt 取原文件名）、bids、gids、target_fps、aspect、
-  source {repo, commit, path, member}（上游原处，致谢与追溯用；金手指汇总库的 member 是构建号）、license、author、sha256（内容）、data（内容 base64，字节与上游原文件一致，不转格式：
+  dir（只画面类有：load 降负载 / quality 提画质，tools/patch_index.py gfx_dir；认不出不写）、source {repo, commit, path, member}（上游原处，致谢与追溯用；金手指汇总库的 member 是构建号）、license、author、sha256（内容）、data（内容 base64，字节与上游原文件一致，不转格式：
   编号按内容算，转了格式编号就变，玩家已开的选择与验证记录会对不上）。"""
 import base64
 import gzip
@@ -49,7 +49,9 @@ def item(row, data):
     return dict(id=row['sha256'][:16], kind=row['kind'], cat=row['cat'], name=os.path.basename(row.get('member') or row['path']),
                 bids=row['bids'], gids=row['gids'], target_fps=row['target_fps'], aspect=row['aspect'],
                 source=dict(repo=row['repo'], commit=row['commit'], path=row['path'], member=row.get('member', '')),
-                license=row['license'], author=row.get('author', ''), sha256=row['sha256'], data=base64.b64encode(data).decode())
+                license=row['license'], author=row.get('author', ''), sha256=row['sha256'], data=base64.b64encode(data).decode(),
+                **({'dir': row['dir']} if row.get('dir') else {}),   # 画面类方向（load / quality，patch_index.gfx_dir；认不出不写，旧包同样没有）
+                **({'adjusted': row['adjusted']} if row.get('adjusted') else {}))   # 发布前改过渲染分辨率（patch_index.res_fix）：原尺寸 / 新尺寸 / 上游原文 sha256，追溯用；客户端不读
 
 
 def gz(obj):
@@ -152,6 +154,52 @@ def check_snapshot(path):
         return None, f'{type(e).__name__}: {e}'
 
 
+V3_BLOCK = 1 << 20   # v3 每块原文约 1 MB：整库 xz 约 13 MB（v2 tar 24.5 MB），取一款只解它那一块（实测约 16 ms）
+
+
+def to_v3(v2_path, dest):
+    """随启动器装的快照 v2 → v3（11-16 安装包瘦身）：各包 gunzip 成原文，按键名排序拼成约 1 MB 的块、每块 xz（标准库 lzma，读方不加依赖）。
+    index.json 照 v2 的清单，每个包加 raw_sha256 / block / off / len，schema 改 3；sha256（gz 的，和云端清单比用）原样保留。
+    成员名、时间、属主固定，同输入同字节。读方 pack/jobs/patches.py _snapshot。云端仍发 v2，只有随包的这份换格式"""
+    import gzip, lzma, tarfile
+    with tarfile.open(v2_path) as t:
+        index = json.load(t.extractfile('index.json'))
+        raw = {k: gzip.decompress(t.extractfile(k + '.json.gz').read()) for k in sorted(index['bundles'])}
+    blocks, cur, bundles = [], bytearray(), {}
+    for k, data in raw.items():
+        if cur and len(cur) + len(data) > V3_BLOCK:
+            blocks.append(bytes(cur)); cur = bytearray()
+        bundles[k] = dict(index['bundles'][k], raw_sha256=hashlib.sha256(data).hexdigest(), block=len(blocks), off=len(cur), len=len(data))
+        cur += data
+    if cur:
+        blocks.append(bytes(cur))
+    members = [('index.json', json.dumps(dict(index, schema=3, bundles=bundles), ensure_ascii=False, sort_keys=True).encode())]
+    members += [(f'blk/{i:04d}.xz', lzma.compress(b, preset=9)) for i, b in enumerate(blocks)]
+    with tarfile.open(dest + '.tmp', 'w', format=tarfile.USTAR_FORMAT) as t:
+        for n, data in members:
+            ti = tarfile.TarInfo(n); ti.size = len(data); ti.mtime = 0; ti.mode = 0o644; ti.uid = ti.gid = 0; ti.uname = ti.gname = ''
+            t.addfile(ti, io.BytesIO(data))
+    os.replace(dest + '.tmp', dest)
+    return dest
+
+
+def check_v3(path):
+    """v3 自洽：每个包按 block / off / len 取出的原文 sha256 = raw_sha256 → (index, None)；否则 (None, 原因)"""
+    import lzma, tarfile
+    try:
+        with tarfile.open(path) as t:
+            index = json.load(t.extractfile('index.json'))
+            blocks = {}
+            for k, v in index['bundles'].items():
+                if v['block'] not in blocks:
+                    blocks[v['block']] = lzma.decompress(t.extractfile(f"blk/{v['block']:04d}.xz").read())
+                if hashlib.sha256(blocks[v['block']][v['off']:v['off'] + v['len']]).hexdigest() != v['raw_sha256']:
+                    return None, f'{k} 原文与清单不符'
+        return index, None
+    except (OSError, KeyError, ValueError, tarfile.TarError, lzma.LZMAError) as e:
+        return None, f'{type(e).__name__}: {e}'
+
+
 def stage_snapshot(dest_dir, url='https://dl.s2arm.com/patches/v2/' + SNAPSHOT):
     """启动器打包（launchers/macos/build_app.py、launchers/windows/bundle_win.py）：快照放进 <资源>/CommunityPatches/。
     来源 S2A_PATCH_SNAPSHOT（本机文件）> 下载站；核过自洽才放。取不到 / 不自洽 → 不放、回原因（出包时照样向下载站要，只是离线没有本地库）"""
@@ -172,7 +220,12 @@ def stage_snapshot(dest_dir, url='https://dl.s2arm.com/patches/v2/' + SNAPSHOT):
     index, why = check_snapshot(dest + '.tmp')
     if index is None:
         os.remove(dest + '.tmp'); return f'快照不自洽：{why}'
-    os.replace(dest + '.tmp', dest)
+    # 随包放 v3（分块 xz，省约 11 MB）；转完自查一遍才放，v2 中间件不留
+    v3 = to_v3(dest + '.tmp', os.path.join(dest_dir, 'patches-v3.tar'))
+    os.remove(dest + '.tmp')
+    index3, why = check_v3(v3)
+    if index3 is None or set(index3['bundles']) != set(index['bundles']):
+        os.remove(v3); return f'v3 快照不自洽：{why or "包数不一致"}'
     return None
 
 

@@ -10,6 +10,12 @@ import unittest
 import unittest.mock
 import os
 os.environ.setdefault("S2A_BANNER_FETCH", "0")   # 作业层测试一律不连商店（library.store_meta）；要测的用例自己打桩
+# 补丁 / 金手指下载站同理（11-14 门禁提速）：每次出包 patches.prepare 都现取云端清单（patches.cloud_manifest），原先单测里每个出包用例都真连网
+#   （经本机代理，每次约 1 秒，test_job_failure_codes 一份就 40 多次；断网 / 代理卡住时按 patches.TIMEOUT 白等）。缺省指一个不存在的本地目录
+#   = 「云端取不到、只用本地」，与门禁机断网时同一条路径；要测下载站的用例（test_patches）自己把 S2A_PATCH_BASE 指到造好的目录
+os.environ.setdefault("S2A_PATCH_BASE", "file:" + os.path.join(tempfile.gettempdir(), "s2a-jobtests-no-patch-site"))
+# 每局结束注销 S2ArmGame 系统登记（host_update.forget_registrations，#1126）：单测起局不碰门禁机 / 本机真的应用登记库，指向不存在的工具 = 不做
+os.environ.setdefault("S2A_LSREGISTER", os.path.join(tempfile.gettempdir(), "s2a-jobtests-no-lsregister"))
 
 JOBS = Path(__file__).resolve().parents[1]
 ROOT = JOBS.parents[1]
@@ -96,6 +102,49 @@ def as_windows(*modules, **override):
     for m in modules:
         stack.enter_context(unittest.mock.patch.object(m, "os", OsView(**override)))
     return stack
+
+def fake_context(root, **override):
+    """作业上下文替身的唯一工厂（替代各用例手写 types.SimpleNamespace）：字段与 core.Context 对齐（test_fake_context_covers_context 核：
+    产品代码里用到的 c.<名> 凡是 Context 有的，这里都得有），各用例只覆盖自己关心的。
+    11-16：手写的替身缺 env，put_game 新加的收回 NRO 走到 c.env()，discover 顺序全量跑时 test_win_jobs 3 红（单跑因为 push_pack 导入不到碰巧绕过）。
+    普通字段给合理缺省；lock / idle 用真文件锁；emit / begin / diagnostic 记下来（events / stages / diagnostics）；
+    有副作用的（run / catalog / game / finish / stop）缺省响亮报错——用到了就在用例里显式给，别让替身悄悄冒充"""
+    import contextlib, threading, types
+    import filelock
+    root = Path(root)
+    c = types.SimpleNamespace()
+    c.events, c.stages, c.diagnostics = [], [], []
+    def loud(name):
+        def f(*a, **k):
+            raise AssertionError(f"测试替身的 c.{name} 没配：这条路径会用到它，请在用例里 fake_context(..., {name}=...) 显式给")
+        return f
+    @contextlib.contextmanager
+    def lock(name="catalog", wait=None, root=None):
+        lib = Path(root or c.library); lib.mkdir(parents=True, exist_ok=True)
+        with filelock.held(lib / f".{name}.lock", wait_s=60 if wait is None else wait):
+            yield
+    @contextlib.contextmanager
+    def idle(name="execution"):
+        yield True
+    def diagnostic(message, code="job_failed", severity="error", **kw):
+        d = dict(message=message, code=code, severity=severity, **kw); c.diagnostics.append(d); return d
+    c.__dict__.update(
+        r={}, operation="test", task="t", number=1, count=1,
+        library=root / "library", private=root / "private", logs=root / "logs", engine=root / "engine", work_root=root / "work",
+        keys=root / "private/keys/prod.keys", cancelled=False, guard=threading.RLock(), last_log=None, last_rc=None,
+        job=dict(schema=1, id="t", diagnostics=[]), jobpath=root / "logs/jobs/t.json",
+        check=lambda: None, require_source=lambda: None, require_library=lambda: None,
+        lock=lock, idle=idle, lock_holder=lambda: dict(taskId="t"),
+        emit=lambda kind="progress", message="", *a, **k: c.events.append((kind, message)),
+        begin=lambda stage, number=1, count=1, key=None, keychain=False: c.stages.append(stage),
+        progress=lambda done, total: None, redact=lambda value, **k: value,
+        diagnostic=diagnostic, describe_failure=lambda error, *a, **k: dict(message=str(error)), report_failure=lambda error: None,
+        fonts_dir=lambda: None, env=lambda: dict(os.environ),
+        run=loud("run"), catalog=loud("catalog"), game=loud("game"), finish=loud("finish"), stop=loud("stop"),
+    )
+    c.__dict__.update(override)
+    return c
+
 
 class JobCase(unittest.TestCase):
     def setUp(self):
@@ -214,13 +263,22 @@ if source.read_bytes() == b"disappear fixture":
 print(json.dumps({"schema":1,"packages":[{"titleId":"0100000000000000","baseId":"0100000000000000","type":"base","version":0,"name":"Synthetic","display":"1.0","guestIsa":"aarch64","builds":{}}]}))
 ''')
         binary.chmod(0o700)
-        # Reader lookup is content-keyed in the actual worker too.
+        # Reader lookup is content-keyed in the actual worker too. Mac 起读取器直接执行缓存位上的
+        # 自包含单文件（不再经 dotnet 跑 dll）：合成读取器脚本就装在缓存位，argv 与 Windows 直跑同形
+        # （少了 dotnet 前缀，源 / 图标目录各前移一位）。
         from core import digest
         key = toolchain.reader_key(self.c)
         actual = self.c.private / "tools" / key
         actual.mkdir(parents=True)
-        (actual / "nx_unpack.dll").write_bytes(b"fixture")
-        atomic(actual / "ready.json", dict(schema=1, sha256=digest(actual / "nx_unpack.dll")))
+        reader = actual / "nx_unpack"
+        reader.write_text(
+            binary.read_text()
+            .replace("sys.argv[4]", "sys.argv[3]")
+            .replace("sys.argv[5]", "sys.argv[4]"),
+            encoding="utf-8",
+        )
+        reader.chmod(0o700)
+        atomic(actual / "ready.json", dict(schema=1, sha256=digest(reader)))
         if sys.platform == 'win32':
             # A local copy of the installed interpreter runs the *same*
             # synthetic reader script. This is not a real .NET reader.
@@ -321,11 +379,12 @@ def synthetic_nacp(title, display):   # 0x4000 字节：ApplicationTitle[0] 名�
 
 
 def ios_fixture(c, gid, *, shell="SID1", pack="cafe01", compat=None, fixups=True):
-    """游戏库结构 v3 里一款出好的 iPhone 版：这款文件夹 image/ios/kit（容器件：main.npdm + 改写产物表）+ image/ios/pack（资源包，清单带 index_sha256），
+    """游戏库结构 v3 里一款出好的 iPhone 版：程序缓存 cache/programs/<程序号>/kit（容器件：main.npdm + 改写产物表；常驻配方见 pack/jobs/programs.py）+ 这款文件夹 image/ios/.pack（资源包，清单带 index_sha256），
     game.json 的 ios 记出它的壳号、资源包号（compat 给了再记 hostAbi / dmshChain）→ (kit, pack)"""
     import layout
     image = layout.image_ios(c, gid)
-    kit, pk = image / "kit", image / ".pack"
+    import programs
+    kit, pk = programs.cache(c, gid) / "kit", image / ".pack"
     kit.mkdir(parents=True, exist_ok=True)
     (kit / "main.npdm").write_bytes(b"META")
     if fixups:

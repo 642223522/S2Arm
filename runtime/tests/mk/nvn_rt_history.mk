@@ -1,6 +1,6 @@
 # Exact production history functions and real NVN object/record/GPU lifetimes.
 NATIVE_TEST_OWN += nvn_rt_history
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 NVN_RT_HISTORY_SOURCE ?= graphics/nvn/gfx/nvn/nvn_mtl.m
 NVN_RT_HISTORY_BINARY ?= $(BUILD)/tests/t_nvn_rt_history
 $(NVN_RT_HISTORY_BINARY): graphics/nvn/tests/t_nvn_rt_history.m $(NVN_RT_HISTORY_SOURCE) $(NVN_MTL_DEPS) graphics/nvn/gfx/nvn/nvn_session.inc $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)

@@ -7,7 +7,7 @@ native-test-play_layout:
 	@mkdir -p $(BUILD)/tests
 	$(CC) $(CFLAGS) -fobjc-arc -framework Foundation -framework CoreGraphics -o $(BUILD)/tests/t_play_layout runtime/tests/t_play_layout.m ios/play_layout.m ios/play_reflection.m
 	$(BUILD)/tests/t_play_layout
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 	@$(IOS_CC) -fsyntax-only -fobjc-arc $(NATIVE_INC) -Iruntime/src -Iruntime/ns2pro/include ios/play_layout.m ios/app.m ios/vpad.m ios/app_settings.m ios/save_transfer.m
 endif
 TEST_TARGETS += native-test-play_layout

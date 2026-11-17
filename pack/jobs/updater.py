@@ -110,8 +110,8 @@ def network_error(error, what="连接 GitHub"):
             except ValueError:
                 wait = None
             minutes = max(1, (wait + 59) // 60) if wait and wait > 0 else None
-            return UpdateError("update_rate_limited", "GitHub 暂时限制了这个网络的查询次数" + (f"，约 {minutes} 分钟后恢复" if minutes else "，过一会儿会恢复")
-                               + "。当前版本没有变化，稍后再试，或打开下载页手动下载。", f"HTTP {error.code} {dict(headers)}")
+            return UpdateError("update_rate_limited", "GitHub 暂时限制了这个网络的查询次数" + (f"，约 {minutes} 分钟后恢复" if minutes else "，过一会儿会恢复")  # 非玩家句
+                               + "。当前版本没有变化，稍后再试，或打开下载页手动下载。", f"HTTP {error.code} {dict(headers)}")  # 非玩家句
         return UpdateError("update_server", f"GitHub 返回错误（HTTP {error.code}），当前版本没有变化。稍后再试，或打开下载页手动下载。", f"HTTP {error.code} {error.reason}")
     reason = getattr(error, "reason", None) or error
     kind = "超时" if isinstance(reason, TimeoutError) or "timed out" in str(reason) else type(reason).__name__
@@ -361,7 +361,7 @@ def feature_spotlight(platform, current, path=None, withdrawn=()):
             pages.append(dict(texts, layout="detail", image=image))
     if not pages:
         return None
-    out = {"kind": "feature", "id": ident, "badge": _bilingual(data.get("badge")) or {"zh-Hans": "新功能", "en": "New"}, "pages": pages}
+    out = {"kind": "feature", "id": ident, "badge": _bilingual(data.get("badge")) or {"zh-Hans": "新功能", "en": "New"}, "pages": pages}  # 非玩家句
     url = data.get("url")
     if isinstance(url, str):
         parts = urllib.parse.urlsplit(url)
@@ -442,8 +442,8 @@ def notes_from_markdown(text):
         m = re.match(r"\s+\*(.+)\*\s*$", line)
         if m and current["items"] and "en" not in current["items"][-1]:
             current["items"][-1]["en"] = plain(m.group(1))
-    highlights = [i for s in sections if s["title"] == "亮点" for i in s["items"]]
-    return notes_valid({"highlights": highlights, "sections": [s for s in sections if s["title"] != "亮点"]})
+    highlights = [i for s in sections if s["title"] == "亮点" for i in s["items"]]  # 非玩家句
+    return notes_valid({"highlights": highlights, "sections": [s for s in sections if s["title"] != "亮点"]})  # 非玩家句
 
 
 PLATFORMS = ("mac", "windows")
@@ -556,7 +556,7 @@ def inbox_seen(private_root, update=None, after=None, notice=None, feature=None)
                                 ("noticeSeen", notice, r"[A-Za-z0-9._-]{1,80}"), ("featureSeen", feature, r"[A-Za-z0-9._-]{1,80}")):
         if value is not None:
             if not re.fullmatch(pattern, value):
-                raise ValueError(f"{key} 不对")
+                raise ValueError(f"{key} 不对")  # 非玩家句
             seen[key] = value
     save_json(seen_path(private_root), seen)
     return seen

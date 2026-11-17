@@ -315,6 +315,9 @@ def scan(repo, ref, paths, list_only=False, base=None):
         except ScanError:
             raise ScanError('cannot_resolve_baseline') from None
     matched_paths = {p for p in paths if p == '.'}
+    # 增量门禁（给了 --base）只有改动文件会阻挡；没改的文件扫出来只计「存量命中」、不影响结论（钉了摘要的压缩包只在规则表变了时结论才会变）。
+    #   所以规则表与扫描器自己都没改时只读改动文件（11-16 门禁提速：全树读一遍本机约 117 秒，每支都跑）；它俩改了照旧全树
+    changed_only = base is not None and not ({str(RULES_PATH.name), Path(__file__).name} & {PurePosixPath(c).name for c in changed if c.startswith('tools/')})
     findings, manifest, uncovered = [], [], []
     uncovered_blocking, uncovered_allowed = [], []
     counts = Counter()
@@ -325,6 +328,9 @@ def scan(repo, ref, paths, list_only=False, base=None):
             matched_paths.update(matching)
             if not matching:
                 counts['outside_selection'] += 1
+                continue
+            if changed_only and path not in changed:
+                counts['unchanged_not_read'] += 1
                 continue
             decision, meta_categories = classify(
                 path, mode, kind, size, rules,

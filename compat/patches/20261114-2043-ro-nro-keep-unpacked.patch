@@ -1,0 +1,38 @@
+diff --git a/src/Ryujinx.HLE/HOS/Services/Ro/IRoInterface.cs b/src/Ryujinx.HLE/HOS/Services/Ro/IRoInterface.cs
+index 4ec5da97373e4d4d6e52d161846afb96b2a01c75..73443a23dd12f586b7d0085390c77f47531ab265 100644
+--- a/src/Ryujinx.HLE/HOS/Services/Ro/IRoInterface.cs
++++ b/src/Ryujinx.HLE/HOS/Services/Ro/IRoInterface.cs
+@@ -308,6 +308,19 @@ namespace Ryujinx.HLE.HOS.Services.Ro
+ 
+             nroMappedAddress = mapped;
+ 
++            // S2Arm: not in the package (#8be819: a game keeps its NRO inside its own encrypted archive, which packing cannot read). The game has just
++            // unpacked it into memory: the native layer keeps that file so the next preparation of the game rewrites it
++            if (rc == 1 && S2AHooks.NroKeep != null && S2AHooks.GuestView?.Invoke(info.NroAddress, (int)info.NroSize) is System.Memory<byte> nroView
++                && System.Security.Cryptography.SHA256.HashData(nroView.Span).AsSpan().SequenceEqual(info.Hash))
++            {
++                using System.Buffers.MemoryHandle pin = nroView.Pin();
++
++                fixed (byte* hash = info.Hash)
++                {
++                    S2AHooks.NroKeep(hash, (byte*)pin.Pointer, info.NroSize);
++                }
++            }
++
+             switch (rc)
+             {
+                 case 0:
+diff --git a/src/Ryujinx.HLE/S2AHooks.cs b/src/Ryujinx.HLE/S2AHooks.cs
+index 0c9ad8c03f0913ac661cce2a5e7a180cdc5153ef..eff7e1585cfe22ec5d938731676e06d1ef89ab1c 100644
+--- a/src/Ryujinx.HLE/S2AHooks.cs
++++ b/src/Ryujinx.HLE/S2AHooks.cs
+@@ -41,6 +41,9 @@ namespace Ryujinx.HLE
+         // NroUnmap(base) -> 0 ok, 1 not loaded. Null = upstream (Ryujinx kernel memory manager).
+         public static delegate*<byte*, ulong, ulong, ulong*, int> NroMap;   // 宿主登记（services Native.NroMap → 原生核心 s2a_nro_map，DllImport 集中声明）
+         public static delegate*<ulong, int> NroUnmap;
++        // NroKeep(sha256[32], nro bytes, size) -> 0 kept, 2 kept before (not prepared again yet), 1 failed: an NRO the package has no image of (NroMap 1) is kept
++        // as the game unpacked it, for the next preparation to rewrite (runtime/src/loader.c s2a_nro_keep). Null = not kept.
++        public static delegate*<byte*, byte*, ulong, int> NroKeep;
+         public static bool NroHooked => NroMap != null;
+         public static int NroUnmapAt(ulong mapped) => NroUnmap(mapped);
+ 

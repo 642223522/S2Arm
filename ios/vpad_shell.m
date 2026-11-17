@@ -22,8 +22,9 @@ static S2AVPadLayoutStore *store_for(const char *gid, BOOL split) {
     const char *t = getenv("S2A_SHELL_DOCS");   // 只给单测：Mac 上 Documents 是用户真目录，单测指到临时目录
     NSURL *docs = t && *t ? [NSURL fileURLWithPath:@(t) isDirectory:YES] : [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
     NSURL *game = [[docs URLByAppendingPathComponent:@"games" isDirectory:YES] URLByAppendingPathComponent:@(gid) isDirectory:YES];
-    return [[S2AVPadLayoutStore alloc] initWithDirectory:[game URLByAppendingPathComponent:@"VPadLayouts" isDirectory:YES]
-                                       settingsDirectory:[docs URLByAppendingPathComponent:@"VPadLayouts" isDirectory:YES] split:split];
+    NSURL *gameLayouts = [game URLByAppendingPathComponent:@"VPadLayouts" isDirectory:YES], *appLayouts = [docs URLByAppendingPathComponent:@"VPadLayouts" isDirectory:YES];
+    [S2AVPadLayoutStore adoptLegacyLayoutsFrom:appLayouts into:gameLayouts];   // 旧版 App 级「我的布局」接进这款（只复制、不选上）
+    return [[S2AVPadLayoutStore alloc] initWithDirectory:gameLayouts settingsDirectory:appLayouts split:split];
 }
 // 要编辑的底稿：本款「我的布局」能读就用它，否则按这块安全区现算（选的是 2D 就从 2D 改，#268；其余默认布局）
 static S2AVPadLayout *base_for(S2AVPadLayoutStore *s, CGRect safe, BOOL split, BOOL *hasMine) {

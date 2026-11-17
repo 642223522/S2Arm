@@ -123,6 +123,31 @@ ALREADY_REGISTERED = re.compile(r'already exists on this team', re.I)
 RETRY_WAIT = 3   # 连不上签名服务器时重试前等几秒（单测置 0）
 
 
+def sign_dylibs(exe, shell_root, dylibs, bundle, log):
+    """通用壳程序包（pack/jobs/program_pack.py win_signer，11-16）：plumesign 没有单签一个文件的命令，就拿预编壳（shell_root = 壳的 App 内容）
+    去掉 PlugIns/（小组件扩展：带上它 plumesign 会为扩展另注册 App ID）、Frameworks/ 放进这几个 dylib，打成小 IPA，只签不装（sign_install register=False），
+    再把签好的 dylib 原地换回。bundle = 这台手机上已装 S2Arm 的包名，经 --custom-identifier 原样交给 plumesign：不接团队号、不新建 App ID
+    （11-16 Windows 出包机实测：不给它就新注册了主 App + 扩展 2 个 App ID）。签好的 dylib 代码字节不变，只换文件头长度字段与末尾签名块"""
+    dylibs = [Path(d) for d in dylibs]
+    with tempfile.TemporaryDirectory(prefix='s2a_signdylib_') as w:
+        w = Path(w); app = w / 'stage/Payload/S2Arm.app'
+        shutil.copytree(shell_root, app, symlinks=True, ignore=shutil.ignore_patterns('PlugIns'))
+        (app / 'Frameworks').mkdir(exist_ok=True)
+        for d in dylibs:
+            shutil.copyfile(d, app / 'Frameworks' / d.name)
+        stub, out = w / 'stub.ipa', w / 'signed.ipa'
+        with zipfile.ZipFile(stub, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as z:
+            for p in sorted((w / 'stage').rglob('*')):
+                if p.is_file():
+                    z.write(p, p.relative_to(w / 'stage').as_posix())
+        sign_install(exe, stub, None, None, log, out, bundle=bundle, register=False)
+        with zipfile.ZipFile(out) as z:
+            for d in dylibs:
+                tmp = d.with_name(d.name + '.signed')
+                tmp.write_bytes(z.read(f'Payload/S2Arm.app/Frameworks/{d.name}'))
+                os.replace(tmp, d)
+
+
 def install_signed(exe, app, udid, log):
     """已签好的 App（开发者证书模式，pack/jobs/devcert.py 签）只装不签：plumesign device --install（同版 v2.7.2 源码 commands/device.rs：
     给 .app 目录直接走 installation_proxy 装；--udid 比的是设备编号，同 sign_install）"""
@@ -178,6 +203,12 @@ def install_app(a, say=lambda m: print(m, flush=True)):
                     time.sleep(RETRY_WAIT)
                     try:
                         sign_install(exe, a.ipa, dev, a.name, log, out, bundle)
+                    except Fail as again:
+                        # 重试那次 plumesign 常常连不上就直接 panic（omnisette remote_anisette_v3.rs 显式 panic），输出里只剩
+                        #   「note: run with RUST_BACKTRACE=1」认不出原因、落回 device_install_failed，玩家看到的就是这句（诊断#3fc02b D-5A5K，0.4.0）。
+                        #   第二次认不出就按第一次认出的报：连不上签名服务器
+                        if again.err != 'device_install_failed': raise
+                        raise e from again
                     finally:
                         Path(log).write_text(first + '\n--- 连不上签名服务器：重试 ---\n' + Path(log).read_text(encoding='utf-8', errors='replace'), encoding='utf-8')
             except Fail:

@@ -28,6 +28,20 @@ LICENSE_MARKERS = [
     (b'libopus ', ['assets/licenses/opus-COPYING.txt']),                                      # BSD-3-Clause
     (b'WebM Project VP8 Decoder', ['assets/licenses/libvpx-LICENSE.txt',
                                    'assets/licenses/libvpx-PATENTS.txt']),                    # BSD-3-Clause + patent grant
+    (b'adrenotools-libvulkan', ['assets/licenses/libadrenotools-LICENSE.txt',
+                                'assets/licenses/liblinkernsbypass-LICENSE.txt']),           # BSD-2-Clause
+    (b'S2ARM_EASU_ffx_fsr1_mit', ['assets/licenses/easu-fsr1-LICENSE.txt']),                 # AMD FidelityFX FSR1 EASU (MIT)
+]
+
+# 许可文本不再在仓库里留副本：打包时从 third_party 原件拷入。这里逐字节核对；
+# 拷贝接线被拆掉时必须把 APK 校验判红（负对照）。
+LICENSE_EXACT = [
+    ('assets/licenses/libadrenotools-LICENSE.txt',
+     HERE / 'third_party/libadrenotools/LICENSE'),
+    ('assets/licenses/liblinkernsbypass-LICENSE.txt',
+     HERE / 'third_party/libadrenotools/lib/linkernsbypass/LICENSE'),
+    ('assets/licenses/easu-fsr1-LICENSE.txt',
+     HERE / 'third_party/ffx_fsr1/LICENSE.txt'),
 ]
 
 
@@ -43,8 +57,10 @@ def verify(path):
         if {'lib/arm64-v8a/libs2arm_android.so', 'lib/arm64-v8a/libs2a_capprobe.so'} - names or names - {
                 'lib/arm64-v8a/' + n for n in ('libs2arm_android.so', 'libs2a_capprobe.so',
                                                'libs2a_cs_probe.so', 'libs2a_cs.so',
-                                               'libssl.so', 'libcrypto.so', 'libs2arm_rewriter.so')}:
-            raise ValueError('APK must contain the arm64-v8a Android host and capprobe helper libraries, and only the declared NativeAOT / OpenSSL / preparation libraries')
+                                               'libssl.so', 'libcrypto.so', 'libs2arm_rewriter.so',
+                                               # 外挂 Vulkan 驱动：libadrenotools 与两个 hook 库（只在选择驱动时加载）
+                                               'libadrenotools.so', 'libhook_impl.so', 'libmain_hook.so')}:
+            raise ValueError('APK must contain the arm64-v8a Android host and capprobe helper libraries, and only the declared NativeAOT / OpenSSL / preparation / custom-driver libraries')
         # Redistributed third-party code carries its license text. What the libraries contain decides
         # what is needed: the single-library build links the .NET runtime and the codecs into the host library.
         files = set(apk.namelist())
@@ -57,6 +73,13 @@ def verify(path):
         missing = [n for n in needs if n not in files]
         if missing:
             raise ValueError('APK lacks license files: ' + ', '.join(missing))
+        for entry, original in LICENSE_EXACT:
+            if entry not in needs:          # 不带驱动库的 APK 不要求这两份
+                continue
+            if entry not in files:
+                raise ValueError('APK lacks third-party license: ' + entry)
+            if apk.read(entry) != original.read_bytes():
+                raise ValueError(entry + ': does not match third_party original ' + str(original))
         # The host library carries the JNI ABI of the Java it was built with (NativeBridge.jniAbi()): it must be
         # this tree's, or every launch of this APK would be refused after the load.
         abi = jni_abi().encode()

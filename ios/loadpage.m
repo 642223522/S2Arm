@@ -4,6 +4,7 @@
 // 之后的启动：只有图标、标题和一个小转圈，首帧上屏就淡出。素材取本地资源包（icon.jpg、ctl/control.nacp），不外传。
 // 主线程每 0.25 秒读一次模型快照；页面压在根视图最上层（虚拟手柄等后挂的视图也压不住它），首帧后 0.35 秒淡出并移除。
 #import <UIKit/UIKit.h>
+#import "tv_compat.h"
 #import "s2a_l10n.h"
 #include "s2a_loadprog.h"
 uint64_t now_ns(void);
@@ -76,7 +77,7 @@ static UILabel *label(CGFloat size, UIFontWeight w, UIColor *c) {
     _backdrop = [[UIImageView alloc] initWithImage:ic]; _backdrop.contentMode = UIViewContentModeScaleAspectFill; _backdrop.clipsToBounds = YES;
     _backdrop.frame = self.bounds; _backdrop.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight; _backdrop.alpha = 0.9;
     [self addSubview:_backdrop];
-    UIVisualEffectView *blur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterialDark]];
+    UIVisualEffectView *blur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:S2A_BLUR_MATERIAL_DARK]];
     blur.frame = self.bounds; blur.autoresizingMask = _backdrop.autoresizingMask; [self addSubview:blur];
 
     _icon = [[UIImageView alloc] initWithImage:rounded]; _icon.translatesAutoresizingMaskIntoConstraints = NO; _icon.contentMode = UIViewContentModeScaleAspectFill;
@@ -113,7 +114,7 @@ static UILabel *label(CGFloat size, UIFontWeight w, UIColor *c) {
     _stepDots = dots; _stepLabels = labs;
     UIStackView *steps = [[UIStackView alloc] initWithArrangedSubviews:items]; steps.spacing = 22; steps.alignment = UIStackViewAlignmentCenter;
 
-    _bar = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleBar]; _bar.translatesAutoresizingMaskIntoConstraints = NO;
+    _bar = [[UIProgressView alloc] initWithProgressViewStyle:S2A_PROGRESS_BAR]; _bar.translatesAutoresizingMaskIntoConstraints = NO;
     _bar.progressTintColor = [UIColor colorWithWhite:1 alpha:0.92]; _bar.trackTintColor = [UIColor colorWithWhite:1 alpha:0.14];
     _bar.layer.cornerRadius = 2; _bar.clipsToBounds = YES;
     _detail = label(13, UIFontWeightRegular, UIColor.secondaryLabelColor);

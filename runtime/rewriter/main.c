@@ -23,7 +23,8 @@ int main(int argc, char** argv) {
                            getenv("S2A_FPS_TSV"),
                            getenv("S2A_CPATCH_TSV"),
                            getenv("S2A_CODE_PATCH"),
-                           getenv("S2A_CODE_BUILD")};
+                           getenv("S2A_CODE_BUILD"),
+                           getenv("S2A_FIX_TSV")};
   const char* cut = getenv("S2A_SDK_ADDR_CUT");
   const char* sj = getenv("S2A_REWRITE_SIGNED_JT");
   const char* acq = getenv("S2A_REWRITE_ACQ");

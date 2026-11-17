@@ -1,6 +1,6 @@
 # native-test-nvn_pkg_sub：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来）
 NATIVE_TEST_OWN += nvn_pkg_sub
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # 打包贴图每个核查周期只核一次（塞尔达户外，11-02）
 $(BUILD)/tests/t_nvn_pkg_sub: graphics/nvn/tests/t_nvn_pkg_sub.m $(NVN_MTL_DEPS) graphics/nvn/widen_glue.inc graphics/nvn/widen_fallback.inc $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \

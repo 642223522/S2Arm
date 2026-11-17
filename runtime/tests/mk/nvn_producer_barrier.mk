@@ -1,5 +1,5 @@
 NATIVE_TEST_OWN += nvn_producer_barrier
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 NVN_PRODUCER_SOURCE ?= graphics/nvn/gfx/nvn/nvn_mtl.m
 NVN_PRODUCER_BINARY ?= $(BUILD)/tests/t_nvn_producer_barrier
 $(NVN_PRODUCER_BINARY): graphics/nvn/tests/t_nvn_producer_barrier.m $(NVN_PRODUCER_SOURCE) $(NVN_MTL_DEPS) $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)

@@ -68,7 +68,6 @@ public struct JobEnvironment: Equatable {
         do {
             try FileManager.default.createDirectory(at: privateRoot, withIntermediateDirectories: true)
             try JSONSerialization.data(withJSONObject: p, options: [.sortedKeys]).write(to: file, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         } catch {
             throw JobClientError("游戏库已建好，但设置没能写进磁盘（\(error.localizedDescription)）：请检查磁盘空间和权限后再换一次。")
         }
@@ -199,7 +198,9 @@ public final class JobClient {
             "devHud": env.devHud, "metalHud": env.metalHud, "buildId": env.buildId,
             "parentPid": Int(pid),
         ]
-        if let lang = env.uiLanguage, ["zh-Hans", "en"].contains(lang) { req["uiLanguage"] = lang }   // extra 带了（起局）照 extra
+        // 界面语言照原样带、由作业层认（install.py：中文界面用中文定名，其余英文；build.py：六门之外不设）。原先只带 zh-Hans / en，
+        //   法 / 日 / 西 / 繁中界面整个不带，作业层回落成中文：自签导出文件夹与说明成了中文（#502，11-16 维护者）
+        if let lang = env.uiLanguage, !lang.isEmpty { req["uiLanguage"] = lang }   // extra 带了（起局）照 extra
         extra.forEach { req[$0] = $1 }
         if let bundle = env.engineBundle { req["engineBundle"] = bundle.path; req["engineDir"] = bundle.path }
         // 环境准备不依赖游戏库：旧游戏库所在盘没插着时也要能跑
@@ -301,11 +302,10 @@ public final class JobClient {
         let dir = environment.privateRoot.appendingPathComponent("requests")
         let file = dir.appendingPathComponent(id + ".json")
         do {
-            try fileManager.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            // 系统缺省权限（~/Library 本来就只归当前用户；11-16 维护者：不再自设权限）
+            try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
             let data = try JSONSerialization.data(withJSONObject: request(id: id, operation: operation, extra: extra))
             try data.write(to: file, options: .atomic)
-            // 作业层只认本人所有、0600 的请求（winproc.request_is_private）
-            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         } catch {
             throw JobClientError("无法写入任务请求：\(error.localizedDescription)")
         }
@@ -317,6 +317,7 @@ public final class JobClient {
             process = try runner.start(
                 executable: python, arguments: ["-B", "-I", entry.path, "run", "--request", file.path],
                 environment: processEnvironment().merging(secrets) { _, s in s },
+                automatic: JobTrigger.automaticOperations.contains(operation),
                 onLine: { line in
                     guard let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else { return }
                     guard let event = JobEvent(json: object) else {

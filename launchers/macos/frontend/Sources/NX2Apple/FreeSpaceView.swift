@@ -25,37 +25,30 @@ struct FreeSpaceView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 4) {
-                    // 标题跟着所在的页走；游戏名只在这一款的页显示，一行，太长截尾（总览不是某一款的）。
-                    Text(overviewMode ? storage("title") : loc.t("s2arm.space.title")).font(.manrope(26, .heavy)).tracking(-0.6)
-                        .lineLimit(1).fixedSize()
-                    if !overviewMode {
-                        Text(game?.name ?? space?.name ?? gameID).font(.manrope(14)).foregroundStyle(.secondary)
-                            .lineLimit(1).truncationMode(.tail)
-                    }
-                }
+                // 总览不针对某一款；单款页的游戏名跟在标题后。
+                LauncherSheetHeading(overviewMode ? storage("title") : loc.t("s2arm.space.title"),
+                                     subtitle: overviewMode ? "" : game?.name ?? space?.name ?? gameID)
                 Spacer(minLength: 12)
-                if model.spaceFreeing, let note = model.lockWaitNote { Text(loc.backend(note)).font(.manrope(12)).foregroundStyle(.secondary) }
+                if model.spaceFreeing, let note = model.lockWaitNote { Text(loc.backend(note)).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary) }
                 if model.spaceLoading || model.spaceFreeing || model.overviewLoading { ProgressView().controlSize(.small) }
             }
-            .padding(.horizontal, 30).padding(.top, 28).padding(.bottom, 16)
-            // 切换单独一行、水平居中，夹在页头与内容之间。两段都是固定的短词，不放游戏名。
-            Picker("", selection: $overviewMode) {
-                Text(loc.t("s2arm.space.title")).tag(false)
-                Text(storage("title")).tag(true)
-            }
-            .pickerStyle(.segmented).labelsHidden().fixedSize().accessibilityIdentifier("space.mode")
-            .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.horizontal, 30).padding(.bottom, 20)
+            .padding(.horizontal, LauncherTheme.Space.page).padding(.top, LauncherTheme.Space.page).padding(.bottom, 16)
+            // 切换单独一行，与页头和内容左对齐。两段都是固定的短词，不放游戏名。
+            LauncherSegmented(options: [("game", loc.t("s2arm.space.title")), ("overview", storage("title"))],
+                              selection: overviewMode ? "overview" : "game") { overviewMode = $0 == "overview" }
+            .frame(width: LauncherTheme.Metrics.navigationWidth)
+            .accessibilityIdentifier("space.mode")
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, LauncherTheme.Space.page).padding(.bottom, 20)
             if let error = model.spaceError {
-                Text(loc.backend(error)).font(.manrope(12)).foregroundStyle(LauncherPalette.danger)
+                Text(loc.backend(error)).font(LauncherTheme.TypeStyle.caption).foregroundStyle(LauncherPalette.danger)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 30).padding(.bottom, 12)
+                    .padding(.horizontal, LauncherTheme.Space.page).padding(.bottom, 12)
             }
             if let freed = model.spaceFreed {
                 Text(String(format: loc.t("s2arm.space.freed"), Self.size(freed))).font(.manrope(12.5, .semibold))
                     .foregroundStyle(LauncherPalette.ready)
-                    .padding(.horizontal, 30).padding(.bottom, 12)
+                    .padding(.horizontal, LauncherTheme.Space.page).padding(.bottom, 12)
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
@@ -66,9 +59,9 @@ struct FreeSpaceView: View {
                             ForEach(space.parts) { part in
                                 CardRow(loc.backend(part.title), detail: loc.backend(part.rebuild)) {
                                     HStack(spacing: 14) {
-                                        Text(Self.size(part.bytes)).font(.manrope(13, .semibold)).monospacedDigit()
+                                        Text(Self.size(part.bytes)).font(LauncherTheme.TypeStyle.section).monospacedDigit()
                                             .foregroundStyle(part.bytes > 0 ? .primary : .secondary)
-                                        Toggle("", isOn: binding(part.id)).toggleStyle(.checkbox).labelsHidden()
+                                        Toggle("", isOn: binding(part.id)).toggleStyle(PadToggleStyle(.checkbox)).labelsHidden()
                                             .disabled(part.bytes == 0 || model.spaceFreeing)
                                             .accessibilityLabel(loc.backend(part.title))
                                     }
@@ -79,38 +72,35 @@ struct FreeSpaceView: View {
                         CardGroup(loc.t("s2arm.space.kept"), footnote: loc.t("s2arm.space.keptNote")) {
                             ForEach(space.kept) { item in
                                 CardRow(keptTitle(item.id)) {
-                                    Text(Self.size(item.bytes)).font(.manrope(13, .semibold)).monospacedDigit().foregroundStyle(.secondary)
+                                    Text(Self.size(item.bytes)).font(LauncherTheme.TypeStyle.section).monospacedDigit().foregroundStyle(.secondary)
                                 }
                                 if item.id != space.kept.last?.id { CardDivider() }
                             }
                         }
                     }
                 }
-                .padding(.horizontal, 30).padding(.bottom, 24)
+                .padding(.horizontal, LauncherTheme.Space.page).padding(.bottom, LauncherTheme.Space.section)
             }
-            Divider().opacity(0.3)
-            HStack(spacing: 14) {
+            LauncherSheetFooter {
                 // 总览页没有可删的东西：不显示「已选」与「直接删除」。
                 if !overviewMode {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(String(format: loc.t("s2arm.space.total"), Self.size(total))).font(.manrope(14, .bold)).monospacedDigit()
-                        Text(loc.t("s2arm.space.direct")).font(.manrope(12)).foregroundStyle(LauncherPalette.danger)
-                        if model.busy { Text(loc.t("s2arm.space.busy")).font(.manrope(12)).foregroundStyle(.secondary) }
+                        Text(loc.t("s2arm.space.direct")).font(LauncherTheme.TypeStyle.caption).foregroundStyle(LauncherPalette.danger)
+                        if model.busy { Text(loc.t("s2arm.space.busy")).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary) }
                     }
                 }
                 Spacer(minLength: 8)
                 if overviewMode {
-                    Button(storage("refresh")) { model.loadOverview() }.buttonStyle(LauncherSecondaryButtonStyle()).disabled(model.overviewLoading)
+                    Button(storage("refresh")) { model.loadOverview() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.overviewLoading).controllerShortcut(.secondary)
                 }
-                Button(loc.t("launch.done")) { dismiss() }.buttonStyle(LauncherSecondaryButtonStyle())
-                if !overviewMode { Button { confirming = true } label: {
-                    Text(loc.t("s2arm.space.free")).font(.manrope(13.5, .bold)).foregroundStyle(.black)
-                        .padding(.horizontal, 22).padding(.vertical, 9)
-                        .background(LauncherPalette.cream, in: Capsule())
+                Button(loc.t("launch.done")) { dismiss() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).keyboardShortcut(.cancelAction)
+                    .controllerShortcut(.rightTrigger, .back, focused: !overviewMode)
+                if !overviewMode {
+                    Button(loc.t("s2arm.space.free")) { confirming = true }
+                        .controllerButtonStyle(LauncherPrimaryButtonStyle()).disabled(!canFree).controllerShortcut(.rightTrigger)
                 }
-                .buttonStyle(.plain).disabled(!canFree).opacity(canFree ? 1 : 0.45) }
             }
-            .padding(.horizontal, 30).padding(.vertical, 16)
         }
         .alert(String(format: loc.t("s2arm.space.confirmTitle"), Self.size(total)), isPresented: $confirming) {
             Button(loc.t("s2arm.space.confirm"), role: .destructive) {
@@ -123,15 +113,12 @@ struct FreeSpaceView: View {
             Text(confirmMessage)
         }
         .onAppear { model.loadSpace(gameID) }
-        .frame(width: 640, height: 640)
+        .launcherSheet()
         .onDisappear { model.clearSpaceFreed() }
-        .background(LauncherPalette.background)
-        .font(.manrope(13))
-        .preferredColorScheme(.dark)
-        .tint(LauncherPalette.cream)
+        .onExitCommand { dismiss() }
     }
 
-    private func storage(_ id: String) -> String { BackendText.launcherText("storage." + id, language: loc.lang == .zh ? "zh-Hans" : "en") }
+    private func storage(_ id: String) -> String { BackendText.launcherText("storage." + id, language: loc.lang.sharedCode) }
 
     private func binding(_ id: String) -> Binding<Bool> {
         Binding(get: { chosen.contains(id) }, set: { on in if on { chosen.insert(id) } else { chosen.remove(id) } })
@@ -139,7 +126,7 @@ struct FreeSpaceView: View {
 
     /// 勾选的几项（显示名）+「直接删除、不能撤销」。
     private var confirmMessage: String {
-        let names = (space?.parts ?? []).filter { chosen.contains($0.id) }.map { loc.backend($0.title) }.joined(separator: loc.lang == .zh ? "、" : ", ")
+        let names = (space?.parts ?? []).filter { chosen.contains($0.id) }.map { loc.backend($0.title) }.joined(separator: loc.t("s2arm.punct.list"))
         return String(format: loc.t("s2arm.space.confirmMessage"), names)
     }
 

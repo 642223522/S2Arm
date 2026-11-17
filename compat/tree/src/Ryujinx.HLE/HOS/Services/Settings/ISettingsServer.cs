@@ -118,6 +118,17 @@ namespace Ryujinx.HLE.HOS.Services.Settings
             return GetKeyCodeMapImpl(context, 2);
         }
 
+        [CommandCmif(12)] // 17.0.0+
+        // GetKeyCodeMapByPort(u32 port) -> buffer<nn::kpr::KeyCodeMap, 0x16>
+        // 11-14 诊断 D-YHRE：有游戏开局就调它，没实现回 2010-0221（未知命令）游戏随即 Break、Mac / iOS 都打不开。
+        //   按端口取键盘布局：主机只有一套布局，与 GetKeyCodeMap2 同一份（Eden settings_server.cpp 同口径，只借协议事实）
+        public ResultCode GetKeyCodeMapByPort(ServiceCtx context)
+        {
+            context.RequestData.ReadUInt32(); // port
+
+            return GetKeyCodeMapImpl(context, 2);
+        }
+
         [CommandCmif(11)] // 10.1.0+
         // GetDeviceNickName() -> buffer<nn::settings::system::DeviceNickName, 0x16>
         public ResultCode GetDeviceNickName(ServiceCtx context)

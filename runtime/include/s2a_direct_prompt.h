@@ -54,6 +54,18 @@ extern "C" {
 //   它是「状态未知」，既不是已确认安全的 0，也不是原因位；Apple（dlsym）缺席仍恒 0
 #define S2A_SAVE_ATOMIC_UNKNOWN (-1)
 int s2a_save_atomic_poll(void);
+// 画面没出来（体验梳理线 11-14 定稿；诊断组「shader library directory … does not exist」：玩家只导了 game.img、包里没有直连库，现编又全败，只有声音）：
+//   直连模式、起局后会话跑满 S2A_NOPIC_AFTER_S 秒、已经在上屏，期间直连现编失败次数 > 0 且一次绘制都没编码出去（上屏的全是空帧）→ 提示一次。
+//   只有失败、但画出了东西（部分材质缺）的不提示。触发时记一行日志（带现编失败次数，随诊断包走）并计进直连安全网（s2a_dguard_evidence）。
+//   前端主线程每秒调一次；返回 1 只返回一次，之后恒 0。判据本身是纯函数 s2a_no_picture_decide（单测）
+#define S2A_NOPIC_AFTER_S 20
+#define S2A_DPROMPT_NOPIC_TITLE    "画面没出来"
+#define S2A_DPROMPT_NOPIC_TITLE_EN "No picture"
+#define S2A_DPROMPT_NOPIC_BODY     "这款游戏的图形组件不完整。在电脑上用启动器重新出包并推送到手机就能解决。"
+#define S2A_DPROMPT_NOPIC_BODY_EN  "This game's graphics data is incomplete. Export it again on your computer and send it to your iPhone to fix it."
+int s2a_no_picture_decide(double secs, unsigned long long fails, unsigned long long draws, unsigned long long presents);
+int s2a_no_picture_poll(void);
+int s2a_no_picture_poll_at(double now);   // 同上，时刻由调用方给（单调时钟秒；单测用）
 #ifdef __cplusplus
 }
 #endif

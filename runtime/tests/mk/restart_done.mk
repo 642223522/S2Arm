@@ -1,6 +1,6 @@
 # native-test-restart_done：重启完成登记点（runtime/src/session.c s2a_session_on_restart_done；iOS 壳靠它放重启首帧屏障，设置页 / 游戏发起同一处）
 NATIVE_TEST_OWN += restart_done
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 .PHONY: native-test-restart_done
 native-test-restart_done:
 	@mkdir -p $(BUILD)/tests

@@ -62,7 +62,7 @@ static uint64_t g_drop_t;                                            // 骤降�
 enum { PEAK_S = 5 };
 static const uint64_t PK_SNAP = 64 * MB;
 static uint64_t g_pk_ns0, g_pk_t0, g_pk_tmin, g_pk_tmin_s, g_pk_bmin, g_pk_bmin_s; static int g_pk_have, g_peak_watch;
-static struct { uint64_t t; char tags[400]; } g_pk_snap[2]; static _Atomic int g_pk_cur;   // 快照时的 T 与按标签合计；g_pk_cur 指向已写完的那份
+static struct { uint64_t t; char tags[768]; } g_pk_snap[2]; static _Atomic int g_pk_cur;   // 快照时的 T 与按标签合计；g_pk_cur 指向已写完的那份
 static void ledger(const char *why, const char *stuck);
 
 static uint64_t lv_now(void) { if (g_now) return g_now(); struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec; }
@@ -100,7 +100,7 @@ static void scan(uint64_t *t, uint64_t *b) {
     // 骤降读数（10-21 巫师3 两局：第 60 秒 T 1295 / 1323 MB、按 A 进场后不到 1 秒崩时 0 / 35，中间没有任何读数）：比上次打读数时少了 ≥ 200 MB 就打一行账（含各家账面），
     // 回升则起点跟上；申请时也扫，进场高峰里开片频繁，这行能把骤降逐段记下来
     if (!g_drop_t || *t > g_drop_t) g_drop_t = *t;
-    else if (g_drop_t - *t >= 200 * MB) { g_drop_t = *t; ledger("骤降", NULL); char tg[400]; s2a_low_tags(tg, sizeof tg); LOG("低区账 [骤降]：%s", tg);
+    else if (g_drop_t - *t >= 200 * MB) { g_drop_t = *t; ledger("骤降", NULL); char tg[768]; s2a_low_tags(tg, sizeof tg); LOG("低区账 [骤降]：%s", tg);
 #if defined(__APPLE__)
         s2a_low_files("骤降");   // Mach external_pager / proc_regionfilename 明细；Android 仍用上面的真实 maps 总账
 #endif

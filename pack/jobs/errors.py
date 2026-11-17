@@ -5,13 +5,15 @@ import errno
 import os
 import re
 from pathlib import Path
+import stat
 
 
 RECOVERY = {
-    "ios_install_dir_unwritable": "重新打开 S2Arm（会自动修好），再从电脑推送一次。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
+    "ios_install_dir_unwritable": "重试没用，要删掉 iPhone 上的 S2Arm App 再重装：①先在游戏菜单「存档管理」里导出存档，存到 S2Arm 文件夹以外（比如 iCloud 云盘）；②在 iPhone 桌面长按 S2Arm，删除 App；③在电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」；④装好后在「存档管理」里导回存档。电脑上的游戏和 S2Arm 都不用删。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
     "ios_install_no_space": "清出空间后点「重试」。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
     "ios_install_img_format": "更新 iPhone 上的 S2Arm，再打开这款游戏。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
     "ios_install_img_corrupt": "从电脑重新装到 iPhone，会接着已传的部分续传。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
+    "ios_import_img_corrupt": "在游戏库里长按这款，选「删除游戏…」，再把电脑上导出的这款 .img 重新放进「放这里导入」。",   # 同上，但坏的 game.img 是玩家放进「放这里导入」认领的（pack_apply.c came_from_import）：从电脑续传不对路，删掉重新导入
     "ios_install_pack_truncated": "重新连电脑推送，会自动补齐。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
     "ios_install_files_missing": "从电脑重新装到 iPhone。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
     "ios_install_manifest_bad": "从电脑重新装到 iPhone。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
@@ -40,6 +42,7 @@ RECOVERY = {
     "job_failed": "查看本任务的具体日志，修复提示的问题后重试；反馈时复制已脱敏的错误摘要。",
     "tool_exit": "查看本任务日志和失败阶段，按提示修复后重试；反馈时复制错误摘要。",
     "game_crashed": "再启动一次试试；还是这样，就在「环境检查」导出诊断包，到 GitHub 发帖附上，我们按崩溃现场修。",   # Mac 起局：游戏进程中途非 0 退出（build.launch）
+    "game_gpu_stopped": "点「再启动一次」一般能接着玩，存档停在游戏上次保存的地方。",   # Mac 起局：显卡挂死、运行时安全停（退出码 86，build.launch）
     "keys_missing": "在「设置 → 玩家密钥」导入自行导出的 prod.keys，然后重新导入游戏。",
     "keys_invalid": "重新选择完整的 prod.keys 文本文件，不要手工补写密钥值；原有密钥保持不变。",
     "content_unreadable": "检查文件和票据是否完整；若另行确认 Switch 密钥版本不足，可重新导出并到「设置 → 玩家密钥」重新导入。",
@@ -62,7 +65,9 @@ RECOVERY = {
     "library_move_failed": "游戏库还在原来的位置，什么都没有丢：按上面的原因处理后再搬一次。",
     "batch_record_failed": "批次记录（数据目录下的 batch.json）写不进：检查数据目录所在磁盘的空间与权限，处理后在批量出包页点「继续」；已出好的包都在。",
     "library_busy": "等正在用游戏库的那个任务结束（或在任务列表里取消它）再重试；什么都没有改动。",
+    "library_lock_stuck": "原任务进程已不在，但游戏库的锁仍被占用。重新连接或重新挂载游戏库所在磁盘后再试；不要手动删除锁文件。本次没有改动游戏文件。",
     "downstream_ineligible": "这个下游方案只支持某一版更新（上面写了是哪一版）：导入那一版更新后再导出；不换更新就在确认页选「仍用原版方案」。",
+    "downstream_export_unsupported": "这款选的下游方案是独立 App，资源要由电脑推进去：连上手机后点「装到 iPhone」；想导出自签包就在确认页改选「仍用原版方案」。",
     "download_failed": "检查这台电脑的网络（能打开 s2arm.com）后再点一次；下了一半的不会被当成好的用。",
     "diag_upload_failed": "导出诊断包，手动发到 GitHub 帖子或群里；网络恢复后也可以再点一次「故障报修」。",   # 上传诊断没成（服务没开通 / 连不上 / 被拒收，diag_upload.py）：界面退回导出
     "disk_full": "释放任务所在磁盘的空间，检查游戏库和应用数据所在磁盘后重试；不要删除存档或上次成功的运行版本。",
@@ -79,7 +84,7 @@ RECOVERY = {
                                "并关掉对游戏库文件夹的杀毒实时扫描或云同步，或把游戏库换到另一块盘。",
     "ios_platform_missing": "在设置里点「iOS 平台组件」的「一键下载」（苹果官方，约 8 GB），下完自动重新检查后重试；也可以打开 Xcode → 设置 → Components 装上与 Xcode 配套的 iOS 平台。",
     "ios_platform_unregistered": "iOS 平台组件已经下载，只是还没注册到模拟器：点「重新检查」再试；不用重复下载（约 8 GB）。还不行就在 Xcode → 设置 → Components 里确认这一项，或重启这台 Mac 后再点「重新检查」。",
-    "dotnet_unavailable": "重新安装完整的 S2Arm，恢复内置运行时后点「重新检查」。",
+    "dotnet_unavailable": "重新安装完整的 S2Arm，然后点「重新检查」。",
     "dotnet_sdk_missing": "在「设置」的环境检查中安装 .NET 10 SDK，完成后重新检查，再打 iPhone 包。",
     "reader_unavailable": "重新安装完整的 S2Arm，然后重新导入游戏。",
     "engine_incomplete": "重新安装完整的 S2Arm，然后点「重新检查」。",
@@ -98,6 +103,9 @@ RECOVERY = {
     "device_required": "在装机页选好要装到哪台 iPhone / iPad，再点装机。",
     "signing_failed": "查看本任务日志里签名那一步的报错；确认 Xcode 能用你的账号给这台 iPhone 签名，或改用 AltStore 安装。",
     "device_locked": "解锁这台 iPhone（保持亮屏、停在主屏幕），再点一次「装到 iPhone」；装机过程中别锁屏。",
+    "shell_install_required": "在 S2Arm 里先点「安装 S2Arm」把 App 装到这台 iPhone，再对这款点「推到 iPhone」。",   # 通用壳「推到 iPhone」：手机上还没装壳（install.push_game）
+    "shell_update_required": "在 S2Arm 里先点「更新 S2Arm」，把手机上的 App 换成这一版，再对这款点「推到 iPhone」。",   # 通用壳「推到 iPhone」：手机上的壳不是本版
+    "device_not_visible": "用数据线把这台 iPhone 连到这台 Mac，解锁后在手机上点「信任」；打开开发者模式（设置 → 隐私与安全性 → 开发者模式，开了要重启手机）；等 Xcode 菜单「窗口 → 设备与模拟器」里出现这台，再点一次「装到 iPhone」。",   # pack/ensure_profile.sh：Xcode 看不到这台、账号上也没登记过它（D-44DP 兜底的盲区，11-16）
     "free_app_limit": "免费 Apple ID 在每台设备上最多同时装 3 个自签 App，这台 iPhone 已经装满：在 iPhone 上长按删掉一个不再玩的自签 App 后重试；或改用付费 Apple 开发者账号（没有这个上限）。",
     "free_appid_limit": "这是 Apple 对免费 Apple ID 的限制：7 天内最多注册 10 个包名，这个账号已经用满；在手机上删 App 不会退还额度。办法：等几天，最早那批包名注册满 7 天就会恢复；或在 Xcode / Impactor 里换一个 Apple ID 登录后再装；或改用付费 Apple 开发者账号（没有这个限制）。",   # Apple 错误 9120；与 free_app_limit（设备上同时 3 个）是两件事，删 App 无效
     "app_id_taken": "苹果拒绝注册这个包名（Apple 错误 9401：同一个包名在苹果那边已被占用）。请在 Impactor（Mac 上是 Xcode）里确认登录的是当初装 S2Arm 用的那个 Apple ID 再装；付费开发者账号也可以到 developer.apple.com 的「Certificates, Identifiers & Profiles → Identifiers」删掉 io.s2arm.games 开头的旧包名后重试。还不行请导出诊断包反馈。",   # Apple 错误 9401；Windows 装机先用大小写两种包名各试一次（install_win.install_app），都被拒才报这个码
@@ -105,10 +113,14 @@ RECOVERY = {
     "bundle_id_switched": "这个包名之前被别的签名用过（多半是你自己签名装 S2Arm 时用了同一个包名），这次已自动换成新包名装好。手机上可能有两个 S2Arm：新装的这个里有这台电脑装的游戏；旧的那个不再需要的话可以删掉（先导出存档）。",   # 包名被占（9401）时 Mac 自动换 <包名>.s2 装好（install.MacPhone.install），黄字说明
     "signing_server_unreachable": "这台电脑连不上 Impactor 签名要用的登录辅助服务器（mac-ani.jkcoxson.com，Impactor 内置、改不了），已自动重试过一次。检查这台电脑的网络：浏览器能打开这个地址就再点一次「装到 iPhone」；打不开就换个 DNS（如 223.5.5.5 或 1.1.1.1）或开 / 关代理后再装。手机、已装的 App 和存档都不受影响。",   # #3fc02b：plumesign 取 anisette（mac-ani.jkcoxson.com，Impactor v2.7.2 omnisette 写死）时 DNS / 连接失败（impactor.explain）
     "apple_session_expired": "Apple ID 登录已过期，请重新登录后再装：在装机页点「打开 Impactor」→「设置」，选中你的 Apple ID 点「移除账号」，再点「添加账号」用同一个 Apple ID 重新登录（邮箱、密码、手机上的验证码，输入前切到英文输入法），然后回来再点一次「装到 iPhone」。密码只在 Impactor 里输，S2Arm 不经手。",   # Windows plumesign 恢复保存的会话时 Apple 1100（impactor.explain）；Mac 同类原文归 xcode_account_missing（去 Xcode 重新登录）
+    "apple_not_signed_in": "Impactor 里还没登录 Apple ID：在装机页点「打开 Impactor」→「设置」→「添加账号」，用你的 Apple ID 登录（邮箱、密码、手机上的验证码，输入前切到英文输入法）；已经存了几个账号的，选中要用的那个（或移除后重新添加）。然后回来再点一次「装到 iPhone」。密码只在 Impactor 里输，S2Arm 不经手。",   # Impactor 里没有选中的 Apple ID（从没登录 / 存了几个没选中，#edc5f5 从登录过期拆出）
+    "apple_server_unreachable": "这台电脑连不上苹果的服务器（Impactor 登录和签名都要连），不是 Apple ID 或密码的问题。检查这台电脑的网络：浏览器能打开 appleid.apple.com 就再点一次「装到 iPhone」；打不开就换个 DNS（如 223.5.5.5 或 1.1.1.1）或开 / 关代理后再装。手机、已装的 App 和存档都没动。",   # 连不上 *.apple.com（#edc5f5 拆分：网络问题，不让玩家去重登 Apple ID）
+    "crash_restored": "照常玩就行；如果又崩溃，会再自动关掉，也可以在启动设置里自己关。",
     "aoc_missing": "本体已出好，照常安装即可；没解出的追加内容不在包里，游戏里用不到那部分内容。请导出诊断反馈，解码支持后重新打包即可带上。",
+    "kit_oversized": "游戏照常能玩、能装；只是这款的程序件里混进了不该有的大文件，多占电脑空间、装机多推一些。请导出诊断反馈给我们。",   # 程序件（除改写产物）超过 300 MB：资源镜像混进同层（library.loud_if_kit_oversized），出包不拦、当场看见
     "direct_offline_empty": "游戏照常能玩，只是开头几次进新场景会卡一下（着色器现编，编过的会记住）。请导出诊断反馈给我们，修好后重新出包就能提前编好。",
     "sibling_clone_failed": "已改从解包目录准备，本次照常完成，只是多花一些时间；游戏库放在 APFS 格式的磁盘上（Mac 内置盘或格式化为 APFS 的外接盘）时，各平台导出可以共用已准备好的游戏数据。",
-    "iml_missing": "用 Xcode（免费 Apple ID 即可）或 AltStore Classic v2.3 重新签名安装这款游戏；SideStore 0.7.0 免费账号重签会丢这项权限。已装的也可以用 GetMoreRam 给 App ID 补上权限后重装。",
+    "iml_missing": "在电脑上的 S2Arm 点「装到 iPhone」重新安装（免费 Apple ID 也会带上这项权限）；自己签名的话用 Xcode 或 AltStore Classic v2.3，SideStore 0.7.0 重签会丢；已经装好的也可以用 GetMoreRam 给 App ID 补上权限后重装。",
     "export_dir_busy": "用新文件夹里的 S2Arm.ipa 和 .img 自签安装；关掉占用旧文件夹的程序后，可以把旧的那个删掉。",
     "manual_unpack_required": "资源包已经在手机上，不用重推：在 iPhone 上打开 S2Arm，选这款游戏，保持在前台别锁屏，等它导入完就能玩。",
     "usb_slow": "换一根支持 USB 3 的 USB-C 数据线，直接插 Mac 上的 USB-C / 雷雳口（不经扩展坞、集线器、显示器上的口），再装下一款；iPhone 15 Pro 及更新的 Pro 机型才支持 USB 3，其它机型只能 USB 2.0。",
@@ -117,6 +129,7 @@ RECOVERY = {
     "devcert_mismatch": "在开发者网站重新生成描述文件并勾上这张证书，下载后和证书一起重新导入。",   # 开发者证书签名（pack/jobs/devcert.py，v0.2.4）
     "devcert_missing": "在出包页「我的开发者证书」里重新导入证书和描述文件，或切回「Apple ID 签名」。",   # 开发者证书签名（pack/jobs/devcert.py，v0.2.4）
     "devcert_keychain": "解锁登录钥匙串并允许 S2Arm 访问后，重新导入证书。",   # 开发者证书签名（pack/jobs/devcert.py，v0.2.4）
+    "widget_skipped": "App 已装好、游戏照常玩。想要主屏小组件：用 Apple ID 签名（不是自己的开发者证书）再装一次；免费 Apple ID 包名额度满了就等几天再装。",   # 主屏小组件（install.widget_skip，11-16）
     "shell_sdk_old": "装好的包能用；要在 iPhone Duo 等新机型上铺满全屏，把 Xcode 更新到不低于这台 iPhone 系统大版本的版本（如 iOS 27 用 Xcode 27），在启动器里选它后重新打 iPhone 包再装。",
     'configuration_failed': '检查当前阶段的配置推导错误，保留原始游戏输入；更新完整引擎后重新准备，仍失败时反馈错误摘要。',
     'shader_extract_failed': '检查着色器抽取的具体错误；确认游戏输入完整且版本一致，重新准备后仍失败时反馈摘要。',
@@ -129,6 +142,7 @@ RECOVERY = {
     'developer_mode_required': '在 iPhone「设置 → 隐私与安全性 → 开发者模式」按系统提示开启开发者模式，再重新安装。',
     'device_pairing_required': '重新用数据线连接并解锁 iPhone，在手机上确认「信任此电脑」，然后重新检查设备并安装。',
     'free_team_capability': '免费个人开发者团队签不了这个 App 申请的某项权限（例如「扩展虚拟寻址」）；更新 S2Arm 后重新安装（新版对免费团队只申请能签的权限），或在 Xcode 改用付费开发者团队。',
+    'tvos_eva_required': 'Switch 2 游戏在 Apple TV 上要「扩展虚拟寻址」权限，只有付费 Apple 开发者账号签得了：在 Xcode「设置 → 账户」登录付费开发者账号或选付费团队，再装到 Apple TV（Switch 1 游戏用免费 Apple ID 就能装）。',
     'provisioning_expired': '开发描述文件已过期；在 Xcode 重新登录签名账号、重新申请描述文件并签名安装，保留原 App 存档。',
     'compiler_cache_incomplete': '已完成的安装包可以保留；检查磁盘余量与缓存目录权限后再清理缓存，不要删除游戏或存档。',
     'stage_timeout': '当前阶段已超时；检查该阶段日志和设备连接，确认原因后重试，不要同时重复启动同一任务。',
@@ -207,17 +221,42 @@ class Failure(Exception):
         self.facts = facts     # 机读的失败事实（cause_facts：改写失败的模块 / 缺口数 / 缺口类别），前端按字段显示，不解析中文；没有为 None
 
 
+def library_lock_failure(holder, message, internal=""):
+    """Keep ordinary lock contention unchanged; specialize only a locally proven dead/reused owner."""
+    import filelock
+    if filelock.holder_is_stale(holder) is True:
+        return Failure("原任务进程已不在，但游戏库的锁仍被占用。重新连接或重新挂载游戏库所在磁盘后再试；不要手动删除锁文件。本次没有改动游戏文件。",
+                       code="library_lock_stuck", holder=holder, internal=internal)
+    return Failure(message, code="library_busy", holder=holder, internal=internal)
+
+
 def _under(path, roots):
-    # 两边都按真实路径比（macOS 的 /var 实为 /private/var、外接盘挂载点软链：请求里记的与报错带的写法可能不同；删掉的文件 realpath 照样解析父目录）
+    # 两边都安全解析后再比（macOS 的 /var 实为 /private/var、外接盘挂载点软链：请求里记的与报错带的写法可能不同）。
     try:
-        p = os.path.realpath(os.fspath(path))
-    except TypeError:
+        # core.resolve_path 已处理 Windows ERROR_UNRECOGNIZED_VOLUME：能安全解析时做真实路径比较；
+        # A 盘 / 网络卷不可识别时不让二次诊断覆盖原始 OSError。
+        from core import resolve_path
+        p = os.path.normcase(os.fspath(resolve_path(path)))
+    except (OSError, TypeError, ValueError):
         return False
     for r in roots:
-        r = os.path.realpath(os.fspath(r))
+        try:
+            r = os.path.normcase(os.fspath(resolve_path(r)))
+        except (OSError, TypeError, ValueError):
+            continue
         if p == r or p.startswith(r.rstrip(os.sep) + os.sep):
             return True
     return False
+
+
+def _is_directory(path):
+    """Return None when the volume cannot be checked; do not mistake I/O errors for a missing library."""
+    try:
+        return stat.S_ISDIR(os.stat(path).st_mode)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
 
 
 def explain(error, sources=(), library=None):
@@ -232,13 +271,14 @@ def explain(error, sources=(), library=None):
         if error.errno in (errno.ENOSPC, errno.EDQUOT):
             return Failure("任务所在磁盘空间不足。", code="disk_full")
         paths = [p for p in (error.filename, error.filename2) if p]
-        internal = f"{type(error).__name__} errno {error.errno}：{error.strerror or error}" + ("；路径 " + " → ".join(map(str, paths)) if paths else "")
+        internal = f"{type(error).__name__} errno {error.errno}：{error.strerror or error}" + ("；路径 " + " → ".join(map(str, paths)) if paths else "")  # 非玩家句
         if error.errno in (errno.EACCES, errno.EPERM, errno.EROFS):
             if any(_under(p, [*sources, *([library] if library else [])]) for p in paths):
                 return Failure("文件或目录不可访问或不可写。", code="permission_denied", internal=internal)
             return Failure("本地任务失败：S2Arm 自己的文件读写不了，请导出诊断发给我们。", internal=internal)
         if error.errno == errno.ENOENT:
-            if any(_under(p, sources) for p in paths) or (library is not None and not os.path.isdir(library)):
+            library_is_dir = _is_directory(library) if library is not None else True
+            if any(_under(p, sources) for p in paths) or library_is_dir is False:
                 return Failure("任务所需的文件或目录不存在。", code="input_missing", internal=internal)
             return Failure("本地任务失败：S2Arm 自己的文件找不到了，请重试；还不行请导出诊断发给我们。", internal=internal)
         return Failure("本地任务失败，请检查日志和输入。", internal=internal)
@@ -307,47 +347,47 @@ def player_reason(code):
 # 按日志确凿字样归因，先于阶段映射：按本表顺序，证据里第一个命中的码胜出（盘满最先：写盘失败后面常跟一串连带错误）。
 # 只收工具 / 系统原样会打的字样，不从散文猜。
 LOG_CAUSES = (
-    (r"WinError 206|filename or extension is too long|文件名或扩展名太长", "windows_path_too_long"),
-    (r"No space left on device|\bENOSPC\b|\[Errno 28\]|\berrno\s*[=:]?\s*28\b"          # POSIX / Python OSError / .NET IOException（Mac）
+    (r"WinError 206|filename or extension is too long|文件名或扩展名太长", "windows_path_too_long"),  # 非玩家句
+    (r"No space left on device|\bENOSPC\b|\[Errno 28\]|\berrno\s*[=:]?\s*28\b"          # POSIX / Python OSError / .NET IOException（Mac）  # 非玩家句
      r"|There is not enough space on the disk|\bDisk full\b|WinError 112|ERROR_DISK_FULL|0x80070070"   # Windows / .NET
      r"|STATUS_DISK_FULL|磁盘空间不足", "disk_full"),                                       # Windows 退出码注（direct_lib.sh 127）/ 我方字样
     # 内存用完（#711：Windows 16 GB 抽取按核数开满进程池，Python 子进程 MemoryError）：Python / .NET / Windows 提交上限原样字样
-    (r"(?m:^\s*MemoryError\b)|OutOfMemoryException|\[WinError 1455\]|paging file is too small|页面文件太小|Cannot allocate memory|\bENOMEM\b", "out_of_memory"),
+    (r"(?m:^\s*MemoryError\b)|OutOfMemoryException|\[WinError 1455\]|paging file is too small|页面文件太小|Cannot allocate memory|\bENOMEM\b", "out_of_memory"),  # 非玩家句
     # 盘不支持某种文件操作（exFAT 外接盘不支持原子改名 / 克隆 / 硬链接，实测 errno 45）：出包写入的这块盘格式不对，说清换 APFS 盘（11-10 网友：存放位置设到外接盘写入失败）
     (r"\[Errno 45\] Operation not supported|\bENOTSUP\b|Operation not supported on socket", "volume_ops_unsupported"),
     # cp 被系统拒绝（拷字体等，pack/stages/sysdata.sh 红行带 cp 原文）：macOS 隐私授权没给（桌面 / 文稿 / 下载 / 外接盘）或目录没写权限 → 提示去系统设置授权
     (r"\bcp: .*: (?:Operation not permitted|Permission denied)", "permission_denied"),
     # 直连库出库前核链号对不上：旧引擎（≤ beta.4，direct_lib.sh 把 dmsh_chain.py --build-env 的 stderr 一起收进链号）遇到 metal 比锁新的 Xcode，
     #   编译器提示「note: …」被当成链号读（eb4b5c964 已修）。玩家能做的就是更新 S2Arm
-    (r"链号前后不一", "engine_toolchain_newer"),
+    (r"链号前后不一", "engine_toolchain_newer"),  # 非玩家句
     # 直连配置推导判不出图形接口（graphics/nvn/tools/direct_profile.py；gfx_api.py 只认动态导入的 NVN / Vulkan / EGL）：
     #   同人移植多把 deko3d / Mesa 静态链进程序（#222 程序号 05F4…，不是官方 0100 段），通用 GPU 模拟路径已拆（11-07 只有直连），这类按现行设计不支持
     (r"unsupported graphics API: unknown", "graphics_api_unsupported"),
     # v0.3.1 拿不准不停 ⑪ / ⑧：物理做不下去的照停，但要说人话。直连配置推导不认本款的程序结构（main 不是 NSO / 动态符号表 / RomFS 符号链接等；图形接口那类上一行先认）
-    (r"配置推导不支持本款", "game_structure_unsupported"),
+    (r"配置推导不支持本款", "game_structure_unsupported"),  # 非玩家句
     # 直连库 Metal 一份都没出（Build.cs Metal.Tally）：这台机器上的 Metal 编译器用不了
-    (r"Metal 库一份都没出", "metal_unavailable"),
+    (r"Metal 库一份都没出", "metal_unavailable"),  # 非玩家句
     # 资源包核对（pack/verify.py）：包里那份读出的 SHA 和 pack.py 记进 index 的不一样——同一个文件（NTFS 硬链接 / 克隆）两次读出不同，
     #   多见于读盘不稳定或有程序在改游戏库里的文件；核对已让这几个文件下次重算（11-13 玩家报错原先落成未归类 package_failed）
-    (r"SHA 与 index 不符", "package_verify_mismatch"),
+    (r"SHA 与 index 不符", "package_verify_mismatch"),  # 非玩家句
     # 直连库原生库缺导出 / 缺库（Build.cs）：S2Arm 安装不全，不是游戏内容
-    (r"原生库缺件（出包机环境", "tool_missing"),
+    (r"原生库缺件（出包机环境", "tool_missing"),  # 非玩家句
     # 改写停住：v0.3.1 起有缺口照出产物、降级继续（pack/stage_rewrite.sh 记 degrade.rewrite.tsv），日志里留着「PFRW … gaps=N」不再说明失败在改写；
     #   只有缺口加上补丁区放不下（stage_rewrite.sh 这句红行）才是改写停住。按 PFRW 认会把之后别的阶段的失败错归成改写缺口
-    (r"需要的改写空间超过了能放下的上限", "rewrite_gap"),
+    (r"需要的改写空间超过了能放下的上限", "rewrite_gap"),  # 非玩家句
     # Windows 出包期 GLSLC 工具模式缺失（exitCode 75）
-    (r"Windows 还没有 GLSLC 工具模式|要出包期离线编 GLSLC.*Windows", "glslc_windows_unavailable"),
+    (r"Windows 还没有 GLSLC 工具模式|要出包期离线编 GLSLC.*Windows", "glslc_windows_unavailable"),  # 非玩家句
     # 下载 Metal 编译组件（xcodebuild -downloadComponent MetalToolchain）拿不到苹果的资源目录（诊断#f5eae9：3 台 Mac，Xcode 27A266a / 27B47；
     #   同版本 Xcode 在能连上苹果的网络里照常下得下来）：玩家这边网络 / 代理到不了苹果的组件服务器。原先上屏只剩最后一行「})」
     (r"Failed fetching catalog for assetType \(com\.apple\.MobileAsset\.MetalToolchain", "metal_download_unreachable"),
     # xcodebuild 自己的插件加载不了（CoreSimulator 等系统组件没装上），苹果原文让跑 -runFirstLaunch = Xcode 首次设置没做完（同诊断#f5eae9 一台）
     (r"xcodebuild failed to load a required plug-in", "xcode_setup_required"),
-    (r"unable to find utility \"metal(?:lib)?\"|cannot execute tool '?metal(?:lib)?'?|missing Metal Toolchain"
+    (r"unable to find utility \"metal(?:lib)?\"|cannot execute tool '?metal(?:lib)?'?|missing Metal Toolchain"  # 非玩家句
      r"|【红】环境缺件 metal：", "metal_unavailable"),   # 后者：Windows 出包预检（pack/orch/oneclick_win.py env_items）找不到 Metal Developer Tools
     (r"is not installed\. (?:To use with Xcode, first download and install the platform|Please download and install the platform)", "ios_platform_missing"),   # xcodebuild 原文（11-07 gate-host Xcode 26.6）
     (r"unable to find utility \"|: command not found|is not recognized as an internal or external command", "tool_missing"),
 )
-_RED = ("【红】", "🔴", "[RED]")
+_RED = ("【红】", "🔴", "[RED]")  # 非玩家句
 # 红行里点名的子日志（如直连库 <缓存>/work.stage.N/build.log）：绝对路径（可含空格，如「Application Support」），以 .log / .out 结尾
 _LOG_PATH_ANY = re.compile(r"((?:[A-Za-z]:[\\/]|/)[^\s'\"（）()，,；;]+)")   # 命中行里点名的绝对路径（核盘满用：不限 .log）
 _LOG_PATH = re.compile(r"(?:(?<=[\s（(：:，,=])|^)((?:[A-Za-z]:[\\/]|/)[^（）()，,；;\"'\r\n]*?\.(?:log|out))(?=$|[\s）)，,；;:\"'])")
@@ -382,7 +422,7 @@ def gather_evidence(log, texts=()):
     """有界读取失败证据：调用方给的原因文本 + 主日志尾 EVIDENCE_MAIN_BYTES，再跟红行（原因文本整段）里点名的子日志，
     最多 EVIDENCE_SUB_FILES 份、每份尾 EVIDENCE_SUB_BYTES，子日志的红行可再往下跟。返回 [(来源, 文本)]。"""
     from pathlib import Path
-    chunks = [("原因", t) for t in texts if t]
+    chunks = [("原因", t) for t in texts if t]  # 非玩家句
     queue = [p for t in texts if t for p in _log_paths(t, red_only=False)]
     seen = set()
     if log:
@@ -439,16 +479,16 @@ def _confirm(code, line, log):
         paths = [m.group(1) for m in _LOG_PATH_ANY.finditer(line)] + ([str(Path(log).parent)] if log else [])
         free = [(p, f) for p, f in ((p, _free_bytes(p)) for p in paths) if f is not None]
         if not free:
-            return True, "读不到所在盘的剩余空间，按字样"
+            return True, "读不到所在盘的剩余空间，按字样"  # 非玩家句
         path, least = min(free, key=lambda pf: pf[1])
         gib = least / (1 << 30)
         if least < DISK_FULL_FREE:
-            return True, "核实：%s 所在盘只剩 %.1f GB" % (path, gib)
-        return False, "所在盘还剩 %.1f GB（%s），不是盘满" % (gib, path)
+            return True, "核实：%s 所在盘只剩 %.1f GB" % (path, gib)  # 非玩家句
+        return False, "所在盘还剩 %.1f GB（%s），不是盘满" % (gib, path)  # 非玩家句
     if code == "tool_missing":
         m = re.search(r"([\w.+-]+): command not found", line)
         if m and _tool_present(m.group(1)):
-            return False, "「%s」现在找得到，不是没装" % m.group(1)
+            return False, "「%s」现在找得到，不是没装" % m.group(1)  # 非玩家句
     return True, ""
 
 
@@ -465,18 +505,18 @@ def log_cause(chunks, log=None):
                 ok, why = _confirm(code, line, log)
                 if ok:
                     return code, label, line, why
-                rejected.append("候选 %s 未采信：%s 里「%s」，%s" % (code, label, line, why))
+                rejected.append("候选 %s 未采信：%s 里「%s」，%s" % (code, label, line, why))  # 非玩家句
                 break   # 同一个码事实已核过，别的来源同样字样不再重复核
     return None, rejected
 
 
 def refresh_stop_phase(red):
     """refresh.sh 的终止红行「【红】<款> 刷新停在 <子阶段>…」→ STAGE_CODES 的阶段；未登记的子阶段给 None（保持宽码，不从更早的红行猜）。"""
-    stop = re.match(r"^【红】[^\r\n]+? 刷新停在\s*(.*)", red or "")
+    stop = re.match(r"^【红】[^\r\n]+? 刷新停在\s*(.*)", red or "")  # 非玩家句
     if not stop:
         return None
     substep = stop.group(1)
-    for prefix, phase in (("直连配置推导", "configure"), ("rewrite 阶段", "rewrite"), ("抽取阶段", "sh_extract"), ("direct 阶段", "direct")):
+    for prefix, phase in (("直连配置推导", "configure"), ("rewrite 阶段", "rewrite"), ("抽取阶段", "sh_extract"), ("direct 阶段", "direct")):  # 非玩家句
         if substep.startswith(prefix):
             return phase
     return None
@@ -516,13 +556,13 @@ def classify_failure(phase, log, texts=()):
     """Mac 准备（build_tool_failure）与 iPhone 打包（ipa.oneclick_failure，Mac / Windows 同一份）共用：
     日志确凿根因优先，其次阶段映射，判不出 package_failed。返回 (码, 写进 internal 的归因说明)。"""
     chunks = gather_evidence(log, texts)
-    read = "；".join("%s（尾 %d 字节）" % (label, len(text.encode("utf-8"))) for label, text in chunks if label != "原因") or "无日志"
+    read = "；".join("%s（尾 %d 字节）" % (label, len(text.encode("utf-8"))) for label, text in chunks if label != "原因") or "无日志"  # 非玩家句
     hit = log_cause(chunks, log)
     if hit[0]:
         code, label, line, why = hit
-        return code, "归因 %s：%s 里「%s」%s；读过 %s" % (code, label, line, "（" + why + "）" if why else "", read)
+        return code, "归因 %s：%s 里「%s」%s；读过 %s" % (code, label, line, "（" + why + "）" if why else "", read)  # 非玩家句
     code = STAGE_CODES.get(phase, "package_failed")
-    return code, "归因 %s：按阶段 %s；%s读过 %s" % (code, phase or "未识别", "".join(r + "；" for r in hit[1]), read)
+    return code, "归因 %s：按阶段 %s；%s读过 %s" % (code, phase or "未识别", "".join(r + "；" for r in hit[1]), read)  # 非玩家句
 
 
 def tool_reason(log):
@@ -535,7 +575,7 @@ def tool_reason(log):
                 lines = stream.read().decode("utf-8", errors="replace").splitlines()
             # 作业层自己往工具日志里追加的记录（[s2a] 开头，如收掉残留进程）不是工具的报错，不当失败原因（#711：真报错被它盖住）
             nonempty = [line.strip() for line in lines if line.strip() and not line.strip().startswith("[s2a] ")]
-            red = [line for line in nonempty if "【红】" in line]
+            red = [line for line in nonempty if any(mark in line for mark in _RED)]  # #1411：读取器打的是「🔴」，原先只认「【红】」，摘要取到末行「第 0 段数据 通过」
             if nonempty:
                 return (red or nonempty)[-1][-1500:]
         except OSError:
@@ -554,7 +594,7 @@ def last_output_lines(log, limit=5):
             lines = [line.strip() for line in stream.read().decode("utf-8", errors="replace").splitlines() if line.strip()]
     except OSError:
         return []
-    reds = [i for i, line in enumerate(lines) if "【红】" in line or "error" in line.lower()][-2:]
+    reds = [i for i, line in enumerate(lines) if "【红】" in line or "error" in line.lower()][-2:]  # 非玩家句
     keep = sorted(set(reds) | set(range(max(0, len(lines) - (limit - len(reds))), len(lines))))
     return [lines[i][-300:] for i in keep]
 
@@ -586,9 +626,11 @@ def build_tool_failure(args, milestone, log):
         elif script == "refresh.sh":
             # 只采用本次 refresh 的终止红行（日志末条红行），不允许 host/unpack/sign 等上一条命令的标签参与本次归因。
             phase = refresh_stop_phase(reason) or "refresh"
-    elif executable == "dotnet" and milestone == "unpack":
+    elif (
+        executable == "nx_unpack" and milestone == "unpack"
+    ):  # 读取器现为自包含单文件直执行（原先经 dotnet 跑 dll，executable 是 dotnet）
         phase = "unpack"
     code, why = classify_failure(phase, log)
     # 上屏只放玩家话术；阶段 / rc / 构建号 / 红行原文进 internal → 诊断 detail（「复制错误摘要」带走）；机读事实进 facts（前端按字段显示）
-    return Failure(player_reason(code), code=code, internal="Mac 准备失败（" + (phase or "未识别阶段") + "）：" + reason + "\n" + why,
+    return Failure(player_reason(code), code=code, internal="Mac 准备失败（" + (phase or "未识别阶段") + "）：" + reason + "\n" + why,  # 非玩家句
                    facts=cause_facts(code, log))

@@ -63,7 +63,7 @@ gap() {
 export J=${J:-${S2A_CPU_BAKE:-${S2A_JOBS:-$(getconf _NPROCESSORS_ONLN)}}}
 source "$R/tools/progress.sh"
 PS=0; prog() { PS=$((PS + 1)); say "第 ${PS}/5 步 $*"; prog_tick 直连库 $((PS - 1)) 5; }
-[ -d "$ROOT/romfs" ] && [ -f "$ROOT/exefs/main" ] || { say "🔴 $ROOT 缺 romfs/ 或 exefs/main"; exit 1; }
+{ [ -d "$ROOT/romfs" ] || [ -f "$ROOT/romfs.std" ]; } && [ -f "$ROOT/exefs/main" ] || { say "🔴 $ROOT 缺 romfs/（或镜像 romfs.std）或 exefs/main"; exit 1; }   # RomFS 目录或镜像都行（romfs_list.py image_of；下面读 RomFS 一律经 romfs_list）
 source "$R/pack/srcs.sh"; TID=$(prog_id "$ROOT"); [ -n "$TID" ] || { say "🔴 取不到程序号"; exit 1; }
 # Vulkan 款（main 直接导入 vk*：哈迪斯、超级马力欧银河 1 / 2）：直连走直连层的 Vulkan 层（graphics/nvn/gfx/vk/hle_vk.m），着色器是 RomFS 里的 SPIR-V，
 #   出包时用 vk_shaders.py（spirv-cross）离线翻成一个库：<输出目录>/vk/vk_shaders.metallib + vk_shaders.tsv（运行时 <DM_MSL_DIR>/vk/，DM_MSL_DIR = shaders/direct）。
@@ -168,6 +168,9 @@ V=$(cd "$NX/../../translator" && "$PY" -c 'import dmsh_chain; print(dmsh_chain.v
 for d in "$C/mac" "$C/ios" "$C/work"; do [ -e "$d" ] && { mv "$d" "$C/.old-$$-${d##*/}" && say "旧布局缓存 ${d##*/}/ 已挪开、后台删（改存内容寻址仓 $C/store）"; }; done
 for d in "$C"/.old-*; do [ -e "$d" ] && { nohup rm -rf "$d" > /dev/null 2>&1 & }; done
 mkdir -p "$C/store" "$C/logs"
+# 审计 P1-173：三步改名（外接盘 / Windows）停在第一步之后，正式目录在 $OUT.swapold：先改回来，再清临时目录（原先旧版本落在 $OUT.stage.<pid>.old，
+#   被下面这行当成死进程的临时目录删掉，下一轮正式目录里没有上一份直连库）
+[ ! -e "$OUT" ] && [ -d "$OUT.swapold" ] && mv "$OUT.swapold" "$OUT" && say "上次换进位停在半路：已把上一份直连库改回正式位置"
 for d in "$C"/work.stage.* "$C"/mac.stage.* "$OUT".stage.*; do [ -d "$d" ] && ! kill -0 "${d##*.}" 2>/dev/null && rm -rf "$d"; done   # 上次被停留下的临时目录
 W=$C/work.stage.$$ MS=$C/mac.stage.$$ OS=$OUT.stage.$$; DONE=0
 # 成功：临时目录换进来的是旧版本，删；失败：只删库，work 留着看日志（下次起跑时清）
@@ -199,14 +202,23 @@ swap_out() {
   "$PY" -c 'import os, sys, ctypes, ctypes.util
 a, b = sys.argv[1:3]
 if not os.path.lexists(b): os.rename(a, b); sys.exit(0)
-if sys.platform == "win32": os.rename(b, a + ".old"); os.rename(a, b); os.rename(a + ".old", a); sys.exit(0)   # Windows 没有目录原子互换：三步改名，换下的旧版本仍落在临时名、由 EXIT 陷阱删
+def three():   # 三步改名：旧的先挪成 <正式>.swapold（不是临时目录的名字，起跑清扫不会当垃圾删）；第二步失败把它改回正式名；换下的旧版本最后落在临时名、由 EXIT 陷阱删
+    old = b + ".swapold"
+    os.rename(b, old)
+    try:
+        os.rename(a, b)
+    except OSError:
+        os.rename(old, b)
+        raise
+    os.rename(old, a)
+if sys.platform == "win32": three(); sys.exit(0)   # Windows 没有目录原子互换（审计 P1-173）
 c = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
 sw = getattr(c, "renamex_np", None)
 if (sw(os.fsencode(a), os.fsencode(b), ctypes.c_uint(2)) if sw else c.renameat2(-100, os.fsencode(a), -100, os.fsencode(b), ctypes.c_uint(2))):
     e = ctypes.get_errno()
     if e not in (45, 95, 102): sys.exit(f"{a} ⇄ {b}: {os.strerror(e)}")
     # exFAT 等外接盘不支持原子互换（ENOTSUP / EOPNOTSUPP）：同 Windows 三步改名
-    os.rename(b, a + ".old"); os.rename(a, b); os.rename(a + ".old", a)' "$OS" "$OUT" || { say "🔴 换进位失败"; exit 1; }
+    three()' "$OS" "$OUT" || { say "🔴 换进位失败"; exit 1; }
   rm -rf "$C/logs.new" && mkdir -p "$C/logs.new" && find "$W" -maxdepth 1 -name '*.log' -exec cp {} "$C/logs.new/" \; && rm -rf "$C/logs" && mv "$C/logs.new" "$C/logs"
 }
 # ①② 抽取（10-25 维护者「抽着色器只做一次」）：共享抽取阶段（pack/stage_extract.sh）已经出好的 <产物根>/extract/（有 ok）就整份 APFS 克隆进工作目录，不重抽；

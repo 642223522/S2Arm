@@ -90,6 +90,10 @@ static const fmt_t g_fmts[] = {
     FC(A2B10G10R10_UNORM_PACK32, RGB10A2Unorm, UInt1010102Normalized, 4), FI(A2B10G10R10_UINT_PACK32, RGB10A2Uint, Invalid, 4),
     FC(B10G11R11_UFLOAT_PACK32, RG11B10Float, FloatRG11B10, 4), FC(E5B9G9R9_UFLOAT_PACK32, RGB9E5Float, FloatRGB9E5, 4),
     FC(R5G6B5_UNORM_PACK16, B5G6R5Unorm, Invalid, 2),
+    // 4 位四通道（诊断#3156b9：一款 Vulkan 游戏建 B4G4R4A4 的图像回「不支持」，游戏不查返回值拿空图像取内存需求 → 崩）：Metal 只有 ABGR4Unorm
+    //   （16 位里 R 在高 4 位、A 在低 4 位 = Vulkan R4G4B4A4）。B4G4R4A4 是 B 在高 4 位：同一种存法、字节原样上传读回，存储里的「R」其实是 B——
+    //   视图混排与清色对调 R / B（rb_swapped），往里画（渲染输出不能混排）报红
+    FC(R4G4B4A4_UNORM_PACK16, ABGR4Unorm, Invalid, 2), FC(B4G4R4A4_UNORM_PACK16, ABGR4Unorm, Invalid, 2),
     FC(R16_UNORM, R16Unorm, UShortNormalized, 2), FC(R16_SNORM, R16Snorm, ShortNormalized, 2), FI(R16_UINT, R16Uint, UShort, 2), FI(R16_SINT, R16Sint, Short, 2),
     FC(R16_SFLOAT, R16Float, Half, 2),
     FC(R16G16_UNORM, RG16Unorm, UShort2Normalized, 4), FC(R16G16_SNORM, RG16Snorm, Short2Normalized, 4), FI(R16G16_UINT, RG16Uint, UShort2, 4),
@@ -123,6 +127,9 @@ static const fmt_t g_fmts[] = {
 };
 static const fmt_t *g_fmt_by[VK_FORMAT_ASTC_12x12_SRGB_BLOCK + 1];
 static void fmt_init(void) { for (size_t i = 0; i < sizeof g_fmts / sizeof *g_fmts; i++) g_fmt_by[g_fmts[i].vk] = &g_fmts[i]; }
+// B4G4R4A4 存成 Metal ABGR4Unorm（见格式表）：存储里的 R / B 与 Vulkan 的对调。纯函数，tests/vk_core 测
+static int rb_swapped(VkFormat f) { return f == VK_FORMAT_B4G4R4A4_UNORM_PACK16; }
+static MTLTextureSwizzle rb_swap(MTLTextureSwizzle c) { return c == MTLTextureSwizzleRed ? MTLTextureSwizzleBlue : c == MTLTextureSwizzleBlue ? MTLTextureSwizzleRed : c; }
 static const fmt_t *fmt_of(VkFormat f) {
     static pthread_once_t once = PTHREAD_ONCE_INIT; pthread_once(&once, fmt_init);
     return (unsigned)f < sizeof g_fmt_by / sizeof *g_fmt_by ? g_fmt_by[f] : NULL;
@@ -847,6 +854,7 @@ VKB(vkCreateImageView, VkResult, VkDevice d, const VkImageViewCreateInfo *ci, co
     int bc1rgb = im->fmt == VK_FORMAT_BC1_RGB_UNORM_BLOCK || im->fmt == VK_FORMAT_BC1_RGB_SRGB_BLOCK;   // Metal decodes BC1 with punch-through alpha; Vulkan's RGB variant has none
     MTLTextureSwizzleChannels sw = MTLTextureSwizzleChannelsMake(swz(ci->components.r, MTLTextureSwizzleRed), swz(ci->components.g, MTLTextureSwizzleGreen),
                                                                  swz(ci->components.b, MTLTextureSwizzleBlue), bc1rgb ? MTLTextureSwizzleOne : swz(ci->components.a, MTLTextureSwizzleAlpha));
+    if (rb_swapped(im->fmt)) { sw.red = rb_swap(sw.red); sw.green = rb_swap(sw.green); sw.blue = rb_swap(sw.blue); sw.alpha = rb_swap(sw.alpha); }   // 存储里 R / B 是对调的（见格式表 B4G4R4A4）
     int ident = sw.red == MTLTextureSwizzleRed && sw.green == MTLTextureSwizzleGreen && sw.blue == MTLTextureSwizzleBlue && sw.alpha == MTLTextureSwizzleAlpha;
     VkImageView v = obj_alloc(sizeof *v, O_IMAGE_VIEW); v->img = im;
     v->pf = pf; v->tt = tt; v->lv0 = r->baseMipLevel; v->lvn = lv; v->ly0 = r->baseArrayLayer; v->lyn = ly; v->sw = sw; v->vnext = im->views; im->views = v;
@@ -1684,9 +1692,11 @@ static void open_sub(rs_t *s) {
         int first = rp->first[a] == k, last = rp->last[a] == k;
         ca.texture = fb->v[a]->tex; w = umin(w, rt_width(fb, fb->v[a])); h = umin(h, rt_height(fb, fb->v[a]));
         if (fb->v[a]->img && fb->v[a]->img->swap) s->swap_img = fb->v[a]->img;
+        if (fb->v[a]->img && rb_swapped(fb->v[a]->img->fmt)) RED1("B4G4R4A4 图像当颜色附件：Metal 存成 ABGR4Unorm，往里画的 R / B 会对调（渲染输出不能混排；清色已对调）");
         ca.loadAction = first && !part ? load_a(at->load) : MTLLoadActionLoad; s->st_col[i] = last && !part ? store_a(at->store) : MTLStoreActionStore; ca.storeAction = MTLStoreActionUnknown;
         if (first && at->load == VK_ATTACHMENT_LOAD_OP_CLEAR && (uint32_t)a < c->nclear) {
-            const float *f = c->clear[a].color.float32; ca.clearColor = MTLClearColorMake(f[0], f[1], f[2], f[3]);
+            const float *f = c->clear[a].color.float32; int sw = fb->v[a]->img && rb_swapped(fb->v[a]->img->fmt);   // B4G4R4A4：存储里 R / B 对调
+            ca.clearColor = MTLClearColorMake(f[sw ? 2 : 0], f[1], f[sw ? 0 : 2], f[3]);
             if (part && clr->na < 8) clr->a[clr->na++] = (VkClearAttachment){VK_IMAGE_ASPECT_COLOR_BIT, i, c->clear[a]};
         }
         int r = sp->res[i];

@@ -15,8 +15,6 @@ import urllib.request
 FILES = {
     "python-3.12.10-embed-amd64.zip": ("https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip",
                                        "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3"),
-    "MinGit-2.54.0-64-bit.zip": ("https://github.com/git-for-windows/git/releases/download/v2.54.0.windows.1/MinGit-2.54.0-64-bit.zip",
-                                 "04f937e1f0918b17b9be6f2294cb2bb66e96e1d9832d1c298e2de088a1d0e668"),
     "zstd-v1.5.7-LICENSE": ("https://raw.githubusercontent.com/facebook/zstd/v1.5.7/LICENSE",
                             "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8"),
 }

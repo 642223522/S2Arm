@@ -1,6 +1,7 @@
 #!/bin/bash
 # 编译缓存入口（10-30 列车线，调研报告「按内容编译缓存」③）：tools/cc_cache.sh 把本目录放到 PATH 最前，clang / clang++ / cc / c++ / xcrun 都落到这里。
-#   只有「只编不链」（带 -c）的那一次交给 ccache，别的（链接、-E、-fsyntax-only、读标准输入、@响应文件）原样交给系统 xcrun，行为与不装缓存时一致。
+#   「只编不链」（带 -c）的那一次交给 ccache；「一步编链」（源文件直接 -o 出可执行文件 / 动态库，原生层单测几乎都这么写）拆成逐个源 -c（走 ccache）+ 一次链接，
+#   见下方 split_link；别的（纯链接、-E、-fsyntax-only、读标准输入、@响应文件）原样交给系统 xcrun，行为与不装缓存时一致。
 #   真编译器用 /usr/bin/xcrun -f 解出（跟 DEVELOPER_DIR / --sdk 走，ccache 按真编译器文件判版本）；
 #   没写 -isysroot 时补上 xcrun 本来会用的 SDK（xcrun 靠 SDKROOT 环境变量选 SDK，ccache 不把它算进键，补进命令行才算）
 me=${0##*/}; x=()
@@ -9,7 +10,50 @@ if [ "$me" = xcrun ]; then
   while [ $# -gt 0 ]; do case $1 in --sdk|-sdk|--toolchain|-toolchain) [ $# -ge 2 ] || exec /usr/bin/xcrun "${a[@]}"; x+=("$1" "$2"); shift 2 ;; *) break ;; esac; done
   case ${1:-} in clang|clang++|cc|c++) me=$1; shift ;; *) exec /usr/bin/xcrun "${a[@]}" ;; esac
 fi
+# 一步编链拆开（11-14 门禁提速：原生层单测 350 组几乎都是「cc … -o t_x t_x.c src.c」一步编链，不带 -c、ccache 管不到，
+#   每批每组从头编；103 组 NVN 单测各自 #include 整份 nvn_mtl.m，改一个无关 .c 也因前置变新而全部重编，单组 13–15 秒）：
+#   每个源按原编译参数（去掉只给链接器的参数）单独 -c 走本入口进 ccache，再把原命令里的源换成对应 .o、原样链接（顺序不变：构造函数按链接顺序跑）。
+#   与一步编链同产物：clang 一步编链本来也是逐个源编成临时 .o 再链；带 -g 时它会再跑 dsymutil 出 <输出>.dSYM，这里照跑。
+#   不是「编并链」的（-E / -S / -fsyntax-only 等只走一段的）与认不全的命令（-x 改语言、多个 -arch、没有 -o、出现认不出的非选项参数、
+#   调用方自己要依赖文件 -M*）返回 3、一律原样直通，不拆。逐个源依次编（同 clang 一步编链自己的顺序）
+split_link() {
+  local a=("$@") n=$# i=0 v cf=() lk=() src=() at=() o= ar=0 g=
+  while [ $i -lt $n ]; do v=${a[$i]}
+    case $v in
+      -o) [ $((i + 1)) -lt $n ] || return 3; o=${a[$((i + 1))]}; lk+=(-o "$o"); i=$((i + 2)); continue ;;
+      -|-c|-E|-S|-fsyntax-only|--analyze|-emit-llvm|@*|-x|-x*|-M|-MM|-MD|-MMD|-MF|-MT|-MQ|-MG|-MP|-save-temps*|-arch?*|-flto*) return 3 ;;
+      -arch) ar=$((ar + 1)); [ $ar -le 1 ] || return 3; cf+=("$v" "${a[$((i + 1))]}"); lk+=("$v" "${a[$((i + 1))]}"); i=$((i + 2)); continue ;;
+      # 只给链接器、带一个值的参数
+      -framework|-weak_framework|-install_name|-rpath|-undefined|-exported_symbols_list|-unexported_symbols_list|-Xlinker|-force_load|-bundle_loader|-compatibility_version|-current_version|-umbrella|-weak_library|-reexport_library)
+        lk+=("$v" "${a[$((i + 1))]}"); i=$((i + 2)); continue ;;
+      # 编译与链接都带、值是单独一个词的参数
+      -I|-D|-U|-include|-imacros|-isystem|-iquote|-idirafter|-iframework|-isysroot|-target|-F|-Xclang|-mllvm|-ivfsoverlay|-iprefix|-iwithprefix|-iwithprefixbefore)
+        cf+=("$v" "${a[$((i + 1))]}"); lk+=("$v" "${a[$((i + 1))]}"); i=$((i + 2)); continue ;;
+      # 只给链接器的单个参数（-ObjC / -static / -pie 这类编译时也有含义的不在这里，走下面「两边都带」）
+      -l*|-L*|-Wl,*|-dynamiclib|-shared|-bundle|-dead_strip|-all_load|-fobjc-link-runtime|-headerpad_max_install_names|-nostartfiles|-rdynamic) lk+=("$v") ;;
+      -g|-g[0-9]|-ggdb*|-gline-tables-only|-gfull|-gdwarf*) g=1; cf+=("$v"); lk+=("$v") ;;
+      -g0) g=; cf+=("$v"); lk+=("$v") ;;
+      -*) cf+=("$v"); lk+=("$v") ;;
+      *.c|*.m|*.mm|*.cc|*.cpp|*.cxx|*.S|*.s) src+=("$v"); at+=(${#lk[@]}); lk+=("$v") ;;
+      *.o|*.a|*.dylib|*.tbd|*.so) lk+=("$v") ;;
+      *) return 3 ;;
+    esac; i=$((i + 1))
+  done
+  [ -n "$o" ] && [ ${#src[@]} -gt 0 ] || return 3
+  local d k=0 s ob bad=0 self=("$0")
+  [ "${0##*/}" = xcrun ] && self=("$0" ${x[@]+"${x[@]}"} "$me")
+  d=$(mktemp -d "${TMPDIR:-/tmp}/s2a_ccsplit.XXXXXX") || return 3
+  for s in "${src[@]}"; do
+    ob=$d/$k.$(basename "${s%.*}").o; lk[${at[$k]}]=$ob; k=$((k + 1))
+    "${self[@]}" ${cf[@]+"${cf[@]}"} -Wno-unused-command-line-argument -c "$s" -o "$ob" || bad=1
+  done
+  [ $bad = 0 ] && /usr/bin/xcrun ${x[@]+"${x[@]}"} "$me" "${lk[@]}" -Wno-unused-command-line-argument || bad=1
+  [ $bad = 0 ] && [ -n "$g" ] && { rm -rf "$o.dSYM"; /usr/bin/xcrun dsymutil "$o" -o "$o.dSYM" || bad=1; }
+  rm -rf "$d"; return $bad
+}
 c=0; for v in "$@"; do case $v in -c) c=1 ;; -E|-fsyntax-only|-|-M|-MM|-S|--analyze|-emit-llvm|@*) c=0; break ;; esac; done
+# 不带 -c 且能拆：拆开编链，结果（含编译 / 链接失败的退出码，报错已在标准错误）就是本次结果；认不全（3）照旧直通
+if [ "$c" = 0 ] && [ -x "${S2A_CCACHE_BIN:-}" ]; then split_link "$@"; rc=$?; [ $rc = 3 ] || exit $rc; fi
 [ "$c" = 1 ] && [ -x "${S2A_CCACHE_BIN:-}" ] || exec /usr/bin/xcrun ${x[@]+"${x[@]}"} "$me" "$@"
 real=$(/usr/bin/xcrun ${x[@]+"${x[@]}"} -f "$me" 2> /dev/null) && [ -x "$real" ] || exec /usr/bin/xcrun ${x[@]+"${x[@]}"} "$me" "$@"
 sr=; for v in "$@"; do case $v in -isysroot|-isysroot*|--sysroot|--sysroot=*) sr=1; break ;; esac; done
@@ -17,5 +61,13 @@ sr=; for v in "$@"; do case $v in -isysroot|-isysroot*|--sysroot|--sysroot=*) sr
 # 带调试信息（-g…）时把仓库根映射成「.」：调试信息里的编译目录 / 源路径不带树的绝对路径，同一份输入在哪棵树编出的 .o 都逐字节相同，
 #   缓存才能跨树共用而不把「先编的那棵树」的路径带给别的树（ccache 见到 -fdebug-prefix-map 也不再把当前目录算进键）
 g=; for v in "$@"; do case $v in -g|-g[0-9]|-ggdb*|-gline-tables-only|-gfull|-gdwarf*) g=1; break ;; esac; done
-[ -n "$g" ] && [ -n "${CCACHE_BASEDIR:-}" ] && set -- "$@" "-fdebug-prefix-map=$CCACHE_BASEDIR=."
+# 当前目录在树下、又不是树根（graphics/nvn、dsx、metal 的 Makefile 进 mktemp 出的随机目录 libnvn.a.o.XXXXXX 编）：当前目录也映射成「.」。
+#   否则映射后的编译目录仍带随机后缀、ccache 把它算进键，这几份核心库在门禁里永远不命中（11-16 实测 58 次编译中 2 次）；
+#   映射后调试信息里的编译目录是「.」、源路径照旧按树根映射，不同目录编出的 .o 逐字节相同
+if [ -n "$g" ] && [ -n "${CCACHE_BASEDIR:-}" ]; then
+  set -- "$@" "-fdebug-prefix-map=$CCACHE_BASEDIR=."
+  #   首尾各放一份：ccache 算键取第一条匹配编译目录的映射（Makefile 自带的 -ffile-prefix-map=<树根>= 排在前面会先匹配），clang 写调试信息取最后一条
+  #   逻辑路径（$PWD，ccache 算键用）与物理路径（clang 写调试信息用；macOS 的 /var → /private/var）都判、都映射
+  for cw in "$PWD" "$(pwd -P)"; do case $cw/ in "$CCACHE_BASEDIR"/?*|"$(cd "$CCACHE_BASEDIR" 2> /dev/null && pwd -P)"/?*) set -- "-fdebug-prefix-map=$cw=." "$@" "-fdebug-prefix-map=$cw=." ;; esac; done
+fi
 exec "$S2A_CCACHE_BIN" "$real" "$@"

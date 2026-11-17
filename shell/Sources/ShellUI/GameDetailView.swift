@@ -235,10 +235,14 @@ struct SettingControl: View, Equatable {
                 }
                 HStack(spacing: 10) {
                     rangeButton("minus", min: min, max: max, delta: -step)
+                    #if os(tvOS)
+                    Spacer(minLength: 0)   // tvOS 没有 Slider：遥控器 / 手柄只用两侧的减、加一档
+                    #else
                     if min < max && step > 0 {
                         Slider(value: Binding(get: { Double(row.value) ?? min }, set: { change(String($0)) }), in: min...max, step: step)
                             .frame(minHeight: 44).tint(ShellPalette.cream).accessibilityLabel(row.label)
                     }
+                    #endif
                     rangeButton("plus", min: min, max: max, delta: step)
                 }
             }

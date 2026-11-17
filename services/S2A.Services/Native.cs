@@ -372,6 +372,7 @@ namespace S2A.Services
         // nn::ro 装 / 卸 NRO（Host.HookNro 登记进 S2AHooks；返回码见 Ryujinx.HLE/S2AHooks.cs）
         internal static unsafe int NroMap(byte* sha256, ulong size, ulong bss, ulong* mapped) => Imports.s2a_nro_map(sha256, size, bss, mapped);
         internal static int NroUnmap(ulong mapped) => Imports.s2a_nro_unmap(mapped);
+        internal static unsafe int NroKeep(byte* sha256, byte* data, ulong size) => Imports.s2a_nro_keep(sha256, data, size);
 
         internal static class Imports
         {
@@ -379,6 +380,7 @@ namespace S2A.Services
 
             [DllImport(Lib)] public static extern unsafe int s2a_nro_map(byte* sha256, ulong size, ulong bss, ulong* mapped);
             [DllImport(Lib)] public static extern int s2a_nro_unmap(ulong mapped);
+            [DllImport(Lib)] public static extern unsafe int s2a_nro_keep(byte* sha256, byte* data, ulong size);
 
             [DllImport(Lib)] public static extern uint s2a_handle_new(uint kind, ulong cookie);
             [DllImport(Lib)] public static extern int s2a_session_prepare();

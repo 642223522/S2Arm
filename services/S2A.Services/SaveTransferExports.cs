@@ -25,10 +25,11 @@ public static unsafe class SaveTransferExports
             }
             SaveTransfer.UseLanguage(request ?? "");
             string response;
-            if (SaveTransfer.HostStarted || Host.Device != null) response = SaveTransfer.Error("save_running", SaveTransfer.T("请在启动游戏前管理存档。", "Manage saves before starting the game."));
-            else if (json == null) response = SaveTransfer.Error("save_invalid", SaveTransfer.T("存档请求为空。", "The save request is empty."));
+            if (json == null) response = SaveTransfer.Error("save_invalid", SaveTransfer.T("存档请求为空。", "The save request is empty."));
             else if (request == null) response = SaveTransfer.Error("save_invalid", SaveTransfer.T("存档请求过大。", "The save request is too large."));
-            else response = SaveTransfer.Execute(request);
+            // 游戏在跑：只放只读操作（Execute 里判；切后台上传 = status + export，导出前后核指纹，中途改了就这次不传）。
+            //   原先这里整个拒，切后台上传（shell CloudSaves s2a_shell_cloud_upload_background）每次都「请在启动游戏前管理存档」失败（诊断#a87296）
+            else response = SaveTransfer.Execute(request, SaveTransfer.HostStarted || Host.Device != null);
             return Allocate(response);
             }
         }

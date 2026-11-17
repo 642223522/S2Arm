@@ -1,5 +1,5 @@
 NATIVE_TEST_OWN += dirty_growth
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 NVN_DIRTY_GROWTH_SOURCE ?= graphics/nvn/gfx/nvn/nvn_dirty.c
 NVN_DIRTY_GROWTH_BINARY ?= $(BUILD)/tests/t_dirty_growth
 $(NVN_DIRTY_GROWTH_BINARY): graphics/nvn/tests/t_dirty_growth.c $(NVN_DIRTY_GROWTH_SOURCE) $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)

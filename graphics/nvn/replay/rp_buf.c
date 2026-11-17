@@ -20,11 +20,12 @@
 #include <string.h>
 
 struct gpu_write { uint64_t off, len, id; uint8_t mi; };   // GPU 写进镜像、还没回写到游戏内存的一段；mi = 写进了哪一份镜像
+struct mirror_block { uint64_t version, epoch, covered; };
 // 一份镜像。synced[i]：第 i 页上次同步取的脏页代号，0 = 从没同步；sub[i]：那次同步所在的提交序号；
 // checked[i]：第 i 页上次逐页核对时的全局写代号（代号没动 = 那之后游戏没写过任何被跟踪的页，这一页不用再核）。
 // use_sub / use_fence：最近一次用到这份镜像的提交（序号、栅栏值）；prev_fence：再往前一次用到它的提交的栅栏值——
 // 它做完了，显卡就不再读这份镜像里的旧内容，这次提交第一次同步的页可以直接写。
-struct mirror { nvn_gpu_buf buf; uint64_t *synced, *sub, *checked; uint64_t seen_map; uint8_t seen_ok; uint64_t use_sub, use_fence, prev_fence; };
+struct mirror { nvn_gpu_buf buf; uint64_t *synced, *sub, *checked; struct mirror_block *blocks; uint64_t seen_map; uint8_t seen_ok; uint64_t use_sub, use_fence, prev_fence; };
 // 每个池最多两份镜像。平时只有第 0 份；游戏的 Finish 被放行、不等上一帧做完时（rp_exec.c nvn_be_finish_publish），每帧换一份用：
 // 上一帧的活显卡还在做，读的是另一份。两份各记各的页代号，换回来时自己把这两帧里变过的页补上。
 // landing：正在锁外把 GPU 写回的内容拷进游戏内存（拷贝是 13 MB/帧量级，压在全局锁里会把提交线程挡住 11–21 毫秒/帧）。
@@ -33,17 +34,19 @@ struct mirror { nvn_gpu_buf buf; uint64_t *synced, *sub, *checked; uint64_t seen
 // 以前按整份池禁止，走路时剔除数据每帧都在落地，于是几乎每次解析都退回「录成 GPU 拷贝 + 全屏障」，
 // 真机表现为走路一顿一顿（池镜像同步 4.2 MB/帧、其中直接写只剩 0.2 MB，见坑记录续 33）。
 struct land_rng { uint64_t off, len; };
-struct shadow { const uint8_t *mem; uint64_t size; struct mirror m[2]; uint64_t npages; uintptr_t page0; struct gpu_write *gw; int ngw, cgw; int landing, dead;
+struct shadow { const uint8_t *mem; uint64_t size; struct mirror m[2]; uint64_t npages, nblocks; uintptr_t page0; struct gpu_write *gw; int ngw, cgw; int landing, dead;
+                int blocks_on;
                 int failed;   // 第一份镜像建不出来：记住，之后这个池直接按未接返回，不再每笔重建（池释放时随表项删掉，重建池会重试）
                 struct land_rng lr[16]; int nlr; };
 static int g_mirror_cur;   // 现在用第几份；只在提交锁里改（Finish 与提交互斥）
 static pthread_mutex_t g_bmu = PTHREAD_MUTEX_INITIALIZER;
 static nvn_hmap g_shadow = {.klen = 8};   // 池起点 → struct shadow *
 static uint64_t g_sync_bytes, g_sync_runs;
+static nvn_gpu_buf g_null_storage;
 
 int rp_pool_find(uint64_t addr, uint64_t len, const uint8_t **mem, uint64_t *size);   // rp_entry.c
 
-static void mirror_free(struct mirror *m) { if (m->buf) nvn_gpu_buf_release(m->buf, NULL, NULL); free(m->synced); free(m->sub); free(m->checked); memset(m, 0, sizeof *m); }
+static void mirror_free(struct mirror *m) { if (m->buf) nvn_gpu_buf_release(m->buf, NULL, NULL); free(m->synced); free(m->sub); free(m->checked); free(m->blocks); memset(m, 0, sizeof *m); }
 static void shadow_free(struct shadow *s) { mirror_free(&s->m[0]); mirror_free(&s->m[1]); free(s->gw); free(s); }
 // 镜像映射代号：新建镜像、换镜像都会让「同一段地址解析出的 (缓冲, 偏移)」变掉。回放核心的解析结果缓存按它作废。
 
@@ -67,6 +70,8 @@ static int mirror_make(struct shadow *s, int i) {
     m->sub = calloc(s->npages ? s->npages : 1, sizeof *m->sub);
     m->checked = calloc(s->npages ? s->npages : 1, sizeof *m->checked);
     if (!m->synced || !m->sub || !m->checked) { mirror_free(m); return 0; }   // 页表没分出来：不留半份镜像（之后每次使用都会读它）
+    if (s->blocks_on && s->nblocks <= SIZE_MAX / sizeof *m->blocks)
+        m->blocks = calloc(s->nblocks ? (size_t)s->nblocks : 1, sizeof *m->blocks); // 失败时沿用逐页路径
     return 1;
 }
 static struct shadow *shadow_get(const uint8_t *mem, uint64_t size) {
@@ -82,6 +87,8 @@ static struct shadow *shadow_get(const uint8_t *mem, uint64_t size) {
     s->mem = mem; s->size = size;
     s->page0 = (uintptr_t)mem & ~(uintptr_t)(ps - 1);
     s->npages = ((uintptr_t)mem + size - s->page0 + ps - 1) / ps;
+    s->blocks_on = nvn_plat_flag("nvk_buf_blocks", 0) != 0;
+    s->nblocks = ((s->page0 / ps & 63u) + s->npages + 63u) / 64u;
     if (!mirror_make(s, 0)) { s->failed = 1; nvn_hm_put(&g_shadow, &k, s); nvn_unimpl("gpu", "buf_create_pool_mirror", mem); return NULL; }
     nvn_hm_put(&g_shadow, &k, s);
     return s;
@@ -162,13 +169,14 @@ void rp_buf_gpu_write_land(uint64_t pool_key, uint64_t id, int ok) {   // 线程
 // 大头是这把锁与完成线程（落地 GPU 写）互抢，所以另给批量入口，一笔绘制只抢一次。
 static int g_res_tm = -1; static unsigned g_res_tmk;
 static uint64_t res_now(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec; }
-static int resolve_locked(uint64_t addr, uint64_t len, const uint8_t *mem, uint64_t size) {
+static int resolve_part_locked(uint64_t addr, uint64_t len, const uint8_t *mem, uint64_t size,
+                               struct shadow *s, struct mirror *m, int count_resolve) {
     if (g_res_tm < 0 || !(++g_res_tmk & 255)) g_res_tm = nvn_plat_flag("nvk_res_tm", 0) != 0;
     const uint64_t q0 = g_res_tm ? res_now() : 0;
-    rp_perf_add(RP_PERF_RES_N, 1);
-    struct shadow *s = shadow_get(mem, size);
+    if (count_resolve) rp_perf_add(RP_PERF_RES_N, 1);
+    if (!s) s = shadow_get(mem, size);
     if (!s) return 0;
-    struct mirror *m = mirror_pick(s, addr - (uint64_t)(uintptr_t)mem, len, NULL);
+    if (!m) m = mirror_pick(s, addr - (uint64_t)(uintptr_t)mem, len, NULL);
     size_t ps = nvn_dirty_page_size();
     uint64_t p = ((uintptr_t)addr - s->page0) / ps, q = ((uintptr_t)addr + len - 1 - s->page0) / ps, n = q - p + 1;
     uint64_t now0 = nvn_dirty_now();
@@ -209,6 +217,51 @@ static int resolve_locked(uint64_t addr, uint64_t len, const uint8_t *mem, uint6
     if (q0) rp_perf_add(RP_PERF_RES_LA_NS, res_now() - q0);
     return 1;
 }
+static int resolve_locked(uint64_t addr, uint64_t len, const uint8_t *mem, uint64_t size) {
+    struct shadow *s = shadow_get(mem, size);
+    if (!s) return 0;
+    // 整段先选一次镜像：未落地的 GPU 写可能只覆盖其中一个摘要块。
+    struct mirror *m = mirror_pick(s, addr - (uint64_t)(uintptr_t)mem, len, NULL);
+    size_t ps = nvn_dirty_page_size();
+    uint64_t p = ((uintptr_t)addr - s->page0) / ps, q = ((uintptr_t)addr + len - 1 - s->page0) / ps;
+    if (!m->blocks || q - p + 1 <= 64)
+        return resolve_part_locked(addr, len, mem, size, s, m, 1);
+    const void *span = nvn_dirty_span((const void *)(uintptr_t)addr, (size_t)len);
+    if (!span) return resolve_part_locked(addr, len, mem, size, s, m, 1);
+    rp_perf_add(RP_PERF_RES_N, 1);
+    const uint64_t base_page = s->page0 / ps;
+    int all_fast = 1;
+    for (uint64_t i = p; i <= q;) {
+        uint64_t first_bit = (base_page + i) & 63u;
+        uint64_t j = i + (63u - first_bit); if (j > q) j = q;
+        uint64_t idx = (base_page + i) / 64u - base_page / 64u;
+        uintptr_t a = s->page0 + (uintptr_t)(i * ps), b = s->page0 + (uintptr_t)((j + 1) * ps);
+        if (a < (uintptr_t)mem) a = (uintptr_t)mem;
+        if (b > (uintptr_t)mem + size) b = (uintptr_t)mem + size;
+        uint64_t version, epoch;
+        if (idx >= s->nblocks || !nvn_dirty_block_snapshot(span, (const void *)a, b - a, &version, &epoch))
+            return resolve_part_locked(addr, len, mem, size, s, m, 0);
+        struct mirror_block *block = &m->blocks[idx];
+        uint64_t count = j - i + 1;
+        uint64_t mask = count == 64 ? UINT64_MAX : ((UINT64_C(1) << count) - 1) << first_bit;
+        if (block->epoch != epoch) {
+            // 增删/换底可能令旧的逐页 synced 也失去意义；仅清本次用到的页，保留 sub 顺序。
+            for (uint64_t k = i; k <= j; k++) m->synced[k] = 0;
+            block->epoch = epoch; block->version = version; block->covered = 0;
+        } else if (block->version != version) { block->version = version; block->covered = 0; }
+        if ((block->covered & mask) != mask) {
+            all_fast = 0;
+            if (!resolve_part_locked((uint64_t)a, b - a, mem, size, s, m, 0)) return 0;
+            uint64_t v1, e1;
+            if (m->seen_ok && nvn_dirty_block_snapshot(span, (const void *)a, b - a, &v1, &e1) &&
+                v1 == version && e1 == epoch) block->covered |= mask;
+            else block->covered = 0;
+        }
+        i = j + 1;
+    }
+    if (all_fast) rp_perf_add(RP_PERF_BUF_FAST_N, 1);
+    return 1;
+}
 int rp_buf_resolve(nvn_gpu_cmd c, uint64_t addr, uint64_t len, nvn_gpu_buf *buf, uint64_t *off) {
     (void)c;
     const uint8_t *mem; uint64_t size;
@@ -227,9 +280,8 @@ int rp_buf_resolve(nvn_gpu_cmd c, uint64_t addr, uint64_t len, nvn_gpu_buf *buf,
     return r;
 }
 // 批量：一次抢锁解析多段（顶点流 / 存储缓冲），成功写 1、失败写 0。
-int rp_buf_resolve_multi(int n, const uint64_t *addr, const uint64_t *len, nvn_gpu_buf *buf, uint64_t *off, unsigned char *ok) {
+static void resolve_multi_chunk(int n, const uint64_t *addr, const uint64_t *len, nvn_gpu_buf *buf, uint64_t *off, unsigned char *ok) {
     const uint8_t *mem[16]; uint64_t size[16];
-    if (n > 16) n = 16;
     for (int i = 0; i < n; i++) { mem[i] = NULL; size[i] = 0; ok[i] = 0; if (len[i]) rp_pool_find(addr[i], len[i], &mem[i], &size[i]); }
     const uint64_t w0 = (g_res_tm && n) ? res_now() : 0;
     pthread_mutex_lock(&g_bmu);
@@ -242,6 +294,15 @@ int rp_buf_resolve_multi(int n, const uint64_t *addr, const uint64_t *len, nvn_g
         buf[i] = m->buf; off[i] = addr[i] - (uint64_t)(uintptr_t)mem[i]; ok[i] = 1;
     }
     pthread_mutex_unlock(&g_bmu);
+}
+int rp_buf_resolve_multi(int n, const uint64_t *addr, const uint64_t *len, nvn_gpu_buf *buf, uint64_t *off, unsigned char *ok) {
+    // Storage bindings can exceed the 16 vertex streams. Resolve every item;
+    // the fixed scratch arrays bound each lock acquisition, not the request.
+    while (n > 0) {
+        int count = n < 16 ? n : 16;
+        resolve_multi_chunk(count, addr, len, buf, off, ok);
+        n -= count; addr += count; len += count; buf += count; off += count; ok += count;
+    }
     return 1;
 }
 
@@ -252,9 +313,28 @@ void rp_buf_pool_gone(const void *mem) {
     if (s) { if (s->landing > 0) s->dead = 1; else shadow_free(s); }   // 有拷贝在锁外进行：由收尾那边释放（见 rp_buf_gpu_write_land）
     pthread_mutex_unlock(&g_bmu);
 }
+nvn_gpu_buf rp_buf_for_null_storage(void) {
+    pthread_mutex_lock(&g_bmu);
+    if (!g_null_storage) {
+        // 对齐 Ryujinx DescriptorSetUpdater：不支持 nullDescriptor 时，未使用的缓冲绑定用 64 KiB 物理对象。
+        // 只初始化一次；着色器写入后不承诺内容仍为零，也不把写入落到任何 guest 地址。
+        void *zero = calloc(1, 0x10000);
+        nvn_gpu_err err = {0};
+        if (!zero || !nvn_gpu_ok(nvn_gpu_buf_create(0x10000, NVN_GPU_MEM_SHARED, zero, &g_null_storage, &err))) {
+            g_null_storage = NULL;
+            if (nvn_unimpl("gpu", "null_storage_create", NULL) == 1 && err.why[0]) nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", err.why);
+        }
+        free(zero);
+    }
+    nvn_gpu_buf result = g_null_storage;
+    pthread_mutex_unlock(&g_bmu); return result;
+}
+
 void rp_buf_reset(void) {
     pthread_mutex_lock(&g_bmu);
     for (uint32_t i = 0; i < g_shadow.cap; i++) { struct shadow *s = g_shadow.vals[i]; if (s) shadow_free(s); }
+    if (g_null_storage) nvn_gpu_buf_release(g_null_storage, NULL, NULL);
+    g_null_storage = NULL;
     free(g_shadow.keys); free(g_shadow.vals); nvn_hm_init(&g_shadow, 8); g_mirror_cur = 0;
     pthread_mutex_unlock(&g_bmu);
 }
@@ -373,14 +453,23 @@ void rp_op_copy_t2t(nvn_gpu_cmd c, const p_copy_t2t *o, const void *rec) {
         sr = (NVNcopyRegion){0, 0, 0, (int)w, (int)h, 1}; dr = sr;
     } else {
         int nz = sr.depth > 0 ? sr.depth : 1, dnz = dr.depth > 0 ? dr.depth : 1;
-        if (o->flags & (NVN_COPY_FLAGS_MIRROR_X_BIT | NVN_COPY_FLAGS_MIRROR_Y_BIT | NVN_COPY_FLAGS_MIRROR_Z_BIT)) { nvn_unimpl("tex", "t2t_mirror", rec); return; }
-        if (sr.width != dr.width || sr.height != dr.height || sfmt != dfmt) {
-            // 缩放 / 换格式（iOS 是画出来的，copy_t2t_draw；这边后端有原生的缩放拷贝）：只做二维、单层、单采样、两边都不是整数 / 深度模板格式的
+        int mirror = o->flags & (NVN_COPY_FLAGS_MIRROR_X_BIT | NVN_COPY_FLAGS_MIRROR_Y_BIT);
+        if ((o->flags & NVN_COPY_FLAGS_MIRROR_Z_BIT) || (mirror && s->serial == d->serial)) { nvn_unimpl("tex", "t2t_mirror", rec); return; }
+        if (mirror || sr.width != dr.width || sr.height != dr.height || sfmt != dfmt) {
+            // 缩放 / 换格式：二维、单层、单采样。颜色走原生 blit；同格式 D24S8/D32FS8 最近点缩放由后端能力位声明。
             nvn_fmt_info fa, fb; int ia = !nvn_fmt_info_of((uint32_t)sfmt, &fa) || fa.kind == NVN_FMT_UINT || fa.kind == NVN_FMT_SINT || fa.depth || fa.stencil;
             int ib = !nvn_fmt_info_of((uint32_t)dfmt, &fb) || fb.kind == NVN_FMT_UINT || fb.kind == NVN_FMT_SINT || fb.depth || fb.stencil;
-            if (s3 || d3 || nz != 1 || dnz != 1 || s->d.samples > 1 || d->d.samples > 1 || ia || ib) { nvn_unimpl("tex", sfmt != dfmt ? "t2t_format_change" : "t2t_scaled", rec); return; }
+            int depth_pair = sfmt == dfmt && sfmt == s->d.format && dfmt == d->d.format &&
+                (sfmt == NVN_FORMAT_DEPTH24_STENCIL8 || sfmt == NVN_FORMAT_DEPTH32F_STENCIL8) && !mirror && !(o->flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT);
+            if (s3 || d3 || nz != 1 || dnz != 1 || s->d.samples > 1 || d->d.samples > 1 || ((ia || ib) && !depth_pair)) { nvn_unimpl("tex", mirror ? "t2t_mirror" : sfmt != dfmt ? "t2t_format_change" : "t2t_scaled", rec); return; }
             nvn_gpu_caps caps; nvn_gpu_caps_get(&caps);
-            if (!(caps.caps & NVN_GPU_CAP_BLIT_SCALED)) { nvn_unimpl("tex", "t2t_scaled_no_native_blit", rec); return; }
+            if (depth_pair ? !(caps.caps & NVN_GPU_CAP_BLIT_DEPTH_STENCIL) : !(caps.caps & NVN_GPU_CAP_BLIT_SCALED)) {
+                nvn_unimpl("tex", mirror ? "t2t_mirror" : depth_pair ? "t2t_scaled" : "t2t_scaled_no_native_blit", rec); return;
+            }
+            // NVN 区域仍为正尺寸；先防止反向端点的有符号加法溢出。
+            if (mirror && (sr.width <= 0 || sr.height <= 0 || dr.width <= 0 || dr.height <= 0 ||
+                sr.xoffset < 0 || sr.yoffset < 0 || (int64_t)sr.xoffset + sr.width > INT32_MAX ||
+                (int64_t)sr.yoffset + sr.height > INT32_MAX)) { nvn_unimpl("tex", "t2t_mirror", rec); return; }
             // 视图只取级与层：拷贝按存储的格式做
             view_t vs, vd; memset(&vs, 0, sizeof vs); memset(&vd, 0, sizeof vd);
             vs.set_levels = 1; vs.base_level = (int)sl; vs.nlevels = 1; vs.set_layers = 1; vs.min_layer = (int)(sz0 + (uint32_t)sr.zoffset); vs.nlayers = 1;
@@ -391,6 +480,9 @@ void rp_op_copy_t2t(nvn_gpu_cmd c, const p_copy_t2t *o, const void *rec) {
             nvn_gpu_view gv = rp_view_for(s, &vs, c), hv = rp_view_for(d, &vd, c);
             if (!gv || !hv) { rp_view_pin_end(); return; }
             NVNcopyRegion a = sr, b = dr; a.zoffset = b.zoffset = 0; a.depth = b.depth = 1;
+            // Ryujinx ExtentsToOffset3D 同样保留两端次序：镜像沿源矩形反向行走。
+            if (mirror & NVN_COPY_FLAGS_MIRROR_X_BIT) { a.xoffset += a.width; a.width = -a.width; }
+            if (mirror & NVN_COPY_FLAGS_MIRROR_Y_BIT) { a.yoffset += a.height; a.height = -a.height; }
             nvn_gpu_blit(c, gv, &a, hv, &b, (o->flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT) != 0);
             rp_view_pin_end();
             rp_tex_mark_gpu_written(d);

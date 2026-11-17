@@ -7,6 +7,8 @@
 #   ③ bytes：uint32 列表按小端连写
 #   ④ DECLARATIONS：变量排在变量区（8 对齐）、初值非 0 才写；ALL_FPS 里 [VARIABLE, $名] 换成 [MAIN, 偏移]；block 丢弃
 #   ⑤ 调 FPSLocker 自带帮助函数 _fpsLock() → 不收（Unsupported）
+#   ⑥ 汇编器起不来（Windows 没有 xcrun，FileNotFoundError）→ 这份不收（Unsupported），不冲垮补丁出表（#1173）
+#   ⑦⑧ 见对应段落：_convertTickToTimeSpan() 我方实现；mov / movk 里的常量按 16 位片段
 set -u; H=$(cd "$(dirname "$0")/.." && pwd)
 python3 - "$H" <<'EOF'
 import struct, subprocess, sys
@@ -84,6 +86,48 @@ try:
 except F.Unsupported as e:
     ok = '_fpsLock' in str(e)
 ck('⑤ 自带帮助函数不收', ok)
+# ⑥ #1173：汇编器起不来（Windows 没有 xcrun → FileNotFoundError WinError 2）→ 这份不收（Unsupported），不让异常冲垮整个补丁出表
+# ⑦ 我方实现的帮助函数 _convertTickToTimeSpan()（11-15 #934，计时器计数 → 纳秒 = 计数 × 625 ÷ 12）：配置里调了、没自己声明 → 补一个合成代码块，
+#    排在声明的代码块之后（代码区起 0x1000：dynamicSpeed 3 条占 0x1000–0x100b，帮助函数从 0x100c 起），bl 跳到它；帮助函数逐字（按 A64 手册手算）：
+#    mov x1, #625 = 0xD2804E21；mul x0, x0, x1 = 0x9B017C00；mov x1, #12 = 0xD2800181；udiv x0, x0, x1 = 0x9AC10800；ret = 0xD65F03C0
+#    bl 0x100c 放在 0x1000：偏移 +0xc → 0x94000003
+# ⑧ mov / movk 里的 $常量取值的 16 位片段（原先按变量页内偏移取低 12 位：33333333 编成 0x00550055，每帧时长小 6 倍）：
+#    33333333 = 0x01FCA055 → mov w0, #0xa055 = 0x52940AA0；movk w0, #0x1fc, lsl #16 = 0x72A03F80
+doc7 = miniyaml.load('''DECLARATIONS:
+  -
+    type: const
+    name: frame_ns
+    value: 33333333
+  -
+    type: code
+    name: dynamicSpeed
+    instructions: [
+      [bl, _convertTickToTimeSpan()],
+      [mov, w0, $frame_ns],
+      [movk, w0, $frame_ns, 16]
+    ]
+''')
+try:
+    w7, _ = F.convert(doc7, (0x1000, 0x2000), (0x8000, 0x9000))
+    words = lambda off: list(struct.unpack('<%dI' % (len(w7[off]) // 4), w7[off]))
+    ck('⑦ 帮助函数补在 0x100c、bl 跳到它', sorted(w7) == [0x1000, 0x100c] and words(0x1000)[0] == 0x94000003
+       and words(0x100c) == [0xD2804E21, 0x9B017C00, 0xD2800181, 0x9AC10800, 0xD65F03C0])
+    ck('⑧ mov / movk 里的常量按 16 位片段编码', words(0x1000)[1:] == [0x52940AA0, 0x72A03F80])
+except F.Unsupported as e:
+    if 'xcrun' in str(e): print('跳过 ⑦⑧：本机没有汇编器')
+    else: ck(f'⑦⑧ 不该不收：{e}', False)
+real = subprocess.run
+def gone(*a, **k): raise FileNotFoundError(2, '系统找不到指定的文件。')
+subprocess.run = gone
+try:
+    F._assemble(['nop']); ok = False
+except F.Unsupported as e:
+    ok = 'xcrun' in str(e)
+except Exception:
+    ok = False
+finally:
+    subprocess.run = real
+ck('⑥ 没有汇编器：这份不收、不抛别的异常', ok)
 print(('🔴 fpslocker_test 有不通项' if bad else '✅ fpslocker_test 全过'))
 sys.exit(bad)
 EOF

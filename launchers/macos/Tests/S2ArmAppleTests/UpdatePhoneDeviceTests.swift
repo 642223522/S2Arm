@@ -11,6 +11,7 @@ import S2ArmAppleAdapter
 @MainActor final class UpdatePhoneDeviceTests: XCTestCase {
     func testUpdatePhonePassesTheChosenDevice() async throws {
         _ = NSApplication.shared
+        pinIosAfterPackInstall()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("s2arm-upd-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root.appendingPathComponent("Jobs"), withIntermediateDirectories: true)
@@ -30,10 +31,12 @@ import S2ArmAppleAdapter
     /// 会挤掉别的电脑装的游戏（container_would_drop）：界面发起的弹确认、记着当时的设备；确认后带 acceptDropped 重发同一台。控制口发起的（ask: false）不弹
     func testUpdatePhoneAsksBeforeDroppingAndRetriesWithAcceptDropped() async throws {
         _ = NSApplication.shared
+        pinIosAfterPackInstall()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("s2arm-upd-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root.appendingPathComponent("Jobs"), withIntermediateDirectories: true)
         try Data().write(to: root.appendingPathComponent("Jobs/main.py"))
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("lib"), withIntermediateDirectories: true)   // 游戏库文件夹在（更新后重读游戏库失败不能当成库没了，#1412）
         let runner = RequestRunner(); runner.dropFirst = 2
         let model = S2ArmLauncherModel(client: JobClient(environment: JobEnvironment(
             privateRoot: root, resources: root, library: root.appendingPathComponent("lib").path, libraryId: "fixture"), runner: runner))

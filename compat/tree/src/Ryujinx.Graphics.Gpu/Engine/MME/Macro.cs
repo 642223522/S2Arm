@@ -52,7 +52,7 @@ namespace Ryujinx.Graphics.Gpu.Engine.MME
                 {
                     _executionEngine = new MacroHLE(processor, _hleFunction);
                 }
-                else if (GraphicsConfig.EnableMacroJit)
+                else if (GraphicsConfig.EnableMacroJit && System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported)   // S2A：NativeAOT 没有 Reflection.Emit，MacroJit 必失败；AOT 编译期判定为假、整支裁掉
                 {
                     _executionEngine = new MacroJit();
                 }

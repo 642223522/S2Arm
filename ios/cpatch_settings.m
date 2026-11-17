@@ -102,10 +102,11 @@ BOOL s2a_ios_cpatch_result_ok(NSArray<NSString *> *st);   // ios/game_options.m
 }
 @end
 
-// 包根没有 cpatch.tsv 或表里没有项时，统一设置不显示此入口。
+// 正在玩的这款的补丁表：读它的随行目录（s2a_ios_game_dir(nil) = 启动上下文 caps_dir：多款容器 Games/<游戏号>、单款壳 = 包根），
+//   同游戏库详情页 game_options.m patch_groups（#1165：原先只读包根 cpatch.tsv，容器包包根没有这份，游戏内设置 / 齿轮菜单
+//   一律当这款没补丁——画面组没有满屏 / 帧率两行、S 级优化只剩金手指，和详情页对不上）。表里没有项时统一设置不显示此入口
 NSArray<S2ACPatchGroup *> *s2a_cpatch_bundled_groups(void) {
-    NSString *path = [NSBundle.mainBundle pathForResource:@"cpatch" ofType:@"tsv"];
-    NSString *text = path ? [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil] : nil;
+    NSString *text = [NSString stringWithContentsOfFile:[s2a_ios_game_dir(nil) stringByAppendingPathComponent:@"cpatch.tsv"] encoding:NSUTF8StringEncoding error:nil];
     return text ? S2ACPatchGroupsFromTSV(text) : @[];
 }
 UIViewController *s2a_cpatch_settings_controller(NSArray<S2ACPatchGroup *> *groups) {

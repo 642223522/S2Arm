@@ -13,7 +13,7 @@ power.tsv / logcat.txt / gfx_mode.txt / battery.txt / thermal.txt / frame_log.tx
                 [--extra s2arm.KEY[=VALUE] ...]   # 其他 intent extra（true/false 走 --ez）
                 [--adb "adb"] [--ready-timeout 180] [--wait 0] [--allow-data-loss]
                 [--backup-dir DIR] [--lock-root DIR] [--holder NAME] [--note TXT]
-                [--push-timeout S] [--push-tar auto|always|never]
+                [--push-timeout S]
 
 锁：取 device_lock.py 的持久内核锁后才动设备，收局按持锁令牌 release；
 崩溃 / 强杀 / adb 掉线 = 未正常收局，设备留置不放行（不自动放）。
@@ -1450,9 +1450,7 @@ def main(argv=None):
                         "tar + manifest.json（逐文件 sha256 清单），收局按它回灌核对")
     p.add_argument("--adb", default="adb")
     p.add_argument("--push-timeout", type=int, default=None,
-                   help="资源推送超时秒数；缺省按资源字节+文件数估（约 30MB/s + 20ms/文件、2 倍余量）")
-    p.add_argument("--push-tar", choices=["auto", "always", "never"], default="auto",
-                   help="资源推送方式：auto 小文件密集自动 tar 单推解开；always 强制；never 整树推")
+                   help="资源直传超时秒数；缺省按字节估（约 30MB/s、2 倍余量）")
     p.add_argument("--ready-timeout", type=int, default=180)
     p.add_argument("--discharge-settle", type=int, default=None,
                    help="采集窗开始前要连续物理放电的秒数（能耗口径；缺省 30，"
@@ -1666,10 +1664,7 @@ def main(argv=None):
                 log("已降级安装测试包（install -r -d）")
             deploy_game.deploy_resources(str(frozen), str(res), adb, str(deploy_work),
                                          mode="auto", timeout=300, start=False,
-                                         push_timeout=args.push_timeout,
-                                         push_tar={"auto": None, "always": True,
-                                                   "never": False}[args.push_tar],
-                                         log=log)
+                                         push_timeout=args.push_timeout, log=log)
             log("资源与包已部署（deploy_resources，未启动）")
             if args.pack:
                 try:

@@ -1,4 +1,5 @@
 #!/bin/bash
+# 门禁覆盖：*.sh *.py *.mk Makefile *.yml android/gradlew tools/bin/timeout tools/ccshim/shim
 # 进程组信号守卫单测（tools/safe_killpg.sh + tools/killpg_lint.py，约 5 秒）：bash tests/killpg_lint_test.sh
 # 10-21 08:40 / 09:21 本机全部用户进程两次被 kill -KILL -- -1（单测 die_nt 按 ps 算出组号 1）。期望（按规则手写）：
 #   ① 全仓（tools/safe_killpg.sh 本身、扫描器 tools/killpg_lint.py、本单测的坏写法夹具与 compat/tree 除外）没有绕开 safe_killpg 直接给进程组发信号的写法
@@ -15,10 +16,13 @@ fi
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); bad=0; trap 'if [ -e "$T/killpg-cleanup-failed" ]; then echo "保留清理失败现场：$T" >&2; else rm -rf "$T"; fi' EXIT
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
 cd "$H" || exit 1
+# 扫哪些文件 = 本文件头「门禁覆盖」那一行（11-14：扫描器只认 shell 的 kill / pkill 与 Python 的 os.killpg，C 里的 kill(-pid, …) 本来认不出；
+#   范围只写一处，新门禁按同一行算这支单测的输入，声明和实际扫的永远一致）
 git ls-files -z | python3 -c '
-import sys
+import sys, fnmatch, re
+pats = re.search(r"^# 门禁覆盖：(.*)$", open("tests/killpg_lint_test.sh", encoding="utf-8").read(), re.M).group(1).split()
 for f in sys.stdin.read().split("\0"):
-    if not f or f.startswith("compat/tree/") or f in ("tools/safe_killpg.sh", "tools/killpg_lint.py", "tests/killpg_lint_test.sh") or f.endswith((".md",".png",".jpg",".bin",".zst",".rec",".metallib")): continue
+    if not f or f.startswith("compat/tree/") or f in ("tools/safe_killpg.sh", "tools/killpg_lint.py", "tests/killpg_lint_test.sh") or not any(fnmatch.fnmatch(f, p) for p in pats): continue
     try: b = open(f, "rb").read(400000)
     except OSError: continue
     if b"\0" not in b: print(f)' > $T/files

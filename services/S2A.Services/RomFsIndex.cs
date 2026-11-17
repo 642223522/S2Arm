@@ -366,6 +366,119 @@ namespace S2A.Services
             return builder.Build();
         }
 
+        // 标准 RomFS 镜像（产物根里与 romfs/ 同级的 romfs.std、DLC 的 aoc/<idx>.std：LibHac RomFsBuilder 建的 Switch 标准 RomFS，同 IMG 里那段）。
+        //   约定同 graphics/nvn/tools/romfs_list.py：目录 <top> 在就照旧读目录；目录不在、旁边有 <top>.std 才读镜像（StdOf）。
+        //   没有界面覆盖层 → 整个文件直接交给游戏（不建表、不枚举）；有覆盖层 → 按镜像自己的文件表重建虚拟 RomFS，同路径的读覆盖层那份（同 OpenImg 的覆盖层语义）
+        public const string StdSuffix = ".std";
+
+        /// <summary>目录 dir 不在、dir.std 是文件 → dir.std 的完整路径；否则 null（目录在照旧读目录）</summary>
+        public static string StdOf(string dir)
+        {
+            if (Directory.Exists(dir)) return null;
+            string std = Path.TrimEndingDirectorySeparator(dir) + StdSuffix;
+            return File.Exists(std) ? std : null;
+        }
+
+        public static IStorage OpenStd(string path, string overlayDir = null)
+        {
+            var h = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.Read, FileOptions.RandomAccess);
+            IStorage romfs = new HandleRange(h, 0, RandomAccess.GetLength(h));
+            Dictionary<string, string> overlay = OverlayFiles(overlayDir);
+            if (overlay == null) return romfs;
+            RomFsFileSystem fs = new(romfs);
+            long data = fs.Header.DataOffset;
+            List<string> files = new();
+            ListFiles(fs.FileTable, "", files);
+            files.Sort(StringComparer.Ordinal);   // 同目录现建 / 预建索引的加入顺序（RomFsFromDirectory）：同一份文件建出同一布局
+            RomFsBuilder builder = new();
+            foreach (string rel in files)
+            {
+                if (overlay.TryGetValue(rel, out string over)) { builder.AddFile("/" + rel, new LazyHostFile(over, new FileInfo(over).Length)); continue; }
+                fs.FileTable.TryOpenFile("/" + rel, out RomFileInfo info);
+                builder.AddFile("/" + rel, new RangeFile(romfs, data + info.Offset, info.Length));
+            }
+            return builder.Build();
+        }
+
+        // 镜像文件表里的全部文件（相对路径、/ 分隔、无前导 /）
+        internal static void ListFiles(HierarchicalRomFileTable<RomFileInfo> table, string dir, List<string> into)
+        {
+            if (!table.TryOpenDirectory(dir.Length == 0 ? "/" : "/" + dir, out FindPosition start))
+                throw new InvalidDataException($"RomFS 文件表里打不开目录 /{dir}");
+            FindPosition p = start;
+            while (table.FindNextFile(ref p, out RomFileInfo _, out string n)) into.Add(dir.Length == 0 ? n : dir + "/" + n);
+            p = start;
+            while (table.FindNextDirectory(ref p, out string n)) ListFiles(table, dir.Length == 0 ? n : dir + "/" + n, into);
+        }
+
+        // 诊断（缺省关）：S2A_ROMFS_READLOG=<文件> 时，交给游戏的每份 RomFS（本体、DLC）每次读完记一行
+        //   「起局后毫秒 \t 来源 \t RomFS 内路径 \t 文件内偏移 \t 长度 \t 读到字节的 sha256」；一次读跨几个文件按文件拆开，落在文件数据以外（头 / 文件表 / 填充）的
+        //   记 <元数据> 与镜像内偏移。按 RomFS 内路径记、不按镜像偏移：目录形态与镜像形态（romfs.std）读到的同一个文件逐行可比。只作对拍手段，不得变成产品行为
+        private static readonly string ReadLogPath = Environment.GetEnvironmentVariable("S2A_ROMFS_READLOG");
+        public static IStorage ReadLog(IStorage storage, string source) => ReadLog(storage, source, ReadLogPath);
+        internal static IStorage ReadLog(IStorage storage, string source, string logPath) =>
+            storage == null || string.IsNullOrEmpty(logPath) ? storage : new LoggedStorage(storage, source, logPath);
+
+        private sealed class LoggedStorage : IStorage
+        {
+            private static readonly object Gate = new();
+            private static readonly Dictionary<string, StreamWriter> Outs = new(StringComparer.Ordinal);   // 同一记录文件多份 RomFS（本体 + DLC）共用一个写入器
+            private readonly StreamWriter _out;
+            private static readonly long T0 = System.Diagnostics.Stopwatch.GetTimestamp();
+            private readonly IStorage _s;
+            private readonly string _source;
+            private readonly long[] _start, _len;   // 非空文件的数据区间（镜像内偏移），按起点升序
+            private readonly string[] _path;
+
+            public LoggedStorage(IStorage s, string source, string logPath)
+            {
+                _s = s; _source = source;
+                RomFsFileSystem fs = new(s);
+                List<string> files = new();
+                ListFiles(fs.FileTable, "", files);
+                List<(long Start, long Len, string Path)> spans = new(files.Count);
+                foreach (string rel in files)
+                    if (fs.FileTable.TryOpenFile("/" + rel, out RomFileInfo info) && info.Length > 0) spans.Add((fs.Header.DataOffset + info.Offset, info.Length, rel));
+                spans.Sort((a, b) => a.Start.CompareTo(b.Start));
+                _start = spans.ConvertAll(x => x.Start).ToArray(); _len = spans.ConvertAll(x => x.Len).ToArray(); _path = spans.ConvertAll(x => x.Path).ToArray();
+                lock (Gate)
+                {
+                    if (!Outs.TryGetValue(logPath, out _out)) Outs[logPath] = _out = new StreamWriter(logPath, append: true, new UTF8Encoding(false)) { AutoFlush = true };
+                }
+                Console.Error.WriteLine($"[S2A RomFS] 读记录已开：{source} {spans.Count} 个文件 → {logPath}（S2A_ROMFS_READLOG，诊断）");
+            }
+
+            public override Result Read(long offset, Span<byte> destination)
+            {
+                Result r = _s.Read(offset, destination);
+                if (r.IsFailure() || destination.IsEmpty) return r;
+                long ms = (long)System.Diagnostics.Stopwatch.GetElapsedTime(T0).TotalMilliseconds;
+                StringBuilder sb = new();
+                for (long at = offset, end = offset + destination.Length; at < end;)
+                {
+                    int i = Array.BinarySearch(_start, at);
+                    if (i < 0) i = ~i - 1;   // 起点 ≤ at 的最后一个文件
+                    long stop; string what; long inner;
+                    if (i >= 0 && at < _start[i] + _len[i]) { stop = Math.Min(end, _start[i] + _len[i]); what = _path[i]; inner = at - _start[i]; }
+                    else { stop = i + 1 < _start.Length ? Math.Min(end, _start[i + 1]) : end; what = "<元数据>"; inner = at; }
+                    ReadOnlySpan<byte> part = destination.Slice((int)(at - offset), (int)(stop - at));
+                    sb.Append(ms).Append('\t').Append(_source).Append('\t').Append(what).Append('\t').Append(inner).Append('\t').Append(part.Length).Append('\t')
+                      .Append(Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(part))).Append('\n');
+                    at = stop;
+                }
+                lock (Gate) _out.Write(sb.ToString());
+                return r;
+            }
+
+            public override Result GetSize(out long size) => _s.GetSize(out size);
+            public override Result Write(long offset, ReadOnlySpan<byte> source) => _s.Write(offset, source);
+            public override Result Flush() => _s.Flush();
+            public override Result SetSize(long size) => _s.SetSize(size);
+            public override Result OperateRange(Span<byte> outBuffer, OperationId operationId, long offset, long size, ReadOnlySpan<byte> inBuffer) =>
+                _s.OperateRange(outBuffer, operationId, offset, size, inBuffer);
+            public override void Dispose() { _s.Dispose(); base.Dispose(); }
+        }
+
         // IMG 目录表里按名取一条（目录表只在起局时读一次、条目少，线性扫即可；按路径 O(1) 查的算法见 pack/img.py find）
         private static byte[] ImgEntry(Microsoft.Win32.SafeHandles.SafeFileHandle h, long to, long tl, string name)
         {
@@ -393,7 +506,15 @@ namespace S2A.Services
                 if (offset < 0 || offset + destination.Length > _len) return ResultFs.OutOfRange.Value;
                 for (int got = 0; got < destination.Length;)
                 {
-                    int n = RandomAccess.Read(_h, destination[got..], _off + offset + got);
+                    int n;
+                    try { n = RandomAccess.Read(_h, destination[got..], _off + offset + got); }
+                    catch (IOException e) when (e.HResult == LazyHostFile.EFault)
+                    {
+                        // 目标是游戏内存、读盘期间页被写保护（#602，同 IndexedStorage 读镜像那条）：剩下的部分经宿主中转缓冲读、报一次写再拷
+                        Span<byte> left = destination[got..];
+                        return LazyHostFile.ReadViaBounce(_h, left, _off + offset + got, "RomFS 镜像", out long bounced) && bounced == left.Length
+                            ? Result.Success : ResultFs.HostFileDataCorrupted.Value;
+                    }
                     if (n <= 0) return ResultFs.OutOfRange.Value;
                     got += n;
                 }

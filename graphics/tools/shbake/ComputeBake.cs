@@ -136,35 +136,34 @@ namespace S2A.ShBake
             Require(program.Info.Stage == Ryujinx.Graphics.Shader.ShaderStage.Compute, "unexpected shader stage");
             Require(program.Info.CBuffers.Count == 0 && program.Info.SBuffers.Count == 0 && program.Info.Textures.Count == 0 && program.Info.Images.Count == 0, "resource-bearing shaders unsupported by smoke");
             var reservations = new ResourceReservationCounts(false, false);
-            var metadata = new {
-                contract = "s2arm.compute-smoke-result.draft1", stage = "compute", entryPoint = "main",
-                localSize = new[] { cs.LocalSizeX, cs.LocalSizeY, cs.LocalSizeZ }, bindingAbi = Abi,
-                uniformBufferSet = caps.UniformBufferSetIndex, storageBufferSet = caps.StorageBufferSetIndex,
-                textureSet = caps.TextureSetIndex, imageSet = caps.ImageSetIndex,
-                perStageBudgets = new { uniformBuffers = caps.MaximumUniformBuffersPerStage,
-                    storageBuffers = caps.MaximumStorageBuffersPerStage, textures = caps.MaximumTexturesPerStage,
-                    images = caps.MaximumImagesPerStage }, extraSetBase = caps.ExtraSetBaseIndex, extraSetBudget = caps.MaximumExtraSets,
-                reservedUniformBuffers = reservations.ReservedConstantBuffers,
-                reservedStorageBuffers = reservations.ReservedStorageBuffers,
-                reservedTextures = reservations.ReservedTextures, reservedImages = reservations.ReservedImages,
-                userResources = 0, deviceAdmission = "unverified", runtimeProgram = false
-            };
+            // 具名 record + 源码生成（ShBakeJson.cs）：AOT 单文件没有反射序列化；字段名 / 顺序同原匿名类型
+            var metadata = new ComputeSmokeMetadata(
+                contract: "s2arm.compute-smoke-result.draft1", stage: "compute", entryPoint: "main",
+                localSize: new[] { cs.LocalSizeX, cs.LocalSizeY, cs.LocalSizeZ }, bindingAbi: Abi,
+                uniformBufferSet: caps.UniformBufferSetIndex, storageBufferSet: caps.StorageBufferSetIndex,
+                textureSet: caps.TextureSetIndex, imageSet: caps.ImageSetIndex,
+                perStageBudgets: new ComputeStageBudgets(uniformBuffers: caps.MaximumUniformBuffersPerStage,
+                    storageBuffers: caps.MaximumStorageBuffersPerStage, textures: caps.MaximumTexturesPerStage,
+                    images: caps.MaximumImagesPerStage), extraSetBase: caps.ExtraSetBaseIndex, extraSetBudget: caps.MaximumExtraSets,
+                reservedUniformBuffers: reservations.ReservedConstantBuffers,
+                reservedStorageBuffers: reservations.ReservedStorageBuffers,
+                reservedTextures: reservations.ReservedTextures, reservedImages: reservations.ReservedImages,
+                userResources: 0, deviceAdmission: "unverified", runtimeProgram: false);
             ShaderInfo info = ShaderInfoBuilder.BuildForCompute(ctx, program.Info);
-            var resources = new {
-                contract = "s2arm.compute-gal-observation.draft1",
-                fragmentOutputMap = info.FragmentOutputMap, fromCache = info.FromCache,
-                pipelineState = info.State,
-                sets = info.ResourceLayout.Sets.Select((set, index) => new {
-                    set = index,
-                    descriptors = set.Descriptors.Select(d => new {
-                        binding = d.Binding, count = d.Count, type = d.Type.ToString(), stages = (int)d.Stages }),
-                    usages = info.ResourceLayout.SetUsages[index].Usages.Select(u => new {
-                        binding = u.Binding, arrayLength = u.ArrayLength, type = u.Type.ToString(), stages = (int)u.Stages, write = u.Write })
-                }),
-                sharedMemoryBytes = cs.SharedMemorySize, localMemoryBytes = cs.LocalMemorySize
-            };
+            var resources = new ComputeGalInfo(
+                contract: "s2arm.compute-gal-observation.draft1",
+                fragmentOutputMap: info.FragmentOutputMap, fromCache: info.FromCache,
+                pipelineState: info.State,
+                sets: info.ResourceLayout.Sets.Select((set, index) => new ComputeSet(
+                    set: index,
+                    descriptors: set.Descriptors.Select(d => new ComputeDescriptor(
+                        binding: d.Binding, count: d.Count, type: d.Type.ToString(), stages: (int)d.Stages)).ToArray(),
+                    usages: info.ResourceLayout.SetUsages[index].Usages.Select(u => new ComputeUsage(
+                        binding: u.Binding, arrayLength: u.ArrayLength, type: u.Type.ToString(), stages: (int)u.Stages, write: u.Write)).ToArray()
+                )).ToArray(),
+                sharedMemoryBytes: cs.SharedMemorySize, localMemoryBytes: cs.LocalMemorySize);
             return new Translation(new ShaderSource(program.BinaryCode, program.Info.Stage, TargetLanguage.Spirv),
-                info, JsonSerializer.Serialize(metadata), JsonSerializer.Serialize(resources, new JsonSerializerOptions { IncludeFields = true }));
+                info, JsonSerializer.Serialize(metadata, ShBakeJson.Default.ComputeSmokeMetadata), JsonSerializer.Serialize(resources, ShBakeFieldsJson.Default.ComputeGalInfo));
         }
 
         public static int Run(string[] args)
@@ -193,7 +192,7 @@ namespace S2A.ShBake
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine(JsonSerializer.Serialize(new { error = new { code = "COMPUTE_SMOKE_REJECTED", message = ex.Message } }));
+                Console.Error.WriteLine(JsonSerializer.Serialize(new ComputeError(new ComputeErrorBody("COMPUTE_SMOKE_REJECTED", ex.Message)), ShBakeJson.Default.ComputeError));
                 return 2;
             }
             finally

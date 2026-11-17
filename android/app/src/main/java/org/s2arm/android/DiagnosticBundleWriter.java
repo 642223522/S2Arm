@@ -311,6 +311,45 @@ final class DiagnosticBundleWriter {
         return p;
     }
 
+    /**
+     * Mode for the player's chosen document: "wt", not "w". Some document providers (the external
+     * storage provider since Android 10) do not truncate on "w", so overwriting an existing, longer
+     * file of the same name would keep its old tail and leave a broken zip.
+     */
+    static final String SAVE_MODE = "wt";
+
+    /** Where the bundle goes: opens the chosen document in the given mode (ContentResolver in the app). */
+    interface Destination {
+        OutputStream open(String mode) throws IOException;
+    }
+
+    /** Saves one bundle to the destination, opened with {@link #SAVE_MODE}; returns the bytes written. */
+    static long saveBundle(Path outDir, String name, Destination destination) throws IOException {
+        try (OutputStream out = destination.open(SAVE_MODE)) {
+            if (out == null) throw new IOException("destination cannot be written");
+            return copyBundle(outDir, name, out);
+        }
+    }
+
+    /**
+     * Copies one bundle this class wrote (a name {@link #shareable} accepts) to a destination the
+     * player picked, without following links. Returns the bytes copied; the caller compares them
+     * with the bundle size, so a destination that stopped taking bytes is not reported as saved.
+     */
+    static long copyBundle(Path outDir, String name, OutputStream out) throws IOException {
+        Path bundle = shareable(outDir, name);
+        if (bundle == null) throw new IOException("not a diagnostic bundle");
+        long copied = 0;
+        byte[] buffer = new byte[64 << 10];
+        try (java.io.InputStream in = Files.newInputStream(bundle, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
+            for (int n; (n = in.read(buffer)) > 0; copied += n) out.write(buffer, 0, n);
+        }
+        out.flush();
+        long size = Files.size(bundle);
+        if (copied != size) throw new IOException("bundle changed while saving");
+        return copied;
+    }
+
     /** Keeps the newest KEEP_BUNDLES bundles (the one just written always stays) and clears leftovers. */
     private static void prune(Path outDir, Path keep) throws IOException {
         List<Path> bundles = new ArrayList<>();

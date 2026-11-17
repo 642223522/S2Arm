@@ -48,7 +48,7 @@ class ReportButton(unittest.TestCase):
 
     def test_top_bar_last_button(self):   # ④
         mac = read(MAC / "LauncherView.swift")
-        top = mac[mac.index("private var topActions"):]; top = top[:top.index(".padding(.trailing, 8)")]
+        top = mac[mac.index("private var topActions"):]; top = top[:top.index(".fixedSize()")]
         last = top[top.rindex("Button {"):]
         self.assertIn('accessibilityIdentifier("top.report")', last); self.assertIn('"report.button"', last)
         win = read(WIN / "App/EnvironmentWindow.cs")
@@ -56,6 +56,11 @@ class ReportButton(unittest.TestCase):
         adds = re.findall(r"rightBar\.Children\.Add\((\w+)", bar)
         self.assertEqual(adds[-1], "reportBtn")
         self.assertIn('SetAutomationId(reportBtn, "top.report")', bar); self.assertIn('T("report.button")', bar)
+
+    def test_settings_does_not_duplicate_the_global_report_entry(self):
+        settings = read(MAC / "EnvironmentView.swift")
+        self.assertFalse("CopyReportButton(" in settings, "设置页应复用顶栏报修入口")
+        self.assertFalse("ReportHint()" in settings, "设置页不应重复显示报修说明")
 
 
 if __name__ == "__main__":

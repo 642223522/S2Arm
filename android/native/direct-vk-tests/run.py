@@ -74,7 +74,7 @@ def main():
         raise RuntimeError("generated signatures differ from checked-in rows")
     common = [cc, "-std=c11", "-O2", "-g", "-Wall", "-Wextra", "-Werror", "-pthread",
               "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections",
-              "-I" + str(NATIVE), "-I" + str(ROOT / "runtime/include")]
+              "-I" + str(NATIVE), "-I" + str(ROOT / "runtime/include"), "-llog"]
     xstack = [NATIVE / "tsd.c", NATIVE / "plat_android.c", NATIVE / "runtime/fault/elf_host.c",
               ROOT / "runtime/src/xstack.c", ROOT / "runtime/src/entry.S"]
     def compile(source, name, test, dependencies):

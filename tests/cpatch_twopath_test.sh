@@ -125,6 +125,12 @@ rcA, gA = rew(wk, T + '/wk')
 imgA = open(T + '/wk/main.patched.bin', 'rb').read(); keyA = next(int(l.split('\t')[1], 16) for l in open(T + '/wk/main.fixups.tsv') if l.startswith('# KEY_PAGE_OFF\t'))
 rA = run(1, img=imgA, key=keyA, poke=((keyA + 1016 * 8, struct.pack('<I', 0x0BADF00D)),))
 ck(f'⑨ w 行 @k：adrp 改指键页、读到槽 1016 的值（实得 rc={rcA} w4={rA[4]:#x}）', rcA == 0 and 'cpatch' not in gA and rA[4] == 0x0BADF00D)
+# ⑩ 补丁新字是反汇编器解不出的字（诊断 D-Z5E3 / #1234：画面补丁往代码段写浮点常数 0x3f800000 = 1.0）：原先 cp_check 经 dis() 的 REQUIRE 整个改写器断言退出
+#   （「条件不成立：decode(w, a, &x)」，整款出包红）；应记缺口 cpatch「解不出」、产物照出（退出码 3）、0x108 保持原字——由 pack/cpatch.py prune 剔掉这份补丁重来
+rcU, gU = rew([('p', 0x108, words[0x108], 0x3F800000, 5)], T + '/undec')
+wU = struct.unpack_from('<I', open(T + '/undec/main.patched.bin', 'rb').read(), 0x108)[0] if os.path.exists(T + '/undec/main.patched.bin') else None
+ck(f'⑩ 补丁新字解不出 → 退出码 3、缺口 cpatch「解不出」、0x108 保持原字（实得 rc={rcU} {wU and hex(wU)} 缺口「{gU.strip()[:80]}」）',
+   rcU == 3 and 'cpatch' in gU and '解不出' in gU and wU == words[0x108])
 sys.exit(bad)
 EOF
 rc=$?; [ $rc = 0 ] && echo "✅ cpatch_twopath_test 全过" || { echo "🔴 cpatch_twopath_test 有不通项"; exit 1; }

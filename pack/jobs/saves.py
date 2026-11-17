@@ -355,7 +355,6 @@ def write_archive(c, game, root, destination):
     done = 0
     try:
         with temporary.open("xb") as f:
-            os.chmod(temporary, 0o600)
             with zipfile.ZipFile(f, "w", zipfile.ZIP_DEFLATED, compresslevel=3) as z:
                 for name, info in selected.items():
                     h = hashlib.sha256()
@@ -613,9 +612,9 @@ class RecoveryFailed(Exception):
 def recovery_message(error):
     # 与 iPhone 存档页同一口径：说清记录在哪、可以先备份、单独确认后仍可启动、记录不删（审计 18:00 P0-3）
     return (
-        f"存档恢复事务尚未完成，自动回退失败。事务记录在 {error.journal}"
-        + (f"，上次的数据副本在 {error.transaction}" if error.transaction else "")
-        + "。可以先「备份存档」把当前存档拷走；确认可能丢掉这次没做完的导入 / 恢复后，可选择「仍要启动」。"
+        f"存档恢复事务尚未完成，自动回退失败。事务记录在 {error.journal}"  # 非玩家句
+        + (f"，上次的数据副本在 {error.transaction}" if error.transaction else "")  # 非玩家句
+        + "。可以先「备份存档」把当前存档拷走；确认可能丢掉这次没做完的导入 / 恢复后，可选择「仍要启动」。"  # 非玩家句
         "记录不会删除，下次启动会再试恢复。"
     )
 
@@ -676,7 +675,7 @@ def recover(c, game, override=False):
     except RecoveryFailed as error:
         if not override:
             fail(c, recovery_message(error), "recovery")
-        report(c, recovery_message(error) + "（玩家已确认仍要启动）", "recovery_overridden", "warning")
+        report(c, recovery_message(error) + "（玩家已确认仍要启动）", "recovery_overridden", "warning")  # 非玩家句
         return False
 
 
@@ -949,7 +948,7 @@ def external_archive(c, game, root, source):
                     "no_target",
                 )
             sid = entries[0]["saveId"]
-            cache.mkdir(parents=True, exist_ok=True, mode=0o700)
+            cache.mkdir(parents=True, exist_ok=True)
             stage = Path(tempfile.mkdtemp(prefix=".import.", dir=cache))
             try:
                 tree = stage / "root"
@@ -1024,7 +1023,7 @@ def checked_archive(c, game, root):
 SEED_NOTICE = "这款游戏在这台电脑上还没玩过：存档会在下次启动游戏时放进去。"
 # 服务层 SeedFrom 每一类都灌入后才打这一句（services/S2A.Services/Saves.cs SeedAllDoneLine，两边一字不差；审计 P1-156：
 #   原先认「S2A 带存档起局：」，它在真正灌入前的「当前用户」行和每一类成功行都有，前一类成功、后一类失败也删了种子）
-SEED_DONE_LINE = "S2A 带存档起局完成："
+SEED_DONE_LINE = "S2A 带存档起局完成："  # 非玩家句
 
 
 def pending_seed(c, gid):
@@ -1105,7 +1104,7 @@ def seed_restore(c, game, root, source):
     pending = pending_seed(c, game["id"])
     stage = pending.with_name(".pending-seed.new")
     shutil.rmtree(stage, ignore_errors=True)
-    stage.mkdir(parents=True, mode=0o700)
+    stage.mkdir(parents=True)
     with opened_seed(c, game, source) as (data, kind):
         copy_tree(c, Path(data), stage / seed_kind(c, game, kind))
     shutil.rmtree(pending, ignore_errors=True)
@@ -1156,7 +1155,6 @@ def copy_tree(c, source, destination):
         target = destination / name
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("xb") as f:
-            os.chmod(target, 0o600)
             for chunk in file_chunks(c, source / name):
                 f.write(chunk)
             f.flush()
@@ -1179,12 +1177,12 @@ def restore(c):
         ):
             fail(c, "备份或当前存档已变化，请重新检查备份后再确认恢复。", "changed")
         token = uuid.uuid4().hex
-        transactions.mkdir(parents=True, exist_ok=True, mode=0o700)
+        transactions.mkdir(parents=True, exist_ok=True)
         transaction = transactions / token
-        transaction.mkdir(mode=0o700)
+        transaction.mkdir()
         atomic(transaction / "owner.json", dict(schema=1, gameId=game["id"], transaction=token))
         previous = backups / token
-        previous.mkdir(parents=True, mode=0o700)
+        previous.mkdir(parents=True)
         sync_parents(transaction, layout.root_of(c, game["id"]))
         sync_parents(previous, layout.root_of(c, game["id"]))   # 备份目录在这款所在的存放位置下，不一定在默认游戏库里
         new, old = transaction / "new", previous / "data"
@@ -1220,7 +1218,6 @@ def restore(c):
                     path.parent.mkdir(parents=True, exist_ok=True)
                     h = hashlib.sha256()
                     with z.open("payload/" + item["path"]) as src, path.open("xb") as dst:
-                        os.chmod(path, 0o600)
                         while chunk := src.read(CHUNK):
                             c.check()
                             dst.write(chunk)

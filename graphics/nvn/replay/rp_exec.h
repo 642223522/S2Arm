@@ -7,6 +7,7 @@
 
 const char *rp_op_name(uint32_t op);   // 录制命令名（"OP_DRAW" …）；范围外返回 "OP_?"
 int rp_pool_count(void);                // 已登记的内存池个数
+uint64_t rp_pool_fast_hits(void);       // 调用线程的快路命中累计（只读；测试与调优观测点）
 void rp_pool_memo_stats(uint64_t *hits, uint64_t *lookups);   // 池查找的线程内备忘（rp_entry.c）：调用线程自己的累计命中数、查找数
 int rp_tex_live_n(void);                // 活贴图对象个数（只是登记数，不等于已建图的个数）
 int rp_depth_zero(void);                // NVN 深度模式：1 = 近平面为 0
@@ -14,6 +15,8 @@ int rp_origin_lower_left(void);         // NVN 窗口原点：1 = 左下
 uint64_t rp_frame(void);                // 前端给的当前帧号
 
 // ---------- 内存池镜像（rp_buf.c）----------
+// 合法但未绑定的 NVN 存储槽：内部 64 KiB 缓冲（初始全零），不登记 guest 池；会话收尾释放。
+nvn_gpu_buf rp_buf_for_null_storage(void);
 // 取 [addr, addr+len) 在后端的缓冲与偏移；自上次同步后写过的页在 c 这一段的 GPU 顺序里重传。0 = 地址不在任何池里（已记账）。线程：[提交]。
 int rp_buf_resolve(nvn_gpu_cmd c, uint64_t addr, uint64_t len, nvn_gpu_buf *buf, uint64_t *off);
 int rp_buf_resolve_multi(int n, const uint64_t *addr, const uint64_t *len, nvn_gpu_buf *buf, uint64_t *off, unsigned char *ok);   // 一次抢锁解析多段
@@ -91,8 +94,19 @@ enum { RP_PERF_SUBMIT_NS, RP_PERF_COMMIT_NS, RP_PERF_SUBS, RP_PERF_WAIT_NS, RP_P
        RP_PERF_KEEP_F_PG, RP_PERF_KEEP_F_BI, RP_PERF_KEEP_F_PIPESET, RP_PERF_KEEP_F_ITEMS,               // 继续：程序变 / base_instance 变 / 换过管线 / 逐项校验不过
        RP_PERF_SUB_PRE_NS, RP_PERF_SUB_EXEC_NS, RP_PERF_SUB_POST_NS, RP_PERF_WAIT_ALREADY_N, RP_PERF_GPU_BUSY_NS,   // 提交三段耗时 / 进等待时已完成 / GPU 忙区间
        RP_PERF_WAIT_FAKED_N,   // 实验开关 nvk_sync_lag 下「没真等」的等待次数（量重叠上限用，画面可能错）
+       RP_PERF_TM_FRAMES,      // 分时抽样：窗口里逐步计时过的帧数（#1103）；绘制各步 / 开通道细分 / 贴图解析等锁持锁按它求每帧值
        RP_PERF_N };   // P_CONT：同目标续接命中的 SET_RT 次数；P_CLEARONLY：一笔绘制都没有的通道数；P_PARK：记进挂起表的待折清除条数；BIND_FAST：整组绑定直接沿用没重建；TEX_EPOCH：贴图内容检查按纪元跳过的次数；PC_HIT/MISS：后端开通道缓存命中 / 新建   /* FX_*：做完时要写回游戏内存的提交数，和各类回写的个数（事件 / 计数器报告 / 遮挡事件 / 显卡写缓冲） */   // TEX_UP_*：贴图整张上传的次数与千字节；BUF_SYNC_KB：池镜像同步的千字节   // P_*：通道的构成（见 rp_pass.c rp_pass_end）   // D_*：一笔绘制里各步（见 rp_draw.c）
 void rp_perf_add(int i, uint64_t v);
+// 分时读数抽样（#1103）：一笔绘制取 10 次时钟 + 9 次原子加、一次贴图解析取 3 次、一个通道取 5 次，世界稳态每帧合计约 2.2 万次取时钟，占回放线程约 3%。
+// 改成每 rp_tm_stride() 帧只完整计 1 帧（缺省 32）：采样帧里逐步计时照旧，其余帧一次时钟都不取；纯计数的项不动、每帧都记。
+// 「分时」里这几项按采样帧数（RP_PERF_TM_FRAMES）求每帧值，读数行的格式和含义不变。
+// 调试开关（仅调试包读；release 恒为缺省）：nvk_tm_stride = 抽样间隔（帧，夹到 1..1024）；nvk_tm_full=1 = 每帧都计（等于原行为，同包 A/B 用）。
+// 开关在会话重开（rp_draw_reset）时读；rp_tm_frame_end 在每次上屏时调一次（帧边界），由它定下一帧要不要计时。
+extern int rp_tm_on;   // 1 = 当前这一帧要逐步计时
+static inline int rp_tm(void) { return __atomic_load_n(&rp_tm_on, __ATOMIC_RELAXED); }
+unsigned rp_tm_stride(void);   // 当前抽样间隔（帧）；1 = 每帧都计
+void rp_tm_frame_end(void);    // 一帧结束（上屏）：刚结束的是采样帧就记一帧，再定下一帧
+void rp_tm_reset(void);        // 会话重开：重读开关（rp_draw_reset 里调）
 void rp_exec_dump_ops(char *b, size_t n);   // 逐命令类型耗时前几名（开关 nvk_exec_tm；窗口末尾取一次即清零）
 void rp_sync_lag_present(void);   // 上屏之后调：给「每帧只放行一次同步等待」补一次额度（开关 nvk_sync_lag=3）
 void rp_bind_tm_take(uint64_t *tot, uint64_t *backend, uint64_t *n);   // 绑定重建：总时间 / 其中交后端 / 次数（纳秒，取即清零）
@@ -105,6 +119,14 @@ int rp_fence_done(uint64_t f);       // 栅栏值 f 及之前交出去的活显�
 extern int rp_split_draws;       // 中途交段：每段的笔数（见 rp_exec.c）
 uint64_t rp_seg_serial(void);   // 第几个后端段：段里的暂存内容（arena 切片）只在同一段里能复用
 void rp_frame_take(uint64_t *exec_ns, uint64_t *draws, uint64_t *subs);   // 取走本帧的回放耗时 / 绘制笔数 / 提交次数（长帧日志用）
+// 逐帧分项账（长帧归因，开关 nvk_hitch_log）：5 秒窗口的 rp_perf 混了多帧，回答不了「这一帧的时间花在哪」。
+// 这一组只在帧边界由上屏线程取走一次（取即清零），累计点与 rp_perf 的 D_* 同源（见 rp_exec.c 的 fr_perf_project）。
+// 口径：取程序 / 开通道 / 取管线 / 绑定 / 后端绘制 / 收尾各占一笔绘制里的一段；「后端取与设」「管线缓存写盘」
+// 嵌套在取管线里，只细分显示、不再加进合计。
+enum { RP_FR_PROG, RP_FR_PASS, RP_FR_PIPE, RP_FR_PGET, RP_FR_BIND, RP_FR_DRAW, RP_FR_TAIL, RP_FR_PLC, RP_FR_N };
+int rp_fr_perf_on(void);   // 开关（nvk_hitch_log，进程内缓存一次，与长帧日志同一个值）：关着时帧级分项不做任何累计
+void rp_fr_perf_take(uint64_t out[RP_FR_N]);   // [上屏] 取走本帧分项并清零；每帧只调一次（与 rp_frame_take 同一个帧边界）
+int rp_hitch_line(char *b, size_t n, uint64_t gap_ns, uint64_t exec_ns, uint64_t draws, uint64_t subs, const uint64_t fr[RP_FR_N]);   // 长帧行（见 rp_exec.c）
 uint64_t rp_sub_serial(void);   // 第几次提交（一次提交内可复用的暂存内容按它判）
 void rp_perf_take(uint64_t out[RP_PERF_N]);
 void rp_draw_reset(void);
@@ -125,6 +147,10 @@ int rp_rc_skip(void);                   // 条件渲染判成不画的那一段�
 void rp_pass_note_draw(int uses_ds);   // 一笔绘制进了当前通道（uses_ds：这笔开着深度测试 / 深度写 / 模板测试）
 int rp_pass_slot_attached(int i);   // 当前目标的颜色槽 i 真的挂了附件（有图，且不是重复挂的同一张）：管线描述按它给格式
 void rp_pass_slot_size(int i, uint32_t *w, uint32_t *h);   // 颜色槽 i 的视图尺寸（像素；块压缩基底配一块当一个像素的视图时按块数）
+void rp_pass_noatt_size(uint32_t *w, uint32_t *h);   // 当前是无附件通道时给它的帧缓冲尺寸（缺省视口 / 裁剪夹取用）；不是就不动 *w *h
 // 调试读回（rp_draw.c）：上屏线程登记，提交线程在一次提交收尾时执行；fence 是提交线程的时间线值，每读一张 +1
 void rp_debug_dump_request(uint64_t present_serial, uint64_t frame);
 void rp_debug_dump_poll(uint64_t *fence);
+
+// #653：无能力 / 段超 64 槽时沿用 guest_tick 的报告数（OOM 不伪造读数），取走清零。
+uint64_t rp_timestamp_fallback_take(void);

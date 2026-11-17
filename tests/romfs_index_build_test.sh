@@ -51,11 +51,18 @@ ck "② 构建成功 → 只构建一次（$(cat "$STUB_BUILD_LOG" 2>/dev/null)�
 ck "② 构建成功 → 跑的是工程下那份 DLL（[${RUNS}]）" 'grep -qF "$DLL" <<< "$RUNS"'
 ck "② 构建成功 → 产物根照旧写在 <根>/（stdout 有桩回显）" 'grep -q "跑了" <<< "$O"'
 
-# ③ 预编分支：S2A_PREBUILT_TOOLS 不构建，直接跑那份 DLL（语义不变）
-mkdir -p "$T/prebuilt/romfs"; printf 'prebuilt\n' > "$T/prebuilt/romfs/romfs_index.dll"
+# ③ 预编分支：S2A_PREBUILT_TOOLS 不构建，直接执行预编的 NativeAOT 单文件（Mac 发版形态；语义不变）
+mkdir -p "$T/prebuilt/romfs"
+cat >"$T/prebuilt/romfs/romfs_index" <<'SH'
+#!/bin/bash
+echo "$0 $*" >> "$STUB_RUN_LOG"
+echo "🟢 桩：跑了 $0 $*"
+exit "${STUB_RUN_RC:-0}"
+SH
+chmod +x "$T/prebuilt/romfs/romfs_index"
 rm -f "$STUB_BUILD_LOG" "$STUB_RUN_LOG"
 go S2A_PREBUILT_TOOLS="$T/prebuilt"
-ck "③ S2A_PREBUILT_TOOLS：rc=0 且跑的是预编 DLL（[${RUNS}]）" '[ "$RC" = 0 ] && grep -qF "$T/prebuilt/romfs/romfs_index.dll" <<< "$RUNS"'
+ck "③ S2A_PREBUILT_TOOLS：rc=0 且跑的是预编单文件（[${RUNS}]）" '[ "$RC" = 0 ] && grep -qF "$T/prebuilt/romfs/romfs_index" <<< "$RUNS"'
 ck "③ S2A_PREBUILT_TOOLS：不构建（build 一次都没调）" '[ ! -f "$STUB_BUILD_LOG" ]'
 
 # ④ build 报成功但没产物：也属于「没换成新的」，不许拿旧 DLL 顶上

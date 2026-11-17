@@ -205,6 +205,13 @@ namespace Ryujinx.Audio.Renderer.Dsp
                 Volatile.Write(ref S2AMaxLateNs, s2aLate);
             }
 
+            // S2Arm (11-14 卡顿诊断探针): 本周期比节拍晚到的纳秒累计给宿主 TSV 的 @aud_wait_ms 列（hle_nvn.c 每帧取走清零）。
+            // 游戏线程等的声音更新事件由本线程 Signal（AudioRendererManager.SendCommands）——这里晚到，等事件的游戏线程就同量晚醒
+            if (s2aLate > 0)
+            {
+                S2AAudLate.Note(s2aLate);
+            }
+
             // S2Arm: one sleep to the end of the period instead of polling WaitOne(1) (3.4 wakeups per 5 ms period → 1)
             if (timeNow < _lastTime + increment)
             {
@@ -403,11 +410,25 @@ namespace Ryujinx.Audio.Renderer.Dsp
 
             for (int i = 0; i < _sessionCommandList.Length; i++)
             {
-                if (_sessionCommandList[i] != null)
+                RendererSession session = _sessionCommandList[i];
+
+                if (session != null)
                 {
-                    _sessionCommandList[i].CommandList.Process(OutputDevices[i]);
-                    _sessionCommandList[i].CommandList.Dispose();
-                    _sessionCommandList[i] = null;
+                    // S2Arm: 命令级异常已在 CommandList.Process 内按拍隔离；这里再兜一层非命令异常，
+                    //   保证会话槽一定清空、下一拍还能继续（inline 模式下异常原本会打穿渲染线程）
+                    try
+                    {
+                        session.CommandList.Process(OutputDevices[i]);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Error?.Print(LogClass.AudioRenderer, $"DSP session {i} failed; dropping period: {ex}");
+                    }
+                    finally
+                    {
+                        session.CommandList.Dispose();
+                        _sessionCommandList[i] = null;
+                    }
                 }
             }
 

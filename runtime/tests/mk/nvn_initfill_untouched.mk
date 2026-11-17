@@ -1,6 +1,6 @@
 # native-test-nvn_initfill_untouched：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += nvn_initfill_untouched
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # 贴图初始内容判全 0 不读游戏没碰过的页（11-05 时之笛 iPhone：新建 GPU 贴图的存储被整段读一遍，未写页进足迹）
 $(BUILD)/tests/t_nvn_initfill_untouched: graphics/nvn/tests/t_nvn_initfill_untouched.m graphics/nvn/gfx/nvn/nvn_mtl.m $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \

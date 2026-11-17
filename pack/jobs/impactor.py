@@ -91,10 +91,12 @@ EXPLAIN = (
     (r'anisette error[\s\S]{0,600}?(?:dns error|os error 1100[1-4]|client error \(connect\)|error sending request|connection (?:refused|reset)|timed out)', 'signing_server_unreachable'),
     # 保存的 Apple ID 会话过期（Apple 开发者接口 1100「Your session has expired. Please log in.」，plumesign 恢复会话时报，玩家反馈 v0.2.7）：
     #   要在 Impactor 里重新登录；原先落到 device_install_failed，建议写「检查设备连接与包的有效性」，把玩家往错的方向引
-    (r'developer api error 1100\b|\b1100\b[^\n]{0,40}session|session has expired|please log ?in again|not logged in', 'apple_session_expired'),
-    # 存了账号却没选中（D-ZM37 plumesign 原文「No account selected. Please login first」）：处理办法同过期——在 Impactor 里移除再添加，
-    #   添加即选中（v2.7.2 accounts_add 设 selected_account）；只存了一个的在签名前已替玩家选上（select_only_account），到这里的是存了多个
-    (r'no account selected', 'apple_session_expired'),
+    # 连不上苹果自己的服务器（登录 gsa.apple.com、签名 developerservices2.apple.com）：网络问题，不是 Apple ID 的问题（#edc5f5 拆分）
+    (r'error sending request for url \(https?://[^\s)]*\bapple\.com', 'apple_server_unreachable'),
+    (r'developer api error 1100\b|\b1100\b[^\n]{0,40}session|session has expired|please log ?in again', 'apple_session_expired'),
+    # 还没登录 / 存了账号却没选中（D-ZM37 plumesign 原文「No account selected. Please login first」）：原先归「登录已过期」，
+    #   对从没登录成功过的玩家措辞不对（#edc5f5）。添加即选中（v2.7.2 accounts_add 设 selected_account）；只存了一个的在签名前已替玩家选上（select_only_account）
+    (r'no account selected|please log ?in first|not logged in', 'apple_not_signed_in'),
     (r'-2097\d|-20101|incorrect|entered incorrectly', 'apple_id_wrong'),
     (r'-21669|verification code|two.?factor|2fa', 'two_factor_wrong'),
     (r'unknown error occured while reading the file|unknown error occurred while reading the file|zip64', 'ipa_needs_repack'),
@@ -107,7 +109,9 @@ EXPLAIN = (
     (r'mismatchedapplicationidentifierentitlement|application-identifier entitlement string[^\n]{0,240}does not match', 'app_other_signer'),   # 同 install.SIGN_ERRORS（文本已转小写）
     (r'developer mode', 'developer_mode_required'),
     (r'device is locked|passcode|unlock', 'device_locked'),
-    (r'pairing|not paired|invalidhostid|trust', 'device_pairing_required'),
+    # 苹果设备服务里没有这台的配对记录（#1198 plumesign 原文「unexpected response from device: missing PairRecordData in pair record response」）：
+    #   也是没配好对，原先落到 device_install_failed、建议成「检查设备连接与包」
+    (r'pairing|not paired|invalidhostid|trust|pair ?record', 'device_pairing_required'),
     (r'no device|not connected|usbmux', 'device_not_connected'),
 )
 
@@ -210,8 +214,8 @@ def guide_html(ipa=None, st=None, lang='zh-Hans'):
         note = f'<p class="note">{esc(s["note"][lang])}</p>' if s.get('note') else ''
         rows.append(f'<section><h2>{i}. {esc(s["title"][lang])}</h2><ol>{items}</ol>{note}</section>')
     errs = ''.join(f'<tr><td><code>{esc(e["match"])}</code></td><td>{esc(e["means"][lang])}</td><td>{esc(recovery(e["code"], packaged=True))}</td></tr>' for e in g['errors'])
-    ipa_line = f'<p>本次出好的包：<code>{esc(os.path.abspath(ipa))}</code>（已在资源管理器里选中）</p>' if ipa else ''
-    return f'''<!doctype html><html lang="zh-Hans"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    ipa_line = f'<p>本次出好的包：<code>{esc(os.path.abspath(ipa))}</code>（已在资源管理器里选中）</p>' if ipa else ''  # 非玩家句
+    return f'''<!doctype html><html lang="zh-Hans"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">  # 非玩家句
 <title>{esc(g["title"][lang])}</title>
 <style>:root{{--bg:#fff;--fg:#1d1d1f;--mut:#6e6e73;--card:#f5f5f7;--acc:#0a66d6;--warn:#b25000}}
 @media (prefers-color-scheme:dark){{:root{{--bg:#111;--fg:#f2f2f2;--mut:#a1a1a6;--card:#1c1c1e;--acc:#4ea1ff;--warn:#ffb15c}}}}

@@ -17,13 +17,18 @@
 
 #define MB (1ull << 20)
 enum { GC_LIMIT_NONE, GC_LIMIT_TOTAL, GC_LIMIT_HEAPS, GC_LIMIT_NEED };
-static const uint64_t k_total_reserve = 10240 * MB, k_heaps_reserve = 2688 * MB, k_spare = 1024 * MB;
+// 余量（11-16 改）：大两档另要给宿主留 5 GB。总上限档开局一次保留 10 GB、分堆档 2.7 GB，原先只留 1 GB：窗口按学到的跨度收窄后
+//   iPhone 低区放得下总上限，GC 一口吃掉 10 GB，宿主只剩 2 GB，Switch 2 款局中 malloc / 线程栈碰底（D-A9PE iPhone16,2：
+//   C# 初始化前低区 12565 MB → 后 2025 MB，第 130 秒视频解码 malloc 陷阱）。玩家诊断 iOS 2255 局宿主低区峰值 p99 3502 / 最大 4873 MB；
+//   总上限档 830 局里 87 局开局只剩 < 4 GB、19 局耗到底。托管堆峰值（SOH 170 / LOH 177 / POH 28 MB）三档都够，大档省下的地址给宿主。
+//   按需档只保留 870 MB，仍按 1 GB 余量（再往下就是不设上限、扩表缺陷没挡住）。
+static const uint64_t k_total_reserve = 10240 * MB, k_heaps_reserve = 2688 * MB, k_spare = 1024 * MB, k_host_big = 5120 * MB;
 // 按需档保留量上界：按分堆档实测保留 / 上限比 2688 / 2176 折 704 MB 上限 ≈ 870 MB（异度3 416 MB 上限实测只占 358 MB，比值更小，这里取保守）
 static const uint64_t k_need_reserve = 870 * MB;
 
 int s2a_gc_limit_pick(uint64_t largest) {
-    if (largest >= k_total_reserve + k_spare) return GC_LIMIT_TOTAL;
-    if (largest >= k_heaps_reserve + k_spare) return GC_LIMIT_HEAPS;
+    if (largest >= k_total_reserve + k_host_big) return GC_LIMIT_TOTAL;
+    if (largest >= k_heaps_reserve + k_host_big) return GC_LIMIT_HEAPS;
     if (largest >= k_need_reserve + k_spare) return GC_LIMIT_NEED;
     return GC_LIMIT_NONE;
 }
@@ -40,17 +45,17 @@ void s2a_gc_limit_apply(void) {
     case GC_LIMIT_TOTAL:
         setenv("DOTNET_GCHeapHardLimit", "80000000", 1);   // DOTNET_ 数值按十六进制
         LOG("GC 上限：总 2048 MB（低区最大一块 %llu MB ≥ %llu MB；开局一次保留约 %llu MB）",
-            (unsigned long long)(largest / MB), (unsigned long long)((k_total_reserve + k_spare) / MB), (unsigned long long)(k_total_reserve / MB));
+            (unsigned long long)(largest / MB), (unsigned long long)((k_total_reserve + k_host_big) / MB), (unsigned long long)(k_total_reserve / MB));
         break;
     case GC_LIMIT_HEAPS:
         setenv("DOTNET_GCHeapHardLimitSOH", "60000000", 1); setenv("DOTNET_GCHeapHardLimitLOH", "20000000", 1); setenv("DOTNET_GCHeapHardLimitPOH", "8000000", 1);
         LOG("GC 上限：分堆 SOH 1536 / LOH 512 / POH 128 MB（低区最大一块 %llu MB，放不下总上限要的 %llu MB；开局一次保留约 %llu MB）",
-            (unsigned long long)(largest / MB), (unsigned long long)((k_total_reserve + k_spare) / MB), (unsigned long long)(k_heaps_reserve / MB));
+            (unsigned long long)(largest / MB), (unsigned long long)((k_total_reserve + k_host_big) / MB), (unsigned long long)(k_heaps_reserve / MB));
         break;
     case GC_LIMIT_NEED:
         setenv("DOTNET_GCHeapHardLimitSOH", "18000000", 1); setenv("DOTNET_GCHeapHardLimitLOH", "10000000", 1); setenv("DOTNET_GCHeapHardLimitPOH", "4000000", 1);
         LOG("GC 上限：按需 SOH 384 / LOH 256 / POH 64 MB（低区最大一块 %llu MB，放不下分堆要的 %llu MB；开局一次保留至多约 %llu MB，GC 不再运行中长新段）",
-            (unsigned long long)(largest / MB), (unsigned long long)((k_heaps_reserve + k_spare) / MB), (unsigned long long)(k_need_reserve / MB));
+            (unsigned long long)(largest / MB), (unsigned long long)((k_heaps_reserve + k_host_big) / MB), (unsigned long long)(k_need_reserve / MB));
         break;
     default:
         LOG("【黄】GC 上限：不设（低区最大一块 %llu MB、合计 %llu MB，放不下按需上限要的 %llu MB）——退回不设上限，GC 运行中扩表的那个缺陷没挡住",

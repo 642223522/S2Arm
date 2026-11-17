@@ -15,6 +15,7 @@
 #           ⑱ 片元 in 块的块级 flat 加到每个成员；成员自带精度保留
 #           ⑲ 匿名块（没有实例名）：成员保持原名
 #           ⑳ 实例是数组 / 成员是数组 / uniform 块：整份不动（照旧由翻译报错）
+#           ㉑–㉔ D-9EPN：结果不是 3.20、没开多重采样插值扩展时整词 sample → s2a_sample（3.10 原文 / ES 1.00 升版）；3.20 或开了扩展不动
 set -u
 H=$(cd "$(dirname "$0")" && pwd); R=$(cd "$H/../../../.." && pwd)
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT; bad=0; n=0
@@ -64,4 +65,18 @@ printf '#version 320 es\nout vec2 a;\n\nvoid main() { a = vec2(1.0); }\n' > "$T/
 ck "⑲ 匿名块成员保持原名" rewrite vert
 printf '#version 320 es\nout VS_OUT { vec2 uv; } vs_out[2];\nout B { float w[4]; } b;\nlayout(std140) uniform U { vec4 c; } u;\nvoid main() { }\n' > "$T/in"; cp "$T/in" "$T/want"
 ck "⑳ 数组实例 / 数组成员 / uniform 块不动" rewrite vert
+# ㉑ D-9EPN：3.10 结果里「sample」当名字用 → 整词改 s2a_sample；gl_SampleID、samples、sampler2D 不动
+printf '#version 310 es\nprecision highp float;\nuniform sampler2D tex;\nout vec4 o;\nvoid main() { float sample = 1.0; int samples = gl_SampleID; o = vec4(sample) + texture(tex, vec2(sample)); }\n' > "$T/in"
+printf '#version 310 es\nprecision highp float;\nuniform sampler2D tex;\nout vec4 o;\nvoid main() { float s2a_sample = 1.0; int samples = gl_SampleID; o = vec4(s2a_sample) + texture(tex, vec2(s2a_sample)); }\n' > "$T/want"
+ck "㉑ 3.10 里 sample 当名字 → s2a_sample" rewrite frag
+# ㉒ ES 1.00 原文（升版后同样是 3.10）也改：varying → in，sample → s2a_sample
+printf 'precision mediump float;\nvarying vec2 uv;\nvoid main() { vec4 sample = vec4(uv, 0.0, 1.0); gl_FragColor = sample; }\n' > "$T/in"
+"$T/es" rewrite frag < "$T/in" > "$T/got" 2> "$T/err"; n=$((n + 1))
+if grep -q 'vec4 s2a_sample = vec4' "$T/got" && grep -q '= s2a_sample;' "$T/got" && ! grep -qw 'sample' "$T/got"; then echo "  过 ㉒ ES 1.00 升版后 sample 也改名"; else echo "  败 ㉒ ES 1.00 升版后 sample 也改名"; cat "$T/got"; bad=$((bad + 1)); fi
+# ㉓ 3.20 里 sample 是插值限定符：不动
+printf '#version 320 es\nprecision highp float;\nsample in vec4 v;\nout vec4 o;\nvoid main() { o = v; }\n' > "$T/in"; cp "$T/in" "$T/want"
+ck "㉓ 3.20 的 sample 限定符不动" rewrite frag
+# ㉔ 3.10 开了 GL_OES_shader_multisample_interpolation：sample 是限定符，不动
+printf '#version 310 es\n#extension GL_OES_shader_multisample_interpolation : require\nprecision highp float;\nsample in vec4 v;\nout vec4 o;\nvoid main() { o = v; }\n' > "$T/in"; cp "$T/in" "$T/want"
+ck "㉔ 开了多重采样插值扩展：不动" rewrite frag
 [ $bad = 0 ] && echo "✓ t_glsl_es：$n 项全过" || { echo "✗ t_glsl_es：$n 项，失败 $bad"; exit 1; }

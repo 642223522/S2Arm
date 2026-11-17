@@ -25,7 +25,7 @@ static uint64_t run(int n, int alias) {
     enum { SER0 = 1000000 };
     // 清干净上一局：区间注销全部（也走一遍解链），再从空表开始
     if (g_ntreg) nvn_be_unreg_tex_range(0, g_ntreg);
-    pthread_mutex_lock(&g_rmu); REQUIRE(g_neg || g_treg_ser.n == 0); pthread_mutex_unlock(&g_rmu);
+    os_unfair_lock_lock(&g_rmu); REQUIRE(g_neg || g_treg_ser.n == 0); os_unfair_lock_unlock(&g_rmu);
     uint64_t S_shared = SER0 + 900000, X = SER0 + 900001, Y = SER0 + 900002, Z = SER0 + 900003, W = SER0 + 900004, NOBODY = SER0 + 900005;
     for (int i = 1; i < n; i++) { tex_t t = mk(SER0 + (uint64_t)i); nvn_be_reg_tex(i, &t, NULL); }
     tex_t ts = mk(S_shared), tx = mk(X), ty = mk(Y), tz = mk(Z), tw = mk(W);
@@ -34,7 +34,7 @@ static uint64_t run(int n, int alias) {
     nvn_be_reg_tex(50, &tz, NULL); nvn_be_unreg_tex_range(50, 1); nvn_be_reg_tex(50, &tw, NULL);        // 50 注销后再登记成 W：删 Z 不碰它
     nvn_be_reg_tex(60, &tz, NULL); nvn_be_reg_tex(60, &tz, NULL);                                        // 同样内容重复登记：链上只一份
     // 视图：每 7 个编号一个，外加所有特殊编号（四种视图字段都覆盖到）
-    pthread_mutex_lock(&g_rmu);
+    os_unfair_lock_lock(&g_rmu);
     for (int i = 1; i < n; i++) if (!(i % 7) || i == 10 || i == 20 || i == n - 1 || i == 40 || i == 41 || i == 50 || i == 60 || i == 77) {
         treg_t *r = &g_treg[i];
         switch (i % 4) { case 0: r->view = obj(); break; case 1: r->alt = obj(); break; case 2: r->ar = obj(); break; default: r->im = obj(); r->view = obj(); }
@@ -46,21 +46,21 @@ static uint64_t run(int n, int alias) {
     void **before = calloc((size_t)n * 4, sizeof *before); uint8_t *want = calloc((size_t)n, 1); uint64_t want_n = 0, owners = 0; REQUIRE(before && want);
     for (int i = 0; i < n; i++) { treg_t *r = &g_treg[i]; before[4 * i] = r->view; before[4 * i + 1] = r->alt; before[4 * i + 2] = r->ar; before[4 * i + 3] = r->im;
         if (r->ok && in(r->t.serial, gone, ng)) { owners++; if (has_views(r)) { want[i] = 1; want_n++; } } }
-    pthread_mutex_unlock(&g_rmu);
+    os_unfair_lock_unlock(&g_rmu);
     uint64_t w0 = g_treg_ser_walk;
     if (!alias) { for (int k = 0; k < ng; k++) mtl_vc_drop(gone[k]); treg_sweep_gone(); }   // 删除时记进待处理，提交开头清扫
     else { pthread_mutex_lock(&g_smu); for (int k = 0; k < ng; k++) { if (g_alias_dead_n == g_alias_dead_cap) { g_alias_dead_cap = g_alias_dead_cap ? 2 * g_alias_dead_cap : 64; g_alias_dead_ser = realloc(g_alias_dead_ser, g_alias_dead_cap * sizeof *g_alias_dead_ser); REQUIRE(g_alias_dead_ser); }
                                                              g_alias_dead_ser[g_alias_dead_n++] = gone[k]; } pthread_mutex_unlock(&g_smu);
            alias_dead_views(); }
     uint64_t walked = g_treg_ser_walk - w0;
-    pthread_mutex_lock(&g_rmu);
+    os_unfair_lock_lock(&g_rmu);
     uint64_t dropped = 0, wrong_drop = 0, kept_wrong = 0;
     for (int i = 0; i < n; i++) { treg_t *r = &g_treg[i];
         int same = r->view == before[4 * i] && r->alt == before[4 * i + 1] && r->ar == before[4 * i + 2] && r->im == before[4 * i + 3];
         if (want[i]) { if (has_views(r)) kept_wrong++; else dropped++; }
         else if (!same) wrong_drop++; }
     int sh_ok = !has_views(&g_treg[10]) && !has_views(&g_treg[20]) && !has_views(&g_treg[n - 1]) && !has_views(&g_treg[41]) && has_views(&g_treg[40]) && has_views(&g_treg[50]) && !has_views(&g_treg[60]);
-    pthread_mutex_unlock(&g_rmu);
+    os_unfair_lock_unlock(&g_rmu);
     const char *what = alias ? "③ 覆写放掉" : "① 删除清扫";
     CHECK(dropped == want_n && !kept_wrong && !wrong_drop && sh_ok, "%s 表 %d：丢视图 %llu 个（期望 %llu = 全表扫答案）、该丢没丢 %llu、不该丢丢了 %llu、特殊编号（共享三处 / 改登记 / 注销再登记 / 重复登记）%s",
           what, n, (unsigned long long)dropped, (unsigned long long)want_n, (unsigned long long)kept_wrong, (unsigned long long)wrong_drop, sh_ok ? "对" : "错");

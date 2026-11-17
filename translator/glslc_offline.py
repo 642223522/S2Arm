@@ -98,7 +98,7 @@ def romfs_nros(root):
     for e in romfs_list.heads(rf).files():
         if e.error is not None or e.head[0x10:0x14] != b'NRO0': continue
         try:
-            with open(e.path, 'rb') as h: out.append(('/' + e.rel.replace('/', os.sep), h.read()))
+            with e.open() as h: out.append(('/' + e.rel.replace('/', os.sep), h.read()))   # e.open()：romfs/ 不在、只有 romfs.std 时从镜像读
         except OSError: pass
     return sorted(out)
 

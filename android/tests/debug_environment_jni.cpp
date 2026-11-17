@@ -9,6 +9,7 @@ static void s2a_redirect_stderr_once() {}
 static char g_exitlog_path[128];
 static int __system_property_get(const char *, char *) { return 0; }
 static void s2a_exit_probe() {}
+static void s2a_tune_heap_for_game() {}   // :game 进程的堆分配器策略（#1190）：宿主上不调 mallopt
 #include "onload.inc"
 static int writes_until_failure = -1;
 static int set_value(const char *key, const char *value, int overwrite) {

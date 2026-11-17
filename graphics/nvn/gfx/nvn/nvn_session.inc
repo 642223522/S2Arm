@@ -197,7 +197,7 @@ int nvn_be_shutdown_session(void) {
     os_unfair_lock_unlock(&g_shader_lock);
     NSMutableSet<NSString *> *cached_prefetch = [NSMutableSet set];
     int depth_zero = atomic_load(&g_depth_zero);
-    pthread_mutex_lock(&g_rmu);
+    os_unfair_lock_lock(&g_rmu);
     for (NvShader *sh in shaders.allValues) {
         sh->wsh = 0; sh->s_rec = 0;
         if (sh->size_abi) { sh->ab_buf = nil; sh->ab_gpu = sh->ab_size_sub = 0; }
@@ -210,7 +210,7 @@ int nvn_be_shutdown_session(void) {
         if (st >= 0 && st != 2 && shaders[shader_identity(key, st, 0, depth_zero)] == sh)
             [cached_prefetch addObject:hash];
     }
-    pthread_mutex_unlock(&g_rmu);
+    os_unfair_lock_unlock(&g_rmu);
     os_unfair_lock_lock(&g_shpre_mu);
     // Previously skipped cold keys may now be available. Already cached
     // libraries need no second background load just because a run restarted.
@@ -247,5 +247,5 @@ void nvn_be_begin_session(void) {
     atomic_store(&g_shpre_stopping, 0);
     os_unfair_lock_unlock(&g_shpre_mu);
     atomic_store(&g_link_stop, 0); atomic_store(&g_present_discard, 0);
-    const char *e = getenv("DM_PRESENT_LINK"); g_dm_present_link = e ? atoi(e) : 1;
+    g_dm_present_link = present_link_from_env();   // 同 mtl_init：补帧开着时不起显示链（120 档补丁除外），每局开头不再只按 DM_PRESENT_LINK 缺省 1
 }

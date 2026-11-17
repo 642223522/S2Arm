@@ -1,6 +1,4 @@
-"""内置引擎 Git 快照（10-23 走查：复制丢了空目录 → .git 无效 → Git 往上认到用户主目录的仓库）：
-- clone_tree 保留空目录；
-- check_git：放在别的仓库里面、自己的 .git 缺 refs 目录时报错（改前会认到外层仓库）；完整快照通过。"""
+"""clone_tree 保留空目录（10-23 走查起因是快照 .git 的空 refs 目录；快照不再带 .git 后，RomFS 等目录里的空目录照样要原样拷）。"""
 import os
 from pathlib import Path
 import subprocess
@@ -11,8 +9,6 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from build import clone_tree  # noqa: E402
-from core import Failure  # noqa: E402
-from embedded import check_git  # noqa: E402
 
 ENV = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
            GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
@@ -22,64 +18,14 @@ def git(d, *a):
     subprocess.run(["git", "-C", str(d), *a], check=True, env=ENV, capture_output=True)
 
 
-class EngineGit(unittest.TestCase):
-    def setUp(self):
-        self.t = Path(tempfile.mkdtemp())
-        git(self.t, "init", "-q")   # 外层仓库（模拟用户主目录是个仓库）
-        self.src = self.t / "src"; (self.src / "runtime" / "rewriter").mkdir(parents=True)
-        (self.src / "runtime" / "rewriter" / "a.py").write_text("x\n")
-        git(self.src, "init", "-q", "--template="); git(self.src, "add", "-A"); git(self.src, "commit", "-qm", "s")
-        git(self.src, "gc", "-q", "--prune=now")   # 同 bundle_engine.py：gc 后 refs/heads 为空目录
-
-    def test_clone_keeps_empty_dirs_and_git_valid(self):
-        self.assertTrue((self.src / ".git" / "refs" / "heads").is_dir())
-        self.assertEqual(list((self.src / ".git" / "refs" / "heads").iterdir()), [])
-        dst = self.t / "engines" / "e1"; dst.mkdir(parents=True)
-        clone_tree(types.SimpleNamespace(check=lambda: None, progress=lambda *a: None), self.src, dst)
-        self.assertTrue((dst / ".git" / "refs" / "heads").is_dir())
-        check_git(dst)   # 不抛异常 = 认出的仓库就是自己的 .git
-        out = subprocess.run(["git", "-C", str(dst), "rev-parse", "HEAD:runtime/rewriter"], capture_output=True, text=True, env=ENV)
-        self.assertEqual(out.returncode, 0, out.stderr)
-
-    def test_broken_snapshot_rejected_not_parent_repo(self):
-        dst = self.t / "engines" / "e2"; dst.mkdir(parents=True)
-        clone_tree(types.SimpleNamespace(check=lambda: None, progress=lambda *a: None), self.src, dst)
-        for p in sorted((dst / ".git" / "refs").rglob("*"), reverse=True):
-            p.rmdir() if p.is_dir() else p.unlink()
-        (dst / ".git" / "refs").rmdir()   # refs 空目录丢了（11-11 Windows 覆盖安装后的现场）
-        check_git(dst)   # 补上空目录、认出的就是自己的 .git（原先报「快照无效」、或一路往上认到外层仓库）
-        self.assertTrue((dst / ".git" / "refs" / "heads").is_dir())
-        out = subprocess.run(["git", "-C", str(dst), "rev-parse", "HEAD:runtime/rewriter"], capture_output=True, text=True, env=ENV)
-        self.assertEqual(out.returncode, 0, out.stderr)
-
-    def test_really_broken_snapshot_says_reinstall(self):
-        dst = self.t / "engines" / "e4"; dst.mkdir(parents=True)
-        clone_tree(types.SimpleNamespace(check=lambda: None, progress=lambda *a: None), self.src, dst)
-        (dst / ".git" / "HEAD").unlink()   # 真坏了：补不了，照样拒绝，并且不往上认外层仓库
-        with self.assertRaises(Failure) as caught:
-            check_git(dst)
-        self.assertIn("请重新安装", str(caught.exception))
-        self.assertEqual(caught.exception.code, "engine_incomplete")
-
-    def test_git_failure_says_what_git_said(self):
-        """#638：git 自己没跑成（如这台机的 git 起不来）时，提示带 git 的原话，不说成「快照无效，请重新安装」"""
-        dst = self.t / "engines" / "e3"; dst.mkdir(parents=True)
-        fake = self.t / "bin"; fake.mkdir()
-        (fake / "git").write_text("#!/bin/sh\necho 'git: simulated tool failure' >&2\nexit 69\n"); (fake / "git").chmod(0o755)
-        old = os.environ["PATH"]; os.environ["PATH"] = f"{fake}{os.pathsep}{old}"
-        try:
-            with self.assertRaises(Failure) as caught:
-                check_git(dst)
-        finally:
-            os.environ["PATH"] = old
-        text = str(caught.exception)
-        self.assertIn("simulated tool failure", text)
-        self.assertIn("69", text)
-        self.assertNotIn("快照无效", text)
-
-
-if __name__ == "__main__":
-    unittest.main()
+class CloneKeepsEmptyDirs(unittest.TestCase):
+    def test_clone_keeps_empty_dirs(self):
+        t = Path(tempfile.mkdtemp())
+        src = t / "src"; (src / "romfs" / "empty" / "nested").mkdir(parents=True); (src / "romfs" / "a.bin").write_bytes(b"x")
+        dst = t / "dst"; dst.mkdir()
+        clone_tree(types.SimpleNamespace(check=lambda: None, progress=lambda *a: None), src, dst)
+        self.assertTrue((dst / "romfs" / "empty" / "nested").is_dir())
+        self.assertEqual((dst / "romfs" / "a.bin").read_bytes(), b"x")
 
 
 class SnapshotIgnoresBuildOutputs(unittest.TestCase):

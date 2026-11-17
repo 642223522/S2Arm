@@ -1,6 +1,6 @@
 # Authored IR -> real Analyze/Reflect/SPVC/Metal -> public NVN recording.
 NATIVE_TEST_OWN += nvn_size_abi
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 NVN_SIZE_OUT := $(abspath $(NVN_TEST_DIR)/size-abi)
 NVN_SIZE_TOOL := $(NVN_SIZE_OUT)/tool/dsh_cmp.dll
 NVN_SIZE_ASSETS := $(NVN_SIZE_OUT)/assets

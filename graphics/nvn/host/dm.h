@@ -59,6 +59,8 @@ int dm_gfx_guest_start_hold(void);
 void s2a_core_block_begin(void); void s2a_core_block_end(void);
 // S2Arm：ProgramSetShaders 时库里没有的键登记进待编表，提交线程第一次用到时 dm_shader_miss_late 现编（graphics/nvn/host/dsh_miss.inc，§12.3 s2a_dsh_compile）
 void dm_shader_miss(const uint8_t key[8], uint64_t code, const void *control); int dm_shader_miss_late(const char *k16, uint64_t code, const void *control); int dm_shader_reuse(const char *k16);   // control：在用控制段（Switch 2 NVN2 键在这里登记，dsh_miss.inc）
+// 着色器补料（graphics/nvn/host/dsh_salvage.inc）：kind 1 不在映射表 / 2 现编失败 / 4 管线建不起来 / 8 补齐变体做不了；存进 wire/<号>/shader_miss/ 随诊断包带走
+void dm_shader_salvage(const char *k16, int kind, uint64_t code, const void *control, const char *why);
 int dm_shader_fout(const uint8_t key[8], uint64_t code, const void *control, uint32_t umask, uint32_t smask, char *path, size_t n);
 int dm_shader_fout_fresh(const char *key16, uint32_t umask, uint32_t smask);   // S2Arm：兜底目录里这个变体能不能直接用（同翻译链、不比源码旧）   // S2Arm：片元输出逐位置定类型的变体源码（graphics/nvn/host/dsh_miss.inc）
 // S2Arm（#800）：采样器归约变体源码 <键>_se.metal（graphics/nvn/host/dsh_miss.inc，S2A.Dsh FsRd）：成功 0、没有能改的采样 3、做不了 1；_fresh = 兜底目录里那份能直接用；
@@ -71,6 +73,7 @@ void dm_shader_mesh_hold_key(const uint8_t key[8], uint64_t code, const void *co
 void dm_shader_vs_hold_key(const uint8_t key[8], uint64_t code, const void *control);   // SetShaders 时按键保存 Switch 1 顶点着色器输入（补齐变体用）
 int dm_shader_se_fresh(const char *key16);
 void *dm_shader_snap(uint64_t code, const void *control, uint64_t *code_out, const void **control_out);
+int dm_shader_retrans(const uint8_t key[8], uint64_t code, const void *control);   // 出包库计算着色器按本机翻译器重出源码 <键>_b.metal（dsh_miss.inc，v0.4.1 重译抢跑）：成功 0、做不了 1
 void mtl_se_stats(uint64_t out[2]);   // S2Arm（#800，nvn_mtl.m se_done）：采样器归约变体 [0] 本局在设备上编好的着色器数、[1] 编不出的（收局汇总行）
 void mtl_vp_stats(uint64_t out[2]);   // S2Arm（nvn_mtl.m vp_done）：顶点补齐变体 [0] 本局在设备上编好的、[1] 编不出的
 void mtl_shmap_rt_add(const char *key, const char *stage); int mtl_shmap_known(const char *key); int mtl_shlib_has(const char *key);

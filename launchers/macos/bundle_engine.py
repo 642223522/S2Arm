@@ -1,14 +1,17 @@
 """Package S2Arm's own engine, reader and preparation source closure.
 
 Only repository inputs enter the snapshot; ignored outputs and user data never do.
-The fresh Git snapshot preserves existing HEAD-based pipeline keys, with no remote
-or developer history. At runtime it is cloned to the app's private writable cache.
+A fresh single-commit Git repository is built over the snapshot only to compute the
+HEAD-based pipeline keys; they are written into engine.json, checked against the
+readers, and the repository is removed before shipping (seal_snapshot). At runtime
+the snapshot is cloned to the app's private writable cache.
 """
 import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -22,8 +25,8 @@ INPUTS = ["runtime", "ios", "graphics", "translator", "services", "compat", "pac
           "platform/build.mk", "launchers/macos/build.mk", "macos", "tests/visual/galrec",
           # 打 iPhone 包（make ios）要编 platform/apple/plat_apple.c（10-23 Spare-host 前端打 iPhone 包撞「no such file」）
           "platform/apple", "shell", "launchers/shared/SaveSync", "launchers/macos/frontend", "launchers/macos/adapter", "platform/plat.h", "platform/plat_asm.h",
-          # Android target uses the same immutable engine snapshot as its pack stages.
-          "android", "LICENSE", "README.md",
+          # 不收 android/（11-16 安装包瘦身，约 11 MB）：安卓导出未对玩家开放（启动器回「即将上线」），开放时再加回
+          "LICENSE", "README.md",
           # 随包 Python 的钉版依赖清单：Windows 环境检查（pack/jobs/winenv.py）按它核随包 Python 的库版本（11-07 发版产物端到端：快照缺它、整份清单报错误码合同无法核实）
           "launchers/macos/requirements-runtime.txt",
           # 游戏设置定义表（pack/jobs/community.py 按它读写 launch.json、转宿主开关；11-09 启动设置）
@@ -40,14 +43,10 @@ INPUTS = ["runtime", "ios", "graphics", "translator", "services", "compat", "pac
 
 
 def include_source(relative):
-    """Do not ship Android/Vulkan test trees in the app's production engine."""
+    """发版引擎快照不收测试树（11-16 安装包瘦身：出包流程不跑测试，各处 tests/ 约 18 MB）。
+    例外：根目录 tests/visual/galrec 是出包要读的（INPUTS 单独列进来），按顶层 tests 之后的目录判。"""
     parts = Path(relative).parts
-    if parts[:1] == ("android",):
-        directories = parts[1:-1]
-    elif parts[:2] == ("graphics", "vulkan"):
-        directories = parts[2:-1]
-    else:
-        return True
+    directories = parts[1:-1] if parts[:1] == ("tests",) else parts[:-1]
     return not any(p in ("test", "tests", "androidTest", "testFixtures") or p.endswith("-tests")
                    for p in directories)
 
@@ -119,8 +118,9 @@ def bundle_prebuilt_libs(tools, source_root=ROOT, env=None):
             (out / "build.txt").write_text("key=%s\nversion=%s\nsource_sha256=%s\nlib_sha256=%s\n" % (key, pin.group(1), pin.group(2), digest(out / lib)))
 
 
-def strip_debug_maps(root, developer_dir):
-    """发布进 App 的二进制去掉调试映射（N_OSO / N_SO 记着出包机 .o 与源码目录的绝对路径）：strip -S 只删调试信息，符号表保留、崩溃栈照样有函数名。
+def strip_debug_maps(root, developer_dir, keep_dir=None):
+    """发布进 App 的二进制去掉调试映射与本地符号（strip -S -x）：调试映射记着出包机 .o 与源码目录的绝对路径；本地符号玩家机器上没有代码读
+    （11-15 瘦身：宿主 121.5 → 48.7 MB，导出符号一个不少，dlsym 照常）。keep_dir 给了就先把未去符号的原件按相对路径存过去（发版存档，离线还原崩溃报告）。
     strip 会让签名失效，所以随后由里到外重签（保留原 entitlements / 标识）。玩家机器上现编的宿主不走这里，照常可调试。"""
     env = dict(os.environ, DEVELOPER_DIR=developer_dir)
     def is_macho(p):
@@ -129,7 +129,11 @@ def strip_debug_maps(root, developer_dir):
     machos = [p for p in sorted(root.rglob("*")) if p.is_file() and not p.is_symlink() and is_macho(p)]
     keep = ["--preserve-metadata=identifier,entitlements,flags,runtime"]
     for p in machos:
-        subprocess.run(["xcrun", "strip", "-S", str(p)], env=env, check=True, capture_output=True)
+        if keep_dir:
+            dst = Path(keep_dir) / p.relative_to(root)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(p, dst)
+        subprocess.run(["xcrun", "strip", "-S", "-x", str(p)], env=env, check=True, capture_output=True)
         subprocess.run(["codesign", "--force", "--sign", "-", *keep, str(p)], env=env, check=True, capture_output=True)
     bundles = sorted((p for p in root.rglob("*") if p.is_dir() and p.suffix in (".app", ".framework")), key=lambda p: -len(p.parts))
     for b in bundles:
@@ -146,18 +150,66 @@ def bundle(destination, developer_dir):
     toolchain.prepare(c)
     host = compile_host(c, fingerprint, c.env(), c.logs)
     prepare = c.private / "tools/prepare"
+    # 每次从空目录编：dotnet publish -o 不清目标目录，上一次（别的编法）留下的产物会混进来（v0.4.4 第三次候选：上一版编出的 dsh_batch.dSYM
+    #   残留，去符号那步拿它当二进制处理报错）。这几样工具每次本来就全量重编，清掉不损失增量
+    shutil.rmtree(prepare, ignore_errors=True)
     prepare.mkdir(parents=True, exist_ok=True)
     c.run(["make", "-C", ROOT / "graphics/metal", str(ROOT / "build/gal/gal_xc"),
            "DEVELOPER_DIR=" + developer_dir], c.logs / "gal-tools.log")
     c.run(["make", "-C", ROOT / "graphics/dsx", str(ROOT / "build/dsx/libdsx.dylib"),
            "DEVELOPER_DIR=" + developer_dir], c.logs / "dsx.log")
-    c.run(["dotnet", "build", ROOT / "graphics/tools/shbake/S2A.ShBake.csproj", "-c", "Release", "--nologo"],
-          c.logs / "shbake.log")
-    c.run(["dotnet", "build", ROOT / "services/romfs_index/romfs_index.csproj", "-c", "Release", "--nologo",
-           "-o", prepare / "romfs"], c.logs / "romfs.log")
-    # 直连库的 C# 批量进程（translator/dsh_batch.py）随发版编好：玩家首次出包不再现编（11-06 维护者「玩家体验至上」，Spare-host 约 25 秒 CPU）
-    c.run(["dotnet", "build", ROOT / "graphics/tools/direct/dsh/batch/dsh_batch.csproj", "-c", "Release", "--nologo",
-           "-p:UseSharedCompilation=false", "-o", prepare / "dsh_batch"], c.logs / "dsh_batch.log")
+    # 出包用的 C# 工具随发版预编为 NativeAOT 单文件（romfs_index 的 PublishAot 写在工程里：服务层闭包含 netstandard2.0 生成器，-p: 全局属性会波及，同 services/aot/S2A.Aot.csproj）：
+    #   玩家机每游戏构建直接执行，App 不再携带 .NET 运行时（bundle_runtime.py 也不再收）
+    c.run(
+        [
+            "dotnet",
+            "publish",
+            ROOT / "graphics/tools/shbake/S2A.ShBake.csproj",
+            "-c",
+            "Release",
+            "-r",
+            "osx-arm64",
+            "-p:PublishAot=true",
+            "-p:UseSharedCompilation=false",
+            "--nologo",
+            "-o",
+            prepare / "shbake",
+        ],
+        c.logs / "shbake.log",
+    )
+    c.run(
+        [
+            "dotnet",
+            "publish",
+            ROOT / "services/romfs_index/romfs_index.csproj",
+            "-c",
+            "Release",
+            "-r",
+            "osx-arm64",
+            "--nologo",
+            "-o",
+            prepare / "romfs",
+        ],
+        c.logs / "romfs.log",
+    )
+    # 直连库的 C# 批量进程（translator/dsh_batch.py）随发版编好（NativeAOT 单文件）：玩家首次出包不再现编（11-06 维护者「玩家体验至上」，Spare-host 约 25 秒 CPU），也不再要 .NET 运行时
+    c.run(
+        [
+            "dotnet",
+            "publish",
+            ROOT / "graphics/tools/direct/dsh/batch/dsh_batch.csproj",
+            "-c",
+            "Release",
+            "-r",
+            "osx-arm64",
+            "-p:PublishAot=true",
+            "-p:UseSharedCompilation=false",
+            "--nologo",
+            "-o",
+            prepare / "dsh_batch",
+        ],
+        c.logs / "dsh_batch.log",
+    )
     # 推资源包流式写手机（pack/devpush，Rust，只依赖 idevice MIT；11-06 维护者：玩家 Mac / Windows 两端都要）：tools/push_pack.py 见 S2A_PREBUILT_TOOLS/devpush/s2a-devpush 就用，
     #   不在就退回 devicectl copy。--locked：按仓库里的 Cargo.lock 取依赖，发版间不漂
     cargo = shutil.which("cargo") or str(Path.home() / ".cargo/bin/cargo")
@@ -187,24 +239,40 @@ def bundle(destination, developer_dir):
     # maintenance would otherwise invalidate the signed resource seal.
     subprocess.run(["git", "-C", str(destination), "-c", "gc.autoDetach=false", "gc", "--prune=now"], env=env, check=True)
     shutil.copytree(host, destination / "Binaries/S2ArmGame.app")
-    shutil.copytree(toolchain.reader(c).parent, destination / "Binaries/Reader",
-                    ignore=shutil.ignore_patterns("obj", "*.pdb", "ready.json"))
+    # 读取器：NativeAOT 单文件（同 toolchain.prepare 的配方），整个 Reader 目录只有这一个可执行文件
+    (destination / "Binaries/Reader").mkdir(parents=True)
+    shutil.copy2(toolchain.reader(c), destination / "Binaries/Reader/nx_unpack")
     tools = destination / "Binaries/Prepare"
-    shutil.copytree(ROOT / "build/shbake", tools / "shbake", ignore=shutil.ignore_patterns("*.pdb", "obj"))
+    # 预编工具各收自己的单文件（AOT publish 会另出符号文件 / 中间件，不随包）：shbake 的 gpu_arch（clang 编的原生件）同目录
+    (tools / "shbake").mkdir(parents=True)
+    shutil.copy2(prepare / "shbake/S2A.ShBake", tools / "shbake/S2A.ShBake")
     bundle_tzdata(c, tools / "Tzdata")
     shutil.copy2(prepare / "gpu_arch", tools / "shbake/gpu_arch")
-    shutil.copytree(prepare / "romfs", tools / "romfs", ignore=shutil.ignore_patterns("*.pdb"))
+    (tools / "romfs").mkdir(parents=True)
+    shutil.copy2(prepare / "romfs/romfs_index", tools / "romfs/romfs_index")
     bundle_prebuilt_libs(tools, env=c.env())
-    shutil.copytree(prepare / "dsh_batch", tools / "dsh_batch", ignore=shutil.ignore_patterns("*.pdb"))
-    # 摘要按 App 里这份源码算（dsh_batch.py 同一函数）：玩家那边摘要相同才用内置件，不同照旧现编
+    (tools / "dsh_batch").mkdir(parents=True)
+    shutil.copy2(prepare / "dsh_batch/dsh_batch", tools / "dsh_batch/dsh_batch")
+    # 摘要按 App 里这份源码算（dsh_batch.py 同一函数）：玩家那边摘要相同才用内置件，不同（App 装坏了）报重装、不现编
     digest_out = subprocess.run([sys.executable, "-I", str(destination / "translator/dsh_batch.py"), "--src-digest"],
                                 env=c.env(), check=True, capture_output=True, text=True).stdout.strip()
     (tools / "dsh_batch/.src_digest").write_text(digest_out + "\n", encoding="utf-8")
-    # 同一份 App 内源码的翻译器指纹（dmsh_chain.py --xfp 按 DshXfpInput 现算）：玩家机只带 .NET 运行时，展不开清单，direct_lib.sh 出库后核库印章取这份当「本树」值
+    # 同一份 App 内源码的翻译器指纹（dmsh_chain.py --xfp 按 DshXfpInput 现算）：玩家机没有 .NET（SDK 更没有），展不开清单，direct_lib.sh 出库后核库印章取这份当「本树」值
     #   （dmsh_chain.tree_xfp ← dsh_batch.prebuilt_xfp，摘要相同才认）。与内置件自报的编译期 Xfp 不同就是发版件没按这份源码编，当场停
-    xfp_out = subprocess.run([sys.executable, "-I", str(destination / "translator/dmsh_chain.py"), "--xfp"],
-                             env=c.env(), check=True, capture_output=True, text=True).stdout.strip()
-    xfp_bin = subprocess.run(["dotnet", str(tools / "dsh_batch/dsh_batch.dll"), "--xfp"], env=c.env(), check=True, capture_output=True, text=True).stdout.strip()
+    xfp_out = subprocess.run(
+        [sys.executable, "-I", str(destination / "translator/dmsh_chain.py"), "--xfp"],
+        env=c.env(),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    xfp_bin = subprocess.run(
+        [str(tools / "dsh_batch/dsh_batch"), "--xfp"],
+        env=c.env(),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     if xfp_out != xfp_bin:
         raise RuntimeError(f"Bundled dsh_batch reports translator fingerprint {xfp_bin}, the bundled sources give {xfp_out}")
     (tools / "dsh_batch/.xfp").write_text(xfp_out + "\n", encoding="utf-8")
@@ -221,11 +289,112 @@ def bundle(destination, developer_dir):
     shutil.copy2(ROOT / "build/gal/gal_xc", tools / "gal/gal_xc")
     (tools / "dsx").mkdir()   # 直连翻译库（pack/stage_direct.sh 认 dsx/libdsx.dylib，11-08 从 libnxgal 拆出）
     shutil.copy2(ROOT / "build/dsx/libdsx.dylib", tools / "dsx/libdsx.dylib")
-    strip_debug_maps(destination / "Binaries", developer_dir)
+    sym = os.environ.get("S2A_SYMBOLS_OUT")   # 发版存档未去符号原件（private-tools release/build_mac.sh 给 <产物目录>/symbols）
+    strip_debug_maps(destination / "Binaries", developer_dir, Path(sym) / "Engine/Binaries" if sym else None)
     if source_fingerprint(ROOT) != fingerprint:
         raise RuntimeError("Engine sources changed during packaging; retry with stable inputs")
     precompile(destination, destination.parent / RUNTIME_PYTHON)   # 先于清单：.pyc 和源码一起进 engine.json、一起签
-    return write_manifest(destination, fingerprint)
+    return seal_snapshot(destination, fingerprint)
+
+
+# 快照不带 .git（瘦身约 28 MB）：出包各阶段原先在快照库里用 git 取的值，打包时（快照库已 commit + gc、文件都放齐、签名之前）用 git 算好写进 engine.json，
+#   读方有字段就用（pack/stage_keyfiles.sh engine_snap、pack/orch/roots.py snapshot、tools/stage_deps.py _listed）。不能签名后按文件重算：
+#   签名改写了快照里的 Mach-O（translator/dmsh_xlate_bin/dmsh_xlate 在直连库阶段的输入表里），按文件算出的对象号与提交里的不同，所有玩家的直连库都会重编
+# 只在打包时参与算键、玩家机上没人执行的文件：键算完、和 .git 一起从包里拿掉。
+#   translator/dmsh_xlate_bin/dmsh_xlate：翻译器的 .NET 启动壳（要系统装 .NET 才起得来）。直连库阶段的输入表登记了它，所以照算键；
+#   但出包作业里 dmsh_chain 只读同目录的 .source_sha 与几个 dll 的哈希，翻译走 NativeAOT 的 dsh_batch，没有地方执行它
+#   （去 .NET 静态扫描点名它）。从仓库删会改直连库的键、所有款重编，拿出包更便宜
+BUILD_ONLY = ("translator/dmsh_xlate_bin/dmsh_xlate",)
+SNAP_KEYS = ("commit", "stageFilesKeys", "scanTree", "romfsIndexOids", "listed")
+SNAP_STAGES = ("extract", "direct", "direct_seed")   # 玩家出包路径上调 stage_files_key 的阶段
+ROMFS_WRITER = ("services/S2A.Services/RomFsIndex.cs", "services/romfs_index", "services/romfs_index.sh", "compat/tree/Directory.Packages.props")
+
+
+def _bash():
+    sys.path.insert(0, str(ROOT)); from pack.orch.bash import find_bash   # Windows 打包机不认 WSL 存根（同出包编排层）
+    exe = find_bash()
+    if not exe:
+        raise RuntimeError("打包自检要 bash（算阶段键）")
+    return exe
+
+
+def _git_out(destination, *args):
+    env = dict(os.environ, GIT_CEILING_DIRECTORIES=str(Path(destination).resolve().parent), GIT_OPTIONAL_LOCKS="0")
+    env.pop("DEVELOPER_DIR", None)
+    return subprocess.run(["git", "-C", str(destination), *args], env=env, check=True, capture_output=True).stdout
+
+
+def snapshot_fields(destination):
+    """在带 .git 的快照上用 git 算出 engine.json 的快照字段（旧读法的原值）"""
+    destination = Path(destination)
+    keys = {}
+    for st in SNAP_STAGES:
+        keys[st] = subprocess.run([_bash(), "-c", 'source "$1/pack/stage_keyfiles.sh" && stage_files_key "$2" "$1"', "_", str(destination), st],
+                                  check=True, capture_output=True, text=True).stdout.strip()
+    listed = _git_out(destination, "ls-files", "-co", "--exclude-standard", "-z").decode("utf-8", "surrogateescape").split("\0")
+    return dict(commit=_git_out(destination, "rev-parse", "HEAD").decode().strip(),
+                stageFilesKeys=keys,
+                scanTree=_git_out(destination, "rev-parse", "HEAD:graphics/widen/scan").decode().strip(),
+                romfsIndexOids=_git_out(destination, "rev-parse", *("HEAD:" + p for p in ROMFS_WRITER)).decode().split(),
+                listed=sorted({f for f in listed if f}))
+
+
+PROBE_PY = """import json, sys
+sys.dont_write_bytecode = True
+e = sys.argv[1]; sys.path.insert(0, e); sys.path.insert(0, e + '/tools')
+from pack.orch import roots, stages
+import stage_deps
+files, _ = stage_deps._listed(e)
+print(json.dumps(dict(py_head=roots.head(e), py_scan=stages.scan_tree(), py_romfs=stages.romfs_writer_oids(),
+                      listed=sorted(files) if files is not None else None)))
+"""
+
+
+def reader_values(destination):
+    """出包各读方在这份快照上实际读到的值（bash 与 Python 两套读方各跑一遍）：带 .git、engine.json 没有快照字段时走 git，删 .git 后走 engine.json"""
+    destination = str(Path(destination))
+    out = {}
+    for name, call in (("sh_commit9", 'src_commit9 "$1"'), ("sh_scan", 'scan_tree "$1"'), ("sh_romfs", 'romfs_writer_oids "$1"'),
+                       *((f"sh_key_{st}", f'stage_files_key {st} "$1"') for st in SNAP_STAGES),
+                       ("sh_root_src", 'source "$1/pack/roots.sh" && _root_head')):
+        p = subprocess.run([_bash(), "-c", 'source "$1/pack/stage_keyfiles.sh" && ' + call, "_", destination], capture_output=True, text=True,
+                           env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
+        out[name] = [p.returncode, p.stdout]
+    p = subprocess.run([sys.executable, "-B", "-I", "-c", PROBE_PY, destination], capture_output=True, text=True, check=True)
+    out.update(json.loads(p.stdout))
+    return out
+
+
+def _rmtree_writable(path):
+    """删整棵目录；删不动的先加写权限再删一次（Windows 上 git 的对象文件、commit-graph 是只读的，rmtree 报 WinError 5 拒绝访问）"""
+    def retry(fn, p, _):
+        os.chmod(p, stat.S_IWRITE | stat.S_IREAD)
+        fn(p)
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=retry)
+    else:
+        shutil.rmtree(path, onerror=retry)
+
+
+def seal_snapshot(destination, fingerprint):
+    """快照库已 commit + gc、引擎目录里的文件都放齐之后调：git 算快照字段写进 engine.json → 删 .git → 各读方新旧两种读法逐项比对，不一致就停、不出包"""
+    destination = Path(destination)
+    write_manifest(destination, fingerprint, snap={})   # engine.json / prepare.json 先落盘：玩家副本里 git ls-files 会列出它们，listed 要算进去
+    before = reader_values(destination)                 # 旧读法（git）
+    fields = snapshot_fields(destination)
+    _rmtree_writable(destination / ".git")
+    for rel in BUILD_ONLY:   # 键已按它们算进 engine.json：从包里拿掉不改任何键
+        (destination / rel).unlink(missing_ok=True)
+    write_manifest(destination, fingerprint, snap=fields)
+    after = reader_values(destination)                  # 新读法（engine.json）
+    failed = [k for k, v in before.items() if k.startswith("sh_") and v[0]]
+    diff = sorted(k for k in before.keys() | after.keys() if before.get(k) != after.get(k))
+    if failed or diff:
+        raise RuntimeError(f"引擎快照自检不过：git 读法报错 {failed}；删 .git 后读到的值与 git 算的不同 {diff}")
+    leftovers = sorted(str(p.relative_to(destination)) for p in destination.rglob("*.dSYM"))
+    if leftovers:   # 调试符号包不随包（去符号那步会拿它当二进制处理；也不该给玩家）：多半是构建目录的残留
+        raise RuntimeError(f"引擎目录里有调试符号包（构建残留），不出包：{leftovers[:5]}")
+    return write_manifest(destination, fingerprint)     # 再写一遍（沿用字段）：顺带核自检没往引擎目录里多写文件
 
 
 # 签名封存的 App 包运行时一个字节都不能多（多了 codesign --verify 报「a sealed resource is missing or invalid」、Gatekeeper 拒开）。
@@ -241,7 +410,10 @@ def precompile(root, python):
     python = Path(python)
     if not python.is_file():
         raise RuntimeError(f"预编 .pyc 要用 App 自带的 Python，没找到：{python}")
-    subprocess.run([str(python), "-I", "-m", "compileall", "-q", "-j", "0", "--invalidation-mode", "checked-hash", str(root)],
+    # -B：解释器起来时自己会导入 encodings / sitecustomize，不加 -B 就先把它们写成按时间戳失效的 .pyc，compileall 见已有就不重写；
+    #   装机改了源码时间后第一次起包里的 Python 就重写这 4 份（sitecustomize 关写字节码在它们之后才生效），签名封存坏（v0.4.4 候选验收⑦）。
+    #   -f：已有的一律按 checked-hash 重写。compileall 自己显式写 .pyc，不受 -B 影响
+    subprocess.run([str(python), "-I", "-B", "-m", "compileall", "-q", "-f", "-j", "0", "--invalidation-mode", "checked-hash", str(root)],
                    stdout=subprocess.DEVNULL, check=True)
 
 
@@ -250,20 +422,34 @@ def seal_runtime(resources):
     resources = Path(resources)
     lib = next((resources / "Runtime/python/lib").glob("python3.*"))
     (lib / "site-packages/sitecustomize.py").write_text(SITECUSTOMIZE)
-    for d in (lib, *(resources / name for name in ("Jobs", "GUIJobs") if (resources / name).is_dir())):
+    dirs = (lib, *(resources / name for name in ("Jobs", "GUIJobs") if (resources / name).is_dir()))
+    for d in dirs:
         precompile(d, resources / RUNTIME_PYTHON)
+    # 自检：签名封存的包里 .pyc 必须全是 checked-hash（标志 3）——按时间戳失效的那种，装机改了源码时间后第一次起包里的 Python 就会改写它、
+    #   签名封存坏（v0.4.4 候选验收⑦：4 份启动模块）。发现就停、不出包，出包时当场红，不等到候选验收
+    stale = [str(p.relative_to(resources)) for d in dirs for p in d.rglob("*.pyc")
+             if int.from_bytes(p.read_bytes()[4:8], "little") != 3]
+    if stale:
+        raise RuntimeError(f"内置 Python 有 {len(stale)} 份 .pyc 不是 checked-hash（装机后会被改写、签名封存坏）：{stale[:5]}")
 
 
-def write_manifest(destination, fingerprint):
+def write_manifest(destination, fingerprint, snap=None):
     """按引擎目录里文件的最终字节写 prepare.json 与 engine.json（逐文件大小 + sha256，启动时 embedded.artifact 校验）。
-    打包时调一次；发版签名（sign_release.sh）重签了里面的二进制、字节变了，签完整包之前再调一次（不重算会报「准备产物缺失或大小不符」）"""
+    打包时（seal_snapshot）调；发版签名（sign_release.sh）重签了里面的二进制、字节变了，签完整包之前再调一次（不重算会报「准备产物缺失或大小不符」）。
+    snap = 快照字段（SNAP_KEYS）；不给 = 沿用已有 engine.json 里的，这时文件集合不许变（listed 是按打包时的文件集合算的）"""
     destination = Path(destination)
+    old = {}
+    if snap is None:
+        old = json.loads((destination / "engine.json").read_text(encoding="utf-8"))
+        snap = {k: old[k] for k in SNAP_KEYS if k in old}
     tools = destination / "Binaries/Prepare"
     tool_files = {str(p.relative_to(tools)): [p.stat().st_size, digest(p)] for p in tools.rglob("*") if p.is_file() and p.name != "prepare.json"}
     atomic(tools / "prepare.json", dict(schema=1, source=fingerprint, files=tool_files))
     # Binaries are hashed too. engine.json itself is the signed bundle's manifest.
     files = {str(p.relative_to(destination)): [p.stat().st_size, digest(p)]
              for p in sorted(destination.rglob("*")) if p.is_file() and p != destination / "engine.json"}
+    if old.get("listed") and set(files) != set(old.get("files", {})):
+        raise RuntimeError("引擎目录在封存快照之后多了 / 少了文件，engine.json 的 listed 已过期：%s" % sorted(set(files) ^ set(old.get("files", {})))[:5])
     identity = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
     # 壳编号（pack/shell/manifest.py current_id）：在开发树按壳输入表算好写进来，快照里的出包直接读（快照按目录挑文件、剔测试目录，重算会对不上发布的壳）
     sys.path.insert(0, str(ROOT)); from pack.shell import manifest as shell_manifest
@@ -271,5 +457,5 @@ def write_manifest(destination, fingerprint):
     #   显示版本（v0.3.0 / v0.2.6-dev+ba0ef07）同理在开发树算好写进来——快照是全新单提交 Git 库，在快照里现算会得到快照自己的提交号（core.display_version）
     from core import display_version, release_version
     atomic(destination / "engine.json", dict(schema=1, id=identity, source=fingerprint, version=release_version(ROOT), displayVersion=display_version(ROOT),
-                                           memoryRequirementsVersion=2, shellId=shell_manifest.current_id(), files=files))
+                                           memoryRequirementsVersion=2, shellId=shell_manifest.current_id(), shellIdTvos=shell_manifest.current_id("tvos"), **snap, files=files))
     return identity

@@ -40,7 +40,7 @@ preamble = r'''
 #define REF_BUF 2
 struct nvn_gpu_tex_s { uint32_t w,h,depth,levels,target,layers,format,nvn_format,aspect; VkImage image; int bc_decoded; };   /* bc_decoded：压缩贴图现解；本测试的贴图都不是 */
 struct nvn_gpu_buf_s { VkBuffer buffer; uint64_t size; };
-struct nvn_gpu_cmd_s { int sticky,in_pass; VkCommandBuffer cb; };
+struct nvn_gpu_cmd_s { int sticky,in_pass,xfer_dirty; VkCommandBuffer cb; };
 static int copies, bc_calls, bc_upload_calls; static VkBufferImageCopy last;
 static int nvn_vk_format_substituted(uint32_t f) { (void)f; return 0; }   /* #398 D24 换 D32：本测试的贴图都不换存储 */
 static int rc_is(int got, int expected) { return got == expected; }

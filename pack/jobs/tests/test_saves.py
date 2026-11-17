@@ -189,7 +189,6 @@ class SaveTests(unittest.TestCase):
         self.assertEqual(m["users"], dict(ids=[USER], active=USER))
         self.assertTrue(any(f["path"].startswith("bis/system/save/") for f in m["files"]))
         self.assertFalse(any("prod.keys" in f["path"] for f in m["files"]))
-        self.assertEqual(self.archive.stat().st_mode & 0o777, 0o600)
 
     def test_zip64_directory_bounds_are_checked_before_zipfile_loads_it(self):
         self.backup()
@@ -738,7 +737,8 @@ saves.restore(c)
     def test_live_execution_lock_blocks_backup(self):
         import filelock
 
-        with (self.directory / "library/.execution.lock").open("a") as f:
+        import core
+        with (self.directory / "library/.execution.lock").open("a") as f, patch.object(core, "LOCK_WAIT_S", 0.3):   # 排队上限调短（同 test_filelock / test_probe_jobs 的 0.3 秒口径）：这里核的是「锁被占 → 报忙、不动东西」，不是等满产品缺省 30 秒（11-14 门禁提速：原先每例白等 30 秒）
             filelock.try_lock(f)
             with self.assertRaises(Failure):
                 self.backup()

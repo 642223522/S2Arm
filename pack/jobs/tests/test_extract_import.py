@@ -99,6 +99,37 @@ class ExtractImportTests(JobCase):
                 build.extract_folder(c, dict(name="G"), [dict(format="loose")], root / "x", {}, root)
             self.assertEqual(calls, [("ns2_dump.py", True, os.path.realpath(src))])
 
+    def test_loose_link_on_windows_uses_junction_then_symlink(self):
+        # 诊断#1fad25：Windows 普通用户建符号链接 WinError 1314（没有特权），已解包散文件出包在解包一步就失败。
+        #   期望：Windows 先建目录联接；联接建不了再试符号链接（按目录建）；两样都不行报 permission_denied、说清网络盘 / 开发者模式
+        import sys as _sys
+        import types
+        from unittest import mock
+        import build
+        from core import Failure
+        calls = []
+        def junction_ok(target, link): calls.append(("junction", target, link))
+        def junction_bad(target, link): calls.append(("junction", target, link)); raise OSError(1, "不支持")
+        def symlink_ok(src, dst, target_is_directory=False): calls.append(("symlink", str(src), str(dst), target_is_directory))
+        def symlink_bad(src, dst, target_is_directory=False): calls.append(("symlink", str(src), str(dst), target_is_directory)); raise OSError(1314, "客户端没有所需的特权")
+        src, dst = "D:\\games\\loose", "C:\\stage\\base"
+        for junction, symlink, want, fails in ((junction_ok, symlink_bad, [("junction", src, dst)], False),
+                                               (junction_bad, symlink_ok, [("junction", src, dst), ("symlink", src, dst, True)], False),
+                                               (junction_bad, symlink_bad, [("junction", src, dst), ("symlink", src, dst, True)], True)):
+            calls.clear()
+            fake = types.ModuleType("pack.orch.winlong"); fake.create_junction = junction
+            with self.subTest(junction=junction.__name__, symlink=symlink.__name__), \
+                 mock.patch.dict(_sys.modules, {"pack.orch.winlong": fake}), mock.patch.object(build.os, "name", "nt"), \
+                 mock.patch.object(build.os, "symlink", symlink):
+                if fails:
+                    with self.assertRaises(Failure) as e:
+                        build._dir_link(src, dst)
+                    self.assertEqual(e.exception.code, "permission_denied")
+                    self.assertIn("开发者模式", str(e.exception))
+                else:
+                    build._dir_link(src, dst)
+                self.assertEqual(calls, want)
+
     def test_loose_import_without_keys(self):
         # 通用解包目录（有 exefs/main、exefs/main.npdm 和 romfs/ 目录，没有 unpack.tsv）：不要密钥能导入，format=loose，
         # 程序号从 main.npdm 读，名称取 exefs/control.nacp 或目录名
