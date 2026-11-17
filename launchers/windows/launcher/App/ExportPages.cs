@@ -41,11 +41,8 @@ public sealed partial class EnvironmentWindow
     private const string PlatformIos = "ios";
     private const string PlatformTv = "tvos";
     private bool exportIos = true;
-    /// <summary>出包页勾了 Apple TV（11-16 维护者：Windows 也出 Apple TV 包；装到电视暂时只有 Mac 版能做）</summary>
+    /// <summary>出包页勾了 Apple TV（11-16 维护者：Windows 出 Apple TV 包后导出安装包 .ipa，玩家自己签名装到电视）</summary>
     private bool exportTv;
-    /// <summary>安装包带了 Apple TV 预编壳（启动器目录 Shell-tvOS，launchers/windows/bundle_win.py --tv-shell）：没带的这版不能勾 Apple TV</summary>
-    private bool TvShellReady => Directory.Exists(TvShellDir(paths));
-    internal static string TvShellDir(LauncherPaths p) => Path.Combine(Path.GetDirectoryName(Path.GetFullPath(p.Shell)) ?? "", "Shell-tvOS");
     // 存放位置（游戏库结构 v3）：locations 作业读回的各位置、为哪款读的、出包页选中的文件夹（"" = 还没定，不传，后端按这款现在的位置）
     private StorageLocations? locations;
     private string? locationsFor;
@@ -362,7 +359,7 @@ public sealed partial class EnvironmentWindow
         var tiles = new UniformGrid { Columns = 5 };
         foreach (var platform in new[] { PlatformIos, PlatformTv, "mac", "android", "ohos" })
         {
-            var open = platform == PlatformIos || platform == PlatformTv && TvShellReady;
+            var open = platform == PlatformIos || platform == PlatformTv;   // Apple TV 不藏不锁（维护者 11-16）：安装包没带 tvOS 预编壳时出包作业照实报
             var on = open && (platform == PlatformTv ? exportTv : exportIos);
             var tile = new StackPanel { Spacing = 10 };
             var top = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
@@ -372,7 +369,7 @@ public sealed partial class EnvironmentWindow
             tile.Children.Add(top);
             tile.Children.Add(Muted(T(platform switch
             {
-                PlatformIos => "export.note.ios", PlatformTv => TvShellReady ? "export.note.tvos_win" : "export.note.tvos_win_missing",
+                PlatformIos => "export.note.ios", PlatformTv => "export.note.tvos_win",
                 "mac" => "export.note.mac_only", _ => "export.soon"
             })));
             var card = new Button
@@ -970,7 +967,7 @@ public sealed partial class EnvironmentWindow
                 packTrack.Finish(Clock); packSeconds = (DateTime.UtcNow - packStarted).TotalSeconds;
                 packState = o.State == "completed" ? "succeeded" : o.State;
                 packSummary = o.Message; packIpa = o.Ipa; packIpaBytes = o.IpaBytes; packPackBytes = o.PackBytes; packNotes = o.Notes ?? []; packBoost = o.Boost; packFailureCode = o.Code;
-                if (ended.Where.Platform == "appletv" && o.State == "completed") packNotes = [.. packNotes, T("export.done.tvos_win")];   // Windows 出好 Apple TV 包：说清装到电视暂时要 Mac
+                if (ended.Where.Platform == "appletv" && o.State == "completed") packNotes = [.. packNotes, T("export.done.tvos_win")];   // Windows 出好 Apple TV 包并导出了安装包：说清在哪、自己签名装
                 packDiagnostics = exportChildReport is { } r
                     ? JobDiagnostics(new LibraryJobOutput(r, new ProbeOutput(r.State == "succeeded" ? 0 : r.State == "cancelled" ? 130 : 1, "", "")))
                     : o.Message;
