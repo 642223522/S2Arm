@@ -6,7 +6,7 @@
   Library/Application Support/S2Arm/games/<游戏号>/program/   （与 资源包/ 同级）
     S2AImages-<游戏号>.dylib    团队签名（同一团队才过宿主的库校验 F_CHECK_LV）
     Games/<游戏号>/             随行表 + main.npdm + icon.jpg（同容器里的 Games/<游戏号>/）
-    catalogue.json              {schema, title_id, name, display_version, icon, host_abi, chain, rewriter_id, image, image_sha256, team}
+    catalogue.json              {schema, title_id, name, display_version, icon, banner, host_abi, chain, rewriter_id, image, image_sha256, team, dir}
   推送顺序：dylib → Games/<游戏号>/ → 最后写 catalogue.json（临时名再改名）；手机上没有 catalogue.json = 这款程序没装好，宿主不拿去加载。
 本模块（电脑端第 1 段）：
   build(c, gid)                       常驻程序件（programs.kit_dir）→ 未签名程序包，缓存在 <工具缓存>/cache/programs/<号>/package/
@@ -67,7 +67,7 @@ def compat(c):
     return dict(host_abi=want["hostAbi"], chain=want["dmshChain"], rewriter_id=rewrite_refresh.rewriter_id(c))
 
 
-def build(c, gid, *, kit=None, shell=None, info=None):
+def build(c, gid, *, kit=None, shell=None, info=None, banner=None):
     """未签名程序包 → 目录 <cache>/package/（S2AImages-<号>.dylib、Games/<号>/、meta.json）。缓存键 = 约定号 + 链号 + 改写器指纹 + 程序件内容戳，
     键没变不重出。kit / shell / info 单测可给（缺省：programs.kit_dir、本版 iPhone 壳、compat）"""
     gid = gid.upper()
@@ -75,7 +75,12 @@ def build(c, gid, *, kit=None, shell=None, info=None):
     if not (kit / "main.npdm").is_file():
         raise Failure(f"{gid} 还没有 iPhone 程序件：先「打 iPhone 包」", code="container_stale")
     info = info or compat(c)
-    key = hashlib.sha256(json.dumps(dict(info, kit=_kit_stamp(kit)), sort_keys=True).encode()).hexdigest()
+    if banner is None:   # 游戏库横版封面（导入时抓的，library.store_meta）：后来才抓到 / 换了也要重出，进键
+        import layout
+        banner = layout.path(c, gid, "banner.jpg", create=False)
+    banner = Path(banner) if banner and Path(banner).is_file() else None
+    bst = [banner.stat().st_size, banner.stat().st_mtime_ns] if banner else None
+    key = hashlib.sha256(json.dumps(dict(info, kit=_kit_stamp(kit), banner=bst), sort_keys=True).encode()).hexdigest()
     dest = programs.cache(c, gid) / PACKAGE
     if (dest / KEY).is_file() and (dest / KEY).read_text(encoding="utf-8") == key and (dest / image_name(gid)).is_file():
         return dest
@@ -87,7 +92,8 @@ def build(c, gid, *, kit=None, shell=None, info=None):
     try:
         log = c.logs / (c.task + "-program.log")
         out = work / "program"
-        c.run([os.sys.executable, "-X", "utf8", "-B", Path(c.engine) / "pack/ship_ext.py", "program", "--shell", shell, "--root", kit, "--out", out], log, c.env())
+        c.run([os.sys.executable, "-X", "utf8", "-B", Path(c.engine) / "pack/ship_ext.py", "program", "--shell", shell, "--root", kit, "--out", out]
+              + (["--banner", banner] if banner else []), log, c.env())
         got = json.loads(log.read_text(encoding="utf-8", errors="replace").strip().splitlines()[-1])
         if got.get("gid") != gid:
             raise Failure(f"程序件 {kit} 的程序号是 {got.get('gid')}，不是 {gid}", code="job_failed")  # 非玩家句
@@ -110,6 +116,8 @@ def catalogue(gid, meta, image, team):
                image=image_name(gid), image_sha256=_sha(image), team=team)
     if (Path(image).parent / "Games" / gid / "icon.jpg").is_file():
         out["icon"] = f"Games/{gid}/icon.jpg"
+    if (Path(image).parent / "Games" / gid / "banner.jpg").is_file():
+        out["banner"] = f"Games/{gid}/banner.jpg"
     return out
 
 

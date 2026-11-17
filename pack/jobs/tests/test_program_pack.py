@@ -67,8 +67,18 @@ class ProgramPackTests(JobCase):
         super().setUp()
         self.shell = make_shell(self.root / "s"); self.kit = make_kit(self.root / "k")
 
-    def build(self):
-        return program_pack.build(self.c, GID, kit=self.kit, shell=self.shell, info=INFO)
+    def build(self, banner=""):
+        return program_pack.build(self.c, GID, kit=self.kit, shell=self.shell, info=INFO, banner=banner)
+
+    def test_banner_goes_into_package_and_key(self):
+        b = self.root / "banner.jpg"; b.write_bytes(b"JPGbanner")
+        pkg = self.build(banner=b)
+        self.assertEqual((pkg / "Games" / GID / "banner.jpg").read_bytes(), b"JPGbanner")
+        out = program_pack.sign(self.c, GID, "T", "io.b", lambda d, t, bd: None, pkg=pkg)
+        self.assertEqual(json.loads((out / "catalogue.json").read_text(encoding="utf-8"))["banner"], f"Games/{GID}/banner.jpg")
+        t0 = (pkg / "meta.json").stat().st_mtime_ns
+        b.write_bytes(b"JPGbanner2"); self.build(banner=b)
+        self.assertNotEqual((pkg / "meta.json").stat().st_mtime_ns, t0, "横图换了要重出")
 
     def test_build_matches_ship_ext_and_caches(self):
         pkg = self.build()

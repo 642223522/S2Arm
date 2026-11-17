@@ -372,6 +372,8 @@ def cmd_program(a):
         place_game(root, tmp / GAMES / gid, tmp / program_image(gid), tables)
         if (root / "icon.jpg").is_file():   # 游戏库卡片图标（同容器 Games/<游戏号>/icon.jpg）：游戏库改由各款 program/catalogue.json 拼时从这里取
             shutil.copyfile(root / "icon.jpg", tmp / GAMES / gid / "icon.jpg")
+        if a.banner and Path(a.banner).is_file():   # 游戏库横版封面（游戏库那份，组装不联网；同容器 _place_banner 的 --banner）：只有壳的容器不带各款，横图随程序包走
+            shutil.copyfile(a.banner, tmp / GAMES / gid / "banner.jpg")
         # 存档游戏身份（同容器，核过才放）：程序包款宿主按模块目录 = program/Games/<号>/ 读它（ios/save_transfer.m），11-17 和开发乙定随程序包走
         si = root / "save-identity.json"
         if si.is_file():
@@ -532,6 +534,7 @@ def main():
     g = sub.add_parser("sign"); g.add_argument("--app", required=True); g.add_argument("--sign", choices=("none", "adhoc", "dev"), required=True)
     g.add_argument("--bundle-id", default=""); g.add_argument("--team", default="")
     q = sub.add_parser("program"); q.add_argument("--shell", required=True); q.add_argument("--root", required=True); q.add_argument("--out", required=True)
+    q.add_argument("--banner", help="横版封面路径（游戏库那份）：拷进 Games/<游戏号>/banner.jpg")
     a = ap.parse_args()
     {"shell": cmd_shell, "build": cmd_build, "container": cmd_container, "container-drop": cmd_container_drop, "program": cmd_program,
      "sign": lambda a: sign_app(Path(a.app), a.sign, a.bundle_id, a.team)}[a.cmd](a)
