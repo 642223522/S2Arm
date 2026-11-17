@@ -10154,5 +10154,9 @@
  {
   "source": "这份 S2Arm 没装完整：程序的两部分来自不同版本（多半是应用内更新中途失败、回滚没退干净）。这次照常出包；出包失败或游戏起不来时，请从发布页下载最新的安装包，覆盖安装一次（游戏库、存档、密钥都在别处，不受影响）。",
   "en": "This S2Arm isn't fully installed: two parts of the program are from different versions (usually an in-app update failed midway and didn't roll back cleanly). Packaging continues anyway; if packaging fails or the game won't start, download the latest installer from the release page and install over it (your library, saves and keys are stored elsewhere and are not affected)."
+ },
+ {
+  "source": "按顺序把所选游戏推到 iPhone",
+  "en": "Pushing the selected games to your iPhone one by one"
  }
 ]

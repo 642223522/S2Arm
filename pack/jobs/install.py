@@ -2630,6 +2630,56 @@ def push_game(c, gid, ph, steps=True):
     return dict(bundleId=ph.bid, games=[gid], packFiles=files, packBytes=size, **ph.info, **extra, openToFinish=True)
 
 
+PUSH_SELECTED = "push_selected.json"   # 「更新所选」这一轮的进度（私有目录）：{device, games, done, failed}，续推按它接着来
+# 换哪一款都一样做不下去的：手机上没装 / 壳不是本版、手机断开或没准备好——整轮停下报这个原因；别的失败只记这一款、接着推下一款
+PUSH_SELECTED_STOP = ("shell_install_required", "shell_update_required", "device_not_connected", "device_not_ready", "device_required")
+
+
+def push_selected(c):
+    """作业 pushSelected（总控台「更新所选」，0.6.0 通用壳）：所选几款按顺序各推一次（同单款「推到 iPhone」：push_game，只做这一款、要改写就前台改写）。
+    一款失败记下原因、接着推下一款；换哪款都做不下去（PUSH_SELECTED_STOP）才整轮停。玩家点停 = 取消作业，推完的留着。
+    每推完一款记一次进度：请求带 resume: true 就从上一轮没推成的（没推到的 + 失败的）接着推；带 gameIds 就开新一轮。
+    → {games: [{gameId, ok, code?, message?}], done, failed, remaining}；开关关着 → {enabled: False}"""
+    import program_pack
+    from core import Cancelled
+    if not program_pack.enabled(c):
+        return dict(enabled=False)
+    state_path = c.private / PUSH_SELECTED
+    with packer_phone_lock(c):
+        c.begin("找签名账号与 iPhone", 1, 1)
+        ph = phone_for(c)
+        if c.r.get("resume") is True:
+            old = read(state_path, {}) or {}
+            games = [g for g in old.get("games") or [] if g not in (old.get("done") or [])] if old.get("device") == ph.key else []
+        else:
+            games = list(dict.fromkeys(str(g).upper() for g in c.r.get("gameIds") or []))
+        state = dict(device=ph.key, games=games, done=[], failed={})
+        atomic(state_path, state)
+        rows = []
+        for i, g in enumerate(games, 1):
+            c.check()
+            c.begin("按顺序把所选游戏推到 iPhone", i, len(games), key="pushSelected")
+            c.emit("progress", "", done=i - 1, total=len(games), current=g)   # 前端按 current（游戏号）标正在推的那一行（gameId 是作业自带的键）
+            try:
+                push_game(c, g, ph, steps=False)
+                state["done"].append(g); state["failed"].pop(g, None)
+                rows.append(dict(gameId=g, ok=True))
+            except Cancelled:
+                raise
+            except Failure as e:
+                if e.code in PUSH_SELECTED_STOP:
+                    raise
+                state["failed"][g] = dict(code=e.code, message=str(e))
+                rows.append(dict(gameId=g, ok=False, code=e.code, message=str(e)))
+            except Exception as e:   # 这一款的意外错误：记下、接着推下一款（日志里有完整原因）
+                trace(c, f"{g} 推送出错：{type(e).__name__} {str(e)[:300]}")  # 非玩家句
+                state["failed"][g] = dict(code="job_failed", message=str(e)[:300])
+                rows.append(dict(gameId=g, ok=False, code="job_failed", message=str(e)[:300]))
+            finally:
+                atomic(state_path, state)
+    return dict(enabled=True, games=rows, done=len(state["done"]), failed=len(state["failed"]), remaining=len(games) - len(state["done"]))
+
+
 def install_shell(c, ph, steps=True):
     """通用壳「安装 / 续签 / 更新 S2Arm」（program_pack.enabled）：只组只有壳的容器、签名、装壳，绝不推任何一款的程序包与资源包（11-17 维护者定）。
     手机上已是这一版壳、签名离到期还早（same_app）→ 不装，updated = False。装上后记壳号、包名、签名时刻；各款记录原样留着（程序包在手机上不受装壳影响）"""
