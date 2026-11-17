@@ -400,6 +400,40 @@ class ProgramPackTest(unittest.TestCase):
         self.assertFalse(out2.exists()); self.assertFalse(any((self.d / "q").glob(".program-*")) if (self.d / "q").exists() else False)
 
 
+class ShellOnlyTest(unittest.TestCase):
+    """只有壳的容器（通用壳 0.6.0，container --shell-only）：期望手写——清单 games 为空、壳号 = 同一壳组的普通容器的壳号；
+       App 里没有 Games/ 下任何一款、没有 Frameworks/S2AImages-*；除此之外的文件与同一壳组的普通容器同名同在；带 --game 报红"""
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory(); self.d = Path(self.td.name)
+        self.shell = ShipExtTest.shell(None, self.d)
+        self.a = ContainerTest.game(None, self.d, "a", 3, 0, 0x0100000000010000, "甲游戏")
+
+    def tearDown(self): self.td.cleanup()
+
+    def run_s(self, out, extra=()):
+        from PIL import Image
+        icon = self.d / "brand.png"
+        if not icon.exists(): Image.new("RGB", (64, 64), (1, 2, 3)).save(icon)
+        return subprocess.run([sys.executable, str(REPO / "pack/ship_ext.py"), "container", "--shell-only", "--shell", str(self.shell), "--out", str(out),
+                               "--bundle-id", "dev.example.games", "--icon", str(icon), "--host-abi", "7", *extra], capture_output=True, text=True)
+
+    def test_shell_only(self):
+        app = self.d / "s/S2Arm.app"
+        r = self.run_s(app); self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        ref = self.d / "c/S2Arm.app"
+        c = ContainerTest.run_c(None, self.d, self.shell, ref, [self.a]); self.assertEqual(c.returncode, 0, c.stdout + c.stderr)
+        cat, rc = (json.loads((x / "s2a_catalogue.json").read_text(encoding="utf-8")) for x in (app, ref))
+        self.assertEqual(cat, dict(schema=1, shell_id=rc["shell_id"], games=[]))
+        self.assertFalse(list(app.glob("Frameworks/S2AImages-*"))); self.assertFalse((app / "Games").exists() and any((app / "Games").iterdir()))
+        mine = {p.relative_to(app).as_posix() for p in app.rglob("*") if p.is_file()}
+        theirs = {p.relative_to(ref).as_posix() for p in ref.rglob("*") if p.is_file() and not p.relative_to(ref).as_posix().startswith(("Games/", "Frameworks/S2AImages-"))}
+        self.assertEqual(mine, theirs)
+
+    def test_shell_only_refuses_games(self):
+        r = self.run_s(self.d / "x/S2Arm.app", ["--game", str(self.a)])
+        self.assertNotEqual(r.returncode, 0); self.assertIn("--shell-only 只装壳", r.stdout + r.stderr)
+
+
 class BannerPlaceTest(unittest.TestCase):
     """_place_banner 的联网分支打桩测（进程内直调 ship_ext，mock 掉 banner_fetch.fetch_banner，零真联网；#101 评审 1 项）。
     子进程组装测（ContainerTest）已用 S2A_BANNER_FETCH=0 + 产物根自带图保证离线确定性，这里补抓图分支本身。"""
