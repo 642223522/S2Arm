@@ -48,7 +48,7 @@ static void one_case(const char *dir, SecKeyRef key, CFArrayRef chain, const uin
     size_t rn = 0; uint8_t *rf = slurp(ref, &rn);
     // 被测
     uint8_t *out = NULL; size_t on = 0; char why[256] = {0};
-    int rc = s2a_selfsign_macho(in, n, NULL, "TEAMID1234", appid, key, chain, &out, &on, why, sizeof why);
+    int rc = s2a_selfsign_macho(in, n, NULL, "ABCDE12345", appid, key, chain, &out, &on, why, sizeof why);
     CHECK(rc == 0, "%s：签名成功 %s", tag, why);
     if (rc || !rf) { free(rf); free(out); return; }
     char ours[512]; snprintf(ours, sizeof ours, "%s/ours_%s", dir, appid ? "ent" : "plain");
@@ -82,14 +82,14 @@ int main(void) {
     char dir[] = "/tmp/t_selfsign.XXXXXX"; if (!mkdtemp(dir)) { puts("【红】建不了临时目录"); return 1; }
     // 输入：arm64 小可执行文件，签名标识 t_selfsign_in；证书：自签名 RSA 2048，OU = 团队号
     int r = sh("printf 'int main(void){return 0;}' > %s/m.c && cc -arch arm64 -o %s/in %s/m.c && codesign -f -s - -i t_selfsign_in %s/in 2>/dev/null", dir)
-         || sh("openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj '/CN=t_selfsign/OU=TEAMID1234'"
+         || sh("openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj '/CN=t_selfsign/OU=ABCDE12345'"
                " -addext 'keyUsage=critical,digitalSignature' -addext 'extendedKeyUsage=critical,codeSigning' -keyout %s/k.pem -out %s/c.pem 2>/dev/null"
                " && openssl pkcs12 -export -inkey %s/k.pem -in %s/c.pem -out %s/id.p12 -passout pass:t -certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg sha1 2>/dev/null", dir);
     CHECK(r == 0, "备好输入与测试证书");
     FILE *e = NULL; { char p[512]; snprintf(p, sizeof p, "%s/e.plist", dir); e = fopen(p, "w"); }
     if (e) { fputs("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n"
-                   "\t<key>application-identifier</key>\n\t<string>TEAMID1234.io.example.selfsign.test</string>\n"
-                   "\t<key>com.apple.developer.team-identifier</key>\n\t<string>TEAMID1234</string>\n</dict>\n</plist>\n", e); fclose(e); }
+                   "\t<key>application-identifier</key>\n\t<string>ABCDE12345.io.example.selfsign.test</string>\n"
+                   "\t<key>com.apple.developer.team-identifier</key>\n\t<string>ABCDE12345</string>\n</dict>\n</plist>\n", e); fclose(e); }
     char p[512]; size_t pn = 0, n = 0;
     snprintf(p, sizeof p, "%s/id.p12", dir); uint8_t *pb = slurp(p, &pn);
     snprintf(p, sizeof p, "%s/in", dir); uint8_t *in = slurp(p, &n);
@@ -97,7 +97,7 @@ int main(void) {
     int ir = pb ? s2a_selfsign_identity(pb, pn, "t", &key, &chain) : -1;
     CHECK(ir == 0, "导入测试 p12（%d）", ir);
     if (!ir && in) {
-        one_case(dir, key, chain, in, n, "TEAMID1234.io.example.selfsign.test");
+        one_case(dir, key, chain, in, n, "ABCDE12345.io.example.selfsign.test");
         one_case(dir, key, chain, in, n, NULL);
     }
     char c[600]; snprintf(c, sizeof c, "rm -rf %s", dir); system(c);
