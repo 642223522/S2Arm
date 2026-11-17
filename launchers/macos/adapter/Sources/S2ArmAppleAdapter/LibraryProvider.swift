@@ -189,7 +189,13 @@ public final class LibraryProvider {
 
     /// 上一次读到的游戏列表：启动时先显示它，catalog 作业在后台跑完再替换。换了游戏库（libraryId 不符）或没读过时为 nil。
     public func lastKnownGames() -> [GameSummary]? {
-        guard !client.environment.libraryId.isEmpty, let data = try? Data(contentsOf: snapshotFile),
+        guard !client.environment.libraryId.isEmpty, !client.environment.library.isEmpty else { return nil }
+        // 库标记不在（库被删 / 搬走）或库号不符：缓存列表不能当成还在。只核 libraryId 会让删库后的旧列表一直挂着，删除 / 刷新都报 library_not_connected。
+        let marker = URL(fileURLWithPath: client.environment.library).appendingPathComponent(".s2arm-library.json")
+        guard let markerData = try? Data(contentsOf: marker),
+              let markerInfo = (try? JSONSerialization.jsonObject(with: markerData)) as? [String: Any],
+              markerInfo["id"] as? String == client.environment.libraryId else { return nil }
+        guard let data = try? Data(contentsOf: snapshotFile),
               let saved = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               saved["libraryId"] as? String == client.environment.libraryId,
               let result = saved["result"] as? [String: Any] else { return nil }
