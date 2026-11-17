@@ -1068,6 +1068,37 @@ class SaveBackupTests(unittest.TestCase):
         self._accept()
         self.assertEqual(self._run([], list_rc=124, apps_rc=124)[0], None)
 
+    def test_locked_phone_waits_for_unlock_then_backs_up(self):
+        """#a442de（维护者 11-17：玩家判断不了的我们替他判）：手机锁着（RemotePairingError 1016）→ 不先问「仍然继续」，提示解锁、自动重试；
+        解锁后照常备份。期望手写：前两次列存档报锁屏、第三次列得出 → 提示「请解锁手机」一次、共列 3 次、备份照常（拉回 1 个文件）、不报 save_backup_failed；
+        一直锁着到等满 → 走原来的确认（save_backup_failed）"""
+        import diag
+        LOCK = "ERROR: com.apple.dt.RemotePairingError error 1016 (0x3F8) The device has not been unlocked recently"
+        def run(locked_times):
+            calls = []
+            def devicectl(c, *a, timeout=0):
+                if a[:3] == ("device", "info", "files"):
+                    calls.append(1)
+                    if len(calls) <= locked_times:
+                        return 1, {}, LOCK
+                    return 0, {"result": {"files": [dict(relativePath="0000000000000001/0/a.bin")]}}, ""
+                if a[:3] == ("device", "copy", "from"):
+                    d = Path(a[a.index("--destination") + 1]); d.parent.mkdir(parents=True, exist_ok=True); d.write_bytes(b"s"); return 0, {}, ""
+                if a[:3] == ("device", "info", "apps"):
+                    return 0, {"result": {"apps": [{"bundleIdentifier": "s2arm.z.games"}]}}, ""
+                raise AssertionError(a)
+            said = []
+            with um.patch.object(diag, "devicectl", devicectl), um.patch.object(install, "UNLOCK_POLL_S", 0), um.patch.object(install.time, "sleep", lambda s: None), \
+                 um.patch.object(self.c, "emit", lambda kind, text="", **kw: said.append(text), create=True):
+                return install.backup_saves(self.c, "C891", "s2arm.z.games", "0100C2500FC20000"), calls, said
+        dest, calls, said = run(2)
+        self.assertEqual(len(calls), 3)
+        self.assertTrue((Path(dest) / "0000000000000001/0/a.bin").is_file())
+        self.assertEqual(sum("请解锁手机" in t for t in said), 1)
+        with um.patch.object(install, "UNLOCK_WAIT_S", 0), self.assertRaises(Failure) as e:
+            run(10 ** 6)
+        self.assertEqual(e.exception.code, "save_backup_failed")
+
     def _tree(self, tree, docs, locked=()):
         # 假设备文件系统（11-07 满屏线 Duo 实测）：列不存在的目录 devicectl 也报「failed to get a list of files」——和锁屏同一个错，只能靠父目录分辨
         def devicectl(c, *a, timeout=0):

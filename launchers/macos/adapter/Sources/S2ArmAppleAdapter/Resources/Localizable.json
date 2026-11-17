@@ -8100,6 +8100,10 @@
   "en": "Couldn't back up the saves on the phone before this install ({0}). Without a backup, saves could be lost if the install goes wrong. Click again to continue anyway."
  },
  {
+  "source": "iPhone 锁着，读不了存档：请解锁手机，解锁后会自动继续",
+  "en": "The iPhone is locked, so its saves can't be read. Unlock the phone and this will continue automatically"
+ },
+ {
   "source": "读不懂 iPhone 返回的存档文件清单（{0} 条没有路径字段，多半是 Xcode 版本不同）",
   "en": "Couldn't understand the save file list from the iPhone ({0} entries have no path; usually a different Xcode version)"
  },
