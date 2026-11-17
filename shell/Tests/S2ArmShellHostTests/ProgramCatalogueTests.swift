@@ -51,3 +51,19 @@ import ShellUI
     let c = Catalogue.load(path: p.path, programRoot: tmp.appendingPathComponent("none"))
     #expect(c.tiles.isEmpty && c.problems.isEmpty, "空清单 → 空游戏库、没有问题（实际 \(c.problems)）")
 }
+
+// 回到前台 / 游戏库页出现时重读清单（rescanCatalogue）：App 开着时电脑端推进来的新款要列出来。期望按规则手写：
+//   起来时只有 A；重读后清单多了 B、A 改了名 → 游戏库是 A（新名）、B，A 不重复；重读时清单里没了的款不删（删走资源判据）
+@MainActor @Test func rescanCatalogueListsNewlyPushedGames() {
+    let first = Catalogue.parse(Data(#"{"schema":1,"games":[{"title_id":"0100000000010000","name":"A"}]}"#.utf8), baseDirectory: URL(fileURLWithPath: "/"))
+    var next = first
+    let model = S2ArmShellHostModel(catalogue: first, play: { _ in }, installState: { _ in 1 }, reloadCatalogue: { next })
+    #expect(model.games.map(\.id) == ["0100000000010000"])
+    next = Catalogue.parse(Data(#"{"schema":1,"games":[{"title_id":"0100000000010000","name":"A 新"},{"title_id":"0100000000020000","name":"B"}]}"#.utf8), baseDirectory: URL(fileURLWithPath: "/"))
+    model.rescanCatalogue()
+    #expect(model.games.map(\.id) == ["0100000000010000", "0100000000020000"], "新推进来的 B 列到最后，A 不重复（实际 \(model.games.map(\.id))）")
+    #expect(model.games.first?.game.title == "A 新", "已有的款换成新条目")
+    next = Catalogue.parse(Data(#"{"schema":1,"games":[]}"#.utf8), baseDirectory: URL(fileURLWithPath: "/"))
+    model.rescanCatalogue()
+    #expect(model.games.count == 2, "清单里没了的款重读时不删")
+}
