@@ -13,6 +13,9 @@
 //   某款游戏每帧新建的粒子数据（261,370 个 R32F）落在 ≡ 8 (mod 16) 的偏移上的那些帧，粒子四边形被拉长。期望（按语义手写）：偏移 0x30008 的 261,370 个 R32F（第 i 个 = 3000 + i）
 //   tba_copy(…, -1) 在 GPU 上拷 1 次；绑定得到的视图不在池缓冲上、缓冲偏移是 64 的倍数、宽 261,370；GPU 核按下标 i 从视图读到的正是 3000 + i（全部元素）
 //   反证：同一用例编修前源码 → tba_copy 对 1D 不拷（made 0）、绑定拿到的是池缓冲上的原地视图，GPU 读出整体错后 2 个元素
+// ⑥ #798 偏移表（着色器有前导项时，tbl_view）：偏移 0x50008 的 4096 个 R32F，**本次提交里由 GPU 拷贝写入**（第 i 个 = 5000 + i；CPU 看见的是旧字节）。期望（按语义手写）：
+//   视图在池缓冲上（不拷贝）、缓冲偏移 = 0x50008 向下取整到 64 = 0x50000、宽 4096 + 2；前导数 2；GPU 核按着色器的挪法读 read(i + 前导) = 5000 + i（全部元素），
+//   get_width() − 前导 = 4096。反证：前导按 0 读（着色器没挪）→ 第 0 个读到取整前的字节
 #include "../gfx/nvn/nvn_mtl.m"
 
 static unsigned checks, fails;
@@ -94,6 +97,33 @@ int main(void) { @autoreleasepool {
         const float *r = (const float *)out.contents; long bad = -1; for (int i = 0; i < P; i++) if (r[i] != 3000.0f + (float)i) { bad = i; break; }
         VERIFY(vq && bad < 0, "⑤ GPU 按下标从视图读 = 源数据（%d 个；第一处不符 %ld：读到 %g，期望 %g）", P, bad, bad >= 0 ? r[bad] : 0.0, bad >= 0 ? 3000.0 + bad : 0.0);
     }
-    printf("%s t_nvn_tbuf_align：%u 项，%u 项失败（不对齐池偏移的缓冲纹理按 2D 行 / 1D 读取对齐副本，#309 / #798）\n", fails ? "✗" : "✓", checks, fails);
+    {   // ⑥ #798 偏移表：前导视图原地读、看得见同提交的 GPU 写
+        enum { Q = 4096 }; const size_t src = 0x900000, off = 0x50008;
+        uint32_t *sv = (uint32_t *)(memory + src); for (uint32_t i = 0; i < Q; i++) { float f = 5000.0f + (float)i; memcpy(&sv[i], &f, 4); }
+        memset(memory + off - 8, 0xcd, (size_t)Q * 4 + 16);   // CPU 看见的旧字节（含取整前那 8 字节）
+        static tex_t w; memset(&w, 0, sizeof w); w.magic = MAGIC('T', 'E', 'X', 0); w.serial = nvn_new_serial();
+        w.d = (nvn_texdesc){.target = NVN_TEXTURE_TARGET_BUFFER, .format = NVN_FORMAT_R32F, .width = Q, .height = 1, .depth = 1, .levels = 1};
+        w.pool = pool; w.off = off; w.mem = pool->mem + off; nvn_tex_layout(&w.d, &w.L); nvn_be_tex_init(&w); nvn_be_reg_tex(11, &w, NULL);
+        nvn_be_sub_begin();
+        mtl_sub_copy((uint64_t)(uintptr_t)(memory + src), (uint64_t)(uintptr_t)(memory + off), (size_t)Q * 4);   // 本次提交里的 GPU 写入
+        id<MTLTexture> tw = tex_mtl(&w); REQUIRE(tw && tw.textureType == MTLTextureTypeTextureBuffer);
+        uint32_t ld = 0; uint64_t rw = 0; id<MTLTexture> vw = tbl_view(11, tw, &ld, &rw);
+        VERIFY(vw && vw.buffer == tw.buffer && vw.bufferOffset == 0x50000 && vw.width == Q + 2 && ld == 2,
+               "⑥ 前导视图在池缓冲上（不拷贝）、缓冲偏移 %lu（期望 327680）、宽 %lu（期望 %d）、前导 %u（期望 2）", vw ? (unsigned long)vw.bufferOffset : 0ul, vw ? (unsigned long)vw.width : 0ul, Q + 2, ld);
+        uint64_t f = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f, 10000000000ull)); REQUIRE(!mtl_last_commit_error());
+        id<MTLLibrary> lib = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nkernel void k(texture_buffer<float> t [[texture(0)]], device float *o [[buffer(0)]], constant uint &lead [[buffer(1)]], uint i [[thread_position_in_grid]]) { if (i == 0) o[4096] = float(t.get_width() - lead); o[i] = t.read(i + lead).x; }\n" options:nil error:NULL];
+        id<MTLComputePipelineState> cp = lib ? [g_dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"k"] error:NULL] : nil; REQUIRE(cp);
+        float bad0 = 0; long bad = -1, badz = -1;
+        for (int pass = 0; pass < 2; pass++) {   // 0：按前导挪；1：反证，前导按 0
+            id<MTLBuffer> out = [g_dev newBufferWithLength:(Q + 1) * 4 options:MTLResourceStorageModeShared]; uint32_t l = pass ? 0 : ld;
+            id<MTLCommandBuffer> cb = [[g_dev newCommandQueue] commandBuffer]; id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder];
+            [ce setComputePipelineState:cp]; [ce setTexture:vw atIndex:0]; [ce setBuffer:out offset:0 atIndex:0]; [ce setBytes:&l length:4 atIndex:1];
+            [ce dispatchThreads:MTLSizeMake(Q, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)]; [ce endEncoding]; [cb commit]; [cb waitUntilCompleted];
+            const float *r = (const float *)out.contents;
+            if (!pass) { for (int i = 0; i < Q; i++) if (r[i] != 5000.0f + (float)i) { bad = i; bad0 = r[i]; break; } VERIFY(bad < 0 && r[Q] == (float)Q, "⑥ GPU 按前导读 = GPU 写进去的源数据（%d 个；第一处不符 %ld 读到 %g）、宽度 − 前导 = %g（期望 %d）", Q, bad, bad0, r[Q], Q); }
+            else { badz = r[0] == 5000.0f ? -1 : 0; VERIFY(badz == 0, "⑥ 反证：前导按 0 读，第 0 个读到 %g（期望不是 5000：取整前的字节）", r[0]); }
+        }
+    }
+    printf("%s t_nvn_tbuf_align：%u 项，%u 项失败（不对齐池偏移的缓冲纹理：2D 行 / 1D 读对齐副本、偏移表前导视图，#309 / #798）\n", fails ? "✗" : "✓", checks, fails);
     return fails != 0;
 } }

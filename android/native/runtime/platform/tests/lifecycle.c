@@ -1,16 +1,26 @@
 // 生命周期错误传播/顺序单测；guest 停稳证明另见真实 thread + fault 交叉测试。
 #include "native.h"
 #include "../lifecycle_android.h"
+#include <android/log.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
+#include <stdarg.h>
 #include <sys/syscall.h>
 #include <time.h>
 
 void s2a_host_shutdown(const char *why);
 void s2a_term_install(void);
+// 宿主没有 logcat；保留生产失败诊断到 stderr，不替换生命周期实现或退出码。
+int __android_log_print(int prio, const char *tag, const char *fmt, ...) {
+    (void)prio; (void)tag;
+    va_list ap; va_start(ap, fmt);
+    int n = vfprintf(stderr, fmt, ap);
+    va_end(ap); fputc('\n', stderr);
+    return n;
+}
 static const char *mode;
 static int threaded_mode;   // 模式名带 -threaded：宿主记的拆线程开关为开
 int s2a_android_host_threaded(void) { return threaded_mode; }
@@ -101,6 +111,12 @@ void s2a_svc_red_summary(void) {}
 void s2a_det_summary(void) {}
 unsigned s2a_unresolved_count(void) { return 0; }
 
+// #528 第 15 项：会话标记钩子取 files 目录的那一处（真宿主是 bridge.cpp 的 configureGpuDriver）。这里取环境变量：
+//   没设时为空，钩子什么都不做、不打日志，和基线逐行比对不受影响。
+const char *s2a_android_gpu_driver_files_dir(void) { return getenv("S2A_TEST_FILES_DIR"); }
+// 基线的 lifecycle_android.c 没有它：弱引用，只在 sesmark 模式里用
+int s2a_android_sesmark_clear(const char *files_dir) __attribute__((weak));
+
 int __real_pthread_create(pthread_t *, const pthread_attr_t *, void *(*)(void *), void *);
 int __wrap_pthread_create(pthread_t *t, const pthread_attr_t *a, void *(*f)(void *), void *arg) {
     if (!strcmp(mode, "watchdog-fail") || !strcmp(mode, "term-thread-fail")) return EAGAIN;
@@ -138,6 +154,11 @@ int main(int argc, char **argv) {
         if (!(action.sa_flags & SA_ONSTACK)) return 89;
         raise(SIGTERM);
         for (;;) pause();
+    }
+    if (!strcmp(mode, "sesmark")) {   // 只测删标记的判定本身：打印返回值，不收局
+        if (!s2a_android_sesmark_clear) return 97;
+        printf("sesmark=%d\n", s2a_android_sesmark_clear(getenv("S2A_TEST_FILES_DIR")));
+        return 0;
     }
     if (!strcmp(mode, "full-stderr")) {
         int pipe_fd[2];

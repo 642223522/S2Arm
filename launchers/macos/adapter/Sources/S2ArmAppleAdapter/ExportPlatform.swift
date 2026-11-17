@@ -1,9 +1,10 @@
 import Foundation
 
 /// 出包平台（11-02 维护者：iPhone / iPad（同一个 iOS 包）、macOS、安卓、鸿蒙，按这个顺序列；同旧启动器 BuildPlatform 的 id）。
+/// Apple TV（tvOS，11-15）与 iPhone 并列，排在它后面。
 /// 安卓、鸿蒙留位置、置灰「即将上线，敬请期待」：开放某个平台只改 released 与 target。
 public enum ExportPlatform: String, CaseIterable, Identifiable {
-    case ios, mac, android, ohos
+    case ios, tvos, mac, android, ohos
 
     public var id: String { rawValue }
 
@@ -14,6 +15,7 @@ public enum ExportPlatform: String, CaseIterable, Identifiable {
     public var target: EngineTarget? {
         switch self {
         case .ios: return .iPhone
+        case .tvos: return .appleTV
         case .mac: return .mac
         case .android, .ohos: return nil
         }

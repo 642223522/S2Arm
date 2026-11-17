@@ -30,23 +30,15 @@ MILESTONES = [
     ("install", "安装并校验", "把准备好的文件装进游戏库，并逐个校验。", True),
     ("ipa", "编 App 与签名", "编出 iPhone / iPad 版程序、签名，并打好要拷进手机的资源包。", False),
 ]
-# 装法是「导出，自己签名安装」时（维护者 11-13：出包页起分两路）：最后一步不叫「编 App 与签名」——这一路不签名、不连手机，
-#   出完接着导出成未签名 S2Arm.ipa + 每款 .img（install.export_phone）。作用说明照实写
+# 这次出包是为了导出自签包时（请求带 mode = export：游戏库「导出自签包」点在没出过包的款上，出完接着导出）：最后一步不叫「编 App 与签名」——
+#   这一路不签名、不连手机，出完接着导出成未签名 S2Arm.ipa + 每款 .img（install.export_phone）。作用说明照实写
 EXPORT_LABELS = {"ipa": ("整理 iPhone 版程序与资源包", "编出 iPhone / iPad 版程序、打好资源包；出完接着导出成未签名的 S2Arm.ipa 和这款的 .img，你用自签工具安装。")}
 
 
-def _export_mode(c):
-    """装法设置（install.json，install.install_mode 同一份）：导出模式 → True。读不到当一键装"""
-    try:
-        return json.loads((Path(c.private) / "install.json").read_text(encoding="utf-8")).get("mode") == "export"
-    except (OSError, ValueError, AttributeError, TypeError):
-        return False
-
-
 def label_of(c, mid):
-    """这一步给玩家看的（名称, 作用）：导出模式下换成自签路实际在做的"""
+    """这一步给玩家看的（名称, 作用）：这次出包是为了导出自签包时换成自签路实际在做的"""
     row = next((l, p) for m, l, p, _ in MILESTONES if m == mid)
-    return EXPORT_LABELS.get(mid, row) if _export_mode(c) else row
+    return EXPORT_LABELS.get(mid, row) if getattr(c, "r", {}).get("mode") == "export" else row
 
 
 # 各种任务的里程碑（与现行流程逐段对上）：
@@ -82,9 +74,9 @@ def estimate_details(c, size_gb, kind="build_dual", reused=()):
         samples = [(s, g) for s, g in per.get((mid, reuse), []) if g > 0 or not scaled]   # 要按体积换算的，缺体积的记录不用
         if samples and size_gb > 0:
             out[mid] = dict(seconds=statistics.median(s / g * size_gb if scaled else s for s, g in samples), source="history",
-                            samples=len(samples), basis="本机最近" + ("复用缓存时" if reuse else "") + "记录的中位数" + ("，按游戏体积换算" if scaled else ""))
+                            samples=len(samples), basis="本机最近" + ("复用缓存时" if reuse else "") + "记录的中位数" + ("，按游戏体积换算" if scaled else ""))  # 非玩家句
         elif reuse:
-            out[mid] = dict(seconds=0.0, source="reuse", samples=0, basis="复用缓存；本机还没有这一步复用时的记录，按 0 秒计")
+            out[mid] = dict(seconds=0.0, source="reuse", samples=0, basis="复用缓存；本机还没有这一步复用时的记录，按 0 秒计")  # 非玩家句
         else:
             out[mid] = dict(seconds=None, source="none", samples=0, basis="本机还没有这一步的记录")
     return out

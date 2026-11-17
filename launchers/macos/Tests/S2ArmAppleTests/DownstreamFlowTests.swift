@@ -72,6 +72,9 @@ import S2ArmAppleAdapter
         let loadedGame = await loaded(); let game = try XCTUnwrap(loadedGame)
         XCTAssertNil(model.export(game, platforms: [.mac]))
         XCTAssertNil(model.downstreamPromptFor)
+        // 等这次导出的请求真起来再结束（同上两例）：不等的话测试先收尾、tearDown 删掉临时根，还在路上的导出作业
+        //   写完请求文件、假执行器去读时文件已没了，记到别的用例头上（11-15 三个模块并发跑整套时红过一次）
+        await until("直接导出") { runner.requests.contains { $0["operation"] as? String == "export" } }
     }
 
     func testConfirmSheetRendersBothStates() async throws {

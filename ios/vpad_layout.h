@@ -143,5 +143,10 @@ static const NSInteger kS2AVPadKeyThemeCount = 5;   // 0 = 默认描线，1–4 
 // 玩家手动选过方案（切换钮 / 提示条「切到触屏」/ 设置里的触屏布局）：.manual 标记，持久化；自动切（游戏声明触屏配置）见到它就不切
 @property(nonatomic, readonly) BOOL manualChosen;
 - (BOOL)markManual:(NSError **)error;
+/// 旧版 App 级「我的布局」接进这款（11-15 维护者「每款游戏记住自己的触屏布局」）：11-07 以前布局存在 App 级 VPadLayouts，按游戏存以后没人读。
+///   打开一款时把 App 级目录里玩家自己的布局（*.json，内置名除外、读得通的）复制进这款的布局目录，只复制不替玩家选上（每款从默认布局开始，
+///   默认布局所有游戏都能用；旧布局可能没有摇杆，不能当所有游戏的缺省）。这款已有同名文件不覆盖；每款只做一次（.legacy_adopted），玩家删了不再冒出来。
+///   两个目录相同（单款壳）时什么都不做。返回复制了几份
++ (NSUInteger)adoptLegacyLayoutsFrom:(NSURL *)appDirectory into:(NSURL *)gameDirectory;
 @end
 NS_ASSUME_NONNULL_END

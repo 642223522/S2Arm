@@ -10,6 +10,7 @@
 #include "native.h"
 #include "s2a_pad.h"
 #include "haptic_retry.h"
+#include "haptic_safe.h"
 #include "phone_axes.h"
 #include <math.h>
 #include <pthread.h>
@@ -28,6 +29,7 @@ static s2a_pad_motion g_motion[SLOT_PADS];
 static int g_motion_known[SLOT_PADS];
 static _Atomic int g_motion_wanted, g_active;
 static _Atomic int g_motion_first_logged;   // 首个样本只打一次（真机排查体感用）
+static _Atomic int g_motion_capable[SLOT_PADS];   // 槽里手柄有没有体感：0 空槽、1 有 GCMotion、2 系统不给（Joy-Con 一代 / Xbox 等）
 static dispatch_queue_t g_q;   // 震动对象只在这条队列上碰
 
 void s2a_ios_slot_feedback_stop(void);
@@ -42,29 +44,31 @@ static dispatch_queue_t queue(void) {
 @interface S2ASlotRumbler : NSObject {
 @public
     GCController *device;
-    CHHapticEngine *engine;
-    id<CHHapticPatternPlayer> player;   // 能建循环播放器就用循环的；建不了用普通播放器，快到事件末尾时重起
-    BOOL loops, plainOnly, playing;
-    uint64_t startedNs;
+    // 一路或两路（ios/haptic_retry.h s2a_hp_split）：手柄同时支持 LeftHandle / RightHandle 就左右各一个引擎（[0] 左、[1] 右），否则 [0] 一路合成
+    int split;                           // -1 = 还没看过这只手柄，0 = 合成一路，1 = 左右两路
+    CHHapticEngine *engine[2];
+    id<CHHapticPatternPlayer> player[2];   // 能建循环播放器就用循环的；建不了用普通播放器，快到事件末尾时重起
+    BOOL loops[2], playing[2];
+    uint64_t startedNs[2];
+    BOOL plainOnly;
     dispatch_source_t timer;
     s2a_hp_state retry;
 }
 @end
 @implementation S2ASlotRumbler
+- (instancetype)init { if ((self = [super init])) split = -1; return self; }
 @end
 static NSMapTable<GCController *, S2ASlotRumbler *> *g_rumblers;   // 手柄断开时跟着丢
 
 static void rumbler_stop(S2ASlotRumbler *r) {
     if (!r) return;
-    if (r->player && r->playing) [r->player stopAtTime:CHHapticTimeImmediate error:nil];
-    r->playing = NO;
+    for (int k = 0; k < 2; k++) { if (r->player[k] && r->playing[k]) s2a_hp_stop(r->player[k]); r->playing[k] = NO; }
     if (r->timer) dispatch_source_set_timer(r->timer, DISPATCH_TIME_FOREVER, DISPATCH_TIME_FOREVER, 0);
 }
 static void rumbler_reset(S2ASlotRumbler *r) {
     if (!r) return;
     rumbler_stop(r);
-    [r->engine stopWithCompletionHandler:nil];
-    r->player = nil; r->engine = nil;
+    for (int k = 0; k < 2; k++) { s2a_hp_engine_stop(r->engine[k]); r->player[k] = nil; r->engine[k] = nil; }
 }
 static void rumbler_fail(S2ASlotRumbler *r, const char *what, NSError *error) {
     BOOL died = s2a_hp_on_fail(&r->retry, up_ns());
@@ -74,56 +78,68 @@ static void rumbler_fail(S2ASlotRumbler *r, const char *what, NSError *error) {
     }
     if (died) LOG("【红】玩家手柄震动：%s 本局停用（连续 %d 次失败）；换手柄会再试", r->device.vendorName.UTF8String ?: "?", S2A_HP_MAX_FAILS);
 }
-// pair 已按设置倍率与手感曲线缩放（s2a_pad_set_rumble_slot）
-static void rumbler_play(S2ASlotRumbler *r, const s2a_pad_vibration pair[2]) {
-    float amplitude = 0, weighted = 0, weights = 0;
-    for (int i = 0; i < 2; i++) {
-        float lo = clampf(pair[i].low_amp, 0, 1), hi = clampf(pair[i].high_amp, 0, 1);
-        amplitude = fmaxf(amplitude, fmaxf(lo, hi));
-        weighted += lo * clampf(pair[i].low_hz, 0, 1250) + hi * clampf(pair[i].high_hz, 0, 1250);
-        weights += lo + hi;
-    }
-    if (amplitude <= 0.001f || !r->device.haptics) { rumbler_stop(r); return; }
-    if (s2a_hp_should_try(&r->retry, up_ns()) == S2A_HP_SKIP) return;
-    float hz = weights > 0 ? weighted / weights : 160;
-    float sharp = clampf((hz - 160) / 160 * 0.5f + 0.3f, 0, 1);
+// 第 k 路播 amplitude / sharpness：建引擎（locality）→ 建播放器 → 起播 → 更新强度。返回 NO = 失败已记（调用方整只手柄复位）或要重来
+static BOOL rumbler_channel(S2ASlotRumbler *r, int k, GCHapticsLocality locality, float amplitude, float sharp, BOOL *retry_plain) {
     NSError *error = nil;
-    if (!r->engine) {
-        r->engine = [r->device.haptics createEngineWithLocality:GCHapticsLocalityDefault];
-        if (!r->engine) { rumbler_fail(r, "无法创建引擎", nil); return; }
-        r->engine.playsHapticsOnly = YES;
-        __weak CHHapticEngine *weakEngine = r->engine;
+    if (!r->engine[k]) {
+        r->engine[k] = [r->device.haptics createEngineWithLocality:locality];
+        if (!r->engine[k]) {
+            if (r->split > 0) { LOG("玩家手柄震动（%s）：分侧引擎建不出来，改两侧合成一路", r->device.vendorName.UTF8String ?: "?"); r->split = 0; *retry_plain = YES; return NO; }
+            rumbler_fail(r, "无法创建引擎", nil); return NO; }
+        r->engine[k].playsHapticsOnly = YES;
+        __weak CHHapticEngine *weakEngine = r->engine[k];
         __weak S2ASlotRumbler *weakR = r;
         void (^invalidate)(void) = ^{
             CHHapticEngine *e = weakEngine;
-            if (e) dispatch_async(queue(), ^{ S2ASlotRumbler *x = weakR; if (x && x->engine == e) rumbler_reset(x); });
+            if (e) dispatch_async(queue(), ^{ S2ASlotRumbler *x = weakR; if (x && (x->engine[0] == e || x->engine[1] == e)) rumbler_reset(x); });
         };
-        r->engine.resetHandler = ^{ invalidate(); };
-        r->engine.stoppedHandler = ^(CHHapticEngineStoppedReason reason) { (void)reason; invalidate(); };
+        r->engine[k].resetHandler = ^{ invalidate(); };
+        r->engine[k].stoppedHandler = ^(CHHapticEngineStoppedReason reason) { (void)reason; invalidate(); };
     }
-    if (!r->player) {
-        if (![r->engine startAndReturnError:&error]) { rumbler_fail(r, "启动引擎失败", error); rumbler_reset(r); return; }
+    if (!r->player[k]) {
+        if (![r->engine[k] startAndReturnError:&error]) { rumbler_fail(r, "启动引擎失败", error); return NO; }
         CHHapticEvent *event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous parameters:@[
             [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:1],
             [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness value:0.5]] relativeTime:0 duration:30];
         CHHapticPattern *pattern = [[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&error];
-        // 循环播放器有的系统 / 手柄建不出来（NSCocoaErrorDomain 4097，同 controller.m system_play_on_queue）：退到普通播放器，丢掉这个引擎从头再来
+        // 循环播放器有的系统 / 手柄建不出来（NSCocoaErrorDomain 4097，同 controller.m system_play_on_queue）：退到普通播放器，丢掉引擎从头再来
         if (pattern && !r->plainOnly) {
-            id<CHHapticAdvancedPatternPlayer> advanced = [r->engine createAdvancedPlayerWithPattern:pattern error:&error];
-            if (advanced) { advanced.loopEnabled = YES; r->player = advanced; r->loops = YES; }
-            else { r->plainOnly = YES; rumbler_reset(r); rumbler_play(r, pair); return; }
-        } else if (pattern) { r->player = [r->engine createPlayerWithPattern:pattern error:&error]; r->loops = NO; }
-        if (!r->player) { rumbler_fail(r, "创建播放器失败", error); rumbler_reset(r); return; }
+            id<CHHapticAdvancedPatternPlayer> advanced = [r->engine[k] createAdvancedPlayerWithPattern:pattern error:&error];
+            if (advanced) { advanced.loopEnabled = YES; r->player[k] = advanced; r->loops[k] = YES; }
+            else { r->plainOnly = YES; *retry_plain = YES; return NO; }
+        } else if (pattern) { r->player[k] = [r->engine[k] createPlayerWithPattern:pattern error:&error]; r->loops[k] = NO; }
+        if (!r->player[k]) { rumbler_fail(r, "创建播放器失败", error); return NO; }
     }
     uint64_t now = up_ns();
-    if (r->playing && !r->loops && now - r->startedNs > SLOT_RESTART_NS) { [r->player stopAtTime:CHHapticTimeImmediate error:nil]; r->playing = NO; }
-    if (!r->playing && ![r->player startAtTime:CHHapticTimeImmediate error:&error]) { rumbler_fail(r, "播放失败", error); rumbler_reset(r); return; }
-    if (!r->playing) r->startedNs = now;
-    r->playing = YES;
-    if (![r->player sendParameters:@[
+    if (r->playing[k] && !r->loops[k] && now - r->startedNs[k] > SLOT_RESTART_NS) { s2a_hp_stop(r->player[k]); r->playing[k] = NO; }
+    if (!r->playing[k] && !s2a_hp_start(r->player[k], &error)) { rumbler_fail(r, "播放失败", error); return NO; }
+    if (!r->playing[k]) r->startedNs[k] = now;
+    r->playing[k] = YES;
+    if (!s2a_hp_send(r->player[k], @[
         [[CHHapticDynamicParameter alloc] initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl value:amplitude relativeTime:0],
-        [[CHHapticDynamicParameter alloc] initWithParameterID:CHHapticDynamicParameterIDHapticSharpnessControl value:sharp - 0.5f relativeTime:0]] atTime:CHHapticTimeImmediate error:&error]) {
-        rumbler_fail(r, "更新强度失败", error); rumbler_reset(r); return;
+        [[CHHapticDynamicParameter alloc] initWithParameterID:CHHapticDynamicParameterIDHapticSharpnessControl value:sharp - 0.5f relativeTime:0]], &error)) {
+        rumbler_fail(r, "更新强度失败", error); return NO;
+    }
+    return YES;
+}
+// pair 已按设置倍率与手感曲线缩放（s2a_pad_set_rumble_slot）
+static void rumbler_play(S2ASlotRumbler *r, const s2a_pad_vibration pair[2]) {
+    if (!r->device.haptics) { rumbler_stop(r); return; }
+    if (r->split < 0) {
+        NSSet<GCHapticsLocality> *loc = r->device.haptics.supportedLocalities;
+        r->split = s2a_hp_split([loc containsObject:GCHapticsLocalityLeftHandle], [loc containsObject:GCHapticsLocalityRightHandle]);
+        LOG("玩家手柄震动（%s）：%s（支持 %s）", r->device.vendorName.UTF8String ?: "?", r->split ? "左右马达分开震" : "两侧合成一路", [loc.allObjects componentsJoinedByString:@","].UTF8String ?: "");
+    }
+    float lo[2] = {pair[0].low_amp, pair[1].low_amp}, hi[2] = {pair[0].high_amp, pair[1].high_amp}, lz[2] = {pair[0].low_hz, pair[1].low_hz}, hz[2] = {pair[0].high_hz, pair[1].high_hz};
+    float amp[2] = {0, 0}, sharp[2] = {0.3f, 0.3f}; int n = r->split ? 2 : 1;
+    if (r->split) for (int k = 0; k < 2; k++) s2a_hp_mix(1, &lo[k], &hi[k], &lz[k], &hz[k], &amp[k], &sharp[k]);
+    else s2a_hp_mix(2, lo, hi, lz, hz, &amp[0], &sharp[0]);
+    if (fmaxf(amp[0], amp[1]) <= 0.001f) { rumbler_stop(r); return; }
+    if (s2a_hp_should_try(&r->retry, up_ns()) == S2A_HP_SKIP) return;
+    for (int k = 0; k < n; k++) {
+        GCHapticsLocality locality = !r->split ? GCHapticsLocalityDefault : k == 0 ? GCHapticsLocalityLeftHandle : GCHapticsLocalityRightHandle;
+        BOOL plain = NO;
+        if (!rumbler_channel(r, k, locality, amp[k], sharp[k], &plain)) { rumbler_reset(r); if (plain) rumbler_play(r, pair); return; }
     }
     s2a_hp_on_ok(&r->retry);
     if (!r->timer) {   // 1 秒没新帧自动停（服务层每 250 ms 续一次）
@@ -194,6 +210,8 @@ __attribute__((visibility("default"), used)) int s2a_pad_read_motion_slot(int sl
     return known;
 }
 
+// 槽里手柄有没有体感（controller.m 判「玩家拿着没体感的手柄、游戏却要体感」时说一次）：0 空槽、1 有、2 系统不给
+int s2a_ios_slot_motion_capable(int slot) { return slot >= 0 && slot < SLOT_PADS ? atomic_load(&g_motion_capable[slot]) : 0; }
 // ---------- controller.m 调 ----------
 // 槽 slot 换了手柄（inputQueue 上，planSlots 分完槽；槽 0 = 玩家 1 由 attachSystem / clearSystem 调）：nil = 空槽。
 //   旧手柄摘体感回调、停震动；新手柄装体感回调
@@ -211,6 +229,7 @@ void s2a_ios_slot_feedback_owner(int slot, GCController *c) {
         if (!elsewhere) { motion_activate(old, NO); dispatch_async(queue(), ^{ rumbler_stop([g_rumblers objectForKey:old]); }); }
     }
     GCMotion *m = c.motion;
+    atomic_store(&g_motion_capable[slot], !c ? 0 : m ? 1 : 2);
     if (!m) {
         // 系统不给这只手柄六轴。已知：iOS 的 GameController 只对 Switch Pro / DualSense / DualShock 提供 GCMotion，
         //   **Joy-Con 一代的电量 / 按键能读到，但 motion 是 nil**（Apple 论坛 712394，2022 年起如此），这条路没有体感可读

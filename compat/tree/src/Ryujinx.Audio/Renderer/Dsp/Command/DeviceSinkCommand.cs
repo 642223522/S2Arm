@@ -4,6 +4,7 @@ using System;
 using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Threading;
 
 namespace Ryujinx.Audio.Renderer.Dsp.Command
 {
@@ -25,6 +26,26 @@ namespace Ryujinx.Audio.Renderer.Dsp.Command
         public ushort[] InputBufferIndices { get; private set; }
 
         public Memory<float> Buffers { get; private set; }
+
+        // S2Arm (#1182 无声诊断)：交设备前（饱和转 int16 之前）混音结果里的 NaN 样本累计数。饱和把 NaN 变 0，到设备那边已分不出
+        //   「渲染出 NaN」与「渲染出真 0」，只能在 float 阶段数。全渲染器共用一个计数：本命令只在音频渲染线程上跑，有 NaN 时才原子加一次；
+        //   Apple 后端的 10 秒 [声] 行（S2AOutputDiag）取走清零。
+        public static long S2ANaNSamples;
+
+        private static int S2ACountNaN(ReadOnlySpan<float> buffer)
+        {
+            int count = 0;
+
+            foreach (float sample in buffer)
+            {
+                if (float.IsNaN(sample))
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
 
         public DeviceSinkCommand()
         {
@@ -100,6 +121,19 @@ namespace Ryujinx.Audio.Renderer.Dsp.Command
                 else
                 {
                     inputCount = bufferCount;
+                }
+
+                // S2Arm (#1182)：饱和前数 NaN（见 S2ANaNSamples）
+                int nanSamples = 0;
+
+                for (int i = 0; i < bufferCount; i++)
+                {
+                    nanSamples += S2ACountNaN(GetBuffer(InputBufferIndices[i], SampleCount));
+                }
+
+                if (nanSamples != 0)
+                {
+                    Interlocked.Add(ref S2ANaNSamples, nanSamples);
                 }
 
                 short[] outputBuffer = ArrayPool<short>.Shared.Rent((int)inputCount * SampleCount);

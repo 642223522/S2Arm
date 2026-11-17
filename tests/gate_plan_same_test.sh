@@ -8,8 +8,11 @@
 set -u
 H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d "${TMPDIR:-/tmp}/t_gate_plan_same_XXXXXX"); trap 'rm -rf "$T"' EXIT
 bad=0; ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
-git clone -q --no-hardlinks "$H" "$T/r" 2> /dev/null || git clone -q "$H" "$T/r" || { echo "不通 克隆失败"; exit 1; }
+# --shared：历史对象经 alternates 引用本仓库、不复制（11-16 门禁提速：--no-hardlinks 每次复制 800 多 MB 对象约 6 秒）；克隆只在本单测里活着、用完即删
+git clone -q --shared "$H" "$T/r" 2> /dev/null || git clone -q "$H" "$T/r" || { echo "不通 克隆失败"; exit 1; }
 cd "$T/r" || exit 1; g() { git -c user.name=t -c user.email=t@t "$@"; }
+# 路由缓存（tools/gate_route.py，按内容寻址：覆盖面按树指纹、点名词表按文件内容摘要）和本仓库共用一份，克隆里的几次门禁规划不必各自冷算
+gc=$(git -C "$H" rev-parse --path-format=absolute --git-common-dir 2> /dev/null) && mkdir -p "$gc/s2a-gate-route" && ln -s "$gc/s2a-gate-route" "$(git rev-parse --git-common-dir)/s2a-gate-route" 2> /dev/null || :
 # 当前工作树里未提交的本组改动也带进来（单测在自检 / 门禁里跑时 HEAD 已含；手动跑时可能还没提交）
 (cd "$H" && git diff HEAD) | git apply --whitespace=nowarn 2> /dev/null
 printf '#!/bin/bash\necho "✅ 工具齐全（单测桩）"\n' > tools/doctor.sh; g add -A; g commit -q -m base --allow-empty; BASE=$(git rev-parse HEAD)

@@ -123,6 +123,7 @@ private struct SideBarReader: View {
 }
 #endif
 
+#if !os(tvOS)   // tvOS：侧边条（iPhone Duo）的按钮依赖触屏库界面的 ControllerChip / ShellSettingsChip，电视上不编
 /// The Controllers and Settings chips stacked in the side column.
 struct SideBarChips: View {
     let controllers: Int
@@ -156,6 +157,7 @@ struct SideBarTopChip: View {
         .shellTarget(target, radius: 22, action: action)
     }
 }
+#endif   // !os(tvOS)
 
 extension View {
     /// Puts a side-column chip at `frame`, given in the screen's coordinates, inside a view laid out in the safe area.

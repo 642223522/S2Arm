@@ -32,7 +32,7 @@ def cache_entries(paths):
     """{条目键哈希: 抽取键}"""
     out = {}
     for path in paths:
-        d = open(path, 'rb').read(); i = 0; parts = []
+        d = romfs_list.read_file(path); i = 0; parts = []   # RomFS 里的缓存：只有 romfs.std 镜像时从镜像读（盘上有同 open）
         while True:
             j = d.find(b'\x28\xb5\x2f\xfd', i)
             if j < 0: break

@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+extern int (*nvn_dirty_far_fn)(uint64_t a, uint64_t n);          // 远端别名区判定（宿主填）：登记时远端池不登记、不加写保护
 void nvn_dirty_add_range(const void *mem, size_t size);           // Register a memory pool as a tracked range (the first call registers the page-fault hook and the host pre-write hook)
 void nvn_dirty_stat(int *live, int *peak, int *cap);                // number of registered memory pools, peak, tracking table capacity (for the memory readout line)
 void nvn_dirty_remove_range(const void *mem);                     // Pool destruction: restore protected pages to writable and mark invalid
@@ -24,10 +25,9 @@ int nvn_dirty_since(const void *addr, size_t len, uint64_t stamp); // Covered pa
 const void *nvn_dirty_span(const void *addr, size_t len);          // The tracked range holding the span (a handle to keep; NULL = untracked)
 int nvn_dirty_since_span(const void *span, const void *addr, size_t len, uint64_t stamp);   // nvn_dirty_since through a kept handle (rechecked, scanned again only if it no longer holds the span)
 long nvn_dirty_page_gens(const void *span, const void *addr, size_t len, uint64_t *gens, size_t n);   // write generation of each page of the span (0 = never written); page count, -1 = untracked / over n
-// 线程内备忘（find_span 的答案：同一 (地址, 长度) 在表没变时不重扫）。0 = 关（A/B 对照 / 单测的负对照）；n = 每线程 2^n 项，超过编译期上限按上限。缺省开。
-// 返回值与关着时逐位相同，只省重复的线性扫描；表一变（登记 / 注销 / 换底 / 重置会话）旧记录全部作废。
-void nvn_dirty_set_span_memo(unsigned log2_entries);
-void nvn_dirty_span_memo_stats(uint64_t *hits, uint64_t *scans);   // 调用线程自己的累计：备忘命中次数、真正做了线性扫描的次数
+// 取范围（find_span）走有序索引，答案与线性扫逐位相同（装得下的范围里槽号最小的），只是不再每问一次扫一遍整张表。
+// 调用线程自己的累计：索引答的次数、退回线性扫的次数（写者正在改表 / 复查代际不一致 / 零长度 / 索引不可用）、索引答的那些次一共访问了多少个节点。
+void nvn_dirty_span_stats(uint64_t *idx_hits, uint64_t *scans, uint64_t *nodes);
 size_t nvn_dirty_page_size(void);                                  // Host page size the tracking works in (16 KB on Apple systems: one page can hold several 4 KB-aligned NVN resources)
 long nvn_dirty_written_pages(const void *span, const void *addr, size_t len, uint64_t stamp, uint64_t *bits, size_t nbits);   // bit k = page k of the span written after stamp; returns the page count, -1 = untracked / over nbits
 void nvn_dirty_stats(uint64_t *faults, uint64_t *preps);           // Cumulative: number of page faults triggered by game writes, number of pages unprotected before host writes

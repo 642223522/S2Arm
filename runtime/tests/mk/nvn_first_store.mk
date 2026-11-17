@@ -1,6 +1,6 @@
 # native-test-nvn_first_store：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += nvn_first_store
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # 只有第一个调用写的存储由宿主派发前写（first_store，上游参考实现（MIT）c8521eeb / e07cba1c 宿主半边）；Metal 4 / 3 两路
 $(BUILD)/tests/t_nvn_first_store: graphics/nvn/tests/t_nvn_first_store.m graphics/nvn/gfx/nvn/nvn_mtl.m graphics/nvn/gfx/nvn/nvn_refl.h $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \

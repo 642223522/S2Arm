@@ -201,14 +201,17 @@ static class SwshXlate
     [System.Diagnostics.CodeAnalysis.DynamicDependency(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.NonPublicMethods, typeof(ResourceReservations))]   // the trimmed on-device translator (S2A.Dsh) keeps TryGetOffset for the reflection below
     static JsonArray GeometryOutOffsets(ResourceReservations rr)
     {
-        var asm = typeof(ResourceReservations).Assembly;
-        Type kind = asm.GetType("Ryujinx.Graphics.Shader.IntermediateRepresentation.StorageKind", true), io = asm.GetType("Ryujinx.Graphics.Shader.IntermediateRepresentation.IoVariable", true);
-        var mi = typeof(ResourceReservations).GetMethod("TryGetOffset", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic, null,
-            new[] { kind, io, typeof(int), typeof(int), typeof(int).MakeByRefType() }, null) ?? throw new MissingMethodException("ResourceReservations.TryGetOffset(StorageKind, IoVariable, int, int, out int)");
+        // The two internal enum types are read off TryGetOffset's own parameters (not Assembly.GetType by name: that is not trim-analyzable, IL2026 in the
+        //   NativeAOT dsh_batch / on-device builds); the method itself is kept by the DynamicDependency above
+        var mi = typeof(ResourceReservations).GetMethods(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+            .SingleOrDefault(m => m.Name == "TryGetOffset" && m.GetParameters() is var ps && ps.Length == 5 && ps[0].ParameterType.Name == "StorageKind" && ps[1].ParameterType.Name == "IoVariable"
+                && ps[2].ParameterType == typeof(int) && ps[3].ParameterType == typeof(int) && ps[4].ParameterType == typeof(int).MakeByRefType())
+            ?? throw new MissingMethodException("ResourceReservations.TryGetOffset(StorageKind, IoVariable, int, int, out int)");
+        Type kind = mi.GetParameters()[0].ParameterType, io = mi.GetParameters()[1].ParameterType;
         object output = Enum.Parse(kind, "Output");
         int Off(string v, int loc) { var a = new object[] { output, Enum.Parse(io, v), loc, 0, 0 }; return (bool)mi.Invoke(rr, a) ? (int)a[4] : -1; }
-        var r = new JsonArray { JsonValue.Create(Off("Position", 0)) };   // JsonValue.Create(int), not JsonArray.Add<T>: the trimmed on-device translator has no type info for Add<int>
-        for (int n = 0; n < 32; n++) r.Add(JsonValue.Create(Off("UserDefined", n)));
+        var r = new JsonArray { (JsonNode)JsonValue.Create(Off("Position", 0)) };   // JsonValue.Create(int), not JsonArray.Add<T>: the trimmed on-device translator has no type info for Add<int>
+        for (int n = 0; n < 32; n++) r.Add((JsonNode)JsonValue.Create(Off("UserDefined", n)));
         return r;
     }
 
@@ -232,8 +235,8 @@ static class SwshXlate
         S2Arm.Gfx.Widen.SpirvFetchScale.PatchY(p.BinaryCode, S2Arm.Gfx.Widen.WidenShaders.RenderScaleMember, out var legacyScales, out _, out bool exact);
         bool resolutionExact = S2Arm.Gfx.Widen.SpirvFetchScale.AnalyzeSizeTable(p.BinaryCode, S2Arm.Gfx.Widen.WidenShaders.RenderScaleMember, out var scales, out var analysisReasons);
         var a = new JsonArray(); var seen = new HashSet<(int, int, bool)>();
-        foreach (var scale in scales) if (seen.Add(scale)) a.Add(new JsonArray(JsonValue.Create(scale.Index), JsonValue.Create(scale.Binding), JsonValue.Create(scale.Image)));
-        foreach (var scale in legacyScales) if (seen.Add(scale)) a.Add(new JsonArray(JsonValue.Create(scale.Index), JsonValue.Create(scale.Binding), JsonValue.Create(scale.Image)));
+        foreach (var scale in scales) if (seen.Add(scale)) a.Add((JsonNode)new JsonArray(JsonValue.Create(scale.Index), JsonValue.Create(scale.Binding), JsonValue.Create(scale.Image)));
+        foreach (var scale in legacyScales) if (seen.Add(scale)) a.Add((JsonNode)new JsonArray(JsonValue.Create(scale.Index), JsonValue.Create(scale.Binding), JsonValue.Create(scale.Image)));
         res["tex_scales"] = a; res["scale_exact"] = exact;
         var reasons = new SortedSet<string>(StringComparer.Ordinal);
         foreach (string reason in analysisReasons) reasons.Add("unsupported_scaled_access:" + reason);
@@ -256,7 +259,7 @@ static class SwshXlate
     static void SetResolutionMetadata(JsonObject res, IEnumerable<string> reasons)
     {
         var unique = new SortedSet<string>(reasons, StringComparer.Ordinal);
-        var a = new JsonArray(); foreach (string reason in unique) a.Add(JsonValue.Create(reason));
+        var a = new JsonArray(); foreach (string reason in unique) a.Add((JsonNode)JsonValue.Create(reason));
         res["resolution_scale_abi"] = SupportBuffer.TextureSizeTableAbi;
         res["resolution_scale_exact"] = unique.Count == 0;
         res["resolution_scale_status"] = unique.Count == 0 ? "exact" : "legacy_1x";
@@ -347,7 +350,7 @@ static class SwshXlate
                     ["geometry_max_vertices"] = geometry ? p.Info.GeometryMaxOutputVertices : 0,   // the kernel's records per invocation: a passthrough geometry shader without host passthrough emits the input primitive's vertices (ShaderDefinitions.MaxOutputVertices), not the header's count
                     ["uses_frag_coord"] = p.Info.UsesFragCoord, ["frag_out_map"] = p.Info.FragmentOutputMap,
                 };
-                foreach (var b in p.Info.CBuffers) res["cbufs"].AsArray().Add(new JsonObject { ["binding"] = b.Binding, ["slot"] = b.Slot });
+                foreach (var b in p.Info.CBuffers) res["cbufs"].AsArray().Add((JsonNode)new JsonObject { ["binding"] = b.Binding, ["slot"] = b.Slot });
                 res["cbuf_use"] = CbufUseText(p);
                 FetchScales(p, res);
                 var resolutionReasons = new List<string>(acc.MissingResolutionFacts);
@@ -356,11 +359,11 @@ static class SwshXlate
                 if ((string)job["stage"] == "gs" || geometry) resolutionReasons.Add("unsupported_scaled_access:geometry_stage");
                 if ((string)job["stage"] is "hs" or "ds") resolutionReasons.Add("unsupported_scaled_access:tessellation_stage");
                 SetResolutionMetadata(res, resolutionReasons);
-                foreach (var b in p.Info.SBuffers) res["sbufs"].AsArray().Add(new JsonObject { ["binding"] = b.Binding, ["slot"] = b.Slot, ["cb_slot"] = b.SbCbSlot, ["cb_offset"] = b.SbCbOffset, ["flags"] = (int)b.Flags });
+                foreach (var b in p.Info.SBuffers) res["sbufs"].AsArray().Add((JsonNode)new JsonObject { ["binding"] = b.Binding, ["slot"] = b.Slot, ["cb_slot"] = b.SbCbSlot, ["cb_offset"] = b.SbCbOffset, ["flags"] = (int)b.Flags });
                 foreach (var (list, name) in new[] { (p.Info.Textures, "textures"), (p.Info.Images, "images") })
-                    foreach (var t in list) res[name].AsArray().Add(new JsonObject { ["binding"] = t.Binding, ["type"] = (int)t.Type, ["format"] = t.Format.ToString(), ["cbuf_slot"] = t.CbufSlot, ["handle"] = t.HandleIndex, ["array"] = t.ArrayLength, ["separate"] = t.Separate, ["flags"] = (int)t.Flags });
+                    foreach (var t in list) res[name].AsArray().Add((JsonNode)new JsonObject { ["binding"] = t.Binding, ["type"] = (int)t.Type, ["format"] = t.Format.ToString(), ["cbuf_slot"] = t.CbufSlot, ["handle"] = t.HandleIndex, ["array"] = t.ArrayLength, ["separate"] = t.Separate, ["flags"] = (int)t.Flags });
                 // 不用 Add<int>：玩家包宿主（NativeAOT）关了反射式 JSON，没有 int 的类型信息（同 GeometryOutOffsets；11-02 疯狂兔子兜底现编整批 NotSupportedException）
-                if (acc.Fetch1D.Count > 0) { var f1 = new JsonArray(); foreach (int h in acc.Fetch1D) f1.Add(JsonValue.Create(h)); res["fetch1d"] = f1; }
+                if (acc.Fetch1D.Count > 0) { var f1 = new JsonArray(); foreach (int h in acc.Fetch1D) f1.Add((JsonNode)JsonValue.Create(h)); res["fetch1d"] = f1; }
                 // Ampere's wrapped fetch takes its row width and count from the bound 2D form and reads 0 past W * H (InstEmitAmpereMem.cs, 11-04): the host binds a texture buffer there as exact rows
                 //   (W * H = element count, W a power of two when H > 1; nvn_mtl.m tbuf_as_2d). Maxwell's wrapped fetch keeps the fixed 16384-texel rows
                 if (acc.Fetch1D.Count > 0 && (string)job["arch"] == "sm86") res["fetch1d_exact"] = true;

@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 S2Arm contributors
+{
+  "module": {
+    "name": "entry", "type": "entry", "description": "$string:module_desc", "mainElement": "EntryAbility",
+    "deviceTypes": ["default"], "deliveryWithInstall": true, "installationFree": false,
+    "pages": "$profile:main_pages",
+    "abilities": [ {
+      "name": "EntryAbility", "srcEntry": "./ets/entryability/EntryAbility.ets", "description": "$string:module_desc",
+      "label": "$string:module_desc", "startWindowIcon": "$media:app_icon", "startWindowBackground": "$color:bg", "exported": true,
+      "skills": [ { "entities": ["entity.system.home"], "actions": ["ohos.want.action.home"] } ]
+    } ]
+  }
+}

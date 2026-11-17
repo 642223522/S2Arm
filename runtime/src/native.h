@@ -7,6 +7,7 @@
 #include <string.h>
 #include <dlfcn.h>
 #include "s2a_native.h"
+#include "s2a_lowva.h"   // S2A_VMTAG_*：宿主自有映射的虚存标签
 #include <pthread.h>
 // 给我方宿主线程起名（11-04 能耗线：「[能耗]」行的耗能前 6 线程只认名字，没名字的只剩线程号，Pokopia 一条吃半个核的宿主线程认不出是谁）。
 //   名字 ≤ 15 字节 ASCII（Linux / 安卓上限 16 含结尾），苹果 / 非苹果签名不同
@@ -40,6 +41,7 @@ __attribute__((weak)) void s2a_logcon_flush(void) {}
 #ifdef S2A_LOGCAP_IMPL
 void s2a_log_out(int fd, const char *p, size_t n);
 #else
+#define S2A_LOG_OUT_WEAK 1   // 本编译单元已有弱定义（单测把多份源码拼进同一单元时，后面的强定义要让位，见 runtime/tests/t_thread.c）
 __attribute__((weak)) void s2a_log_out(int fd, const char *p, size_t n) { ssize_t w = write(fd, p, n); (void)w; }
 #endif
 // 一行日志一次写出：多线程同时打不穿插（旧库 sw.h 同做法）
@@ -67,7 +69,7 @@ __attribute__((format(printf, 1, 2))) static inline void s2a_log_line2(const cha
 // Android 地址窗口：平台实现先按最大值整块保留（platform/vawin_android.inc），起局时
 // svc_mem 用 s2a_layout_need 算出本款跨度再 s2a_window_trim 收缩。非 Android 由 vawin.c
 // 直接按本款跨度预留，不再使用这个最大值常量。
-#define S2A_WIN_SIZE (68ull << 30)
+#define S2A_WIN_SIZE (72ull << 30)   // 63 GiB 别名区 + 栈区 2 GiB（Horizon 真值）+ 堆 + 模块放得下（layout_android.inc）
 #endif
 void s2a_log_session_start(void);   // iOS 主线程：正式激活才轮换日志 / 切 fd / 起控制台副本；幂等
 // energy.c：进程能耗分账（快照单位：纳秒 / 纳焦；s2a_energy_log 打「上次调用以来」一行）

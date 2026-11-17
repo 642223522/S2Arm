@@ -130,6 +130,40 @@ static int cmif_result(const uint32_t *m, uint32_t *res) {   // 应答里 SFCO �
     for (int i = 2; i < 0x40; i++) if (m[i] == 0x4F434653) { *res = m[i + 2]; return 1; }
     return 0;
 }
+// 每条客体线程最近 16 次 IPC（崩溃现场打，s2a_gate_ipc_recent）：#eb9952 / #03b531 / #7a6909 三款不同游戏、不同平台，都是刚从服务调用返回、
+//   在自己的代码里用了空指针，原先的日志看不出这条线程刚调了哪个服务、回了什么。平时只往线程局部的环里写几个字，不打日志
+typedef struct { uint32_t num, handle, dom, res, rc; int cmd; } ipc_rec;
+static _Thread_local ipc_rec t_ipc[16]; static _Thread_local unsigned t_ipc_n;
+// 句柄 → 服务名：sm GetService 的应答里拿到的句柄（名字是请求里的 8 字节，只收可打印的）；会话克隆 / 子对象不在表里（打「?」）。只追加、崩溃时倒查
+static struct { _Atomic uint32_t h; char nm[9]; } g_hname[512]; static _Atomic unsigned g_hname_n;
+static int svc_name_ok(const char *n) { if (!n[0]) return 0; for (int i = 0; i < 8 && n[i]; i++) if (!((n[i] >= 'a' && n[i] <= 'z') || (n[i] >= '0' && n[i] <= '9') || n[i] == ':' || n[i] == '-' || n[i] == '_')) return 0; return 1; }
+static void ipc_note_before(int num, const uint64_t *regs, const uint32_t *msg, char name[9]) {
+    ipc_rec *r = &t_ipc[t_ipc_n++ & 15]; memset(r, 0, sizeof *r);
+    r->num = (uint32_t)num; r->handle = (uint32_t)(num == 0x21 ? regs[0] : regs[2]); r->cmd = -1; name[0] = 0;
+    if (!msg) return;
+    if ((msg[0] & 0xffff) >= 16) { r->cmd = (int)(msg[0] & 0xffff) - 16; if (r->cmd == 1) { const uint32_t *raw = msg + 2 + ((msg[1] >> 31) ? 1 : 0); memcpy(name, raw, 8); name[8] = 0; } }   // TIPC（sm:）
+    else { r->cmd = cmif_cmd(msg, name, &r->dom); if (r->cmd != 1) name[0] = 0; }   // CMIF：只有命令 1（GetService）的那 8 字节是服务名
+    if (!svc_name_ok(name)) name[0] = 0;
+}
+static void ipc_note_after(const uint64_t *regs, const uint32_t *msg, const char *name) {
+    ipc_rec *r = &t_ipc[(t_ipc_n - 1) & 15]; r->rc = (uint32_t)regs[0];
+    if (msg && (msg[0] & 0xffff) < 16) cmif_result(msg, &r->res);
+    if (msg && name[0] && !regs[0] && (msg[1] >> 31)) {   // GetService 成功：应答里转移来的第一个句柄就是这个服务的会话
+        uint32_t hd = msg[2]; int ncopy = (hd >> 1) & 15, nmove = (hd >> 5) & 15; const uint32_t *h = msg + 3 + ((hd & 1) ? 2 : 0);
+        if (ncopy + nmove) { unsigned k = atomic_fetch_add(&g_hname_n, 1) & 511; memcpy(g_hname[k].nm, name, 9); atomic_store(&g_hname[k].h, h[0]); }
+    }
+}
+static const char *ipc_name(uint32_t h) {
+    unsigned n = atomic_load(&g_hname_n), lim = n < 512 ? n : 512;
+    for (unsigned i = 0; i < lim; i++) { unsigned k = (n - 1 - i) & 511; if (atomic_load(&g_hname[k].h) == h) return g_hname[k].nm; }
+    return "?";
+}
+void s2a_gate_ipc_recent(const char *why) {   // 崩溃现场（crash.c，崩的那条线程上调）：本线程最近 16 次 IPC，旧 → 新
+    unsigned n = t_ipc_n, k0 = n > 16 ? n - 16 : 0;
+    LOG("%s：本线程最近 %u 次 IPC（共 %u 次；句柄 → 服务名只认 sm 直接给的会话，子对象 / 克隆打 ?）", why, n - k0, n);
+    for (unsigned k = k0; k < n; k++) { const ipc_rec *r = &t_ipc[k & 15]; char d[24] = ""; if (r->dom) snprintf(d, sizeof d, " 域对象 %u", r->dom & 0xffffff);
+        LOG("  #%u svc %#x 句柄 %#x（%s）命令 %d%s → 结果 %#x、svc 返回 %#x", k - k0 + 1, r->num, r->handle, ipc_name(r->handle), r->cmd, d, r->res, r->rc); }
+}
 static void trace(const s2a_svc_ctx *c, const uint32_t *msg, int before) {
     if (!msg) return;
     char nm[9] = ""; uint32_t dom = 0; int cmd = before ? cmif_cmd(msg, nm, &dom) : -1;
@@ -222,7 +256,9 @@ static uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig) {
         atomic_fetch_add(&g_cs_inflight, 1);
         if (atomic_load(&g_park)) { atomic_fetch_sub(&g_cs_inflight, 1); park_forever(); }   // 与 park_all 的先后：先登记在途再复查，收局方要么等到它、要么它停住
         s2a_svc_ctx c; s2a_svc_ctx_fill(&c, num, regs);
-        const uint32_t *msg = trace_on() && (num == 0x21 || num == 0x22) ? (const uint32_t *)(num == 0x21 ? c.tlr : (void *)regs[0]) : NULL;
+        const uint32_t *ipcmsg = num == 0x21 || num == 0x22 ? (const uint32_t *)(num == 0x21 ? c.tlr : (void *)regs[0]) : NULL;
+        const uint32_t *msg = trace_on() ? ipcmsg : NULL;
+        char ipcname[9] = ""; if (num == 0x21 || num == 0x22) ipc_note_before(num, regs, ipcmsg, ipcname);   // 崩溃现场的最近 IPC（上面）
         if (msg) trace(&c, msg, 1);
         extern int g_det; uint64_t keep[8]; if (g_det) memcpy(keep, regs, sizeof keep);
         void s2a_core_leave(void), s2a_core_enter(void); int ipc = num == 0x21 || num == 0x22 || num == 0x23;
@@ -234,6 +270,7 @@ static uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig) {
         // 系统调用收尾（清 in_svc）留在取核之后：等核期间仍算在系统调用里，暂停方不去 Mach 挂起它
         s2a_svc_ctx_done();
         if (g_det) { int s2a_det_out_regs(int); for (int k = s2a_det_out_regs(num); k < 8; k++) regs[k] = keep[k]; }   // 确定性档：C# 留在非输出寄存器的宿主残值不泄进游戏（每局不同）
+        if (num == 0x21 || num == 0x22) ipc_note_after(regs, ipcmsg, ipcname);
         if (msg) trace(&c, msg, 0);
         if (done) return regs[0];
         s2a_svc_red(num, regs, orig, "C# 未处理");

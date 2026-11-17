@@ -121,6 +121,7 @@ KB=$K; K=$(stage_deps_key "$CUR" aoc "$KB" "$SELF") || exit 1
 root_stage_done "$CUR" aoc "$K" && { echo "🟢 $G 现行已是追加内容 ${K}，跳过"; exit 0; }
 fs=(); while IFS=$'\t' read -r f _; do fs+=("$f"); done <<< "$L"
 C=${S2A_AOC_CACHE:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/cache/aoc}/$G-$K
+[ -f "$C/aoc.tsv" ] && touch "$C" 2> /dev/null   # 命中：刷新条目时刻，总量上限按最久没用回收（pack/jobs/cache_retention.py trim_build_caches）
 MISS=(); FROM=$C; KEEP=0   # MISS：「文件名<TAB>原因」；FROM：克隆来源（全部解出 = 共享缓存）；KEEP=1：一份都没解出，aoc/ 与 aoc.tsv 沿用现行
 miss() { MISS+=("$(basename "$1")	$(printf '%s' "$2" | tr '\t\n' '  ' | cut -c1-160)"); echo "🟡 ${G} 追加内容 $(basename "$1") 未能解出（$(printf '%s' "$2" | cut -c1-160)），跳过"; }
 if [ ! -f "$C/aoc.tsv" ]; then   # 缓存没有：解到 C.tmp.<pid>（带一份 main 供版本核对，解完删），再改名；并发时后到的丢弃自己那份

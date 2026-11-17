@@ -34,12 +34,13 @@ static inline enum s2a_save_phase s2a_save_next(enum s2a_save_phase p, enum s2a_
     return p;
 }
 // overridden = 玩家在 RECOVER_FAILED / NO_ROOT 页确认过「仍要开始」；service = 存档服务与游戏身份都在
+//   quit = 「退出」（#1206：只备份完就划掉 App，下次打开还是这页）：只在没有待恢复事务（READY）且不忙时给，不能借它跳过恢复
 //   读不到存档位置（审计 18:00 P2-14）与恢复失败用同一个确认：确认后可开始；没有存档位置就不能导入 / 导出
-struct s2a_save_buttons { int start, import, export_, override; };
+struct s2a_save_buttons { int start, import, export_, override, quit; };
 static inline struct s2a_save_buttons s2a_save_buttons(enum s2a_save_phase p, int overridden, int service, int has_save, int busy) {
     int blocked = p == S2A_SAVE_RECOVER_FAILED || p == S2A_SAVE_NO_ROOT;
     int ok = p == S2A_SAVE_READY || (blocked && overridden);
-    struct s2a_save_buttons b = { !busy && ok, !busy && service && ok && p != S2A_SAVE_NO_ROOT, 0, blocked && !overridden };
+    struct s2a_save_buttons b = { !busy && ok, !busy && service && ok && p != S2A_SAVE_NO_ROOT, 0, blocked && !overridden, !busy && p == S2A_SAVE_READY };
     b.export_ = b.import && has_save;
     return b;
 }

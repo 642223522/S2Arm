@@ -8,7 +8,7 @@
 #include <stdint.h>
 
 enum { NVN_RB_CBUF = 1, NVN_RB_SAMP, NVN_RB_TEX, NVN_RB_IMG, NVN_RB_TBUF,
-       NVN_RB_SBUFP, NVN_RB_SUPPORT, NVN_RB_C1, NVN_RB_DRV0, NVN_RB_DRV2, NVN_RB_SAMPT, NVN_RB_UBOP, NVN_RB_TEXU, NVN_RB_SAMPU, NVN_RB_SAMPI, NVN_RB_SBUFU, NVN_RB_TEXD, NVN_RB_SAMPD, NVN_RB_IMGA, NVN_RB_TEXA, NVN_RB_SAMPA, NVN_RB_GEOMETRY, NVN_RB_UVX, NVN_RB_LB, NVN_RB_UBOLEN, NVN_RB_SBSZ, NVN_RB_PUSH, NVN_RB_TBUFU, NVN_RB_IMGU, NVN_RB_GMEM, NVN_RB_GMEML, NVN_RB_TEXP, NVN_RB_SAMPP, NVN_RB_UBOA };   // UBOA: 计算存储缓冲来自「用户 UBO 内 8 字节 guest 裸指针」（map 3，UBO 槽 src_reg + 字节偏移 src_off）   // UVX: S2Arm widen 16:9 sampling remap table (dmsh_build.py fs_uvx; widen_glue.inc uvx_fill); LB: #800 sampler LOD bias table (dmsh_red.py fs_lb; nvn_mtl.m lb_fill)
+       NVN_RB_SBUFP, NVN_RB_SUPPORT, NVN_RB_C1, NVN_RB_DRV0, NVN_RB_DRV2, NVN_RB_SAMPT, NVN_RB_UBOP, NVN_RB_TEXU, NVN_RB_SAMPU, NVN_RB_SAMPI, NVN_RB_SBUFU, NVN_RB_TEXD, NVN_RB_SAMPD, NVN_RB_IMGA, NVN_RB_TEXA, NVN_RB_SAMPA, NVN_RB_GEOMETRY, NVN_RB_UVX, NVN_RB_LB, NVN_RB_UBOLEN, NVN_RB_SBSZ, NVN_RB_PUSH, NVN_RB_TBUFU, NVN_RB_IMGU, NVN_RB_GMEM, NVN_RB_GMEML, NVN_RB_TEXP, NVN_RB_SAMPP, NVN_RB_UBOA, NVN_RB_TBLEAD };   // UBOA: 计算存储缓冲来自「用户 UBO 内 8 字节 guest 裸指针」（map 3，UBO 槽 src_reg + 字节偏移 src_off）   // UVX: S2Arm widen 16:9 sampling remap table (dmsh_build.py fs_uvx; widen_glue.inc uvx_fill); LB: #800 sampler LOD bias table (dmsh_red.py fs_lb; nvn_mtl.m lb_fill)
 // TEXA / SAMPA: an array of n handles in the driver table c2 that the shader indexes at run time (dmsh_build.py c2_array): element k = the texture / sampler of the slot whose c2 word lies
 // at byte off + 8k (combined, else separate); words outside both tables give the dummy. Luigi's Mansion 3's shadow cascades
 // IMGA: SPIRV-Cross's MSL 2.3 image atomics: a device atomic_uint / atomic_int pointer (<image name>_atomic) beside the image of NVN image slot r; the replay binds the image's storage address
@@ -51,6 +51,10 @@ typedef struct {
     //   slot order's (Civilization VI: texture IDs in uniform slot 13, sampler handles in slot 12, the shader's OR names slot 12 first). pair = 0: no other half (read as before)
     uint8_t pair, pair_sid;  // pair_sid: the other half is a sampler ID word, shifted by 20 (its SAMPU sid)
     uint16_t pair_reg, pair_off;
+    // #798 TBLEAD（gal_spvx.c spv_tbias，Dsh.cs kind tblead）：一个纹素缓冲的前导元素数（uint，着色器取数下标加它、取宽度减它）。宿主把视图建在向下取整到线性贴图对齐的边界上、
+    //   宽度多出这么多元素，参数块里这一项指向常量表里值为它的一格（nvn_mtl.m tbl_bind）。tbl：TBUF / TBUFU / TEX 上 = 1 + 它那一项在 b[] 里的下标（0 = 没有，走 GPU 对齐副本）；
+    //   TBLEAD 上 = 1 + 它所属纹素缓冲在 b[] 里的下标
+    uint16_t tbl;
 } nvn_rbind;
 // SBSZ 表一项一项怎么填（nvn_mtl.m len_fill 调用；tests/t_sbsz.c 手算核）：q[成员的参数号] = 该存储缓冲当前绑定的字节数，返回表长（至少 1）。
 //   SBUFP / UBOP：bound(ctx, b) 给出当前绑定的字节数（没绑 0，游戏没给长度 UINT32_MAX & ~15 = 不夹）；GMEM / GMEML（原始内存池表与写日志）：bound 给整段长度；SBUFU：不夹。
@@ -88,6 +92,7 @@ typedef struct {
     uint8_t dyn;             // Has TEXD / SAMPD bindings: c2's texture and sampler tables hold slot indices for this shader
     uint8_t pool;            // Has TEXP / SAMPP bindings (it also sets bindless): its argument block holds pool table addresses, which change when a table is rebuilt (nvn_mtl.m g_psnap_gen)
     uint8_t has_atomic_image; // Native image atomic binding; ordinary draw/dispatch needs no atomic prescan
+    uint8_t has_tbl;         // #798: some texel buffer has a lead entry (TBLEAD; nvn_mtl.m tbl_bind)
     uint8_t has_unb;         // some TEX binding has an unnorm_bit (nvn_mtl.m ub_*: the host fills s2a_flags.yzw per draw); 0 = byte-for-byte the support buffer as before
     uint16_t unb_uncov;      // TEX bindings whose unnorm_bit is -1 (binding outside the bitmap: > 31, geometry, no unique mapping): normalization stays compiled in
     uint8_t has_user;        // bit 0: user_out known (vertex json user_out), bit 1: user_in known (pixel json user_in); a library without them leaves both 0
@@ -99,12 +104,14 @@ typedef struct {
     int8_t pos_attr; uint8_t pos_w1, may_discard, writes_smask, color_mask, color_known;   // color_known: the color list was recorded at packaging (color_mask can be trusted)
     // Merge B step 2 (readable-tile version <key>_bf, dmsh_fetch.py): fragment - nfc redirectable samples (the i-th: texture slot fc_reg, interpolated output fc_locn),
     // bitmap fc_mixed of texture slots with mixed use (these slots must not be redirected to read the tile), nfo outputs (each with color number fo_color); vertex - .xy of interpolated output locn is taken as-is from attribute uv_attr[locn] (-1 = no)
-    uint8_t nfc, fc_reg[32], fc_locn[32], nfo, fo_color[4]; uint64_t fc_mixed[4]; int8_t uv_attr[32];   // fc_mixed: a bit per texture slot 0-255 (slots 128+ are separate texture binds, NVN_SEPTEX_SLOT0)
+    uint8_t nfc, fc_reg[32], fc_locn[32], nfo, fo_color[8]; uint64_t fc_mixed[4]; int8_t uv_attr[32];   // fc_mixed: a bit per texture slot 0-255 (slots 128+ are separate texture binds, NVN_SEPTEX_SLOT0)
     // Vertex - .x / .y of interpolated output locn = fma(.x / .y of attribute uv_aff_attr[locn], scale, offset), where scale / offset reference a uniform: (slot << 8) | (vector << 2) | component
     int8_t uv_aff_attr[32]; uint32_t uv_aff[32][4];   // [sx, ox, sy, oy]; a uniform reference: (slot << 16) | (vector 0..4095 << 2) | component, the whole 64 KB constant buffer
     // 10-30 遍内自采样改片上读取（nvn_mtl.m fb_tile_try）：fragment - fc_proj 第 i 个可改采样是投影屏幕坐标（in.m.xy / in.m.w，dmsh_fetch proj_uv）；
     //   vertex - scr_uv 第 L 位 = 插值量 locn L 是本顶点裁剪坐标的屏幕坐标（.x = (P.x + P.w) / 2、.y = (P.w - P.y) / 2、.w = P.w，main0 与 main0_z 都成立，dmsh_build scr_uv_locns）
     uint32_t fc_proj, scr_uv;
+    // #1152：fragment - fc_ndc 第 i 个可改采样是片元算的 NDC→uv（fma(x / w, 0.5, 0.5)、fma(y / w, -0.5, 0.5)），证明看顶点 scr_pos；vertex - scr_pos 第 L 位 = 插值量 locn L 就是 gl_Position
+    uint32_t fc_ndc, scr_pos;
     uint8_t *c1;             // c1 constant segment as-is (B): c1_len bytes, malloc'd by nvn_refl_from_json (NULL without one). It was a 4 KB array; Hyrule Warriors: Age of Calamity has 6 KB segments (its soldiers' vertex shaders)
 } nvn_refl;
 

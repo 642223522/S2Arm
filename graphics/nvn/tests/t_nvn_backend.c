@@ -35,8 +35,9 @@ _Static_assert(sizeof(((nvn_gpu_err *)0)->why) >= 160, "why 至少容下安卓 s
 enum { CAPS_OR = NVN_GPU_CAP_HOST_IMPORT | NVN_GPU_CAP_GPU_VA | NVN_GPU_CAP_TILE_MEMORY | NVN_GPU_CAP_SAMP_MINMAX | NVN_GPU_CAP_SAMP_LOD_BIAS
        | NVN_GPU_CAP_DEPTH_CLIP_CTL | NVN_GPU_CAP_GEOMETRY | NVN_GPU_CAP_TESSELLATION | NVN_GPU_CAP_XFB | NVN_GPU_CAP_INDIRECT_COUNT | NVN_GPU_CAP_LINKED_PIPE
        | NVN_GPU_CAP_TEX_BC | NVN_GPU_CAP_TEX_ASTC | NVN_GPU_CAP_GPU_DURATION | NVN_GPU_CAP_GPU_TIME_HOST | NVN_GPU_CAP_SHOWN_TIME
-       | NVN_GPU_CAP_DYN_DEPTH_STENCIL | NVN_GPU_CAP_DYN_RASTER | NVN_GPU_CAP_BLIT_SCALED | NVN_GPU_CAP_GPU_DESWIZZLE };
-_Static_assert(CAPS_OR == (1u << 20) - 1, "能力位应为连续且不重叠的 20 位");
+       | NVN_GPU_CAP_DYN_DEPTH_STENCIL | NVN_GPU_CAP_DYN_RASTER | NVN_GPU_CAP_BLIT_SCALED | NVN_GPU_CAP_GPU_DESWIZZLE | NVN_GPU_CAP_BLIT_DEPTH_STENCIL
+       | NVN_GPU_CAP_NO_ATTACH_PASS };
+_Static_assert(CAPS_OR == (1u << 22) - 1, "能力位应为连续且不重叠的 22 位");
 
 // 错误域（定稿 A7）：与安卓 native–NativeAOT 会话 ABI 不相交。会话 ABI 码值抄自 android/native/direct/s2a_direct.h
 //   enum s2a_direct_result（#868 头 642ec4574 / android/868-land-1029@ac3d6ec23，DirectAbi.cs 同值）：OK 0、PENDING +1、ARGUMENT -1 … INTERNAL -9。
@@ -82,6 +83,7 @@ SIG(nvn_gpu_tex_upload_blocklinear, void (*)(nvn_gpu_cmd, nvn_gpu_tex, uint32_t,
 SIG(nvn_gpu_shader_load, nvn_gpu_rc (*)(const nvn_gpu_shader_src *, nvn_gpu_shader *, nvn_gpu_err *));
 SIG(nvn_gpu_shader_release, void (*)(nvn_gpu_shader));
 SIG(nvn_gpu_pipe_get, nvn_gpu_rc (*)(const nvn_gpu_pipe_desc *, int, nvn_gpu_pipe *, nvn_gpu_err *));
+SIG(nvn_gpu_pipe_lookup, int (*)(const nvn_gpu_pipe_desc *, nvn_gpu_pipe *));
 SIG(nvn_gpu_cpipe_get, nvn_gpu_rc (*)(const nvn_gpu_stage_desc *, int, nvn_gpu_pipe *, nvn_gpu_err *));
 SIG(nvn_gpu_cmd_begin, nvn_gpu_rc (*)(const nvn_gpu_cmd_desc *, nvn_gpu_cmd *, nvn_gpu_err *));
 SIG(nvn_gpu_cmd_abort, void (*)(nvn_gpu_cmd));
@@ -122,7 +124,7 @@ SIG(nvn_vsync_start, int (*)(uint32_t, nvn_vsync_fn, void *, char *, size_t));
 SIG(nvn_vsync_stop, void (*)(void));
 // #968 消费审查定稿 ①（10-30）：组合采样项 view 与 samp 同时装得下、互不重叠（原稿两者在同一个 union 里，只能放一个）
 _Static_assert(offsetof(nvn_gpu_binding, u.ts.samp) >= offsetof(nvn_gpu_binding, u.ts.view) + sizeof(nvn_gpu_view), "TEX_SAMP 的 view 与 samp 重叠");
-#define N_SIG 63   // 上面 SIG 的条数：nvn_gpu_* 61 + nvn_vsync_* 2（.mk 按两个头文件分别核对声明数，漏登记一个新函数会红）
+#define N_SIG 64   // 上面 SIG 的条数：nvn_gpu_* 62 + nvn_vsync_* 2（.mk 按两个头文件分别核对声明数，漏登记一个新函数会红）
 
 int main(void) {
     // 运行期只做一件不依赖实现的事：典型调用点的结构体能按契约填出来（零初始化 + 字段可写），证明头文件里的类型完整可用
@@ -134,6 +136,6 @@ int main(void) {
     nvn_gpu_pass_desc ps = {.ncolor = 1, .w = 1280, .h = 720, .layers = 1};
     ps.color[0].load = NVN_GPU_LOAD_CLEAR; ps.color[0].store = NVN_GPU_STORE_STORE;
     int ok = pd.st[0].spec[0].id == 1000 && b.u.va == 0x1000 && ts.u.ts.view == (nvn_gpu_view)(uintptr_t)0x10 && ts.u.ts.samp == (nvn_gpu_samp)(uintptr_t)0x20 && le.binding == 5 && !nvn_gpu_ok(rc) && rc.code == -1007 && ps.color[0].load == NVN_GPU_LOAD_CLEAR && sizeof(nvn_gpu_dyn) > 0;
-    printf("nvn_backend.h 契约 v%d：签名 %d 项、句柄 8 类、能力位 20 位、错误码 14 个（区间 [-1099,-1000]，与会话 ABI [-9,1] 不相交），编译期全部钉住；运行期填表 %s\n", NVN_GPU_CONTRACT_VERSION, N_SIG, ok ? "通过" : "失败");
+    printf("nvn_backend.h 契约 v%d：签名 %d 项、句柄 8 类、能力位 22 位、错误码 14 个（区间 [-1099,-1000]，与会话 ABI [-9,1] 不相交），编译期全部钉住；运行期填表 %s\n", NVN_GPU_CONTRACT_VERSION, N_SIG, ok ? "通过" : "失败");
     return ok ? 0 : 1;
 }

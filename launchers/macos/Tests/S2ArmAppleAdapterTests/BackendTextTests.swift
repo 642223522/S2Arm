@@ -3,6 +3,40 @@ import XCTest
 
 /// 作业层文字的翻译（BackendText）：真资源包（Localizable.json + 共享体验规格），期望值按对照表里的英文手写。
 final class BackendTextTests: XCTestCase {
+    /// 共享文案表缺这门语言回落英文、缺键才显示 [键名]（11-14 i18n 打底）：duration.s 只有 zh-Hans / en 两列
+    func testLauncherTextFallsBackToEnglish() {
+        XCTAssertEqual(BackendText.launcherText("duration.s", language: "zh-Hans"), "{0} 秒")
+        XCTAssertEqual(BackendText.launcherText("duration.s", language: "en"), "{0}s")
+        XCTAssertEqual(BackendText.launcherText("duration.s", language: "xx"), "{0}s")   // 没有文案文件的语言
+        XCTAssertEqual(BackendText.launcherText("no.such.key", language: "xx"), "[no.such.key]")
+    }
+
+    /// 作业层拼出来的整句按多占位句式翻，占位里的中文再翻、数字原样（11-14 i18n 第四批：诊断上传总时限）
+    func testMultiSlotPatternTranslatesSlots() {
+        XCTAssertEqual(BackendText.translate("上传诊断超过 90 秒还没完成（网络太慢或连接卡住），已停止。可以先导出诊断包，手动发给我们。", language: "en"),
+                       "Uploading diagnostics didn't finish within 90 seconds (the network is too slow or the connection stalled), so it was stopped. You can export a diagnostic package and send it to us yourself.")
+    }
+
+    /// Windows 环境检查「Apple 移动设备支持」：句式 → 「；」拆段 → 每段再套句式（11-14 i18n 第四批 winenv）
+    func testAppleDriverCheckedListTranslates() {
+        XCTAssertEqual(BackendText.translate("没找到Apple设备支持。查过：本机usbmux端口 127.0.0.1:27015：连不上；服务 Apple Mobile Device Service：已停止；商店版 Apple Devices：没装", language: "en"),
+                       "Apple device support not found. Checked: local usbmux port 127.0.0.1:27015: not reachable; Apple Mobile Device Service: stopped; Apple Devices (Store version): not installed")
+    }
+
+    /// 出包前空间预算提示：外层句式 → 分项按「；」拆开逐项翻（11-14 i18n：分项分隔由「，」改「；」）
+    func testSpaceBudgetWarningTranslates() {
+        XCTAssertEqual(BackendText.translate("磁盘空间不够：游戏存放位置所在的盘这次出包预计要 106 GB（解包 12 GB；单一 IMG 边写边腾解包、不另占；直连着色器上限 4 GB），现在只剩 48 GB。已按你的选择仍然继续。", language: "en"),
+                       "Not enough disk space: on the drive where the games are stored this build needs about 106 GB (Unpack 12 GB; single IMG written while freeing the unpacked files, no extra space; direct shaders up to 4 GB), but only 48 GB is left. Continuing anyway, as you chose.")
+    }
+
+    /// 叠加语言（11-14 加繁中）：资源包里的 l10n.zh-Hant.json 生效；没有文件的语言整表回落英文
+    func testOverlayLanguages() {
+        XCTAssertEqual(BackendText.launcherText("report.button", language: "zh-Hant"), "故障報修")
+        XCTAssertEqual(BackendText.translate("游戏已停止。", language: "zh-Hant"), "遊戲已停止。")
+        XCTAssertEqual(BackendText.translate("游戏已停止。", language: "xx"), "Game stopped.")
+        XCTAssertEqual(BackendText.launcherText("report.button", language: "xx"), BackendText.launcherText("report.button", language: "en"))
+    }
+
     func testWholeSentenceAndSharedLabels() {
         XCTAssertEqual(BackendText.translate("游戏已停止。", language: "en"), "Game stopped.")
         XCTAssertEqual(BackendText.translate("游戏库所在磁盘", language: "en"), "Library Drive")

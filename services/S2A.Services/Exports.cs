@@ -244,7 +244,9 @@ namespace S2A.Services
                 if (!System.IO.File.Exists(System.IO.Path.Combine(configuration.GameDirectory, "exefs", "main.npdm")) ||
                     !System.IO.File.Exists(System.IO.Path.Combine(configuration.GameDirectory, "ctl", "control.nacp")) ||
                     !(System.IO.Directory.Exists(System.IO.Path.Combine(configuration.GameDirectory, "romfs")) ||
-                      System.IO.File.Exists(System.IO.Path.Combine(configuration.GameDirectory, RomFsIndex.ImageName))))
+                      System.IO.File.Exists(System.IO.Path.Combine(configuration.GameDirectory, RomFsIndex.ImageName)) ||
+                      // 标准 RomFS 镜像 romfs.std（出包缺省不落散文件，8fe66d7fe；安卓包整份带它，Application.cs 起局按 StdOf 读）
+                      RomFsIndex.StdOf(System.IO.Path.Combine(configuration.GameDirectory, "romfs")) != null))
                     throw new InvalidOperationException("Validated game data requires NPDM, complete NACP and RomFS");
                 // Revision files may be content-pool symlinks. Validate the opened
                 // content, not FileInfo.Length (the symlink text length on Unix).
@@ -496,6 +498,8 @@ namespace S2A.Services
             if (guestJoined) MemDiag.Stop();
             ShutdownStep(mode, "停止图形生产", () => BeforeShutdown?.Invoke());
             ShutdownStep(mode, "停止输入泵", InputPump.Stop);
+            // 金手指 / FPSLocker 线程读写游戏内存：在停 Horizon、关设备之前停；下一局 Start 重新加载、把编进包的开关重新交原生层（审计 P1-185）
+            ShutdownStep(mode, "停止金手指与帧率写入", () => { Cheats.Stop(); FpsLocker.Stop(); });
             ShutdownStep(mode, "收起系统键盘", TextInput.CancelAll);   // 还开着的输入框按取消交回并收框，不留迟到的回复给下一局
             // 输入泵停止后不会再次复位音频事件；先唤醒 DSP，再等待服务/设备关停。
             ShutdownStep(mode, "唤醒音频处理", Host.ResumeAudioForShutdown);

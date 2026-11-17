@@ -5,7 +5,7 @@
 残留批覆盖、.pushed 记账这类坑两边各踩一次；现在两边都调本模块，tools/push_pack.sh 只剩 dev_run 的回调外壳。
 放在 tools/ 而不是 pack/jobs/：调度把 tools/ 整份单独拷到 gate-host 跑 dev_run（tools/sched.sh git archive tools），tools 树要自成一体（11-06 列车 sched_test / ssh_argv_test 退回）。
 
-口径（手机端 runtime/src/pack_apply.c 不变）：
+口径（手机端 runtime/src/pack_apply.c）：
   ① 机上已有什么按 <资源包根>/index.applied.tsv 认（App 解包成功时写；老 App 没有它才退回 index.tsv）。
      资源包根：单款 App 缺省 <文档根>/资源包 = Documents/资源包；多款容器由调用方 --pack-root 给（pack/jobs/install.py pick_pack_root：
      Library/Application Support/S2Arm/games/<游戏号>/资源包，过渡期新位置不在而旧位置 Documents/games/<游戏号>/资源包 在时给旧位置）；
@@ -21,6 +21,8 @@
      Mac 上没工具 / 不知道 UDID / 这批流式写失败 → 这批打 tar + devicectl copy（同名覆盖半截包）
   ⑦ 每推完一批把「路径 \\t sha」追加进 .pushed 并推上机（中断续推 / 出包重叠早推后补差量）；开推先把机上 manifest.json 置空，最后推 index.tsv 与 manifest.json
   ⑧ 推之前核剩余空间：待推量 + 最大一批 + 每文件 4 KB + S2A_PUSH_SPARE_GB（缺省 1）GB（need_bytes）；读不到照推
+  ⑨ 压缩传输（v0.5.0）：game.img 按款量一次 zstd 压缩率，省到 15% 的款切成 1 GiB 一块、每块一个 zstd 帧推进 .incoming，App 解开时流式解回 game.img（zstd_plan / send_zst；
+     手机端 runtime/src/pack_apply.c img_unzst）；S2A_PUSH_ZSTD=0 一律原样直写。导出 / 推到「放这里导入」的 .img 不压（手机按文件头认领、原样挪位）
 
 设备操作两种（同一个 Dev 接口）：
   Devpush：s2a-devpush 走 usbmuxd + house_arrest + AFC（Windows 只有它；Mac 上手机连 usbmuxd 时也能用）
@@ -513,6 +515,10 @@ def spot_check(dev, pack, work, have, say):
     want = {w[0]: w for w in (l.split("\t") for l in (Path(pack) / "index.tsv").read_text(encoding="utf-8").splitlines()) if len(w) == 3}
     same = [w for r, w in want.items() if have.get(r) == w[2]]
     pick = [w for w in same if w[0].startswith("shaders/direct/") and ("/" not in w[0][15:] or re.fullmatch(r"shaders/direct/b-[^/]+/lib\.idx", w[0]))]
+    # 游戏库起局必需的小文件（同 runtime/src/pack_apply.c s2a_pack_core_path：exefs/、ctl/control.nacp）每次都核：账上记着、机上没了就补推。
+    #   #1059 D-JAT7：已应用索引记着 exefs/main.npdm（0.3.x 时 pack_apply 只按 index 记账），机上实际没有；抽查没抽到它，
+    #   推送当「已在」跳过，App 解开后核程序描述不在、每次重装都一样
+    pick += [w for w in same if (w[0].startswith("exefs/") or w[0] == "ctl/control.nacp") and int(w[1]) < 4 << 20 and w not in pick]
     pick += sorted((w for w in same if int(w[1]) < 4 << 20 and w not in pick), key=lambda w: w[2])[:5]
     chk = Path(work) / "chk"; chk.mkdir(exist_ok=True); bad = []
     for i, w in enumerate(pick, 1):
@@ -585,8 +591,78 @@ def resume_offset(dev, src, rel, size):
     return min(got[0] // IMG_PAGE * IMG_PAGE, size)
 
 
-def _send(dev, pack, work, say=print, progress=None):
+# 压缩传输（v0.5.0）：game.img 按 ZCHUNK 原始字节切块，每块一个独立 zstd 帧（带内容校验），推成 <资源包根>/.incoming/game.img.<资源包号前 16 位>.<块号 4 位>.zst（资源包号 = index.tsv 里 game.img 那行第三列，pack/img.py）；
+#   手机上的 App 解开时按块号顺序流式解进 game.img 的块号 × ZCHUNK 处、解完一块删一块（runtime/src/pack_apply.c img_unzst），机上仍存未压缩的 game.img，运行时零改动。
+#   机上峰值 ≤ 未压缩 game.img + 一块：推的时候压缩块总和 < 原大小，解的时候已解的部分 + 剩下的压缩块单调从压缩总量涨到原大小。
+#   只压 game.img：单一 IMG 形态里它占 99% 以上（11-16 丝之歌 6704 / 6728 MB），旁边的着色器库 / 覆盖层照旧按 tar 批推。
+#   按款判压不压：整份 game.img 按推送同一套参数（zstd 9 档多线程，同 pack/jobs/programs.py）逐块压一遍量出每块压缩后字节，省不到 ZSAVE 不压；
+#   量数按资源包号记在资源包目录旁的 <资源包目录名>.zstd.json（不放进资源包目录：导出按目录里全部文件算来源戳），同一份包只量一次
+ZCHUNK = 1 << 30
+ZLEVEL = 9
+ZSAVE = 0.15   # 维护者定：按款实测省不到 15% 的款原样推
+ZNAME = re.compile(r"game\.img\.([0-9a-f]{16})\.(\d{4})\.zst")
+
+
+def zstd_compressor():
+    """→ 压一块的函数（bytes → 一个 zstd 帧，带内容校验）；本机 Python 两样都没有 → None（照原样推）。
+    Python 3.14 用 compression.zstd，随包 Python 3.12 用 zstandard（launchers/macos/requirements-runtime.txt、Windows 同钉版）"""
+    try:
+        from compression import zstd
+        opts = {zstd.CompressionParameter.compression_level: ZLEVEL, zstd.CompressionParameter.nb_workers: os.cpu_count() or 1,
+                zstd.CompressionParameter.checksum_flag: 1}
+        return lambda b: zstd.compress(b, options=opts)
+    except ImportError:
+        pass
+    try:
+        import zstandard
+    except ImportError:
+        return None
+    c = zstandard.ZstdCompressor(level=ZLEVEL, threads=-1, write_checksum=True)
+    return c.compress
+
+
+def zname(sha, k): return f"game.img.{sha[:16]}.{k:04d}.zst"
+
+
+def read_chunk(path, k):
+    with open(path, "rb") as f:
+        f.seek(k * ZCHUNK)
+        return f.read(ZCHUNK)
+
+
+def zstd_plan(pack, row, say=print, stage=None, env=None, comp=None):
+    """这份 game.img（index.tsv 一行：路径、字节、sha256）压不压 → 每块压缩后字节的列表（压）或 None（原样推）"""
+    if row[0] != "game.img" or (env or os.environ).get("S2A_PUSH_ZSTD") == "0": return None
+    comp = comp or zstd_compressor()
+    if comp is None:
+        say("压缩传输：本机 Python 没有 zstd 模块（compression.zstd / zstandard），原样推"); return None
+    pack = Path(pack); raw, sha = int(row[1]), row[2]
+    cache = pack.parent / f"{pack.name}.zstd.json"
+    try:
+        c = json.loads(cache.read_text(encoding="utf-8"))
+        sizes = c["z"] if (c.get("sha"), c.get("level"), c.get("chunk")) == (sha, ZLEVEL, ZCHUNK) else None
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        sizes = None
+    if sizes is None:
+        t0, n, sizes = time.time(), (raw + ZCHUNK - 1) // ZCHUNK, []
+        for k in range(n):
+            if stage: stage(STAGE_ZSTD, k * ZCHUNK, raw)
+            sizes.append(len(comp(read_chunk(pack / row[0], k))))
+        try:
+            tmp = cache.with_name(cache.name + ".tmp")
+            tmp.write_text(json.dumps(dict(sha=sha, level=ZLEVEL, chunk=ZCHUNK, raw=raw, z=sizes)), encoding="utf-8"); os.replace(tmp, cache)
+        except OSError as e:
+            say(f"压缩传输：量数记不下（{e}），下次推还会再量")
+        say(f"压缩传输：量了 {row[0]} {n} 块，用时 {time.time() - t0:.0f} 秒")
+    z = sum(sizes); saved = 1 - z / max(raw, 1)
+    yes = saved >= ZSAVE
+    say(f"压缩传输：{row[0]} {raw / 1e9:.2f} GB → {z / 1e9:.2f} GB（省 {saved:.0%}）" + ("，压缩推" if yes else f"，省不到 {ZSAVE:.0%}，原样推"))
+    return sizes if yes else None
+
+
+def _send(dev, pack, work, say=print, progress=None, zp=None):
     """推 plan 写好的批次 → 推了几批；每批写完才把它的文件记进 .pushed 并推上机；最后推索引与清单。
+    zp：{镜像相对路径: 每块压缩后字节}（zstd_plan 判要压的），这些镜像改推压缩块（send_zst），不直写。
     progress(已传字节, 本次待传总字节, 已完成批次, 总批次)：流式工具按秒报文件 / 批内进度，旧工具与 devicectl 退路仍按批报（#266）。
     计数和手机蒙版同一口径：分母 = 已在手机上的 + 本次待传（plan 算好的差量），首装就是本次待传量；批内最多报到 size-1，成功记账后才报满。"""
     pack, work = Path(pack), Path(work)
@@ -597,12 +673,13 @@ def _send(dev, pack, work, say=print, progress=None):
     direct = [l.split("\t") for l in dl.read_text(encoding="utf-8").splitlines() if l] if dl.is_file() else []
     batches = [[l.split("\t") for l in bf.read_text(encoding="utf-8").splitlines() if l] for bf in files]
     total, steps, step = sum(int(w[1]) for w in direct) + sum(int(w[1]) for b in batches for w in b), len(direct) + len(files), 0
-    def transfer(method, *args, size):
+    zp = zp or {}
+    def transfer(method, *args, size, scale=1.0):   # scale：压缩块按已传压缩字节 × 原始 / 压缩折回原始字节报（计数口径仍是原始字节）
         stream = getattr(dev, "dp", None) or dev
         old = getattr(stream, "progress", None); seen = 0
         def report(n):
             nonlocal seen
-            n = max(0, min(n, size - 1))
+            n = max(0, min(int(n * scale), size - 1))
             if n > seen:
                 seen = n
                 progress(done + n, total, step, steps)
@@ -619,9 +696,11 @@ def _send(dev, pack, work, say=print, progress=None):
     if progress: progress(0, total, 0, steps)
     if direct or batches:   # 传输清单：手机上的游戏库按它画装机蒙版（各文件已到多少字节 / 本次总字节，S2ArmShellHostModel），只写这一次——
         #   手机自己看正在写的文件，不依赖电脑端上报，也不跟推包抢 USB
+        #   压缩推的镜像列它的各压缩块（手机上看的是块文件长到多少）
         tr = work / "transfer.json"
-        tr.write_text(json.dumps(dict(schema=1, total=total, base=base, started=ts, files=[[w[0], int(w[1])] for w in direct] +
-                                      [[f".incoming/{ts}_{k:03d}.tar", sum(int(w[1]) for w in b)] for k, b in enumerate(batches)])), encoding="utf-8")
+        listed = [f for w in direct for f in ([[f".incoming/{zname(w[2], k)}", z] for k, z in enumerate(zp[w[0]])] if w[0] in zp else [[w[0], int(w[1])]])] + \
+                 [[f".incoming/{ts}_{k:03d}.tar", sum(int(w[1]) for w in b)] for k, b in enumerate(batches)]
+        tr.write_text(json.dumps(dict(schema=1, total=sum(f[1] for f in listed), base=base, started=ts, files=listed)), encoding="utf-8")
         try: dev.put(tr, f"{rp(dev)}/.transfer")
         finally: tr.unlink(missing_ok=True)
     if direct or batches:   # 开推先把机上清单置空（11-09 根修 Windows 装完游戏库空）：清单最后写，「清单读得出」= 这次推送完整。
@@ -633,7 +712,64 @@ def _send(dev, pack, work, say=print, progress=None):
         e = work / "not_applied"; e.write_bytes(b"")
         try: dev.put(e, f"{rp(dev)}/.applied")
         finally: e.unlink(missing_ok=True)
+    def send_zst(w, sizes):
+        """一份镜像改推压缩块：机上旧镜像截空 → 别的版本留下的块删掉 → 机上已有、长度对的块不重推（续传）→ 其余边压边推（压下一块和推这一块并行）"""
+        nonlocal done
+        size, n = int(w[1]), len(sizes)
+        names = [zname(w[2], k) for k in range(n)]
+        e = work / "img_empty"; e.write_bytes(b"")   # 旧镜像要被块整份重写，留着白占机上空间（直写时 put 一上来同样截断旧文件）
+        try: dev.put(e, f"{rp(dev)}/{w[0]}")
+        finally: e.unlink(missing_ok=True)
+        seen = {m.group(0) for l in (dev.ls(inc(dev)) or []) for m in ZNAME.finditer(l)}
+        rm = getattr(dev, "rm", None) or getattr(getattr(dev, "dp", None), "rm", None)
+        for x in sorted(seen - set(names)):   # 别的版本的块：删掉；删不了（devicectl 没有删除）盖成空文件，App 解包时连同它删掉
+            if not (rm and rm(f"{inc(dev)}/{x}")[0]):
+                e.write_bytes(b"")
+                try: dev.put(e, f"{inc(dev)}/{x}")
+                finally: e.unlink(missing_ok=True)
+        todo = []
+        for k, x in enumerate(names):   # 续传：机上这块长度 = 这次量出的压缩字节才算传完（长度对、内容不同的块 App 按帧校验判坏、整份重推）
+            got = dev.head(f"{inc(dev)}/{x}", 0) if x in seen and hasattr(dev, "head") else None
+            if not (got and got[0] == sizes[k]): todo.append(k)
+        if len(todo) < n:
+            say(f"  续传 {w[0]}：机上已有 {n - len(todo)}/{n} 个压缩块，接着推剩下的")
+            done += sum(min(ZCHUNK, size - k * ZCHUNK) for k in range(n) if k not in todo)
+        comp = zstd_compressor()
+        def make(k):
+            p = work / f"zchunk_{k:04d}"; p.write_bytes(comp(read_chunk(pack / w[0], k))); return p
+        from concurrent.futures import ThreadPoolExecutor
+        try:
+            with ThreadPoolExecutor(1) as ex:
+                fut = ex.submit(make, todo[0]) if todo else None
+                for i, k in enumerate(todo):
+                    p = fut.result()
+                    fut = ex.submit(make, todo[i + 1]) if i + 1 < len(todo) else None
+                    raw = min(ZCHUNK, size - k * ZCHUNK)
+                    for attempt in (1, 2):   # 一块断了原地再推一次（同直写）；两次都不成才停，已推完的块下次续传
+                        try:
+                            transfer(dev.put_big, p, f"{inc(dev)}/{names[k]}", size=raw, scale=raw / max(p.stat().st_size, 1)); break
+                        except Fail as e2:
+                            if dev.nospc() or attempt == 2: raise
+                            say(f"【黄】推 {w[0]} 第 {k + 1}/{n} 块中断（{str(e2)[-200:]}），原地再试一次")
+                    p.unlink(missing_ok=True); done += raw
+        except OSError as e2:
+            raise Fail(f"读 {w[0]} 压缩失败：{e2}") from None
+        finally:
+            for p in work.glob("zchunk_*"): p.unlink(missing_ok=True)
     for w in direct:
+      if w[0] in zp:
+        t1 = time.time()
+        try:
+            send_zst(w, zp[w[0]])
+        except Fail as e:
+            if dev.nospc(): raise Fail(f"测试设备空间不足（推 {w[0]} 时 POSIX 28）")
+            say(f"【红】传 {w[0]} 中断（{e}）；机上这份不完整，不会被当成可用，重新装机会接着已传的部分续传")
+            raise Fail(f"资源传输中断（{push_reason(e) or str(e)[-160:]}）：{w[0]} 没传完，重新装到 iPhone 会接着已传的部分续传")
+        nt += 1; ledger += f"{w[0]}\t{w[2]}\n"; led.write_text(ledger, encoding="utf-8"); dev.put(led, f"{rp(dev)}/.pushed")
+        say(f"  压缩推 {w[0]}：{int(w[1]) / 1e9:.2f} GB（压缩后 {sum(zp[w[0]]) / 1e9:.2f} GB），{time.time() - t1:.0f} 秒，折合 {int(w[1]) / 1e6 / max(time.time() - t1, 1e-3):.1f} MB/s")
+        step += 1
+        if progress: progress(done, total, step, steps)
+        continue
       for attempt in (1, 2):   # 直写失败先原地再试一次（线缆抖一下、隧道重连）：game.img 接着已传的续传，旧形态从头写；两次都不成才停
         t1 = time.time(); size, rel = int(w[1]), f"{rp(dev)}/{w[0]}"
         off = resume_offset(dev, pack / w[0], rel, size)
@@ -722,7 +858,10 @@ def send(dev, pack, work, say=print, progress=None, stage=None):
     run 与 dev_run 的两步路（tools/push_pack.sh：plan → send）都经这里：原先只有 run 现拼，dev_run 推库里的包 FileNotFoundError: romfs.img"""
     made = materialize_images(pack, work, say, stage)
     try:
-        return _send(dev, pack, work, say, progress)
+        dl = Path(work) / "direct_img.tsv"   # 压不压按款量（zstd_plan，同一份包只量一次）：在现拼之后，库内形态的镜像这时才有实体
+        rows = [l.split("\t") for l in dl.read_text(encoding="utf-8").splitlines() if l] if dl.is_file() else []
+        zp = {w[0]: z for w in rows for z in [zstd_plan(pack, w, say, stage)] if z}
+        return _send(dev, pack, work, say, progress, zp)
     finally:
         for f in made: Path(f).unlink(missing_ok=True)
 
@@ -850,7 +989,7 @@ def run(dev, pack, work, full=False, say=print, env=None, on_plan=None, progress
 
 
 CODE_PREFIX = "S2A_PUSH_CODE"   # 失败的机器读行：S2A_PUSH_CODE <码>\t<给玩家的话>（device_space_low / ios_install_no_space / device_locked）
-STAGE_CHECK, STAGE_SPACE, STAGE_IMAGE = "核对手机上的文件", "检查手机空间", "准备资源（拼镜像）"   # 装机页的准备子阶段（作业层原样上屏）
+STAGE_CHECK, STAGE_SPACE, STAGE_IMAGE, STAGE_ZSTD = "核对手机上的文件", "检查手机空间", "准备资源（拼镜像）", "准备资源（测压缩率）"   # 装机页的准备子阶段（作业层原样上屏）
 STAGE_PREFIX = "S2A_PUSH_STAGE"   # --progress-lines 打的机器读行：S2A_PUSH_STAGE <名字>\t<已做字节>\t<总字节>（没有字节的两栏为空）
 
 

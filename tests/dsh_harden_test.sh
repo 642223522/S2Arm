@@ -153,4 +153,72 @@ ck "直连加固：c1 不钳" $((0xC1000006)) "$g1"
 ck "直连加固：存储缓冲运行时数组按字节数表钳到 rt[2]" $((0xBBBB0003)) "$g2"
 ck "反证（不加固）：常量缓冲读到第 7 个 vec4" $((0xC7000006)) "$w0"
 ck "反证（不加固）：运行时数组读到 rt[6]" $((0xBBBB0007)) "$w2"
+# ---- 第三支：#798 纹素缓冲前导（gal_spvx.c spv_tbias）----
+#   一支计算核读纹素缓冲 cp_tb：o[i] = texelFetch(cp_tb, i).x（i < 64），o[64] = textureSize(cp_tb)。
+#   布局（同宿主 nvn_mtl.m tbl_view）：池缓冲里纹素缓冲从字节 8 开始（低于 16 的对齐，前导 2 个 R32F），第 i 个 = 100 + i，前 8 字节是 0xDEAD0000；
+#   视图从字节 0 开、宽 64 + 2；前导项 gal_tbl_cp_tb 指向值为 2 的一格。
+#   期望（手算）：加固后 MSL 有成员 gal_tbl_cp_tb；o[i] = 100 + i（全部 64 个）、o[64] = 64；反证（不加固、同一视图）o[0] 读到前 8 字节（不是 100）、o[64] = 66
+cat > "$T/b.comp" <<'GLSL'
+#version 450
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 3) uniform samplerBuffer cp_tb;
+layout(std430, set = 0, binding = 0) buffer O { float o[]; };
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    o[i] = texelFetch(cp_tb, int(i)).x;
+    if (i == 0u) o[64] = float(textureSize(cp_tb));
+}
+GLSL
+glslangValidator -V -S comp "$T/b.comp" -o "$T/b.spv" > "$T/gv3.log" 2>&1 || { echo "✗ glslangValidator 失败（第三支）：$(tail -2 "$T/gv3.log")"; exit 1; }
+python3 - "$H" "$T" <<'PY' || exit 1
+import os, sys
+sys.path.insert(0, os.path.join(sys.argv[1], 'graphics/tools/direct/tests')); import dshfn
+t = sys.argv[2]; spv = open(os.path.join(t, 'b.spv'), 'rb').read().hex()
+r = dshfn.batch([('msl_raw', [spv]), ('msl_hardened', [spv])], dsx=os.path.join(sys.argv[1], 'build/dsx/libdsx.dylib'))
+for nm, x in zip(('braw', 'bhard'), r):
+    if 'ok' not in x: sys.exit(f'✗ {nm} 出 MSL 失败：{x}')
+    open(os.path.join(t, nm + '.metal'), 'w').write(x['ok'])
+PY
+cat > "$T/brun.m" <<'OBJC'
+#import <Metal/Metal.h>
+#include <stdio.h>
+#include <stdlib.h>
+// argv: metal 纹素缓冲 id、O id、gal_tbl_cp_tb id、spvBufferSizeConstants id（-1 = 没有）
+int main(int argc, char **argv) { @autoreleasepool {
+    id<MTLDevice> d = MTLCreateSystemDefaultDevice(); NSError *e = nil; int it = atoi(argv[2]), io = atoi(argv[3]), il = atoi(argv[4]), is = atoi(argv[5]);
+    NSString *src = [NSString stringWithContentsOfFile:@(argv[1]) encoding:NSUTF8StringEncoding error:nil];
+    id<MTLLibrary> lib = [d newLibraryWithSource:src options:nil error:&e]; if (!lib) { printf("编不过：%s\n", e.description.UTF8String); return 2; }
+    id<MTLFunction> f = [lib newFunctionWithName:@"main0"]; id<MTLComputePipelineState> ps = [d newComputePipelineStateWithFunction:f error:&e];
+    if (!ps) { printf("管线：%s\n", e.description.UTF8String); return 2; }
+    id<MTLBuffer> pool = [d newBufferWithLength:4096 options:MTLResourceStorageModeShared], o = [d newBufferWithLength:65 * 4 options:MTLResourceStorageModeShared];
+    id<MTLBuffer> lead = [d newBufferWithLength:16 options:MTLResourceStorageModeShared];
+    uint32_t *P = pool.contents; P[0] = 0xDEAD0000u; P[1] = 0xDEAD0001u; float *F = (float *)(P + 2); for (int i = 0; i < 64; i++) F[i] = 100.0f + (float)i;
+    ((uint32_t *)lead.contents)[0] = 2;
+    id<MTLBuffer> sz = [d newBufferWithLength:256 options:MTLResourceStorageModeShared]; memset(sz.contents, 0, 256); if (io >= 0) ((uint32_t *)sz.contents)[io] = 65 * 4;   // 加固按它夹 o[] 的写
+    MTLTextureDescriptor *td = [MTLTextureDescriptor textureBufferDescriptorWithPixelFormat:MTLPixelFormatR32Float width:66 resourceOptions:pool.resourceOptions usage:MTLTextureUsageShaderRead];
+    id<MTLTexture> v = [pool newTextureWithDescriptor:td offset:0 bytesPerRow:272];
+    id<MTLArgumentEncoder> ae = [f newArgumentEncoderWithBufferIndex:0]; id<MTLBuffer> ab = [d newBufferWithLength:ae.encodedLength options:MTLResourceStorageModeShared];
+    [ae setArgumentBuffer:ab offset:0]; [ae setTexture:v atIndex:it]; [ae setBuffer:o offset:0 atIndex:io]; if (il >= 0) [ae setBuffer:lead offset:0 atIndex:il]; if (is >= 0) [ae setBuffer:sz offset:0 atIndex:is];
+    id<MTLCommandQueue> q = [d newCommandQueue]; id<MTLCommandBuffer> cb = [q commandBuffer]; id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder];
+    [ce setComputePipelineState:ps]; [ce setBuffer:ab offset:0 atIndex:0]; [ce setBuffer:sz offset:0 atIndex:25];
+    [ce useResource:v usage:MTLResourceUsageRead]; [ce useResource:o usage:MTLResourceUsageWrite]; [ce useResource:lead usage:MTLResourceUsageRead]; [ce useResource:sz usage:MTLResourceUsageRead];
+    [ce dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)]; [ce endEncoding]; [cb commit]; [cb waitUntilCompleted];
+    if (cb.error) { printf("GPU 错误：%s\n", cb.error.description.UTF8String); return 3; }
+    float *O = o.contents; int ok = 1; for (int i = 0; i < 64; i++) ok &= O[i] == 100.0f + (float)i;
+    printf("%d %g %g\n", ok, O[0], O[64]);
+    return 0;
+} }
+OBJC
+xcrun clang -fobjc-arc -framework Metal -framework Foundation "$T/brun.m" -o "$T/brun" 2> "$T/cc3.log" || { echo "✗ 执行器编不过（第三支）：$(head -3 "$T/cc3.log")"; exit 1; }
+bargs() { echo "$(mid "$1" cp_tb) $(tid "$1" O) $(mid "$1" gal_tbl_cp_tb) $(mid "$1" spvBufferSizeConstants)"; }
+BH=$T/bhard.metal
+ck "#798 前导：加固后参数块有成员 gal_tbl_cp_tb" 1 "$([ "$(mid "$BH" gal_tbl_cp_tb)" -ge 0 ] && echo 1 || echo 0)"
+ck "#798 前导：不加固没有该成员" -1 "$(mid "$T/braw.metal" gal_tbl_cp_tb)"
+read -r bok b0 bw <<< "$("$T/brun" "$BH" $(bargs "$BH"))"; read -r rok r0b rwb <<< "$("$T/brun" "$T/braw.metal" $(bargs "$T/braw.metal"))"
+ck "#798 前导：取数下标挪前导，64 个全对（o[i] = 100 + i）" 1 "$bok"
+ck "#798 前导：textureSize 减前导 = 64" 64 "$bw"
+ck "反证（不加固、同一视图）：o[0] 不是 100（读到对齐边界前的字节）" 1 "$([ "$r0b" != 100 ] && echo 1 || echo 0)"
+ck "反证（不加固）：textureSize = 视图宽 66" 66 "$rwb"
+ck "Dsh.cs 反射认 gal_tbl_ 前缀（kind tblead）" 1 "$(grep -c 'StartsWith("gal_tbl_", StringComparison.Ordinal)) e.Set("kind", "tblead")' "$D/Dsh.cs")"
+ck "nvn_refl.m 认 tblead" 1 "$(grep -c 'isEqualToString:@"tblead"\]) {' "$H/graphics/nvn/gfx/nvn/nvn_refl.m")"
 [ $bad = 0 ] && echo "dsh_harden：全过" || echo "dsh_harden：有失败"; exit $bad

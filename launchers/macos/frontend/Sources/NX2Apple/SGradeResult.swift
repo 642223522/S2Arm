@@ -30,7 +30,7 @@ struct SGradeResultView: View {
     let results: [SGradeGameResult]
     let text: (String) -> String
 
-    private func cat(_ c: String) -> String { text("export.sgrade.cat." + (["widescreen", "fps", "gfx", "cheat"].contains(c) ? c : "gfx")) }
+    private func cat(_ c: String) -> String { text("export.sgrade.cat." + (["widescreen", "fps", "gfx", "cheat", "mod"].contains(c) ? c : "gfx")) }
 
     var body: some View {
         let shown = results.filter { !$0.outcome.isEmpty }

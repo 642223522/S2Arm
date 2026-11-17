@@ -39,11 +39,15 @@ int main(void) {
     assert(!unlink(filename));
     req = (s2a_layout_requirements){.heap_size=S2A_HEAP_DEFAULT};
     assert(!s2a_android_layout_split(&req, 0, &why, note, sizeof note));
-    assert(req.alias_gb == 60 && req.heap_size == S2A_HEAP_DEFAULT);
+    // 别名区未测按预算推：72 GiB − 固定 2146 MiB − 堆 3284 MiB = 68298 MiB，向下取整 66 GiB，封顶 63
+    assert(req.alias_gb == 63 && req.heap_size == S2A_HEAP_DEFAULT);
+    // 需求手算：别名区 63 GiB + TLS/保护页 2 MiB + 栈区 2 GiB（Horizon 39 位真值）+ 共享余量 96 MiB + 堆 3284 MiB
     uint64_t need = s2a_android_layout_need(3, 80*MB, &req);
-    assert(need > 60*GB && need < 64*GB);
-    assert(!s2a_android_layout_compute(3, 80*MB, &req, W, 64*GB, &L));
+    assert(S2A_HEAP_DEFAULT == 3284*MB && need == 63*GB + 2*MB + 2*GB + 96*MB + 3284*MB);
+    assert(!s2a_android_layout_compute(3, 80*MB, &req, W, 72*GB, &L));
     assert(L.win_size == need && L.heap_size == S2A_HEAP_DEFAULT);
+    assert(L.stack_size == 2*GB && L.stack_base == W + 63*GB + 2*MB && L.heap_base == L.stack_base + 2*GB);   // 栈区写死 128 MiB 时 SDK 建线程挑不出位置（奥日开局中止）
+    assert(L.aslr_base == L.stack_base && L.aslr_size == 2*GB + 96*MB + 3284*MB);
     assert(L.alias_base + L.alias_size <= L.stack_base);
     assert(L.heap_base + L.heap_size <= W + L.win_size);
     assert(s2a_android_layout_compute(3, 80*MB, &req, W, need-2*MB, &L) == -2);

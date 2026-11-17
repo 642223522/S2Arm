@@ -1,6 +1,6 @@
 # native-test-vawin：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += vawin
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # t_vaguard 的不带护栏反证仍保持独立，不由此规则改动。
 .PHONY: native-test-vawin
 native-test-vawin: $(TEST_VAGUARD)

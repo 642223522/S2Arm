@@ -37,16 +37,18 @@ void s2a_det_summary(void){}
 void s2a_punch_summary(void){}   // svc_mem.c（#258 收局读数）；本测只链 lifecycle.c
 unsigned s2a_unresolved_count(void){return 0;}
 static void late(void){event('A');}
+void s2a_guest_run_mark(int running){event(running?'R':'M');}   // vawin.c 替身：优雅收局一开头删「在跑」标记 = 打 M（lifecycle.c 按名字取）
 int main(void){
  int bad=0;
- // 期望（手算）：0 正常「NF」；1 C# 收尾超时 → 1.5 秒兜底「TF」；2 SIGTERM「NF」；
+ // 期望（手算）：每种收局一开头都删「在跑」标记，打 M（D-D3J8：切换游戏等前台优雅退出原先不删，下一局被当成死于内存）；
+ //   0 正常「NF」；1 C# 收尾超时 → 1.5 秒兜底「TF」；2 SIGTERM「NF」；
  //   3 早期统计一步永远卡住 → 兜底照样在 1.5 秒打汇总冲日志退出「TF」（兜底原先排在这一步之后，永远不开，alarm 10 秒杀掉 = 红）；
  //   4 同 3 且兜底里冲日志也卡 → 2.5 秒无条件退出「T」。退出码都是 0
  for(int k=0;k<5;k++){
   int fd[2];pipe(fd);pid_t p=fork();
   if(!p){alarm(10);close(fd[0]);dup2(fd[1],1);close(fd[1]);g_s2a_logfd=open("/dev/null",O_WRONLY);timeout_case=(k==1);early_stall=k==3?1:k==4?2:0;atexit(late);if(k==2){s2a_term_install();kill(getpid(),SIGTERM);for(;;)pause();}s2a_host_shutdown("fixture");_exit(50);}
   close(fd[1]);char buf[32];ssize_t at=0,n;while(at<(ssize_t)sizeof buf-1&&(n=read(fd[0],buf+at,sizeof buf-1-at))>0)at+=n;buf[at]=0;close(fd[0]);int st;waitpid(p,&st,0);
-  int ok=WIFEXITED(st)&&WEXITSTATUS(st)==0&&!strcmp(buf,k==1||k==3?"TF":k==4?"T":"NF");printf("%s lifecycle %s：%s\n",ok?"✓":"✗",k==1?"watchdog":k==2?"SIGTERM":k==3?"early stall":k==4?"early stall + flush stall":"normal",buf);if(!ok)bad++;
+  int ok=WIFEXITED(st)&&WEXITSTATUS(st)==0&&!strcmp(buf,k==1||k==3?"MTF":k==4?"MT":"MNF");printf("%s lifecycle %s：%s\n",ok?"✓":"✗",k==1?"watchdog":k==2?"SIGTERM":k==3?"early stall":k==4?"early stall + flush stall":"normal",buf);if(!ok)bad++;
  }
  printf("%s t_lifecycle：%d 处不符\n",bad?"✗":"✓",bad);return bad!=0;
 }

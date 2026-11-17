@@ -1,6 +1,6 @@
 # Test the real FPS core with the Apple platform and a standalone loader boundary.
 NATIVE_TEST_OWN += fps
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 .PHONY: native-test-fps
 native-test-fps:
 	@mkdir -p $(BUILD)/tests

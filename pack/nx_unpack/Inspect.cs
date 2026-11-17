@@ -66,7 +66,7 @@ static partial class P {
             for (int i = 2; i < args.Length; i++) if (args[i].StartsWith("--temp-dir=", StringComparison.Ordinal)) NczCore.TempDir = args[i].Substring(11);
             LoadTitleKeys(args[0], titleKeys);
             Index(args[2], inspect: true); Resolve();
-            var packages = new List<object>();
+            var packages = new List<InspectPackage>();
             foreach (var open in Where.Values.ToArray()) {
                 var meta = new Nca(Ks, open());
                 if (meta.Header.ContentType != NcaContentType.Meta) continue;
@@ -136,13 +136,13 @@ static partial class P {
                     long contentBytes = m.ContentEntries.Where(c => Where.ContainsKey(Convert.ToHexString(c.NcaId).ToLowerInvariant())).Sum(c => c.Size);
                     // 本包在这个文件里的各 NCA 的 content ID（任天堂按内容算的哈希）：导入按它与文件大小定原件身份，不再整份读一遍算 SHA-256（玩家反馈「只是添加也要跑几分钟」）
                     string[] contentIds = m.ContentEntries.Select(c => Convert.ToHexString(c.NcaId).ToLowerInvariant()).Where(Where.ContainsKey).OrderBy(x => x, StringComparer.Ordinal).ToArray();
-                    packages.Add(new { titleId=m.TitleId.ToString("X16"),
-                        baseId=(kind == "base" ? m.TitleId : m.ApplicationTitleId).ToString("X16"),
-                        version=m.TitleVersion.Version, type=kind, name, englishName, display, builds, guestIsa, icon, controls, contentBytes, contentIds });
+                    packages.Add(new InspectPackage(m.TitleId.ToString("X16"),
+                        (kind == "base" ? m.TitleId : m.ApplicationTitleId).ToString("X16"),
+                        m.TitleVersion.Version, kind, name, englishName, display, builds, guestIsa, icon, controls, contentBytes, contentIds));
                 }
             }
             if (packages.Count == 0) throw new IOException("No application metadata");
-            json.WriteLine(JsonSerializer.Serialize(new { schema=1, packages })); json.Flush();
+            json.WriteLine(JsonSerializer.Serialize(new InspectResult(1, packages), InspectJsonContext.Default.InspectResult)); json.Flush();   // 源码生成（InspectJson.cs）：AOT 单文件没有反射序列化
             return 0;
         } catch (UsageError u) {
             // 我们自己的用法 / 参数错（如 --title-keys 指的路径不在）不是「容器读不出」，不混进退出码 3：

@@ -10,7 +10,7 @@ import UIKit
 /// 界面朝向 landscapeLeft = 设备顶部（传感器那一端）在右边；竖屏、iPad、Mac 都按「不在右侧」
 enum SensorEdge {
     @MainActor static var onTrailing: Bool {
-        #if canImport(UIKit) && !os(macOS)
+        #if canImport(UIKit) && !os(macOS) && !os(tvOS)
         // 只看手机自己的应用场景：接了外接显示器时多一个外接屏场景（ios/extdisplay.m，iOS 27 起），它的朝向不是手机的（审计 P2-272）
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.filter { $0.session.role == .windowApplication }
         let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
@@ -26,13 +26,17 @@ enum SensorEdge {
 struct TrailingOverlaySafeArea: ViewModifier {
     @State private var sensorOnTrailing = false
     func body(content: Content) -> some View {
+        #if os(tvOS)
+        content   // 电视：页面留在过扫描安全区里，不往屏幕边上铺
+        #else
         content
             .ignoresSafeArea(edges: sensorOnTrailing ? [.leading, .bottom] : [.leading, .trailing, .bottom])
             .onAppear { sensorOnTrailing = SensorEdge.onTrailing }
-            #if canImport(UIKit) && !os(macOS)
+            #if canImport(UIKit) && !os(macOS) && !os(tvOS)
             .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
                 sensorOnTrailing = SensorEdge.onTrailing
             }
             #endif
+        #endif
     }
 }

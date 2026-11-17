@@ -23,12 +23,17 @@
 // 实现在 nvk_shader.c，声明在 nvk_session.h。这里不包 nvk_session.h：nvk_compile_stop_test.py 拿本文件当夹具，
 // 会在同一个翻译单元里把 nvk_session_request_stop 等会话函数定义成 static，包了头就是「static 声明跟在非 static 声明后面」，编不过。
 uint64_t nvk_shader_cs_fast_hits(void);
+int nvk_shader_last_allocated(void);
+void nvk_shader_last_test_put(uint64_t key, const struct rp_prog *prog);
+const struct rp_prog *nvk_shader_last_test_find(uint64_t key);
 
 static int checks, failures, compiler_calls, diag_enabled, diag_lines, diag_queries;
 static unsigned fake_array_count;
 static int separate_fixture;
-static int fake_gs_success, fake_gs_result_mode, gs_loads[6], fake_geometry_enabled = 1;
-static int fake_cs_success, cs_loads;   // 1：编译器替身对计算请求回一份合法的计算程序（走「编成功之后进快路」的正向路径）
+static int fake_gs_success, fake_gs_result_mode, gs_loads[6], fake_geometry_enabled = 1, fake_depth_clip;
+static int fake_gs_fact_deps;
+static int fixture_depth_zero, fixture_origin_lower_left, shader_load_count, shader_release_count;
+static int fake_cs_success, cs_loads;
 int g_s2a_logfd = 2;
 static const char *fake_compile_error;
 static const char *fake_compile_file;
@@ -44,6 +49,8 @@ static uint8_t gs_keys[6][8], gs_stages[6], gs_keys_ok;
 #define CHECK(c, ...) do { checks++; if (!(c)) { failures++; fprintf(stderr, "FAIL: "); fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); } } while (0)
 
 void nvn_plat_safepoint(void) {}
+// 宿主夹具没有跨局缓存目录：程序预热清单不落盘（nvk_prog_warm 只读平台目录，不读环境变量）。
+const char *nvn_plat_dir(int which) { (void)which; return NULL; }
 int nvn_plat_flag(const char *name, int dflt) {
     if (!strcmp(name, "nvk_texpool_log")) { diag_queries++; return diag_enabled; }
     return dflt;
@@ -63,8 +70,8 @@ void nvn_plat_log(int level, const char *cls, const char *text) {
     if (level == NVN_PLAT_LOG_INFO && !strcmp(cls, "shader") && strstr(text, "texture_pool_request_reject"))
         snprintf(last_request_reason, sizeof last_request_reason, "%s", text);
 }
-int rp_depth_zero(void) { return 0; }
-int rp_origin_lower_left(void) { return 0; }
+int rp_depth_zero(void) { return fixture_depth_zero; }
+int rp_origin_lower_left(void) { return fixture_origin_lower_left; }
 // 此夹具只登记一个起点为 0 的池；空池也按真实 nvn_dpool_base 返回 0。
 int nvn_dpool_base(const void *pool, int tex) { (void)pool; (void)tex; return 0; }
 uint64_t nvn_ga2ca(uint64_t address) { return address; }
@@ -74,7 +81,7 @@ const prog_t *nvn_prog_snap_get(uint64_t serial, uint8_t keys[6][8], uint8_t *ok
     memcpy(keys, gs_keys, sizeof gs_keys); memcpy(stage, gs_stages, sizeof gs_stages); *ok = gs_keys_ok;
     return &gs_program;
 }
-void nvn_gpu_caps_get(nvn_gpu_caps *out) { memset(out, 0, sizeof *out); out->caps = fake_geometry_enabled ? NVN_GPU_CAP_GEOMETRY : 0; }
+void nvn_gpu_caps_get(nvn_gpu_caps *out) { memset(out, 0, sizeof *out); out->caps = (fake_geometry_enabled ? NVN_GPU_CAP_GEOMETRY : 0) | (fake_depth_clip ? NVN_GPU_CAP_DEPTH_CLIP_CTL : 0); }
 int rp_tex_snap_by_id(int id, tex_t *t, view_t *v, int *h) {
     // 77：带视图（改目标为 RECTANGLE）；78 / 79：同一组格式 / 目标 / 深度的两个不同句柄（快路按事实认，不按句柄认）。
     if (!separate_fixture || (id != 77 && id != 78 && id != 79 && !(separate_fixture == 2 && id == 0))) return 0;
@@ -127,12 +134,20 @@ static int32_t fake_compile(uint64_t session, uint64_t gen, s2a_direct_bytes req
         int32_t rc = emit(sink, payload); free(bytes); return rc;
     }
     if (fake_gs_success) {
-        char result[1024];
+        char result[1536];
         const char *extra = fake_gs_result_mode == 1 ? "" :
             fake_gs_result_mode == 2 ? ",{\"stage\":\"gs\",\"spirv\":\"AwIjBwABAwAAAAAAAQAAAAAAAAA=\"},{\"stage\":\"gs\",\"spirv\":\"AwIjBwABAwAAAAAAAQAAAAAAAAA=\"}" :
             fake_gs_result_mode == 3 ? ",{\"stage\":\"gs\",\"spirv\":\"AwIjBwABAwAAAAAAAQAAAAAAAAA=\"},{\"stage\":\"tcs\",\"spirv\":\"AwIjBwABAwAAAAAAAQAAAAAAAAA=\"}" :
             ",{\"stage\":\"gs\",\"spirv\":\"AwIjBwABAwAAAAAAAQAAAAAAAAA=\"}";
-        int n = snprintf(result, sizeof result, "{\"schema\":\"s2a-direct-program-v1\",\"content\":{\"stages\":[{\"stage\":\"vs\",\"spirv\":\"AwIjBwABAwAAAAAAAQAAAAAAAAA=\"},{\"stage\":\"fs\",\"spirv\":\"AwIjBwABAwAAAAAAAQAAAAAAAAA=\"}%s],\"bindings\":[]}}", extra);
+        char depbuf[768] = "";
+        const char *source = fake_gs_fact_deps == 2 ? "texture-fact:zz:8:-1" :
+            fake_gs_fact_deps == 3 ? "texture-fact:vs:71:-1" :
+            fake_gs_fact_deps == 4 ? "texture-fact:vs:8:99" :
+            fake_gs_fact_deps == 5 ? "future-texture-state" : "texture-fact:vs:8:-1";
+        if (fake_gs_fact_deps) snprintf(depbuf, sizeof depbuf,
+            ",\"contract\":\"s2a-direct-program-content-v1\",\"dependencies\":[{\"source\":\"code:sha256:synthetic\",\"method\":\"GetCode\"},{\"source\":\"%s\",\"method\":\"QuerySamplerType\"},{\"source\":\"texture-fact:fs:10:2\",\"method\":\"QueryTextureCoordNormalized\"},{\"source\":\"code:sha256:synthetic#cbUse\",\"method\":\"QueryConstantBufferUse\",\"arguments\":\"stage=vs\"}]", source);
+        const char *deps = depbuf;
+        int n = snprintf(result, sizeof result, "{\"schema\":\"s2a-direct-program-v1\",\"content\":{\"stages\":[{\"stage\":\"vs\",\"spirv\":\"AwIjBwABAwAAAAAAAQAAAAAAAAA=\"},{\"stage\":\"fs\",\"spirv\":\"AwIjBwABAwAAAAAAAQAAAAAAAAA=\"}%s],\"bindings\":[]%s}}", extra, deps);
         CHECK(n > 0 && (size_t)n < sizeof result, "GS result fixture fits");
         s2a_direct_bytes payload = {(const uint8_t *)result, (uint64_t)n};
         return emit(sink, payload);
@@ -164,13 +179,13 @@ s2a_direct_compile_fn s2a_direct_bound_compile_any(void) { return fake_compile; 
 nvn_gpu_rc nvn_gpu_shader_load(const nvn_gpu_shader_src *s, nvn_gpu_shader *o, nvn_gpu_err *e) {
     (void)e;
     if (fake_gs_success && (unsigned)s->stage < 6) {
-        gs_loads[s->stage]++; *o = (nvn_gpu_shader)(uintptr_t)(s->stage + 1); return (nvn_gpu_rc){NVN_GPU_OK};
+        shader_load_count++; gs_loads[s->stage]++; *o = (nvn_gpu_shader)(uintptr_t)(s->stage + 1); return (nvn_gpu_rc){NVN_GPU_OK};
     }
     if (fake_array_count) { *o = (nvn_gpu_shader)(uintptr_t)1; return (nvn_gpu_rc){NVN_GPU_OK}; }
     if (fake_cs_success && s->stage == NVN_GPU_SH_CS) { cs_loads++; *o = (nvn_gpu_shader)(uintptr_t)7; return (nvn_gpu_rc){NVN_GPU_OK}; }
     CHECK(0, "unexpected shader load"); return (nvn_gpu_rc){NVN_GPU_E_UNSUPPORTED};
 }
-void nvn_gpu_shader_release(nvn_gpu_shader s) { (void)s; }
+void nvn_gpu_shader_release(nvn_gpu_shader s) { if (s) shader_release_count++; }
 static void wr(uint8_t *p, unsigned x) { p[0]=x; p[1]=x>>8; p[2]=x>>16; p[3]=x>>24; }
 static void wr64(uint8_t *p, uint64_t x) { for (int i = 0; i < 8; i++) p[i] = (uint8_t)(x >> (8 * i)); }
 static void bind_pools(int n);
@@ -352,6 +367,12 @@ static void cs_variant_source(unsigned variant, uint8_t digest[32]) {
     s2a_sha256 h; s2a_sha256_init(&h); s2a_sha256_update(&h,ctl,sizeof ctl); s2a_sha256_update(&h,code,sizeof code); s2a_sha256_final(&h,digest);
     CHECK(!s2a_source_keep(digest, 0, code, sizeof code, ctl, sizeof ctl), "CS fixture source variant=%u", variant);
 }
+// 绑了图像槽 2 的那次编译请求里必须有 c2 字 76、cbufSlot −1 的事实（夹具 78 号是 RGBA8 2D）
+static void check_image_fact(int rc_mode) {
+    const char *t = strstr(captured, "\"textures\"");
+    CHECK(strstr(captured, "{\"stage\":\"cs\",\"handle\":76,\"cbufSlot\":-1,\"samplerType\":\"2d\",\"format\":\"R8G8B8A8Unorm\"") != NULL,
+          "CS request carries the bound image's fact at c2 word 76 (reg_changes=%d): %.160s", rc_mode, t ? t : "(none)");
+}
 static void compute_fast_path_test(void) {
     for (int rc_mode = 1; rc_mode >= 0; rc_mode--) {
         const struct rp_prog *a = NULL, *b = NULL; uint8_t dig2[32];
@@ -391,6 +412,16 @@ static void compute_fast_path_test(void) {
         CS_MISS("changed CS texture fact recompiles", rp_S.tex[5][3] = 77, rp_S.tex[5][3] = 0);
         // 分离槽 100 的下标是 228：旧键只拷了 rp_S.tex[5] 的前 160 项，覆盖不到。
         CS_MISS("changed CS separate texture fact recompiles", bind_separate(5, 100, 1, 78), bind_separate(5, 100, 1, 0));
+        // 图像槽 2（c2 字 76）：绑上图像要进请求（图像事实）、快路也要认它；换成同格式的另一张不重编
+        captured[0] = 0;
+        CS_MISS("binding a CS image recompiles", rp_S.img[5][2] = 78, (check_image_fact(rc_mode), rp_S.img[5][2] = 0));
+        { const struct rp_prog *with_img = NULL; rp_S.img[5][2] = 78;
+          CHECK(rp_shader_resolve_compute(&with_img) == 0 && with_img && with_img != a, "CS image input has its own entry (reg_changes=%d)", rc_mode);
+          calls = compiler_calls; hits = nvk_shader_cs_fast_hits();
+          rp_S.img[5][2] = 79;   // 另一张同格式 / 目标 / 深度的图像：请求不变
+          CHECK(rp_shader_resolve_compute(&b) == 0 && b == with_img && compiler_calls == calls && nvk_shader_cs_fast_hits() == hits + 1,
+                "CS same-fact image handle reuses the program (reg_changes=%d)", rc_mode);
+          rp_S.img[5][2] = 0; calls = compiler_calls; hits = nvk_shader_cs_fast_hits(); }
 #undef CS_MISS
         // 来源登记冲突会毒化短键并推进代际：同一份状态不能再命中推进之前存下的快路表项（慢路仍给同一个程序、不重编）。
         { uint8_t wrong_code[16] = {9}, wrong_control[0x760] = {0};
@@ -409,8 +440,29 @@ static void compute_fast_path_test(void) {
               "after session reset the same CS state compiles again (reg_changes=%d)", rc_mode);
     }
     fake_cs_success = 0; separate_fixture = 0; fake_reg_changes = 1;
-    bind_separate(5, 100, 1, 0); memset(rp_S.ubo[5], 0, sizeof rp_S.ubo[5]); memset(rp_S.ssbo[5], 0, sizeof rp_S.ssbo[5]); memset(rp_S.tex[5], 0, sizeof rp_S.tex[5]);
+    bind_separate(5, 100, 1, 0); memset(rp_S.img[5], 0, sizeof rp_S.img[5]); memset(rp_S.ubo[5], 0, sizeof rp_S.ubo[5]); memset(rp_S.ssbo[5], 0, sizeof rp_S.ssbo[5]); memset(rp_S.tex[5], 0, sizeof rp_S.tex[5]);
     rp_shader_reset();
+}
+// 图形与计算共用的快表（#1146）：一帧里依次访问落在同一个旧桶（桶号低 9 位相同）的 5 个键。
+// 旧表 512 桶 × 4 路装不下 5 个键，轮转替换遇上周期访问就是每次都落空；4096 桶把它们散开（第 9..11 位不同），
+// 8 轮里只有第一轮冷启动的 5 次落空。同时钉死表的生命周期：会话外没有分配、第一次存项时才分配、会话收尾释放，
+// 收尾后旧项（里面存的是 rp_prog*）一个都取不到。
+static void last_table_test(void) {
+    static struct rp_prog progs[5];
+    uint64_t keys[5];
+    rp_shader_reset();
+    CHECK(!nvk_shader_last_allocated(), "fast table is not allocated outside a session");
+    CHECK(nvk_shader_last_test_find(0x15) == NULL, "empty fast table finds nothing");
+    for (int i = 0; i < 5; i++) keys[i] = ((uint64_t)i << 9) | 0x15;
+    int misses = 0;
+    for (int round = 0; round < 8; round++)
+        for (int i = 0; i < 5; i++)
+            if (nvk_shader_last_test_find(keys[i]) != &progs[i]) { misses++; nvk_shader_last_test_put(keys[i], &progs[i]); }
+    CHECK(misses == 5, "5 keys sharing the low 9 bits of the bucket index coexist in the fast table: %d misses in 8 rounds (cold start only = 5)", misses);
+    CHECK(nvk_shader_last_allocated(), "fast table is allocated on the first store");
+    rp_shader_reset();
+    CHECK(!nvk_shader_last_allocated(), "fast table is released at session retirement");
+    CHECK(nvk_shader_last_test_find(keys[0]) == NULL, "entries holding rp_prog pointers do not survive session retirement");
 }
 static int emit_real_request(const char *profile_path, const char *closure, const char *dir, const char *output, int tbuf) {
     FILE *pf = fopen(profile_path, "rb"); if (!pf) return 1;
@@ -419,6 +471,9 @@ static int emit_real_request(const char *profile_path, const char *closure, cons
     external_profile[pn] = 0; snprintf(external_closure, sizeof external_closure, "%s", closure);
     struct s2a_jv profile_obj = {external_profile, pn}, hash_field;
     if (s2a_jv_obj_find(profile_obj, "profileHash", &hash_field) || s2a_jv_str(hash_field, external_profile_hash, sizeof external_profile_hash)) return 1;
+    // GS 整链（--emit-real 及其复用变体）：生成的请求要与 vk/t_replay_gs 在 lavapipe 上发出的逐字节相同；lavapipe 有 VK_EXT_depth_clip_control，
+    //   有这项能力时现编不改写 z（nvk_shader.c fill_facts），所以这里同样报有（设备没有时 t_replay_gs 的逐字节比对会直接红）
+    fake_depth_clip = tbuf == 0 || tbuf >= 3;   // GS 整链的基准（0）、执行复用（3）、三种宽松输入（4–6）同一口径，内容才可比；贴图缓冲链（1 / 2）不变
     rp_state_reset(); rp_shader_reset(); s2a_source_clear();
     uint8_t keys[3][8];
     for (unsigned st = 0; st < 3; st++) {
@@ -436,18 +491,42 @@ static int emit_real_request(const char *profile_path, const char *closure, cons
     for (unsigned st = 0; st < 3; st++) { gs_stages[st] = (uint8_t)st; memcpy(gs_keys[st], keys[st], 8); }
     gs_keys_ok = 7; p_bind_program_id bind = {&gs_program, gs_program.serial, 0x1f, 0};
     if (!rp_state_op(OP_BIND_PROGRAM, &bind, sizeof bind + 8)) return 1;
-    bind_pools(tbuf ? 100 : 7);
-    if (tbuf) { separate_fixture = 3; bind_separate(1, 0, 1, 77); }
-    if (tbuf == 2) { fake_compile_file = output; fake_gs_success = 1; nvn_unimpl_reset(); memset(gs_loads, 0, sizeof gs_loads); }
+    bind_pools(tbuf == 1 || tbuf == 2 || tbuf == 7 ? 100 : 7);
+    if (tbuf == 1 || tbuf == 2 || tbuf == 7) { separate_fixture = 3; bind_separate(1, 0, 1, 77); }
+    if (tbuf == 2 || tbuf == 3 || tbuf == 7) { fake_compile_file = output; fake_gs_success = 1; nvn_unimpl_reset(); memset(gs_loads, 0, sizeof gs_loads); }
     else capture_output = output;
+    if (tbuf == 4) rp_S.tex[0][0] = 99;
+    if (tbuf == 6) rp_S.ubo[5][15].size = 16;
     compiler_calls = 0;
     struct rp_shader_req q = {0}; q.prim = 0; q.rt_count = 1; q.rt_format[0] = NVN_FORMAT_RGBA8;
+    if (tbuf == 5) { q.rt_count=2; q.rt_format[1]=NVN_FORMAT_RGBA8; }
     const struct rp_prog *prog = NULL; int rc = rp_shader_resolve(&q, &prog);
-    if (tbuf == 2) {
+    if (tbuf == 7) {
         int rejected = rc == -1 && !prog && compiler_calls == 1 &&
             nvn_unimpl_count("shader", "texture_buffer_replay_unsupported") == 1 && gs_loads[1] == 0;
-        fprintf(stderr, "%s: real BUFFER result refuses unsupported replay before FS shader load\n", rejected ? "PASS" : "FAIL");
+        fprintf(stderr, "%s: graphics TBUFU is rejected before shader load\n", rejected ? "PASS" : "FAIL");
         return !rejected;
+    }
+    if (tbuf == 3) {
+        CHECK(!rc && prog && compiler_calls == 1, "real compiler result loads for dependency reuse");
+        const struct rp_prog *first = prog;
+        rp_S.tex[0][0] = 99;
+        CHECK(!rp_shader_resolve(&q, &prog) && prog == first && compiler_calls == 1,
+              "real compiler dependency trace permits unused texture reuse");
+        rp_S.ubo[0][15].size = 16;
+        CHECK(!rp_shader_resolve(&q, &prog) && prog != first && compiler_calls == 2,
+              "real compiler active-stage UBO mask remains strict without dependency queries");
+        fprintf(stderr, "real compiler dependency reuse: checks=%d failures=%d\n", checks, failures);
+        return failures != 0;
+    }
+    if (tbuf == 2) {
+        int found = 0;
+        if (prog) for (uint32_t i = 0; i < prog->nent[1]; i++)
+            if (prog->ent[1][i].cls == NVN_GPU_RES_TBUF && prog->ent[1][i].src_reg == 128 &&
+                prog->dtt[1][i] == NVN_TEXTURE_TARGET_BUFFER + 1 && prog->dcls[1][i] == 0) found++;
+        int accepted = rc == 0 && prog && compiler_calls == 1 && gs_loads[1] == 1 && found == 1;
+        fprintf(stderr, "%s: real BUFFER result loads FS with declared TBUF layout\n", accepted ? "PASS" : "FAIL");
+        return !accepted;
     }
     printf("production Maxwell request: rc=%d captured=%d failures=%d\n", rc, compiler_calls, failures);
     return !(rc == -1 && compiler_calls == 1 && failures == 0);
@@ -475,14 +554,130 @@ static int emit_compute_request(const char *profile_path, const char *closure, c
     if (replay) { fake_compile_file = output; fake_gs_success = 1; nvn_unimpl_reset(); memset(gs_loads, 0, sizeof gs_loads); }
     else capture_output = output;
     compiler_calls = 0; const struct rp_prog *prog = NULL; int rc = rp_shader_resolve_compute(&prog);
-    if (replay) {
+    if (replay == 2) {
         int rejected = rc == -1 && !prog && compiler_calls == 1 &&
-            nvn_unimpl_count("shader", "texture_buffer_replay_unsupported") == 1 && gs_loads[NVN_GPU_SH_CS] == 0;
-        fprintf(stderr, "%s: real compute BUFFER result refuses unsupported replay before CS shader load\n", rejected ? "PASS" : "FAIL");
+            nvn_unimpl_count("shader", "compute_program_parse_failed") == 1 &&
+            strstr(last_red, "compute binding has no reflected guest slot") && gs_loads[NVN_GPU_SH_CS] == 0;
+        fprintf(stderr, "%s: compute TBUFU is rejected by parser before shader load (rc=%d red=%s)\n", rejected ? "PASS" : "FAIL", rc, last_red);
         return !rejected;
+    }
+    if (replay) {
+        int found = 0;
+        if (prog) for (uint32_t i = 0; i < prog->nent[0]; i++)
+            if (prog->ent[0][i].cls == NVN_GPU_RES_TBUF && prog->ent[0][i].src_reg == 0 &&
+                prog->dtt[0][i] == NVN_TEXTURE_TARGET_BUFFER + 1 && prog->dcls[0][i] == 0) found++;
+        int accepted = rc == 0 && prog && compiler_calls == 1 && gs_loads[NVN_GPU_SH_CS] == 1 && found == 1;
+        fprintf(stderr, "%s: real compute BUFFER result loads CS with declared TBUF layout\n", accepted ? "PASS" : "FAIL");
+        return !accepted;
     }
     printf("production compute Maxwell request: rc=%d captured=%d failures=%d red=%s\n", rc, compiler_calls, failures, last_red);
     return !(rc == -1 && compiler_calls == 1 && failures == 0);
+}
+
+static void graphics_fact_reuse_test(void) {
+    rp_shader_reset(); s2a_source_clear(); rp_state_reset(); nvn_unimpl_reset();
+    uint8_t keys[3][8]; for (unsigned st = 0; st < 3; st++) gs_source(st, 0, keys[st]);
+    memset(&gs_program, 0, sizeof gs_program); gs_program.magic = MAGIC('P','R','O','G');
+    gs_program.serial = 900; gs_program.nstage = 3;
+    memset(gs_stages, 0xff, sizeof gs_stages); memset(gs_keys, 0, sizeof gs_keys);
+    for (unsigned st = 0; st < 3; st++) { gs_stages[st] = (uint8_t)st; memcpy(gs_keys[st], keys[st], 8); }
+    gs_keys_ok = 7; p_bind_program_id bind = {&gs_program, gs_program.serial, 0x1f, 0};
+    CHECK(rp_state_op(OP_BIND_PROGRAM, &bind, sizeof bind + 8), "fact reuse program binds");
+    bind_pools(100); fake_gs_success = fake_gs_fact_deps = 1; separate_fixture = 1; fake_reg_changes = 0;
+    struct rp_shader_req q = {0}; q.prim = 4; const struct rp_prog *p = NULL;
+    compiler_calls = 0; CHECK(!rp_shader_resolve(&q, &p) && p && compiler_calls == 1, "fact reuse initial real producer resolves");
+    const struct rp_prog *first = p;
+    rp_S.tex[0][2] = 77;
+    CHECK(!rp_shader_resolve(&q, &p) && p == first && compiler_calls == 1, "unqueried combined texture reuses compiled program");
+    rp_S.tex[1][2] = 77;
+    CHECK(!rp_shader_resolve(&q, &p) && p == first && compiler_calls == 1, "other stage unqueried combined texture reuses program");
+    rp_S.tex[0][0] = 77;
+    CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == 2, "queried texture format changes recompile");
+    rp_S.tex[1][1] = 77;
+    CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == 3, "queried c2 fallback texture changes recompile");
+    rp_S.ubo[0][15].size = 16;
+    CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == 4, "active UBO change still recompiles under fact reuse");
+    rp_S.ubo[1][15].size = 16;
+    CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == 5, "unqueried active-stage UBO mask remains strict");
+    q.rt_count = 1; q.rt_format[0] = NVN_FORMAT_RGBA8;
+    CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == 5, "attachment count alone does not split shader identity");
+    q.rt_format[0] = NVN_FORMAT_R32UI;
+    CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == 6, "changed compiler output numeric type recompiles");
+    // A BUFFER fact excludes the entire request from the dependency shortcut,
+    // even if the mock result itself does not reflect a buffer binding.
+    rp_shader_reset(); rp_state_reset();
+    CHECK(rp_state_op(OP_BIND_PROGRAM, &bind, sizeof bind + 8), "TBUF fact identity program binds");
+    bind_pools(100); separate_fixture = 3; fake_reg_changes = 0; compiler_calls = 0;
+    rp_S.tex[0][3] = 77;
+    CHECK(!rp_shader_resolve(&q, &p) && p && compiler_calls == 1, "TBUF fact identity initial compile");
+    rp_S.tex[0][4] = 78;
+    CHECK(!rp_shader_resolve(&q, &p) && p && compiler_calls == 2, "TBUF input fact prevents dependency identity reuse");
+    rp_shader_reset(); rp_state_reset();
+    CHECK(rp_state_op(OP_BIND_PROGRAM, &bind, sizeof bind + 8), "fact reuse program rebinds after TBUF test");
+    bind_pools(100); separate_fixture = 1;
+    for (int mode = 0; mode <= 5; mode++) if (mode != 1) {
+        rp_shader_reset(); fake_gs_fact_deps = mode; compiler_calls = 0; rp_S.tex[0][3] = 0;
+        CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == 1, "unsupported dependency fixture resolves");
+        rp_S.tex[0][3] = 77;
+        CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == 2, "unsupported dependency metadata preserves exact identity: mode=%d", mode);
+    }
+    rp_shader_reset(); fake_gs_fact_deps = 1; compiler_calls = shader_load_count = shader_release_count = 0;
+    rp_S.tex[0][3] = 0;
+    CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == 1, "reset strict-state fixture");
+#define STRICT_GFX(label, change) do { int before=compiler_calls; change; CHECK(!rp_shader_resolve(&q,&p) && compiler_calls==before+1, "strict graphics state: " label); } while (0)
+    STRICT_GFX("depth mode", fixture_depth_zero=1);
+    STRICT_GFX("Y negate", fixture_origin_lower_left=1);
+    STRICT_GFX("alpha comparison", rp_S.color.alpha_func=2);
+    STRICT_GFX("alpha reference", rp_S.alpha_ref=0.5f);
+    STRICT_GFX("alpha coverage", rp_S.ms.a2c=1);
+    STRICT_GFX("alpha coverage dither", rp_S.ms.a2c_dither=1);
+    STRICT_GFX("dual source", rp_S.blend[0].src_rgb=0x10);
+    STRICT_GFX("vertex numeric type", rp_S.nattr=1; rp_S.attr[0].fmt=NVN_FORMAT_R32UI);
+    STRICT_GFX("output numeric type", q.rt_format[0]=NVN_FORMAT_RGBA8);
+#undef STRICT_GFX
+    const struct rp_prog *last=p; int before=compiler_calls;
+    rp_S.tex[0][3]=77;
+    CHECK(!rp_shader_resolve(&q,&p) && p==last && compiler_calls==before,"alias reuse before reset");
+    rp_shader_reset();
+    CHECK(shader_release_count==shader_load_count,"owned shaders released once despite aliases: %d/%d",shader_release_count,shader_load_count);
+    CHECK(!rp_shader_resolve(&q,&p) && compiler_calls==before+1,"reset clears aliases and dependency index before next resolve");
+    rp_shader_reset();
+    CHECK(shader_release_count==shader_load_count,"second session releases each shader once");
+    fixture_depth_zero=fixture_origin_lower_left=0;
+    fake_gs_success = fake_gs_fact_deps = 0; separate_fixture = 0; fake_reg_changes = 1;
+    rp_shader_reset(); rp_state_reset();
+}
+
+/* The compiler request contains only stages in this graphics program. Inactive
+ * UBO state (including compute) must not create new graphics identities. */
+static void graphics_active_ubo_test(void) {
+    for (unsigned nst = 1; nst <= 3; nst++) {
+        rp_shader_reset(); s2a_source_clear(); rp_state_reset(); nvn_unimpl_reset();
+        uint8_t keys[3][8]; for (unsigned st = 0; st < nst; st++) gs_source(st, 0, keys[st]);
+        memset(&gs_program, 0, sizeof gs_program); gs_program.magic = MAGIC('P','R','O','G');
+        gs_program.serial = 800 + nst; gs_program.nstage = nst;
+        memset(gs_stages, 0xff, sizeof gs_stages); memset(gs_keys, 0, sizeof gs_keys);
+        for (unsigned st = 0; st < nst; st++) { gs_stages[st] = (uint8_t)st; memcpy(gs_keys[st], keys[st], 8); }
+        gs_keys_ok = (1u << nst) - 1;
+        p_bind_program_id bind = {&gs_program, gs_program.serial, 0x1f, 0};
+        CHECK(rp_state_op(OP_BIND_PROGRAM, &bind, sizeof bind + 8), "active UBO graphics fixture binds");
+        bind_pools(7); compiler_calls = 0;
+        struct rp_shader_req q = {0}; q.prim = 4; const struct rp_prog *p = NULL;
+        rp_shader_resolve(&q, &p); CHECK(compiler_calls == 1, "initial graphics compiler attempt");
+        for (unsigned st = nst; st < 6; st++) {
+            rp_S.ubo[st][15].size = 16;
+            rp_shader_resolve(&q, &p);
+            CHECK(compiler_calls == 1, "inactive stage UBO keeps graphics identity: stages=%u changed=%u calls=%d", nst, st, compiler_calls);
+        }
+        for (unsigned st = 0; st < nst; st++) {
+            int before = compiler_calls; rp_S.ubo[st][15].size = 16;
+            rp_shader_resolve(&q, &p);
+            CHECK(compiler_calls == before + 1, "active high UBO changes identity: stages=%u changed=%u", nst, st);
+            char expected[64]; snprintf(expected, sizeof expected, "\"constantBufferUse\":%u", 1u << 18);
+            CHECK(strstr(captured, expected), "active cbuf18 reaches real request");
+        }
+    }
+    rp_shader_reset(); rp_state_reset();
 }
 
 int main(int argc, char **argv) {
@@ -502,11 +697,25 @@ int main(int argc, char **argv) {
         for (size_t i = 0; i < n; i++) printf("%02x", bytes[i]);
         putchar('\n'); return 0;
     }
+    if (argc == 6 && !strcmp(argv[1], "--emit-reuse-texture"))
+        return emit_real_request(argv[2], argv[3], argv[4], argv[5], 4);
+    if (argc == 6 && !strcmp(argv[1], "--emit-reuse-rt"))
+        return emit_real_request(argv[2], argv[3], argv[4], argv[5], 5);
+    if (argc == 6 && !strcmp(argv[1], "--emit-reuse-inactive"))
+        return emit_real_request(argv[2], argv[3], argv[4], argv[5], 6);
+    if (argc == 6 && !strcmp(argv[1], "--execute-reuse"))
+        return emit_real_request(argv[2], argv[3], argv[4], argv[5], 3);
+    if (argc == 6 && !strcmp(argv[1], "--reject-graphics-tbufu"))
+        return emit_real_request(argv[2], argv[3], argv[4], argv[5], 7);
+    if (argc == 6 && !strcmp(argv[1], "--reject-compute-tbufu"))
+        return emit_compute_request(argv[2], argv[3], argv[4], argv[5], 2);
     if (argc == 6 && (!strcmp(argv[1], "--emit-real") || !strcmp(argv[1], "--emit-real-tbuf") || !strcmp(argv[1], "--execute-tbuf")))
         return emit_real_request(argv[2], argv[3], argv[4], argv[5], !strcmp(argv[1], "--execute-tbuf") ? 2 : !strcmp(argv[1], "--emit-real-tbuf"));
     if (argc == 6 && (!strcmp(argv[1], "--emit-compute-tbuf") || !strcmp(argv[1], "--execute-compute-tbuf")))
         return emit_compute_request(argv[2], argv[3], argv[4], argv[5], !strcmp(argv[1], "--execute-compute-tbuf"));
     if (argc != 1) return 2;
+    graphics_fact_reuse_test();
+    graphics_active_ubo_test();
     unsetenv("S2A_SHADER_REVISION_ROOT"); unsetenv("S2A_DIRECT_CACHE_DIR"); rp_state_reset(); source();
     for (int cs = 0; cs < 2; cs++) {
         run_case(cs, 0, 0, "texture_pool_missing");
@@ -645,6 +854,7 @@ int main(int argc, char **argv) {
     }
     fake_array_count = 0; fake_compile_error = NULL;
     compute_fast_path_test();
+    last_table_test();
     gs_request_test();
     rp_shader_reset(); s2a_source_clear();
     fprintf(stderr, "nvk shader pool: %d checks, %d failures\n", checks, failures);

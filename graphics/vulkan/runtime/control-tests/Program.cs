@@ -9,7 +9,16 @@ internal static class Program
     internal static readonly int[] Barrier = [unchecked((int)((4U << 29) | (0x50U / 4)))];
     private static int Main()
     {
-        try { QueuedControl(); RepeatedControl(); RuntimeChecks.Run(); ThreadedChecks.Run(); return 0; }
+        // S2A_CONTROL_PART=threaded：只跑拆线程用例（跳过单线程部分；11-14 门禁提速，tests/vulkan_backend_test.sh 把等真实时钟最久的几个用例
+        //   放另一个进程与其余部分同时跑，配 ThreadedChecks 的 S2A_THREADED_CHECK / S2A_THREADED_SKIP）；缺省全跑（原样）
+        string part = Environment.GetEnvironmentVariable("S2A_CONTROL_PART");
+        if (part is not (null or "threaded")) { Console.Error.WriteLine("FAIL: unknown S2A_CONTROL_PART " + part); return 1; }
+        try
+        {
+            if (part == null) { QueuedControl(); RepeatedControl(); RuntimeChecks.Run(); }
+            ThreadedChecks.Run();
+            return 0;
+        }
         catch (Exception error) { Console.Error.WriteLine(error); return 1; }
         finally { GPFifoDevice.S2ATrackSync = null; }
     }

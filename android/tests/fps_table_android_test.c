@@ -84,6 +84,9 @@ int main(void) {
     unsetenv("S2A_FPS_TABLE"); unsetenv("S2A_FSTEP"); unsetenv("DM_PRESENT_INTERVAL");
     // 24a353e2 起 60 帧默认关、只有 S2A_FPS60=1 才开（runtime/src/fps.c fps_on_at_start）；本例测的是「开」这一侧
     setenv("S2A_FPS60", "1", 1);
+    // 11-14 撤我方 60 帧（49948472b）起：我方帧率表照装，但槽 / w 行 / 帧步只在 S2A_CAPS_OWN=1 时按 60 帧开关写，缺省一律写关值。
+    //   本例测的是这套装载与写入机制本身（同 runtime/tests/t_fps.c 机制段），所以显式走 S2A_CAPS_OWN=1；缺省口径由 t_fps 判
+    setenv("S2A_CAPS_OWN", "1", 1);
 
     s2a_fps_start(dir);   // before the fix this aborts: the key-page slot write went through the checked guest write
     CHECK("table published", s2a_fps_available());

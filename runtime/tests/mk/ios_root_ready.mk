@@ -1,6 +1,6 @@
 # native-test-ios_root_ready：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += ios_root_ready
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 .PHONY: native-test-ios_root_ready
 native-test-ios_root_ready:
 	@mkdir -p $(BUILD)/tests

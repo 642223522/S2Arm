@@ -527,6 +527,15 @@ class AndroidDeliveryTest(unittest.TestCase):
              patch.dict(os.environ, {'S2A_ANDROID_SKIP_APPLE_ARTIFACTS': '1'}):
             entries = producer.entries_from_root(str(root), str(third))
         self.assertEqual([name for name, _ in entries if name.startswith('shaders/')], ['shaders/vulkan/direct'])
+        # #1434 新图形层的离线库 shaders/direct/b-<链>-vk 进包；同目录 Apple 的 Metal 库（不带 -vk）不进
+        for lib in ('b-0be3f28548fd-vk', 'b-0be3f28548fd'):
+            (root / 'shaders/direct' / lib).mkdir(parents=True); (root / 'shaders/direct' / lib / 'lib.idx').write_text('fixture')
+        fourth = self.base / 'fourth/modules'; fourth.mkdir(parents=True)
+        with patch.object(producer, 'rewrite'), patch.object(producer, 'stage_address_requirements', return_value='need'), \
+             patch.dict(os.environ, {'S2A_ANDROID_SKIP_APPLE_ARTIFACTS': '1'}):
+            entries = producer.entries_from_root(str(root), str(fourth))
+        self.assertEqual([name for name, _ in entries if name.startswith('shaders/')],
+                         ['shaders/vulkan/direct', 'shaders/direct/b-0be3f28548fd-vk'])
         for name in ('widen_enable.handheld.tsv', 'widen_full.handheld.tsv', 'widen_verified.tsv'):
             self.assertEqual((stage / name).read_text(), (root / name).read_text())
         second_stage = self.base / 'second/modules'; second_stage.mkdir(parents=True)
@@ -590,8 +599,9 @@ class AndroidDeliveryTest(unittest.TestCase):
                 adapter.check_request(request)
 
     def test_bundled_engine_includes_android_runtime_and_tools(self):
+        # 11-16 安装包瘦身：安卓导出未对玩家开放（启动器回「即将上线」），发版引擎快照不收 android/；开放时加回 INPUTS 并把这里改回 assertIn
         from launchers.macos.bundle_engine import INPUTS
-        self.assertIn('android', INPUTS)
+        self.assertNotIn('android', INPUTS)
         self.assertIn('graphics', INPUTS)
         for relative in ('android/docker/build.sh', 'android/docker/Dockerfile',
                          'android/app/build.gradle', 'android/tools/make_pack.py',
@@ -607,9 +617,11 @@ class AndroidDeliveryTest(unittest.TestCase):
                     'android/core-link/runtime-tests/foo.c',
                     'graphics/vulkan/wsi/tests/run.py',
                     'graphics/vulkan/core/cache-tests/fixture.cs')
+        # 11-16 起全快照都不收测试树（pack/tests 等，出包流程不跑测试）；根 tests/visual/galrec 出包要读，照收
+        excluded += ('pack/tests/fixture.dat', 'pack/jobs/tests/test_x.py', 'graphics/nvn/tests/t_x.c')
         included = ('android/native/selftest.c', 'android/test.sh',
                     'android/codecs/LICENSE', 'graphics/vulkan/core/DeviceFeatureSnapshot.cs',
-                    'pack/tests/fixture.dat', 'tests/visual/galrec/fixture.dat')
+                    'pack/jobs/core.py', 'tests/visual/galrec/fixture.dat')
         for path in excluded: self.assertFalse(bundle_engine.include_source(Path(path)), path)
         for path in included: self.assertTrue(bundle_engine.include_source(Path(path)), path)
 
@@ -808,6 +820,11 @@ class AndroidDeliveryTest(unittest.TestCase):
         (repo / 'source.txt').write_text('modified')
         with patch.object(mod, 'ROOT', repo), self.assertRaisesRegex(ValueError, '未提交'):
             mod.export_sources(self.base / 'dirty-export', mod.build_environment(os.environ))
+        # 发版快照（根有 engine.json）：打包重签名让已跟踪文件和 HEAD 不同，照样导出，内容是已提交的那份
+        (repo / 'engine.json').write_text('{}')
+        with patch.object(mod, 'ROOT', repo):
+            mod.export_sources(self.base / 'snapshot-export', mod.build_environment(os.environ))
+        self.assertEqual((self.base / 'snapshot-export' / 'source.txt').read_text(), 'source')
 
     def test_game_output_cannot_be_inside_checkout(self):
         repo = self.base / 'repo'; repo.mkdir()

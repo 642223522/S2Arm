@@ -199,7 +199,9 @@ public final class JobClient {
             "devHud": env.devHud, "metalHud": env.metalHud, "buildId": env.buildId,
             "parentPid": Int(pid),
         ]
-        if let lang = env.uiLanguage, ["zh-Hans", "en"].contains(lang) { req["uiLanguage"] = lang }   // extra 带了（起局）照 extra
+        // 界面语言照原样带、由作业层认（install.py：中文界面用中文定名，其余英文；build.py：六门之外不设）。原先只带 zh-Hans / en，
+        //   法 / 日 / 西 / 繁中界面整个不带，作业层回落成中文：自签导出文件夹与说明成了中文（#502，11-16 维护者）
+        if let lang = env.uiLanguage, !lang.isEmpty { req["uiLanguage"] = lang }   // extra 带了（起局）照 extra
         extra.forEach { req[$0] = $1 }
         if let bundle = env.engineBundle { req["engineBundle"] = bundle.path; req["engineDir"] = bundle.path }
         // 环境准备不依赖游戏库：旧游戏库所在盘没插着时也要能跑

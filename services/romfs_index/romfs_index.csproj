@@ -4,6 +4,10 @@
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>disable</Nullable>
+    <!-- 发版随 App 预编为 NativeAOT 单文件（launchers/macos/bundle_engine.py）：玩家机每游戏构建直接执行，不再要随包 .NET 运行时。
+         写在工程里而不是 publish -p：全局属性会波及 Ryujinx.HLE 闭包里 netstandard2.0 的源码生成器工程（不能 AOT）——同 services/aot/S2A.Aot.csproj 的注释；
+         源码树现编（romfs_index.sh 的 dotnet build）不受影响，AOT 只在 publish 时发生 -->
+    <PublishAot>true</PublishAot>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../S2A.Services/S2A.Services.csproj" />

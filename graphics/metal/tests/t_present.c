@@ -228,8 +228,27 @@ static void t_layer(void) {
 //   8×4（2:1）拉伸上屏 → 铺满、比例一致，几何不报；6×4（1.5:1）拉伸 → 宽高比差 25% > 1%，几何报（画面整幅纯黑时不报：看不出变形 / 留边）；
 //   内容（出图比 16:9 宽才判）：48×9 两侧 16 列黑、中间有内容 → 报；黑底只有正中 4 列（logo 页）→ 不报；8×4 最左列黑 → 不判
 uint64_t gal_present_unfit(void); uint64_t gal_present_pillar_n(void);
-static void drain(id L) { (void)L; double t0 = now_s(); uint64_t a[4], b[4]; nxgal_window_stats(a);
-    for (;;) { struct timespec ts = {0, 5000000}; nanosleep(&ts, NULL); nxgal_window_stats(b); if (b[1] + b[2] + b[3] >= a[0] || now_s() - t0 > 3) break; } }
+// 几何判据在出图线程上更新（gal_present.m present_one → fit_geom），出图只把帧放进信箱：gal_finish 等的是主队列，不等出图线程取帧。
+//   整机负载高时出图线程落后，「几何恢复」那几帧还在信箱里就摘了图层 → 出图线程不再取帧、几何状态停在没满屏，之后每次判定都记一次几何（11-14 负载 30：10 遍红 2–3 遍，69 / 83 后段一律 +3）。
+// settle：等挂着图层交给出图线程的帧全部落定（上屏 + 顶掉 + 取不到 = 交出数）——确定的状态，不按墙钟。最后一帧不会被顶掉，落定即它已过 fit_geom（取不到另报红：没上屏几何就没更新）。
+//   g_unq：t_fit 开头前没交出图线程的出图次数（无图层时的出图）；t_fit 挂图层期间每次出图都交出图线程。60 秒只是卡死保护（到了报红，不当作等到）
+void gal_finish(void); uint64_t gal_present_judged(void);
+//   每次 settle 不单记一项（present_geo 轮数不定，项数会跟着变）：头一次不符记进 g_settle_bad，t_fit 末尾一项 CHECK 报
+static uint64_t g_unq, g_nd0; static char g_settle_bad[256];
+static void settle(const char *what) {
+    uint64_t s[4]; double t0 = now_s();
+    for (;;) { nxgal_window_stats(s); if (s[1] + s[2] + s[3] + g_unq >= s[0] || now_s() - t0 > 60) break; struct timespec ts = {0, 1000000}; nanosleep(&ts, NULL); }
+    if (!g_settle_bad[0] && (s[1] + s[2] + s[3] + g_unq < s[0] || s[3] != g_nd0))
+        snprintf(g_settle_bad, sizeof g_settle_bad, "%s：落定 %llu / %llu、取不到 +%llu", what,
+                 (unsigned long long)(s[1] + s[2] + s[3]), (unsigned long long)(s[0] - g_unq), (unsigned long long)(s[3] - g_nd0));
+}
+// 几何报不报要等：出图线程按这一几何上过屏（settle 后 g_geo_bad / 钉帧请求就位），且 settle 之后钉住的图判完。
+//   settle 前至多残留一张旧钉点（钉住时还是旧几何），所以等判定张数涨 2：第 2 张必是 settle 后钉的。每轮 settle 保证钉帧请求在下一次出图前已发出，3 轮必到（8 只防死循环，到了下面的 CHECK 照红）
+static void present_geo(uint32_t t, nxgal_crop *c, const char *what) {
+    nxgal_present(t, c); settle(what); gal_finish();
+    uint64_t j0 = gal_present_judged();
+    for (int k = 0; k < 8 && gal_present_judged() < j0 + 2; k++) { nxgal_present(t, c); settle(what); gal_finish(); }
+}
 static void present_n(uint32_t t, nxgal_crop *c, int n) { for (int k = 0; k < n; k++) { nxgal_present(t, c); struct timespec ts = {0, 2000000}; nanosleep(&ts, NULL); } }
 // 内容判据每 30 次出图钉住一张定格图、GPU 做完后在之后的出图里判，连续 2 次才计（gal_present.m）。每批 30 次出图里恰有一个钉点；
 // 批后 gal_finish 等主队列做完（钉住的那张必然做完），下一批第一次出图就判掉——3 批 + 1 次出图 = 确定 3 次抽样，后 2 次必是本图
@@ -241,11 +260,13 @@ enum { FP = 5, FIT_N = 3 * FP };
 // 满屏判据段只等主队列做完（gal_finish），不用 drain：离屏图层不显示，drain 等「显示 / 顶掉 / 取不到」落定每次都要等满 3 秒（那段 57 秒的大头）；判据看的是钉住的定格图，GPU 做完即可
 // 钉住的图交给判据队列时，队列上一张还没判完就顺延到之后的出图（gal_present.m「队列上一张还没判完就先不交」）：整机负载高时「3 批 + 1 次出图」里最后几次交接
 //   被顺延，钉住的图没判到就读数（11-02 体验线报：同一二进制三遍一红「未满屏 +0 记 +0」）。改为补出图直到判定张数真涨了 3（上限 40 次防死等）
+//   11-14 再修：涨 3 不够。进来时至多两张旧图要先判掉——A：上一段钉住、还没交的；B：本图第 1 次出图时到点钉住的「上一张」（钉点取钉的那一刻的最新槽，本图还没进槽）。
+//   之后钉的必是本图。内容要连续 2 次才计，所以要等涨 2 + 2 = 4：出图快时三批里自然判够 4 张，整机负载高时只判到 A、B、本图 1 张就读数 → 「期望照报 实得 +0」（按机制推出的缺口，11-14 负载 60–77、4 份并发 40 遍没撞上）
 uint64_t gal_present_judged(void);
 static void present_fit(uint32_t t, nxgal_crop *c) {
     uint64_t j0 = gal_present_judged();
     for (int k = 0; k < 3; k++) { present_n(t, c, FP); gal_finish(); }
-    for (int k = 0; k < 40 && gal_present_judged() < j0 + 3; k++) { nxgal_present(t, c); gal_finish(); }
+    for (int k = 0; k < 40 && gal_present_judged() < j0 + 4; k++) { nxgal_present(t, c); gal_finish(); }
 }
 static uint32_t mk_band(int w, int h, int lo, int hi) {
     nxgal_tex_info i = info2d(w, h, RGBA8, 4); uint32_t t = nxgal_tex_create(&i); uint8_t *d = calloc((size_t)w * h, 4);
@@ -272,23 +293,25 @@ static void t_fit(void) {
     ((id (*)(id, SEL))objc_msgSend)(L, sel_registerName("retain"));
     nxgal_window_set_size(64, 32); nxgal_window_set_layer((void *)L);
     gal_present_fit_period(FP);
+    { uint64_t s[4]; nxgal_window_stats(s); g_unq = s[0] - (s[1] + s[2] + s[3]); g_nd0 = s[3]; }
     uint32_t t = mk_src(8, 4, RGBA8, NULL);
     nxgal_crop c = crop(0, 0, 0, 0, 0, 0); c.stretched = 1;
-    present_n(t, &c, 4); gal_finish();
-    uint64_t u0 = gal_present_unfit(); present_n(t, &c, 4); gal_finish(); uint64_t u1 = gal_present_unfit();
+    present_n(t, &c, 4); settle("8×4 拉伸上屏"); gal_finish();   // 上一段图层用例是信箱几何（没满屏）：出图线程按铺满上过屏、几何才恢复
+    uint64_t u0 = gal_present_unfit(); present_n(t, &c, 4); settle("8×4 拉伸上屏"); gal_finish(); uint64_t u1 = gal_present_unfit();
     CHECK(u1 == u0, "8×4 拉伸到 64×32：期望不报 实得 +%llu", (unsigned long long)(u1 - u0));
     nxgal_crop c6 = crop(0, 6, 0, 4, 0, 0); c6.stretched = 1;
-    // 几何红要等钉住的定格图确认有内容（gal_present.m fit_geom）：几何没满屏后下一次出图就钉一张；每轮 2 次出图 + 出图做完 + 主队列做完，3 轮必判到
+    // 几何红要等钉住的定格图确认有内容（gal_present.m fit_geom）：几何没满屏后下一次出图就钉一张；按 present_geo 等出图线程上屏、钉住的图判完
     // （挂着离屏图层出图慢——无头机 gate-host 取不到画布——用例只出几次图）。反例先：同样 6×4 拉伸变形但整幅纯黑（开机黑帧），屏上看不出变形 / 留边，期望不报
     uint32_t blk = mk_band(6, 4, 0, 0);
-    for (int k = 0; k < 3; k++) { present_n(blk, &c6, 2); gal_finish(); gal_finish(); }
+    present_geo(blk, &c6, "6×4 纯黑拉伸上屏");
     uint64_t ub = gal_present_unfit();
     CHECK(ub == u1, "6×4 拉伸到 64×32 但整幅纯黑：期望不报几何 实得 +%llu", (unsigned long long)(ub - u1));
-    for (int k = 0; k < 3; k++) { present_n(t, &c6, 2); gal_finish(); gal_finish(); }
+    present_geo(t, &c6, "6×4 拉伸上屏");
     uint64_t u2 = gal_present_unfit();
     CHECK(u2 > ub, "6×4 拉伸到 64×32（有内容）：期望报几何 实得 +%llu", (unsigned long long)(u2 - ub));
     nxgal_tex_release(blk);
-    present_n(t, &c, 4); gal_finish();   // 几何恢复
+    present_n(t, &c, 4); settle("几何恢复"); gal_finish();   // 几何恢复：出图线程按铺满上过屏才算（摘图层后出图线程不再取帧，几何状态就停在这里）
+    CHECK(!g_settle_bad[0], "挂图层出图：期望出图线程每次都把交出的帧全部落定、取不到 +0 实得 %s", g_settle_bad);
     // 内容：只在出图比 16:9 宽时判（无窗口局也判，这里摘掉图层：离屏图层不接显示，连出几百帧时出图队列等画布会把主队列拖住约 4 秒，撞上 3 秒卡死保护）。48×9：16:9 宽 16，每侧内缩 16
     nxgal_window_set_layer(NULL); nxgal_window_set_size(96, 18);
     uint32_t mid = mk_band(48, 9, 16, 32), logo = mk_band(48, 9, 22, 26), full = mk_band(48, 9, 0, 48), narrow = mk_band(8, 4, 1, 8);

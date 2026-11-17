@@ -44,7 +44,7 @@ public final class BootSpecTest {
         s.sessionId = "3f2c1a9e-7b6d-4c8f-9a10-2d4e6f8a0b1c";
         String root = "sha256-" + "ab".repeat(32);
         s.game = new BootContract.Game("0100000000ABCDEF", root, "revisions/" + root, "game-build-artifact.json", "cd".repeat(32),
-            BootContract.REWRITE_ABI, "0.1.0", "vulkan", "exefs/main.npdm", "ctl/control.nacp", "romfs", "modules", 8, 4096,
+            BootContract.REWRITE_ABI, "0.1.0", "vulkan", "exefs/main.npdm", "ctl/control.nacp", "romfs", "modules", null, 8, 4096,
             Collections.emptyList(), null, null);
         s.gameRoot = "/data/user/10/org.s2arm.android/files/games/0100000000ABCDEF";
         s.userRoot = "/data/user/10/org.s2arm.android/files/user/0";

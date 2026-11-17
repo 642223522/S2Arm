@@ -95,14 +95,14 @@ def rel(p, r):   # 表里来源列一律 / 分隔（Windows 出包机上 relpath
 def sources(roots):
     """(source bytes, stage or None, where) for every shader in the input paths"""
     for r in roots:
-        if os.path.isfile(r):
+        if os.path.isfile(r):   # 单个文件（exefs/main）照旧；RomFS 目录或镜像 romfs.std 走下面 romfs_list
             with open(r, 'rb') as f: head = f.read(4)
             if head == b'NSO0':
                 for k, s in enumerate(nso_strings(r)): yield s, None, f'{os.path.basename(r)}#{k}'
             elif stage_of(r) or any_stage(r):
                 yield text_of(open(r, 'rb').read()), stage_of(r), os.path.basename(r)
             continue
-        if not os.path.isdir(r):
+        if not romfs_list.is_dir(r):   # 同 os.path.isdir；RomFS 不落散文件时 romfs/ 不在、旁边有 romfs.std 也算
             raise ValueError(f'输入路径不存在：{r}')
         for d, _, fs in romfs_list.walk(r):
             for fn in sorted(fs):
@@ -110,7 +110,7 @@ def sources(roots):
                 if fn.endswith('.mvgl'):
                     try: a = mvgl.Archive(p)
                     except ValueError:
-                        with open(p, 'rb') as probe:
+                        with romfs_list.open_file(p) as probe:
                             if probe.read(4) == b'AFS2': continue
                         raise
                     for nm in sorted(a.files):
@@ -124,7 +124,7 @@ def sources(roots):
                         st = 'vert' if nm.endswith('_v.shader') else 'frag' if nm.endswith('_f.shader') else None
                         yield text_of(b.read(nm)), st, f'/{rel(p, r)}:{nm}'
                 elif stage_of(fn) or any_stage(fn):
-                    yield text_of(open(p, 'rb').read()), stage_of(fn), '/' + rel(p, r)
+                    yield text_of(romfs_list.read_file(p)), stage_of(fn), '/' + rel(p, r)
 
 # GLSL 改写层（graphics/nvn/gfx/gl/gl_glsl_es.c）：离线链与宿主运行时兜底共用一份 C 实现；这里每个进程编一次它的命令行入口（S2A_GLSL_ES_MAIN），逐支调用
 ES_SRC = Path(__file__).resolve().parents[1] / "graphics/nvn/gfx/gl" / "gl_glsl_es.c"

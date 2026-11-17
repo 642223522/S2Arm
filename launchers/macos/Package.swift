@@ -26,7 +26,7 @@ let package = Package(
         .testTarget(name: "S2ArmAppleAdapterTests", dependencies: [.product(name: "S2ArmAppleAdapter", package: "adapter")],
                     swiftSettings: [.swiftLanguageMode(.v5)]),
         // 新前端的本机控制口命令表（NX2Apple/S2ArmControl.swift，11-07）
-        .testTarget(name: "S2ArmAppleTests", dependencies: [.product(name: "NX2AppleUI", package: "frontend"),
+        .testTarget(name: "S2ArmAppleTests", dependencies: ["S2ArmApple", .product(name: "NX2AppleUI", package: "frontend"),
                                                             .product(name: "S2ArmAppleAdapter", package: "adapter")],
                     swiftSettings: [.swiftLanguageMode(.v5)])
     ]

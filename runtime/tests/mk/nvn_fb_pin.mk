@@ -1,6 +1,6 @@
 # native-test-nvn_fb_pin：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += nvn_fb_pin
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # 同遍反馈采样：采样器钉住一级的绘制读那一级的单级视图（fb_pinned_level，上游参考实现（MIT）56e4577b）；Metal 4 / 3 两路
 $(BUILD)/tests/t_nvn_fb_pin: graphics/nvn/tests/t_nvn_fb_pin.m graphics/nvn/gfx/nvn/nvn_mtl.m $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \

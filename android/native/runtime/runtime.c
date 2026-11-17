@@ -234,6 +234,13 @@ static int run_common(const struct s2a_android_runtime_request *r,
         } else names[count++] = r->module_names[i];
     }
     // 包内能力清单（产物根 s2a_caps.tsv，tools/make_pack.py 放进游戏数据根，iOS / Mac 同一份）：装载前读，只在环境变量未设时写 S2A_WIDEN_CAPS / S2A_FPS60
+    // 停帧救场留下的「这款帧率补丁下次也关」（docs_android.h s2a_android_stall_off_apply；state 目录即上面绑的 S2A_DOCS）：要在能力清单之前，清单才不会把 60 帧写回 1
+    {
+        int stall = s2a_android_stall_off_apply(r->services.state_dir);
+        if (stall == 1) fprintf(stderr, "[s2a] 停帧救场标记 cpatch_stall_off 在：这款上次画面停住时关过帧率补丁，本局 60 帧 / 帧率补丁按关（S2A_FPS60=0）\n");
+        else if (stall == 2) fprintf(stderr, "[s2a] 停帧救场标记 cpatch_stall_off 在，但启动环境已给 S2A_FPS60，按启动环境\n");
+        else if (stall < 0) fprintf(stderr, "[s2a] 【红】停帧救场标记在，写 S2A_FPS60=0 失败（errno=%d），本局帧率补丁照清单\n", -stall);
+    }
     s2a_caps_apply(r->services.game_data_dir);
     if (r->module_source) {
         s2a_nro_table_load(r->services.game_data_dir);

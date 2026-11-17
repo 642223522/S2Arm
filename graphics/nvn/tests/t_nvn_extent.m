@@ -99,9 +99,9 @@ int main(int argc, char **argv) { @autoreleasepool {
     NVNtextureView v = view(1, 1); API(nvnTexturePoolRegisterTexture)(&textures, 256, &alias, &v);
     // Match wd_draw -> wd_tex_scales -> tex_fast_rid's slow view path: the
     // caller already owns the widen lock before taking the registry lock.
-    pthread_mutex_lock(&g_wd_mu); pthread_mutex_lock(&g_rmu);
+    pthread_mutex_lock(&g_wd_mu); os_unfair_lock_lock(&g_rmu);
     id<MTLTexture> old_view = tex_by_id(256);
-    pthread_mutex_unlock(&g_rmu); pthread_mutex_unlock(&g_wd_mu);
+    os_unfair_lock_unlock(&g_rmu); pthread_mutex_unlock(&g_wd_mu);
     REQUIRE(old_view && old_view.width == (NSUInteger)(lw >> 1) && old_view.height == (NSUInteger)(lh >> 1));
     if (wide || tall) { g_wd = s2a_widen_init(wide ? 2346 : 1920, wide ? 1080 : 1350, S2A_WIDEN_FULL); REQUIRE(g_wd > 0); }
     g_wd_gen = s2a_screen_gen();
@@ -110,9 +110,9 @@ int main(int argc, char **argv) { @autoreleasepool {
     REQUIRE(storage.width == (NSUInteger)pw && storage.height == (NSUInteger)ph && storage.mipmapLevelCount == (NSUInteger)levels);
     REQUIRE(API(nvnTextureGetWidth)(&texture) == lw && API(nvnTextureGetHeight)(&texture) == lh);
     REQUIRE(g_pass.tw == (NSUInteger)(pw >> 1) && g_pass.th == (NSUInteger)(ph >> 1));
-    pthread_mutex_lock(&g_wd_mu); pthread_mutex_lock(&g_rmu);
+    pthread_mutex_lock(&g_wd_mu); os_unfair_lock_lock(&g_rmu);
     id<MTLTexture> selected = tex_by_id(256);
-    pthread_mutex_unlock(&g_rmu); pthread_mutex_unlock(&g_wd_mu);
+    os_unfair_lock_unlock(&g_rmu); pthread_mutex_unlock(&g_wd_mu);
     REQUIRE(selected && selected.width == (NSUInteger)(pw >> 1) && selected.height == (NSUInteger)(ph >> 1));
     REQUIRE(selected.mipmapLevelCount == 1 && selected.arrayLength == 1 && selected.parentRelativeLevel == 1 && selected.parentRelativeSlice == 1);
     if (wide || tall) REQUIRE(storage != old && selected != old_view);

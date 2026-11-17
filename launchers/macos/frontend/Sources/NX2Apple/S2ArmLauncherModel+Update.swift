@@ -33,7 +33,9 @@ extension S2ArmLauncherModel {
         _ = sparkleUpdate
     }
 
-    /// 启动时一次：查版本 + 取公告，按「永远只给最新一期」算出弹窗 / 横幅 / 消息（pack/jobs/updater.py inbox）。有新版照旧在后台下好，不打断玩家；
+    /// 启动时一次：查版本 + 取公告，按「永远只给最新一期」算出弹窗 / 横幅 / 消息（pack/jobs/updater.py inbox）。有新版只提示、不下载：
+    ///   Sparkle 2 下好解开的新版，App 退出时一定会装上（SPUUserDriver.h showReadyToInstallAndRelaunch、SPUUpdaterDelegate.h willInstallUpdateOnQuit：
+    ///   「Sparkle will always attempt to install the update when the app terminates」），后台先下 = 玩家没点也被换版（#1283）。玩家点「现在更新」才下。
     ///   查不到（没网、GitHub 不通）什么都不显示
     func loadInbox() {
         Task {
@@ -43,7 +45,6 @@ extension S2ArmLauncherModel {
             unreadMessages = result["unread"] as? Int ?? 0
             if let update = result["update"] as? [String: Any], update["available"] as? Bool == true { availableUpdate = update }
             updatePopup = result["popup"] as? [String: Any]
-            if availableUpdate != nil, updateState == .idle { downloadUpdate() }
         }
     }
 
@@ -108,10 +109,16 @@ extension S2ArmLauncherModel {
         try? data.write(to: folder.appendingPathComponent("\(version).json"))
     }
 
-    /// 只有玩家点了才重启。有局 / 任务在跑：先拦下说清（草图④：前置检查，不进换版）。替换、回滚、重启都由 Sparkle 做
+    /// 只有玩家点了才换版。有局 / 任务在跑：先拦下说清（草图④：前置检查，不进换版）。还没下：先下，下好（SparkleUpdate.showReady）接着换。
+    ///   替换、回滚、重启都由 Sparkle 做
     func restartToUpdate() {
-        if busy { updateGate = session?.kind == .play ? "update.gate.playing" : "update.gate.busy"; return }
-        guard sparkleUpdate.readyToInstall else { return }
+        if busy { updateGate = session?.kind == .play ? "update.gate.playing" : "update.gate.busy"; installWhenReady = false; return }
+        guard sparkleUpdate.readyToInstall else {
+            installWhenReady = true
+            downloadUpdate()
+            return
+        }
+        installWhenReady = false
         updatePopup = nil
         sparkleUpdate.installNow()
     }

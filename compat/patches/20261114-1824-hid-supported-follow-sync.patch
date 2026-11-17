@@ -1,0 +1,35 @@
+diff --git a/src/Ryujinx.HLE/HOS/Services/Hid/HidDevices/NpadDevices.cs b/src/Ryujinx.HLE/HOS/Services/Hid/HidDevices/NpadDevices.cs
+index 4dd8ac2b8a363d18c34dba106d653a58df6e0e87..8572344402e597656118c5afcc0fa62581c16453 100644
+--- a/src/Ryujinx.HLE/HOS/Services/Hid/HidDevices/NpadDevices.cs
++++ b/src/Ryujinx.HLE/HOS/Services/Hid/HidDevices/NpadDevices.cs
+@@ -191,6 +191,10 @@ namespace Ryujinx.HLE.HOS.Services.Hid
+         }
+ 
+         // S2A：输入泵每 250 ms 查游戏收不收掌机格 / Player1（不分配，GetSupportedPlayers 是迭代器）
++        // S2A：游戏声明收哪些手柄号 / 样式之后、这次服务调用返回之前回调（IHidServer SetSupportedNpadIdType / SetSupportedNpadStyleSet）：
++        //   宿主虚拟手柄跟随游戏声明改接（掌机格 → Player1 Pro 等）在声明这一刻同步做完，同真机——掌机里握着的 Joy-Con 在声明时就归到它收的手柄号，
++        //   游戏之后 ActivateNpad、建自己的手柄对象时看到的已是改好的连接。原先只靠输入泵 250 ms 轮询，改接落在游戏初始化中途任意时刻
++        public static System.Action<Switch> S2ASupportedChanged;
+         internal bool IsSupportedPlayer(PlayerIndex player) => (uint)player < (uint)_supportedPlayers.Length && _supportedPlayers[(int)player];
+ 
+         internal IEnumerable<PlayerIndex> GetSupportedPlayers()
+diff --git a/src/Ryujinx.HLE/HOS/Services/Hid/IHidServer.cs b/src/Ryujinx.HLE/HOS/Services/Hid/IHidServer.cs
+index 4d3e4fca5faf15c707ec00295c007de6f11de840..3a61bd60fbfdad06a6951b72d34780d8738247dd 100644
+--- a/src/Ryujinx.HLE/HOS/Services/Hid/IHidServer.cs
++++ b/src/Ryujinx.HLE/HOS/Services/Hid/IHidServer.cs
+@@ -774,6 +774,7 @@ namespace Ryujinx.HLE.HOS.Services.Hid
+ 
+             context.Device.Hid.Npads.SupportedStyleSets = type;
+             Ryujinx.Common.S2AInputCaps.RecordStyleSet((uint)type);  // S2Arm: 收局 [输入能力] 摘要
++            NpadDevices.S2ASupportedChanged?.Invoke(context.Device);  // S2Arm：虚拟手柄在声明这一刻跟随（NpadDevices）
+ 
+             return ResultCode.Success;
+         }
+@@ -817,6 +818,7 @@ namespace Ryujinx.HLE.HOS.Services.Hid
+             }
+ 
+             Logger.Stub?.PrintStub(LogClass.ServiceHid, $"{supportedPlayerIds.Length} Players: " + string.Join(",", supportedPlayerIds.ToArray()));
++            NpadDevices.S2ASupportedChanged?.Invoke(context.Device);  // S2Arm：虚拟手柄在声明这一刻跟随（NpadDevices）
+ 
+             return ResultCode.Success;
+         }

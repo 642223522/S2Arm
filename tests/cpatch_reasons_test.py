@@ -207,6 +207,36 @@ class ReasonsTest(unittest.TestCase):
                     dict(code=code, message_zh=message, raw=raw),
                 )
 
+    def test_nop_stale_register_only_when_left_by_a_call(self):
+        # 11-16（cpatch.nop_stale）：补丁 nop 掉的指令原本写的寄存器，后面被读、且此前最近一次是被函数调用改写的才挡。期望手写：
+        #   ① bl；adrp x8；add x8；str x8 —— nop 掉 adrp/add → 挡（x8 是调用留下的，在 0xc 被读）
+        #   ② ldr x8,[x2]；adrp x8；add x8；str x8 —— 同样 nop → 不挡（x8 是游戏自己 ldr 出的，真机一样）
+        #   ③ ldr w0,[x19,#0xa0]；bl；mov x20,x0 —— nop 掉 bl → 不挡（读的是前面 ldr 出的 x0，「关动态分辨率」写法）
+        #   ④ bl；bl；mov x20,x0 —— nop 掉第二个 bl → 挡（x0 是第一个调用的返回值）
+        sys.path.insert(0, str(ROOT / "pack")); import cpatch
+        nop = bytearray((0xD503201F).to_bytes(4, "little"))
+        img = lambda *ws: b"".join(struct.pack("<I", w) for w in ws) + bytes(0x200)
+        BL, ADRP, ADD, STR, LDR, LDRW0, MOV = 0x94000040, 0x90000008, 0x91004108, 0xF9000028, 0xF9400048, 0xB940A260, 0xAA0003F4
+        self.assertEqual(cpatch.nop_stale(img(BL, ADRP, ADD, STR), 0x100, {4: nop, 8: nop}), (4, 0xC, "x8"))
+        self.assertIsNone(cpatch.nop_stale(img(LDR, ADRP, ADD, STR), 0x100, {4: nop, 8: nop}))
+        self.assertIsNone(cpatch.nop_stale(img(LDRW0, BL, MOV), 0x100, {4: nop}))
+        self.assertEqual(cpatch.nop_stale(img(BL, BL, MOV), 0x100, {4: nop}), (4, 8, "x0"))
+
+    def test_real_plan_rejects_nop_leaving_a_call_clobbered_register(self):
+        # 出包级：补丁 nop 掉 adrp/add、x8 由前面的 bl 留下又被 str 读 → 不收，原因点名；另一份只 nop 掉 0x100 的 mov（后面不读）照收
+        with tempfile.TemporaryDirectory() as temporary:
+            root, index = fixture(Path(temporary))
+            main = bytearray((root / "exefs/main").read_bytes())
+            struct.pack_into("<IIII", main, 0x100 + 0x200, 0x94000040, 0x90000008, 0x91004108, 0xF9000028)
+            (root / "exefs/main").write_bytes(bytes(main))
+            ids = write_patches(index, [(0x204, "1F2003D51F2003D5"), (0x100, "1F2003D5")])
+            result = subprocess.run([sys.executable, str(ROOT / "pack/cpatch.py"), "plan", str(root), "", str(index)],
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            rejected = [line.split("\t") for line in (root / "cpatch_plan.log").read_text().splitlines() if line.startswith("不收\t")]
+            self.assertEqual([(r[1], r[4]) for r in rejected],
+                             [(f"gfx:{ids[0]}", "把 main+0x204 改成空指令后，它原本要写的 x8 在 main+0x20c 被读：读到的是残值，可能被当指针读而崩")])
+
     def test_real_plan_does_not_assume_module_or_hash_whitelist(self):
         with tempfile.TemporaryDirectory() as temporary:
             root, index = fixture(Path(temporary))

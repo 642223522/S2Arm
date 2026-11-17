@@ -1,0 +1,76 @@
+diff --git a/src/Ryujinx.Audio/Renderer/Dsp/AudioProcessor.cs b/src/Ryujinx.Audio/Renderer/Dsp/AudioProcessor.cs
+index 464027b79cd112f6d60049df8ccef0ade759441a..caaf5c9a3f99382abdf9c5e7638a772709254469 100644
+--- a/src/Ryujinx.Audio/Renderer/Dsp/AudioProcessor.cs
++++ b/src/Ryujinx.Audio/Renderer/Dsp/AudioProcessor.cs
+@@ -410,11 +410,25 @@ namespace Ryujinx.Audio.Renderer.Dsp
+ 
+             for (int i = 0; i < _sessionCommandList.Length; i++)
+             {
+-                if (_sessionCommandList[i] != null)
++                RendererSession session = _sessionCommandList[i];
++
++                if (session != null)
+                 {
+-                    _sessionCommandList[i].CommandList.Process(OutputDevices[i]);
+-                    _sessionCommandList[i].CommandList.Dispose();
+-                    _sessionCommandList[i] = null;
++                    // S2Arm: 命令级异常已在 CommandList.Process 内按拍隔离；这里再兜一层非命令异常，
++                    //   保证会话槽一定清空、下一拍还能继续（inline 模式下异常原本会打穿渲染线程）
++                    try
++                    {
++                        session.CommandList.Process(OutputDevices[i]);
++                    }
++                    catch (Exception ex)
++                    {
++                        Logger.Error?.Print(LogClass.AudioRenderer, $"DSP session {i} failed; dropping period: {ex}");
++                    }
++                    finally
++                    {
++                        session.CommandList.Dispose();
++                        _sessionCommandList[i] = null;
++                    }
+                 }
+             }
+ 
+diff --git a/src/Ryujinx.Audio/Renderer/Dsp/Command/CommandList.cs b/src/Ryujinx.Audio/Renderer/Dsp/Command/CommandList.cs
+index 2f522d0ae0cd28bc5468ba6884be719984c8d74b..fc72cea5cf08079b25cb395db6d1fa65e69a295c 100644
+--- a/src/Ryujinx.Audio/Renderer/Dsp/Command/CommandList.cs
++++ b/src/Ryujinx.Audio/Renderer/Dsp/Command/CommandList.cs
+@@ -118,9 +118,13 @@ namespace Ryujinx.Audio.Renderer.Dsp.Command
+ 
+             StartTime = (ulong)PerformanceCounter.ElapsedNanoseconds;
+ 
++            // S2Arm: 单条命令抛异常（损坏的音频参数等）只丢这一拍：记命令类型 / NodeId，后面的命令不再执行，
++            //   但仍逐个归还对象池；异常不再沿 inline 的渲染线程主循环打穿（S2A_AUDIO_INLINE 缺省开）
++            bool failed = false;
++
+             foreach (ICommand command in Commands)
+             {
+-                if (command.Enabled)
++                if (!failed && command.Enabled)
+                 {
+                     bool shouldMeter = command.ShouldMeter();
+ 
+@@ -130,10 +134,19 @@ namespace Ryujinx.Audio.Renderer.Dsp.Command
+                     {
+                         startTime = PerformanceCounter.ElapsedNanoseconds;
+                     }
+-                    
+-                    command.Process(this);
+ 
+-                    if (shouldMeter)
++                    try
++                    {
++                        command.Process(this);
++                    }
++                    catch (Exception ex)
++                    {
++                        failed = true;
++
++                        Logger.Error?.Print(LogClass.AudioRenderer, $"Command {command.GetType().Name} (node {command.NodeId}) failed; dropping period: {ex}");
++                    }
++
++                    if (shouldMeter && !failed)
+                     {
+                         ulong effectiveElapsedTime = (ulong)(PerformanceCounter.ElapsedNanoseconds - startTime);
+ 

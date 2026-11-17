@@ -5,6 +5,7 @@ static _Atomic uint64_t g_dsh_ok, g_dsh_failed, g_dsh_skipped, g_dsh_reused, g_d
 static _Atomic uint64_t g_dsh_eager_n, g_dsh_eager_ok, g_dsh_eager_hit, g_dsh_eager_waited, g_dsh_eager_cancel;   // 后台预编（dsh_eager_start）：交后台 / 编好 / 首遇复用 / 首遇时还在编等了 / 首遇时没开始改同步
 // 开发浮层「首遇现建」读（runtime/src/hud.c 经 dlsym）：成功 / 失败 / 跳过 / 复用上局 / 输出类型变体
 void s2a_dsh_stats(uint64_t out[5]) { out[0] = atomic_load(&g_dsh_ok); out[1] = atomic_load(&g_dsh_failed); out[2] = atomic_load(&g_dsh_skipped); out[3] = atomic_load(&g_dsh_reused); out[4] = atomic_load(&g_dsh_typed); }
+static void dsh_salvage_summary(void);   // 着色器补料收局一行（dsh_salvage.inc，在下面才包含）
 static void dsh_summary(int normal) {
     if (s2a_gfx_mode() != S2A_GFX_DIRECT) return;
     LOG("直连着色器现编汇总：成功 %llu、失败 %llu、跳过 %llu、复用上局 %llu、输出类型变体 %llu（%s）",
@@ -22,6 +23,7 @@ static void dsh_summary(int normal) {
     // 顶点补齐变体（nvn_mtl.m vp_ask）：运行期配上的片元要读顶点不写的 user(locn) 时在设备上编
     uint64_t vp[2]; mtl_vp_stats(vp);
     if (vp[0] || vp[1]) LOG("顶点补齐变体：设备编好 %llu / 编不出 %llu", (unsigned long long)vp[0], (unsigned long long)vp[1]);
+    dsh_salvage_summary();
 }
 __attribute__((constructor)) static void dsh_register_summary(void) { s2a_direct_summary_register(dsh_summary); }
 // 本机现编库的翻译器指纹（S2A.Dsh s2a_dsh_xfp，16 位十六进制）；没链 S2A.Aot 为 NULL
@@ -77,6 +79,14 @@ static int dsh_stage(const uint8_t *cd, const uint8_t *ctl, uint32_t *ncode, uin
     int st = memcmp(cd, gfx_magic, 4) ? 2 : t == 1 ? 0 : t == 5 ? 1 : t == 4 ? 3 : -1;
     return !*ncode || *ncode >= (1u << 24) || *nctl < 0x100 || *nctl >= (1u << 20) ? -1 : st;
 }
+#include "dsh_salvage.inc"
+// 着色器补料（dsh_salvage.inc）：k = 16 位十六进制键；control / code = 此刻有效的控制段 / 代码区（认不出阶段就只记索引）
+static void dsh_salvage(const char *k, int kind, const void *control, uint64_t code, const char *why) {
+    uint32_t ncode = 0, nctl = 0; int st = -1;
+    if (control && code && (uintptr_t)control < (1ull << 47)) st = dsh_stage((const uint8_t *)(uintptr_t)code, control, &ncode, &nctl);
+    dsh_salvage_put(k, kind, st, st >= 0 ? control : NULL, nctl, st >= 0 ? (const void *)(uintptr_t)code : NULL, ncode, why);
+}
+void dm_shader_salvage(const char *k16, int kind, uint64_t code, const void *control, const char *why) { dsh_salvage(k16, kind, control, code, why); }
 
 // 缺库的键先登记、到第一次真正用到才现编（10-27 交付线两段式出包）：ProgramSetShaders 时游戏会把它所有的程序一口气建出来（斯普拉遁3 开机 10 秒 1.26 万个），
 //   多数一局里根本不画；在那里同步现编，热键版包开机要卡上万次。所以这里只拷下控制段（只在这次调用里有效）记进待编表，
@@ -218,6 +228,7 @@ void dm_shader_miss(const uint8_t key[8], uint64_t code, const void *control) {
     char k[17]; for (int i = 0; i < 8; i++) snprintf(k + 2 * i, 3, "%02x", key[i]);
     if (!control || !code) { atomic_fetch_add_explicit(&g_dsh_skipped, 1, memory_order_relaxed); return; }
     if (mtl_shmap_known(k) && mtl_shlib_has(k)) { return; }   // 映射表有、库里没有（热键版包的冷键）照样走现编，见 nvn_mtl.m mtl_shlib_has
+    if (!mtl_shmap_known(k)) dsh_salvage(k, DSV_NOMAP, control, code, NULL);   // 着色器补料：映射表里没有（热键版包的冷键在表里、不算）
     dsh_comp_fn comp = dsh_comp();
     const uint8_t *ctl = control, *cd = (const uint8_t *)(uintptr_t)code; uint32_t ncode, nctl;
     int st = dsh_stage(cd, ctl, &ncode, &nctl);
@@ -254,6 +265,7 @@ static int dsh_nvn2_pend(const uint8_t key[8], const char *k, uint64_t code, con
         atomic_fetch_add_explicit(&g_dsh_skipped, 1, memory_order_relaxed); return -1;
     }
     dsh_dump(k, control, nctl, code, ncode);
+    if (!mtl_shmap_known(k)) dsh_salvage(k, DSV_NOMAP, control, code, NULL);   // 着色器补料（同 dm_shader_miss）
     const char *out = getenv("DM_MSL_FALLBACK");
     if (!out || !*out) { atomic_fetch_add_explicit(&g_dsh_skipped, 1, memory_order_relaxed); return -1; }
     mkdir(out, 0755);
@@ -319,8 +331,10 @@ int dm_shader_miss_late(const char *k16, uint64_t code, const void *control) {
         snprintf(fp, sizeof fp, "%s/%s.fail.code", out, k); if ((f = fopen(fp, "wb"))) { fwrite(cd, 1, ncode, f); fclose(f); }
         LOG("直连着色器现编失败的输入已存：%s/%s.fail.ctl / .fail.code（控制段 %u 字节、代码区 %u 字节；反馈问题时请附上）", out, k, e->nctl, ncode);
     }
-    int st = e->st; free(e);
-    if (rc) { atomic_fetch_add_explicit(&g_dsh_failed, 1, memory_order_relaxed); atomic_fetch_add(&g_dsh_bad, 1); LOG("【红】直连着色器现编失败：%s（%s）rc=%d", k, dsh_nm[st], rc); return 0; }
+    int st = e->st; uint32_t enctl = e->nctl; uint8_t *ectl = rc > 0 ? malloc(enctl) : NULL; if (ectl) memcpy(ectl, e->ctl, enctl); free(e);
+    if (rc) { atomic_fetch_add_explicit(&g_dsh_failed, 1, memory_order_relaxed); atomic_fetch_add(&g_dsh_bad, 1); LOG("【红】直连着色器现编失败：%s（%s）rc=%d", k, dsh_nm[st], rc);
+        if (rc > 0) { char why[64]; snprintf(why, sizeof why, "translator rc=%d (%s)", rc, dsh_nm[st]); if (ectl) dsh_salvage_put(k, DSV_COMPFAIL, st, ectl, enctl, code ? (const void *)(uintptr_t)code : NULL, ncode, why); }   // 着色器补料：控制段用待编表里的拷贝
+        free(ectl); return 0; }
     mtl_shmap_rt_add(k, dsh_nm[st]);
     uint64_t n = atomic_fetch_add_explicit(&g_dsh_ok, 1, memory_order_relaxed) + 1;
     LOG("直连着色器首遇现编 %llu 次：%s（%s，%.1f ms）", (unsigned long long)n, k, dsh_nm[st], (now_ns() - t0) / 1e6);
@@ -454,6 +468,17 @@ int dm_shader_vpad_cached(const uint8_t key[8], int st, uint32_t mask, char *pat
 }
 // 后台出归约变体用的拷贝（nvn_mtl.m se_kick）：控制段只在 SetShaders 里保证有效、代码区游戏也可能另用，提交线程上先整份拷下（控制段在前、代码区在后），
 //   后台拿拷贝调 dm_shader_se（它只读 [code, code + 代码长) 与控制段）。*code_out / *control_out 指进返回的那块，调用方 free；NULL = 不是认得的着色器或内存不够
+// 出包库里的计算着色器在设备上按本机翻译器重出一份源码（v0.4.1 重译抢跑，nvn_mtl.m cps_retrans）：兜底目录写 <键>_b.metal + .json（已有本机同链同指纹的就直接用）。
+//   出包库是旧翻译器出的（只升级 App 不重写已出包的库，graphics/tools/direct/COMPUTE_REPAIR.md），本机翻译器带大计算核拆分（DshOutline）。成功 0、做不了 1
+int dm_shader_retrans(const uint8_t key[8], uint64_t code, const void *control) {
+    char k[17]; for (int i = 0; i < 8; i++) snprintf(k + 2 * i, 3, "%02x", key[i]);
+    dsh_comp_fn comp = dsh_comp(); const char *out = getenv("DM_MSL_FALLBACK"); uint32_t ncode = 0, nctl = 0;
+    int st = control && code ? dsh_stage((const uint8_t *)(uintptr_t)code, control, &ncode, &nctl) : -1;
+    if (!comp || !out || !*out || st != 2) { LOG("【红】直连：%s 要重译，做不了（%s）", k, !comp ? "S2A.Aot 没链进来" : !out || !*out ? "没设 DM_MSL_FALLBACK" : "不是计算着色器或长度不对"); return 1; }
+    mkdir(out, 0755);
+    if (dsh_comp_src_locked(comp, k, st, (const void *)(uintptr_t)code, ncode, control, nctl, out)) { atomic_fetch_add_explicit(&g_dsh_failed, 1, memory_order_relaxed); LOG("【红】直连：%s 重译失败", k); return 1; }
+    return 0;
+}
 void *dm_shader_snap(uint64_t code, const void *control, uint64_t *code_out, const void **control_out) {
     uint32_t ncode = 0, nctl = 0;
     if (!code || !control || dsh_stage((const uint8_t *)(uintptr_t)code, control, &ncode, &nctl) < 0) return NULL;

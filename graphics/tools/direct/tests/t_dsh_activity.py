@@ -21,6 +21,10 @@ for pos in range(brace, len(source)):
         break
 else:
     raise AssertionError('unbalanced production Ticker')
+# Ticker 写活动行用的具名 record + 源码生成上下文在 DshActivity.cs（dsh_batch 是 NativeAOT 单文件，不能反射序列化）：一并编进来，
+#   去掉它自己的 using（下面 PROGRAM 头上统一给），类型声明原样
+activity = ''.join(l for l in (ROOT / 'graphics/tools/direct/dsh/batch/DshActivity.cs').read_text(encoding='utf-8').splitlines(True)
+                   if not l.startswith('using '))
 
 PROGRAM = r'''
 using System;
@@ -28,8 +32,10 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 static class Build { internal static int Jobs = 5; }
 __TICKER__
+__ACTIVITY__
 static class Program {
     static int failures;
     static string path;
@@ -88,7 +94,7 @@ if not dotnet:
     sys.exit('需要预先安装 .NET 10 SDK（DOTNET）；本测试不下载工具。')
 with tempfile.TemporaryDirectory(prefix='dsh-activity-test-') as directory:
     root = Path(directory)
-    program = PROGRAM.replace('__TICKER__', ticker).replace('__OWNED_SCOPES__', str(source.count('using var tk = new Ticker(') == 2).lower())
+    program = PROGRAM.replace('__TICKER__', ticker).replace('__ACTIVITY__', activity).replace('__OWNED_SCOPES__', str(source.count('using var tk = new Ticker(') == 2).lower())
     (root / 'Program.cs').write_text(program, encoding='utf-8')
     (root / 'test.csproj').write_text('<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType>'
         '<TargetFramework>net10.0</TargetFramework><Nullable>disable</Nullable></PropertyGroup></Project>')

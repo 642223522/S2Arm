@@ -30,6 +30,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, '..', '..'))
 sys.path.insert(0, HERE)
 import direct_library   # noqa: E402  内容身份只有这一份实现（安装 revision 的 GameContentRoot 同值）
+sys.path.insert(0, os.path.join(REPO, 'graphics', 'nvn', 'tools'))
+import romfs_list   # noqa: E402  RomFS 两种形态（目录 / 镜像 romfs.std）的唯一读取入口
 
 INDEX = 'index.tsv'
 MANIFEST = 'manifest.json'
@@ -120,7 +122,8 @@ def extract_shaders(root, destination, env):
         copy_tree(staged, destination)
         return
     romfs, main = Path(root, 'romfs'), Path(root, 'exefs', 'main')
-    if not romfs.is_dir() or not main.is_file():
+    # romfs_list.is_dir：romfs/ 目录不在、只有镜像 romfs.std 也算（nxsh_extract 经 romfs_list 读两种形态）
+    if not romfs_list.is_dir(romfs) or not main.is_file():
         _red(f'产物根 {root} 没有 romfs/ 或 exefs/main')
     aoc_root = Path(root, 'aoc')
     aocs = sorted(str(p) for p in aoc_root.iterdir() if p.is_dir()) if aoc_root.is_dir() else []

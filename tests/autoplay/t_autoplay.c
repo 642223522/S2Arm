@@ -72,8 +72,10 @@ uint64_t s2a_ap_shot_ns(void) { return t_shot_ns; }
 uint32_t s2a_ap_draws(void) { int st = atomic_load(&g_state); return st == GAME ? (!strcmp(g_scn, "lowdraw") ? 30 : 600) : 20; }
 int s2a_ap_nominal_fps(void) { return 30; }
 static _Atomic int g_cut_waited;   // cut：自动玩家已做出「+ 是开关、现在没开着，这次不按、等」的决定（⑲ 要看的那一步）
+static _Atomic int g_pb_judged;    // popback：自动玩家已判完「菜单 A 回到了走过的标题页」（㊸ 要看的那一步）
 void s2a_ap_log(const char *fmt, ...) {
     if (strstr(fmt, "这次不按")) atomic_store(&g_cut_waited, 1);
+    if (strstr(fmt, "回到走过的第")) atomic_store(&g_pb_judged, 1);
     va_list a; va_start(a, fmt); pthread_mutex_lock(&g_lm); vfprintf(g_log, fmt, a); fputc('\n', g_log); fflush(g_log); pthread_mutex_unlock(&g_lm); va_end(a);
 }
 static _Atomic int g_marked;   // 自动玩家打了 MARK（声音层稳态窗口钩子就在 MARK 那一刻调）：之后的局内帧记 S2A_AP_HOLD 用例的按键事件
@@ -208,7 +210,10 @@ static void *game(void *a) {
             else if (down & S2A_AP_A) set_state(TITLE);
             continue; }
         if (!strcmp(g_scn, "popback") && st != GAME) { int hl = atomic_load(&g_hl);
-            if (st == TITLE && hl == 1 && atomic_load(&g_frames) >= atomic_load(&g_state_f) + 30) { atomic_store(&g_hl, 2); s2a_ap_log("[游戏] 又弹出一个同版式弹窗"); set_state(MENU); }
+            // 回标题 30 帧且自动玩家已判完这次回头才弹第二个弹窗（原先只按帧数，机器忙时自动玩家按完 A 还没认页第二个弹窗已弹出，认成菜单页内来回、
+            //   A 被拉黑，㊸ 菜单问答「A 无 无 …」）；按事件同步，不按墙钟。自动玩家始终没判到回头时 20 倍帧数兜底弹出，㊸ 照实判不通、不卡死
+            uint64_t pf = atomic_load(&g_frames) - atomic_load(&g_state_f);
+            if (st == TITLE && hl == 1 && ((pf >= 30 && atomic_load(&g_pb_judged)) || pf >= 30 * 20)) { atomic_store(&g_hl, 2); s2a_ap_log("[游戏] 又弹出一个同版式弹窗"); set_state(MENU); }
             else if (st == TITLE && !hl && (down & S2A_AP_A)) set_state(MENU);
             else if (st == MENU && (down & S2A_AP_A)) { if (hl == 0) { atomic_store(&g_hl, 1); set_state(TITLE); } else if (hl == 2) set_state(GAME); }
             continue; }

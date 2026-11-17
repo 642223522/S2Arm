@@ -153,6 +153,12 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
 #endif
     info.enabledExtensionCount = enabled_count;
     info.ppEnabledExtensionNames = enabled;
+    // nvk 路径也给自定义驱动一个机会：game 构建里 vkCreateInstance 被 --wrap 接管，
+    // 这里先填窄 shim。没选驱动时返回 NULL，系统 loader 路径与改前完全相同。
+    {
+        extern void *s2a_android_vk_custom_driver_prepare(const char *) __attribute__((weak));
+        if (s2a_android_vk_custom_driver_prepare) (void)s2a_android_vk_custom_driver_prepare(NULL);
+    }
     if (vkCreateInstance(&info, NULL, &out->instance) != VK_SUCCESS)
         return fail(why, why_size, "vkCreateInstance failed");
 #if defined(__ANDROID__)
@@ -187,6 +193,7 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
     vkGetPhysicalDeviceProperties2(out->physical, &props2);
     snprintf(out->driver_name, sizeof out->driver_name, "%.120s", driver.driverName);
     snprintf(out->driver_info, sizeof out->driver_info, "%.120s", driver.driverInfo);
+    out->driver_id = (int)driver.driverID;
 
     uint32_t family_count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(out->physical, &family_count, NULL);
@@ -324,31 +331,61 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
     VkPhysicalDevice4444FormatsFeaturesEXT f4444 = {0};
     f4444.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_4444_FORMATS_FEATURES_EXT;
     const int has_4444 = has_device_extension(out->physical, "VK_EXT_4444_formats");
+    // #1070：placed 映射探针（只查、不启用）。NDK 29 自带的头（275 版）还没有这个扩展：结构与类型号照 Vulkan 头原文补在本地
+#ifndef VK_EXT_map_memory_placed
+    typedef struct { VkStructureType sType; void *pNext; VkBool32 memoryMapPlaced, memoryMapRangePlaced, memoryUnmapReserve; } VkPhysicalDeviceMapMemoryPlacedFeaturesEXT;
+    typedef struct { VkStructureType sType; void *pNext; VkDeviceSize minPlacedMemoryMapAlignment; } VkPhysicalDeviceMapMemoryPlacedPropertiesEXT;
+#define S2A_STYPE_PLACED_FEATURES ((VkStructureType)1000272000)
+#define S2A_STYPE_PLACED_PROPERTIES ((VkStructureType)1000272001)
+#else
+#define S2A_STYPE_PLACED_FEATURES VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAP_MEMORY_PLACED_FEATURES_EXT
+#define S2A_STYPE_PLACED_PROPERTIES VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAP_MEMORY_PLACED_PROPERTIES_EXT
+#endif
+    VkPhysicalDeviceMapMemoryPlacedFeaturesEXT placed = {0};
+    placed.sType = S2A_STYPE_PLACED_FEATURES;
+    out->placed_ext = has_device_extension(out->physical, "VK_EXT_map_memory_placed");
+    out->map_memory2_ext = has_device_extension(out->physical, "VK_KHR_map_memory2");
+    // 出包预编库的顶点着色器不改写深度（near = 0 口径）；near = -w 的游戏靠管线把裁剪深度设成 [-1, 1] 得到同一结果
+    VkPhysicalDeviceDepthClipControlFeaturesEXT dcc = {0};
+    dcc.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT;
+    const int has_dcc = has_device_extension(out->physical, "VK_EXT_depth_clip_control");
+    VkPhysicalDeviceCustomBorderColorFeaturesEXT border = {0};
+    border.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT;
     {
         VkPhysicalDeviceFeatures2 query = {0};
         query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
         draw_parameters.pNext = &timeline;
         timeline.pNext = &index_u8;
         index_u8.pNext = has_4444 ? &f4444 : NULL;
+        if (has_dcc) { dcc.pNext = index_u8.pNext; index_u8.pNext = &dcc; }
         query.pNext = &draw_parameters;
         if (out->has_swapchain_maintenance1) {
             maintenance.pNext = &draw_parameters;
             query.pNext = &maintenance;
+        }
+        if (out->placed_ext) { placed.pNext = query.pNext; query.pNext = &placed; }   // 只在列出扩展时挂查询结构（同下）
+        if (has_device_extension(out->physical, "VK_EXT_custom_border_color")) {   // 只在 advertise 时挂查询结构
+            border.pNext = query.pNext;
+            query.pNext = &border;
         }
         vkGetPhysicalDeviceFeatures2(out->physical, &query);
         out->swapchain_maintenance1_enabled = out->has_swapchain_maintenance1 && maintenance.swapchainMaintenance1 == VK_TRUE;
         out->timeline_semaphore_enabled = timeline.timelineSemaphore == VK_TRUE;
         out->shader_draw_parameters_enabled = draw_parameters.shaderDrawParameters == VK_TRUE;
         out->formats_4444_enabled = has_4444 && f4444.formatA4B4G4R4 == VK_TRUE;
+        out->depth_clip_control_enabled = has_dcc && dcc.depthClipControl == VK_TRUE;
+        out->placed_map = out->placed_ext && placed.memoryMapPlaced == VK_TRUE;
+        out->placed_range = out->placed_ext && placed.memoryMapRangePlaced == VK_TRUE;
+        out->placed_unmap_reserve = out->placed_ext && placed.memoryUnmapReserve == VK_TRUE;
         index_u8.pNext = NULL;   // 查询链拆掉；建设备的链在下面按启用情况重接
     }
     // C2 顶点 SPIR-V 声明 DrawParameters（gl_VertexIndex / gl_InstanceIndex）；没有该特征不能合法消费模块。
     if (!out->shader_draw_parameters_enabled)
         return fail(why, why_size, "required feature missing: shaderDrawParameters");
 
-    // 容量取两边并集：main 的 index_type_uint8 + 本 PR 的 host import / AHB（其余是 swapchain /
-    // maintenance1 / 校准扩展），新增可选 indirect count 后留 11 项，避免扩展数组越界。
-    const char *device_ext[11];
+    // 容量 = 所有可选扩展同时启用时的项数（swapchain / maintenance1 / 校准 / index_type_uint8 / display_timing / host import /
+    // AHB + queue_family_foreign / indirect count / 4444 / 实例除数 / 镜像夹取 / 自定义边框色 / 深度裁剪控制，校准 KHR / EXT 二选一 = 14），留余量。
+    const char *device_ext[16];
     uint32_t device_ext_count = 0;
     if (out->has_swapchain) device_ext[device_ext_count++] = "VK_KHR_swapchain";
     if (out->swapchain_maintenance1_enabled) device_ext[device_ext_count++] = "VK_EXT_swapchain_maintenance1";
@@ -417,7 +454,44 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
     }
     int indirect_count_ext = has_device_extension(out->physical, "VK_KHR_draw_indirect_count");
     if (indirect_count_ext) device_ext[device_ext_count++] = "VK_KHR_draw_indirect_count";
+    // #977：NVN 顶点流的实例除数大于 1 要 VK_EXT_vertex_attribute_divisor（可选；没有时除数大于 1 的管线建不出来、具名报红）。
+    VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT vdiv = {0};
+    vdiv.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT;
+    if (has_device_extension(out->physical, "VK_EXT_vertex_attribute_divisor")) {
+        VkPhysicalDeviceFeatures2 q = {0};
+        q.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        q.pNext = &vdiv;
+        vkGetPhysicalDeviceFeatures2(out->physical, &q);
+        VkPhysicalDeviceVertexAttributeDivisorPropertiesEXT vdp = {0};
+        vdp.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES_EXT;
+        VkPhysicalDeviceProperties2 p2 = {0};
+        p2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        p2.pNext = &vdp;
+        vkGetPhysicalDeviceProperties2(out->physical, &p2);
+        out->vertex_divisor_enabled = vdiv.vertexAttributeInstanceRateDivisor == VK_TRUE && vdp.maxVertexAttribDivisor > 1;
+        out->max_vertex_attrib_divisor = out->vertex_divisor_enabled ? vdp.maxVertexAttribDivisor : 0;
+    }
+    if (out->vertex_divisor_enabled) device_ext[device_ext_count++] = "VK_EXT_vertex_attribute_divisor";
+    fprintf(stderr, "[s2a] vk vertex divisor: enabled=%d max=%u\n", out->vertex_divisor_enabled, out->max_vertex_attrib_divisor);
+    // #976：NVN 的 MIRROR_CLAMP_TO_EDGE 环绕。扩展没有特性结构，advertise 即可启用；没有时建这种采样器报 UNSUPPORTED。
+    out->sampler_mirror_clamp_enabled = has_device_extension(out->physical, "VK_KHR_sampler_mirror_clamp_to_edge");
+    if (out->sampler_mirror_clamp_enabled) device_ext[device_ext_count++] = "VK_KHR_sampler_mirror_clamp_to_edge";
     if (out->formats_4444_enabled) device_ext[device_ext_count++] = "VK_EXT_4444_formats";
+    if (out->depth_clip_control_enabled) device_ext[device_ext_count++] = "VK_EXT_depth_clip_control";
+    // #976：NVN 的任意边框色。要 customBorderColors 特性；customBorderColorWithoutFormat 按设备如实开（没有时后端建这种采样器报 UNSUPPORTED）。
+    out->custom_border_enabled = border.customBorderColors == VK_TRUE;
+    out->custom_border_without_format = out->custom_border_enabled && border.customBorderColorWithoutFormat == VK_TRUE;
+    out->custom_border_max = 0;
+    if (out->custom_border_enabled) {
+        device_ext[device_ext_count++] = "VK_EXT_custom_border_color";
+        VkPhysicalDeviceCustomBorderColorPropertiesEXT bp = {0};
+        bp.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_PROPERTIES_EXT;
+        VkPhysicalDeviceProperties2 p2 = {0};
+        p2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        p2.pNext = &bp;
+        vkGetPhysicalDeviceProperties2(out->physical, &p2);
+        out->custom_border_max = bp.maxCustomBorderColorSamplers;
+    }
     out->device_extension_count = device_ext_count;
 
     // #975：NVN 16 位打包格式的路由（格式表在 nvn_vk_format.c 的 k_p16，弱引用同 #398 深度替换）。
@@ -438,6 +512,18 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
         out->p16_fallback_mask = nvn_vk_p16_fallback_pick ? nvn_vk_p16_fallback_pick(ex, fb) : 0;
         if (nvn_vk_format_set_p16_fallback) nvn_vk_format_set_p16_fallback(out->p16_fallback_mask);
         fprintf(stderr, "[s2a] vk packed16 route: 4444=%d fallback=0x%02x\n", out->formats_4444_enabled, out->p16_fallback_mask);
+    {   // #1070 placed 探针：对齐值与单次分配上限（属性链；只读，不改任何启用项）
+        VkPhysicalDeviceMapMemoryPlacedPropertiesEXT pp = {0}; pp.sType = S2A_STYPE_PLACED_PROPERTIES;
+        VkPhysicalDeviceMaintenance3Properties m3 = {0}; m3.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES;
+        if (out->placed_ext) m3.pNext = &pp;
+        VkPhysicalDeviceProperties2 p2 = {0}; p2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2; p2.pNext = &m3;
+        vkGetPhysicalDeviceProperties2(out->physical, &p2);
+        out->placed_align = out->placed_ext ? (uint64_t)pp.minPlacedMemoryMapAlignment : 0;
+        out->max_alloc = (uint64_t)m3.maxMemoryAllocationSize;
+        fprintf(stderr, "[s2a] vk placed map: ext=%d map2=%d placed=%d range=%d unmap_reserve=%d align=%llu max_alloc=%llu（只查未启用）\n",
+                out->placed_ext, out->map_memory2_ext, out->placed_map, out->placed_range, out->placed_unmap_reserve,
+                (unsigned long long)out->placed_align, (unsigned long long)out->max_alloc);
+    }
     }
 
     float priority = 1.0f;
@@ -466,6 +552,14 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
     } else {
         device_info.pNext = &draw_parameters;
     }
+    if (out->vertex_divisor_enabled) {   // 接在链尾：只开实例除数（零除数用不到：NVN 除数 0 = 逐顶点）
+        vdiv.vertexAttributeInstanceRateDivisor = VK_TRUE;
+        vdiv.vertexAttributeInstanceRateZeroDivisor = VK_FALSE;
+        vdiv.pNext = NULL;
+        VkBaseOutStructure *tail = (VkBaseOutStructure *)&device_info;
+        while (tail->pNext) tail = tail->pNext;
+        tail->pNext = (VkBaseOutStructure *)&vdiv;
+    }
     if (out->formats_4444_enabled) {   // 接在链尾：只开 A4B4G4R4（A4R4G4B4 用不到）
         f4444.formatA4B4G4R4 = VK_TRUE;
         f4444.formatA4R4G4B4 = VK_FALSE;
@@ -473,6 +567,19 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
         VkBaseOutStructure *tail = (VkBaseOutStructure *)device_info.pNext;
         while (tail->pNext) tail = tail->pNext;
         tail->pNext = (VkBaseOutStructure *)&f4444;
+    }
+    if (out->depth_clip_control_enabled) {   // 同样接在链尾（查询时它挂在 index_u8 后面，这里重接）
+        dcc.depthClipControl = VK_TRUE;
+        dcc.pNext = NULL;
+        VkBaseOutStructure *tail = (VkBaseOutStructure *)device_info.pNext;
+        while (tail->pNext) tail = tail->pNext;
+        tail->pNext = (VkBaseOutStructure *)&dcc;
+    }
+    if (out->custom_border_enabled) {
+        border.customBorderColors = VK_TRUE;
+        border.customBorderColorWithoutFormat = out->custom_border_without_format ? VK_TRUE : VK_FALSE;
+        border.pNext = (void *)device_info.pNext;
+        device_info.pNext = &border;
     }
     if (vkCreateDevice(out->physical, &device_info, NULL, &out->device) != VK_SUCCESS)
         return fail(why, why_size, "vkCreateDevice failed");

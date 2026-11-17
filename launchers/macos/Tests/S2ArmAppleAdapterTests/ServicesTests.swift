@@ -64,6 +64,27 @@ final class LibraryProviderTests: XCTestCase {
 }
 
 final class SettingsProviderTests: XCTestCase {
+    func testOtherSettingsKeepTheRememberedExportFolder() throws {
+        let box = try Sandbox(); defer { box.remove() }
+        let c = client(box, FakeRunner())
+        let file = box.privateRoot.appendingPathComponent("apple-frontend/launch-settings.json")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"schema":1,"exportLocation":"/original/new-storage"}"#.utf8).write(to: file)
+        let settings = SettingsProvider(client: c)
+        XCTAssertEqual(settings.exportLocation, "/original/new-storage")
+        try settings.setExportLocation("/original/selected-storage")
+        try settings.setExportTargets(["mac"])
+        try settings.setAIControl(true)
+        let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        XCTAssertEqual(saved["exportLocation"] as? String, "/original/selected-storage", "修改其他设置不能丢掉上次选择的位置")
+        XCTAssertEqual(SettingsProvider(client: c).exportLocation, "/original/selected-storage")
+        // 按游戏记（11-15「玩家自行选择优先」）：给 A 选的只管 A，B 没选过取不到；重开仍在；全局「上次手动选」照记
+        try settings.setExportLocation("/vol/a-folder", game: "0100A")
+        XCTAssertEqual(SettingsProvider(client: c).exportLocation(forGame: "0100A"), "/vol/a-folder")
+        XCTAssertNil(SettingsProvider(client: c).exportLocation(forGame: "0100B"))
+        XCTAssertEqual(SettingsProvider(client: c).exportLocation, "/vol/a-folder")
+    }
+
     /// 这一层设置表一行都没有（逐款选项在启动设置，走作业层 community）；本地文件只记出包平台勾选，旧文件里的 games（语言 / 底座）读时丢、写时不再带。
     func testNoGameOptionsAndOldLocalChoicesAreDropped() throws {
         let box = try Sandbox(); defer { box.remove() }
@@ -96,6 +117,8 @@ final class SettingsProviderTests: XCTestCase {
         let targetsBefore = settings.exportTargets
         XCTAssertThrowsError(try settings.setExportTargets(["ios"]))
         XCTAssertEqual(settings.exportTargets, targetsBefore)
+        XCTAssertThrowsError(try settings.setExportLocation("/original/storage"))
+        XCTAssertNil(settings.exportLocation)
     }
 }
 
@@ -130,14 +153,15 @@ final class PlayServiceTests: XCTestCase {
         XCTAssertFalse(play.isRunning)
     }
 
-    func testUnknownUILanguageIsNotSent() throws {
+    func testUILanguageIsPassedThroughForTheJobLayerToResolve() throws {
+        // 法文界面原先不带 uiLanguage，作业层回落中文，自签导出文件夹成了「S2Arm 自签导出」（#502）：现在照原样带，作业层自己认
         let box = try Sandbox(); defer { box.remove() }
         let runner = FakeRunner()
         let c = client(box, runner)
         let play = PlayService(client: c)
         let done = expectation(description: "finish")
-        try play.play(gameId: "0100A", uiLanguage: "sv", onFinish: { _ in done.fulfill() })
+        try play.play(gameId: "0100A", uiLanguage: "fr", onFinish: { _ in done.fulfill() })
         wait(for: [done], timeout: 5)
-        XCTAssertNil(runner.starts.first?.request["uiLanguage"])
+        XCTAssertEqual(runner.starts.first?.request["uiLanguage"] as? String, "fr")
     }
 }

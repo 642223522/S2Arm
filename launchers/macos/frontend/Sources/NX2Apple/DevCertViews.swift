@@ -9,7 +9,7 @@ import NXModel
 import NXLauncher
 import S2ArmAppleAdapter
 
-private func sx(_ loc: Localizer, _ id: String) -> String { BackendText.launcherText("export.sign." + id, language: loc.lang == .zh ? "zh-Hans" : "en") }
+private func sx(_ loc: Localizer, _ id: String) -> String { BackendText.launcherText("export.sign." + id, language: loc.lang.sharedCode) }
 
 struct DevCertRow: View {
     @ObservedObject var model: S2ArmLauncherModel
@@ -17,6 +17,7 @@ struct DevCertRow: View {
     /// 标题与「不用证书」那一项的叫法：环境检查「装到 iPhone 的方式」里叫「签名身份」「Xcode 账号」（Mac 上 Apple ID 只能经 Xcode 登录）
     var title: String? = nil
     var appleIdTitle: String? = nil
+    var embedded = false
     @State private var confirmDelete = false
 
     private var on: Bool { model.devCert?.active == true }
@@ -24,22 +25,25 @@ struct DevCertRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
-                LauncherRowIcon("signature")
-                Text(title ?? sx(loc, "title")).font(.manrope(13)).foregroundStyle(.secondary)
+                if !embedded { LauncherRowIcon("signature") }
+                Text(title ?? sx(loc, "title")).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary)
                 Spacer(minLength: 12)
-                Picker(title ?? sx(loc, "title"), selection: Binding(get: { on }, set: { model.setDevCertActive($0) })) {
-                    Text(appleIdTitle ?? sx(loc, "appleId")).tag(false)
-                    Text(sx(loc, "devcert")).tag(true)
+                LauncherDropdown(options: [("xcode", appleIdTitle ?? sx(loc, "appleId")), ("certificate", sx(loc, "devcert"))],
+                                 selection: on ? "certificate" : "xcode", label: title ?? sx(loc, "title")) {
+                    model.setDevCertActive($0 == "certificate")
                 }
-                .pickerStyle(.segmented).labelsHidden().frame(width: 300)
-                .accessibilityIdentifier("export.sign.mode")
+                .launcherRowControls().controllerID("export.sign.mode")
             }
             if on, let cert = model.devCert?.cert { details(cert) }
-            Text(sx(loc, "switchNote")).font(.manrope(12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(sx(loc, "switchNote")).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.horizontal, 14).padding(.vertical, 12)
-        .background(LauncherPalette.surface.opacity(0.7), in: RoundedRectangle(cornerRadius: 12))
-        .padding(.top, 4)
+        .padding(embedded ? 0 : LauncherTheme.Metrics.cardInset)
+        .background {
+            if !embedded {
+                RoundedRectangle(cornerRadius: LauncherTheme.Metrics.cardRadius).fill(LauncherTheme.Colors.card)
+                    .overlay(RoundedRectangle(cornerRadius: LauncherTheme.Metrics.cardRadius).strokeBorder(LauncherTheme.Colors.border))
+            }
+        }
         .onAppear { model.refreshDevCert() }
         .onChange(of: model.selectedDevice?["udid"] as? String) { _ in model.refreshDevCert() }
         .sheet(isPresented: $model.showDevCertImport) { DevCertSheet(model: model).environmentObject(loc) }
@@ -57,15 +61,15 @@ struct DevCertRow: View {
             line(sx(loc, "bundle"), c.bundleId)
             line(sx(loc, "devices"), devices(c))
             ForEach(c.blocking, id: \.self) { t in
-                Label(loc.backend(t), systemImage: "xmark.octagon").font(.manrope(12)).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)
+                Label(loc.backend(t), systemImage: "xmark.octagon").font(LauncherTheme.TypeStyle.caption).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)
             }
             ForEach(c.warnings, id: \.self) { t in
-                Label(loc.backend(t), systemImage: "exclamationmark.triangle").font(.manrope(12)).foregroundStyle(.yellow).fixedSize(horizontal: false, vertical: true)
+                Label(loc.backend(t), systemImage: "exclamationmark.triangle").font(LauncherTheme.TypeStyle.caption).foregroundStyle(.yellow).fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 10) {
-                Button(sx(loc, "replace")) { model.showDevCertImport = true }.buttonStyle(LauncherSecondaryButtonStyle())
+                Button(sx(loc, "replace")) { model.showDevCertImport = true }.controllerButtonStyle(LauncherSecondaryButtonStyle())
                     .accessibilityIdentifier("export.sign.replace")
-                Button(sx(loc, "delete")) { confirmDelete = true }.buttonStyle(LauncherSecondaryButtonStyle())
+                Button(sx(loc, "delete")) { confirmDelete = true }.controllerButtonStyle(LauncherSecondaryButtonStyle())
                     .accessibilityIdentifier("export.sign.delete")
             }
             .padding(.top, 4)
@@ -82,7 +86,7 @@ struct DevCertRow: View {
 
     private func line(_ k: String, _ v: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text(k).font(.manrope(12.5)).foregroundStyle(.secondary).frame(width: 96, alignment: .leading)
+            Text(k).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary).frame(width: 96, alignment: .leading)
             Text(v.isEmpty ? "-" : v).font(.manrope(12.5, .semibold)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -100,34 +104,35 @@ struct DevCertSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text(sx(loc, "sheet.title")).font(.manrope(20, .bold))
+            LauncherSheetHeading(sx(loc, "sheet.title"))
             pick(sx(loc, "sheet.p12"), path: $p12, types: ["p12", "pfx"], id: "p12")
             pick(sx(loc, "sheet.profile"), path: $profile, types: ["mobileprovision"], id: "profile")
             VStack(alignment: .leading, spacing: 6) {
-                Text(sx(loc, "sheet.password")).font(.manrope(13, .semibold))
-                SecureField("", text: $password).textFieldStyle(.roundedBorder).accessibilityIdentifier("export.sign.sheet.password")
-                Text(sx(loc, "sheet.passwordNote")).font(.manrope(12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(sx(loc, "sheet.password")).font(LauncherTheme.TypeStyle.section)
+                SecureField("", text: $password).textFieldStyle(LauncherTextFieldStyle())
+                    .accessibilityLabel(sx(loc, "sheet.password")).accessibilityIdentifier("export.sign.sheet.password")
+                Text(sx(loc, "sheet.passwordNote")).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if let failure {
-                Text(loc.backend(failure)).font(.manrope(12.5)).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)
+                Text(loc.backend(failure)).font(LauncherTheme.TypeStyle.detail).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("export.sign.sheet.failure")
             }
             Spacer(minLength: 0)
             HStack {
                 if working {
                     ProgressView().controlSize(.small)
-                    Text(sx(loc, "sheet.working")).font(.manrope(12.5)).foregroundStyle(.secondary)
+                    Text(sx(loc, "sheet.working")).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button(sx(loc, "sheet.cancel")) { dismiss() }.buttonStyle(LauncherSecondaryButtonStyle()).keyboardShortcut(.cancelAction)
+                Button(sx(loc, "sheet.cancel")) { dismiss() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).keyboardShortcut(.cancelAction).controllerShortcut(.back)
                 Button(sx(loc, "sheet.import")) { start() }
-                    .buttonStyle(LauncherSecondaryButtonStyle()).keyboardShortcut(.defaultAction)
+                    .controllerButtonStyle(LauncherPrimaryButtonStyle()).keyboardShortcut(.defaultAction).controllerShortcut(.rightTrigger)
                     .disabled(working || p12.isEmpty || profile.isEmpty)
                     .accessibilityIdentifier("export.sign.sheet.import")
             }
         }
-        .padding(30)
-        .frame(width: 560, height: 470)
+        .padding(LauncherTheme.Space.page)
+        .launcherSheet(.form, height: 520)
     }
 
     private func start() {
@@ -141,10 +146,10 @@ struct DevCertSheet: View {
 
     private func pick(_ title: String, path: Binding<String>, types: [String], id: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.manrope(13, .semibold))
+            Text(title).font(LauncherTheme.TypeStyle.section)
             HStack(spacing: 10) {
                 Text(path.wrappedValue.isEmpty ? sx(loc, "sheet.drop") : (path.wrappedValue as NSString).abbreviatingWithTildeInPath)
-                    .font(.manrope(12.5)).foregroundStyle(path.wrappedValue.isEmpty ? .secondary : .primary)
+                    .font(LauncherTheme.TypeStyle.detail).foregroundStyle(path.wrappedValue.isEmpty ? .secondary : .primary)
                     .lineLimit(1).truncationMode(.middle)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Button(sx(loc, "sheet.choose")) {
@@ -153,11 +158,11 @@ struct DevCertSheet: View {
                     panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
                     if panel.runModal() == .OK, let url = panel.url { path.wrappedValue = url.path }
                 }
-                .buttonStyle(LauncherSecondaryButtonStyle())
+                .controllerButtonStyle(LauncherSecondaryButtonStyle())
                 .accessibilityIdentifier("export.sign.sheet.choose." + id)
             }
             .padding(.horizontal, 12).padding(.vertical, 10)
-            .background(LauncherPalette.surface.opacity(0.7), in: RoundedRectangle(cornerRadius: 10))
+            .launcherPanel()
             .onDrop(of: [.fileURL], isTargeted: nil) { providers in
                 guard let item = providers.first else { return false }
                 _ = item.loadObject(ofClass: URL.self) { url, _ in

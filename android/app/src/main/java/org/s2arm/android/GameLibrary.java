@@ -115,7 +115,8 @@ final class GameLibrary {
                     listener.onGameReady(session);
                 } catch (BootContract.BadGame | GamePack.BadPack | IOException | RuntimeException error) {
                     if (timing != null) for (String line : timing.lines()) Log.d("S2ArmBootTiming", line);
-                    failure("Game admission failed: " + error.getMessage(), R.string.player_err_start, error);
+                    failure("Game admission failed: " + error.getMessage(), R.string.player_err_start,
+                        inPlaceAccess(error, inPlaceGame(new File(gamesDir, selectedTitle))));
                 }
             });
             return;
@@ -153,13 +154,98 @@ final class GameLibrary {
         });
     }
 
+    /**
+     * 原地使用：root 是共享存储上的一个资源目录（含 manifest.json），或放着几款的上一级文件夹（逐个子目录找，
+     * 一个失败不影响其他）。内容文件不复制，只登记元数据（GameInstall.installInPlace）。
+     * origin 进日志行（deploy_game.py --in-place 按它认这次登记的结论）。
+     */
+    void registerInPlace(File root) {
+        worker.execute(() -> {
+            List<File> packages = new ArrayList<>();
+            try {
+                if (new File(root, "manifest.json").isFile()) packages.add(root);
+                else {
+                    File[] children = root.listFiles(File::isDirectory);
+                    if (children == null) throw new IOException("cannot list the folder " + root);
+                    java.util.Arrays.sort(children);
+                    for (File child : children) if (new File(child, "manifest.json").isFile()) packages.add(child);
+                }
+                if (packages.isEmpty())
+                    throw new GamePack.BadPack("no game package (a folder with manifest.json) in " + root
+                        + " or its direct subfolders; pick the folder you copied the package into");
+            } catch (GamePack.BadPack | IOException | RuntimeException e) {
+                failure("Game in-place registration refused: " + e.getMessage(), R.string.player_err_import, inPlaceAccess(e, true));
+                status(describe());
+                return;
+            }
+            for (File dir : packages) {
+                try {
+                    GameInstall.Result r = GameInstall.installInPlace(gamesDir, dir,
+                        source -> checkedImportSource(source, context.getPackageName(),
+                            (context.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0,
+                            DebugGate.open()), inPlaceProgress());
+                    status("Game " + outcome(r) + " from in-place " + r.inPlaceRoot);
+                    try {
+                        BootContract.Current now = BootContract.readCurrent(new File(gamesDir, r.titleId));
+                        Log.i("S2Arm", "Game import receipt: " + r.titleId + " contentRoot=" + now.contentRoot
+                            + " artifactSha256=" + now.artifactSha256 + " from in-place " + r.inPlaceRoot);
+                    } catch (BootContract.BadGame | IOException receipt) {
+                        Log.i("S2Arm", "Game import receipt unavailable: " + r.titleId + " from in-place " + r.inPlaceRoot);
+                    }
+                } catch (GamePack.BadPack | BootContract.BadGame | IOException | RuntimeException e) {
+                    failure("Game in-place registration of " + dir + " refused: " + e.getMessage(), R.string.player_err_import, inPlaceAccess(e, true));
+                }
+            }
+            status(describe());
+        });
+    }
+
+    /**
+     * 文件夹选择器给的树文档 id → 能直接打开的路径；不是本机存储（网盘等）返回 null。
+     * 规则照 mamcjr/Swap2-Native PathUtil.idToPath（MIT）："primary:相对路径" 在内部存储根下，
+     * "&lt;卷 id&gt;:相对路径" 是 SD 卡 / U 盘（/storage/&lt;卷 id&gt;），"raw:" 后面直接是路径。
+     */
+    static String inPlacePath(String documentId, File primary) {
+        if (documentId == null) return null;
+        if (documentId.startsWith("raw:") || documentId.startsWith("msf:"))   // 下载 / 媒体库的 id：后面是路径才算
+            return documentId.substring(4).startsWith("/") ? documentId.substring(4) : null;
+        int colon = documentId.indexOf(':');
+        if (colon <= 0) return null;
+        String volume = documentId.substring(0, colon), rel = documentId.substring(colon + 1);
+        File root = volume.equals("primary") ? primary : new File("/storage/" + volume);
+        if (rel.startsWith(root.getPath() + "/")) return rel;   // 个别选择器给的是整条路径
+        return rel.isEmpty() ? root.getPath() : new File(root, rel).getPath();
+    }
+
+    /** 读共享存储失败、而本 App 确实没有「所有文件访问」时，把这个真原因放进报错（不预先拦：先做，真失败再说为什么）。 */
+    private static Throwable inPlaceAccess(Throwable error, boolean inPlace) {
+        if (!inPlace || android.os.Build.VERSION.SDK_INT < 30 || android.os.Environment.isExternalStorageManager()) return error;
+        return new IOException("All files access is off for this app: " + error.getMessage(), error);
+    }
+
+    private static boolean inPlaceGame(File gameRoot) {
+        try { return GameInstall.inPlace(new File(gameRoot, BootContract.readCurrent(gameRoot).revisionDir)); }
+        catch (BootContract.BadGame | IOException | RuntimeException unreadable) { return false; }
+    }
+
+    // 原地登记的进度：核对（只读）而不是导入
+    private GameInstall.Progress inPlaceProgress() {
+        long[] last = {0};
+        return (done, total) -> {
+            if (done - last[0] > (64L << 20)) {
+                last[0] = done;
+                listener.onStatus(String.format(Locale.ROOT, "Checking game files in place: %d / %d MiB", done >> 20, total >> 20));
+            }
+        };
+    }
+
     /** Copy a package folder chosen with ACTION_OPEN_DOCUMENT_TREE. */
     void importTree(Uri tree) {
         worker.execute(() -> {
             try {   // 不取整库锁：每个包装进去时只锁它那一款
                 ContentResolver cr = context.getContentResolver();
                 Map<String, String> ids = new HashMap<>();
-                walk(cr, tree, ids);
+                walk(cr, tree, ids, null);
                 // 选了包所在的上一级（或放着几款游戏的文件夹）不挡：在里面找出所有游戏包逐个导入，一个失败不影响其他（不堵门）
                 List<String> roots = packageRoots(ids.keySet());
                 if (roots.isEmpty())
@@ -210,6 +296,9 @@ final class GameLibrary {
     private static String outcome(GameInstall.Result r) {
         String game = r.info.name + " " + r.info.version + " [" + r.titleId + "]";
         if (r.alreadyActive) return "already installed: " + game;
+        if (r.inPlaceRoot != null && !r.artifactRefreshed)
+            return "registered in place: " + game + " -> " + r.contentRoot.substring(0, 19) + " (files read where they are, nothing copied)"
+                + (r.previousContentRoot == null ? "" : "; previous " + r.previousContentRoot.substring(0, 19) + " kept");
         if (r.artifactRefreshed) return "build artifact updated (same files): " + game + " -> " + r.contentRoot.substring(0, 19);
         return "installed: " + game + " -> " + r.contentRoot.substring(0, 19)
             + String.format(Locale.ROOT, "; stored %.1f MiB, shared %.1f MiB with installed versions", r.storedBytes / 1048576.0, r.sharedBytes / 1048576.0)
@@ -221,16 +310,12 @@ final class GameLibrary {
     private GameInstall.Progress progress() {
         long[] last = {0};
         return (done, total) -> {
-            if (done - last[0] > (64L << 20)) { last[0] = done; listener.onStatus(progress(done, total)); }
+            if (done - last[0] > (64L << 20)) { last[0] = done; listener.onStatus(context.getString(R.string.import_progress, done >> 20, total >> 20)); }
         };
     }
 
-    private static String progress(long done, long total) {
-        return String.format(Locale.ROOT, "Importing game: %d / %d MiB", done >> 20, total >> 20);
-    }
-
-    // Every file and folder under the picked tree, by package-relative path.
-    private static void walk(ContentResolver cr, Uri tree, Map<String, String> ids) throws IOException {
+    // Every file and folder under the picked tree, by package-relative path; folders also go to dirs when given (mod import).
+    static void walk(ContentResolver cr, Uri tree, Map<String, String> ids, java.util.Set<String> dirs) throws IOException {
         ArrayDeque<String[]> todo = new ArrayDeque<>();   // {path prefix, document id}
         todo.add(new String[] {"", DocumentsContract.getTreeDocumentId(tree)});
         String[] columns = {DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME,
@@ -243,7 +328,10 @@ final class GameLibrary {
                 while (c.moveToNext()) {
                     String path = dir[0].isEmpty() ? c.getString(1) : dir[0] + "/" + c.getString(1);
                     ids.put(path, c.getString(0));
-                    if (DocumentsContract.Document.MIME_TYPE_DIR.equals(c.getString(2))) todo.add(new String[] {path, c.getString(0)});
+                    if (DocumentsContract.Document.MIME_TYPE_DIR.equals(c.getString(2))) {
+                        todo.add(new String[] {path, c.getString(0)});
+                        if (dirs != null) dirs.add(path);
+                    }
                 }
             }
         }
@@ -273,7 +361,7 @@ final class GameLibrary {
                 state = boot.summary() + "; refused: " + mismatch;
             } else {
                 state = boot.summary() + "; launch requires session admission";
-                File revision = new File(g, boot.revisionDir), banner = new File(revision, "banner.jpg"), icon = new File(revision, "icon.jpg");
+                File revision = boot.contentDir(g), banner = new File(revision, "banner.jpg"), icon = new File(revision, "icon.jpg");
                 listener.onGameAvailable(boot.titleId, info.name, banner.isFile() ? banner : icon.isFile() ? icon : null);
             }
             sb.append(String.format(Locale.ROOT, "\n%s %s [%s]: %d files, %.1f MiB; %s", info.name, info.version, info.titleId,

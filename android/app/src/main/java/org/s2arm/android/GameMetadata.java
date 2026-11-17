@@ -14,7 +14,7 @@ final class GameMetadata {
 
     static GamePack.Info read(File gameRoot, BootContract.Game boot) throws IOException, GamePack.BadPack {
         GamePack.Info info = new GamePack.Info();
-        GamePack.describe(info, GamePack.read(new File(new File(gameRoot, boot.revisionDir), boot.control)));
+        GamePack.describe(info, GamePack.read(new File(boot.contentDir(gameRoot), boot.control)));
         return info;
     }
 }

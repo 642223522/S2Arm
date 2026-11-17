@@ -41,6 +41,9 @@ namespace Ryujinx.HLE
         // NroUnmap(base) -> 0 ok, 1 not loaded. Null = upstream (Ryujinx kernel memory manager).
         public static delegate*<byte*, ulong, ulong, ulong*, int> NroMap;   // 宿主登记（services Native.NroMap → 原生核心 s2a_nro_map，DllImport 集中声明）
         public static delegate*<ulong, int> NroUnmap;
+        // NroKeep(sha256[32], nro bytes, size) -> 0 kept, 2 kept before (not prepared again yet), 1 failed: an NRO the package has no image of (NroMap 1) is kept
+        // as the game unpacked it, for the next preparation to rewrite (runtime/src/loader.c s2a_nro_keep). Null = not kept.
+        public static delegate*<byte*, byte*, ulong, int> NroKeep;
         public static bool NroHooked => NroMap != null;
         public static int NroUnmapAt(ulong mapped) => NroUnmap(mapped);
 

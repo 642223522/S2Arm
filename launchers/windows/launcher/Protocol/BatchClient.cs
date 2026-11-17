@@ -116,7 +116,7 @@ public static class BatchClient
     }
 
     /// <summary>create --json 的内容：{items:[{gameId,name,platforms}], location}；location 空 = 不传，后端按每款现在的位置。</summary>
-    public static string CreateJson(IEnumerable<Entry> entries, string? location) => JsonSerializer.Serialize(new Dictionary<string, object?>
+    public static string CreateJson(IEnumerable<Entry> entries, string? location) => JsonOut.Serialize(new Dictionary<string, object?>
     {
         ["items"] = entries.Select(e =>
         {

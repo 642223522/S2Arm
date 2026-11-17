@@ -1,6 +1,6 @@
 # native-test-nvn_mesh：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += nvn_mesh
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # NVN2 任务 / 网格绘制（DrawMeshTasks / DrawMeshTasksIndirect，11-05 时之笛）：夹具库按 KIND 编三份（任务 / 有任务的网格 / 无任务的网格），经产品的 draw() 画到离屏目标读回列掩码。
 #   两套后端（Metal 4、NXGAL_BE=mtl3 强制 Metal 3）× 编码线程（录制回放）关 / 开 各跑一遍；另开 Metal 校验层（MTL_DEBUG_LAYER=1）两套后端各一遍：
 #   网格管线不得把网格函数设成顶点函数（11-11 #376：校验层在 setVertexFunction 断言中止 rc=134，挡住玩家开校验层查挂死）

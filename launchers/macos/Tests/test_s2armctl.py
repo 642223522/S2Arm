@@ -174,10 +174,12 @@ class WaitTests(unittest.TestCase):
                 (["build", "G", "ios"], "/build", {"gameId": "G", "target": "ios"}),
                 (["ipa", "G", "--space-override"], "/ipa", {"gameId": "G", "spaceOverride": True}),
                 (["ipa", "G"], "/ipa", {"gameId": "G"})]:
-            with mock.patch.object(ctl, "call", return_value={"ok": True}) as call, mock.patch.object(ctl.sys, "argv", ["s2armctl", *argv]), \
-                    mock.patch("builtins.print"):
+            # build 发出前先读一次任务列表（记下已有任务号给 wait 用），数据目录换成临时目录
+            with tempfile.TemporaryDirectory() as root, mock.patch.object(ctl, "ROOT", root), \
+                    mock.patch.object(ctl, "call", side_effect=lambda m, p, *a, **k: {"tasks": []} if (m, p) == ("GET", "/state") else {"ok": True}) as call, \
+                    mock.patch.object(ctl.sys, "argv", ["s2armctl", *argv]), mock.patch("builtins.print"):
                 ctl.main()
-            call.assert_called_once_with("POST", path, body)
+            self.assertEqual([c for c in call.call_args_list if c.args[0] == "POST"], [mock.call("POST", path, body)])
 
     def test_install_passes_team_and_device_only_when_given(self):
         for argv, body in [(["install", "G", "--no-wait"], {"gameId": "G"}),
@@ -190,6 +192,20 @@ class WaitTests(unittest.TestCase):
             with mock.patch.object(ctl, "call", return_value={"ok": True}) as call, mock.patch.object(ctl.sys, "argv", ["s2armctl", *argv]), mock.patch("builtins.print"):
                 ctl.main()
             call.assert_called_once_with("POST", "/install", body)
+
+    def test_any_accept_flag_is_forwarded_as_is(self):
+        # 11-15：确认开关不在客户端按名字挑（--accept-low-space 原先被静默丢掉，AI 替玩家确认空间不足也续不上）
+        with mock.patch.object(ctl, "call", return_value={"ok": True}) as call, \
+                mock.patch.object(ctl.sys, "argv", ["s2armctl", "install", "G", "--device", "D", "--accept-low-space", "--no-wait"]), mock.patch("builtins.print"):
+            ctl.main()
+        call.assert_called_once_with("POST", "/install", {"gameId": "G", "device": "D", "acceptLowSpace": True})
+
+    def test_unknown_command_goes_to_app_not_refused_locally(self):
+        # 11-15：客户端不拦不认识的命令，原样 POST /<命令>，由 App 回「不认识」
+        with mock.patch.object(ctl, "call", return_value={"ok": True}) as call, \
+                mock.patch.object(ctl.sys, "argv", ["s2armctl", "brand-new-thing", "a", "b"]), mock.patch("builtins.print"):
+            ctl.main()
+        call.assert_called_once_with("POST", "/brand-new-thing", {"args": ["a", "b"]})
 
     def test_update_phone_passes_accept_dropped_only_when_given(self):
         # 同 install --accept-dropped：玩家同意让别的电脑装的款这次带不上（v0.3.0 只换壳验收：原先 update-phone 没有这个入口，永远过不去）
@@ -247,6 +263,38 @@ class WaitTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 ctl.main()
         call.assert_not_called()
+
+    def run_build_then_wait(self, after, limit=30):
+        """玩家 / AI 照「build 然后 wait」走：发 build 前库里已有一个上次（老版）出完的 ipa 任务 old；之后出现的才是这次的"""
+        old = {"id": "old", "gameId": "G", "operation": "ipa", "state": "completed", "started": 1, "ended": 2}
+        with tempfile.TemporaryDirectory() as root, mock.patch.object(ctl, "ROOT", root):
+            with mock.patch.object(ctl, "call", side_effect=lambda m, p, *a, **k: {"tasks": [old]} if (m, p) == ("GET", "/state") else {"ok": True}), \
+                    mock.patch.object(ctl.sys, "argv", ["s2armctl", "build", "G", "ios"]), mock.patch("builtins.print"):
+                ctl.main()
+            marker = os.path.exists(os.path.join(root, "ctl-pending", "G.ipa.json"))
+            states = [{"tasks": [old], "error": "", "cachedAt": 0}] * 3
+            output = io.StringIO(); now = [0]
+            with mock.patch.object(ctl, "call", side_effect=lambda *a, **k: states.pop(0) if states else {"tasks": [old] + after, "error": "", "cachedAt": 0}), \
+                    mock.patch.object(ctl.time, "time", side_effect=lambda: now[0]), mock.patch.object(ctl.time, "sleep", side_effect=lambda x: now.__setitem__(0, now[0] + x)), \
+                    mock.patch.object(ctl.sys, "argv", ["s2armctl", "wait", "G", "--op", "ipa", "--timeout", str(limit)]), \
+                    contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as result:
+                ctl.main()
+            left = os.path.exists(os.path.join(root, "ctl-pending", "G.ipa.json"))
+        return marker, result.exception.code, output.getvalue(), left
+
+    def test_wait_after_build_ignores_an_old_completed_task(self):
+        # 11-16：升级后库里留着老版出完的 ipa 任务，build 后 wait 原先立刻拿它退 0（合入运维 0.5.0 候选升级验收的假绿）；现在要等到这次的任务
+        marker, code, _, left = self.run_build_then_wait([])
+        self.assertTrue(marker)
+        self.assertIsInstance(code, str); self.assertIn("没结束", code)
+        self.assertFalse(left)   # wait 读走就删，下一次 build 另记
+
+    def test_wait_after_build_follows_the_new_task(self):
+        new = {"id": "new", "gameId": "G", "operation": "ipa", "state": "completed", "started": 5, "ended": 9}
+        _, code, out, _ = self.run_build_then_wait([new])
+        self.assertEqual(code, 0); self.assertIn("completed", out)
+        failed = dict(new, state="failed")
+        self.assertEqual(self.run_build_then_wait([failed])[1], 1)
 
     def test_queued_then_running_then_completed(self):
         old = task("old", "completed", 1)

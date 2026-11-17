@@ -1,9 +1,9 @@
 # native-test-nvn2_codec：Switch 2 直连档的视频解码接管 nvn2_codec.c——图像池、VP9（libvpx，services/vpx 同一份库）/ AV1（VideoToolbox；没有 AV1 硬件解码的机器跳过并说明；
 #   dav1d 软解逐帧 MD5 对 ffmpeg 参考、强制软解走整条路径）
-#   解码器协议、H.264 未接回失败、同步点事件、av1C、NVN2 原生图像 → 线性纹理；纯 C + 替身，不需要游戏
+#   解码器协议、H.264（VideoToolbox，起始码 / 长度前缀两种输入）、同步点事件、av1C、NVN2 原生图像 → 线性纹理；纯 C + 替身，不需要游戏
 # S2A_DAV1D=0 的本地构建不链 dav1d：这条单测的 dav1d 部分无法链接，整条跳过（默认构建照常跑）
 NATIVE_TEST_OWN += nvn2_codec
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 ifneq ($(S2A_DAV1D),0)
 .PHONY: native-test-nvn2_codec
 native-test-nvn2_codec:

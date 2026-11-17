@@ -81,6 +81,7 @@ if [ "$(uname -s)" = Darwin ]; then
   cat > "$D2/Makefile" <<'EOF'
 BUILD := build
 CC := clang
+S2A_UNAME := $(shell uname -s)
 NATIVE_INC :=
 NATIVE_TEST_OWN :=
 TEST_TARGETS :=

@@ -1,14 +1,19 @@
 // Android 现有地址需求表与布局。容量在占窗口前确定，GetInfo 后不重排。
 #include <stdint.h>
 
-// 普通档沿用 64 GiB 布局预算；上限不定档使用完整 68 GiB 预留。
+// 布局预算 = 实际保留的整个窗口 72 GiB（普通档原先沿用 64 GiB、窗口 68 GiB；栈区按真值 2 GiB 后上限不定档也放不下）。
 typedef struct { unsigned alias_gb, version, unbounded; uint64_t heap_size; } s2a_layout_requirements;
-#define S2A_WINDOW_BUDGET (64ull << 30)
-#define S2A_UNBOUNDED_WINDOW_BUDGET (68ull << 30)
+#define S2A_WINDOW_BUDGET (72ull << 30)
+#define S2A_UNBOUNDED_WINDOW_BUDGET (72ull << 30)
 #ifdef __ANDROID__
 _Static_assert(S2A_UNBOUNDED_WINDOW_BUDGET == S2A_WIN_SIZE, "Android 窗口与不定预算必须一致");
 #endif
-#define S2A_LAYOUT_FIXED (226ull << 20)
+// 固定部分 = TLS/保护页 2 MiB + 栈区 2 GiB + 共享映射余量 96 MiB。
+//   栈区照 Horizon 39 位给 2 GiB（Ryujinx KPageTableBase stackRegion.Size = 0x80000000；同 runtime/src/layout.c VAMM_STACK）：
+//   SDK 建线程在栈区里随机挑地址放线程栈（StackGuardManager::MapAtRandomAddress），原先写死 128 MiB，
+//   Unity 款开局建线程把栈区占满后断言中止（11-14 奥日：栈区映射 40 MB、最高到区内 +128 MiB 顶满，CreateAliasStackUnsafe → AbortImpl）
+#define S2A_LAYOUT_STACK (2048ull << 20)
+#define S2A_LAYOUT_FIXED ((2ull << 20) + S2A_LAYOUT_STACK + (96ull << 20))
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
@@ -85,7 +90,7 @@ int s2a_android_layout_split(s2a_layout_requirements *req, uint64_t module_span,
         // 不截堆、不把“未证明有界”当静态大区上限；无法完整容纳则明确拒绝。
         if (fixed > S2A_UNBOUNDED_WINDOW_BUDGET - 63 * GB ||
             req->heap_size > S2A_UNBOUNDED_WINDOW_BUDGET - fixed - 63 * GB) {
-            *why = "上限不定的别名区和完整普通堆放不进 68 GiB 窗口"; return -1;
+            *why = "上限不定的别名区和完整普通堆放不进 72 GiB 窗口"; return -1;
         }
         req->alias_gb = 63;
         snprintf(note, cap, "别名区上限不定：保留 63 GiB 和完整普通堆 %llu MiB", (unsigned long long)(req->heap_size / MB));
@@ -123,8 +128,8 @@ uint64_t s2a_android_layout_need(uint32_t as_type, uint64_t sys_resource_size, c
     if (!req || (req->alias_gb && req->alias_gb < 4) || req->heap_size < 32 * MB || (req->heap_size & (2 * MB - 1))) return 0;
     uint64_t alias = alias_budget(req);
     if (!alias) return 0;
-    // TLS/保护页到别名末共 alias + 2MiB；尾部：栈128MiB + 按需堆 + 共享映射余量96MiB。
-    uint64_t fixed = alias + 226 * MB;
+    // TLS/保护页到别名末共 alias + 2MiB；尾部：栈 2GiB + 按需堆 + 共享映射余量96MiB。
+    uint64_t fixed = alias + S2A_LAYOUT_FIXED;
     if (req->heap_size > UINT64_MAX - fixed) return 0;
     return fixed + req->heap_size;
 }
@@ -151,9 +156,9 @@ int s2a_android_layout_compute(uint32_t as_type, uint64_t sys_resource_size, con
         o->tlsio_base = W;                       o->tlsio_size = 2 * MB - 0x4000;
         o->alias_base = W + 2 * MB - 0x4000;     o->alias_size = A + 0x8000 - 2 * MB;
         uint64_t tail = W + A + 2 * MB;
-        o->stack_base = tail;                   o->stack_size = 128 * MB;
-        o->heap_base = tail + 128 * MB;         o->heap_size = req->heap_size;
-        o->aslr_base = tail;                    o->aslr_size = 224 * MB + req->heap_size;
+        o->stack_base = tail;                   o->stack_size = S2A_LAYOUT_STACK;
+        o->heap_base = tail + S2A_LAYOUT_STACK; o->heap_size = req->heap_size;
+        o->aslr_base = tail;                    o->aslr_size = S2A_LAYOUT_STACK + 96 * MB + req->heap_size;
 #endif
     } else {
         // 非VAMM沿用39位布局；实际物理分配仍由SVC的应用池限制。

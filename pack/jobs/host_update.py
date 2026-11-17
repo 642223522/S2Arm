@@ -15,6 +15,8 @@ import os
 import re
 import shutil
 import stat
+import subprocess
+import sys
 from pathlib import Path
 
 import layout
@@ -51,6 +53,44 @@ def image_compat(image, manifest):
         libs = [p.name[2:] for p in (Path(image) / "shaders/direct").glob("b-*") if p.is_dir()]
         chain = libs[0] if len(libs) == 1 else None
     return dict(hostAbi=manifest.get("hostAbi", 1), dmshChain=chain)
+
+
+LSREGISTER = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+# 系统应用登记里所有 S2ArmGame.app 记录逐条注销（含早已删掉的路径：系统照样给它们出启动台图标）。$1 = lsregister
+FORGET_SCRIPT = ('"$1" -dump 2>/dev/null | grep "path:.*/S2ArmGame\\.app" | sed "s/.*path: *//; s/ (0x[0-9a-f]*)$//" | sort -u'
+                 ' | while IFS= read -r p; do "$1" -u "$p" 2>/dev/null; done')
+
+
+def forget_registrations(lsregister=None, wait=False, app=None):
+    """#1126：Mac 宿主是直接执行 Contents/MacOS/s2arm-host 起局的，系统每次起它都会把这个 .app 登记进应用登记库，
+    启动台 / 应用程序里就多出一个灰色「S2ArmGame」；引擎更新、换库后旧路径的登记还留着（玩家实测 43 条、34 条指向已删路径）。
+    宿主不需要登记（启动器不经启动服务打开它）：每局结束后把全部 S2ArmGame.app 登记注销。
+    后台脱离进程做（导出整张登记表约 3 秒），不拖慢回游戏库；失败不影响游戏，只是图标还在。wait=True 给单测
+    app：这局起的宿主包。系统只登记带 Contents/Info.plist 的真 App 包——不是真包（单测的假宿主只有一个可执行文件）就没有可注销的，
+      不碰系统登记库（11-15 门禁机上单测起局打到真 lsregister、38 个 -dump 同时跑）。
+    同一时间只跑一个（锁随子进程持有到它退出）：已有一个在跑就跳过，下一局再注销，不叠"""
+    if app is not None and not (Path(app) / "Contents" / "Info.plist").is_file():
+        return None
+    lsregister = lsregister or os.environ.get("S2A_LSREGISTER") or LSREGISTER   # 单测改指（jobcase：不碰本机真登记）
+    if sys.platform != "darwin" or not os.path.exists(lsregister):
+        return None
+    import fcntl
+    import hashlib
+    import tempfile
+    lock = Path(tempfile.gettempdir()) / f"s2a-lsregister-forget-{hashlib.sha1(lsregister.encode()).hexdigest()[:12]}.lock"
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return None
+        p = subprocess.Popen(["/bin/bash", "-c", FORGET_SCRIPT, "forget", lsregister], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, pass_fds=(fd,))
+    finally:
+        os.close(fd)   # 子进程继承的那份还拿着锁，退出才放
+    if wait:
+        p.wait()
+    return p
 
 
 def host_exe(c, sha):

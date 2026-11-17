@@ -10,27 +10,41 @@ namespace S2A.Services
 {
     // FPSLocker 帧率配置的运行时部分（11-12 维护者：帧率补丁能打的都打上）：出包时 pack/fpslocker.py 把每构建号一份的 FPSLocker YAML 拆成
     //   静态部分（汇编 / 字节写入，编进包、跟「60 帧」开关）与这里的 fpslocker.json（ALL_FPS：按目标帧率定期写的地址与值）。
-    //   本线程每秒看一次「60 帧」此刻是否真在生效（s2a_fps_live）：生效时按 60 帧求值写一遍；从生效变成不生效时按 30 帧写一遍（多数配置是帧时间 / 帧率上限公式，写回原帧率）。
+    //   本线程每秒按份问原生层这份补丁此刻是否被选中开着（s2a_cpatch_fps_unit → 选中档的目标帧率）：选中就按选中档求值写一遍；
+    //   从选中变成没选中时按 30 帧写一遍（多数配置是帧时间 / 帧率上限公式，写回原帧率）。没选中的那几份不写
+    //   （审计 P1-184：原先跟「60 帧」开关一律按 60 写进每一份，选 120 档时和已开的 120 补丁抢同一处）。
     //   地址 [MAIN|HEAP|ALIAS, 偏移, 偏移…]：区基址 + 第一个偏移，之后每级先读 8 字节指针再加下一个偏移（FPSLocker 同义；VARIABLE 出包时已换成 MAIN 偏移）。
     //   读写复用金手指的内存适配（只读已映射页、只写可写页）；地址没就绪（堆还没分配）跳过这一条、下一秒再试。
     //   表达式按 FPSLocker FORMAT.md：FPS_TARGET / FRAMETIME_TARGET / VSYNC_TARGET / FPS_LOCK_TARGET、四则与括号、TruncDec 与常用数学函数
     public static unsafe class FpsLocker
     {
         private static Thread _thread;
+        private static CancellationTokenSource _stop;
+        private static bool _loadFailed;
 
         public static void Start()
         {
             if (_thread != null) return;
             try { _ = Imports.s2a_cpatch_tables_dir(); }
             catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException) { return; }   // 没有原生核心（单测 / 工具宿主）
-            _thread = new Thread(Wait) { Name = "S2A.FpsLocker", IsBackground = true, Priority = ThreadPriority.BelowNormal };
+            var stop = _stop = new CancellationTokenSource();
+            _thread = new Thread(() => Wait(stop.Token)) { Name = "S2A.FpsLocker", IsBackground = true, Priority = ThreadPriority.BelowNormal };
             _thread.Start();
         }
 
-        // 服务起来时主程序可能还没装载（表目录还没登记）：每秒找一次 fpslocker.json，找到才加载；这款没有就一直闲着（每秒一次 stat）
-        private static void Wait()
+        // 收局（Exports.ShutdownManaged）：停线程，下一局 Start 重新找表、按新一局的选档写（同 Cheats.Stop，审计 P1-185）
+        public static void Stop()
         {
-            for (; ; Thread.Sleep(1000))
+            Thread t = _thread; if (t == null) return;
+            _stop.Cancel();
+            if (!t.Join(3000)) Console.Error.WriteLine("【红】FPSLocker：线程 3 秒内没停下");
+            _thread = null; _stop = null; _loadFailed = false;
+        }
+
+        // 服务起来时主程序可能还没装载（表目录还没登记）：每秒找一次 fpslocker.json，找到才加载；这款没有就一直闲着（每秒一次 stat）
+        private static void Wait(CancellationToken stop)
+        {
+            for (; !stop.WaitHandle.WaitOne(1000);)
             {
                 string dir = Marshal.PtrToStringUTF8((IntPtr)Imports.s2a_cpatch_tables_dir());
                 if (string.IsNullOrEmpty(dir)) continue;
@@ -38,17 +52,21 @@ namespace S2A.Services
                 if (!File.Exists(path)) continue;
                 List<Entry> entries;
                 try { entries = Load(File.ReadAllText(path)); }
-                catch (Exception e) { Console.Error.WriteLine($"【红】FPSLocker：读不了 {path}：{e.Message}"); return; }
+                catch (Exception e)   // 读不了（还在写 / 一时打不开）：下一秒再试，不让线程退出（审计 P1-184 附带）
+                {
+                    if (!_loadFailed) Console.Error.WriteLine($"【红】FPSLocker：读不了 {path}：{e.Message}（每秒重试）");
+                    _loadFailed = true; continue;
+                }
                 if (entries.Count == 0) return;
-                Console.Error.WriteLine($"FPSLocker：{entries.Count} 条帧率写入，跟 60 帧开关");
-                Run(entries);
+                Console.Error.WriteLine($"FPSLocker：{entries.Count} 条帧率写入，跟所选帧率档（只写选中的那份）");
+                Run(entries, stop);
                 return;
             }
         }
 
         public sealed class Entry
         {
-            public string Type = "", ValueType = "", CompareType = "", CompareValueType = "";
+            public string Unit = "", Type = "", ValueType = "", CompareType = "", CompareValueType = "";   // Unit：所属那份帧率补丁的编号（cpatch.tsv 第一列）
             public List<JsonElement> Address = new(), CompareAddress;
             public JsonElement Value, CompareValue;
         }
@@ -58,9 +76,11 @@ namespace S2A.Services
             var list = new List<Entry>();
             using var doc = JsonDocument.Parse(json);
             foreach (var unit in doc.RootElement.GetProperty("units").EnumerateArray())
+            {
+                string uid = unit.TryGetProperty("id", out var id) ? id.GetString() ?? "" : "";
                 foreach (var e in unit.GetProperty("all_fps").EnumerateArray())
                 {
-                    var x = new Entry { Type = e.GetProperty("type").GetString() ?? "" };
+                    var x = new Entry { Unit = uid, Type = e.GetProperty("type").GetString() ?? "" };
                     if (e.TryGetProperty("value_type", out var vt)) x.ValueType = vt.GetString() ?? "";
                     if (e.TryGetProperty("address", out var a)) foreach (var v in a.EnumerateArray()) x.Address.Add(v.Clone());
                     if (e.TryGetProperty("value", out var val)) x.Value = val.Clone();
@@ -70,29 +90,37 @@ namespace S2A.Services
                     if (e.TryGetProperty("compare_value", out var cv)) x.CompareValue = cv.Clone();
                     list.Add(x);
                 }
+            }
             return list;
         }
 
-        private static void Run(List<Entry> entries)
+        private static void Run(List<Entry> entries, CancellationToken stop)
         {
-            bool was = false;
+            var units = new Dictionary<string, List<Entry>>();
+            foreach (var e in entries) { if (!units.TryGetValue(e.Unit, out var l)) units[e.Unit] = l = new(); l.Add(e); }
+            var was = new Dictionary<string, int>();
             var process = new Cheats.GameProcess();
-            for (; ; Thread.Sleep(1000))
-            {
-                bool live;
-                try { live = Imports.s2a_fps_live() != 0; } catch (Exception) { return; }
-                if (!live && !was) continue;
-                double target = live ? 60 : 30;
-                int ok = 0, skip = 0;
-                foreach (var e in entries)
+            while (!stop.WaitHandle.WaitOne(1000))
+                foreach (var (unit, list) in units)
                 {
-                    try { if (Apply(process, e, target)) ok++; else skip++; }
-                    catch (Exception) { skip++; }   // 地址没就绪 / 读写落空：这一条下一秒再试
+                    int pick;
+                    try { pick = Imports.s2a_cpatch_fps_unit(unit); } catch (Exception) { return; }
+                    was.TryGetValue(unit, out int last);
+                    if (pick == 0 && last == 0) continue;
+                    double target = Target(pick);
+                    int ok = 0, skip = 0;
+                    foreach (var e in list)
+                    {
+                        try { if (Apply(process, e, target)) ok++; else skip++; }
+                        catch (Exception) { skip++; }   // 地址没就绪 / 读写落空：这一条下一秒再试
+                    }
+                    if (pick != last) Console.Error.WriteLine($"FPSLocker：{unit} 按 {target} 帧写 {ok} 条（{skip} 条地址未就绪）");
+                    was[unit] = pick;
                 }
-                if (live != was) Console.Error.WriteLine($"FPSLocker：按 {target} 帧写 {ok} 条（{skip} 条地址未就绪）");
-                was = live;
-            }
         }
+
+        // 这份选中 → 选中档的目标帧率；刚从选中变成没选中 → 30（写回原帧率，见类说明）
+        internal static double Target(int pick) => pick > 0 ? pick : 30;
 
         internal static bool Apply(Cheats.GameProcess p, Entry e, double target)
         {
@@ -264,7 +292,7 @@ namespace S2A.Services
         {
             private const string Lib = "s2a_native";
             [DllImport(Lib)] public static extern byte* s2a_cpatch_tables_dir();
-            [DllImport(Lib)] public static extern int s2a_fps_live();
+            [DllImport(Lib)] public static extern int s2a_cpatch_fps_unit([MarshalAs(UnmanagedType.LPUTF8Str)] string id);   // runtime/src/cpatch.c：这份选中档的目标帧率，没选中 0
         }
     }
 }

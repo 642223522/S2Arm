@@ -789,6 +789,8 @@ static class P
                 refOut1 = new float[n];
                 RefBiquadStereo(parameters, refStates0, refStates1, in0, in1, refOut0, refOut1, n);
             }
+            // #1182 restart rule (both paths): a stage whose state ends non-finite restarts from zero
+            for (int k = 0; k < 2; k++) { RefClearNonFinite(ref refStates0[k]); RefClearNonFinite(ref refStates1[k]); }
 
             // tree scalar path (the dispatcher's fallback)
             BiquadFilterState[] scalarStates0 = (BiquadFilterState[])initStates0.Clone(), scalarStates1 = (BiquadFilterState[])initStates1.Clone();
@@ -832,6 +834,198 @@ static class P
             CheckState($"{what} ch0 stage1", refStates0[1], vecStates0[1], anyNaN);
             CheckState($"{what} ch1 stage0", refStates1[0], vecStates1[0], anyNaN);
             CheckState($"{what} ch1 stage1", refStates1[1], vecStates1[1], anyNaN);
+        }
+    }
+
+    // ---- #1182 non-finite states: long multi-call runs, state carried across calls (production: 240 samples per call, in place) ----
+    // Spec (both paths): at the end of each call, a stage whose state holds a NaN / Inf restarts from zero; without that, one bad
+    //   sample silences the voice for good, because by IEEE rules NaN * c = NaN and Inf * 0 = NaN, Inf + -Inf = NaN: once a state
+    //   field is NaN, y = x*a0 + s0*a1 + s1*a2 + s2*b1 + s3*b2 is NaN for every later input and the device sink saturates NaN to 0.
+    // Expected values do not come from the kernels under test:
+    //   - a double-precision reference (same direct form 1, two stages, state carried across calls; a stage restarts from zero when
+    //     its double state is NaN / Inf or beyond float range, i.e. where the float state would have overflowed); per sample:
+    //     double NaN -> float NaN, double +-Inf -> same Inf, finite -> within tol * (largest |value| of that call and channel);
+    //     a call whose double values go beyond float range must hold at least one non-finite float sample (float overflow = Inf)
+    //   - the transcribed upstream loop (RefBiquadStereo) followed by the same restart rule, bit for bit (NaN compared as is-NaN).
+    static void RefClearNonFinite(ref BiquadFilterState s)
+    {
+        if (!float.IsFinite(s.State0) || !float.IsFinite(s.State1) || !float.IsFinite(s.State2) || !float.IsFinite(s.State3))
+        {
+            s.State0 = 0f; s.State1 = 0f; s.State2 = 0f; s.State3 = 0f;
+        }
+    }
+
+    // double reference, one channel, two stages, in place on y (double); st[stage][0..3]. Same products and summation order as
+    //   the float loop; returns true when any product or partial sum went beyond float range (the float loop gets an Inf there,
+    //   and Inf / NaN stays to the end of the call), and that stage then restarts from zero, like a non-finite double state.
+    static bool RefBiquadDouble(BiquadFilterParameter2[] parameters, double[][] st, double[] y, int n)
+    {
+        bool anyOverflow = false;
+
+        for (int stage = 0; stage < 2; stage++)
+        {
+            Span<float> nu = parameters[stage].Numerator.AsSpan();
+            Span<float> de = parameters[stage].Denominator.AsSpan();
+            double a0 = nu[0], a1 = nu[1], a2 = nu[2], b1 = de[0], b2 = de[1];
+            double s0 = st[stage][0], s1 = st[stage][1], s2 = st[stage][2], s3 = st[stage][3];
+            bool overflow = false;
+
+            static bool Over(double v) => double.IsFinite(v) && Math.Abs(v) > float.MaxValue;
+
+            for (int i = 0; i < n; i++)
+            {
+                double x = y[i];
+                double p0 = x * a0, p1 = s0 * a1, p2 = s1 * a2, p3 = s2 * b1, p4 = s3 * b2;
+                double q1 = p0 + p1, q2 = q1 + p2, q3 = q2 + p3, o = q3 + p4;
+                if (Over(p0) || Over(p1) || Over(p2) || Over(p3) || Over(p4) || Over(q1) || Over(q2) || Over(q3) || Over(o)) overflow = true;
+                s1 = s0; s0 = x; s3 = s2; s2 = o;
+                y[i] = o;
+            }
+
+            if (overflow || !double.IsFinite(s0) || !double.IsFinite(s1) || !double.IsFinite(s2) || !double.IsFinite(s3)) { s0 = s1 = s2 = s3 = 0; }
+            st[stage][0] = s0; st[stage][1] = s1; st[stage][2] = s2; st[stage][3] = s3;
+            anyOverflow |= overflow;
+        }
+
+        return anyOverflow;
+    }
+
+    static bool StatesFinite(BiquadFilterState[] s)
+    {
+        foreach (var x in s)
+        {
+            if (!float.IsFinite(x.State0) || !float.IsFinite(x.State1) || !float.IsFinite(x.State2) || !float.IsFinite(x.State3)) return false;
+        }
+        return true;
+    }
+
+    static int CountNonFinite(ReadOnlySpan<float> a)
+    {
+        int c = 0;
+        foreach (float v in a) if (!float.IsFinite(v)) c++;
+        return c;
+    }
+
+    static void TestBiquadNonFinite(Random rnd)
+    {
+        const int N = 240, Calls = 200, Bad = 50;   // 200 calls x 240 = 48000 samples (1 s at 48 kHz); the bad input lands in call 50
+
+        BiquadFilterParameter2 typ = MakeBiquadParameter(0.5f, 0.25f, 0.125f, 0.3f, -0.1f);    // poles |p| = sqrt(0.1) = 0.316, DC gain 0.875/0.8 = 1.09
+        BiquadFilterParameter2 pass = MakeBiquadParameter(1f, 0f, 0f, 0f, 0f);                  // passthrough: zero coefficients turn an Inf state into NaN (Inf * 0)
+        // poles r * e^{+-i pi/4}: b1 = 2 r cos(pi/4), b2 = -r^2 (y[n] = ... + b1 y[n-1] + b2 y[n-2])
+        static BiquadFilterParameter2 Resonator(double r) => MakeBiquadParameter(1e-3f, 0f, 0f, (float)(2 * r * Math.Cos(Math.PI / 4)), (float)(-r * r));
+
+        var scenarios = new (string name, BiquadFilterParameter2[] p, Func<int, int, int, float> x, double tol, bool expectNonFinite)[]
+        {
+            // |y| <= sum|h| * 1e30, far below float max: never non-finite
+            ("huge 1e30 every 10th call", [typ, pass], (c, ch, i) => c % 10 == 0 ? (rnd.Next(2) == 0 ? 1e30f : -1e30f) : rnd.NextSingle() * 65536f - 32768f, 1e-4, false),
+            // ch0 constant +max: DC gain 1.09 > 1 -> |y| > float max -> Inf, then Inf*0.3 + Inf*(-0.1) = NaN; ch1 alternating +-max (gain at Nyquist 0.27)
+            ("max 3.4e38 in call 50", [typ, pass], (c, ch, i) => c == Bad ? (ch == 0 ? float.MaxValue : (i % 2 == 0 ? float.MaxValue : -float.MaxValue)) : rnd.NextSingle() * 65536f - 32768f, 1e-4, true),
+            // subnormal input: stays subnormal / tiny, never non-finite
+            ("subnormal 1e-40", [typ, pass], (c, ch, i) => (rnd.NextSingle() * 2f - 1f) * 1e-40f, 1e-3, false),
+            ("NaN at ch0 call 50 sample 17", [typ, pass], (c, ch, i) => c == Bad && ch == 0 && i == 17 ? float.NaN : rnd.NextSingle() * 65536f - 32768f, 1e-4, true),
+            ("+Inf at ch1 call 50 sample 3", [typ, pass], (c, ch, i) => c == Bad && ch == 1 && i == 3 ? float.PositiveInfinity : rnd.NextSingle() * 65536f - 32768f, 1e-4, true),
+            ("-Inf at ch0 call 50 sample 239", [typ, pass], (c, ch, i) => c == Bad && ch == 0 && i == 239 ? float.NegativeInfinity : rnd.NextSingle() * 65536f - 32768f, 1e-4, true),
+            // stable but near the unit circle (r = 0.9999): rings for ~10^4 samples, stays finite
+            ("poles r=0.9999", [Resonator(0.9999), pass], (c, ch, i) => rnd.NextSingle() * 65536f - 32768f, 1e-3, false),
+            // unstable (r = 1.01): grows 1.01^n, passes float max after ~8900 samples -> Inf / NaN
+            ("poles r=1.01 (unstable)", [Resonator(1.01), pass], (c, ch, i) => rnd.NextSingle() * 65536f - 32768f, 1e-3, true),
+        };
+
+        foreach (var sc in scenarios)
+        {
+            BiquadFilterState[] v0 = new BiquadFilterState[2], v1 = new BiquadFilterState[2];   // vector kernel
+            BiquadFilterState[] s0 = new BiquadFilterState[2], s1 = new BiquadFilterState[2];   // tree scalar path
+            BiquadFilterState[] u0 = new BiquadFilterState[2], u1 = new BiquadFilterState[2];   // upstream loop, no restart (as shipped upstream)
+            BiquadFilterState[] r0 = new BiquadFilterState[2], r1 = new BiquadFilterState[2];   // upstream loop + restart rule
+            double[][][] d = [[new double[4], new double[4]], [new double[4], new double[4]]];
+
+            int firstBadV = -1, firstBadU = -1, afterV = 0, afterU = 0, afterTotal = 0, nonFiniteCallsV = 0;
+            bool vStatesAlwaysFinite = true, sawNonFinite = false;
+            double maxRel = 0;
+            int failsBefore = fails;
+
+            for (int c = 0; c < Calls; c++)
+            {
+                float[] in0 = new float[N], in1 = new float[N];
+                for (int i = 0; i < N; i++) { in0[i] = sc.x(c, 0, i); in1[i] = sc.x(c, 1, i); }
+
+                float[] vo0 = (float[])in0.Clone(), vo1 = (float[])in1.Clone();
+                S2ADspBiquadHelper.ProcessBiquadFilterStereoAdvSimd(sc.p, v0, v1, vo0, vo1, vo0, vo1, N);
+                float[] so0 = (float[])in0.Clone(), so1 = (float[])in1.Clone();
+                S2ADspBiquadHelper.ProcessBiquadFilterStereoScalar(sc.p, s0, s1, so0, so1, so0, so1, N);
+                float[] uo0 = (float[])in0.Clone(), uo1 = (float[])in1.Clone();
+                RefBiquadStereo(sc.p, u0, u1, uo0, uo1, uo0, uo1, N);
+                float[] ro0 = (float[])in0.Clone(), ro1 = (float[])in1.Clone();
+                RefBiquadStereo(sc.p, r0, r1, ro0, ro1, ro0, ro1, N);
+                for (int k = 0; k < 2; k++) { RefClearNonFinite(ref r0[k]); RefClearNonFinite(ref r1[k]); }
+
+                string what = $"nonfinite '{sc.name}' call {c}";
+                CheckFloatsAnyNan($"{what} vector vs scalar ch0", so0, vo0);
+                CheckFloatsAnyNan($"{what} vector vs scalar ch1", so1, vo1);
+                CheckFloatsAnyNan($"{what} vector vs upstream+restart ch0", ro0, vo0);
+                CheckFloatsAnyNan($"{what} vector vs upstream+restart ch1", ro1, vo1);
+                for (int k = 0; k < 2; k++)
+                {
+                    CheckState($"{what} vector vs scalar ch0 stage{k}", s0[k], v0[k], true);
+                    CheckState($"{what} vector vs scalar ch1 stage{k}", s1[k], v1[k], true);
+                    CheckState($"{what} vector vs upstream+restart ch0 stage{k}", r0[k], v0[k], true);
+                    CheckState($"{what} vector vs upstream+restart ch1 stage{k}", r1[k], v1[k], true);
+                }
+
+                cases++;
+                if (!StatesFinite(v0) || !StatesFinite(v1) || !StatesFinite(s0) || !StatesFinite(s1))
+                {
+                    if (vStatesAlwaysFinite) Fail($"{what}: state not finite after the call (restart rule)", c, "finite", $"v=({v0[0].State0:R},{v0[0].State2:R},{v0[1].State2:R}) ch1 ({v1[0].State2:R},{v1[1].State2:R})");
+                    vStatesAlwaysFinite = false;
+                }
+
+                // double reference
+                for (int ch = 0; ch < 2; ch++)
+                {
+                    float[] inp = ch == 0 ? in0 : in1;
+                    float[] got = ch == 0 ? vo0 : vo1;
+                    double[] y = new double[N];
+                    for (int i = 0; i < N; i++) y[i] = inp[i];
+                    bool overflow = RefBiquadDouble(sc.p, d[ch], y, N);
+
+                    int nf = CountNonFinite(got);
+                    if (nf > 0) sawNonFinite = true;
+                    cases++;
+                    if (overflow)
+                    {
+                        if (nf == 0) Fail($"{what} ch{ch} vs double: double went beyond float range, float call has no Inf/NaN", c, ">=1 non-finite", "0");
+                        continue;
+                    }
+
+                    double scale = 0;
+                    for (int i = 0; i < N; i++) if (double.IsFinite(y[i])) scale = Math.Max(scale, Math.Abs(y[i]));
+                    for (int i = 0; i < N; i++)
+                    {
+                        double w = y[i]; float g = got[i];
+                        bool ok = double.IsNaN(w) ? float.IsNaN(g)
+                            : double.IsInfinity(w) ? (double)g == w
+                            : float.IsFinite(g) && Math.Abs(g - w) <= sc.tol * scale;
+                        if (!ok)
+                        {
+                            Fail($"{what} ch{ch} vs double (tol {sc.tol} x {scale:G3})", i, $"{w:R}", $"{g:R}");
+                            break;
+                        }
+                        if (double.IsFinite(w) && scale > 0) maxRel = Math.Max(maxRel, Math.Abs(g - w) / scale);
+                    }
+                }
+
+                int nv = CountNonFinite(vo0) + CountNonFinite(vo1), nu2 = CountNonFinite(uo0) + CountNonFinite(uo1);
+                if (nv > 0) { nonFiniteCallsV++; if (firstBadV < 0) firstBadV = c; }
+                if (nu2 > 0 && firstBadU < 0) firstBadU = c;
+                if (firstBadU >= 0 && c > firstBadU) { afterV += nv; afterU += nu2; afterTotal += 2 * N; }
+            }
+
+            cases++;
+            if (sc.expectNonFinite != sawNonFinite) Fail($"nonfinite '{sc.name}' non-finite output seen", 0, $"{sc.expectNonFinite}", $"{sawNonFinite}");
+
+            Console.WriteLine($"  nonfinite '{sc.name}': 首个非有限输出 call 向量={firstBadV} 上游={firstBadU}；其后各 call 非有限样本 向量 {afterV}/{afterTotal}、上游原循环 {afterU}/{afterTotal}；" +
+                $"向量出非有限的 call 数 {nonFiniteCallsV}/{Calls}；上游末态有限={StatesFinite(u0) && StatesFinite(u1)}，向量末态有限={StatesFinite(v0) && StatesFinite(v1)}；对 double 最大相对误差 {maxRel:G3}；红 {fails - failsBefore}");
         }
     }
 
@@ -1281,6 +1475,7 @@ static class P
         TestRamp(rnd);
         TestSaturateInterleave(rnd);
         TestBiquadStereo(rnd);
+        TestBiquadNonFinite(rnd);
         TestAdpcm(rnd);
         TestSaturateInterleave6(rnd);
         TestWiring(rnd);

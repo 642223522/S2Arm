@@ -64,6 +64,15 @@ typedef struct s2a_lowva_api {
     void (*snapshot)(uint64_t *holes, uint64_t *largest, uint64_t *reserve, uint64_t *untracked, uint64_t *tracked);
 } s2a_lowva_api;
 
+// 宿主自有大块匿名映射的虚存标签（#7c1a0f：低区按标签合计里「标签 0」1.3 GB 分不出是谁）。242..247 是窗口尾部使用者（native.h S2A_TAIL_TAG0 + user），
+//   这里从 248 起；vawin.c s2a_low_tags 按名字列。苹果平台 mmap 的 fd 位传 S2A_VMTAG_FD(标签)，别的平台没有虚存标签、传 -1（同原来）
+enum { S2A_VMTAG_VPOOL = 248, S2A_VMTAG_FAR = 249, S2A_VMTAG_SHMEM = 250, S2A_VMTAG_HOST = 251, S2A_VMTAG_END = 252 };
+#if defined(__APPLE__)
+#define S2A_VMTAG_FD(t) ((int)((unsigned)(t) << 24))   // 同 <mach/vm_statistics.h> VM_MAKE_TAG（共用头不直接引苹果系统头，分层规则 R-02）
+#else
+#define S2A_VMTAG_FD(t) (-1)
+#endif
+
 // 原生层导出，恒返回有效接口；窗口没占满（尾部还给系统 > 0）时不设限（acquire 恒 0）、不巡检，只记账
 const s2a_lowva_api *s2a_lowva(void);
 

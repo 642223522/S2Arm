@@ -1,7 +1,7 @@
 #!/bin/bash
 # 门禁覆盖：*.sh *.py Makefile *.mk
-# 单测接线扫描（tools/test_wired_lint.py，约 1 秒）：bash tests/test_wired_test.sh
-# 期望：① 本仓库全部接线或在白名单 → 退出 0；② 本仓库换成空白名单 → 退出 1 且点名仍需私有数据 / 参数的三支手动单测；
+# 单测接线扫描（tools/test_wired_lint.py，全仓一遍约 25 秒）：bash tests/test_wired_test.sh
+# 期望：① 本仓库全部接线或在白名单 → 退出 0；② 本仓库换成空白名单（同一次扫描出的第二份结论）→ 退出 1 且点名仍需私有数据 / 参数的三支手动单测；
 #   ③ 临时仓库：门禁调到的、经已接线脚本再调的、Python import 的、Makefile 配方里调的都算接上；只在注释里提到的、谁都没调的报出；
 #   白名单没写原因、白名单写了不存在 / 其实已接上的单测只提示，没写原因的报一条；不合格的白名单行不豁免（没写原因的那支照报没接线）
 #   ⑤ 文字提及、非执行选项、heredoc、同名不同目录都不算接线；真调用正控仍判接上；解析失败点名文件和原因。
@@ -16,10 +16,10 @@ fixture_lint() {
     git -C "$root" add -A || return
     python3 "$lint" "$root"
 }
-o=$(cd "$H" && python3 tools/test_wired_lint.py 2>&1); r=$?
+o=$(cd "$H" && S2A_WIRED_EMPTY_OUT=$T/empty.out python3 tools/test_wired_lint.py 2>&1); r=$?   # 同一次扫描顺带出空白名单那份结论（②用，不整仓重扫）
 ck "① 本仓库：全部接线或在白名单（$(echo "$o" | tail -1 | cut -c1-120)）" '[ $r = 0 ]'
 [ $r = 0 ] || echo "$o" | head -10
-: > "$T/empty.tsv"; o=$(cd "$H" && S2A_WIRED_OK=$T/empty.tsv python3 tools/test_wired_lint.py 2>&1); r=$?
+o=$(sed '$d' "$T/empty.out"); r=$(tail -1 "$T/empty.out" | sed 's/^退出码 //')
 ck "② 空白名单：退出 1（rc=${r}）" '[ $r = 1 ]'
 # 拼扩展名：现有扫描器会把断言里的完整文件名误当调用（#484 另行修复）。
 for stem in t_pkz_real t_smbw_bnsh t_fout_rule; do
@@ -278,19 +278,19 @@ for t in graphics/tests/t_notgated.py graphics/tests/t_dry.py plat/tests/t_say.p
   ck "⑫ $t 报没接线（只挂顶层聚合目标 / make -n / echo \"\$@\" / 字符串里不是按脚本目录的工程路径）" 'grep -Fq "$t 没有门禁脚本调它" <<< "$o"'; done
 
 # ⑬ 11-01 维护者：分母不按命名——tests 目录（含 *-tests）下的测试入口（.sh、带 shebang / __main__ 的 .py）都要接线（#1243 stop_after_acquire.py 不叫 *_test 没人查）；
-#   纯被导入的模块不算入口；unittest discover 按 -s 起始目录 + -p 模式精确展开（模式是变量不认）；Python 跑器 subprocess.run([sys.executable, Path(__file__).with_name(x)]) 算接上。期望按构造手写
-N=$T/r13; mkdir -p $N/tools $N/w/tests $N/vk/foo-tests $N/pk/tests $N/pk2/tests; cp "$H/tools/test_wired_lint.py" "$H/tools/gate_decl.py" "$H/tools/gate_route.py" $N/tools/
+#   纯被导入的模块不算入口；unittest discover 按 -s 起始目录 + -p 模式精确展开（模式是变量不认；后面的重定向不算位置参数）；Python 跑器 subprocess.run([sys.executable, Path(__file__).with_name(x)]) 算接上。期望按构造手写
+N=$T/r13; mkdir -p $N/tools $N/w/tests $N/vk/foo-tests $N/pk/tests $N/pk2/tests $N/pk3/tests; cp "$H/tools/test_wired_lint.py" "$H/tools/gate_decl.py" "$H/tools/gate_route.py" $N/tools/
 M13='if __name__ == "__main__":\n    print(1)\n'
 printf "$M13" > $N/w/tests/stop_after_acquire.py; printf 'def helper():\n    return 1\n' > $N/w/tests/helper_mod.py; printf 'echo hi\n' > $N/w/tests/orphan.sh
 printf "import subprocess, sys\nfrom pathlib import Path\nsubprocess.run([sys.executable, str(Path(__file__).with_name('child.py'))])\n$M13" > $N/vk/foo-tests/run.py; printf "$M13" > $N/vk/foo-tests/child.py
-printf "$M13" > $N/pk/tests/test_a.py; printf "$M13" > $N/pk/tests/test_b.py; printf "$M13" > $N/pk/tests/other_c.py; printf "$M13" > $N/pk2/tests/test_d.py
-mkdir -p $N/graphics; printf "python3 vk/foo-tests/run.py\npython3 -m unittest discover -s pk/tests -p 'test_*.py'\npython3 -m unittest discover -s pk2/tests -p \"\$P\"\n" > $N/graphics/gate.sh
+printf "$M13" > $N/pk/tests/test_a.py; printf "$M13" > $N/pk/tests/test_b.py; printf "$M13" > $N/pk/tests/other_c.py; printf "$M13" > $N/pk2/tests/test_d.py; printf "$M13" > $N/pk3/tests/test_e.py
+mkdir -p $N/graphics; printf "python3 vk/foo-tests/run.py\npython3 -m unittest discover -s pk/tests -p 'test_*.py'\npython3 -m unittest discover -s pk2/tests -p \"\$P\"\npython3 -B -m unittest discover -s pk3/tests -v > build/pk3.log 2>&1 & p3=\$!\n" > $N/graphics/gate.sh
 o=$(fixture_lint $N/tools/test_wired_lint.py $N 2>&1); r=$?
 ck "⑬ 临时仓库退出 1（rc=${r}）" '[ $r = 1 ]'
 for t in w/tests/stop_after_acquire.py w/tests/orphan.sh pk/tests/other_c.py pk2/tests/test_d.py; do
   ck "⑬ $t 报没接线（不按命名的入口 / .sh / discover 模式外 / 模式是变量）" 'grep -Fq "$t 没有门禁脚本调它" <<< "$o"'; done
-for t in vk/foo-tests/run.py vk/foo-tests/child.py pk/tests/test_a.py pk/tests/test_b.py; do
-  ck "⑬ $t 算接上（*-tests 入口 / Python 跑器 / discover 展开）" '! grep -Fq "$t 没有" <<< "$o"'; done
+for t in vk/foo-tests/run.py vk/foo-tests/child.py pk/tests/test_a.py pk/tests/test_b.py pk3/tests/test_e.py; do
+  ck "⑬ $t 算接上（*-tests 入口 / Python 跑器 / discover 展开；pk3：discover 后接「> 日志 2>&1 &」，重定向不当模式）" '! grep -Fq "$t 没有" <<< "$o"'; done
 ck "⑬ 纯被导入的模块不进分母" '! grep -Fq "w/tests/helper_mod.py" <<< "$o"'
 mkdir -p $N/img/tests; printf 'FROM x\nCOPY entry.sh /opt/\nENTRYPOINT ["bash", "/opt/entry.sh"]\n' > $N/img/tests/Dockerfile; printf 'echo in-image\n' > $N/img/tests/entry.sh; printf 'echo loose\n' > $N/img/tests/loose.sh
 o=$(fixture_lint $N/tools/test_wired_lint.py $N 2>&1)

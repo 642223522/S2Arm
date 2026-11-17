@@ -15,12 +15,12 @@ int main(int argc, char **argv) {
     assert(!s2a_android_layout_split(&r, 0, &why, note, sizeof note));
     if (atoi(argv[5])) {
         s2a_layout_requirements too_large = r;
-        too_large.heap_size = 5ull << 30;
+        too_large.heap_size = 8ull << 30;   // 上限不定档：72 GiB − 固定 2146 MiB − 63 GiB = 7070 MiB 放不下
         assert(s2a_android_layout_split(&too_large, 0, &why, note, sizeof note) == -1);
-        assert(too_large.heap_size == 5ull << 30); // 超预算不悄悄截堆
+        assert(too_large.heap_size == 8ull << 30); // 超预算不悄悄截堆
         assert(s2a_android_layout_compute(3, 16ull << 20, &r, 0x6000000000ull, 64ull << 30, &l) == -2);
     }
-    assert(!s2a_android_layout_compute(3, 16ull << 20, &r, 0x6000000000ull, 68ull << 30, &l));
+    assert(!s2a_android_layout_compute(3, 16ull << 20, &r, 0x6000000000ull, 72ull << 30, &l));
     const uint64_t gb = 1ull << 30;
     uint64_t start = (l.alias_base + 0x3fe00000ull + (gb | 0xfff)) & ~(gb - 1);
     int fits = start + 62 * gb <= l.alias_base + l.alias_size - 0x1000;

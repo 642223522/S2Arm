@@ -2,7 +2,7 @@
 # Do not append TEST_TARGETS: neither make test nor gate may require game inputs.
 # Build with S2A_CS=0 S2A_MAC_FRONTEND=0; these probes link every production
 # HOST_SRCS, rename only host_main's main, and never start services/game/GPU.
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 SDK_STOP_PROBE_UNDEFINED := $(S2A_HOST_WEAK)
 
 .PHONY: native-sdk-stop-probe native-tls-join-block-probe native-fps-reload-probe

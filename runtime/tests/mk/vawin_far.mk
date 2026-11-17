@@ -1,6 +1,6 @@
 # Mac malloc 房间与生产远端围栏：真实地址探测，不需要游戏或 NPDM。
 NATIVE_TEST_OWN += vawin_far
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 .PHONY: native-test-vawin_far
 native-test-vawin_far: $(TEST_VAGUARD)
 	@mkdir -p $(BUILD)/tests

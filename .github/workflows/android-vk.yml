@@ -31,8 +31,14 @@ concurrency:
   cancel-in-progress: true
 jobs:
   contract-sim:
+    # 每档都要整套 run.sh（lavapipe 上几分钟），十几档串行在一个 job 里会超时限：按片并行，片数随档数调（sim_tiers.sh 的 S2A_SIM_SHARD）。
+    name: contract-sim (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -46,7 +52,7 @@ jobs:
       - name: 契约测试 + 模拟机型档
         run: |
           set +e
-          bash android/tests/vk/sim_tiers.sh
+          S2A_SIM_SHARD=${{ matrix.shard }}/4 bash android/tests/vk/sim_tiers.sh
           rc=$?
           set -e
           if [ "$rc" -eq 75 ]; then

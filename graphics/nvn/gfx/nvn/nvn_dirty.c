@@ -66,8 +66,12 @@ static pthread_mutex_t g_slot_mu = PTHREAD_MUTEX_INITIALIZER;   // Pool creation
 // Range-table writers hold g_slot_mu and bracket publication/reuse with odd /
 // even epochs. Never reset this counter: other threads can retain negative
 // queries across sessions. Page protection and write generations are unrelated.
-// find_span's per-thread memo (below) trusts this epoch too: a writer that changes base / end / live without bracketing it leaves stale answers behind.
+// find_span's sorted index (below) trusts this epoch too, as a seqlock: a writer that changes base / end / live / the index without bracketing it lets a reader return a stale answer.
 static _Atomic uint64_t g_table_epoch = 2;
+// 写者的括号。开工：代际变奇数，并且这次写必须先于后面对表和索引的任何写被别的线程看到（所以补一道 release 栅栏，
+// 光靠这次自增本身只约束它之前的访问）；收工：代际变偶数，release 保证表和索引的写都先于它。读者的配套读法在 find_span。
+static inline void table_write_begin(void) { atomic_fetch_add_explicit(&g_table_epoch, 1, memory_order_relaxed); atomic_thread_fence(memory_order_release); }
+static inline void table_write_end(void) { atomic_fetch_add_explicit(&g_table_epoch, 1, memory_order_release); }
 typedef struct { uintptr_t addr; size_t len; uint64_t epoch; } prep_miss;
 static _Thread_local prep_miss g_prep_miss[64];
 // Old arrays can still be held by a fault reader during slot reuse. Keep them
@@ -78,6 +82,89 @@ typedef struct retired_arrays {
     struct retired_arrays *next;
 } retired_arrays;
 static retired_arrays *g_retired_arrays;   // g_slot_mu; never read by the signal path
+
+// ---- find_span 的有序索引（#1133；取代 #974 的线程内备忘）----
+// 线性扫槽位表是 O(池数)：世界场景里池有上千个，回放线程每个走慢路的缓冲解析、每次贴图内容检查都问一次「哪个范围装得下 [a, a+len)」
+// （真机取样：线性扫 + 备忘共占回放线程约 4%；备忘只在表没变时有效，命中 68–74%，其余每次整表扫）。
+// 索引 = 现存范围按 (起点, 槽号) 排序的数组，外加「隐含的区间树」：以数组下标区间 [lo, hi) 的中点为根递归成树，每个根记子树里最大的 end（sm）。
+// 查询 [a, a+len)：从根往下，子树 sm < a+len 整棵剪掉；根的起点 > a 则根和右子树都不可能装得下，只走左边；否则根是候选，左子树起点必然 ≤ a，右子树继续看。
+// 复杂度 O(log N + k)，k = 真正装得下的范围数（共用边界页时 ≤ 2）；范围互相嵌套（一个大池里套小池）也不退化。取所有装得下的范围里槽号最小的，所以与线性扫逐位相同。
+// 写者（登记 / 注销 / 重置会话）在 g_slot_mu 内、代际为奇数的窗口里增删条目并重算 sm，是 O(N)（N = 现存池数；宿主 -O2 读数：已有 1000 / 3000 个池时一次增或删约 2 / 7 微秒，不含 mprotect）。
+// 并发：索引的每个字段都是 relaxed 原子量（读者和写者同时碰它不构成数据竞争）。读者按 seqlock 读：先取偶数代际、读完索引、再复查代际没变才信；
+// 奇数（有写者在改）或复查不一致就退回线性扫。块只增不减，直到重置会话才释放，所以读者读到半改状态的条目也不会踩到已释放的内存，只是答案会被复查丢掉。
+// 索引不可用（现存范围超上限 / 分配失败 / 与表对不上）时置 g_span_off，之后 find_span 一律线性扫（答案不变，只是慢），重置会话恢复；这是真退路，不是成功兜底。
+#ifndef NVN_DIRTY_SPAN_IDX_MAX
+#define NVN_DIRTY_SPAN_IDX_MAX 32768   // 索引最多收多少条（= 现存池数）；超了每次登记都要 O(N) 重算，不值得，退回线性扫
+#endif
+enum { SPAN_BLK_SHIFT = 10, SPAN_BLK = 1 << SPAN_BLK_SHIFT, SPAN_IDX_MAX = NVN_DIRTY_SPAN_IDX_MAX,
+       SPAN_NBLK = (SPAN_IDX_MAX + SPAN_BLK - 1) >> SPAN_BLK_SHIFT, SPAN_STACK = 48 };
+#define SPAN_NONE 0xFFFFFFFFu
+typedef struct { _Atomic uintptr_t base, end, sm; _Atomic uint32_t slot; } span_ent;   // 32 字节：一个节点一条缓存线的一半
+#ifndef NVN_DIRTY_SPAN_CALLOC
+#define NVN_DIRTY_SPAN_CALLOC() calloc(SPAN_BLK, sizeof(span_ent))   // 单测钩子：换成可以注入失败的分配
+#endif
+static _Atomic(span_ent *) g_span_blk[SPAN_NBLK];   // 块每块 1024 条，按需分配，只增不减
+static _Atomic int g_span_n;                         // 索引条数（= 现存范围数）；写者在 g_slot_mu 内改
+static _Atomic int g_span_off;                       // 1 = 索引不可用（见上）；重置会话清零
+static inline span_ent *span_at(int i) { return &atomic_load_explicit(&g_span_blk[i >> SPAN_BLK_SHIFT], memory_order_relaxed)[i & (SPAN_BLK - 1)]; }
+static inline uintptr_t span_base(const span_ent *e) { return atomic_load_explicit(&e->base, memory_order_relaxed); }
+static inline uintptr_t span_end(const span_ent *e) { return atomic_load_explicit(&e->end, memory_order_relaxed); }
+static inline uint32_t span_slot(const span_ent *e) { return atomic_load_explicit(&e->slot, memory_order_relaxed); }
+static void span_off(const char *why) {
+    if (!atomic_exchange(&g_span_off, 1)) LOG("【红】 dirty-page tracking: 取范围索引停用（%s），find_span 退回线性扫（答案不变，只是慢）；重置会话后恢复", why);
+}
+static int span_lower(uintptr_t base, uint32_t slot, int n) {   // 第一个键 >= (base, slot) 的下标
+    int lo = 0, hi = n;
+    while (lo < hi) {
+        const int mid = (lo + hi) >> 1; const span_ent *e = span_at(mid); const uintptr_t eb = span_base(e);
+        if (eb < base || (eb == base && span_slot(e) < slot)) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+}
+static void span_copy(span_ent *to, const span_ent *from) {
+    atomic_store_explicit(&to->base, span_base(from), memory_order_relaxed);
+    atomic_store_explicit(&to->end, span_end(from), memory_order_relaxed);
+    atomic_store_explicit(&to->slot, span_slot(from), memory_order_relaxed);
+}
+static uintptr_t span_sm_build(int lo, int hi) {   // 返回 [lo, hi) 里最大的 end，并把它记在这棵子树的根（中点）上
+    if (lo >= hi) return 0;
+    const int mid = (lo + hi) >> 1; span_ent *e = span_at(mid);
+    uintptr_t m = span_end(e);
+    const uintptr_t l = span_sm_build(lo, mid), r = span_sm_build(mid + 1, hi);
+    if (l > m) m = l;
+    if (r > m) m = r;
+    atomic_store_explicit(&e->sm, m, memory_order_relaxed);
+    return m;
+}
+// 以下三个只在 g_slot_mu 内、代际为奇数时调（写者的括号里）
+static void span_insert(uintptr_t base, uintptr_t end, uint32_t slot) {
+    if (atomic_load_explicit(&g_span_off, memory_order_relaxed)) return;
+    const int n = atomic_load_explicit(&g_span_n, memory_order_relaxed);
+    if (n >= SPAN_IDX_MAX) { span_off("现存范围超过索引上限"); return; }
+    if (!atomic_load_explicit(&g_span_blk[n >> SPAN_BLK_SHIFT], memory_order_relaxed)) {   // 先发布块，再让 g_span_n 数上它
+        span_ent *nb = NVN_DIRTY_SPAN_CALLOC();
+        if (!nb) { span_off("内存分配失败"); return; }
+        atomic_store_explicit(&g_span_blk[n >> SPAN_BLK_SHIFT], nb, memory_order_release);
+    }
+    const int p = span_lower(base, slot, n);
+    for (int i = n; i > p; i--) span_copy(span_at(i), span_at(i - 1));
+    span_ent *e = span_at(p);
+    atomic_store_explicit(&e->base, base, memory_order_relaxed); atomic_store_explicit(&e->end, end, memory_order_relaxed); atomic_store_explicit(&e->slot, slot, memory_order_relaxed);
+    atomic_store_explicit(&g_span_n, n + 1, memory_order_release);
+    span_sm_build(0, n + 1);
+}
+static void span_remove(uintptr_t base, uint32_t slot) {
+    if (atomic_load_explicit(&g_span_off, memory_order_relaxed)) return;
+    const int n = atomic_load_explicit(&g_span_n, memory_order_relaxed), p = span_lower(base, slot, n);
+    if (p >= n || span_base(span_at(p)) != base || span_slot(span_at(p)) != slot) { span_off("索引里找不到要注销的范围"); return; }
+    for (int i = p; i < n - 1; i++) span_copy(span_at(i), span_at(i + 1));
+    atomic_store_explicit(&g_span_n, n - 1, memory_order_release);
+    span_sm_build(0, n - 1);
+}
+static void span_reset(void) {   // 重置会话：所有读者线程已收拢（见 nvn_dirty_reset_session），块可以放掉
+    for (int b = 0; b < SPAN_NBLK; b++) free(atomic_exchange(&g_span_blk[b], NULL));
+    atomic_store(&g_span_n, 0); atomic_store(&g_span_off, 0);
+}
 static _Atomic uint64_t g_mp_calls, g_mp_pages, g_mp_ticks;
 // 保护分块（页数，相对所属映射起点对齐）。共享默认 0 = 逐页，与 main 行为一致：
 // Apple 路径（iOS / Mac 也编本文件）没有 VMA 上限问题，不能替它付整块重传的代价（维护方审 11-04）。
@@ -127,7 +214,8 @@ static _Atomic int g_busy_red;
 // entry. Old protections belong to the native window that is remapped next.
 void nvn_dirty_reset_session(void) {
     pthread_mutex_lock(&g_slot_mu);
-    atomic_fetch_add(&g_table_epoch, 1);
+    table_write_begin();
+    span_reset();
     for (int b = 0; b < NBLK; b++) {
         range_t *r = atomic_exchange(&g_blk[b], NULL);
         if (!r) continue;
@@ -140,7 +228,7 @@ void nvn_dirty_reset_session(void) {
     }
     atomic_store(&g_nr, 0); atomic_store(&g_live, 0); atomic_store(&g_live_peak, 0);
     atomic_store(&g_now, 1); atomic_store(&g_overflow_logged, 0); atomic_store(&g_busy_red, 0); atomic_store(&g_hooks_on, 0);
-    atomic_fetch_add(&g_table_epoch, 1);
+    table_write_end();
     pthread_mutex_unlock(&g_slot_mu);
 }
 // Wait for this page to leave BUSY. Returns 1 = it has left; 0 = waited past the limit (reported red once). Usable in a signal handler: only atomic reads, dirty_tick and sched_yield
@@ -164,38 +252,52 @@ static range_t *find_span_scan(uintptr_t a, size_t len) {
     for (int i = 0; i < n; i++) { range_t *r = rg(i); if (live_at(i) && a >= r->base && a + len <= r->end) return r; }
     return NULL;
 }
-// ---- find_span 的线程内备忘（#974 问 3，维护者答「做」）----
-// 上面是线性扫槽位表：世界场景里池有上千个，回放线程每个走慢路的缓冲解析、每次贴图内容检查都问一次（真机取样：占回放线程 8.4%）。
-// 表没变，同一个 (地址, 长度) 的答案就不会变——包括「没有」。每个线程记一张小表：键 = (地址, 长度)，值 = 当时扫出来的槽 + 当时的表代际，两路组相联。
-// 用法与 g_prep_miss 同款（偶数且前后没变才用）：只在代际是偶数（没有写者正在改表）、且扫完后代际没变时才记；用的时候代际也必须是偶数且与记录时相等。
-// 写者（add / remove / replace / reset）改表前后各加一次代际，表一变旧记录全部作废，所以返回值与线性扫逐位相同。
-// 不进信号路径：on_fault 自己扫，不走 find_span（线程内表在信号处理函数里不能碰：首次访问线程局部存储可能分配内存）。
-typedef struct { uintptr_t a; size_t len; uint64_t epoch; range_t *r; } span_memo;
-enum { SPAN_MEMO_LOG2 = 10, SPAN_MEMO_N = 1 << SPAN_MEMO_LOG2 };   // 每线程 1024 项 × 32 字节 = 32 KB
-static _Thread_local span_memo g_span_memo[SPAN_MEMO_N];
-static _Thread_local uint64_t g_span_hits, g_span_scans;
-static _Atomic unsigned g_span_memo_bits = SPAN_MEMO_LOG2;   // 0 = 关
-void nvn_dirty_set_span_memo(unsigned log2_entries) { atomic_store(&g_span_memo_bits, log2_entries > SPAN_MEMO_LOG2 ? (unsigned)SPAN_MEMO_LOG2 : log2_entries); }
-void nvn_dirty_span_memo_stats(uint64_t *hits, uint64_t *scans) { *hits = g_span_hits; *scans = g_span_scans; }
-static inline unsigned span_memo_k(uintptr_t a, size_t len, unsigned bits) {   // 键落在哪一组（单测按它挑键，让两个键必然同组）
-    return (unsigned)((((uint64_t)a ^ ((uint64_t)len * 0x9E3779B97F4A7C15ull)) * 0xD6E8FEB86659FD93ull) >> (64 - bits));
+// ---- find_span：查有序索引，不行就退回线性扫（索引的结构与并发说明见前面 span_ent 一节）----
+// 不进信号路径：on_fault 自己扫，不走 find_span。
+// 读者的计数是线程自己的（回放线程打印读数时读到的是它自己的），不用原子量。
+static _Thread_local uint64_t g_span_idx_hits, g_span_scans, g_span_nodes;
+void nvn_dirty_span_stats(uint64_t *idx_hits, uint64_t *scans, uint64_t *nodes) { *idx_hits = g_span_idx_hits; *scans = g_span_scans; *nodes = g_span_nodes; }
+// 单测钩子（默认空，零开销）：单测编译时换成「在索引读完、复查代际之前插进一次写者操作」，确定性地走到复查不一致的那条路。
+#ifndef NVN_DIRTY_SPAN_AFTER_QUERY
+#define NVN_DIRTY_SPAN_AFTER_QUERY() ((void)0)
+#endif
+// 装得下 [a, endq) 的现存范围里槽号最小的；没有则 SPAN_NONE。读到半改状态的索引时返回值没有意义（调用方复查代际后丢掉），但不会越界。
+static uint32_t span_query(uintptr_t a, uintptr_t endq, unsigned *nodes) {
+    const int n = atomic_load_explicit(&g_span_n, memory_order_acquire);
+    int slo[SPAN_STACK], shi[SPAN_STACK], sp = 0;
+    uint32_t best = SPAN_NONE; unsigned visited = 0;
+    if (n > 0) { slo[0] = 0; shi[0] = n; sp = 1; }
+    while (sp > 0) {
+        int lo = slo[--sp], hi = shi[sp];
+        while (lo < hi) {
+            const int mid = (lo + hi) >> 1; const span_ent *e = span_at(mid);
+            visited++;
+            if (atomic_load_explicit(&e->sm, memory_order_relaxed) < endq) break;   // 这棵子树里没有谁的 end 够得着：整棵剪掉
+            if (span_base(e) > a) { hi = mid; continue; }   // 根和右子树的起点都在 a 之后：只看左边
+            if (span_end(e) >= endq) { const uint32_t s = span_slot(e); if (s < best) best = s; }   // 根装得下
+            if (mid + 1 < hi) { slo[sp] = mid + 1; shi[sp++] = hi; }   // 右子树留着以后看（里面的起点要逐个比）
+            hi = mid;   // 左子树的起点都 ≤ 根的起点 ≤ a，继续往左
+        }
+    }
+    *nodes = visited;
+    return best;
 }
 static range_t *find_span(uintptr_t a, size_t len) {
-    const unsigned bits = atomic_load_explicit(&g_span_memo_bits, memory_order_relaxed);
-    if (!bits || !len) { g_span_scans++; return find_span_scan(a, len); }   // 关着；零长度不记（nvn_dirty_tracked 会带 0 进来）
-    const uint64_t epoch = atomic_load_explicit(&g_table_epoch, memory_order_acquire);
-    const unsigned k = span_memo_k(a, len, bits);
-    span_memo *w0 = &g_span_memo[k], *w1 = &g_span_memo[k ^ 1];
-    if (!(epoch & 1)) {   // 奇数 = 有写者正在改表：不信备忘，也不记
-        if (w0->epoch == epoch && w0->a == a && w0->len == len) { g_span_hits++; return w0->r; }
-        if (w1->epoch == epoch && w1->a == a && w1->len == len) { g_span_hits++; return w1->r; }
+    if (len && a + len >= a) {   // 零长度（nvn_dirty_tracked 会带 0 进来）和地址回绕：线性扫的比较自有语义，交给它，不在索引里重新发明
+        const uint64_t epoch = atomic_load_explicit(&g_table_epoch, memory_order_acquire);
+        if (!(epoch & 1) && !atomic_load_explicit(&g_span_off, memory_order_relaxed)) {   // 奇数 = 有写者正在改表（含索引）：不信索引
+            unsigned nodes = 0;
+            const uint32_t slot = span_query(a, a + len, &nodes);
+            NVN_DIRTY_SPAN_AFTER_QUERY();
+            atomic_thread_fence(memory_order_acquire);   // 读索引的那些 load 不能挪到下面这次代际复查之后
+            if (atomic_load_explicit(&g_table_epoch, memory_order_relaxed) == epoch) {   // 整个查询期间表没变：答案（含「没有」）与线性扫在这张表上的逐位相同
+                g_span_idx_hits++; g_span_nodes += nodes;
+                return slot == SPAN_NONE ? NULL : rg((int)slot);
+            }
+        }
     }
-    range_t *r = find_span_scan(a, len);
     g_span_scans++;
-    atomic_thread_fence(memory_order_acquire);   // 扫描里的读不能挪到下面这次代际复查之后
-    if (!(epoch & 1) && atomic_load_explicit(&g_table_epoch, memory_order_relaxed) == epoch)   // 整个扫描期间表没变：答案（含「没有」）在这个代际里一直成立
-        *(w0->epoch != epoch ? w0 : w1->epoch != epoch ? w1 : (g_span_scans & 1 ? w1 : w0)) = (span_memo){a, len, epoch, r};
-    return r;
+    return find_span_scan(a, len);
 }
 // 分块边界：以所属映射（r->base）为基准，块内页号 c*CP..c*CP+CP-1，末块按映射长度截断。
 // 加保护、缺页解保护、宿主写前解除、范围销毁四条路径都必须用它，否则仍会制造页级碎片。
@@ -329,11 +431,11 @@ static void prep_write(void *addr, size_t len) {
 int nvn_dirty_replace_range(const void *mem, size_t size) {
     if (!g_pg) { g_pg = (uintptr_t)getpagesize(); g_shift = __builtin_ctzl(g_pg); }
     pthread_mutex_lock(&g_slot_mu);
-    atomic_fetch_add(&g_table_epoch, 1);
+    table_write_begin();
     range_t *r = NULL;
     int n = atomic_load(&g_nr);
     for (int i = 0; i < n && !r; i++) if (live_at(i) && rg(i)->mem == (uintptr_t)mem) r = rg(i);
-    if (!r) { atomic_fetch_add(&g_table_epoch, 1); pthread_mutex_unlock(&g_slot_mu); return 0; }
+    if (!r) { table_write_end(); pthread_mutex_unlock(&g_slot_mu); return 0; }
     // 换底长度/对齐与登记时不同：旧的页状态数组按旧 end 分配，不能按旧 end 重加只读（会保护到新映射之外）。
     // 报红并走「删除 + 重新登记」，由 add_range 按新长度重新分配页状态（维护方审 11-04 第 8 条）。
     const uintptr_t nbase = (uintptr_t)mem & ~(g_pg - 1);
@@ -341,7 +443,7 @@ int nvn_dirty_replace_range(const void *mem, size_t size) {
     if (nbase != r->base || nend != r->end) {
         LOG("【红】 dirty-page tracking: replace_range %p size=%zu 与登记区间 [%p,%p) 不同，删除并重新登记（不按旧 end 加保护）",
             mem, size, (void *)r->base, (void *)r->end);
-        atomic_fetch_add(&g_table_epoch, 1);
+        table_write_end();
         pthread_mutex_unlock(&g_slot_mu);
         nvn_dirty_remove_range(mem);
         nvn_dirty_add_range(mem, size);
@@ -366,19 +468,32 @@ int nvn_dirty_replace_range(const void *mem, size_t size) {
         }
         k = last + 1;
     }
-    atomic_fetch_add(&g_table_epoch, 1);
+    table_write_end();
     pthread_mutex_unlock(&g_slot_mu);
     return 1;
 }
 uint64_t nvn_dirty_mapping_generation(void) { return atomic_load(&g_mapping_gen); }
 
+// 远端别名区判定（宿主填 runtime/src/far.c s2a_far_has，graphics/nvn/host_adapt.m；没填 = 没有远端，照常登记）。函数指针而不是弱引用：只链本文件的单测照常链得上
+// 弱链接[nvntest]：s2a_far_has（host_adapt.m 填上面的指针时取它；NVN 单测链 libnvn 不链原生层，按这行放行未定义）
+int (*nvn_dirty_far_fn)(uint64_t a, uint64_t n);
+static _Atomic int g_far_skip_logged;
 void nvn_dirty_add_range(const void *mem, size_t size) {
+    // 远端别名区里的内存池不登记（11-14 D-GCMY：窗口 2048 MB、内存池全落在远端）。远端的游戏地址在宿主上没有映射（iPhone）或是护栏页（Mac），
+    //   内容在影子里：对游戏地址加只读保护，iPhone 上回 ENOMEM，一次失败就把全局「跟踪不可靠」置位，此后所有打包纹理一律当脏重传；
+    //   Mac 上反而会成功，把护栏页改成可读，游戏读到护栏里的 0 而不是影子。远端的写还走缺页代执行、改写器直达影子、SDK 内存函数快路径，
+    //   缺页跟踪本来也看不全。所以不登记：这些池的纹理查不到跟踪条目，按「可能写过」在用到时重传（只影响远端池，不连累别的）
+    int (*far)(uint64_t, uint64_t) = nvn_dirty_far_fn;
+    if (far && size && (far((uint64_t)(uintptr_t)mem, 1) || far((uint64_t)(uintptr_t)mem + size - 1, 1))) {
+        if (!atomic_exchange(&g_far_skip_logged, 1)) LOG("【黄】 dirty-page tracking: memory pool %p +%#zx is in the far alias region (no host mapping): not write-protected; its packaged textures are re-uploaded at use", mem, size);
+        return;
+    }
     static int inited;
     if (!inited) { inited = 1; g_pg = (uintptr_t)getpagesize(); g_shift = __builtin_ctzl(g_pg); dirty_tick_rate(&g_tb_num, &g_tb_den); }
     if (!atomic_exchange(&g_hooks_on, 1)) { dm_fault_hook_register(on_fault); dm_guest_write_prep_register(prep_write); }   // before any page of this session is protected
     atomic_fetch_add(&g_adds_total, 1);
     pthread_mutex_lock(&g_slot_mu);
-    atomic_fetch_add(&g_table_epoch, 1);
+    table_write_begin();
     int n = atomic_load(&g_nr);
     int slot = -1;
     for (int i = 0; i < n; i++) if (!live_at(i)) { slot = i; break; }
@@ -386,7 +501,7 @@ void nvn_dirty_add_range(const void *mem, size_t size) {
         if (n >= MAX_RANGE) {
             int expected = 0;
             if (atomic_compare_exchange_strong(&g_overflow_logged, &expected, 1)) LOG("【红】 dirty-page tracking ranges are full (%d), pool %p not tracked", MAX_RANGE, mem);
-            atomic_fetch_add(&g_table_epoch, 1);
+            table_write_end();
             pthread_mutex_unlock(&g_slot_mu); return;
         }
         slot = n;
@@ -423,17 +538,18 @@ void nvn_dirty_add_range(const void *mem, size_t size) {
     r->base = base; r->end = end; r->mem = (uintptr_t)mem; r->state = state; r->gen = gen;
     if (slot == n) atomic_store(&g_nr, n + 1);
     atomic_store_explicit(&r->live, 1, memory_order_release);
-    atomic_fetch_add(&g_table_epoch, 1);
+    span_insert(base, end, (uint32_t)slot);
+    table_write_end();
     pthread_mutex_unlock(&g_slot_mu);
 }
 // Pool destruction: first restore still-protected pages to writable (the pool memory may be reused for something else once returned to the game), then mark invalid
 void nvn_dirty_remove_range(const void *mem) {
     pthread_mutex_lock(&g_slot_mu);
-    atomic_fetch_add(&g_table_epoch, 1);
-    range_t *r = NULL; int n = atomic_load(&g_nr);
-    for (int i = 0; i < n && !r; i++) if (live_at(i) && rg(i)->mem == (uintptr_t)mem) r = rg(i);   // Match by the pool's exact start: an adjacent pool sharing a page may have the same rounded base
-    if (r) { prep_write((void *)r->base, r->end - r->base); atomic_store_explicit(&r->live, 0, memory_order_release); atomic_fetch_sub(&g_live, 1); }
-    atomic_fetch_add(&g_table_epoch, 1);
+    table_write_begin();
+    range_t *r = NULL; int n = atomic_load(&g_nr), slot = -1;
+    for (int i = 0; i < n && !r; i++) if (live_at(i) && rg(i)->mem == (uintptr_t)mem) { r = rg(i); slot = i; }   // Match by the pool's exact start: an adjacent pool sharing a page may have the same rounded base
+    if (r) { prep_write((void *)r->base, r->end - r->base); atomic_store_explicit(&r->live, 0, memory_order_release); atomic_fetch_sub(&g_live, 1); span_remove(r->base, (uint32_t)slot); }
+    table_write_end();
     pthread_mutex_unlock(&g_slot_mu);
 }
 int nvn_dirty_tracked(const void *addr, size_t len) {

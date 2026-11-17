@@ -33,6 +33,110 @@ static class RomfsExtraction {
         ? a.InnerExceptions.Count > 0 && a.InnerExceptions.All(IsDataHashFailure)
         : e is HorizonResultException h && h.ResultValue == ResultFs.NonRealDataVerificationFailed.Value;
 
+    static readonly TimeSpan[] PublishRetryDelays = {
+        TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(200), TimeSpan.FromMilliseconds(500),
+        TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(4),
+        TimeSpan.FromSeconds(8), TimeSpan.FromSeconds(15), TimeSpan.FromSeconds(30)
+    };
+
+    static bool IsAccessDenied(Exception e) => e is UnauthorizedAccessException ||
+        e is IOException && (e.HResult == unchecked((int)0x80070005) || e.HResult == unchecked((int)0x80070020));
+
+    static void Publish(string stage, string destination, Action<string, string> move,
+                        bool windows, Action<TimeSpan> wait = null) {
+        Action<TimeSpan> pause = wait ?? (delay => Thread.Sleep(delay));
+        try { move(stage, destination); }
+        catch (Exception e) when (windows && IsAccessDenied(e)) {
+            // 与 pack/orch/dirrename.py 对齐：等待 Windows 杀软 / 索引器释放新写文件的句柄。
+            Exception lastDenied = e;
+            foreach (TimeSpan delay in PublishRetryDelays) {
+                pause(delay);
+                try { move(stage, destination); return; }
+                catch (Exception retry) when (IsAccessDenied(retry)) { lastDenied = retry; }
+            }
+            // 保留底层异常供错误分类器识别，同时把可操作路径和建议交给玩家。
+            throw new IOException($"RomFS 目录发布退避重试 {PublishRetryDelays.Length} 次仍被拒绝：{stage}（最近一次错误：{lastDenied.Message}）。请等待文件扫描结束后重试，或将游戏库目录加入杀毒软件排除列表。", lastDenied);
+        }
+    }
+
+    internal static void TestPublish(string root) {
+        if (Directory.Exists(root) || File.Exists(root)) throw new IOException("测试目录已存在（不覆盖）");
+        TimeSpan[] expectedRetries = {
+            TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(200), TimeSpan.FromMilliseconds(500),
+            TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(4),
+            TimeSpan.FromSeconds(8), TimeSpan.FromSeconds(15), TimeSpan.FromSeconds(30)
+        };
+        if (!PublishRetryDelays.SequenceEqual(expectedRetries) ||
+            !IsAccessDenied(new IOException("synthetic sharing violation", unchecked((int)0x80070020))))
+            throw new InvalidDataException("Windows 发布退避表或 ERROR_SHARING_VIOLATION 分类与 dirrename.py 不一致");
+        byte[] block = new byte[64 * 1024];
+        if (OperatingSystem.IsWindows()) {
+            string lockedStage = Path.Combine(root, "locked-stage"), lockedDestination = Path.Combine(root, "locked-published");
+            Directory.CreateDirectory(lockedStage);
+            File.WriteAllBytes(Path.Combine(lockedStage, "payload.bin"), block);
+            using var blocker = new FileStream(Path.Combine(lockedStage, "payload.bin"), FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite); // 故意不授予 FileShare.Delete，令 Windows 真正拒绝目录改名。
+            int lockedMoves = 0, lockDeniedHResult = 0;
+            TimeSpan lockedWait = TimeSpan.Zero;
+            TimeSpan releaseAfter = TimeSpan.FromMilliseconds(150);
+            void LockedMove(string from, string to) {
+                lockedMoves++;
+                try { Directory.Move(from, to); }
+                catch (Exception e) { if (lockedMoves == 1) lockDeniedHResult = e.HResult; throw; }
+            }
+            void WaitAndRelease(TimeSpan delay) {
+                Thread.Sleep(delay);
+                lockedWait += delay;
+                if (lockedWait >= releaseAfter) blocker.Dispose();
+            }
+            Publish(lockedStage, lockedDestination, LockedMove, windows: true, wait: WaitAndRelease);
+            if (lockedMoves < 2 || !IsAccessDenied(new IOException("test", lockDeniedHResult)) || lockedWait < releaseAfter ||
+                Directory.Exists(lockedStage) || !File.Exists(Path.Combine(lockedDestination, "payload.bin")))
+                throw new InvalidDataException("真实 Windows 文件句柄等待后未能发布");
+            Console.WriteLine($"🟢 Windows 同盘句柄测试：真实 Directory.Move 初次拒绝 0x{lockDeniedHResult:X8}；固定等待至少 {releaseAfter.TotalMilliseconds:F0} ms 后释放句柄并发布成功");
+        } else Console.WriteLine("🟡 Windows 同盘句柄对照：非 Windows 跳过");
+        byte[] expected = { 0x53, 0x32, 0x41, 0x00, 0x7f };
+
+        string oldStage = Path.Combine(root, "old-stage"), oldDestination = Path.Combine(root, "old-published");
+        Directory.CreateDirectory(oldStage);
+        File.WriteAllBytes(Path.Combine(oldStage, "payload.bin"), expected);
+        int oldMoves = 0;
+        void DenyFirstMove(string from, string to) {
+            if (++oldMoves == 1) throw new IOException("synthetic access denied", unchecked((int)0x80070005));
+            Directory.Move(from, to);
+        }
+        try {
+            Publish(oldStage, oldDestination, DenyFirstMove, windows: false,
+                wait: _ => throw new InvalidDataException("非 Windows 不应等待重试"));
+            throw new InvalidDataException("非 Windows 负对照应原样抛出首次拒绝");
+        } catch (IOException e) when (e.Message == "synthetic access denied") { }
+        if (oldMoves != 1 || !Directory.Exists(oldStage) || Directory.Exists(oldDestination))
+            throw new InvalidDataException("非 Windows 负对照没有证明一次拒绝后原样失败");
+        Console.WriteLine("🟢 负对照：windows=false 的直接发布遇一次 E_ACCESSDENIED 即原样失败，不等待、不 flush");
+
+        string deniedStage = Path.Combine(root, "denied-stage"), deniedDestination = Path.Combine(root, "denied-published");
+        Directory.CreateDirectory(deniedStage);
+        File.WriteAllBytes(Path.Combine(deniedStage, "payload.bin"), expected);
+        int deniedMoves = 0, deniedWaits = 0;
+        TimeSpan deniedWaited = TimeSpan.Zero;
+        void AlwaysDeny(string from, string to) {
+            deniedMoves++;
+            throw new IOException("synthetic persistent access denied", unchecked((int)0x80070005));
+        }
+        try {
+            Publish(deniedStage, deniedDestination, AlwaysDeny, windows: true,
+                wait: delay => { deniedWaits++; deniedWaited += delay; });
+            throw new InvalidDataException("持续访问拒绝不应被吞掉");
+        } catch (IOException e) when (e.Message.Contains("RomFS 目录发布退避重试")) {
+            if (!e.Message.Contains(deniedStage) || !e.Message.Contains("加入杀毒软件排除列表"))
+                throw new InvalidDataException("最终拒绝错误未包含目录路径和杀软排除建议", e);
+        }
+        if (deniedMoves != 10 || deniedWaits != PublishRetryDelays.Length ||
+            deniedWaited != TimeSpan.FromMilliseconds(60_800) || !Directory.Exists(deniedStage) || Directory.Exists(deniedDestination))
+            throw new InvalidDataException("持续访问拒绝未保留暂存目录或被错误吞掉");
+        Console.WriteLine("🟢 合成负控：持续拒绝 → 按 dirrename 重试 9 次（总等待 60.8 秒）后报红；提示路径和杀软排除，暂存保留、目标未创建");
+    }
+
     internal static Result Extract(Func<IntegrityCheckLevel, IStorage> open, string destination, bool patched,
                                    long partSize = PartSize, int parallelism = 0) {
         if (partSize <= 0) throw new ArgumentOutOfRangeException(nameof(partSize));
@@ -49,33 +153,125 @@ static class RomfsExtraction {
                 string first = (e is AggregateException g ? g.InnerExceptions.ToArray() : new[] { e }).OfType<ReadPlace>().Select(r => r.Message).FirstOrDefault();
                 result = Attempt(open, stage, IntegrityCheckLevel.None, partSize, parallelism) with { Bypassed = true, FirstBad = first };
             }
-            Directory.Move(stage, destination);
+            Publish(stage, destination, Directory.Move, OperatingSystem.IsWindows());
             return result;
         } finally {
             if (Directory.Exists(stage)) Directory.Delete(stage, true);
         }
     }
 
+    // 镜像形态（缺省，S2A_ROMFS_IMAGE=0 关）：合并后的 RomFS 不拆成散文件，直接写一份标准 RomFS 镜像 <产物根>/romfs.std。
+    //   与「先解成 romfs/ 再 services/romfs_index.sh --std 建镜像」逐字节相同：同一个 LibHac RomFsBuilder、同样按相对路径 Ordinal 排序加文件、
+    //   同样跳过宿主垃圾名（IsHostJunk，同 services RomFsIndex.IsHostJunk）。完整性降级、只差大小写报红、不覆盖已有输出都与目录形态同一口径。
+    //   open == null：程序没有资源分区，写一份空 RomFS（对应目录形态的空 romfs/）。
+    internal const string ImageName = "romfs.std";
+    internal static Result ExtractImage(Func<IntegrityCheckLevel, IStorage> open, string destination, bool patched,
+                                        long chunkSize = ImageChunk, int parallelism = 0) {
+        if (chunkSize <= 0) throw new ArgumentOutOfRangeException(nameof(chunkSize));
+        if (Directory.Exists(destination) || File.Exists(destination)) throw new IOException("RomFS 镜像输出已存在（不覆盖）");
+        string parent = Path.GetDirectoryName(Path.GetFullPath(destination));
+        Directory.CreateDirectory(parent);
+        string stage = Path.Combine(parent, ".romfs-image-" + Guid.NewGuid().ToString("N"));
+        try {
+            Result result;
+            try { result = AttemptImage(open, stage, IntegrityCheckLevel.ErrorOnInvalid, chunkSize, parallelism); }
+            catch (Exception e) when (patched && open != null && IsDataHashFailure(e)) {
+                File.Delete(stage);
+                string first = (e is AggregateException g ? g.InnerExceptions.ToArray() : new[] { e }).OfType<ReadPlace>().Select(r => r.Message).FirstOrDefault();
+                result = AttemptImage(open, stage, IntegrityCheckLevel.None, chunkSize, parallelism) with { Bypassed = true, FirstBad = first };
+            }
+            File.Move(stage, destination);
+            return result;
+        } finally {
+            if (File.Exists(stage)) File.Delete(stage);
+        }
+    }
+    const long ImageChunk = 64L << 20;
+
+    // 同 services/S2A.Services/RomFsIndex.cs IsHostJunk：目录形态下这些名字不进镜像，这里也不进，两种形态才逐字节相同
+    internal static bool IsHostJunk(string path) {
+        string name = path[(path.LastIndexOf('/') + 1)..];
+        return name == ".DS_Store" || name.StartsWith("._", StringComparison.Ordinal);
+    }
+
+    static Result AttemptImage(Func<IntegrityCheckLevel, IStorage> open, string stage, IntegrityCheckLevel level,
+                               long chunkSize, int parallelism) {
+        var files = (open == null ? new List<Entry>() : ListEntries(open, level)).Where(e => !IsHostJunk(e.Path))
+            .OrderBy(e => e.Path, StringComparer.Ordinal).ToList();
+        using var views = new ThreadLocal<RomFsFileSystem>(() => new RomFsFileSystem(open(level)), true);
+        try {
+            var builder = new RomFsBuilder();
+            foreach (Entry e in files) builder.AddFile(e.Path, new ViewFile(views, e.Path, e.Size));
+            using IStorage image = builder.Build();
+            image.GetSize(out long total).ThrowIfFailure();
+            int parts = checked((int)Math.Max(1, (total + chunkSize - 1) / chunkSize));
+            int workers = Math.Min(parts, parallelism <= 0 ? Environment.ProcessorCount : parallelism);
+            using (var handle = File.OpenHandle(stage, FileMode.CreateNew, FileAccess.Write, FileShare.None, FileOptions.None, total)) {
+                Parallel.For(0, parts, new ParallelOptions { MaxDegreeOfParallelism = workers }, k => {
+                    long lo = k * chunkSize, hi = Math.Min(total, lo + chunkSize);
+                    byte[] buffer = new byte[4 << 20];
+                    for (long p = lo; p < hi;) {
+                        int n = (int)Math.Min(buffer.Length, hi - p);
+                        image.Read(p, buffer.AsSpan(0, n)).ThrowIfFailure();
+                        RandomAccess.Write(handle, buffer.AsSpan(0, n), p); p += n;
+                    }
+                });
+            }
+            return new Result(files.Count, files.Sum(e => e.Size), workers, false);
+        } finally { foreach (var fs in views.Values) fs.Dispose(); }
+    }
+
+    // 镜像里一个文件的数据：每个线程从自己的那份 RomFS 视图按路径读（LibHac 的读视图带缓存、不跨线程共用）；读坏块时同目录形态包上位置
+    sealed class ViewFile : IFile {
+        readonly ThreadLocal<RomFsFileSystem> views; readonly string path; readonly long size;
+        public ViewFile(ThreadLocal<RomFsFileSystem> views, string path, long size) { this.views = views; this.path = path; this.size = size; }
+        protected override LibHac.Result DoRead(out long bytesRead, long offset, Span<byte> destination, in ReadOption option) {
+            bytesRead = 0;
+            int want = (int)Math.Max(0, Math.Min(destination.Length, size - offset));
+            if (want == 0) return LibHac.Result.Success;
+            using var file = new UniqueRef<IFile>();
+            views.Value.OpenFile(ref file.Ref, path.ToU8Span(), OpenMode.Read).ThrowIfFailure();
+            file.Get.GetSize(out long now).ThrowIfFailure();
+            if (now != size) throw new InvalidDataException("RomFS 文件长度在读取时改变");
+            while (bytesRead < want) {
+                long got;
+                try { file.Get.Read(out got, offset + bytesRead, destination[(int)bytesRead..want], ReadOption.None).ThrowIfFailure(); }
+                catch (Exception x) when (x is not ReadPlace) { throw new ReadPlace($"文件 romfs{path}，文件内偏移 {offset + bytesRead}（读 {want - bytesRead} 字节）", x); }
+                if (got <= 0 || got > want - bytesRead) throw new IOException("RomFS 文件未完整读出");
+                bytesRead += got;
+            }
+            return LibHac.Result.Success;
+        }
+        protected override LibHac.Result DoGetSize(out long size) { size = this.size; return LibHac.Result.Success; }
+        protected override LibHac.Result DoWrite(long offset, ReadOnlySpan<byte> source, in WriteOption option) => ResultFs.WriteUnpermitted.Value;
+        protected override LibHac.Result DoFlush() => LibHac.Result.Success;
+        protected override LibHac.Result DoSetSize(long size) => ResultFs.WriteUnpermitted.Value;
+        protected override LibHac.Result DoOperateRange(Span<byte> outBuffer, OperationId operationId, long offset, long size, ReadOnlySpan<byte> inBuffer)
+            => ResultFs.NotImplemented.Value;
+    }
+
+    // 列条目（严格：LibHac 遍历；None：先自己核结构再列）；目录形态与镜像形态共用，两种形态看到的是同一份文件表
+    static List<Entry> ListEntries(Func<IntegrityCheckLevel, IStorage> open, IntegrityCheckLevel level) {
+        using IStorage storage = open(level);
+        if (level == IntegrityCheckLevel.None) return ReadDirectory(storage);
+        using var fs = new RomFsFileSystem(storage);
+        var entries = new List<Entry>(); long offset = 0;
+        void Walk(string dir) {
+            var all = fs.EnumerateEntries(dir, "*", SearchOptions.Default).ToList();
+            foreach (var e in all.Where(e => e.Type == DirectoryEntryType.File).OrderBy(e => e.Name, StringComparer.Ordinal)) {
+                entries.Add(new Entry(e.FullPath, e.Size, offset)); offset = checked(offset + e.Size);
+            }
+            foreach (var e in all.Where(e => e.Type == DirectoryEntryType.Directory).OrderBy(e => e.Name, StringComparer.Ordinal)) Walk(e.FullPath + "/");
+        }
+        Walk("/");
+        if (entries.Select(e => e.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() != entries.Count)
+            throw new InvalidDataException("RomFS 资源里有只差大小写的路径");
+        return entries;
+    }
+
     static Result Attempt(Func<IntegrityCheckLevel, IStorage> open, string stage, IntegrityCheckLevel level,
                           long partSize, int parallelism) {
-        List<Entry> entries;
-        using (IStorage storage = open(level)) {
-            if (level == IntegrityCheckLevel.None) entries = ReadDirectory(storage);
-            else {
-                using var fs = new RomFsFileSystem(storage);
-                entries = new List<Entry>(); long offset = 0;
-                void Walk(string dir) {
-                    var all = fs.EnumerateEntries(dir, "*", SearchOptions.Default).ToList();
-                    foreach (var e in all.Where(e => e.Type == DirectoryEntryType.File).OrderBy(e => e.Name, StringComparer.Ordinal)) {
-                        entries.Add(new Entry(e.FullPath, e.Size, offset)); offset = checked(offset + e.Size);
-                    }
-                    foreach (var e in all.Where(e => e.Type == DirectoryEntryType.Directory).OrderBy(e => e.Name, StringComparer.Ordinal)) Walk(e.FullPath + "/");
-                }
-                Walk("/");
-                if (entries.Select(e => e.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() != entries.Count)
-                    throw new InvalidDataException("RomFS 资源里有只差大小写的路径");
-            }
-        }
+        List<Entry> entries = ListEntries(open, level);
         Directory.CreateDirectory(stage);
         foreach (Entry e in entries) {
             string dst = Path.Combine(stage, e.Path.TrimStart('/'));

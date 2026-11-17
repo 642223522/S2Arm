@@ -44,7 +44,10 @@ namespace Ryujinx.HLE.HOS.Services.SurfaceFlinger
         private int _swapInterval;
         private int _swapIntervalDelay;
 
-        private static int S2AEffective(int swapInterval) => swapInterval == 0 ? 0 : Math.Max(swapInterval, S2AFramePacing.MinSwapInterval);
+        // S2Arm: a swap interval outside the hardware range 0..5 (NVN MAX_PRESENT_INTERVAL; community frame-rate patches written for emulators
+        // with vsync off use 1000 / 400 / -1 to mean "do not wait") is treated as 0, same as the direct layer (graphics/nvn/gfx/nvn/hle_nvn.c itv_in).
+        // Taking 1000 literally presents one frame per 1000 vsyncs and the picture stops.
+        private static int S2AEffective(int swapInterval) => swapInterval <= 0 || swapInterval > 5 ? 0 : Math.Max(swapInterval, S2AFramePacing.MinSwapInterval);
 
         // S2A：已通知宿主的生效交换间隔（-1 = 还没通知过：游戏第一帧合成时必通知一次）
         private int _s2aNotified = -1;

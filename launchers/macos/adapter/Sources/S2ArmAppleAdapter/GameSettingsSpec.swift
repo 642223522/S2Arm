@@ -3,7 +3,11 @@ import Foundation
 /// 游戏设置定义表（launchers/shared/game_settings.v1.json，Mac 启动设置页与 iOS 游戏内菜单共用）里 Mac 有的那些项。
 /// 文案、类型、取值都从表里读，界面不另存一份；读不到 / 格式不对抛错（不猜）。
 public struct GameSettingItem: Equatable, Identifiable {
-    public struct Option: Equatable { public let value: String; public let label: [String: String] }
+    /// note：选中这一档时标题下写的一句（如画质提升的锐利放大写代价）；没有为空
+    public struct Option: Equatable {
+        public let value: String; public let label: [String: String]; public var note: [String: String] = [:]
+        public func detail(_ language: String) -> String? { (note[language] ?? note["zh-Hans"]).flatMap { $0.isEmpty ? nil : $0 } }
+    }
     public let id: String
     /// bool / choice / patches / page
     public let type: String
@@ -36,7 +40,7 @@ public enum GameSettingsSpec {
             }
             let options = try (item["options"] as? [[String: Any]] ?? []).map { o -> GameSettingItem.Option in
                 guard let v = o["value"] as? String, let l = o["label"] as? [String: String] else { throw BackendText.ResourceError(message: "Game settings option is invalid") }
-                return .init(value: v, label: l)
+                return .init(value: v, label: l, note: o["note"] as? [String: String] ?? [:])
             }
             return GameSettingItem(id: id, type: type, group: item["group"] as? String ?? "other", label: label,
                                    note: item["note"] as? [String: String] ?? [:], options: options)

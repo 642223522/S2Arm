@@ -423,6 +423,28 @@ if cmd == "push":
                 info.size = len(blob)
                 tf.addfile(info, io.BytesIO(blob))
     save(); sys.exit(0)
+if cmd == "forward":
+    # 资源直传（ImportReceiver.java 协议）：起一个一次性接收端（子进程），收下的文件落到 st["received_dir"]
+    if argv[1] == "--remove":
+        sys.exit(0)
+    import socket as _sock
+    srv = _sock.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(1)
+    port = srv.getsockname()[1]
+    if os.fork() == 0:
+        os.setsid()
+        nul = os.open(os.devnull, os.O_RDWR); os.dup2(nul, 0); os.dup2(nul, 1); os.dup2(nul, 2)
+        srv.settimeout(120)
+        c, _ = srv.accept(); f = c.makefile("rb"); c.sendall(b"READY 1\\n"); f.readline()
+        n = 0
+        while True:
+            line = f.readline().decode().rstrip("\\n")
+            if line == "END":
+                break
+            _, size, rel = line.split(" ", 2)
+            data = f.read(int(size)); dst = os.path.join(st["received_dir"], rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True); open(dst, "wb").write(data); n += 1
+        c.sendall(("OK %d 0\\n" % n).encode()); c.close(); os._exit(0)
+    srv.close(); out("%d\\n" % port); sys.exit(0)
 if cmd == "exec-out":
     if len(argv) > 2 and argv[1] == "run-as":
         run_as(argv[-1]); sys.exit(0)
@@ -2919,71 +2941,19 @@ class RunGameTest(unittest.TestCase):
               f"contentRoot={artifact['contentRoot']} artifactSha256={art_sha} from import/{name}\n"
             + frame_log_text())
 
-    def test_resources_tree_push_progress_logged(self):
-        """资源整树推送：文件数+字节+速率进度打进 run.log；--push-timeout 照传。"""
+    def test_resources_direct_transfer(self):
+        """资源直传：经 adb forward 把资源树逐字节送进 App 的接收端（替身起一次性接收端落到 received_dir），不再 push 到共享存储。"""
         res, artifact = self._resources_dir()
         self._with_receipt(artifact)
-        rc, out, state = self.run_tool(
-            state={"push_slow_s": 6},
-            argv=["--resources", str(res), "--push-timeout", "600"])
-        self.assertEqual(0, rc)
-        runlog = (out / "run.log").read_text()
-        self.assertIn("整树推送", runlog)
-        self.assertIn("推送中", runlog, "慢推送中段应有进度行（文件数/字节/速率）")
-        self.assertIn("推送完成", runlog)
+        rdir = self.tmp / "received"
+        rc, out, state = self.run_tool(state={"received_dir": str(rdir)}, argv=["--resources", str(res)])
+        self.assertEqual(0, rc, (out / "run.log").read_text()[-2000:] if (out / "run.log").exists() else "")
+        want = {p.relative_to(res).as_posix(): p.read_bytes() for p in res.rglob("*") if p.is_file()}
+        got = {p.relative_to(rdir).as_posix(): p.read_bytes() for p in rdir.rglob("*") if p.is_file()}
+        self.assertEqual(want, got)
+        self.assertIn("直传完成", (out / "run.log").read_text())
         st = json.loads((self.tmp / "state.json").read_text())
-        self.assertNotIn("tar_pushed", st, "默认整树推送不该推 tar")
-
-    def test_resources_push_timeout_is_enforced(self):
-        """--push-timeout 真传到推送：推送卡住到点被杀，错误带最后进度。"""
-        res, artifact = self._resources_dir()
-        self._with_receipt(artifact)
-        rc, out, state = self.run_tool(
-            state={"push_slow_s": 30},
-            argv=["--resources", str(res), "--push-timeout", "2"])
-        self.assertNotEqual(0, rc)
-        man = json.loads((out / "run-manifest.json").read_text())
-        self.assertIn("推送超时", man["reason"])
-        self.assertIn("最后进度", man["reason"], "超时错误要留最后进度，看得出卡在哪")
-
-    def test_resources_push_tar_extracts_and_verifies(self):
-        """--push-tar always：打一个 tar 推一次、设备端解开、逐文件 SHA 核对写进 run.log。"""
-        res, artifact = self._resources_dir()
-        self._with_receipt(artifact)
-        rc, out, state = self.run_tool(
-            argv=["--resources", str(res), "--push-tar", "always"])
-        self.assertEqual(0, rc)
-        st = json.loads((self.tmp / "state.json").read_text())
-        self.assertTrue(st.get("tar_pushed", "").endswith(".tar"), "应推的是 tar 归档")
-        pushed_src = Path(st["tar_pushed_src"])
-        self.assertEqual(out / "deploy", pushed_src.parent,
-                         "推送 tar 中间产物必须落本次 out/deploy 下，不进系统临时目录")
-        self.assertFalse(pushed_src.exists(), "核对过后 tar 中间产物清掉（再生材料）")
-        runlog = (out / "run.log").read_text()
-        self.assertIn("tar 单推", runlog)
-        self.assertIn("SHA 核对通过", runlog)
-
-    def test_resources_push_tar_corrupt_extract_fails(self):
-        """tar 解开被改写 → 设备端逐文件 SHA 核对必须拦下（负对照：核对在起作用）。"""
-        res, artifact = self._resources_dir()
-        self._with_receipt(artifact)
-        rc, out, state = self.run_tool(
-            state={"corrupt_extract": True},
-            argv=["--resources", str(res), "--push-tar", "always"])
-        self.assertNotEqual(0, rc)
-        man = json.loads((out / "run-manifest.json").read_text())
-        self.assertIn("SHA 核对失败", man["reason"])
-
-    def test_resources_tar_verify_uses_bounded_batches(self):
-        """⑭ 大资源树（>find -exec 参数上限）：设备端 SHA 核验走 print0|xargs 有界分批。
-        替身对 -exec {} + 超 512 文件报 Argument list too long（8E r4 真机 toybox E2BIG）——
-        实现退回 -exec 就会红。"""
-        res, artifact = self._resources_dir(npayload=600)   # 609 文件 > find_exec_max 512
-        self._with_receipt(artifact)
-        rc, out, state = self.run_tool(
-            argv=["--resources", str(res), "--push-tar", "always"])
-        self.assertEqual(0, rc)
-        self.assertIn("SHA 核对通过", (out / "run.log").read_text())
+        self.assertFalse(any("/sdcard" in k for k in st.get("dev_fs", {})), "直传不该往共享存储写")
 
     def test_truncated_frame_block_reports_missing_chunks(self):
         """⑱ 转储截断如实报：meta 声明 N 片只收到 N-2 片且无 end（镜像 8E 二局
@@ -3069,19 +3039,6 @@ class RunGameTest(unittest.TestCase):
         good = subprocess.run(adb + ["shell", "sh -c 'getprop s2a.anything'"],
                               capture_output=True, text=True)
         self.assertEqual(0, good.returncode, "sh -c <脚本> 必须解包执行到 getprop")
-
-    def test_resources_tar_verify_mid_batch_failure_is_short(self):
-        """⑭ 核验中途某批挂：报错只带短 stderr 尾，不把几千条文件清单灌进 manifest。"""
-        res, artifact = self._resources_dir(npayload=600)
-        self._with_receipt(artifact)
-        rc, out, state = self.run_tool(
-            state={"sha_batch_fail_at": 1},
-            argv=["--resources", str(res), "--push-tar", "always"])
-        self.assertNotEqual(0, rc)
-        man = json.loads((out / "run-manifest.json").read_text())
-        self.assertIn("SHA 核验失败", man["reason"])
-        self.assertLess(len(man["reason"]), 600,
-                        "只留短 stderr 尾，不能把核验输出整份灌进 reason")
 
 
 def run_isolated_suite(options=()):

@@ -14,7 +14,7 @@ struct GameSizesList: View {
     let sizes: GameSizes
     var compact = false
 
-    private func t(_ id: String) -> String { BackendText.launcherText("library.sizes." + id, language: loc.lang == .zh ? "zh-Hans" : "en") }
+    private func t(_ id: String) -> String { BackendText.launcherText("library.sizes." + id, language: loc.lang.sharedCode) }
 
     static func rows(_ s: GameSizes) -> [(id: String, bytes: Int64)] {
         [("imageMac", s.imageMac), ("imageIos", s.imageIos), ("saves", s.saves), ("cache", s.cache), ("sources", s.sources)]
@@ -43,7 +43,7 @@ struct StorageOverviewSection: View {
     @ObservedObject var model: S2ArmLauncherModel
     @EnvironmentObject var loc: Localizer
 
-    private func t(_ id: String) -> String { BackendText.launcherText("storage." + id, language: loc.lang == .zh ? "zh-Hans" : "en") }
+    private func t(_ id: String) -> String { BackendText.launcherText("storage." + id, language: loc.lang.sharedCode) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
@@ -68,17 +68,16 @@ struct StorageOverviewSection: View {
                         if part.id != o.shared.last?.id { CardDivider() }
                     }
                 }
-                CardGroup(t("games"), footnote: BackendText.launcherText("library.sizes.sourcesNote", language: loc.lang == .zh ? "zh-Hans" : "en")) {
+                CardGroup(t("games"), footnote: BackendText.launcherText("library.sizes.sourcesNote", language: loc.lang.sharedCode)) {
                     ForEach(o.games) { g in
-                        // 与 CardRow 同一套边距（18 + 圆点位 7 + 间距 12），游戏名和上面两张卡的行标题、分隔线对齐。
-                        HStack(alignment: .top, spacing: 12) {
-                            Color.clear.frame(width: 7, height: 7)
+                        // 游戏名和设置行共用同一条文字起始线。
+                        HStack(alignment: .top, spacing: LauncherTheme.Space.medium) {
                             VStack(alignment: .leading, spacing: 8) {
                                 Text(g.name).font(.manrope(14, .semibold)).fixedSize(horizontal: false, vertical: true)
                                 GameSizesList(sizes: g.sizes, compact: true)
                             }
                         }
-                        .padding(.horizontal, 18).padding(.vertical, 13)
+                        .padding(.horizontal, LauncherTheme.Metrics.cardInset).padding(.vertical, LauncherTheme.Space.large)
                         if g.id != o.games.last?.id { CardDivider() }
                     }
                 }

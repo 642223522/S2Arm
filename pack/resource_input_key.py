@@ -42,6 +42,10 @@ def inventory(root):
         try:
             info = base.lstat()
         except FileNotFoundError:
+            # RomFS 不落散文件（11-16）：目录不在、旁边有 <目录>.std 标准镜像 → 成员从镜像盘点（romfs_list），名字 / 大小 / 抽样字节与目录形态相同，键不变
+            if romfs_list.image_of(base) is not None:
+                pending.append((str(base), top))
+                continue
             if top == 'romfs':
                 raise
             continue
@@ -63,6 +67,7 @@ def inventory(root):
         tree = romfs_list.scan(folder)
         for error in tree.errors.values():
             raise error
+        image = tree.image.path if tree.image is not None else None
         for child in tree.entries:
             if child.lstat_error is not None:
                 raise child.lstat_error
@@ -71,7 +76,7 @@ def inventory(root):
             if stat.S_ISDIR(info.st_mode):
                 continue
             elif stat.S_ISREG(info.st_mode):
-                entries[name] = signature(info)
+                entries[name] = signature(info) if image is None else image_signature(image, info.st_size)
             else:
                 raise ValueError('resource is not a regular file or directory')
     return dict(sorted(entries.items(), key=lambda row: os.fsencode(row[0])))
@@ -182,10 +187,23 @@ def save_title_memo(root, entries):
             os.unlink(temp)
 
 
-def read_digest(path, expected, full):
+def image_signature(image, size):
+    """镜像里的成员（没有自己的 inode / 时间）：设备、inode、修改 / 变更时间取镜像文件本身，大小取成员的；镜像换了或被改 → 签名变 → 重采"""
+    info = os.stat(image)
+    return [info.st_dev, info.st_ino, size, info.st_mtime_ns, info.st_ctime_ns, stat.S_IFREG]
+
+
+def read_digest(path, expected, full, image=None):
+    """image：成员在 RomFS 镜像里时给镜像路径（内容经 romfs_list.open_file 从镜像读，前后核镜像文件的签名）"""
     h = hashlib.sha256()
-    with path.open('rb') as stream:
-        if signature(os.fstat(stream.fileno())) != expected:
+    if image is None:
+        opened, now = path.open('rb'), lambda stream: signature(os.fstat(stream.fileno()))
+        settled = lambda: signature(path.lstat())
+    else:
+        opened, now = romfs_list.open_file(path), lambda stream: image_signature(image, romfs_list.file_size(path))
+        settled = lambda: image_signature(image, romfs_list.file_size(path))
+    with opened as stream:
+        if now(stream) != expected:
             raise OSError('resource changed before hashing')
         if full:
             for data in iter(lambda: stream.read(1024 * 1024), b''):
@@ -205,7 +223,7 @@ def read_digest(path, expected, full):
             if len(tail) != BLOCK or stream.tell() != expected[2]:
                 raise OSError('resource changed while hashing')
             h.update(tail)
-        if signature(os.fstat(stream.fileno())) != expected or signature(path.lstat()) != expected:
+        if now(stream) != expected or settled() != expected:
             raise OSError('resource changed while hashing')
     return h.hexdigest()
 
@@ -219,9 +237,12 @@ def resource_key(root):
         return memo['key']  # 已验证全部成员/身份，不再读输入字节或重算汇总键。
     changed = [(name, sig) for name, sig in current.items()
                if name not in old or old[name]['signature'] != sig]
+    images = {top: romfs_list.image_of(root / top) for top in ('romfs', 'aoc')}
     def sample(row):
         name, sig = row
-        return name, {'signature': sig, 'digest': read_digest(root / name, sig, name == 'exefs/main')}
+        image = images.get(name.split('/')[0])
+        args = (root / name, sig, name == 'exefs/main') + ((image,) if image else ())
+        return name, {'signature': sig, 'digest': read_digest(*args)}
     entries = {name: old[name] for name, sig in current.items() if name in old and old[name]['signature'] == sig}
     # 本根 memo 里从没出现过的路径（新克隆的根、memo 按根目录 inode 取不到），再按同款摘要缓存：字节数 + mtime 都相同就复用
     #   （exefs/main 整份哈希、很小，始终重算）。本根 memo 里有、身份变了的（原地改字节再把 mtime 改回 / 替换）一律重采：

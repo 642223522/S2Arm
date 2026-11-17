@@ -12,6 +12,31 @@ if (args.Length == 2 && args[0] == "--request")
     Console.WriteLine(SaveTransfer.Execute(File.ReadAllText(args[1])));
     return;
 }
+if (args.Length == 1 && args[0] == "--running-gate")
+{
+    // 诊断#a87296：游戏在跑（hostRunning）时只放只读的 status / export / inspect；restore / recover、留着没收尾的事务一律 save_running；不需要私有存档
+    string tmp = Directory.CreateDirectory(Path.Combine(OperatingSystem.IsWindows() ? Path.GetTempPath() : "/private/tmp", "s2a-running-gate-" + Guid.NewGuid().ToString("N"))).FullName,   // 不走 /var/folders：/var 是软链，存档路径核对拒链接
+    root = Path.Combine(tmp, "data"), work = Path.Combine(tmp, "work");
+    Directory.CreateDirectory(root);
+    string id = "0100000000010000";
+    JsonObject Req(string op) => new() { ["operation"] = op, ["dataRoot"] = root, ["workRoot"] = work, ["path"] = Path.Combine(tmp, "x.s2asave"),
+        ["game"] = new JsonObject { ["id"] = id, ["version"] = 0, ["contentIdentity"] = new string('a', 64), ["name"] = "t" } };
+    string Code(JsonObject r, bool running) { var n = JsonNode.Parse(SaveTransfer.Execute(r.ToJsonString(), running)); return n["ok"].GetValue<bool>() ? "ok" : n["error"]["code"].GetValue<string>(); }
+    var fails = new List<string>();
+    void Expect(bool ok, string what) { Console.WriteLine((ok ? "PASS " : "FAIL ") + what); if (!ok) fails.Add(what); }
+    Expect(Code(Req("status"), false) == "ok", "not running: status ok (fixture is valid)");
+    Expect(Code(Req("status"), true) == "ok", "running: status allowed (empty save)");
+    Expect(Code(Req("restore"), true) == "save_running", "running: restore refused");
+    Expect(Code(Req("recover"), true) == "save_running", "running: recover refused");
+    Directory.CreateDirectory(Path.Combine(work, "save-transactions"));
+    File.WriteAllText(Path.Combine(work, "save-transactions", id + ".json"), "{}");
+    Expect(Code(Req("status"), true) == "save_running", "running: pending transaction journal refuses even status (no Recover while the game writes)");
+    Expect(Code(Req("status"), false) != "save_running", "not running: status goes through (Recover handles the journal)");
+    Directory.Delete(tmp, true);
+    if (fails.Count > 0) { Console.WriteLine($"✗ running gate: {fails.Count} failed"); Environment.Exit(1); }
+    Console.WriteLine("✓ running gate: 6 checks");
+    return;
+}
 if (args.Length == 4 && args[0] == "--crash-child")
 {
     Environment.SetEnvironmentVariable("SAVE_TRANSFER_CHECKPOINT", args[2]);

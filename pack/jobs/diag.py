@@ -4,6 +4,7 @@
 AltStore 重签后会在后面加团队号，按前缀认）→ 从 App 数据目录只拉诊断要的文件（Documents/diag 里 App 导出的诊断包、最近 3 次
 会话的 host.log、frames.tsv、threads.txt、unpack.log、metrickit/），不拉存档和资源包 → 放进 <私有目录>/diagnostics/<时间-随机>/<设备>_<包名>-随机/。
 请求里给 device（设备号或名字）就只拉那一台。
+Apple TV（11-15 tvOS 版）同一条路：同网配对过的 Apple TV 一起列进来，按 TV_ITEMS（文档根 Library/Caches/S2Arm）拉，之后照旧走诊断包导出 / 上传。
 """
 from __future__ import annotations
 import json
@@ -21,6 +22,10 @@ PREFIXES = ("io.s2arm.", "io.s2arm-exp.", "local.s2arm.", "s2arm.")
 PULL_RECORD = "pull.json"   # 每次拉回的目录里：拉回时刻、来源设备（机型 / 系统）、各款文件数
 ITEMS = ("Documents/diag", "Documents/host.log", "Documents/logs", "Documents/frames.tsv",
          "Documents/threads.txt", "Documents/unpack.log", "Documents/metrickit")
+# Apple TV（tvOS）：App 只能长期写 Library/Caches，宿主的文档根是 Library/Caches/S2Arm（iOS 的 Documents 换到这里，
+#   每款同样在 games/<游戏号>/ 下，pack/jobs/tvos.py TV_DOCS）。拉的东西与 iPhone 同一份清单，只换根
+TV_DOCS = "Library/Caches/S2Arm"
+TV_ITEMS = tuple(TV_DOCS + i[len("Documents"):] for i in ITEMS)
 
 
 # 系统已装的 CoreDevice 框架（Xcode「附加组件」装进 /Library/Developer）。直接调它自带的 devicectl，不经 Xcode 的 usr/bin/devicectl：
@@ -73,6 +78,13 @@ def is_mobile(d):
     return _hw(d).get("platform") in ("iOS", "iPadOS") or is_vision(d)
 
 
+def is_tv(d):
+    """Apple TV：读 devicectl 设备信息里的 deviceType / platform（不写死型号）；明确标成模拟器的不算"""
+    h = _hw(d)
+    kind = str(h.get("deviceType") or d.get("deviceType") or "").replace(" ", "").lower()
+    return h.get("reality") != "simulated" and (h.get("platform") == "tvOS" or kind == "appletv")
+
+
 def is_candidate(d):
     """装机候选（install._pick_device、target.connected）：devicectl 列出的真设备都算——有硬件 UDID、或标着 physical、或有任何配对 / 连接信息。
     不看配对状态 / 是否在线 / 开发者服务这些值来筛——装不装得上让装的那一步说（11-13 维护者：别预先判断拦玩家）。
@@ -122,10 +134,10 @@ def pull(c):
     c.begin("找已连接的 iPhone / iPad", 1, 3)
     rc, data, err = devicectl(c, "list", "devices")
     if rc:
-        raise Failure("读不到设备列表：需要完整的 Xcode（devicectl）。" + (err.splitlines()[-1] if err else ""))
+        raise Failure("读不到设备列表：需要完整的 Xcode（devicectl）。" + (err.splitlines()[-1] if err else ""))  # 非玩家句
     want = (c.r.get("device") or "").strip()
     devices = [d for d in data.get("result", {}).get("devices", [])
-               if is_mobile(d)
+               if (is_mobile(d) or is_tv(d))
                and reachable(d)
                and (not want or want in (d.get("identifier"), d.get("hardwareProperties", {}).get("udid"), d.get("deviceProperties", {}).get("name")))]
     if not devices:
@@ -139,6 +151,8 @@ def pull(c):
     for d in devices:
         dev = d["identifier"]
         hw = d.get("hardwareProperties", {})
+        tv = is_tv(d)
+        items, docs = (TV_ITEMS, TV_DOCS) if tv else (ITEMS, "Documents")
         name = re.sub(r"[^\w.-]+", "_", hw.get("marketingName") or hw.get("productType") or "iPhone")
         # 来源设备只记机型和系统，不记设备号、不记玩家给设备起的名字（诊断包要交到公开帖子里）
         sources.append(dict(model=hw.get("marketingName") or hw.get("productType") or "", platform=hw.get("platform") or "",
@@ -148,10 +162,10 @@ def pull(c):
             bid = app.get("bundleIdentifier", "")
             if not bid.startswith(PREFIXES):
                 continue
-            c.begin("拉回 " + (app.get("name") or bid), 3, 3)
+            c.begin("拉回 " + (app.get("name") or bid), 3, 3)  # 非玩家句
             dest = Path(tempfile.mkdtemp(prefix=f"{name}_{bid}-", dir=root))
             got = 0
-            for item in ITEMS:
+            for item in items:
                 target = dest / Path(item).name
                 rc, _, _ = devicectl(c, "device", "copy", "from", "--device", dev, "--domain-type", "appDataContainer",
                                      "--domain-identifier", bid, "--source", item, "--destination", str(target), timeout=300)
@@ -168,7 +182,7 @@ def pull(c):
                 target = dest / "games" / gid / "unpack.log"
                 target.parent.mkdir(parents=True, exist_ok=True)
                 rc, _, _ = devicectl(c, "device", "copy", "from", "--device", dev, "--domain-type", "appDataContainer",
-                                     "--domain-identifier", bid, "--source", f"Documents/games/{gid}/unpack.log", "--destination", str(target), timeout=120)
+                                     "--domain-identifier", bid, "--source", f"{docs}/games/{gid}/unpack.log", "--destination", str(target), timeout=120)
                 if rc == 0 and target.is_file():
                     got += 1
                 else:

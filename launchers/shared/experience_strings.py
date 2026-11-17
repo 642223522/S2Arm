@@ -39,6 +39,8 @@ def quote(text):
 
 
 DEFAULT_PREFIXES = ("ios_install_", "ios_import_")
+OVERLAY_LANGS = ("ja", "es", "fr")
+SHARED_DIR = Path(__file__).resolve().parent
 
 
 def entries(lang, prefixes=DEFAULT_PREFIXES, spec_path=SPEC):
@@ -50,6 +52,11 @@ def entries(lang, prefixes=DEFAULT_PREFIXES, spec_path=SPEC):
         if miss:
             raise ValueError("experience_zh_hant.json 缺这些句子的繁中：" + " | ".join(miss))
         return [(k, hant[t]) for k, t in rows]
+    if lang in OVERLAY_LANGS:   # 日 / 西 / 法（11-14 加）：简中原句查这门语言的叠加文案（launchers/shared/l10n/<语言>.json 的 text），没翻的回落英文
+        path = SHARED_DIR / "l10n" / f"{lang}.json"
+        over = json.loads(path.read_text(encoding="utf-8")).get("text", {}) if path.exists() else {}
+        english = dict(entries("en", prefixes, spec_path))
+        return [(k, over.get(t) or english[k]) for k, t in entries("zh-Hans", prefixes, spec_path)]
     items = json.loads(Path(spec_path).read_text(encoding="utf-8"))["errors"]["items"]
     rec = recovery()
     en = {i["source"]: i.get("en", "") for i in json.loads(LOCALIZABLE.read_text(encoding="utf-8"))}
@@ -70,7 +77,7 @@ def entries(lang, prefixes=DEFAULT_PREFIXES, spec_path=SPEC):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--lang", required=True, choices=("zh-Hans", "zh-Hant", "en"))
+    ap.add_argument("--lang", required=True, choices=("zh-Hans", "zh-Hant", "en", *OVERLAY_LANGS))
     ap.add_argument("--prefix", action="append", help="只出这些前缀的码（可重复）；缺省 ios_install_ 与 ios_import_")
     ap.add_argument("--spec", default=str(SPEC))
     a = ap.parse_args(argv)
