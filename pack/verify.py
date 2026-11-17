@@ -24,12 +24,16 @@ NJ = env_jobs('J', 'S2A_JOBS')   # 并行路数（tools/cores.sh S2A_JOBS）
 if len(sys.argv) < 3: sys.exit('用法：verify.py <包目录> <前缀>=<源目录> …')
 P = sys.argv[1]
 SRCS = [l for a in sys.argv[2:] for l in (open(a[1:], encoding='utf-8').read().splitlines() if a.startswith('@') else [a]) if l]   # @<文件>：源清单从文件读（同 pack.py）
-def red(msg): print(f'🔴 资源包核对 {P}：{msg}'); sys.exit(1)
+def red(msg): print(f'🔴 资源包核对 {P}：{msg}'); sys.exit(1)   # 只留给核不下去的（清单读不了 / 格式不对 / 镜像打不开）
+# 维护者 11-17：校验不过不再整个拒绝出包。对得上与否的几项（index 摘要、路径集合、逐文件 SHA / 字节数、清单外文件）记成黄字、照常出包，
+#   原因写进 <包目录>.verify_warn.txt（出包作业读它记进这款的 integrityNotes，之后起局 / 装机 / 出包失败时报错补一句「之前出包这里校验不过」）
+WARN = []
+def warn(msg): WARN.append(msg); print(f'🟡 资源包核对 {P}：{msg}（照常继续出包）')
 try: man = json.load(open(f'{P}/manifest.json'))
 except (OSError, ValueError) as e: red(f'读不到 manifest.json（{e}）')
 if man.get('version') != 2: red(f'manifest version 是 {man.get("version")}，不是 2')
 raw = open(f'{P}/index.tsv', 'rb').read()
-if hashlib.sha256(raw).hexdigest() != man.get('index_sha256'): red('index.tsv 的 SHA-256 与 manifest index_sha256 不符')
+if hashlib.sha256(raw).hexdigest() != man.get('index_sha256'): warn('index.tsv 的 SHA-256 与 manifest index_sha256 不符')
 idx = [l.split('\t') for l in raw.decode().splitlines() if l]
 if any(len(x) != 3 for x in idx): red('index.tsv 每行应为「路径<TAB>字节数<TAB>SHA-256」')
 packed = {rel: (int(sz), sha) for rel, sz, sha in idx}
@@ -52,7 +56,7 @@ for a in SRCS:
             src[rel] = p if im is None else (im.path, *spans[r], name + '.std', r)   # 镜像里的：(源镜像, 偏移, 长度, 包里那份镜像, 镜像内路径)
             if content_keyed(name): full.add(rel)
 miss = sorted(set(src) - set(packed)); extra = sorted(set(packed) - set(src))
-if miss or extra: red(f'路径不一致：包里缺 {len(miss)} 个（如 {miss[:3]}），多 {len(extra)} 个（如 {extra[:3]}）')
+if miss or extra: warn(f'路径不一致：包里缺 {len(miss)} 个（如 {miss[:3]}），多 {len(extra)} 个（如 {extra[:3]}）')
 VS = P.rstrip('/') + '.verify.tsv'; prev = {}
 try:
     for l in open(VS, encoding='utf-8'): r = l.rstrip('\n').split('\t'); prev[r[0]] = tuple(r[1:])
@@ -74,6 +78,7 @@ def blocks(path, off=0, left=None):   # 文件（或镜像里从 off 起 left �
             yield b
 bad = []; rec = {}; todo = []; UNSTABLE = set()
 for rel, p in src.items():
+    if rel not in packed: continue   # 包里缺的已在上面「路径不一致」记了黄字，逐文件只核两边都有的
     q = f'{P}/{p[3]}' if isinstance(p, tuple) else f'{P}/{rel}'; sz, sha = packed[rel]   # 镜像里的：签名取源镜像与包里那份镜像
     if rel not in full and rel in prev and os.path.isfile(q) and prev[rel] == sig(p[0] if isinstance(p, tuple) else p, q, sha): rec[rel] = prev[rel]; continue   # 没有上次记录（冷）就不取 stat
     todo.append((rel, p, q, sz, sha))
@@ -128,8 +133,11 @@ def check_img(t):   # 镜像里的一个文件：同上，只是源 / 包里那�
 # 逐文件互不依赖：按本机核数并行（S2A_JOBS，tools/cores.sh；10-25 维护者「要适配机器的核心数」——原先串行，01006F8002326000 11 万个文件核对 33 秒只用 0.47 核）；
 #   读文件、算哈希期间释放 GIL，线程即可。进度写 S2A_PROGRESS（tools/progress.py）
 tk = Ticker('资源包核对', len(todo))
+def check_safe(t):   # 读不到某个文件（权限 / 盘出错）：记这一个对不上、其余照核（原先整个核对抛异常退出）
+    try: return check(t)
+    except OSError as e: return t[0], f'{t[0]}（读不到：{e.strerror or e}）'
 def block(b):
-    return [check(t) for t in b]
+    return [check_safe(t) for t in b]
 with ThreadPoolExecutor(max_workers=NJ) as ex:
     for part in ex.map(block, [todo[i:i + 64] for i in range(0, len(todo), 64)]):
         for rel, r in part:
@@ -148,13 +156,19 @@ if bad:
     why = ''
     if sha_bad:
         why = (f'；其中 {len(UNSTABLE)} 个同一文件两次读出的内容不同（读盘不稳定）' if UNSTABLE else '') + f'；已让这 {len(sha_bad)} 个文件下次出包重读重算'
-    red(f'{len(bad)} 个文件不对：{sorted(bad)[:5]}{why}')
+    warn(f'{len(bad)} 个文件不对：{sorted(bad)[:5]}{why}')
 # 包目录这边也要跳过 macOS 自己留的垃圾（.DS_Store / ._*）：pack.py 复制时已经跳过它们，
 # 但 Finder / Spotlight 会在 pkg/pack 里重新生成，不过滤就会把「清单外文件」误报成出包失败。包里有 RomFS 的逐文件拷贝，遍历同样经 romfs_list。
 stray = [os.path.relpath(os.path.join(d, f), P).replace(os.sep, '/') for d, _, fs in romfs_list.walk(P) for f in fs
          if f != '.DS_Store' and not f.startswith('._')]
 stray = [s for s in stray if s not in packed and s not in ('manifest.json', 'index.tsv') and s not in stds]   # 镜像形态：包里那份镜像不在 index.tsv（index 逐文件记）
-if stray: red(f'包目录里有清单外的文件 {len(stray)} 个：{stray[:5]}')
+if stray: warn(f'包目录里有清单外的文件 {len(stray)} 个：{stray[:5]}')
+WF = P.rstrip('/') + '.verify_warn.txt'
+if WARN:   # 有对不上的：不写「上次核对通过」记录（下次全量重核），原因落盘给出包作业记进 integrityNotes；照常退出 0
+    with open(WF, 'w', encoding='utf-8', newline='\n') as f: f.write('\n'.join(WARN) + '\n')
+    print(f'🟡 资源包核对：{len(WARN)} 项对不上，照常出包；原因记在 {WF}，之后出问题时报错会提到这里（{P}）'); sys.exit(0)
+try: os.remove(WF)   # 这次全对：上次留下的黄字记录作废
+except OSError: pass
 with open(VS + '.tmp', 'w', encoding='utf-8', newline='\n') as f: f.writelines('\t'.join((rel,) + v) + '\n' for rel, v in rec.items())
 os.replace(VS + '.tmp', VS)
 print(f'🟢 资源包核对：{len(packed)} 个文件与源一致、SHA 对得上、无多余文件（核 {len(packed) - skip} 个，{skip} 个与上次核对时源 / 包都没变）（{P}）')
