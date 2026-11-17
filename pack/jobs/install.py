@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import datetime
 import hashlib
@@ -2114,9 +2115,26 @@ def dir_missing(out):
     return bool(re.search(r"no such file|object\s*not\s*found", out or "", re.I))
 
 
+PREEMPT_OPERATIONS = ("installUpdatePrepare", "sgradeMac")   # 前台装机让它们先停的后台自动作业：同 main.AUTO_HEAVY（单测锁住两处一致；main 是入口脚本，这里不 import 它）
+
+
+@contextlib.contextmanager
 def packer_phone_lock(c):
+    """装机类作业（装到 iPhone / 更新 / 装回上一版 / 从手机删 / 推导出包）一次一个（ipa.phone_lock）。拿锁前先取消正在跑的后台自动作业
+    （core.preempt_jobs，11-17 #1450：玩家点的优先，不在降到最低优先级的后台改写后面排队）"""
     import ipa as packer
-    return packer.phone_lock(c)
+    from core import preempt_jobs
+    preempt_jobs(c, PREEMPT_OPERATIONS, say=lambda t: trace(c, t))
+    trace(c, "拿手机锁…")
+    with packer.phone_lock(c):
+        trace(c, "拿到手机锁")
+        yield
+
+
+def trace(c, text):
+    """装机过程记进本任务日志（core.trace，进诊断包）：进锁前后、各款改写、组容器的起止（11-17 #1450：原先只看得到停在第几步）"""
+    from core import trace as _trace
+    _trace(c, text)
 
 
 def phone_bid(ph):
@@ -2719,10 +2737,18 @@ def update_prepare(c):
     games = sorted({str(g).upper() for _, rec in layout.devices(c) if isinstance(rec, dict) for g in (rec.get("games") or {}) if str(g).upper() in have})
     c.begin("准备更新 iPhone 上的 S2Arm", 1, 1)
     updated = []
+    done = []
     for g in games:
+        # 前台装机类作业在跑（拿着手机锁）：不再拿程序锁跟它抢（11-17 #1450：后台降到最低优先级，前台排在它后面就是倒置）——停下，剩下的前台自己做
+        with c.idle("phone") as free:
+            pass
+        if not free:
+            trace(c, "前台装机作业在跑：准备更新先停，剩下的由它按正常优先级做")
+            break
         with packer.program_locks(c, [g]):
             updated += refresh_ios(c, [g])
-    return dict(prepared=games, updated=sorted(set(updated)))
+        done.append(g)
+    return dict(prepared=done, updated=sorted(set(updated)))
 
 
 def update_phone(c):
@@ -2748,11 +2774,15 @@ def _update_phone(c):
     import program_pack
     if program_pack.enabled(c):   # 通用壳（0.6.0，缺省关）：「更新 S2Arm」只装壳，不碰各款
         return install_shell(c, ph)
+    trace(c, "认出手机：" + str(ph.info.get("deviceKind") or "") + "；读手机上有哪几款…")   # 11-17 #1450 第 5 次卡在第 1 步：分步记，下次分得出卡在哪  # 非玩家句
     rec = layout.load_device(c, ph.key)
     others = container_others(c, ph, rec)
+    trace(c, f"手机上有 {len(others)} 款；核壳新旧…")
     sid = packer.current_shell_id(c)
     st = shell_outdated(c, rec, sid, others)
+    trace(c, "收回手机上留下的 NRO…")
     ph.pull_kept(others)   # 机上留下的 NRO（#8be819）先收回：有新的就照样重组容器补上（sgrade_pending 认）
+    trace(c, "核要不要补 S 级优化…")
     if st is None and (c.r.get("sgradeUpgrade") is True or sgrade_pending(c, others)):
         # 壳已是本版、但有款要补 S 级优化（「S 级优化升级」页；补丁库更新了 / 电脑上导入了要改游戏代码的金手指，11-14）：照样重组容器，
         #   游戏程序在 put_game → refresh_ios 里补上，资源包照旧不推。Windows「更新 iPhone 上的 S2Arm」同走这里
