@@ -631,6 +631,12 @@ def launch_env(c, gid):
     # 画质提升（11-15，同 iPhone S2AScalingFilter）：2D 游戏专用 = 最近邻；锐利放大 = 直连上屏 MetalFX 空间放大（graphics/nvn/gfx/nvn/nvn_present_fx.inc），没走直连不设
     if s.get("quality") == "Nearest" or (s.get("quality") == "MetalFX" and caps.get("direct") == "1"):
         env["S2A_SCALING_FILTER"] = s["quality"]
+    # 渲染分辨率 / 帧率上限（11-17，同 iPhone S2AResolutionScale / S2AFrameRateLimit，ios/settings.m）：缺省 1× / 不限不写，宿主照旧；
+    #   其余照选的值设 S2A_RES_SCALE（graphics/nvn/gfx/nvn/nvn_rscale.inc）、S2A_FPS（graphics/loop/RenderLoop.cs、nvn_fps.c）
+    if str(s.get("resolutionScale") or "1") != "1":
+        env["S2A_RES_SCALE"] = str(s["resolutionScale"])
+    if str(s.get("fpsLimit") or "0") != "0":
+        env["S2A_FPS"] = str(s["fpsLimit"])
     if "docked" in s:
         env["S2A_DOCKED"] = "1" if s["docked"] == "docked" else "0"
     if s.get("language", "system") != "system":

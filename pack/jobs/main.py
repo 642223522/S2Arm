@@ -110,7 +110,10 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
             embedded.install(c)
         if c.operation not in NO_LIBRARY:
             layout.ensure(c)   # 旧布局的库先一次性整理成新结构（layout.py），之后各作业只按新布局找路径
-        with awake.keep_awake() if c.operation in KEEP_AWAKE else contextlib.nullcontext():
+        if c.operation in AUTO_HEAVY:
+            background_priority()
+        with c.lock("auto-heavy", wait=AUTO_HEAVY_WAIT_S) if c.operation in AUTO_HEAVY else contextlib.nullcontext(), \
+                awake.keep_awake() if c.operation in KEEP_AWAKE else contextlib.nullcontext():
             result = operations[c.operation](c)
         if c.operation in HEAL_AFTER:
             # 英文名可能刚拿到（导入读 NACP、出包解出 control.nacp）：锁已放，空闲就把还叫游戏号的文件夹改名（剃刀 H3）。
@@ -153,6 +156,7 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
             del c.job["diagnostics"][kept:]
             return _finish_cancelled(c)
         message = diagnostic["summary"]
+        integrity_note(c)
         if c.operation in CLEANS_AFTER_STOP:   # 错误摘要要读产物根里的日志，所以排在它后面
             library.clean_after_stop(c)
         c.finish("failed", message, partial_import_result(c))
@@ -160,6 +164,20 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
     finally:
         ended.set()
         _drop_job_tmp(c)
+
+
+def integrity_note(c):
+    """出包 / 起局等带游戏号的作业失败时：这款导入时有内容跳过了完整性校验 → 补一条 warning 级诊断（维护者 11-17：免得难查）。
+    读不到游戏库或不是游戏作业就不补，不让补充说明本身把失败收尾弄坏"""
+    gid = c.r.get("gameId")
+    if not gid:
+        return
+    try:
+        game = next((g for g in c.catalog()["games"] if g["id"] == gid), None)
+        if library.integrity_skipped(game):
+            c.diagnostic(library.SOURCE_INTEGRITY_FAILED_NOTE, code="source_integrity_skipped", severity="warning")
+    except (Failure, OSError, ValueError, KeyError, TypeError):
+        pass
 
 
 def _finish_cancelled(c):
@@ -186,6 +204,24 @@ def _drop_job_tmp(c):
 
 
 CLEANS_AFTER_STOP = ("build", "ipa")
+# 打开启动器时自动起的后台重活（#1439 / #1442 / #1443）：installUpdatePrepare（有手机要更新就预出包）、sgradeMac（S 级规则变了重出）。
+#   两件同时跑时各按整机开满路数，玩家的 Mac 内存耗尽 panic。这两项只由启动器自动发起（S2ArmLauncherModel / +PhoneBanner），按作业名就能认：
+#   互相串行（游戏库里一把「auto-heavy」锁，后到的排队、显示在等谁、能取消），整条链低优先级（nice 19 子进程继承；macOS 再加后台档），不和玩家抢机器
+AUTO_HEAVY = ("installUpdatePrepare", "sgradeMac")
+AUTO_HEAVY_WAIT_S = 6 * 3600
+
+
+def background_priority():
+    """本进程（及之后起的子进程）降到最低优先级：nice 19；macOS 再设后台档（PRIO_DARWIN_BG：CPU / 磁盘都让前台）。做不成不挡作业"""
+    try:
+        if hasattr(os, "nice"):
+            os.nice(max(0, 19 - os.nice(0)))
+        if hasattr(os, "PRIO_DARWIN_BG"):
+            os.setpriority(os.PRIO_DARWIN_PROCESS, 0, os.PRIO_DARWIN_BG)
+    except OSError as error:
+        print(f"[s2a] 自动任务降优先级没做成，照常跑：{error}", file=sys.stderr, flush=True)
+
+
 KEEP_AWAKE = ("build", "ipa", "install", "installUpdate", "installRestore", "exportPush", "tvInstall", "tvExport")   # 出包 / 推送期间电脑不空闲休眠（awake.py；v0.3.1 玩家推大包被休眠打断成「传输中断」）
 HEAL_AFTER = ("import", "build", "ipa")   # 结束时顺手把还叫游戏号的文件夹改英文名（layout.heal_folder_names）
 ORCHESTRATION = ("export",)   # 只起子作业的编排：引擎副本、游戏库结构由每一步的子作业自己核（剃刀 H13）

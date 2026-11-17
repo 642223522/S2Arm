@@ -568,6 +568,9 @@ class AndroidDeliveryTest(unittest.TestCase):
         shutil.copytree(ROOT / 'pack/contracts', isolated / 'contracts', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
         (isolated / 'targets').mkdir()
         shutil.copytree(ROOT / 'pack/targets/ios', isolated / 'targets/ios', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+        # 宿主约定号头文件是苹果引擎的一部分（pack/jobs/host_update.py 导入时读它；Mac 应用随作业层放进 Jobs，引擎快照在 runtime/include）
+        (self.base / 'apple-engine/runtime/include').mkdir(parents=True)
+        shutil.copy2(ROOT / 'runtime/include/s2a_host_abi.h', self.base / 'apple-engine/runtime/include/s2a_host_abi.h')
         result = subprocess.run([sys.executable, '-I', '-S', str(isolated / 'jobs/target_main.py'), '--help'],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)

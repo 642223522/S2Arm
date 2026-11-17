@@ -116,8 +116,10 @@ class PlanRules(Base):
         self.go(self.on_phone("a", "b"), full=True); self.assertEqual(self.dev.lists, [["a", "b"]])
 
     def test_not_v2(self):
+        # 维护者 11-17：「校验不过就整个拒绝」一律撤掉——清单版本不认只打一行黄、照常算批次推送（期望手写：不抛、日志有那行黄）
         (self.pk / "manifest.json").write_text('{"version": 1}')
-        with self.assertRaises(push.Fail): self.go({})
+        self.go({})
+        self.assertTrue(any(s.startswith("【黄】资源包清单版本 1 这个工具不认") and s.endswith("照常推送") for s in self.log), self.log)
 
 
 class Pending(Base):
@@ -260,6 +262,26 @@ See 'devicectl device process launch --help' for more information.
         except push.Fail as e: r = e
         self.assertIsInstance(r, push.NeedsPlayer); self.assertIn("锁着屏", str(r)); self.assertNotIn("开发者模式", str(r))
         self.assertIn(f"资源包已传完。{push.LOCKED_WAIT}", self.log)
+
+    def test_unwritable_reads_owner_and_mode_of_dir_and_file(self):
+        # 期望（手写，D-A76N）：写不进时按 devicectl info files --no-recurse 的 JSON 读出「目录」与「文件」各自的属主和权限（八进制），
+        #   目录 0555（权限 365）、文件 0444（权限 292）；列不出的那一项说「读不到」，不抛
+        import stat
+        fake = Path(self.w) / "devicectl"
+        fake.write_text("#!/bin/sh\n" + f"exec {sys.executable} - \"$@\" <<'PY'\n" + """import json, sys
+a = sys.argv[1:]
+sub = a[a.index('--subdirectory') + 1] if '--subdirectory' in a else ''
+out = a[a.index('--json-output') + 1]
+table = {'L/games/X': [{'name': '资源包', 'relativePath': '资源包', 'metadata': {'ownerUid': 501, 'permissions': 365}}]}
+if sub in table: json.dump({'result': {'files': table[sub]}}, open(out, 'w'))
+else: sys.exit(1)
+PY
+""")
+        fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+        d = push.Devicectl("DEV", "io.s2arm.x", self.w, env=dict(os.environ, S2A_DEVICECTL=str(fake)))
+        note = d.owner_note("L/games/X/资源包/game.img")
+        self.assertIn("L/games/X/资源包：属主 uid 501、权限 555", note)
+        self.assertIn("L/games/X/资源包/game.img：读不到（devicectl rc=1）", note)
 
     def test_mac_launch_without_env_omits_flag(self):   # 多款容器拉起到游戏库 env 为空：devicectl 收 '{}' 会拒，得不带这个参数（11-10 测试设备实测）
         import stat
@@ -444,6 +466,63 @@ class BigFallback(unittest.TestCase):
         self.assertIn("本机可用内存", err)
 
 
+class NoSpace(unittest.TestCase):
+    """手机写满了：同一族报错各种说法都认，按写满报，不报成连接中断（11-17 Duo 实测：AFC「No space left」被说成「devicectl 退出码 1，确认数据线插稳」）。
+    原文取自真机日志与工具输出，期望手写"""
+    REAL = ["推 Library/Application Support/S2Arm/games/0400C3F00006E000/资源包/game.img 失败：写文件失败：afc error: No space left",   # s2a-devpush 写（11-17 Duo）
+            "打不开 Library/Application Support/S2Arm/games/0400C3F00006E000/资源包/game.img：afc error: No space left",            # s2a-devpush 再打开（同上）
+            "ERROR: The operation couldn’t be completed. (NSPOSIXErrorDomain error 28 - No space left on device)",                  # devicectl
+            "Underlying error: POSIX error code 28",                                                                              # devicectl cp.log
+            "afc_file_write returned AFC_E_NO_SPACE_LEFT",                                                                        # libimobiledevice
+            "OSError: [Errno 28] No space left on device (ENOSPC)"]
+    NOT = ["写文件失败：device socket io failed", "NSPOSIXErrorDomain error 280", "POSIX error code 2", "afc error: Permission denied", ""]
+
+    def test_family(self):
+        for t in self.REAL: self.assertTrue(push.nospace(t), t)
+        for t in self.NOT: self.assertFalse(push.nospace(t), t)
+        for t in self.REAL: self.assertEqual(push.push_reason(t), "手机空间写满了", t)
+
+    def test_stream_full_no_retry_no_devicectl(self):   # 流式写报写满：不隔 3 秒重试、不改走 devicectl（白等两分钟），原样交给 run
+        with tempfile.TemporaryDirectory() as t:
+            src = Path(t) / "game.img"; src.write_bytes(b"\0" * 512)
+            d = push.Devicectl("C891", "io.s2arm.games.t", t, env={"S2A_DC_FALLBACK_MAX": "4096"})
+            calls = []
+            class Stream:
+                def put(self, src, rel): calls.append(rel); raise push.Fail(f"资源包写进 iPhone 时中断（{NoSpace.REAL[0]}）：确认手机解锁、数据线插稳后再点一次")
+            d.dp = Stream(); copied, said = [], []; d.say = said.append; d.put = lambda src, rel: copied.append(rel)
+            with self.assertRaises(push.Fail) as e: d.put_big(src, "Documents/资源包/game.img")
+            self.assertTrue(push.nospace(str(e.exception)))
+            self.assertEqual((len(calls), copied, said), (1, [], []))
+
+    def test_run_reports_full_from_text_even_when_free_unreadable(self):   # 推的时候报写满、推完量不到空闲 → 照样按写满报（ios_install_no_space）
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t); pk = d / "pack"; pk.mkdir(); w = d / "w"; w.mkdir()
+            (pk / "a").write_bytes(b"A"); (pk / "index.tsv").write_text(f"a\t1\t{sha(b'A')}\n"); (pk / "manifest.json").write_text('{"version": 2}')
+            dev = Fake({})
+            def full(lst, root, rel): raise push.Fail(f"资源包写进 iPhone 时中断（{NoSpace.REAL[0]}）：确认手机解锁、数据线插稳后再点一次")
+            dev.put_tar = full
+            with self.assertRaises(push.SpaceFull) as e: push.run(dev, pk, w, full=True, say=lambda m: None, env={"S2A_PUSH_SPARE_GB": "0"})
+            self.assertEqual(e.exception.code, "ios_install_no_space"); self.assertIn("写满", str(e.exception)); self.assertNotIn("数据线", str(e.exception))
+
+    def test_devicectl_free_asks_devpush_first(self):   # 玩家机上多半没装 ideviceinfo：有 s2a-devpush 就按它读（AFC 设备信息），读到就不再问 ideviceinfo
+        with tempfile.TemporaryDirectory() as t:
+            d = push.Devicectl("C891", "io.s2arm.games.t", t)
+            class DP:
+                def free(self): return 123 << 30
+            d.dp = DP()
+            with mock.patch.object(push.shutil, "which", lambda n: self.fail("不该再找 ideviceinfo")):
+                self.assertEqual(d.free(), 123 << 30)
+
+    def test_low_space_says_how_much_short(self):   # 预检：要 8198 字节、手机报 8000 → 说清还差多少
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t); pk = d / "pack"; pk.mkdir(); w = d / "w"; w.mkdir()
+            (pk / "a").write_bytes(b"A"); (pk / "b").write_bytes(b"BB")
+            (pk / "index.tsv").write_text(f"a\t1\t{sha(b'A')}\nb\t2\t{sha(b'BB')}\n"); (pk / "manifest.json").write_text('{"version": 2}')
+            dev = Fake({}); dev.free = lambda: 8000
+            with self.assertRaises(push.LowSpace) as e: push.run(dev, pk, w, full=True, say=lambda m: None, env={"S2A_PUSH_SPARE_GB": "0"})
+            self.assertIn("还差约", str(e.exception))
+
+
 class PushReason(unittest.TestCase):
     """推送失败的原文 → 摘要里一眼看得懂的一类（11-12 v0.3.1 Mac 玩家「romfs.img 没传完」看不出是哪种）。期望按 s2a-devpush / devicectl 的报错特征手写"""
     def test_kinds(self):
@@ -529,7 +608,7 @@ class SpaceNeed(Base):
     def test_one_byte_short_accepted_pushes(self):
         self.dev = Fake({}); self.dev.free = lambda: 8197
         self.assertEqual(push.run(self.dev, self.pk, self.w, full=True, say=self.log.append, env={"S2A_PUSH_SPARE_GB": "0", "S2A_PUSH_ACCEPT_LOW_SPACE": "1"})[2], 3)
-        self.assertTrue(any(m.startswith("🟡 iPhone 剩余空间看起来不够") for m in self.log))
+        self.assertTrue(any(m.startswith("🟡 按估算，iPhone 剩余空间可能不够") for m in self.log))
 
     # 真写满：推失败后再量、空闲 < 256 MB → 报 ios_install_no_space，说清要传多少、手机还剩多少；空闲还多 = 别的原因，照原样往上抛
     def test_real_full_says_how_much(self):
@@ -978,7 +1057,7 @@ print(op + " 8 字节 → " + sys.argv[3])
         with self.assertRaises(push.Fail) as cm:
             dev.put(self.pk / "a", "Library/S2Arm/games/G/资源包/game.img")
         self.assertEqual(ops.read_text().split(), ["put", "rm"])
-        self.assertIn("Permission denied", str(cm.exception)); self.assertIn("删除并重新安装 S2Arm", str(cm.exception))
+        self.assertIn("Permission denied", str(cm.exception)); self.assertIn("删掉 iPhone 上的 S2Arm App 再重装", str(cm.exception))
         self.assertEqual(push.push_reason(str(cm.exception)), "手机上这个文件 App 写不进（Permission denied）")
 
     def test_denied_again_after_remove_reports_reinstall(self):
@@ -988,7 +1067,7 @@ print(op + " 8 字节 → " + sys.argv[3])
             dev.put(self.pk / "a", "Library/S2Arm/games/G/资源包/game.img")
         self.assertEqual(ops.read_text().split(), ["put", "rm", "put"])
         self.assertIsInstance(cm.exception, push.DirUnwritable)
-        self.assertIn("Permission denied", str(cm.exception)); self.assertIn("删除并重新安装 S2Arm", str(cm.exception))
+        self.assertIn("Permission denied", str(cm.exception)); self.assertIn("删掉 iPhone 上的 S2Arm App 再重装", str(cm.exception))
         self.assertEqual(push.push_reason(str(cm.exception)), "手机上这个文件 App 写不进（Permission denied）")
 
     def image_plan(self):
@@ -1009,13 +1088,13 @@ print(op + " 8 字节 → " + sys.argv[3])
         # 期望（手写，D-CY3B）：目录 App 写不进（DirUnwritable）→ 不原地再试、不说「重新装会续传 / 从头传」，原样抛出，码 ios_install_dir_unwritable
         self.image_plan(); dev = Fake({}); tries = []
         def put_big(*args):
-            tries.append(1); raise push.DirUnwritable("手机上的 x 删掉重写也写不进（afc error: Permission denied）：它所在的文件夹 App 写不进。" + push.REINSTALL_STEP)
+            tries.append(1); raise push.DirUnwritable("iPhone 上的 S2Arm 写不进 x：删掉旧文件重写也被系统拒绝（afc error: Permission denied），它所在的文件夹 S2Arm 写不进。" + push.REINSTALL_STEP)
         dev.put_big = put_big
         with self.assertRaises(push.DirUnwritable) as cm:
             push.send(dev, self.pk, self.w)
         self.assertEqual(len(tries), 1)
         self.assertEqual(cm.exception.code, "ios_install_dir_unwritable")
-        self.assertNotIn("续传", str(cm.exception)); self.assertNotIn("从头传", str(cm.exception)); self.assertIn("删除并重新安装 S2Arm", str(cm.exception))
+        self.assertNotIn("续传", str(cm.exception)); self.assertNotIn("从头传", str(cm.exception)); self.assertIn("删掉 iPhone 上的 S2Arm App 再重装", str(cm.exception))
 
     def test_partial_image_failure_never_reports_completion(self):
         self.image_plan(); dev = Fake({}); calls = []

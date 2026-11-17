@@ -536,7 +536,13 @@ static long ubo_tex_id(int st, unsigned cbuf, unsigned word) {
     const unsigned reg = cbuf - 3, off = word * 4;
     if (reg >= 16) return -1;
     const p_bind_buf *u = &rp_S.ubo[st][reg];
-    if (!u->addr || (uint64_t)off + 4 > u->size || !rp_pool_find(u->addr + off, 4, NULL, NULL)) return -1;
+    if (!u->addr || (uint64_t)off + 4 > u->size || !rp_pool_find(u->addr + off, 4, NULL, NULL)) {
+        char b[200];
+        snprintf(b, sizeof b, "常量缓冲句柄读不到：%s c%u 第 %u 字，槽地址 0x%llx 大小 %llu（%s）", st == 0 ? "vs" : st == 1 ? "fs" : "gs", cbuf, word,
+                 (unsigned long long)u->addr, (unsigned long long)u->size, !u->addr ? "槽没绑" : (uint64_t)off + 4 > u->size ? "越界" : "不在登记过的池里");
+        red1("ubo_handle_unreadable", b);
+        return -1;
+    }
     uint32_t h; memcpy(&h, (const void *)(uintptr_t)(u->addr + off), 4);
     return (long)(h & 0xFFFFF) + rp_S.tex_base;
 }
@@ -546,8 +552,15 @@ static void ubo_facts_add(struct facts *f, int st) {
     for (unsigned i = 0; e && i < e->n && f->ntex < S2A_COMPILE_TEXTURE_MAX; i++) {
         long id = ubo_tex_id(st, e->c[i].cbuf, e->c[i].word);
         tex_t t; view_t tv; int has_tv = 0; struct s2a_nvn_texture_fact nf; char why[96];
-        if (id < 0 || !rp_tex_snap_by_id((int)id, &t, &tv, &has_tv)) continue;
-        if (request_texture_fact((uint32_t)(has_tv && tv.set_format ? tv.format : t.d.format), (uint32_t)(has_tv && tv.set_target ? tv.target : t.d.target), t.d.depth, &nf, why, sizeof why)) continue;
+        if (id < 0) continue;   // ubo_tex_id 已具名报过
+        if (!rp_tex_snap_by_id((int)id, &t, &tv, &has_tv)) {
+            char b[160]; snprintf(b, sizeof b, "常量缓冲句柄指向的贴图取不到：c%u 第 %u 字 → 贴图号 %ld（贴图池基址 %d）", e->c[i].cbuf, e->c[i].word, id, (int)rp_S.tex_base);
+            red1("ubo_handle_no_texture", b); continue;
+        }
+        if (request_texture_fact((uint32_t)(has_tv && tv.set_format ? tv.format : t.d.format), (uint32_t)(has_tv && tv.set_target ? tv.target : t.d.target), t.d.depth, &nf, why, sizeof why)) {
+            char b[240]; snprintf(b, sizeof b, "常量缓冲句柄的贴图出不了编译事实：贴图号 %ld 格式 0x%x 目标 %u：%s", id, (unsigned)(has_tv && tv.set_format ? tv.format : t.d.format), (unsigned)(has_tv && tv.set_target ? tv.target : t.d.target), why);
+            red1("ubo_handle_no_fact", b); continue;
+        }
         int n = f->ntex++;
         memcpy(f->tfmt[n], nf.format, sizeof f->tfmt[n]); memcpy(f->tsmp[n], nf.sampler_type, sizeof f->tsmp[n]);
         f->tex[n] = (struct s2a_compile_texture_src){st == 0 ? "vs" : st == 1 ? "fs" : "gs", e->c[i].word, e->c[i].cbuf, f->tsmp[n], f->tfmt[n], nf.is_buffer, nf.normalized, 0, nf.array_length};
@@ -1052,9 +1065,11 @@ static struct entry *work_run(const struct work_snap *s, int background) {
         free(json);
         if (ran || !oc.bytes || !oc.bytes_len) {
             atomic_fetch_add_explicit(&g_n_failed, 1, memory_order_relaxed);
-            red1("compile_failed", oc.summary);
-            compiler_rejected(oc.summary);
+            // 编译器报缺的是用户常量缓冲里的句柄事实、且学到了新坐标：resolve_slow 会带上它当场重编，这次拒绝是学习的一步，
+            // 不记成「未接 compile_failed」（不然每份着色器第一次见这类句柄都多几条假红）。学不到 / 重编到上限仍失败的，下一次照常报红。
             if (ubo_need_learn(oc.summary, (const uint8_t (*)[8])s->keys, s->nst)) g_ubo_learned = 1;
+            else red1("compile_failed", oc.summary);
+            compiler_rejected(oc.summary);
             s2a_compile_outcome_free(&oc);
             struct entry *fe = (struct entry *)calloc(1, sizeof *fe);
             if (fe) { fe->failed = 1; memcpy(fe->prog.identity, s->identity, 32); }

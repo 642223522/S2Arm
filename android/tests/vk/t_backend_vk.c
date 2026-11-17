@@ -1284,6 +1284,28 @@ static void c71_present(void) {
       CHECK(OK(r), "C199 rebuild：%d %s", r.code, e.why);
     }
 
+    // C71w：取图信号量轮着用 nimages + 1 把；worker 落后（这里让它在一个游戏段上先睡 400 ms，呈现段都排在它后面没人等栅栏）时，
+    //   连着呈现 20 帧（比任何一档的 nimages + 1 都多）会绕回第一把信号量。取图必须先等到上次等这把信号量的呈现段被确认完成，
+    //   否则把还挂着等待的信号量交给驱动 = VUID-vkAcquireNextImageKHR-semaphore-01779（门禁上 CPU 忙时偶发，这里稳定复现）。
+    //   判据：每帧取图和呈现都成（等待有界、不超 1 s 的取图时限），且 run.sh 的 validation 0 条。
+    { nvn_gpu_cmd cw = begin_cmd();
+      nvn_gpu_tex_upload(cw, tex, 0, 0, NULL, px, 64 * 4, sizeof px);
+      nvn_gpu_vk_test_delay_segment(8, 400);
+      r = nvn_gpu_cmd_commit(cw, 8, on_done, NULL, &e);
+      CHECK(OK(r), "C71w commit：%d %s", r.code, e.why);
+      int bad = 0;
+      memset(pd.dst, 0, sizeof pd.dst); memset(pd.crop, 0, sizeof pd.crop);
+      for (int i = 0; i < 20 && !bad; i++) {
+          nvn_gpu_drawable q; memset(&q, 0, sizeof q);
+          nvn_gpu_rc ra = nvn_gpu_drawable_acquire(sf, 1000000000ull, NULL, &q, &e);
+          if (!OK(ra)) { bad = 1 + i; break; }
+          if (!OK(nvn_gpu_present(sf, &q, &pd, 300 + (uint64_t)i, on_shown, NULL, &e))) bad = 1 + i;
+      }
+      CHECK(!bad, "C71w worker 落后时连呈现 20 帧：第 %d 帧取图 / 呈现失败：%s", bad, e.why);
+      CHECK(OK(nvn_gpu_fence_wait(8, 5000000000ull, &e)), "C71w wait 8：%d %s", e.rc.code, e.why);
+      nvn_gpu_vk_test_delay_segment(0, 0);
+    }
+
     nvn_gpu_view_release(view); nvn_gpu_tex_release(tex);
     r = nvn_gpu_surface_detach(sf, 5000000000ull, &e);
     CHECK(OK(r), "C71 detach：%d %s", r.code, e.why);
@@ -4451,6 +4473,64 @@ static void c61_storage_image(const char *dir) {
     CHECK(bad == 0, "C61 imageStore 读回错 %d 项（首项 %u）", bad, rd[0]);
     nvn_gpu_view_release(v); nvn_gpu_tex_release(t);
     nvn_gpu_buf_release(rb, NULL, NULL);
+    nvn_gpu_shader_release(sh);
+}
+
+// C61s：sRGB 贴图按同位宽 UNORM 视图当存储图像写（NVN_GPU_CAP_STORAGE_SRGB_ALIAS）。RGBA8_SRGB 本身不能当存储：建图带存储用途时后端加
+//   EXTENDED_USAGE，sRGB 默认视图剥掉存储用途（剥不掉校验层会报，run.sh 要求 0 条）；RGBA8 视图写 k/255 精确字节，读回逐字节相同
+//   （被做了 sRGB 编码就不同：128/255 → 188）。设备不到 1.1 不置能力位，本用例按「没宣告」核：建图带存储用途要被拒。
+static void c61s_storage_srgb_alias(const char *dir) {
+    nvn_gpu_caps cp; nvn_gpu_caps_get(&cp);
+    const int have = (cp.caps & NVN_GPU_CAP_STORAGE_SRGB_ALIAS) != 0;
+    CHECK(!(nvn_gpu_format_caps(NVN_FORMAT_RGBA8_SRGB) & NVN_GPU_FMT_STORAGE) || !have, "C61s 前提：RGBA8_SRGB 本身不该报可存储（否则不需要别名）");
+    if (!have) { printf("C61s 设备没宣告 STORAGE_SRGB_ALIAS（Vulkan < 1.1），sRGB 存储写不测\n"); return; }
+    CHECK(nvn_gpu_format_caps(NVN_FORMAT_RGBA8) & NVN_GPU_FMT_STORAGE, "C61s 前提：RGBA8 能当存储");
+    nvn_gpu_layout_ent ce;
+    memset(&ce, 0, sizeof ce);
+    ce.set = 0; ce.cls = NVN_GPU_RES_IMAGE; ce.access = NVN_GPU_ACC_W; ce.binding = 0; ce.count = 1; ce.stages = 1u << NVN_GPU_SH_CS;
+    nvn_gpu_layout cl;
+    memset(&cl, 0, sizeof cl);
+    cl.ent = &ce; cl.nent = 1;
+    nvn_gpu_shader sh = NULL;
+    nvn_gpu_pipe cp2 = mk_cpipe(dir, "img_rgba8.comp", &cl, &sh);
+    CHECK(cp2 != NULL, "C61s cpipe 为空");
+    if (!cp2) return;
+    nvn_gpu_tex t = make_tex(4, 4, NVN_FORMAT_RGBA8_SRGB, NVN_GPU_TEX_STORAGE | NVN_GPU_TEX_SAMPLED | NVN_GPU_TEX_VIEW_FMT);
+    if (t) {
+        nvn_gpu_view vs = make_view(t);   // sRGB 默认视图（采样用）：带着存储用途就会被校验层拒
+        view_t vd; memset(&vd, 0, sizeof vd); vd.set_format = 1; vd.format = NVN_FORMAT_RGBA8;
+        nvn_gpu_view vu = NULL; nvn_gpu_err e;
+        nvn_gpu_rc r = nvn_gpu_view_create(t, &vd, &vu, &e);
+        CHECK(OK(r) && vu, "C61s RGBA8 视图：%d %s", r.code, e.why);
+        nvn_gpu_buf rb = make_buf(16 * 4, NVN_GPU_MEM_SHARED, NULL);
+        if (vu && rb) {
+            const uint32_t zeros[16] = {0};
+            nvn_gpu_cmd c = begin_cmd();
+            nvn_gpu_tex_upload(c, t, 0, 0, NULL, zeros, 16, 64);
+            nvn_gpu_set_pipe(c, cp2);
+            nvn_gpu_binding b; memset(&b, 0, sizeof b);
+            b.ent = 0; b.cls = NVN_GPU_RES_IMAGE; b.u.view = vu;
+            nvn_gpu_bind(c, NVN_GPU_SH_CS, &b, 1);
+            nvn_gpu_dispatch(c, cp2, 1, 1, 1, NULL, 0);
+            nvn_gpu_copy_tex_buf(c, t, 0, 0, NULL, rb, 0, 16, 64);
+            r = nvn_gpu_cmd_commit(c, 1, on_done, NULL, &e);   // 自己一个会话（见 main），围栏号从 1 起
+            CHECK(OK(r), "C61s commit：%d %s", r.code, e.why);
+            r = nvn_gpu_fence_wait(1, 5000000000ull, &e);
+            CHECK(OK(r), "C61s wait：%d %s", r.code, e.why);
+            const uint8_t *rd = (const uint8_t *)buf_cpu(rb);
+            int bad = 0;
+            for (int k = 0; k < 16; k++) {
+                const uint8_t want[4] = {(uint8_t)(k * 16), 128, (uint8_t)(255 - k), 255};
+                if (memcmp(rd + 4 * k, want, 4)) { if (!bad) printf("C61s 像素 %d：期望 %u,%u,%u,%u → %u,%u,%u,%u\n", k, want[0], want[1], want[2], want[3], rd[4*k], rd[4*k+1], rd[4*k+2], rd[4*k+3]); bad++; }
+            }
+            CHECK(bad == 0, "C61s RGBA8 视图写进 sRGB 贴图：16 个像素期望逐字节相同（不做 sRGB 编码）→ %d 个不符", bad);
+            if (!bad) printf("C61s sRGB 贴图按 UNORM 视图存储写：16 像素逐字节相同，已核对\n");
+        }
+        if (rb) nvn_gpu_buf_release(rb, NULL, NULL);
+        if (vu) nvn_gpu_view_release(vu);
+        if (vs) nvn_gpu_view_release(vs);
+        nvn_gpu_tex_release(t);
+    }
     nvn_gpu_shader_release(sh);
 }
 
@@ -10303,6 +10383,9 @@ int main(int argc, char **argv) {
     if (!open_backend()) return 1;   // C197 自己一个会话：围栏号从这里重新算，和前后用例不相干
     c197_pass_cache();
     CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C197 close：%d %s", e18.rc.code, e18.why);
+    if (!open_backend()) return 1;   // C61s 自己一个会话：围栏号从 1 起，不穿插在主会话 C61（108）/ C62（109）之间
+    c61s_storage_srgb_alias(argv[1]);
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C61s close：%d %s", e18.rc.code, e18.why);
     c204_dset_recycle(argv[1]);   // 描述符组按布局回收（#1096）：每个臂自己开 / 关会话
     c208_dyn_ubo(argv[1]);   // 动态 UBO 偏移（#1233）：关 / 开两个臂各开一次会话
     if (!open_backend()) return 1;   // C201 同样自己一个会话

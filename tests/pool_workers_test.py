@@ -1,5 +1,6 @@
 """进程池路数（#1332 / D-VV4J：88 核 Windows 出 iPhone 包停在「资源包 N/N」几小时——Windows 进程池超过 61 个卡死 / 抛错）。
-四处按核数开进程池的真实入口逐个跑（pack.py 算哈希、ui_lyt 宽屏布局、nxsh_extract 抽取着色器、shader_split 直连抽取），
+五处按核数开进程池的真实入口逐个跑（pack.py 算哈希、ui_lyt 宽屏布局、nxsh_extract 抽取着色器、shader_split 直连抽取、
+wide_scan 宽屏扫描——#1332 / D-V5QR 88 核卡死在「八个轻阶段」的就是它，原先没给 J 时 Pool(本机核数)），
 核数打成 88 / 128、模拟 Windows（只换 tools/pool_workers._windows，不碰全局 os.name），记下各处真正交给进程池的路数。期望手写：
   ① Windows：88 / 128 核 → 每处都是 61；② 非 Windows：128 核 → 128（不封顶）；③ 少于 61 的照给（16 核 → 16）
 池按记下的路数开但实际只起 2 个进程（不真起 61 个进程），入口其余逻辑照跑"""
@@ -25,7 +26,7 @@ def rec_pool(self, processes=None, *a, **k):
 
 def run(entry, cores, windows, env):
     asked.clear()
-    keep = {k: os.environ.get(k) for k in ("J", "S2A_JOBS")}
+    keep = {k: os.environ.get(k) for k in ("J", "S2A_JOBS", "S2A_NCPU", "S2A_KEYSCAN_J")}   # 核数只按下面打桩的 os.cpu_count 算，不吃外面给的覆盖
     for k in keep: os.environ.pop(k, None)
     os.environ.update(env)
     try:
@@ -69,13 +70,21 @@ def ss_entry(tag):
     out = T / f"ss_{tag}"; out.mkdir()
     return argv_run(R / "translator/shader_split.py", [ss_romfs, main_nso, out / "pkg", out / "map.tsv", out / "facts.tsv", out / "pairs.tsv"])
 
+# wide_scan：一段 1 MB 的空镜像（够 1<<16 个字，才会分段开池）；单测强制 fork 起法（Mac 上起池，记下交给 Pool 的路数）
+sys.path.insert(0, str(R / "graphics/widen/scan")); import wide_scan
+def ws_entry(): wide_scan.scan(bytes(4 << 18), start="fork")
+
 for cores in (88, 128):
     ck(f"① pack.py 算哈希：Windows {cores} 核", [61], run(pack_entry(f"w{cores}"), cores, True, {}))
     ck(f"① ui_lyt 宽屏布局：Windows {cores} 核", [61], run(ui_entry, cores, True, {}))
     ck(f"① nxsh_extract 抽取：Windows、编排给 J={cores}", [61], run(nx_entry(f"w{cores}"), cores, True, {"J": str(cores)}))
     ck(f"① shader_split 直连抽取：Windows {cores} 核", [61], run(ss_entry(f"w{cores}"), cores, True, {}))
+    ck(f"① wide_scan 宽屏扫描：Windows {cores} 核（#1332 原卡死点）", [61], run(ws_entry, cores, True, {}))
 ck("② pack.py：非 Windows 128 核不封顶", [128], run(pack_entry("m128"), 128, False, {}))
 ck("② ui_lyt：非 Windows 128 核不封顶", [128], run(ui_entry, 128, False, {}))
+ck("② wide_scan：非 Windows 128 核不封顶", [128], run(ws_entry, 128, False, {}))
+ck("③ wide_scan：Windows 16 核照给 16", [16], run(ws_entry, 16, True, {}))
+ck("④ wide_scan：Windows 88 核、编排给 S2A_JOBS=22（按内存预算分到的路数）→ 22", [22], run(ws_entry, 88, True, {"S2A_JOBS": "22"}))
 ck("③ pack.py：Windows 16 核照给 16", [16], run(pack_entry("w16"), 16, True, {}))
 ck("③ shader_split：Windows 16 核照给 16", [16], run(ss_entry("w16"), 16, True, {}))
 shutil.rmtree(T, ignore_errors=True)

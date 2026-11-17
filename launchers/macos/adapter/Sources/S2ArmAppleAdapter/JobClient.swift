@@ -317,6 +317,7 @@ public final class JobClient {
             process = try runner.start(
                 executable: python, arguments: ["-B", "-I", entry.path, "run", "--request", file.path],
                 environment: processEnvironment().merging(secrets) { _, s in s },
+                automatic: JobTrigger.automaticOperations.contains(operation),
                 onLine: { line in
                     guard let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else { return }
                     guard let event = JobEvent(json: object) else {

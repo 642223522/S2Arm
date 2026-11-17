@@ -1581,8 +1581,8 @@ def main():
     zdicts = {k: v for r in romfs_v for k, v in zs_dicts(r).items()}   # Tears of the Kingdom's zstd dictionaries (zs_dicts)
     keys = {}
     # First pass: every file; Unity bundles carry type trees, and the Shader trees are collected on the way. Second pass: Unity serialized files without type trees are scanned again with the borrowed trees
-    from pool_workers import process_pool_size   # tools/ is on sys.path (progress, above)
-    J = process_pool_size(int(os.environ.get('J') or os.environ.get('S2A_JOBS') or os.cpu_count() or 1))   # workers = J (no J = S2A_JOBS / every core); at most 61 on Windows (#1332)
+    from pool_workers import process_pool_size, env_jobs   # tools/ is on sys.path (progress, above)
+    J = process_pool_size(env_jobs('J', 'S2A_JOBS'))   # workers = J (no J = S2A_JOBS / every core); at most 61 on Windows (#1332)
     big = [j for p, r in files for j in (linkdata_jobs(p, r) or [])]   # Three Houses' 6.9 GB DATA1.bin: one job per range of entries, not one read of the whole file
     pak_jobs, paks = kpka_jobs(files)   # Monster Hunter Rise's PAKs: the newest copy of each path, in ranges of entries
     tr_jobs, trp = trpfs_jobs(files)   # Pokémon Legends: Z-A's Trinity packs (data.trpfs and its index data.trpfd), decoded by the game's own Oodle in the Mac host

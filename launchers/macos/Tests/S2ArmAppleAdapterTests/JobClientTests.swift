@@ -176,6 +176,59 @@ final class JobClientTests: XCTestCase {
         XCTAssertNil(s.finish())
     }
 
+    /// 真进程：作业跑着的时候持有一段防 App Nap 的活动，进程结束就收；起不来也要收（推送慢 11-17）。
+    ///   期望手写：起一个作业 → 开 1 段、收 1 段，收在退出回调之前；起一个不存在的可执行文件 → 开 1 段、收 1 段，抛错
+    func testSystemRunnerHoldsActivityWhileJobRuns() throws {
+        final class Box { var begun = 0, ended = 0, endedBeforeExit = false }
+        let box = Box(), token = NSObject()
+        let runner = SystemJobProcessRunner(beginActivity: { box.begun += 1; return token },
+                                            endActivity: { got in XCTAssertTrue(got === token); box.ended += 1 })
+        let done = expectation(description: "exit")
+        _ = try runner.start(executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", "sleep 0.2"], environment: [:],
+                             onLine: { _ in }, onStderr: { _ in },
+                             onExit: { _ in box.endedBeforeExit = box.ended == 1; done.fulfill() })
+        XCTAssertEqual(box.begun, 1)
+        wait(for: [done], timeout: 10)
+        XCTAssertTrue(box.endedBeforeExit)
+        XCTAssertThrowsError(try runner.start(executable: URL(fileURLWithPath: "/nonexistent/s2arm-job"), arguments: [], environment: [:],
+                                              onLine: { _ in }, onStderr: { _ in }, onExit: { _ in }))
+        XCTAssertEqual(box.begun, 2); XCTAssertEqual(box.ended, 2)
+    }
+
+    /// 自动起的后台任务（JobTrigger.automaticOperations）：不开防降级活动；玩家点的照开（11-17 维护者：自动任务让路）。期望手写
+    func testAutomaticJobsDoNotHoldActivity() throws {
+        final class Box { var begun = 0, ended = 0 }
+        let box = Box(), token = NSObject()
+        let runner = SystemJobProcessRunner(beginActivity: { box.begun += 1; return token }, endActivity: { _ in box.ended += 1 })
+        let done = expectation(description: "exit")
+        _ = try runner.start(executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", "true"], environment: [:], automatic: true,
+                             onLine: { _ in }, onStderr: { _ in }, onExit: { _ in done.fulfill() })
+        wait(for: [done], timeout: 10)
+        XCTAssertEqual(box.begun, 0); XCTAssertEqual(box.ended, 0)
+    }
+
+    /// JobClient 按作业名认：只有作业层那两项自动重活算 automatic
+    func testClientMarksOnlyAutomaticOperations() throws {
+        final class Spy: JobProcessRunner {
+            var seen: [Bool] = []
+            final class H: JobProcessHandle { func terminate() {} }
+            func start(executable: URL, arguments: [String], environment: [String: String],
+                       onLine: @escaping (Data) -> Void, onStderr: @escaping (Data) -> Void, onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle {
+                try start(executable: executable, arguments: arguments, environment: environment, automatic: false, onLine: onLine, onStderr: onStderr, onExit: onExit)
+            }
+            func start(executable: URL, arguments: [String], environment: [String: String], automatic: Bool,
+                       onLine: @escaping (Data) -> Void, onStderr: @escaping (Data) -> Void, onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle {
+                seen.append(automatic); return H()
+            }
+        }
+        let box = try Sandbox(); defer { box.remove() }
+        let spy = Spy()
+        let client = JobClient(environment: box.environment(), runner: spy)
+        for op in ["installUpdatePrepare", "sgradeMac", "install", "build"] { _ = try client.start(operation: op) }
+        XCTAssertEqual(spy.seen, [true, true, false, false])
+        XCTAssertEqual(JobTrigger.automaticOperations, ["installUpdatePrepare", "sgradeMac"])
+    }
+
     /// 真进程：行都到了才报退出（快结束的作业最后一条结果不能被退出抢先）。
     func testSystemRunnerDeliversAllLinesBeforeExit() throws {
         var lines: [String] = []

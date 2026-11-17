@@ -2,7 +2,7 @@
 // 单一 IMG v1（pack/img.py 的布局，RomFsIndex.OpenImg）：服务层从 game.img 读 RomFS。夹具现造，期望 = 夹具文件本身（逐字节比）：
 //   ① 没有界面覆盖层：OpenImg 交出标准 RomFS 段，LibHac RomFsFileSystem 逐文件读回与源目录相同
 //   ② 有覆盖层（romfs_overlay/a/s.txt）：读到覆盖层那份（长度不同也行），其余文件仍读 IMG
-//   ③ 文件长度不等于头里的整个文件长（推到一半）→ 没有 romfs/ 时抛、有 romfs/ 时 null（审计 P1-170）；④ 格式号 2 → 抛（起局失败、说清要更新 S2Arm）
+//   ③ 文件长度不等于头里的整个文件长（推到一半）→ 没有 romfs/ 时抛、有 romfs/ 时 null（审计 P1-170）；④（11-17 起不拒、照常读）格式号 2 → 抛（起局失败、说清要更新 S2Arm）
 //   ⑤ 旁边有 game.imgmap + romfs.s2aidx（pack/img.py convert 写）→ 走单文件镜像同一条预建路径（IndexedStorage，不重建目录表）：覆盖层文件读覆盖版、其余读 IMG 原件；
 //      偏移表记的镜像长与 game.img 不符（过期）→ 退回现建，读出的内容照样对
 using System;
@@ -93,8 +93,10 @@ namespace S2A.Services.Tests
                 if (!hadRomfs) Directory.Delete(Path.Combine(game, "romfs"));
                 string game2 = Path.Combine(root, "game2"); Directory.CreateDirectory(game2);   // 前面打开的句柄只许读，格式号 2 的夹具另放一个目录
                 WriteImgFixture(rom, Path.Combine(game2, RomFsIndex.ImgName), 2, rels);
-                string why = null; try { RomFsIndex.OpenImg(game2); } catch (InvalidDataException e) { why = e.Message; }
-                Ck(why != null && why.Contains("格式号 2"), $"④ 格式号 2 → 抛：{why}");
+                // 11-17 维护者：校验不过不整个拒——格式号 2 照常按 1 读（布局同），黄字记下；之后报红时带上这一条
+                Red.Reset(); string why = null; IStorage st2 = null; try { st2 = RomFsIndex.OpenImg(game2); } catch (InvalidDataException e) { why = e.Message; }
+                Ck(why == null && st2 != null && Red.WaivedNote.Contains("格式号 2"), $"④ 格式号 2 → 不抛、照常打开，记下没过的校验：{why ?? Red.WaivedNote}");
+                Red.Reset();
                 // ⑤ 预建偏移表：IMG 是原件，索引建在覆盖后的 romfs 上
                 string game3 = Path.Combine(root, "game3"), patched = Path.Combine(root, "patched", "romfs"); Directory.CreateDirectory(game3);
                 string img3 = Path.Combine(game3, RomFsIndex.ImgName); WriteImgFixture(rom, img3, 1, rels);

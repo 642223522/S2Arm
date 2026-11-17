@@ -147,7 +147,7 @@ static class RomfsExtraction {
         try {
             Result result;
             try { result = Attempt(open, stage, IntegrityCheckLevel.ErrorOnInvalid, partSize, parallelism); }
-            catch (Exception e) when (patched && IsDataHashFailure(e)) {
+            catch (Exception e) when (IsDataHashFailure(e)) {
                 // Parallel.For 抛出前已收齐 worker；所有视图已 Dispose，才能清掉失败前缀并整分区重读。
                 if (Directory.Exists(stage)) Directory.Delete(stage, true);
                 string first = (e is AggregateException g ? g.InnerExceptions.ToArray() : new[] { e }).OfType<ReadPlace>().Select(r => r.Message).FirstOrDefault();
@@ -175,7 +175,7 @@ static class RomfsExtraction {
         try {
             Result result;
             try { result = AttemptImage(open, stage, IntegrityCheckLevel.ErrorOnInvalid, chunkSize, parallelism); }
-            catch (Exception e) when (patched && open != null && IsDataHashFailure(e)) {
+            catch (Exception e) when (open != null && IsDataHashFailure(e)) {
                 File.Delete(stage);
                 string first = (e is AggregateException g ? g.InnerExceptions.ToArray() : new[] { e }).OfType<ReadPlace>().Select(r => r.Message).FirstOrDefault();
                 result = AttemptImage(open, stage, IntegrityCheckLevel.None, chunkSize, parallelism) with { Bypassed = true, FirstBad = first };

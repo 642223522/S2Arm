@@ -23,6 +23,7 @@
 退出码：0 成功；1 失败（标准输出最后一行【红】说明停在哪一步）；3 内容缺口（直连库出不了）；75 环境缺件（--check 同口径）。
 今晚实测（11-05 Windows 出包机 20 核）：旷野之息 解包 39 秒 / 轻阶段 ~260 秒 / 直连库 267 秒 / ipa 136 秒；金刚 导出整理 91 秒 / 轻阶段 ~300 秒 / 直连库 493 秒 / ipa 196 秒。
 """
+import os as _pw_os, sys as _pw_sys; _pw_sys.path.append(_pw_os.path.join(_pw_os.path.dirname(_pw_os.path.abspath(__file__)), '..', '..', 'tools')); from pool_workers import cores  # noqa: E402  核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
 import argparse, glob, json, os, re, shutil, stat, subprocess, sys, tempfile, time
 from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
@@ -769,7 +770,7 @@ def main(argv=None):
         if hasattr(s, 'reconfigure'): s.reconfigure(encoding='utf-8')
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('source', nargs='*'); ap.add_argument('--out'); ap.add_argument('--target', choices=('ios', 'mac'), default='ios')
-    ap.add_argument('--title-id'); ap.add_argument('--bundle-id'); ap.add_argument('--shell'); ap.add_argument('--jobs', type=int, default=os.cpu_count() or 8)
+    ap.add_argument('--title-id'); ap.add_argument('--bundle-id'); ap.add_argument('--shell'); ap.add_argument('--jobs', type=int, default=cores())
     ap.add_argument('--check', action='store_true'); ap.add_argument('--from-extract'); ap.add_argument('--events')
     ap.add_argument('--rt-shaders', metavar='DIR')   # 内部验证包：真机转储的着色器并进解包目录（put_rt）；不给 = 不带（缺省行为不变）
     ap.add_argument('--install', metavar='UDID'); ap.add_argument('--name'); ap.add_argument('--suffix'); ap.add_argument('--plumesign'); ap.add_argument('--devpush')

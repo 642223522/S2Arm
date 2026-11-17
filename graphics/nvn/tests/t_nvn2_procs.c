@@ -13,6 +13,7 @@
 #include "nvn_count.h"
 #include <stdint.h>
 #include <stdio.h>
+#include <sys/mman.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -368,6 +369,22 @@ static void ounce_on(void) {   // 写一份 Switch 2 布局的 NPDM（ACID 魔�
     extern int nvn2_on(void); CHECK(nvn2_on());
 }
 
+// #713 D-ZBQS 0007（0.5.1 SIGBUS 在 BindProgram）：SetShaders 时控制段可读，之后游戏放掉了那块内存（这里改成 PROT_NONE 模拟），
+//   BindProgram 逐阶段看 NVN2 控制段魔数 / +0x56 前要先核可读。期望：不崩（改前在 BindProgram 里读控制段即 SIGBUS，单测进程直接死）
+static void bind_program_freed_control(void) {
+    uint8_t *ctl = mmap(NULL, 0x4000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0); CHECK(ctl != MAP_FAILED);
+    static uint8_t code[256];
+    union { NVNprogram p; char raw[512]; } prog; memset(&prog, 0, sizeof prog);
+    NVNshaderData sd = { (NVNbufferAddress)(uintptr_t)code, ctl };
+    API(nvnProgramSetShaders)(&prog.p, 1, &sd);
+    CHECK(mprotect(ctl, 0x4000, PROT_NONE) == 0);   // 游戏放掉了控制段
+    NVNcommandBuffer cmd; memset(&cmd, 0, sizeof cmd); CHECK(API(nvnCommandBufferInitialize)(&cmd, &device));
+    API(nvnCommandBufferAddCommandMemory)(&cmd, &pool, 8192, 4096); API(nvnCommandBufferBeginRecording)(&cmd);
+    API(nvnCommandBufferBindProgram)(&cmd, &prog.p, 1);   // 走到这里不崩就是对的
+    CHECK(API(nvnCommandBufferEndRecording)(&cmd) != 0);
+    munmap(ctl, 0x4000);
+}
+
 int main(void) {
     char map[1024]; const char *td = getenv("TMPDIR"); snprintf(map, sizeof map, "%s/t_nvn2_procs_XXXXXX", td && *td ? td : "/tmp");
     int fd = mkstemp(map); CHECK(fd >= 0); close(fd); setenv("DM_NVN_SHMAP", map, 1);
@@ -380,7 +397,7 @@ int main(void) {
     API(nvnMemoryPoolBuilderSetFlags)(&pb, NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED | NVN_MEMORY_POOL_FLAGS_GPU_CACHED);
     API(nvnMemoryPoolBuilderSetStorage)(&pb, memory, 65536);
     CHECK(API(nvnMemoryPoolInitialize)(&pool, &pb));
-    drv_names(); program_builder(); dirty_tile_map(); window(); multisample(); queue_builder(); device_objects(); dlss(); recording(); draw_device_bytes(); mesh_recording(); red_stub();
+    drv_names(); program_builder(); dirty_tile_map(); window(); multisample(); queue_builder(); device_objects(); dlss(); recording(); draw_device_bytes(); mesh_recording(); bind_program_freed_control(); red_stub();
     unlink(map);
     printf("✓ t_nvn2_procs：NVN2 驱动按名可取的 767 个入口全部取得到，未实现桩正好是写明原因的 %d 个；程序构建器 / 脏块图 / 窗口 / 多重采样 / 队列构建器 / 设备命令与消息缓冲 / DLSS / 快速清除 / NVX 地址按驱动布局与公式；"
            "HDR 元数据栈上参数；延后推常量录成指针记录 → 通过（%u 项检查）\n", NRED, checks);

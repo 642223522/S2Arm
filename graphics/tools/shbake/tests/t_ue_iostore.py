@@ -238,6 +238,7 @@ if old_src is not None:
     # ue_pak / uepak 的 RomFS 遍历经它（仓库里唯一的 RomFS 遍历）
     os.makedirs(os.path.join(T, 'oldtree', 'graphics', 'nvn', 'tools'), exist_ok=True)
     shutil.copy(os.path.join(H, 'graphics', 'nvn', 'tools', 'romfs_list.py'), os.path.join(T, 'oldtree', 'graphics', 'nvn', 'tools', 'romfs_list.py'))
+    os.makedirs(os.path.join(T, 'oldtree', 'tools'), exist_ok=True); shutil.copy(os.path.join(H, 'tools', 'pool_workers.py'), os.path.join(T, 'oldtree', 'tools', 'pool_workers.py'))   # romfs_list / pak_crypto 经它取核数（#1332）
     open(old_py, 'w').write(old_src)
     rc5, log5 = run_ue_pak(os.path.join(r2, 'romfs'), os.path.join(r2, 'out_old'), old_py)
     old_list = listing(os.path.join(r2, 'out_old'))
@@ -251,6 +252,7 @@ for d in ('pack', 'graphics/tools/direct', 'graphics/tools/shbake', 'translator'
     os.makedirs(os.path.join(R6, d), exist_ok=True)
 # extract.sh 判有无 Unreal 包、ue_pak / uepak 列文件都经它（仓库里唯一的 RomFS 遍历）
 shutil.copy(os.path.join(H, 'graphics', 'nvn', 'tools', 'romfs_list.py'), os.path.join(R6, 'graphics', 'nvn', 'tools', 'romfs_list.py'))
+os.makedirs(os.path.join(R6, 'tools'), exist_ok=True); shutil.copy(os.path.join(H, 'tools', 'pool_workers.py'), os.path.join(R6, 'tools', 'pool_workers.py'))   # 同上
 shutil.copy(UE_PAK, os.path.join(R6, 'pack', 'ue_pak.py'))
 shutil.copy(EXTRACT, os.path.join(R6, 'graphics', 'tools', 'direct', 'extract.sh'))
 shutil.copy(os.path.join(H, 'tools', 'nostall.py'), os.path.join(R6, 'tools', 'nostall.py'))   # extract.sh 各步经无进展看门狗起（10-30 去固定超时）

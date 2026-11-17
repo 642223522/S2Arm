@@ -1097,6 +1097,7 @@ static void library_pack_help_show(NSString *gid, BOOL again, int st);
 int s2a_img_scan(const char *proc_docs);   // pack_apply.c
 const char *s2a_img_scan_failure(void); const char *s2a_img_scan_code(void);   // pack_apply.c：最近一次认领失败的原因 / 码（空串 = 没失败）
 const char *s2a_img_scan_noshaders(void);   // pack_apply.c：这次认领里不带着色器库的文件名（空串 = 没有）
+const char *s2a_img_scan_skipped(void);   // pack_apply.c：这次扫描跳过的着色器更新包（和当前游戏版本不配套）文件名（空串 = 没有）
 static int img_scan_now(void) {   // 后台线程
     if (atomic_load(&g_game_picked)) return 0;
     char d[1024]; s2a_container_docs(d, sizeof d); int n = s2a_img_scan(d);
@@ -1114,6 +1115,16 @@ static void img_scan_report(void) {   // 主线程
           [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.gotIt") style:UIAlertActionStyleCancel handler:nil]];
           [lib_top() presentViewController:a animated:YES completion:nil];
           return;   // 一次只弹一个；认领失败的那句下次回前台再说
+      } }
+    // 着色器更新包和当前游戏版本不配套（维护者 11-17：替玩家判，不套用、不报错）：说一句已跳过，游戏照常玩（同一个文件只说一次）
+    { static char told[256]; const char *f = s2a_img_scan_skipped();
+      if (f && *f && strcmp(f, told) && g_lib_window) {
+          strlcpy(told, f, sizeof told);
+          UIAlertController *a = [UIAlertController alertControllerWithTitle:S2AL(@"img.updateSkipped.title")
+              message:[NSString stringWithFormat:S2AL(@"img.updateSkipped.body"), @(f)] preferredStyle:UIAlertControllerStyleAlert];
+          [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.gotIt") style:UIAlertActionStyleCancel handler:nil]];
+          [lib_top() presentViewController:a animated:YES completion:nil];
+          return;
       } }
     static char shown[600]; const char *why = s2a_img_scan_failure();
     if (!why || !*why || !strcmp(why, shown) || !g_lib_window) return;
@@ -1161,7 +1172,9 @@ static void img_scan_bg(void) {
         static atomic_int checked; int r = 0;
         if (!atomic_exchange(&checked, 1) && !atomic_load(&g_game_picked)) { char d[1024]; s2a_container_docs(d, sizeof d);
             char line[1600]; uint64_t fb = 0; if (s2a_foreign_scan(NSHomeDirectory().fileSystemRepresentation, &fb, line, sizeof line)) { LOG("【黄】%s", line); g_foreign_bytes = fb; r = 1; }
-            pack_layout_prepare(d); }
+            pack_layout_prepare(d);
+            int gc = s2a_program_gc(NSHomeDirectory().fileSystemRepresentation, time(NULL));   // 程序包旧版本目录（电脑端换上新版后留下的、推断了的）：启动时清，一进程一次
+            if (gc) LOG("程序包清理：本次启动清掉 %d 项", gc); }
         atomic_store(&g_games_repairing, 0);
         int n = img_scan_now();
         dispatch_async(dispatch_get_main_queue(), ^{ if (n > 0 && s2a_shell_refresh) s2a_shell_refresh(); if (r) foreign_report(); if (!r || g_foreign_bytes < (2ull << 30)) img_scan_report(); });   // 同一刻只弹一个框：迁移那次先说迁移，认领失败下次回前台重扫再说
@@ -1370,7 +1383,10 @@ static void widget_open(NSURL *url, void *ctx) {
     if (!entry) return;   // 先领取，再启动；后续激活只走现有恢复路径
     { void s2a_ios_test_save_op(void); s2a_ios_test_save_op(); }   // 测试开关 S2A_TEST_SAVE_OP（ios/save_transfer.m）：游戏已选定、宿主还没起，导出 / 导回一次存档
     int inputError = s2a_ios_input_config_load();
-    if (inputError) { LOG("【红】iOS 输入配置损坏，拒绝启动（%d: %s）", inputError, s2a_input_config_error_message(inputError)); exit(2); }
+    if (inputError) {   // 11-17 维护者：校验不过不再拒启。默认键位照常起，横幅点名原因（这条只在开发 / 自动化起局设了 S2A_INPUT_CONFIG 时出现）
+        LOG("【黄】iOS 输入配置读不懂（%d: %s），这局用默认键位照常启动", inputError, s2a_input_config_error_message(inputError));
+        s2a_dprompt_notice(S2AL(@"dprompt.input.bad.title"), [NSString stringWithFormat:S2AL(@"dprompt.input.bad.body"), @(s2a_input_config_error_message(inputError))], 3, 12);
+    }
     s2a_log_session_start();
     BOOT_MARK("预热 → 场景激活");
     { uint64_t base, size; s2a_window_get(&base, &size);

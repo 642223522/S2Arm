@@ -266,7 +266,12 @@ async fn run(a: &[String]) -> Result<(), String> {
         for d in list { if !seen.contains(&d.udid) { println!("{}", d.udid); seen.push(d.udid); } }
         return Ok(());
     }
-    let dev = mux.get_device(udid).await.map_err(|e| format!("找不到设备 {udid}：{e}"))?;
+    // 同一台手机 usbmuxd 常同时列 USB 与 Wi-Fi 两条（同一 UDID）：idevice 的 get_device 取第一条，排到 Wi-Fi 那条就走无线，
+    //   推送从百来 MB/s 掉到个位数（11-17 Duo 实测：同时刻同一文件 devicectl 205 MiB/s、本工具 8.2 MiB/s）。同 devices 一样 USB 优先
+    let mut found = mux.get_devices().await.map_err(|e| format!("找不到设备 {udid}：{e}"))?;
+    found.retain(|d| d.udid == *udid);
+    found.sort_by_key(|d| !matches!(d.connection_type, idevice::usbmuxd::Connection::Usb));
+    let dev = found.into_iter().next().ok_or_else(|| format!("找不到设备 {udid}：{}", idevice::IdeviceError::DeviceNotFound))?;
     let provider = dev.to_provider(addr, "s2a-devpush");
     if op == "launch" {
         // CoreDevice app_service：idevice（钉的提交）自带的 launch_application 请求缺新系统要的字段（iOS 27 实测依次报缺 standardIOIdentifiers、

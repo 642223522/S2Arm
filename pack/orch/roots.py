@@ -128,14 +128,26 @@ def directory_link(target, link, *, relative=None):
         #   有的 Windows（玩家实测 26320）stat / listdir / realpath 一律 WinError 3，同一链接走长路径或改写绝对目标都正常；没开开发者模式时走的
         #   junction 退路本来就只能写绝对目标。写长路径不写短路径：短根入口任务结束就拆，链接不能指向它
         target, relative = Path(to_long(str(target.absolute()), table_now())), None
+    existed = os.path.lexists(link)
     try:
         # Windows stores the substitute name verbatim; '/' in a relative
         # reparse target can be created successfully but fails kernel traversal.
         value = relative if relative is not None else str(target)
         os.symlink(os.path.normpath(value), link, target_is_directory=True)
-    except OSError:
+    except OSError as error:
         if os.name != 'nt':
             raise
+        # #1431：有的 Windows（玩家 26300、库在 ReFS 开发驱动器、没开开发者模式）软链报失败时 link 处已经留下了东西，紧跟着的 junction 退路
+        #   mkdir 撞 WinError 183，播种 / 提交每次都在这里红，撤回再被它卡住。软链之前没有、失败之后有的，只能是这次失败留下的：删掉再走退路
+        if not existed and os.path.lexists(link):
+            try:
+                os.rmdir(link)
+            except OSError:
+                try:
+                    os.unlink(link)
+                except OSError as stuck:
+                    error.add_note(f'（软链失败后 {link.name} 处留下的残留删不掉：{stuck!r}）')
+                    raise error
         print(f'【黄】目录软链不可用，显式 junction 退路：{link.name}', file=sys.stderr)
         _junction(target, link)
 
@@ -363,6 +375,11 @@ def remove_owned(path):
             _win_acl(path, False)
         path.chmod(stat.S_IMODE(path.stat().st_mode) | stat.S_IWUSR)
         path.unlink()
+    elif os.path.lexists(path):   # 在、但既不是链接也读不出是文件 / 目录（#1431：软链失败留下的残留）：原先一支都不认、什么都不删，上一级 rmdir 报「目录不是空的」
+        try:
+            os.rmdir(path)
+        except OSError:
+            os.unlink(path)
 
 
 def remove_patterns(directory, patterns):

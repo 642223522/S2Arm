@@ -96,7 +96,7 @@ public sealed partial class EnvironmentWindow
         Grid.SetColumn(zip, 2); head.Children.Add(zip);
         var dir = Action("mods.page.importFolder", () => _ = ImportModsAsync(true), !modsLoading && !libraryBusy);
         Grid.SetColumn(dir, 3); head.Children.Add(dir);
-        var back = Action("cheats.page.back", () => { modsFor = null; Render(); });
+        var back = Action(page == "library" ? "cheats.page.back" : "nav.back", () => { modsFor = null; Render(); });   // 从出包页进来的写「返回」、回出包页（#1430），从游戏库进来的照旧「返回游戏库」
         Grid.SetColumn(back, 4); head.Children.Add(back);
         body.Children.Add(head);
         var box = new StackPanel { Spacing = 10 };

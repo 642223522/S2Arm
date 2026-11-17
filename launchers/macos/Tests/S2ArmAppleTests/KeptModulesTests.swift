@@ -121,6 +121,7 @@ import S2ArmAppleAdapter
     //   开关关 → 不准备、不显示
     func testPrepareBannerAfterLauncherUpdate() async throws {
         _ = NSApplication.shared
+        pinIosAfterPackInstall()
         let key = S2ArmLauncherModel.autoUpdatePhoneOffKey, before = UserDefaults.standard.object(forKey: key)
         defer { UserDefaults.standard.set(before, forKey: key) }
         func run(fails: Bool, on: Bool) async throws -> (S2ArmLauncherModel, KeptRunner) {

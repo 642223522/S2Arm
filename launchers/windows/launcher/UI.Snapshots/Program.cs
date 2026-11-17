@@ -227,6 +227,16 @@ CheckHeroActions(pack, "无横图的选中游戏", heroActionFailures);
     CheckHeroActions(pack, "有横图的选中游戏", heroActionFailures, expectBanner: true);
     InjectMockGame(pack, ready: true);   // 恢复后续场景用的无横图夹具
 }
+// 导入时数据校验不过、照常导入的款（11-17）：封面右下角黄色「!」，悬停 / 选中时说明；夹具用通用占位名
+{
+    var plain = MockGame(true) with { Id = "0100F00200000000", Name = "示例游戏 A" };
+    var skipped = MockGame(true) with { Id = "0100F00300000000", Name = "示例游戏 B",
+        Packages = [new("base", "0100F00300000000", 0, "v1.0.0", 1L, "", IntegritySkipped: true)] };
+    SetW(pack, "catalog", new LibraryCatalog([plain, skipped], true, "密钥已就绪"));
+    SetW(pack, "selectedGame", skipped.Id);
+    SaveP("win_06e_library_integrity_skipped", () => Navigate(pack, "library"));
+    InjectMockGame(pack, ready: true);
+}
 // 导出自签包的进度 / 完成（11-15：装机页只画结局卡，不画装机说明、清单、开始装机 / 删除）
 {
     var g = MockGame(true);
@@ -454,6 +464,11 @@ SetW(pack, "cheatsList", (JsonElement?)SG("""
 """));
 SaveP("sgrade_05_cheats_page", () => { SetW(pack, "page", "library"); InvokeW(pack, "Render"); });
 SetW(pack, "cheatsFor", null); SetW(pack, "cheatsList", null);
+// #1430：出包页 S 级卡「导入 Mod…」进 Mod 页（原先只在游戏库页画、从出包页点没反应）；「返回」回出包页
+InjectMockGame(pack, ready: true);
+SaveP("win_26_export_mods_page", () => { Navigate(pack, "build"); SetW(pack, "modsFor", MockGame(true));
+    SetW(pack, "modsList", (JsonElement?)SG("""[{"name":"高清材质包","bytes":1073741824,"files":120,"enabled":true}]""")); InvokeW(pack, "Render"); });
+SaveP("win_26b_export_mods_back", () => { SetW(pack, "modsFor", null); SetW(pack, "modsList", null); InvokeW(pack, "Render"); });
 pack.Height = 900;
 
 pack.Close();

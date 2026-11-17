@@ -90,6 +90,8 @@ static void boundary_cases(const char *T) {
     CHECK(f && fread(value, 1, 2, f) == 2 && !strcmp(value, "ok"), "合法 pax path 内容不符"); if (f) fclose(f);
 }
 
+unsigned s2a_pack_repair_modes_as(const char *docs, const char *root, unsigned self_uid); extern unsigned s2a_pack_repair_self_override;
+const char *s2a_img_scan_skipped(void);
 unsigned s2a_foreign_scan(const char *home, uint64_t *bytes, char *line, size_t n); unsigned s2a_foreign_scan_as(const char *home, unsigned self_uid, uint64_t *bytes, char *line, size_t n);
 // 压缩传输的 game.img 块（v0.5.0，runtime/src/pack_apply.c img_unzst；块大小本单测编成 64 KB，见 runtime/tests/mk/pack_apply.mk）。
 //   夹具：合成单一 IMG（头 + 规律字节 + 文件尾 40 字节空目录表，长 2 × 64 KB + 5000），按 64 KB 切 3 块，每块用 zstd 命令行（没有就 Python zstd 模块）
@@ -242,7 +244,8 @@ int main(void) {
         "cd src4 && COPYFILE_DISABLE=1 tar " TAR_OPTIONS " -cf ../docs/资源包/.incoming/3_002.tar locked/e.bin", T);
     CHECK(sh(c) == 0, "造只读目录包失败");
     { char lg[1100]; snprintf(lg, sizeof lg, "%s/host_locked.log", T); int lfd = open(lg, O_WRONLY | O_CREAT | O_TRUNC, 0644), keep = g_s2a_logfd; g_s2a_logfd = lfd;
-      CHECK(s2a_pack_apply(docs) != 0, "只读目录应判失败"); g_s2a_logfd = keep; close(lfd);
+      s2a_pack_repair_self_override = (unsigned)getuid() + 1;   // 这条测「别人的只读目录」写失败带现场：自己的只读目录现在会被补回写权限（D-A76N）
+      CHECK(s2a_pack_apply(docs) != 0, "只读目录应判失败"); s2a_pack_repair_self_override = 0; g_s2a_logfd = keep; close(lfd);
       snprintf(c, sizeof c, "tail -1 %s/docs/unpack.log | grep -q '返回 -4.*现场：建临时文件 .*/资源包/locked/e.bin.part：errno 13'", T); CHECK(sh(c) == 0, "失败行应含「返回 -4」与建临时文件现场（errno 13）");
       snprintf(c, sizeof c, "grep -q '资源包收推送：失败.*现场：建临时文件 .*locked/e.bin.part：errno 13' %s", lg); CHECK(sh(c) == 0, "host 日志的失败行也应带现场（errno 原文）"); }
     snprintf(c, sizeof c, "cd %s && chmod 0755 docs/资源包/locked && rm -rf docs/资源包/locked docs/资源包/.incoming/*.tar", T); sh(c);
@@ -446,7 +449,8 @@ int main(void) {
       w = (struct s2a_gate_watch){0};
       CHECK(s2a_import_decide(D, &w, 100, why, sizeof why) == S2A_GATE_BROKEN, "⑫ 不完整、首轮：应直接说明页");
       snprintf(c2, sizeof c2, "printf 12 > '%s/exefs/main'", R); sh(c2);
-      CHECK(s2a_import_decide(D, &w, 103, why, sizeof why) == S2A_GATE_BROKEN, "⑫ 剃刀 #33：不完整、文件变了也不等，仍是说明页");
+      // 维护者 11-17 撤掉「校验不过就整个拒绝」：核心文件在、只是大小和清单不符 → 部分可玩（起局时问玩家仍要启动），不再是说明页
+      CHECK(s2a_import_decide(D, &w, 103, why, sizeof why) == S2A_GATE_READY, "⑫ 核心文件在但大小不符：按部分可玩放行（问玩家），不再拦成说明页");
       snprintf(c2, sizeof c2, "printf 12345 > '%s/exefs/main'", R); sh(c2);
       CHECK(s2a_import_decide(D, &w, 170, why, sizeof why) == S2A_GATE_READY, "⑫ 补齐：应就绪");
       snprintf(D, sizeof D, "%s/imp8", T); mkdir(D, 0755); w = (struct s2a_gate_watch){0};
@@ -497,6 +501,14 @@ int main(void) {
           IS(2, ".applied 等于清单但缺 main.npdm（审计 P2-212）→ 2 待解开（库解开时核对报出缺文件；原先经「新清单没到」判在传、又没有 .transfer → 0 从库里消失，剃刀 #24 / #26）");
           snprintf(qc, sizeof qc, "printf x > '%s/exefs/main.npdm'", qr); sh(qc);
           IS(1, ".applied 等于清单、main.npdm 在 → 1 就绪");
+          // D-YGEC（11-17 iOS 0.5.1）：本体 game.img 被截短——头里写整个文件长 1000、实际只有 136 字节头，.applied 仍等于清单。期望：快判、装机阶段都不判就绪；
+          //   补回完整（头里写 136）后又就绪。改前：照判就绪（1 / 快判 0），点开服务层才报 IMG 没传完
+          snprintf(qc, sizeof qc, "{ printf S2AIMG01; head -c 120 /dev/zero; printf '\\350\\003\\0\\0\\0\\0\\0\\0'; } > '%s/game.img'", qr); sh(qc);
+          IS(2, "D-YGEC：本体 game.img 截短（头写 1000、实际 136）→ 不就绪，落到 2 由库重新解开核对");
+          CHECK(s2a_import_state_game_quick(pd, "0100FD70134FA000") != 0, "D-YGEC：快判也不判就绪（实际 %d）", s2a_import_state_game_quick(pd, "0100FD70134FA000"));
+          snprintf(qc, sizeof qc, "{ printf S2AIMG01; head -c 120 /dev/zero; printf '\\210\\0\\0\\0\\0\\0\\0\\0'; } > '%s/game.img'", qr); sh(qc);
+          IS(1, "D-YGEC：本体补回完整（头写 136、实际 136）→ 1 就绪");
+          snprintf(qc, sizeof qc, "rm '%s/game.img'", qr); sh(qc);
           snprintf(qc, sizeof qc, "rm '%s/exefs/main.npdm'", qr); sh(qc);
           // 推送包齐了只等解开（11-09 根修 Windows 装完游戏库空：推完起 App 解包没成，.applied 仍是推送开头清空的空文件）
           snprintf(qc, sizeof qc, "mkdir -p '%s/.incoming' && head -c 1024 /dev/zero > '%s/.incoming/1_000.tar' && touch '%s/index.tsv' && printf '' > '%s/.applied'", qr, qr, qr, qr); CHECK(sh(qc) == 0, "造待解开夹具失败");
@@ -547,8 +559,7 @@ int main(void) {
       snprintf(c, sizeof c, "test \"$(stat -f %%m '%s/exefs/main.npdm' 2>/dev/null || stat -c %%Y '%s/exefs/main.npdm')\" = \"$(date -j -f %%Y%%m%%d%%H%%M%%S 20200101000000 +%%s 2>/dev/null || date -d 2020-01-01T00:00 +%%s)\"", G, G);
       CHECK(sh(c) == 0, "⑬d 已在且长度对的不重写（修改时间不变）");
       snprintf(c, sizeof c, "printf '\\011' | dd of='%s/game.img' bs=1 seek=8 conv=notrunc 2>/dev/null && rm -rf '%s/exefs' && printf '' > '%s/.applied'", G, G, G); sh(c);
-      CHECK(s2a_pack_apply(D) != 0, "⑬e 格式号 9 → 解包失败");
-      snprintf(c, sizeof c, "grep -q '格式号' '%s/unpack.log'", D); CHECK(sh(c) == 0, "⑬e 解包日志带「格式号」"); 
+      CHECK(s2a_pack_apply(D) == 0, "⑬e 格式号 9（维护者 11-17：版本号不认不再整个拒绝）→ 打一行后按格式 1 照常解开");
       { // ⑬f D-4VAX（本体目录表路径区错位：表里出现「…/0100000000000823/」这种相邻两条路径首尾拼成的一截，原先当文件写 → 每次同一处 -4 EISDIR）：
         //   读表自检，路径以「/」结尾 / 有重复路径 = 本体被改坏 → 不硬解，判 IMG 坏（码 ios_install_img_corrupt），现场写明。期望手写
         // 两条都先用 img.py 造合法表、再在文件里改字节（img.py 自己不写「/」结尾项、也不写重复项，见 pack/img.py toc_bytes）：
@@ -639,8 +650,9 @@ int main(void) {
       snprintf(f4, sizeof f4, "%s/Import Here/新格式.img", D4);   // 英文界面建的导入文件夹名也认
       FILE *o4 = fopen(f4, "wb"); uint8_t h4[8192] = {0}; memcpy(h4, "S2AIMG01", 8); h4[8] = 9; memcpy(h4 + 16, "0100ABCD00000000", 16); uint64_t tot = sizeof h4; memcpy(h4 + 128, &tot, 8);
       CHECK(o4 && fwrite(h4, 1, sizeof h4, o4) == sizeof h4 && !fclose(o4), "造格式号 9 的 IMG");
-      CHECK(s2a_img_scan(D4) == 0 && !access(f4, F_OK) && !strcmp(s2a_img_scan_code(), "ios_install_img_format"),
-            "格式号 9：不挪、给码 ios_install_img_format（实际 %s「%s」）", s2a_img_scan_code(), s2a_img_scan_failure());
+      { int r9 = s2a_img_scan(D4);   // 维护者 11-17：版本号不认不再整个拒收——按格式 1 照常收进库（真读不出的在解包 / 起局时按原因报）
+        CHECK(r9 == 1 && access(f4, F_OK) && !*s2a_img_scan_code(), "格式号 9：照常导入 1 个、文件挪进库、不给拒收码（实际 %d、%s、码「%s」）",
+              r9, access(f4, F_OK) ? "已挪走" : "还在", s2a_img_scan_code()); }
       // ⑭c 着色器更新包（格式号 2，维护者 11-13）：先导完整包（带 shaders/a.metallib = 'x'）并解开；再导更新包（同游戏号同资源包号，a.metallib = 'y'——
       //   同长度：旧的若还在本体目录表里，下次解包会按「长度对就跳过 / 照目录表回写」把它弄回 'x'）。期望手写：
       //   认领 1 个、更新包从导入文件夹删掉、a.metallib = 'y'、本体目录表里不再有 shaders/ 条目、本体头里整长 = 文件长、再次应用后仍是 'y'；
@@ -736,7 +748,8 @@ int main(void) {
         snprintf(c, sizeof c, "python3 '%s/pack/img.py' build - '%s/src/upd.tsv' '%s/放这里导入/错版.img' --gid 0100abcd00000008 --pack-id img999 > /dev/null"
                  " && printf '\002' | dd of='%s/放这里导入/错版.img' bs=1 seek=8 conv=notrunc 2>/dev/null", R, D, D6, D6);
         CHECK(sh(c) == 0, "⑭c 造资源包号不同的更新包");
-        CHECK(s2a_img_scan(D6) == 0 && !strcmp(s2a_img_scan_code(), "ios_import_update_mismatch"), "⑭c 资源包号不同：不收、给码（实际 %s）", s2a_img_scan_code());
+        // 维护者 11-17：配套与否玩家判断不了，替他判——不套用、不报错（无码），记下跳过的文件名给库上说一句；文件原样留在导入文件夹
+        CHECK(s2a_img_scan(D6) == 0 && !s2a_img_scan_code()[0] && !strcmp(s2a_img_scan_skipped(), "错版.img"), "⑭c 资源包号不同：跳过不套、不给错误码、记下跳过（实际码「%s」、跳过「%s」）", s2a_img_scan_code(), s2a_img_scan_skipped());
         snprintf(c, sizeof c, "test -e '%s/放这里导入/错版.img' && rm '%s/放这里导入/错版.img'"
                  " && python3 '%s/pack/img.py' build - '%s/src/upd.tsv' '%s/放这里导入/没本体.img' --gid 0100abcd00000009 --pack-id img901 > /dev/null"
                  " && printf '\002' | dd of='%s/放这里导入/没本体.img' bs=1 seek=8 conv=notrunc 2>/dev/null", D6, D6, R, D, D6, D6);
@@ -817,7 +830,8 @@ int main(void) {
         snprintf(c, sizeof c, "mkdir -p '%s/games/%s/资源包/.incoming' && printf 'hello' > '%s/games/%s/资源包/romfs.img' && printf 'x' > '%s/games/%s/资源包/.incoming/a.tar'", base, gid, base, gid, base, gid); sh(c);
         char root[600]; snprintf(root, sizeof root, "%s/games/%s/资源包", base, gid); chmod(root, 0555);
         char gd[600]; snprintf(gd, sizeof gd, "%s/games/%s", base, gid);
-        int arc = s2a_pack_apply(gd);
+        s2a_pack_repair_self_override = (unsigned)getuid() + 1;   // #569 是「归 root」：测试改不了属主，把自己当外人，补权限不动它
+        int arc = s2a_pack_apply(gd); s2a_pack_repair_self_override = 0;
         CHECK(arc != 0 && strstr(s2a_pack_apply_failure(), "目录 App 写不进") && strstr(s2a_pack_apply_failure(), "资源包") && strstr(s2a_pack_apply_failure(), "权限 555"),
               "资源包目录写不进：解包先报目录与权限（实际 %d「%s」）", arc, s2a_pack_apply_failure());
         CHECK(!strcmp(s2a_pack_apply_code(), "ios_install_dir_unwritable"), "目录写不进给码 ios_install_dir_unwritable（实际 %s）", s2a_pack_apply_code());
@@ -872,10 +886,11 @@ int main(void) {
         sh(c);
         // ⑧e 审计 P1-169 余项（改前读数要的那一款）：新位置已就绪（清单 abc、.applied abc、本体 game.img 在），旧位置 .incoming 里只有一个 1024 字节全零 tar
         //   （空包：只有归档结束块，没有一个条目）、没有清单。期望按规则手写：空包不算新推送 → 新位置已就绪 → 删旧的重复（返回 1）；新位置的 game.img 还在、清单还是 abc
-        snprintf(c, sizeof c, "set -e; printf img > '%s/game.img'; mkdir -p '%s/资源包/.incoming'; head -c 1024 /dev/zero > '%s/资源包/.incoming/1_000.tar'", N1, G1, G1);
+        // game.img 用最小合法 IMG：136 字节头（魔数 S2AIMG01、+128 整个文件长 = 136），快判核长度（D-YGEC）也认它完整
+        snprintf(c, sizeof c, "set -e; { printf S2AIMG01; head -c 120 /dev/zero; printf '\\210\\0\\0\\0\\0\\0\\0\\0'; } > '%s/game.img'; mkdir -p '%s/资源包/.incoming'; head -c 1024 /dev/zero > '%s/资源包/.incoming/1_000.tar'", N1, G1, G1);
         CHECK(sh(c) == 0, "⑮⑧e 造：新位置就绪带 game.img + 旧位置只有一个空 tar");
         int r8e = s2a_pack_migrate_one(G1);
-        snprintf(c, sizeof c, "test \"$(cat '%s/game.img')\" = img && grep -q abc '%s/manifest.json' && test ! -e '%s/资源包'", N1, N1, G1);
+        snprintf(c, sizeof c, "test \"$(head -c 8 '%s/game.img')\" = S2AIMG01 && grep -q abc '%s/manifest.json' && test ! -e '%s/资源包'", N1, N1, G1);
         CHECK(r8e == 1 && sh(c) == 0, "⑮⑧e 空 tar 不算新推送：返回 1（实际 %d）、新位置 game.img 与清单都在、旧位置删掉", r8e);
         snprintf(c, sizeof c, "rm -f '%s/game.img'", N1); sh(c);
         // ⑤ 迁到一半被杀：30 款，子进程迁、几毫秒后 SIGKILL，再迁一次 → 30 款都在新位置、每款 50 个文件一个不少、存档都在
@@ -906,6 +921,21 @@ int main(void) {
       char want[64]; snprintf(want, sizeof want, "属主 uid %u", (unsigned)getuid());
       CHECK(n0 == 0 && b0 == 0, "清点：全是自己的 → 0 个、0 字节（实际 %u、%llu）", n0, (unsigned long long)b0);
       CHECK(n1 == 4 && b1 >= 4096 && strstr(l1, want) && strstr(l1, "4 个"), "清点：把自己当外人 → 4 个、≥4096 字节、读数行带属主（实际 %u、%llu「%s」）", n1, (unsigned long long)b1, l1); }
+    { // 资源包里 App 自己的、缺写权限的目录 / 文件补回属主读写（D-A76N）。期望手写：
+      //   文档根 D（0555）、资源包根 R 下子目录 s（0555）、文件 s/f（0444）、文件 g（0644）→ 按真 uid 补 3 个（D、s、s/f），D / s 变 0755、s/f 变 0644、g 不动；
+      //   补完后在 s 里能建文件；把「自己」当成别的 uid 再跑 → 一个都不补
+      char D[1200], R[1300], s[1400], f[1500], g[1400], nf[1500]; struct stat a, b, cst, d;
+      snprintf(D, sizeof D, "%s/repair_docs", T); snprintf(R, sizeof R, "%s/pack", D); snprintf(s, sizeof s, "%s/s", R);
+      snprintf(f, sizeof f, "%s/f", s); snprintf(g, sizeof g, "%s/g", R); snprintf(nf, sizeof nf, "%s/new", s);
+      snprintf(c, sizeof c, "mkdir -p '%s' && echo x > '%s' && echo y > '%s' && chmod 444 '%s' && chmod 555 '%s' && chmod 555 '%s'", s, f, g, f, s, D); CHECK(sh(c) == 0, "造只读样本");
+      CHECK(s2a_pack_repair_modes_as(D, R, (unsigned)getuid() + 1) == 0, "补权限：属主不是自己 → 一个都不动");
+      unsigned n = s2a_pack_repair_modes_as(D, R, (unsigned)getuid());
+      stat(D, &a); stat(s, &b); stat(f, &cst); stat(g, &d);
+      CHECK(n == 3, "补权限：补 3 个（实际 %u）", n);
+      CHECK((a.st_mode & 0777) == 0755 && (b.st_mode & 0777) == 0755 && (cst.st_mode & 0777) == 0644 && (d.st_mode & 0777) == 0644,
+            "补权限：D / s 0755、s/f 0644、g 不动 0644（实际 %o %o %o %o）", a.st_mode & 0777, b.st_mode & 0777, cst.st_mode & 0777, d.st_mode & 0777);
+      FILE *w = fopen(nf, "w"); CHECK(w != NULL, "补完后能在原只读目录里建文件"); if (w) fclose(w);
+      snprintf(c, sizeof c, "chmod -R u+w '%s' 2>/dev/null; rm -rf '%s'", D, D); sh(c); }
 zst_cases(T);
 printf("%s t_pack_apply：%d 处不符\n", bad ? "✗" : "✓", bad); return bad != 0;
 }

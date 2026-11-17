@@ -19,6 +19,7 @@ __attribute__((weak)) int s2a_ui_zh(void) { return 1; }   // 界面语言（s2a_
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+static int img_whole_or_absent(const char *root);   // 本体 game.img 在就核长度（定义在游戏库快判旁）
 #include <string.h>
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
@@ -165,7 +166,8 @@ static int img_toc_file(const char *p, img_ent **out, size_t *n) {   // 同上�
     int fd = open(p, O_RDONLY); if (fd < 0) return 1;
     uint8_t h[136]; struct stat st; int rc = -10;
     if (pread(fd, h, sizeof h, 0) != (ssize_t)sizeof h || memcmp(h, "S2AIMG01", 8) || fstat(fd, &st)) goto out;
-    uint32_t fmt; memcpy(&fmt, h + 8, 4); if (fmt != 1) { rc = -11; goto out; }
+    uint32_t fmt; memcpy(&fmt, h + 8, 4);
+    if (fmt != 1) LOG("资源包：game.img 格式号 %u 这个 S2Arm 不认识（只认 1），按格式 1 照常读；读不出来再报（维护者 11-17：校验不过不整个拒绝）", fmt);
     uint64_t to, tl, total; memcpy(&to, h + 112, 8); memcpy(&tl, h + 120, 8); memcpy(&total, h + 128, 8);
     if (total != (uint64_t)st.st_size || tl < 8 || tl > (64u << 20) || to + tl > total) goto out;
     uint8_t *t = malloc(tl); if (!t || pread(fd, t, tl, (off_t)to) != (ssize_t)tl) { free(t); goto out; }
@@ -375,7 +377,9 @@ static unsigned index_check_core(const char *root, char *ex, size_t exn, int pro
         snprintf(p, sizeof p, "%s/%s", root, line);
         int gone = stat(p, &st) != 0;
         if (gone || !S_ISREG(st.st_mode) || st.st_size != want) { if (!miss++ && exn) snprintf(ex, exn, "%s（%s）", line, gone ? "不在" : !S_ISREG(st.st_mode) ? "不是文件" : "大小不符");
-            if (core && s2a_pack_core_path(line)) (*core)++; }
+            // 只有真缺（不在 / 不是文件）才算核心缺件挡起局；在、只是大小和清单不符的按「部分可玩」：解包记 .partial、起局问玩家仍要启动、下次推送照补
+            //   （维护者 11-17：「校验不过就整个拒绝」一律撤掉）
+            if (core && (gone || !S_ISREG(st.st_mode)) && s2a_pack_core_path(line)) (*core)++; }
     }
     if (ferror(f)) { if (exn) snprintf(ex, exn, "index.tsv 读失败：%s", strerror(errno)); miss++; if (core) (*core)++; }
     fclose(f); return miss;
@@ -433,6 +437,32 @@ const char *s2a_install_code(int rc, int err, int truncated, int from_img) {
 }
 const char *s2a_pack_apply_code(void) { return g_apply_code; }
 // 返回进程退出码（0 成功）；docs = Documents 目录
+// ---- 资源包里「App 自己的、但缺写权限」的目录 / 文件补回属主读写（D-A76N，11-17 测试设备复现）：
+//   电脑端把 0555 的目录拷进手机后，那条目录仍归 App（uid 501）但没有写位：afc 在里面建 / 删 / 覆盖全被拒（Permission denied），devicectl 却写得进，
+//   玩家看到「删掉重写也写不进」。属主是自己就能 chmod 回来，不必删除重装；归别的用户的（#569，root）不动，照旧走下面的「目录 App 写不进」。
+//   只补属主位（目录 u+rwx、普通文件 u+rw），不碰组 / 其他位。docs（本款文档根）只看自己这一层，资源包根整棵查。返回补了几个
+static unsigned g_repair_n, g_repair_self;
+static int repair_one(const char *p, const struct stat *st, int flag, struct FTW *w) {
+    (void)w; if (flag == FTW_NS || st->st_uid != g_repair_self) return 0;
+    mode_t m = st->st_mode & 07777, want = S_ISDIR(st->st_mode) ? (m | S_IRWXU) : S_ISREG(st->st_mode) ? (m | S_IRUSR | S_IWUSR) : m;
+    if (want != m && !chmod(p, want)) g_repair_n++;
+    return 0;
+}
+#ifdef S2A_UNIT_TEST
+unsigned s2a_pack_repair_self_override;   // 单测：非 0 时把它当「App 自己」（模拟 #569 条目归别的用户：测试进程改不了属主，只能把自己当外人）
+#endif
+static unsigned repair_self(void) {
+#ifdef S2A_UNIT_TEST
+    if (s2a_pack_repair_self_override) return s2a_pack_repair_self_override;
+#endif
+    return (unsigned)getuid();
+}
+unsigned s2a_pack_repair_modes_as(const char *docs, const char *root, unsigned self_uid) {
+    g_repair_n = 0; g_repair_self = self_uid; struct stat st;
+    if (!lstat(docs, &st) && S_ISDIR(st.st_mode)) repair_one(docs, &st, FTW_D, NULL);
+    if (!lstat(root, &st) && S_ISDIR(st.st_mode)) nftw(root, repair_one, 32, FTW_PHYS);
+    return g_repair_n;
+}
 int s2a_pack_apply(const char *docs) {
     char root[2048], inc[2100], logp[2100]; s2a_pack_root(root, sizeof root, docs); snprintf(inc, sizeof inc, "%s/.incoming", root); snprintf(logp, sizeof logp, "%s/unpack.log", docs);
     if (pack_in_bundle(root, "解开资源包")) return -12;   // 同「目录写不进」的码
@@ -440,6 +470,7 @@ int s2a_pack_apply(const char *docs) {
     //   原先建不了日志、解开了也没有完成行，电脑端（tools/push_pack.py 只认日志完成行）白等 180 秒后误报「解包没有开始」。建不了时 mkdirs 记的现场由下一行清掉，失败照旧走下面「unpack.log 建不了」那句
     mkdirs(logp);
     uint64_t t0 = now_ns(); unsigned ntar = 0, nf = 0; uint64_t nb = 0; int rc = 0, from_img = 0; char what[2300] = ""; g_fail_errno = 0; g_untar_trunc = 0; g_untar_err[0] = 0;
+    { unsigned fixed = s2a_pack_repair_modes_as(docs, root, repair_self()); if (fixed) LOG("资源包：%u 个目录 / 文件是 App 自己的但缺写权限，已补回属主读写（D-A76N）", fixed); }
     // 本款目录 / 资源包 / 待解包目录 App 写不进（#569：玩家机上这一串归 root、0755，App 是 501）：一个包都不解，先把真实原因说清楚，
     //   不再去解包、报一句含糊的「解 xxx.tar」。不迁移（App 改不了删不掉，只有删除重装能清）：给码 ios_install_dir_unwritable，界面说「先导出存档再重装」
     { const char *dirs[] = {docs, root, inc}; struct stat ds;
@@ -477,6 +508,8 @@ int s2a_pack_apply(const char *docs) {
     //   库却一直判「等解开」、每秒重解一次、失败原因为空（#1059 D-PB7S：installing → failed(reason nil) 循环、Play 被拒）。两边判据合成一条：这里核不过就按缺文件失败、说清缺的是它
     if (!rc) { char np[2100]; struct stat ns; snprintf(np, sizeof np, "%s/exefs/main.npdm", root);
         if (stat(np, &ns) || !S_ISREG(ns.st_mode) || ns.st_size <= 0) { rc = -8; snprintf(what, sizeof what, "核对：程序描述 exefs/main.npdm %s，不记已应用，请回电脑重新装到设备", stat(np, &ns) ? "不在" : !S_ISREG(ns.st_mode) ? "不是文件" : "是空的"); } }
+    // 本体 game.img 在就核长度（D-YGEC：本体只剩 5 MB 也照写 .applied，游戏库判就绪、点开服务层才报没传完）：同快判 img_whole_or_absent，核不过按缺文件失败
+    if (!rc && !img_whole_or_absent(root)) { rc = -8; snprintf(what, sizeof what, "核对：本体 game.img 不完整（实际长度与头里写的整个文件长不符），不记已应用，请回电脑重新装到设备"); }
     if (!rc) { unsigned nd = 0; uint64_t db = 0; int r2 = prune(root, &nd, &db);   // 清旧文件：资源包下不在 index.tsv 里的（旧版分卷等）
         if (r2) { rc = r2; snprintf(what, sizeof what, "清旧文件（读 index.tsv）"); }
         else if (nd) log_line(logp, "进度：清掉不在 index.tsv 里的旧文件 %u 个 %llu MB", nd, (unsigned long long)(db >> 20)); }
@@ -558,6 +591,7 @@ int s2a_import_state(const char *docs) {
     unsigned core = 0; g_pack_bad = (int)index_check_core(root, g_pack_first, sizeof g_pack_first, 0, &core);
     if (g_pack_bad && !core) { LOG("资源导入：缺 %d 个非必需文件（如 %s），部分可玩：玩家确认后照玩", g_pack_bad, g_pack_first); return S2A_IMPORT_PARTIAL; }
     if (g_pack_bad) { LOG("资源导入：资源包不完整，缺 / 不对 %d 个文件（如 %s，其中核心 %u 个）", g_pack_bad, g_pack_first, core); return S2A_IMPORT_BROKEN; }
+    if (!img_whole_or_absent(root)) { snprintf(g_pack_first, sizeof g_pack_first, "game.img"); g_pack_bad = 1; return S2A_IMPORT_BROKEN; }   // D-YGEC：本体截短 = 资源不完整，不起局
     if (img_needs_apply(root)) return S2A_IMPORT_PENDING;   // game.img 到了、小文件还没解：先解开再就绪
     return S2A_IMPORT_READY;
 }
@@ -675,6 +709,8 @@ static char g_img_err[600], g_img_code[48];
 // 这次认领里不带着色器库的那个文件名（最近一个；空 = 没有）：游戏库上提示一句怎么换（ios/app.m img_scan_report；D-QW2Q / D-9ZF9：自签玩家放了资源包文件夹里的 game.img）
 static char g_img_noshaders[256];
 const char *s2a_img_scan_noshaders(void) { return g_img_noshaders; }
+static char g_img_skipped[256];   // 这次扫描跳过（和当前游戏版本不配套）的着色器更新包文件名（空串 = 没有）
+const char *s2a_img_scan_skipped(void) { return g_img_skipped; }
 const char *s2a_img_scan_failure(void) { return g_img_err; }
 // 认领失败给码（同 s2a_install_code）：格式号不认识 = ios_install_img_format，挪 / 写时空间满 = ios_install_no_space，其余 ios_import_img_failed
 const char *s2a_img_scan_code(void) { return g_img_code; }
@@ -769,8 +805,11 @@ static int img_update(const char *proc_docs, const char *path, const uint8_t *h,
     snprintf(base, sizeof base, "%s/game.img", root);
     uint8_t bh[136]; int bfd = open(base, O_RDONLY); int ok = bfd >= 0 && pread(bfd, bh, sizeof bh, 0) == (ssize_t)sizeof bh && !memcmp(bh, "S2AIMG01", 8); if (bfd >= 0) close(bfd);
     if (!ok) { snprintf(g_img_err, sizeof g_img_err, "%s 是着色器更新包，手机上还没有这款游戏（%s）的本体：先放导出文件夹里这款的完整 .img", fn, gid); return -13; }
+    // 配的本体不是手机上这一版（维护者 11-17：玩家自己判断不了配不配套，替他判——不套用、不报错，游戏照常玩，说一句已跳过）：
+    //   返回 2 = 跳过（不算认领、不算失败），文件原样留在导入文件夹；库上提示一次（s2a_img_scan_skipped，app.m img_scan_report）
     if (memcmp(bh + 32, h + 32, 64)) { char bp[65]; memcpy(bp, bh + 32, 64); bp[64] = 0;
-        snprintf(g_img_err, sizeof g_img_err, "%s 配的本体（资源包号 %.12s）不是手机上这一版（%.12s）：按电脑上同一次导出的完整 .img 和更新包一起用", fn, pid, bp); return -14; }
+        LOG("资源导入：%s 配的本体（资源包号 %.12s）不是手机上这一版（%.12s），和当前游戏版本不配套，已跳过、不套用", fn, pid, bp);
+        snprintf(g_img_skipped, sizeof g_img_skipped, "%s", fn); return 2; }
     // 本体刚认领、游戏库还没解开（.applied 不是这份清单）：先不套。解开时要按目录表整理资源包目录，这边同时往 shaders/ 写派生件会被删掉、
     //   报「写 … 失败：No such file or directory」（诊断#fe33c2 D-33EH：完整 .img 与更新包一起放，更新包在本体解开途中被套）。返回 1 = 原样留着，下次扫描（回前台 / 重新检查）再套
     if (img_needs_apply(root)) { LOG("资源导入：%s 等本体解开后再套（本体还没解开）", fn); return 1; }
@@ -866,7 +905,7 @@ static int img_place(const char *proc_docs, const char *path, int pass) {   // 0
         int bad = ufd < 0 || upd_read_toc(ufd, uto, utl, &ue, &un) || !un; if (ufd >= 0) close(ufd); if (ue) upd_free(ue, un); if (bad) return 1; }
     if ((fmt == 2) != (pass == 1)) return 1;
     if (fmt == 2) return img_update(proc_docs, path, h, total);   // 着色器更新包
-    if (fmt != 1) { snprintf(g_img_err, sizeof g_img_err, "%s 是格式号 %u 的资源包，这个 S2Arm 只认 1、2：请更新 S2Arm", path, fmt); return -11; }
+    if (fmt != 1) LOG("导入：%s 是格式号 %u 的资源包，这个 S2Arm 只认 1、2，按格式 1 照常导入；读不出来再报（维护者 11-17：校验不过不整个拒绝）", path, fmt);
     char gid[17], pid[65]; memcpy(gid, h + 16, 16); gid[16] = 0; memcpy(pid, h + 32, 64); pid[64] = 0;
     for (int i = 0; i < 16; i++) if (!((gid[i] >= '0' && gid[i] <= '9') || (gid[i] >= 'A' && gid[i] <= 'F'))) { snprintf(g_img_err, sizeof g_img_err, "%s 头里的游戏号不对", path); return -10; }
     if (!pid[0]) snprintf(pid, sizeof pid, "img-%llx", (unsigned long long)total);   // 没写资源包号的（老工具）：按长度给一个，至少换了文件能触发重新应用
@@ -921,7 +960,7 @@ static int img_scan_dir(const char *proc_docs, const char *dir, int depth, int p
 const char *const s2a_img_import_dirs[2] = {"放这里导入", "Import Here"};
 int s2a_img_scan(const char *proc_docs) {   // 回前台 / 「重新检查」可能同时调：一把锁串起来，免得两边抢着挪同一个文件
     static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
-    pthread_mutex_lock(&mu); int placed = 0; g_img_err[0] = 0; g_img_code[0] = 0; g_img_noshaders[0] = 0;
+    pthread_mutex_lock(&mu); int placed = 0; g_img_err[0] = 0; g_img_code[0] = 0; g_img_noshaders[0] = 0; g_img_skipped[0] = 0;
     for (int pass = 0; pass < 2; pass++)   // 先完整包、后更新包（img_place）
         for (int i = 0; i < 2; i++) { char dir[2200]; snprintf(dir, sizeof dir, "%s/%s", proc_docs, s2a_img_import_dirs[i]); img_scan_dir(proc_docs, dir, 0, pass, &placed); }
     pthread_mutex_unlock(&mu); return placed;
@@ -1027,13 +1066,24 @@ int s2a_import_state_game(const char *proc_docs, const char *gid) {
 // 游戏库快判：解包成功时写的 .applied 等于当前清单 = 这份已核对过每个文件，直接算就绪。
 //   库界面在主线程、每次回前台都判，逐文件 stat 一款 10 万文件的游戏要 2.5 秒以上（冷缓存更久，玩家「每次打开都要等」）；
 //   完整核对仍在点 Play 后的导入闸门（s2a_import_state）做
+// 本体 game.img 在就核长度（D-YGEC 11-17 iOS 0.5.1：本体只剩 5 MB、头里写 3.47 GB，.applied 照样等于清单，快判说就绪，点开服务层报「IMG 没传完」崩）：
+//   头里 128 起的「整个文件长」不等于实际长度 = 没传完 / 被截断 → 不算就绪（同 init_fail.c 的判据）。只读 136 字节头；没有 game.img（散文件老包）照旧不管
+static int img_whole_or_absent(const char *root) {
+    char p[2300]; snprintf(p, sizeof p, "%s/game.img", root);
+    int fd = open(p, O_RDONLY); if (fd < 0) return errno == ENOENT;
+    uint8_t h[136]; struct stat st = {0}; uint64_t total = 0;
+    int ok = pread(fd, h, sizeof h, 0) == (ssize_t)sizeof h && !memcmp(h, "S2AIMG01", 8) && !fstat(fd, &st) && (memcpy(&total, h + 128, 8), total == (uint64_t)st.st_size);
+    close(fd);
+    if (!ok) { static int said; if (said++ < 4) LOG("【红】资源包：%s 不完整（实际 %lld 字节，头里写 %llu 字节，或头读不出）：不算就绪，游戏库显示「需要游戏数据」", p, (long long)st.st_size, (unsigned long long)total); }
+    return ok;
+}
 static int applied_ready(const char *root) {   // 资源包目录 root：.applied 等于清单的 index_sha256、程序描述在
     char mf[2300], ap[2300], np[2300], want[200], got[200] = ""; struct stat ns;
     snprintf(mf, sizeof mf, "%s/manifest.json", root); snprintf(ap, sizeof ap, "%s/.applied", root); snprintf(np, sizeof np, "%s/exefs/main.npdm", root);
     FILE *f = fopen(ap, "r");
     if (f) { size_t k = fread(got, 1, sizeof got - 1, f); fclose(f); got[k] = 0; got[strcspn(got, "\r\n")] = 0; }
     // 快判也核程序描述 exefs/main.npdm 在、是普通文件（审计 P2-212：只认 .applied 时删掉它库里仍显示可玩，点开始才报缺）；只 stat 一个文件，不逐文件核
-    return got[0] && !manifest_sha(mf, want, sizeof want) && !strcmp(got, want) && !stat(np, &ns) && S_ISREG(ns.st_mode) && ns.st_size > 0;
+    return got[0] && !manifest_sha(mf, want, sizeof want) && !strcmp(got, want) && !stat(np, &ns) && S_ISREG(ns.st_mode) && ns.st_size > 0 && img_whole_or_absent(root);
 }
 // 部分可玩（v0.3.1）：解包时只缺非核心文件写的 .partial 第一行 = 当前清单 sha、程序描述在
 static int partial_ready(const char *root) {
@@ -1041,7 +1091,7 @@ static int partial_ready(const char *root) {
     snprintf(mf, sizeof mf, "%s/manifest.json", root); snprintf(pp, sizeof pp, "%s/.partial", root); snprintf(np, sizeof np, "%s/exefs/main.npdm", root);
     FILE *f = fopen(pp, "r"); if (!f) return 0;
     size_t k = fread(got, 1, sizeof got - 1, f); fclose(f); got[k] = 0; got[strcspn(got, "\r\n")] = 0;
-    return got[0] && !manifest_sha(mf, want, sizeof want) && !strcmp(got, want) && !stat(np, &ns) && S_ISREG(ns.st_mode) && ns.st_size > 0;
+    return got[0] && !manifest_sha(mf, want, sizeof want) && !strcmp(got, want) && !stat(np, &ns) && S_ISREG(ns.st_mode) && ns.st_size > 0 && img_whole_or_absent(root);
 }
 int s2a_import_state_game_quick(const char *proc_docs, const char *gid) {
     if (proc_docs && *proc_docs && gid && *gid && !strchr(gid, '/') && gid[0] != '.') {

@@ -237,8 +237,9 @@ namespace Ryujinx.Audio.Backends.Apple
                     }
             }
 
-            // S2Arm 11-07: player builds (S2A_DEV_FACILITIES=0, exported by the native host from Info.plist S2ADevFacilities) do not start the 10 s reporter thread
-            if (Environment.GetEnvironmentVariable("S2A_DEV_FACILITIES") != "0" && Interlocked.Exchange(ref _reporterStarted, 1) == 0)
+            // S2Arm 11-17: the 10 s reporter is a log-only diagnostic reading (device peak / frames handed over), started in player builds too;
+            //   remote triage of "no sound" needs it. It no longer follows the developer-facilities switch S2A_DEV_FACILITIES
+            if (Interlocked.Exchange(ref _reporterStarted, 1) == 0)
             {
                 new Thread(ReporterLoop) { IsBackground = true, Name = "S2A.AudioDiag" }.Start();
             }

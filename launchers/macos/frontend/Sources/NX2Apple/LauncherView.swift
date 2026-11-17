@@ -334,13 +334,20 @@ struct LauncherView: View {
                 }
                 .controllerButtonStyle(ConsoleIconButtonStyle()).disabled(model.busy)
                 .help(loc.t("s2arm.action.import")).controllerID("top.import")
+                // 设置按钮角标只在「缺东西、要处理」时挂红点（#1426：原先就绪时常驻绿点，玩家当成未读，点进去找不到新内容）；
+                //   就绪 / 检查中都不挂，「环境已就绪」在设置页里看。悬停与无障碍在缺东西时说清是什么事
                 Button { model.showEnvironment = true } label: {
                     Image(systemName: "gearshape").overlay(alignment: .topTrailing) {
-                        Circle().fill(environmentColor).frame(width: 5, height: 5).offset(x: 5, y: -3)
+                        if environmentNeedsAction {
+                            Circle().fill(LauncherPalette.danger).frame(width: 5, height: 5).offset(x: 5, y: -3)
+                        }
                     }
                 }
                 .controllerButtonStyle(ConsoleIconButtonStyle())
-                .help(txt("nav.settings")).accessibilityLabel(txt("nav.settings")).controllerID("top.settings")
+                .help(environmentNeedsAction ? txt("nav.settings") + "：" + loc.t("s2arm.env.missing") : txt("nav.settings"))
+                .accessibilityLabel(txt("nav.settings"))
+                .accessibilityValue(environmentNeedsAction ? loc.t("s2arm.env.missing") : "")
+                .controllerID("top.settings")
                 // 故障报修（11-13）：任何页面同一位置（顶栏最右，Windows 同位），点开就是全局「上传给开发者」弹窗（不针对某款，
                 //   作业层自动附最近一次失败的错误摘要）；报错页的指引 ReportHint 指的就是它
                 Button { model.diagUploadFor = "" } label: {
@@ -424,13 +431,8 @@ struct LauncherView: View {
 
     private struct OptionsTarget: Identifiable { let id: String }
 
-    private var environmentColor: Color {
-        switch model.environmentState {
-        case .unknown: return LauncherPalette.unbuilt
-        case .ready, .readyMac: return LauncherPalette.ready   // readyMac：Mac 上能玩，只差打 iPhone 包的项（环境检查页里单列）
-        case .missing: return LauncherPalette.danger
-        }
-    }
+    /// 环境缺东西、要玩家处理（顶栏设置按钮挂红点）。readyMac（Mac 上能玩、只差打 iPhone 包的项）照旧算就绪、不挂：只玩 Mac 的玩家不该一直看到提醒，缺的项在设置页单列
+    private var environmentNeedsAction: Bool { model.environmentState == .missing }
 
     /// 顶部公告条（v0.2.3）：醒目的琥珀色底、整条宽，压在内容上方但不盖住任何按钮；× 关掉后同一条不再出现。文字取自 notice.json，代码里不写公告内容
     @ViewBuilder private var noticeBar: some View {

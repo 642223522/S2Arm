@@ -22,6 +22,7 @@ set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); bad=0
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
 mkdir -p $T/repo/pack $T/repo/tools $T/repo/graphics/widen/scan $T/roots $T/widen $T/data/g/romfs/Layout
 mkdir -p $T/repo/graphics/nvn/tools; cp "$H/graphics/nvn/tools/romfs_list.py" $T/repo/graphics/nvn/tools/; cp "$H/pack/roots.sh" "$H/pack/romfs_img.py" $T/repo/pack/; cp "${STAGE:-$H/pack/stage_uilayout.sh}" $T/repo/pack/stage_uilayout.sh; cp "$H/tools/clonedir.py" "$H/tools/plock.sh" "$H/tools/flock_hold.py" $T/repo/tools/
+mkdir -p "$T/repo/tools"; cp "$H/tools/pool_workers.py" "$T/repo/tools/"   # romfs_list / pak_crypto 经它取核数（#1332：核数唯一来源）
 gen() { cat > $T/repo/graphics/widen/scan/ui_lyt.py <<EOF
 import os, sys
 if os.environ.get('FAKE_RACE') == '1':   # 并行阶段在生成期间提交：新现行 g@race，起跑时的版本删掉（同 pack/roots.sh 的「只留现行 + 上一版」）
