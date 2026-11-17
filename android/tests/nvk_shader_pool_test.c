@@ -854,8 +854,9 @@ static void graphics_ubo_handle_fact_test(void) {
     memset(ubo_mem, 0, sizeof ubo_mem); ubo_mem[92] = 78;   // 池起点 0：句柄低 20 位就是贴图号
     rp_S.ubo[1][0].addr = (uint64_t)(uintptr_t)ubo_mem; rp_S.ubo[1][0].size = sizeof ubo_mem;
     struct rp_shader_req q = {0}; q.prim = 4; const struct rp_prog *p = NULL;
-    compiler_calls = 0;
+    compiler_calls = 0; nvn_unimpl_reset();
     CHECK(!rp_shader_resolve(&q, &p) && p && compiler_calls == 2, "missing c3 handle fact is learned and compiled in the same draw: calls=%d", compiler_calls);
+    CHECK(nvn_unimpl_count("shader", "compile_failed") == 0, "a rejection that taught a coordinate is a learning step, not an unimplemented compile_failed (count=%llu)", (unsigned long long)nvn_unimpl_count("shader", "compile_failed"));
     CHECK(ubo_fact_in_request("2d", 1), "retry request carries (fs,92,c3) fact from texture 78");
     const struct rp_prog *first = p;
     CHECK(!rp_shader_resolve(&q, &p) && p == first && compiler_calls == 2, "same UBO texture takes the fast path");
@@ -868,13 +869,16 @@ static void graphics_ubo_handle_fact_test(void) {
     rp_S.ubo[1][0].size = 92 * 4;
     int before = compiler_calls; captured[0] = 0;
     CHECK(rp_shader_resolve(&q, &p) == -1 && compiler_calls == before && !captured[0], "unreadable handle word reuses the fact-less failure (calls=%d)", compiler_calls - before);
+    CHECK(nvn_unimpl_count("shader", "ubo_handle_unreadable") >= 1, "unreadable handle word is reported by name, not skipped silently");
     // 换局清表：同样的输入要重新学（两次编译）
     rp_shader_reset(); rp_S.ubo[1][0].size = sizeof ubo_mem; ubo_mem[92] = 78; compiler_calls = 0;
     CHECK(!rp_shader_resolve(&q, &p) && p && compiler_calls == 2, "session reset forgets learned coordinates (calls=%d)", compiler_calls);
     // 反例：c2 / 组合槽坐标的缺事实不进这张表（不当成用户常量缓冲去读）
     rp_shader_reset(); fake_ubo_missing = 0; fake_gs_success = 0; compiler_calls = 0;
     fake_compile_error = "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"MISSING_FACT\",\"message\":\"QuerySamplerType has no source (stage=fs,handle=92,cbufSlot=2)\"}";
+    nvn_unimpl_reset();
     CHECK(rp_shader_resolve(&q, &p) == -1 && compiler_calls == 1, "c2 missing fact is not retried as a user UBO handle (calls=%d)", compiler_calls);
+    CHECK(nvn_unimpl_count("shader", "compile_failed") == 1, "a rejection nothing can be learned from is still reported as compile_failed (count=%llu)", (unsigned long long)nvn_unimpl_count("shader", "compile_failed"));
     fake_compile_error = NULL; fake_gs_result_mode = 0; separate_fixture = 0; fake_reg_changes = 1;
     memset(&rp_S.ubo[1][0], 0, sizeof rp_S.ubo[1][0]);
     rp_shader_reset(); rp_state_reset();
