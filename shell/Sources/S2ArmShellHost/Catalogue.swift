@@ -66,7 +66,8 @@ public struct Catalogue: Equatable, Sendable {
     /// 列进来（单个对象，字段同 App 包清单条目，另有 dir）。图 / 补丁表都相对版本目录 program/<dir>/（没写 dir = program/）。
     /// 同一个号 App 包清单里也有：以程序包这条为准（换上的是这一版）。游戏号不合规的目录、清单读不了 / 不是这一款的都跳过并记问题
     /// legacy（只装壳的通用 App）：0.5.x 老玩家覆盖装上通用 App 后，老款的资源包还在 <根>/<号>/资源包、App 包里没有它、也还没有程序包——
-    /// 照样列出来，卡片「在电脑上更新」（.needsGameUpdate；电脑总控台「更新所选」补程序包，资源不重推），不让玩家以为游戏丢了。名字暂用游戏号
+    /// 照样列出来，卡片「在电脑上更新」（.needsGameUpdate；电脑总控台「更新所选」补程序包，资源不重推），不让玩家以为游戏丢了。
+    /// 名字取资源包自带的 资源包/ctl/control.nacp（同电脑端 install.phone_game_name：简中 14，没有取美式英语 0），读不到用游戏号
     mutating func merge(programs root: URL, legacy: Bool = false) {
         guard let ids = try? FileManager.default.contentsOfDirectory(atPath: root.path) else { return }
         for id in ids.sorted() where isTitleID(id) {
@@ -75,7 +76,8 @@ public struct Catalogue: Equatable, Sendable {
                 var isDir: ObjCBool = false
                 if legacy, !tiles.contains(where: { $0.id == id }),
                    FileManager.default.fileExists(atPath: root.appendingPathComponent(id).appendingPathComponent("资源包").path, isDirectory: &isDir), isDir.boolValue {
-                    tiles.append(GameTile(id: id, title: id, state: .needsGameUpdate))
+                    let pack = root.appendingPathComponent(id).appendingPathComponent("资源包")
+                    tiles.append(GameTile(id: id, title: Catalogue.nacpTitle(pack.appendingPathComponent("ctl/control.nacp")) ?? id, state: .needsGameUpdate))
                     problems.append("\(id) 只有资源包、没有程序包（0.5.x 老款），列为「在电脑上更新」")
                 }
                 continue
@@ -87,6 +89,17 @@ public struct Catalogue: Equatable, Sendable {
             if let i = tiles.firstIndex(where: { $0.id == id }) { tiles[i] = t } else { tiles.append(t) }
             if let b = e.banner, !b.isEmpty { bannerURLs[id] = b.hasPrefix("/") ? URL(fileURLWithPath: b) : base.appendingPathComponent(b) }
         }
+    }
+
+    /// control.nacp 的标题：16 组语言，每组 0x300 字节、前 0x200 是 UTF-8 名字（同 pack/ns2_dump.py nacp_title）。简中（14）优先，没有取美式英语（0）
+    static func nacpTitle(_ url: URL) -> String? {
+        guard let n = try? Data(contentsOf: url) else { return nil }
+        for lang in [14, 0] where n.count >= lang * 0x300 + 0x200 {
+            let raw = n.subdata(in: lang * 0x300 ..< lang * 0x300 + 0x200)
+            let name = String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+            if !name.isEmpty { return name }
+        }
+        return nil
     }
 
     static func tile(_ e: CatalogueEntry, base: URL, sgradeDirs: [URL]) -> GameTile {

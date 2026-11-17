@@ -41,7 +41,7 @@ import ShellUI
 }
 
 // 0.5.x 老玩家覆盖装上通用 App（开发甲 11-17 迁移路径）：只装壳的 App 包清单 games 为空；资源根下 E 只有 资源包/（没有程序包）、F 有程序包、
-//   G 只有 program/ 空目录没有清单也没有资源包 → 列 E（「在电脑上更新」、名字暂用游戏号）、F（可玩）；G 不列。
+//   G 只有 program/ 空目录没有清单也没有资源包 → 列 E（「在电脑上更新」、名字取 control.nacp 简中）、F（可玩）、H（只有英文名）；G 不列。
 //   App 包清单里有款的老容器（0.5.x 行为）：同样只有资源包的 H 不额外列出（开关关着行为不变）
 @Test func legacyPackOnlyGamesListedAsUpdateOnComputer() throws {
     let fm = FileManager.default
@@ -52,11 +52,19 @@ import ShellUI
         try fm.createDirectory(at: root.appendingPathComponent(d), withIntermediateDirectories: true)
     }
     try Data(#"{"title_id":"0100000000060000","name":"F"}"#.utf8).write(to: root.appendingPathComponent("0100000000060000/program/catalogue.json"))
+    var nacp = Data(count: 16 * 0x300); nacp.replaceSubrange(14 * 0x300 ..< 14 * 0x300 + 6, with: Data("老游戏".utf8.prefix(6)))   // 简中名「老游」（UTF-8 前 6 字节）
+    nacp.replaceSubrange(0 ..< 3, with: Data("Old".utf8))
+    try fm.createDirectory(at: root.appendingPathComponent("0100000000050000/资源包/ctl"), withIntermediateDirectories: true)
+    try nacp.write(to: root.appendingPathComponent("0100000000050000/资源包/ctl/control.nacp"))
+    var en = Data(count: 16 * 0x300); en.replaceSubrange(0 ..< 3, with: Data("Old".utf8))
+    try fm.createDirectory(at: root.appendingPathComponent("0100000000080000/资源包/ctl"), withIntermediateDirectories: true)
+    try en.write(to: root.appendingPathComponent("0100000000080000/资源包/ctl/control.nacp"))
     let shell = tmp.appendingPathComponent("shell.json"); try Data(#"{"schema":1,"shell_id":"x","games":[]}"#.utf8).write(to: shell)
     let c = Catalogue.load(path: shell.path, programRoot: root)
     #expect(c.tiles.map(\.id) == ["0100000000050000", "0100000000060000", "0100000000080000"], "列 E、F、H（实际 \(c.tiles.map(\.id))）")
     let e = c.tiles.first { $0.id == "0100000000050000" }
-    #expect(e?.state == .needsGameUpdate && e?.title == "0100000000050000", "只有资源包的款：「在电脑上更新」、名字是游戏号")
+    #expect(e?.state == .needsGameUpdate && e?.title == "老游", "只有资源包的款：「在电脑上更新」、名字取 control.nacp 简中（实际 \(e?.title ?? "nil")）")
+    #expect(c.tiles.first { $0.id == "0100000000080000" }?.title == "Old", "没有简中名取美式英语")
     #expect(c.tiles.first { $0.id == "0100000000060000" }?.state == .playable, "有程序包的照常可玩")
     let old = tmp.appendingPathComponent("old.json"); try Data(#"{"schema":1,"shell_id":"x","games":[{"title_id":"0100000000050000","name":"E"}]}"#.utf8).write(to: old)
     let o = Catalogue.load(path: old.path, programRoot: root)
