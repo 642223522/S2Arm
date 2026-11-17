@@ -34,6 +34,14 @@ struct LineSplitter {
     }
 }
 
+/// 作业是谁触发的（给 SystemJobProcessRunner 看的环境变量，JobClient.start 按 automatic 写）：
+///   玩家点出来的（出包、推到 iPhone）要快，持有防降级活动；打开启动器时自动起的后台任务（准备更新 iPhone、重出着色器库）要让路——
+///   按 utility 低优先级跑、不开活动（11-17 维护者：玩家在用电脑时它们该让路，#1442 自动任务把整台 Mac 压垮）
+public enum JobTrigger {
+    public static let environmentKey = "S2A_JOB_TRIGGER"
+    public static let automatic = "auto"
+}
+
 /// 真的：Foundation.Process + 两条管道。
 public final class SystemJobProcessRunner: JobProcessRunner {
     /// 作业是玩家点了按钮在等的事（出包、装机推送）：跑着的时候不让系统把启动器降成后台（App Nap）。原先什么都没做：启动器隐藏 / 窗口被挡住
@@ -70,7 +78,10 @@ public final class SystemJobProcessRunner: JobProcessRunner {
         let queue = DispatchQueue(label: "s2arm.job.events")
         let readers = DispatchGroup()
         readers.enter(); readers.enter()
-        let activity = beginActivity(), end = endActivity
+        let automatic = environment[JobTrigger.environmentKey] == JobTrigger.automatic
+        if automatic { process.qualityOfService = .utility }
+        let activity: NSObjectProtocol? = automatic ? nil : beginActivity()
+        let end: (NSObjectProtocol?) -> Void = { [endActivity] in if let a = $0 { endActivity(a) } }
         process.terminationHandler = { p in
             end(activity)
             readers.notify(queue: queue) { onExit(p.terminationStatus) }

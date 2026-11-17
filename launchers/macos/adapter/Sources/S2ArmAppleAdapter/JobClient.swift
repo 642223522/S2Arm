@@ -294,7 +294,9 @@ public final class JobClient {
     /// 起不来（缺 Python / 入口 / 写不进请求）直接抛错，不回调。
     @discardableResult
     /// secrets：只给这一个作业进程的环境变量（开发者证书密码，pack/jobs/devcert.py ⑤）；不进请求文件，作业层一起来就从环境摘掉
+    /// automatic：打开启动器时自动起的后台任务（不是玩家点的），按低优先级跑、不防系统降级（JobTrigger）
     public func start(operation: String, extra: [String: Any] = [:], id: String = UUID().uuidString.lowercased(), secrets: [String: String] = [:],
+                      automatic: Bool = false,
                       onEvent: @escaping (JobEvent) -> Void = { _ in },
                       onFinish: @escaping (JobOutcome) -> Void = { _ in }) throws -> JobHandle {
         let python = try pythonExecutable()
@@ -316,7 +318,7 @@ public final class JobClient {
         do {
             process = try runner.start(
                 executable: python, arguments: ["-B", "-I", entry.path, "run", "--request", file.path],
-                environment: processEnvironment().merging(secrets) { _, s in s },
+                environment: processEnvironment().merging(secrets) { _, s in s }.merging(automatic ? [JobTrigger.environmentKey: JobTrigger.automatic] : [:]) { _, t in t },
                 onLine: { line in
                     guard let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else { return }
                     guard let event = JobEvent(json: object) else {

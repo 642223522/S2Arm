@@ -84,7 +84,7 @@ struct SaveResultIncomplete: Error {}
 
 extension S2ArmLauncherModel {
     /// 交一个存档作业并等它结束，回作业结果。没配游戏库不起作业；失败抛 JobFailure（message 是作业层原话）。
-    func saveJob(_ operation: String, gameID: String, extra: [String: Any] = [:], events: EventSink? = nil) async throws -> [String: Any] {
+    func saveJob(_ operation: String, gameID: String, extra: [String: Any] = [:], automatic: Bool = false, events: EventSink? = nil) async throws -> [String: Any] {
         let client = provider.client
         defer { lockWaitNote = nil }
         let lock = lockWaitSink()   // 等锁原句另外显示（剃刀 M3）；调用方的去处（存档弹窗的进度）照收
@@ -92,7 +92,7 @@ extension S2ArmLauncherModel {
         guard !client.environment.library.isEmpty else { throw JobClientError(LibraryProvider.noLibraryMessage) }
         var request = extra
         request["gameId"] = gameID
-        return try await client.perform(operation, extra: request, events: sink).result
+        return try await client.perform(operation, extra: request, automatic: automatic, events: sink).result
     }
 
     func saveStatus(_ gameID: String, events: EventSink? = nil) async throws -> SaveStatusInfo {
