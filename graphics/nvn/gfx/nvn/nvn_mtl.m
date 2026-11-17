@@ -10900,7 +10900,11 @@ static inline void args_sync_dirty(void) {
 // A task shader's slot i (object stage table g_ot; the mesh stage shares the vertex table, enc_r_vbuf). Recorded as enc_r_vbuf records g_vt (nvn_rec.h)
 static inline void enc_o_args(uint64_t gpu, NSUInteger i) { if (rec_on() && !g_m3) rec_table_op(RO_T_ADDR, g_ot, gpu, i); else tab_addr(g_ot, gpu, i); }
 static int g_args_object;   // nonzero while a task / mesh draw binds its task shader (nvn_geometry.inc mtk_encode): stage 3 is the object stage, not the hull kernel
+// #770 the host running a task / mesh stage as a compute kernel (nvn_geometry.inc mtk_emu_prep): the stage's argument block is captured here (g_args_compute 2) and bound at the
+//   kernel's own dispatch later, whatever stage it belongs to
+static uint64_t g_args_cap_gpu; static NSUInteger g_args_cap_ai; static int g_args_cap_ok, g_args_compute;
 static void bind_args(id<MTLCommandEncoder> en, int nvn_stage, int metal_vertex, id<MTLBuffer> ab, uint64_t gpu, size_t off, NSUInteger ai) {
+    if (g_args_compute == 2) { g_args_cap_gpu = gpu; g_args_cap_ai = ai; g_args_cap_ok = 1; return; }
     if (nvn_stage == 3 && g_args_object) { enc_o_args(gpu, ai); return; }
     if (nvn_stage == 5 || nvn_stage == 2 || nvn_stage == 3) enc_c_args((id<MTLComputeCommandEncoder>)en, gpu, ai);   // compute, the geometry kernel (geo_draw), the hull kernel (tess_draw ②)
     else enc_r_args((id<MTLRenderCommandEncoder>)en, metal_vertex ? MTLRenderStageVertex : MTLRenderStageFragment, gpu, ai);
