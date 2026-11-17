@@ -150,3 +150,6 @@ void rp_pass_noatt_size(uint32_t *w, uint32_t *h);   // 当前是无附件通道
 // 调试读回（rp_draw.c）：上屏线程登记，提交线程在一次提交收尾时执行；fence 是提交线程的时间线值，每读一张 +1
 void rp_debug_dump_request(uint64_t present_serial, uint64_t frame);
 void rp_debug_dump_poll(uint64_t *fence);
+
+// #653：无能力 / 段超 64 槽 / 分配失败时沿用 guest_tick 的报告数，取走清零。
+uint64_t rp_timestamp_fallback_take(void);

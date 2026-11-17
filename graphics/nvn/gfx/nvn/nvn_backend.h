@@ -39,7 +39,7 @@
 extern "C" {
 #endif
 
-#define NVN_GPU_CONTRACT_VERSION 8   // 改任何签名或语义 +1；两个后端与核心同批改，t_nvn_backend.c 的签名表同批改
+#define NVN_GPU_CONTRACT_VERSION 9   // 改任何签名或语义 +1；两个后端与核心同批改，t_nvn_backend.c 的签名表同批改
 /* 定稿 #1（调用形式）：链接期直接调用 nvn_gpu_*。每个平台构建只链一个后端，Metal 3 / 4 的选择留在 Metal 后端内部。
    理由：零间接、可内联；同进程 A/B 对照没有真实消费者，不为它新增注册实体（vickwv 同意）。 */
 
@@ -106,6 +106,7 @@ enum {
     NVN_GPU_CAP_BLIT_SCALED       = 1u << 18,  // 带缩放 / 格式转换的贴图拷贝原生（Metal 无，核心 copy_t2t_draw 用绘制做；vkCmdBlitImage）
     NVN_GPU_CAP_GPU_DESWIZZLE     = 1u << 19,  // 后端能在 GPU 上解 NVN 块线性排布（Metal 现有 nvn_deswizzle_gpu.h；定稿 #3）
     NVN_GPU_CAP_BLIT_DEPTH_STENCIL = 1u << 20, // 同格式 D24S8/D32FS8、二维单采样、最近点缩放（含全部模板位）
+    NVN_GPU_CAP_REPORT_TIMESTAMP  = 1u << 22,  // 逐报告位置的时间戳：已校准 CLOCK_MONOTONIC ns；首版仅 Vulkan，Metal 明确不置位
     NVN_GPU_CAP_NO_ATTACH_PASS    = 1u << 21,  // 能开一个附件都不挂的渲染通道（NVN 不挂目标照样绘制：片元只写存储 / 只为遮挡计数）。尺寸由 pass_desc 的 w / h 给；
                                                //   Vulkan 核心 1.0 恒有（零附件子通道 + 带宽高的帧缓冲）；Metal 的 renderTargetWidth / Height 没接，不置位 → 核心照旧跳过并记账
 };
@@ -423,6 +424,15 @@ void nvn_gpu_barrier(nvn_gpu_cmd c, uint32_t nvn_barrier_bits);
 void nvn_gpu_occlusion(nvn_gpu_cmd c, int32_t slot);   // 之后的绘制计入 slot，-1 停止。通道内且 pass_desc.occlusion = 1
 void nvn_gpu_label(nvn_gpu_cmd c, const char *text);   // 调试标签压栈，NULL 出栈
 
+// #653：槽归命令段，按需分配、上限 64，不预扫命令流。仅 CAP_REPORT_TIMESTAMP 时调用。
+// 线程：[提交]，通道内外均可；type 仅 NVN TIMESTAMP / TIMESTAMP_TOP（普通=全部命令完成，TOP=管线顶）。
+// 每槽最多编码一次；重复 / slot>=64 / 类型非法为粘滞 ARG，无能力为粘滞 UNSUPPORTED。
+// 核心不为超额报告调用此入口：该报告沿用 guest_tick 并记账，不能让整段失败。
+// abort 不产生结果；查询资源活到 done 返回。无校准、不可用及失败结果不能伪装成主机时间。
+enum { NVN_GPU_TIMESTAMP_SLOTS = 64 };
+void nvn_gpu_timestamp(nvn_gpu_cmd c, uint32_t slot, uint32_t nvn_counter_type);
+typedef struct { uint64_t host_ns; uint8_t valid; } nvn_gpu_timestamp_result; // 0 是合法时间，必须看 valid
+
 // ---------- 提交与完成（定稿 A4 / A6） ----------
 enum {
     NVN_GPU_DONE_OK = 0,      // 已执行完
@@ -436,6 +446,7 @@ typedef struct {
     nvn_gpu_rc rc; const char *why;   // why 只在回调期间有效
     uint32_t time_kind;       // NONE：没有时间；DURATION：只有 gpu_dur_ns 可信；HOST：gpu_t0 / gpu_t1 也可信（主机单调时钟 ns，CAP_GPU_TIME_HOST）
     uint64_t gpu_dur_ns, gpu_t0, gpu_t1;   // 不可信的字段为 0，0 不表示「零耗时」，看 time_kind
+    const nvn_gpu_timestamp_result *timestamps; uint32_t ntimestamps; // 回调期间只读；FAILED 无有效槽，FAULT 仅消费 valid 槽
     const uint64_t *occlusion; uint32_t nocclusion;   // 各槽样本数（只在回调期间有效；FAILED 时为 NULL）
 } nvn_gpu_done;
 typedef void (*nvn_gpu_done_fn)(void *user, const nvn_gpu_done *d);

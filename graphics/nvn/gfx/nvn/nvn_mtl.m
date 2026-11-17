@@ -2367,7 +2367,16 @@ static int ev_wait(volatile uint32_t *val, uint32_t mode, uint32_t v, const uint
     return 0;
 }
 static void ts_clk(void);
-void mtl_sub_counter(uint64_t addr, uint32_t type) { sbw_note(addr, 16, SBW_REPORT); post((post_op){2, NULL, 0, 0, addr, type, NULL, g_seg}); ts_clk(); }
+void mtl_sub_counter(uint64_t addr, uint32_t type) {
+    // #653: legacy Metal does not implement the nvn_gpu per-report timestamp contract.
+    // Count this unsupported capability at its real entry point; preserve legacy feedback.
+    if (type == NVN_COUNTER_TYPE_TIMESTAMP || type == NVN_COUNTER_TYPE_TIMESTAMP_TOP) {
+        static _Atomic uint64_t unsupported;
+        uint64_t n = atomic_fetch_add(&unsupported, 1) + 1;
+        if (n && !(n & (n - 1))) MLOG("per-report GPU timestamp unsupported on legacy Metal (count=%llu); retaining legacy counter feedback", (unsigned long long)n);
+    }
+    sbw_note(addr, 16, SBW_REPORT); post((post_op){2, NULL, 0, 0, addr, type, NULL, g_seg}); ts_clk();
+}
 void mtl_counter_stats(uint64_t rep[32], uint64_t rst[32]) { memcpy(rep, g_cnt_report, sizeof g_cnt_report); memcpy(rst, g_cnt_reset, sizeof g_cnt_reset); }
 
 // Counter timestamps (19.2 MHz) are taken from the guest clock (hle_os.c guest_ns, the same source as svc GetSystemTick / cntpct): on hardware GPU timestamps and the CPU counter share one timebase, and games compare them.

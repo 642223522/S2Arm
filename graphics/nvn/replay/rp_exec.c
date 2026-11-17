@@ -16,6 +16,7 @@
 
 void nvn_hle_queue_enter(void *q);   // hle_nvn.c
 void nvn_hle_piece_begun(void);
+int s2a_guest_tick_from_host_ns(uint64_t host_ns, uint64_t *out);
 uint64_t s2a_guest_tick(void);       // 运行时：游戏的系统计数器（与游戏自己读到的同一个钟）
 
 #define OPN(x) [x] = #x
@@ -37,10 +38,12 @@ _Static_assert(OP_COUNT_ == 52 && OP_NVN2_END_ == 56, "录制命令个数变了�
 const char *rp_op_name(uint32_t op) { return op < OP_NVN2_END_ && k_op_name[op] ? k_op_name[op] : "OP_?"; }
 
 // ---------- 提交 ----------
-struct post { volatile uint32_t *val; uint32_t mode, v; uint64_t report; uint32_t type; };   // 完成后写事件值（mode 0 写 / 1 加）；report 非 0 = 计数器报告的写回地址
+// 固定地址的段属结果：mid 回调不能碰仍会 realloc 的 post 表。最后一段回调后统一回收。
+struct ts_segment { struct ts_segment *next; uint32_t count; nvn_gpu_timestamp_result values[NVN_GPU_TIMESTAMP_SLOTS]; };
+struct post { volatile uint32_t *val; uint32_t mode, v; uint64_t report; uint32_t type; struct ts_segment *ts; uint32_t slot; };   // 完成后写事件值（mode 0 写 / 1 加）；report 非 0 = 计数器报告的写回地址
 struct occ_ev { uint32_t pos; uint32_t report; uint64_t addr; };   // 遮挡计数的事件：发生时本段已经开过 pos 个槽；report 0 = 复位、1 = 报告（写回 addr）
 struct gw_ev { uint64_t pool_key, id; };   // 本段里 GPU 写进池的一段（rp_buf_gpu_write_note 的登记）
-struct sub { uint32_t mids, freed; uint8_t orphan;   /* mids：还没完成的中途段里有几个指着这份提交；orphan：最后一段没交成，由最后一个中途段的完成回调来放（见 sub_orphan） */
+struct sub { struct ts_segment *ts_head, *ts_current; uint32_t mids, freed; uint8_t orphan;   /* mids：还没完成的中途段里有几个指着这份提交；orphan：最后一段没交成，由最后一个中途段的完成回调来放（见 sub_orphan） */
              struct post *p; int n, cap, nfx; /* nfx：p 里时间戳报告以外的条数 */ uint64_t t_commit; struct occ_ev *oe; int noe, oecap; uint64_t fence; struct gw_ev *gw; int ngw, gwcap;
     uint64_t *oc; uint32_t noc, occ_base; };   // oc：中途交过段的提交，各段的遮挡槽结果按整次提交的槽号攒在这里（没拆过为 NULL）；occ_base：最后一段的第一个槽号
 // 分时读数（上屏那边每 5 秒取走一次清零）：一次队列提交里回放花的、交给后端花的、游戏等围栏花的、段从提交到完成隔了多久
@@ -152,8 +155,19 @@ nvn_gpu_cmd rp_xfer_cmd(uint64_t *last_sub) {
     return g_pre;
 }
 
+static uint64_t g_ts_fallbacks;
+uint64_t rp_timestamp_fallback_take(void) { return __atomic_exchange_n(&g_ts_fallbacks, 0, __ATOMIC_RELAXED); }
+static void ts_capture(struct ts_segment *t, const nvn_gpu_done *d) {
+    if (!t || d->status == NVN_GPU_DONE_FAILED || !d->timestamps) return;
+    for (uint32_t i = 0; i < t->count && i < d->ntimestamps; i++) t->values[i] = d->timestamps[i];
+}
+static void ts_free(struct sub *s) { struct ts_segment *t = s->ts_head;
+    while (t) { struct ts_segment *next = t->next; free(t); t = next; }
+}
+
 static void sub_done(void *user, const nvn_gpu_done *d) {
     struct sub *s = user;
+    ts_capture(s->ts_current, d);
     uint64_t t_done = now_ns();
     if (s->t_commit) { pf_add(RP_PERF_DONE_NS, t_done - s->t_commit); pf_add(RP_PERF_DONE_N, 1); }
     if (d->status != NVN_GPU_DONE_FAILED) busy_done(s->t_commit, t_done);   // 失败段没执行：不算显卡忙
@@ -161,10 +175,17 @@ static void sub_done(void *user, const nvn_gpu_done *d) {
     for (int i = 0; i < s->ngw; i++) rp_buf_gpu_write_land(s->gw[i].pool_key, s->gw[i].id, d->status != NVN_GPU_DONE_FAILED);
     if (d->status != NVN_GPU_DONE_FAILED)   // 没执行的段不做任何成功回写
         for (int i = 0; i < s->n; i++) {
-            if (s->p[i].report) {   // 计数器记录 = {计数值, 时间}（各 8 字节）。时间取本段完成这一刻的游戏时钟；时间戳类的计数值就是时间，
-                // 其余管线统计类计数值写 0（同 nvn_mtl.m 提交完成回调里的写法）。同一段里的多条报告现在拿到同一个时间：按报告所在位置给 GPU 时间要后端出段内时间戳，没接。
+            if (s->p[i].report) {   // 计数器记录 = {计数值, 时间}（各 8 字节）。时间戳类优先取报告位置的校准 GPU 时刻；
+                // 其余管线统计类计数值写 0（同 nvn_mtl.m 提交完成回调里的写法）。无时间戳能力或槽满时明确回落既有 guest tick。
                 // 条件渲染开着时时间戳类的计数值也写 0，同真机（游戏拿两条报告的计数值做条件，见 rc_value）
-                uint64_t t = s2a_guest_tick(), rec[2] = {(s->p[i].type == NVN_COUNTER_TYPE_TIMESTAMP || s->p[i].type == NVN_COUNTER_TYPE_TIMESTAMP_TOP) && !s2a_nvn_render_cond() ? t : 0, t};
+                uint64_t t;
+                if (s->p[i].ts) {
+                    const nvn_gpu_timestamp_result *v = &s->p[i].ts->values[s->p[i].slot];
+                    if (!v->valid || !s2a_guest_tick_from_host_ns(v->host_ns, &t)) {
+                        nvn_unimpl("timestamp", "result_unavailable", NULL); continue; // 不用回调 CPU now 冒充采样点；FAULT 仅有效槽可写
+                    }
+                } else t = s2a_guest_tick(); // 无能力 / 超额：明确计数的既有回落
+                uint64_t rec[2] = {(s->p[i].type == NVN_COUNTER_TYPE_TIMESTAMP || s->p[i].type == NVN_COUNTER_TYPE_TIMESTAMP_TOP) && !s2a_nvn_render_cond() ? t : 0, t};
                 memcpy((void *)(uintptr_t)s->p[i].report, rec, sizeof rec);
                 continue;
             }
@@ -190,14 +211,14 @@ static void sub_done(void *user, const nvn_gpu_done *d) {
       }
       g_occ_acc = acc; }
     if (s->fence) { uint64_t f = __atomic_load_n(&g_done_fence, __ATOMIC_RELAXED); if (s->fence > f) __atomic_store_n(&g_done_fence, s->fence, __ATOMIC_RELEASE); }
-    free(s->gw); free(s->oe); free(s->p); free(s->oc); free(s);
+    ts_free(s); free(s->gw); free(s->oe); free(s->p); free(s->oc); free(s);
 }
 // 最后一段没交成的提交（开段失败）：它的回写、事件、计数器都不做（同「提交段失败」），登记过的 GPU 写按失败落地。
 // 中途交出去的段还指着它（mid_done 要往它的 oc 里攒遮挡结果），所以不能当场放：谁最后一个松手谁放，两边可能同时到，用 freed 抢一次。
 static void sub_release(struct sub *s) {
     if (__atomic_exchange_n(&s->freed, 1, __ATOMIC_ACQ_REL)) return;
     for (int i = 0; i < s->ngw; i++) rp_buf_gpu_write_land(s->gw[i].pool_key, s->gw[i].id, 0);
-    free(s->gw); free(s->oe); free(s->p); free(s->oc); free(s);
+    ts_free(s); free(s->gw); free(s->oe); free(s->p); free(s->oc); free(s);
 }
 static void light_done(void *user, const nvn_gpu_done *d) { (void)user; (void)d; }   // 补点亮栅栏的空段：没有副作用要写回
 static void sub_orphan(struct sub *s) {
@@ -298,9 +319,10 @@ void nvn_be_sub_begin(void) {
     rp_dirty_all();   // 新段：已发给后端的状态全部重发；rp_S / rp_R 不动
 }
 
-struct mid { struct sub *s; uint32_t base; uint8_t counted; uint64_t t_commit; };   // counted：这次中途段记进了 s->mids（完成回调里才减）；t_commit：提交时刻（算 GPU 忙）
+struct mid { struct ts_segment *ts; struct sub *s; uint32_t base; uint8_t counted; uint64_t t_commit; };   // counted：这次中途段记进了 s->mids（完成回调里才减）；t_commit：提交时刻（算 GPU 忙）
 static void mid_done(void *user, const nvn_gpu_done *d) {   // 中途交的段完成：遮挡槽的结果先攒进所属提交（它的最后一段还没完成：段按提交顺序完成）
     struct mid *m = user;
+    if (m) ts_capture(m->ts, d);
     if (d->status == NVN_GPU_DONE_FAILED) red("中途交的段失败：%s", d->why ? d->why : "?");
     else { if (m) busy_done(m->t_commit, now_ns());
         if (m && m->s->oc && d->occlusion) { for (uint32_t i = 0; i < d->nocclusion && m->base + i < 2048; i++) m->s->oc[m->base + i] = d->occlusion[i];
@@ -333,8 +355,10 @@ static void seg_cut(int next_occ) {
     if (g_pre) { nvn_gpu_cmd pc = g_pre; g_pre = NULL; if (!nvn_gpu_ok(nvn_gpu_cmd_commit(pc, g_fence + ++g_mid, pre_done, pre_note_make(), &err))) red("前置段提交失败：%s", err.why); }
     nvn_gpu_cmd c = g_cmd; g_cmd = NULL;
     struct mid *m = calloc(1, sizeof *m);   // 每个中途段都带一份提交时刻（算 GPU 忙用）；分配失败只是这一段不计，语义不变
-    if (m) { m->s = g_sub; m->base = g_occ_base; m->t_commit = now_ns(); }
-    if (g_occ_seg) { if (!g_sub->oc) g_sub->oc = calloc(2048, sizeof *g_sub->oc); if (m) { __atomic_add_fetch(&g_sub->mids, 1, __ATOMIC_ACQ_REL); m->counted = 1; } }
+    if (m) { m->s = g_sub; m->ts = g_sub->ts_current; m->base = g_occ_base; m->t_commit = now_ns(); }
+    if (g_occ_seg && !g_sub->oc) g_sub->oc = calloc(2048, sizeof *g_sub->oc);
+    if (m && (g_occ_seg || m->ts)) { __atomic_add_fetch(&g_sub->mids, 1, __ATOMIC_ACQ_REL); m->counted = 1; }
+    g_sub->ts_current = NULL;
     if (!nvn_gpu_ok(nvn_gpu_cmd_commit(c, g_fence + ++g_mid, mid_done, m, &err))) red("中途交段失败：%s", err.why);
     pf_add(RP_PERF_SUBS, 1);
     g_occ_base = g_occ_next; g_occ_cur = -1; g_seg_serial++;
@@ -459,7 +483,7 @@ uint64_t rp_fx_report_types(void) { return __atomic_exchange_n(&g_fx_types, 0, _
 static void post_event(volatile uint32_t *val, uint32_t mode, uint32_t v) {
     struct sub *s = g_sub; if (!s || !val) return;
     if (s->n == s->cap) { int cap = s->cap ? s->cap * 2 : 8; struct post *np = realloc(s->p, (size_t)cap * sizeof *np); if (!np) { red("%s", "回写表扩不了，这条事件 / 计数器回写丢了"); return; } s->p = np; s->cap = cap; }
-    s->p[s->n++] = (struct post){val, mode, v, 0, 0}; s->nfx++; pf_add(RP_PERF_FX_EVENT, 1);
+    s->p[s->n++] = (struct post){.val=val, .mode=mode, .v=v}; s->nfx++; pf_add(RP_PERF_FX_EVENT, 1);
 }
 // 一笔读回可有多行与多个层：先全登记，再交给后端；失败撤销本笔全部登记。
 // 仅登记真正写到的行，不把行间 / 片间填充覆盖回游戏内存。
@@ -494,7 +518,23 @@ int rp_post_gpu_write(uint64_t addr, uint64_t len) { return rp_post_gpu_write_ro
 static void post_report(uint64_t addr, uint32_t type) {
     struct sub *s = g_sub; if (!s || !addr) return;
     if (s->n == s->cap) { int cap = s->cap ? s->cap * 2 : 8; struct post *np = realloc(s->p, (size_t)cap * sizeof *np); if (!np) { red("%s", "回写表扩不了，这条事件 / 计数器回写丢了"); return; } s->p = np; s->cap = cap; }
-    s->p[s->n++] = (struct post){NULL, 0, 0, addr, type}; if (type != NVN_COUNTER_TYPE_TIMESTAMP && type != NVN_COUNTER_TYPE_TIMESTAMP_TOP) s->nfx++; pf_add(RP_PERF_FX_REPORT, 1); __atomic_fetch_or(&g_fx_types, 1ull << (type & 63), __ATOMIC_RELAXED);
+    struct post p = {.report = addr, .type = type};
+    if (type == NVN_COUNTER_TYPE_TIMESTAMP || type == NVN_COUNTER_TYPE_TIMESTAMP_TOP) {
+        nvn_gpu_caps caps; nvn_gpu_caps_get(&caps);
+        if (g_cmd && (caps.caps & NVN_GPU_CAP_REPORT_TIMESTAMP)) {
+            if (!s->ts_current) {
+                struct ts_segment *t = calloc(1, sizeof *t);
+                if (t) { t->next = s->ts_head; s->ts_head = s->ts_current = t; }
+            }
+            if (s->ts_current && s->ts_current->count < NVN_GPU_TIMESTAMP_SLOTS) {
+                p.ts = s->ts_current; p.slot = p.ts->count++;
+                rp_pass_flush(g_cmd); // 延后折叠的清除须先于这个报告；不跨报告位置重排
+                nvn_gpu_timestamp(g_cmd, p.slot, type);
+            }
+        }
+        if (!p.ts) __atomic_fetch_add(&g_ts_fallbacks, 1, __ATOMIC_RELAXED);
+    }
+    s->p[s->n++] = p; if (type != NVN_COUNTER_TYPE_TIMESTAMP && type != NVN_COUNTER_TYPE_TIMESTAMP_TOP) s->nfx++; pf_add(RP_PERF_FX_REPORT, 1); __atomic_fetch_or(&g_fx_types, 1ull << (type & 63), __ATOMIC_RELAXED);
 }
 
 void nvn_be_sub_index(const uint64_t *h, int n) { (void)h; (void)n; }     // 存储前瞻索引：通道规划接上时再建

@@ -70,25 +70,31 @@ static int g_ft_hit;   // 脏页追踪的替身（真的在 hle_nvn.c）：nvn_f
 int nvn_ft_written(const tex_t *t) { if (g_ft_hit) nvn_be_tex_cpu_written(t); return g_ft_hit; }   // 与 hle_nvn.c 一致：命中时它自己记「CPU 写过」（会把 GPU 写过的归属清掉）
 
 // ---------- 后端替身：段只记账；完成由用例手动触发 ----------
-struct nvn_gpu_cmd_s { int live, is_pre; };
+struct nvn_gpu_cmd_s { int live, is_pre; uint32_t nts; nvn_gpu_timestamp_result ts[64]; };
 static struct nvn_gpu_cmd_s g_fake_cmd, g_fake_pre;   // 主段 / 前置段各一个替身
 static int g_aborts;
 static int g_begins, g_commits;
-static struct { nvn_gpu_done_fn fn; void *user; uint64_t signal; } g_pend[72]; static int g_npend, g_main_commits;   // g_pend：一次提交最多 64 个中间值 + 主段；g_main_commits：不算前置段
+static struct { nvn_gpu_done_fn fn; void *user; uint64_t signal; uint32_t nts; nvn_gpu_timestamp_result ts[64]; } g_pend[72]; static int g_npend, g_main_commits;   // g_pend：一次提交最多 64 个中间值 + 主段；g_main_commits：不算前置段
 static uint64_t g_fdone;
 static uint32_t g_occ_slots_decl; static int g_occ_log[32], g_nocc_log; static int g_rcond;
 int s2a_nvn_render_cond(void) { return g_rcond; }
+static int g_ts_calls; static uint32_t g_ts_types[128];
+void nvn_gpu_timestamp(nvn_gpu_cmd c, uint32_t slot, uint32_t type) {
+    CHECK(slot < 64); if (slot >= 64) return;
+    if (g_ts_calls < 128) g_ts_types[g_ts_calls] = type;
+    g_ts_calls++; c->ts[slot] = (nvn_gpu_timestamp_result){1000 + 100 * (uint64_t)g_ts_calls, 1}; c->nts = slot + 1;
+}
 void nvn_gpu_occlusion(nvn_gpu_cmd c, int32_t slot) { (void)c; if (g_nocc_log < 32) g_occ_log[g_nocc_log] = slot; g_nocc_log++; }
 static int g_begin_fail_at;   // 第几次开主段失败（1 = 下一次；0 = 都成功）
 nvn_gpu_rc nvn_gpu_cmd_begin(const nvn_gpu_cmd_desc *d, nvn_gpu_cmd *out, nvn_gpu_err *err) { (void)err; g_begins++;
     struct nvn_gpu_cmd_s *c = d && d->label && strstr(d->label, "pre") ? &g_fake_pre : &g_fake_cmd;
     if (c == &g_fake_cmd && g_begin_fail_at && !--g_begin_fail_at) { *out = NULL; if (err) err->why[0] = 0; return (nvn_gpu_rc){NVN_GPU_E_OOM}; }
-    c->live = 1; c->is_pre = c == &g_fake_pre; *out = c;
+    c->nts = 0; memset(c->ts, 0, sizeof c->ts); c->live = 1; c->is_pre = c == &g_fake_pre; *out = c;
     if (!c->is_pre) g_occ_slots_decl = d ? d->occlusion_slots : 0;
     return (nvn_gpu_rc){NVN_GPU_OK}; }
 void nvn_gpu_cmd_abort(nvn_gpu_cmd c) { c->live = 0; g_aborts++; }
 nvn_gpu_rc nvn_gpu_cmd_commit(nvn_gpu_cmd c, uint64_t signal, nvn_gpu_done_fn done, void *user, nvn_gpu_err *err) {
-    (void)err; c->live = 0; g_commits++; if (!c->is_pre) g_main_commits++; g_pend[g_npend].fn = done; g_pend[g_npend].user = user; g_pend[g_npend].signal = signal; g_npend++; return (nvn_gpu_rc){NVN_GPU_OK}; }
+    (void)err; c->live = 0; g_commits++; if (!c->is_pre) g_main_commits++; g_pend[g_npend].fn = done; g_pend[g_npend].user = user; g_pend[g_npend].signal = signal; g_pend[g_npend].nts = c->nts; memcpy(g_pend[g_npend].ts, c->ts, sizeof c->ts); g_npend++; return (nvn_gpu_rc){NVN_GPU_OK}; }
 nvn_gpu_rc nvn_gpu_fence_wait(uint64_t v, uint64_t timeout_ns, nvn_gpu_err *err) { (void)timeout_ns; (void)err; return (nvn_gpu_rc){v <= g_fdone ? NVN_GPU_OK : NVN_GPU_E_TIMEOUT}; }
 // 贴图 / 视图 / 采样器 / 上传：只记账
 struct nvn_gpu_tex_s { nvn_gpu_tex_desc d; int ord; uint32_t px[4][4]; }; struct nvn_gpu_view_s { nvn_gpu_tex of; int has_v; int rid; view_t v; nvn_gpu_buf buf; uint64_t off, bytes; uint32_t format; }; struct nvn_gpu_samp_s { int x; };   // ord：后端贴图的递增序号；px：像素替身（4 个 mip × 4 层各一个 32 位字）；v：建视图时收到的视图记录
@@ -210,6 +216,7 @@ static struct { nvn_gpu_clear d; int npd, ends; } g_cr[8]; static int g_ncr;   /
 void nvn_gpu_clear_rect(nvn_gpu_cmd c, const nvn_gpu_clear *d) { (void)c; if (g_ncr < 8) { g_cr[g_ncr].d = *d; g_cr[g_ncr].npd = g_npd; g_cr[g_ncr].ends = g_pass_ends; } g_ncr++; }
 static uint64_t g_tick;   // 游戏时钟替身
 uint64_t s2a_guest_tick(void) { return g_tick; }
+int s2a_guest_tick_from_host_ns(uint64_t ns, uint64_t *out) { *out = ns / 10; return 1; }
 
 // 上屏替身：取图结果按脚本给，呈现记下描述并按「没有上屏时刻」回调
 struct nvn_gpu_surface_s { int x; };
@@ -284,7 +291,7 @@ nvn_gpu_rc nvn_gpu_arena_alloc(nvn_gpu_cmd c, uint64_t bytes, uint32_t align, nv
 static const uint64_t *g_fake_occ; static uint32_t g_fake_nocc;   // 下一次完成时交给回调的各槽样本数
 static void fake_complete(uint32_t status) {
     for (int i = 0; i < g_npend; i++) { nvn_gpu_done d = {0}; d.signal = g_pend[i].signal; d.status = status; d.why = "替身失败";
-        if (status != NVN_GPU_DONE_FAILED) { d.occlusion = g_fake_occ; d.nocclusion = g_fake_nocc; }
+        if (status != NVN_GPU_DONE_FAILED) { d.occlusion = g_fake_occ; d.nocclusion = g_fake_nocc; d.timestamps = g_pend[i].ts; d.ntimestamps = g_pend[i].nts; }
         g_pend[i].fn(g_pend[i].user, &d); if (status != NVN_GPU_DONE_FAILED) g_fdone = g_pend[i].signal; }
     g_npend = 0; g_fake_occ = NULL; g_fake_nocc = 0;
 }
@@ -1851,6 +1858,47 @@ static void t_report_counter(void) {   // 计数器报告：段完成后才写�
     g_rcond = 1; g_tick = 8888; submit1(&a); fake_complete(NVN_GPU_DONE_OK);
     CHECK(rec[0][0] == 0 && rec[0][1] == 8888 && rec[2][0] == 0 && rec[2][1] == 8888);
     g_rcond = 0; nvn_be_shutdown_session(); nvn_unimpl_reset();
+}
+
+static void ts_report(stream *s, uint64_t *rec) {
+    uint64_t type = NVN_COUNTER_TYPE_TIMESTAMP, addr = (uint64_t)(uintptr_t)rec;
+    uint8_t *p = put(s, OP_REPORT_COUNTER, 16); memcpy(p, &type, 8); memcpy(p + 8, &addr, 8);
+}
+static void t_report_position(void) {
+    nvn_be_shutdown_session(); g_caps_extra = NVN_GPU_CAP_REPORT_TIMESTAMP; g_ts_calls = 0;
+    uint64_t rec[2][2] = {{99, 99}, {88, 88}}; stream a = {0};
+    for (int i = 0; i < 2; i++) { uint64_t t = i ? NVN_COUNTER_TYPE_TIMESTAMP_TOP : NVN_COUNTER_TYPE_TIMESTAMP;
+        uint64_t ad = (uint64_t)(uintptr_t)rec[i]; uint8_t *r = put(&a, OP_REPORT_COUNTER, 16); memcpy(r, &t, 8); memcpy(r + 8, &ad, 8); }
+    end(&a); g_tick = 999999; submit1(&a);
+    CHECK(rec[0][0] == 99 && rec[1][0] == 88); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ts_calls == 2); CHECK(g_ts_types[0] == NVN_COUNTER_TYPE_TIMESTAMP && g_ts_types[1] == NVN_COUNTER_TYPE_TIMESTAMP_TOP);
+    CHECK(rec[0][0] == 110 && rec[0][1] == 110); CHECK(rec[1][0] == 120 && rec[1][1] == 120);
+    // Explicit valid bit: zero is a sample; an unavailable FAULT slot must not write.
+    rec[0][0] = 99; rec[1][0] = 88; submit1(&a);
+    g_pend[0].ts[0] = (nvn_gpu_timestamp_result){.host_ns=0, .valid=1};
+    g_pend[0].ts[1].valid = 0; fake_complete(NVN_GPU_DONE_FAULT);
+    CHECK(rec[0][0] == 0 && rec[0][1] == 0); CHECK(rec[1][0] == 88);
+    rec[0][0] = 99; submit1(&a); fake_complete(NVN_GPU_DONE_FAILED); CHECK(rec[0][0] == 99);
+    // Slot budget is per actual segment, never a reason to drop the submission.
+    stream many = {0}; uint64_t records[65][2]; memset(records, 0, sizeof records);
+    for (int i = 0; i < 65; i++) { ts_report(&many, records[i]); }
+    end(&many);
+    rp_timestamp_fallback_take(); g_ts_calls = 0; submit1(&many); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ts_calls == 64 && records[63][0] == 740 && records[64][0] == g_tick);
+    CHECK(rp_timestamp_fallback_take() == 1);
+    // CALL then JUMP preserves execution order and address-to-slot mapping.
+    stream child = {0}, tail = {0}, root = {0}; ts_report(&child, rec[0]); end(&child);
+    ts_report(&tail, rec[1]); end(&tail); uint64_t ptr = (uint64_t)(uintptr_t)child.b;
+    memcpy(put(&root, OP_CALL, 8), &ptr, 8); ptr = (uint64_t)(uintptr_t)tail.b;
+    memcpy(put(&root, OP_JUMP, 8), &ptr, 8); end(&root); g_ts_calls = 0;
+    submit1(&root); fake_complete(NVN_GPU_DONE_OK); CHECK(rec[0][0] == 110 && rec[1][0] == 120);
+    // The first occlusion reset cuts the segment between the two reports.
+    nvn_be_shutdown_session(); stream split = {0}; ts_report(&split, rec[0]);
+    uint64_t reset = NVN_COUNTER_TYPE_SAMPLES_PASSED; memcpy(put(&split, OP_RESET_COUNTER, 8), &reset, 8);
+    ts_report(&split, rec[1]); end(&split); g_ts_calls = 0; submit1(&split);
+    CHECK(g_npend == 2 && g_pend[0].nts == 1 && g_pend[1].nts == 1);
+    fake_complete(NVN_GPU_DONE_OK); CHECK(rec[0][0] == 110 && rec[1][0] == 120);
+    g_caps_extra = 0; nvn_be_shutdown_session(); nvn_unimpl_reset();
 }
 
 // 最小的可画环境：一个不带属性、不带绑定的程序，一张 64x36 的颜色目标
@@ -3981,6 +4029,7 @@ int main(int argc, char **argv) {
     t_pass_clear_park_read();
     t_clear_rect();
     t_report_counter();
+    t_report_position();
     t_occlusion();
     t_occl_first_reset_cap();
     t_msoff();
