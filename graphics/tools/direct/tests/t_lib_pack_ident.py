@@ -11,6 +11,7 @@ CMD, _ = dsh_batch.get()
 with tempfile.TemporaryDirectory() as t:
     r = subprocess.run([*CMD, '--libpack', 'ident-test', t], capture_output=True, text=True, encoding='utf-8')
 print(r.stdout, end=''); print(r.stderr, end='', file=sys.stderr)
-ok = r.returncode == 0 and r.stdout.rstrip().endswith('ident-test: ok') and '✗' not in r.stdout
+# 第 ② 组在 Build.cs 的分部方法里，没编进来时编译器会整句略去：要求它的判据行真出现，免得少一组还报绿
+ok = r.returncode == 0 and r.stdout.rstrip().endswith('ident-test: ok') and '✗' not in r.stdout and 'Side.Ident：' in r.stdout and 'side：' in r.stdout
 print('PASS' if ok else f'FAIL（退出 {r.returncode}）')
 sys.exit(0 if ok else 1)

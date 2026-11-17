@@ -1316,3 +1316,22 @@ sealed class TextView : IReadOnlyDictionary<string, string>
     public IEnumerator<KeyValuePair<string, string>> GetEnumerator() { foreach (var k in keys) yield return new(k, this[k]); }
     System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
 }
+
+/// <summary>LibPack.IdentTest 第 ② 组：真 Side（同一数组 Put 两名 + Alias 一名、等值新数组一名、别的字节一名），身份 = 数据文件里的偏移:长度（#1331）。
+/// 放在这里而不在 LibPack.cs：出包 Vulkan 独立入口工程（vklib/S2A.DshVkLib.csproj）只编 LibPack.cs，没有 Side</summary>
+static partial class LibPack
+{
+    static partial void SideIdentCases(string tmp, string[] names, byte[] x, byte[] y, Action<bool, string> check, Action<string, Func<string, byte[]>, Func<string, string>, string[]> @case)
+    {
+        var sideDir = Path.Combine(tmp, "side"); Directory.CreateDirectory(sideDir);
+        var side = new Side(sideDir);
+        side.Put(names[0], x); side.Put(names[1], x); side.Alias(names[0], names[2]); side.Put(names[3], x.ToArray()); side.Put(names[4], y);
+        string i0 = side.Ident(names[0]);
+        check(i0 != null && side.Ident(names[1]) == i0 && side.Ident(names[2]) == i0 && side.Ident(names[3]) != i0 && side.Ident(names[3]) != null && side.Ident(names[4]) != i0,
+            $"Side.Ident：同一数组两名与 Alias 同身份，等值新数组另一身份（{string.Join(" ", names.Select(n => side.Ident(n)))}）");
+        check(side.Ident("0000000000000001_b.metal") == null && side.Ident("ffffffffffffffff_bv.metallib") == null, "Side.Ident：源码 / 不在的名字 → null");
+        var view = side.All;
+        check(view is ISharedBytes, "Side.All 实现 ISharedBytes（发布打包据此给 ident）");
+        @case("side", side.Get, view is ISharedBytes sb ? sb.Ident : null, names[..3]);
+    }
+}

@@ -74,12 +74,31 @@ import S2ArmAppleAdapter
 
     // 启动器打开后第一次读库失败（首次使用还没选游戏库 / 外置游戏库没挂上），之后读成功：后台循环在第一次读成功时开（11-16 Mac 整链：原先跟 startup 那一次绑死，
     //   第一次失败就整次不开，手机上留了代码模块也一直不亮「更新 iPhone」）
+    // #1412：玩家在访达里删了游戏库文件夹——作业层读库失败、文件夹确实没了：忘掉这个库，不留上次的列表、回欢迎页（不再一直报「游戏库未连接或标识不符」）
+    func testDeletedLibraryFolderGoesBackToWelcome() async throws {
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("s2arm-gone-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("Jobs"), withIntermediateDirectories: true)
+        try Data().write(to: root.appendingPathComponent("Jobs/main.py"))
+        let runner = KeptRunner(); runner.catalogFails = true; runner.catalog = ["games": [[String: Any]]()]
+        let model = S2ArmLauncherModel(client: JobClient(environment: JobEnvironment(
+            privateRoot: root, resources: root, library: root.appendingPathComponent("gone").path, libraryId: "fixture"), runner: runner))
+        model.refresh()
+        for _ in 0..<300 where !model.libraryLoaded || model.loading { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(model.libraryError, LibraryProvider.noLibraryMessage, "按「还没有游戏库」处理")
+        XCTAssertTrue(model.games.isEmpty); XCTAssertFalse(model.showingSnapshot)
+        XCTAssertTrue(model.showsWelcome, "回欢迎页")
+        XCTAssertEqual(model.provider.client.environment.library, "", "忘掉了这个库：添加游戏时按新玩家在 ~/S2Arm 重建")
+    }
+
     func testStartupLoopsStartOnFirstSuccessfulLoad() async throws {
         _ = NSApplication.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("s2arm-loops-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root.appendingPathComponent("Jobs"), withIntermediateDirectories: true)
         try Data().write(to: root.appendingPathComponent("Jobs/main.py"))
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("lib"), withIntermediateDirectories: true)   // 游戏库文件夹在、第一次读失败（文件夹没了是 #1412 那条路）
         let runner = KeptRunner(); runner.catalogFails = true; runner.catalog = ["games": [[String: Any]]()]
         let model = S2ArmLauncherModel(client: JobClient(environment: JobEnvironment(
             privateRoot: root, resources: root, library: root.appendingPathComponent("lib").path, libraryId: "fixture"), runner: runner))

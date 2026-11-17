@@ -854,6 +854,18 @@ class FlowTests(unittest.TestCase):
         line = "{ platform:iOS, arch:arm64, id:00000000-0000000000000002, name:测试设备2, error:The device needs to be unlocked to continue Unlock the device"
         self.assertEqual(install.classify(line), "device_locked")
 
+    def test_unregistered_unseen_phone_maps_device_not_visible(self):
+        # 11-16 D-44DP 兜底的盲区：Xcode 看不到这台、账号上也没登记过 → ensure_profile.sh 的红行 / Xcode「has no devices」原文都归 device_not_visible，建议是插线 / 信任 / 开发者模式
+        out = subprocess.run(["bash", "-c", 'grep -o "^NV=\\"[^\\"]*" "$1" | cut -c5-', "_", str(Path(__file__).resolve().parents[3] / "pack/ensure_profile.sh")],
+                             capture_output=True, text=True).stdout.strip()
+        self.assertTrue(out.startswith("【红】Xcode 看不到这台 iPhone"), out)
+        for text in ("【黄】xcodebuild 看不到这台 iPhone（ABCDEF），改为不指定设备再申请一次\n" + out,
+                     "error: Your team has no devices from which to generate a provisioning profile. Connect a device to use"):
+            self.assertEqual(install.classify(text), "device_not_visible", text)
+        from errors import RECOVERY
+        self.assertIn("开发者模式", RECOVERY["device_not_visible"])
+        self.assertNotEqual(install.classify("【黄】xcodebuild 看不到这台 iPhone（ABCDEF），改为不指定设备再申请一次"), "device_not_visible", "只有兜底的提示行不算")
+
     def test_profile_failure_maps_free_limit(self):
         gid = "0100535012974000"; out, pack = self._fixture(gid); self.c.r.update(gameId=gid)
         import ipa as packer
