@@ -78,7 +78,7 @@ public struct Catalogue: Equatable, Sendable {
                    FileManager.default.fileExists(atPath: root.appendingPathComponent(id).appendingPathComponent("资源包").path, isDirectory: &isDir), isDir.boolValue {
                     let pack = root.appendingPathComponent(id).appendingPathComponent("资源包")
                     tiles.append(GameTile(id: id, title: Catalogue.nacpTitle(pack.appendingPathComponent("ctl/control.nacp")) ?? id, state: .needsGameUpdate))
-                    problems.append("\(id) 只有资源包、没有程序包（0.5.x 老款），列为「在电脑上更新」")
+                    problems.append("程序包清单 \(id) 不在、只有资源包（0.5.x 老款），列为「在电脑上更新」")
                 }
                 continue
             }
