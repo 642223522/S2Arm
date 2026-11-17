@@ -15,6 +15,46 @@ static _Atomic uint64_t g_cont;   // 假的含睡眠连续钟（覆盖 os.c 的�
 uint64_t s2a_cont_ns(void) { return atomic_load(&g_cont); }
 static int g_cb; static void on_catchup(void) { g_cb++; }
 
+// #653 改前/改后对照：同一份驱动分别链接基线与候选 os.c，逐字节比较 stdout。
+// 此模式仅调用已有 API，不调用新增换算函数，不能用候选自身生成期望值。
+// 编译时加 -DS2A_OS_EQ_TRACE；正常 t_os 入口仍包含历史采样拒绝和并发回归。
+#ifdef S2A_OS_EQ_TRACE
+void s2a_guest_tick_hz_set(uint64_t hz);
+void s2a_os_session_reset(void);
+uint64_t s2a_guest_tick(void);
+static unsigned trace_step;
+static void trace(const char *label) {
+    uint64_t ns = guest_ns(), tick = guest_tick(), exported = s2a_guest_tick();
+    printf("%u %s %llu %llu %llu %lld %llu %d\n", trace_step++, label,
+           (unsigned long long)ns, (unsigned long long)tick, (unsigned long long)exported,
+           (long long)s2a_clock_unseen_ns(), (unsigned long long)s2a_guest_tick_hz(), g_cb);
+}
+int main(void) {
+    const uint64_t rates[] = {19200000, 31250000};
+    s2a_clock_register_catchup(on_catchup);
+    for (unsigned i = 0; i < sizeof rates / sizeof rates[0]; i++) {
+        uint64_t t = 1000000ull * (i + 1);
+        at(t); atomic_store(&g_cont, t + 10000); s2a_guest_tick_hz_set(rates[i]);
+        s2a_os_session_reset(); trace("new-running");
+        at(t + 625); trace("running");
+        guest_clock_freeze_for(1, 1); trace("freeze");
+        at(t + 1000); guest_clock_freeze_for(2, 1); trace("second-reason");
+        guest_clock_freeze_for(1, 1); trace("duplicate-reason");
+        at(t + 2000); guest_clock_freeze_for(1, 0); trace("partial-thaw");
+        at(t + 3000); s2a_os_session_reset(); trace("new-frozen");
+        at(t + 4000); trace("still-frozen");
+        guest_clock_freeze_for(2, 0); trace("thaw");
+        at(t + 5000); trace("running-again");
+        guest_clock_freeze_for(2, 0); trace("redundant-thaw");
+        guest_clock_freeze_for(0, 1); trace("default-reason");
+        at(t + 6000); guest_clock_freeze_for(-1, 0); trace("default-thaw");
+        at(t + 7000); s2a_clock_catchup(); trace("catchup");
+        s2a_os_session_reset(); trace("reset-running");
+    }
+    return 0;
+}
+#else
+
 static int bad, n;
 static void eq(const char *what, uint64_t got, uint64_t want) {
     n++;
@@ -118,3 +158,5 @@ int main(void) {
     printf("✓ t_os：%d 项游戏时钟冻结全符（停住、接着走、按原因叠加、19.2 MHz 计数、没看到的时长、补时回调、并发单调）\n", n);
     return 0;
 }
+
+#endif // S2A_OS_EQ_TRACE

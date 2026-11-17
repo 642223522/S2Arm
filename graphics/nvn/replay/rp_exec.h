@@ -151,5 +151,5 @@ void rp_pass_noatt_size(uint32_t *w, uint32_t *h);   // 当前是无附件通道
 void rp_debug_dump_request(uint64_t present_serial, uint64_t frame);
 void rp_debug_dump_poll(uint64_t *fence);
 
-// #653：无能力 / 段超 64 槽 / 分配失败时沿用 guest_tick 的报告数，取走清零。
+// #653：无能力 / 段超 64 槽时沿用 guest_tick 的报告数（OOM 不伪造读数），取走清零。
 uint64_t rp_timestamp_fallback_take(void);

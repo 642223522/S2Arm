@@ -3974,6 +3974,11 @@ static void t_sync_reuse_after_gpu_write(void) {
     q_counter(&t, OP_REPORT_COUNTER, NVN_COUNTER_TYPE_TIMESTAMP, ts); end(&t);
     submit1(&t); CHECK(nvn_be_wait(nvn_be_last_fence(), 0) == 0);
     fake_complete(NVN_GPU_DONE_OK); CHECK(ts[1] == 7777);
+    // #653 capability path: report-position samples still write only before wait publishes success.
+    g_caps_extra = NVN_GPU_CAP_REPORT_TIMESTAMP; g_ts_calls = 0; ts[0] = ts[1] = 999;
+    submit1(&t); CHECK(nvn_be_wait(nvn_be_last_fence(), 0) == 0 && ts[1] == 999);
+    fake_complete(NVN_GPU_DONE_OK); CHECK(nvn_be_wait(nvn_be_last_fence(), 0) == 1 && ts[1] == 110);
+    g_caps_extra = 0;
     nvn_be_pool_del(g_pmem); g_buf_cpu_auto = 0;
 }
 
