@@ -60,6 +60,7 @@ enum AppSetup {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        BackendText.preload()   // 文案资源启动时一次读完：Sparkle「更新并重启」换盘上 .app 时不再去读（0.5.1 退出崩溃）
         // --control（S2ARM_CONTROL=1）= AI / 测试驱动的实例：按后台辅助应用起——不进 Dock、不抢焦点（窗口照建：s2armctl snapshot 截它）。
         //   S2ARM_CONTROL=1 写进本进程环境，作业层据此让测试起局的 s2arm-host 静默崩溃（pack/jobs/core.py env）
         let args = CommandLine.arguments
