@@ -288,11 +288,19 @@ def npdm_ident(npdm):
     return f"{int.from_bytes(b[aci + 0x10:aci + 0x18], 'little'):016X}", (b[0x0C] >> 1) & 7
 
 
+TV_DOCS_GAMES = "Library/Caches/S2Arm/games"   # Apple TV（S2A_APPLE_OS=tvos）：文档根在 Library/Caches，资源包在 <文档根>/资源包（runtime/include/s2a_docs.h：tvOS 不让写 Documents）
+
+
 def ctx_text(gid):
-    """本款启动上下文 v1（runtime/include/s2a_launch_ctx.h）：宿主起这一款时 S2A_LAUNCH_CTX=@bundle/Games/<游戏号>/launch.ctx"""
-    docs = f"@home/{DOCS_GAMES}/{gid}"
+    """本款启动上下文 v1（runtime/include/s2a_launch_ctx.h）：宿主起这一款时 S2A_LAUNCH_CTX=@bundle/Games/<游戏号>/launch.ctx。
+    tvOS 容器（组装时 S2A_APPLE_OS=tvos，pack/jobs/tvos.py tv_env）按电视的位置写，同宿主 s2a_docs.h 的取法"""
+    if os.environ.get("S2A_APPLE_OS") == "tvos":
+        docs = f"@home/{TV_DOCS_GAMES}/{gid}"
+        data = f"{docs}/资源包"
+    else:
+        docs, data = f"@home/{DOCS_GAMES}/{gid}", f"@home/{PACK_GAMES}/{gid}/资源包"
     return (f"version\t1\ngame_id\t{gid}\nimages\t@bundle/{game_images(gid)}\nmodule_dir\t@bundle/{GAMES}/{gid}\n"
-            f"game_data\t@home/{PACK_GAMES}/{gid}/资源包\ndocs\t{docs}\n")
+            f"game_data\t{data}\ndocs\t{docs}\n")
 
 
 def display_version(root):
