@@ -294,8 +294,8 @@ static uint8_t *slurp(const char *p, size_t *n) {
     fclose(f); *n = (size_t)l; return b;
 }
 // ---------- 签名身份交接（0.6.0 通用壳，电脑侧 pack/jobs/install.py deliver_identity）----------
-// 电脑经 USB 把私钥（PKCS#1 RSAPrivateKey DER）与叶证书（DER）放进 App 数据容器 Library/Caches/S2Arm/identity/incoming/{key.der, cert.der, identity.json}
-//   （Caches 不进 iCloud / 电脑备份；导入前再给 incoming 目录设 NSURLIsExcludedFromBackupKey，双保险），
+// 电脑经 USB 把私钥（PKCS#1 RSAPrivateKey DER）与叶证书（DER）放进 App 数据容器 Library/Application Support/S2Arm/identity/incoming/{key.der, cert.der, identity.json}
+//   （维护者定：私钥是玩家自己的，进他自己账号的加密备份无妨；App 一打开就导入、立刻删，躺的时间很短），
 //   identity.json 最后改名 = 三份齐了。App 启动时（s2a_selfsign_probe 开头，构造期）导入钥匙串（本 App 访问组、首次解锁后、仅本机），
 //   确认能配成签名身份（真机 11-17 测试机2：分别 SecItemAdd 的私钥与证书配得上）→ 删 incoming/ 三份 → 写不含私钥的
 //   Library/Application Support/S2Arm/identity/current.json（电脑推送时读它判要不要重交）；
@@ -342,12 +342,10 @@ static int write_file(const char *path, const char *text) {
 int s2a_identity_import(const char *home) {
     if (!home) return 0;
     char dir[1024], inc[1100], pj[1200], pk[1200], pc[1200], cur[1200], err[1200];
-    snprintf(dir, sizeof dir, "%s/Library/Application Support/S2Arm/identity", home); snprintf(inc, sizeof inc, "%s/Library/Caches/S2Arm/identity/incoming", home);
+    snprintf(dir, sizeof dir, "%s/Library/Application Support/S2Arm/identity", home); snprintf(inc, sizeof inc, "%s/incoming", dir);
     snprintf(pj, sizeof pj, "%s/identity.json", inc); snprintf(pk, sizeof pk, "%s/key.der", inc); snprintf(pc, sizeof pc, "%s/cert.der", inc);
     snprintf(cur, sizeof cur, "%s/current.json", dir); snprintf(err, sizeof err, "%s/import_error.txt", dir);
     size_t jn = 0, kn = 0, cn = 0; uint8_t *jb = slurp(pj, &jn); if (!jb) return 0;   // 没有 identity.json = 没交、或还没交齐
-    { CFURLRef u = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)inc, (CFIndex)strlen(inc), true);   // 私钥在的目录不进备份（导入失败时它会留着）
-      if (u) { if (!CFURLSetResourcePropertyForKey(u, kCFURLIsExcludedFromBackupKey, kCFBooleanTrue, NULL)) LOG("【黄】签名身份：incoming 目录设不进备份没成功（Caches 本来就不备份）"); CFRelease(u); } }
     for (char *q = (char *)dir + 1; *q; q++) if (*q == '/') { *q = 0; mkdir(dir, 0755); *q = '/'; } mkdir(dir, 0755);   // current.json / import_error.txt 的目录
     char *js = realloc(jb, jn + 1); if (!js) { free(jb); return 0; } js[jn] = 0;
     char team[64], want_sha[64], why[256] = {0}; json_str(js, "team", team, sizeof team); json_str(js, "cert_sha1", want_sha, sizeof want_sha); free(js);
