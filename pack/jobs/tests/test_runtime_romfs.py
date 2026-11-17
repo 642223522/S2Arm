@@ -143,6 +143,21 @@ class RuntimeRomfs(unittest.TestCase):
             build.validate_runtime(self.c, self.dest)
         self.assertEqual(error.exception.code, "runtime_invalid")
 
+    def test_launch_records_failed_checks_instead_of_rejecting(self):
+        # 11-17 维护者：校验不过不再拒起局。期望手写：清单 schema 写 2、主程序大小比清单少 1 字节 →
+        #   起局（传 doubts）照常返回清单、记两条，次序同校验次序；游戏库判就绪（不传 doubts）照旧抛 runtime_invalid
+        host = self.dest / "S2ArmGame.app/Contents/MacOS/s2arm-host"
+        host.parent.mkdir(parents=True); host.write_bytes(b"synthetic"); host.chmod(0o755)
+        (self.dest / "romfs").mkdir(); (self.dest / "main").write_bytes(b"12345")
+        manifest = dict(schema=2, engine="S2Arm", target="macos-arm64", files={"main": [6, ""]})
+        (self.dest / "manifest.json").write_text(json.dumps(manifest))
+        doubts = []
+        self.assertEqual(build.validate_runtime(self.c, self.dest, files=False, doubts=doubts)["schema"], 2)
+        self.assertEqual(doubts, ["运行版本清单对不上（schema=2, engine=S2Arm, target=macos-arm64）", "运行文件 main 缺失或大小不符"])
+        with self.assertRaises(Failure) as error:
+            build.validate_runtime(self.c, self.dest, files=False)
+        self.assertEqual(error.exception.code, "runtime_invalid")
+
     def test_memory_table_mismatch_or_missing_still_launches(self):
         # v0.3.1（认不出的直接做）：宿主读 addr_need.tsv 只认几行、程序号不符按 0，表坏了 / 没了最多布局提示不生效，不挡起局
         host = self.dest / "S2ArmGame.app/Contents/MacOS/s2arm-host"

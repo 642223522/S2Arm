@@ -1839,7 +1839,7 @@ class JobsTests(unittest.TestCase):
         runtime.mkdir(parents=True, exist_ok=True); (runtime / "ok.bin").write_bytes(b"12")
         manifest = {"gameId": game["id"], "memoryRequirementsVersion": 2, "files": {"ok.bin": [2, ""], "romfs/gone.bin": [9, ""]}}
         calls = []
-        def quick(c, rt, full=False, files=True):
+        def quick(c, rt, full=False, files=True, doubts=None):
             calls.append(files); return manifest
         def crash(command, log, env, **kwargs):
             self.c.last_rc = 139; raise Failure("游戏运行中失败（退出码 139）：fixture", code="tool_exit")
@@ -1854,6 +1854,27 @@ class JobsTests(unittest.TestCase):
             with self.assertRaises(Failure) as e:
                 build.launch(self.c)
         self.assertEqual(e.exception.code, "game_crashed")   # 文件都好：是真崩溃
+
+    def test_launch_warns_and_continues_when_checks_fail(self):
+        # 11-17 维护者：校验不过不再拒起局。期望手写：请求带旧字段 vammLayout + 快核记下一条「主程序大小不符」→ 不抛错、照常起到 c.run，
+        #   黄字两条（runtime_invalid / warning，原句 + 「先照常启动」）；这局崩了（139、文件都好）→ 仍是 game_crashed，消息末尾带「起局前这里校验就没过」两条原因
+        game = self.game(); self.catalogue([game]); self.c.r["gameId"] = game["id"]; self.c.r["vammLayout"] = "legacy"
+        self.fake_host(game["id"])
+        runtime = layout.image_mac(self.c, game["id"], create=False); runtime.mkdir(parents=True, exist_ok=True)
+        manifest = {"gameId": game["id"], "memoryRequirementsVersion": 2, "files": {}}
+        def quick(c, rt, full=False, files=True, doubts=None):
+            doubts.append("运行文件 main 缺失或大小不符"); return manifest
+        ran = []
+        def crash(command, log, env, **kwargs):
+            ran.append(command); self.c.last_rc = 139; raise Failure("游戏运行中失败（退出码 139）：fixture", code="tool_exit")
+        with patch.object(build, "validate_runtime", side_effect=quick), patch.object(self.c, "run", side_effect=crash):
+            with self.assertRaises(Failure) as e:
+                build.launch(self.c)
+        self.assertEqual(len(ran), 1)   # 照常起了
+        warned = [(d["code"], d["severity"]) for d in self.c.job["diagnostics"] if "先照常启动" in str(d)]
+        self.assertEqual(warned, [("runtime_invalid", "warning")] * 2)
+        self.assertEqual(e.exception.code, "game_crashed")
+        self.assertTrue(str(e.exception).endswith("\n起局前这里校验就没过：请求里带着已停用的旧内存布局设置（vammLayout）；运行文件 main 缺失或大小不符"))
 
     def test_bad_or_unsupported_input_mapping_falls_back_to_default_keys(self):
         # v0.3.1（认不出的直接做）：键位映射不合规 / 宿主不认映射 → 这局用默认键位照常起，不让玩家先去重新打包
