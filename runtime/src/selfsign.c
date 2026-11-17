@@ -306,7 +306,7 @@ static uint8_t *slurp(const char *p, size_t *n) {
 //   identity.json 最后改名 = 三份齐了。App 启动时（s2a_selfsign_probe 开头，构造期）导入钥匙串（本 App 访问组、首次解锁后、仅本机），
 //   确认能配成签名身份（真机 11-17 一台测试 iPhone：分别 SecItemAdd 的私钥与证书配得上）→ 删 incoming/ 三份 → 写不含私钥的
 //   Library/Application Support/S2Arm/identity/current.json（电脑推送时读它判要不要重交）；
-//   证书 sha1 和上次不同就调 s2a_programs_resign_all（还没有就记一行）。任何一步失败：incoming/ 留着、写 identity/import_error.txt，起局照常
+//   证书换了不批量重签：起哪款签哪款（起局时按款重签）。任何一步失败：incoming/ 留着、写 identity/import_error.txt，起局照常
 #define SS_KC_LABEL "io.s2arm.selfsign.identity"
 static int kc_store_real(SecKeyRef k, SecCertificateRef c, char *why, size_t why_n) {   // 换掉旧的同标签两项再存；存后按身份取回核配得上
     CFStringRef label = CFSTR(SS_KC_LABEL);
@@ -334,8 +334,6 @@ static int (*g_kc_store)(SecKeyRef, SecCertificateRef, char *, size_t) = kc_stor
 #ifdef S2A_UNIT_TEST
 void s2a_identity_test_store(int (*f)(SecKeyRef, SecCertificateRef, char *, size_t)) { g_kc_store = f ? f : kc_store_real; }   // 单测换掉钥匙串（不碰本机钥匙串、不弹授权框）
 #endif
-// 弱链接[host,nvntest]：s2a_programs_resign_all（通用壳程序包清单侧，还没有时只记一行）
-int s2a_programs_resign_all(const char *cert_sha1) __attribute__((weak_import));
 static void json_str(const char *j, const char *key, char *out, size_t n) {   // 取 "key":"值"（只认这一种写法；电脑侧 json.dumps 写的）
     out[0] = 0; char pat[64]; snprintf(pat, sizeof pat, "\"%s\"", key); const char *p = j ? strstr(j, pat) : NULL; if (!p) return;
     p = strchr(p + strlen(pat), ':'); if (!p) return; p++; while (*p == ' ') p++; if (*p != '"') return; p++;
@@ -376,7 +374,7 @@ int s2a_identity_import(const char *home) {
     if (write_file(cur, cj)) LOG("【黄】签名身份已进钥匙串，但 current.json 写不进（电脑下次推送会重交一次）");
     int changed = strcasecmp(prev, sha) != 0;
     LOG("签名身份已导入钥匙串：团队 %s、证书 sha1 %s（%s）；incoming/ 已删", team[0] ? team : "?", sha, !prev[0] ? "第一次" : changed ? "换了证书" : "同一张证书");
-    if (changed && prev[0]) { if (s2a_programs_resign_all) s2a_programs_resign_all(sha); else LOG("【黄】换了签名证书，要全部重签程序包，但重签入口还没接（s2a_programs_resign_all）"); }
+    if (changed && prev[0]) LOG("签名证书换了：各款不批量重签，玩家起哪款、起局时发现签名证书不同就当场重签那一款（维护者 0.6.0 总原则：点了才做、只做这一款）");
     return 1;
 }
 
