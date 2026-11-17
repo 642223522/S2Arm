@@ -357,12 +357,5 @@ public sealed partial class EnvironmentWindow
 
     private static string? GetDiagCode(LibraryJobOutput job) => DiagnosticCode(job.Report.Diagnostics);
 
-    private static string? DiagnosticCode(System.Text.Json.JsonElement diagnostics)
-    {
-        if (diagnostics.ValueKind == System.Text.Json.JsonValueKind.Array)
-            foreach (var d in diagnostics.EnumerateArray())
-                if (d.TryGetProperty("code", out var code) && code.GetString() is { Length: > 0 } c)
-                    return c;
-        return null;
-    }
+    private static string? DiagnosticCode(System.Text.Json.JsonElement diagnostics) => LibraryJobResult.FailureCodeOf(diagnostics);
 }

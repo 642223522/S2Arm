@@ -45,13 +45,13 @@ static void boot(int docked, const char *from) {
     LOG("档位梯子：运行模式 %s（%s），梯子不改", g_top_docked ? "主机" : "掌机", from);
 }
 // 苹果起局（host_main.c host_run，iOS 画面设置注入之后、服务层与宽屏装表读 S2A_DOCKED 之前）：
-//   此刻环境里的 S2A_DOCKED 就是玩家选的运行模式（iOS 设置页写的，缺省掌机；Mac 启动器缺省主机）；没有 = 主机，Mac 的缺省。
+//   此刻环境里的 S2A_DOCKED 就是玩家选的运行模式（iOS 设置页 / Mac 启动器写的）；没有 = 掌机，同共用设置定义表
+//   launchers/shared/game_settings.v1.json 的 docked 缺省（两端都是掌机），也同服务层、直连 dm_opmode、宽屏装表对「没设」的理解，所以不补写。
 //   固定档位的测量局关梯子（S2A_LADDER=0，自动化局缺省关）
 void s2a_ql_boot(void) {
     if (!ladder_on()) return;
     const char *d = getenv("S2A_DOCKED");
-    if (!d) setenv("S2A_DOCKED", "1", 1);   // 没设 = 主机（Mac 缺省），服务层 / 宽屏装表读到的与上限一致
-    boot(d ? strcmp(d, "1") == 0 : 1, d ? "玩家设置" : "没设，按主机");
+    boot(d && strcmp(d, "1") == 0, d ? "玩家设置" : "没设，按掌机（共用设置表缺省）");
 }
 // 安卓起局（android/native/runtime/runtime.c，#528 第 6 项）：运行模式由 App 经服务请求的 console_mode 给（0 掌机 / 1 主机，缺省掌机），
 //   不经环境变量 S2A_DOCKED。这里不读也不写 S2A_DOCKED：上面那个入口没设时会写成 1，安卓掌机局的服务层与宽屏装表就被带成主机
@@ -83,8 +83,9 @@ void s2a_ql_host_frame(uint64_t now, int game, uint64_t dt, int game_itv) {
     if (s2a_ql_stable_now()) { save(S2A_QL_FPS, s2a_ql_tier()); LOG("档位梯子：%s 稳住 2 分钟，记成本机本款的最后稳定档", tier_name(s2a_ql_tier())); }
     if (t < 0) return;
     double fps, slow, gpu; int th; s2a_ql_last(&fps, &slow, &gpu, &th); int why = s2a_ql_why();
-    LOG("档位梯子：换到 %s（%s；上个窗口 %.1f 帧/秒、慢帧 %.1f%%、GPU 忙 %.0f%%、热状态 %d）", tier_name(t),
-        why == S2A_QL_WHY_FPS ? "局内帧率达不到本档目标" : "GPU 余量够 2 分钟，升一档", fps, slow, gpu, th);
+    LOG("档位梯子：换到 %s（%s；上个窗口 %.1f 帧/秒、慢帧 %.1f%%、GPU 忙 %.0f%%、热状态 %d）%s", tier_name(t),
+        why == S2A_QL_WHY_FPS ? "局内帧率达不到本档目标" : "GPU 余量够 2 分钟，升一档", fps, slow, gpu, th,
+        s2a_ql_cpu_bound() ? "；GPU 没跑满，是 CPU 跟不上：本局不再按 GPU 余量升回上一档" : "");
     if (why != S2A_QL_WHY_UP) save(S2A_QL_FPS, t);   // 降档立刻记（上一档不稳）；升档等稳住 2 分钟再记
     apply(t, 0);
 }

@@ -7,7 +7,6 @@
 // 输入可以已有签名（ad-hoc 或别的证书）：在原 LC_CODE_SIGNATURE 处截断、按新签名大小改该命令与 __LINKEDIT 尺寸后重写，代码页本身不动。
 #include <CommonCrypto/CommonDigest.h>
 #include <Security/Security.h>
-#include <mach-o/loader.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,6 +14,16 @@
 #include <time.h>
 #include "native.h"
 #include <sys/stat.h>
+#include <strings.h>
+#include <unistd.h>
+
+// Mach-O 文件格式里用到的几样（照 <mach-o/loader.h> 的布局，按文件格式自己写，不包含苹果系统头：分层规则 R-02，共用文件不直接包含苹果头）
+enum { SS_MH_MAGIC_64 = 0xfeedfacf, SS_MH_EXECUTE = 0x2, SS_CPU_TYPE_ARM64 = 0x0100000c, SS_LC_SEGMENT_64 = 0x19, SS_LC_CODE_SIGNATURE = 0x1d };
+struct ss_mach_header_64 { uint32_t magic; int32_t cputype, cpusubtype; uint32_t filetype, ncmds, sizeofcmds, flags, reserved; };
+struct ss_load_command { uint32_t cmd, cmdsize; };
+struct ss_segment_command_64 { uint32_t cmd, cmdsize; char segname[16]; uint64_t vmaddr, vmsize, fileoff, filesize; int32_t maxprot, initprot; uint32_t nsects, flags; };
+struct ss_linkedit_data_command { uint32_t cmd, cmdsize, dataoff, datasize; };
+_Static_assert(sizeof(struct ss_mach_header_64) == 32 && sizeof(struct ss_segment_command_64) == 72 && sizeof(struct ss_linkedit_data_command) == 16, "Mach-O 结构与文件格式不符");
 
 #define CS_PAGE_SHIFT 14
 #define CS_PAGE (1u << CS_PAGE_SHIFT)
@@ -206,17 +215,17 @@ int s2a_selfsign_identity(const void *p12, size_t n, const char *password, SecKe
 int s2a_selfsign_macho(const uint8_t *in, size_t n, const char *ident, const char *team, const char *appid, SecKeyRef key, CFArrayRef chain, uint8_t **out, size_t *out_n, char *why, size_t why_n) {
 #define FAIL(...) do { snprintf(why, why_n, __VA_ARGS__); free(cd.p); free(cms.p); free(req.p); free(sb.p); free(o.p); free(ex.p); free(ed.p); return -1; } while (0)
     buf cd = {0}, cms = {0}, req = {0}, sb = {0}, o = {0}, ex = {0}, ed = {0};
-    if (n < sizeof(struct mach_header_64)) FAIL("文件太小");
-    const struct mach_header_64 *mh = (const void *)in;
-    if (mh->magic != MH_MAGIC_64 || mh->cputype != CPU_TYPE_ARM64) FAIL("不是 arm64 单架构 Mach-O（magic %#x）", mh->magic);
-    const uint8_t *lc = in + sizeof *mh; struct linkedit_data_command *sig = NULL; struct segment_command_64 *le = NULL; uint64_t text_off = 0, text_size = 0;
+    if (n < sizeof(struct ss_mach_header_64)) FAIL("文件太小");
+    const struct ss_mach_header_64 *mh = (const void *)in;
+    if (mh->magic != SS_MH_MAGIC_64 || mh->cputype != SS_CPU_TYPE_ARM64) FAIL("不是 arm64 单架构 Mach-O（magic %#x）", mh->magic);
+    const uint8_t *lc = in + sizeof *mh; struct ss_linkedit_data_command *sig = NULL; struct ss_segment_command_64 *le = NULL; uint64_t text_off = 0, text_size = 0;
     for (uint32_t i = 0; i < mh->ncmds; i++) {
-        const struct load_command *c = (const void *)lc;
-        if (c->cmd == LC_CODE_SIGNATURE) sig = (void *)c;
-        if (c->cmd == LC_SEGMENT_64) { struct segment_command_64 *s = (void *)c; if (!strcmp(s->segname, "__LINKEDIT")) le = s; if (!strcmp(s->segname, "__TEXT")) { text_off = s->fileoff; text_size = s->filesize; } }
+        const struct ss_load_command *c = (const void *)lc;
+        if (c->cmd == SS_LC_CODE_SIGNATURE) sig = (void *)c;
+        if (c->cmd == SS_LC_SEGMENT_64) { struct ss_segment_command_64 *s = (void *)c; if (!strcmp(s->segname, "__LINKEDIT")) le = s; if (!strcmp(s->segname, "__TEXT")) { text_off = s->fileoff; text_size = s->filesize; } }
         lc += c->cmdsize;
     }
-    if (!sig || !le) FAIL("没有 LC_CODE_SIGNATURE / __LINKEDIT（要先有一份签名，ad-hoc 也行）");
+    if (!sig || !le) FAIL("没有 SS_LC_CODE_SIGNATURE / __LINKEDIT（要先有一份签名，ad-hoc 也行）");
     uint32_t limit = sig->dataoff;
     if (limit > n || le->fileoff > limit) FAIL("签名偏移越界");
     // 带权限时签名标识取 appid 的包名部分：免费团队按描述文件校验，libmis 拿「团队号.签名标识」对描述文件的 application-identifier
@@ -248,13 +257,13 @@ int s2a_selfsign_macho(const uint8_t *in, size_t n, const char *ident, const cha
     uint32_t est = 0;
     for (int pass = 0; pass < 2; pass++) {
         free(cd.p); cd = (buf){0}; free(cms.p); cms = (buf){0};
-        if (pass == 1) {   // 按估好的大小改 LC_CODE_SIGNATURE 与 __LINKEDIT
-            struct linkedit_data_command *s2 = (void *)(code + ((const uint8_t *)sig - in));
-            struct segment_command_64 *l2 = (void *)(code + ((const uint8_t *)le - in));
+        if (pass == 1) {   // 按估好的大小改 SS_LC_CODE_SIGNATURE 与 __LINKEDIT
+            struct ss_linkedit_data_command *s2 = (void *)(code + ((const uint8_t *)sig - in));
+            struct ss_segment_command_64 *l2 = (void *)(code + ((const uint8_t *)le - in));
             s2->datasize = est; l2->filesize = (uint64_t)limit + est - l2->fileoff;
             l2->vmsize = (l2->filesize + CS_PAGE - 1) & ~(uint64_t)(CS_PAGE - 1);
         }
-        if (build_cd(code, limit, ident, team, req_hash, ents ? ent_hash : NULL, ents ? ent_der_hash : NULL, text_off, text_size, mh->filetype == MH_EXECUTE ? 1 : 0, &cd)) { free(code); FAIL("出 CodeDirectory 失败"); }
+        if (build_cd(code, limit, ident, team, req_hash, ents ? ent_hash : NULL, ents ? ent_der_hash : NULL, text_off, text_size, mh->filetype == SS_MH_EXECUTE ? 1 : 0, &cd)) { free(code); FAIL("出 CodeDirectory 失败"); }
         uint8_t h[32]; CC_SHA256(cd.p, (CC_LONG)cd.n, h);
         if (build_cms(h, key, chain, &cms)) { free(code); FAIL("出 CMS 签名失败（私钥签不了或证书解析失败）"); }
         uint32_t need = (uint32_t)(12 + nblob * 8 + cd.n + req.n + ents_n + cms.n + 8);
@@ -291,7 +300,88 @@ static uint8_t *slurp(const char *p, size_t *n) {
     uint8_t *b = l > 0 ? malloc((size_t)l) : NULL; if (b && fread(b, 1, (size_t)l, f) != (size_t)l) { free(b); b = NULL; }
     fclose(f); *n = (size_t)l; return b;
 }
+// ---------- 签名身份交接（0.6.0 通用壳，电脑侧 pack/jobs/install.py deliver_identity）----------
+// 电脑经 USB 把私钥（PKCS#1 RSAPrivateKey DER）与叶证书（DER）放进 App 数据容器 Library/Application Support/S2Arm/identity/incoming/{key.der, cert.der, identity.json}
+//   （维护者定：私钥是玩家自己的，进他自己账号的加密备份无妨；App 一打开就导入、立刻删，躺的时间很短），
+//   identity.json 最后改名 = 三份齐了。App 启动时（s2a_selfsign_probe 开头，构造期）导入钥匙串（本 App 访问组、首次解锁后、仅本机），
+//   确认能配成签名身份（真机 11-17 一台测试 iPhone：分别 SecItemAdd 的私钥与证书配得上）→ 删 incoming/ 三份 → 写不含私钥的
+//   Library/Application Support/S2Arm/identity/current.json（电脑推送时读它判要不要重交）；
+//   证书换了不批量重签：起哪款签哪款（起局时按款重签）。任何一步失败：incoming/ 留着、写 identity/import_error.txt，起局照常
+#define SS_KC_LABEL "io.s2arm.selfsign.identity"
+static int kc_store_real(SecKeyRef k, SecCertificateRef c, char *why, size_t why_n) {   // 换掉旧的同标签两项再存；存后按身份取回核配得上
+    CFStringRef label = CFSTR(SS_KC_LABEL);
+    const void *dk[] = {kSecClass, kSecAttrLabel}, *dv1[] = {kSecClassKey, label}, *dv2[] = {kSecClassCertificate, label};
+    CFDictionaryRef d1 = CFDictionaryCreate(NULL, dk, dv1, 2, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks), d2 = CFDictionaryCreate(NULL, dk, dv2, 2, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    SecItemDelete(d1); SecItemDelete(d2); CFRelease(d1); CFRelease(d2);
+    const void *ak[] = {kSecClass, kSecValueRef, kSecAttrLabel, kSecAttrAccessible};
+    const void *av1[] = {kSecClassKey, k, label, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly}, *av2[] = {kSecClassCertificate, c, label, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly};
+    CFDictionaryRef q1 = CFDictionaryCreate(NULL, ak, av1, 4, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks), q2 = CFDictionaryCreate(NULL, ak, av2, 4, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    OSStatus s1 = SecItemAdd(q1, NULL), s2 = SecItemAdd(q2, NULL); CFRelease(q1); CFRelease(q2);
+    if (s1 || s2) { snprintf(why, why_n, "存钥匙串失败（私钥 %d、证书 %d）", (int)s1, (int)s2); return -1; }
+    const void *qk[] = {kSecClass, kSecReturnRef, kSecMatchLimit}, *qv[] = {kSecClassIdentity, kCFBooleanTrue, kSecMatchLimitAll};
+    CFDictionaryRef q3 = CFDictionaryCreate(NULL, qk, qv, 3, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFTypeRef got = NULL; OSStatus s3 = SecItemCopyMatching(q3, &got); CFRelease(q3);
+    CFDataRef want = SecCertificateCopyData(c); int ok = 0;
+    for (CFIndex i = 0; s3 == errSecSuccess && got && CFGetTypeID(got) == CFArrayGetTypeID() && i < CFArrayGetCount(got) && !ok; i++) {
+        SecCertificateRef ic = NULL; if (SecIdentityCopyCertificate((SecIdentityRef)CFArrayGetValueAtIndex(got, i), &ic) || !ic) continue;
+        CFDataRef dd = SecCertificateCopyData(ic); ok = dd && CFEqual(dd, want); if (dd) CFRelease(dd); CFRelease(ic);
+    }
+    if (got) CFRelease(got); CFRelease(want);
+    if (!ok) { snprintf(why, why_n, "存进钥匙串了，但私钥和证书配不成签名身份（取回 %d）", (int)s3); return -1; }
+    return 0;
+}
+static int (*g_kc_store)(SecKeyRef, SecCertificateRef, char *, size_t) = kc_store_real;
+#ifdef S2A_UNIT_TEST
+void s2a_identity_test_store(int (*f)(SecKeyRef, SecCertificateRef, char *, size_t)) { g_kc_store = f ? f : kc_store_real; }   // 单测换掉钥匙串（不碰本机钥匙串、不弹授权框）
+#endif
+static void json_str(const char *j, const char *key, char *out, size_t n) {   // 取 "key":"值"（只认这一种写法；电脑侧 json.dumps 写的）
+    out[0] = 0; char pat[64]; snprintf(pat, sizeof pat, "\"%s\"", key); const char *p = j ? strstr(j, pat) : NULL; if (!p) return;
+    p = strchr(p + strlen(pat), ':'); if (!p) return; p++; while (*p == ' ') p++; if (*p != '"') return; p++;
+    size_t i = 0; while (*p && *p != '"' && i + 1 < n) out[i++] = *p++; out[i] = 0;
+}
+static int write_file(const char *path, const char *text) {
+    char tmp[1100]; snprintf(tmp, sizeof tmp, "%s.tmp", path); FILE *f = fopen(tmp, "w"); if (!f) return -1;
+    int ok = fputs(text, f) >= 0; if (fclose(f)) ok = 0; return ok && !rename(tmp, path) ? 0 : -1;
+}
+// 返回 0 = 没有要导入的；1 = 导入成功；-1 = 失败（已写 import_error.txt）
+int s2a_identity_import(const char *home) {
+    if (!home) return 0;
+    char dir[1024], inc[1100], pj[1200], pk[1200], pc[1200], cur[1200], err[1200];
+    snprintf(dir, sizeof dir, "%s/Library/Application Support/S2Arm/identity", home); snprintf(inc, sizeof inc, "%s/incoming", dir);
+    snprintf(pj, sizeof pj, "%s/identity.json", inc); snprintf(pk, sizeof pk, "%s/key.der", inc); snprintf(pc, sizeof pc, "%s/cert.der", inc);
+    snprintf(cur, sizeof cur, "%s/current.json", dir); snprintf(err, sizeof err, "%s/import_error.txt", dir);
+    size_t jn = 0, kn = 0, cn = 0; uint8_t *jb = slurp(pj, &jn); if (!jb) return 0;   // 没有 identity.json = 没交、或还没交齐
+    for (char *q = (char *)dir + 1; *q; q++) if (*q == '/') { *q = 0; mkdir(dir, 0755); *q = '/'; } mkdir(dir, 0755);   // current.json / import_error.txt 的目录
+    char *js = realloc(jb, jn + 1); if (!js) { free(jb); return 0; } js[jn] = 0;
+    char team[64], want_sha[64], why[256] = {0}; json_str(js, "team", team, sizeof team); json_str(js, "cert_sha1", want_sha, sizeof want_sha); free(js);
+    uint8_t *kb = slurp(pk, &kn), *cb = slurp(pc, &cn); SecKeyRef k = NULL; SecCertificateRef c = NULL; int rc = -1; char sha[41] = {0};
+    if (!kb || !cb) snprintf(why, sizeof why, "identity.json 在，但缺 %s", !kb ? "key.der" : "cert.der");
+    else {
+        CFDataRef kd = CFDataCreate(NULL, kb, (CFIndex)kn), cd = CFDataCreate(NULL, cb, (CFIndex)cn);
+        const void *ak[] = {kSecAttrKeyType, kSecAttrKeyClass}, *av[] = {kSecAttrKeyTypeRSA, kSecAttrKeyClassPrivate};
+        CFDictionaryRef ka = CFDictionaryCreate(NULL, ak, av, 2, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        k = SecKeyCreateWithData(kd, ka, NULL); c = SecCertificateCreateWithData(NULL, cd); CFRelease(ka); CFRelease(kd); CFRelease(cd);
+        uint8_t h[CC_SHA1_DIGEST_LENGTH]; CC_SHA1(cb, (CC_LONG)cn, h); for (int i = 0; i < CC_SHA1_DIGEST_LENGTH; i++) snprintf(sha + 2 * i, 3, "%02x", h[i]);
+        if (!k || !c) snprintf(why, sizeof why, "%s读不了（不是 PKCS#1 RSA 私钥 / DER 证书）", !k ? "私钥" : "证书");
+        else if (want_sha[0] && strcasecmp(want_sha, sha)) snprintf(why, sizeof why, "证书 sha1 对不上（identity.json %s，实际 %s）", want_sha, sha);
+        else rc = g_kc_store(k, c, why, sizeof why);
+    }
+    if (kb) { memset(kb, 0, kn); free(kb); } free(cb); if (k) CFRelease(k); if (c) CFRelease(c);
+    if (rc) { char t[400]; snprintf(t, sizeof t, "%s\n", why); write_file(err, t); LOG("【红】签名身份导入失败：%s（incoming/ 留着，电脑下次推送时说明；起局照常用电脑签好的）", why); return -1; }
+    char prev[64] = {0}; { size_t pn = 0; uint8_t *pb = slurp(cur, &pn); char *ps = pb ? realloc(pb, pn + 1) : NULL; if (ps) { ps[pn] = 0; json_str(ps, "cert_sha1", prev, sizeof prev); free(ps); } else free(pb); }
+    unlink(pk); unlink(pc); unlink(pj); unlink(err); rmdir(inc);   // 先删私钥，再写 current.json
+    char cj[300]; snprintf(cj, sizeof cj, "{\"schema\": 1, \"team\": \"%s\", \"cert_sha1\": \"%s\", \"imported\": %ld}\n", team, sha, (long)time(NULL));
+    if (write_file(cur, cj)) LOG("【黄】签名身份已进钥匙串，但 current.json 写不进（电脑下次推送会重交一次）");
+    int changed = strcasecmp(prev, sha) != 0;
+    LOG("签名身份已导入钥匙串：团队 %s、证书 sha1 %s（%s）；incoming/ 已删", team[0] ? team : "?", sha, !prev[0] ? "第一次" : changed ? "换了证书" : "同一张证书");
+    if (changed && prev[0]) LOG("签名证书换了：各款不批量重签，玩家起哪款、起局时发现签名证书不同就当场重签那一款（维护者 0.6.0 总原则：点了才做、只做这一款）");
+    return 1;
+}
+
+// 弱链接[host,nvntest]：s2a_prov_signing_ids_self（ios/prov_expiry.m 只在 iOS App 里；Mac 宿主与单测链接行按这行放行未定义）
+int s2a_prov_signing_ids_self(char *team, size_t team_n, char *appid, size_t appid_n) __attribute__((weak_import));   // ios/prov_expiry.m（只在 iOS App 里）
 void s2a_selfsign_probe(void) {
+    s2a_identity_import(getenv("HOME"));   // 电脑交来的签名身份（有才做；没有立即返回）
     const char *p12 = getenv("S2A_SELFSIGN_P12"), *in = getenv("S2A_SELFSIGN_IN"), *out = getenv("S2A_SELFSIGN_OUT");
     if (!p12 || !in || !out) return;
     char pp[1024], pi[1024], po[1024], why[256] = {0};
@@ -318,7 +408,15 @@ void s2a_selfsign_probe(void) {
     }
     clock_gettime(CLOCK_MONOTONIC, &t1);
     uint8_t *ob = NULL; size_t on = 0;
-    rc = s2a_selfsign_macho(ib, n, NULL, getenv("S2A_SELFSIGN_TEAM"), getenv("S2A_SELFSIGN_APPID"), key, chain, &ob, &on, why, sizeof why);
+    // 团队号 / appid：开发用环境变量优先；没给就读包里的描述文件（ios/prov_expiry.m，产品路径；Mac 宿主与单测没有它，弱引用取不到就按没给）
+    const char *team = getenv("S2A_SELFSIGN_TEAM"), *appid = getenv("S2A_SELFSIGN_APPID"); char pt[64], pa[512];
+    if (!(team && *team) && s2a_prov_signing_ids_self) {
+        int pr = s2a_prov_signing_ids_self(pt, sizeof pt, pa, sizeof pa);
+        if (pr >= 0) { team = pt; appid = pa; LOG("手机端自签：团队号 %s、appid %s 取自包里的描述文件", pt, pa); }
+        if (pr == 1) LOG("【黄】手机端自签：描述文件的 application-identifier 和本包包名拼出的 %s 不同，照常用本包包名（系统可能拒，见上一行）", pa);
+        if (pr < 0) LOG("【黄】手机端自签：包里读不到描述文件的团队号（TrollStore / ad-hoc 包没有），照常不带团队号与权限签");
+    }
+    rc = s2a_selfsign_macho(ib, n, NULL, team, appid, key, chain, &ob, &on, why, sizeof why);
     clock_gettime(CLOCK_MONOTONIC, &t2);
     long nchain = (long)CFArrayGetCount(chain); free(ib); CFRelease(key); CFRelease(chain);
     if (rc) { LOG("【红】手机端自签：签名失败：%s", why); return; }

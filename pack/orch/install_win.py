@@ -234,7 +234,7 @@ def plume_key_path(team, appdata=None):
 
 def pkcs1_der(pem):
     """私钥 PEM → RSAPrivateKey（PKCS#1）DER。key.pem 是 PKCS#8（BEGIN PRIVATE KEY）：取出里面 OCTET STRING 包着的那份；已是 PKCS#1（BEGIN RSA PRIVATE KEY）就原样。
-    读不了 → None。手机端 SecKeyCreateWithData 收的就是 PKCS#1（开发乙 11-17 真机验过）"""
+    读不了 → None。手机端 SecKeyCreateWithData 收的就是 PKCS#1（11-17 真机验过）"""
     import base64
     try:
         body = ''.join(l for l in pem.splitlines() if l and not l.startswith('-----'))

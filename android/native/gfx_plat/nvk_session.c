@@ -91,8 +91,10 @@ int nvk_session_open(struct s2a_vk_device *dev, const char *cache_dir, char *why
     { extern void nvn_dirty_set_chunk_pages(uint32_t); extern int nvn_dirty_blocks_configure(int); extern int nvn_dirty_log_configure(int); extern int nvn_plat_flag(const char *, int);
       int cp = nvn_plat_flag("nvk_chunk_pages", 64);
       nvn_dirty_set_chunk_pages(cp > 0 ? (uint32_t)cp : 0); __android_log_print(ANDROID_LOG_INFO, TAG, "nvk session: 写跟踪保护分块 %d 页", cp);
-      if (nvn_plat_flag("nvk_buf_blocks", 0) && !nvn_dirty_blocks_configure(1))
-          __android_log_print(ANDROID_LOG_WARN, TAG, "【黄】写跟踪块摘要未启用：已有登记池或所需原子操作非无锁，继续逐页核对");
+      if (nvn_plat_flag("nvk_buf_blocks", 0)) {
+          if (nvn_dirty_blocks_configure(1)) __android_log_print(ANDROID_LOG_INFO, TAG, "回放缓冲按块核查：开");
+          else __android_log_print(ANDROID_LOG_WARN, TAG, "【黄】写跟踪块摘要未启用：已有登记池或所需原子操作非无锁，继续逐页核对");
+      }
       // 脏页追加日志（#1501 A②，debug.s2a.nvk_buf_dirtylog，缺省关）：和块摘要一样必须在登记任何池之前配置；回放核心按同一开关决定用不用
       if (nvn_plat_flag("nvk_buf_dirtylog", 0) && !nvn_dirty_log_configure(1))
           __android_log_print(ANDROID_LOG_WARN, TAG, "【黄】脏页追加日志未启用：已有登记池或所需原子操作非无锁，继续逐页核对"); }

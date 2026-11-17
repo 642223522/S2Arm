@@ -10,6 +10,27 @@ public sealed record LibraryJobResult(string State, string Message, JsonElement 
 {
     public bool Succeeded => State == "succeeded";
 
+    /// <summary>让这次作业停下的那条诊断的码（同 Mac JobOutcome.failureDiagnostic）。</summary>
+    public string? FailureCode => FailureCodeOf(Diagnostics);
+
+    /// <summary>
+    /// 作业层把终态错误追加在诊断列表最后（pack/jobs/core.py report_failure），前面可能有中途记的警告。
+    /// 取最后一条 error 级的码，没有就取最后一条带码的。原先取第一条：更新 iPhone 时先记了补着色器的警告，
+    /// 停装码 save_backup_failed 排在后面，认不出、不问「仍然继续」。
+    /// </summary>
+    public static string? FailureCodeOf(JsonElement diagnostics)
+    {
+        if (diagnostics.ValueKind != JsonValueKind.Array) return null;
+        string? lastError = null, last = null;
+        foreach (var d in diagnostics.EnumerateArray())
+        {
+            if (d.ValueKind != JsonValueKind.Object || !d.TryGetProperty("code", out var code) || code.ValueKind != JsonValueKind.String || code.GetString() is not { Length: > 0 } c) continue;
+            last = c;
+            if (d.TryGetProperty("severity", out var s) && s.ValueKind == JsonValueKind.String && s.GetString() == "error") lastError = c;
+        }
+        return lastError ?? last;
+    }
+
     // Jobs NDJSON is not the oneclick ev/t stream. A terminal event alone is not process success.
     //   整段输出也逐行交 JobEventReader：事件流规则只有那一份（剃刀 W17：原先这里另写一遍，改一处漏一处）
     public static LibraryJobResult Parse(string ndjson, int exitCode, string jobId, string operation)

@@ -424,11 +424,11 @@ static void dq_tune(void) {
     atomic_store_explicit(&g_dq_wake_bytes, kb > 0 ? (uint64_t)kb << 10 : 0, memory_order_relaxed);
     atomic_store_explicit(&g_dq_stat, nvn_plat_flag("nvk_gputime", 0) != 0, memory_order_relaxed);
 }
-// 开关（调试属性 nvk_dq，缺省关）：在提交处读——那里队列刚清空；别的线程这时还有没做完的记录也没关系，它之后的直接调用会先清空队列。
+// 开关（调试属性 nvk_dq，缺省开——11-17 旷野之息神庙场景调试包关 / 开 / 关交错：回放每帧 39.2 / 28.1 / 39.0 ms、帧率 18.4 / 23.5 / 18.4）：在提交处读——那里队列刚清空；别的线程这时还有没做完的记录也没关系，它之后的直接调用会先清空队列。
 static void dq_poll(void) {
     static _Atomic uint32_t n; if (!g_dq_ring || (atomic_fetch_add_explicit(&n, 1, memory_order_relaxed) & 63)) return;
     dq_tune();
-    int on = nvn_plat_flag("nvk_dq", 0) != 0;
+    int on = nvn_plat_flag("nvk_dq", 1) != 0;
     if (on != DQ_ON()) { atomic_store_explicit(&g_dq_on, on, memory_order_relaxed); VKLOG("两级回放%s（debug.s2a.nvk_dq）", on ? "开：vkCmd* 调用交给录制线程" : "关：回放线程自己录"); }
 }
 // 设备建好之后、第一处 Vulkan 命令之前调一次。取不到环内存就一直按「关」走。
@@ -450,7 +450,7 @@ static void vk_dq_init(VkDevice dev) {
     if (rc) { free(ring); VKLOG("【红】两级回放：录制线程起不来，回放线程自己录"); return; }
     g_dq_rec_th = t;
     g_dq_ring = ring;
-    atomic_store_explicit(&g_dq_on, nvn_plat_flag("nvk_dq", 0) != 0, memory_order_relaxed);   // 起始值；之后由 dq_poll 在提交处跟着开关变
+    atomic_store_explicit(&g_dq_on, nvn_plat_flag("nvk_dq", 1) != 0, memory_order_relaxed);   // 起始值；之后由 dq_poll 在提交处跟着开关变
 }
 
 // 销毁：队列里可能还有引用这个对象的调用没做（录了命令、没提交就放弃的那一段——同步模型下录完再销毁无害，这里得先把队列做完）。
