@@ -1129,6 +1129,21 @@ S2ARM_README_TEXT = {
 }
 
 
+# 文件夹里导出过通用 S2Arm.ipa（export_shell_ipa）时，说明最前面加这一句；没导出就不出现（11-17 维护者定稿原话）
+S2ARM_README_IPA = {
+    "zh": "S2Arm.ipa：用你自己的签名工具（AltStore、SideStore 等）签好装到手机。只装一次，S2Arm 升级时再装一次。\n",  # 非玩家句（说明文件按界面语言直接写，英文见下一项）
+    "en": "S2Arm.ipa: sign it with your own tool (AltStore, SideStore, etc.) and install it on your iPhone. You only need to do this once, and again when S2Arm updates.\n",
+}
+
+
+def write_s2arm_readme(folder, lang):
+    """「S2Arm 游戏包」文件夹的说明：导出 .s2arm、导出通用 S2Arm.ipa 都按这一处写（谁后写都一样）；文件夹里有 S2Arm.ipa 才带 ipa 那句。→ 说明的路径"""
+    readme = folder / S2ARM_READMES[lang]
+    text = (S2ARM_README_IPA[lang] if (folder / "S2Arm.ipa").is_file() else "") + S2ARM_README_TEXT[lang]
+    readme.write_text(text, encoding="utf-8-sig" if os.name == "nt" else "utf-8")
+    return readme
+
+
 def s2arm_dir(c):
     for name in S2ARM_DIRS.values():
         if (c.library / name).is_dir():
@@ -1206,7 +1221,7 @@ def export_s2arm(c, gid):
     tmp.write_bytes(data)
     os.replace(tmp, out)
     lang = ui_lang(c)   # 这份文件夹的说明（玩家删了下次导出照样写回）
-    (folder / S2ARM_READMES[lang]).write_text(S2ARM_README_TEXT[lang], encoding="utf-8-sig" if os.name == "nt" else "utf-8")
+    write_s2arm_readme(folder, lang)
     game_img = Path(pack) / "game.img"
     return dict(gameId=gid, s2armPath=str(out), s2armBytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
                 resourcePath=str(game_img) if game_img.is_file() else "", exported=True)
@@ -1496,6 +1511,34 @@ def swap_export_dir(out, dest, old, tries=None, wait=None):
     return alt
 
 
+def export_shell_ipa(c):
+    """0.6.0 通用壳（program_pack.enabled）「导出通用 S2Arm.ipa」：只有壳、不带任何一款游戏（ipa.assemble_shell，同「安装 S2Arm」装的那个），未签名，
+    写成「S2Arm 游戏包」文件夹（s2arm_dir，和各款 .s2arm 同一处）里的 S2Arm.ipa，就地换掉上一份；同文件夹里别的东西不动。
+    0.5.x 的「S2Arm 自签导出」文件夹不碰。不读游戏库、不出游戏的程序包，所以游戏多少都一样快。玩家关了主屏小组件就去掉扩展再交（同 export_phone）。
+    结果字段同 export_phone（完成页照用），games / files 为空"""
+    import ipa as packer
+    c.begin("组 S2Arm（不带游戏）", 1, 2)
+    work, tmp = Path(tempfile.mkdtemp(prefix=".export-", dir=c.library)), None
+    try:
+        ipa, _, sid = packer.assemble_shell(c, dest=work / "assemble")
+        c.begin("写进「S2Arm 游戏包」文件夹", 2, 2)
+        folder = s2arm_dir(c)
+        folder.mkdir(parents=True, exist_ok=True)   # 玩家删了文件夹也照样重建
+        out = folder / "S2Arm.ipa"
+        tmp = folder / f".S2Arm.ipa.{os.getpid()}.partial"
+        if not (c.r.get("widget") is False and ipa_strip_widget(ipa, tmp)):
+            shutil.move(str(ipa), str(tmp))   # 临时目录和文件夹都在游戏库所在盘上：通常是改名
+        os.replace(tmp, out)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)   # 半路失败不留半个文件（换上去了就已不在）
+    lang = ui_lang(c)
+    readme = write_s2arm_readme(folder, lang)
+    return dict(exported=True, outputPath=str(folder), ipa=str(out), readme=str(readme), shellId=sid, sgrade=patches_results(c),
+                games=[], files=[], skipped=[], exportBytes=out.stat().st_size, fresh=[], reused=0, unwritten=[])
+
+
 def export_phone(c, gid=None):
     """导出，自己签名安装：本版壳 + 游戏库里能放进本壳、已出成单一 IMG 的各款组一个容器（ipa.assemble，同一键装），
     出未签名 S2Arm.ipa + 每款一个 <游戏名>.img + 说明到游戏库根「S2Arm 自签导出」（英文界面「S2Arm Self-Sign Export」）。不连手机、不签名。
@@ -1503,7 +1546,10 @@ def export_phone(c, gid=None):
     带 gid 时 .img 只新写这一款，别的款能沿用上次导出的就沿用、不能就不写（结果 unwritten 点名）；None 时照旧每款都写。
     放不进本壳（要按新版重新出包）/ 还不是单一 IMG 形态的别的款不带，结果 skipped 点名"""
     import ipa as packer
+    import program_pack
     gid = gid.upper() if gid else None
+    if gid is None and program_pack.enabled(c):   # 0.6.0 通用壳：「导出新版 S2Arm」只出不带游戏的通用 S2Arm.ipa（游戏走 .s2arm）
+        return export_shell_ipa(c)
     c.begin("核对要导出的游戏", 1, 4)
     sid = packer.current_shell_id(c)
     if gid:
