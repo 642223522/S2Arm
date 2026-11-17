@@ -222,9 +222,9 @@ ios: ios-ns2pro
 	  /usr/bin/plutil -insert CFBundleLocalizations -json '["en","en-GB","zh-Hans","zh-Hant","ja","ko","fr","fr-CA","de","it","es","es-419","pt","pt-BR","nl","ru","pl","th","sv"]' $(IOS_APP)/Info.plist; \
 	  /usr/bin/plutil -insert CFBundleDevelopmentRegion -string en $(IOS_APP)/Info.plist; \
 	  if [ $(S2A_APPLE_OS) = ios ]; then \
-	  for k in UISupportedInterfaceOrientations UISupportedInterfaceOrientations~ipad; do /usr/bin/plutil -insert $$k -xml '<array><string>UIInterfaceOrientationLandscapeRight</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationPortrait</string></array>' $(IOS_APP)/Info.plist; done; \
+	  for k in UISupportedInterfaceOrientations UISupportedInterfaceOrientations~ipad; do /usr/bin/plutil -insert $$k -xml '<array><string>UIInterfaceOrientationLandscapeRight</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationPortraitUpsideDown</string></array>' $(IOS_APP)/Info.plist; done; \
 	  /usr/bin/plutil -insert UIRequiresFullScreen -bool YES $(IOS_APP)/Info.plist; /usr/bin/plutil -insert UIStatusBarHidden -bool YES $(IOS_APP)/Info.plist; \
-	  fi   # 只许横屏、全屏、无状态栏；以上文件共享 / 屏幕方向 / 主屏快捷项 / 高刷键只有 iPhone 有（Apple TV 不写，11-15）
+	  fi   # 方向四个都声明（竖屏倒置：Duo 镜头一侧朝下握也能竖屏分屏，#1364 应用层放开全部方向，但系统按 Info.plist 取交集，原先没写倒置就转不过去）；全屏、无状态栏；以上文件共享 / 屏幕方向 / 主屏快捷项 / 高刷键只有 iPhone 有（Apple TV 不写，11-15）
 	@[ $(S2A_APPLE_OS) != tvos ] || /usr/bin/plutil -insert UIUserInterfaceStyle -string Dark $(IOS_APP)/Info.plist   # 电视：深色界面（同电视系统缺省）
 	@/usr/bin/plutil -insert LSSupportsGameMode -bool YES $(IOS_APP)/Info.plist   # 声明支持系统游戏模式（10-20 维护者二分：动森整机 5.88 → 3.37 W、30 帧不变，性能核 3.9 → 2.2 GHz；旧 S2A 包有此键、S2Arm 漏了）
 	@/usr/bin/plutil -insert LSApplicationCategoryType -string public.app-category.games $(IOS_APP)/Info.plist   # 系统靠类别认出是游戏才进游戏模式（11-01 调研：LSSupportsGameMode 之外还要类别键）
