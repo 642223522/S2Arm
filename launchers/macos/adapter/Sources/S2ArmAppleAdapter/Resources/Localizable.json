@@ -4068,6 +4068,22 @@
   "en": "The backup is damaged, unsupported or contains unsafe paths. Restoration was refused."
  },
  {
+  "source": "备份里有文件校验对不上；手动恢复会跳过坏的那几个、保留当前存档里原来的，其余照常恢复。",
+  "en": "Some files in the backup failed the integrity check. A manual restore skips the damaged ones, keeps the current save's originals for them, and restores everything else."
+ },
+ {
+  "source": "确认之后当前存档又变了，已把当前进度另存一份恢复前副本，照常恢复。",
+  "en": "The current save changed after you confirmed. The current progress was saved as an extra pre-restore copy, and the restore continued."
+ },
+ {
+  "source": "备份文件 CRC 或 SHA-256 校验失败，已拒绝恢复。",
+  "en": "A backup file failed the CRC or SHA-256 check, so the restore was declined."
+ },
+ {
+  "source": "备份里有 {0} 个文件校验对不上（{1}），这几个不恢复、保留当前存档里原来的，其余照常恢复。",
+  "en": "{0} files in the backup failed the integrity check ({1}). Those files are not restored and the current save's originals are kept; everything else is restored."
+ },
+ {
   "source": "备份时间",
   "en": "Backup time"
  },
@@ -4144,8 +4160,16 @@
   "en": "The current save changed. Stop the game and check the backup again."
  },
  {
-  "source": "当前游戏存档将替换为已检查的备份。恢复前的存档会自动保留；游戏、用户或版本不符时不会恢复。",
-  "en": "The current save will be replaced with the checked backup. The previous save is retained automatically. A game, user or version mismatch prevents restoration."
+  "source": "当前游戏存档将替换为已检查的备份。恢复前的存档会自动保留；备份属于另一款游戏时不会恢复，用户或版本不符会先提示。",
+  "en": "The current game save will be replaced with the checked backup. The save from before the restore is kept automatically; a backup from a different game won't be restored, and a user or version mismatch is shown first."
+ },
+ {
+  "source": "备份与当前游戏版本或更新、DLC 组合不符，仍可恢复；游戏可能读不到这份进度，恢复前的存档会自动保留一份副本。",
+  "en": "The backup doesn't match the current game version, update or DLC combination. You can still restore it; the game may not be able to read this progress. The save from before the restore is kept automatically."
+ },
+ {
+  "source": "备份用户与当前存档用户不符，仍可恢复；恢复后当前用户的进度会换成备份里的，恢复前的存档会自动保留一份副本。",
+  "en": "The backup's users don't match the current save's users. You can still restore it; the current user's progress will be replaced with the one in the backup. The save from before the restore is kept automatically."
  },
  {
   "source": "恢复存档",

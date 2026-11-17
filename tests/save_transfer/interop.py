@@ -165,9 +165,17 @@ with tempfile.TemporaryDirectory(prefix="s2arm-public-save-interop-") as tempora
     assert snapshot(target) == exported
     print(f"PASS G05 -> G06 restore/export -> G05 restore; {p['fileCount']} files, directories, SHA256 and owners match")
 
-    def compare(path, code="save_invalid", *, root=source):
-        assert python_call("saveInspect", path=str(path), expected=code) == csharp_call(
-            "inspect", path, root=root, expected_code=code)
+    def compare(path, code="save_invalid", *, root=source, **extra):
+        assert python_call("saveInspect", path=str(path), expected=code, **extra) == csharp_call(
+            "inspect", path, root=root, expected_code=code, **extra)
+
+    # 维护者 11-17：版本 / DLC 组合、账号归属对不上不再拒绝手动恢复——两种实现都照常检查、各给一句提示（作业层 warning 诊断 + notice；
+    #   服务层 warnings）；带 sync（云存档自动同步）两边照旧以同一个码拒绝
+    def compare_warn(path, code, *, root=source):
+        compare(path, code, root=root, sync=True)
+        py = python_call("saveInspect", path=str(path))
+        assert py["notice"], py
+        assert len(csharp_call("inspect", path, root=root)["warnings"]) == 1
 
     def rewrite(name, mutate=None, extra=None, duplicate=False):
         path = scratch / (name + ".s2asave")
@@ -188,21 +196,21 @@ with tempfile.TemporaryDirectory(prefix="s2arm-public-save-interop-") as tempora
         return path
 
     compare(rewrite("wrong-game", lambda m: m["game"].update(id="0100000000000001")), "save_wrong_game")
-    compare(rewrite("wrong-version", lambda m: m["game"].update(version=2)), "save_version")
-    compare(rewrite("wrong-content", lambda m: m["game"].update(contentIdentity="0" * 64)), "save_version")
+    compare_warn(rewrite("wrong-version", lambda m: m["game"].update(version=2)), "save_version")
+    compare_warn(rewrite("wrong-content", lambda m: m["game"].update(contentIdentity="0" * 64)), "save_version")
     compare(rewrite("path-traversal", extra="payload/../escape"))
     compare(rewrite("duplicate-path", duplicate=True))
-    print("PASS both implementations reject wrong game/version/content, traversal and duplicate paths with identical reason codes")
+    print("PASS both implementations reject wrong game, traversal and duplicate paths with identical reason codes; version/content mismatch warns (sync rejects alike)")
 
     other = scratch / "other-user"
     subprocess.run([DOTNET, DRIVER, "--create", str(other), str(REPO), OTHER_USER], check=True, timeout=60)
     original = scratch / "original"
     shutil.move(source, original)
     shutil.copytree(other, source)
-    compare(python_archive, "save_wrong_user", root=other)
+    compare_warn(python_archive, "save_wrong_user", root=other)
     shutil.rmtree(source)
     shutil.move(original, source)
-    print("PASS both reject independently API-created different account owner: save_wrong_user")
+    print("PASS both warn on independently API-created different account owner (sync rejects alike: save_wrong_user)")
 
     # 本地玩家（#623）：一边多一个玩家（账号集合是包含关系：另一台设备还没建这个玩家、恢复建玩家之前的备份）→ 两种实现都照常检查、C# 照常恢复；
     #   上面「各有对方没有的账号」照旧拒绝。期望手写：恢复后目标的账号就是备份里的那几个

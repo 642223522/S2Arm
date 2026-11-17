@@ -149,11 +149,19 @@ internal static class RealTests
                 Assert(Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(Path.Combine(emptyRoot, file["path"].GetValue<string>())))) == file["sha256"].GetValue<string>(), "G05 imported bytes");
             Pass("restore actual G05 archive into empty target");
             var wrong = Request(root, work, "inspect", archive); wrong["game"]["id"] = "0000000000000000"; Reject(wrong, "save_wrong_game");
-            wrong = Request(root, work, "inspect", archive); wrong["game"]["version"] = game["version"].GetValue<long>() + 1; Reject(wrong, "save_version");
-            wrong = Request(root, work, "inspect", archive); wrong["game"]["contentIdentity"] = new string('0', 64); Reject(wrong, "save_version");
-            Pass("reject game/version/contentIdentity mismatch");
+            // 版本 / DLC 组合、账号归属对不上：手动检查照常通过并带一句提示；sync（iCloud 自动同步）照旧拒绝
+            foreach (var change in new Action<JsonObject>[] { r => r["game"]["version"] = game["version"].GetValue<long>() + 1, r => r["game"]["contentIdentity"] = new string('0', 64) })
+            {
+                wrong = Request(root, work, "inspect", archive); change(wrong);
+                var warned = Call(wrong); Assert(warned["warnings"].AsArray().Count == 1, "version mismatch warns once");
+                wrong = Request(root, work, "inspect", archive); change(wrong); wrong["sync"] = true; Reject(wrong, "save_version");
+            }
+            Assert(Call(Request(root, work, "inspect", archive))["warnings"].AsArray().Count == 0, "matching backup has no warnings");
+            Pass("reject other game; version/contentIdentity mismatch warns (sync still rejects)");
             string other = Path.Combine(scratch, "other-owner"); Copy(source, other); OwnershipVariant.Change(other);
-            Reject(Request(other, work + "-other", "inspect", archive), "save_wrong_user"); Pass("reject changed actual LibHac account owner");
+            Assert(Call(Request(other, work + "-other", "inspect", archive))["warnings"].AsArray().Count == 1, "owner mismatch warns once");
+            var syncOther = Request(other, work + "-other", "inspect", archive); syncOther["sync"] = true; Reject(syncOther, "save_wrong_user");
+            Pass("changed actual LibHac account owner warns (sync still rejects)");
             string duplicate = Path.Combine(scratch, "duplicate-index"); Copy(source, duplicate);
             string indexPath = Path.Combine(duplicate, "bis/system/save/8000000000000000/0/imkvdb.arc");
             byte[] indexBytes = File.ReadAllBytes(indexPath);

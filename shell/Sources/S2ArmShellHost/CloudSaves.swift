@@ -102,10 +102,11 @@ enum CloudSaves {
                 guard try call(context, ["operation": "status"])["hasSave"] as? Bool == true else { return false }
                 _ = try call(context, ["operation": "export", "path": url.path]); return true
             },
-            inspect: { url in try files(call(context, ["operation": "inspect", "path": url.path])) },
+            // sync：自动同步没人看提示、不经玩家确认——版本 / DLC 组合、账号归属对不上时服务层照旧拒绝，不悄悄换掉进度（玩家手动恢复不带，只提示）
+            inspect: { url in try files(call(context, ["operation": "inspect", "path": url.path, "sync": true])) },
             restore: { url in
-                let preview = try call(context, ["operation": "inspect", "path": url.path])
-                _ = try call(context, ["operation": "restore", "path": url.path,
+                let preview = try call(context, ["operation": "inspect", "path": url.path, "sync": true])
+                _ = try call(context, ["operation": "restore", "path": url.path, "sync": true,
                                        "archiveSha256": preview["archiveSha256"] ?? "", "targetFingerprint": preview["targetFingerprint"] ?? ""])
                 // 收掉已提交的事务记录，不然下次起局会先进存档管理页。此时存档已经换了：失败要照实说（基线不前进，下次同步内容相同只记基线）
                 do { _ = try call(context, ["operation": "recover"]) }

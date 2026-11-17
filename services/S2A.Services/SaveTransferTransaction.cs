@@ -182,7 +182,7 @@ public static partial class SaveTransfer
     private static JsonObject Restore(Context c)
     {
         using var archive = new Archive(Source(c));
-        Identity(c, archive.Manifest);
+        Identity(c, archive.Manifest);   // 对不上的提示检查时已给玩家看过（确认即同意）；sync 时照旧拒绝
         string fingerprint = Fingerprint(c.Root);
         Require(c.Request["archiveSha256"]?.GetValue<string>() == archive.Sha &&
             c.Request["targetFingerprint"]?.GetValue<string>() == fingerprint, T("备份或目标已变化，请重新检查后确认。", "The backup or target has changed. Check again, then confirm."), "save_changed");

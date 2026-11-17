@@ -977,10 +977,17 @@ def external_archive(c, game, root, source):
     return destination, notice
 
 
+VERSION_NOTICE = "备份与当前游戏版本或更新、DLC 组合不符，仍可恢复；游戏可能读不到这份进度，恢复前的存档会自动保留一份副本。"
+USER_NOTICE = "备份用户与当前存档用户不符，仍可恢复；恢复后当前用户的进度会换成备份里的，恢复前的存档会自动保留一份副本。"
+
+
 def checked_archive(c, game, root):
-    """校验来源（我方备份或社区存档）→ (归档路径, 清单, 归档 sha, 提示)；提示只给界面显示，不参与任何判定。"""
+    """校验来源（我方备份或社区存档）→ (归档路径, 清单, 归档 sha, 提示)；提示只给界面显示，不参与任何判定。
+    维护者 11-17：版本 / DLC 组合、用户归属对不上不再拒绝恢复——玩家手动恢复时写进提示（确认前看得到）、发 warning 照常恢复，
+    恢复前副本照留。云存档自动同步（请求带 sync，没人看提示、也不经玩家确认）照旧拒绝，免得悄悄换掉进度"""
     source = Path(c.r["path"]).expanduser()
     notice = ""
+    mismatch = []
     try:
         external = (source.exists() or source.is_symlink()) and not own_backup(source)
     except (ValueError, OSError, zipfile.BadZipFile):
@@ -999,7 +1006,9 @@ def checked_archive(c, game, root):
                 manifest["game"].get("version") != wanted["version"]
                 or manifest["game"].get("contentIdentity") != wanted["contentIdentity"]
             ):
-                fail(c, "备份与当前游戏版本或更新、DLC 组合不符，已拒绝恢复。", "version")
+                if c.r.get("sync"):
+                    fail(c, "备份与当前游戏版本或更新、DLC 组合不符，已拒绝恢复。", "version")
+                mismatch.append((VERSION_NOTICE, "version"))
             if root.exists():
                 files, dirs = scan(c, root)
                 if any(n.startswith("bis/user/save/") for n in files):
@@ -1012,10 +1021,14 @@ def checked_archive(c, game, root):
                     # 本地玩家（#623）：账号集合是包含关系（一边多了 / 少了玩家）照常恢复，各有对方没有的才拒绝（同 SaveTransferArchive.cs Identity）
                     if any(not (target[key] <= incoming[key] or incoming[key] <= target[key])
                            for key in target.keys() & incoming.keys()):
-                        fail(c, "备份用户与当前存档用户不符，已拒绝恢复。", "wrong_user")
+                        if c.r.get("sync"):
+                            fail(c, "备份用户与当前存档用户不符，已拒绝恢复。", "wrong_user")
+                        mismatch.append((USER_NOTICE, "wrong_user"))
         if before != hash_file(c, source):
             fail(c, "备份已变化，请重新检查。", "changed")
-        return source, manifest, before, notice
+        for text, code in mismatch:
+            report(c, text, code, "warning")
+        return source, manifest, before, "\n".join([notice] * bool(notice) + [text for text, _ in mismatch])
     except (ValueError, OSError, zipfile.BadZipFile, KeyError, TypeError, RuntimeError):
         fail(c, "备份损坏、格式不支持或包含不安全路径，已拒绝恢复。", "invalid")
 

@@ -61,7 +61,7 @@ extension S2ArmLauncherModel {
                 _ = try await self.saveBackup(gameID, to: url); return true
             },
             inspect: { url in
-                let r = try await self.saveJob("saveInspect", gameID: gameID, extra: ["path": url.path])
+                let r = try await self.saveJob("saveInspect", gameID: gameID, extra: ["path": url.path, "sync": true])
                 guard let list = (r["manifest"] as? [String: Any])?["files"] as? [[String: Any]] else { throw SaveResultIncomplete() }
                 return try list.map {
                     guard let path = $0["path"] as? String, let sha = $0["sha256"] as? String else { throw SaveResultIncomplete() }
@@ -69,8 +69,8 @@ extension S2ArmLauncherModel {
                 }
             },
             restore: { url in
-                let preview = try await self.saveInspect(gameID, source: url)
-                _ = try await self.saveRestore(gameID, preview: preview)
+                let preview = try await self.saveInspect(gameID, source: url, sync: true)   // 自动同步：对不上照旧拒绝，不悄悄换掉进度
+                _ = try await self.saveRestore(gameID, preview: preview, sync: true)
             })
         let engine = SaveSyncEngine(folder: CloudSaveFolder(root: folder, gameID: gameID), device: Self.deviceID(),
                                     deviceName: Host.current().localizedName ?? "Mac", platform: "mac", work: work, ports: ports,

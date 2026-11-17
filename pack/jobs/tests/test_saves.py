@@ -329,22 +329,33 @@ class SaveTests(unittest.TestCase):
         self.assertFalse(self.archive.exists())
         self.assertFalse(self.root.exists())
 
-    def test_wrong_game_version_and_user_are_rejected(self):
+    def test_wrong_game_rejected_version_and_user_warn(self):
+        """维护者 11-17：版本 / DLC 组合、用户归属对不上不再拒绝恢复。期望手写：
+        另一款游戏 → 照旧拒绝；版本 / contentIdentity 不符、用户不符 → 检查照常通过、提示里有对应那句、发 warning，恢复照常完成、恢复前副本在；
+        请求带 sync（云存档自动同步）→ 照旧拒绝；任何拒绝都不动当前存档"""
         self.backup()
         original = self.archive.read_bytes()
-        for field, value in (
-            ("id", "0100000000000001"),
-            ("version", 2),
-            ("contentIdentity", "b" * 64),
-        ):
+        def sync_preview():
+            return saves.inspect(self.context(operation="saveInspect", path=str(self.archive), sync=True))
+        self.archive.write_bytes(original)
+        self.rewrite_archive(lambda m: m["game"].update({"id": "0100000000000001"}))
+        with self.assertRaises(Failure):
+            self.preview()
+        for field, value in (("version", 2), ("contentIdentity", "b" * 64)):
             with self.subTest(field=field):
                 self.archive.write_bytes(original)
-                self.rewrite_archive(
-                    lambda m, field=field, value=value: m["game"].update({field: value})
-                )
+                self.rewrite_archive(lambda m, field=field, value=value: m["game"].update({field: value}))
                 with self.assertRaises(Failure):
-                    self.preview()
+                    sync_preview()
+                c = self.context(operation="saveInspect", path=str(self.archive))
+                got = saves.inspect(c)
+                self.assertIn(saves.VERSION_NOTICE, got["notice"])
+                self.assertEqual([(d["code"], d["severity"]) for d in c.job["diagnostics"]], [("save_version", "warning")])
                 self.assertEqual((self.root / PROGRESS).read_bytes(), b"checkpoint-one")
+                r = self.context(operation="saveRestore", path=str(self.archive), **got)
+                result = saves.restore(r)
+                self.assertTrue(result.get("previousBackup"))
+                self.assertTrue(Path(result["previousBackup"]).exists())
         self.archive.write_bytes(original)
         other = "00000000000000020000000000000000"
         self.put(
@@ -353,7 +364,11 @@ class SaveTests(unittest.TestCase):
         )
         self.put(saves.SAVE_INDEX, synthetic_index([(1, GID, 1, other)]))
         with self.assertRaises(Failure):
-            self.preview()
+            sync_preview()
+        c = self.context(operation="saveInspect", path=str(self.archive))
+        got = saves.inspect(c)
+        self.assertIn(saves.USER_NOTICE, got["notice"])
+        self.assertEqual([(d["code"], d["severity"]) for d in c.job["diagnostics"]], [("save_wrong_user", "warning")])
 
     def test_index_owners_override_current_profile_and_profiles_are_labels_only(self):
         owner = "78626c000000000153574e4154495645"
