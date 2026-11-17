@@ -7,7 +7,8 @@
   ⑤ Devpush.mv：假工具收到「mv <源> <目标>」
   ⑥ 开关（第 2 段）：缺省关；S2A_UNIVERSAL_SHELL=1 开、=0 关、别的值按缺省
   ⑦ 签名器按模式选：开发者证书 → rcodesign 读 p12 只签这个 dylib（不带 -e 权限、不嵌描述文件）；否则 Mac → dev_sign --dylib
-  ⑧ install.push_program：手写的调用顺序（先删清单与 Games/ → dylib → Games 各文件 → 清单临时名 → 改名）；改名失败报红
+  ⑧ install.push_program（写入规则 11-17 定稿）：手写的调用顺序（版本目录 v-<sha16>-pc/ 下 dylib → Games 各文件 → catalogue.json.pc.tmp → 改名覆盖 catalogue.json），
+     不删任何东西、清单带 dir；续推时机上已完整（长度 + 开头一页对）的文件跳过、只补没写完的；改名失败报红
   ⑨ install.push_programs：设备记录与要推的包对得上 → 不推、记录原样；没推过 → 推、记录换成这次的
 """
 import hashlib
@@ -177,12 +178,14 @@ class SwitchAndSignerTests(JobCase):
 
 
 class FakeClient:
-    def __init__(self, mv_ok=True):
-        self.calls, self.mv_ok = [], mv_ok
+    def __init__(self, mv_ok=True, have=None):
+        self.calls, self.mv_ok, self.have, self.puts = [], mv_ok, dict(have or {}), {}
     def rm(self, rel):
         self.calls.append(("rm", rel)); return True, ""
+    def head(self, rel, n):
+        b = self.have.get(rel); return (-1, b"") if b is None else (len(b), b[:n])
     def put(self, src, rel):
-        self.calls.append(("put", Path(src).name, rel))
+        self.calls.append(("put", Path(src).name, rel)); self.puts[rel] = Path(src).read_bytes()
     def mv(self, a, b):
         self.calls.append(("mv", a, b)); return self.mv_ok, "" if self.mv_ok else "afc error"
 
@@ -193,21 +196,30 @@ class PushProgramTests(JobCase):
         import install
         self.install = install
         pkg = self.root / "pkg"; (pkg / "Games" / GID / "sub").mkdir(parents=True)
-        (pkg / f"S2AImages-{GID}.dylib").write_bytes(b"dy")
+        (pkg / f"S2AImages-{GID}.dylib").write_bytes(b"dy" * 3000)
         (pkg / "Games" / GID / "main.npdm").write_bytes(b"n"); (pkg / "Games" / GID / "sub/t.tsv").write_text("t")
-        (pkg / "catalogue.json").write_text(json.dumps(dict(image=f"S2AImages-{GID}.dylib", image_sha256="s1", team="T", host_abi=7, rewriter_id="rw")))
+        (pkg / "catalogue.json").write_text(json.dumps(dict(image=f"S2AImages-{GID}.dylib", image_sha256="0123456789abcdef" + "f" * 48, team="T", host_abi=7, rewriter_id="rw")))
         self.pkg = pkg
         self.pr = f"Library/Application Support/S2Arm/games/{GID}/资源包"
+        self.P = f"Library/Application Support/S2Arm/games/{GID}/program"
+        self.V = f"{self.P}/v-0123456789abcdef-pc"
 
     def test_order(self):
         cl = FakeClient()
         got = self.install.push_program(cl, GID.lower(), self.pkg, self.pr)
-        P = f"Library/Application Support/S2Arm/games/{GID}/program"
-        self.assertEqual(cl.calls, [("rm", f"{P}/catalogue.json"), ("rm", f"{P}/Games"),
-                                    ("put", f"S2AImages-{GID}.dylib", f"{P}/S2AImages-{GID}.dylib"),
-                                    ("put", "main.npdm", f"{P}/Games/{GID}/main.npdm"), ("put", "t.tsv", f"{P}/Games/{GID}/sub/t.tsv"),
-                                    ("put", "catalogue.json", f"{P}/catalogue.json.partial"), ("mv", f"{P}/catalogue.json.partial", f"{P}/catalogue.json")])
-        self.assertEqual(got, dict(sha="s1", team="T", host_abi=7, rewriter_id="rw"))
+        P, V = self.P, self.V
+        self.assertEqual(cl.calls, [("put", f"S2AImages-{GID}.dylib", f"{V}/S2AImages-{GID}.dylib"),
+                                    ("put", "main.npdm", f"{V}/Games/{GID}/main.npdm"), ("put", "t.tsv", f"{V}/Games/{GID}/sub/t.tsv"),
+                                    ("put", "catalogue.json", f"{P}/catalogue.json.pc.tmp"), ("mv", f"{P}/catalogue.json.pc.tmp", f"{P}/catalogue.json")])
+        self.assertEqual(json.loads(cl.puts[f"{P}/catalogue.json.pc.tmp"])["dir"], "v-0123456789abcdef-pc")
+        self.assertEqual(got, dict(sha="0123456789abcdef" + "f" * 48, team="T", host_abi=7, rewriter_id="rw", dir="v-0123456789abcdef-pc"))
+
+    def test_resume_skips_complete_files(self):
+        V = self.V
+        cl = FakeClient(have={f"{V}/S2AImages-{GID}.dylib": b"dy" * 3000, f"{V}/Games/{GID}/main.npdm": b"x",
+                              f"{V}/Games/{GID}/sub/t.tsv": b""})   # dylib 已完整；npdm 长度对、内容不对；t.tsv 写了一半
+        self.install.push_program(cl, GID, self.pkg, self.pr)
+        self.assertEqual([c[2] for c in cl.calls if c[0] == "put"], [f"{V}/Games/{GID}/main.npdm", f"{V}/Games/{GID}/sub/t.tsv", f"{self.P}/catalogue.json.pc.tmp"])
 
     def test_mv_failure_raises(self):
         with self.assertRaises(self.install.Failure):
@@ -215,7 +227,7 @@ class PushProgramTests(JobCase):
 
     def test_push_programs_skips_matching_record(self):
         from unittest import mock
-        same = dict(sha="s1", team="T", host_abi=7, rewriter_id="rw")
+        same = dict(sha="0123456789abcdef" + "f" * 48, team="T", host_abi=7, rewriter_id="rw", dir="v-0123456789abcdef-pc")
         with mock.patch.object(program_pack, "sign", lambda c, g, team, bundle, signer: self.pkg):
             cl = FakeClient()
             got = self.install.push_programs(self.c, cl, [GID], dict(games={GID: dict(program=same)}), "T", "io.b", None, {GID: self.pr})

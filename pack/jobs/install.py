@@ -2307,30 +2307,44 @@ def program_root(pack_root):
     return pack_root.rstrip("/").rsplit("/", 1)[0] + "/program"
 
 
+PROGRAM_WRITER = "pc"   # 写入方名（版本目录 v-<sha16>-<写入方>/、临时清单 catalogue.json.<写入方>.tmp）；手机上的导入是 import
+
+
 def push_program(cl, gid, pkg, pack_root):
-    """签好的程序包（program_pack.sign 的目录）推进手机 <program_root>/（通用壳，cmdr 方案「和开发乙之间的约定」）。顺序：
-    先删机上的 catalogue.json 与 Games/（推到一半宿主见不到清单就不拿去加载）→ dylib → Games/<号>/ 各文件 → catalogue.json 先写临时名、再改名就位。
-    cl = s2a-devpush 客户端（AFC 自己建目录，不让 devicectl 先建，#1391）。→ 设备记录里这款的 program 记录 {sha, team, host_abi, rewriter_id}"""
+    """签好的程序包（program_pack.sign 的目录）推进手机。写入规则（cmdr 通用壳方案「写入规则」，11-17 和开发乙定稿；来源 D-YGEC：
+    电脑推送与手机导入同时写同一款，清单和本体成了两版）：同一款各写入方各写自己的版本目录，用一次原子改名换上，后换上的为准，不靠「看见谁在写就让路」：
+      ① 整份写进 <program>/v-<image_sha256 前 16 位>-pc/（dylib、Games/<号>/）——同一份续推时机上已完整的文件（长度与开头一页都对）跳过，只补没写完的；
+      ② 清单加 dir = 这个版本目录名，先写 catalogue.json.pc.tmp，再改名覆盖 catalogue.json：这一步是唯一的换上（AFC 单文件改名覆盖是原子的）；
+      ③ 不删旧版本目录：App 可能正开着这款、还在读旧目录里的表，没被指着的旧目录由 App 启动时按「最新文件 1 小时没写入」清。
+    宿主只按清单的 dir 取文件、核 image_sha256（开发乙）。cl = s2a-devpush 客户端（AFC 自己建目录，#1391）。
+    → 设备记录里这款的 program 记录 {sha, team, host_abi, rewriter_id, dir}"""
     gid, pkg = gid.upper(), Path(pkg)
     root = program_root(pack_root)
     cat = json.loads((pkg / "catalogue.json").read_text(encoding="utf-8"))
-    for rel in (f"{root}/catalogue.json", f"{root}/Games"):
-        ok, out = cl.rm(rel)
-        if not ok:
-            raise Failure(f"删不掉手机上 {gid} 的旧程序（{(out.splitlines() or [''])[-1]}）：解锁手机、数据线插稳后再试一次。", code="resource_transfer_failed")
+    vdir = f"v-{cat['image_sha256'][:16]}-{PROGRAM_WRITER}"
+    files = [pkg / cat["image"]] + sorted(p for p in (pkg / "Games" / gid).rglob("*") if p.is_file())
     try:
-        cl.put(pkg / cat["image"], f"{root}/{cat['image']}")
-        for f in sorted(p for p in (pkg / "Games" / gid).rglob("*") if p.is_file()):
-            cl.put(f, f"{root}/Games/{gid}/{f.relative_to(pkg / 'Games' / gid).as_posix()}")
-        cl.put(pkg / "catalogue.json", f"{root}/catalogue.json.partial")
+        for f in files:
+            rel = f"{root}/{vdir}/{f.relative_to(pkg).as_posix()}"
+            size = f.stat().st_size
+            got = cl.head(rel, 4096) if hasattr(cl, "head") else None
+            if got and got[0] == size:
+                with open(f, "rb") as h:
+                    if got[1] == h.read(len(got[1])):
+                        continue   # 续推：机上这份已完整（同一份程序包、长度与开头一页都对；整份 sha 宿主加载时核）
+            cl.put(f, rel)
+        with tempfile.TemporaryDirectory() as w:
+            tmp = Path(w) / "catalogue.json"
+            tmp.write_text(json.dumps(dict(cat, dir=vdir), ensure_ascii=False, indent=1), encoding="utf-8")
+            cl.put(tmp, f"{root}/catalogue.json.{PROGRAM_WRITER}.tmp")
     except Exception as e:   # push_pack.Fail：已是给玩家的话
         if isinstance(e, Failure):
             raise
         raise Failure(str(e), code=getattr(e, "err", None) or "resource_transfer_failed") from e
-    ok, out = cl.mv(f"{root}/catalogue.json.partial", f"{root}/catalogue.json")
+    ok, out = cl.mv(f"{root}/catalogue.json.{PROGRAM_WRITER}.tmp", f"{root}/catalogue.json")
     if not ok:
         raise Failure(f"{gid} 的程序清单在手机上就不了位（{(out.splitlines() or [''])[-1]}）：再试一次；还不行请更新电脑上的 S2Arm。", code="resource_transfer_failed")
-    return dict(sha=cat["image_sha256"], team=cat["team"], host_abi=cat["host_abi"], rewriter_id=cat.get("rewriter_id", ""))
+    return dict(sha=cat["image_sha256"], team=cat["team"], host_abi=cat["host_abi"], rewriter_id=cat.get("rewriter_id", ""), dir=vdir)
 
 
 def push_programs(c, cl, games, rec, team, bundle, signer, pack_roots):
