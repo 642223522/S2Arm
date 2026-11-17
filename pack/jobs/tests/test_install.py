@@ -1966,7 +1966,7 @@ class ExportPhoneTests(unittest.TestCase):
             return fake(args, log, env, cwd, on_line)
         with um.patch.object(packer, "current_shell_id", return_value="SID1"), um.patch.object(packer, "container_shell", return_value=shell), \
              um.patch.object(host_update, "engine_compat", return_value=dict(self.COMPAT)), um.patch.object(self.c, "run", run), \
-             um.patch.object(rewrite_refresh, "refresh_ios", lambda c, games: None), um.patch.object(install, "phone_for", no_phone), \
+             um.patch.object(rewrite_refresh, "refresh_ios", lambda c, games, **kw: None), um.patch.object(install, "phone_for", no_phone), \
              um.patch.object(install, "_devpush_exe", lambda c: "s2a-devpush"), um.patch.object(install, "_devpush_lines", getattr(self, "lines", lambda c, exe, *a: (0, [], ""))):
             return (fn or install.install)(self.c)
 
@@ -2797,7 +2797,8 @@ class UpdatePrepareTests(unittest.TestCase):
             def lock(name, wait=None):
                 held.append(name); yield; held.remove(name)
             c = jobcase.fake_context(lib.parent, library=lib, catalog=lambda: {"games": [{"id": self.A}, {"id": self.B}]}, begin=lambda *a: None, lock=lock)
-            def refresh(cc, games):
+            def refresh(cc, games, ignore_rewriter=False):
+                assert ignore_rewriter is True, "后台准备更新不因改写器指纹单独变了重改写（11-17 维护者定）"
                 calls.append((list(games), list(held))); return [g for g in games if g == self.B]
             def no_phone(cc):
                 raise AssertionError("准备段不该找手机")
@@ -2817,7 +2818,7 @@ class UpdatePrepareTests(unittest.TestCase):
             def idle(name="execution"):
                 yield not (name == "phone" and busy)
             c = jobcase.fake_context(lib.parent, library=lib, catalog=lambda: {"games": [{"id": self.A}, {"id": self.B}]}, begin=lambda *a: None, idle=idle)
-            def refresh(cc, games):
+            def refresh(cc, games, ignore_rewriter=False):
                 calls.append(list(games)); busy.append(1); return []   # 补完第一款时，前台装机作业进来拿了手机锁
             with um.patch.object(rewrite_refresh, "refresh_ios", refresh):
                 r = install.update_prepare(c)

@@ -276,7 +276,7 @@ def sgrade_pending(c, games):
         return False
     if any(rewrite_refresh.kept_todo(c, g, layout.ios_kit(c, g)) for g in games if g):   # 运行时留下、还没进 iPhone 件的 NRO（#8be819）：要重组容器补上
         return True
-    pend = rewrite_refresh.pending_ios(c, [g for g in games if g], rid)
+    pend = rewrite_refresh.pending_ios(c, [g for g in games if g], rid, ignore_rewriter=True)   # 改写器指纹单独变了不因此重组容器（11-17 维护者定）
     # 这一版记号下已经试过、缺原件补不上的不算（不然每次「更新 iPhone」都白重装一遍）
     if any((layout.game_info(c, g).get("ios") or {}).get("sgradeMissing") != (rewrite_refresh.ios_key(c, g, rid) or "") for g in pend):
         return True
@@ -1390,7 +1390,8 @@ def export_phone(c, gid=None):
     import contextlib
     held = contextlib.ExitStack()   # 导出读各款程序件与资源包（写 .img）：整段持有这几款的程序锁，出包交付换件时等它写完
     held.enter_context(packer.program_locks(c, ([gid] if gid else []) + others))
-    refresh_ios(c, ([gid] if gid else []) + others)
+    refresh_ios(c, [gid] if gid else [])   # 导出：这一款按本引擎核；别款改写器指纹单独变了不批量重改写（11-17 维护者定）
+    refresh_ios(c, [g for g in others if g != gid], ignore_rewriter=c.r.get("sgradeUpgrade") is not True)
     c.begin("组装 S2Arm.ipa（未签名）", 2, 4)
     work = Path(tempfile.mkdtemp(prefix=".export-", dir=c.library))
     try:
@@ -2352,7 +2353,10 @@ def put_game(c, gid, ph, steps=True, others=None, skipped=()):
     from rewrite_refresh import refresh_ios
     ph.pull_kept([g for g in ([gid] if gid else []) + list(others) if g])   # 先收回机上留下的 NRO，refresh_ios 才补得进（#8be819）
     with packer.program_locks(c, ([gid] if gid else []) + list(others)):   # 各款程序件这段不让出包交付换（ipa.program_locks）
-        refresh_ios(c, [g for g in ([gid] if gid else []) + list(others) if g])
+        # 玩家点的这一款按本引擎改写器核；同容器的别款只在补丁记号变了时补，改写器指纹单独变了不批量重改写（11-17 维护者定），
+        #   玩家在「S 级优化升级」页显式点了（sgradeUpgrade）照旧全核
+        refresh_ios(c, [gid] if gid else [])
+        refresh_ios(c, [g for g in others if g and g != gid], ignore_rewriter=c.r.get("sgradeUpgrade") is not True)
         # 已同意过「这次不带」的款（#479）：按壳号记在设备记录 staleAgreed，同一版壳不再每次问；换了壳号重新问。重新打过 iPhone 包的款组装时带得进，自然不在名单里
         ipa, games, sid = packer.assemble(c, gid, others, failed=rec.get("failedShells", []), agreed=rec.get("staleAgreed") or {})
     left_out = sorted({g.upper() for g in list(others) + list(skipped) if g} - set(games))   # 这次没带进去的（玩家已同意；游戏库删掉的也在里面，不碍事：它们组装时本来就不带、不问）
@@ -2810,7 +2814,7 @@ def update_prepare(c):
             trace(c, "前台装机作业在跑：准备更新先停，剩下的由它按正常优先级做")
             break
         with packer.program_locks(c, [g]):
-            updated += refresh_ios(c, [g])
+            updated += refresh_ios(c, [g], ignore_rewriter=True)   # 后台：改写器指纹单独变了不重改写（11-17 维护者定），留到玩家对这一款操作时前台做
         done.append(g)
     return dict(prepared=done, updated=sorted(set(updated)))
 
