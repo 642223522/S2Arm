@@ -17104,7 +17104,7 @@ static struct { uint64_t frame; char path[1024]; } g_shotq[SHOTQ_MAX]; static in
 static pthread_mutex_t g_shotq_mu = PTHREAD_MUTEX_INITIALIZER;
 static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, const int crop[4]);
 API_AVAILABLE(macos(26.0), ios(26.0))
-static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, id<MTLTexture> mirror, const int crop[4], int uv_i);
+static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, const int crop[4], int uv_i);
 // Game picture needed by the whole-window screenshot (front end window_shot; no longer does drawViewHierarchy on a Metal layer with the display link attached): at the next present, the present thread draws the same frame
 // with the same encoding as the present (present_encode) into an offscreen texture of the same size as the swapchain, and after the GPU finishes hands out a CGImage in the completion callback (the callback does not block the present). Guarded by g_shotq_mu
 static void (^g_grab_cb)(const uint8_t *bgra, size_t w, size_t h, size_t row);   // S2Arm: raw BGRA8 bytes (valid only during the call), no CGImage: the caller copies them once
@@ -17591,7 +17591,6 @@ int nvn_be_display_hz(void) {
 }
 static _Atomic uint64_t g_present_stall_ns;   // For unit tests: an extra pause before each present on the present thread (simulating a drawable that stays unavailable)
 static CAMetalLayer *g_present_layer_resident;
-static CALayer *g_present_mirror_resident;   // Reflection layer whose residency set was added to the Metal 4 queue (present thread)
 #if TARGET_OS_IPHONE
 #endif
 void mtl_present_test_stall(uint64_t ns) { g_present_stall_ns = ns; }
@@ -17727,13 +17726,11 @@ static const int *rs_aa_crop(id<MTLTexture> src, id<MTLTexture> dst, const int c
     if (!vw || !vh || vw > w || vh > h || (vw == w && vh == h)) return crop;
     tmp[0] = tmp[1] = 0; tmp[2] = (int)vw; tmp[3] = (int)vh; return tmp;
 }
-// mirror (iOS split-view reflection, may be nil): the final picture drawn a second time into the small reflection drawable,
-//   by the same blit with the same inputs as the one into dst (ios/play_reflection.m s2a_ios_reflection_drawable)
-static int present_encode_slot(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, id<MTLTexture> mirror, const int crop[4], int slot) {
+static int present_encode_slot(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, const int crop[4], int slot) {
     present_options();
     BOOL flip = atomic_load_explicit(&g_origin_ll, memory_order_relaxed) != 0;
     NvPresentFX *fx = present_fx_for(slot, src, dst, crop, NO);
-    if (!g_present_aa && !fx) return present_blit(cb, src, dst, crop, flip, 1) && (!mirror || present_blit(cb, src, mirror, crop, flip, 1));
+    if (!g_present_aa && !fx) return present_blit(cb, src, dst, crop, flip, 1);
     id<MTLTexture> out;
     if (g_present_aa) {
         int ac[4]; NvPresentAA *s = present_aa_prepare(slot, src, rs_aa_crop(src, dst, crop, fx, ac));   // rs_aa_crop
@@ -17751,18 +17748,17 @@ static int present_encode_slot(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<M
         present_fx_encode(cb, fx, out);
         out = fx->output;
     }
-    return present_blit(cb, out, dst, NULL, NO, 1) && (!mirror || present_blit(cb, out, mirror, NULL, NO, 1));
+    return present_blit(cb, out, dst, NULL, NO, 1);
 }
 static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, const int crop[4]) {
-    return present_encode_slot(cb, src, dst, nil, crop, 3); // synchronous screen captures
+    return present_encode_slot(cb, src, dst, crop, 3); // synchronous screen captures
 }
 API_AVAILABLE(macos(26.0), ios(26.0))
-static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, id<MTLTexture> mirror, const int crop[4], int slot) {
+static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, const int crop[4], int slot) {
     present_options();
     BOOL flip = atomic_load_explicit(&g_origin_ll, memory_order_relaxed) != 0;
     NvPresentFX *fx = present_fx_for(slot, src, dst, crop, YES);
-    // The mirror blit writes the same values into the same parameter buffer / table as the blit before it
-    if (!g_present_aa && !fx) return present_blit_m4(cb, src, dst, crop, g_present_uv[slot], g_present_args, flip, 1) && (!mirror || present_blit_m4(cb, src, mirror, crop, g_present_uv[slot], g_present_args, flip, 1));
+    if (!g_present_aa && !fx) return present_blit_m4(cb, src, dst, crop, g_present_uv[slot], g_present_args, flip, 1);
     id<MTLTexture> out;
     if (g_present_aa) {
         int ac[4]; NvPresentAA *s = present_aa_prepare(slot, src, rs_aa_crop(src, dst, crop, fx, ac));   // rs_aa_crop
@@ -17781,7 +17777,7 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
         present_fx_encode(cb, fx, out);
         out = fx->output;
     }
-    return present_blit_m4(cb, out, dst, NULL, g_present_uv[slot], g_present_args, NO, 1) && (!mirror || present_blit_m4(cb, out, mirror, NULL, g_present_uv[slot], g_present_args, NO, 1));
+    return present_blit_m4(cb, out, dst, NULL, g_present_uv[slot], g_present_args, NO, 1);
 }
 static double g_link_it_tin;   // Enqueue time of the frame the display-link callback is presenting (read and written only on the display-link thread)
 #if !TARGET_OS_SIMULATOR
@@ -17928,9 +17924,6 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     id<CAMetalDrawable> dr = supplied ? supplied : [layer nextDrawable];
     if (!supplied) g_drawable_ns += now_ns() - dt0;
     if (!dr) return 0;
-    // iOS split view: the lower-area reflection gets this frame too, drawn in this same present (nil when it is not showing)
-    id<CAMetalDrawable> mdr = nil;   // 11-17 下区倒影已去掉（ios/play_reflection.m）：不再取倒影画布，下面 mdr 那几支不再走；分支本身的清理另做
-    if (mdr && !g_m3 && g_present_mirror_resident != mdr.layer) { if (@available(macOS 26.0, iOS 26.0, *)) { [g_q4 addResidencySet:((CAMetalLayer *)mdr.layer).residencySet]; g_present_mirror_resident = mdr.layer; } }
     int alloc_i = (int)(ticket % 3);
     present_options();
     if (g_present_aa || g_present_fx) {
@@ -17947,14 +17940,13 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     if (g_m3) {
         cb3 = [g_q3 commandBuffer];   // retained references: keeps the drawable and the source until it is done
         ext_wait3(cb3);
-        if (!present_encode_slot(cb3, src, dr.texture, mdr.texture, crop, alloc_i)) return 0;
+        if (!present_encode_slot(cb3, src, dr.texture, crop, alloc_i)) return 0;
     } else if (@available(macOS 26.0, iOS 26.0, *)) {
         [g_present_alloc4[alloc_i] reset];
         [g_q4 waitForDrawable:dr];
-        if (mdr) [g_q4 waitForDrawable:mdr];
         cb = g_present_cb[alloc_i];
         [cb beginCommandBufferWithAllocator:g_present_alloc4[alloc_i]];
-        if (!present_encode_m4(cb, src, dr.texture, mdr.texture, crop, alloc_i)) { [cb endCommandBuffer]; [g_q4 signalDrawable:dr]; if (mdr) [g_q4 signalDrawable:mdr]; return 0; }
+        if (!present_encode_m4(cb, src, dr.texture, crop, alloc_i)) { [cb endCommandBuffer]; [g_q4 signalDrawable:dr]; return 0; }
         if (rl_m4) {   // DM_NVN_REGLUM: after the present blit, behind the same queue barrier
             id<MTLBuffer> b = g_rl_buf[alloc_i];
             if (!b || b.length < rw * rh * 4) { if (b) res_remove(b); b = g_rl_buf[alloc_i] = [g_dev newBufferWithLength:rw * rh * 4 options:MTLResourceStorageModeShared]; res_add(b); }
@@ -17974,7 +17966,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
         pthread_mutex_lock(&g_pq_mu); if (aa) aa->busy = NO; if (fxs) fxs->busy = NO; if (ticket > g_pq_done) g_pq_done = ticket; g_pq_inflight--; pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu);
     });
     pthread_mutex_lock(&g_pq_mu); if (aa) aa->busy = YES; if (fxs) fxs->busy = YES; g_pq_inflight++; pthread_mutex_unlock(&g_pq_mu);
-    if (g_m3) { if (mdr) [cb3 presentDrawable:mdr]; present_m3(cb3, dr, ticket, period, target_ts); m3_commit(cb3, o, nil, 0); }
+    if (g_m3) { present_m3(cb3, dr, ticket, period, target_ts); m3_commit(cb3, o, nil, 0); }
     else {
         // Publish residency before every Metal 4 present submit, including resources added during encoding (#298).
         res_commit();
@@ -17995,7 +17987,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
                  (unsigned long long)g_link_dropped, a[149], a[0], b[149], b[0], b[299]);
         }
     }
-    if (!g_m3) { [g_q4 signalDrawable:dr]; if (mdr) { [g_q4 signalDrawable:mdr]; [mdr present]; } }
+    if (!g_m3) [g_q4 signalDrawable:dr];
     g_present_alloc_fence[alloc_i] = ticket;
     if (g_m3) { (void)frame; return 1; }   // presented by its command buffer (present_m3)
 #if TARGET_OS_SIMULATOR   // The iOS simulator SDK has no presentation-time callback and no minimum display duration (used only for picture acceptance, display-link ticks are not counted)

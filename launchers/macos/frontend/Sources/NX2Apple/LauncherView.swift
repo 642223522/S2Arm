@@ -298,13 +298,19 @@ struct LauncherView: View {
                     ControllerToolbarButton(controller: model.controller, show: $showController,
                                             lang: loc.lang.code)
                     messagesButton
+                    // 就绪 / 检查中不挂角标；环境缺项时用红点和无障碍说明提示玩家。
                     Button { model.showEnvironment = true } label: {
                         Image(systemName: "gearshape").overlay(alignment: .topTrailing) {
-                            Circle().fill(environmentColor).frame(width: 5, height: 5).offset(x: 5, y: -3)
+                            if environmentNeedsAction {
+                                Circle().fill(LauncherPalette.danger).frame(width: 5, height: 5).offset(x: 5, y: -3)
+                            }
                         }
                     }
                     .controllerButtonStyle(ConsoleIconButtonStyle(backgroundless: true))
-                    .help(txt("nav.settings")).accessibilityLabel(txt("nav.settings")).controllerID("top.settings")
+                    .help(environmentNeedsAction ? txt("nav.settings") + "：" + loc.t("s2arm.env.missing") : txt("nav.settings"))
+                    .accessibilityLabel(txt("nav.settings"))
+                    .accessibilityValue(environmentNeedsAction ? loc.t("s2arm.env.missing") : "")
+                    .controllerID("top.settings")
                 }
                 // 报错页的 ReportHint 指向这里：所有页面保持同一个全局入口。
                 Button { model.diagUploadFor = "" } label: {
@@ -388,13 +394,8 @@ struct LauncherView: View {
 
     private struct OptionsTarget: Identifiable { let id: String }
 
-    private var environmentColor: Color {
-        switch model.environmentState {
-        case .unknown: return LauncherPalette.unbuilt
-        case .ready, .readyMac: return LauncherPalette.ready   // readyMac：Mac 上能玩，只差打 iPhone 包的项（环境检查页里单列）
-        case .missing: return LauncherPalette.danger
-        }
-    }
+    /// 环境缺东西、要玩家处理（顶栏设置按钮挂红点）。readyMac（Mac 上能玩、只差打 iPhone 包的项）照旧算就绪、不挂：只玩 Mac 的玩家不该一直看到提醒，缺的项在设置页单列
+    private var environmentNeedsAction: Bool { model.environmentState == .missing }
 
     /// 顶部公告条（v0.2.3）：醒目的琥珀色底、整条宽，压在内容上方但不盖住任何按钮；× 关掉后同一条不再出现。文字取自 notice.json，代码里不写公告内容
     @ViewBuilder private var noticeBar: some View {

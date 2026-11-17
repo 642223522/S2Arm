@@ -454,6 +454,11 @@ SetW(pack, "cheatsList", (JsonElement?)SG("""
 """));
 SaveP("sgrade_05_cheats_page", () => { SetW(pack, "page", "library"); InvokeW(pack, "Render"); });
 SetW(pack, "cheatsFor", null); SetW(pack, "cheatsList", null);
+// #1430：出包页 S 级卡「导入 Mod…」进 Mod 页（原先只在游戏库页画、从出包页点没反应）；「返回」回出包页
+InjectMockGame(pack, ready: true);
+SaveP("win_26_export_mods_page", () => { Navigate(pack, "build"); SetW(pack, "modsFor", MockGame(true));
+    SetW(pack, "modsList", (JsonElement?)SG("""[{"name":"高清材质包","bytes":1073741824,"files":120,"enabled":true}]""")); InvokeW(pack, "Render"); });
+SaveP("win_26b_export_mods_back", () => { SetW(pack, "modsFor", null); SetW(pack, "modsList", null); InvokeW(pack, "Render"); });
 pack.Height = 900;
 
 pack.Close();

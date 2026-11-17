@@ -323,6 +323,12 @@ public sealed partial class EnvironmentWindow : Window
             panel.Children.Add(dismiss);
             body.Children.Add(Card(panel));
         }
+        if (page != "library" && modsFor is not null)   // 出包页 S 级卡「导入 Mod…」进的「Mod」页：出包页在下面先画、会把它盖掉，所以在这里先画；「返回」清 modsFor 回出包页（#1430）
+        {
+            RenderMods(body);
+            ShowPage("mods", body);
+            return;
+        }
         if (RenderPackPages(body) || RenderBatchPage()) return;
         if (importDialog is not null)
         {

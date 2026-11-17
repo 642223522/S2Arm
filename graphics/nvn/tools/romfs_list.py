@@ -368,12 +368,73 @@ def exists(p):
     return os.path.exists(p) or is_file(p) or is_dir(p)
 
 
+class _ImageSpan:
+    """镜像里一个文件的只读映射视图（map_file 不对齐时用）：底下是从对齐处起映的文件映射，下标整体平移 delta。
+    同 mmap 的用法：len、下标 / 切片（切片出 bytes）、find / rfind、size、close、with；正则 / struct / memoryview 经 __buffer__ 拿到的正是这个文件的字节"""
+    def __init__(self, mm, delta, size):
+        self._mm, self._d, self._n = mm, delta, size
+
+    def __buffer__(self, flags):
+        whole = memoryview(self._mm)
+        view = whole[self._d:self._d + self._n]
+        whole.release()
+        return view
+
+    def __release_buffer__(self, view):
+        view.release()
+
+    def __len__(self):
+        return self._n
+
+    def __getitem__(self, k):
+        if isinstance(k, slice):
+            a, b, step = k.indices(self._n)
+            if step == 1:
+                return self._mm[self._d + a:self._d + max(a, b)]
+            with memoryview(self) as v:
+                return bytes(v[k])
+        i = k.__index__()
+        if i < 0:
+            i += self._n
+        if not 0 <= i < self._n:
+            raise IndexError("mmap index out of range")
+        return self._mm[self._d + i]
+
+    def _span(self, start, end):
+        a, b, _ = slice(start, end).indices(self._n)
+        return self._d + a, self._d + max(a, b)
+
+    def find(self, sub, start=None, end=None):
+        r = self._mm.find(sub, *self._span(start, end))
+        return r - self._d if r >= 0 else -1
+
+    def rfind(self, sub, start=None, end=None):
+        r = self._mm.rfind(sub, *self._span(start, end))
+        return r - self._d if r >= 0 else -1
+
+    def size(self):
+        return self._n
+
+    @property
+    def closed(self):
+        return self._mm.closed
+
+    def close(self):
+        self._mm.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
 def map_file(p):
     """mmap（with 里用；同 mmap.mmap(open(p).fileno(), 0, access=ACCESS_READ)，空文件同样抛 ValueError）。
     镜像里的文件：数据起点按映射粒度（mmap.ALLOCATIONGRANULARITY）对齐 → 直接映射镜像里那一段（不拷贝）；
-    不对齐（LibHac 建的镜像文件数据只按 0x10 对齐，几乎都不对齐）→ 映射不出从 0 起的那一段，拷进同长的匿名映射（页由系统按需给、可换出，不进 Python 堆；
-    find / 切片 / 正则 / struct 与文件映射同用法；拷贝可写，写了不落回镜像）。
-    代价：多一遍拷贝，Windows 上匿名映射计入提交量（几 GB 的单个文件要大页文件）——要零拷贝须建镜像时大文件按映射粒度对齐，不落散文件的最后一段定"""
+    不对齐（LibHac 建的镜像文件数据只按 0x10 对齐，几乎都不对齐）→ 从下方对齐处起映射镜像（多映前面不到一个粒度），交 _ImageSpan 平移下标：
+    仍是文件映射、零拷贝，页走系统文件缓存，多个进程映同一份共用一份（#1439：原先拷进同长匿名映射，大文件分段扫的每一段、trpfs 的每个包各拷一整份，
+    宝可梦紫 10 路各拷几 GB，整机内存耗尽卡死）。Python 3.12 以下没有 __buffer__（PEP 688），正则 / struct 拿不到平移后的内容，退回拷贝"""
     import mmap
     try:
         f = open(p, "rb")
@@ -385,9 +446,13 @@ def map_file(p):
         start, size = im.span(rel)
         if not size:
             raise ValueError("cannot mmap an empty file")
-        if start % mmap.ALLOCATIONGRANULARITY == 0:
+        delta = start % mmap.ALLOCATIONGRANULARITY
+        if delta == 0:
             with open(im.path, "rb") as g:
                 return mmap.mmap(g.fileno(), size, offset=start, access=mmap.ACCESS_READ)
+        if sys.version_info >= (3, 12):
+            with open(im.path, "rb") as g:
+                return _ImageSpan(mmap.mmap(g.fileno(), size + delta, offset=start - delta, access=mmap.ACCESS_READ), delta, size)
         m = mmap.mmap(-1, size)
         with im.open(rel) as src:
             view, at = memoryview(m), 0

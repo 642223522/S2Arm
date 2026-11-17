@@ -150,7 +150,7 @@ with tempfile.TemporaryDirectory(prefix='romfs readers img ') as t:
                 ok_map &= len(m) == len(v) and m[:] == v and m.rfind(v[-4:]) == len(v) - 4
     ck(ok_read, f'① read_file / file_size / is_file / exists = 夹具（{len(FILES)} 个文件）')
     ck(ok_seek, '① open_file：seek 中间读、SEEK_END 读尾、tell = 夹具')
-    ck(ok_map, '① map_file（不对齐 → 匿名映射拷贝）：长度 / 全文 / rfind = 夹具')
+    ck(ok_map, '① map_file（不对齐 → 文件映射视图，3.12 以下拷贝）：长度 / 全文 / rfind = 夹具')
     sub = lambda r: sorted((e.rel, e.file, e.lstat.st_size if e.file else 0) for e in romfs_list.scan(r / 'Game').entries)
     ck(sub(rd) == sub(ri) == [('Paks', False, 0), ('Paks/a.pak', True, len(FILES['Game/Paks/a.pak'])), ('Paks/g.utoc', True, len(FILES['Game/Paks/g.utoc']))]
        and romfs_list.scan(ri / 'nope').errors.get('') is not None, '① scan 镜像里的子目录（Game/）= 目录形态；镜像里没有的子目录同目录盘点记「打不开」')
@@ -176,6 +176,21 @@ with tempfile.TemporaryDirectory(prefix='romfs readers img ') as t:
     with romfs_list.map_file(al / 'x/romfs/b.bin') as m:
         aligned = (got_start % G == 0, len(m) == len(body), m[:] == body, m.rfind(body[-4:]))
     ck(ok and aligned == (True, True, True, len(body) - 4), f'① map_file 对齐分支（数据起点 {got_start:#x} 按 {G:#x} 对齐 → 直接映射镜像那一段）：长度 / 全文 / rfind = 夹具')
+    # 不对齐分支（#1439）：不拷进匿名映射，按下方对齐处映射镜像、平移下标（文件映射、零拷贝）。期望全按夹具 body 手算
+    import re as _re, struct as _st
+    (al / 'r/a.bin').write_bytes(b'a' * (16 + (-start) % G + 16))
+    (al / 'u').mkdir(); oku = build(al / 'r', al / 'u/romfs.std')
+    us = romfs_img.RomfsImage(al / 'u/romfs.std').span('b.bin')[0]
+    nb = len(body); pat = body[100:108]; at = body.find(pat); last = body.rfind(body[-4:])
+    with romfs_list.map_file(al / 'u/romfs/b.bin') as m:
+        kind = type(m).__name__
+        got = (len(m), m[:] == body, m[0] == body[0], m[-1] == body[-1], m[5:9] == body[5:9], m[::7] == body[::7], m[nb + 10:] == b'',
+               m.find(pat) == at, m.find(pat, at + 1) == body.find(pat, at + 1), m.find(body[:4], 1, 50) == body.find(body[:4], 1, 50),
+               m.rfind(body[-4:]) == last, _st.unpack_from('<Q', m, 3) == _st.unpack_from('<Q', body, 3),
+               (_re.search(_re.escape(pat), m).start() if _re.search(_re.escape(pat), m) else None) == _re.search(_re.escape(pat), body).start(),
+               bytes(memoryview(m)) == body, m.size() == nb)
+    ck(oku and us % G != 0 and kind == ('_ImageSpan' if sys.version_info >= (3, 12) else 'mmap') and all(got[1:]) and got[0] == nb and m.closed,
+       f'① map_file 不对齐分支（数据起点 {us:#x} 不按 {G:#x} 对齐）：文件映射视图、不拷贝；长度 / 下标 / 切片 / find / rfind / struct / 正则 / memoryview = 夹具，with 后关闭（{kind}，{got}）')
 
     # ② host_decoder
     hd_d, hd_i = attempt(lambda: host_decoder.need([str(rd)])), attempt(lambda: host_decoder.need([str(ri)]))

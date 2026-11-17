@@ -57,15 +57,16 @@ int main(int argc, char **argv) {
     check(s2a_system_action(state(false, false, false, true, false)) == S2A_SYS_NONE,
           "后台且没有当前对象 → 什么都不做");
     check(S2A_SYSTEM_RECHECK_MS == 200, "复查延迟是 200ms");
-    // 系统手柄走了以后接回 NS2 手柄（参数：之前在、现在在、前台、开着适配、玩家要连、链路在跑）
-    check(s2a_ble_resume_after_system(true, false, true, true, true, false), "系统手柄走了、前台、开着适配、要连、链路没跑：接回 NS2 手柄");
-    check(!s2a_ble_resume_after_system(true, true, true, true, true, false), "系统手柄还在：不接");
-    check(!s2a_ble_resume_after_system(false, false, true, true, true, false), "本来就没有系统手柄（不是「走了」）：不接");
-    check(!s2a_ble_resume_after_system(true, false, false, true, true, false), "在后台：不接（回前台由 setForeground 接）");
-    check(!s2a_ble_resume_after_system(true, false, true, false, true, false), "关着适配：不接");
-    check(!s2a_ble_resume_after_system(true, false, true, true, false, false), "玩家取消过 / 没连上过：不接");
-    check(!s2a_ble_resume_after_system(true, false, true, true, true, true), "链路已在跑：不重复接");
-    check(count_in(source, "s2a_ble_resume_after_system(_hasSystem, hasSystem") == 1, "controller.m 的接回判定走 s2a_ble_resume_after_system");
+    // ---- #1428 接线：NS2 Pro 和系统手柄一视同仁分槽，系统手柄不再挡 NS2 Pro ----
+    check(count_in(source, "_hasSystem") == 0, "#1428：不再有「有系统手柄就不连 / 停掉 NS2 Pro」的门槛（原 8 处 _hasSystem）");
+    check(count_in(source, "system controller selected") == 0, "#1428：选到系统手柄时不停 NS2 Pro");
+    check(count_in(source, "ids[n] = &g_ble_slot_tag") == 1, "#1428：NS2 Pro 连着就参加 s2a_slot_plan 分槽");
+    check(count_in(source, "if (slot == 0) s2a_pad_update(S2A_PAD_BLE, 1, (uint32_t)state->buttons, axes)") == 1,
+          "#1428：NS2 Pro 输入按占的槽走（槽 0 才进 pad.c 当玩家 1）");
+    check(count_in(source, "atomic_store(&g_slot_buttons[slot], (uint32_t)state->buttons & S2A_PAD_KEYS)") == 1,
+          "#1428：NS2 Pro 占玩家 2–4 时写那个槽");
+    check(count_in(source, "s2a_pad_update(S2A_PAD_BLE, ready, 0, axes)") == 0, "#1428：NS2 Pro 就绪不直接当玩家 1，等分槽");
+    check(count_in(source, "if (_slotId[slot] == &g_ble_slot_tag) return;") == 1, "#1428：分槽刷新不把 NS2 Pro 的槽清零");
 
     // ---- 接线：controller.m 真的按这套决策走 ----
     check(count_in(source, "[controllers containsObject:") == 0,

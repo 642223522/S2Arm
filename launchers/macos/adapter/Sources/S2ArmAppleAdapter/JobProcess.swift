@@ -36,7 +36,20 @@ struct LineSplitter {
 
 /// 真的：Foundation.Process + 两条管道。
 public final class SystemJobProcessRunner: JobProcessRunner {
-    public init() {}
+    /// 作业是玩家点了按钮在等的事（出包、装机推送）：跑着的时候不让系统把启动器降成后台（App Nap）。原先什么都没做：启动器隐藏 / 窗口被挡住
+    ///   一段时间后被降成后台，之后再起的作业连同它的子进程（s2a-devpush）一起被节流，读盘和 USB 都慢，推送从 60–120 MiB/s 掉到 5–13 MiB/s
+    ///   （11-17 实测：同一 s2a-devpush 推同一冷文件，正常 81.8 MiB/s、taskpolicy -b 13.2 MiB/s；隐藏启动器先出包二十多分钟再推的那单约 7 MB/s，
+    ///   起来几秒就推的那单 57–70 MB/s）。每个作业进程起之前开一段 userInitiated 活动，进程结束就收
+    private let beginActivity: () -> NSObjectProtocol
+    private let endActivity: (NSObjectProtocol) -> Void
+    public convenience init() {
+        self.init(beginActivity: { ProcessInfo.processInfo.beginActivity(options: .userInitiated, reason: "S2Arm 作业（出包 / 装机推送）") },
+                  endActivity: { ProcessInfo.processInfo.endActivity($0) })
+    }
+    /// 单测换成假的活动，核「开了就收」
+    public init(beginActivity: @escaping () -> NSObjectProtocol, endActivity: @escaping (NSObjectProtocol) -> Void) {
+        self.beginActivity = beginActivity; self.endActivity = endActivity
+    }
 
     final class Handle: JobProcessHandle {
         let process: Process
@@ -57,10 +70,12 @@ public final class SystemJobProcessRunner: JobProcessRunner {
         let queue = DispatchQueue(label: "s2arm.job.events")
         let readers = DispatchGroup()
         readers.enter(); readers.enter()
+        let activity = beginActivity(), end = endActivity
         process.terminationHandler = { p in
+            end(activity)
             readers.notify(queue: queue) { onExit(p.terminationStatus) }
         }
-        try process.run()
+        do { try process.run() } catch { end(activity); throw error }
         DispatchQueue.global(qos: .utility).async {
             defer { try? out.fileHandleForReading.close(); readers.leave() }
             var splitter = LineSplitter()
