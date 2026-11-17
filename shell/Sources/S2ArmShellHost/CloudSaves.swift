@@ -90,7 +90,12 @@ enum CloudSaves {
         defer { free(raw) }
         let response = (try? JSONSerialization.jsonObject(with: Data(String(cString: raw).utf8))) as? [String: Any] ?? [:]
         guard response["ok"] as? Bool == true else {
-            throw ServiceError(message: ((response["error"] as? [String: Any])?["message"] as? String) ?? shellText("The save service didn’t return a valid result."))
+            let error = response["error"] as? [String: Any]
+            // 自动同步（sync）遇到云端那份版本 / 账号对不上或有文件坏了：服务层照旧不覆盖，这里告诉玩家本机进度没动、可以去存档管理手动恢复
+            if op["sync"] as? Bool == true, let code = error?["code"] as? String, ["save_version", "save_wrong_user", "save_damaged"].contains(code) {
+                throw ServiceError(message: shellText("The iCloud save is from a different version, belongs to another account, or has damaged files, so it didn’t overwrite your progress on this device. To use it, restore it manually in save management."))
+            }
+            throw ServiceError(message: (error?["message"] as? String) ?? shellText("The save service didn’t return a valid result."))
         }
         return response["result"] as? [String: Any] ?? [:]
     }

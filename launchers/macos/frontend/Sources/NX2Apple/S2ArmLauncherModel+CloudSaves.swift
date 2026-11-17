@@ -31,6 +31,8 @@ extension S2ArmLauncherModel {
         case SaveSyncError.notDownloaded(let name): return fill("s2arm.cloud.error.notDownloaded", name)
         case SaveSyncError.corrupt(let name): return fill("s2arm.cloud.error.corrupt", name)
         case SaveSyncError.cloudWriteAfterRestore(let from, let why): return fill("s2arm.cloud.error.writeBack", from, why)
+        // 云端那份版本 / 账号对不上或有文件坏了：自动同步不覆盖本机进度（作业层带 sync 时照旧拒绝），告诉玩家可以去存档管理手动恢复
+        case let f as JobFailure where ["save_version", "save_wrong_user", "save_damaged"].contains(f.code ?? ""): return loc.t("s2arm.cloud.error.notApplied")
         default: return error.localizedDescription
         }
     }

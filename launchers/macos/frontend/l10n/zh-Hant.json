@@ -1646,6 +1646,7 @@
   "s2arm.cloud.conflict.later": "先不處理",
   "s2arm.cloud.error.notDownloaded": "iCloud 還沒把 {0} 下載到這臺裝置，存檔沒有改動。請聯網稍等後再試。",
   "s2arm.cloud.error.corrupt": "iCloud 裡的 {0} 不完整，存檔沒有改動。請在另一臺裝置上重新同步一次。",
+  "s2arm.cloud.error.notApplied": "雲端有一份和本機不同版本、屬於另一個帳號或有檔案損壞的存檔，沒有自動覆蓋你本機的進度；要用它可以在存檔管理裡手動恢復",
   "s2arm.cloud.error.writeBack": "已換成 {0} 的進度，但沒能寫回 iCloud（{1}）。存檔本身沒問題，下次同步會再寫。",
   "s2arm.cloud.failed": "iCloud 存檔沒有同步：{0}",
   "s2arm.cloud.syncing": "正在同步 iCloud 存檔…",

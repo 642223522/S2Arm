@@ -202,6 +202,25 @@ with tempfile.TemporaryDirectory(prefix="s2arm-public-save-interop-") as tempora
     compare(rewrite("duplicate-path", duplicate=True))
     print("PASS both implementations reject wrong game, traversal and duplicate paths with identical reason codes; version/content mismatch warns (sync rejects alike)")
 
+    # 维护者 11-17：备份里个别存档文件 CRC / SHA 坏了不再整份拒绝。期望手写：坏一个用户存档文件 → 两种实现都照常检查、各给一句提示
+    #   （作业层 notice 点名它；服务层 warnings 一条）；带 sync 两边照旧拒绝（save_invalid）；坏账号索引两边照旧拒绝
+    def corrupt(name, pick):
+        path = scratch / (name + ".s2asave")
+        with zipfile.ZipFile(python_archive) as src, zipfile.ZipFile(path, "w") as dst:
+            target = pick([e.filename for e in src.infolist()])
+            for entry in src.infolist():
+                content = src.read(entry)
+                if entry.filename == target:
+                    content = content[:-1] + bytes([content[-1] ^ 0xFF])
+                dst.writestr(entry.filename, content)
+        return path, target[len("payload/"):]
+    bad, bad_name = corrupt("damaged-save", lambda names: next(n for n in names if n.startswith("payload/bis/user/save/") and n.endswith(".md")))
+    compare(bad, "save_damaged", sync=True)
+    assert bad_name in python_call("saveInspect", path=str(bad))["notice"]
+    assert len(csharp_call("inspect", bad)["warnings"]) == 1
+    compare(corrupt("damaged-index", lambda names: "payload/bis/system/save/8000000000000000/0/imkvdb.arc")[0])
+    print("PASS both warn on one damaged save file (sync rejects alike) and reject a damaged account index")
+
     other = scratch / "other-user"
     subprocess.run([DOTNET, DRIVER, "--create", str(other), str(REPO), OTHER_USER], check=True, timeout=60)
     original = scratch / "original"
@@ -283,6 +302,7 @@ with tempfile.TemporaryDirectory(prefix="s2arm-public-save-interop-") as tempora
     for name, transformed in cases.items():
         path = scratch / (name + ".s2asave")
         path.write_bytes(transformed)
+        # payload-crc-corruption 坏的是第一个非空条目，即账号索引 imkvdb.arc：账号元数据坏了照旧整份拒绝（普通存档文件坏了只提示，见上面 damaged-save）
         compare(path)
         print("PASS both reject " + name + ": save_invalid")
     assert snapshot(source) == expected

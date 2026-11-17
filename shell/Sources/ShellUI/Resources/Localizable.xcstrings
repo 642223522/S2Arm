@@ -13995,6 +13995,46 @@
         }
       }
     },
+    "The iCloud save is from a different version, belongs to another account, or has damaged files, so it didn’t overwrite your progress on this device. To use it, restore it manually in save management.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The iCloud save is from a different version, belongs to another account, or has damaged files, so it didn’t overwrite your progress on this device. To use it, restore it manually in save management."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La partida de iCloud es de otra versión, pertenece a otra cuenta o tiene archivos dañados, así que no sobrescribió tu progreso en este dispositivo. Para usarla, restáurala manualmente en la gestión de partidas."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La sauvegarde iCloud provient d'une autre version, appartient à un autre compte ou contient des fichiers endommagés ; elle n'a donc pas remplacé votre progression sur cet appareil. Pour l'utiliser, restaurez-la manuellement dans la gestion des sauvegardes."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iCloud のセーブデータはバージョンが異なるか、別のアカウントのものか、破損したファイルを含むため、このデバイスの進行状況は上書きしませんでした。使う場合はセーブデータ管理から手動で復元してください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "云端有一份和本机不同版本、属于另一个账号或有文件损坏的存档，没有自动覆盖你本机的进度；要用它可以在存档管理里手动恢复。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "雲端有一份和本機不同版本、屬於另一個帳號或有檔案損壞的存檔，沒有自動覆蓋你本機的進度；要用它可以在存檔管理裡手動恢復。"
+          }
+        }
+      }
+    },
     "The save service didn’t return a valid result.": {
       "localizations": {
         "en": {

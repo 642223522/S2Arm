@@ -127,11 +127,22 @@ public static partial class SaveTransfer
         }
         Require(expected.SetEquals(archive.Zip.Entries.Select(e => e.FullName)) && fileNames.Contains(Profile) &&
             fileNames.Any(n => n.StartsWith("bis/user/save/", StringComparison.Ordinal)), T("备份缺少必要文件或含额外条目。", "The backup is missing required files or has extra entries."));
+        // 维护者 11-17：个别文件 CRC / SHA 对不上不再整份拒绝——记进 damaged，恢复时不写它们、保留目标原来的那份，其余照常恢复。
+        //   用户表与账号索引坏了没法知道哪份存档归谁，照旧拒绝
+        var damaged = new JsonArray();
         foreach (var item in files)
         {
-            var entry = archive.Zip.GetEntry("payload/" + Str(item, "path"));
-            using var stream = entry.Open();
-            CopyEntry(stream, Stream.Null, entry.Length, Str(item, "sha256"), entry.Crc32);
+            string name = Str(item, "path");
+            var entry = archive.Zip.GetEntry("payload/" + name);
+            try
+            {
+                using var stream = entry.Open();
+                CopyEntry(stream, Stream.Null, entry.Length, Str(item, "sha256"), entry.Crc32);
+            }
+            catch (Exception e) when ((e is Failure || e is InvalidDataException) && name != Profile && name != Index)
+            {
+                damaged.Add(name);
+            }
         }
         Profiles(EntryBytes(archive, "payload/" + Profile));
         var entries = Entries(name => EntryBytes(archive, "payload/" + name), files.Select(f => Str(f, "path")), dirs.Select(d => d.GetValue<string>()));
@@ -141,6 +152,7 @@ public static partial class SaveTransfer
         node["users"] = Users(entries);
         if (node.AsObject().ContainsKey("deviceSettings")) Require(node["deviceSettings"] is JsonObject, T("设备设置元信息无效。", "Invalid device settings metadata."));
         node["deviceSettings"] = Settings(node["deviceSettings"]);
+        if (damaged.Count > 0) node["damaged"] = damaged;
         return (JsonObject)node;
     }
     // → 对不上但照常可恢复的几句提示（检查结果 warnings，确认框里给玩家看）。维护者 11-17：版本 / DLC 组合、账号归属对不上不再拒绝——
@@ -156,6 +168,12 @@ public static partial class SaveTransfer
         {
             Require(!sync, T("备份的游戏版本或 DLC 组合不符。", "The backup’s game version or DLC combination doesn’t match."), "save_version");
             warnings.Add(T("备份的游戏版本或 DLC 组合不符，仍可恢复；游戏可能读不到这份进度，恢复前的存档会自动保留一份副本。", "The backup’s game version or DLC combination doesn’t match. You can still restore it; the game may not be able to read this progress. The save from before the restore is kept automatically."));
+        }
+        if (manifest["damaged"] is JsonArray damaged && damaged.Count > 0)
+        {
+            Require(!sync, T("备份文件 CRC 或 SHA-256 校验失败。", "The backup file failed the CRC or SHA-256 check."), "save_damaged");
+            string names = string.Join(", ", damaged.Take(5).Select(d => d.GetValue<string>())) + (damaged.Count > 5 ? " …" : "");
+            warnings.Add(string.Format(T("备份里有 {0} 个文件校验对不上（{1}），这几个不恢复、保留当前存档里原来的，其余照常恢复。", "{0} files in the backup failed the integrity check ({1}). Those files are not restored and the current save’s originals are kept; everything else is restored."), damaged.Count, names));
         }
         var owners = OwnerSets(c, manifest);
         if (owners == null) return warnings;

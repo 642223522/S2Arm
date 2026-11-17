@@ -1643,6 +1643,7 @@
   "s2arm.cloud.conflict.later": "Not now",
   "s2arm.cloud.error.notDownloaded": "Connect to the internet and retry after iCloud downloads {0}, with your save unchanged",
   "s2arm.cloud.error.corrupt": "Sync {0} again on the other device because the iCloud copy is incomplete, with your save unchanged",
+  "s2arm.cloud.error.notApplied": "The iCloud save is from a different version, belongs to another account, or has damaged files, so it didn't overwrite your progress on this Mac. To use it, restore it manually in save management",
   "s2arm.cloud.error.writeBack": "Progress from {0} is in use; the next sync will retry writing it to iCloud after error {1}",
   "s2arm.cloud.failed": "iCloud saves didn't sync: {0}",
   "s2arm.cloud.syncing": "Syncing iCloud saves…",

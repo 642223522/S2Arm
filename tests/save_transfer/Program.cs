@@ -136,7 +136,12 @@ internal static class RealTests
             Pass("export real private save copy and validate CRC/hash/index");
             Reject(Request(root, work, "export", archive), "save_exists"); Pass("exclusive export");
             var stale = Confirm(root, work, archive);
-            MutateProgress(root); Reject(stale, "save_changed"); Pass("changed target after preview");
+            // 维护者 11-17（按新规矩改：原先检查后目标又变就拒绝）：iCloud 自动同步（sync）照旧拒绝；手动恢复照常恢复，恢复前副本在执行时现拍
+            MutateProgress(root);
+            var staleSync = stale.DeepClone().AsObject(); staleSync["sync"] = true; Reject(staleSync, "save_changed");
+            var staleDone = Call(stale); Assert(staleDone["committed"].GetValue<bool>() && File.Exists(staleDone["previousBackup"].GetValue<string>()), "stale manual restore proceeds with a fresh previous backup");
+            Call(Request(root, work, "recover"));
+            Pass("changed target after preview: sync rejects, manual restore proceeds");
             var restored = Call(Confirm(root, work, archive));
             Assert(restored["committed"].GetValue<bool>() && Equal(original, Hashes(root)), "byte-for-byte restore including nonwhitelisted original data");
             Assert(File.Exists(restored["previousBackup"].GetValue<string>()), "Previous archive");

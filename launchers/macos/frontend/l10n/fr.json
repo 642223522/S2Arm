@@ -1643,6 +1643,7 @@
   "s2arm.cloud.conflict.later": "Pas maintenant",
   "s2arm.cloud.error.notDownloaded": "iCloud n'a pas encore téléchargé {0} sur cet appareil, donc votre sauvegarde n'a pas été modifiée. Connectez-vous à Internet, patientez un moment, puis réessayez.",
   "s2arm.cloud.error.corrupt": "{0} dans iCloud est incomplet, donc votre sauvegarde n'a pas été modifiée. Resynchronisez depuis l'autre appareil.",
+  "s2arm.cloud.error.notApplied": "La sauvegarde iCloud provient d'une autre version, appartient à un autre compte ou contient des fichiers endommagés ; elle n'a donc pas remplacé votre progression sur ce Mac. Pour l'utiliser, restaurez-la manuellement dans la gestion des sauvegardes",
   "s2arm.cloud.error.writeBack": "Basculé vers la progression de {0}, mais impossible de la réécrire dans iCloud ({1}). La sauvegarde elle-même est intacte ; la prochaine synchronisation la réécrira.",
   "s2arm.cloud.failed": "Les sauvegardes iCloud n'ont pas été synchronisées : {0}",
   "s2arm.cloud.syncing": "Synchronisation des sauvegardes iCloud…",
