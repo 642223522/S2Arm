@@ -27,6 +27,10 @@ static void write_file(const char *p, const char *body) {
 }
 
 // ---------- 多款容器：进程级用例（在拷进临时 App 包的副本里跑）----------
+// 宿主的 s2a_imgpack_open（imgpack.c，本单测不链）的桩：launchctx.c 选游戏时按名字 dlsym 它。记调用次数，恒回 3（= S2A_IMG_ESIGN，签名本机不认）——
+//   App 包里的款（没有程序包，0.6.0 前玩家手上全是这种）选游戏时不许调它（行为同改造前：进局后由装载器打开）；改造前的写法对所有款都预开，这一桩会把合规款判成「要重签」
+static int g_imgpack_calls;
+__attribute__((visibility("default"), used)) int s2a_imgpack_open(const char *path, void **out, char *why, size_t n) { (void)path; (void)out; if (why && n) why[0] = 0; g_imgpack_calls++; return 3; }
 static int g_ctor_ran, g_ctor_container, g_ctor_frozen;
 // 同 vawin.c constructor(101)：构造期第一次取上下文。只在 exec 出来的副本里取（父进程取了会把兼容冻结带进下面 fork 的子进程）
 __attribute__((constructor(101))) static void t_ctor(int argc, char **argv) {
@@ -60,6 +64,7 @@ static int child_container(const char *home) {
     CK(!s2a_launch_ctx_get() && !getenv("S2A_DOCS"), "校验值不一致：不冻结、不写环境");
     r = s2a_launch_ctx_select("0100000000000001");
     CK(!r, "合规的那款 → 选中");
+    CK(g_imgpack_calls == 0, "App 包里的款（没有程序包）选游戏时不预开程序库：行为同改造前（桩恒回签名不认，预开了就会被拒）");
     if (r) printf("    原因：%s\n", r);
     const s2a_launch_ctx *g = s2a_launch_ctx_get();
     char want[1200]; snprintf(want, sizeof want, "%s/Documents/games/0100000000000001", home);
