@@ -1029,6 +1029,7 @@
   "library.folderUnset": "Non défini",
   "library.gameCount": "%d jeux",
   "library.gameCountOne": "1 jeu",
+  "library.enter": "Ouvrir la bibliothèque",
   "library.localNote": "Construit à partir de vos propres fichiers de jeu.",
   "library.manage": "Gérer",
   "library.newBuild": "Construire le jeu",
