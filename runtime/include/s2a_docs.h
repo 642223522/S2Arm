@@ -58,7 +58,24 @@ static inline const char *s2a_pack_base_rel(const char *container, int clen) {  
     snprintf(alt, sizeof alt, "%.*s/" S2A_PACK_BASE_ALT_REL "/games", clen, container);
     return !stat(alt, &st) && S_ISDIR(st.st_mode) ? S2A_PACK_BASE_ALT_REL : S2A_PACK_BASE_REL;
 }
+// App 包内的资源包（11-16 Apple TV 安装包导出：pack/jobs/tvos.py export_tv 把这款资源包整份打进 App 本体 <App>/Games/<游戏号>/资源包/，
+//   包内带 .applied，电视上闸门判「已应用」、不在只读区写）：docs 以 /games/<游戏号> 结尾、<bundle>/Games/<游戏号>/资源包/manifest.json 在
+//   → 写包内路径、回长度；否则回 0（照旧找 Library/Caches）。纯函数，单测 runtime/tests/t_docs.c；只在 tvOS 上由 s2a_pack_root 先调（没上电视验过）
+static inline int s2a_pack_root_in_bundle(char *out, size_t n, const char *bundle, const char *docs) {
+    const char *k = docs ? strrchr(docs, '/') : NULL;
+    if (!bundle || !*bundle || !k || k - docs < 6 || strncmp(k - 6, "/games", 6) || !k[1] || k[1] == '.') return 0;
+    char m[2048]; struct stat st;
+    if (snprintf(m, sizeof m, "%s/Games/%s/资源包/manifest.json", bundle, k + 1) >= (int)sizeof m || stat(m, &st) || !S_ISREG(st.st_mode)) return 0;
+    int r = snprintf(out, n, "%s/Games/%s/资源包", bundle, k + 1);
+    return r > 0 ? r : 0;
+}
+#if defined(__APPLE__) && TARGET_OS_TV
+const char *s2a_launch_ctx_bundle_dir(void) __attribute__((weak_import));   // runtime/src/launchctx.c：App 包根（单测不链它）
+#endif
 static inline int s2a_pack_root(char *out, size_t n, const char *docs) {
+#if defined(__APPLE__) && TARGET_OS_TV
+    { int r = s2a_launch_ctx_bundle_dir ? s2a_pack_root_in_bundle(out, n, s2a_launch_ctx_bundle_dir(), docs) : 0; if (r) return r; }   // 电视：先找包内，没有再找 Library/Caches
+#endif
     static const char key[] = "/Documents/games/";
     const char *k = docs ? strstr(docs, key) : NULL;
     if (k) {
