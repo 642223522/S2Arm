@@ -2310,12 +2310,14 @@ def program_root(pack_root):
 PROGRAM_WRITER = "pc"   # 写入方名（版本目录 v-<sha16>-<写入方>/、临时清单 catalogue.json.<写入方>.tmp）；手机上的导入是 import
 
 
-def push_program(cl, gid, pkg, pack_root):
+def push_program(cl, gid, pkg, pack_root, keep_old=False):
     """签好的程序包（program_pack.sign 的目录）推进手机。写入规则（cmdr 通用壳方案「写入规则」，11-17 和开发乙定稿；来源 D-YGEC：
     电脑推送与手机导入同时写同一款，清单和本体成了两版）：同一款各写入方各写自己的版本目录，用一次原子改名换上，后换上的为准，不靠「看见谁在写就让路」：
       ① 整份写进 <program>/v-<image_sha256 前 16 位>-pc/（dylib、Games/<号>/）——同一份续推时机上已完整的文件（长度与开头一页都对）跳过，只补没写完的；
       ② 清单加 dir = 这个版本目录名，先写 catalogue.json.pc.tmp，再改名覆盖 catalogue.json：这一步是唯一的换上（AFC 单文件改名覆盖是原子的）；
-      ③ 不删旧版本目录：App 可能正开着这款、还在读旧目录里的表，没被指着的旧目录由 App 启动时按「最新文件 1 小时没写入」清。
+      ③ 换上后删**换上前清单指着的那个**旧版本目录——这款没在运行才删；keep_old（调用方判出手机上 App 开着 / 判不清）就留给 App 在这款退出或下次启动时清
+         （11-17 总指挥与开发乙定：程序包、资源包同一条）。别的写入方正在写的目录没被指过、不删；没写完的半份由 App 启动时按「最新文件 1 小时没写入」清。
+         删不掉不算失败（App 会清）。
     宿主只按清单的 dir 取文件、核 image_sha256（开发乙）。cl = s2a-devpush 客户端（AFC 自己建目录，#1391）。
     → 设备记录里这款的 program 记录 {sha, team, host_abi, rewriter_id, dir}"""
     gid, pkg = gid.upper(), Path(pkg)
@@ -2334,6 +2336,13 @@ def push_program(cl, gid, pkg, pack_root):
                         continue   # 续推：机上这份已完整（同一份程序包、长度与开头一页都对；整份 sha 宿主加载时核）
             cl.put(f, rel)
         with tempfile.TemporaryDirectory() as w:
+            old = None   # 换上前清单指着的版本目录（换上后删它）
+            prev = Path(w) / "prev.json"
+            if cl.get(f"{root}/catalogue.json", prev):
+                try:
+                    old = json.loads(prev.read_text(encoding="utf-8")).get("dir")
+                except ValueError:
+                    old = None
             tmp = Path(w) / "catalogue.json"
             tmp.write_text(json.dumps(dict(cat, dir=vdir), ensure_ascii=False, indent=1), encoding="utf-8")
             cl.put(tmp, f"{root}/catalogue.json.{PROGRAM_WRITER}.tmp")
@@ -2344,12 +2353,14 @@ def push_program(cl, gid, pkg, pack_root):
     ok, out = cl.mv(f"{root}/catalogue.json.{PROGRAM_WRITER}.tmp", f"{root}/catalogue.json")
     if not ok:
         raise Failure(f"{gid} 的程序清单在手机上就不了位（{(out.splitlines() or [''])[-1]}）：再试一次；还不行请更新电脑上的 S2Arm。", code="resource_transfer_failed")
+    if not keep_old and isinstance(old, str) and old.startswith("v-") and "/" not in old and old != vdir:
+        cl.rm(f"{root}/{old}")   # 删不掉不算失败：没被指着，App 启动时清
     return dict(sha=cat["image_sha256"], team=cat["team"], host_abi=cat["host_abi"], rewriter_id=cat.get("rewriter_id", ""), dir=vdir)
 
 
-def push_programs(c, cl, games, rec, team, bundle, signer, pack_roots):
+def push_programs(c, cl, games, rec, team, bundle, signer, pack_roots, keep_old=False):
     """通用壳装机（program_pack.enabled）：每款按设备记录判要不要推（program_pack.need），要推的出包、按这台的团队签、推进 program/。
-    rec = 设备记录；pack_roots = {游戏号: 手机上资源包根}。→ {游戏号: program 记录}（没推的照旧记录原样带回）；推到一半失败照抛，已推好的由调用方记下"""
+    rec = 设备记录；pack_roots = {游戏号: 手机上资源包根}；keep_old = 手机上 App 开着 / 判不清（旧版本目录留给 App 清，见 push_program ③）。→ {游戏号: program 记录}（没推的照旧记录原样带回）；推到一半失败照抛，已推好的由调用方记下"""
     import program_pack
     out = {}
     for g in games:
@@ -2361,7 +2372,7 @@ def push_programs(c, cl, games, rec, team, bundle, signer, pack_roots):
             out[g] = old
             continue
         note(c, f"{g} 的程序推进手机（{'、'.join(sorted(why))}）")  # 非玩家句
-        out[g] = push_program(cl, g, pkg, pack_roots[g])
+        out[g] = push_program(cl, g, pkg, pack_roots[g], keep_old=keep_old)
     return out
 
 

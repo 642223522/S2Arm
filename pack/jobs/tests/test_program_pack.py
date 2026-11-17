@@ -8,7 +8,7 @@
   ⑥ 开关（第 2 段）：缺省关；S2A_UNIVERSAL_SHELL=1 开、=0 关、别的值按缺省
   ⑦ 签名器按模式选：开发者证书 → rcodesign 读 p12 只签这个 dylib（不带 -e 权限、不嵌描述文件）；否则 Mac → dev_sign --dylib
   ⑧ install.push_program（写入规则 11-17 定稿）：手写的调用顺序（版本目录 v-<sha16>-pc/ 下 dylib → Games 各文件 → catalogue.json.pc.tmp → 改名覆盖 catalogue.json），
-     不删任何东西、清单带 dir；续推时机上已完整（长度 + 开头一页对）的文件跳过、只补没写完的；改名失败报红
+     清单带 dir；换上后只删换上前清单指着的旧版本目录（没有旧清单 / 指的就是这次的 → 不删）；续推时机上已完整（长度 + 开头一页对）的文件跳过；改名失败报红
   ⑨ install.push_programs：设备记录与要推的包对得上 → 不推、记录原样；没推过 → 推、记录换成这次的
 """
 import hashlib
@@ -184,6 +184,10 @@ class FakeClient:
         self.calls.append(("rm", rel)); return True, ""
     def head(self, rel, n):
         b = self.have.get(rel); return (-1, b"") if b is None else (len(b), b[:n])
+    def get(self, rel, dst):
+        self.calls.append(("get", rel)); b = self.have.get(rel)
+        if b is None: return False
+        Path(dst).write_bytes(b); return True
     def put(self, src, rel):
         self.calls.append(("put", Path(src).name, rel)); self.puts[rel] = Path(src).read_bytes()
     def mv(self, a, b):
@@ -210,7 +214,8 @@ class PushProgramTests(JobCase):
         P, V = self.P, self.V
         self.assertEqual(cl.calls, [("put", f"S2AImages-{GID}.dylib", f"{V}/S2AImages-{GID}.dylib"),
                                     ("put", "main.npdm", f"{V}/Games/{GID}/main.npdm"), ("put", "t.tsv", f"{V}/Games/{GID}/sub/t.tsv"),
-                                    ("put", "catalogue.json", f"{P}/catalogue.json.pc.tmp"), ("mv", f"{P}/catalogue.json.pc.tmp", f"{P}/catalogue.json")])
+                                    ("get", f"{P}/catalogue.json"),
+                                    ("put", "catalogue.json", f"{P}/catalogue.json.pc.tmp"), ("mv", f"{P}/catalogue.json.pc.tmp", f"{P}/catalogue.json")])   # 第一次推：没有旧清单，不删
         self.assertEqual(json.loads(cl.puts[f"{P}/catalogue.json.pc.tmp"])["dir"], "v-0123456789abcdef-pc")
         self.assertEqual(got, dict(sha="0123456789abcdef" + "f" * 48, team="T", host_abi=7, rewriter_id="rw", dir="v-0123456789abcdef-pc"))
 
@@ -220,6 +225,22 @@ class PushProgramTests(JobCase):
                               f"{V}/Games/{GID}/sub/t.tsv": b""})   # dylib 已完整；npdm 长度对、内容不对；t.tsv 写了一半
         self.install.push_program(cl, GID, self.pkg, self.pr)
         self.assertEqual([c[2] for c in cl.calls if c[0] == "put"], [f"{V}/Games/{GID}/main.npdm", f"{V}/Games/{GID}/sub/t.tsv", f"{self.P}/catalogue.json.pc.tmp"])
+
+    def test_deletes_only_previous_pointed_dir(self):
+        P = self.P
+        cl = FakeClient(have={f"{P}/catalogue.json": json.dumps(dict(dir="v-aaaaaaaaaaaaaaaa-import")).encode()})
+        self.install.push_program(cl, GID, self.pkg, self.pr)
+        self.assertEqual([c for c in cl.calls if c[0] == "rm"], [("rm", f"{P}/v-aaaaaaaaaaaaaaaa-import")])
+        self.assertEqual(cl.calls[-2][0], "mv", "先换上、再删旧的")
+        cl = FakeClient(have={f"{P}/catalogue.json": json.dumps(dict(dir="v-0123456789abcdef-pc")).encode()})
+        self.install.push_program(cl, GID, self.pkg, self.pr)
+        self.assertEqual([c for c in cl.calls if c[0] == "rm"], [], "旧清单指的就是这次的目录：不删")
+        cl = FakeClient(have={f"{P}/catalogue.json": json.dumps(dict(dir="v-aaaaaaaaaaaaaaaa-import")).encode()})
+        self.install.push_program(cl, GID, self.pkg, self.pr, keep_old=True)
+        self.assertEqual([c for c in cl.calls if c[0] == "rm"], [], "这款可能在运行（keep_old）：不删，留给 App 清")
+        cl = FakeClient(have={f"{P}/catalogue.json": json.dumps(dict(dir="../资源包")).encode()})
+        self.install.push_program(cl, GID, self.pkg, self.pr)
+        self.assertEqual([c for c in cl.calls if c[0] == "rm"], [], "清单里不是版本目录名：不删")
 
     def test_mv_failure_raises(self):
         with self.assertRaises(self.install.Failure):
