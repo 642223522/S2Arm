@@ -194,15 +194,15 @@ static void dsh_src_hold(const uint8_t key[8], int st, const uint8_t *ctl, uint3
 }
 void dm_shader_mesh_hold_key(const uint8_t key[8], uint64_t code, const void *control) {
     if (!nvn2_on() || !code || !control || (uintptr_t)control >= (1ull << 47)) return;
-    const uint8_t *ctl = control; if (!nvn2_ctl(ctl) || ctl[0x56] != 7) return;
+    const uint8_t *ctl = control; if (!nvn2_ctl(ctl) || (ctl[0x56] != 7 && ctl[0x56] != 6)) return;   // 网格；任务（6）也存：#770 宿主自跑任务阶段要它的源码（dm_shader_base_cached）
     uint32_t ncode = 0, nctl = 0; memcpy(&ncode, ctl + 0x44, 4); memcpy(&nctl, ctl + 0x30, 4);
     if (!ncode || ncode >= (1u << 24)) return;
     if (nctl < 0xd8 || nctl > NVN2_CTL_COPY) nctl = 0xd8;
-    dsh_src_hold(key, 5, ctl, nctl, code, ncode);
+    dsh_src_hold(key, ctl[0x56] == 6 ? 4 : 5, ctl, nctl, code, ncode);
 }
 void dm_shader_mesh_hold(uint64_t code, const void *control) {
     if (!nvn2_on() || !code || !control || (uintptr_t)control >= (1ull << 47)) return;
-    const uint8_t *ctl = control; if (!nvn2_ctl(ctl) || ctl[0x56] != 7) return;
+    const uint8_t *ctl = control; if (!nvn2_ctl(ctl) || (ctl[0x56] != 7 && ctl[0x56] != 6)) return;
     uint8_t key[8]; if (nvn2_key(ctl, (const void *)(uintptr_t)code, key)) dm_shader_mesh_hold_key(key, code, control);
 }
 // Switch 1 vertex shader at SetShaders, under the key keys_hash gave it (its final key: Switch 1 keys are not deferred). NVN2 stages are keyed at first use: not here
@@ -486,6 +486,27 @@ int dm_shader_vpad_cached(const uint8_t key[8], int st, uint32_t mask, char *pat
     if (rc == 3) return 3;
     if (rc) { atomic_fetch_add_explicit(&g_dsh_failed, 1, memory_order_relaxed); return 1; }
     LOG("直连%s补齐变体：%s 从本机同链同指纹源码补 user(locn) 掩码 %#x（控制段已过期）", st == 5 ? "网格" : "顶点", k, mask);
+    return 0;
+}
+// #770 宿主自跑任务阶段（nvn_geometry.inc mtk_emu_fn）：任务（st 4）/ 网格（st 5）着色器在本机的基础源码 <键>_b.metal（带 S2A_MESH_EMU 入口），没有就按 SetShaders / Bind 时的源快照现翻一份。
+//   成功 0（path = 源码），做不了 1
+int dm_shader_base_cached(const uint8_t key[8], int st, char *path, size_t n) {
+    static const char *const js[6] = {"vs", "ps", "cs", "gs", "ts", "ms"};
+    if (st != 4 && st != 5) return 1;
+    char k[17], meta[1200], b[8192]; for (int i = 0; i < 8; i++) snprintf(k + 2 * i, 3, "%02x", key[i]);
+    const char *out = getenv("DM_MSL_FALLBACK"); if (!out || !*out) return 1;
+    mkdir(out, 0755);
+    if (!dsh_have(out, k)) {
+        dsh_src_snap *src = dsh_src_snap_get(key, st); dsh_comp_fn comp = dsh_comp();
+        if (!src || !comp) { LOG("【红】直连%s源码：%s 没有源快照或翻译器，宿主跑不了它的任务阶段", st == 4 ? "任务" : "网格", k); return 1; }
+        if (dsh_comp_src_locked(comp, k, st, src->bytes + src->nctl, src->ncode, src->bytes, src->nctl, out)) return 1;
+    }
+    if (!dsh_have(out, k)) return 1;
+    snprintf(meta, sizeof meta, "%s/%s_b.json", out, k);
+    FILE *f = fopen(meta, "r"); if (!f) return 1;
+    size_t z = fread(b, 1, sizeof b - 1, f); fclose(f); b[z] = 0;
+    if (!dsh_json_eq(b, "stage", js[st])) return 1;
+    snprintf(path, n, "%s/%s_b.metal", out, k);
     return 0;
 }
 // 后台出归约变体用的拷贝（nvn_mtl.m se_kick）：控制段只在 SetShaders 里保证有效、代码区游戏也可能另用，提交线程上先整份拷下（控制段在前、代码区在后），

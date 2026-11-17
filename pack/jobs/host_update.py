@@ -52,6 +52,40 @@ def engine_compat(c):
     return dict(hostAbi=HOST_ABI, dmshChain=m.group(1)) if m else None
 
 
+HINT_REASONS = ("rewriter", "hostAbi", "shader")   # 改写器更新 / 宿主约定号变了 / 着色器链（直连库）更新
+
+
+def update_hints(c):
+    """0.6.0 通用壳（开关后面）：启动器新版本打开时的快速比对（《文件与程序管理体系》⑦ ③，11-17 维护者定）。每款只读程序兼容记录
+    （game.json 的 ios，没有读专用文件夹那份，layout.program_info，几 KB），比对改写器指纹 / 宿主约定号 / 着色器链与本版启动器的值；
+    对不上的款给出「建议更新」与原因，玩家点了才做。不读游戏大文件（game.img、资源包、程序件）、不排后台重活、不改任何东西。
+    没打过 iPhone 包的款没有记录，不标。开关关着 → {enabled: False, games: []}"""
+    import program_pack
+    if not program_pack.enabled(c):
+        return dict(enabled=False, games=[])
+    want = engine_compat(c) or {}
+    import rewrite_refresh
+    try:
+        rid = rewrite_refresh.rewriter_id(c)
+    except (Failure, OSError, subprocess.SubprocessError):
+        rid = None   # 取不到改写器指纹：这一项不判（不因此给所有款标「建议更新」）
+    games = []
+    for g in c.catalog()["games"]:
+        ios = layout.program_info(c, g["id"])
+        if not ios:
+            continue
+        why = []
+        if rid and ios.get("rewriterId") != rid:
+            why.append("rewriter")
+        if want and ios.get("hostAbi", 1) != want["hostAbi"]:
+            why.append("hostAbi")
+        if want and ios.get("dmshChain", LEGACY_CHAIN) != want["dmshChain"]:
+            why.append("shader")
+        if why:
+            games.append(dict(gameId=g["id"].upper(), reasons=why))
+    return dict(enabled=True, games=games)
+
+
 def compatible(c, entry):
     """iPhone 容器里的一款能不能原样放进本版宿主"""
     want = engine_compat(c)
