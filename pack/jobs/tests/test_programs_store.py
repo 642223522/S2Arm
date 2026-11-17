@@ -336,7 +336,8 @@ class PutDir(unittest.TestCase):
         res = self.t / "Resources"; jobs = res / "Jobs"
         shutil.copytree(Path(programs.__file__).resolve().parent, jobs, ignore=shutil.ignore_patterns("tests", "__pycache__"))
         (res / "Engine").symlink_to(self.c.engine, target_is_directory=True)
-        for case, pre in (("a", ""), ("b", "sys.path.insert(0, sys.argv[2]); ")):
+        #   c 不管是谁、Engine/pack（有 pack.py）已在 sys.path 最前：换目录也不能靠 sys.path 先后（命名空间包会被同名模块压过），按文件路径载入 dirrename
+        for case, pre in (("a", ""), ("b", "sys.path.insert(0, sys.argv[2]); "), ("c", "sys.path.insert(0, sys.argv[2] + '/pack'); ")):
             with self.subTest(case=case):
                 shutil.rmtree(self.t / "kit", ignore_errors=True); (self.t / "kit.partial").mkdir(exist_ok=True); (self.t / "kit.partial" / "new.txt").write_text("新")
                 code = (pre + "import importlib.util; from pathlib import Path; from types import SimpleNamespace; import programs; "

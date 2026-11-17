@@ -36,13 +36,27 @@ OUTPUTS = ("patched.bin", "fixups.tsv", "gates.tsv", "sites.tsv", "gaps.tsv", "w
 
 def _rename_dir(c, src, dst):
     """目录改名按 #361 同一套退避重试（pack/orch/dirrename.py：Windows 上杀软 / 索引程序开着刚写完的文件时报 WinError 5 / 32，扫完会放开）"""
-    # 作业主程序只把 pack/jobs 放进 sys.path：pack.orch 从作业的引擎根 c.engine 导入（同 library._rename_library_path）。
-    # 不能按本文件位置推：App 里作业层在 Resources/Jobs、引擎在 Resources/Engine，往上两级没有 pack，出包落程序件即 No module named 'pack'
-    root = str(c.engine)
-    if root not in sys.path:
-        sys.path.append(root)
-    from pack.orch.dirrename import rename_dir
-    rename_dir(src, dst)
+    _dirrename(c).rename_dir(src, dst)
+
+
+_DIRRENAME = {}
+
+
+def _dirrename(c):
+    """作业的引擎根 c.engine 里的 pack/orch/dirrename.py，按文件路径载入（只依赖标准库）。
+    不走 import pack.orch（#1424）：pack/ 没有 __init__.py，是命名空间包，sys.path 上任何位置只要有一个叫 pack 的模块（如 pack/pack.py 所在目录）
+    就压过它、和先后顺序无关；App 里作业层（Resources/Jobs）也推不到引擎根（7825d8125）。同一份文件已按包名导入过（仓库树里单测打桩）就用那一份"""
+    path = (Path(c.engine) / "pack/orch/dirrename.py").resolve()
+    loaded = sys.modules.get("pack.orch.dirrename")
+    if loaded is not None and Path(getattr(loaded, "__file__", "") or "").resolve() == path:
+        return loaded
+    if str(path) not in _DIRRENAME:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("s2a_engine_dirrename", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _DIRRENAME[str(path)] = mod
+    return _DIRRENAME[str(path)]
 
 
 def _put_dir(c, part, dest):
