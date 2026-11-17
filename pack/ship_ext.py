@@ -374,7 +374,7 @@ def cmd_program(a):
             shutil.copyfile(root / "icon.jpg", tmp / GAMES / gid / "icon.jpg")
         if a.banner and Path(a.banner).is_file():   # 游戏库横版封面（游戏库那份，组装不联网；同容器 _place_banner 的 --banner）：只有壳的容器不带各款，横图随程序包走
             shutil.copyfile(a.banner, tmp / GAMES / gid / "banner.jpg")
-        # 存档游戏身份（同容器，核过才放）：程序包款宿主按模块目录 = program/Games/<号>/ 读它（ios/save_transfer.m），11-17 和开发乙定随程序包走
+        # 存档游戏身份（同容器，核过才放）：程序包款宿主按模块目录 = program/Games/<号>/ 读它（ios/save_transfer.m），11-17 与 iOS 加载侧定随程序包走
         si = root / "save-identity.json"
         if si.is_file():
             r = subprocess.run([sys.executable, str(HERE / "save_identity.py"), "--check", str(si), "--output", str(tmp / GAMES / gid / "save-identity.json")],

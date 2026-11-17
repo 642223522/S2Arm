@@ -2311,14 +2311,14 @@ PROGRAM_WRITER = "pc"   # 写入方名（版本目录 v-<sha16>-<写入方>/、�
 
 
 def push_program(cl, gid, pkg, pack_root, keep_old=False):
-    """签好的程序包（program_pack.sign 的目录）推进手机。写入规则（cmdr 通用壳方案「写入规则」，11-17 和开发乙定稿；来源 D-YGEC：
+    """签好的程序包（program_pack.sign 的目录）推进手机。写入规则（通用壳方案「写入规则」，11-17 与 iOS 加载侧定稿；来源 D-YGEC：
     电脑推送与手机导入同时写同一款，清单和本体成了两版）：同一款各写入方各写自己的版本目录，用一次原子改名换上，后换上的为准，不靠「看见谁在写就让路」：
       ① 整份写进 <program>/v-<image_sha256 前 16 位>-pc/（dylib、Games/<号>/）——同一份续推时机上已完整的文件（长度与开头一页都对）跳过，只补没写完的；
       ② 清单加 dir = 这个版本目录名，先写 catalogue.json.pc.tmp，再改名覆盖 catalogue.json：这一步是唯一的换上（AFC 单文件改名覆盖是原子的）；
       ③ 换上后删**换上前清单指着的那个**旧版本目录——这款没在运行才删；keep_old（调用方判出手机上 App 开着 / 判不清）就留给 App 在这款退出或下次启动时清
-         （11-17 总指挥与开发乙定：程序包、资源包同一条）。别的写入方正在写的目录没被指过、不删；没写完的半份由 App 启动时按「最新文件 1 小时没写入」清。
+         （11-17 定：程序包、资源包同一条）。别的写入方正在写的目录没被指过、不删；没写完的半份由 App 启动时按「最新文件 1 小时没写入」清。
          删不掉不算失败（App 会清）。
-    宿主只按清单的 dir 取文件、核 image_sha256（开发乙）。cl = s2a-devpush 客户端（AFC 自己建目录，#1391）。
+    宿主只按清单的 dir 取文件、核 image_sha256（iOS 加载侧）。cl = s2a-devpush 客户端（AFC 自己建目录，#1391）。
     → 设备记录里这款的 program 记录 {sha, team, host_abi, rewriter_id, dir}"""
     gid, pkg = gid.upper(), Path(pkg)
     root = program_root(pack_root)

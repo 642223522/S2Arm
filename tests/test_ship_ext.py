@@ -378,7 +378,7 @@ class ProgramPackTest(unittest.TestCase):
         self.assertIn(Path("main.npdm"), mine); self.assertIn(Path("main.fixups.tsv"), mine); self.assertIn(Path("addr_need.tsv"), mine); self.assertIn(Path("icon.jpg"), mine)
 
     def test_program_carries_save_identity_like_container(self):
-        # 11-17 和开发乙定：程序包款宿主按模块目录（program/Games/<号>/）读存档身份（ios/save_transfer.m），所以随程序包走；
+        # 11-17 与 iOS 加载侧定：程序包款宿主按模块目录（program/Games/<号>/）读存档身份（ios/save_transfer.m），所以随程序包走；
         #   期望 = 同一份产物根组出的容器里 Games/<号>/save-identity.json（逐字节）；身份不合法 → 报红、不留目录
         gid = ContainerTest.A
         (self.root / "save-identity.json").write_text(json.dumps(dict(id=gid, name="甲游戏", version=65536, contentIdentity="ab" * 32)))
