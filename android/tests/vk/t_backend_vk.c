@@ -5390,9 +5390,9 @@ static void c66_pool_sets(const char *dir) {
 //                   竞态 40 轮：每轮「写法 {0, 1} 的段 → 立刻释放它的缓冲 → 写法 {0} 的段」：复用 40、被拒 40、新分 0、老路径 +40、输出全对，两条恒等式成立。
 //                   旧做法（表项里的组留着没重写的槽）下，被销毁的 Y 还被已绑进下一段的组指着：validation 层报 VUID-vkDestroyBuffer-buffer-00922
 //                   或命令缓冲因「绑定的缓冲已销毁」失效，整套 vk 用例里偶发（本臂 40 轮就是为了让它每遍都有很多次机会撞上）。
-//   臂 M（写法按「binding + 数组项号」认）：布局 binding 0 有 3 项、binding 1 有 2 项，每段在 binding 0 第 0 项之外再多写一条：
-//                   {b0e0, b0e1} 定写法并新分 1 组；{b0e0, b0e2}（条数、binding 相同，数组项号不同）、{b0e0, b1e1}（条数、数组项号的集合相同，binding 不同）、
-//                   {b0e0}（条数不同）各被拒 1 次、复用 0；回到 {b0e0, b0e1} 照常复用 1。两条恒等式成立。
+//   臂 M（写法按「binding + 数组项号」认）：binding 0 一项（着色器用）、binding 1 有 3 项、binding 2 有 2 项（着色器都不用），每段在 binding 0 之外再多写一条：
+//                   {b0e0, b1e1} 定写法并新分 1 组；{b0e0, b1e2}（条数、binding 相同，数组项号不同）、{b0e0, b2e1}（条数、数组项号的集合相同，binding 不同）、
+//                   {b0e0}（条数不同）各被拒 1 次、复用 0；回到 {b0e0, b1e1} 照常复用 1。两条恒等式成立。
 //   臂 H（总量上限，nvn_vk_dbg_dset_cap 改成 15 组；N = 70）：第 1 轮：向驱动要 1 + 2 + 4 + 8 = 15 组，到 15 就拒——复用 11、交出 15、放回 15、其余 55 次派发退回老路径
 //                   （到上限退回 55 次，驱动里分配计数 +70 = 新分 15 + 老路径 55）、输出全对、空闲 15；第 2 轮：新分 0、复用 15、退回 55、驱动计数 +55；
 //                   放弃一轮（取走的 15 组还给池、空闲 0，在用加空闲的组数回落，上限的余量回来）；再跑 1 轮：向驱动要 8 + 8 = 16 组（第 2 批取完是 16、比上限多 1 组：上限是软的，
@@ -5474,14 +5474,16 @@ static void c204_arm(const char *dir, int arm) {
       CHECK(cap > 0 && cap == g_c204_cap0, "C204 臂 %c 总量上限应在每次开会话时复位成缺省：第一个臂 %llu → 这个臂 %llu", 'A' + arm, (unsigned long long)g_c204_cap0, (unsigned long long)cap); }
     nvn_vk_dbg_dset_inject(arm == 3 ? 1 : arm == 4 ? 2 : 0);
     if (arm == 11) nvn_vk_dbg_dset_failreg(70);   // 臂 L：接下来 70 次登记表项当作内存不够（第 1 轮 70 次取组各撞一次）
-    nvn_gpu_layout_ent ce[2];
+    nvn_gpu_layout_ent ce[3];
     memset(ce, 0, sizeof ce);
     ce[0].set = 0; ce[0].cls = NVN_GPU_RES_SSBO; ce[0].access = NVN_GPU_ACC_W; ce[0].binding = 0; ce[0].count = 1; ce[0].stages = 1u << NVN_GPU_SH_CS;
     ce[1] = ce[0]; ce[1].binding = 1;   // 臂 G / M：第二项，着色器不用
-    if (arm == 12) { ce[0].count = 3; ce[1].count = 2; }   // 臂 M：两项都是数组（3 项 / 2 项），着色器只用 binding 0 的第 0 项
+    // 臂 M：数组放在着色器不用的 binding 1（3 项）/ binding 2（2 项）上；binding 0 保持 1 项、每段都写。
+    //   着色器用到的 binding 若是数组、只写第 0 项，新版校验层（1.4.341）把没写的项算作派发时访问到、报 VUID-vkCmdDispatch-None-08114。
+    if (arm == 12) { ce[1].count = 3; ce[2] = ce[0]; ce[2].binding = 2; ce[2].count = 2; }
     nvn_gpu_layout cl;
     memset(&cl, 0, sizeof cl);
-    cl.ent = ce; cl.nent = arm == 6 || arm == 12 ? 2 : 1;
+    cl.ent = ce; cl.nent = arm == 12 ? 3 : arm == 6 ? 2 : 1;
     nvn_gpu_shader sh = NULL;
     nvn_gpu_pipe cp = mk_cpipe(dir, "comp.comp", &cl, &sh);
     CHECK(cp != NULL, "C204 臂 %c cpipe 为空", 'A' + arm);
@@ -5596,22 +5598,22 @@ static void c204_arm(const char *dir, int arm) {
                 CHECK(s1.nw == s1.idle + s1.freed, "C204 臂 G 恒等式 向驱动要来的 == 空闲 + 还给池：%llu == %llu + %llu", (unsigned long long)s1.nw, (unsigned long long)s1.idle, (unsigned long long)s1.freed);
             }
         } else if (arm == 12) {
-            // 臂 M：写法按「binding + 数组项号」认，数一样也算不同。布局 binding 0 有 3 项、binding 1 有 2 项；每段在 binding 0 第 0 项之外再多写一条。
+            // 臂 M：写法按「binding + 数组项号」认，数一样也算不同。binding 1 有 3 项、binding 2 有 2 项（着色器不用）；每段在 binding 0 之外再多写一条。
             nvn_gpu_buf y = make_buf(64, NVN_GPU_MEM_SHARED, NULL);
             if (y) {
-                s0 = c204_now(); bad = c204_round_x(cp, buf, y, 0, 1, stride, 1, 0, &sig, "m-b0e1"); s1 = c204_now();   // 写法 {b0e0, b0e1}：表项的写法定为它
+                s0 = c204_now(); bad = c204_round_x(cp, buf, y, 1, 1, stride, 1, 0, &sig, "m-b1e1"); s1 = c204_now();   // 写法 {b0e0, b1e1}：表项的写法定为它
                 CHECK(bad == 0, "C204 臂 M 段 1 输出不符 %d 槽", bad);
                 C204_EQ("段 1 向驱动新分的组（批大小从 1 起）", s1.nw - s0.nw, 1); C204_EQ("段 1 被拒", s1.sigmiss - s0.sigmiss, 0);
-                s0 = c204_now(); bad = c204_round_x(cp, buf, y, 0, 2, stride, 1, 0, &sig, "m-b0e2"); s1 = c204_now();   // {b0e0, b0e2}：条数相同、binding 相同，数组项号不同
+                s0 = c204_now(); bad = c204_round_x(cp, buf, y, 1, 2, stride, 1, 0, &sig, "m-b1e2"); s1 = c204_now();   // {b0e0, b1e2}：条数相同、binding 相同，数组项号不同
                 CHECK(bad == 0, "C204 臂 M 段 2 输出不符 %d 槽", bad);
                 C204_EQ("段 2 数组项号不同：复用", s1.reuse - s0.reuse, 0); C204_EQ("段 2 数组项号不同：被拒", s1.sigmiss - s0.sigmiss, 1);
-                s0 = c204_now(); bad = c204_round_x(cp, buf, y, 1, 1, stride, 1, 0, &sig, "m-b1e1"); s1 = c204_now();   // {b0e0, b1e1}：条数相同、数组项号的集合相同，binding 不同
+                s0 = c204_now(); bad = c204_round_x(cp, buf, y, 2, 1, stride, 1, 0, &sig, "m-b2e1"); s1 = c204_now();   // {b0e0, b2e1}：条数相同、数组项号的集合相同，binding 不同
                 CHECK(bad == 0, "C204 臂 M 段 3 输出不符 %d 槽", bad);
                 C204_EQ("段 3 binding 不同：复用", s1.reuse - s0.reuse, 0); C204_EQ("段 3 binding 不同：被拒", s1.sigmiss - s0.sigmiss, 1);
                 s0 = c204_now(); bad = c204_round(cp, buf, stride, 1, 0, &sig, "m-b0e0"); s1 = c204_now();   // {b0e0}：条数不同
                 CHECK(bad == 0, "C204 臂 M 段 4 输出不符 %d 槽", bad);
                 C204_EQ("段 4 条数不同：复用", s1.reuse - s0.reuse, 0); C204_EQ("段 4 条数不同：被拒", s1.sigmiss - s0.sigmiss, 1);
-                s0 = c204_now(); bad = c204_round_x(cp, buf, y, 0, 1, stride, 1, 0, &sig, "m-b0e1-again"); s1 = c204_now();   // 回到 {b0e0, b0e1}：照常复用
+                s0 = c204_now(); bad = c204_round_x(cp, buf, y, 1, 1, stride, 1, 0, &sig, "m-b1e1-again"); s1 = c204_now();   // 回到 {b0e0, b1e1}：照常复用
                 CHECK(bad == 0, "C204 臂 M 段 5 输出不符 %d 槽", bad);
                 C204_EQ("段 5 写法相同：复用", s1.reuse - s0.reuse, 1); C204_EQ("段 5 写法相同：被拒", s1.sigmiss - s0.sigmiss, 0);
                 nvn_gpu_buf_release(y, NULL, NULL);
@@ -5635,8 +5637,11 @@ static void c204_arm(const char *dir, int arm) {
                 CHECK(bad == 0, "C204 臂 N 第二条管线输出不符 %d 槽", bad);
                 C204_EQ("第二条管线（同一布局）：向驱动新分的组（取第一条管线放回的）", s1.nw - s0.nw, 0); C204_EQ("第二条管线：复用", s1.reuse - s0.reuse, 70);
                 C204_EQ("两条管线共用一个表项", nvn_vk_dbg_dset_stat(6), 1);
-                nvn_gpu_layout_ent cec[1]; cec[0] = ce[0]; cec[0].count = 2;   // 结构不同：binding 0 有 2 项
-                nvn_gpu_layout clc = cl; clc.ent = cec; clc.nent = 1;
+                // 结构不同：多一个着色器不用的 binding 7。不把着色器用到的 binding 0 改成 2 项：那样每段只写第 0 项，
+                //   新版校验层（1.4.341）把没写的第 1 项算作派发时访问到，报 VUID-vkCmdDispatch-None-08114。
+                //   用 7 是避开下面 ① 直接取的那些结构（binding 1 / 2 / 100–399），否则 ① 的「表项 +1」「命中次数」会被这里先登记的那项带偏。
+                nvn_gpu_layout_ent cec[2]; cec[0] = ce[0]; cec[1] = ce[0]; cec[1].binding = 7;
+                nvn_gpu_layout clc = cl; clc.ent = cec; clc.nent = 2;
                 nvn_gpu_shader shc = NULL;
                 nvn_gpu_pipe cpc = mk_cpipe(dir, "comp.comp", &clc, &shc);
                 CHECK(cpc != NULL, "C204 臂 N 第三条管线为空");
