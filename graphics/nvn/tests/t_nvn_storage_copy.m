@@ -171,5 +171,5 @@ int main(void) { @autoreleasepool {
     shaped_case(NVN_FORMAT_RGBA_DXT1,NVN_TEXTURE_TARGET_2D,64,64,1,7);
     shaped_case(NVN_FORMAT_RGBA_DXT5,NVN_TEXTURE_TARGET_2D_ARRAY,32,16,3,5);
     shaped_case(NVN_FORMAT_RGBA8,NVN_TEXTURE_TARGET_3D,17,9,5,3);
-    printf("storage copy: %u checks, %u failures\n",checks,fails);return fails?1:0;
+    printf("%s t_nvn_storage_copy：%u checks, %u failures\n",fails?"✗":"✓",checks,fails);return fails?1:0;
 } }
