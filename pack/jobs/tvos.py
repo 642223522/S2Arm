@@ -214,16 +214,19 @@ def derive(c, gid, extraction):
       ③ 开发树本机还没有本版 tvOS 壳就出一个（发版应用自带 Shell-tvOS/）
       ④ game.json 记 tvos：壳号、兼容判据、资源包号（usable_kit 按它判）"""
     import host_update
-    src = layout.image_ios(c, gid, create=False)
-    if not (src / layout.IOS_KIT / "main.npdm").is_file() or not (src / layout.IOS_PACK / "manifest.json").is_file():
+    pack = layout.image_ios(c, gid, create=False) / layout.IOS_PACK
+    if not layout.has_ios_kit(c, gid) or not (pack / "manifest.json").is_file():
+        raise Failure("iPhone 版没出好，Apple TV 包从它派生：先看上面 iPhone 那一步的报错。", code="package_failed")
+    kit = layout.ios_kit(c, gid)   # iPhone 程序件：0.5.0 起常驻在库根 .programs + 缓存（pack/jobs/programs.py kit_dir），不在 image/ios/kit 了
+    if not (kit / "main.npdm").is_file():
         raise Failure("iPhone 版没出好，Apple TV 包从它派生：先看上面 iPhone 那一步的报错。", code="package_failed")
     dst = tv_image(c, gid)
     dst.mkdir(parents=True, exist_ok=True)
-    for name in (layout.IOS_KIT, layout.IOS_PACK):
+    for name, src in ((layout.IOS_KIT, kit), (layout.IOS_PACK, pack)):
         tmp = dst / (name + ".partial")
         shutil.rmtree(tmp, ignore_errors=True)
         try:
-            clone_tree(src / name, tmp)
+            clone_tree(src, tmp)
         except (OSError, shutil.Error) as e:
             shutil.rmtree(tmp, ignore_errors=True)
             raise Failure("Apple TV 包的文件拷不出来：" + (str(e).strip().splitlines() or ["?"])[-1], code="package_failed") from e  # 非玩家句

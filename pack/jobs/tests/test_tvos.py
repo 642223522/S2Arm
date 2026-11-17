@@ -442,9 +442,11 @@ class ExportPlanTest(unittest.TestCase):
 class DeriveTest(TvCase):
     """出 Apple TV 包（tvos.derive，ipa 作业 platform = tvos）：从 image/ios 派生，ASTC 包进 tvOS 资源包清单，game.json 记 tvos。期望手写"""
     def make_ios(self):
+        import programs
         img = layout.path(self.c, G, "image", "ios")
-        (img / "kit").mkdir(parents=True); (img / "kit/main.npdm").write_bytes(b"npdm")
-        pack = img / ".pack"; pack.mkdir()
+        kit = programs.cache(self.c, G) / "kit"   # 0.5.0 起 iPhone 程序件在常驻缓存（programs.kit_dir），不在 image/ios/kit
+        kit.mkdir(parents=True); (kit / "main.npdm").write_bytes(b"npdm"); (kit / "main.fixups.tsv").write_text("x")   # has_kit：主程序表非空 + 有改写产物表
+        pack = img / ".pack"; pack.mkdir(parents=True)
         (pack / "game.img").write_bytes(b"IMG")
         (pack / "index.tsv").write_text("game.img\t3\tabc\n", encoding="utf-8")
         (pack / "manifest.json").write_text(json.dumps(dict(version=3, files=1, total=3, index_sha256="old")), encoding="utf-8")
