@@ -1028,6 +1028,7 @@
   "export.platform.tvos": "Apple TV",
   "export.note.tvos": "Se instala en el Apple TV (misma red, enlazado una vez en Xcode); basta con un Apple ID gratuito, los juegos de Switch 2 requieren una cuenta de desarrollador de Apple de pago",
   "export.installAppleTV": "Instalar en el Apple TV",
+  "export.exportAppleTV": "Exportar instalador (.ipa)",
   "export.done.tvos": "La compilación para Apple TV está lista. Pulsa Instalar en el Apple TV para llevarla al televisor.",
   "export.appleTV.device": "Apple TV de destino",
   "export.appleTV.none": "Todavía no hay ningún Apple TV enlazado: conecta el televisor a la misma red que este Mac y enlázalo una vez en Devices and Simulators de Xcode.",

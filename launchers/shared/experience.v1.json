@@ -1004,6 +1004,7 @@
       {"id": "export.note.tvos_win", "zh-Hans": "导出 Apple TV 安装包（.ipa，游戏资源在包里）：用你自己的签名工具签名后装到电视", "en": "Exports an Apple TV installer (.ipa, game resources included): sign it with your own signing tool and install it on your TV"},
       {"id": "export.done.tvos_win", "zh-Hans": "Apple TV 安装包（.ipa）导出好了，在游戏库的「S2Arm Apple TV 导出」文件夹里，游戏资源已在包里：用你自己的签名工具签名、装到 Apple TV 就能玩。Switch 2 游戏签名要付费开发者账号。", "en": "The Apple TV installer (.ipa) is ready in the library's \"S2Arm Apple TV Export\" folder, with the game resources inside: sign it with your own signing tool and install it on your Apple TV to play. Signing Switch 2 games needs a paid developer account."},
       {"id": "export.installAppleTV", "zh-Hans": "装到 Apple TV", "en": "Install on Apple TV"},
+      {"id": "export.exportAppleTV", "zh-Hans": "导出安装包（.ipa）", "en": "Export installer (.ipa)"},
       {"id": "export.done.tvos", "zh-Hans": "Apple TV 版做好了，点「装到 Apple TV」装到电视上。", "en": "The Apple TV build is ready. Click Install on Apple TV to put it on your TV."},
       {"id": "export.appleTV.device", "zh-Hans": "装到哪台 Apple TV", "en": "Apple TV to install on"},
       {"id": "export.appleTV.none", "zh-Hans": "还没看到配对过的 Apple TV：电视和这台 Mac 连同一网络，在 Xcode 的「Devices and Simulators」里配对一次。", "en": "No paired Apple TV yet: put the TV on the same network as this Mac and pair it once in Xcode's Devices and Simulators."},
