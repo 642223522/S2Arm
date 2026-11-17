@@ -297,7 +297,7 @@ static uint8_t *slurp(const char *p, size_t *n) {
 // 电脑经 USB 把私钥（PKCS#1 RSAPrivateKey DER）与叶证书（DER）放进 App 数据容器 Library/Application Support/S2Arm/identity/incoming/{key.der, cert.der, identity.json}
 //   （维护者定：私钥是玩家自己的，进他自己账号的加密备份无妨；App 一打开就导入、立刻删，躺的时间很短），
 //   identity.json 最后改名 = 三份齐了。App 启动时（s2a_selfsign_probe 开头，构造期）导入钥匙串（本 App 访问组、首次解锁后、仅本机），
-//   确认能配成签名身份（真机 11-17 测试机2：分别 SecItemAdd 的私钥与证书配得上）→ 删 incoming/ 三份 → 写不含私钥的
+//   确认能配成签名身份（真机 11-17 一台测试 iPhone：分别 SecItemAdd 的私钥与证书配得上）→ 删 incoming/ 三份 → 写不含私钥的
 //   Library/Application Support/S2Arm/identity/current.json（电脑推送时读它判要不要重交）；
 //   证书 sha1 和上次不同就调 s2a_programs_resign_all（还没有就记一行）。任何一步失败：incoming/ 留着、写 identity/import_error.txt，起局照常
 #define SS_KC_LABEL "io.s2arm.selfsign.identity"
