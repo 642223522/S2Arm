@@ -457,5 +457,5 @@ def write_manifest(destination, fingerprint, snap=None):
     #   显示版本（v0.3.0 / v0.2.6-dev+ba0ef07）同理在开发树算好写进来——快照是全新单提交 Git 库，在快照里现算会得到快照自己的提交号（core.display_version）
     from core import display_version, release_version
     atomic(destination / "engine.json", dict(schema=1, id=identity, source=fingerprint, version=release_version(ROOT), displayVersion=display_version(ROOT),
-                                           memoryRequirementsVersion=2, shellId=shell_manifest.current_id(), **snap, files=files))
+                                           memoryRequirementsVersion=2, shellId=shell_manifest.current_id(), shellIdTvos=shell_manifest.current_id("tvos"), **snap, files=files))
     return identity

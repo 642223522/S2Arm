@@ -234,7 +234,7 @@ ios: ios-ns2pro
 	@/usr/bin/plutil -insert NSBluetoothAlwaysUsageDescription -string "Connect a Switch 2 Pro Controller when enabled in Settings." $(IOS_APP)/Info.plist
 	@/usr/bin/plutil -insert UIApplicationSceneManifest -json '{"UIApplicationSupportsMultipleScenes":false,"UISceneConfigurations":{"UIWindowSceneSessionRoleApplication":[{"UISceneConfigurationName":"Default","UISceneDelegateClassName":"S2ASceneDelegate"}]}}' $(IOS_APP)/Info.plist   # iOS 27 场景生命周期（27.1 SDK 强制 UIScene adoption，否则启动即崩）：指向 app.m 的 S2ASceneDelegate
 	@[ "$(S2A_SHELLUI)" != 1 ] || /usr/bin/plutil -insert CFBundleURLTypes -json '[{"CFBundleURLName":"s2arm","CFBundleURLSchemes":["s2arm"]}]' $(IOS_APP)/Info.plist   # 主屏小组件点封面：s2arm://play/<游戏号>（app.m 场景代理交给游戏库「开始」）
-	@[ "$(S2A_SHELLUI)" != 1 ] || $(MAKE) --no-print-directory ios-widget
+	@[ "$(S2A_SHELLUI)" != 1 ] || [ $(S2A_APPLE_OS) = tvos ] || $(MAKE) --no-print-directory ios-widget   # 主屏小组件只给 iPhone / iPad（tvOS 没有第三方主屏小组件；按 iOS 三元组编、tvOS SDK 下编不过）
 	@echo "iOS App：$(IOS_APP)（$$(du -sh $(IOS_APP) | cut -f1)，包名 $(IOS_BUNDLE)，未签名）"
 
 # NVN 查询测试共用完整生产 bootstrap / swnvn / NVN 跳板；保留签名检查，不提供测试替身。
