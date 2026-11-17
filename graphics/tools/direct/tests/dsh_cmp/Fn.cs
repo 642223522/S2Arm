@@ -93,6 +93,8 @@ static class Fn
                     "scr_pos_locns" => DshCompiler.ScrPosLocns(S(0)),
                     "next_id" => DshCompiler.NextId(S(0)),
                     // 11-01 dsh 收敛：离线链 Python reflect / tex_scales 删了，tests/dmsh_reflect_test.sh、dmsh_tex_scales_test.sh 改测这里（经 dshfn.py）
+                    "wide_loads" => DshCompiler.WideLoads(S(0)),   // 存储缓冲逐字读合并（tests/t_dsh_wide.py）
+                    "mul_extended" => DshCompiler.MulExtended(S(0)),   // 标量宽乘法离开 optnone 模板（tests/t_dsh_mulext.py）
                     "pool_arrays" => ((Func<object>)(() => { try { return DshCompiler.PoolArrays(S(0)); } catch (DshError de) { return new PyDict { ["err"] = de.Status, ["detail"] = de.Detail }; } }))(),   // 池数组改池指针（PoolArrays）；失败带原因原文
                     "reflect_detail" => ((Func<object>)(() => { try { return DshCompiler.Reflect(S(0), S(1), a[2].AsObject()); } catch (DshError de) { return new PyDict { ["err"] = de.Status, ["detail"] = de.Detail }; } }))(),   // 失败带原因原文（上面 reflect 只回类名）
                     "tex_scales" => typeof(DshCompiler).GetMethod("TexScales", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
