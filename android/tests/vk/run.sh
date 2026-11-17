@@ -188,6 +188,9 @@ if [ "$mode" = "--descriptor-indexing" ]; then
 fi
 
 # Pool-table contract fixture shares this validated Vulkan container entry.
+# 上面 find_icd / find_layer 已按通配找到 lavapipe 与 validation 层（各发行版 ICD 文件名不一，如 lvp_icd.json / lvp_icd.x86_64.json），
+#   原样传给池表用例，只留这一处负责找（11-17：池表用例自己只认 lvp_icd.x86_64.json，CI 上找不到、退 2，contract-sim 四片全红）
+export S2A_LAVAPIPE_ICD="$icd" S2A_VK_LAYER_DIR="$layer"
 if [[ "$mode" == --pool-table* ]]; then
     exec bash "$repo/android/tests/vk/pool_table.sh" "${mode#--pool-table}"
 fi
