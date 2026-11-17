@@ -2721,6 +2721,11 @@ def install_shell(c, ph, steps=True):
     ph.install(ipa, [], steps=False)
     rec = layout.load_device(c, ph.key)
     signed = dict(signed=dict(at=time.time(), free=bool(ph.info["free"]), device=ph.info["device"])) if "free" in ph.info else {}
+    if rec.get("bundleId") and ph.bid and rec["bundleId"] != ph.bid:
+        # 装上的是另一个 App（换了团队 / 签名方式 = 换包名 = 新沙盒）：记录里各款的程序包、资源包、交过的证书都在原来那个 App 里，这个 App 里没有。
+        #   清掉，之后「推到 iPhone」按没推过整款推（同 0.5.x _put 的 moved）；原来那个 App 和它的游戏留在手机上不动
+        note(c, f"手机上装的是另一个 App（{rec['bundleId']} → {ph.bid}）：各款按没推过算")  # 非玩家句
+        rec = {k: v for k, v in rec.items() if k not in ("games", "identity", "usage")}
     layout.save_device(c, ph.key, dict(rec, shellId=sid, bundleId=ph.bid or rec.get("bundleId", ""), at=time.time(), **signed))
     packer.commit_phone_ipa(c, ipa, sid)
     return dict(updated=True, outputPath=str(layout.phone_ipa(c)), bundleId=ph.bid, games=[], toShell=sid, **ph.info)
