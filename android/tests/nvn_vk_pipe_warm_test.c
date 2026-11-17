@@ -1299,8 +1299,9 @@ int main(int argc, char **argv) {
         free(ba); free(bb);
     }
     {   // 诊断开 / 关两遍同一串 note，落盘逐字节相同（诊断不改行为）；放在坏文件段之后：它们共用的清单文件已经用完
-        const char *dbase = getenv("S2A_PW_DIR");
-        int rc = diag_equiv(argv[0], dbase ? dbase : "/tmp");
+        // 传上面拷下来的 base，不要传 getenv 返回的指针：diag_equiv 里 setenv 会改写 S2A_PW_DIR，macOS 的 setenv 会释放这个变量
+        // 之前由 setenv 分配的旧值（走到这里时它已被上面的 setenv 重设过，不管父进程给没给目录），指针会悬空；glibc 不释放，所以 Linux 上看不出来。
+        int rc = diag_equiv(argv[0], base);
         printf("%-8s %s\n", "diag_eq", rc == 0 ? "ok" : "FAIL");
         if (rc != 0) fail = 1;
     }
