@@ -226,6 +226,64 @@ def cert_check(exe, team, appdata=None, log=None, run=subprocess.run):
     return dict(name=first['name'], machine=first['machine'], created=created)
 
 
+def plume_key_path(team, appdata=None):
+    """plumesign 存私钥的地方（同版 v2.7.2 apps/plumesign/src/main.rs get_data_path）：Windows %APPDATA%，别的系统 $XDG_CONFIG_HOME 或 ~/.config；下面 PlumeImpactor/keys/<团队>/key.pem"""
+    base = appdata or os.environ.get('APPDATA') or os.environ.get('XDG_CONFIG_HOME') or os.path.join(os.path.expanduser('~'), '.config')
+    return Path(base) / 'PlumeImpactor' / 'keys' / team / 'key.pem'
+
+
+def pkcs1_der(pem):
+    """私钥 PEM → RSAPrivateKey（PKCS#1）DER。key.pem 是 PKCS#8（BEGIN PRIVATE KEY）：取出里面 OCTET STRING 包着的那份；已是 PKCS#1（BEGIN RSA PRIVATE KEY）就原样。
+    读不了 → None。手机端 SecKeyCreateWithData 收的就是 PKCS#1（开发乙 11-17 真机验过）"""
+    import base64
+    try:
+        body = ''.join(l for l in pem.splitlines() if l and not l.startswith('-----'))
+        der = base64.b64decode(body)
+        if 'BEGIN RSA PRIVATE KEY' in pem:
+            return der
+        _, s, e = _tlv(der, 0)
+        tag, os_, oe = _children(der, s, e)[2]
+        if tag != 0x04:
+            return None
+        inner = der[os_:oe]
+        return inner if inner[:1] == b'\x30' else None
+    except (IndexError, ValueError):
+        return None
+
+
+def plume_identity(exe, team, appdata=None, log=None, run=subprocess.run):
+    """手机自签要的身份（0.6.0 通用壳，「私钥怎么交给 App」）：本机 plumesign 私钥 + 苹果列表里它的那张证书（公钥对上、机器名 AltStore，
+    就是 plumesign 自己会复用的那张，同 cert_check）→ {key: PKCS#1 DER, cert: DER, created, key_fp}；没有私钥 / 列不出 / 列表里没有对应证书 → None。
+    只读：只列证书，不新建、不撤。key_fp = 私钥文件的 SHA-256 前 16 位（调用方据此判「交过了」，不必每次联网列证书）"""
+    import hashlib
+    key = plume_key_path(team, appdata)
+    if not key.is_file():
+        return None
+    pem = key.read_text(encoding='utf-8')
+    mine, der = key_modulus(pem), pkcs1_der(pem)
+    if mine is None or der is None:
+        return None
+    try:
+        p = run([exe, 'account', 'certificates', '--team', team], capture_output=True, text=True, encoding='utf-8', errors='replace', env=plumesign_env(), timeout=120)
+    except (OSError, subprocess.SubprocessError) as e:
+        if log: Path(log).write_text(f'列证书失败：{e}\n', encoding='utf-8')
+        return None
+    if p.returncode:
+        return None
+    for c in parse_certs((p.stdout or '') + (p.stderr or '')):
+        m, created = cert_modulus_and_start(c['der'])
+        if m == mine and c['machine'] == PLUME_MACHINE_NAME:
+            return dict(key=der, cert=c['der'], created=created, key_fp=hashlib.sha256(pem.encode('utf-8')).hexdigest()[:16])
+    return None
+
+
+def key_fingerprint(team, appdata=None):
+    """本机 plumesign 私钥文件的 SHA-256 前 16 位；没有 → None（不联网）"""
+    import hashlib
+    key = plume_key_path(team, appdata)
+    return hashlib.sha256(key.read_text(encoding='utf-8').encode('utf-8')).hexdigest()[:16] if key.is_file() else None
+
+
 def sign_dylibs(exe, shell_root, dylibs, bundle, log):
     """通用壳程序包（pack/jobs/program_pack.py win_signer，11-16）：plumesign 没有单签一个文件的命令，就拿预编壳（shell_root = 壳的 App 内容）
     去掉 PlugIns/（小组件扩展：带上它 plumesign 会为扩展另注册 App ID）、Frameworks/ 放进这几个 dylib，打成小 IPA，只签不装（sign_install register=False），

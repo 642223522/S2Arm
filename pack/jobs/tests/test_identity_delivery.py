@@ -1,0 +1,147 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 S2Arm contributors
+"""0.6.0 通用壳：手机自签要的私钥 + 证书交给 App（pack/orch/install_win.py plume_identity / pkcs1_der，pack/jobs/install.py deliver_identity）。
+私钥与证书按 DER 规则手工拼（模数是随手写的大整数，不是真密钥），plumesign 列证书的输出按同版 v2.7.2 的 Rust Debug 形式手写，团队号、名字都是假的。
+期望由拼进去的值直接得出，不跑被测实现推。"""
+import hashlib
+import json
+import sys
+import tempfile
+import types
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+JOBS = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(JOBS))
+sys.path.insert(0, str(JOBS.parent / "orch"))
+import install  # noqa: E402
+import install_win  # noqa: E402
+from test_win_cert_gate import MOD_MINE, MOD_XCODE, Run, cert_der, integer, key_pem, listing, seq  # noqa: E402
+
+TEAM = "TEAM-FAKE"
+
+
+def rsa_der(modulus):   # 与 test_win_cert_gate.key_pem 包进 PKCS#8 的那份 RSAPrivateKey 逐字节相同
+    return seq(integer(0), integer(modulus), integer(65537), integer(3), integer(5), integer(7), integer(11), integer(13), integer(17))
+
+
+class PlumeIdentity(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.appdata = Path(self.tmp.name)
+
+    def mine(self):
+        k = self.appdata / "PlumeImpactor/keys" / TEAM / "key.pem"
+        k.parent.mkdir(parents=True); k.write_text(key_pem(MOD_MINE), encoding="utf-8")
+        return k.read_text(encoding="utf-8")
+
+    def test_pkcs1_from_pkcs8_and_pkcs1(self):
+        self.assertEqual(install_win.pkcs1_der(key_pem(MOD_MINE)), rsa_der(MOD_MINE))
+        import base64
+        b = base64.b64encode(rsa_der(MOD_MINE)).decode()
+        self.assertEqual(install_win.pkcs1_der("-----BEGIN RSA PRIVATE KEY-----\n" + b + "\n-----END RSA PRIVATE KEY-----\n"), rsa_der(MOD_MINE))
+        self.assertIsNone(install_win.pkcs1_der("-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n"))
+
+    def test_picks_our_certificate(self):
+        pem = self.mine()
+        ours = cert_der(MOD_MINE, "251101000000Z")
+        run = Run(listing(("Apple Development: Fake Xcode", "Fake-Mac", cert_der(MOD_XCODE, "250301120000Z")),
+                          ("Apple Development: Fake S2Arm", "AltStore", ours)))
+        got = install_win.plume_identity("plumesign.exe", TEAM, appdata=self.appdata, run=run)
+        self.assertEqual(got, dict(key=rsa_der(MOD_MINE), cert=ours, created="2025-11-01", key_fp=hashlib.sha256(pem.encode()).hexdigest()[:16]))
+        self.assertEqual(install_win.key_fingerprint(TEAM, appdata=self.appdata), got["key_fp"])
+
+    def test_no_identity_when_not_reusable(self):
+        # 公钥对、机器名不是 AltStore（plumesign 认不出，会新建）/ 列表里没有 / 列不出 / 本机没私钥：都不交
+        self.mine()
+        for out, rc in ((listing(("Apple Development: Fake S2Arm", "Fake-PC", cert_der(MOD_MINE, "251101000000Z"))), 0),
+                        (listing(("Apple Development: Fake Xcode", "Fake-Mac", cert_der(MOD_XCODE, "250301120000Z"))), 0),
+                        ("Error: session expired\n", 1)):
+            self.assertIsNone(install_win.plume_identity("plumesign.exe", TEAM, appdata=self.appdata, run=Run(out, rc)))
+        run = Run("[]\n")
+        self.assertIsNone(install_win.plume_identity("plumesign.exe", "TEAM-NOKEY", appdata=self.appdata, run=run))
+        self.assertEqual(run.calls, [], "没私钥不联网列证书")
+
+
+class FakeClient:
+    def __init__(self, fail_put=False):
+        self.ops, self.files, self.fail_put = [], {}, fail_put
+
+    def put(self, src, rel):
+        if self.fail_put:
+            raise RuntimeError("资源包写进 iPhone 时中断")
+        self.ops.append(("put", rel)); self.files[rel] = Path(src).read_bytes()
+
+    def mv(self, src, dst):
+        self.ops.append(("mv", src, dst)); self.files[dst] = self.files.pop(src); return True, ""
+
+
+class DeliverIdentity(unittest.TestCase):
+    """作业层：第一次交三份（identity.json 最后改名就位、不含私钥）、记下私钥指纹；指纹没变不联网不重交；交不出 / 推不进不挡推送"""
+    IDENT = dict(key=b"\x30\x01PRIVATE", cert=b"\x30\x02CERT", created="2025-11-01", key_fp="fp1")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.store = {}
+        self.c = types.SimpleNamespace(r={}, logs=Path(self.tmp.name), private=self.tmp.name, task="t1")
+
+    def phone(self, fp="fp1", ident=IDENT, client=None):
+        calls = []
+        def plume_identity(exe, team, log=None):
+            calls.append((exe, team)); return ident
+        W = types.SimpleNamespace(impactor=types.SimpleNamespace(selected_team=lambda: TEAM, bundled=lambda r: {"plumesign": "p.exe"}),
+                                  plumesign_path=lambda given=None: "C:/plumesign.exe", key_fingerprint=lambda team: fp, plume_identity=plume_identity)
+        cl = client or FakeClient()
+        return types.SimpleNamespace(W=W, key="UDID1", client=lambda w: cl), calls, cl
+
+    def deliver(self, ph, devcert=False):
+        with patch.object(install.layout, "load_device", lambda c, k: dict(self.store.get(k, {}))), \
+                patch.object(install.layout, "save_device", lambda c, k, rec: self.store.__setitem__(k, rec)), \
+                patch.object(install.devcert, "active", lambda c: devcert), patch.object(install, "trace", lambda *a, **k: None):
+            return install.deliver_identity(self.c, ph)
+
+    def test_first_delivery_three_files_metadata_last(self):
+        ph, calls, cl = self.phone()
+        sha1 = hashlib.sha1(self.IDENT["cert"]).hexdigest()
+        self.assertEqual(self.deliver(ph), sha1)
+        base = install.IDENTITY_INCOMING
+        self.assertEqual(cl.ops, [("put", f"{base}/key.der"), ("put", f"{base}/cert.der"), ("put", f"{base}/identity.json.pc.tmp"),
+                                  ("mv", f"{base}/identity.json.pc.tmp", f"{base}/identity.json")])
+        self.assertEqual(cl.files[f"{base}/key.der"], self.IDENT["key"])
+        meta = json.loads(cl.files[f"{base}/identity.json"])
+        self.assertEqual(meta, dict(schema=1, team=TEAM, cert_sha1=sha1, created="2025-11-01", source="appleId"))
+        self.assertNotIn(b"PRIVATE", cl.files[f"{base}/identity.json"], "清单里不带私钥")
+        rec = self.store["UDID1"]["identity"]
+        self.assertEqual((rec["team"], rec["key_fp"], rec["cert_sha1"]), (TEAM, "fp1", sha1))
+        self.assertEqual(calls, [("C:/plumesign.exe", TEAM)])
+
+    def test_same_key_not_redelivered_no_network(self):
+        ph, calls, cl = self.phone()
+        self.deliver(ph)
+        ph2, calls2, cl2 = self.phone()
+        self.assertIsNone(self.deliver(ph2))
+        self.assertEqual((calls2, cl2.ops), ([], []))
+
+    def test_new_key_delivered_again(self):
+        self.deliver(self.phone()[0])
+        ph, calls, cl = self.phone(fp="fp2", ident=dict(self.IDENT, key_fp="fp2"))
+        self.assertIsNotNone(self.deliver(ph))
+        self.assertEqual(len(cl.ops), 4)
+        self.assertEqual(self.store["UDID1"]["identity"]["key_fp"], "fp2")
+
+    def test_nothing_to_deliver_or_push_failure_does_not_raise(self):
+        ph, calls, cl = self.phone(ident=None)
+        self.assertIsNone(self.deliver(ph)); self.assertEqual(cl.ops, []); self.assertNotIn("UDID1", self.store)
+        ph, calls, cl = self.phone(client=FakeClient(fail_put=True))
+        self.assertIsNone(self.deliver(ph)); self.assertNotIn("UDID1", self.store)
+
+    def test_modes_that_cannot_deliver(self):
+        ph, calls, cl = self.phone()
+        self.assertIsNone(self.deliver(ph, devcert=True))   # 证书模式另做
+        self.assertIsNone(self.deliver(types.SimpleNamespace(key="UDID1")))   # Mac 的手机对象没有 W
+        self.assertEqual((calls, cl.ops), ([], []))
+
+
+if __name__ == "__main__":
+    unittest.main()
