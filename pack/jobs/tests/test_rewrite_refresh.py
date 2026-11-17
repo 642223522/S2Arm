@@ -589,3 +589,29 @@ class NoBackgroundRewriteTests(unittest.TestCase):
                 self.assertEqual(ran, [])
                 self.assertFalse(rr.refresh_mac(c, self.G, rt))   # 前台：要按新改写器做（替身抛错 → 核不了不挡起局，返回 False）
                 self.assertEqual(ran, [1])
+
+
+class FpslKey(unittest.TestCase):
+    """D-7AQ2：FPSLocker 转换代码修了，已出过包的款要走 S 级补进重出表。补丁记号（sgrade_key）只在这款带 FPSLocker 配置时多一段 :fpsl<转换代码指纹>：
+    期望手写——带配置：记号以 :fpsl<指纹> 结尾、转换代码一变记号就变；不带：记号与没加这段时一字不差（不让别的款白白重补）；补丁库取不到：当没带"""
+    def key(self, items, fp="aaaaaaaaaaaa"):
+        c = types.SimpleNamespace(engine=Path(__file__).resolve().parents[3])
+        import patches
+        with patch.object(patches, "version_key", return_value="vk"), patch.object(rr, "plan_code_id", return_value="pc"), \
+             patch.object(rr, "cheats_digest", return_value="-"), patch("mods.code_digest", return_value="-"), \
+             patch.object(rr, "fpsl_code_id", return_value=fp), patch.object(patches, "items_for", side_effect=items if callable(items) else (lambda *a: items)):
+            return rr.sgrade_key(c, "0100AD80208A8000", "rid", "68E3A0EA176A79F4")
+
+    def test_key(self):
+        base = "rid:pc:vk:-"
+        self.assertEqual(self.key([{"kind": "fpsl", "name": "68E3A0EA176A79F4.yaml"}]), base + ":fpslaaaaaaaaaaaa")
+        self.assertNotEqual(self.key([{"kind": "fpsl"}], fp="bbbbbbbbbbbb"), self.key([{"kind": "fpsl"}]), "转换代码变了记号跟着变")
+        self.assertEqual(self.key([{"kind": "pchtxt", "name": "x.pchtxt"}]), base, "不带 FPSLocker 配置：记号不变")
+        def gone(*a):
+            raise OSError("补丁库取不到")
+        self.assertEqual(self.key(gone), base, "补丁库取不到：当没带")
+
+    def test_code_id_tracks_converter_files(self):
+        c = types.SimpleNamespace(engine=Path(__file__).resolve().parents[3])
+        a = rr.fpsl_code_id(c)
+        self.assertRegex(a, r"^[0-9a-f]{12}$")
