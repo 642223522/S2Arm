@@ -532,3 +532,60 @@ class OriginalExefsFormatTests(unittest.TestCase):
              patch.object(library, "engine_tool", side_effect=lambda _c, name: ns2_dump):
             self.original()
         self.assertEqual(seen, [str(reader)])
+
+
+class NoBackgroundRewriteTests(unittest.TestCase):
+    """11-17 维护者定：改写器指纹变了不再在后台重改写全部游戏（准备更新 iPhone、打开启动器补 S 级都走 ignore_rewriter），
+    只在玩家对这一款出包 / 推送 / 装机 / 起局时前台做；补丁记号里改写器之后的部分（补丁库版本、金手指等）变了照旧补。
+    改写器本身换成计数的替身，期望按规则手写"""
+    G = "0100000000010000"
+
+    def run_ios(self, stored, now_key, ignore):
+        c = types.SimpleNamespace(emit=lambda *a, **k: None, catalog=lambda: {"games": [{"id": self.G, "name": "甲"}]})
+        calls, saved = [], {"ios": dict(stored)}
+        def check(cc, g, kit, target, rid, ignore_rewriter=False):
+            calls.append((g, rid)); return "unaffected"
+        with patch.object(rr, "rewriter_id", lambda cc: "NEWRID"), patch.object(rr, "ios_key", lambda cc, g, rid: now_key(rid)), \
+                patch.object(rr, "kept_todo", lambda *a: False), patch.object(rr, "check_and_update", check), \
+                patch.object(rr, "_refresh_bf_ios", lambda cc, games: []), \
+                patch.object(rr.layout, "game_info", lambda cc, g: saved), patch.object(rr.layout, "ios_kit", lambda cc, g: Path("/kit")), \
+                patch("core.trace", lambda *a, **k: None, create=True), patch("programs.save_recipe", lambda *a: None, create=True):
+            rr.refresh_ios(c, [self.G], ignore_rewriter=ignore)
+        return calls
+
+    def test_rewriter_change_alone_skipped_in_background(self):
+        # 改写器指纹从 OLDRID 换成 NEWRID、补丁记号其余部分不变：后台（ignore_rewriter）0 次改写；前台（玩家推这一款）改写 1 次
+        stored = dict(rewriterId="OLDRID", sgradeKey="OLDRID:plan:v1:-")
+        key = lambda rid: f"{rid}:plan:v1:-"
+        self.assertEqual(self.run_ios(stored, key, True), [])
+        self.assertEqual(self.run_ios(stored, key, False), [(self.G, "NEWRID")])
+
+    def test_patch_library_change_still_refreshed_in_background(self):
+        # 补丁库版本 v1 → v2（记号里改写器之后的部分变了）：后台照旧补（11-14 维护者：补丁库更新 / 导入金手指要补进程序）
+        stored = dict(rewriterId="OLDRID", sgradeKey="OLDRID:plan:v1:-")
+        self.assertEqual(self.run_ios(stored, lambda rid: f"{rid}:plan:v2:-", True), [(self.G, "NEWRID")])
+
+    def test_sgrade_off_game_never_rewritten_in_background(self):
+        # 出包时取消过 S 级优化（记号 None，只看改写器指纹）：后台 0 次；前台照旧按新改写器做
+        stored = dict(rewriterId="OLDRID")
+        self.assertEqual(self.run_ios(stored, lambda rid: None, True), [])
+        self.assertEqual(self.run_ios(stored, lambda rid: None, False), [(self.G, "NEWRID")])
+
+    def test_mac_background_skips_rewriter_change_alone(self):
+        # Mac 运行版本（打开启动器后台补 S 级用 ignore_rewriter）：改写器指纹单独变了直接返回，不跑改写器；前台起局（不带）要跑
+        with tempfile.TemporaryDirectory() as t:
+            rt = Path(t)
+            (rt / "exefs").mkdir()
+            (rt / "exefs/main").write_bytes(bytes(0x48))
+            import json as _json
+            (rt / "manifest.json").write_text(_json.dumps({"files": {}, "rewriterId": "OLDRID"}))
+            c = types.SimpleNamespace(emit=lambda *a, **k: None, catalog=lambda: {"games": []}, private=t)
+            ran = []
+            def boom(*a, **k):
+                ran.append(1); raise Failure("前台才该跑到这里")
+            with patch.object(rr, "rewriter_id", lambda cc: "NEWRID"), patch.object(rr, "sgrade_off", lambda cc, g: True), \
+                    patch.object(rr, "rewriter_bin", boom):
+                self.assertFalse(rr.refresh_mac(c, self.G, rt, ignore_rewriter=True))
+                self.assertEqual(ran, [])
+                self.assertFalse(rr.refresh_mac(c, self.G, rt))   # 前台：要按新改写器做（替身抛错 → 核不了不挡起局，返回 False）
+                self.assertEqual(ran, [1])
