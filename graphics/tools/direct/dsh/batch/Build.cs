@@ -248,7 +248,7 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
         foreach (var d in new[] { Out, IosOut }.Where(x => x != null))   // 上一次留下的印章先去掉，出完再写
             if (File.Exists(Path.Combine(d, "inputs.tsv"))) File.Delete(Path.Combine(d, "inputs.tsv"));
 
-        Metal.Init(NoMac ? null : (MacMetal, MacRecord, "macosx"), IosLib ? (IosMetal, IosRecord, "iphoneos") : null, Work, NJ);
+        if (Metal.Init(NoMac ? null : (MacMetal, MacRecord, "macosx"), IosLib ? (IosMetal, IosRecord, "iphoneos") : null, Work, NJ) is { } broken) { Say(broken); return 1; }
         Phase("读表 / 键摘要");
         Translate(); Packs.Clear(); var res = Finish(); Phase("翻译与逐键收尾");   // 着色器包记录只在键摘要与翻译里读：翻完即放（审计 #1417 P1-77：原先留到进程结束）
         bool flushed = Defer.Count > 0;
@@ -946,11 +946,38 @@ static class Metal
     static string Work; static SemaphoreSlim Gate;
     static readonly ConcurrentDictionary<string, long> St = new();
     static readonly ConcurrentBag<(double S, string Target, int Bytes)> Times = new();
-    public static void Init((string[] Cmd, string Rec, string Sdk)? mac, (string[] Cmd, string Rec, string Sdk)? ios, string work, int jobs)
+    /// <summary>→ null 正常；编译工具用不了 → 一行【红】原因（调用方打出来、整次停，不再逐支翻译编译）</summary>
+    public static string Init((string[] Cmd, string Rec, string Sdk)? mac, (string[] Cmd, string Rec, string Sdk)? ios, string work, int jobs)
     {
         Work = work; Gate = new SemaphoreSlim(jobs);
         foreach (var (name, t) in new[] { ("mac", mac), ("ios", ios) })
-            if (t is { } v) { T[name] = (v.Cmd, v.Sdk, SHA256.HashData(Encoding.UTF8.GetBytes("dshb-mtl 2\0" + v.Rec + "\0" + CompilerId(v.Sdk)))); BuildPch(name, v.Cmd); }
+            if (t is { } v)
+            {
+                if (Probe(name, v.Cmd, v.Sdk) is { } why) return why;
+                T[name] = (v.Cmd, v.Sdk, SHA256.HashData(Encoding.UTF8.GetBytes("dshb-mtl 2\0" + v.Rec + "\0" + CompilerId(v.Sdk)))); BuildPch(name, v.Cmd);
+            }
+        return null;
+    }
+    // 开编前试编一支最小着色器（#840 / D-AH9G：Windows 玩家机上 metal.exe 起不来，照样翻译了 1 万多支、跑一个半小时，最后只说「一个键都没出」）：
+    //   用和正式编译同一套编译约定与 metallib，编不出就当场停、带上编译器原话。逐支编不过不在这里判（同审计 P1-150：那是着色器自己的问题，不整次停）
+    const string ProbeMsl = "#include <metal_stdlib>\nusing namespace metal;\nkernel void s2a_probe(device uint *o [[buffer(0)]]) { o[0] = 1u; }\n";
+    static string Probe(string name, string[] cmd, string sdk)
+    {
+        var dir = Path.Combine(Work, "probe-" + name); Directory.CreateDirectory(dir);
+        string m = Path.Combine(dir, "s2a_probe.metal"), air = Path.Combine(dir, "s2a_probe.air"), lib = Path.Combine(dir, "s2a_probe.metallib");
+        File.WriteAllText(m, ProbeMsl);
+        int rc; string err, step = "metal";
+        try
+        {
+            (rc, err) = Exec(Native(cmd).Concat(new[] { m, "-o", air }).ToArray());
+            if (rc == 0) { step = "metallib"; (rc, err) = Exec(Tool(sdk, "metallib", air, "-o", lib)); }
+            if (rc == 0 && !File.Exists(lib)) (rc, err) = (-1, "退出码 0 却没写出 " + Path.GetFileName(lib));
+        }
+        catch (Exception e) { (rc, err) = (-1, e.GetType().Name + "：" + e.Message); }   // 起不来（文件不在 / 没有执行权限 / 路径不认）也算编译工具用不了
+        finally { try { Directory.Delete(dir, true); } catch { } }
+        if (rc == 0) return null;
+        string tool = string.Join(' ', step == "metal" ? Native(cmd).Take(1) : Tool(sdk, "metallib").Take(WinBin == null ? 4 : 1));
+        return $"[RED] Metal 编译工具没能运行（{name}，{step} 那一步，退出码 {rc}）：先装好 / 修好它再出包；没开始翻译编译。命令 {tool}；原话：{Trunc((CompilerWhy(err) ?? err ?? "").Trim(), 400)}";
     }
     // 预编头（11-06 出包速度线，Spare-host 实测）：每份 MSL 的描述符结构体里有贴图成员，前端每个编译单元都要现实例化一遍 metal 标准库的贴图类模板
     //   （texture2d / texture2d_array / texturecube … 每种 19–38 毫秒，194 KB 那支前端 163 毫秒里占 111）；模块缓存只存声明、不存实例化。
@@ -1130,7 +1157,8 @@ static class Metal
     /// <summary>单测入口（dsh_batch --metal-compile &lt;工作目录&gt; &lt;源文件&gt;）：按 Mac 编译约定走一次真实的 Init + Compile + 编库收尾 Tally → 0 编成 / 1 有编不过的 / 2 整次停（编译环境坏了，或一份库都没出）</summary>
     internal static int CompileCli(string[] a)
     {
-        Store.Open(Path.Combine(a[0], "store")); Init((Build.MacMetal, Build.MacRecord, "macosx"), null, a[0], 1);
+        Store.Open(Path.Combine(a[0], "store"));
+        if (Init((Build.MacMetal, Build.MacRecord, "macosx"), null, a[0], 1) is { } broken) { Console.WriteLine("stop: " + broken); return 2; }   // 同出库：开编前试编不过 = 编译工具用不了，整次停
         try
         {
             string last = null;
