@@ -1614,7 +1614,7 @@ public final class S2ArmLauncherModel: ObservableObject {
                 self?.finish(.completed, message: "", reveal: reveal, slot: slot)
             } catch let failure as JobFailure {
                 self?.finish(failure.state, message: failure.errorDescription ?? "", code: failure.code,
-                             suggestion: failure.outcome.diagnostics.first?["suggestion"] as? String ?? "", slot: slot)
+                             suggestion: failure.outcome.failureDiagnostic?["suggestion"] as? String ?? "", slot: slot)
             } catch is CancellationError {
                 self?.finish(.cancelled, message: "", slot: slot)
             } catch is ExportIncomplete {

@@ -13,6 +13,7 @@ import argparse
 import contextlib
 import json
 import datetime
+import errno
 import hashlib
 import os
 import plistlib
@@ -943,10 +944,51 @@ def wait_unlocked(c, call):
     return rc, data, err
 
 
+# 存档备份失败时先分清两种玩家能看懂、能处理的情况，不笼统报「确认不了 / 读不到」（维护者 11-17：玩家更新手机上的 S2Arm 时卡在备份）：
+#   ① 这台 Mac 磁盘满（devicectl 结果写不下、拉回的存档写不下）→ 说清「Mac 空间不够」、腾出多少再试，仍可确认后照装；
+#   ② 玩家开了云存档、这款在 iCloud 云存档文件夹里有快照 → 覆盖装 App 不碰 iCloud 里那份，如实说一句、照装（不是删检查：手机上的本地存档照常备份，只有备份不成时才看云端）。
+#   云存档文件夹由 Mac 启动器随请求带（cloudSavesFolder，玩家在环境页选的同一个；SaveSync CloudSaveFolder：<文件夹>/S2Arm Saves/<程序号大写>/head-<设备>.json）
+BACKUP_FREE_GB = 1   # 磁盘满时请玩家至少腾出的空间：存档本身一般几 MB 到几十 MB，余量给 devicectl 结果文件与装机临时文件
+
+
+def cloud_save_copy(c, gid):
+    """这款在云存档文件夹里有快照 → 最新那份 head 的修改时刻（time.struct_time）；没开云存档 / 没有 / 读不了 → None。
+    iCloud 还没下载到这台 Mac 的 head 是占位文件 .head-<设备>.json.icloud，同样算有"""
+    folder = c.r.get("cloudSavesFolder")
+    if not folder or not gid:
+        return None
+    d = Path(folder) / "S2Arm Saves" / gid.upper()
+    try:
+        heads = [p for p in d.iterdir() if (p.name.startswith("head-") and p.name.endswith(".json"))
+                 or (p.name.startswith(".head-") and p.name.endswith(".json.icloud"))]
+        return time.localtime(max(p.stat().st_mtime for p in heads)) if heads else None
+    except (OSError, ValueError):
+        return None
+
+
+def mac_free_mb(c):
+    try:
+        return shutil.disk_usage(c.private).free >> 20
+    except OSError:
+        return -1
+
+
+def save_backup_stuck(c, gid, why, nospace=False):
+    """备份做不成时的出口：云端有这款的快照 → 记一笔照装（返回 None）；磁盘满 → 按「Mac 空间不够」问玩家；其余照旧 backup_failed"""
+    at = cloud_save_copy(c, gid)
+    if at:
+        c.emit("message", "这款存档在 iCloud 云存档里有一份（{0}），覆盖装不会碰它：这次不另备份，照装".format(time.strftime("%Y-%m-%d %H:%M", at)))
+        note(c, f"覆盖装前没能备份手机上的存档（{why}），云存档里有这款的快照，照装")  # 非玩家句
+        return None
+    if nospace:
+        why = "这台 Mac 空间不够，存档备份放不下（只剩 {0} MB）：腾出 {1} GB 再试，或者确认后继续".format(mac_free_mb(c), BACKUP_FREE_GB)
+    return backup_failed(c, why)
+
+
 def backup_saves(c, ident, bid, gid, docs="Documents"):
     """覆盖装前把机上这款的整个存档目录（bis/user/save）逐文件拉回游戏库 games/<程序号>/save_backup/<时刻>/（10-27 运维线：
     斯普拉遁3 体感包覆盖装后进了选形象页，原档没有备份、无从比对）。第一次装 / 机上没有存档 = 不备份；拉失败报红停装，宁可不装也不冒丢档的险"""
-    from diag import devicectl
+    from diag import DEVICECTL_NOSPACE, devicectl
     save_dir = f"{docs}/{SAVE_REL}"
     rc, data, err = wait_unlocked(c, lambda: devicectl(c, "device", "info", "files", "--device", ident, "--domain-type", "appDataContainer",
                                                        "--domain-identifier", bid, "--subdirectory", save_dir, timeout=120))
@@ -958,27 +1000,35 @@ def backup_saves(c, ident, bid, gid, docs="Documents"):
              if p and not p.rsplit("/", 1)[-1].startswith(".")]
     if not rc and unknown:
         print(f"[s2a] 存档文件清单有 {len(unknown)} 条读不出路径，字段：{unknown[0]}", file=sys.stderr)
-        return backup_failed(c, f"读不懂 iPhone 返回的存档文件清单（{len(unknown)} 条没有路径字段，多半是 Xcode 版本不同）")
+        return save_backup_stuck(c, gid, f"读不懂 iPhone 返回的存档文件清单（{len(unknown)} 条没有路径字段，多半是 Xcode 版本不同）")
+    if rc == DEVICECTL_NOSPACE:
+        return save_backup_stuck(c, gid, err, nospace=True)
     if rc:
         # 列不出：App 不在机上（第一次装）才算没有存档；App 在却列不出要分清两种——devicectl 对「目录不存在」和「锁屏 / 隧道断」报同一个错
         #   （11-07 满屏线 Duo 实测：容器第一次装半途失败 / 从没进过游戏，机上 Documents/games 是空目录，原先每次都拒装、玩家永久卡死）。
         #   往上逐级列父目录，第一个列得出的父目录定：里面看不到存档目录 = 没有存档，照装；看得到却列不出 / 父目录一个都列不出 = 停装
         arc, apps, aerr = wait_unlocked(c, lambda: devicectl(c, "device", "info", "apps", "--device", ident, "--bundle-id", bid, timeout=60))
         if arc:   # 连「装没装过」都问不出（锁屏 / 超时 / 断开）：不能当成第一次装，否则跳过备份直接覆盖（#333）
-            return backup_failed(c, "确认不了 iPhone 上有没有装过这款：" + (aerr.splitlines()[-1] if aerr else f"devicectl 退出 {arc}"))  # 非玩家句
+            return save_backup_stuck(c, gid, "确认不了 iPhone 上有没有装过这款：" + (aerr.splitlines()[-1] if aerr else f"devicectl 退出 {arc}"), nospace=arc == DEVICECTL_NOSPACE)  # 非玩家句
         if any(a.get("bundleIdentifier") == bid for a in (apps.get("result") or {}).get("apps") or []):
             if not save_dir_absent(c, ident, bid, save_dir):
-                return backup_failed(c, "读不到 iPhone 上这款的存档目录：" + (err.splitlines()[-1] if err else f"devicectl 退出 {rc}"))  # 非玩家句
+                return save_backup_stuck(c, gid, "读不到 iPhone 上这款的存档目录：" + (err.splitlines()[-1] if err else f"devicectl 退出 {rc}"))  # 非玩家句
         return None
     if not files:
         return None
     dest = layout.path(c, gid, "save_backup", time.strftime("%Y%m%d-%H%M%S"))
     for rel in files:
-        (dest / rel).parent.mkdir(parents=True, exist_ok=True)
+        try:
+            (dest / rel).parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            if e.errno != errno.ENOSPC:
+                raise
+            return save_backup_stuck(c, gid, str(e), nospace=True)
         rc, _, err = devicectl(c, "device", "copy", "from", "--device", ident, "--domain-type", "appDataContainer", "--domain-identifier", bid,
                                "--source", f"{save_dir}/{rel}", "--destination", str(dest / rel), timeout=120)
         if rc or not (dest / rel).is_file():
-            return backup_failed(c, f"拉存档失败（{rel}）：" + (err.splitlines()[-1] if err else f"devicectl 退出 {rc}"))  # 非玩家句
+            return save_backup_stuck(c, gid, f"拉存档失败（{rel}）：" + (err.splitlines()[-1] if err else f"devicectl 退出 {rc}"),  # 非玩家句
+                                     nospace=rc == DEVICECTL_NOSPACE)
     return dest
 
 
@@ -2535,16 +2585,38 @@ def phone_busy(ph, games):
     return got is not False
 
 
-IDENTITY_INCOMING = "Library/Application Support/S2Arm/identity/incoming"   # App 启动时导入钥匙串、导入成功就删（手机侧，0.6.0）
+# App 一打开就导入钥匙串、立刻删这三份（11-17 维护者：私钥是玩家自己的，进他自己账号的加密备份也无妨，不另放 Caches）。
+#   已交没交按手机上的现状判：App 导入后写的 current.json / 还没导入的 incoming 清单里是同一张证书就不重交
+IDENTITY_INCOMING = "Library/Application Support/S2Arm/identity/incoming"
+IDENTITY_CURRENT = "Library/Application Support/S2Arm/identity/current.json"   # App 导入成功后写（团队号、证书 sha1，不含私钥）
+
+
+def _identity_on_phone(c, ph, sha1):
+    """手机上这张证书已导入（current.json）或还等着导入（incoming/identity.json）→ True；都没有（从没交过 / App 删了重装）→ False"""
+    if not sha1:
+        return False
+    with tempfile.TemporaryDirectory(dir=c.private) as w:
+        cl = ph.client(w)
+        for rel in (IDENTITY_CURRENT, f"{IDENTITY_INCOMING}/identity.json"):
+            got = Path(w) / "probe.json"
+            if cl.get(rel, got):
+                try:
+                    if json.loads(got.read_text(encoding="utf-8")).get("cert_sha1") == sha1:
+                        return True
+                except ValueError:
+                    pass
+    return False
 
 
 def deliver_identity(c, ph):
-    """0.6.0 通用壳：把手机自签要的私钥 + 叶证书交给 App（cmdr 方案「私钥怎么交给 App」，开发乙 11-17 真机验过 DER 两份能配成签名身份）。
+    """0.6.0 通用壳：把手机自签要的私钥 + 叶证书交给 App（cmdr 方案「私钥怎么交给 App」，11-17 真机验过 DER 两份能配成签名身份）。
     只走本机 USB（s2a-devpush），写进 App 数据容器 IDENTITY_INCOMING：key.der（PKCS#1）、cert.der、最后改名就位的 identity.json（不含私钥）。
+    通用壳开关关着（0.6.0 前缺省）一个字节都不写。
     交得出的只有 Windows Apple ID 模式（Impactor / plumesign 的 keys/<团队>/key.pem）；Mac 现在借 Xcode 钥匙串、证书模式另做，都照旧电脑签。
-    设备记录 identity.key_fp 与本机私钥文件指纹相同 = 交过了，不联网列证书、不重交。交不出 / 推不进都不挡推送：记一行，照旧电脑签。→ 交了的证书 sha1 | None"""
+    设备记录 identity.key_fp 与本机私钥文件指纹相同、且手机上已导入或还等着导入同一张证书 = 交过了，不联网列证书、不重交。交不出 / 推不进都不挡推送：记一行，照旧电脑签。→ 交了的证书 sha1 | None"""
     import hashlib
-    if not hasattr(ph, "W") or devcert.active(c):   # 只有 Windows 的手机对象（WinPhone）带 W（Impactor / plumesign）
+    import program_pack
+    if not program_pack.enabled(c) or not hasattr(ph, "W") or devcert.active(c):   # 开关关着一个字节都不写；只有 Windows 的手机对象（WinPhone）带 W
         return None
     try:
         team = ph.W.impactor.selected_team()
@@ -2552,8 +2624,8 @@ def deliver_identity(c, ph):
         if not fp:
             return None
         done = layout.load_device(c, ph.key).get("identity") or {}
-        if done.get("team") == team and done.get("key_fp") == fp:
-            return None
+        if done.get("team") == team and done.get("key_fp") == fp and _identity_on_phone(c, ph, done.get("cert_sha1")):
+            return None   # 同一把私钥、手机上已导入或还等着导入：不联网、不重交
         exe = ph.W.plumesign_path((ph.W.impactor.bundled(c.r.get("resources")) or {}).get("plumesign"))
         ident = ph.W.plume_identity(exe, team, log=c.logs / (c.task + "-identity.log")) if exe else None
         if not ident:

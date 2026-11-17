@@ -116,6 +116,21 @@ try:
 except F.Unsupported as e:
     if 'xcrun' in str(e): print('跳过 ⑦⑧：本机没有汇编器')
     else: ck(f'⑦⑧ 不该不收：{e}', False)
+# ⑨ D-7AQ2：跳转目标写了 + / - 的是相对当前指令（[b, +160]），没写符号的是主程序里的绝对偏移（[b, 0x1000]）。原先 +160 读成 160、按绝对跳到 main+0xa0。
+#   期望按 A64 B 编码手算（0x14000000 | ((目标 − 本条) / 4 的低 26 位)）：0x1000 处 b +160 → 0x10a0 = 0x14000028；0x1004 处 b -8 → 0xffc = 0x17fffffe；
+#   0x1008 处 b 0x1000 → 0x1000 = 0x17fffffe
+y9 = miniyaml.load('MASTER_WRITE:\n  -\n    type: asm_a64\n    main_offset: 0x1000\n    instructions: [\n      [b, +160],\n      [b, -8],\n      [b, 0x1000]\n    ]\n')
+ins9 = y9['MASTER_WRITE'][0]['instructions']
+ck('⑨ 小 YAML：+160 / -8 记成带符号的整数，0x1000 是普通整数',
+   [type(i[1]).__name__ for i in ins9] == ['Signed', 'Signed', 'int'] and [int(i[1]) for i in ins9] == [160, -8, 0x1000])
+if have_clang:
+    try:
+        w9, _ = F.convert(y9, (0, 0), (0x10000, 0x20000))
+        ck('⑨ 带符号的跳转按相对编码、不带符号的按绝对', w9 == {0x1000: struct.pack('<III', 0x14000028, 0x17FFFFFE, 0x17FFFFFE)})
+    except F.Unsupported as e:
+        ck(f'⑨ 不该不收：{e}', False)
+else:
+    print('跳过 ⑨ 编码：本机没有汇编器')
 real = subprocess.run
 def gone(*a, **k): raise FileNotFoundError(2, '系统找不到指定的文件。')
 subprocess.run = gone

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 S2Arm contributors
+using System.Text.Json;
 using S2Arm.Launcher.Protocol;
 
 internal static class LibraryJobCases
@@ -26,6 +27,18 @@ internal static class LibraryJobCases
         check(WithBanner("", english).BannerFile() is null, "banner: no banner falls back to the cover card");
         check(WithBanner(Path.Combine(english, "cover.jpg"), english).BannerFile() is null, "banner: only banner.jpg counts");
         check(WithBanner(Path.Combine(byId, "banner.jpg"), english).BannerFile() is null, "banner: another game's folder is refused");
+
+        // 失败码取让作业停下的那条（0.5.4 玩家卡在「更新 iPhone 上的 S2Arm」：补着色器的警告在前、停装码 save_backup_failed 在后，
+        //   原先取第一条，认不出可确认的停装、不问「仍然继续」）。期望手写：最后一条 error 级；没有 error 取最后一条；空 / 非数组为 null
+        static JsonElement Diags(string json) => JsonDocument.Parse(json).RootElement.Clone();
+        check(LibraryJobResult.FailureCodeOf(Diags("""[{"code":"disk_full","severity":"warning"},{"code":"save_backup_failed","severity":"error"}]""")) == "save_backup_failed",
+              "failure code: the stopping error after an earlier warning");
+        check(LibraryJobResult.FailureCodeOf(Diags("""[{"code":"a","severity":"error"},{"code":"w","severity":"warning"},{"code":"b","severity":"error"}]""")) == "b",
+              "failure code: the last error wins");
+        check(LibraryJobResult.FailureCodeOf(Diags("""[{"code":"w1","severity":"warning"},{"code":"w2"}]""")) == "w2", "failure code: no error falls back to the last code");
+        check(LibraryJobResult.FailureCodeOf(Diags("[]")) is null && LibraryJobResult.FailureCodeOf(Diags("{}")) is null, "failure code: empty or non-array is null");
+        check(new LibraryJobResult("failed", "", Diags("{}"), Diags("""[{"code":"runtime_invalid","severity":"warning"},{"code":"save_backup_failed","severity":"error"}]""")).FailureCode == "save_backup_failed",
+              "failure code: job result exposes the same rule");
 
         // 导入失败的去向：只有读取器确认通用密钥版本不足（keys_outdated）才引导换密钥；
         // 无法读取、缺票据、内容截断都不是换 prod.keys 能解决的。

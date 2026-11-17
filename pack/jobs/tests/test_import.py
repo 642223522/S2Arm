@@ -87,6 +87,14 @@ class ImportTests(JobCase):
         self.assertNotIn("prod.keys", diagnostic["summary"])
         self.assertNotIn("重新导出", diagnostic["suggestion"])
 
+    def test_wrong_keys_reported_as_keys_not_tampered_file(self):
+        # #1511：分区头魔数不对（读取器【原因 keys_wrong】）→ 按密钥不对报（keys_outdated，叫玩家重新导出 prod.keys），不报哈希 / 内容读不出、不叫玩家换文件
+        self.import_keys(); self.install_reader_fixture()
+        source = self.root / "source.xci"; source.write_bytes(b"magic fixture")
+        _, terminal = self.worker("import", paths=[str(source)])
+        diagnostic = self.assert_failure(terminal, "keys_outdated")
+        self.assertIn("解不开", diagnostic["summary"]); self.assertNotIn("换一份", diagnostic["summary"])
+
     def test_identity_from_content_ids_without_reading_whole_file(self):
         # 11-09 玩家反馈「只是添加也要跑几分钟」：读取器给了 content ID 就按 titleId / 类型 / 版本 / 排序后的 content ID / 文件大小算身份，不整份算 SHA-256；
         #   期望按 library.source_identity 文件头的公式手算（不调被测函数）

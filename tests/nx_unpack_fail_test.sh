@@ -140,6 +140,10 @@ ck "--title-keys 指的文件不在：rc=2（用法错，不冒作 3 = 容器读
 S2A_NXUNPACK_TEST_THROW=agg-key run "$T/a1" "$K" "$T/oa" "$T/junk.bin"
 ck "并行异常第二条才是缺密钥：分类 keys_missing、rc=1、不出调用栈" '[ "$(cat "$T/a1.rc")" = 1 ] && grep -q "【原因 keys_missing】" "$T/a1" && ! grep -q "Unhandled exception\|   at " "$T/a1"'
 
+# ---- 用例：分区头魔数不对（#1511：2002-4644 PartitionSignatureVerificationFailed，解出来是乱码 = 密钥不对）——不当哈希不符降级重跑、不报 hash_mismatch ----
+S2A_NXUNPACK_TEST_THROW=magic run "$T/m1" "$K" "$T/om" "$T/junk.bin"
+ck "分区头魔数不对：分类 keys_wrong、rc=1、不出「校验跳过」与 hash_mismatch、不出调用栈" '[ "$(cat "$T/m1.rc")" = 1 ] && grep -q "【原因 keys_wrong】" "$T/m1" && ! grep -q "校验跳过\|hash_mismatch\|哈希校验不过" "$T/m1" && ! grep -q "Unhandled exception\|   at " "$T/m1"'
+
 # ---- 用例：并行异常里带位置的哈希错（#787：原先只有一行原因，不说读到哪个文件 / 偏移）----
 S2A_NXUNPACK_TEST_THROW=agg-hash run "$T/h1" "$K" "$T/oh" "$T/junk.bin"
 ck "并行异常第二条是带位置的哈希错：rc=1、报哈希红、点名阶段 + 文件 + 偏移、不出调用栈" '[ "$(cat "$T/h1.rc")" = 1 ] && grep -q "源文件数据哈希校验不过" "$T/h1" && grep -q "读到坏块时在：建索引，文件 romfs/x.bin，文件内偏移 7" "$T/h1" && ! grep -q "Unhandled exception\|   at " "$T/h1"'
