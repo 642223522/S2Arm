@@ -1077,6 +1077,21 @@ S2ARM_README_TEXT = {
 }
 
 
+# 文件夹里导出过通用 S2Arm.ipa（export_shell_ipa）时，说明最前面加这一句；没导出就不出现（11-17 维护者定稿原话）
+S2ARM_README_IPA = {
+    "zh": "S2Arm.ipa：用你自己的签名工具（AltStore、SideStore 等）签好装到手机。只装一次，S2Arm 升级时再装一次。\n",  # 非玩家句（说明文件按界面语言直接写，英文见下一项）
+    "en": "S2Arm.ipa: sign it with your own tool (AltStore, SideStore, etc.) and install it on your iPhone. You only need to do this once, and again when S2Arm updates.\n",
+}
+
+
+def write_s2arm_readme(folder, lang):
+    """「S2Arm 游戏包」文件夹的说明：导出 .s2arm、导出通用 S2Arm.ipa 都按这一处写（谁后写都一样）；文件夹里有 S2Arm.ipa 才带 ipa 那句。→ 说明的路径"""
+    readme = folder / S2ARM_READMES[lang]
+    text = (S2ARM_README_IPA[lang] if (folder / "S2Arm.ipa").is_file() else "") + S2ARM_README_TEXT[lang]
+    readme.write_text(text, encoding="utf-8-sig" if os.name == "nt" else "utf-8")
+    return readme
+
+
 def s2arm_dir(c):
     for name in S2ARM_DIRS.values():
         if (c.library / name).is_dir():
@@ -1154,7 +1169,7 @@ def export_s2arm(c, gid):
     tmp.write_bytes(data)
     os.replace(tmp, out)
     lang = ui_lang(c)   # 这份文件夹的说明（玩家删了下次导出照样写回）
-    (folder / S2ARM_READMES[lang]).write_text(S2ARM_README_TEXT[lang], encoding="utf-8-sig" if os.name == "nt" else "utf-8")
+    write_s2arm_readme(folder, lang)
     game_img = Path(pack) / "game.img"
     return dict(gameId=gid, s2armPath=str(out), s2armBytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
                 resourcePath=str(game_img) if game_img.is_file() else "", exported=True)
@@ -1467,8 +1482,7 @@ def export_shell_ipa(c):
         if tmp is not None:
             tmp.unlink(missing_ok=True)   # 半路失败不留半个文件（换上去了就已不在）
     lang = ui_lang(c)
-    readme = folder / S2ARM_READMES[lang]
-    readme.write_text(S2ARM_README_TEXT[lang], encoding="utf-8-sig" if os.name == "nt" else "utf-8")
+    readme = write_s2arm_readme(folder, lang)
     return dict(exported=True, outputPath=str(folder), ipa=str(out), readme=str(readme), shellId=sid, sgrade=patches_results(c),
                 games=[], files=[], skipped=[], exportBytes=out.stat().st_size, fresh=[], reused=0, unwritten=[])
 

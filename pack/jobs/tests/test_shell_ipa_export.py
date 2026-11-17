@@ -52,9 +52,21 @@ class ShellIpaExport(unittest.TestCase):
         self.assertEqual(r["ipa"], str(folder / "S2Arm.ipa"))
         self.assertEqual(self.names(r["ipa"]), sorted([APP, WIDGET]))
         self.assertEqual((r["games"], r["files"], r["shellId"], r["exported"]), ([], [], "SHELL1", True))
-        self.assertTrue((folder / "怎么导入.txt").is_file())
+        text = (folder / "怎么导入.txt").read_text(encoding="utf-8")
+        self.assertTrue(text.startswith("S2Arm.ipa：用你自己的签名工具（AltStore、SideStore 等）签好装到手机。"), "导出了 ipa：说明最前面是 ipa 那句")
+        self.assertIn("点开 .s2arm 文件", text)
         self.assertEqual((old / "S2Arm.ipa").read_bytes(), b"0.5.x", "0.5.x 的自签导出文件夹不碰")
         self.assertEqual(sorted(p.name for p in Path(self.c.library).iterdir() if p.name.startswith(".export-")), [], "不留临时目录")
+
+    def test_readme_ipa_sentence_only_when_ipa_exported(self):
+        # 只导出过 .s2arm 的文件夹（没 S2Arm.ipa）：说明里没有 ipa 那句；之后导出 ipa 再写 .s2arm，ipa 那句留着
+        import install as ins
+        folder = Path(self.c.library) / "S2Arm 游戏包"; folder.mkdir()
+        ins.write_s2arm_readme(folder, "zh")
+        self.assertNotIn("S2Arm.ipa", (folder / "怎么导入.txt").read_text(encoding="utf-8"))
+        self.export()
+        ins.write_s2arm_readme(folder, "en")
+        self.assertTrue((folder / "How to import.txt").read_text(encoding="utf-8").startswith("S2Arm.ipa: sign it with your own tool"))
 
     def test_widget_off_strips_extension(self):
         self.c.r["widget"] = False
