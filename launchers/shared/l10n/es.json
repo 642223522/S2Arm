@@ -1107,7 +1107,9 @@
   "export.appleTV.refresh": "Actualizar",
   "phone.done.export.unwritten": "Esta vez solo se escribió el .img del juego que elegiste. No se escribió el .img de {0}: si ya están en tu teléfono siguen funcionando; si no, elige ese juego en la biblioteca y vuelve a exportar.",
   "errors.cert_revoke_confirm.title": "Puede revocarse otro certificado de desarrollo",
-  "errors.cert_revoke_confirm.detail": "Si los certificados de tu cuenta están completos, crear uno nuevo hace que Apple revoque el primero de la lista y las apps firmadas con él dejan de abrirse; si no están completos, no se revoca nada."
+  "errors.cert_revoke_confirm.detail": "Si los certificados de tu cuenta están completos, crear uno nuevo hace que Apple revoque el primero de la lista y las apps firmadas con él dejan de abrirse; si no están completos, no se revoca nada.",
+  "errors.phone_app_running.title": "S2Arm se está ejecutando en el iPhone",
+  "errors.phone_app_running.detail": "Si cambias las partidas guardadas con el juego abierto, el juego las sobrescribe y las daña."
  },
  "text": {
   "满屏补丁（按屏幕比例自动选）": "Parche de pantalla completa (elegido según la proporción de tu pantalla)",

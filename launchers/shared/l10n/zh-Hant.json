@@ -1107,7 +1107,9 @@
   "welcome.step.games.title": "新增你的遊戲",
   "welcome.step.games.what": "NSP、XCI、NUP 檔案或解包好的遊戲資料夾都可以。",
   "errors.cert_revoke_confirm.title": "可能會撤掉一張別的開發證書",
-  "errors.cert_revoke_confirm.detail": "帳號證書滿了時，新建證書會讓蘋果撤掉列表裡的第一張，用它簽的 App 會打不開；沒滿就什麼都不撤。"
+  "errors.cert_revoke_confirm.detail": "帳號證書滿了時，新建證書會讓蘋果撤掉列表裡的第一張，用它簽的 App 會打不開；沒滿就什麼都不撤。",
+  "errors.phone_app_running.title": "S2Arm 正在 iPhone 上執行",
+  "errors.phone_app_running.detail": "遊戲開著的時候換存檔，存檔會被遊戲寫壞。"
  },
  "text": {
   "直连": "直連",

@@ -2045,7 +2045,7 @@ class MacPhone:
         return n
 
     def backup(self, g):
-        backup_saves(self.c, self.dev["id"], self.bid, g, docs=game_docs(g))
+        return backup_saves(self.c, self.dev["id"], self.bid, g, docs=game_docs(g))
 
     def app_missing(self, bid, why):
         """s2a-devpush 进不了容器时，这台手机确实没装这个包名吗？Mac 上没装时 s2a-devpush 只回「device socket io failed」（真机实测），
@@ -2695,6 +2695,114 @@ def phone_busy(ph, games):
     return got is not False
 
 
+PHONE_SAVE_MARK = ".s2a-save-backup.json"   # 通用壳存档快照的记号（设备、内容摘要、时刻）：只有带它的备份参与「同内容不新建、每台每款留 10 份」
+PHONE_SAVE_KEEP = 10
+
+
+def _save_digest(d):
+    h = hashlib.sha256()
+    for p in sorted(x for x in Path(d).rglob("*") if x.is_file() and x.name != PHONE_SAVE_MARK):
+        h.update(p.relative_to(d).as_posix().encode("utf-8") + b"\0" + hashlib.sha256(p.read_bytes()).digest())
+    return h.hexdigest()
+
+
+def _marked(d):
+    return read(Path(d) / PHONE_SAVE_MARK, None) if (Path(d) / PHONE_SAVE_MARK).is_file() else None
+
+
+def snapshot_phone_saves(c, ph, games):
+    """0.6.0 通用壳（11-17 维护者定，《文件与程序管理体系》）：推游戏、装壳都不再覆盖手机上的存档，所以在它们开头顺手把这几款的手机存档拉回电脑
+    （ph.backup，同覆盖装前那份 games/<号>/save_backup/<时刻>/），和这台手机这款的上一份比内容：一样就删掉刚拉的、不新建；变了留下并记上记号，
+    这台这款带记号的只留最近 PHONE_SAVE_KEEP 份。没带记号的旧备份（覆盖装前拉的）一份不删。拉不回（锁屏 / 断开 / 没装过）只记一行，不挡推送。
+    → {游戏号: 这份存档在电脑上的备份目录名（新建的或内容相同的上一份）}；开关关着 → {}"""
+    import program_pack
+    if not program_pack.enabled(c):
+        return {}
+    out = {}
+    for g in [str(x).upper() for x in games]:
+        try:
+            dest = ph.backup(g)
+        except Failure as e:   # 包括 save_backup_failed：这里不覆盖存档，备份不了只记一行
+            trace(c, f"{g} 的手机存档这次没拉回电脑（不挡推送）：{str(e)[:200]}")  # 非玩家句
+            continue
+        if not dest or not Path(dest).is_dir():
+            continue
+        dest = Path(dest)
+        digest = _save_digest(dest)
+        mine = sorted((d for d in dest.parent.iterdir() if d.is_dir() and d != dest and (_marked(d) or {}).get("device") == ph.key), key=lambda d: d.name)
+        if mine and (_marked(mine[-1]) or {}).get("digest") == digest:
+            shutil.rmtree(dest, ignore_errors=True)
+            out[g] = mine[-1].name
+            continue
+        files = [p for p in dest.rglob("*") if p.is_file()]
+        atomic(dest / PHONE_SAVE_MARK, dict(device=ph.key, digest=digest, at=time.time(), files=len(files), bytes=sum(p.stat().st_size for p in files)))
+        for old in (mine + [dest])[:-PHONE_SAVE_KEEP]:
+            shutil.rmtree(old, ignore_errors=True)
+        out[g] = dest.name
+    return out
+
+
+def phone_saves(c):
+    """手机存档在电脑上的备份（作业 phoneSaves，只读）：每款 games/<号>/save_backup/ 下的每一份，新的在前。带记号的给设备、时刻、
+    文件数、字节数；覆盖装前拉的旧备份没有记号，给 legacy: True（设备不知道）。请求带 gameId 只列这一款"""
+    want = (c.r.get("gameId") or "").upper()
+    games = []
+    for g in c.catalog()["games"]:
+        gid = g["id"].upper()
+        if want and gid != want:
+            continue
+        root = layout.path(c, gid, "save_backup", create=False)
+        rows = []
+        for d in sorted((x for x in root.iterdir() if x.is_dir()), key=lambda x: x.name, reverse=True) if root.is_dir() else []:
+            m = _marked(d)
+            if m:
+                rows.append(dict(id=d.name, device=m.get("device"), at=m.get("at"), files=m.get("files"), bytes=m.get("bytes"), legacy=False))
+            else:
+                files = [p for p in d.rglob("*") if p.is_file()]
+                rows.append(dict(id=d.name, device=None, at=d.stat().st_mtime, files=len(files), bytes=sum(p.stat().st_size for p in files), legacy=True))
+        games.append(dict(gameId=gid, backups=rows))
+    return dict(games=games)
+
+
+def restore_phone_save(c):
+    """把电脑上的一份存档备份还原到手机（作业 phoneSaveRestore：gameId、device、backup = phoneSaves 给的 id）。
+    先拉一份手机现在的存档（snapshot_phone_saves，内容没变就不多存），再把备份里的文件写回手机这款的存档目录、删掉手机上备份里没有的文件。
+    手机上 S2Arm 明确在运行就停下（边玩边换存档会写坏）；判不清照常还原。通用壳开关后面"""
+    import program_pack
+    if not program_pack.enabled(c):
+        return dict(enabled=False)
+    gid = (c.r.get("gameId") or "").upper()
+    name = str(c.r.get("backup") or "")
+    root = layout.path(c, gid, "save_backup", create=False)
+    src = root / name
+    if not name or "/" in name or "\\" in name or name.startswith(".") or not src.is_dir():
+        raise Failure("找不到这份存档备份：请在列表里重新选一份。", code="save_invalid")
+    c.begin("把存档还原到 iPhone", 1, 2)
+    ph = phone_for(c)
+    try:
+        running = ph.playing([gid]) if hasattr(ph, "playing") else ph.app_running()
+    except Exception:   # noqa: BLE001 —— 判不清照常还原
+        running = None
+    if running is True:
+        raise Failure("先在 iPhone 上退出 S2Arm，再还原存档。", code="phone_app_running")
+    now = snapshot_phone_saves(c, ph, [gid]).get(gid)   # 还原前手机上的存档也留一份（内容和已有的一样就不多存）
+    have = {p.relative_to(root / now).as_posix() for p in (root / now).rglob("*") if p.is_file() and p.name != PHONE_SAVE_MARK} if now else set()
+    files = sorted(p for p in src.rglob("*") if p.is_file() and p.name != PHONE_SAVE_MARK)
+    keep = {p.relative_to(src).as_posix() for p in files}
+    base = f"{game_docs(gid)}/{SAVE_REL}"
+    c.begin("写回存档文件", 2, 2)
+    with tempfile.TemporaryDirectory(dir=c.private) as w:
+        cl = ph.client(w)
+        for p in files:
+            cl.put(p, f"{base}/{p.relative_to(src).as_posix()}")
+        for rel in sorted(have - keep):
+            cl.rm(f"{base}/{rel}")
+    return dict(gameId=gid, restored=name, files=len(files), removed=len(have - keep), safetyBackup=now or "")
+
+
+IDENTITY_INCOMING = "Library/Application Support/S2Arm/identity/incoming"   # App 启动时导入钥匙串、导入成功就删（手机侧，0.6.0）
+
+
 # App 一打开就导入钥匙串、立刻删这三份（11-17 维护者：私钥是玩家自己的，进他自己账号的加密备份也无妨，不另放 Caches）。
 #   已交没交按手机上的现状判：App 导入后写的 current.json / 还没导入的 incoming 清单里是同一张证书就不重交
 IDENTITY_INCOMING = "Library/Application Support/S2Arm/identity/incoming"
@@ -2779,6 +2887,7 @@ def push_game(c, gid, ph, steps=True):
         raise Failure(SHELL_INSTALL_FIRST, code="shell_install_required")
     if rec["shellId"] != packer.current_shell_id(c):
         raise Failure(SHELL_UPDATE_FIRST, code="shell_update_required")
+    snapshot_phone_saves(c, ph, [gid])   # 0.6.0：推游戏不再覆盖存档，开头顺手把手机上这款的存档拉回电脑（内容变了才新建、每台每款留 10 份）
     team, bid, signer = phone_signing(c, ph)
     if steps: c.begin("把这款的程序推进 iPhone", 2, 3)
     from rewrite_refresh import refresh_ios
@@ -2867,6 +2976,7 @@ def install_shell(c, ph, steps=True):
     手机上已是这一版壳、签名离到期还早（same_app）→ 不装，updated = False。装上后记壳号、包名、签名时刻；各款记录原样留着（程序包在手机上不受装壳影响）"""
     import ipa as packer
     rec = layout.load_device(c, ph.key)
+    snapshot_phone_saves(c, ph, list(rec.get("games") or {}))   # 0.6.0：装壳前把手机上各款的存档拉回电脑（同 push_game）
     if steps: c.begin("组 S2Arm（不带游戏）", 2, 3)
     ipa, _, sid = packer.assemble_shell(c)
     if same_app(c, ph, rec, packer.ipa_digest(ipa)):

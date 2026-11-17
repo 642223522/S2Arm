@@ -1107,7 +1107,9 @@
   "export.appleTV.refresh": "更新",
   "phone.done.export.unwritten": "今回は選んだゲームの .img だけを書き出しました。{0} の .img は書き出していません。すでに iPhone にあればそのまま遊べます。ない場合はライブラリでそのゲームを選んでもう一度書き出してください。",
   "errors.cert_revoke_confirm.title": "別の開発用証明書が取り消される可能性があります",
-  "errors.cert_revoke_confirm.detail": "アカウントの証明書が上限に達している場合、新しい証明書を作成すると Apple がリストの最初の証明書を取り消し、それで署名した App は開けなくなります。上限に達していなければ何も取り消されません。"
+  "errors.cert_revoke_confirm.detail": "アカウントの証明書が上限に達している場合、新しい証明書を作成すると Apple がリストの最初の証明書を取り消し、それで署名した App は開けなくなります。上限に達していなければ何も取り消されません。",
+  "errors.phone_app_running.title": "iPhone で S2Arm が実行中です",
+  "errors.phone_app_running.detail": "ゲームを開いたままセーブデータを入れ替えると、ゲームに上書きされて壊れます。"
  },
  "text": {
   "满屏补丁（按屏幕比例自动选）": "全画面パッチ（画面比率に応じて自動選択）",
