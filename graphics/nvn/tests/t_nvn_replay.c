@@ -3222,13 +3222,14 @@ static void t_draw_mdi(void) {
     CHECK(g_last_da.cnt_off == 5 * PG && g_last_da.ind_off == 4 * PG);
     CHECK(nvn_unimpl_count("draw", "indirect_count_group_unavailable") == gu0);   // 同组后两条认出来、不报名
     // 组断了：序号 0 后直接是 2 → 第 0 条单独一组（max 1），序号 2 报名跳过
+    uint64_t broken0 = nvn_unimpl_count("draw", "indirect_count_group_broken");
     stream t = {0}; mdi_prelude(&t, &rtt);
     for (int i = 0; i < 3; i += 2) {
         p_draw_idx *di = put(&t, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->instances = 1; di->ibuf = base + 3 * PG;
         di->ind = ind + (uint64_t)i * 20; di->mdi_cnt = cnt; di->mdi_i = i;
     }
     end(&t); submit1(&t); fake_complete(NVN_GPU_DONE_OK);
-    CHECK(g_gdraws == d0 + 2 && g_last_da.max_draws == 1 && nvn_unimpl_count("draw", "indirect_count_group_unavailable") == gu0 + 1);
+    CHECK(g_gdraws == d0 + 2 && g_last_da.max_draws == 1 && nvn_unimpl_count("draw", "indirect_count_group_broken") == broken0 + 1 && nvn_unimpl_count("draw", "indirect_count_group_unavailable") == gu0);
     // 超过 1,024 条的一次调用：一条 OP_MULTI_DRAW
     stream m = {0}; mdi_prelude(&m, &rtt); p_multi_draw *md = put(&m, OP_MULTI_DRAW, sizeof *md);
     md->ind = ind; md->cnt = cnt; md->ibuf = base + 3 * PG; md->stride = 20; md->max = 100; md->prim = 4; md->itype = 1;
@@ -3237,13 +3238,14 @@ static void t_draw_mdi(void) {
     // 设备没开：整组跳过、报名一次，不交给后端（交了后端整段判失败）
     g_caps_extra = 0;
     uint64_t nd0 = nvn_unimpl_count("draw", "indirect_count_no_device_support");
+    uint64_t unsupported0 = nvn_unimpl_count("draw", "indirect_count_unsupported");
     stream n = {0}; mdi_prelude(&n, &rtt);
     for (int i = 0; i < 3; i++) {
         p_draw_idx *di = put(&n, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->instances = 1; di->ibuf = base + 3 * PG;
         di->ind = ind + (uint64_t)i * 20; di->mdi_cnt = cnt; di->mdi_i = i;
     }
     end(&n); submit1(&n); fake_complete(NVN_GPU_DONE_OK);
-    CHECK(g_gdraws == d0 + 3 && nvn_unimpl_count("draw", "indirect_count_no_device_support") == nd0 + 1);
+    CHECK(g_gdraws == d0 + 3 && nvn_unimpl_count("draw", "indirect_count_unsupported") == unsupported0 + 1 && nvn_unimpl_count("draw", "indirect_count_no_device_support") == nd0);
 }
 
 // 间接绘制的 base instance 拷贝只给读 c0 + 0x644 的阶段（rp_prog.binst_unread 位 = 编译器 c0Reads 证明不读）。
