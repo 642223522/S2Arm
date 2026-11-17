@@ -40,7 +40,7 @@ import ShellUI
     #expect(c.problems.contains { $0.contains("0100000000040000") }, "清单不是这一款的记问题")
 }
 
-// 0.5.x 老玩家覆盖装上通用 App（开发甲 11-17 迁移路径）：只装壳的 App 包清单 games 为空；资源根下 E 只有 资源包/（没有程序包）、F 有程序包、
+// 0.5.x 老玩家覆盖装上通用 App：只装壳的 App 包清单 games 为空；资源根下 E 只有 资源包/（没有程序包）、F 有程序包、
 //   G 只有 program/ 空目录没有清单也没有资源包 → 列 E（「在电脑上更新」、名字取 control.nacp 简中）、F（可玩）、H（只有英文名）；G 不列。
 //   App 包清单里有款的老容器（0.5.x 行为）：同样只有资源包的 H 不额外列出（开关关着行为不变）
 @Test func legacyPackOnlyGamesListedAsUpdateOnComputer() throws {
