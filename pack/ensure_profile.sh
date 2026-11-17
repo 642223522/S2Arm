@@ -25,7 +25,7 @@ xb() { (cd "$D" && timeout 600 xcodebuild -project Prov.xcodeproj -scheme Prov -
 #   而 0.5.0 起带小组件的 Apple ID 装机每次都要新申请两份描述文件，玩家更新 iPhone 必挂。登记设备只是顺带（这台装过就已在账号上）：
 #   找不到目的设备 → 不登记、改按 generic/platform=iOS 再申请一次（描述文件含账号上已登记的全部设备）；这台真没登记过，后面签名 / 装机会照常点名缺设备
 xb || { [ -n "$UDID" ] && grep -a -q 'Unable to find a destination matching' "$D/build.log" \
-        && { echo "【黄】xcodebuild 看不到这台 iPhone（${UDID: -6}），改为不指定设备再申请一次（用账号上已登记的设备）"; cp "$D/build.log" "$D/build.dest.log"; DEST='generic/platform=iOS'; REG=(); xb; }; } \
+        && { echo "【黄】xcodebuild 看不到这台 iPhone（${UDID: -6}），改为不指定设备再申请一次（用账号上已登记的设备）"; DEST='generic/platform=iOS'; REG=(); xb; }; } \
   || { KL=${S2A_ROOTS:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/roots}/.failed/${BID}_ensure_profile.log; mkdir -p "$(dirname "$KL")"; if ! cp "$D/build.log" "$KL" 2> /dev/null; then KL="（没留住：拷不进 ${KL}）"; fi   # 失败留全文（临时目录退出即删，10-30 凌晨原因一栏是空的、现场也没了）
        # 11-08：第一次签名弹钥匙串授权框没人点，xcodebuild 等到 timeout 打 BUILD INTERRUPTED，末尾的 error 行是无关的 DVTDevice 杂音
        grep -aq 'BUILD INTERRUPTED' "$D/build.log" && { echo "【红】等钥匙串授权超时：在这台 Mac 屏幕上的钥匙串弹窗里点「始终允许」（需要的话输入 Mac 登录密码），再点一次「装到 iPhone」"; exit 1; }
