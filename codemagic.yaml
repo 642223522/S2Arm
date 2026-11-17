@@ -1,0 +1,284 @@
+# Codemagic pipeline: pack FINAL FANTASY RESONANCE (0100B8A026F14000) with
+# S2Arm into a standalone unsigned IPA + single export .img resource pack.
+# Adapted from the proven GitHub Actions workflow pack-odyssey-img.yml for
+# Codemagic's free plan (Mac mini M2, 120-minute per-build cap, Xcode 27.0).
+# Inputs come from the private relay repo (642223522/game-relay, release
+# ff-resonance); outputs go back to release ff-resonance-out there, split
+# into <=1800 MiB parts, because Codemagic's artifact storage cannot hold
+# an ~9 GB .img. RELAY_TOKEN lives in the Codemagic environment group
+# "relay": a fine-grained GitHub PAT scoped to game-relay only.
+workflows:
+  ff-resonance-s2arm:
+    name: FF Resonance pack (S2Arm)
+    instance_type: mac_mini_m2
+    max_build_duration: 120
+    environment:
+      xcode: 27.0
+      groups:
+        - relay
+    scripts:
+      - name: Install tools (bash 5, zstd, spirv-cross)
+        script: |
+          set -ux
+          df -h /
+          xcodebuild -version
+          brew install bash zstd spirv-cross make meson ninja
+          bash --version | head -1
+          zstd --version
+          which spirv-cross; spirv-cross --version || true
+          which gmake; gmake --version | head -1
+          which meson; meson --version; which ninja; ninja --version
+
+      - name: Download game + keys from relay repo
+        script: |
+          set -eux
+          FF_WORK="$HOME/ff-work"
+          mkdir -p "$FF_WORK/game" "$FF_WORK/keys" "$FF_WORK/dl"
+          curl -s -H "Authorization: Bearer $RELAY_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/642223522/game-relay/releases/tags/ff-resonance \
+            -o "$FF_WORK/release.json"
+          python3 - "$FF_WORK" <<'PYEOF'
+          import json, sys
+          ff = sys.argv[1]
+          d = json.load(open(f'{ff}/release.json'))
+          with open(f'{ff}/assets.txt', 'w') as f:
+              for a in d['assets']:
+                  f.write(f"{a['id']} {a['name']}\n")
+          print(len(d['assets']), 'assets')
+          PYEOF
+          while read -r aid aname; do
+            curl -L --retry 3 -H "Authorization: Bearer $RELAY_TOKEN" \
+              -H "Accept: application/octet-stream" \
+              "https://api.github.com/repos/642223522/game-relay/releases/assets/$aid" \
+              -o "$FF_WORK/dl/$aname"
+          done < "$FF_WORK/assets.txt"
+          cat "$FF_WORK/dl/base.nsp.part-"* > "$FF_WORK/game/base.nsp"
+          rm -f "$FF_WORK/dl/base.nsp.part-"*
+          mv "$FF_WORK/dl/update.nsp" "$FF_WORK/dl/dlc1.nsp" "$FF_WORK/dl/dlc2.nsp" "$FF_WORK/dl/dlc3.nsp" "$FF_WORK/game/"
+          cp "$FF_WORK/dl/prod.keys" "$FF_WORK/keys/prod.keys"
+          cp "$FF_WORK/dl/title.keys" "$FF_WORK/keys/title.keys" 2>/dev/null || true
+          rm -rf "$FF_WORK/dl" "$FF_WORK/release.json" "$FF_WORK/assets.txt"
+          ls -la "$FF_WORK/game" "$FF_WORK/keys"
+          df -h /
+
+      - name: Python venv with the pack's pinned requirements
+        script: |
+          set -eux
+          FF_WORK="$HOME/ff-work"
+          python3 -m venv "$FF_WORK/venv"
+          "$FF_WORK/venv/bin/python" -m pip install --upgrade pip
+          "$FF_WORK/venv/bin/python" -m pip install \
+            -r launchers/macos/requirements-runtime.txt \
+            -r pack/fonts/requirements.txt
+          "$FF_WORK/venv/bin/python" -c "import capstone, lz4, numpy, PIL, fontTools; print('venv imports ok')"
+
+      - name: Repo prep steps (same as ci.yml / stage-0 probe, venv python)
+        ignore_failure: true
+        script: |
+          FF_WORK="$HOME/ff-work"
+          PY="$FF_WORK/venv/bin/python"
+          "$PY" runtime/rewriter/prepare_deps.py build/rewriter-deps || echo "prep rewriter deps failed"
+          "$PY" pack/fonts/make_open_fonts.py "$FF_WORK/openfonts" || echo "prep open fonts failed"
+          bash services/systemdata/make_tzdata.sh --prepare-sources || echo "prep tzdata failed"
+          bash compat/fetch_base.sh || echo "prep compat base failed"
+
+      - name: Allow unsigned pack + commit pack-time patches in the runner
+        script: |
+          set -eux
+          # oneclick.sh only accepts --sign adhoc|dev but pack/ipa.sh accepts
+          # S2A_SIGN=none; a one-line sed on the throwaway checkout lets
+          # "none" through (the user signs the IPA themselves).
+          sed -i '' 's/case $SIGN in adhoc|dev)/case $SIGN in adhoc|dev|none)/' pack/oneclick/oneclick.sh
+          grep -n 'adhoc|dev|none' pack/oneclick/oneclick.sh
+          # ipa.sh needs a clean tree.
+          git add -A
+          git -c user.name="s2arm-pack" -c user.email="pack@localhost" commit -m "pack-time patches: unsigned sign (runner-local, not pushed)" || echo "nothing to commit"
+          echo "dirty files in build dirs after commit (must be empty):"
+          git status --porcelain -- runtime ios graphics translator services compat Makefile || true
+
+      - name: Pre-flight translation-chain tool check (diagnostic)
+        ignore_failure: true
+        script: |
+          FF_WORK="$HOME/ff-work"
+          echo "spirv-cross identity path: $(which spirv-cross)"
+          "$FF_WORK/venv/bin/python" translator/dmsh_chain.py --check-tools || echo "check-tools FAILED (see [RED] lines above)"
+          echo "pre-flight done"
+
+      - name: Install .NET 10 SDK + Metal components (pack prerequisites; GitHub images had them, Codemagic does not)
+        script: |
+          set -e
+          VENV_PY="$HOME/ff-work/venv/bin/python"
+          "$VENV_PY" pack/jobs/applenv.py --install dotnet
+          ls "$HOME/.dotnet/sdk"
+          "$VENV_PY" pack/jobs/applenv.py --install metal
+          # The read-only applenv check is a DESKTOP checklist (it flags the
+          # machine's default Python, Apple ID login, test-only tools, etc.)
+          # and is NOT the pack gate: the pack itself runs under
+          # S2A_PYTHON=<venv> with all packages installed. Print it for
+          # diagnosis only; never let it fail this step.
+          export S2A_PYTHON="$VENV_PY"
+          "$VENV_PY" pack/jobs/applenv.py || echo "applenv advisory check exited $?: non-fatal, continuing to Pack"
+
+      - name: Pack (unsigned, fullscreen test pack)
+        script: |
+          set +e
+          FF_WORK="$HOME/ff-work"
+          export S2A_PYTHON="$FF_WORK/venv/bin/python"
+          # Runner-class memory gate: mem_admit's dsh class-floor estimate
+          # refuses unmeasured titles; measured dsh peaks top out at 5.2 GB,
+          # so bypass the admission gate (documented emergency switch in
+          # tools/mem_admit.sh). If it OOMs, the job just fails.
+          export S2A_MEM_ADMIT='0'
+          # Fullscreen test pack: ipa.sh ships s2a_caps.all.tsv (widen=1 via
+          # the always-present layer-3 generic fullscreen source).
+          export S2A_ALL_CAPS='1'
+          # Keep the widen auto-table closed loop OFF: it needs the
+          # maintainers' out-of-repo vision-model keys, which do not exist
+          # on a runner.
+          export S2A_WIDEN_AUTO_RUN='0'
+          mkdir -p "$FF_WORK/out"
+          bash pack/oneclick/oneclick.sh "$FF_WORK/game" \
+            --keys "$FF_WORK/keys/prod.keys" \
+            --target ios --sign none \
+            --out "$FF_WORK/out" \
+            --events "$FF_WORK/events.jsonl" 2>&1 | tee "$FF_WORK/pack-console.log"
+          RC=${PIPESTATUS[0]}
+          echo "oneclick exit code: $RC"
+          df -h / || true
+          exit $RC
+
+      - name: Convert pack to IMG + export single file (phone-importable form)
+        script: |
+          set -eux
+          FF_WORK="$HOME/ff-work"
+          PY="$FF_WORK/venv/bin/python"
+          ROOT=$(dirname "$(find "$FF_WORK/out/roots" -name unpack.tsv | head -1)")
+          [ -n "$ROOT" ] && [ -d "$ROOT/romfs" ] || { echo "product root romfs not found under out/roots:"; find "$FF_WORK/out/roots" -maxdepth 2 | head -20; exit 1; }
+          PACK=$(find "$FF_WORK/out" -maxdepth 1 -type d -name '*资源包' | head -1)
+          [ -n "$PACK" ] || { echo "resource pack folder not found in out/"; ls "$FF_WORK/out"; exit 1; }
+          echo "root: $ROOT"; echo "pack: $PACK"; df -h /
+          "$PY" pack/img.py convert "$ROOT" "$PACK" --gid 0100B8A026F14000 2>&1 | tee "$FF_WORK/img-convert.log"
+          head -c 8 "$PACK/game.img"; echo " <- game.img magic (want S2AIMG01)"
+          mkdir -p "$FF_WORK/ship"
+          "$PY" pack/img.py export "$PACK" "$FF_WORK/ship/game.img" 2>&1 | tee "$FF_WORK/img-export.log"
+          "$PY" pack/img.py ls "$FF_WORK/ship/game.img" > "$FF_WORK/img-ls.txt" 2>&1 || true
+          echo "img entries: $(wc -l < "$FF_WORK/img-ls.txt")"
+          du -sh "$FF_WORK/ship"/*; df -h /
+
+      - name: Collect deliverables and upload to relay
+        script: |
+          set -eux
+          FF_WORK="$HOME/ff-work"
+          D="$FF_WORK/deliver"
+          mkdir -p "$D/logs"
+          # Diagnostic copies must NEVER kill the step: under set -e a
+          # missing log/caps file used to abort the whole upload (build #4
+          # died here with the 13.5 GB img still on the runner). Only the
+          # two real deliverables (game.img, IPA) are fatal when missing.
+          cp pack/app.entitlements "$D/" 2>/dev/null || true
+          find "$FF_WORK/out" -maxdepth 2 -name '*.ipa' -exec cp {} "$D/" \; 2>/dev/null || true
+          [ -f "$FF_WORK/ship/game.img" ] || { echo "FATAL: ship/game.img missing"; exit 1; }
+          cp "$FF_WORK/ship/game.img" "$D/"
+          [ -n "$(ls "$D"/*.ipa 2>/dev/null)" ] || { echo "FATAL: no IPA found in out/"; exit 1; }
+          cp "$FF_WORK/img-convert.log" "$FF_WORK/img-export.log" "$FF_WORK/img-ls.txt" "$D/logs/" 2>/dev/null || true
+          cp "$FF_WORK/events.jsonl" "$D/logs/" 2>/dev/null || true
+          cp "$FF_WORK/pack-console.log" "$D/logs/" 2>/dev/null || true
+          cp -R "$FF_WORK/out/logs" "$D/logs/out" 2>/dev/null || true
+          for r in "$FF_WORK/out/roots"/*@*; do
+            [ -d "$r" ] || continue
+            for f in s2a_caps.tsv s2a_caps.all.tsv widen_sites.tsv caps.log; do
+              cp "$r/$f" "$D/logs/" 2>/dev/null || true
+            done
+          done
+          {
+            echo "# FF Resonance S2Arm pack result (Codemagic)"
+            echo "- widen verdict (shipped caps must be the .all list, widen=1):"
+            grep -h '^widen' "$D/logs/s2a_caps.all.tsv" 2>/dev/null || echo "s2a_caps.all.tsv not collected"
+            echo "- release caps for comparison:"
+            grep -h '^widen' "$D/logs/s2a_caps.tsv" 2>/dev/null || echo "s2a_caps.tsv not collected"
+            echo "- deliverables:"
+            find "$D" -maxdepth 1 -print
+            echo "- sizes:"
+            du -sh "$D"/* 2>/dev/null
+            echo "- events (result lines):"
+            grep '"ev":"result"' "$FF_WORK/events.jsonl" 2>/dev/null || echo "no result event (pack did not finish)"
+            echo "- disk:"
+            df -h / || true
+          } | tee "$D/RESULT.txt"
+          (cd "$D" && zip -qr logs.zip logs && rm -rf logs)
+          # Split the .img into <=1800 MiB parts (release assets cap at 2 GB).
+          if [ -f "$D/game.img" ]; then
+            (cd "$D" && split -b 1800m game.img game.img.part- && rm game.img)
+          fi
+          ls -la "$D"
+          # Get or create the output release, clearing any previous assets.
+          REL_ID=$(curl -s -H "Authorization: Bearer $RELAY_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/642223522/game-relay/releases/tags/ff-resonance-out \
+            | python3 -c "import sys, json; print(json.load(sys.stdin).get('id', ''))")
+          if [ -z "$REL_ID" ]; then
+            REL_ID=$(curl -s -X POST -H "Authorization: Bearer $RELAY_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/642223522/game-relay/releases \
+              -d '{"tag_name":"ff-resonance-out","name":"最终幻想：共鸣 打包产物（S2Arm / Codemagic）","body":"S2Arm 打包产物：未签名 IPA + game.img 分片（1800 MiB/片）+ app.entitlements + 日志。img 合并：cat game.img.part-* > game.img。"}' \
+              | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
+          else
+            curl -s -H "Authorization: Bearer $RELAY_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/642223522/game-relay/releases/$REL_ID/assets" \
+              | python3 -c "
+          import sys, json, os, urllib.request
+          token = os.environ['RELAY_TOKEN']
+          for a in json.load(sys.stdin):
+              req = urllib.request.Request(f\"https://api.github.com/repos/642223522/game-relay/releases/assets/{a['id']}\", method='DELETE', headers={'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github+json'})
+              urllib.request.urlopen(req)
+              print('deleted old asset', a['name'])
+          "
+          fi
+          echo "output release id: $REL_ID"
+          # STREAMING upload: curl --data-binary loads the whole file into
+          # RAM and OOMs on 1.8 GB parts (build #3 lost 7 of 8 parts this
+          # way while reporting success). curl -T streams from disk.
+          # Every upload is checked by HTTP status, and the step fails fast
+          # unless every local file appears in the release byte-exact.
+          for f in "$D"/*; do
+            [ -f "$f" ] || continue
+            n=$(basename "$f")
+            sz=$(stat -f%z "$f")
+            echo "uploading $n ($sz bytes) [streaming curl -T]"
+            resp=$(curl -s -w '\n%{http_code}' -X POST -H "Authorization: Bearer $RELAY_TOKEN" \
+              -H "Content-Type: application/octet-stream" \
+              -T "$f" \
+              "https://uploads.github.com/repos/642223522/game-relay/releases/$REL_ID/assets?name=$n")
+            code=$(printf '%s' "$resp" | tail -1)
+            echo " -> HTTP $code"
+            [ "$code" = "201" ] || { echo "UPLOAD FAILED for $n (HTTP $code): $(printf '%s' "$resp" | head -c 400)"; exit 1; }
+          done
+          python3 - "$D" "$REL_ID" <<'PYEOF'
+          import sys, json, os, urllib.request
+          d, rel = sys.argv[1], sys.argv[2]
+          tok = os.environ['RELAY_TOKEN']
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/642223522/game-relay/releases/{rel}/assets?per_page=100",
+              headers={'Authorization': f'Bearer {tok}', 'Accept': 'application/vnd.github+json'})
+          assets = {a['name']: a['size'] for a in json.load(urllib.request.urlopen(req))}
+          bad = []
+          for name in sorted(os.listdir(d)):
+              p = os.path.join(d, name)
+              if not os.path.isfile(p):
+                  continue
+              want, got = os.path.getsize(p), assets.get(name)
+              print(f"{name}: local {want} remote {got}")
+              if got != want:
+                  bad.append(name)
+          if bad:
+              print("MISSING/MISMATCHED:", bad)
+              sys.exit(1)
+          print("release assets verified byte-exact")
+          PYEOF
+          echo "ALL UPLOADS VERIFIED"
+
+    artifacts:
+      - /Users/builder/ff-work/deliver/*.ipa
+      - /Users/builder/ff-work/deliver/RESULT.txt
