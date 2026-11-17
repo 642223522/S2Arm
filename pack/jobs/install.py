@@ -1093,17 +1093,6 @@ def s2arm_name(c, gid):
     return (f"{base} [{gid[-4:]}]" if clash else base) + S2ARM_SUFFIX
 
 
-def _zstd_checked(data):
-    """一个 zstd 帧、带内容校验（手机解完按它判包坏没坏，11-17 与 iOS 导入侧对定）"""
-    try:
-        from compression import zstd   # Python 3.14
-        return zstd.compress(data, options={zstd.CompressionParameter.compression_level: 9, zstd.CompressionParameter.checksum_flag: 1,
-                                            zstd.CompressionParameter.nb_workers: os.cpu_count() or 1})
-    except ImportError:
-        import zstandard   # 随包 Python 3.12
-        return zstandard.ZstdCompressor(level=9, write_checksum=True, threads=-1).compress(data)
-
-
 def export_s2arm(c, gid):
     """0.6.0 通用壳（开关后面）两件套导出里的小游戏包 .s2arm（《文件与程序管理体系》B 项、⑦ ①，11-17 维护者定）：
     tar（只用 ustar、只有普通文件条目；路径放不进 ustar 就报错）整体压一个带内容校验的 zstd 帧；
@@ -1156,7 +1145,8 @@ def export_s2arm(c, gid):
             except ValueError as e:   # ustar 放不下的路径（name 100 + prefix 155）：不改用 pax / GNU 长名（手机只认 ustar）
                 raise Failure(f"{gid} 有文件路径太长，打不进 .s2arm：{e}", code="job_failed") from e  # 非玩家句
     c.begin("写进「S2Arm 游戏包」文件夹", 3, 3)
-    data = _zstd_checked(buf.getvalue())
+    import programs
+    data = programs._compress(buf.getvalue(), checksum=True)   # 带内容校验（与 iOS 导入侧对定）；核数只在 programs 里取（tools/pool_size_lint.py 白名单）
     folder = s2arm_dir(c)
     folder.mkdir(parents=True, exist_ok=True)   # 玩家删了文件夹也照样重建；不设特殊权限
     out = folder / s2arm_name(c, gid)
