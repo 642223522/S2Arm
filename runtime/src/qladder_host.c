@@ -45,13 +45,13 @@ static void boot(int docked, const char *from) {
     LOG("档位梯子：运行模式 %s（%s），梯子不改", g_top_docked ? "主机" : "掌机", from);
 }
 // 苹果起局（host_main.c host_run，iOS 画面设置注入之后、服务层与宽屏装表读 S2A_DOCKED 之前）：
-//   此刻环境里的 S2A_DOCKED 就是玩家选的运行模式（iOS 设置页写的，缺省掌机；Mac 启动器缺省主机）；没有 = 主机，Mac 的缺省。
+//   此刻环境里的 S2A_DOCKED 就是玩家选的运行模式（iOS 设置页 / Mac 启动器写的）；没有 = 掌机，同共用设置定义表
+//   launchers/shared/game_settings.v1.json 的 docked 缺省（两端都是掌机），也同服务层、直连 dm_opmode、宽屏装表对「没设」的理解，所以不补写。
 //   固定档位的测量局关梯子（S2A_LADDER=0，自动化局缺省关）
 void s2a_ql_boot(void) {
     if (!ladder_on()) return;
     const char *d = getenv("S2A_DOCKED");
-    if (!d) setenv("S2A_DOCKED", "1", 1);   // 没设 = 主机（Mac 缺省），服务层 / 宽屏装表读到的与上限一致
-    boot(d ? strcmp(d, "1") == 0 : 1, d ? "玩家设置" : "没设，按主机");
+    boot(d && strcmp(d, "1") == 0, d ? "玩家设置" : "没设，按掌机（共用设置表缺省）");
 }
 // 安卓起局（android/native/runtime/runtime.c，#528 第 6 项）：运行模式由 App 经服务请求的 console_mode 给（0 掌机 / 1 主机，缺省掌机），
 //   不经环境变量 S2A_DOCKED。这里不读也不写 S2A_DOCKED：上面那个入口没设时会写成 1，安卓掌机局的服务层与宽屏装表就被带成主机
