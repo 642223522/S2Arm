@@ -155,8 +155,11 @@ public sealed class ControlPort : IDisposable
 /// <summary>作业层自己写的作业记录（pack/jobs/core.py：&lt;私有目录&gt;/jobs/&lt;任务&gt;.json）当 GET /state 的 tasks，同 Mac ControlJournal。</summary>
 public static class ControlJournal
 {
+    // s2armctl 等的作业（wait_op：delete / setup / diagnostics / installUpdate …）必须在这里，否则作业早做完了 s2armctl 还一直等到 1800 秒报失败
+    //   （v0.5.1 实测 delete 5 秒删完、命令不返回）。同 Mac ControlPort.visibleOperations 里 Windows 也跑的那些
     private static readonly HashSet<string> Visible = new(StringComparer.Ordinal)
-        { "install", "installRemove", "installRestore", "installUpdate", "import", "keys", "ipa", "moveGame", "setup" };
+        { "install", "installRemove", "installRestore", "installUpdate", "import", "keys", "ipa", "moveGame", "setup",
+          "delete", "remove", "clean", "spaceFree", "diagnostics" };
 
     // 进程被强制结束时作业层来不及写终态：记录还是 running 而进程已不在，要按中断报，否则 s2armctl 一直等。
     //   「在不在」按进程号 + 起始时刻认，同作业层 core.describe（剃刀 W9：原先只看进程号，进程号被复用时早死的作业一直报 running）
