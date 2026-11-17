@@ -3921,6 +3921,8 @@
   "没找到这款的 Apple TV 资源包（{0}），没有装。请重新出 Apple TV 包后再装。": "No se encontró el paquete de recursos para Apple TV de este juego ({0}), así que no se instaló nada. Vuelve a compilarlo para Apple TV y luego instálalo.",
   "装到 Apple TV": "Instalar en el Apple TV",
   "游戏卡住了，S2Arm 把这局安全停下了。": "El juego se quedó bloqueado y S2Arm detuvo esta partida de forma segura.",
+  "这款需要更多内存：已经记下要多少，再点一次开始就能进。": "Este juego necesita más memoria: ya se anotó cuánta, así que vuelve a iniciarlo y funcionará.",
+  "再点一次「开始」就能进：这一局已记下这款要的内存，下次起局按它给。": "Vuelve a pulsar Iniciar para jugar: esta sesión anotó cuánta memoria necesita el juego y el próximo inicio la usará.",
   "点「再启动一次」一般能接着玩，存档停在游戏上次保存的地方。": "Pulsa «Volver a iniciar» y normalmente podrás seguir jugando; tu partida guardada es la del último guardado del juego.",
   "游戏卡住了，已经安全停下": "El juego se quedó bloqueado y se detuvo de forma segura",
   "游戏运行中卡住了，S2Arm 把这局安全停下，免得整台电脑跟着卡死。存档停在游戏上次保存的地方。": "El juego se quedó bloqueado mientras se ejecutaba. S2Arm detuvo esta partida de forma segura para que no se congelara todo el Mac. Tu partida guardada es la del último guardado del juego.",
