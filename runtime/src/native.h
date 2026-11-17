@@ -212,6 +212,11 @@ void s2a_envfile_log_flush(void);   // 启动单线程调用，输出后清空�
 uint64_t guest_ns(void);
 uint64_t guest_tick(void);      // 系统计数器（Switch 19.2 MHz / Switch 2 31.25 MHz，s2a_guest_tick_hz）
 uint64_t s2a_guest_tick_hz(void); uint64_t s2a_ns_to_tick(uint64_t ns);
+// 后端已校准的宿主时刻（plat_now_ns 域；安卓为 CLOCK_MONOTONIC）转游戏计数器。
+// 苹果 plat_now_ns 是 mach_absolute_time 域，不能直接传 CLOCK_MONOTONIC；首版 Metal 不宣告时间戳能力。
+// 仅接受当前冻结/运行映射区间内的非未来样本；跨冻结边界的历史样本无法还原，返回 0 且不改 out。
+// 成功返回 1，*out 可以为 0。任意线程可调；不以完成回调的 CPU 时刻替换输入。
+int s2a_guest_tick_from_host_ns(uint64_t host_ns, uint64_t *out);
 void s2a_thread_set_hw_cores(int n); int s2a_thread_hw_cores(void);   // thread.c：硬件核数（Switch 4、Switch 2 8）
 // 游戏时钟按原因冻结（1 后台会话、2 系统键盘、3 Mac 失焦、4 安卓退后台），全部解除才接着走（os.c）。
 void guest_clock_freeze_for(int reason, int on);
