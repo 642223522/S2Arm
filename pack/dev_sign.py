@@ -7,7 +7,7 @@ dev_sign.py <NxIOS.app> <包名> <团队号> <基础权限 Gen/NxIOS.entitlement
 ③ 权限 = 基础权限 + application-identifier / team-identifier / get-task-allow，且每项必须被描述文件允许（否则装不上）；
 ④ 嵌入 embedded.mobileprovision → 先签内嵌 *.dylib / *.framework → 再带权限签 App → 核「提高内存上限」在签名里。
 找不到合适的描述文件或身份、描述文件缺 S2A_PROFILE_NEED_UDIDS 里的测试设备，退出码 3（调用方退回 Xcode 导出）；本机描述文件解不出（安全服务不可用）退出码 4（调用方不申请、照报）；其余失败退出码 1。"""
-import glob, hashlib, os, plistlib, shutil, subprocess, sys, tempfile
+import datetime, glob, hashlib, os, plistlib, shutil, subprocess, sys, tempfile
 # 只签一个程序 dylib（通用壳程序包，pack/jobs/program_pack.py mac_signer，11-16）：dev_sign.py --dylib <文件> <包名> <团队>
 #   挑描述文件与身份同签 App（这台手机上装的 S2Arm 用的那一个，库校验要同团队），只签这个文件、不嵌描述文件、不核权限；末行打印完整身份 SHA-1
 DYLIB = sys.argv[1:2] == ['--dylib']
@@ -27,19 +27,21 @@ def cms(f):
     r = subprocess.run(['security', 'cms', '-D', '-i', f], capture_output=True)
     try: return plistlib.loads(r.stdout)
     except Exception: return None
-best, unread = None, []
+best, unread, expired = None, [], []
 for f in glob.glob(os.path.join(glob.escape(os.path.expanduser('~/Library/MobileDevice/Provisioning Profiles')), '*.mobileprovision')) + glob.glob(os.path.join(glob.escape(os.path.expanduser('~/Library/Developer/Xcode/UserData/Provisioning Profiles')), '*.mobileprovision')):
     p = cms(f)
     if not p: unread.append(os.path.basename(f)); continue
     e = p.get('Entitlements', {})
     if e.get('application-identifier') != f'{team}.{bid}' or not p.get('ProvisionedDevices') or e.get('get-task-allow') is not True: continue
     if TVOS and 'tvOS' not in (p.get('Platform') or []): continue
+    # 过期或一天内到期的不算有（11-16 诊断 D-44DP：装机改成「先签、退出码 3 才申请」后，本机这份就是装上去用的那份，过期的签了也装不上）→ 都不合适就退 3 让调用方重申
+    if p['ExpirationDate'] <= datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) + datetime.timedelta(days=1): expired.append(os.path.basename(f)); continue
     if best is None or p['ExpirationDate'] > best[1]['ExpirationDate']: best = (f, p)
 # 解不出的描述文件不等于没有（10-30 出包线：凌晨内存耗尽、trustd 等安全服务被 Jetsam 杀，security cms 全解不出，这里报「没有」，
 #   调用方去申请新描述文件、原因空白，真因被盖住）：一个都没挑中且有解不出的 → 退出码 4、点名，调用方不申请、照原样报红
 if not best and unread:
     print(f'【红】读不出本机描述文件 {len(unread)} 个（security cms -D 失败，系统安全服务 trustd / securityd 不可用或内存耗尽被杀？如 {unread[0]}）：不当作「没有描述文件」'); sys.exit(4)
-if not best: print(f'没有 {team}.{bid} 的开发描述文件'); sys.exit(3)
+if not best: print(f'没有 {team}.{bid} 的开发描述文件' + (f'（{len(expired)} 份已过期或一天内到期，如 {expired[0]}）' if expired else '')); sys.exit(3)
 pf, prof = best
 # 描述文件要含我方全部测试设备（S2A_PROFILE_NEED_UDIDS，pack/ipa_tail.py 从 tools/devices.sh 名单给；没给不核）：设备登记晚于申请的旧描述文件缺它，
 #   装上去报「This provisioning profile cannot be installed on this device」（11-07 惊奇装 Duo）→ 退 3，调用方 ensure_profile.sh 移走旧的、按账号现有设备重申

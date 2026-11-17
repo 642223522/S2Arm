@@ -1626,6 +1626,23 @@ def widget_skip(c, app, why):
     c.diagnostic(f"这次没装小组件：{why}", code="widget_skipped", severity="warning")
 
 
+def _sign_or_request(c, sign, bid, team, ents, udid, log, env, steps):
+    """先用本机已有的开发描述文件签（sign = dev_sign.py 命令；退出码 3 = 没有合适的：没有、过期或一天内到期、不含这台手机、权限不够），
+    3 才申请（ensure_profile.sh：xcodebuild 拿这台手机当目标、登记设备，要 Xcode 看得到它）再签一次。
+    11-16 诊断 D-44DP：原先每次装机都先申请，Xcode 看不到这台手机（Unable to find a destination）时本机明明有能用的描述文件，主程序也签不成；
+    ensure_profile.sh 文件头写的本意就是「签名报退出码 3 时才调」。dev_sign 带 S2A_PROFILE_NEED_UDIDS = 这台，描述文件不含它也算没有"""
+    senv = dict(env or c.env(), S2A_PROFILE_NEED_UDIDS=udid) if udid else env
+    if steps: c.begin("用你的 Apple ID 签名", 4, 6, keychain=True)   # codesign 用钥匙串里的签名身份：可能弹授权（开发者证书模式读 p12，不弹）
+    c.last_rc = 0
+    c.run(sign, log, senv, ok_codes=(0, 3))
+    if c.last_rc != 3:
+        return
+    if steps: c.begin("申请开发描述文件（第一次要几十秒）", 3, 6, keychain=True)   # 用 Xcode 账号申请：可能弹钥匙串授权
+    c.run(["bash", c.engine / "pack/ensure_profile.sh", bid, team["id"], ents] + ([udid] if udid else []), log, env)
+    if steps: c.begin("用你的 Apple ID 签名", 4, 6, keychain=True)
+    c.run(sign, log, senv)
+
+
 def sign_with_apple_id(c, app, team, bid, ents, udid, log, steps, vision=False, widget=False):
     """Apple ID 模式：按玩家 Xcode 账号申请开发描述文件（ensure_profile.sh）再用钥匙串身份签（dev_sign.py）。
     vision：目标是 Apple Vision Pro（按 iPad 兼容装）——申请描述文件的目标写 id=<UDID>，让 Xcode 自己认平台与「Designed for iPad」变体、登记这台设备
@@ -1639,12 +1656,9 @@ def sign_with_apple_id(c, app, team, bid, ents, udid, log, steps, vision=False, 
             if e.code in ("keychain_prompt",):   # 钥匙串框没人点：去掉扩展也一样要签，照原样报
                 raise
             widget_skip(c, app, WIDGET_QUOTA if e.code == "free_appid_limit" else str(e).removeprefix("签名没成：") or e.code)  # 非玩家句（去前缀用）
-    if steps: c.begin("申请开发描述文件（第一次要几十秒）", 3, 6, keychain=True)   # 用 Xcode 账号申请：可能弹钥匙串授权
     try:
         env = dict(c.env(), S2A_PROFILE_DEST=f"id={udid}") if vision and udid else None
-        c.run(["bash", c.engine / "pack/ensure_profile.sh", bid, team["id"], ents] + ([udid] if udid else []), log, env)
-        if steps: c.begin("用你的 Apple ID 签名", 4, 6, keychain=True)   # codesign 用钥匙串里的签名身份：可能弹授权（开发者证书模式读 p12，不弹）
-        c.run([sys.executable, c.engine / "pack/dev_sign.py", app, bid, team["id"], ents], log)
+        _sign_or_request(c, [sys.executable, c.engine / "pack/dev_sign.py", app, bid, team["id"], ents], bid, team, ents, udid, log, env, steps)
     except Failure as e:
         if e.code != "tool_exit":
             raise
@@ -1665,15 +1679,11 @@ def sign_with_widget(c, app, team, bid, ents, udid, log, steps, vision):
         main_ents.write_bytes(plistlib.dumps(pl))
         ext_ents = Path(t) / "widget.entitlements"
         ext_ents.write_bytes(plistlib.dumps({"com.apple.security.application-groups": [group]}))
-        if steps: c.begin("申请开发描述文件（第一次要几十秒）", 3, 6, keychain=True)
         try:
             env = dict(c.env(), S2A_PROFILE_DEST=f"id={udid}") if vision and udid else None
-            for b, e in ((bid, main_ents), (wbid, ext_ents)):
-                c.run(["bash", c.engine / "pack/ensure_profile.sh", b, team["id"], e] + ([udid] if udid else []), log, env)
-            if steps: c.begin("用你的 Apple ID 签名", 4, 6, keychain=True)
-            for x in W.appexes(app):
-                c.run([sys.executable, c.engine / "pack/dev_sign.py", x, wbid, team["id"], ext_ents, "--extension"], log)
-            c.run([sys.executable, c.engine / "pack/dev_sign.py", app, bid, team["id"], main_ents], log)
+            for x in W.appexes(app):   # 扩展先签（主程序的封印要包住签好的扩展）
+                _sign_or_request(c, [sys.executable, c.engine / "pack/dev_sign.py", x, wbid, team["id"], ext_ents, "--extension"], wbid, team, ext_ents, udid, log, env, steps)
+            _sign_or_request(c, [sys.executable, c.engine / "pack/dev_sign.py", app, bid, team["id"], main_ents], bid, team, main_ents, udid, log, env, steps)
         except Failure as e:
             if e.code != "tool_exit":
                 raise
