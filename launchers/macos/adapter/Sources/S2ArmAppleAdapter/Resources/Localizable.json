@@ -9978,5 +9978,61 @@
  {
   "source": "这台 iPhone 没连到这台 Mac，账号上也还没登记过它，申请不到能装到它上面的开发描述文件。",
   "en": "This iPhone isn't connected to this Mac and hasn't been registered to your account yet, so no development profile can be created for it."
+ },
+ {
+  "source": "手机上还没装 S2Arm：先点「安装 S2Arm」，装好后再把这款推到 iPhone。",
+  "en": "S2Arm is not installed on this phone yet. Click \"Install S2Arm\" first, then push this game to iPhone."
+ },
+ {
+  "source": "手机上的 S2Arm 不是这一版：先点「更新 S2Arm」，再把这款推到 iPhone。",
+  "en": "S2Arm on this phone is not this version. Click \"Update S2Arm\" first, then push this game to iPhone."
+ },
+ {
+  "source": "{0} 的程序清单在手机上就不了位（{0}）：再试一次；还不行请更新电脑上的 S2Arm。",
+  "en": "{0}'s program list couldn't be put in place on the phone ({0}). Try again; if it still fails, update S2Arm on your computer."
+ },
+ {
+  "source": "把这款的程序推进 iPhone",
+  "en": "Pushing this game's program to iPhone"
+ },
+ {
+  "source": "把这款的资源推进 iPhone（只推变了的文件；第一次大游戏要几分钟）",
+  "en": "Pushing this game's resources to iPhone (only changed files; a large game takes a few minutes the first time)"
+ },
+ {
+  "source": "组 S2Arm（不带游戏）",
+  "en": "Building S2Arm (without games)"
+ },
+ {
+  "source": "签名并装到 iPhone",
+  "en": "Signing and installing on iPhone"
+ },
+ {
+  "source": "读不到 Impactor 里登录的 Apple ID：在 Impactor 里登录后再推到 iPhone。",
+  "en": "Can't read the Apple ID signed in to Impactor. Sign in to Impactor, then push to iPhone again."
+ },
+ {
+  "source": "在 S2Arm 里先点「安装 S2Arm」把 App 装到这台 iPhone，再对这款点「推到 iPhone」。",
+  "en": "In S2Arm, click \"Install S2Arm\" to install the App on this iPhone first, then click \"Push to iPhone\" for this game."
+ },
+ {
+  "source": "在 S2Arm 里先点「更新 S2Arm」，把手机上的 App 换成这一版，再对这款点「推到 iPhone」。",
+  "en": "In S2Arm, click \"Update S2Arm\" to bring the App on your phone to this version, then click \"Push to iPhone\" for this game."
+ },
+ {
+  "source": "手机上还没装 S2Arm",
+  "en": "S2Arm is not installed on the phone"
+ },
+ {
+  "source": "「推到 iPhone」只推游戏，不装 App；这台手机上还没有 S2Arm。",
+  "en": "\"Push to iPhone\" only sends the game and does not install the App; this phone does not have S2Arm yet."
+ },
+ {
+  "source": "手机上的 S2Arm 要先更新",
+  "en": "S2Arm on the phone needs updating first"
+ },
+ {
+  "source": "手机上的 S2Arm 是别的版本，这一版的游戏程序放上去打不开。",
+  "en": "S2Arm on the phone is a different version, so game programs prepared by this version would not open there."
  }
 ]

@@ -3876,6 +3876,20 @@
   "这款选了下游深度方案（独立 App），它的资源要由电脑推进手机，导出的自签包里装不下。": "Ce jeu utilise un portage dédié (une app distincte). Ses ressources sont copiées sur le téléphone depuis votre ordinateur, elles ne peuvent donc pas aller dans un paquet exporté à signer vous-même.",
   "用数据线把这台 iPhone 连到这台 Mac，解锁后在手机上点「信任」；打开开发者模式（设置 → 隐私与安全性 → 开发者模式，开了要重启手机）；等 Xcode 菜单「窗口 → 设备与模拟器」里出现这台，再点一次「装到 iPhone」。": "Branchez cet iPhone à ce Mac avec un câble, déverrouillez-le et touchez « Se fier » sur le téléphone. Activez le mode développeur (Réglages → Confidentialité et sécurité → Mode développeur ; le téléphone redémarre). Quand il apparaît dans Xcode sous Fenêtre → Appareils et simulateurs, relancez l'installation.",
   "Xcode 看不到这台 iPhone": "Xcode ne voit pas cet iPhone",
-  "这台 iPhone 没连到这台 Mac，账号上也还没登记过它，申请不到能装到它上面的开发描述文件。": "Cet iPhone n'est pas branché à ce Mac et n'est pas encore enregistré sur votre compte : impossible de créer un profil de développement pour lui."
+  "这台 iPhone 没连到这台 Mac，账号上也还没登记过它，申请不到能装到它上面的开发描述文件。": "Cet iPhone n'est pas branché à ce Mac et n'est pas encore enregistré sur votre compte : impossible de créer un profil de développement pour lui.",
+  "手机上还没装 S2Arm：先点「安装 S2Arm」，装好后再把这款推到 iPhone。": "S2Arm n'est pas encore installé sur ce téléphone. Cliquez d'abord sur « Installer S2Arm », puis envoyez ce jeu sur l'iPhone.",
+  "手机上的 S2Arm 不是这一版：先点「更新 S2Arm」，再把这款推到 iPhone。": "Le S2Arm de ce téléphone n'est pas cette version. Cliquez d'abord sur « Mettre à jour S2Arm », puis envoyez ce jeu sur l'iPhone.",
+  "{0} 的程序清单在手机上就不了位（{0}）：再试一次；还不行请更新电脑上的 S2Arm。": "La liste de programmes de {0} n'a pas pu être mise en place sur le téléphone ({0}). Réessayez ; si l'échec persiste, mettez à jour S2Arm sur l'ordinateur.",
+  "把这款的程序推进 iPhone": "Envoi du programme de ce jeu sur l'iPhone",
+  "把这款的资源推进 iPhone（只推变了的文件；第一次大游戏要几分钟）": "Envoi des ressources de ce jeu sur l'iPhone (seulement les fichiers modifiés ; un gros jeu prend quelques minutes la première fois)",
+  "组 S2Arm（不带游戏）": "Préparation de S2Arm (sans jeux)",
+  "签名并装到 iPhone": "Signature et installation sur l'iPhone",
+  "读不到 Impactor 里登录的 Apple ID：在 Impactor 里登录后再推到 iPhone。": "Impossible de lire l'identifiant Apple connecté dans Impactor. Connectez-vous dans Impactor, puis renvoyez sur l'iPhone.",
+  "在 S2Arm 里先点「安装 S2Arm」把 App 装到这台 iPhone，再对这款点「推到 iPhone」。": "Dans S2Arm, cliquez d'abord sur « Installer S2Arm » pour installer l'App sur cet iPhone, puis sur « Envoyer sur l'iPhone » pour ce jeu.",
+  "在 S2Arm 里先点「更新 S2Arm」，把手机上的 App 换成这一版，再对这款点「推到 iPhone」。": "Dans S2Arm, cliquez d'abord sur « Mettre à jour S2Arm » pour passer l'App du téléphone à cette version, puis sur « Envoyer sur l'iPhone » pour ce jeu.",
+  "手机上还没装 S2Arm": "S2Arm n'est pas installé sur le téléphone",
+  "「推到 iPhone」只推游戏，不装 App；这台手机上还没有 S2Arm。": "« Envoyer sur l'iPhone » envoie seulement le jeu et n'installe pas l'App ; ce téléphone n'a pas encore S2Arm.",
+  "手机上的 S2Arm 要先更新": "Il faut d'abord mettre à jour S2Arm sur le téléphone",
+  "手机上的 S2Arm 是别的版本，这一版的游戏程序放上去打不开。": "Le S2Arm du téléphone est une autre version : les programmes de jeu préparés par cette version ne s'y ouvriraient pas."
  }
 }

@@ -2376,6 +2376,97 @@ def push_programs(c, cl, games, rec, team, bundle, signer, pack_roots, keep_old=
     return out
 
 
+SHELL_INSTALL_FIRST = "手机上还没装 S2Arm：先点「安装 S2Arm」，装好后再把这款推到 iPhone。"
+SHELL_UPDATE_FIRST = "手机上的 S2Arm 不是这一版：先点「更新 S2Arm」，再把这款推到 iPhone。"
+
+
+def phone_signing(c, ph):
+    """通用壳：这台手机上程序包按什么签 → (团队号, 包名, 签名器)。同装机签 App 的那一处：开发者证书 → 证书的团队与描述文件的包名；
+    Windows Apple ID → Impactor 当前账号的团队、plumesign 定的包名；Mac Apple ID → 钥匙串账号的团队、容器包名"""
+    import program_pack
+    if devcert.active(c):
+        return devcert.team(c)["id"], devcert.state(c)["bundleId"], program_pack.devcert_signer(c)
+    if os.name == "nt":
+        team = ph.W.impactor.selected_team() if hasattr(ph.W.impactor, "selected_team") else None
+        if not team:
+            raise Failure("读不到 Impactor 里登录的 Apple ID：在 Impactor 里登录后再推到 iPhone。", code="xcode_account_missing")
+        import ipa as packer
+        exe = ph.W.plumesign_path((ph.W.impactor.bundled(c.r.get("resources")) or {}).get("plumesign"))
+        shell = Path(packer.container_shell(c, packer.current_shell_id(c))) / "root"
+        return team, ph.bundle_for_signing() or ph.bid, program_pack.win_signer(c, exe, shell)
+    return ph.team["id"], ph.bid, program_pack.mac_signer(c)
+
+
+def phone_busy(ph, games):
+    """这几款此刻可能在手机上运行吗（换上程序包后删不删旧版本目录，push_program keep_old）：Mac 只能看 App 开没开（devicectl），
+    Windows 按游玩时间心跳；判不清一律当在运行"""
+    try:
+        got = ph.playing(games) if hasattr(ph, "playing") else ph.app_running()
+    except Exception:   # noqa: BLE001 —— 判不清当在运行，最坏只是旧目录多留到下次启动
+        return True
+    return got is not False
+
+
+def push_game(c, gid, ph, steps=True):
+    """通用壳「推到 iPhone」（program_pack.enabled）：只推这一款的程序包与资源包，绝不签名装壳（11-17 维护者定：装 App 与推游戏是两个独立作业）。
+    手机上没装 S2Arm（这台没有装壳记录）或壳不是本版 → 报「先安装 / 更新 S2Arm」、不推。程序包按设备记录判要不要推（program_pack.need），
+    资源包照 put_game 的判据（资源包号变了才推）。装上后这款的记录加 program"""
+    import ipa as packer
+    gid = gid.upper()
+    pack = ios_pack(c, gid)
+    rec = layout.load_device(c, ph.key)
+    if not rec.get("shellId") or not ph.bid:
+        raise Failure(SHELL_INSTALL_FIRST, code="shell_install_required")
+    if rec["shellId"] != packer.current_shell_id(c):
+        raise Failure(SHELL_UPDATE_FIRST, code="shell_update_required")
+    team, bid, signer = phone_signing(c, ph)
+    if steps: c.begin("把这款的程序推进 iPhone", 2, 3)
+    from rewrite_refresh import refresh_ios
+    ph.pull_kept([gid])   # 机上留下的 NRO 先收回（#8be819），refresh_ios 补进程序件
+    pr = pick_pack_root(c, ph, gid)
+    with packer.program_locks(c, [gid]):
+        refresh_ios(c, [gid])
+        with tempfile.TemporaryDirectory(dir=c.private) as w:
+            progs = push_programs(c, ph.client(w), [gid], rec, team, bid, signer, {gid: pr}, keep_old=phone_busy(ph, [gid]))
+    old = rec.get("games", {}).get(gid) or {}
+    rec = layout.load_device(c, ph.key)
+    layout.save_device(c, ph.key, dict(rec, games=dict(rec.get("games") or {}, **{gid: dict(old, program=progs[gid])}), at=time.time()))
+    if steps: c.begin("把这款的资源推进 iPhone（只推变了的文件；第一次大游戏要几分钟）", 3, 3)
+    files = size = 0
+    pushed, mods = old.get("pack", ""), old.get("mods") or {}
+    try:
+        if pack_id(pack) != pushed:
+            ph.before_push({gid: pack})
+            files, size = ph.push(gid, pack)
+            pushed = pack_id(pack)
+        mods = push_mods(c, ph, gid, mods)
+    finally:
+        rec = layout.load_device(c, ph.key)
+        layout.save_device(c, ph.key, dict(rec, games=dict(rec.get("games") or {}, **{gid: dict(program=progs[gid], pack=pushed, **({"mods": mods} if mods else {}))}),
+                                           at=time.time()))
+    extra = dict(unpackPending=ph.pending) if ph.pending else {}
+    return dict(bundleId=ph.bid, games=[gid], packFiles=files, packBytes=size, **ph.info, **extra, openToFinish=True)
+
+
+def install_shell(c, ph, steps=True):
+    """通用壳「安装 / 续签 / 更新 S2Arm」（program_pack.enabled）：只组只有壳的容器、签名、装壳，绝不推任何一款的程序包与资源包（11-17 维护者定）。
+    手机上已是这一版壳、签名离到期还早（same_app）→ 不装，updated = False。装上后记壳号、包名、签名时刻；各款记录原样留着（程序包在手机上不受装壳影响）"""
+    import ipa as packer
+    rec = layout.load_device(c, ph.key)
+    if steps: c.begin("组 S2Arm（不带游戏）", 2, 3)
+    ipa, _, sid = packer.assemble_shell(c)
+    if same_app(c, ph, rec, packer.ipa_digest(ipa)):
+        note(c, "手机上的 S2Arm 已是这一版、签名离到期还早：不重签不重装")  # 非玩家句
+        return dict(updated=False, bundleId=ph.bid, games=[], **ph.info)
+    if steps: c.begin("签名并装到 iPhone", 3, 3)
+    ph.install(ipa, [], steps=False)
+    rec = layout.load_device(c, ph.key)
+    signed = dict(signed=dict(at=time.time(), free=bool(ph.info["free"]), device=ph.info["device"])) if "free" in ph.info else {}
+    layout.save_device(c, ph.key, dict(rec, shellId=sid, bundleId=ph.bid or rec.get("bundleId", ""), at=time.time(), **signed))
+    packer.commit_phone_ipa(c, ipa, sid)
+    return dict(updated=True, outputPath=str(layout.phone_ipa(c)), bundleId=ph.bid, games=[], toShell=sid, **ph.info)
+
+
 SAME_APP_FRESH = (3 * 86400, 30 * 86400)   # 跳过重签的签名新鲜度：免费账号描述文件 7 天到期，签了不到 3 天才跳过（照常装机就顺手续签）；付费 / 证书 30 天
 
 
@@ -2612,6 +2703,9 @@ def _update_phone(c):
         if hint:
             raise Failure(hint, code="device_not_connected") from e
         raise
+    import program_pack
+    if program_pack.enabled(c):   # 通用壳（0.6.0，缺省关）：「更新 S2Arm」只装壳，不碰各款
+        return install_shell(c, ph)
     rec = layout.load_device(c, ph.key)
     others = container_others(c, ph, rec)
     sid = packer.current_shell_id(c)
@@ -2654,6 +2748,9 @@ def _install(c):
     if wants_export(c):   # 这次是「导出自签包」：不连手机、不签名，出到文件夹；推不推到手机由玩家在完成页选（exportPush）
         return export_phone(c, gid)
     c.begin("找签名账号与 iPhone", 1, 6)
+    import program_pack
+    if program_pack.enabled(c):   # 通用壳（0.6.0，缺省关）：「推到 iPhone」只推这一款，不装壳
+        return push_game(c, gid, phone_for(c))
     return put_game(c, gid, phone_for(c))
 
 
