@@ -4491,9 +4491,9 @@ static void c61s_storage_srgb_alias(const char *dir) {
             nvn_gpu_bind(c, NVN_GPU_SH_CS, &b, 1);
             nvn_gpu_dispatch(c, cp2, 1, 1, 1, NULL, 0);
             nvn_gpu_copy_tex_buf(c, t, 0, 0, NULL, rb, 0, 16, 64);
-            r = nvn_gpu_cmd_commit(c, 1091, on_done, NULL, &e);
+            r = nvn_gpu_cmd_commit(c, 1, on_done, NULL, &e);   // 自己一个会话（见 main），围栏号从 1 起
             CHECK(OK(r), "C61s commit：%d %s", r.code, e.why);
-            r = nvn_gpu_fence_wait(1091, 5000000000ull, &e);
+            r = nvn_gpu_fence_wait(1, 5000000000ull, &e);
             CHECK(OK(r), "C61s wait：%d %s", r.code, e.why);
             const uint8_t *rd = (const uint8_t *)buf_cpu(rb);
             int bad = 0;
@@ -10266,7 +10266,6 @@ int main(int argc, char **argv) {
     c59_tbuf(argv[1]);
     c60_image_tbuf(argv[1]);
     c61_storage_image(argv[1]);
-    c61s_storage_srgb_alias(argv[1]);
     c62_tsamp_cs(argv[1]);
     c63_desc_array_elem(argv[1]);
     c63c_desc_array_same_view(argv[1]);
@@ -10362,6 +10361,9 @@ int main(int argc, char **argv) {
     if (!open_backend()) return 1;   // C197 自己一个会话：围栏号从这里重新算，和前后用例不相干
     c197_pass_cache();
     CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C197 close：%d %s", e18.rc.code, e18.why);
+    if (!open_backend()) return 1;   // C61s 自己一个会话：围栏号从 1 起，不穿插在主会话 C61（108）/ C62（109）之间
+    c61s_storage_srgb_alias(argv[1]);
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C61s close：%d %s", e18.rc.code, e18.why);
     c204_dset_recycle(argv[1]);   // 描述符组按布局回收（#1096）：每个臂自己开 / 关会话
     c208_dyn_ubo(argv[1]);   // 动态 UBO 偏移（#1233）：关 / 开两个臂各开一次会话
     if (!open_backend()) return 1;   // C201 同样自己一个会话
