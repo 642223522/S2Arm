@@ -103,9 +103,13 @@ has() { grep -qF -- "$2" "$1"; }
 # 往往在日志中段，末尾 40 行只剩汇总「红（N 处不符）」看不出是哪条（11-17 run 44072797348）。先打全日志里的 FAIL / 【红】行
 # （带日志行号，最多 40 条），再打末尾 40 行。
 show_fail() {
-    echo "  日志：${1}；FAIL / 【红】行（行号:内容，最多 40 条）：" >&2
-    local hits; hits=$(grep -nE '^FAIL |【红】' "$1" || true)
-    if [ -n "$hits" ]; then printf '%s\n' "$hits" | head -40 >&2; else echo "    （没有 FAIL / 【红】行）" >&2; fi
+    # FAIL 行单独先打：绿的整套本来就有十来条预期的【红】（驱动缺特性的具名跳过），混在一起取前 40 条会把真正的 FAIL 挤掉。
+    echo "  日志：${1}；FAIL 行（行号:内容，最多 40 条）：" >&2
+    local hits; hits=$(grep -nE '^FAIL ' "$1" || true)
+    if [ -n "$hits" ]; then printf '%s\n' "$hits" | head -40 >&2; else echo "    （没有 FAIL 行）" >&2; fi
+    echo "  【红】行（最多 40 条）：" >&2
+    hits=$(grep -n '【红】' "$1" || true)
+    if [ -n "$hits" ]; then printf '%s\n' "$hits" | head -40 >&2; else echo "    （没有【红】行）" >&2; fi
     echo "  末尾 40 行：" >&2
     tail -40 "$1" >&2
 }
