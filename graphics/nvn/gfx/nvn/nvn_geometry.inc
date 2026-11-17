@@ -304,6 +304,7 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
 }
 static void mtk_encode(id en_) {
     id en = en_; NvShader *ts = g_mtk.ts, *ms = g_mtk.ms;
+    if (fault_enc_on()) fault_enc_mark(en, [NSString stringWithFormat:@"task / mesh draw: task %s mesh %s, %s", ts ? ts->key : "-", ms->key, g_mtk.ind ? "indirect" : [NSString stringWithFormat:@"%llu workgroups", (unsigned long long)g_mtk.count].UTF8String]);
     uint64_t first = g_mtk.ind ? g_mtk.ind + 16 : 0;   // indirect: the converted arguments carry it at word 4 (ixc_arrays)
     if (!first) { id<MTLBuffer> b; size_t o = arena_alloc(16, &b); memcpy((uint8_t *)b.contents + o, &g_mtk.first, 4); first = b.gpuAddress + o; }
     enc_r_table(en, g_vt, MTLRenderStageMesh);
@@ -319,6 +320,7 @@ static void mtk_encode(id en_) {
         static int once; if (!once++) MLOG("task / mesh payload relay: first draw (task %s mesh %s), %llu task workgroups, %.1f MB", ts->key, ms->key, (unsigned long long)n, bytes / 1048576.0);
     }
     NSUInteger ot = ts ? ts->mesh_threads : 1, mt = ms->mesh_threads;
+    if (g_mtk.ind && fault_enc_on()) { NSUInteger fo; id<MTLBuffer> fbuf; if (m3_buf_at(g_mtk.ind, &fbuf, &fo)) fault_ring_put(fbuf, fo, ts ? ts->key : NULL, ms->key, atomic_load_explicit(&g_cur_frame, memory_order_relaxed)); }
     if (g_mtk.ind) enc_r_mesh_indirect(en, g_mtk.ind, ot, mt); else enc_r_mesh(en, g_mtk.count, ot, mt);
 }
 static void mesh_tasks_draw(const p_draw *dw) {

@@ -274,6 +274,18 @@ class ContainerTest(unittest.TestCase):
         self.assertEqual(p2.get("CFBundleShortVersionString"), shell_v)
         self.assertNotIn("S2ADisplayVersion", p2)
 
+    def test_ctx_text_tvos_paths(self):
+        # Apple TV 容器（组装时 S2A_APPLE_OS=tvos）：文档根 Library/Caches/S2Arm/games/<号>、资源包 <文档根>/资源包（同 runtime/include/s2a_docs.h 电视口径）
+        import unittest.mock as um
+        sys.path.insert(0, str(REPO / "pack")); import ship_ext
+        g = "0100000000010000"
+        with um.patch.dict(os.environ, {"S2A_APPLE_OS": "tvos"}):
+            tv = ship_ext.ctx_text(g)
+        self.assertEqual(tv, f"version\t1\ngame_id\t{g}\nimages\t@bundle/Frameworks/S2AImages-{g}.dylib\nmodule_dir\t@bundle/Games/{g}\n"
+                             f"game_data\t@home/Library/Caches/S2Arm/games/{g}/资源包\ndocs\t@home/Library/Caches/S2Arm/games/{g}\n")
+        with um.patch.dict(os.environ, {"S2A_APPLE_OS": "ios"}):
+            self.assertIn(f"docs\t@home/Documents/games/{g}\n", ship_ext.ctx_text(g))   # iPhone 照旧
+
     def test_layout_catalogue_and_window_max(self):
         r = self.run_c(self.d, self.shell, self.d / "o1/S2Arm.app", [self.a, self.b])
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -334,6 +346,43 @@ class ContainerTest(unittest.TestCase):
         (base / "s2a_catalogue.json").write_text(json.dumps(cat))
         r = self.run_c(self.d, self.shell, self.d / "o7/S2Arm.app", [a2], base=base)
         self.assertEqual(r.returncode, 1); self.assertIn("要按本壳重出", r.stderr); self.assertIn(self.B, r.stderr)   # 已有款 B 是别的壳组装的：不混装
+
+
+class ProgramPackTest(unittest.TestCase):
+    """程序包（通用壳，ship_ext.py program）：一款程序出成 <out>/{S2AImages-<游戏号>.dylib, Games/<游戏号>/}，不签名、不写清单。
+       期望不靠被测代码算：同一份产物根用现有的 container 组一次，程序包里的 dylib 与容器里 Frameworks/S2AImages-<游戏号>.dylib 逐字节相同、
+       随行目录逐文件相同（同一个 place_game，只差容器自己的 launch.ctx）；目标已在报红；失败不留半个目录"""
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory(); self.d = Path(self.td.name)
+        self.shell = ShipExtTest.shell(None, self.d)
+        self.root = ContainerTest.game(None, self.d, "a", 3, 0, 0x0100000000010000, "甲游戏")
+
+    def tearDown(self): self.td.cleanup()
+
+    def run_p(self, root, out):
+        return subprocess.run([sys.executable, str(REPO / "pack/ship_ext.py"), "program", "--shell", str(self.shell), "--root", str(root), "--out", str(out)],
+                              capture_output=True, text=True)
+
+    def test_program_matches_container_bytes(self):
+        out = self.d / "p/program"
+        r = self.run_p(self.root, out); self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        gid = ContainerTest.A
+        self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1]), {"gid": gid, "image": f"S2AImages-{gid}.dylib", "ast": 3, "name": "甲游戏", "display_version": "1.2.0"})
+        self.assertEqual(sorted(p.name for p in out.iterdir()), ["Games", f"S2AImages-{gid}.dylib"])
+        app = self.d / "c/S2Arm.app"
+        c = ContainerTest.run_c(None, self.d, self.shell, app, [self.root]); self.assertEqual(c.returncode, 0, c.stdout + c.stderr)
+        self.assertEqual((out / f"S2AImages-{gid}.dylib").read_bytes(), (app / f"Frameworks/S2AImages-{gid}.dylib").read_bytes())
+        mine = {p.relative_to(out / "Games" / gid): p.read_bytes() for p in (out / "Games" / gid).rglob("*") if p.is_file()}
+        theirs = {p.relative_to(app / "Games" / gid): p.read_bytes() for p in (app / "Games" / gid).rglob("*") if p.is_file() and p.name != "launch.ctx"}
+        self.assertEqual(mine, theirs)   # 只差容器自己的启动上下文 launch.ctx（自动化起局用，程序包不带）
+        self.assertIn(Path("main.npdm"), mine); self.assertIn(Path("main.fixups.tsv"), mine); self.assertIn(Path("addr_need.tsv"), mine); self.assertIn(Path("icon.jpg"), mine)
+
+    def test_program_refuses_existing_and_leaves_nothing_on_failure(self):
+        out = self.d / "p/program"; out.mkdir(parents=True)
+        r = self.run_p(self.root, out); self.assertNotEqual(r.returncode, 0); self.assertIn("不覆盖已有目标", r.stdout + r.stderr)
+        (self.root / "main.npdm").unlink(); out2 = self.d / "q/program"
+        r = self.run_p(self.root, out2); self.assertNotEqual(r.returncode, 0)
+        self.assertFalse(out2.exists()); self.assertFalse(any((self.d / "q").glob(".program-*")) if (self.d / "q").exists() else False)
 
 
 class BannerPlaceTest(unittest.TestCase):

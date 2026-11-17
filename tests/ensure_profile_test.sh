@@ -55,4 +55,21 @@ rv() { ARGS_OUT="$T/args" PATH="$T/bin:$PATH" S2A_ROOTS="$T/roots" S2A_PROFILE_D
 rv; a1=$(tr '\n' ' ' < "$T/args"); S2A_PROFILE_DEST=id=U9 rv; a2=$(tr '\n' ' ' < "$T/args")
 ck "⑥ 目标：iPhone「${a1}」含 platform=iOS,id=U9；Vision Pro「${a2}」含 -destination id=U9；都登记设备" \
   'grep -q -- "-destination platform=iOS,id=U9" <<< "$a1" && grep -q -- "-destination id=U9 " <<< "$a2" && grep -q -- "-allowProvisioningDeviceRegistration" <<< "$a2"'
+# ⑧ D-44DP（0.5.0 更新 iPhone 签不成）：给了设备号、xcodebuild 看不到这台（只报「Unable to find a destination」）→ 不登记、改 generic/platform=iOS 再申请一次：
+#   假 xcodebuild 见到 id=U9 就失败、generic 就成功 → 退 0、有【黄】改不指定设备那行、第二次参数是 generic 且不带 -allowProvisioningDeviceRegistration、共调 2 次
+printf '#!/bin/bash\necho x >> "$CALLS"; printf "%%s\\n" "$@" > "$ARGS_OUT"\ncase "$*" in *id=U9*) echo "xcodebuild: error: Unable to find a destination matching the provided destination specifier:"; exit 70;; esac\nexit 0\n' > "$T/bin/xcodebuild"; chmod +x "$T/bin/xcodebuild"
+: > "$T/calls"; o=$(CALLS="$T/calls" ARGS_OUT="$T/args" PATH="$T/bin:$PATH" S2A_ROOTS="$T/roots" S2A_PROFILE_DIRS="$P" bash "$H/pack/ensure_profile.sh" com.example.t1 TEAM123 "$T/ent.plist" U9 2>&1); r=$?
+a3=$(tr '\n' ' ' < "$T/args"); n=$(wc -l < "$T/calls" | tr -d ' ')
+ck "⑧ 看不到这台 → 改 generic 再申请：退 ${r}（期望 0）、调用 ${n} 次（期望 2）、第二次「${a3}」" \
+  '[ $r = 0 ] && [ "$n" = 2 ] && grep -q "【黄】xcodebuild 看不到这台 iPhone" <<< "$o" && grep -q -- "-destination generic/platform=iOS" <<< "$a3" && ! grep -q -- "-allowProvisioningDeviceRegistration" <<< "$a3"'
+# ⑧b 不给设备号时照旧只调 1 次、失败就退 1（不重试）
+printf '#!/bin/bash\necho x >> "$CALLS"\necho "xcodebuild: error: Unable to find a destination matching the provided destination specifier:"\nexit 70\n' > "$T/bin/xcodebuild"; chmod +x "$T/bin/xcodebuild"
+: > "$T/calls"; o=$(CALLS="$T/calls" run); r=$?; n=$(wc -l < "$T/calls" | tr -d ' ')
+ck "⑧b 没给设备号 → 不重试：退 ${r}（期望 1）、调用 ${n} 次（期望 1）" '[ $r = 1 ] && [ "$n" = 1 ] && ! grep -q "改为不指定设备" <<< "$o"'
+# ⑧c 同族另一种说法：等满 -destination-timeout 仍不见设备时 xcodebuild 报「Unable to find a device matching」（0.5.1 命令行真跑实测）→ 同样改 generic 再申请
+printf '#!/bin/bash\necho x >> "$CALLS"; printf "%%s\\n" "$@" > "$ARGS_OUT"\ncase "$*" in *id=U9*) echo "xcodebuild: error: Unable to find a device matching the provided destination specifier:"; exit 70;; esac\nexit 0\n' > "$T/bin/xcodebuild"; chmod +x "$T/bin/xcodebuild"
+: > "$T/calls"; o=$(CALLS="$T/calls" ARGS_OUT="$T/args" PATH="$T/bin:$PATH" S2A_ROOTS="$T/roots" S2A_PROFILE_DIRS="$P" bash "$H/pack/ensure_profile.sh" com.example.t1 TEAM123 "$T/ent.plist" U9 2>&1); r=$?
+a3=$(tr '\n' ' ' < "$T/args"); n=$(wc -l < "$T/calls" | tr -d ' ')
+ck "⑧c 报 device matching → 也改 generic 再申请：退 ${r}（期望 0）、调用 ${n} 次（期望 2）" \
+  '[ $r = 0 ] && [ "$n" = 2 ] && grep -q "【黄】xcodebuild 看不到这台 iPhone" <<< "$o" && grep -q -- "-destination generic/platform=iOS" <<< "$a3"'
 [ $bad = 0 ] && echo "✅ 申请描述文件红因全通" || { echo "🔴 申请描述文件红因有不通项"; exit 1; }

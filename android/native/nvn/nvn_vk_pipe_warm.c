@@ -312,6 +312,227 @@ static void pw_memo_touch_locked(uint64_t h, int32_t slot) {
     g.memo[0].h = h; g.memo[0].slot = slot;
 }
 
+// ---- 诊断（debug.s2a.nvk_pw_diag，缺省 0；#1372）----
+// 清单满了以后每新记一条都要整表扫一遍挑淘汰目标。站着不动的场景里这一项每秒都在发生，原因有两种，修法不同：
+//   (a) 颠簸：被淘汰的配方过一会儿又要用、再插回来；  (b) 配方里混进了逐帧变化的量：同一条管线每帧都被当成新配方。
+// 这里只加计数和日志来分辨它们，**不改清单的任何判定、顺序和落盘字节**（用例：诊断关（开关不设 = 缺省）/ 开两遍同一串 note，
+// 落盘文件逐字节相同）。玩家包的 nvn_plat_flag 恒取缺省 0 → dg.on == 0，下面每个入口一进来就返回：不分配、不读时钟、不打日志。
+// 诊断开着时不污染读数：持 g.mu 期间只做计数、淘汰散列集合的查 / 插，以及（每窗口每类至多一次）一份清单快照的内存拷贝；
+// 整表比对和所有日志都在 g.mu 之外做（用例：每条诊断行出来时另起线程去拿 g.mu，拿不到就红）。
+// 状态受 g.mu 保护（与清单同一把锁，不另立锁），snap_busy 例外（原子读写）。
+#define PW_DG_WINDOW_NS 5000000000ull   // 窗口：5 秒
+#define PW_DG_EV_BITS 17                // 淘汰散列集合：2^17 项 × 8 字节 = 1 MiB，只在诊断开时分配
+#define PW_DG_SAMPLE_MAX 24             // 两类样本各最多输出这么多条（每个窗口每类 1 条 → 约 2 分钟）
+#define PW_DG_DIFF_SHOW 6               // 每条样本最多点名的差异字节数
+
+static struct pw_dg_state {
+    int on;                             // -1 = 还没读开关；0 = 关；1 = 开
+    uint64_t t0;                        // 本窗口起点（CLOCK_MONOTONIC，纳秒）
+    struct nvk_pipe_warm_diag c, c0;    // 累计 / 窗口起点时的累计（窗口 = 两者之差）
+    uint64_t *ev;                       // 被淘汰过的配方散列（开放寻址，0 = 空；装满 3/4 清空重来）
+    uint32_t ev_n;
+    int win_s_fresh, win_s_reins;       // 本窗口两类样本各抽过没有
+    struct nvk_pipe_rec *snap;          // 抽样用的清单快照：g.cap 条（缺省 ≈ 3.2 MiB），只在诊断开时分配；抢到名额时持锁拷一份，锁外比对
+    uint32_t snap_n;                    // 快照里的条数
+    int snap_busy;                      // 1 = 快照正在被锁外比对（原子读写）；忙时不抢新名额，免得它在比对中途被覆盖
+} dg = { .on = -1 };
+
+// 持锁时备好、解锁后输出的东西：每次 note 一份，放在调用者栈上；诊断关着时不初始化、不读。
+struct pw_dg_out {
+    char line[704];                     // 要打的汇总行（开机行 / 窗口行）；空串 = 没有
+    int sample;                         // 1 = 要在锁外抽样，下面几项有效
+    int reins;                          // 样本类别：1 = 被淘汰过又插回来；0 = 此前没见过
+    uint64_t nth;                       // 本类第几条样本
+    uint64_t snap_us;                   // 持锁拷快照用了多少微秒
+    uint8_t desc[NVK_PW_DESC_BYTES];    // 这条新记配方
+    uint8_t ident[32];
+};
+
+static uint64_t pw_dg_now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+static uint32_t pw_dg_home(uint64_t key) { return (uint32_t)(key ^ (key >> 32)) & ((1u << PW_DG_EV_BITS) - 1u); }
+
+static int pw_dg_ev_has(uint64_t h) {
+    if (!dg.ev) return 0;
+    const uint32_t mask = (1u << PW_DG_EV_BITS) - 1u;
+    const uint64_t key = h ? h : 1;   // 0 留给「空」
+    for (uint32_t i = pw_dg_home(key);; i = (i + 1) & mask) {   // 装载率 ≤ 3/4：一定遇得到空槽
+        if (!dg.ev[i]) return 0;
+        if (dg.ev[i] == key) return 1;
+    }
+}
+
+static void pw_dg_ev_add(uint64_t h) {
+    if (!dg.ev) return;
+    const uint32_t mask = (1u << PW_DG_EV_BITS) - 1u;
+    const uint64_t key = h ? h : 1;
+    if (dg.ev_n >= (mask + 1u) / 4u * 3u) {   // 装满 3/4：清空重来；清空之后的「插回」会漏数，计 ev_clears
+        memset(dg.ev, 0, ((size_t)mask + 1u) * sizeof *dg.ev);
+        dg.ev_n = 0;
+        dg.c.ev_clears++;
+    }
+    for (uint32_t i = pw_dg_home(key);; i = (i + 1) & mask) {
+        if (!dg.ev[i]) { dg.ev[i] = key; dg.ev_n++; return; }
+        if (dg.ev[i] == key) return;
+    }
+}
+
+// 紧凑配方字节偏移 → 字段名（布局 = pw_desc_write 的写入顺序）。
+_Static_assert(NVK_PW_DESC_BYTES == 352, "诊断的字段名表按 352 字节布局写：pw_desc_write 改了布局，要同批改 pw_dg_field");
+static void pw_dg_field(uint32_t off, char *out, size_t n) {
+    static const char *const ms_f[10] = {"enable", "samples", "a2c", "a2c_dither", "raster_samples",
+                                         "cov_mod", "cov2color_en", "cov2color_out", "sl_en", "sl_grid"};
+    if (off == 0) snprintf(out, n, "stage_mask");
+    else if (off < 33) snprintf(out, n, "cfmt[%u]", (unsigned)((off - 1) / 4));
+    else if (off < 37) snprintf(out, n, "dfmt");
+    else if (off < 41) snprintf(out, n, "sfmt");
+    else if (off < 45) snprintf(out, n, "samples");
+    else if (off < 53) snprintf(out, n, "lmap[%u]", (unsigned)(off - 45));
+    else if (off < 57) snprintf(out, n, "prim");
+    else if (off < 61) snprintf(out, n, "patch_size");
+    else if (off < 62) snprintf(out, n, "prim_restart");
+    else if (off < 126) snprintf(out, n, "blend[%u]", (unsigned)((off - 62) / 8));
+    else if (off < 130) snprintf(out, n, "color");
+    else if (off < 134) snprintf(out, n, "chmask");
+    else if (off < 144) snprintf(out, n, "ms.%s", ms_f[off - 134]);
+    else if (off < 208) snprintf(out, n, "attr[%u]", (unsigned)((off - 144) / 4));
+    else if (off < 336) snprintf(out, n, "stream[%u].%s", (unsigned)((off - 208) / 8), ((off - 208) % 8) < 4 ? "stride" : "divisor");
+    else if (off < 344) snprintf(out, n, "ds");
+    else if (off < 348) snprintf(out, n, "poly");
+    else if (off == 348) snprintf(out, n, "rast_discard");
+    else if (off == 349) snprintf(out, n, "clip_neg1");
+    else if (off == 350) snprintf(out, n, "origin_ll");
+    else if (off == 351) snprintf(out, n, "depth_clamp");
+    else snprintf(out, n, "?");
+}
+
+// 锁外抽样：在快照里找与这条新配方最近的一条（程序身份相同优先，身份不同记 1000 分；再比配方字节差，差得最少的），
+// 打出身份是否相同、差几个字节、差在哪些字段（偏移、旧字节→新字节），以及这次抽样的耗时。整表比对（≤ 8192 × 352 字节）约 1–3 毫秒。
+// 快照是抢到名额那一刻（持锁）拷的，snap_busy 放回之前别的线程不会去改它；这里不碰 g.*，所以比对多久都不挡回放线程。
+static void pw_dg_sample_run(const struct pw_dg_out *o) {
+    const uint64_t t0 = pw_dg_now();
+    int32_t best = -1;
+    uint32_t best_score = 0xffffffffu;
+    for (uint32_t i = 0; i < dg.snap_n; i++) {
+        const struct nvk_pipe_rec *r = &dg.snap[i];
+        if (r->bytes != NVK_PW_DESC_BYTES) continue;
+        uint32_t score = memcmp(r->prog_identity, o->ident, 32) == 0 ? 0u : 1000u;
+        for (uint32_t j = 0; j < NVK_PW_DESC_BYTES && score < best_score; j++)
+            if (r->desc[j] != o->desc[j]) score++;
+        if (score < best_score) { best_score = score; best = (int32_t)i; }
+    }
+    if (best >= 0) {
+        const struct nvk_pipe_rec *r = &dg.snap[best];
+        char det[360];
+        size_t dn = 0;
+        uint32_t ndiff = 0;
+        det[0] = 0;
+        for (uint32_t j = 0; j < NVK_PW_DESC_BYTES; j++) {
+            if (r->desc[j] == o->desc[j]) continue;
+            if (ndiff < PW_DG_DIFF_SHOW && dn < sizeof det) {
+                char nm[40];
+                pw_dg_field(j, nm, sizeof nm);
+                int w = snprintf(det + dn, sizeof det - dn, "%s%s@%u %02x→%02x", ndiff ? "、" : "", nm, (unsigned)j,
+                                 (unsigned)r->desc[j], (unsigned)o->desc[j]);
+                if (w > 0) dn += (size_t)w;
+            }
+            ndiff++;
+        }
+        char line[640];
+        snprintf(line, sizeof line,
+                 "预热清单诊断 样本（%s，第 %llu 条）：最近条目程序身份%s，配方差 %u 字节%s%s；快照拷贝 %llu 微秒（持锁）、比对 %llu 微秒（锁外）",
+                 o->reins ? "被淘汰过又插回来" : "此前没见过", (unsigned long long)o->nth,
+                 memcmp(r->prog_identity, o->ident, 32) == 0 ? "相同" : "不同", (unsigned)ndiff, ndiff ? "：" : "", det,
+                 (unsigned long long)o->snap_us, (unsigned long long)((pw_dg_now() - t0) / 1000u));
+        nvn_plat_log(NVN_PLAT_LOG_INFO, "pipe", line);   // 不走 pw_log：它的 512 字节缓冲放不下这一行
+    }
+    __atomic_store_n(&dg.snap_busy, 0, __ATOMIC_RELEASE);   // 比对完了：快照缓冲放回，下一个窗口的名额可以再用
+}
+
+// 一个窗口一行（持锁只格式化进 o->line，解锁后再打）：窗口内的 note 次数（memo / 链 / 新记）、新记拆成「此前没见过」与
+// 「被淘汰过又插回」、满后淘汰、淘汰扫描次数与总耗时、淘汰集合清空次数（本窗口 / 累计：清空之后的「插回」会漏数，
+// 读到「此前没见过」偏高时要靠它分清是真新还是集合被清过）、当前条数 / 容量；后面带累计值。然后开新窗口。
+static void pw_dg_window_locked(struct pw_dg_out *o, uint64_t now) {
+    const struct nvk_pipe_warm_diag *a = &dg.c, *b = &dg.c0;
+    snprintf(o->line, sizeof o->line,
+             "预热清单诊断 %.1f 秒：note %llu 次（memo %llu / 链 %llu / 新记 %llu）；新记里 此前没见过 %llu、被淘汰过又插回 %llu；"
+             "满后淘汰 %llu 次；淘汰扫描 %llu 次共 %llu 微秒；淘汰集合清空 %llu 次（累计 %llu）；条数 %u / 容量 %u；"
+             "累计 新记 %llu（没见过 %llu、插回 %llu）、淘汰 %llu、扫描 %llu 次共 %llu 微秒",
+             (double)(now - dg.t0) / 1e9,
+             (unsigned long long)(a->calls - b->calls), (unsigned long long)(a->memo_hits - b->memo_hits),
+             (unsigned long long)(a->chain_hits - b->chain_hits), (unsigned long long)(a->news - b->news),
+             (unsigned long long)(a->fresh - b->fresh), (unsigned long long)(a->reins - b->reins),
+             (unsigned long long)(a->evicts - b->evicts), (unsigned long long)(a->scans - b->scans),
+             (unsigned long long)((a->scan_ns - b->scan_ns) / 1000u),
+             (unsigned long long)(a->ev_clears - b->ev_clears), (unsigned long long)a->ev_clears,
+             (unsigned)g.count, (unsigned)g.cap,
+             (unsigned long long)a->news, (unsigned long long)a->fresh, (unsigned long long)a->reins,
+             (unsigned long long)a->evicts, (unsigned long long)a->scans, (unsigned long long)(a->scan_ns / 1000u));
+    dg.c0 = dg.c;
+    dg.t0 = now;
+    dg.win_s_fresh = dg.win_s_reins = 0;
+}
+
+// 第一次进 note 时读开关；开着就分配淘汰集合与清单快照缓冲、记窗口起点，并把开机行备进 o->line。返回是否开着。
+// 开着时每次调用都把 o 初始化（空行、不抽样）；关着时不碰 o。
+static int pw_dg_on_locked(struct pw_dg_out *o) {
+    if (dg.on < 0) {
+        dg.on = nvn_plat_flag("nvk_pw_diag", 0) != 0;
+        if (!dg.on) return 0;
+        dg.ev = calloc((size_t)1 << PW_DG_EV_BITS, sizeof *dg.ev);
+        dg.snap = calloc(g.cap, sizeof *dg.snap);
+        if (dg.snap) memset(dg.snap, 0, (size_t)g.cap * sizeof *dg.snap);   // 开机时一次性把页占住：别等到第一次抽样拷贝时才在锁里缺页
+        dg.t0 = pw_dg_now();
+        snprintf(o->line, sizeof o->line,
+                 "预热清单诊断：开（debug.s2a.nvk_pw_diag=1）；淘汰散列集合%s、清单快照缓冲%s；每 5 秒一行，样本每类最多 %d 条",
+                 dg.ev ? "已分配" : "分配失败（「被淘汰过又插回」不计）", dg.snap ? "已分配" : "分配失败（不抽样）", PW_DG_SAMPLE_MAX);
+        o->sample = 0;
+        return 1;
+    }
+    if (dg.on > 0) { o->line[0] = 0; o->sample = 0; }
+    return dg.on;
+}
+
+// note 每次进锁之后（诊断开着）：计数并看窗口到没到（到了就把窗口行备进 o->line；开机行占着时这次不出窗口行）。
+static void pw_dg_call_locked(struct pw_dg_out *o) {
+    dg.c.calls++;
+    const uint64_t now = pw_dg_now();
+    if (now - dg.t0 >= PW_DG_WINDOW_NS && !o->line[0]) pw_dg_window_locked(o, now);
+}
+
+// 新记一条之前（note 里，持锁）：归到「被淘汰过又插回」或「此前没见过」，并按窗口名额决定抽不抽样。
+// 抽样 = 持锁只做内存拷贝：这条新配方 + 一份清单快照（看的是插入前的清单）；整表比对与日志在解锁后（pw_dg_out_run）做。
+// 清单为空没有可比的 / 快照缓冲还在被上一次抽样占着 → 不抽、不占名额。
+static void pw_dg_new_locked(struct pw_dg_out *o, const uint8_t *desc, const uint8_t ident[32], uint64_t h) {
+    const int reins = pw_dg_ev_has(h);
+    dg.c.news++;
+    if (reins) dg.c.reins++; else dg.c.fresh++;
+    int *won = reins ? &dg.win_s_reins : &dg.win_s_fresh;
+    uint64_t *total = reins ? &dg.c.samples_reins : &dg.c.samples_fresh;
+    if (*won || *total >= PW_DG_SAMPLE_MAX || !dg.snap || g.count == 0 || __atomic_load_n(&dg.snap_busy, __ATOMIC_ACQUIRE)) return;
+    const uint64_t t0 = pw_dg_now();
+    memcpy(dg.snap, g.recs, (size_t)g.count * sizeof *dg.snap);   // 槽位按顺序填，已用的就是 [0, count)
+    dg.snap_n = g.count;
+    o->snap_us = (pw_dg_now() - t0) / 1000u;
+    memcpy(o->desc, desc, NVK_PW_DESC_BYTES);
+    memcpy(o->ident, ident, 32);
+    o->reins = reins;
+    o->sample = 1;
+    *won = 1;
+    o->nth = ++*total;
+    __atomic_store_n(&dg.snap_busy, 1, __ATOMIC_RELAXED);   // 持锁时置位；pw_dg_sample_run 比对完放回
+}
+
+// 解锁之后：把持锁时备好的行打出来，抽样的在这里做整表比对。
+static void pw_dg_out_run(const struct pw_dg_out *o) {
+    if (o->line[0]) nvn_plat_log(NVN_PLAT_LOG_INFO, "pipe", o->line);   // 不走 pw_log：它的 512 字节缓冲放不下窗口行
+    if (o->sample) pw_dg_sample_run(o);
+}
+
 // 淘汰目标：uses 最小，同 uses 取最久没用的。
 static uint32_t pw_victim_locked(void) {
     uint32_t best = 0;
@@ -331,8 +552,11 @@ static uint32_t pw_next_gen_locked(void) {
 static uint64_t pw_tag_of_locked(uint32_t slot) { return ((uint64_t)g.gen[slot] << 32) | (uint64_t)(slot + 1u); }
 
 static uint32_t pw_insert_locked(const uint8_t *desc, const uint8_t ident[32], uint64_t h, uint32_t uses) {
+    const uint64_t dg_t0 = dg.on > 0 ? pw_dg_now() : 0;
     uint32_t slot = pw_victim_locked();
+    if (dg.on > 0) { dg.c.scans++; dg.c.scan_ns += pw_dg_now() - dg_t0; }   // 诊断：只计数，不影响上面的选择
     if (g.used[slot]) {
+        if (dg.on > 0) { dg.c.evicts++; pw_dg_ev_add(g.hash[slot]); }      // 诊断：记下被淘汰配方的散列（覆盖之前读）
         __atomic_fetch_add(&g.st.rejected, 1, __ATOMIC_RELAXED);   // 上限满了淘汰最冷的：不拒绝新配方，代价记在这里
         pw_unlink_locked(slot);
         pw_memo_drop_locked((int32_t)slot);
@@ -407,13 +631,18 @@ static void pw_note(const nvn_gpu_pipe_desc *d, const uint8_t prog_identity[32],
     uint64_t h = pw_slot_hash(desc, prog_identity);
     pthread_mutex_lock(&g.mu);
     if (pw_init_locked() != 0) { pthread_mutex_unlock(&g.mu); return; }
+    struct pw_dg_out dgo;                         // 诊断：持锁时备好、解锁后输出的东西
+    const int dgon = pw_dg_on_locked(&dgo);       // 诊断开关（缺省 0）：关着时 dgo 不初始化，下面所有 dg 钩子都不进
+    if (dgon) pw_dg_call_locked(&dgo);
     for (int i = 0; i < NVK_PW_MEMO; i++) {   // 最近 4 条：同散列且整份相等就只 uses ++，不再拷配方
         int32_t slot = g.memo[i].slot;
         if (slot >= 0 && g.memo[i].h == h && pw_same(&g.recs[slot], desc, prog_identity)) {
+            if (dgon) dg.c.memo_hits++;
             pw_touch_locked((uint32_t)slot);
             pw_memo_touch_locked(h, slot);
             if (tag_out) *tag_out = pw_tag_of_locked((uint32_t)slot);
             pthread_mutex_unlock(&g.mu);
+            if (dgon) pw_dg_out_run(&dgo);
             return;
         }
     }
@@ -421,17 +650,21 @@ static void pw_note(const nvn_gpu_pipe_desc *d, const uint8_t prog_identity[32],
         uint32_t b = pw_bucket_of(h, g.nbucket);
         for (int32_t slot = g.bucket[b]; slot >= 0; slot = g.next[slot])
             if (g.hash[slot] == h && pw_same(&g.recs[slot], desc, prog_identity)) {
+                if (dgon) dg.c.chain_hits++;
                 pw_touch_locked((uint32_t)slot);
                 pw_memo_touch_locked(h, (int32_t)slot);
                 if (tag_out) *tag_out = pw_tag_of_locked((uint32_t)slot);
                 pthread_mutex_unlock(&g.mu);
+                if (dgon) pw_dg_out_run(&dgo);
                 return;
             }
     }
     __atomic_fetch_add(&g.st.recorded, 1, __ATOMIC_RELAXED);
+    if (dgon) pw_dg_new_locked(&dgo, desc, prog_identity, h);   // 先归类 / 抽样（拷下插入前的清单），再插
     const uint32_t slot = pw_insert_locked(desc, prog_identity, h, 1);
     if (tag_out) *tag_out = pw_tag_of_locked(slot);
     pthread_mutex_unlock(&g.mu);
+    if (dgon) pw_dg_out_run(&dgo);   // 解锁之后：打汇总行、抽样的做整表比对
 }
 
 void nvk_pipe_warm_note(const nvn_gpu_pipe_desc *d, const uint8_t prog_identity[32]) { pw_note(d, prog_identity, NULL); }
@@ -693,6 +926,7 @@ int nvk_pipe_warm_load(void) {
     for (int i = 0; i < NVK_PW_MEMO; i++) { g.memo[i].slot = -1; g.memo[i].h = 0; }
     for (uint32_t i = 0; i < g.nbucket; i++) g.bucket[i] = -1;
     for (uint32_t i = 0; i < g.cap; i++) g.next[i] = -1;
+    if (dg.on > 0 && dg.ev) { memset(dg.ev, 0, ((size_t)1 << PW_DG_EV_BITS) * sizeof *dg.ev); dg.ev_n = 0; }   // 诊断：换了一份清单，旧的淘汰记录作废
     for (uint32_t i = 0; i < cnt; i++) {
         const uint8_t *e = buf + NVK_PW_HDR + (size_t)i * NVK_PW_ENTRY;
         struct nvk_pipe_rec *r = &g.recs[i];
@@ -802,5 +1036,25 @@ void nvk_pipe_warm_stats(struct nvk_pipe_warm_stats *out) {
     out->rejected = g.st.rejected + g.save_fail;
     pthread_mutex_unlock(&g.mu);
     out->draw_hits = nvn_gpu_pipe_warm_hits ? nvn_gpu_pipe_warm_hits() : 0;   // 转发后端：真实 draw 命中预建对象
+}
+
+// 诊断读数（用例 / 调试用）：开关关着（或还没有 note 读过开关）时全 0。
+void nvk_pipe_warm_diag_stats(struct nvk_pipe_warm_diag *out) {
+    if (!out) return;
+    memset(out, 0, sizeof *out);
+    pthread_mutex_lock(&g.mu);
+    if (dg.on > 0) { *out = dg.c; out->on = 1; }
+    pthread_mutex_unlock(&g.mu);
+}
+
+// 立刻输出当前窗口一行并开新窗口（用例用；诊断关着时什么也不做）。行在锁外打，与 note 同一做法。
+void nvk_pipe_warm_diag_flush(void) {
+    struct pw_dg_out o;
+    o.line[0] = 0;
+    o.sample = 0;
+    pthread_mutex_lock(&g.mu);
+    if (dg.on > 0) pw_dg_window_locked(&o, pw_dg_now());
+    pthread_mutex_unlock(&g.mu);
+    pw_dg_out_run(&o);
 }
 

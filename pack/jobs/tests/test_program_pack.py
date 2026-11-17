@@ -1,0 +1,150 @@
+"""通用壳程序包（pack/jobs/program_pack.py、pack/ship_ext.py program、pack/orch/install_win.py sign_dylibs、tools/push_pack.py Devpush.mv）。
+期望值不靠被测代码算：
+  ① build：出的 dylib 与直接跑 ship_ext.py program 的逐字节相同；第二次键没变不重出（目录修改时间不变）；程序件里一个文件变了就重出
+  ② sign：假签名器收到的团队 / 包名就是给的；catalogue.json 字段按约定手写，image_sha256 = 本测试对签好的文件算的 SHA-256；同团队同包名第二次不再签
+  ③ need：六种原因各一例 + 都对得上 = 空集
+  ④ sign_dylibs：假 plumesign 收到 --custom-identifier <包名>、没有 --register-and-install；小 IPA 里没有 PlugIns/；签好的 dylib 原地换回
+  ⑤ Devpush.mv：假工具收到「mv <源> <目标>」
+"""
+import hashlib
+import json
+import os
+from pathlib import Path
+import plistlib
+import shutil
+import stat
+import struct
+import subprocess
+import sys
+import tempfile
+import unittest
+import zipfile
+
+from jobcase import JobCase, ROOT
+import program_pack
+
+sys.path.insert(0, str(ROOT))
+from pack.shell import manifest as shell_manifest   # noqa: E402
+
+GID = "0100000000010000"
+INFO = dict(host_abi=7, chain="abcdef012345", rewriter_id="rw01")
+
+
+def make_shell(d):
+    r = Path(d) / "shell/root"; r.mkdir(parents=True)
+    (r / "Info.plist").write_bytes(plistlib.dumps({"CFBundleExecutable": "S2Arm", "CFBundleIdentifier": "dev.s2arm.shell", "CFBundlePackageType": "APPL", "CFBundleName": "S2Arm"}))
+    (r / "S2Arm").write_bytes(b"\xcf\xfa\xed\xfe" + bytes(60))
+    (r / "Frameworks").mkdir(); (r / "PlugIns/W.appex").mkdir(parents=True); (r / "PlugIns/W.appex/W").write_bytes(b"x")
+    (r / "S2AShell.tables").write_text("addr_need.tsv\n")
+    shell_manifest.seal(r, Path(d) / "shell/manifest.json", *shell_manifest._defaults())
+    return Path(d) / "shell"
+
+
+def make_kit(d):
+    k = Path(d) / "kit"; k.mkdir(parents=True)
+    (k / "main.patched.bin").write_bytes(bytes((i * 7) & 0xFF for i in range(0xD000)))
+    (k / "main.fixups.tsv").write_text("# TEXT_END 0x5000\n# PATCH_OFF 0xc000\n# KEY_PAGE_OFF 0x8000\n# KEY_PAGE_SIZE 0x4000\n")
+    (k / "main.gates.tsv").write_text("g\n")
+    b = bytearray(0x80 + 0x38); b[0:4] = b"META"; b[0x0C] = 3 << 1
+    struct.pack_into("<I", b, 0x70, 0x80); b[0x80:0x84] = b"ACI0"; struct.pack_into("<Q", b, 0x90, int(GID, 16))
+    (k / "main.npdm").write_bytes(bytes(b)); (k / "addr_need.tsv").write_text("a\n"); (k / "icon.jpg").write_bytes(b"JPGicon")
+    nacp = bytearray(0x4000); t = "甲游戏".encode(); nacp[14 * 0x300:14 * 0x300 + len(t)] = t; nacp[0x3060:0x3065] = b"1.2.0"
+    (k / "ctl").mkdir(); (k / "ctl/control.nacp").write_bytes(bytes(nacp))
+    return k
+
+
+def sha(p):
+    return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+
+
+class ProgramPackTests(JobCase):
+    def setUp(self):
+        super().setUp()
+        self.shell = make_shell(self.root / "s"); self.kit = make_kit(self.root / "k")
+
+    def build(self):
+        return program_pack.build(self.c, GID, kit=self.kit, shell=self.shell, info=INFO)
+
+    def test_build_matches_ship_ext_and_caches(self):
+        pkg = self.build()
+        ref = self.root / "ref/program"
+        subprocess.run([sys.executable, str(ROOT / "pack/ship_ext.py"), "program", "--shell", str(self.shell), "--root", str(self.kit), "--out", str(ref)], check=True, capture_output=True)
+        self.assertEqual((pkg / f"S2AImages-{GID}.dylib").read_bytes(), (ref / f"S2AImages-{GID}.dylib").read_bytes())
+        meta = json.loads((pkg / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual((meta["host_abi"], meta["chain"], meta["rewriter_id"], meta["name"], meta["display_version"]), (7, "abcdef012345", "rw01", "甲游戏", "1.2.0"))
+        t0 = (pkg / "meta.json").stat().st_mtime_ns
+        self.assertEqual(self.build(), pkg); self.assertEqual((pkg / "meta.json").stat().st_mtime_ns, t0, "键没变不重出")
+        (self.kit / "addr_need.tsv").write_text("b\n")
+        self.build(); self.assertNotEqual((pkg / "meta.json").stat().st_mtime_ns, t0, "程序件变了要重出")
+
+    def test_sign_writes_catalogue_and_caches_per_team(self):
+        pkg = self.build(); calls = []
+        def signer(dylib, team, bundle):
+            calls.append((Path(dylib).name, team, bundle)); Path(dylib).write_bytes(Path(dylib).read_bytes() + team.encode())
+        out = program_pack.sign(self.c, GID, "TEAMA", "io.example.games", signer, pkg=pkg)
+        self.assertEqual(calls, [(f"S2AImages-{GID}.dylib", "TEAMA", "io.example.games")])
+        cat = json.loads((out / "catalogue.json").read_text(encoding="utf-8"))
+        want = dict(schema=1, title_id=GID, name="甲游戏", display_version="1.2.0", host_abi=7, chain="abcdef012345", rewriter_id="rw01",
+                    image=f"S2AImages-{GID}.dylib", image_sha256=sha(out / f"S2AImages-{GID}.dylib"), team="TEAMA", icon=f"Games/{GID}/icon.jpg")
+        self.assertEqual(cat, want)
+        self.assertEqual(sorted(p.name for p in out.iterdir() if not p.name.startswith(".")), ["Games", f"S2AImages-{GID}.dylib", "catalogue.json"])
+        program_pack.sign(self.c, GID, "TEAMA", "io.example.games", signer, pkg=pkg); self.assertEqual(len(calls), 1, "同团队同包名不再签")
+        program_pack.sign(self.c, GID, "TEAMB", "io.example.games", signer, pkg=pkg); self.assertEqual(len(calls), 2, "换团队要重签")
+
+    def test_need_reasons(self):
+        want = dict(host_abi=7, rewriter_id="rw01", image_sha256="s1")
+        ok = dict(sha="s1", team="T", cert="C", host_abi=7, rewriter_id="rw01")
+        N = lambda phone, team="T", cert="C": program_pack.need(self.c, GID, phone, team, cert, want=want)
+        self.assertEqual(N(None), {"missing"})
+        self.assertEqual(N(ok), set())
+        self.assertEqual(N(dict(ok, host_abi=6)), {"abi"})
+        self.assertEqual(N(dict(ok, rewriter_id="rw00")), {"rewriter"})
+        self.assertEqual(N(dict(ok, sha="s0")), {"sha"})
+        self.assertEqual(N(ok, team="U"), {"team"})
+        self.assertEqual(N(ok, cert="D"), {"cert"})
+
+
+class SignDylibsTests(unittest.TestCase):
+    def test_custom_identifier_no_register_no_plugins(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d); shell = make_shell(d) / "root"
+            dy = d / f"S2AImages-{GID}.dylib"; dy.write_bytes(b"UNSIGNED")
+            argv, seen = d / "argv.json", d / "seen.json"
+            fake = d / "plumesign"
+            fake.write_text(f"""#!{sys.executable}
+import json, sys, zipfile
+a = sys.argv[1:]; json.dump(a, open({str(argv)!r}, "w"))
+src, out = a[a.index("--package") + 1], a[a.index("-o") + 1]
+with zipfile.ZipFile(src) as zi, zipfile.ZipFile(out, "w") as zo:
+    json.dump(zi.namelist(), open({str(seen)!r}, "w"))
+    for n in zi.namelist(): zo.writestr(n, zi.read(n) + (b"+SIGNED" if n.endswith(".dylib") else b""))
+""")
+            fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+            sys.path.insert(0, str(ROOT))
+            from pack.orch import install_win
+            install_win.sign_dylibs(str(fake), shell, [dy], "io.example.games.team", d / "sign.log")
+            a = json.loads(argv.read_text())
+            self.assertIn("--custom-identifier", a); self.assertEqual(a[a.index("--custom-identifier") + 1], "io.example.games.team")
+            self.assertNotIn("--register-and-install", a)
+            names = json.loads(seen.read_text())
+            self.assertIn(f"Payload/S2Arm.app/Frameworks/S2AImages-{GID}.dylib", names)
+            self.assertFalse(any("/PlugIns/" in n for n in names), "小 IPA 不带小组件扩展")
+            self.assertEqual(dy.read_bytes(), b"UNSIGNED+SIGNED")
+
+
+class DevpushMvTests(unittest.TestCase):
+    def test_mv_calls_tool(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d); rec = d / "argv.json"; fake = d / "devpush"
+            fake.write_text(f"#!{sys.executable}\nimport json, sys\njson.dump(sys.argv[1:], open({str(rec)!r}, 'w'))\nprint('mv ok')\n")
+            fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+            sys.path.insert(0, str(ROOT / "tools"))
+            import push_pack
+            dp = push_pack.Devpush(str(fake), "UDID", "io.example", d)
+            ok, _ = dp.mv("Library/x/catalogue.json.tmp", "Library/x/catalogue.json")
+            self.assertTrue(ok)
+            self.assertEqual(json.loads(rec.read_text())[-3:], ["mv", "Library/x/catalogue.json.tmp", "Library/x/catalogue.json"])
+
+
+if __name__ == "__main__":
+    unittest.main()

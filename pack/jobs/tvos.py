@@ -214,16 +214,19 @@ def derive(c, gid, extraction):
       ③ 开发树本机还没有本版 tvOS 壳就出一个（发版应用自带 Shell-tvOS/）
       ④ game.json 记 tvos：壳号、兼容判据、资源包号（usable_kit 按它判）"""
     import host_update
-    src = layout.image_ios(c, gid, create=False)
-    if not (src / layout.IOS_KIT / "main.npdm").is_file() or not (src / layout.IOS_PACK / "manifest.json").is_file():
+    pack = layout.image_ios(c, gid, create=False) / layout.IOS_PACK
+    if not layout.has_ios_kit(c, gid) or not (pack / "manifest.json").is_file():
+        raise Failure("iPhone 版没出好，Apple TV 包从它派生：先看上面 iPhone 那一步的报错。", code="package_failed")
+    kit = layout.ios_kit(c, gid)   # iPhone 程序件：0.5.0 起常驻在库根 .programs + 缓存（pack/jobs/programs.py kit_dir），不在 image/ios/kit 了
+    if not (kit / "main.npdm").is_file():
         raise Failure("iPhone 版没出好，Apple TV 包从它派生：先看上面 iPhone 那一步的报错。", code="package_failed")
     dst = tv_image(c, gid)
     dst.mkdir(parents=True, exist_ok=True)
-    for name in (layout.IOS_KIT, layout.IOS_PACK):
+    for name, src in ((layout.IOS_KIT, kit), (layout.IOS_PACK, pack)):
         tmp = dst / (name + ".partial")
         shutil.rmtree(tmp, ignore_errors=True)
         try:
-            clone_tree(src / name, tmp)
+            clone_tree(src, tmp)
         except (OSError, shutil.Error) as e:
             shutil.rmtree(tmp, ignore_errors=True)
             raise Failure("Apple TV 包的文件拷不出来：" + (str(e).strip().splitlines() or ["?"])[-1], code="package_failed") from e  # 非玩家句
@@ -241,8 +244,13 @@ def derive(c, gid, extraction):
         c.emit("message", "这款没有 RomFS，Apple TV 包不用预转贴图")
     sid = tv_shell_id(c)
     shell = Path(c.env().get("S2A_RUN_ROOT") or Path.home() / ".s2arm/run") / "s2arm/cache/shell-tvos" / sid
-    if not (shell / "manifest.json").is_file() and not c.r.get("tvShellDir") and not (c.engine / "Shell-tvOS").is_dir():
-        if sys.platform != "darwin":   # 现出壳要 Xcode：Windows 只能用安装包带的 Shell-tvOS（启动器作 tvShellDir 交来，launchers/windows/bundle_win.py --tv-shell）
+    try:   # 有没有壳按装机 / 组装同一个取法判（tv_shell：tvShellDir > 发版应用 <resources>/Shell-tvOS > 开发树缓存）；原先看 <引擎>/Shell-tvOS，发版应用放在 Resources/Shell-tvOS 判成没有
+        tv_shell(c)
+        have = True
+    except Failure:
+        have = False
+    if not have:
+        if sys.platform != "darwin" or c.r.get("engineBundle"):   # 现出壳要 Xcode 和开发树：Windows 与发版应用只能用安装包带的 Shell-tvOS（launchers/macos/build_app.py、launchers/windows/bundle_win.py --tv-shell）
             raise Failure("这个 S2Arm 安装包没带 Apple TV 预编壳，这台电脑出不了 Apple TV 包：请更新到带 Apple TV 支持的 S2Arm 版本。", code="engine_incomplete")
         c.begin("出 Apple TV 预编壳（本版第一次）")
         tmp = shell.parent / (".tmp." + sid + "." + str(os.getpid()))
@@ -686,6 +694,11 @@ def _export_tv(c, gid, pack, shell, sid):
     try:
         info = app / "Info.plist"
         pl = plistlib.loads(info.read_bytes()); pl["CFBundleIdentifier"] = tv_export_bundle_id(gid); info.write_bytes(plistlib.dumps(pl))
+        ctx = app / "Games" / gid / "launch.ctx"   # 资源包在 App 本体里：按启动上下文直接起这一款时（S2A_LAUNCH_CTX）也读包内（游戏库选游戏走 s2a_pack_root，本来就先找包内）
+        if ctx.is_file():
+            line = f"game_data\t@bundle/Games/{gid}/资源包\n"  # 非玩家句
+            ctx.write_text("".join(line if l.startswith("game_data\t") else l for l in ctx.read_text(encoding="utf-8").splitlines(keepends=True)),
+                           encoding="utf-8", newline="\n")
         if sys.platform == "darwin":
             packer.sign_container(c, app, log)   # 改了 Info.plist：Mac 重签 ad-hoc（同 finish_container）
         ents, eva = entitlements_for(c, app, out / "tv.entitlements")
