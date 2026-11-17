@@ -1001,6 +1001,7 @@
   "install.done.title": "{0} にインストール済み",
   "install.done.open": "iPhone に送信されました。S2Arm を開くと自動的にインストールが完了します。",
   "install.done.trust": "初回起動前に、iPhone / iPad の「設定 › 一般 › VPN とデバイス管理」で Apple ID を信頼してください。",
+  "install.done.trustNamed": "初めて開く前に、iPhone で「設定」→「一般」→「VPN とデバイス管理」→「{0}」→「信頼」を選び、それから S2Arm を開いてください。",
   "install.done.free": "無料の Apple ID で署名されたアプリは 7 日後に期限切れになります。ここに戻って「更新」をタップしてください。",
   "install.apple.open": "Xcode を開く",
   "install.close": "完了",
