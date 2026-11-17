@@ -37,7 +37,10 @@ int16_t s2a_hid_pad_axis(long v, long min, long max, int invert) {
 }
 
 // ---- Switch Pro 协议（#934 11-15）----
-void s2a_pro_cal_default(s2a_pro_cal *c) { c->cx = c->cy = 2048; c->xmax = c->ymax = c->xmin = c->ymin = 1600; }
+// 读不到出厂校准（第三方「… Pro Controller」常不回 SPI 0x603D，#1264 PowerA）：中心 2048、行程起点 1003，之后按实际推到的最远处放大
+//   （同参考实现 SDL3 hidapi_switch.c：缺省行程 = 中心 × 0.7，摇杆范围再从它的 0.7 起、随读数扩大）。原先死用 1600 不放大，
+//   手柄实际推满不到 1600 时推到底也只算推了一部分（移动慢、菜单上下够不到门槛）
+void s2a_pro_cal_default(s2a_pro_cal *c) { c->cx = c->cy = 2048; c->xmax = c->ymax = c->xmin = c->ymin = 1003; }
 static int cal12(const uint8_t *d, int i) { return i & 1 ? (d[i / 2 * 3 + 1] >> 4) | (d[i / 2 * 3 + 2] << 4) : d[i / 2 * 3] | ((d[i / 2 * 3 + 1] & 0xF) << 8); }   // 9 字节 = 6 个 12 位值
 int s2a_pro_cal_parse(const uint8_t d[18], s2a_pro_cal *l, s2a_pro_cal *r) {
     int v[12]; for (int i = 0; i < 6; i++) { v[i] = cal12(d, i); v[6 + i] = cal12(d + 9, i); }
@@ -53,7 +56,14 @@ int16_t s2a_pro_axis(int v, int center, int above, int below) {
     if (f > 1) f = 1; if (f < -1) f = -1;
     return (int16_t)(f * 32767.0);
 }
-int s2a_pro_parse(const uint8_t *r, size_t n, const s2a_pro_cal *l, const s2a_pro_cal *rc, uint32_t *buttons, int16_t ax[4]) {
+// 行程随读数扩大：这一拍离中心比记下的行程还远，就把它当新的行程（推到底就是满量程），再按行程换算
+int16_t s2a_pro_axis_grow(int v, int center, uint16_t *above, uint16_t *below) {
+    int dv = v - center;
+    if (dv > *above) *above = (uint16_t)dv;
+    if (-dv > *below) *below = (uint16_t)-dv;
+    return s2a_pro_axis(v, center, *above, *below);
+}
+int s2a_pro_parse(const uint8_t *r, size_t n, s2a_pro_cal *l, s2a_pro_cal *rc, uint32_t *buttons, int16_t ax[4]) {
     if (n < 12 || (r[0] != 0x30 && r[0] != 0x21)) return 0;
     uint8_t a = r[3], m = r[4], b = r[5]; uint32_t o = 0;
     if (a & 0x01) o |= B_WEST; if (a & 0x02) o |= B_NORTH; if (a & 0x04) o |= B_SOUTH; if (a & 0x08) o |= B_EAST; if (a & 0x40) o |= B_R; if (a & 0x80) o |= B_ZR;
@@ -61,8 +71,8 @@ int s2a_pro_parse(const uint8_t *r, size_t n, const s2a_pro_cal *l, const s2a_pr
     if (b & 0x01) o |= B_DOWN; if (b & 0x02) o |= B_UP; if (b & 0x04) o |= B_RIGHT; if (b & 0x08) o |= B_LEFT; if (b & 0x40) o |= B_L; if (b & 0x80) o |= B_ZL;
     *buttons = o;
     int lx = r[6] | ((r[7] & 0xF) << 8), ly = (r[7] >> 4) | (r[8] << 4), rx = r[9] | ((r[10] & 0xF) << 8), ry = (r[10] >> 4) | (r[11] << 4);
-    ax[0] = s2a_pro_axis(lx, l->cx, l->xmax, l->xmin); ax[1] = s2a_pro_axis(ly, l->cy, l->ymax, l->ymin);   // 0x30 报告里 Y 向上为正，与 GameController 同向
-    ax[2] = s2a_pro_axis(rx, rc->cx, rc->xmax, rc->xmin); ax[3] = s2a_pro_axis(ry, rc->cy, rc->ymax, rc->ymin);
+    ax[0] = s2a_pro_axis_grow(lx, l->cx, &l->xmax, &l->xmin); ax[1] = s2a_pro_axis_grow(ly, l->cy, &l->ymax, &l->ymin);   // 0x30 报告里 Y 向上为正，与 GameController 同向
+    ax[2] = s2a_pro_axis_grow(rx, rc->cx, &rc->xmax, &rc->xmin); ax[3] = s2a_pro_axis_grow(ry, rc->cy, &rc->ymax, &rc->ymin);
     return 1;
 }
 uint8_t s2a_pro_player_lights(int slot) { return slot < 0 ? 0x1 : slot >= 3 ? 0xF : (uint8_t)((1u << (slot + 1)) - 1); }
