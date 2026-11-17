@@ -106,8 +106,8 @@ def _mac_built(c, gid):
 
 
 def shader_hint(c, gid, ios_count=None):
-    """着色器覆盖度（能耗线 11-17 判据，设备实测不按版本猜）：现场翻译过包里没有的着色器（count > 0）且这份包比当前启动器旧 → 重新出包能补上，
-    给 shaderMiss；count > 0 但包已是当前版本打的 → 重出也没用（出包流程漏，归能耗线覆盖率表），不标。ios_count 给了就只看这一台"""
+    """着色器覆盖度（11-17 维护者定的判据，设备实测不按版本猜）：现场翻译过包里没有的着色器（count > 0）且这份包比当前启动器旧 → 重新出包能补上，
+    给 shaderMiss；count > 0 但包已是当前版本打的 → 重出也没用（是出包流程漏了，另由出包流程补），不标。ios_count 给了就只看这一台"""
     got = shader_misses(c, gid)
     n_ios = got["ios"] if ios_count is None else ios_count
     ios = layout.program_info(c, gid) or {}
