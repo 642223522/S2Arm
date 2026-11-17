@@ -220,6 +220,17 @@ class Devpush:
         rc, out = self.call("ls", rel)
         return out.splitlines() if rc == 0 else None
 
+    def du(self, *rels):   # 量这几个目录的占用（只读文件信息）→ {目录: (字节, 文件数) | None（不在）}；工具太旧（没有 du）/ 断开 / 锁屏 → None
+        rc, out = self.call("du", *rels)
+        if rc:
+            return None
+        got = {}
+        for line in out.splitlines():
+            m = re.fullmatch(r"du (-?\d+) (\d+) (.+)", line.strip())
+            if m:
+                got[m[3]] = None if m[1] == "-1" else (int(m[1]), int(m[2]))
+        return got
+
     def get_tree(self, rel, dst):   # 整个目录拉回本机；目录不在 = 成功且 0 个文件。→ (成功?, 输出)
         rc, out = self.call("get-tree", rel, dst)
         return rc == 0, out

@@ -2753,6 +2753,66 @@ def phone_kept_pull(c):
     return _kept_pull_on(c, ph)
 
 
+def _usage_games(cl):
+    """手机上有哪几款（资源根两处 + 文档根下的游戏号目录，以手机为准，不只看这台电脑推过的）"""
+    found = set()
+    for root in (PACK_GAMES, PACK_GAMES_ALT, DOCS_GAMES):
+        rc, out = cl.call("ls", root)
+        if not rc:
+            found.update(n.upper() for n in out.splitlines() if GID_RE.fullmatch(n.strip().upper()))
+    return sorted(found)
+
+
+def _usage_measure(cl, games):
+    """→ {游戏号: {program, resources, saves, files}}（字节）；量不了（工具旧 / 断开 / 锁屏）→ None。
+    程序 = 两处资源根下 <号>/program/；存档 = 文档根 <号>/S2A/…/save；资源 = 这款其余全部（资源包、旧位置的资源、金手指、日志等）"""
+    roots = {}
+    for g in games:
+        roots[g] = dict(total=[f"{PACK_GAMES}/{g}", f"{PACK_GAMES_ALT}/{g}", game_docs(g)],
+                        program=[f"{PACK_GAMES}/{g}/program", f"{PACK_GAMES_ALT}/{g}/program"], saves=[f"{game_docs(g)}/{SAVE_REL}"])
+    got = cl.du(*[r for v in roots.values() for rs in v.values() for r in rs]) if games else {}
+    if got is None:
+        return None
+    def size(rs, i=0):
+        return sum((got.get(r) or (0, 0))[i] for r in rs)
+    out = {}
+    for g, v in roots.items():
+        total, prog, saves = size(v["total"]), size(v["program"]), size(v["saves"])
+        out[g] = dict(program=prog, resources=total - prog - saves, saves=saves, files=size(v["total"], 1))
+    return out
+
+
+def phone_usage(c):
+    """作业 phoneUsage（总控台「空间」手机那一列，0.6.0 通用壳）：连着的这台手机上每款占多少——程序 / 资源 / 存档（字节），量完记进设备记录 usage（带时刻）。
+    快照还没有手机上的固定位置，snapshots 给 None。没连 / 量不了 → 给各台上次量的（live 假）。只读：不推、不删、不拉起 App。
+    → {enabled, phones: [{device, at, live, games: [{gameId, program, resources, saves, snapshots, files}]}]}；开关关着 → {enabled: False, phones: []}"""
+    import program_pack
+    if not program_pack.enabled(c):
+        return dict(enabled=False, phones=[])
+    live = None
+    try:
+        ph = phone_for(c)
+    except Failure as e:
+        trace(c, f"没量手机（给上次的）：{e.code}")  # 非玩家句
+        ph = None
+    if ph is not None and phone_bid(ph):
+        with tempfile.TemporaryDirectory(dir=c.private) as w:
+            cl = devpush_client(c, ph.udid, phone_bid(ph), w)
+            got = _usage_measure(cl, _usage_games(cl))
+        if got is not None:
+            rec = layout.load_device(c, ph.key)
+            layout.save_device(c, ph.key, dict(rec, usage=dict(at=time.time(), games=got)))
+            live = ph.key
+    phones = []
+    for key, rec in layout.devices(c):
+        u = rec.get("usage") or {}
+        if not u:
+            continue
+        games = [dict(gameId=g, snapshots=None, **v) for g, v in sorted((u.get("games") or {}).items())]
+        phones.append(dict(device=key, at=u.get("at"), live=key == live, games=games))
+    return dict(enabled=True, phones=phones)
+
+
 def _kept_pull_none():   # 没连手机 / 都问不到：每次一份新的（列表不共用）
     return dict(device="", new=0, kept=[], shellUpdate=False, stale=[], running=False)
 
