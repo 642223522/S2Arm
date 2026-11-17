@@ -378,6 +378,30 @@ int s2a_identity_import(const char *home) {
     return 1;
 }
 
+// ---------- 手机上签程序要的身份与证书链（0.6.0 通用壳：起局时按款重签，ios/program_resign.m）----------
+#include "selfsign_certs.inc"
+// 叶证书后接 WWDR G3 与 Apple Root。叶证书若是别一代 WWDR 签的，系统注册签名时会拒（日志「注册签名失败 errno=1」），这里不猜
+CFArrayRef s2a_selfsign_chain_for(SecCertificateRef leaf) {
+    if (!leaf) return NULL;
+    CFMutableArrayRef a = CFArrayCreateMutable(NULL, 3, &kCFTypeArrayCallBacks); CFArrayAppendValue(a, leaf);
+    const struct { const uint8_t *p; size_t n; } k[] = {{SS_WWDR_G3, sizeof SS_WWDR_G3}, {SS_APPLE_ROOT, sizeof SS_APPLE_ROOT}};
+    for (size_t i = 0; i < 2; i++) {
+        CFDataRef d = CFDataCreate(NULL, k[i].p, (CFIndex)k[i].n); SecCertificateRef c = d ? SecCertificateCreateWithData(NULL, d) : NULL;
+        if (d) CFRelease(d);
+        if (c) { CFArrayAppendValue(a, c); CFRelease(c); }
+    }
+    return a;
+}
+// 钥匙串里电脑交来的签名身份（s2a_identity_import 存的，标签 SS_KC_LABEL）。0 = 取到（调用方 CFRelease 两样）；-1 = 没有
+int s2a_identity_keychain(SecKeyRef *key, SecCertificateRef *cert) {
+    const void *k[] = {kSecClass, kSecAttrLabel, kSecReturnRef, kSecMatchLimit}, *v[] = {kSecClassIdentity, CFSTR(SS_KC_LABEL), kCFBooleanTrue, kSecMatchLimitOne};
+    CFDictionaryRef q = CFDictionaryCreate(NULL, k, v, 4, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFTypeRef got = NULL; OSStatus st = SecItemCopyMatching(q, &got); CFRelease(q);
+    if (st != errSecSuccess || !got || CFGetTypeID(got) != SecIdentityGetTypeID()) { if (got) CFRelease(got); return -1; }
+    int r = SecIdentityCopyPrivateKey((SecIdentityRef)got, key) || SecIdentityCopyCertificate((SecIdentityRef)got, cert) ? -1 : 0;
+    CFRelease(got); return r;
+}
+
 // 弱链接[host,nvntest]：s2a_prov_signing_ids_self（ios/prov_expiry.m 只在 iOS App 里；Mac 宿主与单测链接行按这行放行未定义）
 int s2a_prov_signing_ids_self(char *team, size_t team_n, char *appid, size_t appid_n) __attribute__((weak_import));   // ios/prov_expiry.m（只在 iOS App 里）
 void s2a_selfsign_probe(void) {
