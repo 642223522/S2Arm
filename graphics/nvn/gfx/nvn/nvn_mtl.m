@@ -5699,7 +5699,7 @@ void nvn_be_tex_release(tex_t *t) {
         //   (late / in flight). Dropping it from g_by_serial made tex_get re-create it from the all-zero guest storage (BotW's 100x56 / 400x225 R8 masks:
         //   one-frame light / dark flashes on iPad). Keep the GPU result under the existing bounded ghost-ring lifetime instead, as tex_put does for evicted ones
         tex_put_locked(t->serial, holder);
-        hm_del_id(&g_by_serial, &t->serial);
+        hm_del_id(&g_by_serial, &t->serial);   // borrow-safe: the ghost ring keeps holder (tex_put_locked above), so a replay borrowing it this submission still has it
     }
     pthread_mutex_unlock(&g_smu);
     serial_del(t->serial);
