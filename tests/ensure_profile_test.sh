@@ -66,4 +66,10 @@ ck "⑧ 看不到这台 → 改 generic 再申请：退 ${r}（期望 0）、调
 printf '#!/bin/bash\necho x >> "$CALLS"\necho "xcodebuild: error: Unable to find a destination matching the provided destination specifier:"\nexit 70\n' > "$T/bin/xcodebuild"; chmod +x "$T/bin/xcodebuild"
 : > "$T/calls"; o=$(CALLS="$T/calls" run); r=$?; n=$(wc -l < "$T/calls" | tr -d ' ')
 ck "⑧b 没给设备号 → 不重试：退 ${r}（期望 1）、调用 ${n} 次（期望 1）" '[ $r = 1 ] && [ "$n" = 1 ] && ! grep -q "改为不指定设备" <<< "$o"'
+# ⑧c 同族另一种说法：等满 -destination-timeout 仍不见设备时 xcodebuild 报「Unable to find a device matching」（0.5.1 命令行真跑实测）→ 同样改 generic 再申请
+printf '#!/bin/bash\necho x >> "$CALLS"; printf "%%s\\n" "$@" > "$ARGS_OUT"\ncase "$*" in *id=U9*) echo "xcodebuild: error: Unable to find a device matching the provided destination specifier:"; exit 70;; esac\nexit 0\n' > "$T/bin/xcodebuild"; chmod +x "$T/bin/xcodebuild"
+: > "$T/calls"; o=$(CALLS="$T/calls" ARGS_OUT="$T/args" PATH="$T/bin:$PATH" S2A_ROOTS="$T/roots" S2A_PROFILE_DIRS="$P" bash "$H/pack/ensure_profile.sh" com.example.t1 TEAM123 "$T/ent.plist" U9 2>&1); r=$?
+a3=$(tr '\n' ' ' < "$T/args"); n=$(wc -l < "$T/calls" | tr -d ' ')
+ck "⑧c 报 device matching → 也改 generic 再申请：退 ${r}（期望 0）、调用 ${n} 次（期望 2）" \
+  '[ $r = 0 ] && [ "$n" = 2 ] && grep -q "【黄】xcodebuild 看不到这台 iPhone" <<< "$o" && grep -q -- "-destination generic/platform=iOS" <<< "$a3"'
 [ $bad = 0 ] && echo "✅ 申请描述文件红因全通" || { echo "🔴 申请描述文件红因有不通项"; exit 1; }
