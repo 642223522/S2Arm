@@ -838,6 +838,8 @@ sealed class Side
     public byte[] Get(string n) => f.TryGetValue(n, out var e) ? Of(n).Read(e) : null;
     public string Text(string n) { var b = Get(n); return b == null ? null : Encoding.UTF8.GetString(b); }
     public bool Has(string n) => f.ContainsKey(n);
+    /// <summary>n 的字节在数据文件里的位置（只追加写，同位置 = 同一份字节；Put 同一个数组、Alias 都落到同一位置）；源码或不在 → null（LibPack.ISharedBytes）</summary>
+    public string Ident(string n) => !IsText(n) && f.TryGetValue(n, out var e) ? $"{e.Item1}:{e.Item2}" : null;
     public void Put(string n, byte[] b)
     {
         var (file, sn) = IsText(n) ? (Of(n), seenTx) : (bf, seen);
@@ -859,9 +861,10 @@ sealed class Side
         foreach (var p in Directory.GetFiles(dir)) { var n = Path.GetFileName(p); if (own.IsMatch(n) && !f.ContainsKey(n)) File.Delete(p); }
         foreach (var n in f.Keys.OrderBy(x => x, StringComparer.Ordinal)) File.WriteAllBytes(Path.Combine(dir, n), Get(n));
     }
-    sealed class View : IReadOnlyDictionary<string, byte[]>   // 只读视图：取值才读盘（发布打包 / 核验逐个取用即丢）
+    sealed class View : IReadOnlyDictionary<string, byte[]>, ISharedBytes   // 只读视图：取值才读盘（发布打包 / 核验逐个取用即丢）；发布打包按 Ident 认出共用的一份只读一次
     {
         readonly Side s; public View(Side side) { s = side; }
+        public string Ident(string k) => s.Ident(k);
         public byte[] this[string k] => s.Get(k) ?? throw new KeyNotFoundException(k);
         public IEnumerable<string> Keys => s.f.Keys;
         public IEnumerable<byte[]> Values => s.f.Keys.Select(s.Get);
