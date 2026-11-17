@@ -15,6 +15,8 @@
 #include <time.h>
 #include "native.h"
 #include <sys/stat.h>
+#include <strings.h>
+#include <unistd.h>
 
 #define CS_PAGE_SHIFT 14
 #define CS_PAGE (1u << CS_PAGE_SHIFT)
@@ -291,9 +293,87 @@ static uint8_t *slurp(const char *p, size_t *n) {
     uint8_t *b = l > 0 ? malloc((size_t)l) : NULL; if (b && fread(b, 1, (size_t)l, f) != (size_t)l) { free(b); b = NULL; }
     fclose(f); *n = (size_t)l; return b;
 }
+// ---------- 签名身份交接（0.6.0 通用壳，电脑侧 pack/jobs/install.py deliver_identity）----------
+// 电脑经 USB 把私钥（PKCS#1 RSAPrivateKey DER）与叶证书（DER）放进 App 数据容器 identity/incoming/{key.der, cert.der, identity.json}，
+//   identity.json 最后改名 = 三份齐了。App 启动时（s2a_selfsign_probe 开头，构造期）导入钥匙串（本 App 访问组、首次解锁后、仅本机），
+//   确认能配成签名身份（真机 11-17 测试机2：分别 SecItemAdd 的私钥与证书配得上）→ 写不含私钥的 identity/current.json → 删 incoming/ 三份；
+//   证书 sha1 和上次不同就调 s2a_programs_resign_all（还没有就记一行）。任何一步失败：incoming/ 留着、写 identity/import_error.txt，起局照常
+#define SS_KC_LABEL "io.s2arm.selfsign.identity"
+static int kc_store_real(SecKeyRef k, SecCertificateRef c, char *why, size_t why_n) {   // 换掉旧的同标签两项再存；存后按身份取回核配得上
+    CFStringRef label = CFSTR(SS_KC_LABEL);
+    const void *dk[] = {kSecClass, kSecAttrLabel}, *dv1[] = {kSecClassKey, label}, *dv2[] = {kSecClassCertificate, label};
+    CFDictionaryRef d1 = CFDictionaryCreate(NULL, dk, dv1, 2, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks), d2 = CFDictionaryCreate(NULL, dk, dv2, 2, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    SecItemDelete(d1); SecItemDelete(d2); CFRelease(d1); CFRelease(d2);
+    const void *ak[] = {kSecClass, kSecValueRef, kSecAttrLabel, kSecAttrAccessible};
+    const void *av1[] = {kSecClassKey, k, label, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly}, *av2[] = {kSecClassCertificate, c, label, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly};
+    CFDictionaryRef q1 = CFDictionaryCreate(NULL, ak, av1, 4, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks), q2 = CFDictionaryCreate(NULL, ak, av2, 4, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    OSStatus s1 = SecItemAdd(q1, NULL), s2 = SecItemAdd(q2, NULL); CFRelease(q1); CFRelease(q2);
+    if (s1 || s2) { snprintf(why, why_n, "存钥匙串失败（私钥 %d、证书 %d）", (int)s1, (int)s2); return -1; }
+    const void *qk[] = {kSecClass, kSecReturnRef, kSecMatchLimit}, *qv[] = {kSecClassIdentity, kCFBooleanTrue, kSecMatchLimitAll};
+    CFDictionaryRef q3 = CFDictionaryCreate(NULL, qk, qv, 3, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFTypeRef got = NULL; OSStatus s3 = SecItemCopyMatching(q3, &got); CFRelease(q3);
+    CFDataRef want = SecCertificateCopyData(c); int ok = 0;
+    for (CFIndex i = 0; s3 == errSecSuccess && got && CFGetTypeID(got) == CFArrayGetTypeID() && i < CFArrayGetCount(got) && !ok; i++) {
+        SecCertificateRef ic = NULL; if (SecIdentityCopyCertificate((SecIdentityRef)CFArrayGetValueAtIndex(got, i), &ic) || !ic) continue;
+        CFDataRef dd = SecCertificateCopyData(ic); ok = dd && CFEqual(dd, want); if (dd) CFRelease(dd); CFRelease(ic);
+    }
+    if (got) CFRelease(got); CFRelease(want);
+    if (!ok) { snprintf(why, why_n, "存进钥匙串了，但私钥和证书配不成签名身份（取回 %d）", (int)s3); return -1; }
+    return 0;
+}
+static int (*g_kc_store)(SecKeyRef, SecCertificateRef, char *, size_t) = kc_store_real;
+#ifdef S2A_UNIT_TEST
+void s2a_identity_test_store(int (*f)(SecKeyRef, SecCertificateRef, char *, size_t)) { g_kc_store = f ? f : kc_store_real; }   // 单测换掉钥匙串（不碰本机钥匙串、不弹授权框）
+#endif
+// 弱链接[host,nvntest]：s2a_programs_resign_all（通用壳程序包清单侧，还没有时只记一行）
+int s2a_programs_resign_all(const char *cert_sha1) __attribute__((weak_import));
+static void json_str(const char *j, const char *key, char *out, size_t n) {   // 取 "key":"值"（只认这一种写法；电脑侧 json.dumps 写的）
+    out[0] = 0; char pat[64]; snprintf(pat, sizeof pat, "\"%s\"", key); const char *p = j ? strstr(j, pat) : NULL; if (!p) return;
+    p = strchr(p + strlen(pat), ':'); if (!p) return; p++; while (*p == ' ') p++; if (*p != '"') return; p++;
+    size_t i = 0; while (*p && *p != '"' && i + 1 < n) out[i++] = *p++; out[i] = 0;
+}
+static int write_file(const char *path, const char *text) {
+    char tmp[1100]; snprintf(tmp, sizeof tmp, "%s.tmp", path); FILE *f = fopen(tmp, "w"); if (!f) return -1;
+    int ok = fputs(text, f) >= 0; if (fclose(f)) ok = 0; return ok && !rename(tmp, path) ? 0 : -1;
+}
+// 返回 0 = 没有要导入的；1 = 导入成功；-1 = 失败（已写 import_error.txt）
+int s2a_identity_import(const char *home) {
+    if (!home) return 0;
+    char dir[1024], inc[1100], pj[1200], pk[1200], pc[1200], cur[1200], err[1200];
+    snprintf(dir, sizeof dir, "%s/Library/Application Support/S2Arm/identity", home); snprintf(inc, sizeof inc, "%s/incoming", dir);
+    snprintf(pj, sizeof pj, "%s/identity.json", inc); snprintf(pk, sizeof pk, "%s/key.der", inc); snprintf(pc, sizeof pc, "%s/cert.der", inc);
+    snprintf(cur, sizeof cur, "%s/current.json", dir); snprintf(err, sizeof err, "%s/import_error.txt", dir);
+    size_t jn = 0, kn = 0, cn = 0; uint8_t *jb = slurp(pj, &jn); if (!jb) return 0;   // 没有 identity.json = 没交、或还没交齐
+    char *js = realloc(jb, jn + 1); if (!js) { free(jb); return 0; } js[jn] = 0;
+    char team[64], want_sha[64], why[256] = {0}; json_str(js, "team", team, sizeof team); json_str(js, "cert_sha1", want_sha, sizeof want_sha); free(js);
+    uint8_t *kb = slurp(pk, &kn), *cb = slurp(pc, &cn); SecKeyRef k = NULL; SecCertificateRef c = NULL; int rc = -1; char sha[41] = {0};
+    if (!kb || !cb) snprintf(why, sizeof why, "identity.json 在，但缺 %s", !kb ? "key.der" : "cert.der");
+    else {
+        CFDataRef kd = CFDataCreate(NULL, kb, (CFIndex)kn), cd = CFDataCreate(NULL, cb, (CFIndex)cn);
+        const void *ak[] = {kSecAttrKeyType, kSecAttrKeyClass}, *av[] = {kSecAttrKeyTypeRSA, kSecAttrKeyClassPrivate};
+        CFDictionaryRef ka = CFDictionaryCreate(NULL, ak, av, 2, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        k = SecKeyCreateWithData(kd, ka, NULL); c = SecCertificateCreateWithData(NULL, cd); CFRelease(ka); CFRelease(kd); CFRelease(cd);
+        uint8_t h[CC_SHA1_DIGEST_LENGTH]; CC_SHA1(cb, (CC_LONG)cn, h); for (int i = 0; i < CC_SHA1_DIGEST_LENGTH; i++) snprintf(sha + 2 * i, 3, "%02x", h[i]);
+        if (!k || !c) snprintf(why, sizeof why, "%s读不了（不是 PKCS#1 RSA 私钥 / DER 证书）", !k ? "私钥" : "证书");
+        else if (want_sha[0] && strcasecmp(want_sha, sha)) snprintf(why, sizeof why, "证书 sha1 对不上（identity.json %s，实际 %s）", want_sha, sha);
+        else rc = g_kc_store(k, c, why, sizeof why);
+    }
+    if (kb) { memset(kb, 0, kn); free(kb); } free(cb); if (k) CFRelease(k); if (c) CFRelease(c);
+    if (rc) { char t[400]; snprintf(t, sizeof t, "%s\n", why); write_file(err, t); LOG("【红】签名身份导入失败：%s（incoming/ 留着，电脑下次推送时说明；起局照常用电脑签好的）", why); return -1; }
+    char prev[64] = {0}; { size_t pn = 0; uint8_t *pb = slurp(cur, &pn); char *ps = pb ? realloc(pb, pn + 1) : NULL; if (ps) { ps[pn] = 0; json_str(ps, "cert_sha1", prev, sizeof prev); free(ps); } else free(pb); }
+    char cj[300]; snprintf(cj, sizeof cj, "{\"schema\": 1, \"team\": \"%s\", \"cert_sha1\": \"%s\", \"imported\": %ld}\n", team, sha, (long)time(NULL));
+    if (write_file(cur, cj)) LOG("【黄】签名身份已进钥匙串，但 current.json 写不进");
+    unlink(pk); unlink(pc); unlink(pj); unlink(err); rmdir(inc);
+    int changed = strcasecmp(prev, sha) != 0;
+    LOG("签名身份已导入钥匙串：团队 %s、证书 sha1 %s（%s）；incoming/ 已删", team[0] ? team : "?", sha, !prev[0] ? "第一次" : changed ? "换了证书" : "同一张证书");
+    if (changed && prev[0]) { if (s2a_programs_resign_all) s2a_programs_resign_all(sha); else LOG("【黄】换了签名证书，要全部重签程序包，但重签入口还没接（s2a_programs_resign_all）"); }
+    return 1;
+}
+
 // 弱链接[host,nvntest]：s2a_prov_signing_ids_self（ios/prov_expiry.m 只在 iOS App 里；Mac 宿主与单测链接行按这行放行未定义）
 int s2a_prov_signing_ids_self(char *team, size_t team_n, char *appid, size_t appid_n) __attribute__((weak_import));   // ios/prov_expiry.m（只在 iOS App 里）
 void s2a_selfsign_probe(void) {
+    s2a_identity_import(getenv("HOME"));   // 电脑交来的签名身份（有才做；没有立即返回）
     const char *p12 = getenv("S2A_SELFSIGN_P12"), *in = getenv("S2A_SELFSIGN_IN"), *out = getenv("S2A_SELFSIGN_OUT");
     if (!p12 || !in || !out) return;
     char pp[1024], pi[1024], po[1024], why[256] = {0};
