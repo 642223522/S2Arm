@@ -695,6 +695,8 @@ class Stages:
                     deps.python('pack/direct_profile_stage.py', final, '--selected')
                 return result
             except BaseException:
+                if stage == 'rewrite':
+                    self._keep_failed_logs(tx.path, game)
                 tx.abort()
                 raise
         finally:
@@ -802,6 +804,21 @@ class Stages:
             raw.decode('utf-8')
             if b'\r\n' in raw:
                 path.write_bytes(raw.replace(b'\r\n', b'\n'))
+
+    def _keep_failed_logs(self, work, game):
+        """改写失败：事务回滚会连临时版本目录里的 <模块>.rewrite.log 一起删，先拷进 <产物根>/.failed/<款>_<模块>.rewrite.log
+        （同 pack/stage_rewrite.sh 的做法；作业层 library._keep_stage_logs 收进 <任务>-stages/，诊断包按任务带上）。
+        本款上一次失败留下的同类日志先清掉，留下的只有这一次的；拷不成不改变失败本身"""
+        try:
+            kept = self.roots.path / '.failed'
+            for old in kept.glob(f'{game}_*.rewrite.log'):
+                old.unlink()
+            for log in sorted(Path(work).glob('*.rewrite.log')):
+                if log.is_file() and not is_link(log):
+                    kept.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(log, kept / f'{game}_{log.name}')
+        except OSError:
+            pass
 
     def _light_commit(self, tx, stage, start, key, replay=()):
         result = self._result(stage, start, tx.path, key)

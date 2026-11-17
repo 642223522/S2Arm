@@ -2401,7 +2401,8 @@ def _keep_stage_logs(c, gid):
     roots = [*work.glob("roots/*@现行"), *work.glob("work/pkg/product"), *layout.build_dir(c, gid, create=False).glob("*/roots/*@现行"),  # 非玩家句
              *work.glob("work"),   # Windows 一键出包各步的日志（seed.log 等，pack/orch/oneclick_win.py Run.sh 写在工作目录下）：#754 失败后随 build/ 删掉，诊断包里没有
              # 阶段失败时各阶段把自己的日志拷进产物根旁的 .failed/（如改写 pack/stage_rewrite.sh 的 <款>_<模块>.log）：玩家报出包超时 / 改写失败时要的就是它（#251 诊断包里没有）
-             *work.glob("roots/.failed"), *layout.build_dir(c, gid, create=False).glob("*/roots/.failed")]
+             *work.glob("roots/.failed"), *layout.build_dir(c, gid, create=False).glob("*/roots/.failed"),
+             *work.glob("work/roots/.failed")]   # Windows 一键出包的产物根在工作目录下（pack/jobs/ipa.py win_oneclick --out <工作目录>/work）：改写失败留的 <款>_<模块>.rewrite.log（#1476 诊断包里只有 light.log）
     dest = c.logs / (c.task + "-stages")
     count = 0
     for root in roots:
