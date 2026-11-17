@@ -270,12 +270,16 @@ struct LauncherView: View {
         Text(verbatim: Self.displayVersion).font(.manrope(8.5, .medium)).monospacedDigit().foregroundStyle(.tertiary)
             .lineLimit(1).fixedSize().textSelection(.enabled).help(Self.displayVersion).accessibilityIdentifier("topbar.version")
     }
-    /// 「UI by NX2Apple & SkyRiN」：SkyRiN 链到界面作者主页，样式与正文一样。
+    /// 「UI by NX2Apple, SkyRiN & shenxianmq」：两位界面作者的名字各自链到主页，样式与正文一样（shenxianmq：11-17 首页 / 出包页 / 更新流程交互设计，#1498）。
     static let uiCredit: AttributedString = {
-        var text = AttributedString("UI by NX2Apple & ")
-        var name = AttributedString("SkyRiN")
-        name.link = URL(string: "https://x.com/skyrin1008")
-        text.append(name)
+        var text = AttributedString("UI by NX2Apple, ")
+        var skyrin = AttributedString("SkyRiN")
+        skyrin.link = URL(string: "https://x.com/skyrin1008")
+        text.append(skyrin)
+        text.append(AttributedString(" & "))
+        var shen = AttributedString("shenxianmq")
+        shen.link = URL(string: "https://github.com/shenxianmq")
+        text.append(shen)
         return text
     }()
 

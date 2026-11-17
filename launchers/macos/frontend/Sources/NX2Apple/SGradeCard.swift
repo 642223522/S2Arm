@@ -112,7 +112,7 @@ struct SGradeCardView: View {
                         } label: {
                             HStack(spacing: 4) {
                                 Image(systemName: "info.circle").font(.system(size: 11, weight: .semibold))
-                                Text(zh ? (detailsOpen ? "收起说明" : "说明") : (detailsOpen ? "Hide details" : "Details"))
+                                Text(x(detailsOpen ? "details.hide" : "details.show"))
                                     .font(.manrope(11.5, .medium))
                                 Image(systemName: detailsOpen ? "chevron.up" : "chevron.down").font(.system(size: 9, weight: .semibold))
                             }
@@ -167,17 +167,17 @@ struct SGradeCardView: View {
             let title = catName(c)
             if let n = m.exact[c], n > 0 {
                 let status: String = switch c {
-                case "widescreen", "fps": zh ? "默认开启" : "On by default"
-                case "gfx": zh ? "Mac · 默认开" : "Mac · On"
-                case "cheat": zh ? "默认关闭" : "Off by default"
-                case "mod": zh ? "出包编入" : "Built in"
+                case "widescreen", "fps": x("status.on")
+                case "gfx": x("status.macOn")
+                case "cheat": x("status.off")
+                case "mod": x("status.builtIn")
                 default: ""
                 }
                 chips.append(HitChip(id: c, symbol: sym, title: title, badge: "\(n)", status: status))
             } else if c == "widescreen", !m.port, m.ownWiden {
-                chips.append(HitChip(id: "ownWiden", symbol: sym, title: title, badge: zh ? "通用" : "Auto", status: zh ? "默认关闭" : "Off by default"))
+                chips.append(HitChip(id: "ownWiden", symbol: sym, title: title, badge: x("badge.auto"), status: x("status.off")))
             } else if c == "widescreen", m.port {
-                chips.append(HitChip(id: "port", symbol: sym, title: title, badge: zh ? "移植" : "Port", status: zh ? "默认开启" : "On by default"))
+                chips.append(HitChip(id: "port", symbol: sym, title: title, badge: x("badge.port"), status: x("status.on")))
             }
         }
         return chips

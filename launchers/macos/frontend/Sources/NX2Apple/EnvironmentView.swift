@@ -210,59 +210,55 @@ struct EnvironmentView: View {
     private func s(_ id: String) -> String { BackendText.launcherText(id, language: loc.lang.sharedCode) }
 
     @ViewBuilder private var updateSettingsCard: some View {
-        let en = loc.lang.sharedCode == "en"
         let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "-"
         let foundVersion = model.availableUpdate?["version"] as? String
         let isWorking: Bool = { if case .working = model.updateState { return true }; return false }()
         let manualDetail: String = {
             if model.updateState == .ready, let v = foundVersion {
-                return en ? "Version v\(v) is downloaded and ready to install" : "新版 v\(v) 已下载就绪，可重启安装"
+                return s("update.settings.ready").replacingOccurrences(of: "{0}", with: v)
             }
             if case .working(let id, let percent) = model.updateState {
                 return s(id).replacingOccurrences(of: "{0}", with: "\(percent ?? 0)")
             }
             if model.updateCheckFeedback == "checking" {
-                return en ? "Checking for updates..." : "正在检查是否有新版本..."
+                return s("update.settings.checking")
             }
             if let v = foundVersion {
-                return en ? "New version v\(v) available" : "发现新版本 v\(v)"
+                return s("update.settings.found").replacingOccurrences(of: "{0}", with: v)
             }
             if model.updateCheckFeedback == "upToDate" {
-                return en ? "You are on the latest version (v\(current))" : "当前已是最新版本（v\(current)）"
+                return s("update.settings.upToDate").replacingOccurrences(of: "{0}", with: current)
             }
             if model.updateCheckFeedback == "failed" {
-                return en ? "Update check failed — please verify your network" : "检查更新失败，请检查网络连接"
+                return s("update.settings.failed")
             }
-            return en ? "Current version v\(current)" : "当前版本 v\(current)"
+            return s("update.settings.current").replacingOccurrences(of: "{0}", with: current)
         }()
         let manualButtonTitle: String = {
-            if model.updateState == .ready { return en ? "Update now" : "立即更新" }
-            if isWorking { return en ? "Downloading..." : "下载中..." }
-            if model.updateCheckFeedback == "checking" { return en ? "Checking..." : "检查中..." }
-            if foundVersion != nil { return en ? "View update" : "查看新版" }
-            return en ? "Check now" : "检查更新"
+            if model.updateState == .ready { return s("update.settings.btn.now") }
+            if isWorking { return s("update.settings.btn.downloading") }
+            if model.updateCheckFeedback == "checking" { return s("update.settings.btn.checking") }
+            if foundVersion != nil { return s("update.settings.btn.view") }
+            return s("update.settings.btn.check")
         }()
 
-        CardGroup(en ? "Software Updates" : "软件更新") {
-            CardRow(en ? "Check for updates automatically" : "自动检查更新",
-                    detail: en ? "Check for new versions when S2Arm opens" : "启动时自动检查是否有新版本") {
+        CardGroup(s("update.settings.group")) {
+            CardRow(s("update.settings.autoCheck"), detail: s("update.settings.autoCheck.detail")) {
                 Toggle("", isOn: $model.autoCheckUpdates)
                     .toggleStyle(LauncherSwitchStyle()).labelsHidden()
-                    .accessibilityLabel(en ? "Check for updates automatically" : "自动检查更新")
+                    .accessibilityLabel(s("update.settings.autoCheck"))
                     .accessibilityIdentifier("settings.updates.autoCheck")
             }
             CardDivider()
-            CardRow(en ? "Download updates automatically" : "自动下载更新",
-                    detail: en ? "Download updates in the background and prompt once ready; when off, prompt with release notes before downloading"
-                               : "开启后在后台自动下载，下载成功后弹窗提示；关闭时查到更新先弹窗展示内容，由你决定是否下载") {
+            CardRow(s("update.settings.autoDownload"), detail: s("update.settings.autoDownload.detail")) {
                 Toggle("", isOn: $model.autoDownloadUpdates)
                     .toggleStyle(LauncherSwitchStyle()).labelsHidden()
                     .disabled(!model.autoCheckUpdates)
-                    .accessibilityLabel(en ? "Download updates automatically" : "自动下载更新")
+                    .accessibilityLabel(s("update.settings.autoDownload"))
                     .accessibilityIdentifier("settings.updates.autoDownload")
             }
             CardDivider()
-            CardRow(en ? "Manual check" : "手动检查更新", detail: manualDetail) {
+            CardRow(s("update.settings.manual"), detail: manualDetail) {
                 Button(manualButtonTitle) {
                     if model.updateState == .ready || model.availableUpdate != nil {
                         model.showUpdatePopup()

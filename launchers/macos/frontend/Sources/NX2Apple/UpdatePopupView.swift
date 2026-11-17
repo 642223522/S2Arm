@@ -92,7 +92,7 @@ struct UpdatePopupView: View {
                 }
                 Spacer()
                 if !isWorking {
-                    Button(isEnglish ? "Skip this version" : "跳过此版本") { model.skipUpdateVersion() }
+                    Button(t("update.popup.skip")) { model.skipUpdateVersion() }
                         .controllerButtonStyle(LauncherSecondaryButtonStyle())
                         .accessibilityIdentifier("update.popup.skip")
                 }
@@ -110,9 +110,9 @@ struct UpdatePopupView: View {
 
     private var primaryActionTitle: String {
         if isReady { return t("update.popup.now") }
-        if isWorking { return isEnglish ? "Downloading..." : "下载中..." }
-        if case .failed = model.updateState { return isEnglish ? "Retry download" : "重试下载" }
-        return isEnglish ? "Download update" : "下载更新"
+        if isWorking { return t("update.settings.btn.downloading") }
+        if case .failed = model.updateState { return t("update.popup.retryDownload") }
+        return t("update.popup.download")
     }
 
     private var afterBody: some View {
