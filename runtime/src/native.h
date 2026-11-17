@@ -106,6 +106,9 @@ void s2a_window_reserve(void);                 // 一次性预留；所有启动
 void s2a_window_get(uint64_t *base, uint64_t *size);
 uint64_t s2a_window_spare(void);              // 窗口之外还能给宿主大映射的地址（收尾还回 + 窗口所在空洞其余部分，vawin.c）
 void s2a_window_need(uint64_t *need, uint64_t *fit);   // 本款要的跨度、本机 2^39 以下最大能放的一块（自检提示用）
+uint64_t s2a_window_hole_top(void);   // 2^39 / 2^36 以下那次找空洞的上界（与系统地址上限取小；没算到 0）
+int s2a_window_hi36_tried(void);   // 36 位款是否在 2^36 以上按 2^36 对齐的各块里找过窗口（#1419）
+void s2a_window_fatal_msg(char *out, size_t cap, uint64_t need, uint64_t fit, uint64_t hole_top, int hi36);   // 窗口没占到时的 FATAL 文字（纯函数）
 // 客体窗口里在内存 / 已压缩换出的字节（mincore 扫整窗，心跳用）
 void s2a_window_resident(uint64_t *res, uint64_t *out);
 int s2a_guest_fd(void); int s2a_guest_zero(uint64_t a, uint64_t n); void *s2a_guest_map_any(uint64_t len);   // vawin.c：客体内存文件后备（S2A_GUEST_FILE）——文件 fd（-1 = 没开）；还页打洞 + 原偏移重映射成不可访问（不在窗口 / 没开 = 0）
