@@ -67,10 +67,8 @@ def compat(c):
     return dict(host_abi=want["hostAbi"], chain=want["dmshChain"], rewriter_id=rewrite_refresh.rewriter_id(c))
 
 
-def build(c, gid, *, kit=None, shell=None, info=None, banner=None):
-    """未签名程序包 → 目录 <cache>/package/（S2AImages-<号>.dylib、Games/<号>/、meta.json）。缓存键 = 约定号 + 链号 + 改写器指纹 + 程序件内容戳，
-    键没变不重出。kit / shell / info 单测可给（缺省：programs.kit_dir、本版 iPhone 壳、compat）"""
-    gid = gid.upper()
+def _package_key(c, gid, kit=None, info=None, banner=None):
+    """未签名程序包的缓存键（build 与 sign 共用）→ (kit, info, banner, 键)。缓存键 = 约定号 + 链号 + 改写器指纹 + 程序件内容戳 + 横版封面"""
     kit = Path(kit) if kit else programs.kit_dir(c, gid)
     if not (kit / "main.npdm").is_file():
         raise Failure(f"{gid} 还没有 iPhone 程序件：先「打 iPhone 包」", code="container_stale")
@@ -81,6 +79,14 @@ def build(c, gid, *, kit=None, shell=None, info=None, banner=None):
     banner = Path(banner) if banner and Path(banner).is_file() else None
     bst = [banner.stat().st_size, banner.stat().st_mtime_ns] if banner else None
     key = hashlib.sha256(json.dumps(dict(info, kit=_kit_stamp(kit), banner=bst), sort_keys=True).encode()).hexdigest()
+    return kit, info, banner, key
+
+
+def build(c, gid, *, kit=None, shell=None, info=None, banner=None):
+    """未签名程序包 → 目录 <cache>/package/（S2AImages-<号>.dylib、Games/<号>/、meta.json）。缓存键 = 约定号 + 链号 + 改写器指纹 + 程序件内容戳，
+    键没变不重出。kit / shell / info 单测可给（缺省：programs.kit_dir、本版 iPhone 壳、compat）"""
+    gid = gid.upper()
+    kit, info, banner, key = _package_key(c, gid, kit, info, banner)
     dest = programs.cache(c, gid) / PACKAGE
     if (dest / KEY).is_file() and (dest / KEY).read_text(encoding="utf-8") == key and (dest / image_name(gid)).is_file():
         return dest
@@ -125,10 +131,15 @@ def sign(c, gid, team, bundle, signer, *, pkg=None):
     """未签名包 → <cache>/signed/<团队>/（同结构 + catalogue.json）。signer(dylib 路径, 团队, 包名) 原地签那个 dylib（Mac：mac_signer；
     Windows：win_signer）。缓存键 = 未签名包的键 + 团队 + 包名，没变不重签。pkg 缺省 build(c, gid)"""
     gid = gid.upper()
+    dest = programs.cache(c, gid) / SIGNED / team
+    own = pkg is None   # 自己出的未签名包：签好后删掉它的 dylib（0.6.0 程序缓存瘦身：推送只用签好的那份；换团队时按键重出，build 自己会出）
+    if own:   # 签好的那份键对得上就直接用，不必先把未签名包重出一遍
+        hit = _package_key(c, gid)[3] + f"\t{team}\t{bundle}"
+        if (dest / KEY).is_file() and (dest / KEY).read_text(encoding="utf-8") == hit and (dest / CATALOGUE).is_file():
+            return dest
     pkg = Path(pkg) if pkg else build(c, gid)
     meta = json.loads((pkg / META).read_text(encoding="utf-8"))
     key = (pkg / KEY).read_text(encoding="utf-8") + f"\t{team}\t{bundle}"
-    dest = programs.cache(c, gid) / SIGNED / team
     if (dest / KEY).is_file() and (dest / KEY).read_text(encoding="utf-8") == key and (dest / CATALOGUE).is_file():
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -147,6 +158,8 @@ def sign(c, gid, team, bundle, signer, *, pkg=None):
         os.replace(out, dest)
     finally:
         shutil.rmtree(work, ignore_errors=True)
+    if own:   # 签名整份重写 dylib（codesign 实测：克隆后签名独占全部字节），未签名那份留着就是每款多一份程序；只留键与元数据，下次要时 build 按键重出
+        (pkg / image_name(gid)).unlink(missing_ok=True)
     return dest
 
 
