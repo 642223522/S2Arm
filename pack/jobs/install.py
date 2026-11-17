@@ -1523,6 +1523,32 @@ def check_shell_sdk(c, app, dev):
                      "上整个 App 会按旧 iPhone 尺寸缩小在屏幕中间", code="shell_sdk_old", severity="warning")
 
 
+PROFILE_REJECTED = "0xe8008015"   # 「A valid provisioning profile for this executable was not found」（MIInstallerErrorDomain 13）
+
+
+def set_aside_profiles(c, picked):
+    """dev_sign 记下的那几份描述文件挪进 <产物根>/.stale_profiles/（同 ensure_profile.sh 挪缺设备的旧描述文件那个目录；不删，挪不动的跳过）→ 挪走的"""
+    try:
+        paths = {p.strip() for p in Path(picked).read_text(encoding="utf-8").splitlines() if p.strip()} if picked and Path(picked).is_file() else set()
+    except OSError:
+        paths = set()
+    env = c.env()
+    sd = Path(env.get("S2A_ROOTS") or Path(env.get("S2A_RUN_ROOT") or Path.home() / ".s2arm/run") / "s2arm/roots") / ".stale_profiles"
+    moved = []
+    for p in sorted(paths):
+        try:
+            sd.mkdir(parents=True, exist_ok=True)
+            shutil.move(p, sd / Path(p).name)
+            moved.append(p)
+        except OSError as e:
+            note(c, f"挪不开描述文件 {p}：{e}")  # 非玩家句
+    return moved
+
+
+def app_has_widget(app):
+    return any((Path(app) / "PlugIns").glob("*.appex")) if (Path(app) / "PlugIns").is_dir() else False
+
+
 def sign_and_install(c, ipa, team, dev, udid, bid, games, steps=True):
     """steps=False：不报主进度（出包重叠早装在后台线程里调，进度条归出包）。解 ipa → 改包名 → 申请开发描述文件 → 用玩家 Apple ID 签名 →
     按各款文档根 Documents/games/<游戏号> 拉跑局知识与存档备份 → devicectl 覆盖装（不卸载，Documents 保留）"""
@@ -1545,12 +1571,13 @@ def sign_and_install(c, ipa, team, dev, udid, bid, games, steps=True):
         # 主屏小组件扩展（PlugIns/S2ArmWidget.appex，11-16）：扩展包名跟着主包名（<主包名>.widget）。玩家在设置里关了（widget: false）→ 去掉；
         #   玩家自己的证书只有主程序一份描述文件 → 去掉并提示；Apple ID 签名带上（sign_with_apple_id 申请两份描述文件，哪步不成就去掉重签，绝不因小组件装不上）
         widget = widget_prepare(c, app, bid, devcert=devcert.active(c))
+        from diag import is_vision
+        c.profile_picked = stage / "profile-picked.txt"   # dev_sign 记下这次用了哪份描述文件（手机拒了就挪开它重申）
         if devcert.active(c):   # 玩家自己的开发者证书（v0.2.4）：rcodesign 直接读 p12 签，不申请描述文件、不要 Xcode 账号
             if steps: c.begin("用你的开发者证书签名", 4, 6)
             devcert.sign_app(c, app, log)
             devcert.export_ipa(c, stage / "Payload")
         else:
-            from diag import is_vision
             sign_with_apple_id(c, app, team, bid, ents, udid, log, steps, vision=is_vision(dev), widget=widget)
         if steps: c.begin("装到 iPhone", 5, 6)
         from diag import devicectl
@@ -1558,6 +1585,17 @@ def sign_and_install(c, ipa, team, dev, udid, bid, games, steps=True):
             pull_seen(c, dev["id"], bid, g, udid or dev["id"], docs=game_docs(g))
             backup_saves(c, dev["id"], bid, g, docs=game_docs(g))
         rc, _, err = devicectl(c, "device", "install", "app", "--device", dev["id"], str(app), timeout=1800)
+        if rc and PROFILE_REJECTED in err and not devcert.active(c):
+            # 11-17 #1447 / #1448：手机说这次签名用的描述文件不能用（0xe8008015）——本机核得出的几项都过了、手机仍不认（证书在别处被换掉 / 吊销、
+            #   描述文件被别的工具改过等）：把这次用过的描述文件挪开（不删），按 0.5.1 的做法向 Xcode 申请一份新的、重签、再装一次；仍不认照常报
+            moved = set_aside_profiles(c, c.profile_picked)
+            note(c, f"iPhone 不认这次用的开发描述文件（0xe8008015）：挪开 {len(moved)} 份、重新申请后再签再装一次")  # 非玩家句
+            c.profile_force_request = True
+            try:
+                sign_with_apple_id(c, app, team, bid, ents, udid, log, steps, vision=is_vision(dev), widget=widget and app_has_widget(app))
+            finally:
+                c.profile_force_request = False
+            rc, _, err = devicectl(c, "device", "install", "app", "--device", dev["id"], str(app), timeout=1800)
         if rc:
             # 识别 devicectl 的实际原因，不把额度、配对和开发者模式失败统称签名。
             code = classify(err, default="device_install_failed")
@@ -1632,12 +1670,16 @@ def _sign_or_request(c, sign, bid, team, ents, udid, log, env, steps):
     3 才申请（ensure_profile.sh：xcodebuild 拿这台手机当目标、登记设备，要 Xcode 看得到它）再签一次。
     11-16 诊断 D-44DP：原先每次装机都先申请，Xcode 看不到这台手机（Unable to find a destination）时本机明明有能用的描述文件，主程序也签不成；
     ensure_profile.sh 文件头写的本意就是「签名报退出码 3 时才调」。dev_sign 带 S2A_PROFILE_NEED_UDIDS = 这台，描述文件不含它也算没有"""
-    senv = dict(env or c.env(), S2A_PROFILE_NEED_UDIDS=udid) if udid else env
-    if steps: c.begin("用你的 Apple ID 签名", 4, 6, keychain=True)   # codesign 用钥匙串里的签名身份：可能弹授权（开发者证书模式读 p12，不弹）
-    c.last_rc = 0
-    c.run(sign, log, senv, ok_codes=(0, 3))
-    if c.last_rc != 3:
-        return
+    #   11-17 #1447 / #1448（0.5.2 装上被手机拒 0xe8008015）：不知道这台手机的 UDID 时本机描述文件含不含它核不了 → 不用本机的，先申请（0.5.1 的做法）；
+    #   c.profile_force_request（sign_and_install 手机拒了那份之后重来）同样先申请；c.profile_picked：dev_sign 把用了哪份描述文件记进这个文件
+    picked = getattr(c, "profile_picked", None)
+    senv = dict(env or c.env(), **({"S2A_PROFILE_NEED_UDIDS": udid} if udid else {}), **({"S2A_DEV_SIGN_PICKED": str(picked)} if picked else {}))
+    if udid and not getattr(c, "profile_force_request", False):
+        if steps: c.begin("用你的 Apple ID 签名", 4, 6, keychain=True)   # codesign 用钥匙串里的签名身份：可能弹授权（开发者证书模式读 p12，不弹）
+        c.last_rc = 0
+        c.run(sign, log, senv, ok_codes=(0, 3))
+        if c.last_rc != 3:
+            return
     if steps: c.begin("申请开发描述文件（第一次要几十秒）", 3, 6, keychain=True)   # 用 Xcode 账号申请：可能弹钥匙串授权
     c.run(["bash", c.engine / "pack/ensure_profile.sh", bid, team["id"], ents] + ([udid] if udid else []), log, env)
     if steps: c.begin("用你的 Apple ID 签名", 4, 6, keychain=True)
