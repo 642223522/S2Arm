@@ -164,7 +164,11 @@ int main(int argc, char **argv) {
     snprintf(b, sizeof b, "%s/empty", tmp); bundle(b, NULL, NULL, 0);
     ck(ctr(b, tmp) == 0 && strstr(g_log, "下没有游戏"), "④ 空 Games/：0、红行「下没有游戏」");
     snprintf(b, sizeof b, "%s/miss", tmp); bundle(b, (const char *[]){A, B}, (const int[]){0, 4}, 2);
-    ck(ctr(b, tmp) == 0 && strstr(g_log, "读不到 main.npdm"), "④ 某款缺 main.npdm：0、红行「读不到 main.npdm」");
+    // 通用壳（11-17）：程序没推到这台的款（App 包里没有 main.npdm、也没有程序包）构造期跳过、不拖累别的款：{A, B 缺 main.npdm} → 按 A 32770 MB；
+    //   全部款都没程序 → 0、红行「下没有游戏」。改前：整个容器 0、红行「读不到 main.npdm」
+    ck(ctr(b, tmp) == 32770 && strstr(g_log, "程序不在这台") && strstr(g_log, "1 款取最大 32770 MB"), "④ 某款缺 main.npdm（程序没推到）：跳过它，按其余款 32770 MB，黄行「程序不在这台」");
+    snprintf(b, sizeof b, "%s/missall", tmp); bundle(b, (const char *[]){B}, (const int[]){4}, 1);
+    ck(ctr(b, tmp) == 0 && strstr(g_log, "下没有游戏"), "④ 唯一一款也缺 main.npdm：0、红行「下没有游戏」");
     // ⑤ 只读偏移表（iOS 上 s2a_loader_span_images 用它取各款 x1 块长）
     snprintf(b, sizeof b, "%s/img", tmp); mkdir(b, 0755); game(b, 3, 0, 0);
     snprintf(p, sizeof p, "python3 ios/embed.py '%s' '%s/S2AImages.dylib' main >/dev/null", b, b);
