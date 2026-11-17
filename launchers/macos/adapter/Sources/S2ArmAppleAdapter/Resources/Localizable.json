@@ -6052,6 +6052,26 @@
   "en": "Prepared files are missing or the wrong size, prepare again: {0}"
  },
  {
+  "source": "{0}，先照常启动；起不来的话重新出一次 Mac 版。",
+  "en": "{0}. Starting anyway; if the game won't start, build the Mac version again."
+ },
+ {
+  "source": "请求里带着已停用的旧内存布局设置（vammLayout）",
+  "en": "The request carries the retired old memory layout setting (vammLayout)"
+ },
+ {
+  "source": "起局前这里校验就没过：{0}",
+  "en": "Before launch, this check had already failed: {0}"
+ },
+ {
+  "source": "运行文件 {0} 缺失或大小不符",
+  "en": "Runtime file {0} is missing or the wrong size"
+ },
+ {
+  "source": "运行版本清单对不上（{0}）",
+  "en": "The runtime manifest doesn't match ({0})"
+ },
+ {
   "source": "准备产物校验失败，请重新准备：{0}",
   "en": "Prepared files failed verification, prepare again: {0}"
  },
