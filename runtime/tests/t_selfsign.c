@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "s2a_t_result.h"
 
 int s2a_selfsign_identity(const void *p12, size_t n, const char *password, SecKeyRef *key, CFArrayRef *chain);
 int s2a_selfsign_macho(const uint8_t *in, size_t n, const char *ident, const char *team, const char *appid, SecKeyRef key, CFArrayRef chain, uint8_t **out, size_t *out_n, char *why, size_t why_n);
@@ -101,6 +102,5 @@ int main(void) {
         one_case(dir, key, chain, in, n, NULL);
     }
     char c[600]; snprintf(c, sizeof c, "rm -rf %s", dir); system(c);
-    printf(fails ? "【红】t_selfsign：%d 项不通\n" : "t_selfsign：全部通过\n", fails);
-    return fails ? 1 : 0;
+    return S2A_T_RESULT("t_selfsign", fails);
 }
