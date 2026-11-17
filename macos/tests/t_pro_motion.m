@@ -7,6 +7,7 @@
 #include <assert.h>
 #include <mach/mach_time.h>
 #include <string.h>
+#include <math.h>
 static uint64_t test_us = 1000000;
 static unsigned writes, opens;
 static unsigned support_queries;
@@ -65,6 +66,8 @@ static uint64_t clock_ticks(void) { mach_timebase_info_data_t tb; mach_timebase_
 @property BOOL sensorsRequireManualActivation, hasGravityAndUserAcceleration, hasRotationRate;
 @property(nonatomic) BOOL sensorsActive;
 @property unsigned requests;
+@property GCRotationRate rotationRate;
+@property GCAcceleration gravity, userAcceleration, acceleration;
 @end
 @implementation TestSensor
 - (void)setSensorsActive:(BOOL)value { _sensorsActive = value; _requests++; }
@@ -222,5 +225,17 @@ int main(void) { @autoreleasepool {
     CHECK(writes==before && retains==releases && !references[1] && !references[3],
           "attachment snapshots preserve the passive Pro backend and balance all target references");
     detach_device(dev(1)); atomic_store(&g_want,0);
+    // 六轴样本：DualSense 只给角速度 + 总加速度（不分离重力）也要出样本，排在 HID 之后（返回 1）；分离了重力的校准样本返回 2
+    TestSensor *ds = [TestSensor new]; ds.hasRotationRate = YES;
+    ds.acceleration = (GCAcceleration){0, 0, -1}; ds.rotationRate = (GCRotationRate){M_PI, 0, 0};
+    s2a_pad_motion sample = {0};
+    CHECK(s2a_gc_motion_sample((GCMotion *)ds, &sample) == 1 && sample.acceleration_z == 1.0f && sample.acceleration_x == 0.0f && fabsf(sample.gyro_x - 180.0f) < 1e-3f,
+          "rotation plus total acceleration (DualSense) yields an acceleration-only sample");
+    TestSensor *cal = [TestSensor new]; cal.hasRotationRate = YES; cal.hasGravityAndUserAcceleration = YES;
+    cal.gravity = (GCAcceleration){0, -1, 0}; cal.userAcceleration = (GCAcceleration){0.5, 0, 0}; cal.acceleration = (GCAcceleration){9, 9, 9};
+    CHECK(s2a_gc_motion_sample((GCMotion *)cal, &sample) == 2 && sample.acceleration_x == -0.5f && sample.acceleration_y == 1.0f && sample.acceleration_z == 0.0f,
+          "separated gravity plus user acceleration wins over total acceleration");
+    TestSensor *none = [TestSensor new]; none.hasGravityAndUserAcceleration = YES;
+    CHECK(s2a_gc_motion_sample((GCMotion *)none, &sample) == 0 && s2a_gc_motion_sample(nil, &sample) == 0, "no rotation rate, no sample");
     printf("pro_motion: %u checks, %u failures\n",checks,failed); return failed ? 1 : 0;
 } }

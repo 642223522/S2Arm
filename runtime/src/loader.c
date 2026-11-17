@@ -253,10 +253,10 @@ static void read_layout_text(module_t *m, struct loader_text *text) {
             m->traps = calloc(n ? n : 1, sizeof *m->traps); m->ntrap = 0; trap_cap = (unsigned)n; have_traps = 1;
         }
         else if (!strcmp(key, "TRAP")) {   // # TRAP <偏移> <种类> <寄存器> <原字>
-            char kind[16]; unsigned reg; unsigned long orig; static const char *const kinds[] = {"tpidr_r", "tpidrro_r", "tpidr_w", "ctr"};
+            char kind[16]; unsigned reg; unsigned long orig; static const char *const kinds[S2A_TRAP_NKIND] = {"tpidr_r", "tpidrro_r", "tpidr_w", "ctr", "as_aslr_lo", "as_aslr_hi", "as_stack_lo", "as_stack_hi"};
             if (!have_traps || m->ntrap >= trap_cap || sscanf(line, "# TRAP %lx %15s %u %lx", &v, kind, &reg, &orig) != 4 || reg > 31 || (v & 3))
                 die("%s: TRAP 行格式错或多于 TRAP_SITES", path);
-            int k = -1; for (int j = 0; j < 4; j++) if (!strcmp(kind, kinds[j])) k = j;
+            int k = -1; for (int j = 0; j < S2A_TRAP_NKIND; j++) if (!strcmp(kind, kinds[j])) k = j;
             if (k < 0) die("%s: TRAP 种类 %s 不认", path, kind);
             m->traps[m->ntrap++] = (struct s2a_trap){.off = v, .orig = (uint32_t)orig, .kind = (uint8_t)k, .reg = (uint8_t)reg};
         }
@@ -593,6 +593,8 @@ void s2a_loader_test_relocate(module_t *m) {   // 单测：内存里的合成模
 //   主程序 = 与游戏无关的预编壳，pack/shell_build.sh；镜像包由 ios/embed.py 纯 Python 写 Mach-O）。一块 = 包 + 文件偏移 + 长度
 typedef struct { const s2a_imgpack *pk; uint64_t off; unsigned long len; } blk_t;
 enum { EMB_X0 = S2A_IMG_X0, EMB_W = S2A_IMG_W, EMB_X1 = S2A_IMG_X1, EMB_X2 = S2A_IMG_X2 };
+// 弱链接[host,nvntest]：s2a_prov_hours_left_self（ios/prov_expiry.m 只在 iOS App 里；Mac 宿主与单测链接行按这行放行未定义）
+double s2a_prov_hours_left_self(void) __attribute__((weak_import));   // 本包描述文件剩几小时，读不到 NAN
 static const s2a_imgpack *ext_pack(void) {   // 进程内打开一次；包不在、打不开或签名不过 = 停（iOS 包必有它）
     static const s2a_imgpack *pk; static int done; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
     pthread_mutex_lock(&mu);
@@ -601,6 +603,9 @@ static const s2a_imgpack *ext_pack(void) {   // 进程内打开一次；包不�
         if (!lc) die("外置镜像包：启动上下文不可用：%s", s2a_launch_ctx_error());
         const char *path = lc->images;   // 启动上下文冻结的镜像包（单款兼容 = <可执行文件目录>/Frameworks/S2AImages.dylib，同改造前）
         s2a_imgpack *q = NULL; int rc = s2a_imgpack_open(path, &q, why, sizeof why);
+        // 免费签名 7 天到期后系统拒绝注册签名（#1496：3 局都在描述文件过期 13 小时后，重新签名装机后全好）：直接告诉玩家怎么办
+        if (rc == S2A_IMG_ESIGN && s2a_prov_hours_left_self) { double h = s2a_prov_hours_left_self();
+            if (h < 0) die("签名已过期（描述文件 %.1f 小时前到期，免费 Apple ID 签名 7 天有效）：在电脑上重新签名安装 S2Arm 即可，存档不受影响（%s）", -h, why); }
         if (rc) die("外置镜像包打不开（返回 %d）：%s", rc, why);
         pk = q; done = 1;
         LOG("外置镜像包：%s 已打开、签名已注册（镜像按需映射，不占宿主低区）", path);

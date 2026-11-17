@@ -13,6 +13,7 @@ import argparse
 import contextlib
 import json
 import datetime
+import errno
 import hashlib
 import os
 import plistlib
@@ -723,13 +724,15 @@ def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None, pack_root=Non
     return got.get("files", 0), got.get("mb", 0) << 20
 
 
-def push_cheats(c, device, bid, gid, docs):
+def push_cheats(c, device, bid, gid, docs, mkdir=None):
     """金手指（11-12）：这款文件夹 cheats/ 里的 txt（出包时从公开库取的 + 玩家导入的）拷到机上本款文档根 cheats/，
     游戏内金手指菜单（ios/vpad_cheats.m）与服务层 Cheats.cs 读那里；改代码的条目出包时已编进包。开关 enabled.txt / 状态 status.txt 不推（不盖玩家在手机上的选择）。
     拷不进只记黄、不挡装机"""
     import cheats
     d = cheats.cheats_dir(c, gid.upper(), create=False)
     files = [f for f in layout.entries(d, "*.txt") if f.name not in cheats.SKIP]   # ._<名>.txt（exFAT 附属文件）不推进手机金手指目录
+    if files and mkdir:   # devicectl 会代建缺的目录，iOS 26.x 上代建的归 root、App 写不进开关文件（a48655）：先以 App 身份（s2a-devpush）建好；建不成照旧拷
+        mkdir(f"{docs}/cheats")
     bad = 0
     for f in files:
         r = subprocess.run(["xcrun", "devicectl", "device", "copy", "to", "--device", device, "--domain-type", "appDataContainer",
@@ -943,10 +946,51 @@ def wait_unlocked(c, call):
     return rc, data, err
 
 
+# 存档备份失败时先分清两种玩家能看懂、能处理的情况，不笼统报「确认不了 / 读不到」（维护者 11-17：玩家更新手机上的 S2Arm 时卡在备份）：
+#   ① 这台 Mac 磁盘满（devicectl 结果写不下、拉回的存档写不下）→ 说清「Mac 空间不够」、腾出多少再试，仍可确认后照装；
+#   ② 玩家开了云存档、这款在 iCloud 云存档文件夹里有快照 → 覆盖装 App 不碰 iCloud 里那份，如实说一句、照装（不是删检查：手机上的本地存档照常备份，只有备份不成时才看云端）。
+#   云存档文件夹由 Mac 启动器随请求带（cloudSavesFolder，玩家在环境页选的同一个；SaveSync CloudSaveFolder：<文件夹>/S2Arm Saves/<程序号大写>/head-<设备>.json）
+BACKUP_FREE_GB = 1   # 磁盘满时请玩家至少腾出的空间：存档本身一般几 MB 到几十 MB，余量给 devicectl 结果文件与装机临时文件
+
+
+def cloud_save_copy(c, gid):
+    """这款在云存档文件夹里有快照 → 最新那份 head 的修改时刻（time.struct_time）；没开云存档 / 没有 / 读不了 → None。
+    iCloud 还没下载到这台 Mac 的 head 是占位文件 .head-<设备>.json.icloud，同样算有"""
+    folder = c.r.get("cloudSavesFolder")
+    if not folder or not gid:
+        return None
+    d = Path(folder) / "S2Arm Saves" / gid.upper()
+    try:
+        heads = [p for p in d.iterdir() if (p.name.startswith("head-") and p.name.endswith(".json"))
+                 or (p.name.startswith(".head-") and p.name.endswith(".json.icloud"))]
+        return time.localtime(max(p.stat().st_mtime for p in heads)) if heads else None
+    except (OSError, ValueError):
+        return None
+
+
+def mac_free_mb(c):
+    try:
+        return shutil.disk_usage(c.private).free >> 20
+    except OSError:
+        return -1
+
+
+def save_backup_stuck(c, gid, why, nospace=False):
+    """备份做不成时的出口：云端有这款的快照 → 记一笔照装（返回 None）；磁盘满 → 按「Mac 空间不够」问玩家；其余照旧 backup_failed"""
+    at = cloud_save_copy(c, gid)
+    if at:
+        c.emit("message", "这款存档在 iCloud 云存档里有一份（{0}），覆盖装不会碰它：这次不另备份，照装".format(time.strftime("%Y-%m-%d %H:%M", at)))
+        note(c, f"覆盖装前没能备份手机上的存档（{why}），云存档里有这款的快照，照装")  # 非玩家句
+        return None
+    if nospace:
+        why = "这台 Mac 空间不够，存档备份放不下（只剩 {0} MB）：腾出 {1} GB 再试，或者确认后继续".format(mac_free_mb(c), BACKUP_FREE_GB)
+    return backup_failed(c, why)
+
+
 def backup_saves(c, ident, bid, gid, docs="Documents"):
     """覆盖装前把机上这款的整个存档目录（bis/user/save）逐文件拉回游戏库 games/<程序号>/save_backup/<时刻>/（10-27 运维线：
     斯普拉遁3 体感包覆盖装后进了选形象页，原档没有备份、无从比对）。第一次装 / 机上没有存档 = 不备份；拉失败报红停装，宁可不装也不冒丢档的险"""
-    from diag import devicectl
+    from diag import DEVICECTL_NOSPACE, devicectl
     save_dir = f"{docs}/{SAVE_REL}"
     rc, data, err = wait_unlocked(c, lambda: devicectl(c, "device", "info", "files", "--device", ident, "--domain-type", "appDataContainer",
                                                        "--domain-identifier", bid, "--subdirectory", save_dir, timeout=120))
@@ -958,27 +1002,35 @@ def backup_saves(c, ident, bid, gid, docs="Documents"):
              if p and not p.rsplit("/", 1)[-1].startswith(".")]
     if not rc and unknown:
         print(f"[s2a] 存档文件清单有 {len(unknown)} 条读不出路径，字段：{unknown[0]}", file=sys.stderr)
-        return backup_failed(c, f"读不懂 iPhone 返回的存档文件清单（{len(unknown)} 条没有路径字段，多半是 Xcode 版本不同）")
+        return save_backup_stuck(c, gid, f"读不懂 iPhone 返回的存档文件清单（{len(unknown)} 条没有路径字段，多半是 Xcode 版本不同）")
+    if rc == DEVICECTL_NOSPACE:
+        return save_backup_stuck(c, gid, err, nospace=True)
     if rc:
         # 列不出：App 不在机上（第一次装）才算没有存档；App 在却列不出要分清两种——devicectl 对「目录不存在」和「锁屏 / 隧道断」报同一个错
         #   （11-07 满屏线 Duo 实测：容器第一次装半途失败 / 从没进过游戏，机上 Documents/games 是空目录，原先每次都拒装、玩家永久卡死）。
         #   往上逐级列父目录，第一个列得出的父目录定：里面看不到存档目录 = 没有存档，照装；看得到却列不出 / 父目录一个都列不出 = 停装
         arc, apps, aerr = wait_unlocked(c, lambda: devicectl(c, "device", "info", "apps", "--device", ident, "--bundle-id", bid, timeout=60))
         if arc:   # 连「装没装过」都问不出（锁屏 / 超时 / 断开）：不能当成第一次装，否则跳过备份直接覆盖（#333）
-            return backup_failed(c, "确认不了 iPhone 上有没有装过这款：" + (aerr.splitlines()[-1] if aerr else f"devicectl 退出 {arc}"))  # 非玩家句
+            return save_backup_stuck(c, gid, "确认不了 iPhone 上有没有装过这款：" + (aerr.splitlines()[-1] if aerr else f"devicectl 退出 {arc}"), nospace=arc == DEVICECTL_NOSPACE)  # 非玩家句
         if any(a.get("bundleIdentifier") == bid for a in (apps.get("result") or {}).get("apps") or []):
             if not save_dir_absent(c, ident, bid, save_dir):
-                return backup_failed(c, "读不到 iPhone 上这款的存档目录：" + (err.splitlines()[-1] if err else f"devicectl 退出 {rc}"))  # 非玩家句
+                return save_backup_stuck(c, gid, "读不到 iPhone 上这款的存档目录：" + (err.splitlines()[-1] if err else f"devicectl 退出 {rc}"))  # 非玩家句
         return None
     if not files:
         return None
     dest = layout.path(c, gid, "save_backup", time.strftime("%Y%m%d-%H%M%S"))
     for rel in files:
-        (dest / rel).parent.mkdir(parents=True, exist_ok=True)
+        try:
+            (dest / rel).parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            if e.errno != errno.ENOSPC:
+                raise
+            return save_backup_stuck(c, gid, str(e), nospace=True)
         rc, _, err = devicectl(c, "device", "copy", "from", "--device", ident, "--domain-type", "appDataContainer", "--domain-identifier", bid,
                                "--source", f"{save_dir}/{rel}", "--destination", str(dest / rel), timeout=120)
         if rc or not (dest / rel).is_file():
-            return backup_failed(c, f"拉存档失败（{rel}）：" + (err.splitlines()[-1] if err else f"devicectl 退出 {rc}"))  # 非玩家句
+            return save_backup_stuck(c, gid, f"拉存档失败（{rel}）：" + (err.splitlines()[-1] if err else f"devicectl 退出 {rc}"),  # 非玩家句
+                                     nospace=rc == DEVICECTL_NOSPACE)
     return dest
 
 
@@ -1058,6 +1110,106 @@ def export_dir(c):
 def wants_export(c):
     """这次按导出走：请求带 mode = export（游戏库「导出自签包」、完成页「这次改为导出自签」、S 级优化升级页「自签导出」）；没带 = 一键装"""
     return c.r.get("mode") == "export"
+
+
+S2ARM_SUFFIX = ".s2arm"
+S2ARM_FORMAT = "s2arm"   # .s2arm 第一个条目 s2arm.json 的 format 字段（手机导入按它认文件）
+# 游戏库根的固定文件夹（11-17 维护者定，单独一个、不放进 0.5.x 的「S2Arm 自签导出」：那里几 GB 的整包 0.6.0 起该删，放一起玩家分不清）。
+#   只按第一次建的时候的界面语言选名字；库根已有其中一个就一直用它，换界面语言也不建第二个
+S2ARM_DIRS = {"zh": "S2Arm 游戏包", "en": "S2Arm Game Packs"}  # 非玩家句
+
+
+S2ARM_READMES = {"zh": "怎么导入.txt", "en": "How to import.txt"}  # 非玩家句
+# 「S2Arm 游戏包」文件夹自己的说明（11-17 维护者定稿，只这三件事；「放这里导入」英文同 iOS 端 img.importFolder「Import Here」）
+S2ARM_README_TEXT = {
+    "zh": "点开 .s2arm 文件，在 S2Arm 里导入这款游戏。第一次导入这款时，还要把游戏库里的 game.img 放进 iPhone 上 S2Arm 的「放这里导入」文件夹"  # 非玩家句（说明文件按界面语言直接写，英文见下一项）
+          "（启动器里「显示资源文件」能找到它）。.s2arm 删了，在启动器里再导出一次就有。\n",
+    "en": "Open the .s2arm file to import the game into S2Arm. The first time you import a game, also put its game.img from the library into the "
+          "“Import Here” folder of S2Arm on your iPhone (“Show resource file” in the launcher finds it). If you delete a .s2arm file, just export it again from the launcher.\n",
+}
+
+
+def s2arm_dir(c):
+    for name in S2ARM_DIRS.values():
+        if (c.library / name).is_dir():
+            return c.library / name
+    return c.library / S2ARM_DIRS[ui_lang(c)]
+
+
+def s2arm_name(c, gid):
+    """<游戏名>.s2arm（同 _img_name 的取名）；游戏库里有别款同名时带上 [游戏号尾 4 位]，免得两款互相覆盖"""
+    games = c.catalog()["games"]
+    name = next((g.get("name") for g in games if g["id"].upper() == gid.upper()), "") or ""
+    base = _BAD_NAME.sub(" ", name).strip().strip(".") or gid
+    clash = sum(1 for g in games if (_BAD_NAME.sub(" ", g.get("name") or "").strip().strip(".") or g["id"]).lower() == base.lower()) > 1
+    return (f"{base} [{gid[-4:]}]" if clash else base) + S2ARM_SUFFIX
+
+
+def export_s2arm(c, gid):
+    """0.6.0 通用壳（开关后面）两件套导出里的小游戏包 .s2arm（《文件与程序管理体系》B 项、⑦ ①，11-17 维护者定）：
+    tar（只用 ustar、只有普通文件条目；路径放不进 ustar 就报错）整体压一个带内容校验的 zstd 帧；
+    第一个条目 s2arm.json（格式、程序号、名字版本、约定号、改写器指纹、程序 sha、资源包号、bytes = 其余条目内容字节合计、signer），
+    program/（同推送的程序包：dylib、Games/<号>/、catalogue.json，未签名，留给手机签），pack/（资源包目录里除 game.img 以外的派生件）。
+    资源本体 game.img 不拷：结果给出它在游戏库里的原位置（界面「显示资源文件」）。放游戏库根的固定文件夹（s2arm_dir），
+    不加锁不加权限，玩家删了下次导出重新生成；只换这一款自己的 .s2arm，同文件夹里别的东西不动。这一款的改写、出程序包都在这里前台按需做"""
+    import hashlib, io as _io, tarfile
+    import program_pack
+    import ipa as packer
+    from rewrite_refresh import refresh_ios
+    gid = gid.upper()
+    c.begin("准备这款的程序（按需更新）", 1, 3)
+    pack = ios_pack(c, gid)
+    with packer.program_locks(c, [gid]):
+        refresh_ios(c, [gid])
+        pkg = Path(program_pack.build(c, gid))
+        meta = json.loads((pkg / program_pack.META).read_text(encoding="utf-8"))
+        image = pkg / program_pack.image_name(gid)
+        cat = program_pack.catalogue(gid, meta, image, None)
+        c.begin("打包 .s2arm", 2, 3)
+        files = [("program/" + p.relative_to(pkg).as_posix(), p) for p in sorted(pkg.rglob("*"))
+                 if p.is_file() and p.name not in (program_pack.META, program_pack.KEY)]
+        derived = [("pack/" + p.relative_to(pack).as_posix(), p) for p in sorted(Path(pack).rglob("*"))
+                   if p.is_file() and p.relative_to(pack).as_posix() != "game.img"]
+        manifest = read(Path(pack) / "manifest.json", {})
+        cat_bytes = json.dumps(cat, ensure_ascii=False, indent=1).encode("utf-8")
+        total = len(cat_bytes) + sum(p.stat().st_size for _, p in files + derived)   # 解压后其余条目内容字节合计（手机导入前看空间、显示进度）
+        head = dict(format=S2ARM_FORMAT, schema=1, title_id=gid, name=cat["name"], display_version=cat["display_version"],
+                    host_abi=cat["host_abi"], chain=cat["chain"], rewriter_id=cat["rewriter_id"], image=cat["image"],
+                    image_sha256=cat["image_sha256"], source_sha256=cat["image_sha256"], pack=(manifest or {}).get("index_sha256", ""),
+                    bytes=total, signer=None)
+        buf = _io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as t:
+            def add(name, data=None, path=None):
+                info = tarfile.TarInfo(name)
+                info.mode, info.mtime = 0o644, 0
+                if path is not None:
+                    info.size = path.stat().st_size
+                    with open(path, "rb") as f:
+                        t.addfile(info, f)
+                else:
+                    info.size = len(data)
+                    t.addfile(info, _io.BytesIO(data))
+            try:
+                add("s2arm.json", json.dumps(head, ensure_ascii=False, indent=1).encode("utf-8"))
+                add("program/catalogue.json", cat_bytes)
+                for name, p in files + derived:
+                    add(name, path=p)
+            except ValueError as e:   # ustar 放不下的路径（name 100 + prefix 155）：不改用 pax / GNU 长名（手机只认 ustar）
+                raise Failure(f"{gid} 有文件路径太长，打不进 .s2arm：{e}", code="job_failed") from e  # 非玩家句
+    c.begin("写进「S2Arm 游戏包」文件夹", 3, 3)
+    import programs
+    data = programs._compress(buf.getvalue(), checksum=True)   # 带内容校验（与 iOS 导入侧对定）；核数只在 programs 里取（tools/pool_size_lint.py 白名单）
+    folder = s2arm_dir(c)
+    folder.mkdir(parents=True, exist_ok=True)   # 玩家删了文件夹也照样重建；不设特殊权限
+    out = folder / s2arm_name(c, gid)
+    tmp = folder / f".{out.name}.{os.getpid()}.partial"
+    tmp.write_bytes(data)
+    os.replace(tmp, out)
+    lang = ui_lang(c)   # 这份文件夹的说明（玩家删了下次导出照样写回）
+    (folder / S2ARM_READMES[lang]).write_text(S2ARM_README_TEXT[lang], encoding="utf-8-sig" if os.name == "nt" else "utf-8")
+    game_img = Path(pack) / "game.img"
+    return dict(gameId=gid, s2armPath=str(out), s2armBytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
+                resourcePath=str(game_img) if game_img.is_file() else "", exported=True)
 
 
 def _img_name(name, gid, used):
@@ -1929,7 +2081,10 @@ class MacPhone:
     def push(self, g, pack):
         n0 = len(self.c.job["diagnostics"])
         r = push_pack(self.c, self.dev["id"], self.bid, pack, udid=self.udid, docs=game_docs(g), ctx=game_ctx(g), pack_root=pick_pack_root(self.c, self, g))
-        push_cheats(self.c, self.dev["id"], self.bid, g, game_docs(g))
+        with tempfile.TemporaryDirectory(dir=self.c.private) as w:
+            try: dp = self.client(w) if self.udid else None
+            except Failure: dp = None
+            push_cheats(self.c, self.dev["id"], self.bid, g, game_docs(g), mkdir=dp.mkdir if dp else None)
         hit = [d for d in self.c.job["diagnostics"][n0:] if d.get("code") == "manual_unpack_required"]   # push_pack 按「需要玩家操作」收尾时记的那条
         if hit: self.pending = hit[-1].get("summary") or ""
         return r
@@ -2139,6 +2294,11 @@ class WinPhone:
     def purge(self, g):
         with tempfile.TemporaryDirectory(dir=self.c.private) as w:
             return purge_game(self.client(w), g)
+
+
+def sign_mode(c):
+    """这次用什么签的 App（设备记录 signed.mode，总控台写签名方式）：自己的开发者证书 → devCert；Apple ID（Xcode / Impactor）→ appleId"""
+    return "devCert" if devcert.active(c) else "appleId"
 
 
 def phone_for(c):
@@ -2397,7 +2557,7 @@ def put_game(c, gid, ph, steps=True, others=None, skipped=()):
     finally:   # 推到一半失败：已推好的记下，没推的下次照推
         rec = layout.load_device(c, ph.key)
         # signed：这次签名（游戏库页的「还有几天到期 / 续签」读 layout.install_record）：免费账号的描述文件 7 天到期，容器里每款同一次签名
-        signed = dict(signed=dict(at=time.time(), free=bool(ph.info["free"]), device=ph.info["device"])) if "free" in ph.info and not skipped else {}   # 跳过安装 = 没重签：到期时间照旧
+        signed = dict(signed=dict(at=time.time(), free=bool(ph.info["free"]), device=ph.info["device"], mode=sign_mode(c))) if "free" in ph.info and not skipped else {}   # 跳过安装 = 没重签：到期时间照旧
         layout.save_device(c, ph.key, dict(rec, games={g: dict(pack=pushed[g], **({"mods": modset[g]} if modset[g] else {})) for g in games},
                                            deleted=[g for g in rec.get("deleted") or [] if g not in games], shellId=sid, bundleId=ph.bid or rec.get("bundleId", ""), at=time.time(),
                                            staleAgreed={sid: left_out} if left_out else {}, **signed))
@@ -2535,16 +2695,38 @@ def phone_busy(ph, games):
     return got is not False
 
 
-IDENTITY_INCOMING = "Library/Application Support/S2Arm/identity/incoming"   # App 启动时导入钥匙串、导入成功就删（手机侧，0.6.0）
+# App 一打开就导入钥匙串、立刻删这三份（11-17 维护者：私钥是玩家自己的，进他自己账号的加密备份也无妨，不另放 Caches）。
+#   已交没交按手机上的现状判：App 导入后写的 current.json / 还没导入的 incoming 清单里是同一张证书就不重交
+IDENTITY_INCOMING = "Library/Application Support/S2Arm/identity/incoming"
+IDENTITY_CURRENT = "Library/Application Support/S2Arm/identity/current.json"   # App 导入成功后写（团队号、证书 sha1，不含私钥）
+
+
+def _identity_on_phone(c, ph, sha1):
+    """手机上这张证书已导入（current.json）或还等着导入（incoming/identity.json）→ True；都没有（从没交过 / App 删了重装）→ False"""
+    if not sha1:
+        return False
+    with tempfile.TemporaryDirectory(dir=c.private) as w:
+        cl = ph.client(w)
+        for rel in (IDENTITY_CURRENT, f"{IDENTITY_INCOMING}/identity.json"):
+            got = Path(w) / "probe.json"
+            if cl.get(rel, got):
+                try:
+                    if json.loads(got.read_text(encoding="utf-8")).get("cert_sha1") == sha1:
+                        return True
+                except ValueError:
+                    pass
+    return False
 
 
 def deliver_identity(c, ph):
-    """0.6.0 通用壳：把手机自签要的私钥 + 叶证书交给 App（cmdr 方案「私钥怎么交给 App」，开发乙 11-17 真机验过 DER 两份能配成签名身份）。
+    """0.6.0 通用壳：把手机自签要的私钥 + 叶证书交给 App（cmdr 方案「私钥怎么交给 App」，11-17 真机验过 DER 两份能配成签名身份）。
     只走本机 USB（s2a-devpush），写进 App 数据容器 IDENTITY_INCOMING：key.der（PKCS#1）、cert.der、最后改名就位的 identity.json（不含私钥）。
+    通用壳开关关着（0.6.0 前缺省）一个字节都不写。
     交得出的只有 Windows Apple ID 模式（Impactor / plumesign 的 keys/<团队>/key.pem）；Mac 现在借 Xcode 钥匙串、证书模式另做，都照旧电脑签。
-    设备记录 identity.key_fp 与本机私钥文件指纹相同 = 交过了，不联网列证书、不重交。交不出 / 推不进都不挡推送：记一行，照旧电脑签。→ 交了的证书 sha1 | None"""
+    设备记录 identity.key_fp 与本机私钥文件指纹相同、且手机上已导入或还等着导入同一张证书 = 交过了，不联网列证书、不重交。交不出 / 推不进都不挡推送：记一行，照旧电脑签。→ 交了的证书 sha1 | None"""
     import hashlib
-    if not hasattr(ph, "W") or devcert.active(c):   # 只有 Windows 的手机对象（WinPhone）带 W（Impactor / plumesign）
+    import program_pack
+    if not program_pack.enabled(c) or not hasattr(ph, "W") or devcert.active(c):   # 开关关着一个字节都不写；只有 Windows 的手机对象（WinPhone）带 W
         return None
     try:
         team = ph.W.impactor.selected_team()
@@ -2552,8 +2734,8 @@ def deliver_identity(c, ph):
         if not fp:
             return None
         done = layout.load_device(c, ph.key).get("identity") or {}
-        if done.get("team") == team and done.get("key_fp") == fp:
-            return None
+        if done.get("team") == team and done.get("key_fp") == fp and _identity_on_phone(c, ph, done.get("cert_sha1")):
+            return None   # 同一把私钥、手机上已导入或还等着导入：不联网、不重交
         exe = ph.W.plumesign_path((ph.W.impactor.bundled(c.r.get("resources")) or {}).get("plumesign"))
         ident = ph.W.plume_identity(exe, team, log=c.logs / (c.task + "-identity.log")) if exe else None
         if not ident:
@@ -2630,6 +2812,56 @@ def push_game(c, gid, ph, steps=True):
     return dict(bundleId=ph.bid, games=[gid], packFiles=files, packBytes=size, **ph.info, **extra, openToFinish=True)
 
 
+PUSH_SELECTED = "push_selected.json"   # 「更新所选」这一轮的进度（私有目录）：{device, games, done, failed}，续推按它接着来
+# 换哪一款都一样做不下去的：手机上没装 / 壳不是本版、手机断开或没准备好——整轮停下报这个原因；别的失败只记这一款、接着推下一款
+PUSH_SELECTED_STOP = ("shell_install_required", "shell_update_required", "device_not_connected", "device_not_ready", "device_required")
+
+
+def push_selected(c):
+    """作业 pushSelected（总控台「更新所选」，0.6.0 通用壳）：所选几款按顺序各推一次（同单款「推到 iPhone」：push_game，只做这一款、要改写就前台改写）。
+    一款失败记下原因、接着推下一款；换哪款都做不下去（PUSH_SELECTED_STOP）才整轮停。玩家点停 = 取消作业，推完的留着。
+    每推完一款记一次进度：请求带 resume: true 就从上一轮没推成的（没推到的 + 失败的）接着推；带 gameIds 就开新一轮。
+    → {games: [{gameId, ok, code?, message?}], done, failed, remaining}；开关关着 → {enabled: False}"""
+    import program_pack
+    from core import Cancelled
+    if not program_pack.enabled(c):
+        return dict(enabled=False)
+    state_path = c.private / PUSH_SELECTED
+    with packer_phone_lock(c):
+        c.begin("找签名账号与 iPhone", 1, 1)
+        ph = phone_for(c)
+        if c.r.get("resume") is True:
+            old = read(state_path, {}) or {}
+            games = [g for g in old.get("games") or [] if g not in (old.get("done") or [])] if old.get("device") == ph.key else []
+        else:
+            games = list(dict.fromkeys(str(g).upper() for g in c.r.get("gameIds") or []))
+        state = dict(device=ph.key, games=games, done=[], failed={})
+        atomic(state_path, state)
+        rows = []
+        for i, g in enumerate(games, 1):
+            c.check()
+            c.begin("按顺序把所选游戏推到 iPhone", i, len(games), key="pushSelected")
+            c.emit("progress", "", done=i - 1, total=len(games), current=g)   # 前端按 current（游戏号）标正在推的那一行（gameId 是作业自带的键）
+            try:
+                push_game(c, g, ph, steps=False)
+                state["done"].append(g); state["failed"].pop(g, None)
+                rows.append(dict(gameId=g, ok=True))
+            except Cancelled:
+                raise
+            except Failure as e:
+                if e.code in PUSH_SELECTED_STOP:
+                    raise
+                state["failed"][g] = dict(code=e.code, message=str(e))
+                rows.append(dict(gameId=g, ok=False, code=e.code, message=str(e)))
+            except Exception as e:   # 这一款的意外错误：记下、接着推下一款（日志里有完整原因）
+                trace(c, f"{g} 推送出错：{type(e).__name__} {str(e)[:300]}")  # 非玩家句
+                state["failed"][g] = dict(code="job_failed", message=str(e)[:300])
+                rows.append(dict(gameId=g, ok=False, code="job_failed", message=str(e)[:300]))
+            finally:
+                atomic(state_path, state)
+    return dict(enabled=True, games=rows, done=len(state["done"]), failed=len(state["failed"]), remaining=len(games) - len(state["done"]))
+
+
 def install_shell(c, ph, steps=True):
     """通用壳「安装 / 续签 / 更新 S2Arm」（program_pack.enabled）：只组只有壳的容器、签名、装壳，绝不推任何一款的程序包与资源包（11-17 维护者定）。
     手机上已是这一版壳、签名离到期还早（same_app）→ 不装，updated = False。装上后记壳号、包名、签名时刻；各款记录原样留着（程序包在手机上不受装壳影响）"""
@@ -2643,7 +2875,7 @@ def install_shell(c, ph, steps=True):
     if steps: c.begin("签名并装到 iPhone", 3, 3)
     ph.install(ipa, [], steps=False)
     rec = layout.load_device(c, ph.key)
-    signed = dict(signed=dict(at=time.time(), free=bool(ph.info["free"]), device=ph.info["device"])) if "free" in ph.info else {}
+    signed = dict(signed=dict(at=time.time(), free=bool(ph.info["free"]), device=ph.info["device"], mode=sign_mode(c))) if "free" in ph.info else {}
     layout.save_device(c, ph.key, dict(rec, shellId=sid, bundleId=ph.bid or rec.get("bundleId", ""), at=time.time(), **signed))
     packer.commit_phone_ipa(c, ipa, sid)
     return dict(updated=True, outputPath=str(layout.phone_ipa(c)), bundleId=ph.bid, games=[], toShell=sid, **ph.info)
@@ -2939,6 +3171,8 @@ def _install(c):
             raise Failure(f"这款用的是 {scheme['name']} 方案（独立 App），现在只能「装到 iPhone」，还不能导出自签包。", code="downstream_export_unsupported")
         return downstream.install_ios(c, next((g for g in c.catalog()["games"] if g["id"].upper() == gid.upper()), dict(id=gid)), scheme)
     ios_pack(c, gid)
+    if wants_export(c) and gid and __import__("program_pack").enabled(c):   # 0.6.0 通用壳：一款导出成小游戏包 .s2arm + 资源本体原位（两件套）
+        return export_s2arm(c, gid)
     if wants_export(c):   # 这次是「导出自签包」：不连手机、不签名，出到文件夹；推不推到手机由玩家在完成页选（exportPush）
         return export_phone(c, gid)
     c.begin("找签名账号与 iPhone", 1, 6)

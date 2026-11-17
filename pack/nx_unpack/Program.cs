@@ -115,7 +115,7 @@ static partial class P {
     // 任何没被专门接住的异常翻译成「能照做的红字 + 分类码」。分类码是给普查 / 日志聚合看的，不参与成功判定。
     //   异常链里每一个（含并行读包 AggregateException 的全部 inner）各分一次类，按 Prio 取最具体的那个（#772 F-nxunpack-leaf-first：
     //   原先只顺着第一条 inner 走到底，缺密钥 / 容器坏排在第二条时记成 internal，普查和「内部错误」混在一起）
-    static readonly string[] Prio = { "disk_full", "access_denied", "ticket_missing", "keys_missing", "hash_mismatch", "container_invalid", "out_of_range", "io", "oom", "hresult", "source", "usage", "internal" };
+    static readonly string[] Prio = { "disk_full", "access_denied", "ticket_missing", "keys_missing", "keys_wrong", "hash_mismatch", "container_invalid", "out_of_range", "io", "oom", "hresult", "source", "usage", "internal" };
     static (string Code, string Message) Explain(Exception e) {
         (string Code, string Message) best = ExplainOne(e); int bi = Array.IndexOf(Prio, best.Code);
         foreach (Exception x in Chain(e)) { var r = ExplainOne(x); int i = Array.IndexOf(Prio, r.Code); if (i < bi) { best = r; bi = i; } }
@@ -150,6 +150,8 @@ static partial class P {
                 return ("ticket_missing", "缺少内容对应的票据或标题密钥，请检查源文件是否完整");
             case LibHac.Common.Keys.MissingKeyException m:
                 return ("keys_missing", $"prod.keys 里没有 {m.Name}：这款游戏用了更新的密钥版本，要用系统版本更新的 Switch 重新导出 prod.keys（{first}）");
+            case HorizonResultException h when MagicFail(h):
+                return ("keys_wrong", $"解出来的数据对不上（分区头不是 PFS0 / HFS0，{first}）：多半是 prod.keys 里这款用的那一代密钥不对（文件改过不会这样，只会哈希对不上）。请用升级到最新系统的 Switch 重新导出 prod.keys 再导入");
             case HorizonResultException h when h.Message.Contains("VerificationFailed"):
                 return ("hash_mismatch", $"源文件数据哈希校验不过（{first}）：文件被改过（如合进改版资源的整合版）或损坏，换一份原版完整的文件");
             case HorizonResultException h:
@@ -182,9 +184,14 @@ static partial class P {
     // 哈希错可能被并行读包在 AggregateException 里（10-26 普查：RomFS 分卷并行读时崩成 rc=134 调用栈，上面的红没接住）；
     //   10-28 #633：原先只看 InnerExceptions[0]，并行里多条任务同时失败时哈希错可能排在后面 → 仍然漏成 134，改成看全部
     static HorizonResultException HashFail(Exception e) {
-        foreach (Exception x in Chain(e)) if (x is HorizonResultException h && h.Message.Contains("VerificationFailed")) return h;
+        foreach (Exception x in Chain(e)) if (x is HorizonResultException h && h.Message.Contains("VerificationFailed") && !MagicFail(h)) return h;
         return null;
     }
+    // 分区头魔数对不上（LibHac PartitionFileSystemMeta：开头不是 PFS0 / HFS0 → PartitionSignatureVerificationFailed 2002-4644；名字叫「签名」其实是魔数）：
+    //   解密后的分区开头是乱码 = 解密用的密钥不对（prod.keys 里这款那一代的密钥 / 标题密钥）。改版文件不会这样（只会哈希对不上）。
+    //   #1511：原先当哈希不符降级重跑，跳过校验照样是乱码，再报 hash_mismatch 叫玩家换文件；按「真解不开」报真原因（keys_wrong）
+    static bool MagicFail(HorizonResultException h) => h.ResultValue == LibHac.Fs.ResultFs.PartitionSignatureVerificationFailed.Value
+        || h.ResultValue == LibHac.Fs.ResultFs.Sha256PartitionSignatureVerificationFailed.Value;
     // #787：哈希校验不过只有一行原因，玩家分不出坏的是本体、更新还是 DLC，也分不出是整合包改过还是解包器的问题。
     //   报红后补两行：读到坏块时在读什么（阶段 + 文件 + 文件内偏移，ReadPlace 包在异常链里），再把本次用到的内容逐个整份核对一遍、
     //   逐段写通过 / 不过（只在失败时做，读一遍全部内容，大游戏要几分钟）
@@ -247,6 +254,10 @@ static partial class P {
         if (Environment.GetEnvironmentVariable("S2A_NXUNPACK_TEST_THROW") == "agg-hash") {   // #787：并行里第二条是带位置的真 2002-4604
             Exception hash = null; try { ResultFs.NonRealDataVerificationFailed.Value.ThrowIfFailure(); } catch (Exception x) { hash = x; }
             throw new AggregateException(new Exception("并行任务一：普通异常"), new ReadPlace("文件 romfs/x.bin，文件内偏移 7（读 16 字节）", hash));
+        }
+        if (Environment.GetEnvironmentVariable("S2A_NXUNPACK_TEST_THROW") == "magic") {   // #1511：真的 2002-4644（分区头魔数不对 = 解出来是乱码）
+            Exception magic = null; try { ResultFs.PartitionSignatureVerificationFailed.Value.ThrowIfFailure(); } catch (Exception x) { magic = x; }
+            throw magic;
         }
         if (a.Length == 2 && a[0] == "--npdm-isa") return NpdmIsaCli(a[1]);   // 不要密钥：只读一份已解出的 main.npdm
         if (a.Length == 3 && a[0] == "--nso-normalize") {   // 不要密钥：一份 NSO 解成段不压缩（ZBIC 才动，别的原样拷），给 Switch 2 导出目录 / NUP 路径（pack/ns2_dump.py）用

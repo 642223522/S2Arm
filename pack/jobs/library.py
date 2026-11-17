@@ -1127,6 +1127,9 @@ def inspect(c, source, icon_dir, keyfile=None, *, source_id=None):
             raise Failure("缺少内容对应的票据或标题密钥，请检查源文件是否完整。", code="ticket_missing") from None
         if any(line.startswith("【原因 keys_missing】") for line in lines):  # 非玩家句
             raise Failure("现有 prod.keys 缺少读取此文件所需的密钥。", code="keys_outdated") from None
+        # 解出来的数据对不上（分区头魔数不对，#1511）：prod.keys 里这款那一代的密钥不对，同「缺密钥」让玩家重新导出 prod.keys，原话说清是解不开、不是文件被改过
+        if any(line.startswith("【原因 keys_wrong】") for line in lines):  # 非玩家句
+            raise Failure("现有 prod.keys 解不开这份文件：解出来的数据对不上，多半是这款用的那一代密钥不对。请用升级到最新系统的 Switch 重新导出 prod.keys 再导入。", code="keys_outdated") from None
         # 读取器自己给了确定原因（「【原因 hash_mismatch】源文件数据哈希校验不过…换一份原版完整的文件」等，pack/nx_unpack Inspect.cs / Program.cs）：
         #   照它的原话报，不再落到「文件不完整、缺票据或密钥不匹配」三选一的猜测（#1008：本体哈希校验不过，玩家被指去查密钥）
         reason = next((line.split("】", 1)[1].strip() for line in lines if line.startswith("【原因 ") and "】" in line and line.split("】", 1)[1].strip()), "")  # 非玩家句

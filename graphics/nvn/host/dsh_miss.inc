@@ -74,6 +74,10 @@ static int dsh_stage_raw(const uint8_t *cd, const uint8_t *ctl, uint32_t *ncode,
         int st = ctl[0x56] == 0 ? 0 : ctl[0x56] == 1 ? 1 : ctl[0x56] == 5 ? 2 : ctl[0x56] == 2 ? 3 : ctl[0x56] == 6 ? 4 : ctl[0x56] == 7 ? 5 : -1;   // 4 / 5 = S2A.Dsh 的 ts / ms（11-05 时之笛 11aa3147be208368 阶段字节 6 不能现编）
         return !*ncode || *ncode >= (1u << 24) ? -1 : st;
     }
+    if (nvn2_on()) {   // Switch 2 进程里控制段不是认得的 NVN2 格式（#1520：全按 Switch 1 读出「控制段 0 / 0x2fa 字节」）：头 8 字节（魔数、版本）记几行，定是不是新版 GLSLC
+        static _Atomic int said; uint32_t m, v; memcpy(&m, ctl, 4); memcpy(&v, ctl + 4, 4);
+        if (atomic_fetch_add(&said, 1) < 4) LOG("【红】直连：Switch 2 游戏的着色器控制段不是认得的 NVN2 格式（头 0x%08x、版本 0x%x；认得的是 0x%08x / 0x%x），按 Switch 1 读", m, v, (unsigned)NVN2_CTL_MAGIC, (unsigned)NVN2_CTL_VERSION);
+    }
     uint32_t w; memcpy(ncode, ctl + 0x704, 4); memcpy(nctl, ctl + 0x20, 4); memcpy(&w, cd + 0x30, 4);
     static const uint8_t gfx_magic[4] = {0x78, 0x56, 0x34, 0x12}; int t = (w >> 10) & 0xf; if (t == 0 && (w & 0x1f) == 1) t = 1;
     int st = memcmp(cd, gfx_magic, 4) ? 2 : t == 1 ? 0 : t == 5 ? 1 : t == 4 ? 3 : -1;

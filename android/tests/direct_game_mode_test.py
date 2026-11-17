@@ -22,6 +22,7 @@ preamble = r'''
 #include <stdatomic.h>
 typedef struct { int interval; } win_t;
 static _Atomic int g_game_itv = 1;
+static _Atomic int g_itv_cap;   // 出图间隔上限（社区帧率补丁改 sdk 交换间隔时设，e78782b17）；用例不设 = 不封
 static _Atomic uint64_t g_itv2_since;
 static int g_hz = 60;
 static void present_cfg(const win_t *o) { (void)o; }
@@ -74,6 +75,6 @@ int main(void) {
 }
 '''
 with tempfile.TemporaryDirectory(prefix='direct-game-mode-') as temp:
-    d=Path(temp); (d/'test.c').write_text(preamble + support + function('static uint64_t present_period(const win_t *o) {') + main)
+    d=Path(temp); (d/'test.c').write_text(preamble + support + function('static int game_itv(const win_t *o) {') + '\n' + function('static uint64_t present_period(const win_t *o) {') + main)
     subprocess.run([os.environ.get('CC','cc'),'-std=c11','-D__ANDROID__','-I',str(root/'android/native'),str(d/'test.c'),'-o',str(d/'test')],check=True)
     subprocess.run([str(d/'test')],check=True)

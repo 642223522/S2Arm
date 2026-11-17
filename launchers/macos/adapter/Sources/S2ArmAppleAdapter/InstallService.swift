@@ -146,10 +146,12 @@ public final class InstallService {
     /// acceptDropped：玩家已确认「手机上只在别的电脑装过的游戏这次带不上」（作业层 container_would_drop 之后再点）
     /// mode = "export"：游戏库「导出自签包」——不连手机、不签名，出未签名 S2Arm.ipa 和各款 .img 到文件夹（11-15 起导出只看这次请求）
     /// widget = false：玩家在设置里关了「装到 iPhone 时带主屏小组件」，作业层不带小组件扩展（不传 = 带）
+    /// cloudSaves：玩家选的云存档文件夹（没开 = nil）。覆盖装前备份手机存档做不成时，作业层看这款在里面有没有快照：有就照装（覆盖装 App 不碰 iCloud 里那份）
     public func install(gameId: String, teamId: String? = nil, device: String? = nil, acceptDropped: Bool = false, accept: Set<String> = [], mode: String? = nil,
-                        widget: Bool = true, events: EventSink = .discard) async throws -> InstallResult {
+                        widget: Bool = true, cloudSaves: String? = nil, events: EventSink = .discard) async throws -> InstallResult {
         var extra: [String: Any] = ["gameId": gameId]
         if !widget { extra["widget"] = false }
+        if let cloudSaves, !cloudSaves.isEmpty { extra["cloudSavesFolder"] = cloudSaves }
         if let mode { extra["mode"] = mode }
         if acceptDropped { extra["acceptDropped"] = true }
         for key in accept { extra[key] = true }   // 玩家在结局页确认过的（acceptDropped / acceptNoBackup / acceptStale，作业层按码认）
@@ -216,10 +218,12 @@ public final class InstallService {
     ///   device：连着多台时装到哪台（同 install；不给 = 只连着一台）
     /// acceptDropped：同 install——玩家已确认手机上只在别的电脑装过的游戏这次带不上（作业层 container_would_drop）
     /// mode：这次按「一键装到 iPhone」（install）/「导出自己签名安装」（export）走，nil = 按设置里的装法；sgradeUpgrade：「S 级优化升级」页发起，壳已是本版也重组装上
+    /// cloudSaves：同 install
     public func updatePhone(acceptStale: Bool = false, acceptDropped: Bool = false, accept: Set<String> = [], mode: String? = nil, sgradeUpgrade: Bool = false, device: String? = nil,
-                            widget: Bool = true, events: EventSink = .discard) async throws -> [String: Any] {
+                            widget: Bool = true, cloudSaves: String? = nil, events: EventSink = .discard) async throws -> [String: Any] {
         var extra: [String: Any] = acceptStale ? ["acceptStale": true] : [:]
         if !widget { extra["widget"] = false }
+        if let cloudSaves, !cloudSaves.isEmpty { extra["cloudSavesFolder"] = cloudSaves }
         if acceptDropped { extra["acceptDropped"] = true }
         for key in accept { extra[key] = true }
         if let device { extra["device"] = device }

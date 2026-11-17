@@ -512,14 +512,7 @@ static void sample_motion(GCExtendedGamepad *pad) {
     GCMotion *m = atomic_load(&g_motion_wanted) && !ns2 ? pad.controller.motion : nil;
     set_motion_source(m);
     s2a_pad_motion sample = {0};
-    int known = m.hasRotationRate && m.hasGravityAndUserAcceleration;
-    if (known) {
-        double gravity[3] = {m.gravity.x, m.gravity.y, m.gravity.z}, user[3] = {m.userAcceleration.x, m.userAcceleration.y, m.userAcceleration.z};
-        double rotation[3] = {m.rotationRate.x, m.rotationRate.y, m.rotationRate.z};
-        float acceleration[3], gyro[3];
-        s2a_gc_motion_axes(gravity, user, rotation, acceleration, gyro);
-        sample = (s2a_pad_motion){clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000, acceleration[0], acceleration[1], acceleration[2], gyro[0], gyro[1], gyro[2]};
-    }
+    int known = s2a_gc_motion_sample(m, &sample);
     pthread_mutex_lock(&g_motion_mu);
     g_motion = sample; g_motion_known = known;
     pthread_mutex_unlock(&g_motion_mu);
@@ -546,13 +539,13 @@ __attribute__((visibility("default"), used)) int s2a_pad_read_motion(s2a_pad_mot
     int known = g_motion_switched ? 0 : g_motion_known;
     *out = g_motion; g_motion_switched = 0;
     pthread_mutex_unlock(&g_motion_mu);
-    if (known) return 1;
-    // GameController 无六轴时回退 Joy-Con HID（优先右、否则左）
+    if (known == 2) return 1;
+    // GameController 没有校准六轴时先回退 Joy-Con / Pro HID（优先右、否则左），HID 没数据再用只有总加速度的那份（DualSense）
     s2a_pad_motion l = {0}, r = {0};
     int mask = s2a_joycon_imu_read(&l, &r);
     if (mask & 2) { *out = r; return 1; }
     if (mask & 1) { *out = l; return 1; }
-    return 0;
+    return known != 0;
 }
 // 左右 Joy-Con 各一路；只有 GCMotion 时退回单源写在 out[0]
 __attribute__((visibility("default"), used)) int s2a_pad_read_motion_pair(s2a_pad_motion out[2]) {
@@ -1089,15 +1082,8 @@ static void sample_slot_motion(GCController *const owner_before[S2A_MAX_PADS]) {
     for (int s = 1; s < S2A_MAX_PADS; s++) {
         GCMotion *m = want ? pad_owner[s].motion : nil;
         s2a_motion_power_select(&g_slot_motion_source[s], m, g_motion_source);
-        BOOL known = m.hasRotationRate && m.hasGravityAndUserAcceleration;
         s2a_pad_motion sample = {0};
-        if (known) {
-            double gravity[3] = {m.gravity.x, m.gravity.y, m.gravity.z}, user[3] = {m.userAcceleration.x, m.userAcceleration.y, m.userAcceleration.z};
-            double rotation[3] = {m.rotationRate.x, m.rotationRate.y, m.rotationRate.z};
-            float acceleration[3], gyro[3];
-            s2a_gc_motion_axes(gravity, user, rotation, acceleration, gyro);
-            sample = (s2a_pad_motion){clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000, acceleration[0], acceleration[1], acceleration[2], gyro[0], gyro[1], gyro[2]};
-        }
+        BOOL known = s2a_gc_motion_sample(m, &sample);
         pthread_mutex_lock(&g_motion_mu);
         g_slot_motion[s] = sample; g_slot_motion_known[s] = known;
         pthread_mutex_unlock(&g_motion_mu);

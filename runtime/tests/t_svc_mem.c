@@ -138,6 +138,7 @@ int main(void) {
         uint64_t b = ((uint64_t)R + 2 * MB - 1) & ~(2 * MB - 1);
         s2a_mem_test_setup(b + 4 * MB, 4 * MB, b, RS, (void *)b, 0); s2a_mem_test_sysres(0x2000000, 4 * MB);
         FILE *log = tmpfile(); CHECK(log != NULL, "族 25 单测：日志临时文件");
+        char hn[] = "/tmp/s2a_t_heap_need_XXXXXX"; int hfd = mkstemp(hn); if (hfd >= 0) close(hfd); unlink(hn); setenv("S2A_HEAP_NEED", hn, 1);   // D-NGH9：超堆区时记下要的堆
         if (log) {
             int saved = g_s2a_logfd; g_s2a_logfd = fileno(log); g_red_n = 0;
             uint64_t r[8], rc[3];
@@ -150,7 +151,16 @@ int main(void) {
             CHECK(rc[0] == 0xD001 && rc[1] == 0xE401 && rc[2] == 0xF001 && g_red_n == 0 && logged,
                   "族 25：超堆区 / 普通句柄 / 未知信息类型 期望 回 0xd001 / 0xe401 / 0xf001、报红 0 次、三行普通失败日志 → 实 %#llx / %#llx / %#llx、报红 %d 次、日志%s",
                   (unsigned long long)rc[0], (unsigned long long)rc[1], (unsigned long long)rc[2], g_red_n, logged ? "齐" : "不齐");
+            // D-NGH9 / #947：超堆区那次（6 MB）记下要的堆；再要 5 MB 不降（只增不减）；要 8 MB 升到 8 MB。期望手写 6291456 → 6291456 → 8388608
+            unsigned long long v[3] = {0}; FILE *hf;
+            hf = fopen(hn, "r"); if (hf) { if (fscanf(hf, "%llu", &v[0]) != 1) v[0] = 0; fclose(hf); }
+            memset(r, 0, sizeof r); r[1] = 5 * MB; svc_mem(0x01, r, 0);
+            hf = fopen(hn, "r"); if (hf) { if (fscanf(hf, "%llu", &v[1]) != 1) v[1] = 0; fclose(hf); }
+            memset(r, 0, sizeof r); r[1] = 8 * MB; svc_mem(0x01, r, 0);
+            hf = fopen(hn, "r"); if (hf) { if (fscanf(hf, "%llu", &v[2]) != 1) v[2] = 0; fclose(hf); }
+            CHECK(v[0] == 6291456 && v[1] == 6291456 && v[2] == 8388608, "超堆区记下要的堆：期望 6291456 / 6291456 / 8388608 → 实 %llu / %llu / %llu", v[0], v[1], v[2]);
         }
+        unsetenv("S2A_HEAP_NEED"); unlink(hn);
         munmap(R, RS + 2 * MB);
     }
     s2a_mem_test_setup(AB, AS, W, 64ull << 30, (void *)HEAP, HCUR);

@@ -36,8 +36,8 @@ export S2A_MACRO_DUMP=${S2A_MACRO_DUMP:-$D/macro}; mkdir -p "$S2A_MACRO_DUMP"
 #   暖局要复用缓存就由调用方显式给同一个目录
 export S2A_DOCS=${S2A_DOCS:-$D} S2A_AUTOPLAY_OUT=${S2A_AUTOPLAY_OUT:-$D}
 export S2A_RYU_DATA=${S2A_RYU_DATA:-$D/ryu} NXGAL_SHADER_CACHE_DIR=${NXGAL_SHADER_CACHE_DIR:-$D/gal}; mkdir -p "$S2A_RYU_DATA" "$NXGAL_SHADER_CACHE_DIR"
-# 游戏数据（服务接入线 S2A_Init 登记游戏用：exefs/main.npdm、romfs/ 或标准 RomFS 镜像 romfs.std、ctl/control.nacp）：没给就用产物根本身
-[ -z "${S2A_GAME_DATA:-}" ] && { [ -d "$IN/romfs" ] || [ -f "$IN/romfs.std" ]; } && export S2A_GAME_DATA=$IN
+# 游戏数据（服务接入线 S2A_Init 登记游戏用：exefs/main.npdm、romfs/ 或标准 RomFS 镜像 romfs.std 或 0.6.0 起与 iPhone 资源包共用的 game.img、ctl/control.nacp）：没给就用产物根本身
+[ -z "${S2A_GAME_DATA:-}" ] && { [ -d "$IN/romfs" ] || [ -f "$IN/romfs.std" ] || [ -f "$IN/game.img" ]; } && export S2A_GAME_DATA=$IN
 # 存档：没显式给 S2A_SAVE_DIR 就用和真机局同一份正式局存档的副本（tools/mac_save.sh，10-24 维护者）
 source "$ROOT/tools/mac_save.sh"; mac_save_prep "$G" "$IN" "$D" > "$D/save.txt" || exit 1
 mac_slot_acquire() { :; }; mac_slot_release() { :; }; [ -z "${S2A_PRIVATE_TOOLS:-}" ] || source "$S2A_PRIVATE_TOOLS/mac_slot_frozen.sh" || exit 1; [ -n "${S2A_MAC_SLOT_HELD:-}" ] || { mac_slot_acquire "$G $D" || exit 1; export S2A_MAC_SLOT_HELD=1; }; trap mac_slot_release EXIT   # Mac 局全机并发上限（维护方设施：设了 S2A_PRIVATE_TOOLS 才排队，没设单机直接起）

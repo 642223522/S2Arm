@@ -42,6 +42,7 @@ RECOVERY = {
     "job_failed": "查看本任务的具体日志，修复提示的问题后重试；反馈时复制已脱敏的错误摘要。",
     "tool_exit": "查看本任务日志和失败阶段，按提示修复后重试；反馈时复制错误摘要。",
     "game_crashed": "再启动一次试试；还是这样，就在「环境检查」导出诊断包，到 GitHub 发帖附上，我们按崩溃现场修。",   # Mac 起局：游戏进程中途非 0 退出（build.launch）
+    "game_heap_learned": "再点一次「开始」就能进：这一局已记下这款要的内存，下次起局按它给。",   # Mac 起局：普通堆超出堆区、已记下（runtime svc_mem.c heap_need，build.launch）
     "game_gpu_stopped": "点「再启动一次」一般能接着玩，存档停在游戏上次保存的地方。",   # Mac 起局：显卡挂死、运行时安全停（退出码 86，build.launch）
     "keys_missing": "在「设置 → 玩家密钥」导入自行导出的 prod.keys，然后重新导入游戏。",
     "keys_invalid": "重新选择完整的 prod.keys 文本文件，不要手工补写密钥值；原有密钥保持不变。",

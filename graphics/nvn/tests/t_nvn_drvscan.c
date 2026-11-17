@@ -28,6 +28,18 @@ static void form_ldrsw(size_t f, size_t tbl, int major, int minor) {
     int32_t e0 = (int32_t)((int64_t)ret - (int64_t)tbl), e1 = (int32_t)((int64_t)c1 - (int64_t)tbl);
     memcpy(img + tbl, &e0, 4); memcpy(img + tbl + 4, &e1, 4);
 }
+// 形状三（最早的 SDK 0.12，驱动在 subsdk0）：adrp/add 表 ; movz w0,#major ; ldrsw ; add ; br——主版本在取表项之前就放进 w0，离 br 隔两条
+static void form_early(size_t f, size_t tbl, int major, int minor) {
+    pc = f;
+    emit(cmp_w(20, 0x4c)); emit(bhi(40)); emit(0x2a1403e8u /* mov w8, w20 */);
+    emit(adrp(9, pc, tbl)); emit(add_imm(9, 9, (int)(tbl & 0xfff)));
+    emit(movz_w(0, major));
+    emit(0xb8a87928u /* ldrsw x8, [x9, x8, lsl #2] */); emit(0x8b090108u /* add x8, x8, x9 */); emit(br(8));
+    size_t ret = pc; emit(0xd65f03c0u);
+    size_t c1 = pc; emit(movz_w(0, minor)); emit(0xd65f03c0u);
+    int32_t e0 = (int32_t)((int64_t)ret - (int64_t)tbl), e1 = (int32_t)((int64_t)c1 - (int64_t)tbl);
+    memcpy(img + tbl, &e0, 4); memcpy(img + tbl + 4, &e1, 4);
+}
 // 形状二（塞尔达 SDK 20 / 3D 世界 SDK 10.4）：adrp/add 表 ; adr 基准 ; ldrb ; add 基准, u8 lsl 2 ; movz w0,#major ; br
 static void form_ldrb(size_t f, size_t tbl, int major, int minor) {
     pc = f;
@@ -172,7 +184,11 @@ int main(void) {
     }
     memset(img, 0, sizeof img); form_ldrb(0x800, 0x2d82, 53, 313); form_ldrsw(0x1200, 0x3104, 53, 310);   // 两处不同值：二义，不认
     CHECK(scan(api) == 0 && api[0] == -1);
-    memset(img, 0, sizeof img); form_ldrsw(0x100, 0x3004, 52, 310);   // 主版本不是 53 / 55：不是这个函数
+    memset(img, 0, sizeof img); form_ldrsw(0x100, 0x3004, 7, 310);   // 主版本不是 52 / 53 / 55：不是这个函数
+    CHECK(scan(api) == 0);
+    memset(img, 0, sizeof img); form_early(0x100, 0x3004, 52, 32);   // 形状三：SDK 0.12 驱动报 52.32（该款游戏要求主版本恰为 52、次版本至少 32）
+    CHECK(scan(api) == 1 && api[0] == 52 && api[1] == 32);
+    memset(img, 0, sizeof img); form_early(0x100, 0x3004, 52, 32); put(0x100 + 4 * 5, 0xd503201fu);   // 形状三把 movz 换成 nop：br 前三条里没有主版本，不认
     CHECK(scan(api) == 0);
     memset(img, 0, sizeof img); form_ldrb(0x800, 0x2d82, 55, 15); put(0x800 + 4 * 12, 0x2a1403e0u);   // case 1 不是 movz（读别的）：不认
     CHECK(scan(api) == 0);
