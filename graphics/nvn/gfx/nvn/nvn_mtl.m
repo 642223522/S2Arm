@@ -1915,7 +1915,7 @@ static id<MTLBuffer> g_ubs_buf; static size_t g_ubs_off, g_ubs_size;
 // made of them alone, latest first per byte (exactly what the GPU would read, whatever earlier frames still have in flight); when they cover only part of it, the rest comes from memory (ubp_get).
 // The real copies are encoded in order when the pass ends (rp_end), so later passes and the CPU see them as before. The pass still ends before a draw that would need more: a partly covered binding
 // whose rest memory cannot give, or a read of the deferred data through a vertex, index, indirect or storage buffer (ubd_conflict). Also on in TBDR mode (see ubd_on). DM_NVN_UB_DEFER=0 turns it off
-static size_t arena_alloc(size_t n, __strong id<MTLBuffer> *buf); static inline void args_dirty_all(void); static void ubd_dirty(uint64_t lo, uint64_t hi);
+static size_t arena_alloc(size_t n, __strong id<MTLBuffer> *buf); static size_t arena_alloc_u(size_t n, __unsafe_unretained id<MTLBuffer> *buf); static inline void args_dirty_all(void); static void ubd_dirty(uint64_t lo, uint64_t hi);
 typedef struct { uint64_t lo, hi, gpu; size_t off; __unsafe_unretained id<MTLBuffer> buf; uint32_t seq; } ubd_ent;   // data at buf + off (the ubs ring; a ring block replaced meanwhile lives until this submission completes); seq: order deferred
 enum { UBD_MAX = 512 };
 static ubd_ent g_ubd[UBD_MAX]; static int g_nubd;   // in the order deferred (ubd_flush lands them so)
@@ -1989,7 +1989,7 @@ enum { UBD_OV = 32 };
 static uint64_t ubd_shadow(uint64_t lo, uint64_t hi) {
     const ubd_ent *ov[UBD_OV], *e; int n = ubd_overlaps(lo, hi, ov, UBD_OV, &e);
     if (e && e->lo <= lo && hi <= e->hi) { uint64_t g = e->gpu + (lo - e->lo); if (!(g & 15)) return g; }
-    id<MTLBuffer> ab; size_t o = arena_alloc((size_t)(hi - lo), &ab); uint8_t *d = (uint8_t *)ab.contents + o;
+    __unsafe_unretained id<MTLBuffer> ab; size_t o = arena_alloc_u((size_t)(hi - lo), &ab); uint8_t *d = (uint8_t *)ab.contents + o;
     ubd_lay(lo, hi, d, ov, n);
     return ab.gpuAddress + o;
 }
@@ -2199,12 +2199,12 @@ static int ubp_get(uint64_t lo, uint64_t hi, uint64_t *gpu, const uint8_t **cpu)
     static ifw_ent *ifw[IFW_HITS]; int nif = c || (nc == 1 && cl[0] == lo && ch[0] == hi) ? 0 : ifw_get(lo, hi, cl, ch, &nc, &exact, ifw);
     if (nif < 0) { g_ubp_why[4]++; return 0; }
     uint64_t len = hi - lo;
-    id<MTLBuffer> ab; size_t o = arena_alloc((size_t)len, &ab); uint8_t *d = (uint8_t *)ab.contents + o;
+    __unsafe_unretained id<MTLBuffer> ab; size_t o = arena_alloc_u((size_t)len, &ab); uint8_t *d = (uint8_t *)ab.contents + o;
     int big = len >= UBQ_ASYNC;   // smaller ones are always copied here: handing a copy to the worker costs more than making it (see UBQ_ASYNC)
     if (UBQ_N - (g_ubq_tail - g_ubq_head) < (uint64_t)nk + (uint64_t)nif + 1) ubq_flush();   // a shadow's copies never straddle a forced flush
     ubq_put(d, c ? c->cpu : (const uint8_t *)(uintptr_t)lo, (size_t)len, big, c != NULL);   // the previous shadow's own copies are queued before these
     if (nif) { size_t tot = 0; for (int i = 0; i < nif; i++) tot += (size_t)(MIN(ifw[i]->hi, hi) - MAX(ifw[i]->lo, lo));   // the bytes copied out now into this frame's scratch:
-        id<MTLBuffer> ib; size_t io = arena_alloc(tot, &ib); uint8_t *ip = (uint8_t *)ib.contents + io;   //   entries are recycled once their submission completes
+        __unsafe_unretained id<MTLBuffer> ib; size_t io = arena_alloc_u(tot, &ib); uint8_t *ip = (uint8_t *)ib.contents + io;   //   entries are recycled once their submission completes
         for (int i = nif - 1; i >= 0; i--) { uint64_t x = MAX(ifw[i]->lo, lo), y = MIN(ifw[i]->hi, hi);   // oldest first
             memcpy(ip, ifw[i]->b + (x - ifw[i]->lo), (size_t)(y - x)); ubq_put(d + (x - lo), ip, (size_t)(y - x), big, 0); ip += y - x; }
     }
@@ -7451,15 +7451,21 @@ static const prog_t *g_prog_last_ptr; static uint64_t g_prog_last_serial, g_prog
 // S2Arm 11-15: a program whose vertex / mesh shader (the stages that follow the depth mode, stage_depth_moded) was loaded under the other depth mode than the game's now
 static int prog_depth_stale(NvProg *o, int dz) { for (int st = 0; st <= 4; st += 4) if (o->sh[st] && o->sh[st]->load_depth_zero != dz) return 1; return 0; }
 static NvProg *bind_rebuild(const prog_t *p, NvProg *old);   // a combined program (per-stage binding, bind_stages) put together again; nil when p is not one
-static __unsafe_unretained NvProg *prog_get(const prog_t *cp) {   // Called only on the submit thread
+// The program is borrowed (upstream (MIT) e82aedb8d): what it returns is held by the serial table (serial_put; one it replaces or drops goes through defer_obj_release / defer_obj_unref, so it lives
+//   until the submission being encoded completes) or by g_prog_last; a program without a serial (initialized, no SetShaders yet) by g_prog_noserial, whose previous one is let go
+//   the same deferred way. Returned as a pointer: ARC ignores __unsafe_unretained on a return type, so returning the object paid an autorelease and a claim at every call
+static NvProg *g_prog_noserial;
+static void *prog_get_ptr(const prog_t *cp);
+#define prog_get(cp) ((__bridge NvProg *)prog_get_ptr(cp))
+static void *prog_get_ptr(const prog_t *cp) {   // Called only on the submit thread
     prog_t *p = (prog_t *)cp;
     uint64_t gen = g_ser_gen; int dz = atomic_load(&g_depth_zero);
-    if (p == g_prog_last_ptr && p->serial == g_prog_last_serial && gen == g_prog_last_gen && g_prog_last && !prog_depth_stale(g_prog_last, dz)) return g_prog_last;
+    if (p == g_prog_last_ptr && p->serial == g_prog_last_serial && gen == g_prog_last_gen && g_prog_last && !prog_depth_stale(g_prog_last, dz)) return (__bridge void *)g_prog_last;
     // S2Arm 11-15 (#790 D-6XQT, 22 of 728 diagnoses in 7 titles): a game that sets the depth mode after drawing kept the programs resolved before it, whose vertex shaders
     //   rewrite z for the other convention, so whole scenes (characters, terrain) fell outside the depth range. A program resolved under the other mode is resolved again
     __unsafe_unretained NvProg *have = p->serial ? serial_get(p->serial) : nil;
-    if (have && !prog_depth_stale(have, dz)) { g_prog_last_ptr = p; g_prog_last_serial = p->serial; g_prog_last_gen = gen; g_prog_last = have; return have; }
-    if (have) { NvProg *re = bind_rebuild(p, have); if (re) { serial_put(p->serial, re); return re; } }   // a combined program has no shaders of its own (nstage 0): its stages' programs again
+    if (have && !prog_depth_stale(have, dz)) { g_prog_last_ptr = p; g_prog_last_serial = p->serial; g_prog_last_gen = gen; g_prog_last = have; return (__bridge void *)have; }
+    if (have) { NvProg *re = bind_rebuild(p, have); if (re) { serial_put(p->serial, re); return (__bridge void *)re; } }   // a combined program has no shaders of its own (nstage 0): its stages' programs again
     shmap_load();
     NvProg *o = [NvProg new];
     for (unsigned i = 0; i < p->nstage; i++) {
@@ -7517,7 +7523,8 @@ static __unsafe_unretained NvProg *prog_get(const prog_t *cp) {   // Called only
     }
     o->gp = p;
     if (p->serial) serial_put(p->serial, o);
-    return o;
+    else { if (g_prog_noserial) defer_obj_unref(g_prog_noserial); g_prog_noserial = o; }
+    return (__bridge void *)o;
 }
 void nvn_be_prog_release(prog_t *p) { if (p->serial) serial_del(p->serial); }
 
@@ -8435,7 +8442,10 @@ static void sub_cut(void);   // hands the encoded part of the submission to the 
 static void arena_seg_done(uint64_t sf) { pthread_mutex_lock(&g_mu); if (sf > g_seg_done) g_seg_done = sf; pthread_cond_broadcast(&g_cv); pthread_mutex_unlock(&g_mu); }
 // buf is __strong: an unqualified id * out-parameter is __autoreleasing under ARC, which put the arena buffer in the autorelease pool at every call (a few per draw;
 // upstream (MIT) 5a81e13f: autorelease 2.63% -> 1.73% of replay time)
-static size_t arena_alloc(size_t n, __strong id<MTLBuffer> *buf) {
+// arena_alloc_u lends the block (upstream (MIT) e82aedb8d): its NvArena is in g_sub_arenas until the submission or segment is handed to the GPU, then in g_arenas, and an NvArena
+//   and its buffer are never let go before the session ends (arena_new hands a free one out again, nvn_session.inc drops them all), so a caller that only binds the block or writes
+//   through it within this submission needs no reference of its own: a retain and release less per argument block
+static size_t arena_alloc_u(size_t n, __unsafe_unretained id<MTLBuffer> *buf) {
     n = (n + 255) & ~(size_t)255; g_arena_seg += n;
     if (!g_cur_arena || g_cur_arena->used + n > g_cur_arena->len) {
         pthread_mutex_lock(&g_mu); g_cur_arena = arena_new(n); pthread_mutex_unlock(&g_mu);
@@ -8443,6 +8453,7 @@ static size_t arena_alloc(size_t n, __strong id<MTLBuffer> *buf) {
     }
     size_t off = g_cur_arena->used; g_cur_arena->used += n; *buf = g_cur_arena->buf; return off;
 }
+static size_t arena_alloc(size_t n, __strong id<MTLBuffer> *buf) { __unsafe_unretained id<MTLBuffer> b; size_t off = arena_alloc_u(n, &b); *buf = b; return off; }
 // Keep the logical vertex-zero pointer inside a real MTLBuffer. Only the payload
 // is populated; vertex_id still includes first/baseVertex and skips the prefix.
 static size_t arena_alloc_origin(size_t n, uint64_t prefix, __strong id<MTLBuffer> *buf) {
@@ -8536,7 +8547,7 @@ static void bind_vbufs(id<MTL4RenderCommandEncoder> en, NvShader *vs) {
     vbuf_zero(en, -1); uint64_t zero_gpu = g_vbuf_zero_gpu;
     enc_r_vbuf(en, 30, zero_gpu);
     if (g_wd_push[0] != 0 || g_wd_push[1] != 0 || g_wd_push[2] != 0 || g_wd_push[3] != 0) {   // S2Arm widen edge push (see g_wd_push): zero reads the zero buffer
-        id<MTLBuffer> pb; size_t po = arena_alloc(sizeof g_wd_push, &pb); memcpy((uint8_t *)pb.contents + po, g_wd_push, sizeof g_wd_push); enc_r_vbuf(en, PUSH_SLOT, pb.gpuAddress + po);
+        __unsafe_unretained id<MTLBuffer> pb; size_t po = arena_alloc_u(sizeof g_wd_push, &pb); memcpy((uint8_t *)pb.contents + po, g_wd_push, sizeof g_wd_push); enc_r_vbuf(en, PUSH_SLOT, pb.gpuAddress + po);
     } else enc_r_vbuf(en, PUSH_SLOT, zero_gpu);
 }
 // Size of an attachment-less pass (rp_begin_ex_): the far corner of viewport 0, else of the scissor, clamped to Metal's 1..16384
@@ -9614,7 +9625,10 @@ static id<MTLRenderPipelineState> pso_pend_take(const pso_key *k, int *timed_out
 static int pso_pend_state(const pso_key *k) {   // 2 compiled in the background / 1 compiling / 0 not in the table (first_skip_ok)
     pthread_mutex_lock(&g_pp_mu); int at = pso_pend_find(k), st = at < 0 ? 0 : g_pp[at].done ? 2 : 1; pthread_mutex_unlock(&g_pp_mu); return st;
 }
-static __unsafe_unretained id<MTLRenderPipelineState> pso_get_(NvProg *pr, MTLRenderPassDescriptor *unused);
+// The pipeline lookups return a borrowed pointer (upstream (MIT) e82aedb8d), as prog_get_ptr: g_pso holds every pipeline they return and lets none go before the session ends
+//   (nvn_session.inc); returning the object paid an autorelease and a claim at every call, as ARC ignores __unsafe_unretained on a return type
+static void *pso_get_ptr_(NvProg *pr, MTLRenderPassDescriptor *unused);
+#define pso_get_(pr, unused) ((__bridge id<MTLRenderPipelineState>)pso_get_ptr_(pr, unused))
 static id<MTLFunction> ms_fs_override(NvShader *fs);   // DM_NVN_MAGSCAN (defined before draw)
 // A pipeline Metal refused: when a colour the fragment shader writes has an integer attachment, its output was most likely translated as float (a game without PC reflection has no output types,
 // Tears of the Kingdom's BC4 block encoder and Ultrahand mask were the first cases). Writes the facts row that declares the outputs, for the profile's shader_facts_manual.tsv (merged by shader_split.py)
@@ -9703,9 +9717,11 @@ static int pso_err_transient(NSError *e) {
     NSString *d = e.localizedDescription;
     return d && ([d containsString:@"XPC_ERROR_CONNECTION_INTERRUPTED"] || [d containsString:@"XPC_ERROR_CONNECTION_INVALID"] || [d containsString:@"interrupted connection"] || [d containsString:@"timed out"]);
 }
-static __unsafe_unretained id<MTLRenderPipelineState> pso_get(NvProg *pr, MTLRenderPassDescriptor *unused) { AP_B; __unsafe_unretained id<MTLRenderPipelineState> r = pso_get_(pr, unused); AP_E(2); return r; }
-static __unsafe_unretained id<MTLRenderPipelineState> pso_get_vs(NvProg *pr, NvShader *vs);
-static __unsafe_unretained id<MTLRenderPipelineState> pso_get_(NvProg *pr, MTLRenderPassDescriptor *unused) { (void)unused; return pso_get_vs(pr, pr->sh[0]); }
+static void *pso_get_ptr(NvProg *pr, MTLRenderPassDescriptor *unused) { AP_B; void *r = pso_get_ptr_(pr, unused); AP_E(2); return r; }
+#define pso_get(pr, unused) ((__bridge id<MTLRenderPipelineState>)pso_get_ptr(pr, unused))
+static void *pso_get_vs_ptr(NvProg *pr, NvShader *vs);
+#define pso_get_vs(pr, vs) ((__bridge id<MTLRenderPipelineState>)pso_get_vs_ptr(pr, vs))
+static void *pso_get_ptr_(NvProg *pr, MTLRenderPassDescriptor *unused) { (void)unused; return pso_get_vs_ptr(pr, pr->sh[0]); }
 // S2Arm tessellation: the vertex stage is given explicitly. A normal draw's is sh[0]; the tessellation render pass's (tess_draw ④) is the domain shader sh[4], a plain vertex function
 //   reading the expanded domain points (dmsh_build.py tess_finish). Taking sh[0] there paired the capture vertex shader with a fragment shader that reads what the domain stage writes:
 //   pso_pair_ok rejected every pair and none of The Witcher 3's 8 patch draws drew (w3tess6b, 10-28). g_pso_why: why the last call returned nil, for a caller whose red line names it
@@ -9714,10 +9730,10 @@ static char g_pso_why[200];
 // callers. Background prewarm builds descriptors directly, without this state.
 static uint8_t g_pso_color_round;
 #define PSO_WHY(...) snprintf(g_pso_why, sizeof g_pso_why, __VA_ARGS__)
-static __unsafe_unretained id<MTLRenderPipelineState> pso_get_vs(NvProg *pr, NvShader *vs) {
+static void *pso_get_vs_ptr(NvProg *pr, NvShader *vs) {   // borrowed: g_pso holds what it returns
     __unsafe_unretained NvShader *fs = pr->sh[1]; g_pso_why[0] = 0;
     g_pso_color_round = 0;
-    if (!vs) { RED_ONCE(13, "program has no vertex shader (or it is not mapped)"); PSO_WHY("no vertex stage"); return nil; }
+    if (!vs) { RED_ONCE(13, "program has no vertex shader (or it is not mapped)"); PSO_WHY("no vertex stage"); return NULL; }
     pso_key k; pso_key_fill(&k, vs, fs, g_pass.cfmt, g_pass.dfmt, g_pass.sfmt, g_pass.samples, g_pso_lmap != NULL);
     if (g_pso_lmap) { memcpy(k.lmap, g_pso_lmap, 8); k.fsfn = (__bridge void *)g_pso_fsfn; }
     // S2Arm #800: the reduction variant is another fragment function of the same shader, its pipelines keyed apart from main0's (pso_desc picks it from k.fc). Picked by the caller
@@ -9735,16 +9751,16 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get_vs(NvProg *pr, NvS
       long cf = (long)atomic_load(&g_cur_frame); if (at > 0 && f0 < 0) f0 = cf;
       if (at > 0 && cf - f0 + 1 == at && skip_safe(vs, fs)) {
           static uint64_t n; if (!(++n & (n - 1))) MLOG("skip-safe test (DM_NVN_SKIP_SAFE_AT=%ld): %llu draws skipped; %llu steady answers so far came from the storage only", at, (unsigned long long)n, (unsigned long long)g_rt_steady_mem);
-          g_first_skipped = 1; PSO_WHY("skip-safe test frame"); return nil; } }
+          g_first_skipped = 1; PSO_WHY("skip-safe test frame"); return NULL; } }
     __unsafe_unretained id<MTLRenderPipelineState> cached = hm_get_id(&g_pso, &k);
-    if (cached) return cached;
-    if (hm_get_id(&g_pso_fail, &k)) { PSO_WHY("on the failed list (its first build was refused; the red line then said why)"); return nil; }
-    { NSNumber *r = hm_get_id(&g_pso_retry, &k); if (r && pso_retry_frame(r.unsignedLongLongValue) > atomic_load(&g_cur_frame)) { g_first_skipped = 1; PSO_WHY("waiting to retry after a compiler service failure"); return nil; } }   // waiting to retry (pso_err_transient)
-    if (quar_has(vs, fs)) { hm_put_id(&g_pso_fail, &k, NSNull.null); PSO_WHY("quarantined after a GPU error"); return nil; }   // a GPU error quarantined it (quar_fault)
+    if (cached) return (__bridge void *)cached;
+    if (hm_get_id(&g_pso_fail, &k)) { PSO_WHY("on the failed list (its first build was refused; the red line then said why)"); return NULL; }
+    { NSNumber *r = hm_get_id(&g_pso_retry, &k); if (r && pso_retry_frame(r.unsignedLongLongValue) > atomic_load(&g_cur_frame)) { g_first_skipped = 1; PSO_WHY("waiting to retry after a compiler service failure"); return NULL; } }   // waiting to retry (pso_err_transient)
+    if (quar_has(vs, fs)) { hm_put_id(&g_pso_fail, &k, NSNull.null); PSO_WHY("quarantined after a GPU error"); return NULL; }   // a GPU error quarantined it (quar_fault)
     if (!pso_pair_ok(vs, fs, 1)) {
-        if (vp_ask(pr->gp, vs, pso_pair_miss(vs, fs))) { PSO_WHY("the vertex stage %s's padded variant is being made", vs->key); return nil; }   // not failed: the next draw asks again
-        hm_put_id(&g_pso_fail, &k, NSNull.null); PSO_WHY("the vertex stage %s does not write a user(locn) the fragment reads", vs->key); return nil; }
-    if (!g_pso_lmap && !ms_fn && !g_pso_fsfn && first_skip_ok(&k, vs, fs)) { PSO_WHY("compiling in the background (first-use skip)"); return nil; }   // S2Arm first-use skip: no stand-in, the full pipeline compiles in the background (draw counts it)
+        if (vp_ask(pr->gp, vs, pso_pair_miss(vs, fs))) { PSO_WHY("the vertex stage %s's padded variant is being made", vs->key); return NULL; }   // not failed: the next draw asks again
+        hm_put_id(&g_pso_fail, &k, NSNull.null); PSO_WHY("the vertex stage %s does not write a user(locn) the fragment reads", vs->key); return NULL; }
+    if (!g_pso_lmap && !ms_fn && !g_pso_fsfn && first_skip_ok(&k, vs, fs)) { PSO_WHY("compiling in the background (first-use skip)"); return NULL; }   // S2Arm first-use skip: no stand-in, the full pipeline compiles in the background (draw counts it)
     id<MTLRenderPipelineState> ps;
     NSError *e = nil; uint64_t bt = bp_now();
     int pp_late = 0, may_skip = skip_safe(vs, fs);
@@ -9759,11 +9775,11 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get_vs(NvProg *pr, NvS
     atomic_fetch_add(&g_fu_waiting, 1); int fu_busy0 = atomic_load(&g_warm_busy); uint64_t fu_t0 = bp_now(), fu_take = 0, fu_build = 0;
     ps = g_pso_lmap || ms_fn ? nil : pso_pend_take(&k, &pp_late, may_skip);
     fu_take = bp_now() - fu_t0;
-    if (!ps && !pp_late && may_skip && !g_pso_lmap && !ms_fn && !g_pso_fsfn && !pso_budget_left_ms()) { atomic_fetch_sub(&g_fu_waiting, 1); pso_budget_skip_note(); g_first_skipped = 1; PSO_WHY("no pipeline wait budget left this frame"); return nil; }   // not queued (table full / refused) and no budget left: no synchronous build either
+    if (!ps && !pp_late && may_skip && !g_pso_lmap && !ms_fn && !g_pso_fsfn && !pso_budget_left_ms()) { atomic_fetch_sub(&g_fu_waiting, 1); pso_budget_skip_note(); g_first_skipped = 1; PSO_WHY("no pipeline wait budget left this frame"); return NULL; }   // not queued (table full / refused) and no budget left: no synchronous build either
     if (pp_late) {   // still compiling past the limit (pso_wait_ms): skip this draw, keep the compile queued; a synchronous build here would queue behind the same compiler service
         atomic_fetch_sub(&g_fu_waiting, 1);
         { static unsigned n; if (pp_late == 1 && n++ < 8) MLOG("【红】 pipeline still compiling in the background after %d ms (vertex %s fragment %s): draw skipped so the frame goes on (%llu so far)", pso_wait_ms(), vs->key, fs ? fs->key : "-", (unsigned long long)g_pp_timeouts); }
-        g_first_skipped = 1; PSO_WHY("still compiling in the background past the wait limit"); return nil; }
+        g_first_skipped = 1; PSO_WHY("still compiling in the background past the wait limit"); return NULL; }
     if (ps) g_pp_taken++;
     else {
         if (g_pp_submit_mark != g_sub_serial) { g_pp_submit_mark = g_sub_serial; pso_predict_rest(); }   // First miss in this submission: first kick the later ones out to compile in parallel, then synchronously compile the one at hand
@@ -9805,19 +9821,19 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get_vs(NvProg *pr, NvS
         if (!at) {
             static unsigned ng; if (ng++ < 32) MLOG("【红】 render pipeline (vertex %s fragment %s): the system compiler service failed on it %u times in a row (%s), so it fails on this pair, not by chance: on the failed list for the run, its draws skipped (%u pairs given up so far)",
                                                    vs->key, fs ? fs->key : "-", fails, e.localizedDescription.UTF8String, ng);
-            hm_put_id(&g_pso_fail, &k, NSNull.null); g_first_skipped = 1; PSO_WHY("the system compiler service failed on it %u times in a row", fails); return nil; }
+            hm_put_id(&g_pso_fail, &k, NSNull.null); g_first_skipped = 1; PSO_WHY("the system compiler service failed on it %u times in a row", fails); return NULL; }
         hm_put_id(&g_pso_retry, &k, @(pso_retry_pack(at, fails)));
         { static unsigned n; if (n++ < 8) MLOG("【红】 render pipeline (vertex %s fragment %s) not built, the system compiler service failed (%s): its draws are skipped and it is built again in %llu frames (failure %u of this pair, at most %d; %llu so far)",
                                                vs->key, fs ? fs->key : "-", e.localizedDescription.UTF8String, (unsigned long long)(at - now), fails, PSO_RETRY_MAX, (unsigned long long)g_pso_transient); }
-        g_first_skipped = 1; PSO_WHY("the system compiler service failed, built again in %llu frames", (unsigned long long)(at - now)); return nil; }
+        g_first_skipped = 1; PSO_WHY("the system compiler service failed, built again in %llu frames", (unsigned long long)(at - now)); return NULL; }
     if (!ps) { char hint[200]; MLOG("【红】 failed to create render pipeline (vertex %s fragment %s): %s%s", vs->key, fs ? fs->key : "-", e.localizedDescription.UTF8String, pso_fout_hint(fs, g_pass.cfmt, hint, sizeof hint));
-               hm_put_id(&g_pso_fail, &k, NSNull.null); return nil; }
+               hm_put_id(&g_pso_fail, &k, NSNull.null); return NULL; }
     if (!ms_fn) { pso_skey sk; char shex[sizeof sk * 2 + 1]; pso_skey_from(&k, vs, fs, g_pso_lmap != NULL, g_pso_lmap ? &g_pso_fz : NULL, &sk); pso_skey_hex(&sk, shex);
         pso_record("R\t%s\n", shex);
         pso_user_record("R\t%s\n", shex); }
     quar_built(vs, fs);
     hm_put_id(&g_pso, &k, ps);
-    return ps;
+    return (__bridge void *)ps;
 }
 static NSString *warm_key(const char *s, size_t n) {
     size_t z = strnlen(s, n);
@@ -11022,7 +11038,7 @@ static struct { uint64_t ver, gen, gpu; } g_push_copy[2][NVN2_PUSH_SLOTS];
 static uint64_t push_gpu(int c, int slot) {
     if (!S.push_ver[c][slot]) return zero_bank_gpu();
     if (g_push_copy[c][slot].ver == S.push_ver[c][slot] && g_push_copy[c][slot].gen == g_arena_gen) return g_push_copy[c][slot].gpu;
-    id<MTLBuffer> pb; size_t po = arena_alloc(NVN2_PUSH_BYTES, &pb); memcpy((uint8_t *)pb.contents + po, S.push[c][slot], NVN2_PUSH_BYTES);
+    __unsafe_unretained id<MTLBuffer> pb; size_t po = arena_alloc_u(NVN2_PUSH_BYTES, &pb); memcpy((uint8_t *)pb.contents + po, S.push[c][slot], NVN2_PUSH_BYTES);
     g_push_copy[c][slot].ver = S.push_ver[c][slot]; g_push_copy[c][slot].gen = g_arena_gen; g_push_copy[c][slot].gpu = pb.gpuAddress + po;
     return g_push_copy[c][slot].gpu;
 }
@@ -11189,7 +11205,7 @@ static uint64_t lb_fill(NvShader *sh, int nvn_stage) {
     }
     if (top < 0) return zero_gpu;
     if (top < span) { for (int k = top + 1; k <= span; k++) q[k] = 0; top = span; }
-    id<MTLBuffer> ab; size_t o = arena_alloc(sizeof q[0] * (size_t)(top + 1), &ab); memcpy((uint8_t *)ab.contents + o, q, sizeof q[0] * (size_t)(top + 1));
+    __unsafe_unretained id<MTLBuffer> ab; size_t o = arena_alloc_u(sizeof q[0] * (size_t)(top + 1), &ab); memcpy((uint8_t *)ab.contents + o, q, sizeof q[0] * (size_t)(top + 1));
     return ab.gpuAddress + o;
 }
 // #1204 T1 bounds hardening (gal_spvx.m direct form): the two length tables the shader clamps its indices with, from this draw's bindings. Caller holds g_rmu (encode_args)
@@ -11310,7 +11326,7 @@ static uint64_t len_fill(NvShader *sh, int nvn_stage, int kind, const uint64_t *
     lf_last *l = &g_lf[nvn_stage < 6 ? nvn_stage : 5][kind == NVN_RB_UBOLEN];
     size_t bytes = sizeof q[0] * (size_t)n;
     if (l->gpu && l->gen == g_arena_gen && l->n == n && !memcmp(l->q, q, bytes)) return l->gpu;
-    id<MTLBuffer> ab; size_t o = arena_alloc(bytes, &ab); memcpy(g_cur_arena->cpu + o, q, bytes);   // ab is g_cur_arena's buffer (arena_alloc)
+    __unsafe_unretained id<MTLBuffer> ab; size_t o = arena_alloc_u(bytes, &ab); memcpy(g_cur_arena->cpu + o, q, bytes);   // ab is g_cur_arena's buffer (arena_alloc_u)
     l->gpu = g_cur_arena->gpu + o; l->gen = g_arena_gen; l->n = n; memcpy(l->q, q, bytes);
     return l->gpu;
 }
@@ -11343,7 +11359,7 @@ static void se_bind(id en, NvShader *sh, int nvn_stage) {
         if (se_entry(sid, e) && e->q[3] != 0) { e->s0 = samp_border_rid(sid, 0); e->s1 = samp_border_rid(sid, 1); if (!e->s0 || !e->s1) e->q[3] = 0; }
     }
     os_unfair_lock_unlock(&g_rmu);
-    id<MTLBuffer> ab; size_t o = arena_alloc(len, &ab); memcpy((uint8_t *)ab.contents + o, q, len); uint64_t gpu = ab.gpuAddress + o;
+    __unsafe_unretained id<MTLBuffer> ab; size_t o = arena_alloc_u(len, &ab); memcpy((uint8_t *)ab.contents + o, q, len); uint64_t gpu = ab.gpuAddress + o;
     if (nvn_stage == 5) enc_c_args(en, gpu, RED_SLOT);
     else enc_r_args(en, MTLRenderStageFragment, gpu, RED_SLOT);
 }
@@ -11408,7 +11424,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
         return 1;
     }
     if (reusable && args_ubo_patchable(sh)) {   // only what the uniform slots point at changed since this block: copy it, write the uniform slots and the bounds table again
-        NSUInteger len = sh->arg_len; id<MTLBuffer> ab; size_t off = arena_alloc(len, &ab);
+        NSUInteger len = sh->arg_len; __unsafe_unretained id<MTLBuffer> ab; size_t off = arena_alloc_u(len, &ab);
         // The block's addresses are taken now: cbuf_slot (ubd_shadow / ubp_get) and len_fill below allocate from the arena too, and when that starts a new block,
         //   g_cur_arena->gpu + off named the new block at this block's offset (the table written here, the GPU pointed elsewhere: GPU page faults; same fix as nxnative 44d67fbe)
         uint64_t *p = (uint64_t *)(void *)(g_cur_arena->cpu + off); const uint64_t agpu = g_cur_arena->gpu + off;
@@ -11677,7 +11693,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             int bank = b->kind == NVN_RB_DRV2 ? 2 : 0;
             if (!sh->rf.drv_read[bank]) { slots[aid] = zero_bank_gpu(); USE(zero_bank(), MTLResourceUsageRead); }
             else {
-                id<MTLBuffer> db; size_t doff = arena_alloc(DRV_SIZE, &db); uint8_t *d = g_cur_arena->cpu + doff; memset(d, 0, DRV_SIZE);
+                __unsafe_unretained id<MTLBuffer> db; size_t doff = arena_alloc_u(DRV_SIZE, &db); uint8_t *d = g_cur_arena->cpu + doff; memset(d, 0, DRV_SIZE);
                 if (bank == 0) {
                     int base = c0_ssbo_base(nvn_stage, sh->mesh_kind);
                     if (base < 0) RED_ONCE(45, "stage %d shader reads driver segment c0; the storage buffer table base was never measured", nvn_stage);
@@ -11748,7 +11764,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             g_args_dirty[nvn_stage] = 0; g_args_ubo[nvn_stage] = 0; g_stat_args_reuse++; return 1;
         }
     }
-    id<MTLBuffer> ab; size_t off = arena_alloc(arg_len, &ab);
+    __unsafe_unretained id<MTLBuffer> ab; size_t off = arena_alloc_u(arg_len, &ab);
     memcpy(g_cur_arena->cpu + off, slots, arg_len);
     bind_args(en, nvn_stage, metal_vertex, ab, g_cur_arena->gpu + off, off, sh->rf.abi);
     sh->ab_buf = ab; sh->ab_gpu = g_cur_arena->gpu + off; sh->ab_off = off; sh->ab_pass = g_pass.serial; sh->ab_binst = g_draw_binst; sh->ab_size_sub = g_sub_serial; sh->ab_pgen = g_psnap_gen; sh->ab_ub = (uint8_t)ub_on; g_args_dirty[nvn_stage] = 0; g_args_ubo[nvn_stage] = 0;
@@ -12271,11 +12287,13 @@ static void rt_sub(const p_set_rt *r, int k, uint64_t *ser, int *lv, int *sl);
 // The lookahead's program lookup: the resolved program when every stage's shader is already loaded, nil otherwise. It never loads, waits for a prefetch or compiles: prog_get would
 //   (shader_get), and on the submit thread at that. Super Mario Party (11-02, pso_1102, frame 953): a lookahead through prog_get loaded the libraries of the rest of the submission
 //   first, the first draw's wait came to 8.5 s and the frame to 38 s (68 libraries)
-static __unsafe_unretained NvProg *prog_peek(const prog_t *p) {
-    if (!p) return nil;
+static void *prog_peek_ptr(const prog_t *p);   // borrowed, as prog_get_ptr
+#define prog_peek(p) ((__bridge NvProg *)prog_peek_ptr(p))
+static void *prog_peek_ptr(const prog_t *p) {
+    if (!p) return NULL;
     int dz = atomic_load(&g_depth_zero);
     __unsafe_unretained NvProg *have = p->serial ? serial_get(p->serial) : nil;
-    if (have && !prog_depth_stale(have, dz)) return have;   // resolved under the other depth mode: as not resolved (prog_get resolves it again)
+    if (have && !prog_depth_stale(have, dz)) return (__bridge void *)have;   // resolved under the other depth mode: as not resolved (prog_get resolves it again)
     int ok = p->nstage > 0, nm = 0; NSString *mk[6]; int ms[6];
     os_unfair_lock_lock(&g_shader_lock);
     for (unsigned i = 0; i < p->nstage && i < 6; i++) {
@@ -12287,7 +12305,7 @@ static __unsafe_unretained NvProg *prog_peek(const prog_t *p) {
     }
     os_unfair_lock_unlock(&g_shader_lock);
     for (int i = 0; i < nm; i++) shader_urgent(mk[i], ms[i]);   // not loaded: loaded beside the submit thread for when its draw comes (this lookahead skips the draw)
-    return ok ? prog_get(p) : nil;
+    return ok ? prog_get_ptr(p) : NULL;
 }
 // Prediction for parallel precompilation (see the note before pso_get): scan from after the current operation to the end of this submit, replaying only state; at a draw, compute the pipeline key from "the state at that time + that render pass's attachment formats" and dispatch those not yet built to the background.
 // Only draws whose shaders are loaded (prog_peek), only the key with the pass's attachments as recorded, and at most PSO_AHEAD compiles in the background at once: the same run's
@@ -14671,7 +14689,7 @@ static int lc_keeps(uint32_t op) {
 //   (SetAlphaRef, OP_ALPHA_REF), written per draw through the argument table (the deferred encoder records table writes, no new encoder method); draws without the test bind nothing
 static void alpha_ref_bind(id en, NvShader *fs) {
     int af = (int)S.color.alpha_func; if (!fs || !fs->has_atms || af < 1 || af > 7) return;
-    id<MTLBuffer> b; size_t o = arena_alloc(sizeof S.alpha_ref, &b); memcpy((uint8_t *)b.contents + o, &S.alpha_ref, sizeof S.alpha_ref);
+    __unsafe_unretained id<MTLBuffer> b; size_t o = arena_alloc_u(sizeof S.alpha_ref, &b); memcpy((uint8_t *)b.contents + o, &S.alpha_ref, sizeof S.alpha_ref);
     enc_r_args(en, MTLRenderStageFragment, b.gpuAddress + o, 30);
 }
 static int draw_pass_state(id en, NvShader *fs) {   // en: the render encoder (typed id: enc_r_dss and friends take the Metal 4 type; naming it here would add an unguarded Metal 4 symbol, tools/avail_count.sh)
@@ -15081,7 +15099,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     g_udc_lmap = NULL; g_udc_fsfn = 0;   // the output map is this draw's own too: the one a previous (on-chip read / merged) draw used must not judge the next pass's lookahead (pass_color_unwritten) or a geometry / tessellation draw's writes (11-06 TotK: tiled lights black outside the lit tiles)
     g_draw_binst = (uint32_t)(dw ? dw->base_instance : di ? di->base_instance : 0);   // c0 + 0x644 of the stages that read the driver segment (encode_args)
     if (!g_geo_program && S.prog) {
-        NvProg *geometry_program = prog_get(S.prog);
+        __unsafe_unretained NvProg *geometry_program = prog_get(S.prog);   // borrowed: the serial table holds it (prog_get)
         if (geometry_program && geometry_program->sh[2] && geometry_program->sh[2]->geo_vertices) {
             if ((dw && dw->mdi_cnt && !mdi_live(dw->mdi_cnt, dw->mdi_i)) || (di && di->mdi_cnt && !mdi_live(di->mdi_cnt, di->mdi_i))) return;
             draw_widen(geometry_program, dw, di); geo_draw(geometry_program, dw, di); return;
