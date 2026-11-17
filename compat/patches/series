@@ -615,3 +615,4 @@
 20261117-0346-app-focus-no-foreground-msg.patch
 20261117-0425-mac-audio-thaw-restart.patch
 20261117-0608-audio-diag-always-on.patch
+20261117-0911-fs-read-fail-short-log.patch
