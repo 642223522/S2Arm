@@ -110,6 +110,11 @@ def bundle(target):
         env=dict(os.environ, RUSTFLAGS=(os.environ.get("RUSTFLAGS", "") + " -C target-feature=+crt-static").strip()))
     (tools / "devpush").mkdir()
     shutil.copy2(ROOT / "build/devpush-static/release/s2a-devpush.exe", tools / "devpush/s2a-devpush.exe")
+    # 电脑侧签程序库（pack/selfsign，同 Mac；静态 C 运行库同 devpush）
+    run(["cargo", "build", "--release", "--locked", "--manifest-path", ROOT / "pack/selfsign/Cargo.toml", "--target-dir", ROOT / "build/selfsign-static"], "selfsign.log",
+        env=dict(os.environ, RUSTFLAGS=(os.environ.get("RUSTFLAGS", "") + " -C target-feature=+crt-static").strip()))
+    (tools / "selfsign").mkdir()
+    shutil.copy2(ROOT / "build/selfsign-static/release/s2a-selfsign.exe", tools / "selfsign/s2a-selfsign.exe")
 
     # 开发者证书签名工具 rcodesign（apple-codesign 官方发布件，版本 / SHA-256 钉在 pack/jobs/devcert.py，不符拒打；v0.2.4）
     import devcert

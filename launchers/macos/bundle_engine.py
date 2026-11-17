@@ -215,6 +215,9 @@ def bundle(destination, developer_dir):
     cargo = shutil.which("cargo") or str(Path.home() / ".cargo/bin/cargo")
     c.run([cargo, "build", "--release", "--locked", "--manifest-path", ROOT / "pack/devpush/Cargo.toml", "--target-dir", ROOT / "build/devpush"],
           c.logs / "devpush.log")
+    # 电脑侧签程序库（pack/selfsign，Rust，只依赖 ring；0.6.0 通用壳：免费团队认的 dylib 签名系统 codesign 签不出，program_pack 用它签）
+    c.run([cargo, "build", "--release", "--locked", "--manifest-path", ROOT / "pack/selfsign/Cargo.toml", "--target-dir", ROOT / "build/selfsign"],
+          c.logs / "selfsign.log")
     c.run(["clang", "-ffile-prefix-map=%s=." % ROOT, "-fobjc-arc", "-O1", ROOT / "graphics/tools/shbake/gpu_arch.m", "-o", prepare / "gpu_arch",
            "-framework", "Metal", "-framework", "Foundation"], c.logs / "gpu-arch.log")
     destination.mkdir(parents=True)
@@ -278,6 +281,8 @@ def bundle(destination, developer_dir):
     (tools / "dsh_batch/.xfp").write_text(xfp_out + "\n", encoding="utf-8")
     (tools / "devpush").mkdir()
     shutil.copy2(ROOT / "build/devpush/release/s2a-devpush", tools / "devpush/s2a-devpush")
+    (tools / "selfsign").mkdir()
+    shutil.copy2(ROOT / "build/selfsign/release/s2a-selfsign", tools / "selfsign/s2a-selfsign")
     # 开发者证书签名工具 rcodesign（apple-codesign 官方发布件，版本 / SHA-256 钉在 pack/jobs/devcert.py，不符拒打；v0.2.4）
     import devcert
     devcert.fetch_rcodesign(tools / "rcodesign", "mac")
