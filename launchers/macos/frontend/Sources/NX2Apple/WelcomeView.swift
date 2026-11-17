@@ -124,10 +124,10 @@ struct WelcomeView: View {
         VStack(alignment: .leading, spacing: 0) {
             Spacer(minLength: 24)
             journey.padding(.bottom, 34)
-            LauncherHeadingLine {
-                Text(w("title")).font(.manrope(44, .heavy)).tracking(-1.4).help(w("title"))
-            } subtitle: {
-                Text(w("lead")).font(.manrope(16)).foregroundStyle(.secondary).help(w("lead"))
+            // 欢迎页的标题和说明都是整句，按页面宽度换行（#1416：原先和别的页一样用单行标题 LauncherHeadingLine，英文等长语言被截成「Put your Switch gam...」）
+            VStack(alignment: .leading, spacing: 18) {
+                Text(w("title")).font(.manrope(44, .heavy)).tracking(-1.4).fixedSize(horizontal: false, vertical: true)
+                Text(w("lead")).font(.manrope(16)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Text(w("soon")).font(.manrope(14, .semibold)).foregroundStyle(LauncherPalette.cream.opacity(0.75))
                 .padding(.top, 14)
