@@ -1674,9 +1674,9 @@ public sealed partial class EnvironmentWindow
         var state = new StackPanel { Spacing = 16 };
         state.Children.Add(PhoneJobCard(installTrack, installState, installMessage, installDiagnostics, game.Id, notes, showsOperation: showsOperation,
             switchExport: installState is "failed" or "interrupted" && !installExport && installTrack.Kind == "install" ? () => { IosAfterPack = "export"; ExportSelfSign(game); } : null));
-        if (installState is "failed" && installCode == "apple_session_expired")
+        if (installState is "failed" && installCode is "apple_session_expired" or "apple_not_signed_in")
         {
-            // Apple ID 登录过期（Apple 1100）：打开 Impactor 让玩家自己重新登录（密码不经手），登录好再点一次「装到 iPhone」
+            // Apple ID 登录过期（Apple 1100）/ 还没登录：打开 Impactor 让玩家自己重新登录（密码不经手），登录好再点一次「装到 iPhone」
             var relogin = Action("install.relogin", OpenBundledImpactor, File.Exists(BundledImpactor) && !installBusy);
             AutomationId(relogin, "install.relogin");
             state.Children.Add(relogin);

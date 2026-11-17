@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -49,6 +50,7 @@ class ProgramStoreTests(unittest.TestCase):
         self.root = Path(t.name)
         self.c = jobcase.fake_context(self.root, library=self.root / "library", work_root=self.root / "work", engine=self.root, env=lambda: {})
         self.c.library.mkdir()
+        (self.root / "pack").symlink_to(Path(programs.__file__).resolve().parents[1], target_is_directory=True)   # 替身引擎根也带 pack（换目录从 c.engine 导入 pack.orch）
         self.store = self.c.library / ".programs" / GID
         self.cache = self.root / "work/cache/programs" / GID
         for p in (mock.patch.object(rewrite_refresh, "rewrite_modules", fake_rewrite), mock.patch.object(rewrite_refresh, "rewriter_bin", lambda c: "rw"),
@@ -117,6 +119,38 @@ class ProgramStoreTests(unittest.TestCase):
         shutil.rmtree(self.cache)
         kit = layout.ios_kit(self.c, GID)
         self.assertEqual((kit / "sgrade_state.json").read_text(), '{"schema": 1}')
+
+    def test_resource_images_stay_out_unknown_small_files_stay_in(self):
+        # 期望手写：资源镜像这一小类封闭集合（romfs.std / game.img / *.nsp / *.xci / *.nca，大小写不论）不进程序件也不进配方；
+        #   不认识的小文件照常进（不是白名单：程序件有约 30 种、读写方各不相同，漏一项升级就坏）
+        product = self.product()
+        res = ("romfs.std", "game.img", "base.nsp", "card.XCI", "x.nca")
+        for n in res:
+            (product / n).write_bytes(b"R" * 64)
+        (product / "new_table.tsv").write_text("新表")
+        sgrade.save_program(self.c, GID, self.exefs())
+        kit = library.save_container_kit(self.c, GID, product)
+        recipe = self.names(self.store / "recipe.tar.zst")
+        for n in res:
+            self.assertFalse((kit / n).exists(), n); self.assertNotIn(n, recipe)
+        self.assertEqual((kit / "new_table.tsv").read_text(), "新表"); self.assertIn("new_table.tsv", recipe)
+
+    def test_oversized_kit_is_loud_and_names_the_biggest_file(self):
+        # 期望手写（阈值换成 1000 字节）：除改写产物外合计超过阈值 → 报 kit_oversized（告警、不拦），点名最大的文件；
+        #   改写产物（main.patched.bin 再大）不算；没超过不报
+        said = []
+        self.c.diagnostic = lambda msg, code="job_failed", severity="error", **kw: said.append((code, severity, msg))
+        product = self.product()
+        (product / "main.patched.bin").write_bytes(b"P" * 5000)
+        sgrade.save_program(self.c, GID, self.exefs())
+        with mock.patch.object(library, "KIT_LOUD_BYTES", 1000):
+            library.save_container_kit(self.c, GID, product)
+            self.assertEqual(said, [])
+            (product / "mystery.bin").write_bytes(b"M" * 2000)
+            kit = library.save_container_kit(self.c, GID, product)
+        self.assertEqual([(c, s) for c, s, _ in said], [("kit_oversized", "warning")])
+        self.assertIn("mystery.bin", said[0][2])
+        self.assertTrue((kit / "mystery.bin").is_file())   # 只报不拦：照常存
 
     def test_cache_deleted_rebuilds_same_kit(self):
         for rows, seen in (("", "-"), ("p main 1 2 3 # x\n", "rows")):
@@ -250,6 +284,50 @@ class ProgramStoreTests(unittest.TestCase):
             parts = library.space_parts(self.c, GID)
         self.assertEqual(parts["ipa"], [pack])
         self.assertEqual(parts["shaders"], [self.cache])
+
+
+class PutDir(unittest.TestCase):
+    """换目录（programs._put_dir）：期望手写——旧的整份被新的取代、不留挪开的旧目录；Windows 上改名被拒（WinError 5，杀软扫描）退避重试后成功"""
+    def setUp(self):
+        self.t = Path(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, self.t, True)
+        self.part, self.dest = self.t / "kit.partial", self.t / "kit"
+        self.part.mkdir(); (self.part / "new.txt").write_text("新")
+        self.dest.mkdir(); (self.dest / "old.txt").write_text("旧")
+        self.c = SimpleNamespace(engine=Path(programs.__file__).resolve().parents[2])   # 仓库树里引擎根 = 仓库根
+
+    def test_existing_dest_is_replaced_whole(self):
+        programs._put_dir(self.c, self.part, self.dest)
+        self.assertEqual(sorted(p.name for p in self.dest.iterdir()), ["new.txt"])
+        self.assertEqual(sorted(p.name for p in self.t.iterdir()), ["kit"])   # 没留 kit.partial / kit.old-*
+
+    def test_busy_rename_is_retried_on_windows(self):
+        sys.path.append(str(Path(programs.__file__).resolve().parents[2]))
+        from pack.orch import dirrename
+        real, calls = Path.rename, []
+        def rename(src, dst):
+            calls.append(src.name)
+            if len(calls) == 1:
+                raise PermissionError(13, "被占用")   # 没有 winerror 属性按 5 认（同 dirrename）
+            return real(src, dst)
+        with mock.patch.object(dirrename, "os", SimpleNamespace(name="nt")), mock.patch.object(dirrename, "DIR_RENAME_RETRIES", (0, 0)), \
+             mock.patch.object(Path, "rename", rename):
+            programs._put_dir(self.c, self.part, self.dest)
+        self.assertEqual(calls, ["kit", "kit", "kit.partial"])   # 挪开旧的：第一次被拒、第二次成功；再把新的改名就位
+        self.assertEqual((self.dest / "new.txt").read_text(), "新")
+
+    def test_app_layout_imports_from_engine_root(self):
+        # App 里作业层（Resources/Jobs）和引擎（Resources/Engine）是兄弟目录：按本文件位置往上推找不到 pack，
+        # 必须从 c.engine 导入（11-16 第 4 份候选出包即 No module named 'pack'）。独立进程、只把作业层放进 sys.path，同作业主程序
+        res = self.t / "Resources"; jobs = res / "Jobs"
+        shutil.copytree(Path(programs.__file__).resolve().parent, jobs, ignore=shutil.ignore_patterns("tests", "__pycache__"))
+        (res / "Engine").symlink_to(self.c.engine, target_is_directory=True)
+        code = ("import sys; from pathlib import Path; from types import SimpleNamespace; import programs; "
+                "t = Path(sys.argv[1]); programs._put_dir(SimpleNamespace(engine=Path(sys.argv[2])), t / 'kit.partial', t / 'kit'); "
+                "print(sorted(p.name for p in (t / 'kit').iterdir()))")
+        r = subprocess.run([sys.executable, "-I", "-c", f"import sys; sys.path.insert(0, {str(jobs)!r}); exec({code!r})", str(self.t), str(res / "Engine")],
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr[-600:])
+        self.assertEqual(r.stdout.strip(), "['new.txt']")
 
 
 if __name__ == "__main__":

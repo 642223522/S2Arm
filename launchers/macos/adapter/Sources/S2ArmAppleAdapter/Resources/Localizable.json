@@ -9910,5 +9910,17 @@
  {
   "source": "点「再启动一次」一般能接着玩，存档停在游戏上次保存的地方。",
   "en": "Click “Start again” and you can usually keep playing; your save is as of the last time the game saved."
+ },
+ {
+  "source": "游戏照常能玩、能装；只是这款的程序件里混进了不该有的大文件，多占电脑空间、装机多推一些。请导出诊断反馈给我们。",
+  "en": "The game still installs and plays normally; this game's program files just picked up a large file that does not belong there, which takes extra disk space and makes installs push more data. Please export a diagnostic report and send it to us."
+ },
+ {
+  "source": "Impactor 里还没登录 Apple ID：在装机页点「打开 Impactor」→「设置」→「添加账号」，用你的 Apple ID 登录（邮箱、密码、手机上的验证码，输入前切到英文输入法）；已经存了几个账号的，选中要用的那个（或移除后重新添加）。然后回来再点一次「装到 iPhone」。密码只在 Impactor 里输，S2Arm 不经手。",
+  "en": "No Apple ID is signed in to Impactor: on the install page click Open Impactor → Settings → Add Account and sign in with your Apple ID (email, password and the code on your devices; switch the keyboard to English first). If several accounts are saved, select the one you want (or remove it and add it again). Then come back and click Install to iPhone again. You enter the password only in Impactor; S2Arm never sees it."
+ },
+ {
+  "source": "这台电脑连不上苹果的服务器（Impactor 登录和签名都要连），不是 Apple ID 或密码的问题。检查这台电脑的网络：浏览器能打开 appleid.apple.com 就再点一次「装到 iPhone」；打不开就换个 DNS（如 223.5.5.5 或 1.1.1.1）或开 / 关代理后再装。手机、已装的 App 和存档都没动。",
+  "en": "This computer cannot reach Apple's servers (Impactor needs them to sign in and to sign). This is not a problem with your Apple ID or password. Check this computer's network: if a browser can open appleid.apple.com, click Install to iPhone again; if it cannot, switch DNS (for example 1.1.1.1) or turn your proxy on or off, then install again. Your phone, installed apps and saves were not touched."
  }
 ]

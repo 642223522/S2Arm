@@ -420,7 +420,7 @@ def install_ios_win(c, game, scheme):
         c.emit("message", "Impactor 里存着一个 Apple ID 但没选中，已替你选上")
     team = W.impactor.selected_team()
     if not team:
-        raise Failure("读不到 Impactor 当前选中的 Apple ID：在 Impactor 里登录并选中你的 Apple ID 后再装。", code="apple_session_expired")
+        raise Failure("读不到 Impactor 当前选中的 Apple ID：在 Impactor 里登录并选中你的 Apple ID 后再装。", code="apple_not_signed_in")
     udid = inst.win_udid(c, W)
     bid = bundle_id(scheme, team)
     log = c.private / "logs" / (c.task + "-install.log")
