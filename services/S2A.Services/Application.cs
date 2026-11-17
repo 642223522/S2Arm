@@ -107,7 +107,9 @@ namespace S2A.Services
             string overlayDir = Path.Combine(programDir, "ui_overlay", "romfs");   // 界面布局覆盖层（RomFsIndex.OverlayFiles）：同路径读覆盖层那份
             string readLogAs = $"程序 {programIndex}";   // 诊断读记录（S2A_ROMFS_READLOG，RomFsIndex.ReadLog）里的来源名
 
-            IStorage imgV1 = RomFsIndex.OpenImg(programDir);   // 单一 IMG v1（v0.3.0）：有 game.img 就用它；旧形态（romfs.img 三件套 / romfs/ 目录）照旧支持
+            // 单一 IMG v1（v0.3.0）：有 game.img 就用它（Mac 运行目录里的是 iPhone 资源包那份的硬链接，0.6.0 一款一份资源）；旧形态（romfs.img 三件套 / romfs/ 目录）照旧支持。
+            //   Mac 运行目录的界面覆盖层在 ui_overlay/romfs（iPhone 资源包是 romfs_overlay，OpenImg 缺省）
+            IStorage imgV1 = RomFsIndex.OpenImg(programDir, Directory.Exists(overlayDir) ? overlayDir : null);
             if (imgV1 != null)
             {
                 imgV1 = RomFsMods.ApplyAtLaunch(imgV1, programIndex);   // 资源替换类 mod（RomFsMods.cs）：没有 mod 原对象返回；下面几处同

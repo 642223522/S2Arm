@@ -5,6 +5,8 @@
 //   ③ 文件长度不等于头里的整个文件长（推到一半）→ 没有 romfs/ 时抛、有 romfs/ 时 null（审计 P1-170）；④（11-17 起不拒、照常读）格式号 2 → 抛（起局失败、说清要更新 S2Arm）
 //   ⑤ 旁边有 game.imgmap + romfs.s2aidx（pack/img.py convert 写）→ 走单文件镜像同一条预建路径（IndexedStorage，不重建目录表）：覆盖层文件读覆盖版、其余读 IMG 原件；
 //      偏移表记的镜像长与 game.img 不符（过期）→ 退回现建，读出的内容照样对
+//   ⑥ 一款一份资源（0.6.0）：Mac 运行目录 mac/ 的 game.img 是 iPhone 资源包那份的硬链接，旁边只有 Mac 自己的 ui_overlay/romfs；iPhone 资源包有 iPhone 的偏移表 +
+//      索引 + romfs_overlay：OpenImg(mac, ui_overlay/romfs) 覆盖层用 Mac 那份（"mac!!"，不是 iPhone 的 "overlay!!"），不碰 iPhone 的偏移表（现建路径）；不给覆盖层 → 原件
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -138,6 +140,17 @@ namespace S2A.Services.Tests
                 var s6 = RomFsIndex.OpenImg(game3);
                 Ck(s6 != null && s6.GetType().Name != "IndexedStorage" && Encoding.UTF8.GetString(ReadRom(s6, "/a/s.txt")) == "overlay!!" && ReadRom(s6, "/a/big.bin").AsSpan().SequenceEqual(big),
                    $"⑤ 偏移表过期（镜像长不符）→ 退回现建（{s6?.GetType().Name}），内容照样对");
+                // ⑥ Mac 运行目录的 game.img 是 iPhone 资源包那份的硬链接：iPhone 资源包 = game3（带 iPhone 偏移表、索引、romfs_overlay），Mac 目录 = mac
+                string mac = Path.Combine(root, "mac");
+                Directory.CreateDirectory(Path.Combine(mac, "ui_overlay", "romfs", "a"));
+                File.CreateHardLink(Path.Combine(mac, RomFsIndex.ImgName), img3);
+                File.WriteAllBytes(Path.Combine(mac, "ui_overlay", "romfs", "a", "s.txt"), "mac!!"u8.ToArray());
+                var s7 = RomFsIndex.OpenImg(mac, Path.Combine(mac, "ui_overlay", "romfs"));
+                Ck(s7 != null && s7.GetType().Name != "IndexedStorage" && Encoding.UTF8.GetString(ReadRom(s7, "/a/s.txt")) == "mac!!"
+                   && ReadRom(s7, "/a/big.bin").AsSpan().SequenceEqual(big) && ReadRom(s7, "/top.dat").AsSpan().SequenceEqual(files["top.dat"]),
+                   $"⑥ Mac 目录（硬链接同一个 IMG）：覆盖层用 Mac 的（mac!!）、其余读 IMG 原件、不走 iPhone 的偏移表（{s7?.GetType().Name}）");
+                var s8 = RomFsIndex.OpenImg(mac, null);
+                Ck(s8 != null && ReadRom(s8, "/a/s.txt").AsSpan().SequenceEqual(files["a/s.txt"]), "⑥ Mac 不给覆盖层（目录里也没有 romfs_overlay）→ 直接交 RomFS 段，读到原件");
             }
             finally { Directory.Delete(root, true); }
             Console.WriteLine($"{(bad == 0 ? "✓" : "✗")} RomFS 单一 IMG：{bad} 项不符");

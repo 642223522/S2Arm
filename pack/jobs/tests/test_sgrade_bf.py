@@ -102,6 +102,32 @@ class UpgradeMac(unittest.TestCase):
             self.assertEqual(((rt / "shaders/direct/keys.tsv").read_text(), (rt / "manifest.json").read_text()), ("old\n", m0), "运行版本与清单一个字节不动、不记代数")
             self.assertFalse((rt / "shaders/direct.sgbf").exists(), "不留临时目录")
 
+    def test_mac_runtime_with_game_img(self):
+        # 一款一份资源（0.6.0）：Mac 运行版本只有 game.img（iPhone 资源包那份的硬链接）、没有 romfs.std / romfs/：重出时 rebuild 看到的 romfs.std
+        #   = game.img 的 RomFS 段（字节手写对比），补完删掉，game.img 不动
+        import os
+        with tempfile.TemporaryDirectory() as t:
+            t = Path(t); rt = t / "runtime"; (rt / "shaders/direct").mkdir(parents=True)
+            engine = Path(sgrade_bf.__file__).resolve().parents[2]
+            img = sgrade_bf._img(types.SimpleNamespace(engine=engine))
+            seg = os.urandom(50001); ro = img.PAGE
+            with open(rt / "game.img", "wb") as f:
+                f.write(img.HDR.pack(img.MAGIC, img.FORMAT, 0, b"0100AAAA00000000", b"", ro, len(seg), ro + len(seg), 0, ro + len(seg)))
+                f.seek(ro); f.write(seg)
+            before = (rt / "game.img").read_bytes()
+            (rt / "shaders/direct/keys.tsv").write_text("old\n")
+            (rt / "manifest.json").write_text(json.dumps({"files": {"game.img": [len(before), ""], "shaders/direct/keys.tsv": [4, ""]}}))
+            new = t / "new"; new.mkdir(); (new / "keys.tsv").write_text("k\n")
+            seen = []
+            def rebuild(c, gid, runtime, target, tmp):
+                seen.append((runtime / "romfs.std").read_bytes()); return new
+            c = types.SimpleNamespace(emit=lambda *a, **k: None, private=t, engine=engine)
+            with patch.object(sgrade_bf, "rebuild", rebuild):
+                self.assertTrue(sgrade_bf.upgrade_mac(c, "G", rt, None))
+            self.assertEqual(seen, [seg], "重出看到的 romfs.std = RomFS 段")
+            self.assertFalse((rt / "romfs.std").exists(), "补完删掉临时 romfs.std")
+            self.assertEqual((rt / "game.img").read_bytes(), before, "game.img 不动")
+
 
 class IosInputsImage(unittest.TestCase):
     def test_romfs_segment_becomes_image_byte_for_byte(self):
