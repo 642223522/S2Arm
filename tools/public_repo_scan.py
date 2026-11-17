@@ -20,12 +20,16 @@ from collections import Counter
 import fnmatch
 import hashlib
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import sys
 
 RULES_PATH = Path(__file__).with_name('public_repo_scan_rules.json')
+# 私有规则（只在维护方机器上）：内部称呼的词表不能明文放进公开仓，放在仓外由入车快检查和门禁读；读不到（外部贡献者）就跳过。
+#   只判新增行：存量不计命中，也不计存量（改了扫描器 / 规则表时的全量模式同样只看新增行）。环境变量 S2A_PRIVATE_SCAN_RULES 可改路径
+PRIVATE_RULES_PATH = Path(os.environ.get('S2A_PRIVATE_SCAN_RULES') or Path.home() / '.config' / 's2arm' / 'scan_private_rules.json')
 MAX_BYTES = 16 * 1024 * 1024
 # 可执行 / 库文件头（Mach-O、Mach-O fat、ELF、PE、ar）：白名单外的一律记 build_artifact（构建产物不入仓）
 ARTIFACT_MAGIC = (b'\xcf\xfa\xed\xfe', b'\xce\xfa\xed\xfe', b'\xca\xfe\xba\xbe', b'\x7fELF', b'MZ', b'!<arch>')
@@ -75,9 +79,32 @@ def load_rules():
                     not re.fullmatch(r'[0-9a-f]{64}', row['sha256'])):
                 raise ValueError
             archive_paths.add(path)
+        rules['added_only_rules'] = load_private_rules()
         return rules
     except (OSError, ValueError, KeyError, TypeError, re.error):
         raise ScanError('invalid_rules_table') from None
+
+
+def load_private_rules():
+    """私有规则：{"version": 1, "content_rules": [{"id", "category", "regex"}…]}；文件不在 → []（跳过）；在但坏了 → 报错（别静默漏扫）"""
+    try:
+        text = PRIVATE_RULES_PATH.read_text(encoding='utf-8')
+    except FileNotFoundError:
+        return []
+    except OSError:
+        raise ScanError('invalid_private_rules') from None
+    try:
+        data = json.loads(text)
+        if data['version'] != 1:
+            raise ValueError
+        out = []
+        for row in data['content_rules']:
+            if not row['id'] or not row['category']:
+                raise ValueError
+            out.append(dict(row, compiled=re.compile(row['regex'])))
+        return out
+    except (ValueError, KeyError, TypeError, re.error):
+        raise ScanError('invalid_private_rules') from None
 
 
 def matches(path, globs):
@@ -96,8 +123,8 @@ def allowed(category, value, line, path, rules):
     return False
 
 
-def content_hits(line, path, rules):
-    for row in rules['content_rules']:
+def content_hits(line, path, rules, key='content_rules'):
+    for row in rules.get(key, ()):
         if 'context_compiled' in row and not row['context_compiled'].search(line):
             continue
         if row.get('messages_only'):   # 只扫提交信息的规则（内部线名：文件存量待 v0.2.0 后一次清完再打开）
@@ -371,12 +398,14 @@ def scan(repo, ref, paths, list_only=False, base=None):
                         decision = 'unreviewed_binary_or_encoding'
                     else:
                         for number, line in enumerate(text.split('\n'), 1):
+                            added = path in changed and (ranges is None or any(start <= number < start + count
+                                                                               for start, count in ranges))
                             for category in sorted({c for c, _ in content_hits(line, path, rules)}):
-                                findings.append({**location, 'status': 'changed' if path in changed and
-                                                 (ranges is None or any(start <= number < start + count
-                                                                        for start, count in ranges))
-                                                 else 'existing',
+                                findings.append({**location, 'status': 'changed' if added else 'existing',
                                                  'line': number, 'category': category})
+                            if added:   # 私有规则只判新增行（不计存量）
+                                for category in sorted({c for c, _ in content_hits(line, path, rules, 'added_only_rules')}):
+                                    findings.append({**location, 'status': 'changed', 'line': number, 'category': category})
                 else:
                     # strings -a semantics, without executing or decoding the binary.
                     seen = set()
@@ -438,7 +467,7 @@ def scan_messages(repo, ref, base):
     """提交信息扫描（11-09 维护方：公开仓扫描只查文件，main 提交信息里漏进内部线名 / 设备代号这类内部称呼）：
     base..ref 每条提交信息逐行用同一份 content_rules 里 internal_name 类判；返回 [(短提交号, 行号, 规则 id)]，命中的词本身不外泄"""
     rules = load_rules()
-    rows = [r for r in rules['content_rules'] if r['category'] in MESSAGE_CATEGORIES or r.get('messages')]
+    rows = [r for r in rules['content_rules'] if r['category'] in MESSAGE_CATEGORIES or r.get('messages')] + rules['added_only_rules']
     revs = git(repo, 'rev-list', f'{base}..{ref}').decode().split()
     hits = []
     for rev in revs:
