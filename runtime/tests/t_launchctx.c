@@ -209,6 +209,10 @@ int main(int argc, char **argv) {
                    " {\"name\":\"0100000000000003\",\"title_id\":\"0100000000000004\"},\n {\"title_id\":\"0100000000000005\",\"host_abi\":%d}]}\n", S2A_HOST_ABI + 1);
       write_file(p2, cat); }
     ck(s2a_launch_ctx_is_container_dir(app), "容器判定：有清单且有 Games/ → 容器");
+    {   // 0.6.0「只装壳」的容器：清单只有 shell_id、games 为空，没有 Games/ → 也是容器（原先要求 Games/，被当成单款包起）
+        char sh[1300], sp[1400]; snprintf(sh, sizeof sh, "%s/ShellOnly/S2Arm.app", dir); mkdirs(sh);
+        snprintf(sp, sizeof sp, "%s/s2a_catalogue.json", sh); write_file(sp, "{\"schema\":1,\"shell_id\":\"abc\",\"games\":[]}\n");
+        ck(s2a_launch_ctx_is_container_dir(sh), "容器判定：只装壳（清单在、games 空、没有 Games/）→ 容器"); }
     snprintf(p2, sizeof p2, "%s/Frameworks/S2AImages-0100000000000001.dylib", app); write_file(p2, "x");
     snprintf(p2, sizeof p2, "%s/Games/0100000000000005", app); mkdirs(p2);   // 第 5 款：随行目录、镜像包都在，只是 host_abi 对不上（进程级用例核拒载）
     snprintf(p2, sizeof p2, "%s/Frameworks/S2AImages-0100000000000005.dylib", app); write_file(p2, "x");
