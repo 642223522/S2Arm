@@ -13968,7 +13968,7 @@ static void fb_report(uint64_t frame) {   // every 300 frames: hits per layer an
 // #387 the depth snapshot of the pass's own depth attachment, kept while that depth stays unchanged: draws after the first that sample it read the same copy (one copy and
 //   one pass break for a run of halo draws instead of one per draw). It goes stale when the depth or stencil may change: a draw writing depth or stencil to it, a depth / stencil
 //   clear, a render-target change, a copy or buffer clear (storage may alias) and a new submission. Own storage (dsnap_storage), not fb_snap_shape's slots that other copies reuse in place
-static struct { uint64_t ser; __unsafe_unretained id<MTLTexture> src; __strong id<MTLTexture> use; int valid; } g_dsnap;
+static struct { uint64_t ser; __unsafe_unretained id<MTLTexture> src; __strong id<MTLTexture> use; int valid, stencil; } g_dsnap;   // stencil: the copy is read through a stencil view
 static void dsnap_stale(void) { g_dsnap.valid = 0; }
 // 存储按形状留 DSNAP_SLOTS 份（11-13，0400486024DEC000 读档进场景：每帧先后采样 768x432、1536x864 两张深度，只留一份时每帧来回整张重建，
 //   每 300 帧新建 900 张、436 MB，常驻集跟着进出 900 次）。同形状照旧原地复用；份数满了换掉最久没用的那份，旧的照旧推迟到用过它的提交做完再放
@@ -13990,7 +13990,15 @@ static void fb_prepare(NvProg *pr) {
     g_draw_seq++; g_fb_n = 0; g_fbt.on = 0; g_fbt.fn = nil; g_fb_want_load = 0;
     {   // a draw that may write depth / stencil changes what the copy holds: stale before it (its own sampling copies the depth as it is) and after it (its writes land after its reads)
         static int after; if (after) { dsnap_stale(); after = 0; }
-        if ((S.ds.dt && S.ds.dw) || (S.ds.st && (S.st_wmask[0] || S.st_wmask[1]))) { dsnap_stale(); after = 1; } }
+        // Stencil writes only matter to a copy read through a stencil view: the copy is a separate texture, and a depth view of it holds the depth plane, which a
+        //   stencil write does not touch (a deferred lighting pass draws one light volume per draw with stencil test on and depth writes off, each sampling the depth:
+        //   staling on any stencil write mask ended the pass and copied the whole depth for every light, 139 times a frame in one title). Writes are counted as the
+        //   stencil ops really writing (sd_note's wwhy 5: a write mask and an op other than KEEP). DM_NVN_DSNAP_STRICT=1: the old rule (any stencil write mask)
+        static int strict = -1; if (strict < 0) strict = getenv("DM_NVN_DSNAP_STRICT") != NULL;
+        int wst = S.ds.st && (S.st_wmask[0] || S.st_wmask[1]) && (strict
+            || S.ds.fail_f != NVN_STENCIL_OP_KEEP || S.ds.zfail_f != NVN_STENCIL_OP_KEEP || S.ds.zpass_f != NVN_STENCIL_OP_KEEP
+            || S.ds.fail_b != NVN_STENCIL_OP_KEEP || S.ds.zfail_b != NVN_STENCIL_OP_KEEP || S.ds.zpass_b != NVN_STENCIL_OP_KEEP);
+        if ((S.ds.dt && S.ds.dw) || (wst && (strict || g_dsnap.stencil))) { dsnap_stale(); after = 1; } }
     if (!g_enc) memset(g_fb_dirty, 0, sizeof g_fb_dirty);   // no pass open: the last one ended and its writes are in memory (g_fb_dirty is only reset when a pass opens; a stale 1 sent the first self-sampling draw of the next pass to ④)
     if (g_fbc.forcing) { g_fbt.on = 1; memcpy(g_fbt.fx, g_fbc.fx, sizeof g_fbt.fx); g_fbt.fbmask = g_fbc.fbmask; memcpy(g_fbt.lmap, g_fbc.lmap, 8); g_fbt.fn = g_fbc.fn; return; }   // 双画检查的第二遍：强制 ⑤
     if (g_fb_rebind) { args_dirty_all(); g_fb_rebind = 0; }   // the previous draw had a substituted binding: re-encode with the original bindings this time
@@ -14035,6 +14043,11 @@ static void fb_prepare(NvProg *pr) {
             if (g_fb_use[g_fb_n] && g_fb_use[g_fb_n] != use) defer_obj_unref(g_fb_use[g_fb_n]);
             g_fb_src[g_fb_n] = t; g_fb_use[g_fb_n] = use; g_fb_rid[g_fb_n] = use.gpuResourceID._impl; g_fb_n++; g_fb_hits++; g_fb_count++; g_fb_depth++;
             g_dsnap.ser = ser; g_dsnap.src = t; g_dsnap.use = use; g_dsnap.valid = 1;
+            { MTLPixelFormat vf = use.pixelFormat; g_dsnap.stencil = vf == MTLPixelFormatStencil8 || vf == MTLPixelFormatX32_Stencil8
+#if TARGET_OS_OSX
+                || vf == MTLPixelFormatX24_Stencil8
+#endif
+                ; }
             if (g_fb_depth == 1 || g_fb_depth == 100 || g_fb_depth % 100000 == 0) MLOG("same-pass depth sampling: draw %llu (shader %s) samples its pass's depth attachment ser=%llu (%lux%lu format %lu); the pass ends and it reads a copy (%llu so far)",
                 (unsigned long long)g_draw_seq, fs->key, (unsigned long long)ser, (unsigned long)base.width, (unsigned long)base.height, (unsigned long)base.pixelFormat, (unsigned long long)g_fb_depth);
             PD("N %llu same-pass depth sampling: depth attachment ser=%llu sampled at slot %d; the pass ends and this draw reads a copy", g_stat_pass, (unsigned long long)ser, b->reg);
