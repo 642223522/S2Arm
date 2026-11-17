@@ -1287,6 +1287,53 @@ class AppDirs(unittest.TestCase):
         calls, said, err = self.go([(2, "用法：s2a-devpush …")])
         self.assertIsNone(err); self.assertEqual(len(calls), 1)
 
+    class Box(push.Devpush):
+        """模拟 App 容器的属主语义（期望按 POSIX 规则手写，不跑被测实现推导）：owner[目录] = 'app' / 'root'。
+        AFC 以 App 身份做事：在某目录下建 / 改名要该目录归 App；put 的父目录不在 → 「Object not found」（玩家原文）"""
+        def __init__(self, owner):
+            super().__init__("devpush", "U", "B", tempfile.mkdtemp()); self.owner = dict(owner); self.files = set(); self.calls = []
+        def parent(self, p): return p.rsplit("/", 1)[0] if "/" in p else ""
+        def call(self, *a):
+            self.calls.append(a); op = a[0]
+            if op == "mkdir":
+                cur = ""
+                for part in a[1].split("/"):
+                    nxt = f"{cur}/{part}" if cur else part
+                    if nxt not in self.owner:
+                        if self.owner.get(cur) != "app": return 1, f"S2A_DIR_UNWRITABLE {cur}\n建不了 {nxt}：afc error: Permission denied"
+                        self.owner[nxt] = "app"
+                    cur = nxt
+                return (0, "mkdir") if self.owner[cur] == "app" else (1, f"S2A_DIR_UNWRITABLE {cur}")
+            if op == "mv":
+                src, dst = a[1], a[2]
+                if self.owner.get(self.parent(src)) != "app": return 1, "afc error: Permission denied"
+                for k in [k for k in self.owner if k == src or k.startswith(src + "/")]: self.owner[dst + k[len(src):]] = self.owner.pop(k)
+                return 0, "mv"
+            if op == "put":
+                d = self.parent(a[2])
+                if d not in self.owner: return 1, f"打不开 {a[2]}：afc error: Object not found"
+                if self.owner[d] != "app": return 1, f"打不开 {a[2]}：afc error: Permission denied"
+                self.files.add(a[2]); return 0, "put"
+            return 0, ""
+
+    def test_root_chain_two_levels_rebuilt_and_put_works(self):   # 玩家现场：games/<号> 与 资源包 都归 root（devicectl 代建）
+        S = "Library/Application Support/S2Arm"
+        box = self.Box({"": "app", "Library": "app", "Library/Application Support": "app", S: "app", f"{S}/games": "app",
+                        self.G: "root", f"{self.G}/资源包": "root"})
+        src = Path(tempfile.mkdtemp()) / "f"; src.write_bytes(b"x")
+        with self.assertRaises(push.Fail): box.put(str(src), f"{self.G}/资源包/.incoming/a.zst")   # 修之前：Object not found（资源包下建不出 .incoming）
+        with mock.patch.object(push.time, "time", return_value=1700000000): push.app_dirs(box, f"{self.G}/资源包/.incoming", lambda m: None)
+        self.assertEqual([box.owner.get(d) for d in (self.G, f"{self.G}/资源包", f"{self.G}/资源包/.incoming")], ["app", "app", "app"])
+        self.assertEqual(box.owner.get(f"{S}/games/.s2a-foreign-0100ABCDE0000000-1700000000"), "root")   # 挪开的那份原样在（App 删不掉）
+        box.put(str(src), f"{self.G}/资源包/.incoming/a.zst"); self.assertIn(f"{self.G}/资源包/.incoming/a.zst", box.files)
+
+    def test_games_dir_root_moves_games_not_skeleton(self):   # games 本身归 root：挪 games（父目录 S2Arm 归 App），不碰 S2Arm 骨架
+        S = "Library/Application Support/S2Arm"
+        box = self.Box({"": "app", "Library": "app", "Library/Application Support": "app", S: "app", f"{S}/games": "root"})
+        with mock.patch.object(push.time, "time", return_value=1700000000): push.app_dirs(box, f"{self.G}/资源包/.incoming", lambda m: None)
+        self.assertEqual(box.owner.get(f"{S}/games"), "app"); self.assertEqual(box.owner.get(f"{S}/.s2a-foreign-games-1700000000"), "root")
+        self.assertEqual(box.owner.get(f"{self.G}/资源包/.incoming"), "app")
+
     def test_devicectl_put_makes_parent_as_app_once(self):   # devicectl 拷文件前先以 App 身份建父目录，同一目录只建一次
         dev = push.Devicectl("D", "B", tempfile.mkdtemp()); dev.dp = self.Dp([])
         src = Path(tempfile.mkdtemp()) / "f"; src.write_bytes(b"ok")
