@@ -136,6 +136,7 @@ void gl_clear(GLbitfield mask);                           // 按当前清除值�
 void gl_wait(uint64_t v);                                 // 等本层共享事件到 v（glFinish、上屏前取回读）
 struct gl_vao *gl_vao_cur(void);                        // gl_buf.m：当前顶点数组；0 号是 GLES 的缺省顶点数组（不在名字表里）
 void gl_buffer_ref(struct gl_buffer *b);                   // 绑定当前存储进编码器时登记本次提交
+GLuint gl_pack_buffer_name(void); struct gl_buffer *gl_pack_buffer(void);   // gl_buf.m：当前绑的像素打包缓冲（名字 / 对象，没绑 0 / NULL）
 int gl_buffer_busy(const struct gl_buffer *b);             // 当前存储仍被未完成的提交引用
 extern id<MTLDevice> gl_dev; extern id<MTLSharedEvent> gl_ev;
 

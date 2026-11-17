@@ -736,6 +736,17 @@ static int present_link_from_env(void) {
     //   Metal 3 不补帧（nvn_present_fi.inc fi_wanted），显示链照建（审计 P1-188：原先在知道是不是 Metal 3 之前就清成 0，Metal 3 的局既没补帧也没显示链）——
     //   所以 mtl_init 要先定后端再调本函数
     { const char *fi = getenv("DM_PRESENT_FI"); if (fi && !strcmp(fi, "1") && v != 2 && !g_m3) v = 0; }
+    // Metal 性能浮层 + 显示链在老 macOS 上闪退（D-G4ZD / #1490，macOS 15.7.9 两局开局 1～3 帧 abort）：系统的 libMTLHud 换掉
+    //   CAMetalDisplayLinkUpdate 的 drawable 取值，把这个更新对象当 CAMetalLayer 交给浮层初始化，发 -device 不认 → ObjC 异常。
+    //   macOS 27.2 上同样开浮层 + 显示链（本机最小程序，libMTLHud 已加载）跑 120 帧不崩，苹果已修；中间哪一版修的没核，按 27 以下都避开。
+    //   玩家在启动器开了 Metal 性能浮层（MTL_HUD_ENABLED=1）时这一局出图线程自己取画布（同 DM_PRESENT_LINK=0），浮层照常显示
+#if TARGET_OS_OSX
+    { const char *hud = getenv("MTL_HUD_ENABLED");
+      if (v && hud && !strcmp(hud, "1") && NSProcessInfo.processInfo.operatingSystemVersion.majorVersion < 27) {
+          static int said; if (!said++) MLOG("Metal 性能浮层开着、macOS %ld 低于 27：这一局不用显示链（系统浮层在老版本上和显示链一起会闪退，D-G4ZD）", (long)NSProcessInfo.processInfo.operatingSystemVersion.majorVersion);
+          v = 0; g_link_base = 0;
+      } }
+#endif
     return v;
 }
 void mtl_init(void) {

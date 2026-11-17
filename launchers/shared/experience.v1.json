@@ -1139,6 +1139,7 @@
       {"id": "update.error.update_download_failed", "zh-Hans": "下载连接中断，请检查网络后重试或手动下载新版，当前版本没有变化", "en": "Check your network and retry the interrupted download, or download manually; your current version is unchanged"},
       {"id": "update.error.update_unpack_failed", "zh-Hans": "无法打开安装包，请手动下载新版，当前版本没有变化", "en": "The package could not be opened; download the new version manually with your current version unchanged"},
       {"id": "update.error.update_failed", "zh-Hans": "更新未完成，请检查网络后重试，当前版本没有变化", "en": "Check your network and retry the incomplete update; your current version is unchanged"},
+      {"id": "update.error.update_install_failed", "zh-Hans": "上次更新到 v{0} 没装上，现在还是原来的版本", "en": "The update to v{0} didn't install; you're still on the previous version"},
       {"id": "update.error.update_swap_failed", "zh-Hans": "替换文件失败，已保留当前版本", "en": "The files could not be replaced, so your current version was kept"},
       {"id": "update.error.update_rolled_back", "zh-Hans": "新版没能启动，已回到原来的版本", "en": "The new version could not start, so S2Arm restored the previous version"},
       {"id": "update.error.update_rollback_failed", "zh-Hans": "新版无法启动且旧版恢复失败，请重新下载 S2Arm，游戏库不受影响", "en": "Download S2Arm again because neither version could start or be restored; your library is safe"},
