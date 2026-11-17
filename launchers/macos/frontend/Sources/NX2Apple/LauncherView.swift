@@ -106,16 +106,16 @@ struct LauncherView: View {
         .padScope("main", padFocus)
         .environmentObject(padFocus)
         .launcherDropdownHost()
+        .ignoresSafeArea(.container, edges: .top)
         .background {
-            if showingHome { HomeBackdrop(game: homeSelected, covers: covers) }
-            else { LauncherWindowMaterial() }
+            if showingHome { HomeBackdrop(game: homeSelected, covers: covers).ignoresSafeArea() }
+            else { LauncherWindowMaterial().ignoresSafeArea() }
         }
         .background(LauncherWindowChrome())
         .background(LauncherPadHost(navigation: navigation, update: configurePadNavigation))
         .onReceive(model.controller.$deviceCount.dropFirst()) { _ in
             DispatchQueue.main.async { navigation.source.refreshPresentation() }
         }
-        .ignoresSafeArea(.container, edges: .top)
         .preferredColorScheme(.dark)
         .tint(LauncherPalette.cream)
         .font(LauncherTheme.TypeStyle.detail)

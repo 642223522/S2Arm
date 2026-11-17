@@ -21,7 +21,7 @@ extension LauncherView {
                 homeCoverStrip(size: size)
                 Spacer(minLength: 12)
                 if let game = homeSelected {
-                    homePreview(game, size: size).padding(.horizontal, 54).padding(.bottom, size.height < 740 ? 24 : 42)
+                    homePreview(game, size: size).padding(.horizontal, 54).padding(.bottom, size.height < 740 ? 52 : 74)
                 }
             }
             homeFooter
@@ -74,7 +74,7 @@ extension LauncherView {
         let compact = size.height < 740
         return VStack(alignment: .leading, spacing: compact ? 10 : 16) {
             Text(game.name).font(.manrope(compact ? 34 : min(48, size.width * 0.04), .bold)).tracking(-1)
-                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                .lineLimit(1).minimumScaleFactor(0.62)
                 .shadow(color: .black.opacity(0.3), radius: 14, y: 2)
             VStack(alignment: .leading, spacing: 8) {
                 if !compact {
@@ -118,6 +118,13 @@ extension LauncherView {
                     .controllerButtonStyle(ConsolePillButtonStyle()).controllerID("hero.install")   // 只开装机窗：别的作业在跑，窗里点装机会排队
                     .help(txt(game.iphoneInstalledAt != nil && game.iphoneFree ? "library.hero.renew" : "library.hero.install"))
                 }
+                if game.playable || game.iphoneReady {
+                    Button { model.exportFor = game.id } label: {
+                        fitLabel(loc.t("s2arm.export.action"), "shippingbox")
+                    }
+                    .controllerButtonStyle(ConsolePillButtonStyle()).controllerID("hero.export")
+                    .help(loc.t("s2arm.export.action")).accessibilityLabel(loc.t("s2arm.export.action"))
+                }
                 // 只留两个人人认得的圆钮（…、♡）；「查看出包结果」「启动设置」收进「…」菜单（11-16 维护者：三条横杠看不出是启动设置，一行三种形状不统一）
                 Button { moreFor = game.id } label: { Image(systemName: "ellipsis") }
                     .controllerButtonStyle(ConsoleIconButtonStyle(size: 52)).controllerID("hero.more")
@@ -131,7 +138,7 @@ extension LauncherView {
                     .accessibilityAddTraits(home.favorites.contains(game.id) ? .isSelected : [])
             }.padding(.top, compact ? 4 : 10)
         }
-        .frame(maxWidth: min(740, size.width * 0.64), alignment: .leading)
+        .frame(maxWidth: min(920, size.width * 0.78), alignment: .leading)
         .accessibilityElement(children: .contain).accessibilityIdentifier("home.preview")
     }
 
