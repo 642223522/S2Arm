@@ -250,14 +250,21 @@ public sealed record GameLocation(string State, string Path, string Folder, stri
 
 /// <summary>Per-part size of one game in bytes (catalog game.sizes / storageOverview games[].sizes, pack/jobs/sizes.py; mirrors GameSizes in the Mac adapter).
 /// Cache = build cache + shader cache; Sources = referenced game files, a file shared by n games counts size / n for each.
-/// Measured is false until a job has measured the game: the four folder parts are then 0 and shown as not counted.</summary>
-public sealed record GameSizes(long ImageMac, long ImageIos, long Saves, long Cache, long Sources, bool Measured)
+/// Measured is false until a job has measured the game: the four folder parts are then 0 and shown as not counted.
+/// Categories (0.6.0, only when the universal shell switch is on): resources / programs / playerData / cache by "what happens if deleted"
+/// (pack/jobs/sizes.py categories); null = show the old parts.</summary>
+public sealed record GameSizes(long ImageMac, long ImageIos, long Saves, long Cache, long Sources, bool Measured, IReadOnlyDictionary<string, long>? Categories = null)
 {
+    public static readonly string[] CategoryOrder = ["resources", "programs", "playerData", "cache"];
+
     public static GameSizes Parse(JsonElement value)
     {
         long N(string key) => value.TryGetProperty(key, out var n) && n.ValueKind == JsonValueKind.Number ? n.GetInt64() : 0;
+        Dictionary<string, long>? categories = null;
+        if (value.TryGetProperty("categories", out var c) && c.ValueKind == JsonValueKind.Object)
+            categories = CategoryOrder.ToDictionary(k => k, k => c.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt64() : 0);
         return new(N("imageMac"), N("imageIos"), N("saves"), N("cache"), N("sources"),
-            value.TryGetProperty("measured", out var m) && m.ValueKind == JsonValueKind.True);
+            value.TryGetProperty("measured", out var m) && m.ValueKind == JsonValueKind.True, categories);
     }
 }
 

@@ -334,6 +334,9 @@ public struct GameSizes: Equatable {
     public var cache: Int64 = 0
     public var sources: Int64 = 0
     public var measured = false
+    /// 0.6.0 四类（作业层 pack/jobs/sizes.py categories：resources / programs / playerData / cache；通用壳开关开着才带）。nil = 照旧五项显示
+    public var categories: [String: Int64]?
+    public static let categoryOrder = ["resources", "programs", "playerData", "cache"]
     public init() {}
     public init(imageMac: Int64, imageIos: Int64, saves: Int64, cache: Int64, sources: Int64, measured: Bool) {
         self.imageMac = imageMac; self.imageIos = imageIos; self.saves = saves; self.cache = cache; self.sources = sources; self.measured = measured
@@ -342,6 +345,9 @@ public struct GameSizes: Equatable {
         func n(_ k: String) -> Int64 { (s[k] as? NSNumber)?.int64Value ?? 0 }
         imageMac = n("imageMac"); imageIos = n("imageIos"); saves = n("saves"); cache = n("cache"); sources = n("sources")
         measured = s["measured"] as? Bool ?? false
+        if let c = s["categories"] as? [String: Any] {
+            categories = Dictionary(uniqueKeysWithValues: Self.categoryOrder.map { ($0, (c[$0] as? NSNumber)?.int64Value ?? 0) })
+        }
     }
 }
 
