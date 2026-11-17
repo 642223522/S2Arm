@@ -15,6 +15,7 @@
 #   先试它、编不过再试顶点 / 片元 / 几何（glslc_tool.c 按候选顺序取第一个编过的）
 # 宿主：DM_GLSLC_HOST（缺省本仓库 build/s2arm-host，S2A_CS=1 make host 编出：工具模式要 C# 服务层）；并行 J 路（每路一个宿主进程编一段源码）
 # 退出：0 = 不需要 / 编成（末行「GLSLC 离线编：…」）；1 = 要编却编不成（找不到源码、没有宿主、宿主失败、一支都没编成），末行 [RED] 原因
+import os as _pw_os, sys as _pw_sys; _pw_sys.path.append(_pw_os.path.join(_pw_os.path.dirname(_pw_os.path.abspath(__file__)), '..', 'tools')); from pool_workers import env_jobs  # noqa: E402  核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
 import concurrent.futures as cf, os, re, shutil, struct, subprocess, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..', 'graphics', 'nvn', 'tools')); import nso_syms
@@ -163,7 +164,7 @@ def run_host(host, mods, job, n):
 def build(srcs, host, mods, out, J=None):
     """srcs 分 J 段、每段一个宿主进程（mods = 改写模块目录）编 → <out>/glslc_<i>.glslc（第 i 段编成的输出首尾相接）；→ (编成数, 编不过数, {阶段: 数}, J)。宿主失败 → red"""
     os.makedirs(out, exist_ok=True)
-    J = max(1, min(J or int(os.environ.get('J') or os.cpu_count() or 1), len(srcs)))
+    J = max(1, min(J or env_jobs('J'), len(srcs)))
     parts = [srcs[i::J] for i in range(J)]
     jobs = [os.path.join(out, f'job_{i}.dmgj') for i in range(J)]
     for p, items in zip(jobs, parts): job_write(p, items)

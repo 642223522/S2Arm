@@ -16,7 +16,7 @@ SHA-256 记在 <输出包目录>.state.tsv（路径、字节数、源 mtime 纳�
 --check：清单最新则退出 0，否则 1（不改任何文件）。"""
 import ctypes, hashlib, json, multiprocessing as mp, os, shutil, sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tools'))
-from pool_workers import process_pool_size   # 进程池路数（Windows 至多 61，#1332）
+from pool_workers import process_pool_size, env_jobs   # 进程池路数（Windows 至多 61，#1332）
 from progress import Ticker   # 出包进度（S2A_PROGRESS，tools/progress.sh）：克隆 + 算 SHA 两段按文件数记
 from refs_clone import clone_file as refs_clone   # Windows ReFS / 开发驱动器块克隆（#1100）
 import sha256_fast   # 文件 SHA：Windows 走 CNG（hashlib 在玩家 Python 上没用 SHA 指令，Windows 出包机单核 0.37 → 1.46 GB/s）
@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 import romfs_list   # 源目录遍历一律经它（tools/romfs_walk_lint.py）；目录不在、旁边有 <目录>.std 时从标准 RomFS 镜像列
 COPIED = [0]   # Windows 上没克隆成、退回整份拷贝的文件数（收尾打一行黄）
 LINKED = [0]   # Windows 上没克隆成、改用同卷硬链接的文件数
-NJ = int(os.environ.get('J') or os.environ.get('S2A_JOBS') or os.cpu_count() or 1)   # 并行路数（tools/cores.sh S2A_JOBS）
+NJ = env_jobs('J', 'S2A_JOBS')   # 并行路数（tools/cores.sh S2A_JOBS）
 if sys.platform == 'darwin':
     libc = ctypes.CDLL('libc.dylib', use_errno=True); libc.clonefile.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32]
 def copy_sha(src, dst):   # 整份拷贝、边拷边算 SHA-256（11-06 出包速度线：拷完再回头读一遍源算 SHA，0100F2C0115B6000 16 GB 多读一遍）→ SHA

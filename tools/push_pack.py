@@ -42,6 +42,7 @@
 退出码：0 成功；1 失败（标准输出末行【红】说明）；2 用法"""
 from __future__ import annotations
 
+import os as _pw_os, sys as _pw_sys; _pw_sys.path.append(_pw_os.path.dirname(_pw_os.path.abspath(__file__))); from pool_workers import cores  # noqa: E402  核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
 import argparse
 from collections import deque
 import hashlib
@@ -663,7 +664,7 @@ def zstd_compressor():
     Python 3.14 用 compression.zstd，随包 Python 3.12 用 zstandard（launchers/macos/requirements-runtime.txt、Windows 同钉版）"""
     try:
         from compression import zstd
-        opts = {zstd.CompressionParameter.compression_level: ZLEVEL, zstd.CompressionParameter.nb_workers: os.cpu_count() or 1,
+        opts = {zstd.CompressionParameter.compression_level: ZLEVEL, zstd.CompressionParameter.nb_workers: cores(),
                 zstd.CompressionParameter.checksum_flag: 1}
         return lambda b: zstd.compress(b, options=opts)
     except ImportError:

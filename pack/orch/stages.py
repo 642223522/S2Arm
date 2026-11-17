@@ -7,6 +7,7 @@ the bash mechanism rows and add the orchestration sources (issue1100 contract).
 """
 from __future__ import annotations
 
+import os as _pw_os, sys as _pw_sys; _pw_sys.path.append(_pw_os.path.join(_pw_os.path.dirname(_pw_os.path.abspath(__file__)), '..', '..', 'tools')); from pool_workers import cores  # noqa: E402  核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import hashlib
@@ -585,7 +586,7 @@ class Stages:
         modules = sorted(p for p in (w / 'exefs').iterdir() if p.is_file() and
                          (p.name in ('main', 'sdk') or len(p.name) == 7 and p.name.startswith('subsdk') and p.name[-1].isdigit()))
         modules += sorted(p for p in (w / 'nroexe').glob('nro*') if p.is_file())
-        jobs = int(env.get('S2A_JOBS') or os.cpu_count() or 0)
+        jobs = int(env.get('S2A_JOBS') or cores())
         if jobs < 1:
             raise StageError('无法确定正数并发度')
 
