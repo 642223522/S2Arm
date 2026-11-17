@@ -24,9 +24,13 @@ xb() { (cd "$D" && timeout 600 xcodebuild -project Prov.xcodeproj -scheme Prov -
 # 0.5.0 D-44DP（11-16 维护者定严重阻断）：带设备号时 xcodebuild 要自己「看到」这台真机才肯申请；看不到（只报「Unable to find a destination」）就整步失败，
 #   而 0.5.0 起带小组件的 Apple ID 装机每次都要新申请两份描述文件，玩家更新 iPhone 必挂。登记设备只是顺带（这台装过就已在账号上）：
 #   同族两种说法都认：「Unable to find a destination matching」与等满 -destination-timeout 仍不见设备时的「Unable to find a device matching」（0.5.1 命令行真跑只出后者）
-#   找不到目的设备 → 不登记、改按 generic/platform=iOS 再申请一次（描述文件含账号上已登记的全部设备）；这台真没登记过，后面签名 / 装机会照常点名缺设备
+#   找不到目的设备 → 不登记、改按 generic/platform=iOS 再申请一次（描述文件含账号上已登记的全部设备）
+# 这台从没登记过（11-16 兜底的盲区）：账号一台设备都没有 → Xcode 报「has no devices from which to generate」；有别的设备 → 申请成功但描述文件不含这台，
+#   原先到 devicectl 装机才失败、报一长段英文。两种都在这里点名 NV 一句（install.py SIGN_ERRORS → device_not_visible）
+NV="【红】Xcode 看不到这台 iPhone，账号上也还没登记它，申请不到能装到它上面的开发描述文件：用数据线把 iPhone 连到这台 Mac、解锁并在手机上点「信任」，打开开发者模式，等 Xcode「设备与模拟器」里出现这台，再点一次「装到 iPhone」"
+FB=
 xb || { [ -n "$UDID" ] && grep -a -q -E 'Unable to find a (destination|device) matching' "$D/build.log" \
-        && { echo "【黄】xcodebuild 看不到这台 iPhone（${UDID: -6}），改为不指定设备再申请一次（用账号上已登记的设备）"; DEST='generic/platform=iOS'; REG=(); xb; }; } \
+        && { echo "【黄】xcodebuild 看不到这台 iPhone（${UDID: -6}），改为不指定设备再申请一次（用账号上已登记的设备）"; FB=1; DEST='generic/platform=iOS'; REG=(); xb; }; } \
   || { KL=${S2A_ROOTS:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/roots}/.failed/${BID}_ensure_profile.log; mkdir -p "$(dirname "$KL")"; if ! cp "$D/build.log" "$KL" 2> /dev/null; then KL="（没留住：拷不进 ${KL}）"; fi   # 失败留全文（临时目录退出即删，10-30 凌晨原因一栏是空的、现场也没了）
        # 11-08：第一次签名弹钥匙串授权框没人点，xcodebuild 等到 timeout 打 BUILD INTERRUPTED，末尾的 error 行是无关的 DVTDevice 杂音
        grep -aq 'BUILD INTERRUPTED' "$D/build.log" && { echo "【红】等钥匙串授权超时：在这台 Mac 屏幕上的钥匙串弹窗里点「始终允许」（需要的话输入 Mac 登录密码），再点一次「装到 iPhone」"; exit 1; }
@@ -42,5 +46,15 @@ xb || { [ -n "$UDID" ] && grep -a -q -E 'Unable to find a (destination|device) m
        #   新包名一律申请不到描述文件（老包名有现成的不受影响），原文埋在长行里看不出修法，这里直说
        grep -a -q 'is not installed\. Please download and install the platform' "$D/build.log" \
          && echo "【红】本机 Xcode 没装 iOS 平台组件（Xcode 升级后不会跟着装），新包名申请不到开发描述文件；修法：xcodebuild -downloadPlatform iOS（苹果官方源，装在系统盘）"
+       [ -n "$FB" ] && grep -a -q 'has no devices from which to generate' "$D/build.log" && echo "$NV"   # 兜底申请：账号上一台设备都没有
        exit 1; }   # 目的设备为什么不可用（10-26 测试设备2 锁屏，原先只报「等不到目的设备」）
+# 兜底申请成功：本机 <团队>.<包名> 的开发描述文件里要有一份含这台，没有 = 这台没登记过，签了也装不上，当场点名（不等装机报英文）
+if [ -n "$FB" ]; then
+  IFS=: read -r -a PDS <<< "${S2A_PROFILE_DIRS:-$HOME/Library/MobileDevice/Provisioning Profiles:$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles}"
+  HIT=; for pd in "${PDS[@]}"; do for f in "$pd"/*.mobileprovision; do [ -f "$f" ] || continue
+    x=$(security cms -D -i "$f" 2> /dev/null) || continue
+    grep -qF "<string>${TEAM}.${BID}</string>" <<< "$x" && grep -qF "<string>${UDID}</string>" <<< "$x" && { HIT=1; break 2; }
+  done; done
+  [ -n "$HIT" ] || { echo "$NV"; exit 1; }
+fi
 echo "已申请 ${BID} 的开发描述文件（$(grep -a 'Provisioning Profile:' "$D/build.log" | head -1 | sed 's/^ *//' | cut -c1-100)）"

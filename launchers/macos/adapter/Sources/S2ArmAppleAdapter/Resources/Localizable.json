@@ -9962,5 +9962,17 @@
  {
   "source": "{0} 还没有 iPhone 程序件：先「打 iPhone 包」",
   "en": "{0} has no iPhone program files yet. Use \"Pack for iPhone\" first."
+ },
+ {
+  "source": "用数据线把这台 iPhone 连到这台 Mac，解锁后在手机上点「信任」；打开开发者模式（设置 → 隐私与安全性 → 开发者模式，开了要重启手机）；等 Xcode 菜单「窗口 → 设备与模拟器」里出现这台，再点一次「装到 iPhone」。",
+  "en": "Connect this iPhone to this Mac with a cable, unlock it and tap \"Trust\" on the phone. Turn on Developer Mode (Settings → Privacy & Security → Developer Mode; the phone restarts). Once it appears in Xcode under Window → Devices and Simulators, retry installation."
+ },
+ {
+  "source": "Xcode 看不到这台 iPhone",
+  "en": "Xcode can't see this iPhone"
+ },
+ {
+  "source": "这台 iPhone 没连到这台 Mac，账号上也还没登记过它，申请不到能装到它上面的开发描述文件。",
+  "en": "This iPhone isn't connected to this Mac and hasn't been registered to your account yet, so no development profile can be created for it."
  }
 ]
