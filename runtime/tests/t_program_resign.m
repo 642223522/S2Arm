@@ -14,7 +14,6 @@
 int s2a_selfsign_identity(const void *p12, size_t n, const char *password, SecKeyRef *key, CFArrayRef *chain);
 int s2a_program_resign_if_needed(const char *home, const char *game_data, const char *gid, char *module_dir, char *images, size_t n, char *why, size_t why_n);
 void s2a_program_resign_test_identity(int (*f)(SecKeyRef *, SecCertificateRef *));
-void s2a_log_line(const char *fmt, ...) { (void)fmt; }
 
 static int bad;
 static void ck(int ok, NSString *what) { printf("%s %s\n", ok ? "  通" : "  【红】", what.UTF8String); if (!ok) bad++; }

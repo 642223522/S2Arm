@@ -14,7 +14,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-void s2a_log_line(const char *fmt, ...);
+#include "native.h"   // s2a_log_line（static inline，不能另写外部声明：iOS 链接找不到定义）
 int s2a_identity_keychain(SecKeyRef *key, SecCertificateRef *cert);   // runtime/src/selfsign.c
 CFArrayRef s2a_selfsign_chain_for(SecCertificateRef leaf);
 int s2a_selfsign_macho(const uint8_t *in, size_t n, const char *ident, const char *team, const char *appid, SecKeyRef key, CFArrayRef chain, uint8_t **out, size_t *out_n, char *why, size_t why_n);
