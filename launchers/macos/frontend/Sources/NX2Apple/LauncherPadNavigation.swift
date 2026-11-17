@@ -234,10 +234,13 @@ enum LauncherPadSpatial {
             })
         }
     }
-    func detach() {
+    /// teardown：SwiftUI 正在拆这棵视图（dismantleNSView，NSHostingView.deinit 里）。这时不写 presentation 的发布属性——
+    ///   拆图期间发布变更会撞上 SwiftUI 自己的独占访问，fatalError 关窗闪退（#1516，0.5.3–0.5.5）。拆完 presentation 随视图释放，
+    ///   重新接上窗口时 source.updatePresentation 照实写；窗口关闭通知那条路（图还在）照旧清
+    func detach(teardown: Bool = false) {
         source.stop(); clearRings(); keyboard?.close(apply: false); keyboard = nil
         nativeButtons.restore(); source.refresh = {}; source.updatePresentation = { _, _ in }
-        presentation.connected = false; presentation.symbols = [:]
+        if !teardown { presentation.connected = false; presentation.symbols = [:] }
         for monitor in monitors { NSEvent.removeMonitor(monitor) }; monitors.removeAll()
         for observer in notifications { NotificationCenter.default.removeObserver(observer) }; notifications.removeAll()
         for overlay in overlays.values { overlay.removeFromSuperview() }; overlays.removeAll()
@@ -544,5 +547,5 @@ struct LauncherPadHost: NSViewRepresentable {
     }
     func makeNSView(context: Context) -> Host { let host = Host(); host.navigation = navigation; return host }
     func updateNSView(_ view: Host, context: Context) { update(); if let window = view.window { navigation.attach(window) } }
-    static func dismantleNSView(_ view: Host, coordinator: ()) { if view.navigation?.window === view.lastWindow { view.navigation?.detach() } }
+    static func dismantleNSView(_ view: Host, coordinator: ()) { if view.navigation?.window === view.lastWindow { view.navigation?.detach(teardown: true) } }
 }
