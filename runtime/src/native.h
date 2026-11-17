@@ -141,6 +141,7 @@ int   s2a_tail_has(const void *p);
 void  s2a_tail_note(char *o, size_t cap);
 void s2a_fd_usage(int *open_n, uint64_t *soft, uint64_t *hard);   // 已开文件句柄数（探到 min(软上限, 4096)）+ RLIMIT_NOFILE 软 / 硬上限
 int s2a_gc_limit_pick(uint64_t largest); void s2a_gc_limit_apply(void);   // GC 上限自适应三档（gclimit.c）：0 不设 / 1 总 2 GB / 2 分堆
+uint64_t s2a_window_for_span(uint64_t learned);                     // vawin.c：按学到的跨度该给多大窗口（learned × 1.25 + 2 GiB，1 GiB 取整；0 = 没学到、不限）
 uint64_t s2a_window_host_below(uint64_t fit, uint64_t learned);   // vawin.c：放不下标准布局时窗口下方留给宿主多少（按学到的跨度，#783）
 uint64_t s2a_window_span_seen(uint64_t pid);                        // vawin.c：本款本机学到的地址跨度（wire/<程序号>/span_peak；没有 = 0）
 uint64_t s2a_mem_span_now(void);                                     // svc_mem.c：本局已碰到的地址跨度（碰到的最高地址 − 窗口基址）
