@@ -1,0 +1,108 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 S2Arm contributors
+import Foundation
+import S2ArmAppleAdapter
+
+/// 0.6.0 iPhone 总控台（通用壳开关后面，《0.6.0 极简流程》界面一节「iPhone 总控台」）：游戏库首位固定「S2Arm」卡，选中它就是这台手机的总控台。
+///   不加门、不加锁：要手机的按钮只在没连时灰并就近写原因，其余都能点。
+extension S2ArmLauncherModel {
+    /// 首位卡的选中号（不是游戏号，永远排第一、不能删不能挪、不算进游戏数）
+    static let consoleID = "s2arm.console"
+    var consoleSelected: Bool { selectedID == Self.consoleID }
+
+    func refreshPhoneOverview(probe: Bool = false) {
+        Task {
+            // 读不到不弹框（首位卡是附带的入口），但不吞：记日志，保持上次的值
+            do {
+                let o = try await provider.phoneOverview(probe: probe)
+                phoneOverview = o
+                if let o, !o.phones.contains(where: { $0.device == consoleDevice }) { consoleDevice = nil }
+                seedConsoleSelection()
+            } catch { NSLog("S2Arm phoneOverview: %@", String(describing: error)) }
+        }
+    }
+
+    /// 总控台当前这台：选过的那台；没选过 → 连着的那台 → 最近同步过的那台
+    var consolePhone: PhoneOverview.Phone? {
+        guard let phones = phoneOverview?.phones, !phones.isEmpty else { return nil }
+        if let d = consoleDevice, let p = phones.first(where: { $0.device == d }) { return p }
+        if let p = phones.first(where: { if case .some(.some) = $0.online { return true }; return false }) { return p }
+        return phones.max { ($0.lastSeen ?? .distantPast) < ($1.lastSeen ?? .distantPast) }
+    }
+
+    /// 首位卡状态行（流程稿表格，自上而下取第一条成立的）
+    enum ConsoleStatus: Equatable {
+        case introduce                       // 从没装过、也没连过：「在 iPhone 上玩」介绍卡
+        case updating(done: Int, total: Int) // 正在更新所选
+        case notConnected(lastSeen: Date?)   // 问过 USB、没连
+        case notInstalled
+        case appOutdated
+        case expired
+        case expiring(days: Int)             // ≤ 2 天
+        case suggested(count: Int)
+        case ok(days: Int?)                  // 还剩约 N 天（证书用户没有估值时 nil）
+    }
+
+    func consoleStatus(now: Date = Date()) -> ConsoleStatus {
+        guard let p = consolePhone else { return .introduce }
+        if !consoleBatch.isEmpty { return .updating(done: consoleBatchDone, total: consoleBatch.count) }
+        if case .some(.none) = p.online { return .notConnected(lastSeen: p.lastSeen) }
+        if !p.installed { return .notInstalled }
+        if !p.shellCurrent { return .appOutdated }
+        let days = p.expiresAtEstimate.map { Self.daysLeft(until: $0, now: now) }
+        if let d = days, d <= 0 { return .expired }
+        if let d = days, d <= 2 { return .expiring(days: d) }
+        let n = p.games.filter { $0.state == .suggested }.count
+        if n > 0 { return .suggested(count: n) }
+        return .ok(days: days)
+    }
+
+    /// 还剩几天（不足一天按一天，过了就是 0）：到期时刻本来就是估的，界面写「约」
+    static func daysLeft(until end: Date, now: Date) -> Int {
+        let s = end.timeIntervalSince(now)
+        return s <= 0 ? 0 : Int((s / 86_400).rounded(.up))
+    }
+
+    /// 这款在当前这台上的状态（② 一行）；表里没有的款按没推过
+    func consoleGame(_ game: GameSummary) -> PhoneOverview.Game {
+        consolePhone?.games.first { $0.gameId == game.id.uppercased() }
+            ?? PhoneOverview.Game(gameId: game.id.uppercased(), state: .notPushed, reasons: [], dataOnComputer: nil)
+    }
+
+    /// 建议更新的默认勾上（每次读到新总览时补勾新出现的建议更新款；玩家取消的不重勾，直到它的状态变了）
+    func seedConsoleSelection() {
+        let suggested = Set(consolePhone?.games.filter { $0.state == .suggested }.map(\.gameId) ?? [])
+        consoleSelection.formUnion(suggested.subtracting(consoleSeeded))
+        consoleSeeded = suggested
+    }
+
+    /// 「更新所选」：前台一款款推（就是 install 按顺序排进手机槽，装机作业本身已一次一款）；推哪台就是总控台这台
+    func updateSelected() {
+        guard consoleBatch.isEmpty, let device = consolePhone?.device else { return }
+        let order = games.filter { consoleSelection.contains($0.id.uppercased()) }
+        guard !order.isEmpty else { return }
+        consoleBatch = order.map { $0.id.uppercased() }
+        for game in order { install(game, device: device) }
+    }
+
+    /// 「停下」：停在当前这款（它推完照样算数；没推完的下次接着推），排着的不再推
+    func stopUpdateSelected() {
+        let batch = Set(consoleBatch)
+        phoneQueue.removeAll { batch.contains(($0.gameID ?? "").uppercased()) }
+        consoleBatch = consoleBatch.filter { id in phoneSession?.gameID?.uppercased() == id }
+    }
+
+    /// 这一轮推完了几款：排着的和正在推的之外都算完
+    var consoleBatchDone: Int {
+        let queued = Set(phoneQueue.compactMap { $0.gameID?.uppercased() })
+        let running = phoneBusy ? phoneSession?.gameID?.uppercased() : nil
+        return consoleBatch.filter { !queued.contains($0) && $0 != running }.count
+    }
+
+    /// 手机槽一单结束时调（S2ArmLauncherModel.finish 后）：这一轮全推完就收尾、重读总览
+    func consoleBatchStep() {
+        guard !consoleBatch.isEmpty, consoleBatchDone >= consoleBatch.count else { return }
+        consoleBatch = []
+        refreshPhoneOverview()
+    }
+}

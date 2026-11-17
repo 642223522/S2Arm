@@ -25,6 +25,7 @@ struct LauncherView: View {
     @ObservedObject var navigation: LauncherPadNavigation
     @EnvironmentObject var loc: Localizer
     @Environment(\.accessibilityReduceMotion) var reduceMotion
+    @Namespace var consoleSpace   // iPhone 总控台：首位卡手机轮廓升到页顶的共享元素过渡（LauncherView+PhoneConsole）
     @StateObject var padFocus = PadFocus()
     @StateObject var covers = CoverCache()
     @State var installFor: String?
