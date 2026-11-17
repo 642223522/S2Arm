@@ -1372,7 +1372,10 @@ static void widget_open(NSURL *url, void *ctx) {
     if (!entry) return;   // 先领取，再启动；后续激活只走现有恢复路径
     { void s2a_ios_test_save_op(void); s2a_ios_test_save_op(); }   // 测试开关 S2A_TEST_SAVE_OP（ios/save_transfer.m）：游戏已选定、宿主还没起，导出 / 导回一次存档
     int inputError = s2a_ios_input_config_load();
-    if (inputError) { LOG("【红】iOS 输入配置损坏，拒绝启动（%d: %s）", inputError, s2a_input_config_error_message(inputError)); exit(2); }
+    if (inputError) {   // 11-17 维护者：校验不过不再拒启。默认键位照常起，横幅点名原因（这条只在开发 / 自动化起局设了 S2A_INPUT_CONFIG 时出现）
+        LOG("【黄】iOS 输入配置读不懂（%d: %s），这局用默认键位照常启动", inputError, s2a_input_config_error_message(inputError));
+        s2a_dprompt_notice(S2AL(@"dprompt.input.bad.title"), [NSString stringWithFormat:S2AL(@"dprompt.input.bad.body"), @(s2a_input_config_error_message(inputError))], 3, 12);
+    }
     s2a_log_session_start();
     BOOT_MARK("预热 → 场景激活");
     { uint64_t base, size; s2a_window_get(&base, &size);

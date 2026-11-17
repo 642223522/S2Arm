@@ -372,6 +372,8 @@
 "dprompt.expiry.hours" = "约 %d 小时";
 "dprompt.expiry.lessThanHour" = "不到 1 小时";
 "dprompt.expiry.title" = "签名快到期了";
+"dprompt.input.bad.body" = "这局先用默认键位照常开始（%@）。";
+"dprompt.input.bad.title" = "键位设置没读懂";
 "dprompt.ns2pro.body" = "四指长按屏幕 1.5 秒打开设置，打开「启用 Switch 2 Pro 手柄」，再按手柄上的配对键。";
 "dprompt.ns2pro.title" = "用 Switch 2 Pro 手柄？";
 "dprompt.motion.title" = "体感操作";
