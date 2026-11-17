@@ -35,7 +35,7 @@ __attribute__((visibility("default"), used)) int s2a_imgpack_open(const char *pa
 static int g_ctor_ran, g_ctor_container, g_ctor_frozen;
 // 同 vawin.c constructor(101)：构造期第一次取上下文。只在 exec 出来的副本里取（父进程取了会把兼容冻结带进下面 fork 的子进程）
 __attribute__((constructor(101))) static void t_ctor(int argc, char **argv) {
-    if (argc < 2 || (strcmp(argv[1], "container") && strcmp(argv[1], "ctxfile"))) return;
+    if (argc < 2 || (strcmp(argv[1], "container") && strcmp(argv[1], "ctxfile") && strcmp(argv[1], "waive"))) return;
     g_ctor_ran = 1; g_ctor_container = s2a_launch_ctx_container(); g_ctor_frozen = s2a_launch_ctx_get() != NULL;
 }
 #define CK(x, m) do { if (!(x)) { printf("  ✗（副本）%s\n", m); bad++; } } while (0)
@@ -55,14 +55,7 @@ static int child_container(const char *home) {
     CK(s2a_launch_ctx_game_needs_update("0100000000000005") == 1 && s2a_launch_ctx_game_needs_update("0100000000000001") == 0
        && s2a_launch_ctx_game_needs_update("0100000000000BAD") == 0, "库界面预判：约定号对不上的那款 → 1；对得上 / 不在清单 → 0（不在清单交给点开时报）");
     CK(!s2a_launch_ctx_get(), "预判不冻结");
-    r = s2a_launch_ctx_select("0100000000000005");
-    CK(r && strstr(r, "ios_host_abi_mismatch"), "清单里这款的 host_abi ≠ 本宿主 S2A_HOST_ABI → 拒绝，原因带诊断码 ios_host_abi_mismatch");
-    CK(s2a_launch_ctx_select_kind() == S2A_SELECT_NEEDS_UPDATE, "约定号对不上 → 类别 NEEDS_UPDATE（游戏库标「要在电脑上按新版更新」）");
-    CK(!s2a_launch_ctx_get() && !getenv("S2A_DOCS"), "约定号对不上：不冻结、不写环境（还能换一款选）");
-    r = s2a_launch_ctx_select("0100000000000007");   // 通用壳：程序包清单的 image_sha256 是全 0、程序库内容 "y"（父进程写）→ 不一致
-    CK(r && strstr(r, "ios_program_resign") && strstr(r, "不是同一次出的"), "程序包：程序库和清单 image_sha256 不一致 → 拒绝，原因带 ios_program_resign");
-    CK(s2a_launch_ctx_select_kind() == S2A_SELECT_NEEDS_RESIGN, "程序包校验值不一致 → 类别 NEEDS_RESIGN（游戏库标「要在电脑上重新签名」）");
-    CK(!s2a_launch_ctx_get() && !getenv("S2A_DOCS"), "校验值不一致：不冻结、不写环境");
+    // 0005（约定号对不上）/ 0007（程序包校验值对不上）：11-17 起不再拒、黄字照常继续，选中后本进程就不能再选别款 → 各在自己的副本进程里测（child_waive）
     r = s2a_launch_ctx_select("0100000000000001");
     CK(!r, "合规的那款 → 选中");
     CK(g_imgpack_calls == 0, "App 包里的款（没有程序包）选游戏时不预开程序库：行为同改造前（桩恒回签名不认，预开了就会被拒）");
@@ -83,6 +76,20 @@ static int child_container(const char *home) {
     CK(r && strstr(r, "重新打开") && s2a_launch_ctx_get() == g && !strcmp(g->game_id, "0100000000000001"), "换一款二次 select → 拒绝，上下文不变");
     return bad;
 }
+// 校验不过照常继续（11-17 维护者）：0005 宿主约定号对不上 → 照常选中；0007 程序包校验值对不上 → 不再因校验值拒（单测桩恒回签名不认，
+//   所以最后按「签名本机不认」拒——这是物理上加载不了的那一项，照旧拒；原因里不该再有校验值那句「不是同一次出的」）
+static int child_waive(const char *gid) {
+    int bad = 0; const char *r = s2a_launch_ctx_select(gid);
+    if (!strcmp(gid, "0100000000000005")) {
+        CK(!r, "约定号对不上 → 不再拒，照常选中（黄字记下）");
+        if (r) printf("    原因：%s\n", r);
+        CK(s2a_launch_ctx_get() && getenv("S2A_DOCS"), "约定号对不上：照常冻结上下文、写环境");
+    } else {
+        CK(r && !strstr(r, "不是同一次出的") && strstr(r, "签名本机不认"), "校验值对不上 → 不再按校验值拒；只剩签名不认（物理上加载不了）那一项拒");
+        if (r) printf("    原因：%s\n", r);
+    }
+    return bad;
+}
 static int child_ctxfile(void) {   // 容器包里设了 S2A_LAUNCH_CTX：显式上下文文件优先（自动化局），构造期冻结、不进容器模式
     int bad = 0;
     CK(g_ctor_ran && !g_ctor_container && g_ctor_frozen, "设了 S2A_LAUNCH_CTX：构造期按文件冻结、不当容器");
@@ -98,6 +105,7 @@ static void mkdirs(const char *p) { char b[1200]; snprintf(b, sizeof b, "mkdir -
 int main(int argc, char **argv) {
     if (argc >= 3 && !strcmp(argv[1], "container")) return child_container(argv[2]) ? 1 : 0;
     if (argc >= 2 && !strcmp(argv[1], "ctxfile")) return child_ctxfile() ? 1 : 0;
+    if (argc >= 4 && !strcmp(argv[1], "waive")) return child_waive(argv[3]) ? 1 : 0;
     s2a_launch_ctx c; char why[600];
     unset_roots();
 
@@ -320,6 +328,13 @@ int main(int argc, char **argv) {
     if (!p) { unset_roots(); setenv("HOME", home, 1); execl(copy, copy, "container", home, (char *)NULL); _exit(98); }
     waitpid(p, &st, 0); rc8 = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
     ck(rc8 == 0, "容器进程：构造期不冻结、gid 不在清单 / 镜像包缺拒绝且不冻结、选中写环境建文档根、二次 select 拒绝");
+    for (int wi = 0; wi < 2; wi++) {   // 校验不过照常继续（11-17）：各一个副本进程（选中后本进程不能再选）
+        const char *wg = wi ? "0100000000000007" : "0100000000000005";
+        p = fork();
+        if (!p) { unset_roots(); setenv("HOME", home, 1); execl(copy, copy, "waive", home, wg, (char *)NULL); _exit(98); }
+        waitpid(p, &st, 0); rc8 = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+        ck(rc8 == 0, wi ? "程序包校验值对不上：不再按校验值拒（签名不认那项照旧拒）" : "宿主约定号对不上：黄字照常选中");
+    }
     write_file(f1, "version\t1\ngame_id\tg3\nimages\t/i\nmodule_dir\t/m\ngame_data\t/gd3\ndocs\t/d3\n");
     p = fork();
     if (!p) { unset_roots(); setenv("HOME", home, 1); setenv("S2A_LAUNCH_CTX", f1, 1); execl(copy, copy, "ctxfile", (char *)NULL); _exit(98); }

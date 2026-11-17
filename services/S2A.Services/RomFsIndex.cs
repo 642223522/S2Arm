@@ -327,7 +327,7 @@ namespace S2A.Services
             byte[] hdr = new byte[136];
             if (RandomAccess.Read(h, hdr, 0) != hdr.Length || !hdr.AsSpan(0, 8).SequenceEqual(ImgMagic)) { h.Dispose(); throw new InvalidDataException($"不是 S2Arm 资源包 IMG：{path}"); }
             uint fmt = BitConverter.ToUInt32(hdr, 8);
-            if (fmt != 1) { h.Dispose(); throw new InvalidDataException($"资源包 IMG 格式号 {fmt}，这个 S2Arm 只认 1：请更新 S2Arm（{path}）"); }
+            if (fmt != 1) Red.Waive($"资源包 IMG 格式号 {fmt}，这个 S2Arm 只认 1，按 1 照常读（出问题先更新 S2Arm）", path);   // 11-17 维护者：校验不过不整个拒，黄字照常继续
             long ro = BitConverter.ToInt64(hdr, 96), rl = BitConverter.ToInt64(hdr, 104), to = BitConverter.ToInt64(hdr, 112), tl = BitConverter.ToInt64(hdr, 120), total = BitConverter.ToInt64(hdr, 128);
             if (RandomAccess.GetLength(h) != total || rl <= 0)
             {
@@ -552,8 +552,8 @@ namespace S2A.Services
         public static Source Decide(bool imageOpened, bool imageFileExists, bool romfsDirExists, string programDir)
         {
             if (imageOpened) return Source.Image;
-            if (imageFileExists && !romfsDirExists)
-                throw new InvalidDataException($"RomFS 单文件镜像不完整（长度与对照表不符或缺对照表 / 索引，多半推到一半），也没有 romfs/ 可退：{programDir}；请重新装到 iPhone");
+            if (imageFileExists && !romfsDirExists)   // 11-17 维护者：不整个拒——黄字记下、照常开局，游戏读不到文件时按原因报（报红带上这条）
+                Red.Waive("RomFS 单文件镜像不完整（长度与对照表不符或缺对照表 / 索引，多半推到一半），也没有 romfs/ 可退，照常开局（可能缺文件或闪退，重新装到 iPhone 可解）", programDir);
             return romfsDirExists ? Source.Directory : Source.Missing;
         }
 
