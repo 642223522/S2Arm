@@ -4,15 +4,23 @@
     .text
     .globl _nvn_unimpl_entry
     .p2align 2
+// S2Arm：游戏 sp 不一定 16 字节对齐（Horizon 不查，苹果芯片对「以 sp 为基址的读写」查），先在下方对齐处开帧、原 sp 存进帧，出口还原（只动 x9 / x10）
 _nvn_unimpl_entry:
-    stp x29, x30, [sp, #-16]!
+    mov x9, sp
+    and x10, x9, #~15
+    sub x10, x10, #32
+    mov sp, x10
+    stp x29, x30, [sp]
+    str x9, [sp, #16]
     mov x29, sp
     mov x3, x2
     mov x2, x1
     mov x1, x0
     mov x0, x16
     bl _nvn_unimpl_c
-    ldp x29, x30, [sp], #16
+    ldr x9, [sp, #16]
+    ldp x29, x30, [sp]
+    mov sp, x9
     ret
 
 // Timing wrapper entry (the slot table points here when DM_NVN_PROF=1): when the thunk comes in, x16 = this function's slot address.
@@ -22,7 +30,12 @@ _nvn_unimpl_entry:
     .globl _nvn_prof_entry
     .p2align 2
 _nvn_prof_entry:
-    sub sp, sp, #240
+    mov x9, sp                       // S2Arm：sp 不对齐时同 nvn_unimpl_entry——对齐处开帧，原 sp 存 [240]
+    and x9, x9, #~15
+    sub x9, x9, #256
+    mov x10, sp
+    mov sp, x9
+    str x10, [sp, #240]
     stp x29, x30, [sp]
     mov x29, sp
     stp x0, x1, [sp, #16]
@@ -81,7 +94,8 @@ _nvn_prof_entry:
     ldp q0, q1, [sp, #96]
     ldp q2, q3, [sp, #128]
     ldp x29, x30, [sp]
-    add sp, sp, #240
+    ldr x9, [sp, #240]
+    mov sp, x9
     ret
 
 // Big-stack entry: when the thunk comes in, x16 = this function's slot address. Load nvn_big_real[i] into x16 and hand over to dm_bigstack_enter (dm/host/hle_bigstack.c):
@@ -98,3 +112,34 @@ _nvn_big_entry:
     add x17, x17, _nvn_big_real@PAGEOFF
     ldr x16, [x17, x16, lsl #3]
     b _dm_bigstack_enter
+
+// S2Arm：带栈上参数的 NVN2 入口（HDR 显示元数据四个，hle_nvn.c nvn_stack_args）：进来时 x16 = 本函数槽地址，实现在 nvn_sa_real[i]。
+//   不能换栈（栈上参数在调用方 sp 起），原先直接在游戏栈上跑实现；游戏 sp 不是 16 字节对齐时实现开头一压栈就 SIGBUS。
+//   sp 对齐：直接尾跳实现。不对齐：对齐到下方开 48 字节帧，把调用方 sp 起 32 字节（最多三个 8 字节栈参）拷到新 sp 起，原 sp / lr 存 [32]，调完还原。
+//   拷贝用 x9 作基址（不是 sp），读写都不触发 sp 对齐检查；只动 x9..x12、x17
+    .globl _nvn_stackarg_entry
+    .p2align 2
+_nvn_stackarg_entry:
+    adrp x17, _nvn_slot@PAGE
+    add x17, x17, _nvn_slot@PAGEOFF
+    sub x9, x16, x17
+    lsr x9, x9, #4                   // 槽号 i
+    adrp x17, _nvn_sa_real@PAGE
+    add x17, x17, _nvn_sa_real@PAGEOFF
+    ldr x17, [x17, x9, lsl #3]
+    mov x9, sp
+    tst x9, #15
+    b.ne 1f
+    br x17
+1:  and x10, x9, #~15
+    sub x10, x10, #48
+    ldp x11, x12, [x9]
+    stp x11, x12, [x10]
+    ldp x11, x12, [x9, #16]
+    stp x11, x12, [x10, #16]
+    stp x9, x30, [x10, #32]
+    mov sp, x10
+    blr x17
+    ldp x9, x30, [sp, #32]
+    mov sp, x9
+    ret

@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "nvn_protos.h"
+#include "nvn_count.h"
 
 extern void *h_nvnBootstrapLoader(const char *name);
 static void *load(const char *name) {
@@ -162,7 +163,10 @@ int main(int argc, char **argv) {
         if (lr_entries) { bad++; fprintf(stderr, "leaf: 交了 %u 个跳板入口\n", lr_entries); }
         if (lr_stack) { bad++; fprintf(stderr, "leaf: 交了 %u 个带栈参的\n", lr_stack); }
         if (lr_got != first) { bad++; fprintf(stderr, "leaf: 第二次又交了 %u 个（应幂等）\n", lr_got - first); }
-        printf("叶子桩接点：交出 %u 个（命令录制 %u 个），跳板入口 0、带栈参 0\n", first, lr_cmdbuf);
+        // 带栈参的四个（HDR 显示元数据，都有实现）改指 nvn_stackarg_entry、真实现记进 nvn_sa_real：期望恰好 4 个
+        extern void *nvn_sa_real[NVN_NFUNC]; unsigned sa = 0; for (unsigned i = 0; i < NVN_NFUNC; i++) sa += nvn_sa_real[i] != NULL;
+        checks++; if (sa != 4) { bad++; fprintf(stderr, "leaf: 带栈参入口 %u 个（应 4）\n", sa); }
+        printf("叶子桩接点：交出 %u 个（命令录制 %u 个），跳板入口 0、带栈参 0；带栈参的 %u 个经对齐入口\n", first, lr_cmdbuf, sa);
     }
 #endif
     printf("%s t_nvn_b %s: %u assertions, %u mismatches\n", bad ? "✗" : "✓", query ? query : "window queries", checks, bad);
