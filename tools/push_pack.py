@@ -1007,7 +1007,8 @@ def run(dev, pack, work, full=False, say=print, env=None, on_plan=None, progress
         if fb is None: say(f"🟡 读不到 iPhone 剩余空间，这次要传 {max(1, nbytes >> 30)} GB：空间不够时会中途停下，请确认手机上留有足够空间")
         elif fb < need:
             # 手机报的空闲（AFC）不含系统随时能清掉的空间，比「设置 → 储存空间」里的「可用」小，常差好几 GB：估算不够不等于放不下
-            head = (f"iPhone 剩余空间看起来不够：这次要传约 {gb1(nbytes)} GB，连同解开时临时多占的约要 {gb1(need)} GB，"
+            # 「估算」写进句子（11-17 维护者）：手机报的空闲偏小，能读到空间以后提示变多，玩家要知道这是估的、可以照传
+            head = (f"按估算，iPhone 剩余空间可能不够：这次要传约 {gb1(nbytes)} GB，连同解开时临时多占的约要 {gb1(need)} GB，"
                     + (f"手机可用约 {gb1(fb)} GB（含系统随时能清掉的空间）" if imp else f"手机报的空闲约 {gb1(fb)} GB")
                     + f"，还差约 {gb1(need - fb)} GB。")
             if not accept:
@@ -1023,9 +1024,9 @@ def run(dev, pack, work, full=False, say=print, env=None, on_plan=None, progress
         left = dev.free() if nbytes else None
         # 报错原文就说写满了（AFC「No space left」等，见 NOSPACE），或推完再量空闲已近 0：都按写满报，不报成连接中断
         if nospace(str(e)) or (left is not None and left < FULL_LEFT):
-            now = f"手机现在只剩 {left >> 20} MB" if left is not None else "手机报空间已写满"
-            raise SpaceFull(f"iPhone 空间写满了，传到一半停下：这次要传约 {gb1(nbytes)} GB，{now}。"
-                            f"在「设置 → 通用 → iPhone 储存空间」腾出空间后再装一次（已传完的文件不用重传）。") from e
+            raise SpaceFull((f"iPhone 空间写满了，传到一半停下：这次要传约 {gb1(nbytes)} GB，手机现在只剩 {left >> 20} MB。" if left is not None else
+                             f"iPhone 空间写满了，传到一半停下：这次要传约 {gb1(nbytes)} GB。")   # 两句整句进对照表（BackendText 按整句 / 句式翻）
+                            + "在「设置 → 通用 → iPhone 储存空间」腾出空间后再装一次（已传完的文件不用重传）。") from e
         raise
     return nb, nt, nbytes
 

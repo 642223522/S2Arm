@@ -113,8 +113,9 @@ static int is_file(const char *p) { struct stat st; return !stat(p, &st) && S_IS
 int s2a_launch_ctx_is_container_dir(const char *b) {
     char p[S2A_LCTX_PATH];
     if (!b || !*b) return 0;
-    if (join(p, b, "s2a_catalogue.json") || !is_file(p)) return 0;
-    return !join(p, b, "Games") && is_dir(p);
+    // 只看 s2a_catalogue.json（只有多款容器的组装才写它，pack/ship_ext.py container）：0.6.0 通用壳「只装壳」的容器清单只有 shell_id、games 为空，
+    //   也不带 Games/（各款的程序与随行表都在程序包 program/ 里）。原先还要求有 Games/，只装壳的容器会被当成单款包起，FATAL
+    return !join(p, b, "s2a_catalogue.json") && is_file(p);
 }
 // 清单里有没有这款：逐个找键 "title_id" 后的字符串值比对（title_id 是 16 位十六进制，不含转义；值里有反斜杠的条目不认）。
 //   界面（S2ArmShellHost Catalogue.swift）读同一份清单；这里只核成员，不判 state（界面只对 playable 放 Play）
@@ -413,7 +414,7 @@ static void decide(void) {
     if (!(ctx && *ctx) && s2a_launch_ctx_is_container_dir(g_bundle)) {   // ③ 容器：此刻不冻结，等 s2a_launch_ctx_select
         g_container = 1;
         snprintf(g_err, sizeof g_err, "多款容器还没选游戏：s2a_launch_ctx_select 之前不许读游戏相关值");
-        LOG("启动上下文：多款容器（%s 有 s2a_catalogue.json 与 Games/），构造期不冻结，等玩家选游戏", g_bundle);
+        LOG("启动上下文：多款容器（%s 有 s2a_catalogue.json），构造期不冻结，等玩家选游戏", g_bundle);
         return;
     }
     if (s2a_launch_ctx_resolve(&g_ctx, g_bundle, getenv("HOME"), ctx, g_err, sizeof g_err)) return;
@@ -447,7 +448,7 @@ const char *s2a_launch_ctx_select(const char *gid) {
     static char why[700];
     pthread_once(&g_once, decide);
     g_sel_kind = S2A_SELECT_OTHER;
-    if (!g_container) return "不是多款容器（包根没有 s2a_catalogue.json 与 Games/，或设了 S2A_LAUNCH_CTX）：启动上下文已在构造期定好，不能再选游戏";
+    if (!g_container) return "不是多款容器（包根没有 s2a_catalogue.json，或设了 S2A_LAUNCH_CTX）：启动上下文已在构造期定好，不能再选游戏";
     pthread_mutex_lock(&g_sel_mu);
     const char *r = NULL;
     if (g_selected) { snprintf(why, sizeof why, "本进程已经选过游戏 %s，同一进程不再起第二款：请关掉 App 重新打开", g_ctx.game_id); r = why; goto out; }

@@ -683,6 +683,33 @@ static void test_pad_slots(void) {
     expect(s2a_slot_plan(owners, live, 0, 4, slot_of) == 1, "no pads: back to one slot for keyboard and mouse");
 }
 
+// #1264（D-7VG4 现场）：兜底手柄 a（PowerA，顺序表认不到它）先占槽 0；游戏中途连上 DualSense b 进槽 1；面板把 b 登记成 P1（顺序表 rank 0）。
+//   期望手算：钉住后 b 在槽 0、a 被挤到槽 1；再关掉 a，b 仍在槽 0（单人游戏读玩家 1 就是它）。没登记的手柄不受钉住影响、照旧留原槽
+static void test_pad_slot_pin(void) {
+    int ids[3] = {1, 2, 3};
+    const void *a = &ids[0], *b = &ids[1], *c = &ids[2];
+    const void *owners[4] = {a, b, NULL, NULL};
+    int slot_of[3];
+    const void *ab[2] = {a, b}; int rank_ab[2] = {S2A_PAD_ORDER_UNLISTED, 0};
+    s2a_slot_pin(owners, ab, rank_ab, 2, 4);
+    expect(s2a_slot_plan(owners, ab, 2, 4, slot_of) == 2 && slot_of[1] == 0 && slot_of[0] == 1,
+        "a pad the panel lists as P1 takes slot 0; the unlisted one moves to slot 1");
+    apply_slots(owners, ab, slot_of, 2, 4);
+    const void *only_b[1] = {b}; int rank_b[1] = {0};
+    s2a_slot_pin(owners, only_b, rank_b, 1, 4);
+    expect(s2a_slot_plan(owners, only_b, 1, 4, slot_of) == 1 && slot_of[0] == 0, "turning the old pad off leaves the listed P1 in slot 0");
+    // 没登记的两只（a 槽 1、c 槽 2）+ 登记 P1 的 b 已在槽 0：钉住什么都不动
+    const void *owners2[4] = {b, a, c, NULL};
+    const void *bac[3] = {b, a, c}; int rank_bac[3] = {0, S2A_PAD_ORDER_UNLISTED, S2A_PAD_ORDER_UNLISTED};
+    s2a_slot_pin(owners2, bac, rank_bac, 3, 4);
+    expect(owners2[0] == b && owners2[1] == a && owners2[2] == c && owners2[3] == NULL, "pinning leaves pads already in place and unlisted pads alone");
+    // 登记成 P2（rank 1）、P1 不在：钉在槽 1，不提前到槽 0（同原机：玩家号不跳）
+    const void *owners3[4] = {NULL, NULL, NULL, NULL};
+    const void *only_c[1] = {c}; int rank_c[1] = {1};
+    s2a_slot_pin(owners3, only_c, rank_c, 1, 4);
+    expect(s2a_slot_plan(owners3, only_c, 1, 4, slot_of) == 2 && slot_of[0] == 1, "a listed P2 stays in slot 1 when P1 is absent");
+}
+
 // 只有通用物理描述的手柄（没有扩展手柄档）：按标准键名从 physicalInputProfile 读、回调装在 valueDidChangeHandler 上。
 //   用系统自带的虚拟简易手柄（controllerWithMicroGamepad：只有 A / X / Menu / 方向键）当这种手柄。期望手算：
 //   它的类别是「Siri Remote」，认不出类型按缺省「自动」照字母（pad.c s2a_pad_abxy_order）：系统 A = Switch A，默认配置第 0 位（1）；
@@ -1261,7 +1288,47 @@ int main(int argc, const char **argv) {
                ax[0] == 32767 && ax[1] == 0 && ax[2] == -32767 && ax[3] == 32767, "Pro 0x30 report: buttons and sticks");
         uint8_t simple[12]; memcpy(simple, rep, sizeof simple); simple[0] = 0x3F;
         expect(s2a_pro_parse(simple, sizeof simple, &d, &d, &bt, ax) == 0, "Pro parser leaves the simple HID report (0x3F) to the element path");
+        //   读不到出厂校准（#1264 PowerA）：缺省行程 1003、随读数放大。期望手算：+500 → 500 / 1003 × 32767 = 16334.6 → 16334；
+        //   推到 +1200（超过 1003）→ 行程放大到 1200、满量程 32767；之后 +600 → 600 / 1200 × 32767 = 16383.5 → 16383；
+        //   负向没动过：-700 → -700 / 1003 × 32767 = -22868.3 → -22868（行程两向分开记）
+        s2a_pro_cal g; s2a_pro_cal_default(&g);
+        int16_t g1 = s2a_pro_axis_grow(2548, g.cx, &g.xmax, &g.xmin), g2 = s2a_pro_axis_grow(3248, g.cx, &g.xmax, &g.xmin);
+        int16_t g3 = s2a_pro_axis_grow(2648, g.cx, &g.xmax, &g.xmin), g4 = s2a_pro_axis_grow(1348, g.cx, &g.xmax, &g.xmin);
+        expect(g1 == 16334 && g2 == 32767 && g.xmax == 1200 && g3 == 16383 && g4 == -22868 && g.xmin == 1003,
+               "Pro stick without factory calibration: range starts at 1003 and grows to the farthest reading");
         expect(s2a_pro_player_lights(0) == 0x1 && s2a_pro_player_lights(1) == 0x3 && s2a_pro_player_lights(3) == 0xF, "Pro player lights: first n lit for player n");
+        // Xbox 有线手柄 GIP 协议纯函数验证（#1406）
+        expect(s2a_is_xbox_gip(0x045E, 0x02D1) == 1, "Xbox GIP: 0x045E:0x02D1 (Xbox One)");
+        expect(s2a_is_xbox_gip(0x045E, 0x0B12) == 1, "Xbox GIP: 0x045E:0x0B12 (Xbox Series)");
+        expect(s2a_is_xbox_gip(0x045E, 0x028E) == 0, "Xbox GIP: 0x045E:0x028E (Xbox 360 XUSB, 非 GIP) 返回 0");
+        expect(s2a_usb_has_hid_child(0) == 0, "USB has HID child: 空句柄返回 0");
+        expect(s2a_is_xbox_gip(0x045E, 0x9999) == 0, "Xbox GIP: 非 Xbox 手柄 PID 返回 0");
+        expect(s2a_is_xbox_gip(0x054C, 0x0CE6) == 0, "Xbox GIP: 非微软 VID 返回 0");
+
+        uint8_t ack_pkt[13];
+        const uint8_t req_ack[4] = {0x02, 0x10, 0x05, 0x01};
+        expect(s2a_gip_ack(req_ack, sizeof req_ack, ack_pkt) == 13 &&
+               ack_pkt[0] == 0x01 && ack_pkt[1] == 0x20 && ack_pkt[2] == 0x05 && ack_pkt[5] == 0x02,
+               "Xbox GIP ACK: 置有 ACK 标志时正确生成 13 字节应答包");
+        const uint8_t no_ack[4] = {0x20, 0x00, 0x05, 0x01};
+        expect(s2a_gip_ack(no_ack, sizeof no_ack, ack_pkt) == 0, "Xbox GIP ACK: 无 ACK 标志返回 0");
+
+        const uint8_t gip_rep[18] = {
+            0x20, 0x00, 0x01, 0x0E,
+            0x14, 0x10,             // buttons: Xbox A (0x0010), Menu (+, 0x0004), LB (0x1000)
+            0x00, 0x01,             // LT: 256 (> 200 -> ZL)
+            0x00, 0x00,             // RT: 0
+            0x00, 0x40,             // lx: 16384
+            0x00, 0xC0,             // ly: -16384
+            0x00, 0x00,             // rx: 0
+            0x00, 0x00              // ry: 0
+        };
+        uint32_t gip_bt = 0; int16_t gip_ax[4] = {0};
+        expect(s2a_gip_parse(gip_rep, sizeof gip_rep, &gip_bt, gip_ax) == 1, "Xbox GIP parse: valid 0x20 report");
+        expect(gip_bt == ((1u << 0) | (1u << 10) | (1u << 6) | (1u << 8)), "Xbox GIP parse buttons: A, +, L, ZL");
+        expect(gip_ax[0] == 16384 && gip_ax[1] == -16384 && gip_ax[2] == 0 && gip_ax[3] == 0, "Xbox GIP parse axes: lx, ly, rx, ry");
+        uint8_t invalid_gip[18]; memcpy(invalid_gip, gip_rep, sizeof invalid_gip); invalid_gip[0] = 0x07;
+        expect(s2a_gip_parse(invalid_gip, sizeof invalid_gip, &gip_bt, gip_ax) == 0, "Xbox GIP parse: non-0x20 report returns 0");
     }
     char relayPath[96];
     snprintf(relayPath, sizeof relayPath, "/tmp/s2arm-motion-%d.sock", getpid());
@@ -1476,6 +1543,7 @@ int main(int argc, const char **argv) {
         test_active_pad();
         test_pro_sensor_control();
         test_pad_slots();
+    test_pad_slot_pin();
         // 同一个真实前端实现：通用 attach 先发布层，detach 先通知再清层；
         // 直连只发布/清层，不通知尚未初始化且不应初始化的通用 NxGal。
         CAMetalLayer *front = [CAMetalLayer layer];

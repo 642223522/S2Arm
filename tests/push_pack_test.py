@@ -586,7 +586,7 @@ class SpaceNeed(Base):
     def test_one_byte_short_accepted_pushes(self):
         self.dev = Fake({}); self.dev.free = lambda: 8197
         self.assertEqual(push.run(self.dev, self.pk, self.w, full=True, say=self.log.append, env={"S2A_PUSH_SPARE_GB": "0", "S2A_PUSH_ACCEPT_LOW_SPACE": "1"})[2], 3)
-        self.assertTrue(any(m.startswith("🟡 iPhone 剩余空间看起来不够") for m in self.log))
+        self.assertTrue(any(m.startswith("🟡 按估算，iPhone 剩余空间可能不够") for m in self.log))
 
     # 真写满：推失败后再量、空闲 < 256 MB → 报 ios_install_no_space，说清要传多少、手机还剩多少；空闲还多 = 别的原因，照原样往上抛
     def test_real_full_says_how_much(self):

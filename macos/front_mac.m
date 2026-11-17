@@ -1383,6 +1383,8 @@ static void sample_input(void) {
     if (kbd_own && n < S2A_LIVE_MAX) { live_ids[n] = &kbd_slot_id; live_pads[n] = nil; live_ctrls[n] = nil; live_ble[n] = S2A_PAD_ORDER_KEYBOARD; n++; }
     atomic_store(&kbd_buttons_snap, kbd_own ? 0 : kbd_buttons);   // 手柄快速路径合槽 0 时读这份：键盘有自己的槽就不合
     if (kbd_own) for (int i = 0; i < 4; i++) atomic_store(&kbd_sticks_snap[i], 0);
+    int live_rank[S2A_LIVE_MAX];   // 顺序表里排第几（没登记 = S2A_PAD_ORDER_UNLISTED）：下面 s2a_slot_pin 照它把登记过的钉在自己那格
+    for (int j = 0; j < S2A_LIVE_MAX; j++) live_rank[j] = S2A_PAD_ORDER_UNLISTED;
     if (g_order_loaded) {
         int rank[S2A_LIVE_MAX], m = 0; NSMutableDictionary<NSString *, NSNumber *> *seen = [NSMutableDictionary new];
         for (int j = 0; j < n; j++) {
@@ -1397,7 +1399,7 @@ static void sample_input(void) {
         for (int k = 0; k < n; k++) {
             int j = order_idx[k];
             if (rank[j] == S2A_PAD_ORDER_DROPPED) continue;   // 分配时没登记：同原机断开（系统手柄 S2Arm 断不了蓝牙，游戏不读它）
-            ids[m] = live_ids[j]; pads[m] = live_pads[j]; ctrls[m] = live_ctrls[j]; bles[m] = live_ble[j]; keys2[m] = live_key[j]; hids[m] = live_hid[j]; m++;
+            ids[m] = live_ids[j]; pads[m] = live_pads[j]; ctrls[m] = live_ctrls[j]; bles[m] = live_ble[j]; keys2[m] = live_key[j]; hids[m] = live_hid[j]; live_rank[m] = rank[j]; m++;
         }
         for (int k = 0; k < m; k++) { live_ids[k] = ids[k]; live_pads[k] = pads[k]; live_ctrls[k] = ctrls[k]; live_ble[k] = bles[k]; live_key[k] = keys2[k]; live_hid[k] = hids[k]; }
         for (int k = m; k < n; k++) live_ctrls[k] = nil;
@@ -1411,6 +1413,9 @@ static void sample_input(void) {
     }
     logged_mix = mix;
     int slot_of[S2A_LIVE_MAX];
+    // 面板里登记成第几位就是游戏里的第几位（#1264：中途连上 DualSense、面板 P1 是它，宿主却照「已在玩的留原位」把玩家 1 留给原手柄，
+    //   原手柄关掉后 DualSense 还在二号位，单人游戏读不到）；没登记的手柄照旧留原槽
+    if (g_order_loaded) s2a_slot_pin(pad_id, live_ids, live_rank, n, S2A_MAX_PADS);
     int live = s2a_slot_plan(pad_id, live_ids, n, S2A_MAX_PADS, slot_of);
     // 断开清槽：整表重建，只有本轮还在的才写回（强引用随之释放，不会留悬空指针）
     GCController *owner_before[S2A_MAX_PADS];

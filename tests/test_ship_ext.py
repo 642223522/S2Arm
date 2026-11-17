@@ -377,12 +377,61 @@ class ProgramPackTest(unittest.TestCase):
         self.assertEqual(mine, theirs)   # 只差容器自己的启动上下文 launch.ctx（自动化起局用，程序包不带）
         self.assertIn(Path("main.npdm"), mine); self.assertIn(Path("main.fixups.tsv"), mine); self.assertIn(Path("addr_need.tsv"), mine); self.assertIn(Path("icon.jpg"), mine)
 
+    def test_program_carries_save_identity_like_container(self):
+        # 11-17 与 iOS 加载侧定：程序包款宿主按模块目录（program/Games/<号>/）读存档身份（ios/save_transfer.m），所以随程序包走；
+        #   期望 = 同一份产物根组出的容器里 Games/<号>/save-identity.json（逐字节）；身份不合法 → 报红、不留目录
+        gid = ContainerTest.A
+        (self.root / "save-identity.json").write_text(json.dumps(dict(id=gid, name="甲游戏", version=65536, contentIdentity="ab" * 32)))
+        out = self.d / "p/program"
+        r = self.run_p(self.root, out); self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        app = self.d / "c/S2Arm.app"
+        c = ContainerTest.run_c(None, self.d, self.shell, app, [self.root]); self.assertEqual(c.returncode, 0, c.stdout + c.stderr)
+        self.assertEqual((out / "Games" / gid / "save-identity.json").read_bytes(), (app / "Games" / gid / "save-identity.json").read_bytes())
+        (self.root / "save-identity.json").write_text(json.dumps(dict(id=gid, name="甲游戏")))
+        out2 = self.d / "q/program"
+        r = self.run_p(self.root, out2); self.assertNotEqual(r.returncode, 0); self.assertIn("存档游戏身份校验失败", r.stdout + r.stderr)
+        self.assertFalse(out2.exists())
+
     def test_program_refuses_existing_and_leaves_nothing_on_failure(self):
         out = self.d / "p/program"; out.mkdir(parents=True)
         r = self.run_p(self.root, out); self.assertNotEqual(r.returncode, 0); self.assertIn("不覆盖已有目标", r.stdout + r.stderr)
         (self.root / "main.npdm").unlink(); out2 = self.d / "q/program"
         r = self.run_p(self.root, out2); self.assertNotEqual(r.returncode, 0)
         self.assertFalse(out2.exists()); self.assertFalse(any((self.d / "q").glob(".program-*")) if (self.d / "q").exists() else False)
+
+
+class ShellOnlyTest(unittest.TestCase):
+    """只有壳的容器（通用壳 0.6.0，container --shell-only）：期望手写——清单 games 为空、壳号 = 同一壳组的普通容器的壳号；
+       App 里没有 Games/ 下任何一款、没有 Frameworks/S2AImages-*；除此之外的文件与同一壳组的普通容器同名同在；带 --game 报红"""
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory(); self.d = Path(self.td.name)
+        self.shell = ShipExtTest.shell(None, self.d)
+        self.a = ContainerTest.game(None, self.d, "a", 3, 0, 0x0100000000010000, "甲游戏")
+
+    def tearDown(self): self.td.cleanup()
+
+    def run_s(self, out, extra=()):
+        from PIL import Image
+        icon = self.d / "brand.png"
+        if not icon.exists(): Image.new("RGB", (64, 64), (1, 2, 3)).save(icon)
+        return subprocess.run([sys.executable, str(REPO / "pack/ship_ext.py"), "container", "--shell-only", "--shell", str(self.shell), "--out", str(out),
+                               "--bundle-id", "dev.example.games", "--icon", str(icon), "--host-abi", "7", *extra], capture_output=True, text=True)
+
+    def test_shell_only(self):
+        app = self.d / "s/S2Arm.app"
+        r = self.run_s(app); self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        ref = self.d / "c/S2Arm.app"
+        c = ContainerTest.run_c(None, self.d, self.shell, ref, [self.a]); self.assertEqual(c.returncode, 0, c.stdout + c.stderr)
+        cat, rc = (json.loads((x / "s2a_catalogue.json").read_text(encoding="utf-8")) for x in (app, ref))
+        self.assertEqual(cat, dict(schema=1, shell_id=rc["shell_id"], games=[]))
+        self.assertFalse(list(app.glob("Frameworks/S2AImages-*"))); self.assertFalse((app / "Games").exists() and any((app / "Games").iterdir()))
+        mine = {p.relative_to(app).as_posix() for p in app.rglob("*") if p.is_file()}
+        theirs = {p.relative_to(ref).as_posix() for p in ref.rglob("*") if p.is_file() and not p.relative_to(ref).as_posix().startswith(("Games/", "Frameworks/S2AImages-"))}
+        self.assertEqual(mine, theirs)
+
+    def test_shell_only_refuses_games(self):
+        r = self.run_s(self.d / "x/S2Arm.app", ["--game", str(self.a)])
+        self.assertNotEqual(r.returncode, 0); self.assertIn("--shell-only 只装壳", r.stdout + r.stderr)
 
 
 class BannerPlaceTest(unittest.TestCase):
