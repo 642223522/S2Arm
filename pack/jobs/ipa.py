@@ -169,12 +169,13 @@ def bundled_shell(c):
         raise Failure("应用自带的预编壳缺失，请重新安装完整的 S2Arm。", code="tool_missing")
     # 壳和引擎必须是同一版（#1043：0.3.9 → 0.3.10 应用内更新回滚不完整，Engine/engine.json 是新壳号、Shell/manifest.json 还是旧的，
     #   出包到 ship_ext 核壳编号才挂、原因看不懂）。两边都写了壳号且对不上 = 这份 S2Arm 只装了一半：开头就说清、给出路
+    #   维护者 11-17：校验不过不再整个拒绝——黄字说清、照常出包（ship_ext 核壳同样只提示），出包 / 起局真失败时这条诊断还在结果里
     want = (read(Path(c.engine) / "engine.json", {}) or {}).get("shellId")
     have = ((read(d / "manifest.json", {}) or {}).get("details") or {}).get("shellId")
     if want and have and want != have:
-        raise Failure("这份 S2Arm 没装完整：程序的两部分来自不同版本（多半是应用内更新中途失败、回滚没退干净）。"
-                      "请从发布页下载最新的安装包，覆盖安装一次（游戏库、存档、密钥都在别处，不受影响），再出包。",
-                      code="engine_incomplete", internal=f"引擎要的壳 {want}，应用自带的壳 {have}（{d}）")  # 非玩家句
+        c.diagnostic("这份 S2Arm 没装完整：程序的两部分来自不同版本（多半是应用内更新中途失败、回滚没退干净）。"
+                     "这次照常出包；出包失败或游戏起不来时，请从发布页下载最新的安装包，覆盖安装一次（游戏库、存档、密钥都在别处，不受影响）。",
+                     code="engine_incomplete", severity="warning", internal=f"引擎要的壳 {want}，应用自带的壳 {have}（{d}）")  # 非玩家句（internal）
     return d
 
 
