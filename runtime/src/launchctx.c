@@ -405,7 +405,9 @@ static int export_env(void) {   // 冻结后的四个根写进进程环境（覆
     }
     return 0;
 }
+void s2a_selfsign_probe(void);   // selfsign.c：手机端自签真机验证（开发用环境变量，没设就直接返回）
 static void decide(void) {
+    s2a_selfsign_probe();
     char exe[S2A_LCTX_PATH]; uint32_t n = sizeof exe;
     if (_NSGetExecutablePath(exe, &n)) { snprintf(g_err, sizeof g_err, "取不到可执行文件路径"); return; }
     char *sl = strrchr(exe, '/'); if (sl) *sl = 0;
