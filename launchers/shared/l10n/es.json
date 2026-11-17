@@ -389,6 +389,7 @@
   "update.error.update_download_failed": "La descarga se interrumpió repetidamente. Tu versión actual no ha cambiado. Comprueba tu red y reintenta, o descarga la nueva versión tú mismo.",
   "update.error.update_unpack_failed": "No se pudo abrir el paquete descargado. Tu versión actual no ha cambiado. Puedes descargar la nueva versión tú mismo.",
   "update.error.update_failed": "La actualización no terminó. No se ha cambiado nada. Comprueba tu red e inténtalo de nuevo.",
+  "update.error.update_install_failed": "La actualización a v{0} no se instaló; sigues con la versión anterior",
   "update.error.update_swap_failed": "Error al reemplazar los archivos. Se ha mantenido la versión actual.",
   "update.error.update_rolled_back": "La nueva versión no pudo iniciarse. S2Arm ha vuelto a la versión anterior.",
   "update.error.update_rollback_failed": "La nueva versión no pudo iniciarse y la antigua no pudo restaurarse. Descarga S2Arm de nuevo; tu biblioteca está a salvo.",

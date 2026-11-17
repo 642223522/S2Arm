@@ -389,6 +389,7 @@
   "update.error.update_download_failed": "Le téléchargement n'arrêtait pas de se couper. Votre version actuelle est inchangée. Vérifiez votre réseau et réessayez, ou téléchargez la nouvelle version vous-même.",
   "update.error.update_unpack_failed": "Impossible d'ouvrir le paquet téléchargé. Votre version actuelle est inchangée. Vous pouvez télécharger la nouvelle version vous-même.",
   "update.error.update_failed": "La mise à jour ne s'est pas terminée. Rien n'a été modifié. Vérifiez votre réseau et réessayez.",
+  "update.error.update_install_failed": "La mise à jour vers v{0} ne s'est pas installée ; vous êtes toujours sur la version précédente",
   "update.error.update_swap_failed": "Le remplacement des fichiers a échoué. La version actuelle a été conservée.",
   "update.error.update_rolled_back": "La nouvelle version n'a pas pu démarrer. S2Arm est revenu à la version précédente.",
   "update.error.update_rollback_failed": "La nouvelle version n'a pas pu démarrer et l'ancienne n'a pas pu être restaurée. Téléchargez S2Arm à nouveau ; votre bibliothèque est intacte.",
