@@ -195,6 +195,29 @@ final class JobClientTests: XCTestCase {
         XCTAssertEqual(box.begun, 2); XCTAssertEqual(box.ended, 2)
     }
 
+    /// 自动起的后台任务（JobTrigger）：不开防降级活动；玩家点的照开（11-17 维护者：自动任务让路，玩家的作业不被降级）。期望手写
+    func testAutomaticJobsDoNotHoldActivity() throws {
+        final class Box { var begun = 0, ended = 0 }
+        let box = Box(), token = NSObject()
+        let runner = SystemJobProcessRunner(beginActivity: { box.begun += 1; return token }, endActivity: { _ in box.ended += 1 })
+        let done = expectation(description: "exit")
+        _ = try runner.start(executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", "true"],
+                             environment: [JobTrigger.environmentKey: JobTrigger.automatic],
+                             onLine: { _ in }, onStderr: { _ in }, onExit: { _ in done.fulfill() })
+        wait(for: [done], timeout: 10)
+        XCTAssertEqual(box.begun, 0); XCTAssertEqual(box.ended, 0)
+    }
+
+    /// JobClient：automatic 才把触发标记交给作业进程；缺省（玩家点的）不带
+    func testClientMarksOnlyAutomaticJobs() throws {
+        let box = try Sandbox(); defer { box.remove() }
+        let runner = FakeRunner()
+        let client = self.client(box, runner)
+        _ = try client.start(operation: "installUpdatePrepare", automatic: true)
+        _ = try client.start(operation: "install")
+        XCTAssertEqual(runner.starts.map { $0.environment[JobTrigger.environmentKey] }, [JobTrigger.automatic, nil])
+    }
+
     /// 真进程：行都到了才报退出（快结束的作业最后一条结果不能被退出抢先）。
     func testSystemRunnerDeliversAllLinesBeforeExit() throws {
         var lines: [String] = []

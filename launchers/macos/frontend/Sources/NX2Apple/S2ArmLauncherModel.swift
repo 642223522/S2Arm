@@ -420,7 +420,7 @@ public final class S2ArmLauncherModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                let r = try await self.saveJob("sgradeMac", gameID: "")
+                let r = try await self.saveJob("sgradeMac", gameID: "", automatic: true)   // 打开启动器时自动起的：低优先级让路（JobTrigger）
                 if !((r["updated"] as? [Any]) ?? []).isEmpty { self.refresh() }
             } catch { NSLog("S2Arm：后台给 Mac 游戏补 S 级优化没成：%@", error.localizedDescription) }
         }
