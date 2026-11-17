@@ -91,6 +91,8 @@ static inline int s2a_crash_quiet(void) {
     return (q && q[0] == '1') || getenv("DM_GLSLC_JOB") || getenv("DM_OODLE_SERVE") || getenv("S2A_PSO_HARVEST") || getenv("S2A_FRAME_REPLAY");
 }
 __attribute__((noreturn)) static inline void s2a_native_fatal(void) {
+    { const char *(*wn)(void) = (const char *(*)(void))dlsym(RTLD_DEFAULT, "s2a_waived_note"); const char *w = wn ? wn() : NULL;   // waived.c：带着没过的校验跑到这里
+      if (w && *w) LOG("【红】之前这些校验没过（照常继续了）：%s", w); }
     void (*boot_abort)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_session_abort_boot");
     if (boot_abort) boot_abort();
     if (s2a_crash_quiet()) _exit(70);
