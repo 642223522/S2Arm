@@ -262,6 +262,7 @@ class ExportTvTest(TvCase):
             out = self.root / "asm"; app = out / "S2Arm.app"; (app / f"Games/{gid}").mkdir(parents=True)
             (app / "Info.plist").write_bytes(plistlib.dumps(dict(CFBundleIdentifier="io.s2arm.games", CFBundleExecutable="S2Arm")))
             (app / "S2Arm").write_bytes(b"exe"); (app / f"Games/{gid}/main.npdm").write_bytes(npdm(switch2))
+            (app / f"Games/{gid}/launch.ctx").write_text(f"version\t1\ngame_id\t{gid}\ngame_data\t@home/Library/Caches/S2Arm/games/{gid}/资源包\ndocs\t@home/Library/Caches/S2Arm/games/{gid}\n", encoding="utf-8")
             seen["assemble"] = (gid, tuple(others))
             return out, app, [gid]
         def write_ipa(c, app, ipa, log):   # 同 pack/app_bundle.py write_ipa 的包内布局：Payload/S2Arm.app/…
@@ -293,6 +294,9 @@ class ExportTvTest(TvCase):
             self.assertEqual(z.read(root + "index.applied.tsv"), (pack / "index.tsv").read_bytes())
             self.assertEqual(z.read(root + "manifest.json"), (pack / "manifest.json").read_bytes())
             self.assertNotIn(root + "game.imgmap", names)
+            # 启动上下文的资源包指向包内（按 S2A_LAUNCH_CTX 直接起也读包内），文档根照旧在 Library/Caches
+            self.assertEqual(z.read(f"Payload/S2Arm.app/Games/{G}/launch.ctx").decode(),
+                             f"version\t1\ngame_id\t{G}\ngame_data\t@bundle/Games/{G}/资源包\ndocs\t@home/Library/Caches/S2Arm/games/{G}\n")
             self.assertTrue(all(i.compress_type == zipfile.ZIP_STORED for i in z.infolist() if i.filename.startswith(root)))
             self.assertEqual(plistlib.loads(z.read("Payload/S2Arm.app/Info.plist"))["CFBundleIdentifier"], "io.s2arm.tv.0100abcd00010000")
         self.assertEqual((res["bundleId"], res["zip64"], res["eva"]), ("io.s2arm.tv.0100abcd00010000", False, False))

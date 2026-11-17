@@ -274,6 +274,18 @@ class ContainerTest(unittest.TestCase):
         self.assertEqual(p2.get("CFBundleShortVersionString"), shell_v)
         self.assertNotIn("S2ADisplayVersion", p2)
 
+    def test_ctx_text_tvos_paths(self):
+        # Apple TV 容器（组装时 S2A_APPLE_OS=tvos）：文档根 Library/Caches/S2Arm/games/<号>、资源包 <文档根>/资源包（同 runtime/include/s2a_docs.h 电视口径）
+        import unittest.mock as um
+        sys.path.insert(0, str(REPO / "pack")); import ship_ext
+        g = "0100000000010000"
+        with um.patch.dict(os.environ, {"S2A_APPLE_OS": "tvos"}):
+            tv = ship_ext.ctx_text(g)
+        self.assertEqual(tv, f"version\t1\ngame_id\t{g}\nimages\t@bundle/Frameworks/S2AImages-{g}.dylib\nmodule_dir\t@bundle/Games/{g}\n"
+                             f"game_data\t@home/Library/Caches/S2Arm/games/{g}/资源包\ndocs\t@home/Library/Caches/S2Arm/games/{g}\n")
+        with um.patch.dict(os.environ, {"S2A_APPLE_OS": "ios"}):
+            self.assertIn(f"docs\t@home/Documents/games/{g}\n", ship_ext.ctx_text(g))   # iPhone 照旧
+
     def test_layout_catalogue_and_window_max(self):
         r = self.run_c(self.d, self.shell, self.d / "o1/S2Arm.app", [self.a, self.b])
         self.assertEqual(r.returncode, 0, r.stderr)
