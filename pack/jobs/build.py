@@ -673,18 +673,28 @@ def ensure_extract(c, game, packages, env, logs, valid=None):
         elif any(p.get("format") in EXTRACTED_FORMATS for p in packages):
             extract_folder(c, game, packages, extraction, env, logs)
         else:
-            c.run(
-                [
-                    toolchain.reader(c),
-                    c.keys,
-                    extraction,
-                    "--aoc-index",
-                    "--title-id=" + game["id"],
-                    *paths,
-                ],
-                logs / "extract.log",
-                env,
-            )
+            try:
+                c.run(
+                    [
+                        toolchain.reader(c),
+                        c.keys,
+                        extraction,
+                        "--aoc-index",
+                        "--title-id=" + game["id"],
+                        *paths,
+                    ],
+                    logs / "extract.log",
+                    env,
+                )
+            except Failure as error:
+                # #1411：打 iPhone 包（ipa）在自己里面解包，读取器失败原先落进通用 tool_exit（「工具跑失败」），原因被藏；
+                #   Mac 准备（build）在 core.run 里已按 build_tool_failure 归好类、码不是 tool_exit，不走这里。两种作业同一判法：按解包阶段归类
+                if error.code != "tool_exit":
+                    raise
+                from errors import cause_facts, classify_failure, player_reason, tool_reason
+                code, why = classify_failure("unpack", logs / "extract.log")
+                raise Failure(player_reason(code), code=code, internal="解包失败：" + tool_reason(logs / "extract.log") + "\n" + why,  # 非玩家句
+                              facts=cause_facts(code, logs / "extract.log")) from error
         c.emit(
             "message", "解包已完成，正在校验合并结果并写入缓存"
         )  # 解包读满 100% 后还要校验、写缓存：说明在做什么，进度不停在「解包 100%」（社区贡献者补丁 #8）
