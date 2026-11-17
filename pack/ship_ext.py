@@ -167,15 +167,21 @@ def cmd_shell(a):
 
 
 def shell_checked(shell_dir):
-    """壳目录 → (壳 root, 随包表, 壳编号)：逐文件核壳、要求壳编号 = 本打包器源码算出的编号（不配套报红）"""
+    """壳目录 → (壳 root, 随包表, 壳编号)：逐文件核壳、核壳编号 = 本打包器源码算出的编号。
+    维护者 11-17：校验不过不再整个拒绝——被改 / 缺失 / 多出、壳编号不配套都只黄字提示、照常组装（缺的文件到用时自己报真原因）；
+    清单本身读不了（ShellError 非 Mismatch）才报红。返回的壳编号取这份壳清单自己写的（容器目录记的是真正用的那份壳）"""
     shell_dir = Path(shell_dir); shell, man = shell_dir / "root", shell_dir / "manifest.json"
     try:
-        shell_manifest.verify(shell, man)   # 逐文件重算：被改 / 缺失 / 多出点名
-        need = shell_manifest.current_id()
-        shell_manifest.require(man, need)   # 壳与本打包器同一提交 / 链号 / iOS 最低版本，不配套就停
-    except Exception as e:   # noqa: BLE001 —— ShellError 等，统一报红
+        sid = shell_manifest.load(man)["details"]["shellId"]
+    except Exception as e:   # noqa: BLE001 —— 清单读不了 / 不合法：核不下去
         red(f"壳 {shell_dir} 不能用：{e}")
-    return shell, [t for t in (shell / TABLES).read_text(encoding="utf-8").split("\n") if t], need
+    for check in (lambda: shell_manifest.verify(shell, man),   # 逐文件重算：被改 / 缺失 / 多出点名
+                  lambda: shell_manifest.require(man, shell_manifest.current_id())):   # 壳与本打包器同一提交 / 链号 / iOS 最低版本
+        try:
+            check()
+        except shell_manifest.Mismatch as e:
+            print(f"🟡 壳 {shell_dir} 校验不过，照常继续组装：{e}", file=sys.stderr)
+    return shell, [t for t in (shell / TABLES).read_text(encoding="utf-8").split("\n") if t], sid
 
 
 def shell_chain(shell_dir):
