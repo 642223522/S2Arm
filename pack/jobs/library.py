@@ -109,9 +109,11 @@ def diagnostic_log_chunks(source, size, head=None, tail=None):
     + 中间的心跳行与最后一次崩溃摘要、全线程现场 + 结尾 tail（从行首起）。最后一块之后返回 (留下的字节, 截掉的字节)，经 StopIteration.value 取"""
     head = DIAGNOSTIC_LOG_HEAD if head is None else head
     tail = DIAGNOSTIC_LOG_TAIL if tail is None else tail
+    # 只读到打开时量的 size 为止（11-17 D-4PE6：游戏开着、日志边导边涨，原先读到文件尾，导出慢的时候一份 game.log 涨过收件单个成员 16 MB 上限，
+    #   整包被拒「单个文件超过 16 MB」）；导出之后才写进来的部分不收
     if size <= head + tail:
         kept = 0
-        while chunk := source.read(DIAGNOSTIC_LOG_CHUNK):
+        while kept < size and (chunk := source.read(min(DIAGNOSTIC_LOG_CHUNK, size - kept))):
             kept += len(chunk); yield chunk
         return kept, 0
     first = _line_head(source, head)
@@ -149,8 +151,9 @@ def diagnostic_log_chunks(source, size, head=None, tail=None):
         mid += gap("中间最后一次崩溃摘要与全线程现场") + _scene_text(*scene.last)  # 非玩家句
     yield mid + gap("以下是日志结尾")  # 非玩家句
     source.seek(tail_start)
-    while chunk := source.read(DIAGNOSTIC_LOG_CHUNK):
-        kept += len(chunk); yield chunk
+    pos = tail_start
+    while pos < size and (chunk := source.read(min(DIAGNOSTIC_LOG_CHUNK, size - pos))):
+        pos += len(chunk); kept += len(chunk); yield chunk
     return kept, omitted
 
 

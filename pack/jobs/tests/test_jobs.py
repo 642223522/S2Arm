@@ -2696,6 +2696,17 @@ class JobsTests(unittest.TestCase):
             self.assertFalse(any("link" in name or "pipe" in name or "outside" in name for name in archive.namelist()))
             self.assertNotIn("OUTSIDE_BOUNDARY_SENTINEL", "".join(archive.read(name).decode() for name in archive.namelist()))
 
+    def test_diagnostic_log_stops_at_size_measured_when_opened(self):
+        # D-4PE6（11-17）：游戏开着、日志边导边涨，原先读到文件尾，导出慢时一份 game.log 涨过收件单个成员 16 MB 上限、整包被拒。
+        #   期望手写：打开时量的是 size，之后多写进来的不收——不截断（size ≤ 头 + 尾）时整份正好 size 字节；截断时结尾段止于 size
+        grown = b"x" * 9 + b"\n"   # 打开后才写进来的
+        short = b"line\n" * 100
+        self.assertEqual(library.diagnostic_log_excerpt(io.BytesIO(short + grown * 1000), len(short), 16000, 16000), short)
+        body = b"".join(f"{i:07d} payload\n".encode() for i in range(10000))   # 16 字节一行，160000 字节
+        out = library.diagnostic_log_excerpt(io.BytesIO(body + grown * 100000), len(body), 16000, 16000)
+        self.assertTrue(out.endswith(b"0009999 payload\n"), out[-40:])
+        self.assertNotIn(grown, out)
+
     def test_diagnostic_log_keeps_head_heartbeats_and_tail(self):
         import io
         short = b"a" * 32000
@@ -2932,7 +2943,8 @@ class JobsTests(unittest.TestCase):
         with um.patch.object(os, "fdopen", tracked_open), um.patch.object(zipfile, "ZipFile", side_effect=archive):
             library.diagnostics(self.c)
         self.assertTrue(all(output.closed for output in outputs))
-        self.assertIn((log.stat().st_ino, 0, library.DIAGNOSTIC_LOG_CHUNK), reads)   # #41：日志整份读（按块），不再只读头尾
+        # #41：日志整份读（按块），不再只读头尾；D-4PE6：只读到打开时的大小，一块不超过 DIAGNOSTIC_LOG_CHUNK
+        self.assertIn((log.stat().st_ino, 0, min(log.stat().st_size, library.DIAGNOSTIC_LOG_CHUNK)), reads)
         self.assertTrue(all(size <= 1 << 20 or size == (4 << 20) + 1 for _, _, size in reads))
         self.assertEqual(marker.read_bytes(), b"unchanged marker")
         self.assertTrue(predictable.is_symlink()); self.assertFalse(destination.is_symlink())
