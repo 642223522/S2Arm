@@ -219,7 +219,7 @@ public final class S2ArmShellHostModel {
             let id = allGames[i].id, listed = listedStates[id] ?? allGames[i].game.state
             let want: GameState
             switch installState(id) {
-            case 1, 4: want = listed != .playable ? listed : needsReinstall(id) ? .needsGameReinstall : needsHostUpdate(id) ? .needsGameUpdate : listed; installTried.remove(id)   // 程序约定号对不上本宿主：卡片标「需要在电脑上更新」，点开只展开说明；4 = 只缺非核心文件：库里照样可玩，点开始时宿主问一次「仍要启动」（v0.3.1）
+            case 1, 4: want = listed != .playable ? listed : needsReinstall(id) || needsHostUpdate(id) ? .needsGameUpdate : listed; installTried.remove(id)   // 程序约定号对不上本宿主、签名或文件对不上本机这份 App：都标「需要在电脑上更新」（修法同一个：电脑上对这款再装一次），点开只展开说明；4 = 只缺非核心文件：库里照样可玩，点开始时宿主问一次「仍要启动」（v0.3.1）
             case 2: want = .installing(unpackStage(id))
             case 3: want = .installing(transferStage(id))   // 断了也接着看：电脑重新插上续传时字节又涨
             default:   // 资源不在：玩家删掉的不显示；没删过的留在库里显示「需要游戏数据」，Play 点到只给导入说明，不放行（审计 P1-155）

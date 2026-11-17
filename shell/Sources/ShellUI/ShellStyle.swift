@@ -496,7 +496,6 @@ extension GameState {
         case .needsGameData: ShellStrings.text("Needs game data")
         case .needsAppUpdate: ShellStrings.text("App update needed")
         case .needsGameUpdate: ShellStrings.text("Update on your computer")
-        case .needsGameReinstall: ShellStrings.text("Reinstall from your computer")
         case .broken(let reason, _, _): reason.isEmpty ? ShellStrings.text("Unavailable") : reason
         case .installing(let stage):
             switch stage.phase {
@@ -528,7 +527,7 @@ extension GameState {
     var color: Color {
         switch self {
         case .playable: ShellPalette.ready
-        case .needsGameData, .needsAppUpdate, .needsGameUpdate, .needsGameReinstall: ShellPalette.attention
+        case .needsGameData, .needsAppUpdate, .needsGameUpdate: ShellPalette.attention
         case .broken: ShellPalette.muted
         case .installing(let stage): stage.phase == .interrupted || stage.phase == .failed ? ShellPalette.attention : ShellPalette.muted
         }
@@ -538,8 +537,7 @@ extension GameState {
         case .playable: ""
         case .needsGameData: ShellStrings.text("Choose this game's data to get ready to play. If it was installed from a computer, connect the iPhone and click “Install on iPhone” for this game in S2Arm: it picks up from what was already copied, so it won’t start over.")
         case .needsAppUpdate: ShellStrings.text("Install a newer version of this app to play this game.")
-        case .needsGameUpdate: ShellStrings.text("This game was built with an older S2Arm and doesn't match the new version on your phone, so it can't open. Connect your phone to your computer and click \"Update S2Arm on iPhone\" in S2Arm; this game will be rebuilt for the new version.")
-        case .needsGameReinstall: ShellStrings.text("This game's files on your phone didn't finish installing, or were installed from another computer or Apple ID, so they don't match S2Arm on this phone and it can't open. Connect your phone to your computer and click \"Install on iPhone\" for this game in S2Arm to reinstall it.")
+        case .needsGameUpdate: ShellStrings.text("This game on your phone doesn't match S2Arm on this phone, so it can't open: it was built for another version, installed from another computer or Apple ID, or didn't finish installing. Connect your phone to your computer and click \"Install on iPhone\" for this game in S2Arm.")
         case .broken(_, let detail, _): detail
         case .installing(let stage):
             switch stage.phase {
@@ -555,7 +553,7 @@ extension GameState {
         switch self {
         case .playable: ShellStrings.text("Play")
         case .needsGameData: ShellStrings.text("Choose game data…")
-        case .needsAppUpdate, .needsGameUpdate, .needsGameReinstall: ShellStrings.text("How to update")
+        case .needsAppUpdate, .needsGameUpdate: ShellStrings.text("How to update")
         case .broken: ShellStrings.text("How to fix")
         case .installing(let stage):
             switch stage.phase {
@@ -569,7 +567,7 @@ extension GameState {
         switch self {
         case .playable: "play.fill"
         case .needsGameData: "folder"
-        case .needsAppUpdate, .needsGameUpdate, .needsGameReinstall: "arrow.up.circle"
+        case .needsAppUpdate, .needsGameUpdate: "arrow.up.circle"
         case .broken: "wrench.and.screwdriver"
         case .installing(let stage):
             switch stage.phase {
@@ -657,7 +655,7 @@ extension GameState {
         switch self {
         case .playable: ShellStrings.text("Play")
         case .needsGameData: ShellStrings.text("Choose")
-        case .needsAppUpdate, .needsGameUpdate, .needsGameReinstall: ShellStrings.text("How to update")
+        case .needsAppUpdate, .needsGameUpdate: ShellStrings.text("How to update")
         case .broken: ShellStrings.text("How to fix")
         case .installing: actionTitle
         }
@@ -665,7 +663,7 @@ extension GameState {
     /// Broken, needs-an-update and a stopped transfer are fixed on the computer. Their primary action explains how, instead of acting.
     var needsHelp: Bool {
         switch self {
-        case .broken, .needsAppUpdate, .needsGameUpdate, .needsGameReinstall: true
+        case .broken, .needsAppUpdate, .needsGameUpdate: true
         case .installing(let stage): stage.phase == .interrupted
         default: false
         }
