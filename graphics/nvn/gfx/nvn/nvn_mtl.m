@@ -17593,7 +17593,6 @@ static _Atomic uint64_t g_present_stall_ns;   // For unit tests: an extra pause 
 static CAMetalLayer *g_present_layer_resident;
 static CALayer *g_present_mirror_resident;   // Reflection layer whose residency set was added to the Metal 4 queue (present thread)
 #if TARGET_OS_IPHONE
-id<CAMetalDrawable> s2a_ios_reflection_drawable(CAMetalLayer *game) __attribute__((weak_import));   // ios/play_reflection.m (App shell only)
 #endif
 void mtl_present_test_stall(uint64_t ns) { g_present_stall_ns = ns; }
 #include "nvn_present_aa.inc"
@@ -17930,11 +17929,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     if (!supplied) g_drawable_ns += now_ns() - dt0;
     if (!dr) return 0;
     // iOS split view: the lower-area reflection gets this frame too, drawn in this same present (nil when it is not showing)
-#if TARGET_OS_IPHONE
-    id<CAMetalDrawable> mdr = s2a_ios_reflection_drawable ? s2a_ios_reflection_drawable(layer) : nil;
-#else
-    id<CAMetalDrawable> mdr = nil;
-#endif
+    id<CAMetalDrawable> mdr = nil;   // 11-17 下区倒影已去掉（ios/play_reflection.m）：不再取倒影画布，下面 mdr 那几支不再走；分支本身的清理另做
     if (mdr && !g_m3 && g_present_mirror_resident != mdr.layer) { if (@available(macOS 26.0, iOS 26.0, *)) { [g_q4 addResidencySet:((CAMetalLayer *)mdr.layer).residencySet]; g_present_mirror_resident = mdr.layer; } }
     int alloc_i = (int)(ticket % 3);
     present_options();
