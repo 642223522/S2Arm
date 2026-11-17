@@ -2735,6 +2735,8 @@
   "核对源文件是否含有所需票据。": "Vérifiez que le fichier source contient le ticket requis.",
   "现有 prod.keys 缺少读取此文件所需的密钥。": "Votre fichier prod.keys ne contient pas les clés nécessaires pour lire ce fichier.",
   "现有 prod.keys 解不开这份文件：解出来的数据对不上，多半是这款用的那一代密钥不对。请用升级到最新系统的 Switch 重新导出 prod.keys 再导入。": "Votre prod.keys actuel ne peut pas déchiffrer ce fichier : les données déchiffrées ne correspondent pas, probablement parce que la génération de clés utilisée par ce jeu est incorrecte. Réexportez prod.keys depuis une Switch à jour avec la dernière version du système, puis importez à nouveau.",
+  "这份文件要 master_key_{0}，你的 prod.keys 只到 master_key_{1}：不够新。": "Ce fichier nécessite master_key_{0}, mais votre prod.keys s'arrête à master_key_{1} : il n'est pas assez récent.",
+  "这份文件要 master_key_{0}，你的 prod.keys 有到 master_key_{1}：代数够，多半是这一行的值不对。": "Ce fichier nécessite master_key_{0} et votre prod.keys va jusqu'à master_key_{1} : la génération est présente, c'est donc très probablement la valeur de cette ligne qui est incorrecte.",
   "无法读取游戏内容：可能是文件不完整、缺票据或密钥不匹配。请核对原始文件；若已确认 Switch 密钥版本不足，再重新导出，到「设置 → 玩家密钥」重新导入。": "Impossible de lire le contenu du jeu. Le fichier est peut-être incomplet, un ticket est peut-être manquant ou les clés ne correspondent pas. Vérifiez le fichier d'origine. Si vous confirmez que les clés Switch sont obsolètes, exportez-les à nouveau et ajoutez-les dans Réglages → Clés du joueur.",
   "读不到设备列表：打开一次 Xcode，等它装完附加组件后再试。": "Impossible de lire la liste des appareils. Ouvrez Xcode une fois, attendez la fin de l'installation des composants supplémentaires, puis réessayez.",
   "同一网络上有多台配对过的 iPhone / iPad：用数据线连上要装的那一台。": "Plusieurs iPhone / iPad jumelés sont sur ce réseau. Connectez par câble celui sur lequel vous souhaitez installer.",
