@@ -330,6 +330,8 @@
 "img.scanFailed.title" = "ゲームファイルをインポートできませんでした";
 "img.noShaders.title" = "このゲームファイルは不完全です";
 "img.noShaders.body" = "「%@」は不完全です。PC の「S2Arm Self-Sign Export」フォルダ内の「<ゲーム名>.img」に置き換えるか、iPhone を接続して PC の S2Arm で「Send to iPhone」をクリックしてください。";
+"img.updateSkipped.title" = "シェーダー更新をスキップしました";
+"img.updateSkipped.body" = "「%@」は現在のゲームのバージョンと対応していないため、スキップして適用していません。ゲームはそのまま遊べます。この更新を使うには、PC の同じエクスポートの完全な .img と一緒に入れてください。";
 "container.locked.title" = "S2Arm の一部のファイルがシステムにロックされています";
 "container.locked.body" = "この端末には、システムにロックされた S2Arm の古いファイルが %@ GB あります。S2Arm では変更も削除もできず、アプリを削除したときにだけ消えます。\n\n空き容量を戻すには：\n1. 各ゲームでメニュー →「セーブデータ管理」→「現在のセーブデータをエクスポート…」で、「ファイル」の S2Arm フォルダ以外の場所に保存（iCloud Drive など。アプリを削除すると S2Arm フォルダも消えます）\n2. S2Arm を削除して再インストール\n3. 「セーブデータ管理」→「確認するバックアップを選択…」でセーブを戻す";
 "diag.fileWord" = "診断";

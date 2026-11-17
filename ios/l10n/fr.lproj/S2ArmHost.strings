@@ -330,6 +330,8 @@
 "img.scanFailed.title" = "Impossible d'importer le fichier du jeu";
 "img.noShaders.title" = "Ce fichier de jeu est incomplet";
 "img.noShaders.body" = "« %@ » est incomplet. Remplacez-le par le « <nom du jeu>.img » du dossier « S2Arm Self-Sign Export » sur votre ordinateur, ou connectez votre téléphone et cliquez sur « Send to iPhone » dans S2Arm sur votre ordinateur.";
+"img.updateSkipped.title" = "Mise à jour des shaders ignorée";
+"img.updateSkipped.body" = "« %@ » ne correspond pas à la version actuelle de ce jeu ; elle a été ignorée et non appliquée. Le jeu fonctionne normalement. Pour utiliser cette mise à jour, ajoutez avec elle le .img complet du même export sur votre ordinateur.";
 "container.locked.title" = "Certains fichiers de S2Arm sont verrouillés par le système";
 "container.locked.body" = "%@ Go d’anciens fichiers S2Arm sur cet appareil sont verrouillés par le système. S2Arm ne peut ni les modifier ni les supprimer ; ils ne disparaissent qu’en supprimant l’app.\n\nPour libérer cet espace :\n1. Dans chaque jeu, ouvrez le menu → Gérer les sauvegardes → Exporter la sauvegarde actuelle…, vers un emplacement de Fichiers hors du dossier S2Arm (par exemple iCloud Drive ; le dossier S2Arm est supprimé avec l’app)\n2. Supprimez et réinstallez S2Arm\n3. Gérer les sauvegardes → Choisir une sauvegarde à vérifier… pour récupérer vos sauvegardes";
 "diag.fileWord" = "diag";

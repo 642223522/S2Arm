@@ -91,6 +91,7 @@ static void boundary_cases(const char *T) {
 }
 
 unsigned s2a_pack_repair_modes_as(const char *docs, const char *root, unsigned self_uid); extern unsigned s2a_pack_repair_self_override;
+const char *s2a_img_scan_skipped(void);
 unsigned s2a_foreign_scan(const char *home, uint64_t *bytes, char *line, size_t n); unsigned s2a_foreign_scan_as(const char *home, unsigned self_uid, uint64_t *bytes, char *line, size_t n);
 // 压缩传输的 game.img 块（v0.5.0，runtime/src/pack_apply.c img_unzst；块大小本单测编成 64 KB，见 runtime/tests/mk/pack_apply.mk）。
 //   夹具：合成单一 IMG（头 + 规律字节 + 文件尾 40 字节空目录表，长 2 × 64 KB + 5000），按 64 KB 切 3 块，每块用 zstd 命令行（没有就 Python zstd 模块）
@@ -747,7 +748,8 @@ int main(void) {
         snprintf(c, sizeof c, "python3 '%s/pack/img.py' build - '%s/src/upd.tsv' '%s/放这里导入/错版.img' --gid 0100abcd00000008 --pack-id img999 > /dev/null"
                  " && printf '\002' | dd of='%s/放这里导入/错版.img' bs=1 seek=8 conv=notrunc 2>/dev/null", R, D, D6, D6);
         CHECK(sh(c) == 0, "⑭c 造资源包号不同的更新包");
-        CHECK(s2a_img_scan(D6) == 0 && !strcmp(s2a_img_scan_code(), "ios_import_update_mismatch"), "⑭c 资源包号不同：不收、给码（实际 %s）", s2a_img_scan_code());
+        // 维护者 11-17：配套与否玩家判断不了，替他判——不套用、不报错（无码），记下跳过的文件名给库上说一句；文件原样留在导入文件夹
+        CHECK(s2a_img_scan(D6) == 0 && !s2a_img_scan_code()[0] && !strcmp(s2a_img_scan_skipped(), "错版.img"), "⑭c 资源包号不同：跳过不套、不给错误码、记下跳过（实际码「%s」、跳过「%s」）", s2a_img_scan_code(), s2a_img_scan_skipped());
         snprintf(c, sizeof c, "test -e '%s/放这里导入/错版.img' && rm '%s/放这里导入/错版.img'"
                  " && python3 '%s/pack/img.py' build - '%s/src/upd.tsv' '%s/放这里导入/没本体.img' --gid 0100abcd00000009 --pack-id img901 > /dev/null"
                  " && printf '\002' | dd of='%s/放这里导入/没本体.img' bs=1 seek=8 conv=notrunc 2>/dev/null", D6, D6, R, D, D6, D6);

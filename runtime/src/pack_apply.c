@@ -709,6 +709,8 @@ static char g_img_err[600], g_img_code[48];
 // 这次认领里不带着色器库的那个文件名（最近一个；空 = 没有）：游戏库上提示一句怎么换（ios/app.m img_scan_report；D-QW2Q / D-9ZF9：自签玩家放了资源包文件夹里的 game.img）
 static char g_img_noshaders[256];
 const char *s2a_img_scan_noshaders(void) { return g_img_noshaders; }
+static char g_img_skipped[256];   // 这次扫描跳过（和当前游戏版本不配套）的着色器更新包文件名（空串 = 没有）
+const char *s2a_img_scan_skipped(void) { return g_img_skipped; }
 const char *s2a_img_scan_failure(void) { return g_img_err; }
 // 认领失败给码（同 s2a_install_code）：格式号不认识 = ios_install_img_format，挪 / 写时空间满 = ios_install_no_space，其余 ios_import_img_failed
 const char *s2a_img_scan_code(void) { return g_img_code; }
@@ -803,8 +805,11 @@ static int img_update(const char *proc_docs, const char *path, const uint8_t *h,
     snprintf(base, sizeof base, "%s/game.img", root);
     uint8_t bh[136]; int bfd = open(base, O_RDONLY); int ok = bfd >= 0 && pread(bfd, bh, sizeof bh, 0) == (ssize_t)sizeof bh && !memcmp(bh, "S2AIMG01", 8); if (bfd >= 0) close(bfd);
     if (!ok) { snprintf(g_img_err, sizeof g_img_err, "%s 是着色器更新包，手机上还没有这款游戏（%s）的本体：先放导出文件夹里这款的完整 .img", fn, gid); return -13; }
+    // 配的本体不是手机上这一版（维护者 11-17：玩家自己判断不了配不配套，替他判——不套用、不报错，游戏照常玩，说一句已跳过）：
+    //   返回 2 = 跳过（不算认领、不算失败），文件原样留在导入文件夹；库上提示一次（s2a_img_scan_skipped，app.m img_scan_report）
     if (memcmp(bh + 32, h + 32, 64)) { char bp[65]; memcpy(bp, bh + 32, 64); bp[64] = 0;
-        snprintf(g_img_err, sizeof g_img_err, "%s 配的本体（资源包号 %.12s）不是手机上这一版（%.12s）：按电脑上同一次导出的完整 .img 和更新包一起用", fn, pid, bp); return -14; }
+        LOG("资源导入：%s 配的本体（资源包号 %.12s）不是手机上这一版（%.12s），和当前游戏版本不配套，已跳过、不套用", fn, pid, bp);
+        snprintf(g_img_skipped, sizeof g_img_skipped, "%s", fn); return 2; }
     // 本体刚认领、游戏库还没解开（.applied 不是这份清单）：先不套。解开时要按目录表整理资源包目录，这边同时往 shaders/ 写派生件会被删掉、
     //   报「写 … 失败：No such file or directory」（诊断#fe33c2 D-33EH：完整 .img 与更新包一起放，更新包在本体解开途中被套）。返回 1 = 原样留着，下次扫描（回前台 / 重新检查）再套
     if (img_needs_apply(root)) { LOG("资源导入：%s 等本体解开后再套（本体还没解开）", fn); return 1; }
@@ -955,7 +960,7 @@ static int img_scan_dir(const char *proc_docs, const char *dir, int depth, int p
 const char *const s2a_img_import_dirs[2] = {"放这里导入", "Import Here"};
 int s2a_img_scan(const char *proc_docs) {   // 回前台 / 「重新检查」可能同时调：一把锁串起来，免得两边抢着挪同一个文件
     static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
-    pthread_mutex_lock(&mu); int placed = 0; g_img_err[0] = 0; g_img_code[0] = 0; g_img_noshaders[0] = 0;
+    pthread_mutex_lock(&mu); int placed = 0; g_img_err[0] = 0; g_img_code[0] = 0; g_img_noshaders[0] = 0; g_img_skipped[0] = 0;
     for (int pass = 0; pass < 2; pass++)   // 先完整包、后更新包（img_place）
         for (int i = 0; i < 2; i++) { char dir[2200]; snprintf(dir, sizeof dir, "%s/%s", proc_docs, s2a_img_import_dirs[i]); img_scan_dir(proc_docs, dir, 0, pass, &placed); }
     pthread_mutex_unlock(&mu); return placed;

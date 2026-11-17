@@ -335,6 +335,8 @@
 "img.scanFailed.title" = "Couldn't import the game file";
 "img.noShaders.title" = "This game file is incomplete";
 "img.noShaders.body" = "“%@” is incomplete. Replace it with the “<game name>.img” from the “S2Arm Self-Sign Export” folder on your computer, or connect your phone and click “Send to iPhone” in S2Arm on your computer.";
+"img.updateSkipped.title" = "Shader update skipped";
+"img.updateSkipped.body" = "“%@” doesn’t match the current version of this game, so it was skipped and not applied. The game still plays normally. To use this update, add the full .img from the same export on your computer together with it.";
 "container.locked.title" = "Some S2Arm files are locked by the system";
 "container.locked.body" = "%@ GB of old S2Arm files on this device are locked by the system. S2Arm can neither change nor delete them; they are only removed when the app is deleted.\n\nTo free this space:\n1. In each game, open the menu → Manage saves → Export current save…, to a place in Files outside the S2Arm folder (for example iCloud Drive; the S2Arm folder is deleted together with the app)\n2. Delete and reinstall S2Arm\n3. Use Manage saves → Choose a backup to check… to bring your saves back";
 "diag.fileWord" = "diag";
