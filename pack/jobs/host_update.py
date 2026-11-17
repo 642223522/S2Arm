@@ -24,7 +24,12 @@ from core import Failure, contained, digest, read
 
 def _host_abi():
     """宿主读产物的约定号：从 runtime/include/s2a_host_abi.h 机械读（与宿主编进去的是同一个数，不两处各写一份）"""
-    text = (Path(__file__).resolve().parents[2] / "runtime/include/s2a_host_abi.h").read_text(encoding="utf-8")
+    here = Path(__file__).resolve()
+    # Mac 应用里作业层在 Contents/Resources/Jobs，头文件随包放同目录（launchers/macos/jobs_bundle.py EXTRA）；源码树 / Windows 引擎快照里在 runtime/include
+    head = here.parent / "s2a_host_abi.h"
+    if not head.is_file():
+        head = here.parents[2] / "runtime/include/s2a_host_abi.h"
+    text = head.read_text(encoding="utf-8")
     return int(re.search(r"^#define S2A_HOST_ABI (\d+)$", text, re.M).group(1))
 
 
