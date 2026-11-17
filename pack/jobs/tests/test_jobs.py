@@ -2106,6 +2106,24 @@ class JobsTests(unittest.TestCase):
         self.assertTrue((self.c.library / package["path"]).exists())
         self.assertTrue(all(f.exists() for f in other))
 
+    def test_delete_keeps_every_kind_of_save(self):
+        # 维护者 11-17：「删除游戏」原先只留 saves/、save-backups/，把 SaveData*（Mac 原生格式存档位置）和 save_backup/（装机前从 iPhone /
+        #   Apple TV 拉回的存档备份）一起删了。期望（手写）：带齐四种存档（另加一个玩家的 SaveData-<玩家>）的款删完，五样都在、内容不变；
+        #   金手指、mod、封面、Mac 运行版本这些照删；清单里没有这款。存档类以 layout.save_entries 为唯一来源
+        package = self.package(); game = self.game(packages=[package]); self.catalogue([game])
+        g = layout.game_dir(self.c, game["id"])
+        saves = {"saves/a.sav": "s", "save-backups/20261117/a.sav": "b", "save_backup/20261117-080000/0000000000000001/0/x.bin": "p",
+                 "SaveData/account/x.bin": "n", "SaveData-Player2/account/y.bin": "m"}
+        others = ["cheats/c.txt", "mods/m/romfs/a.bin", "cover.jpg", "image/mac/main.patched.bin", "seen/dev.tsv"]
+        for rel, text in list(saves.items()) + [(r, "x") for r in others]:
+            (g / rel).parent.mkdir(parents=True, exist_ok=True); (g / rel).write_text(text)
+        self.assertEqual(sorted(p.name for p in layout.save_entries(g)), ["SaveData", "SaveData-Player2", "save-backups", "save_backup", "saves"])
+        self.c.r["gameId"] = game["id"]
+        library.delete(self.c)
+        self.assertEqual({rel: (g / rel).read_text() for rel in saves if (g / rel).is_file()}, saves)
+        self.assertEqual([r for r in others if (g / r).exists()], [])
+        self.assertEqual([x["id"] for x in self.c.catalog()["games"]], [])
+
     def test_delete_removes_the_program_store_too(self):
         # 期望（手写）：「删除游戏」= 从库里删、也从手机记录摘掉，这款在游戏程序专用文件夹 .programs/<程序号>/ 的 kit / 原始程序 / 兼容记录一并删；别款的不动
         package = self.package(); game = self.game(packages=[package]); self.catalogue([game])

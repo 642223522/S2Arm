@@ -64,6 +64,15 @@ class CleanupLinkTests(unittest.TestCase):
         library._keep_stage_logs(self.c, self.gid)
         self.assertEqual((logs / "t1-stages" / "seed.log").read_text(encoding="utf-8"), "OSError: [WinError 145] 原错误\n")
 
+    def test_stage_logs_include_windows_failed_rewrite_log(self):
+        # #1476：Windows 改写失败时本款的 <款>_main.rewrite.log 留在 build/ios/work/roots/.failed（pack/orch/stages.py _keep_failed_logs），
+        #   原先作业层不收这一处、诊断包里只有 light.log；期望拷进本任务的 <任务>-stages
+        logs = self.root / "logs"; self.c.logs = logs; self.c.task = "t2"
+        kept = self.output / "work" / "roots" / ".failed"; kept.mkdir(parents=True)
+        (kept / "g_main.rewrite.log").write_text("PFRW mod=main need=9\n", encoding="utf-8")
+        library._keep_stage_logs(self.c, self.gid)
+        self.assertEqual((logs / "t2-stages" / "g_main.rewrite.log").read_text(encoding="utf-8"), "PFRW mod=main need=9\n")
+
     def seed_root(self, root):
         (root / "ctl").mkdir(parents=True); (root / "programs/1").mkdir(parents=True); (root / "romfs").mkdir(); (root / ".stage_pkg").mkdir()
         for name in ("main.npdm", "main.fixups.tsv", "main.gates.tsv", "main.patched.bin", "icon.jpg", "romfs.s2aidx", "build.log", ".root_src", "ctl/control.nacp",

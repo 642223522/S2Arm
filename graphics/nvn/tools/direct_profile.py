@@ -30,7 +30,7 @@ NX = HERE.parent
 NO_STATIC_SIGNAL = (
     "present_interval", "fps_hold", "render_cond", "tex_flush_upload",
     "tex_dirty_upload", "tex_dyn_slots", "gpu_timestamps", "vconv_range",
-    "feedback_snap", "alpha_from_red", "core_preempt",
+    "feedback_snap", "alpha_from_red",
 )
 # Local generation policy, never a static deduction or an upstream rule change.
 PROFILE_POLICY = {

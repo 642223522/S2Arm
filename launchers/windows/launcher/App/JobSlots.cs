@@ -117,6 +117,8 @@ public partial class EnvironmentWindow
 
     /// <summary>关窗口的每一步记进 logs/update.log（更新启动器靠关窗口让位给安装程序，卡在哪一步要看得见）</summary>
     private void CloseLog(string line) => UpdateLog.Write(Path.Combine(privateRoot, "logs", "update.log"), line);
+    /// <summary>应用级退出步骤（Program.cs）：同 CloseLog 写 update.log，私有目录按 PrivateRootForLogs 算</summary>
+    internal static void ExitLog(string line) => UpdateLog.Write(Path.Combine(PrivateRootForLogs(), "logs", "update.log"), line);
 
     /// <summary>有任何作业在跑（控制口拒新命令、更新启动器要等）</summary>
     private bool AnyJob => jobs.Count > 0;

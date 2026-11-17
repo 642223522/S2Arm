@@ -34,7 +34,15 @@ walk() 与 os.walk(top)（topdown、不跟随软链目录、onerror 同义）逐
                       romfs_list.py sizes <目录> <输出>       普通文件（lstat）每个一行「字节数\\t相对路径」，给 RomFS 索引（services/romfs_index --list，免得它再枚举、逐个打开）
                       romfs_list.py files0 <目录>            普通文件（lstat，不跟随软链；同 find <目录> -type f）每个一行「<目录>/<相对路径>\\0」，scandir 顺序；有读不开的目录退 1（同 find）
 """
-import os as _pw_os, sys as _pw_sys; _pw_sys.path.append(_pw_os.path.join(_pw_os.path.dirname(_pw_os.path.abspath(__file__)), '..', '..', '..', 'tools')); from pool_workers import cores  # noqa: E402  核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
+# 核数 / 进程池路数唯一来源 tools/pool_workers.py（#1332）。两个落点同 romfs_img（见 _romfs_img）：随 Jobs 拷进应用时与本文件同目录
+#   （launchers/macos/jobs_bundle.py 一并带上），仓库里在 tools/。先认同目录：不靠调用方恰好把 Jobs 放进导入路径（出包 build.clone_tree 按文件路径装载本文件）
+import os as _pw_os, sys as _pw_sys
+for _pw_d in (_pw_os.path.dirname(_pw_os.path.abspath(__file__)), _pw_os.path.join(_pw_os.path.dirname(_pw_os.path.abspath(__file__)), '..', '..', '..', 'tools')):
+    if _pw_os.path.isfile(_pw_os.path.join(_pw_d, 'pool_workers.py')):
+        if _pw_d not in _pw_sys.path:
+            _pw_sys.path.insert(0, _pw_d)
+        break
+from pool_workers import cores  # noqa: E402
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import io

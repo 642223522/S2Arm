@@ -130,6 +130,18 @@ class CommunityTests(unittest.TestCase):
         self.assertNotIn("S2A_AUDIO_BUFFER_FRAMES", community.launch_env(self.c, GID))
         self.c.r = {"gameId": GID, "settings": {"audioLatency": "16"}}
         with self.assertRaises(Failure): community.save(self.c)
+    def test_resolution_scale_and_fps_limit(self):
+        # 渲染分辨率 / 帧率上限（11-17，Mac 补上 iPhone 已有的两项）：缺省 1× / 不限不设变量；0.5× → S2A_RES_SCALE=0.5，30 帧 → S2A_FPS=30；表外取值拒收
+        env = community.launch_env(self.c, GID)
+        self.assertNotIn("S2A_RES_SCALE", env); self.assertNotIn("S2A_FPS", env)
+        self.c.r = {"gameId": GID, "settings": {"resolutionScale": "0.5", "fpsLimit": "30"}}; community.save(self.c)
+        env = community.launch_env(self.c, GID)
+        self.assertEqual((env["S2A_RES_SCALE"], env["S2A_FPS"]), ("0.5", "30"))
+        self.c.r = {"gameId": GID, "settings": {"resolutionScale": "1", "fpsLimit": "0"}}; community.save(self.c)
+        env = community.launch_env(self.c, GID)
+        self.assertNotIn("S2A_RES_SCALE", env); self.assertNotIn("S2A_FPS", env)
+        self.c.r = {"gameId": GID, "settings": {"resolutionScale": "3"}}
+        with self.assertRaises(Failure): community.save(self.c)
     def test_game_language_only_supported(self):
         # 11-14 维护者「按你的建议加上」：只列这款 control.nacp 支持的语言；系统语言不支持时在设置里写明起局用哪种（不弹窗）。期望按 NACP 位序手算
         def nacp(*bits):
@@ -266,7 +278,7 @@ class MacDisplayTests(unittest.TestCase):
     def test_every_mac_item_of_the_table_is_on_the_page(self):
         # 定义表里 platforms 含 mac 的 bool / choice 项 = quality（11-15 取代 enhance）fps60 widescreen docked rumble rumbleLevel motion hud（11-13 widenForce 并进 widescreen）
         self.caps()
-        self.assertEqual(sorted(self.mac()), sorted(["quality", "fps60", "fpsPick", "widescreen", "docked", "language", "rumble", "rumbleLevel", "motion", "padFace", "hud", "pauseUnfocused", "audioLatency", "diagRun"]))
+        self.assertEqual(sorted(self.mac()), sorted(["quality", "fps60", "fpsPick", "resolutionScale", "fpsLimit", "widescreen", "docked", "language", "rumble", "rumbleLevel", "motion", "padFace", "hud", "pauseUnfocused", "audioLatency", "diagRun"]))
 
     def test_fps_pick_level(self):
         # 帧率档位（11-13）：包里帧率补丁（编号 fps:）目标帧率两档以上才出；选具体档 → S2A_FPS_PICK=档，选自动（"0"）不写；表外取值拒收

@@ -6188,6 +6188,10 @@
   "en": "The S2Arm reader tool is missing or does not match the engine version. Reinstall the full S2Arm."
  },
  {
+  "source": "这款游戏的程序号（{0}）和游戏包（{1}）对不上，多半是游戏文件被改过；已按程序号放进设备，照常安装。玩不了时请用原版游戏文件重新导入。",
+  "en": "This game's program ID ({0}) doesn't match its game package ({1}), usually because the game files were modified. It was placed on the device by program ID and installed as usual. If it doesn't play, import the original game files again."
+ },
+ {
   "source": ".NET SDK 装完了但没找到，请查看日志。",
   "en": "The .NET SDK was installed but cannot be found. See the log."
  },
@@ -6274,6 +6278,18 @@
  {
   "source": "没找到 iPhone：插上数据线并解锁，在手机上点「信任」。",
   "en": "No iPhone found: connect the cable, unlock it and tap Trust on the phone."
+ },
+ {
+  "source": "这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。如果你的账号证书已满，苹果会撤掉列表里的第一张「{0}」（在 {1} 上创建，{2} 生效），用它签的 App（可能是 Xcode 或 AltStore 装的）会打不开；没满就什么都不撤。",
+  "en": "This computer has no usable development certificate for this Apple ID, so it needs to create one. If your account's certificates are full, Apple will revoke the first one in the list, “{0}” (created on {1}, valid from {2}), and apps signed with it (possibly installed by Xcode or AltStore) will stop opening; if they are not full, nothing is revoked."
+ },
+ {
+  "source": "这台电脑上没有这个 Apple ID 能用的开发证书，要新建一张。如果你的账号证书已满，苹果会撤掉列表里的第一张「{0}」（{1} 生效），用它签的 App（可能是 Xcode 或 AltStore 装的）会打不开；没满就什么都不撤。",
+  "en": "This computer has no usable development certificate for this Apple ID, so it needs to create one. If your account's certificates are full, Apple will revoke the first one in the list, “{0}” (valid from {1}), and apps signed with it (possibly installed by Xcode or AltStore) will stop opening; if they are not full, nothing is revoked."
+ },
+ {
+  "source": "点「仍然继续」就照签。想保住那一张，要先删掉一张不用的开发证书：有 Mac 的话，在 Mac 上 Xcode 的「设置 → 账户 → 管理证书」里删，删完回来再装一次。",
+  "en": "Click Continue anyway to sign. To keep that one, first delete a development certificate you no longer use: if you have a Mac, delete it in Xcode on the Mac under Settings → Accounts → Manage Certificates, then come back and install again."
  },
  {
   "source": "点「仍然继续」照传：手机报的空闲不含系统随时能清掉的空间，实际多半放得下，真写满了会停下并说明还差多少；也可以先在「设置 → 通用 → iPhone 储存空间」腾出空间。",
@@ -8108,6 +8124,10 @@
   "en": "Couldn't back up the saves on the phone before this install ({0}). Without a backup, saves could be lost if the install goes wrong. Click again to continue anyway."
  },
  {
+  "source": "iPhone 锁着，读不了存档：请解锁手机，解锁后会自动继续",
+  "en": "The iPhone is locked, so its saves can't be read. Unlock the phone and this will continue automatically"
+ },
+ {
   "source": "读不懂 iPhone 返回的存档文件清单（{0} 条没有路径字段，多半是 Xcode 版本不同）",
   "en": "Couldn't understand the save file list from the iPhone ({0} entries have no path; usually a different Xcode version)"
  },
@@ -9092,8 +9112,12 @@
   "en": "Couldn't download {0}'s package: {1}. Check your network and try again."
  },
  {
-  "source": "{0} 的包件内容和登记的不一致（提交 {1}）：没有用它。",
-  "en": "{0}'s package doesn't match its registration (commit {1}), so it wasn't used."
+  "source": "{0} 的包件内容和登记的不一致（提交 {1}），重新下载后还是不对：没有用它。",
+  "en": "The {0} package doesn't match its registered contents (commit {1}), even after downloading it again, so it wasn't used."
+ },
+ {
+  "source": "{0} 的包件解不开，重新下载后还是不对：没有用它。",
+  "en": "The {0} package couldn't be extracted, even after downloading it again, so it wasn't used."
  },
  {
   "source": "解包出的游戏程序 {0} 不是 {1} 要的那一版（{2}），做不出来。导入 {3} 更新后再导出。",
@@ -9928,8 +9952,8 @@
   "en": "Removes only the resource pack: games already on your phone keep working and still come along when you update S2Arm; make the package again only to install on another phone or copy the resources again."
  },
  {
-  "source": "在电脑上的 S2Arm 点「装到 iPhone」重新安装（免费 Apple ID 也会带上这项权限）；自己签名的话用 Xcode 或 AltStore Classic v2.3，SideStore 0.7.0 重签会丢；已经装好的也可以用 GetMoreRam 给 App ID 补上权限后重装。",
-  "en": "Reinstall with “Install on iPhone” in S2Arm on your computer (a free Apple ID keeps this permission too). If you sign it yourself, use Xcode or AltStore Classic v2.3; re-signing with SideStore 0.7.0 drops it. For an existing install, you can also add the permission to the App ID with GetMoreRam and reinstall."
+  "source": "按你装 S2Arm 的方式补上：\n· 电脑上的 S2Arm（免费或付费 Apple ID）：对这款游戏点「装到 iPhone」重装一次；重装后还看到这条提示，就用下面的 GetMoreRam 补上，再点一次「装到 iPhone」。\n· 自己的开发者证书（.p12 + 描述文件）：在苹果开发者网站给 S2Arm 的 App ID（苹果给每个 App 登记的身份）打开「Increased Memory Limit」，重新生成描述文件，用新描述文件重签再装。\n· AltStore：用 AltStore Classic 2.2 或更新版重装（不是刷新）。\n· SideStore 0.7.0：签名会丢这项权限，用下面的 GetMoreRam 补上后，在 SideStore 里重装。\n· Sideloadly：暂不支持，它没说免费账号会保留这项权限，自定义权限要付费开发者账号。\n· GetMoreRam：用装 S2Arm 的同一个 Apple ID 把它自签装到手机（占免费账号一个 App 名额，用完可删），登录后打开 App IDs、点刷新、选 S2Arm、点「Add Increased Memory Limit」，再用原来的方式重装 S2Arm。",
+  "en": "Fix it the way you installed S2Arm:\n· S2Arm on your computer (free or paid Apple ID): click “Install on iPhone” for this game to reinstall. If you still see this message afterwards, add the permission with GetMoreRam below, then click “Install on iPhone” again.\n· Your own developer certificate (.p12 + provisioning profile): on the Apple Developer website, turn on “Increased Memory Limit” for S2Arm’s App ID (the identity Apple registers for each app), regenerate the provisioning profile, then re-sign and install with the new profile.\n· AltStore: reinstall (not refresh) with AltStore Classic 2.2 or later.\n· SideStore 0.7.0: its signing drops this permission; add it with GetMoreRam below, then reinstall in SideStore.\n· Sideloadly: not supported for now; it doesn’t say it keeps this permission with a free Apple ID, and custom entitlements need a paid Apple Developer account.\n· GetMoreRam: sideload it with the same Apple ID you used for S2Arm (it takes one of a free account’s app slots; delete it afterwards), sign in, open App IDs, tap Refresh, choose S2Arm, tap “Add Increased Memory Limit”, then reinstall S2Arm the way you did before."
  },
  {
   "source": "准备更新 iPhone 上的 S2Arm",
@@ -10103,15 +10127,15 @@
   "source": "手机空间写满了",
   "en": "iPhone storage is full"
  },
-{
+ {
   "source": "这份游戏文件里有数据和原版对不上（多半是改版 / 整合版，或个别块损坏），已跳过完整性校验照常导入。",
   "en": "Some data in this game file does not match the original (usually a modded or merged build, or a damaged block). The integrity check was skipped and the game was imported anyway."
  },
-{
+ {
   "source": "能玩就照常用；出包或游戏里出现花屏、闪退时，换一份原版完整的文件（本体与更新 / DLC 分开的那种）再试。",
   "en": "If it plays, keep using it. If you see graphics glitches or crashes when building or playing, try again with a complete original file (base game and updates / DLC as separate files)."
  },
-{
+ {
   "source": "导入时这款数据校验不过（多半是改版 / 整合版或个别块损坏），这次失败可能与此有关；换一份原版完整的文件再试。",
   "en": "This game's data failed the integrity check when it was imported (usually a modded or merged build, or a damaged block), which may be related to this failure. Try again with a complete original file."
  }

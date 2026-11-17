@@ -74,11 +74,27 @@ CGRect s2a_direct_out_rect(void) __attribute__((weak_import));
 static pthread_mutex_t g_rmu = PTHREAD_MUTEX_INITIALIZER; static FILE *g_rec; static char g_rpath[1024]; static int g_roff;
 static uint32_t g_rb = ~0u; static uint64_t g_rs, g_rflush, g_rt0; static int g_nsave; static char g_rsave[1100];
 static uint64_t rec_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000 + (uint64_t)t.tv_nsec / 1000000; }
-int s2a_dev_on(void) __attribute__((weak_import));   // runtime/src/os.c：开发设施总开关，玩家包 = 0
+int s2a_dev_on(void) __attribute__((weak_import));   // runtime/src/os.c：开发设施总开关，缺省 0
+// 开发设施关着时，把以前积下的 Documents/padrec 整个删掉（11-17：玩家手机一小时长近 3 GB，「文件」App 里越积越多；只给自动玩家 / 回放用，
+//   删了对玩家零影响）。每个进程只做一次、放后台线程删，不挡起局
+static void padrec_purge(void) {
+    static atomic_int done; if (atomic_exchange(&done, 1)) return;
+#if TARGET_OS_IPHONE
+    char dir[900]; s2a_container_docs(dir, sizeof dir); strlcat(dir, "/padrec", sizeof dir);
+#else
+    char dir[900]; s2a_docs_root(dir, sizeof dir); strlcat(dir, "/padrec", sizeof dir);
+#endif
+    struct stat st; if (stat(dir, &st) || !S_ISDIR(st.st_mode)) return;
+    NSString *p = @(dir);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSError *err = nil; BOOL ok = [NSFileManager.defaultManager removeItemAtPath:p error:&err];
+        LOG("录手柄：开发设施关着，清掉以前积下的 %s：%s", p.UTF8String, ok ? "已删" : err.localizedDescription.UTF8String);
+    });
+}
 static int rec_open(void) {   // 持 g_rmu
     if (g_rec || g_roff) return g_rec != NULL;
     if (s2a_autoplay_on && s2a_autoplay_on()) { g_roff = 1; return 0; }
-    if (s2a_dev_on && !s2a_dev_on()) { g_roff = 1; return 0; }   // 玩家包不录（#845）：录手柄与存档点副本是给自动玩家 / 回放用的开发设施
+    if (!s2a_dev_on || !s2a_dev_on()) { g_roff = 1; padrec_purge(); return 0; }   // 不录（#845，11-17 缺省关）：拿不到开关也当关；关着时把以前积下的 padrec 清掉
     NSString *bid = NSBundle.mainBundle.bundleIdentifier ?: @"s2arm"; NSString *g = [bid componentsSeparatedByString:@"."].lastObject;
 #if TARGET_OS_IPHONE
     char dir[900]; s2a_container_docs(dir, sizeof dir); strlcat(dir, "/padrec", sizeof dir); mkdir(dir, 0755);

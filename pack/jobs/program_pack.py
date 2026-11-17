@@ -215,6 +215,7 @@ def signer_for(c, *, win_exe=None, shell_app=None):
 
 
 def enabled(c):
-    """通用壳装机开没开（见 ON_BY_DEFAULT）"""
-    v = (c.env() or {}).get("S2A_UNIVERSAL_SHELL", "")
+    """通用壳装机开没开（见 ON_BY_DEFAULT）。读作业进程自己的环境：c.env() 是给子工具的环境，会清掉 S2A_*（core.Context.env），
+    从那里读这个开关永远读不到、只能是缺省（同 build.py 读 S2A_DAV1D）"""
+    v = os.environ.get("S2A_UNIVERSAL_SHELL", "")
     return v == "1" if v in ("0", "1") else ON_BY_DEFAULT

@@ -106,15 +106,38 @@ public sealed partial class EnvironmentWindow
     }
 
     /// <summary>封面 + 已打上 S 级优化的左上角金色 S（同 Mac LauncherView+Library SGradeBadge：只有 S、没有框和底色，叠三层更实、加投影）</summary>
+    /// <summary>数据校验不过的说明（作业层原句，六种语言在对照表；同 Mac LauncherView+Home integritySkippedNote）</summary>
+    private const string IntegritySkippedNote = "这份游戏文件里有数据和原版对不上（多半是改版 / 整合版，或个别块损坏），已跳过完整性校验照常导入。";
+
     private Control GameCover(LibraryGame game, int size)
     {
-        var cover = GameCoverImage(game, size);
+        var cover = WithIntegrityBadge(game, GameCoverImage(game, size), size);
         if (!game.SGrade) return cover;
         var s = Math.Max(20, size / 3.2);
         var badge = new Panel { Width = s, Height = s, Margin = new Thickness(3), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top,
             Effect = new DropShadowEffect { Color = Color.FromArgb(115, 0, 0, 0), BlurRadius = s * 0.24, OffsetX = 0, OffsetY = s * 0.04 } };
         for (var k = 0; k < 3; k++) badge.Children.Add(new Image { Source = SGoldImage(), Stretch = Stretch.Uniform });
         Avalonia.Automation.AutomationProperties.SetAutomationId(badge, "card.sgrade");
+        return new Panel { Width = size, Height = size, Children = { cover, badge } };
+    }
+
+    /// <summary>选中区的黄字说明（同 Mac 状态行下那句）：卡片角标只有「!」，手柄玩家看不到悬停说明</summary>
+    private Control? IntegrityLine(LibraryGame game) => game.IntegritySkipped
+        ? new TextBlock { Text = "⚠ " + B(IntegritySkippedNote), Foreground = Brush.Parse("#FFD60A"), FontSize = 13, TextWrapping = TextWrapping.Wrap, MaxWidth = 720, HorizontalAlignment = HorizontalAlignment.Left }
+        : null;
+
+    /// <summary>导入时数据校验不过、照常导入的款（11-17）：封面右下角黄色「!」，悬停说明</summary>
+    private Control WithIntegrityBadge(LibraryGame game, Control cover, int size)
+    {
+        if (!game.IntegritySkipped) return cover;
+        var d = Math.Max(16, size / 5.0);
+        var badge = new Border { Width = d, Height = d, CornerRadius = new CornerRadius(d / 2), Margin = new Thickness(4),
+            Background = Brush.Parse("#99000000"), HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom,
+            Child = new TextBlock { Text = "!", FontWeight = FontWeight.Bold, FontSize = d * 0.62, Foreground = Brush.Parse("#FFD60A"),
+                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center } };
+        ToolTip.SetTip(badge, B(IntegritySkippedNote));
+        Avalonia.Automation.AutomationProperties.SetName(badge, B(IntegritySkippedNote));
+        Avalonia.Automation.AutomationProperties.SetAutomationId(badge, "card.integritySkipped");
         return new Panel { Width = size, Height = size, Children = { cover, badge } };
     }
 
@@ -223,6 +246,7 @@ public sealed partial class EnvironmentWindow
             overlay.Children.Add(Muted(T(selectedGame is null ? "library.title" : "library.selected"), 14));
             overlay.Children.Add(Label(hero.Name, 32));
             overlay.Children.Add(Muted(T("library.version") + " · " + hero.Version, 14));
+            if (IntegrityLine(hero) is { } heroNote) overlay.Children.Add(heroNote);
             overlay.Children.Add(HeroActions(hero));   // 有横图时按钮也叠在底部渐变上（v0.4.5 修：说明写着「常驻」，之前只画了大图）
             art.Children.Add(overlay);
             body.Children.Add(new Border { CornerRadius = new CornerRadius(16), ClipToBounds = true, Child = art });
@@ -235,6 +259,7 @@ public sealed partial class EnvironmentWindow
             title.Children.Add(Label(T(selectedGame is null ? "library.title" : "library.selected")));
             title.Children.Add(Label(hero.Name, 28));
             title.Children.Add(Label(T("library.version") + " · " + hero.Version));
+            if (IntegrityLine(hero) is { } heroNote) title.Children.Add(heroNote);
             title.Children.Add(HeroActions(hero));
             Grid.SetColumn(title, 1); banner.Children.Add(title); body.Children.Add(Card(banner, 20));
         }

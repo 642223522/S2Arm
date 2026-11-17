@@ -45,8 +45,6 @@ tex_flush_upload	on
 # The Switch version shows 30 fps and steps the game a fixed amount per update: a KIDS task waits out 1/30 s and steps the game clock by 1/30 s, the battle steps 1 / the game's frame-rate
 # block (30.0), and the event scripts step by the KTGL device's frame rate (59.94 / present interval 2). On 1.3.0 main (patches.py FRAME_STEP) three stubs run the updates at the cap
 # and set all three to it (with only a 1/60 s wait the clock and the battles ran at twice real time); the host paces the presents at 60 fps, 30 when 60 does not hold.
-# 0 = the Switch original
-fps_target	60
 # The updates step by the cap whatever the hold, so holding late frames only paces the screen: frames are shown as soon as they are ready (the 60fps IPA ran battles at 45–57).
 # The iPhone battle's GPU going from 10 to 41 ms a frame was first read as its GPU clock following the hold; the same rise came with no hold at all: the battle runs about 1,000 to
 # 2,800 compute dispatches a frame after its first cutscene, which each had an encoder of their own (nvn_mtl.m dispatch_enc)
