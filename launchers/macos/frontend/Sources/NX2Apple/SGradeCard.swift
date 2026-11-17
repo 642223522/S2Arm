@@ -90,7 +90,7 @@ struct SGradeCardView: View {
 
     // 金色（11-13 维护者：这个功能很牛，做得精致高级、显眼一点，用金色版 logo 的 S）：高光 / 主金 / 古铜三档，命中时整张卡亮起来
     //   配色跟金色 S 同一套双色：上半香槟金、下半玫瑰金（launchers/macos/Branding/make_s_gold.py），标题 / 描边 / 图标钮都从香槟金过渡到玫瑰金
-    static let goldHi = Color(red: 1, green: 0.92, blue: 0.70), gold = Color(red: 0.93, green: 0.77, blue: 0.42), rose = Color(red: 0.93, green: 0.62, blue: 0.52), goldDeep = Color(red: 0.55, green: 0.36, blue: 0.24)
+    static let goldHi = Color(red: 1, green: 0.92, blue: 0.70), gold = Color(red: 0.93, green: 0.77, blue: 0.42), rose = Color(red: 0.86, green: 0.66, blue: 0.35), goldDeep = Color(red: 0.55, green: 0.36, blue: 0.24)
     static let sGold: NSImage = Bundle.main.url(forResource: "s-gold", withExtension: "png").flatMap(NSImage.init(contentsOf:)) ?? NSImage()
     private var lit: Bool { ((match?.total ?? 0) > 0 || match?.port == true || match?.ownWiden == true) && on?.wrappedValue != false }
 
@@ -120,7 +120,7 @@ struct SGradeCardView: View {
                             .padding(.horizontal, 8).padding(.vertical, 3.5)
                             .background(Color.white.opacity(0.06), in: Capsule())
                         }
-                        .controllerButtonStyle(.plain)
+                        .buttonStyle(.plain)
                         .accessibilityIdentifier("export.sgrade.details")
                     }
                     Spacer(minLength: 12)
@@ -240,24 +240,23 @@ struct SGradeCardView: View {
     }
 
     private func hitChipView(_ chip: HitChip) -> some View {
-        VStack(alignment: .center, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Image(systemName: chip.symbol).font(.system(size: 11, weight: .semibold)).foregroundStyle(Self.goldHi)
                 Text(chip.title).font(.manrope(13, .semibold)).foregroundStyle(LauncherPalette.cream).lineLimit(1).fixedSize()
                 if let badge = chip.badge {
-                    Text(badge).font(.manrope(12, .bold)).monospacedDigit().foregroundStyle(Self.goldHi)
+                    Text(badge).font(.manrope(11.5, .bold)).monospacedDigit().foregroundStyle(Self.goldHi)
                         .lineLimit(1).fixedSize()
-                        .padding(.horizontal, 7).padding(.vertical, 1.5)
+                        .padding(.horizontal, 6.5).padding(.vertical, 1)
                         .background(Self.gold.opacity(0.22), in: Capsule())
                 }
             }
-            .fixedSize()
-            .padding(.horizontal, 12).padding(.vertical, 6)
-            .background(Capsule().fill(LinearGradient(colors: [Self.gold.opacity(0.20), Self.rose.opacity(0.14)], startPoint: .topLeading, endPoint: .bottomTrailing)))
-            .overlay(Capsule().strokeBorder(LinearGradient(colors: [Self.goldHi.opacity(0.55), Self.rose.opacity(0.4)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.9))
-            Text(chip.status).font(.manrope(11, .medium)).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+            Text(chip.status).font(.manrope(10.5, .medium)).foregroundStyle(LauncherTheme.Colors.secondary).lineLimit(1).fixedSize()
         }
         .fixedSize()
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(LinearGradient(colors: [Self.gold.opacity(0.18), Self.rose.opacity(0.12)], startPoint: .topLeading, endPoint: .bottomTrailing)))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(LinearGradient(colors: [Self.goldHi.opacity(0.48), Self.rose.opacity(0.32)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.9))
     }
     private func note(_ text: String) -> some View {
         Text(text).font(.manrope(12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

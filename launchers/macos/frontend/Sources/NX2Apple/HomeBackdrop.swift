@@ -23,10 +23,11 @@ struct HomeBackdrop: View {
                     .init(color: .clear, location: 0.75)
                 ], startPoint: .leading, endPoint: .trailing)
                 LinearGradient(stops: [
-                    .init(color: .black.opacity(0.55), location: 0),
-                    .init(color: .black.opacity(0.08), location: 0.35),
-                    .init(color: .black.opacity(0.28), location: 0.6),
-                    .init(color: .black.opacity(0.85), location: 1)
+                    .init(color: .black.opacity(0.62), location: 0),
+                    .init(color: .black.opacity(0.32), location: 0.18),
+                    .init(color: .black.opacity(0.08), location: 0.42),
+                    .init(color: .black.opacity(0.30), location: 0.62),
+                    .init(color: .black.opacity(0.88), location: 1)
                 ], startPoint: .top, endPoint: .bottom)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
