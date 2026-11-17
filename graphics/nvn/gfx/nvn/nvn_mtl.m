@@ -222,8 +222,60 @@ void mtl_gpu_halt(const char *why) {
     if (g_gpu_halt_notify) g_gpu_halt_notify(why);
 }
 // 所有命令缓冲报错的入口（where = 哪条队列 / 哪类提交，seq = 栅栏号或批号，0 = 没有）。返回 1 = 已在安全停（调用方别再刷红行）
+// DM_NVN_FAULT_ENC=1（诊断，默认关，只在 Metal 3 后端有效，#770）：主命令缓冲带「逐编码器执行状态」建出来，各遍开头、每次换管线、每笔 task / mesh 绘制各插一条调试标记；
+//   命令缓冲报错时把出事（faulted）与被牵连（affected）的编码器连同它的标记打出来，直接读出挂死落在哪一遍、那一遍画过哪些着色器。Metal 4 的提交回执没有逐编码器状态，不适用
+static int fault_enc_on(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("DM_NVN_FAULT_ENC"); v = g_m3 && e && *e == '1'; if (e && *e == '1') MLOG("DM_NVN_FAULT_ENC: %s", v ? "on (per-encoder execution status and debug signposts; diagnostic)" : "ignored (Metal 3 backend only)"); }
+    return v;
+}
+// The converted arguments of the last indirect task / mesh draws (ixc_arrays: {workgroups, 1, 1, 0, first}), kept with their arena buffer so that the dump can read what the GPU was handed.
+//   The arena buffers are shared storage and the ring retains them, so the read is of live memory
+#define FAULT_RING 64
+static id<MTLBuffer> g_fr_keep[FAULT_RING]; static const uint32_t *g_fr_arg[FAULT_RING]; static uint64_t g_fr_frame[FAULT_RING]; static char g_fr_key[FAULT_RING][40]; static uint32_t g_fr_n;
+static os_unfair_lock g_fr_lock = OS_UNFAIR_LOCK_INIT;
+static void fault_ring_put(id<MTLBuffer> b, NSUInteger o, const char *ts, const char *ms, uint64_t frame) {
+    os_unfair_lock_lock(&g_fr_lock);
+    uint32_t k = g_fr_n++ % FAULT_RING;
+    g_fr_keep[k] = b; g_fr_arg[k] = (const uint32_t *)((const uint8_t *)b.contents + o); g_fr_frame[k] = frame; snprintf(g_fr_key[k], sizeof g_fr_key[k], "%.17s/%.17s", ts ? ts : "-", ms ? ms : "-");
+    os_unfair_lock_unlock(&g_fr_lock);
+}
+static void fault_ring_dump(void) {
+    os_unfair_lock_lock(&g_fr_lock);
+    uint32_t n = g_fr_n < FAULT_RING ? g_fr_n : FAULT_RING;
+    // Only the faulted frame's values are what the GPU was handed: an earlier frame's arena buffer has been reused since, a later frame's conversion has not run yet
+    MLOG("【红】 DM_NVN_FAULT_ENC: indirect task / mesh draws so far %u; the converted arguments of the last %u follow, oldest first (read the faulted frame's only: earlier frames' buffers are reused, later frames' are not written yet)", g_fr_n, n);
+    for (uint32_t i = 0; i < n; i++) { uint32_t k = (g_fr_n - n + i) % FAULT_RING; const uint32_t *a = g_fr_arg[k];
+        MLOG("【红】 DM_NVN_FAULT_ENC:   frame %llu task/mesh %s: workgroups %u,%u,%u first %u", (unsigned long long)g_fr_frame[k], g_fr_key[k], a[0], a[1], a[2], a[4]); }
+    os_unfair_lock_unlock(&g_fr_lock);
+}
+static void fault_enc_dump(NSError *e, const char *where, uint64_t seq) {
+    static _Atomic int n;
+    NSArray<id<MTLCommandBufferEncoderInfo>> *inf = e.userInfo[MTLCommandBufferEncoderInfoErrorKey];
+    if (!inf || atomic_fetch_add(&n, 1) >= 2) return;
+    static const char *const st[] = { "unknown", "completed", "affected", "pending", "faulted" };
+    NSUInteger cnt[5] = {0}, i = 0;
+    for (id<MTLCommandBufferEncoderInfo> x in inf) cnt[x.errorState <= 4 ? x.errorState : 0]++;
+    MLOG("【红】 DM_NVN_FAULT_ENC: %s command buffer %llu has %lu encoders: completed %lu, faulted %lu, affected %lu, pending %lu, unknown %lu", where ? where : "-", (unsigned long long)seq,
+         (unsigned long)inf.count, (unsigned long)cnt[1], (unsigned long)cnt[4], (unsigned long)cnt[2], (unsigned long)cnt[3], (unsigned long)cnt[0]);
+    for (id<MTLCommandBufferEncoderInfo> x in inf) {
+        NSUInteger k = i++; MTLCommandEncoderErrorState es = x.errorState;
+        if (es != MTLCommandEncoderErrorStateFaulted && es != MTLCommandEncoderErrorStateAffected) continue;
+        NSArray<NSString *> *sp = x.debugSignposts;
+        MLOG("【红】 DM_NVN_FAULT_ENC: encoder %lu of %lu %s, %lu signposts", (unsigned long)k, (unsigned long)inf.count, st[es <= 4 ? es : 0], (unsigned long)sp.count);
+        NSString *last = nil; NSUInteger rep = 0, shown = 0;
+        for (NSString *m in sp) {
+            if (last && [m isEqualToString:last]) { rep++; continue; }
+            if (last && shown++ < 400) MLOG("【红】 DM_NVN_FAULT_ENC:   encoder %lu: %s%s", (unsigned long)k, last.UTF8String, rep ? [NSString stringWithFormat:@" (x%lu)", (unsigned long)rep + 1].UTF8String : "");
+            last = m; rep = 0;
+        }
+        if (last) MLOG("【红】 DM_NVN_FAULT_ENC:   encoder %lu: %s%s", (unsigned long)k, last.UTF8String, rep ? [NSString stringWithFormat:@" (x%lu)", (unsigned long)rep + 1].UTF8String : "");
+    }
+    fault_ring_dump();
+}
 int mtl_gpu_cb_error(NSError *e, const char *where, uint64_t seq) {
     if (!e) return mtl_gpu_halted();
+    if (fault_enc_on()) fault_enc_dump(e, where, seq);
     if (mtl_gpu_halted()) { atomic_fetch_add_explicit(&g_gpu_err_after, 1, memory_order_relaxed); return 1; }
     if (!mtl_gpu_err_fatal(e)) return 0;
     char w[1600]; snprintf(w, sizeof w, "%s 命令缓冲（序号 %llu）报 GPU 挂死 / 超时 / 缺页：%s", where ? where : "-", (unsigned long long)seq, e.description.UTF8String);
@@ -247,7 +299,19 @@ static inline void fb_add(id o, fb_fn h) { if (g_m3) [(NSMutableArray *)o addObj
 // With the encode thread on this runs on that thread (rec_commit_m3 records it), which is why the handlers must be recorded with it
 // A Metal 3 command buffer on g_q3. Unretained references as on Metal 4, where command buffers retain nothing: the replay already keeps what a command buffer uses alive until its fence
 // has completed (defer_obj_release, g_done is advanced by the completion handler)
-static id<MTLCommandBuffer> m3_cb(void) { return [g_q3 commandBufferWithUnretainedReferences]; }
+static id<MTLCommandBuffer> m3_cb(void) {
+    if (!fault_enc_on()) return [g_q3 commandBufferWithUnretainedReferences];
+    MTLCommandBufferDescriptor *d = [MTLCommandBufferDescriptor new]; d.retainedReferences = NO; d.errorOptions = MTLCommandBufferErrorOptionEncoderExecutionStatus;   // DM_NVN_FAULT_ENC
+    return [g_q3 commandBufferWithDescriptor:d];
+}
+// DM_NVN_FAULT_ENC: one debug signpost on the encoder (recorded with the encode thread on: RO_SIGNPOST)
+static inline void fault_enc_mark(id en, NSString *s) { if (fault_enc_on() && en && s) [(id<MTLCommandEncoder>)en insertDebugSignpost:s]; }
+static void fault_enc_pass(id en, id d_) {
+    if (!fault_enc_on()) return;
+    MTLRenderPassDescriptor *d = d_; id<MTLTexture> t = d.colorAttachments[0].texture, z = d.depthAttachment.texture; if (!t) t = z;
+    fault_enc_mark(en, [NSString stringWithFormat:@"pass frame %llu target %lux%lu format %lu%s", (unsigned long long)atomic_load_explicit(&g_cur_frame, memory_order_relaxed),
+                        (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.pixelFormat, z ? " +depth" : ""]);
+}
 static void m3_commit(id<MTLCommandBuffer> cb, NSArray *fb, id<MTLSharedEvent> ev, uint64_t v) {
     if (!gpu_go()) return;   // GPU 安全停后不交（反馈处理也不挂：不会再有回调）
     for (fb_fn h in fb) [cb addCompletedHandler:^(id<MTLCommandBuffer> c) { h((id)c); }];
@@ -1690,7 +1754,7 @@ static inline id<MTL4RenderCommandEncoder> enc_r_begin_pass(MTL4RenderPassDescri
     enc_close_blit();
     g_half_mask_sent = -1;
     gp_pre(d, 'R');   // Metal 3: the sample points go on the pass descriptor before the encoder is made (no-op elsewhere)
-    id<MTL4RenderCommandEncoder> e = [g_cb renderCommandEncoderWithDescriptor:d];
+    id<MTL4RenderCommandEncoder> e = [g_cb renderCommandEncoderWithDescriptor:d]; fault_enc_pass(e, d);
     int relaxed = g_last_end_relaxed && !g_game_barrier;
     int full = !relaxed;
     if (g_m3) m3_wait(e, 1, relaxed);
@@ -1710,7 +1774,7 @@ static inline id<MTL4RenderCommandEncoder> enc_r_begin(MTL4RenderPassDescriptor 
     enc_close_blit();
     g_half_mask_sent = -1;
     gp_pre(d, 'R');
-    id<MTL4RenderCommandEncoder> e = [g_cb renderCommandEncoderWithDescriptor:d];
+    id<MTL4RenderCommandEncoder> e = [g_cb renderCommandEncoderWithDescriptor:d]; fault_enc_pass(e, d);
     if (g_m3) m3_wait(e, 1, 0); else main_barrier_begin(e, 0);
     enc_r_table(e, g_vt, MTLRenderStageVertex); enc_r_table(e, g_ft, MTLRenderStageFragment); gp_begin(e, 'R', d); return e;
 }
@@ -1782,6 +1846,7 @@ static inline id<MTL4ComputeCommandEncoder> enc_c_begin(MTLComputePassDescriptor
         MTLComputePassDescriptor *cd = [MTLComputePassDescriptor computePassDescriptor]; gp_pre(cd, 'C');
         e = [g_cb computeCommandEncoderWithDescriptor:cd];
     } else e = [g_cb computeCommandEncoder];
+    fault_enc_mark(e, @"compute");
     if (g_m3) m3_wait(e, 0, 0); else main_barrier_begin(e, 0);
     enc_c_table(e, g_ct); gp_begin(e, 'C', nil); return e;
 }
@@ -15228,7 +15293,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     if (g_vcap_hit) { g_vcap_hit = 0; FILE *vf = fopen(g_vcap_path, "a"); if (vf) { fprintf(vf, "# widen mode %d push d %.6f threshold² %.6f shrink %.6f (vs_push: pushed when t² > threshold², and without shrink t² < threshold² × 1.012)\n", g_wd_mode, g_wd_push[0], g_wd_push[1], g_wd_push[2]); fclose(vf); } }   // DM_NVN_VCAP: this draw's push (vcap_draw)
     if (g_wd_side_on || g_wd_row_on) wd_page_clear(en);   // S2Arm widen: a 16:9 page starts at this draw; its side strips are cleared before any of this draw's state is set (the clear resets it)
     { uint32_t r5[5]; if (wd_p2_want_self(R.has_rt && R.rt.n > 0 ? R.rt.color[0] : NULL, r5)) wd_p2_self_clear(en, r5); }   // S2Arm widen: fallback sentinel in the world target's side bands when the game did not clear it this frame
-    if (ps != g_enc_pso) { enc_r_pso(en, ps); g_enc_pso = ps; }
+    if (ps != g_enc_pso) { enc_r_pso(en, ps); g_enc_pso = ps; if (fault_enc_on()) fault_enc_mark(en, [NSString stringWithFormat:@"draw vertex %s fragment %s", pr->sh[0] ? pr->sh[0]->key : "-", pr->sh[1] ? pr->sh[1]->key : "-"]); }
     enc_r_half_mask(en, cur_ps_round);
     if (!draw_pass_state(en, pr->sh[1])) return;   // depth-stencil / viewport / scissor / cull / ... (shared with tess_draw ④): 0 = this draw draws nothing
     alpha_ref_bind(en, pr->sh[1]);   // gap family 34
