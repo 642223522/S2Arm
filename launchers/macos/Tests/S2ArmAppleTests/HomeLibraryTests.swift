@@ -18,7 +18,7 @@ import LauncherPadBridge
         try Self.writeArtwork(to: root)
         let now = Date().timeIntervalSince1970, day = 86400.0
         // 第 0 款：6.5 天前装 → 还剩 1 天；第 1 款：8 天前 → 已过期；第 2 款：1 天前 → 还剩 6 天
-        let runner = HomeCatalogRunner(artwork: root, installs: [0: now - 6.5 * day, 1: now - 8 * day, 2: now - day])
+        let runner = HomeCatalogRunner(artwork: root, installs: [0: now - 6.5 * day, 1: now - 8 * day, 2: now - day], skipped: [2, 3])
         let model = S2ArmLauncherModel(client: JobClient(environment: JobEnvironment(privateRoot: root, resources: root,
             library: root.appendingPathComponent("lib").path, libraryId: "fixture"), runner: runner))
         model.refresh()
@@ -34,6 +34,8 @@ import LauncherPadBridge
         // 角标是卡片按钮里的装饰（无障碍信息合进卡片按钮），这里只核天数口径；样子看 S2A_SNAPSHOT_OUT 出的 home-cards.png
         XCTAssertEqual(model.games.first { $0.id == String(format: "%016X", 2) }?.iphoneDaysLeft(), 6)
         XCTAssertNil(model.games.first { $0.id == String(format: "%016X", 3) }?.iphoneDaysLeft(), "没装过的款没有角标")
+        // 数据校验不过的款（11-17）：第 2、3 款标，其余不标；角标样子同看 home-cards.png（右下角黄色三角）
+        XCTAssertEqual(model.games.filter(\.integritySkipped).map(\.id), [2, 3].map { String(format: "%016X", $0) })
         for _ in 0..<20 { host.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(30)) }
         if let output = ProcessInfo.processInfo.environment["S2A_SNAPSHOT_OUT"] {
             let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
@@ -236,7 +238,9 @@ private final class HomeCatalogRunner: JobProcessRunner {
     let artwork: URL
     /// 第几款是用免费账号装到 iPhone 的、什么时候装的（Unix 秒）；没写的款没装过
     let installs: [Int: Double]
-    init(artwork: URL, installs: [Int: Double] = [:]) { self.artwork = artwork; self.installs = installs }
+    /// 第几款导入时数据校验不过（packages 带 integritySkipped，11-17）
+    let skipped: Set<Int>
+    init(artwork: URL, installs: [Int: Double] = [:], skipped: Set<Int> = []) { self.artwork = artwork; self.installs = installs; self.skipped = skipped }
     private let lock = NSLock()
     private var launch: String?
     var lastLaunch: String? { lock.withLock { launch } }
@@ -252,6 +256,7 @@ private final class HomeCatalogRunner: JobProcessRunner {
                 "ready": true, "missing": [],
                 "customCover": false, "cover": artwork.appendingPathComponent("cover.png").path,
                 "banner": artwork.appendingPathComponent($0 % 2 == 0 ? "banner-red.png" : "banner-blue.png").path,
+                "packages": skipped.contains($0) ? [["type": "base", "integritySkipped": [["stage": "import", "contents": ["x"], "place": "romfs"]]]] : [] as [[String: Any]],
                 "iphoneInstall": installs[$0].map { ["at": $0, "free": true] as Any } ?? NSNull()] as [String: Any] }, "keys": [:]]
         }
         let event: [String: Any] = ["schema": 1, "taskId": request["taskId"] ?? "", "type": "result", "state": "succeeded", "result": result]

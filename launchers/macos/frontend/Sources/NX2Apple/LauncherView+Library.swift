@@ -184,7 +184,8 @@ extension LauncherView {
 
     func status(_ game: GameSummary, prominent: Bool = false) -> some View {
         let (text, color) = statusLine(game)
-        return HStack(spacing: 7) {
+        return VStack(alignment: .leading, spacing: 4) {
+        HStack(spacing: 7) {
             Circle().fill(color).frame(width: prominent ? 9 : 7, height: prominent ? 9 : 7)
             Text(prominent ? text.uppercased() : text)
                 .font(prominent ? .manrope(12, .bold) : .manrope(13, .medium))
@@ -193,6 +194,12 @@ extension LauncherView {
             if !game.display.isEmpty {
                 Text("· " + game.display).font(.manrope(prominent ? 13 : 12)).foregroundStyle(.secondary).lineLimit(1)
             }
+        }
+        // 导入时数据校验不过、照常导入的款（11-17）：选中时黄字说一句（卡片角标只有图标，手柄玩家看不到悬停说明）
+        if game.integritySkipped {
+            Label(loc.backend(LauncherView.integritySkippedNote), systemImage: "exclamationmark.triangle.fill")
+                .font(.manrope(12, .medium)).foregroundStyle(.yellow).fixedSize(horizontal: false, vertical: true)
+        }
         }
         .accessibilityElement(children: .combine)
     }

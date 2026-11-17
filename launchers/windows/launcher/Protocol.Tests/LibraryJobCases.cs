@@ -108,6 +108,18 @@ internal static class LibraryJobCases
             check(g[0].NeedsKeys && !g[1].NeedsKeys, "catalog: needsKeys comes from the backend field, not from package formats");
             check(g[0].OnPhone && !g[1].OnPhone, "catalog: onPhone (recorded on a phone; delete confirm warns it stops opening there) read from the backend field");
         }
+        // 11-17：导入时数据校验不过照常导入（packages[].integritySkipped 非空数组）→ 这款标「数据校验不过」；空数组 / 没有这个字段都不标（同 Mac ExportFlowTests）
+        const string skipped = """
+        {"games":[{"id":"0100A","name":"A","display":"","cover":"","hidden":false,"missing":[],"packages":[{"type":"base","titleId":"0100A","version":0,"display":"","size":1,"format":"nsp"},{"type":"update","titleId":"0100A","version":1,"display":"","size":1,"format":"nsp","integritySkipped":[{"stage":"import","contents":["x"],"place":"romfs"}]}]},
+                  {"id":"0100B","name":"B","display":"","cover":"","hidden":false,"missing":[],"packages":[{"type":"base","titleId":"0100B","version":0,"display":"","size":1,"format":"nsp","integritySkipped":[]}]}],
+         "keys":{"ready":false,"message":""}}
+        """;
+        using (var document = System.Text.Json.JsonDocument.Parse(skipped))
+        {
+            var g = LibraryCatalog.Parse(document.RootElement).Games;
+            check(!g[0].Packages![0].IntegritySkipped && g[0].Packages![1].IntegritySkipped && g[0].IntegritySkipped, "catalog: a package with integritySkipped marks the game");
+            check(!g[1].IntegritySkipped, "catalog: an empty integritySkipped list does not mark the game");
+        }
         using (var document = System.Text.Json.JsonDocument.Parse(updates.Replace("\"phoneUpdates\":[", "\"phoneDevices\":2,\"phoneUpdates\":[")))
             check(LibraryCatalog.Parse(document.RootElement).PhoneDevices == 2, "catalog: phoneDevices (phones this PC installed to; update popup says launcher and iPhone app) read");
         using (var document = System.Text.Json.JsonDocument.Parse(updates))
