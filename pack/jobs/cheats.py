@@ -386,7 +386,7 @@ def forget_auto_off(c, gid, items):
 
 
 def restore_after_update(c, game):
-    """起局前（build.py launch）调：上次崩溃自动关掉的，换了启动器版本就重开一次（只开当时关的、现在仍关着的），记录删掉。→ 重开的 [(类, 键)]"""
+    """起局前（build.py launch）调：上次崩溃自动关掉的，换了启动器版本就重开一次（只开当时关的、现在仍关着的；社区补丁不重开、记录留着），其余记录删掉。→ 重开的 [(类, 键)]"""
     gid = game["id"].upper()
     d = cheats_dir(c, gid, create=False)
     ao = read(d / "auto_off.json", None)
@@ -395,12 +395,14 @@ def restore_after_update(c, game):
         return []
     import community
     data = community.load_launch(c, gid)
-    back, keys = [], []
+    back, keys, kept = [], [], []
     for t, k in (tuple(x) for x in ao.get("off", [])):
         if t == "cheat":
             keys.append(k); back.append((t, k))
-        elif t == "patch" and data["patches"].get(k) is False:
-            data["patches"].pop(k); back.append((t, k))
+        elif t == "patch":
+            # 社区补丁按内容编号（gfx:<内容哈希> 等）、字节编在包里：换启动器版本改不了它，重开只会让它再崩（#1257：已撤下的坏补丁被带回来）。
+            #   不重开，记录留着（S 级状态照旧显示「崩溃自动关」）；玩家自己打开或重新出包换掉它才算数
+            kept.append([t, k])
         elif t == "fps" and data["settings"].get("fps60") is False:
             data["settings"].pop("fps60"); back.append((t, k))
         elif t == "fs" and data["settings"].get("widescreen") is False:
@@ -409,7 +411,10 @@ def restore_after_update(c, game):
         known = {it["key"] for it in listing(c, game)["items"]}
         save(c, game, {k: True for k in keys if k in known})
     atomic(community.launch_path(c, gid), data)
-    (d / "auto_off.json").unlink(missing_ok=True)
+    if kept:
+        atomic(d / "auto_off.json", dict(ao, off=kept, meta={m: v for m, v in (ao.get("meta") or {}).items() if m.split("\t", 1)[0] == "patch"}))
+    else:
+        (d / "auto_off.json").unlink(missing_ok=True)
     return back
 
 

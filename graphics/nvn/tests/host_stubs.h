@@ -30,6 +30,7 @@ uint64_t s2a_npdm_program_id(void) { return 0; }
 void s2a_res_report_register(void *fn) { (void)fn; }
 int s2a_screen_w(void) { return 1920; }
 int s2a_screen_h(void) { return 1080; }
+int s2a_widen_force_native(int on) { (void)on; return 0; }   // runtime/src/widen.c：张量核顶替在满屏放宽下退回 16:9（nvn_tensor.inc，#726）；单测屏幕恒 16:9，不会调到
 unsigned s2a_screen_gen(void) { return 0; } int s2a_screen_switch(int w, int h) { (void)w; (void)h; return 0; }   // 运行中换屏（runtime/src/widen.c）：单测不换
 void s2a_track_write_quiet(uint64_t a, uint64_t n) { (void)a; (void)n; }
 void *sw_xstack_wrap(const char *name, void *fn) { (void)name; return fn; }

@@ -21,6 +21,10 @@
 //   规则：带平方的出口层、绑定恰好 1 张贴图 + 1 张图 + 1 个推常量槽 → 按本次派发的推常量给 MetalFX 设输入内容宽高；输出区域不是整张图时先放大进同尺寸临时图，
 //   再拷到输出图的起点。参数不成立（宽高 ≤ 0、步长非正 / 非有限、越出图）报红一次、照整张图做
 static uint64_t g_tensor_skip, g_tensor_up, g_tensor_red, g_tensor_off;
+#include "tensor_widen.h"   // 满屏放宽下挑不出输入几时退回 16:9（#726）
+int s2a_screen_w(void); int s2a_screen_h(void);   // runtime/src/widen.c（满屏门之后的屏幕宽 / 高；原生 16:9 = 1920 × 1080）
+int s2a_widen_force_native(int on);   // runtime/src/widen.c：运行中退回原生 16:9（图形单测由 tests/host_stubs.h 给桩）
+static s2a_tensor_widen_t g_tensor_widen;   // 只在 g_rmu 外、派发线程里改（tensor_standin 由录制 / 编码线程串行调）
 // 诊断开关 DM_NVN_TENSOR_STANDIN=0（11-11 #376 / #464：M1 主机模式 Metal 4 进场景后 GPU 挂死，顶替用的 Metal 4 版 MetalFX 空间放大是头号嫌疑）：网络照旧不派发，
 //   出口层也不做顶替（不平方、不调 MetalFX、不拷），输出图这一遍不写——画面不对，只为判挂死是不是顶替引起的。缺省（不设 / 其他值）照旧顶替，零变化
 static int g_tensor_standin_on = -1;
@@ -256,6 +260,12 @@ static void tensor_standin(NvShader *cs) {
     if (!o || !c) {
         g_tensor_red++;
         if (!(cs->tensor_log & 1)) { cs->tensor_log |= 1; MLOG("【红】 张量核网络顶替：%s 写图 %lux%lu，读的贴图里没有宽高比一致、放大 1–4 倍的低分辨率画面，这一遍不写", cs->key, o ? (unsigned long)o.width : 0ul, o ? (unsigned long)o.height : 0ul); }
+        // 满屏放宽下挑不出（#726：放宽的目标与没放宽的图宽高比对不上）：不同的帧里累计到 S2A_TENSOR_WIDEN_FRAMES 就本局退回 16:9（tensor_widen.h），不让输出图一直空着
+        if (o && s2a_tensor_widen_revert_due(&g_tensor_widen, atomic_load(&g_cur_frame), s2a_screen_w() > 1920 || s2a_screen_h() > 1080)) {
+            int fr = s2a_widen_force_native(1);
+            MLOG("【红】 张量核网络顶替：满屏放宽（屏幕 %dx%d）下 %d 个不同的帧都挑不出对得上的输入（%s 写图 %lux%lu），本局退回原生 16:9（%s）", s2a_screen_w(), s2a_screen_h(), S2A_TENSOR_WIDEN_FRAMES, cs->key,
+                 (unsigned long)o.width, (unsigned long)o.height, fr > 0 ? "已热切，下一个渲染遍起生效" : fr < 0 ? "游戏自己出宽图，退不了" : "已经是 16:9 或还没定屏，没变化");
+        }
         return;
     }
     int dom = cs->tensor_sq ? 1 : cs->tensor_srgb ? 2 : 0;   // 出口层的输出域（文件头）：0 同域、1 平方、2 sRGB 解码

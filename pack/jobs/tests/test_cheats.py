@@ -282,9 +282,12 @@ class CheatsTests(unittest.TestCase):
         self.assertEqual(cheats.restore_after_update(self.c, self.game), [])           # 同版本：不动
         (self.c.engine / "engine.json").write_text(json.dumps({"version": "0.4.2"}))
         back = cheats.restore_after_update(self.c, self.game)
-        self.assertEqual(sorted(back), [("fps", "fps60"), ("patch", "gfx:B1"), ("patch", "widescreen:A1")])
-        self.assertEqual(self._on(), ([], ["gfx:B1", "widescreen:A1"], True))
+        self.assertEqual(back, [("fps", "fps60")])                                      # 社区补丁按内容编号、换版本改不了：不重开（#1257）
+        self.assertEqual(self._on(), ([], [], True))
         self.assertEqual(cheats.restore_after_update(self.c, self.game), [])           # 只重开一次
+        (self.c.engine / "engine.json").write_text(json.dumps({"version": "0.4.3"}))
+        self.assertEqual(cheats.restore_after_update(self.c, self.game), [])           # 再换版本，补丁也不重开
+        self.assertEqual(self._on(), ([], [], True))
 
     def test_crash_with_nothing_on_records_nothing(self):
         cheats.note_crash(self.c, self.game)
