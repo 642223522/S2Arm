@@ -21,6 +21,7 @@ struct nvn_gpu_surface_s {
     VkSemaphore *rendered;      // 每张图一把：呈现段完成时发，vkQueuePresentKHR 等
     uint32_t acquire_next;
     unsigned char *acquire_pending;             // 每槽一字节：取图发过、还没被呈现段等掉；不受 32 位掩码限制
+    uint64_t *acquire_waiter;                   // 每槽：最后一个等这把信号量的呈现段序号（g.wsi_seq）；0 = 没有
     uint64_t gen;                               // 0 = 已撤销
     int outdated;
     int64_t held;                                   // 取了没呈现、留作下次取图结果的那张（没有就是 -1）
@@ -78,9 +79,30 @@ static void wsi_destroy_swapchain(struct nvn_gpu_surface_s *s) {
     if (s->swapchain) { vkDestroySwapchainKHR(g.d, s->swapchain, NULL); s->swapchain = VK_NULL_HANDLE; }
     for (uint32_t i = 0; i < s->nimages + 1; i++) if (s->acquire && s->acquire[i]) { vkDestroySemaphore(g.d, s->acquire[i], NULL); s->acquire[i] = VK_NULL_HANDLE; }
     for (uint32_t i = 0; i < s->nimages; i++) if (s->rendered && s->rendered[i]) { vkDestroySemaphore(g.d, s->rendered[i], NULL); s->rendered[i] = VK_NULL_HANDLE; }
-    free(s->images); free(s->acquire); free(s->rendered); free(s->acquire_pending);
-    s->images = NULL; s->acquire = NULL; s->rendered = NULL; s->acquire_pending = NULL;
+    free(s->images); free(s->acquire); free(s->rendered); free(s->acquire_pending); free(s->acquire_waiter);
+    s->images = NULL; s->acquire = NULL; s->rendered = NULL; s->acquire_pending = NULL; s->acquire_waiter = NULL;
     s->nimages = 0; s->held = -1; s->acquire_next = 0;
+}
+
+// 取图前：这把信号量上一次被哪个呈现段等，那一段的栅栏要先被 worker 等到（g.wsi_done 追上它的序号）才能再交给取图。
+// 「轮着用 nimages + 1 把」只保证 GPU 上大概率早做完了，不保证主机已经看到那次等待完成：worker 落后（CPU 忙、
+// 前面有慢段）时第 nimages + 2 次取图就会把还挂着等待的信号量交给驱动（VUID-vkAcquireNextImageKHR-semaphore-01779，
+// 规范上的未定义行为，不只是校验层的说法）。正常节拍下 worker 早就等完了，这里只是查一次数；落后时有界地等它。
+// 0 = 可以用；-1 = 到时限还没等到（按「没有空闲的交换链图」处理，这一帧不取图）。
+static int wsi_wait_acquire_free(uint64_t seq, uint64_t timeout_ns) {
+    if (!seq) return 0;
+    uint64_t deadline = add_sat(now_ns(), timeout_ns);
+    int ok = 1;
+    pthread_mutex_lock(&g_mu);
+    while (g.wsi_done < seq && !g.device_lost && !g.stop) {
+        uint64_t now = now_ns();
+        if (now >= deadline) { ok = 0; break; }
+        struct timespec ts; deadline_after(&ts, deadline - now);
+        pthread_cond_timedwait(&g_cv, &g_mu, &ts);
+    }
+    if (g.wsi_done < seq && (g.device_lost || g.stop)) ok = 0;
+    pthread_mutex_unlock(&g_mu);
+    return ok ? 0 : -1;
 }
 
 // 等内部段与游戏段都执行完：之后销毁交换链 / 信号量才合法。0 = 等到了。
@@ -171,7 +193,8 @@ static nvn_gpu_rc wsi_build(struct nvn_gpu_surface_s *s, nvn_gpu_err *err) {
     s->acquire = calloc((size_t)ni + 1, sizeof *s->acquire);
     s->rendered = calloc(ni, sizeof *s->rendered);
     s->acquire_pending = calloc((size_t)ni + 1, sizeof *s->acquire_pending);
-    if (!s->acquire || !s->rendered || !s->acquire_pending) { wsi_destroy_swapchain(s); return fail(err, NVN_GPU_E_OOM, "交换链信号量数组分配失败"); }
+    s->acquire_waiter = calloc((size_t)ni + 1, sizeof *s->acquire_waiter);
+    if (!s->acquire || !s->rendered || !s->acquire_pending || !s->acquire_waiter) { wsi_destroy_swapchain(s); return fail(err, NVN_GPU_E_OOM, "交换链信号量数组分配失败"); }
     VkSemaphoreCreateInfo si; memset(&si, 0, sizeof si); si.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
     for (uint32_t i = 0; i < ni + 1; i++) if (!s->acquire[i] && vkCreateSemaphore(g.d, &si, NULL, &s->acquire[i]) != VK_SUCCESS) { wsi_destroy_swapchain(s); return fail(err, NVN_GPU_E_OOM, "信号量创建失败"); }
     for (uint32_t i = 0; i < ni; i++) if (!s->rendered[i] && vkCreateSemaphore(g.d, &si, NULL, &s->rendered[i]) != VK_SUCCESS) { wsi_destroy_swapchain(s); return fail(err, NVN_GPU_E_OOM, "信号量创建失败"); }
@@ -242,6 +265,7 @@ nvn_gpu_rc nvn_gpu_drawable_acquire(nvn_gpu_surface s, uint64_t timeout_ns, void
         sem = s->acquire_next;
         if (sem > s->nimages) return fail(err, NVN_GPU_E_ORDER, "取图信号量下标越界");
         struct timespec q0, q1; clock_gettime(CLOCK_MONOTONIC, &q0);
+        if (wsi_wait_acquire_free(s->acquire_waiter[sem], timeout_ns)) return fail(err, NVN_GPU_E_TIMEOUT, "上一次等这把取图信号量的呈现段还没确认完成");
         VkResult r = vkAcquireNextImageKHR(g.d, s->swapchain, timeout_ns, s->acquire[sem], VK_NULL_HANDLE, &idx);
         clock_gettime(CLOCK_MONOTONIC, &q1); __atomic_fetch_add(&g_acq_ns, (uint64_t)(q1.tv_sec - q0.tv_sec) * 1000000000ull + (uint64_t)q1.tv_nsec - (uint64_t)q0.tv_nsec, __ATOMIC_RELAXED);
         if (r == VK_TIMEOUT || r == VK_NOT_READY) return fail(err, NVN_GPU_E_TIMEOUT, "没有空闲的交换链图");
@@ -530,6 +554,7 @@ nvn_gpu_rc nvn_gpu_present(nvn_gpu_surface s, const nvn_gpu_drawable *dr, const 
     }
     s->acquire_pending[sem] = 0;   // 这把信号量已交给呈现段去等
     seg->cmd = c; seg->cb = c->cb; seg->fence = fence; seg->submitted = 1; seg->executed = 1; seg->internal = 1;
+    seg->wsi_seq = s->acquire_waiter[sem] = ++g.wsi_seq;   // 持 g_submit_mu：序号与入队同序
     enqueue_segment(&g, seg);
     VkPresentInfoKHR pi; memset(&pi, 0, sizeof pi);
     pi.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR; pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &s->rendered[idx];
