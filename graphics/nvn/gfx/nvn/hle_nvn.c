@@ -2269,7 +2269,8 @@ NVN(nvnCommandBufferBindProgram, void, NVNcommandBuffer *c, const NVNprogram *p,
     // Snapshot only mesh inputs under that final key; SetShaders' mapped=1 key path intentionally skips NVN2.
     if (nvn2_on()) for (unsigned i = 0; i < o->nstage && i < 6; i++) {
         const void *ctl = o->sd[i].control; uint8_t md[8];
-        if (ctl && (uintptr_t)ctl < (1ull << 47) && nvn2_ctl(ctl) && ((const uint8_t *)ctl)[0x56] == 7 &&
+        // #713 D-ZBQS 0007（0.5.1 SIGBUS）：SetShaders 之后游戏可能已放掉控制段那块内存，指针还在、页不可读——先核整段可读再看魔数 / 阶段字节（同 keys_hash 的 shader_bytes_readable）
+        if (ctl && (uintptr_t)ctl < (1ull << 47) && shader_bytes_readable((uint64_t)(uintptr_t)ctl, 0x58) && nvn2_ctl(ctl) && ((const uint8_t *)ctl)[0x56] == 7 &&
             prog_key(o, i, md)) dm_shader_mesh_hold_key(md, o->sd[i].data, ctl);
     }
     prog_t snap; memcpy(&snap, o, sizeof snap);
