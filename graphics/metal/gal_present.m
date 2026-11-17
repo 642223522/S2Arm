@@ -233,7 +233,6 @@ int gal_present_drain(int timeout_ms) { uint64_t v = g_pdone_n; return !g_pdone 
 static void slot_unpresent(int s) { pthread_mutex_lock(&g_mu); g_slot[s].presenting--; pthread_cond_broadcast(&g_cv); pthread_mutex_unlock(&g_mu); }
 
 #if TARGET_OS_IPHONE
-id<CAMetalDrawable> s2a_ios_reflection_drawable(CAMetalLayer *game) __attribute__((weak_import));   // ios/play_reflection.m：上下分屏下区倒影（App 壳才有）
 #endif
 static CALayer *g_mirror_resident;   // 出图线程独占：倒影层的驻留集已加进出图队列
 static CAMetalLayer *g_applied; static int g_applied_vsync = -1; static CGSize g_applied_size;   // 出图线程独占
@@ -282,11 +281,7 @@ static void present_one(CAMetalLayer *layer, id<CAMetalDrawable> dr, int s, pslo
     pr_encode(e, g_pt, pso, sl.aa ? sl.post : sl.tex, r, filter);
     [e endEncoding];
     // 上下分屏下区倒影：同一张画面在同一个命令缓冲里再画进倒影层的小画布（不分屏 / 后台时取到 nil）
-#if TARGET_OS_IPHONE
-    id<CAMetalDrawable> mdr = s2a_ios_reflection_drawable ? s2a_ios_reflection_drawable(layer) : nil;
-#else
-    id<CAMetalDrawable> mdr = nil;
-#endif
+    id<CAMetalDrawable> mdr = nil;   // 11-17 下区倒影已去掉（ios/play_reflection.m）：不再取倒影画布，下面 mdr 那几支不再走；分支本身的清理另做
     if (mdr) {
         id<MTLTexture> mt = mdr.texture; irect mr = dst_rect((int)mt.width, (int)mt.height, sl.stretched, sl.ax, sl.ay);
         if (g_mirror_resident != mdr.layer) { [g_pq addResidencySet:mdr.layer.residencySet]; g_mirror_resident = mdr.layer; }
