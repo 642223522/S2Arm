@@ -1,6 +1,7 @@
 """装到 Apple TV / 电视存档自动备份 / 从电视拉诊断（pack/jobs/tvos.py、diag.py，11-15 tvOS 版）。devicectl 全部打桩（组里没有 Apple TV），
 期望值按 TVPort 的规则与本文件里写明的输入手算，不跑被测实现推。"""
-import json, plistlib, shutil, sys, unittest
+import json
+import os, plistlib, shutil, sys, unittest
 import unittest.mock as um
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -508,6 +509,25 @@ class DeriveTest(TvCase):
         (tv / ".pack/game.img").write_bytes(b"CHANGED")   # 整份拷贝：改 tvOS 这份不动 iPhone 那份
         self.assertEqual((img / ".pack/game.img").read_bytes(), b"IMG")
         self.assertFalse([r for r in runs if "shell_build.sh" in " ".join(r)])
+
+    def test_derive_060_links_game_img_on_windows(self):
+        """0.6.0（通用壳开关开，体系文档 L）：Windows 上 tvOS 资源包的 game.img 是 iPhone 那份的硬链接（同一个文件，不再实拷），
+        电视这份改的清单 / 加的 astc.pack 都不动 iPhone 那份"""
+        img = self.make_ios()
+        ex = self.root / "extract"; (ex / "romfs").mkdir(parents=True)
+        def run(argv, log, env=None, **k):
+            if "astc_pack.py" in str(argv[4]): Path(argv[7]).write_bytes(b"ASTC" * 4)
+        given = self.root / "Shell-tvOS"; given.mkdir(); (given / "manifest.json").write_text("{}")
+        self.c.r["tvShellDir"] = str(given)
+        with um.patch.dict("os.environ", {"S2A_UNIVERSAL_SHELL": "1"}), um.patch.object(tvos.sys, "platform", "win32"), \
+             um.patch.object(self.c, "run", side_effect=run), um.patch.object(tvos, "tv_shell_id", return_value="sid1"), \
+             um.patch.object(self.c, "env", return_value={"S2A_RUN_ROOT": str(self.root / "run")}):
+            tvos.derive(self.c, G, ex)
+        tv = layout.path(self.c, G, "image", "tvos", create=False)
+        self.assertTrue(os.path.samefile(tv / ".pack/game.img", img / ".pack/game.img"))
+        self.assertEqual((img / ".pack/index.tsv").read_text(), "game.img\t3\tabc\n")   # 电视清单多了 astc.pack，iPhone 那份不变
+        self.assertFalse((img / ".pack/astc.pack").exists())
+        self.assertIn("astc.pack", (tv / ".pack/index.tsv").read_text())
 
     def test_derive_on_windows_without_tv_shell_stops(self):
         """Windows 安装包没带 Shell-tvOS：明说出不了，不去现出壳（要 Xcode）"""
