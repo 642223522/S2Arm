@@ -21744,6 +21744,86 @@
           }
         }
       }
+    },
+    "Reinstall from your computer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reinstall from your computer"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reinstálalo desde tu ordenador"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "À réinstaller depuis l'ordinateur"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "パソコンから再インストールが必要"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要在电脑上重装"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要在電腦上重裝"
+          }
+        }
+      }
+    },
+    "This game's files on your phone didn't finish installing, or were installed from another computer or Apple ID, so they don't match S2Arm on this phone and it can't open. Connect your phone to your computer and click \"Install on iPhone\" for this game in S2Arm to reinstall it.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This game's files on your phone didn't finish installing, or were installed from another computer or Apple ID, so they don't match S2Arm on this phone and it can't open. Connect your phone to your computer and click \"Install on iPhone\" for this game in S2Arm to reinstall it."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los archivos de este juego en el teléfono no se instalaron por completo, o se instalaron desde otro ordenador u otro Apple ID, así que no coinciden con S2Arm en este teléfono y no puede abrirse. Conecta el teléfono al ordenador y, en S2Arm, pulsa «Instalar en el iPhone» para este juego y vuelve a instalarlo."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les fichiers de ce jeu sur le téléphone n'ont pas été installés entièrement, ou l'ont été depuis un autre ordinateur ou un autre identifiant Apple : ils ne correspondent plus à S2Arm sur ce téléphone et le jeu ne peut pas s'ouvrir. Branchez le téléphone à l'ordinateur et, dans S2Arm, cliquez sur « Installer sur l'iPhone » pour ce jeu afin de le réinstaller."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このゲームのファイルがスマホに最後までインストールされていないか、別のパソコンや別の Apple ID でインストールされたため、このスマホの S2Arm と合わず開けません。スマホをパソコンにつなぎ、S2Arm でこのゲームの「iPhone にインストール」を押して、もう一度インストールしてください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这款游戏在手机上的文件没装完整，或者是用别的电脑、别的 Apple ID 装的，和这台手机上的 S2Arm 对不上，打不开。连上电脑，在 S2Arm 里对这款点「装到 iPhone」，重装一次就好。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "這款遊戲在手機上的檔案沒裝完整，或是用別的電腦、別的 Apple ID 裝的，和這台手機上的 S2Arm 對不上，打不開。連接電腦，在 S2Arm 裡對這款點「裝到 iPhone」，重裝一次就好。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

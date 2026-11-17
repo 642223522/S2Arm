@@ -26,6 +26,8 @@ public final class S2ArmShellHostModel {
     @ObservationIgnored private let installState: (String) -> Int32
     /// 这款程序按别的宿主约定号出、要在电脑上按新版更新（s2a_shell_game_needs_host_update：宿主每款读一次清单后缓存，点开被拒的也记上）
     @ObservationIgnored private let needsHostUpdate: (String) -> Bool
+    /// 这款程序包对不上本机这份 App、要在电脑上对这款重装（s2a_shell_game_needs_reinstall：点开被拒时宿主记下）
+    @ObservationIgnored private let needsReinstall: (String) -> Bool
     /// 在后台解开阶段 2 的那款（同时只解一款；正在解别的返回 false）；正在解的这款的进度（已解开包数, 总包数）
     @ObservationIgnored private let installGame: (String) -> Bool
     @ObservationIgnored private let installWait: () -> Int32
@@ -83,7 +85,7 @@ public final class S2ArmShellHostModel {
                 installPhase: ((String) -> (Int, Double?)?)? = nil, installFailure: ((String) -> String?)? = nil, installWait: (() -> Int32)? = nil,
                 now: @escaping () -> Date = Date.init, pickGameData: ((String) -> Void)? = nil, identityStore: GameIdentityStore = .live,
                 gamesRoot: URL = S2ArmContainer.gamesRoot(), packGamesRoot: URL? = nil,
-                imlNotice: (() -> String?)? = nil, needsHostUpdate: ((String) -> Bool)? = nil) {
+                imlNotice: (() -> String?)? = nil, needsHostUpdate: ((String) -> Bool)? = nil, needsReinstall: ((String) -> Bool)? = nil) {
         self.gamesRoot = gamesRoot
         self.packGamesRoot = packGamesRoot ?? Self.packGamesRoot(for: gamesRoot)
         self.stores = stores; self.layoutState = layoutState; bannerURLs = catalogue.bannerURLs
@@ -101,6 +103,7 @@ public final class S2ArmShellHostModel {
         self.play = play ?? { id in _ = id.withCString { s2a_shell_play($0) } }
         self.installState = installState ?? { id in id.withCString { s2a_shell_game_install_state($0) } }
         self.needsHostUpdate = needsHostUpdate ?? { id in id.withCString { s2a_shell_game_needs_host_update($0) } != 0 }
+        self.needsReinstall = needsReinstall ?? { id in id.withCString { s2a_shell_game_needs_reinstall($0) } != 0 }
         self.installGame = installGame ?? { id in id.withCString { s2a_shell_install_game($0) } != 0 }
         self.installWait = installWait ?? { s2a_shell_install_wait() }
         self.installProgress = installProgress ?? { id in
@@ -189,7 +192,7 @@ public final class S2ArmShellHostModel {
             let id = allGames[i].id, listed = listedStates[id] ?? allGames[i].game.state
             let want: GameState
             switch installState(id) {
-            case 1, 4: want = listed == .playable && needsHostUpdate(id) ? .needsGameUpdate : listed; installTried.remove(id)   // 程序约定号对不上本宿主：卡片标「需要在电脑上更新」，点开只展开说明；4 = 只缺非核心文件：库里照样可玩，点开始时宿主问一次「仍要启动」（v0.3.1）
+            case 1, 4: want = listed != .playable ? listed : needsReinstall(id) ? .needsGameReinstall : needsHostUpdate(id) ? .needsGameUpdate : listed; installTried.remove(id)   // 程序约定号对不上本宿主：卡片标「需要在电脑上更新」，点开只展开说明；4 = 只缺非核心文件：库里照样可玩，点开始时宿主问一次「仍要启动」（v0.3.1）
             case 2: want = .installing(unpackStage(id))
             case 3: want = .installing(transferStage(id))   // 断了也接着看：电脑重新插上续传时字节又涨
             default:   // 资源不在：玩家删掉的不显示；没删过的留在库里显示「需要游戏数据」，Play 点到只给导入说明，不放行（审计 P1-155）

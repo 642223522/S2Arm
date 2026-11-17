@@ -35,6 +35,9 @@ int s2a_shell_game_install_state(const char *game_id);
 // 这款程序是按别的宿主约定号出的（runtime s2a_launch_ctx_game_needs_update / 点开被拒 S2A_SELECT_NEEDS_UPDATE）→ 1：库卡片标「需要在电脑上更新」。
 //   实现在宿主 ios/app.m（每款读一次清单后缓存，点开被拒的也记上；库每秒重判只查缓存）；弱缺省 0
 int s2a_shell_game_needs_host_update(const char *game_id);
+// 这款程序包对不上本机这份 App（通用壳：签名 / 库校验不认、或程序库与清单 image_sha256 不符；点开被拒 S2A_SELECT_NEEDS_RESIGN）→ 1：库卡片标「需要在电脑上重装」。
+//   实现在宿主 ios/app.m（点开被拒时记下）；弱缺省 0
+int s2a_shell_game_needs_reinstall(const char *game_id);
 int s2a_shell_install_game(const char *game_id);
 int s2a_shell_install_progress(const char *game_id, int *done, int *total);
 // 库起解包被拒（s2a_shell_install_game 返回 0）时为什么：1 另一款正在解（同时只解一款）/ 2 正在整理游戏目录（首次清点容器、资源包挪位，ios/app.m img_scan_bg）/ 0 没有在等的事。
