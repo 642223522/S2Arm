@@ -6,6 +6,7 @@
 #include "s2a_init_fail.h"
 #include "native.h"
 #include "as_type.h"
+#include "s2a_docs.h"
 #include <errno.h>
 #include <stdatomic.h>
 #include <sys/mman.h>
@@ -382,15 +383,33 @@ static int alias_first_hint(const char *npdm, uint64_t pid) {
 __attribute__((weak)) void s2a_init_failed(int code) { (void)code; }   // 弱定义：宿主里 host_main.c 的强定义顶替（走初启失败出口、不返回）；只链本文件的单测用这份空的，返回后照旧 die
 // 布局只算一次：模块装载（loader.c 要模块段起点）早于 s2a_mem_init，两处都经这里。只看 NPDM 与宿主占到的窗口（layout.c）
 static int g_lay_ok; static uint64_t g_mod_base, g_shadow_base, g_lay_need;
+// 报给游戏的别名区大小（GetInfo AliasSize，#1441）：0 = 照 L.alias_size。内部布局与映射检查仍按 L.alias_size，只有告诉游戏的值可能收小（layout.c s2a_alias_report_size）
+static uint64_t g_alias_report, g_lay_pid;
+static int alias_full_path(char *out, size_t n, uint64_t pid) {
+    const char *ov = getenv("S2A_ALIAS_FULL"); if (ov && *ov) { snprintf(out, n, "%s", ov); return 1; }   // 单测 / 诊断指定
+    return pid ? s2a_docs_path(out, n, "wire/%016llX/alias_full", (unsigned long long)pid) : 0;
+}
+static int alias_full_seen(uint64_t pid) { char p[1024]; FILE *f = alias_full_path(p, sizeof p, pid) ? fopen(p, "r") : NULL; if (f) fclose(f); return f != NULL; }   // 只用 fopen / fclose：安卓 VM 端点集合（check_endpoints.py）
+// 收小后游戏照旧映射到收掉的那段（它没按报的大小来，比如写死了 64 GiB）：这一局照常服务（那段在 L.alias_size 内，伸出窗口的走远端，同收小前），
+//   报一次红并记下本款，下次起局恢复原值——宁慢不写错
+static void alias_report_overrun(uint64_t a, uint64_t size) {
+    static _Atomic int said; if (atomic_exchange(&said, 1)) return;
+    char p[1024]; int ok = 0;
+    if (alias_full_path(p, sizeof p, g_lay_pid)) { FILE *f = fopen(p, "w"); if (f) ok = !fclose(f); }   // 空文件即标记；越界地址在下面这行红里
+    LOG("【红】别名区收小后游戏仍映射到收掉的那段（%#llx +%#llx，报给游戏的别名区到 %#llx）：这局照常走远端，%s", (unsigned long long)a, (unsigned long long)size,
+        (unsigned long long)(L.alias_base + g_alias_report), ok ? "已记下本款，下次起局别名区恢复原值" : "记录写不进，下次起局仍会收小");
+}
 static void layout_prepare(const char *npdm) {
     if (g_lay_ok) return;
     uint32_t t, ms; uint64_t sr, pid, wb, ws;
     if (npdm_read(npdm, &t, &sr, &ms, &pid, 1)) die("读不到 NPDM：%s", npdm);
     s2a_window_get(&wb, &ws);
+    uint64_t ws_hole = ws;   // 宿主占到的空洞（下面可能按学到的跨度再收）：判「放不下标准布局」用它（#1441）
     char detail[256] = {0};
     int platform_result = plat_layout_override(npdm, t, sr, pid, wb, ws, &L, &g_lay_need, detail, sizeof detail);
     if (!platform_result) {
         if (detail[0]) LOG("地址需求：%s", detail);
+        g_alias_report = L.alias_size;
         s2a_window_trim(L.win_size); g_lay_ok = 1; return;
     }
     if (platform_result != ENOTSUP) die("【红】平台地址布局失败：%s", detail);
@@ -424,6 +443,14 @@ static void layout_prepare(const char *npdm) {
     else if (L.win_size < g_lay_need)
         LOG("地址按需：标准布局要 %llu MB，宿主占到 %llu MB——小区在前、别名区伸出窗口 %llu MB（只是承诺）；游戏映射到宿主没占到的地址回内存不足并报红",
             (unsigned long long)(g_lay_need >> 20), (unsigned long long)(L.win_size >> 20), (unsigned long long)((L.alias_base + L.alias_size - L.win_base - L.win_size) >> 20));
+    g_lay_pid = pid;
+    { int full = alias_full_seen(pid);
+      g_alias_report = s2a_alias_report_size(L.alias_base, L.alias_size, L.win_base + L.win_size, ws_hole, g_lay_need, alias_gb, full);
+      if (g_alias_report < L.alias_size)
+          LOG("别名区收小到 %llu GB 报给游戏（原 %llu GB）：空洞 %llu MB 放不下标准布局 %llu MB、别名区伸出窗口，收到窗口末让游戏的内存落在窗口里、不走远端缺页代执行（#1441）",
+              (unsigned long long)(g_alias_report >> 30), (unsigned long long)(L.alias_size >> 30), (unsigned long long)(ws_hole >> 20), (unsigned long long)(g_lay_need >> 20));
+      else if (full && s2a_alias_report_size(L.alias_base, L.alias_size, L.win_base + L.win_size, ws_hole, g_lay_need, alias_gb, 0) < L.alias_size)
+          LOG("【黄】别名区不收小：本款上次收小后仍映射到收掉的那段（wire/%016llX/alias_full），这局照旧报 %llu GB、伸出段走远端", (unsigned long long)pid, (unsigned long long)(L.alias_size >> 30)); }
     s2a_window_trim(L.win_size);   // 布局之外的窗口尾部交给宿主（vawin.c）
     if (g_shadow_base) s2a_far_set(L.win_base + L.win_size, L.alias_base + L.alias_size, L.heap_base, L.heap_base + L.heap_size);   // 乙：别名区伸出窗口，伸出段走远端影子（far.c）
     g_lay_ok = 1;
@@ -856,8 +883,9 @@ void s2a_mem_test_lockorder_abort(void) { GMU_LOCK(); s2a_mem_lockorder_vp_enter
 static void punch_reset_locked(void);   // #258 懒清零状态复位（定义在 pages_release 前）
 #endif
 // 单测：不经 NPDM / 窗口，直接摆出别名区、堆、映射表与子页位
+void s2a_mem_test_alias_report(uint64_t v) { g_alias_report = v; }   // 单测：设报给游戏的别名区大小（#1441）
 void s2a_mem_test_setup(uint64_t alias_base, uint64_t alias_size, uint64_t win_base, uint64_t win_size, void *heap, uint64_t heap_cur) {
-    memset(&L, 0, sizeof L); L.alias_base = alias_base; L.alias_size = alias_size; L.win_base = win_base; L.win_size = win_size;
+    memset(&L, 0, sizeof L); L.alias_base = alias_base; L.alias_size = alias_size; L.win_base = win_base; L.win_size = win_size; g_alias_report = 0;
 #ifdef __ANDROID__
     s2a_android_mirror_init((uintptr_t)win_base, (size_t)win_size);
 #endif
@@ -1817,6 +1845,7 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
         if (!L.sys_resource_size) { regs[0] = 0xD401; return 1; }   // 没有 SystemResourceSize 不能用（Ryujinx：PersonalMmHeap 为 0 即拒）
         if ((a | size) & 0xfff || !size) { regs[0] = 0xCC01; return 1; }   // InvalidAddress
         if (a + size < a || a < L.alias_base || a + size > L.alias_base + L.alias_size) { regs[0] = 0xDC01; return 1; }   // InvalidMemoryRegion
+        if (num == 0x2C && g_alias_report && g_alias_report < L.alias_size && a + size > L.alias_base + g_alias_report) alias_report_overrun(a, size);   // #1441
         uint64_t lo = a & ~(HPG - 1), hi = (a + size + HPG - 1) & ~(HPG - 1);
 #ifdef __ANDROID__
         int mapping = num == 0x2C;
@@ -2203,7 +2232,7 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
         switch (id) {
         case I_CoreMask: v = g_core_mask; break;
         case I_PriorityMask: v = g_prio_mask; break;
-        case I_AliasAddr: v = L.alias_base; break;  case I_AliasSize: v = L.alias_size; break;
+        case I_AliasAddr: v = L.alias_base; break;  case I_AliasSize: v = g_alias_report ? g_alias_report : L.alias_size; break;
         case I_HeapAddr: v = L.heap_base; break;    case I_HeapSize: v = L.heap_size; break;
         case I_AslrAddr: v = L.aslr_base; break;    case I_AslrSize: v = L.aslr_size; break;
         case I_StackAddr: v = L.stack_base; break;  case I_StackSize: v = L.stack_size; break;
