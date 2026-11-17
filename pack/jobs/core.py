@@ -675,6 +675,15 @@ class Context:
             parts = self.library.parts
             if len(parts) > 2 and parts[1] == "Volumes" and not Path("/", "Volumes", parts[2]).exists():
                 raise Failure(f"游戏库所在的磁盘「{parts[2]}」没连上：插上这块盘后再试一次。")
+            if marker.get("id"):
+                # 这个位置是一个游戏库，只是不是启动器记着的那个（从备份恢复 / 别处拷来 / 重装启动器后记录丢了）：说清是哪个、有几款，
+                #   玩家确认就改用它（前端重走选库、记下它的库号），不直接拒、也不悄悄改用（11-17 维护者）
+                try:
+                    count = sum(1 for g in json.loads((self.library / "catalog.json").read_text(encoding="utf-8")).get("games", []) if not g.get("hidden"))
+                except (OSError, ValueError, AttributeError):
+                    count = 0
+                raise Failure(f"「{self.library.name}」（{self.library}）里是另一个游戏库，有 {count} 款游戏，不是 S2Arm 上次记下的那个。点「仍然继续」就改用它；不是你要的，就到设置里重新选游戏库。",
+                              code="library_id_mismatch", facts={"libraryId": marker["id"]})
             raise Failure("游戏库未连接或标识不符，请重新选择游戏库。")
 
     def lock_holder(self):

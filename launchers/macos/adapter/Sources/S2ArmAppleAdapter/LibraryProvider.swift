@@ -251,7 +251,8 @@ public final class LibraryProvider {
             return try client.start(operation: "catalog", extra: startup ? ["startup": true] : [:], onFinish: { outcome in
                 guard outcome.state == .completed else {
                     if outcome.state == .failed, self.forgetLibraryIfGone() { completion(.failure(JobClientError(Self.noLibraryMessage))); return }
-                    completion(.failure(JobClientError(outcome.message.isEmpty ? JobOutcome.interruptedMessage : outcome.message)))
+                    completion(.failure(JobClientError(outcome.message.isEmpty ? JobOutcome.interruptedMessage : outcome.message,
+                                                       code: outcome.diagnostics.first?["code"] as? String)))   // 带失败码：前端按码给动作（library_id_mismatch 问要不要改用这个库）
                     return
                 }
                 self.remember(outcome.result)
