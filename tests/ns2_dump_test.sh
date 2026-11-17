@@ -9,16 +9,24 @@ set -u
 H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 # 真 ZBIC 用例要真 nx_unpack（--nso-normalize）与真 ZBIC 样本；构建产物放 <仓库根>/build/ns2_dump_test
 OUT=$H/build/ns2_dump_test; mkdir -p "$OUT"
+export DOTNET_ROOT=${DOTNET_ROOT:-$HOME/.dotnet}; export PATH=$DOTNET_ROOT:$PATH
 timeout 500 dotnet build "$H/pack/nx_unpack/nx_unpack.csproj" -c Release --artifacts-path "$OUT/art" -v quiet -nologo > "$OUT/build.log" 2>&1 || { tail -20 "$OUT/build.log"; echo "不通 nx_unpack 编译（期望编过）"; exit 1; }
 timeout 500 dotnet build "$H/tests/nx_unpack_zbic/ZbicTest.csproj" -c Release --artifacts-path "$OUT/artz" -v quiet -nologo >> "$OUT/build.log" 2>&1 || { tail -20 "$OUT/build.log"; echo "不通 ZbicTest 编译（期望编过）"; exit 1; }
 NXD=$(find "$OUT/art/bin" -name nx_unpack.dll | head -1); ZB=$(find "$OUT/artz/bin" -name ZbicTest.dll | head -1); [ -n "$NXD" ] && [ -n "$ZB" ] || { echo "不通 没找到构建产物"; exit 1; }
+# ⑩ 的参照只用 romfs_index 的产物，不需要每个用例都经 services/romfs_index.sh 重新 build 一次（脚本每次 build 同一个工程，门禁并行时会互等构建锁）。
+# 这里构建一次到本测试自己的 artifacts，再给 wrapper；构建覆盖仍由 services/ 自己的门禁负责。
+RIOUT=$OUT/ri
+RIB=(dotnet build "$H/services/romfs_index" -c Release -o "$RIOUT" -v quiet -nologo)
+[ -f "$H/services/romfs_index/obj/project.assets.json" ] && RIB+=(--no-restore)   # 有本地 assets 就不走 restore（门禁/本机离线时 restore 会等源）
+timeout 500 "${RIB[@]}" >> "$OUT/build.log" 2>&1 || { tail -20 "$OUT/build.log"; echo "不通 romfs_index 编译（期望编过）"; exit 1; }
+RID=$RIOUT/romfs_index.dll; [ -s "$RID" ] || { echo "不通 没找到 romfs_index.dll"; exit 1; }
+printf '#!/bin/bash\nexec dotnet "%s" "$@"\n' "$RID" > "$T/ri"; chmod +x "$T/ri"
 printf '#!/bin/bash\nexec dotnet "%s" "$@"\n' "$NXD" > "$T/nxu"; chmod +x "$T/nxu"
 printf '#!/bin/bash\n# 另一份程序（字节不同、行为相同）：验键里带 nx_unpack 程序哈希、换了重做\nexec dotnet "%s" "$@"\n' "$NXD" > "$T/nxu2"; chmod +x "$T/nxu2"
 dotnet "$ZB" --emit "$T/zbic.nso" "$T/zbic-exp.nso" > /dev/null || { echo "不通 --emit 0xBF 样本"; exit 1; }
 dotnet "$ZB" --emit "$T/zbicff.nso" "$T/zbicff-exp.nso" FF > /dev/null || { echo "不通 --emit 0xFF 样本"; exit 1; }
-export NXU="$T/nxu" NXU2="$T/nxu2" RIDX="$H/services/romfs_index.sh"   # RIDX：⑩ 镜像形态的参照（旧路径 romfs/ 建镜像的工具）
+export NXU="$T/nxu" NXU2="$T/nxu2" RIDX="$T/ri"   # RIDX：⑩ 镜像形态的参照（预编 romfs_index，不再每个用例 build）
 export S2A_ROMFS_IMAGE=0   # ①–⑨ 按目录形态（romfs/ 散文件）写期望；缺省是镜像形态（romfs.std），见 ⑩
-export DOTNET_ROOT=${DOTNET_ROOT:-$HOME/.dotnet}; export PATH=$DOTNET_ROOT:$PATH
 PY=${S2A_PY:-$HOME/.s2arm/venv/bin/python3}   # 钉版解释器（lz4，同 pack_rewrite_test.sh）：被测 ns2_dump 解 LZ4 段用出包 Python 的 lz4，gate-host 的系统 python3 没有
 "$PY" - "$H/pack/ns2_dump.py" "$T" <<'PY'
 import os, struct, subprocess, sys
