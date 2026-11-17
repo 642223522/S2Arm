@@ -92,6 +92,19 @@ class S2armExport(unittest.TestCase):
         self.assertTrue((folder / "测试游戏.s2arm").is_file())
         self.assertEqual([p.name for p in folder.iterdir() if p.name.endswith(".partial")], [], "不留临时文件")
 
+    def test_folder_readme_three_sentences(self):
+        # 「S2Arm 游戏包」里的说明只讲三件事（维护者 11-17 定稿），中文界面中文、别的界面英文；删了下次导出写回
+        self.fixture()
+        self.export()
+        zh = Path(self.c.library) / "S2Arm 游戏包" / "怎么导入.txt"
+        self.assertEqual(zh.read_text(encoding="utf-8"), install.S2ARM_README_TEXT["zh"])
+        self.assertIn(".s2arm 删了，在启动器里再导出一次就有。", zh.read_text(encoding="utf-8"))
+        zh.unlink()
+        self.export()
+        self.assertTrue(zh.is_file())
+        self.assertIn("If you delete a .s2arm file, just export it again from the launcher.", install.S2ARM_README_TEXT["en"])
+        self.assertIn("“Import Here”", install.S2ARM_README_TEXT["en"], "同 iOS 端「放这里导入」的英文 img.importFolder")
+
     def test_same_name_gets_game_id(self):
         self.fixture({self.A: "同名", self.B: "同名"})
         self.assertTrue(self.export()["s2armPath"].endswith(f"同名 [{self.A[-4:]}].s2arm"))

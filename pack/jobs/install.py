@@ -1062,9 +1062,19 @@ def wants_export(c):
 
 S2ARM_SUFFIX = ".s2arm"
 S2ARM_FORMAT = "s2arm"   # .s2arm 第一个条目 s2arm.json 的 format 字段（手机导入按它认文件）
-# 游戏库根的固定文件夹（11-17 体验梳理定，单独一个、不放进 0.5.x 的「S2Arm 自签导出」：那里几 GB 的整包 0.6.0 起该删，放一起玩家分不清）。
+# 游戏库根的固定文件夹（11-17 维护者定，单独一个、不放进 0.5.x 的「S2Arm 自签导出」：那里几 GB 的整包 0.6.0 起该删，放一起玩家分不清）。
 #   只按第一次建的时候的界面语言选名字；库根已有其中一个就一直用它，换界面语言也不建第二个
 S2ARM_DIRS = {"zh": "S2Arm 游戏包", "en": "S2Arm Game Packs"}  # 非玩家句
+
+
+S2ARM_READMES = {"zh": "怎么导入.txt", "en": "How to import.txt"}  # 非玩家句
+# 「S2Arm 游戏包」文件夹自己的说明（11-17 维护者定稿，只这三件事；「放这里导入」英文同 iOS 端 img.importFolder「Import Here」）
+S2ARM_README_TEXT = {
+    "zh": "点开 .s2arm 文件，在 S2Arm 里导入这款游戏。第一次导入这款时，还要把游戏库里的 game.img 放进 iPhone 上 S2Arm 的「放这里导入」文件夹"  # 非玩家句（说明文件按界面语言直接写，英文见下一项）
+          "（启动器里「显示资源文件」能找到它）。.s2arm 删了，在启动器里再导出一次就有。\n",
+    "en": "Open the .s2arm file to import the game into S2Arm. The first time you import a game, also put its game.img from the library into the "
+          "“Import Here” folder of S2Arm on your iPhone (“Show resource file” in the launcher finds it). If you delete a .s2arm file, just export it again from the launcher.\n",
+}
 
 
 def s2arm_dir(c):
@@ -1145,7 +1155,7 @@ def export_s2arm(c, gid):
                     add(name, path=p)
             except ValueError as e:   # ustar 放不下的路径（name 100 + prefix 155）：不改用 pax / GNU 长名（手机只认 ustar）
                 raise Failure(f"{gid} 有文件路径太长，打不进 .s2arm：{e}", code="job_failed") from e  # 非玩家句
-    c.begin("写进自签导出文件夹", 3, 3)
+    c.begin("写进「S2Arm 游戏包」文件夹", 3, 3)
     data = _zstd_checked(buf.getvalue())
     folder = s2arm_dir(c)
     folder.mkdir(parents=True, exist_ok=True)   # 玩家删了文件夹也照样重建；不设特殊权限
@@ -1153,6 +1163,8 @@ def export_s2arm(c, gid):
     tmp = folder / f".{out.name}.{os.getpid()}.partial"
     tmp.write_bytes(data)
     os.replace(tmp, out)
+    lang = ui_lang(c)   # 这份文件夹的说明（玩家删了下次导出照样写回）
+    (folder / S2ARM_READMES[lang]).write_text(S2ARM_README_TEXT[lang], encoding="utf-8-sig" if os.name == "nt" else "utf-8")
     game_img = Path(pack) / "game.img"
     return dict(gameId=gid, s2armPath=str(out), s2armBytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
                 resourcePath=str(game_img) if game_img.is_file() else "", exported=True)

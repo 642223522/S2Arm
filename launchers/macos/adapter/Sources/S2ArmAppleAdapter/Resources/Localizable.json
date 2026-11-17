@@ -6292,6 +6292,18 @@
   "en": "Click Continue anyway to sign. To keep that one, first delete a development certificate you no longer use: if you have a Mac, delete it in Xcode on the Mac under Settings → Accounts → Manage Certificates, then come back and install again."
  },
  {
+  "source": "准备这款的程序（按需更新）",
+  "en": "Preparing this game’s program (updating it if needed)"
+ },
+ {
+  "source": "打包 .s2arm",
+  "en": "Packing the .s2arm file"
+ },
+ {
+  "source": "写进「S2Arm 游戏包」文件夹",
+  "en": "Writing it to the “S2Arm Game Packs” folder"
+ },
+ {
   "source": "点「仍然继续」照传：手机报的空闲不含系统随时能清掉的空间，实际多半放得下，真写满了会停下并说明还差多少；也可以先在「设置 → 通用 → iPhone 储存空间」腾出空间。",
   "en": "Tap Continue Anyway to send it: the free space the iPhone reports leaves out space iOS can clear at any time, so it usually fits, and it stops and says how much is missing only if storage really fills up. You can also free up space first in Settings → General → iPhone Storage."
  },
