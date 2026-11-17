@@ -5,7 +5,7 @@ import XCTest
 final class GameSettingsSpecTests: XCTestCase {
     func testMacItemsComeFromTheSharedTable() throws {
         let items = try GameSettingsSpec.macItems()
-        XCTAssertEqual(items.map(\.id), ["quality", "fps60", "fpsPick", "widescreen", "docked", "language", "patches", "input", "rumble", "rumbleLevel", "motion", "padFace", "hud", "cheats", "mods", "pauseUnfocused", "audioLatency", "diagRun"])
+        XCTAssertEqual(items.map(\.id), ["quality", "fps60", "fpsPick", "resolutionScale", "fpsLimit", "widescreen", "docked", "language", "patches", "input", "rumble", "rumbleLevel", "motion", "padFace", "hud", "cheats", "mods", "pauseUnfocused", "audioLatency", "diagRun"])
         // 画质提升（11-15 取代「画面增强模式」）：三档，只有锐利放大带一句代价（选中时写在标题下）
         let quality = try XCTUnwrap(items.first { $0.id == "quality" })
         XCTAssertEqual(quality.text("zh-Hans"), "画质提升")

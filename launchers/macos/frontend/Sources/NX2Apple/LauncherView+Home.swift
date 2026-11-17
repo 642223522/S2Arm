@@ -225,6 +225,9 @@ extension LauncherView {
         }
     }
 
+    /// 数据校验不过的说明（作业层原句，六种语言在对照表；同 Windows LibraryPage IntegritySkippedNote）
+    static let integritySkippedNote = "这份游戏文件里有数据和原版对不上（多半是改版 / 整合版，或个别块损坏），已跳过完整性校验照常导入。"
+
     private func homeCard(_ game: GameSummary, side: CGFloat) -> some View {
         let selected = homeSelected?.id == game.id
         let focused = navigation.visible && navigation.focusedID == "card." + game.id
@@ -245,14 +248,20 @@ extension LauncherView {
                     }
                 }
                 .overlay(alignment: .bottomLeading) { expiryBadge(game) }
+                .overlay(alignment: .bottomTrailing) {   // 导入时数据校验不过、照常导入的款（11-17）：黄色提示角标，悬停 / 读屏说明见卡片 help
+                    if game.integritySkipped {
+                        Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 11, weight: .semibold)).foregroundStyle(.yellow)
+                            .padding(6).background(.black.opacity(0.6), in: Circle()).padding(8).accessibilityHidden(true)
+                    }
+                }
                 .padding(5)
                 .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(.white.opacity(focused ? 1 : selected ? 0.9 : 0), lineWidth: focused ? 3 : 2))
                 .shadow(color: .black.opacity(selected ? 0.4 : 0.2), radius: selected ? 12 : 6, y: 6)
                 .contentShape(RoundedRectangle(cornerRadius: 20))
         }.controllerButtonStyle(.plain)
             .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.86), value: selected)
-            .help(game.name + " · " + statusLine(game).text)
-            .accessibilityLabel(game.name).accessibilityValue(statusLine(game).text)
+            .help(game.name + " · " + statusLine(game).text + (game.integritySkipped ? "\n" + loc.backend(Self.integritySkippedNote) : ""))
+            .accessibilityLabel(game.name).accessibilityValue(statusLine(game).text + (game.integritySkipped ? "\n" + loc.backend(Self.integritySkippedNote) : ""))
             .accessibilityAddTraits(selected ? .isSelected : []).controllerID("card." + game.id)
             .contextMenu { cardMenu(game) }
             .modifier(CardDrop(targeted: cardTargeted(game.id), artwork: artworkSide + 10) { dropOnCard($0, game: game) })

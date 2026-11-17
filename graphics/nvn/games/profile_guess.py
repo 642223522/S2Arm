@@ -3,7 +3,7 @@
 # facts_of(ExeFS, RomFS) reads the code modules (dynamic symbols, sizes, SDK strings) and the RomFS file headers (a romfs_manifest.tsv from nx_extract --manifest, or a RomFS folder);
 # guess(facts) turns the facts into profile keys, each with the reason written above it in game.tsv. Every rule was checked against the hand-made profiles; --check runs that comparison again.
 # The keys no short run decides (render_cond, tex_flush_upload,
-# tex_dirty_upload, core_preempt, gpu_timestamps, feedback_snap, alpha_from_red, vconv_range, present_interval) keep their defaults for a developer: a minute's boot without input
+# tex_dirty_upload, gpu_timestamps, feedback_snap, alpha_from_red, vconv_range, present_interval) keep their defaults for a developer: a minute's boot without input
 # cannot tell the games that need them (Tears of the Kingdom) from those that only use what they answer (Wonder's conditional clears, Breath of the Wild's flushed textures).
 # Usage: profile_guess.py <ExeFS dir> <romfs_manifest.tsv | RomFS dir>   the facts and the guessed keys
 #        profile_guess.py --check [<NSP root>]                        every profile in dm/games against its extraction under <NSP root> (default ~/nsp): where the guess differs
@@ -241,7 +241,6 @@ def va_heap(sysres, imports):   # virtual address memory (an NPDM system resourc
 def engine(F):   # keys that follow from the engine rather than from a general signal
     out = {}
     if 'hagi.config' in F['romfs']['root']:   # NERD's Hagi Wii layer: the pointer is the touch screen in handheld mode (docked it is the Joy-Con gyro, which the host does not have)
-        out['op_mode'] = ('handheld', 'Hagi (hagi.config): the Wii pointer is the touch screen in handheld mode')
         out['pad_layout'] = ('full', 'Hagi: a 3D game pad (D-pad, right stick)')
 
     # present_interval 推导（10-28 60 帧零配置放开）：引擎 / 呈现路径标记 + L3 判定 → 缺省值
@@ -262,8 +261,8 @@ def engine(F):   # keys that follow from the engine rather than from a general s
 
 
 # ---- Checking the rules against the hand-made profiles ----
-DEFAULTS = {'op_mode': 'console', 'pad_layout': 'simple'}
-NO_SIGNAL = {'pad_layout', 'op_mode'}   # no static signal outside the engine presets; the player switches the pad layout in game, DM_OPMODE in env.txt sets the mode
+DEFAULTS = {'pad_layout': 'simple'}
+NO_SIGNAL = {'pad_layout'}   # no static signal outside the engine presets; the player switches the pad layout in game
 
 
 def find_extraction(root, g):   # (ExeFS, RomFS manifest or folder) for a profile: its survey, else a work folder's extraction of the packed version

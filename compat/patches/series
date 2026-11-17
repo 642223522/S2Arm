@@ -614,3 +614,4 @@
 20261116-2302-image-raw-load-formatless.patch
 20261117-0346-app-focus-no-foreground-msg.patch
 20261117-0425-mac-audio-thaw-restart.patch
+20261117-0608-audio-diag-always-on.patch

@@ -1284,6 +1284,28 @@ static void c71_present(void) {
       CHECK(OK(r), "C199 rebuild：%d %s", r.code, e.why);
     }
 
+    // C71w：取图信号量轮着用 nimages + 1 把；worker 落后（这里让它在一个游戏段上先睡 400 ms，呈现段都排在它后面没人等栅栏）时，
+    //   连着呈现 20 帧（比任何一档的 nimages + 1 都多）会绕回第一把信号量。取图必须先等到上次等这把信号量的呈现段被确认完成，
+    //   否则把还挂着等待的信号量交给驱动 = VUID-vkAcquireNextImageKHR-semaphore-01779（门禁上 CPU 忙时偶发，这里稳定复现）。
+    //   判据：每帧取图和呈现都成（等待有界、不超 1 s 的取图时限），且 run.sh 的 validation 0 条。
+    { nvn_gpu_cmd cw = begin_cmd();
+      nvn_gpu_tex_upload(cw, tex, 0, 0, NULL, px, 64 * 4, sizeof px);
+      nvn_gpu_vk_test_delay_segment(8, 400);
+      r = nvn_gpu_cmd_commit(cw, 8, on_done, NULL, &e);
+      CHECK(OK(r), "C71w commit：%d %s", r.code, e.why);
+      int bad = 0;
+      memset(pd.dst, 0, sizeof pd.dst); memset(pd.crop, 0, sizeof pd.crop);
+      for (int i = 0; i < 20 && !bad; i++) {
+          nvn_gpu_drawable q; memset(&q, 0, sizeof q);
+          nvn_gpu_rc ra = nvn_gpu_drawable_acquire(sf, 1000000000ull, NULL, &q, &e);
+          if (!OK(ra)) { bad = 1 + i; break; }
+          if (!OK(nvn_gpu_present(sf, &q, &pd, 300 + (uint64_t)i, on_shown, NULL, &e))) bad = 1 + i;
+      }
+      CHECK(!bad, "C71w worker 落后时连呈现 20 帧：第 %d 帧取图 / 呈现失败：%s", bad, e.why);
+      CHECK(OK(nvn_gpu_fence_wait(8, 5000000000ull, &e)), "C71w wait 8：%d %s", e.rc.code, e.why);
+      nvn_gpu_vk_test_delay_segment(0, 0);
+    }
+
     nvn_gpu_view_release(view); nvn_gpu_tex_release(tex);
     r = nvn_gpu_surface_detach(sf, 5000000000ull, &e);
     CHECK(OK(r), "C71 detach：%d %s", r.code, e.why);

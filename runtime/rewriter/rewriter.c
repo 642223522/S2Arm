@@ -178,6 +178,7 @@ typedef struct {
   Alloc* allocs;
   /* 布局重选（同 patch_nso.py #290）：retry_front 非 0 = 本轮是容量不足后的重做；req / now = 上一轮 / 本轮成功的自旋回边 (头, 回边) */
   size_t retry_front, next_front;
+  size_t retry_gaps0, next_gaps0;   /* 触发本轮重做的那一轮的缺口数（#1476）：重做后缺口比它多才算布局重选失败 */
   int retry_dual, next_dual;   // 本轮 / 下一轮是双岛布局
   const Pair* req;
   size_t nreq;
@@ -4897,7 +4898,7 @@ static int cmpgap(const void* a, const void* b) {
 static int cmpbump(const void* a, const void* b) {
   return strcmp(((const Stat*)a)->key, ((const Stat*)b)->key);
 }
-/* 首轮零 GAP 且补丁放不进 FRONT 时按实际长度 align64KiB(补丁 + 16KiB) 整轮重做（上限 32 MiB）；自旋是可选优化，但换布局不许丢掉上一轮成功的回边 */
+/* 补丁放不进 FRONT 时按实际长度 align64KiB(补丁 + 16KiB) 整轮重做（首轮有 GAP 也重做，GAP 带到下一轮照常降级，#1476）；自旋是可选优化，但换布局不许丢掉上一轮成功的回边 */
 #define RETRY_RC (-100)
 static size_t lost_spins(void) {
   size_t n = 0;
@@ -4931,11 +4932,15 @@ static int outputs(void) {
     g->next_front = 0;
     return RETRY_RC;
   }
-  /* 双岛的前岛超容量时本轮的单元落点不作数（缺口可能就是越界落点造成的）：不看缺口，直接放大前岛重做 */
-  if ((g->dual || (!g->gaps.n && !lost)) && capacity_short) {
+  /* 前岛超容量时本轮的单元落点不作数（缺口可能就是越界落点造成的）：不看缺口，直接放大前岛重做。
+   *   单前岛原先只在零缺口时重做，首轮有缺口（与容量无关的 brk / 窗口等）又超容量就删产物返回 3，出包整包失败（#1476）；
+   *   现在单前岛同双岛一样放大重做，原有缺口照常降级出产物，重做后缺口比触发那轮多才算布局重选失败（retry_gaps） */
+  if ((g->dual || !lost) && capacity_short) {
     remove_output("patched.bin");
+    g->next_gaps0 = g->gaps.n;
     if (next_front <= front_max) {
-      msg("%s 补丁容量不足，重新生成：FRONT 0x%zx → 0x%zx，补丁 0x%zx\n", g->r.module, g->front, next_front, flen);
+      msg("%s 补丁容量不足，重新生成：FRONT 0x%zx → 0x%zx，补丁 0x%zx%s\n", g->r.module, g->front, next_front, flen,
+          g->gaps.n ? "（本轮已有缺口照常降级）" : "");
       g->next_dual = g->dual;
       g->next_front = next_front;
       return RETRY_RC;
@@ -4995,7 +5000,7 @@ static int outputs(void) {
     }
   }
   /* 能进入重做说明原布局零 GAP：此时新增缺口属于布局重选失败 */
-  int retry_gaps = !g->dual && g->retry_front && g->gaps.n;
+  int retry_gaps = !g->dual && g->retry_front && g->gaps.n > g->retry_gaps0;
   int layout_fatal = retry_gaps || (!g->gaps.n && (capacity_short || lost));
   msg("PFRW mod=%s need=%zu gaps=%zu fatal=%d\n", g->r.module, total, g->gaps.n, layout_fatal);
   if (g->gaps.n && !retry_gaps && (capacity_short || lost)) {
@@ -5011,8 +5016,8 @@ static int outputs(void) {
   if (layout_fatal) {
     remove_output("patched.bin");
     if (retry_gaps)
-      fail("补丁布局重选后 B / ADRP 超出跳转范围，新增 %zu 个编码缺口（text 末尾 0x%zx，新 FRONT 0x%zx）；首轮零 GAP，当前布局不可用，拒绝输出",
-           g->gaps.n, g->text, g->front);
+      fail("补丁布局重选后 B / ADRP 超出跳转范围，新增 %zu 个编码缺口（text 末尾 0x%zx，新 FRONT 0x%zx）；重做前 %zu 个，当前布局不可用，拒绝输出",
+           g->gaps.n - g->retry_gaps0, g->text, g->front, g->retry_gaps0);
     if (lost)
       fail("扩大补丁布局后丢失 %zu 条已成功的自旋回边，拒绝输出", lost);
     fail("补丁区 0x%zx 字节放不进首址前的 0x%zx（可用 0x%zx）；需要 0x%zx，布局策略上限 0x%zx", flen,
@@ -5373,7 +5378,7 @@ static void rel_upgrade(void) {
   if (n) msg("独占存补 release：共 %d 处%s\n", n, n > 16 ? "（上面只列前 16 处）" : "");
 }
 static int attempt(const s2a_rewrite_request* r, const s2a_rewrite_options* options, FILE* log, size_t* front, int* dual,
-                   Pair** carry, size_t* ncarry) {
+                   size_t* gaps0, Pair** carry, size_t* ncarry) {
   RW *prev = g, *ctx = calloc(1, sizeof(*ctx));
   if (!ctx)
     return 1;
@@ -5381,6 +5386,7 @@ static int attempt(const s2a_rewrite_request* r, const s2a_rewrite_options* opti
   g->r = *r;
   g->retry_front = *front;
   g->retry_dual = *dual;
+  g->retry_gaps0 = *gaps0;
   g->req = *carry;
   g->nreq = *ncarry;
   g->log = log;
@@ -5439,6 +5445,7 @@ static int attempt(const s2a_rewrite_request* r, const s2a_rewrite_options* opti
     free(*carry);
     *front = g->next_front;
     *dual = g->next_dual;
+    *gaps0 = g->next_gaps0;
     if (g->dual || g->next_dual) {   /* 双岛不带自旋回边（够不着的另出表头 SPIN_UNREACHED） */
       free(g->now);
       *carry = NULL;
@@ -5458,11 +5465,11 @@ int s2a_rewrite_files_with_options(const s2a_rewrite_request* r,
   if (!r || !r->input || !r->output_dir || !r->module || !r->module[0] || strchr(r->module, '/') ||
       strchr(r->module, '\\') || eq(r->module, ".") || eq(r->module, ".."))
     return 1;
-  size_t front = 0, ncarry = 0;
+  size_t front = 0, ncarry = 0, gaps0 = 0;
   int dual = 0;
   Pair* carry = NULL;
   int rc;
-  while ((rc = attempt(r, options, log, &front, &dual, &carry, &ncarry)) == RETRY_RC) {
+  while ((rc = attempt(r, options, log, &front, &dual, &gaps0, &carry, &ncarry)) == RETRY_RC) {
   }
   free(carry);
   return rc;

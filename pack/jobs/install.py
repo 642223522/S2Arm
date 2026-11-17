@@ -922,13 +922,34 @@ def backup_failed(c, why):
                   code="save_backup_failed", internal=why)
 
 
+# 手机锁着（devicectl：com.apple.dt.RemotePairingError 1016「…has not been unlocked recently」等）：读不了 App 数据容器，解锁后就能读。
+#   维护者 11-17（玩家判断不了的我们替他判）：不先问「仍然继续 / 先不」，提示解锁、每几秒自动重试，等到了照常备份；等满 2 分钟还锁着才走原来的确认
+LOCKED = re.compile(r"RemotePairingError.{0,40}\b1016\b|not been unlocked|device is locked|passcode.{0,20}locked", re.I | re.S)
+UNLOCK_WAIT_S, UNLOCK_POLL_S = 120, 5   # 等满 2 分钟还锁着才退回确认框
+
+
+def wait_unlocked(c, call):
+    """call() → (rc, data, err)。锁屏才等：rc 非 0 且错误是锁屏 → 提示解锁、每 UNLOCK_POLL_S 秒重试，直到不再是锁屏错误或等满 UNLOCK_WAIT_S；返回最后一次结果"""
+    rc, data, err = call()
+    if not rc or not LOCKED.search(err or ""):
+        return rc, data, err
+    c.emit("message", "iPhone 锁着，读不了存档：请解锁手机，解锁后会自动继续")
+    end = time.monotonic() + UNLOCK_WAIT_S
+    while rc and LOCKED.search(err or "") and time.monotonic() < end:
+        c.check()   # 玩家取消照常能停
+        time.sleep(UNLOCK_POLL_S)
+        rc, data, err = call()
+    note(c, "存档备份等手机解锁：" + ("已解锁，继续" if not (rc and LOCKED.search(err or "")) else f"等了 {UNLOCK_WAIT_S} 秒仍锁着"))  # 非玩家句
+    return rc, data, err
+
+
 def backup_saves(c, ident, bid, gid, docs="Documents"):
     """覆盖装前把机上这款的整个存档目录（bis/user/save）逐文件拉回游戏库 games/<程序号>/save_backup/<时刻>/（10-27 运维线：
     斯普拉遁3 体感包覆盖装后进了选形象页，原档没有备份、无从比对）。第一次装 / 机上没有存档 = 不备份；拉失败报红停装，宁可不装也不冒丢档的险"""
     from diag import devicectl
     save_dir = f"{docs}/{SAVE_REL}"
-    rc, data, err = devicectl(c, "device", "info", "files", "--device", ident, "--domain-type", "appDataContainer", "--domain-identifier", bid,
-                              "--subdirectory", save_dir, timeout=120)
+    rc, data, err = wait_unlocked(c, lambda: devicectl(c, "device", "info", "files", "--device", ident, "--domain-type", "appDataContainer",
+                                                       "--domain-identifier", bid, "--subdirectory", save_dir, timeout=120))
     # 文件清单的路径字段（#908：玩家 Xcode 16.0 的 devicectl 有条目不带 relativePath，原先 f["relativePath"] 抛 KeyError、整个装机作业崩成
     #   「本地任务失败」，每次都装不上）：relativePath / path 都认；都没有的条目读不懂 → 走「备份不了存档、确认后照装」，条目字段名记进日志，不再崩
     entries = [f for f in ((data.get("result") or {}).get("files") or []) if isinstance(f, dict)]
@@ -942,7 +963,7 @@ def backup_saves(c, ident, bid, gid, docs="Documents"):
         # 列不出：App 不在机上（第一次装）才算没有存档；App 在却列不出要分清两种——devicectl 对「目录不存在」和「锁屏 / 隧道断」报同一个错
         #   （11-07 满屏线 Duo 实测：容器第一次装半途失败 / 从没进过游戏，机上 Documents/games 是空目录，原先每次都拒装、玩家永久卡死）。
         #   往上逐级列父目录，第一个列得出的父目录定：里面看不到存档目录 = 没有存档，照装；看得到却列不出 / 父目录一个都列不出 = 停装
-        arc, apps, aerr = devicectl(c, "device", "info", "apps", "--device", ident, "--bundle-id", bid, timeout=60)
+        arc, apps, aerr = wait_unlocked(c, lambda: devicectl(c, "device", "info", "apps", "--device", ident, "--bundle-id", bid, timeout=60))
         if arc:   # 连「装没装过」都问不出（锁屏 / 超时 / 断开）：不能当成第一次装，否则跳过备份直接覆盖（#333）
             return backup_failed(c, "确认不了 iPhone 上有没有装过这款：" + (aerr.splitlines()[-1] if aerr else f"devicectl 退出 {arc}"))  # 非玩家句
         if any(a.get("bundleIdentifier") == bid for a in (apps.get("result") or {}).get("apps") or []):
@@ -1388,7 +1409,7 @@ def export_phone(c, gid=None):
         old_stamps = read(c.private / EXPORT_STAMPS, {}) or {}
         for g in games:
             f = _img_name(names.get(g, g), g, used)
-            stamp = _pack_stamp(c, layout.ios_pack(c, g))
+            stamp = _pack_stamp(c, layout.ios_pack(c, packer.library_id(c, g)))
             if not _reuse_export(prev / f, out / f, old_stamps.get(f), stamp):
                 # 点了哪款只新写那一款（库大时第一次导出 / 换版本不再把每款几 GB 全写一遍）：别的款上次导出的 .img 来源没变就沿用，
                 #   变了或没有就这次不写，完成页点名（unwritten）。程序都在 S2Arm.ipa 里；手机上已有的旧 .img 照常能玩（game.img 不随壳变）
@@ -2340,9 +2361,9 @@ def put_game(c, gid, ph, steps=True, others=None, skipped=()):
     packs = {}
     for g in games:
         try:
-            packs[g] = ios_pack(c, g)
+            packs[g] = ios_pack(c, packer.library_id(c, g))
         except Failure as e:
-            if gid and g.upper() == gid.upper():
+            if gid and packer.library_id(c, g).upper() == gid.upper():
                 raise
             packs[g] = None
             note(c, f"{g} 本机没有资源包（{e}）：这次不推它，手机上已有的照旧")

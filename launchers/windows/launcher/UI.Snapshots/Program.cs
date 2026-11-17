@@ -227,6 +227,16 @@ CheckHeroActions(pack, "无横图的选中游戏", heroActionFailures);
     CheckHeroActions(pack, "有横图的选中游戏", heroActionFailures, expectBanner: true);
     InjectMockGame(pack, ready: true);   // 恢复后续场景用的无横图夹具
 }
+// 导入时数据校验不过、照常导入的款（11-17）：封面右下角黄色「!」，悬停 / 选中时说明；夹具用通用占位名
+{
+    var plain = MockGame(true) with { Id = "0100F00200000000", Name = "示例游戏 A" };
+    var skipped = MockGame(true) with { Id = "0100F00300000000", Name = "示例游戏 B",
+        Packages = [new("base", "0100F00300000000", 0, "v1.0.0", 1L, "", IntegritySkipped: true)] };
+    SetW(pack, "catalog", new LibraryCatalog([plain, skipped], true, "密钥已就绪"));
+    SetW(pack, "selectedGame", skipped.Id);
+    SaveP("win_06e_library_integrity_skipped", () => Navigate(pack, "library"));
+    InjectMockGame(pack, ready: true);
+}
 // 导出自签包的进度 / 完成（11-15：装机页只画结局卡，不画装机说明、清单、开始装机 / 删除）
 {
     var g = MockGame(true);

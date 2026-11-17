@@ -164,9 +164,15 @@ class DevpushMvTests(unittest.TestCase):
 class SwitchAndSignerTests(JobCase):
     def test_switch_default_off(self):
         self.assertFalse(program_pack.ON_BY_DEFAULT, "0.6.0 之前缺省关（维护者 11-17 定）")
+        from unittest import mock
+        # 读作业进程自己的环境：给子工具的 c.env() 会清掉 S2A_*（core.Context.env），替身照样清，开关不能靠它
+        self.c.env = lambda: {k: v for k, v in os.environ.items() if not k.startswith("S2A_")}
         for v, want in (("", False), ("1", True), ("0", False), ("yes", False)):
-            self.c.env = lambda v=v: dict(os.environ, S2A_UNIVERSAL_SHELL=v)
-            self.assertEqual(program_pack.enabled(self.c), want, repr(v))
+            with mock.patch.dict(os.environ, {"S2A_UNIVERSAL_SHELL": v}):
+                self.assertEqual(program_pack.enabled(self.c), want, repr(v))
+        with mock.patch.dict(os.environ, clear=False):
+            os.environ.pop("S2A_UNIVERSAL_SHELL", None)
+            self.assertFalse(program_pack.enabled(self.c))
 
     def test_signer_by_mode(self):
         import devcert
