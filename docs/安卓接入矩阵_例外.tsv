@@ -26,3 +26,4 @@ runtime/src/motion_pick.c	安卓侧缺口（不是不适用）：玩家 1 六轴
 runtime/src/game_volume.c	游戏音量（#1186）：只接苹果音频输出层（compat/tree Ryujinx.Audio.Backends.Apple ApplyVolume 取值、iOS 齿轮菜单调 S2A_AudioSetVolume）；安卓音频走自己的输出、界面没有这项，不适用	dev-yi	2026-11-15
 graphics/tools/astc/bc2astc.c	出包机宿主工具（pack/astc_pack.py 编成动态库，BC 贴图预转 ASTC 给 Apple TV），不进任何 App / 平台运行时	D2R线	2026-11-16
 runtime/src/waived.c	校验没过照常继续的原生记账（FATAL / 崩溃补报一行）：唯一写入方 launchctx.c 只在苹果 iOS（见上 launchctx.c 例外），native.h / crash.c 按 dlsym 可选取用、取不到就跳过；安卓侧同一需求由 C# Red.Waive 承担	开发乙线	2026-11-17
+runtime/src/selfsign.c	手机端自签（0.6.0 通用壳）：在 iOS 上用玩家开发证书给游戏程序库重签，只用 CommonCrypto / Security；唯一调用方 launchctx.c 只在苹果（见上 launchctx.c 例外）。安卓侧装包与签名不走 Apple 代码签名，没有对应需求	开发乙线	2026-11-17

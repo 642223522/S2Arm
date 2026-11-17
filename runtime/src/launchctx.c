@@ -405,6 +405,9 @@ static int export_env(void) {   // 冻结后的四个根写进进程环境（覆
     }
     return 0;
 }
+// selfsign.c：手机端自签真机验证（开发用环境变量，没设就直接返回）。这里给弱的空实现：链了 selfsign.c 的（App / 宿主）用它的强定义，
+//   只链 launchctx.c 的单测和工具不用跟着链 Security
+__attribute__((weak)) void s2a_selfsign_probe(void) {}
 // 校验没过、照常继续（11-17 维护者，waived.c）：打【黄】并记下，FATAL / 崩溃时补报
 static void waive(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static void waive(const char *fmt, ...) {
@@ -413,6 +416,7 @@ static void waive(const char *fmt, ...) {
     if (f) f(m); else LOG("【黄】校验没过，照常继续：%s", m);
 }
 static void decide(void) {
+    s2a_selfsign_probe();
     char exe[S2A_LCTX_PATH]; uint32_t n = sizeof exe;
     if (_NSGetExecutablePath(exe, &n)) { snprintf(g_err, sizeof g_err, "取不到可执行文件路径"); return; }
     char *sl = strrchr(exe, '/'); if (sl) *sl = 0;
