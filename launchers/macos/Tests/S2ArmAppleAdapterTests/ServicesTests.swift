@@ -2,6 +2,13 @@ import Foundation
 import XCTest
 @testable import S2ArmAppleAdapter
 
+/// 测试用的游戏库根：写和作业层同一格式的库标记（setup 作业建库时写的就是 schema=1 / id）。
+private func writeLibraryMarker(_ box: Sandbox, id: String = "lib-1") throws {
+    let library = URL(fileURLWithPath: box.environment().library)
+    try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
+    try Data(#"{"schema":1,"id":"\#(id)"}"#.utf8).write(to: library.appendingPathComponent(".s2arm-library.json"))
+}
+
 final class LibraryProviderTests: XCTestCase {
     func testCatalogResultBecomesGameSummaries() throws {
         let box = try Sandbox(); defer { box.remove() }
@@ -26,6 +33,7 @@ final class LibraryProviderTests: XCTestCase {
         let box = try Sandbox(); defer { box.remove() }
         let runner = FakeRunner()
         runner.script = { _ in ([eventLine("result", state: "succeeded", message: "操作完成", extra: #","result":{"games":[{"id":"0100A","name":"Alpha","display":"1.2.0","ready":true,"missing":[]}],"keys":{"ready":true},"jobs":[]}"#)], 0, false) }
+        try writeLibraryMarker(box)
         let provider = LibraryProvider(client: client(box, runner))
         XCTAssertNil(provider.lastKnownGames(), "没读过：没有列表可显示")
         let done = expectation(description: "load")
@@ -38,6 +46,21 @@ final class LibraryProviderTests: XCTestCase {
         XCTAssertEqual(runner.starts.count, starts, "读列表不起作业")
         var other = box.environment(); other.libraryId = "another-library"
         XCTAssertNil(LibraryProvider(client: client(box, runner, env: other)).lastKnownGames(), "换了游戏库不显示旧列表")
+    }
+
+
+    func testLastKnownGamesIsNotShownWhenLibraryMarkerIsGone() throws {
+        let box = try Sandbox(); defer { box.remove() }
+        let runner = FakeRunner()
+        runner.script = { _ in ([eventLine("result", state: "succeeded", message: "操作完成", extra: #","result":{"games":[{"id":"0100A","name":"Alpha","display":"1.2.0","ready":true,"missing":[]}],"keys":{"ready":true},"jobs":[]}"#)], 0, false) }
+        try writeLibraryMarker(box)
+        let provider = LibraryProvider(client: client(box, runner))
+        let done = expectation(description: "load")
+        provider.load { _ in done.fulfill() }
+        wait(for: [done], timeout: 5)
+        XCTAssertEqual(provider.lastKnownGames()?.map(\.id), ["0100A"], "库标记在时缓存列表可用")
+        try FileManager.default.removeItem(atPath: box.environment().library)
+        XCTAssertNil(LibraryProvider(client: client(box, runner)).lastKnownGames(), "游戏库被删后不能显示缓存列表")
     }
 
     func testNoLibraryFailsWithoutStartingAJob() throws {
