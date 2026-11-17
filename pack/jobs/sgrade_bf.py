@@ -250,6 +250,43 @@ def upgrade_ios(c, gid):
     return "updated" if rels else "none"
 
 
+def rechain_ios(c, gid):
+    """0.6.0 通用壳（11-17 维护者定）：着色器链（直连库链号，game.json ios.dmshChain）和本引擎不同 → 只重编这款的着色器库，不重出整款。
+    原料同 upgrade_ios（ios_inputs：游戏库里的 game.img；没有就借同款 Mac 运行版本；都没有才要原件），按出包同一套阶段重出（rebuild），
+    新库（b-<新链>）整份换掉资源包里的 shaders/direct，改资源包清单（add_to_pack），记新链号与本代 _bf（整份重出已含）。
+    资源包号随之变，推送按机上清单只推变了的文件。由玩家对这一款「推到 iPhone」时前台调（install.push_game），不进后台。
+    → 'skip'（链号已是本引擎的 / 读不到本引擎链号 / 不是直连包）| 'unavailable'（没原料：调用方记一行，不挡推送）| 'updated'"""
+    import host_update
+    import tempfile
+    want = host_update.engine_compat(c)
+    side = layout.game_info(c, gid).get("ios") or {}
+    if not want or side.get("dmshChain", host_update.LEGACY_CHAIN) == want["dmshChain"]:
+        return "skip"
+    pack = Path(layout.ios_pack(c, gid))
+    direct = pack / "shaders/direct"
+    if lib_dir(direct) is None:
+        return "skip"   # 不是直连包
+    with tempfile.TemporaryDirectory(dir=c.private) as tmp:
+        src, where = ios_inputs(c, gid, Path(tmp))
+        if src is None:
+            return "unavailable"
+        c.emit("message", f"{gid}：着色器链更新了，正在用{where}重编这款的着色器库（不重出整款；首次要几分钟到几十分钟）")  # 非玩家句
+        new = rebuild(c, gid, src, "ios", Path(tmp) / "w")
+        if lib_dir(new) is None:
+            raise Failure("重编的直连着色器库不完整")  # 非玩家句
+        staged, old = pack / "shaders/.direct-new", pack / "shaders/.direct-old"
+        for d in (staged, old):
+            shutil.rmtree(d, ignore_errors=True)
+        shutil.copytree(new, staged)
+        os.replace(direct, old)
+        os.replace(staged, direct)
+        shutil.rmtree(old, ignore_errors=True)
+        rels = [p.relative_to(pack).as_posix() for p in sorted(direct.rglob("*")) if p.is_file()]
+        pid = add_to_pack(pack, "shaders/direct/", rels)
+    layout.update_info(c, gid, ios={**side, "dmshChain": want["dmshChain"], "bfGen": BF_GEN, "pack": pid})
+    return "updated"
+
+
 def due(c, gid):
     """iPhone 款要不要补 _bf（install.sgrade_pending 用）：代数低于本引擎、这一代没因缺原料试过、资源包是直连包"""
     side = layout.game_info(c, gid).get("ios") or {}
