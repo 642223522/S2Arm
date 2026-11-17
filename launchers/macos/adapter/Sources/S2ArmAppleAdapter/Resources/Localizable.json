@@ -9984,6 +9984,14 @@
   "en": "The game got stuck, so S2Arm stopped this session safely."
  },
  {
+  "source": "这款需要更多内存：已经记下要多少，再点一次开始就能进。",
+  "en": "This game needs more memory: how much has been noted, so start it again and it will run."
+ },
+ {
+  "source": "再点一次「开始」就能进：这一局已记下这款要的内存，下次起局按它给。",
+  "en": "Click Start again to play: this session noted how much memory the game needs, and the next start uses it."
+ },
+ {
   "source": "点「再启动一次」一般能接着玩，存档停在游戏上次保存的地方。",
   "en": "Click “Start again” and you can usually keep playing; your save is as of the last time the game saved."
  },

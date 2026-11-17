@@ -404,6 +404,7 @@ static int heap_need_note(uint64_t pid, uint64_t size) {   // → 1 = 记下了�
     char p[1024]; FILE *f = heap_need_path(p, sizeof p, pid) ? fopen(p, "w") : NULL;
     return f && fprintf(f, "%llu\n", (unsigned long long)size) > 0 && !fclose(f);
 }
+static _Atomic int g_heap_noted;   // 这一局 SetHeapSize 超出堆区、已记下要的堆
 static int alias_full_seen(uint64_t pid) { char p[1024]; FILE *f = alias_full_path(p, sizeof p, pid) ? fopen(p, "r") : NULL; if (f) fclose(f); return f != NULL; }   // 只用 fopen / fclose：安卓 VM 端点集合（check_endpoints.py）
 // 收小后游戏照旧映射到收掉的那段（它没按报的大小来，比如写死了 64 GiB）：这一局照常服务（那段在 L.alias_size 内，伸出窗口的走远端，同收小前），
 //   报一次红并记下本款，下次起局恢复原值——宁慢不写错
@@ -1490,6 +1491,7 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
             GMU_UNLOCK();
             // 出包时堆按应用池上限给、别名优先的款按静态识别让堆——到这里说明那两条都没覆盖到（堆大小是运行时算的，D-NGH9）：记下本款要的堆，下一局布局至少给到这么多
             int noted = heap_need_note(g_lay_pid, size);
+            if (noted) atomic_store(&g_heap_noted, 1);   // 游戏随后 Break（拿到 0xD001 中止）时按「需要更多内存、已记下」收（见 Break）
             char b[320]; snprintf(b, sizeof b, "普通堆需要 %llu 字节，堆区只有 %llu 字节（出包缺省 / 静态识别没覆盖到这款）：%s",
                 (unsigned long long)size, (unsigned long long)heap_region(), noted ? "已记下本款要的堆，下次起局堆区按它给" : "记录写不进，下次起局仍按缺省");
             svc_fail_log(num, 0xD001, b); regs[0] = 0xD001; return 1;
@@ -2045,6 +2047,9 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
             LOG("【红】Break 载荷结果码 %#x（%04u-%04u：模块 %u、描述 %u）", r, 2000 + (r & 0x1FF), (r >> 9) & 0x1FFF, r & 0x1FF, (r >> 9) & 0x1FFF);
         }
         s2a_backtrace(regs[29]);
+        // 这一局普通堆超出堆区、已记下要的堆（D-NGH9）：游戏拿到 0xD001 自己中止。告诉玩家「需要更多内存、已记下、再点一次开始」，不按崩溃说
+        //   （iOS 人手局停提示页，Mac / 自动化局失败退出，Mac 启动器按同一句话报，pack/jobs/build.py）。没记下（写不进）照旧走下面
+        if (atomic_load(&g_heap_noted)) { LOG("游戏在堆不够后中止：本款要的堆已记下，下一局按它给"); s2a_init_failed(S2A_INIT_FAIL_E_HEAP_LEARNED); }
         session_guest_end("游戏 Break");
 #if TARGET_OS_IPHONE
         // 资源包缺 / 不全导致的 Break（10-26 测试设备2：缺 ctl/control.nacp，App 退出像闪退）：不退出，停住游戏、弹缺资源包说明页（pack_apply.c）
