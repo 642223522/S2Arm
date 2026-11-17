@@ -72,6 +72,7 @@ def push_reason(text):
     """推送失败的原文 → 玩家一眼看得懂的一类（摘要第一条要能看出是哪种，11-12 v0.3.1 Mac 玩家「romfs.img 没传完」看不出原因）：
     USB 看不到手机 / 手机锁屏 / 连接断了；认不出就空串（照原文报）。按 s2a-devpush 与 devicectl 的报错特征认，不看英文全文"""
     t = str(text or "")
+    if nospace(t): return "手机空间写满了"
     if "找不到设备" in t or "No device" in t or "usbmuxd" in t.lower() and "connect" in t.lower(): return "USB 看不到手机（没插数据线，或手机只在无线连接上）"
     if DENIED in t: return "手机上这个文件 App 写不进（Permission denied）"
     if "锁屏" in t or "locked" in t.lower() or "passcode" in t.lower(): return "手机锁屏了"
@@ -121,6 +122,15 @@ class SpaceFull(Fail):
 
 
 FULL_LEFT = 256 << 20   # 推失败后手机空闲低于它 = 写满了（按写满报，不报成传输失败）
+# 手机写满的报错，同一族的说法都认（11-17：原先只认 devicectl 的 POSIX 28，s2a-devpush 的 AFC「No space left」被当成连接中断，
+#   还改走 devicectl 白等两分钟，最后报「devicectl 退出码 1，确认手机解锁、数据线插稳」）。实测原文：s2a-devpush「afc error: No space left」；
+#   devicectl「POSIX error code 28」「NSPOSIXErrorDomain error 28」「No space left on device」；libimobiledevice「AFC_E_NO_SPACE_LEFT」；ENOSPC
+NOSPACE = re.compile(r"No space left|ENOSPC|AFC_E_NO_SPACE_LEFT|POSIX error code 28(?!\d)|NSPOSIXErrorDomain error 28(?!\d)")
+
+
+def nospace(text):
+    """这段报错说的是手机写满了吗（同一族各种说法）"""
+    return bool(NOSPACE.search(text or ""))
 
 
 def gb1(n): return f"{n / 2**30:.1f}"
@@ -328,12 +338,14 @@ class Devicectl:
                 except DirUnwritable:
                     raise
                 except Fail as first:   # 流式断一次多半是瞬时的（插拔 / 同网切线）：隔 3 秒再流一次，再不行才考虑 devicectl（预检清单 #77）
+                    if nospace(str(first)): raise   # 手机写满了：重试、换 devicectl 都写不进，直接交给 run 按写满报
                     self.say(f"流式写 {Path(rel).name} 断了（{str(first)[-160:]}），3 秒后再试一次")
                     time.sleep(3)
                     return self.dp.put(src, rel)
             except DirUnwritable:
                 raise
             except Fail as e:
+                if nospace(str(e)): raise
                 # devicectl 会把整个文件读进系统设备服务的内存（#641）：本机可用内存的一半装得下才交给它（至少放行 S2A_DC_FALLBACK_MAX / 2 GiB）
                 size, mem = Path(src).stat().st_size, avail_mem()
                 cap = max(int((self.env or os.environ).get("S2A_DC_FALLBACK_MAX") or DC_FALLBACK_MAX), mem // 2)
@@ -384,7 +396,11 @@ class Devicectl:
         except (OSError, ValueError, KeyError, TypeError):
             return None
 
-    def free(self):   # 机上可写字节（ideviceinfo AmountDataAvailable）；UDID 没给就按设备标识从 devicectl 设备列表换；读不到 None
+    def free(self):   # 机上可写字节：有 s2a-devpush 先问它（AFC 设备信息），再退 ideviceinfo AmountDataAvailable；UDID 没给就按设备标识从 devicectl 设备列表换；读不到 None
+        # 11-17：原先只问 ideviceinfo，玩家机上多半没装 libimobiledevice，推之前一律「读不到 iPhone 剩余空间」照推，推到一半写满才停
+        if self.dp:
+            v = self.dp.free()
+            if v is not None: return v
         ud = self.udid
         if not ud:
             js = self.work / "devlist.json"
@@ -423,7 +439,7 @@ class Devicectl:
             tail = (self.work / "cp.log").read_text(errors="replace").splitlines()[-40:]
         except OSError:
             return False
-        return any(re.search(r"POSIX error code 28[^0-9]|NSPOSIXErrorDomain error 28[^0-9]", l + " ") for l in tail)
+        return any(nospace(l) for l in tail)
 
     say = staticmethod(lambda m: None)
 
@@ -992,7 +1008,8 @@ def run(dev, pack, work, full=False, say=print, env=None, on_plan=None, progress
         elif fb < need:
             # 手机报的空闲（AFC）不含系统随时能清掉的空间，比「设置 → 储存空间」里的「可用」小，常差好几 GB：估算不够不等于放不下
             head = (f"iPhone 剩余空间看起来不够：这次要传约 {gb1(nbytes)} GB，连同解开时临时多占的约要 {gb1(need)} GB，"
-                    + (f"手机可用约 {gb1(fb)} GB（含系统随时能清掉的空间）。" if imp else f"手机报的空闲约 {gb1(fb)} GB。"))
+                    + (f"手机可用约 {gb1(fb)} GB（含系统随时能清掉的空间）" if imp else f"手机报的空闲约 {gb1(fb)} GB")
+                    + f"，还差约 {gb1(need - fb)} GB。")
             if not accept:
                 raise LowSpace(head + ("可以先在「设置 → 通用 → iPhone 储存空间」腾出一些，或者" if imp else
                                        "「设置 → 通用 → iPhone 储存空间」里的「可用」还包括系统随时能清掉的空间，实际多半放得下；")
@@ -1004,8 +1021,10 @@ def run(dev, pack, work, full=False, say=print, env=None, on_plan=None, progress
         raise
     except Fail as e:
         left = dev.free() if nbytes else None
-        if left is not None and left < FULL_LEFT:
-            raise SpaceFull(f"iPhone 空间写满了，传到一半停下：这次要传约 {gb1(nbytes)} GB，手机现在只剩 {left >> 20} MB。"
+        # 报错原文就说写满了（AFC「No space left」等，见 NOSPACE），或推完再量空闲已近 0：都按写满报，不报成连接中断
+        if nospace(str(e)) or (left is not None and left < FULL_LEFT):
+            now = f"手机现在只剩 {left >> 20} MB" if left is not None else "手机报空间已写满"
+            raise SpaceFull(f"iPhone 空间写满了，传到一半停下：这次要传约 {gb1(nbytes)} GB，{now}。"
                             f"在「设置 → 通用 → iPhone 储存空间」腾出空间后再装一次（已传完的文件不用重传）。") from e
         raise
     return nb, nt, nbytes
