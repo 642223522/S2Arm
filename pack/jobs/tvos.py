@@ -194,11 +194,22 @@ def tv_shell(c):
 ASTC_PACK = "astc.pack"   # 资源包里的 BC → ASTC 预转包（pack/astc_pack.py 出；宿主在电视上见到就设 NXGAL_ASTC_PACK，ios/tv_host.m）
 
 
+def clone_tree(src, dst):
+    """整棵目录拷一份：Mac 用 cp -cR（APFS 克隆，不占空间；不同卷时 cp 自动退成整份拷贝），Windows 没有 cp，整份拷贝（NTFS 没有写时复制，
+    不用硬链接：之后改 tvOS 这份不能动到 iPhone 那份）"""
+    if sys.platform == "darwin":
+        r = subprocess.run(["cp", "-cR", str(src), str(dst)], capture_output=True, text=True)
+        if r.returncode:
+            raise OSError((r.stderr.strip().splitlines() or ["cp 失败"])[-1])  # 非玩家句
+        return
+    shutil.copytree(src, dst)
+
+
 def derive(c, gid, extraction):
     """出 Apple TV 包（ipa 作业带 platform = "tvos"，iPhone 版刚交付、解包目录还没清时调）：电视与 iPhone 跑同一份改写产物，差别只在
     组装时镜像包标的平台（ios/embed.py 按 S2A_APPLE_OS 写）、tvOS 壳、和多一个 ASTC 预转包（A15 不支持 BC 贴图，不转会在 CPU 上整张解成未压缩、
     贴图内存涨 4–8 倍，电视约 2 GB 就被系统结束）。所以：
-      ① image/tvos/kit、image/tvos/.pack 从 image/ios 克隆（APFS 克隆不占空间；资源包同一份，电视上按 Library/Caches 推）
+      ① image/tvos/kit、image/tvos/.pack 从 image/ios 拷一份（clone_tree：Mac APFS 克隆不占空间，Windows 整份拷贝；资源包同一份，电视上按 Library/Caches 推）
       ② 解开的 romfs → image/tvos/.pack/astc.pack（只给电视推，iPhone 资源包不带）
       ③ 开发树本机还没有本版 tvOS 壳就出一个（发版应用自带 Shell-tvOS/）
       ④ game.json 记 tvos：壳号、兼容判据、资源包号（usable_kit 按它判）"""
@@ -211,10 +222,11 @@ def derive(c, gid, extraction):
     for name in (layout.IOS_KIT, layout.IOS_PACK):
         tmp = dst / (name + ".partial")
         shutil.rmtree(tmp, ignore_errors=True)
-        r = subprocess.run(["cp", "-cR", str(src / name), str(tmp)], capture_output=True, text=True)   # APFS 克隆；不同卷时 cp 自动退成整份拷贝
-        if r.returncode:
+        try:
+            clone_tree(src / name, tmp)
+        except (OSError, shutil.Error) as e:
             shutil.rmtree(tmp, ignore_errors=True)
-            raise Failure("Apple TV 包的文件拷不出来：" + (r.stderr.strip().splitlines() or ["?"])[-1], code="package_failed")  # 非玩家句
+            raise Failure("Apple TV 包的文件拷不出来：" + (str(e).strip().splitlines() or ["?"])[-1], code="package_failed") from e  # 非玩家句
         shutil.rmtree(dst / name, ignore_errors=True)
         os.replace(tmp, dst / name)
     romfs = Path(extraction) / "romfs"
@@ -230,6 +242,8 @@ def derive(c, gid, extraction):
     sid = tv_shell_id(c)
     shell = Path(c.env().get("S2A_RUN_ROOT") or Path.home() / ".s2arm/run") / "s2arm/cache/shell-tvos" / sid
     if not (shell / "manifest.json").is_file() and not c.r.get("tvShellDir") and not (c.engine / "Shell-tvOS").is_dir():
+        if sys.platform != "darwin":   # 现出壳要 Xcode：Windows 只能用安装包带的 Shell-tvOS（启动器作 tvShellDir 交来，launchers/windows/bundle_win.py --tv-shell）
+            raise Failure("这个 S2Arm 安装包没带 Apple TV 预编壳，这台电脑出不了 Apple TV 包：请更新到带 Apple TV 支持的 S2Arm 版本。", code="engine_incomplete")
         c.begin("出 Apple TV 预编壳（本版第一次）")
         tmp = shell.parent / (".tmp." + sid + "." + str(os.getpid()))
         shutil.rmtree(tmp, ignore_errors=True); shell.parent.mkdir(parents=True, exist_ok=True)

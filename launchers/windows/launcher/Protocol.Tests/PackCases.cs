@@ -161,6 +161,21 @@ public static class PackCases
               (string?)ipa["shellDir"] == Path.GetFullPath(paths.Shell) && (int?)ipa["parentPid"] == Environment.ProcessId &&
               (string?)ipa["resources"] == Path.GetFullPath(AppContext.BaseDirectory),
             "request: ipa carries game, library id, bundled shell, bundled resources (fonts) and launcher pid");
+        // Apple TV 预编壳（安装包带了才有，同 Shell 放在启动器目录）：目录在 → ipa / export 带 tvShellDir；不在 → 不带（作业层 tvos.derive 报安装包没带）
+        var tvRoot = Path.Combine(Path.GetTempPath(), "s2a-tvshell-" + Environment.ProcessId);
+        try
+        {
+            var tvPaths = new LauncherPaths(Path.Combine(tvRoot, "Engine"), Path.Combine(tvRoot, "Runtime"), Path.Combine(tvRoot, "Shell"));
+            var noTv = PackJobClient.Payload(new(tvPaths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", "ipa", "0100FD70134FA000"), "win-tv0");
+            Directory.CreateDirectory(Path.Combine(tvRoot, "Shell-tvOS"));
+            var tvIpa = PackJobClient.Payload(new(tvPaths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", "ipa", "0100FD70134FA000"), "win-tv1");
+            var tvExport = PackJobClient.Payload(new(tvPaths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", "export", ""), "win-tv2");
+            var tvInstall = PackJobClient.Payload(new(tvPaths, Path.GetTempPath(), Path.GetTempPath(), "lib-id", "install", "0100FD70134FA000"), "win-tv3");
+            var want = Path.Combine(tvRoot, "Shell-tvOS");
+            check(!noTv.ContainsKey("tvShellDir") && (string?)tvIpa["tvShellDir"] == want && (string?)tvExport["tvShellDir"] == want && !tvInstall.ContainsKey("tvShellDir"),
+                "request: ipa / export carry tvShellDir only when Shell-tvOS sits next to Shell; install never");
+        }
+        finally { try { Directory.Delete(tvRoot, true); } catch (IOException) { } }
         // 界面语言照原样带（#502：法文界面原先不带 uiLanguage，作业层回落中文，自签导出文件夹与说明成了中文）
         var langBefore = JobLanguage.Current;
         try

@@ -81,25 +81,44 @@ def _run(cmd):
     if r.returncode: raise RuntimeError(f'{cmd[0]} 失败（{r.returncode}）：{" ".join(cmd)[:300]}\n{r.stderr[-2000:]}')
 
 
+EXPORTS = ('b2a_version', 'b2a_level_offset', 'b2a_layer_size', 'b2a_deswizzle', 'b2a_ctx_new', 'b2a_ctx_free', 'b2a_encode', 'yaz0_decompress')   # Lib 用到的全部函数
+
+
+def lib_name():
+    """C 库文件名（名字即源码与编译参数的身份）：现编缓存与 Windows 发版预编件同名"""
+    ext = '.dll' if os.name == 'nt' else ('.dylib' if sys.platform == 'darwin' else '.so')
+    return f'libbc2astc-{tool_hash()[:16]}{ext}'
+
+
+def prebuilt():
+    """启动器随发版预编的一份（S2A_PREBUILT_TOOLS/astc/<lib_name>，launchers/windows/bundle_prepare_win.py）：同名在就用，玩家机不要编译器"""
+    tools = os.environ.get('S2A_PREBUILT_TOOLS')
+    p = os.path.join(tools, 'astc', lib_name()) if tools else ''
+    return p if p and os.path.isfile(p) else None
+
+
 def build_tool(tool_dir=None):
-    """编出 C 库（按源码与编译参数的哈希缓存），返回路径"""
-    tag = tool_hash()[:16]
+    """编出 C 库（按源码与编译参数的哈希缓存），返回路径；有同名预编件直接用"""
+    hit = prebuilt()
+    if hit: return hit
     d = tool_dir or os.path.join(ROOT, 'build', 'astc_tool')
-    ext = '.dylib' if sys.platform == 'darwin' else '.so'
-    lib = os.path.join(d, f'libbc2astc-{tag}{ext}')
+    lib = os.path.join(d, lib_name())
     if os.path.exists(lib): return lib
+    tag = tool_hash()[:16]
     work = os.path.join(d, f'obj-{tag}'); os.makedirs(work, exist_ok=True)
     cxx, cc = os.environ.get('CXX', 'clang++'), os.environ.get('CC', 'clang')
     cpp, _ = _sources()
+    # Windows（clang 出 MSVC 目标）不认 -fPIC，且共享库默认不导出函数：编时去掉 -fPIC、链接时按名导出（同 graphics/tools/nxfmt.py 的 Yaz0 解码库）
+    strip = (lambda f: [x for x in f if x != '-fPIC']) if os.name == 'nt' else (lambda f: f)
     jobs = []
-    for src in cpp: jobs.append([cxx] + ASTC_FLAGS + ['-c', src, '-o', os.path.join(work, os.path.basename(src)[:-4] + '.o')])
-    for src in LIB_C: jobs.append([cc] + C_FLAGS + ['-c', src, '-o', os.path.join(work, os.path.basename(src)[:-2] + '.o')])
+    for src in cpp: jobs.append([cxx] + strip(ASTC_FLAGS) + ['-c', src, '-o', os.path.join(work, os.path.basename(src)[:-4] + '.o')])
+    for src in LIB_C: jobs.append([cc] + strip(C_FLAGS) + ['-c', src, '-o', os.path.join(work, os.path.basename(src)[:-2] + '.o')])
     with cf.ThreadPoolExecutor(os.cpu_count() or 4) as ex:
         for f in [ex.submit(_run, j) for j in jobs]: f.result()
     objs = [j[-1] for j in jobs]
     part = f'{lib}.{os.getpid()}.part'
-    link = [cxx, '-dynamiclib' if sys.platform == 'darwin' else '-shared', '-o', part] + objs
-    _run(link)
+    shared = ['-dynamiclib'] if sys.platform == 'darwin' else ['-shared'] + ([f'-Wl,/EXPORT:{n}' for n in EXPORTS] if os.name == 'nt' else [])
+    _run([cxx] + shared + ['-o', part] + objs)
     os.replace(part, lib)
     return lib
 
@@ -159,14 +178,22 @@ def _zstd():
 
 
 def unzstd(d, dicts):
+    fhd = d[4] if len(d) > 5 else 0
+    n, o = (0, 1, 2, 4)[fhd & 3], 6 - (fhd >> 5 & 1)
+    did = int.from_bytes(d[o:o + n], 'little')
+    want = dicts.get(did) if did else None
     z = _zstd()
     if z is not None:
-        fhd = d[4] if len(d) > 5 else 0
-        n, o = (0, 1, 2, 4)[fhd & 3], 6 - (fhd >> 5 & 1)
-        did = int.from_bytes(d[o:o + n], 'little')
-        if did and did in dicts: return z.decompress(d, zstd_dict=z.ZstdDict(dicts[did]))
-        return z.decompress(d)
-    return subprocess.run(['zstd', '-d', '-c', '-q'], input=d, capture_output=True, check=True).stdout
+        return z.decompress(d, zstd_dict=z.ZstdDict(want)) if want is not None else z.decompress(d)
+    # 没有 Python 3.14 的 compression.zstd（Windows 随包 Python 3.12）：退到 zstd 命令行，带字典的帧要把字典写成文件交 -D，不然整帧解不开
+    if want is None:
+        return subprocess.run(['zstd', '-d', '-c', '-q'], input=d, capture_output=True, check=True).stdout
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.zdict') as f:
+        f.write(want)
+    try:
+        return subprocess.run(['zstd', '-d', '-c', '-q', '-D', f.name], input=d, capture_output=True, check=True).stdout
+    finally:
+        os.unlink(f.name)
 
 
 def sarc_members(d):

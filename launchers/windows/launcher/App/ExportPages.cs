@@ -39,7 +39,13 @@ public sealed partial class EnvironmentWindow
     }
 
     private const string PlatformIos = "ios";
+    private const string PlatformTv = "tvos";
     private bool exportIos = true;
+    /// <summary>出包页勾了 Apple TV（11-16 维护者：Windows 也出 Apple TV 包；装到电视暂时只有 Mac 版能做）</summary>
+    private bool exportTv;
+    /// <summary>安装包带了 Apple TV 预编壳（启动器目录 Shell-tvOS，launchers/windows/bundle_win.py --tv-shell）：没带的这版不能勾 Apple TV</summary>
+    private bool TvShellReady => Directory.Exists(TvShellDir(paths));
+    internal static string TvShellDir(LauncherPaths p) => Path.Combine(Path.GetDirectoryName(Path.GetFullPath(p.Shell)) ?? "", "Shell-tvOS");
     // 存放位置（游戏库结构 v3）：locations 作业读回的各位置、为哪款读的、出包页选中的文件夹（"" = 还没定，不传，后端按这款现在的位置）
     private StorageLocations? locations;
     private string? locationsFor;
@@ -353,11 +359,11 @@ public sealed partial class EnvironmentWindow
         var existing = Action(PadKey("export.install_existing"), () => { readinessFor = null; Navigate("install"); }, !PhoneBlockedFor(game));   // 装机中也能进装机页：看别的游戏时提示「另一款正在装 · 查看那一款」
         Grid.SetColumn(existing, 1); heading.Children.Add(existing);
         body.Children.Add(heading);
-        var tiles = new UniformGrid { Columns = 4 };
-        foreach (var platform in new[] { PlatformIos, "mac", "android", "ohos" })
+        var tiles = new UniformGrid { Columns = 5 };
+        foreach (var platform in new[] { PlatformIos, PlatformTv, "mac", "android", "ohos" })
         {
-            var open = platform == PlatformIos;
-            var on = open && exportIos;
+            var open = platform == PlatformIos || platform == PlatformTv && TvShellReady;
+            var on = open && (platform == PlatformTv ? exportTv : exportIos);
             var tile = new StackPanel { Spacing = 10 };
             var top = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
             top.Children.Add(Label(T("export.platform." + platform), 16));
@@ -366,7 +372,8 @@ public sealed partial class EnvironmentWindow
             tile.Children.Add(top);
             tile.Children.Add(Muted(T(platform switch
             {
-                PlatformIos => "export.note.ios", "mac" => "export.note.mac_only", _ => "export.soon"
+                PlatformIos => "export.note.ios", PlatformTv => TvShellReady ? "export.note.tvos_win" : "export.note.tvos_win_missing",
+                "mac" => "export.note.mac_only", _ => "export.soon"
             })));
             var card = new Button
             {
@@ -377,7 +384,7 @@ public sealed partial class EnvironmentWindow
                 BorderBrush = on ? Accent : Brush.Parse("#2A2A2E"), BorderThickness = new Thickness(on ? 1.5 : 1)
             };
             AutomationId(card, "export.platform." + platform);
-            card.Click += (_, _) => { exportIos = !exportIos; Render(); };
+            card.Click += (_, _) => { if (platform == PlatformTv) exportTv = !exportTv; else exportIos = !exportIos; Render(); };
             tiles.Children.Add(card);
         }
         body.Children.Add(tiles);
@@ -657,7 +664,7 @@ public sealed partial class EnvironmentWindow
 
     private string? ExportBlockerKind(LibraryGame game)
     {
-        if (!exportIos) return "platform";
+        if (!exportIos && !exportTv) return "platform";
         if (game.Missing.Count > 0) return "files";
         if (game.NeedsKeys && catalog?.KeysReady != true) return "keys";
         if (exportQueue.Any(q => q.Game.Id == game.Id)) return "queued";
@@ -784,9 +791,9 @@ public sealed partial class EnvironmentWindow
         {
             var (queued, spaceOverride, location) = exportQueue[0];
             var game = catalog?.Games.FirstOrDefault(g => g.Id == queued.Id && !g.Hidden);
-            if (game is not null && exportIos && LockedNow(game)) return;   // 暂时锁着：留在排头，等作业收尾再来
+            if (game is not null && (exportIos || exportTv) && LockedNow(game)) return;   // 暂时锁着：留在排头，等作业收尾再来
             exportQueue.RemoveAt(0);
-            if (game is null || !exportIos) continue;   // 已不在游戏库 / 出 iPhone 关了：拿掉，接着下一款
+            if (game is null || !exportIos && !exportTv) continue;   // 已不在游戏库 / 平台都没勾：拿掉，接着下一款
             var watching = page == "progress";
             packLocation = location;
             ResetPack(game);
@@ -812,10 +819,13 @@ public sealed partial class EnvironmentWindow
         exportStepEnded = false; exportChildReport = null;
     }
 
-    /// <summary>出包页单款：同批量出包走出包编排作业（剃刀 H13），计划只有这一款的 iPhone、不写批次文件</summary>
+    /// <summary>出包页单款：同批量出包走出包编排作业（剃刀 H13），计划只有这一款勾了的平台（iPhone / Apple TV）、不写批次文件</summary>
     private Task RunPackAsync(LibraryGame game, bool spaceOverride)
     {
-        var plan = ExportStream.InlinePlan(game.Id, game.Name, ["iphone"], packLocation, spaceOverride);
+        var platforms = new List<string>();
+        if (exportIos) platforms.Add("iphone");
+        if (exportTv) platforms.Add("appletv");
+        var plan = ExportStream.InlinePlan(game.Id, game.Name, platforms, packLocation, spaceOverride);
         if (SGradeOff().Contains(game.Id)) plan["sgrade"] = false;   // 出包页取消「S 级优化（Beta）」：这次不带社区补丁与金手指（pack/jobs/patches.py prepare）
         return RunExportAsync(plan, batch: false, mode: selfSignAfterPack.Contains(game.Id) ? "export" : null);
     }
@@ -960,6 +970,7 @@ public sealed partial class EnvironmentWindow
                 packTrack.Finish(Clock); packSeconds = (DateTime.UtcNow - packStarted).TotalSeconds;
                 packState = o.State == "completed" ? "succeeded" : o.State;
                 packSummary = o.Message; packIpa = o.Ipa; packIpaBytes = o.IpaBytes; packPackBytes = o.PackBytes; packNotes = o.Notes ?? []; packBoost = o.Boost; packFailureCode = o.Code;
+                if (ended.Where.Platform == "appletv" && o.State == "completed") packNotes = [.. packNotes, T("export.done.tvos_win")];   // Windows 出好 Apple TV 包：说清装到电视暂时要 Mac
                 packDiagnostics = exportChildReport is { } r
                     ? JobDiagnostics(new LibraryJobOutput(r, new ProbeOutput(r.State == "succeeded" ? 0 : r.State == "cancelled" ? 130 : 1, "", "")))
                     : o.Message;
