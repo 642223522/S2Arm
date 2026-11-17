@@ -28,6 +28,7 @@ enum { S2A_LCTX_COMPAT = 0, S2A_LCTX_FILE = 1, S2A_LCTX_CONTAINER = 2 };
 #define S2A_LCTX_PATH 1024
 typedef struct s2a_launch_ctx {
     int source;                       // S2A_LCTX_COMPAT / S2A_LCTX_FILE
+    int from_program;                 // 多款容器：1 = 这款程序从资源包旁的程序包 program/ 取（通用壳，11-16），0 = App 包内
     char ctx_path[S2A_LCTX_PATH];     // 上下文文件（兼容 = 空）
     char game_id[128], build_id[128]; // 兼容 = 空（单款包不需要）
     char bundle_dir[S2A_LCTX_PATH];   // 可执行文件目录（iOS = App 包）
@@ -57,7 +58,8 @@ const char *s2a_launch_ctx_select(const char *gid);
 // 上一次 s2a_launch_ctx_select 被拒的类别（给玩家看的话按它选，原文只进日志）：
 //   APP_INCOMPLETE = 这款在 App 里不完整（不在清单、随行目录 / 镜像包不在）→ 在电脑上重新装到 iPhone；STORAGE = 建不了本款文档目录（多半存储满）；OTHER = 其余
 //   NEEDS_UPDATE = 这款程序是按别的宿主约定号出的（s2a_host_abi_check 对不上，诊断码 ios_host_abi_mismatch）→ 在电脑上按新版更新这款
-enum { S2A_SELECT_OTHER = 0, S2A_SELECT_APP_INCOMPLETE = 1, S2A_SELECT_STORAGE = 2, S2A_SELECT_NEEDS_UPDATE = 3 };
+//   NEEDS_RESIGN = 这款程序包签名对不上本机这份 App（注册签名 / 库校验失败、或程序库和清单 image_sha256 不符）→ 在电脑上重新签名推回去
+enum { S2A_SELECT_OTHER = 0, S2A_SELECT_APP_INCOMPLETE = 1, S2A_SELECT_STORAGE = 2, S2A_SELECT_NEEDS_UPDATE = 3, S2A_SELECT_NEEDS_RESIGN = 4 };
 int s2a_launch_ctx_select_kind(void);
 // 宿主约定号核对（11-16，runtime/include/s2a_host_abi.h S2A_HOST_ABI）：这款产物上记的号——程序包自带的清单 program_catalogue
 //   （程序挪出 App 后随程序走的 program/catalogue.json：{schema, title_id, host_abi, chain, rewriter_id, image, image_sha256}）优先；
@@ -66,6 +68,11 @@ int s2a_launch_ctx_select_kind(void);
 int s2a_host_abi_check(const char *program_catalogue, const char *app_catalogue, const char *gid, int *have, char *why, size_t why_n);
 // 本款程序包清单的位置：<资源包根的上一级>/program/catalogue.json（资源包根见 s2a_docs.h s2a_pack_root）；程序挪出 App 之前不存在
 int s2a_program_catalogue_path(char *out, size_t n, const char *game_data);
+// 本款程序包（<程序包根>/<游戏号>/program/）：有清单 → 写随行目录与镜像包路径（各 S2A_LCTX_PATH 字节）、回 1；没有程序包 → 0；清单读不了 / 没这款 / 缺件 → -1。
+//   s2a_launch_ctx_resolve_game 同一套取法；多款容器构造期算地址窗口时（vawin.c s2a_window_container_need）逐款调
+int s2a_program_game_paths(const char *home, const char *gid, char *module_dir, char *images, char *why, size_t why_n);
+// 各款程序包 / 资源包所在的根（<容器>/Library/Application Support/S2Arm/games，备用位置在就取它，同 s2a_pack_root）：构造期列出只在程序包里、App 包里没有的游戏
+int s2a_program_games_root(char *out, size_t n, const char *home);
 // 游戏库画卡片时预判（主线程，多款容器）：本进程 App 包里这款的程序约定号对不上本宿主 → 1（卡片标「需要在电脑上更新」）；对得上 / 不是容器 /
 //   核不了（路径太长、清单读不了：交给点开时 s2a_launch_ctx_select 的完整校验报）→ 0。只读文件，不冻结、不改任何状态
 int s2a_launch_ctx_game_needs_update(const char *gid);

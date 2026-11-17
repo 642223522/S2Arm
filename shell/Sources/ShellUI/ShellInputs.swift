@@ -9,6 +9,8 @@ public enum GameState: Equatable, Sendable {
     case needsAppUpdate
     /// The game's files were built for an older version of this app and must be built again on the computer (the opposite direction of needsAppUpdate).
     case needsGameUpdate
+    /// The game's program on this device does not match this app (installed only partly, or signed from another computer or Apple ID) and must be installed again from the computer.
+    case needsGameReinstall
     /// `reason` is one short line for under the title, such as "Game files damaged". `detail` is a plain sentence
     /// for the player (what happened, what to do), shown under the title and in the How to fix sheet. `technical`
     /// is the underlying message, shown only as small secondary Details in the sheet.

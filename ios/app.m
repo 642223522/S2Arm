@@ -26,6 +26,7 @@ void s2a_brightness_hold_log(void);   // 亮度保持（S2A_BRIGHTNESS）：心�
 #include "s2a_pad.h"
 #include "s2a_boot.h"
 #include "s2a_launch_ctx.h"
+#include <sys/stat.h>   // 程序包清单修改时间（s2a_shell_game_needs_reinstall）
 #include <sys/mount.h>   // statfs（free_note）
 #include "s2a_docs.h"   // s2a_container_docs：游戏库按款核资源包的进程级 Documents
 #include "s2a_sesdiag.h"   // 会话标记：上一局是不是死在前台（启动前崩溃询问）
@@ -904,6 +905,21 @@ static void library_play(const char *gid, void *ctx) {   // 主线程（s2a_shel
 }
 // 程序约定号对不上本宿主的款（游戏号 → 1 / 0）：s2a_shell_game_needs_host_update 的缓存，点开被拒时也写进来
 static NSMutableDictionary<NSString *, NSNumber *> *g_host_update;
+// 程序包对不上本机这份 App 的款：点开被拒（S2A_SELECT_NEEDS_RESIGN）时记下这款程序包清单的修改时间（纳秒）。电脑端重推时清单最后写，
+//   时间一变就不再标（不用重开 App，库每秒重判即恢复「可玩」）；清单读不到记 -1（同样一变就清）。s2a_shell_game_needs_reinstall 读（主线程，s2a_shell.h）
+static NSMutableDictionary<NSString *, NSNumber *> *g_reinstall;
+static long long program_cat_mtime(const char *gid) {
+    char root[1024], p[1300]; struct stat st;
+    if (s2a_program_games_root(root, sizeof root, getenv("HOME")) || snprintf(p, sizeof p, "%s/%s/program/catalogue.json", root, gid) >= (int)sizeof p || stat(p, &st)) return -1;
+    return (long long)st.st_mtimespec.tv_sec * 1000000000LL + st.st_mtimespec.tv_nsec;
+}
+int s2a_shell_game_needs_reinstall(const char *gid) {
+    NSNumber *v = gid && *gid ? g_reinstall[@(gid)] : nil;
+    if (!v) return 0;
+    if (v.longLongValue == program_cat_mtime(gid)) return 1;
+    [g_reinstall removeObjectForKey:@(gid)]; LOG("游戏库：%s 的程序包换过了（电脑端重推），取消「需要在电脑上重装」", gid);
+    return 0;
+}
 static void library_play_go(const char *gid, S2ASceneDelegate *sd) {
     if (atomic_load(&g_game_picked)) {
         LOG("游戏库：同一进程第二次 Play %s，拒绝（一进程一款）", gid);
@@ -913,7 +929,15 @@ static void library_play_go(const char *gid, S2ASceneDelegate *sd) {
     // why 是 launchctx.c 的内部原因（路径 / errno，已进 host.log「选游戏…被拒」）：屏上按类别说人话 + 下一步，原文只进日志 / 诊断（v0.3.1）
     if (why) {
         int kind = s2a_launch_ctx_select_kind();
-        if (kind == S2A_SELECT_NEEDS_UPDATE) {   // 程序按别的约定号出：不弹窗，回游戏库在这款卡片上标「需要在电脑上更新」（预判没读到时的兜底；原因已进 host.log）
+        if (kind == S2A_SELECT_NEEDS_RESIGN) {   // 程序包对不上本机这份 App（通用壳 11-16）：不弹窗，回游戏库标「需要在电脑上重装」（电脑端对这款点「装到 iPhone」重推）
+            if (!g_reinstall) g_reinstall = [NSMutableDictionary dictionary];
+            g_reinstall[@(gid)] = @(program_cat_mtime(gid));
+            LOG("游戏库：%s 的程序包对不上本机这份 App，卡片标「需要在电脑上重装」", gid);
+            if (s2a_shell_refresh) s2a_shell_refresh();
+            return;
+        }
+        if (kind == S2A_SELECT_NEEDS_UPDATE) {
+            // 程序按别的约定号出：不弹窗，回游戏库在这款卡片上标「需要在电脑上更新」（预判没读到时的兜底；原因已进 host.log）
             if (!g_host_update) g_host_update = [NSMutableDictionary dictionary];
             g_host_update[@(gid)] = @1;
             if (s2a_shell_refresh) s2a_shell_refresh();
