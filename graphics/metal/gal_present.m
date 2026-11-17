@@ -22,6 +22,7 @@
 #include <dlfcn.h>
 #include "gal_pstat.h"
 #import <QuartzCore/CAMetalLayer.h>
+#import <QuartzCore/CATransaction.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <string.h>
@@ -248,7 +249,18 @@ static int present_prep(CAMetalLayer *layer, int s, int vsync, int rw, int rh) {
 #else
     (void)vsync; (void)applied_vsync;
 #endif
-    if (rw > 0 && rh > 0 && (applied_size.width != rw || applied_size.height != rh)) { layer.drawableSize = CGSizeMake(rw, rh); applied_size = CGSizeMake(rw, rh); }
+    if (rw > 0 && rh > 0 && (applied_size.width != rw || applied_size.height != rh)) {
+        applied_size = CGSizeMake(rw, rh);
+#if TARGET_OS_IPHONE
+        // iOS：图层属性只在主线程改。出图线程直接设 drawableSize 会在本线程开隐式 CATransaction，提交时连带布局 UIKit 视图——
+        //   iPadOS 27 判「后台线程改布局引擎」抛 NSInternalInconsistencyException 退出（D-HHEG，第一次出图碰上主线程有待布局时）。
+        //   交主线程异步设（不等它：主线程可能正等出图），这期间的几帧按旧可画尺寸出（上屏按画布实际尺寸算区域，见 present_one）
+        CAMetalLayer *L = layer; CGSize sz = applied_size;
+        dispatch_async(dispatch_get_main_queue(), ^{ [CATransaction begin]; [CATransaction setDisableActions:YES]; L.drawableSize = sz; [CATransaction commit]; });
+#else
+        layer.drawableSize = applied_size;
+#endif
+    }
     g_applied = applied; g_applied_vsync = applied_vsync; g_applied_size = applied_size;
     return 1;
 }
