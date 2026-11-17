@@ -79,17 +79,17 @@ int main(void) {
     if (atomic_load(&g_s2a_hud_fn) != 1 || stamp < before || stamp > after) {
         printf("✗ HUD 帧时间戳未使用宿主单调纳秒钟\n"); bad++;
     }
-    {   // ⑧ 开发设施开关（11-07 质量线，cmdr/壳内开发设施盘点.md）：玩家口径（s2a_dev_on = 0）首帧上屏后不起停住看门线程，停 1.6 秒 → 现场 0 份；
-        //    开发包（= 1）同样条件 → 1 份（同 ④ 第一步）。看门只在首帧上屏起一次（静态标记），所以各在一个 fork 出的子进程里从零开始；份数经管道带回
+    {   // ⑧ 停住现场（11-17 起归诊断读数）：玩家口径（s2a_dev_on = 0）与开发包（= 1）一样，首帧上屏后起停住看门，停 1.6 秒 → 现场 1 份；
+        //    （11-07 原为玩家口径 0 份）（同 ④ 第一步）。看门只在首帧上屏起一次（静态标记），所以各在一个 fork 出的子进程里从零开始；份数经管道带回
         for (int dev = 0; dev <= 1; dev++) {
             int pfd[2]; if (pipe(pfd)) { printf("✗ ⑧ pipe\n"); bad++; break; }
             pid_t pid = fork();
             if (pid == 0) { close(pfd[0]); atomic_store(&g_dev, dev); setenv("S2A_STALL_DUMP_S", "1", 1); s2a_frame_presented(); usleep(1600000);
                             char b = (char)atomic_load(&g_ndump); ssize_t w = write(pfd[1], &b, 1); (void)w; _exit(0); }
             close(pfd[1]); char b = -1; ssize_t r = read(pfd[0], &b, 1); close(pfd[0]); int st; waitpid(pid, &st, 0);
-            int want = dev ? 1 : 0;
+            int want = 1;   // 11-17 拆开：停住现场归「诊断读数」，玩家口径也打（只进日志、一局至多 3 次），不再看开发设施开关
             if (r != 1 || b != want) { printf("✗ ⑧ 开发设施 %s：停住现场 %d 份（期望 %d）\n", dev ? "开（开发包）" : "关（玩家口径）", (int)b, want); bad++; }
-            else printf("✓ ⑧ 开发设施 %s：停住看门%s，停 1.6 秒现场 %d 份\n", dev ? "开（开发包）" : "关（玩家口径）", dev ? "全套" : "只救场、不打现场", (int)b);
+            else printf("✓ ⑧ 开发设施 %s：停住看门全套（诊断读数，不看开发设施开关），停 1.6 秒现场 %d 份\n", dev ? "开（开发包）" : "关（玩家口径）", (int)b);
         }
     }
     {   // ⑧c 审计 P1-191：停帧救场是给玩家的，看门线程的模式与开发设施分开（s2a_ap_stall_mode）。期望按规则手写：
