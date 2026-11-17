@@ -669,6 +669,8 @@
       {"id": "save_atomic_title", "macro": "S2A_DPROMPT_SAVE_ATOMIC_TITLE", "zh-Hans": "存档提醒", "en": "Save warning"},
       {"id": "save_atomic_mac", "macro": "S2A_DPROMPT_SAVE_ATOMIC_MAC", "zh-Hans": "当前磁盘不能安全保存：请把游戏库挪到本机磁盘。保存过程中强退，可能留下写了一半的存档。", "en": "This disk can't save safely: move the game library to this Mac's disk. Force-quitting while saving may leave a half-written save."},
       {"id": "save_atomic_ios", "macro": "S2A_DPROMPT_SAVE_ATOMIC_IOS", "zh-Hans": "当前存储不能安全保存：保存过程中强退，可能留下写了一半的存档。请等游戏存完再退出。", "en": "This storage can't save safely: force-quitting while saving may leave a half-written save. Wait for the game to finish saving before you quit."},
+      {"id": "input_bad_title", "macro": "S2A_DPROMPT_INPUT_BAD_TITLE", "zh-Hans": "键位设置没读懂", "en": "Couldn't read the button settings"},
+      {"id": "input_bad_mac", "macro": "S2A_DPROMPT_INPUT_BAD_MAC", "zh-Hans": "这局先用默认键位照常开始（%s）。回到 S2Arm 的按键设置里重新保存一次就能恢复。", "en": "This game starts with the default buttons (%s). Save your button settings again in S2Arm to restore them."},
       {"id": "vpad_touch_title", "macro": "S2A_DPROMPT_VPAD_TOUCH_TITLE", "zh-Hans": "这款游戏能用触屏", "en": "This game supports touch"},
       {"id": "vpad_touch_body", "macro": "S2A_DPROMPT_VPAD_TOUCH_BODY", "zh-Hans": "要点游戏自己的菜单，就切到触屏。左上角齿轮 → 按键布局，随时可以切回按键。", "en": "To tap the game's own menus, switch to touch. You can switch back to buttons anytime from the gear in the top-left corner → Button layout."},
       {"id": "vpad_touch_accept", "macro": "S2A_DPROMPT_VPAD_TOUCH_ACCEPT", "zh-Hans": "切到触屏", "en": "Switch to touch"},
