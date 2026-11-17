@@ -76,6 +76,19 @@ class _Scene:
             if self.END in line: self.in_block = False
 
 
+def key_generation_note(lines):
+    """读取器解不开时多打的「【密钥代】<要的代>\t<prod.keys 有到>\t<带 rights id>」（十六进制，同 prod.keys 里 master_key_XX 的写法，#1511）
+    → 玩家句补一句「这份要第几代、你的有到第几代」；读取器没给（读不出 NCA 头）就不补"""
+    line = next((x for x in lines if x.startswith("【密钥代】")), None)  # 非玩家句
+    parts = line[len("【密钥代】"):].split("\t") if line else []  # 非玩家句
+    if len(parts) < 2 or parts[1] == "-":
+        return ""
+    need, top = parts[0], parts[1]
+    if int(need, 16) > int(top, 16):
+        return "\n" + f"这份文件要 master_key_{need}，你的 prod.keys 只到 master_key_{top}：不够新。"
+    return "\n" + f"这份文件要 master_key_{need}，你的 prod.keys 有到 master_key_{top}：代数够，多半是这一行的值不对。"
+
+
 def _scene_text(summary, block, budget=DIAGNOSTIC_LOG_SCENE):
     """整段放得下就整段；放不下按优先级：崩溃摘要 → 现场块头 → 第一个非等待线程的整段栈 → 其余线程的头一行 → 现场完"""
     text = b"\n".join(summary + block)
@@ -1127,9 +1140,13 @@ def inspect(c, source, icon_dir, keyfile=None, *, source_id=None):
             raise Failure("缺少内容对应的票据或标题密钥，请检查源文件是否完整。", code="ticket_missing") from None
         if any(line.startswith("【原因 keys_missing】") for line in lines):  # 非玩家句
             raise Failure("现有 prod.keys 缺少读取此文件所需的密钥。", code="keys_outdated") from None
+        # 解不开、但同一份文件里同代密钥的别的内容能解开（#1511 再判：玩家换两组密钥同处坏、控制数据能读）：密钥是对的，是文件本身被改过 / 坏了
+        if any(line.startswith("【原因 content_damaged】") for line in lines):  # 非玩家句
+            raise Failure("这份文件的内容被改过或损坏了：同一份文件里用同一代密钥的其它内容能正常解开，密钥是对的。请换一份原版完整的文件（XCI / NSP）再导入。", code="content_invalid") from None
         # 解出来的数据对不上（分区头魔数不对，#1511）：prod.keys 里这款那一代的密钥不对，同「缺密钥」让玩家重新导出 prod.keys，原话说清是解不开、不是文件被改过
         if any(line.startswith("【原因 keys_wrong】") for line in lines):  # 非玩家句
-            raise Failure("现有 prod.keys 解不开这份文件：解出来的数据对不上，多半是这款用的那一代密钥不对。请用升级到最新系统的 Switch 重新导出 prod.keys 再导入。", code="keys_outdated") from None
+            raise Failure("现有 prod.keys 解不开这份文件：解出来的数据对不上，多半是这款用的那一代密钥不对。请用升级到最新系统的 Switch 重新导出 prod.keys 再导入。"
+                          + key_generation_note(lines), code="keys_outdated") from None
         # 读取器自己给了确定原因（「【原因 hash_mismatch】源文件数据哈希校验不过…换一份原版完整的文件」等，pack/nx_unpack Inspect.cs / Program.cs）：
         #   照它的原话报，不再落到「文件不完整、缺票据或密钥不匹配」三选一的猜测（#1008：本体哈希校验不过，玩家被指去查密钥）
         reason = next((line.split("】", 1)[1].strip() for line in lines if line.startswith("【原因 ") and "】" in line and line.split("】", 1)[1].strip()), "")  # 非玩家句

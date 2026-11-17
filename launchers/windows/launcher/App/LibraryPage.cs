@@ -111,7 +111,7 @@ public sealed partial class EnvironmentWindow
 
     private Control GameCover(LibraryGame game, int size)
     {
-        var cover = WithIntegrityBadge(game, GameCoverImage(game, size), size);
+        var cover = WithUpdateHintBadge(game, WithIntegrityBadge(game, GameCoverImage(game, size), size), size);
         if (!game.SGrade) return cover;
         var s = Math.Max(20, size / 3.2);
         var badge = new Panel { Width = s, Height = s, Margin = new Thickness(3), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top,
@@ -233,8 +233,10 @@ public sealed partial class EnvironmentWindow
                 Padding = new Thickness(16, 12), Child = capsuleBar });
         }
 
+        EnsureUpdateHints();
         var games = catalog?.Games.Where(g => !g.Hidden).ToArray() ?? [];
-        var hero = games.FirstOrDefault(g => g.Id == selectedGame) ?? games.FirstOrDefault();
+        var hero = ConsoleSelected ? null : games.FirstOrDefault(g => g.Id == selectedGame) ?? games.FirstOrDefault();
+        if (ConsoleSelected) body.Children.Add(ConsolePanel());   // 选中首位「S2Arm」：大图区换成 iPhone 总控台
         if (hero is not null && HeroBanner(hero) is { } heroBanner)
         {
             // 顶部大图（11-14 维护者：「换成用 banner」）：商店横图 1920×1080 铺满整条，标题压在底部渐变上；没有横图的款退回下面的封面卡片
@@ -247,6 +249,7 @@ public sealed partial class EnvironmentWindow
             overlay.Children.Add(Label(hero.Name, 32));
             overlay.Children.Add(Muted(T("library.version") + " · " + hero.Version, 14));
             if (IntegrityLine(hero) is { } heroNote) overlay.Children.Add(heroNote);
+            if (UpdateHintLines(hero) is { } heroHint) overlay.Children.Add(heroHint);
             overlay.Children.Add(HeroActions(hero));   // 有横图时按钮也叠在底部渐变上（v0.4.5 修：说明写着「常驻」，之前只画了大图）
             art.Children.Add(overlay);
             body.Children.Add(new Border { CornerRadius = new CornerRadius(16), ClipToBounds = true, Child = art });
@@ -260,6 +263,7 @@ public sealed partial class EnvironmentWindow
             title.Children.Add(Label(hero.Name, 28));
             title.Children.Add(Label(T("library.version") + " · " + hero.Version));
             if (IntegrityLine(hero) is { } heroNote) title.Children.Add(heroNote);
+            if (UpdateHintLines(hero) is { } heroHint) title.Children.Add(heroHint);
             title.Children.Add(HeroActions(hero));
             Grid.SetColumn(title, 1); banner.Children.Add(title); body.Children.Add(Card(banner, 20));
         }
@@ -296,6 +300,7 @@ public sealed partial class EnvironmentWindow
 
         if (catalog is not null && games.Length > 0)   // 「S 级优化升级」入口（同 Mac 游戏库标题行，v0.4.0）
             body.Children.Add(new StackPanel { HorizontalAlignment = HorizontalAlignment.Right, Children = { SGradeUpgradeEntry() } });
+        if (catalog is not null && phoneOverview is not null) body.Children.Add(ConsoleRow());   // 首位固定「S2Arm」（0.6.0 开关后面），不算进游戏数
         foreach (var game in games)
         {
             var line = new Grid { ColumnDefinitions = new ColumnDefinitions("72,*,Auto"), ColumnSpacing = 18 };

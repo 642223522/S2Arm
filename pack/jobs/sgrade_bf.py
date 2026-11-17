@@ -76,9 +76,8 @@ def upgrade_mac(c, gid, runtime, hold=None):
     """Mac 运行版本补 _bf：整份重出直连库换进运行版本（运行版本自带全部输入，不用原件）→ True = 换了。代数已是本引擎的 / 这次放弃 → False。
     hold（同 rewrite_refresh.refresh_mac）：重出只读运行版本、在锁外做；换库与改清单前进 hold()，它 yield False（玩家正在开始游戏）就整款放弃、
       不记代数，下次再补。不给 hold = 调用方已持锁"""
-    import contextlib
     import tempfile
-    from core import atomic, read
+    from core import read
     runtime = Path(runtime)
     manifest = read(runtime / "manifest.json", {})
     if not isinstance(manifest.get("files"), dict) or not stale(manifest.get("bfGen")):
@@ -86,28 +85,46 @@ def upgrade_mac(c, gid, runtime, hold=None):
     if not (runtime / "shaders/direct/keys.tsv").is_file() or not _has_romfs(runtime):
         return False   # 不是直连包 / 没有 RomFS：没有可补的
     c.emit("message", "正在给这款重出着色器库（补上片上读取用的着色器，资源不动；首次要几分钟到几十分钟）")
-    with tempfile.TemporaryDirectory(dir=c.private) as tmp:
-        new = rebuild(c, gid, runtime, "macos", Path(tmp))
-        stage = runtime / "shaders/direct.sgbf"; old = runtime / "shaders/direct.sgbf-old"
-        for p in (stage, old):
-            shutil.rmtree(p, ignore_errors=True)
-        shutil.copytree(new, stage, copy_function=_clone_file)
-        with (hold() if hold else contextlib.nullcontext(True)) as free:
-            if not free:
-                shutil.rmtree(stage, ignore_errors=True)
-                return False
-            manifest = read(runtime / "manifest.json", {})   # 锁里再读一次：重出期间别的作业可能改过清单（refresh_mac 补程序）
-            os.replace(runtime / "shaders/direct", old)
-            try:
-                os.replace(stage, runtime / "shaders/direct")
-            except OSError:
-                os.replace(old, runtime / "shaders/direct")   # 换不上：旧库原样回位
-                raise
-            files = {k: v for k, v in manifest["files"].items() if not k.startswith("shaders/direct/")}
-            for rel, size in _lib_files(runtime):
-                files[rel] = [size, ""]   # 同 build.snapshot：只记大小
-            atomic(runtime / "manifest.json", dict(manifest, files=files, bfGen=BF_GEN))
-        shutil.rmtree(old, ignore_errors=True)
+    # 运行版本的 RomFS 是 game.img（0.6.0 一款一份资源，pack/jobs/onerom.py）：重出要产物根形态的 romfs.std，同 iPhone 那条（ios_inputs）从 RomFS 段拷出一份，补完删掉
+    std = runtime / "romfs.std"
+    made = not _std_or_dir(runtime) and (runtime / "game.img").is_file()
+    if made:
+        h = _img(c).header(str(runtime / "game.img"))
+        with open(runtime / "game.img", "rb") as f:
+            _copy_range(f, h["romfs"][0], h["romfs"][1], std)
+    try:
+        with tempfile.TemporaryDirectory(dir=c.private) as tmp:
+            return _upgrade_mac(c, gid, runtime, hold, Path(tmp))
+    finally:
+        if made:
+            std.unlink(missing_ok=True)
+
+
+def _upgrade_mac(c, gid, runtime, hold, tmp):
+    """upgrade_mac 的重出与换库（tmp：重出用的临时目录）"""
+    import contextlib
+    from core import atomic, read
+    new = rebuild(c, gid, runtime, "macos", tmp)
+    stage = runtime / "shaders/direct.sgbf"; old = runtime / "shaders/direct.sgbf-old"
+    for p in (stage, old):
+        shutil.rmtree(p, ignore_errors=True)
+    shutil.copytree(new, stage, copy_function=_clone_file)
+    with (hold() if hold else contextlib.nullcontext(True)) as free:
+        if not free:
+            shutil.rmtree(stage, ignore_errors=True)
+            return False
+        manifest = read(runtime / "manifest.json", {})   # 锁里再读一次：重出期间别的作业可能改过清单（refresh_mac 补程序）
+        os.replace(runtime / "shaders/direct", old)
+        try:
+            os.replace(stage, runtime / "shaders/direct")
+        except OSError:
+            os.replace(old, runtime / "shaders/direct")   # 换不上：旧库原样回位
+            raise
+        files = {k: v for k, v in manifest["files"].items() if not k.startswith("shaders/direct/")}
+        for rel, size in _lib_files(runtime):
+            files[rel] = [size, ""]   # 同 build.snapshot：只记大小
+        atomic(runtime / "manifest.json", dict(manifest, files=files, bfGen=BF_GEN))
+    shutil.rmtree(old, ignore_errors=True)
     return True
 
 
@@ -185,9 +202,14 @@ def _img(c):
     return m
 
 
-def _has_romfs(root):
-    """产物根形态的目录有 RomFS：散文件目录 romfs/，或镜像 romfs.std（标准 RomFS，与 romfs/ 同级）"""
+def _std_or_dir(root):
+    """产物根形态的 RomFS：散文件目录 romfs/，或镜像 romfs.std（标准 RomFS，与 romfs/ 同级）"""
     return (Path(root) / "romfs").is_dir() or (Path(root) / "romfs.std").is_file()
+
+
+def _has_romfs(root):
+    """目录有 RomFS：产物根形态（_std_or_dir），或 Mac 运行版本的 game.img（0.6.0 一款一份资源，用时拷出 RomFS 段）"""
+    return _std_or_dir(root) or (Path(root) / "game.img").is_file()
 
 
 def overlay(c, old_lib, new_lib, out):

@@ -220,6 +220,15 @@ internal static class LibraryJobCases
             check(games[0].Sizes == new GameSizes(0, 6000000000, 3, 4, 5, true), "catalog: sizes read, iPhone size beyond Int32 kept");
             check(games[1].Sizes is null, "catalog: no sizes field reads as null (not counted)");
         }
+        // 0.6.0 四类（pack/jobs/sizes.py categories，通用壳开关开着才带）：按键读、缺的类记 0；不带 → null（界面照旧五项）
+        using (var cat = JsonDocument.Parse("{\"imageMac\":0,\"imageIos\":1,\"saves\":2,\"cache\":3,\"sources\":4,\"measured\":true,"
+                                            + "\"categories\":{\"resources\":7000000000,\"programs\":20,\"playerData\":30}}"))
+        {
+            var g = GameSizes.Parse(cat.RootElement);
+            check(g.Categories is { } c && c["resources"] == 7000000000 && c["programs"] == 20 && c["playerData"] == 30 && c["cache"] == 0
+                  && string.Join(",", GameSizes.CategoryOrder) == "resources,programs,playerData,cache", "sizes: 0.6.0 categories read in order, missing one is 0, beyond Int32 kept");
+            check(GameSizes.Parse(JsonDocument.Parse("{\"measured\":true}").RootElement).Categories is null, "sizes: no categories reads as null (old five parts)");
+        }
         const string overview = """
         {"locations":[{"id":"a","path":"D:\\S2Arm","volume":"Data","connected":true,"default":true,"totalBytes":9000000000,"freeBytes":4000000000,"usedBytes":3000000000},
                       {"id":"b","path":"E:\\S2Arm","volume":"Ext","connected":false,"default":false}],

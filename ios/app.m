@@ -311,6 +311,7 @@ static const char *host_text(const char *s) {
         {S2A_INIT_FAIL_MSG_GAME, S2A_INIT_FAIL_MSG_GAME_EN}, {S2A_INIT_FAIL_MSG_GENERIC, S2A_INIT_FAIL_MSG_GENERIC_EN},
         {S2A_INIT_FAIL_MSG_FILES, S2A_INIT_FAIL_MSG_FILES_EN}, {S2A_INIT_FAIL_NEXT, S2A_INIT_FAIL_NEXT_EN},
         {S2A_INIT_FAIL_MSG_DEVICE, S2A_INIT_FAIL_MSG_DEVICE_EN},   // #446 设备地址空间 / 内存不够
+        {S2A_INIT_FAIL_MSG_HEAP, S2A_INIT_FAIL_MSG_HEAP_EN},       // D-NGH9 普通堆不够、已记下，再点一次开始
         {S2A_INIT_FAIL_MSG_SHADERS, S2A_INIT_FAIL_MSG_SHADERS_EN},   // direct_lib_missing：电脑装 / 自签导入两条路各说一句
     };
     if (!s || s2a_l10n_zh()) return s;
@@ -1236,7 +1237,27 @@ static void cloud_sync_done(void *ctx) {
 // 主屏小组件点封面（s2arm://play/<游戏号>，11-16 维护者：小组件进 0.5.0；Info.plist 的 CFBundleURLTypes 见 runtime/build.mk）：
 //   游戏库还开着 → 同玩家点「开始」（library_play：崩溃恢复 → 起局前检查 → 起宿主；资源不在手机上的款照常说明为什么开不了）；
 //   这一进程已经在玩（一进程一款）→ 只把 App 拉到前台，不弹「再开一款」的提示
+// 小游戏包 .s2arm（0.6.0 通用壳，电脑「导出」出的两件套之一）：从「文件」或别的 App 用 S2Arm 打开（Info.plist 的文档类型见 runtime/build.mk）→
+//   后台导入这一款（pack_apply.c s2a_s2arm_import：程序进 program/、派生件进 资源包/），导好刷新游戏库；game.img 照常放「放这里导入」认领。
+//   系统拷进 Documents/Inbox 的那份导完删掉；原地打开的（别处的原文件）不动。失败按码说人话（同导入文件夹认领失败）
+int s2a_s2arm_import(const char *proc_docs, const char *src, char *gid_out, size_t gid_n); const char *s2a_s2arm_import_code(void);   // pack_apply.c
+static void s2arm_open(NSURL *url) {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        BOOL scoped = [url startAccessingSecurityScopedResource];
+        char d[1024], gid[17] = ""; s2a_container_docs(d, sizeof d);
+        int r = s2a_s2arm_import(d, url.fileSystemRepresentation, gid, sizeof gid);
+        NSString *code = r < 0 ? @(s2a_s2arm_import_code()) : nil;
+        if (scoped) [url stopAccessingSecurityScopedResource];
+        if (!r && [url.path containsString:@"/Documents/Inbox/"]) [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+        LOG(".s2arm 打开：%s → %s", url.lastPathComponent.UTF8String, !r ? gid : r > 0 ? "还没拷完，稍后再打开一次" : code.UTF8String);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!r) { if (s2a_shell_refresh) s2a_shell_refresh(); return; }
+            if (r < 0 && g_lib_window) top_alert(g_lib_window, S2AL(@"img.scanFailed.title"), install_error_text(code.UTF8String));
+        });
+    });
+}
 static void widget_open(NSURL *url, void *ctx) {
+    if (url.isFileURL && [url.pathExtension.lowercaseString isEqualToString:@"s2arm"]) { s2arm_open(url); return; }
     if (!url || ![url.scheme isEqualToString:@"s2arm"] || ![url.host isEqualToString:@"play"]) return;
     NSString *gid = url.lastPathComponent.uppercaseString;
     if (gid.length != 16 || [gid rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"0123456789ABCDEF"].invertedSet].location != NSNotFound) {

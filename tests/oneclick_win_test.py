@@ -520,6 +520,25 @@ class Events(unittest.TestCase):   # ⑥ ⑦ ⑧ 机器读事件流与 --from-ex
         try: self.assertIsNone(oneclick_win.work_temp(self.t / 'k')); self.assertEqual(os.environ.get('TMP'), old)
         finally: os.environ.pop('S2A_KEEP_SYSTEM_TEMP', None)
 
+    def test_windows_temp_root_preserves_mapped_drive(self):
+        # A: 映射网络库经 Path.resolve() 会变成 UNC；Metal 只读得了映射盘路径。
+        mapped = r'A:\_game\_ios\games\Absolum\build\ios'
+        with patch.object(oneclick_win, 'WIN', True):
+            self.assertEqual(oneclick_win._work_temp_root(mapped), mapped)
+
+    def test_windows_temp_root_reverses_unc_to_mapped_drive(self):
+        unc = r'\\192.168.50.250\Database\_game\_ios\games\Absolum\build\ios\work'
+        mapped = r'A:\_game\_ios\games\Absolum\build\ios\work'
+        with patch.object(oneclick_win, 'WIN', True), \
+             patch.object(oneclick_win, '_mapped_network_roots', return_value=[('A:', r'\\192.168.50.250\Database')]):
+            self.assertEqual(oneclick_win._work_temp_root(unc), mapped)
+
+    def test_windows_temp_root_requires_share_boundary(self):
+        unc = r'\\server\DatabaseBackup\games\x'
+        with patch.object(oneclick_win, 'WIN', True), \
+             patch.object(oneclick_win, '_mapped_network_roots', return_value=[('A:', r'\\server\Database')]):
+            self.assertEqual(oneclick_win._work_temp_root(unc), unc)
+
 
 class InstallWin(unittest.TestCase):
     def fake(self, d, body):

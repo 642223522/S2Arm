@@ -79,13 +79,26 @@ def validate_files(c, root, files, full=False):
 QUICK_FILES = ("main", "main.npdm")   # 游戏库列表快判也核的几个文件（主程序与程序描述）：在、是普通文件、大小同清单
 
 
+def heap_learned_now(env, gid, since):
+    """这一局（since 之后）运行时记下了这款要的普通堆（runtime/src/svc_mem.c heap_need_note → <文档根>/wire/<程序号>/heap_need）"""
+    docs = env.get("S2A_DOCS")
+    if not docs:
+        return False
+    p = Path(docs) / "wire" / gid.upper() / "heap_need"
+    try:
+        return p.stat().st_mtime >= since - 1
+    except OSError:
+        return False
+
+
 def has_runtime_romfs(root):
-    """运行版本里的 RomFS 两种形态（约定同 graphics/nvn/tools/romfs_list.py）：romfs/ 真目录，或目录不在、只有标准 RomFS 镜像 romfs.std（普通文件，
-    宿主 services/S2A.Services/RomFsIndex.cs OpenStd 整个交给游戏）。软链都不算：运行版本要独立于构建缓存"""
-    romfs, std = root / "romfs", root / "romfs.std"
+    """运行版本里的 RomFS 三种形态（约定同 graphics/nvn/tools/romfs_list.py）：romfs/ 真目录，或目录不在、只有标准 RomFS 镜像 romfs.std（普通文件，
+    宿主 services/S2A.Services/RomFsIndex.cs OpenStd 整个交给游戏），或 game.img（0.6.0 一款一份资源：iPhone 资源包那份的硬链接，pack/jobs/onerom.py；
+    宿主 OpenImg 先认它）。软链都不算：运行版本要独立于构建缓存"""
+    romfs, std, img = root / "romfs", root / "romfs.std", root / "game.img"
     if romfs.is_symlink() or romfs.exists():
         return romfs.is_dir() and not romfs.is_symlink()
-    return std.is_file() and not std.is_symlink()
+    return (std.is_file() and not std.is_symlink()) or (img.is_file() and not img.is_symlink())
 
 
 def validate_runtime(c, runtime, full=False, files=True, doubts=None):
@@ -348,12 +361,15 @@ def launch(c):
         try:
             c.begin("游戏运行中", key="game_running")
             log = c.logs / (c.task + "-game.log")
-            started = time.monotonic()
+            started, wall = time.monotonic(), time.time()
             try:
-                c.run([executable, runtime], log, env, cwd=c.library / "temp" / game["id"])
+                import onerom   # 一款一份资源（0.6.0）：游戏跑过加载期后在后台把 Mac 运行版本合并到 iPhone 那份 game.img（玩家不等，退出就停、下次接着）
+                onerom.during(c, game["id"], lambda: c.run([executable, runtime], log, env, cwd=c.library / "temp" / game["id"]))
             except Failure as f:
                 if trial:   # 新宿主试玩：TRIAL_OK_SECONDS 内异常退出 = 不认这款，下次退回原来的；玩过这么久才崩不怪宿主
                     host_update.settle(c, game["id"], host, ok=time.monotonic() - started >= host_update.TRIAL_OK_SECONDS)
+                if f.code == "tool_exit" and heap_learned_now(env, game["id"], wall):   # 这一局普通堆不够、已记下要的堆（runtime svc_mem.c heap_need）：下一局按它给，不是崩溃、不关金手指
+                    raise Failure("这款需要更多内存：已经记下要多少，再点一次开始就能进。", code="game_heap_learned", internal=str(f)) from None
                 if f.code == "tool_exit":   # 游戏进程自己非 0 退出（多为崩溃，139 = 段错误）：给启动页一个说人话的码，原文与退出码随错误摘要带走
                     import cheats   # 开着金手指 / 补丁时退出：当场关掉、记下，下次开始时启动器通知关了哪几条（11-13 维护者改定：不问，cheats.note_crash）
                     cheats.note_crash(c, game, env.get("S2A_DOCS"))   # 带文档根：读运行时写的崩溃落点（宿主自己崩第一次不关）
@@ -943,6 +959,8 @@ def prepare(c):
                 os.replace(image, old)
             os.replace(temporary, image)
             layout.update_info(c, game["id"], hostMac=sha, hostFailed=[], imageKey=key)
+            import onerom   # 一款一份资源（0.6.0）：这款已有 iPhone 资源包、RomFS 是同一份 → 新 Mac 运行版本直接链到它、删掉刚克隆进来的 romfs.std
+            onerom.note(c, game["id"], onerom.dedupe(c, game["id"]))
             # 出包实测账（library.record_pack_usage）：在清旧镜像之前量，新旧同在盘上才是这一单真占到的峰值
             from library import record_pack_usage
             record_pack_usage(c, game)

@@ -108,6 +108,7 @@ static partial class P {
     static void Report(string code, string message, Exception e) {
         Console.Error.WriteLine("🔴 " + message);
         Console.Error.WriteLine($"【原因 {code}】");   // 与 --inspect 同形，日志聚合按「【原因 」分类
+        KeyGenLine(code);
         if (Trace()) Console.Error.WriteLine(e.ToString());
     }
     // 带 S2A_NXUNPACK_TRACE=1 重跑时把调用栈打到 stderr（默认不打印：普查日志里没用的噪音）
@@ -150,8 +151,10 @@ static partial class P {
                 return ("ticket_missing", "缺少内容对应的票据或标题密钥，请检查源文件是否完整");
             case LibHac.Common.Keys.MissingKeyException m:
                 return ("keys_missing", $"prod.keys 里没有 {m.Name}：这款游戏用了更新的密钥版本，要用系统版本更新的 Switch 重新导出 prod.keys（{first}）");
+            case HorizonResultException h when MagicFail(h) && SiblingDecrypts() is string ok:
+                return ("content_damaged", $"解出来的数据对不上（分区头不是 PFS0 / HFS0，{first}）：同一份文件里{ok}用同一代密钥能正常解开，密钥是对的，是这份内容本身被改过或损坏了。请换一份原版完整的文件（XCI / NSP）再导入");
             case HorizonResultException h when MagicFail(h):
-                return ("keys_wrong", $"解出来的数据对不上（分区头不是 PFS0 / HFS0，{first}）：多半是 prod.keys 里这款用的那一代密钥不对（文件改过不会这样，只会哈希对不上）。请用升级到最新系统的 Switch 重新导出 prod.keys 再导入");
+                return ("keys_wrong", $"解出来的数据对不上（分区头不是 PFS0 / HFS0，{first}）：多半是 prod.keys 里这款用的那一代密钥不对（文件改过不会这样，只会哈希对不上）。{KeyGenNote()}请用升级到最新系统的 Switch 重新导出 prod.keys 再导入");
             case HorizonResultException h when h.Message.Contains("VerificationFailed"):
                 return ("hash_mismatch", $"源文件数据哈希校验不过（{first}）：文件被改过（如合进改版资源的整合版）或损坏，换一份原版完整的文件");
             case HorizonResultException h:
@@ -190,6 +193,61 @@ static partial class P {
     // 分区头魔数对不上（LibHac PartitionFileSystemMeta：开头不是 PFS0 / HFS0 → PartitionSignatureVerificationFailed 2002-4644；名字叫「签名」其实是魔数）：
     //   解密后的分区开头是乱码 = 解密用的密钥不对（prod.keys 里这款那一代的密钥 / 标题密钥）。改版文件不会这样（只会哈希对不上）。
     //   #1511：原先当哈希不符降级重跑，跳过校验照样是乱码，再报 hash_mismatch 叫玩家换文件；按「真解不开」报真原因（keys_wrong）
+    // #1511：解不开时说清「这份内容要第几代密钥、prod.keys 实际有到第几代」，玩家不用猜是不是 prod.keys 不够新。
+    //   代数：NCA 头 KeyGeneration（两处取大），第 g 代用 master_key_{g-1}（g 为 0 / 1 都是 master_key_00，同 LibHac）；
+    //   titlekek / key_area_key 缺了 LibHac 会由 master_key 自己推（内置原料），所以只比 master_key。带 rights id 的内容另要票据里的标题密钥
+    internal static int KeyIndex(byte keyGeneration) => keyGeneration == 0 ? 0 : keyGeneration - 1;
+    internal static int TopMasterKey(KeySet ks) {
+        for (int i = ks.MasterKeys.Length - 1; i >= 0; i--) foreach (byte b in ks.MasterKeys[i].DataRo) if (b != 0) return i;
+        return -1;
+    }
+    internal static (int Need, int Top, bool Rights)? KeyGen;   // KeyGenNote 算出来的（读出 NCA 头才有）：随【原因 keys_wrong】多打一行【密钥代】给作业层拼玩家句
+    internal static void KeyGenLine(string code) {
+        if (code == "keys_wrong" && KeyGen is var (n, t, r)) Console.Error.WriteLine($"【密钥代】{n:x2}\t{(t < 0 ? "-" : t.ToString("x2"))}\t{(r ? 1 : 0)}");
+    }
+    // #1511：解不开不一定是密钥不对。同一次读取里，同一代密钥、同样有无 rights id（同一把密钥区密钥 / 同一种标题密钥）的 NCA，
+    //   有的解出来对、有的不对 → 密钥是对的，是解不对的那份被改过或坏了（玩家换两组密钥同处坏、控制数据照常能读）。
+    //   判「解出来对不对」：每个 NCA 第一个 AesCtr / AesXts 段解密后的开头——PFS0 段是「PFS0」、RomFS 段头长 0x50（不加密的段用什么密钥都能读，不算；
+//   更新的补丁段 AesCtrEx 离了本体读不出，也不算）。
+    //   → 能正常解开的那份的说明（「控制数据（内容 xxxxxxxx）」）；判不出（没有同代对照、或全都解不对）→ null，照旧按密钥报
+    internal static string SiblingDecrypts() {
+        if (Ks == null) return null;
+        var good = new Dictionary<(int, bool), string>(); var bad = new HashSet<(int, bool)>();
+        foreach (var (id, open) in Where.ToList()) {
+            try {
+                var n = new Nca(Ks, open());
+                int s = Enumerable.Range(0, 4).FirstOrDefault(i => n.SectionExists(i) && n.GetFsHeader(i).EncryptionType is NcaEncryptionType.AesCtr or NcaEncryptionType.AesXts, -1);   // 更新的补丁段（AesCtrEx）离了本体单独读不出来，不拿来作对照
+                if (s < 0) continue;
+                var key = (KeyIndex(n.Header.KeyGeneration), n.Header.HasRightsId);
+                var head = new byte[8];
+                bool right;
+                try {
+                    n.OpenStorage(s, IntegrityCheckLevel.None).Read(0, head).ThrowIfFailure();
+                    right = n.GetFsHeader(s).FormatType == NcaFormatType.Pfs0 ? head.AsSpan(0, 4).SequenceEqual("PFS0"u8) : BitConverter.ToUInt64(head) == 0x50;
+                } catch (Exception) { right = false; }
+                if (right) good.TryAdd(key, $"{n.Header.ContentType switch { NcaContentType.Control => "控制数据", NcaContentType.Program => "程序", NcaContentType.Manual => "说明书", NcaContentType.Meta => "内容清单", _ => "数据" }}（内容 {id[..Math.Min(8, id.Length)]}）");
+                else bad.Add(key);
+            } catch (Exception) { }
+        }
+        foreach (var k in bad) if (good.TryGetValue(k, out var who)) return who;
+        return null;
+    }
+    internal static string KeyGenNote() {
+        if (Ks == null) return "";   // 还没读 prod.keys 就失败（单测钩子）：不补这句
+        int need = -1; bool rights = false;
+        foreach (string id in (Involved.Count > 0 ? Involved.Select(x => x.Id) : Where.Keys).ToList()) {
+            if (!Where.TryGetValue(id, out var open)) continue;
+            try { var n = new Nca(Ks, open()); need = Math.Max(need, KeyIndex(n.Header.KeyGeneration)); rights |= n.Header.HasRightsId; } catch (Exception) { }
+        }
+        int top = TopMasterKey(Ks);
+        if (need < 0) return "";
+        KeyGen = (need, top, rights);
+        string have = top < 0 ? "prod.keys 里一条 master_key 都没有" : $"prod.keys 里 master_key 有到 {top:x2}";
+        string tk = rights ? "；这份内容还要票据里的标题密钥" : "";
+        return need > top
+            ? $"这份内容要第 {need:x2} 代密钥（master_key_{need:x2}），{have}：prod.keys 不够新{tk}。"
+            : $"这份内容要第 {need:x2} 代密钥（master_key_{need:x2}），{have}，代数够：多半是 master_key_{need:x2} 这一行的值不对{(rights ? "，或票据里的标题密钥不对" : "")}。";
+    }
     static bool MagicFail(HorizonResultException h) => h.ResultValue == LibHac.Fs.ResultFs.PartitionSignatureVerificationFailed.Value
         || h.ResultValue == LibHac.Fs.ResultFs.Sha256PartitionSignatureVerificationFailed.Value;
     // #787：哈希校验不过只有一行原因，玩家分不出坏的是本体、更新还是 DLC，也分不出是整合包改过还是解包器的问题。

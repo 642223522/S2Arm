@@ -211,6 +211,14 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var showEnvironment = false
     /// 装到 iPhone 的方式（环境检查「装到 iPhone 的方式」卡，installMode 作业）与壳比本版旧的手机（catalog phoneUpdates，库页右上角按钮）
     @Published var installMode = InstallModeInfo()
+    /// 「建议更新」（0.6.0 通用壳开关后面，S2ArmLauncherModel+UpdateHints.swift）：游戏号（大写）→ 对不上的原因；开关关着恒为空
+    @Published var updateHints: [String: [String]] = [:]
+    /// iPhone 总控台（0.6.0 通用壳开关后面，S2ArmLauncherModel+PhoneConsole.swift）：nil = 开关关着，首页不出首位卡
+    @Published var phoneOverview: PhoneOverview?
+    @Published var consoleDevice: String?            // 总控台在管哪台（多台时顶部切换）；nil = 跟着默认那台
+    @Published var consoleSelection: Set<String> = []   // ② 游戏同步里勾上的款（游戏号大写）
+    @Published var consoleBatch: [String] = []           // 「更新所选」这一轮要推的款（按顺序）；空 = 没在更新
+    var consoleSeeded: Set<String> = []                  // 上次自动勾过的建议更新款（玩家取消的不重勾）
     @Published var phoneUpdates: [PhoneUpdate] = []
     @Published var phoneDevices = 0   // catalog phoneDevices：这台电脑往几台手机装过游戏（更新弹窗按钮写「更新启动器和 iPhone App」）
     @Published var phoneBanner: PhoneBanner?   // 新版启动器首次启动后的「iPhone 版 S2Arm」横幅（S2ArmLauncherModel+PhoneBanner.swift）
@@ -291,6 +299,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var installDone: String?
     /// 刚装完的那次是单一 IMG：成功页多写一句「打开 S2Arm 会自动完成安装」
     @Published var installOpenToFinish = false
+    @Published var installTrustName = ""   // 这次签名的证书名（装机 / 更新结果 trustName）：完成页「点「<名字>」→ 信任」；空 = 退回不带名字的说法
     /// 最近一次手机作业（装到 iPhone / 从手机删 / 装回上一版）的结局，玩家还没回去看：顶部胶囊「已装好 · 查看结果」靠它（#308：关掉装机弹窗后找不回结果）。
     /// 新的手机作业开始、或打开这款的装机弹窗时清掉。
     @Published var phoneResult: (gameID: String, name: String, ok: Bool)?
@@ -424,6 +433,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     func mainHolds(_ gameID: String?) -> Bool { guard let gameID, mainBusy else { return false }; return session?.gameID == gameID }
     /// 手机槽空出来 / 主槽一单结束：起排着的第一个能起的（那款不被主槽占着）
     func pumpPhone() {
+        consoleBatchStep()   // 总控台「更新所选」这一轮全推完就收尾（S2ArmLauncherModel+PhoneConsole）
         guard !phoneBusy, let i = phoneQueue.firstIndex(where: { !mainHolds($0.gameID) }) else { return }
         phoneQueue.remove(at: i).run()
     }
@@ -517,6 +527,8 @@ public final class S2ArmLauncherModel: ObservableObject {
                 self.games = games; self.libraryError = nil; self.showingSnapshot = false
                 self.phoneUpdates = self.provider.library.phoneUpdates
                 self.phoneDevices = self.provider.library.phoneDevices
+                self.refreshUpdateHints()   // 打开时和每次重读游戏库后快速比对一次（只读 game.json，不排后台活）
+                self.refreshPhoneOverview()   // 总控台：只读设备记录（秒回），不探 USB
                 if !self.startupLoopsStarted { self.startupLoopsStarted = true; self.sgradeMacInBackground(); self.keptModulesLoop(); self.preparePhoneUpdate(); self.appleTVBackupLoop() }
                 if self.selectedID == nil || !games.contains(where: { $0.id == self.selectedID }) { self.selectedID = games.first?.id }
             case .failure(let error):
@@ -1190,6 +1202,7 @@ public final class S2ArmLauncherModel: ObservableObject {
                     self?.phoneOutcome = PhoneOutcome(device: Self.deviceLabel(kind: r.deviceKind, name: r.deviceName), packFiles: r.packFiles, packBytes: r.packBytes)
                 }
                 self?.installOpenToFinish = r?.openToFinish ?? false
+                self?.installTrustName = r?.trustName ?? ""
             }
             catch let f as JobFailure where ask && Self.confirmCodes[f.code ?? ""] != nil {
                 self?.dropConfirm = DropConfirm(kind: .install, game: game, message: f.errorDescription ?? "", code: f.code ?? "",

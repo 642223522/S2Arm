@@ -106,6 +106,31 @@ class ProgramPackTests(JobCase):
         program_pack.sign(self.c, GID, "TEAMA", "io.example.games", signer, pkg=pkg); self.assertEqual(len(calls), 1, "同团队同包名不再签")
         program_pack.sign(self.c, GID, "TEAMB", "io.example.games", signer, pkg=pkg); self.assertEqual(len(calls), 2, "换团队要重签")
 
+    def test_sign_keeps_only_signed_copy(self):
+        # 0.6.0 程序缓存瘦身：生产路径（不传 pkg，sign 自己出未签名包）签好后删掉未签名 dylib，只留键与元数据；
+        #   同团队再要 → 直接用签好的（不重出未签名包、不重签）；换团队 → 按键重出未签名包再签，签完照样删。期望手写
+        from unittest import mock
+        import programs
+        calls, builds = [], []
+        def signer(dylib, team, bundle):
+            calls.append(team); Path(dylib).write_bytes(Path(dylib).read_bytes() + team.encode())
+        real = program_pack.build
+        def build(c, gid, **k):
+            builds.append(1); return real(c, gid, kit=self.kit, shell=self.shell, info=INFO, banner="")
+        with mock.patch.object(program_pack, "build", build), mock.patch.object(programs, "kit_dir", lambda c, g: self.kit), \
+             mock.patch.object(program_pack, "compat", lambda c: INFO), mock.patch("layout.path", lambda *a, **k: self.root / "no-banner.jpg"):
+            out = program_pack.sign(self.c, GID, "TEAMA", "io.b", signer)
+            pkg = programs.cache(self.c, GID) / program_pack.PACKAGE
+            self.assertFalse((pkg / f"S2AImages-{GID}.dylib").exists(), "签好后未签名 dylib 删掉")
+            self.assertTrue((pkg / ".key").is_file() and (pkg / "meta.json").is_file(), "键与元数据留着")
+            self.assertTrue((out / f"S2AImages-{GID}.dylib").read_bytes().endswith(b"TEAMA"))
+            self.assertEqual(program_pack.sign(self.c, GID, "TEAMA", "io.b", signer), out)
+            self.assertEqual((calls, len(builds)), (["TEAMA"], 1), "同团队再要：直接用签好的，不重出不重签")
+            out_b = program_pack.sign(self.c, GID, "TEAMB", "io.b", signer)
+            self.assertEqual((calls, len(builds)), (["TEAMA", "TEAMB"], 2), "换团队：重出未签名包再签")
+            self.assertTrue((out_b / f"S2AImages-{GID}.dylib").read_bytes().endswith(b"TEAMB"))
+            self.assertFalse((pkg / f"S2AImages-{GID}.dylib").exists(), "签完照样删")
+
     def test_need_reasons(self):
         want = dict(host_abi=7, rewriter_id="rw01", image_sha256="s1")
         ok = dict(sha="s1", team="T", cert="C", host_abi=7, rewriter_id="rw01")

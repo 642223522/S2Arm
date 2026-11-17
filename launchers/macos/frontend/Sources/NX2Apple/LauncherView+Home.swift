@@ -8,7 +8,8 @@ import S2ArmAppleAdapter
 
 extension LauncherView {
     var homeGames: [GameSummary] { home.games(model.games) }
-    var homeSelected: GameSummary? { homeGames.first { $0.id == model.selectedID } ?? homeGames.first }
+    /// 选中首位「S2Arm」卡（iPhone 总控台，开关开着才有）时没有选中游戏
+    var homeSelected: GameSummary? { consoleEnabled && model.consoleSelected ? nil : homeGames.first { $0.id == model.selectedID } ?? homeGames.first }
 
     func homeLibrary(size: CGSize) -> some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -20,7 +21,9 @@ extension LauncherView {
             } else {
                 homeCoverStrip(size: size)
                 Spacer(minLength: 12)
-                if let game = homeSelected {
+                if consoleEnabled && model.consoleSelected {
+                    consolePanel(size: size).padding(.horizontal, LauncherTheme.Metrics.libraryInset).padding(.bottom, size.height < 740 ? 24 : 40)
+                } else if let game = homeSelected {
                     homePreview(game, size: size).padding(.horizontal, LauncherTheme.Metrics.libraryInset).padding(.bottom, size.height < 740 ? 52 : 74)
                 }
             }
@@ -181,6 +184,7 @@ extension LauncherView {
         return ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: 14) {
+                    if consoleEnabled { consoleCard(side: side).id("card." + S2ArmLauncherModel.consoleID) }   // 首位固定，不算进游戏数
                     ForEach(homeGames) { game in
                         homeCard(game, side: side).id("card." + game.id)
                     }
@@ -200,6 +204,10 @@ extension LauncherView {
             .onChange(of: navigation.focusedID) { id in
                 guard let id, id.hasPrefix("card.") else { return }
                 let gameID = String(id.dropFirst(5))
+                if consoleEnabled, gameID == S2ArmLauncherModel.consoleID {
+                    if model.selectedID != gameID { model.selectedID = gameID; model.refreshPhoneOverview(probe: true) }   // 选中总控台时探一次 USB（几秒）
+                    return
+                }
                 guard homeGames.contains(where: { $0.id == gameID }) else { return }
                 if model.selectedID != gameID { model.selectedID = gameID }
                 if !navigation.isFullyVisible(id) {
@@ -255,9 +263,19 @@ extension LauncherView {
                         if game.sgrade { SGradeBadge(size: max(24, artworkSide / 9)) }
                     }
                     .overlay(alignment: .topTrailing) {
-                        if home.favorites.contains(game.id) {
-                            Image(systemName: "heart.fill").font(.system(size: 10)).padding(6).background(.black.opacity(0.6), in: Circle()).padding(8)
-                        }
+                        HStack(spacing: 4) {
+                            // 「建议更新」（0.6.0 通用壳开关后面）：收藏心旁边一个小角标，原因在选中后的状态行里
+                            if !model.updateReasons(game).isEmpty {
+                                Text(BackendText.launcherText("update.hint.badge", language: loc.lang.sharedCode))
+                                    .font(.manrope(10.5, .bold)).foregroundStyle(.orange)
+                                    .padding(.horizontal, 7).padding(.vertical, 4)
+                                    .background(.black.opacity(0.68), in: Capsule()).overlay(Capsule().strokeBorder(.orange.opacity(0.6)))
+                                    .accessibilityIdentifier("card.updateHint." + game.id)
+                            }
+                            if home.favorites.contains(game.id) {
+                                Image(systemName: "heart.fill").font(.system(size: 10)).padding(6).background(.black.opacity(0.6), in: Circle())
+                            }
+                        }.padding(8)
                     }
                     .overlay(alignment: .bottomLeading) { expiryBadge(game) }
                     .overlay(alignment: .bottomTrailing) {   // 导入时数据校验不过、照常导入的款（11-17）：黄色提示角标，悬停 / 读屏说明见卡片 help
@@ -333,6 +351,7 @@ extension LauncherView {
         else { model.exportFor = game.id }
     }
     func reconcileHomeSelection() {
+        if consoleEnabled && model.consoleSelected { return }   // 首位卡选中着：不改
         let games = homeGames
         if !games.contains(where: { $0.id == model.selectedID }), let first = games.first { model.selectedID = first.id }
         if let id = navigation.focusedID, id.hasPrefix("card."), !games.contains(where: { "card." + $0.id == id }) {
@@ -424,7 +443,7 @@ struct ConsoleBadgeLabelStyle: LabelStyle {
     }
 }
 
-private struct HomeCardSurface<Label: View>: View {
+struct HomeCardSurface<Label: View>: View {
     let selected: Bool
     let focused: Bool
     @ViewBuilder let label: () -> Label

@@ -89,6 +89,17 @@ int main(void) {
     EQ(s2a_layout_compute(3,80*MB,MOD,0,W,64*GB,&L,&mb,&sb),0); EQ(L.heap_size,3540*MB); EQ(mb,W); EQ(L.stack_size,2*GB); EQ(L.tlsio_base,W+6*GB);
     // 同空洞、别名优先（八方2 / 巫师3 / 异度3 类）：照旧甲，别名区在前、堆让到 32M
     EQ(s2a_layout_compute(3,80*MB,MOD,1,W,64*GB,&L,&mb,&sb),0); EQ(L.tlsio_base,W); EQ(L.heap_size,32*MB); EQ(sb,0);
+    // D-NGH9 / #947：别名优先的款上一局真要过 3140 MB 普通堆（wire/<号>/heap_need，svc_mem.c 读回设 s2a_layout_heap_floor_set）。期望手写：
+    //   乙（窗口 13 GB 起 50 GB）：堆区 = 3140 + 影子余量 128 = 3268M，仍在 +428M；余量后 TLS/IO 在 +(300+128+3268+96)M = +3792M
+    //   64 GiB 空洞：甲固定部分 63G+526M 再加 3140M 放不下 → 走乙（堆给够），模块在窗口起点、堆区 3268M
+    //   下限清 0 后回到原来的 192M（上面各条不受影响）
+    { void s2a_layout_heap_floor_set(uint64_t); const uint64_t W26 = 13 * GB;
+      s2a_layout_heap_floor_set(3292528640ull);
+      EQ(s2a_layout_compute(3,80*MB,MOD,49,W26,50*GB,&L,&mb,&sb),0);
+      EQ(L.heap_base,W26+428*MB); EQ(L.heap_size,3268*MB); EQ(L.tlsio_base,W26+3792*MB); EQ(L.alias_base,W26+3794*MB-0x4000); sane(&L,mb);
+      EQ(s2a_layout_compute(3,80*MB,MOD,1,W,64*GB,&L,&mb,&sb),0); EQ(mb,W); EQ(L.heap_size,3268*MB);
+      s2a_layout_heap_floor_set(0);
+      EQ(s2a_layout_compute(3,80*MB,MOD,49,W26,50*GB,&L,&mb,&sb),0); EQ(L.heap_size,192*MB); }
     // 堆模式甲：32G + 模块正好放下，照 39 位布局，模块在 +32G
     EQ(s2a_layout_compute(3,0,MOD,0,W,32*GB+MOD,&L,&mb,&sb),0);
     EQ(L.tlsio_base,W); EQ(L.stack_base,W+GB); EQ(L.heap_base,W+3*GB); EQ(L.heap_size,6*GB); EQ(L.alias_base,W+9*GB);

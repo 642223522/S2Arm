@@ -726,9 +726,13 @@ void nvn_ft_poll(void) {
     pthread_mutex_unlock(&g_ft_mu);
     static uint64_t nup, nkept;   // under g_sub_mu (the submit path); first lines, then at powers of two
     for (size_t i = 0; i < nhit; i++) {   // outside g_ft_mu: the ownership check takes the ledger's lock
-        const tex_t *t = &hit[i]; int kept = nvn_be_tex_gpu_owned_since(t->serial, hst[i]); uint64_t k = kept ? ++nkept : ++nup;
+        // 多重采样贴图（2D_MULTISAMPLE / _ARRAY）的采样只在宿主 GPU 上，客体内存里排不出（nvn_deswizzle 不支持，GPU 解交错也不支持）：按客体内存重传会换上一张
+        //   内容未定义的新贴图（#1499 被囚禁的掌心 iPhone：警告页之后整屏黑，日志「deswizzle failed format 0x29 target 5」）。它只能是 GPU 画出来的，一律留着
+        const tex_t *t = &hit[i];
+        const int msaa = t->d.target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE || t->d.target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY;
+        int kept = msaa || nvn_be_tex_gpu_owned_since(t->serial, hst[i]); uint64_t k = kept ? ++nkept : ++nup;
         if (k <= 8 || !(k & (k - 1))) LOG("[nvn] texture ser=%llu %ux%ux%u format %#x flags %#x: pages written after its first use, %s (%llu so far)", (unsigned long long)t->serial,
-                                          t->d.width, t->d.height, t->d.depth, t->d.format, t->d.flags, kept ? "kept as the GPU wrote it (its GPU-written bytes are unchanged in guest memory)" : "uploaded from guest memory", (unsigned long long)k);
+                                          t->d.width, t->d.height, t->d.depth, t->d.format, t->d.flags, msaa ? "kept as the GPU wrote it (multisample: its samples are not in guest memory)" : kept ? "kept as the GPU wrote it (its GPU-written bytes are unchanged in guest memory)" : "uploaded from guest memory", (unsigned long long)k);
         if (!kept) nvn_be_tex_cpu_written(t);
     }
 }
@@ -3077,18 +3081,22 @@ static int nvn_stack_args(const char *n) {
 #if !defined(__ANDROID__)
 // 留在游戏栈上的 NVN 实现（命令录制 nvnCommandBuffer* 等，每帧上万次）套叶子桩（11-17，同 runtime/src/xstack.c 叶子名单）：游戏 sp 不是 16 字节对齐时
 //   （Horizon 不查、苹果芯片查），宿主实现开头一压栈就 SIGBUS；叶子桩 sp 对齐直接尾跳，不对齐先对齐、调完恢复。
-//   不套：未实现桩 / 大栈入口 / 计时入口（靠跳板给的 x16 = 槽地址找实现，叶子桩会改写 x16）、带栈上参数的四个（挪 sp 会读错参数）。
+//   不套叶子桩：未实现桩 / 大栈入口 / 计时入口（靠跳板给的 x16 = 槽地址找实现，叶子桩会改写 x16；未实现桩与计时入口自己在汇编里对齐，
+//   大栈入口切栈前不碰 sp、切到对齐的宿主栈）。带栈上参数的四个（挪 sp 会读错参数）改指 nvn_stackarg_entry：对齐时尾跳，不对齐时连栈参一起挪到对齐处再调。
 //   host_adapt.m big_wrap 直连起用时调一次；幂等。leaf = sw_xstack_leaf（不链运行时的单测不调）
 extern void nvn_prof_entry(void);
+extern void nvn_stackarg_entry(void);
+void *nvn_sa_real[NVN_NFUNC];   // 带栈参入口的真实现（nvn_entry.S nvn_stackarg_entry 按槽号取）
 void nvn_leaf_wrap(void *(*leaf)(const char *, void *)) {
     static int done; if (done || !leaf) return; done = 1;
-    unsigned n = 0;
+    unsigned n = 0, sa = 0;
     for (unsigned i = 0; i < NVN_NFUNC; i++) {
         void *f = nvn_slot[i].fn;
-        if (f == (void *)nvn_unimpl_entry || f == (void *)nvn_big_entry || f == (void *)nvn_prof_entry || nvn_stack_args(nvn_names[i])) continue;
+        if (f == (void *)nvn_unimpl_entry || f == (void *)nvn_big_entry || f == (void *)nvn_prof_entry) continue;
+        if (nvn_stack_args(nvn_names[i])) { nvn_sa_real[i] = f; nvn_slot[i].fn = (void *)nvn_stackarg_entry; sa++; continue; }
         nvn_slot[i].fn = leaf(nvn_names[i], f); n++;
     }
-    LOG("[nvn] 留在游戏栈上的 %u 个实现套叶子桩（游戏 sp 不对齐时先对齐再调）", n);
+    LOG("[nvn] 留在游戏栈上的 %u 个实现套叶子桩、%u 个带栈参的经对齐入口（游戏 sp 不对齐时先对齐再调）", n, sa);
 }
 #endif
 __attribute__((constructor)) static void nvn_nops_register(void) {
