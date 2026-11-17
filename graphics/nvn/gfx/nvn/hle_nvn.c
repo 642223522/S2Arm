@@ -726,9 +726,13 @@ void nvn_ft_poll(void) {
     pthread_mutex_unlock(&g_ft_mu);
     static uint64_t nup, nkept;   // under g_sub_mu (the submit path); first lines, then at powers of two
     for (size_t i = 0; i < nhit; i++) {   // outside g_ft_mu: the ownership check takes the ledger's lock
-        const tex_t *t = &hit[i]; int kept = nvn_be_tex_gpu_owned_since(t->serial, hst[i]); uint64_t k = kept ? ++nkept : ++nup;
+        // 多重采样贴图（2D_MULTISAMPLE / _ARRAY）的采样只在宿主 GPU 上，客体内存里排不出（nvn_deswizzle 不支持，GPU 解交错也不支持）：按客体内存重传会换上一张
+        //   内容未定义的新贴图（#1499 被囚禁的掌心 iPhone：警告页之后整屏黑，日志「deswizzle failed format 0x29 target 5」）。它只能是 GPU 画出来的，一律留着
+        const tex_t *t = &hit[i];
+        const int msaa = t->d.target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE || t->d.target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY;
+        int kept = msaa || nvn_be_tex_gpu_owned_since(t->serial, hst[i]); uint64_t k = kept ? ++nkept : ++nup;
         if (k <= 8 || !(k & (k - 1))) LOG("[nvn] texture ser=%llu %ux%ux%u format %#x flags %#x: pages written after its first use, %s (%llu so far)", (unsigned long long)t->serial,
-                                          t->d.width, t->d.height, t->d.depth, t->d.format, t->d.flags, kept ? "kept as the GPU wrote it (its GPU-written bytes are unchanged in guest memory)" : "uploaded from guest memory", (unsigned long long)k);
+                                          t->d.width, t->d.height, t->d.depth, t->d.format, t->d.flags, msaa ? "kept as the GPU wrote it (multisample: its samples are not in guest memory)" : kept ? "kept as the GPU wrote it (its GPU-written bytes are unchanged in guest memory)" : "uploaded from guest memory", (unsigned long long)k);
         if (!kept) nvn_be_tex_cpu_written(t);
     }
 }
