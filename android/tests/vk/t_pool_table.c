@@ -9,24 +9,50 @@ extern int nvn_gpu_vk_test_pool_live(nvn_gpu_pool_table);
 extern int nvn_gpu_vk_test_pool_refs(nvn_gpu_pool_table);
 extern void nvn_gpu_vk_test_pool_hook(void (*)(nvn_gpu_pool_table));
 static void release_in_bind(nvn_gpu_pool_table t) { nvn_gpu_pool_release(t); }
-static VkEvent pool_test_event;
+// 让真 GPU 停在「已提交、围栏未到」：被测那次提交先扣在主机侧，放行时才真正交给驱动。
+// 不用「命令缓冲开头等事件、主机再 vkSetEvent」——命令缓冲在途时主机设它正在等的事件违反
+// VUID-vkSetEvent-event-09543（新版校验层报）；1.1 设备又没有时间线信号量可「先等后发」。
+// 扣住期间后端看到的就是一个真实未发的围栏（vkGetFenceStatus = VK_NOT_READY），与在途等价。
+#define POOL_HOLD_MAX 4
+static int pool_test_hold;       // 置 1：下一次提交扣住
+static int pool_test_held;       // 已扣住、未放行
 static VkFence pool_test_fence;
-static int pool_test_arm;
+static VkQueue pool_hold_queue;
+static uint32_t pool_hold_count;
+static VkSubmitInfo pool_hold_submits[POOL_HOLD_MAX];
+static VkCommandBuffer pool_hold_cbs[POOL_HOLD_MAX][8];
+static VkSemaphore pool_hold_waits[POOL_HOLD_MAX][8], pool_hold_signals[POOL_HOLD_MAX][8];
+static VkPipelineStageFlags pool_hold_stages[POOL_HOLD_MAX][8];
 VKAPI_ATTR VkResult VKAPI_CALL __real_vkBeginCommandBuffer(VkCommandBuffer, const VkCommandBufferBeginInfo *);
 VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkBeginCommandBuffer(VkCommandBuffer cb, const VkCommandBufferBeginInfo *bi) {
-    VkResult r = __real_vkBeginCommandBuffer(cb, bi);
-    if (r == VK_SUCCESS && pool_test_arm) {
-        pool_test_arm = 0;
-        vkCmdWaitEvents(cb, 1, &pool_test_event, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                        0, NULL, 0, NULL, 0, NULL);
-    }
-    return r;
+    return __real_vkBeginCommandBuffer(cb, bi);
 }
 VKAPI_ATTR VkResult VKAPI_CALL __real_vkQueueSubmit(VkQueue, uint32_t, const VkSubmitInfo *, VkFence);
 VKAPI_ATTR VkResult VKAPI_CALL __wrap_vkQueueSubmit(VkQueue q, uint32_t count, const VkSubmitInfo *submits, VkFence fence) {
-    VkResult r = __real_vkQueueSubmit(q, count, submits, fence);
-    if (r == VK_SUCCESS && pool_test_event) pool_test_fence = fence;
-    return r;
+    if (!pool_test_hold) return __real_vkQueueSubmit(q, count, submits, fence);
+    pool_test_hold = 0;
+    if (count > POOL_HOLD_MAX) return VK_ERROR_OUT_OF_HOST_MEMORY;
+    for (uint32_t i = 0; i < count; i++) {
+        const VkSubmitInfo *si = &submits[i];
+        if (si->pNext || si->commandBufferCount > 8 || si->waitSemaphoreCount > 8 || si->signalSemaphoreCount > 8)
+            return VK_ERROR_OUT_OF_HOST_MEMORY;   // 扣不住的形状：让用例在 commit 处红，不静默放过
+        pool_hold_submits[i] = *si;
+        memcpy(pool_hold_cbs[i], si->pCommandBuffers, si->commandBufferCount * sizeof(VkCommandBuffer));
+        memcpy(pool_hold_waits[i], si->pWaitSemaphores, si->waitSemaphoreCount * sizeof(VkSemaphore));
+        memcpy(pool_hold_stages[i], si->pWaitDstStageMask, si->waitSemaphoreCount * sizeof(VkPipelineStageFlags));
+        memcpy(pool_hold_signals[i], si->pSignalSemaphores, si->signalSemaphoreCount * sizeof(VkSemaphore));
+        pool_hold_submits[i].pCommandBuffers = pool_hold_cbs[i];
+        pool_hold_submits[i].pWaitSemaphores = pool_hold_waits[i];
+        pool_hold_submits[i].pWaitDstStageMask = pool_hold_stages[i];
+        pool_hold_submits[i].pSignalSemaphores = pool_hold_signals[i];
+    }
+    pool_hold_queue = q; pool_hold_count = count; pool_test_fence = fence; pool_test_held = 1;
+    return VK_SUCCESS;
+}
+static VkResult pool_hold_release(void) {
+    if (!pool_test_held) return VK_ERROR_UNKNOWN;
+    pool_test_held = 0;
+    return __real_vkQueueSubmit(pool_hold_queue, pool_hold_count, pool_hold_submits, pool_test_fence);
 }
 
 int main(int argc, char **argv) {
@@ -143,12 +169,8 @@ int main(int argc, char **argv) {
         nvn_gpu_pool_table newer = NULL; r = nvn_gpu_pool_create(&rd, &newer, &err);
         CHECK(nvn_gpu_ok(r) && newer, "replacement pool create: %d %s", r.code, err.why);
         if (pipe && output && output2 && newer) {
-            VkEventCreateInfo eci = {0}; eci.sType = VK_STRUCTURE_TYPE_EVENT_CREATE_INFO;
-            VkResult evr = vkCreateEvent(g_dev.device, &eci, NULL, &pool_test_event);
-            CHECK(evr == VK_SUCCESS, "create GPU wait event: %d", evr);
-            pool_test_arm = pool_test_event != VK_NULL_HANDLE;
+            pool_test_fence = VK_NULL_HANDLE;
             nvn_gpu_cmd c = begin_cmd();
-            CHECK(!pool_test_arm, "GPU wait event was not inserted into command buffer");
             const uint8_t zero[4] = {0}, gradient[8] = {255,0,0,255, 0,255,0,255}, blue_px[4] = {0,0,255,255};
             nvn_gpu_tex_upload(c, dummy, 0, 0, NULL, zero, 4, 4);
             nvn_gpu_tex_upload(c, tex, 0, 0, NULL, gradient, 8, 8);
@@ -173,11 +195,13 @@ int main(int argc, char **argv) {
             nvn_gpu_dispatch(c, pipe, 7, 1, 1, NULL, 0);
             nvn_gpu_pool_release(newer); newer = NULL;
             nvn_gpu_pool_release(sampler_table); sampler_table = NULL;
+            pool_test_hold = 1;
             r = nvn_gpu_cmd_commit(c, 1, on_done, NULL, &err);
+            CHECK(pool_test_held, "pool dispatch submit was not held");
             CHECK(pool_test_fence && vkGetFenceStatus(g_dev.device, pool_test_fence) == VK_NOT_READY,
-                  "real GPU fence must be unsignaled while event is unset");
+                  "real GPU fence must be unsignaled while the submit is held");
             CHECK(nvn_gpu_fence_done() < 1 && nvn_gpu_vk_test_pool_live(old), "released old table must survive before real fence completes");
-            if (pool_test_event) CHECK(vkSetEvent(g_dev.device, pool_test_event) == VK_SUCCESS, "release GPU wait event");
+            if (pool_test_held) { VkResult hr = pool_hold_release(); CHECK(hr == VK_SUCCESS, "release held submit: %d", hr); }
             CHECK(nvn_gpu_ok(r), "pool dispatch commit: rc=%d %s", r.code, err.why);
             if (nvn_gpu_ok(r)) {
                 r = nvn_gpu_fence_wait(1, 5000000000ull, &err);
@@ -194,7 +218,8 @@ int main(int argc, char **argv) {
                           "replacement output[%u]: expected %.2f got %.2f", i, expected2[i], got[i]);
             }
 gpu_done:
-            if (pool_test_event) { vkDestroyEvent(g_dev.device, pool_test_event, NULL); pool_test_event = VK_NULL_HANDLE; }
+            pool_test_hold = 0;
+            if (pool_test_held) (void)pool_hold_release();   // 中途失败也要把扣住的提交交出去，围栏才会到
         }
         if (newer) nvn_gpu_pool_release(newer);
         if (output2) nvn_gpu_buf_release(output2, NULL, NULL);
