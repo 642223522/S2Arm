@@ -407,7 +407,9 @@ def _build(c):
     if early:   # 打完放进容器装到这台：早装推过的不再推，push_pack 按机上已解开的清单只补差量（着色器库 + 变了的小文件）
         import install as inst
         c.begin("装到 iPhone 并补推资源包（出包期间已先推 %d 个文件）" % pre.get("files", 0))
-        done = inst.put_game(c, gid, inst.MacPhone(c, early.team, early.dev, early.udid), steps=False)
+        import program_pack
+        ph = inst.MacPhone(c, early.team, early.dev, early.udid)
+        done = (inst.push_game if program_pack.enabled(c) else inst.put_game)(c, gid, ph, steps=False)   # 通用壳（缺省关）：只推这一款，不装壳
         shutil.rmtree(early.dir, ignore_errors=True)
         result.update(done, outputPath=str(image), packFiles=done["packFiles"] + pre.get("files", 0), packBytes=done["packBytes"] + pre.get("bytes", 0), earlyPack=pre)
     lib_ipa = refresh_library_ipa(c)
@@ -779,6 +781,29 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None, agreed=None)
                       code="game_files_mismatch")
     shutil.rmtree(app, ignore_errors=True)
     return ipa, games, sid
+
+
+def assemble_shell(c, *, dest=None):
+    """通用壳（pack/jobs/program_pack.enabled，0.6.0）：只有壳的容器——本版 iPhone 壳，s2a_catalogue.json 的 games 为空，不带任何一款（各款程序包由
+    「推到 iPhone」另推进手机 program/，install.push_game）。出 S2Arm.app + S2Arm.ipa 到 dest（缺省游戏库同盘临时目录）。→ (ipa, [], 壳号)；签名同 assemble"""
+    import host_update
+    sid = current_shell_id(c)
+    shell = container_shell(c, sid)
+    icon = c.engine / "launchers/macos/Branding/AppIcon-iOS.png"
+    if not icon.is_file():
+        raise Failure("这个 S2Arm 安装包不完整（缺应用图标），请重新下载 S2Arm。", code="engine_incomplete")
+    out = Path(dest) if dest else Path(tempfile.mkdtemp(prefix=".container-", dir=c.library))
+    out.mkdir(parents=True, exist_ok=True)
+    app, ipa = out / "S2Arm.app", out / "S2Arm.ipa"
+    log = c.logs / (c.task + "-container.log")
+    shutil.rmtree(app, ignore_errors=True)
+    c.run([os.sys.executable, "-X", "utf8", "-B", c.engine / "pack/ship_ext.py", "container", "--shell-only", "--shell", shell, "--out", app,
+           "--bundle-id", CONTAINER_BUNDLE, "--icon", icon, "--sign", "none", "--host-abi", str(host_update.HOST_ABI),
+           "--version", release_version(c.engine), "--display-version", display_version(c.engine)], log, c.env())
+    finish_container(c, app, log)
+    write_container_ipa(c, app, ipa, log)
+    shutil.rmtree(app, ignore_errors=True)
+    return ipa, [], sid
 
 
 def ipa_games(ipa):
