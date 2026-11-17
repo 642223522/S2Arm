@@ -4,6 +4,7 @@
 #include <stdarg.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <mach-o/dyld.h>
 int s2a_dump_threads(const char *why);
 module_t *module_of(const void *p) { (void)p; return NULL; }   // 桩：单测没有游戏模块，地址全走宿主符号
 static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t cv = PTHREAD_COND_INITIALIZER; static volatile int go, parked, after;
@@ -25,6 +26,17 @@ int main(void) {
     check("threads.txt 有停住线程的名字「s2a-单测停住」", strstr(buf, "「s2a-单测停住」") != NULL);
     check("threads.txt 回溯里有它停住的函数 t_tdump_marker_wait", strstr(buf, "t_tdump_marker_wait") != NULL);
     check("threads.txt 有本线程（发起现场）一行", strstr(buf, "本线程，发起现场") != NULL);
+    // 11-16 #55248c：系统库被抹名，帧括号里带「库名+库内偏移」、末尾列库基址与 UUID。期望用 dwarfdump --uuid 独立读本测试程序的 UUID，不经被测代码
+    { char exe[1024]; uint32_t es = sizeof exe; char want[64] = "", cmd[1200], line[512];
+      if (!_NSGetExecutablePath(exe, &es)) { snprintf(cmd, sizeof cmd, "dwarfdump --uuid '%s' 2>/dev/null", exe); FILE *q = popen(cmd, "r");
+        if (q && fgets(line, sizeof line, q)) { char *u = strstr(line, "UUID: "); if (u) snprintf(want, 37, "%s", u + 6); } if (q) pclose(q); }
+      const char *base = strrchr(exe, '/') ? strrchr(exe, '/') + 1 : exe; char needle[256]; snprintf(needle, sizeof needle, "库 %s 基址 0x", base);
+      char *row = strstr(buf, needle);
+      check("末尾库表有本测试程序一行「库 <名> 基址 0x…」", row != NULL);
+      check("库表里本测试程序的 UUID = dwarfdump --uuid 读出的", want[0] && row && strstr(row, want) && strstr(row, want) < strchr(row, '\n'));
+      snprintf(needle, sizeof needle, "t_tdump_marker_wait+0x"); char *f = strstr(buf, needle);
+      snprintf(needle, sizeof needle, "（%s+0x", base);
+      check("停住线程那一帧括号里带「库名+库内偏移」", f && strstr(f, needle) && strstr(f, needle) < strchr(f, '\n')); }
     check("threads.txt 有停住线程的全寄存器行 x0..x28（取证增强）", strstr(buf, "    x0 ") != NULL && strstr(buf, "    x28 ") != NULL);
     { FILE *g = fopen(lp, "r"); int lines = 0, ch; while (g && (ch = fgetc(g)) != EOF) lines += ch == '\n'; if (g) fclose(g);
       int k = 0; for (char *q = buf; *q; q++) k += *q == '\n';
@@ -32,5 +44,5 @@ int main(void) {
     pthread_mutex_lock(&mu); go = 1; pthread_cond_signal(&cv); pthread_mutex_unlock(&mu); pthread_join(t, NULL);
     check("取完现场后被挂起的线程照常跑完", after == 1);
     unlink(p); unlink(lp); rmdir(dir);
-    printf("%s t_tdump：%d 处不符（共 7 项）\n", fails ? "✗" : "✓", fails); return fails != 0;
+    printf("%s t_tdump：%d 处不符（共 10 项）\n", fails ? "✗" : "✓", fails); return fails != 0;
 }

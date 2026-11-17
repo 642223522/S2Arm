@@ -52,22 +52,29 @@ static float rumble_amplitude(float amplitude) {
     return fminf(1, s2a_hp_feel(amplitude) * rumble_scale);
 }
 
+// 输入事件化（#771）：报文线程存好快照就通知采样（s2a_mac_ns2_input_changed，实现在 front_mac.m：踢主队列跑 sample_input），
+//   不再等 120Hz 主线程定时器拉取（平均 ~4.2ms、最坏 ~8.3ms，主线程忙于菜单动画时还要排队）。空闲整包重发（没变化）不通知
 static void receive_input(const ns2_state *state, void *context) {
+    int changed = 0;
     pthread_mutex_lock(&lock);
-    if (ready && foreground) input[0] = *state;
+    if (ready && foreground && memcmp(&input[0], state, sizeof input[0])) { input[0] = *state; changed = 1; }
     pthread_mutex_unlock(&lock);
+    if (changed) s2a_mac_ns2_input_changed();
 }
 
 static void receive_status(ns2_status next, const char *message, void *context) {
     pthread_mutex_lock(&lock);
     status = next;
     int connected = next == NS2_STATUS_READY;
+    int changed = 0;
     if (ready != connected) {
         epoch++;
         memset(&input[0], 0, sizeof input[0]);
+        changed = 1;   // 连上 / 断开改变有没有手柄：即时采样，槽位跟着变
     }
     ready = connected;
     pthread_mutex_unlock(&lock);
+    if (changed) s2a_mac_ns2_input_changed();
     fprintf(stderr, "[Mac NS2] status=%d %s\n", next, message);
 }
 
@@ -149,8 +156,10 @@ static void *relay_read_main(void *context) {
         // 玩家 2 起：只存按键 / 摇杆与型号（体感 / 鼠标 / 震动 / 连接状态跟玩家 0 走，ns2_relay.h player）
         if (packet.player) {
             int p = packet.player, on = packet.ready != 0;
+            ns2_state next = on ? packet.state : (ns2_state){0};
+            int changed = playerReady[p] != on || memcmp(&input[p], &next, sizeof next);   // 玩家 2 起同样变化即踢采样（在线状态或按键 / 摇杆变了）
             playerReady[p] = on;
-            input[p] = on ? packet.state : (ns2_state){0};
+            input[p] = next;
             relayKind[p] = on ? (ns2_kind)packet.kind : NS2_KIND_NONE;
             if (on && packet.motion_known) { playerMotion[p] = packet.motion; playerMotion[p].host_timestamp_us = s2a_mac_ns2_now_us(); }
             else if (!on) memset(&playerMotion[p], 0, sizeof playerMotion[p]);
@@ -160,16 +169,18 @@ static void *relay_read_main(void *context) {
                 playerMouseUs[p] = s2a_mac_ns2_now_us();
             } else if (!on) memset(&playerMouse[p], 0, sizeof playerMouse[p]);
             pthread_mutex_unlock(&lock);
+            if (changed) s2a_mac_ns2_input_changed();
             continue;
         }
-        int connected = packet.ready != 0;
+        int connected = packet.ready != 0, changed = 0;
         if (ready != connected) {
             epoch++;
             memset(&input[0], 0, sizeof input[0]);
+            changed = 1;
         }
         ready = connected;
         status = (ns2_status)packet.status;
-        if (connected) input[0] = packet.state;
+        if (connected && memcmp(&input[0], &packet.state, sizeof input[0])) { input[0] = packet.state; changed = 1; }   // 同 receive_input：变化即踢采样（通道按拍整包重发，没变化的不踢）
         relayKind[0] = connected ? (ns2_kind)packet.kind : NS2_KIND_NONE;
         if (packet.motion_known) relayMotion = packet.motion;
         else memset(&relayMotion, 0, sizeof relayMotion);
@@ -186,10 +197,13 @@ static void *relay_read_main(void *context) {
             relayMouseUs[side] = s2a_mac_ns2_now_us();
         } else if (!connected) memset(relayMouse, 0, sizeof relayMouse);
         pthread_mutex_unlock(&lock);
+        if (changed) s2a_mac_ns2_input_changed();
     }
 
+    int closed = 0;
     pthread_mutex_lock(&lock);
     if (relayFD == fd) {
+        closed = 1;
         relayFD = -1;
         ready = 0;
         status = NS2_STATUS_DISCONNECTED;
@@ -200,6 +214,7 @@ static void *relay_read_main(void *context) {
         memset(relayMouse, 0, sizeof relayMouse);
     }
     pthread_mutex_unlock(&lock);
+    if (closed) s2a_mac_ns2_input_changed();   // 通道断开（连接程序退出）：手柄槽位即时摘掉，不等下一拍拉取
     close(fd);
     fprintf(stderr, "[Mac NS2] Relay connection closed\n");
     return NULL;

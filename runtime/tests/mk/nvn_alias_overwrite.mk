@@ -1,6 +1,6 @@
 # native-test-nvn_alias_overwrite：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += nvn_alias_overwrite
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # 同一存储上被别的贴图 GPU 写过的活对象贴图按 Ryujinx 语义释放（时之笛阴影图每帧换尺寸，429 张叠在 6 MB 存储上）；Metal 4 / 3 两路
 $(BUILD)/tests/t_nvn_alias_overwrite: graphics/nvn/tests/t_nvn_alias_overwrite.m graphics/nvn/gfx/nvn/nvn_mtl.m $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \

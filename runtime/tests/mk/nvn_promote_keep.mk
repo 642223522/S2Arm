@@ -1,6 +1,6 @@
 # native-test-nvn_promote_keep：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来）
 NATIVE_TEST_OWN += nvn_promote_keep
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # GPU 贴图转随包贴图时留住 GPU 写过的级（巫师3 远景植被品红，11-04）：完整 bootstrap、录制、Metal 3/4 回放与提交内拷出。
 $(BUILD)/tests/t_nvn_promote_keep: graphics/nvn/tests/t_nvn_promote_keep.m graphics/nvn/gfx/nvn/nvn_protos.h graphics/nvn/gfx/nvn/include/nvn.h $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -fobjc-arc $(NATIVE_INC) -Igraphics/nvn/gfx/nvn -Igraphics/nvn/gfx/nvn/include \

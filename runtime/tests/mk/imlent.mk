@@ -2,7 +2,7 @@
 # 合成 Mach-O 之外，再用本程序自身验内存里的真签名段：链接器自签（没有权限槽 → -1）、codesign 带 get-task-allow（查它 → 1、查 IML → 0）。
 #   不签带 IML 的那份去跑：macOS AMFI 不让 ad-hoc 签名带受限键的程序启动（实测 Killed: 9）
 NATIVE_TEST_OWN += imlent
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 .PHONY: native-test-imlent
 native-test-imlent:
 	@mkdir -p $(BUILD)/tests

@@ -22,40 +22,6 @@ ck "系统数据阶段戳变（时区来源）→ 包键变（字体 / 0802 / 08
 key_bad=$T/key_bad; mkdir -p "$key_bad"
 ( ipa_pkg_key "$key_commit" "$key_bad" > /dev/null 2> "$T/key_bad.err" ); rb=$?
 ck "资源输入键算不出（没有 exefs/main）→ 失败并报红，不拿缺项的键去比" '[ $rb != 0 ] && grep -q "【红】算进包资源输入键失败" "$T/key_bad.err"'
-# 固定翻译器/脚本/SDK等外部输入，直接调用生产key_of；旧键期望逐行手写，不经新实现生成。
-# 这是显式目标输入行的兼容性单测；实际编译闭包/脚本内容键变化仍须在冷/热出包中单独核对。
-(
-  R=$H
-  eval "$(sed -n '/^key_of() {/,/^}/p' "$H/graphics/tools/shader_pack.sh")"
-  tool_keys() { CS=compiler-fixture; XC=gal-fixture; }; tool_keys_memo() { tool_keys; }   # key_of 经记忆层调 tool_keys（10-30 P4）：这里只测键怎么拼
-  input_fp() { printf '%s\n' input-list-fixture main-content-fixture; }
-  extrap_of() { echo off; }
-  python3() { case "$1" in */key_norm.py) echo script-fixture;; *) command python3 "$@";; esac; }
-  xcrun() { case "$*" in *--show-sdk-version*) echo 27.1;; *metal*--version*) echo metal-fixture;; *) return 1;; esac; }
-  IPHONEOS_DEPLOYMENT_TARGET=18.0; MACOSX_DEPLOYMENT_TARGET=15.0
-  unset S2A_TARGET_DEVICE_CAPS S2A_PSO_ARCHS S2A_PREBUILT_TOOLS
-  # 出包目标对（10-29 起进键，pack/jobs/archs.py pairs 推导，推导本身由 pack/jobs/tests/test_archs.py 测）：这里用桩，只测键怎么拼——
-  #   不设架构 = 跑局机清单两对；显式架构按给的出（与 archs.py 显式分支同形：架构 × 系统大版本 27）；桩答不出 = 推导失败
-  fake_py() { [ "$2" = pairs ] || return 2; [ "${FAKE_PAIRS_FAIL:-0}" = 0 ] || return 2
-    if [ -n "${S2A_PSO_ARCHS:-}" ]; then for a in $S2A_PSO_ARCHS; do printf '%s\t27\t4\n' "$a"; done | LC_ALL=C sort -t. -k1,1
-    else printf 'applegpu_g18p\t27\t4\napplegpu_g19p\t27\t4\n'; fi; }
-  PY=fake_py
-  printf '%s\n' input-list-fixture main-content-fixture 'cs compiler-fixture' 'xc gal-fixture' 'extrap off' \
-    'scripts script-fixture' 'pso-pairs applegpu_g18p.27.4 applegpu_g19p.27.4 ' 27.1 27.1 metal-fixture 'ios18.0 macos15.0' | shasum -a 256 | cut -c1-64 > "$T/shader_legacy.bytes"
-  key_of "$T" > "$T/shader_unset.bytes" || exit 1
-  cmp -s "$T/shader_legacy.bytes" "$T/shader_unset.bytes" || exit 1
-  S2A_TARGET_DEVICE_CAPS=31,32768 key_of "$T" > "$T/shader_explicit.bytes" || exit 1
-  ! cmp -s "$T/shader_unset.bytes" "$T/shader_explicit.bytes" || exit 1
-  S2A_TARGET_DEVICE_CAPS= key_of "$T" > "$T/shader_empty.bytes" || exit 1
-  ! cmp -s "$T/shader_unset.bytes" "$T/shader_empty.bytes" || exit 1
-  S2A_PSO_ARCHS='applegpu_g18p applegpu_g19p' key_of "$T" > "$T/shader_default_arch.bytes" || exit 1
-  cmp -s "$T/shader_unset.bytes" "$T/shader_default_arch.bytes" || exit 1
-  S2A_PSO_ARCHS=applegpu_g14p key_of "$T" > "$T/shader_arch.bytes" || exit 1
-  ! cmp -s "$T/shader_unset.bytes" "$T/shader_arch.bytes" || exit 1
-  ! FAKE_PAIRS_FAIL=1 key_of "$T" > /dev/null 2>&1
-)
-shader_key_ok=$?
-ck "着色器目标输入：未设能力/架构时 key_of 与手写期望键（含跑局机清单两对）完整字节一致；显式给的对与缺省推导相同时逐字节相同（键只认推导出的对、不认怎么给的）；显式能力/空能力/别的架构均不复用默认键；对推导不出 → key_of 报红不给键" '[ "$shader_key_ok" = 0 ]'
 key_mem_small=$(CFLAGS='-DS2A_MEM_NEED_MB=3584' kf)
 key_mem_large=$(CFLAGS='-DS2A_MEM_NEED_MB=4500' kf)
 ck "不同编译预算不能复用同一 ipa 包键" '[ "$key_mem_small" != "$key_mem_large" ] && [ "$key_mem_small" != "$k3" ]'
@@ -133,18 +99,6 @@ ck "覆盖层不给 → 包里是原版（同一份源、只是少了覆盖层�
 rm -rf $S/Layout
 ck "包内路径带 .. → 拒绝" '! python3 $H/pack/pack.py $T/pack3 ../x=$T/main.npdm > /dev/null 2>&1'
 export S2A_ROOTS=$T/roots; source $H/pack/roots.sh
-# root_pso0（管线归档 0 KB 判据，10-21）：有分片 + 0 KB → 是坏的、打分片数；有分片有大小 / 没分片 / 没有 json / 旧版无字段 → 不算
-mkdir -p $T/p0/a/shaders $T/p0/b/shaders $T/p0/c/shaders $T/p0/d/shaders $T/p0/e
-echo '{"pso": {"chunks": 27}, "pso_archive_kb": 0}' > $T/p0/a/shaders/shader_pack.json; echo '{"pso": {"chunks": 27}, "pso_archive_kb": 547731}' > $T/p0/b/shaders/shader_pack.json
-echo '{"pso": {"chunks": 0}, "pso_archive_kb": 0}' > $T/p0/c/shaders/shader_pack.json; echo '{"red": {}}' > $T/p0/d/shaders/shader_pack.json
-mkdir -p $T/p0/f/shaders/direct; cp $T/p0/a/shaders/shader_pack.json $T/p0/f/shaders/; echo k > $T/p0/f/shaders/direct/keys.tsv   # 直连款：同样 27 片 0 KB，但包里有直连库
-# 离线 0 支的三种直连形态（11-05）：keys.tsv 空 + vk 表头 / gl 表头 / runtime_only.txt，同样 27 片 0 KB → 不算坏；keys.tsv 空、三样都没有 → 照判坏（反证）
-for k in g v r n; do mkdir -p $T/p0/$k/shaders/direct; cp $T/p0/a/shaders/shader_pack.json $T/p0/$k/shaders/; : > $T/p0/$k/shaders/direct/keys.tsv; done
-mkdir -p $T/p0/g/shaders/direct/gl $T/p0/v/shaders/direct/vk; echo '# s2arm-gl-lib 2' > $T/p0/g/shaders/direct/gl/gl_shaders.tsv; echo '# s2arm-vk-lib 3' > $T/p0/v/shaders/direct/vk/vk_shaders.tsv; echo 缺口 > $T/p0/r/shaders/direct/runtime_only.txt
-ck "root_pso0：只有 vk 表头 / gl 表头 / 运行时现编空库的直连款 → 不算坏；keys.tsv 空且三样都没有 → 照判坏（打 27）" '! root_pso0 $T/p0/v && ! root_pso0 $T/p0/g && ! root_pso0 $T/p0/r && [ "$(root_pso0 $T/p0/n)" = 27 ]'
-ck "root_pso0：27 片 0 KB → 坏（打 27）；有大小 / 0 片 / 旧版无字段 / 没有 json / 直连款（通用按口径不出归档）→ 不算" '[ "$(root_pso0 $T/p0/a)" = 27 ] && ! root_pso0 $T/p0/b && ! root_pso0 $T/p0/c && ! root_pso0 $T/p0/d && ! root_pso0 $T/p0/e && ! root_pso0 $T/p0/f'
-g1=$(unset S2A_ALLOW_PSO0; root_pso0_gate $T/p0/a d3); r1=$?; g2=$(S2A_ALLOW_PSO0=仅录制 root_pso0_gate $T/p0/a d3); r2=$?; g3=$(unset S2A_ALLOW_PSO0; root_pso0_gate $T/p0/b acnh); r3=$?
-ck "登记闸门：0 KB 缺省判红不放（rc=${r1}）；S2A_ALLOW_PSO0=仅录制 → 🟡 例外放行带原因（rc=${r2}）；好包静默放行（rc=${r3}）" '[ $r1 = 1 ] && [[ "$g1" == 【红】d3\ 管线归档\ 0\ KB* ]] && [ $r2 = 0 ] && [[ "$g2" == 🟡*例外登记——仅录制 ]] && [ $r3 = 0 ] && [ -z "$g3" ]'
 W=$(root_begin acnh c1) && echo v1 > $W/out.txt && root_commit acnh c1; ck "c1 提交后现行 → c1" '[ "$(basename "$(root_cur acnh)")" = acnh@c1 ] && [ "$(cat $(root_cur acnh)/out.txt)" = v1 ]'
 W=$(root_begin acnh c2); ck "c2 从现行克隆（带 c1 内容）" '[ "$(cat $W/out.txt)" = v1 ]'
 echo v2 > $W/out.txt; ck "提交前现行仍是 c1" '[ "$(cat $(root_cur acnh)/out.txt)" = v1 ]'

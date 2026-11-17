@@ -131,6 +131,7 @@ static void c20a(void) {
     _exit((a > 1.4212 && a < 1.4232 ? 0 : 1) | (b > 2.1712 && b < 2.1732 ? 0 : 2) | (c > 2.1712 && c < 2.1732 ? 0 : 4));
 }
 int main(void) {
+    setenv("S2A_CAPS_OWN", "1", 1);   // 测我方宽屏读屏幕宽的机制本身（11-15 起缺省不用，S2A_CAPS_OWN=1 才按名单 / 能力清单）
     char T[] = "/tmp/s2a_t_widen_ios_screen_XXXXXX"; if (!mkdtemp(T)) return 1;
     snprintf(g_tmd, sizeof g_tmd, "%s", T);
     { char p[620]; snprintf(p, sizeof p, "%s/widen_verified.tsv", T); FILE *f = fopen(p, "w"); if (!f) return 1;   // 名单门放行（widen_verified 只看文件在不在）

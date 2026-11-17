@@ -30,10 +30,28 @@ f=$(ls $R/compat/tree/src/Ryujinx.Common/*.cs | head -1); echo '// t' >> "$f"; B
 echo '// t' >> $R/graphics/nvn/gfx/nvn/dmsh_chain.h; B; ck "⑦ 改属性引用的 dmsh_chain.h → 全量" 'full'
 echo '// t' >> $R/graphics/dsx/gal_spvx.c; B; ck "⑧ 改单列的 DshXfpInput gal_spvx.c → 全量" 'full'
 echo '// u' >> $R/graphics/tools/direct/dsh/Dsh.cs; B 1; B; ck "⑨ 改源后编失败不记戳 → 下次仍全量" 'full'
-# 启动器内置件（S2A_PREBUILT_TOOLS/dsh_batch，bundle_engine.py 发版时编好并写源码摘要，11-06）：摘要相同 → 用内置件、不调 dotnet build；不同 → 照常现编
-P=$T/pre; mkdir -p $P/dsh_batch; : > $P/dsh_batch/dsh_batch.dll
-python3 -c "import sys; sys.path.insert(0, '$R/translator'); import dsh_batch, os; print(dsh_batch.src_digest(os.path.join(dsh_batch.DSH, 'batch', 'dsh_batch.csproj')))" > $P/dsh_batch/.src_digest
-BP() { : > $T/log; S2A_PREBUILT_TOOLS=$P DOTNET=$T/dotnet FAKE_LOG=$T/log python3 -c "import sys; sys.path.insert(0, '$R/translator'); import dsh_batch; print(dsh_batch.build()[0][1])" 2>/dev/null; }
-rm -f $R/build/dsh_batch/dsh_batch.dll; o=$(BP); ck "⑩ 内置件摘要相同 → 用内置件（${o}）、不调 dotnet build" '[ "$o" = "$P/dsh_batch/dsh_batch.dll" ] && [ ! -s $T/log ]'
-echo '// p' >> $R/graphics/tools/direct/dsh/Dsh.cs; o=$(BP); ck "⑪ 源码改过、摘要不同 → 不用内置件、照常现编（${o}）" '[ "$o" = "$R/build/dsh_batch/dsh_batch.dll" ] && full'
-[ $bad = 0 ] && echo "dsh_build_content 单测全过" || { echo "dsh_build_content 单测有不通"; exit 1; }
+# 启动器内置件（S2A_PREBUILT_TOOLS/dsh_batch，bundle_engine.py 发版时以 NativeAOT 单文件编好并写源码摘要，11-06）：摘要相同 → 用内置件单文件直接执行、不调 dotnet build；
+#   摘要不同 / 缺件（App 装坏）→ 报红重装、不回落现编（玩家机没有 SDK，同 services/prebuilt_lib.sh 的口径；开发机要现编就不设 S2A_PREBUILT_TOOLS）
+P=$T/pre
+mkdir -p $P/dsh_batch
+printf '#!/bin/bash\n[ "$1" = --xfp ] && echo 0123456789abcdef\n' >$P/dsh_batch/dsh_batch
+chmod +x $P/dsh_batch/dsh_batch
+python3 -c "import sys; sys.path.insert(0, '$R/translator'); import dsh_batch, os; print(dsh_batch.src_digest(os.path.join(dsh_batch.DSH, 'batch', 'dsh_batch.csproj')))" >$P/dsh_batch/.src_digest
+BP() {
+  : >$T/log
+  S2A_PREBUILT_TOOLS=$P DOTNET=$T/dotnet FAKE_LOG=$T/log python3 -c "import sys; sys.path.insert(0, '$R/translator'); import dsh_batch; print(dsh_batch.build()[0][0])"
+}
+rm -f $R/build/dsh_batch/dsh_batch.dll
+o=$(BP)
+ck "⑩ 内置件摘要相同 → 用内置件单文件（${o}）、不调 dotnet build" '[ "$o" = "$P/dsh_batch/dsh_batch" ] && [ ! -s $T/log ]'
+echo '// p' >>$R/graphics/tools/direct/dsh/Dsh.cs
+o=$(BP 2>&1)
+ck "⑪ 源码改过、摘要不同 → 报红重装、不现编（${o}）" '[[ "$o" == *"[RED] App 内置的直连批量进程"* ]] && [ ! -s $T/log ]'
+python3 -c "import sys; sys.path.insert(0, '$R/translator'); import dsh_batch, os; print(dsh_batch.src_digest(os.path.join(dsh_batch.DSH, 'batch', 'dsh_batch.csproj')))" >$P/dsh_batch/.src_digest
+rm -f $P/dsh_batch/dsh_batch
+o=$(BP 2>&1)
+ck "⑪b 内置件缺单文件（摘要相同）→ 同样报红重装（${o}）" '[[ "$o" == *"[RED] App 内置的直连批量进程"* ]] && [ ! -s $T/log ]'
+[ $bad = 0 ] && echo "dsh_build_content 单测全过" || {
+  echo "dsh_build_content 单测有不通"
+  exit 1
+}

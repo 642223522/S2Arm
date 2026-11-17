@@ -151,6 +151,16 @@ int main(void) { @autoreleasepool {
         standin(cs);
         VERIFY(g_tensor_up == up2 + 1, "⑥ 撤掉后照旧顶替：放大 %llu 次（期望 1）", (unsigned long long)(g_tensor_up - up2));
     }
+    {   // ⑧ 动态分辨率（第三类 GPU 挂死 4/4 份样本都紧跟输入尺寸变化）：同一张输出图、输入图尺寸不同 → 同一个放大器（改前按输入尺寸各建一个）；
+        //   放大器输入容量 = 输出尺寸。期望手写：854x480、683x384 两种输入，输出 1920x1080，放大器同一个、容量 1920x1080
+        MTLTextureDescriptor *di = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float width:854 height:480 mipmapped:NO]; di.usage = MTLTextureUsageShaderRead;
+        id<MTLTexture> i1 = [g_dev newTextureWithDescriptor:di]; di.width = 683; di.height = 384; id<MTLTexture> i2 = [g_dev newTextureWithDescriptor:di];
+        MTLTextureDescriptor *dd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float width:1920 height:1080 mipmapped:NO]; dd.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite | MTLTextureUsageRenderTarget;
+        id<MTLTexture> oo = [g_dev newTextureWithDescriptor:dd];
+        NvDlss *f1 = tensor_scaler(i1, oo), *f2 = tensor_scaler(i2, oo);
+        VERIFY(f1 && f1 == f2, "⑧ 输入 854x480 与 683x384、输出 1920x1080：同一个放大器（%p / %p）", (__bridge void *)f1, (__bridge void *)f2);
+        VERIFY(f1 && f1->iw == 1920 && f1->ih == 1080, "⑧ 放大器输入容量 = 输出尺寸：%lux%lu（期望 1920x1080）", f1 ? (unsigned long)f1->iw : 0ul, f1 ? (unsigned long)f1->ih : 0ul);
+    }
     printf("%s t_nvn_tensor_sq：%u 项，%u 项不过（张量核网络顶替：平方域出口层先平方输入、sRGB 域先解码输入、同域照原样；按推常量取输入有效区域与输出区域；诊断开关关掉不顶替）\n", fails ? "✗" : "✓", checks, fails);
     return fails ? 1 : 0;
 } }

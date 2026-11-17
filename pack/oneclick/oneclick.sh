@@ -126,20 +126,17 @@ for c in /Applications/S2Arm.app/Contents/Resources/Runtime/python/bin/python3 "
 #   选定的解释器所在目录放到 PATH 最前（#447 评审，照启动器 pack/jobs/core.py 的 env() 做）：出包链各 .sh 里的裸 python3 都落到这一个解释器，
 #   不会在装了 anaconda 的机器上拿到 PATH 最前面那个 3.9（缺包 / 版本不对，在后面某个阶段再停）
 export S2A_PYTHON=$PY S2A_PY=$PY PATH="$(dirname "$PY"):$PATH"
-#   .NET 10：读取器的 apphost 要 DOTNET_ROOT，按 --list-sdks 给的真实 SDK 根补（在 Python 之后查：选 SDK 用 Python 那一处判法）
-if [ -n "${S2A_PREBUILT_TOOLS:-}" ] && [ -n "${S2A_NX_UNPACK:-}" ] && [ -n "${S2A_SHELL:-}" ]; then
-  #   发版应用（启动器 pack/jobs/ipa.py 给齐预编件 / 读取器 / 随包壳）：C# 只运行不现编，有 .NET 10 运行时即可（DOTNET_ROOT 由作业环境给随包那份）
-  DN=${DOTNET:-$(command -v dotnet || true)}; [ -n "$DN" ] || { [ -x "$HOME/.dotnet/dotnet" ] && DN=$HOME/.dotnet/dotnet; }
-  [ -n "$DN" ] && "$DN" --list-runtimes 2> /dev/null | grep -q '^Microsoft\.NETCore\.App 10\.' || die "应用内置 .NET 10 运行时缺失：重新安装完整的 S2Arm"
+#   .NET：只在源码树现编 C# 时要——发版应用（启动器 pack/jobs/ipa.py 给齐预编件 / 读取器 / 随包壳）的 C# 件全为随 App 预编的原生单文件（NativeAOT），运行不再要 .NET 运行时
+if [ -z "${S2A_PREBUILT_TOOLS:-}" ] || [ -z "${S2A_NX_UNPACK:-}" ] || [ -z "${S2A_SHELL:-}" ]; then
+  #   源码树现编 C#：SDK 版本按 compat/tree/global.json 判（#449：只 grep 10.x 会放过 10.0.301，到编 C# 时才红）：选哪个 dotnet、够不够版本、报什么，都用 pack/jobs/ipa.py
+  #   dotnet_sdk() / dotnet_missing() 那一处（applenv.py 与启动器环境检查同一判法）；它按 DOTNET → DOTNET_ROOT → ~/.dotnet → PATH → 常见安装位置找
+  #   读取器的 apphost 要 DOTNET_ROOT，按 --list-sdks 给的真实 SDK 根补（在 Python 之后查：选 SDK 用 Python 那一处判法）
+  DNR=$("$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); from ipa import dotnet_sdk, dotnet_missing; r, e = dotnet_sdk(); print(f"{e}\t{r}" if e else "\t" + dotnet_missing())' "$P/../pack/jobs") \
+    || die "查不了 .NET SDK（${PY} 跑 pack/jobs/ipa.py 失败）"
+  DN=${DNR%%$'\t'*}
+  [ -n "$DN" ] || die "${DNR#*$'\t'}"
   export DOTNET=$DN PATH="$(dirname "$DN"):$PATH"
-else
-#   源码树现编 C#：SDK 版本按 compat/tree/global.json 判（#449：只 grep 10.x 会放过 10.0.301，到编 C# 时才红）：选哪个 dotnet、够不够版本、报什么，都用 pack/jobs/ipa.py
-#   dotnet_sdk() / dotnet_missing() 那一处（applenv.py 与启动器环境检查同一判法）；它按 DOTNET → DOTNET_ROOT → ~/.dotnet → PATH → 常见安装位置找
-DNR=$("$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); from ipa import dotnet_sdk, dotnet_missing; r, e = dotnet_sdk(); print(f"{e}\t{r}" if e else "\t" + dotnet_missing())' "$P/../pack/jobs") \
-  || die "查不了 .NET SDK（${PY} 跑 pack/jobs/ipa.py 失败）"
-DN=${DNR%%$'\t'*}; [ -n "$DN" ] || die "${DNR#*$'\t'}"
-export DOTNET=$DN PATH="$(dirname "$DN"):$PATH"
-[ -n "${DOTNET_ROOT:-}" ] || export DOTNET_ROOT="${DNR#*$'\t'}"
+  [ -n "${DOTNET_ROOT:-}" ] || export DOTNET_ROOT="${DNR#*$'\t'}"
 fi
 #   共享字体：没给 --fonts 就用开源替代字体（维护者 10-30：缺省开源、原版只在显式给时用；来源规则在 pack/stages/sysdata.sh，一处定）
 # 并行度按本机核数（tools/cores.sh：重烘 / 出库路数 = min(核数, 内存一半 ÷ 1.5 GB)，make 等按全部核；G04 10-23 起一键出包就按本机用满，10-25 起 refresh / ipa.sh 直调也同一处算）
@@ -250,7 +247,7 @@ if [ -n "$FX" ]; then
   #   目录取盘点身份（graphics/nvn/tools/romfs_list.py：相对路径 + 大小 + 修改时间纳秒，只 lstat、不读内容，27 万文件也只是盘点一遍），没有的记「-」
   KA=$(cd "$FX" && "$PY" -c 'import os, sys; sys.path.insert(0, sys.argv[1]); import romfs_list
 for d in sys.argv[2:]:
-    i = romfs_list.scan(d).identity if os.path.isdir(d) else "-"
+    i = romfs_list.scan(d).identity if romfs_list.is_dir(d) else "-"   # is_dir：romfs/ 不在、只有镜像 romfs.std 时盘点镜像（身份随镜像换而换）
     if i is None: sys.exit(1)
     print(d, i)' "$P/../graphics/nvn/tools" romfs aoc && { [ ! -f aoc.tsv ] || shasum -a 256 < aoc.tsv; }) || die "盘点不了 $FX 的 romfs/ 或 aoc/"
   K=$( { cat "$FX/unpack.tsv"; echo "$KM"; echo "$KA"; } | shasum -a 256 | cut -c1-16); X=$FX

@@ -2,7 +2,7 @@
 #   期望（手写，按报告者的对照表）：live / early / late / flight 读 255（late / flight 是修前读 0 的两种），remap 读改映射后的 73；
 #   new（收尾后同一地址建另一序号）修前修后都读 0，是这次修法覆盖不到的边界，只打出来、不判
 NATIVE_TEST_OWN += nvn_tex_finalize
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 $(BUILD)/tests/t_nvn_tex_finalize: graphics/nvn/tests/nvn_tex_finalize_probe.m $(NVN_MTL_DEPS) graphics/nvn/widen_glue.inc graphics/nvn/widen_fallback.inc $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \
 	  $(NATIVE_INC) -Igraphics/nvn/host -Igraphics/nvn/gfx/nvn -Igraphics/nvn/gfx/nvn/include -Igraphics/nvn/third_party/vulkan-headers/include \

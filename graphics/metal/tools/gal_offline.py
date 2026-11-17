@@ -4,13 +4,14 @@
 # 步骤：① gal_xc：每支 SPIR-V → <键>.metal + gal.idx（与运行时现编同一份翻译代码）；② 并行 xcrun metal -c → .air；③ 按键序分片，每片 xcrun metallib → gal.<片号>.metallib。
 # 产物：<输出目录>/gal.<片号>.metallib、gal.shards（每行「首键 16 位十六进制<TAB>文件名」，按键升序）、gal.idx（运行时 nxgal_prog_lib_open(目录)）；中间 .metal / .air 留在 <输出目录>/msl 供排查。
 # 分片（10-20）：整库一块要几百 MB 连续地址，iPhone 低区空洞被 C# 初始化与线程栈打碎（巫师3 365 MB 开不了）；每片 ≤64 MB（切片目标 GAL_SHARD_MB）。
+import os as _pw_os, sys as _pw_sys; _pw_sys.path.append(_pw_os.path.join(_pw_os.path.dirname(_pw_os.path.abspath(__file__)), '..', '..', '..', 'tools')); from pool_workers import env_jobs  # noqa: E402  核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
 import bisect, os, re, subprocess, sys, threading, concurrent.futures as cf
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, '../../..'))
 src, out, plat = sys.argv[1], sys.argv[2], sys.argv[3]
 sdk = {'ios': 'iphoneos', 'macos': 'macosx'}[plat]
-J = max(1, int(os.environ.get('J', str(os.cpu_count() or 8))))
+J = env_jobs('J')
 xc = os.environ.get('GAL_XC', os.path.join(ROOT, 'build/gal/gal_xc'))
 os.makedirs(out, exist_ok=True)
 if os.environ.get('GAL_XC_DONE') == '1' and os.path.exists(os.path.join(out, 'gal.idx')):   # ① 已由调用方跑过（graphics/tools/shbake 出包时为拼宿主程序二进制先跑了 gal_xc）：不重翻

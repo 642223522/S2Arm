@@ -774,6 +774,7 @@ namespace Ryujinx.HLE.HOS.Services.Hid
 
             context.Device.Hid.Npads.SupportedStyleSets = type;
             Ryujinx.Common.S2AInputCaps.RecordStyleSet((uint)type);  // S2Arm: 收局 [输入能力] 摘要
+            NpadDevices.S2ASupportedChanged?.Invoke(context.Device);  // S2Arm：虚拟手柄在声明这一刻跟随（NpadDevices）
 
             return ResultCode.Success;
         }
@@ -817,6 +818,7 @@ namespace Ryujinx.HLE.HOS.Services.Hid
             }
 
             Logger.Stub?.PrintStub(LogClass.ServiceHid, $"{supportedPlayerIds.Length} Players: " + string.Join(",", supportedPlayerIds.ToArray()));
+            NpadDevices.S2ASupportedChanged?.Invoke(context.Device);  // S2Arm：虚拟手柄在声明这一刻跟随（NpadDevices）
 
             return ResultCode.Success;
         }

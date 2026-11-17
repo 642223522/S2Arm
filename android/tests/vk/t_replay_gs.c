@@ -12,6 +12,7 @@
 #include "direct/s2a_direct.h"
 #include "direct/sha256.h"
 #include "direct/jv.h"
+#include "compiler_cli.h"
 #include <spawn.h>
 #include <sys/wait.h>
 extern char **environ;
@@ -33,10 +34,13 @@ const prog_t *nvn_prog_snap_get(uint64_t serial, uint8_t keys[6][8], uint8_t *ok
 int rp_depth_zero(void) { return 0; }
 int rp_origin_lower_left(void) { return 0; }
 void rp_perf_add(int index, uint64_t value) { (void)index; (void)value; }
+uint64_t rp_frame(void) { return 1; }   // #996：rp_draw 首用策略按帧号判（rp_entry.c 的替身）
 uint64_t rp_seg_serial(void) { return 1; }
 void rp_occl_draw(nvn_gpu_cmd c) { (void)c; }
 int rp_post_gpu_write(uint64_t a, uint64_t n) { (void)a; (void)n; return 0; }
 int rp_pool_find(uint64_t a, uint64_t n, const uint8_t **m, uint64_t *s) { (void)a; (void)n; (void)m; (void)s; return 0; }
+// 本夹具没有存储缓冲声明；空存储语义由真实 rp_buf GPU 用例验证。
+nvn_gpu_buf rp_buf_for_null_storage(void) { return NULL; }
 int rp_buf_resolve(nvn_gpu_cmd c, uint64_t a, uint64_t n, nvn_gpu_buf *b, uint64_t *o) { (void)c; (void)a; (void)n; (void)b; (void)o; return 0; }
 // #958 批量解析：逐段转给上面的单段替身（口径一致）
 int rp_buf_resolve_multi(int n, const uint64_t *a, const uint64_t *l, nvn_gpu_buf *b, uint64_t *o, unsigned char *ok) {
@@ -48,6 +52,8 @@ void rp_view_pin_end(void) {}
 nvn_gpu_view rp_view_by_id(int id, nvn_gpu_cmd c, const tex_t **t) { (void)id; (void)c; (void)t; return NULL; }
 nvn_gpu_view rp_view_by_id_decl(int id, uint8_t tt, uint8_t cls, int elem, nvn_gpu_cmd c, const tex_t **t) { (void)id; (void)tt; (void)cls; (void)elem; (void)c; (void)t; return NULL; }
 nvn_gpu_samp rp_samp_by_id(int id) { (void)id; return NULL; }
+nvn_gpu_samp rp_samp_for_tex(int sid, int tid) { (void)tid; return rp_samp_by_id(sid); }   // #1072：替身不判过滤能力
+uint32_t rp_fmt_caps(uint32_t f) { return nvn_gpu_format_caps(f); }
 int rp_tex_snap_by_id(int id, tex_t *t, view_t *v, int *h) { (void)id; (void)t; (void)v; (void)h; return 0; }
 uint64_t rp_tex_reg_gen(void) { return 1; }
 uint64_t rp_tex_fact_sig(const uint64_t *h, int n, int b, int count) { (void)h; (void)n; (void)b; return (uint64_t)count; }
@@ -57,6 +63,7 @@ nvn_gpu_tex rp_tex_backend_by_serial(uint64_t s) { (void)s; return NULL; }
 const p_set_rt *rp_pass_target(void) { return &target; }
 int rp_pass_slot_attached(int i) { return i == 0; }
 void rp_pass_slot_size(int i, uint32_t *w, uint32_t *h) { (void)i; *w = *h = 4; }
+void rp_pass_noatt_size(uint32_t *w, uint32_t *h) { (void)w; (void)h; }   // 有附件的通道：不动尺寸
 void rp_pass_note_draw(int d) { (void)d; }
 // #950 新增的回放核心依赖：替身取保守中性值（写日志恒报「写过」= 不让暂存命中；没有待折清除、不缩渲染区域）
 uint64_t rp_write_mark(void) { return 0; }
@@ -80,13 +87,14 @@ static int32_t compiled_result(uint64_t session, uint64_t generation, s2a_direct
     if (session != 4 || generation != 6 || req.bytes != request_len || memcmp(req.data, request_data, request_len)) {
         fprintf(stderr, "FAIL: core production request differs from real compiler input\n"); return -1;
     }
-    char req_path[1024], out_dir[1024], result_path[1024];
+    char req_path[1024], out_dir[1024], result_path[1024], cli_dll[1280];
     snprintf(req_path, sizeof req_path, "%s/core-request.json", case_dir);
     snprintf(out_dir, sizeof out_dir, "%s/core-compiler", case_dir);
     snprintf(result_path, sizeof result_path, "%s/core-compiler/program.json", case_dir);
     FILE *f = fopen(req_path, "wb"); if (!f) return -1;
     if (fwrite(req.data, 1, (size_t)req.bytes, f) != (size_t)req.bytes || fclose(f)) return -1;
-    char *const argv[] = {"dotnet", "/src/graphics/tools/direct/compiler/cli/bin/Release/net10.0/S2A.DirectCompiler.Cli.dll",
+    if (s2a_test_compiler_cli(case_dir, cli_dll, sizeof cli_dll)) return -1;
+    char *const argv[] = {"dotnet", cli_dll,
                           "compile", "--request", req_path, "--output", out_dir, NULL};
     pid_t pid; int status = 0;
     if (posix_spawnp(&pid, "dotnet", NULL, NULL, argv, environ) || waitpid(pid, &status, 0) != pid ||

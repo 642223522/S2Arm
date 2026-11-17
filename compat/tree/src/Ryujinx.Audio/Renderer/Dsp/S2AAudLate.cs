@@ -8,7 +8,8 @@ namespace Ryujinx.Audio.Renderer.Dsp
     /// DM_NVN_TSV 每帧取走清零成 @aud_wait_ms 列。慢帧归因「在等事件」时用它看音频占比。
     /// </summary>
     /// <remarks>
-    /// 没有 s2a_native 这个符号的构建（安卓 / 单测 / 别的宿主）就不记：守门一次失败后不再调（同 S2AOutputDiag.HudAudio）。
+    /// s2a_aud_late_note 在公用核心 runtime/src/ap_host.c（苹果与安卓都链；安卓诊断组合有替身），各端静态链（DirectPInvoke）。
+    /// 没有 s2a_native 的宿主（单测 / 别的宿主）调用失败就不再调。
     /// </remarks>
     internal static class S2AAudLate
     {

@@ -2,6 +2,7 @@
 # Copyright 2026 S2Arm contributors
 """Mac 运行包必须包含独立 RomFS；共享存储链接不能漏拷或逃逸。"""
 import errno
+import jobcase  # noqa: E402（作业上下文替身统一工厂 jobcase.fake_context）
 import importlib.util
 import json
 import os
@@ -32,7 +33,7 @@ class RuntimeRomfs(unittest.TestCase):
         (self.source / "romfs").symlink_to("../.romfs_store/game/input-v1")
         self.dest = self.base / "library/games/game/releases/new.partial"
         self.dest.mkdir(parents=True)
-        self.c = types.SimpleNamespace(library=self.base / "library", check=lambda: None, progress=lambda *a: None)
+        self.c = jobcase.fake_context(self.base, library=self.base / "library", check=lambda: None, progress=lambda *a: None)
 
     def test_store_link_materializes_independent_readonly_files(self):
         (self.store / "data.bin").chmod(0o444)
@@ -47,6 +48,17 @@ class RuntimeRomfs(unittest.TestCase):
         self.store.chmod(0o755)
         shutil.rmtree(self.store)
         self.assertEqual((self.dest / "romfs/data.bin").read_bytes(), b"synthetic resource\x00")
+
+    def test_image_only_root_clones_the_image_itself(self):
+        # 产物根只有 RomFS 镜像 romfs.std（没有 romfs/）：照样准备，镜像原样克隆成一个文件（字节相同、不多不少），不展开、不建 romfs/
+        (self.source / "romfs").unlink()
+        blob = os.urandom(70000)
+        (self.source / "romfs.std").write_bytes(blob)
+        (self.source / "exefs").mkdir(); (self.source / "exefs/main").write_bytes(b"main")
+        build.clone_tree(self.c, self.source, self.dest, materialize_romfs=True)
+        self.assertEqual((self.dest / "romfs.std").read_bytes(), blob)
+        self.assertFalse((self.dest / "romfs").exists())
+        self.assertEqual(sorted(p.relative_to(self.dest).as_posix() for p in self.dest.rglob("*") if p.is_file()), ["exefs/main", "romfs.std"])
 
     def test_reports_whether_every_file_was_cloned(self):
         # #329：返回值决定 Mac 出包后解包目录留不留——整棵都是真克隆（同一克隆族、不另占盘）才 True；有一个退成普通复制（跨卷 / 非 APFS / Windows）就 False
@@ -159,6 +171,36 @@ class RuntimeRomfs(unittest.TestCase):
         (self.dest / "romfs").symlink_to(self.store)
         with self.assertRaises(Failure):
             build.validate_runtime(self.c, self.dest)
+
+    def test_standard_image_runtime_without_romfs_directory(self):
+        # 镜像形态（romfs/ 不在、只有标准 RomFS 镜像 romfs.std）：运行版本搬这一个文件，不要求 romfs/ 实目录；宿主 RomFsIndex.OpenStd 读它
+        (self.source / "romfs").unlink()
+        (self.source / "romfs.std").write_bytes(b"standard romfs image\x00")
+        build.clone_tree(self.c, self.source, self.dest, materialize_romfs=True)
+        self.assertFalse((self.dest / "romfs").exists())
+        self.assertEqual((self.dest / "romfs.std").read_bytes(), b"standard romfs image\x00")
+        self.assertIn("romfs.std", build.snapshot(self.c, self.dest))
+        host = self.dest / "S2ArmGame.app/Contents/MacOS/s2arm-host"
+        host.parent.mkdir(parents=True); host.write_bytes(b"synthetic"); host.chmod(0o755)
+        manifest = dict(schema=1, engine="S2Arm", target="macos-arm64", files=build.snapshot(self.c, self.dest))
+        (self.dest / "manifest.json").write_text(json.dumps(manifest))
+        build.validate_runtime(self.c, self.dest)
+        (self.dest / "romfs.std").unlink()
+        with self.assertRaises(Failure) as error:   # 镜像也没有：照旧拦下
+            build.validate_runtime(self.c, self.dest, files=False)
+        self.assertEqual(error.exception.code, "runtime_invalid")
+        (self.dest / "romfs.std").symlink_to(self.source / "romfs.std")
+        with self.assertRaises(Failure):   # 软链的镜像不算独立运行版本
+            build.validate_runtime(self.c, self.dest, files=False)
+
+    def test_standard_image_source_rules(self):
+        (self.source / "romfs").unlink()
+        with self.assertRaises(Failure):   # 目录、镜像都没有
+            build.clone_tree(self.c, self.source, self.dest, materialize_romfs=True)
+        (self.source / "romfs.std").symlink_to(self.base / "elsewhere.std")
+        (self.base / "elsewhere.std").write_bytes(b"x")
+        with self.assertRaises(Failure):   # 镜像是软链：不跟
+            build.clone_tree(self.c, self.source, self.dest, materialize_romfs=True)
 
 
 class BundleLayoutRomfsImport(unittest.TestCase):

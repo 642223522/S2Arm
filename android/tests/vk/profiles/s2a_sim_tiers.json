@@ -147,6 +147,21 @@
                 }
             }
         },
+        "no_clip_distance": {
+            "features": {
+                "VkPhysicalDeviceFeatures": {
+                    "shaderClipDistance": false,
+                    "shaderCullDistance": false
+                }
+            }
+        },
+        "no_int16": {
+            "features": {
+                "VkPhysicalDeviceFeatures": {
+                    "shaderInt16": false
+                }
+            }
+        },
         "no_dual_src_blend": {
             "features": {
                 "VkPhysicalDeviceFeatures": {
@@ -161,9 +176,63 @@
                 }
             }
         },
-        "unchanged": {}
+        "no_exact16": {
+            "formats": {
+                "VK_FORMAT_B5G6R5_UNORM_PACK16": {
+                    "VkFormatProperties": {
+                        "linearTilingFeatures": [],
+                        "optimalTilingFeatures": [],
+                        "bufferFeatures": []
+                    }
+                },
+                "VK_FORMAT_R5G5B5A1_UNORM_PACK16": {
+                    "VkFormatProperties": {
+                        "linearTilingFeatures": [],
+                        "optimalTilingFeatures": [],
+                        "bufferFeatures": []
+                    }
+                }
+            }
+        },
+        "ssbo_align_256": {
+            "properties": {
+                "VkPhysicalDeviceProperties": {
+                    "limits": {
+                        "minStorageBufferOffsetAlignment": 256
+                    }
+                }
+            }
+        },
+        "unchanged": {},
+        "no_fmt_filter_blend": {
+            "formats": {
+                "VK_FORMAT_R16G16B16A16_UNORM": {
+                    "VkFormatPropertiesRemove": {
+                        "optimalTilingFeatures": [
+                            "VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT"
+                        ]
+                    }
+                },
+                "VK_FORMAT_R32_SFLOAT": {
+                    "VkFormatPropertiesRemove": {
+                        "optimalTilingFeatures": [
+                            "VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT"
+                        ]
+                    }
+                }
+            }
+        }
     },
     "profiles": {
+        "VP_S2A_SIM_ssbo_align_256": {
+            "version": 1,
+            "api-version": "1.1.0",
+            "label": "存储缓冲偏移对齐 256",
+            "description": "模拟存储缓冲偏移对齐 256 字节，回放窗口及像素正确，校验层无错误。",
+            "contributors": {},
+            "history": [{"revision": 1, "date": "2026-11-16", "author": "S2Arm", "comment": "只模拟 Vulkan 的存储缓冲对齐上限"}],
+            "capabilities": ["ssbo_align_256"]
+        },
         "VP_S2A_SIM_no_bc": {
             "version": 1,
             "api-version": "1.1.0",
@@ -204,7 +273,7 @@
             "version": 1,
             "api-version": "1.1.0",
             "label": "无顶点阶段存储写",
-            "description": "藏掉 vertexPipelineStoresAndAtomics（Mali 类）。期望：发行宏下仍能建设备，契约绿。",
+            "description": "藏掉 vertexPipelineStoresAndAtomics（Mali 类）。期望：发行宏下仍能建设备；顶点阶段写存储的着色器不交给驱动、管线报 UNSUPPORTED 并点名特性，只读存储照建（C1072a），validation 0 条，契约绿。",
             "contributors": {},
             "history": [
                 {
@@ -216,6 +285,42 @@
             ],
             "capabilities": [
                 "no_vertex_stores"
+            ]
+        },
+        "VP_S2A_SIM_no_clip_distance": {
+            "version": 1,
+            "api-version": "1.1.0",
+            "label": "无裁剪 / 剔除距离",
+            "description": "藏掉 shaderClipDistance 与 shaderCullDistance（Mali 类）。期望：写裁剪 / 剔除距离的顶点着色器不交给驱动，用它的管线按规定报 UNSUPPORTED 并点名特性（C1072a），validation 0 条，契约绿。",
+            "contributors": {},
+            "history": [
+                {
+                    "revision": 1,
+                    "date": "2026-11-15",
+                    "author": "S2Arm",
+                    "comment": "首版（#1072 第 1 项）：只按 Vulkan 规范特性名手写，不含任何设备报告数据"
+                }
+            ],
+            "capabilities": [
+                "no_clip_distance"
+            ]
+        },
+        "VP_S2A_SIM_no_int16": {
+            "version": 1,
+            "api-version": "1.1.0",
+            "label": "无 16 位整数",
+            "description": "藏掉 shaderInt16（#1340）。期望：仍建得了设备（shaderInt16 不再是整机门槛）；声明 OpCapability Int16 的模块装载即按规定报 UNSUPPORTED 并点名特性、不交给驱动，不声明的照常建（C1340），validation 0 条，契约绿。",
+            "contributors": {},
+            "history": [
+                {
+                    "revision": 1,
+                    "date": "2026-11-16",
+                    "author": "S2Arm",
+                    "comment": "首版（#1340）：只按 Vulkan 规范特性名手写，不含任何设备报告数据"
+                }
+            ],
+            "capabilities": [
+                "no_int16"
             ]
         },
         "VP_S2A_SIM_no_dual_src_blend": {
@@ -270,6 +375,114 @@
             ],
             "capabilities": [
                 "unchanged"
+            ]
+        },
+        "VP_S2A_SIM_no_exact16": {
+            "version": 1,
+            "api-version": "1.1.0",
+            "label": "无 16 位打包精确格式",
+            "description": "藏掉 B5G6R5_UNORM_PACK16 与 R5G5B5A1_UNORM_PACK16，sim_tiers.sh 再用 exclude_device_extensions 去掉 VK_EXT_4444_formats（#975）。期望：契约绿，NVN RGBA4 / RGB565 / A1BGR5 走退回格式 + 采样通道补偿，读回仍按 NVN 位序；当渲染目标具名报红。",
+            "contributors": {},
+            "history": [
+                {
+                    "revision": 1,
+                    "date": "2026-11-14",
+                    "author": "S2Arm",
+                    "comment": "首版（#975）：只按 Vulkan 规范格式名 / 扩展名手写，不含任何设备报告数据"
+                }
+            ],
+            "capabilities": [
+                "no_exact16"
+            ]
+        },
+        "VP_S2A_SIM_no_vertex_divisor": {
+            "version": 1,
+            "api-version": "1.1.0",
+            "label": "无实例除数扩展",
+            "description": "能力不变，由 sim_tiers.sh 用 exclude_device_extensions 去掉 VK_EXT_vertex_attribute_divisor。期望：契约绿，除数 2 的管线具名 UNSUPPORTED（C977b），不静默退回每实例一次。",
+            "contributors": {},
+            "history": [
+                {
+                    "revision": 1,
+                    "date": "2026-11-14",
+                    "author": "S2Arm",
+                    "comment": "#977：只按 Vulkan 规范扩展名手写，不含任何设备报告数据"
+                }
+            ],
+            "capabilities": [
+                "unchanged"
+            ]
+        },
+        "VP_S2A_SIM_no_mirror_clamp": {
+            "version": 1,
+            "api-version": "1.1.0",
+            "label": "无镜像夹到边",
+            "description": "能力不变，由 sim_tiers.sh 用 exclude_device_extensions 去掉 VK_KHR_sampler_mirror_clamp_to_edge。期望：契约绿，MIRROR_CLAMP_TO_EDGE 采样器回具名 UNSUPPORTED（#976）。",
+            "contributors": {},
+            "history": [
+                {
+                    "revision": 1,
+                    "date": "2026-11-14",
+                    "author": "S2Arm",
+                    "comment": "首版（#976）：只按 Vulkan 规范扩展名手写，不含任何设备报告数据"
+                }
+            ],
+            "capabilities": [
+                "unchanged"
+            ]
+        },
+        "VP_S2A_SIM_no_custom_border": {
+            "version": 1,
+            "api-version": "1.1.0",
+            "label": "无自定义边框色",
+            "description": "能力不变，由 sim_tiers.sh 用 exclude_device_extensions 去掉 VK_EXT_custom_border_color。期望：契约绿，不是内置三档的边框色回具名 UNSUPPORTED（#976）。",
+            "contributors": {},
+            "history": [
+                {
+                    "revision": 1,
+                    "date": "2026-11-14",
+                    "author": "S2Arm",
+                    "comment": "首版（#976）：只按 Vulkan 规范扩展名手写，不含任何设备报告数据"
+                }
+            ],
+            "capabilities": [
+                "unchanged"
+            ]
+        },
+        "VP_S2A_SIM_no_minmax": {
+            "version": 1,
+            "api-version": "1.1.0",
+            "label": "无 min / max 归约",
+            "description": "由 sim_tiers.sh 排除 VK_EXT_sampler_filter_minmax；min / max 归约具名 UNSUPPORTED。",
+            "contributors": {},
+            "history": [
+                {
+                    "revision": 1,
+                    "date": "2026-11-14",
+                    "author": "S2Arm",
+                    "comment": "只按 Vulkan 规范扩展名手写，不含设备报告数据"
+                }
+            ],
+            "capabilities": [
+                "unchanged"
+            ]
+        },
+        "VP_S2A_SIM_no_fmt_filter_blend": {
+            "version": 1,
+            "api-version": "1.1.0",
+            "label": "格式不能过滤 / 不能混合",
+            "description": "RGBA16 UNORM 去掉 SAMPLED_IMAGE_FILTER_LINEAR、R32F 去掉 COLOR_ATTACHMENT_BLEND（同 Mali-G710 的报告）。期望：契约绿，后端如实报这两个格式没有 FMT_FILTER / FMT_BLEND（核心据此退最近点 / 关混合）。",
+            "contributors": {},
+            "history": [
+                {
+                    "revision": 1,
+                    "date": "2026-11-15",
+                    "author": "S2Arm",
+                    "comment": "#1072：只按 Vulkan 规范格式名 / 特性位手写，不含任何设备报告数据"
+                }
+            ],
+            "capabilities": [
+                "no_fmt_filter_blend"
             ]
         }
     }

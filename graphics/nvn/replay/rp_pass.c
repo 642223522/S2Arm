@@ -10,11 +10,20 @@
 #include "rp_exec.h"
 #include "rp_state.h"
 #include "rp_res.h"
+#include "nvn_first_use.h"   // 首用跳过判据的 fresh 标记（iOS rt_fresh_now）
 #include "nvn_unimpl.h"
 #include "nvn_plat.h"
 #include "nvn_fmt_info.h"
 #include <math.h>
 #include <string.h>
+
+// 弱链接登记（tools/weak_link_decl.py，场合 replay = 回放核心宿主单测）：后端 / 首用模块的可选件，缺实现时地址为空、走不到调用
+// 弱链接[replay]：s2a_fu_rt_mark_fresh
+
+// 首用跳过开关（安卓 demand 层，弱引用）：iOS / 鸿蒙 / 宿主单测没有实现 → 不标记，行为同现状。
+int nvn_vk_pipe_demand_on(void) __attribute__((weak));
+#pragma weak s2a_fu_rt_mark_fresh   // 只编回放核的宿主门禁可能没链接 nvn_first_use.c；缺实现时 enabled 为假、不会调用
+static int rp_pass_fu_enabled(void) { return nvn_vk_pipe_demand_on && nvn_vk_pipe_demand_on(); }
 
 static struct {
     p_set_rt rt; tex_t kept[9]; int has_rt;
@@ -29,6 +38,7 @@ static struct {
     // 上一个通道的管线形状（各颜色槽的附件格式、深度 / 模板格式、采样数）：Vulkan 的管线对象与渲染通道的格式绑在一起，
     // 形状变了必须重取管线（见 rp_pass_begin 末尾）；形状没变、目标只是换了张同格式的图，管线与绑定都不用重发
     uint32_t shape_c[8], shape_d, shape_s, shape_smp; int shape_ok;
+    uint32_t na_w, na_h;          // 无附件通道（一个附件都没挂，只为片元副作用 / 遮挡计数）的帧缓冲尺寸；有附件的通道是 0
 } P;
 
 // 视图看到的尺寸（像素）。块压缩基底配非压缩视图（一块当一个像素，见 bc_view）时按块数算：通道、整屏清除判断、清除矩形都用它
@@ -174,6 +184,27 @@ static const view_t *att_view(const tex_t *t, int has_v, const view_t *v, view_t
 }
 void rp_pass_note_draw(int uses_ds) { P.ndraw++; if (uses_ds) P.ds_used = 1; }
 void rp_pass_slot_size(int i, uint32_t *w, uint32_t *h) { level_size(P.rt.color[i], &P.rt.cview[i], P.rt.has_cview[i], w, h); }
+void rp_pass_noatt_size(uint32_t *w, uint32_t *h) { if (P.na_w && P.na_h) { *w = P.na_w; *h = P.na_h; } }
+
+// 无附件通道的帧缓冲尺寸。NVN 允许不挂任何渲染目标照样绘制（片元着色器只写存储缓冲 / 图像、或只为遮挡计数），
+// 光栅范围由视口与裁剪矩形定：片元落不出视口，所以帧缓冲盖住视口 0 的右下角就够；没设视口时用裁剪矩形；两样都没有返回 0。
+// 夹到设备的最大目标尺寸（Vulkan maxFramebufferWidth / Height 与 maxImageDimension2D 同级，caps.max_tex_dim）。
+static int noatt_extent(uint32_t *w, uint32_t *h) {
+    double x1 = 0, y1 = 0;
+    if (rp_S.has_vp) {
+        const float *v = rp_S.vp[0];
+        x1 = v[2] >= 0 ? (double)v[0] + v[2] : v[0];
+        y1 = v[3] >= 0 ? (double)v[1] + v[3] : v[1];   // 负高度（上下翻）的视口：右下角是起点本身
+    } else if (rp_R.has_sc) {
+        x1 = (double)rp_R.sc.x + rp_R.sc.w; y1 = (double)rp_R.sc.y + rp_R.sc.h;
+    }
+    if (!(x1 >= 1) || !(y1 >= 1)) return 0;
+    nvn_gpu_caps cp; nvn_gpu_caps_get(&cp);
+    double lim = cp.max_tex_dim ? (double)cp.max_tex_dim : 16384.0;
+    *w = (uint32_t)ceil(x1 < lim ? x1 : lim); *h = (uint32_t)ceil(y1 < lim ? y1 : lim);
+    return 1;
+}
+static int noatt_ok(void) { nvn_gpu_caps cp; nvn_gpu_caps_get(&cp); return (cp.caps & NVN_GPU_CAP_NO_ATTACH_PASS) != 0; }
 int rp_pass_slot_attached(int i) { return P.has_rt && i >= 0 && i < P.rt.n && i < 8 && P.rt.color[i] && !dup_slot(i) && slot_kind(i, NULL, NULL) >= 0; }
 
 // 同一组目标（对齐 nvn_mtl.m rt_same @10955）：颜色 / 深度个数、每张图的序号、视图记录逐字节相同就算同一组。
@@ -388,11 +419,15 @@ void rp_pass_end(nvn_gpu_cmd c) {
 
 // 开通道（已开着直接回 1）。0 = 开不了（已记账）：调用方跳过这笔绘制。
 static uint64_t pb_now(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec; }
-#define PB(step) do { uint64_t n_ = pb_now(); rp_perf_add(step, n_ - pb_); pb_ = n_; } while (0)
+#define PB(step) do { if (tm_) { uint64_t n_ = pb_now(); rp_perf_add(step, n_ - pb_); pb_ = n_; } } while (0)
 // 绘制前调（rp_draw 在 rp_pass_begin 之前）：把这一笔要求的像素区域交给下一步开通道；通道已经开着而这一笔超出当前区域，
 // 收通道并按并集重开（重开用 LOAD：上一遍只保存过它自己的区域，区域外内容本来就是原样；带清除负载的通道区域必是整张，走不到这里）。
 void rp_pass_prepare_draw(nvn_gpu_cmd c) {
     P.area_want = 0;
+    if (P.open && P.na_w) {   // 无附件通道：帧缓冲按开通道时的视口定，这一笔的视口超出了就收通道，下面按新视口重开（同 Metal 旧路径 g_pass_targetless）
+        uint32_t w = 0, h = 0;
+        if (noatt_extent(&w, &h) && (w > P.na_w || h > P.na_h)) rp_pass_end(c);
+    }
     if (!nvn_plat_flag("nvk_pass_area", 0)) return;
     int32_t x, y; uint32_t w, h;
     if (!pass_area(&x, &y, &w, &h)) return;               // 没有裁剪矩形：整张，不缩
@@ -409,9 +444,11 @@ int rp_pass_begin(nvn_gpu_cmd c) {
     if (P.open) return 1;
     if (!c || !P.has_rt) { if (c) nvn_unimpl("pass", "draw_without_target", NULL); return 0; }
     int any_color = 0; for (int i = 0; i < P.rt.n && i < 8; i++) if (P.rt.color[i]) any_color = 1;
-    if (P.rt.n < 0 || P.rt.n > 8 || (!any_color && !P.rt.depth)) { nvn_unimpl("pass", "no_attachment", NULL); return 0; }
+    if (P.rt.n < 0 || P.rt.n > 8) { nvn_unimpl("pass", "no_attachment", NULL); return 0; }
+    if (!any_color && !P.rt.depth && !noatt_ok()) { nvn_unimpl("pass", "no_attachment", NULL); return 0; }   // 后端开不了无附件通道（iOS 现在）：这笔跳过
     rp_view_pin_begin();   // 下面取到的视图在本函数结束前不能被轮转放掉
-    uint64_t pb_ = pb_now();   // 四段计时：取附件视图 / 屏障 / 后端开通道 / 记 GPU 写过
+    const int tm_ = rp_tm();   // 分时抽样（#1103）：只在采样帧里计时
+    uint64_t pb_ = tm_ ? pb_now() : 0;   // 四段计时：取附件视图 / 屏障 / 后端开通道 / 记 GPU 写过
     nvn_gpu_pass_desc d; memset(&d, 0, sizeof d);
     int nattached = 0;
     int taken[9], ntake = 0;   // 这个通道吃掉的挂起项（开通道成功后才移出表：开不了要留着下次落地）
@@ -434,7 +471,12 @@ int rp_pass_begin(nvn_gpu_cmd c) {
         if (!d.w) level_size(t, &P.rt.cview[i], P.rt.has_cview[i], &d.w, &d.h);   // 尺寸取第一个有图的槽
     }
     d.ncolor = (uint32_t)P.rt.n; d.layers = 1;
-    if (!nattached && !P.rt.depth) { rp_view_pin_end(); nvn_unimpl("pass", "no_attachment", NULL); return 0; }   // 颜色槽全成了空槽、又没有深度：这个通道的绘制跳过（同 iOS）
+    P.na_w = P.na_h = 0;
+    if (!nattached && !P.rt.depth) {   // 一个附件都没挂（没设目标，或颜色槽全成了空槽）：后端能开无附件通道就按视口尺寸开，片元副作用 / 遮挡计数照常
+        if (!noatt_ok()) { rp_view_pin_end(); nvn_unimpl("pass", "no_attachment", NULL); return 0; }   // 开不了（iOS 现在）：这个通道的绘制跳过
+        if (!noatt_extent(&d.w, &d.h)) { rp_view_pin_end(); nvn_unimpl("pass", "no_attachment_no_extent", NULL); return 0; }
+        P.na_w = d.w; P.na_h = d.h;
+    }
     if (!d.w && P.rt.depth) level_size(P.rt.depth, &P.rt.dview, P.rt.has_dview, &d.w, &d.h);   // 只有深度的通道（阴影图、深度预通道）：尺寸取深度目标的
     int pdpk = park_depth();   // 深度模板挂着的待折清除（一项可以带两面）
     int pcd = pdpk >= 0 && g_pk[pdpk].cd, pcs = pdpk >= 0 && g_pk[pdpk].cs;
@@ -489,6 +531,17 @@ int rp_pass_begin(nvn_gpu_cmd c) {
                     rp_perf_add(RP_PERF_P_AREA, 1); rp_perf_add(RP_PERF_P_AREA_KPIX, (uint64_t)w * h / 1000);
                 }
             }
+        }
+    }
+    // 首用跳过判据的 fresh 标记：本帧把这个附件整张清过（load=CLEAR）且不是子区域渲染 → 内容本帧从清晰值重来。
+    if (rp_pass_fu_enabled()) {
+        uint64_t ff = rp_frame();
+        if (!P.area_on) {
+            for (uint32_t i = 0; i < d.ncolor && i < 8; i++)
+                if (d.color[i].view && d.color[i].load == NVN_GPU_LOAD_CLEAR && P.rt.color[i])
+                    s2a_fu_rt_mark_fresh(P.rt.color[i]->serial, ff);
+            if (d.depth.view && d.depth.load == NVN_GPU_LOAD_CLEAR && P.rt.depth) s2a_fu_rt_mark_fresh(P.rt.depth->serial, ff);
+            if (d.stencil.view && d.stencil.load == NVN_GPU_LOAD_CLEAR && P.rt.depth) s2a_fu_rt_mark_fresh(P.rt.depth->serial, ff);
         }
     }
     P.area_want = 0;
@@ -597,6 +650,8 @@ void rp_pass_clear_ds(nvn_gpu_cmd c, const p_clear_ds *cd, const void *rec) {
 
 // 游戏的屏障：不拆通道，记下位，下一个通道前交给后端（nvn_mtl.m:14646 的缺省路径；通道内着色器写图像后要求片元顺序的拆通道随图像绑定一起接）
 void rp_pass_barrier(uint32_t bits) { P.barrier_bits |= bits; }
+// 通道外的计算派发开工前取走待发的游戏屏障位（#978）：调用方交给后端，之后的通道开头不再重发
+uint32_t rp_pass_take_barrier(void) { uint32_t b = P.barrier_bits; P.barrier_bits = 0; return b; }
 
 // 现在挂着几条待折清除。绘制路径拿它做快路的门：0 时不必为「读之前落地」收集这一笔的贴图（稳态下几乎总是 0）。
 int rp_pass_parked(void) {

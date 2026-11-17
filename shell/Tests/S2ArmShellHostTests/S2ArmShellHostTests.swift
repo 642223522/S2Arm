@@ -33,6 +33,9 @@ import S2ArmShellBridge
     }
     let json = #"{"schema":1,"games":[{"title_id":"0100000000010000","name":"A"},{"title_id":"0100000000020000","name":"B"},{"title_id":"0100000000030000","name":"C"}]}"#
     #expect(Catalogue.parse(Data(json.utf8), baseDirectory: base).tiles.map(\.sgrade) == [true, false, false])
+    // 只带随包金手指原文（补丁表只有表头）：也算打进了（11-14，同 Mac）
+    try "[x]\n04000000 0 1\n".write(to: base.appendingPathComponent("Games/0100000000020000/cheat-src.AABBCCDD00112233.txt"), atomically: true, encoding: .utf8)
+    #expect(Catalogue.parse(Data(json.utf8), baseDirectory: base).tiles.map(\.sgrade) == [true, true, false])
     try "编号\nfps:x\n".write(to: base.appendingPathComponent("cpatch.tsv"), atomically: true, encoding: .utf8)
     #expect(Catalogue.parse(Data(#"{"schema":1,"games":[{"title_id":"0100000000030000","name":"C"}]}"#.utf8), baseDirectory: base).tiles.map(\.sgrade) == [true])
 }
@@ -581,4 +584,77 @@ nonisolated(unsafe) private var lastPlayed = ""
     #expect(SigningIdentity.mismatch(provision: provision("ABCDE12345.com.other.*"), bundleID: "io.s2arm.games") == "com.other.*")
     #expect(SigningIdentity.mismatch(provision: nil, bundleID: "io.s2arm.games") == nil)
     #expect(SigningIdentity.mismatch(provision: Data("no plist here".utf8), bundleID: "io.s2arm.games") == nil)
+}
+
+// 游戏音量（#1186，同齿轮菜单「声音」）：宿主给了 volume 才出「声音」一组、五档里取最接近的；改值交宿主（种类 volume、键 = 百分比）。期望手算
+@MainActor @Test func gameSettingsVolume() throws {
+    typealias O = S2ArmGameSettings.Options
+    var withVol = O(fps: .init(on: false, hidden: true), fullscreen: .init(on: false, hidden: true)); withVol.volume = 30
+    let opts: [String: O] = ["G7": withVol, "G8": O(fps: .init(on: false, hidden: true), fullscreen: .init(on: false, hidden: true))]
+    var sets: [String] = []
+    let tag = UUID().uuidString
+    let app = try #require(UserDefaults(suiteName: "s2a.test.app." + tag))
+    defer { app.removePersistentDomain(forName: "s2a.test.app." + tag) }
+    let stores = S2ArmGameSettings.Stores(game: { _ in app }, app: app, options: { opts[$0] },
+                                          setOption: { id, kind, key, on in sets.append("\(id) \(kind) \(key) \(on)"); return true })
+    let s = S2ArmGameSettings.sections(for: "G7", stores: stores, state: .init(selected: "default", hasMine: false))
+    #expect(s.map(\.id) == ["s2a.identity", "s2a.picture", "s2a.sound", "s2a.vpad"])
+    let row = try #require(s.first { $0.id == "s2a.sound" }?.rows.first)
+    #expect(row.id == "gameVolume" && row.value == "25", "30 取最接近的 25 档")
+    if case .choice(let o) = row.kind { #expect(o.map(\.id) == ["0", "25", "50", "75", "100"] && o.first?.label == "Mute") } else { Issue.record("不是选项行") }
+    #expect(!S2ArmGameSettings.sections(for: "G8", stores: stores, state: .init(selected: "default", hasMine: false)).contains { $0.id == "s2a.sound" }, "宿主没给音量不出这一组")
+    S2ArmGameSettings.apply(id: "G7", setting: "gameVolume", value: "50", stores: stores)
+    S2ArmGameSettings.apply(id: "G7", setting: "gameVolume", value: "loud", stores: stores)
+    #expect(sets == ["G7 volume 50 true"], "非数字不交宿主")
+    #expect(O.parse(#"{"fps":{"on":false},"fullscreen":{"on":false},"volume":75}"#)?.volume == 75)
+    #expect(O.parse(#"{"fps":{"on":false},"fullscreen":{"on":false}}"#)?.volume == nil)
+}
+
+// 游戏语言（#1252，同游戏内设置页）：宿主给了 language 才出「语言」一组；当前值不在选项里按跟随系统；宿主那句「这款不支持 X」接在说明后；改值交宿主（种类 language、键 = 枚举名）。期望手算
+@MainActor @Test func gameSettingsLanguage() throws {
+    typealias O = S2ArmGameSettings.Options
+    let json = #"{"fps":{"on":false,"hidden":true},"fullscreen":{"on":false,"hidden":true},"language":{"pick":"Japanese","levels":[{"value":"system","label":"Same as system"},{"value":"AmericanEnglish","label":"English (US)"},{"value":"Japanese","label":"日本語"}],"note":"NOTE"}}"#
+    let withLang = try #require(O.parse(json))
+    #expect(withLang.language == .init(pick: "Japanese", levels: [.init(value: "system", label: "Same as system"), .init(value: "AmericanEnglish", label: "English (US)"), .init(value: "Japanese", label: "日本語")], note: "NOTE"))
+    var stale = withLang; stale.language?.pick = "Korean"; stale.language?.note = ""
+    let opts: [String: O] = ["G1": withLang, "G2": stale, "G3": O(fps: .init(on: false, hidden: true), fullscreen: .init(on: false, hidden: true))]
+    var sets: [String] = []
+    let tag = UUID().uuidString
+    let app = try #require(UserDefaults(suiteName: "s2a.test.app." + tag))
+    defer { app.removePersistentDomain(forName: "s2a.test.app." + tag) }
+    let stores = S2ArmGameSettings.Stores(game: { _ in app }, app: app, options: { opts[$0] },
+                                          setOption: { id, kind, key, on in sets.append("\(id) \(kind) \(key) \(on)"); return true })
+    let st = S2ArmGameSettings.LayoutState(selected: "default", hasMine: false)
+    let s = S2ArmGameSettings.sections(for: "G1", stores: stores, state: st)
+    #expect(s.map(\.id) == ["s2a.identity", "s2a.picture", "s2a.language", "s2a.vpad"])
+    let row = try #require(s.first { $0.id == "s2a.language" }?.rows.first)
+    #expect(row.id == "gameLanguage" && row.value == "Japanese")
+    #expect(row.note.hasSuffix(" · NOTE"), "宿主的说明接在后面：\(row.note)")
+    if case .choice(let o) = row.kind { #expect(o.map(\.id) == ["system", "AmericanEnglish", "Japanese"]) } else { Issue.record("不是选项行") }
+    let staleRow = try #require(S2ArmGameSettings.sections(for: "G2", stores: stores, state: st).first { $0.id == "s2a.language" }?.rows.first)
+    #expect(staleRow.value == "system" && !staleRow.note.contains("·"), "选的不在选项里按跟随系统；没有宿主说明不加分隔")
+    #expect(!S2ArmGameSettings.sections(for: "G3", stores: stores, state: st).contains { $0.id == "s2a.language" }, "宿主没给语言不出这一组")
+    #expect(O.parse(#"{"fps":{"on":false},"fullscreen":{"on":false},"language":{"pick":"system","levels":[]}}"#)?.language == nil, "空选项不出")
+    S2ArmGameSettings.apply(id: "G1", setting: "gameLanguage", value: "AmericanEnglish", stores: stores)
+    S2ArmGameSettings.apply(id: "G1", setting: "gameLanguage", value: "system", stores: stores)
+    #expect(sets == ["G1 language AmericanEnglish true", "G1 language system true"])
+}
+
+// 界面语言（#1252：游戏库齿轮页也能选）：与游戏内设置页同一个键 S2AUILanguage；「跟随系统」删键、不认的值不存
+@MainActor @Test func shellInterfaceLanguage() throws {
+    let key = ShellSettingsStore.interfaceLanguageKey, std = UserDefaults.standard, old = std.object(forKey: key)
+    defer { if let old { std.set(old, forKey: key) } else { std.removeObject(forKey: key) } }
+    #expect(key == "S2AUILanguage")
+    let store = ShellSettingsStore(defaults: std)
+    std.removeObject(forKey: key)
+    #expect(store.interfaceLanguage == "system")
+    ShellSettingsRows.apply(ShellSettingsRows.language, value: "ja", to: store)
+    #expect(std.string(forKey: key) == "ja" && ShellSettingsRows.languageRow(store).value == "ja")
+    ShellSettingsRows.apply(ShellSettingsRows.language, value: "de", to: store)
+    #expect(std.string(forKey: key) == "ja", "不认的值不存")
+    ShellSettingsRows.apply(ShellSettingsRows.language, value: "system", to: store)
+    #expect(std.object(forKey: key) == nil && store.interfaceLanguage == "system")
+    std.set("xx", forKey: key)
+    #expect(store.interfaceLanguage == "system", "存了不认的值按跟随系统显示")
+    if case .choice(let o) = ShellSettingsRows.languageRow(store).kind { #expect(o.map(\.id) == ["system", "zh-Hans", "zh-Hant", "en", "ja", "es", "fr"] && o[1].label == "简体中文") } else { Issue.record("不是选项行") }
 }

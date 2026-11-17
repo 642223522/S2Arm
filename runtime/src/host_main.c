@@ -53,6 +53,7 @@ __attribute__((weak)) int s2a_front_is_running(void) { return 0; }   // iOS 壳 
 #include "s2a_lan_discovery.h"
 // Hosts without a discovery implementation leave LAN unavailable explicitly.
 __attribute__((weak)) const s2a_lan_discovery_v1 *s2a_ldn_lan_provider(void) { return NULL; }
+__attribute__((weak)) void s2a_window_span_arm(void) {}   // vawin.c（Apple）强定义：低区碰底死的局记跨度用的路径先备好（#1143）
 void s2a_crash_install(void); void s2a_term_install(void);
 uint64_t s2a_mem_init(const char *npdm);
 void s2a_boot_mark(const char *stage);
@@ -295,6 +296,9 @@ static int host_run(int argc, char **argv) {
       if (!s2a_selfcheck()) {
 #if TARGET_OS_IPHONE
           const char *t, *b; s2a_selfcheck_page(&t, &b);   // 细节（地址上限、内存上限）已在 host.log「【红】自检不过」，随诊断包带走
+          // 弱链接[host]：s2a_iml_claim（ios/iml_probe.m 提供；Mac 宿主与原生单测不链它，取不到就不记）
+          // 这页会说「缺提高内存上限权限」：记下这次打开已说过，诊断询问与游戏里提示条不再重复说（ios/iml_probe.m；输入工作台没链进来时弱引用为空）
+          { extern int s2a_iml_claim(void) __attribute__((weak_import)); if (s2a_iml_claim) (void)s2a_iml_claim(); }
           int s2a_selfcheck_can_continue(void); int s2a_ios_ask_continue(const char *, const char *, const char *, const char *);
           // 只差内存上限：提示页多一个「仍要启动」，玩家点了就照常起局（v0.3.1 装机原则）；物理上起不来的照旧只给提示、不起游戏
           if (s2a_selfcheck_can_continue() && s2a_ios_ask_continue("exclamationmark.triangle.fill", t, b, S2A_SELFCHECK_GO))
@@ -327,7 +331,9 @@ static int host_run(int argc, char **argv) {
         if (!nvn_pso_harvest) die("【红】S2A_PSO_HARVEST：这个宿主没链直连后端（nvn_pso_harvest）");
         exit(nvn_pso_harvest(hv)); } }
 #endif
-    if (!s2a_window_ok()) die("【红】地址窗口不足：首选位置整块 64 GB 与退路（2^39 以下 ≥ 32 GB 的空洞）都没占到，起不了局（见上面的地址表）");
+    // 窗口没占到：按本局实际的跨度与上界说（vawin.c s2a_window_fatal_msg；原先写死「首选 64 GB / 退路 2^39」，36 位款对不上）
+    if (!s2a_window_ok()) { char m[512]; uint64_t need = 0, fit = 0; s2a_window_need(&need, &fit);
+        s2a_window_fatal_msg(m, sizeof m, need, fit, s2a_window_hole_top(), s2a_window_hi36_tried()); die("%s", m); }
     s2a_crash_install(); s2a_term_install();
 #if !TARGET_OS_IPHONE
     // 帧回放（S2A_FRAME_REPLAY=<录像目录>，graphics/nvn/docs/frame_replay.md）：地址窗口占好后不装游戏、不起游戏线程，把录下的一帧喂给直连回放层，出截图 / 满屏判据 / 每笔指令数就退出
@@ -369,6 +375,14 @@ static int host_run(int argc, char **argv) {
 #if TARGET_OS_IPHONE
     // 游戏数据（服务接入线登记游戏用：exefs/main.npdm、romfs/、ctl/control.nacp）在资源包根（测试层契约），没给就指过去
     if (!getenv("S2A_GAME_DATA")) { setenv("S2A_GAME_DATA", lc->game_data, 0); LOG("游戏数据：%s", lc->game_data); }   // 启动上下文资源包根（兼容 = $HOME/Documents/资源包）
+#if TARGET_OS_TV
+    // Apple TV（11-15）：资源包里有 BC → ASTC 预转包（pack/jobs/tvos.py derive 出、随资源包推进电视）就交给渲染器（graphics/metal/gal_astc.m 查包）；
+    //   A15 不支持 BC 贴图，没这个包就在 CPU 上整张解成未压缩、贴图内存涨 4–8 倍。已设的环境变量优先（诊断 / 对照局）
+    { const char *gd = getenv("S2A_GAME_DATA"); char ap[1100]; struct stat st;
+      if (gd && *gd && !getenv("NXGAL_ASTC_PACK") && snprintf(ap, sizeof ap, "%s/astc.pack", gd) < (int)sizeof ap && !stat(ap, &st) && S_ISREG(st.st_mode)) {
+          setenv("NXGAL_ASTC_PACK", ap, 0); LOG("贴图：用 ASTC 预转包 %s（%lld MB）", ap, (long long)(st.st_size >> 20)); }
+      else if (!getenv("NXGAL_ASTC_PACK")) LOG("【黄】贴图：资源包里没有 ASTC 预转包（%s/astc.pack），BC 贴图在 CPU 上解压，内存占用高", gd ? gd : "?"); }
+#endif
 #endif
     // 出包期工具模式（Oodle：oodle_tool.c；GLSLC：glslc_tool.c）：只要装好的模块与游戏主线程，不起图形 / 前端、不进 nnMain——起游戏主线程，做完就退出。
     //   Oodle 解码器在 SDK 初始化前做完，不要 C#；GLSLC 与 LZ5（勇者斗恶龙 XI S 的 LZ5_decompress_safe，要游戏 malloc）要等 nninitStartup 与各模块全局构造，
@@ -407,6 +421,7 @@ static int host_run(int argc, char **argv) {
           fn, (unsigned long long)fs, (unsigned long long)fh); }
     { void s2a_vm_top(const char *); s2a_vm_top("C# 初始化后"); void s2a_vm_low(const char *); s2a_vm_low("C# 初始化后"); }
     { void s2a_guest_va_report(const char *); s2a_guest_va_report("C# 初始化后"); }
+    s2a_window_span_arm();   // 低区碰底死的局在崩溃处理里记跨度：路径与取数函数这里先备好（vawin.c，#1143）
     if (s2a_dev_on()) { void s2a_va_watch_start(void); s2a_va_watch_start(); }   // 地址走势（30 秒一行）：开发设施，玩家口径不起
     s2a_lowva_start();   // 低区统一记账巡检（lowva.c）：每秒实测保留量、余量不够叫可腾退的腾
     LOG("S2A 就绪");   // 测试层契约第 4 节：运行时（原生层 + C#）已起来

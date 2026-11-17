@@ -16,8 +16,8 @@ struct BatchRow: Identifiable, Equatable {
 }
 
 extension S2ArmLauncherModel {
-    static func batchPlatform(_ p: ExportPlatform) -> String? { p == .ios ? "iphone" : p == .mac ? "mac" : nil }
-    static func exportPlatform(_ p: String) -> ExportPlatform? { p == "iphone" ? .ios : p == "mac" ? .mac : nil }
+    static func batchPlatform(_ p: ExportPlatform) -> String? { p == .ios ? "iphone" : p == .tvos ? "appletv" : p == .mac ? "mac" : nil }
+    static func exportPlatform(_ p: String) -> ExportPlatform? { p == "iphone" ? .ios : p == "appletv" ? .tvos : p == "mac" ? .mac : nil }
 
     /// 后端批次里的各款（show 的 batch.items）
     var batchItems: [[String: Any]] { (batchState?["batch"] as? [String: Any])?["items"] as? [[String: Any]] ?? [] }
@@ -76,7 +76,7 @@ extension S2ArmLauncherModel {
             if !sgradeOn(d.id) { item["sgrade"] = false }
             return item }
         guard !items.isEmpty else { return "没有能出的游戏" }
-        guard !busy, !batchRunning else { return "正在出包" }
+        guard !mainBusy, !batchRunning else { return "正在出包" }   // 手机槽（装机等）在跑不挡批量出包
         guard let data = try? JSONSerialization.data(withJSONObject: ["items": items, "location": batchLocation.isEmpty ? NSNull() : batchLocation] as [String: Any]),
               let json = String(data: data, encoding: .utf8) else { return "批次清单组不出来" }
         guard let state = await provider.client.batch("create", ["--json", json]) else { return "批次脚本起不来" }
@@ -146,7 +146,7 @@ extension S2ArmLauncherModel {
     func retryBatch(_ gid: String? = nil) { batchCommand("retry", gid.map { ["--game", $0] } ?? []) }
 
     private func batchCommand(_ command: String, _ args: [String] = []) {
-        guard !busy, !batchRunning else { return }
+        guard !mainBusy, !batchRunning else { return }
         Task {
             guard accept(await provider.client.batch(command, args)) else { batchShown = true; return }   // 「重试 / 继续」没成：批量页说清原因
             runBatchExport()

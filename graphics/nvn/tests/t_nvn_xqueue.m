@@ -8,6 +8,14 @@
 //   ⑤ 互等（负对照）：A「等 X → 发 Y」、B「等 Y → 发 X」：B 停住会成环 → B 不停、照旧立即放行并记一次成环（报红），两边都在 2 秒内完成，X = Y = 1，不死锁
 //   ⑥ 保险：等一个永远没人发的信号 → 别的队列再提交 256 次后强制放行，停住的拷贝落地
 //   ⑦ 停住时的回放状态带到接着回放的那段：等待之前 BindProgram / SetRenderTargets 记下的 S / R 在接着回放时原样恢复（不被中间别的队列的提交改掉）
+//   ⑧ 状态里的顶点缓冲是已提交但停住的命令依赖：停住期间来宾 Finalize 内存池，接着回放仍能解析当时的缓冲；没在快照里的地址仍取不到
+#include <stddef.h>
+#include <stdint.h>
+// 本夹具直接包含 nvn_mtl.m，不链宿主 dsh_miss.inc；#871 的网格源码缓存不在这些场景里，给可被真实现覆盖的弱桩。
+__attribute__((weak)) int dm_shader_vpad_cached_mesh(const uint8_t key[8], uint32_t mask, char *path, size_t n) {
+    (void)key; (void)mask; (void)path; (void)n;
+    return -1;
+}
 #include "../gfx/nvn/nvn_mtl.m"
 static unsigned checks, failures;
 #define REQUIRE(c) do { if (!(c)) { fprintf(stderr, "FAIL setup %s:%d: %s\n", __FILE__, __LINE__, #c); exit(1); } } while (0)
@@ -95,7 +103,30 @@ int main(void) { @autoreleasepool {
     // 接着回放的那段在 A 的流末尾（END）读不到状态：用 B 发信号之后、A 接着回放完之后的全局状态看（A 那段是最后回放的）
     submit(&QB, vb7, 1); seen_ref = S.alpha_ref; seen_patch = S.patch_size; seen_sc = R.has_sc ? (int)R.sc.x : -1; settle();
     VERIFY(seen_ref == 0.25f && seen_patch == 7 && seen_sc == 11, "⑦ 接着回放时恢复停住时的状态：alpha_ref %.2f（期望 0.25）、patch %d（期望 7）、剪裁 x %d（期望 11）", seen_ref, seen_patch, seen_sc);
+    // ⑧ 直接核 xq_state_save / load 的资源寿命：真队列路径也只通过这两个函数携带停住点。
+    uint8_t *vp = NULL; REQUIRE(!posix_memalign((void **)&vp, 65536, 65536)); memset(vp, 0x5a, 65536); nvn_be_pool_add(vp, 65536);
+    state_reset(); S.vbuf[5] = (NVNbufferRange){(uint64_t)(uintptr_t)(vp + 4096), 34720};
+    NSUInteger deferred0 = g_deferred.count;
+    void *saved = xq_state_save(); nvn_be_pool_del(vp); state_reset(); xq_state_load(saved);
+    void *mb = NULL; uint64_t mo = 0, gpu = 0, avail = 0;
+    int held = gpu_addr_want(S.vbuf[5].address, 1, S.vbuf[5].size, &mb, &mo, &gpu, &avail);
+    VERIFY(held && mb && mo == 4096 && avail >= S.vbuf[5].size,
+           "⑧ 停住状态持有顶点缓冲：内存池 Finalize 后恢复 slot 5 仍可解析 %d、偏移 %llu（期望 4096）、可用 %llu 字节",
+           held, (unsigned long long)mo, (unsigned long long)avail);
+    void *saved2 = xq_state_save(); xq_state_deactivate(); xq_state_free(saved); state_reset(); xq_state_load(saved2);
+    mb = NULL; mo = gpu = avail = 0;
+    int transferred = gpu_addr_want(S.vbuf[5].address, 1, S.vbuf[5].size, &mb, &mo, &gpu, &avail);
+    VERIFY(transferred && mb && mo == 4096 && avail >= S.vbuf[5].size,
+           "⑧ 再次停住：已 Finalize 池的持有从旧快照转给新快照 %d（期望 1），旧快照释放后仍可解析", transferred);
+    void *other = NULL; uint64_t oo = 0, og = 0, oa = 0;
+    int leaked = gpu_addr_want((uint64_t)(uintptr_t)vp + 60000, 1, 1, &other, &oo, &og, &oa);
+    VERIFY(!leaked, "⑧ 负对照：同一已 Finalize 池里没被 slot 5 快照覆盖的地址仍不可解析 %d（期望 0）", leaked);
+    xq_state_deactivate(); xq_state_free(saved2);
+    pthread_mutex_lock(&g_xq_bhold_mu); int holds_left = g_xq_nbhold; pthread_mutex_unlock(&g_xq_bhold_mu);
+    VERIFY(!holds_left && g_deferred.count == deferred0 + 1,
+           "⑧ 生命周期收尾：暂停持有剩 %d（期望 0），池缓冲在最后一次回放之后进入延后释放 %ld 次（期望 1）",
+           holds_left, (long)(g_deferred.count - deferred0));
     if (failures) { printf("✗ t_nvn_xqueue：%u 项里 %u 项不符\n", checks, failures); return 1; }
-    printf("✓ t_nvn_xqueue：%u 项全过（跨队列事件顺序：等待之后的命令排在满足它的信号之后；同队列后续提交排队；子列表 / 多句柄接着回放；欠着的栅栏；互等报红不死锁；保险放行；状态带过停住点）\n", checks);
+    printf("✓ t_nvn_xqueue：%u 项全过（跨队列事件顺序：等待之后的命令排在满足它的信号之后；同队列后续提交排队；子列表 / 多句柄接着回放；欠着的栅栏；互等报红不死锁；保险放行；状态带过停住点及顶点缓冲寿命）\n", checks);
     return 0;
 } }

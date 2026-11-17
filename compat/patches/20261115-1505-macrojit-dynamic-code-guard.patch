@@ -1,0 +1,37 @@
+diff --git a/src/Ryujinx.Graphics.Gpu/Engine/MME/Macro.cs b/src/Ryujinx.Graphics.Gpu/Engine/MME/Macro.cs
+index 8f82663831573c61a4b4f4f3a23cd0c953a34f84..54391db275ab53c20037e0c8d69ca854f7c3092e 100644
+--- a/src/Ryujinx.Graphics.Gpu/Engine/MME/Macro.cs
++++ b/src/Ryujinx.Graphics.Gpu/Engine/MME/Macro.cs
+@@ -52,7 +52,7 @@ namespace Ryujinx.Graphics.Gpu.Engine.MME
+                 {
+                     _executionEngine = new MacroHLE(processor, _hleFunction);
+                 }
+-                else if (GraphicsConfig.EnableMacroJit)
++                else if (GraphicsConfig.EnableMacroJit && System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported)   // S2A：NativeAOT 没有 Reflection.Emit，MacroJit 必失败；AOT 编译期判定为假、整支裁掉
+                 {
+                     _executionEngine = new MacroJit();
+                 }
+diff --git a/src/Ryujinx.Graphics.Gpu/Engine/MME/MacroJit.cs b/src/Ryujinx.Graphics.Gpu/Engine/MME/MacroJit.cs
+index 0f26490a8c2e0b3db57a06fb595b4d507be7a951..1ab9299d92f50c1e0333fb5adde902560016f8fe 100644
+--- a/src/Ryujinx.Graphics.Gpu/Engine/MME/MacroJit.cs
++++ b/src/Ryujinx.Graphics.Gpu/Engine/MME/MacroJit.cs
+@@ -7,6 +7,7 @@ namespace Ryujinx.Graphics.Gpu.Engine.MME
+     /// <summary>
+     /// Represents a execution engine that uses a Just-in-Time compiler for fast execution.
+     /// </summary>
++    [System.Diagnostics.CodeAnalysis.RequiresDynamicCode("S2A：宏 JIT 用 Reflection.Emit 现生成方法；没有动态代码（NativeAOT）时由 Macro.cs 走 S2AMacroAot / 解释器")]
+     class MacroJit : IMacroEE
+     {
+         private readonly MacroJitContext _context = new();
+diff --git a/src/Ryujinx.Graphics.Gpu/Engine/MME/MacroJitCompiler.cs b/src/Ryujinx.Graphics.Gpu/Engine/MME/MacroJitCompiler.cs
+index cd711f1b33904b24e5d8ec679fd9ca89dca453eb..2915abf47beb2350024f698ee4c24651bc8365eb 100644
+--- a/src/Ryujinx.Graphics.Gpu/Engine/MME/MacroJitCompiler.cs
++++ b/src/Ryujinx.Graphics.Gpu/Engine/MME/MacroJitCompiler.cs
+@@ -20,6 +20,7 @@ namespace Ryujinx.Graphics.Gpu.Engine.MME
+         /// <summary>
+         /// Creates a new instance of the Macro Just-in-Time compiler.
+         /// </summary>
++        [System.Diagnostics.CodeAnalysis.RequiresDynamicCode("S2A：DynamicMethod 要动态代码；只由 MacroJit（同样标注）在 RuntimeFeature.IsDynamicCodeSupported 为真时用")]
+         public MacroJitCompiler()
+         {
+             _meth = new DynamicMethod("Macro", typeof(void), [typeof(MacroJitContext), typeof(IDeviceState), typeof(int)

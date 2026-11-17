@@ -2,7 +2,7 @@
 
 宿主放 <库>/hosts/mac/<可执行文件摘要前 12 位>/S2ArmGame.app，每款镜像 games/<英文名>/image/mac 不含宿主；game.json 的 hostMac 记这款在用的宿主。
 升级 S2Arm 后，新宿主认得旧镜像就直接换用，不用重新准备。判据两项，都对上才换：
-  hostAbi    —— 宿主读每款产物的约定号，就是下面的 HOST_ABI。改了宿主读产物的方式（改写器与运行时的约定：跳板 / 虚拟寄存器槽 / 门控表，
+  hostAbi    —— 宿主读每款产物的约定号，就是下面的 HOST_ABI（从 runtime/include/s2a_host_abi.h 读，宿主编的是同一个数）。改了宿主读产物的方式（改写器与运行时的约定：跳板 / 虚拟寄存器槽 / 门控表，
                 *.fixups / *.sites / *.gates / addr_need.tsv 等表的格式，镜像目录布局）就把它加 1；只修宿主自身的 bug 不动它。
   dmshChain  —— 直连着色器库版本 V（graphics/nvn/gfx/nvn/dmsh_chain.h 的 DMSH_CHAIN，宿主只读 shaders/direct/b-<V>/），从引擎源码机械读出。
 镜像的 manifest.json 记准备时的这两项；本字段之前（v0.1.0 起的公开版）出的镜像 hostAbi 按 1，dmshChain 按目录里实有的 b-<V> 认。
@@ -15,12 +15,25 @@ import os
 import re
 import shutil
 import stat
+import subprocess
+import sys
 from pathlib import Path
 
 import layout
 from core import Failure, contained, digest, read
 
-HOST_ABI = 1
+def _host_abi():
+    """宿主读产物的约定号：从 runtime/include/s2a_host_abi.h 机械读（与宿主编进去的是同一个数，不两处各写一份）"""
+    here = Path(__file__).resolve()
+    # Mac 应用里作业层在 Contents/Resources/Jobs，头文件随包放同目录（launchers/macos/jobs_bundle.py EXTRA）；源码树 / Windows 引擎快照里在 runtime/include
+    head = here.parent / "s2a_host_abi.h"
+    if not head.is_file():
+        head = here.parents[2] / "runtime/include/s2a_host_abi.h"
+    text = head.read_text(encoding="utf-8")
+    return int(re.search(r"^#define S2A_HOST_ABI (\d+)$", text, re.M).group(1))
+
+
+HOST_ABI = _host_abi()
 TRIAL_OK_SECONDS = 60
 APP = "S2ArmGame.app"
 EXE = APP + "/Contents/MacOS/s2arm-host"
@@ -51,6 +64,44 @@ def image_compat(image, manifest):
         libs = [p.name[2:] for p in (Path(image) / "shaders/direct").glob("b-*") if p.is_dir()]
         chain = libs[0] if len(libs) == 1 else None
     return dict(hostAbi=manifest.get("hostAbi", 1), dmshChain=chain)
+
+
+LSREGISTER = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+# 系统应用登记里所有 S2ArmGame.app 记录逐条注销（含早已删掉的路径：系统照样给它们出启动台图标）。$1 = lsregister
+FORGET_SCRIPT = ('"$1" -dump 2>/dev/null | grep "path:.*/S2ArmGame\\.app" | sed "s/.*path: *//; s/ (0x[0-9a-f]*)$//" | sort -u'
+                 ' | while IFS= read -r p; do "$1" -u "$p" 2>/dev/null; done')
+
+
+def forget_registrations(lsregister=None, wait=False, app=None):
+    """#1126：Mac 宿主是直接执行 Contents/MacOS/s2arm-host 起局的，系统每次起它都会把这个 .app 登记进应用登记库，
+    启动台 / 应用程序里就多出一个灰色「S2ArmGame」；引擎更新、换库后旧路径的登记还留着（玩家实测 43 条、34 条指向已删路径）。
+    宿主不需要登记（启动器不经启动服务打开它）：每局结束后把全部 S2ArmGame.app 登记注销。
+    后台脱离进程做（导出整张登记表约 3 秒），不拖慢回游戏库；失败不影响游戏，只是图标还在。wait=True 给单测
+    app：这局起的宿主包。系统只登记带 Contents/Info.plist 的真 App 包——不是真包（单测的假宿主只有一个可执行文件）就没有可注销的，
+      不碰系统登记库（11-15 门禁机上单测起局打到真 lsregister、38 个 -dump 同时跑）。
+    同一时间只跑一个（锁随子进程持有到它退出）：已有一个在跑就跳过，下一局再注销，不叠"""
+    if app is not None and not (Path(app) / "Contents" / "Info.plist").is_file():
+        return None
+    lsregister = lsregister or os.environ.get("S2A_LSREGISTER") or LSREGISTER   # 单测改指（jobcase：不碰本机真登记）
+    if sys.platform != "darwin" or not os.path.exists(lsregister):
+        return None
+    import fcntl
+    import hashlib
+    import tempfile
+    lock = Path(tempfile.gettempdir()) / f"s2a-lsregister-forget-{hashlib.sha1(lsregister.encode()).hexdigest()[:12]}.lock"
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o666)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return None
+        p = subprocess.Popen(["/bin/bash", "-c", FORGET_SCRIPT, "forget", lsregister], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, pass_fds=(fd,))
+    finally:
+        os.close(fd)   # 子进程继承的那份还拿着锁，退出才放
+    if wait:
+        p.wait()
+    return p
 
 
 def host_exe(c, sha):

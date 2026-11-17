@@ -28,6 +28,8 @@ jobs:
         run: python3 tools/layer_map.py check
       - name: 单测接线
         run: python3 tools/test_wired_lint.py
+      - name: 合成系统归档一致性
+        run: python3 tests/sysdata_synth_tar_test.py
       - name: 公开仓扫描（全量）
         run: python3 tools/public_repo_scan.py --repo . --ref HEAD --path . --format gate
   macos:

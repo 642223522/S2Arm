@@ -77,23 +77,29 @@ int main(void) {
       expect("⑥ 启动环境 S2A_FPS60=1 时清单的 0 不覆盖", "0", WIFEXITED(ws) ? (WEXITSTATUS(ws) ? "1" : "0") : "崩"); }
     // ⑥b 11-11 速度已验证正确的款保留默认 60（清单原因认来源）：期望手算——fps.tsv / A/B 绿 / 原生 60 → 玩家没设时设 1；
     //   全引擎档 / Unity·UE 推导 → 不设；玩家显式 0 → 照旧 0；社区帧率补丁（11-13）→ 设 1、玩家显式 0 照旧 0
-    { static const struct { const char *why, *env, *want; } vc[] = {
-          {"默认开：来源 fps.tsv", NULL, "1"},
-          {"默认开：来源 逻辑速度同局 A/B 绿（ρ 1.01、q 0.99，放开出图间隔）", NULL, "1"},
-          {"默认开：来源 游戏原生 60 帧", NULL, "1"},
-          {"默认开：来源 引擎通用：放开出图间隔（全引擎，同局 A/B 判红才关）", NULL, NULL},
-          {"默认开：来源 引擎通用第一层（Unity / UE4 放开交换间隔）", NULL, NULL},
-          {"默认开：来源 fps.tsv", "0", "0"},
-          {"默认开：来源 社区帧率补丁", NULL, "1"},          // 11-13：社区帧率补丁版本精确命中才进得了包，默认开
-          {"默认开：来源 社区帧率补丁", "0", "0"}};          // 玩家关了照旧关
-      for (int i = 0; i < 8; i++) {
+    //   11-14 撤我方 60 帧：缺省（没设 S2A_CAPS_OWN）我方来源 fps.tsv / A/B 绿也不设（老包清单还写着这些原因）；原生 60 / 社区帧率补丁照旧设 1；S2A_CAPS_OWN=1 回旧口径
+    { static const struct { const char *why, *env, *want; int own; } vc[] = {
+          {"默认开：来源 fps.tsv", NULL, "1", 1},
+          {"默认开：来源 逻辑速度同局 A/B 绿（ρ 1.01、q 0.99，放开出图间隔）", NULL, "1", 1},
+          {"默认开：来源 游戏原生 60 帧", NULL, "1", 1},
+          {"默认开：来源 引擎通用：放开出图间隔（全引擎，同局 A/B 判红才关）", NULL, NULL, 1},
+          {"默认开：来源 引擎通用第一层（Unity / UE4 放开交换间隔）", NULL, NULL, 1},
+          {"默认开：来源 fps.tsv", "0", "0", 1},
+          {"默认开：来源 社区帧率补丁", NULL, "1", 1},          // 11-13：社区帧率补丁版本精确命中才进得了包，默认开
+          {"默认开：来源 社区帧率补丁", "0", "0", 1},          // 玩家关了照旧关
+          {"默认开：来源 fps.tsv", NULL, NULL, 0},             // 缺省口径：我方帧率表不替玩家开
+          {"默认开：来源 逻辑速度同局 A/B 绿（ρ 1.01、q 0.99，放开出图间隔）", NULL, NULL, 0},
+          {"默认开：来源 游戏原生 60 帧", NULL, "1", 0},
+          {"默认开：来源 社区帧率补丁", NULL, "1", 0}};
+      for (int i = 0; i < (int)(sizeof vc / sizeof *vc); i++) {
           f = fopen(path, "w"); fprintf(f, "fps60\t1\t# %s\n", vc[i].why); fclose(f);
           fflush(stdout); pid_t p = fork(); if (p < 0) return 1;
           if (!p) { if (vc[i].env) setenv("S2A_FPS60", vc[i].env, 1); else unsetenv("S2A_FPS60");
+                    if (vc[i].own) setenv("S2A_CAPS_OWN", "1", 1); else unsetenv("S2A_CAPS_OWN");
                     s2a_caps_apply(T); const char *x = getenv("S2A_FPS60");
                     _exit(vc[i].want ? (x && !strcmp(x, vc[i].want) ? 0 : 1) : (!x ? 0 : 1)); }
           int ws = 0; waitpid(p, &ws, 0); char what[256];
-          snprintf(what, sizeof what, "⑥b 清单 fps60 1「%s」、玩家%s → S2A_FPS60 %s", vc[i].why, vc[i].env ? "设了 0" : "没设", vc[i].want ? vc[i].want : "不设");
+          snprintf(what, sizeof what, "⑥b%s 清单 fps60 1「%s」、玩家%s → S2A_FPS60 %s", vc[i].own ? "（旧口径）" : "（缺省）", vc[i].why, vc[i].env ? "设了 0" : "没设", vc[i].want ? vc[i].want : "不设");
           expect(what, "0", WIFEXITED(ws) ? (WEXITSTATUS(ws) ? "1" : "0") : "崩"); } }
     f = fopen(path, "w"); fprintf(f, "fps60\t0\t# 未验：无登记\n"); fclose(f);
     // ⑦ 普查同局 A/B 模式（S2A_FPS_AB=1）：清单 fps60 0 → 另设 DM_PRESENT_INTERVAL=display（平时由 fps.c 降档原因 3 退回原帧率）；没开 A/B 模式、或已显式给了间隔都不设
@@ -149,21 +155,25 @@ int main(void) {
 
     // ⑬ 放开出图间隔的来源（s2a_fps60_display_source）：期望手算——60 帧开着时，清单 fps60_display 1（全引擎档 / A/B 绿）放开；
     //   已验证款 fps.tsv / 游戏原生 60 帧不由清单放开（帧率表自带 present display 行 / 跟随游戏间隔）；未验证款（全引擎档无标记行、强信号 0）玩家开了就放开；60 帧关一律不放开
-    { static const struct { const char *name, *caps; const char *env; int want; } dc[] = {
-          {"fps.tsv", "fps60\t1\t# 默认开：来源 fps.tsv\n", NULL, 0},
-          {"原生 60", "fps60\t1\t# 默认开：来源 游戏原生 60 帧\n", NULL, 0},
-          {"原生 60", "fps60\t1\t# 默认开：来源 游戏原生 60 帧\n", "1", 0},
-          {"A/B 绿 + 放开行", "fps60\t1\t# 默认开：来源 逻辑速度同局 A/B 绿（ρ 1.0）\nfps60_display\t1\t# A/B\n", NULL, 1},
-          {"全引擎档 + 放开行", "fps60\t1\t# 默认开：来源 引擎通用：放开出图间隔\nfps60_display\t1\t# 全引擎\n", NULL, 0},
-          {"全引擎档 + 放开行", "fps60\t1\t# 默认开：来源 引擎通用：放开出图间隔\nfps60_display\t1\t# 全引擎\n", "1", 1},
-          {"Unity·UE 第一层", "fps60\t1\t# 默认开：来源 引擎通用第一层（Unity / UE4 放开交换间隔）\n", "1", 1},
-          {"强信号 0", "fps60\t0\t# 强信号\n", "1", 1},
-          {"强信号 0", "fps60\t0\t# 强信号\n", NULL, 0},
-          {"A/B 绿 + 放开行", "fps60\t1\t# 默认开：来源 逻辑速度同局 A/B 绿（ρ 1.0）\nfps60_display\t1\t# A/B\n", "0", 0} };
+    //   11-14：这些都是我方放开来源，只在旧口径（S2A_CAPS_OWN=1）算；缺省口径一律不放开（末两行）
+    { static const struct { const char *name, *caps; const char *env; int want, own; } dc[] = {
+          {"fps.tsv", "fps60\t1\t# 默认开：来源 fps.tsv\n", NULL, 0, 1},
+          {"原生 60", "fps60\t1\t# 默认开：来源 游戏原生 60 帧\n", NULL, 0, 1},
+          {"原生 60", "fps60\t1\t# 默认开：来源 游戏原生 60 帧\n", "1", 0, 1},
+          {"A/B 绿 + 放开行", "fps60\t1\t# 默认开：来源 逻辑速度同局 A/B 绿（ρ 1.0）\nfps60_display\t1\t# A/B\n", NULL, 1, 1},
+          {"全引擎档 + 放开行", "fps60\t1\t# 默认开：来源 引擎通用：放开出图间隔\nfps60_display\t1\t# 全引擎\n", NULL, 0, 1},
+          {"全引擎档 + 放开行", "fps60\t1\t# 默认开：来源 引擎通用：放开出图间隔\nfps60_display\t1\t# 全引擎\n", "1", 1, 1},
+          {"Unity·UE 第一层", "fps60\t1\t# 默认开：来源 引擎通用第一层（Unity / UE4 放开交换间隔）\n", "1", 1, 1},
+          {"强信号 0", "fps60\t0\t# 强信号\n", "1", 1, 1},
+          {"强信号 0", "fps60\t0\t# 强信号\n", NULL, 0, 1},
+          {"A/B 绿 + 放开行", "fps60\t1\t# 默认开：来源 逻辑速度同局 A/B 绿（ρ 1.0）\nfps60_display\t1\t# A/B\n", "0", 0, 1},
+          {"全引擎档 + 放开行（缺省口径）", "fps60\t1\t# 默认开：来源 引擎通用：放开出图间隔\nfps60_display\t1\t# 全引擎\n", "1", 0, 0},
+          {"强信号 0（缺省口径）", "fps60\t0\t# 强信号\n", "1", 0, 0} };
       for (unsigned i = 0; i < sizeof dc / sizeof *dc; i++) {
           f = fopen(path, "w"); fputs(dc[i].caps, f); fclose(f);
           pid_t p = fork(); if (p < 0) return 1;
           if (!p) { unsetenv("S2A_FPS_AB"); unsetenv("DM_PRESENT_INTERVAL"); if (dc[i].env) setenv("S2A_FPS60", dc[i].env, 1); else unsetenv("S2A_FPS60");
+                    if (dc[i].own) setenv("S2A_CAPS_OWN", "1", 1); else unsetenv("S2A_CAPS_OWN");
                     s2a_caps_apply(T); _exit(s2a_fps60_display_source() ? 1 : 0); }
           int ws = 0; waitpid(p, &ws, 0); char what[400];
           snprintf(what, sizeof what, "⑬ 放开来源：清单 %s、启动环境 S2A_FPS60=%s", dc[i].name, dc[i].env ? dc[i].env : "（没设）");

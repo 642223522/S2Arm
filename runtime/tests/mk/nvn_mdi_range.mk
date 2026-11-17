@@ -1,6 +1,6 @@
 # native-test-nvn_mdi_range：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += nvn_mdi_range
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # 间接计数多绘超过 1,024 条整段一条记录、回放按 GPU 掩码分批（draw_multi，上游参考实现（MIT）c7ba23df）；Metal 4 / 3 两路
 $(BUILD)/tests/t_nvn_mdi_range: graphics/nvn/tests/t_nvn_mdi_range.m graphics/nvn/gfx/nvn/nvn_mtl.m graphics/nvn/gfx/nvn/nvn2_cmd.h $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \

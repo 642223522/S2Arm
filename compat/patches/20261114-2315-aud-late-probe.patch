@@ -1,8 +1,8 @@
 diff --git a/src/Ryujinx.Audio/Renderer/Dsp/AudioProcessor.cs b/src/Ryujinx.Audio/Renderer/Dsp/AudioProcessor.cs
-index 3b8075ffd9deece90b9430721ab5c35917cedc3b..80d0ea495b5353fe0cb6ba3684bd362a5d8caa1b 100644
+index 20d70bf3ac3b85359de37d5a624b68de059ea03b..464027b79cd112f6d60049df8ccef0ade759441a 100644
 --- a/src/Ryujinx.Audio/Renderer/Dsp/AudioProcessor.cs
 +++ b/src/Ryujinx.Audio/Renderer/Dsp/AudioProcessor.cs
-@@ -199,6 +199,13 @@ namespace Ryujinx.Audio.Renderer.Dsp
+@@ -205,6 +205,13 @@ namespace Ryujinx.Audio.Renderer.Dsp
                  Volatile.Write(ref S2AMaxLateNs, s2aLate);
              }
  
@@ -18,10 +18,10 @@ index 3b8075ffd9deece90b9430721ab5c35917cedc3b..80d0ea495b5353fe0cb6ba3684bd362a
              {
 diff --git a/src/Ryujinx.Audio/Renderer/Dsp/S2AAudLate.cs b/src/Ryujinx.Audio/Renderer/Dsp/S2AAudLate.cs
 new file mode 100644
-index 0000000000000000000000000000000000000000..da44686fb6f951f059bfd6931748b9882ca4f463
+index 0000000000000000000000000000000000000000..37ba36f2e75a8cd8e3571db731c80539907a05ff
 --- /dev/null
 +++ b/src/Ryujinx.Audio/Renderer/Dsp/S2AAudLate.cs
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,37 @@
 +using System;
 +using System.Runtime.InteropServices;
 +
@@ -32,7 +32,8 @@ index 0000000000000000000000000000000000000000..da44686fb6f951f059bfd6931748b988
 +    /// DM_NVN_TSV 每帧取走清零成 @aud_wait_ms 列。慢帧归因「在等事件」时用它看音频占比。
 +    /// </summary>
 +    /// <remarks>
-+    /// 没有 s2a_native 这个符号的构建（安卓 / 单测 / 别的宿主）就不记：守门一次失败后不再调（同 S2AOutputDiag.HudAudio）。
++    /// s2a_aud_late_note 在公用核心 runtime/src/ap_host.c（苹果与安卓都链；安卓诊断组合有替身），各端静态链（DirectPInvoke）。
++    /// 没有 s2a_native 的宿主（单测 / 别的宿主）调用失败就不再调。
 +    /// </remarks>
 +    internal static class S2AAudLate
 +    {

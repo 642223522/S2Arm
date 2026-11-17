@@ -12,7 +12,9 @@
 //     ts_av1 = ffmpeg -f lavfi -i testsrc2=size=96x64:rate=30 -frames:v 6 -pix_fmt yuv420p -c:v libsvtav1 -crf 30 -preset 8 -g 6 -f ivf，
 //     red10_av1 = 上面那份红色原始 YUV 的 10 位版（Y 324、U 360、V 960）-pix_fmt yuv420p10le -c:v libsvtav1 -crf 10；
 //     经整条接管路径（强制软解）出的像素：8 位、10 位都按上面手算的 (254, 0, 0, 255)，有损 ±3。
-//   - H.264 宿主没接：初始化回失败（不出假画面）。
+//   - H.264（VideoToolbox，诊断 #ea0964：原先宿主没接、初始化回失败，游戏的播放库随即中止）：同一份红色原始 YUV 用 libx264 编（命令见
+//     t_nvn2_codec_h264.inc），起始码分隔与 4 字节长度前缀两种输入各走一遍整条接管路径，两帧像素都按上面手算的 (254, 0, 0, 255)，有损 ±3；
+//     NAL 切分：帧 0 切出 SPS / PPS / IDR 三个（类型 7 / 8 / 5），长度前缀越界的包回 -1。
 //   - 同步句柄：模式 1 比 64 位、其它 32 位回绕比；全 0 句柄算达到。
 // 可选参数 <时间单元文件> <av1C 文件>：再核一对真片子的数据（一次性核对用，不进门禁）
 #include <stdio.h>
@@ -30,6 +32,8 @@
 #include <CommonCrypto/CommonDigest.h>
 #include "nvn_obj.h"
 #include "t_nvn2_codec_av1.inc"
+#include "t_nvn2_codec_h264.inc"
+int nvn2_h264_nals(const uint8_t *p, size_t n, size_t (*nal)[2], int cap);
 
 static unsigned checks;
 #define CHECK(c) do { checks++; if (!(c)) { fprintf(stderr, "t_nvn2_codec:%d 失败：%s\n", __LINE__, #c); exit(1); } } while (0)
@@ -58,6 +62,9 @@ uint64_t s2a_event_create(uint32_t *hr, uint32_t *hw) { int i = g_nev++; g_ev[i]
 // 读档自中止复现钩子（11-06 时之笛）：对 g_hook_ev 的下一次触发，先让 g_hook_fn 在另一条线程上跑、最多等它 300 ms，再真正置位。
 //   旧实现在锁外触发，另一条线程这时能完成「取消 + 重新请求」，迟到的触发落在新请求上；修好后触发在锁内，另一条线程要等它
 static _Atomic uint64_t g_hook_ev; static void *(*g_hook_fn)(void *); static _Atomic int g_hook_done, g_hook_fired;
+// 出图节奏挂点（hle_nvn.c s2a_video_frame 的替身）：数 Switch 2 解码交出的新帧
+static _Atomic unsigned g_vframes;
+void s2a_video_frame(void) { atomic_fetch_add(&g_vframes, 1); }
 void s2a_event_signal(uint64_t ev) {
     if (ev && atomic_load(&g_hook_ev) == ev && atomic_exchange(&g_hook_ev, 0) == ev) {
         pthread_t th; CHECK(!pthread_create(&th, NULL, g_hook_fn, NULL)); pthread_detach(th);
@@ -304,6 +311,9 @@ int main(int argc, char **argv) {
         void *f1 = s2a_codec_entry("_ZN2nn2oe26SetGraphicsTargetFrameRateENS0_23GraphicsTargetFrameRateE"), *f2 = s2a_codec_entry("_ZN2nn2oe26SetGraphicsTargetFrameRateEi");
         CHECK(f1 && f1 == f2 && !nvn2_gs_booted() && ((Result (*)(int))f1)(30) == 0 && ((Result (*)(int))f1)(60) == 0);
         CHECK(!s2a_codec_entry("_ZN2nn2oe20SetAudioOutputPolicyENS0_17AudioOutputPolicyE"));   // 负对照：oe 的其余函数照走 sdk
+        // D-SM6Y：自动档（无参数）同样在 sdk 内直调 gs 帧长模式；接管后 gs 没启动也回成功
+        void *f3 = s2a_codec_entry("_ZN2nn2oe30SetGraphicsTargetFrameRateAutoEv");
+        CHECK(f3 && f3 != f1 && !nvn2_gs_booted() && ((Result (*)(void))f3)() == 0);
     }
     // nn::vi::GetDisplayVsyncEvent（金刚 / raiders，11-04）：nvn2.c 的 vi 表弱引用到本文件实现；挂到游戏 SystemEvent（托管、自动清除），宿主线程按 60 Hz 触发
     {
@@ -379,11 +389,12 @@ int main(int argc, char **argv) {
     // ---------- VP9（libvpx，无损）：两帧红，按登记次序填 ----------
     {
         rig r; rig_up(&r, &VP9, 64, 64);
-        uint64_t id = 0;
+        uint64_t id = 0; unsigned vf0 = atomic_load(&g_vframes);
         CHECK(((f_sub)E(VP9.sub))(&id, r.obj, red_vp9_0, sizeof red_vp9_0, 33333000, 0) == 0 && id == 1);
         CHECK(((f_sub)E(VP9.sub))(&id, r.obj, red_vp9_1, sizeof red_vp9_1, 66666999, 0) == 0 && id == 2);
         sync_h h1, h2; uint32_t i1 = take(&r, &VP9, &spev, &h1), i2 = take(&r, &VP9, &spev, &h2);
         CHECK(i1 == 0 && i2 == 1 && h2.value == h1.value + 1 && h1.id_inv == h2.id_inv);
+        CHECK(atomic_load(&g_vframes) - vf0 == 2);   // 两帧新解码的画面各报一次出图节奏（nvn_vpace：≤30 帧片源据此封顶）
         uint16_t w, h, w2, h2_; int64_t pts; uint8_t eos;
         CHECK(((f_props)E(VP9.props))(&w, &h, &w2, &h2_, &pts, &eos, r.obj, i1) == 0 && w == 64 && h == 64 && w2 == 64 && h2_ == 64 && pts == 33333000 && !eos);
         CHECK(((f_props)E(VP9.props))(&w, &h, &w2, &h2_, &pts, &eos, r.obj, i2) == 0 && pts == 66666000 && !eos);
@@ -407,7 +418,29 @@ int main(int argc, char **argv) {
         sync_h h3; uint32_t i3 = take(&r, &VP9, &spev, &h3);
         CHECK(i3 == i1 && h3.value == h2.value + 1);
         CHECK(((f_props)E(VP9.props))(&w, &h, &w2, &h2_, &pts, &eos, r.obj, i3) == 0 && eos == 1 && w == 64);
+        CHECK(atomic_load(&g_vframes) - vf0 == 2);   // 流结束标记（重复上一帧）不报
         rig_down(&r, &VP9);
+    }
+
+    // ---------- 同一块对象没 Finalize 又 Initialize（诊断「解码器初始化两次」12 份）：不中止，旧的收掉，新的照常出帧；
+    //   Finalize 一次只销毁一次游戏事件（期望手写：重建不碰游戏事件，destroyed 仍 0；收尾 +1）。旧实现：第二次 Initialize 直接 die ----------
+    {
+        rig r; rig_up(&r, &VP9, 64, 64);
+        uint64_t id = 0;
+        CHECK(((f_sub)E(VP9.sub))(&id, r.obj, red_vp9_0, sizeof red_vp9_0, 33333000, 0) == 0 && id == 1);   // 旧解码器里留一包没取
+        int d0 = g_destroys;
+        CHECK(((f_init_tm)E(VP9.init))(r.obj, NULL, 0, 0, 64, 64, 0, 0, 2, 0) == 0);
+        CHECK(g_destroys == d0 && !((fake_sev *)(r.obj + 8))->destroyed);
+        for (uint32_t i = 0; i < 2; i++) CHECK(((f_reg)E(VP9.reg))(r.obj, i, r.pool[i], 0) == 0);
+        CHECK(((f_t)E(VP9.start))(r.obj) == 0);
+        CHECK(((f_sub)E(VP9.sub))(&id, r.obj, red_vp9_0, sizeof red_vp9_0, 33333000, 0) == 0 && id == 1);   // 新解码器从 1 数
+        CHECK(((f_sub)E(VP9.sub))(&id, r.obj, red_vp9_1, sizeof red_vp9_1, 66666999, 0) == 0 && id == 2);
+        sync_h h1, h2; uint32_t i1 = take(&r, &VP9, &spev, &h1), i2 = take(&r, &VP9, &spev, &h2);
+        uint8_t p[4]; px(&r, i1, p);
+        printf("重新初始化后第 1 帧像素 (%u,%u,%u,%u)，期望红 (255,0,0,255)\n", p[0], p[1], p[2], p[3]);
+        CHECK(p[0] >= 253 && p[1] <= 1 && p[2] <= 1 && p[3] == 255);
+        ((f_rel)E(VP9.rel))(r.obj, i1, 0, 0); ((f_rel)E(VP9.rel))(r.obj, i2, 0, 0);
+        rig_down(&r, &VP9);   // 内含：Finalize 后 g_destroys 恰 +1、事件已销毁
     }
 
     // ---------- VP9 系统后端（S2A_VP9_SYSTEM=1，VideoToolbox）：同样的两帧红走整条接管路径 ----------
@@ -537,10 +570,28 @@ int main(int argc, char **argv) {
         void *it = E("_ZN3nvn11NativeImage17InitializeTextureEPNS_7TextureE"); CHECK(!nvn2_red_of(it) && it != E("_Z35nvnTextureInitializeFromNativeImageP10NVNtextureP14NVNnativeImage"));
     }
 
-    // ---------- H.264 宿主没接：初始化回失败 ----------
+    // ---------- H.264（VideoToolbox）：NAL 切分、起始码 / 长度前缀两种输入各解两帧 ----------
     {
-        _Alignas(16) uint8_t obj[0x400];
-        CHECK(((f_init_tm)E(H264.init))(obj, NULL, 0, 0, 32, 16, 0, 0, 2, 0) != 0);
+        size_t nal[8][2];
+        int k = nvn2_h264_nals(h264_f0_ab, sizeof h264_f0_ab, nal, 8);
+        CHECK(k == 3 && (h264_f0_ab[nal[0][0]] & 0x1f) == 7 && (h264_f0_ab[nal[1][0]] & 0x1f) == 8 && (h264_f0_ab[nal[2][0]] & 0x1f) == 5 && nal[2][1] == sizeof h264_f0_ab);
+        k = nvn2_h264_nals(h264_f0_avcc, sizeof h264_f0_avcc, nal, 8);
+        CHECK(k == 3 && (h264_f0_avcc[nal[0][0]] & 0x1f) == 7 && nal[0][1] - nal[0][0] == (size_t)h264_f0_avcc[3] && nal[2][1] == sizeof h264_f0_avcc);
+        static const uint8_t bad[] = {0x00, 0x00, 0x10, 0x00, 0x65};   // 长度 0x1000 > 包长
+        CHECK(nvn2_h264_nals(bad, sizeof bad, nal, 8) == -1);
+        const uint8_t *f0[2] = {h264_f0_ab, h264_f0_avcc}, *f1[2] = {h264_f1_ab, h264_f1_avcc};
+        size_t n0[2] = {sizeof h264_f0_ab, sizeof h264_f0_avcc}, n1[2] = {sizeof h264_f1_ab, sizeof h264_f1_avcc};
+        for (int v = 0; v < 2; v++) {
+            rig r; rig_up(&r, &H264, 64, 64);
+            uint64_t id;
+            CHECK(((f_sub)E(H264.sub))(&id, r.obj, f0[v], n0[v], 0, 0) == 0);
+            CHECK(((f_sub)E(H264.sub))(&id, r.obj, f1[v], n1[v], 33333000, 0) == 0);
+            sync_h a, b; take(&r, &H264, &spev, &a); take(&r, &H264, &spev, &b);
+            uint8_t p[4];
+            for (uint32_t i = 0; i < 2; i++) { px(&r, i, p); printf("H.264（%s）第 %u 帧像素 (%u,%u,%u,%u)\n", v ? "长度前缀" : "起始码", i, p[0], p[1], p[2], p[3]);
+                CHECK(p[0] >= 251 && p[1] <= 3 && p[2] <= 3 && p[3] == 255); }
+            rig_down(&r, &H264);
+        }
     }
 
     // ---------- dav1d 垫片：逐帧 MD5 对 ffmpeg（libdav1d）参考 ----------
@@ -737,6 +788,21 @@ int main(int argc, char **argv) {
         free(buf);
     }
     ((f_spv)E(SP_DESTROY))(&spev);
+    // ---------- 11-14 进程内重启（D-VHSE）：同步点事件不能沿用上一局挂的读端句柄 ----------
+    //   期望：换局（会话代号 +1）后再建同步点事件，挂到游戏 SystemEventType 上的是新事件的新句柄；上一局那个事件宿主那份引用放掉（refs −1）。
+    //   反证：去掉 sp_create 里的 sp_slots_for_session_locked，换局后拿到的还是上一局的句柄，本项红
+    {
+        uint32_t a = 0; uint8_t ho[0x40];
+        CHECK(((f_spc)E(SP_CREATE))(&a) == 0); ((f_sph)E(SP_HOLDER))(ho, &a);
+        uint32_t h1 = ((fake_sev *)g_sp_sev)->handle; int e1 = (int)h1 - 0x100, r1 = g_ev[e1].refs;
+        ((f_spv)E(SP_DESTROY))(&a);
+        atomic_fetch_add(&g_gen, 1);
+        uint32_t b2 = 0; CHECK(((f_spc)E(SP_CREATE))(&b2) == 0); ((f_sph)E(SP_HOLDER))(ho, &b2);
+        uint32_t h2 = ((fake_sev *)g_sp_sev)->handle;
+        if (h2 == h1 || g_ev[e1].refs != r1 - 1) fprintf(stderr, "换局后同步点事件：句柄 %#x → %#x，上一局事件引用 %d → %d\n", h1, h2, r1, g_ev[e1].refs);
+        CHECK(h2 != h1 && g_ev[e1].refs == r1 - 1);
+        ((f_spv)E(SP_DESTROY))(&b2);
+    }
     printf("✓ t_nvn2_codec：%u 项检查全过\n", checks);
     return 0;
 }

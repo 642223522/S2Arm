@@ -1,5 +1,5 @@
 #!/bin/bash
-# 门禁覆盖：pack/jobs/*.py pack/jobs/tests/*.py docs/site/notice.json
+# 门禁覆盖：pack/jobs/*.py pack/jobs/tests/*.py docs/site/notice.json launchers/macos/bundle_engine.py launchers/macos/s2armctl.py launchers/macos/adapter/Sources/S2ArmAppleAdapter/Resources/Localizable.json
 # 启动器任务层单测进门禁（10-27 维护者：pack/jobs/tests 原先只挂在 launchers/macos/gate.sh 钩子下，tool 档不跑钩子，
 #   名单线 lists/save-zero 改 pack/jobs/saves.py 判 tool 档、test_saves.py 没进门禁）：bash tests/pack_jobs_test.sh
 # 选测：GATE_CHANGED（门禁给的改动清单）里只有 pack/jobs/<模块>.py → 只跑 import / 点名了这些模块的 pack/jobs/tests/test_*.py；
@@ -9,6 +9,9 @@ mods=(); all=; [ -n "${GATE_CHANGED:-}" ] || all=1
 for f in ${GATE_CHANGED:-}; do case $f in
   pack/jobs/tests/*) all=1;;
   pack/jobs/*.py) m=${f#pack/jobs/}; mods+=("${m%.py}");; esac; done
+# 串行整目录跑（排查用；也是 pack/jobs/tests 的接线：下面并行跑的 discover 写在 sh -c 串里，接线扫描读不到）。
+#   11-14 起 launchers/macos/test.sh 不再重复跑整目录（单次 465 秒，是那个钩子几乎全部的耗时），这套单测只由本单测负责
+[ "${PACK_JOBS_SERIAL:-0}" = 1 ] && { S2A_BANNER_FETCH=0 python3 -B -m unittest discover -s pack/jobs/tests -p 'test_*.py'; exit $?; }
 if [ -n "$all" ] || [ ${#mods[@]} = 0 ]; then sel=(pack/jobs/tests/test_*.py)
 else sel=($(for t in pack/jobs/tests/test_*.py; do for m in "${mods[@]}"; do grep -qE "(^|[^A-Za-z0-9_])${m}([^A-Za-z0-9_]|$)" "$t" && { echo "$t"; break; }; done; done))
   [ ${#sel[@]} -gt 0 ] || sel=(pack/jobs/tests/test_*.py); fi   # 改的模块没有单测点名它：全跑（宁多勿漏）

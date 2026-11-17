@@ -816,7 +816,7 @@ namespace S2A.ShBake
         public static string SpvKey(byte[] spv) => BinaryPrimitives.ReadUInt64LittleEndian(SHA256.HashData(spv)).ToString("x16"); // 与 gal_prog.m gal_spv_hash 同口径（SHA-256 前 8 字节按小端读成 u64）
 
         // 口径核对：常量取本仓 Ryujinx 源码（DiskCacheGuestStorage.TocMagic / VersionPacked，DiskCacheHostStorage.TocsMagic / FileFormatVersionPacked / CodeGenVersion），不在这里另抄数
-        static uint RyuConst(Type t, string name) => Convert.ToUInt32(t.GetField(name, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static).GetRawConstantValue());
+        static uint RyuConst([System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.NonPublicFields)] Type t, string name) => Convert.ToUInt32(t.GetField(name, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static).GetRawConstantValue());   // 标注：AOT 裁剪保留这两个类型的私有常量字段，反射读得到
 
         /// <summary>返回 null = 口径一致；否则返回不一致的说明。</summary>
         static string CheckFormat(string dir)
@@ -869,17 +869,13 @@ namespace S2A.ShBake
 
         /// <summary>烘焙用渲染器：只答 GetCapabilities，其余任何成员被调用就抛异常——翻译若用到渲染器的别的行为，烘焙当场红，
         /// 不会悄悄依赖渲染器本体（烘焙器因此只引能力表工程，渲染器其余代码改了着色器不重烘）</summary>
-        public class BakeRenderer : System.Reflection.DispatchProxy
+        public sealed class BakeRenderer : StubRenderer   // 手写替身（GalStubs.cs）：AOT 单文件里 DispatchProxy 生成不了类型
         {
-            Capabilities _caps;
-            public static IRenderer Create(Capabilities caps)
-            {
-                IRenderer r = Create<IRenderer, BakeRenderer>();
-                ((BakeRenderer)(object)r)._caps = caps;
-                return r;
-            }
-            protected override object Invoke(System.Reflection.MethodInfo m, object[] args) =>
-                m.Name == nameof(IRenderer.GetCapabilities) ? _caps : throw new NotSupportedException($"着色器烘焙不该调到渲染器 IRenderer.{m.Name}");
+            readonly Capabilities _caps;
+            BakeRenderer(Capabilities caps) => _caps = caps;
+            public static IRenderer Create(Capabilities caps) => new BakeRenderer(caps);
+            public override Capabilities GetCapabilities() => _caps;
+            protected override T Missing<T>(string member) => throw new NotSupportedException($"着色器烘焙不该调到渲染器 IRenderer.{member}");
         }
 
         // ================= 主命令 =================
@@ -1323,7 +1319,7 @@ namespace S2A.ShBake
 
             if (Environment.GetEnvironmentVariable("S2A_SHBAKE_PAIR_ONLY") == "1")   // 只出配对统计（配对规则核对用）：不跑乙段 / 不写缓存
             {
-                File.WriteAllText(Path.Combine(outRoot, "bake.json"), System.Text.Json.JsonSerializer.Serialize(rep, new System.Text.Json.JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }));
+                File.WriteAllText(Path.Combine(outRoot, "bake.json"), JsonTree.Write(rep, new System.Text.Json.JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }));
                 Console.WriteLine($"shbake：只出配对统计（S2A_SHBAKE_PAIR_ONLY）→ {outRoot}/bake.json");
                 Tr.Write(Path.Combine(outRoot, TrLog.FileName)); Console.WriteLine(Tr.Summary());
                 return 0;
@@ -1860,7 +1856,7 @@ namespace S2A.ShBake
             }
             Console.WriteLine($"shbake：转计算程序（顶点 / 几何当计算跑）写入 {vtgOk} 个，只出函数 {vtgFn} 个");
             rep["spec_trimmed_tex_queries"] = TrimmedTexQueries;
-            File.WriteAllText(Path.Combine(outRoot, "bake.json"), System.Text.Json.JsonSerializer.Serialize(rep, new System.Text.Json.JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }));
+            File.WriteAllText(Path.Combine(outRoot, "bake.json"), JsonTree.Write(rep, new System.Text.Json.JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }));
             int nred = red.Values.Sum();
             Tr.Write(Path.Combine(outRoot, TrLog.FileName)); Console.WriteLine(Tr.Summary());
             Console.WriteLine($"shbake：继承条目贴图查询按再翻收窄 {TrimmedTexQueries} 位");

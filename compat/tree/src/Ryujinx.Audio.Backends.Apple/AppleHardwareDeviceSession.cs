@@ -15,7 +15,7 @@ namespace Ryujinx.Audio.Backends.Apple
 {
     [SupportedOSPlatform("macos")]
     [SupportedOSPlatform("ios")]
-    class AppleHardwareDeviceSession : HardwareDeviceSessionOutputBase
+    class AppleHardwareDeviceSession : HardwareDeviceSessionOutputBase, Ryujinx.Audio.Integration.IS2AOutputDepth   // 平台例外：苹果会话自己实现中性的在途深度接口，共享代码只认接口、不引用苹果类型
     {
         // S2Arm: a pool of 32 device buffers of up to 50 ms each, filled as soon as samples are queued (DeviceBufferPump), instead of
         // 3 buffers of 10 ms refilled only from the device callback. 50 ms holds a whole game buffer (witcher3 audout: 1024 frames =
@@ -58,6 +58,14 @@ namespace Ryujinx.Audio.Backends.Apple
         // S2Arm (11-02 Pokopia iPhone 杂音): releases each queued buffer when the credit's play head reaches its end, one per buffer
         //   like a Switch (see PlaybackCredit), instead of a whole device pull at each hand-back. Woken by hand-backs and new buffers
         private readonly AutoResetEvent _paceEvent = new(false);
+        // S2Arm (11-14 iPhone 实机 声音服务卡死): slots the device handed back, one bit each (NumBuffers = 32), set by OutputCallback and
+        //   drained by the pace thread (S2ADrainReturned). The AudioQueue callback thread belongs to the audio system: it must never
+        //   wait on our locks or read guest memory. It did both (pump lock, then Pump → AudioSampleQueue.Read → ReadSamples from the
+        //   game's audio-out buffers): a stalled game (iPhone 实机 第 17515 帧, guest memory file-backed) can block it for good, and a
+        //   process killed with the audio system's thread stuck in our code left the phone's audio service broken until a reboot
+        //   (every later launch: first enqueue 11 s, repeated media-services resets, session activation failing)
+        private int _returnedMask;
+        private bool _closedStuck;   // S2Arm (11-14): Dispose left the queue allocated (TrySuspend failed): a Pump returning later submits nothing
         private const int CreditBurstGapMicroseconds = 2000;
         private const int CreditMaxLeadMilliseconds = 100;
         private readonly ManualResetEvent _updateRequiredEvent;
@@ -111,6 +119,8 @@ namespace Ryujinx.Audio.Backends.Apple
         private static int _watchdogStarted;
         private long _lastCallbackTicks;
         private long _lastHealTicks;
+        // S2Arm (#1384): 已处理过的客机冻结次数（S2AGuestFreeze.Seq）。建会话时取当前值，之前的冻结不算
+        private long _thawSeq = Interlocked.Read(ref Ryujinx.Audio.Integration.S2AGuestFreeze.Seq);
         private int _heals;
         private bool _testStallDone;
         // 测试钩子：S2A_AUDIO_TEST_PRODUCER_STALL_AT=<秒>:<毫秒> —— 开播后到点在送声音的入口（QueueBuffer）睡一次，模拟 GC 停顿卡住生产方、吃光缓冲垫
@@ -189,7 +199,7 @@ namespace Ryujinx.Audio.Backends.Apple
 
             SetupAudioQueue();
             S2AWatch(this, true);
-            new Thread(PaceLoop) { IsBackground = true, Name = "S2A.AudioPace" }.Start();
+            new Thread(PaceLoop) { IsBackground = true, Name = "S2A.AudioPace", Priority = ThreadPriority.Highest }.Start();
         }
 
         // S2Arm: 登记 / 注销看门狗（固定 8 槽，看门狗线程扫数组不分配）
@@ -318,7 +328,27 @@ namespace Ryujinx.Audio.Backends.Apple
                 return;
             }
 
-            if (_timeline.Tick(zero, returned, elapsed) && now - _lastHealTicks >= (long)HealBackoffMs * Stopwatch.Frequency / 1000)
+            // S2Arm (#1384): 客机冻结（失焦暂停）放开后，macOS 也重置时间轴、重启一次输出队列。11-13 的前提「macOS 队列自己恢复」在部分外接输出上不成立：
+            //   玩家外接 DP 显示器（48 kHz）失焦暂停切回后画面恢复、一直无声；他在解冻时重置时间轴 + 重启输出队列，同机两轮都好了。
+            //   每次冻结只做一次，在解冻后第一次检查时做；iOS / tvOS 照旧走下面的时间轴自愈
+            long freezeSeq = Interlocked.Read(ref Ryujinx.Audio.Integration.S2AGuestFreeze.Seq);
+            if (freezeSeq != _thawSeq && Ryujinx.Audio.Integration.S2AGuestFreeze.Frozen == 0)
+            {
+                _thawSeq = freezeSeq;
+
+                if (OperatingSystem.IsMacOS())   // 平台例外：苹果后端内部，iOS / tvOS 解冻由下面的时间轴自愈接住
+                {
+                    _timeline.Reset();
+                    S2ARecover($"客机解冻（失焦暂停放开，第 {freezeSeq} 次）：重置时间轴、重启输出队列", false, now, false);
+
+                    return;
+                }
+            }
+
+            // S2Arm (11-13 断音): iOS only. A macOS queue recovers by itself (QueueTimelineWatch), and its criterion cannot tell a timeline
+            //   ahead from a queue playing at zero margin: 0400486024DEC000 Mac 局第 26 秒 a 30 ms render stall left zero margin, this fired, and the
+            //   synchronous stop / restart only cut the audio once more (zero-in-flight hand-backs 24 → 39 in the next window)
+            if ((OperatingSystem.IsIOS() || OperatingSystem.IsTvOS()) && _timeline.Tick(zero, returned, elapsed) && now - _lastHealTicks >= (long)HealBackoffMs * Stopwatch.Frequency / 1000)   // 平台例外：苹果后端内部，iOS 队列跑前要重启、macOS 队列自己恢复
             {
                 S2ARecover($"队列时间轴跑到声音前面（这 {elapsed * 1000 / Stopwatch.Frequency} ms 交还 {returned / _bytesPerFrame} 帧、{zero} 次交还后在途为 0：欠载后交的缓冲排在已过去的时刻，没播就交还）",
                            false, now, false);
@@ -373,7 +403,20 @@ namespace Ryujinx.Audio.Backends.Apple
         private static int s_stallDumps;
 
         [DllImport("s2a_native")]
-        private static extern int s2a_dump_threads(string why);   // runtime/src/tdump.c：全线程宿主栈（自动玩家卡住、崩溃时同一份）
+        private static extern int s2a_dump_threads(string why);
+
+        [DllImport("s2a_native")]
+        private static extern int s2a_audio_volume();   // runtime/src/game_volume.c：游戏音量 0–100（#1186）
+
+        private static bool s_gameVolumeGone;   // 原生层没有这个导出（旧宿主 / 只链托管的单测）：按 100，不再试
+
+        private static int S2AGameVolume()
+        {
+            if (s_gameVolumeGone)
+                return 100;
+            try { return s2a_audio_volume(); }
+            catch (Exception e) when (e is DllNotFoundException || e is EntryPointNotFoundException) { s_gameVolumeGone = true; return 100; }
+        }   // runtime/src/tdump.c：全线程宿主栈（自动玩家卡住、崩溃时同一份）
 
         // 恢复输出流：iOS 重新激活会话 → 同步停队列（重置时重建）→ 收回在途 → 重新排进去 → 开播
         private void S2ARecover(string why, bool rebuild, long now, bool red)
@@ -404,10 +447,18 @@ namespace Ryujinx.Audio.Backends.Apple
 
                     if (!rebuild)
                     {
+                        // S2Arm (11-14): hand-backs noted during the stop are reclaimed with the rest (Restart); a bit left over would
+                        //   recycle the slot again after it is resubmitted. A failed stop reclaims nothing: keep them
+                        if (stopRc == 0)
+                        {
+                            Interlocked.Exchange(ref _returnedMask, 0);
+                        }
+
                         return stopRc;
                     }
 
                     AudioQueueDispose(_audioQueue, true);
+                    Interlocked.Exchange(ref _returnedMask, 0);
                     newRc = CreateQueue();
 
                     return 0;   // 旧队列连同它的缓冲已销毁：在途的槽全部收回
@@ -438,7 +489,7 @@ namespace Ryujinx.Audio.Backends.Apple
                 Volatile.Write(ref _lastCallbackTicks, Stopwatch.GetTimestamp());
 
                 Console.Error.WriteLine($"[声] {(red ? "【红】" : "")}输出 #{_diag.Index}：{why}（在途 {inFlightFrames} 帧）→ {(rebuild ? "重建" : "重启")}输出队列（第 {++_heals} 次）：" +
-                    $"{(OperatingSystem.IsIOS() ? $"重新激活音频会话 {(active ? "成功" : "失败")}、" : "")}停队列 rc={stopRc}、收回 {reclaimed / _bytesPerFrame} 帧" +
+                    $"{((OperatingSystem.IsIOS() || OperatingSystem.IsTvOS()) ? $"重新激活音频会话 {(active ? "成功" : "失败")}、" : "")}停队列 rc={stopRc}、收回 {reclaimed / _bytesPerFrame} 帧" +   // 平台例外：tvOS 与 iOS 走同一分支
                     $"{(rebuild ? $"、新建队列 rc={newRc}" : "")}、重新开播 rc={startRc}{(startRc == 0 ? "" : "（没开播：游戏停着或开播失败，下一笔声音到时再试）")}");
             }
         }
@@ -489,6 +540,11 @@ namespace Ryujinx.Audio.Backends.Apple
                 return result;
             }
 
+            // S2Arm (11-14 设备缓冲): 设备 IO 缓冲是出声延迟的地板——建队（起会话与自愈重建共用）先请求它，
+            //   再挂布局 / 分配缓冲。失败按原样继续（见 S2AApplyDeviceBufferFrames）
+            S2AApplyDeviceBufferFrames();
+            S2ALogOutputDevice();
+
             // S2Arm（#189）：6 声道队列声明 5.1 布局（起会话与重建共用这条路径）：不声明时系统隐式 6→2 只复制
             //   FL/FR，中置（对白）与环绕整段丢失；真 5.1 设备声明后按布局直通。设置失败按无布局继续（打出【红】，
             //   行为同旧），真 5.1 设备探建时已验过布局可用。显式下混的队列是 2 声道（折叠已在前），不设布局
@@ -528,6 +584,112 @@ namespace Ryujinx.Audio.Backends.Apple
             return 0;
         }
 
+        // S2Arm (11-14 设备缓冲)：S2A_AUDIO_BUFFER_FRAMES = 16 的倍数（16–512）时，把输出设备的
+        //   kAudioDevicePropertyBufferFrameSize 请求成这个值。上游从不请求，设备回落自己的默认 IO 周期
+        //   （Mac 内置扬声器 512 帧 ≈ 10.7 ms @48k），这一个 IO 周期就是出声延迟的地板；本机实测设备收 16 帧
+        //   （≈ 0.33 ms，合法范围 15–4096）声音干净，交还节奏变密、audren 链路的延迟随之下降（PlaybackCredit
+        //   按实测 burst 自适应，不用改）。建队与自愈重建都走这里（路由切走后旧请求留在旧设备上，下次建队重新请求）。
+        //   11-14 实测：这个值按进程算——我们持有 32 帧时别的进程读到的仍是设备默认 512，我们退出也不留改动，不影响其他 App。
+        //   代价只在本进程：IO 周期变短、CPU 占用上升，机器忙时可能爆音（启动设置「声音延迟」的说明照此写）。
+        //   失败（读设备号 / 设 / 读回）按设备默认继续（【红】记录，行为同旧）。
+        //   仅 macOS：iOS 没有 HAL 设备属性（IO 缓冲走 AVAudioSession 的 S2A_AUDIO_IO20 通道）。
+        private void S2AApplyDeviceBufferFrames()
+        {
+            if (!OperatingSystem.IsMacOS())   // 平台例外：设备 IO 缓冲是 macOS HAL 属性，iOS 走 AVAudioSession
+            {
+                return;
+            }
+
+            int frames = AppleDeviceBufferFrames.FromEnvironment();
+
+            if (frames == 0)
+            {
+                return;
+            }
+
+            // 设备号：队列不选设备，AudioQueueNewOutput 缺省绑系统默认输出设备（'dOut'）。本机 macOS 26 实测
+            //   队列侧 kAudioQueueProperty_CurrentDevice（'aqcd'）读不出（-66683），从 AudioObject 系统对象取
+            AudioObjectPropertyAddress defaultOut = new()
+            {
+                Selector = kAudioHardwarePropertyDefaultOutputDevice,
+                Scope = kAudioObjectPropertyScopeGlobal,
+                Element = kAudioObjectPropertyElementMain
+            };
+            uint device = 0;
+            uint deviceSize = sizeof(uint);
+
+            if (AudioObjectGetPropertyData(kAudioObjectSystemObject, ref defaultOut, 0, nint.Zero, ref deviceSize, ref device) != 0 || device == 0)
+            {
+                Console.Error.WriteLine($"[声] 【红】输出 #{_diag.Index}：读默认输出设备号失败，设备缓冲 {frames} 帧没请求（按设备默认继续）");
+                return;
+            }
+
+            AudioObjectPropertyAddress address = new()
+            {
+                Selector = kAudioDevicePropertyBufferFrameSize,
+                Scope = kAudioObjectPropertyScopeGlobal,
+                Element = kAudioObjectPropertyElementMain
+            };
+            uint requested = (uint)frames;
+            int setRc = AudioObjectSetPropertyData(device, ref address, 0, nint.Zero, sizeof(uint), ref requested);
+            uint granted = 0;
+            uint readSize = sizeof(uint);
+            int getRc = AudioObjectGetPropertyData(device, ref address, 0, nint.Zero, ref readSize, ref granted);
+
+            if (setRc != 0 || getRc != 0 || granted == 0)
+            {
+                Console.Error.WriteLine($"[声] 【红】输出 #{_diag.Index}：设备缓冲请求 {frames} 帧失败（set rc={setRc}、读回 rc={getRc}、值 {granted}）：按设备默认继续");
+                return;
+            }
+
+            Console.Error.WriteLine($"[声] 输出 #{_diag.Index}：设备缓冲请求 {frames} 帧，设备实给 {granted} 帧 ≈ {granted * 1000.0 / RequestedSampleRate:F1} ms（只作用于本进程，其他 App 不受影响）");
+        }
+
+        // S2Arm (11-16 声音诊断)：建队时记一行系统默认输出设备的传输方式、IO 周期、标称采样率、静音与音量（#1308 爆音 / #1245、诊断#a51362 无声：
+        //   交设备的声音非零，判不了是设备静音、走了蓝牙 / 虚拟设备，还是内容本身）。只读，不改设备；仅 macOS（iOS 没有 HAL 设备属性）
+        private void S2ALogOutputDevice()
+        {
+            if (!OperatingSystem.IsMacOS())   // 平台例外：HAL 设备属性只有 macOS
+            {
+                return;
+            }
+
+            AudioObjectPropertyAddress a = new() { Selector = kAudioHardwarePropertyDefaultOutputDevice, Scope = kAudioObjectPropertyScopeGlobal, Element = kAudioObjectPropertyElementMain };
+            uint device = 0, size = sizeof(uint);
+
+            if (AudioObjectGetPropertyData(kAudioObjectSystemObject, ref a, 0, nint.Zero, ref size, ref device) != 0 || device == 0)
+            {
+                Console.Error.WriteLine($"[声] 【红】输出 #{_diag.Index}：读不到系统默认输出设备");
+                return;
+            }
+
+            string U32(uint selector, uint scope)
+            {
+                AudioObjectPropertyAddress q = new() { Selector = selector, Scope = scope, Element = kAudioObjectPropertyElementMain };
+                uint v = 0, n = sizeof(uint);
+                return AudioObjectGetPropertyData(device, ref q, 0, nint.Zero, ref n, ref v) == 0 ? v.ToString() : null;
+            }
+
+            AudioObjectPropertyAddress t = new() { Selector = kAudioDevicePropertyTransportType, Scope = kAudioObjectPropertyScopeGlobal, Element = kAudioObjectPropertyElementMain };
+            uint tran = 0, ts = sizeof(uint);
+            string transport = AudioObjectGetPropertyData(device, ref t, 0, nint.Zero, ref ts, ref tran) == 0
+                ? (tran switch
+                {
+                    0x626C746E => "内置", 0x626C7565 => "蓝牙", 0x626C6561 => "蓝牙低功耗", 0x75736220 => "USB", 0x68646D69 => "HDMI", 0x64707274 => "DisplayPort",
+                    0x61697270 => "AirPlay", 0x67727570 => "聚合", 0x76697274 => "虚拟", 0x7468756E => "雷雳", 0x70636920 => "PCI", _ => $"其他 0x{tran:x8}",
+                })
+                : "读不到";
+            AudioObjectPropertyAddress r = new() { Selector = kAudioDevicePropertyNominalSampleRate, Scope = kAudioObjectPropertyScopeGlobal, Element = kAudioObjectPropertyElementMain };
+            double rate = 0; uint rs = sizeof(double);
+            string rateText = AudioObjectGetPropertyDataDouble(device, ref r, 0, nint.Zero, ref rs, ref rate) == 0 ? $"{rate:F0} Hz" : "读不到";
+            AudioObjectPropertyAddress vq = new() { Selector = kAudioDevicePropertyVolumeScalar, Scope = kAudioDevicePropertyScopeOutput, Element = kAudioObjectPropertyElementMain };
+            float vol = 0; uint vs = sizeof(float);
+            string volText = AudioObjectGetPropertyDataFloat(device, ref vq, 0, nint.Zero, ref vs, ref vol) == 0 ? $"{vol:F2}" : "主元素读不到（多为按声道调音量的设备）";
+            string frames = U32(kAudioDevicePropertyBufferFrameSize, kAudioObjectPropertyScopeGlobal);
+            string mute = U32(kAudioDevicePropertyMute, kAudioDevicePropertyScopeOutput);
+            Console.Error.WriteLine($"[声] 输出 #{_diag.Index}：系统默认输出设备 {device}，传输方式 {transport}、IO 周期 {frames ?? "读不到"} 帧、标称采样率 {rateText}（本会话 {RequestedSampleRate} Hz）、静音 {mute ?? "读不到"}、音量 {volText}");
+        }
+
         // S2Arm: the device side of DeviceBufferPump: pool buffer i is _audioQueueBuffers[i]
         private sealed unsafe class Pump : DeviceBufferPump
         {
@@ -556,6 +718,11 @@ namespace Ryujinx.Audio.Backends.Apple
 
             protected override void Submit(int slot, int bytes)
             {
+                if (Volatile.Read(ref _s._closedStuck))
+                {
+                    return;
+                }
+
                 nint bufferPtr = _s._audioQueueBuffers[slot];
                 AudioQueueBuffer* buffer = (AudioQueueBuffer*)bufferPtr;
 
@@ -595,19 +762,37 @@ namespace Ryujinx.Audio.Backends.Apple
             if (!Volatile.Read(ref _bufferSlots).TryGetValue(bufferPtr, out int bufferIndex))
                 return;
 
-            // S2Arm: recycle every returned device buffer, but advance guest progress only for its queued-sample bytes,
-            //   one device pull ahead of the hand-backs (PlaybackCredit)
-            int bytesPlayed = _pump.Returned(bufferIndex);
-            _credit.Returned(bytesPlayed, Stopwatch.GetTimestamp());
+            // S2Arm (11-14): only note the slot and wake the pace thread, which recycles it and refills the device (see _returnedMask)
+            Interlocked.Or(ref _returnedMask, 1 << bufferIndex);
+            _paceEvent.Set();
+        }
+
+        // S2Arm (11-14): on the pace thread. Recycle every returned device buffer, but advance guest progress only for its queued-sample
+        //   bytes, one device pull ahead of the hand-backs (PlaybackCredit); then refill the device from what the game queued
+        private void S2ADrainReturned()
+        {
+            int mask = Interlocked.Exchange(ref _returnedMask, 0);
+
+            if (mask == 0)
+            {
+                return;
+            }
+
+            long now = Stopwatch.GetTimestamp();
+
+            while (mask != 0)
+            {
+                int slot = System.Numerics.BitOperations.TrailingZeroCount(mask);
+                mask &= mask - 1;
+                _credit.Returned(_pump.Returned(slot), now);
+            }
+
             _diag.SetLead(_credit.LeadBytes / _bytesPerFrame);
 
             if (_started)
             {
                 _pump.Pump();
             }
-
-            S2ACredit();
-            _paceEvent.Set();
         }
 
         // S2Arm (11-02): release what now counts as played (handed back, or submitted and passed by the credit's play head)
@@ -627,6 +812,7 @@ namespace Ryujinx.Audio.Backends.Apple
         {
             while (!Volatile.Read(ref _disposed))
             {
+                S2ADrainReturned();
                 S2ACredit();
 
                 long rest;
@@ -691,7 +877,8 @@ namespace Ryujinx.Audio.Backends.Apple
 
         private unsafe void ApplyVolume(nint dataPtr, int byteSize)
         {
-            float volume = Math.Clamp(_volume * _driver.Volume, 0f, 1f);
+            // S2A：游戏音量（#1186，runtime/src/game_volume.c；按游戏存、局中齿轮菜单可改）乘进来；100 时同原来整段跳过
+            float volume = Math.Clamp(_volume * _driver.Volume * (S2AGameVolume() / 100f), 0f, 1f);
             if (volume >= 0.999f)
                 return;
 
@@ -919,6 +1106,12 @@ namespace Ryujinx.Audio.Backends.Apple
             }
         }
 
+        // S2Arm (11-13 断音): what the renderer paces by (AudioProcessor.S2ADepthWait): queued + submitted, not handed back yet.
+        //   Only while the device plays: in pre-roll the queue must fill to the prime floor on the wall clock
+        public long S2ABufferedFrames => Volatile.Read(ref _queueRunning) && !Volatile.Read(ref _disposed)
+            ? (_pump.InFlightBytes + _samples.Length) / _bytesPerFrame
+            : -1;
+
         public override void PrepareToClose() { }
         // S2Arm: the buffer goes back to the game (Stop / FlushBuffers / Dispose) possibly before it was played: keep what it held
         public override void UnregisterBuffer(AudioBuffer buffer) => _samples.Release(buffer);
@@ -936,20 +1129,38 @@ namespace Ryujinx.Audio.Backends.Apple
                     Stop();
                     _queueRunning = false;
 
+                    bool leaked = false;
+
                     if (_audioQueue != nint.Zero)
                     {
-                        AudioQueueStop(_audioQueue, true);
-                        int result = AudioQueueDispose(_audioQueue, true);
-                        if (result != 0)
-                            throw new InvalidOperationException($"AudioQueueDispose failed: {result}; callback handle retained");
-                        _audioQueue = nint.Zero;
+                        // S2Arm (11-14 iPhone 实机 声音服务卡死): the pace thread may be stuck inside a Pump reading a stalled guest buffer (the game
+                        //   hung; S2ADrainReturned). Disposing would free the buffers (and the downmix stage) it is writing through: stop the
+                        //   queue (its callbacks only set a bit) and leave both allocated instead. Bounded: closing never waits on the game
+                        if (_pump.TrySuspend(TimeSpan.FromMilliseconds(200)))
+                        {
+                            AudioQueueStop(_audioQueue, true);
+                            int result = AudioQueueDispose(_audioQueue, true);
+                            if (result != 0)
+                                throw new InvalidOperationException($"AudioQueueDispose failed: {result}; callback handle retained");
+                            _audioQueue = nint.Zero;
+                        }
+                        else
+                        {
+                            Volatile.Write(ref _closedStuck, true);
+                            AudioQueueStop(_audioQueue, true);
+                            leaked = true;
+                            Console.Error.WriteLine($"[声] 【红】输出 #{_diag.Index}：释放时送数线程卡在读游戏内存（等了 200 ms），队列已停、不释放（防止释放后它再往缓冲里写）");
+                        }
                     }
 
-                    _processor?.Dispose();   // S2Arm (#189): the explicit downmix stage (AudioConverter) goes with the queue
+                    if (!leaked)
+                    {
+                        _processor?.Dispose();   // S2Arm (#189): the explicit downmix stage (AudioConverter) goes with the queue
+                    }
 
                     // Synchronous queue disposal completes callbacks before their
-                    // handle is released. A repeated Dispose cannot free a reused slot.
-                    if (_gcHandle.IsAllocated) _gcHandle.Free();
+                    // handle is released. A repeated Dispose cannot free a reused slot. A queue left allocated keeps its handle.
+                    if (_gcHandle.IsAllocated && !leaked) _gcHandle.Free();
                     _diag.Dispose();
                     _driver.Unregister(this);
                     Volatile.Write(ref _disposed, true);

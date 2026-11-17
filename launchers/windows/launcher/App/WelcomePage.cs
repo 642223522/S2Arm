@@ -46,7 +46,8 @@ public sealed partial class EnvironmentWindow
 
     private void RenderWelcome(StackPanel body)
     {
-        var outer = new Grid { ColumnDefinitions = new ColumnDefinitions("*,580") };
+        // 宽窗左右两栏；窗宽不够左栏放下大标题时（右栏固定 580，左栏会被挤到一两个字宽）改上下排：介绍在上、三步在下（11-14 体验梳理）
+        var outer = new Grid { ColumnDefinitions = new ColumnDefinitions("*,580"), RowDefinitions = new RowDefinitions("Auto,Auto") };
 
         // ── 左列：介绍 ──────────────────────────────────────────────────
         var intro = new StackPanel { Spacing = 0 };
@@ -93,6 +94,19 @@ public sealed partial class EnvironmentWindow
             steps.Children.Add(oneclick);
         }
         Grid.SetColumn(steps, 1); outer.Children.Add(steps);
+        bool? stacked = null;
+        void Arrange(double width)
+        {
+            var narrow = width < WelcomeTwoColumnMinWidth;
+            if (stacked == narrow) return;
+            stacked = narrow;
+            outer.ColumnDefinitions = new ColumnDefinitions(narrow ? "*" : "*,580");
+            Grid.SetColumn(steps, narrow ? 0 : 1); Grid.SetRow(steps, narrow ? 1 : 0);
+            intro.Margin = narrow ? new Thickness(48, 48, 48, 8) : new Thickness(48);
+            steps.Margin = narrow ? new Thickness(48, 24, 48, 44) : new Thickness(0, 44, 48, 44);
+        }
+        Arrange(Bounds.Width);
+        outer.SizeChanged += (_, e) => Arrange(e.NewSize.Width);
         body.Children.Add(outer);
     }
 
@@ -116,9 +130,10 @@ public sealed partial class EnvironmentWindow
 
     private string EnvironmentSummary()
     {
-        var lines = new List<string> { "S2Arm 环境检查未通过", "", "S2Arm：" + AppVersion,
-            "系统：" + System.Runtime.InteropServices.RuntimeInformation.OSDescription, "" };
-        lines.AddRange((report?.Checks ?? []).Where(c => c.Status != "ok").Select(c => $"{c.Name}（{c.Status}，{c.Code ?? "-"}）：{c.Message}"));
+        var lines = new List<string> { T("envcopy.title"), "", T("envcopy.app").Replace("{0}", AppVersion),
+            T("envcopy.system").Replace("{0}", System.Runtime.InteropServices.RuntimeInformation.OSDescription), "" };
+        lines.AddRange((report?.Checks ?? []).Where(c => c.Status != "ok").Select(c => T("envcopy.check")
+            .Replace("{0}", c.Name).Replace("{1}", c.Status).Replace("{2}", c.Code ?? "-").Replace("{3}", c.Message)));
         lines.Add(""); lines.Add(diagnostics);
         return string.Join("\n", lines).Replace(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "~");
     }
@@ -253,6 +268,8 @@ public sealed partial class EnvironmentWindow
         catch (LibraryProtocolException error)
         { librarySummary = "library.invalid_result"; libraryDiagnostics += "\n" + error.Message; importError = libraryFailure = LibraryFailed(folder, error.Message); }
         catch (OperationCanceledException) { librarySummary = "library.interrupted"; }
+        catch (UnauthorizedAccessException error)   // 写不进去：不甩英文原文，说清是哪个文件夹、怎么办（原文进诊断）
+        { librarySummary = "library.failed"; libraryDiagnostics += "\n" + error.Message; importError = libraryFailure = LibraryFailed(folder, NoWrite(error, folder)); }
         catch (Exception error)   // 玩家输入驱动的连接 / 创建：任何异常都报出来、不逃出去（玩家反馈：点「连接或创建游戏库」闪退）
         { librarySummary = "library.failed"; libraryDiagnostics += "\n" + error.Message; importError = libraryFailure = LibraryFailed(folder, error.Message); }
         finally { EndJob(front); Render(); }
@@ -265,6 +282,9 @@ public sealed partial class EnvironmentWindow
         selectedGame = game.Id;
         Navigate("build");
     }
+
+    // 两栏的下限：右栏 580 + 左栏放得下「大标题一行至少一个完整词」约 380 + 左右边距
+    private const double WelcomeTwoColumnMinWidth = 1060;
 
     private static Canvas Spacer(double height) => new() { Height = height };
 
@@ -371,6 +391,16 @@ public sealed partial class EnvironmentWindow
         return panel;
     }
 
+    /// <summary>「写不进去」的平实说明：异常原文里带被拒的路径就点名它所在的文件夹，取不到用给定的位置（11-16：原先直接显示
+    /// 「Access to the path '…request-….json' is denied.」）</summary>
+    private string NoWrite(UnauthorizedAccessException error, string fallback)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(error.Message, "'([^']+)'");
+        var where = m.Success ? m.Groups[1].Value : fallback;
+        if (Path.HasExtension(where)) where = Path.GetDirectoryName(where) ?? where;
+        return T("library.no_write").Replace("{0}", where);
+    }
+
     private string LibraryFailed(string folder, string reason) =>
-        T("welcome.sheet.libraryFailed").Replace("{0}", folder).Replace("{1}", reason.Length > 0 ? reason : T("library.failed"));
+        T("welcome.sheet.libraryFailed").Replace("{0}", folder).Replace("{1}", reason.Length > 0 ? B(reason) : T("library.failed"));   // 作业层原句按界面语言翻
 }

@@ -1,5 +1,6 @@
 """换游戏库：打开已有的、认领旧产物、搬家（同盘 / 跨盘）和失败回滚。"""
 import hashlib
+import jobcase  # noqa: E402（作业上下文替身统一工厂 jobcase.fake_context）
 import json
 import os
 import sys
@@ -32,7 +33,7 @@ class MoveTests(unittest.TestCase):
 
     def ctx(self, library_path, **request):
         notes = []
-        c = SimpleNamespace(library=library_path, private=self.private, engine=self.root / "engine", r=request, begin=lambda *a, **k: None, check=lambda: None,
+        c = jobcase.fake_context(self.root, library=library_path, private=self.private, engine=self.root / "engine", r=request, begin=lambda *a, **k: None, check=lambda: None,
                             progress=lambda *a: None, redact=lambda s: s, diagnostic=lambda m, **k: notes.append(m), notes=notes,
                             emit=lambda *a, **k: None, lock_wait=0.3, task="t1", operation="setup")
         c.lock_holder, c.lock = MethodType(core.Context.lock_holder, c), MethodType(core.Context.lock, c)   # 库锁走真实现（剃刀 H2：搬家锁旧库同一语义）
@@ -171,7 +172,7 @@ class MoveTests(unittest.TestCase):
     def test_setup_does_not_adopt_logs_of_a_plain_folder(self):
         import layout
         folder = self.root / "picked"; (folder / "logs").mkdir(parents=True); (folder / "logs" / "mine.txt").write_text("玩家自己的")
-        layout.adopt_library_logs(SimpleNamespace(library=folder, private=self.private, logs=self.private / "logs"))
+        layout.adopt_library_logs(jobcase.fake_context(self.root, library=folder, private=self.private, logs=self.private / "logs"))
         self.assertEqual((folder / "logs" / "mine.txt").read_text(), "玩家自己的")   # 还不是游戏库：logs 是玩家自己的东西，不收
 
     def test_opens_existing_library(self):
@@ -342,6 +343,62 @@ class MoveTests(unittest.TestCase):
         with um.patch.object(library, "_same_volume", return_value=False):
             r = self.run_setup(new, moveFrom=str(old))
         self.assertEqual(r["outcome"], "moved"); self.assert_moved(old, new); self.assertFalse(old.exists())
+
+    def test_cross_volume_space_counts_new_volume_cluster(self):
+        """#1112：exFAT 1 MB 簇的盘，小文件按簇向上取整。夹具全是几 KB 以内的小文件、目录也各占一簇，按原始大小只要几 KB，
+        给 1 MB 空余在旧算法下放行；按 1 MB 簇算，光文件就有 6 个 = 至少 6 MB → 期望 disk_full、报出分配单元、原库不动、新位置没留临时目录。
+        负对照：同样 1 MB 空余、簇 0（读不到，按原始大小）→ 照常搬成"""
+        old, new = self.old(), self.root / "new"
+        free = SimpleNamespace(total=1 << 40, used=0, free=1 << 20)
+        with um.patch.object(library, "_same_volume", return_value=False), um.patch.object(library, "volume_cluster", return_value=1 << 20), \
+             um.patch.object(library.shutil, "disk_usage", return_value=free), self.assertRaises(Failure) as e:
+            self.run_setup(new, moveFrom=str(old))
+        self.assertEqual(e.exception.code, "disk_full"); self.assertIn("1024 KB", str(e.exception)); self.assert_untouched(old, new)
+        with um.patch.object(library, "_same_volume", return_value=False), um.patch.object(library, "volume_cluster", return_value=0), \
+             um.patch.object(library.shutil, "disk_usage", return_value=free):
+            self.assertEqual(self.run_setup(new, moveFrom=str(old))["outcome"], "moved")
+
+    def test_size_on_rounds_files_and_counts_dirs(self):
+        # 期望手写：簇 4096；文件 1 B、4096 B、4097 B → 4096 + 4096 + 8192；两个目录（根、子目录）各 4096 → 共 24576
+        d = self.root / "t"; (d / "sub").mkdir(parents=True)
+        (d / "a").write_bytes(b"x"); (d / "b").write_bytes(b"x" * 4096); (d / "sub" / "c").write_bytes(b"x" * 4097)
+        self.assertEqual(library._size_on(d, 4096), 24576)
+        self.assertEqual(library._size_on(d, 0), 1 + 4096 + 4097)
+
+    def test_rmtree_treats_vanished_entries_as_removed(self):
+        """#1112：exFAT 上 AppleDouble「._」附属文件随主文件一起没了，rmtree 删到它时 FileNotFoundError 半途停下、整棵临时目录留在盘上。
+        模拟：删某个文件时它已经不在（先真删、再报 FileNotFoundError）→ 期望不抛、整棵删干净；别的错（权限）照抛"""
+        d = self.root / "moving"; (d / "0").mkdir(parents=True)
+        for n in ("a", "._a", "b"): (d / "0" / n).write_bytes(b"x")
+        real = os.unlink
+        def vanish(path, *a, **k):
+            real(path, *a, **k)
+            if str(path).endswith("._a"): raise FileNotFoundError(2, "No such file or directory", str(path))
+        with um.patch.object(os, "unlink", vanish):
+            library._rmtree_gone_ok(d)
+        self.assertFalse(d.exists())
+        (d / "0").mkdir(parents=True); (d / "0" / "c").write_bytes(b"x")
+        def denied(path, *a, **k): raise PermissionError(13, "Permission denied", str(path))
+        with um.patch.object(os, "unlink", denied), self.assertRaises(PermissionError):
+            library._rmtree_gone_ok(d)
+
+    def test_cleanup_error_does_not_hide_the_original_failure(self):
+        """#1112：拷到一半盘满（ENOSPC），回滚时删临时目录自己又出错，原先后者盖住前者、玩家看到的是不相干的 FileNotFoundError。
+        期望：抛出的仍是盘满那个错，临时目录没删干净时记一条提示带上路径"""
+        old, new = self.old(), self.root / "new"
+        def full(*a, **k): raise OSError(28, "No space left on device")
+        real = library._discard
+        def flaky(p):
+            if p.name == ".s2arm-moving": raise FileNotFoundError(2, "No such file or directory", str(p))
+            real(p)
+        ctx = self.ctx(new, moveFrom=str(old))
+        with um.patch.object(library, "require_apfs"), um.patch.object(library, "require_local"), um.patch.object(library, "_same_volume", return_value=False), \
+             um.patch.object(library, "copy_tree_links", full), um.patch.object(library.shutil, "copy2", full), um.patch.object(library, "_discard", flaky), \
+             self.assertRaises(OSError) as e:
+            library.setup(ctx)
+        self.assertEqual(e.exception.errno, 28)
+        self.assertTrue(any(".s2arm-moving" in n for n in ctx.notes), ctx.notes)
+        self.assertTrue(any("清倒" in n for n in ctx.notes), ctx.notes)   # 盘满失败后提示可能要修复文件系统（#1112 删残留后空闲仍为 0）
 
     def test_cross_volume_failed_verification_rolls_back(self):
         old, new = self.old(), self.root / "new"

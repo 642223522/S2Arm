@@ -26,3 +26,36 @@ int s2a_save_atomic_poll(void) {
     LOG("存档：不能原子提交（原因位 %d：1 没登记原语 / 2 卷不能克隆或原子交换 / 4 工作目录准备失败），提示玩家", bits);
     return bits;
 }
+
+// 画面没出来（接口与口径见 runtime/include/s2a_direct_prompt.h）
+int s2a_no_picture_decide(double secs, unsigned long long fails, unsigned long long draws, unsigned long long presents) {
+    return secs >= S2A_NOPIC_AFTER_S && presents > 0 && fails > 0 && draws == 0;
+}
+#if defined(__ANDROID__)
+int s2a_no_picture_poll_at(double now) { (void)now; return 0; }
+int s2a_no_picture_poll(void) { return 0; }   // 横幅只在 iPhone 壳（ios/dprompt.m）；安卓的直连现编另有口径
+#else
+#include "s2a_gfx_mode.h"
+#include "s2a_dguard.h"
+#include <time.h>
+int s2a_no_picture_poll_at(double now) {   // now：单调时钟秒（单测直接给）
+    static int done, started; static double t0;
+    if (done || s2a_host_session_state() != S2A_SESSION_RUNNING || !s2a_gfx_mode_settled() || s2a_gfx_mode() != S2A_GFX_DIRECT) return 0;
+    if (!started) { started = 1; t0 = now; }   // 会话跑起来后第一次问：从这里算
+    static void (*dsh)(unsigned long long *); static unsigned long long (*draws)(void), (*presents)(void); static int looked;
+    if (!looked) { looked = 1; dsh = (void (*)(unsigned long long *))dlsym(RTLD_DEFAULT, "s2a_dsh_stats");
+        draws = (unsigned long long (*)(void))dlsym(RTLD_DEFAULT, "s2a_direct_draws"); presents = (unsigned long long (*)(void))dlsym(RTLD_DEFAULT, "mtl_present_count"); }
+    if (!dsh || !draws || !presents) return 0;   // 没链直连层（单测 / 别的前端）：不判
+    unsigned long long st[5] = {0}; dsh(st);
+    unsigned long long d = draws(), p = presents();
+    if (!s2a_no_picture_decide(now - t0, st[1], d, p)) {
+        if (d) done = 1;   // 画出过东西：这局不会再「画面没出来」，不再问
+        return 0;
+    }
+    done = 1;
+    LOG("【红】画面没出来：起局 %.0f 秒，直连现编成功 %llu、失败 %llu 支，上屏 %llu 次、一次绘制都没编码出去 → 提示玩家重新出包（计进直连安全网）", now - t0, st[0], st[1], p);
+    s2a_dguard_evidence("画面没出来（直连现编全失败、起局后一次绘制都没画）", 0);
+    return 1;
+}
+int s2a_no_picture_poll(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return s2a_no_picture_poll_at((double)ts.tv_sec + ts.tv_nsec / 1e9); }
+#endif

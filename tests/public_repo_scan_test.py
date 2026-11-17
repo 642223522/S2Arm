@@ -1,5 +1,10 @@
 """Original synthetic fixtures: no production identifiers, assets or user files."""
 import importlib.util
+import hashlib
+import io
+import zipfile
+import tarfile
+from contextlib import redirect_stdout
 import json
 import os
 from pathlib import Path
@@ -69,6 +74,123 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(clean.returncode, 0)
         self.assertEqual(report['uncovered_blocking'], [])
 
+    def archive_rules(self, path='Vendor/dependency.zip', data=None):
+        if data is None:
+            stream = io.BytesIO()
+            with zipfile.ZipFile(stream, 'w') as archive:
+                archive.writestr('LICENSE.txt', 'Original synthetic archive fixture')
+            data = stream.getvalue()
+        rules = self.mod.load_rules()
+        rules['reviewed_archives'] = [{'id': 'synthetic_archive', 'path': path,
+            'sha256': hashlib.sha256(data).hexdigest(), 'reason': 'Original test ZIP only'}]
+        return rules, data
+
+    def test_reviewed_archive_hash_only_keeps_unscanned_boundary_visible(self):
+        rules, data = self.archive_rules()
+        self.commit({'Vendor/dependency.zip': data})
+        with patch.object(self.mod, 'load_rules', return_value=rules):
+            report = self.mod.scan(self.root, 'HEAD', ['.'])
+        self.assertEqual(report['coverage'], {'excluded_payload': 1})
+        self.assertEqual(report['uncovered_blocking'], [])
+        self.assertEqual(report['uncovered_allowed'][0]['reason'], 'excluded_payload')
+        self.assertEqual(report['uncovered_allowed'][0]['reviewed_archive'], 'synthetic_archive')
+        self.assertEqual(report['uncovered'], report['uncovered_allowed'])
+        output = io.StringIO()
+        with patch.object(self.mod, 'load_rules', return_value=rules), patch.object(
+                sys, 'argv', ['public_repo_scan', '--repo', str(self.root), '--path', '.',
+                              '--format', 'gate']), redirect_stdout(output):
+            self.assertEqual(self.mod.main(), 0)
+        self.assertIn('SHA-256 已核对（仍未扫描正文）', output.getvalue())
+
+    def test_reviewed_archive_tamper_blocks_full_and_changed_scan(self):
+        rules, data = self.archive_rules()
+        base = self.commit({'Vendor/dependency.zip': data})
+        self.commit({'Vendor/dependency.zip': data + b'original tamper fixture'})
+        with patch.object(self.mod, 'load_rules', return_value=rules):
+            for baseline in (None, base):
+                report = self.mod.scan(self.root, 'HEAD', ['.'], base=baseline)
+                self.assertEqual(len(report['uncovered_blocking']), 1)
+                self.assertEqual(report['uncovered_allowed'], [])
+
+    def test_reviewed_archive_does_not_allow_another_zip_or_read_it(self):
+        rules, data = self.archive_rules()
+        self.commit({'Vendor/another.zip': data})
+        with patch.object(self.mod, 'load_rules', return_value=rules), patch.object(
+                self.mod.Blobs, 'read', side_effect=AssertionError('unreviewed ZIP read')):
+            report = self.mod.scan(self.root, 'HEAD', ['.'])
+        self.assertEqual(len(report['uncovered_blocking']), 1)
+        self.assertEqual(report['uncovered_allowed'], [])
+
+    def test_reviewed_archive_cannot_read_sensitive_paths_or_git_links(self):
+        paths = ['prod.keys', 'secrets/dependency.zip', 'games/dependency.zip',
+                 'assets/dependency.zip', 'firmware/dependency.zip', 'romfs/dependency.zip']
+        rules, data = self.archive_rules()
+        self.commit({p: data for p in paths})
+        oid = self.git('hash-object', '-w', '--stdin')
+        self.git('update-index', '--add', '--cacheinfo', '120000,' + oid + ',Vendor/link.zip')
+        self.git('commit', '-qm', 'synthetic archive link')
+        paths.append('Vendor/link.zip')
+        template = rules['reviewed_archives'][0]
+        rules['reviewed_archives'] = [{**template, 'path': p} for p in paths]
+        with patch.object(self.mod, 'load_rules', return_value=rules), patch.object(
+                self.mod.Blobs, 'read', side_effect=AssertionError('sensitive or link read')):
+            report = self.mod.scan(self.root, 'HEAD', ['.'])
+        self.assertEqual(len(report['uncovered_blocking']), len(paths))
+        self.assertEqual(report['uncovered_allowed'], [])
+
+    def test_reviewed_archive_list_only_and_oversized_never_read(self):
+        rules, data = self.archive_rules()
+        self.commit({'Vendor/dependency.zip': data})
+        with patch.object(self.mod, 'load_rules', return_value=rules), patch.object(
+                self.mod.Blobs, 'read', side_effect=AssertionError('list-only read')):
+            report = self.mod.scan(self.root, 'HEAD', ['.'], list_only=True)
+        self.assertEqual(report['manifest'][0]['decision'], 'excluded_payload')
+        self.assertEqual(report['uncovered_allowed'], [])
+        self.commit({'Vendor/dependency.zip': b'Z' * (self.mod.MAX_BYTES + 1)})
+        with patch.object(self.mod, 'load_rules', return_value=rules), patch.object(
+                self.mod.Blobs, 'read', side_effect=AssertionError('oversized read')):
+            report = self.mod.scan(self.root, 'HEAD', ['.'])
+        self.assertEqual(len(report['uncovered_blocking']), 1)
+
+    def test_reviewed_archive_rules_require_exact_paths_sha_and_reason(self):
+        raw = json.loads(RULES.read_text())
+        valid = {'id': 'synthetic_archive', 'path': 'Vendor/dependency.zip',
+                 'sha256': 'a' * 64, 'reason': 'Original synthetic fixture'}
+        for changes in ({'path': 'Vendor/*.zip'}, {'path': '../dependency.zip'},
+                        {'path': '/dependency.zip'}, {'path': 42}, {'sha256': 'bad'}, {'reason': ''}):
+            with self.subTest(changes=changes):
+                raw['reviewed_archives'] = [{**valid, **changes}]
+                table = Path(self.tmp.name) / 'rules.json'
+                table.write_text(json.dumps(raw))
+                with patch.object(self.mod, 'RULES_PATH', table), self.assertRaises(self.mod.ScanError):
+                    self.mod.load_rules()
+
+    def test_synthetic_systemdata_tar_exception_is_exact_and_unread(self):
+        path = 'services/S2A.Services/systemdata_synth.tar'
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode='w', format=tarfile.USTAR_FORMAT) as archive:
+            data = b'Original synthetic scanner fixture'
+            member = tarfile.TarInfo('fixture.txt'); member.size = len(data)
+            archive.addfile(member, io.BytesIO(data))
+        self.commit({path: stream.getvalue()})
+        with patch.object(self.mod.Blobs, 'read', side_effect=AssertionError('archive body read')):
+            report = self.mod.scan(self.root, 'HEAD', ['.'])
+        self.assertEqual(report['coverage'], {'unreviewed_type': 1})
+        self.assertEqual(report['uncovered_blocking'], [])
+        self.assertEqual([f['path'] for f in report['uncovered_allowed']], [path])
+        self.assertEqual(report['uncovered_allowed'][0]['reason'], 'unreviewed_type')
+        other = 'services/S2A.Services/another.tar'
+        self.commit({other: stream.getvalue()})
+        with patch.object(self.mod.Blobs, 'read', side_effect=AssertionError('archive body read')):
+            report = self.mod.scan(self.root, 'HEAD', ['.'])
+        self.assertEqual([f['path'] for f in report['uncovered_blocking']], [other])
+        self.assertEqual([f['path'] for f in report['uncovered_allowed']], [path])
+
+    def test_dshfn_comments_have_no_public_scan_findings(self):
+        path = 'graphics/tools/direct/tests/dshfn.py'
+        for line_number, line in enumerate((ROOT / path).read_text().splitlines(), 1):
+            self.assertEqual(self.mod.categories(line, path), [], f'{path}:{line_number}')
+
     def test_full_scan_reasoned_existing_allowlist_keeps_boundary_visible(self):
         self.commit({'unknown.xyz': b'original unknown-type fixture'})
         rules = self.mod.load_rules()
@@ -106,6 +228,36 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(report['uncovered_allowed'], [])
         self.assertEqual({f['reason'] for f in report['uncovered_blocking']},
                          {'excluded_credentials', 'excluded_payload', 'non_regular'})
+
+    def test_synthetic_system_archive_rule_is_exact_and_keeps_unread_boundary(self):
+        path = 'services/S2A.Services/systemdata_synth.tar'
+        other = 'services/S2A.Services/other.tar'
+        rules = self.mod.load_rules()
+        entries = [row for row in rules['allowlist'] if row['id'] == 'generated_synthetic_systemdata_tar']
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]['paths'], [path])
+        self.assertEqual(entries[0]['categories'], ['uncovered_unreviewed_type'])
+        self.assertTrue(entries[0]['reason'])
+        archive = (ROOT / path).read_bytes()
+        self.commit({path: archive, other: archive})
+        with patch.object(self.mod, 'load_rules', return_value=rules), patch.object(
+                self.mod.Blobs, 'read', side_effect=AssertionError('archive body must remain unread')):
+            report = self.mod.scan(self.root, 'HEAD', ['.'])
+        self.assertEqual(report['coverage'], {'unreviewed_type': 2})
+        self.assertEqual([row['path'] for row in report['uncovered_allowed']], [path])
+        self.assertEqual([row['path'] for row in report['uncovered_blocking']], [other])
+        rules['allowlist'].remove(entries[0])
+        with patch.object(self.mod, 'load_rules', return_value=rules):
+            reverted = self.mod.scan(self.root, 'HEAD', ['.'])
+        self.assertEqual(len(reverted['uncovered_blocking']), 2, 'removing registration must block both TARs')
+
+    def test_synthetic_system_archive_is_verified_before_the_ci_scan(self):
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        linux = workflow.split('  linux:\n', 1)[1].split('  macos:\n', 1)[0]
+        verify = 'run: python3 tests/sysdata_synth_tar_test.py'
+        scan = 'run: python3 tools/public_repo_scan.py'
+        self.assertIn(verify, linux)
+        self.assertLess(linux.index(verify), linux.index(scan))
 
     def test_extensionless_text_is_scanned_without_values(self):
         mail = 'synthetic' + '@private.test'
@@ -465,8 +617,11 @@ class ScanTests(unittest.TestCase):
         self.commit({'docs/clean.md': 'still clean\n'})
         p, r = self.scan('--base', base)
         self.assertEqual(p.returncode, 0)
-        self.assertEqual(len(r['findings']), 1)
-        self.assertEqual(r['findings'][0]['status'], 'existing')
+        # 增量模式（11-16 起）：没改的 docs/old.md 不读——存量命中不阻挡、也不再列出；覆盖统计记 unchanged_not_read
+        self.assertEqual(r['findings'], [])
+        self.assertGreater(r['coverage'].get('unchanged_not_read', 0), 0)
+        p, r = self.scan()
+        self.assertEqual([f['status'] for f in r['findings']], ['existing'], '不给 --base 的全量清单照旧列出存量')
         self.commit({'docs/old.md': '/Users/fixtureperson/old\nunrelated edit\n'})
         p, r = self.scan('--base', base)
         self.assertEqual(p.returncode, 0)
@@ -727,7 +882,7 @@ class ScanTests(unittest.TestCase):
         self.assertNotIn('fixtureperson', red.stdout + red.stderr)
         report = json.loads((self.root / 'build/public_repo_scan.json').read_text())
         self.assertGreater(report['blocking_count'], 0)
-        self.assertTrue(any(f['status'] == 'existing' for f in report['findings']))
+        self.assertGreater(report['coverage'].get('unchanged_not_read', 0), 0)   # 存量文件没改：增量模式不读（11-16 起）
 
     def test_contrib_doc_executes_scan_and_red_takes_priority(self):
         base = self.install_gate_fixture()

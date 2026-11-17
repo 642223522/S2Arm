@@ -16,7 +16,7 @@
 |---|---|
 | `Sources/NXCore/Localization.swift`、`LocalizationFiles.swift`、`BundledTools.swift`、`LauncherWork.swift`、`BuildProgress.swift` | 同名 |
 | `Sources/NXModel/Localizer.swift` | 同名 |
-| `Sources/NXLauncher/LauncherPalette.swift`、`Typography.swift`、`EmbeddedFonts.swift`、`LauncherStyles.swift`、`LauncherDropdown.swift`、`PadFocus.swift`、`LauncherCard.swift`、`RowScroller.swift` | 同名 |
+| `Sources/NXLauncher/LauncherPalette.swift`、`Typography.swift`、`EmbeddedFonts.swift`、`PadFocus.swift`、`RowScroller.swift` | 同名 |
 | `fonts/Manrope-OFL.txt` | 同名（`EmbeddedFonts.swift` 内嵌的 Manrope 字体的 SIL OFL 1.1 许可） |
 
 带 S2Arm 改动（文件头注明 Derived from 与改动）：
@@ -24,14 +24,39 @@
 | 本目录 | 上游 `frontend/` | 改动 |
 |---|---|---|
 | `Sources/NX2Apple/LauncherView.swift` | 同名 | 只保留库页；状态换成 `S2ArmLauncherModel`（不用 `LauncherStores`）；作业进行中（一局 / 准备 / 装机 / 导入）换成 `JobSessionView`，出包换成 `ExportSessionView`；点某款的「出包」库页换成出包页 `ExportView`；顶栏加「添加游戏」（选文件 / 拖进窗口 → import 作业）与「环境检查」；加装机页、释放空间两个 sheet；去掉 Builds / Settings 页、启动选项 sheet、引擎同步横幅、封面编辑、管理菜单、主机模式与手柄驱动；顶栏显示品牌名（一行大号，与窗口三个按钮同一中线：空的 unified 工具栏把标题栏撑到顶栏高、系统把按钮居中）；顶栏加 Switch 2 Pro 手柄按钮与弹窗（`Switch2ProConnectionPopover`）；顶栏最前加本地玩家按钮与弹窗（`PlayerToolbarButton`，S2Arm 自有 `LocalPlayersView.swift`，#623） |
-| `Sources/NX2Apple/LauncherView+Library.swift` | 同名 | 游戏换成适配层 `GameSummary`（catalog 作业），封面用游戏库 `cover.jpg`（`CoverFill` / `CoverCache`，不取上游 Artwork 体系）；主按钮是「出包」（打开出包页），Mac 版已做好的款旁边加次按钮「开始游戏」（launch 作业），再是「释放空间」圆钮；没有启动选项圆钮（11-07 维护者 删游戏选项）；卡片与主按钮带自己的辅助功能标签（原先被读成图片）；空库页加「添加游戏」；去掉重建、iPhone 重签、管理菜单、Switch 2 徽标、筛选 |
-| `l10n/en.json`、`l10n/zh.json` | 同名 | 按键序插入我方键 `s2arm.*`；上游已有的键一个没改 |
+| `Sources/NX2Apple/LauncherView+Library.swift` | 同名 | 游戏换成适配层 `GameSummary`（catalog 作业），封面用游戏库 `cover.jpg`（`CoverFill` / `CoverCache`，不取上游 Artwork 体系）；主按钮是「出包」（打开出包页），Mac 版已做好的款旁边加次按钮「开始游戏」（launch 作业），再是「释放空间」圆钮；「开始游戏」旁有启动设置圆钮（齿轮，11-09；游戏语言等逐款选项，11-14 维护者确认玩家可选）；卡片与主按钮带自己的辅助功能标签（原先被读成图片）；空库页加「添加游戏」；去掉重建、iPhone 重签、管理菜单、Switch 2 徽标、筛选 |
+| `Sources/NXLauncher/LauncherStyles.swift`、`LauncherDropdown.swift`、`LauncherCard.swift` | 同名 | 按钮/开关登记实际动作与边界；滑块支持键盘、手柄和标准辅助功能；下拉菜单隔离焦点；统一消费 `LauncherTheme.swift` 的尺寸、排版与材质 |
+| `l10n/en.json`、`l10n/zh.json` | 同名 | 我方键 `s2arm.*`、`home.*`；保留上游键，精简说明并去掉说明末尾句号 |
 | `Package.swift` | 同名 | 我方重写：只含取用的文件；上游 app target `NX2Apple` 改成库 target `NX2AppleUI`（路径仍是 `Sources/NX2Apple`），依赖 `S2ArmAppleAdapter`；下限同上游 macOS 13、Swift 5 语言模式 |
 
 S2Arm 新增（不是上游文件）：`Sources/NX2Apple/S2ArmLauncherModel.swift`（界面状态，接适配层 `S2ArmEngineProvider`；出包的平台队列 `ExportRun`）、`ExportView.swift`（出包页：游戏信息、平台多选卡、能不能出包；没有游戏选项）、`ExportSessionView.swift`（出包进行中 / 做完：平台队列、总用时与预计还需（适配层 `MilestoneEstimate`）、步骤清单、按平台的结果动作）、`JobSessionView.swift`（作业页：事件 / 停止或取消 / 结局 / 回库，第一刀叫 PlaySessionView）、
 `EnvironmentView.swift`（环境检查清单与一键处理，卡片用 NXLauncher 的 CardGroup / CardRow；游戏库在云盘 / 非 APFS 给「换游戏库」）、`InstallView.swift`（装机前清单，每 5 秒重查）、`FreeSpaceView.swift`（释放空间：spaceSurvey / spaceFree 作业，勾选删除、二次确认）、`JobProgress.swift`（作业页的第几步 / 本阶段计数 / 按实测速率算的剩余时间，显示借 NXCore `BuildProgress` 的 `Stage.clock` 与 `progressDetail`）、`BackendText+Localizer.swift`（作业层中文原句按界面语言显示，翻译走适配层 `BackendText`）、`S2ArmAppleRoot.swift`（本包唯一 public 入口：`package` 访问级别不跨 SwiftPM 包）。
 
 不取游戏选项（11-07 维护者）：上游 `LaunchOptionsView.swift`（每款启动选项 sheet）不取用——游戏语言跟设备系统语言，Mac 主机模式 / 手机掌机模式，60 帧缺省开、起不来自动降级，满屏缺省通用 + 补丁包，都由 S2Arm 作业层 / 宿主定，界面不给开关；适配层 `settingsSchema` 回空表。
+
+## 2026-11-14：主机风格 Home 与整界面手柄导航
+
+`LauncherView+Home.swift` 使用顶部横向封面排，选中封面放大；`HomeBackdrop.swift` 将对应游戏的 banner 铺满窗口并淡入切换，缺失或无法解码时使用封面，再缺失时显示渐变背景。游戏标题与操作置于左下方。`ConsoleButtonStyles.swift` 统一首页与顶栏的图标按钮，保留辅助功能标签和悬停说明。全部/最近/收藏分组与中文/拼音搜索由 `HomeLibraryState.swift` 管理，游戏实际进入运行阶段才记入最近。手柄左右切换游戏、下键进入操作、上键返回封面或搜索；屏外封面按稳定游戏 ID 横向滚入视口。
+
+`Sources/NXLauncher/PadControls.swift` 登记 SwiftUI 控件的实际动作与边界；`LauncherPadNavigation.swift` 在首页、顶栏、设置、弹窗和原生面板之间管理焦点；`LauncherPadKeyboard.swift` 提供手柄文本输入。`LauncherPadInput.swift` 读取 GameController 与已有 Switch 中继，`Sources/LauncherPadBridge/` 复用仓库中继协议及 Joy-Con 旋转代码，并封装本进程公开 AppKit 辅助功能操作。启动游戏前释放中继读端，运行期间不抢占游戏连接。其他页面的按钮样式接入相同登记机制。
+
+`LauncherView+Library.swift` 的 `CoverCache` 在后台读取时间戳与图片字节，同路径在途请求去重；主线程只读取缓存和发布加载结果，避免宗卷或文件授权等待挡住首页。
+
+以上为 S2Arm 本地扩展，同步上游时保留；对应测试位于 `Tests/NXLauncherTests/` 及父包 `../Tests/S2ArmAppleTests/{HomeLibraryTests,LauncherPadNavigationTests,CoverCacheTests}.swift`。
+
+## 2026-11-14：统一设置主题
+
+设置与工具窗口的主题、组件规范和验证入口见 [DESIGN.md](DESIGN.md)。`Sources/NXLauncher/LauncherTheme.swift` 是 S2Arm 新增文件，同步上游时保留。
+
+## 2026-11-15：首页内联搜索与签名右侧对齐
+
+S2Arm 新增 `Sources/NX2Apple/HomeSearchControl.swift`，搜索胶囊在首页控制栏内动画展开和收起，保留查询并支持清除、键盘焦点和减少动态效果设置，不使用搜索弹出窗口。`LauncherView+Home.swift` 在窄窗口中使用有完整辅助功能名称的图标分组，为搜索保留空间。`InstallModeViews.swift` 的签名子区只保留左侧缩进，右边缘与父选项一致。两项均由 `Tests/NXLauncherTests/SettingsLayoutTests.swift` 的中英文真实窗口回归覆盖，同步上游时保留。
+
+首页通过分组直接切换游戏列表，移除重复的筛选按钮、弹层及手柄 X 筛选提示，保留肩键切换分组与文本键盘的 X 删除功能。
+
+「已就绪」分组位于全部游戏之后，使用与首页启动操作一致的 `GameSummary.playable` 判断 Mac 是否可直接运行，继续支持搜索、空状态与肩键切换。
+
+窗口与页面标题使用 S2Arm 自有的 `LauncherHeadingLine`：副标题紧跟标题、同一行按文字基线对齐，长文本单行省略并保留悬停全文。共用弹窗标题与存档、空间、设置、导入、更新、出包、作业、玩家和手柄面板采用同一规则。`LauncherView.swift` 的品牌与版本号也使用该布局，为原生标题栏右侧按钮预留其实际宽度；同步上游时保留。
 
 ## 剔除清单
 

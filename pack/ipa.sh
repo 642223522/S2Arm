@@ -28,10 +28,9 @@ source "$R/tools/cores.sh"; s2a_cores || exit 1; source "$R/tools/progress.sh"  
 SIGN=${S2A_SIGN:-dev}; case $SIGN in dev|adhoc|none) ;; *) echo "【红】S2A_SIGN 只认 dev / adhoc / none"; exit 1;; esac   # none = 不签（交给侧载工具签，Windows 出包用）
 [ "$SIGN" != dev ] && [ $REG = 1 ] && { echo "【红】${SIGN} 包不登记调度（测试设备只装开发直签包）"; exit 1; }
 TEAM=${S2A_TEAM:-${S2A_TEAM_DEFAULT:-}}; [ -n "$TEAM" ] || [ "$SIGN" != dev ] || { echo "【红】没设 S2A_TEAM（复制 tools/machine.local.example 为 tools/machine.local 并填写签名团队）"; exit 1; }
-C=$(git -C "$R" rev-parse --short=9 HEAD) || exit 1
+source "$H/stage_keyfiles.sh"; C=$(src_commit9 "$R") || exit 1   # 发布快照没有 .git：读 engine.json 里打包时记下的提交号
 # 源码树干净才出（包号里的提交号要对得上源码）：防开发者用改了没提交的树出包。发布快照（App 内置引擎，根有 engine.json 清单）
-#   安装时已按清单逐文件核过 sha256、玩家机上没人改它，这条在玩家路径上没有意义，不判（11-02 维护者；beta.3 走查：快照缺
-#   根 .gitignore 时编译产物被当改动，玩家导出 iPhone 版全红——.gitignore 已补进快照，作第二道）
+#   安装时已按清单逐文件核过 sha256、玩家机上没人改它，这条在玩家路径上没有意义，不判（11-02 维护者）；快照也不再带 .git，没有可比的提交
 src_dirty() { [ -f "$1/engine.json" ] && return 1; [ -n "$(git -C "$1" status --porcelain -- runtime ios graphics translator services compat Makefile)" ]; }
 src_dirty "$R" && { echo "【红】本树构建相关目录有未提交改动，包版本对不上提交号，不出"; exit 1; }
 # 同一产物根、同款、同提交只许一份在出（10-20 20:5x 我手出与自动正式局同时出01006F8002326000 c85d1335a，两份抢 CPU）：后到的等先到的出完，
@@ -89,10 +88,8 @@ DN=$("${S2A_PY:-python3}" "$H/display_name.py" "$CUR" --suffix "$DSUF") || { ech
 DT=$("${S2A_PY:-python3}" "$H/display_name.py" "$CUR" --title) || { rm -f "$TL0"; exit 1; }   # 游戏名单独写进 Info.plist（S2AGameTitle）：装机时加后缀（pack/jobs/install.py）同一函数拼
 PK=$(ipa_pkg_key "$C$([ "$SIGN" = dev ] || echo " sign=$SIGN")${S2A_BUNDLE_ID:+ bid=$BID} dn=$DN$([ "${ALLCAPS:-0}" = 1 ] && echo " allcaps")$([ "${NATIVE:-0}" = 1 ] && echo " native")" "$CUR" "$G") || exit 1   # 资源输入键算不出 = 失败（ipa_key.sh 已报红），不拿缺项的键去比
 [ -z "$SIKEY" ] || PK="$PK save=$SIKEY"
-# 登记前核管线归档（10-21 维护者：归档 0 KB 的包判红、不登记，免得调度把首遇全现编的包装上测试设备 / 给 维护者）
 # 登记说明带上没解出的追加内容（审计 P2-30：解不出不拦本体，但不许静默算全绿）
-reg() { local an; root_pso0_gate "$(dirname "$1")" "$G" || return 1; an=$(root_aoc_note "$(dirname "$1")"); an=${an#；}
-  if root_pso0 "$(dirname "$1")" > /dev/null; then S2A_PKG_NOTE="例外：归档 0 KB，${S2A_ALLOW_PSO0}${an:+；$an}" bash "$S2A_PRIVATE_TOOLS/sched.sh" pkg "$G" "$1" "$C"; else S2A_PKG_NOTE=$an bash "$S2A_PRIVATE_TOOLS/sched.sh" pkg "$G" "$1" "$C"; fi; }
+reg() { local an; an=$(root_aoc_note "$(dirname "$1")"); an=${an#；}; S2A_PKG_NOTE=$an bash "$S2A_PRIVATE_TOOLS/sched.sh" pkg "$G" "$1" "$C"; }
 [ -z "$AO" ] && root_stage_done "$CUR" pkg "$PK" && { rm -f "$TL0"; echo "🟢 $G 现行已是包 $PK$(root_aoc_note "$CUR")"; [ $REG = 1 ] && { reg "$CUR/pkg" || exit 1; }; exit 0; }
 # -H：产物根的 romfs 是指向 RomFS 共享存储的相对软链（pack/roots.sh），临时目录里照抄会悬空；跟随它克隆成真目录（同原先）
 if [ -n "$AO" ]; then AOT=$(mktemp -d) || exit 1; trap 'plock_release "$PL_PID"; _root_rm_red "$AOT" "$G 只出程序（临时工作根）"' EXIT; W=$AOT/root; TAG=; mkdir -p "$W" && for e in $(ls -A "$CUR"); do [ "$e" = pkg ] || cp -cRH "$CUR/$e" "$W/" || exit 1; done || { echo "【红】$G 只出程序：克隆产物根 $CUR 失败"; exit 1; }   # 不克隆 pkg/（上一版资源包几万个文件，快道的资源包取自登记快照）

@@ -1,5 +1,14 @@
 {
   "version": 1,
+  "reviewed_archives": [
+    {
+      "id": "sparkle_2_10_1_swiftpm",
+      "path": "launchers/macos/frontend/Vendor/Sparkle-2.10.1.zip",
+      "sha256": "4c2e48a3e50ebcc2c88a58a4c7264a1a99c3c31857ce754357afb9cdb323022a",
+      "reason": "Sparkle 2.10.1 官方 SwiftPM ZIP 原样离线依赖，MIT 许可见同目录 Sparkle-LICENSE.txt；SHA-256 与改为本地包前 Package.swift 的钉值一致。仅核对归档字节，不扫描正文。",
+      "source": "https://github.com/sparkle-project/Sparkle/releases/download/2.10.1/Sparkle-for-Swift-Package-Manager.zip"
+    }
+  ],
   "content_rules": [
     {
       "id": "home",
@@ -179,6 +188,16 @@
       "reason": "自家 S2Arm 应用图标（同目录 AppIcon.svg 为源稿）、透明底字标，和由应用图标生成的金色 S（毛玻璃双色：香槟金 + 玫瑰金，make_s_gold.py）。"
     },
     {
+      "id": "own_feature_spotlight_art",
+      "categories": [
+        "game_screenshot"
+      ],
+      "paths": [
+        "docs/site/feature/*.jpg"
+      ],
+      "reason": "启动器新功能大窗的示意图（HTML 画的界面示意与抽象风景，生成脚本在维护者本机），不含任何游戏画面。"
+    },
+    {
       "id": "own_installer_ui",
       "categories": [
         "game_screenshot"
@@ -252,6 +271,16 @@
         "compat/tree/src/Ryujinx.HLE/Homebrew.npdm"
       ],
       "reason": "上游 Ryujinx（MIT）原样提交的预编译 SPIR-V 着色器、JIT 支持库与自制程序 npdm，构建要用。"
+    },
+    {
+      "id": "generated_synthetic_systemdata_tar",
+      "categories": [
+        "uncovered_unreviewed_type"
+      ],
+      "paths": [
+        "services/S2A.Services/systemdata_synth.tar"
+      ],
+      "reason": "本库 tools/make_sysdata_synth_tar.py 从 pack/sysdata_synth.py 常量生成的空结构系统数据，不读取游戏、固件或密钥；tests/sysdata_synth_tar_test.py 逐字节重算核对。仅保留这一精确路径的未扫描正文边界，不泛化到其他 tar。"
     },
     {
       "id": "upstream_nuget_packages",
@@ -541,7 +570,6 @@
       "android/codecs/tests/vectors/*.pps-change",
       "android/tests/fixtures/input-identity-v1/*.bin",
       "compat/tree/src/Ryujinx.Graphics.Vulkan/Effects/Textures/*.bin",
-      "graphics/tools/shbake/tests/refpso/*.gz",
       "launchers/windows/launcher/App/Assets/Fonts/*.ttf",
       "shell/Sources/ShellUI/Resources/*.ttf",
       "runtime/tests/cpatch_loader/module.nso",
@@ -568,12 +596,12 @@
       "runtime/fps/*.tsv",
       "runtime/tests/cpatch/*.tsv",
       "graphics/tools/shbake/tests/trlog_baseline.tsv",
-      "graphics/tools/shbake/tests/refpso/*.tsv",
       "android/codecs/tests/vectors/*.txt",
       "android/codecs/tests/vectors/*.json",
       "android/codecs/tests/vectors/*.hex",
       "android/tests/fixtures/storage-stages/*.hex",
       "pack/jobs/tests/fixtures/progress_*.jsonl",
+      "pack/jobs/tests/fixtures/extract_hash_mismatch_*.log",
       "compat/tree/src/Ryujinx.HLE/HOS/Applets/SoftwareKeyboard/Resources/*.svg",
       "launchers/macos/adapter/Sources/S2ArmAppleAdapter/Resources/*.json",
       "launchers/windows/launcher/App/Assets/Fonts/*.txt",
@@ -606,7 +634,6 @@
       "graphics/widen/tables/*",
       "runtime/fps/*.tsv",
       "runtime/tests/cpatch/*.tsv",
-      "graphics/tools/shbake/tests/refpso/*",
       "graphics/tools/shbake/tests/trlog_baseline.tsv"
     ],
     "payload_directories": [
@@ -647,6 +674,8 @@
       ".ts"
     ],
     "text_suffixes": [
+      ".ets",
+      ".json5",
       ".spvasm",
       ".svg",
       ".lock",

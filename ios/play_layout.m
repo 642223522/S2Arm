@@ -12,6 +12,7 @@ int s2a_ios_split_active(void) { return atomic_load(&g_split_active); }
 //   非 iOS 编译（Mac 单测 t_play_layout 也编本文件）没有分屏，回空矩形 = 调用方用视图自身
 #if !TARGET_OS_IPHONE
 CGRect s2a_ios_game_area(void) { return CGRectNull; }
+int s2a_ios_game_top(void) { return 0; }
 #endif
 
 NSString *const S2APlaySplitKey=@"splitScreen", *const S2APlayOrientationKey=@"screenOrientation", *const S2APlayLayoutChanged=@"S2APlayLayoutChanged";
@@ -40,17 +41,26 @@ static BOOL finite_rect(CGRect r) {
 }
 S2APlayLayout S2APlayLayoutMake(CGRect b, CGRect safe, S2APlaySplitMode mode, BOOL half, CGRect division) {
     BOOL split=S2APlaySplitEnabled(mode,half);
-    S2APlayLayout l={b,CGRectIntersection(b,safe),CGRectNull,split};
-    if (!finite_rect(b) || CGRectIsEmpty(b)) return (S2APlayLayout){CGRectZero,CGRectZero,CGRectNull,split};
+    S2APlayLayout l={b,CGRectIntersection(b,safe),CGRectNull,split,NO};
+    if (!finite_rect(b) || CGRectIsEmpty(b)) return (S2APlayLayout){CGRectZero,CGRectZero,CGRectNull,split,NO};
     if (!finite_rect(division)) division=CGRectNull;
     if (!CGRectIsNull(division)) l.division=CGRectIntersection(b,division);
     if (!split) return l;
-    CGFloat top=CGRectGetMidY(b), bottom=top;
+    CGFloat top=CGRectGetMidY(b), bottom=top; BOOL hinge=NO;
     if (!CGRectIsNull(l.division) && division.size.width>division.size.height &&
         l.division.size.width>=b.size.width*.9 && CGRectGetMinY(division)>CGRectGetMinY(b) && CGRectGetMaxY(division)<CGRectGetMaxY(b)) {
-        top=CGRectGetMinY(division); bottom=CGRectGetMaxY(division);
+        top=CGRectGetMinY(division); bottom=CGRectGetMaxY(division); hinge=YES;
     }
     l.game=CGRectIntersection(safe,CGRectMake(b.origin.x,b.origin.y,b.size.width,top-b.origin.y));
+    // 竖屏分屏、上区没有折痕可依（手动分屏）、安全区左右有缩进（iPhone Duo 外屏竖着用：系统报右 84 点，11-15 真机读数 视图 466×678、安全区 右 84 下 34）：
+    //   原先取安全区 ∩ 上半屏只有 382 点宽，16:9 画面再上下居中，外屏左上一小块、右边和顶上空着。改成横向按整屏宽、竖向仍按安全区，画面贴顶放
+    //   （上面没有要躲的东西；手柄在下半区）。别的机型竖屏左右缩进都是 0、半折内屏走折痕分支，区域不变
+    CGRect sg=CGRectIntersection(b,safe);
+    if (!hinge && b.size.height>b.size.width && !CGRectIsNull(sg) &&
+        (CGRectGetMinX(sg)>CGRectGetMinX(b) || CGRectGetMaxX(sg)<CGRectGetMaxX(b))) {
+        CGFloat y=MAX(CGRectGetMinY(sg),b.origin.y);
+        l.game=top>y ? CGRectMake(b.origin.x,y,b.size.width,top-y) : CGRectNull; l.top=YES;
+    }
     l.controls=CGRectIntersection(safe,CGRectMake(b.origin.x,bottom,b.size.width,CGRectGetMaxY(b)-bottom));
     if (CGRectIsNull(l.game)) l.game=CGRectZero;
     if (CGRectIsNull(l.controls)) l.controls=CGRectZero;
@@ -76,10 +86,26 @@ static _Atomic double g_view_ratio;
 static _Atomic int g_max_fps;   // 屏幕最高刷新率（帧率补丁按档默认取不超过它的最高一档，runtime/src/cpatch.c fps_pick；布局时在主线程记）
 S2APlayLayout s2a_ios_play_layout(void) { return g_layout; }
 CGRect s2a_ios_game_area(void) { return g_layout.game; }
+int s2a_ios_game_top(void) { return g_layout.top; }
+// 可自由缩放的窗口（尺寸类 regular/regular：Duo 内屏、iPad）：方向不干预，哪端朝上画面就朝哪端（#1364 维护者拍板），设置里的横 / 竖只管普通 iPhone。
+//   游戏页每次排版按自己窗口的尺寸类记（主线程写，各处读）
+static _Atomic int g_resizable;
+int s2a_ios_play_resizable(void) { return atomic_load(&g_resizable); }
+#if !TARGET_OS_TV
 UIInterfaceOrientationMask s2a_ios_play_orientations(void) {
+    if (atomic_load(&g_resizable)) return UIInterfaceOrientationMaskAll;
     NSUserDefaults *d=NSUserDefaults.standardUserDefaults;
     BOOL split=S2APlaySplitEnabled(S2APlayReadSplit(d),g_half);
     return S2APlayPortrait(S2APlayReadOrientation(d),split) ? UIInterfaceOrientationMaskPortrait : UIInterfaceOrientationMaskLandscape;
+}
+#endif
+// 玩家选的方向是竖屏吗（电视只有横屏，11-15 Apple TV 版）
+static BOOL play_wants_portrait(void) {
+#if TARGET_OS_TV
+    return NO;
+#else
+    return s2a_ios_play_orientations()==UIInterfaceOrientationMaskPortrait;
+#endif
 }
 // 外接屏（ios/extdisplay.m）：画面出在外接屏上时比例按外接屏。这里给弱的缺省实现（没有外接屏 = 0）：
 //   输入工作台（ios/lab）只编本文件、不编 extdisplay.m，App 里 extdisplay.m 的正式实现链接时盖过它
@@ -89,8 +115,12 @@ static double screen_ratio(void) {
     double r=atomic_load(&g_view_ratio);
     if (!(r>0) && !NSThread.isMainThread) for (int i=0;i<500 && !((r=atomic_load(&g_view_ratio))>0);i++) usleep(10000);
     if (r>0) return r;
-    CGSize s=UIScreen.mainScreen.nativeBounds.size;
-    BOOL portrait=s2a_ios_play_orientations()==UIInterfaceOrientationMaskPortrait;
+    // 还没排过版：按当前前台场景所在的那块屏算。不用 UIScreen.mainScreen——iPhone Duo 内屏亮着时它仍报外屏 1398×2034（11-13 真机读数）
+    CGSize s=CGSizeZero;
+    if (NSThread.isMainThread) for (UIScene *sc in UIApplication.sharedApplication.connectedScenes)
+        if ([sc isKindOfClass:UIWindowScene.class] && sc.activationState==UISceneActivationStateForegroundActive) { s=((UIWindowScene *)sc).coordinateSpace.bounds.size; break; }
+    if (!(s.width>0 && s.height>0)) s=UIScreen.mainScreen.nativeBounds.size;
+    BOOL portrait=atomic_load(&g_resizable) ? s.height>s.width : play_wants_portrait();   // 自由窗口按实际方向；电视只有横屏（play_wants_portrait）
     CGRect b=CGRectMake(0,0,portrait?fmin(s.width,s.height):fmax(s.width,s.height),portrait?fmax(s.width,s.height):fmin(s.width,s.height));
     CGRect a=S2APlayLayoutMake(b,b,S2APlayReadSplit(NSUserDefaults.standardUserDefaults),g_half,CGRectNull).game;
     return a.size.width>0 && a.size.height>0 ? a.size.width/a.size.height : 16.0/9;
@@ -152,7 +182,9 @@ CGRect S2APlayDivision(UIView *view) {
 @end
 
 @implementation S2APlayViewController {
+#if !TARGET_OS_TV
     UIInterfaceOrientationMask _requested;
+#endif
     BOOL _transitioning, _orientationRefused, _waitingOrientation;
     S2APlaySplitMode _lastSplit;
     S2APlayOrientation _lastOrientation;
@@ -170,30 +202,47 @@ CGRect S2APlayDivision(UIView *view) {
     [self updatePlayPreferences];
 }
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
-- (BOOL)resizable { UITraitCollection *t=self.view.window.windowScene.traitCollection; return t.horizontalSizeClass==UIUserInterfaceSizeClassRegular && t.verticalSizeClass==UIUserInterfaceSizeClassRegular; }
-- (UIInterfaceOrientationMask)supportedInterfaceOrientations { return self.resizable ? UIInterfaceOrientationMaskAll : s2a_ios_play_orientations(); }
+- (BOOL)resizable {
+#if TARGET_OS_TV   // 电视窗口固定横屏，不算自由缩放
+    return NO;
+#else
+    UITraitCollection *t=self.view.window.windowScene.traitCollection; return t.horizontalSizeClass==UIUserInterfaceSizeClassRegular && t.verticalSizeClass==UIUserInterfaceSizeClassRegular;
+#endif
+}
+#if !TARGET_OS_TV
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations { return self.resizable ? UIInterfaceOrientationMaskAll : s2a_ios_play_orientations(); }   // 自由窗口：全部方向、不申请
+#endif
 - (void)viewDidAppear:(BOOL)animated { [super viewDidAppear:animated]; [self updatePlayPreferences]; }
 - (void)updatePlayPreferences {
     if (!NSThread.isMainThread) { dispatch_async(dispatch_get_main_queue(),^{ [self updatePlayPreferences]; }); return; }
     g_half=((S2APlaySurface *)self.view).partiallyOpen;
     NSUserDefaults *d=NSUserDefaults.standardUserDefaults;
     S2APlaySplitMode split=S2APlayReadSplit(d); S2APlayOrientation orientation=S2APlayReadOrientation(d);
+#if TARGET_OS_TV   // 电视只有横屏：不发方向请求，只按偏好重排
+    _lastSplit=split; _lastOrientation=orientation;
+    [self.view setNeedsUpdateConstraints]; [self.view setNeedsLayout];
+    return;
+#else
     UIInterfaceOrientationMask mask=s2a_ios_play_orientations();
     if (_lastSplit!=split || _lastOrientation!=orientation) { _requested=0; _orientationRefused=NO; }
     _lastSplit=split; _lastOrientation=orientation;
+    atomic_store(&g_resizable, self.resizable);
     [self setNeedsUpdateOfSupportedInterfaceOrientations];
     [self.view setNeedsUpdateConstraints]; [self.view setNeedsLayout];
     UIWindowScene *scene=self.view.window.windowScene;
+    if (self.resizable) { _requested=0; return; }   // 自由窗口不申请方向：交给系统跟着手机转（#1364）
+    mask=s2a_ios_play_orientations();
     if (!scene || mask==_requested) return;
     _requested=mask; _orientationRefused=NO;
     [NSNotificationCenter.defaultCenter postNotificationName:S2APlayLayoutChanged object:nil];
     UIViewController *top=self; while (top.presentedViewController) top=top.presentedViewController;
     [top setNeedsUpdateOfSupportedInterfaceOrientations];
     [scene requestGeometryUpdateWithPreferences:[[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:mask] errorHandler:^(NSError *error) {
-        self->_orientationRefused=YES;
-        fprintf(stderr,"[S2A 布局] 系统未接受方向请求，按实际窗口布局：%s\n",error.localizedDescription.UTF8String);
-        [self.view setNeedsLayout];
+        // 系统在后台队列调这个回调（7 份「后台线程改自动布局」闪退崩前都有下面这行、4181 份没有这行的 0 崩）：改界面派回主线程
+        fprintf(stderr,"[S2A 布局] 系统未接受方向请求，按实际窗口布局：%s（回调在%s线程）\n",error.localizedDescription.UTF8String,NSThread.isMainThread?"主":"后台");
+        dispatch_async(dispatch_get_main_queue(), ^{ self->_orientationRefused=YES; [self.view setNeedsLayout]; });
     }];
+#endif
 }
 - (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
     _transitioning=YES;
@@ -211,9 +260,10 @@ CGRect S2APlayDivision(UIView *view) {
     BOOL changed=!CGRectEqualToRect(l.game,g_layout.game) || !CGRectEqualToRect(l.controls,g_layout.controls) || !CGRectEqualToRect(l.division,g_layout.division) || l.split!=g_layout.split;
     g_layout=l;
     S2APlayPublishSplit(l.split);
-    S2APlayReflectionLayout(s,l);
+    S2APlayBackgroundLayout(s,l);
     BOOL portrait=s.bounds.size.height>s.bounds.size.width;
-    BOOL expectedPortrait=s2a_ios_play_orientations()==UIInterfaceOrientationMaskPortrait;
+    if (atomic_exchange(&g_resizable, self.resizable) != self.resizable) [self updatePlayPreferences];   // 换窗口类型（Duo 合上 / 展开）：重新定要不要申请方向
+    BOOL expectedPortrait=self.resizable ? portrait : play_wants_portrait();   // 自由窗口按实际方向（不再等转到玩家选的方向）
     // 屏幕比例（宽屏静态改写装载时按它写死，起局后跟不上）只认玩家选的方向：可自由缩放的窗口（Duo 内屏 / iPad，尺寸类 regular/regular）也先等系统转到位。
     //   11-13 Duo 内屏：原先 resizable 时不等，起局那一刻手机横着就按横屏比例 2.84 定了屏幕宽 3070，随后转成竖屏分屏，静态表还按 3070 画、画面右侧和上下被裁。
     //   只管第一次：系统拒绝方向请求，或 1 秒内没转过来（iPad 自由窗口接受请求却转不了），按实际窗口记

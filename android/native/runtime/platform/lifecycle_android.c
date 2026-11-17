@@ -356,3 +356,32 @@ int s2a_android_term_install(void) {
     int error = pthread_once(&g_term_once, term_install_once);
     return error ? error : g_term_error;
 }
+
+// #528 第 15 项：共用 lifecycle.c 在优雅收尾最后一步（_exit(0) 之前）按链接期弱引用调的会话标记钩子；iOS 由 sesdiag.c 提供同名函数。
+//   收尾中途失败（_exit 125）或被兜底结束（_exit 124）都走不到这里，标记留着 end，库页下次提示。
+//   files 目录取外壳每次装载运行库后经 configureGpuDriver 存下的 getFilesDir()（bridge.cpp；MainActivity 装载后、起局前调）。
+//   依赖这一条：那次调用要是被删掉或挪到起局之后，干净收尾的 end 就删不掉，每次正常退局库页都会误报；所以「设过但为空」报红，
+//   android/tests/exit_order_test.py 也守着 MainActivity 里那次调用。不带 bridge 的单测链接里取不到（NULL），什么都不做。
+extern const char *s2a_android_gpu_driver_files_dir(void) __attribute__((weak));
+int s2a_android_sesmark_clear(const char *files_dir) {
+    char path[1100];
+    if (!files_dir || files_dir[0] != '/' || snprintf(path, sizeof path, "%s/s2a_session.mark", files_dir) >= (int)sizeof path) return -1;
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return 0;
+    char text[8];
+    ssize_t n = read(fd, text, sizeof text);
+    close(fd);
+    if (n != 4 || memcmp(text, "end\n", 4)) return 0;
+    return unlink(path) ? -1 : 1;
+}
+void s2a_sesmark_clear_home(void) {
+    const char *dir = s2a_android_gpu_driver_files_dir ? s2a_android_gpu_driver_files_dir() : NULL;
+    if (!dir) return;   // 没有这条来源（不带 bridge 的单测链接）：不是本局的事，不出声
+    if (!*dir) {   // 有来源但从没设过：外壳没调 configureGpuDriver，标记删不掉，之后每次正常退局库页都会误报，所以报红
+        LOG("【红】会话标记：不知道 files 目录（外壳没调 configureGpuDriver？），end 标记留着，库页会误报上一局异常结束");
+        return;
+    }
+    int result = s2a_android_sesmark_clear(dir);
+    if (result > 0) LOG("会话标记：干净收尾已走完，删掉（库页不再提示上一局异常结束）");
+    else if (result < 0) LOG("【红】会话标记删不掉 errno=%d：下次回库页会多问一次", errno);
+}

@@ -75,7 +75,7 @@ __attribute__((constructor(101))) static void vawin_reserve(void) {
     void *base = NULL;
     int error = plat_vm_reserve(S2A_WIN_SIZE, 1ull << 30, 1ull << 39, &base);
     if (error) {
-        LOG("【红】Android 地址窗口：68 GiB 保留失败 errno=%d，不回退", error);
+        LOG("【红】Android 地址窗口：72 GiB 保留失败 errno=%d，不回退", error);
         return;
     }
     uint64_t b = (uint64_t)(uintptr_t)base;

@@ -1,0 +1,14 @@
+// 玩家 1 的六轴来源仲裁：纯函数，宿主（ios/controller.m）每帧调一次。
+//   只在「有没有样本」这一层做决定，不碰时间 / 锁 / 设备；换源滞回与丢一帧由宿主负责。
+#include "motion_pick.h"
+
+int s2a_motion_pick(int input_source, int ns2_known, int gc_known, int phone_known) {
+    int phone = phone_known ? S2A_MOTION_PHONE : S2A_MOTION_NONE;
+    int gc = gc_known ? S2A_MOTION_GC : S2A_MOTION_NONE;
+    int ns2 = ns2_known ? S2A_MOTION_NS2 : S2A_MOTION_NONE;
+    // 11-15 维护者：「接着手柄就不用管触屏了吧？谁接着手柄还用触屏玩啊」——接了有体感的手柄就用手柄的六轴，不再看触屏有没有在操作；
+    //   手柄都给不出体感（Xbox / Joy-Con 一代 / 夹手机的 Backbone、Kishi：手机和手柄一起动，手机陀螺仪正好对）才用手机。
+    //   输入来源只在两只手柄之间分先后：NS2 Pro 在驱动输入就先读它，其余（系统手柄 / 触屏 / 未知）先读系统手柄
+    if (input_source == 1) return ns2 ? ns2 : gc ? gc : phone;
+    return gc ? gc : ns2 ? ns2 : phone;
+}

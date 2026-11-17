@@ -17,6 +17,8 @@ static UIWindowScene *g_scene;   // 外接屏场景（主线程）；nil = 没�
 static UIWindow *g_window;       // 外接屏窗口（主线程）；出图层第一次要挂时才建
 static _Atomic double g_ratio;   // 外接屏 宽 ÷ 高；0 = 没接。外接屏不随手机转向，不取长边 ÷ 短边（竖放的显示器按窄屏加高）
 double s2a_ios_ext_ratio(void) { return g_ratio; }
+// 主线程菜单查询：低版本 / 镜像模式也算已接屏，不创建窗口或接管镜像。
+BOOL s2a_ios_ext_connected(void) { return g_scene != nil || UIScreen.screens.count > 1; }
 static void note_ratio(CGSize z) { if (z.width > 0 && z.height > 0) g_ratio = z.width / z.height; }
 static int ext_on(void) { const char *e = getenv("S2A_EXT_DISPLAY"); return !(e && !strcmp(e, "0")); }
 

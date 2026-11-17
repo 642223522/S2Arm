@@ -16,7 +16,12 @@ mac_save_kind_ok() {
 }
 mac_save_prep() {
   local g=${1:?款} in=${2:?产物根} d=${3:?局目录} bid sa
-  [ -n "${S2A_SAVE_DIR:-}" ] && { mac_save_kind_ok "$in" "$S2A_SAVE_DIR" || return 1; echo "存档：调用方显式给了 S2A_SAVE_DIR=${S2A_SAVE_DIR}，照用"; return 0; }
+  # 显式给了 = 声明带存档：打实际带上的文件数与字节数，0 个文件（目录不在 / 空目录）报红、不起局——
+  #   11-15 #1238：对照脚本把 S2A_SAVE_DIR 指到一个空目录，五局都没带上玩家存档却当成「带了存档」下结论。故意不带存档就不给 S2A_SAVE_DIR
+  [ -n "${S2A_SAVE_DIR:-}" ] && { local nf nb
+    nf=$(find "$S2A_SAVE_DIR" -type f 2> /dev/null | wc -l | tr -d ' '); nb=$(find "$S2A_SAVE_DIR" -type f -exec wc -c {} + 2> /dev/null | awk '$2 != "total" {s+=$1} END{print s+0}')
+    [ "${nf:-0}" -gt 0 ] || { echo "【红】存档：调用方显式给了 S2A_SAVE_DIR=${S2A_SAVE_DIR}，但里面 0 个文件（目录不在或是空的），不起局；故意不带存档就别给 S2A_SAVE_DIR"; return 1; }
+    mac_save_kind_ok "$in" "$S2A_SAVE_DIR" || return 1; echo "存档：调用方显式给了 S2A_SAVE_DIR=${S2A_SAVE_DIR}，照用：${nf} 个文件、${nb} 字节"; return 0; }
   [ -f "$in/exefs/main" ] || { echo "存档：产物根没有 exefs/main，不带存档"; return 0; }
   bid=$(xxd -s 0x40 -l 16 -p "$in/exefs/main" 2> /dev/null); sa=${S2A_SAVES:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/saves}/${g}_$bid
   [ -d "$sa" ] || { echo "存档：没有 ${sa}，不带存档"; return 0; }

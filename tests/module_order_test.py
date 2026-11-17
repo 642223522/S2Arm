@@ -80,5 +80,15 @@ with tempfile.TemporaryDirectory(prefix='module-order-') as tmp:
         got = [m['name'] for m in json.load(f)['modules']]
     check('④ make_pack.write_artifact：乱序模块文件产出 Horizon 序', got == WANT)
 
+# ⑤ pack/ship_ext.modules：exFAT / 网络盘上的 AppleDouble 附属文件 ._<名>.fixups.tsv 不是模块（当模块交给 embed.py 会按文本读二进制头报错）
+ship_ext = load_script(os.path.join(REPO, 'pack/ship_ext.py'), 'ship_ext')
+with tempfile.TemporaryDirectory(prefix='module-order-') as tmp:
+    for n in SHUFFLED:
+        with open(os.path.join(tmp, f'{n}.fixups.tsv'), 'w') as f:
+            f.write(FIXUPS)
+        with open(os.path.join(tmp, f'._{n}.fixups.tsv'), 'wb') as f:
+            f.write(b'\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X        \x00\x02\x00\x00\x00\x09\x00\x00\x00\x32\x00\x00\x0e\xb0')
+    check('⑤ ship_ext.modules：跳过 AppleDouble ._*、其余按 Horizon 序', ship_ext.modules(tmp) == WANT)
+
 print(f"{'不通' if fails else '通'} module_order：{fails} 处不符")
 sys.exit(1 if fails else 0)

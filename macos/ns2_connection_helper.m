@@ -24,6 +24,7 @@ static int listenFD = -1;
 static int clientFD = -1;
 static const char *socketPath;
 static pthread_mutex_t relayLock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t sendLock = PTHREAD_MUTEX_INITIALIZER;   // 串行化对 clientFD 的整包 send：输入变化直发（receive_input）与 8ms 心跳并发，流式 send 交错会把定长包接错位，游戏端按魔数校验、错位即断开
 static ns2_relay_packet snapshot;
 // 玩家 2（两只 Joy-Con 各一位玩家时槽 1 那只，#520 D）：头部同 snapshot、player = 1；只带按键 / 摇杆 / 型号（体感 / 鼠标 / 震动跟玩家 1 走）
 static ns2_relay_packet second;
@@ -94,6 +95,12 @@ static void receive_assign(int link, ns2_kind kind, ns2_assign_gesture gesture, 
     emit_line(@{@"assign": @{@"link": @(link), @"kind": @(kind), @"gesture": @(gesture), @"id": @(identifier ?: "")}});
 }
 
+// 认手柄：面板开着时任一只有新按下的键就报给启动器（玩家列表那一行亮一下；NS2Transport.h ns2_press_callback）
+static void receive_press(int link, const char *identifier, uint64_t buttons, int side, void *context) {
+    (void)context;
+    emit_line(@{@"press": @{@"link": @(link), @"id": @(identifier ?: ""), @"buttons": @(buttons), @"side": @(side)}});
+}
+
 // 分配完成（启动器 stdin `assign done {json}`）：split = 两只 Joy-Con 各一位玩家、first = 玩家 1 那只的 id、keep = 登记了的 id；没登记的断开（同原机）
 static void apply_assignment(NSDictionary *plan) {
     ns2_set_assign_mode(0);
@@ -131,6 +138,9 @@ static void emit_status(ns2_status status, const char *message, void *context) {
         ns2_get_info(&info);
         NSMutableDictionary *payload = [@{
             @"status": @(status),
+#ifdef NS2_SCAN_SECONDS
+            @"scanSeconds": @(NS2_SCAN_SECONDS),   // 这次编进来的扫描秒数：启动器「搜索 / 连接中」显示多久照它
+#endif
             @"message": message ? [NSString stringWithUTF8String:message] ?: @"" : @"",
             @"name": info.name[0] ? [NSString stringWithUTF8String:info.name] ?: @"" : @"",
             @"identifier": info.identifier[0] ? [NSString stringWithUTF8String:info.identifier] ?: @"" : @"",
@@ -144,13 +154,25 @@ static void emit_status(ns2_status status, const char *message, void *context) {
     }
 }
 
+// 输入变化直发（11-12 延迟管线调研）：此前输入要等 8ms 心跳整包推给游戏端，平均多等半个心跳、最坏一整个；
+//   变化即发后心跳只留给状态 / 体感 / 保活。整包空闲重发（部分手柄没输入也按拍整包上报）不发。
+static void send_snapshot(void);
+
 static void receive_input(const ns2_state *state, void *context) {
     (void)context;
     ns2_kind kind = ns2_get_output_kind();   // 拼对 / 拆对不一定伴随状态变化，跟着输入刷新
+    int changed = 0;
     pthread_mutex_lock(&relayLock);
-    if (snapshot.ready) snapshot.state = *state;
-    snapshot.kind = (uint8_t)kind;
+    if (snapshot.ready && memcmp(&snapshot.state, state, sizeof snapshot.state)) {
+        snapshot.state = *state;
+        changed = 1;
+    }
+    if (snapshot.kind != (uint8_t)kind) {
+        snapshot.kind = (uint8_t)kind;
+        changed = 1;
+    }
     pthread_mutex_unlock(&relayLock);
+    if (changed) send_snapshot();
 }
 
 static void receive_player(int player, ns2_kind kind, const ns2_state *state, void *context) {
@@ -196,6 +218,9 @@ static void *stdin_main(void *context) {
             pthread_mutex_unlock(&filterLock);
             continue;
         }
+        if (!strcmp(line, "scan") || !strcmp(line, "scan\n")) { ns2_rescan(); continue; }   // 手柄面板开着：再搜一轮好接上别的手柄（已连着手柄的链路不撤，ns2_rescan 会略过）
+        if (!strncmp(line, "press start", 11)) { ns2_set_press_watch(1); continue; }   // 手柄面板打开：按键时让玩家那一行亮一下
+        if (!strncmp(line, "press stop", 10)) { ns2_set_press_watch(0); continue; }
         if (!strncmp(line, "assign start", 12)) { ns2_set_assign_mode(1); ns2_rescan(); continue; }   // 分配中继续搜，好接更多手柄
         if (!strncmp(line, "assign cancel", 13)) { ns2_set_assign_mode(0); continue; }
         if (!strncmp(line, "assign done ", 12)) {
@@ -395,22 +420,22 @@ static void send_snapshot(void) {
     packet.mouse_kind = mouse.known ? (uint8_t)mouse.kind : 0;
     if (mouse.known) packet.mouse = (ns2_relay_mouse){mouse.x, mouse.y, mouse.surface, mouse.distance};
 
+    pthread_mutex_lock(&sendLock);
     ssize_t sent = send(fd, &packet, sizeof packet, MSG_DONTWAIT);
-    if (sent != (ssize_t)sizeof packet) { drop_client(fd); return; }
-    if (sendSecond) {
-        sent = send(fd, &player2, sizeof player2, MSG_DONTWAIT);
-        if (sent != (ssize_t)sizeof player2) { drop_client(fd); return; }
-    }
+    int ok = sent == (ssize_t)sizeof packet;
+    if (ok && sendSecond) ok = send(fd, &player2, sizeof player2, MSG_DONTWAIT) == (ssize_t)sizeof player2;
     // 别组的玩家（玩家号 2 起）：连着就每拍发，断了补一包 ready = 0
-    for (int p = 2; p < NS2_RELAY_PLAYERS; p++) {
+    for (int p = 2; ok && p < NS2_RELAY_PLAYERS; p++) {
         ns2_relay_packet x;
         pthread_mutex_lock(&relayLock);
         int due = extraDirty[p] || extra[p].ready;
         x = extra[p]; extraDirty[p] = 0;
         pthread_mutex_unlock(&relayLock);
         if (!due || x.magic != NS2_RELAY_MAGIC) continue;
-        if (send(fd, &x, sizeof x, MSG_DONTWAIT) != (ssize_t)sizeof x) { drop_client(fd); return; }
+        ok = send(fd, &x, sizeof x, MSG_DONTWAIT) == (ssize_t)sizeof x;
     }
+    pthread_mutex_unlock(&sendLock);   // 一拍的几包整组串行（#771：输入变化直发与 8ms 心跳并发，交错会把定长包接错位）；放锁后再断开
+    if (!ok) drop_client(fd);
 }
 
 static int create_listener(const char *path) {
@@ -573,6 +598,7 @@ int main(void) {
         configure_bonding();
         ns2_set_player_callback(receive_player);
         ns2_set_assign_callback(receive_assign);
+        ns2_set_press_callback(receive_press);
         pthread_t commandThread;
         if (!pthread_create(&commandThread, NULL, stdin_main, NULL)) pthread_detach(commandThread);
         ns2_set_joycon_raw(1);   // 单只 Joy-Con 报原始方向（通道 v2），游戏宿主按游戏样式决定转不转（macos/ns2_controller.c，#520 A）

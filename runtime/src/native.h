@@ -7,6 +7,7 @@
 #include <string.h>
 #include <dlfcn.h>
 #include "s2a_native.h"
+#include "s2a_lowva.h"   // S2A_VMTAG_*：宿主自有映射的虚存标签
 #include <pthread.h>
 // 给我方宿主线程起名（11-04 能耗线：「[能耗]」行的耗能前 6 线程只认名字，没名字的只剩线程号，Pokopia 一条吃半个核的宿主线程认不出是谁）。
 //   名字 ≤ 15 字节 ASCII（Linux / 安卓上限 16 含结尾），苹果 / 非苹果签名不同
@@ -40,6 +41,7 @@ __attribute__((weak)) void s2a_logcon_flush(void) {}
 #ifdef S2A_LOGCAP_IMPL
 void s2a_log_out(int fd, const char *p, size_t n);
 #else
+#define S2A_LOG_OUT_WEAK 1   // 本编译单元已有弱定义（单测把多份源码拼进同一单元时，后面的强定义要让位，见 runtime/tests/t_thread.c）
 __attribute__((weak)) void s2a_log_out(int fd, const char *p, size_t n) { ssize_t w = write(fd, p, n); (void)w; }
 #endif
 // 一行日志一次写出：多线程同时打不穿插（旧库 sw.h 同做法）
@@ -67,7 +69,7 @@ __attribute__((format(printf, 1, 2))) static inline void s2a_log_line2(const cha
 // Android 地址窗口：平台实现先按最大值整块保留（platform/vawin_android.inc），起局时
 // svc_mem 用 s2a_layout_need 算出本款跨度再 s2a_window_trim 收缩。非 Android 由 vawin.c
 // 直接按本款跨度预留，不再使用这个最大值常量。
-#define S2A_WIN_SIZE (68ull << 30)
+#define S2A_WIN_SIZE (72ull << 30)   // 63 GiB 别名区 + 栈区 2 GiB（Horizon 真值）+ 堆 + 模块放得下（layout_android.inc）
 #endif
 void s2a_log_session_start(void);   // iOS 主线程：正式激活才轮换日志 / 切 fd / 起控制台副本；幂等
 // energy.c：进程能耗分账（快照单位：纳秒 / 纳焦；s2a_energy_log 打「上次调用以来」一行）
@@ -104,6 +106,9 @@ void s2a_window_reserve(void);                 // 一次性预留；所有启动
 void s2a_window_get(uint64_t *base, uint64_t *size);
 uint64_t s2a_window_spare(void);              // 窗口之外还能给宿主大映射的地址（收尾还回 + 窗口所在空洞其余部分，vawin.c）
 void s2a_window_need(uint64_t *need, uint64_t *fit);   // 本款要的跨度、本机 2^39 以下最大能放的一块（自检提示用）
+uint64_t s2a_window_hole_top(void);   // 2^39 / 2^36 以下那次找空洞的上界（与系统地址上限取小；没算到 0）
+int s2a_window_hi36_tried(void);   // 36 位款是否在 2^36 以上按 2^36 对齐的各块里找过窗口（#1419）
+void s2a_window_fatal_msg(char *out, size_t cap, uint64_t need, uint64_t fit, uint64_t hole_top, int hi36);   // 窗口没占到时的 FATAL 文字（纯函数）
 // 客体窗口里在内存 / 已压缩换出的字节（mincore 扫整窗，心跳用）
 void s2a_window_resident(uint64_t *res, uint64_t *out);
 int s2a_guest_fd(void); int s2a_guest_zero(uint64_t a, uint64_t n); void *s2a_guest_map_any(uint64_t len);   // vawin.c：客体内存文件后备（S2A_GUEST_FILE）——文件 fd（-1 = 没开）；还页打洞 + 原偏移重映射成不可访问（不在窗口 / 没开 = 0）
@@ -139,6 +144,7 @@ int   s2a_tail_has(const void *p);
 void  s2a_tail_note(char *o, size_t cap);
 void s2a_fd_usage(int *open_n, uint64_t *soft, uint64_t *hard);   // 已开文件句柄数（探到 min(软上限, 4096)）+ RLIMIT_NOFILE 软 / 硬上限
 int s2a_gc_limit_pick(uint64_t largest); void s2a_gc_limit_apply(void);   // GC 上限自适应三档（gclimit.c）：0 不设 / 1 总 2 GB / 2 分堆
+uint64_t s2a_window_for_span(uint64_t learned);                     // vawin.c：按学到的跨度该给多大窗口（learned × 1.25 + 2 GiB，1 GiB 取整；0 = 没学到、不限）
 uint64_t s2a_window_host_below(uint64_t fit, uint64_t learned);   // vawin.c：放不下标准布局时窗口下方留给宿主多少（按学到的跨度，#783）
 uint64_t s2a_window_span_seen(uint64_t pid);                        // vawin.c：本款本机学到的地址跨度（wire/<程序号>/span_peak；没有 = 0）
 uint64_t s2a_mem_span_now(void);                                     // svc_mem.c：本局已碰到的地址跨度（碰到的最高地址 − 窗口基址）
@@ -170,6 +176,7 @@ uint64_t s2a_app_pool(void); void s2a_app_pool_set(uint64_t v);   // layout.c
 #define S2A_HEAP_DEFAULT (S2A_APP_POOL & ~((2ull << 20) - 1))
 // 标准布局（各区全有宿主地址）的跨度，含模块段；0 = 地址空间类型不支持
 uint64_t s2a_layout_need(uint32_t as_type, uint64_t sys_resource_size, uint64_t module_span);
+uint64_t s2a_alias_report_size(uint64_t alias_base, uint64_t alias_size, uint64_t win_end, uint64_t hole, uint64_t need, int alias_gb, int full_flag);   // layout.c：报给游戏的别名区大小（#1441）
 // 按宿主占到的窗口 [win_base, +win_size) 排布局：放得下标准布局就照标准排，放不下就小区在前、别名区伸出窗口。
 //   out->win_size = 布局实际用的宿主地址（其余还给宿主）；*mod_base = 模块段起点。0 成功，-1 地址空间类型不支持，-2 窗口连前段都放不下
 //   alias_gb：出包静态认出的开局别名区大区（GiB，含 SDK 元数据；0 = 没有）——非 0 即别名优先，乙里放得下它时别名区收到窗口末、不伸出；
@@ -209,6 +216,11 @@ void s2a_envfile_log_flush(void);   // 启动单线程调用，输出后清空�
 uint64_t guest_ns(void);
 uint64_t guest_tick(void);      // 系统计数器（Switch 19.2 MHz / Switch 2 31.25 MHz，s2a_guest_tick_hz）
 uint64_t s2a_guest_tick_hz(void); uint64_t s2a_ns_to_tick(uint64_t ns);
+// 后端已校准的宿主时刻（plat_now_ns 域；安卓为 CLOCK_MONOTONIC）转游戏计数器。
+// 苹果 plat_now_ns 是 mach_absolute_time 域，不能直接传 CLOCK_MONOTONIC；首版 Metal 不宣告时间戳能力。
+// 仅接受当前冻结/运行映射区间内的非未来样本；跨冻结边界的历史样本无法还原，返回 0 且不改 out。
+// 成功返回 1，*out 可以为 0。任意线程可调；不以完成回调的 CPU 时刻替换输入。
+int s2a_guest_tick_from_host_ns(uint64_t host_ns, uint64_t *out);
 void s2a_thread_set_hw_cores(int n); int s2a_thread_hw_cores(void);   // thread.c：硬件核数（Switch 4、Switch 2 8）
 // 游戏时钟按原因冻结（1 后台会话、2 系统键盘、3 Mac 失焦、4 安卓退后台），全部解除才接着走（os.c）。
 void guest_clock_freeze_for(int reason, int on);

@@ -7,6 +7,10 @@
 #   GLSLC 离线编出了 .glslc → shader_split 拿到 DM_GLSLC_CAPTURE=extract/glslc_capture、要编时先编宿主；离线编失败 → 退出 3、红行带原因
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); bad=0
 export S2A_JOBS=6
+# 被测阶段只为 prog_id 才 source pack/srcs.sh，而 srcs.sh 一 source 就按 pack/nx_unpack 源码哈希定 nx_unpack、没编过就 dotnet build。
+#   假仓库没有 nx_unpack 源码：每次调阶段都对空工程 dotnet build 一次（本单测 60 多次；门禁里 dotnet 还要排同树 C# 编译锁），与判据无关。
+#   本单测不解包，按 srcs.sh 的接口给 S2A_NX_UNPACK（从不执行）
+export S2A_NX_UNPACK=$T/nx_unpack-unused
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
 mkdir -p $T/repo/pack $T/repo/tools $T/repo/graphics/tools/direct $T/repo/graphics/tools/shbake $T/repo/translator $T/repo/graphics/nvn/games $T/repo/graphics/nvn/tools $T/roots
 cp "$H/pack/resource_input_key.py" $T/repo/pack/; cp "$H/pack/stage_keyfiles.sh" $T/repo/pack/; cp "$H/tools/stage_deps.py" $T/repo/tools/; cp -R "$H/tools/stage_deps_hook" $T/repo/tools/   # 各阶段实际读入进键（pack/stage_keyfiles.sh，10-30）
@@ -14,6 +18,7 @@ cp "$H/pack/roots.sh" "$H/pack/srcs.sh" "$H/pack/stage_extract.sh" "$H/pack/ue_p
 cp "$H/graphics/tools/direct/extract.sh" $T/repo/graphics/tools/direct/; cp "$H/graphics/tools/shbake/pak_crypto.py" "$H/graphics/tools/shbake/unreal_pak.py" "$H/graphics/tools/shbake/zstd_lib.py" $T/repo/graphics/tools/shbake/
 # romfs_list.py：仓库里唯一的 RomFS 遍历（11-03），被测脚本经它列 RomFS
 cp "$H/graphics/nvn/tools/romfs_list.py" $T/repo/graphics/nvn/tools/
+mkdir -p "$T/repo/tools"; cp "$H/tools/pool_workers.py" "$T/repo/tools/"   # romfs_list / pak_crypto 经它取核数（#1332：核数唯一来源）
 cp "$H/graphics/nvn/tools/gfx_api.py" $T/repo/graphics/nvn/tools/
 for f in translator/uepak.py translator/unityfs.py graphics/nvn/games/game.py graphics/nvn/tools/nso_syms.py graphics/nvn/tools/lz4blk.py; do echo x > $T/repo/$f; done   # 只进键，假抽取器不导入
 # 假抽取器：记一行「工具 J DM_GAME DM_UE_SHADERS」（另记一行「splitcap DM_GLSLC_CAPTURE」），出最小产物；FAKE_FAIL=split 时 shader_split 失败；

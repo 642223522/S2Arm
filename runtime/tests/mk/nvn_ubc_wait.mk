@@ -1,6 +1,6 @@
 # 统一缓冲拷贝交接（os_sync_wait_on_address，照 nxnative，MIT）：生产 nvn_mtl.m，只跑 CPU，graphics/nvn/tests/t_nvn_ubc_wait.m
 NATIVE_TEST_OWN += nvn_ubc_wait
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 $(BUILD)/tests/t_nvn_ubc_wait: graphics/nvn/tests/t_nvn_ubc_wait.m $(NVN_MTL_DEPS) $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \
 	  $(NATIVE_INC) -Igraphics/nvn/host -Igraphics/nvn/gfx/nvn -Igraphics/nvn/gfx/nvn/include -Igraphics/nvn/third_party/vulkan-headers/include \

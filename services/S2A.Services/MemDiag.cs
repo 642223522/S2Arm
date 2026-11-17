@@ -95,7 +95,7 @@ namespace S2A.Services
 
         // 读数来自 libSystem（苹果平台独有）：别的平台不碰 P/Invoke，直接回「取不到」-1（审计 #859：原先无条件调，Linux 上
         //   Host.Boot 里抛 DllNotFoundException，单测主程序在 try 之外直接崩）
-        private static bool HasLibSystem => OperatingSystem.IsMacOS() || OperatingSystem.IsIOS() || OperatingSystem.IsMacCatalyst();
+        private static bool HasLibSystem => OperatingSystem.IsMacOS() || (OperatingSystem.IsIOS() || OperatingSystem.IsTvOS()) || OperatingSystem.IsMacCatalyst();   // 平台例外：tvOS 与 iOS 同一套内存诊断（同为 Darwin 移动系统，libSystem / 内存上限口径相同）
 
         // proc_pid_rusage(RUSAGE_INFO_V2) 的 ri_phys_footprint（偏移 72：uuid 16 + 7 个 u64）：jetsam 按它算
         public static long Footprint()
@@ -118,7 +118,7 @@ namespace S2A.Services
         // os_proc_available_memory：只有 iOS 有（Mac 上没有这个符号）
         public static long Available()
         {
-            if (!OperatingSystem.IsIOS())
+            if (!(OperatingSystem.IsIOS() || OperatingSystem.IsTvOS()))   // 平台例外：tvOS 与 iOS 同一套内存诊断（同为 Darwin 移动系统，libSystem / 内存上限口径相同）
             {
                 return -1;
             }

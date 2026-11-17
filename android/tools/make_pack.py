@@ -146,10 +146,14 @@ def rewrite(exefs, staging):
     #   改写器按它打的读槽指令要 runtime/src/fps.c 往键页槽里写值（槽没人写游戏就读到 0），所以交给改写器的必须是
     #   同一份随包进游戏数据根、由 fps.c 起局读的表（entries_from_root 收 fps.tsv；android/native/runtime/runtime.c 起表）
     # 社区补丁行（S2A_CPATCH_TSV）同理不从环境继承：只交本次按安卓改写器出的那份（下面 cpatch 轮），它和进包的 cpatch.tsv 是同一次 plan 出的
-    env = {k: v for k, v in os.environ.items() if k not in ('S2A_FPS_TSV', 'S2A_CPATCH_TSV')}
+    env = {k: v for k, v in os.environ.items() if k not in ('S2A_FPS_TSV', 'S2A_CPATCH_TSV', 'S2A_FIX_TSV')}
     fps_table = Path(exefs).parent / 'fps.tsv'
     if fps_table.is_file():
         env['S2A_FPS_TSV'] = str(fps_table)
+    # 游戏缺陷修补表（同 pack/orch/stages.py）：仓库 runtime/fix/<main 构建号前 16 位>.tsv
+    fix_table = Path(REPO) / 'runtime/fix' / (Path(exefs, 'main').read_bytes()[0x40:0x48].hex() + '.tsv') if Path(exefs, 'main').is_file() else None
+    if fix_table and fix_table.is_file():
+        env['S2A_FIX_TSV'] = str(fix_table)
     env.update(S2A_TARGET='android',
                S2A_REWRITE_SPIN=os.environ.get('S2A_REWRITE_SPIN', '0'),
                S2A_SDK_ADDR_CUT=os.environ.get('S2A_SDK_ADDR_CUT', '1'))
@@ -326,9 +330,17 @@ def stage_system_data(root, staging, sysdata=None):
     return str(existing)
 
 
+def romfs_image(root):
+    """产物根的 RomFS 是镜像形态：romfs/ 目录不在、旁边是标准 RomFS 镜像 romfs.std（普通文件）"""
+    return not os.path.isdir(os.path.join(root, 'romfs')) and os.path.isfile(os.path.join(root, 'romfs.std'))
+
+
 def entries_from_root(root, staging, sysdata=None, direct_vulkan=False):
     """(pack path, source) pairs, as pack/ipa.sh chooses them, plus modules/."""
-    need = [('exefs/main.npdm', 'exefs/main.npdm'), ('romfs', 'romfs'), ('ctl/control.nacp', 'ctl/control.nacp')]
+    # RomFS 两种形态（约定同 graphics/nvn/tools/romfs_list.py、服务层 Application.cs StdOf / OpenStd）：romfs/ 目录，
+    #   或目录不在、只有标准 RomFS 镜像 romfs.std（出包缺省不落散文件，8fe66d7fe）——镜像整份进包，起局时服务层直接读它
+    image = romfs_image(root)
+    need = [('exefs/main.npdm', 'exefs/main.npdm'), ('romfs.std', 'romfs.std') if image else ('romfs', 'romfs'), ('ctl/control.nacp', 'ctl/control.nacp')]
     for _, rel in need:
         if not os.path.exists(os.path.join(root, rel)):
             sys.exit(f'{root} has no {rel}')
@@ -336,7 +348,8 @@ def entries_from_root(root, staging, sysdata=None, direct_vulkan=False):
     out = [(name, os.path.join(root, rel)) for name, rel in need]
     overlay = os.path.join(root, 'ui_overlay', 'romfs')
     if os.path.isdir(overlay):   # 界面布局覆盖层（pack/orch/stages.py _uilayout）：同 pack/pkg_srcs.py，同包内路径后者优先（romfs.s2aidx 按覆盖层大小建）
-        out.append(('romfs', overlay))
+        # 镜像形态没有 romfs/ 可叠：覆盖层原样放 ui_overlay/romfs/，服务层 OpenStd(镜像, <游戏目录>/ui_overlay/romfs) 同路径读覆盖那份
+        out.append(('ui_overlay/romfs' if image else 'romfs', overlay))
     # s2a_caps.tsv: the per-game capability list (fullscreen / 60 fps on unless a strong signal; rewrite stage writes it into the
     # product root for every platform) -- runtime.c applies it from the game data dir before loading modules, like iOS / Mac
     # fps.tsv：60 帧表与改写器读的是同一份（rewrite()），fps.c 从游戏数据根读（#48 D2）
@@ -364,6 +377,12 @@ def entries_from_root(root, staging, sysdata=None, direct_vulkan=False):
             # Preserve the Android direct offline library only; do not bundle Metal outputs.
             direct = os.path.join(shaders, 'vulkan', 'direct')
             if os.path.isdir(direct): out.append(('shaders/vulkan/direct', direct))
+            # #1434 新图形层读的离线库（LibPack，nvk_shader.c → libpack_vk.c）在 shaders/direct/b-<链>-vk/：只收 Vulkan 版，
+            #   同目录下 Apple 的 Metal 库不进安卓包。原先只收上面那份描述文件式的旧库，出库成功也到不了手机（11-13 奥日 11052 个程序全现编）
+            libs = os.path.join(shaders, 'direct')
+            if os.path.isdir(libs):
+                out += [(f'shaders/direct/{n}', os.path.join(libs, n)) for n in sorted(os.listdir(libs))
+                        if n.startswith('b-') and n.endswith('-vk') and os.path.isdir(os.path.join(libs, n))]
         else:
             out += [(f'shaders/{n}', os.path.join(shaders, n)) for n in sorted(os.listdir(shaders)) if n != 'work']
     # 社区补丁装载器表（#48 D2）：本次按安卓改写器出的那份已写进 staging（随下面的 modules/ 进包）；产物根里苹果改写阶段留下的 cpatch.tsv 不进安卓包
@@ -598,7 +617,8 @@ def write_artifact(out, index_sha, files, total, graphics=None):
         'target': 'android', 'guestAbi': 'aarch64', 'rewriteAbi': REWRITE_ABI,
         'runtime': {'version': RUNTIME_VERSION, 'backend': 'vulkan'},
         'package': {'manifest': 'manifest.json', 'indexSha256': index_sha, 'files': files, 'bytes': total},
-        'npdm': 'exefs/main.npdm', 'control': 'ctl/control.nacp', 'romfs': 'romfs', 'modules': modules,
+        'npdm': 'exefs/main.npdm', 'control': 'ctl/control.nacp', 'modules': modules,
+        'romfs': 'romfs.std' if os.path.isfile(os.path.join(out, 'romfs.std')) else 'romfs',   # 镜像形态（romfs_image）：启动校验按文件核
         'createdAt': stamp.isoformat(timespec='seconds').replace('+00:00', 'Z'),
         'toolchain': {'rewriter': f'runtime/rewriter@{REWRITE_ABI}', 'packer': 'android/tools/make_pack.py@1'},
     }

@@ -1,3 +1,4 @@
+#if !os(tvOS)   // tvOS 不编本文件：触屏虚拟手柄布局编辑（电视版库界面见 TVLibraryView.swift，UPSTREAM.md「我方改动」）
 import SwiftUI
 
 /// The touch controls' layout editor (#414), a screen of the shell settings: the controls of one layout drawn as the game draws them, on
@@ -515,3 +516,4 @@ extension TouchLayout.Control {
         }
     }
 }
+#endif   // !os(tvOS)

@@ -434,6 +434,11 @@ async fn run(a: &[String]) -> Result<(), String> {
             if afc.get_file_info(remote.clone()).await.is_ok() { afc.remove_all(remote.clone()).await.map_err(|e| format!("删 {remote} 失败：{e}"))?; }
             println!("rm {remote}");
         }
+        "mv" => {   // 容器内改名（通用壳程序包，11-16：catalogue.json 先写临时名、写完改名就位，手机上看不到写了一半的清单）；目标在就覆盖
+            let (from, to) = (a[4].trim_start_matches('/').to_string(), a.get(5).map(|s| s.trim_start_matches('/').to_string()).ok_or("mv 要 <源> <目标> 两个远端路径")?);
+            afc.rename(from.clone(), to.clone()).await.map_err(|e| format!("改名 {from} → {to} 失败：{e}"))?;
+            println!("mv {from} → {to}");
+        }
         "free" => {   // 手机可写字节（推包前核空间）；调用约定与其它操作同，第 5 个参数占位
             let i = afc.get_device_info().await.map_err(|e| e.to_string())?; println!("{}", i.free_bytes);
         }
@@ -456,6 +461,6 @@ async fn main() {
     let a: Vec<String> = std::env::args().collect();
     // launch 可以不带环境变量（多款容器推完拉起到游戏库，tools/push_pack.py Devpush.launch({})）：原先一律要 ≥ 5 个参数，这种调用只打用法、退 2，
     //   Windows 上「分开的文件」资源包推完永远拉不起 App（11-11 Windows 实机实测）
-    if a.len() < 5 && !(a.len() == 4 && (a[3] == "launch" || a[3] == "find-s2arm" || a[3] == "devices")) { eprintln!("用法：s2a-devpush <udid> <包名> put <本地> <远端> | put-at <本地> <远端> <偏移> | head <远端> <字节数> <本地> | get <远端> <本地> | ls <目录>"); std::process::exit(2); }
+    if a.len() < 5 && !(a.len() == 4 && (a[3] == "launch" || a[3] == "find-s2arm" || a[3] == "devices")) { eprintln!("用法：s2a-devpush <udid> <包名> put <本地> <远端> | put-at <本地> <远端> <偏移> | head <远端> <字节数> <本地> | get <远端> <本地> | ls <目录> | mv <远端> <远端>"); std::process::exit(2); }
     if let Err(e) = run(&a).await { eprintln!("{e}"); std::process::exit(1); }
 }

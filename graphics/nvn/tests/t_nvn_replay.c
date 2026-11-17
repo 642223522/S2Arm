@@ -18,7 +18,9 @@
 #include <string.h>
 
 static int g_fail, g_checks;
-#define CHECK(c) do { g_checks++; if (!(c)) { g_fail++; printf("【红】 %s:%d  %s\n", __FILE__, __LINE__, #c); } } while (0)
+// 红行立刻刷出：dirty_span_memo_mutation_test.py 经管道读本进程的输出，管道上 stdio 整块缓冲；变异体放行池外访问后，
+// 后面的用例可能读写池外而崩溃（崩不崩取决于平台的静态布局），没刷出的红行会随进程一起丢，脚本就看不到「红在哪条断言」。
+#define CHECK(c) do { g_checks++; if (!(c)) { g_fail++; printf("【红】 %s:%d  %s\n", __FILE__, __LINE__, #c); fflush(stdout); } } while (0)
 
 // ---------- 平台替身 ----------
 static int g_red_lines; static char g_last_red[200];
@@ -28,7 +30,13 @@ void nvn_plat_log(int level, const char *cls, const char *text) { (void)cls; if(
 static int g_flag_finish_lag;   // 用例设：开关 nvk_finish_lag 的值
 static int g_flag_sync_lag;     // 用例设：开关 nvk_sync_lag 的值（产品缺省 1＝允许一格在飞；用例固定 0，测的是「真等」这条契约）
 static int g_flag_state_keep = 1, g_flag_rt_cont = 1, g_flag_clear_park = 1, g_flag_pass_area = 1;   // 用例设：开关 nvk_state_keep / nvk_rt_cont / nvk_clear_park / nvk_pass_area 的值（缺省同产品：都开）
+static int g_flag_pool_memo = 1;   // 用例设：开关 nvk_pool_memo 的值（缺省同产品：开）；备忘每 4096 次查找才重读一次，换值后要用 pm_flag() 推一下
+static int g_flag_buf_blocks;      // 分块验证只在明确开启时尝试；产品默认关闭。
+static int g_flag_vf_key = 1;      // 用例设：开关 nvk_vf_key 的值（缺省同产品：视图表按存储认视图）；每 256 次取视图重读一次，换值后要用 vf_push() 推一下
 int nvn_plat_flag(const char *name, int dflt) {
+    if (!strcmp(name, "nvk_buf_blocks")) return g_flag_buf_blocks;
+    if (!strcmp(name, "nvk_pool_memo")) return g_flag_pool_memo;
+    if (!strcmp(name, "nvk_vf_key")) return g_flag_vf_key;
     if (!strcmp(name, "nvk_finish_lag")) return g_flag_finish_lag;
     if (!strcmp(name, "nvk_sync_lag")) return g_flag_sync_lag;
     if (!strcmp(name, "nvk_state_keep")) return g_flag_state_keep;
@@ -64,29 +72,47 @@ static int g_ft_hit;   // 脏页追踪的替身（真的在 hle_nvn.c）：nvn_f
 int nvn_ft_written(const tex_t *t) { if (g_ft_hit) nvn_be_tex_cpu_written(t); return g_ft_hit; }   // 与 hle_nvn.c 一致：命中时它自己记「CPU 写过」（会把 GPU 写过的归属清掉）
 
 // ---------- 后端替身：段只记账；完成由用例手动触发 ----------
-struct nvn_gpu_cmd_s { int live, is_pre; };
+struct nvn_gpu_cmd_s { int live, is_pre; uint32_t nts; nvn_gpu_timestamp_result ts[64]; };
 static struct nvn_gpu_cmd_s g_fake_cmd, g_fake_pre;   // 主段 / 前置段各一个替身
 static int g_aborts;
 static int g_begins, g_commits;
-static struct { nvn_gpu_done_fn fn; void *user; uint64_t signal; } g_pend[8]; static int g_npend, g_main_commits;   // g_main_commits：不算前置段
+static struct { nvn_gpu_done_fn fn; void *user; uint64_t signal; uint32_t nts; nvn_gpu_timestamp_result ts[64]; } g_pend[72]; static int g_npend, g_main_commits;   // g_pend：一次提交最多 64 个中间值 + 主段；g_main_commits：不算前置段
 static uint64_t g_fdone;
 static uint32_t g_occ_slots_decl; static int g_occ_log[32], g_nocc_log; static int g_rcond;
 int s2a_nvn_render_cond(void) { return g_rcond; }
+static int g_ts_calls; static uint32_t g_ts_types[128];
+#ifdef S2A_TEST_TS_ALLOC
+int s2a_test_fail_ts_alloc;
+#endif
+void nvn_gpu_timestamp(nvn_gpu_cmd c, uint32_t slot, uint32_t type) {
+    CHECK(slot < 64); if (slot >= 64) return;
+    if (g_ts_calls < 128) g_ts_types[g_ts_calls] = type;
+    g_ts_calls++; c->ts[slot] = (nvn_gpu_timestamp_result){1000 + 100 * (uint64_t)g_ts_calls, 1}; c->nts = slot + 1;
+}
 void nvn_gpu_occlusion(nvn_gpu_cmd c, int32_t slot) { (void)c; if (g_nocc_log < 32) g_occ_log[g_nocc_log] = slot; g_nocc_log++; }
 static int g_begin_fail_at;   // 第几次开主段失败（1 = 下一次；0 = 都成功）
 nvn_gpu_rc nvn_gpu_cmd_begin(const nvn_gpu_cmd_desc *d, nvn_gpu_cmd *out, nvn_gpu_err *err) { (void)err; g_begins++;
     struct nvn_gpu_cmd_s *c = d && d->label && strstr(d->label, "pre") ? &g_fake_pre : &g_fake_cmd;
     if (c == &g_fake_cmd && g_begin_fail_at && !--g_begin_fail_at) { *out = NULL; if (err) err->why[0] = 0; return (nvn_gpu_rc){NVN_GPU_E_OOM}; }
-    c->live = 1; c->is_pre = c == &g_fake_pre; *out = c;
+    c->nts = 0; memset(c->ts, 0, sizeof c->ts); c->live = 1; c->is_pre = c == &g_fake_pre; *out = c;
     if (!c->is_pre) g_occ_slots_decl = d ? d->occlusion_slots : 0;
     return (nvn_gpu_rc){NVN_GPU_OK}; }
 void nvn_gpu_cmd_abort(nvn_gpu_cmd c) { c->live = 0; g_aborts++; }
 nvn_gpu_rc nvn_gpu_cmd_commit(nvn_gpu_cmd c, uint64_t signal, nvn_gpu_done_fn done, void *user, nvn_gpu_err *err) {
-    (void)err; c->live = 0; g_commits++; if (!c->is_pre) g_main_commits++; g_pend[g_npend].fn = done; g_pend[g_npend].user = user; g_pend[g_npend].signal = signal; g_npend++; return (nvn_gpu_rc){NVN_GPU_OK}; }
+    (void)err; c->live = 0; g_commits++; if (!c->is_pre) g_main_commits++; g_pend[g_npend].fn = done; g_pend[g_npend].user = user; g_pend[g_npend].signal = signal; g_pend[g_npend].nts = c->nts; memcpy(g_pend[g_npend].ts, c->ts, sizeof c->ts); g_npend++; return (nvn_gpu_rc){NVN_GPU_OK}; }
 nvn_gpu_rc nvn_gpu_fence_wait(uint64_t v, uint64_t timeout_ns, nvn_gpu_err *err) { (void)timeout_ns; (void)err; return (nvn_gpu_rc){v <= g_fdone ? NVN_GPU_OK : NVN_GPU_E_TIMEOUT}; }
 // 贴图 / 视图 / 采样器 / 上传：只记账
-struct nvn_gpu_tex_s { nvn_gpu_tex_desc d; }; struct nvn_gpu_view_s { nvn_gpu_tex of; int has_v; int rid; }; struct nvn_gpu_samp_s { int x; };
-static int g_tex_creates, g_tex_releases, g_view_creates, g_view_releases, g_samp_creates, g_samp_releases, g_tex_create_fail;
+struct nvn_gpu_tex_s { nvn_gpu_tex_desc d; int ord; uint32_t px[4][4]; }; struct nvn_gpu_view_s { nvn_gpu_tex of; int has_v; int rid; view_t v; nvn_gpu_buf buf; uint64_t off, bytes; uint32_t format; }; struct nvn_gpu_samp_s { int x; };   // ord：后端贴图的递增序号；px：像素替身（4 个 mip × 4 层各一个 32 位字）；v：建视图时收到的视图记录
+static int g_tex_creates, g_tex_releases, g_view_creates, g_view_releases, g_samp_creates, g_samp_releases, g_tex_create_fail, g_tex_ord;
+// 像素替身（视图表按存储认视图的用例用）：每份后端存储有一小块「像素」——4 个 mip × 4 层各一个 32 位字，初值 0。「画」= 往视图指到的（mip，层）那个字里写
+// 一个值；写进去的值要经过视图记录的签名（格式 / 通道映射不同的视图，同一次绘制写进去的字节不同，真 GPU 上也一样）；「读回」= 把存储的 16 个字原样取出。
+// 视图的内容只取决于（后端贴图，视图记录），所以同样的画面序列走新旧两条取视图的路径，每帧读回的像素必须逐字节相同——
+// 不同就说明某次画进了别的存储 / 别的层 / 别的 mip / 用了别种视图。
+static uint32_t view_sig(const struct nvn_gpu_view_s *w) { uint32_t h = 2166136261u ^ (uint32_t)w->has_v; if (w->has_v) for (size_t i = 0; i < sizeof w->v; i++) h = (h ^ ((const uint8_t *)&w->v)[i]) * 16777619u; return h; }
+static void fake_paint(const struct nvn_gpu_view_s *w, uint32_t val) {
+    const uint32_t lvl = w->has_v ? w->v.base_level : 0, layer = w->has_v ? w->v.min_layer : 0;   // 没带视图记录 = 第 0 个 mip、第 0 层
+    if (lvl < 4 && layer < 4) w->of->px[lvl][layer] = val ^ view_sig(w);
+}
 static int g_vid; static int g_released_id[8192]; static int g_nrel;   // 视图生命周期取证：每个视图一个递增 id，release 记下 id
 static int was_view_released(int rid) { for (int i = 0; i < g_nrel; i++) if (g_released_id[i] == rid) return 1; return 0; }
 static uint32_t g_last_usage; static uint16_t g_last_swz;
@@ -94,15 +120,33 @@ static view_t g_vw_last; static int g_vw_last_has;   // 最近一次 view_create
 static struct { uint32_t level, layer; uint64_t pitch, img; int w, h, pre; uint8_t first[64]; } g_up[16]; static int g_nup;
 nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_gpu_err *err) {
     if (g_tex_create_fail) { snprintf(err->why, sizeof err->why, "替身：不支持"); *out = NULL; return (nvn_gpu_rc){NVN_GPU_E_UNSUPPORTED}; }
-    g_tex_creates++; g_last_usage = d->usage; g_last_swz = d->swz; *out = calloc(1, sizeof **out); (*out)->d = *d; return (nvn_gpu_rc){NVN_GPU_OK}; }
+    g_tex_creates++; g_last_usage = d->usage; g_last_swz = d->swz; *out = calloc(1, sizeof **out); (*out)->d = *d; (*out)->ord = ++g_tex_ord; return (nvn_gpu_rc){NVN_GPU_OK}; }
 void nvn_gpu_tex_release(nvn_gpu_tex t) { g_tex_releases++; free(t); }
-nvn_gpu_rc nvn_gpu_view_create(nvn_gpu_tex t, const view_t *v, nvn_gpu_view *out, nvn_gpu_err *err) { (void)err; g_view_creates++; g_vw_last_has = v != NULL; if (v) g_vw_last = *v; *out = calloc(1, sizeof **out); (*out)->of = t; (*out)->has_v = v != NULL; (*out)->rid = ++g_vid; return (nvn_gpu_rc){NVN_GPU_OK}; }
+nvn_gpu_rc nvn_gpu_view_create(nvn_gpu_tex t, const view_t *v, nvn_gpu_view *out, nvn_gpu_err *err) { (void)err; g_view_creates++; g_vw_last_has = v != NULL; if (v) g_vw_last = *v; *out = calloc(1, sizeof **out); (*out)->of = t; (*out)->has_v = v != NULL; if (v) (*out)->v = *v; (*out)->rid = ++g_vid; return (nvn_gpu_rc){NVN_GPU_OK}; }
 void nvn_gpu_view_release(nvn_gpu_view v) { g_view_releases++; if (v && g_nrel < 8192) g_released_id[g_nrel++] = v->rid; free(v); }
-nvn_gpu_rc nvn_gpu_samp_create(const samp_par *p, nvn_gpu_samp *out, nvn_gpu_err *err) { (void)p; (void)err; g_samp_creates++; *out = calloc(1, sizeof **out); (*out)->x = p->ws; return (nvn_gpu_rc){NVN_GPU_OK}; }
+// 环绕的替身语义同真后端（#976）：MIRROR_CLAMP / MIRROR_CLAMP_TO_BORDER 永远具名 UNSUPPORTED；g_samp_no_mce = 设备没有镜像夹到边的扩展。
+static int g_samp_no_mce, g_samp_tries, g_samp_fail_nearest; static samp_par g_samp_last;
+nvn_gpu_rc nvn_gpu_samp_create(const samp_par *p, nvn_gpu_samp *out, nvn_gpu_err *err) {
+    g_samp_tries++; *out = NULL;
+    if (g_samp_fail_nearest && p->magf == NVN_MAG_FILTER_NEAREST) { snprintf(err->why, sizeof err->why, "模拟内存不足"); return (nvn_gpu_rc){NVN_GPU_E_OOM}; }
+    const uint32_t w[3] = {p->ws, p->wt, p->wr};
+    for (int i = 0; i < 3; i++) {
+        const char *why = w[i] == NVN_WRAP_MODE_MIRROR_CLAMP ? "sampler_wrap_mirror_clamp：替身" : w[i] == NVN_WRAP_MODE_MIRROR_CLAMP_TO_BORDER ? "sampler_wrap_mirror_clamp_to_border：替身"
+                        : w[i] == NVN_WRAP_MODE_MIRROR_CLAMP_TO_EDGE && g_samp_no_mce ? "sampler_mirror_clamp_to_edge：替身设备没有扩展" : NULL;
+        if (why) { snprintf(err->why, sizeof err->why, "%s", why); return (nvn_gpu_rc){NVN_GPU_E_UNSUPPORTED}; }
+    }
+    g_samp_creates++; g_samp_last = *p; *out = calloc(1, sizeof **out); (*out)->x = p->ws; return (nvn_gpu_rc){NVN_GPU_OK}; }
 void nvn_gpu_samp_release(nvn_gpu_samp s) { g_samp_releases++; free(s); }
+static uint32_t g_caps_stor[4];   // 用例：这些格式在替身设备上也能当存储图像（默认只有 RGBA8）
 static uint32_t g_caps_nosample = ~0u;   // 用例：这个格式在替身设备上不能直接采样（后端走计算解码的 BC 格式，能力位回 0）
+static uint32_t g_caps_nofilter = ~0u, g_caps_noblend = ~0u;   // #1072：这个格式在替身设备上不能线性过滤 / 不能混合（FMT_FILTER / FMT_BLEND 去掉）
 uint32_t nvn_gpu_format_caps(uint32_t f) { if (f == g_caps_nosample) return 0;
-    return f == NVN_FORMAT_RGBA8 ? NVN_GPU_FMT_SAMPLE | NVN_GPU_FMT_RENDER | NVN_GPU_FMT_STORAGE : f == NVN_FORMAT_R16 || f == NVN_FORMAT_RG32UI || f == NVN_FORMAT_RGBA32UI || f == NVN_FORMAT_RGBA16UI ? NVN_GPU_FMT_SAMPLE | NVN_GPU_FMT_RENDER : NVN_GPU_FMT_SAMPLE; }
+    uint32_t c = f == NVN_FORMAT_RGBA8 ? NVN_GPU_FMT_SAMPLE | NVN_GPU_FMT_RENDER | NVN_GPU_FMT_STORAGE | NVN_GPU_FMT_BLEND : f == NVN_FORMAT_R16 || f == NVN_FORMAT_RG32UI || f == NVN_FORMAT_RGBA32UI || f == NVN_FORMAT_RGBA16UI ? NVN_GPU_FMT_SAMPLE | NVN_GPU_FMT_RENDER : NVN_GPU_FMT_SAMPLE;
+    for (int k = 0; k < 4; k++) if (g_caps_stor[k] && f == g_caps_stor[k]) c = NVN_GPU_FMT_SAMPLE | NVN_GPU_FMT_STORAGE;   // 用例指定的存储图像格式
+    c |= NVN_GPU_FMT_FILTER;
+    if (f == g_caps_nofilter) c &= ~(uint32_t)NVN_GPU_FMT_FILTER;
+    if (f == g_caps_noblend) c &= ~(uint32_t)NVN_GPU_FMT_BLEND;
+    return c; }
 void nvn_gpu_tex_upload(nvn_gpu_cmd c, nvn_gpu_tex t, uint32_t level, uint32_t layer, const NVNcopyRegion *r, const void *src, uint64_t row_bytes, uint64_t image_bytes) {
     (void)t; if (g_nup == 16) return;
     g_up[g_nup].pre = c->is_pre; g_up[g_nup].level = level; g_up[g_nup].layer = layer; g_up[g_nup].pitch = row_bytes; g_up[g_nup].img = image_bytes; g_up[g_nup].w = r->width; g_up[g_nup].h = r->height;
@@ -112,8 +156,11 @@ static uint64_t g_dirty_now = 100, g_dirty_written; static int g_protects;
 void nvn_dirty_protect(const void *addr, size_t len) { (void)addr; (void)len; g_protects++; }
 void nvn_dirty_stats(uint64_t *f, uint64_t *p) { *f = 0; *p = 0; }
 static uint64_t g_dirty_map = 1; uint64_t nvn_dirty_mapping_generation(void) { return g_dirty_map; }
-int nvn_dirty_tracking_unreliable(void) { return 0; }
+static int g_block_unreliable;
+int nvn_dirty_tracking_unreliable(void) { return g_block_unreliable; }
 void nvn_dirty_mp_stats(uint64_t *c, uint64_t *g, uint64_t *n) { *c = 0; *g = 0; *n = 0; }
+void nvn_dirty_span_stats(uint64_t *h, uint64_t *s, uint64_t *n) { *h = 0; *s = 0; *n = 0; }
+void nvn_dirty_slot_stats(int *live, int *used, uint64_t *adds) { *live = 0; *used = 0; *adds = 0; }
 uint64_t nvn_dirty_now(void) { return g_dirty_now; }
 int nvn_dirty_since(const void *addr, size_t len, uint64_t stamp) { (void)addr; (void)len; return g_dirty_written > stamp; }
 
@@ -122,7 +169,8 @@ struct nvn_gpu_buf_s { uint64_t bytes; uint8_t *cpu; };
 static int g_buf_cpu_auto;   // 1 = 新建的缓冲各带一块自己的 CPU 可见内存（两份池镜像要分得开的用例用）
 static int g_buf_creates, g_buf_releases; static uint64_t g_buf_bytes;
 static struct { uint64_t off, len; uint8_t head[8]; int pre; } g_bw[32]; static int g_nbw;
-nvn_gpu_rc nvn_gpu_buf_create(uint64_t bytes, int mem, const void *init, nvn_gpu_buf *out, nvn_gpu_err *err) { (void)mem; (void)init; (void)err; g_buf_creates++; g_buf_bytes = bytes; *out = calloc(1, sizeof **out); (*out)->bytes = bytes; if (g_buf_cpu_auto) (*out)->cpu = calloc(1, bytes); return (nvn_gpu_rc){NVN_GPU_OK}; }
+static uint64_t g_buf_fail_bytes;   // 非 0：建这个大小的缓冲时失败（池镜像建不出来的用例用）
+nvn_gpu_rc nvn_gpu_buf_create(uint64_t bytes, int mem, const void *init, nvn_gpu_buf *out, nvn_gpu_err *err) { (void)mem; (void)init; (void)err; g_buf_creates++; g_buf_bytes = bytes; if (g_buf_fail_bytes && bytes == g_buf_fail_bytes) { *out = NULL; return (nvn_gpu_rc){NVN_GPU_E_OOM}; } *out = calloc(1, sizeof **out); (*out)->bytes = bytes; if (g_buf_cpu_auto) (*out)->cpu = calloc(1, bytes); return (nvn_gpu_rc){NVN_GPU_OK}; }
 void nvn_gpu_tex_info_get(nvn_gpu_tex t, nvn_gpu_tex_info *out) { memset(out, 0, sizeof *out); (void)t; }   // 调试读回用；用例不开那个开关
 static struct { nvn_gpu_tex s, d; uint32_t sl, sy, dl, dy; NVNcopyRegion sr, dr; } g_ct[8]; static int g_nct;
 void nvn_gpu_copy_tex(nvn_gpu_cmd c, nvn_gpu_tex src, uint32_t slevel, uint32_t slayer, const NVNcopyRegion *sr, nvn_gpu_tex dst, uint32_t dlevel, uint32_t dlayer, const NVNcopyRegion *dr) {
@@ -147,28 +195,67 @@ void nvn_gpu_buf_write(nvn_gpu_cmd c, nvn_gpu_buf dst, uint64_t off, const void 
 // 页级脏账替身：4096 字节一页，g_pmem 这个池每页的写代号由用例设
 enum { PG = 4096, NPG = 8 };
 static _Alignas(4096) uint8_t g_pmem[PG * NPG]; static uint64_t g_pg_gen[NPG]; static int g_pg_tracked = 1;
+enum { BLOCK_TEST_PAGES = 256, BLOCK_TEST_ALIGN = 64 * PG };
+static _Alignas(4096) uint8_t g_block_arena[(BLOCK_TEST_PAGES + 64) * PG];
+static uint8_t *g_block_mem;
+static uint64_t g_block_gen[BLOCK_TEST_PAGES], g_block_version[BLOCK_TEST_PAGES / 64], g_block_pages_examined;
 size_t nvn_dirty_page_size(void) { return PG; }
 // 不受写跟踪的池（用例用 g_pg_tracked=0 设）没有跟踪区间：真实现里也是返回 NULL，靠它判「每次使用都整段同步」。
-const void *nvn_dirty_span(const void *addr, size_t len) { (void)len; if (!g_pg_tracked) return NULL; return (const uint8_t *)addr >= g_pmem && (const uint8_t *)addr < g_pmem + sizeof g_pmem ? g_pmem : NULL; }
+const void *nvn_dirty_span(const void *addr, size_t len) {
+    uintptr_t a = (uintptr_t)addr, e = a + len;
+    if (!g_pg_tracked || e < a) return NULL;
+    if (g_block_mem && a >= (uintptr_t)g_block_mem && e <= (uintptr_t)g_block_mem + BLOCK_TEST_PAGES * PG) return g_block_mem;
+    return a >= (uintptr_t)g_pmem && e <= (uintptr_t)g_pmem + sizeof g_pmem ? g_pmem : NULL;
+}
 long nvn_dirty_page_gens(const void *span, const void *addr, size_t len, uint64_t *gens, size_t n) {
-    if (!span || !g_pg_tracked) return -1;
+    if (!span || !g_pg_tracked || g_block_unreliable) return -1;
+    if (span == g_block_mem && g_block_mem) {
+        size_t p = (size_t)((const uint8_t *)addr - g_block_mem) / PG, q = (size_t)((const uint8_t *)addr + len - 1 - g_block_mem) / PG;
+        if (q >= BLOCK_TEST_PAGES || q - p + 1 > n) return -1;
+        g_block_pages_examined += q - p + 1;
+        for (size_t i = p; i <= q; i++) gens[i - p] = g_block_gen[i];
+        return (long)(q - p + 1);
+    }
     size_t p = (size_t)((const uint8_t *)addr - g_pmem) / PG, q = (size_t)((const uint8_t *)addr + len - 1 - g_pmem) / PG;
     if (q - p + 1 > n) return -1;
     for (size_t i = p; i <= q; i++) gens[i - p] = g_pg_gen[i];
     return (long)(q - p + 1);
 }
+int nvn_dirty_block_snapshot(const void *span, const void *addr, size_t len, uint64_t *version, uint64_t *epoch) {
+    uintptr_t a = (uintptr_t)addr, base = (uintptr_t)g_block_mem;
+    if (!g_block_mem || span != g_block_mem || !g_pg_tracked || g_block_unreliable || !len || !version || !epoch ||
+        a < base || len > BLOCK_TEST_PAGES * PG || a - base > BLOCK_TEST_PAGES * PG - len) return 0;
+    size_t p = (a - base) / BLOCK_TEST_ALIGN, q = (a + len - 1 - base) / BLOCK_TEST_ALIGN;
+    if (p != q) return 0;
+    *version = g_block_version[p]; *epoch = g_dirty_map; return 1;
+}
 
 // 通道替身：记每次开通道的描述
 static int g_pass_open, g_bind_outside, g_draw_outside;   // 通道开着没有；图形阶段的绑定在通道外到达的次数（真后端会置粘滞、整段作废）
+static int g_tbuf_created, g_tbuf_in_pass, g_tbuf_binds[6];
+static struct { nvn_gpu_buf buf; uint64_t off, bytes; uint32_t format; } g_tbuf_bound[6];
+nvn_gpu_rc nvn_gpu_view_create_buf(nvn_gpu_buf b, uint64_t off, uint64_t bytes, uint32_t fmt, nvn_gpu_view *out, nvn_gpu_err *err) {
+    (void)err; *out = NULL;
+    // These two formats are the only ones exercised here, both four bytes.
+    if (!b || (fmt != NVN_FORMAT_R32UI && fmt != NVN_FORMAT_RGBA8UI) || !bytes || (off & 3) || (bytes & 3) || off > b->bytes || bytes > b->bytes - off)
+        return (nvn_gpu_rc){NVN_GPU_E_ARG};
+    nvn_gpu_view v = calloc(1, sizeof *v); if (!v) return (nvn_gpu_rc){NVN_GPU_E_OOM};
+    v->buf = b; v->off = off; v->bytes = bytes; v->format = fmt; v->rid = ++g_vid;
+    g_tbuf_created++; g_tbuf_in_pass += g_pass_open; *out = v; return (nvn_gpu_rc){NVN_GPU_OK};
+}
 static nvn_gpu_pass_desc g_pd[8]; static int g_npd, g_pass_ends; static uint32_t g_barrier_bits; static int g_barrier_at;   // g_barrier_at：收到屏障时已开过几个通道
 void nvn_gpu_pass_begin(nvn_gpu_cmd c, const nvn_gpu_pass_desc *d) { (void)c; if (g_npd < 8) g_pd[g_npd] = *d; g_npd++; g_pass_open = 1; }
 void nvn_gpu_pass_end(nvn_gpu_cmd c) { (void)c; g_pass_ends++; g_pass_open = 0; }
 static int g_npd_now(void) { return g_npd; } static int g_ends_now(void) { return g_pass_ends; }
-void nvn_gpu_barrier(nvn_gpu_cmd c, uint32_t bits) { (void)c; g_barrier_bits |= bits; g_barrier_at = g_npd; }
+static int g_ndisp_now(void);
+static struct { uint32_t bits; int ndisp; } g_bar[8]; static int g_nbar;   // 每次屏障：交了哪些位、当时已派发几次
+void nvn_gpu_barrier(nvn_gpu_cmd c, uint32_t bits) { (void)c; g_barrier_bits |= bits; g_barrier_at = g_npd; if (g_nbar < 8) { g_bar[g_nbar].bits = bits; g_bar[g_nbar].ndisp = g_ndisp_now(); } g_nbar++; }
 static struct { nvn_gpu_clear d; int npd, ends; } g_cr[8]; static int g_ncr;   // 矩形清：记描述，以及收到时已开 / 已关过几个通道
 void nvn_gpu_clear_rect(nvn_gpu_cmd c, const nvn_gpu_clear *d) { (void)c; if (g_ncr < 8) { g_cr[g_ncr].d = *d; g_cr[g_ncr].npd = g_npd; g_cr[g_ncr].ends = g_pass_ends; } g_ncr++; }
 static uint64_t g_tick;   // 游戏时钟替身
 uint64_t s2a_guest_tick(void) { return g_tick; }
+static int g_ts_convert_fail;
+int s2a_guest_tick_from_host_ns(uint64_t ns, uint64_t *out) { if (g_ts_convert_fail) return 0; *out = ns / 10; return 1; }
 
 // 上屏替身：取图结果按脚本给，呈现记下描述并按「没有上屏时刻」回调
 struct nvn_gpu_surface_s { int x; };
@@ -191,6 +278,7 @@ int rp_shader_resolve(const struct rp_shader_req *q, const struct rp_prog **out)
 // 计算：程序、管线、派发的替身
 static struct rp_prog g_cprog; static int g_cresolves, g_cresolve_rc, g_cpipe_gets, g_ndisp; static uint32_t g_disp[3]; static struct nvn_gpu_pipe_s *g_disp_pipe; static nvn_gpu_shader g_cpipe_sh;
 static nvn_gpu_buf g_disp_ind; static uint64_t g_disp_off;
+static int g_ndisp_now(void) { return g_ndisp; }
 static nvn_gpu_binding g_cb[16]; static uint32_t g_ncb; static int g_cbinds;
 int rp_shader_resolve_compute(const struct rp_prog **out) { g_cresolves++; *out = g_cresolve_rc ? NULL : &g_cprog; return g_cresolve_rc; }
 void rp_shader_reset(void) {}
@@ -203,7 +291,9 @@ nvn_gpu_rc nvn_gpu_pipe_get(const nvn_gpu_pipe_desc *d, int mode, nvn_gpu_pipe *
 void nvn_gpu_set_pipe(nvn_gpu_cmd c, nvn_gpu_pipe p) { (void)c; (void)p; g_set_pipes++; }
 static struct nvn_gpu_pipe_s g_fcpipe;
 nvn_gpu_rc nvn_gpu_cpipe_get(const nvn_gpu_stage_desc *cs, int mode, nvn_gpu_pipe *out, nvn_gpu_err *err) { (void)mode; (void)err; g_cpipe_gets++; g_cpipe_sh = cs->sh; *out = &g_fcpipe; return (nvn_gpu_rc){NVN_GPU_OK}; }
+static int g_ncopy4;   // 4 字节的缓冲拷贝：间接绘制把 GPU 侧 base instance 拷进驱动段 c0 + 0x644
 void nvn_gpu_copy_buf(nvn_gpu_cmd c, nvn_gpu_buf src, uint64_t soff, nvn_gpu_buf dst, uint64_t doff, uint64_t bytes) {
+    if (bytes == 4) { (void)c; (void)src; (void)soff; (void)dst; (void)doff; g_ncopy4++; return; }
     (void)c; (void)src; CHECK(dst == &g_arena_buf && g_buf_cpu_fake && bytes == 12);
     if (dst == &g_arena_buf && g_buf_cpu_fake) memcpy(g_arena + doff, g_buf_cpu_fake + soff, (size_t)bytes);
 }
@@ -212,14 +302,21 @@ void nvn_gpu_set_dyn(nvn_gpu_cmd c, const nvn_gpu_dyn *d) { (void)c; g_set_dyns+
 void nvn_gpu_set_vbuf(nvn_gpu_cmd c, uint32_t stream, nvn_gpu_buf b, uint64_t off) { (void)c; (void)b; if (g_nvb < 4) { g_vb[g_nvb].stream = stream; g_vb[g_nvb].off = off; } g_nvb++; }
 static int g_bind_calls[3];   // 图形两个阶段各发了几次绑定
 void nvn_gpu_bind(nvn_gpu_cmd c, nvn_gpu_stage st, const nvn_gpu_binding *b, uint32_t n) { (void)c;
+    for (uint32_t i = 0; i < n; i++) if (b[i].cls == NVN_GPU_RES_TBUF && b[i].u.view) {
+        nvn_gpu_view v = b[i].u.view; g_tbuf_binds[st]++;
+        g_tbuf_bound[st].buf = v->buf; g_tbuf_bound[st].off = v->off;
+        g_tbuf_bound[st].bytes = v->bytes; g_tbuf_bound[st].format = v->format;
+    }
     if (st == NVN_GPU_SH_CS) { g_cbinds++; g_ncb = n; memcpy(g_cb, b, (n < 16 ? n : 16) * sizeof *b); return; }
     CHECK(st >= NVN_GPU_SH_VS && st <= NVN_GPU_SH_GS);
     if (st < NVN_GPU_SH_VS || st > NVN_GPU_SH_GS) return;
     if (!g_pass_open) g_bind_outside++;
     int i = (int)st; g_bind_calls[i]++; g_nfb[i] = n; memcpy(g_fb[i], b, (n < 16 ? n : 16) * sizeof *b); }
 void nvn_gpu_draw(nvn_gpu_cmd c, const nvn_gpu_draw_args *a) { (void)c; g_gdraws++; g_last_da = *a; if (!g_pass_open) g_draw_outside++; }
+static uint32_t g_caps_remove;
 static uint32_t g_caps_extra;   // 用例临时打开的能力位（如间接计数多绘）
-void nvn_gpu_caps_get(nvn_gpu_caps *out) { memset(out, 0, sizeof *out); out->min_ubo_align = 64; out->caps = NVN_GPU_CAP_BLIT_SCALED | g_caps_extra; }
+static uint32_t g_caps_min_ssbo; static uint64_t g_caps_max_ssbo;   // 用例临时设的 minStorageBufferOffsetAlignment / maxStorageBufferRange（0 = 不报，其余用例的口径）
+void nvn_gpu_caps_get(nvn_gpu_caps *out) { memset(out, 0, sizeof *out); out->min_ubo_align = 64; out->caps = (NVN_GPU_CAP_BLIT_SCALED | g_caps_extra) & ~g_caps_remove; out->min_ssbo_align = g_caps_min_ssbo; out->max_ssbo_range = g_caps_max_ssbo; }
 static int g_arena697_fail;
 nvn_gpu_rc nvn_gpu_arena_alloc(nvn_gpu_cmd c, uint64_t bytes, uint32_t align, nvn_gpu_slice *out, nvn_gpu_err *err) { (void)c; (void)err;
     if(g_arena697_fail) { memset(out,0,sizeof *out);memset(err,0,sizeof *err);
@@ -233,7 +330,7 @@ nvn_gpu_rc nvn_gpu_arena_alloc(nvn_gpu_cmd c, uint64_t bytes, uint32_t align, nv
 static const uint64_t *g_fake_occ; static uint32_t g_fake_nocc;   // 下一次完成时交给回调的各槽样本数
 static void fake_complete(uint32_t status) {
     for (int i = 0; i < g_npend; i++) { nvn_gpu_done d = {0}; d.signal = g_pend[i].signal; d.status = status; d.why = "替身失败";
-        if (status != NVN_GPU_DONE_FAILED) { d.occlusion = g_fake_occ; d.nocclusion = g_fake_nocc; }
+        if (status != NVN_GPU_DONE_FAILED) { d.occlusion = g_fake_occ; d.nocclusion = g_fake_nocc; d.timestamps = g_pend[i].ts; d.ntimestamps = g_pend[i].nts; }
         g_pend[i].fn(g_pend[i].user, &d); if (status != NVN_GPU_DONE_FAILED) g_fdone = g_pend[i].signal; }
     g_npend = 0; g_fake_occ = NULL; g_fake_nocc = 0;
 }
@@ -314,6 +411,24 @@ static void t_fence_sync(void) {
     uint64_t got = 0; CHECK(sync_published(&s, &got) == 1 && got == f0 + 64 && nvn_be_last_fence() == f0 + 64);
 }
 
+// CALL 目标核对替身（真身在 hle_nvn.c，本单测不链前端）：缺省都算活录制；用例把 g_call_reused 设成某个句柄，它就回 -1（块已被复用）
+static uint64_t g_call_reused;
+int nvn_cmd_call_resolve(uint64_t h, uint64_t *to) { *to = h; return g_call_reused && h == g_call_reused ? -1 : 0; }
+// #768338 安全阀：CALL 的目标块已被别的录制复用 → 跳过这次调用（子列表的设置不生效）、记一行红；CALL 之后的记录照常执行。
+//   反证：去掉 rp_exec.c 的 ck < 0 跳过，子列表照执行，alpha_ref 被写成 0.25
+static void t_call_reused(void) {
+    stream a = {0}, sub = {0};
+    p_alpha_ref *ar = put(&sub, OP_ALPHA_REF, sizeof *ar); ar->ref = 0.25f; end(&sub);
+    uint8_t *r = put(&a, OP_CALL, 8); uint64_t h = (uint64_t)(uintptr_t)sub.b; memcpy(r, &h, 8);
+    p_set_patch_size *ps = put(&a, OP_SET_PATCH_SIZE, sizeof *ps); ps->size = 6;
+    end(&a);
+    rp_S.alpha_ref = 0; int red0 = g_red_lines; g_call_reused = h;
+    submit1(&a); fake_complete(NVN_GPU_DONE_OK);
+    g_call_reused = 0;
+    if (rp_S.alpha_ref != 0 || rp_S.patch_size != 6 || g_red_lines - red0 != 1) printf("CALL 目标已复用：alpha_ref %.2f（期望 0）、patch_size %u（期望 6）、红行 +%d（期望 1）\n", rp_S.alpha_ref, (unsigned)rp_S.patch_size, g_red_lines - red0);
+    CHECK(rp_S.alpha_ref == 0 && rp_S.patch_size == 6 && g_red_lines - red0 == 1);
+}
+
 static void t_jump_call(void) {
     stream a = {0}, b = {0}, sub = {0};
     p_alpha_ref *ar = put(&sub, OP_ALPHA_REF, sizeof *ar); ar->ref = 0.5f; end(&sub);
@@ -388,36 +503,47 @@ static tex_t mk_tex(uint64_t serial, int64_t off, int fmt, uint32_t w, uint32_t 
 static void res_fresh(void);   // 定义在本文件后面
 // 视图取用窗口（#699）：一笔通道要同时挂多个附件，窗口内取到的缓存视图必须钉住到窗口结束；
 // 窗口一结束它就该能按轮转淘汰（证明窗口只在窗口内起作用，不是永久驻留）。
+static view_t vk_layer(int i) { view_t v; memset(&v, 0, sizeof v); v.set_layers = 1; v.min_layer = (uint16_t)i; v.nlayers = 1; return v; }   // 同一份存储上的第 i 种视图记录（替身不校验层号）
 static void t_view_pin(void) {
     res_fresh();
-    // 视图表是 128 组 x 8 路（按贴图序号散列）：窗口里取 3000 个不同贴图，平均每组 23 个——first 那一组的 8 格必然被本轮钉满、
-    // 多出来的走溢出表；窗口结束后再取 3000 个，first 那一格必然被换掉。数量由表的形状推出，不依赖具体散列到哪一组。
-    enum { N = 6000, NWIN = 3000 };
-    static tex_t tp[N];
-    for (int i = 0; i < N; i++) { tp[i] = mk_tex(3000 + (uint64_t)i, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0); nvn_be_tex_init(&tp[i]); }
+    // 本用例要放掉成千上万个视图、又要查 first 有没有被放掉：「视图放掉」记录表（g_released_id，8192 条、整个程序不清）
+    //   跑到这里已被前面的用例用掉一大半，记满后 first 被放掉也记不进去。同 t_view_storage_sweep：用例内从空表记起，结束时恢复
+    const int saved_nrel = g_nrel; g_nrel = 0;
+    // 视图表是 128 组 x 8 路（按存储、视图记录散列）：窗口里取 3000 种不同的（存储，视图记录），平均每组 23 个——first 那一组的 8 格必然被本轮钉满、
+    // 多出来的走溢出表。窗口结束后 first 那一格要能被换掉（见下面的循环：插到它被放掉为止）。
+    // 表按存储认视图：不同序号共用一份存储（同池同偏移同描述）时是同一项，所以这里在一份存储上取不同的视图记录来凑不同的项。
+    enum { NWIN = 3000 };
+    static view_t vp[NWIN];
+    tex_t tp = mk_tex(3000, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0); nvn_be_tex_init(&tp);
+    for (int i = 0; i < NWIN; i++) vp[i] = vk_layer(i);
     nvn_gpu_view first = NULL;
     int first_id = 0;
     rp_view_pin_begin();
-    first = rp_view_for(&tp[0], NULL, &g_fake_cmd);
+    first = rp_view_for(&tp, &vp[0], &g_fake_cmd);
     CHECK(first != NULL);
     if (first) first_id = first->rid;
-    for (int i = 1; i < NWIN; i++) (void)rp_view_for(&tp[i], NULL, &g_fake_cmd);   // 每组都被挤满：钉住时不能放掉 first
+    for (int i = 1; i < NWIN; i++) (void)rp_view_for(&tp, &vp[i], &g_fake_cmd);   // 每组都被挤满：钉住时不能放掉 first
     CHECK(first && !was_view_released(first_id));                                  // 修前：轮转把 first 放掉 → 红
     rp_view_pin_end();
-    for (int i = NWIN; i < N; i++) (void)rp_view_for(&tp[i], NULL, &g_fake_cmd);
+    // 窗口结束后它可以被淘汰。淘汰哪一路取全局插入计数 % 8（rp_res.c rp_view_for），不是逐组轮转：first 那一组之后进几次插入、
+    //   每次轮到哪一路随存储编号（全局累加）与散列而变，固定再插 3000 个时约 5% 的布局一次都轮不到 first（11-15 前面多一个用例就红）。
+    //   所以一直插不同的视图记录，直到 first 被放掉；上限 60000 次（first 那组约进 470 次插入，轮不到的概率 (7/8)^470，可以不计）
+    for (int i = NWIN; i < NWIN + 60000 && first && !was_view_released(first_id); i++) { view_t w = vk_layer(i); (void)rp_view_for(&tp, &w, &g_fake_cmd); }
     CHECK(first && was_view_released(first_id));                                   // 窗口结束：它可以被淘汰
     res_fresh();
     // 一帧里轮着用 300 个目标（真机一款 3D 游戏每帧一百多个通道）：第二遍取到的必须是第一遍那些视图，一个都不重建。
     // 300 个散进 128 组、每组 8 格；数量远小于 1024 格，但会不会有一组超过 8 个取决于散列，所以只要求「重建的不超过 300 个里的 5%」
     // （原先 64 格的环：第二遍 300 个全部重建）。
     { enum { M = 300 }; static tex_t tm[M]; static int rid[M]; int rebuilt = 0;
-      for (int i = 0; i < M; i++) { tm[i] = mk_tex(9000 + (uint64_t)i * 7, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0); nvn_be_tex_init(&tm[i]); }
+      for (int i = 0; i < M; i++) { tm[i] = mk_tex(9000 + (uint64_t)i * 7, (int64_t)i * 4096, NVN_FORMAT_RGBA8, 16, 16, 1, 0); nvn_be_tex_init(&tm[i]); }   // 各占一份存储（偏移错开）
       for (int i = 0; i < M; i++) { nvn_gpu_view v = rp_view_for(&tm[i], NULL, &g_fake_cmd); rid[i] = v ? v->rid : -1; }
       for (int i = 0; i < M; i++) { nvn_gpu_view v = rp_view_for(&tm[i], NULL, &g_fake_cmd); if (!v || v->rid != rid[i]) rebuilt++; }
       if (rebuilt > M / 20) fprintf(stderr, "视图表：300 个目标取第二遍，重建了 %d 个（期望 ≤ %d）\n", rebuilt, M / 20);
       CHECK(rebuilt <= M / 20); }
     res_fresh();   // 本用例建的存储不留给后面的用例（它们按 live 计数做断言）
+    g_nrel = saved_nrel;
 }
+
 
 // 程序按阶段绑定：只绑程序实际有 shader 的阶段；VS/FS 不能被关（保留原绑定）；GS/TCS/TES 程序没有就解绑。
 // 期望值直接由输入推出：绑 0x1f、程序只有 VS+FS → 有效掩码 3；分程序组合 → VS 保留、FS 换；
@@ -502,6 +628,205 @@ static void t_pools(void) {
     CHECK(nvn_be_addr(b + 0xf00, 0x100, &buf, &off) == 1);    // 恰好到池尾
     nvn_be_pool_del(mem);
     CHECK(nvn_be_addr(b + 0x800, 0x100, &buf, &off) == 0 && rp_pool_count() == n0);
+}
+
+// ---------- 池查找的线程内备忘（rp_entry.c pool_find_memo，#974 问 3）----------
+// 契约：答案与「候选 = 起点不超过地址的最后一个池、装得下才算」逐位一致（rp_pool_find 与 nvn_be_addr 两个入口都对）；
+// 重复的查找真的命中备忘；池表一变（加池 / 删池 / 同起点换大小）旧记录整张作废；开关关着时不命中也不计数。
+// 参考答案由用例自己登记的池直接线性扫出，不经被测实现。池区间允许嵌套：一个池的存储可能落在另一个池的区间里，
+// 命中的是「起点不超过地址、且真正覆盖 [addr, addr+len) 的池里起点最大的那个」（更具体的池优先）。
+int rp_pool_find(uint64_t addr, uint64_t len, const uint8_t **mem, uint64_t *size);   // rp_entry.c（rp_draw.c 也是就地声明）
+typedef struct { uint64_t a, n; int live; } pm_ref_t;
+enum { PM_SLOTS = 24 };
+static pm_ref_t g_pmr[PM_SLOTS]; static uint8_t g_pm_arena[0x10000];
+static int pm_ref_find(uint64_t addr, uint64_t len, uint64_t *a, uint64_t *n) {
+    int cand = -1;
+    for (int i = 0; i < PM_SLOTS; i++) {
+        if (!g_pmr[i].live || g_pmr[i].a > addr) continue;
+        if (addr - g_pmr[i].a > g_pmr[i].n || len > g_pmr[i].n - (addr - g_pmr[i].a)) continue;
+        if (cand < 0 || g_pmr[i].a > g_pmr[cand].a) cand = i;   // 嵌套时更具体的池优先
+    }
+    if (cand < 0) return 0;
+    *a = g_pmr[cand].a; *n = g_pmr[cand].n; return 1;
+}
+static void pm_add(int slot, uint64_t off, uint64_t size) { nvn_be_pool_add(g_pm_arena + off, size); g_pmr[slot] = (pm_ref_t){(uint64_t)(uintptr_t)(g_pm_arena + off), size, 1}; }
+static void pm_del(int slot) { nvn_be_pool_del((const void *)(uintptr_t)g_pmr[slot].a); g_pmr[slot].live = 0; }
+static uint64_t pm_hits(void) { uint64_t h, l; rp_pool_memo_stats(&h, &l); return h; }
+static uint64_t pm_lookups(void) { uint64_t h, l; rp_pool_memo_stats(&h, &l); return l; }
+static void pm_flag(int on) { g_flag_pool_memo = on; for (int i = 0; i < 4096; i++) rp_pool_find(1, 1, NULL, NULL); }   // 备忘每 4096 次查找重读一次开关
+static int pm_check(uint64_t addr, uint64_t len) {   // 一次查找（两个入口各一次）与参考答案逐位对照：1 = 一致
+    uint64_t ra = 0, rn = 0; int rh = pm_ref_find(addr, len, &ra, &rn);
+    const uint8_t *m = NULL; uint64_t n = 0; int h = rp_pool_find(addr, len, &m, &n);
+    if (h != rh || (h && ((uint64_t)(uintptr_t)m != ra || n != rn))) return 0;
+    void *buf = NULL; uint64_t off = 0; int h2 = nvn_be_addr(addr, len, &buf, &off);
+    return h2 == rh && (!h2 || ((uint64_t)(uintptr_t)buf == ra && off == addr - ra));
+}
+static uint32_t pm_rnd_state = 777;
+static uint32_t pm_rnd(void) { pm_rnd_state = pm_rnd_state * 1664525u + 1013904223u; return pm_rnd_state >> 8; }
+static void t_pool_memo(void) {
+    const uint64_t B = (uint64_t)(uintptr_t)g_pm_arena; int n0 = rp_pool_count();
+    memset(g_pmr, 0, sizeof g_pmr);
+    pm_flag(1);
+    // ⓪ 排满备忘（20 个池各问一次，环只有 16 项，别的用例留下的记录被全部挤掉），再把池整体删掉：旧记录一项都不能再用
+    enum { NP = 20 };
+    for (int i = 0; i < NP; i++) pm_add(i, 0x8000 + (uint64_t)i * 0x200, 0x100);
+    for (int i = 0; i < NP; i++) CHECK(pm_check(B + 0x8000 + (uint64_t)i * 0x200 + 8, 0x10) && rp_pool_find(B + 0x8000 + (uint64_t)i * 0x200 + 8, 0x10, NULL, NULL) == 1);
+    for (int i = 0; i < NP; i++) pm_del(i);
+    for (int i = 0; i < NP; i++) CHECK(pm_check(B + 0x8000 + (uint64_t)i * 0x200 + 0x10, 8) && rp_pool_find(B + 0x8000 + (uint64_t)i * 0x200 + 0x10, 8, NULL, NULL) == 0);
+    pm_add(0, 0x0000, 0x1000); pm_add(1, 0x2000, 0x1000); pm_add(2, 0x4000, 0x2000);
+    // ① 命中：第一次走锁内二分并记下，同池另一处再问就命中备忘（两个入口各一次）
+    CHECK(pm_check(B + 0x10, 0x20));
+    uint64_t h0 = pm_hits();
+    CHECK(pm_check(B + 0x800, 0x100));
+    CHECK(pm_hits() == h0 + 2);
+    CHECK(pm_check(B + 0x2100, 0x40));                       // 另一个池：第一问走锁内二分并记下
+    uint64_t h1 = pm_hits(); CHECK(pm_check(B + 0x2200, 0x40) && pm_hits() == h1 + 2);
+    // ② 装得下才算：越过池尾、池间空隙、恰好到池尾
+    CHECK(pm_check(B + 0xf80, 0x100));                       // 越过 P0 尾：没有
+    CHECK(pm_check(B + 0x1800, 0x10));                       // P0 与 P1 之间的空隙：候选是 P0、装不下：没有
+    CHECK(pm_check(B + 0xf00, 0x100));                       // 恰好到 P0 尾：有
+    CHECK(pm_check(B + 0x10, 0));                            // 零长度
+    // ③ 删池之后旧记录作废：删掉再问是「没有」
+    CHECK(pm_check(B + 0x4100, 0x40) && pm_check(B + 0x4200, 0x40));
+    pm_del(2);
+    CHECK(pm_check(B + 0x4100, 0x40) && pm_check(B + 0x4200, 0x40) && pm_check(B + 0x5ff0, 0x10));
+    uint64_t ra = 0, rn = 0; CHECK(!pm_ref_find(B + 0x4100, 0x40, &ra, &rn) && !rp_pool_find(B + 0x4100, 0x40, NULL, NULL));   // 确实没有（参考与实现各自说）
+    // ④ 同起点换大小：先 8 KB 后缩成 4 KB，后半必须变成「没有」，不能拿旧长度
+    pm_add(2, 0x4000, 0x2000);
+    CHECK(pm_check(B + 0x5800, 0x100) && pm_check(B + 0x5800, 0x100));
+    CHECK(rp_pool_find(B + 0x5800, 0x100, NULL, NULL) == 1);
+    pm_del(2); pm_add(2, 0x4000, 0x1000);
+    CHECK(pm_check(B + 0x5800, 0x100) && rp_pool_find(B + 0x5800, 0x100, NULL, NULL) == 0);
+    CHECK(pm_check(B + 0x4800, 0x100) && rp_pool_find(B + 0x4800, 0x100, NULL, NULL) == 1);
+    // ⑤ 加池：新池的地址马上查得到（旧的「没有」不残留）
+    CHECK(pm_check(B + 0x8100, 0x40) && rp_pool_find(B + 0x8100, 0x40, NULL, NULL) == 0);
+    pm_add(3, 0x8000, 0x800);
+    CHECK(pm_check(B + 0x8100, 0x40) && rp_pool_find(B + 0x8100, 0x40, NULL, NULL) == 1);
+    // ⑥ 开关关：不命中、不计数，答案照旧
+    pm_flag(0);
+    uint64_t hz = pm_hits(), lz = pm_lookups();
+    for (int i = 0; i < 64; i++) CHECK(pm_check(B + 0x10 + (uint64_t)i * 0x20, 0x20) && pm_check(B + 0x2100 + (uint64_t)i, 0x40));
+    CHECK(pm_hits() == hz && pm_lookups() == lz);
+    pm_flag(1);
+    // ⑦ 随机：加池 / 删池 / 同起点换大小，每步 16 问（一半是刚问过的键）；先开着、再关着各跑一遍，答案都与参考逐位一致
+    for (int i = 0; i < PM_SLOTS; i++) if (g_pmr[i].live) pm_del(i);
+    for (int pass = 1; pass >= 0; pass--) {
+        pm_flag(pass);
+        uint64_t hs = pm_hits(); unsigned bad = 0, ops = 0; uint64_t ka[4] = {0}, kl[4] = {0};
+        for (int step = 0; step < 3000; step++) {
+            int i = (int)(pm_rnd() % PM_SLOTS); unsigned op = pm_rnd() % 8;
+            if (op < 4 && !g_pmr[i].live) {                  // 加：起点是 0x400 的倍数，大小 0x100..0x1800，与现存的池不重叠
+                uint64_t off = (pm_rnd() % 60) * 0x400, size = 0x100 + (pm_rnd() % 0x18) * 0x100; int ok = off + size <= sizeof g_pm_arena;
+                for (int k = 0; k < PM_SLOTS && ok; k++) if (g_pmr[k].live) { uint64_t o = g_pmr[k].a - B; if (off < o + g_pmr[k].n && o < off + size) ok = 0; }
+                if (ok) { pm_add(i, off, size); ops++; }
+            } else if (op < 7 && g_pmr[i].live) { pm_del(i); ops++; }
+            for (int q = 0; q < 16; q++) {
+                uint64_t a, l;
+                if (q & 1) { a = ka[(q >> 1) & 3]; l = kl[(q >> 1) & 3]; }
+                else { a = B + pm_rnd() % sizeof g_pm_arena; l = pm_rnd() % 9 ? pm_rnd() % 0x1200 : 0; ka[(q >> 1) & 3] = a; kl[(q >> 1) & 3] = l; }
+                if (!pm_check(a, l)) bad++;
+            }
+        }
+        CHECK(bad == 0 && ops > 800);                        // 答案与参考不一致 0 次；表真的变了足够多次
+        if (pass) CHECK(pm_hits() > hs + 1000);              // 开着：确实在命中
+        else CHECK(pm_hits() == hs);                         // 关着：一次也不命中
+    }
+    for (int i = 0; i < PM_SLOTS; i++) if (g_pmr[i].live) pm_del(i);
+    pm_flag(1);
+    CHECK(rp_pool_count() == n0);
+}
+
+// ---------- 嵌套池：一个池的存储落在另一个池的区间里（#1345） ----------
+// 契约：命中的是「起点不超过地址、且真正覆盖 [addr, addr+len) 的池里起点最大的那个」。
+// 旧实现只取「起点不超过地址的最后一个池」，候选装不下就返回 0——大池会被区间内的小池遮蔽。
+static uint8_t g_pn_arena[1 << 20] __attribute__((aligned(16)));
+static void t_pool_nested(void) {
+    const uint64_t B = (uint64_t)(uintptr_t)g_pn_arena;
+    const uint64_t BIG = 1u << 20, SMALL = 0x2000, SMALL_OFF = 0x10000;
+    const int n0 = rp_pool_count();
+    const uint8_t *m = NULL; uint64_t n = 0; void *buf = NULL; uint64_t off = 0;
+    // ① 先加 1 MiB 大池，再在其 +0x10000 处加 8 KB 小池
+    nvn_be_pool_add(g_pn_arena, BIG);
+    nvn_be_pool_add(g_pn_arena + SMALL_OFF, SMALL);
+    CHECK(rp_pool_count() == n0 + 2);
+    // ② 小池内地址 → 小池
+    m = NULL; n = 0;
+    CHECK(rp_pool_find(B + SMALL_OFF + 0x10, 0x20, &m, &n) == 1 && (uint64_t)(uintptr_t)m == B + SMALL_OFF && n == SMALL);
+    buf = NULL; off = 0;
+    CHECK(nvn_be_addr(B + SMALL_OFF + 0x10, 0x20, &buf, &off) == 1 && (uint64_t)(uintptr_t)buf == B + SMALL_OFF && off == 0x10);
+    // ③ 大池内、小池之外（小池之后的地址，旧实现会被小池遮蔽返回 0）→ 大池
+    m = NULL; n = 0;
+    CHECK(rp_pool_find(B + SMALL_OFF + 0x4000, 0x20, &m, &n) == 1 && (uint64_t)(uintptr_t)m == B && n == BIG);
+    // ④ 起点在小池内、长度跨过小池尾但没出大池 → 大池
+    m = NULL; n = 0;
+    CHECK(rp_pool_find(B + SMALL_OFF + 0x1ff0, 0x100, &m, &n) == 1 && (uint64_t)(uintptr_t)m == B && n == BIG);
+    // ⑤ 先查大池内地址（让快路/备忘发布大池），再查小池内地址 → 仍必须是小池
+    //    备忘先关掉：备忘里若已经有小池记录，会先于快路答出，就测不到快路的上界（lim）了
+    pm_flag(0);
+    CHECK(rp_pool_find(B + SMALL_OFF + 0x4000, 0x20, NULL, NULL) == 1);
+    CHECK(rp_pool_find(B + SMALL_OFF + 0x20, 0x40, NULL, NULL) == 1);
+    m = NULL; n = 0;
+    CHECK(rp_pool_find(B + SMALL_OFF + 0x20, 0x40, &m, &n) == 1 && (uint64_t)(uintptr_t)m == B + SMALL_OFF && n == SMALL);
+    pm_flag(1);
+    // ⑥ 同一小池内地址连查 3 次（覆盖备忘与快路）：每次都要与锁内结论一致
+    for (int i = 0; i < 3; i++) {
+        m = NULL; n = 0;
+        CHECK(rp_pool_find(B + SMALL_OFF + 0x30, 0x10, &m, &n) == 1 && (uint64_t)(uintptr_t)m == B + SMALL_OFF && n == SMALL);
+    }
+    // ⑦ 删掉小池：小池内地址回落到大池
+    nvn_be_pool_del(g_pn_arena + SMALL_OFF);
+    CHECK(rp_pool_count() == n0 + 1);
+    m = NULL; n = 0;
+    CHECK(rp_pool_find(B + SMALL_OFF + 0x10, 0x20, &m, &n) == 1 && (uint64_t)(uintptr_t)m == B && n == BIG);
+    // ⑧ 两个入口（rp_pool_find / nvn_be_addr）同一地址答案一致
+    {
+        static const uint64_t qo[5] = { 0x10, SMALL_OFF + 0x10, SMALL_OFF + 0x4000, BIG - 0x10, BIG };
+        static const uint64_t ql[5] = { 0x20, 0x20, 0x40, 0x20, 0x10 };
+        for (int i = 0; i < 5; i++) {
+            const uint8_t *mm = NULL; uint64_t nn = 0;
+            void *bb = NULL; uint64_t oo = 0;
+            const int h1 = rp_pool_find(B + qo[i], ql[i], &mm, &nn);
+            const int h2 = nvn_be_addr(B + qo[i], ql[i], &bb, &oo);
+            CHECK(h1 == h2);
+            if (h1 && h2) CHECK(mm == (const uint8_t *)bb && oo == B + qo[i] - (uint64_t)(uintptr_t)mm && nn == BIG);
+        }
+    }
+    // ⑨ 快路：小池放回来，关掉备忘，查大池内、小池之后的地址两次——第二次必须走快路
+    nvn_be_pool_add(g_pn_arena + SMALL_OFF, SMALL);
+    CHECK(rp_pool_count() == n0 + 2);
+    pm_flag(0);
+    uint64_t fh0 = rp_pool_fast_hits();
+    m = NULL; n = 0;
+    CHECK(rp_pool_find(B + SMALL_OFF + 0x4000, 0x20, &m, &n) == 1 && (uint64_t)(uintptr_t)m == B && n == BIG);
+    CHECK(rp_pool_fast_hits() == fh0);
+    m = NULL; n = 0;
+    CHECK(rp_pool_find(B + SMALL_OFF + 0x4000, 0x20, &m, &n) == 1 && (uint64_t)(uintptr_t)m == B && n == BIG);
+    CHECK(rp_pool_fast_hits() == fh0 + 1);
+    // ⑩ 备忘：开着时同地址连查 3 次，备忘命中数要增加（可答区间没被小池切断）
+    pm_flag(1);
+    uint64_t hz0 = pm_hits();
+    // 先查一次小池内地址：把快路/备忘指向小池，随后的大池地址装不下，只能回落锁内并写入大池的记录
+    m = NULL; n = 0;
+    CHECK(rp_pool_find(B + SMALL_OFF + 0x20, 0x40, &m, &n) == 1 && (uint64_t)(uintptr_t)m == B + SMALL_OFF && n == SMALL);
+    for (int i = 0; i < 3; i++) {
+        m = NULL; n = 0;
+        CHECK(rp_pool_find(B + SMALL_OFF + 0x4100, 0x20, &m, &n) == 1 && (uint64_t)(uintptr_t)m == B && n == BIG);
+    }
+    CHECK(pm_hits() >= hz0 + 2);   // 后两次从备忘答出
+    // ⑪ 左端：[大池起点, 小池起点) 的地址连查两次，第二次走快路
+    pm_flag(0);
+    uint64_t fh1 = rp_pool_fast_hits();
+    m = NULL; n = 0;
+    CHECK(rp_pool_find(B + 0x800, 0x20, &m, &n) == 1 && (uint64_t)(uintptr_t)m == B && n == BIG);
+    CHECK(rp_pool_fast_hits() == fh1);
+    m = NULL; n = 0;
+    CHECK(rp_pool_find(B + 0x800, 0x20, &m, &n) == 1 && (uint64_t)(uintptr_t)m == B && n == BIG);
+    CHECK(rp_pool_fast_hits() == fh1 + 1);
+    pm_flag(1);
+    nvn_be_pool_del(g_pn_arena + SMALL_OFF);
+    CHECK(rp_pool_count() == n0 + 1);
+    nvn_be_pool_del(g_pn_arena);
+    CHECK(rp_pool_count() == n0);
 }
 
 static pool_t g_tp; static uint8_t g_tmem[4 << 20];   // #936 的 128x64x64 RGBA8 三维贴图要 2 MiB，池子得放得下（原来是 1 MiB，读到池外段错误）
@@ -618,6 +943,202 @@ static void t_alias_take_over(void) {
     nvn_be_alias_drop_pool(&g_tp);
     CHECK(rp_res_tex_built() == 0);
     nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+}
+
+// 视图表按存储认视图（rp_res.c g_vf）：游戏每帧把瞬态渲染目标 Finalize 再按同描述重建——新序号、同一份存储（共用表）。视图只由（存储，视图记录）决定，
+// 所以新序号取到的必须是上一个序号建的那个视图，一个都不重建（后端按视图记的帧缓冲也就跟着沿用）；换视图记录 / 换存储才是新项；存储放掉，名下的视图一并放。
+// 期望值都由用例自己建的输入直接得出：创建 / 放掉次数来自替身计数，视图身份来自替身给的 rid。
+// 两臂：arm 1 = 缺省（按存储）；arm 0 = nvk_vf_key=0（旧：按序号）——同样的操作每个新序号都重建，是这条改动的负对照（两臂的期望写在同一处，一臂变红即说明开关没起作用或改动没生效）。
+static void vf_push(int on) {   // 开关每 256 次取视图重读一次：换值后用一张探针贴图推一下
+    g_flag_vf_key = on;
+    tex_t pr = mk_tex(83999, 0x7F000, NVN_FORMAT_RGBA8, 16, 16, 1, 0); nvn_be_tex_init(&pr);
+    for (int i = 0; i < 300; i++) (void)rp_view_for(&pr, NULL, &g_fake_cmd);
+    nvn_be_tex_release(&pr);
+}
+static void t_view_storage_key(void) {
+    for (int arm = 1; arm >= 0; arm--) {
+        res_fresh();
+        const int c0 = g_view_creates, r0 = g_view_releases;   // 整臂的账：结束时创建数 = 放掉数（不漏、不多放）
+        vf_push(arm);
+        const int ca = g_view_creates;
+        tex_t a = mk_tex(84001, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0); nvn_be_tex_init(&a);
+        nvn_gpu_view va = rp_view_for(&a, NULL, &g_fake_cmd);
+        CHECK(va != NULL && g_view_creates == ca + 1);
+        const int rid_a = va ? va->rid : -1;
+        // ① 序号销毁、同描述的新序号接上来（瞬态渲染目标每帧 Finalize 再重建）：同一份存储
+        nvn_be_tex_release(&a);
+        tex_t b = mk_tex(84002, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0); nvn_be_tex_init(&b);
+        nvn_gpu_view vb = rp_view_for(&b, NULL, &g_fake_cmd);
+        CHECK(vb != NULL);
+        if (arm) CHECK(vb && vb->rid == rid_a && g_view_creates == ca + 1 && !was_view_released(rid_a));   // 视图沿用：没重建、没放
+        else     CHECK(vb && vb->rid != rid_a && g_view_creates == ca + 2 && was_view_released(rid_a));   // 负对照：按序号认，旧序号一没就放、新序号重建
+        // ② 两个活着的序号共用一份存储（同池同偏移同描述）：视图共用
+        const int cb = g_view_creates;
+        tex_t d = mk_tex(84003, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0); nvn_be_tex_init(&d);
+        nvn_gpu_view vd = rp_view_for(&d, NULL, &g_fake_cmd);
+        if (arm) CHECK(vd && vb && vd->rid == vb->rid && g_view_creates == cb);
+        else     CHECK(vd && vb && vd->rid != vb->rid && g_view_creates == cb + 1);
+        // ③ 同一份存储上换视图记录：新项；再取：命中
+        view_t l1 = vk_layer(1);
+        const int cc = g_view_creates;
+        nvn_gpu_view v1 = rp_view_for(&b, &l1, &g_fake_cmd);
+        CHECK(v1 && vb && v1->rid != vb->rid && g_view_creates == cc + 1);
+        CHECK(rp_view_for(&b, &l1, &g_fake_cmd) == v1 && g_view_creates == cc + 1);
+        // ④ 另一份存储（偏移不同）：新项
+        tex_t e = mk_tex(84004, 4096, NVN_FORMAT_RGBA8, 16, 16, 1, 0); nvn_be_tex_init(&e);
+        const int cd = g_view_creates;
+        nvn_gpu_view ve = rp_view_for(&e, NULL, &g_fake_cmd);
+        CHECK(ve && vb && ve->rid != vb->rid && g_view_creates == cd + 1);
+        // ⑤ 存储放掉（内存池 Finalize）：名下的视图一并放，一个不留
+        nvn_be_tex_release(&b); nvn_be_tex_release(&d); nvn_be_tex_release(&e); nvn_be_alias_drop_pool(&g_tp);
+        CHECK(g_view_creates - c0 == g_view_releases - r0);
+        // ⑥ 同地址的新存储（calloc 常把刚放掉的块再给出来）：取到新视图，不是死存储的旧视图
+        tex_t f = mk_tex(84005, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0); nvn_be_tex_init(&f);
+        const int ce = g_view_creates;
+        nvn_gpu_view vf = rp_view_for(&f, NULL, &g_fake_cmd);
+        CHECK(vf && vf->rid != rid_a && g_view_creates == ce + 1);
+        nvn_be_tex_release(&f); nvn_be_alias_drop_pool(&g_tp);
+        CHECK(g_view_creates - c0 == g_view_releases - r0);
+        // ⑦ 不进共用表的存储（没有池）：序号销毁就是存储销毁，视图当场放（tex_unref 路径）
+        tex_t p = mk_tex(84006, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0); p.pool = NULL; p.mem = NULL; nvn_be_tex_init(&p);
+        const int cf = g_view_creates, rf = g_view_releases;
+        nvn_gpu_view vp0 = rp_view_for(&p, NULL, &g_fake_cmd);
+        CHECK(vp0 != NULL && g_view_creates == cf + 1);
+        const int rid_p = vp0 ? vp0->rid : -1;
+        nvn_be_tex_release(&p);
+        CHECK(g_view_releases == rf + 1 && was_view_released(rid_p));
+        CHECK(g_view_creates - c0 == g_view_releases - r0);
+        // ⑧ 同偏移来了别的描述、旧存储闲置够久被挤掉（alias_take_over，序号早已销毁）：名下的视图一并放
+        nvn_be_sub_begin();
+        tex_t h = mk_tex(84007, 0, NVN_FORMAT_RGBA8, 64, 64, 1, 0); nvn_be_tex_init(&h);
+        nvn_gpu_view vh = rp_view_for(&h, NULL, &g_fake_cmd);
+        CHECK(vh != NULL);
+        const int rid_h = vh ? vh->rid : -1;
+        nvn_be_tex_release(&h);
+        nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+        subs_pass(16);
+        nvn_be_sub_begin();
+        tex_t h2 = mk_tex(84008, 0, NVN_FORMAT_RGBA8, 40, 40, 1, 0); nvn_be_tex_init(&h2);
+        CHECK(rp_tex_resolve(&h2, &g_fake_cmd) != NULL);
+        CHECK(was_view_released(rid_h));
+        nvn_be_tex_release(&h2); nvn_be_alias_drop_pool(&g_tp);
+        nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+        CHECK(g_view_creates - c0 == g_view_releases - r0);
+    }
+    vf_push(1);   // 开关回缺省，并让备忘重读
+    res_fresh();
+}
+
+// 视图记录的每个字节都在键里（键是（存储 uid，视图记录整份 16 字节 + 有没有记录））：同一份存储上，把记录逐字节各改一次、再加一个「没带记录」，每个变体各是一个独立的视图；
+// 换序号后，按存储认的一臂每个变体沿用自己的视图、一个不错认；按序号认的一臂（负对照）每个变体都重建。身份用替身给的 rid 比（放掉的视图地址会被复用，不能比指针）。
+static void t_view_storage_fields(void) {
+    enum { NV = 18 };   // 0 = 基础记录；1..16 = 逐字节改一个字节；17 = 不带记录（NULL）
+    for (int arm = 1; arm >= 0; arm--) {
+        res_fresh();
+        const int c0 = g_view_creates, r0 = g_view_releases;   // 整臂的账（含 vf_push 的探针视图）
+        vf_push(arm);
+        const int c1 = g_view_creates;                         // 本用例自己的创建数从这里数
+        view_t var[NV]; var[0] = vk_layer(2); for (int k = 1; k < 17; k++) { var[k] = var[0]; ((uint8_t *)&var[k])[k - 1] ^= 0x5A; }
+        memset(&var[17], 0, sizeof var[17]);
+        tex_t a = mk_tex(86500, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0); nvn_be_tex_init(&a);
+        int rid[NV];
+        for (int k = 0; k < NV; k++) {
+            nvn_gpu_view w = rp_view_for(&a, k == 17 ? NULL : &var[k], &g_fake_cmd);
+            CHECK(w != NULL); rid[k] = w ? w->rid : -1;
+            for (int m = 0; m < k; m++) CHECK(rid[m] != rid[k]);                                     // 改任何一个字节都不是同一个视图
+        }
+        CHECK(g_view_creates - c1 == NV);
+        nvn_be_tex_release(&a);                                                                         // 序号销毁；同描述的新序号接上来
+        tex_t b = mk_tex(86501, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0); nvn_be_tex_init(&b);
+        for (int k = NV - 1; k >= 0; k--) {
+            nvn_gpu_view w = rp_view_for(&b, k == 17 ? NULL : &var[k], &g_fake_cmd);
+            CHECK(w != NULL);
+            if (arm) CHECK(w && w->rid == rid[k]); else CHECK(w && w->rid != rid[k]);                 // 新：各沿用各的；旧：全部重建
+        }
+        CHECK(g_view_creates - c1 == (arm ? NV : 2 * NV));
+        nvn_be_tex_release(&b); nvn_be_alias_drop_pool(&g_tp);
+        CHECK(g_view_creates - c0 == g_view_releases - r0);
+    }
+    vf_push(1);
+    res_fresh();
+}
+
+// 视图记录的每个字节都在键里，且不靠散列碰巧分开：上面逐字节的用例里各变体散列到不同的组，比较函数漏比一个字节时，被漏的那个变体多半碰不上同组的兄弟，
+// 照样全绿。这里把同一个字节的 256 个取值逐个取一遍（一个字节 256 个变体挤进 128 组，同组争位的有几百对），再取一次「不带记录」：取回的视图自己记着建它时
+// 收到的记录，必须与这次要的逐字节相同、有没有记录也相同——键里漏了哪个字节（或漏比有没有记录），总会有一对同组变体取回别人的视图。
+static void t_view_storage_sweep(void) {
+    const int saved_nrel = g_nrel;   // 本用例要放掉几千个视图：别把后面用例用的「视图放掉」记录挤满
+    for (int arm = 1; arm >= 0; arm--) {
+        int reqs = 0, bad = 0;
+        for (int k = 0; k < (int)sizeof(view_t); k++) {
+            res_fresh();
+            const int c0 = g_view_creates, r0 = g_view_releases;   // 这一个字节的账（含 vf_push 的探针视图）
+            vf_push(arm);
+            const int c1 = g_view_creates;
+            tex_t a = mk_tex(87000 + k, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0); nvn_be_tex_init(&a);
+            const view_t base = vk_layer(2);
+            for (int val = 0; val < 256; val++) {
+                view_t r = base; ((uint8_t *)&r)[k] ^= (uint8_t)val;   // val = 0 → 基础记录
+                nvn_gpu_view w = rp_view_for(&a, &r, &g_fake_cmd);
+                reqs++; if (!w || !w->has_v || memcmp(&w->v, &r, sizeof r)) bad++;
+            }
+            { nvn_gpu_view w = rp_view_for(&a, NULL, &g_fake_cmd); reqs++; if (!w || w->has_v) bad++; }
+            { view_t r = base; nvn_gpu_view w = rp_view_for(&a, &r, &g_fake_cmd); reqs++; if (!w || !w->has_v || memcmp(&w->v, &r, sizeof r)) bad++; }   // 不带记录之后再取带记录的
+            CHECK(g_view_creates - c1 >= 256);                         // 256 个不同的记录各建过自己的视图（用例没有空转）
+            nvn_be_tex_release(&a); nvn_be_alias_drop_pool(&g_tp);
+            CHECK(g_view_creates - c0 == g_view_releases - r0);        // 建了几个、放了几个：不漏、不多放
+        }
+        CHECK(reqs == 16 * 258);
+        CHECK(bad == 0);   // 取回的视图没有一个是为别的记录建的
+    }
+    vf_push(1);
+    res_fresh();
+    g_nrel = saved_nrel;
+}
+
+// 同一存储换序号后，读回的像素与旧路径逐字节相同，且等于「该画的内容」。60 帧、每帧一个新序号（Finalize 再按同描述重建）、每帧在 6 种视图记录上各画一次（带 / 不带记录、
+// 不同层、不同 mip、不同格式、不同通道映射；6 个视图各写自己的那个像素字，互不覆盖）；中间经历：存储不变（0–14）→ 内存池 Finalize、存储换成新对象（15–29）→ 同池另一偏移（30–44）
+// → 回到前一份（45–59）。每帧画完读回这一帧用的那份存储的全部像素（16 个字），两臂（缺省按存储 / nvk_vf_key=0 按序号）各跑一遍：两臂每帧读回逐字节相同，
+// 且每帧读回恰好等于「6 个视图各写进自己那个字的值」（没有画丢、没有画进别的存储）；同时核两臂确实走了不同机制：新路径只建 18 个视图（存储 / 偏移每换一次 6 个），旧路径每帧 6 个共 360 个。
+static void t_view_storage_pixels(void) {
+    static uint32_t snap[2][60][16]; int creates[2] = {0, 0};
+    // 6 个视图各自写的那个像素字（mip，层）：0 → [0][3]；1 → [0][1]；2 → [0][2]；3 → [1][0]；4 → [2][1]；5（不带记录）→ [0][0]
+    static const int cell[6] = {0 * 4 + 3, 0 * 4 + 1, 0 * 4 + 2, 1 * 4 + 0, 2 * 4 + 1, 0 * 4 + 0};
+    for (int arm = 1; arm >= 0; arm--) {
+        res_fresh();
+        const int c0 = g_view_creates, r0 = g_view_releases;   // 整臂的账（含 vf_push 的探针视图）
+        vf_push(arm);
+        const int c1 = g_view_creates;                         // 本用例自己的创建数从这里数
+        for (int f = 0; f < 60; f++) {
+            const int64_t off = f >= 30 && f < 45 ? 4096 : 0;
+            tex_t t = mk_tex(86600 + f, off, NVN_FORMAT_RGBA8, 16, 16, 1, 0); nvn_be_tex_init(&t);
+            nvn_gpu_tex st = NULL; uint32_t want_px[16]; memset(want_px, 0, sizeof want_px);
+            for (int j = 0; j < 6; j++) {
+                view_t vj = vk_layer(j == 0 ? 3 : j % 3);
+                if (j == 3) vj.base_level = 1;
+                if (j == 4) { vj.base_level = 2; vj.format = 7; }
+                if (j == 2) vj.swz[1] = 3;
+                nvn_gpu_view w = rp_view_for_attach(&t, j == 5 ? NULL : &vj, &g_fake_cmd);
+                CHECK(w != NULL);
+                const uint32_t val = (uint32_t)(f * 8 + j + 1);
+                struct nvn_gpu_view_s want = {0}; want.has_v = j != 5; if (j != 5) want.v = vj;
+                want_px[cell[j]] = val ^ view_sig(&want);
+                if (w) { fake_paint(w, val); st = w->of; }
+            }
+            CHECK(st != NULL);
+            if (st) { memcpy(snap[arm][f], st->px, sizeof snap[arm][f]); CHECK(!memcmp(snap[arm][f], want_px, sizeof want_px)); }   // 读回 = 该画的内容
+            nvn_be_tex_release(&t);
+            if (f == 14) nvn_be_alias_drop_pool(&g_tp);   // 内存池 Finalize：存储死亡，下一帧起是新的存储对象
+        }
+        creates[arm] = g_view_creates - c1;
+        nvn_be_alias_drop_pool(&g_tp);
+        CHECK(g_view_creates - c0 == g_view_releases - r0);
+    }
+    CHECK(!memcmp(snap[1], snap[0], sizeof snap[0]));                 // 两臂每帧读回的像素逐字节相同
+    CHECK(creates[1] == 18 && creates[0] == 360);                     // 且两臂走的确实是两条路（新路径少建 95%）
+    CHECK(memcmp(snap[1][0], snap[1][1], sizeof snap[1][0]) != 0);    // 画面确实在变（每帧写进去的值不同）
+    vf_push(1);
+    res_fresh();
 }
 
 static void t_alias(void) {   // 同池同偏移同描述的对象共用一份存储；只差用途标志也算同一份；偏移不同是两份
@@ -913,6 +1434,32 @@ static void t_linear_reject(void) {
     nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
 }
 
+// #976：后端没有的两种镜像夹取 → 核心记具名近似、按 MIRROR_CLAMP_TO_EDGE 重建；扩展也没有 → 不给采样器，按后端的名字记未接、红行带原文。
+static void t_samp_mirror_clamp(void) {
+    res_fresh(); nvn_unimpl_reset();
+    samp_par sp; memset(&sp, 0, sizeof sp);
+    sp.ws = NVN_WRAP_MODE_MIRROR_CLAMP; sp.wt = NVN_WRAP_MODE_MIRROR_CLAMP_TO_BORDER; sp.wr = NVN_WRAP_MODE_REPEAT; sp.border[1] = 0.5f;
+    nvn_be_reg_samp(2, &sp);
+    int c0 = g_samp_creates, t0 = g_samp_tries;
+    nvn_gpu_samp q = rp_samp_by_id(2);
+    CHECK(q && g_samp_creates - c0 == 1 && g_samp_tries - t0 == 2);   // 先按原样问一次（后端拒），再按近似建成
+    CHECK(g_samp_last.ws == NVN_WRAP_MODE_MIRROR_CLAMP_TO_EDGE && g_samp_last.wt == NVN_WRAP_MODE_MIRROR_CLAMP_TO_EDGE && g_samp_last.wr == NVN_WRAP_MODE_REPEAT);
+    CHECK(g_samp_last.border[1] == 0.5f);                              // 其余参数原样
+    CHECK(nvn_unimpl_count("gpu", "samp_wrap_mirror_clamp_approx") == 1 && nvn_unimpl_kinds() == 1);
+    CHECK(rp_samp_by_id(2) == q && g_samp_tries - t0 == 2);            // 建成后不再重问，近似只记一次
+    sp.ws = NVN_WRAP_MODE_MIRROR_CLAMP_TO_EDGE; sp.wt = NVN_WRAP_MODE_CLAMP_TO_EDGE; nvn_be_reg_samp(3, &sp);
+    CHECK(rp_samp_by_id(3) && g_samp_last.ws == NVN_WRAP_MODE_MIRROR_CLAMP_TO_EDGE && nvn_unimpl_count("gpu", "samp_wrap_mirror_clamp_approx") == 1);   // 原生有的不算近似
+    g_samp_no_mce = 1; int red0 = g_red_lines;
+    sp.ws = NVN_WRAP_MODE_MIRROR_CLAMP; nvn_be_reg_samp(4, &sp);
+    CHECK(rp_samp_by_id(4) == NULL);                                   // 近似也建不了：不给采样器（这笔绘制按槽位未解析跳过），不画别的
+    CHECK(nvn_unimpl_count("gpu", "samp_wrap_mirror_clamp_approx") == 2 && nvn_unimpl_count("gpu", "sampler_mirror_clamp_to_edge") == 1);
+    CHECK(g_red_lines - red0 == 2 && strstr(g_last_red, "sampler_mirror_clamp_to_edge：替身设备没有扩展"));   // 未接首行 + 后端原文
+    sp.ws = NVN_WRAP_MODE_MIRROR_CLAMP_TO_EDGE; nvn_be_reg_samp(5, &sp);
+    CHECK(rp_samp_by_id(5) == NULL && nvn_unimpl_count("gpu", "sampler_mirror_clamp_to_edge") == 2 && nvn_unimpl_count("gpu", "samp_create") == 0);
+    g_samp_no_mce = 0;
+    res_fresh(); nvn_unimpl_reset();
+}
+
 static void t_registry(void) {
     nvn_be_sub_begin();
     res_fresh(); nvn_unimpl_reset(); int v0 = g_view_creates, vr0 = g_view_releases, s0 = g_samp_creates, sr0 = g_samp_releases;
@@ -956,6 +1503,9 @@ static void t_decl_view(void) {
         {NVN_TEXTURE_TARGET_CUBEMAP, 6, NVN_TEXTURE_TARGET_CUBEMAP_ARRAY + 1, 1, 9, 6},
         {NVN_TEXTURE_TARGET_CUBEMAP_ARRAY, 12, NVN_TEXTURE_TARGET_CUBEMAP + 1, 1, 8, 6},
         {NVN_TEXTURE_TARGET_2D_ARRAY, 12, 0, 0, 4, 12},
+        // P0-6：方形、≥6 层的二维数组当立方体 / 立方体数组读：照 iOS 建立方体视图（后端给这种图建立方体兼容），不再绑零贴图
+        {NVN_TEXTURE_TARGET_2D_ARRAY, 12, NVN_TEXTURE_TARGET_CUBEMAP + 1, 1, 8, 6},
+        {NVN_TEXTURE_TARGET_2D_ARRAY, 12, NVN_TEXTURE_TARGET_CUBEMAP_ARRAY + 1, 1, 9, 12},
     };
     rp_view_pin_begin();
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
@@ -970,6 +1520,12 @@ static void t_decl_view(void) {
             g_vw_last.set_layers && g_vw_last.nlayers == cases[i].layers && g_vw_last.min_layer == 0);
         else CHECK(v == rp_view_by_id((int)i, &g_fake_cmd, NULL));
     }
+    CHECK(nvn_unimpl_count("tex", "cube_view_of_2d_array") == 0);
+    // 负对照：非方形（4x2）的 6 层二维数组不能立方体兼容，仍记 cube_view_of_2d_array、绑零贴图
+    { tex_t ns = mk_tex(7020, 0x30000, NVN_FORMAT_RGBA8, 4, 2, 1, 0); ns.d.target = NVN_TEXTURE_TARGET_2D_ARRAY; ns.d.depth = 6; nvn_tex_layout(&ns.d, &ns.L);
+      nvn_be_reg_tex(20, &ns, NULL);
+      nvn_gpu_view zn = rp_view_by_id_decl(20, NVN_TEXTURE_TARGET_CUBEMAP + 1, 0, 0, &g_fake_cmd, NULL);
+      CHECK(zn && zn->of->d.d.width == 1 && nvn_unimpl_count("tex", "cube_view_of_2d_array") == 1); }
     // 从已有子视图继续适配：保留 mip、起始层、格式与通道映射。
     tex_t t = mk_tex(7010, 0x10000, NVN_FORMAT_RGBA8, 8, 8, 3, 0);
     t.d.target = NVN_TEXTURE_TARGET_CUBEMAP_ARRAY; t.d.depth = 12; nvn_tex_layout(&t.d, &t.L);
@@ -996,6 +1552,18 @@ static void t_decl_view(void) {
     CHECK(rp_view_by_id_decl(11, NVN_TEXTURE_TARGET_CUBEMAP + 1, 1, 1, &g_fake_cmd, NULL) == z);
     CHECK(rp_view_by_id_decl(-1, NVN_TEXTURE_TARGET_CUBEMAP + 1, 1, 1, &g_fake_cmd, NULL) == z);
     CHECK(g_tex_creates == creates + 1 && g_nup == 6 && g_red_lines == red);
+    // #1147 空槽：单槽取池容量内一个没登记的号（句柄 0 → tex_base + 0 落在驱动保留区、TexturePoolInitialize 不写）→ 绑同一张声明类型零贴图、
+    //   不跳整笔、不报红，只记信息计数；号越过池容量、负号、池容量未知（没登记池）仍取不到 → 调用方照旧报 texture_slot_unresolved
+    nvn_be_set_tex_pool_n(64);
+    uint64_t ez0 = rp_empty_slot_zero_count();
+    CHECK(rp_view_by_id_decl(40, NVN_TEXTURE_TARGET_CUBEMAP + 1, 1, 0, &g_fake_cmd, NULL) == z);
+    CHECK(rp_view_by_id_decl(41, NVN_TEXTURE_TARGET_CUBEMAP + 1, 1, 0, &g_fake_cmd, NULL) == z);
+    CHECK(rp_empty_slot_zero_count() == ez0 + 2 && g_tex_creates == creates + 1 && g_red_lines == red);
+    CHECK(rp_view_by_id_decl(64, NVN_TEXTURE_TARGET_CUBEMAP + 1, 1, 0, &g_fake_cmd, NULL) == NULL);
+    CHECK(rp_view_by_id_decl(-1, NVN_TEXTURE_TARGET_CUBEMAP + 1, 1, 0, &g_fake_cmd, NULL) == NULL);
+    nvn_be_set_tex_pool_n(0);
+    CHECK(rp_view_by_id_decl(40, NVN_TEXTURE_TARGET_CUBEMAP + 1, 1, 0, &g_fake_cmd, NULL) == NULL);
+    CHECK(rp_empty_slot_zero_count() == ez0 + 2);
     // 不能桥接的不同维度组合（#936）：记账，绑声明类型的零贴图（同 iOS / Ryujinx），不把原视图交下去。
     nvn_gpu_view original = rp_view_by_id(11, &g_fake_cmd, NULL);
     creates = g_tex_creates;
@@ -1012,12 +1580,14 @@ static void t_decl_view(void) {
     CHECK(za && za != orig3 && za->of->d.d.target == NVN_TEXTURE_TARGET_2D_ARRAY && za->of->d.d.depth == 1 && g_tex_creates == creates + 1);
     CHECK(rp_view_by_id_decl(14, NVN_TEXTURE_TARGET_2D_ARRAY + 1, 0, 0, &g_fake_cmd, NULL) == za && g_tex_creates == creates + 1);
     CHECK(nvn_unimpl_count("tex", "decl_type_mismatch") == 3);
-    // 12 层二维数组当立方体读：后端建图没带 CUBE_COMPATIBLE，必被拒绝的视图不交下去；记账并绑零贴图。
+    // 12 层方形二维数组当立方体读（P0-6）：后端给这种图建立方体兼容，照 iOS 建 6 层立方体视图，不绑零贴图。
+    // cube_view_of_2d_array 只有上面那个非方形负对照记过 1 次。
     t = mk_tex(7012, 0x18000, NVN_FORMAT_RGBA8, 4, 4, 1, 0);
     t.d.target = NVN_TEXTURE_TARGET_2D_ARRAY; t.d.depth = 12; nvn_tex_layout(&t.d, &t.L); nvn_be_reg_tex(12, &t, NULL);
     int vc = g_view_creates;
-    CHECK(rp_view_by_id_decl(12, NVN_TEXTURE_TARGET_CUBEMAP + 1, 1, 0, &g_fake_cmd, NULL) == z);
-    CHECK(g_view_creates == vc && nvn_unimpl_count("tex", "cube_view_of_2d_array") == 1);
+    nvn_gpu_view cv = rp_view_by_id_decl(12, NVN_TEXTURE_TARGET_CUBEMAP + 1, 1, 0, &g_fake_cmd, NULL);
+    CHECK(cv && cv != z && g_view_creates == vc + 1 && g_vw_last.set_target && g_vw_last.target == NVN_TEXTURE_TARGET_CUBEMAP && g_vw_last.nlayers == 6);
+    CHECK(nvn_unimpl_count("tex", "cube_view_of_2d_array") == 1);
     // 登记视图「层数 0 = 从起点取到底」：12 层立方体数组从第 6 层起，当二维数组读取 6 层
     t = mk_tex(7013, 0x1c000, NVN_FORMAT_RGBA8, 4, 4, 1, 0);
     t.d.target = NVN_TEXTURE_TARGET_CUBEMAP_ARRAY; t.d.depth = 12; nvn_tex_layout(&t.d, &t.L);
@@ -1028,11 +1598,29 @@ static void t_decl_view(void) {
     nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
     int releases = g_tex_releases, view_releases = g_view_releases;
     rp_res_reset();
-    // 贴图：6 例 + 7010 + 7011 + 零立方体 + 零 3D + 7014 + 零二维数组 + 7013 = 13（7012 不建视图也不解析）；
-    // 视图：未改造 2 + 改造 4 + 7010 + 7011 原样 + 零立方体 + 零 3D + 7014 原样 + 零二维数组 + 7013 = 13
-    CHECK(g_tex_releases == releases + 13 && g_view_releases == view_releases + 13);
+    // 贴图：8 例 + 零浮点立方体（7020 负对照，7020 本身不建）+ 7010 + 7011 + 零 uint 立方体 + 零 3D + 7014 + 零二维数组 + 7012 + 7013 = 17；
+    // 视图：未改造 2 + 改造 6 + 零浮点立方体 + 7010 + 7011 原样 + 零 uint 立方体 + 零 3D + 7014 原样 + 零二维数组 + 7012 立方体 + 7013 = 17
+    CHECK(g_tex_releases == releases + 17 && g_view_releases == view_releases + 17);
 }
 
+static void t_buf_mirror_fail_once(void) {   // 池镜像建不出来：同一个池只尝试一次，之后直接按未接返回；池释放再登记会重试
+    nvn_be_sub_begin();
+    nvn_be_shutdown_session(); nvn_unimpl_reset(); g_pg_tracked = 1; g_nbw = 0;
+    uint64_t base = (uint64_t)(uintptr_t)g_pmem; int c0 = g_buf_creates;
+    nvn_be_pool_add(g_pmem, sizeof g_pmem);
+    g_buf_fail_bytes = sizeof g_pmem;
+    nvn_gpu_buf b = NULL; uint64_t o = 0;
+    CHECK(rp_buf_resolve(&g_fake_cmd, base + 64, 16, &b, &o) == 0);
+    CHECK(rp_buf_resolve(&g_fake_cmd, base + 128, 16, &b, &o) == 0);
+    CHECK(rp_buf_resolve(&g_fake_cmd, base + PG, 32, &b, &o) == 0);
+    CHECK(g_buf_creates - c0 == 1);                                         // 三次解析只试建一次
+    CHECK(nvn_unimpl_count("gpu", "buf_create_pool_mirror") == 3);         // 每次照样记未接（计数），不再重建
+    nvn_be_pool_del(g_pmem); nvn_be_pool_add(g_pmem, sizeof g_pmem);         // 池释放再登记：失败记录随之删掉
+    g_buf_fail_bytes = 0;
+    CHECK(rp_buf_resolve(&g_fake_cmd, base + 64, 16, &b, &o) == 1 && b && o == 64);   // 同一地址重新使用：重试并建成
+    CHECK(g_buf_creates - c0 == 2);
+    nvn_be_shutdown_session();
+}
 static void t_buf_mirror(void) {   // 池镜像：首次使用建一份、按页同步；没写过的页不重传；按使用点的先后保证 GPU 顺序
     nvn_be_sub_begin();
     nvn_be_shutdown_session(); nvn_unimpl_reset(); memset(g_pg_gen, 0, sizeof g_pg_gen); g_pg_tracked = 1; g_nbw = 0; g_dirty_now = 100;
@@ -1068,6 +1656,113 @@ static void t_buf_mirror(void) {   // 池镜像：首次使用建一份、按页
     nvn_be_pool_del(g_pmem);
     CHECK(g_buf_releases - r0 == 1 && rp_buf_mirrors() == 0);       // 池销毁：镜像放掉
     nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+}
+
+static void t_buf_multi_tail(void) {
+    nvn_be_sub_begin(); nvn_be_shutdown_session();
+    memset(g_pg_gen, 0, sizeof g_pg_gen); g_pg_tracked = 1; g_dirty_now = 100; g_nbw = 0;
+    nvn_be_pool_add(g_pmem, sizeof g_pmem);
+    uint64_t base = (uint64_t)(uintptr_t)g_pmem;
+    const int counts[] = {0, 1, 16, 17, 64, 65};
+    for (unsigned c = 0; c < sizeof counts / sizeof counts[0]; c++) {
+        uint64_t addr[66], len[66], off[66]; nvn_gpu_buf buf[66]; unsigned char ok[66];
+        memset(ok, 0xa5, sizeof ok); memset(buf, 0, sizeof buf); memset(off, 0xff, sizeof off);
+        for (int i = 0; i < 66; i++) { addr[i] = base + (uint64_t)i * 16; len[i] = 8; }
+        // Valid, zero-length and pool-tail failures on both sides of a chunk boundary.
+        len[15] = len[31] = 0;
+        addr[16] = addr[48] = base + sizeof g_pmem - 4;
+        CHECK(rp_buf_resolve_multi(counts[c], addr, len, buf, off, ok) == 1);
+        for (int i = 0; i < counts[c]; i++) {
+            int valid = i != 15 && i != 16 && i != 31 && i != 48;
+            CHECK(ok[i] == valid);
+            if (valid) CHECK(buf[i] != NULL && off[i] == (uint64_t)i * 16);
+        }
+        CHECK(ok[counts[c]] == 0xa5);
+    }
+    nvn_be_pool_del(g_pmem); nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+}
+
+// 全池已同步后，无关写不应触发逐页扫描；本池一块变脏时只需检查这一块。
+static void t_buf_block_work(void) {
+    nvn_be_shutdown_session(); nvn_unimpl_reset(); g_pg_tracked = 1; g_buf_cpu_auto = 1;
+    g_flag_buf_blocks = 1; g_dirty_now = 100; g_nbw = 0;
+    g_block_mem = (uint8_t *)(((uintptr_t)g_block_arena + BLOCK_TEST_ALIGN - 1) & ~(uintptr_t)(BLOCK_TEST_ALIGN - 1));
+    memset(g_block_mem, 0x21, BLOCK_TEST_PAGES * PG); memset(g_block_gen, 0, sizeof g_block_gen);
+    memset(g_block_version, 0, sizeof g_block_version); ++g_dirty_map; g_block_unreliable = 0;
+    uint64_t base = (uint64_t)(uintptr_t)g_block_mem;
+    nvn_be_pool_add(g_block_mem, BLOCK_TEST_PAGES * PG);
+    nvn_gpu_buf b = NULL;
+    nvn_be_sub_begin();
+    CHECK(rp_buf_resolve(&g_fake_cmd, base, BLOCK_TEST_PAGES * PG, &b, NULL) == 1 && b && b->cpu);
+    if (b && b->cpu) CHECK(!memcmp(b->cpu, g_block_mem, BLOCK_TEST_PAGES * PG));
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+
+    nvn_be_sub_begin(); ++g_dirty_now; g_block_pages_examined = 0;   // 其他跟踪池写，不改本池
+    CHECK(rp_buf_resolve(&g_fake_cmd, base, BLOCK_TEST_PAGES * PG, &b, NULL) == 1);
+    printf("block-work unrelated: examined=%llu expected=0\n", (unsigned long long)g_block_pages_examined);
+    CHECK(g_block_pages_examined == 0);   // 期望 4 个摘要块；main 逐页查询 256 页
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+
+    nvn_be_sub_begin();
+    memset(g_block_mem + 70 * PG, 0x7b, PG); g_block_gen[70] = ++g_dirty_now; g_block_version[1]++;
+    g_block_pages_examined = 0;
+    CHECK(rp_buf_resolve(&g_fake_cmd, base, BLOCK_TEST_PAGES * PG, &b, NULL) == 1);
+    printf("block-work dirty: examined=%llu expected<=64\n", (unsigned long long)g_block_pages_examined);
+    CHECK(g_block_pages_examined <= 64);  // 只有第 2 块变脏，其他 3 块不得逐页查
+    if (b && b->cpu) CHECK(!memcmp(b->cpu, g_block_mem, BLOCK_TEST_PAGES * PG));
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+
+    // 一次写脏同块中的两页；只解析前一页不能证明后一页已核对。
+    memset(g_block_mem + 80 * PG, 0x38, PG); memset(g_block_mem + 81 * PG, 0x49, PG);
+    g_block_gen[80] = g_block_gen[81] = ++g_dirty_now; g_block_version[1]++;
+    nvn_be_sub_begin();
+    CHECK(rp_buf_resolve(&g_fake_cmd, base + 80 * PG, PG, &b, NULL) == 1);
+    if (b && b->cpu) CHECK(b->cpu[80 * PG] == 0x38 && b->cpu[81 * PG] == 0x21);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    nvn_be_sub_begin();
+    CHECK(rp_buf_resolve(&g_fake_cmd, base + 81 * PG, PG, &b, NULL) == 1);
+    if (b && b->cpu) CHECK(b->cpu[81 * PG] == 0x49);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+
+    // 跨多个摘要块的部分覆盖：先解析第 80 页起的 66 页，不能把同块第 70 页也算核过。
+    memset(g_block_mem + 70 * PG, 0x61, PG); memset(g_block_mem + 80 * PG, 0x62, PG);
+    g_block_gen[70] = g_block_gen[80] = ++g_dirty_now; g_block_version[1]++;
+    nvn_be_sub_begin();
+    CHECK(rp_buf_resolve(&g_fake_cmd, base + 80 * PG, 66 * PG, &b, NULL) == 1);
+    if (b && b->cpu) CHECK(b->cpu[80 * PG] == 0x62 && b->cpu[70 * PG] == 0x7b);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    nvn_be_sub_begin(); g_block_pages_examined = 0;
+    CHECK(rp_buf_resolve(&g_fake_cmd, base, BLOCK_TEST_PAGES * PG, &b, NULL) == 1);
+    CHECK(g_block_pages_examined <= 64);
+    if (b && b->cpu) CHECK(!memcmp(b->cpu, g_block_mem, BLOCK_TEST_PAGES * PG));
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+
+    // 待落地写只覆盖末块时，整段解析必须留在写入的镜像，分块不能各自重选。
+    extern uint64_t rp_buf_gpu_write_note(uint64_t, uint64_t, uint64_t *);
+    extern void rp_buf_gpu_write_land(uint64_t, uint64_t, int);
+    extern void rp_buf_frame_flip(void);
+    nvn_gpu_buf written = b; uint64_t key = 0;
+    uint64_t id = rp_buf_gpu_write_note(base + 200 * PG, PG, &key);
+    CHECK(id && key == base && written && written->cpu);
+    if (written && written->cpu) memset(written->cpu + 200 * PG, 0xee, PG);
+    rp_buf_frame_flip();
+    g_block_gen[200] = ++g_dirty_now; g_block_version[3]++;
+    nvn_be_sub_begin();
+    CHECK(rp_buf_resolve(&g_fake_cmd, base, BLOCK_TEST_PAGES * PG, &b, NULL) == 1 && b == written);
+    if (b && b->cpu) CHECK(b->cpu[200 * PG] == 0xee); // CPU 同步不得覆盖 GPU 未落地的字节
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    if (id) rp_buf_gpu_write_land(key, id, 1);
+    CHECK(g_block_mem[200 * PG] == 0xee);
+
+    // 跟踪失效后没有可用摘要，即使页代号不变也必须整段同步。
+    g_block_unreliable = 1; g_block_mem[100 * PG] = 0x71;
+    nvn_be_sub_begin();
+    CHECK(rp_buf_resolve(&g_fake_cmd, base, BLOCK_TEST_PAGES * PG, &b, NULL) == 1);
+    if (b && b->cpu) CHECK(b->cpu[100 * PG] == 0x71);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    g_block_unreliable = 0;
+    nvn_be_pool_del(g_block_mem); nvn_be_shutdown_session();
+    g_block_mem = NULL; g_buf_cpu_auto = 0; g_flag_buf_blocks = 0;
 }
 
 static void t_buf_ops(void) {   // 缓冲类命令只改游戏内存；GPU 顺序由使用点同步保证：先用的看到旧内容，后用的看到新内容
@@ -1156,7 +1851,7 @@ static void put_set_rt(stream *s, const tex_t *color, const tex_t *depth) {   //
     if (color) { snap[k] = *color; pt[k] = &snap[k]; k++; }
     if (depth) { snap[k] = *depth; pt[k] = &snap[k]; }
 }
-static void pass_fresh(void) { nvn_be_shutdown_session(); res_fresh(); nvn_unimpl_reset(); g_npd = g_pass_ends = g_ncr = 0; g_barrier_bits = 0; g_barrier_at = -1; }
+static void pass_fresh(void) { nvn_be_shutdown_session(); res_fresh(); nvn_unimpl_reset(); g_npd = g_pass_ends = g_ncr = 0; g_barrier_bits = 0; g_barrier_at = -1; g_nbar = 0; }
 
 static void t_pass_clear_fold(void) {   // 整屏清除不单独编码：折进通道的 load；没有绘制时提交末为它开一个只清除的通道
     pass_fresh();
@@ -1321,6 +2016,71 @@ static void t_report_counter(void) {   // 计数器报告：段完成后才写�
     g_rcond = 0; nvn_be_shutdown_session(); nvn_unimpl_reset();
 }
 
+static void ts_report(stream *s, uint64_t *rec) {
+    uint64_t type = NVN_COUNTER_TYPE_TIMESTAMP, addr = (uint64_t)(uintptr_t)rec;
+    uint8_t *p = put(s, OP_REPORT_COUNTER, 16); memcpy(p, &type, 8); memcpy(p + 8, &addr, 8);
+}
+static void t_report_position(void) {
+    nvn_be_shutdown_session(); g_caps_extra = NVN_GPU_CAP_REPORT_TIMESTAMP; g_ts_calls = 0;
+    uint64_t rec[2][2] = {{99, 99}, {88, 88}}; stream a = {0};
+    for (int i = 0; i < 2; i++) { uint64_t t = i ? NVN_COUNTER_TYPE_TIMESTAMP_TOP : NVN_COUNTER_TYPE_TIMESTAMP;
+        uint64_t ad = (uint64_t)(uintptr_t)rec[i]; uint8_t *r = put(&a, OP_REPORT_COUNTER, 16); memcpy(r, &t, 8); memcpy(r + 8, &ad, 8); }
+    end(&a); g_tick = 999999; submit1(&a);
+    CHECK(rec[0][0] == 99 && rec[1][0] == 88); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ts_calls == 2); CHECK(g_ts_types[0] == NVN_COUNTER_TYPE_TIMESTAMP && g_ts_types[1] == NVN_COUNTER_TYPE_TIMESTAMP_TOP);
+    CHECK(rec[0][0] == 110 && rec[0][1] == 110); CHECK(rec[1][0] == 120 && rec[1][1] == 120);
+    // Zero remains a valid sample; an unavailable result falls back and records the reason.
+    uint64_t unavail0 = nvn_unimpl_count("timestamp", "result_unavailable");
+    rec[0][0] = rec[0][1] = 99; rec[1][0] = rec[1][1] = 88; submit1(&a);
+    g_pend[0].ts[0] = (nvn_gpu_timestamp_result){.host_ns=0, .valid=1};
+    g_pend[0].ts[1].valid = 0; fake_complete(NVN_GPU_DONE_OK);
+    CHECK(rec[0][0] == 0 && rec[0][1] == 0);
+    CHECK(rec[1][0] == g_tick && rec[1][1] == g_tick);
+    CHECK(nvn_unimpl_count("timestamp", "result_unavailable") == unavail0 + 1);
+    rec[0][0] = rec[0][1] = 99; rec[1][0] = rec[1][1] = 88;
+    g_ts_convert_fail = 1; submit1(&a); fake_complete(NVN_GPU_DONE_OK); g_ts_convert_fail = 0;
+    CHECK(rec[0][0] == g_tick && rec[0][1] == g_tick);
+    CHECK(rec[1][0] == g_tick && rec[1][1] == g_tick);
+    CHECK(nvn_unimpl_count("timestamp", "result_unavailable") == unavail0 + 3);
+    uint64_t fault0 = nvn_unimpl_count("timestamp", "fault");
+    rec[0][0] = rec[0][1] = 99; rec[1][0] = rec[1][1] = 88; submit1(&a);
+    fake_complete(NVN_GPU_DONE_FAULT);
+    CHECK(rec[0][0] == g_tick && rec[0][1] == g_tick);
+    CHECK(rec[1][0] == g_tick && rec[1][1] == g_tick);
+    CHECK(nvn_unimpl_count("timestamp", "fault") == fault0 + 2);
+#ifdef S2A_TEST_TS_ALLOC
+    nvn_be_shutdown_session(); uint64_t oom0 = nvn_unimpl_count("timestamp", "slot_oom");
+    rec[0][0] = rec[0][1] = 99; rec[1][0] = rec[1][1] = 88;
+    s2a_test_fail_ts_alloc = 1; submit1(&a); s2a_test_fail_ts_alloc = 0; fake_complete(NVN_GPU_DONE_OK);
+    CHECK(rec[0][0] == g_tick && rec[0][1] == g_tick);
+    CHECK(rec[1][0] == g_tick && rec[1][1] == g_tick);
+    CHECK(nvn_unimpl_count("timestamp", "slot_oom") == oom0 + 2);
+#endif
+    rec[0][0] = 99; submit1(&a); fake_complete(NVN_GPU_DONE_FAILED); CHECK(rec[0][0] == 99);
+    // Slot budget is per actual segment, never a reason to drop the submission.
+    stream many = {0}; uint64_t records[65][2]; memset(records, 0, sizeof records);
+    for (int i = 0; i < 65; i++) { ts_report(&many, records[i]); }
+    end(&many);
+    rp_timestamp_fallback_take(); g_ts_calls = 0; submit1(&many); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ts_calls == 64 && records[63][0] == 740 && records[64][0] == g_tick);
+    CHECK(rp_timestamp_fallback_take() == 1);
+    records[64][0] = 54321; g_ts_calls = 0; submit1(&many); fake_complete(NVN_GPU_DONE_FAULT);
+    CHECK(records[0][0] == g_tick && records[64][0] == g_tick);
+    // CALL then JUMP preserves execution order and address-to-slot mapping.
+    stream child = {0}, tail = {0}, root = {0}; ts_report(&child, rec[0]); end(&child);
+    ts_report(&tail, rec[1]); end(&tail); uint64_t ptr = (uint64_t)(uintptr_t)child.b;
+    memcpy(put(&root, OP_CALL, 8), &ptr, 8); ptr = (uint64_t)(uintptr_t)tail.b;
+    memcpy(put(&root, OP_JUMP, 8), &ptr, 8); end(&root); g_ts_calls = 0;
+    submit1(&root); fake_complete(NVN_GPU_DONE_OK); CHECK(rec[0][0] == 110 && rec[1][0] == 120);
+    // The first occlusion reset cuts the segment between the two reports.
+    nvn_be_shutdown_session(); stream split = {0}; ts_report(&split, rec[0]);
+    uint64_t reset = NVN_COUNTER_TYPE_SAMPLES_PASSED; memcpy(put(&split, OP_RESET_COUNTER, 8), &reset, 8);
+    ts_report(&split, rec[1]); end(&split); g_ts_calls = 0; submit1(&split);
+    CHECK(g_npend == 2 && g_pend[0].nts == 1 && g_pend[1].nts == 1);
+    fake_complete(NVN_GPU_DONE_OK); CHECK(rec[0][0] == 110 && rec[1][0] == 120);
+    g_caps_extra = 0; nvn_be_shutdown_session(); nvn_unimpl_reset();
+}
+
 // 最小的可画环境：一个不带属性、不带绑定的程序，一张 64x36 的颜色目标
 static tex_t g_qrt;
 static void q_env(stream *s) {
@@ -1463,6 +2223,50 @@ static void t_pass_clear_park_tail(void) {   // 挂起到提交收尾：清 A �
     pass_fresh();
 }
 
+// #1072：格式不能线性过滤 / 不能混合时照常用是未定义行为（G710 的 RGBA16 不能过滤、R32F 不能混合等）。
+// 期望：线性采样器配这种格式时改用同参数的最近点采样器，记 tex / filter_unsupported_fmt_0x..；这种格式当颜色目标时关混合，记 draw / blend_unsupported_fmt_0x..。
+// 负对照：能过滤 / 能混合时不改；整数格式本来就走最近点，不记。
+static void t_fmt_filter_blend(void) {
+    pass_fresh(); g_resolve_rc = g_cresolve_rc = 0; int g0 = g_gdraws;
+    tex_t a = mk_tex(151, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0), b = mk_tex(152, 0x4000, NVN_FORMAT_RGBA8, 16, 16, 1, 0);
+    samp_par sp; memset(&sp, 0, sizeof sp); sp.minf = NVN_MIN_FILTER_LINEAR_MIPMAP_LINEAR; sp.magf = NVN_MAG_FILTER_LINEAR; sp.ws = NVN_WRAP_MODE_REPEAT; sp.aniso = 4;
+    nvn_be_reg_tex(7, &a, NULL); nvn_be_reg_samp(3, &sp);
+    blend_st bl; memset(&bl, 0, sizeof bl); bl.target = 0;
+    for (int k = 0; k < 2; k++) {   // k = 0：替身设备说 RGBA8 不能过滤、不能混合；k = 1：负对照，能
+        g_caps_nofilter = g_caps_noblend = k ? ~0u : NVN_FORMAT_RGBA8;
+        stream s = {0}; q_env(&s); put_set_rt(&s, &b, NULL);
+        g_fprog.nent[1] = 1; g_fprog.ent[1][0].cls = NVN_GPU_RES_TEX_SAMP; g_fprog.ent[1][0].src_kind = NVN_RB_TEX; g_fprog.ent[1][0].src_reg = 5; g_fprog.ent[1][0].src_reg2 = UINT16_MAX;
+        g_fprog.dtt[1][0] = NVN_TEXTURE_TARGET_2D + 1;
+        p_bind_state *by = put(&s, OP_BIND_STATE, sizeof *by); by->kind = 0; memcpy(by->bytes, &bl, sizeof bl);
+        color_st cs; memset(&cs, 0, sizeof cs); cs.blend_en = 1; cs.logic_op = NVN_LOGIC_OP_COPY;
+        by = put(&s, OP_BIND_STATE, sizeof *by); by->kind = 1; memcpy(by->bytes, &cs, sizeof cs);
+        p_bind_handles *bh = put(&s, OP_BIND_TEX, sizeof *bh); bh->stage = 1; bh->first = 5; bh->n = 1; bh->h[0] = 7 | 3 << 20;
+        q_draw(&s); end(&s);
+        submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+        CHECK(g_gdraws == g0 + 1 + k && g_nfb[1] == 1 && g_fb[1][0].u.ts.samp != NULL);
+        if (!k) {
+            CHECK((g_last_pdesc.color.blend_en & 1) == 0 && nvn_unimpl_count("draw", "blend_unsupported_fmt_0x25") == 1);
+            CHECK(g_samp_last.magf == NVN_MAG_FILTER_NEAREST && g_samp_last.minf == NVN_MIN_FILTER_NEAREST_MIPMAP_NEAREST && g_samp_last.ws == NVN_WRAP_MODE_REPEAT &&
+                  g_samp_last.aniso <= 1 && nvn_unimpl_count("tex", "filter_unsupported_fmt_0x25") == 1);
+        } else {
+            CHECK((g_last_pdesc.color.blend_en & 1) == 1 && nvn_unimpl_count("draw", "blend_unsupported_fmt_0x25") == 0 && nvn_unimpl_count("tex", "filter_unsupported_fmt_0x25") == 0);
+        }
+        pass_fresh(); nvn_be_reg_tex(7, &a, NULL); nvn_be_reg_samp(3, &sp);
+    }
+    g_fprog.nent[1] = 0;
+    pass_fresh(); g_caps_nofilter = NVN_FORMAT_RGBA8;
+    nvn_be_reg_tex(7, &a, NULL);
+    sp.ws = NVN_WRAP_MODE_MIRROR_CLAMP; nvn_be_reg_samp(3, &sp);
+    nvn_gpu_samp near = rp_samp_for_tex(3, 7);
+    CHECK(near && g_samp_last.ws == NVN_WRAP_MODE_MIRROR_CLAMP_TO_EDGE && g_samp_last.magf == NVN_MAG_FILTER_NEAREST);
+    pass_fresh(); g_caps_nofilter = NVN_FORMAT_RGBA8;
+    nvn_be_reg_tex(7, &a, NULL); sp.ws = NVN_WRAP_MODE_REPEAT; nvn_be_reg_samp(3, &sp);
+    g_samp_fail_nearest = 1;
+    CHECK(rp_samp_for_tex(3, 7) == NULL);  // 最近点采样器分配失败，不能交原来的线性采样器
+    g_samp_fail_nearest = 0; g_caps_nofilter = g_caps_noblend = ~0u;
+    pass_fresh();
+}
+
 static void t_pass_clear_park_read(void) {   // 被读之前必须落地（正确性红线）：清 A 后把 A 当采样贴图用，绘制路径先落地再开通道
     pass_fresh(); g_flag_clear_park = 1; g_flag_rt_cont = 1; g_resolve_rc = g_cresolve_rc = 0;
     int g0 = g_gdraws;
@@ -1506,6 +2310,32 @@ static void t_gs_dirty_and_topology(void) {
     end(&t); submit1(&t); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_gdraws == 2);
     CHECK(nvn_unimpl_count("draw", "geometry_topology_unimplemented") == 1);
+    // #696：GS + 不带索引、非间接的三角带，按 GL 序展开成三角形列表再交给原生 GS。期望按 GL 4.6 §10.1.6 手算（不跑被测的展开函数）：
+    //   第 i 个三角形偶 i 为 (i, i+1, i+2)、奇 i 为 (i+1, i, i+2)；Vulkan 原生三角带的奇三角形是 (i, i+2, i+1)。首顶点进 base vertex，实例数与首实例不变
+    { stream u = {0}; p_draw *ts = put(&u, OP_DRAW, sizeof *ts); ts->prim = 5; ts->first = 7; ts->count = 4; ts->instances = 32; ts->base_instance = 3;
+      end(&u); submit1(&u); fake_complete(NVN_GPU_DONE_OK);
+      CHECK(g_gdraws == 3 && nvn_unimpl_count("draw", "geometry_topology_unimplemented") == 1);
+      CHECK(g_last_da.prim == 4 && g_last_pdesc.prim == 4 && g_last_req.prim == 4 && g_last_pdesc.prim_restart == 0);
+      CHECK(g_last_da.itype == 2 && g_last_da.ibuf == &g_arena_buf && g_last_da.count == 6 && g_last_da.base_vertex == 7 && g_last_da.first == 0);
+      CHECK(g_last_da.instances == 32 && g_last_da.base_instance == 3);
+      { const uint32_t e[6] = {0, 1, 2, 2, 1, 3}; CHECK(g_last_da.count == 6 && !memcmp(g_arena + g_last_da.ioff, e, sizeof e)); } }
+    { stream u = {0}; p_draw *ts = put(&u, OP_DRAW, sizeof *ts); ts->prim = 5; ts->count = 5; ts->instances = 1;   // 奇数个顶点：3 个三角形
+      end(&u); submit1(&u); fake_complete(NVN_GPU_DONE_OK);
+      CHECK(g_gdraws == 4 && g_last_da.prim == 4 && g_last_da.base_vertex == 0);
+      { const uint32_t e[9] = {0, 1, 2, 2, 1, 3, 2, 3, 4}; CHECK(g_last_da.count == 9 && !memcmp(g_arena + g_last_da.ioff, e, sizeof e)); } }
+    { stream u = {0}; p_draw *ts = put(&u, OP_DRAW, sizeof *ts); ts->prim = 5; ts->count = 2; ts->instances = 1;   // 不足 3 个顶点：不画、不报红
+      end(&u); submit1(&u); fake_complete(NVN_GPU_DONE_OK);
+      CHECK(g_gdraws == 4 && nvn_unimpl_count("draw", "geometry_topology_unimplemented") == 1); }
+    // 读数之外的组合照旧报未接：带索引的三角带、间接的三角带、三角扇
+    { stream u = {0}; p_draw_idx *di = put(&u, OP_DRAW_IDX, sizeof *di); di->prim = 5; di->itype = 1; di->count = 4; di->instances = 1; di->ibuf = 0x5000;
+      end(&u); submit1(&u); fake_complete(NVN_GPU_DONE_OK);
+      CHECK(g_gdraws == 4 && nvn_unimpl_count("draw", "geometry_topology_unimplemented") == 2); }
+    { stream u = {0}; p_draw *ts = put(&u, OP_DRAW, sizeof *ts); ts->prim = 5; ts->ind = 0x6000;
+      end(&u); submit1(&u); fake_complete(NVN_GPU_DONE_OK);
+      CHECK(g_gdraws == 4 && nvn_unimpl_count("draw", "geometry_topology_unimplemented") == 3); }
+    { stream u = {0}; p_draw *ts = put(&u, OP_DRAW, sizeof *ts); ts->prim = 6; ts->count = 4; ts->instances = 1;
+      end(&u); submit1(&u); fake_complete(NVN_GPU_DONE_OK);
+      CHECK(g_gdraws == 4 && nvn_unimpl_count("draw", "geometry_topology_unimplemented") == 4); }
     g_snap_prog = NULL; pass_fresh();
 }
 // 不同阶段同槽的三个 UBO 有不同哨兵；只重绑 GS 后检查对应阶段与管线。
@@ -1564,6 +2394,45 @@ static void t_stage_dropped_clears_binds(void) {
 // 绘制要绑的存储缓冲，同一次提交里第二次同步时要录成传输、结束通道：必须发生在开通道之前，
 // 不能在设了管线之后、发绑定的途中把通道结束掉（真后端随后收到通道外的绑定，置粘滞、整段作废；#697 Mali 真机）。
 // 池不受写跟踪 → 每次用都整段同步；同一段里两笔都绑同一段存储缓冲，第二笔那次同步一定走传输。
+// 合法 NVN 存储槽尚未绑定时，Ryujinx 为描述符保留 64 KiB 物理空缓冲，不能跳过整笔绘制。
+// 不把真实地址解析失败或槽号越界当空槽；内部资源不登记到 guest 池。
+static void t_storage_null_binding(void) {
+    pass_fresh(); g_gdraws = g_resolve_rc = 0; memset(g_nfb, 0, sizeof g_nfb);
+    int created = g_buf_creates, released = g_buf_releases;
+    stream s = {0}; q_env(&s);
+    g_fprog.nent[0] = 1;
+    nvn_gpu_layout_ent *e = &g_fprog.ent[0][0];
+    e->cls = NVN_GPU_RES_SSBO; e->src_kind = NVN_RB_SBUFP; e->src_reg = 0; e->access = NVN_GPU_ACC_R;
+    q_draw(&s); q_draw(&s); end(&s); submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 2 && nvn_unimpl_kinds() == 0);
+    nvn_gpu_buf empty = g_nfb[0] == 1 ? g_fb[0][0].u.b.buf : NULL;
+    CHECK(empty && g_fb[0][0].u.b.off == 0 && g_fb[0][0].u.b.len == 0x10000);
+    CHECK(g_buf_creates == created + 1); // 两笔复用同一对象
+    e->src_reg = 16;
+    stream bad = {0}; q_draw(&bad); end(&bad); submit1(&bad); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 2 && nvn_unimpl_count("draw", "storage_buffer_unbound") == 1);
+    e->src_reg = 0;
+    stream missing = {0};
+    p_bind_buf *b = put(&missing, OP_BIND_SSBO, sizeof *b); b->stage = 0; b->index = 0; b->addr = 0x12340; b->size = 32;
+    q_draw(&missing); end(&missing); submit1(&missing); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 2 && nvn_unimpl_count("draw", "storage_buffer_unresolved") == 1);
+    // 地址或长度只空一个，以及 UBO 指针来源，不能被合法空 SBUFP 路径接走。
+    for (int k = 0; k < 3; k++) {
+        stream invalid = {0}; q_env(&invalid);
+        g_fprog.nent[0] = 1; e = &g_fprog.ent[0][0];
+        e->cls = NVN_GPU_RES_SSBO; e->src_kind = k == 2 ? NVN_RB_UBOP : NVN_RB_SBUFP; e->src_reg = 0; e->access = NVN_GPU_ACC_R;
+        if (k < 2) {
+            b = put(&invalid, OP_BIND_SSBO, sizeof *b); b->stage = 0; b->index = 0;
+            b->addr = k == 0 ? 0x12340 : 0; b->size = k == 0 ? 0 : 32;
+        }
+        int draws = g_gdraws, allocated = g_buf_creates;
+        uint64_t unbound = nvn_unimpl_count("draw", "storage_buffer_unbound");
+        q_draw(&invalid); end(&invalid); submit1(&invalid); fake_complete(NVN_GPU_DONE_OK);
+        CHECK(g_gdraws == draws && nvn_unimpl_count("draw", "storage_buffer_unbound") == unbound + 1 && g_buf_creates == allocated);
+    }
+    pass_fresh();
+    CHECK(g_buf_releases == released + 1);
+}
 static void t_storage_sync_before_pass(void) {
     pass_fresh(); g_gdraws = g_resolves = g_resolve_rc = 0; g_arena_used = 0; g_bind_outside = 0; g_draw_outside = 0; g_pass_open = 0; g_nbw = 0;
     memset(g_pmem, 0, sizeof g_pmem); nvn_be_pool_add(g_pmem, sizeof g_pmem);
@@ -1580,6 +2449,139 @@ static void t_storage_sync_before_pass(void) {
     CHECK(g_bind_outside == 0 && g_draw_outside == 0);            // 每一次图形绑定、每一笔绘制都在通道里
     CHECK(nvn_unimpl_count("draw", "storage_buffer_unresolved") == 0);
     g_pg_tracked = tracked; pass_fresh();
+}
+// A buffer texture reads the registered pool range directly, with no sampler.
+// A second untracked use must synchronize before its render pass is reopened.
+static void t_tbuf_replay(void) {
+    pass_fresh(); g_gdraws = g_resolves = g_resolve_rc = 0; g_arena_used = 0;
+    g_bind_outside = g_draw_outside = g_pass_open = g_nbw = 0;
+    g_tbuf_created = g_tbuf_in_pass = 0; memset(g_tbuf_binds, 0, sizeof g_tbuf_binds);
+    memset(g_tbuf_bound, 0, sizeof g_tbuf_bound); memset(g_pmem, 0, sizeof g_pmem);
+    nvn_be_pool_add(g_pmem, sizeof g_pmem); int tracked = g_pg_tracked; g_pg_tracked = 0;
+    const uint32_t values[4] = {11, 22, 33, 44}; memcpy(g_pmem + 2 * PG + 256, values, sizeof values);
+    tex_t t = mk_tex(88801, 0, NVN_FORMAT_R32UI, 4, 1, 1, 0);
+    t.d.target = NVN_TEXTURE_TARGET_BUFFER; t.mem = g_pmem + 2 * PG + 256; t.off = 2 * PG + 256;
+    static pool_t pool; memset(&pool, 0, sizeof pool); pool.mem = g_pmem; pool.size = sizeof g_pmem; t.pool = &pool;
+    nvn_tex_layout(&t.d, &t.L); nvn_be_set_tex_pool_n(8); nvn_be_reg_tex(3, &t, NULL);
+    stream s = {0}; q_env(&s);
+    g_fprog.nent[1] = 1; nvn_gpu_layout_ent *e = &g_fprog.ent[1][0];
+    e->cls = NVN_GPU_RES_TBUF; e->src_kind = NVN_RB_TBUF; e->src_reg = 130; e->src_reg2 = UINT16_MAX; e->count = 1; e->access = NVN_GPU_ACC_R;
+    g_fprog.dtt[1][0] = NVN_TEXTURE_TARGET_BUFFER + 1; g_fprog.dcls[1][0] = 1;
+    p_bind_handles *b = put(&s, OP_BIND_TEX, sizeof *b); b->stage = 1; b->first = 130; b->n = 1; b->h[0] = 3;
+    q_draw(&s); q_draw(&s); end(&s); submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 2 && g_tbuf_binds[NVN_GPU_SH_FS] == 2);
+    CHECK(g_tbuf_bound[NVN_GPU_SH_FS].buf && g_tbuf_bound[NVN_GPU_SH_FS].off == 2 * PG + 256 &&
+          g_tbuf_bound[NVN_GPU_SH_FS].bytes == 16 && g_tbuf_bound[NVN_GPU_SH_FS].format == NVN_FORMAT_R32UI);
+    CHECK(g_tbuf_created == 2 && !g_tbuf_in_pass && g_nbw == 2 && g_bw[0].pre == 1 && g_bw[1].pre == 0);
+    CHECK(g_bind_outside == 0 && g_draw_outside == 0);
+    // Tracked and unchanged bytes keep the pass open: the binding fast path
+    // still must not reuse the previous draw's released temporary view.
+    g_pg_tracked = 1; g_pg_gen[2] = ++g_dirty_now;
+    int old_binds = g_tbuf_binds[NVN_GPU_SH_FS], old_draws = g_gdraws, old_passes = g_npd;
+    stream stable = {0}; q_env(&stable);
+    g_fprog.nent[1] = 1; e = &g_fprog.ent[1][0];
+    e->cls = NVN_GPU_RES_TBUF; e->src_kind = NVN_RB_TBUF; e->src_reg = 130; e->src_reg2 = UINT16_MAX; e->count = 1; e->access = NVN_GPU_ACC_R;
+    g_fprog.dtt[1][0] = NVN_TEXTURE_TARGET_BUFFER + 1; g_fprog.dcls[1][0] = 1;
+    b = put(&stable, OP_BIND_TEX, sizeof *b); b->stage = 1; b->first = 130; b->n = 1; b->h[0] = 3;
+    q_draw(&stable); q_draw(&stable); end(&stable); submit1(&stable); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == old_draws + 2 && g_npd == old_passes + 1);
+    CHECK(g_tbuf_binds[NVN_GPU_SH_FS] == old_binds + 2);
+    g_pg_tracked = 0;
+    memset(&g_cprog, 0, sizeof g_cprog); g_cprog.is_compute = 1; g_cprog.sh[0] = &g_fsh[0]; g_cprog.nent[0] = 1;
+    e = &g_cprog.ent[0][0]; e->cls = NVN_GPU_RES_TBUF; e->src_kind = NVN_RB_TBUF; e->src_reg = 0; e->src_reg2 = UINT16_MAX; e->count = 1; e->access = NVN_GPU_ACC_R;
+    g_cprog.dtt[0][0] = NVN_TEXTURE_TARGET_BUFFER + 1; g_cprog.dcls[0][0] = 1;
+    rp_S.tex[5][0] = 3; int n = g_ndisp; p_dispatch dp = {.x=1, .y=1, .z=1};
+    nvn_be_sub_begin(); rp_dispatch(&g_fake_cmd, &dp, NULL); nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_ndisp == n + 1 && g_tbuf_binds[NVN_GPU_SH_CS] == 1);
+    CHECK(g_tbuf_bound[NVN_GPU_SH_CS].buf && g_tbuf_bound[NVN_GPU_SH_CS].off == 2 * PG + 256 &&
+          g_tbuf_bound[NVN_GPU_SH_CS].bytes == 16 && g_tbuf_bound[NVN_GPU_SH_CS].format == NVN_FORMAT_R32UI);
+    nvn_be_sub_begin(); g_cprog.dtt[0][0] = NVN_TEXTURE_TARGET_BUFFER + 1; g_cprog.dcls[0][0] = 1;
+    view_t v = {0}; v.set_format = 1; v.format = NVN_FORMAT_RGBA8UI; nvn_be_reg_tex(3, &t, &v);
+    rp_dispatch(&g_fake_cmd, &dp, NULL);
+    CHECK(g_ndisp == n + 2 && g_tbuf_bound[NVN_GPU_SH_CS].format == NVN_FORMAT_RGBA8UI && g_tbuf_bound[NVN_GPU_SH_CS].bytes == 16);
+    t.d.width = 3; nvn_tex_layout(&t.d, &t.L); nvn_be_reg_tex(3, &t, &v); rp_dispatch(&g_fake_cmd, &dp, NULL);
+    CHECK(g_ndisp == n + 3 && g_tbuf_bound[NVN_GPU_SH_CS].bytes == 12);
+    v.format = NVN_FORMAT_R16UI; nvn_be_reg_tex(3, &t, &v); rp_dispatch(&g_fake_cmd, &dp, NULL);
+    CHECK(g_ndisp == n + 3 && nvn_unimpl_count("draw", "tbuf_format_unsupported") == 1);
+    v.format = NVN_FORMAT_RGBA8; nvn_be_reg_tex(3, &t, &v); rp_dispatch(&g_fake_cmd, &dp, NULL);
+    CHECK(g_ndisp == n + 3 && nvn_unimpl_count("draw", "tbuf_format_mismatch") == 1);
+    v.format = NVN_FORMAT_RGBA8UI; nvn_be_reg_tex(3, &t, &v); g_cprog.dtt[0][0] = 0;
+    rp_dispatch(&g_fake_cmd, &dp, NULL);
+    CHECK(g_ndisp == n + 3 && nvn_unimpl_count("draw", "tbuf_format_mismatch") == 2);
+    g_cprog.dtt[0][0] = NVN_TEXTURE_TARGET_BUFFER + 1;
+    t.d.samples = 2; nvn_be_reg_tex(3, &t, &v); rp_dispatch(&g_fake_cmd, &dp, NULL);
+    CHECK(g_ndisp == n + 3 && nvn_unimpl_count("draw", "tbuf_texture_shape") == 1);
+    t.d.samples = 0;
+    v.format = NVN_FORMAT_RGBA8UI; v.set_swizzle = 1; v.swz[0] = 4; v.swz[1] = 3; v.swz[2] = 2; v.swz[3] = 5;
+    nvn_be_reg_tex(3, &t, &v); rp_dispatch(&g_fake_cmd, &dp, NULL);
+    CHECK(g_ndisp == n + 3 && nvn_unimpl_count("draw", "tbuf_swizzle_unsupported") == 1);
+    v.set_swizzle = 0; t.mem = g_pmem + sizeof g_pmem - 4; t.off = sizeof g_pmem - 4;
+    nvn_be_reg_tex(3, &t, &v); rp_dispatch(&g_fake_cmd, &dp, NULL);
+    CHECK(g_ndisp == n + 3 && nvn_unimpl_count("draw", "tbuf_buffer_unresolved") == 1);
+    t.mem = g_pmem + 2 * PG + 258; t.off = 2 * PG + 258;
+    nvn_be_reg_tex(3, &t, &v); rp_dispatch(&g_fake_cmd, &dp, NULL);
+    CHECK(g_ndisp == n + 3 && nvn_unimpl_count("draw", "tbuf_view_create_failed") == 1);
+    rp_S.tex[5][0] = 7; rp_dispatch(&g_fake_cmd, &dp, NULL);
+    CHECK(g_ndisp == n + 3 && nvn_unimpl_count("draw", "tbuf_texture_unresolved") == 1);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    g_pg_tracked = tracked; nvn_be_pool_del(g_pmem); pass_fresh();
+}
+// 存储缓冲的绑定窗口（同 Ryujinx AlignDown(基址, 宿主对齐)）：基址不对齐时窗口从 基址 & −对齐 起、长度补余数（着色器按这个起点取数）；
+// 长度夹到 maxStorageBufferRange，被夹短时具名记账、照画。图形（开通道前解析）与计算（发绑定时解析）两条路；UBOP 来源起点不动。
+static void sbuf_case(int stage, int kind, uint64_t addr, uint64_t size, uint32_t align, uint64_t range) {
+    g_caps_min_ssbo = align; g_caps_max_ssbo = range; rp_draw_reset(); g_arena_used = 0;   // 能力表是缓存的：改了替身值就重开一次
+    stream s = {0};
+    if (stage == 5) {
+        g_cresolves = g_cresolve_rc = g_cpipe_gets = g_ndisp = g_cbinds = 0; g_ncb = 0;
+        memset(&g_cprog, 0, sizeof g_cprog); g_cprog.is_compute = 1; g_cprog.sh[0] = &g_fsh[0];
+        g_cprog.nent[0] = 1; g_cprog.ent[0][0].cls = NVN_GPU_RES_SSBO; g_cprog.ent[0][0].src_kind = (uint8_t)kind; g_cprog.ent[0][0].src_reg = 1; g_cprog.ent[0][0].access = NVN_GPU_ACC_R;
+        p_bind_buf *b = put(&s, kind == NVN_RB_UBOP ? OP_BIND_UBO : OP_BIND_SSBO, sizeof *b); b->stage = 5; b->index = 1; b->addr = addr; b->size = size;
+        p_dispatch *dp = put(&s, OP_DISPATCH, sizeof *dp); dp->x = dp->y = dp->z = 1;
+    } else {
+        q_env(&s);
+        g_fprog.nent[1] = 1; g_fprog.ent[1][0].cls = NVN_GPU_RES_SSBO; g_fprog.ent[1][0].src_kind = NVN_RB_SBUFP; g_fprog.ent[1][0].src_reg = 0; g_fprog.ent[1][0].access = NVN_GPU_ACC_R;
+        p_bind_buf *b = put(&s, OP_BIND_SSBO, sizeof *b); b->stage = 1; b->index = 0; b->addr = addr; b->size = size;
+        q_draw(&s);
+    }
+    end(&s); submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+}
+static void t_sbuf_window(void) {
+    pass_fresh(); g_gdraws = g_resolves = g_resolve_rc = 0; g_arena_used = 0; memset(g_nfb, 0, sizeof g_nfb);
+    memset(g_pmem, 0, sizeof g_pmem); nvn_be_pool_add(g_pmem, sizeof g_pmem);
+    const uint64_t base = (uint64_t)(uintptr_t)g_pmem;
+    const uint64_t cl0 = nvn_unimpl_count("draw", "storage_buffer_window_clamped");
+    struct { uint64_t off, size; uint32_t align; uint64_t range; uint64_t want_off, want_len; int clamped; } g[] = {
+        {2 * PG + 0x40, 64,     256, 0,      2 * PG, 0x80,   0},   // 不对齐：起点下取整、长度补余数
+        {2 * PG,        64,     256, 0,      2 * PG, 64,     0},   // 负对照：已对齐，原样
+        {2 * PG + 0x40, 64,     0,   0,      2 * PG + 0x40, 64, 0}, // 负对照：设备没报对齐，原样
+        {PG,            0x3000, 0,   0x1000, PG,     0x1000, 1},   // 超范围上限：夹短、具名、照画
+        {PG + 0x40,     0x3000, 256, 0x1000, PG,     0x1000, 1},   // 两样都有
+        {PG,            0x1000, 0,   0x1000, PG,     0x1000, 0},   // 负对照：正好等于上限，不记账
+    };
+    uint64_t want_cl = cl0;
+    for (unsigned k = 0; k < sizeof g / sizeof g[0]; k++) {
+        int d0 = g_gdraws;
+        sbuf_case(1, NVN_RB_SBUFP, base + g[k].off, g[k].size, g[k].align, g[k].range);
+        want_cl += (uint64_t)g[k].clamped;
+        CHECK(g_gdraws == d0 + 1 && g_nfb[1] == 1 && g_fb[1][0].cls == NVN_GPU_RES_SSBO);
+        CHECK(g_fb[1][0].u.b.off == g[k].want_off && g_fb[1][0].u.b.len == g[k].want_len);
+        CHECK(nvn_unimpl_count("draw", "storage_buffer_window_clamped") == want_cl);
+    }
+    // 计算阶段：发绑定时自己解析，同一个窗口
+    sbuf_case(5, NVN_RB_SBUFP, base + 2 * PG + 0x40, 64, 256, 0);
+    CHECK(g_ndisp == 1 && g_ncb == 1 && g_cb[0].u.b.off == 2 * PG && g_cb[0].u.b.len == 0x80);
+    // UBOP 着色器按原基址取数：无法合法移动不对齐的窗口，应具名拒绝，而不是向 Vulkan 交非法偏移。
+    const uint64_t unaligned0 = nvn_unimpl_count("draw", "storage_buffer_offset_unaligned");
+    sbuf_case(5, NVN_RB_UBOP, base + 2 * PG + 0x40, 64, 256, 0);
+    CHECK(g_ndisp == 0 && nvn_unimpl_count("draw", "storage_buffer_offset_unaligned") == unaligned0 + 1);
+    // 已对齐的 UBOP 仍按原基址绑定。
+    sbuf_case(5, NVN_RB_UBOP, base + 2 * PG, 64, 256, 0);
+    CHECK(g_ndisp == 1 && g_ncb == 1 && g_cb[0].u.b.off == 2 * PG && g_cb[0].u.b.len == 64);
+    sbuf_case(5, NVN_RB_UBOP, base + PG, 0x3000, 0, 0x1000);
+    CHECK(g_ndisp == 1 && g_ncb == 1 && g_cb[0].u.b.off == PG && g_cb[0].u.b.len == 0x1000);
+    CHECK(nvn_unimpl_count("draw", "storage_buffer_window_clamped") == want_cl + 1);
+    CHECK(nvn_unimpl_count("draw", "storage_buffer_unresolved") == 0 && nvn_unimpl_count("draw", "storage_buffer_offset_unaligned") == unaligned0 + 1);
+    g_caps_min_ssbo = 0; g_caps_max_ssbo = 0; rp_draw_reset(); pass_fresh();
 }
 static void q_counter(stream *s, uint32_t op, uint64_t type, uint64_t *dst) { uint8_t *r = put(s, op, 16); uint64_t ad = (uint64_t)(uintptr_t)dst; memcpy(r, &type, 8); memcpy(r + 8, &ad, 8); }
 
@@ -1621,6 +2623,36 @@ static void t_pass_depth_shadow(void) {
     submit1(&s3); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_npd == 0 && g_ntb == 0 && nvn_unimpl_count("pass", "color_target_depth") == 1 && nvn_unimpl_count("pass", "no_attachment") == 1);
     pass_fresh();
+}
+
+// 不挂任何目标的绘制（NVN 允许：片元只写存储 / 只为遮挡计数；安卓真机一款大作每帧约 4 笔被跳过）。
+// 期望值手算：后端没有 NVN_GPU_CAP_NO_ATTACH_PASS → 不开通道、记 no_attachment 一笔、绘制 0 笔；
+//   有 → 通道 0 个颜色槽、无深度，尺寸 = 视口右下角（24×20）；下一笔视口 40×30 超出 → 收通道按 40×30 重开；
+//   再一笔视口 10×10 不超出 → 留在同一通道，裁剪按 40×30 夹（不夹成缺省的 1×1）= (0, 0, 10, 10)。
+static void vp_sc(stream *s, float w, float h) {
+    p_viewports *vp = put(s, OP_VIEWPORTS, sizeof *vp); vp->n = 1; vp->v[0][2] = w; vp->v[0][3] = h;
+    p_scissor *sc = put(s, OP_SCISSOR, sizeof *sc); sc->x = 0; sc->y = 0; sc->w = (int32_t)w; sc->h = (int32_t)h;
+}
+static void t_pass_no_attachment(void) {
+    pass_fresh(); g_caps_extra = 0;
+    int d0 = g_gdraws;
+    stream s = {0}; q_env(&s); put_set_rt(&s, NULL, NULL); vp_sc(&s, 24, 20); q_draw(&s); end(&s);
+    submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == d0 && g_npd == 0 && nvn_unimpl_count("pass", "no_attachment") == 1);
+    pass_fresh(); g_caps_extra = NVN_GPU_CAP_NO_ATTACH_PASS;
+    d0 = g_gdraws;
+    stream s2 = {0}; q_env(&s2); put_set_rt(&s2, NULL, NULL);
+    vp_sc(&s2, 24, 20); q_draw(&s2);
+    vp_sc(&s2, 40, 30); q_draw(&s2);
+    vp_sc(&s2, 10, 10); q_draw(&s2);
+    end(&s2);
+    submit1(&s2); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == d0 + 3 && g_npd == 2 && g_pass_ends == 2);
+    CHECK(g_pd[0].ncolor == 0 && !g_pd[0].depth.view && !g_pd[0].stencil.view && g_pd[0].w == 24 && g_pd[0].h == 20);
+    CHECK(g_pd[1].ncolor == 0 && g_pd[1].w == 40 && g_pd[1].h == 30);
+    CHECK(g_last_dyn.has_sc && g_last_dyn.sc[0] == 0 && g_last_dyn.sc[1] == 0 && g_last_dyn.sc[2] == 10 && g_last_dyn.sc[3] == 10);
+    CHECK(nvn_unimpl_kinds() == 0);
+    g_caps_extra = 0; pass_fresh();
 }
 
 // 块压缩贴图经「一块当一个像素」的非压缩视图当渲染目标（#709，对照 nvn_mtl.m bcrt_attach）：同深度影子一套，影子按块数建。
@@ -1868,13 +2900,18 @@ static void t_pass_3d_slice_view(void) {
 // 期望值手算：各槽的样本数由替身在完成时给出，报告值 = 复位之后、报告之前开过的各槽之和（跨段接着加）。
 // 开段失败（审计 P1-174）：时间线照走一格，不回放出任何绘制；中途交段之后开新段失败时，已经交出去的段完成回调不能碰到放掉的提交。
 static void t_begin_fail(void) {
-    // ① 一上来就开不了段：这次提交一笔都没交，返回的栅栏值 = 原值 + 64；下一次正常提交用的是再 + 64，两次的值不重
+    // ① 一上来就开不了段：这次提交一笔都不画，返回的栅栏值 = 原值 + 64；下一次正常提交用的是再 + 64，两次的值不重。
+    //    这一格要有人点亮（P1-174）：补交一个空段、值就是这一格，做完后等这一格的线程不靠下一次提交就放行
     pass_fresh(); g_gdraws = 0; uint64_t f0 = nvn_be_last_fence(); int c0 = g_main_commits; g_npend = 0;
     static stream s; memset(&s, 0, sizeof s); q_env(&s); q_draw(&s); end(&s);
     g_begin_fail_at = 1; nvn_be_sub_begin(); nvn_be_exec(s.b); uint64_t f1 = nvn_be_sub_commit();
-    CHECK(f1 == f0 + 64 && nvn_be_last_fence() == f0 + 64 && g_main_commits == c0 && g_gdraws == 0 && g_begin_fail_at == 0);
+    CHECK(f1 == f0 + 64 && nvn_be_last_fence() == f0 + 64 && g_gdraws == 0 && g_begin_fail_at == 0);
+    CHECK(g_main_commits == c0 + 1 && g_npend == 1 && g_pend[0].signal == f0 + 64);   // 补点亮的空段：恰好一个、值就是这一格
+    CHECK(nvn_gpu_fence_wait(f1, 0, NULL).code == NVN_GPU_E_TIMEOUT);
+    fake_complete(NVN_GPU_DONE_OK);
+    CHECK(nvn_gpu_fence_wait(f1, 0, NULL).code == NVN_GPU_OK);   // 没有下一次提交，这一格也已点亮
     nvn_be_sub_begin(); nvn_be_exec(s.b); uint64_t f2 = nvn_be_sub_commit();
-    CHECK(f2 == f0 + 128 && g_main_commits == c0 + 1 && g_npend && g_pend[g_npend - 1].signal == f0 + 128);
+    CHECK(f2 == f0 + 128 && g_main_commits == c0 + 2 && g_npend && g_pend[g_npend - 1].signal == f0 + 128);
     fake_complete(NVN_GPU_DONE_OK);
     // ② 带遮挡计数、画 13 笔（每段 12 笔）：中途交出一段之后开新段失败。主段只交了那一个中途段（值 = 原值 + 1 或 + 2：前面可能有一个前置段），
     //    提交返回原值 + 64；随后那个中途段完成，回调要往所属提交里攒结果——这时那份提交必须还活着（用地址消毒器跑这条用例看得出来）。
@@ -1886,21 +2923,48 @@ static void t_begin_fail(void) {
     for (int i = 0; i < 13; i++) q_draw(&t);
     put_set_rt_n(&t, b_, 1, NULL); q_draw(&t); end(&t);
     nvn_be_sub_begin(); CHECK(g_occ_slots_decl != 0); g_begin_fail_at = 1; nvn_be_exec(t.b); uint64_t f3 = nvn_be_sub_commit();
-    CHECK(g_begin_fail_at == 0 && g_main_commits == c0 + 1 && f3 == f0 + 64 && g_gdraws == 13);   // 第 14 笔在开不出来的新段里：不画
+    CHECK(g_begin_fail_at == 0 && g_main_commits == c0 + 2 && f3 == f0 + 64 && g_gdraws == 13);   // 第 14 笔在开不出来的新段里：不画；主段 = 中途段 + 补点亮这一格的空段
+    CHECK(g_npend >= 2 && g_pend[g_npend - 1].signal == f0 + 64 && g_pend[g_npend - 2].signal < f0 + 64);   // 空段在中途段之后、值是这一格
     static uint64_t occ[4] = {7, 0, 0, 0}; g_fake_occ = occ; g_fake_nocc = 1;
     fake_complete(NVN_GPU_DONE_OK); g_fake_occ = NULL; g_fake_nocc = 0;
     nvn_be_sub_begin(); nvn_be_exec(s.b); CHECK(nvn_be_sub_commit() == f0 + 128); fake_complete(NVN_GPU_DONE_OK);   // 之后照常
     rp_split_draws = keep; pass_fresh();
 }
 
+// #1015：多重采样目标上游戏关了多重采样（ms.enable = 0）：安卓照多重采样画，但要具名记 draw / multisample_off_on_ms_target，不静默。
+// 负对照：单样本目标上关、多重采样目标上开，都不记。
+static void t_msoff(void) {
+    pass_fresh(); g_gdraws = 0;
+    tex_t M = mk_tex(141, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0); M.d.target = NVN_TEXTURE_TARGET_2D_MULTISAMPLE; M.d.samples = 4; nvn_tex_layout(&M.d, &M.L); M.has_layout = 1;
+    tex_t S1 = mk_tex(142, 0x4000, NVN_FORMAT_RGBA8, 16, 16, 1, 0); const tex_t *m_[1] = {&M}, *s_[1] = {&S1};
+    ms_st on = {0}, off = {0}; on.enable = 1; on.samples = 4; off.enable = 0; off.samples = 4;
+    static const struct { int ms_target; int enable; unsigned want; } k[3] = {{1, 0, 1}, {0, 0, 0}, {1, 1, 0}};
+    for (int i = 0; i < 3; i++) {
+        stream q = {0}; q_env(&q); put_set_rt_n(&q, k[i].ms_target ? m_ : s_, 1, NULL);
+        p_bind_state *by = put(&q, OP_BIND_STATE, sizeof *by); by->kind = 3; memcpy(by->bytes, k[i].enable ? &on : &off, sizeof on);
+        q_draw(&q); end(&q);
+        int g0 = g_gdraws; unsigned n0 = nvn_unimpl_count("draw", "multisample_off_on_ms_target");
+        submit1(&q); fake_complete(NVN_GPU_DONE_OK);
+        CHECK(g_gdraws == g0 + 1 && nvn_unimpl_count("draw", "multisample_off_on_ms_target") == n0 + k[i].want);
+    }
+    pass_fresh();
+}
+
 static void t_occlusion(void) {
     pass_fresh(); g_rcond = 0; g_gdraws = 0; g_nocc_log = 0; g_tick = 5;
     uint64_t ra[2] = {~0ull, ~0ull}, rb[2] = {~0ull, ~0ull}, rcx[2] = {~0ull, ~0ull};
-    // 段 1：游戏第一次碰这个计数器。开段时还不知道，没声明槽：这一段里不计
-    stream s1 = {0}; q_env(&s1); q_counter(&s1, OP_RESET_COUNTER, NVN_COUNTER_TYPE_SAMPLES_PASSED, NULL); q_draw(&s1); end(&s1);
+    // 段 1：游戏第一次碰这个计数器。开段时还不知道、没声明槽：复位时就地交段，后半段带槽（#1015）。
+    // 复位前那笔在前半段、不计；复位后那笔在后半段的槽 0，报告 R0 = 槽 0 的值。
+    uint64_t r0[2] = {~0ull, ~0ull}; int mc0 = g_main_commits;
+    stream s1 = {0}; q_env(&s1); q_draw(&s1); q_counter(&s1, OP_RESET_COUNTER, NVN_COUNTER_TYPE_SAMPLES_PASSED, NULL); q_draw(&s1);
+    q_counter(&s1, OP_REPORT_COUNTER, NVN_COUNTER_TYPE_SAMPLES_PASSED, r0); end(&s1);
     submit1(&s1);
-    CHECK(g_occ_slots_decl == 0 && g_nocc_log == 0 && g_gdraws == 1 && g_pd[0].occlusion == 0);
-    fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_occ_slots_decl > 0 && g_main_commits == mc0 + 2 && g_gdraws == 2 && g_npd == 2 && g_pd[0].occlusion == 0 && g_pd[1].occlusion == 1);
+    { static const int want[2] = {0, -1}; CHECK(g_nocc_log == 2 && !memcmp(g_occ_log, want, sizeof want)); }
+    CHECK(nvn_unimpl_count("occl", "first_reset_not_counted") == 0);
+    { static const uint64_t occ[1] = {9}; g_fake_occ = occ; g_fake_nocc = 1; fake_complete(NVN_GPU_DONE_OK); }
+    CHECK(r0[0] == 9);
+    g_nocc_log = 0;
     // 段 2：画（槽 0）、报告 A、画（槽 1）、带裁剪的清除（清除不计：先停）、画（槽 2）、复位、画（槽 3）、报告 B
     int npd0 = g_npd;
     stream s2 = {0}; q_draw(&s2); q_counter(&s2, OP_REPORT_COUNTER, NVN_COUNTER_TYPE_SAMPLES_PASSED, ra); q_draw(&s2);
@@ -1912,7 +2976,7 @@ static void t_occlusion(void) {
     { static const int want[8] = {0, -1, 1, -1, 2, -1, 3, -1}; CHECK(g_nocc_log == 8 && !memcmp(g_occ_log, want, sizeof want)); }
     CHECK(ra[0] == ~0ull);   // 没完成：没写
     { static const uint64_t occ[4] = {10, 20, 30, 7}; g_fake_occ = occ; g_fake_nocc = 4; g_tick = 600; fake_complete(NVN_GPU_DONE_OK); }
-    CHECK(ra[0] == 10 && ra[1] == 600);   // 复位在段 1；报告 A 之前只开过槽 0
+    CHECK(ra[0] == 19 && ra[1] == 600);   // 复位在段 1（段 1 复位后那笔 9）；本段报告 A 之前只开过槽 0（10）
     CHECK(rb[0] == 7 && rb[1] == 600);    // 段内又复位过：只算槽 3
     // 段 3：接着画（这一段的槽 0）再报告：跨段累计 7 + 5
     g_nocc_log = 0;
@@ -1926,6 +2990,20 @@ static void t_occlusion(void) {
     submit1(&s3); { static const uint64_t occ[1] = {1}; g_fake_occ = occ; g_fake_nocc = 1; fake_complete(NVN_GPU_DONE_OK); }
     CHECK(rcx[0] == 13 && nvn_unimpl_kinds() == 0);
     pass_fresh();
+}
+
+// #1015：第一次复位要就地交段，但这次提交的中间值已经用完（每段 1 笔、换 61 次渲染目标先交满）：交不了，具名记 first_reset_not_counted，不静默。
+static void t_occl_first_reset_cap(void) {
+    pass_fresh(); g_gdraws = 0; g_npend = 0; int keep = rp_split_draws; rp_split_draws = 1;
+    tex_t A = mk_tex(131, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0), B = mk_tex(132, 0x4000, NVN_FORMAT_RGBA8, 16, 16, 1, 0); const tex_t *a_[1] = {&A}, *b_[1] = {&B};
+    static stream t; memset(&t, 0, sizeof t); q_env(&t); end(&t);
+    nvn_be_sub_begin(); nvn_be_exec(t.b);   // 同一次提交里分块回放（一个流装不下 61 次换目标）
+    for (int i = 0; i < 61; i++) { memset(&t, 0, sizeof t); put_set_rt_n(&t, (i & 1) ? b_ : a_, 1, NULL); q_draw(&t); end(&t); nvn_be_exec(t.b); }
+    memset(&t, 0, sizeof t); q_counter(&t, OP_RESET_COUNTER, NVN_COUNTER_TYPE_SAMPLES_PASSED, NULL); q_draw(&t); end(&t); nvn_be_exec(t.b);
+    nvn_be_sub_commit();
+    CHECK(g_gdraws == 62 && g_occ_slots_decl == 0 && nvn_unimpl_count("occl", "first_reset_not_counted") == 1);
+    fake_complete(NVN_GPU_DONE_OK);
+    rp_split_draws = keep; pass_fresh();
 }
 
 // 计算派发：取计算程序 → 结束通道 → 绑 NVN 阶段 5 的资源（驱动段里有组数与两张表）→ 派发；
@@ -1991,6 +3069,36 @@ static void t_dispatch(void) {
     g_cresolve_rc = -1; submit1(&s2); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_ndisp == 2 && nvn_unimpl_count("draw", "compute_program_unresolved") == 1);
     g_cresolve_rc = 0; g_buf_cpu_fake = NULL; nvn_be_pool_del(g_pmem); pass_fresh();
+}
+
+// 游戏屏障对通道外的计算派发也生效（#978；iOS 在下一个编码器开头消费游戏屏障，计算编码器也算）：
+// 派发 A → 屏障 → 派发 B：屏障在 A 之后、B 之前交给后端，只交一次（之后开的绘制通道不再重发）；
+// 间接派发自带的那道屏障和待发位合成一次；负控：没有游戏屏障就一道都不插。
+static void t_dispatch_barrier(void) {
+    const int32_t bits = NVN_BARRIER_ORDER_PRIMITIVES_BIT | NVN_BARRIER_INVALIDATE_SHADER_BIT;
+    for (int mode = 0; mode < 3; mode++) {   // 0 有屏障；1 有屏障、B 是间接派发；2 负控：没有屏障
+        pass_fresh(); memset(g_pg_gen, 0, sizeof g_pg_gen); g_pg_tracked = 1; g_dirty_now = 100; g_arena_used = 0; g_nbw = 0;
+        g_cresolve_rc = 0; g_ndisp = 0;
+        uint64_t base = (uint64_t)(uintptr_t)g_pmem; nvn_be_pool_add(g_pmem, sizeof g_pmem); memset(g_pmem, 0, sizeof g_pmem);
+        uint32_t ind[3] = {1, 1, 1}; memcpy(g_pmem + 2 * PG, ind, 12);
+        memset(&g_cprog, 0, sizeof g_cprog); g_cprog.is_compute = 1; g_cprog.sh[0] = &g_fsh[0]; g_cprog.nent[0] = 1;
+        g_cprog.ent[0][0].cls = NVN_GPU_RES_SSBO; g_cprog.ent[0][0].src_kind = NVN_RB_SBUFP; g_cprog.ent[0][0].src_reg = 0; g_cprog.ent[0][0].access = NVN_GPU_ACC_RW;
+        stream s = {0};
+        p_bind_buf *sb = put(&s, OP_BIND_SSBO, sizeof *sb); sb->stage = 5; sb->index = 0; sb->addr = base + PG; sb->size = 256;
+        p_dispatch *dp = put(&s, OP_DISPATCH, sizeof *dp); dp->x = 4; dp->y = 1; dp->z = 1;   // A：写
+        if (mode != 2) { uint8_t *b = put(&s, OP_BARRIER, 8); memcpy(b, &bits, 4); }
+        dp = put(&s, OP_DISPATCH, sizeof *dp);                                                 // B：读 A 写的内容
+        if (mode == 1) dp->ind = base + 2 * PG; else { dp->x = 4; dp->y = 1; dp->z = 1; }
+        q_env(&s); q_draw(&s);   // 派发之后开一个绘制通道：已经交过的屏障不在它开头重发
+        end(&s);
+        submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+        CHECK(g_ndisp == 2 && g_npd == 1 && nvn_unimpl_kinds() == 0);
+        if (mode == 0) CHECK(g_nbar == 1 && g_bar[0].ndisp == 1 && g_bar[0].bits == (uint32_t)bits);
+        if (mode == 1) CHECK(g_nbar == 1 && g_bar[0].ndisp == 1 && g_bar[0].bits == ((uint32_t)bits | NVN_BARRIER_ORDER_INDIRECT_DATA_BIT));
+        if (mode == 2) CHECK(g_nbar == 0);
+        nvn_be_pool_del(g_pmem);
+    }
+    pass_fresh();
 }
 
 // 着色器来源快路径用的两个代号（分离贴图槽摘要的缓存靠它们判失效）：
@@ -2166,6 +3274,36 @@ static void t_dispatch_ubop_ro_skip(void) {
     g_buf_cpu_fake = NULL; nvn_be_pool_del(g_pmem); pass_fresh();
 }
 
+// 计算存储图像按着色器声明选视图格式（对齐 Ryujinx 按绑定格式取视图、iOS img_fit）：
+//   ① 声明 Unknown + uint，贴图 RG32F → 同存储的 RG32UI 视图（SULD.B 按位读，原始位不变）；② 声明 Unknown + float → 贴图原格式；
+//   ③ 声明 R32ui、贴图 RG32F（字节数不同）→ 报名跳过；④ 声明 R32ui、贴图 R32F → R32UI 视图；⑤ 声明 Rg32f、贴图 RG32F → 原格式；
+//   ⑥ 声明没解析出来（dtt 0）→ 照旧原格式。
+static const struct nvn_gpu_view_s *img_class_view(int tex_id, uint8_t dcls, uint8_t difmt, uint8_t dtt, int *dispatched) {
+    g_cprog.dtt[0][0] = dtt; g_cprog.dcls[0][0] = dcls; g_cprog.difmt[0][0] = difmt; rp_S.img[5][2] = (uint64_t)tex_id;
+    int n = g_ndisp; g_ncb = 0; rp_dispatch(&g_fake_cmd, &(p_dispatch){.x = 1, .y = 1, .z = 1}, NULL);
+    *dispatched = g_ndisp == n + 1;
+    return *dispatched && g_ncb == 1 ? (const struct nvn_gpu_view_s *)g_cb[0].u.view : NULL;
+}
+static void t_compute_image_class(void) {
+    pass_fresh(); res_fresh(); g_arena_used = 0; g_cresolve_rc = 0;
+    g_caps_stor[0] = NVN_FORMAT_RG32F; g_caps_stor[1] = NVN_FORMAT_RG32UI; g_caps_stor[2] = NVN_FORMAT_R32F; g_caps_stor[3] = NVN_FORMAT_R32UI;
+    tex_t rg = mk_tex(671, 0, NVN_FORMAT_RG32F, 1, 1, 1, NVN_TEXTURE_FLAGS_IMAGE), r = mk_tex(672, 0x4000, NVN_FORMAT_R32F, 1, 1, 1, NVN_TEXTURE_FLAGS_IMAGE);
+    nvn_be_reg_tex(3, &rg, NULL); nvn_be_reg_tex(4, &r, NULL); nvn_be_set_tex_pool_n(8);
+    memset(&g_cprog, 0, sizeof g_cprog); g_cprog.is_compute = 1; g_cprog.sh[0] = &g_fsh[0]; g_cprog.nent[0] = 1;
+    nvn_gpu_layout_ent *e = &g_cprog.ent[0][0]; e->cls = NVN_GPU_RES_IMAGE; e->src_kind = NVN_RB_IMG; e->src_reg = 2; e->count = 1; e->access = NVN_GPU_ACC_R;
+    const uint8_t t2d = NVN_TEXTURE_TARGET_2D + 1; int ok = 0; const struct nvn_gpu_view_s *v;
+    nvn_be_sub_begin();
+    v = img_class_view(3, 1, 0, t2d, &ok); CHECK(ok && v && v->has_v && v->v.set_format && v->v.format == NVN_FORMAT_RG32UI);   // ①
+    v = img_class_view(3, 0, 0, t2d, &ok); CHECK(ok && v && !(v->has_v && v->v.set_format));                                  // ②
+    uint64_t mis0 = nvn_unimpl_count("draw", "compute_image_decl_format_size_mismatch");
+    v = img_class_view(3, 1, 33, t2d, &ok); CHECK(!ok && nvn_unimpl_count("draw", "compute_image_decl_format_size_mismatch") == mis0 + 1);   // ③
+    v = img_class_view(4, 1, 33, t2d, &ok); CHECK(ok && v && v->has_v && v->v.set_format && v->v.format == NVN_FORMAT_R32UI);  // ④
+    v = img_class_view(3, 0, 6, t2d, &ok); CHECK(ok && v && !(v->has_v && v->v.set_format));                                  // ⑤
+    v = img_class_view(3, 1, 0, 0, &ok); CHECK(ok && v && !(v->has_v && v->v.set_format));                                    // ⑥
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    memset(g_caps_stor, 0, sizeof g_caps_stor); rp_S.img[5][2] = 0; pass_fresh();
+}
+
 // #659：计算阶段独立图像槽，读写属性决定 GPU 所有权；不涉及间接参数同步。
 static void t_compute_image(void) {
     pass_fresh(); res_fresh(); g_arena_used = 0;
@@ -2208,6 +3346,72 @@ static void t_compute_image(void) {
     fresh.serial = 662; fresh.d.levels = 2; nvn_tex_layout(&fresh.d, &fresh.L);
     nvn_be_reg_tex(6, &fresh, NULL); rp_dispatch(&g_fake_cmd, &dp, NULL); CHECK(g_ndisp == n + 3);
     nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK); pass_fresh();
+}
+
+// 计算核按贴图采样 c2 图像句柄表的字（贴图槽 32..39，同 iOS nvn_mtl.m tex_slot_h）：取图像槽 k 绑着的句柄，不读组合 / 分离贴图表的同号项。
+//   图像槽 0 绑贴图 3（已登记），贴图表第 32 项放一个没登记的号 9：取对了就能派发、视图非空；读错表就取不到视图、报名跳过。
+static void t_compute_tex_from_image(void) {
+    pass_fresh(); res_fresh(); g_arena_used = 0;
+    tex_t t = mk_tex(663, 0, NVN_FORMAT_RGBA8, 8, 8, 1, NVN_TEXTURE_FLAGS_IMAGE);
+    samp_par sp; memset(&sp, 0, sizeof sp);
+    nvn_be_reg_tex(3, &t, NULL); nvn_be_reg_samp(0, &sp); nvn_be_set_tex_pool_n(16);
+    memset(&g_cprog, 0, sizeof g_cprog); g_cprog.is_compute = 1; g_cprog.sh[0] = &g_fsh[0];
+    g_cprog.nent[0] = 1;
+    nvn_gpu_layout_ent *e = &g_cprog.ent[0][0];
+    e->cls = NVN_GPU_RES_TEX_SAMP; e->src_kind = NVN_RB_TEX; e->src_reg = 32; e->src_reg2 = UINT16_MAX; e->count = 1; e->access = NVN_GPU_ACC_R;
+    memset(rp_S.img[5], 0, sizeof rp_S.img[5]); rp_S.img[5][0] = 3; rp_S.tex[5][32] = 9;
+    p_dispatch dp = {.x = 1, .y = 1, .z = 1};
+    int n = g_ndisp; uint64_t un0 = nvn_unimpl_count("draw", "texture_slot_unresolved");
+    nvn_be_sub_begin(); rp_dispatch(&g_fake_cmd, &dp, NULL);
+    CHECK(g_ndisp == n + 1 && g_ncb == 1 && g_cb[0].cls == NVN_GPU_RES_TEX_SAMP && g_cb[0].u.ts.view && g_cb[0].u.ts.samp);
+    CHECK(nvn_unimpl_count("draw", "texture_slot_unresolved") == un0);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK); rp_S.img[5][0] = 0; rp_S.tex[5][32] = 0; pass_fresh();
+}
+
+// 着色器把驱动句柄表 c2 当常量缓冲读（NVN_RB_DRV2）：按完整驱动表 0xA00 填（同 iOS nvn_mtl.m DRV2）——
+//   组合槽 r → 0x20 + 8r；r ≥ 32 与图像表同址，只在绑了该组合槽、同址图像槽没绑时写；图像槽 r → 0x120 + 8r；
+//   分离贴图槽 r → 0x168 + 8r；分离采样器槽 r → 0x568 + 8r；句柄只占每项低 4 字节，其余为 0。图形（片元）与计算各验一次。
+static void drv2_fill(int st) {
+    memset(rp_S.tex[st], 0, sizeof rp_S.tex[st]); memset(rp_S.img[st], 0, sizeof rp_S.img[st]); memset(rp_S.samp[st], 0, sizeof rp_S.samp[st]);
+    rp_S.tex[st][3] = 0x00300007; rp_S.tex[st][33] = 0x55; rp_S.tex[st][34] = 0x66; rp_S.img[st][2] = 0x77; rp_S.img[st][0] = 0x88;
+    rp_S.tex[st][128 + 5] = 0x99; rp_S.samp[st][4] = 6u << 20;
+}
+static int drv2_ok(const uint8_t *d, uint64_t len, char *why, size_t n) {
+    static const struct { uint32_t off, want; } w[] = {
+        {0x20 + 8 * 3, 0x00300007}, {0x20 + 8 * 33, 0x55}, {0x20 + 8 * 34, 0x77},   // 槽 34 与图像槽 2 同址：图像绑着 → 图像的句柄
+        {0x120, 0x88}, {0x168 + 8 * 5, 0x99}, {0x568 + 8 * 4, 6u << 20}, {0x24 + 8 * 3, 0}, {0x568 + 8 * 127, 0}, {0x9FC, 0} };
+    if (len != 0xA00) { snprintf(why, n, "len %llu", (unsigned long long)len); return 0; }
+    for (unsigned i = 0; i < sizeof w / sizeof w[0]; i++) { uint32_t v; memcpy(&v, d + w[i].off, 4); if (v != w[i].want) { snprintf(why, n, "0x%x = 0x%x, want 0x%x", w[i].off, v, w[i].want); return 0; } }
+    return 1;
+}
+static void t_drv2_table(void) {
+    char why[96] = "";
+    // 计算
+    pass_fresh(); res_fresh(); g_arena_used = 0; g_cresolve_rc = 0;
+    memset(&g_cprog, 0, sizeof g_cprog); g_cprog.is_compute = 1; g_cprog.sh[0] = &g_fsh[0]; g_cprog.nent[0] = 1;
+    g_cprog.ent[0][0].cls = NVN_GPU_RES_UBO; g_cprog.ent[0][0].src_kind = NVN_RB_DRV2; g_cprog.ent[0][0].src_reg2 = UINT16_MAX;
+    drv2_fill(5);
+    p_dispatch dp = {.x = 1, .y = 1, .z = 1}; int n = g_ndisp;
+    nvn_be_sub_begin(); rp_dispatch(&g_fake_cmd, &dp, NULL);
+    int cok = g_ndisp == n + 1 && g_ncb == 1 && g_cb[0].u.b.buf == &g_arena_buf && drv2_ok(g_arena + g_cb[0].u.b.off, g_cb[0].u.b.len, why, sizeof why);
+    if (!cok) printf("  compute DRV2: %s\n", why);
+    CHECK(cok);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    // 图形（片元阶段）
+    pass_fresh(); g_arena_used = 0; g_resolve_rc = 0;
+    stream s = {0}; q_env(&s);
+    g_fprog.nent[1] = 1; g_fprog.ent[1][0].cls = NVN_GPU_RES_UBO; g_fprog.ent[1][0].src_kind = NVN_RB_DRV2;
+    q_draw(&s); end(&s);
+    drv2_fill(1); memset(g_nfb, 0, sizeof g_nfb);
+    submit1(&s);
+    why[0] = 0;
+    int gok = g_nfb[1] == 1 && g_fb[1][0].u.b.buf == &g_arena_buf && drv2_ok(g_arena + g_fb[1][0].u.b.off, g_fb[1][0].u.b.len, why, sizeof why);
+    if (!gok) printf("  graphics DRV2: nfb=%u %s\n", g_nfb[1], why);
+    CHECK(gok);
+    fake_complete(NVN_GPU_DONE_OK);
+    memset(rp_S.tex[1], 0, sizeof rp_S.tex[1]); memset(rp_S.img[1], 0, sizeof rp_S.img[1]); memset(rp_S.samp[1], 0, sizeof rp_S.samp[1]);
+    memset(rp_S.tex[5], 0, sizeof rp_S.tex[5]); memset(rp_S.img[5], 0, sizeof rp_S.img[5]); memset(rp_S.samp[5], 0, sizeof rp_S.samp[5]);
+    pass_fresh();
 }
 
 // 贴图 → 贴图的拷贝：同尺寸同格式的逐层直接拷，各按自己视图的级与起始层；缩放 / 换格式 / 镜像 / 多重采样解析分开记账；目标从此以 GPU 为准。
@@ -2253,6 +3457,13 @@ static void t_compute_sources(void) {
     CHECK(nvn_unimpl_count("draw", "storage_buffer_outside_pools") == 0);
     CHECK(nvn_unimpl_count("draw", "storage_buffer_indirect_empty") == 0);
     CHECK(g_ndisp == 1 && nvn_unimpl_count("draw", "compute_storage_indirect_writable_unknown") == 1);
+    // 间接来源的真实指针相对池偏移 64：设备要求 256 时不能交非法描述符。
+    const uint64_t unaligned0 = nvn_unimpl_count("draw", "storage_buffer_offset_unaligned");
+    g_caps_min_ssbo = 256; rp_draw_reset(); g_cprog.ent[0][1].access = NVN_GPU_ACC_R;
+    { stream t = {0}; p_bind_buf *u4 = put(&t, OP_BIND_UBO, sizeof *u4); *u4 = *ub;
+      p_dispatch *d4 = put(&t, OP_DISPATCH, sizeof *d4); d4->x = 1; d4->y = 1; d4->z = 1; end(&t); submit1(&t); }
+    CHECK(g_ndisp == 1 && nvn_unimpl_count("draw", "storage_buffer_offset_unaligned") == unaligned0 + 1);
+    g_caps_min_ssbo = 0; rp_draw_reset();
     g_buf_cpu_fake = NULL; nvn_be_pool_del(g_pmem);
 }
 
@@ -2285,6 +3496,81 @@ static void t_dispatch_indirect_gpu(void) {
     nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK); g_buf_cpu_fake = NULL; nvn_be_pool_del(g_pmem); pass_fresh();
 }
 
+static void t_depth_copy_scaled(void) {
+    pass_fresh(); g_nbl = 0; g_caps_extra = NVN_GPU_CAP_BLIT_DEPTH_STENCIL;
+    tex_t a = mk_tex(176, 0, NVN_FORMAT_DEPTH24_STENCIL8, 16, 16, 1, 0), b = mk_tex(177, 0x4000, NVN_FORMAT_DEPTH24_STENCIL8, 8, 8, 1, 0);
+    stream s = {0}; p_copy_t2t *o = put_t2t(&s, &a, &b);
+    o->sr = (NVNcopyRegion){2, 2, 0, 12, 12, 1}; o->dr = (NVNcopyRegion){1, 1, 0, 6, 6, 1}; end(&s);
+    submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_nbl == 1 && nvn_unimpl_kinds() == 0);
+    CHECK(g_bl[0].s && g_bl[0].d && g_bl[0].sr.xoffset == 2 && g_bl[0].dr.xoffset == 1 && g_bl[0].dr.width == 6 && !g_bl[0].linear);
+    o->flags = NVN_COPY_FLAGS_LINEAR_FILTER_BIT;
+    submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_nbl == 1 && nvn_unimpl_count("tex", "t2t_scaled") == 1);
+    o->flags = 0; g_caps_extra = 0;
+    submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_nbl == 1 && nvn_unimpl_count("tex", "t2t_scaled") == 2);
+    pass_fresh();
+}
+// Ryujinx StateUpdater 与 EnumConversion 合成的 VkFrontFace 仅由 API 值和队列 flip 决定；
+// 后端 C80 的 NDC 合同另含窗口原点转换。下面是两步规范换算的真值表，不调用被测归一化。
+static void t_front_origin_matrix(void) {
+    static const unsigned canonical[2][2][2] = {{{0,1},{1,0}},{{1,0},{0,1}}};
+    pass_fresh(); g_gdraws = g_resolve_rc = 0;
+    for (int api = 0; api < 2; api++) for (int flip = 0; flip < 2; flip++) for (int ll = 0; ll < 2; ll++) {
+        nvn_be_set_origin_lower_left(ll); s2a_nvn_rast_flip = flip;
+        stream s = {0}; q_env(&s);
+        p_bind_state *state = put(&s, OP_BIND_STATE, sizeof *state); state->kind = 4;
+        poly_st poly = {NVN_FACE_BACK, (unsigned)api, NVN_POLYGON_MODE_FILL, 0}; memcpy(state->bytes, &poly, sizeof poly);
+        q_draw(&s); end(&s); int before = g_pipe_gets; submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+        CHECK(g_last_pdesc.poly.front == canonical[api][flip][ll] && g_last_pdesc.poly.cull == NVN_FACE_BACK && g_last_pdesc.origin_ll == ll && g_pipe_gets == before + 1);
+    }
+    nvn_be_set_origin_lower_left(1); s2a_nvn_rast_flip = 1; pass_fresh();
+}
+// 源反向端点的期望由矩形两端手算，不调用后端转换。
+static void t_color_copy_mirror(void) {
+    for (int axes = 1; axes <= 3; axes++) for (int variant = 0; variant < 4; variant++) {
+        pass_fresh(); g_nbl = g_nct = 0;
+        tex_t a = mk_tex(300, 0, variant >= 2 ? NVN_FORMAT_R11G11B10F : NVN_FORMAT_RGBA8, 64, 32, 3, 0);
+        tex_t b = mk_tex(301, 0x10000, NVN_FORMAT_RGBA8, 64, 32, 3, 0);
+        a.d.target = b.d.target = NVN_TEXTURE_TARGET_2D_ARRAY; a.d.depth = b.d.depth = 4;
+        nvn_tex_layout(&a.d, &a.L); nvn_tex_layout(&b.d, &b.L);
+        stream s = {0}; p_copy_t2t *o = put_t2t(&s, &a, &b);
+        o->has_sv = o->has_dv = 1; o->sv.set_levels = o->dv.set_levels = 1; o->sv.base_level = o->dv.base_level = 1;
+        o->sv.set_layers = o->dv.set_layers = 1; o->sv.min_layer = o->dv.min_layer = 1;
+        o->sr = (NVNcopyRegion){4, 2, 1, 8, 4, 1}; o->dr = (NVNcopyRegion){2, 3, 1, variant & 1 ? 4 : 8, 4, 1};
+        o->flags = (axes & 1 ? NVN_COPY_FLAGS_MIRROR_X_BIT : 0) | (axes & 2 ? NVN_COPY_FLAGS_MIRROR_Y_BIT : 0) |
+            (variant == 1 ? NVN_COPY_FLAGS_LINEAR_FILTER_BIT : 0); end(&s);
+        submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+        CHECK(g_nbl == 1 && g_nct == 0 && nvn_unimpl_kinds() == 0);
+        if (g_nbl) {
+            CHECK(g_bl[0].sr.xoffset == (axes & 1 ? 12 : 4) && g_bl[0].sr.width == (axes & 1 ? -8 : 8));
+            CHECK(g_bl[0].sr.yoffset == (axes & 2 ? 6 : 2) && g_bl[0].sr.height == (axes & 2 ? -4 : 4));
+            CHECK(g_bl[0].sr.zoffset == 0 && g_bl[0].sr.depth == 1 && g_bl[0].dr.xoffset == 2 && g_bl[0].dr.yoffset == 3);
+            CHECK(g_bl[0].dr.width == (variant & 1 ? 4 : 8) && g_bl[0].linear == (variant == 1));
+            CHECK(nvn_be_tex_gpu_owned(301) == 1 && nvn_be_tex_gpu_owned(300) == 0);
+        }
+    }
+    for (int bad = 0; bad < 11; bad++) {
+        pass_fresh(); g_nbl = g_nct = 0;
+        tex_t a = mk_tex(302, 0, bad == 2 ? NVN_FORMAT_DEPTH24_STENCIL8 : bad == 3 ? NVN_FORMAT_R32UI : NVN_FORMAT_RGBA8, 16, 16, 1, 0), b = a;
+        b.serial = bad == 10 ? a.serial : 303;
+        if (bad == 4) a.d.target = b.d.target = NVN_TEXTURE_TARGET_3D;
+        if (bad == 6) a.d.samples = b.d.samples = 4;
+        stream s = {0}; p_copy_t2t *o = put_t2t(&s, &a, &b); o->sr = (NVNcopyRegion){0, 0, 0, 8, 8, 1}; o->dr = o->sr;
+        o->flags = NVN_COPY_FLAGS_MIRROR_Y_BIT;
+        if (bad == 0) g_caps_remove = NVN_GPU_CAP_BLIT_SCALED;
+        if (bad == 1) o->flags |= NVN_COPY_FLAGS_MIRROR_Z_BIT;
+        if (bad == 5) o->sr.depth = o->dr.depth = 2;
+        if (bad == 7) o->sr.width = 0;
+        if (bad == 8) o->sr.xoffset = INT32_MAX;
+        if (bad == 9) o->sr.yoffset = -1;
+        end(&s); submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+        CHECK(g_nbl == 0 && g_nct == 0 && nvn_unimpl_count("tex", "t2t_mirror") == 1);
+        g_caps_remove = 0;
+    }
+    pass_fresh();
+}
 static void t_copy_t2t(void) {
     pass_fresh(); g_nct = 0; g_nbl = 0;
     tex_t a = mk_tex(71, 0, NVN_FORMAT_RGBA8, 64, 32, 3, 0), b = mk_tex(72, 0x8000, NVN_FORMAT_RGBA8, 32, 16, 1, 0), f = mk_tex(73, 0xC000, NVN_FORMAT_R11G11B10F, 32, 16, 1, 0);
@@ -2296,7 +3582,7 @@ static void t_copy_t2t(void) {
     o = put_t2t(&s, &a, &b); o->sr = (NVNcopyRegion){0, 0, 0, 32, 16, 1}; o->dr = (NVNcopyRegion){0, 0, 0, 16, 8, 1}; o->flags = NVN_COPY_FLAGS_LINEAR_FILTER_BIT;   // 缩放：后端的缩放拷贝，线性过滤
     o = put_t2t(&s, &a, &f); o->sr = (NVNcopyRegion){0, 0, 0, 16, 8, 1}; o->dr = o->sr;                                                             // 换格式：同上，最近点
     { tex_t u = mk_tex(74, 0x10000, NVN_FORMAT_R32UI, 32, 16, 1, 0); o = put_t2t(&s, &u, &b); o->sr = (NVNcopyRegion){0, 0, 0, 32, 16, 1}; o->dr = (NVNcopyRegion){0, 0, 0, 16, 8, 1}; }   // 整数格式换格式：没接
-    o = put_t2t(&s, &a, &b); o->sr = (NVNcopyRegion){0, 0, 0, 16, 8, 1}; o->dr = o->sr; o->flags = NVN_COPY_FLAGS_MIRROR_Y_BIT;                       // 镜像：没接
+    o = put_t2t(&s, &a, &b); o->sr = (NVNcopyRegion){0, 0, 0, 16, 8, 1}; o->dr = o->sr; o->flags = NVN_COPY_FLAGS_MIRROR_Z_BIT;                       // Z 镜像：没接
     o = put_t2t(&s, &b, &b); o->sr = (NVNcopyRegion){0, 0, 0, 32, 16, 1}; o->dr = o->sr; o->flags = (int32_t)DM_COPY_RESOLVE;                         // 降采样记录、两边采样数相同：整张拷贝
     { tex_t ms = mk_tex(75, 0, NVN_FORMAT_RGBA8, 32, 16, 1, 0); ms.d.samples = 4; ms.d.target = NVN_TEXTURE_TARGET_2D_MULTISAMPLE;
       o = put_t2t(&s, &ms, &b); o->flags = DM_COPY_RESOLVE; }
@@ -2460,6 +3746,33 @@ static void t_draw_mdi(void) {
     CHECK(g_gdraws == d0 + 3 && nvn_unimpl_count("draw", "indirect_count_no_device_support") == nd0 + 1);
 }
 
+// 间接绘制的 base instance 拷贝只给读 c0 + 0x644 的阶段（rp_prog.binst_unread 位 = 编译器 c0Reads 证明不读）。
+//   每笔拷贝都要先收通道（拷贝得排在 GPU 生产者之后），所以同一通道里连着 3 笔间接绘制：要拷 = 3 个通道、3 次拷贝；都已证不读 = 1 个通道、0 次拷贝。
+//   真机读数（9000 空轨 2nd 进 3D）：每帧收通道 884 次里 844 次是这一处。紧跟 t_draw_mdi，沿用它的池与渲染目标。
+static void t_draw_ind_binst(void) {
+    uint64_t base = (uint64_t)(uintptr_t)g_pmem, ind = base + 4 * PG;
+    struct rp_prog saved = g_fprog;
+    tex_t rtt = mk_tex(92, 0, NVN_FORMAT_RGBA8, 64, 36, 1, 0);
+    static const struct { uint8_t unread; int copies, passes; const char *what; } cases[] = {
+        { 0, 6, 3, "unknown / read: both stages copy, every indirect draw cuts the pass" },
+        { 1, 3, 3, "vs proven, fs still reads: only fs copies, the cut stays" },
+        { 3, 0, 1, "both stages proven: no copy, one pass for all three draws" },
+    };
+    for (size_t k = 0; k < sizeof cases / sizeof cases[0]; k++) {
+        for (int st = 0; st < 2; st++) { g_fprog.nent[st] = 1; nvn_gpu_layout_ent *e = &g_fprog.ent[st][0]; memset(e, 0, sizeof *e); e->src_reg2 = UINT16_MAX; e->cls = NVN_GPU_RES_UBO; e->src_kind = NVN_RB_DRV0; e->count = 1; }
+        g_fprog.binst_unread = cases[k].unread; g_arena_used = 0;   // 替身暂存区 64 KB 不查越界：每段从头用（上一段已完成）
+        int c0 = g_ncopy4, p0 = g_npd, d0 = g_gdraws;
+        stream s = {0}; mdi_prelude(&s, &rtt);
+        for (int i = 0; i < 3; i++) { p_draw_idx *di = put(&s, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->instances = 1; di->ibuf = base + 3 * PG; di->ind = ind + (uint64_t)i * 20; }
+        end(&s); submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+        if (g_gdraws - d0 != 3 || g_ncopy4 - c0 != cases[k].copies || g_npd - p0 != cases[k].passes) {
+            printf("  %s: draws %d copies %d passes %d (expect 3 / %d / %d)\n", cases[k].what, g_gdraws - d0, g_ncopy4 - c0, g_npd - p0, cases[k].copies, cases[k].passes);
+            CHECK(0);
+        }
+    }
+    g_fprog = saved;
+}
+
 static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管线 / 动态状态 / 顶点流 / 绑定；没变的管线不重取；取不到的资源跳过并记账
     pass_fresh(); memset(g_pg_gen, 0, sizeof g_pg_gen); g_pg_tracked = 1; g_dirty_now = 100; memset(g_pmem, 0, sizeof g_pmem); g_arena_used = 0;
     g_pipe_gets = g_set_pipes = g_set_dyns = g_gdraws = g_nvb = g_resolves = g_resolve_rc = 0; memset(g_nfb, 0, sizeof g_nfb);
@@ -2550,6 +3863,27 @@ static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管
       CHECK(g_gdraws == g0 + 2 && g_last_da.count == 12 && g_last_da.itype == 2 && g_last_da.base_vertex == 2 && g_last_pdesc.prim_restart == 0);
       { const uint32_t exp2[12] = {5, 6, 7, 5, 7, 8, 20, 21, 22, 20, 22, 23}; CHECK(!memcmp(g_arena + g_last_da.ioff, exp2, sizeof exp2)); }
       nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK); }
+    // #977 重启值不是全 1：带索引的直接条带绘制改写成 32 位索引（等于重启值的 → 0xFFFFFFFF，原来的全 1 保持原值、不再触发重启）。
+    // 期望序列按定义手算，不跑被测函数。
+    { int g0 = g_gdraws; stream q = {0}; p_prim_restart *pr;
+      uint16_t ri[7] = {0, 1, 2, 0x1234, 3, 4, 5}; memcpy(g_pmem + 3 * PG + 1536, ri, sizeof ri);
+      uint16_t rk[8] = {0, 1, 2, 0x1234, 3, 4, 0xffff, 5}; memcpy(g_pmem + 3 * PG + 1600, rk, sizeof rk);
+      // ① 重启值 0x1234、u16 三角带
+      pr = put(&q, OP_PRIM_RESTART, sizeof *pr); pr->on = 1; pr->index = 0x1234;
+      di = put(&q, OP_DRAW_IDX, sizeof *di); di->prim = 5; di->itype = 1; di->count = 7; di->base_vertex = 3; di->ibuf = base + 3 * PG + 1536; end(&q); submit1(&q); fake_complete(NVN_GPU_DONE_OK);
+      CHECK(g_gdraws == g0 + 1 && g_last_da.prim == 5 && g_last_pdesc.prim_restart == 1 && g_last_da.itype == 2 && g_last_da.ibuf == &g_arena_buf && g_last_da.base_vertex == 3 && g_last_da.count == 7);
+      { const uint32_t e[7] = {0, 1, 2, 0xFFFFFFFFu, 3, 4, 5}; CHECK(g_last_da.itype == 2 && g_last_da.count == 7 && !memcmp(g_arena + g_last_da.ioff, e, sizeof e)); }
+      // ② 同一重启值，索引里本来有 0xFFFF：保持原值（u32 的 0x0000FFFF，不再当重启）
+      q.n = 0; di = put(&q, OP_DRAW_IDX, sizeof *di); di->prim = 5; di->itype = 1; di->count = 8; di->ibuf = base + 3 * PG + 1600; end(&q); submit1(&q); fake_complete(NVN_GPU_DONE_OK);
+      { const uint32_t e[8] = {0, 1, 2, 0xFFFFFFFFu, 3, 4, 0xFFFFu, 5}; CHECK(g_gdraws == g0 + 2 && g_last_da.itype == 2 && g_last_da.count == 8 && !memcmp(g_arena + g_last_da.ioff, e, sizeof e)); }
+      // ③ 间接绘制碰到这种重启值：具名记账、不画
+      q.n = 0; di = put(&q, OP_DRAW_IDX, sizeof *di); di->prim = 5; di->itype = 1; di->ibuf = base + 3 * PG + 1536; di->ind = base + 3 * PG + 2048; end(&q); submit1(&q); fake_complete(NVN_GPU_DONE_OK);
+      CHECK(g_gdraws == g0 + 2 && nvn_unimpl_count("draw", "indirect_restart_index_not_all_ones") == 1);
+      // ④ 负对照：重启值本来就是全 1（u16 0xFFFF）不改写，索引与重启原样交给后端
+      q.n = 0; pr = put(&q, OP_PRIM_RESTART, sizeof *pr); pr->on = 1; pr->index = 0xffff;
+      di = put(&q, OP_DRAW_IDX, sizeof *di); di->prim = 5; di->itype = 1; di->count = 8; di->ibuf = base + 3 * PG + 1600; end(&q); submit1(&q); fake_complete(NVN_GPU_DONE_OK);
+      CHECK(g_gdraws == g0 + 3 && g_last_da.itype == 1 && g_last_da.ibuf != &g_arena_buf && g_last_da.ioff == 3 * PG + 1600 && g_last_da.count == 8 && g_last_pdesc.prim_restart == 1);
+      q.n = 0; pr = put(&q, OP_PRIM_RESTART, sizeof *pr); pr->on = 0; end(&q); submit1(&q); fake_complete(NVN_GPU_DONE_OK); }
     // 线环（2）、四边形带（8）、多边形（9）（#710）：期望的图元号与索引序列都是按定义手算的，不跑被测的展开函数
     { int g0 = g_gdraws; stream q = {0}; p_prim_restart *pr;
       // ① 线环、不带索引、3 个点：线段列表 (0,1)(1,2)(2,0)，首点进 base vertex
@@ -2597,11 +3931,11 @@ static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管
     { stream w1 = {0}; by = put(&w1, OP_BIND_STATE, sizeof *by); by->kind = 4; poly_st pw = {NVN_FACE_BACK, NVN_FRONT_FACE_CCW, NVN_POLYGON_MODE_FILL, 0}; memcpy(by->bytes, &pw, sizeof pw);
       di = put(&w1, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->count = 3; di->ibuf = base + 3 * PG; end(&w1);
       submit1(&w1); fake_complete(NVN_GPU_DONE_OK);
-      CHECK(g_last_pdesc.poly.front == NVN_FRONT_FACE_CW && g_last_pdesc.poly.cull == NVN_FACE_BACK && g_last_pdesc.origin_ll == 1);   // 翻转开着：接口说逆时针 → 规范化坐标里顺时针
+      CHECK(g_last_pdesc.poly.front == NVN_FRONT_FACE_CCW && g_last_pdesc.poly.cull == NVN_FACE_BACK && g_last_pdesc.origin_ll == 1);   // 翻转与当前左下原点共同归一化：这里抵消
       int pg0 = g_pipe_gets; s2a_nvn_rast_flip = 0;                                  // 换一条翻转关着的队列：同样的状态，管线要重取
       stream w2 = {0}; di = put(&w2, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->count = 3; di->ibuf = base + 3 * PG; end(&w2);
       submit1(&w2); fake_complete(NVN_GPU_DONE_OK);
-      CHECK(g_pipe_gets == pg0 + 1 && g_last_pdesc.poly.front == NVN_FRONT_FACE_CCW);
+      CHECK(g_pipe_gets == pg0 + 1 && g_last_pdesc.poly.front == NVN_FRONT_FACE_CW);
       s2a_nvn_rast_flip = 1; }
     // 裁剪矩形夹到目标（64×36）内；整个在目标外的不发绘制；深度夹取进管线描述；「y 取反」的视口重排 = 视口上下翻
     { stream c1 = {0}; p_scissor *sc1 = put(&c1, OP_SCISSOR, sizeof *sc1); sc1->x = -5; sc1->y = -6; sc1->w = 20; sc1->h = 100;
@@ -2622,9 +3956,9 @@ static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管
     stream x = {0}; p_bind_state *bs = put(&x, OP_BIND_STATE, sizeof *bs); bs->kind = 4; poly_st po = {NVN_FACE_FRONT, NVN_FRONT_FACE_CW, NVN_POLYGON_MODE_FILL, 0}; memcpy(bs->bytes, &po, sizeof po);
     di = put(&x, OP_DRAW_IDX, sizeof *di); di->prim = 4; di->itype = 1; di->count = 3; di->ibuf = base + 3 * PG; end(&x);
     submit1(&x); fake_complete(NVN_GPU_DONE_OK);
-    CHECK(g_gdraws == d0 + 16);   // 新拓扑6笔 + 点模式1笔成功；不支持的线模式不绘制
-    uint64_t dr_n = 0, sk_n = 0; rp_draw_stats(&dr_n, &sk_n); CHECK(dr_n == 19 && sk_n == 4);
-    g_resolve_rc = 0; t_draw_mdi();   // 间接计数多绘：放在 t_draw 末尾、池和贴图还没释放时，沿用同一套绑定（它多画的几笔不扰动上面按笔数的断言）
+    CHECK(g_gdraws == d0 + 19);   // 新拓扑6笔 + 点模式1笔成功 + #977 重启值改写 3 笔；不支持的线模式不绘制
+    uint64_t dr_n = 0, sk_n = 0; rp_draw_stats(&dr_n, &sk_n); CHECK(dr_n == 22 && sk_n == 5);   // #977 间接 + 非全 1 重启值跳过 1 笔
+    g_resolve_rc = 0; t_draw_mdi(); t_draw_ind_binst();   // 间接计数多绘：放在 t_draw 末尾、池和贴图还没释放时，沿用同一套绑定（它多画的几笔不扰动上面按笔数的断言）
     g_resolve_rc = 0; nvn_be_tex_release(&rtt); nvn_be_tex_release(&tx); nvn_be_pool_del(g_pmem); pass_fresh();
 }
 
@@ -2785,13 +4119,138 @@ static void t_separate_sampler(void) {
     nvn_be_tex_release(&t); pass_fresh();
 }
 
+// 句柄在用户常量缓冲里的贴图（NVN_RB_TEXU，iOS nvn_mtl.m ubo_packed 语义）：纹理字在常量槽 2 +0x10（= 7），同一句柄的另一半是
+//   常量槽 3 +0x8 的采样器号字（sid，左移 20 = 3 << 20）→ 打包句柄 7 | 3 << 20：纹理号 7（4x4 那张）、采样器号 3（ws = 5）。
+//   游戏改了常量缓冲里的纹理字（= 8，2x2 那张），下一笔就读到新的：句柄在编码这一刻从游戏内存读
+static void t_ubo_texture(void) {
+    pass_fresh(); g_resolve_rc = 0; g_gdraws = 0; nvn_unimpl_reset();
+    memset(g_pmem, 0, sizeof g_pmem); nvn_be_pool_add(g_pmem, sizeof g_pmem);
+    const uint64_t base = (uint64_t)(uintptr_t)g_pmem;
+    stream s = {0}; q_env(&s);
+    tex_t t7 = mk_tex(7040, 0x4000, NVN_FORMAT_RGBA8, 4, 4, 1, 0), t8 = mk_tex(7041, 0x8000, NVN_FORMAT_RGBA8, 2, 2, 1, 0);
+    samp_par sp = {0}; sp.ws = 5; nvn_be_reg_tex(7, &t7, NULL); nvn_be_reg_tex(8, &t8, NULL); nvn_be_reg_samp(3, &sp);
+    uint32_t tw = 7, sw = 3; memcpy(g_pmem + PG + 0x10, &tw, 4); memcpy(g_pmem + 2 * PG + 0x8, &sw, 4);
+    g_fprog.nent[1] = 1; nvn_gpu_layout_ent *e = &g_fprog.ent[1][0];
+    e->cls = NVN_GPU_RES_TEX_SAMP; e->src_kind = NVN_RB_TEXU; e->src_reg = 2; e->src_off = 0x10; e->src_reg2 = 0; e->count = 1;
+    g_fprog.nusrc = 1;
+    g_fprog.usrc[0] = (struct rp_usrc){ .tex = { .reg = 2, .off = 0x10, .pair = 1, .pair_reg = 3, .pair_off = 0x8, .pair_sid = 1 },
+                                        .samp_kind = NVN_RB_SAMPU, .samp = { .reg = 3, .off = 0x8, .sid = 1, .pair = 1, .pair_reg = 2, .pair_off = 0x10 } };
+    p_bind_buf *ub = put(&s, OP_BIND_UBO, sizeof *ub); ub->stage = 1; ub->index = 2; ub->addr = base + PG; ub->size = 64;
+    ub = put(&s, OP_BIND_UBO, sizeof *ub); ub->stage = 1; ub->index = 3; ub->addr = base + 2 * PG; ub->size = 64;
+    q_draw(&s); end(&s); submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 1 && g_fb[1][0].u.ts.view && g_fb[1][0].u.ts.view->of->d.d.width == 4 && g_fb[1][0].u.ts.samp && g_fb[1][0].u.ts.samp->x == 5);
+    tw = 8; memcpy(g_pmem + PG + 0x10, &tw, 4);
+    stream again = {0}; q_draw(&again); end(&again); submit1(&again); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 2 && g_fb[1][0].u.ts.view && g_fb[1][0].u.ts.view->of->d.d.width == 2 && g_fb[1][0].u.ts.samp && g_fb[1][0].u.ts.samp->x == 5);
+    CHECK(nvn_unimpl_kinds() == 0);
+    // 常量缓冲句柄走同一格式能力检查：RGBA8 无线性过滤时必须交最近点并具名记账。
+    g_caps_nofilter = NVN_FORMAT_RGBA8; sp.magf = NVN_MAG_FILTER_LINEAR; sp.minf = NVN_MIN_FILTER_LINEAR;
+    nvn_be_reg_samp(3, &sp);
+    stream filter = {0}; q_draw(&filter); end(&filter); submit1(&filter); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 3 && g_samp_last.magf == NVN_MAG_FILTER_NEAREST && g_samp_last.minf == NVN_MIN_FILTER_NEAREST_MIPMAP_NEAREST &&
+          nvn_unimpl_count("tex", "filter_unsupported_fmt_0x25") == 1);
+    g_caps_nofilter = ~0u;
+    nvn_be_tex_release(&t7); nvn_be_tex_release(&t8); pass_fresh();
+}
+
+// Registered views must obey the same encode-window lifetime as cached attachment
+// views and samplers, including re-registration and nested windows.
+static void t_registered_view_pin(void) {
+    res_fresh();
+    tex_t a = mk_tex(81001, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0);
+    tex_t b = mk_tex(81002, 4096, NVN_FORMAT_RGBA8, 16, 16, 1, 0);
+    nvn_be_tex_init(&a); nvn_be_tex_init(&b);
+    nvn_be_reg_tex(3, &a, NULL);
+    rp_view_pin_begin();
+    nvn_gpu_view first = rp_view_by_id(3, &g_fake_cmd, NULL);
+    CHECK(first != NULL); int first_id = first ? first->rid : 0;
+    rp_view_pin_begin();
+    nvn_be_reg_tex(3, &b, NULL);
+    CHECK(!was_view_released(first_id));
+    nvn_gpu_view second = rp_view_by_id(3, &g_fake_cmd, NULL);
+    CHECK(second != NULL); int second_id = second ? second->rid : 0;
+    nvn_be_unreg_tex_range(3, 1);
+    CHECK(rp_view_by_id(3, &g_fake_cmd, NULL) == NULL);
+    CHECK(!was_view_released(second_id));
+    rp_view_pin_end();
+    CHECK(!was_view_released(first_id) && !was_view_released(second_id));
+    rp_view_pin_end();
+    CHECK(was_view_released(first_id) && was_view_released(second_id));
+    res_fresh();
+}
+
+// 视图表按存储认视图：序号销毁时视图跟着存储留在表里（存储还在共用表里，下一个同描述的新序号接着用，见 t_view_storage_key）；
+// 存储真放掉（内存池 Finalize）时名下的视图一并放，窗口内已交出的要等窗口结束。
+static void t_invalidated_attachment_pin(void) {
+    res_fresh();
+    tex_t t = mk_tex(82001, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0);
+    nvn_be_tex_init(&t);
+    rp_view_pin_begin();
+    nvn_gpu_view v = rp_view_for(&t, NULL, &g_fake_cmd);
+    CHECK(v != NULL); int id = v ? v->rid : 0;
+    rp_view_pin_begin();
+    nvn_be_tex_release(&t);
+    CHECK(!was_view_released(id));
+    nvn_be_alias_drop_pool(&g_tp);   // 存储放掉：视图要放，但窗口内已交出的钉到窗口结束
+    CHECK(!was_view_released(id));
+    rp_view_pin_end();
+    CHECK(!was_view_released(id));
+    rp_view_pin_end();
+    CHECK(was_view_released(id));
+    v = rp_view_for(&t, NULL, &g_fake_cmd);
+    CHECK(v != NULL); id = v ? v->rid : 0;
+    nvn_be_tex_release(&t);
+    nvn_be_alias_drop_pool(&g_tp);   // 窗口外：当场放
+    CHECK(was_view_released(id));
+    res_fresh();
+}
+
+static void t_sync_reuse_after_gpu_write(void) {
+    g_flag_sync_lag = 1; g_buf_cpu_auto = 1;
+    memset(g_pmem, 0x11, sizeof g_pmem);
+    uint64_t addr = (uint64_t)(uintptr_t)g_pmem;
+    nvn_be_pool_add(g_pmem, sizeof g_pmem); nvn_be_sub_begin();
+    nvn_gpu_buf b = NULL; uint64_t off = 0;
+    CHECK(rp_buf_resolve(&g_fake_cmd, addr, 16, &b, &off));
+    CHECK(rp_post_gpu_write(addr, 16)); memset(b->cpu + off, 0x22, 16);
+    nvn_be_sub_commit(); uint64_t f = nvn_be_last_fence();
+    // A successful wait grants CPU reuse. GPU writeback must have landed first.
+    CHECK(nvn_be_wait(f, 0) == 0);
+    fake_complete(NVN_GPU_DONE_OK);
+    CHECK(nvn_be_wait(f, 0) == 1 && g_pmem[0] == 0x22);
+    memset(g_pmem, 0x33, 16);
+    // A later read-only submission can retain the existing overlap path.
+    nvn_be_sub_begin(); nvn_be_sub_commit();
+    CHECK(nvn_be_wait(nvn_be_last_fence(), 0) == 1);
+    fake_complete(NVN_GPU_DONE_OK); CHECK(g_pmem[0] == 0x33);
+    // A queued event is also observable CPU memory, not a read-only submission.
+    volatile uint32_t ev = 0; stream a = {0};
+    uint8_t *r = put(&a, OP_SIGNAL_EVENT, 16); volatile uint32_t *pv = &ev; uint32_t mode = 0, value = 7;
+    memcpy(r, &pv, 8); memcpy(r+8, &mode, 4); memcpy(r+12, &value, 4); end(&a);
+    submit1(&a); CHECK(nvn_be_wait(nvn_be_last_fence(), 0) == 0);
+    fake_complete(NVN_GPU_DONE_OK); CHECK(ev == 7);
+    uint64_t ts[2] = {0, 0}; stream t = {0}; g_tick = 7777;
+    q_counter(&t, OP_REPORT_COUNTER, NVN_COUNTER_TYPE_TIMESTAMP, ts); end(&t);
+    submit1(&t); CHECK(nvn_be_wait(nvn_be_last_fence(), 0) == 0);
+    fake_complete(NVN_GPU_DONE_OK); CHECK(ts[1] == 7777);
+    // #653 capability path: report-position samples still write only before wait publishes success.
+    g_caps_extra = NVN_GPU_CAP_REPORT_TIMESTAMP; g_ts_calls = 0; ts[0] = ts[1] = 999;
+    submit1(&t); CHECK(nvn_be_wait(nvn_be_last_fence(), 0) == 0 && ts[1] == 999);
+    fake_complete(NVN_GPU_DONE_OK); CHECK(nvn_be_wait(nvn_be_last_fence(), 0) == 1 && ts[1] == 110);
+    g_caps_extra = 0;
+    nvn_be_pool_del(g_pmem); g_buf_cpu_auto = 0;
+}
+
 int main(int argc, char **argv) {
+    if (argc > 1 && !strcmp(argv[1], "--sync-reuse")) { t_sync_reuse_after_gpu_write(); printf("sync reuse: %d checks, %d failures\n", g_checks, g_fail); return g_fail != 0; }
+    t_invalidated_attachment_pin();
+    t_registered_view_pin();
     t_state_persists();
     t_unimpl_names();
     t_one_commit_per_submit();
     t_event_after_done();
     t_fence_sync();
-    t_jump_call();
+    t_jump_call(); t_call_reused();
     t_bad_record();
     t_dirty_bits();
     t_deferred_bind();
@@ -2799,6 +4258,8 @@ int main(int argc, char **argv) {
     t_program_bind_stages();
     // 一行一个调用：外部各支都往这里加用例，挤在一行时每两支必冲突
     t_pools();
+    t_pool_memo();
+    t_pool_nested();
     t_tex_init_registers_only();
     t_alias();
     t_alias_take_over();
@@ -2809,12 +4270,17 @@ int main(int argc, char **argv) {
     t_linear_upload();
     t_linear_reject();
     t_registry();
+    t_samp_mirror_clamp();
     t_decl_view();
     t_buf_mirror();
+    t_buf_block_work();
+    t_buf_mirror_fail_once();
+    t_buf_multi_tail();
     t_buf_ops();
     t_copy_b2t();
     t_pass_clear_fold();
     t_pass_depth_shadow();
+    t_pass_no_attachment();
     t_pass_bc_shadow();
     t_pass_bc_shadow_3d();
     t_autoflush();
@@ -2828,26 +4294,40 @@ int main(int argc, char **argv) {
     t_pass_clear_park();
     t_pass_clear_park_tail();
     t_pass_clear_park_read();
+    t_fmt_filter_blend();
     t_clear_rect();
     t_report_counter();
+    t_report_position();
     t_occlusion();
+    t_occl_first_reset_cap();
+    t_msoff();
     t_render_cond();
     t_dispatch();
+    t_dispatch_barrier();
     t_dispatch_indirect_gpu();
     t_dispatch_ubop_rw();
     t_dispatch_ubop_ro_skip();
     t_compute_image();
+    t_compute_image_class();
+    t_compute_tex_from_image();
+    t_drv2_table();
     t_compute_sources();
-    t_copy_t2t();
+    t_depth_copy_scaled(); t_front_origin_matrix(); t_color_copy_mirror(); t_copy_t2t();
     t_draw();
     t_arena697_detail();
     t_logic_op_accounting();
     t_gs_dirty_and_topology();
-    t_gs_bind(); t_storage_sync_before_pass(); t_stage_dropped_clears_binds();
+    t_gs_bind(); t_storage_null_binding(); t_storage_sync_before_pass(); t_stage_dropped_clears_binds(); t_sbuf_window();
+    t_tbuf_replay();
     t_decl_sampling();
     t_separate_sampler();
+    t_ubo_texture();
     t_present();
     t_view_pin();
+    t_view_storage_key();
+    t_view_storage_fields();
+    t_view_storage_sweep();
+    t_view_storage_pixels();
     t_pass_3d_slice_view();
     t_bind_reuse();
     t_begin_fail();

@@ -32,6 +32,24 @@ int main(void) {
                "c main 0x100 word 3942f661 52800021\n"          // 改指令行：运行时跳过
                "slot 2041 f32 200 100\nslot 2042 i32 1\nspeed 2040 0.5 2.0\npresent30 if slot 2042 == 0\n");
     fclose(f);
+    {   // 11-14 撤我方 60 帧：缺省（没设 S2A_CAPS_OWN）我方帧率表照装、一律按「关」写——60 帧开着也一样（开关此后只管社区帧率补丁）。
+        //   期望手写（同下面「起局关」那组）：w 行 main+0x1000 不写（仍 0）、不设 DM_PRESENT_INTERVAL、slot 2041 写关时值 100、速度槽 2040 = 1.0、不算真帧率来源。
+        //   起初整张表不装：槽留 0，带表的包起局后游戏步长读到 0 停在加载黑屏（iPhone 实机）→ 槽两项红；旧实现照开 → w 行 / 间隔两项红
+        fflush(stdout); pid_t p = fork(); if (p < 0) return 1;
+        if (!p) {
+            fails = 0; dm_fps_state = NULL; unsetenv("S2A_CAPS_OWN"); unsetenv("DM_PRESENT_INTERVAL"); unsetenv("S2A_FPS_TABLE"); unsetenv("S2A_FPS"); setenv("S2A_FSTEP", "0", 1); setenv("S2A_FPS60", "1", 1);
+            s2a_fps_start(dir); usleep(250000);
+            int32_t a; memcpy(&a, img + 0x1000, 4); expect("缺省口径：60 帧开也不写我方 w 行 main+0x1000（仍 0）", 0, a);
+            expect("缺省口径：不设 DM_PRESENT_INTERVAL", 0, getenv("DM_PRESENT_INTERVAL") != NULL);
+            expect("缺省口径：只有被禁用的我方 present display 表，不强制退回游戏 interval", 0, s2a_fps_present_at(1000000000ull));
+            float f2; memcpy(&f2, img + 0x4000 + 2041 * 8, 4); expect("缺省口径：slot 2041 写关时值 100（×1000）", 100000, (long)(f2 * 1000));
+            memcpy(&f2, img + 0x4000 + 2040 * 8, 4); expect("缺省口径：速度槽 1.0（×100）", 100, lroundf(f2 * 100));
+            { int s2a_fps_real_source(void); expect("缺省口径：我方帧率表不算真帧率来源", 0, s2a_fps_real_source()); }
+            _exit(fails);
+        }
+        int st = 0; waitpid(p, &st, 0); expect("缺省口径子进程：不符项数", 0, WIFEXITED(st) ? WEXITSTATUS(st) : 99);
+    }
+    setenv("S2A_CAPS_OWN", "1", 1);   // 以下测我方帧率表装载机制本身（留给内部对照，S2A_CAPS_OWN=1 才装）
     {   // speed 行带秒槽（11-06 王国之泪布料 / 头发时钟改读实测秒数）。期望手算：33.3 ms → 步长 1.0、秒 1/30 = 0.0333；16.7 ms → 0.5、0.01667；
         //   运行中关 → 步长 1.0、秒 1/30；秒槽与步长槽相同 → 整行报红、两槽都不写（仍是上一张表留下的值）。旧实现：秒槽不写（仍 0）→ 红
         fflush(stdout); pid_t p = fork(); if (p < 0) return 1;
@@ -143,6 +161,7 @@ int main(void) {
     s2a_fps_start(dir);
     usleep(250000);
     int32_t v; memcpy(&v, img + 0x1000, 4); expect("无条件写 main+0x1000", 60, v);
+    { int s2a_fps_source(void); expect("帧率来源：表装上且 60 帧开 → 2（补帧让路）", 2, s2a_fps_source()); }
     memcpy(&v, img + 0x1004, 4); expect("条件标志 0：main+0x1004 写「== 0」那条", 1, v);
     img[0x1010] = 1; usleep(250000);
     memcpy(&v, img + 0x1004, 4); expect("条件标志改 1：main+0x1004 写「!= 0」那条", 2, v);
@@ -164,6 +183,7 @@ int main(void) {
     expect("起局通知 cpatch 跟随一次（开）", 1, g_follow_n); expect("起局跟随值 1", 1, g_follow_last); expect("起局开：s2a_fps_enabled", 1, s2a_fps_enabled());
     int32_t pre1004; memcpy(&pre1004, img + 0x1004, 4);   // 关之前条件行的开时值（条件选中哪个就是哪个）
     s2a_fps_set_enabled(0); usleep(250000);
+    { int s2a_fps_source(void); expect("帧率来源：局中关 60 帧 → 1（补帧可补）", 1, s2a_fps_source()); }
     expect("关：通知 cpatch 跟随（第 2 次）", 2, g_follow_n); expect("关：跟随值 0", 0, g_follow_last);
     s2a_fps_set_enabled(0); expect("重复关：不再通知", 2, g_follow_n);
     memcpy(&v, img + 0x1000, 4); expect("关：main+0x1000 写关值 30", 30, v);

@@ -3,7 +3,10 @@
 import SwiftUI
 
 struct ControllerIcon: View {
-    enum Glyph { case left, right, leftSideways, rightSideways, gen1LeftSideways, gen1RightSideways, pairHead, pro, unknown, playstation, xbox, gen1Left, gen1Right, gen1Pair, otherPad, keyboard }
+    enum Glyph { case left, right, leftSideways, rightSideways, gen1LeftSideways, gen1RightSideways, pairHead, pro, unknown, playstation, xbox, gen1Left, gen1Right, gen1Pair, otherPad, keyboard,
+        /// 预留给未来同一 Wi-Fi 的手机当手柄（玩家位走分配玩家流程，不写死）。功能未做，面板暂不显示、也不引用
+        ///   方案建议（入口、配对、玩家、顶栏）写在 Switch2ProConnectionPopover.swift 文件头：放进手柄弹窗，不另开首页面板
+        mobile }
     let glyph: Glyph
 
     /// 按连接程序报的型号挑图（ns2_kind：1 Pro、2 左、3 右、4 一对；players 2 = 两只各一位玩家，标题图同一对）
@@ -18,7 +21,7 @@ struct ControllerIcon: View {
 
     var body: some View {
         Canvas { context, size in
-            let wide: Set<Glyph> = [.pro, .playstation, .xbox, .otherPad, .unknown, .keyboard]
+            let wide: Set<Glyph> = [.pro, .playstation, .xbox, .otherPad, .unknown, .keyboard, .mobile]
             let box: CGSize = wide.contains(glyph) ? CGSize(width: 64, height: 44) : CGSize(width: 60, height: 40)
             let scale = min(size.width / box.width, size.height / box.height)
             context.translateBy(x: (size.width - box.width * scale) / 2, y: (size.height - box.height * scale) / 2)
@@ -35,6 +38,7 @@ struct ControllerIcon: View {
             case .pro: Self.pro(&context)
             case .unknown: Self.unknown(&context)
             case .keyboard: Self.keyboardGlyph(&context)
+            case .mobile: Self.mobileGlyph(&context)
             case .playstation: Self.pad(&context, body: Color(white: 0.95), touchpad: true, guide: nil)
             case .xbox: Self.pad(&context, body: Color(white: 0.95), touchpad: false, guide: Color(red: 0x10 / 255, green: 0x7c / 255, blue: 0x10 / 255))
             case .otherPad: Self.pro(&context)   // 认不出的手柄：同 Pro 手柄图
@@ -136,6 +140,17 @@ struct ControllerIcon: View {
             }
         }
         c.fill(Path(roundedRect: CGRect(x: 18, y: 30, width: 28, height: 3.6), cornerRadius: 1.2), with: .color(key))
+    }
+
+    /// 手机（预留，见 Glyph.mobile）：一般直立手机外形——米色机身、深色屏幕、上方听筒、下方横条（viewBox 64×44 中间）
+    private static func mobileGlyph(_ c: inout GraphicsContext) {
+        let body = Color(red: 0xe8 / 255, green: 0xe3 / 255, blue: 0xda / 255), dark = Color(red: 0x2a / 255, green: 0x28 / 255, blue: 0x26 / 255)
+        c.fill(Path(roundedRect: CGRect(x: 21, y: 1, width: 22, height: 42), cornerRadius: 5), with: .color(body))
+        c.fill(Path(roundedRect: CGRect(x: 23.5, y: 6, width: 17, height: 30), cornerRadius: 1.5), with: .color(dark))
+        var bars = Path()
+        bars.move(to: CGPoint(x: 29, y: 3.6)); bars.addLine(to: CGPoint(x: 35, y: 3.6))
+        bars.move(to: CGPoint(x: 28, y: 39.6)); bars.addLine(to: CGPoint(x: 36, y: 39.6))
+        c.stroke(bars, with: .color(dark), style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
     }
 
     /// NS2 Pro（稿里 ipro，viewBox 64×44）

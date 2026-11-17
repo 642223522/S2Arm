@@ -25,6 +25,9 @@ int s2a_mac_ns2_raw_now(void);
 int s2a_mac_ns2_raw_wanted(ns2_kind kind, int style);
 int s2a_mac_ns2_single_style(ns2_kind kind);
 uint32_t s2a_mac_ns2_shape(ns2_kind kind, int raw, ns2_state *state);
+// 输入快照有变化时由传输 / 通道读线程回调（实现在 front_mac.m：踢主队列跑一次采样；单测里是计数桩）。
+//   输入变化与连 / 断、通道断开都会调——都改变 sample_input 的取数与手柄槽位（#771）
+void s2a_mac_ns2_input_changed(void);
 void s2a_mac_ns2_set_back_buttons(uint16_t left, uint16_t right);
 ns2_status s2a_mac_ns2_status(void);
 // 通道模式下开局后还没接上过（IDLE）时要不要去连：通道文件在（S2Arm 的连接程序启动时建、退出时删）才连。

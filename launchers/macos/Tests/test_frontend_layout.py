@@ -43,13 +43,15 @@ class StageAppleResourcesTests(unittest.TestCase):
     def test_real_tree_layout(self):
         resources = self.tmp / "Resources"
         placed = layout.stage_apple_resources(ROOT, resources)
-        self.assertEqual(placed, ["Licenses/NX2Apple/LICENSE", "Licenses/NX2Apple/Manrope-OFL.txt", "Licenses/NX2Apple/NOTICE",
-                                  "l10n/en.json", "l10n/zh.json"])
+        # 语言文件按源目录实际有的全集断言（加一门语言 = 加一个文件，不改这里；11-15：写死 en / zh 时加繁中 / 日 / 西 / 法被门禁退回）
+        langs = sorted("l10n/" + p.name for p in (ROOT / "launchers/macos/frontend/l10n").glob("*.json"))
+        self.assertIn("l10n/en.json", langs); self.assertIn("l10n/zh.json", langs)
+        self.assertEqual(placed, ["Licenses/NX2Apple/LICENSE", "Licenses/NX2Apple/Manrope-OFL.txt", "Licenses/NX2Apple/NOTICE"] + langs)
         on_disk = sorted(str(p.relative_to(resources)) for p in resources.rglob("*") if p.is_file())
         self.assertEqual(on_disk, placed)
         frontend = ROOT / "launchers/macos/frontend"
-        for got, source in (("l10n/zh.json", "l10n/zh.json"), ("Licenses/NX2Apple/LICENSE", "LICENSE"),
-                            ("Licenses/NX2Apple/NOTICE", "NOTICE"), ("Licenses/NX2Apple/Manrope-OFL.txt", "fonts/Manrope-OFL.txt")):
+        for got, source in [(x, x) for x in langs] + [("Licenses/NX2Apple/LICENSE", "LICENSE"),
+                            ("Licenses/NX2Apple/NOTICE", "NOTICE"), ("Licenses/NX2Apple/Manrope-OFL.txt", "fonts/Manrope-OFL.txt")]:
             self.assertEqual((resources / got).read_bytes(), (frontend / source).read_bytes(), got)
         # 不碰 S2Arm 游戏共享字体目录（大小写不敏感的盘上 fonts 与 Fonts 同名）
         self.assertFalse((resources / "Fonts").exists())

@@ -39,10 +39,10 @@ int main(void) { @autoreleasepool {
     S.img[5][0] = TID;   // compute stage image slot 0
     nvn_be_sub_begin();
     int ok = img_atomic_prepare(sh, 5);
-    pthread_mutex_lock(&g_rmu);   // the image slot as encode_args resolves it (NVN_RB_IMG: tex_fast_rid, then img_fit for an image read in another class)
+    os_unfair_lock_lock(&g_rmu);   // the image slot as encode_args resolves it (NVN_RB_IMG: tex_fast_rid, then img_fit for an image read in another class)
     void *tv = NULL; tex_fast_rid(TID, &tv); id<MTLTexture> slot = (__bridge id<MTLTexture>)tv; uint64_t rid = 0;
     id<MTLTexture> img = slot && mtl_pf_dpf(slot.pixelFormat) != NVN_DPF_UINT ? img_fit(TID, slot, NVN_DPF_UINT, &rid) : slot;
-    pthread_mutex_unlock(&g_rmu);
+    os_unfair_lock_unlock(&g_rmu);
     f = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f, 10000000000ull)); REQUIRE(!mtl_last_commit_error());
     VERIFY(ok == 1, "① img_atomic_prepare 放行：返回 %d（期望 1）", ok);
     id<MTLTexture> rgba = tex_mtl(&t), root = root_of(rgba);

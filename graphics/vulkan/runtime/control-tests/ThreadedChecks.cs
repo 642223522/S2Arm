@@ -92,10 +92,29 @@ internal static unsafe class ThreadedChecks
         public int Barriers;
     }
 
-    // S2A_THREADED_CHECK=<用例名>：只跑这一个（负控定位用）；缺省全跑。
+    // S2A_THREADED_CHECK=<用例名>[,<用例名>…]：只跑这几个（负控定位用）；S2A_THREADED_SKIP=<用例名>[,…]：跳过这几个
+    //   （tests/vulkan_backend_test.sh：等真实时钟最久的几个放另一个进程只跑它们，这边跳过）；名字不认识就报错；缺省全跑。
     public static void Run()
     {
-        (string Name, Action Body)[] cases =
+        (string Name, Action Body)[] cases = Cases();
+        string[] only = Names("S2A_THREADED_CHECK", cases), skip = Names("S2A_THREADED_SKIP", cases);
+        foreach ((string name, Action body) in cases)
+            if ((only == null || Array.IndexOf(only, name) >= 0) && (skip == null || Array.IndexOf(skip, name) < 0)) body();
+        string scope = (only == null ? "" : ", only " + string.Join(",", only)) + (skip == null ? "" : ", skip " + string.Join(",", skip));
+        Console.WriteLine($"PASS: {_checks} threaded-renderer assertions (real ThreadedRenderer + RunThreaded/RenderMain over NullRenderer, production bounds{scope}); Vulkan/Android/GPU NOT RUN.");
+    }
+
+    private static string[] Names(string variable, (string Name, Action Body)[] cases)
+    {
+        string value = Environment.GetEnvironmentVariable(variable);
+        if (value == null) return null;
+        string[] names = value.Split(',');
+        foreach (string name in names)
+            if (Array.FindIndex(cases, c => c.Name == name) < 0) throw new Exception($"FAIL threaded: unknown {variable} {name}");
+        return names;
+    }
+
+    private static (string Name, Action Body)[] Cases() =>
         [
             (nameof(ThreadedSwitch), ThreadedSwitch),
             (nameof(AutoPolicy), AutoPolicy),
@@ -133,12 +152,6 @@ internal static unsafe class ThreadedChecks
             (nameof(PipelineSaveAwait), PipelineSaveAwait),
             (nameof(RenderFailure), RenderFailure),
         ];
-        string only = Environment.GetEnvironmentVariable("S2A_THREADED_CHECK");
-        if (only != null && Array.FindIndex(cases, c => c.Name == only) < 0) throw new Exception("FAIL threaded: unknown S2A_THREADED_CHECK " + only);
-        foreach ((string name, Action body) in cases)
-            if (only == null || only == name) body();
-        Console.WriteLine($"PASS: {_checks} threaded-renderer assertions (real ThreadedRenderer + RunThreaded/RenderMain over NullRenderer, production bounds{(only == null ? "" : ", only " + only)}); Vulkan/Android/GPU NOT RUN.");
-    }
 
     private static ulong Publish(Session session, ulong owner, int advance)
     {

@@ -69,7 +69,7 @@ def gpu_arch(product_type, developer_dir):
                   "where (d.ProductType = ? or d.ProductType like ? || '-%') and t.GPUArchName like 'applegpu_%'", (product_type, product_type), platform)
     archs = sorted({r[0] for r in rows})
     if len(archs) != 1:
-        raise TargetError(f"这个 Xcode 认不出机型 {product_type} 的 GPU（{'查到多个：' + '、'.join(archs) if archs else '没有记录'}）：请把 Xcode 更新到最新版。", code="xcode_unavailable")
+        raise TargetError(f"这个 Xcode 认不出机型 {product_type} 的 GPU（{'查到多个：' + '、'.join(archs) if archs else '没有记录'}）：请把 Xcode 更新到最新版。", code="xcode_unavailable")  # 非玩家句
     return archs[0]
 
 
@@ -103,24 +103,24 @@ def os_choices(env):
         if isinstance(stderr, bytes):
             stderr = stderr.decode("utf-8", errors="replace")
         lines = (stderr or "").strip().splitlines()
-        tail = lines[-1] if lines else "（空）"
-        return TargetError(f"{reason}；命令：{' '.join(cmd)}；退出码：{rc}；stderr 末行：{tail}", code=code)
+        tail = lines[-1] if lines else "（空）"  # 非玩家句
+        return TargetError(f"{reason}；命令：{' '.join(cmd)}；退出码：{rc}；stderr 末行：{tail}", code=code)  # 非玩家句
 
     try:
         p = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=60)
     except subprocess.TimeoutExpired as e:
-        raise failure("读取 iOS SDK 超时（60 秒）", "未取得（超时）", e.stderr) from e
+        raise failure("读取 iOS SDK 超时（60 秒）", "未取得（超时）", e.stderr) from e  # 非玩家句
     except OSError as e:
-        raise failure(f"无法启动 iOS SDK 探测：{e}", "未启动", None) from e
+        raise failure(f"无法启动 iOS SDK 探测：{e}", "未启动", None) from e  # 非玩家句
     if p.returncode:
-        raise failure("读取 iOS SDK 失败", p.returncode, p.stderr)
+        raise failure("读取 iOS SDK 失败", p.returncode, p.stderr)  # 非玩家句
     version = p.stdout.strip()
     if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)*", version):
-        raise failure(f"iOS SDK 版本输出为空或非法：{version!r}", p.returncode, p.stderr)
+        raise failure(f"iOS SDK 版本输出为空或非法：{version!r}", p.returncode, p.stderr)  # 非玩家句
     try:
         top = int(version.split(".")[0])
     except ValueError as e:
-        raise failure("iOS SDK 版本数值非法", p.returncode, p.stderr) from e
+        raise failure("iOS SDK 版本数值非法", p.returncode, p.stderr) from e  # 非玩家句
     if top < MIN_OS:
         raise failure(f"iOS SDK {version} 太旧，需要 iOS {MIN_OS} 或更新的 SDK", p.returncode, p.stderr,
                       code="xcode_sdk_too_old")
@@ -253,7 +253,7 @@ PROFILE_GLOBS = ("~/Library/MobileDevice/Provisioning Profiles/*.mobileprovision
 def profile_udids(paths=()):
     """开发描述文件里登记的设备 UDID（大写）：连着多台时用它缩小到「这个包能装的机器」。没给路径就扫本机两处缺省目录"""
     out = set()
-    files = [Path(p).expanduser() for p in paths if p] or [Path(p) for pat in PROFILE_GLOBS for p in glob.glob(os.path.expanduser(pat))]
+    files = [Path(p).expanduser() for p in paths if p] or [Path(p) for pat in PROFILE_GLOBS for p in glob.glob(os.path.join(glob.escape(os.path.expanduser(os.path.dirname(pat))), os.path.basename(pat)))]
     for f in files:
         try:
             r = subprocess.run(["security", "cms", "-D", "-i", str(f)], capture_output=True, timeout=60)
@@ -299,12 +299,12 @@ def pick(want="", profiles=(), dd=None):
             raise TargetError(f"devicectl 没列出设备「{want}」（没连着这条线，或没在这台电脑上点过信任）", code="target_unknown")
         return _answer(dict(gpuArch=gpu_arch(pt, dd), os=0, productType=pt, model=pt), f"--device {want}（ideviceinfo）")
     live = [d for d in allv if d.get("tunnel") or d.get("wired")]
-    source = "连着的那一台"
+    source = "连着的那一台"  # 非玩家句
     if len(live) != 1:
         uds = profile_udids(profiles)
         narrowed = [d for d in live if d["udid"].upper() in uds]
         if len(narrowed) == 1:
-            live, source = narrowed, "开发描述文件登记的那一台"
+            live, source = narrowed, "开发描述文件登记的那一台"  # 非玩家句
     if len(live) == 1:
         return _answer(live[0], source)
     if not live:

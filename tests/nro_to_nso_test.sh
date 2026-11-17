@@ -17,6 +17,7 @@
 #    nro2 = B（data/big.arc@<B 帧偏移>:zstd）——按 NRR 登记顺序编号；C 不收（没登记）；NSO 正文 = 原 NRO；输出目录没有残留临时文件
 #    ⑦b 分块 0x40（zstd 帧与原样 NRO 都跨块边界）结果逐字节相同；⑦c 同一 romfs 去掉 .nrr = 旧行为：只有 nro0 = A；⑦d 坏 NRR（魔数不对）跳过这一份、带【黄】、退出 0 = ⑦c（只有 nro0 = A）
 #    ⑦f Switch 2 布局的 NRR（#713：字段整体后移 0x80，大小锚点在 +0x3B8、表在 +0x3D0，+0x340 是乱数）：结果同 ⑦
+#    ⑧ 运行时留下的 NRO（第三参数，#8be819）：见 ⑧ 段
 #    ⑦e 反证（11-03 大乱斗 data.arc 实遇）：2 GB 稀疏大文件开头一个假 NRO 头（NRO0、头里大小 0x80000000 > 2^31-1、三段自洽）→ 不去读它、退出 0、不出表（旧实现 pread 2 GB 回 EINVAL 退出 1）
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); trap 'rm -rf "$T"' EXIT; bad=0
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
@@ -143,4 +144,26 @@ with open(sys.argv[1], 'wb') as f:
 EOF
 python3 "$H/runtime/rewriter/nro_to_nso.py" "$T/r7e" "$T/o7e" > "$T/o7e.log" 2>&1; r7e=$?
 ck "⑦e 反证：大文件里头里大小 > 2 GB 的假 NRO 不读、退出 0、不出表（实得 ${r7e}：$(tail -1 "$T/o7e.log" | cut -c1-80)）" '[ $r7e = 0 ] && [ ! -f "$T/o7e/nro_modules.tsv" ]'
+# ⑧ 运行时留下的 NRO（第三参数，#8be819：NRO 藏在游戏自有加密归档里，出包时认不出；宿主 LoadNro 缺表时存下游戏解开的那份 <SHA-256>.nro）。
+#    romfs = ⑦ 去掉 data/big.arc（D、B 在 romfs 里找不到）；留存目录：<sha(B)>.nro = B、<sha(C)>.nro = C（没登记）、<sha(B)>… 名下放 D（名不符）。
+#    期望：nro0 = A（a.nro）、nro1 = B（kept:<sha(B)>.nro）；C 与名不符的不收、各带【黄】；⑧b 再放对名的 D：nro1 / nro2 按文件名排序收 B、D；⑧c 不给第三参数 = ⑦c 前的旧行为（只有 nro0）
+mkdir -p "$T/r8" "$T/k8"; cp -R "$T/r7/." "$T/r8/"; rm -f "$T/r8/data/big.arc"
+SB=$(shasum -a 256 < "$T/B.nro" | cut -c1-64); SD=$(shasum -a 256 < "$T/D.nro" | cut -c1-64)
+python3 - "$T/B.nro" "$T/k8" "$SB" <<'K8'
+import hashlib, sys
+b = bytearray(open(sys.argv[1], 'rb').read()); c = bytearray(b); c[0x48] = 0x13
+open(f'{sys.argv[2]}/{sys.argv[3]}.nro', 'wb').write(b)
+open(f'{sys.argv[2]}/{hashlib.sha256(c).hexdigest()}.nro', 'wb').write(c)
+K8
+cp "$T/D.nro" "$T/k8/${SB:0:63}0.nro"   # 名不符（内容是 D）
+python3 "$H/runtime/rewriter/nro_to_nso.py" "$T/r8" "$T/o8" "$T/k8" > "$T/o8.log" 2>&1; r8=$?
+W8=$(printf 'nro0\ta.nro\nnro1\tkept:%s.nro' "$SB")
+ck "⑧ 运行时留下：退出 0、表 = A（a.nro）、B（kept:），C 与名不符的不收、带两条【黄】（实得 ${r8}：$(grep -v '^#' "$T/o8/nro_modules.tsv" 2>/dev/null | cut -f1,5 | tr '\n\t' '; ')）" "[ $r8 = 0 ] && [ \"\$(grep -v '^#' \"$T/o8/nro_modules.tsv\" | cut -f1,5)\" = \"\$W8\" ] && [ \$(grep -c '【黄】运行时留下' \"$T/o8.log\") = 2 ]"
+ck "⑧ NSO 正文 = 原 NRO（nro1 = B）" '[ "$(tail -c +257 "$T/o8/nro1" 2>/dev/null | shasum -a 256)" = "$(shasum -a 256 < "$T/B.nro")" ]'
+cp "$T/D.nro" "$T/k8/$SD.nro"
+python3 "$H/runtime/rewriter/nro_to_nso.py" "$T/r8" "$T/o8b" "$T/k8" > "$T/o8b.log" 2>&1; r8b=$?
+W8b=$(printf '%s\n%s\n' "kept:$SB.nro" "kept:$SD.nro" | sort | awk 'BEGIN{print "nro0\ta.nro"} {printf "nro%d\t%s\n", NR, $0}')
+ck "⑧b 再放对名的 D：nro1 / nro2 按文件名收 B、D（实得 ${r8b}：$(grep -v '^#' "$T/o8b/nro_modules.tsv" 2>/dev/null | cut -f1,5 | tr '\n\t' '; ')）" "[ $r8b = 0 ] && [ \"\$(grep -v '^#' \"$T/o8b/nro_modules.tsv\" | cut -f1,5)\" = \"\$W8b\" ]"
+python3 "$H/runtime/rewriter/nro_to_nso.py" "$T/r8" "$T/o8c" > "$T/o8c.log" 2>&1; r8c=$?
+ck "⑧c 不给第三参数 = 旧行为：只有 nro0 = a.nro（实得 ${r8c}）" "[ $r8c = 0 ] && [ \"\$(grep -v '^#' \"$T/o8c/nro_modules.tsv\" | cut -f1,5)\" = \"\$(printf 'nro0\ta.nro')\" ]"
 [ $bad = 0 ] && echo "🟢 nro_to_nso_test 全通" || { echo "🔴 nro_to_nso_test 有不通"; tail -3 "$T/c.log" "$T/c0.log" 2> /dev/null; exit 1; }

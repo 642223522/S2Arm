@@ -40,7 +40,7 @@ class Sizes(JobCase):
         # 镜像里的 romfs 是解包的真克隆（APFS 上共享块；Windows / 非 APFS 退成复制，照实是第 2 份）——同出包 clone_tree
         self.cloned = core.clone(d / "build" / "extract" / "romfs" / "data.arc", d / "image" / "mac" / "romfs" / "data.arc")
         write(d / "shader-cache" / "pso.bin", 1 * MIB)
-        write(d / "image" / "ios" / "kit" / "main.bin", 2 * MIB)          # 容器件 → imageIos
+        write(d / "image" / "ios" / "kit" / "main.npdm", 2 * MIB)         # 旧位置的容器件 → imageIos（释放空间前先搬进程序常驻，pack/jobs/programs.py）
         write(d / "image" / "ios" / "pack" / "r.bin", 1 * MIB)           # 资源包 → imageIos
         write(d / "build" / "ios" / "roots" / "r@1" / "x.bin", 1 * MIB)  # iPhone 出包中间产物 → cache
         write(d / "build" / "ios" / "logs" / "build.log", 1 * MIB)       # 日志不算进任何一项

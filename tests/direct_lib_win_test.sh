@@ -13,7 +13,8 @@ set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); bad=0; trap 'rm -rf
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
 P=$T/repo; mkdir -p $P/graphics/tools/direct $P/graphics/nvn/tools $P/translator $P/pack $P/tools $T/win $T/bin
 cp "$H/graphics/tools/direct/direct_lib.sh" $P/graphics/tools/direct/; cp "$H/pack/srcs.sh" $P/pack/; cp "$H/tools/progress.sh" $P/tools/; cp "$H/graphics/nvn/tools/romfs_list.py" $P/graphics/nvn/tools/
-cp "$H/translator/vk_shaders.py" $P/translator/; cp "$H/graphics/tools/spirv_msl.py" $P/graphics/tools/; cp "$H/tools/nostall.py" $P/tools/
+cp "$H/translator/vk_shaders.py" $P/translator/; mkdir -p $P/tools; cp "$H/tools/pool_workers.py" $P/tools/;  # vk_shaders 经它取核数（#1332）
+ cp "$H/graphics/tools/spirv_msl.py" $P/graphics/tools/; cp "$H/tools/nostall.py" $P/tools/
 printf 'import os\nprint(os.environ.get("FAKE_API", "nvn") + "\\t桩")\n' > $P/graphics/nvn/tools/gfx_api.py
 printf '#!/bin/sh\necho MINGW64_NT-10.0-26100\n' > $T/win/uname
 printf '#!/bin/sh\nfor a; do :; done; echo "$a"\n' > $T/win/cygpath

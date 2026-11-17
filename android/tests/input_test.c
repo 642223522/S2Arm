@@ -18,7 +18,8 @@ int main(void) {
     if (pthread_create(&thread, NULL, writer, NULL)) return 1;
     do {
         int32_t values[4]; uint32_t buttons = s2a_vpad_read(values);
-        if (values[0] != (int32_t)buttons || values[1] != -values[0]
+        // 按键读数 = 当前按键 | 读之间按下又松开的锁存位（短按锁存）：当前那次写入的位必须都在，多出的只能来自锁存
+        if ((buttons & (uint32_t)values[0]) != (uint32_t)values[0] || values[1] != -values[0]
             || values[2] != values[0] * 2 || values[3] != -values[2]) {
             fprintf(stderr, "Input reader observed a torn snapshot\n"); pthread_join(thread, NULL); return 1;
         }

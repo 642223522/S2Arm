@@ -37,8 +37,9 @@ public sealed partial class EnvironmentWindow
 
     // ── 打开时给玩家看什么（11-13 维护者定稿草图，判定在 pack/jobs/updater.py inbox，两端共用「永远只给最新一期」）：
     //    最多一个弹窗（这版更新了什么 / 有新版）、横幅（最新一条没看过的重要公告）、「消息」列表与未读数（只算最新那条公告）
-    private JsonElement? updatePopup;   // {kind: update | afterUpdate, version, notes?}
+    private JsonElement? updatePopup;   // {kind: update | afterUpdate, version, notes?}；kind = feature 是新功能大窗（FeatureSpotlight.cs）
     private JsonElement? availableUpdate;   // 有新版那一版 {version, notes?}：顶栏「有新版 vX」点开回到弹窗
+    private bool installWhenReady;   // 玩家点了「现在更新」时还没下：下完接着装（同 Mac S2ArmLauncherModel.installWhenReady）
     private JsonElement[] messages = [];
     private int unreadMessages;
     private bool messagesOpen;
@@ -57,7 +58,7 @@ public sealed partial class EnvironmentWindow
             availableUpdate = update;
         updatePopup = value.TryGetProperty("popup", out var popup) && popup.ValueKind == JsonValueKind.Object ? popup : null;
         Render();
-        if (availableUpdate is not null) await DownloadUpdateAsync();   // 后台下好，不打断玩家
+        // 有新版只提示，不自动下载（11-16 维护者：启动器与手机端都改成手动更新；同 Mac restartToUpdate #1283）：玩家点「现在更新」才下、下完接着装
     }
 
     private void Seen(params string[] args) => _ = UpdateClient.RunAsync(paths, new[] { "inbox-seen", "--private-root", privateRoot }.Concat(args), null, TimeSpan.FromSeconds(20));
@@ -65,6 +66,7 @@ public sealed partial class EnvironmentWindow
     /// <summary>关掉弹窗（以后再说 / 知道了 / Esc）：这一版不再弹</summary>
     private void CloseUpdatePopup()
     {
+        if (FeatureOpen) { CloseFeature(); return; }
         updateGate = "";
         if (updatePopup is not { } popup) return;
         updatePopup = null;
@@ -79,7 +81,7 @@ public sealed partial class EnvironmentWindow
         if (availableUpdate is not { } update) return;
         var version = update.GetProperty("version").GetString() ?? "";
         var notes = update.TryGetProperty("notes", out var n) ? n.GetRawText() : "null";
-        using var doc = JsonDocument.Parse($"{{\"kind\":\"update\",\"version\":{JsonSerializer.Serialize(version)},\"notes\":{notes}}}");
+        using var doc = JsonDocument.Parse($"{{\"kind\":\"update\",\"version\":{JsonOut.Serialize(version)},\"notes\":{notes}}}");
         updatePopup = doc.RootElement.Clone(); Render();
     }
 
@@ -149,7 +151,10 @@ public sealed partial class EnvironmentWindow
         else
         {
             buttons.Children.Add(Action("update.popup.later", CloseUpdatePopup));
-            buttons.Children.Add(Action("update.popup.now", RestartToUpdate, updateReady is not null));
+            // 装过 iPhone、自动更新开着：写「更新启动器和 iPhone App」，新版启动后自动把 iPhone App 也更新（PhoneAutoUpdate.cs）；自动化 id 照旧
+            var now = Action("update.popup.now", RestartToUpdate, updateReady is not null || availableUpdate is not null);   // 没下也能点：点了才下、下完接着装；手动更新（11-16）：启动器升级不再顺带装手机，按钮不再写「和 iPhone App」
+            Avalonia.Automation.AutomationProperties.SetAutomationId(now, "update.popup.now");
+            buttons.Children.Add(now);
         }
         panel.Children.Add(buttons);
         body.Children.Add(Card(panel, 32));
@@ -217,13 +222,18 @@ public sealed partial class EnvironmentWindow
             // 静默装进现在这个目录（便携版也原地更新，不另装一份）；数据不在程序目录里（私有目录、游戏库），装新版不碰
             CustomInstallerArguments = $"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR=\"{InstallDir}\"",
             RelaunchAfterUpdateCommandSuffix = string.Join(" ", Environment.GetCommandLineArgs().Skip(1).Select(a => "\"" + a.Replace("\"", "") + "\"")),
+            // 装完拉起不靠当前目录（11-16 第 2 份候选手动更新：装好了却没拉起）：NetSparkle 写的脚本是 cd "<目录>" 再跑 "<可执行文件名>"，
+            //   cd 不带 /d 换不了盘——脚本在系统盘的临时目录里跑，程序装在别的盘（便携版放 D:、测试装在 R:）时 cd 落空，相对的 S2Arm.exe 找不到，静默不拉起。
+            //   可执行文件给绝对路径，前缀再 cd /d 到安装目录（工作目录同安装程序「现在打开」的 WorkingDir {app}）
+            RestartExecutableName = Path.Combine(InstallDir, Path.GetFileName(Environment.ProcessPath ?? "S2Arm.exe")),
+            RelaunchAfterUpdateCommandPrefix = $"cd /d \"{InstallDir}\" && ",
             LogWriter = new UpdateLog(Path.Combine(privateRoot, "logs", "update.log")),
         };
         updater.CloseApplicationAsync += () => { Dispatcher.UIThread.Post(Close); return Task.CompletedTask; };
         updater.DownloadMadeProgress += (_, item, e) => Dispatcher.UIThread.Post(() =>
         { updateProgress = T("update.downloading").Replace("{0}", e.ProgressPercentage.ToString()); RefreshLive(); });
         updater.DownloadFinished += (item, path) => Dispatcher.UIThread.Post(() =>
-        { updateProgress = ""; updateReady = item; updateReadyPath = path; Render(); });
+        { updateProgress = ""; updateReady = item; updateReadyPath = path; Render(); if (installWhenReady) RestartToUpdate(); });
         updater.DownloadHadError += (item, path, error) => Dispatcher.UIThread.Post(() => Fail("update_failed", error.Message));
         updater.InstallUpdateFailed += (reason, path) => { Dispatcher.UIThread.Post(() => Fail("update_failed", reason.ToString())); return true; };
         return sparkle = updater;
@@ -275,7 +285,9 @@ public sealed partial class EnvironmentWindow
     {
         // 草图④：有任务在跑先拦下说明，弹窗不关
         if (UpdateBlocked) { updateGate = "update.gate.busy"; if (updatePopup is null) ShowUpdatePopup(); Render(); return; }
+        if (updateReady is null && availableUpdate is not null) { installWhenReady = true; _ = DownloadUpdateAsync(); return; }   // 玩家点了才下：下完在 DownloadFinished 里接着装
         if (updateReady is not { } ready || sparkle is null) return;
+        installWhenReady = false;
         UpdateLog.Write(Path.Combine(privateRoot, "logs", "update.log"), $"玩家点了更新并重启：交给 NetSparkle 运行安装程序 {ready.Version}");
         _ = sparkle.InstallUpdate(ready, updateReadyPath);   // 写好等本程序退出再跑安装程序、装完拉起的脚本，再经 CloseApplicationAsync 关掉本程序
     }
@@ -330,7 +342,7 @@ public sealed partial class EnvironmentWindow
         var bar = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 10, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center };
         if (updateProgress.Length > 0)
             bar.Children.Add(new TextBlock { Text = updateProgress, FontSize = 12, Foreground = Brush.Parse("#A8A6A1"), VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center });
-        else if (updateReady is not null && availableUpdate is { } update)   // 草图：「以后再说」后顶栏留「有新版 vX」，点开回到弹窗；重启只在弹窗里点
+        else if (availableUpdate is { } update)   // 草图：「以后再说」后顶栏留「有新版 vX」，点开回到弹窗；重启只在弹窗里点
         {
             var available = new Button { Content = T("update.top.available").Replace("{0}", update.GetProperty("version").GetString() ?? ""), Padding = new Thickness(14, 8),
                 CornerRadius = new CornerRadius(8), Background = Accent, Foreground = Canvas };

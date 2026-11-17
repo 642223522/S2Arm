@@ -166,7 +166,7 @@ class StageTest(unittest.TestCase):
         try:
             (tx.path / 'ui_overlay/romfs/Layout').mkdir(parents=True)
             (tx.path / 'ui_overlay/romfs/Layout/x.zs').write_bytes(b'widened layout bytes')
-            pre = self.home / 'pre'; (pre / 'romfs').mkdir(parents=True); (pre / 'romfs/romfs_index.dll').write_bytes(b'')
+            pre = self.home / 'pre'; (pre / 'romfs').mkdir(parents=True); (pre / ('romfs/romfs_index.exe' if os.name == 'nt' else 'romfs/romfs_index')).write_bytes(b'')
             with patch.dict(os.environ, {'S2A_PREBUILT_TOOLS': str(pre), 'DOTNET': sys.executable}), patch.object(stages, 'run', side_effect=fake_run):
                 stages.Stages(self.store)._romfsidx(tx, deps)
             rows = dict(r.split('\t', 1)[::-1] for r in seen['list'].splitlines())
@@ -284,7 +284,7 @@ class StageTest(unittest.TestCase):
             'pack/roots.sh', 'pack/stage_rewrite.sh', 'pack/stage_keyfiles.sh', 'pack/rewriter.py',
             'pack/cpatch.py', 'runtime/rewriter', 'graphics/widen/scan', 'tools/addr_need.py',
             'tools/stage_deps.py', 'tools/stage_deps_hook', 'graphics/nvn/tools/romfs_list.py',
-            'tools/nso_plain.py', 'pack/pkg_srcs.py'])   # 11-06：10b9156f3 起 addr_need.py 顶层 import nso_plain、stages.selected_tables 加载 pack/pkg_srcs.py，镜像少这两个 8 例红
+            'tools/nso_plain.py', 'pack/pkg_srcs.py', 'tools/pool_workers.py'])   # 11-06：10b9156f3 起 addr_need.py 顶层 import nso_plain、stages.selected_tables 加载 pack/pkg_srcs.py，镜像少这两个 8 例红；#1332 起 wide_scan / romfs_list / stages 经 tools/pool_workers.py 取核数与进程池路数
         for name in listed.decode('utf-8').split('\0'):
             if name and (original / name).is_file():
                 dest = mirror / name
@@ -482,6 +482,79 @@ class StageTest(unittest.TestCase):
         (self.source / 'romfs/sub/resource').write_bytes(b'123456789')
         self.assertNotEqual(stages.romfsidx_key(self.source), expected)
 
+    def test_index_list_written_in_process_equals_romfs_list_sizes_cli(self):
+        # 11-16 出包轻阶段：索引清单原先另起一个 Python 进程跑 romfs_list.py sizes 写；现在在本进程里写。期望 = 那个命令行对同一份 RomFS 的输出，逐字节相同
+        for rel in ('b/2', 'a', 'b/1', 'c/d/e'):
+            (self.source / 'romfs' / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.source / 'romfs' / rel).write_bytes(rel.encode() * 3)
+        current = refresh.seed(self.store, '原创', self.source)
+        tx = self.store.begin('原创', 'index-inproc')
+        deps = stages.Dependencies('romfsidx', current)
+        seen = {}; real_run = stages.run
+        def fake_run(args, **kw):
+            if '--list' not in args: return real_run(args, **kw)
+            seen['list'] = Path(args[args.index('--list') + 1]).read_bytes()
+            (tx.path / 'romfs.s2aidx').write_bytes(b'idx')
+            return '', 0
+        try:
+            expected = self.home / 'cli.tsv'
+            subprocess.run([sys.executable, str(stages.REPO / 'graphics/nvn/tools/romfs_list.py'), 'sizes', str(tx.path / 'romfs'), str(expected)], check=True)
+            pre = self.home / 'pre'; (pre / 'romfs').mkdir(parents=True); (pre / ('romfs/romfs_index.exe' if os.name == 'nt' else 'romfs/romfs_index')).write_bytes(b'')
+            with patch.dict(os.environ, {'S2A_PREBUILT_TOOLS': str(pre), 'DOTNET': sys.executable}), patch.object(stages, 'run', side_effect=fake_run):
+                stages.Stages(self.store)._romfsidx(tx, deps)
+            self.assertEqual(seen['list'], expected.read_bytes())
+        finally:
+            tx.abort(); deps.close()
+
+    def test_build_identity_covers_project_closure_and_build_props_only(self):
+        # RomFS 索引工具按源码内容身份编一次、同身份复用。期望手写：闭包里任一工程的源文件、上级的 Directory.Build.props 一改身份就变；
+        #   bin / obj 里的编译产物、闭包外的工程改了身份不变
+        repo = self.home / 'repo'
+        files = {'a/a.csproj': '<Project><ItemGroup><ProjectReference Include="..\\b\\b.csproj" /></ItemGroup></Project>',
+                 'a/x.cs': 'class X {}', 'b/b.csproj': '<Project />', 'b/y.cs': 'class Y {}', 'c/c.csproj': '<Project />',
+                 'Directory.Build.props': '<Project />', 'a/obj/project.assets.json': '{}', 'a/bin/Release/a.dll': 'MZ'}
+        for rel, data in files.items():
+            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (repo / rel).write_text(data, encoding='utf-8')
+        with patch.object(stages, 'REPO', repo):
+            ident = lambda: stages.build_identity(repo / 'a/a.csproj')
+            first = ident()
+            self.assertRegex(first, '^[0-9a-f]{12}$')
+            for rel in ('a/obj/project.assets.json', 'a/bin/Release/a.dll', 'c/c.csproj'):
+                (repo / rel).write_text('changed', encoding='utf-8')
+                self.assertEqual(ident(), first, rel)
+            seen = {first}
+            for rel in ('b/y.cs', 'a/x.cs', 'Directory.Build.props'):
+                (repo / rel).write_text('changed ' + rel, encoding='utf-8')
+                now = ident()
+                self.assertNotIn(now, seen, rel)
+                seen.add(now)
+
+    def test_index_tool_built_once_per_identity_then_reused(self):
+        # 期望手写：同一身份第一次编（dotnet build 一次、-o 到临时目录再改名成 <运行根>/s2arm/bin/romfs_index_<身份>），第二次不编、直接用；身份变了再编一次
+        calls = []
+        def fake_run(args, **kw):
+            command = [str(a) for a in args]
+            calls.append(command)
+            out = Path(command[command.index('-o') + 1]); out.mkdir(parents=True)
+            (out / 'romfs_index.dll').write_bytes(b'dll')
+            return '', 0
+        log = self.home / 'build.log'
+        deps = stages.Dependencies('romfsidx', self.source)
+        try:
+            with patch.dict(os.environ, {'S2A_RUN_ROOT': str(self.home / 'run')}), patch.object(stages, 'run', side_effect=fake_run), \
+                 patch.object(stages, 'build_identity', side_effect=['aaaaaaaaaaaa', 'aaaaaaaaaaaa', 'bbbbbbbbbbbb']):
+                engine = stages.Stages(self.store)
+                first = engine._index_tool('dotnet', deps, log)
+                self.assertEqual(first, self.home / 'run/s2arm/bin/romfs_index_aaaaaaaaaaaa/romfs_index.dll')
+                self.assertEqual(len(calls), 1); self.assertIn('--no-restore', calls[0])
+                self.assertEqual(engine._index_tool('dotnet', deps, log), first)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(engine._index_tool('dotnet', deps, log).parent.name, 'romfs_index_bbbbbbbbbbbb')
+                self.assertEqual(len(calls), 2)
+        finally:
+            deps.close()
+
     @unittest.skipUnless(os.name == 'nt', 'Windows Job timeout boundary')
     def test_tool_timeout_terminates_only_the_owned_process(self):
         with self.assertRaises(stages.StageError) as error:
@@ -508,6 +581,7 @@ class StageTest(unittest.TestCase):
             tx.abort(); deps.close()
 
     def test_index_manifest_preserves_eight_baseline_repository_rows(self):
+        # #1332：romfs_list / resource_input_key 经 tools/pool_workers.py 取核数，它照实进依赖清单（改它会换 romfsidx 的键）
         refresh.seed(self.store, '原创', self.source)
         engine = stages.Stages(self.store)
         def original_core_boundary(tx, deps):
@@ -522,7 +596,7 @@ class StageTest(unittest.TestCase):
         self.assertEqual(names, [
             'R:graphics/nvn/tools/romfs_list.py', 'R:pack/resource_input_key.py',
             'R:pack/stage_keyfiles.sh', 'R:pack/stages/romfsidx.sh',
-            'R:tools/clonedir.py', 'R:tools/direct_shards.py', 'R:tools/stage_deps.py',
+            'R:tools/clonedir.py', 'R:tools/direct_shards.py', 'R:tools/pool_workers.py', 'R:tools/stage_deps.py',
             'R:tools/stage_deps_hook/sitecustomize.py'])
 
     @unittest.skipUnless(os.environ.get('S2A_ORCH_TEST_DOTNET') or shutil.which('dotnet'), 'existing .NET tool required; never downloaded')
@@ -543,7 +617,7 @@ class StageTest(unittest.TestCase):
                     command.append('-p:MSBuildProjectExtensionsPath=' + str(self.home / 'fresh-obj') + os.sep)
             return run(command, **kwargs)
         try:
-            with patch.dict(os.environ, {'DOTNET': str(tool), 'S2A_PREBUILT_TOOLS': ''}), patch.object(stages, 'run', isolated_assets):
+            with patch.dict(os.environ, {'DOTNET': str(tool), 'S2A_PREBUILT_TOOLS': '', 'S2A_RUN_ROOT': str(self.home / 'run')}), patch.object(stages, 'run', isolated_assets):
                 with self.assertRaises(stages.StageError) as error:
                     stages.Stages(self.store)._romfsidx(tx, deps)
             self.assertEqual(error.exception.code, 75)
@@ -561,7 +635,7 @@ class StageTest(unittest.TestCase):
     def test_real_index_core_structure_and_repeat_cache(self):
         initial = refresh.seed(self.store, '原创', self.source)
         tool = os.environ.get('S2A_ORCH_TEST_DOTNET') or shutil.which('dotnet')
-        with patch.dict(os.environ, {'DOTNET': tool, 'S2A_PREBUILT_TOOLS': ''}):
+        with patch.dict(os.environ, {'DOTNET': tool, 'S2A_PREBUILT_TOOLS': '', 'S2A_RUN_ROOT': str(self.home / 'run')}):
             engine = stages.Stages(self.store)
             try:
                 result = engine.execute('原创', 'romfsidx')

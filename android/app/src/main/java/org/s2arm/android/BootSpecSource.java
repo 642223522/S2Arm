@@ -23,9 +23,8 @@ final class BootSpecSource {
         spec.sessionId = UUID.randomUUID().toString();
         spec.game = game;
         spec.gameRoot = new File(gamesDir, game.titleId).getAbsolutePath();
-        File user = new File(context.getFilesDir(), "user/0");
-        spec.userRoot = user.getAbsolutePath();
-        spec.saveRoot = new File(user, "saves/" + game.titleId).getAbsolutePath();
+        spec.userRoot = GameSession.userRoot(context.getFilesDir()).getAbsolutePath();
+        spec.saveRoot = GameSession.saveRoot(context.getFilesDir(), game.titleId).getAbsolutePath();
         spec.cacheRoot = context.getCacheDir().getAbsolutePath();
         spec.logDir = new File(context.getFilesDir(), "logs").getAbsolutePath();
         spec.runtimeLibrary = NativeBridge.loaded().json();

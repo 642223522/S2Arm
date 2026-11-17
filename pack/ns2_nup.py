@@ -10,10 +10,12 @@ NUP 是公开的打包格式（https://github.com/a55uka/nup ，SPEC.md v1）：
     <输出>/updates/<版本号>/exefs|romfs/...         只写最新那一版更新（ns2_dump 只用最新更新 + 本体判全量 / 差量）
     <输出>/updates/<版本号>/control.nacp、icon_AmericanEnglish.dat   该包带了控制分区才写（ns2_dump 认作原件；没带就由它按目录名合成）
     <输出>/dlc/<DLC 标题号>/0/romfs/...             每个 DLC
+镜像形态（缺省，S2A_ROMFS_IMAGE=0 回散文件）：本体 / 更新的 romfs 不展开成散文件，改写一份清单 <版本目录>/romfs.nupmap（每个文件在容器里的位置、编码、SHA-256，
+格式即 nx_unpack --romfs-image 的清单），由 ns2_dump 选好全量 / 差量后交 nx_unpack 直接从容器建 romfs.std；DLC 照旧展开。
 后面的程序号判定、全量 / 差量、控制分区、unpack.tsv 都由 ns2_dump 照原样做，这里不重复。
 没有本体的容器（SPEC §3.1.2 的 standalone_update，或本体记录没有文件）：把最新更新同时写成 base/，即把更新当整款
 （容器里证明不了更新是全量，所以打黄字说明，同 the reference port）。
-每个文件读出时核大小与 SHA-256，对不上报红。<输出>/.ns2_nup_key = 目录表 SHA-256 + 本脚本内容的哈希，相同就复用不重做；
+每个文件读出时核大小与 SHA-256：大小不对报红，只是 SHA-256 不对打黄照常写出（维护者 11-17）。<输出>/.ns2_nup_key = 目录表 SHA-256 + 本脚本内容的哈希，相同就复用不重做；
 先写 <输出>.tmp，成功才改名。
 
 容器读取（超级块 / 目录表 / 包记录 / 文件记录的布局与校验、scan 的检查）借自 the reference port scripts/pack_nup.py
@@ -134,8 +136,9 @@ class Nup:
             raise Error(f'{self.path}：目录表与数据区重叠')
         toc = self.mm[toc_off:toc_off + toc_size]
         self.toc_sha = toc_sha
-        if hashlib.sha256(toc).digest() != toc_sha:
-            raise Error(f'{self.path}：目录表与它的 SHA-256 对不上（文件损坏）')
+        if hashlib.sha256(toc).digest() != toc_sha:   # 维护者 11-17：只打黄照常读；目录表真坏时下面的逐条边界检查会按原因报
+            print(f'🟡 {os.path.basename(self.path)}：目录表和它的 SHA-256 对不上（疑改版 / 整合版或损坏），照常读', flush=True)
+            print('【校验跳过】NUP 目录表\t\t', flush=True)  # 非玩家句
         tmagic, tpkg, self.ndirs, nfiles, pool_off, pool_size, _ = TOC.unpack_from(toc)
         need = TOC.size + tpkg * PKG.size + self.ndirs * DIR.size + nfiles * FILE.size
         if (tmagic != b'TOC\x01' or tpkg != npkg or not npkg or len(toc) < need or pool_off < need
@@ -241,8 +244,11 @@ class Nup:
                     n = -1
         finally:
             view.release()
-        if n != size or h.digest() != sha:
-            raise Error(f'{self.path}：{name.decode(errors="replace")} 大小或 SHA-256 对不上（文件损坏）')
+        if n != size:   # 大小不对：读出的东西放不进清单给的位置，物理上用不了，照旧报红
+            raise Error(f'{self.path}：{name.decode(errors="replace")} 大小对不上（文件损坏）')
+        if h.digest() != sha:   # 只是哈希不对（维护者 11-17：「校验不过就整个拒绝」一律撤掉）：打黄 + 【校验跳过】机读行，照常写出
+            print(f'🟡 {os.path.basename(self.path)}：{name.decode(errors="replace")} 的 SHA-256 和目录表对不上（疑改版 / 整合版或损坏），照常写出', flush=True)
+            print(f'【校验跳过】NUP 容器\t\t文件 {name.decode(errors="replace")}', flush=True)  # 非玩家句
         return n
 
     def read(self, i):
@@ -325,6 +331,28 @@ def safe_name(n, raw):
     return name
 
 
+def write_nupmap(n, d, dst, stat):
+    """镜像形态：容器里的 romfs 目录 d 不展开，写清单 dst（nx_unpack --romfs-image 格式：相对路径 字节数 容器 偏移 长度 编码 SHA-256）。
+    数据不在这里读，SHA-256 由 nx_unpack 写镜像时核。"""
+    rows = []
+
+    def walk(d, pre):
+        for raw, isdir, i in n.children(d):
+            rel = pre + safe_name(n, raw)
+            if isdir:
+                walk(i, rel + '/')
+                continue
+            _, size, sha, eoff, esz, codec = n.files[i]
+            if '\t' in rel or '\n' in rel or '\r' in rel:
+                raise Error(f'{n.path}：文件名带制表 / 换行，写不进清单：{rel!r}')
+            rows.append(f'{rel}\t{size}\t{os.path.abspath(n.path)}\t{eoff}\t{esz}\t{"zstd" if codec else "raw"}\t{sha.hex()}\n')
+            stat[0] += 1
+    walk(d, '')
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    with open(dst, 'w', encoding='utf-8', newline='\n') as f:
+        f.writelines(rows)
+
+
 def write_tree(n, d, dst, stat, written=None):
     """容器里的目录 d 整棵写到 dst（逐文件核 SHA-256）。written（一次展开共用的 {(内容 SHA-256, 大小): 已写的路径}）：
     内容相同的文件只真写一次，其余从已写的那份克隆（同卷 APFS 不占新空间）/ 硬链接——NUP 容器按块去重，本体与整份打过补丁的更新
@@ -393,9 +421,13 @@ def write_control(n, k, base, dst):
     return False
 
 
+def image_mode():   # 镜像形态开关（同 nx_unpack / ns2_dump）：缺省开，S2A_ROMFS_IMAGE=0 回旧路径（展开散文件）
+    return os.environ.get('S2A_ROMFS_IMAGE') != '0'
+
+
 def key_of(n):
     me = open(os.path.abspath(__file__), 'rb').read()
-    return hashlib.sha256(n.toc_sha + me).hexdigest()
+    return hashlib.sha256(n.toc_sha + me + (b'romfs-image' if image_mode() else b'')).hexdigest()   # 两种形态展开的东西不同，不能互相复用
 
 
 def convert(src, out, say=print):
@@ -418,7 +450,9 @@ def convert(src, out, say=print):
             if k.exefs == NO_DIR or n.child(k.exefs, b'main') is None or n.child(k.exefs, b'main.npdm') is None:
                 raise Error(f'{k.kind} v{k.version}：没有 exefs/main 与 exefs/main.npdm')
             write_tree(n, k.exefs, os.path.join(tmp, rel, 'exefs'), stat, written)
-            if k.romfs != NO_DIR:
+            if k.romfs != NO_DIR and image_mode():
+                write_nupmap(n, k.romfs, os.path.join(tmp, rel, 'romfs.nupmap'), stat)
+            elif k.romfs != NO_DIR:
                 write_tree(n, k.romfs, os.path.join(tmp, rel, 'romfs'), stat, written)
             if write_control(n, k, base, os.path.join(tmp, rel)):
                 say(f'   {rel}：带控制分区（control.nacp + 图标），用原件')
@@ -427,12 +461,15 @@ def convert(src, out, say=print):
             for part in ('exefs', 'romfs'):
                 if os.path.isdir(os.path.join(u, part)):
                     shutil.copytree(os.path.join(u, part), os.path.join(tmp, 'base', part), copy_function=_clone)
+            if os.path.isfile(os.path.join(u, 'romfs.nupmap')):
+                shutil.copyfile(os.path.join(u, 'romfs.nupmap'), os.path.join(tmp, 'base', 'romfs.nupmap'))
         for tid, k in sorted(dlc.items()):
             write_tree(n, k.romfs, os.path.join(tmp, 'dlc', f'{tid:016X}', '0', 'romfs'), stat, written)
         with open(os.path.join(tmp, '.ns2_nup_key'), 'w', encoding='utf-8', newline='\n') as f:
             f.write(key + '\n')
         shutil.rmtree(out, ignore_errors=True)
-        os.rename(tmp, out)
+        from orch.dirrename import rename_dir   # 刚写完十几万个文件，Windows 上杀软 / 索引扫描开着句柄时目录改名报 WinError 5：按 #361 同一套退避重试
+        rename_dir(tmp, out)                     #   （11-15 Windows 出 Switch 2 大款：展开 22 分钟后在这一步报拒绝访问、整单失败）
         say(f'🟢 展开完成：{stat[0]:,} 个文件，真写 {stat[1] / 2**30:.2f} GB，同内容共用 {stat[2] / 2**30:.2f} GB（{stat[2]:,} 字节）→ {out}')
         return app
 

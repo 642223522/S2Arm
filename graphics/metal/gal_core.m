@@ -1829,6 +1829,30 @@ static void pa_open_publish(int n, id o, int bad, uint64_t b) {
 }
 // 同片只有一个线程申请和开片；热片只拿表锁，不等其他片的 I/O / 低区账本。
 // 数组可在等待 / 开片期间增长，所以解锁后只保留槽号、字节数和路径强引用。
+// 限时打开一片归档（Metal 4）。11-14 macOS 27.2.1 实测：系统打开 Xcode 27.1 编的、含图形与计算管线的归档时在 MTL4ArchiveImpl::loadFromURL 里死循环、
+//   永不返回（采样栈全在系统代码里；只含顶点函数的能开，旧系统版本编的报「不兼容」不卡）——游戏卡在第一次建管线。打开放到后台线程，
+//   等 S2A_PSO_OPEN_TIMEOUT_MS（缺省 8000）毫秒；到点没回来：本局不再开任何出包归档（以后每片直接返回空、按首遇现建），报红一次。
+//   卡住的那条后台线程停不下来，会一直占一个核到退出（系统调用里没有取消点），日志写明；比整局卡死好
+static _Atomic int g_pa_hung;
+__attribute__((weak)) void gal_pso_test_open_stall(void) {}   // 单测注入：模拟系统打开卡住（tests/t_psoopen.m）
+static id pa_open_timed(NSString *path, NSError **err);
+int gal_pso_open_timed_probe(const char *path, int *hung) {   // 单测入口：限时打开一次，返回 1 = 得到归档对象；*hung = 本局是否已停用
+    NSError *e = nil; id o = pa_open_timed(@(path), &e); if (hung) *hung = atomic_load(&g_pa_hung); return o != nil;
+}
+static id pa_open_timed(NSString *path, NSError **err) {
+    if (atomic_load(&g_pa_hung)) { if (err) *err = [NSError errorWithDomain:@"s2a.gal" code:-4 userInfo:@{NSLocalizedDescriptionKey: @"本局出包归档已停用（之前一片打开卡死）"}]; return nil; }
+    static int ms = -1; if (ms < 0) { const char *v = getenv("S2A_PSO_OPEN_TIMEOUT_MS"); ms = v && atoi(v) > 0 ? atoi(v) : 8000; }
+    __block id got = nil; __block NSError *ge = nil; dispatch_semaphore_t done = dispatch_semaphore_create(0); NSString *p = [path copy];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ gal_pso_test_open_stall(); NSError *e2 = nil; id o = [g_gdev newArchiveWithURL:[NSURL fileURLWithPath:p] error:&e2]; got = o; ge = e2; dispatch_semaphore_signal(done); });
+    if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, (int64_t)ms * 1000000))) {
+        atomic_store(&g_pa_hung, 1);
+        GLOG("【红】管线归档 %s：系统打开 %d ms 没返回（Metal 载入卡死），本局停用全部出包归档、按首遇现建；卡住的后台线程会一直占一个核到退出", p.lastPathComponent.UTF8String, ms);
+        if (err) *err = [NSError errorWithDomain:@"s2a.gal" code:-5 userInfo:@{NSLocalizedDescriptionKey: @"系统打开归档超时"}];
+        return nil;
+    }
+    if (err) *err = ge;
+    return got;
+}
 static id pa_get(int n) {
     pthread_mutex_lock(&g_pa_mu);
     while (1) {
@@ -1860,7 +1884,7 @@ static id pa_get(int n) {
     }
     // pso_open：开一片归档的墙钟（10-22 马车8 场景切换首帧建管线 196 次 124.5 ms、全是归档命中，拆「开片」与「从归档取」）
     GP_SCOPE(GP_PSO_OPEN);
-    NSError *e = nil; id o = gal_be_kind() == GAL_BE_MTL3 ? binary_archive3(path, &e) : [g_gdev newArchiveWithURL:[NSURL fileURLWithPath:path] error:&e];
+    NSError *e = nil; id o = gal_be_kind() == GAL_BE_MTL3 ? binary_archive3(path, &e) : pa_open_timed(path, &e);
     if (!o) {
         NSError *u = e.userInfo[NSUnderlyingErrorKey];
         GLOG("【红】管线归档 %s 载入失败：%s（域 %s 码 %ld；底层 %s 码 %ld：POSIX 24 = 句柄用尽、12 = 内存 / 地址不够）", what, e.localizedDescription.UTF8String, e.domain.UTF8String, (long)e.code,
@@ -2759,7 +2783,9 @@ id<MTLLibrary> gal_helper_lib(int k, NSError **e) {
 static void dev_caps(uint64_t out[4]) {
     id<MTLDevice> d = g_gdev; memset(out, 0, 4 * sizeof *out); if (!d) return;
     int apple1 = [d supportsFamily:MTLGPUFamilyApple1], apple2 = [d supportsFamily:MTLGPUFamilyApple2];
-    out[0] = (d.supportsBCTextureCompression ? NXGAL_CAP_BC : 0) | (apple2 ? NXGAL_CAP_ASTC : 0) | (apple1 ? NXGAL_CAP_ETC2 | NXGAL_CAP_PACKED16 : 0)
+    // BC：设备原生支持，或设备不支持而 BC 贴图经 ASTC 预转包（NXGAL_ASTC_PACK，gal_tex.m「BC → ASTC」）——后者让 Gpu 层交来原始 BC、由渲染器查包传 ASTC，不在 CPU 上整张解压
+    int bce = gal_bce_on();   // 先判：它读 NXGAL_ASTC_FORCE（Mac 上把本机当成不支持 BC）
+    out[0] = ((d.supportsBCTextureCompression && !gal_bce_test_nobc) || bce ? NXGAL_CAP_BC : 0) | (apple2 ? NXGAL_CAP_ASTC : 0) | (apple1 ? NXGAL_CAP_ETC2 | NXGAL_CAP_PACKED16 : 0)
            | ([d supportsFamily:MTLGPUFamilyApple6] ? NXGAL_CAP_ASTC_HDR : 0);
     out[1] = d.maxThreadgroupMemoryLength; out[2] = d.recommendedMaxWorkingSetSize;
 }
@@ -2840,7 +2866,7 @@ NXGAL_API int nxgal_init(int debug_level) { GAL_API_LOCK();
         thermal_start();   // 热状态记录（初始化 / 每 10 秒 / 变化）
         { uint64_t c[4]; dev_caps(c);
           GLOG("初始化：设备 %s；能力（MTLDevice 当场查询）：BC 压缩贴图 %s，ASTC %s（HDR %s），ETC2 %s，16 位紧凑格式 %s，计算共享内存 %llu KB，建议工作集 %.2f GB",
-               g_gdev.name.UTF8String, c[0] & NXGAL_CAP_BC ? "原生支持" : "不支持", c[0] & NXGAL_CAP_ASTC ? "支持" : "不支持", c[0] & NXGAL_CAP_ASTC_HDR ? "支持" : "不支持",
+               g_gdev.name.UTF8String, !(c[0] & NXGAL_CAP_BC) ? "不支持" : gal_bce_on() ? "设备不支持、经 ASTC 包" : "原生支持", c[0] & NXGAL_CAP_ASTC ? "支持" : "不支持", c[0] & NXGAL_CAP_ASTC_HDR ? "支持" : "不支持",
                c[0] & NXGAL_CAP_ETC2 ? "支持" : "不支持", c[0] & NXGAL_CAP_PACKED16 ? "支持" : "不支持", (unsigned long long)(c[1] >> 10), c[2] / 1073741824.0); }
     }
     return 0;

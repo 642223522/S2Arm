@@ -19,6 +19,8 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[3]
 SOURCE = ROOT / "pack/jobs/winenv.py"
 sys.path.insert(0, str(ROOT / "pack/jobs"))   # 用到真 library / toolchain 的几条（Mac 预检同一份规则）：从仓库根跑时也找得到
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # tests/winenv_test.sh 用 python3 -I 跑，-I 不把脚本目录放进 sys.path：jobcase 要显式找
+import jobcase  # noqa: E402（作业上下文替身统一工厂 jobcase.fake_context）
 
 
 class FakeProbe:
@@ -831,7 +833,7 @@ class EnvironmentTests(unittest.TestCase):
 
     def test_budget_mac_function_body_keeps_direct_result(self):
         self.budget_catalog()
-        context = types.SimpleNamespace(library=self.catalog_path.parent)
+        context = jobcase.fake_context(self.catalog_path.parent, library=self.catalog_path.parent)
         with patch("shutil.disk_usage", return_value=types.SimpleNamespace(free=40_000_000_000)):
             result = self.library_budget(context, self.budget_game)
         self.assertEqual(result["volumes"][0]["needBytes"], 26_770_000_000)   # Mac：解包一份 × 1.1 + 15 GB（单文件镜像不再存进库，#329）
@@ -844,7 +846,7 @@ class EnvironmentTests(unittest.TestCase):
         def shared(packages, **kw):
             calls.append(packages)
             return 12345
-        context = types.SimpleNamespace(library=self.catalog_path.parent)
+        context = jobcase.fake_context(self.catalog_path.parent, library=self.catalog_path.parent)
         with patch("shutil.disk_usage", return_value=types.SimpleNamespace(free=40000)):
             result = self.library_budget(context, self.budget_game, need=shared)
         self.assertEqual(result["volumes"][0]["needBytes"], 12345)
@@ -992,6 +994,12 @@ class RecoveryMappingTests(unittest.TestCase):
         self.probe.values["volume"] = {"format": "ntfs", "home": "C:\\Users\\player", "env": {"OneDrive": "C:\\Users\\player\\OneDrive"}}
         report = self.report(library="D:\\S2Arm\\游戏库")
         self.assertTrue(self.item(report, "library_cloud")["ok"]); self.assertTrue(self.item(report, "library_format")["ok"])
+        self.assertEqual(self.item(report, "library_format")["message"], "游戏库所在磁盘格式可用。")
+        # NAS 游戏库（映射盘 / UNC，DRIVE_REMOTE）：照样 ok，只多一句会慢，不拦
+        self.probe.values["volume"] = {"format": "ntfs", "remote": True, "home": "C:\\Users\\player", "env": {}}
+        report = self.report(library="\\\\nas\\share\\S2Arm")
+        self.assertTrue(self.item(report, "library_format")["ok"])
+        self.assertEqual(self.item(report, "library_format")["message"], "游戏库在网络盘上，出包会比较慢。")
 
     def test_recovery_host_mismatch(self):
         self.probe.values["host"] = {"system": "Linux", "bits": 64}

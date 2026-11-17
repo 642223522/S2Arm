@@ -25,7 +25,11 @@ static int child(const char *pidhex, const char *log, const char *docs, const ch
 static int has(const char *log, const char *s) { FILE *f = fopen(log, "r"); if (!f) return 0; char b[4096]; int ok = 0; while (fgets(b, sizeof b, f)) if (strstr(b, s)) ok = 1; fclose(f); return ok; }
 int main(int argc, char **argv) {
     g_in_main = 1;
-    if (argc >= 2) { printf("before-main program_id calls %d\n", g_pid_calls_before_main); return 0; }   // 子进程：构造函数已跑完，报计数
+    if (argc >= 2) { printf("before-main program_id calls %d\n", g_pid_calls_before_main);   // 子进程：构造函数已跑完，报计数
+        // 局中写「在跑」标记（App 到前台，ios/app.m）：此刻 s2a_npdm_program_id 仍是 0（同 iOS 图形模式没放行），标记要按构造期读到的本款号落到 wire/<号>/running
+        void s2a_guest_run_mark(int running); s2a_guest_run_mark(1);
+        char m[600]; snprintf(m, sizeof m, "%s/wire/%s/running", getenv("S2A_DOCS"), getenv("T_PID")); struct stat st; printf("run mark at own id %d\n", !stat(m, &st));
+        return 0; }
     int bad = 0; char t[] = "/tmp/t_gfpid.XXXXXX"; if (!mkdtemp(t)) return 1;
     char docs[256], dir[256], peak[400], log1[300], log2[300], self[1024];
     snprintf(docs, sizeof docs, "%s/docs", t); snprintf(dir, sizeof dir, "%s/mod", t); mkdir(docs, 0755); mkdir(dir, 0755);
@@ -40,6 +44,7 @@ int main(int argc, char **argv) {
     CHECK(has(log1, "本机本款上一局到过系统内存压力"), "构造期按 main.npdm 的程序号读到本款压力记录");
     CHECK(has(log1, "before-main program_id calls 0"), "构造期没调 s2a_npdm_program_id（不经 s2a_gfx_mode 落定模式）");
     CHECK(has(log2, "Mac 缺省匿名内存"), "反证：程序号换成别款 → 没读到这份压力记录（缺省匿名）");
+    CHECK(has(log1, "run mark at own id 1") && has(log2, "run mark at own id 1"), "局中程序号取不到时「在跑」标记按构造期本款号写进 wire/<号>/running（两款各写各的）");
     if (bad) { printf("--- a.log\n"); char c[600]; snprintf(c, sizeof c, "grep -a '文件后备\\|before-main' %s %s", log1, log2); system(c); }
     printf("%s t_guest_file_pid：%d 处不符\n", bad ? "✗" : "✓", bad); return bad != 0;
 }

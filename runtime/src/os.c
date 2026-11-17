@@ -190,6 +190,7 @@ static _Atomic unsigned g_clk_fz;       // 冻结原因位图；非 0 = 冻结�
 static _Atomic uint64_t g_clk_lost;     // 壁钟 − 游戏时间
 static _Atomic uint64_t g_clk_fv;       // 冻结期间读到的游戏时间（冻结那一刻）；0 = 冻结方还没写好
 static pthread_mutex_t g_clk_mu = PTHREAD_MUTEX_INITIALIZER;   // 冻结 / 解冻串行（读不加锁）
+static uint64_t g_clk_since;           // 当前映射区间的宿主起点；只在 g_clk_mu 下读写，不保留历史映射
 // 单调：冻结先置位、后写冻结值，读者算完壁钟再看一次位——看到没冻结的那次读，壁钟一定早于冻结时刻；
 //   解冻先改 lost（= 现在 − 冻结值，接着冻结值走）、后清位，读者前后两次读到的 lost 不同就重来
 uint64_t guest_ns(void) {
@@ -204,9 +205,9 @@ void guest_clock_freeze_for(int reason, int on) {
     unsigned bit = 1u << (reason > 0 && reason < 32 ? reason : 1);
     pthread_mutex_lock(&g_clk_mu);
     unsigned prev = atomic_load(&g_clk_fz);
-    if (on && !prev) { atomic_store(&g_clk_fv, 0); atomic_store(&g_clk_fz, bit); atomic_store(&g_clk_fv, now_ns() - atomic_load(&g_clk_lost)); }
+    if (on && !prev) { atomic_store(&g_clk_fv, 0); atomic_store(&g_clk_fz, bit); g_clk_since = now_ns(); atomic_store(&g_clk_fv, g_clk_since - atomic_load(&g_clk_lost)); }
     else if (on) atomic_store(&g_clk_fz, prev | bit);
-    else if ((prev & bit) && !(prev & ~bit)) { atomic_store(&g_clk_lost, now_ns() - atomic_load(&g_clk_fv)); atomic_store(&g_clk_fz, 0); }
+    else if ((prev & bit) && !(prev & ~bit)) { g_clk_since = now_ns(); atomic_store(&g_clk_lost, g_clk_since - atomic_load(&g_clk_fv)); atomic_store(&g_clk_fz, 0); }
     else atomic_store(&g_clk_fz, prev & ~bit);
     pthread_mutex_unlock(&g_clk_mu);
 }
@@ -233,6 +234,22 @@ uint64_t s2a_guest_tick_hz(void) { return g_tick_hz; }       // 导出给 C#（�
 uint64_t s2a_ns_to_tick(uint64_t ns) { return (uint64_t)((unsigned __int128)ns * g_tick_hz / 1000000000u); }
 uint64_t guest_tick(void) { return s2a_ns_to_tick(guest_ns()); }
 uint64_t s2a_guest_tick(void) { return guest_tick(); }       // 导出给 C#（接口 v2.8）：与 cntpct 门 / GetSystemTick 同一个计数器
+// #653：转换后端给的采样时刻，不是完成回调当前时刻。仅当前映射区间有完整信息；
+// 冻结/解冻之前的延迟结果不能减「现在的 lost」冒充历史时钟，明确无效交调用者处理。
+int s2a_guest_tick_from_host_ns(uint64_t host_ns, uint64_t *out) {
+    if (!out) return 0;
+    pthread_mutex_lock(&g_clk_mu);
+    uint64_t now = now_ns(), lost = atomic_load(&g_clk_lost), ns = 0;
+    int valid = host_ns >= g_clk_since && host_ns <= now;
+    if (valid && atomic_load(&g_clk_fz)) ns = atomic_load(&g_clk_fv);
+    else if (valid && host_ns >= lost) ns = host_ns - lost;
+    else valid = 0;
+    unsigned __int128 ticks = (unsigned __int128)ns * g_tick_hz / 1000000000u;
+    if (!g_tick_hz || ticks > UINT64_MAX) valid = 0;
+    if (valid) *out = (uint64_t)ticks;
+    pthread_mutex_unlock(&g_clk_mu);
+    return valid;
+}
 // 含睡眠的单调钟（#863）：苹果 CLOCK_MONOTONIC 睡眠照走（plat_now_ns 的 mach_absolute_time 不走），Linux / 安卓用 CLOCK_BOOTTIME。弱定义：单测换成假钟
 __attribute__((weak)) uint64_t s2a_cont_ns(void) {
     struct timespec ts;
@@ -256,8 +273,9 @@ static _Atomic uint64_t g_rng = 0x5357444554524e47ull;
 // 但不继承旧局累计暂停时长或固定熵流的游标。
 void s2a_os_session_reset(void) {
     pthread_mutex_lock(&g_clk_mu);
+    g_clk_since = now_ns();  // 新局不接受旧局采样，且与冻结基点取同一时刻
     atomic_store(&g_clk_lost, 0);
-    atomic_store(&g_clk_fv, atomic_load(&g_clk_fz) ? now_ns() : 0);
+    atomic_store(&g_clk_fv, atomic_load(&g_clk_fz) ? g_clk_since : 0);
     pthread_mutex_unlock(&g_clk_mu);
     atomic_store(&g_rng, 0x5357444554524e47ull);
 }

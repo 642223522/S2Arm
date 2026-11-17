@@ -2,6 +2,8 @@
 // 为什么要单独测：这条判定直接决定迁移能不能做，而且真实 maps 里出现 r--p（脏页跟踪把页设只读）
 // 是常态——要求“每段都是 rw”会把大多数热池误拒（本机实测 5 个热池全被判失败）。
 #include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
 #include <string.h>
 
 #include "nvn/poolahb_cover.h"
@@ -9,9 +11,16 @@
 static int g_fail, g_checks;
 #define CHECK(cond) do { g_checks++; if (!(cond)) { g_fail++; printf("    FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); } } while (0)
 
+// 每个进程自己的临时目录：同机并行跑多份整套时，固定路径 /tmp/vk_poolahb_<名>.maps 会被另一份
+//   以 "wb" 截断后再读，读到空 / 半截内容（11-14 出包机两套并跑时 kgsl_guest_ram_accepted 假红）。
 static const char *write_maps(const char *name, const char *text) {
-    static char path[256];
-    snprintf(path, sizeof path, "/tmp/vk_poolahb_%s.maps", name);
+    static char dir[256], path[512];
+    if (!dir[0]) {
+        const char *t = getenv("TMPDIR");
+        snprintf(dir, sizeof dir, "%s/vk_poolahb.XXXXXX", t && t[0] ? t : "/tmp");
+        if (!mkdtemp(dir)) { dir[0] = 0; return NULL; }
+    }
+    snprintf(path, sizeof path, "%s/%s.maps", dir, name);
     FILE *f = fopen(path, "wb");
     if (!f) return NULL;
     fputs(text, f);

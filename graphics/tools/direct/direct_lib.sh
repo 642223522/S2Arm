@@ -63,7 +63,7 @@ gap() {
 export J=${J:-${S2A_CPU_BAKE:-${S2A_JOBS:-$(getconf _NPROCESSORS_ONLN)}}}
 source "$R/tools/progress.sh"
 PS=0; prog() { PS=$((PS + 1)); say "第 ${PS}/5 步 $*"; prog_tick 直连库 $((PS - 1)) 5; }
-[ -d "$ROOT/romfs" ] && [ -f "$ROOT/exefs/main" ] || { say "🔴 $ROOT 缺 romfs/ 或 exefs/main"; exit 1; }
+{ [ -d "$ROOT/romfs" ] || [ -f "$ROOT/romfs.std" ]; } && [ -f "$ROOT/exefs/main" ] || { say "🔴 $ROOT 缺 romfs/（或镜像 romfs.std）或 exefs/main"; exit 1; }   # RomFS 目录或镜像都行（romfs_list.py image_of；下面读 RomFS 一律经 romfs_list）
 source "$R/pack/srcs.sh"; TID=$(prog_id "$ROOT"); [ -n "$TID" ] || { say "🔴 取不到程序号"; exit 1; }
 # Vulkan 款（main 直接导入 vk*：哈迪斯、超级马力欧银河 1 / 2）：直连走直连层的 Vulkan 层（graphics/nvn/gfx/vk/hle_vk.m），着色器是 RomFS 里的 SPIR-V，
 #   出包时用 vk_shaders.py（spirv-cross）离线翻成一个库：<输出目录>/vk/vk_shaders.metallib + vk_shaders.tsv（运行时 <DM_MSL_DIR>/vk/，DM_MSL_DIR = shaders/direct）。
@@ -168,6 +168,9 @@ V=$(cd "$NX/../../translator" && "$PY" -c 'import dmsh_chain; print(dmsh_chain.v
 for d in "$C/mac" "$C/ios" "$C/work"; do [ -e "$d" ] && { mv "$d" "$C/.old-$$-${d##*/}" && say "旧布局缓存 ${d##*/}/ 已挪开、后台删（改存内容寻址仓 $C/store）"; }; done
 for d in "$C"/.old-*; do [ -e "$d" ] && { nohup rm -rf "$d" > /dev/null 2>&1 & }; done
 mkdir -p "$C/store" "$C/logs"
+# 审计 P1-173：三步改名（外接盘 / Windows）停在第一步之后，正式目录在 $OUT.swapold：先改回来，再清临时目录（原先旧版本落在 $OUT.stage.<pid>.old，
+#   被下面这行当成死进程的临时目录删掉，下一轮正式目录里没有上一份直连库）
+[ ! -e "$OUT" ] && [ -d "$OUT.swapold" ] && mv "$OUT.swapold" "$OUT" && say "上次换进位停在半路：已把上一份直连库改回正式位置"
 for d in "$C"/work.stage.* "$C"/mac.stage.* "$OUT".stage.*; do [ -d "$d" ] && ! kill -0 "${d##*.}" 2>/dev/null && rm -rf "$d"; done   # 上次被停留下的临时目录
 W=$C/work.stage.$$ MS=$C/mac.stage.$$ OS=$OUT.stage.$$; DONE=0
 # 成功：临时目录换进来的是旧版本，删；失败：只删库，work 留着看日志（下次起跑时清）
@@ -199,14 +202,23 @@ swap_out() {
   "$PY" -c 'import os, sys, ctypes, ctypes.util
 a, b = sys.argv[1:3]
 if not os.path.lexists(b): os.rename(a, b); sys.exit(0)
-if sys.platform == "win32": os.rename(b, a + ".old"); os.rename(a, b); os.rename(a + ".old", a); sys.exit(0)   # Windows 没有目录原子互换：三步改名，换下的旧版本仍落在临时名、由 EXIT 陷阱删
+def three():   # 三步改名：旧的先挪成 <正式>.swapold（不是临时目录的名字，起跑清扫不会当垃圾删）；第二步失败把它改回正式名；换下的旧版本最后落在临时名、由 EXIT 陷阱删
+    old = b + ".swapold"
+    os.rename(b, old)
+    try:
+        os.rename(a, b)
+    except OSError:
+        os.rename(old, b)
+        raise
+    os.rename(old, a)
+if sys.platform == "win32": three(); sys.exit(0)   # Windows 没有目录原子互换（审计 P1-173）
 c = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
 sw = getattr(c, "renamex_np", None)
 if (sw(os.fsencode(a), os.fsencode(b), ctypes.c_uint(2)) if sw else c.renameat2(-100, os.fsencode(a), -100, os.fsencode(b), ctypes.c_uint(2))):
     e = ctypes.get_errno()
     if e not in (45, 95, 102): sys.exit(f"{a} ⇄ {b}: {os.strerror(e)}")
     # exFAT 等外接盘不支持原子互换（ENOTSUP / EOPNOTSUPP）：同 Windows 三步改名
-    os.rename(b, a + ".old"); os.rename(a, b); os.rename(a + ".old", a)' "$OS" "$OUT" || { say "🔴 换进位失败"; exit 1; }
+    three()' "$OS" "$OUT" || { say "🔴 换进位失败"; exit 1; }
   rm -rf "$C/logs.new" && mkdir -p "$C/logs.new" && find "$W" -maxdepth 1 -name '*.log' -exec cp {} "$C/logs.new/" \; && rm -rf "$C/logs" && mv "$C/logs.new" "$C/logs"
 }
 # ①② 抽取（10-25 维护者「抽着色器只做一次」）：共享抽取阶段（pack/stage_extract.sh）已经出好的 <产物根>/extract/（有 ok）就整份 APFS 克隆进工作目录，不重抽；
@@ -234,10 +246,10 @@ else X=$W/x; prog "抽取着色器（${J} 路）"; bash "$R/graphics/tools/direc
   [ "$xrc" = 0 ] || { say "🔴 抽取失败（${X}）"; exit 1; }; fi
 # 翻译编译开工前复核盘（pack/jobs/space_rule.py，#265：预检放过、编到一半写满，十几分钟白编；Mac / Windows 两条链都过这里）：与出包预检同一规则，
 #   按产物根里的游戏内容大小（原件那一档）记、扣掉已有的同款缓存。玩家点过「仍然继续」（S2A_SPACE_OVERRIDE=1）只打黄。原话「磁盘空间不足」pack/jobs/errors.py 归 disk_full
-"$PY" "$R/pack/jobs/space_rule.py" direct-check "$ROOT" "$C" "$OUT"; src=$?   # 退 1 = 空间不够；别的非 0 = 复核本身没跑成（缺脚本 / Python 出错），不冒充空间问题
-[ "$src" = 1 ] && { say "🔴 直连库开工前空间不足，没开始编"; exit 1; }   # 估不够：玩家点过「仍然继续」会带 S2A_SPACE_OVERRIDE 过这一关（space_rule.py）
-# 复核本身没跑成（缺脚本 / Python 出错）：拿不准就不停（v0.3.1 ⑫），打黄照编；真写满时写盘报 ENOSPC，那才是物理停（disk_full）
-[ "$src" = 0 ] || [ "$src" = 1 ] || say "🟡 直连库开工前的空间复核没跑成（pack/jobs/space_rule.py 退 ${src}），照常开编；真写满时会按盘满停"
+# 预估不够只打黄、照常开编（space_rule.py 恒退 0，不许堵门：预估偏保守，诊断 D-QDK9 按预估停下、玩家没出路）；真写满时写盘报 ENOSPC，那才是物理停（disk_full）
+"$PY" "$R/pack/jobs/space_rule.py" direct-check "$ROOT" "$C" "$OUT"; src=$?
+# 复核本身没跑成（缺脚本 / Python 出错）：照编，记一行
+[ "$src" = 0 ] || say "🟡 直连库开工前的空间复核没跑成（pack/jobs/space_rule.py 退 ${src}），照常开编；真写满时会按盘满停"
 CPC=-c; [ "$(uname -s)" = Darwin ] || CPC=   # macOS cp -c = APFS 克隆；Linux（安卓出包机）的 GNU cp 没有 -c，普通拷贝
 rm -rf "$W/pkg" && cp $CPC -R "$X/pkg" "$X/split" "$X/s2x" "$W/" && cp $CPC "$X/split.log" "$X/s2x.log" "$W/" || { say "🔴 抽取结果克隆进工作目录失败（${X} → ${W}）"; exit 1; }
 PROF_ONLY=$("$PY" - "$W/split" "$W/profile/$TID" <<'PYEOF'
@@ -378,13 +390,20 @@ rc127_note() {   # rc127_note <rc> <build.log> <目录>… → 追加在报红�
   elif [ -n "$low" ]; then echo "；127 多半是盘满（STATUS_DISK_FULL 0xC000007F 低 8 位）：${gs%、}"
   else echo "；rc=127 不是盘满（${gs%、}）：出库程序异常退出，看下面 build.log 末尾"; fi
 }
+# 出库失败的一句原因（诊断#3d03f4：玩家诊断只收到「出库失败 rc=134（<build.log>）」，异常原文只在 build.log 末尾、上报的红行里没有）：
+#   .NET 未处理异常 / 断言 / 致命错误取第一行，否则取最后一行非缩进、非本脚本进度的输出；放在路径前面——脱敏把路径一直抹到行尾，原因在前才留得下
+fail_why() {
+  local l; l=$(grep -a -m1 -E 'Unhandled exception|Assertion failed|[Ff]atal error' "$1" 2> /dev/null) \
+    || l=$(grep -av -e '^[[:space:]]' -e '^\[直连库\]' "$1" 2> /dev/null | grep -a . | tail -1)
+  printf '%s' "$l" | tr -d '\r' | cut -c1-160
+}
 BTX=; case "${TMPDIR:-}" in ''|/var/folders/*|/private/var/folders/*|/tmp|/tmp/*|/private/tmp|/private/tmp/*|*/AppData/Local/Temp|*/AppData/Local/Temp/*|*'\AppData\Local\Temp'*) BT=$W/tmp;;
   *) BT=${TMPDIR%/}/dsh_batch.$$; BTX=$BT;; esac
 mkdir -p "$BT"
 TMPDIR="$BT" "$PY" "$R/tools/nostall.py" --watch "$MS" --watch "$OUT" "${S2A_NOSTALL_S:-600}" -- "$PY" "$NX/../../translator/dsh_batch.py" build "${BA[@]}" > "$W/build.log" 2>&1
 brc=$?
 DF=$(rc127_note "$brc" "$W/build.log" "$BT" "$C")
-[ "$brc" = 0 ] || { [ "$brc" = 1 ] && gap "$W/build.log" "NVN 着色器"; say "🔴 出库失败 rc=${brc}（$W/build.log）${DF}"; tail -"$([ -n "$DF" ] && echo 20 || echo 5)" "$W/build.log"; exit 1; }
+[ "$brc" = 0 ] || { [ "$brc" = 1 ] && gap "$W/build.log" "NVN 着色器"; WHY=$(fail_why "$W/build.log"); say "🔴 出库失败 rc=${brc}${WHY:+：$WHY}${DF}（$W/build.log）"; tail -"$([ -n "$DF" ] && echo 20 || echo 5)" "$W/build.log"; exit 1; }
 # 核产物出自本树的翻译器（11-06 时之笛第 49 版：DSH_BATCH_CMD 指到Windows 出包机上按旧树编的 dsh_batch.exe，它键里的翻译器指纹是旧的，41971 支全命中旧缓存，
 #   2ce17db8c 的翻译器改动没进包、出库照报绿）：dsh_batch 把自己的翻译器指纹 xfp 与 --lock 文件摘要写进库印章 inputs.tsv（Build.cs WriteStamp），
 #   这里拿本树算的 dmsh_chain.xlate_fp()（与 C# 编译期 Xfp 同一份清单、同一算法）与本树锁文件摘要逐项比，不等 / 印章没这两行（旧程序）报红。只核产物，不管出库命令经谁转手

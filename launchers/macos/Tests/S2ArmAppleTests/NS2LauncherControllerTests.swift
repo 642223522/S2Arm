@@ -1,10 +1,11 @@
 import XCTest
 import AppKit
 import GameController
+import CoreBluetooth
 @testable import NX2AppleUI
 
 // 手柄弹窗标题照连接程序报的型号写（#520）。期望按 ns2_kind 数值手写：1 Pro、2 Joy-Con 左、3 右、4 左右一对；
-//   没连 / 旧连接程序没报 kind 时写通用的 Switch 手柄 / Switch Controller
+//   没连 / 旧连接程序没报 kind 时写「Joy-Con 2 · Pro 2」（中英同）
 final class NS2LauncherControllerTests: XCTestCase {
     @MainActor
     func testSystemControllerConnectionNotification() async {
@@ -16,7 +17,7 @@ final class NS2LauncherControllerTests: XCTestCase {
         // 连接通知从主队列交给模型；不接管手柄的输入回调。
         await Task.yield()
         await Task.yield()
-        XCTAssertEqual(controller.title(simplifiedChinese: true), "DualSense Wireless Controller (test)")
+        XCTAssertEqual(controller.title(lang: "zh"), "DualSense Wireless Controller (test)")
         XCTAssertEqual(controller.buttonStatus, "已连接")
         XCTAssertEqual(controller.buttonColor, .systemGreen)
         XCTAssertFalse(controller.detail.contains("SYNC"))
@@ -35,7 +36,7 @@ final class NS2LauncherControllerTests: XCTestCase {
         let controller = NS2LauncherController(socketURL: URL(fileURLWithPath: "/tmp/s2arm-controller-test.sock"),
                                               systemControllers: { [pad] }, notifications: NotificationCenter())
         controller.startIfEnabled()
-        XCTAssertEqual(controller.title(simplifiedChinese: true), "DualSense Wireless Controller")
+        XCTAssertEqual(controller.title(lang: "zh"), "DualSense Wireless Controller")
         XCTAssertEqual(controller.buttonStatus, "已连接")
         controller.gameDidStart()
         controller.gameDidExit()
@@ -53,11 +54,11 @@ final class NS2LauncherControllerTests: XCTestCase {
         let notifications = NotificationCenter()
         let controller = NS2LauncherController(socketURL: URL(fileURLWithPath: "/tmp/s2arm-controller-test.sock"),
                                               systemControllers: { connected }, notifications: notifications)
-        XCTAssertEqual(controller.title(simplifiedChinese: false), "DualSense Wireless Controller")
+        XCTAssertEqual(controller.title(lang: "en"), "DualSense Wireless Controller")
         notifications.post(name: .GCControllerDidDisconnect, object: dualSense)
         await Task.yield()
         await Task.yield()
-        XCTAssertEqual(controller.title(simplifiedChinese: false), "Xbox Wireless Controller")
+        XCTAssertEqual(controller.title(lang: "en"), "Xbox Wireless Controller")
         XCTAssertEqual(controller.buttonStatus, "已连接")
         connected = [xbox] // 枚举仍包含本次断开的设备，不能靠快照假定它还连着。
         notifications.post(name: .GCControllerDidDisconnect, object: xbox)
@@ -68,16 +69,202 @@ final class NS2LauncherControllerTests: XCTestCase {
         notifications.post(name: NSApplication.didBecomeActiveNotification, object: nil)
         await Task.yield()
         await Task.yield()
-        XCTAssertEqual(controller.title(simplifiedChinese: false), "DualSense Wireless Controller")
+        XCTAssertEqual(controller.title(lang: "en"), "DualSense Wireless Controller")
+    }
+
+    @MainActor
+    func testSystemControllerDoesNotTakeOverSwitch2Title() {
+        // 回归：系统蓝牙手柄连着时，Switch 2 区块标题仍是 Switch 2 自己的（面板另有蓝牙区块），不写系统手柄名（DualSense 出现两次）；
+        //   顶栏照两条通道合并：已连接、绿点、提示写蓝牙手柄名
+        let pad = NamedSystemController("DualSense Wireless Controller")
+        let controller = NS2LauncherController(socketURL: URL(fileURLWithPath: "/tmp/s2arm-controller-test.sock"),
+                                              systemControllers: { [pad] }, notifications: NotificationCenter())
+        XCTAssertTrue(controller.hasSystemController)
+        XCTAssertNotEqual(controller.switch2Title(lang: "en"), "DualSense Wireless Controller")
+        XCTAssertEqual(controller.switch2Title(lang: "en"), NS2LauncherController.title(kind: 0, lang: "en"))
+        XCTAssertEqual(controller.status, .notConnected, "Switch 2 区块照自己的状态")
+        XCTAssertFalse(controller.detail.contains("DualSense"))
+        XCTAssertEqual(controller.title(lang: "en"), "DualSense Wireless Controller")
+        XCTAssertEqual(controller.buttonStatus, "已连接")
+        XCTAssertEqual(controller.buttonColor, .systemGreen)
+    }
+
+    @MainActor
+    func testBluetoothDeniedTurnsReconnectIntoAllow() {
+        // 玩家选过「不允许」：系统不会再弹授权框，主按钮改「允许蓝牙」（去隐私设置页），状态写清是权限没开；蓝牙关着时照旧「重新连接」
+        var auth = CBManagerAuthorization.denied
+        let controller = NS2LauncherController(socketURL: URL(fileURLWithPath: "/tmp/s2arm-controller-test.sock"),
+                                              systemControllers: { [] }, notifications: NotificationCenter(), bluetoothAuthorization: { auth })
+        controller.apply(status: 6, ["status": 6])
+        XCTAssertEqual(controller.status, .bluetoothUnavailable)
+        XCTAssertTrue(controller.bluetoothDenied)
+        XCTAssertEqual(NS2LauncherController.mainButton(controller.status, lang: "en", bluetoothDenied: controller.bluetoothDenied), "Allow Bluetooth")
+        XCTAssertEqual(NS2LauncherController.statusText(controller.status, lang: "zh", bluetoothDenied: controller.bluetoothDenied), "蓝牙权限未允许")
+        auth = .allowedAlways
+        XCTAssertFalse(controller.bluetoothDenied)
+        XCTAssertEqual(NS2LauncherController.mainButton(controller.status, lang: "zh", bluetoothDenied: controller.bluetoothDenied), "重新连接")
+        XCTAssertEqual(NS2LauncherController.mainButton(.failed, lang: "zh", bluetoothDenied: true), "重新连接", "只有蓝牙不可用才改")
+    }
+
+    @MainActor
+    func testHelperUnauthorizedStateCountsAsDenied() {
+        // 本进程读到的授权不一定是 denied（权限记在谁名下由系统定）；连接程序报 state 3（unauthorized）也算没允许
+        let controller = NS2LauncherController(socketURL: URL(fileURLWithPath: "/tmp/s2arm-controller-test.sock"),
+                                              systemControllers: { [] }, notifications: NotificationCenter(), bluetoothAuthorization: { .allowedAlways })
+        controller.apply(status: 6, ["status": 6, "message": "Bluetooth unavailable (state 3). Check Bluetooth power and permission."])
+        XCTAssertTrue(controller.bluetoothDenied)
+        XCTAssertEqual(NS2LauncherController.mainButton(controller.status, lang: "en", bluetoothDenied: controller.bluetoothDenied), "Allow Bluetooth")
+        controller.apply(status: 6, ["status": 6, "message": "Bluetooth unavailable (state 4). Check Bluetooth power and permission."])
+        XCTAssertFalse(controller.bluetoothDenied, "state 4 = 蓝牙关着：照旧重新连接")
+        XCTAssertFalse(NS2LauncherController.reportedUnauthorized(nil))
+    }
+
+    @MainActor
+    func testAutoConnectWaitsForPanelWhenPermissionNotAsked() {
+        // 还没问过蓝牙权限：开着自动连接也不在启动 S2Arm 时起连接程序（会弹系统授权框），等打开手柄面板再问
+        let suite = "s2arm-perm-test-" + UUID().uuidString
+        let store = UserDefaults(suiteName: suite)!
+        store.set(true, forKey: "S2AMacNS2AutoConnectOnOpen")
+        let controller = NS2LauncherController(socketURL: URL(fileURLWithPath: "/tmp/s2arm-controller-test.sock"), store: store,
+                                              orderFile: FileManager.default.temporaryDirectory.appendingPathComponent(suite + ".json"),
+                                              systemControllers: { [] }, notifications: NotificationCenter(), bluetoothAuthorization: { .notDetermined })
+        controller.startIfEnabled()
+        XCTAssertFalse(controller.hasConnectionProcess, "启动时不起连接程序")
+        XCTAssertEqual(controller.status, .notConnected)
+    }
+
+    @MainActor
+    func testPermissionAnswerUpdatesPanel() {
+        // 授权框按「不允许」：面板马上变「蓝牙权限未允许 / 允许蓝牙」；已被拒时打开面板也直接是这样
+        var auth = CBManagerAuthorization.denied
+        let controller = NS2LauncherController(socketURL: URL(fileURLWithPath: "/tmp/s2arm-controller-test.sock"),
+                                              systemControllers: { [] }, notifications: NotificationCenter(), bluetoothAuthorization: { auth })
+        controller.bluetoothPermissionAnswered()
+        XCTAssertFalse(controller.requestingBluetoothPermission)
+        XCTAssertEqual(controller.status, .bluetoothUnavailable)
+        XCTAssertEqual(NS2LauncherController.mainButton(controller.status, lang: "en", bluetoothDenied: controller.bluetoothDenied), "Allow Bluetooth")
+        let fresh = NS2LauncherController(socketURL: URL(fileURLWithPath: "/tmp/s2arm-controller-test.sock"),
+                                         systemControllers: { [] }, notifications: NotificationCenter(), bluetoothAuthorization: { auth })
+        fresh.panelDidOpen()
+        XCTAssertEqual(fresh.status, .bluetoothUnavailable, "已被拒：打开面板直接显示允许蓝牙")
+        auth = .notDetermined
+        let asking = NS2LauncherController(socketURL: URL(fileURLWithPath: "/tmp/s2arm-controller-test.sock"),
+                                          systemControllers: { [] }, notifications: NotificationCenter(), bluetoothAuthorization: { auth })
+        asking.bluetoothPermissionAnswered()   // 授权框没选就关了：本次当不允许，「允许蓝牙」再问一次（不去设置页）
+        XCTAssertTrue(asking.permissionDismissedThisSession)
+        XCTAssertEqual(asking.status, .bluetoothUnavailable)
+        XCTAssertEqual(NS2LauncherController.mainButton(asking.status, lang: "en", bluetoothDenied: asking.bluetoothDenied), "Allow Bluetooth")
+        let relaunch = NS2LauncherController(socketURL: URL(fileURLWithPath: "/tmp/s2arm-controller-test.sock"),
+                                            systemControllers: { [] }, notifications: NotificationCenter(), bluetoothAuthorization: { auth })
+        XCTAssertFalse(relaunch.bluetoothDenied, "下次打开 S2Arm 不当成拒绝")
+        relaunch.panelDidOpen()
+        XCTAssertEqual(relaunch.status, .notConnected)
+    }
+
+    @MainActor
+    func testScanWindowEndShowsNotConnectedNotError() {
+        // 扫 10 秒没找到（状态 9）、或直连记住的手柄过了扫描窗口还没连上：灰点「未连接」+「连接」，红点只给真的出错（状态 5 断开等）
+        let controller = NS2LauncherController(socketURL: URL(fileURLWithPath: "/tmp/s2arm-controller-test.sock"),
+                                              systemControllers: { [] }, notifications: NotificationCenter())
+        controller.apply(status: 1, ["status": 1])
+        controller.apply(status: 9, ["status": 9])
+        XCTAssertEqual(controller.status, .notConnected)
+        XCTAssertEqual(controller.buttonColor, NS2LauncherController.dotColor(.notConnected))
+        XCTAssertEqual(NS2LauncherController.mainButton(controller.status, lang: "en"), "Connect")
+        controller.apply(status: 2, ["status": 2])
+        XCTAssertEqual(controller.status, .connecting, "新一轮连接中照常橙点")
+        controller.connectingWindowEnded()
+        XCTAssertEqual(controller.status, .notConnected, "过了扫描窗口还在等记住的手柄：灰点")
+        controller.apply(status: 4, ["status": 4, "kind": 1])
+        XCTAssertEqual(controller.status, .connected, "按了手柄连上：照常已连接")
+        controller.apply(status: 5, ["status": 5])
+        XCTAssertEqual(controller.status, .failed, "真的断开 / 出错仍是红点")
+    }
+
+    @MainActor
+    func testPressFlashesThatPlayerRow() {
+        // 认手柄：连接程序报某只按了键（{"press": {"id"}}）→ 那位玩家那一行亮；一对 Joy-Con 任一只都算那一位；认不出的 id 不亮
+        let suite = "s2arm-press-test-" + UUID().uuidString
+        let controller = NS2LauncherController(socketURL: URL(fileURLWithPath: "/tmp/s2arm-controller-test.sock"), store: UserDefaults(suiteName: suite),
+                                              orderFile: FileManager.default.temporaryDirectory.appendingPathComponent(suite + ".json"),
+                                              systemControllers: { [] }, notifications: NotificationCenter())
+        controller.apply(status: 4, ["status": 4, "kind": 1, "players": 1, "kinds": [1], "devices": [["kind": 1, "id": "PRO"]]])
+        controller.updateSystem([PlayerAssignment.SystemKey(name: "DualSense", index: 0)])
+        let units = controller.assignment.units
+        XCTAssertEqual(units.count, 2)
+        let pro = units.firstIndex(of: .whole(id: "PRO", kind: 1))!
+        controller.receivePress(["link": 0, "id": "PRO", "buttons": 1 << 9, "side": 0])
+        XCTAssertEqual(controller.flashingPlayers, [pro])
+        XCTAssertEqual(controller.flashingKeys[pro], "ZR", "按键位 9 = ZR")
+        controller.flashPlayer { $0 == .system(name: "DualSense", index: 0) }
+        XCTAssertEqual(controller.flashingPlayers.count, 2)
+        controller.receivePress(["link": 0, "id": "NOPE"])
+        XCTAssertEqual(controller.flashingPlayers.count, 2, "认不出的不亮")
+        let exp = expectation(description: "fade")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { exp.fulfill() }
+        wait(for: [exp], timeout: 2)
+        XCTAssertTrue(controller.flashingPlayers.isEmpty, "0.6 秒后熄")
+    }
+
+    func testGen1ButtonsFromReport() {
+        // 一代 Joy-Con 报告里按着的键：全报告 0x30 第 3–5 字节；简单报告 0x3F 第 1–2 字节 + 方向（8 = 没按）
+        var full = [UInt8](repeating: 0, count: 49); full[0] = 0x30
+        XCTAssertEqual(Gen1HIDWatcher.buttons(report: full), 0)
+        full[3] = 0x08
+        XCTAssertNotEqual(Gen1HIDWatcher.buttons(report: full), 0)
+        XCTAssertEqual(Gen1HIDWatcher.buttons(report: [0x3f, 0, 0, 8]), 0)
+        XCTAssertNotEqual(Gen1HIDWatcher.buttons(report: [0x3f, 0, 0, 2]), 0, "方向键")
+        XCTAssertNotEqual(Gen1HIDWatcher.buttons(report: [0x3f, 0x01, 0, 8]), 0)
+        // 显示的字：全报告右只 A（第 3 字节 0x08）、左只 ZL（第 5 字节 0x80）；简单报告右只第 1 字节 0x01 = A、左只 = ←
+        full[3] = 0x08
+        XCTAssertEqual(Gen1HIDWatcher.keyName(Gen1HIDWatcher.buttons(report: full), side: 1), "A")
+        var left = [UInt8](repeating: 0, count: 49); left[0] = 0x30; left[5] = 0x80
+        XCTAssertEqual(Gen1HIDWatcher.keyName(Gen1HIDWatcher.buttons(report: left), side: 0), "ZL")
+        XCTAssertEqual(Gen1HIDWatcher.keyName(Gen1HIDWatcher.buttons(report: [0x3f, 0x01, 0, 8]), side: 1), "A")
+        XCTAssertEqual(Gen1HIDWatcher.keyName(Gen1HIDWatcher.buttons(report: [0x3f, 0x01, 0, 8]), side: 0), NS2LauncherController.keyLeft)
+        XCTAssertEqual(Gen1HIDWatcher.keyName(Gen1HIDWatcher.buttons(report: [0x3f, 0, 0, 0]), side: 0), NS2LauncherController.keyUp, "摇杆往上推")
+        XCTAssertEqual(NS2LauncherController.ns2Key(buttons: 0, side: 4), "SL")
+        XCTAssertEqual(NS2LauncherController.ns2Key(buttons: 1 << 16, side: 0), "Home")
+        XCTAssertEqual(NS2LauncherController.ns2Key(buttons: 1 << 17, side: 0), "Capture")
+        XCTAssertEqual(SystemControllers.keyLabel(GCInputButtonHome, family: .playstation), "sf:logo.playstation")
+        XCTAssertEqual(SystemControllers.keyLabel(GCInputButtonHome, family: .xbox), "sf:logo.xbox")
+        XCTAssertEqual(SystemControllers.keyLabel(GCInputButtonOptions, family: .xbox), "View")
+        XCTAssertEqual(SystemControllers.keyLabel(GCInputXboxPaddleOne, family: .xbox), "P1")
+        XCTAssertEqual(SystemControllers.keyLabel(GCInputButtonA, family: .other), "B", "认不出的手柄：下面那颗照 Switch 写 B")
+        XCTAssertEqual(SystemControllers.keyLabel(GCInputRightTrigger, family: .nintendoPro), "ZR")
+        XCTAssertEqual(SystemControllers.keyLabel(GCInputButtonMenu, family: .other), "+")
+        XCTAssertEqual(SystemControllers.keyLabel(GCInputLeftThumbstickButton, family: .xbox), "LS", "Xbox 自己没列的键：用 Switch 的")
+        XCTAssertEqual(SystemControllers.keyLabel(GCInputButtonA, family: .playstation), "sf:xmark")
+        XCTAssertEqual(SystemControllers.keyLabel("Direction Pad Up", family: .playstation), NS2LauncherController.keyUp, "方向键也列在 buttons 里")
+        XCTAssertEqual(SystemControllers.keyLabel("Left Thumbstick.left", family: .playstation), NS2LauncherController.keyLeft, "摇杆方向")
+        XCTAssertEqual(NS2LauncherController.ns2Key(buttons: 1 << 34, side: 0), NS2LauncherController.keyLeft, "Switch 2 摇杆往左")
+        XCTAssertEqual(SystemControllers.keyLabel(GCInputLeftShoulder, family: .xbox), "LB")
+    }
+
+    @MainActor
+    func testKeyboardRegistrationSurvivesRelaunch() throws {
+        // 玩家在「分配玩家」里登记过的键盘位，重开 S2Arm 仍在（玩家自己排的优先，同 main 上整份分配持久化）
+        let suite = "s2arm-kb-test-" + UUID().uuidString
+        let store = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let order = FileManager.default.temporaryDirectory.appendingPathComponent(suite + ".json")
+        var saved = PlayerAssignment()
+        saved.keyboard()
+        store.set(try JSONEncoder().encode(saved), forKey: "S2AMacNS2PlayerAssignment")
+        XCTAssertEqual(saved.units, [.keyboard])
+        let controller = NS2LauncherController(socketURL: URL(fileURLWithPath: "/tmp/s2arm-controller-test.sock"), store: store, orderFile: order,
+                                              systemControllers: { [] }, notifications: NotificationCenter())
+        XCTAssertEqual(controller.assignment.units, [.keyboard], "重开后键盘的登记仍在")
+        let reread = try JSONDecoder().decode(PlayerAssignment.self, from: try XCTUnwrap(store.data(forKey: "S2AMacNS2PlayerAssignment")))
+        XCTAssertEqual(reread.units, [.keyboard], "存档里也没被清")
     }
 
     func testTitleFollowsKind() {
-        XCTAssertEqual(NS2LauncherController.title(kind: 2, simplifiedChinese: true), "Joy-Con 2 (L)")
-        XCTAssertEqual(NS2LauncherController.title(kind: 3, simplifiedChinese: false), "Joy-Con 2 (R)")
-        XCTAssertEqual(NS2LauncherController.title(kind: 4, simplifiedChinese: true), "Joy-Con 2 (L + R)")
-        XCTAssertEqual(NS2LauncherController.title(kind: 1, simplifiedChinese: true), "Switch 2 Pro")
-        XCTAssertEqual(NS2LauncherController.title(kind: 0, simplifiedChinese: true), "Switch 手柄")
-        XCTAssertEqual(NS2LauncherController.title(kind: 0, simplifiedChinese: false), "Switch Controller")
+        XCTAssertEqual(NS2LauncherController.title(kind: 2, lang: "zh"), "Joy-Con 2 (L)")
+        XCTAssertEqual(NS2LauncherController.title(kind: 3, lang: "en"), "Joy-Con 2 (R)")
+        XCTAssertEqual(NS2LauncherController.title(kind: 4, lang: "zh"), "Joy-Con 2 (L + R)")
+        XCTAssertEqual(NS2LauncherController.title(kind: 1, lang: "zh"), "Switch 2 Pro")
+        XCTAssertEqual(NS2LauncherController.title(kind: 0, lang: "zh"), "Joy-Con 2 · Pro 2")
+        XCTAssertEqual(NS2LauncherController.title(kind: 0, lang: "en"), "Joy-Con 2 · Pro 2")
     }
 
     func testKindFromStatusLine() throws {
@@ -121,13 +308,54 @@ final class NS2LauncherControllerTests: XCTestCase {
         let took = Date().timeIntervalSince(t0)
         XCTAssertFalse(stubborn.isRunning); XCTAssertGreaterThanOrEqual(took, 0.5); XCTAssertLessThan(took, 2.5)
     }
+
+    @MainActor
+    func testConnectNotificationShowsBeforeInputProfileIsReady() async {
+        // #934：蓝牙手柄刚接上那一下输入描述（physicalInputProfile）可能还没就绪——连接通知是本次事件的真值，照常显示「已连接」，
+        //   不等描述就绪（系统蓝牙已连上、面板却一直「未连接」）；断开通知照旧清掉
+        let notifications = NotificationCenter()
+        let controller = NS2LauncherController(socketURL: URL(fileURLWithPath: "/tmp/s2arm-controller-test.sock"),
+                                              systemControllers: { [] }, notifications: notifications)
+        let pad = BareSystemController("Bare pad (test)")
+        notifications.post(name: .GCControllerDidConnect, object: pad)
+        await Task.yield()
+        await Task.yield()
+        XCTAssertTrue(controller.hasSystemController)
+        XCTAssertEqual(controller.title(lang: "zh"), "Bare pad (test)")
+        XCTAssertEqual(controller.buttonStatus, "已连接")
+        XCTAssertEqual(controller.buttonColor, .systemGreen)
+        notifications.post(name: .GCControllerDidDisconnect, object: pad)
+        await Task.yield()
+        await Task.yield()
+        XCTAssertFalse(controller.hasSystemController)
+        XCTAssertEqual(controller.buttonStatus, "未连接")
+    }
+
+    @MainActor
+    func testSystemControllersRefreshListsNotifiedControllerBeforeProfileIsReady() {
+        // #934：枚举快照还没更新时，连接通知里的那只就是真值；输入描述没就绪也照列（晚一拍补）——
+        //   系统已连上的手柄不能因为快照滞后 / 描述未就绪就一直不出现
+        let systems = SystemControllers(observe: false)
+        let pad = BareSystemController("Bare pad (refresh)")
+        systems.refresh(connected: pad)
+        XCTAssertTrue(systems.pads.contains { $0.name == "Bare pad (refresh)" })
+        systems.refresh(connected: nil)
+        XCTAssertFalse(systems.pads.contains { $0.name == "Bare pad (refresh)" }, "通知没带上它时照枚举快照，不残留")
+    }
 }
 
-private final class NamedSystemController: GCController {
+private final class BareSystemController: GCController {
+    private let name: String
+    init(_ name: String) { self.name = name; super.init() }
+    override var vendorName: String? { name }
+}
+
+final class NamedSystemController: GCController {   // 面板截图测试（NS2PanelSnapshotTests #1151）也用
     private let name: String
     private let gamepadSnapshot = GCController.withExtendedGamepad()
 
     init(_ name: String) { self.name = name; super.init() }
     override var vendorName: String? { name }
+    override var productCategory: String { "Fixture Controller" }
     override var extendedGamepad: GCExtendedGamepad? { gamepadSnapshot.extendedGamepad }
 }

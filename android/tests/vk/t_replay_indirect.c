@@ -10,6 +10,7 @@
 #include "vk_device.h"
 #include "nvn_plat_vk.h"
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdatomic.h>
@@ -25,7 +26,7 @@ const char *const *nvn_plat_vk_instance_exts(uint32_t *n){*n=0;return NULL;}
 VkResult nvn_plat_vk_surface_create(VkInstance i,void *w,VkSurfaceKHR *s){(void)i;(void)w;*s=VK_NULL_HANDLE;return VK_ERROR_EXTENSION_NOT_PRESENT;}
 int nvn_plat_window_size(void *w,uint32_t *x,uint32_t *y){(void)w;(void)x;(void)y;return 0;}
 void nvn_plat_safepoint(void){}
-int nvn_plat_flag(const char *n,int d){return !strcmp(n,"nvk_dq")?!!getenv("S2A_REPLAY_INDIRECT_DQ"):d;}
+int nvn_plat_flag(const char *n,int d){if(!strcmp(n,"nvk_opt_layout"))return !!getenv("S2A_REPLAY_INDIRECT_OPT_LAYOUT");return !strcmp(n,"nvk_dq")?!!getenv("S2A_REPLAY_INDIRECT_DQ"):d;}
 void nvn_plat_log(int l,const char *c,const char *s){(void)l;fprintf(stderr,"[%s] %s\n",c?c:"",s?s:"");}
 static void done(void *u,const nvn_gpu_done *d){(void)u;(void)d;}
 static void retirement(void *u){(void)u;atomic_fetch_add(&retired,1);}
@@ -51,7 +52,9 @@ uint64_t nvn_ga2ca(uint64_t a){return a;}
 int nvn_dpool_base(const void *p,int t){(void)p;(void)t;return 0;}
 const prog_t *nvn_prog_snap_get(uint64_t s,uint8_t k[6][8],uint8_t *o,uint8_t t[6]){(void)s;(void)k;(void)o;(void)t;return NULL;}
 int rp_shader_resolve(const struct rp_shader_req *q,const struct rp_prog **o){(void)q;*o=&prog;return 0;}
-int rp_depth_zero(void){return 0;}int rp_origin_lower_left(void){return 1;}
+static int fixture_origin=1;
+int rp_depth_zero(void){return 0;}int rp_origin_lower_left(void){return fixture_origin;}
+uint64_t rp_frame(void) { return 1; }   // #996：rp_draw 首用策略按帧号判（rp_entry.c 的替身）
 void rp_perf_add(int i,uint64_t n){(void)i;(void)n;}uint64_t rp_seg_serial(void){return serial;}
 uint64_t rp_sub_serial(void){return serial;}uint64_t rp_sub_fence(void){return 1;}
 int rp_fence_done(uint64_t f){(void)f;return 1;}
@@ -70,12 +73,14 @@ void rp_view_pin_begin(void){}void rp_view_pin_end(void){}
 nvn_gpu_view rp_view_by_id(int i,nvn_gpu_cmd c,const tex_t **t){(void)i;(void)c;(void)t;return NULL;}
 nvn_gpu_view rp_view_by_id_decl(int i,uint8_t t,uint8_t k,int e,nvn_gpu_cmd c,const tex_t **o){(void)i;(void)t;(void)k;(void)e;(void)c;(void)o;return NULL;}
 nvn_gpu_samp rp_samp_by_id(int i){(void)i;return NULL;}
+nvn_gpu_samp rp_samp_for_tex(int sid, int tid) { (void)tid; return rp_samp_by_id(sid); }   // #1072：替身不判过滤能力
+uint32_t rp_fmt_caps(uint32_t f) { return nvn_gpu_format_caps(f); }
 int rp_tex_snap_by_id(int i,tex_t *t,view_t *v,int *h){(void)i;(void)t;(void)v;(void)h;return 0;}
 uint64_t rp_tex_reg_gen(void){return 1;}uint64_t rp_tex_fact_sig(const uint64_t *h,int n,int b,int c){(void)h;(void)n;(void)b;(void)c;return 0;}
 void rp_tex_mark_gpu_written(const tex_t *t){(void)t;}int rp_tex_debug_state(uint64_t s){(void)s;return 0;}
 nvn_gpu_tex rp_tex_backend_by_serial(uint64_t s){(void)s;return NULL;}
 const p_set_rt *rp_pass_target(void){return &target;}int rp_pass_slot_attached(int i){return i==0;}
-void rp_pass_slot_size(int i,uint32_t *w,uint32_t *h){(void)i;*w=*h=64;}void rp_pass_note_draw(int d){(void)d;}
+void rp_pass_slot_size(int i,uint32_t *w,uint32_t *h){(void)i;*w=*h=64;}void rp_pass_noatt_size(uint32_t *w,uint32_t *h){(void)w;(void)h;}void rp_pass_note_draw(int d){(void)d;}
 // #950 给 rp_draw.c 新加的通道依赖：中性替身（没有待折清除、不缩渲染区域）
 int rp_pass_parked(void){return 0;}void rp_pass_prepare_draw(nvn_gpu_cmd c){(void)c;}void rp_pass_land_reads(nvn_gpu_cmd c,const tex_t *const *ts,int n){(void)c;(void)ts;(void)n;}
 static void pass(nvn_gpu_cmd c,int clear){nvn_gpu_pass_desc p={0};p.ncolor=1;p.color[0].view=target_view;p.color[0].load=clear?NVN_GPU_LOAD_CLEAR:NVN_GPU_LOAD_LOAD;p.color[0].store=NVN_GPU_STORE_STORE;p.color[0].clear.f[3]=1;p.w=p.h=64;p.layers=1;nvn_gpu_pass_begin(c,&p);pass_open=1;}
@@ -136,5 +141,116 @@ static void run_case(struct s2a_vk_device *d,const char *dir,int index,int mdi){
  if(neg)printf("boundary index=%d mode=%d reason=%s no-draw clear-unchanged\n",index,mdi,reason);
  if(mdi==2){REQUIRE(nvn_unimpl_count("draw","indirect_count_group_unavailable")==1);}rp_buf_gpu_write_land(key,id,0);rp_draw_reset();rp_buf_reset();nvn_gpu_shader_release(prog.sh[0]);nvn_gpu_shader_release(prog.sh[1]);nvn_gpu_view_release(target_view);nvn_gpu_tex_release(tex);int t=atomic_load(&retired)+1;nvn_gpu_buf_release(rb,retirement,NULL);struct timespec pause={0,1000000};for(int i=0;i<5000&&atomic_load(&retired)<t;i++)nanosleep(&pause,NULL);GPU(nvn_gpu_close(5000000000ull,&err));
 }
-int main(int argc,char **argv){if(argc!=2)return 2;struct s2a_vk_device d;char why[256];if(s2a_vk_device_create(&d,why,sizeof why)){fprintf(stderr,"%s\n",why);return 2;}for(int index=0;index<3;index++){run_case(&d,argv[1],index,0);run_case(&d,argv[1],index,2);run_case(&d,argv[1],index,3);}for(int index=0;index<3;index++)for(int mode=10;mode<=22;mode++){if(!index&&((mode>=13&&mode<=15)||mode>=20))continue;run_case(&d,argv[1],index,mode);}
-uint64_t dq=nvn_vk_dbg_dq_recs();REQUIRE(getenv("S2A_REPLAY_INDIRECT_DQ")?dq>0:dq==0);printf("DQ records=%llu\n",(unsigned long long)dq);REQUIRE(!s2a_vk_device_destroy(&d,1));printf("real rp_draw/rp_buf ordinary-indirect+DRV0 cases9 plus-boundaries33 pixel-failures%u\n",failures);return failures?1:0;}
+// Empty valid storage descriptors must still execute the actual draw. Read both
+// ends of Ryujinx's 64 KiB fallback; padding in the readback stays untouched.
+static void run_null_storage(struct s2a_vk_device *d,const char *dir) {
+ nvn_gpu_open_desc od={0};od.host_device=d;od.app_label="real-replay-null-storage";GPU(nvn_gpu_open(&od,&err));
+ memset(&prog,0,sizeof prog);prog.nent[0]=1;prog.color_out_mask=15;
+ nvn_gpu_layout_ent *e=&prog.ent[0][0];e->cls=NVN_GPU_RES_SSBO;e->src_kind=NVN_RB_SBUFP;e->access=NVN_GPU_ACC_R;e->count=1;e->stages=1u<<NVN_GPU_SH_VS;
+ nvn_gpu_layout layout={0};layout.ent=e;layout.nent=1;
+ prog.sh[0]=shader(dir,"replay_null_storage.vert",NVN_GPU_SH_VS,&layout);prog.sh[1]=shader(dir,"quad.frag",NVN_GPU_SH_FS,NULL);
+ nvn_gpu_tex_desc td={0};td.d.target=NVN_TEXTURE_TARGET_2D;td.d.format=NVN_FORMAT_RGBA8;td.d.width=td.d.height=64;td.d.depth=td.d.levels=1;td.usage=NVN_GPU_TEX_RENDER;
+ nvn_gpu_tex tex=NULL;GPU(nvn_gpu_tex_create(&td,&tex,&err));GPU(nvn_gpu_view_create(tex,NULL,&target_view,&err));
+ uint8_t sentinel[16416];memset(sentinel,0xa5,sizeof sentinel);nvn_gpu_buf rb=buffer(sizeof sentinel,sentinel);
+ memset(&target_tex,0,sizeof target_tex);target_tex.d=td.d;target_tex.serial=1;memset(&target,0,sizeof target);target.n=1;target.color[0]=&target_tex;
+ rp_state_reset();rp_draw_reset();nvn_unimpl_reset();rp_S.color.logic_op=3;rp_S.chmask.mask=15;rp_S.poly.mode=NVN_POLYGON_MODE_FILL;
+ GPU(nvn_gpu_cmd_begin(NULL,&active,&err));serial++;pass(active,1);rp_pass_flush(active);
+ unsigned before=emitted;p_draw draw={0};draw.prim=4;draw.count=3;draw.instances=1;rp_draw(active,&draw,NULL,&draw);
+ REQUIRE(emitted==before+1);REQUIRE(!nvn_unimpl_kinds());rp_pass_flush(active);
+ nvn_gpu_copy_tex_buf(active,tex,0,0,NULL,rb,0,256,16384);GPU(nvn_gpu_cmd_commit(active,1,done,NULL,&err));GPU(nvn_gpu_fence_wait(1,5000000000ull,&err));
+ const uint8_t *out=nvn_gpu_buf_cpu(rb);for(unsigned j=0;j<4096;j++)REQUIRE(out[j*4]==0&&out[j*4+1]==255&&out[j*4+2]==0&&out[j*4+3]==255);
+ for(unsigned j=16384;j<sizeof sentinel;j++)REQUIRE(out[j]==0xa5);
+ rp_draw_reset();rp_buf_reset();nvn_gpu_shader_release(prog.sh[0]);nvn_gpu_shader_release(prog.sh[1]);nvn_gpu_view_release(target_view);nvn_gpu_tex_release(tex);nvn_gpu_buf_release(rb,NULL,NULL);GPU(nvn_gpu_close(5000000000ull,&err));
+ puts("null-storage: valid unbound slot draws 4096 green pixels; 64 KiB endpoints zero; 32 sentinel bytes preserved");
+}
+#define CHECK REQUIRE
+#include "depth_blit_test.h"
+// Warm replay state is restored after the depth/stencil helper overwrites physical GPU state.
+static void run_depth_state_restore(struct s2a_vk_device *d,const char *dir) {
+ nvn_gpu_open_desc od={0};od.host_device=d;od.app_label="real-depth-state-restore";GPU(nvn_gpu_open(&od,&err));
+ memset(&prog,0,sizeof prog);prog.color_out_mask=15;prog.nent[1]=1;
+ nvn_gpu_layout_ent *entry=&prog.ent[1][0];entry->set=0;entry->binding=0;entry->cls=NVN_GPU_RES_UBO;entry->src_kind=NVN_RB_CBUF;entry->src_reg=0;entry->count=1;entry->access=NVN_GPU_ACC_R;entry->stages=1u<<NVN_GPU_SH_FS;
+ nvn_gpu_layout layout={0};layout.ent=entry;layout.nent=1;
+ prog.sh[0]=shader(dir,"depth_state.vert",NVN_GPU_SH_VS,NULL);
+ nvn_gpu_shader_src fs={0};fs.stage=NVN_GPU_SH_FS;fs.kind=NVN_GPU_BLOB_SPIRV;fs.entry="main";fs.layout=&layout;fs.blob=depth_state_frag_spv;fs.bytes=sizeof depth_state_frag_spv;GPU(nvn_gpu_shader_load(&fs,&prog.sh[1],&err));
+ nvn_gpu_tex_desc td={0};td.d.target=NVN_TEXTURE_TARGET_2D;td.d.format=NVN_FORMAT_RGBA8;td.d.width=td.d.height=64;td.d.depth=td.d.levels=1;td.usage=NVN_GPU_TEX_RENDER;
+ nvn_gpu_tex tex=NULL;GPU(nvn_gpu_tex_create(&td,&tex,&err));GPU(nvn_gpu_view_create(tex,NULL,&target_view,&err));
+ uint8_t sentinel[16416];memset(sentinel,0xa5,sizeof sentinel);nvn_gpu_buf rb=buffer(sizeof sentinel,sentinel);
+ memset(&target_tex,0,sizeof target_tex);target_tex.d=td.d;target_tex.serial=1;memset(&target,0,sizeof target);target.n=1;target.color[0]=&target_tex;
+ rp_state_reset();rp_draw_reset();nvn_unimpl_reset();rp_S.color.logic_op=3;rp_S.chmask.mask=15;rp_S.poly.mode=NVN_POLYGON_MODE_FILL;
+ float green[4]={0,1,0,1};memcpy(guest+256,green,sizeof green);rp_S.ubo[NVN_GPU_SH_FS][0].addr=(uint64_t)(uintptr_t)(guest+256);rp_S.ubo[NVN_GPU_SH_FS][0].size=sizeof green;
+ GPU(nvn_gpu_cmd_begin(NULL,&active,&err));serial++;pass(active,1);rp_pass_flush(active);
+ unsigned before=emitted;p_draw draw={0};draw.prim=4;draw.count=3;draw.instances=1;rp_draw(active,&draw,NULL,&draw);
+ REQUIRE(emitted==before+1);REQUIRE(!nvn_unimpl_kinds());rp_pass_flush(active);
+ // Warm graphics state must survive the helper's pipelines/descriptors/viewport.
+ // Clear red first: a missing or partial second green draw cannot hide behind the first.
+ nvn_gpu_pass_desc red={0};red.w=red.h=64;red.layers=1;red.ncolor=1;red.color[0].view=target_view;red.color[0].load=NVN_GPU_LOAD_CLEAR;red.color[0].store=NVN_GPU_STORE_STORE;red.color[0].clear.f[0]=red.color[0].clear.f[3]=1;
+ nvn_gpu_pass_begin(active,&red);nvn_gpu_pass_end(active);
+ nvn_gpu_tex_desc dsdesc={0};dsdesc.d.target=NVN_TEXTURE_TARGET_2D;dsdesc.d.format=NVN_FORMAT_DEPTH24_STENCIL8;dsdesc.d.width=dsdesc.d.height=4;dsdesc.d.depth=dsdesc.d.levels=dsdesc.d.samples=1;dsdesc.usage=NVN_GPU_TEX_RENDER|NVN_GPU_TEX_SAMPLED;
+ nvn_gpu_tex dsimage[2]={0};nvn_gpu_view dsview[2]={0};
+ for(unsigned i=0;i<2;i++){GPU(nvn_gpu_tex_create(&dsdesc,&dsimage[i],&err));GPU(nvn_gpu_view_create(dsimage[i],NULL,&dsview[i],&err));nvn_gpu_pass_desc fill={0};fill.w=fill.h=4;fill.layers=1;fill.depth.view=fill.stencil.view=dsview[i];fill.depth.load=fill.stencil.load=NVN_GPU_LOAD_CLEAR;fill.depth.store=fill.stencil.store=NVN_GPU_STORE_STORE;fill.clear_depth=.25f;fill.clear_stencil=0xa5;nvn_gpu_pass_begin(active,&fill);nvn_gpu_pass_end(active);}
+ NVNcopyRegion source={0,0,0,4,4,1},destination={1,1,0,2,2,1};nvn_gpu_blit(active,dsview[0],&source,dsview[1],&destination,0);
+ rp_draw(active,&draw,NULL,&draw);REQUIRE(emitted==before+2);rp_pass_flush(active);
+ for(unsigned i=0;i<2;i++){nvn_gpu_view_release(dsview[i]);nvn_gpu_tex_release(dsimage[i]);}
+ nvn_gpu_copy_tex_buf(active,tex,0,0,NULL,rb,0,256,16384);GPU(nvn_gpu_cmd_commit(active,1,done,NULL,&err));GPU(nvn_gpu_fence_wait(1,5000000000ull,&err));
+ const uint8_t *out=nvn_gpu_buf_cpu(rb);for(unsigned j=0;j<4096;j++)REQUIRE(out[j*4]==0&&out[j*4+1]==255&&out[j*4+2]==0&&out[j*4+3]==255);
+ for(unsigned j=16384;j<sizeof sentinel;j++)REQUIRE(out[j]==0xa5);
+ rp_draw_reset();rp_buf_reset();nvn_gpu_shader_release(prog.sh[0]);nvn_gpu_shader_release(prog.sh[1]);nvn_gpu_view_release(target_view);nvn_gpu_tex_release(tex);nvn_gpu_buf_release(rb,NULL,NULL);GPU(nvn_gpu_close(5000000000ull,&err));
+ puts("depth-state: 4096 green pixels after helper; 32 sentinel bytes preserved");
+}
+static void run_depth_copy(struct s2a_vk_device *d) {
+ nvn_gpu_open_desc od={0};od.host_device=d;od.app_label="real-depth-copy";GPU(nvn_gpu_open(&od,&err));
+ test_depth_blit();GPU(nvn_gpu_close(5000000000ull,&err));
+}
+// Independent oracle: StateUpdater flips API winding when queue flip is off,
+// EnumConversion inverts GAL for Vulkan, and C80 defines the viewport sign.
+// For this NDC-CCW triangle, the table says which raw NVN state must draw.
+static void run_front_origin(struct s2a_vk_device *d,const char *dir) {
+ static const unsigned visible[2][2][2]={{{0,1},{1,0}},{{1,0},{0,1}}};
+ nvn_gpu_open_desc od={0};od.host_device=d;od.app_label="NVN-front-origin-matrix";GPU(nvn_gpu_open(&od,&err));
+ memset(&prog,0,sizeof prog);prog.color_out_mask=15;
+ prog.sh[0]=shader(dir,"replay_front_face.vert",NVN_GPU_SH_VS,NULL);prog.sh[1]=shader(dir,"solid_green.frag",NVN_GPU_SH_FS,NULL);
+ nvn_gpu_tex_desc td={0};td.d.target=NVN_TEXTURE_TARGET_2D;td.d.format=NVN_FORMAT_RGBA8;td.d.width=td.d.height=64;td.d.depth=td.d.levels=1;td.usage=NVN_GPU_TEX_RENDER|NVN_GPU_TEX_SAMPLED;
+ nvn_gpu_tex tex=NULL;GPU(nvn_gpu_tex_create(&td,&tex,&err));GPU(nvn_gpu_view_create(tex,NULL,&target_view,&err));nvn_gpu_buf rb=buffer(16384,NULL);
+ memset(&target_tex,0,sizeof target_tex);target_tex.d=td.d;target_tex.serial=1;memset(&target,0,sizeof target);target.n=1;target.color[0]=&target_tex;
+ rp_state_reset();rp_draw_reset();nvn_unimpl_reset();rp_S.color.logic_op=3;rp_S.chmask.mask=15;rp_S.poly.mode=NVN_POLYGON_MODE_FILL;rp_S.poly.cull=NVN_FACE_BACK;
+ unsigned wrong=0,cases=0;
+ for(unsigned api=0;api<2;api++)for(unsigned flip=0;flip<2;flip++)for(unsigned ll=0;ll<2;ll++){
+  if(rp_S.poly.front!=api){rp_S.poly.front=api;rp_pso_dirty=1;}s2a_nvn_rast_flip=(int)flip;fixture_origin=(int)ll;
+  GPU(nvn_gpu_cmd_begin(NULL,&active,&err));serial++;pass(active,1);rp_pass_flush(active);
+  p_draw draw={0};draw.prim=4;draw.count=3;draw.instances=1;rp_draw(active,&draw,NULL,&draw);rp_pass_flush(active);REQUIRE(!nvn_unimpl_kinds());
+  nvn_gpu_copy_tex_buf(active,tex,0,0,NULL,rb,0,256,16384);GPU(nvn_gpu_cmd_commit(active,1000+cases,done,NULL,&err));GPU(nvn_gpu_fence_wait(1000+cases,5000000000ull,&err));
+  const uint8_t *out=nvn_gpu_buf_cpu(rb);unsigned bad=0;for(unsigned i=0;i<4096;i++)if(out[4*i]||out[4*i+1]!=(visible[api][flip][ll]?255:0)||out[4*i+2]||out[4*i+3]!=255)bad++;
+  printf("front-origin api=%u queue-flip=%u origin-ll=%u expected=%s wrong-pixels=%u\n",api,flip,ll,visible[api][flip][ll]?"green":"culled",bad);if(bad)wrong++;cases++;
+ }
+ fixture_origin=1;s2a_nvn_rast_flip=0;rp_draw_reset();rp_buf_reset();nvn_gpu_shader_release(prog.sh[0]);nvn_gpu_shader_release(prog.sh[1]);nvn_gpu_view_release(target_view);nvn_gpu_tex_release(tex);nvn_gpu_buf_release(rb,NULL,NULL);GPU(nvn_gpu_close(5000000000ull,&err));
+ printf("front-origin matrix cases=%u failed=%u\n",cases,wrong);REQUIRE(!wrong);
+}
+#include "mirror_blit_test.h"
+int main(int argc,char **argv) {
+ int depth_only=argc==3&&!strcmp(argv[2],"--depth-only");
+ int mirror_only=argc==3&&!strcmp(argv[2],"--mirror-only");
+ if(argc!=2&&!depth_only&&!mirror_only)return 2;
+ struct s2a_vk_device d;char why[256];
+ if(s2a_vk_device_create(&d,why,sizeof why)){fprintf(stderr,"%s\n",why);return 2;}
+ if(mirror_only){run_color_mirror(&d);REQUIRE(!s2a_vk_device_destroy(&d,1));return 0;}
+ if(!depth_only){
+  for(int index=0;index<3;index++){run_case(&d,argv[1],index,0);run_case(&d,argv[1],index,2);run_case(&d,argv[1],index,3);}
+  for(int index=0;index<3;index++)for(int mode=10;mode<=22;mode++){if(!index&&((mode>=13&&mode<=15)||mode>=20))continue;run_case(&d,argv[1],index,mode);}
+  run_null_storage(&d,argv[1]);run_null_storage(&d,argv[1]);
+  run_depth_state_restore(&d,argv[1]);
+  run_front_origin(&d,argv[1]);
+ }
+ run_depth_copy(&d);
+ if(!depth_only)run_color_mirror(&d);
+ uint64_t dq=nvn_vk_dbg_dq_recs();REQUIRE(getenv("S2A_REPLAY_INDIRECT_DQ")?dq>0:dq==0);
+ printf("DQ records=%llu\n",(unsigned long long)dq);REQUIRE(!s2a_vk_device_destroy(&d,1));
+ if(depth_only)puts("real depth-copy only: 4 format/subresource cases passed");
+ else printf("real rp_draw/rp_buf ordinary-indirect+DRV0 cases9 plus-boundaries33 pixel-failures%u\n",failures);
+ return failures?1:0;
+}
+
+// 本夹具不模拟真实块代号；返回未知，让回放沿用逐页保守路径。
+int nvn_dirty_block_snapshot(const void *s, const void *a, size_t n, uint64_t *v, uint64_t *e) {
+    (void)s; (void)a; (void)n; (void)v; (void)e; return 0;
+}

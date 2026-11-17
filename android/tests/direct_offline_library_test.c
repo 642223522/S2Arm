@@ -149,6 +149,14 @@ static int fetch(const char *root, const uint8_t id[32], uint32_t abi, const cha
     return s2a_offline_library_fetch(root, &req, out, why, why_size);
 }
 
+// 本进程当前打开的描述符个数（0..4095 逐个 F_GETFD）。
+static int open_fd_count(void) {
+    int n = 0;
+    for (int fd = 0; fd < 4096; fd++)
+        if (fcntl(fd, F_GETFD) != -1) n++;
+    return n;
+}
+
 struct counts { uint64_t hits, misses, rejects; };
 
 static struct counts counts_now(void) {
@@ -440,6 +448,28 @@ int main(void) {
         CHECK(p.bytes == NULL && p.len == 0, "a rejected link returns no bytes");
         expect_counts(c0, 0, 0, 1, "entry symlink to a non-container");
         CHECK(unlink(path_a) == 0, "remove the bogus link");
+
+        // 链接目标已不存在（内容库被清掉、revision 还在）→ 拒绝，且每次查询不留下打开的描述符。
+        // 数本进程打开的描述符：查询 64 次前后必须相同，每次漏一个就多 64。
+        // （不用「最小空闲号」：逐级 openat / close 会在低号留下空位，漏掉的 fd 落在高号上看不出来。）
+        char gone[620];
+        snprintf(gone, sizeof gone, "%s/gone.program", g_base);
+        CHECK(write_file(gone, g_payload_a, sizeof g_payload_a) == 0 && symlink(gone, path_a) == 0 && unlink(gone) == 0,
+              "point the entry at a target that is then deleted");
+        int open_before = open_fd_count();
+        c0 = counts_now();
+        int dangling_rejects = 0;
+        for (int i = 0; i < 64; i++)
+            if (fetch(g_root, g_id_a, 1, PROFILE_A, &p, why, sizeof why) == S2A_OFFLINE_REJECT &&
+                strstr(why, "链接目标不存在") != NULL && p.bytes == NULL)
+                dangling_rejects++;
+        CHECK(dangling_rejects == 64, "a dangling entry link is rejected as such every time");
+        expect_counts(c0, 0, 0, 64, "dangling entry symlink");
+        int open_after = open_fd_count();
+        if (open_after != open_before)
+            printf("open descriptors %d -> %d after 64 dangling-link lookups\n", open_before, open_after);
+        CHECK(open_before > 0 && open_after == open_before, "dangling-link lookups leave no descriptor open");
+        CHECK(unlink(path_a) == 0, "remove the dangling link");
         CHECK(copy_path(store_file, path_a) == 0, "restore the real A entry");
     }
 

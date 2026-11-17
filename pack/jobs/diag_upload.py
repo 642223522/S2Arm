@@ -27,8 +27,8 @@ import zipfile
 from core import Failure
 
 REPO = "github.com/jhaizhou-ops/S2Arm"   # 短码页上同时写出仓库地址：打不开链接的玩家照着手动去
-ISSUE_FORM = "问题回报.yml"   # .github/ISSUE_TEMPLATE/问题回报.yml：字段 id logs / version / platform 以它为准
-PLATFORM_OPTION = {"mac": "Mac（前端里打包或启动）", "windows": "出包的电脑（一键出包命令）"}   # = 模板 platform 下拉的选项原文（预填要逐字相同）
+ISSUE_FORM = "问题回报.yml"   # .github/ISSUE_TEMPLATE/问题回报.yml：字段 id logs / version / platform 以它为准  # 非玩家句
+PLATFORM_OPTION = {"mac": "Mac（前端里打包或启动）", "windows": "出包的电脑（一键出包命令）"}   # = 模板 platform 下拉的选项原文（预填要逐字相同）  # 非玩家句
 UPLOAD_URL = "https://diag.s2arm.com/v1/upload"   # *.workers.dev 国内不通，只用这个；S2A_DIAG_UPLOAD_URL 覆盖（内部联调 / 单测）
 LIMIT = 30 * 1024 * 1024   # 服务端收件上限（压缩后 ≤ 30 MB，方案「服务端」节）：超了不白传，直接退回导出
 CODE_RE = re.compile(r"D-[2-9A-HJKMNP-TV-Z]{4}")   # D- + 4 位，去掉 0 1 I L O U（念、抄不混）
@@ -38,8 +38,8 @@ TOTAL_S = 90   # 打包 + 上传的总时限（11-13 玩家卡在「正在上传
 #   失败还会再试一次，没有总上限；打包这步也没有。到点按失败处理（diag_upload_failed，界面退回导出），说清是超时
 
 
-def _within(seconds, what, fn, *args):
-    """在 seconds 秒内跑完 fn，跑不完按失败处理。fn 在守护线程里跑：超时后作业照常以失败收尾、进程退出时线程随之结束（作业是独立进程）"""
+def _within(seconds, what, why, fn, *args):
+    """在 seconds 秒内跑完 fn，跑不完按失败处理（why = 这一步超时的真实原因，原样写给玩家：打包是本机整理日志，和网络无关）。fn 在守护线程里跑：超时后作业照常以失败收尾、进程退出时线程随之结束（作业是独立进程）"""
     box = {}
 
     def run():
@@ -51,7 +51,7 @@ def _within(seconds, what, fn, *args):
     t.start()
     t.join(max(0.0, seconds))
     if t.is_alive():
-        raise Failure(f"{what}超过 {TOTAL_S} 秒还没完成（网络太慢或连接卡住），已停止。{FALLBACK}", code="diag_upload_failed",
+        raise Failure(f"{what}超过 {TOTAL_S} 秒还没完成（{why}），已停止。{FALLBACK}", code="diag_upload_failed",
                       internal=f"{what}超时：总时限 {TOTAL_S} 秒")
     if "error" in box:
         raise box["error"]
@@ -122,7 +122,7 @@ def issue_url(code, client):
     client = X-S2Arm-Client 的 <平台>/<版本>"""
     from urllib.parse import urlencode, quote
     plat, _, version = client.partition("/")
-    query = dict(template=ISSUE_FORM, logs=code, version=version if version and version != "-" else "", platform=PLATFORM_OPTION.get(plat, ""), title="[问题] ")
+    query = dict(template=ISSUE_FORM, logs=code, version=version if version and version != "-" else "", platform=PLATFORM_OPTION.get(plat, ""), title="[问题] ")  # 非玩家句
     return f"https://{REPO}/issues/new?" + urlencode({k: v for k, v in query.items() if v}, quote_via=quote)
 
 
@@ -156,7 +156,7 @@ def upload(c):
         path = tmp / "S2Arm-diagnostics.zip"
         c.r["path"] = str(path)
         deadline = time.monotonic() + TOTAL_S
-        _within(deadline - time.monotonic(), "打包诊断", library.diagnostics, c)
+        _within(deadline - time.monotonic(), "打包诊断", "本机整理日志太慢，和网络无关", library.diagnostics, c)
         add_summary(c, path)
         url = endpoint()
         if not url:
@@ -166,7 +166,7 @@ def upload(c):
             raise Failure(f"诊断包有 {size / 2**20:.0f} MB，超过上传上限 {LIMIT // 2**20} MB。{FALLBACK}", code="diag_upload_failed")
         c.begin("上传诊断")
         client = client_tag(c)
-        code = _within(deadline - time.monotonic(), "上传诊断", send, url, path, client, min(60, max(5, int(deadline - time.monotonic()))))
+        code = _within(deadline - time.monotonic(), "上传诊断", "网络太慢或连接卡住", send, url, path, client, min(60, max(5, int(deadline - time.monotonic()))))
         return dict(code=code, issueUrl=issue_url(code, client), repo=REPO)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

@@ -35,6 +35,7 @@ import downstream
 import embedded
 import export_plan
 import install
+import tvos
 import ipa
 import layout
 import patches
@@ -61,8 +62,6 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
     devcert_password = os.environ.pop(devcert.PASSWORD_ENV, None)
     winproc.prepare_child_environment()
     path = Path(request_path)
-    if os.name != "nt" and not winproc.request_is_private(path):   # Windows 由启动器建文件时就给只本人可读写的权限，不在这里再核（winproc.request_is_private 说明）
-        raise SystemExit("request must be owned by this user and private (0600)")
     request = json.loads(path.read_text())
     if request.get("schema") != 1:
         raise SystemExit("unsupported request schema")
@@ -96,9 +95,10 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
                   "spaceSurvey": library.space_survey, "spaceFree": library.space_free, "storageOverview": sizes.overview,
                   "diagnostics": library.diagnostics, "diagnosticsUpload": diag_upload.upload, "saveInput": library.save_input,
                   "locations": library.list_locations, "moveGame": library.move_game, "relinkGame": library.relink_game, "forgetGame": library.forget_game,
-                  "build": build.prepare, "launch": build.launch, "pullDiagnostics": diag.pull, "ipa": ipa.build, "downstreamChoice": downstream.set_choice, "install": install.install, "installRemove": install.remove_from_phone, "installRestore": install.restore_previous, "installUpdate": install.update_phone, "exportPush": install.push_export_job, "installMode": install.install_mode_job, "installCheck": install.readiness, "signingProject": install.signing_project, "installDotnet": toolchain.install_dotnet, "targetDevice": target.probe,
+                  "build": build.prepare, "launch": build.launch, "pullDiagnostics": diag.pull, "ipa": ipa.build, "downstreamChoice": downstream.set_choice, "install": install.install, "installRemove": install.remove_from_phone, "installRestore": install.restore_previous, "installUpdate": install.update_phone, "installUpdatePrepare": install.update_prepare, "phoneKeptPull": install.phone_kept_pull, "exportPush": install.push_export_job, "installMode": install.install_mode_job, "installCheck": install.readiness, "signingProject": install.signing_project, "installDotnet": toolchain.install_dotnet, "targetDevice": target.probe,
+                  "tvInstall": tvos.install_tv, "tvExport": tvos.export_tv, "tvDevices": tvos.devices_job, "tvSaveBackup": tvos.autobackup,   # Apple TV（tvOS 版，pack/jobs/tvos.py）
                   "saveStatus": saves.status, "saveBackup": saves.backup, "saveInspect": saves.inspect, "saveRestore": saves.restore,
-                  "community": community.listing, "communitySave": community.save, "patchMatch": patches.match, "sgradeScan": sgrade.scan, "sgradeMac": sgrade.mac_all, "devCert": devcert.operation, "export": export_plan.export}
+                  "community": community.listing, "communitySave": community.save, "patchMatch": patches.match, "sgradeScan": sgrade.scan, "sgradeMac": sgrade.mac_all, "sgradeReenable": sgrade.reenable, "devCert": devcert.operation, "export": export_plan.export}
     if operation_overrides:
         operations.update(operation_overrides)
     try:
@@ -110,7 +110,10 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
             embedded.install(c)
         if c.operation not in NO_LIBRARY:
             layout.ensure(c)   # 旧布局的库先一次性整理成新结构（layout.py），之后各作业只按新布局找路径
-        with awake.keep_awake() if c.operation in KEEP_AWAKE else contextlib.nullcontext():
+        if c.operation in AUTO_HEAVY:
+            background_priority()
+        with c.lock("auto-heavy", wait=AUTO_HEAVY_WAIT_S) if c.operation in AUTO_HEAVY else contextlib.nullcontext(), \
+                awake.keep_awake() if c.operation in KEEP_AWAKE else contextlib.nullcontext():
             result = operations[c.operation](c)
         if c.operation in HEAL_AFTER:
             # 英文名可能刚拿到（导入读 NACP、出包解出 control.nacp）：锁已放，空闲就把还叫游戏号的文件夹改名（剃刀 H3）。
@@ -133,25 +136,27 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
         return 0 if not getattr(c, "journal_broken", False) else 1
     except (Cancelled, KeyboardInterrupt):
         ended.set()
-        # 一局被停是玩家自己关游戏，不是「任务取消」（11-07 新前端验收）
-        # 下载 Xcode 组件的传输由系统资产服务持有：停掉本进程只是不再等，传输可能还在继续（实测 11-08：取消后 Xcode 仍在下载）
-        waiting = c.operation in ("downloadIosPlatform", "downloadMetal")
-        if c.operation in CLEANS_AFTER_STOP:
-            library.clean_after_stop(c)
-        c.finish("cancelled", "游戏已停止。" if c.operation == "launch" else
-                 "已停止等待：Xcode 的下载可能仍在继续（可在 Xcode → 设置 → Components 里查看）。" if waiting else
-                 "任务已取消；上次成功的运行版本和存档已保留。", partial_import_result(c))
-        return 130
+        return _finish_cancelled(c)
     except Exception as error:
         ended.set()
         if not isinstance(error, Failure) or c.last_log is None:
             log = c.logs / (c.task + "-exception.log")
             log.parent.mkdir(parents=True, exist_ok=True)
             log.write_text(c.redact(traceback.format_exc()))
-            os.chmod(log, 0o600)
             c.last_log = log
-        diagnostic = c.report_failure(error)
+        # 取消（SIGTERM / 启动器没了）会把正在跑的工具一起停掉，工具因此报的错只是取消的后果，照取消收尾。否则 report_failure →
+        #   diagnostic → emit 先查取消标志，在这个异常处理里再抛 Cancelled：作业带着回溯退出、没有终态事件也不是 130，
+        #   前端只能报「工作进程已退出」（11-12 Mac 出包页设备探测：xcrun 被 TERM，退出码 -15）。原错误已在上面的日志里
+        if c.cancelled:
+            return _finish_cancelled(c)
+        kept = len(c.job["diagnostics"])
+        try:
+            diagnostic = c.report_failure(error)
+        except Cancelled:   # 取消恰好落在写错误摘要的当口：摘要没发出去，不带进取消的终态
+            del c.job["diagnostics"][kept:]
+            return _finish_cancelled(c)
         message = diagnostic["summary"]
+        integrity_note(c)
         if c.operation in CLEANS_AFTER_STOP:   # 错误摘要要读产物根里的日志，所以排在它后面
             library.clean_after_stop(c)
         c.finish("failed", message, partial_import_result(c))
@@ -159,6 +164,32 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
     finally:
         ended.set()
         _drop_job_tmp(c)
+
+
+def integrity_note(c):
+    """出包 / 起局等带游戏号的作业失败时：这款导入时有内容跳过了完整性校验 → 补一条 warning 级诊断（维护者 11-17：免得难查）。
+    读不到游戏库或不是游戏作业就不补，不让补充说明本身把失败收尾弄坏"""
+    gid = c.r.get("gameId")
+    if not gid:
+        return
+    try:
+        game = next((g for g in c.catalog()["games"] if g["id"] == gid), None)
+        if library.integrity_skipped(game):
+            c.diagnostic(library.SOURCE_INTEGRITY_FAILED_NOTE, code="source_integrity_skipped", severity="warning")
+    except (Failure, OSError, ValueError, KeyError, TypeError):
+        pass
+
+
+def _finish_cancelled(c):
+    # 一局被停是玩家自己关游戏，不是「任务取消」（11-07 新前端验收）
+    # 下载 Xcode 组件的传输由系统资产服务持有：停掉本进程只是不再等，传输可能还在继续（实测 11-08：取消后 Xcode 仍在下载）
+    waiting = c.operation in ("downloadIosPlatform", "downloadMetal")
+    if c.operation in CLEANS_AFTER_STOP:
+        library.clean_after_stop(c)
+    c.finish("cancelled", "游戏已停止。" if c.operation == "launch" else
+             "已停止等待：Xcode 的下载可能仍在继续（可在 Xcode → 设置 → Components 里查看）。" if waiting else
+             "任务已取消；上次成功的运行版本和存档已保留。", partial_import_result(c))
+    return 130
 
 
 def _drop_job_tmp(c):
@@ -173,7 +204,25 @@ def _drop_job_tmp(c):
 
 
 CLEANS_AFTER_STOP = ("build", "ipa")
-KEEP_AWAKE = ("build", "ipa", "install", "installUpdate", "installRestore", "exportPush")   # 出包 / 推送期间电脑不空闲休眠（awake.py；v0.3.1 玩家推大包被休眠打断成「传输中断」）
+# 打开启动器时自动起的后台重活（#1439 / #1442 / #1443）：installUpdatePrepare（有手机要更新就预出包）、sgradeMac（S 级规则变了重出）。
+#   两件同时跑时各按整机开满路数，玩家的 Mac 内存耗尽 panic。这两项只由启动器自动发起（S2ArmLauncherModel / +PhoneBanner），按作业名就能认：
+#   互相串行（游戏库里一把「auto-heavy」锁，后到的排队、显示在等谁、能取消），整条链低优先级（nice 19 子进程继承；macOS 再加后台档），不和玩家抢机器
+AUTO_HEAVY = ("installUpdatePrepare", "sgradeMac")
+AUTO_HEAVY_WAIT_S = 6 * 3600
+
+
+def background_priority():
+    """本进程（及之后起的子进程）降到最低优先级：nice 19；macOS 再设后台档（PRIO_DARWIN_BG：CPU / 磁盘都让前台）。做不成不挡作业"""
+    try:
+        if hasattr(os, "nice"):
+            os.nice(max(0, 19 - os.nice(0)))
+        if hasattr(os, "PRIO_DARWIN_BG"):
+            os.setpriority(os.PRIO_DARWIN_PROCESS, 0, os.PRIO_DARWIN_BG)
+    except OSError as error:
+        print(f"[s2a] 自动任务降优先级没做成，照常跑：{error}", file=sys.stderr, flush=True)
+
+
+KEEP_AWAKE = ("build", "ipa", "install", "installUpdate", "installRestore", "exportPush", "tvInstall", "tvExport")   # 出包 / 推送期间电脑不空闲休眠（awake.py；v0.3.1 玩家推大包被休眠打断成「传输中断」）
 HEAL_AFTER = ("import", "build", "ipa")   # 结束时顺手把还叫游戏号的文件夹改英文名（layout.heal_folder_names）
 ORCHESTRATION = ("export",)   # 只起子作业的编排：引擎副本、游戏库结构由每一步的子作业自己核（剃刀 H13）
 NO_LIBRARY = ORCHESTRATION + ("preflight", "prepareEngine", "downloadMetal", "downloadIosPlatform", "installDotnet", "targetDevice", "setup", "signingProject", "devCert")
@@ -250,7 +299,7 @@ def cli(argv, *, context_class=Context, operation_overrides=None):
                 print(json.dumps(dict(dryRun=True, wouldResume=bool(args.force) or not terminal, operation=record.get("operation"),
                                       attemptNo=(record.get("attemptNo") or 1) + (0 if terminal and not args.force else 1),
                                       stage=record.get("stage") or "", attempts=record.get("attempts") or {},
-                                      note="阶段是否跳过只由各阶段自己的产物键（.stage_<阶段>）决定，job 层不记也不预判"), ensure_ascii=False))
+                                      note="阶段是否跳过只由各阶段自己的产物键（.stage_<阶段>）决定，job 层不记也不预判"), ensure_ascii=False))  # 非玩家句
                 return 0
             if record.get("state") in TERMINAL_STATES and not args.force:
                 # Re-running a finished task on purpose is allowed, but a caller that thinks it is resuming must not silently restart it

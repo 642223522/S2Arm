@@ -630,6 +630,31 @@ static void t_api_version(void) {
     } else CHECK(0, "桌面上下文建立");
     eglMakeCurrent(g_dpy, g_sf, g_sf, es); if (gl) eglDestroyContext(g_dpy, gl);
 }
+// #1440：一款 GL 游戏开局问当前显示 / 表面 / 上下文属性；期望按 EGL 1.5 §3.7.3–3.7.4 与本前端的单显示（1）、单配置（1）、读写同表面手写
+static void t_egl_current(void) {
+    printf("N2 当前显示 / 表面与上下文属性\n");
+    G(eglGetCurrentDisplay, EGLDisplay, void) G(eglGetCurrentSurface, EGLSurface, EGLint) G(eglQueryContext, EGLBoolean, EGLDisplay, EGLContext, EGLint, EGLint *)
+    G(eglGetError, EGLint, void) G(eglBindAPI, EGLBoolean, EGLenum) G(eglCreateContext, EGLContext, EGLDisplay, EGLConfig, EGLContext, const EGLint *)
+    G(eglMakeCurrent, EGLBoolean, EGLDisplay, EGLSurface, EGLSurface, EGLContext) G(eglGetCurrentContext, EGLContext, void) G(eglDestroyContext, EGLBoolean, EGLDisplay, EGLContext)
+    EGLContext es = eglGetCurrentContext();
+    CHECK(eglGetCurrentDisplay() == g_dpy, "当前显示 = eglGetDisplay 给的那个");
+    CHECK(eglGetCurrentSurface(0x3059) == g_sf && eglGetCurrentSurface(0x305A) == g_sf, "EGL_DRAW / EGL_READ 都是当前窗口表面");
+    CHECK(eglGetCurrentSurface(0x3000) == NULL && eglGetError() == 0x300C, "别的 readdraw：EGL_NO_SURFACE + EGL_BAD_PARAMETER");
+    EGLint t = 0, ver = 0, cfg = 0, rb = 0;
+    CHECK(eglQueryContext(g_dpy, es, 0x3097, &t) && t == 0x30A0 && eglQueryContext(g_dpy, es, 0x3098, &ver) && ver == 3,
+          "ES 上下文：CLIENT_TYPE %#x（期望 0x30a0）、CLIENT_VERSION %d（期望 3）", t, ver);
+    CHECK(eglQueryContext(g_dpy, es, 0x3028, &cfg) && cfg == 1 && eglQueryContext(g_dpy, es, 0x3086, &rb) && rb == 0x3084,
+          "CONFIG_ID %d（期望 1）、绑着窗口表面 RENDER_BUFFER %#x（期望 EGL_BACK_BUFFER 0x3084）", cfg, rb);
+    CHECK(!eglQueryContext(g_dpy, es, 0x3030, &t) && eglGetError() == 0x3004, "不认的属性：失败 + EGL_BAD_ATTRIBUTE");
+    CHECK(!eglQueryContext((EGLDisplay)2, es, 0x3097, &t) && eglGetError() == 0x3008, "错的显示：失败 + EGL_BAD_DISPLAY");
+    eglBindAPI(0x30A2); EGLContext gl = eglCreateContext(g_dpy, g_cfg, NULL, NULL); eglBindAPI(0x30A0);
+    CHECK(gl && eglQueryContext(g_dpy, gl, 0x3097, &t) && t == 0x30A2 && eglQueryContext(g_dpy, gl, 0x3098, &ver) && ver == 4 &&
+          eglQueryContext(g_dpy, gl, 0x3086, &rb) && rb == 0x3038, "桌面上下文（没绑）：CLIENT_TYPE %#x、VERSION %d、RENDER_BUFFER %#x（期望 0x30a2 / 4 / EGL_NONE）", t, ver, rb);
+    if (gl) eglDestroyContext(g_dpy, gl);
+    eglMakeCurrent(g_dpy, NULL, NULL, NULL);
+    CHECK(eglGetCurrentDisplay() == NULL && eglGetCurrentSurface(0x3059) == NULL, "没有当前上下文：EGL_NO_DISPLAY / EGL_NO_SURFACE");
+    eglMakeCurrent(g_dpy, g_sf, g_sf, es);
+}
 static void t_map_range(void) {
     printf("N 上下文 API 与范围映射：范围映射\n");
     G(glMapBufferRange, void *, GLenum, GLintptr, GLsizeiptr, GLbitfield) G(glFlushMappedBufferRange, void, GLenum, GLintptr, GLsizeiptr) G(glUnmapBuffer, GLboolean, GLenum)
@@ -895,6 +920,6 @@ int main(void) { alarm(120); @autoreleasepool {
     g_sf = eglCreateWindowSurface(g_dpy, cfg, NULL, NULL); EGLContext ctx = eglCreateContext(g_dpy, cfg, NULL, ctx_attr);
     if (!eglMakeCurrent(g_dpy, g_sf, g_sf, ctx)) { printf("✗ 建上下文失败\n"); return 1; }
     g_tri = program("tri"); glGenVertexArrays(1, &g_tri_vao); glGenBuffers(1, &g_tri_vbo);
-    t_queries(); t_sync(); t_readback(); t_fb_query(); t_volume(); t_msaa(); t_map(); t_instanced(); t_packed_attr(); t_raster_read(); t_uniforms(); t_names_programs(); t_threads(); t_frame_storage(); t_core_stub(); t_tex_storage3d(); t_tex_swizzle(); t_bool_uniform(); t_api_version(); t_map_range(); t_es300(); t_sampler_array(); t_shader_iv(); t_love();
+    t_queries(); t_sync(); t_readback(); t_fb_query(); t_volume(); t_msaa(); t_map(); t_instanced(); t_packed_attr(); t_raster_read(); t_uniforms(); t_names_programs(); t_threads(); t_frame_storage(); t_core_stub(); t_tex_storage3d(); t_tex_swizzle(); t_bool_uniform(); t_api_version(); t_egl_current(); t_map_range(); t_es300(); t_sampler_array(); t_shader_iv(); t_love();
     printf("%s t_gl_api：%d 项，失败 %d\n", fails ? "✗" : "✓", checks, fails); return fails != 0;
 }}

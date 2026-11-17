@@ -32,6 +32,10 @@ public sealed partial class EnvironmentWindow
         CapturePaths();
         if (page == "library") libraryFolder = libraryFolderBox.Text ?? "";
         messagesOpen = false;   // 顶栏导航离开「消息」页
+        sgradeOpen = false;     // 也离开「S 级优化升级」页
+        cheatsFor = null;       // 和「金手指」页
+        modsFor = null;         // 和「Mod」页
+        if (destination == "settings" && page != "settings") settingsFrom = page;   // 设置页左上「返回」回到这里（出包页点「更改」进来就回出包页）
         page = destination;
         if (destination != "library") welcomeHome = false;   // 品牌名带去的欢迎页只管这一次回首页，去了别的页就回到平常
         // 环境检查页每次打开读一次装到 iPhone 的方式和开发者证书（InstallModePage.cs / DevCertPage.cs）
@@ -67,12 +71,13 @@ public sealed partial class EnvironmentWindow
 
     private async void CloseLibraryAsync(object? sender, WindowClosingEventArgs args)
     {
-        if (!libraryBusy) return;
+        if (!libraryBusy || closeAnyway) return;
         args.Cancel = true;
-        if (closingLibrary) return;
+        if (closingLibrary) return;   // 第一次进来的那份在等，等完它自己再关
         closingLibrary = true;
-        CancelJob(JobKind.Library);
-        if (libraryOperation is { } operation) await operation;
+        CloseLog("关窗口：游戏库作业在跑，先取消、等它收尾再关");
+        await WaitJobsEndAsync(JobKind.Library);
+        closingLibrary = false;
         Close();
     }
 
@@ -81,7 +86,39 @@ public sealed partial class EnvironmentWindow
         Background = Surface, CornerRadius = new CornerRadius(12), Padding = new Thickness(padding), Child = content
     };
 
+    /// <summary>顶部大图：只认这款文件夹里的商店横图（LibraryGame.BannerFile），按 1600 宽解码（铺满整条也不糊）；读不出就 null、退回封面卡片</summary>
+    private Bitmap? HeroBanner(LibraryGame game)
+    {
+        if (connectedFolder is null || game.BannerFile() is not { } path) return null;
+        try
+        {
+            if (new FileInfo(path).Length > 16 * 1024 * 1024) return null;
+            // 缓存键另起：没有自带图标的款 cover 也指向 banner.jpg，封面卡片按 240 宽解码的那份不能拿来铺大图
+            if (!covers.TryGetValue(path + "#hero", out var image))
+            {
+                using var file = File.OpenRead(path);
+                image = Bitmap.DecodeToWidth(file, 1600);
+                covers.Add(path + "#hero", image);
+            }
+            return image;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { return null; }
+    }
+
+    /// <summary>封面 + 已打上 S 级优化的左上角金色 S（同 Mac LauncherView+Library SGradeBadge：只有 S、没有框和底色，叠三层更实、加投影）</summary>
     private Control GameCover(LibraryGame game, int size)
+    {
+        var cover = GameCoverImage(game, size);
+        if (!game.SGrade) return cover;
+        var s = Math.Max(20, size / 3.2);
+        var badge = new Panel { Width = s, Height = s, Margin = new Thickness(3), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top,
+            Effect = new DropShadowEffect { Color = Color.FromArgb(115, 0, 0, 0), BlurRadius = s * 0.24, OffsetX = 0, OffsetY = s * 0.04 } };
+        for (var k = 0; k < 3; k++) badge.Children.Add(new Image { Source = SGoldImage(), Stretch = Stretch.Uniform });
+        Avalonia.Automation.AutomationProperties.SetAutomationId(badge, "card.sgrade");
+        return new Panel { Width = size, Height = size, Children = { cover, badge } };
+    }
+
+    private Control GameCoverImage(LibraryGame game, int size)
     {
         // Only a backend-provided local cover in this library is considered; never load a remote URL.
         try
@@ -114,6 +151,32 @@ public sealed partial class EnvironmentWindow
         if (wordmarkBitmap is not null) return wordmarkBitmap;
         using var stream = Avalonia.Platform.AssetLoader.Open(new Uri("avares://S2Arm/Assets/Wordmark.png"));
         return wordmarkBitmap = Bitmap.DecodeToWidth(stream, 480);
+    }
+
+    /// <summary>顶部选中游戏的主操作（有横图的大图叠加、无横图的封面卡片两分支共用）：装到 iPhone（iPhone 版做好才有）+ 导出自签包 + 出包。
+    /// 走和下面列表卡片同一套流程（Navigate("install") / OpenBuild），列表上的按钮留作次要入口。</summary>
+    private StackPanel HeroActions(LibraryGame hero)
+    {
+        // 大卡的主操作（11-14 体验梳理，开发甲定：照 Mac 大卡，两端一套体验；Windows 没有「开始游戏」）
+        var heroActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Margin = new Thickness(0, 6, 0, 0) };
+        var heroBusy = BusyFor(hero) || hero.LocationState is "missing" or "offline";
+        if (hero.IphoneReady)
+        {
+            var install = Primary(T("library.hero.install"),
+                () => { libraryFolder = libraryFolderBox.Text ?? libraryFolder; selectedGame = hero.Id; readinessFor = null; if (!installBusy) installExport = false; Navigate("install"); }, !PhoneBlockedFor(hero));   // 出包在跑也能去装（装机页里排队）
+            AutomationId(install, "library.hero.install");
+            heroActions.Children.Add(install);
+        }
+        // 导出自签包（11-15 维护者：导出不是装法，常驻一个看得见的次按钮；没出过包的点了先出包再导出）
+        var selfSign = Action("library.hero.selfSign", () => ExportSelfSign(hero),   // 能直接导出的走手机作业（出包在跑也行）；要先出包的照旧
+            hero.IphoneExportable ? !PhoneBlockedFor(hero) && hero.LocationState is not ("missing" or "offline") : !heroBusy && !installBusy);
+        selfSign.VerticalAlignment = VerticalAlignment.Center;
+        AutomationId(selfSign, "library.hero.selfSign");
+        heroActions.Children.Add(selfSign);
+        var build = Action("nav.build", () => { libraryFolder = libraryFolderBox.Text ?? libraryFolder; selectedGame = hero.Id; OpenBuild(); }, !heroBusy);
+        build.VerticalAlignment = VerticalAlignment.Center;
+        heroActions.Children.Add(build);
+        return heroActions;
     }
 
     private void RenderLibrary(StackPanel body)
@@ -149,7 +212,22 @@ public sealed partial class EnvironmentWindow
 
         var games = catalog?.Games.Where(g => !g.Hidden).ToArray() ?? [];
         var hero = games.FirstOrDefault(g => g.Id == selectedGame) ?? games.FirstOrDefault();
-        if (hero is not null)
+        if (hero is not null && HeroBanner(hero) is { } heroBanner)
+        {
+            // 顶部大图（11-14 维护者：「换成用 banner」）：商店横图 1920×1080 铺满整条，标题压在底部渐变上；没有横图的款退回下面的封面卡片
+            var art = new Grid { Height = 280 };
+            art.Children.Add(new Image { Source = heroBanner, Stretch = Stretch.UniformToFill, HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Center });
+            art.Children.Add(new Border { Background = new LinearGradientBrush { StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative), EndPoint = new RelativePoint(0, 1, RelativeUnit.Relative),
+                GradientStops = { new GradientStop(Color.Parse("#000E0E10"), 0.35), new GradientStop(Color.Parse("#E60E0E10"), 1) } } });
+            var overlay = new StackPanel { Spacing = 6, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(28, 0, 28, 22) };
+            overlay.Children.Add(Muted(T(selectedGame is null ? "library.title" : "library.selected"), 14));
+            overlay.Children.Add(Label(hero.Name, 32));
+            overlay.Children.Add(Muted(T("library.version") + " · " + hero.Version, 14));
+            overlay.Children.Add(HeroActions(hero));   // 有横图时按钮也叠在底部渐变上（v0.4.5 修：说明写着「常驻」，之前只画了大图）
+            art.Children.Add(overlay);
+            body.Children.Add(new Border { CornerRadius = new CornerRadius(16), ClipToBounds = true, Child = art });
+        }
+        else if (hero is not null)
         {
             var banner = new Grid { ColumnDefinitions = new ColumnDefinitions("100,*"), ColumnSpacing = 24 };
             banner.Children.Add(GameCover(hero, 100));
@@ -157,21 +235,7 @@ public sealed partial class EnvironmentWindow
             title.Children.Add(Label(T(selectedGame is null ? "library.title" : "library.selected")));
             title.Children.Add(Label(hero.Name, 28));
             title.Children.Add(Label(T("library.version") + " · " + hero.Version));
-            // 大卡的主操作（11-14 体验梳理，开发甲定：照 Mac 大卡，两端一套体验；Windows 没有「开始游戏」）：装到 iPhone（iPhone 版做好才有）+ 出包。
-            //   走和下面列表卡片同一套流程（Navigate("install") / OpenBuild），列表上的按钮留作次要入口
-            var heroActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Margin = new Thickness(0, 6, 0, 0) };
-            var heroBusy = BusyFor(hero) || hero.LocationState is "missing" or "offline";
-            if (hero.IphoneReady)
-            {
-                var install = Primary(T(installMode == "export" ? "export.done.export" : "library.hero.install"),
-                    () => { libraryFolder = libraryFolderBox.Text ?? libraryFolder; selectedGame = hero.Id; readinessFor = null; Navigate("install"); }, !BusyFor(hero));
-                AutomationId(install, "library.hero.install");
-                heroActions.Children.Add(install);
-            }
-            var build = Action("nav.build", () => { libraryFolder = libraryFolderBox.Text ?? libraryFolder; selectedGame = hero.Id; OpenBuild(); }, !heroBusy);
-            build.VerticalAlignment = VerticalAlignment.Center;
-            heroActions.Children.Add(build);
-            title.Children.Add(heroActions);
+            title.Children.Add(HeroActions(hero));
             Grid.SetColumn(title, 1); banner.Children.Add(title); body.Children.Add(Card(banner, 20));
         }
 
@@ -205,6 +269,8 @@ public sealed partial class EnvironmentWindow
         if (catalog is null || libraryBusy || librarySummary is "library.failed" or "library.invalid_result" or "library.interrupted")
             body.Children.Add(Card(status));
 
+        if (catalog is not null && games.Length > 0)   // 「S 级优化升级」入口（同 Mac 游戏库标题行，v0.4.0）
+            body.Children.Add(new StackPanel { HorizontalAlignment = HorizontalAlignment.Right, Children = { SGradeUpgradeEntry() } });
         foreach (var game in games)
         {
             var line = new Grid { ColumnDefinitions = new ColumnDefinitions("72,*,Auto"), ColumnSpacing = 18 };
@@ -222,13 +288,13 @@ public sealed partial class EnvironmentWindow
                 detail.Children.Add(Muted(T("library.location.at").Replace("{0}", where.Folder.Length > 0 ? where.Folder : where.Path), 12));
             Grid.SetColumn(detail, 1); line.Children.Add(detail);
             // Primary button: if iPhone pack is ready → install; otherwise export (storage not connected → disabled, game files missing → relink / remove)
-            var primaryKey = game.IphoneReady ? (installMode == "export" ? "export.done.export" : "library.hero.install") : "library.select";   // 导出模式：主按钮写导出（两路分开）
+            var primaryKey = game.IphoneReady ? "library.hero.install" : "library.select";
             var primaryAction = game.IphoneReady
-                ? (Action)(() => { libraryFolder = libraryFolderBox.Text ?? ""; selectedGame = game.Id; readinessFor = null; Navigate("install"); })
+                ? (Action)(() => { libraryFolder = libraryFolderBox.Text ?? ""; selectedGame = game.Id; readinessFor = null; if (!installBusy) installExport = false; Navigate("install"); })
                 : game.LocationState == "missing" ? () => _ = MissingAsync(game)
                 : () => { libraryFolder = libraryFolderBox.Text ?? ""; selectedGame = game.Id; OpenBuild(); };
             // 装机在跑时别的游戏照常能选、看详情、出包（只锁正在装的那款；同时只装一款：点别的「装到 iPhone」进装机页提示「另一款正在装 · 查看那一款」）
-            var select = Action(primaryKey, primaryAction, !BusyFor(game) && (game.IphoneReady || game.LocationState != "offline"));
+            var select = Action(primaryKey, primaryAction, (game.IphoneReady ? !PhoneBlockedFor(game) : !BusyFor(game)) && (game.IphoneReady || game.LocationState != "offline"));   // 装到 iPhone：出包在跑也能去（排队）
             select.VerticalAlignment = VerticalAlignment.Center;
             // secondary: show past result if one exists and game is not currently running
             if (finishedPacks.TryGetValue(game.Id, out _) && !(packRunning && packGame?.Id == game.Id))
@@ -334,13 +400,15 @@ public sealed partial class EnvironmentWindow
             menu.Items.Add(item);
         }
         Add(T("nav.build"), "export", () => { libraryFolder = libraryFolderBox.Text ?? ""; selectedGame = game.Id; OpenBuild(); }, idle && game.Reachable);
+        Add(T("cheats.page.menu"), "cheats", () => OpenCheats(game), idle);
+        Add(T("mods.page.menu"), "mods", () => OpenMods(game), idle);   // 资源替换 mod：看 / 导入 / 删除（ModsPage.cs，同 Mac 启动设置里的「资源 Mod」）   // 金手指：看 / 导入（CheatsPage.cs，同 Mac 启动设置里的金手指）
         menu.Items.Add(new Separator());
         Add(T("library.menu.revealWindows"), "reveal", () => RevealGame(game), (game.Location?.Path ?? "").Length > 0 && game.LocationState != "offline");
         Add(T("library.menu.move"), "move", () => BeginPicker(() => MoveGameAsync(game)), idle && game.Reachable && game.LocationState != "none");
         Add(T("library.menu.clearCache"), "clearCache", () => BeginGameJob("clean", game, new() { ["kind"] = "cache" }), idle && game.Reachable);
         menu.Items.Add(new Separator());
         Add(T("install.remove_game"), "remove", () => { libraryFolder = libraryFolderBox.Text ?? ""; selectedGame = game.Id; Navigate("install"); _ = ConfirmRemoveAsync(game); },
-            !libraryBusy && !installBusy && !packRunning);
+            !libraryBusy && !PhoneQueued(game.Id));
         Add(T("game.diag"), "diag", () => _ = UploadDiagnosticsAsync(game.Id, null, () => ""), idle);   // 同 Mac「更多 → 上传给开发者」；上传没成在弹窗里退回导出
         Add(T("game.delete"), "delete", () => _ = ConfirmDeleteAsync(game), idle);
         return menu;
@@ -420,7 +488,7 @@ public sealed partial class EnvironmentWindow
     private async Task ExportDiagnosticsAsync()
     {
         if (connectedFolder is null || libraryId is null || libraryBusy) return;
-        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions { Title = T("diag.upload.export"), SuggestedFileName = $"S2Arm-{(language == "en" ? "diag" : "诊断")}-{DateTime.Now:MMdd-HHmm}.zip", DefaultExtension = "zip" });
+        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions { Title = T("diag.upload.export"), SuggestedFileName = $"S2Arm-{T("diag.fileWord")}-{DateTime.Now:MMdd-HHmm}.zip", DefaultExtension = "zip" });
         if (file?.TryGetLocalPath() is not { } output) return;
         var front = BeginJob(JobKind.Library); librarySummary = "library.working"; Render();
         try
@@ -667,17 +735,29 @@ public sealed partial class EnvironmentWindow
         var r = LibraryFolderInput.Normalize(folder);
         if (r.Folder is null) { librarySummary = "library.failed"; libraryDiagnostics = T(r.ErrorKey!); Render(); return; }
         folder = r.Folder;
+        var previous = connectedFolder;
         connectedFolder = null; libraryId = null;
         libraryFolder = folder;
-        libraryOperation = SwitchLibraryAsync(folder);
+        libraryOperation = SwitchLibraryAsync(folder, previous);
     }
 
-    private async Task SwitchLibraryAsync(string folder)
+    private async Task SwitchLibraryAsync(string folder, string? previous)
     {
         await EnsureLibraryAsync(folder, () => { });
+        // 换不过去（D-3P26：选在启动器自己的文件夹里，作业层正确拒绝）：原先旧库也一并断开、设置页却写着新路径，玩家以为改好了，
+        //   重开又是原来的。现在连回原来那个库，失败原因留着（设置页游戏库一行下面常驻，换成功才清）
+        if (connectedFolder is null && previous is not null && !SameFolder(previous, folder))
+        {
+            var why = libraryFailure;
+            libraryFolder = previous;
+            await EnsureLibraryAsync(previous, () => { });
+            libraryFailure = why; importError = why; Render();
+            return;
+        }
         if (connectedFolder is null) return;
         try { PrivateJobRequest.EnsurePrivateRoot(privateRoot); File.WriteAllText(LibraryPreference, folder); }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { importError = error.Message; Render(); }
+        catch (UnauthorizedAccessException error) { importError = NoWrite(error, connectedFolder ?? libraryFolder); Render(); }
+        catch (IOException error) { importError = error.Message; Render(); }
     }
 
     /// <summary>设置页「导入密钥」（游戏原件统一走顶栏「添加游戏」）</summary>
@@ -742,6 +822,7 @@ public sealed partial class EnvironmentWindow
             catalog = LibraryCatalog.Parse(listing.Report.Result); ClearCovers();
             if (!catalog.Games.Any(g => g.Id == selectedGame && !g.Hidden)) selectedGame = null;
             librarySummary = "library.completed";
+            _ = PreparePhoneUpdateAsync();   // 新版启动器头一次读到要更新的手机：后台准备 iPhone App 更新（PhoneAutoUpdate.cs）
         }
         catch (LibraryProtocolException error)
         { librarySummary = "library.invalid_result"; libraryDiagnostics += "\n" + error.Message; }

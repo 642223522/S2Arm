@@ -1,3 +1,4 @@
+#if !os(tvOS)   // tvOS 不编本文件：iOS 库界面与自绘焦点引擎（电视用系统焦点）（电视版库界面见 TVLibraryView.swift，UPSTREAM.md「我方改动」）
 // S2Arm modification: present a dedicated sorting list and guard background library input while it is open.
 import SwiftUI
 
@@ -538,6 +539,7 @@ public struct LibraryView: View {
         case .playable: actions.onPlay(detail.id)
         case .needsGameData: actions.onPickGameData(detail.id)
         case .needsAppUpdate: actions.onAppUpdate?()
+        case .needsGameUpdate, .needsGameReinstall: break   // needsHelp：上面已展开说明
         case .broken: actions.onShowLog?(detail.id)
         case .installing(let stage): if stage.phase == .failed { actions.onPlay(detail.id) }   // 重试解开；传着 / 解着按了不动
         }
@@ -874,3 +876,4 @@ private struct CoverThumbnail: View {
         .accessibilityHidden(true)
     }
 }
+#endif   // !os(tvOS)

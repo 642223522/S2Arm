@@ -25,14 +25,14 @@ struct S2ArmPlayersView: View {
             Color.black.opacity(0.72).ignoresSafeArea().onTapGesture { close() }.accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(shellText("Who’s playing?")).font(.system(size: 24, weight: .heavy)).tracking(-0.5).foregroundStyle(.white)
+                    Text(shellText("Who’s playing?")).font(.system(size: 24 * ShellFonts.tvScale, weight: .heavy)).tracking(-0.5).foregroundStyle(.white)
                         .accessibilityAddTraits(.isHeader).accessibilityIdentifier("players.title")
                     Spacer(minLength: 12)
-                    Button(shellText("Done")) { close() }.font(.system(size: 16, weight: .semibold)).foregroundStyle(ShellPalette.cream)
+                    Button(shellText("Done")) { close() }.font(.system(size: 16 * ShellFonts.tvScale, weight: .semibold)).foregroundStyle(ShellPalette.cream)
                         .accessibilityIdentifier("players.done")
                 }
                 Text(shellText("Each player has their own saves in every game. The game starts as the player picked here."))
-                    .font(.system(size: 14)).foregroundStyle(ShellPalette.muted).fixedSize(horizontal: false, vertical: true)
+                    .font(.system(size: 14 * ShellFonts.tvScale)).foregroundStyle(ShellPalette.muted).fixedSize(horizontal: false, vertical: true)
                 // 几个玩家时卡片按内容高；多到放不下才滚
                 ViewThatFits(in: .vertical) {
                     list
@@ -41,12 +41,12 @@ struct S2ArmPlayersView: View {
                 .frame(maxHeight: 360)
                 .fixedSize(horizontal: false, vertical: true)
                 if let error {
-                    Text(error).font(.system(size: 13.5, weight: .medium)).foregroundStyle(ShellPalette.attention)
+                    Text(error).font(.system(size: 13.5 * ShellFonts.tvScale, weight: .medium)).foregroundStyle(ShellPalette.attention)
                         .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("players.error")
                 }
             }
             .padding(24)
-            .frame(maxWidth: 460, alignment: .leading)
+            .frame(maxWidth: 460 * ShellFonts.tvScale, alignment: .leading)   // tvScale：电视上字号与卡宽放大（iOS 为 1）
             .background(ShellPalette.surface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Color.white.opacity(0.08)))
             .padding(.horizontal, 16).padding(.vertical, 12)
@@ -71,28 +71,28 @@ struct S2ArmPlayersView: View {
         case .removing(let uid) where uid == player.uid:
             VStack(alignment: .leading, spacing: 10) {
                 Text(shellText("Remove \(player.displayName)? Their saves stay on this device. Add a player with the same name to get them back."))
-                    .font(.system(size: 14)).foregroundStyle(.white).fixedSize(horizontal: false, vertical: true)
+                    .font(.system(size: 14 * ShellFonts.tvScale)).foregroundStyle(.white).fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Spacer()
                     Button(shellText("Cancel")) { finish() }.foregroundStyle(ShellPalette.muted).accessibilityIdentifier("players.remove.cancel")
                     Button(shellText("Remove")) { remove(player.uid); finish() }.foregroundStyle(ShellPalette.attention).fontWeight(.semibold)
                         .accessibilityIdentifier("players.remove.confirm")
-                }.font(.system(size: 15))
+                }.font(.system(size: 15 * ShellFonts.tvScale))
             }
             .padding(14).background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         default:
             HStack(spacing: 12) {
                 Button { select(player.uid) } label: {
                     HStack(spacing: 12) {
-                        Text(String(player.displayName.prefix(1)).uppercased()).font(.system(size: 17, weight: .bold))
+                        Text(String(player.displayName.prefix(1)).uppercased()).font(.system(size: 17 * ShellFonts.tvScale, weight: .bold))
                             .foregroundStyle(isCurrent ? ShellPalette.background : .white)
                             .frame(width: 38, height: 38).background(isCurrent ? ShellPalette.cream : Color.white.opacity(0.12), in: Circle())
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(player.displayName).font(.system(size: 16.5, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
-                            if isCurrent { Text(shellText("Playing now")).font(.system(size: 12.5, weight: .medium)).foregroundStyle(ShellPalette.ready) }
+                            Text(player.displayName).font(.system(size: 16.5 * ShellFonts.tvScale, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                            if isCurrent { Text(shellText("Playing now")).font(.system(size: 12.5 * ShellFonts.tvScale, weight: .medium)).foregroundStyle(ShellPalette.ready) }
                         }
                         Spacer(minLength: 8)
-                        if isCurrent { Image(systemName: "checkmark").font(.system(size: 15, weight: .bold)).foregroundStyle(ShellPalette.cream) }
+                        if isCurrent { Image(systemName: "checkmark").font(.system(size: 15 * ShellFonts.tvScale, weight: .bold)).foregroundStyle(ShellPalette.cream) }
                     }
                     .contentShape(Rectangle())
                 }
@@ -121,9 +121,9 @@ struct S2ArmPlayersView: View {
         } else {
             Button { start(.adding, text: "") } label: {
                 HStack(spacing: 12) {
-                    Image(systemName: "plus").font(.system(size: 15, weight: .bold)).foregroundStyle(ShellPalette.cream)
+                    Image(systemName: "plus").font(.system(size: 15 * ShellFonts.tvScale, weight: .bold)).foregroundStyle(ShellPalette.cream)
                         .frame(width: 38, height: 38).background(Color.white.opacity(0.06), in: Circle())
-                    Text(shellText("Add Player")).font(.system(size: 16, weight: .semibold)).foregroundStyle(ShellPalette.cream)
+                    Text(shellText("Add Player")).font(.system(size: 16 * ShellFonts.tvScale, weight: .semibold)).foregroundStyle(ShellPalette.cream)
                     Spacer()
                 }
                 .padding(.horizontal, 14).padding(.vertical, 10).contentShape(Rectangle())
@@ -135,7 +135,7 @@ struct S2ArmPlayersView: View {
     private func field(placeholder: String, confirm: String, commit: @escaping () -> Void) -> some View {
         HStack(spacing: 10) {
             TextField(placeholder, text: $text)
-                .textFieldStyle(.plain).font(.system(size: 16)).foregroundStyle(.white)
+                .textFieldStyle(.plain).font(.system(size: 16 * ShellFonts.tvScale)).foregroundStyle(.white)
                 .padding(.horizontal, 12).padding(.vertical, 10)
                 .background(Color.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .focused($fieldFocused).submitLabel(.done).onSubmit(commit)
@@ -143,7 +143,7 @@ struct S2ArmPlayersView: View {
             Button(shellText("Cancel")) { finish() }.foregroundStyle(ShellPalette.muted).accessibilityIdentifier("players.cancel")
             Button(confirm, action: commit).fontWeight(.semibold).foregroundStyle(ShellPalette.cream).accessibilityIdentifier("players.confirm")
         }
-        .font(.system(size: 15))
+        .font(.system(size: 15 * ShellFonts.tvScale))
         .padding(10).background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 

@@ -17,11 +17,14 @@ import Combine
     override func tearDown() async throws { try? FileManager.default.removeItem(at: root) }
 
     private func model(snapshot: Bool) throws -> S2ArmLauncherModel {
+        let library = root.appendingPathComponent("lib")
+        try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
+        try Data(#"{"schema":1,"id":"lib-1"}"#.utf8).write(to: library.appendingPathComponent(".s2arm-library.json"))
         if snapshot {
             let saved = #"{"libraryId":"lib-1","result":{"games":[{"id":"0100A","name":"Alpha","ready":true,"missing":[]}],"keys":{}}}"#
             try Data(saved.utf8).write(to: root.appendingPathComponent("library-snapshot.json"))
         }
-        return S2ArmLauncherModel(client: JobClient(environment: JobEnvironment(privateRoot: root, resources: root, library: root.appendingPathComponent("lib").path, libraryId: "lib-1")))
+        return S2ArmLauncherModel(client: JobClient(environment: JobEnvironment(privateRoot: root, resources: root, library: library.path, libraryId: "lib-1")))
     }
 
     private func settle(_ m: S2ArmLauncherModel) async {

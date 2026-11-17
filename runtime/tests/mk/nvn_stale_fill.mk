@@ -1,6 +1,6 @@
 # native-test-nvn_stale_fill：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
 NATIVE_TEST_OWN += nvn_stale_fill
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 # CPU_NO_ACCESS 池里 GPU 写过的页、存有 Inf / NaN 的浮点存储都不当新贴图初始内容：完整 bootstrap、录制、Metal 3/4 回放与提交内拷出；DM_NVN_STALE_FILL=1 / DM_NVN_NONFINITE_FILL=1 反证旧行为。
 $(BUILD)/tests/t_nvn_stale_fill: graphics/nvn/tests/t_nvn_stale_fill.m graphics/nvn/gfx/nvn/nvn_protos.h graphics/nvn/gfx/nvn/include/nvn.h $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
 	$(CC) $(CFLAGS) -fobjc-arc $(NATIVE_INC) -Igraphics/nvn/gfx/nvn -Igraphics/nvn/gfx/nvn/include \

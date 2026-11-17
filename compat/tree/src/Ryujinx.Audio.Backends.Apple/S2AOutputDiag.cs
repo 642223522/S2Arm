@@ -93,6 +93,7 @@ namespace Ryujinx.Audio.Backends.Apple
         private static readonly S2AOutputDiag[] _all = new S2AOutputDiag[MaxSessions];
         private static int _nextIndex = -1;
         private static int _reporterStarted;
+        private static long _repFreezeSeq;
         private static readonly string _wavBase = DocPath(Environment.GetEnvironmentVariable("S2A_AUDIO_WAV"));
         private readonly ManualResetEventSlim _closed = new(false);
         private Thread _writer;
@@ -124,7 +125,7 @@ namespace Ryujinx.Audio.Backends.Apple
 
             if (string.IsNullOrEmpty(d))
             {
-                d = OperatingSystem.IsIOS() ? Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments) : Directory.GetCurrentDirectory();
+                d = (OperatingSystem.IsIOS() || OperatingSystem.IsTvOS()) ? Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments) : Directory.GetCurrentDirectory();   // 平台例外：tvOS 与 iOS 走同一分支
             }
 
             return Path.Combine(d, p);
@@ -137,6 +138,13 @@ namespace Ryujinx.Audio.Backends.Apple
         private readonly int _bitsPerSample;
 
         private long _callbacks;
+        // S2Arm (#1182 无声诊断)：本 10 秒交设备样本的峰值（int16 绝对值最大，已乘音量；只算 16 位会话，别的位宽行里写「不适用」）。
+        //   OnSubmit 在泵锁内写，reporter 取走清零（Interlocked.Exchange）：交界那一笔的峰值可能记进下一窗，不影响「整窗全 0」的判断
+        private int _peak;
+        // S2Arm (11-16，「交设备峰值非零却听不到」#1245 / 诊断#a51362)：本 10 秒同声道相邻两帧样本差的最大值（int16，已乘音量）。峰值高、这个≈0 = 交出去的是不动的直流（听起来静音）；
+        //   与 _peak 同口径（泵锁内写、reporter 取走清零）。_prev：上一笔最后一帧各声道的样本（跨笔接上，首笔从 0 起）
+        private int _ac;
+        private short[] _prev;
         private long _framesSubmitted;
         private long _framesPlayed;
         private long _underruns;
@@ -303,6 +311,35 @@ namespace Ryujinx.Audio.Backends.Apple
             }
 
             _framesSubmitted += frames;
+
+            if (_bitsPerSample == 16)
+            {
+                int peak = Volatile.Read(ref _peak), ac = Volatile.Read(ref _ac), ch = Math.Max(_channels, 1), k = 0;
+                _prev ??= new short[ch];
+
+                foreach (short sample in MemoryMarshal.Cast<byte, short>(data))
+                {
+                    int magnitude = sample < 0 ? -sample : sample;
+
+                    if (magnitude > peak)
+                    {
+                        peak = magnitude;
+                    }
+
+                    int step = Math.Abs(sample - _prev[k]);
+
+                    if (step > ac)
+                    {
+                        ac = step;
+                    }
+
+                    _prev[k] = sample;
+                    k = k + 1 == ch ? 0 : k + 1;
+                }
+
+                Volatile.Write(ref _peak, peak);
+                Volatile.Write(ref _ac, ac);
+            }
 
             if (_latW - _latR < LatRing)
             {
@@ -529,7 +566,13 @@ namespace Ryujinx.Audio.Backends.Apple
                 Ryujinx.Common.S2AThreadAlloc.Tick("声音诊断"); // S2Arm: per-thread allocation accounting
                 Thread.Sleep(10_000);
 
+                // S2Arm (11-13 失焦误报): frozen now, or frozen at any time in this window: the renderer was paused on purpose
+                long freezeSeq = Interlocked.Read(ref Ryujinx.Audio.Integration.S2AGuestFreeze.Seq);
+                bool frozenWindow = Ryujinx.Audio.Integration.S2AGuestFreeze.Frozen != 0 || freezeSeq != _repFreezeSeq;
+                _repFreezeSeq = freezeSeq;
+
                 long skipped = Interlocked.Exchange(ref AudioProcessor.S2ASkippedPeriods, 0);
+                long nanSamples = Interlocked.Exchange(ref Ryujinx.Audio.Renderer.Dsp.Command.DeviceSinkCommand.S2ANaNSamples, 0);
                 long lateNs = Interlocked.Exchange(ref AudioProcessor.S2AMaxLateNs, 0);
                 HudAudio(-1, 0, skipped);   // 渲染丢周期是整个渲染器的，不分会话：单报一次
 
@@ -563,13 +606,21 @@ namespace Ryujinx.Audio.Backends.Apple
                     {
                         // S2Arm (10-23): 播过声、开着播，却 10 秒零回调零交设备 = 设备停了 / 没声音。之前这里直接跳过，「完全没声」在日志里一行都不留。
                         //   只对播过声的会话报（cb > 0）：游戏开着却从没送过声音的会话（动森 #1）不算
-                        if (d._started && cb > 0)
+                        if (d._started && cb > 0 && frozenWindow)
+                        {
+                            Console.Error.WriteLine($"[声] 输出 #{d.Index} 10 秒：客机冻结中（失焦 / 后台，渲染按设计暂停），回调 0 次不算停播");
+                        }
+                        else if (d._started && cb > 0)
                         {
                             Console.Error.WriteLine($"[声] 【红】输出 #{d.Index} 10 秒：播过声、开着播，这 10 秒回调 0 次、交设备 0 帧（设备停了或游戏不再送声音）");
                         }
 
                         continue;
                     }
+
+                    int peak = Interlocked.Exchange(ref d._peak, 0), acStep = Interlocked.Exchange(ref d._ac, 0);
+                    // S2Arm (#1182)：峰值 0 且交设备帧数正常 = 交出去的全是静音（渲染出 0 / NaN 被饱和成 0），不是设备没播；NaN 数 > 0 指向渲染器混音 / DSP
+                    string level = $"；交设备峰值 {(d._bitsPerSample == 16 ? peak.ToString() : $"不适用（{d._bitsPerSample} 位）")}（int16 绝对值，已乘音量；0 = 交出去的全是静音）、相邻帧最大跳变 {(d._bitsPerSample == 16 ? acStep.ToString() : "不适用")}（峰值高而这个≈0 = 不动的直流，听起来静音）、渲染 NaN 样本 {nanSamples}（饱和转 int16 前，全渲染器）";
 
                     long minInFlight = d._minInFlight;
                     double maxStarveMs = d._maxStarveTicks * 1000.0 / Stopwatch.Frequency;
@@ -588,7 +639,7 @@ namespace Ryujinx.Audio.Backends.Apple
                     Console.Error.WriteLine(
                         $"[声] 输出 #{d.Index} 10 秒：回调 {cb - d._repCallbacks} 次，交设备 {sub - d._repSubmitted} 帧、播完 {pl - d._repPlayed} 帧，" +
                         $"账上在途归零 {und - d._repUnderruns} 次（最长 {maxStarveMs:F1} ms；设备交还早于播完，归零时设备内部仍有缓冲，断音看真缺口与交还迟到）、停流 {pau - d._repPauses} 次，回调后最少在途 {(minInFlight == long.MaxValue ? -1 : minInFlight)} 帧，" +
-                        $"回调最长间隔 {maxGapMs:F1} ms；渲染丢周期 {skipped}、周期最晚 {lateNs / 1e6:F1} ms；真缺口 {gap - d._repGapFrames} 帧（{(gap - d._repGapFrames) * 1000.0 / d._rate:F1} ms）；放回提前量 {Volatile.Read(ref d._leadFrames)} 帧；交还迟到 {lb - d._repLateBursts} 次（最多比一拉晚 {lateOverMs:F1} ms）{lat}{(d._ring != null ? $"；wav 丢 {d._ringDropped} B" : "")}");
+                        $"回调最长间隔 {maxGapMs:F1} ms；渲染丢周期 {skipped}、周期最晚 {lateNs / 1e6:F1} ms；真缺口 {gap - d._repGapFrames} 帧（{(gap - d._repGapFrames) * 1000.0 / d._rate:F1} ms）；放回提前量 {Volatile.Read(ref d._leadFrames)} 帧；交还迟到 {lb - d._repLateBursts} 次（最多比一拉晚 {lateOverMs:F1} ms）{lat}{level}{(d._ring != null ? $"；wav 丢 {d._ringDropped} B" : "")}");
 
                     HudAudio(d.Index, gap * 1000 / d._rate, 0);
 

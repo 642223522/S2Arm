@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 JOBS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(JOBS))
@@ -23,6 +23,42 @@ class NativeImport(unittest.TestCase):
                            capture_output=True, text=True, timeout=5)
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(p.stdout.strip(), 'imported')
+
+
+class HolderState(unittest.TestCase):
+    def setUp(self):
+        self.module = importlib.import_module('filelock')
+        from winproc import EPOCH_AS_FILETIME
+        self.epoch = EPOCH_AS_FILETIME
+        self.holder = dict(pid=123, host='this-host', startedAt=1000.0)
+
+    def test_remote_or_legacy_holder_is_unknown(self):
+        probe = Mock(return_value=str(self.epoch + 1000 * 10_000_000))
+        self.assertIsNone(self.module.holder_is_stale(self.holder, current_host='other-host', windows=True, pid_start=probe))
+        self.assertIsNone(self.module.holder_is_stale({"pid": 123, "startedAt": 1000.0}, current_host='this-host', windows=True, pid_start=probe))
+        probe.assert_not_called()
+
+    def test_invalid_start_time_is_unknown(self):
+        holder = dict(self.holder, startedAt=float('nan'))
+        probe = Mock()
+        self.assertIsNone(self.module.holder_is_stale(holder, current_host='this-host', windows=True, pid_start=probe))
+        probe.assert_not_called()
+
+    def test_exited_process_is_stale(self):
+        def missing(_pid):
+            raise ProcessLookupError(errno.ESRCH, 'process exited')
+        self.assertIs(self.module.holder_is_stale(self.holder, current_host='this-host', windows=True, pid_start=missing), True)
+
+    def test_reused_pid_is_stale_but_original_live_pid_is_not(self):
+        later = str(self.epoch + 1001 * 10_000_000)
+        earlier = str(self.epoch + 999 * 10_000_000)
+        self.assertIs(self.module.holder_is_stale(self.holder, current_host='this-host', windows=True, pid_start=lambda _pid: later), True)
+        self.assertIs(self.module.holder_is_stale(self.holder, current_host='this-host', windows=True, pid_start=lambda _pid: earlier), False)
+
+    def test_access_denied_is_unknown(self):
+        def denied(_pid):
+            raise PermissionError(errno.EACCES, 'access denied')
+        self.assertIsNone(self.module.holder_is_stale(self.holder, current_host='this-host', windows=True, pid_start=denied))
 
 
 class FileLocks(unittest.TestCase):

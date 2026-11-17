@@ -54,6 +54,9 @@ apple_step() {
 # 固定 Python 解释器（11-07 维护者：android_widen_disabled_test 用 ${S2A_PY:-python3}，gate-host 门禁没设 S2A_PY 就落到 homebrew 裸 python3，缺 lz4 红；
 #   固定解释器 ~/.s2arm/venv 里按 tools/rewriter-requirements.txt 钉了版本、doctor.sh 预检核它）：没给 S2A_PY 且固定解释器在 → 各步统一用它
 [ -z "${S2A_PY:-}" ] && [ -x "$HOME/.s2arm/venv/bin/python3" ] && export S2A_PY=$HOME/.s2arm/venv/bin/python3
+# 单跑钩子的一部分（11-14 新门禁按组拆步）：GATE_HOOK_ONLY / GATE_HOOK_SKIP=<子项键…> → 本机整步跑的钩子带 GATE_ONLY / GATE_SKIP（钩子自己认键，认不得报红）；
+#   下文统一 unset GATE_ONLY / GATE_SKIP（远端计划用），这里先记下
+HONLY=${GATE_HOOK_ONLY:-}; HSKIP=${GATE_HOOK_SKIP:-}; unset GATE_HOOK_ONLY GATE_HOOK_SKIP
 TIER=${GATE_TIER:-full}; PLANM=${GATE_PLAN:-}; RER=${GATE_RERUN:-}; NOLQ=${GATE_NO_LOADQ:-}   # 列车起的门禁（下文 unset 前先记下：本机预跑令牌豁免它）
 # 预跑必须按路由（11-11 维护者：各线预跑不给改动清单 → 表外代码路径按全跑算，整份 482 步、墙钟中位 1535 秒，挤占门禁机上列车的槽）：
 #   合入前层（GATE_LAYER=pre）、角色不是列车 / 热修、没给 GATE_CHANGED、不是远端那一份（GATE_PLAN，它随 --env 收本机算好的清单）、
@@ -178,7 +181,7 @@ fi
     # 优先步骤本机独占跑（10-31 维护者：显卡步骤不跟本机重活抢，删掉「等 300 秒到点照跑」）：排队（独占锁 + 等 Mac 局让出，上限 S2A_GATE_GPU_QUEUE_S，缺省 1800 秒）
     #   不占钩子自己的上限——钩子上限交给 维护方工具 在拿齐后才计时；本步外层上限 = 钩子上限 + 排队上限 + 30 秒收尾
     case $hk in graphics/gate.sh|tests/visual/gate.sh) hl=${bl:-${GATE_HOOK_S:-600}}; pl=$(( hl + ${S2A_GATE_GPU_QUEUE_S:-1800} + 30 )); [ "$pl" -gt "${BMAX:-0}" ] && BMAX=$pl
-      add "钩子 $hk" "${S2A_PRIVATE_TOOLS:+bash $S2A_PRIVATE_TOOLS/mac_slot_frozen.sh prio '$hk' $hl -- }bash $hk" $pl;; *) add "钩子 $hk" "bash $hk" $bl;; esac; done
+      add "钩子 $hk" "bash $hk" $pl;; *) add "钩子 $hk" "bash $hk" $bl;; esac; done   # 11-14：不再整钩子套显卡锁——graphics 钩子只在开窗口 / 按显示时钟判的子项上自己拿（graphics/gate.sh gpu_excl），visual 钩子全是离屏对拍、不拿；外层上限仍留排队余量
 fi   # 非 doc 档的语法 / 单测 / 平台钩子
 # 预算查询（列车起门禁前问）：GATE_BUDGET_Q=1 bash tools/gate.sh → 打本次要跑的钩子里自报的最大预算（秒）后退出、什么都不跑
 #   只算钩子自报的预算（没人自报 = 0，列车照缺省上限）；iOS 编译那一步的 3600 秒含排队、不算
@@ -305,6 +308,7 @@ LJ=(); LJN=(); TKS=(); job() {   # job <编号> <命令> <上限>：先排令牌
     *) echo "75 0" > "$L/$1.rc"; echo "环境未就绪：拿不到门禁令牌（持锁进程起不来）" > "$L/$1.log"; return 0;; esac
   echo $((SECONDS - w0)) > "$L/$1.wait"; [ -n "$tk" ] && TKS+=("$tk")
   ( : > "$L/$1.started"; s0=$SECONDS
+  export S2A_GATE_STEP=1   # 本进程树是某一步（不是门禁自己的规划 / 路由）：新门禁按它只采集步本身读的文件
   trap "_sigrc '$1' 143 TERM" TERM; trap "_sigrc '$1' 130 INT" INT; trap "_sigrc '$1' 129 HUP" HUP; trap 'tok_put "$tk"' EXIT
   # 末尾另起一行 exit $?：bash 5 对「-c 串的最后一条简单命令」直接 exec，组长会变成被测命令本身、命令行里没有 .pg 路径，
   #   收尸进程（tools/gate_reap.py）按这个字样经 safe_killpg 认组就认不出（11-11 门禁机上列车 run_token_test ④ 红）；最后一条是内建命令就不会 exec
@@ -419,7 +423,9 @@ detwait() {   # 等本机步（LJ）跑完；期间有确定性步骤红 → 早
 GP=$$; ( while sleep "${GATE_BEAT_S:-300}" > /dev/null 2>&1 < /dev/null; kill -0 $GP 2> /dev/null; do echo "门禁进度 $(date '+%H:%M:%S')：本份已出 $(ls "$L"/*.rc 2> /dev/null | wc -l | tr -d ' ') 个步结论，其余仍在跑 / 排队"; done ) & HB=$!; disown $HB 2> /dev/null; trap 'pkill -P $HB 2> /dev/null; kill $HB 2> /dev/null' EXIT
 echo $HB > "$L/hb.pid"; [ -f tools/gate_reap.py ] && python3 tools/gate_reap.py $$ "$L" 2> /dev/null   # 收尸进程：本主进程被 KILL 时停掉在跑的步与心跳（见 tools/gate_reap.py）
 # 本机那份：整步本机的 + 拆出来的子项；gate-host 那份一次 维护方工具 跑完（带 @gate 共享数据，结果目录拉回 $L/r），两边同时跑
-for i in $(seq 1 $N); do s=${STEPS[$((i - 1))]}; [ "${WH[$i]}" = 本机 ] && { r1=${s#*	}; job "$i" "$(tcw "$i" "${r1%	*}")" "${s##*	}"; }; done
+for i in $(seq 1 $N); do s=${STEPS[$((i - 1))]}; [ "${WH[$i]}" = 本机 ] && { r1=${s#*	}; c=${r1%	*}
+  case ${s%%	*} in 钩子\ *) [ -n "$HSKIP" ] && c="export GATE_SKIP='$HSKIP'; $c"; [ -n "$HONLY" ] && c="export GATE_ONLY='$HONLY'; $c";; esac
+  if [ -n "$HONLY$HSKIP" ]; then job "$i" "$c" "${s##*	}"; else job "$i" "$(tcw "$i" "$c")" "${s##*	}"; fi; }; done   # 只跑一部分：不进按步结果缓存（缓存键不含子项键，部分绿会被当整步绿）
 { j=0; for i in ${LPI[@]+"${LPI[@]}"}; do s=${STEPS[$((i - 1))]}; r1=${s#*	}; job "$i.k$j" "export GATE_ONLY='${LPK[$j]}'; ${r1%	*}" "${s##*	}"; j=$((j + 1)); done; }
 [ ${#LJ[@]} -gt 0 ] && detwait
 # 收尾限时（11-11 合入运维线：门禁机上推测批 154 步 13:24 前全出结论，主进程却在这里的 wait 上又等了 50 分钟到远端时限，
@@ -481,6 +487,8 @@ show() {   # show <行首> <结果文件（$L 下，不带后缀）> <显示名>
   local f=$L/$2 rc sec last
   [ -f "$f.rc" ] || { gl_put "$2" "$3" 无 0; if [ -f "$f.started" ]; then echo "${1}🔴 ${3}：没跑完（无退出码：步已起、被强杀（KILL）或门禁先于它退出）"; else echo "${1}🔴 ${3}：没跑完（无退出码：步没起来）"; fi; return 2; }
   read -r rc sec < "$f.rc"; gl_put "$2" "$3" "$rc" "$sec"; last=$(grep -v '^[[:space:]]*$' "$f.log" | grep -av '^\(待宿主证\|已证宿主项\)	' | tail -1 | cut -c1-200)
+  # 红步的一句话结论优先取第一条失败行（11-15 gate2：python 单测全文末尾是「OK」——那是别的子单测的，红因在中间，回执只写个 OK，属主看不出）
+  [ "$rc" != 0 ] && { fl=$(grep -a -m1 -E '^(不通|✗|FAIL: |ERROR: )|AssertionError|【红】' "$f.log" 2> /dev/null | cut -c1-200); [ -n "$fl" ] && last=$fl; }
   # 宿主项（10-30 维护者：与「待 Mac 证」对称）：步 / 子项在本宿主做不了的项打「待宿主证<TAB>类别<TAB>项」、在具备的宿主上做过且绿打「已证宿主项<TAB>类别<TAB>项」，
   #   不影响本步红绿；这里按「类别<TAB>项<TAB>步名」收进 $L/hostlines，结论里列出（列车凭它核宿主证明，见 tools/train.sh hostproof）
   grep -a '^\(待宿主证\|已证宿主项\)	' "$f.log" 2> /dev/null | awk -F'\t' -v n="$CUR" 'NF >= 3 { print $1 "\t" $2 "\t" $3 "\t" n }' >> "$L/hostlines"
@@ -496,7 +504,7 @@ show() {   # show <行首> <结果文件（$L 下，不带后缀）> <显示名>
   if [ "$rc" = 124 ] && [ -n "$ns" ] && grep -q '【红】无进展看门狗' "$f.log" 2> /dev/null; then echo "${1}🔴 $3 $sec 秒（挂死：连续 ${ns} 秒无进展——日志不长、CPU / 磁盘不涨、没有编译子进程，被停）：$last"; grep -a '无进展看门狗' "$f.log" | head -2 | sed 's/^/    | /'; return 1; fi
   set -- "$1" "$2" "$3" "$hard"
   if [ "$rc" = 124 ] && [ "$sec" -ge $(($4 - 2)) ]; then echo "${1}🟡 $3 $sec 秒（超时未判：跑满 ${4} 秒上限被杀，负载 $(sysctl -n vm.loadavg 2> /dev/null | awk '{print $2}')；不算本支红）：$last"; echo "$3" >> "$L/timeouts"; return 3; fi
-  echo "${1}🔴 $3 $sec 秒（rc=$rc$([ "$rc" = 124 ] && { [ "$sec" -ge $(($4 - 2)) ] && echo "，超 ${4} 秒" || echo "，没到 ${4} 秒上限：是这一步自己退出 124（它内部的 timeout 到点）"; })）：$last"; { grep -E '^(不通|✗)' "$f.log" | head -10; grep -a '^  ┊' "$f.log" | head -400; grep -v '^[[:space:]]*$' "$f.log" | grep -av '^  ┊' | tail -12; } | sed 's/^/    | /'   # 先列「不通 / ✗」行：单测全文长时末尾看不到是哪条（✗ 是 python 单测与 widen 系列的写法，10-31 widen_auto_pkg 红行被截掉）
+  echo "${1}🔴 $3 $sec 秒（rc=$rc$([ "$rc" = 124 ] && { [ "$sec" -ge $(($4 - 2)) ] && echo "，超 ${4} 秒" || echo "，没到 ${4} 秒上限：是这一步自己退出 124（它内部的 timeout 到点）"; })）：$last"; { grep -E '^(不通|✗)' "$f.log" | head -10; grep -a -E '^(FAIL: |ERROR: )|AssertionError|^  File "[^"]+", line [0-9]+|【红】' "$f.log" | head -5; grep -a '^  ┊' "$f.log" | head -400; grep -v '^[[:space:]]*$' "$f.log" | grep -av '^  ┊' | tail -12; } | sed 's/^/    | /'   # 先列「不通 / ✗」行，再列 python 单测的 FAIL / ERROR / 断言 / 出错文件行号与【红】行（各至多 5 行）：单测全文长时末尾看不到是哪条（✗ 是 python 单测与 widen 系列的写法，10-31 widen_auto_pkg 红行被截掉）
   return 1
 }
 # <<< show

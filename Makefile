@@ -10,9 +10,37 @@ include tools/toolchain.env
 # 配方失败即删掉目标（10-24 着色器线：gfx 门禁「首跑红、重跑绿」是真失败被增量构建盖住——失败的配方先写出了目标，重跑时 make 判它已最新就跳过）。
 #   */build.mk 都 include 进本文件，这一行覆盖它们；graphics/metal、graphics/nvn 下单独的 Makefile 各自另加
 .DELETE_ON_ERROR:
+# 宿主系统名只取一次（11-14 门禁提速）：*/build.mk 与单测分片两百多处 ifeq 判 Darwin，原先各写一次 $(shell uname -s)，每次 make 起两百多个进程；
+#   原生层门禁每组一次 make、350 组，满载机器上单次解析 4–6 秒大半耗在这里。新分片照写 $(S2A_UNAME)（写 $(shell uname -s) 也对，只是慢）
+S2A_UNAME := $(shell uname -s)
 # 前端 / 玩家机器用 S2A_DEVELOPER_DIR 指自己的 Xcode（同 tools/toolchain.sh，#49）：不设 = toolchain.env 那套（10-23 Spare-host 全新机器实测：Makefile 不认，没装 27.1 的机器着色器键算不出）
 DEVELOPER_DIR := $(or $(S2A_DEVELOPER_DIR),$(_S2A_ENV_DD),$(shell S2A_TC_QUIET=1 bash -c '. tools/toolchain.sh > /dev/null && printf %s "$$DEVELOPER_DIR"' 2>/dev/null),$(shell xcode-select -p 2>/dev/null))
 export DEVELOPER_DIR MACOSX_DEPLOYMENT_TARGET MSBUILDDISABLENODEREUSE   # iOS 下限不导出（两个都导出时不带 -target 的宿主编译会当成 iOS，见 tools/toolchain.sh）
+# Apple 移动端出哪个平台（11-15 Apple TV 版）：ios（缺省）| tvos。`make ios S2A_APPLE_OS=tvos` 出 Apple TV 壳，与 iOS 同一套配方，
+#   只换 SDK / 目标三元组 / 系统下限 / C# 运行时标识 / 渲染器库产物目录；没显式给 BUILD 时 tvOS 产物放 build/tvos，与 iOS 的 build/ 互不覆盖
+S2A_APPLE_OS ?= ios
+ifeq ($(S2A_APPLE_OS),tvos)
+BUILD ?= build/tvos
+APPLE_SDK := appletvos
+APPLE_MIN := $(TVOS_DEPLOYMENT_TARGET)
+APPLE_MINFLAG := -mtvos-version-min=$(TVOS_DEPLOYMENT_TARGET)
+APPLE_TRIPLE := arm64-apple-tvos$(TVOS_DEPLOYMENT_TARGET)
+APPLE_RID := tvos-arm64
+APPLE_GFX_OUT := -tvos
+APPLE_PLATFORM := AppleTVOS
+APPLE_DEVICE_FAMILY := <array><integer>3</integer></array>
+else ifeq ($(S2A_APPLE_OS),ios)
+APPLE_SDK := iphoneos
+APPLE_MIN := $(IPHONEOS_DEPLOYMENT_TARGET)
+APPLE_MINFLAG := -mios-version-min=$(IPHONEOS_DEPLOYMENT_TARGET)
+APPLE_TRIPLE := arm64-apple-ios$(IPHONEOS_DEPLOYMENT_TARGET)
+APPLE_RID := ios-arm64
+APPLE_GFX_OUT :=
+APPLE_PLATFORM := iPhoneOS
+APPLE_DEVICE_FAMILY := <array><integer>1</integer><integer>2</integer></array>
+else
+$(error S2A_APPLE_OS 只认 ios / tvos，给的是 $(S2A_APPLE_OS))
+endif
 BUILD   ?= build
 CC      ?= clang
 CFLAGS  ?= -O2 -g -Wall -Wextra -Wno-unused-parameter
@@ -27,8 +55,8 @@ S2A_DAV1D ?= 1
 
 # 宿主依赖在全部 build.mk 读完之后才写：规则的依赖在读入那一刻展开，写在 runtime/build.mk 里时按字母序排在后面的 services/、tests/ 追加的源文件
 # （自动玩家等）不在依赖里，改了 make host 不重编（10-20 服务接入线实测作废两局暗黑2、原生层一局八方2）。
-# 构建配置戳：S2A_CS / S2A_DAV1D / CC / CFLAGS 变了也要重编（先不带 C# 编、再带 C# 编之类）；内容不变就不改写，不触发重编
-HOST_CFG     := S2A_CS=$(S2A_CS) S2A_DAV1D=$(S2A_DAV1D) S2A_MAC_FRONTEND=$(S2A_MAC_FRONTEND) CC=$(CC) CFLAGS=$(CFLAGS)
+# 构建配置戳：S2A_CS / S2A_PGO_GEN / S2A_DAV1D / CC / CFLAGS 变了也要重编（先不带 C# 编、再带 C# 编之类）；内容不变就不改写，不触发重编
+HOST_CFG     := S2A_CS=$(S2A_CS) S2A_PGO_GEN=$(S2A_PGO_GEN) S2A_DAV1D=$(S2A_DAV1D) S2A_MAC_FRONTEND=$(S2A_MAC_FRONTEND) CC=$(CC) CFLAGS=$(CFLAGS)
 HOST_CFG_STAMP := $(BUILD)/.host_cfg
 $(shell mkdir -p $(BUILD); [ "$$(cat $(HOST_CFG_STAMP) 2>/dev/null)" = '$(HOST_CFG)' ] || printf '%s' '$(HOST_CFG)' > $(HOST_CFG_STAMP))
 $(BUILD)/s2arm-host: $(HOST_SRCS) $(wildcard $(addsuffix *.h,$(sort $(dir $(HOST_SRCS)))) runtime/include/*.h) $(HOST_CFG_STAMP) Makefile $(wildcard */build.mk)

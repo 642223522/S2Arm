@@ -49,7 +49,7 @@ def developer_dir(explicit=None):
 
 def _rows(path):
     if not path.is_file():
-        raise TargetError(f'表不存在：{path}')
+        raise TargetError(f'表不存在：{path}')  # 非玩家句
     for line in path.read_text(encoding='utf-8').splitlines():
         if line.strip() and not line.startswith('#'):
             yield [c.strip() for c in line.split('\t')]
@@ -61,10 +61,10 @@ def target_table(path=None):
     t = {}
     for c in _rows(p):
         if len(c) < 5 or c[0] not in ('ios', 'macos') or not c[1].isdigit() or not ARCH.fullmatch(c[2]) or c[3] not in ('3', '4'):
-            raise TargetError(f'目标表 {p} 有坏行：{c}')
-        t[(c[0], int(c[1]), c[2])] = (int(c[3]), '' if c[4] == '出' else c[4])
+            raise TargetError(f'目标表 {p} 有坏行：{c}')  # 非玩家句
+        t[(c[0], int(c[1]), c[2])] = (int(c[3]), '' if c[4] == '出' else c[4])  # 非玩家句
     if not t:
-        raise TargetError(f'目标表 {p} 是空的')
+        raise TargetError(f'目标表 {p} 是空的')  # 非玩家句
     return t
 
 
@@ -78,7 +78,7 @@ def our_devices_archs(repo_root=None):
     _, rows = _devices(Path(repo_root) / 'pack' / 'our_devices.tsv' if repo_root else None)
     out = sorted({c[2] for c in rows if len(c) >= 4 and c[3] == 'ios' and ARCH.fullmatch(c[2])})
     if not out:
-        raise TargetError('我方真机表里没有 iPhone 的 GPU 架构')
+        raise TargetError('我方真机表里没有 iPhone 的 GPU 架构')  # 非玩家句
     return out
 
 
@@ -88,13 +88,13 @@ def run_machines(plat):
     out = set()
     for c in rows:
         if len(c) < 5 or not ARCH.fullmatch(c[2]) or c[3] not in ('ios', 'macos') or not c[4].isdigit():
-            raise TargetError(f'跑局机清单 {p} 有坏行（要 机型 / 名字 / 架构 / 平台 / 系统大版本）：{c}')
-        if len(c) < 6 or c[5] not in ('是', '否'):
-            raise TargetError(f'跑局机清单 {p} 第 6 列「在用」要填 是 / 否：{c}')
-        if c[3] == plat and c[5] == '是':   # 不在用的机器不进缺省出包对（10-29 维护者：Duo 没线在用，双人成行白出它那对链接版 70 多分钟）
+            raise TargetError(f'跑局机清单 {p} 有坏行（要 机型 / 名字 / 架构 / 平台 / 系统大版本）：{c}')  # 非玩家句
+        if len(c) < 6 or c[5] not in ('是', '否'):  # 非玩家句
+            raise TargetError(f'跑局机清单 {p} 第 6 列「在用」要填 是 / 否：{c}')  # 非玩家句
+        if c[3] == plat and c[5] == '是':   # 不在用的机器不进缺省出包对（10-29 维护者：Duo 没线在用，双人成行白出它那对链接版 70 多分钟）  # 非玩家句
             out.add((c[2], int(c[4])))
     if not out:
-        raise TargetError(f'跑局机清单 {p} 里没有 {plat} 的机器')
+        raise TargetError(f'跑局机清单 {p} 里没有 {plat} 的机器')  # 非玩家句
     return sorted(out)
 
 
@@ -111,11 +111,11 @@ def host_pair():
             c = subprocess.run(['clang', '-fobjc-arc', '-O1', '-o', str(g), str(ROOT / 'graphics' / 'tools' / 'shbake' / 'gpu_arch.m'), '-framework', 'Metal', '-framework', 'Foundation'],
                                capture_output=True, text=True)
             if c.returncode:
-                raise TargetError(f'本机 GPU 架构探测器编不出：{c.stderr.strip()[-200:]}')
+                raise TargetError(f'本机 GPU 架构探测器编不出：{c.stderr.strip()[-200:]}')  # 非玩家句
         a = subprocess.run([str(g)], capture_output=True, text=True).stdout.strip()
     v = subprocess.run(['sw_vers', '-productVersion'], capture_output=True, text=True).stdout.strip().split('.')[0]
     if not ARCH.fullmatch(a) or not v.isdigit():
-        raise TargetError(f'探测不出本机 GPU 架构 / 系统大版本（{a!r} / {v!r}）')
+        raise TargetError(f'探测不出本机 GPU 架构 / 系统大版本（{a!r} / {v!r}）')  # 非玩家句
     return a, int(v)
 
 
@@ -123,7 +123,7 @@ def _versions(plat):
     """显式大版本表（S2A_MAC_OS / S2A_PSO_OS，空格分隔）；没给 = 空表"""
     raw = os.environ.get('S2A_MAC_OS' if plat == 'macos' else 'S2A_PSO_OS', '').split()
     if not all(re.fullmatch(r'[1-9]\d*', x) for x in raw):
-        raise TargetError(f'{"S2A_MAC_OS" if plat == "macos" else "S2A_PSO_OS"}={" ".join(raw)!r} 不是系统大版本（要整数、空格分隔，例 "26 27"）')
+        raise TargetError(f'{"S2A_MAC_OS" if plat == "macos" else "S2A_PSO_OS"}={" ".join(raw)!r} 不是系统大版本（要整数、空格分隔，例 "26 27"）')  # 非玩家句
     return sorted({int(x) for x in raw})
 
 
@@ -135,61 +135,61 @@ def _ios_sdk_major():
         if isinstance(stderr, bytes):
             stderr = stderr.decode('utf-8', errors='replace')
         lines = (stderr or '').strip().splitlines()
-        tail = lines[-1] if lines else '（空）'
-        return TargetError(f"{reason}；命令：{' '.join(cmd)}；退出码：{rc}；stderr 末行：{tail}")
+        tail = lines[-1] if lines else '（空）'  # 非玩家句
+        return TargetError(f"{reason}；命令：{' '.join(cmd)}；退出码：{rc}；stderr 末行：{tail}")  # 非玩家句
 
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     except subprocess.TimeoutExpired as e:
-        raise failure('读取 iOS SDK 超时（60 秒）', '未取得（超时）', e.stderr) from e
+        raise failure('读取 iOS SDK 超时（60 秒）', '未取得（超时）', e.stderr) from e  # 非玩家句
     except OSError as e:
-        raise failure(f'无法启动 iOS SDK 探测：{e}', '未启动', None) from e
+        raise failure(f'无法启动 iOS SDK 探测：{e}', '未启动', None) from e  # 非玩家句
     if p.returncode:
-        raise failure('读取 iOS SDK 失败', p.returncode, p.stderr)
+        raise failure('读取 iOS SDK 失败', p.returncode, p.stderr)  # 非玩家句
     version = p.stdout.strip()
     if not re.fullmatch(r'[0-9]+(?:\.[0-9]+)*', version):
-        raise failure(f'iOS SDK 版本输出为空或非法：{version!r}', p.returncode, p.stderr)
+        raise failure(f'iOS SDK 版本输出为空或非法：{version!r}', p.returncode, p.stderr)  # 非玩家句
     try:
         return int(version.split('.')[0])
     except ValueError as e:
-        raise failure('iOS SDK 版本数值非法', p.returncode, p.stderr) from e
+        raise failure('iOS SDK 版本数值非法', p.returncode, p.stderr) from e  # 非玩家句
 
 
 def pairs(plat, use):
     """→ ([(架构, 大版本, Metal 档)], 来源说明)。use 只有 pso（管线归档 / 函数体动态库，Metal 3 / 4 档都出）"""
     if plat not in ('ios', 'macos') or use != 'pso':
-        raise TargetError(f'用法：pairs <ios|macos> pso（给的 {plat} {use}）')
+        raise TargetError(f'用法：pairs <ios|macos> pso（给的 {plat} {use}）')  # 非玩家句
     table = target_table()
     vs = _versions(plat)
     if os.environ.get('S2A_PSO_ARCHS', '').strip():
         if not vs:
             vs = [host_pair()[1]] if plat == 'macos' else [_ios_sdk_major()]
-        want, src = [(a, v) for v in vs for a in dict.fromkeys(os.environ['S2A_PSO_ARCHS'].split())], '显式 S2A_PSO_ARCHS'
+        want, src = [(a, v) for v in vs for a in dict.fromkeys(os.environ['S2A_PSO_ARCHS'].split())], '显式 S2A_PSO_ARCHS'  # 非玩家句
     elif os.environ.get('S2A_PSO_ARCHS_ALL') == '1':
-        want, src = [(a, v) for (p, v, a), (_, why) in sorted(table.items()) if p == plat and not why], '全集（S2A_PSO_ARCHS_ALL=1）'
+        want, src = [(a, v) for (p, v, a), (_, why) in sorted(table.items()) if p == plat and not why], '全集（S2A_PSO_ARCHS_ALL=1）'  # 非玩家句
     elif os.environ.get('S2A_PACK_PURPOSE') == 'user':
         if plat == 'ios':
-            raise TargetError('用户包要目标设备：启动器 / 一键出包没传 S2A_PSO_ARCHS / S2A_PSO_OS（选的或连着的设备），不猜')
-        want, src = [host_pair()], '用户包：出包的这台 Mac'
+            raise TargetError('用户包要目标设备：启动器 / 一键出包没传 S2A_PSO_ARCHS / S2A_PSO_OS（选的或连着的设备），不猜')  # 非玩家句
+        want, src = [host_pair()], '用户包：出包的这台 Mac'  # 非玩家句
     elif not Path(os.environ.get('S2A_OUR_DEVICES') or ROOT / 'pack' / 'our_devices.tsv').exists():   # 公开仓不带我方真机表（维护方私有）
         if plat == 'ios':
-            raise TargetError('没有我方真机表（S2A_OUR_DEVICES / pack/our_devices.tsv 为维护方私有）：给 S2A_PSO_ARCHS / S2A_PSO_OS，或 S2A_PSO_ARCHS_ALL=1 出全集')
-        want, src = [host_pair()], '没有我方真机表：出包的这台 Mac'
+            raise TargetError('没有我方真机表（S2A_OUR_DEVICES / pack/our_devices.tsv 为维护方私有）：给 S2A_PSO_ARCHS / S2A_PSO_OS，或 S2A_PSO_ARCHS_ALL=1 出全集')  # 非玩家句
+        want, src = [host_pair()], '没有我方真机表：出包的这台 Mac'  # 非玩家句
     else:
-        want, src = run_machines(plat), '跑局机清单 pack/our_devices.tsv'
+        want, src = run_machines(plat), '跑局机清单 pack/our_devices.tsv'  # 非玩家句
     out, bad = [], []
     for a, v in want:
         if not ARCH.fullmatch(a):
-            bad.append(f'{a}（不是 GPU 架构名）'); continue
+            bad.append(f'{a}（不是 GPU 架构名）'); continue  # 非玩家句
         row = table.get((plat, v, a))
         if row is None:
-            bad.append(f'{a}.{plat}{v}（不在目标表 pack/pso_targets.tsv）')
+            bad.append(f'{a}.{plat}{v}（不在目标表 pack/pso_targets.tsv）')  # 非玩家句
         elif row[1]:
-            bad.append(f'{a}.{plat}{v}（工具链{row[1]}）')
+            bad.append(f'{a}.{plat}{v}（工具链{row[1]}）')  # 非玩家句
         else:
             out.append((a, v, row[0]))
     if bad:
-        raise TargetError(f'目标对推导自{src}，其中 {len(bad)} 对出不了：' + '；'.join(bad))
+        raise TargetError(f'目标对推导自{src}，其中 {len(bad)} 对出不了：' + '；'.join(bad))  # 非玩家句
     return sorted(set(out), key=lambda x: (x[1], x[0])), src
 
 

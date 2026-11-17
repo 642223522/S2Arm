@@ -81,11 +81,23 @@ uint64_t s2a_layout_need(uint32_t as_type, uint64_t sys_resource_size, uint64_t 
     return sys_resource_size ? VAMM_ALIAS + 2 * MB + VAMM_STACK + S2A_HEAP_DEFAULT + VAMM_SHARED + mod : 32 * GB + mod;
 }
 
+// 报给游戏的别名区大小（GetInfo AliasSize，#1441）。内部布局不动（别名区仍按标准尺寸、伸出窗口那段照旧走远端兜底），只是告诉游戏小一点：
+//   SDK 给新地址区挑「最高那段空隙的底部」，报多大游戏就往多高爬（上面「别名优先」那段的火炬之光3 读码），报到窗口末，内存就落在窗口里、不再缺页代执行。
+//   只在这几种情况都成立时收：① 没有出包静态结论（alias_gb == 0；> 0 的上面已按证明收进窗口，< 0 = 上限不定、宁慢不崩）；
+//   ② 宿主占到的空洞放不下标准布局（hole < need；放得下的机型与游戏报给游戏的值一个字节不变）；③ 别名区确实伸出窗口；
+//   ④ 本款没记过「收小后游戏照旧映射到收掉的那段」（full_flag，svc_mem.c 发现就记、下次起局恢复原值）。
+//   收到窗口末、按 GiB 取整；不足 8 GiB 不收（39 位款的别名区标准是 64 GiB，收到太小风险大于收益，照旧走远端）
+uint64_t s2a_alias_report_size(uint64_t alias_base, uint64_t alias_size, uint64_t win_end, uint64_t hole, uint64_t need, int alias_gb, int full_flag) {
+    if (alias_gb || full_flag || !need || hole >= need || alias_base + alias_size <= win_end || win_end <= alias_base) return alias_size;
+    uint64_t r = (win_end - alias_base) & ~(GB - 1);
+    return r >= 8 * GB && r < alias_size ? r : alias_size;
+}
+
 int s2a_layout_compute(uint32_t as_type, uint64_t sys_resource_size, uint64_t module_span, int alias_gb, uint64_t W, uint64_t S, s2a_layout *o, uint64_t *mod_base, uint64_t *shadow_base) {
     memset(o, 0, sizeof *o); *mod_base = *shadow_base = 0;
     uint64_t top = s2a_as_type_top(as_type);
     if (!top) return -1;
-    if ((W & (GB - 1)) || module_span > 64 * GB || W > top || S > top - W) return -2;
+    if ((W & (GB - 1)) || module_span > 64 * GB || !s2a_as_type_end(as_type, W, S)) return -2;   // 36 位款可在 2^36 以上按 2^36 对齐的一块里（as_type.h）
     uint64_t mod = A2M(module_span);
     o->win_base = W; o->as_type = as_type; o->sys_resource_size = sys_resource_size;
     if (as_type == 1) { if (as36(o, W, S, mod, mod_base)) { memset(o, 0, sizeof *o); return -2; } return 0; }

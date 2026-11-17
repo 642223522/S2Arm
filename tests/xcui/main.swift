@@ -13,6 +13,7 @@ ck(p(#"{"bundle":"b","steps":[{"slider":"s","to":1.5}]}"#) == nil, "滑条位置
 ck(p(#"{"steps":[{"wait":1}]}"#) == nil, "缺 bundle 拒收")
 ck(p(#"{"bundle":"x","steps":[]}"#) == nil, "空步拒收")
 ck(p(#"{"bundle":"x","steps":[{"wait":1},{"swipe":[1,2]}]}"#) == nil, "认不出的步整份拒收（不半途执行）")
+ck(p(#"{"bundle":"x","steps":[{"swipe":"mods.item.A","timeout":4}]}"#)?.steps == [.swipeLeft(id: "mods.item.A", timeout: 4)], "swipe：按标识左滑（表格行左滑出删除）")
 ck(p(#"{"bundle":"x","steps":[{"tapxy":[1]}]}"#) == nil, "坐标不是两个数拒收")
 ck(p(#"{"bundle":"x","steps":[{"press":[1,2,0]}]}"#) == nil, "按住 0 秒拒收")
 ck(p(#"{"bundle":"b","steps":[{"type":"s2a.textinput.field","text":"李雷ab"},{"type":"f","text":"x","timeout":3}]}"#) == XCUIPlan(bundle: "b", steps: [.typeText(id: "s2a.textinput.field", text: "李雷ab", timeout: 10), .typeText(id: "f", text: "x", timeout: 3)]),

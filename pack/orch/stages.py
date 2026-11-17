@@ -7,6 +7,7 @@ the bash mechanism rows and add the orchestration sources (issue1100 contract).
 """
 from __future__ import annotations
 
+import os as _pw_os, sys as _pw_sys; _pw_sys.path.append(_pw_os.path.join(_pw_os.path.dirname(_pw_os.path.abspath(__file__)), '..', '..', 'tools')); from pool_workers import cores  # noqa: E402  核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import hashlib
@@ -17,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -24,7 +26,7 @@ import tempfile
 import time
 
 from .bash import find_bash
-from .roots import REPO, Roots, copy_file, git, is_link, plain_entries, read, remove_owned, text
+from .roots import REPO, Roots, copy_file, git, is_link, plain_entries, read, remove_owned, snapshot, text
 
 ENTRY = {'rewrite': 'pack/stage_rewrite.sh', 'romfsidx': 'pack/stages/romfsidx.sh',
          'direct_profile': 'pack/stage_direct_profile.sh'}
@@ -140,7 +142,8 @@ class Dependencies:
         self.env['PYTHONIOENCODING'] = 'utf-8'
         self.env['S2A_DEPS_OUT'] = str(self.raw)
         self.env['PYTHONPATH'] = str(REPO / 'tools/stage_deps_hook') + (os.pathsep + self.env['PYTHONPATH'] if self.env.get('PYTHONPATH') else '')
-        self.env.setdefault('S2A_DEPS_EXTERNAL', machine_cfg(self.env, 'S2A_COMMUNITY_DIR'))
+        if 'S2A_DEPS_EXTERNAL' not in self.env:   # 原先 setdefault 先求值：每个阶段的依赖记账都起一次 Git Bash 跑 machine.sh（11-16 极速出包定因）
+            self.env['S2A_DEPS_EXTERNAL'] = machine_cfg(self.env, 'S2A_COMMUNITY_DIR')
         self.py = self.env.get('S2A_PYTHON') or self.env.get('S2A_PY') or sys.executable
         self.inputs = set()
         # Retain the existing root-clone algorithm identity even on Windows,
@@ -187,18 +190,35 @@ def romfs_walk(path):
     return module('graphics/nvn/tools/romfs_list.py', '_orch_romfs_list').walk(path)
 
 
+def _own_romfs_list():
+    """本文件所在仓库的 graphics/nvn/tools/romfs_list.py（不随单测换掉的 REPO），进程内只载一次"""
+    lister = sys.modules.get('_orch_layout_romfs_list')
+    if lister is None:
+        spec = importlib.util.spec_from_file_location('_orch_layout_romfs_list', Path(__file__).resolve().parents[2] / 'graphics/nvn/tools/romfs_list.py')
+        lister = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(lister)
+        sys.modules['_orch_layout_romfs_list'] = lister
+    return lister
+
+
+def romfs_file(top):
+    """RomFS 里按相对路径（/ 分隔）取单个文件 → (在不在, 读全部字节)。目录不在、旁边有 <top>.std（标准 RomFS 镜像）就从镜像取
+    （graphics/nvn/tools/romfs_list.py image_of 的约定）；目录在照旧按路径取，不盘点整棵。取本文件所在仓库的 romfs_list（同 layout_source_identity，不随单测换掉的 REPO）"""
+    lister = _own_romfs_list()
+    image = lister.image_of(top)
+    if image is None:
+        return (lambda rel: (Path(top) / rel).is_file()), (lambda rel: (Path(top) / rel).read_bytes())
+    im = lister._romfs_image(image)   # romfs_list 找 pack/romfs_img.py 的同一条路（随 Jobs 拷出去时与它同目录）
+    return (lambda rel: rel in im), im.read
+
+
 def layout_source_identity(original):
     """布局覆盖包的原版身份（审计 #1534 P1-54，同 pack/stage_uilayout.sh）：原版 Layout / UI / Pack 的盘点身份（romfs_list：相对路径 + 大小 + 修改时间纳秒，只 lstat）
     合成 12 位，进覆盖包目录名；原版变了构建号没变也重新生成。取本文件所在仓库的 romfs_list（不随单测换掉的 REPO）"""
-    walker = sys.modules.get('_orch_layout_romfs_list')
-    if walker is None:
-        spec = importlib.util.spec_from_file_location('_orch_layout_romfs_list', Path(__file__).resolve().parents[2] / 'graphics/nvn/tools/romfs_list.py')
-        walker = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(walker)
-        sys.modules['_orch_layout_romfs_list'] = walker
+    walker = _own_romfs_list()
     h = hashlib.sha256()
     for name in ('Layout', 'UI', 'Pack'):
-        if (Path(original) / name).is_dir():
+        if walker.is_dir(Path(original) / name):   # 同 Path.is_dir；原版只有镜像 romfs.std 时看镜像里有没有这个目录
             identity = walker.scan(Path(original) / name).identity
             if identity is None:
                 raise StageError('布局盘点不了原版romfs的' + name)
@@ -209,17 +229,18 @@ def layout_source_identity(original):
 def rewrite_inputs(root):
     root = Path(root)
     paths = [p for p in (root / 'exefs').iterdir() if p.is_file()]
-    if (root / 'romfs').is_dir():
+    # RomFS 按路径读经 romfs_list（is_dir / open_file：romfs/ 不在、只有 romfs.std 镜像时从镜像盘点与读，键与目录形态相同）
+    walker = module('graphics/nvn/tools/romfs_list.py', '_orch_romfs_list')
+    if walker.is_dir(root / 'romfs'):
         def fail(error):
             raise error
-        walker = module('graphics/nvn/tools/romfs_list.py', '_orch_romfs_list')
         for directory, _, names in walker.walk(root / 'romfs', onerror=fail):
             paths.extend(Path(directory) / n for n in names if n.lower().endswith(('.nro', '.nrr')))
     h = hashlib.sha256(b'rewrite-inputs-v1\0')
     for path in sorted(paths, key=lambda p: os.fsencode(p.relative_to(root).as_posix())):
         rel = os.fsencode(path.relative_to(root).as_posix())
         content = hashlib.sha256()
-        with path.open('rb') as stream:
+        with walker.open_file(path) as stream:
             for block in iter(lambda: stream.read(1024 * 1024), b''):
                 content.update(block)
         h.update(len(rel).to_bytes(8, 'little') + rel + content.digest())
@@ -239,11 +260,21 @@ def selected_tables(game, bid, env):
             else: os.environ[k] = v
 
 
+_MACHINE_CFG = {}   # 进程内只读一次 machine.local（每次都起 Git Bash，一单的轻阶段里要问十来次；machine.local 在一单之内不变）
+
+
 def machine_cfg(env, name):
     """本机配置一项：env 里非空用它，否则 tools/machine.local 的值（tools/machine.sh get，S2A_MACHINE_NO_LOCAL=1 不读；玩家作业恒设），都没有 = ''。
-    不在代码里写死开发机路径（11-07 启动器零配置）：开发机的数据目录在 machine.local 声明"""
+    不在代码里写死开发机路径（11-07 启动器零配置）：开发机的数据目录在 machine.local 声明。同一进程同一项只问一次"""
     if env.get(name):
         return env[name]
+    cached = (name, env.get('S2A_MACHINE_NO_LOCAL', ''), env.get('S2A_BASH', ''))
+    if cached not in _MACHINE_CFG:
+        _MACHINE_CFG[cached] = _machine_cfg_read(env, name)
+    return _MACHINE_CFG[cached]
+
+
+def _machine_cfg_read(env, name):
     bash = find_bash(env)
     if not bash:
         return ''
@@ -307,6 +338,7 @@ def rewrite_plan(game, current, deps):
                      and len(line.split('\t')) >= 4 and line.split('\t')[0].upper() == pid
                      and line.split('\t')[1].lower() == bid and line.split('\t')[3].lower() == 'apple'), '')   # F7 #1574：苹果路线只取 apple 行
     fps = REPO / f'runtime/fps/{bid[:16]}.tsv'
+    fix = REPO / f'runtime/fix/{bid[:16]}.tsv'   # 游戏缺陷修补表（改写器 fix_rows）：仓库源表，改写器直接读，不进产物根
     dirs, selection, on = community_selection(env, pid, bid)
     if env.get('S2A_COMMUNITY_SELECT'):
         deps.record(env['S2A_COMMUNITY_SELECT'])
@@ -326,7 +358,7 @@ def rewrite_plan(game, current, deps):
     ak, _ = deps.python('tools/addr_need.py', bid, addr, '--npdm', npdm, '--key', '--main', main, log=ad / 'log')
     sd, _ = deps.python('pack/rewriter.py', 'source')
     kr = digest(sd.strip() + '\n' + (REPO / 'runtime/rewriter/nro_to_nso.py').read_text(encoding='utf-8'), 40)
-    ks = git('rev-parse', 'HEAD:graphics/widen/scan')
+    ks = scan_tree()
     rk, _ = deps.python('pack/rewriter.py', 'key')
     target = env.get('S2A_TARGET', 'apple')
     env.setdefault('S2A_REWRITE_SPIN', '1')
@@ -348,33 +380,87 @@ def rewrite_plan(game, current, deps):
         patch = None
     key = digest(f'{key} backend={rk.strip()}{ck}{code}' +
                  (f' fps={digest(fps.read_bytes())}' if fps.is_file() else '') +
+                 (f' fix={digest(fix.read_bytes())}' if fix.is_file() else '') +
                  (f' verified={digest(verified)}' if verified else ''), 10)
     key = digest(f'{key} inputs={rewrite_inputs(current)}', 10)
     tag = f'rw-{key}' + (f'-{target}' if target != 'apple' else '') + ('-spin' if spin else '')
     deps.record('graphics/nvn/tools/romfs_list.py')
     return dict(key=key, tag=tag, bid=bid, tables=tables, verified=verified,
-                fps=fps if fps.is_file() else None, patch=patch, addr=addr,
+                fps=fps if fps.is_file() else None, fix=fix if fix.is_file() else None, patch=patch, addr=addr,
                 addr_log=ad / 'log', community=bool(ck), dirs=dirs, selection=selection)
 
 
+def scan_tree():
+    """graphics/widen/scan 的树对象号（改写阶段键；同 pack/stage_keyfiles.sh scan_tree）：发布快照读 engine.json，开发树走 git"""
+    return snapshot('scanTree') or git('rev-parse', 'HEAD:graphics/widen/scan')
+
+
+def romfs_writer_oids():
+    """RomFS 索引写法 4 个文件的对象号（同 pack/stage_keyfiles.sh romfs_writer_oids）"""
+    return snapshot('romfsIndexOids') or git('rev-parse', 'HEAD:services/S2A.Services/RomFsIndex.cs',
+                                             'HEAD:services/romfs_index', 'HEAD:services/romfs_index.sh',
+                                             'HEAD:compat/tree/Directory.Packages.props').splitlines()
+
+
 def romfsidx_key(current):
-    oids = git('rev-parse', 'HEAD:services/S2A.Services/RomFsIndex.cs',
-               'HEAD:services/romfs_index', 'HEAD:services/romfs_index.sh',
-               'HEAD:compat/tree/Directory.Packages.props').splitlines()
+    oids = romfs_writer_oids()
     if len(oids) != 4:
         raise StageError('RomFS 索引源码对象不完整')
     kt = digest('\n'.join(oids) + '\n')
     h = hashlib.sha256()
     base = current / 'romfs'
-    for directory, dirs, files in romfs_walk(base):
+    # 一次盘点（romfs_list.scan：每个条目 lstat 一次；镜像形态从镜像文件表取长度）拿大小，不再逐个文件 stat（11-16 实测：4.2 万个文件的款 3.4–4 秒 → 0.09 秒）；
+    #   遍历顺序与每行字节同原先（walk 同一棵盘点、目录名 / 文件名排序；普通文件 lstat 大小 = stat 大小），键逐字节不变（tests/romfsidx_key_test.py 对拍）。
+    #   不是普通文件的条目（软链等，产物根里本来没有）照旧按路径跟随取大小
+    lister = module('graphics/nvn/tools/romfs_list.py', '_orch_romfs_list')
+    tree = lister.scan(base)
+    sizes = {e.rel: e.lstat.st_size for e in tree.entries if e.lstat is not None and stat.S_ISREG(e.lstat.st_mode)}
+    for directory, dirs, files in tree.walk():
         dirs.sort()
         for name in sorted(files):
             p = Path(directory) / name
-            h.update(f'{p.relative_to(base).as_posix()}\t{p.stat().st_size}\n'.encode())
+            rel = p.relative_to(base).as_posix()
+            h.update(f'{rel}\t{sizes[rel] if rel in sizes else lister.file_size(p)}\n'.encode())
     over = overlay_sizes(current)
     if over:   # 界面布局覆盖层（_uilayout）：覆盖文件的大小也进键（没有覆盖层的版本键与原先相同）
         h.update(''.join(f'ui_overlay\t{n}\t{over[n]}\n' for n in sorted(over)).encode())
     return digest(f'{h.hexdigest()[:16]} {kt}')
+
+
+BUILD_PROPS = ('directory.build.props', 'directory.build.targets', 'directory.packages.props', 'global.json', 'nuget.config')
+
+
+def build_identity(project):
+    """.NET 工程的源码内容身份（12 位）：沿 ProjectReference 收齐闭包里的工程，每个工程目录下全部文件（跳过 bin / obj）按「仓库相对路径 + 字节」喂 SHA-256，
+    再加各工程目录到仓库根之间的 Directory.Build.* / Directory.Packages.props / global.json / NuGet.config（包版本、编译选项）。不用 git：玩家机的引擎快照不是 git 仓库"""
+    projects, todo = set(), [Path(project).resolve()]
+    while todo:
+        p = todo.pop()
+        if p in projects:
+            continue
+        projects.add(p)
+        todo.extend((p.parent / ref.replace('\\', '/')).resolve()
+                    for ref in re.findall(r'<ProjectReference\s+Include="([^"]+)"', p.read_text(encoding='utf-8-sig')))
+    repo, files = REPO.resolve(), set()
+    for p in projects:
+        files.update(_source_files(p.parent))
+        for d in (p.parent, *p.parent.parents):
+            if d == repo.parent:
+                break
+            files.update(f for f in d.iterdir() if f.is_file() and f.name.lower() in BUILD_PROPS)
+    h = hashlib.sha256(b'build-identity-v1\0')
+    for f in sorted(files, key=lambda f: f.relative_to(repo).as_posix()):
+        h.update(f.relative_to(repo).as_posix().encode() + b'\0' + f.read_bytes() + b'\0')
+    return h.hexdigest()[:12]
+
+
+def _source_files(top):
+    """工程目录下的源文件（跳过编译产物 bin / obj，任意层）"""
+    out = []
+    for directory, dirs, names in os.walk(top):
+        dirs[:] = [d for d in dirs if d.lower() not in ('bin', 'obj')]
+        out.extend(Path(directory) / n for n in names)
+    return out
 
 
 def overlay_sizes(version):
@@ -394,7 +480,14 @@ class Stages:
         target = w / 'romfs.s2aidx'
         target.unlink(missing_ok=True)
         listing = deps.work / 'romfs-list.tsv'
-        deps.python('graphics/nvn/tools/romfs_list.py', 'sizes', w / 'romfs', listing, log=w / 'romfs_index.log')
+        # 清单同 romfs_list.py sizes（盘点顺序、普通文件 lstat 大小），在本进程里写：原先为它另起一个 Python 进程（11-16 出包轻阶段定因）
+        tree = module('graphics/nvn/tools/romfs_list.py', '_orch_romfs_list').scan(w / 'romfs')
+        bad = [(rel, err) for rel, err in tree.errors.items()] + [(e.rel, e.lstat_error) for e in tree.entries if e.lstat_error is not None]
+        if bad:
+            raise StageError(f'RomFS 索引清单：读不开 {bad[0][0] or tree.top}：{bad[0][1]}')
+        with open(listing, 'w', encoding='utf-8', errors='surrogateescape', newline='\n') as f:
+            f.writelines(f'{e.lstat.st_size}\t{e.rel}\n' for e in tree.entries if stat.S_ISREG(e.lstat.st_mode))
+        text(w / 'romfs_index.log', '')
         over = overlay_sizes(w)
         if over:   # 覆盖层优先：索引只认路径与大小（RomFsIndex --list 用 SizeOnlyFile），覆盖文件换成覆盖层那份的大小
             rows = listing.read_text(encoding='utf-8').splitlines()
@@ -404,27 +497,52 @@ class Stages:
                 raise StageError(f'界面布局覆盖层有底下 RomFS 没有的文件（{extra[:3]}）：覆盖层只许替换')
             listing.write_text(''.join(f'{over.get(r.split(chr(9), 1)[1], r.split(chr(9), 1)[0])}\t{r.split(chr(9), 1)[1]}\n'
                                        for r in rows if '\t' in r), encoding='utf-8', newline='\n')
-        dotnet = os.environ.get('DOTNET') or shutil.which('dotnet')
-        if not dotnet:
-            raise StageError('winenv：缺 .NET 命令；不下载', 75)
         prebuilt = os.environ.get('S2A_PREBUILT_TOOLS')
-        if prebuilt:
-            dll = Path(prebuilt) / 'romfs/romfs_index.dll'
+        if prebuilt:   # 发版件：NativeAOT 单文件，直接执行（玩家机不带 .NET；launchers/windows/bundle_prepare_win.py）
+            exe = Path(prebuilt) / ('romfs/romfs_index.exe' if os.name == 'nt' else 'romfs/romfs_index')
+            if not exe.is_file():
+                raise StageError(f'winenv：缺预编 RomFS 索引 {exe}', 75)
+            cmd = [exe]
         else:
-            # --no-restore avoids implicit NuGet/network downloads; missing
-            # restored inputs are an explicit environment failure.
-            dll = REPO / 'services/romfs_index/bin/Release/net10.0/romfs_index.dll'
-            try:
-                run([dotnet, 'build', REPO / 'services/romfs_index', '-c', 'Release',
-                     '-nologo', '-v', 'q', '--no-restore', '-m:2', '-nr:false',
-                     '-p:UseSharedCompilation=false'], env=deps.env, log=w / 'romfs_index_build.log', timeout=300)
-            except StageError as error:
-                raise StageError('winenv：RomFS 索引构建/已还原依赖未就绪；未运行旧 DLL', 75) from error
-        if not dll.is_file():
-            raise StageError('winenv：缺本次指定的 romfs_index.dll', 75)
-        run([dotnet, dll, w, '--list', listing], env=deps.env, log=w / 'romfs_index_core.log')
+            dotnet = os.environ.get('DOTNET') or shutil.which('dotnet')
+            if not dotnet:
+                raise StageError('winenv：缺 .NET 命令；不下载', 75)
+            dll = self._index_tool(dotnet, deps, w / 'romfs_index_build.log')
+            if not dll.is_file():
+                raise StageError('winenv：缺本次指定的 romfs_index.dll', 75)
+            cmd = [dotnet, dll]
+        run([*cmd, w, '--list', listing], env=deps.env, log=w / 'romfs_index_core.log')
         if not target.is_file() or target.stat().st_size == 0:
             raise StageError('RomFS 索引为空，拒绝提交')
+
+    def _index_tool(self, dotnet, deps, log):
+        """源码现编的 RomFS 索引工具：按构建闭包的源码内容身份编一次，放 <S2A_RUN_ROOT>/s2arm/bin/romfs_index_<身份>/，同身份复用（同 _nxu）。
+        原先每次都在仓库树里 dotnet build：工程引用整个服务层（26 个工程），已编过的树增量检查也要十几秒，Windows 出包机道每单新建工作树、每单全量编半分钟以上（11-16 出包轻阶段定因）。
+        身份 = 闭包里每个工程目录的全部源文件（不含 bin / obj）+ 上级目录的 Directory.* / global.json / NuGet.config：改了任何一处就重编，不会拿旧的顶上"""
+        project = REPO / 'services/romfs_index'
+        dest = self._run_root() / 's2arm/bin' / ('romfs_index_' + build_identity(project / 'romfs_index.csproj'))
+        if (dest / 'romfs_index.dll').is_file() and not is_link(dest):
+            text(log, f'复用 {dest}\n')
+            return dest / 'romfs_index.dll'
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=dest.name + '.tmp.', dir=dest.parent) as temporary:
+            output = Path(temporary) / 'build'
+            # --no-restore avoids implicit NuGet/network downloads; missing
+            # restored inputs are an explicit environment failure.
+            try:
+                run([dotnet, 'build', project, '-c', 'Release', '-o', output,
+                     '-nologo', '-v', 'q', '--no-restore', '-m:2', '-nr:false',
+                     '-p:UseSharedCompilation=false'], env=deps.env, log=log, timeout=300)
+            except StageError as error:
+                raise StageError('winenv：RomFS 索引构建/已还原依赖未就绪；未运行旧 DLL', 75) from error
+            if not (output / 'romfs_index.dll').is_file():
+                raise StageError('winenv：缺本次指定的 romfs_index.dll', 75)
+            try:
+                output.rename(dest)
+            except OSError as error:   # 别的作业同时编好了同一身份：用它的
+                if error.errno not in (errno.EEXIST, errno.ENOTEMPTY, errno.EACCES) or is_link(dest) or not (dest / 'romfs_index.dll').is_file():
+                    raise
+        return dest / 'romfs_index.dll'
 
     def _direct_profile(self, tx, deps, plan):
         w = tx.path
@@ -456,6 +574,10 @@ class Stages:
             env['S2A_FPS_TSV'] = str(w / 'fps.tsv')
         else:
             env.pop('S2A_FPS_TSV', None)
+        if plan.get('fix'):
+            env['S2A_FIX_TSV'] = str(plan['fix'])
+        else:
+            env.pop('S2A_FIX_TSV', None)
         if plan['patch']:
             env.update(S2A_CODE_PATCH=str(plan['patch']), S2A_CODE_BUILD=plan['bid'])
         else:
@@ -464,7 +586,7 @@ class Stages:
         modules = sorted(p for p in (w / 'exefs').iterdir() if p.is_file() and
                          (p.name in ('main', 'sdk') or len(p.name) == 7 and p.name.startswith('subsdk') and p.name[-1].isdigit()))
         modules += sorted(p for p in (w / 'nroexe').glob('nro*') if p.is_file())
-        jobs = int(env.get('S2A_JOBS') or os.cpu_count() or 0)
+        jobs = int(env.get('S2A_JOBS') or cores())
         if jobs < 1:
             raise StageError('无法确定正数并发度')
 
@@ -514,7 +636,8 @@ class Stages:
         if stage not in ENTRY:
             raise ValueError('仅支持 rewrite,romfsidx,direct_profile')
         current = self.roots.cur(game)
-        if not current or not (current / 'exefs').is_dir() or not (current / 'romfs').is_dir():
+        # RomFS 是目录 romfs/ 或镜像 romfs.std 都行（romfs_list.is_dir：目录不在、旁边有 .std 也算）
+        if not current or not (current / 'exefs').is_dir() or not module('graphics/nvn/tools/romfs_list.py', '_orch_romfs_list').is_dir(current / 'romfs'):
             raise StageError('缺现行 exefs/romfs；先 --from-extract 播种')
         self.roots._validate(current, game)
         deps = Dependencies(stage, current)
@@ -741,7 +864,7 @@ class Stages:
     def _uilayout(self, game):
         start = time.perf_counter()
         current = self._light_current(game)
-        if not (current / 'romfs').is_dir():
+        if not (current / 'romfs').is_dir() and not (current / 'romfs.std').is_file():   # RomFS 是目录或镜像 romfs.std 都行：本阶段不写 RomFS
             return self._result('uilayout', start, current, None, skipped=True)
         # 原版：seed.txt 记的解包目录 romfs——它在、而且是这一款的（unpack.tsv 程序号对得上）才用（旧格式版本就地改过 RomFS 时靠它还原，见下面 restore）；
         #   否则用现行产物根的 romfs：本阶段只写覆盖层，Windows 别的阶段也不改 romfs，它一直联到播种时那份不可变的身份。
@@ -750,10 +873,17 @@ class Stages:
         source = next((line[4:] for line in read(current / 'seed.txt').splitlines() if line.startswith('src=')), '')
         original = Path(source) / 'romfs' if source else None
         theirs, ours = _title_id(Path(source)) if source else '', _title_id(current)
-        if original is None or not original.is_dir() or (theirs and ours and theirs != ours):
+        lister = _own_romfs_list()   # RomFS 在不在、有没有 Layout / UI / Pack：目录或镜像 romfs.std 都认（romfs_list.is_dir）
+        if original is None or not lister.is_dir(original) or (theirs and ours and theirs != ours):
             print(f'【黄】布局原版改用现行产物根的 RomFS（seed.txt 记的解包目录{"是另一款 " + theirs + " 的" if theirs and ours and theirs != ours else "不在或已失效"}）', file=sys.stderr)
             original = current / 'romfs'
-        plain_entries(original)
+        # 散文件目录要核没有链接 / 特殊文件；镜像 romfs.std 里只有文件和目录，没有可核的。
+        # 只校验生成器真正读的三处（graphics/widen/scan/ui_lyt.py 缺省子目录 Layout,UI,Pack；王国之泪的字典包 Pack/ZsDic 也在其内）：
+        #   原先对整份原版 RomFS 逐文件 lstat / stat，结果不用，大款每单十几到几十秒（11-16 极速出包定因）；整份 RomFS 播种时已校验过（refresh.py）
+        if original.is_dir():
+            for name in ('Layout', 'UI', 'Pack'):
+                if (original / name).is_dir():
+                    plain_entries(original / name)
         generator = REPO / 'graphics/widen/scan/ui_lyt.py'
         # Current repository import closure, including both on-demand C codecs.
         # Decoder fixes must invalidate overlays as well as the stage stamp.
@@ -766,7 +896,7 @@ class Stages:
         overlay = Path(os.environ.get('S2A_WIDEN_DIR', self._run_root() / 's2arm/widen')) / (game + '_' + bid) / f'ui_w{width}_{tv}_{layout_source_identity(original)}'
         if is_link(overlay) or is_link(overlay.parent):
             raise StageError('布局覆盖缓存不能是链接')
-        if not overlay.is_dir() and any((original / p).is_dir() for p in ('Layout', 'UI', 'Pack')):
+        if not overlay.is_dir() and any(lister.is_dir(original / p) for p in ('Layout', 'UI', 'Pack')):
             overlay.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.TemporaryDirectory(prefix=overlay.name + '.tmp.', dir=overlay.parent) as temporary:
                 work = Path(temporary)
@@ -812,18 +942,23 @@ class Stages:
         try:
             base = tx.path / 'romfs'
             previous = [self._layout_name(p) for p in read(tx.path / 'ui_overlay.tsv').splitlines() if p]
-            missing = {p for p in set(files + previous) if not (original / p).is_file() or not (base / p).is_file()}
+            (in_original, read_original), (in_base, read_base) = romfs_file(original), romfs_file(base)
+            missing = {p for p in set(files + previous) if not in_original(p) or not in_base(p)}
             if missing:
                 print(f'【黄】布局原版/现行没有{len(missing)}项，只许替换、跳过', file=sys.stderr)
             files = [p for p in files if p not in missing]
             # 上一版覆盖过、这一版不覆盖的：底下 RomFS 若不是原版（旧格式版本就地改过 RomFS）就把原版放进覆盖层；清单记覆盖层里的全部文件，下一版照样核
-            restore = [p for p in sorted(set(previous) - set(files) - missing) if (base / p).read_bytes() != (original / p).read_bytes()]
+            restore = [p for p in sorted(set(previous) - set(files) - missing) if read_base(p) != read_original(p)]
             layer = tx.path / 'ui_overlay'
             remove_owned(layer)
-            for name, source in [(p, overlay / 'romfs' / p) for p in files] + [(p, original / p) for p in restore]:
+            for name in files + restore:
                 target = layer / 'romfs' / name
                 target.parent.mkdir(parents=True, exist_ok=True)
-                copy_file(source, target)
+                source = overlay / 'romfs' / name if name in files else original / name
+                if source.is_file():
+                    copy_file(source, target)
+                else:   # 原版是镜像 romfs.std（romfs_file）：没有散文件可克隆，按字节写
+                    target.write_bytes(read_original(name))
             text(tx.path / 'ui_overlay.tsv', ''.join(p + '\n' for p in sorted(set(files) | set(restore), key=lambda p: p.encode('utf-8'))))
             text(tx.path / '.stage_uilayout', key + '\n')
             (tx.path / '.stage_romfsidx').unlink(missing_ok=True)
@@ -1034,7 +1169,7 @@ class Stages:
         identity = hashlib.sha256(b''.join(p.read_bytes() for p in inputs)).hexdigest()[:12]
         dest = self._run_root() / 's2arm/bin' / ('nx_unpack_' + identity)
         name = 'nx_unpack.exe' if os.name == 'nt' else 'nx_unpack'
-        pre = os.environ.get('S2A_PREBUILT_TOOLS')   # 启动器随发版预编（同 oneclick_win.nx_unpack，身份相同才用）：玩家机只带 .NET 运行时、现编不了
+        pre = os.environ.get('S2A_PREBUILT_TOOLS')   # 启动器随发版预编（同 oneclick_win.nx_unpack，身份相同才用；NativeAOT 单文件）：玩家机没有 .NET、现编不了
         if pre:
             tool = Path(pre, 'nx_unpack', name)
             try:
@@ -1305,9 +1440,9 @@ class Stages:
                     copy_file(source / 'aoc.log', tx.path / 'aoc.log')
                     if keep:
                         return self._light_commit(tx, 'aoc', start, None, ('aoc.log',))
-                    remove_owned(tx.path / 'aoc')
+                    remove_owned(tx.path / 'aoc'); tx.replaced('aoc')   # 整目录替换（roots.Transaction.replaced：提交时不按原地改核这棵）
                     if (source / 'aoc').is_dir():
-                        self.roots._copy_tree(source / 'aoc', tx.path / 'aoc')
+                        self.roots._copy_tree(source / 'aoc', tx.path / 'aoc', hardlink=True)   # 缓存同样不原地改（roots.SHARED_TREES）
                     (tx.path / 'aoc.tsv').unlink(missing_ok=True)
                     copy_file(source / 'aoc.tsv', tx.path / 'aoc.tsv')
                     deps.save(tx.path, base)

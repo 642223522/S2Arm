@@ -27,6 +27,7 @@ namespace S2A.Services
         private const int ReloadEveryTicks = 12;
         private static long _keys;
         private static Thread _thread;
+        private static CancellationTokenSource _stop;
         private static readonly HashSet<string> _native = new(StringComparer.Ordinal);   // 上次交原生层开着的编进包条目：文件删了 / 改名后要关掉
 
         public struct Entry
@@ -85,20 +86,32 @@ namespace S2A.Services
             try { dir = Marshal.PtrToStringUTF8((IntPtr)Imports.s2a_cheats_dir()); }
             catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException) { return; }
             if (string.IsNullOrEmpty(dir)) return;
-            _thread = new Thread(() => Run(dir)) { Name = "S2A.Cheats", IsBackground = true, Priority = ThreadPriority.BelowNormal };
+            var stop = _stop = new CancellationTokenSource();
+            _thread = new Thread(() => Run(dir, stop.Token)) { Name = "S2A.Cheats", IsBackground = true, Priority = ThreadPriority.BelowNormal };
             _thread.Start();
+        }
+
+        // 收局（Exports.ShutdownManaged）：停线程、清掉跨局状态。进程内重启时原生层会话复位把编进包的开关全清成关（runtime/src/cpatch.c s2a_cpatch_session_reset），
+        //   线程不停的话下一局 Start 见线程还在就返回、文件没改也不重载，开关不再交原生层，status.txt 仍写「生效中（编进游戏）」（审计 P1-185）
+        public static void Stop()
+        {
+            Thread t = _thread; if (t == null) return;
+            _stop.Cancel();
+            if (!t.Join(3000)) Console.Error.WriteLine("【红】金手指：线程 3 秒内没停下");
+            _thread = null; _stop = null; _native.Clear(); seenNative = new HashSet<string>(StringComparer.Ordinal);
         }
 
         private sealed class Item
         {
             public Entry Entry; public ITamperProgram Code; public string Status; public bool Off;
+            public bool Shipped;   // 文件是电脑出包时随包带来的（文档根 cheats/.packed 记着，runtime/src/cpatch.c seed_cheats）：改代码的条目没编进包 ≠ 手机上导入的
         }
 
-        private static void Run(string dir)
+        private static void Run(string dir, CancellationToken stop)
         {
             var programs = new List<Item>();
             string seen = null;
-            for (int tick = 0; ; tick++)
+            for (int tick = 0; !stop.IsCancellationRequested; tick++)
             {
                 if (tick % ReloadEveryTicks == 0)
                 {
@@ -138,13 +151,14 @@ namespace S2A.Services
                     }
                     if (p.Code.Process.TamperedCodeMemory)
                     {
-                        p.Off = true; p.Status = "改代码，不支持"; changed = true;
+                        // #1321：随包带来、却没编进包的（槽 2046 位用尽 / 同点变体超 8 路等，原因在电脑出包完成页）与手机上自己导入的分开说
+                        p.Off = true; p.Status = p.Shipped ? "改代码，没编进包" : "改代码，不支持"; changed = true;
                         Console.Error.WriteLine($"金手指：{p.Entry.Key} 要改代码页（苹果上是签名只读页），已停用");
                     }
                     else if (p.Status == "地址未就绪") { p.Status = "生效中"; changed = true; }
                 }
                 if (changed) WriteStatus(dir, programs);
-                Thread.Sleep(any ? TickMs : TickMs * ReloadEveryTicks / 2);
+                if (stop.WaitHandle.WaitOne(any ? TickMs : TickMs * ReloadEveryTicks / 2)) return;
                 if (!any) tick += ReloadEveryTicks / 2 - 1;
             }
         }
@@ -180,6 +194,8 @@ namespace S2A.Services
             files.Sort(StringComparer.Ordinal);
             int nfiles = 0;
             seenNative = new HashSet<string>(StringComparer.Ordinal);
+            string packedList = Path.Combine(dir, ".packed");   // 随包放进文档根的文件名，一行一个（runtime/src/cpatch.c seed_cheats 写）
+            var shipped = new HashSet<string>(File.Exists(packedList) ? File.ReadAllLines(packedList) : Array.Empty<string>(), StringComparer.Ordinal);
             foreach (string path in files)
             {
                 string name = Path.GetFileName(path);
@@ -194,7 +210,7 @@ namespace S2A.Services
                 entries = entries.FindAll(x => x.Master).Concat(entries.FindAll(x => !x.Master)).ToList();   // 主代码排在同文件普通条目之前执行（Atmosphere 约定），其余保持文件顺序
                 foreach (Entry e in entries)
                 {
-                    var p = new Item { Entry = e };
+                    var p = new Item { Entry = e, Shipped = shipped.Contains(name) };
                     bool on = e.Master ? fileOn : enabled.Contains(e.Key);
                     bool packed = match && exe != 0 && l != null && ToNative(e, on);
                     if (!match) { p.Status = "版本不符"; p.Off = true; }
@@ -246,9 +262,15 @@ namespace S2A.Services
             var sb = new StringBuilder();
             foreach (Item p in programs) sb.Append(p.Entry.Key).Append('\t').Append(p.Status).Append('\n');
             string path = Path.Combine(dir, "status.txt"), tmp = path + ".tmp";
+            // 目录写不进（D-QCTB：iPhone 上 cheats/ 归 root，UnauthorizedAccessException 没接住 → 整局 FailFast）：只记一行红、金手指照常执行，
+            //   状态显示缺了而已；App 改不了这个目录的属主，只有删除重装能清（宿主不迁移、不改名）
             try { File.WriteAllText(tmp, sb.ToString()); File.Move(tmp, path, true); }
-            catch (IOException e) { Console.Error.WriteLine($"金手指：写 status.txt 失败 {e.Message}"); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                if (!_statusWarned) { _statusWarned = true; Console.Error.WriteLine($"【红】金手指：写 status.txt 失败 {e.GetType().Name}: {e.Message}（金手指照常执行，界面看不到状态）"); }
+            }
         }
+        private static bool _statusWarned;
 
         // 「main」区（Atmosphere 区号 0）：偏移按 Horizon 排布算——main 后面首尾相接 subsdk0..N、sdk（各自映像尾 4 KB 对齐），超出 main 的落进后面的模块；
         //   我们的模块按 2 MB 对齐各自摆放（runtime/src/loader.c），直接加 main 基址会写到别的模块的别处（11-13 实测：一款的帧率金手指写 main+0x24191F4，

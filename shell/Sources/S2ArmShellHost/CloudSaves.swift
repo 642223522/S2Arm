@@ -17,7 +17,24 @@ enum CloudSaves {
     ///   书签解析失败、或解析得出但读目录被拒（NSFileReadNoPermissionError 257）。原先只记日志返回 nil，这次同步悄悄跳过、玩家看不到原因
     /// 本次运行里玩家刚选的文件夹（选择器给的 URL 本进程内一直能访问）：书签存不上时也照样用它，玩家选了就能用，不让他换别的文件夹
     nonisolated(unsafe) static var picked: URL?   // 只在主线程读写（选择器回调、起局前同步页、库设置）
+    #if os(tvOS)
+    static var enabled: Bool { true }   // tvOS：存档一直存进本机偏好（见下 tv*），不用选文件夹
+    #else
     static var enabled: Bool { picked != nil || ShellSettingsStore.current.cloudSavesBookmark != nil }
+    #endif
+
+    #if os(tvOS)
+    // tvOS 存档持久化（方案与单测见 launchers/shared/SaveSync/Sources/SaveSync/DeviceSaveStore.swift）：
+    //   存档目录在 Library/Caches（会被系统清），免费 Apple ID 没有 iCloud；「云端」换成本机偏好存储，起局前同步 / 切后台上传照旧走 SaveSyncEngine。
+    /// 超预算时快照落文件的目录：Library/Preferences/tv-saves（和偏好一起留下来）
+    static var tvSpillDirectory: URL {
+        FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0].appendingPathComponent("Preferences/tv-saves", isDirectory: true)
+    }
+    /// 设备号与基线放在会被一起清掉的 <文档根>/save-sync（Library/Caches/S2Arm/save-sync）：清了就按新设备从偏好取回
+    static var tvState: DeviceSaveState { DeviceSaveState(directory: S2ArmContainer.docsRoot().appendingPathComponent("save-sync", isDirectory: true)) }
+    /// 存储格：程序号 + 当前本地玩家（第一个玩家为 first，其余为玩家 uid；都不随安装变）
+    static func tvSlot(_ gameID: String) -> String { gameID + "/" + LocalPlayers(shellDefaults: .standard).current.serviceUser }
+    #endif
     static func access(_ store: ShellSettingsStore = .current) -> Access {
         if let picked { return .ready(picked) }
         guard let data = store.cloudSavesBookmark else { return .off }   // 没开云存档：正常情况，不打日志
@@ -141,6 +158,7 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
+#if !os(tvOS)   // tvOS 没有系统文件夹选择器（UIDocumentPicker）：电视上不出「选择文件夹…」，云存档文件夹只能在 iPhone / Mac 上选
 /// 库设置「云存档 → 选择文件夹…」：系统文件夹选择器，选完记书签
 @MainActor final class CloudFolderPicker: NSObject, UIDocumentPickerDelegate {
     static var current: CloudFolderPicker?
@@ -179,6 +197,7 @@ import UniformTypeIdentifiers
 
 /// 测试开关 S2A_TEST_PICKER=cloud（ios/app.m test_picker）：弹出和库设置「云存档 → 选择文件夹…」同一个选择器
 @_cdecl("s2a_shell_test_cloud_picker") public func s2aShellTestCloudPicker() { MainActor.assumeIsolated { CloudFolderPicker.present() } }
+#endif   // !os(tvOS)
 
 @MainActor func topController() -> UIViewController? {
     let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(\.windows)
@@ -266,7 +285,9 @@ struct CloudSyncView: View {
                 Text(shellText("Choose the iCloud folder again")).font(.system(size: 16, weight: .semibold)).foregroundStyle(.white)
                 Text(reason).font(.system(size: 14)).foregroundStyle(ShellPalette.muted).fixedSize(horizontal: false, vertical: true)
             }
+            #if !os(tvOS)
             primary(shellText("Choose Folder…")) { model.repick() }
+            #endif
             Button(shellText("Don’t sync this time and start")) { model.start() }
                 .font(.system(size: 14, weight: .semibold)).foregroundStyle(ShellPalette.muted).frame(maxWidth: .infinity)
         case .choosing(let choices):
@@ -338,6 +359,7 @@ struct CloudSyncView: View {
         if case .lost(let reason) = access { model.phase = .needsFolder(reason) }
         model.start = { [weak self] in self?.done() }
         model.skip = { [weak self] in NSLog("S2Arm 云存档：玩家跳过这次同步"); self?.work?.cancel() }
+        #if !os(tvOS)
         model.repick = { [weak self] in
             guard let self else { return }
             CloudFolderPicker.present(from: self) { [weak self] url in
@@ -346,6 +368,7 @@ struct CloudSyncView: View {
                 self.engine = self.make(url); self.model.phase = .syncing; self.run()
             }
         }
+        #endif
     }
     /// 只回调一次（跳过与同步结束可能前后脚到）
     func done() { if !finished { finished = true; onDone() } }
@@ -391,8 +414,13 @@ struct CloudSyncView: View {
 
 /// 本款的同步引擎与显示名：没开云存档 / 没有存档身份或服务 / 游戏号无效时回 nil（原因已记日志）
 @MainActor func cloudEngine(_ gameID: UnsafePointer<CChar>?) -> (SaveSyncEngine, String)? {
+    #if os(tvOS)
+    guard let (make, name) = cloudSetup(gameID) else { return nil }
+    return (make(CloudSaves.tvSpillDirectory), name)
+    #else
     guard case .ready(let folder) = CloudSaves.access(), let (make, name) = cloudSetup(gameID) else { return nil }
     return (make(folder), name)
+    #endif
 }
 /// 本款的「按文件夹造同步引擎」与显示名（不碰文件夹授权）：没开云存档 / 没有存档身份或服务 / 游戏号无效时回 nil（原因已记日志）
 @MainActor func cloudSetup(_ gameID: UnsafePointer<CChar>?) -> ((URL) -> SaveSyncEngine, String)? {
@@ -405,12 +433,21 @@ struct CloudSyncView: View {
           gameID.count == 16, gameID.allSatisfy(\.isHexDigit) else { NSLog("S2Arm 云存档：【红】存档身份里没有有效游戏号，不同步"); return nil }
     let work = FileManager.default.temporaryDirectory.appendingPathComponent("s2a-cloud-sync", isDirectory: true)
     let ports = CloudSaves.ports(context)
+    #if os(tvOS)
+    let make = { (_: URL) -> SaveSyncEngine in
+        let slot = CloudSaves.tvSlot(gameID), state = CloudSaves.tvState
+        return SaveSyncEngine(folder: DeviceSaveStore(slot: slot, spillDirectory: CloudSaves.tvSpillDirectory), device: state.device(),
+                              deviceName: UIDevice.current.name, platform: "appletv", work: work, ports: ports,
+                              loadBase: { state.loadBase(slot) }, storeBase: { state.storeBase(slot, $0) })
+    }
+    #else
     let make = { (folder: URL) -> SaveSyncEngine in
         let key = CloudSaves.baseKey(folder: folder, gameID: gameID)
         return SaveSyncEngine(folder: CloudSaveFolder(root: folder, gameID: gameID), device: CloudSaves.deviceID(), deviceName: UIDevice.current.name, platform: UIDevice.current.userInterfaceIdiom == .pad ? "ipad" : "iphone",
                               work: work, ports: ports,
                               loadBase: { UserDefaults.standard.string(forKey: key) }, storeBase: { UserDefaults.standard.set($0, forKey: key) })
     }
+    #endif
     return (make, (context["game"] as? [String: Any])?["name"] as? String ?? gameID)
 }
 
@@ -419,8 +456,12 @@ struct CloudSyncView: View {
 public func s2a_shell_cloud_sync_vc(_ gameID: UnsafePointer<CChar>?, _ done: (@convention(c) (UnsafeMutableRawPointer?) -> Void)?,
                                     _ ctx: UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer? {
     guard let (make, name) = cloudSetup(gameID) else { return nil }
+    #if os(tvOS)
+    let access = CloudSaves.Access.ready(CloudSaves.tvSpillDirectory)   // tvOS：本机偏好存储一直可用
+    #else
     let access = CloudSaves.access()
     if case .off = access { return nil }
+    #endif
     nonisolated(unsafe) let ctx = ctx
     let vc = CloudSyncController(make: make, access: access, game: name) { done?(ctx) }
     return Unmanaged.passRetained(vc as UIViewController).toOpaque()

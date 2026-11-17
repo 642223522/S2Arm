@@ -7,7 +7,10 @@ KEY_LINE = re.compile(r'(?im)^(?P<prefix>[ \t]*[A-Za-z0-9_.-]+[ \t]*=[ \t]*)(?P<
 SECRET = re.compile(r'(?i)(?:password|passwd|secret|token|api[_-]?key|authorization|cookie|serial(?:number)?|udid|uuid|imei|device[_-]?id|android[_-]?id|idfa|idfv|mac[_-]?address|uniqueidentifier|identifierforvendor|tester|(?:^|[_-])keys?(?:[_-]|$)|(?:^|[_-])(?:kek|bek|seed|keyblob)(?:[_-]|$)|titlekek|masterkey|headerkey)')
 
 # Scan keys separately so an innocent outer field cannot hide a nested secret assignment.
-ASSIGNMENT_KEY = re.compile(r"""["']?(?P<name>[A-Za-z_][A-Za-z0-9_.-]*)["']?[^\S\r\n]*[:=][^\S\r\n]*""")
+# 名字只从一串 [A-Za-z0-9_.-] 的开头试（前面的数字 / 点 / 横线由 [0-9.-]* 吃掉，名字仍从串里第一个字母或下划线起）：原写法从串里每个位置起
+#   都把名字吞到串尾再回退，长串（40 KB 的一行日志、base64）上是平方级，40 KB 一行脱敏 18 秒、诊断导出单测 96 秒（11-14 门禁提速）。
+#   结果不变：名字后面必须紧跟引号 / 空白 / [:=]，从串里任何位置起名字都只能在串尾结束，最左匹配本来就落在串里第一个字母或下划线上
+ASSIGNMENT_KEY = re.compile(r"""["']?(?<![A-Za-z0-9_.-])[0-9.-]*(?P<name>[A-Za-z_][A-Za-z0-9_.-]*)["']?[^\S\r\n]*[:=][^\S\r\n]*""")
 
 
 def redact_assignments(text):
@@ -133,7 +136,8 @@ def redact_text(text, *, key_values=None, preserve_identity=False) -> str:
     s = re.sub(r'(?im)(authorization\s*[:=]\s*)[^\r\n]+', r'\1[REDACTED]', s)
     s = re.sub(r'(?i)(https?://)[^/\s:@]+:[^/\s@]+@', r'\1[REDACTED]@', s)
     s = re.sub(r'(?i)([?&](?:token|key|api_key|secret|password|auth|signature|session|access_token)=)[^&#\s]+', r'\1[REDACTED]', s)
-    s = re.sub(r'(?i)((?:password|passwd|secret|token|api[_-]?key|[a-z0-9_]*_key(?:_[a-z0-9]+)*|titlekek|masterkey|headerkey|cookie|serial(?:number)?|udid|uuid|imei|device[_-]?id|android[_-]?id|idfa|idfv|mac[_-]?address|uniqueidentifier|identifierforvendor)\s*["\x27]?\s*[:=]\s*["\x27]?)[^\s,"\x27;}]+', r'\1[REDACTED]', s)
+    # [a-z0-9_]*_key 只从一串 [a-z0-9_] 的开头试（同上 ASSIGNMENT_KEY：串中间起能成的，从串头起也成、且更靠左，原本就轮不到它；原写法长串上平方级）
+    s = re.sub(r'(?i)((?:password|passwd|secret|token|api[_-]?key|(?<![a-z0-9_])[a-z0-9_]*_key(?:_[a-z0-9]+)*|titlekek|masterkey|headerkey|cookie|serial(?:number)?|udid|uuid|imei|device[_-]?id|android[_-]?id|idfa|idfv|mac[_-]?address|uniqueidentifier|identifierforvendor)\s*["\x27]?\s*[:=]\s*["\x27]?)[^\s,"\x27;}]+', r'\1[REDACTED]', s)
     s = redact_identity(s)
     s = re.sub(r'(?:/Volumes/|/private/var/|/var/mobile/|/data/user/|/data/data/|\\\\)[^\r\n\"\x27<>]*', _private_path_keep_reason, s)
     s = re.sub(r'(?:/Users/|/home/|[A-Za-z]:[\\/](?:Users|Documents)[\\/])[^\r\n\"\x27<>]*', _private_path_keep_reason, s)

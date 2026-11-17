@@ -175,6 +175,23 @@ os.remove(cd10 + '/AABBCCDD00112233.txt'); cpatch.plan(r10, '', []); left10 = [f
 del os.environ['S2A_CHEATS_DIRS']
 ck(f'⑩ 金手指原文随包：版本对的那份照原文进产物根、对不上的不带、重跑先清（实得 {sh10}、原文一致 {bool(same10)}、重跑后剩 {left10}）',
    sh10 == ['cheat-src.AABBCCDD00112233.txt'] and same10 and left10 == [])
+# ⑩b 没写构建号的金手指（#1321）：文件名不是 16 位构建号、首行也没 BID= → 不随包、不编；计划日志单独一行「不收 cheat:<文件名> … 没写构建号」（结果页逐份列出），
+#    不再混在「版本不对」里被当成库里别的版本静默略过。期望按构造手写
+r10b = T + '/root10b'; shutil.copytree(root, r10b, ignore=shutil.ignore_patterns('cpatch*', 'cheat-src*')); cd10b = T + '/cheats10b'; os.makedirs(cd10b)
+open(cd10b + '/mine.txt', 'wb').write(good)
+os.environ['S2A_CHEATS_DIRS'] = cd10b; cpatch.plan(r10b, '', []); del os.environ['S2A_CHEATS_DIRS']
+log10b = [l for l in open(r10b + '/cpatch_plan.log', encoding='utf-8').read().splitlines() if 'mine.txt' in l]
+sh10b = [f for f in os.listdir(r10b) if f.startswith('cheat-src.')]
+ck(f'⑩b 没写构建号的金手指：不随包、日志单列「没写构建号」（实得 {log10b}、随包 {sh10b}）',
+   len(log10b) == 1 and log10b[0].startswith('不收\tcheat:mine.txt\tmain\tmine.txt\t没写构建号') and sh10b == [])
+# ⑩c 读不了的金手指文件（原先 except OSError: continue，静默少一份）：金手指目录里一个叫 AABBCCDD00112233.txt 的目录（打开即抛 OSError，各平台都读不了）
+#    → 不随包、计划日志单独一行「不收 cheat:<文件名> … 读不了：」（结果页逐份列出，同 ⑩b）。期望按构造手写
+r10c = T + '/root10c'; shutil.copytree(root, r10c, ignore=shutil.ignore_patterns('cpatch*', 'cheat-src*')); cd10c = T + '/cheats10c'; os.makedirs(cd10c + '/AABBCCDD00112233.txt')
+os.environ['S2A_CHEATS_DIRS'] = cd10c; cpatch.plan(r10c, '', []); del os.environ['S2A_CHEATS_DIRS']
+log10c = [l for l in open(r10c + '/cpatch_plan.log', encoding='utf-8').read().splitlines() if 'AABBCCDD00112233.txt' in l]
+sh10c = [f for f in os.listdir(r10c) if f.startswith('cheat-src.')]
+ck(f'⑩c 读不了的金手指文件：不随包、日志单列「读不了」（实得 {log10c}、随包 {sh10c}）',
+   len(log10c) == 1 and log10c[0].startswith('不收\tcheat:AABBCCDD00112233.txt\tmain\tAABBCCDD00112233.txt\t读不了：') and sh10c == [])
 # ⑪ 跨版本移植（11-13，只做画幅）：主程序构建号 AABB…，补丁库里只有别的版本（1111…）的一份 21:9：0x100 fmov s0,#2.375（= 0x1E207000，imm8 0x03）、数据 0x5100 = 2.3333。
 #    新版程序里那条挪到 0x140、原值 fmov s0,#1.75（16:9 那档，imm8 0x7C → 0x1E2F9000）；数据挪到 0x5180、原值 1.7778。
 #    期望（手算）：移植成 0x140 / 0x5180（log「移植」），再单份参数化（宽侧 21:9，窄侧外推）→ p 140 1e2f9000 → ldr s0,[x16,#1016×8] = bd5fc200「@k」，数据 5180:<1.7778 原字节>:@a4 k1016::@a4
@@ -233,6 +250,100 @@ t15 = [(c[4], c[2]) for c in (l.split('\t') for l in open(r15 + '/cpatch.tsv', e
 p15 = [tuple(l.split('\t# ')[0].split('\t')) for l in open(r15 + '/cpatch_rows.tsv').read().splitlines() if l.startswith('p\t')]
 ck(f'⑮ 金手指同处几档（含别的文件）并存、后写的在前（实得 表 {t15}、行 {p15}）',
    t15 == [('x2', '0'), ('x3', '1'), ('x1', '-'), ('x5', '2')] and p15 == [('p', 'main', '100', '52800009', '528000a9', '2'), ('p', 'main', '100', '52800009', '52800069', '1'), ('p', 'main', '100', '52800009', '52800049', '0')])
+# ⑯ movz / movk 不相邻（11-14：一款游戏的 21:9 补丁 movz w8 @+0x130、movk w8 @+0x138，中间隔一条原指令，原先认不出、移植不了）
+#    u = 21:9 的单精度位；期望（手算）：识别出一处 movpair @0x130、0x138 也算用掉（剩余 0 字）；间距 20 字节（超出上限 16）不认；
+#    中间 @0x134 又给 w8 赋值（movz w8,#1）不认；移植到新版：新版 0x200 movz w8,#lo(16/9) / 0x204 nop / 0x208 movk w8,#hi(16/9) →
+#    写 0x200 = movz w8,#lo(u)、0x208 = movk w8,#hi(u)（新版间距按新版那一对）
+u16 = struct.unpack('<I', struct.pack('<f', 21 / 9))[0]; r16 = struct.unpack('<I', struct.pack('<f', 16 / 9))[0]
+mz = lambda v, rd=8: (0x52800000 | ((v & 0xFFFF) << 5) | rd).to_bytes(4, 'little')
+mk = lambda v, rd=8: (0x72A00000 | ((v >> 16) << 5) | rd).to_bytes(4, 'little')
+par16, _, left16 = cpatch.aspect_classify([(0x130, mz(u16)), (0x138, mk(u16))], 21 / 9)
+far16 = cpatch.aspect_classify([(0x130, mz(u16)), (0x144, mk(u16))], 21 / 9)[0]
+mid16 = cpatch.aspect_classify([(0x130, mz(u16)), (0x134, mz(1)), (0x138, mk(u16))], 21 / 9)[0]
+im16 = bytearray(0x1000); im16[0x200:0x204] = mz(r16); im16[0x204:0x208] = (0xD503201F).to_bytes(4, 'little'); im16[0x208:0x20C] = mk(r16)
+got16, why16 = cpatch.port_writes([(0x130, mz(u16)), (0x138, mk(u16))], 21 / 9, bytes(im16), 0x800)
+ck(f'⑯ movz / movk 隔几条也认、也移植（实得 识别 {[x[:2] for x in par16]} 剩 {left16}；隔 20 {far16}；中间重赋值 {mid16}；移植 {got16} {why16}）',
+   [x[:2] for x in par16] == [(0x130, 'movpair')] and left16 == 0 and far16 == [] and mid16 == []
+   and sorted(got16 or []) == [(0x200, mz(u16)), (0x208, mk(u16))])
+# ⑰ 先高后低、X 寄存器的 movz / movk（11-14 补丁库体检：12 份先写高半 movz w25,#hi,lsl16 + movk w25,#lo；5 份 mov x1,#lo + movk x1,#hi,lsl16）
+#    期望（手算）：两种都认成 movpair、剩余 0 字；W 与 X 混用（movz w8 + movk x8）不认；移植：新版 0x300 movz w25,#hi(16/9),lsl16 / 0x304 movk w25,#lo(16/9) →
+#    写 0x300 = movz w25,#hi(u),lsl16、0x304 = movk w25,#lo(u)
+mzh = lambda v, rd=25: (0x52A00000 | ((v >> 16) << 5) | rd).to_bytes(4, 'little')
+mkl = lambda v, rd=25: (0x72800000 | ((v & 0xFFFF) << 5) | rd).to_bytes(4, 'little')
+xz = lambda v, rd=1: (0xD2800000 | ((v & 0xFFFF) << 5) | rd).to_bytes(4, 'little')
+xk = lambda v, rd=1: (0xF2A00000 | ((v >> 16) << 5) | rd).to_bytes(4, 'little')
+hl17, _, lhl17 = cpatch.aspect_classify([(0x280, mzh(u16)), (0x288, mkl(u16))], 21 / 9)
+x17, _, lx17 = cpatch.aspect_classify([(0x2A0, xz(u16)), (0x2A4, xk(u16))], 21 / 9)
+mix17 = cpatch.aspect_classify([(0x2C0, mz(u16, 1)), (0x2C4, xk(u16))], 21 / 9)[0]
+im17 = bytearray(0x1000); im17[0x300:0x304] = mzh(r16); im17[0x304:0x308] = mkl(r16)
+got17, why17 = cpatch.port_writes([(0x280, mzh(u16)), (0x284, mkl(u16))], 21 / 9, bytes(im17), 0x800)
+ck(f'⑰ 先高后低 / X 寄存器的 movz / movk 也认、也移植（实得 先高后低 {[x[:2] for x in hl17]} 剩 {lhl17}；X {[x[:2] for x in x17]} 剩 {lx17}；W X 混用 {mix17}；移植 {got17} {why17}）',
+   [x[:2] for x in hl17] == [(0x280, 'movpair')] and lhl17 == 0 and [x[:2] for x in x17] == [(0x2A0, 'movpair')] and lx17 == 0 and mix17 == []
+   and sorted(got17 or []) == [(0x300, mzh(u16)), (0x304, mkl(u16))])
+# ⑱ / ⑲ 只改高半的 movk（11-14 补丁库体检：一类补丁只写 movk w9,#hi,lsl16，低半留程序里 16:9 的 movz w9,#0x8e39；32:9 = 0x4063 + 0x8e39 正好 3.5556）
+#    期望（手算）：识别 —— 只写 movk #0x4015 认成 movk（21:9）；补丁连低半也写了（movz #lo(43:18) + movk #0x4018 = 2.3889）按 A = 2.4 不认（不按高半松容差凑）；
+#    移植 —— 新版 0x400 movk w9,#0x3fe3,lsl16 → 写 0x400 = 补丁那条；合成 —— 同 ⑤ 的程序（0x110 movz w10,#0x8e39 / 0x114 movk w10,#0x3fe3），
+#    四份只改 0x114 的高半 → 与 ⑤ 同表同行：0x110 改读槽 1016（b95fc20a）、0x114 换 nop
+hi = lambda A: struct.unpack('<I', struct.pack('<f', A))[0] >> 16
+mkh = lambda v, rd=9: (0x72A00000 | (v << 5) | rd).to_bytes(4, 'little')
+p18 = cpatch.aspect_classify([(0x500, mkh(0x4015))], 21 / 9)[0]
+u18 = struct.unpack('<I', struct.pack('<f', 43 / 18))[0]
+q18 = cpatch.aspect_classify([(0x500, mz(u18, 9)), (0x504, mkh(u18 >> 16))], 2.4)[0]
+im18 = bytearray(0x1000); im18[0x3FC:0x400] = mz(r16, 9); im18[0x400:0x404] = mkh(0x3FE3)
+got18, why18 = cpatch.port_writes([(0x500, mkh(0x4015))], 21 / 9, bytes(im18), 0x800)
+r18 = T + '/root18'; shutil.copytree(r5, r18, ignore=shutil.ignore_patterns('cpatch*'))
+idx18 = T + '/e18/widescreen'; os.makedirs(idx18); rows18 = ['game\ttitle_id\tpath\ttype\tsource\tlicense\tin_pack\tsha256\taspect\torigin']
+for i, (w, hh) in enumerate([(21, 9), (32, 9), (43, 18), (16, 10)]):
+    body = f'@nsobid-{BID}\n@flag offset_shift 0x100\n// {w}:{hh} Aspect Ratio\n@enabled\n00000114 {mkh(hi(w / hh), 10).hex().upper()}\n@stop\n'
+    os.makedirs(f'{idx18}/f/{i}'); open(f'{idx18}/f/{i}/1.0.4.pchtxt', 'w').write(body)
+    rows18.append(f"\t0100A3501946E000\tf/{i}/1.0.4.pchtxt\tpchtxt\to/r\tMIT\tyes\t\t\to/r/Aspect Ratio/{w}'{hh}/exefs/1.0.4.pchtxt")
+open(idx18 + '/INDEX.tsv', 'w').write('\n'.join(rows18) + '\n'); cpatch.plan(r18, '', [idx18])
+got18t = sorted((c[0], c[2], c[7]) for c in (l.split('\t') for l in open(r18 + '/cpatch.tsv', encoding='utf-8').read().splitlines()[1:]))
+rows18r = {tuple(l.split('\t# ')[0].split('\t')) for l in open(r18 + '/cpatch_rows.tsv').read().splitlines()}
+ck(f'⑱ 只改高半的 movk：认、不误认整对、移植、合成（实得 识别 {p18}；整对 {q18}；移植 {got18} {why18}；表 {got18t}；行多 {sorted(rows18r - want5)} 缺 {sorted(want5 - rows18r)}）',
+   p18 == [(0x500, 'movk', 'a')] and q18 == [] and got18 == [(0x400, mkh(0x4015))]
+   and got18t == [(f'wsauto:{fid5}:n', '1', 'k1016::@a4'), (f'wsauto:{fid5}:w', '0', 'k1016::@a4')] and rows18r == want5)
+r19 = T + '/root19'; shutil.copytree(r5, r19, ignore=shutil.ignore_patterns('cpatch*'))
+idx19 = T + '/e19/widescreen'; os.makedirs(idx19 + '/f/0')
+open(idx19 + '/f/0/1.0.4.pchtxt', 'w').write(f'@nsobid-{BID}\n@flag offset_shift 0x100\n// 32:9 Aspect Ratio\n@enabled\n00000114 {mkh(0x4063, 10).hex().upper()}\n@stop\n')
+open(idx19 + '/INDEX.tsv', 'w').write('game\ttitle_id\tpath\ttype\tsource\tlicense\tin_pack\tsha256\taspect\torigin\n\t0100A3501946E000\tf/0/1.0.4.pchtxt\tpchtxt\to/r\tMIT\tyes\t\t32:9\to/r/x/[32:9]/exefs/1.0.4.pchtxt\n')
+cpatch.plan(r19, '', [idx19])
+t19 = sorted((c[2], c[7]) for c in (l.split('\t') for l in open(r19 + '/cpatch.tsv', encoding='utf-8').read().splitlines()[1:]))
+rows19 = {tuple(l.split('\t# ')[0].split('\t')) for l in open(r19 + '/cpatch_rows.tsv').read().splitlines()}
+ck(f'⑲ 单份只改高半（32:9 只写 movk #0x4063）单份参数化：与 ⑤ 同行（实得 表 {t19}；行多 {sorted(rows19 - want5)} 缺 {sorted(want5 - rows19)}）',
+   t19 == [('0', 'k1016::@a4'), ('1', 'k1016::@a4')] and rows19 == want5)
+# ⑳ 帧率补丁组（第 13 列，11-15）：同一上游补丁的 main / sdk 两份（同包同 exefs 目录）一组；另一个上游补丁另一组。期望手写
+g = lambda o: cpatch.fps_group({'origin': o})
+ga, gb, gc = g('t/r/Game/120FPS.rar/exefs/2.1.0.pchtxt'), g('t/r/Game/120FPS.rar/exefs/2.1.0v2.pchtxt'), g('f/x/Game/120fps/exefs/2.1.0.pchtxt')
+ck(f'⑳ 帧率补丁组：同包 main / sdk 同组、别的上游另组、8 位（{ga} {gb} {gc}）', ga == gb != gc and len(ga) == 8)
+# ㉑ 组号走完整 plan()（审计 P1-193：单元原先只存缓存路径 f/<哈希>/文件名，组按缓存目录算 = 每份一组；⑳ 只拿带 origin 的字典调 fps_group，没经过 plan）。
+#   本机缓存按内容分目录（f/0、f/1、f/2），上游原路径：前两份在同一个压缩包的 exefs 下（一组），第三份另一个上游。期望手写：前两份第 13 列相同、第三份不同、都是 8 位
+r21 = T + '/root21'; shutil.copytree(r5, r21, ignore=shutil.ignore_patterns('cpatch*'))
+idx21 = T + '/e21/fps'
+for i, off in enumerate((0x114, 0x118, 0x11c)):
+    os.makedirs(f'{idx21}/f/{i}'); open(f'{idx21}/f/{i}/60fps.pchtxt', 'w').write(f'@nsobid-{BID}\n@flag offset_shift 0x100\n// 60 FPS\n@enabled\n{off:08X} 1F2003D5\n@stop\n')
+open(idx21 + '/INDEX.tsv', 'w').write('game\ttitle_id\tpath\ttype\tsource\tlicense\tin_pack\tsha256\ttarget_fps\torigin\n'
+    + '\t0100A3501946E000\tf/0/60fps.pchtxt\tpchtxt\to/r\tMIT\tyes\t\t60\tt/r/Game/60FPS.rar/exefs/60fps.pchtxt\n'
+    + '\t0100A3501946E000\tf/1/60fps.pchtxt\tpchtxt\to/r\tMIT\tyes\t\t60\tt/r/Game/60FPS.rar/exefs/60fps-sdk.pchtxt\n'
+    + '\t0100A3501946E000\tf/2/60fps.pchtxt\tpchtxt\to/r\tMIT\tyes\t\t60\tf/x/Game/60fps/exefs/60fps.pchtxt\n')
+cpatch.plan(r21, '', [idx21])
+rows21 = [c for c in (l.split('\t') for l in open(r21 + '/cpatch.tsv', encoding='utf-8').read().splitlines()[1:]) if c[0].startswith('fps:')]
+grp21 = [c[12] if len(c) > 12 else '' for c in rows21]
+g21 = {c[6]: (c[12] if len(c) > 12 else '') for c in rows21}   # 第 7 列来源（本机缓存路径 f/<n>/…）→ 第 13 列组：按来源认是哪两份（审计 P2-453：原先只数个数，看不出哪两份同组）
+ck(f'㉑ 组号走 plan()：同包两份（f/0、f/1）同组、另一上游（f/2）另组、8 位（实得 {g21}）',
+   len(rows21) == 3 and g21.get('f/0/60fps.pchtxt') == g21.get('f/1/60fps.pchtxt') != g21.get('f/2/60fps.pchtxt') and all(len(x) == 8 for x in g21.values()))
+# ㉒ IPS 也按上游原路径分组（审计 P1-193 余项：IPS 那一支单元不带 origin，退回缓存路径 f/<n>/…，同包的 IPS 与 pchtxt 拆成两组）。
+#   同一个压缩包 exefs 下一份 IPS（文件名 = 主程序构建号）、一份 pchtxt，本机缓存分在 f/3、f/4。期望手写：两份第 13 列相同
+r22 = T + '/root22'; shutil.copytree(r5, r22, ignore=shutil.ignore_patterns('cpatch*'))
+idx22 = T + '/e22/fps'; os.makedirs(f'{idx22}/f/3'); os.makedirs(f'{idx22}/f/4')
+open(f'{idx22}/f/3/{BID}.ips', 'wb').write(b'PATCH' + (0x120).to_bytes(3, 'big') + (4).to_bytes(2, 'big') + bytes.fromhex('1F2003D5') + b'EOF')
+open(f'{idx22}/f/4/60fps.pchtxt', 'w').write(f'@nsobid-{BID}\n@flag offset_shift 0x100\n// 60 FPS\n@enabled\n00000124 1F2003D5\n@stop\n')
+open(idx22 + '/INDEX.tsv', 'w').write('game\ttitle_id\tpath\ttype\tsource\tlicense\tin_pack\tsha256\ttarget_fps\torigin\n'
+    + f'\t0100A3501946E000\tf/3/{BID}.ips\tips\to/r\tMIT\tyes\t\t60\tt/r/Game/60FPS-pack.zip/exefs/{BID}.ips\n'
+    + '\t0100A3501946E000\tf/4/60fps.pchtxt\tpchtxt\to/r\tMIT\tyes\t\t60\tt/r/Game/60FPS-pack.zip/exefs/60fps.pchtxt\n')
+cpatch.plan(r22, '', [idx22])
+g22 = {c[6].split('/')[1]: (c[12] if len(c) > 12 else '') for c in (l.split('\t') for l in open(r22 + '/cpatch.tsv', encoding='utf-8').read().splitlines()[1:]) if c[0].startswith('fps:')}
+ck(f'㉒ IPS 与同包 pchtxt 同组（实得 {g22}）', set(g22) == {'3', '4'} and g22['3'] == g22['4'] and len(g22['3']) == 8)
 sys.exit(bad)
 EOF
 rc=$?; [ $rc = 0 ] && echo "✅ cpatch_adapt_test 全过" || { echo "🔴 cpatch_adapt_test 有不通项"; exit 1; }

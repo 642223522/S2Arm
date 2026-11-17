@@ -4,6 +4,7 @@
 //   （审计 #854 F-caps-beats-settings：设置要先于清单写，否则设置里关 60 帧 / 宽屏不生效）。
 #ifndef S2A_CAPS_H
 #define S2A_CAPS_H
+#include <stdlib.h>
 
 // 读取并应用包内能力清单：iOS 起局时（s2a_ios_load_graphics_settings 里）调一次，dir 传 App 包路径；Mac 宿主装载前按模块目录（产物根）调，安卓按模块目录调。
 // 路径：<dir>/s2a_caps.tsv；读不到不报错（不带 --all-caps 的包没有这个文件）。目录由调用方给：起局时模块还没装载，
@@ -14,6 +15,7 @@ void s2a_caps_apply(const char *dir);
 void s2a_caps_reset(void);
 // 本局放开出图间隔的来源（S2A_FPS60=1 且：清单 fps60_display 1，或这款不是速度已验证默认开的款）；开关不在这里套（graphics/nvn/host/game_profile.h DM_GAME_PRESENT_DISPLAY）
 int s2a_fps60_display_source(void);
+static inline int s2a_caps_own(void) { const char *e = getenv("S2A_CAPS_OWN"); return e && e[0] == '1' && !e[1]; }   // S2A_CAPS_OWN=1：我方 60 帧那一层（帧率表 / 全引擎放开）照旧用，只给内部对照；缺省 0 = 只用社区补丁
 // 清单 fps60 行算不算「速度已验证正确、默认开」（11-11；11-13 加社区帧率补丁：版本精确命中才进得了包）：值 1 且原因含「fps.tsv」「逻辑速度同局 A/B 绿」「社区帧率补丁」「游戏原生 60 帧」之一。
 //   宿主（caps.c）与 iOS 设置页缺省显示值共用这一份规则；Mac 启动器（pack/jobs/community.py）照抄同三个字样，改字样要两边同步（现四个字样）
 int s2a_caps_fps60_verified(const char *val, const char *why);

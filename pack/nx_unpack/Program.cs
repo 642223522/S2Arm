@@ -1,7 +1,7 @@
 // 游戏原始输入解包（底本旧库 tools/nx_unpack @497552d；出包第一步，零配置新游戏从这里进）：
 //   nx_unpack <prod.keys> <输出目录> [--nacp-only | --aoc-only] <xci / nsp 文件…>
 // 直接读卡带 / 安装包（不先把 NCA 拷出来），按内容清单（cnmt）认基础程序、最新更新、追加内容（DLC），一遍解密写出：
-//   <输出目录>/exefs/（main、sdk、subsdk*、main.npdm、rtld）、romfs/（更新叠加后的资源分区）、aoc/<序号>/（每个 DLC 的数据分区）、
+//   <输出目录>/exefs/（main、sdk、subsdk*、main.npdm、rtld）、romfs.std（更新叠加后的资源分区，标准 RomFS 镜像、不写散文件；S2A_ROMFS_IMAGE=0 时照旧出 romfs/ 散文件）、aoc/<序号>/（每个 DLC 的数据分区）、
 //   ctl/control.nacp（取最新更新的控制分区；服务层 am / ns / acc 读）、icon.jpg、unpack.tsv（程序号、名称、显示版本、构建号、DLC 序号）。
 // 源文件按内容认格式（不看扩展名）：0x100 处魔数 HEAD = 卡带镜像（xci，及其压缩版 xcz），否则按安装包（nsp / nsz 的 PFS0）开；
 //   里面的 .ncz（nsz / xcz 的压缩 NCA）由 Ncz.cs 还原成原 NCA 再交 LibHac。
@@ -9,11 +9,13 @@
 // --exefs-only：只写 exefs/ 与 unpack.tsv 就返回（普查判图形接口 / 位宽用，不解资源）。
 // --program-index=<n>：多程序合集（一个应用里多支程序，程序号末位 = 序号）解第 n 支：本体 / 更新清单里的 Program、Control 按内容自己的序号挑（ProgramPick.cs），
 //   unpack.tsv 的 title_id 写这支程序的程序号（应用号 + n），多程序合集另写 programs（支数）/ program_index 两行；DLC 仍按应用号认。缺省 0。
+// --romfs-image <清单> <输出镜像>：不要密钥，按清单建标准 RomFS 镜像（RomfsImageList.cs；Switch 2 镜像形态用）。
 // --aoc-only：只解追加内容到 aoc/<序号>/ 并写 aoc.tsv（序号、标题号、版本、文件数、字节），给已有产物根补 DLC；版本核对同 --nacp-only。
 //   清单里有、数据不在给的文件里或解不开的 DLC 也记一行，文件数 -1（仅授权：服务层只报已拥有、不挂数据——暗黑2 卡带里的 DLC 是 100 KB 的密钥代号 0 占位包，哈希校验过不了）。
 // 追加内容按内容认：清单类型 AddOnContent 且标题号去掉低 12 位 = 程序号 + 0x1000（序号 = 低 12 位），别的游戏的 DLC / 更新文件一起给也只取本游戏的。
 // 资源包不在这里出（pack/pack.py 按文件 clonefile 出资源包 v2；旧库的第 1 版分卷输出已删）。
-// 完整性：先开 LibHac ErrorOnInvalid；仅更新叠加的 RomFS 遇 2002-4604 可在结构合法时重读一次 None、打黄并记 bypassed；可执行分区始终严格，密钥值不打印。
+// 完整性：先开 LibHac ErrorOnInvalid；遇数据哈希不符（2002-4604）不再整单失败（维护者 11-17）：RomFS（本体或叠加更新）就地重读一次 None、打黄并记 bypassed；
+//   程序 / 控制 / 元数据 / 导入检查只把出错那份内容记进 LenientIds、打黄后整次重跑（其余内容照常核）。密钥值不打印。
 // 为什么不用 nstool：nstool 先把 NCA 整个拷出再软件 AES 解密写出，暗黑三 16 GB 用 234 秒；SDK 20 起的分区压缩它也不认（丝之歌）。
 using System;
 using System.Collections.Generic;
@@ -43,6 +45,30 @@ static partial class P {
     static KeySet Ks;
     // 内容号（32 位十六进制）→ 打开它的办法（每次调用都从源文件新开一份读视图，给并行线程各用各的）
     static readonly Dictionary<string, Func<IStorage>> Where = new();
+    // 完整性校验（维护者 11-17：「校验不过就整个拒绝」一律撤掉）：缺省按 LibHac ErrorOnInvalid 核；某个阶段读到数据哈希不符，
+    //   只把这个阶段用到的内容（StageIds，本体 / 更新 / 控制 / 元数据各自的内容号）记进 LenientIds，打一行黄 + 一行【校验跳过】机读行，整次重跑——
+    //   重跑时只有这几份内容按 None 读，别的照常核。#1467：整合包模拟器能玩、我们整单拒收。RomFS 与 DLC 各自就地降级（RomfsExtraction / aocBypass）
+    static readonly HashSet<string> LenientIds = new();
+    static string[] StageIds = Array.Empty<string>();
+    static IntegrityCheckLevel LevelOf(params string[] ids) {
+        StageIds = ids.Where(i => i != null).ToArray();
+        return StageIds.Any(LenientIds.Contains) ? IntegrityCheckLevel.None : IntegrityCheckLevel.ErrorOnInvalid;
+    }
+    // 机读行（作业层 pack/jobs/library.py 收集，记进包记录 integritySkipped、游戏库标「数据校验不过」）：【校验跳过】<哪一段>\t<内容号>\t<第一处坏块>
+    internal static void SkipLine(string what, string ids, string place) => Console.WriteLine($"【校验跳过】{what}\t{ids}\t{place ?? ""}");
+    static string FirstPlace(Exception e) => Chain(e).OfType<ReadPlace>().Select(r => r.Message).FirstOrDefault();
+    // 这次失败能不能按内容降级再来一次：是数据哈希不符、且当前阶段有还没降级的内容 → 记下、打黄、返回 true；否则 false（交原有报红）
+    static bool SkipAndRetry(Exception e) {
+        if (HashFail(e) == null && !RomfsExtraction.IsDataHashFailure(e)) return false;
+        var fresh = StageIds.Where(i => !LenientIds.Contains(i)).ToArray();
+        if (fresh.Length == 0) return false;
+        foreach (var i in fresh) LenientIds.Add(i);
+        string place = FirstPlace(e), ids = string.Join(",", fresh.Select(i => i[..8]));
+        Console.Error.WriteLine($"🟡 原件有数据和原版对不上（{Stage}，内容 {ids}{(place == null ? "" : "，第一处坏块在" + place)}）：疑改版 / 整合版或个别块损坏，只对这份内容跳过完整性校验，其余照常核，继续解出");
+        SkipLine(Stage, string.Join(",", fresh), place);
+        ResetForRetry(); return true;
+    }
+    static void ResetForRetry() { Where.Clear(); Copies.Clear(); Broken.Clear(); Involved.Clear(); FromOf.Clear(); PatchBase.Clear(); NczCores.Clear(); NczCore.CleanupAll(); }
     // 建索引时同一内容号的每一份（来源文件, 打开办法）；全部建完由 Resolve 按 CopyPick 选定一份进 Where
     static readonly Dictionary<string, List<(string From, Func<IStorage> Open)>> Copies = new();
     const long PartSize = 1024L << 20;
@@ -59,7 +85,12 @@ static partial class P {
         // 输出固定 UTF-8（无 BOM）：Windows 上 .NET 控制台缺省按系统代码页（中文 Windows 为 GBK）编码，调用方按 UTF-8 读会解不开
         //   （11-04 Windows 出包机01007EF00011E000：追加内容阶段读 --nacp-only 的中文提示报 UnicodeDecodeError）；Mac / Linux 缺省本就是 UTF-8，字节不变
         Console.OutputEncoding = new System.Text.UTF8Encoding(false);
-        try { return Run(a); }
+        try {
+            while (true) {
+                try { return Run(a); }
+                catch (Exception e) when (SkipAndRetry(e)) { }
+            }
+        }
         catch (SourceError e) { Console.Error.WriteLine("🔴 " + e.Message); return 1; }
         catch (UsageError e) { Console.Error.WriteLine("🔴 " + e.Message); return 2; }
         catch (Exception e) when (HashFail(e) is HorizonResultException h) {   // 数据块哈希不对（10-26 生死格斗沙滩排球3 整合版：资源被改过、哈希没更新）
@@ -206,6 +237,10 @@ static partial class P {
         Copies.Clear();
     }
     static int Run(string[] a) {
+        if (a.Length == 2 && a[0] == "--test-romfs-publish") {
+            try { RomfsExtraction.TestPublish(a[1]); return 0; }
+            catch (Exception e) { Console.Error.WriteLine("🔴 " + e.Message); return 1; }
+        }
         // 单测注入（tests/nx_unpack_fail_test.sh）：造并行读包那种 AggregateException——第一条普通异常、第二条缺密钥，走真实的兜底路径
         if (Environment.GetEnvironmentVariable("S2A_NXUNPACK_TEST_THROW") == "agg-key")
             throw new AggregateException(new Exception("并行任务一：普通异常"), new LibHac.Common.Keys.MissingKeyException("单测：缺密钥", "titlekek_10", LibHac.Common.Keys.KeyType.Common));
@@ -218,8 +253,16 @@ static partial class P {
             try { File.WriteAllBytes(a[2], NsoZbic.Normalize(File.ReadAllBytes(a[1]), Path.GetFileName(a[1]))); return 0; }
             catch (InvalidDataException e) { Console.Error.WriteLine($"🔴 {e.Message}"); return 1; }
         }
+        if (a.Length == 3 && a[0] == "--romfs-image") {   // 不要密钥：按清单（散文件 / NUP 里的一段）建标准 RomFS 镜像，给 Switch 2 镜像形态（pack/ns2_dump.py）用；格式见 RomfsImageList.cs
+            try { var (n, bytes) = RomfsImageList.Write(a[1], a[2]); Console.WriteLine($"🟢 RomFS 镜像：{n} 个文件 {bytes >> 20} MB → {a[2]}"); return 0; }
+            catch (Exception e) when (e is InvalidDataException or IOException or UnauthorizedAccessException) { Console.Error.WriteLine($"🔴 {e.Message}"); return 1; }
+        }
         if (a.Length >= 3 && a[1] == "--inspect") return Inspect(a);
-        if (a.Length < 3) { Console.Error.WriteLine("用法：nx_unpack <prod.keys> <输出目录> [--nacp-only | --aoc-only | --exefs-only] [--aoc-index] [--title-id=<16 hex>] [--program-index=<0..15>] [--title-keys=<title.keys>] <xci/nsp…>"); return 2; }
+        if (a.Length < 3) {
+            Console.Error.WriteLine("用法：nx_unpack <prod.keys> <输出目录> [--nacp-only | --aoc-only | --exefs-only] [--aoc-index] [--title-id=<16 hex>] [--program-index=<0..15>] [--title-keys=<title.keys>] <xci/nsp…>");
+            Console.Error.WriteLine("测试专用：nx_unpack --test-romfs-publish <尚不存在的测试目录>");
+            return 2;
+        }
         var t0 = DateTime.UtcNow;
         Ks = ExternalKeyReader.ReadKeyFile(a[0]); string D = a[1]; OutDir = D; bool nacpOnly = false, aocOnly = false, aocIndex = false, exefsOnly = false;
         // 单测注入（tests/nx_unpack_fail_test.sh，#792）：Windows 目录改名被拦的原样异常（IOException + E_ACCESSDENIED），被拒路径在输出目录里 / 外
@@ -264,7 +307,7 @@ static partial class P {
             try { nca = new Nca(Ks, open()); }
             catch (Exception e) when (e is not LibHac.Common.Keys.MissingKeyException) { Console.WriteLine($"🟡 内容 {id[..8]} 头部读不出 / 校验不过（{e.GetType().Name}：{e.Message.Split('\n')[0]}），跳过"); Where.Remove(id); continue; }
             if (nca.Header.ContentType != NcaContentType.Meta) continue;
-            var fs = nca.OpenFileSystem(0, IntegrityCheckLevel.ErrorOnInvalid);
+            var fs = nca.OpenFileSystem(0, LevelOf(id));
             foreach (DirectoryEntryEx e in fs.EnumerateEntries("*.cnmt", SearchOptions.Default)) {
                 using var f = new UniqueRef<IFile>(); fs.OpenFile(ref f.Ref, e.FullPath.ToU8Span(), OpenMode.Read).ThrowIfFailure();
                 metas.Add(new Cnmt(f.Release().AsStream()));
@@ -330,7 +373,7 @@ static partial class P {
         Directory.CreateDirectory(D); string name = "", nameZh = "", dver = "";
         if (!aocOnly && ctrlId != null && Where.ContainsKey(ctrlId)) {
             Stage = $"控制数据（内容 {ctrlId[..8]}）";
-            var cfs = new Nca(Ks, Where[ctrlId]()).OpenFileSystem(NcaSectionType.Data, IntegrityCheckLevel.ErrorOnInvalid);
+            var cfs = new Nca(Ks, Where[ctrlId]()).OpenFileSystem(NcaSectionType.Data, LevelOf(ctrlId));
             byte[] nacp = ReadAll(cfs, "/control.nacp"); Directory.CreateDirectory(Path.Combine(D, "ctl")); File.WriteAllBytes(Path.Combine(D, "ctl", "control.nacp"), nacp);
             name = TitleName(nacp, 0); nameZh = TitleName(nacp, 14) ?? TitleName(nacp, 13) ?? name; name ??= nameZh ?? ""; dver = Encoding.ASCII.GetString(nacp, 0x3060, 0x10).TrimEnd('\0');
             foreach (string lang in IconLangs) { byte[] ic = ReadAll(cfs, $"/icon_{lang}.dat"); if (ic != null) { File.WriteAllBytes(Path.Combine(D, "icon.jpg"), ic); break; } }
@@ -340,8 +383,8 @@ static partial class P {
             if (nacpOnly && !File.Exists(Path.Combine(D, "ctl", "control.nacp"))) { Console.Error.WriteLine("🔴 清单里没有控制分区（或不在给的文件里）"); return 1; }
             // 版本核对：元数据必须和输出目录里已有的 exefs 同一版本——比 main 模块的构建号（NSO 头 0x40 起 16 字节）
             var bn0 = new Nca(Ks, Where[baseId]());
-            IFileSystem ex0 = patId == null ? bn0.OpenFileSystem(NcaSectionType.Code, IntegrityCheckLevel.ErrorOnInvalid)
-                                            : bn0.OpenFileSystemWithPatch(new Nca(Ks, Where[patId]()), NcaSectionType.Code, IntegrityCheckLevel.ErrorOnInvalid);
+            IFileSystem ex0 = patId == null ? bn0.OpenFileSystem(NcaSectionType.Code, LevelOf(baseId))
+                                            : bn0.OpenFileSystemWithPatch(new Nca(Ks, Where[patId]()), NcaSectionType.Code, LevelOf(baseId, patId));
             byte[] m0 = ReadAll(ex0, "/main"); string have = Path.Combine(D, "exefs", "main");
             if (File.Exists(have)) {
                 byte[] m1 = File.ReadAllBytes(have);
@@ -362,8 +405,8 @@ static partial class P {
         if (!aocOnly) {   // ---- 可执行分区 ----
         Stage = $"可执行分区（本体 {baseId[..8]}{(patId == null ? "" : " + 更新 " + patId[..8])}）";
         var bn = new Nca(Ks, Where[baseId]());
-        IFileSystem exefs = patId == null ? bn.OpenFileSystem(NcaSectionType.Code, IntegrityCheckLevel.ErrorOnInvalid)
-                                          : bn.OpenFileSystemWithPatch(new Nca(Ks, Where[patId]()), NcaSectionType.Code, IntegrityCheckLevel.ErrorOnInvalid);
+        IFileSystem exefs = patId == null ? bn.OpenFileSystem(NcaSectionType.Code, LevelOf(baseId))
+                                          : bn.OpenFileSystemWithPatch(new Nca(Ks, Where[patId]()), NcaSectionType.Code, LevelOf(baseId, patId));
         string ex = Path.Combine(D, "exefs"); Directory.CreateDirectory(ex);
         foreach (DirectoryEntryEx e in exefs.EnumerateEntries("*", SearchOptions.Default)) {
             if (e.Type != DirectoryEntryType.File) continue; byte[] raw;
@@ -382,16 +425,28 @@ static partial class P {
         void AddFs(string root, Func<IStorage> opener, string dst) {
             var fs = new RomFsFileSystem(opener()); Walk(fs, "/", root, dst, opener, items);
         }
-        RomfsExtraction.Result patchedRomfs = null;
+        RomfsExtraction.Result romfsResult = null;
+        // 镜像形态（缺省；S2A_ROMFS_IMAGE=0 回旧路径出 romfs/ 散文件）：资源分区不拆散文件，直接出 <输出目录>/romfs.std（标准 RomFS，RomfsExtraction.ExtractImage）。
+        //   下游各阶段入口目录 / 镜像都认（graphics/nvn/tools/romfs_list.py image_of）；DLC（aoc/）不受影响
+        bool romfsImage = Environment.GetEnvironmentVariable("S2A_ROMFS_IMAGE") != "0";
+        string romfsImagePath = Path.Combine(D, RomfsExtraction.ImageName);
         // 程序 NCA 没有资源段（第 1 段）的款（#620，数据全在 exefs 里的小游戏）：没有 RomFS，产出空 romfs 目录（空 RomFS 的下游同 #578），
         //   原先照开第 1 段，抛「NCA section 1 does not exist」整次解包失败。只看本体：更新的资源段要叠在本体那段上，本体没有就无从叠
         bool hasRomfs = new Nca(Ks, Where[baseId]()).SectionExists(NcaSectionType.Data);
-        if (!aocOnly && !hasRomfs) { Directory.CreateDirectory(Path.Combine(D, "romfs")); Console.WriteLine("程序没有资源分区（RomFS）：按空资源出包"); }
+        if (!aocOnly && !hasRomfs) {
+            if (romfsImage) romfsResult = RomfsExtraction.ExtractImage(null, romfsImagePath, patched: false);
+            else Directory.CreateDirectory(Path.Combine(D, "romfs"));
+            Console.WriteLine("程序没有资源分区（RomFS）：按空资源出包");
+        }
         if (!aocOnly && hasRomfs) {
             Stage = $"资源分区 RomFS（本体 {baseId[..8]}{(patId == null ? "" : " + 更新 " + patId[..8])}）";
-            if (patId == null) AddFs("romfs", () => RomfsOpener(IntegrityCheckLevel.ErrorOnInvalid), Path.Combine(D, "romfs"));
+            if (romfsImage) {
+                try { romfsResult = RomfsExtraction.ExtractImage(RomfsOpener, romfsImagePath, patched: patId != null); }
+                catch (InvalidDataException e) { throw new SourceError(e.Message); }
+            }
+            else if (patId == null) AddFs("romfs", () => RomfsOpener(LevelOf(baseId)), Path.Combine(D, "romfs"));
             else {
-                try { patchedRomfs = RomfsExtraction.Extract(RomfsOpener, Path.Combine(D, "romfs"), patched: true); }
+                try { romfsResult = RomfsExtraction.Extract(RomfsOpener, Path.Combine(D, "romfs"), patched: true); }
                 catch (InvalidDataException e) { throw new SourceError(e.Message); }
             }
         }
@@ -451,25 +506,27 @@ static partial class P {
                 fref.Destroy();
             }
         });
-        foreach (var (idx, place) in aocBypass.OrderBy(kv => kv.Key))
+        foreach (var (idx, place) in aocBypass.OrderBy(kv => kv.Key)) {
             Console.WriteLine($"🟡 DLC 序号 {idx} 原件数据哈希不符（疑改版 / 整合版），已跳过这个 DLC 的完整性校验照常解出；第一处坏块在{place}");
+            SkipLine($"DLC 序号 {idx} 数据分区", "", place);
+        }
         if (aocOnly) {
             File.WriteAllText(Path.Combine(D, "aoc.tsv"), "idx\ttitle_id\tversion\tfiles\tbytes\n" + string.Concat(aocRows.Select(r => r + "\n")));
             Console.WriteLine($"🟢 追加内容：程序号 {tid:x16}；清单里 {dlc.Count} 个，解出 {aocIdx.Count} 个（{items.Sum(i => i.Size) >> 20} MB）{string.Concat(aocRows.Select(r => "；" + r.Split('\t')[1]))}；{(DateTime.UtcNow - t0).TotalSeconds:F0} 秒");
             return 0;
         }
         if (aocIndex) File.WriteAllText(Path.Combine(D, "aoc.tsv"), "idx\ttitle_id\tversion\tfiles\tbytes\n" + string.Concat(aocRows.Select(r => r + "\n")));
-        WriteResourceManifest(Path.Combine(D, "unpack.tsv"), $"title_id\t{pid:x16}\nname\t{name}\nname_zh\t{nameZh}\ndisplay_version\t{dver}\n{vers}{multi}builds\t{string.Join(' ', builds)}\naoc\t{string.Join(',', aocIdx)}\n", patchedRomfs);
-        int nromfs = patchedRomfs?.Files ?? items.Count(i => i.Rel.StartsWith("romfs/"));
-        long romfsBytes = patchedRomfs?.Bytes ?? items.Where(i => i.Rel.StartsWith("romfs/")).Sum(i => i.Size);
-        Console.WriteLine($"🟢 解包：{name}（{dver}）；exefs {string.Join(' ', builds.Select(b => b.Split(':')[0]))}；romfs {nromfs} 个文件 {romfsBytes >> 20} MB；DLC 解出 {aocIdx.Count} 个"
-            + $"；{(DateTime.UtcNow - t0).TotalSeconds:F0} 秒，{Math.Max(opts.MaxDegreeOfParallelism, patchedRomfs?.Parallelism ?? 1)} 路并行");
+        WriteResourceManifest(Path.Combine(D, "unpack.tsv"), $"title_id\t{pid:x16}\nname\t{name}\nname_zh\t{nameZh}\ndisplay_version\t{dver}\n{vers}{multi}builds\t{string.Join(' ', builds)}\naoc\t{string.Join(',', aocIdx)}\n", romfsResult);
+        int nromfs = romfsResult?.Files ?? items.Count(i => i.Rel.StartsWith("romfs/"));
+        long romfsBytes = romfsResult?.Bytes ?? items.Where(i => i.Rel.StartsWith("romfs/")).Sum(i => i.Size);
+        Console.WriteLine($"🟢 解包：{name}（{dver}）；exefs {string.Join(' ', builds.Select(b => b.Split(':')[0]))}；romfs {nromfs} 个文件 {romfsBytes >> 20} MB{(romfsImage ? "（镜像 romfs.std）" : "")}；DLC 解出 {aocIdx.Count} 个"
+            + $"；{(DateTime.UtcNow - t0).TotalSeconds:F0} 秒，{Math.Max(opts.MaxDegreeOfParallelism, romfsResult?.Parallelism ?? 1)} 路并行");
         return 0;
     }
 
     internal static void WriteResourceManifest(string path, string contents, RomfsExtraction.Result romfs) {
         File.WriteAllText(path, contents + (romfs?.Manifest ?? ""));
-        if (romfs?.Warning is string warning) Console.WriteLine(warning);
+        if (romfs?.Warning is string warning) { Console.WriteLine(warning); SkipLine("资源分区 RomFS", "", romfs.FirstBad); }
     }
 
     // Lenient：只有 DLC 有——读到数据哈希不符时换这个不校验的视图重读（#787），Aoc = DLC 序号

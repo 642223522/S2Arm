@@ -47,7 +47,18 @@ int s2a_libpack_get(const struct s2a_libpack *lp, const uint8_t key[8], unsigned
 //   宿主辅助（uvx/lb/ubolen/sbsize/geometry/drvcb/c1）→ uniform/storage 无 guest 槽。
 //   任一键缺段/坏段 → 整个程序 MISS/REJECT（半程序不命中）。identity 段由调用方给
 //   （direct_abi/profile_hash/translator_closure——与现编 request 同源）。
+/* 片元 .spv 的输出映射（同现编结果 info.fragmentOutputMap：每个颜色目标 4 位，第 c 分量 = 位 4×location + c）。
+ * 0 = 推出；-1 = 读不懂（数组输出、location ≥ 8 等），调用方不出这一项（消费端按全写）。 */
+int s2a_libpack_spv_frag_outputs(const uint8_t *spv, size_t n, uint32_t *map);
 int s2a_libpack_program_v1(const struct s2a_libpack *lp, const uint8_t keys[6][8], uint32_t stages,
+                           uint32_t direct_abi, const char *profile_hash, const char *translator_closure,
+                           uint8_t **json, size_t *json_len, char *why, size_t why_size);
+
+// 计算程序命中：单个 cs 键（rp_S.skey[5]）→ kind "compute" 的 s2a-direct-program-v1（malloc，调用方 free），
+//   按 nvn_vk_program_parse_compute 的合同合成：绑定号 = arg_id×6+5、每条 count 1、storage 带 cbSlot/cbOffset
+//   出处与 rw、c0 驱动常量段挂 slot 0；c0Reads / supportReads 写 null（_b.json 给不出，解析器认可的「未知」），
+//   hasUnalignedStorageBuffer 写 false（批翻链按缺省 false 翻）。返回码与计数口径同 program_v1。
+int s2a_libpack_compute_v1(const struct s2a_libpack *lp, const uint8_t key[8],
                            uint32_t direct_abi, const char *profile_hash, const char *translator_closure,
                            uint8_t **json, size_t *json_len, char *why, size_t why_size);
 

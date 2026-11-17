@@ -95,6 +95,20 @@ class PlanRules(Base):
         self.assertEqual(self.go(self.on_phone("a"))[:2], (1, 1)); self.assertEqual(self.dev.lists, [["b"]])
         self.assertTrue(any("机上实况抽查 1 个文件，与已应用索引一致" in l for l in self.log))
 
+    def test_core_file_missing_on_phone_is_repushed(self):
+        # #1059 D-JAT7：已应用索引记着 exefs/main.npdm、机上其实没有；别的小文件都在且抽查都对。期望（手写）：抽查必核 exefs/ 与 ctl/control.nacp，
+        #   main.npdm 对不上 → 按机上清单核账，只补推 main.npdm（a、b 在且大小对，不重推）
+        # 内容刻意挑过：6 个小文件 sha 都以 0–3 开头，main.npdm 的 sha 以 f 开头——原先「按 sha 排序取前 5 个」一定轮不到 main.npdm
+        extra = {f"x{i}": b"X" + bytes([0, n]) for i, n in enumerate((2, 7, 9, 10, 13, 15))}
+        self.data.update(extra); self.data["exefs/main.npdm"] = b"NPDM\x02"
+        assert all(sha(v) < "4" for v in extra.values()) and sha(self.data["exefs/main.npdm"]).startswith("f")
+        (self.pk / "exefs").mkdir()
+        for k, v in self.data.items(): (self.pk / k).write_bytes(v)
+        (self.pk / "index.tsv").write_text("".join(self.row(k) for k in self.data))
+        f = self.on_phone(*self.data); del f[f"{RP}/exefs/main.npdm"]
+        self.go(f, listing=True)
+        self.assertEqual(self.dev.lists, [["exefs/main.npdm"]])
+
     def test_old_app_falls_back_to_index_tsv(self):   # 老 App 没有 index.applied.tsv → 认 index.tsv
         self.go(self.on_phone("a", applied=False)); self.assertEqual(self.dev.lists, [["b"]])
 
@@ -102,8 +116,10 @@ class PlanRules(Base):
         self.go(self.on_phone("a", "b"), full=True); self.assertEqual(self.dev.lists, [["a", "b"]])
 
     def test_not_v2(self):
+        # 维护者 11-17：「校验不过就整个拒绝」一律撤掉——清单版本不认只打一行黄、照常算批次推送（期望手写：不抛、日志有那行黄）
         (self.pk / "manifest.json").write_text('{"version": 1}')
-        with self.assertRaises(push.Fail): self.go({})
+        self.go({})
+        self.assertTrue(any(s.startswith("【黄】资源包清单版本 1 这个工具不认") and s.endswith("照常推送") for s in self.log), self.log)
 
 
 class Pending(Base):
@@ -246,6 +262,26 @@ See 'devicectl device process launch --help' for more information.
         except push.Fail as e: r = e
         self.assertIsInstance(r, push.NeedsPlayer); self.assertIn("锁着屏", str(r)); self.assertNotIn("开发者模式", str(r))
         self.assertIn(f"资源包已传完。{push.LOCKED_WAIT}", self.log)
+
+    def test_unwritable_reads_owner_and_mode_of_dir_and_file(self):
+        # 期望（手写，D-A76N）：写不进时按 devicectl info files --no-recurse 的 JSON 读出「目录」与「文件」各自的属主和权限（八进制），
+        #   目录 0555（权限 365）、文件 0444（权限 292）；列不出的那一项说「读不到」，不抛
+        import stat
+        fake = Path(self.w) / "devicectl"
+        fake.write_text("#!/bin/sh\n" + f"exec {sys.executable} - \"$@\" <<'PY'\n" + """import json, sys
+a = sys.argv[1:]
+sub = a[a.index('--subdirectory') + 1] if '--subdirectory' in a else ''
+out = a[a.index('--json-output') + 1]
+table = {'L/games/X': [{'name': '资源包', 'relativePath': '资源包', 'metadata': {'ownerUid': 501, 'permissions': 365}}]}
+if sub in table: json.dump({'result': {'files': table[sub]}}, open(out, 'w'))
+else: sys.exit(1)
+PY
+""")
+        fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+        d = push.Devicectl("DEV", "io.s2arm.x", self.w, env=dict(os.environ, S2A_DEVICECTL=str(fake)))
+        note = d.owner_note("L/games/X/资源包/game.img")
+        self.assertIn("L/games/X/资源包：属主 uid 501、权限 555", note)
+        self.assertIn("L/games/X/资源包/game.img：读不到（devicectl rc=1）", note)
 
     def test_mac_launch_without_env_omits_flag(self):   # 多款容器拉起到游戏库 env 为空：devicectl 收 '{}' 会拒，得不带这个参数（11-10 测试设备实测）
         import stat
@@ -430,6 +466,63 @@ class BigFallback(unittest.TestCase):
         self.assertIn("本机可用内存", err)
 
 
+class NoSpace(unittest.TestCase):
+    """手机写满了：同一族报错各种说法都认，按写满报，不报成连接中断（11-17 Duo 实测：AFC「No space left」被说成「devicectl 退出码 1，确认数据线插稳」）。
+    原文取自真机日志与工具输出，期望手写"""
+    REAL = ["推 Library/Application Support/S2Arm/games/0400C3F00006E000/资源包/game.img 失败：写文件失败：afc error: No space left",   # s2a-devpush 写（11-17 Duo）
+            "打不开 Library/Application Support/S2Arm/games/0400C3F00006E000/资源包/game.img：afc error: No space left",            # s2a-devpush 再打开（同上）
+            "ERROR: The operation couldn’t be completed. (NSPOSIXErrorDomain error 28 - No space left on device)",                  # devicectl
+            "Underlying error: POSIX error code 28",                                                                              # devicectl cp.log
+            "afc_file_write returned AFC_E_NO_SPACE_LEFT",                                                                        # libimobiledevice
+            "OSError: [Errno 28] No space left on device (ENOSPC)"]
+    NOT = ["写文件失败：device socket io failed", "NSPOSIXErrorDomain error 280", "POSIX error code 2", "afc error: Permission denied", ""]
+
+    def test_family(self):
+        for t in self.REAL: self.assertTrue(push.nospace(t), t)
+        for t in self.NOT: self.assertFalse(push.nospace(t), t)
+        for t in self.REAL: self.assertEqual(push.push_reason(t), "手机空间写满了", t)
+
+    def test_stream_full_no_retry_no_devicectl(self):   # 流式写报写满：不隔 3 秒重试、不改走 devicectl（白等两分钟），原样交给 run
+        with tempfile.TemporaryDirectory() as t:
+            src = Path(t) / "game.img"; src.write_bytes(b"\0" * 512)
+            d = push.Devicectl("C891", "io.s2arm.games.t", t, env={"S2A_DC_FALLBACK_MAX": "4096"})
+            calls = []
+            class Stream:
+                def put(self, src, rel): calls.append(rel); raise push.Fail(f"资源包写进 iPhone 时中断（{NoSpace.REAL[0]}）：确认手机解锁、数据线插稳后再点一次")
+            d.dp = Stream(); copied, said = [], []; d.say = said.append; d.put = lambda src, rel: copied.append(rel)
+            with self.assertRaises(push.Fail) as e: d.put_big(src, "Documents/资源包/game.img")
+            self.assertTrue(push.nospace(str(e.exception)))
+            self.assertEqual((len(calls), copied, said), (1, [], []))
+
+    def test_run_reports_full_from_text_even_when_free_unreadable(self):   # 推的时候报写满、推完量不到空闲 → 照样按写满报（ios_install_no_space）
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t); pk = d / "pack"; pk.mkdir(); w = d / "w"; w.mkdir()
+            (pk / "a").write_bytes(b"A"); (pk / "index.tsv").write_text(f"a\t1\t{sha(b'A')}\n"); (pk / "manifest.json").write_text('{"version": 2}')
+            dev = Fake({})
+            def full(lst, root, rel): raise push.Fail(f"资源包写进 iPhone 时中断（{NoSpace.REAL[0]}）：确认手机解锁、数据线插稳后再点一次")
+            dev.put_tar = full
+            with self.assertRaises(push.SpaceFull) as e: push.run(dev, pk, w, full=True, say=lambda m: None, env={"S2A_PUSH_SPARE_GB": "0"})
+            self.assertEqual(e.exception.code, "ios_install_no_space"); self.assertIn("写满", str(e.exception)); self.assertNotIn("数据线", str(e.exception))
+
+    def test_devicectl_free_asks_devpush_first(self):   # 玩家机上多半没装 ideviceinfo：有 s2a-devpush 就按它读（AFC 设备信息），读到就不再问 ideviceinfo
+        with tempfile.TemporaryDirectory() as t:
+            d = push.Devicectl("C891", "io.s2arm.games.t", t)
+            class DP:
+                def free(self): return 123 << 30
+            d.dp = DP()
+            with mock.patch.object(push.shutil, "which", lambda n: self.fail("不该再找 ideviceinfo")):
+                self.assertEqual(d.free(), 123 << 30)
+
+    def test_low_space_says_how_much_short(self):   # 预检：要 8198 字节、手机报 8000 → 说清还差多少
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t); pk = d / "pack"; pk.mkdir(); w = d / "w"; w.mkdir()
+            (pk / "a").write_bytes(b"A"); (pk / "b").write_bytes(b"BB")
+            (pk / "index.tsv").write_text(f"a\t1\t{sha(b'A')}\nb\t2\t{sha(b'BB')}\n"); (pk / "manifest.json").write_text('{"version": 2}')
+            dev = Fake({}); dev.free = lambda: 8000
+            with self.assertRaises(push.LowSpace) as e: push.run(dev, pk, w, full=True, say=lambda m: None, env={"S2A_PUSH_SPARE_GB": "0"})
+            self.assertIn("还差约", str(e.exception))
+
+
 class PushReason(unittest.TestCase):
     """推送失败的原文 → 摘要里一眼看得懂的一类（11-12 v0.3.1 Mac 玩家「romfs.img 没传完」看不出是哪种）。期望按 s2a-devpush / devicectl 的报错特征手写"""
     def test_kinds(self):
@@ -515,7 +608,7 @@ class SpaceNeed(Base):
     def test_one_byte_short_accepted_pushes(self):
         self.dev = Fake({}); self.dev.free = lambda: 8197
         self.assertEqual(push.run(self.dev, self.pk, self.w, full=True, say=self.log.append, env={"S2A_PUSH_SPARE_GB": "0", "S2A_PUSH_ACCEPT_LOW_SPACE": "1"})[2], 3)
-        self.assertTrue(any(m.startswith("🟡 iPhone 剩余空间看起来不够") for m in self.log))
+        self.assertTrue(any(m.startswith("🟡 按估算，iPhone 剩余空间可能不够") for m in self.log))
 
     # 真写满：推失败后再量、空闲 < 256 MB → 报 ios_install_no_space，说清要传多少、手机还剩多少；空闲还多 = 别的原因，照原样往上抛
     def test_real_full_says_how_much(self):
@@ -645,6 +738,7 @@ class GameImgResume(Base):
     """v0.3.0 单一 IMG（game.img）断点续传：机上开头一页与本地相同且资源包号不空 → 从机上长度按 16 KB 向下取整处接着写；否则整份重写"""
     def setUp(self):
         super().setUp()
+        z = mock.patch.dict(os.environ, {"S2A_PUSH_ZSTD": "0"}); z.start(); self.addCleanup(z.stop)   # 本组核直写 / 续传原样路；压缩推见 GameImgZstd
         self.local = img()
         self.data = {"game.img": self.local, "b": b"BB"}
         for k, v in self.data.items(): (self.pk / k).write_bytes(v)
@@ -931,7 +1025,7 @@ sys.exit(0 if pathlib.Path(sys.argv[-1]).exists() else 1)
             dev.put(self.pk / "a", "remote")
         self.assertEqual(seen, [40])
 
-    def denied_helper(self, rm_ok=True):
+    def denied_helper(self, rm_ok=True, dir_denied=False):
         # #074d88 三台设备原文：机上旧 game.img 打开写被拒。假工具：删过之前 put / put-at 一律被拒；rm 按 rm_ok 成 / 败；每次调用记一行
         script = self.w / "denied.py"; ops = self.w / "ops"; gone = self.w / "gone"
         script.write_text(f'''import pathlib, sys
@@ -939,7 +1033,7 @@ op = sys.argv[1]; pathlib.Path({str(ops)!r}).open("a").write(op + "\\n")
 if op == "rm":
     if {rm_ok!r}: pathlib.Path({str(gone)!r}).touch(); print("rm " + sys.argv[2]); sys.exit(0)
     print("删不掉 " + sys.argv[2] + "：afc error: Permission denied"); sys.exit(1)
-if op in ("put", "put-at") and not pathlib.Path({str(gone)!r}).exists():
+if op in ("put", "put-at") and ({dir_denied!r} or not pathlib.Path({str(gone)!r}).exists()):
     print("打不开 " + sys.argv[3] + "：afc error: Permission denied"); sys.exit(1)
 print(op + " 8 字节 → " + sys.argv[3])
 ''', encoding="utf-8")
@@ -958,12 +1052,22 @@ print(op + " 8 字节 → " + sys.argv[3])
         self.assertEqual(ops.read_text().split(), ["put-at", "rm", "put"])
 
     def test_denied_and_not_removable_reports_phone_words_and_next_step(self):
-        # 期望（手写）：删也被拒 → 不再写，报手机原话（Permission denied）+ 下一步（手机上打开一次 S2Arm）；分类成「App 写不进」
+        # 期望（手写）：删也被拒 → 不再写，报手机原话（Permission denied）+ 下一步（导出存档、删除重装 S2Arm：App 改不了这个目录的属主，迁移 11-15 已撤）；分类成「App 写不进」
         dev, ops = self.denied_helper(rm_ok=False)
         with self.assertRaises(push.Fail) as cm:
             dev.put(self.pk / "a", "Library/S2Arm/games/G/资源包/game.img")
         self.assertEqual(ops.read_text().split(), ["put", "rm"])
-        self.assertIn("Permission denied", str(cm.exception)); self.assertIn("在手机上打开一次 S2Arm", str(cm.exception))
+        self.assertIn("Permission denied", str(cm.exception)); self.assertIn("删掉 iPhone 上的 S2Arm App 再重装", str(cm.exception))
+        self.assertEqual(push.push_reason(str(cm.exception)), "手机上这个文件 App 写不进（Permission denied）")
+
+    def test_denied_again_after_remove_reports_reinstall(self):
+        # 期望（手写，D-CY3B）：删掉了、从头写照样被拒（目录 App 写不进）→ 不再说「重新装会续传」，报手机原话 + 删除重装那一步；只删一次、写两次
+        dev, ops = self.denied_helper(dir_denied=True)
+        with self.assertRaises(push.Fail) as cm:
+            dev.put(self.pk / "a", "Library/S2Arm/games/G/资源包/game.img")
+        self.assertEqual(ops.read_text().split(), ["put", "rm", "put"])
+        self.assertIsInstance(cm.exception, push.DirUnwritable)
+        self.assertIn("Permission denied", str(cm.exception)); self.assertIn("删掉 iPhone 上的 S2Arm App 再重装", str(cm.exception))
         self.assertEqual(push.push_reason(str(cm.exception)), "手机上这个文件 App 写不进（Permission denied）")
 
     def image_plan(self):
@@ -979,6 +1083,18 @@ print(op + " 8 字节 → " + sys.argv[3])
         push.send(dev, self.pk, self.w, progress=lambda *a: calls.append(a))
         self.assertEqual(calls, [(0, 100, 0, 1), (40, 100, 0, 1), (99, 100, 0, 1), (100, 100, 1, 1)])
         self.assertIsNone(dev.progress)
+
+    def test_unwritable_dir_stops_at_once_with_reinstall_code(self):
+        # 期望（手写，D-CY3B）：目录 App 写不进（DirUnwritable）→ 不原地再试、不说「重新装会续传 / 从头传」，原样抛出，码 ios_install_dir_unwritable
+        self.image_plan(); dev = Fake({}); tries = []
+        def put_big(*args):
+            tries.append(1); raise push.DirUnwritable("iPhone 上的 S2Arm 写不进 x：删掉旧文件重写也被系统拒绝（afc error: Permission denied），它所在的文件夹 S2Arm 写不进。" + push.REINSTALL_STEP)
+        dev.put_big = put_big
+        with self.assertRaises(push.DirUnwritable) as cm:
+            push.send(dev, self.pk, self.w)
+        self.assertEqual(len(tries), 1)
+        self.assertEqual(cm.exception.code, "ios_install_dir_unwritable")
+        self.assertNotIn("续传", str(cm.exception)); self.assertNotIn("从头传", str(cm.exception)); self.assertIn("删掉 iPhone 上的 S2Arm App 再重装", str(cm.exception))
 
     def test_partial_image_failure_never_reports_completion(self):
         self.image_plan(); dev = Fake({}); calls = []
@@ -1012,6 +1128,115 @@ print(op + " 8 字节 → " + sys.argv[3])
         push.send(dev, self.pk, self.w, progress=lambda *a: calls.append(a))
         self.assertEqual(calls, [(0, 100, 0, 1), (40, 100, 0, 1), (100, 100, 1, 1)])
         self.assertIsNone(dev.dp.progress)
+
+
+class GameImgZstd(Base):
+    """v0.5.0 压缩传输：game.img 按块（单测把块改成 4 页 = 64 KB）各压成一个 zstd 帧推进 .incoming，机上旧镜像截空；按款省不到 15% 原样直写。
+    期望按块切分手算，块内容用标准库 zstd 独立解开核对，不用被测实现"""
+    Z = 4 * P
+
+    def setUp(self):
+        super().setUp()
+        if push.zstd_compressor() is None: self.skipTest("本机 Python 没有 zstd 模块（compression.zstd / zstandard）")
+        m = mock.patch.object(push, "ZCHUNK", self.Z); m.start(); self.addCleanup(m.stop)
+        e = mock.patch.dict(os.environ); e.start(); self.addCleanup(e.stop); os.environ.pop("S2A_PUSH_ZSTD", None)
+        self.set_img(img(body=b"D"))   # 1 页头 + 3 页 + 100 字节 = 4 页 + 100 字节 → 2 块（64 KB + 100 字节）
+
+    def set_img(self, b):
+        self.local = b; self.data = {"game.img": b, "b": b"BB"}
+        for k, v in self.data.items(): (self.pk / k).write_bytes(v)
+        (self.pk / "index.tsv").write_text("".join(self.row(k) for k in self.data))
+        (self.pk / "manifest.json").write_text('{"version": 3, "format": "img", "imgFile": "game.img", "index_sha256": "x"}')
+
+    def device(self, files=None):
+        dev = Fake(files or {}); dev.big, dev.rms = [], []
+        def put_big(src, rel): dev.big.append(rel); dev.files[rel] = Path(src).read_bytes()
+        def head(rel, n):
+            v = dev.files.get(rel); return (-1, b"") if v is None else (len(v), v[:n])
+        def rm(rel): dev.rms.append(rel); dev.files.pop(rel, None); return True, ""
+        dev.put_big, dev.head, dev.rm = put_big, head, rm
+        return dev
+
+    def push_it(self, dev, **kw):
+        self.dev = dev
+        push.plan(dev, self.pk, self.w, full=True, say=self.log.append); return push.send(dev, self.pk, self.w, say=self.log.append, **kw)
+
+    def chunks(self):
+        s16 = sha(self.local)[:16]
+        return [f"{INC}/game.img.{s16}.{k:04d}.zst" for k in range(2)]
+
+    def test_compressible_pushes_chunks_that_decode_to_image(self):
+        try: from compression.zstd import decompress
+        except ImportError: from zstandard import decompress
+        dev = self.device({f"{RP}/game.img": b"old image bytes"}); self.push_it(dev)
+        self.assertEqual(dev.big, self.chunks())
+        self.assertEqual(dev.files[f"{RP}/game.img"], b"")   # 机上旧镜像截空（App 按块重写）
+        parts = [decompress(dev.files[c]) for c in self.chunks()]
+        self.assertEqual([len(x) for x in parts], [self.Z, 100])
+        self.assertEqual(b"".join(parts), self.local)
+        self.assertTrue(all(dev.files[c][:4] == b"\x28\xb5\x2f\xfd" for c in self.chunks()))   # 每块一个独立 zstd 帧（帧魔数）
+        tr = json.loads(dev.files[f"{RP}/.transfer"])
+        self.assertEqual([f[0] for f in tr["files"]][:2], [c[len(RP) + 1:] for c in self.chunks()])
+        self.assertEqual(tr["total"], sum(f[1] for f in tr["files"]))
+        self.assertIn(f"game.img\t{sha(self.local)}", dev.files[f"{RP}/.pushed"].decode())
+
+    def test_incompressible_goes_direct(self):
+        self.set_img(os.urandom(4 * P + 100))   # 随机字节压不动
+        dev = self.device(); self.push_it(dev)
+        self.assertEqual(dev.big, [f"{RP}/game.img"]); self.assertEqual(dev.files[f"{RP}/game.img"], self.local)
+        self.assertFalse([k for k in dev.files if k.endswith(".zst")])
+        self.assertTrue(any("省不到 15%" in l for l in self.log), self.log)
+
+    def test_opt_out_env_goes_direct(self):
+        os.environ["S2A_PUSH_ZSTD"] = "0"
+        dev = self.device(); self.push_it(dev)
+        self.assertEqual(dev.big, [f"{RP}/game.img"])
+
+    def test_threshold_is_15_percent(self):   # 假压缩器按比例出字节：省 16% → 压；省 14% → 不压
+        row = ["game.img", str(len(self.local)), sha(self.local)]
+        def fake(r): return lambda b: b"z" * round(len(b) * r)
+        # 两块 65536 + 100 字节：0.84 → 55050 + 84 = 55134，省 1 − 55134/65636 = 16.0%；0.86 → 56361 + 86 = 56447，省 14.0%
+        self.assertEqual(push.zstd_plan(self.pk, row, say=self.log.append, comp=fake(0.84)), [55050, 84])
+        (self.pk.parent / "pack.zstd.json").unlink()
+        self.assertIsNone(push.zstd_plan(self.pk, row, say=self.log.append, comp=fake(0.86)))
+
+    def test_measured_once_per_image(self):   # 同一份 game.img 只量一次（记在资源包目录旁）；镜像变了重量
+        row = ["game.img", str(len(self.local)), sha(self.local)]; calls = []
+        def comp(b): calls.append(len(b)); return b"z" * 10
+        push.zstd_plan(self.pk, row, say=self.log.append, comp=comp); push.zstd_plan(self.pk, row, say=self.log.append, comp=comp)
+        self.assertEqual(calls, [self.Z, 100])
+        self.assertEqual(json.loads((self.pk.parent / "pack.zstd.json").read_text())["z"], [10, 10])
+        self.assertFalse((self.pk / "pack.zstd.json").exists())   # 不进资源包目录
+        push.zstd_plan(self.pk, ["game.img", row[1], "0" * 64], say=self.log.append, comp=comp)
+        self.assertEqual(len(calls), 4)
+
+    def test_resume_skips_complete_chunks_and_drops_stale(self):
+        first = self.device(); self.push_it(first)
+        c0, c1 = self.chunks(); stale = f"{INC}/game.img.{'e' * 16}.0000.zst"
+        dev = self.device({c0: first.files[c0], c1: first.files[c1][:-1], stale: b"old"})   # 第 0 块完整、第 1 块短一个字节、另一个版本的块
+        self.log.clear(); self.push_it(dev)
+        self.assertEqual(dev.big, [c1]); self.assertEqual(dev.rms, [stale]); self.assertNotIn(stale, dev.files)
+        self.assertEqual(dev.files[c1], first.files[c1])
+        self.assertTrue(any("机上已有 1/2 个压缩块" in l for l in self.log), self.log)
+
+    def test_progress_counts_raw_bytes(self):
+        calls = []; dev = self.device(); self.push_it(dev, progress=lambda *a: calls.append(a))
+        self.assertEqual(calls[-1][:2], (len(self.local) + 2, len(self.local) + 2))   # 计数口径仍是原始字节（game.img + b 两字节）
+
+    def test_chunk_failure_says_resume(self):
+        dev = self.device()
+        def broken(src, rel): raise push.Fail("找不到设备 x")
+        dev.put_big = broken
+        with self.assertRaises(push.Fail) as e: self.push_it(dev)
+        self.assertIn("game.img 没传完，重新装到 iPhone 会接着已传的部分续传", str(e.exception))
+        self.assertFalse(list(self.w.glob("zchunk_*")))   # 本机临时压缩块不留
+
+
+class ZstdContract(unittest.TestCase):
+    def test_chunk_size_and_name_match_phone(self):   # 块大小与块名是两端契约：手机端 runtime/src/pack_apply.c S2A_ZCHUNK（1 GiB）、块名定长 34 字符
+        src = (Path(__file__).resolve().parents[1] / "runtime/src/pack_apply.c").read_text(encoding="utf-8")
+        self.assertIn("#define S2A_ZCHUNK (1ULL << 30)", src); self.assertEqual(push.ZCHUNK, 1 << 30)
+        self.assertEqual(len(push.zname("0123456789abcdef" * 4, 7)), 34); self.assertEqual(push.zname("0123456789abcdef" * 4, 7), "game.img.0123456789abcdef.0007.zst")
 
 
 class SendFail(Base):

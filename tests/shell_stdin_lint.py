@@ -391,9 +391,8 @@ class Parser:
 
 ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*=")
 # Verified wrappers at main 6f313c12: their non-local branches invoke ssh;
-# 维护方工具:rsh uses SSH=(ssh ...); pso_dist.sh:rs invokes 维护方工具
-WRAPPERS = {"tools/remote.sh": {"rsh"}, "tools/sched.sh": {"rsh"},
-            "graphics/tools/shbake/pso_dist.sh": {"rx", "rs"}}
+# 维护方工具:rsh uses SSH=(ssh ...)
+WRAPPERS = {"tools/remote.sh": {"rsh"}, "tools/sched.sh": {"rsh"}}
 
 
 def command_words(words):

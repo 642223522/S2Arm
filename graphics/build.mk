@@ -23,6 +23,11 @@ $(NVN_A): FORCE
 # GL 层运行时兜底的 GLSL 翻译 + glslang（graphics/nvn/Makefile libglx：库里没有的 GLSL 首遇现编；SPIRV-Cross 用 libdsx 那份）
 GLX_A := build/nvn/mac/libglx.a
 HOST_LIBS += $(GLX_A)
+# 插桩版（S2A_PGO_GEN=1，tools/pgo_record.sh 录剖析数据用）：libnvn 带计数器，链接时要带上剖析运行时。
+#   不写 -fprofile-instr-generate：宿主是「编 HOST_SRCS + 链接」一条命令，写了原生层源码也一起插桩，剖析数据里混进原生层用不上的函数
+ifeq ($(S2A_PGO_GEN),1)
+HOST_LIBS += -Wl,-u,___llvm_profile_runtime $(shell DEVELOPER_DIR=$(DEVELOPER_DIR) xcrun clang -print-file-name=libclang_rt.profile_osx.a)
+endif
 $(BUILD)/s2arm-host: $(GLX_A)
 $(GLX_A): FORCE
 	$(MAKE) -C graphics/nvn glx-mac
@@ -31,25 +36,29 @@ endif
 
 # iOS App（runtime/build.mk 的 make ios）：渲染器 iOS 静态库（gal_*.m）、直连翻译库 iOS 静态库（翻译段 + SPIRV-Cross，iOS 首遇现编要它）与依赖框架；
 # C# 的 NativeAOT 镜像（服务层 + Ryujinx + NxGal + 渲染循环）只有一份，由 services/build.mk 加，这里不重复。写跟踪 C 源码已随 HOST_SRCS 进 IOS_SRCS
-NXGAL_IOS_A := build/gal/ios/libnxgal.a
-DSX_IOS_A := build/dsx/ios/libdsx.a
+#   Apple TV（S2A_APPLE_OS=tvos，11-15）：三个子目录照编 ios 目标，只把 SDK / 下限 / 产物目录（build/<库>-tvos）从命令行换掉，与 iPhone 版互不覆盖
+APPLE_SDK_PATH = $(shell DEVELOPER_DIR=$(DEVELOPER_DIR) xcrun --sdk $(APPLE_SDK) --show-sdk-path)
+APPLE_GFX_ARGS = $(if $(APPLE_GFX_OUT),IOS_SDK=$(APPLE_SDK_PATH) "IOS_FLAGS=-arch arm64 -isysroot $(APPLE_SDK_PATH) $(APPLE_MINFLAG)" \
+  METAL_SDK=$(APPLE_SDK) METAL_MIN=$(APPLE_MINFLAG) GLSLANG_RID=$(APPLE_RID))
+NXGAL_IOS_A := build/gal$(APPLE_GFX_OUT)/ios/libnxgal.a
+DSX_IOS_A := build/dsx$(APPLE_GFX_OUT)/ios/libdsx.a
 IOS_LIBS += $(NXGAL_IOS_A) -framework Metal -framework QuartzCore -lc++
 ios: $(NXGAL_IOS_A) $(DSX_IOS_A)
 $(NXGAL_IOS_A): FORCE
-	$(MAKE) -C graphics/metal ios
+	$(MAKE) -C graphics/metal ios $(APPLE_GFX_ARGS) $(if $(APPLE_GFX_OUT),OUT=$(abspath build/gal$(APPLE_GFX_OUT)))
 $(DSX_IOS_A): FORCE
-	$(MAKE) -C graphics/dsx ios
+	$(MAKE) -C graphics/dsx ios $(APPLE_GFX_ARGS) $(if $(APPLE_GFX_OUT),OUT=$(abspath build/dsx$(APPLE_GFX_OUT)))
 # 直连图形层 iOS 静态库（graphics/nvn）
-NVN_IOS_A := build/nvn/ios/libnvn.a
+NVN_IOS_A := build/nvn$(APPLE_GFX_OUT)/ios/libnvn.a
 IOS_LIBS += $(NVN_IOS_A) -framework ImageIO -framework UniformTypeIdentifiers -framework VideoToolbox -framework CoreMedia -framework CoreVideo
 ios: $(NVN_IOS_A)
 $(NVN_IOS_A): FORCE
-	$(MAKE) -C graphics/nvn ios
-GLX_IOS_A := build/nvn/ios/libglx.a
+	$(MAKE) -C graphics/nvn ios $(APPLE_GFX_ARGS) $(if $(APPLE_GFX_OUT),OUT=$(abspath build/nvn$(APPLE_GFX_OUT)))
+GLX_IOS_A := build/nvn$(APPLE_GFX_OUT)/ios/libglx.a
 IOS_LIBS += $(GLX_IOS_A)
 ios: $(GLX_IOS_A)
 $(GLX_IOS_A): FORCE
-	$(MAKE) -C graphics/nvn glx-ios
+	$(MAKE) -C graphics/nvn glx-ios $(APPLE_GFX_ARGS) $(if $(APPLE_GFX_OUT),OUT=$(abspath build/nvn$(APPLE_GFX_OUT)))
 IOS_LIBS += $(DSX_IOS_A)   # 直连翻译库排在渲染器 / 直连图形层 / GL 层之后
 
 .PHONY: gfx-test-track gfx-test-metal FORCE

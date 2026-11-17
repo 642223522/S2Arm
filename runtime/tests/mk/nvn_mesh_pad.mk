@@ -1,6 +1,6 @@
 # native-test-nvn_mesh_pad：网格着色器补齐变体（#674）的源码改写（graphics/nvn/host/mesh_pad.h）与 Metal 真建管线（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来）
 NATIVE_TEST_OWN += nvn_mesh_pad
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 $(BUILD)/tests/t_nvn_mesh_pad: graphics/nvn/tests/t_nvn_mesh_pad.m graphics/nvn/host/mesh_pad.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Igraphics/nvn/host -o $@ graphics/nvn/tests/t_nvn_mesh_pad.m -framework Metal -framework Foundation

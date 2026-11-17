@@ -20,6 +20,12 @@ internal static class LibraryJobCases
         check(Game("01006F8002326000", Path.Combine(english, "icon.jpg"), english).CoverFile() is null, "cover: other file names are refused");
         check(Game("01006F8002326000", Path.Combine(english, "sub", "cover.jpg"), english).CoverFile() is null, "cover: nested paths are refused");
         check(Game("01006F8002326000", Path.Combine(english, "cover.jpg"), english, "offline").CoverFile() is null, "cover: offline location shows no cover");
+        // 顶部大图只认这款文件夹里的 banner.jpg（11-14：原先拿 256 的 cover 放大，糊）
+        LibraryGame WithBanner(string banner, string folder) => Game("01006F8002326000", Path.Combine(folder, "cover.jpg"), folder) with { Banner = banner };
+        check(WithBanner(Path.Combine(english, "banner.jpg"), english).BannerFile() == Path.Combine(english, "banner.jpg"), "banner: store banner in the game folder is used for the hero");
+        check(WithBanner("", english).BannerFile() is null, "banner: no banner falls back to the cover card");
+        check(WithBanner(Path.Combine(english, "cover.jpg"), english).BannerFile() is null, "banner: only banner.jpg counts");
+        check(WithBanner(Path.Combine(byId, "banner.jpg"), english).BannerFile() is null, "banner: another game's folder is refused");
 
         // 导入失败的去向：只有读取器确认通用密钥版本不足（keys_outdated）才引导换密钥；
         // 无法读取、缺票据、内容截断都不是换 prod.keys 能解决的。
@@ -30,7 +36,7 @@ internal static class LibraryJobCases
             check(ImportFailureRoute.For(code, true) == ImportFailureRoute.ShowMessage, "no key prompt for " + (code ?? "no code"));
         const string sample = """
         {"schema":1,"jobId":"catalog-test","taskId":"catalog-test","seq":1,"type":"stage","operation":"catalog","state":"running","message":"读取游戏库"}
-        {"schema":1,"jobId":"catalog-test","taskId":"catalog-test","seq":2,"type":"result","operation":"catalog","state":"succeeded","message":"操作完成","result":{"games":[{"id":"0100000000000001","name":"Synthetic game","display":"1.2","cover":"","hidden":false,"missing":["Need base"],"ready":false}],"keys":{"ready":false,"verified":false,"message":"尚未导入"}}}
+        {"schema":1,"jobId":"catalog-test","taskId":"catalog-test","seq":2,"type":"result","operation":"catalog","state":"succeeded","message":"操作完成","result":{"games":[{"id":"0100000000000001","name":"Synthetic game","display":"1.2","cover":"","banner":"D:\\lib\\banner.jpg","hidden":false,"missing":["Need base"],"ready":false}],"keys":{"ready":false,"verified":false,"message":"尚未导入"}}}
         """;
         var report = LibraryJobResult.Parse(sample, 0, "catalog-test", "catalog");
         check(report.Succeeded && report.Message == "操作完成", "jobs terminal result and exit agree");
@@ -38,6 +44,19 @@ internal static class LibraryJobCases
         check(catalog.Games.Count == 1 && catalog.Games[0].Name == "Synthetic game" &&
             catalog.Games[0].Version == "1.2" && !catalog.KeysReady, "handwritten catalog values preserved");
         check(catalog.Games[0].Missing.Single() == "Need base", "backend requirements preserved without UI inference");
+        check(catalog.Games[0].Banner == @"D:\lib\banner.jpg", "catalog banner field is read");
+        // #1272 下游方案：catalog downstream 原样读出（期望手写）；没有 choice = 没选过（null），"" = 仍用原版；文案按语言挑，没有这门语言退回英文
+        var ds = System.Text.Json.JsonDocument.Parse("""
+        {"id":"d2r","name":"D2R Port","eligible":false,"reason":{"zh":"只支持 1.0.1","en":"Update 1.0.1 only"},
+         "copy":{"zh":{"title":"选方案","body":"正文","points":["一","二"],"recommend":"用推荐","original":"用原版"},"en":{"title":"Pick","body":"Body","points":["A"],"recommend":"Use port","original":"Use original"}}}
+        """).RootElement;
+        var offer = DownstreamOffer.Parse(ds)!;
+        check(offer.Id == "d2r" && offer.Name == "D2R Port" && !offer.Eligible && offer.Choice is null, "downstream: fields read, no choice means not chosen yet");
+        check(offer.Text("zh-Hant")!.Original == "用原版" && offer.Text("ja")!.Original == "Use original" && offer.Text("en")!.Points.Single() == "A", "downstream: copy picked by language, other languages fall back to English");
+        check(offer.Why("zh-Hans") == "只支持 1.0.1" && offer.Why("fr") == "Update 1.0.1 only", "downstream: reason picked by language");
+        var chosen = System.Text.Json.JsonDocument.Parse("""{"id":"d2r","name":"D2R Port","choice":""}""").RootElement;
+        check(DownstreamOffer.Parse(chosen)!.Choice == "", "downstream: empty choice means the original was chosen");
+        check(DownstreamOffer.Parse(System.Text.Json.JsonDocument.Parse("""{"name":"x"}""").RootElement) is null, "downstream: no id means no offer");
         // #141：本体 + 2 个 DLC 同一个原件（sha256 相同，size 都是整个原件）：合计按原件算一次，每项自己的字节用 contentBytes；单项原件照旧用 size
         const string bundle = """
         {"schema":1,"jobId":"catalog-test","taskId":"catalog-test","seq":1,"type":"result","operation":"catalog","state":"succeeded","message":"操作完成","result":{"games":[{"id":"0100000000000002","name":"Bundle","display":"","cover":"","hidden":false,"missing":[],"packages":[{"type":"base","titleId":"0100000000000002","version":0,"display":"","size":15032385536,"format":"","sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","contentBytes":15032180736},{"type":"dlc","titleId":"0100000000001003","version":0,"display":"","size":15032385536,"format":"","sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","contentBytes":102400},{"type":"dlc","titleId":"0100000000001004","version":0,"display":"","size":15032385536,"format":"","sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","contentBytes":102400},{"type":"dlc","titleId":"0100000000001005","version":0,"display":"","size":3145728,"format":"","sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","contentBytes":5242880}]}],"keys":{"ready":true,"verified":true,"message":""}}}
@@ -69,6 +88,7 @@ internal static class LibraryJobCases
         check(empty.Games.Count == 0 && !empty.KeysReady, "recorded real empty Windows catalogue has no games or keys");
         check(empty.KeysMessage == "尚未导入 prod.keys", "recorded backend key status stays verbatim");
         check(empty.PhoneUpdates.Count == 0, "catalog: no phoneUpdates field reads as an empty list");
+        check(empty.PhoneDevices == 0, "catalog: no phoneDevices field reads as 0");
         // 壳比本版旧的手机（pack/jobs/install.py phone_updates 的形状）：一台两款、其中一款要重新出包；不是数组 / 没有 device 的项不算
         const string updates = """
         {"games":[],"keys":{"ready":true,"message":""},"phoneUpdates":[
@@ -88,6 +108,8 @@ internal static class LibraryJobCases
             check(g[0].NeedsKeys && !g[1].NeedsKeys, "catalog: needsKeys comes from the backend field, not from package formats");
             check(g[0].OnPhone && !g[1].OnPhone, "catalog: onPhone (recorded on a phone; delete confirm warns it stops opening there) read from the backend field");
         }
+        using (var document = System.Text.Json.JsonDocument.Parse(updates.Replace("\"phoneUpdates\":[", "\"phoneDevices\":2,\"phoneUpdates\":[")))
+            check(LibraryCatalog.Parse(document.RootElement).PhoneDevices == 2, "catalog: phoneDevices (phones this PC installed to; update popup says launcher and iPhone app) read");
         using (var document = System.Text.Json.JsonDocument.Parse(updates))
         {
             var u = LibraryCatalog.Parse(document.RootElement).PhoneUpdates;

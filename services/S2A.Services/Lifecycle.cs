@@ -4,7 +4,7 @@ using Ryujinx.HLE.HOS.SystemState;
 namespace S2A.Services
 {
     // 前后台 / 焦点与底座接线（缺口扫描族 1 / 2，11-01 体验线）：平台壳把焦点、掌机 / 主机写进原生层（接口 v2.15），这里每拍读一次，
-    //   变了就转成游戏收得到的东西——焦点 → AppletState.SetFocus（FocusStateChanged，回前台另入队 ChangeIntoForeground）；
+    //   变了就转成游戏收得到的东西——焦点 → AppletState.SetFocus（只发 FocusStateChanged）；
     //   底座 → Horizon.ChangeDockedModeState（按游戏的通知开关入队 OperationModeChanged / PerformanceModeChanged，点亮分辨率事件）。
     //   睡眠 → psc 各模块的 SleepReady / FullAwake 请求。
     //   游戏的失焦暂停开关反方向写回原生层，平台壳失焦时据此冻结客机（iOS 后台本来整体冻结）。
@@ -65,6 +65,7 @@ namespace S2A.Services
 
         static void ApplyAudioPause(int frozen)
         {
+            Ryujinx.Audio.Integration.S2AGuestFreeze.Set(frozen != 0);   // 声音诊断按它扣掉冻结窗（11-13 失焦误报「回调 0 次」）
             var pause = Host.Device?.AudioDeviceDriver?.GetPauseEvent();
             if (pause == null) return;
             if (frozen != 0) pause.Reset(); else pause.Set();

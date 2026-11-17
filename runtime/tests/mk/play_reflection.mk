@@ -6,7 +6,7 @@ native-test-play_reflection:
 	@mkdir -p $(BUILD)/tests
 	$(CC) $(CFLAGS) -fobjc-arc -framework Foundation -framework CoreGraphics -o $(BUILD)/tests/t_play_reflection runtime/tests/t_play_reflection.m ios/play_layout.m ios/play_reflection.m
 	$(BUILD)/tests/t_play_reflection
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(S2A_UNAME),Darwin)
 	@$(IOS_CC) -fsyntax-only -fobjc-arc $(NATIVE_INC) -Iruntime/src -Iruntime/ns2pro/include ios/play_reflection.m ios/play_layout.m
 endif
 TEST_TARGETS += native-test-play_reflection

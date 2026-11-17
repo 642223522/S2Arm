@@ -9,4 +9,4 @@ cc_bin="${CC:-cc}"
 "$cc_bin" -std=gnu11 -O1 -Wall -Wextra -Werror -Wno-unused-parameter \
   -I "$android/native" -I "$android/native/nvn" \
   -o "$tmp/t" "$android/tests/vk_poolahb_cover_test.c" "$android/native/nvn/poolahb_cover.c"
-"$tmp/t"
+TMPDIR="$tmp" "$tmp/t"   # 测试的临时 maps 文件建在本次目录里，随 trap 一起删

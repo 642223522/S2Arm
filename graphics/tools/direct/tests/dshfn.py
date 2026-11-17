@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # 单测共用：调 S2A.Dsh（graphics/tools/direct/dsh）的 C# 改写函数（dsh_cmp --fn，入口表在 dsh_cmp/Fn.cs）。直连着色器改写只有 C# 一份实现（不维护 Python 第二份）。
-#   dll()：DSH_CMP_DLL 指定就用它；否则在 dsh_cmp/ 下 dotnet build -c Release（增量，持锁，与出包 dsh_batch 的构建及并发单测不互踩 S2A.Dsh 的 obj/）
+#   dll()：DSH_CMP_DLL 指定就用它；否则在 dsh_cmp/ 下 dotnet build -c Release -m:1（单节点、增量，持锁，与出包 dsh_batch 的构建及并发单测不互踩 S2A.Dsh 的 obj/）
 #   batch([(名, [参数…]), …], dsx=None) → 每例 {"ok": 值} | {"err": 类名}（值的形状见 Fn.cs 文件头：元组 → 列表）
 #   fn(名, *参数, dsx=None) → 值；C# 抛异常时抛 DshFnError(类名)。dsx = libdsx.dylib（spill_fix / color_round 等要它）
 import fcntl, json, os, shutil, subprocess, sys, tempfile
@@ -30,7 +30,10 @@ def dll():
         fcntl.flock(lk, fcntl.LOCK_EX)
         sys.path.insert(0, os.path.join(ROOT, 'translator')); import dsh_batch   # 按源内容判重编、不信时间戳（同 dsh_batch.build，见 src_digest）
         dg = dsh_batch.src_digest(PROJ); stamp = os.path.join(os.path.dirname(OUT), '.src_digest'); last = open(stamp).read().strip() if os.path.exists(stamp) else ''
-        r = subprocess.run([dotnet(), 'build', PROJ, '-c', 'Release', '-nodeReuse:false', '-v', 'q', '-m:' + os.environ.get('S2A_CPU_GATE', '6'), *([] if dg == last else ['--no-incremental'])],
+        # -m:1：只用进程内节点、不起 MSBuild 子节点（11-14 macOS 宿主门禁 dsh_harden 红 MSB4166「Child node "2" exited prematurely」：
+        #   子节点进程起来约 1 秒就崩，系统日志有它的 corpse，与被测代码无关）。单节点从机制上没有子节点可崩；
+        #   这棵工程树（dsh_cmp → S2A.Dsh → Ryujinx.Graphics.Shader / Widen.Shader）可并行的少，本机重负载下实测单节点不慢于 -m:6
+        r = subprocess.run([dotnet(), 'build', PROJ, '-c', 'Release', '-nodeReuse:false', '-v', 'q', '-m:1', *([] if dg == last else ['--no-incremental'])],
                            capture_output=True, text=True)
         if not r.returncode and os.path.exists(OUT): open(stamp, 'w').write(dg + '\n')
     if r.returncode or not os.path.exists(OUT):

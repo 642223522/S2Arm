@@ -31,6 +31,7 @@ void mtl_init(void) {}
 // ---------- 内存池登记：按地址判断「这段在不在某个池里」----------
 enum { RP_NPOOL = 4096 };
 static struct { const uint8_t *mem; uint64_t size; } g_pool[RP_NPOOL];
+static uint64_t g_pool_maxend[RP_NPOOL];   // prefix max of pool end addresses (ranges may nest; prunes the walk-back)
 static int g_npool;
 // 池表按起点升序（插入时挪位）。查找走二分 + 「上次命中的池」快路：
 // 原来三条查找都是「抢全局锁 + 线性扫 4096 项」，而每笔绘制的顶点流解析要调两次；真机（重叠档）读到
@@ -40,32 +41,107 @@ static volatile uint64_t g_pool_epoch = 1;
 // 上次命中的池（无锁读）：用奇偶序号做 seqlock，读侧看到序号变化就放弃快路——
 // 只靠「代际 + 两个字段」会被撕裂读（新起点配旧长度）误判成命中，进而把地址解析到错的池上。
 static volatile uint64_t g_pool_lh_seq;
-static struct { uint64_t a, n, epoch; } g_pool_lh;
+// [lo, lim): the interval this entry truly answers for. lim = the next pool start (UINT64_MAX for the last pool);
+// lo = the greatest end among the pools the binary search passed over after the hit (none of them can cover an
+// address at or past its end). Without them the fast path would answer addresses past a nested pool with the
+// outer pool, or fall back to the locked search on every nested lookup.
+static struct { uint64_t a, n, lo, lim, epoch; } g_pool_lh;
+// 线程内备忘（#974 问 3，维护者答「做」）：上面「上次命中的池」全局只有一格，而一笔绘制要在顶点池 / 常量缓冲池 / 索引池之间来回，
+// 那一格几乎总被别的池占着，多数查找仍然抢全局锁 + 二分（真机取样：rp_pool_find 占回放线程 2.6%，每帧约 4500 段）。
+// 每个线程多记 16 个池，命中时不抢锁、不碰任何共享的缓存行。
+// 键 = 地址区间 [a, lim)：池表按起点升序，二分的候选是「起点不超过地址的最后一个池」，区间内任何地址的候选都是这一个池；
+// 命中后「装不装得下」用与锁内二分逐字相同的算术判，装不下就不算命中、照旧走锁内——答案与锁内二分逐位一致，不改任何返回值。
+// 代际：与上面同一个 g_pool_epoch（加池 / 删池都会推进）；记录发生在锁内，读到的代际与表同时成立；代际一变整张作废。
+typedef struct { uint64_t a, n, lo, lim, epoch; } pool_memo;   // 区间 [a, lim) 内的地址，二分候选都是起点 a、长 n 的这个池
+enum { POOL_MEMO_N = 16 };   // 2 的幂
+// 一个线程一份、整块放进同一个 _Thread_local 对象：每个 _Thread_local 变量在动态装载的 .so 里（安卓 dlopen 进来的游戏库）每次取址都要
+// 调一次 TLS 描述符的解析函数（linker64 里，约几十条指令、还要查 DTV 代际）。原先 memo 数组 / put / mru / hits / lookups / tick 是六个独立变量，
+// rp_pool_find 每次调用要解析五六次（真机取样 linker64 占回放线程 1.4%，样本全落在 rp_entry.c 取这几个变量的行上）；合成一个对象后每次调用只解析一次。
+typedef struct {
+    pool_memo memo[POOL_MEMO_N];
+    unsigned put, mru, tick;
+    unsigned tick_fast;
+    uint64_t hits, lookups;
+    uint64_t fast_hits;
+} pool_tls;
+static _Thread_local pool_tls g_pool_tls;
+static int g_pool_fast_off = -1;   // nvn_plat_flag("nvk_pool_nofast", 0)：缺省开快路；每 4096 次查找重读一次（release 包里直接是缺省）
+static int g_pool_memo_on = -1;   // nvn_plat_flag("nvk_pool_memo", 1)：缺省开；每 4096 次查找重读一次（release 包里直接是缺省）
+void rp_pool_memo_stats(uint64_t *hits, uint64_t *lookups) { const pool_tls *t = &g_pool_tls; *hits = t->hits; *lookups = t->lookups; }   // 调用线程自己的累计
+static int pool_find_memo(pool_tls *const t, uint64_t addr, uint64_t len, const uint8_t **mem, uint64_t *size) {
+    int on = __atomic_load_n(&g_pool_memo_on, __ATOMIC_RELAXED);
+    if (on < 0 || !(++t->tick & 4095)) { on = nvn_plat_flag("nvk_pool_memo", 1) != 0; __atomic_store_n(&g_pool_memo_on, on, __ATOMIC_RELAXED); }
+    if (!on) return 0;
+    t->lookups++;
+    const uint64_t ep = __atomic_load_n(&g_pool_epoch, __ATOMIC_ACQUIRE);
+    for (unsigned j = 0; j < POOL_MEMO_N; j++) {
+        const unsigned i = (t->mru + j) & (POOL_MEMO_N - 1);   // 先看上次命中的那一项：相邻两次查找多半在同一个池
+        const pool_memo *m = &t->memo[i];
+        if (m->epoch != ep || addr < m->lo || addr >= m->lim) continue;
+        if (addr - m->a > m->n || len > m->n - (addr - m->a)) continue;   // 区间内但装不下：池可能嵌套，看后面的记录，都不行再落回锁内
+        t->mru = i; t->hits++;
+        if (mem) *mem = (const uint8_t *)(uintptr_t)m->a;
+        if (size) *size = m->n;
+        return 1;
+    }
+    return 0;
+}
+static void pool_maxend_recompute(void) {   // caller holds g_mu; O(n) on add/del (pool count is in the hundreds, adds are rare)
+    uint64_t m = 0;
+    for (int i = 0; i < g_npool; i++) { uint64_t e = (uint64_t)(uintptr_t)g_pool[i].mem + g_pool[i].size; if (e > m) m = e; g_pool_maxend[i] = m; }
+}
 static int pool_find_locked(uint64_t addr, uint64_t len, const uint8_t **mem, uint64_t *size) {
     int lo = 0, hi = g_npool - 1, cand = -1;
     while (lo <= hi) { int mid = (lo + hi) / 2; if ((uint64_t)(uintptr_t)g_pool[mid].mem <= addr) { cand = mid; lo = mid + 1; } else hi = mid - 1; }
     if (cand < 0) return 0;
-    uint64_t b = (uint64_t)(uintptr_t)g_pool[cand].mem, sz = g_pool[cand].size;
-    if (addr - b > sz || len > sz - (addr - b)) return 0;
-    if (mem) *mem = g_pool[cand].mem;
+    // Ranges may nest: a pool's storage can lie inside another pool's range. Taking only the last start <= addr
+    // would let the inner (smaller) pool shadow the outer one. Walk back to the greatest start that truly covers
+    // [addr, addr+len); g_pool_maxend prunes entries that cannot reach addr at all.
+    int hit = -1;
+    for (int j = cand; j >= 0; j--) {
+        uint64_t jb = (uint64_t)(uintptr_t)g_pool[j].mem, jsz = g_pool[j].size;
+        if (addr - jb <= jsz && len <= jsz - (addr - jb)) { hit = j; break; }
+        if (j == 0 || g_pool_maxend[j - 1] <= addr) break;
+    }
+    if (hit < 0) return 0;
+    const int ci = hit;
+    uint64_t b = (uint64_t)(uintptr_t)g_pool[ci].mem, sz = g_pool[ci].size;
+    // Answer interval [lo, lim): lim is where the binary search stops pointing at ci; lo is the greatest end
+    // among the pools ci+1..cand the search passed over (none of them can cover an address at/after it).
+    uint64_t alo = b;
+    for (int k = ci + 1; k <= cand; k++) {
+        uint64_t ke = (uint64_t)(uintptr_t)g_pool[k].mem + g_pool[k].size;
+        if (ke > alo) alo = ke;
+    }
+    uint64_t lim = cand + 1 < g_npool ? (uint64_t)(uintptr_t)g_pool[cand + 1].mem : UINT64_MAX;
+    if (mem) *mem = g_pool[ci].mem;
     if (size) *size = sz;
     const uint64_t ep = __atomic_load_n(&g_pool_epoch, __ATOMIC_RELAXED);
     __atomic_add_fetch(&g_pool_lh_seq, 1, __ATOMIC_RELEASE);   // 奇数：正在写
-    g_pool_lh.a = b; g_pool_lh.n = sz; g_pool_lh.epoch = ep;
+    g_pool_lh.a = b; g_pool_lh.n = sz; g_pool_lh.lo = alo; g_pool_lh.lim = lim; g_pool_lh.epoch = ep;
     __atomic_add_fetch(&g_pool_lh_seq, 1, __ATOMIC_RELEASE);   // 偶数：写完
+    if (__atomic_load_n(&g_pool_memo_on, __ATOMIC_RELAXED) > 0) {   // 备忘开着才记（关着时行为与改动前完全一致）
+        pool_tls *const t = &g_pool_tls;
+        t->memo[t->put++ & (POOL_MEMO_N - 1)] = (pool_memo){b, sz, alo, lim, ep};
+    }
     return 1;
 }
-static int pool_find_fast(uint64_t addr, uint64_t len, const uint8_t **mem, uint64_t *size) {   // 快路：不抢锁；代际一致才认
+static int pool_find_fast(pool_tls *const t, uint64_t addr, uint64_t len, const uint8_t **mem, uint64_t *size) {   // 快路：不抢锁；代际一致才认
+    int off = __atomic_load_n(&g_pool_fast_off, __ATOMIC_RELAXED);
+    if (off < 0 || !(++t->tick_fast & 4095)) { off = nvn_plat_flag("nvk_pool_nofast", 0) != 0; __atomic_store_n(&g_pool_fast_off, off, __ATOMIC_RELAXED); }
+    if (off) return 0;   // debug.s2a.nvk_pool_nofast=1 关快路（缺省开；玩家包恒缺省）
     const uint64_t ep = __atomic_load_n(&g_pool_epoch, __ATOMIC_ACQUIRE);
     const uint64_t s1 = __atomic_load_n(&g_pool_lh_seq, __ATOMIC_ACQUIRE);
     if (s1 & 1) return 0;                                   // 正在写：这一笔走锁内二分
-    uint64_t a = g_pool_lh.a, n = g_pool_lh.n, cep = g_pool_lh.epoch;
+    uint64_t a = g_pool_lh.a, n = g_pool_lh.n, lo = g_pool_lh.lo, lim = g_pool_lh.lim, cep = g_pool_lh.epoch;
     const uint64_t s2 = __atomic_load_n(&g_pool_lh_seq, __ATOMIC_ACQUIRE);
     if (s1 != s2 || cep != ep) return 0;
     if (!a) return 0;
-    if (addr < a || addr - a > n || len > n - (addr - a)) return 0;
+    if (addr < lo || addr >= lim) return 0;   // outside the answer interval: the locked search decides
+    if (addr - a > n || len > n - (addr - a)) return 0;
     if (mem) *mem = (const uint8_t *)(uintptr_t)a;
     if (size) *size = n;
+    t->fast_hits++;
     return 1;
 }
 void nvn_be_pool_add(const void *mem, uint64_t size) {
@@ -78,6 +154,7 @@ void nvn_be_pool_add(const void *mem, uint64_t size) {
         if (at != g_npool) memmove(&g_pool[at + 1], &g_pool[at], (size_t)(g_npool - at) * sizeof g_pool[0]);
         g_pool[at] = (__typeof__(g_pool[0])){mem, size};
         g_npool++;
+        pool_maxend_recompute();
         __atomic_add_fetch(&g_pool_epoch, 1, __ATOMIC_RELEASE);
     }
     else { pthread_mutex_unlock(&g_mu); nvn_unimpl("limit", "pool_table_full_4096", mem); return; }
@@ -88,6 +165,7 @@ void nvn_be_pool_del(const void *mem) {
     for (int i = 0; i < g_npool; i++) if (g_pool[i].mem == mem) {
         memmove(&g_pool[i], &g_pool[i + 1], (size_t)(g_npool - i - 1) * sizeof g_pool[0]);
         g_npool--;
+        pool_maxend_recompute();
         __atomic_add_fetch(&g_pool_epoch, 1, __ATOMIC_RELEASE);
         break; }
     pthread_mutex_unlock(&g_mu);
@@ -95,7 +173,8 @@ void nvn_be_pool_del(const void *mem) {
 }
 int nvn_be_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
     const uint8_t *mem = NULL; uint64_t size = 0;
-    int hit = pool_find_fast(addr, len, &mem, &size);
+    pool_tls *const t = &g_pool_tls;
+    int hit = pool_find_memo(t, addr, len, &mem, &size) || pool_find_fast(t, addr, len, &mem, &size);
     if (!hit) {
         pthread_mutex_lock(&g_mu);
         hit = pool_find_locked(addr, len, &mem, &size);
@@ -105,13 +184,15 @@ int nvn_be_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
     return hit;
 }
 int rp_pool_find(uint64_t addr, uint64_t len, const uint8_t **mem, uint64_t *size) {
-    if (pool_find_fast(addr, len, mem, size)) return 1;
+    pool_tls *const t = &g_pool_tls;
+    if (pool_find_memo(t, addr, len, mem, size) || pool_find_fast(t, addr, len, mem, size)) return 1;
     pthread_mutex_lock(&g_mu);
     int hit = pool_find_locked(addr, len, mem, size);
     pthread_mutex_unlock(&g_mu);
     return hit;
 }
 int rp_pool_count(void) { pthread_mutex_lock(&g_mu); int n = g_npool; pthread_mutex_unlock(&g_mu); return n; }
+uint64_t rp_pool_fast_hits(void) { return g_pool_tls.fast_hits; }
 void nvn_be_pool_addressed(const void *mem, uint64_t size) { (void)mem; (void)size; }   // 原始全局内存表：翻译器的裸地址访问接上时用
 
 // ---------- 贴图：初始化只登记序号，建图在首次使用（nvn_mtl.m:2597 / :4113）----------
