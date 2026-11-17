@@ -235,8 +235,10 @@ def upgrade_ios(c, gid):
         c.emit("message", f"{gid}：正在重出着色器库补上片上读取用的着色器（原料取自 {where}；首次要几分钟到几十分钟，资源只推新增的）")  # 非玩家句
         new = rebuild(c, gid, src, "ios", Path(tmp) / "w")
         nl = lib_dir(new)
-        if nl is None or nl.name != old.name:
-            raise Failure(f"重出的库链版本 {nl.name if nl else '无'} 与资源包 {old.name} 不同：这款要重新出包")  # 非玩家句
+        if nl is None:
+            raise Failure(f"重出着色器库没产出库目录（资源包里是 {old.name}）")  # 非玩家句
+        if nl.name != old.name:   # 维护者 11-17：校验不过不再整个拒绝——只影响这款，黄字说清后照常补
+            c.diagnostic(f"重出的库链版本 {nl.name} 与资源包 {old.name} 不同，照常补上；这款游戏里画面出问题时重新出包", code="job_failed", severity="warning")  # 非玩家句
         out = Path(tmp) / "bf"
         got = overlay(c, old, nl, out)
         dst = old / "bf"
