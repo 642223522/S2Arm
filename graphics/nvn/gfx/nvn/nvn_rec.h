@@ -100,6 +100,10 @@ typedef struct { uint32_t op, nobj; uint64_t a[15]; } rec_t;   // the first nobj
 enum { REC_BLK = 256 };
 typedef struct rec_blk { struct rec_blk *next; int n; rec_t r[REC_BLK]; } rec_blk;
 
+// On by default on the Mac too (Metal 4) since 11-16: a Switch 2 title's fixed scene (save point, no input after it, same spot checked from screenshots), off / on / on / off:
+//   30.0-32.1 fps against 59.9-60.0, frame time p95 34-51 ms against 27-33, whole CPU power not higher; on the Mac it used to stay off and the game held 30 there.
+//   A 30 fps-locked Switch title (11-17, entered the game in all 4 runs, same spot): fps 29.98 / 29.90 off against 29.95 / 29.85 on, CPU power 1.96 / 2.09 W
+//   against 1.87 / 1.84 W (about 8% lower, no overlap), p95 +3.7% (about 1.3 ms); that run's load went 17.8 -> 20.3, so read it as a reference only.
 // On by default on iOS: Breath of the Wild on an iPhone 17 Pro Max (handheld, the Great Plateau) took about 8 ms of submit thread per frame without it and 3.3–4.5 ms with it
 static int g_rec = -1;
 static inline int rec_on(void) {
@@ -109,11 +113,7 @@ static inline int rec_on(void) {
         // Metal 3：只在显式 =1 时开（编码器 / 参数表绑定需要额外适配，暂为保守方案）
         g_rec = e && atoi(e) > 0;
     } else {
-#if TARGET_OS_IPHONE
-        g_rec = !e || atoi(e) > 0;
-#else
-        g_rec = e && atoi(e) > 0;
-#endif
+        g_rec = !e || atoi(e) > 0;   // Metal 4: on by default on the Mac too (11-16, the Mac A/B above), as on iOS; DM_NVN_ENC_THREAD=0 turns it off
     }
     if (g_rec) MLOG("Metal encoding runs on its own thread (DM_NVN_ENC_THREAD=0 turns it off)");
     return g_rec;
