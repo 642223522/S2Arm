@@ -509,6 +509,22 @@ class JobsTests(unittest.TestCase):
             main.integrity_note(self.c)
         diag.assert_not_called()
 
+    def test_failure_after_pack_verify_mismatch_adds_note(self):
+        # 维护者 11-17：出包时资源包核对没对上（pack/verify.py 改黄照常出包，原因落 <包目录>.verify_warn.txt），之后这款失败补一句。
+        #   期望（手写）：现行产物根 pkg/ 下有 *.verify_warn.txt → 补一条 warning 级 source_integrity_skipped（句子 = PACK_VERIFY_NOTE）；
+        #   只有非现行版本里有、或没有 → 不补
+        import unittest.mock as um, main, layout
+        games = {"games": [{"id": "A", "packages": [{}]}]}
+        for where, want in (("ios/roots/ta@现行/pkg", True), ("ios/roots/ta@v1/pkg", False), (None, False)):
+            with tempfile.TemporaryDirectory() as d:
+                if where:
+                    (Path(d) / where).mkdir(parents=True); (Path(d) / where / "pack.files.verify_warn.txt").write_text("x\n")
+                with um.patch.object(self.c, "r", {"gameId": "A"}), um.patch.object(self.c, "catalog", return_value=games), \
+                     um.patch.object(layout, "build_dir", return_value=Path(d)), um.patch.object(self.c, "diagnostic", create=True) as diag:
+                    main.integrity_note(self.c)
+            if want: diag.assert_called_once_with(main.PACK_VERIFY_NOTE, code="source_integrity_skipped", severity="warning")
+            else: diag.assert_not_called()
+
     def test_connected_counts_wired_paired_with_idle_tunnel(self):
         # 10-26 测试设备2：数据线连着、已配对，隧道空闲 disconnected → 算连着。11-13 起（维护者：插着手机别说识别不了）：
         #   无线且隧道没通的（N）、插着线还没配对的（U）也列出来给玩家选——在不在线、配没配对由各行连接状态显示，装的那一步会去配对
