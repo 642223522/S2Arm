@@ -10166,5 +10166,9 @@
  {
   "source": "这台 Mac 空间不够，存档备份放不下（只剩 {0} MB）：腾出 {1} GB 再试，或者确认后继续",
   "en": "This Mac is out of space and the save backup doesn't fit (only {0} MB left): free up {1} GB and try again, or confirm to continue"
+ },
+ {
+  "source": "按顺序把所选游戏推到 iPhone",
+  "en": "Pushing the selected games to your iPhone one by one"
  }
 ]
