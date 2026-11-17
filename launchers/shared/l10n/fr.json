@@ -3121,6 +3121,8 @@
   "iPhone 锁着，读不了存档：请解锁手机，解锁后会自动继续": "L'iPhone est verrouillé, ses sauvegardes ne peuvent pas être lues. Déverrouillez le téléphone et l'opération continuera automatiquement",
   "读不懂 iPhone 返回的存档文件清单（{0} 条没有路径字段，多半是 Xcode 版本不同）": "Impossible de comprendre la liste des fichiers de sauvegarde de l'iPhone ({0} entrées sans chemin ; généralement une version différente de Xcode)",
   "确认不了 iPhone 上有没有装过这款：{0}": "Impossible de confirmer si ce jeu est installé sur l'iPhone : {0}",
+  "这款存档在 iCloud 云存档里有一份（{0}），覆盖装不会碰它：这次不另备份，照装": "Les sauvegardes de ce jeu ont une copie dans vos sauvegardes iCloud ({0}), que l'écrasement de l'app ne touche pas : installation sans sauvegarde séparée cette fois",
+  "这台 Mac 空间不够，存档备份放不下（只剩 {0} MB）：腾出 {1} GB 再试，或者确认后继续": "Ce Mac manque d'espace et la sauvegarde ne tient pas (il ne reste que {0} Mo) : libérez {1} Go et réessayez, ou confirmez pour continuer",
   "读不到 iPhone 上这款的存档目录：{0}": "Impossible de lire le dossier de sauvegarde de ce jeu sur l'iPhone : {0}",
   "拉存档失败（{0}）：{1}": "Impossible de copier les sauvegardes ({0}) : {1}",
   "拉存档失败：{0}": "Impossible de copier les sauvegardes : {0}",

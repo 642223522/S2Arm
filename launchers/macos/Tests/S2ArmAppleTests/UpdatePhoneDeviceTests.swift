@@ -55,6 +55,29 @@ import S2ArmAppleAdapter
         XCTAssertEqual(runner.updates[2]["acceptStale"] as? Bool, true)
         XCTAssertEqual(runner.updates[2]["device"] as? String, "00008160-FIXTURE", "还是同一台")
     }
+
+    /// 覆盖装前存档备份做不成时，作业层看云存档里有没有这款的快照（pack/jobs/install.py cloud_save_copy）：玩家在环境页选了云存档文件夹 →
+    ///   installUpdate 请求带 cloudSavesFolder；没选 → 不带（期望手写）
+    func testUpdatePhonePassesCloudSavesFolder() async throws {
+        _ = NSApplication.shared
+        pinIosAfterPackInstall()
+        for folder in ["cloud-fixture/S2Arm Saves", nil] as [String?] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("s2arm-upd-" + UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            try FileManager.default.createDirectory(at: root.appendingPathComponent("Jobs"), withIntermediateDirectories: true)
+            try Data().write(to: root.appendingPathComponent("Jobs/main.py"))
+            try FileManager.default.createDirectory(at: root.appendingPathComponent("apple-frontend"), withIntermediateDirectories: true)
+            let settings: [String: Any] = folder.map { ["cloudSavesFolder": $0] } ?? [:]
+            try JSONSerialization.data(withJSONObject: settings).write(to: root.appendingPathComponent("apple-frontend/launch-settings.json"))
+            let runner = RequestRunner()
+            let model = S2ArmLauncherModel(client: JobClient(environment: JobEnvironment(
+                privateRoot: root, resources: root, library: root.appendingPathComponent("lib").path, libraryId: "fixture"), runner: runner))
+            model.updatePhone(acceptStale: false, repack: [], language: "zh-Hans", device: "00008160-FIXTURE")
+            for _ in 0..<300 where model.busy || runner.updates.isEmpty { try? await Task.sleep(for: .milliseconds(10)) }
+            XCTAssertEqual(runner.updates.count, 1)
+            XCTAssertEqual(runner.updates.first?["cloudSavesFolder"] as? String, folder, folder == nil ? "没选云存档文件夹就不带" : "选了就带上同一个路径")
+        }
+    }
 }
 
 private final class RequestRunner: JobProcessRunner {
