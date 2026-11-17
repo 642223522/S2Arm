@@ -56,6 +56,8 @@ public sealed partial class EnvironmentWindow
                     Foreground = Brush.Parse("#A8A6A1"), TextWrapping = TextWrapping.Wrap });
             panel.Children.Add(running);
         }
+        else if (libraryFailCode == LibraryChooseDrive && LibraryDrivePicker() is { } choose)
+            panel.Children.Add(choose);   // 第一次建库先选盘（LibraryDrivePicker 选盘模式）：选好建完库再出拖拽区
         else
         {
             var zone = new Border
@@ -101,11 +103,15 @@ public sealed partial class EnvironmentWindow
         if (!libraryBusy && !importBusy && (connectedFolder is null || libraryId is null))
         {
             var fix = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0, 10, 0, 0) };
-            var retry = Action("welcome.sheet.libraryRetry", () => EnsureLibrary(() => { }));
-            AutomationId(retry, "import.library.retry");
             var change = Action("welcome.sheet.libraryChange", () => BeginPicker(ChangeLibraryAsync));
             AutomationId(change, "import.library.change");
-            fix.Children.Add(retry); fix.Children.Add(change);
+            if (libraryFailCode != LibraryChooseDrive)   // 选盘时「重试」就是不选直接建在缺省位置，只留「换一个文件夹」（自己挑文件夹）
+            {
+                var retry = Action("welcome.sheet.libraryRetry", () => EnsureLibrary(() => { }));
+                AutomationId(retry, "import.library.retry");
+                fix.Children.Add(retry);
+            }
+            fix.Children.Add(change);
             panel.Children.Add(fix);
         }
 
