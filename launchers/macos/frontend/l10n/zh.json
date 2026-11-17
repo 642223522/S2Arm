@@ -1030,6 +1030,7 @@
   "library.folderUnset": "尚未设置",
   "library.gameCount": "%d 个游戏",
   "library.gameCountOne": "1 个游戏",
+  "library.enter": "进入游戏库",
   "library.localNote": "使用你自己的游戏文件构建",
   "library.manage": "管理",
   "library.newBuild": "构建游戏",
