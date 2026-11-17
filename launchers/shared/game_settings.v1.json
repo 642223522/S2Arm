@@ -44,7 +44,7 @@
     {"id": "widescreen", "type": "bool", "default": "caps", "scope": "game", "apply": "restart", "platforms": ["ios", "mac"], "group": "display", "ios_key": "S2AWidescreen",
      "label": {"zh-Hans": "满屏", "en": "Full screen"},
      "note": {"zh-Hans": "开启后按屏幕比例铺满，画面拉伸时自动退回 16:9；关闭后保持 16:9", "en": "Fills your screen and falls back to 16:9 if stretched; off keeps the original 16:9 ratio"}},
-    {"id": "docked", "type": "choice", "default": {"mac": "docked", "ios": "handheld"}, "scope": "game", "apply": "restart", "platforms": ["ios", "mac"], "group": "display", "ios_key": "S2ADockedMode",
+    {"id": "docked", "type": "choice", "default": "handheld", "scope": "game", "apply": "restart", "platforms": ["ios", "mac"], "group": "display", "ios_key": "S2ADockedMode",
      "options": [{"value": "docked", "label": {"zh-Hans": "主机模式", "en": "Docked"}}, {"value": "handheld", "label": {"zh-Hans": "掌机模式", "en": "Handheld"}}],
      "label": {"zh-Hans": "运行模式", "en": "Console mode"},
      "note": {"zh-Hans": "主机模式画面分辨率更高，掌机模式更省电", "en": "Docked renders at a higher resolution; handheld uses less power"}},
