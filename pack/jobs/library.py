@@ -401,6 +401,22 @@ def extract_inspect(c, source, icon_dir):
         main_path = source / "exefs" / "main"
         npdm_path = source / "exefs" / "main.npdm"
 
+    # 散文件 / Switch 2 导出没有整包校验：导入时先把程序文件（NSO）试解一遍，物理上解不开当场点名（#1522：原先到出包解包才抛 LZ4 的 Python 栈）；
+    #   段哈希对不上照常收、记黄（维护者 11-17：校验不过不拒收，可能是打过补丁 / mod 的程序）
+    if fmt in ("dump", "loose"):
+        exefs_dirs = [main_path.parent] + ([source / "updates" / n / "exefs" for n in dump.numdirs(str(source / "updates"))] if fmt == "dump" else [])
+        for exefs in exefs_dirs:
+            if not exefs.is_dir():
+                continue
+            rel = exefs.relative_to(source).as_posix()
+            try:
+                off = dump.check_exefs(str(exefs))
+            except dump.NsoDamaged as e:
+                raise Failure(f"程序文件 {rel}/{e.name} 的 {e.seg} 段解不开：这个程序文件坏了或被改过，请重新导出（最好导成 NSP / XCI）。", code="content_invalid") from None
+            if off:
+                c.diagnostic(SOURCE_INTEGRITY_SKIPPED, code="source_integrity_skipped", severity="warning",
+                             internal="；".join(f"{rel}/{n} 的 {s} 段哈希对不上" for n, s in off))  # 非玩家句
+
     # 读名称与显示版本；english = 文件夹取名用的英文名（unpack.tsv 的 name / NACP 美式 → 英式英语），没有就空
     english = ""
     if fmt == "extract" and (source / "unpack.tsv").is_file():
