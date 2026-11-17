@@ -372,6 +372,8 @@
 "dprompt.expiry.hours" = "about %d hours";
 "dprompt.expiry.lessThanHour" = "less than 1 hour";
 "dprompt.expiry.title" = "Signature expires soon";
+"dprompt.input.bad.body" = "This game starts with the default buttons (%@).";
+"dprompt.input.bad.title" = "Couldn't read the button settings";
 "dprompt.ns2pro.body" = "Hold four fingers on the screen for 1.5 seconds to open Settings, turn on “Enable Switch 2 Pro Controller”, then press the pairing button on the controller.";
 "dprompt.ns2pro.title" = "Using a Switch 2 Pro Controller?";
 "dprompt.motion.title" = "Motion controls";

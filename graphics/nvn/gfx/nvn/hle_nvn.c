@@ -228,7 +228,7 @@ static const int g_devinfo[] = {
     [0x45] = 1, [0x46] = 5, [0x47] = 1, [0x48] = 1, [0x49] = 1, [0x4A] = 1, [0x4B] = 1, [0x4C] = 1, [0x4D] = 16,
     [0x4E] = 1024, [0x4F] = 32, [0x50] = 4096, [0x51] = 65536, [0x52] = 65536, [0x53] = 256, [0x54] = 16384,
     [0x55] = 262144, [0x56] = 4096, [0x57] = 1, [0x58] = 4, [0x59] = 2, [0x5A] = 0, [0x5B] = 4096, [0x5C] = 16384,
-    [0x5D] = 4096, [0x5E] = 128, [0x5F] = 4096,
+    [0x5D] = 4096, [0x5E] = 128, [0x5F] = 32,
 };
 // The NVN API version the game's own driver would report follows its SDK: games check it and create no device on a mismatch. SDK 10 and older are API 53 (Super Mario 3D World 10.4,
 // Age of Calamity 9.6, Link's Awakening 8, Odyssey 7.3, Three Houses 6.5); SDK 11 and later take 55.15
@@ -253,12 +253,13 @@ NVN(nvnDeviceGetInteger, void, const NVNdevice *d, NVNdeviceInfo what, int *out)
     (void)d;
     unsigned w = (unsigned)what;
     if (nvn2_on() && nvn2_device_integer(w, out)) { OLOG("DeviceGetInteger %#x -> %d (NVN2)", w, *out); return; }   // Switch 2: NVN2's own values (nvn2.c); unhandled items fall to the X1 table
-    // 0x5F separate sampler binding count and 0x60/0x61 are not in the table measured on SMO: 0x5F is given 4096 per the sampler pool limit, unverified; 0x60/0x61 report a failure and return 0
+    // 0x5F separate sampler bindings were not measured on SMO: use 32 as a fallback, and prefer the game's driver when recognized; 0x60/0x61 report a failure and return 0
     // 0x67 (SDK 19): FINAL FANTASY TACTICS - The Ivalice Chronicles reads it before every program it loads and passes it as the alignment of its copies of the shader's control section and code
     // (main+0x49800; its allocator raises anything below 8 to 8). Not measured on hardware: 256, the alignment of shader code in a memory pool; the host reads shaders by key, so any value works
     if (w == 0x67) { *out = 256; return; }
     if (w >= sizeof g_devinfo / sizeof *g_devinfo) { LOG("【红】 nvnDeviceGetInteger unknown item %#x, returning 0", w); *out = 0; return; }
     *out = g_devinfo[w];
+    if (w == NVN_DEVICE_INFO_SEPARATE_SAMPLER_BINDINGS_PER_STAGE) { int dv; if (dm_nvn_driver_item((int)w, &dv)) *out = dv; }
     // 0x2E / 0x30, the newest GPU code version the driver runs: the table's 1.14 is SMO's SDK 7 driver, while each SDK's driver runs the code of the GLSLC in the same SDK. A game that compiles
     // at run time checks its GLSLC's version against this range first (Catherine: Full Body, SDK 8.2.1: its GLSLC writes 1.15, main+0x330dcc refused it, no built-in program was compiled
     // and the first uniform lookup read a null program, main+0x3316dc), so the host reports at least the version of the GLSLC the game carries
@@ -1372,6 +1373,29 @@ int prog_key(const prog_t *p, unsigned st, uint8_t key[8]) {
 }
 // S2Arm: a stage's key from the bytes there now (prog_key returns the one computed at SetShaders): equal to it only while the game still holds the same control section and code (nvn_mtl.m pso_fout_variant)
 int prog_key_live(const prog_t *p, unsigned st, uint8_t key[8]) { return st < p->nstage && keys_hash(&p->sd[st], 0, key); }
+// 首遇等待诊断（#1001，DM_NVN_FU_SETAT=1，缺省关）：按序号记 SetShaders 的时刻，nvn_mtl.m 的首遇等待行报「登记到这次绘制隔了多久」，
+//   看两级建管线（SetShaders 时先建基础管线）有没有提前量。直接映射表 64K 项（1 MB，开了才分配）：同槽后来的序号顶掉先前的，查到序号对不上算没记到
+enum { FU_SETAT_N = 1 << 16 };
+static _Atomic uint64_t (*g_fu_setat)[2];
+static int fu_setat_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("DM_NVN_FU_SETAT"); on = e && *e && strcmp(e, "0"); } return on; }
+static void fu_setat_note(uint64_t serial) {
+    if (!fu_setat_on()) return;
+    if (!atomic_load_explicit((_Atomic(void *) *)&g_fu_setat, memory_order_acquire)) {
+        void *n = calloc(FU_SETAT_N, sizeof *g_fu_setat), *z = NULL;
+        if (!n || !atomic_compare_exchange_strong((_Atomic(void *) *)&g_fu_setat, &z, n)) free(n);
+    }
+    _Atomic uint64_t *e = g_fu_setat ? g_fu_setat[serial & (FU_SETAT_N - 1)] : NULL; if (!e) return;
+    atomic_store_explicit(&e[0], 0, memory_order_relaxed);
+    atomic_store_explicit(&e[1], now_ns(), memory_order_relaxed);
+    atomic_store_explicit(&e[0], serial, memory_order_release);
+}
+uint64_t nvn_prog_set_ns(uint64_t serial) {
+    _Atomic uint64_t (*t)[2] = atomic_load_explicit((_Atomic(void *) *)&g_fu_setat, memory_order_acquire); if (!t) return 0;
+    _Atomic uint64_t *e = t[serial & (FU_SETAT_N - 1)];
+    if (atomic_load_explicit(&e[0], memory_order_acquire) != serial) return 0;
+    uint64_t ns = atomic_load_explicit(&e[1], memory_order_relaxed);
+    return atomic_load_explicit(&e[0], memory_order_acquire) == serial ? ns : 0;
+}
 NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData *sd) {
     prog_t *o = (prog_t *)p;
     if (n < 0 || n > 6) { LOG("【红】 ProgramSetShaders stage count %d", n); return 0; }
@@ -1380,6 +1404,7 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData 
     uint64_t old_serial = o->serial;   // 旧阶段的 pin 等到新阶段存好/ pin 好之后再解，换 SetShaders 期间不留空窗
 #endif
     nvn_be_prog_release(o); o->nstage = n; memcpy(o->sd, sd, n * sizeof *sd); o->serial = nvn_new_serial();
+    fu_setat_note(o->serial);
     // The keys are computed here (see prog_key in nvn_obj.h): the control section is only guaranteed valid during this call; the code area lives in a memory pool and stays valid while the program is in use
     static int dump = -1; if (dump < 0) dump = getenv("DM_NVN_SHDUMP") != NULL;
     prog_keys_t *k = pk_get(p, 1);

@@ -6052,6 +6052,26 @@
   "en": "Prepared files are missing or the wrong size, prepare again: {0}"
  },
  {
+  "source": "{0}，先照常启动；起不来的话重新出一次 Mac 版。",
+  "en": "{0}. Starting anyway; if the game won't start, build the Mac version again."
+ },
+ {
+  "source": "请求里带着已停用的旧内存布局设置（vammLayout）",
+  "en": "The request carries the retired old memory layout setting (vammLayout)"
+ },
+ {
+  "source": "起局前这里校验就没过：{0}",
+  "en": "Before launch, this check had already failed: {0}"
+ },
+ {
+  "source": "运行文件 {0} 缺失或大小不符",
+  "en": "Runtime file {0} is missing or the wrong size"
+ },
+ {
+  "source": "运行版本清单对不上（{0}）",
+  "en": "The runtime manifest doesn't match ({0})"
+ },
+ {
   "source": "准备产物校验失败，请重新准备：{0}",
   "en": "Prepared files failed verification, prepare again: {0}"
  },
@@ -10058,5 +10078,17 @@
  {
   "source": "手机空间写满了",
   "en": "iPhone storage is full"
+ },
+{
+  "source": "这份游戏文件里有数据和原版对不上（多半是改版 / 整合版，或个别块损坏），已跳过完整性校验照常导入。",
+  "en": "Some data in this game file does not match the original (usually a modded or merged build, or a damaged block). The integrity check was skipped and the game was imported anyway."
+ },
+{
+  "source": "能玩就照常用；出包或游戏里出现花屏、闪退时，换一份原版完整的文件（本体与更新 / DLC 分开的那种）再试。",
+  "en": "If it plays, keep using it. If you see graphics glitches or crashes when building or playing, try again with a complete original file (base game and updates / DLC as separate files)."
+ },
+{
+  "source": "导入时这款数据校验不过（多半是改版 / 整合版或个别块损坏），这次失败可能与此有关；换一份原版完整的文件再试。",
+  "en": "This game's data failed the integrity check when it was imported (usually a modded or merged build, or a damaged block), which may be related to this failure. Try again with a complete original file."
  }
 ]

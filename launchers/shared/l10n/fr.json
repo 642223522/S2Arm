@@ -2555,6 +2555,11 @@
   "S2Arm Mac 宿主不可执行。": "L'hôte S2Arm Mac n'est pas exécutable.",
   "运行资源与所选游戏不匹配。": "Les fichiers du jeu ne correspondent pas au jeu sélectionné.",
   "准备产物缺失或大小不符，请重新准备：{0}": "Fichiers préparés manquants ou de taille incorrecte, préparez à nouveau : {0}",
+  "{0}，先照常启动；起不来的话重新出一次 Mac 版。": "{0}. Lancement quand même ; si le jeu ne démarre pas, recompilez la version Mac.",
+  "请求里带着已停用的旧内存布局设置（vammLayout）": "La requête contient l'ancien réglage de disposition mémoire retiré (vammLayout)",
+  "起局前这里校验就没过：{0}": "Avant le lancement, cette vérification avait déjà échoué : {0}",
+  "运行文件 {0} 缺失或大小不符": "Le fichier d'exécution {0} est manquant ou n'a pas la bonne taille",
+  "运行版本清单对不上（{0}）": "Le manifeste d'exécution ne correspond pas ({0})",
   "准备产物校验失败，请重新准备：{0}": "La vérification des fichiers préparés a échoué, préparez à nouveau : {0}",
   "已校验内置 S2Arm Mac 宿主": "L'hôte S2Arm Mac intégré a été vérifié",
   "已校验并复用 S2Arm Mac 宿主（含地址窗口护栏库）": "L'hôte S2Arm Mac (avec la bibliothèque de protection de fenêtre d'adresse) a été vérifié et réutilisé",
@@ -3896,6 +3901,9 @@
   "按估算，iPhone 剩余空间可能不够：这次要传约 {0} GB，连同解开时临时多占的约要 {1} GB，手机报的空闲约 {2} GB，还差约 {3} GB。「设置 → 通用 → iPhone 储存空间」里的「可用」还包括系统随时能清掉的空间，实际多半放得下；点「仍然继续」照传，真写满了会停下并说明还差多少。": "D'après une estimation, l'espace de l'iPhone pourrait être insuffisant : ce transfert fait environ {0} Go, environ {1} Go en comptant l'espace temporaire utilisé lors de la décompression, et l'iPhone indique environ {2} Go libres, il manque environ {3} Go. La valeur Disponible dans Réglages → Général → Stockage iPhone inclut aussi l'espace qu'iOS peut libérer à tout moment, donc cela tient le plus souvent ; touchez Continuer quand même pour l'envoyer : le transfert ne s'arrête et n'indique ce qui manque que si le stockage est réellement plein.",
   "按估算，iPhone 剩余空间可能不够：这次要传约 {0} GB，连同解开时临时多占的约要 {1} GB，手机可用约 {2} GB（含系统随时能清掉的空间），还差约 {3} GB。可以先在「设置 → 通用 → iPhone 储存空间」腾出一些，或者点「仍然继续」照传，真写满了会停下并说明还差多少。": "D'après une estimation, l'espace de l'iPhone pourrait être insuffisant : ce transfert fait environ {0} Go, environ {1} Go en comptant l'espace temporaire utilisé lors de la décompression, et l'iPhone dispose d'environ {2} Go (y compris l'espace qu'iOS peut libérer à tout moment), il manque environ {3} Go. Vous pouvez d'abord libérer de l'espace dans Réglages → Général → Stockage iPhone, ou toucher Continuer quand même pour l'envoyer ; le transfert ne s'arrête et n'indique ce qui manque que si le stockage est réellement plein.",
   "iPhone 空间写满了，传到一半停下：这次要传约 {0} GB。在「设置 → 通用 → iPhone 储存空间」腾出空间后再装一次（已传完的文件不用重传）。": "Le stockage de l'iPhone est plein, le transfert s'est arrêté en cours de route : ce transfert fait environ {0} Go. Libérez de l'espace dans Réglages → Général → Stockage iPhone, puis réinstallez (les fichiers déjà envoyés ne sont pas renvoyés).",
-  "手机空间写满了": "Le stockage de l'iPhone est plein"
+  "手机空间写满了": "Le stockage de l'iPhone est plein",
+  "这份游戏文件里有数据和原版对不上（多半是改版 / 整合版，或个别块损坏），已跳过完整性校验照常导入。": "Certaines données de ce fichier de jeu ne correspondent pas à l'original (généralement une version modifiée ou fusionnée, ou un bloc endommagé). La vérification d'intégrité a été ignorée et le jeu a quand même été importé.",
+  "能玩就照常用；出包或游戏里出现花屏、闪退时，换一份原版完整的文件（本体与更新 / DLC 分开的那种）再试。": "S'il fonctionne, continuez à l'utiliser. En cas de problèmes d'affichage ou de plantages lors de la création du paquet ou en jeu, réessayez avec un fichier original complet (jeu de base et mises à jour / DLC séparés).",
+  "导入时这款数据校验不过（多半是改版 / 整合版或个别块损坏），这次失败可能与此有关；换一份原版完整的文件再试。": "Les données de ce jeu n'ont pas passé la vérification d'intégrité lors de l'import (généralement une version modifiée ou fusionnée, ou un bloc endommagé) ; cet échec peut en venir. Réessayez avec un fichier original complet."
  }
 }

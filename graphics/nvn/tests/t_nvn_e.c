@@ -90,6 +90,10 @@ static void setup(void) {
     bind_deferred = (bind_deferred_fn)load("nvnCommandBufferBindTexturesDeferred");
     NVNdeviceBuilder db = {{0}}; API(nvnDeviceBuilderSetDefaults)(&db);
     CHECK(API(nvnDeviceInitialize)(&device, &db));
+    int separate_textures = 0, separate_samplers = 0;
+    API(nvnDeviceGetInteger)(&device, NVN_DEVICE_INFO_SEPARATE_TEXTURE_BINDINGS_PER_STAGE, &separate_textures);
+    API(nvnDeviceGetInteger)(&device, NVN_DEVICE_INFO_SEPARATE_SAMPLER_BINDINGS_PER_STAGE, &separate_samplers);
+    CHECK(separate_textures == 128 && separate_samplers == 32);  // 没有加载游戏驱动时采用默认绑定上限。
     NVNqueueBuilder qb = {{0}}; API(nvnQueueBuilderSetDefaults)(&qb);
     API(nvnQueueBuilderSetDevice)(&qb, &device); CHECK(API(nvnQueueInitialize)(&queue, &qb));
     NVNtextureBuilder tb = {{0}}; API(nvnTextureBuilderSetDefaults)(&tb);

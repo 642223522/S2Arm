@@ -517,6 +517,8 @@ static void on_crash(int sig, siginfo_t *si, void *ctx) {
     { void (*ev)(const char *, int) = (void (*)(const char *, int))dlsym(RTLD_DEFAULT, "s2a_dguard_evidence"); if (ev) ev("崩溃", 0); }   // 直连安全网：这局算失败（有证据）；动态取，单测没链 dguard.c
     char bp[160], bl[160]; where(pc, bp, sizeof bp); where(lr, bl, sizeof bl);
     LOG("【红】CRASH 信号 %d 地址 %p pc %s lr %s sp %#llx", sig, si->si_addr, bp, bl, (unsigned long long)uc->uc_mcontext->__ss.__sp);
+    { const char *(*wn)(void) = (const char *(*)(void))dlsym(RTLD_DEFAULT, "s2a_waived_note"); const char *w = wn ? wn() : NULL;   // waived.c
+      if (w && *w) LOG("【红】之前这些校验没过（照常继续了）：%s", w); }
     for (int i = 0; i < 29; i += 4) LOG("  x%-2d %016llx %016llx %016llx %016llx", i, uc->uc_mcontext->__ss.__x[i], uc->uc_mcontext->__ss.__x[i + 1], i + 2 < 29 ? uc->uc_mcontext->__ss.__x[i + 2] : 0, i + 3 < 29 ? uc->uc_mcontext->__ss.__x[i + 3] : 0);
     s2a_backtrace(fp);
     code_note(pc, lr, fp);

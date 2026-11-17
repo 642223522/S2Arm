@@ -30,6 +30,71 @@ static inline int32_t drv_orr_w0(uint32_t m) {
     uint32_t v = 0; for (unsigned k = 0; k < 32; k += e) v |= (uint32_t)el << k;
     return (int32_t)v;
 }
+// Read a constant from an independently guarded device query called before the outer switch.
+// Accept only a completely recognized stack handoff and constant-return sequence.
+static inline int drv_nested_return(const uint8_t *img, size_t text_end, size_t pos) {
+    if (pos + 8 > text_end || drv_w(img, pos) != 0xb85fc3a0u) return 0;
+    pos += 4;
+    uint32_t w = drv_w(img, pos);
+    if ((w >> 26) == 5) {
+        int64_t dest = (int64_t)pos + drv_sx(w & 0x3ffffffu, 26) * 4;
+        if (dest < 0 || (uint64_t)dest + 4 > text_end || (size_t)dest == pos) return 0;
+        pos = (size_t)dest;
+    }
+    // Only restore registers other than x0, adjust sp, and return. Unknown instructions are not proof.
+    for (int i = 0; i < 5 && pos + 4 <= text_end; i++, pos += 4) {
+        w = drv_w(img, pos);
+        if (w == 0xd65f03c0u) return 1;
+        if ((w & 0xffc003e0u) == 0xa94003e0u && (w & 31) != 0 && ((w >> 10) & 31) != 0) continue;
+        if ((w & 0xffc003ffu) == 0x910003ffu) continue;
+        return 0;
+    }
+    return 0;
+}
+static inline int32_t drv_nested_item(const uint8_t *img, size_t text_end, size_t size, size_t cmp, int item, size_t target) {
+    if (cmp < 16 || cmp + 40 > text_end || !drv_nested_return(img, text_end, target) ||
+        drv_w(img, cmp - 16) != 0xd10013a1u || drv_w(img, cmp - 12) != 0xb81fc3bfu ||
+        drv_w(img, cmp - 8) != 0x2a0003f4u ||
+        (drv_w(img, cmp) & 0xffc003ffu) != 0x7100029fu ||
+        drv_w(img, cmp + 8) != 0x2a1403e8u ||
+        (drv_w(img, cmp + 12) & 0x9f00001fu) != 0x90000009u ||
+        (drv_w(img, cmp + 16) & 0xffc003ffu) != 0x91000129u ||
+        (drv_w(img, cmp + 20) & 0x9f00001fu) != 0x1000000au ||
+        drv_w(img, cmp + 24) != 0x3868692bu || drv_w(img, cmp + 28) != 0x8b0b094au ||
+        (drv_w(img, cmp + 32) & 0xffe0001fu) != 0x52800000u || drv_w(img, cmp + 36) != 0xd61f0140u) return -1;
+    uint32_t call = drv_w(img, cmp - 4);
+    if ((call >> 26) != 0x25) return -1;
+    int64_t fn = (int64_t)cmp - 4 + drv_sx(call & 0x3ffffffu, 26) * 4;
+    if (fn < 0 || (uint64_t)fn + 48 > text_end) return -1;
+    size_t p = (size_t)fn;
+    uint32_t sub = drv_w(img, p + 8), limit = drv_w(img, p + 12), pg = drv_w(img, p + 20), add = drv_w(img, p + 24), adr = drv_w(img, p + 28);
+    if (drv_w(img, p) != 0x2a0003e8u || drv_w(img, p + 4) != 0x2a1f03e0u ||
+        (sub & 0xffc003ffu) != 0x51000109u || (limit & 0xffc003ffu) != 0x7100013fu ||
+        (drv_w(img, p + 16) & 0xff00001fu) != 0x54000008u ||
+        (pg & 0x9f00001fu) != 0x9000000au || (add & 0xffc003ffu) != 0x9100014au ||
+        (adr & 0x9f00001fu) != 0x1000000bu || drv_w(img, p + 32) != 0x3869694cu ||
+        drv_w(img, p + 36) != 0x8b0c096bu || (drv_w(img, p + 40) & 0xffe0001fu) != 0x52800008u ||
+        drv_w(img, p + 44) != 0xd61f0160u) return -1;
+    int bias = (sub >> 10) & 0xfff, index = item - bias, last = (limit >> 10) & 0xfff;
+    if (index < 0 || index > last) return -1;
+    int64_t table = (int64_t)((p + 20) & ~(size_t)0xfff) + (drv_sx(((pg >> 29) & 3) | (((pg >> 5) & 0x7ffff) << 2), 21) * 4096) + ((add >> 10) & 0xfff);
+    int64_t base = (int64_t)(p + 28) + drv_sx(((adr >> 29) & 3) | (((adr >> 5) & 0x7ffff) << 2), 21);
+    if (table < 0 || (uint64_t)table + (unsigned)index >= size) return -1;
+    int64_t dest = base + 4 * (int64_t)img[table + index];
+    if (dest < 0 || (uint64_t)dest + 8 > text_end) return -1;
+    uint32_t val = drv_w(img, (size_t)dest);
+    if ((val & 0xffe0001fu) != 0x52800008u) return -1;
+    int32_t result = (val >> 5) & 0xffff;
+    size_t end = (size_t)dest + 4;
+    uint32_t branch = drv_w(img, end);
+    if ((branch >> 26) == 5) {
+        int64_t dest2 = (int64_t)end + drv_sx(branch & 0x3ffffffu, 26) * 4;
+        if (dest2 < 0 || (uint64_t)dest2 + 12 > text_end) return -1;
+        end = (size_t)dest2;
+    }
+    if (end + 12 > text_end || drv_w(img, end) != 0x52800020u || drv_w(img, end + 4) != 0xb9000028u || drv_w(img, end + 8) != 0xd65f03c0u) return -1;
+    return result;
+}
 static inline int nvn_drv_items_scan(const uint8_t *img, size_t text_end, size_t size, int32_t *items, int nmax) {
     int found = 0; static int32_t cur[256];
     for (size_t o = 32; o + 8 <= text_end; o += 4) {
@@ -66,6 +131,7 @@ static inline int nvn_drv_items_scan(const uint8_t *img, size_t text_end, size_t
             if (t < 0 || (uint64_t)t + 4 > text_end) { cur[i] = -1; continue; }
             uint32_t m = drv_w(img, (size_t)t);
             cur[i] = (m & 0xffe0001f) == 0x52800000 ? (int32_t)((m >> 5) & 0xffff) : drv_orr_w0(m);
+            if (cur[i] < 0) cur[i] = drv_nested_item(img, text_end, size, cmp, i, (size_t)t);
         }
         if (cur[1] < 0) continue;   // case 1 must return the minor as an immediate (this is the version switch)
         cur[0] = major;

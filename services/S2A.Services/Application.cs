@@ -321,13 +321,9 @@ namespace S2A.Services
 
                 // 长度来自目录枚举或预建索引：文件被换过（索引过期）就对不上，读出的数据会错位。
                 //   回失败、不按索引长度补零当完整（审计 #1534 P1-6）；不缓存这个句柄，下次读再核
+                // 11-17 维护者：校验不过不整个拒——黄字记下、照常按实际文件读（读到文件尾就是实际长度），出问题时报红会带上这条
                 if (opened.Length != _size)
-                {
-                    Red.Report("RomFS 文件长度与索引不符（romfs.s2aidx 过期？），本次读回失败", $"{_path}：索引 {_size}，实际 {opened.Length}");
-                    opened.Dispose();
-                    bytesRead = 0;
-                    return ResultFs.HostFileDataCorrupted.Value;
-                }
+                    Red.Waive($"RomFS 文件长度与索引不符（romfs.s2aidx 过期？版本不配，可能读错或闪退，重新装到 iPhone 可解），照常按实际文件读", $"{_path}：索引 {_size}，实际 {opened.Length}");
 
                 lock (_lock)
                 {

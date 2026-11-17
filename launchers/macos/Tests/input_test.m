@@ -1232,7 +1232,10 @@ static void test_shared_input_config(void) {
     const s2a_input_config *active = s2a_ios_input_config_current();
     CONFIG_EXPECT(active && active->keyboard[0].code == 49 && active->axes[0].source == 3, "iOS published table is the parsed custom mapping");
     CONFIG_EXPECT([[@"{" dataUsingEncoding:NSUTF8StringEncoding] writeToFile:path atomically:YES], "replace own fixture with invalid JSON");
-    CONFIG_EXPECT(s2a_ios_input_config_load() == S2A_INPUT_CONFIG_JSON && !s2a_ios_input_config_current(), "failed iOS startup load cannot expose previous mapping");
+    // 11-17 维护者：读不懂不再拒启——仍回错误码（调用方黄字说明），这局换成默认键位，不沿用上一份映射
+    { s2a_input_config fallback; s2a_input_config_default(&fallback);
+      const s2a_input_config *now = (s2a_ios_input_config_load() == S2A_INPUT_CONFIG_JSON) ? s2a_ios_input_config_current() : NULL;
+      CONFIG_EXPECT(now && !memcmp(now, &fallback, sizeof fallback), "failed iOS startup load falls back to the default mapping, not the previous one"); }
     if (savedDocs) setenv("S2A_DOCS",savedDocs.UTF8String,1); else unsetenv("S2A_DOCS");
     if (savedPath) setenv("S2A_INPUT_CONFIG",savedPath.UTF8String,1); else unsetenv("S2A_INPUT_CONFIG");
     CONFIG_EXPECT([NSFileManager.defaultManager removeItemAtPath:directory error:NULL], "remove only synthetic fixture directory created by this test");

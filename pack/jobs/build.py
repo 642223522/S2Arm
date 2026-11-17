@@ -88,15 +88,19 @@ def has_runtime_romfs(root):
     return std.is_file() and not std.is_symlink()
 
 
-def validate_runtime(c, runtime, full=False, files=True):
-    """files=False：只看清单和入口（游戏库列表用），不逐文件读状态，只核主程序 / main.npdm 在且大小对（QUICK_FILES，审计 P2-212：
+def validate_runtime(c, runtime, full=False, files=True, doubts=None):
+    """doubts：起局传一个列表（11-17 维护者：校验不过不再拒起局）：清单的 schema / engine / target 对不上、主程序 / 程序描述缺或大小不符都记进去、照常返回，
+    由起局黄字说明、照常起；不传照旧抛错（游戏库判「就绪」用）。files=False：只看清单和入口（游戏库列表用），不逐文件读状态，只核主程序 / main.npdm 在且大小对（QUICK_FILES，审计 P2-212：
     原先清单没变、主程序被删也报就绪，点开始才报错）。起局也用它（v0.3.1：原先每次起局逐个核约 6 万个文件，又慢、任何一个不对就不让玩）；
     其余文件真坏了，游戏会非正常退出，launch 那时再完整核一遍、说清缺了什么（missing_after_crash）"""
     root = resolve_path(runtime)
     layout.require_in_location(c, root)
     manifest = read(root / "manifest.json", {})
     if manifest.get("schema") != 1 or manifest.get("engine") != "S2Arm" or manifest.get("target") != "macos-arm64":
-        raise Failure("当前游戏没有完整的 S2Arm Mac 运行版本。", code="runtime_invalid")
+        if doubts is None:
+            raise Failure("当前游戏没有完整的 S2Arm Mac 运行版本。", code="runtime_invalid")
+        got = f"schema={manifest.get('schema')}, engine={manifest.get('engine')}, target={manifest.get('target')}"
+        doubts.append(f"运行版本清单对不上（{got}）")
     if not has_runtime_romfs(root):
         raise Failure("运行包缺少独立的 RomFS 游戏资源目录，请重新准备。", code="runtime_invalid")
     if files:
@@ -104,7 +108,12 @@ def validate_runtime(c, runtime, full=False, files=True):
     elif isinstance(manifest.get("files"), dict):
         quick = {k: manifest["files"][k] for k in QUICK_FILES if k in manifest["files"]}
         if quick:
-            validate_files(c, root, quick, full=False)
+            try:
+                validate_files(c, root, quick, full=False)
+            except Failure as e:
+                if doubts is None:
+                    raise
+                doubts.append(f"运行文件 {str(e).split('：', 1)[-1]} 缺失或大小不符")
     if manifest.get("memoryRequirementsVersion") == 2:
         table = root / "addr_need.tsv"
         if not table.is_file() or manifest.get("memoryRequirementsSha256") != digest(table):
@@ -126,13 +135,7 @@ def missing_after_crash(c, runtime, manifest):
     return None
 
 
-def require_automatic_memory(c):
-    if "vammLayout" in c.r:
-        raise Failure("启动器版本过旧，请更新后重新打包这款游戏。", code="runtime_invalid")
-
-
 def runtime_env(c, game, runtime, input_ok=True):
-    require_automatic_memory(c)
     # 游戏语言：请求带 gameLanguage（玩家在启动设置里逐款选）就设 S2A_SYSTEM_LANGUAGE；不带就跟 Mac 系统首选语言（宿主 services/S2A.Services/Host.cs PickLanguage
     #   → SystemLocale.FromPreferred；11-13 起不跟启动器界面语言：界面只有中英，日 / 韩语玩家的 Switch 存档名字会乱码）；游戏不支持的落英语，英语也没有用游戏自己的缺省
     language = c.r.get("gameLanguage")
@@ -283,7 +286,6 @@ def keep_runtime_nros(c, game_id, source):
 
 
 def launch(c):
-    require_automatic_memory(c)
     with c.lock("execution"):
         game = c.game()
         from saves import recover
@@ -294,8 +296,15 @@ def launch(c):
         refresh_mac(c, game["id"], runtime)
         kept_nros_mac(c, game["id"], runtime)   # 运行时留下、还没补进的 NRO（#8be819）：上次收局没补成的这里再补
         c.begin("验证运行文件")
-        manifest = validate_runtime(c, runtime, files=False)   # 只核主程序 / 程序描述（QUICK_FILES），其余直接起（v0.3.1）
+        # 校验不过不拒起局（11-17 维护者）：请求带已停用的旧字段 vammLayout（旧启动器发的，照常起、不用它）、清单对不上、主程序 / 程序描述缺或大小不符，
+        #   都黄字点名哪里没过、照常起；这局真出问题时，报错里带上「起局前这里校验就没过」
+        doubts = ["请求里带着已停用的旧内存布局设置（vammLayout）"] if "vammLayout" in c.r else []
+        manifest = validate_runtime(c, runtime, files=False, doubts=doubts)   # 只核主程序 / 程序描述（QUICK_FILES），其余直接起（v0.3.1）
         print("[起局] 只核主程序与程序描述，其余文件不逐个核（真读到坏的、游戏退出后再核、说清缺什么）", file=sys.stderr, flush=True)
+        for doubt in doubts:
+            print("[起局] 校验没过，照常起局：" + doubt, file=sys.stderr, flush=True)  # 非玩家句
+            c.diagnostic(f"{doubt}，先照常启动；起不来的话重新出一次 Mac 版。", code="runtime_invalid", severity="warning")
+        doubt_note = ("\n" + f"起局前这里校验就没过：{'；'.join(doubts)}") if doubts else ""
         if manifest.get("gameId") != game["id"]:
             raise Failure("运行资源与所选游戏不匹配。", code="runtime_invalid")
         if manifest.get("memoryRequirementsVersion") != 2:
@@ -341,11 +350,11 @@ def launch(c):
                     cheats.note_crash(c, game, env.get("S2A_DOCS"))   # 带文档根：读运行时写的崩溃落点（宿主自己崩第一次不关）
                     broken = missing_after_crash(c, runtime, manifest)
                     if broken:   # 起局前没逐个核（v0.3.1）：退出后再核，运行文件缺 / 坏了就直说，别让玩家以为是游戏崩了
-                        raise Failure(f"这款游戏的 Mac 运行文件缺了或坏了（例：{broken}），游戏读到它时退出了。重新出一次 Mac 版就能修好；存档不受影响。",
+                        raise Failure(f"这款游戏的 Mac 运行文件缺了或坏了（例：{broken}），游戏读到它时退出了。重新出一次 Mac 版就能修好；存档不受影响。" + doubt_note,
                                       code="runtime_invalid", internal=str(f)) from None
                     if getattr(c, "last_rc", None) == 86:   # 游戏卡住后被停下（显卡挂死安全停 graphics/nvn/host_adapt.m s2a_gpu_safe_stop、gal_core.m 命令缓冲出错、卡住暂停时玩家选退出 macos/front_mac.m），不是玩完（#1257、#1378）
-                        raise Failure("游戏卡住了，S2Arm 把这局安全停下了。", code="game_gpu_stopped", internal=str(f)) from None
-                    raise Failure(f"游戏运行中意外退出了（退出码 {getattr(c, 'last_rc', '?')}）。", code="game_crashed", internal=str(f)) from None
+                        raise Failure("游戏卡住了，S2Arm 把这局安全停下了。" + doubt_note, code="game_gpu_stopped", internal=str(f)) from None
+                    raise Failure(f"游戏运行中意外退出了（退出码 {getattr(c, 'last_rc', '?')}）。" + doubt_note, code="game_crashed", internal=str(f)) from None
                 raise
             if trial:
                 host_update.settle(c, game["id"], host, ok=True)

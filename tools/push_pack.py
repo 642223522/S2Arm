@@ -42,6 +42,7 @@
 退出码：0 成功；1 失败（标准输出末行【红】说明）；2 用法"""
 from __future__ import annotations
 
+import os as _pw_os, sys as _pw_sys; _pw_sys.path.append(_pw_os.path.dirname(_pw_os.path.abspath(__file__))); from pool_workers import cores  # noqa: E402  核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
 import argparse
 from collections import deque
 import hashlib
@@ -286,6 +287,7 @@ class Devicectl:
     有 s2a-devpush + UDID 时流式写批次、核待解批完整性借它（手机只在 CoreDevice 无线隧道上、usbmuxd 看不到时那批退回 devicectl）"""
     kind = "devicectl"
     docs, ctx, pack = DOCS, None, None
+    say = staticmethod(lambda m: print(m, flush=True))   # device() 换成调用方的；直接构造（单测）时打到标准输出
 
     def __init__(self, device, bid, work, udid=None, devpush=None, env=None):
         self.device, self.bid, self.work, self.udid, self.env = device, bid, Path(work), udid, env
@@ -343,6 +345,7 @@ class Devicectl:
                     time.sleep(3)
                     return self.dp.put(src, rel)
             except DirUnwritable:
+                self.say(self.owner_note(rel))   # 机上那条目录归谁、什么权限：定是「App 自己的、只是缺写权限」还是「归别的用户」（D-A76N）
                 raise
             except Fail as e:
                 if nospace(str(e)): raise
@@ -354,6 +357,24 @@ class Devicectl:
                                "交给 devicectl 会把整份读进内存、拖垮系统的设备服务，不改走 devicectl") from None
                 self.say(f"流式写 {Path(rel).name} 没成（{str(e)[-160:]}），改走 devicectl")
         self.put(src, rel)
+
+    def owner_note(self, rel):
+        """写不进时读机上「文件所在目录」与文件本身的属主 / 权限（devicectl device info files --no-recurse --json-output，只列一层）→ 一句非玩家读数。
+        D-A76N：afc 删掉重写也被拒、devicectl 却写得进。测试设备复现过一种成因：目录是 App 自己的（uid 501）但权限 0555——afc 建 / 删都拒、devicectl 照写；
+        另一种是 #569 归别的用户（root）。两种修法不同（前者 App 能自己补权限，后者只能重装），所以把读数记下来"""
+        d, name = rel.rsplit("/", 1) if "/" in rel else ("", rel)
+        parent, dname = d.rsplit("/", 1) if "/" in d else ("", d)
+        notes = []
+        for sub, want in ((parent, dname), (d, name)):
+            js = self.work / "owner.json"; js.unlink(missing_ok=True)
+            rc, _ = self.dcp(30, "device", "info", "files", *self.container(), *(["--subdirectory", sub] if sub else []), "--no-recurse", "--json-output", js)
+            try:
+                files = json.loads(js.read_text(encoding="utf-8"))["result"]["files"]
+                m = next(f["metadata"] for f in files if f.get("relativePath", f.get("name")) == want or f.get("name") == want)
+                notes.append(f"{sub + '/' if sub else ''}{want}：属主 uid {m.get('ownerUid')}、权限 {int(m.get('permissions', 0)):o}")
+            except (OSError, ValueError, KeyError, TypeError, StopIteration):
+                notes.append(f"{sub + '/' if sub else ''}{want}：读不到（devicectl rc={rc}）")
+        return "写不进的位置（机上属主 / 权限，非玩家句）：" + "；".join(notes)
 
     def head(self, rel, n):   # 续传只走 s2a-devpush（devicectl 读不了文件的一段）
         return self.dp.head(rel, n) if self.dp else None
@@ -492,7 +513,8 @@ def plan(dev, pack, work, full=False, say=print):
     for f in work.glob("push_*.tsv"): f.unlink()
     ver = jver((pack / "manifest.json").read_text(encoding="utf-8") if (pack / "manifest.json").is_file() else "")
     if ver not in (2, 3):   # 3 = v0.3.0 单一 IMG（pack/img.py convert：game.img + 照旧按文件的着色器库 / 覆盖层）
-        say(f"【红】资源包清单版本 {ver} 不认（只认 2、3：{pack}/manifest.json）"); raise Fail("资源包清单版本不认")
+        # 维护者 11-17：「校验不过就整个拒绝」一律撤掉——版本不认只打黄、照常按清单推；真推不了（缺 index.tsv 等）在后面按原因报
+        say(f"【黄】资源包清单版本 {ver} 这个工具不认（只认 2、3：{pack}/manifest.json），照常推送")
     if full:
         have, pushed, keep = {}, {}, []
         say("资源包：S2A_PUSH_FULL=1，整包推送")
@@ -642,7 +664,7 @@ def zstd_compressor():
     Python 3.14 用 compression.zstd，随包 Python 3.12 用 zstandard（launchers/macos/requirements-runtime.txt、Windows 同钉版）"""
     try:
         from compression import zstd
-        opts = {zstd.CompressionParameter.compression_level: ZLEVEL, zstd.CompressionParameter.nb_workers: os.cpu_count() or 1,
+        opts = {zstd.CompressionParameter.compression_level: ZLEVEL, zstd.CompressionParameter.nb_workers: cores(),
                 zstd.CompressionParameter.checksum_flag: 1}
         return lambda b: zstd.compress(b, options=opts)
     except ImportError:

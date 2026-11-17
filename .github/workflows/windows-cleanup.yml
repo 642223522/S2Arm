@@ -43,7 +43,8 @@ jobs:
         with:
           python-version: '3.12'
       - name: 安装清理测试需要的 zstd 编码依赖
-        run: python -m pip install --disable-pip-version-check --only-binary=:all: zstandard==0.25.0
+        run: |
+          python -m pip install --disable-pip-version-check --only-binary=:all: zstandard==0.25.0
       - name: 验证 Windows junction 与软链接清理（不允许跳过）
         shell: python
         run: |

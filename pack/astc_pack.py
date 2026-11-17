@@ -17,6 +17,7 @@
 贴图来源：romfs 里的 BNTX（单独的 .bntx，或嵌在 BFRES 等文件里），外面可以套 zstd（含 Pack/ZsDic.pack.zs 字典）/ Yaz0 / SARC，可嵌套。
 块线性 → 线性、BC 解压、ASTC 编码在 C 库 graphics/tools/astc/bc2astc.c（本脚本按源码哈希编出、缓存在 build/astc_tool/）。
 """
+import os as _pw_os, sys as _pw_sys; _pw_sys.path.append(_pw_os.path.join(_pw_os.path.dirname(_pw_os.path.abspath(__file__)), '..', 'tools')); from pool_workers import cores  # noqa: E402  核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
 import argparse
 import concurrent.futures as cf
 import ctypes
@@ -113,7 +114,7 @@ def build_tool(tool_dir=None):
     jobs = []
     for src in cpp: jobs.append([cxx] + strip(ASTC_FLAGS) + ['-c', src, '-o', os.path.join(work, os.path.basename(src)[:-4] + '.o')])
     for src in LIB_C: jobs.append([cc] + strip(C_FLAGS) + ['-c', src, '-o', os.path.join(work, os.path.basename(src)[:-2] + '.o')])
-    with cf.ThreadPoolExecutor(os.cpu_count() or 4) as ex:
+    with cf.ThreadPoolExecutor(cores()) as ex:
         for f in [ex.submit(_run, j) for j in jobs]: f.result()
     objs = [j[-1] for j in jobs]
     part = f'{lib}.{os.getpid()}.part'
@@ -376,7 +377,7 @@ def read_index(path):
 def build(src, out, quality=QUALITY['fast'], jobs=None, tool_dir=None, say=print):
     t0 = time.time()
     lib = Lib(build_tool(tool_dir))
-    jobs = jobs or os.cpu_count() or 4
+    jobs = jobs or cores()
     os.makedirs(os.path.dirname(os.path.abspath(out)) or '.', exist_ok=True)
     fd, spill_path = tempfile.mkstemp(prefix='.astc-spill-', dir=os.path.dirname(os.path.abspath(out)))
     try:
