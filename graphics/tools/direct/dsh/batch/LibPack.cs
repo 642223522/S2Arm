@@ -570,6 +570,7 @@ static class LibPack
             var so2 = Console.OpenStandardOutput(); var sb2 = Utf8Out.GetBytes(ol + "\n"); so2.Write(sb2); so2.Flush();
             return 0;
         }
+        if (argv.Length == 2 && argv[0] == "ident-test") return IdentTest(argv[1]);   // 单测：PackFiles 的 ident 分支（#1331，t_lib_pack_ident.py）
         if ((argv.Length == 4 || argv.Length == 5) && argv[0] == "pack")
         {
             var names = Directory.EnumerateFiles(argv[1]).Select(Path.GetFileName).ToList();
@@ -594,5 +595,62 @@ static class LibPack
         if (err == null) return 0;
         var e = Console.OpenStandardError(); var eb = Utf8Out.GetBytes(err + "\n"); e.Write(eb); e.Flush();
         return 1;
+    }
+
+    /// <summary>单测（#1331）：PackFiles 给 ident 时，同身份的第二个起不读、不算摘要，产物与 ident=null 逐字节相同。
+    /// 两组输入：① 手给 ident（三名同身份 A、一名字节相同但身份 B、一名别的字节 C）；② 真 Side（同一数组 Put 两名 + Alias 一名、等值新数组一名、别的字节一名），身份来自 Side.Ident。
+    /// 每组各打两次（ident=null / 给 ident）进 &lt;tmp&gt; 下的两个目录，期望（不调被测实现就能算出）：
+    ///   两目录文件清单与每个文件字节相同、汇总行相同；给 ident 时同身份那份 get 合计 1 次，其余每名 1 次；ident=null 时每名各 1 次（判据有分辨力）</summary>
+    static int IdentTest(string tmp)
+    {
+        int fails = 0;
+        void Check(bool ok, string msg) { Console.Out.WriteLine((ok ? "  ✓ " : "  ✗ ") + msg); Console.Out.Flush(); if (!ok) fails++; }
+        string[] keys = { "0000000000000001", "0000000000000002", "0000000000000003", "0000000000000004", "0000000000000005" };
+        string[] names = keys.Select(k => k + "_bv.metallib").ToArray();
+        var x = new byte[200_000]; new Random(1331).NextBytes(x);
+        var y = new byte[70_000]; new Random(1332).NextBytes(y);
+
+        (Dictionary<string, byte[]> Files, string Line, Dictionary<string, int> Gets) Run(string dir, Func<string, byte[]> get, Func<string, string> ident)
+        {
+            Directory.CreateDirectory(dir);
+            var gets = new Dictionary<string, int>();
+            var (bad, line) = PackFiles(names, n => { gets[n] = gets.GetValueOrDefault(n) + 1; return get(n); }, dir, "0a7dae3c1e7b", null, ident);
+            if (bad.Count > 0) Console.Out.WriteLine("  [RED] " + string.Join(" / ", bad));
+            var files = Directory.EnumerateFiles(dir).ToDictionary(Path.GetFileName, File.ReadAllBytes);
+            return (files, line, gets);
+        }
+        bool SameFiles(Dictionary<string, byte[]> a, Dictionary<string, byte[]> b) =>
+            a.Count > 0 && a.Keys.OrderBy(k => k, StringComparer.Ordinal).SequenceEqual(b.Keys.OrderBy(k => k, StringComparer.Ordinal)) && a.All(kv => b[kv.Key].AsSpan().SequenceEqual(kv.Value));
+        string Counts(Dictionary<string, int> g) => string.Join(" ", names.Select(n => $"{n[15]}:{g.GetValueOrDefault(n)}"));
+        void Case(string label, Func<string, byte[]> get, Func<string, string> ident, string[] groupA)
+        {
+            var plain = Run(Path.Combine(tmp, label + "-null"), get, null);
+            var withId = Run(Path.Combine(tmp, label + "-ident"), get, ident);
+            Check(SameFiles(plain.Files, withId.Files), $"{label}：给 ident 与 ident=null 的产物逐字节相同（{string.Join(",", plain.Files.Keys.OrderBy(k => k, StringComparer.Ordinal))}）");
+            Check(plain.Line == withId.Line && plain.Line.Length > 0, $"{label}：汇总行相同（{withId.Line}）");
+            Check(names.All(n => plain.Gets.GetValueOrDefault(n) == 1), $"{label}：ident=null 每名各读 1 次（{Counts(plain.Gets)}）");
+            Check(groupA.Sum(n => withId.Gets.GetValueOrDefault(n)) == 1, $"{label}：同身份 {groupA.Length} 名合计读 1 次（{Counts(withId.Gets)}）");
+            Check(names.Except(groupA).All(n => withId.Gets.GetValueOrDefault(n) == 1), $"{label}：其余每名各读 1 次（字节相同但身份不同的照旧读、靠摘要只存一次）");
+        }
+
+        // ① 手给 ident
+        var bytes = new Dictionary<string, byte[]> { [names[0]] = x, [names[1]] = x, [names[2]] = x, [names[3]] = x.ToArray(), [names[4]] = y };
+        var ids = new Dictionary<string, string> { [names[0]] = "A", [names[1]] = "A", [names[2]] = "A", [names[3]] = "B", [names[4]] = "C" };
+        Case("stub", n => bytes.TryGetValue(n, out var b) ? b.ToArray() : null, n => ids.GetValueOrDefault(n), names[..3]);
+
+        // ② 真 Side：身份 = 数据文件里的偏移:长度
+        var sideDir = Path.Combine(tmp, "side"); Directory.CreateDirectory(sideDir);
+        var side = new Side(sideDir);
+        side.Put(names[0], x); side.Put(names[1], x); side.Alias(names[0], names[2]); side.Put(names[3], x.ToArray()); side.Put(names[4], y);
+        string i0 = side.Ident(names[0]);
+        Check(i0 != null && side.Ident(names[1]) == i0 && side.Ident(names[2]) == i0 && side.Ident(names[3]) != i0 && side.Ident(names[3]) != null && side.Ident(names[4]) != i0,
+            $"Side.Ident：同一数组两名与 Alias 同身份，等值新数组另一身份（{string.Join(" ", names.Select(n => side.Ident(n)))}）");
+        Check(side.Ident("0000000000000001_b.metal") == null && side.Ident("ffffffffffffffff_bv.metallib") == null, "Side.Ident：源码 / 不在的名字 → null");
+        var view = side.All;
+        Check(view is ISharedBytes, "Side.All 实现 ISharedBytes（发布打包据此给 ident）");
+        Case("side", side.Get, view is ISharedBytes sb ? sb.Ident : null, names[..3]);
+
+        Console.Out.WriteLine(fails == 0 ? "ident-test: ok" : $"ident-test: {fails} 处不符");
+        return fails == 0 ? 0 : 1;
     }
 }
