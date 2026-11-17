@@ -3,6 +3,19 @@ import XCTest
 
 /// 作业层文字的翻译（BackendText）：真资源包（Localizable.json + 共享体验规格），期望值按对照表里的英文手写。
 final class BackendTextTests: XCTestCase {
+    /// 0.5.1 Sparkle「更新并重启」退出崩溃（11-17）：文案资源第一次用到才读，退出前重画界面时 Sparkle 正换盘上的 .app，读不到就停进程。
+    ///   修法是启动时 preload 一次读完；这里核「preload 之后翻译、取界面文案、换语言都不再读资源包」，各语言都走一遍（含叠加语言与回落）
+    func testAfterPreloadNothingReadsTheBundle() {
+        BackendText.preload()
+        let before = BackendText.resourceReads
+        for language in ["zh-Hans", "en", "zh-Hant", "ja", "es", "fr"] {   // 界面能选的语言（没有文案文件的未知语言第一次会查一次、读不到不停进程，不在这里）
+            _ = BackendText.translate("操作完成", language: language)
+            _ = BackendText.translate("上传诊断超过 90 秒还没完成（网络太慢或连接卡住），已停止。可以先导出诊断包，手动发给我们。", language: language)
+            _ = BackendText.launcherText("duration.s", language: language)
+        }
+        XCTAssertEqual(BackendText.resourceReads, before, "preload 之后不该再读资源包（Sparkle 换 .app 时读不到会停进程）")
+    }
+
     /// 共享文案表缺这门语言回落英文、缺键才显示 [键名]（11-14 i18n 打底）：duration.s 只有 zh-Hans / en 两列
     func testLauncherTextFallsBackToEnglish() {
         XCTAssertEqual(BackendText.launcherText("duration.s", language: "zh-Hans"), "{0} 秒")
