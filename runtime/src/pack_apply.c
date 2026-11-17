@@ -1018,6 +1018,119 @@ static int img_place(const char *proc_docs, const char *path, int pass) {   // 0
     LOG("资源导入：%s → %s/game.img（%llu MB），等游戏库解开", strrchr(path, '/') ? strrchr(path, '/') + 1 : path, root, (unsigned long long)(total >> 20));
     return 0;
 }
+// ---- 小游戏包 .s2arm 导入（0.6.0 通用壳，手机侧；电脑端 pack/jobs/install.py export_s2arm 出）----
+//   文件 = 一个带内容校验的 zstd 帧，里面是 ustar（只有普通文件）：第一个条目 s2arm.json（format "s2arm"、schema 1、title_id、image_sha256…），
+//   program/（未签名程序包：dylib、Games/<号>/、catalogue.json）、pack/（资源包里除 game.img 以外的派生件）。game.img 不在里面，
+//   玩家另放进「放这里导入」，照常由 img_place 认领（它保留资源包里原有 index.tsv 的着色器库行）。
+//   落盘同电脑推程序包的写入规则：程序写进自己的版本目录 program/v-<image_sha256 前 16 位>-s2arm/，最后临时名改名换上 catalogue.json（补 dir）；
+//   签名不在这里做：清单 team 为空，起局时 ios/program_resign.m 用手机上的身份签这一款。派生件逐个临时名改名写进 资源包/。
+//   返回 0 = 导入好（gid 写这一款的游戏号）；1 = 文件还在拷（zstd 帧没到尾，原样留着下次再看）；负数 = 失败，s2a_s2arm_import_code / _failure 给码与原因
+static char g_s2arm_err[1600], g_s2arm_code[48];
+const char *s2a_s2arm_import_failure(void) { return g_s2arm_err; }
+const char *s2a_s2arm_import_code(void) { return g_s2arm_code; }
+static int s2arm_fail(int rc, const char *code, const char *fmt, ...) {
+    snprintf(g_s2arm_code, sizeof g_s2arm_code, "%s", code);
+    va_list ap; va_start(ap, fmt); vsnprintf(g_s2arm_err, sizeof g_s2arm_err, fmt, ap); va_end(ap);
+    return rc;
+}
+static int s2arm_json_str(const char *j, const char *key, char *out, size_t n) {   // 电脑端 json.dumps 写的平铺字符串字段（不处理嵌套）
+    char pat[64]; snprintf(pat, sizeof pat, "\"%s\"", key);
+    const char *p = strstr(j, pat); if (!p) return -1;
+    p += strlen(pat); while (*p == ' ' || *p == ':' || *p == '\n' || *p == '\t' || *p == '\r') p++;
+    if (*p != '"') return -1;
+    size_t k = 0; for (p++; *p && *p != '"' && k + 1 < n; p++) { if (*p == '\\' && p[1]) p++; out[k++] = *p; }
+    out[k] = 0; return *p == '"' ? 0 : -1;
+}
+static int s2arm_safe(const char *rel) {   // 条目路径不出目标目录：非空、不以 / 开头、没有 .. 段、没有反斜杠
+    if (!*rel || *rel == '/' || strchr(rel, '\\')) return 0;
+    for (const char *s = rel; *s; ) { const char *e = strchr(s, '/'); size_t l = e ? (size_t)(e - s) : strlen(s);
+        if (!l || (l == 2 && s[0] == '.' && s[1] == '.') || (l == 1 && s[0] == '.')) return 0; s += l + (e ? 1 : 0); if (!e) break; }
+    return 1;
+}
+static int s2arm_rm_one(const char *f, const struct stat *st, int flag, struct FTW *w) { (void)st; (void)w; return flag == FTW_DP ? rmdir(f) : unlink(f); }
+static int s2arm_copy_out(int fd, uint64_t off, uint64_t size, const char *dst) {   // tar 里 [off, off+size) 写到 dst（临时名再改名）
+    char tmp[2600]; snprintf(tmp, sizeof tmp, "%s.%d.part", dst, (int)getpid());
+    char d[2600]; snprintf(d, sizeof d, "%s", dst); if (mkdirs(d)) return -1;
+    int o = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644); if (o < 0) return -1;
+    static char buf[1 << 20]; uint64_t done = 0; int ok = 1;
+    while (ok && done < size) { size_t want = size - done < sizeof buf ? (size_t)(size - done) : sizeof buf;
+        ssize_t r = pread(fd, buf, want, (off_t)(off + done)); if (r <= 0) { ok = 0; errno = r < 0 ? errno : EIO; break; }
+        for (ssize_t w = 0; w < r; ) { ssize_t k = write(o, buf + w, (size_t)(r - w)); if (k <= 0) { ok = 0; break; } w += k; }
+        done += (uint64_t)r; }
+    int e = errno; if (close(o)) { ok = 0; e = errno; }
+    if (!ok || rename(tmp, dst)) { if (ok) e = errno; unlink(tmp); errno = e; return -1; }
+    return 0;
+}
+int s2a_s2arm_import(const char *proc_docs, const char *src, char *gid_out, size_t gid_n) {
+    g_s2arm_err[0] = g_s2arm_code[0] = 0; if (gid_out && gid_n) gid_out[0] = 0;
+    char base[1200]; if (s2a_pack_base(base, sizeof base, proc_docs) <= 0) return s2arm_fail(-3, "ios_install_dir_unwritable", "文档根 %s 不是 …/Documents，找不到资源位置", proc_docs);
+    char tarp[1400]; snprintf(tarp, sizeof tarp, "%s/.s2arm-import.%d.tar", base, (int)getpid());
+    { char t[1400]; snprintf(t, sizeof t, "%s", tarp); mkdirs(t); }
+    // ① 解压到临时 tar（流式，1 MB 缓冲）：帧没到尾 = 还在拷，原样留着
+    int in = open(src, O_RDONLY); if (in < 0) return s2arm_fail(-1, "ios_install_pack_truncated", "打不开 %s：%s", src, strerror(errno));
+    int out = open(tarp, O_RDWR | O_CREAT | O_TRUNC, 0600); if (out < 0) { int e = errno; close(in); return s2arm_fail(-4, e == ENOSPC ? "ios_install_no_space" : "ios_install_dir_unwritable", "建临时文件 %s 失败：%s", tarp, strerror(e)); }
+    ZSTD_DStream *z = ZSTD_createDStream(); ZSTD_initDStream(z);
+    static char ib[1 << 20], ob[1 << 20]; size_t last = 1; int rc = 0; ssize_t r;
+    while (!rc && (r = read(in, ib, sizeof ib)) > 0) {
+        ZSTD_inBuffer zi = {ib, (size_t)r, 0};
+        while (zi.pos < zi.size) { ZSTD_outBuffer zo = {ob, sizeof ob, 0}; last = ZSTD_decompressStream(z, &zo, &zi);
+            if (ZSTD_isError(last)) { rc = s2arm_fail(-1, "ios_install_pack_truncated", "%s 不是完整的 .s2arm（解压：%s）", src, ZSTD_getErrorName(last)); break; }
+            for (size_t w = 0; w < zo.pos; ) { ssize_t k = write(out, ob + w, zo.pos - w); if (k <= 0) { int e = errno; rc = s2arm_fail(-4, e == ENOSPC ? "ios_install_no_space" : "ios_install_dir_unwritable", "写临时文件失败：%s", strerror(e)); break; } w += (size_t)k; }
+            if (rc) break; }
+    }
+    ZSTD_freeDStream(z); close(in);
+    if (!rc && last != 0) rc = 1;   // 帧没到尾：还在拷（或拷断了），下次再看
+    if (rc) { close(out); unlink(tarp); return rc; }
+    // ② 读 tar：第一个条目必须是 s2arm.json
+    char gid[17] = "", sha[80] = "", root[1400], prog[1400], vdir[64], fmt[32] = "", *cat = NULL; size_t catn = 0; unsigned nprog = 0, npack = 0; uint64_t off = 0;
+    for (int first = 1;; first = 0) {
+        unsigned char h[512]; if (pread(out, h, 512, (off_t)off) != 512) { rc = s2arm_fail(-1, "ios_install_pack_truncated", ".s2arm 里的 tar 截短了（第 %llu 字节）", (unsigned long long)off); break; }
+        int zero = 1; for (int i = 0; i < 512 && zero; i++) zero = !h[i]; if (zero) break;
+        char name[260]; char pre[156], nm[101]; memcpy(pre, h + 345, 155); pre[155] = 0; memcpy(nm, h, 100); nm[100] = 0;
+        snprintf(name, sizeof name, "%s%s%s", pre, pre[0] ? "/" : "", nm);
+        char szs[13]; memcpy(szs, h + 124, 12); szs[12] = 0; uint64_t size = strtoull(szs, NULL, 8); char type = (char)h[156];
+        uint64_t data = off + 512; off = data + (size + 511) / 512 * 512;
+        if (first) {
+            if (strcmp(name, "s2arm.json") || size > 65536) { rc = s2arm_fail(-2, "ios_install_manifest_bad", "不是 S2Arm 小游戏包：第一个条目是 %s", name); break; }
+            char j[65537]; if (pread(out, j, (size_t)size, (off_t)data) != (ssize_t)size) { rc = s2arm_fail(-1, "ios_install_pack_truncated", "s2arm.json 读不全"); break; } j[size] = 0;
+            s2arm_json_str(j, "format", fmt, sizeof fmt); s2arm_json_str(j, "title_id", gid, sizeof gid); s2arm_json_str(j, "image_sha256", sha, sizeof sha);
+            if (strcmp(fmt, "s2arm")) { rc = s2arm_fail(-2, "ios_install_manifest_bad", "s2arm.json 的 format 是「%s」，不是 s2arm", fmt); break; }
+            for (int i = 0; i < 16; i++) if (gid[i] >= 'a' && gid[i] <= 'f') gid[i] -= 32;
+            int ok = strlen(gid) == 16; for (int i = 0; i < 16 && ok; i++) ok = (gid[i] >= '0' && gid[i] <= '9') || (gid[i] >= 'A' && gid[i] <= 'F');
+            if (!ok) { rc = s2arm_fail(-2, "ios_install_manifest_bad", "s2arm.json 的游戏号「%s」不对", gid); break; }
+            if (strstr(j, "\"schema\": 1") == NULL && strstr(j, "\"schema\":1") == NULL) LOG("【黄】.s2arm 导入：%s 的 schema 不是 1，按 1 的布局照常导入（维护者 11-17：校验不过不整个拒绝）", gid);
+            snprintf(vdir, sizeof vdir, "v-%.16s-s2arm", strlen(sha) >= 16 ? sha : "0000000000000000");
+            snprintf(root, sizeof root, "%s/games/%s/资源包", base, gid); snprintf(prog, sizeof prog, "%s/games/%s/program", base, gid);
+            char vd[1500]; snprintf(vd, sizeof vd, "%s/%s", prog, vdir); struct stat st;
+            if (!lstat(vd, &st)) nftw(vd, s2arm_rm_one, 16, FTW_DEPTH | FTW_PHYS);   // 上次导到一半的同一版：清掉重写
+            continue;
+        }
+        if (type != '0' && type != 0) continue;   // 目录条目等：文件写入时自己建目录
+        const char *rel; char dst[2600];
+        if (!strcmp(name, "program/catalogue.json")) {
+            if (size > (1u << 20)) { rc = s2arm_fail(-2, "ios_install_manifest_bad", "程序包清单太大（%llu 字节）", (unsigned long long)size); break; }
+            free(cat); cat = malloc((size_t)size + 1); catn = (size_t)size;
+            if (!cat || pread(out, cat, catn, (off_t)data) != (ssize_t)catn) { rc = s2arm_fail(-1, "ios_install_pack_truncated", "程序包清单读不全"); break; } cat[catn] = 0; continue;
+        }
+        if (!strncmp(name, "program/", 8)) { rel = name + 8; if (!s2arm_safe(rel)) { rc = s2arm_fail(-2, "ios_install_manifest_bad", "条目路径不对：%s", name); break; } snprintf(dst, sizeof dst, "%s/%s/%s", prog, vdir, rel); nprog++; }
+        else if (!strncmp(name, "pack/", 5)) { rel = name + 5; if (!s2arm_safe(rel) || !strcmp(rel, "game.img")) { rc = s2arm_fail(-2, "ios_install_manifest_bad", "条目路径不对：%s", name); break; } snprintf(dst, sizeof dst, "%s/%s", root, rel); npack++; }
+        else { LOG("【黄】.s2arm 导入：不认识的条目 %s，跳过", name); continue; }
+        if (s2arm_copy_out(out, data, size, dst)) { int e = errno; rc = s2arm_fail(-4, e == ENOSPC || e == EDQUOT ? "ios_install_no_space" : "ios_install_dir_unwritable", "写 %s 失败：%s", dst, strerror(e)); break; }
+    }
+    close(out); unlink(tarp);
+    if (!rc && !cat) rc = s2arm_fail(-2, "ios_install_manifest_bad", "%s 里没有程序包清单 program/catalogue.json", src);
+    if (!rc) {   // ③ 最后换上程序包清单（补 dir 指向这一版）：之前任何一步失败，这一款都还是导入前的样子
+        char cp[1500], tp[1600]; snprintf(cp, sizeof cp, "%s/catalogue.json", prog); snprintf(tp, sizeof tp, "%s.%d.tmp", cp, (int)getpid());
+        const char *b = strchr(cat, '{'); FILE *f = b ? fopen(tp, "w") : NULL;
+        int ok = f && fprintf(f, "{\"dir\": \"%s\",%s", vdir, b + 1) > 0; if (f && fclose(f)) ok = 0;
+        if (!ok || rename(tp, cp)) { int e = errno; unlink(tp); rc = s2arm_fail(-4, e == ENOSPC ? "ios_install_no_space" : "ios_install_dir_unwritable", "写程序包清单 %s 失败：%s", cp, strerror(e)); }
+    }
+    free(cat);
+    if (rc) { LOG("【红】.s2arm 导入（%s）：%s", g_s2arm_code, g_s2arm_err); return rc; }
+    if (gid_out && gid_n) snprintf(gid_out, gid_n, "%s", gid);
+    LOG(".s2arm 导入：%s → 程序 %s（%u 个文件）、资源包派生件 %u 个；game.img 照常放「放这里导入」认领", gid, vdir, nprog, npack);
+    return 0;
+}
 static int img_scan_dir(const char *proc_docs, const char *dir, int depth, int pass, int *placed) {
     DIR *d = opendir(dir); if (!d) return 0;
     char *names[512]; int nn = 0; struct dirent *e;
@@ -1027,6 +1140,8 @@ static int img_scan_dir(const char *proc_docs, const char *dir, int depth, int p
         char p[2400]; struct stat st; snprintf(p, sizeof p, "%s/%s", dir, names[i]);
         if (!lstat(p, &st)) {
             if (S_ISDIR(st.st_mode) && depth < 2) img_scan_dir(proc_docs, p, depth + 1, pass, placed);
+            else if (S_ISREG(st.st_mode) && pass == 0 && ends_with(names[i], ".s2arm")) { char g[17]; int r = s2a_s2arm_import(proc_docs, p, g, sizeof g);
+                if (!r) { unlink(p); (*placed)++; } else if (r < 0) snprintf(g_img_code, sizeof g_img_code, "%s", g_s2arm_code); }   // 导好就删（同 IMG 认领后挪走）；失败原样留着、码交给库界面
             else if (S_ISREG(st.st_mode) && st.st_size >= 4096) { int r = img_place(proc_docs, p, pass); if (!r) (*placed)++; else if (r < 0) { int e = errno;
                 snprintf(g_img_code, sizeof g_img_code, "%s", r == -13 ? "ios_import_update_no_base" : r == -14 ? "ios_import_update_mismatch" : r == -11 ? "ios_install_img_format" : r == -4 && (e == ENOSPC || e == EDQUOT) ? "ios_install_no_space" : "ios_import_img_failed");
                 LOG("【红】资源导入（%s）：%s", g_img_code, g_img_err); } }
