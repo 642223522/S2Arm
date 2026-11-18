@@ -198,9 +198,18 @@ CGRect S2APlayDivision(UIView *view) {
 - (void)update { [self updateLearning:NO]; }
 // learn：只在系统刚转完界面（effectiveGeometry 变化）时学差值——设备方向通知先到、界面后转，通知那一刻读到的是「新设备方向 + 旧界面方向」，学进去就错
 //   （维护者真机 Duo 11-17：差值在 0° / 90° / 180° / 270° 之间乱跳，倒着拿一次也没触发）
+// 窗口转着 180° 时换屏（Duo 合上 / 展开），系统不再按新屏改窗口尺寸：窗口停在旧屏大小（模拟器 Duo：外屏倒着拿后展开，窗口 465x678、屏 669x951；
+//   维护者真机：反复折叠越偏）。每次几何变化先去掉旋转、按场景重设窗口、再转回来
+static void hold_fit(UIWindow *w, UIWindowScene *ws) {
+    CGRect want=ws.coordinateSpace.bounds; CGPoint mid={CGRectGetMidX(want),CGRectGetMidY(want)};
+    if (CGSizeEqualToSize(w.bounds.size,want.size) && CGPointEqualToPoint(w.center,mid)) return;
+    fprintf(stderr,"[S2A 布局] 窗口 %.0fx%.0f 中心 %.0f,%.0f 与屏 %.0fx%.0f 不符，按屏重设\n",w.bounds.size.width,w.bounds.size.height,w.center.x,w.center.y,want.size.width,want.size.height);
+    CGAffineTransform t=w.transform; w.transform=CGAffineTransformIdentity; w.frame=want; w.transform=t;
+}
 - (void)updateLearning:(BOOL)learn {
     UIWindow *w=self.window; UIWindowScene *ws=w.windowScene; if (!ws) return;
     if (ws!=self.scene) { [self.scene removeObserver:self forKeyPath:@"effectiveGeometry"]; self.scene=ws; [ws addObserver:self forKeyPath:@"effectiveGeometry" options:0 context:NULL]; }
+    hold_fit(w,ws);
     int dev=(int)UIDevice.currentDevice.orientation, ui=(int)ws.effectiveGeometry.interfaceOrientation;
     // 差值按屏记（Duo 内外屏不同），学到就存下：外屏 / 普通手机（主屏）没学到前按 0；别的屏没学到前不动（先等一次横屏）
     UIScreen *sc=ws.screen; NSString *key=[NSString stringWithFormat:@"S2AHoldK.%.0fx%.0f",sc.nativeBounds.size.width,sc.nativeBounds.size.height];
@@ -221,7 +230,7 @@ CGRect S2APlayDivision(UIView *view) {
         UIEdgeInsets want=f ? (UIEdgeInsets){sys.bottom-sys.top,sys.right-sys.left,sys.top-sys.bottom,sys.left-sys.right} : UIEdgeInsetsZero;
         if (!UIEdgeInsetsEqualToEdgeInsets(a,want)) root.additionalSafeAreaInsets=want; }
     if (f==self.flipped) return;
-    self.flipped=f; w.transform=f ? CGAffineTransformMakeRotation(M_PI) : CGAffineTransformIdentity;
+    self.flipped=f; w.transform=f ? CGAffineTransformMakeRotation(M_PI) : CGAffineTransformIdentity; hold_fit(w,ws);
     fprintf(stderr,"[S2A 布局] 倒着拿：系统不给倒置竖屏，%s（设备方向 %d、界面方向 %d、差 %d°）\n",f?"整窗转 180°":"复原",dev,ui,k);
 }
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; [_scene removeObserver:self forKeyPath:@"effectiveGeometry"]; }
