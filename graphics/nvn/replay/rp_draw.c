@@ -186,11 +186,15 @@ static nvn_gpu_rc rp_draw_pipe_async(const nvn_gpu_pipe_desc *pd, const p_set_rt
     int64_t left = s2a_fu_budget_left_ms(&g_fu_budget, frame, frame_ms);
     struct s2a_fu_verdict v = s2a_fu_wait_decide(0, late, stuck, may_skip, item_ms, frame_ms, left, unsafe_ms);
     if (v.action == S2A_FU_SKIP) { *skip = v.timeout; return rp_fu_ok(); }
-    uint32_t slice = v.wait_ms ? v.wait_ms : 250;
-    uint64_t t0 = rp_fu_now();
-    int w = nvn_vk_pipe_demand_wait(pd, ident, slice, out, err ? err->why : NULL, err ? sizeof err->why : 0);
-    uint64_t waited = rp_fu_now() - t0;
-    if (may_skip) s2a_fu_budget_spend(&g_fu_budget, frame, waited);
+    // wait_ms == 0 = 不设限（nvn_first_use.h；fu_unsafe_ms = 0）：按 250 ms 分片一直等到有结果，分片超时不当终局。
+    const uint32_t slice = v.wait_ms ? v.wait_ms : 250;
+    int w;
+    do {
+        uint64_t t0 = rp_fu_now();
+        w = nvn_vk_pipe_demand_wait(pd, ident, slice, out, err ? err->why : NULL, err ? sizeof err->why : 0);
+        uint64_t waited = rp_fu_now() - t0;
+        if (may_skip) s2a_fu_budget_spend(&g_fu_budget, frame, waited);
+    } while (w == 1 && !v.wait_ms);
     if (w == 0) return rp_fu_ok();
     if (w == 2 || w == 3)   // 后台失败 / 待定项消失：回退现场建（拿真实结果/错误，不丢笔，也不按未实现报红）
         return nvn_gpu_pipe_get(pd, NVN_GPU_PIPE_SYNC, out, err);
@@ -1255,8 +1259,12 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
                 }
             }
         }
-        for (int i = 0; i < rp_S.nattr && i < 16; i++) pd.attr[i] = rp_S.attr[i];
-        for (int i = 0; i < rp_S.nstream && i < 16; i++) pd.stream[i] = rp_S.stream[i];
+        // 只放着色器真读的属性（attr_mask）和它们用到的流（同旧首遇路径 nvn_vk_first_draw.c 按 attr_mask 取 location）。
+        // 游戏设了格式、着色器不读的属性原先也烘进管线：同一程序因这些属性的格式 / 偏移 / 流步长不同就多出管线变体（换管线、首遇编译都跟着涨；
+        // 参考 BOTWRecompAndroid #483「管线键不再烘入全部顶点属性」，在用管线降 35%），不读的属性格式在本设备没映射时还会让整条管线建失败。
+        uint32_t pstreams = 0;
+        for (int i = 0; i < rp_S.nattr && i < 16; i++) if (g_prog->attr_mask >> i & 1) { pd.attr[i] = rp_S.attr[i]; if (pd.attr[i].fmt && pd.attr[i].stream < 16) pstreams |= 1u << pd.attr[i].stream; }
+        for (int i = 0; i < rp_S.nstream && i < 16; i++) if (pstreams >> i & 1) pd.stream[i] = rp_S.stream[i];
         if (zattr) {
             for (int i = 0; i < 16; i++) if (zattr >> i & 1) { pd.attr[i].fmt = NVN_FORMAT_RGBA32F; pd.attr[i].offset = 0; pd.attr[i].stream = (uint32_t)zstream; }
             pd.stream[zstream].stride = 0; pd.stream[zstream].divisor = 0;
@@ -1506,13 +1514,15 @@ void rp_dispatch(nvn_gpu_cmd c, const p_dispatch *dp, const void *rec) {
                 if (sw <= 5 && sw != (uint32_t)(2 + ch)) swizzled = 1;
             }
             if (levels != 1 || swizzled) { skip("compute_image_view_unsupported", rec); goto done; }
+            view_t fv; if (has_view) fv = view; else memset(&fv, 0, sizeof fv);
+            int target_change = rp_decl_view_target(&snap, &fv, has_view, pg->dtt[0][i]);
+            if (target_change < 0) { skip("compute_image_decl_type_mismatch", rec); goto done; }
             tv[i] = rp_view_by_id((int)(h & 0xFFFFF), c, &images[i]);
             if (!tv[i] || !images[i]) { skip("compute_image_unresolved", rec); goto done; }
-            if (vfmt != format) {   // 换成声明要的格式：同一份存储上的格式视图（贴图建时带 VIEW_FMT，见 rp_res.c usage_of）
-                view_t fv; if (has_view) fv = view; else memset(&fv, 0, sizeof fv);
-                fv.set_format = 1; fv.format = (uint16_t)vfmt;
+            if (target_change || vfmt != format) {   // 目标和格式在同一份存储视图上组合。
+                if (vfmt != format) { fv.set_format = 1; fv.format = (uint16_t)vfmt; }
                 tv[i] = rp_view_for(images[i], &fv, c);
-                if (!tv[i]) { skip("compute_image_format_view_failed", rec); goto done; }
+                if (!tv[i]) { skip("compute_image_decl_view_failed", rec); goto done; }
             }
             continue;
         }

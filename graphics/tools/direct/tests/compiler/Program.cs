@@ -760,6 +760,24 @@ internal static unsafe class Program
             return;
         }
 
+        // 计算共享内存（#1592）：48 KiB 内但超过设备上限（本测 profile 32768）是设备做不到 → UNSUPPORTED_PROGRAM 带实际值；
+        //   超过 Maxwell 48 KiB / 负数才是坏请求 → MISSING_FIELD；等于上限过上限检查
+        {
+            string csRaw = Encoding.UTF8.GetString(RequestJson(profile, "compute", 2, 1, "shared-limit", cs: cs));
+            Func<int, byte[]> withShared = n => Encoding.UTF8.GetBytes(csRaw.Replace("\"sharedMemoryBytes\":0", "\"sharedMemoryBytes\":" + n));
+            // 等于上限过得了上限检查（之后按控制块核对 1x1x1 shared 0 不符才拒，那是另一道检查）
+            try { DirectShaderCompiler.Compile(withShared(32768)); Check(true, "shared 32768 passes the device limit check"); }
+            catch (Exception error) { Check(!error.Message.Contains("exceeds"), "shared 32768 = device limit passes the limit check: " + error.Message); }
+            try { DirectShaderCompiler.Compile(withShared(40960)); Check(false, "shared 40960 above device limit must be rejected"); }
+            catch (DirectCompileException error)
+            {
+                Check(error.Code == "UNSUPPORTED_PROGRAM" && error.Message.Contains("sharedMemoryBytes 40960") && error.Message.Contains("limit 32768"),
+                    "shared 40960 > device 32768 → UNSUPPORTED_PROGRAM with value and limit: " + error.Code + " " + error.Message);
+            }
+            Throws("MISSING_FIELD", () => DirectShaderCompiler.Compile(withShared(49153)), "shared above Maxwell 48 KiB is a bad request");
+            Throws("MISSING_FIELD", () => DirectShaderCompiler.Compile(withShared(-1)), "negative shared is a bad request");
+        }
+
         // A large pool must not prevent a program with constant texture handles from compiling.
         {
             byte[] fsConstant = Guest(true, new[] { Fadd32i(2, 0.5f), Fadd32i(3, 0.5f), Tex2D(0, 2) });
@@ -795,8 +813,11 @@ internal static unsafe class Program
                 Check(false, "runtime handle must not claim an unsupported cbuf layout is usable");
             }
             catch (DirectCompileException error) {
-                Check(error.Code == "UNSUPPORTED_PROGRAM" && error.Message.Contains("texture handle from cbuf slot 0"),
-                    "runtime handle reports its actual upstream cbuf limitation: " + error.Message);
+                string reqSha = Convert.ToHexStringLower(Sha256.HashData(Encoding.UTF8.GetBytes(dynamicRequest)));
+                Check(error.Code == "UNSUPPORTED_PROGRAM" && error.Message.Contains("texture handle from cbuf slot 0") &&
+                      error.Message.Contains("handle=") && error.Message.Contains("arrayLength=") &&
+                      error.Message.Contains("count=") && error.Message.Contains("request=" + reqSha),
+                    "runtime handle reports its actual upstream cbuf limitation with shape and request sha: " + error.Message);
             }
         }
 
@@ -862,6 +883,24 @@ internal static unsafe class Program
                 UboFact(256, 5) + "]", 1u << 4);
             Check(got.StartsWith("MISSING_FACT ", StringComparison.Ordinal) && got.EndsWith("has no source (stage=fs,handle=256,cbufSlot=4)", StringComparison.Ordinal),
                 "a c4 handle without its exact fact is MISSING_FACT at (fs, 256, 4): " + got);
+        }
+
+        // C2 探针：c2 句柄表里的运行时句柄（先看现实现拒在哪一句）。
+        {
+            byte[] fsC2 = Guest(true, new[] { Ldc(4, 0x20, 2), Fadd32i(2, 0.5f), Fadd32i(3, 0.5f), TexBindless2D(0, 2, 4) });
+            const string c2Fact = "[{\"stage\":\"fs\",\"handle\":8,\"cbufSlot\":2,\"samplerType\":\"2d\",\"format\":\"R8G8B8A8Unorm\",\"isBuffer\":false,\"normalized\":true,\"separate\":false,\"arrayLength\":1}]";
+            try
+            {
+                using JsonDocument r = ParseResult(DirectShaderCompiler.Compile(RequestJson(profile, "graphics", 1, 1, "c2-runtime-handle", vs, fsC2, textureFacts: c2Fact)));
+                JsonElement c2Binding = r.RootElement.GetProperty("content").GetProperty("bindings").EnumerateArray()
+                    .First(b => b.GetProperty("kind").GetString() == "texture");
+                Check(c2Binding.GetProperty("slot").GetInt32() == 8 && c2Binding.GetProperty("count").GetInt32() == 1,
+                    "c2 handle-table single texture binds by handle value: " + c2Binding.GetRawText());
+            }
+            catch (DirectCompileException error)
+            {
+                Check(false, "c2 handle-table single texture binds by handle value: " + error.Code + " " + error.Message);
+            }
         }
 
         // 1) 接口全覆盖（接口新增方法时这里先红）。
@@ -1855,10 +1894,13 @@ internal static unsafe class Program
             foreach (var (what, handle, count, len) in new[] { ("without a fact", 74, 1, 1), ("outside the image table", 88, 1, 1), ("as an array", 72, 4, 4) })
             {
                 string r = UboShape("image", "image", count, 2, handle, len, false);
-                Check(r == "UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 2 is not implemented", "c2 image word " + what + " stays unsupported: " + r);
+                Check(r.StartsWith("UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 2 is not implemented (handle=") &&
+                      r.Contains("arrayLength=" + len) && r.Contains("count=" + count),
+                    "c2 image word " + what + " stays unsupported: " + r);
             }
             string c19 = UboShape("texture", "texture", 1, 19, 256, 1, false);
-            Check(c19 == "UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 19 is not implemented", "cbuf 19 is outside the user UBO range: " + c19);
+            Check(c19.StartsWith("UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 19 is not implemented (handle="),
+                "cbuf 19 is outside the user UBO range: " + c19);
             // Facts alone do not implement separate binding; the production resolver must still refuse it.
             var separateAllocator = new DirectAllocator(matrixProfile);
             separateAllocator.Bindings.Add(new DirectBinding("fs", "texture", "test", 2, 0, 1));

@@ -103,12 +103,11 @@ namespace S2A.DshVkLib
             string work = a.GetValueOrDefault("--work", Path.Combine(a["--out"], ".work"));
             var rows = VkLib.Build(a["--pkg"], a["--profile"], a["--out"], new CliSpvCross(a["--spirv-cross"], work), work);
             Console.WriteLine(VkLib.Summary(rows));
+            // 个别键翻不了不拒绝整库：失败的键记在 vk_build.tsv（出库脚本按它报 🟡 缺口、keys.tsv 不列它们），运行时对缺的键现编；成功的照常打库发布。
+            // 原先只要有 1 键失败就整库不出，手机上上万支全部退回现编（010028600EBDA000 的 11194 键里 17 键失败就是这样）
             int failed = rows.Count(row => row.Status == "failed");
-            if (failed > 0)
-            {
-                Console.Error.WriteLine($"[RED] Vulkan 翻译失败 {failed} 键；详见 vk_build.tsv");
-                return 1;
-            }
+            if (failed > 0) Console.Error.WriteLine($"[RED] Vulkan 翻译失败 {failed} 键（其余照常出库，这几键运行时现编）；详见 vk_build.tsv");
+            if (failed > 0 && !rows.Any(row => row.Status == "ok")) return 1;   // 一键都没成：没有可发布的库
             if (a.TryGetValue("--lib", out var lib))
             {
                 var (bad, line) = VkLib.Pack(a["--out"], lib, a["--chain"]);
