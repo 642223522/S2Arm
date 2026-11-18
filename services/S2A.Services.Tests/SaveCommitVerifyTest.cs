@@ -26,7 +26,8 @@ namespace S2A.Services.Tests
         //   ⑧ 只有第一次克隆被换成零字节（偶发）→ 内部重做一次就对了：提交成功、已提交 = "{}"、不报红（只记黄行）；克隆了 2 次
         //   （②⑥ 每次克隆都被换：重做一次仍不对才不提交，报红仍是 +1）
         //   ⑨ 留上一份：提交 "{}"、再写 "[1]" 提交 → 已提交 "[1]"、上一份 "{}"；回到上一份 → 已提交 "{}"、上一份 "[1]"；再调一次 → 换回 "[1]"；
-        //      从没提交过两次的存档（上一份是挂载时的 OLD）照样能回；没有上一份的目录 → 回原因「没有上一份存档」
+        //      回到上一份后护栏标记删掉；没有上一份的目录 → 回原因「没有上一份存档」
+        //   护栏标记 .s2a_guard：②拦下后有、内容带「次提交」，之后正常提交就没了；⑧重做后通过不写
         [SoloTest("--save-commit-verify")]
         private static int SaveCommitVerify()
         {
@@ -81,11 +82,13 @@ namespace S2A.Services.Tests
                 hook.AfterClone = dst => File.WriteAllBytes(System.IO.Path.Combine(dst, "x.bin"), new byte[2]);
                 int before = reds;
                 bool ok1 = tx.Commit().IsSuccess();
-                string s1 = $"{ok1} / {Txt(System.IO.Path.Combine(d, "0", "x.bin"))} / {Directory.Exists(System.IO.Path.Combine(d, ".s2a_new"))} / +{reds - before}";
+                string guard = System.IO.Path.Combine(d, Ryujinx.HLE.FileSystem.S2ASaveTransaction.GuardFile);
+                string mark = File.Exists(guard) && File.ReadAllText(guard).Contains("次提交") ? "有" : "无";
+                string s1 = $"{ok1} / {Txt(System.IO.Path.Combine(d, "0", "x.bin"))} / {Directory.Exists(System.IO.Path.Combine(d, ".s2a_new"))} / +{reds - before} / 标记{mark}";
                 hook.AfterClone = null;
                 bool ok2 = tx.Commit().IsSuccess();
-                string s2 = $"{ok2} / {Txt(System.IO.Path.Combine(d, "0", "x.bin"))}";
-                rows.Add(("② 克隆成零字节：结果 / 已提交 / .s2a_new 在 / 报红 ‖ 去掉故障再提交：结果 / 已提交", "False / 4F4C44 / False / +1 ‖ True / 7B7D", $"{s1} ‖ {s2}"));
+                string s2 = $"{ok2} / {Txt(System.IO.Path.Combine(d, "0", "x.bin"))} / 标记{(File.Exists(guard) ? "有" : "无")}";
+                rows.Add(("② 克隆成零字节：结果 / 已提交 / .s2a_new 在 / 报红 / 护栏标记 ‖ 去掉故障再提交：结果 / 已提交 / 护栏标记", "False / 4F4C44 / False / +1 / 标记有 ‖ True / 7B7D / 标记无", $"{s1} ‖ {s2}"));
                 tx.Dispose();
             }
             {   // ③
@@ -150,7 +153,7 @@ namespace S2A.Services.Tests
                 int before = reds;
                 bool ok = tx.Commit().IsSuccess();
                 hook.AfterClone = null;
-                rows.Add(("⑧ 只有第一次克隆成零字节：结果 / 已提交 / 报红 / 克隆次数", "True / 7B7D / +0 / 2", $"{ok} / {Txt(System.IO.Path.Combine(d, "0", "x.bin"))} / +{reds - before} / {clones}"));
+                rows.Add(("⑧ 只有第一次克隆成零字节：结果 / 已提交 / 报红 / 克隆次数 / 护栏标记", "True / 7B7D / +0 / 2 / 无", $"{ok} / {Txt(System.IO.Path.Combine(d, "0", "x.bin"))} / +{reds - before} / {clones} / {(File.Exists(System.IO.Path.Combine(d, Ryujinx.HLE.FileSystem.S2ASaveTransaction.GuardFile)) ? "有" : "无")}"));
                 tx.Dispose();
             }
 
@@ -163,14 +166,16 @@ namespace S2A.Services.Tests
                 tx.Dispose();
                 string cur = System.IO.Path.Combine(d, "0", "x.bin"), prev = System.IO.Path.Combine(d, Ryujinx.HLE.FileSystem.S2ASaveTransaction.PreviousDir, "x.bin");
                 string s0 = $"{c1} / {c2} / {Txt(cur)} / {Txt(prev)}";
+                string guard9 = System.IO.Path.Combine(d, Ryujinx.HLE.FileSystem.S2ASaveTransaction.GuardFile);
+                File.WriteAllText(guard9, "x");   // 当作被拦过：回到上一份后标记应删掉
                 string r1 = Ryujinx.HLE.FileSystem.S2ASaveTransaction.RestorePrevious(d) ?? "成功";
-                string s1 = $"{r1} / {Txt(cur)} / {Txt(prev)}";
+                string s1 = $"{r1} / {Txt(cur)} / {Txt(prev)} / 标记{(File.Exists(guard9) ? "有" : "无")}";
                 string r2 = Ryujinx.HLE.FileSystem.S2ASaveTransaction.RestorePrevious(d) ?? "成功";
                 string s2 = $"{r2} / {Txt(cur)}";
                 string none = System.IO.Path.Combine(root, "noprev"); Directory.CreateDirectory(System.IO.Path.Combine(none, "0"));
                 string r3 = Ryujinx.HLE.FileSystem.S2ASaveTransaction.RestorePrevious(none) ?? "成功";
                 rows.Add(("⑨ 两次提交：结果 / 结果 / 已提交 / 上一份 ‖ 回到上一份：结果 / 已提交 / 上一份 ‖ 再回：结果 / 已提交 ‖ 没有上一份",
-                    "True / True / 5B315D / 7B7D ‖ 成功 / 7B7D / 5B315D ‖ 成功 / 5B315D ‖ 没有上一份存档", $"{s0} ‖ {s1} ‖ {s2} ‖ {r3}"));
+                    "True / True / 5B315D / 7B7D ‖ 成功 / 7B7D / 5B315D / 标记无 ‖ 成功 / 5B315D ‖ 没有上一份存档", $"{s0} ‖ {s1} ‖ {s2} ‖ {r3}"));
             }
 
             Ryujinx.HLE.FileSystem.S2AHostFileSystem.Transaction = null;
