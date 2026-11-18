@@ -91,9 +91,19 @@ int s2a_ios_game_top(void) { return g_layout.top; }
 //   游戏页每次排版按自己窗口的尺寸类记（主线程写，各处读）
 static _Atomic int g_resizable;
 int s2a_ios_play_resizable(void) { return atomic_load(&g_resizable); }
+// 「自动」方向（没有分屏时）跟随系统（jhz 11-17 真机 Duo：自动模式竖着拿还是横屏、App 自己判握持转画面反而颠倒）：四个方向都给，
+//   系统转到哪就按哪排版，不申请、不自己判握持；选了「横屏 / 竖屏」才锁定。分屏照旧竖屏（S2APlayPortrait）。可自由缩放的窗口同样跟随系统
+static BOOL play_follow_system(void) {
+#if TARGET_OS_TV
+    return NO;   // 电视固定横屏
+#else
+    NSUserDefaults *d=NSUserDefaults.standardUserDefaults;
+    return atomic_load(&g_resizable) || (S2APlayReadOrientation(d)==S2APlayOrientationAuto && !S2APlaySplitEnabled(S2APlayReadSplit(d),g_half));
+#endif
+}
 #if !TARGET_OS_TV
 UIInterfaceOrientationMask s2a_ios_play_orientations(void) {
-    if (atomic_load(&g_resizable)) return UIInterfaceOrientationMaskAll;
+    if (play_follow_system()) return UIInterfaceOrientationMaskAll;
     NSUserDefaults *d=NSUserDefaults.standardUserDefaults;
     BOOL split=S2APlaySplitEnabled(S2APlayReadSplit(d),g_half);
     // 竖屏含倒置（Duo 展开后摄像头朝下拿就是倒置竖屏，#1364 复发：可缩放窗口时全方向能转，一进分屏 / 尺寸类变了只剩正立竖屏就转不过去）；
@@ -122,7 +132,11 @@ static double screen_ratio(void) {
     if (NSThread.isMainThread) for (UIScene *sc in UIApplication.sharedApplication.connectedScenes)
         if ([sc isKindOfClass:UIWindowScene.class] && sc.activationState==UISceneActivationStateForegroundActive) { s=((UIWindowScene *)sc).coordinateSpace.bounds.size; break; }
     if (!(s.width>0 && s.height>0)) s=UIScreen.mainScreen.nativeBounds.size;
-    BOOL portrait=atomic_load(&g_resizable) ? s.height>s.width : play_wants_portrait();   // 自由窗口按实际方向；电视只有横屏（play_wants_portrait）
+#if TARGET_OS_TV
+    BOOL portrait=NO;   // 电视只有横屏
+#else
+    BOOL portrait=play_follow_system() ? s.height>s.width : play_wants_portrait();   // 跟随系统（自动 / 自由窗口）按实际方向
+#endif
     CGRect b=CGRectMake(0,0,portrait?fmin(s.width,s.height):fmax(s.width,s.height),portrait?fmax(s.width,s.height):fmin(s.width,s.height));
     CGRect a=S2APlayLayoutMake(b,b,S2APlayReadSplit(NSUserDefaults.standardUserDefaults),g_half,CGRectNull).game;
     return a.size.width>0 && a.size.height>0 ? a.size.width/a.size.height : 16.0/9;
@@ -233,7 +247,7 @@ S2A_VERTICAL_BAR_OFF
     [self setNeedsUpdateOfSupportedInterfaceOrientations];
     [self.view setNeedsUpdateConstraints]; [self.view setNeedsLayout];
     UIWindowScene *scene=self.view.window.windowScene;
-    if (self.resizable) { _requested=0; return; }   // 自由窗口不申请方向：交给系统跟着手机转（#1364）
+    if (play_follow_system()) { _requested=0; return; }   // 跟随系统（自动 / 自由窗口）不申请方向：系统转到哪排到哪（#1364）
     mask=s2a_ios_play_orientations();
     if (!scene || mask==_requested) return;
     _requested=mask; _orientationRefused=NO;
@@ -266,12 +280,13 @@ S2A_VERTICAL_BAR_OFF
     S2APlayBackgroundLayout(s,l);
     BOOL portrait=s.bounds.size.height>s.bounds.size.width;
     if (atomic_exchange(&g_resizable, self.resizable) != self.resizable) [self updatePlayPreferences];   // 换窗口类型（Duo 合上 / 展开）：重新定要不要申请方向
-    BOOL expectedPortrait=self.resizable ? portrait : play_wants_portrait();   // 自由窗口按实际方向（不再等转到玩家选的方向）
+    BOOL follow=play_follow_system();
+    BOOL expectedPortrait=follow ? portrait : play_wants_portrait();   // 跟随系统按实际方向（不等转到某个方向）
     // 屏幕比例（宽屏静态改写装载时按它写死，起局后跟不上）只认玩家选的方向：可自由缩放的窗口（Duo 内屏 / iPad，尺寸类 regular/regular）也先等系统转到位。
     //   11-13 Duo 内屏：原先 resizable 时不等，起局那一刻手机横着就按横屏比例 2.84 定了屏幕宽 3070，随后转成竖屏分屏，静态表还按 3070 画、画面右侧和上下被裁。
     //   只管第一次：系统拒绝方向请求，或 1 秒内没转过来（iPad 自由窗口接受请求却转不了），按实际窗口记
-    BOOL settled=portrait==expectedPortrait || _orientationRefused || (self.resizable && atomic_load(&g_view_ratio)>0);   // 起局后自由窗口照旧跟实际窗口（运行中换屏）
-    if (!settled && self.resizable && !_waitingOrientation) {
+    BOOL settled=portrait==expectedPortrait || _orientationRefused || (follow && atomic_load(&g_view_ratio)>0);   // 起局后跟随系统照旧跟实际窗口（运行中换屏）
+    if (!settled && follow && !_waitingOrientation) {
         _waitingOrientation=YES;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(),^{
             self->_waitingOrientation=NO;
