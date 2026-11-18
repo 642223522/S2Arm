@@ -524,7 +524,7 @@
        "title": {"zh-Hans": "Apple ID 或密码不对", "en": "Apple ID or password incorrect"},
        "detail": {"zh-Hans": "登录苹果时账号或密码被拒。", "en": "Apple rejected the account or password when signing in."},
        "next_action": {"from": "pack/jobs/errors.py"}},
-      {"code": "sgrade_upgrading", "severity": "warning", "retryable": true, "recoverable": true,
+      {"code": "sgrade_upgrading", "severity": "error", "retryable": true, "recoverable": true,
        "title": {"zh-Hans": "这款正在升级 S 级优化", "en": "S-Grade upgrade in progress"},
        "detail": {"zh-Hans": "这款游戏正在升级 S 级优化，升级完成前不能开始；别的游戏照常能玩。", "en": "This game is upgrading its S-Grade optimization and can't start until it finishes. Other games can be played as usual."},
        "next_action": {"from": "pack/jobs/errors.py"}},
