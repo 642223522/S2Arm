@@ -32,6 +32,8 @@ static NSString *sh(NSString *cmd) { NSTask *t = [NSTask new]; t.launchPath = @"
 int main(void) { @autoreleasepool {
     NSString *dir = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"t_program_resign.%d", getpid()]];
     NSFileManager *fm = NSFileManager.defaultManager; [fm removeItemAtPath:dir error:nil]; [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    // openssl 用测试自带的最小配置：不依赖本机 openssl.cnf（一台门禁机的 Homebrew openssl 缺配置文件，req 直接失败、整组红）
+    { NSString *cnf = [dir stringByAppendingPathComponent:@"openssl.cnf"]; [@"[req]\ndistinguished_name = dn\n[dn]\n" writeToFile:cnf atomically:YES encoding:NSUTF8StringEncoding error:nil]; setenv("OPENSSL_CONF", cnf.fileSystemRepresentation, 1); }
     NSString *G = @"0100ABCDE0000000", *home = [dir stringByAppendingPathComponent:@"home"];
     NSString *gd = [home stringByAppendingPathComponent:[NSString stringWithFormat:@"Library/Application Support/S2Arm/games/%@/资源包", G]];
     NSString *prog = [[gd stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"program"], *v0 = [prog stringByAppendingPathComponent:@"v-0000000000000000-pc"];
