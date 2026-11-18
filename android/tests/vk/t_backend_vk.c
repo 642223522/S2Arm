@@ -6720,6 +6720,80 @@ static void c68_stencil_ops(const char *dir) {
     free(vm); free(fm);
 }
 
+// C1581K：深度模板贴图的 CPU 上传 / 回读（#1581 K，VUID-VkBufferImageCopy-aspectMask-09103：一个拷贝区域只能有一个面）。
+//   上传 64×64 的 D24S8：每纹素一个 32 位字，低 24 位深度 = 0x400000 + x，高 8 位模板 = 左半 1、右半 0。
+//   ① 回读深度面：每纹素低 24 位 = 0x400000 + x（高 8 位按规范未定义，不比）；
+//   ② 模板载入（LOAD）画整屏蓝：函数 NOTEQUAL、参考值 1、操作全 KEEP、深度测试关 → 只有模板是 0 的右半画上。
+// 期望（手算）：左半黑（清屏色）、右半蓝。模板面没传上去（全 0）时整屏蓝；aspectMask 同时带深度与模板时 validation 报 09103。
+// subst = 1：#398 D24 换 D32 存储（三星 Xclipse 那类设备）。深度面走换算，按字节回读本就不支持（E_UNSUPPORTED），这一臂只核模板面。
+//   设备自己的换存储掩码（vk_device 按格式能力定的）每臂结束原样还回去；设备本就没有 D24S8 附件（模拟档 no_d24）时原生臂不跑。
+extern void nvn_vk_format_set_depth_subst(uint32_t mask);
+extern uint32_t nvn_vk_format_depth_subst(void);
+static void c1581k_ds_upload_arm(const char *dir, int subst) {
+    const uint32_t dev_mask = nvn_vk_format_depth_subst();
+    if (!subst && (dev_mask & 1u /* NVN_VK_DEPTH_SUBST_D24S8 */)) { printf("C1581K 原生 D24S8 臂：设备没有 D24S8 附件、按 D32 存储，跳过（换存储臂照跑）\n"); return; }
+    nvn_vk_format_set_depth_subst(subst ? (dev_mask | 1u) : dev_mask);
+    if (!(nvn_gpu_format_caps(NVN_FORMAT_DEPTH24_STENCIL8) & NVN_GPU_FMT_DEPTH)) { CHECK(0, "C1581K 设备没有 D24S8 深度格式"); nvn_vk_format_set_depth_subst(dev_mask); return; }
+    nvn_gpu_shader vs = NULL, fs = NULL; void *vm = NULL, *fm = NULL;
+    if (!load_shader_pair(dir, "tri3.vert", "solid_blue.frag", NULL, NULL, &vs, &fs, &vm, &fm)) { CHECK(0, "C1581K 读不到 solid_blue"); return; }
+    nvn_gpu_pipe_desc pd;
+    fill_gpipe_desc(&pd, vs, fs, NVN_FORMAT_DEPTH24_STENCIL8);
+    pd.sfmt = NVN_FORMAT_DEPTH24_STENCIL8; pd.ds.st = 1;
+    pd.ds.sf_f = pd.ds.sf_b = 6;                                   // 6 = NOTEQUAL
+    pd.ds.fail_f = pd.ds.zfail_f = pd.ds.zpass_f = 1;              // 1 = KEEP
+    pd.ds.fail_b = pd.ds.zfail_b = pd.ds.zpass_b = 1;
+    if (subst) pd.ds.zfail_f = 2;   // 深度测试关、深度失败不会发生：只为换一个管线键，不沿用上一臂按 D24 附件建的管线
+    nvn_gpu_err e; memset(&e, 0, sizeof e);
+    nvn_gpu_pipe pipe = NULL;
+    CHECK(OK(nvn_gpu_pipe_get(&pd, NVN_GPU_PIPE_SYNC, &pipe, &e)), "C1581K pipe：%d %s", e.rc.code, e.why);
+    static uint32_t packed[64 * 64];
+    for (int y = 0; y < 64; y++) for (int x = 0; x < 64; x++) packed[y * 64 + x] = (0x400000u + (uint32_t)x) | ((x < 32 ? 1u : 0u) << 24);
+    nvn_gpu_tex out = make_tex(64, 64, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED);
+    nvn_gpu_tex ds = make_tex(64, 64, NVN_FORMAT_DEPTH24_STENCIL8, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_CPU_UPLOAD);
+    nvn_gpu_view ov = make_view(out), dv = make_view(ds);
+    nvn_gpu_buf rbd = make_buf(sizeof packed, NVN_GPU_MEM_SHARED, NULL);
+    nvn_gpu_buf rb = make_buf(64 * 64 * 4, NVN_GPU_MEM_SHARED, NULL);
+    nvn_gpu_buf vb = full_vb();
+    nvn_gpu_cmd c = begin_cmd();
+    nvn_gpu_tex_upload(c, ds, 0, 0, NULL, packed, 64 * 4, sizeof packed);
+    if (!subst) nvn_gpu_copy_tex_buf(c, ds, 0, 0, NULL, rbd, 0, 64 * 4, sizeof packed);
+    nvn_gpu_pass_desc p; memset(&p, 0, sizeof p);
+    p.ncolor = 1; p.color[0].view = ov; p.color[0].load = NVN_GPU_LOAD_CLEAR; p.color[0].store = NVN_GPU_STORE_STORE; p.color[0].clear.f[3] = 1;
+    p.depth.view = dv; p.depth.load = NVN_GPU_LOAD_LOAD; p.depth.store = NVN_GPU_STORE_STORE;
+    p.stencil.view = dv; p.stencil.load = NVN_GPU_LOAD_LOAD; p.stencil.store = NVN_GPU_STORE_STORE;
+    p.w = 64; p.h = 64; p.layers = 1;
+    nvn_gpu_pass_begin(c, &p);
+    nvn_gpu_set_pipe(c, pipe);
+    nvn_gpu_dyn dyn; full_dyn(&dyn);
+    dyn.st_vmask[0] = dyn.st_vmask[1] = 0xFF; dyn.st_wmask[0] = dyn.st_wmask[1] = 0xFF; dyn.st_ref[0] = dyn.st_ref[1] = 1;
+    nvn_gpu_set_dyn(c, &dyn);
+    nvn_gpu_set_vbuf(c, 0, vb, 0);
+    nvn_gpu_draw_args da; memset(&da, 0, sizeof da); da.prim = 4; da.count = 3; da.instances = 1;
+    nvn_gpu_draw(c, &da);
+    nvn_gpu_pass_end(c);
+    nvn_gpu_copy_tex_buf(c, out, 0, 0, NULL, rb, 0, 64 * 4, 64 * 64 * 4);
+    nvn_gpu_rc r = nvn_gpu_cmd_commit(c, 1u + (uint64_t)subst, on_done, NULL, &e);   // 自己一个会话（见 main）：两臂围栏号 1、2
+    CHECK(OK(r), "C1581K commit：%d %s", r.code, e.why);
+    r = nvn_gpu_fence_wait(1u + (uint64_t)subst, 5000000000ull, &e);
+    CHECK(OK(r), "C1581K wait：%d %s", r.code, e.why);
+    if (OK(r) && !subst) {
+        const uint32_t *d = (const uint32_t *)(const void *)buf_cpu(rbd); int bad = -1;
+        for (int i = 0; i < 64 * 64 && bad < 0; i++) if ((d[i] & 0xFFFFFFu) != (packed[i] & 0xFFFFFFu)) bad = i;
+        CHECK(bad < 0, "C1581K 深度面回读 [%d]=%06x，期望 %06x", bad, bad < 0 ? 0 : d[bad] & 0xFFFFFFu, bad < 0 ? 0 : packed[bad] & 0xFFFFFFu);
+    }
+    if (OK(r)) {
+        expect_rect(buf_cpu(rb), 0, 0, 32, 64, 0, 0, 0, "C1581K 左半（上传的模板 1，NOTEQUAL 挡住：黑）");
+        expect_rect(buf_cpu(rb), 32, 0, 32, 64, 0, 0, 255, "C1581K 右半（上传的模板 0，画上：蓝）");
+    }
+    printf("C1581K D24S8 上传 / 回读（%s）：已核对\n", subst ? "D24 换 D32 存储" : "原生 D24S8");
+    nvn_gpu_view_release(ov); nvn_gpu_view_release(dv);
+    nvn_gpu_tex_release(out); nvn_gpu_tex_release(ds);
+    nvn_gpu_buf_release(vb, NULL, NULL); nvn_gpu_buf_release(rb, NULL, NULL); nvn_gpu_buf_release(rbd, NULL, NULL);
+    nvn_gpu_shader_release(vs); nvn_gpu_shader_release(fs); free(vm); free(fm);
+    nvn_vk_format_set_depth_subst(dev_mask);
+}
+static void c1581k_ds_upload(const char *dir) { c1581k_ds_upload_arm(dir, 0); c1581k_ds_upload_arm(dir, 1); }
+
 // C1581O：纯模板格式 STENCIL8（VK_FORMAT_S8_UINT）当模板附件（#1581 O）。S8 只有模板面：图像的面、默认视图的面都得是 STENCIL；
 //   管线的兼容渲染通道也要有这个附件（管线描述 dfmt = 0、sfmt = STENCIL8，附件格式不能只看 dfmt）。两笔同 C68：
 //   ① 只在左半屏（裁剪）画绿：函数 ALWAYS、通过时 REPLACE、参考值 1；② 整屏画蓝：函数 NOTEQUAL、参考值 1、操作全 KEEP。
@@ -10366,6 +10440,15 @@ int main(int argc, char **argv) {
         s2a_vk_device_destroy(&g_dev, 1);
         return g_fail ? 1 : 0;
     }
+    if (argc > 2 && !strcmp(argv[2], "--ds-upload-only")) {   // 只跑 C1581K（默认档里也跑）；给红 / 绿 / 负控取证用
+        memset(&g_desc, 0, sizeof g_desc); g_desc.host_device = &g_dev; g_desc.app_label = "nvn-backend-vk-test";
+        if (!open_backend()) return 1;
+        c1581k_ds_upload(argv[1]);
+        nvn_gpu_err e = {0}; CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C1581K close %s", e.why);
+        printf("C1581K failures=%d\n", g_fail);
+        s2a_vk_device_destroy(&g_dev, 1);
+        return g_fail ? 1 : 0;
+    }
     if (argc > 2 && !strcmp(argv[2], "--stencil8-only")) {   // 只跑 C1581O（默认档里也跑）；给红 / 绿 / 负控取证用
         memset(&g_desc, 0, sizeof g_desc); g_desc.host_device = &g_dev; g_desc.app_label = "nvn-backend-vk-test";
         if (!open_backend()) return 1;
@@ -10808,6 +10891,9 @@ int main(int argc, char **argv) {
     if (!open_backend()) return 1;   // 自己一个会话：围栏号 1
     c1581o_stencil8(argv[1]);
     CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C1581O close：%s", e18.why);
+    if (!open_backend()) return 1;   // 自己一个会话：围栏号 1、2
+    c1581k_ds_upload(argv[1]);
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C1581K close：%s", e18.why);
     if (!open_backend()) return 1;   // 自己一个会话：围栏号 1、2
     cp06_cube_of_array(argv[1]);
     CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "P0-6 close：%s", e18.why);

@@ -6409,9 +6409,19 @@ static void bc_readback(struct nvn_gpu_cmd_s *c, struct nvn_gpu_tex_s *t, uint32
 static void bc_copy_from_buf(struct nvn_gpu_cmd_s *c, struct nvn_gpu_tex_s *t, uint32_t level, uint32_t layer, const NVNcopyRegion *r,
                              struct nvn_gpu_buf_s *b, uint64_t off, uint64_t row_bytes, uint64_t image_bytes);   // 见 bc_upload 后
 // 线性内容上传 / 缓冲 ↔ 贴图拷贝。全部在通道外，按 GPU 顺序执行。
-// depth_f32：#398 D24 换 D32 存储的贴图，缓冲里已是换算好的 D32 深度面（每纹素 4 字节 float），只拷深度面。
+// 缓冲 ↔ 贴图拷贝的一个区域只能有一个面（VUID-VkBufferImageCopy-aspectMask-09103，#1581 K）。深度模板贴图的整字拷贝
+//   （NVN D24S8 一个 32 位字：低 24 位深度、高 8 位模板）只走深度面：Vulkan 深度面的缓冲布局正是每纹素 4 字节、D24 在低 24 位，
+//   写入时高 8 位忽略、读出时高 8 位未定义。模板面另走一个每纹素 1 字节的区域（COPY_FACE_STENCIL，nvn_gpu_tex_upload 拆出来）。
+static VkImageAspectFlags copy_face_aspect(const struct nvn_gpu_tex_s *t) {
+    return (t->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) ? VK_IMAGE_ASPECT_DEPTH_BIT : t->aspect;
+}
+// face：COPY_FACE_DEFAULT = 按贴图格式（深度模板贴图取深度面，见 copy_face_aspect）；
+//   COPY_FACE_DEPTH_F32 = #398 D24 换 D32 存储的贴图，缓冲里已是换算好的 D32 深度面（每纹素 4 字节 float），只拷深度面；
+//   COPY_FACE_STENCIL = 只拷模板面，缓冲每纹素 1 字节。
+enum { COPY_FACE_DEFAULT = 0, COPY_FACE_DEPTH_F32 = 1, COPY_FACE_STENCIL = 2 };
 static void copy_buf_tex_impl(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint64_t row_bytes, uint64_t image_bytes,
-                              nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r, int depth_f32) {
+                              nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r, int face) {
+    const int depth_f32 = face == COPY_FACE_DEPTH_F32, stencil = face == COPY_FACE_STENCIL;
     { struct nvn_gpu_cmd_s *cc = ch; if (cc && cc->in_pass && rc_is(cc->sticky, NVN_GPU_OK)) { set_sticky(cc, NVN_GPU_E_ORDER, "传输操作在通道内"); return; } }
     struct nvn_gpu_cmd_s *c = ch;
     if (!c || !rc_is(c->sticky, NVN_GPU_OK)) return;
@@ -6431,14 +6441,15 @@ static void copy_buf_tex_impl(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint
         bc_copy_from_buf(c, t, level, layer, r, b, off, row_bytes, image_bytes);
         return;
     }
-    if (t && !depth_f32 && nvn_vk_format_substituted(t->nvn_format)) {   // 格式能力已报 NVN_GPU_FMT_SUBST：调用方给的是 D24 字节
+    if (t && stencil && !(t->aspect & VK_IMAGE_ASPECT_STENCIL_BIT)) { set_sticky(c, NVN_GPU_E_ARG, "模板面拷贝：贴图没有模板面（0x%x）", t->nvn_format); return; }
+    if (t && face == COPY_FACE_DEFAULT && nvn_vk_format_substituted(t->nvn_format)) {   // 格式能力已报 NVN_GPU_FMT_SUBST：调用方给的是 D24 字节
         set_sticky(c, NVN_GPU_E_UNSUPPORTED, "替换存储格式（D24 换 D32）的缓冲字节不能直接拷（0x%x），走 nvn_gpu_tex_upload", t->nvn_format);
         return;
     }
-    uint32_t bpp = depth_f32 ? 4 : t ? fmt_bpp(t->format) : 0;
+    uint32_t bpp = depth_f32 ? 4 : stencil ? 1 : t ? fmt_bpp(t->format) : 0;
     // 块信息：压缩格式一行是一排块（blk_w x blk_h 纹素、blk 字节）；没列进 fmt_bpp 的非压缩格式按 NVN 格式表的每纹素字节数
     uint32_t blk_w = 1, blk_h = 1, blk = bpp;
-    if (t && !depth_f32 && !bpp) {
+    if (t && face == COPY_FACE_DEFAULT && !bpp) {
         nvn_fmt_info fi;
         if (nvn_fmt_info_of(t->nvn_format, &fi) && !nvn_fmt_expand_target(t->nvn_format, NULL, NULL)) { blk_w = fi.bw; blk_h = fi.bh; blk = fi.bytes; bpp = blk; }
     }
@@ -6470,7 +6481,7 @@ static void copy_buf_tex_impl(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint
     bc.bufferOffset = off;
     bc.bufferRowLength = (uint32_t)(row_bytes / blk) * blk_w;   // 以纹素计；压缩格式是块数 × 块宽
     bc.bufferImageHeight = t->target == NVN_TEXTURE_TARGET_3D ? ((e.height + blk_h - 1) / blk_h) * blk_h : (uint32_t)(image_bytes / row_bytes) * blk_h;
-    bc.imageSubresource = (VkImageSubresourceLayers){depth_f32 ? VK_IMAGE_ASPECT_DEPTH_BIT : t->aspect, level,
+    bc.imageSubresource = (VkImageSubresourceLayers){depth_f32 ? VK_IMAGE_ASPECT_DEPTH_BIT : stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : copy_face_aspect(t), level,
                                                      t->target == NVN_TEXTURE_TARGET_3D ? 0 : layer, 1};
     bc.imageOffset = o;
     bc.imageExtent = e;
@@ -6482,7 +6493,7 @@ static void copy_buf_tex_impl(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint
 
 void nvn_gpu_copy_buf_tex(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint64_t row_bytes, uint64_t image_bytes,
                           nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r) {
-    copy_buf_tex_impl(ch, bh, off, row_bytes, image_bytes, th, level, layer, r, 0);
+    copy_buf_tex_impl(ch, bh, off, row_bytes, image_bytes, th, level, layer, r, COPY_FACE_DEFAULT);
 }
 
 void nvn_gpu_copy_tex_buf(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r,
@@ -6538,7 +6549,7 @@ void nvn_gpu_copy_tex_buf(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32
     bc.bufferOffset = off;
     bc.bufferRowLength = (uint32_t)(row_bytes / blk) * blk_w;   // 以纹素计；压缩格式是块数 × 块宽
     bc.bufferImageHeight = t->target == NVN_TEXTURE_TARGET_3D ? ((e.height + blk_h - 1) / blk_h) * blk_h : (uint32_t)(image_bytes / row_bytes) * blk_h;   // 块压缩要是块高的整数倍（同 copy_buf_tex_impl）；非压缩 blk_h = 1，原样 e.height
-    bc.imageSubresource = (VkImageSubresourceLayers){t->aspect, level, t->target == NVN_TEXTURE_TARGET_3D ? 0 : layer, 1};
+    bc.imageSubresource = (VkImageSubresourceLayers){copy_face_aspect(t), level, t->target == NVN_TEXTURE_TARGET_3D ? 0 : layer, 1};   // 深度模板贴图只回读深度面（#1581 K）
     bc.imageOffset = o;
     bc.imageExtent = e;
     vkCmdCopyImageToBuffer(c->cb, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, b->buffer, 1, &bc);
@@ -6951,6 +6962,31 @@ static void bc_copy_from_buf(struct nvn_gpu_cmd_s *c, struct nvn_gpu_tex_s *t, u
     free(rg);
 }
 
+// D24S8 上传的模板面（#1581 K）：从每纹素 32 位字的高 8 位抽出来，按每纹素 1 字节另交一个只有模板面的区域。
+//   深度面那一区（整字或 #398 换算后的 D32）由调用方先交；两区都在本段、按 GPU 顺序执行。
+static void upload_d24s8_stencil(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r,
+                                 const uint8_t *src, uint64_t row_bytes, uint64_t image_bytes, uint32_t ew, uint32_t eh) {
+    struct nvn_gpu_cmd_s *c = ch;
+    if (!rc_is(c->sticky, NVN_GPU_OK)) return;   // 深度面那一区已判非法：不再补交
+    if (row_bytes < (uint64_t)ew * 4 || image_bytes < row_bytes * (eh - 1) + (uint64_t)ew * 4) {
+        set_sticky(c, NVN_GPU_E_ARG, "tex_upload D24S8 模板面越界（行 %llu、总 %llu、区域 %ux%u）",
+                   (unsigned long long)row_bytes, (unsigned long long)image_bytes, ew, eh);
+        return;
+    }
+    nvn_gpu_slice sl;
+    nvn_gpu_err e;
+    if (!rc_is(nvn_gpu_arena_alloc(ch, (uint64_t)ew * eh, 4, &sl, &e), NVN_GPU_OK)) {
+        set_sticky(c, e.rc.code, "tex_upload 模板面暂存：%s", e.why);
+        return;
+    }
+    uint8_t *dst = (uint8_t *)sl.cpu;
+    for (uint32_t y = 0; y < eh; y++) {
+        const uint8_t *row = src + (uint64_t)y * row_bytes;
+        for (uint32_t x = 0; x < ew; x++) dst[(uint64_t)y * ew + x] = row[(uint64_t)x * 4 + 3];
+    }
+    copy_buf_tex_impl(ch, sl.buf, sl.off, ew, (uint64_t)ew * eh, th, level, layer, r, COPY_FACE_STENCIL);
+}
+
 void nvn_gpu_tex_upload(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r,
                         const void *src, uint64_t row_bytes, uint64_t image_bytes) {
     { struct nvn_gpu_cmd_s *cc = ch; if (cc && cc->in_pass && rc_is(cc->sticky, NVN_GPU_OK)) { set_sticky(cc, NVN_GPU_E_ORDER, "传输操作在通道内"); return; } }
@@ -7004,10 +7040,13 @@ void nvn_gpu_tex_upload(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32_t
         if (row_bytes & 3) { set_sticky(c, NVN_GPU_E_ARG, "tex_upload D24 行宽未 4 对齐"); return; }
         memcpy(sl.cpu, src, (size_t)image_bytes);
         nvn_vk_depth24_to_f32(sl.cpu, (size_t)image_bytes / 4);
-        copy_buf_tex_impl(ch, sl.buf, sl.off, row_bytes, image_bytes, th, level, layer, r, 1);
+        copy_buf_tex_impl(ch, sl.buf, sl.off, row_bytes, image_bytes, th, level, layer, r, COPY_FACE_DEPTH_F32);
+        if (t->nvn_format == NVN_FORMAT_DEPTH24_STENCIL8) upload_d24s8_stencil(ch, th, level, layer, r, src, row_bytes, image_bytes, ew, eh);   // 换存储后模板面照样要传
     } else {
         memcpy(sl.cpu, src, (size_t)image_bytes);
-        nvn_gpu_copy_buf_tex(ch, sl.buf, sl.off, row_bytes, image_bytes, th, level, layer, r);
+        nvn_gpu_copy_buf_tex(ch, sl.buf, sl.off, row_bytes, image_bytes, th, level, layer, r);   // 深度模板贴图：这一区只有深度面（copy_face_aspect）
+        if (t->nvn_format == NVN_FORMAT_DEPTH24_STENCIL8 && (t->aspect & VK_IMAGE_ASPECT_STENCIL_BIT))
+            upload_d24s8_stencil(ch, th, level, layer, r, src, row_bytes, image_bytes, ew, eh);
     }
 }
 
