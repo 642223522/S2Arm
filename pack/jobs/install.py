@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import json
 import datetime
@@ -2825,6 +2826,29 @@ SHELL_INSTALL_FIRST = "手机上还没装 S2Arm：先点「安装 S2Arm」，装
 SHELL_UPDATE_FIRST = "手机上的 S2Arm 不是这一版：先点「更新 S2Arm」，再把这款推到 iPhone。"
 
 
+def win_selfsign_signer(c, W, exe, team):
+    """Windows Apple ID：plumesign 存的私钥文件（keys/<团队>/key.pem）+ 苹果列表里它对应的那张证书 → s2a-selfsign 签程序库（免费团队也认）。
+    证书按私钥指纹缓存在私有目录（plume_cert.json），私钥没换就不再联网列证书。缺工具 / 缺私钥 / 列不出证书 → None"""
+    import program_pack
+    tool = program_pack.selfsign_path(c)
+    key = W.plume_key_path(team) if hasattr(W, "plume_key_path") else None
+    if not tool or not key or not Path(key).is_file():
+        return None
+    fp = W.key_fingerprint(team)
+    cache = c.private / "plume_cert.json"
+    got = (read(cache, {}) or {}).get(team) or {}
+    if got.get("key_fp") == fp and got.get("cert"):
+        cert = base64.b64decode(got["cert"])
+    else:
+        ident = W.plume_identity(exe, team, log=c.logs / (c.task + "-identity.log")) if exe else None
+        if not ident:
+            trace(c, f"列不出团队 {team} 私钥对应的证书，这次程序照旧用 plumesign 签")  # 非玩家句
+            return None
+        cert = ident["cert"]
+        atomic(cache, dict(read(cache, {}) or {}, **{team: dict(key_fp=fp, cert=base64.b64encode(cert).decode("ascii"))}))
+    return program_pack.selfsign_signer(c, tool, key, cert)
+
+
 def phone_signing(c, ph):
     """通用壳：这台手机上程序包按什么签 → (团队号, 包名, 签名器)。同装机签 App 的那一处：开发者证书 → 证书的团队与描述文件的包名；
     Windows Apple ID → Impactor 当前账号的团队、plumesign 定的包名；Mac Apple ID → 钥匙串账号的团队、容器包名"""
@@ -2838,8 +2862,11 @@ def phone_signing(c, ph):
         import ipa as packer
         exe = ph.W.plumesign_path((ph.W.impactor.bundled(c.r.get("resources")) or {}).get("plumesign"))
         win_cert_gate(c, ph.W, exe)
-        shell = Path(packer.container_shell(c, packer.current_shell_id(c))) / "root"
-        return team, ph.bundle_for_signing() or ph.bid, program_pack.win_signer(c, exe, shell)
+        signer = win_selfsign_signer(c, ph.W, exe, team)
+        if signer is None:   # 源码树没编 s2a-selfsign / 本机还没有这个团队的私钥：照旧 plumesign 签（付费团队能用，免费团队要手机重签）
+            shell = Path(packer.container_shell(c, packer.current_shell_id(c))) / "root"
+            signer = program_pack.win_signer(c, exe, shell)
+        return team, ph.bundle_for_signing() or ph.bid, signer
     return ph.team["id"], ph.bid, program_pack.mac_signer(c)
 
 
