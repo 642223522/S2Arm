@@ -51,7 +51,7 @@ struct LineSplitter {
 ///   （作业层对它们串行、nice 19 + 后台档；这里对它们不开防降级活动、进程按 utility 起，玩家在用电脑时让路。11-17 维护者：自动任务该让路）。
 ///   两边名单要一致：作业层那份合入后，在 pack/jobs/tests 里加单测读本文件这一行对照
 public enum JobTrigger {
-    public static let automaticOperations: Set<String> = ["installUpdatePrepare", "sgradeMac"]
+    public static let automaticOperations: Set<String> = ["installUpdatePrepare"]
 }
 
 /// 真的：Foundation.Process + 两条管道。

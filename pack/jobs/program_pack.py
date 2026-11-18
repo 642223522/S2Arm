@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
 from pathlib import Path
 import shutil
 import sys
@@ -202,6 +203,30 @@ def win_signer(c, exe, shell_app):
     from pack.orch import install_win
     def run(dylib, team, bundle):
         install_win.sign_dylibs(exe, shell_app, [Path(dylib)], bundle, c.logs / (c.task + "-program-sign.log"))
+    return run
+
+
+def selfsign_path(c):
+    """电脑侧签程序库的 s2a-selfsign（pack/selfsign，0.6.0）：S2A_SELFSIGN（开发用）> 引擎随包 Binaries/Prepare/selfsign/ > 源码树编出的 build/selfsign/release/；
+    都没有 → None（源码树没编，调用方照旧用别的签法）"""
+    exe = "s2a-selfsign.exe" if os.name == "nt" else "s2a-selfsign"
+    for p in (os.environ.get("S2A_SELFSIGN"), Path(c.engine) / "Binaries/Prepare/selfsign" / exe, Path(c.engine) / "build/selfsign/release" / exe):
+        if p and Path(p).is_file():
+            return str(p)
+    return None
+
+
+def selfsign_signer(c, tool, key_pem, cert_der):
+    """用私钥文件签程序库（免费团队也认的签法：签名标识 = App 包名、XML + DER 两份权限，同手机端 selfsign.c，cmdr 免费团队手机自签定稿）：
+    key_pem = 私钥 PEM 文件，cert_der = 这把私钥对应的开发证书 DER（字节）。系统 codesign 不给 dylib 带权限，所以不用它"""
+    def run(dylib, team, bundle):
+        with tempfile.TemporaryDirectory(dir=c.private) as w:
+            cert = Path(w) / "cert.der"
+            cert.write_bytes(cert_der)
+            r = subprocess.run([tool, "--key", str(key_pem), "--cert", str(cert), "--bundle-id", bundle, "--team", team, str(dylib)],
+                               capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if r.returncode:
+            raise Failure("给这款的程序签名失败：" + ((r.stderr or r.stdout or "").strip().splitlines() or ["?"])[-1], code="job_failed")  # 非玩家句（工具原句只进日志 / 诊断）
     return run
 
 

@@ -131,8 +131,12 @@ static int flush_segment(struct diag_record *batch, unsigned n, uint64_t start, 
     if (!bad && fprintf(f, "{\"status\":\"complete\",\"sha256\":\"%s\"}\n", hex) < 0) bad = 1;
     if (fflush(f) || fsync(fd)) bad = 1;
     if (fclose(f)) bad = 1;
-    if (!bad && link(tmp, path)) bad = 1;
-    if (!bad && unlink(tmp)) bad = 1;
+    // 单进程单 writer；文件名按 pid/session/段号隔离。旧段存在就拒绝，
+    // 不使用 app SELinux 禁止的硬链接；同目录 rename 原子发布完整文件。
+    if (!bad) {
+        struct stat st;
+        if (lstat(path, &st) == 0 || errno != ENOENT || rename(tmp, path)) bad = 1;
+    }
     if (bad) { unlink(tmp); return -1; }
     return 0;
 }

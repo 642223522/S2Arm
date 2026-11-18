@@ -589,6 +589,16 @@ def current_shell_id(c):
     return r.stdout.strip()
 
 
+def built_shell(c):
+    """这次组容器实际用的预编壳 → (壳目录, 壳号)。壳号读这份壳 manifest 的 details.shellId（组进 ipa 的就是它），读不到才退回本树壳号：
+    开发请求给了 shellDir（或发版应用里的 Shell/ 与引擎不同版）时两者会不同——回报 / 设备记录 / 兼容判断都按实际组进去的那份，
+    不按树算（11-17：toShell 一直报树的壳号，手机上装的却是请求给的旧壳，排查方向错了约 5 小时）"""
+    sid = current_shell_id(c)
+    shell = Path(container_shell(c, sid))
+    got = ((read(shell / "manifest.json", {}) or {}).get("details") or {}).get("shellId")
+    return shell, (got or sid)
+
+
 def container_shell(c, sid):
     """容器用的预编壳：发版（Windows / Mac 发版应用）= 应用自带 Shell/；开发树 = 本树壳编号的本机缓存 <S2A_RUN_ROOT>/s2arm/cache/shell/<壳编号>（打 iPhone 包时 pack/ipa.sh 出 / 取的同一份）"""
     if os.name == "nt" or c.r.get("engineBundle") or c.r.get("shellDir"):
@@ -715,7 +725,7 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None, agreed=None)
     agreed：设备记录 staleAgreed（#479，{壳号: [游戏号]}）——这台手机在本版壳上同意过「这次不带」的；带不进的都在里面就不再问，照不带它们装。换了壳号重新问
     → (ipa, 全部款, 壳号)。Windows 不签（--sign none，交给 plumesign）；Mac 自签，装机时再按玩家团队重签"""
     import host_update
-    sid = current_shell_id(c)
+    shell, sid = built_shell(c)
     roots = {}
     if gid:
         gid = gid.upper()
@@ -756,7 +766,6 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None, agreed=None)
         c.diagnostic("「" + "」「".join(deleted) + "」已从游戏库删除，新版 S2Arm 里不再包含它们；手机上的存档还在。", code="job_failed", severity="warning")  # 非玩家句
     if not roots:
         raise Failure("手机上的 S2Arm 里没有别的游戏了。", code="job_failed")
-    shell = container_shell(c, sid)
     icon = c.engine / "launchers/macos/Branding/AppIcon-iOS.png"   # iPhone 用鲜艳版玻璃 S（11-13 维护者：Mac 不动，只换 iOS）；宿主永远用 S2Arm 自己的图标，不退回某款游戏的（游戏图标只进 Games/<游戏号>/）
     if not icon.is_file():
         raise Failure("这个 S2Arm 安装包不完整（缺应用图标），请重新下载 S2Arm。", code="engine_incomplete")
@@ -815,8 +824,7 @@ def assemble_shell(c, *, dest=None):
     """通用壳（pack/jobs/program_pack.enabled，0.6.0）：只有壳的容器——本版 iPhone 壳，s2a_catalogue.json 的 games 为空，不带任何一款（各款程序包由
     「推到 iPhone」另推进手机 program/，install.push_game）。出 S2Arm.app + S2Arm.ipa 到 dest（缺省游戏库同盘临时目录）。→ (ipa, [], 壳号)；签名同 assemble"""
     import host_update
-    sid = current_shell_id(c)
-    shell = container_shell(c, sid)
+    shell, sid = built_shell(c)
     icon = c.engine / "launchers/macos/Branding/AppIcon-iOS.png"
     if not icon.is_file():
         raise Failure("这个 S2Arm 安装包不完整（缺应用图标），请重新下载 S2Arm。", code="engine_incomplete")
