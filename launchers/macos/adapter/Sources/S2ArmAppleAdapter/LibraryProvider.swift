@@ -92,6 +92,8 @@ public struct GameSummary: Identifiable, Equatable {
     public var sgrade: Bool = false
     /// S 级优化升级没做完（catalog sgradeIncomplete：上次单款升级中途退出了启动器、标记还在）：这款显示「升级未完成，点 S 级优化继续」
     public var sgradeIncomplete: Bool = false
+    /// S 级优化升级正在跑（catalog sgradeUpgrading：标记在且起升级的进程还活着，比如另一个启动器窗口起的）：同样画升级中、开始按钮不可点
+    public var sgradeUpgrading: Bool = false
     /// 在这台 Mac 上的游玩时间（catalog 的 playtime）；没玩过为 nil
     public var playtime: GamePlaytime? = nil
     /// 下游深度方案（pack/jobs/downstream.py describe）：这款有下游项目的专门移植时，导出 iPhone 前问玩家一次用哪套
@@ -134,6 +136,7 @@ public struct GameSummary: Identifiable, Equatable {
         self.onPhone = g["onPhone"] as? Bool ?? false
         self.sgrade = g["sgrade"] as? Bool ?? false
         self.sgradeIncomplete = g["sgradeIncomplete"] as? Bool ?? false
+        self.sgradeUpgrading = g["sgradeUpgrading"] as? Bool ?? false
         self.playtime = GamePlaytime(catalog: g["playtime"] as? [String: Any])
         self.banner = (g["banner"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         self.downstream = (g["downstream"] as? [String: Any]).flatMap(DownstreamOffer.init(catalog:))
