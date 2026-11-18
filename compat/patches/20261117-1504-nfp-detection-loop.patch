@@ -1,0 +1,65 @@
+diff --git a/src/Ryujinx.HLE/HOS/Services/Nfc/Nfp/NfpManager/INfp.cs b/src/Ryujinx.HLE/HOS/Services/Nfc/Nfp/NfpManager/INfp.cs
+index a2748a2f8668542cd5c706696598cd637288b078..25de4e30b834f55624ec31561a725790480ad914 100644
+--- a/src/Ryujinx.HLE/HOS/Services/Nfc/Nfp/NfpManager/INfp.cs
++++ b/src/Ryujinx.HLE/HOS/Services/Nfc/Nfp/NfpManager/INfp.cs
+@@ -167,29 +167,47 @@ namespace Ryujinx.HLE.HOS.Services.Nfc.Nfp
+                 }
+             }
+ 
+-            _cancelTokenSource = new CancellationTokenSource();
++            // S2Arm: the loop owns its token (a second StartDetection used to swap the field under a running loop, which then never stopped),
++            //   polls at frame rate instead of spinning a core while no tag is present, and skips a pass when the device list is being changed.
++            _cancelTokenSource?.Cancel();
++            CancellationTokenSource cancelTokenSource = new();
++            _cancelTokenSource = cancelTokenSource;
++            CancellationToken token = cancelTokenSource.Token;
+             Task.Run(() =>
+             {
+-                while (true)
++                while (!token.IsCancellationRequested)
+                 {
+-                    if (_cancelTokenSource.Token.IsCancellationRequested)
++                    bool found = false;
++                    try
+                     {
+-                        break;
+-                    }
++                        var devices = context.Device?.System?.NfpDevices;
+ 
+-                    for (int i = 0; i < context.Device.System.NfpDevices.Count; i++)
+-                    {
+-                        if (context.Device.System.NfpDevices[i].State == NfpDeviceState.TagFound)
++                        for (int i = 0; devices != null && i < devices.Count; i++)
+                         {
+-                            context.Device.System.NfpDevices[i].SignalActivate();
+-                            Thread.Sleep(125); // NOTE: Simulate amiibo scanning delay.
+-                            context.Device.System.NfpDevices[i].SignalDeactivate();
++                            NfpDevice device = devices[i];
++
++                            if (device != null && device.State == NfpDeviceState.TagFound)
++                            {
++                                device.SignalActivate();
++                                Thread.Sleep(125); // NOTE: Simulate amiibo scanning delay.
++                                device.SignalDeactivate();
++                                found = true;
+ 
+-                            break;
++                                break;
++                            }
+                         }
+                     }
++                    catch (ArgumentOutOfRangeException)
++                    {
++                        // The device list shrank under us: look again on the next pass.
++                    }
++
++                    if (!found)
++                    {
++                        Thread.Sleep(16);
++                    }
+                 }
+-            }, _cancelTokenSource.Token);
++            }, token);
+ 
+             return ResultCode.Success;
+         }

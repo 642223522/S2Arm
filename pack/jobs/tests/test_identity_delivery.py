@@ -177,9 +177,8 @@ class DeliverIdentity(unittest.TestCase):
 
     def test_modes_that_cannot_deliver(self):
         ph, calls, cl = self.phone()
-        self.assertIsNone(self.deliver(ph, devcert=True))   # 证书模式另做
-        self.assertIsNone(self.deliver(types.SimpleNamespace(key="UDID1")))   # Mac 的手机对象没有 W
-        self.assertEqual((calls, cl.ops), ([], []))
+        self.assertIsNone(self.deliver(types.SimpleNamespace(key="UDID1")))   # Mac Apple ID（借 Xcode 钥匙串）：手机对象没有 W，交不了
+        self.assertEqual((calls, cl.ops), ([], []))   # 证书签名用户两端都交：见 test_devcert_identity
 
 
 if __name__ == "__main__":

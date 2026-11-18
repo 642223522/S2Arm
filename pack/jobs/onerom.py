@@ -6,6 +6,8 @@ iPhone 资源包 image/ios/.pack/game.img 是真身；Mac 运行版本 image/mac
 
 合并（dedupe）只在两边都有时做：只有 Mac 的款保留 romfs.std（转成 game.img 不省空间，之后出 iPhone 包时 iPhone 那份照样新写）。
 先逐字节核 game.img 的 RomFS 段与 romfs.std 相同，再建链、改清单、删 romfs.std；任何一步之前断了，下次从头再核（建链之后断了，下次认出链已在、直接接着做）。
+旧库（11-16 前）的 Mac 运行版本是 romfs/ 散文件目录：逐文件核与 game.img 的 RomFS 段同一份（文件集合相同、每个文件逐字节相同）才合并，
+删 romfs/ 与它的索引 romfs.s2aidx；有一个文件不同（老的就地改界面布局）就原样不动。
 按款加锁（拿不到就跳过：别的进程正在做）。挂通用壳开关（program_pack.enabled）：开关关着一个字节不动。
 谁调：出完 iPhone 包（ipa 换包之后）、出完 Mac 版、Mac 起局后游戏跑满 MIGRATE_AFTER_S 秒在后台做（玩家不等；游戏退出就停，下次再做）。"""
 from __future__ import annotations
@@ -42,8 +44,9 @@ def _same_range(a_path, a_off, b_path, b_off, n, stop):
         return True
 
 
-def dedupe(c, gid, stop=None):
-    """→ (结果, 说明)。结果：linked = 这次合并了；done = 早已合并；skip = 不合并（说明写原因）；stopped = 中途放弃（下次再做）"""
+def dedupe(c, gid, stop=None, keep_dir=False):
+    """→ (结果, 说明)。结果：linked = 这次合并了；done = 早已合并；skip = 不合并（说明写原因）；stopped = 中途放弃（下次再做）。
+    keep_dir：游戏正在跑（Mac 起局后后台做）——旧形态 romfs/ 散文件是游戏现读的，只核、建链，不删（游戏退出后 during 收尾删）"""
     import program_pack
     if not program_pack.enabled(c):
         return "skip", "通用壳开关关着"  # 非玩家句
@@ -52,14 +55,15 @@ def dedupe(c, gid, stop=None):
     std, link, img = mac / "romfs.std", mac / "game.img", layout.ios_pack(c, gid) / "game.img"
     if not img.is_file() or img.is_symlink():
         return "skip", "没有 iPhone 资源包的 game.img"  # 非玩家句
-    if link.exists() and not std.exists() and os.path.samefile(link, img):
+    if link.exists() and not std.exists() and not (mac / "romfs").is_dir() and os.path.samefile(link, img):
         return "done", "已合并"  # 非玩家句
-    if not std.is_file() and not (link.is_file() and not link.is_symlink()):
-        return "skip", "Mac 运行版本没有 romfs.std"  # 非玩家句
+    rdir = mac / "romfs"
+    if not std.is_file() and not (link.is_file() and not link.is_symlink()) and not rdir.is_dir():
+        return "skip", "Mac 运行版本没有 romfs.std / romfs/"  # 非玩家句
     lock = getattr(c, "lock", None)
     try:
         with (lock("onerom-" + gid.upper(), wait=0) if lock else _nolock()):
-            return _dedupe(c, gid, mac, std, link, img, stop)
+            return _dedupe(c, gid, mac, std, link, img, stop, keep_dir)
     except Failure as e:
         if e.code == "library_busy":
             return "skip", "别的任务正在合并这款"  # 非玩家句
@@ -71,9 +75,11 @@ class _nolock:
     def __exit__(self, *a): return False
 
 
-def _dedupe(c, gid, mac, std, link, img, stop):
+def _dedupe(c, gid, mac, std, link, img, stop, keep_dir=False):
     if link.exists() and os.path.samefile(link, img):
-        return _finish(c, gid, mac, std, link)   # 上次建好链之后断了：接着改清单、删 romfs.std
+        return _finish(c, gid, mac, std, link, keep_dir)   # 上次建好链之后断了：接着改清单、删 romfs.std / romfs/
+    if not link.exists() and not std.exists() and (mac / "romfs").is_dir():
+        return _dedupe_dir(c, gid, mac, std, link, img, stop, keep_dir)
     # 两种来源：Mac 还是 romfs.std（整个文件就是 RomFS）；或 Mac 已有自己的 game.img（iPhone 重出过包，Mac 那个名字还连着旧数据）
     src = link if link.exists() else std
     if img.stat().st_dev != src.stat().st_dev:
@@ -102,17 +108,79 @@ def _dedupe(c, gid, mac, std, link, img, stop):
     return _finish(c, gid, mac, std, link)
 
 
-def _finish(c, gid, mac, std, link):
+def _dedupe_dir(c, gid, mac, std, link, img, stop, keep_dir):
+    """旧形态：Mac 运行版本是 romfs/ 散文件。文件集合与每个文件的字节都和 game.img 的 RomFS 段相同才建链"""
+    rdir = mac / "romfs"
+    if img.stat().st_dev != rdir.stat().st_dev:
+        return "skip", "两边不在同一块盘，建不了硬链接"  # 非玩家句
+    rom = _romfs_img(c).RomfsImage.in_img(str(img))
+    want = {rel: span for rel, span in ((r, rom.span(r)) for r in rom.files())}
+    import importlib.util
+    from build import romfs_list_path
+    spec = importlib.util.spec_from_file_location("_s2arm_onerom_romfs_list", romfs_list_path())
+    rl = importlib.util.module_from_spec(spec); spec.loader.exec_module(rl)
+    tree = rl.scan(str(rdir))   # RomFS 目录盘点只走 romfs_list（tools/romfs_walk_lint.py）
+    if tree.errors or any(e.lstat_error is not None for e in tree.entries):
+        return "skip", "romfs/ 盘点出错，下次再核"  # 非玩家句
+    have = {e.rel: Path(e.path) for e in tree.entries if e.file and not e.symlink}
+    if set(want) != set(have):
+        return "skip", f"romfs/ 与 iPhone 资源包的文件集合不同（多 {len(set(have) - set(want))}、少 {len(set(want) - set(have))}）"  # 非玩家句
+    for rel, (off, n) in want.items():
+        if have[rel].stat().st_size != n:
+            return "skip", f"romfs/{rel} 与 iPhone 资源包那份长度不同（多半是就地改过的界面布局），不合并"  # 非玩家句
+        same = _same_range(img, off, have[rel], 0, n, stop)
+        if same is None:
+            return "stopped", "核到一半游戏退出 / 被取消，下次再做"  # 非玩家句
+        if not same:
+            return "skip", f"romfs/{rel} 与 iPhone 资源包那份内容不同（多半是就地改过的界面布局），不合并"  # 非玩家句
+    part = mac / "game.img.part"
+    try:
+        part.unlink()
+    except FileNotFoundError:
+        pass
+    try:
+        os.link(img, part)
+    except OSError as e:
+        return "skip", f"建不了硬链接（{e.strerror}，多半是 exFAT 这类盘）"  # 非玩家句
+    os.replace(part, link)
+    return _finish(c, gid, mac, std, link, keep_dir)
+
+
+def _romfs_img(c):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("s2a_pack_romfs_img", Path(c.engine) / "pack/romfs_img.py")
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    return m
+
+
+def _finish(c, gid, mac, std, link, keep_dir=False):
     manifest = read(mac / "manifest.json", {})
     files = manifest.get("files")
     if isinstance(files, dict):
-        files = {k: v for k, v in files.items() if k != "romfs.std"}
+        files = {k: v for k, v in files.items() if k not in ("romfs.std", "romfs.s2aidx") and not k.startswith("romfs/")}
         files["game.img"] = [link.stat().st_size, ""]   # 同 build.snapshot：只记大小
         atomic(mac / "manifest.json", dict(manifest, files=files))
+    rdir = mac / "romfs"
+    if rdir.is_dir() and keep_dir:
+        return "linked", "Mac 运行版本已链上 iPhone 资源包那份 game.img；romfs/ 散文件游戏正在读，等游戏退出再删"  # 非玩家句
+    if rdir.is_dir():   # 旧形态：改完清单再删散文件（删到一半断了，下次认出链已在，接着删）
+        rom = _romfs_img(c).RomfsImage.in_img(str(link))   # 散文件与它逐文件相同（建链前核过），腾出的就是这些文件的大小
+        saved = sum(rom.span(r)[1] for r in rom.files())
+        from library import _rmtree
+        _rmtree(rdir)
+        try:
+            (mac / "romfs.s2aidx").unlink()
+        except FileNotFoundError:
+            pass
+        return "linked", f"Mac 运行版本的 romfs/ 散文件改用 iPhone 资源包那份 game.img，腾出 {saved / 1e9:.2f} GB"  # 非玩家句
     if not std.exists():
         return "linked", "Mac 运行版本换链到 iPhone 新出的那份 game.img（RomFS 相同），旧那份腾出"  # 非玩家句
     saved = std.stat().st_size
     std.unlink()
+    try:
+        (mac / "romfs.s2aidx").unlink()   # romfs.std 的索引：改用 game.img 后没人读了（清单里上面已去掉）
+    except FileNotFoundError:
+        pass
     return "linked", f"Mac 运行版本改用 iPhone 资源包那份 game.img，腾出 {saved / 1e9:.2f} GB"  # 非玩家句
 
 
@@ -132,7 +200,7 @@ def background(c, gid, delay=MIGRATE_AFTER_S):
         if halt.wait(delay):
             return
         try:
-            note(c, gid, dedupe(c, gid, stop=halt.is_set))
+            note(c, gid, dedupe(c, gid, stop=halt.is_set, keep_dir=True))
         except Exception as e:   # 后台合并出什么错都不影响这局游戏：记下原因，原样不动
             note(c, gid, ("skip", f"出错：{e!r}"))  # 非玩家句
     t = threading.Thread(target=run, name="onerom-" + gid, daemon=True)
@@ -150,3 +218,18 @@ def during(c, gid, run):
         return run()
     finally:
         stop()
+        _finish_after_exit(c, gid)
+
+
+def _finish_after_exit(c, gid):
+    """游戏退出后：后台已核完、建好链，只剩旧形态 romfs/ 散文件没删 → 现在删（没建链就什么都不做，不在这里现核）"""
+    import program_pack
+    if not program_pack.enabled(c):
+        return
+    mac = layout.image_mac(c, gid, create=False)
+    link, img = mac / "game.img", layout.ios_pack(c, gid) / "game.img"
+    try:
+        if (mac / "romfs").is_dir() and link.exists() and img.exists() and os.path.samefile(link, img):
+            note(c, gid, dedupe(c, gid))
+    except Exception as e:   # 收尾删不掉不影响这局：下次再做
+        note(c, gid, ("skip", f"收尾出错：{e!r}"))  # 非玩家句

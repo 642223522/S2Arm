@@ -572,3 +572,15 @@
 "sgrade.cpatch.detail" = "コミュニティパッチの詳細";
 "sgrade.state.off_auto.widen_fit" = "自動でオフにしました：%1$@ にフルスクリーンが画面いっぱいにならないか、画面が引き伸ばされました";
 "sgrade.notice.fullscreen_off" = "S2Arm 汎用フルスクリーンは今回うまく動かなかったため自動でオフにしました。ゲームはそのまま遊べます。もう一度試すにはギアメニューでオンにしてください。";
+
+/* 0.6.0 快照：游戏中菜单 */
+"vpad.snap.save" = "この瞬間を保存";
+"vpad.snap.restore" = "保存した瞬間に戻る";
+"vpad.snap.saving" = "この瞬間を保存中…";
+"vpad.snap.saved" = "この瞬間を保存しました";
+"vpad.snap.notSaved" = "今回は保存できませんでした。少ししてからもう一度";
+"vpad.snap.busy" = "前回の保存がまだ終わっていません";
+"vpad.snap.restoreFailed" = "戻れませんでした：%@";
+"vpad.snap.saveChanged.title" = "保存した瞬間に戻りますか？";
+"vpad.snap.saveChanged.body" = "その後ゲームがセーブしています。戻るとゲームのセーブもその時点に戻ります。今のセーブは先にバックアップします。";
+"vpad.snap.saveChanged.go" = "戻る";

@@ -15,6 +15,8 @@ namespace Ryujinx.Audio.Renderer.Server.Effect
     /// </summary>
     public class BiquadFilterEffect : BaseEffect
     {
+        public override void S2AForceReinit() => Parameter.Status = UsageState.Invalid;   // S2Arm 即时存档
+
         /// <summary>
         /// The biquad filter parameter.
         /// </summary>

@@ -219,11 +219,24 @@ int s2a_host_rebuild(void) {
     // 审计 P2-15：设置里的立刻重启不经过进后台，上一局按着的键 / 摇杆不能带进新局第一次读
     s2a_pad_session_reset();
     void s2a_gfx_mode_session_reset(void); s2a_gfx_mode_session_reset();
+    { void s2a_snap_session_fresh(int); const char *r = getenv("S2A_SNAP_RESTORE"); s2a_snap_session_fresh(r && *r); }   // 即时存档：新一局日志从头记（开关关着什么都不做）
     if (s2a_session_try_boot(load_session_modules, NULL)) return -1;
+    // 即时存档：进程内重建按快照恢复（界面设了 S2A_SNAP_RESTORE 再请求重启）。核对在服务层起来之前（同首次起局）；没过就照常起这一局
+    { const char *s2a_snap_path(const char *); const char *sr = s2a_snap_path(getenv("S2A_SNAP_RESTORE"));
+      if (sr && *sr) { int s2a_snap_restore_check(const char *); void s2a_snap_result_note(int);
+          if (s2a_snap_restore_check(sr)) { s2a_snap_result_note(0); unsetenv("S2A_SNAP_RESTORE"); void s2a_snap_session_fresh(int); s2a_snap_session_fresh(0);
+              LOG("即时存档恢复（进程内）：核对没过，照常起这一局（结果已写 snap_result.tsv）"); }
+          else LOG("即时存档恢复（进程内）：校验通过，起服务层后按快照恢复"); } }
     if (!S2A_InitSession || S2A_InitSession()) return -1;
     // Providers are initialized now; establish a background/restart hold
     // before the replacement guest thread can execute or submit its first frame.
     if (s2a_session_guest_start_prepare(s2a_session_generation())) return -1;
+    { const char *s2a_snap_path(const char *); const char *sr = s2a_snap_path(getenv("S2A_SNAP_RESTORE"));
+      if (sr && *sr) { int s2a_snap_restore(const char *); void s2a_snap_result_note(int);   // 核对在重建开头（服务层起来之前）已做，见上
+          if (s2a_session_guest_begin(s2a_session_generation())) return -1;
+          int rc = s2a_snap_restore(sr); s2a_snap_result_note(!rc); unsetenv("S2A_SNAP_RESTORE"); s2a_session_guest_end(0);
+          if (rc) { LOG("【红】即时存档恢复（进程内）失败：游戏内存已动过，退出（游戏存档未被改动）"); s2a_logcon_flush(); _exit(6); }
+          return 0; } }
     return start_guest_thread();
 }
 
@@ -370,6 +383,13 @@ static int host_run(int argc, char **argv) {
     // 诊断钩子（diag_brk.c，S2A_DIAG_DELAY / S2A_DIAG_STAMP / S2A_DIAG_DUMP 设了才装，只 Mac）
     { void s2a_diag_brk_arm(void); s2a_diag_brk_arm(); }
     LOG("主程序构建号 %s", s2a_main_build_id());
+    // 即时存档恢复（S2A_SNAP_RESTORE=<快照目录>）：布局已定、服务层还没起、没碰存档目录——先核清单，不符当场拒绝退出
+    { const char *s2a_snap_path(const char *); const char *sr = s2a_snap_path(getenv("S2A_SNAP_RESTORE")); if (sr && *sr) { int s2a_snap_restore_check(const char *);
+        void s2a_snap_result_note(int); if (s2a_snap_restore_check(sr)) { s2a_snap_result_note(0);
+            if (s2a_unattended()) { s2a_logcon_flush(); _exit(3); }   // 自动化 / 开发工具局：退出码 3 给脚本判
+            LOG("即时存档恢复：核对没过，这局照常开局（结果已写 snap_result.tsv，界面按分类提示）"); unsetenv("S2A_SNAP_RESTORE"); goto snap_check_done; }
+        LOG("即时存档恢复：校验通过，起服务层后按快照恢复（不起游戏主线程）"); } }
+    snap_check_done:;
     s2a_boot_mark("装载 / 重定位 / 门表");
     s2a_boot_mark("内存布局");
 #if TARGET_OS_IPHONE
@@ -442,7 +462,15 @@ static int host_run(int argc, char **argv) {
         s2a_dguard_arm(now_ns());
     }
 #endif
-    if (start_guest_thread()) failed_session(S2A_INIT_FAIL_E_GAME_THREAD);
+    { const char *s2a_snap_path(const char *); const char *sr = s2a_snap_path(getenv("S2A_SNAP_RESTORE"));
+      if (sr && *sr) { int s2a_snap_restore(const char *);
+          if (s2a_session_guest_begin(s2a_session_generation())) failed_session(S2A_INIT_FAIL_E_GAME_THREAD);
+          void s2a_snap_result_note(int);
+          if (s2a_snap_restore(sr)) { LOG("【红】即时存档恢复失败（原因见上面的红行）：不起游戏，退出；存档目录未被改动"); s2a_snap_result_note(0); s2a_logcon_flush(); _exit(6); }
+          s2a_snap_result_note(1);
+          if (start_timer("S2A_RUN_S", run_timer)) LOG("【红】局时定时器起不来");
+          s2a_session_guest_end(0);
+      } else if (start_guest_thread()) failed_session(S2A_INIT_FAIL_E_GAME_THREAD); }
     if (s2a_session_running(s2a_session_generation())) failed_session(S2A_INIT_FAIL_E_SERVICE_EARLY);
     s2a_boot_mark("S2A 就绪 → 起游戏主线程");
     s2a_front_run(NULL);

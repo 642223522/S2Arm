@@ -572,3 +572,15 @@
 "sgrade.cpatch.detail" = "Détails des correctifs de la communauté";
 "sgrade.state.off_auto.widen_fit" = "Désactivé automatiquement : le %1$@, le plein écran ne remplissait pas l'écran ou étirait l'image";
 "sgrade.notice.fullscreen_off" = "Le plein écran S2Arm n'a pas fonctionné cette fois : il a été désactivé et le jeu tourne normalement. Vous pouvez le réactiver depuis le menu en forme d'engrenage pour réessayer.";
+
+/* 0.6.0 快照：游戏中菜单 */
+"vpad.snap.save" = "Sauvegarder cet instant";
+"vpad.snap.restore" = "Revenir à l’instant sauvegardé";
+"vpad.snap.saving" = "Sauvegarde de cet instant…";
+"vpad.snap.saved" = "Instant sauvegardé";
+"vpad.snap.notSaved" = "Sauvegarde impossible cette fois. Réessayez dans un instant";
+"vpad.snap.busy" = "La sauvegarde précédente est en cours";
+"vpad.snap.restoreFailed" = "Retour impossible : %@";
+"vpad.snap.saveChanged.title" = "Revenir à l’instant sauvegardé ?";
+"vpad.snap.saveChanged.body" = "Le jeu a sauvegardé depuis. Revenir ramène aussi sa sauvegarde à cet instant ; la sauvegarde actuelle est d’abord copiée.";
+"vpad.snap.saveChanged.go" = "Revenir";

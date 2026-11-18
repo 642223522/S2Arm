@@ -119,7 +119,11 @@ def pick(c, want=""):
         return tvs[0]
     if not tvs:
         raise Failure(S_NO_TV, code="device_not_connected")
-    raise Failure(S_MANY_TV.replace("{0}", "、".join("「" + (tv_name(d) or KIND) + "」" for d in tvs)), code="device_required")
+    from diag import reachable
+    online = [d for d in tvs if reachable(d)]
+    if len(online) == 1:   # 两台已配对、只有一台在线：直接用在线的那台，别让玩家先在一台关机的电视和一台开机的电视里选
+        return online[0]
+    raise Failure(S_MANY_TV.replace("{0}", "、".join("「" + (tv_name(d) or KIND) + "」" for d in (online or tvs))), code="device_required")
 
 
 def devices_job(c):
@@ -205,11 +209,37 @@ def clone_tree(src, dst):
     shutil.copytree(src, dst)
 
 
+def _clone_file(src, dst):
+    """单个文件：Mac cp -c（APFS 克隆，不同卷自动退成拷贝），别的平台整份拷"""
+    if sys.platform == "darwin":
+        r = subprocess.run(["cp", "-c", str(src), str(dst)], capture_output=True, text=True)
+        if r.returncode:
+            raise OSError((r.stderr.strip().splitlines() or ["cp 失败"])[-1])  # 非玩家句
+        return dst
+    return shutil.copy2(src, dst)
+
+
+def clone_pack(c, src, dst):
+    """iPhone 资源包派生给 Apple TV：0.6.0（通用壳开关开，体系文档 L）game.img 用硬链接引用 iPhone 那份（同一个文件，Windows NTFS 也不再实拷几 GB），
+    其余小件照拷（电视这份要改清单、加 astc.pack，都是写新文件替换，不动 game.img）。建不了硬链接（跨盘 / exFAT）→ game.img 照旧拷。
+    开关关：整棵照旧（clone_tree）"""
+    import program_pack
+    img = Path(src) / "game.img"
+    if not program_pack.enabled(c) or not img.is_file() or img.is_symlink():
+        return clone_tree(src, dst)
+    shutil.copytree(src, dst, ignore=lambda d, names: ["game.img"] if Path(d) == Path(src) else [], copy_function=_clone_file)
+    try:
+        os.link(img, Path(dst) / "game.img")
+    except OSError:
+        _clone_file(img, Path(dst) / "game.img")
+
+
 def derive(c, gid, extraction):
     """出 Apple TV 包（ipa 作业带 platform = "tvos"，iPhone 版刚交付、解包目录还没清时调）：电视与 iPhone 跑同一份改写产物，差别只在
     组装时镜像包标的平台（ios/embed.py 按 S2A_APPLE_OS 写）、tvOS 壳、和多一个 ASTC 预转包（A15 不支持 BC 贴图，不转会在 CPU 上整张解成未压缩、
     贴图内存涨 4–8 倍，电视约 2 GB 就被系统结束）。所以：
-      ① image/tvos/kit、image/tvos/.pack 从 image/ios 拷一份（clone_tree：Mac APFS 克隆不占空间，Windows 整份拷贝；资源包同一份，电视上按 Library/Caches 推）
+      ① image/tvos/kit、image/tvos/.pack 从 image/ios 拷一份（clone_tree：Mac APFS 克隆不占空间，Windows 整份拷贝；资源包同一份，电视上按 Library/Caches 推；
+         0.6.0 起 .pack/game.img 是 iPhone 那份的硬链接，clone_pack）
       ② 解开的 romfs → image/tvos/.pack/astc.pack（只给电视推，iPhone 资源包不带）
       ③ 开发树本机还没有本版 tvOS 壳就出一个（发版应用自带 Shell-tvOS/）
       ④ game.json 记 tvos：壳号、兼容判据、资源包号（usable_kit 按它判）"""
@@ -226,7 +256,7 @@ def derive(c, gid, extraction):
         tmp = dst / (name + ".partial")
         shutil.rmtree(tmp, ignore_errors=True)
         try:
-            clone_tree(src, tmp)
+            (clone_pack(c, src, tmp) if name == layout.IOS_PACK else clone_tree(src, tmp))
         except (OSError, shutil.Error) as e:
             shutil.rmtree(tmp, ignore_errors=True)
             raise Failure("Apple TV 包的文件拷不出来：" + (str(e).strip().splitlines() or ["?"])[-1], code="package_failed") from e  # 非玩家句
@@ -464,7 +494,7 @@ def verify(c, dev_id, bid, gid, pack):
         raise Failure("核对不了 Apple TV 上的资源包（列不出电视上的文件）：" + (err.splitlines()[-1] if err else f"devicectl 退出 {rc}"), code="resource_transfer_failed")  # 非玩家句
     there = {(f.get("relativePath") or f.get("path")): (f.get("metadata") or {}).get("size")
              for f in ((data.get("result") or {}).get("files") or []) if isinstance(f, dict) and not (f.get("resources") or {}).get("isDirectory")}
-    want = ["index.tsv", "manifest.json"] + sorted(p.relative_to(pack).as_posix() for p in pack.rglob("*") if p.is_file() and IMG.search(p.relative_to(pack).as_posix()))
+    want = ["index.tsv", "manifest.json"] + sorted(p.relative_to(pack).as_posix() for p in pack.rglob("*") if p.is_file() and not layout.os_junk(p.name) and IMG.search(p.relative_to(pack).as_posix()))
     for rel in want:
         local = pack / rel
         if not local.is_file():

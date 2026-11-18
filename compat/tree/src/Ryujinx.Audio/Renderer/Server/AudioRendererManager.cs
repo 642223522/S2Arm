@@ -40,6 +40,9 @@ namespace Ryujinx.Audio.Renderer.Server
         /// The <see cref="AudioRenderSystem"/> sessions instances.
         /// </summary>
         private readonly AudioRenderSystem[] _sessions;
+        // S2Arm 即时存档：会话表与会话锁（持锁时工作线程停在两次处理之间）
+        public AudioRenderSystem[] S2ASessions => _sessions;
+        public Lock S2ASessionLock => _sessionLock;
 
         /// <summary>
         /// The count of active sessions.

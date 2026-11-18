@@ -128,6 +128,7 @@ typedef struct { const char *name; void *fn; } nvn_impl;
 static int g_log;
 static _Atomic uint64_t g_serial_n;
 uint64_t nvn_new_serial(void) { return ++g_serial_n; }
+uint64_t nvn_serial_now(void) { return atomic_load(&g_serial_n); }   // 即时存档
 // 帧回放（nvn_frame_rec.inc）：录像里的贴图 / 程序都带录时的序号；回放进程自己新建的对象（宿主内部程序、清屏用的贴图）从 1 编号，会和它们撞上，
 //   按序号查到别的对象（异度3 f5500：渲染目标的序号查回一个宿主内部程序，tex_extent_at 抛 NvProg parentTexture 异常、回放中止）。回放先把计数器抬到 floor 以上
 void nvn_serial_floor(uint64_t floor) { uint64_t c = g_serial_n; while (c < floor && !atomic_compare_exchange_weak(&g_serial_n, &c, floor)) {} }
@@ -150,6 +151,16 @@ static void nvn_init_slots(void) {
     g_nsem = hit;
 }
 
+// 即时存档恢复（跨版本换算交出的宿主指针）：本版里这个 NVN 函数名对应的 thunk 地址（counting = 计数版），没有 = 0
+uint64_t nvn_snap_proc(const char *name, int counting) {
+#if defined(__ANDROID__)
+    (void)name; (void)counting; return 0;
+#else
+    nvn_init_slots();
+    for (unsigned i = 0; i < NVN_NFUNC; i++) if (!strcmp(nvn_names[i], name)) return (uint64_t)(uintptr_t)(counting ? nvn_thunk[i] : nvn_thunk_fast[i]);
+    return 0;
+#endif
+}
 static void *nvn_lookup(const char *name) {
     nvn_init_slots();
     for (unsigned i = 0; i < NVN_NFUNC; i++)
@@ -157,7 +168,10 @@ static void *nvn_lookup(const char *name) {
 #if defined(__ANDROID__)
             return nvn_slot[i].fn;   // Android 直接返回强类型实现，避免 Apple 汇编 thunk
 #else
-            return nvn_counting() ? nvn_thunk[i] : nvn_thunk_fast[i];
+            { void s2a_snap_handout_id(uint64_t, const char *) __attribute__((weak)); int c = nvn_counting(); void *fn = c ? nvn_thunk[i] : nvn_thunk_fast[i];
+              int s2a_snap_mode(void) __attribute__((weak));
+              if (s2a_snap_handout_id && s2a_snap_mode && s2a_snap_mode()) { char id[128]; snprintf(id, sizeof id, "nvn:%s:%c", name, c ? 'c' : 'f'); s2a_snap_handout_id((uint64_t)(uintptr_t)fn, id); }
+              return fn; }   // 即时存档：登记交给游戏的宿主指针
 #endif
         }
     LOG("【红】 NVN address lookup of an unknown name: %s", name ? name : "(null)");
@@ -1400,6 +1414,34 @@ uint64_t nvn_prog_set_ns(uint64_t serial) {
     uint64_t ns = atomic_load_explicit(&e[1], memory_order_relaxed);
     return atomic_load_explicit(&e[0], memory_order_acquire) == serial ? ns : 0;
 }
+#if !defined(__ANDROID__)
+// 控制段只在 SetShaders 这次调用里保证有效（游戏之后可以复用那块内存），键却有留到首用（prog_key）才算的：Switch 2 阶段一律首用才算（代码区到首次绘制前还会变），
+//   Switch 1 阶段在代码区还不在已登记内存池时也是。原先首用时读游戏的控制段指针，读到的可能已是别的数据：
+//   0.5.7 iPhone 奥日2（Switch 1）+0x700 成了一个地址、+0x704 成了 0x76，键对不上库、代码长度取成 118 字节，现编越界；
+//   一款 Switch 2 游戏 108 支现编失败里 98 支的「控制段」连 NVN2 魔数都没有，宿主按 Switch 1 硬读（#1520 当成「新版控制段没认出」）。
+//   这里按内容去重拷一份自持，首用算键、首遇现编、补齐 / 输出类型变体都读它。同一份只存一份、不释放：总量以不同着色器数为界，程序快照也可能还引用着它。
+//   （DM_NVN_SHDUMP 诊断档一直整份拷控制段，所以开转存复现不出来；安卓走自己的自持控制段 s2a_source_hold_pending）
+typedef struct ctl_own { struct ctl_own *next; uint32_t n; uint8_t md[CC_SHA256_DIGEST_LENGTH]; uint8_t bytes[0x880]; } ctl_own;
+static const void *ctl_intern(const void *ctl, uint32_t n) {
+    enum { B = 4096 }; static ctl_own *tab[B]; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    uint8_t md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256(ctl, n, md);
+    uint32_t h; memcpy(&h, md, 4); h %= B;
+    pthread_mutex_lock(&mu);
+    ctl_own *e = tab[h];
+    while (e && (e->n != n || memcmp(e->md, md, sizeof md))) e = e->next;
+    if (!e && (e = calloc(1, sizeof *e))) { e->n = n; memcpy(e->md, md, sizeof md); memcpy(e->bytes, ctl, n); e->next = tab[h]; tab[h] = e; }   // 0x880 以内没拷的部分是 0
+    pthread_mutex_unlock(&mu);
+    return e ? e->bytes : ctl;
+}
+// 要首用才算键的这一阶段，控制段该自持多少字节（0 = 不自持：已在 SetShaders 算出键、控制段指针不是地址或读不了）
+static uint32_t ctl_hold_len(const NVNshaderData *sd, int keyed) {
+    if (!sd->control || (uint64_t)(uintptr_t)sd->control >= (1ull << 47)) return 0;
+    uint64_t a = (uint64_t)(uintptr_t)sd->control;
+    if (nvn2_on() && shader_bytes_readable(a, 8) && nvn2_ctl(sd->control))
+        return shader_bytes_readable(a, NVN2_CTL_COPY) ? NVN2_CTL_COPY : shader_bytes_readable(a, 0xd8) ? 0xd8 : 0;
+    return !keyed && shader_bytes_readable(a, 0x880) ? 0x880 : 0;
+}
+#endif
 NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData *sd) {
     prog_t *o = (prog_t *)p;
     if (n < 0 || n > 6) { LOG("【红】 ProgramSetShaders stage count %d", n); return 0; }
@@ -1422,6 +1464,10 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData 
         dm_shader_mesh_hold(sd[i].data, sd[i].control);   // NVN2 keys are deferred, but control + code are valid here; retain only mesh inputs
         if (keys_hash(&sd[i], 1, k->key[i])) { k->ok |= (uint8_t)(1u << i); dm_shader_miss(k->key[i], sd[i].data, sd[i].control); dm_shader_vs_hold_key(k->key[i], sd[i].data, sd[i].control); nvn_be_shader_prefetch(k->key[i]); }   // S2Arm: a key missing from the map is translated on the device now (graphics/nvn/host_adapt.m)
         else { uint8_t early[8]; if (keys_hash_early(&sd[i], early)) nvn_be_shader_prefetch(early); }   // S2Arm #674: Switch 2 stages, keyed at first use
+#if !defined(__ANDROID__)
+        // 首用才算键的阶段（Switch 2 一律；Switch 1 代码区还不在已登记内存池时），控制段先自持一份（ctl_intern）
+        { uint32_t hl = ctl_hold_len(&sd[i], k->ok >> i & 1); if (hl) o->sd[i].control = ctl_intern(sd[i].control, hl); }
+#endif
 #if defined(__ANDROID__)   // Android 直连的阶段 / 源快照 / 按 serial 记 key；Apple 回放不读这些，保持 main 原行为
         // 阶段只在 control 仍有效、code 已映射的本次调用内读定；code 未映射时留给 Bind
         // 用自持 control + 当时的 code 补算，Bind 不碰 guest control。
@@ -1773,6 +1819,11 @@ static srec g_sh_all = { .prev = &g_sh_all, .next = &g_sh_all };
 // 句柄登记（#768338 安全阀，g_sh_mu 下读写）：结束了的录制的句柄 → 1 活着 / 2 已被覆盖、还在隔离区（宿主块完好）；隔离期满块被复用时删掉。
 //   内容共用的常驻副本（sh_intern）一直是 1。回放的 CALL 按它核目标（nvn_cmd_call_target）
 static nvn_hmap g_shh = {.klen = 8};
+// 即时存档：录制中的这条属于哪个游戏命令缓冲（cmd_t，游戏地址），恢复时改写它的 rec。旁挂表、只在存档模式登记：关着时录制结构不多一个字段
+static nvn_hmap g_snap_rec_owner = {.klen = 8}; static pthread_mutex_t g_snap_rec_mu = PTHREAD_MUTEX_INITIALIZER;
+// 弱链接[nvntest]：s2a_snap_handout_id（runtime/src/snapshot.c 提供；图形单测不链宿主，链接行按这行放行未定义）
+// 弱链接[nvntest]：s2a_snap_mode（runtime/src/snapsw.c 提供；同上）
+static int hle_snap_saving(void) { static int v = -1; int s2a_snap_saving(void) __attribute__((weak)); if (v < 0) v = s2a_snap_saving ? s2a_snap_saving() : 0; return v; }
 static void shh_set(const uint8_t *h, uintptr_t st) { if (!h) return; uintptr_t k = (uintptr_t)h; if (st) nvn_hm_put(&g_shh, &k, (void *)st); else nvn_hm_del(&g_shh, &k); }
 // #768338 根修：CALL 按设备地址解析（真机上句柄就是命令在游戏内存里的地址）。g_shd：句柄 → 录制时首记录的设备地址，块被复用前一直留着
 //   （同一块再被别的录制当开头用时覆盖；条目数以宿主块的开头位置数为上限）；g_shl：设备地址 → 此刻占着它的活录制句柄（录制死了就删）。
@@ -2078,6 +2129,7 @@ static void sh_end(cmd_t *o) {
     uint64_t h = r->rbytes + OP_RESERVE + sizeof(sblk); o->hint = (uint32_t)(h < 256 ? 256 : h > (1u << 20) ? (1u << 20) : h);
     pthread_mutex_lock(&g_sh_mu);
     if (sh_intern(o, r)) { pthread_mutex_unlock(&g_sh_mu); o->rec = NULL; return; }
+    if (hle_snap_saving()) { pthread_mutex_lock(&g_snap_rec_mu); nvn_hm_del(&g_snap_rec_owner, &r); pthread_mutex_unlock(&g_snap_rec_mu); }
     sh_anchor_empty(o, r); r->open = 0; r->begin = o->begin; shh_set(r->begin, 1); shd_end(r);
     uint64_t un = 0; if (r->niv) sh_index(r); else un = ++g_sh_unanchored;
     pthread_mutex_unlock(&g_sh_mu);
@@ -2093,6 +2145,7 @@ NVN(nvnCommandBufferBeginRecording, void, NVNcommandBuffer *c) {
     r->iv = r->ivs; r->civ = 2; r->open = 1; r->glo = o->gcur;
     pthread_mutex_lock(&g_sh_mu); r->prev = g_sh_all.prev; r->next = &g_sh_all; g_sh_all.prev->next = r; g_sh_all.prev = r; g_sh_nlive++; pthread_mutex_unlock(&g_sh_mu);
     o->rec = r; o->cur = o->end = NULL; o->begin = NULL;
+    if (hle_snap_saving()) { pthread_mutex_lock(&g_snap_rec_mu); nvn_hm_put(&g_snap_rec_owner, &r, o); pthread_mutex_unlock(&g_snap_rec_mu); }
     o->recording = 2;   // 2: recording, no command yet (cmd_alloc sets begin)
 }
 NVN(nvnCommandBufferEndRecording, NVNcommandHandle, NVNcommandBuffer *c) {
@@ -5482,6 +5535,7 @@ int dm_nvn_shutdown_session(void) {
     if (g_pk) { CFDictionaryApplyFunction(g_pk, pk_free_session, NULL); CFRelease(g_pk); g_pk = NULL; }
     sh_shutdown();
     free(g_ft); g_ft = NULL; g_nft = g_cft = 0;
+    pthread_mutex_lock(&g_snap_rec_mu); nvn_hm_clear(&g_snap_rec_owner, NULL); pthread_mutex_unlock(&g_snap_rec_mu);   // 即时存档：录制归属指向上一局的游戏对象
     free(g_tpb); free(g_spb); g_tpb = g_spb = NULL;   // 池表按需增长（#1209），整表释放，下个会话从初始容量重来
     g_cap_tpb = g_cap_spb = g_ntpb = g_nspb = g_tnext = g_snext = 0;
     g_frame = 0; g_hz = -1; g_display_mode = 0; g_game_itv = 1;
@@ -5496,4 +5550,113 @@ int dm_nvn_shutdown_session(void) {
 void dm_nvn_begin_session(void) {
     nvn_be_begin_session();
     atomic_store(&g_session_stopping, 0);
+}
+
+// ---------- 即时存档：hle 层的宿主状态存取（逐项理由见报告 15 节） ----------
+//   描述符池基址表、帧号、上屏裁切、CPU 后填贴图的序号、命令影子（每条录制、三张句柄表、块账、空闲链表头）。
+//   命令记录区里的块已按原地址放回，块指针 / 设备地址 / 句柄在新进程里同址有效；录制对象（srec）在宿主堆上，按存下的字段重建并重新建索引，录制中的改写所属 cmd_t.rec
+static int hs_w(FILE *f, const void *p, size_t n) { return fwrite(p, 1, n, f) == n ? 0 : -1; }
+static int hs_r(FILE *f, void *p, size_t n) { return fread(p, 1, n, f) == n ? 0 : -1; }
+static int hs_hm_save(FILE *f, nvn_hmap *m) {
+    uint32_t n = 0; for (uint32_t i = 0; i < m->cap; i++) n += m->vals[i] != NULL;
+    int e = hs_w(f, &n, 4);
+    for (uint32_t i = 0; i < m->cap; i++) if (m->vals[i]) { uint64_t k, v = (uint64_t)(uintptr_t)m->vals[i]; memcpy(&k, m->keys + (size_t)i * 8, 8); e |= hs_w(f, &k, 8) | hs_w(f, &v, 8); }
+    return e;
+}
+static int hs_hm_load(FILE *f, nvn_hmap *m) {
+    uint32_t n; if (hs_r(f, &n, 4)) return -1;
+    for (uint32_t i = 0; i < n; i++) { uint64_t k, v; if (hs_r(f, &k, 8) || hs_r(f, &v, 8)) return -1; nvn_hm_put(m, &k, (void *)(uintptr_t)v); }
+    return (int)n;
+}
+int hle_snap_save(FILE *f) {
+    int e = 0; uint32_t mg = 0x31534C48u;   // "HLS1"
+    e |= hs_w(f, &mg, 4);
+    pthread_mutex_lock(&g_dpool_mu);
+    e |= hs_w(f, &g_ntpb, 4) | hs_w(f, g_tpb, sizeof *g_tpb * (size_t)g_ntpb) | hs_w(f, &g_nspb, 4) | hs_w(f, g_spb, sizeof *g_spb * (size_t)g_nspb) | hs_w(f, &g_tnext, 4) | hs_w(f, &g_snext, 4);
+    pthread_mutex_unlock(&g_dpool_mu);
+    e |= hs_w(f, &g_frame, 8);
+    pthread_mutex_lock(&g_vi_mu); e |= hs_w(f, g_vi_crop, sizeof g_vi_crop); pthread_mutex_unlock(&g_vi_mu);
+    pthread_mutex_lock(&g_ft_mu); uint64_t nft = g_nft; e |= hs_w(f, &nft, 8); for (size_t i = 0; i < g_nft; i++) e |= hs_w(f, &g_ft[i].t.serial, 8); pthread_mutex_unlock(&g_ft_mu);
+    pthread_mutex_lock(&g_sh_mu);
+    e |= hs_w(f, g_sh_free, sizeof g_sh_free) | hs_w(f, &g_sh_nchunk, 4) | hs_w(f, g_sh_chunk, sizeof *g_sh_chunk * (size_t)g_sh_nchunk) | hs_w(f, g_sh_carving, sizeof g_sh_carving);
+    uint32_t nr = 0, nopen = 0; for (srec *r = g_sh_all.next; r != &g_sh_all; r = r->next) { nr++; nopen += r->open; }
+    e |= hs_w(f, &nr, 4);
+    for (srec *r = g_sh_all.next; r != &g_sh_all; r = r->next) {
+        uint64_t q[11] = {(uint64_t)(uintptr_t)r->blk, (uint64_t)(uintptr_t)r->last, r->niv, r->open, r->glo, r->bytes, r->rbytes, r->frame, (uint64_t)(uintptr_t)r->begin, r->dev0, 0};
+        if (r->open) { pthread_mutex_lock(&g_snap_rec_mu); q[10] = (uint64_t)(uintptr_t)nvn_hm_get(&g_snap_rec_owner, &r); pthread_mutex_unlock(&g_snap_rec_mu); }
+        e |= hs_w(f, q, sizeof q) | hs_w(f, r->iv, sizeof *r->iv * r->niv);
+    }
+    e |= hs_hm_save(f, &g_shh) | hs_hm_save(f, &g_shd) | hs_hm_save(f, &g_shl);
+    pthread_mutex_unlock(&g_sh_mu);
+    LOG("即时存档：hle 层 贴图池 %d / 采样器池 %d、帧号 %llu、CPU 后填贴图 %llu、录制 %u 条（录制中 %u）、句柄表 %u/%u/%u", g_ntpb, g_nspb, (unsigned long long)g_frame,
+        (unsigned long long)nft, nr, nopen, g_shh.n, g_shd.n, g_shl.n);
+    return e;
+}
+static uint64_t *g_snap_ft_ser; static uint64_t g_snap_nft;   // 恢复时：CPU 后填贴图的序号（nvn_snap.inc 按地址表找到对象后再登记）
+int hle_snap_restore(FILE *f) {
+    uint32_t mg; if (hs_r(f, &mg, 4) || mg != 0x31534C48u) return -1;
+    pthread_mutex_lock(&g_dpool_mu);
+    int nt, ns; int e = hs_r(f, &nt, 4);
+    while (!e && g_cap_tpb < nt) e |= dpool_grow(&g_tpb, &g_cap_tpb) ? -1 : 0;
+    e |= e ? -1 : hs_r(f, g_tpb, sizeof *g_tpb * (size_t)nt); g_ntpb = nt;
+    e |= hs_r(f, &ns, 4);
+    while (!e && g_cap_spb < ns) e |= dpool_grow(&g_spb, &g_cap_spb) ? -1 : 0;
+    e |= e ? -1 : hs_r(f, g_spb, sizeof *g_spb * (size_t)ns); g_nspb = ns;
+    e |= hs_r(f, &g_tnext, 4) | hs_r(f, &g_snext, 4);
+    pthread_mutex_unlock(&g_dpool_mu);
+    if (e) return -1;
+    e |= hs_r(f, &g_frame, 8);
+    pthread_mutex_lock(&g_vi_mu); e |= hs_r(f, g_vi_crop, sizeof g_vi_crop); pthread_mutex_unlock(&g_vi_mu);
+    e |= hs_r(f, &g_snap_nft, 8); g_snap_ft_ser = malloc(8 * (g_snap_nft ? g_snap_nft : 1)); e |= hs_r(f, g_snap_ft_ser, 8 * g_snap_nft);
+    if (e) return -1;
+    pthread_mutex_lock(&g_sh_mu);
+    int nch; e |= hs_r(f, g_sh_free, sizeof g_sh_free) | hs_r(f, &nch, 4);
+    if (!e && nch > g_sh_cchunk) { g_sh_chunk = realloc(g_sh_chunk, sizeof *g_sh_chunk * (size_t)nch); g_sh_cchunk = nch; }
+    e |= e ? -1 : hs_r(f, g_sh_chunk, sizeof *g_sh_chunk * (size_t)nch); g_sh_nchunk = nch;
+    e |= hs_r(f, g_sh_carving, sizeof g_sh_carving);
+    // 快照只导出每块已切出的部分（s2a_hle_cmdshadow_list，按页取整）；块的其余部分 B 里还没映射，接着切会落空：按块补映射尾部（只映射未导出的那段，不碰写回的内容）
+    int ntail = 0;
+    for (int i = 0; !e && i < g_sh_nchunk; i++) {
+        size_t pg = (size_t)getpagesize(), done = g_sh_chunk[i].carved ? (((size_t)g_sh_chunk[i].carved << (SH_CLS0 + g_sh_chunk[i].cls)) + pg - 1) & ~(pg - 1) : 0;
+        if (done >= SH_CHUNK) continue;
+        uint8_t *t = g_sh_chunk[i].mem + done;
+        if (mmap(t, SH_CHUNK - done, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0) != (void *)t) { LOG("【红】即时存档恢复：命令块 %p 尾部 +%#zx 映射失败 errno %d", (void *)t, SH_CHUNK - done, errno); e = -1; }
+        else ntail++;
+    }
+    if (ntail) LOG("即时存档恢复：命令块补映射未导出的尾部 %d 块", ntail);
+    uint32_t nr = 0, nopen = 0, nidx = 0; e |= hs_r(f, &nr, 4);
+    for (uint32_t k = 0; k < nr && !e; k++) {
+        uint64_t q[11]; if (hs_r(f, q, sizeof q)) { e = -1; break; }
+        srec *r = calloc(1, sizeof *r); if (!r) die("即时存档恢复：录制对象内存不足");
+        r->blk = (sblk *)(uintptr_t)q[0]; r->last = (sblk *)(uintptr_t)q[1]; r->niv = (uint32_t)q[2]; r->open = (uint32_t)q[3]; r->glo = (uintptr_t)q[4];
+        r->bytes = q[5]; r->rbytes = q[6]; r->frame = q[7]; r->begin = (uint8_t *)(uintptr_t)q[8]; r->dev0 = (uintptr_t)q[9]; void *owner = (void *)(uintptr_t)q[10];
+        if (r->niv <= 2) { r->iv = r->ivs; r->civ = 2; } else { r->iv = malloc(sizeof *r->iv * r->niv); r->civ = r->niv; }
+        if (hs_r(f, r->iv, sizeof *r->iv * r->niv)) { e = -1; break; }
+        r->prev = g_sh_all.prev; r->next = &g_sh_all; g_sh_all.prev->next = r; g_sh_all.prev = r; g_sh_nlive++; g_sh_live_bytes += r->bytes;
+        if (r->open) { if (owner) { ((cmd_t *)owner)->rec = r;
+                if (hle_snap_saving()) { pthread_mutex_lock(&g_snap_rec_mu); nvn_hm_put(&g_snap_rec_owner, &r, owner); pthread_mutex_unlock(&g_snap_rec_mu); } }   // 恢复局里再存时要能找到归属
+            nopen++; }   // 录制中：游戏命令缓冲里存的是 A 的宿主指针，改成新对象
+        else if (r->niv) { sh_index(r); nidx++; }
+    }
+    int a = e ? -1 : hs_hm_load(f, &g_shh), b = e ? -1 : hs_hm_load(f, &g_shd), c = e ? -1 : hs_hm_load(f, &g_shl);
+    pthread_mutex_unlock(&g_sh_mu);
+    LOG("%s即时存档恢复：hle 层 贴图池 %d / 采样器池 %d、帧号 %llu、录制 %u 条（录制中 %u、重建索引 %u）、句柄表 %d/%d/%d", e || a < 0 || b < 0 || c < 0 ? "【红】" : "",
+        nt, ns, (unsigned long long)g_frame, nr, nopen, nidx, a, b, c);
+    return e || a < 0 || b < 0 || c < 0 ? -1 : 0;
+}
+// 恢复：CPU 后填贴图按序号找到游戏里的贴图对象重新登记（lookup 由 nvn_snap.inc 给：序号 → 贴图对象地址）
+int hle_snap_ft_restore(const void *(*lookup)(uint64_t ser)) {
+    int n = 0, miss = 0;
+    for (uint64_t i = 0; i < g_snap_nft; i++) { const tex_t *t = lookup(g_snap_ft_ser[i]); if (t && t->serial == g_snap_ft_ser[i]) { ft_add(t); n++; } else miss++; }
+    free(g_snap_ft_ser); g_snap_ft_ser = NULL; g_snap_nft = 0;
+    LOG("%s即时存档恢复：CPU 后填贴图重新登记 %d 个（找不到 %d）", miss ? "【黄】" : "", n, miss); return n;
+}
+
+// 即时存档：游戏内存里放着宿主定义的 NVN 对象（nvn_obj.h，游戏分配的对象内存里直接是这些结构）+ 本文件按整块存的表：布局指纹
+#include "../../../../runtime/src/snapfmt.h"
+void hle_snap_fps(void (*cb)(const char *name, uint64_t fp)) {
+    cb("nvn.tex", SNAP_FP_TYPE(tex_t)); cb("nvn.cmd", SNAP_FP_TYPE(cmd_t)); cb("nvn.sync", SNAP_FP_TYPE(sync_t)); cb("nvn.pool", SNAP_FP_TYPE(pool_t));
+    cb("nvn.prog", SNAP_FP_TYPE(prog_t)); cb("nvn.samp", SNAP_FP_TYPE(samp_t)); cb("nvn.view", SNAP_FP_TYPE(view_t)); cb("nvn.win", SNAP_FP_TYPE(win_t));
+    cb("nvn.queue", SNAP_FP_TYPE(queue_t)); cb("nvn.dev", SNAP_FP_TYPE(dev_t_)); cb("nvn.ev", SNAP_FP_TYPE(ev_t)); cb("nvn.dpool", SNAP_FP_TYPE(dpool_t));
+    cb("hle.dpool_base", SNAP_FP_TYPE(struct dpool_base)); cb("hle.schunk", SNAP_FP_TYPE(schunk)); cb("hle.sblk", SNAP_FP_TYPE(sblk));
 }

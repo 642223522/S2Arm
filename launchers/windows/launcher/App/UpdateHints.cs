@@ -15,15 +15,25 @@ namespace S2Arm.Launcher;
 public sealed partial class EnvironmentWindow
 {
     private Dictionary<string, string[]> updateHints = new(StringComparer.OrdinalIgnoreCase);
-    private LibraryCatalog? updateHintsFor;
+    private string? updateHintsFor;   // 已比过的游戏库号
 
-    /// <summary>游戏库页渲染时：这份游戏列表还没比过就比一次（载入 / 导入 / 推完重读都会换新列表）</summary>
+    /// <summary>游戏库页渲染时：这个游戏库打开后还没比过就比一次（同 Mac 只在启动器打开时读）。之后只在出包 / 手机作业做完时再读
+    /// （AfterArtifactJob），不跟着每次重读游戏库起：出包过程中会重读好几次，每次多起两个作业进程是浪费</summary>
     private void EnsureUpdateHints()
     {
-        if (catalog is null || ReferenceEquals(updateHintsFor, catalog)) return;
-        updateHintsFor = catalog;
+        if (catalog is null || libraryId is null || updateHintsFor == libraryId) return;
+        updateHintsFor = libraryId;
         _ = RefreshUpdateHintsAsync();
         _ = RefreshPhoneOverviewAsync();   // 总控台（PhoneConsole.cs）：只读设备记录，秒回；选中首位卡时再探 USB
+    }
+
+    /// <summary>出包 / 手机作业（出包、装机、删除、装回、更新 S2Arm）做完：game.json 的产物记录和设备记录才会变，
+    /// 建议更新和总控台再读一次（开关关着不读）</summary>
+    private void AfterArtifactJob()
+    {
+        if (phoneOverview is null) return;
+        _ = RefreshUpdateHintsAsync();
+        _ = RefreshPhoneOverviewAsync();
     }
 
     private async Task RefreshUpdateHintsAsync()
