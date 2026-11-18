@@ -23,6 +23,13 @@ void S2APlayPublishSplit(BOOL split);
 int s2a_ios_split_active(void);
 CGRect s2a_ios_game_area(void);
 int s2a_ios_game_top(void);
+// 倒着拿（jhz 11-17 拍板：其余方向跟随系统，系统不给倒置竖屏时 App 自己补这一种）。纯函数，Mac 单测 t_play_layout：
+//   dev = UIDeviceOrientation（1 竖、2 倒竖、3 横左、4 横右；其余平放 / 未知）；ui = UIInterfaceOrientation（1 竖、2 倒竖、3 横右、4 横左）；
+//   k = 这块屏「界面角度 − 设备角度」（0 / 90 / 180 / 270；外屏和普通手机 0，iPhone Duo 内屏面板与机身差 90° 的倍数）
+// 学差值：界面是横屏时（横屏系统一定照转）才学，返回 k；其余 −1（竖屏可能是系统拒了倒置、停在原来的正竖屏，学了会错 180°）
+int S2APlayLearnK(int dev, int ui);
+// 该怎么做：−1 判不了（平放 / 未知，保持原样）；0 正常（跟随系统）；1 整窗转 180°（该倒置竖屏、系统停在正竖屏）；2 先申请正竖屏（该倒置竖屏、系统停在横屏），转好再进来
+int S2APlayHoldAction(int dev, int ui, int k);
 
 #if TARGET_OS_IPHONE
 #import <UIKit/UIKit.h>
@@ -46,6 +53,11 @@ UIInterfaceOrientationMask s2a_ios_play_orientations(void);
 #endif
 int s2a_ios_play_resizable(void);   // 游戏窗口可自由缩放（Duo 内屏 / iPad）：方向交给系统，设置里的横 / 竖不起作用
 CGRect S2APlayDivision(UIView *view);
+#if !TARGET_OS_TV
+// 挂上 / 刷新这个窗口的倒握跟随（S2APlayHoldAction）：倒着拿而系统不给倒置竖屏时整窗转 180°（游戏画面、触控、弹出的设置页一起转），
+//   根视图控制器的安全区上下 / 左右对调；换了根视图控制器再调一次。仅主线程，重复调用只刷新
+void S2APlayFollowHold(UIWindow *window);
+#endif
 // 游戏壳和无商业资源的输入工作台共用铰链、方向和区域生命周期。
 @interface S2APlayViewController : UIViewController
 @end

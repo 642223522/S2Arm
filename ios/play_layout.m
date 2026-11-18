@@ -78,6 +78,20 @@ CGRect S2APlayControlsRect(S2APlayLayout l, CGRect b) {
     return CGRectIsNull(r) ? CGRectZero : r;
 }
 
+static int dev_angle(int d) { return d==1 ? 0 : d==3 ? 90 : d==2 ? 180 : d==4 ? 270 : -1; }
+static int ui_angle(int u) { return u==1 ? 0 : u==3 ? 90 : u==2 ? 180 : u==4 ? 270 : -1; }
+int S2APlayLearnK(int dev, int ui) {
+    int da=dev_angle(dev), ua=ui_angle(ui);
+    if (da<0 || (ua!=90 && ua!=270)) return -1;
+    return (ua-da+360)%360;
+}
+int S2APlayHoldAction(int dev, int ui, int k) {
+    int da=dev_angle(dev), ua=ui_angle(ui);
+    if (da<0 || ua<0 || k<0) return -1;
+    if ((da+k)%360!=180) return 0;   // 该是的界面不是倒置竖屏：系统自己会转（或已转），跟随
+    return ua==0 ? 1 : ua==180 ? 0 : 2;
+}
+
 #if TARGET_OS_IPHONE
 #include <unistd.h>
 static S2APlayLayout g_layout;
@@ -91,15 +105,21 @@ int s2a_ios_game_top(void) { return g_layout.top; }
 //   游戏页每次排版按自己窗口的尺寸类记（主线程写，各处读）
 static _Atomic int g_resizable;
 int s2a_ios_play_resizable(void) { return atomic_load(&g_resizable); }
-// 「自动」方向（没有分屏时）跟随系统（jhz 11-17 真机 Duo：自动模式竖着拿还是横屏、App 自己判握持转画面反而颠倒）：四个方向都给，
+// 「自动」方向跟随系统（jhz 11-17 真机 Duo：自动模式竖着拿还是横屏、App 自己判握持转画面反而颠倒）：四个方向都给，
 //   系统转到哪就按哪排版，不申请、不自己判握持；选了「横屏 / 竖屏」才锁定。分屏照旧竖屏（S2APlayPortrait）。可自由缩放的窗口同样跟随系统
 static BOOL play_follow_system(void) {
 #if TARGET_OS_TV
     return NO;   // 电视固定横屏
 #else
     NSUserDefaults *d=NSUserDefaults.standardUserDefaults;
-    return atomic_load(&g_resizable) || (S2APlayReadOrientation(d)==S2APlayOrientationAuto && !S2APlaySplitEnabled(S2APlayReadSplit(d),g_half));
+    return atomic_load(&g_resizable) || S2APlayReadOrientation(d)==S2APlayOrientationAuto;   // 分屏也跟随系统：竖着才分上下屏（S2APlayLayoutMake），横过来按横屏排
 #endif
+}
+// 跟随系统时上下分屏只在竖着：系统转成横屏就按横屏排（jhz 11-17 真机：分屏打开就不随系统转——原先分屏写死只给竖屏）。
+//   锁定方向的照旧（玩家选「横屏」再开分屏 = 横屏上下分，t_play_layout）
+static S2APlaySplitMode play_split_for(CGRect b) {
+    S2APlaySplitMode m=S2APlayReadSplit(NSUserDefaults.standardUserDefaults);
+    return play_follow_system() && b.size.width>b.size.height ? S2APlaySplitOff : m;
 }
 #if !TARGET_OS_TV
 UIInterfaceOrientationMask s2a_ios_play_orientations(void) {
@@ -138,7 +158,7 @@ static double screen_ratio(void) {
     BOOL portrait=play_follow_system() ? s.height>s.width : play_wants_portrait();   // 跟随系统（自动 / 自由窗口）按实际方向
 #endif
     CGRect b=CGRectMake(0,0,portrait?fmin(s.width,s.height):fmax(s.width,s.height),portrait?fmax(s.width,s.height):fmin(s.width,s.height));
-    CGRect a=S2APlayLayoutMake(b,b,S2APlayReadSplit(NSUserDefaults.standardUserDefaults),g_half,CGRectNull).game;
+    CGRect a=S2APlayLayoutMake(b,b,play_split_for(b),g_half,CGRectNull).game;
     return a.size.width>0 && a.size.height>0 ? a.size.width/a.size.height : 16.0/9;
 }
 int s2a_ios_screen_known(void) { return atomic_load(&g_view_ratio)>0; }
@@ -166,6 +186,52 @@ CGRect S2APlayDivision(UIView *view) {
 #endif
     return CGRectNull;
 }
+#if !TARGET_OS_TV
+#import <objc/runtime.h>
+@interface S2AHoldFollower : NSObject
+@property(nonatomic,weak) UIWindow *window;
+@property(nonatomic,weak) UIWindowScene *scene;   // 观察它的 effectiveGeometry：系统转完界面后再判（设备方向通知先到）
+@property(nonatomic) BOOL flipped;
+@end
+@implementation S2AHoldFollower
+- (void)observeValueForKeyPath:(NSString *)path ofObject:(id)obj change:(NSDictionary *)change context:(void *)ctx { dispatch_async(dispatch_get_main_queue(),^{ [self update]; }); }
+- (void)update {
+    UIWindow *w=self.window; UIWindowScene *ws=w.windowScene; if (!ws) return;
+    if (ws!=self.scene) { [self.scene removeObserver:self forKeyPath:@"effectiveGeometry"]; self.scene=ws; [ws addObserver:self forKeyPath:@"effectiveGeometry" options:0 context:NULL]; }
+    int dev=(int)UIDevice.currentDevice.orientation, ui=(int)ws.effectiveGeometry.interfaceOrientation;
+    // 差值按屏记（Duo 内外屏不同），学到就存下：外屏 / 普通手机（主屏）没学到前按 0；别的屏没学到前不动（先等一次横屏）
+    UIScreen *sc=ws.screen; NSString *key=[NSString stringWithFormat:@"S2AHoldK.%.0fx%.0f",sc.nativeBounds.size.width,sc.nativeBounds.size.height];
+    NSUserDefaults *d=NSUserDefaults.standardUserDefaults; id kv=[d objectForKey:key];
+    int k=kv ? [kv intValue] : (sc==UIScreen.mainScreen ? 0 : -1), lk=S2APlayLearnK(dev,ui);
+    if (lk>=0 && lk!=k) { [d setInteger:lk forKey:key]; fprintf(stderr,"[S2A 布局] 这块屏（%s）界面与设备方向差 %d°（横屏时学到）\n",key.UTF8String,lk); k=lk; }
+    int act=S2APlayHoldAction(dev,ui,k);
+    UIViewController *root=w.rootViewController;
+    if (act==2 && (root.supportedInterfaceOrientations&UIInterfaceOrientationMaskPortrait))
+        [ws requestGeometryUpdateWithPreferences:[[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:UIInterfaceOrientationMaskPortrait] errorHandler:nil];
+    BOOL f=act==1 ? YES : act<0 ? self.flipped : NO;
+    // 安全区镜像：系统按界面方向给的安全区在转了 180° 的窗口里正好颠倒，用附加安全区对调；每次按系统那份重算，正着拿清零
+    if (root.isViewLoaded) { UIEdgeInsets a=root.additionalSafeAreaInsets, c=root.view.safeAreaInsets, sys={c.top-a.top,c.left-a.left,c.bottom-a.bottom,c.right-a.right};
+        UIEdgeInsets want=f ? (UIEdgeInsets){sys.bottom-sys.top,sys.right-sys.left,sys.top-sys.bottom,sys.left-sys.right} : UIEdgeInsetsZero;
+        if (!UIEdgeInsetsEqualToEdgeInsets(a,want)) root.additionalSafeAreaInsets=want; }
+    if (f==self.flipped) return;
+    self.flipped=f; w.transform=f ? CGAffineTransformMakeRotation(M_PI) : CGAffineTransformIdentity;
+    fprintf(stderr,"[S2A 布局] 倒着拿：系统不给倒置竖屏，%s（设备方向 %d、界面方向 %d、差 %d°）\n",f?"整窗转 180°":"复原",dev,ui,k);
+}
+- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; [_scene removeObserver:self forKeyPath:@"effectiveGeometry"]; }
+@end
+void S2APlayFollowHold(UIWindow *w) {
+    if (!w) return;
+    static char key; S2AHoldFollower *f=objc_getAssociatedObject(w,&key);
+    if (!f) {
+        f=[S2AHoldFollower new]; f.window=w; objc_setAssociatedObject(w,&key,f,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [UIDevice.currentDevice beginGeneratingDeviceOrientationNotifications];
+        NSNotificationCenter *nc=NSNotificationCenter.defaultCenter;
+        [nc addObserver:f selector:@selector(update) name:UIDeviceOrientationDidChangeNotification object:nil];
+        [nc addObserver:f selector:@selector(update) name:UIApplicationDidBecomeActiveNotification object:nil];
+    }
+    dispatch_async(dispatch_get_main_queue(),^{ [f update]; });
+}
+#endif
 @interface S2APlaySurface : UIView
 @property(nonatomic) CGRect division;
 @property(nonatomic) BOOL partiallyOpen;
@@ -229,7 +295,11 @@ S2A_VERTICAL_BAR_OFF
 #if !TARGET_OS_TV
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations { return self.resizable ? UIInterfaceOrientationMaskAll : s2a_ios_play_orientations(); }   // 自由窗口：全部方向、不申请
 #endif
-- (void)viewDidAppear:(BOOL)animated { [super viewDidAppear:animated]; [self updatePlayPreferences]; }
+- (void)viewDidAppear:(BOOL)animated { [super viewDidAppear:animated]; [self updatePlayPreferences];
+#if !TARGET_OS_TV
+    S2APlayFollowHold(self.view.window);   // 倒着拿：系统不给倒置竖屏时整窗转 180°
+#endif
+}
 - (void)updatePlayPreferences {
     if (!NSThread.isMainThread) { dispatch_async(dispatch_get_main_queue(),^{ [self updatePlayPreferences]; }); return; }
     g_half=((S2APlaySurface *)self.view).partiallyOpen;
@@ -273,7 +343,7 @@ S2A_VERTICAL_BAR_OFF
     [super viewDidLayoutSubviews];
     if (_transitioning || UIApplication.sharedApplication.applicationState==UIApplicationStateBackground) return;
     S2APlaySurface *s=(S2APlaySurface *)self.view;
-    S2APlayLayout l=S2APlayLayoutMake(s.bounds,s.safeAreaLayoutGuide.layoutFrame,S2APlayReadSplit(NSUserDefaults.standardUserDefaults),s.partiallyOpen,s.division);
+    S2APlayLayout l=S2APlayLayoutMake(s.bounds,s.safeAreaLayoutGuide.layoutFrame,play_split_for(s.bounds),s.partiallyOpen,s.division);
     BOOL changed=!CGRectEqualToRect(l.game,g_layout.game) || !CGRectEqualToRect(l.controls,g_layout.controls) || !CGRectEqualToRect(l.division,g_layout.division) || l.split!=g_layout.split;
     g_layout=l;
     S2APlayPublishSplit(l.split);

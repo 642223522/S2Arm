@@ -1454,6 +1454,9 @@ static void widget_open(NSURL *url, void *ctx) {
     g_snap_play_ctx = (__bridge void *)self;   // 快照：游戏库「回到上次存下的这一刻」走同一条起局路
     g_lib_window = self.window;
     self.window.rootViewController = (__bridge_transfer UIViewController *)s2a_shell_library_vc(cat.fileSystemRepresentation);
+#if !TARGET_OS_TV
+    S2APlayFollowHold(self.window);   // 库页也补倒着拿（同游戏页）
+#endif
     LOG("游戏库：已挂库界面（清单 %s）%s", cat.UTF8String, s2a_process_prewarmed() ? "，预热进程只显示库、不起宿主" : "");
     img_scan_bg();
     // 测试开关（真机自动化点不到库界面的「开始」，同 diag.m S2A_OPEN_SETTINGS）：S2A_LIBRARY_AUTOPLAY=<程序号> 库界面挂上 2 秒后替玩家点这款的开始，
