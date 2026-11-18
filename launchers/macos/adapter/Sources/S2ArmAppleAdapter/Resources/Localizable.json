@@ -10274,5 +10274,29 @@
  {
   "source": "等这款的 S 级优化升级做完（游戏上有进度），再点开始游戏；别的游戏照常能玩。",
   "en": "Wait for this game's S-Grade optimization upgrade to finish (progress shows on the game), then click Start. Other games can be played as usual."
+ },
+ {
+  "source": "登录 Apple ID",
+  "en": "Sign in with Apple ID"
+ },
+ {
+  "source": "等你填验证码",
+  "en": "Waiting for your verification code"
+ },
+ {
+  "source": "填好 Apple ID 邮箱和密码再登录。",
+  "en": "Enter your Apple ID email and password, then sign in."
+ },
+ {
+  "source": "Apple ID 登录没成功：{0}",
+  "en": "Apple ID sign-in failed: {0}"
+ },
+ {
+  "source": "还没用 Apple ID 登录：在 S2Arm 的「用 Apple ID 签名」里填邮箱和密码登录（你的苹果设备上会弹出验证码），再点一次「装到 iPhone」。密码只用于这次向 Apple 登录，S2Arm 不保存。",
+  "en": "No Apple ID signed in: in S2Arm, open \"Sign with Apple ID\", enter your email and password (a verification code will appear on your Apple devices), then click \"Install to iPhone\" again. The password is only used for this sign-in with Apple; S2Arm doesn't store it."
+ },
+ {
+  "source": "还没用 Apple ID 登录：在 S2Arm 里用你的 Apple ID 登录一次（邮箱、密码、手机上的验证码），再装到 iPhone。",
+  "en": "Not signed in with an Apple ID yet: sign in with your Apple ID in S2Arm once (email, password and the verification code on your phone), then install on iPhone."
  }
 ]

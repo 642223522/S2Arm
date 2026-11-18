@@ -227,7 +227,7 @@ AI_NEXT = {
     'bundle_id_switched': ('auto', '（警告）原包名被别的签名占用，已自动换新包名装好；告诉玩家手机上可能有两个 S2Arm，旧的不需要可删（先导出存档）'),
     'signing_server_unreachable': ('human', '这台电脑连不上 Impactor 签名要用的服务器 mac-ani.jkcoxson.com（DNS / 连接失败，已自动重试一次）：请玩家检查网络、换 DNS 或开关代理（AI 不改玩家网络设置），然后 s2armctl install <游戏号>'),
     'apple_session_expired': ('human', 'Apple ID 登录过期（Apple 1100）：请玩家在 Impactor「设置」里移除账号、再添加账号重新登录（要输密码，AI 不代做），然后 s2armctl install <游戏号>'),
-    'apple_not_signed_in': ('human', 'Impactor 里还没登录或没选中 Apple ID：请玩家在 Impactor「设置」里添加账号登录、存了几个的选中要用的那个（要输密码，AI 不代做），然后 s2armctl install <游戏号>'),
+    'apple_not_signed_in': ('human', 'S2Arm 里还没用 Apple ID 登录：请玩家在 S2Arm「用 Apple ID 签名」里填邮箱、密码和手机上的验证码登录（要输密码，AI 不代做），然后 s2armctl install <游戏号>'),
     'apple_server_unreachable': ('human', '这台电脑连不上苹果服务器（*.apple.com，DNS / 连接失败）：不是 Apple ID 的问题；请玩家检查网络、换 DNS 或开关代理（AI 不改玩家网络设置），然后 s2armctl install <游戏号>'),
     'app_id_taken': ('human', '包名在苹果那边已被占用（Apple 错误 9401）：请玩家确认 Impactor / Xcode 里登录的是当初装 S2Arm 的 Apple ID（要输密码，AI 不代做），或付费账号到 developer.apple.com 删掉 io.s2arm.games 开头的旧包名，然后 s2armctl install <游戏号>'),
     'signing_failed': ('ai', 's2armctl logs <任务号> 看签名哪一步报错；偶发的 s2armctl retry <任务号> 一次，再不行请玩家改用 AltStore（装机步骤页第二部分）'),
