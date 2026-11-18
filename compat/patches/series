@@ -621,3 +621,4 @@
 20261117-2020-shared-font-read-once.patch
 20261117-1813-ampere-image-atomic-bank.patch
 20261117-1742-bindless-any-source.patch
+20261118-0433-bindless-pool-images.patch

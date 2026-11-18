@@ -80,12 +80,10 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             block.Operations.AddBefore(node, new Operation(Instruction.BitwiseAnd, textureHandle, bindlessHandle, OperandHelper.Const(0xfffff)));
             block.Operations.AddBefore(node, new Operation(Instruction.ShiftRightU32, samplerHandle, bindlessHandle, OperandHelper.Const(20)));
 
-            // S2A（直连）：采样贴图（非贴图缓冲）按整个池长、宿主按编号建池表；贴图缓冲与图像按槽绑，数组长 QueryBindlessSlotArrayLength（0 = 也按池长，上游原样）。
-            //   上游参考实现（MIT）BindlessElimination pooled / NvnSlotArrayLength 同此分法
-            int slotArrayLength = gpuAccessor.QueryBindlessSlotArrayLength();
-            bool pooled = slotArrayLength <= 0 || (!texOp.Inst.IsImage() && (texOp.Type & SamplerType.Mask) != SamplerType.TextureBuffer);
-
-            int texturePoolLength = pooled ? Math.Max(BindlessToArray.MinimumArrayLength, gpuAccessor.QueryTextureArrayLengthFromPool()) : slotArrayLength;
+            // S2A（直连）：采样贴图、贴图缓冲、图像一律按整个池长，宿主按编号建池表（iOS nvn_mtl.m pool_gpu 按元素类型分表：采样 / 贴图缓冲 / 可写图像）。
+            //   原先贴图缓冲与图像按 32 槽绑（QueryBindlessSlotArrayLength，上游参考实现 pooled / NvnSlotArrayLength 的分法），宿主只能把 c2 里的句柄改成槽号；
+            //   句柄从存储缓冲 / 游戏 uniform 缓冲等别处读来时改不到，写进 / 读出的是槽里碰巧放着的那张（一款双人合作游戏 119 支计算着色器贴图缓冲写）
+            int texturePoolLength = Math.Max(BindlessToArray.MinimumArrayLength, gpuAccessor.QueryTextureArrayLengthFromPool());
 
             block.Operations.AddBefore(node, new Operation(Instruction.MinimumU32, textureIndex, textureHandle, OperandHelper.Const(texturePoolLength - 1)));
 
@@ -107,7 +105,7 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             {
                 Operand samplerIndex = OperandHelper.Local();
 
-                int samplerPoolLength = pooled ? Math.Max(BindlessToArray.MinimumArrayLength, gpuAccessor.QuerySamplerArrayLengthFromPool()) : slotArrayLength;
+                int samplerPoolLength = Math.Max(BindlessToArray.MinimumArrayLength, gpuAccessor.QuerySamplerArrayLengthFromPool());
 
                 block.Operations.AddBefore(node, new Operation(Instruction.MinimumU32, samplerIndex, samplerHandle, OperandHelper.Const(samplerPoolLength - 1)));
 

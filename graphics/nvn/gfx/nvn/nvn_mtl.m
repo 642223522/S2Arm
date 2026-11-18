@@ -10590,8 +10590,9 @@ static uint64_t dummy_buf_gpu(void) { static uint64_t gpu; if (!gpu) gpu = dummy
 #define POOL_TABS 16
 typedef struct {
     __strong id<MTLBuffer> buf; uint64_t gpu, dummy; uint32_t cap, n;   // n IDs from base (entry n the dummy); cap: entries the buffer has room for
-    int used, samp, dtt, dpf, base;
+    int used, samp, dtt, dpf, rw, base;   // rw: an image table (the shader writes through it, access::write / read_write): entries need the shader-write usage, the dummy is writable
     void **obj;   // per entry: the object it names, retained by the table; NULL: the dummy
+    uint64_t wsub;   // rw: the submission whose GPU writes its textures were last marked for (pool_mark_writes)
 } pool_tab;
 static pool_tab g_ptab[POOL_TABS]; static unsigned g_ptab_next; static _Atomic int g_ptab_any;
 static uint64_t g_psnap_gen = 1;   // bumped when a table's address changes (made, grown, dropped): an argument block holding a pool address is not reused past it (encode_args_ ab_pgen)
@@ -10739,12 +10740,13 @@ static void pool_ent_put(int ti, uint32_t i, void *o, uint64_t rid) {
 // ----- What an ID names
 static int pool_covers(const pool_tab *t, int id_) { return t->used && id_ >= t->base && (uint32_t)(id_ - t->base) < t->n; }
 // The texture ID id_ names, made if the budget allows (limit: the largest texture made up front; a texture a shader read is made up to POOL_REQ_BYTES a frame). NULL: the dummy;
-//   *left: registered and left out by the budget (pool_left_scan makes it later)
-static void *pool_tex_obj(int id_, uint64_t limit, int *left, uint64_t *rid) {
+//   *left: registered and left out by the budget (pool_left_scan makes it later). write: for an image table, which writes it: a render target no pass has written yet is made too
+//   (as an image slot makes it), else a target only shaders write through a pool stays the dummy for good
+static void *pool_tex_obj(int id_, uint64_t limit, int *left, uint64_t *rid, int write) {
     *left = 0;
     if (id_ <= 0 || id_ >= g_ntreg || !g_treg[id_].ok) return NULL;
     treg_t *r = &g_treg[id_];
-    if (!r->view && (!tex_storage_live(r) || pool_unwritten_target(&r->t))) return NULL;   // a target: the dummy until a pass writes it (a shader's read keeps it waiting, pool_seen_scan)
+    if (!r->view && (!tex_storage_live(r) || (!write && pool_unwritten_target(&r->t)))) return NULL;   // a target: the dummy until a pass writes it (a shader's read keeps it waiting, pool_seen_scan)
     int made = r->view || tex_get(r->t.serial);
     if (!made && pool_tex_size(&r->t) > limit && !(pool_seen(id_) && g_walk_req < POOL_REQ_BYTES)) { *left = 1; return NULL; }
     void *tv = NULL; uint64_t tr = tex_fast_rid(id_, &tv);
@@ -10758,14 +10760,45 @@ static void *pool_samp_obj(int id_, uint64_t *rid) {
     void *s = samp_fast(id_); if (!s) return NULL;
     *rid = ((__bridge id<MTLSamplerState>)s).gpuResourceID._impl; return s;
 }
+// What entry id_ of texture table t names, given the texture o the ID holds (pool_tex_obj; NULL: the dummy). A table of another texture type: the dummy (as Ryujinx leaves a target of other
+//   dimensions unbound). A texture buffer below Metal's linear-texture alignment: the dummy, counted, first case red: the slot path reads it through an aligned copy made before each draw
+//   (tba_copy) or a lead the shader adds (tbl_view), and neither fits a table that outlives the draw; the in-place view would read from the offset rounded down. An image table
+//   (rw): a texture without the shader-write usage is upgraded before the next pass (img_wr_note; the upgrade bumps g_ser_gen, and pool_seen_scan looks the IDs shaders touched up again),
+//   the dummy until then, as for an image slot; another numeric class than the shader declares, the class view (img_fit). Caller holds g_rmu
+static uint64_t g_pool_tb_unaligned;
+static void *pool_fit(const pool_tab *t, int id_, void *o, uint64_t *rid) {
+    if (!o) return NULL;
+    __unsafe_unretained id<MTLTexture> x = (__bridge id<MTLTexture>)o;
+    if ((int)x.textureType != t->dtt) return NULL;
+    if (x.textureType == MTLTextureTypeTextureBuffer && x.bufferOffset % linear_align((uint32_t)x.pixelFormat)) {
+        if (!g_pool_tb_unaligned++) MLOG("【红】 texture buffer at an unaligned pool offset (%lu, alignment %lu, texture ID %d) named in a pool table: the dummy (first case)",
+                                         (unsigned long)x.bufferOffset, (unsigned long)linear_align((uint32_t)x.pixelFormat), id_);
+        return NULL; }
+    if (!t->rw) return o;
+    if (!(x.usage & MTLTextureUsageShaderWrite)) {
+        if (!mtl_fmt_depth(x.pixelFormat) && id_ > 0 && id_ < g_ntreg && g_treg[id_].ok && !fmt_compressed(g_treg[id_].t.d.format)) img_wr_note(id_);
+        return NULL; }
+    if (t->dpf != NVN_DPF_FLOAT && mtl_pf_dpf(x.pixelFormat) != t->dpf) { uint64_t r2 = 0; id<MTLTexture> v = img_fit(id_, x, t->dpf, &r2); if (!v) return NULL; *rid = r2; return (__bridge void *)v; }
+    return o;
+}
+static void wd_flat_written(uint64_t ser);   // widen_glue.inc
+// An image table bound in this submission: every texture it names may be written (which IDs the shader writes only the GPU knows), so each is noted as an image slot's texture is
+//   (its pool GPU-written for tex_cpu_content, its guest bytes stale for a partial CPU update, the widen measurement void), once a submission and table. Caller holds g_rmu
+static void pool_mark_writes(pool_tab *t) {
+    if (!t->rw || t->wsub == g_sub_serial + 1) return;
+    t->wsub = g_sub_serial + 1;
+    for (uint32_t i = 0; i < t->n; i++) { int tid = t->base + (int)i; if (!t->obj[i] || tid <= 0 || tid >= g_ntreg || !g_treg[tid].ok) continue;
+        nvn_be_pool_gpu_written(g_treg[tid].t.pool); gpw_mark_view(&g_treg[tid].t, &g_treg[tid].v, g_treg[tid].has_v, 1); wd_flat_written(g_treg[tid].t.serial); }
+}
 // Looks texture ID id_ up again for every table it lies in. Returns 1 if it was left out by the budget
 static int pool_tex_update(int id_, uint64_t limit) {
     int any = 0, want = 0; uint8_t tt1 = id_ > 0 && id_ < g_ntreg && g_treg[id_].ok ? g_treg[id_].tt1 : 0;
     for (int k = 0; k < POOL_TABS; k++) { const pool_tab *t = &g_ptab[k]; if (!t->samp && pool_covers(t, id_)) { any = 1; want |= !tt1 || tt1 - 1 == t->dtt; } }
     if (!any) return 0;
-    int left = 0; uint64_t rid = 0; void *o = want ? pool_tex_obj(id_, limit, &left, &rid) : NULL;   // an ID of a type no table holds: nothing to look up or make
-    int tt = o ? (int)((__bridge id<MTLTexture>)o).textureType : -1;
-    for (int k = 0; k < POOL_TABS; k++) { const pool_tab *t = &g_ptab[k]; if (!t->samp && pool_covers(t, id_)) pool_ent_put(k, (uint32_t)(id_ - t->base), tt == t->dtt ? o : NULL, rid); }
+    int left = 0; uint64_t rid = 0, ridw = 0; void *o = want ? pool_tex_obj(id_, limit, &left, &rid, 0) : NULL, *ow = o; int gotw = o != NULL;   // an ID of a type no table holds: nothing to look up or make
+    for (int k = 0; k < POOL_TABS; k++) { const pool_tab *t = &g_ptab[k]; if (t->samp || !pool_covers(t, id_)) continue;
+        if (t->rw && !gotw) { int lw = 0; ow = want ? pool_tex_obj(id_, limit, &lw, &ridw, 1) : NULL; gotw = 1; }
+        uint64_t r = t->rw ? (ow == o ? rid : ridw) : rid; void *f = pool_fit(t, id_, t->rw ? ow : o, &r); pool_ent_put(k, (uint32_t)(id_ - t->base), f, r); }
     return left;
 }
 static void pool_samp_update(int id_) {
@@ -10848,7 +10881,7 @@ static void pool_tab_drop(int ti) {   // a key pushed out by a sixteenth other: 
     for (uint32_t i = 0; i < t->n; i++) if (t->obj[i]) pool_ent_put(ti, i, NULL, 0);
     defer_obj_release(t->buf); t->buf = nil; free(t->obj); t->obj = NULL; t->used = 0; g_psnap_gen++;
 }
-static int pool_tab_new(int samp, int dtt, int dpf, int base) {   // the one whole walk a key gets. -1: no memory
+static int pool_tab_new(int samp, int dtt, int dpf, int rw, int base) {   // the one whole walk a key gets. -1: no memory
     int ti = -1; for (int k = 0; k < POOL_TABS && ti < 0; k++) if (!g_ptab[k].used) ti = k;
     if (ti < 0) { ti = (int)(g_ptab_next++ % POOL_TABS); pool_tab_drop(ti); }
     uint64_t t0 = mach_absolute_time();
@@ -10860,8 +10893,12 @@ static int pool_tab_new(int samp, int dtt, int dpf, int base) {   // the one who
     res_add(b); res_commit(); g_pool_made++; g_pool_walks++;
     atomic_store(&g_ptab_any, 1);
     pool_tab *t = &g_ptab[ti];
-    *t = (pool_tab){.buf = b, .gpu = b.gpuAddress, .cap = (uint32_t)((len - DMSH_POOL_HEAD) / 8), .n = (uint32_t)n, .used = 1, .samp = samp, .dtt = dtt, .dpf = dpf, .base = base, .obj = obj};
-    t->dummy = samp ? dummy_samp_rid() : (dummy_tex(dtt, dpf) ? g_dummy_tex_rid[dtt & 15][dpf & 3] : 0);
+    *t = (pool_tab){.buf = b, .gpu = b.gpuAddress, .cap = (uint32_t)((len - DMSH_POOL_HEAD) / 8), .n = (uint32_t)n, .used = 1, .samp = samp, .dtt = dtt, .dpf = dpf, .rw = rw, .base = base, .obj = obj};
+    // the dummy: an image table's takes writes (D3D semantics drop a write to nothing: a dedicated texture, so the read dummies stay 0), a texture buffer table's is a buffer texture
+    if (samp) t->dummy = dummy_samp_rid();
+    else if (rw) { id<MTLTexture> di = dummy_img(dtt, dpf, 0); t->dummy = di ? di.gpuResourceID._impl : 0; }
+    else if (dtt == (int)MTLTextureTypeTextureBuffer) t->dummy = dummy_tbuf(dpf) ? g_dummy_tbuf_rid[dpf & 3] : 0;
+    else t->dummy = dummy_tex(dtt, dpf) ? g_dummy_tex_rid[dtt & 15][dpf & 3] : 0;
     uint8_t *c = b.contents; memset(c, 0, DMSH_POOL_HEAD); *(uint32_t *)c = (uint32_t)n; if (!samp) *(uint64_t *)(c + 8) = pool_seen_gpu();
     uint64_t *e = (uint64_t *)(c + DMSH_POOL_HEAD);
     for (uint32_t i = 0; i <= (uint32_t)n; i++) e[i] = t->dummy;
@@ -10870,7 +10907,7 @@ static int pool_tab_new(int samp, int dtt, int dpf, int base) {   // the one who
         int id_ = base + i; uint64_t rid = 0; void *o = NULL; int lft = 0;
         if (samp) o = pool_samp_obj(id_, &rid);
         else if (id_ > 0 && id_ < g_ntreg && g_treg[id_].ok && g_treg[id_].tt1 && g_treg[id_].tt1 - 1 != dtt) {}   // an ID of another texture type, seen before: nothing to look up or charge
-        else { o = pool_tex_obj(id_, limit, &lft, &rid); if (o && (int)((__bridge id<MTLTexture>)o).textureType != dtt) o = NULL; }
+        else { o = pool_tex_obj(id_, limit, &lft, &rid, rw); o = pool_fit(t, id_, o, &rid); }
         if (lft) { left++; pool_dset_add(&g_pleft, id_); }
         if (o) { pool_ent_put(ti, (uint32_t)i, o, rid); real++; }
     }
@@ -10878,11 +10915,11 @@ static int pool_tab_new(int samp, int dtt, int dpf, int base) {   // the one who
     static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb);
     double ms = (double)(mach_absolute_time() - t0) * tb.numer / tb.denom / 1e6; g_pool_walk_ms += ms;
     MLOG("pool for handles traced to no slot: %s pool (texture type %d, class %d) at base %d, %d IDs of which %d hold %s and %d left out by the budget, walked once in %.2f ms (table %d)",
-         samp ? "sampler" : "texture", samp ? -1 : dtt, samp ? -1 : dpf, base, n, real, samp ? "samplers" : "textures of the type", left, ms, ti);
+         samp ? "sampler" : rw ? "image" : "texture", samp ? -1 : dtt, samp ? -1 : dpf, base, n, real, samp ? "samplers" : "textures of the type", left, ms, ti);
     return ti;
 }
 // Everything that changed since the last call, then the table of this key (made on its first ask)
-static uint64_t pool_gpu(int samp, int dtt, int dpf, int base, __unsafe_unretained id<MTLBuffer> *out) {
+static uint64_t pool_gpu(int samp, int dtt, int dpf, int rw, int base, __unsafe_unretained id<MTLBuffer> *out) {
     static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb);
     uint64_t t0 = mach_absolute_time(); g_pool_calls++;
     if (atomic_load_explicit(&g_ptab_any, memory_order_relaxed)) {
@@ -10906,8 +10943,9 @@ static uint64_t pool_gpu(int samp, int dtt, int dpf, int base, __unsafe_unretain
         pool_seen_scan();
         pool_left_scan();
     }
-    int ti = -1; for (int k = 0; k < POOL_TABS && ti < 0; k++) { const pool_tab *t = &g_ptab[k]; if (t->used && t->samp == samp && t->dtt == dtt && t->dpf == dpf && t->base == base) ti = k; }
-    if (ti < 0) ti = pool_tab_new(samp, dtt, dpf, base);
+    int ti = -1; for (int k = 0; k < POOL_TABS && ti < 0; k++) { const pool_tab *t = &g_ptab[k]; if (t->used && t->samp == samp && t->dtt == dtt && t->dpf == dpf && t->rw == rw && t->base == base) ti = k; }
+    if (ti < 0) ti = pool_tab_new(samp, dtt, dpf, rw, base);
+    if (ti >= 0) pool_mark_writes(&g_ptab[ti]);
     g_pool_ms += (double)(mach_absolute_time() - t0) * tb.numer / tb.denom / 1e6;
     if (!(g_pool_calls & 0x3fff)) {   // how the tables stand: whole walks, buffers, entries looked up again by cause, time in all
         unsigned nseen = 0; uint64_t bseen = 0; for (int id_ = 1; id_ < g_ntreg; id_++) if (g_treg[id_].ok && pool_seen(id_)) { nseen++; bseen += pool_tex_size(&g_treg[id_].t); }
@@ -11795,7 +11833,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                 (unsigned long long)real, b->n, b->dtt == (uint8_t)MTLTextureTypeTextureBuffer ? "buffer textures" : "textures"); }
         } else if (b->kind == NVN_RB_TEXP || b->kind == NVN_RB_SAMPP) {   // a pool indexed by the handle's ID (see pool_gpu)
             __unsafe_unretained id<MTLBuffer> pb = nil;
-            slots[aid] = b->kind == NVN_RB_SAMPP ? pool_gpu(1, 0, 0, S.samp_base, &pb) : pool_gpu(0, b->dtt, b->dpf, S.tex_base, &pb);
+            slots[aid] = b->kind == NVN_RB_SAMPP ? pool_gpu(1, 0, 0, 0, S.samp_base, &pb) : pool_gpu(0, b->dtt, b->dpf, b->rw, S.tex_base, &pb);
             USE(pb, MTLResourceUsageRead);
             if (bl) PD("B %llu st%d %s pool base %d", g_stat_pass, nvn_stage, b->kind == NVN_RB_SAMPP ? "sampler" : "texture", b->kind == NVN_RB_SAMPP ? S.samp_base : S.tex_base);
         } else if (b->kind == NVN_RB_TEXA) {   // an array of the driver table's handles that the shader indexes at run time (nvn_refl.h): element k = the texture of the c2 word at off + 8k
