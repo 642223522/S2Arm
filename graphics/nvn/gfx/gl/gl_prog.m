@@ -527,6 +527,10 @@ static void ivwrite(GLint loc, GLsizei count, const GLint *v, int comps) {
 GL(glUniform2iv, void, GLint loc, GLsizei n, const GLint *v) { CTX(); ivwrite(loc, n, v, 2); }
 GL(glUniform3iv, void, GLint loc, GLsizei n, const GLint *v) { CTX(); ivwrite(loc, n, v, 3); }
 GL(glUniform4iv, void, GLint loc, GLsizei n, const GLint *v) { CTX(); ivwrite(loc, n, v, 4); }
+// 标量版本（D-FTA8：游戏调 glUniform2i，原先只有 iv 版本、标量版交空实现，uniform 没写进去）：同 iv 版本写一个元素
+GL(glUniform2i, void, GLint loc, GLint a, GLint b) { CTX(); const GLint v[2] = {a, b}; ivwrite(loc, 1, v, 2); }
+GL(glUniform3i, void, GLint loc, GLint a, GLint b, GLint c) { CTX(); const GLint v[3] = {a, b, c}; ivwrite(loc, 1, v, 3); }
+GL(glUniform4i, void, GLint loc, GLint a, GLint b, GLint c, GLint d) { CTX(); const GLint v[4] = {a, b, c, d}; ivwrite(loc, 1, v, 4); }
 // mat2 / mat3：默认 uniform 块按 std140（glslang -R 的 gl_DefaultUniformBlock），每列占 16 字节（列内 2 / 3 个 float），数组元素步长取反射的 stride；
 //   transpose = 源按行主序给（GL ES 3.0 起允许），换成列主序写
 //   非方阵（GL 2.1 glUniformMatrixCxRfv：C 列 R 行）同样每列 16 字节、列内 R 个 float

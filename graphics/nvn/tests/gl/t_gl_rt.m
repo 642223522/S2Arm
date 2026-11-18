@@ -5,7 +5,8 @@
 //   B 库没有 → 后台翻译：api_es300 两支、texture100 两支编译状态 1，首遇 +4；api_es300 左半红（同 tri 的期望）；texture100 采样 1×1 纯绿贴图画满 → 中心 0 255 0 255；
 //     画完翻好 4 支（编好计数 4）、缓存目录 gl/ 下 4 个 .row + 4 个 .metal
 //   F 结构体数组 uniform（D-FTA8：uniform Light Lights[2]）：api_es300.vert + api_structarr.frag 现编（顶点已缓存，只新翻片元 1 支）、编译 / 链接成；
-//     「Lights[1].color」有位置、「Lights[2].color」没有（−1）；Lights[0] = 红 × 0.5、Lights[1] = 绿 × 0.5 → 左半 (0.5, 0.5, 0, 1) = 128 128 0 255（±1）。
+//     「Lights[1].color」有位置、「Lights[2].color」没有（−1）；Lights[0] = 红 × 0.5、Lights[1] = 绿 × 0.5，再乘 uSel.x / uSel.y（glUniform2i 设 (2, 2) = 1）
+//     → 左半 (0.5, 0.5, 0, 1) = 128 128 0 255（±1）。glUniform2i 没写进去（修前是空实现）时 uSel = (0, 0)，0 / 0 画不出这个颜色。
 //     元素偏移错（第 1 个元素写进第 0 个的位置）会读成 0 128 0 128 一类的值；翻不过（修前「类型 / 数组尚未接入运行时」）则链接失败
 //   C 翻译失败照旧报红：调未声明函数的片元 → 编译状态 0、日志以「翻译失败」开头、链接失败、坏计数 +1、直连异常计数 gl_bad_err +1；同一源码再编一次不重翻（坏计数不变）
 // 第 2 遍（T_GL_RT_PASS=2，同一缓存目录、新进程）：
@@ -30,7 +31,7 @@ static int fails, checks;
     X(glCompileShader, void, GLuint) X(glGetShaderiv, void, GLuint, GLenum, GLint *) X(glGetShaderInfoLog, void, GLuint, GLsizei, GLsizei *, GLchar *) \
     X(glCreateProgram, GLuint, void) X(glAttachShader, void, GLuint, GLuint) X(glLinkProgram, void, GLuint) X(glGetProgramiv, void, GLuint, GLenum, GLint *) \
     X(glUseProgram, void, GLuint) X(glGetAttribLocation, GLint, GLuint, const GLchar *) X(glGetUniformLocation, GLint, GLuint, const GLchar *) \
-    X(glUniform1i, void, GLint, GLint) X(glUniform1f, void, GLint, GLfloat) X(glUniform2f, void, GLint, GLfloat, GLfloat) X(glUniform4f, void, GLint, GLfloat, GLfloat, GLfloat, GLfloat) \
+    X(glUniform1i, void, GLint, GLint) X(glUniform1f, void, GLint, GLfloat) X(glUniform2i, void, GLint, GLint, GLint) X(glUniform2f, void, GLint, GLfloat, GLfloat) X(glUniform4f, void, GLint, GLfloat, GLfloat, GLfloat, GLfloat) \
     X(glClearColor, void, GLfloat, GLfloat, GLfloat, GLfloat) X(glClear, void, GLbitfield) X(glViewport, void, GLint, GLint, GLsizei, GLsizei) \
     X(glDrawArrays, void, GLenum, GLint, GLsizei) X(glFinish, void, void) X(glGetError, GLenum, void) X(glReadPixels, void, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void *) \
     X(glGenFramebuffers, void, GLsizei, GLuint *) X(glBindFramebuffer, void, GLenum, GLuint) X(glGenRenderbuffers, void, GLsizei, GLuint *) X(glBindRenderbuffer, void, GLenum, GLuint) \
@@ -129,7 +130,7 @@ int main(void) { alarm(120); @autoreleasepool {
               vok, fok, lok, (unsigned long long)(st[0] - m0), l1, l2);
         glUseProgram(sa);
         glUniform4f(glGetUniformLocation(sa, "Lights[0].color"), 1, 0, 0, 1); glUniform1f(glGetUniformLocation(sa, "Lights[0].scale"), 0.5f);
-        glUniform4f(l1, 0, 1, 0, 1); glUniform1f(glGetUniformLocation(sa, "Lights[1].scale"), 0.5f);
+        glUniform4f(l1, 0, 1, 0, 1); glUniform1f(glGetUniformLocation(sa, "Lights[1].scale"), 0.5f); glUniform2i(glGetUniformLocation(sa, "uSel"), 2, 2);
         draw_left_red(sa, l, r, ls, rs); CHECK(is(l, 128, 128, 0, 255) && is(r, 0, 0, 255, 255) && !glGetError(), "左 (0.5, 0.5, 0, 1)（%s）、右蓝（%s）", ls, rs);
     } else {
         printf("D 第二次命中缓存\n");
