@@ -558,7 +558,7 @@ def drop_half_consumed(c, gid):
 
 def to_img(c, gid, root, pack_dir):
     """资源包就地转单一 IMG 形态（v0.3.0，pack/img.py convert）：游戏原始资源进 game.img（之后字节不变），着色器库 / 覆盖层照旧按文件。
-    多程序合集这一版照旧旧形态。转失败 = 出包失败（不交一半）"""
+    多程序合集的 programs/ 一并进 IMG（#1545）。转失败 = 出包失败（不交一半）"""
     c.begin("把游戏资源写成单一 IMG（game.img）")
     log = c.logs / "img.log"
     # 边写边删解包出来的 RomFS（#746）：出包收尾本来就清掉整个出包工作目录（prune_unless_follow_up），提前到写 IMG 时，峰值少一整份游戏大小。
