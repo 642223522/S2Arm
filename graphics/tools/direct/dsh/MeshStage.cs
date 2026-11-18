@@ -144,22 +144,28 @@ namespace S2A.Dsh
             return o;
         }
 
-        /// <summary>#770 宿主自跑任务 / 网格阶段时（S2A_MESH_EMU）每个循环最多 4096 圈：着色器读到冷池 / 未映射内存得 0 时，任务 de3befe4936cac83 的循环次数按 (n−1)>>5 下溢成 2^27 圈，
+        /// <summary>#770 宿主自跑任务 / 网格阶段时（S2A_MESH_EMU）每个线程所有循环合计最多 4096 圈：着色器读到冷池 / 未映射内存得 0 时，任务 de3befe4936cac83 的循环次数按 (n−1)>>5 下溢成 2^27 圈，
         ///   走驱动的对象阶段会被 GPU 挂死保护杀掉，放进普通计算核却一直跑、把 WindowServer 饿死（M1 Pro 11-17 两次看门狗）。本游戏这类循环正常最多几圈。
+        ///   计数器每个函数一个（函数开头声明），函数里所有循环共用：任一循环用光预算即退出，外层下一圈也立即退出。原先每个循环各自 4096 圈，嵌套时相乘
+        ///   （两层 1600 万圈 / 线程），游戏申请物理内存失败后读到垃圾计数，单个命令缓冲跑到看门狗时限、M1 Pro 整机重启（#1542）。
         ///   不定义 S2A_MESH_EMU（出包的库）时宏为空，行为不变</summary>
         public const int EMU_LOOP_GUARD = 4096;
-        static string GuardLoops(string msl)
+        internal static string GuardLoops(string msl)
         {
-            var lines = msl.Split('\n').ToList(); int k = 0;
+            var lines = msl.Split('\n').ToList(); int k = 0; var tops = new HashSet<int>();
             for (int n = 0; n + 1 < lines.Count; n++)
             {
                 string t = lines[n].TrimStart();
                 if (!(t.StartsWith("for (") || t.StartsWith("while (") || t == "do") || lines[n + 1].Trim() != "{") continue;
+                int top = n; while (top >= 0 && lines[top] != "{") top--;   // 所在函数体的开括号（SPIRV-Cross 出的函数体从第 0 列的「{」开始）
+                if (top < 0) throw new DshError("mesh stage failed", "循环护栏：循环不在任何函数体里（找不到第 0 列的「{」）");
                 string ind = lines[n][..(lines[n].Length - t.Length)];
-                lines.Insert(n, $"{ind}DM_LG_DECL({k})"); lines.Insert(n + 3, $"{ind}    DM_LG({k})"); n += 3; k++;
+                lines.Insert(n + 2, $"{ind}    DM_LG()"); k++;
+                if (tops.Add(top)) { lines.Insert(top + 1, "    DM_LG_DECL()"); n++; }
+                n += 2;
             }
             if (k == 0) return msl;
-            return $"#ifdef S2A_MESH_EMU\n#define DM_LG_DECL(k) uint dm_lg##k = 0u;\n#define DM_LG(k) if (++dm_lg##k > {EMU_LOOP_GUARD}u) break;\n#else\n#define DM_LG_DECL(k)\n#define DM_LG(k)\n#endif\n" + string.Join("\n", lines);
+            return $"#ifdef S2A_MESH_EMU\n#define DM_LG_DECL() uint dm_lg = 0u;\n#define DM_LG() if (++dm_lg > {EMU_LOOP_GUARD}u) break;\n#else\n#define DM_LG_DECL()\n#define DM_LG()\n#endif\n" + string.Join("\n", lines);
         }
 
         /// <summary>翻好的计算核包成对象函数 main0（ts），或网格函数 main0 与 main0_z（ms：两种深度约定，同顶点着色器 VsDepth：main0 近平面 -w、main0_z 近平面 0）</summary>
@@ -282,12 +288,15 @@ namespace S2A.Dsh
             }
             // 网格阶段也由宿主跑（M1 上驱动跑带任务的网格本身也挂：11-17 宿主跑任务、网格交驱动照挂）：计算核 main0_mc 把本组顶点写进交换缓冲 [11] 起的顶点区（每组 MaxV 个
             //   dm_vertex_t）、索引写进 [12] 起的索引区（每组 MaxP × 3 个，不足的补成退化三角形），宿主用顶点函数 main0_mv 按顶点号读出、普通索引绘制画。逐图元属性没有承载处：不出
+            //   无任务阶段的网格（#1542：M1 上这类原先悄悄落回驱动网格）：没有载荷与排表，第几组就是派发的线程组号，工作组字 = 起始组号 + 组号（同驱动入口 Entry 的无任务分支）
             string EntryMc(string name, bool gl)
             {
-                string fill = $"    uint dm_e = dm_xo[dm_xo[2] + {tg}], dm_t = dm_e >> 10, dm_j = dm_e & 1023u;\n"
-                    + $"    for (uint i = {lid}; i < {pay}u; i += {thr}u) {mem}[{inp}u + i] = dm_xo[dm_xo[1] + dm_t * dm_xo[5] + i];\n"
-                    + bar + $"    if ({lid} == 0u) {{ {mem}[{wg}] = dm_j; {mem}[{inp}] = dm_j; }}\n";
-                return $"kernel void {name}({sigK}, device uint* dm_xo [[buffer({EMU_SLOT})]])\n{{\n{preK}{start}{fill}"
+                string fill = i.Task
+                    ? $"    uint dm_e = dm_xo[dm_xo[2] + {tg}], dm_t = dm_e >> 10, dm_j = dm_e & 1023u;\n"
+                      + $"    for (uint i = {lid}; i < {pay}u; i += {thr}u) {mem}[{inp}u + i] = dm_xo[dm_xo[1] + dm_t * dm_xo[5] + i];\n"
+                      + bar + $"    if ({lid} == 0u) {{ {mem}[{wg}] = dm_j; {mem}[{inp}] = dm_j; }}\n"
+                    : $"    uint dm_j = {tg};\n    if ({lid} == 0u) {mem}[{wg}] = dm_first[0] + {tg};\n";
+                return $"kernel void {name}({sigK}, device uint* dm_xo [[buffer({EMU_SLOT})]]" + (i.Task ? "" : $", {first}") + $")\n{{\n{preK}{start}{fill}"
                     + $"{bar}    {callEmu}\n{bar}"
                     + $"    uint np = min({mem}[{prim >> 2}] >> 24, {i.MaxP}u);\n"
                     + $"    device dm_vertex_t* dm_vb = (device dm_vertex_t*)(dm_xo + dm_xo[11]) + {tg} * {i.MaxV}u;\n"
@@ -304,7 +313,7 @@ namespace S2A.Dsh
             string emuMc = pm.Count == 0
                 ? EntryMc("main0_mc", true) + "\n" + EntryMc("main0_mc_z", false) + "\nvertex dm_vertex_t main0_mv(const device dm_vertex_t* dm_vb [[buffer(" + EMU_SLOT + ")]], uint dm_vid [[vertex_id]]) { return dm_vb[dm_vid]; }\n"
                 : "";
-            string emuMs = i.Task && emuOk && emuMc.Length > 0 ? "\n#ifdef S2A_MESH_EMU\n" + emuMc + "#endif\n" : "";
+            string emuMs = emuOk && emuMc.Length > 0 ? "\n#ifdef S2A_MESH_EMU\n" + emuMc + "#endif\n" : "";
             return src + "\n" + head + Entry("main0", true) + "\n" + Entry("main0_z", false) + emuMs;
         }
     }

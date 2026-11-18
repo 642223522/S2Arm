@@ -61,6 +61,9 @@ class DevicesTest(TvCase):
             tvos.pick(self.c)
         self.assertEqual(e.exception.code, "device_required")
         self.assertIn("「客厅」、「卧室」", str(e.exception))
+        offline = json.loads(json.dumps(other)); offline["connectionProperties"] = {"pairingState": "paired"}
+        with self.listed([TV, offline]):   # 只有一台在线：自动选它
+            self.assertEqual(tvos.pick(self.c)["identifier"], "TV-ID")
         with self.listed([TV, other]):
             self.assertEqual(tvos.pick(self.c, "卧室")["identifier"], "TV2")
             self.assertEqual(tvos.pick(self.c, "TV-UDID")["identifier"], "TV-ID")

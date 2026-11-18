@@ -42,9 +42,9 @@ esac
 #   refresh 走通用、285 款普查按它归类派单；能部分出库的照常出（退 0，末行黄、列没出成的类别与计数）。其余非 0 = 基础设施出错（缺文件、工具 / 编译器起不来、
 #   脚本异常、超时、写盘失败）与判不清的，报红退 1；本机这台出包机做不了的退 75（环境缺件）。gap <日志> <步骤> 只认确定的内容缺口形状，认出就打黄退 3，认不出就返回（调用方照旧报红）：
 #   · 有 Python 异常栈 → 判不清（脚本异常）
-#   · NVN 出库（dmsh_build.py）一支着色器结构不支持就整份停住（在链版本清单里、改了九款整份重出，所以在这里认）：「[RED] <16 位键>: vertex shader of shader type 0 without a VertexB part」
-#     「[RED] <16 位键>: compute code area」「[RED] vertex shader without a main0 main function」
-#   · Vulkan 离线翻译（vk_shaders.py / graphics/tools/spirv_msl.py 的 red）一支翻不了就整份停住，消息带那支的路径：「[RED] /<路径>: <原因>」（没有部分出库的设计，整款走通用）
+#   · NVN 出库（dsh_batch build）是部分出库：单支翻不了 / 编不过记进 _b_build.json 与 direct_fail.log，库照出（Build.cs 收尾「成 N，败 M」）；只有三种本链不支持的 NVN 结构
+#     整份停住（Build.cs 收尾那三行）：「[RED] <16 位键>: vertex shader of shader type 0 without a VertexB part」「[RED] <16 位键>: compute code area」「[RED] vertex shader without a main0 main function」
+#   · Vulkan 离线翻译（vk_shaders.py）v0.3.1 起也逐支剔除、照出其余；仍整份停的只剩带那支路径的红行「[RED] /<路径>: <原因>」（gap 认它，本款走通用）
 gap() {
   local l k why
   grep -aq '^Traceback ' "$1" && return 0

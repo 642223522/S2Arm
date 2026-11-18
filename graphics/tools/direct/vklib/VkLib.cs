@@ -70,7 +70,7 @@ namespace S2A.DshVkLib
         public static (List<string> Bad, string Line) Pack(string keysDir, string libDir, string chain)
         {
             Directory.CreateDirectory(libDir);
-            var names = Directory.EnumerateFiles(keysDir).Select(Path.GetFileName).Where(n => n.EndsWith("_b.json", StringComparison.Ordinal) || n.EndsWith("_b.spv", StringComparison.Ordinal)).ToList();
+            var names = Directory.EnumerateFiles(keysDir).Select(Path.GetFileName).Where(n => !n.StartsWith("._", StringComparison.Ordinal) && (n.EndsWith("_b.json", StringComparison.Ordinal) || n.EndsWith("_b.spv", StringComparison.Ordinal))).ToList();
             return LibPack.PackFiles(names, n => File.ReadAllBytes(Path.Combine(keysDir, n)), libDir, chain, Fp);
         }
 

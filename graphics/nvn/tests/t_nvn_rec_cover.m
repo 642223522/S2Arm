@@ -29,6 +29,8 @@ static const struct { const char *cls, *sel, *why; } g_real_only[] = {
         "只发给 Metal 3 拷贝编码器（读回 / 诊断：cb 来自真队列 [q commandBuffer] / q_cb）"},
     {"DmRecEnc", "copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:options:",
         "只发给 Metal 3 拷贝编码器（帧录放 nvn_frame_rec.inc fr_blit_planes：深度模板面写回，cb 来自真队列 [g_q commandBuffer]，不经编码线程）"},
+    {"DmRecEnc", "copyFromTexture:toTexture:",
+        "只发给 Metal 3 拷贝编码器（即时存档 nvn_snap.inc snap_ghost_put：存档里的影子贴图整张拷回，cb 来自真队列 [g_q commandBuffer]，不经编码线程）"},
     {"DmRecCB", "setLabel:", "只发给编码器（DM_NVN_ENC_LABEL，DmRecEnc 有替身），命令缓冲不设标签"},
 };
 static int real_only(Class cls, SEL s) {

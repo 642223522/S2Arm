@@ -155,7 +155,7 @@ static class GalSpvGen
         var failed = new StringBuilder(); int ok = 0, bad = 0, nprog = 0;
         // S2Arm 抽取的着色器字节在 <抽取目录>/src/*.pk（graphics/tools/shbake/srcpack.py 同一格式）：u16 键长 | 键 | u32 控制段长 | u32 机器码长 | 控制段 | 机器码，同键取第一条
         var src = new Dictionary<string, (byte[] Code, byte[] Ctl)>(StringComparer.Ordinal);
-        foreach (string pk in Directory.EnumerateFiles(Path.Combine(dir, "src"), "*.pk").OrderBy(x => x, StringComparer.Ordinal))
+        foreach (string pk in Directory.EnumerateFiles(Path.Combine(dir, "src"), "*.pk").Where(x => !Path.GetFileName(x).StartsWith("._", StringComparison.Ordinal)).OrderBy(x => x, StringComparer.Ordinal))   // ._：exFAT 上的 AppleDouble 附属文件
         {
             byte[] d = File.ReadAllBytes(pk); int i = 0;
             while (i + 2 <= d.Length)

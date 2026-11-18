@@ -1994,6 +1994,8 @@ def catalog(c):
     input_supported, input_reason = toolchain.input_interface(c)
     # 设备记录里装在某台手机上的款：删除确认框据此多写一句「下次往这台手机装游戏时，手机上的这款会打不开」（容器现组时游戏库里没有它就带不进）
     on_phone = {g.upper() for _, r in layout.devices(c) if isinstance(r, dict) for g in (r.get("games") or {})}
+    import sgrade
+    sq = sgrade.queue_status(c)   # S 级升级队列（排队只在作业层一套）：每款 sgradeState / sgradeProgress，顶层 sgradeBatch
     for game in cat["games"]:
         game["missing"] = requirements(c, game)
         game["requirementDiagnostics"] = [c.describe_failure(error) for error in requirement_errors(c, game)]
@@ -2010,6 +2012,12 @@ def catalog(c):
         game["needsPreparation"] = not game["ready"] or manifest.get("inputIdentity") != input_identity(game)
         game["iphoneReady"] = iphone_ready(c, game["id"])
         game["iphoneExportable"] = game["iphoneReady"] and iphone_img(c, game["id"])   # 「导出自签包」能直接导出（单一 IMG 资源包）；旧格式要先重出
+        import sgrade
+        st = sgrade.upgrade_state(c, game["id"])   # S 级优化单款升级（11-17 起玩家手动点）：在跑 → 界面画进度、禁开始；标记在但作业不在 → 「升级未完成，点 S 级优化继续」
+        game["sgradeUpgrading"], game["sgradeIncomplete"] = st == "upgrading", st == "incomplete"
+        qs = next((x for x in sq["games"] if x["gameId"] == game["id"].upper()), None)   # 升级队列里这款（sgrade.queue_status）：queued / running / done / skipped / incomplete
+        game["sgradeState"] = qs["state"] if qs else ("incomplete" if st == "incomplete" else None)
+        game["sgradeProgress"] = qs["progress"] if qs else None
         game["appleTvReady"] = tvos_ready(c, game["id"])   # Apple TV 版已出好（image/tvos 的容器件 + 资源包，pack/jobs/tvos.py）：出包页给「装到 Apple TV」
         game["downstream"] = downstream.describe(c, game)   # 下游深度方案（pack/downstream/schemes.json）：命中时启动器弹确认页
         game["sgrade"] = sgrade_badge(c, game["id"], image)   # 游戏库封面左上角金色 S（v0.4.0）
@@ -2078,7 +2086,7 @@ def catalog(c):
         phone_updates = []
     # 这台电脑往几台手机装过游戏（设备记录里有款的）：启动器更新弹窗据此把按钮写成「更新启动器和 iPhone App」（11-16 维护者「点一次完成整个流程」）
     phone_devices = sum(1 for _, r in layout.devices(c) if isinstance(r, dict) and r.get("games"))
-    return dict(games=cat["games"], profiles=[], keys=status, jobs=jobs, phoneUpdates=phone_updates, phoneDevices=phone_devices,
+    return dict(games=cat["games"], sgradeBatch=dict((k, sq[k]) for k in ("running", "task", "index", "count")), profiles=[], keys=status, jobs=jobs, phoneUpdates=phone_updates, phoneDevices=phone_devices,
                 engineInfo={"inputConfig": input_supported, "inputConfigReason": input_reason})
 
 
@@ -2442,7 +2450,7 @@ def _keep_stage_logs(c, gid):
     dest = c.logs / (c.task + "-stages")
     count = 0
     for root in roots:
-        for log in sorted(root.glob("*.log")):
+        for log in sorted(p for p in root.glob("*.log") if not layout.os_junk(p.name)):
             if count >= 64 or not log.is_file() or log.stat().st_size > 8 << 20:
                 continue
             dest.mkdir(parents=True, exist_ok=True)

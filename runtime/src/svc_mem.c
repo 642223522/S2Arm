@@ -2479,6 +2479,9 @@ int svc_mem(int num, uint64_t *regs, uint64_t orig) {
 static int snap_w(FILE *f, const void *p, size_t n) { return fwrite(p, 1, n, f) == n ? 0 : -1; }
 #include "snapfmt.h"
 void s2a_snap_mark_old(void);   // snapshot.c：记「旧版快照接不上」（给玩家的提示分类）
+// 单独链本文件的单测（t_svc_mem）没有快照引擎：弱缺省 = 快照关、不记；宿主 / iOS 壳链进 snapshot.c / snapsw.c 的真定义
+__attribute__((weak)) void s2a_snap_mark_old(void) {}
+__attribute__((weak)) int s2a_snap_restoring(void) { return 0; }
 // 内存账（带版本字段格式，snapfmt.h 段 "svcmem" 版本 1）：头记录 = 布局各字段 + 堆 / TLR / 熵；其余每条记录字段 50 标种类：1 映射 2 跨度 3 权限 4 属性 5 物理映射掩码页
 #define SVCMEM_LAYOUT(X) X(1, win_base) X(2, win_size) X(3, alias_base) X(4, alias_size) X(5, heap_base) X(6, heap_size) X(7, stack_base) X(8, stack_size) \
     X(9, tlsio_base) X(10, tlsio_size) X(11, aslr_base) X(12, aslr_size) X(13, sys_resource_size) X(14, as_type)

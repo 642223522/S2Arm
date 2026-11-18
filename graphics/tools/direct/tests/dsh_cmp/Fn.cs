@@ -37,6 +37,7 @@ static class Fn
                     "mesh_memory" => MeshStage.Memory(MeshStage.Info(H(0), H(1))) is var (ml, msz) ? new List<object> { ml.Select(v => (object)(long)v).ToList(), (long)msz } : null,
                     "mesh_to_stage" => MeshStage.ToStage(S(0), MeshStage.Info(H(1), H(2))),
                     "mesh_own_shared" => MeshStage.OwnShared(H(0)),
+                    "mesh_guard_loops" => MeshStage.GuardLoops(S(0)),
                     "raster_facts" => DshCompiler.RasterFacts(S(0), S(1)),
                     "int_inputs" => DshCompiler.IntInputs(S(0)),
                     "vs_init" => DshCompiler.VsInit(S(0)),
