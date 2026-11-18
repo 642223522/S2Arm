@@ -116,6 +116,13 @@ def nacp_info(path):
     return f'{title_id:016X}', name, text_field(nacp, 0x3060, 0x10)
 
 
+def apk_version(version):
+    """游戏显示版本 → APK versionName 里放的文字。aapt 把以「?」开头的值当主题属性引用（?attr/…）、找不到就整包出不来：
+    pack/ns2_dump.py 合成的控制数据把显示版本写成「?」（表示不知道），也可能是空。取不到真值就写 unknown，不让出包停在 aapt。"""
+    text = version.strip()
+    return text if text.strip('?') else 'unknown'
+
+
 def properties_value(text):
     """java.util.Properties escaping for a value (non-ASCII as \\uXXXX, so any encoding reads it)."""
     out = []
@@ -411,7 +418,7 @@ def main():
         shutil.copyfile(os.path.join(pack, p), os.path.join(assets, p))
     if shader_pack is not None:
         write_shader_zip(shader_pack, os.path.join(assets, 'shaders.zip'))
-    props = (f'titleId={title_id}\nname={properties_value(name or title_id)}\nversion={properties_value(version)}\n'
+    props = (f'titleId={title_id}\nname={properties_value(name or title_id)}\nversion={properties_value(apk_version(version))}\n'
              f'versionCode={version_code}\n'
              f'modules={",".join(p[len("modules/"):-len(".fixups.tsv")] for p in modules if p.endswith(".fixups.tsv"))}\n')
     for target in (os.path.join(out, 'game.properties'), os.path.join(assets, 'game.properties')):

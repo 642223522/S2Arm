@@ -209,6 +209,12 @@ def main():
         text = original.read_text(encoding='utf-8')
         changes = [
             ('gs-source-epoch', 'MIX(s2a_source_epoch());\n    MIX(stages);', '(void)s2a_source_epoch();\n    MIX(stages);', 1, 'poisoned GS source cannot hit fast cache'),
+            ('cs-query-proof-omitted', 'e->prog.sampler_unused[0][e->prog.nent[0]] = (uint8_t)s2a_spirv_sampler_unused(',
+             'e->prog.sampler_unused[0][e->prog.nent[0]] = 0 && (uint8_t)s2a_spirv_sampler_unused(', 1,
+             'production compute builder retains sampler use proof: query=1'),
+            ('cs-query-proof-forced', 'e->prog.sampler_unused[0][e->prog.nent[0]] = (uint8_t)s2a_spirv_sampler_unused(',
+             'e->prog.sampler_unused[0][e->prog.nent[0]] = 1 || (uint8_t)s2a_spirv_sampler_unused(', 1,
+             'production compute builder retains sampler use proof: query=0'),
             ('gs-slot', '(const char *const[]){"vs", "fs", "gs"}[st]',
              '(const char *const[]){"vs", "fs", "fs"}[st]', 3, 'GS production request reaches compiler'),
             ('ubo-learn-reported-red', 'g_ubo_learned = 1;\n            else red1("compile_failed", oc.summary);',
@@ -242,8 +248,8 @@ def main():
              'reports the dedicated unimplemented'),
             ('drop-final-summary', 's2a_direct_summary_register(pool_final_summary);',
              '(void)pool_final_summary;', 1, 'normal process-exit callback emits final stats'),
-            ('timeout-is-not-final', 'if (normal && (g_pool_programs || g_pool_request_rejected)) pool_stats("final");',
-             'if (g_pool_programs || g_pool_request_rejected) pool_stats("final");', 1, 'timeout summary is never labelled final'),
+            ('timeout-is-not-final', 'if (normal && (g_pool_programs || g_pool_request_rejected || g_pool_reason_count)) pool_stats("final");',
+             'if (g_pool_programs || g_pool_request_rejected || g_pool_reason_count) pool_stats("final");', 1, 'timeout summary is never labelled final'),
             ('flatten-missing-fact', 'else if (!strcmp(code, "MISSING_FACT")) {',
              'else if (0 && !strcmp(code, "MISSING_FACT")) {', 1, 'compiler reason counted accurately'),
             ('drop-request-count', 'g_pool_request_rejected++;',

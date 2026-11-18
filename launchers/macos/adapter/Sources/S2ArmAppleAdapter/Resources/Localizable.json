@@ -10250,5 +10250,81 @@
  {
   "source": "没能把证书写进 iPhone 上的 S2Arm：确认 iPhone 连着、已解锁，再试一次。",
   "en": "Couldn't write the certificate into S2Arm on your iPhone. Make sure the iPhone is connected and unlocked, then try again."
+ },
+ {
+  "source": "这款游戏正在升级 S 级优化，升级完成后就能开始。",
+  "en": "This game is upgrading its S-Grade optimization. You can start it once the upgrade finishes."
+ },
+ {
+  "source": "这款游戏正在运行或正在升级，等它结束后再点「S 级优化」。",
+  "en": "This game is running or already upgrading. Click “S-Grade optimization” again after it finishes."
+ },
+ {
+  "source": "补上 S 级优化（满屏 / 帧率 / 金手指）",
+  "en": "Adding S-Grade optimization (full screen / frame rate / cheats)"
+ },
+ {
+  "source": "补上片上读取用的着色器（首次要几分钟）",
+  "en": "Adding on-chip read shaders (first time takes a few minutes)"
+ },
+ {
+  "source": "补上 iPhone 版的 S 级优化",
+  "en": "Adding S-Grade optimization to the iPhone version"
+ },
+ {
+  "source": "等这款的 S 级优化升级做完（游戏上有进度），再点开始游戏；别的游戏照常能玩。",
+  "en": "Wait for this game's S-Grade optimization upgrade to finish (progress shows on the game), then click Start. Other games can be played as usual."
+ },
+ {
+  "source": "登录 Apple ID",
+  "en": "Sign in with Apple ID"
+ },
+ {
+  "source": "等你填验证码",
+  "en": "Waiting for your verification code"
+ },
+ {
+  "source": "填好 Apple ID 邮箱和密码再登录。",
+  "en": "Enter your Apple ID email and password, then sign in."
+ },
+ {
+  "source": "Apple ID 登录没成功：{0}",
+  "en": "Apple ID sign-in failed: {0}"
+ },
+ {
+  "source": "还没用 Apple ID 登录：在 S2Arm 的「用 Apple ID 签名」里填邮箱和密码登录（你的苹果设备上会弹出验证码），再点一次「装到 iPhone」。密码只用于这次向 Apple 登录，S2Arm 不保存。",
+  "en": "No Apple ID signed in: in S2Arm, open \"Sign with Apple ID\", enter your email and password (a verification code will appear on your Apple devices), then click \"Install to iPhone\" again. The password is only used for this sign-in with Apple; S2Arm doesn't store it."
+ },
+ {
+  "source": "还没用 Apple ID 登录：在 S2Arm 里用你的 Apple ID 登录一次（邮箱、密码、手机上的验证码），再装到 iPhone。",
+  "en": "Not signed in with an Apple ID yet: sign in with your Apple ID in S2Arm once (email, password and the verification code on your phone), then install on iPhone."
+ },
+ {
+  "source": "在「Windows 安全中心 → 保护历史记录」看是谁拦的。杀毒软件拦的：把 S2Arm 安装文件夹加进信任再重试；「智能应用控制」拦的：它不能单独放行，只能在「应用和浏览器控制 → 智能应用控制」里关掉（关掉后要重装 Windows 才能再打开）；公司电脑请让管理员放行。",
+  "en": "Check Windows Security → Protection history to see what blocked it. If it was antivirus, add the S2Arm install folder to its trusted list and try again. If it was Smart App Control, it can't allow a single app — it can only be turned off under App & browser control → Smart App Control (turning it off needs a Windows reinstall to turn it back on). On a work PC, ask your administrator to allow it."
+ },
+ {
+  "source": "S2Arm 自带的工具",
+  "en": "one of S2Arm's own tools"
+ },
+ {
+  "source": "{0}拦下了 S2Arm 自带的工具「{1}」，没让它运行。",
+  "en": "{0} stopped S2Arm's tool \"{1}\" from running."
+ },
+ {
+  "source": "Windows 的「智能应用控制」",
+  "en": "Windows Smart App Control"
+ },
+ {
+  "source": "这台电脑的组策略（公司 / 学校管理的电脑常见）",
+  "en": "this PC's group policy (common on work or school PCs)"
+ },
+ {
+  "source": "杀毒软件",
+  "en": "Antivirus software"
+ },
+ {
+  "source": "这次签好的 S2Arm 没带「提高内存上限」权限：装上后能玩，但大游戏可能内存不够、开局中止。",
+  "en": "The S2Arm signed this time is missing the \"Increased Memory Limit\" entitlement: it installs and runs, but large games may run out of memory and stop at launch."
  }
 ]

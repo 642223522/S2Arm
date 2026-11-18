@@ -171,16 +171,24 @@ static const char *widen_src(void) {
     return "已验证名单（graphics/widen/tables/verified.tsv）";
 }
 // 名单门（屏幕宽 / 屏幕高共用）：要放（宽 > 1920 或高 > 1080）时看本款在不在宽屏已验证名单。返回 1 = 放，0 = 不放（16:9 原比例加黑边），-1 = 还没装载、不知道
+//   安卓 s2a_screen_w / h 不缓存（旋转靠每次新读），游戏每帧读屏幕尺寸就每帧走到这里：判定照旧每次做，日志只在（结论, 读的是什么, 值）变了时打一行
+//   （#1581 附带：一局 249 秒 4418 行、50 帧局 5.7 万行，且每次重算 widen_src）
+static _Atomic uint64_t g_gate_logged;
+static int gate_log_new(const char *what, int v, int ok) {
+    uint64_t k = (uint64_t)(uint32_t)v | (uint64_t)(ok & 3) << 32 | (uint64_t)((uintptr_t)what & 0x3fffffffu) << 34;
+    return atomic_exchange(&g_gate_logged, k) != k;
+}
 static int widen_gate(const char *what, int v) {
     int ok = widen_verified();
     if (ok < 0) { LOG("【红】宽屏：装载前就读了%s，还不知道本款在不在宽屏已验证名单，这次按 16:9 且不记住", what); return -1; }
-    if (!ok) { LOG("宽屏：不放（来源：%s），整局按 16:9 原比例加黑边（%s %d 不放）", widen_src(), what, v);
+    if (!ok) { if (gate_log_new(what, v, 0)) LOG("宽屏：不放（来源：%s），整局按 16:9 原比例加黑边（%s %d 不放）", widen_src(), what, v);
                if (!getenv("S2A_WIDEN_NARROW")) {
                    if (setenv("S2A_WIDEN_NARROW", "1", 0)) die("宽屏：设置窄屏标记失败");
                    g_default_narrow = 1;
                }
                return 0; }   // 通用上屏层的满屏判据据此不报黑边（graphics/metal/gal_present.m fit_narrow）
-    LOG("宽屏：放开（来源：%s），%s %d", widen_src(), what, v); return 1;
+    if (gate_log_new(what, v, 1)) LOG("宽屏：放开（来源：%s），%s %d", widen_src(), what, v);
+    return 1;
 }
 // 屏幕宽唯一来源（原生层宽屏点与 C# 宽屏包装层同读这里）：S2A_SCREEN_W 优先，iOS 没给时按实际屏幕算；不在宽屏已验证名单时按 1920（见 widen_verified）；只算一次
 //   窗口场景连上前（s2a_ios_screen_known() == 0）只读不缓存，与屏幕高同一做法

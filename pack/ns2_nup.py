@@ -303,7 +303,7 @@ def scan(n):
     if len(ids) != 1:
         raise Error(f'{n.path}：本体与更新程序号不同：' + '、'.join(f'{x:016X}' for x in sorted(ids)))
     app = ids.pop()
-    if app & 0xFFF:
+    if app & 0xFF0:   # 末位是多程序应用里的程序序号：单独导出的程序 n（如 Switch 2 版程序 1，#1567）照收，DLC 按应用号（去掉末位）认
         raise Error(f'{n.path}：程序号 {app:016X} 不是本体标题号')
     vers, dlc = {}, {}
     for k in n.packages:
@@ -314,7 +314,7 @@ def scan(n):
                 raise Error(f'{n.path}：版本 0 的更新')
             vers[k.version] = k
         elif k.kind == ADDON:
-            if not 0 < k.title_id - app - 0x1000 <= 2000:
+            if not 0 < k.title_id - (app & ~0xF) - 0x1000 <= 2000:
                 raise Error(f'{n.path}：{k.title_id:016X} 不是 {app:016X} 的 DLC')
             if k.romfs == NO_DIR:
                 raise Error(f'{n.path}：DLC {k.title_id:016X} 没有 romfs/')

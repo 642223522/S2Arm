@@ -67,6 +67,21 @@ if [[ ! -f "${IMAGES}/Image" ]]; then
     tar -xzf "${archive}" -C "${OHOS_EMU_HOME}/image"
 fi
 [[ -f "${IMAGES}/Image" ]] || die 'Image missing after extraction; check OHOS_IMAGE_URL and rerun setup.sh.'
+: "${EMU_USERDATA_GB:=48}"
+[[ "${EMU_USERDATA_GB}" =~ ^[1-9][0-9]*$ ]] || die 'EMU_USERDATA_GB must be a positive integer.'
+[[ -f "${IMAGES}/userdata.img" ]] || die 'userdata.img missing; check the image extraction.'
+size=$(wc -c < "${IMAGES}/userdata.img")
+if (( size < EMU_USERDATA_GB * 1073741824 )); then
+    pid=''
+    [[ ! -f "${RUN_DIR}/qemu.pid" ]] || pid=$(cat "${RUN_DIR}/qemu.pid")
+    if qemu_running "${pid}"; then
+        log 'Userdata resize waits for the next stop; rerun setup.sh afterwards.'
+    else
+        need truncate 'install truncate (coreutils)'
+        truncate -s "${EMU_USERDATA_GB}G" "${IMAGES}/userdata.img"
+        log "Userdata grown to ${EMU_USERDATA_GB} GiB (sparse); f2fs grows on next boot."
+    fi
+fi
 [[ "${KEEP_DOWNLOADS:-0}" == 1 ]] || rm -f "${archive}"
 log "SDK: ${SDK_DIR}"
 log "Images: ${IMAGES}"

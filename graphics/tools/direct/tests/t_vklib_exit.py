@@ -80,10 +80,11 @@ def main():
                 expected_ok = 0 if mode == "bad" else 1
                 expected_failed = int(mode in ("bad", "mixed"))
                 passed = (ok == expected_ok and failed == expected_failed and skipped == int(mode == "ok-skipped") and
-                          (run.returncode != 0 if expected_failed else run.returncode == 0) and
+                          # 个别键失败不拒绝整库：有成功的键就退 0、照常出库（失败的记在 vk_build.tsv、报 [RED]）；一键都没成才退非零、不出库
+                          (run.returncode != 0 if expected_ok == 0 else run.returncode == 0) and
                           (not expected_failed or "[RED]" in run.stderr) and
-                          (not pack or expected_failed or (lib / "lib.idx").is_file()) and
-                          (not pack or not expected_failed or not (lib / "lib.idx").exists()))
+                          (not pack or expected_ok == 0 or (lib / "lib.idx").is_file()) and
+                          (not pack or expected_ok > 0 or not (lib / "lib.idx").exists()))
                 print(f"{'PASS' if passed else 'FAIL'} {label}: rc={run.returncode} ok={ok} failed={failed} "
                       f"stdout={run.stdout.strip()!r} stderr={run.stderr.strip()!r}")
                 if not passed:
