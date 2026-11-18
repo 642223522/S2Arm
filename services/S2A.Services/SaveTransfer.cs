@@ -280,7 +280,7 @@ public static partial class SaveTransfer
                 using var execution = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
                 string operation = Str(c.Request, "operation");
                 // 游戏在跑：存档目录归游戏写，只许只读的 status / export / inspect（export 前后核指纹）；不跑 Recover（它会换存档），留着没收尾的事务也拒
-                Require(!hostRunning || operation is "status" or "export" or "inspect" && !File.Exists(c.Journal),
+                Require(!hostRunning || operation is "status" or "export" or "inspect" or "previous" && !File.Exists(c.Journal),
                     T("请在启动游戏前管理存档。", "Manage saves before starting the game."), "save_running");
                 bool recovered = !hostRunning && Recover(c);
                 JsonObject result = operation switch
@@ -290,6 +290,8 @@ public static partial class SaveTransfer
                     "export" => Export(c),
                     "inspect" => Inspect(c),
                     "restore" => Restore(c),
+                    "previous" => PreviousSaves(c),
+                    "restorePrevious" => RestorePreviousSaves(c),
                     _ => throw new Failure("save_invalid", T("未知存档操作。", "Unknown save operation."))
                 };
                 return new JsonObject { ["ok"] = true, ["result"] = result }.ToJsonString();
