@@ -372,6 +372,9 @@ def launch(c):
             except Failure as f:
                 if trial:   # 新宿主试玩：TRIAL_OK_SECONDS 内异常退出 = 不认这款，下次退回原来的；玩过这么久才崩不怪宿主
                     host_update.settle(c, game["id"], host, ok=time.monotonic() - started >= host_update.TRIAL_OK_SECONDS)
+                if f.code == "tool_exit":   # 开局就崩：记下（带本局日志），下次开始前若有上一份存档就问玩家要不要回去（save_previous）
+                    import save_previous
+                    save_previous.note_launch(c, game["id"], log, time.monotonic() - started < save_previous.EARLY_SECONDS)
                 if f.code == "tool_exit" and heap_learned_now(env, game["id"], wall):   # 这一局普通堆不够、已记下要的堆（runtime svc_mem.c heap_need）：下一局按它给，不是崩溃、不关金手指
                     raise Failure("这款需要更多内存：已经记下要多少，再点一次开始就能进。", code="game_heap_learned", internal=str(f)) from None
                 if f.code == "tool_exit":   # 游戏进程自己非 0 退出（多为崩溃，139 = 段错误）：给启动页一个说人话的码，原文与退出码随错误摘要带走
@@ -387,6 +390,8 @@ def launch(c):
                 raise
             if trial:
                 host_update.settle(c, game["id"], host, ok=True)
+            import save_previous
+            save_previous.note_launch(c, game["id"], log, False)   # 好好收局：清掉上次「开局就崩」的记号
             import cheats   # 好好收局：记下这时开着的，下次崩了只关比这多开的（cheats.narrow）
             cheats.note_good(c, game)
             back = marker.exists()

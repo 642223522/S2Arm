@@ -10274,5 +10274,25 @@
  {
   "source": "等这款的 S 级优化升级做完（游戏上有进度），再点开始游戏；别的游戏照常能玩。",
   "en": "Wait for this game's S-Grade optimization upgrade to finish (progress shows on the game), then click Start. Other games can be played as usual."
+ },
+ {
+  "source": "查上一份存档",
+  "en": "Checking for a previous save"
+ },
+ {
+  "source": "回到上一份存档",
+  "en": "Going back to the previous save"
+ },
+ {
+  "source": "这款游戏没有上一份存档。",
+  "en": "This game has no previous save."
+ },
+ {
+  "source": "没能回到上一份存档，存档保持原样。",
+  "en": "Couldn’t go back to the previous save. Your save is unchanged."
+ },
+ {
+  "source": "没能回到上一份存档，而且有存档没能换回原样，请导出诊断包。",
+  "en": "Couldn’t go back to the previous save, and some saves couldn’t be switched back. Please export a diagnostic report."
  }
 ]

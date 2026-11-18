@@ -28,7 +28,7 @@ import save_formats
 import layout
 import layout as _lay   # external_archive 里有同名局部变量 layout（存档结构），那里用这个别名
 
-OPERATIONS = {"saveStatus", "saveBackup", "saveInspect", "saveRestore"}
+OPERATIONS = {"saveStatus", "saveBackup", "saveInspect", "saveRestore", "savePrevious", "saveRestorePrevious"}
 TREES = ("bis/user/save", "bis/system/save")
 PROFILE = "system/Profiles.json"
 SAVE_INDEX = "bis/system/save/8000000000000000/0/imkvdb.arc"
