@@ -329,13 +329,86 @@ enum { OKB_MAP_TYPE0, OKB_PRESENT_IDX, OKB_FEAT_ROBUST, OKB_FEAT_SSR, OKB_N };
 static _Atomic uint64_t g_okb[OKB_N];
 uint64_t dm_vk_ok_but_bad(int k) { return k >= 0 && k < OKB_N ? atomic_load(&g_okb[k]) : 0; }
 static void *zalloc(size_t n) { void *p = calloc(1, n); if (!p) die("[vk] out of memory %zu", n); return p; }
+// ---------- 即时存档：宿主对象放固定地址区（vk_snap.inc 文件头讲为什么） ----------
+// 快照开（S2A_SNAP_MODE / S2A_SNAP_RESTORE）时，交给游戏的对象（句柄就是它们的地址）和对象自有的数组从命令记录区（runtime/src/vawin.c s2a_cmd_arena_map，
+//   固定地址、快照按原址存回）里切；快照关时一律 calloc / free，与原来逐字节相同。分配器自己的账（块链、空闲链）也放在区里，随区一起存回
+// 弱链接[nvntest]：s2a_cmd_arena_map（runtime/src/vawin.c 提供；图形单测不链宿主，没有就不进区）
+void *s2a_cmd_arena_map(uint64_t len) __attribute__((weak)); int s2a_cmd_arena_has(const void *p, uint64_t n) __attribute__((weak));
+int s2a_snap_mode(void) __attribute__((weak));
+enum { VS_NCLS = 17, VS_CHUNK = 4u << 20, VS_MAGIC = 0x56534131u };   // 尺寸档 16 B … 1 MB（2 的幂）；更大的整段切；"VSA1"
+typedef struct vs_blk { uint32_t magic, cls; uint64_t size; } vs_blk;   // 每块前 16 字节；cls = VS_NCLS 表示整段切的大块
+typedef struct { uint32_t magic, nseg; void *free_[VS_NCLS]; uint8_t *cur, *end; struct { uint64_t at, len; } seg[1024]; } vs_meta;   // seg：从区里切来的段（存档按它整段存）
+static vs_meta *g_vs; static int g_vs_on = -1; static pthread_mutex_t g_vs_mu = PTHREAD_MUTEX_INITIALIZER;
+static void *vs_seg(uint64_t len) {   // 持 g_vs_mu
+    if (!g_vs || g_vs->nseg >= 1024) return NULL;
+    void *p = s2a_cmd_arena_map(len); if (!p) return NULL;
+    g_vs->seg[g_vs->nseg].at = (uint64_t)(uintptr_t)p; g_vs->seg[g_vs->nseg].len = len; g_vs->nseg++; return p;
+}
+static int vs_on(void) {
+    if (g_vs_on >= 0) return g_vs_on;
+    pthread_mutex_lock(&g_vs_mu);
+    if (g_vs_on < 0) {
+        g_vs_on = 0;
+        if (s2a_snap_mode && s2a_snap_mode() && s2a_cmd_arena_map) {
+            vs_meta *m = s2a_cmd_arena_map(VS_CHUNK);
+            if (m) { m->magic = VS_MAGIC; g_vs = m; m->seg[0].at = (uint64_t)(uintptr_t)m; m->seg[0].len = VS_CHUNK; m->nseg = 1; m->cur = (uint8_t *)m + ((sizeof *m + 4095) & ~4095ul); m->end = (uint8_t *)m + VS_CHUNK; g_vs_on = 1; }
+            else LOG("[vk] 【红】 即时存档：命令记录区切不出 Vulkan 对象区，这局的 Vulkan 状态存不进快照");
+        }
+    }
+    pthread_mutex_unlock(&g_vs_mu);
+    return g_vs_on;
+}
+static int vs_has(const void *p) { return p && g_vs && s2a_cmd_arena_has && s2a_cmd_arena_has(p, 1); }
+static void *vs_alloc(size_t n) {   // 清零的块；区切满时退回 calloc（记红一次）
+    uint32_t c = 0; while (c < VS_NCLS && (16ull << c) < n) c++;
+    pthread_mutex_lock(&g_vs_mu); vs_blk *b = NULL;
+    if (c < VS_NCLS && g_vs->free_[c]) { b = g_vs->free_[c]; g_vs->free_[c] = *(void **)(b + 1); }
+    else {
+        uint64_t need = sizeof(vs_blk) + (c < VS_NCLS ? (16ull << c) : (n + 16383) & ~16383ull);
+        if (c == VS_NCLS || g_vs->cur + need > g_vs->end) {
+            if (c == VS_NCLS) b = vs_seg((need + 16383) & ~16383ull);
+            else { uint8_t *p = vs_seg(VS_CHUNK); if (p) { g_vs->cur = p; g_vs->end = p + VS_CHUNK; } }
+        }
+        if (!b && c < VS_NCLS && g_vs->cur + need <= g_vs->end) { b = (vs_blk *)g_vs->cur; g_vs->cur += need; }
+    }
+    pthread_mutex_unlock(&g_vs_mu);
+    if (!b) { static int once; if (!once++) LOG("[vk] 【红】 即时存档：Vulkan 对象区切满，之后的对象不在区里（快照恢复后会缺）"); return zalloc(n); }
+    b->magic = VS_MAGIC; b->cls = c; b->size = n; memset(b + 1, 0, n); return b + 1;
+}
+static void vs_free(void *p) {
+    vs_blk *b = (vs_blk *)p - 1; if (b->magic != VS_MAGIC) die("[vk] 即时存档对象区：释放的块头不对 %p", p);
+    if (b->cls >= VS_NCLS) return;   // 整段切的大块：区地址不回收（同命令记录区），只少一块
+    pthread_mutex_lock(&g_vs_mu); *(void **)(b + 1) = g_vs->free_[b->cls]; g_vs->free_[b->cls] = b; pthread_mutex_unlock(&g_vs_mu);
+}
+// 设备内存段（虚拟池区里、按原址存回；mem_buf 记）：与对象段分开记，存档时整段存内容
+// 弱链接[nvntest]：s2a_vp_arena_map（runtime/src/vawin.c 提供；同上）
+void *s2a_vp_arena_map(uint64_t len) __attribute__((weak));
+static struct { uint64_t at, len; } *g_vs_mem; static uint32_t g_vs_nmem, g_vs_cmem;   // 宿主堆（不进区）：存档前按它整段存；恢复时从快照读回
+static void vs_note_mem(void *at, uint64_t len) {
+    pthread_mutex_lock(&g_vs_mu);
+    if (g_vs_nmem == g_vs_cmem) { g_vs_cmem = g_vs_cmem ? g_vs_cmem * 2 : 64; g_vs_mem = realloc(g_vs_mem, g_vs_cmem * sizeof *g_vs_mem); }
+    g_vs_mem[g_vs_nmem].at = (uint64_t)(uintptr_t)at; g_vs_mem[g_vs_nmem++].len = len;
+    pthread_mutex_unlock(&g_vs_mu);
+}
+static void vs_forget_mem(void *at) {
+    pthread_mutex_lock(&g_vs_mu);
+    for (uint32_t i = 0; i < g_vs_nmem; i++) if (g_vs_mem[i].at == (uint64_t)(uintptr_t)at) { g_vs_mem[i] = g_vs_mem[--g_vs_nmem]; break; }
+    pthread_mutex_unlock(&g_vs_mu);
+}
+// 对象与对象自有数组的分配 / 释放 / 扩容：快照开走区，关走 calloc / free
+static void *vk_mem(size_t n) { return vs_on() ? vs_alloc(n) : zalloc(n); }
+static void vk_mfree(void *p) { if (!p) return; if (vs_has(p)) vs_free(p); else free(p); }
+static void *vk_mrealloc(void *p, size_t n) {
+    if (!vs_has(p) && !(vs_on() && !p)) return realloc(p, n);
+    void *q = vs_alloc(n); if (p) { size_t o = ((vs_blk *)p - 1)->size; memcpy(q, p, o < n ? o : n); vs_free(p); } return q;
+}
 typedef enum { O_PLAIN, O_MEMORY, O_BUFFER_VIEW, O_IMAGE, O_IMAGE_VIEW, O_SAMPLER, O_SHADER,
     O_PIPELINE, O_LAYOUT, O_SET, O_COMMAND, O_QUERY } object_kind;
 typedef struct vk_object { struct vk_object *next; void *ptr; object_kind kind; } vk_object;
 static vk_object *g_objects;
 static pthread_mutex_t g_object_mu = PTHREAD_MUTEX_INITIALIZER;
 static void *obj_alloc(size_t size, object_kind kind) {
-    void *ptr = zalloc(size); vk_object *node = zalloc(sizeof *node); node->ptr = ptr; node->kind = kind;
+    void *ptr = vk_mem(size); vk_object *node = vk_mem(sizeof *node); node->ptr = ptr; node->kind = kind;
     pthread_mutex_lock(&g_object_mu); node->next = g_objects; g_objects = node; pthread_mutex_unlock(&g_object_mu);
     return ptr;
 }
@@ -346,7 +419,7 @@ static void obj_free(void *ptr) {
     if (!*link) die("[vk] freeing an unregistered object %p", ptr);
     vk_object *node = *link; *link = node->next;
     pthread_mutex_unlock(&g_object_mu);
-    free(node); free(ptr);
+    vk_mfree(node); vk_mfree(ptr);
 }
 static VkResult debug_instance_create(const VkInstanceCreateInfo *, const VkAllocationCallbacks *, VkInstance *);
 static void debug_instance_destroy(VkInstance, const VkAllocationCallbacks *);
@@ -594,7 +667,12 @@ static id<MTLBuffer> mem_buf(VkDeviceMemory m) {
     if (r) return (__bridge id<MTLBuffer>)r;
     pthread_mutex_lock(&g_mem_mu);
     if (!m->buf) {
-        m->buf = [g_dev newBufferWithLength:m->size ? m->size : 16 options:MTLResourceStorageModeShared];
+        uint64_t vn = ((m->size ? m->size : 16) + 16383) & ~16383ull; void *va = vs_on() && s2a_vp_arena_map ? s2a_vp_arena_map(vn) : NULL;   // 即时存档：放虚拟池区（固定地址，映射指针恢复后原样有效）
+        if (va && mmap(va, vn, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0) == va) {
+            m->buf = [g_dev newBufferWithBytesNoCopy:va length:vn options:MTLResourceStorageModeShared deallocator:nil];
+            if (m->buf) vs_note_mem(va, vn);
+        } else if (va) LOG("[vk] 【红】 即时存档：虚拟池区 %p 放不开写，这块设备内存退回普通分配（快照不含它）", va);
+        if (!m->buf) m->buf = [g_dev newBufferWithLength:m->size ? m->size : 16 options:MTLResourceStorageModeShared];
         if (!m->buf) LOG("[vk] 【红】 cannot create an MTLBuffer of %llu bytes", (unsigned long long)m->size);
         else { atomic_store_explicit(&m->raw, (__bridge void *)m->buf, memory_order_release); g_mem_bytes += m->size; }
     }
@@ -611,6 +689,7 @@ VK(vkAllocateMemory, VkResult, VkDevice d, const VkMemoryAllocateInfo *ai, const
 VKB(vkFreeMemory, void, VkDevice d, VkDeviceMemory m, const VkAllocationCallbacks *a) {
     (void)d; (void)a; if (!m) return;
     if (m->buf) g_mem_bytes -= m->size;
+    if (m->buf) vs_forget_mem(m->buf.contents);   // 即时存档：虚拟池区那段不再存（地址不回收，同命令记录区）
     m->buf = nil; obj_free(m);
 }
 VKB(vkMapMemory, VkResult, VkDevice d, VkDeviceMemory m, VkDeviceSize off, VkDeviceSize size, VkMemoryMapFlags fl, void **pp) {
@@ -943,7 +1022,7 @@ VK(vkCreateDescriptorSetLayout, VkResult, VkDevice d, const VkDescriptorSetLayou
         L->idx[b->binding] = (int8_t)L->n++; L->total += b->descriptorCount;
     }
     if (nimm) {
-        L->imm = zalloc(umax(1, L->total) * sizeof *L->imm);
+        L->imm = vk_mem(umax(1, L->total) * sizeof *L->imm);
         for (uint32_t i = 0, k = 0; i < ci->bindingCount; i++) {
             const VkDescriptorSetLayoutBinding *b = src[i]; if (b->binding >= 128) continue;
             if (L->b[k].imm) memcpy(&L->imm[L->b[k].base], b->pImmutableSamplers, b->descriptorCount * sizeof *L->imm);
@@ -967,7 +1046,7 @@ static void set_free(VkDescriptorSet s) {
     if (s->prev) s->prev->next = s->next; else p->sets = s->next;
     if (s->next) s->next->prev = s->prev;
     for (uint32_t k = 0; k < s->L->total; k++) s->d[k] = (desc_t){0};   // releases what the descriptors hold
-    free(s->d); obj_free(s);
+    vk_mfree(s->d); obj_free(s);
 }
 VK(vkResetDescriptorPool, VkResult, VkDevice d, VkDescriptorPool p, VkDescriptorPoolResetFlags f) { (void)d; (void)f; while (p->sets) set_free(p->sets); return VK_SUCCESS; }
 VK(vkDestroyDescriptorPool, void, VkDevice d, VkDescriptorPool p, const VkAllocationCallbacks *a) { (void)a; if (p) { h_vkResetDescriptorPool(d, p, 0); obj_free(p); } }
@@ -975,7 +1054,7 @@ VK(vkAllocateDescriptorSets, VkResult, VkDevice d, const VkDescriptorSetAllocate
     (void)d;
     for (uint32_t i = 0; i < ai->descriptorSetCount; i++) {
         VkDescriptorSetLayout L = ai->pSetLayouts[i];
-        VkDescriptorSet s = obj_alloc(sizeof *s, O_SET); s->d = zalloc(umax(1, L->total) * sizeof(desc_t));
+        VkDescriptorSet s = obj_alloc(sizeof *s, O_SET); s->d = vk_mem(umax(1, L->total) * sizeof(desc_t));
         s->L = L; s->pool = ai->descriptorPool; s->next = s->pool->sets; if (s->next) s->next->prev = s; s->pool->sets = s;
         if (L->imm) for (uint32_t k = 0; k < L->total; k++) { s->d[k].smp = L->imm[k] ? L->imm[k]->s : nil; s->d[k].lb = L->imm[k] ? L->imm[k]->lb : 0; }
         out[i] = s;
@@ -1404,7 +1483,7 @@ static void *rec(VkCommandBuffer cb, uint32_t op, size_t sz) {
     size_t need = (sizeof(chdr) + sz + 7) & ~(size_t)7;
     if (cb->n + need > cb->cap) {
         size_t c = cb->cap ? cb->cap * 2 : 4096; while (c < cb->n + need) c *= 2;
-        cb->buf = realloc(cb->buf, c); if (!cb->buf) die("[vk] out of command buffer memory %zu", c); cb->cap = c;
+        cb->buf = vk_mrealloc(cb->buf, c); if (!cb->buf) die("[vk] out of command buffer memory %zu", c); cb->cap = c;
     }
     chdr *h = (chdr *)(cb->buf + cb->n); h->op = op; h->size = (uint32_t)need; cb->n += need;
     return h + 1;
@@ -1416,7 +1495,7 @@ static void cb_free(VkCommandBuffer cb) {
     VkCommandPool p = cb->pool;
     if (cb->prev) cb->prev->next = cb->next; else p->cbs = cb->next;
     if (cb->next) cb->next->prev = cb->prev;
-    free(cb->buf); obj_free(cb);
+    vk_mfree(cb->buf); obj_free(cb);
 }
 VK(vkDestroyCommandPool, void, VkDevice d, VkCommandPool p, const VkAllocationCallbacks *a) { (void)d; (void)a; if (p) { while (p->cbs) cb_free(p->cbs); obj_free(p); } }
 VK(vkTrimCommandPool, void, VkDevice d, VkCommandPool p, VkCommandPoolTrimFlags f) { (void)d; (void)p; (void)f; }   // command buffers keep no pooled memory to give back
@@ -2409,12 +2488,12 @@ VK(vkCreateQueryPool, VkResult, VkDevice d, const VkQueryPoolCreateInfo *ci, con
     (void)d; (void)a;
     if (ci->queryType != VK_QUERY_TYPE_TIMESTAMP && ci->queryType != VK_QUERY_TYPE_OCCLUSION) LOG("[vk] 【红】 query pool type %d not implemented", ci->queryType);
     VkQueryPool q = obj_alloc(sizeof *q, O_QUERY); q->type = ci->queryType; q->n = ci->queryCount;
-    q->val = zalloc(umax(1, q->n) * sizeof *q->val); q->ticket = zalloc(umax(1, q->n) * sizeof *q->ticket);
+    q->val = vk_mem(umax(1, q->n) * sizeof *q->val); q->ticket = vk_mem(umax(1, q->n) * sizeof *q->ticket);
     for (uint32_t i = 0; i < q->n; i++) q->ticket[i] = FENCE_NONE;
     VLOG("query pool %p: type %d, %u queries", (void *)q, q->type, q->n);
     *out = q; return VK_SUCCESS;
 }
-VK(vkDestroyQueryPool, void, VkDevice d, VkQueryPool q, const VkAllocationCallbacks *a) { (void)d; (void)a; if (q) { free(q->val); free(q->ticket); obj_free(q); } }
+VK(vkDestroyQueryPool, void, VkDevice d, VkQueryPool q, const VkAllocationCallbacks *a) { (void)d; (void)a; if (q) { vk_mfree(q->val); vk_mfree(q->ticket); obj_free(q); } }
 VKB(vkGetQueryPoolResults, VkResult, VkDevice d, VkQueryPool q, uint32_t first, uint32_t n, size_t size, void *data, VkDeviceSize stride, VkQueryResultFlags fl) {
     (void)d; VkResult res = VK_SUCCESS; int w64 = fl & VK_QUERY_RESULT_64_BIT, av = fl & VK_QUERY_RESULT_WITH_AVAILABILITY_BIT;
     for (uint32_t i = 0; i < n && first + i < q->n; i++) {

@@ -64,14 +64,14 @@ int dm_vk_shutdown_session(void) {
                 case O_PIPELINE: { VkPipeline p = node->ptr; p->pso = nil; p->dss = nil; p->dsd = nil; p->dss_dyn = nil; p->cps = nil; p->se_spv = nil; p->se_pd = nil; p->pso_se = nil; p->cps_se = nil; break; }
                 case O_SET: { VkDescriptorSet set = node->ptr;
                     for (uint32_t k = 0; k < set->L->total; k++) { set->d[k].buf = nil; set->d[k].tex = nil; set->d[k].smp = nil; }
-                    free(set->d); break; }
-                case O_LAYOUT: free(((VkDescriptorSetLayout)node->ptr)->imm); break;
-                case O_COMMAND: free(((VkCommandBuffer)node->ptr)->buf); break;
-                case O_QUERY: { VkQueryPool q = node->ptr; free(q->val); free(q->ticket); break; }
+                    vk_mfree(set->d); break; }
+                case O_LAYOUT: vk_mfree(((VkDescriptorSetLayout)node->ptr)->imm); break;
+                case O_COMMAND: vk_mfree(((VkCommandBuffer)node->ptr)->buf); break;
+                case O_QUERY: { VkQueryPool q = node->ptr; vk_mfree(q->val); vk_mfree(q->ticket); break; }
                 case O_PLAIN: break;
             }
         }
-        while (g_objects) { vk_object *node = g_objects; g_objects = node->next; free(node->ptr); free(node); }
+        while (g_objects) { vk_object *node = g_objects; g_objects = node->next; vk_mfree(node->ptr); vk_mfree(node); }
         while (g_instances) debug_instance_release(g_instances, NULL);
         while (g_rt) { rt_ent *entry = g_rt; g_rt = entry->next; entry->fn = entry->fn_d = nil; free(entry); }
         free(g_sh); g_sh = NULL; g_nsh = 0; g_lib = nil;
