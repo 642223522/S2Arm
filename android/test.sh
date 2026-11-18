@@ -508,6 +508,14 @@ s2a_gate_step "$ndk_cc" -O1 -Wall -Werror -I"$repo_dir/runtime/include" "$androi
     "$repo_dir/runtime/src/emul_sp.c" "$repo_dir/runtime/src/emul_ld.c" "$repo_dir/runtime/src/emul_st.c" -o "$out/emul-sp-android-test"
 s2a_gate_step "$PY" "$android_dir/native/runtime/platform/tests/shutdown_wait_test.py"
 s2a_gate_step "$PY" "$android_dir/native/direct-vk-tests/run_shutdown_contract.py"
+# Switch 2 SDK 接管（直连 s2a_direct_lookup 对 nv:: / nn::vi 导入的应答）：真 direct_session.c + 假 nvn2 入口，6 组（选择状态 × 游戏代际）+ 内置负对照
+#   编译运行段要链 wsi_lease.c（pthread_condattr_setclock）与 direct/selection.c（getrandom），只在 Linux；非 Linux 宿主只跑接线检查（纯源码次序）并登记未测
+if [ "$(uname -s)" = Linux ]; then
+    s2a_gate_step "$PY" "$android_dir/native/direct-vk-tests/run_ns2_lookup.py"
+else
+    s2a_gate_step "$PY" "$android_dir/native/direct-vk-tests/run_ns2_lookup.py" --wiring-only
+    s2a_gate_note "未测：run_ns2_lookup.py 的 6 组查找与负对照（链 wsi_lease.c 的 pthread_condattr_setclock、direct/selection.c 的 getrandom）需 Linux；接线检查已跑"
+fi
 # App 纯 Java 层整体编译：抓 import 漏缺 / 签名不匹配这类编译错（#38 GameLibrary 漏 import 让 main 编不过就是这类）。
 # SDK 依赖的类（GameLibrary / MainActivity / NativeBridge / BootSpecSource / TouchPadView 等 import android.*）需 Android SDK，
 # 留给带 SDK 的 Gradle 构建，不在无设备门禁编。新增纯 Java 类时补到这份清单。
