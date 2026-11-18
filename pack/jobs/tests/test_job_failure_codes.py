@@ -663,6 +663,16 @@ class LogCauses(JobCase):
         self.assertEqual(d["code"], "disk_full")
         self.assertIn("这一步写满了盘", d["detail"])
 
+    def test_disk_full_measures_the_disk_the_failed_write_names(self):
+        # #df9fd6：Windows 交付资源包 shutil.copy2 报 WinError 112，库盘还剩 226.7 GB、写满的是目标盘；winlong 给报错补上源 / 目标之后，
+        #   命中行点名两条路径。期望手写：按点名路径里剩得最少的那块盘核（C: 1.0 GB < 5 GB）→ 采信 disk_full，依据点名 C:
+        free = lambda p: (1 << 30) if str(p).startswith("C:") else int(226.7 * (1 << 30))
+        with um.patch("errors._free_bytes", side_effect=free):
+            error, d = self.mac_refresh(["OSError: [WinError 112] 磁盘空间不足。: 'E:\\lib\\games\\t1\\pack\\a.bin' -> 'C:\\out\\t1资源包\\a.bin'",
+                                         "【红】fixture 刷新停在 sysdata 阶段（rc=1），现行 = fixture@ex-1"])
+        self.assertEqual(error.code, "disk_full")
+        self.assertIn("C:", d["detail"]); self.assertIn("1.0 GB", d["detail"])
+
     def test_command_not_found_for_present_tool_is_not_believed(self):
         # 剃刀 H9 反例：「x: command not found」但 x 现在找得到（可选探测、PATH 一时没带上）→ 不叫玩家去装工具，按阶段归
         with um.patch("errors._tool_present", return_value=True):
