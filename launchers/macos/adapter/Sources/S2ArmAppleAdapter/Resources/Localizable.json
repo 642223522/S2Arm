@@ -10260,7 +10260,19 @@
   "en": "one of S2Arm's own tools"
  },
  {
-  "source": "Windows 拦下了 S2Arm 自带的工具「{0}」，没让它运行（应用控制 / 杀毒软件）。",
-  "en": "Windows stopped S2Arm's tool \"{0}\" from running (app control / antivirus)."
+  "source": "{0}拦下了 S2Arm 自带的工具「{1}」，没让它运行。",
+  "en": "{0} stopped S2Arm's tool \"{1}\" from running."
+ },
+ {
+  "source": "Windows 的「智能应用控制」",
+  "en": "Windows Smart App Control"
+ },
+ {
+  "source": "这台电脑的组策略（公司 / 学校管理的电脑常见）",
+  "en": "this PC's group policy (common on work or school PCs)"
+ },
+ {
+  "source": "杀毒软件",
+  "en": "Antivirus software"
  }
 ]

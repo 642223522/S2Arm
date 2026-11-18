@@ -287,7 +287,8 @@ def explain(error, sources=(), library=None):
         internal = f"{type(error).__name__} errno {error.errno}" + (f" WinError {winerror}" if winerror else "") + f"：{error.strerror or error}" + ("；路径 " + " → ".join(map(str, paths)) if paths else "")  # 非玩家句
         if winerror in APP_CONTROL_BLOCKED:   # 先于 EACCES：4551 / 1260 也会被映射成拒绝访问，原因不同、办法不同
             tool = __import__("ntpath").basename(str(error.filename)) if error.filename else "S2Arm 自带的工具"   # ntpath：\\ 与 / 都认
-            return Failure(f"Windows 拦下了 S2Arm 自带的工具「{tool}」，没让它运行（应用控制 / 杀毒软件）。", code="app_control_blocked", internal=internal)
+            who = {4551: "Windows 的「智能应用控制」", 1260: "这台电脑的组策略（公司 / 学校管理的电脑常见）"}.get(winerror, "杀毒软件")
+            return Failure(f"{who}拦下了 S2Arm 自带的工具「{tool}」，没让它运行。", code="app_control_blocked", internal=internal)
         if error.errno in (errno.EACCES, errno.EPERM, errno.EROFS):
             if any(_under(p, [*sources, *([library] if library else [])]) for p in paths):
                 return Failure("文件或目录不可访问或不可写。", code="permission_denied", internal=internal)

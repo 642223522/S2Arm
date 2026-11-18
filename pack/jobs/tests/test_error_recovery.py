@@ -237,6 +237,7 @@ raise SystemExit(main.main())
                 got = explain(e)
                 self.assertEqual(got.code, "app_control_blocked")
                 self.assertIn("「nx_reader.exe」", str(got))
+                self.assertIn({4551: "智能应用控制", 1260: "组策略"}.get(code_w, "杀毒软件"), str(got))
                 self.assertIn(f"WinError {code_w}", got.internal)
         e = OSError(errno.EINVAL, "x"); e.winerror = 4551
         self.assertIn("「S2Arm 自带的工具」", str(explain(e)), "不带文件名照样认")
