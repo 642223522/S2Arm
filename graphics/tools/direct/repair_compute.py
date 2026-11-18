@@ -103,7 +103,7 @@ def find_sources(cache, wanted):
 
     seen = set()
     with ThreadPoolExecutor(max_workers=4) as pool:
-        paths = iter(cache.glob("*/*.e"))
+        paths = (p for p in cache.glob("*/*.e") if not p.name.startswith("._"))   # ._：exFAT 上的 AppleDouble 附属文件
         while batch := list(islice(paths, 256)):
             for result in pool.map(probe, batch):
                 if result is None or result[0] in seen:

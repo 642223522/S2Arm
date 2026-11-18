@@ -574,7 +574,7 @@ static void relocate(module_t *m) {
                 if (!v) v = resolve_global(nm);
                 if (!v) { void *f = s2a_libc_lookup(nm); if (f) { v = (uint64_t)sw_xstack_wrap(nm, f); nlibc++; } }
 #if !defined(__ANDROID__)   // 安卓没有直连 GL 层（s2a_direct_lookup 在 android/native 自给）
-                if (!v && !s2a_nro_defer_lookup(nm)) v = s2a_direct_stub(nm);   // 都没定义（romfs NRO 也没有）的 gl* 核心名：安全空实现，放最后免得顶掉游戏模块自己的定义（#601）
+                if (!v && !s2a_nro_defer_lookup(nm)) v = s2a_direct_stub(nm);   // 都没定义（romfs NRO 也没有）的 gl* 核心名：安全空实现；GL 驱动的带下划线名 _gl* / _egl* 去掉下划线交 GL 层。放最后免得顶掉游戏模块自己的定义（#601）
 #endif
                 if (!v && (s->st_info >> 4) == 2) {   // D-WSFE：按名记下来（含槽位偏移），崩在「往全局指针写」时能对上是哪个；游戏自带 NRO 定义的另报红（起局置 0、nn::ro 装进来后不补）
                     const char *wnro = s2a_nro_defer_lookup(nm);
@@ -736,7 +736,7 @@ uint64_t s2a_module_span(const char *dir) {   // 模块目录里全部 <名>.fix
     uint64_t t = 0; struct dirent *e;
     while ((e = readdir(d))) {
         size_t l = strlen(e->d_name); const char *suf = ".fixups.tsv"; size_t sl = strlen(suf);
-        if (l <= sl || strcmp(e->d_name + l - sl, suf)) continue;
+        if (l <= sl || strcmp(e->d_name + l - sl, suf) || !strncmp(e->d_name, "._", 2)) continue;   // ._：exFAT 上 macOS 配的 AppleDouble 附属文件
         char nm[64]; if (l - sl >= sizeof nm) continue; memcpy(nm, e->d_name, l - sl); nm[l - sl] = 0;
         t += mod_footprint(dir, nm);
     }

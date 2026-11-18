@@ -22,6 +22,27 @@ rewriter = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rewriter)
 
 
+# test_real_inputs_enter_the_key 的仓库副本：改写阶段与能力清单阶段实际读的文件（逐个列，不拷整目录）
+STAGE_INPUTS = (
+    "pack/stage_rewrite.sh", "pack/stage_caps.sh", "pack/gen_caps.sh", "pack/roots.sh", "pack/stage_keyfiles.sh",
+    "pack/stage_inputs/equiv.tsv", "pack/patch_ship.sh", "pack/rewriter.py", "pack/cpatch.py", "pack/pkg_srcs.py",
+    "pack/resource_input_key.py", "pack/rewrite_degrade.py",
+    "runtime/rewriter/CMakeLists.txt", "runtime/rewriter/main.c", "runtime/rewriter/rewriter.c", "runtime/rewriter/rewriter.h",
+    "runtime/rewriter/prepare_deps.py", "runtime/rewriter/nro_to_nso.py",
+    "runtime/src/caps.c", "runtime/src/cpatch.c", "runtime/src/fps.c", "runtime/src/widen.c",
+    "graphics/metal/fit_judge.h", "graphics/metal/gal_present.m",
+    "graphics/nvn/games/profile_guess.py", "graphics/nvn/tools/gfx_api.py", "graphics/nvn/tools/lz4blk.py",
+    "graphics/nvn/tools/nso_syms.py", "graphics/nvn/tools/romfs_list.py",
+    "graphics/widen/WidenFrame.cs", "graphics/widen/WidenSession.cs", "graphics/widen/export/s2a_widen.h",
+    "graphics/widen/scan/auto_pkg.sh", "graphics/widen/scan/wide_scan.py", "graphics/widen/tables/verified.tsv",
+    "tools/.gitignore", "tools/machine.sh", "tools/plock.sh", "tools/stage_deps.py",
+    "tools/stage_deps_hook/sitecustomize.py",
+    "tools/addr_need.py", "tools/caps_policy.py", "tools/clonedir.py", "tools/direct_shards.py", "tools/flock_hold.py",
+    "tools/fps_generic.py", "tools/fps_relocate.py", "tools/fps_warehouse.py", "tools/nostall.py", "tools/nro_exports.py",
+    "tools/nso_plain.py", "tools/pool_workers.py", "tools/reglist.py", "tools/ue_cvar_loc.py", "tools/widen_accept.py",
+)
+
+
 def hashes(root):
     return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
             for p in root.rglob("*") if p.is_file()}
@@ -302,13 +323,11 @@ class PackagingRewrite(unittest.TestCase):
     def test_real_inputs_enter_the_key(self):
         # 10-30 根修：改写阶段实际跑过的生成器记进 .stage_rewrite.deps 并进键（原先手工列名单，fps_warehouse / profile_guess 等漏了，热出包跳过改写用旧产物）。
         #   在仓库最小副本里跑（git 提交一次，树对象号才取得到），逐个改真实生成器：键必须变、不跳过；只算键模式（P4 快路径比键用）与落盘的键一致
+        #   副本只放这两个阶段实际读的文件（bash 脚本 + .stage_rewrite.deps / .stage_caps.deps 里 R: 那些 + 改写器编译输入），不拷整目录：
+        #   本用例读到的仓库文件都会进门禁缓存键，拷整目录让近千个无关文件的改动也重跑它。拷少了阶段报红（缺模块 / 缺脚本）或下面的清单断言红，不会假绿
         repo = self.directory / "repo"
-        listed = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-co", "--exclude-standard", "--", "pack", "tools", "graphics/widen",
-                                 "graphics/nvn/games", "graphics/nvn/tools", "translator", "runtime/rewriter", "runtime/fps", "runtime/src", "graphics/metal", "graphics/widen", "graphics/cpatch", "docs"],
-                                capture_output=True, text=True, check=True).stdout.splitlines()
-        for name in listed:
-            if (ROOT / name).is_file():
-                (repo / name).parent.mkdir(parents=True, exist_ok=True); shutil.copy2(ROOT / name, repo / name)
+        for name in STAGE_INPUTS:
+            (repo / name).parent.mkdir(parents=True, exist_ok=True); shutil.copy2(ROOT / name, repo / name)
         git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
         subprocess.run(git + ["add", "-A"], check=True); subprocess.run(git + ["commit", "-qm", "副本"], check=True)

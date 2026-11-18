@@ -430,6 +430,31 @@ namespace S2A.Dsh
         /// 翻译器总会声明 support_buffer 等资源，入口没用到时 SPIRV-Cross 不放进参数缓冲、json 里就没有它：这类「声明了没用」的变量
         /// 依次放到本阶段所有 arg_id 之后的空号（(最大 arg_id + 1 + k) × 6 + 阶段号；Vulkan 仍要求资源变量带装饰，管线布局不必含它）；「没用到」按保守判定：函数体里任何指令引用了它都算用到。
         /// .spv 里用到的资源变量找不到同名成员、或两个变量落到同一个绑定号 = 红。</summary>
+        /// <summary>指令 op 的第 k 个操作字（不含指令头）是不是字面量（不是 id）：判「函数体里用到了哪个资源变量」时跳过这些位置。
+        /// 原先每个操作字都当 id 比，字面量恰好等于某个资源变量的 id 就误判「用到」→ 报红整支丢：某款 11194 键里 17 键是这样，
+        /// 例如 OpExtInst 的指令号 32（GLSL.std.450 InverseSqrt）撞上 %32「fp_t_tcb_8」，反汇编里这个变量其实一次都没被引用。
+        /// 只列翻译器会出、带字面量的指令；没列的指令照旧每个操作字都当 id（保守：宁可误报红，不把用到的挪去空号）。</summary>
+        static bool LiteralOperand(int op, int k) => op switch
+        {
+            12 => k == 3,                         // OpExtInst：结果类型、结果、扩展集、指令号（字面量）、操作数…
+            79 => k >= 4,                         // OpVectorShuffle：分量下标
+            81 => k >= 3,                         // OpCompositeExtract：下标
+            82 => k >= 4,                         // OpCompositeInsert：下标
+            61 => k >= 3,                         // OpLoad：内存访问掩码与对齐
+            62 => k >= 2,                         // OpStore：内存访问掩码与对齐
+            63 => k >= 2,                         // OpCopyMemory
+            64 => k >= 3,                         // OpCopyMemorySized
+            246 => k >= 2,                        // OpLoopMerge：循环控制
+            247 => k >= 1,                        // OpSelectionMerge：选择控制
+            250 => k >= 3,                        // OpBranchConditional：分支权重
+            251 => k >= 2 && (k - 2) % 2 == 0,    // OpSwitch：选择子、缺省、（字面量值、目标）对
+            87 or 88 or 91 or 92 or 95 or 98 => k == 4,   // 图像采样 / 取 / 读：图像操作数掩码（之后的是 id）
+            89 or 90 or 93 or 94 or 96 or 97 => k == 5,   // 带比较值 / 收集分量的图像指令：图像操作数掩码
+            99 => k == 3,                         // OpImageWrite：图像操作数掩码
+            8 => true,                            // OpLine：文件、行、列
+            _ => false,
+        };
+
         public static byte[] BindToArgIds(byte[] spv, JsonArray bindings, string stage)
         {
             if (!StageNo.TryGetValue(stage, out uint stageNo)) throw new DshError("export failed", "未知阶段 " + stage);
@@ -446,7 +471,7 @@ namespace S2A.Dsh
             {
                 if (op == 54) inFunction = true;
                 else if (op == 56) inFunction = false;
-                else if (inFunction) foreach (uint v in a) if (x.Var.ContainsKey(v)) used.Add(v);
+                else if (inFunction) for (int k = 0; k < a.Length; k++) if (!LiteralOperand(op, k) && x.Var.ContainsKey(a[k])) used.Add(a[k]);
             }
             var target = new Dictionary<uint, uint>(); var idle = new List<uint>();
             foreach (var (vid, vt) in x.Var.OrderBy(v => v.Key))

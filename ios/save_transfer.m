@@ -170,6 +170,7 @@ int s2a_ios_save_management_requested(void) {
 @end
 
 @implementation S2ASaveManager
+S2A_VERTICAL_BAR_OFF
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations { return s2a_ios_play_orientations(); }
 - (UILabel *)label:(NSString *)text style:(UIFontTextStyle)style {
     UILabel *label = [UILabel new]; label.text = text; label.numberOfLines = 0;

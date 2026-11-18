@@ -618,3 +618,8 @@
 20261117-0911-fs-read-fail-short-log.patch
 20261117-1504-nfp-detection-loop.patch
 20261117-1546-snapshot-hooks.patch
+20261117-2020-shared-font-read-once.patch
+20261117-1813-ampere-image-atomic-bank.patch
+20261118-0515-save-commit-verify.patch
+20261118-1021-six-axis-motion-interval.patch
+20261118-0559-save-guard-mark.patch

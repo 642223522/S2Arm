@@ -8,8 +8,7 @@ mkdir -p "$OUT"
 cat > "$OUT/NuGet.Config" <<'XML'
 <configuration><packageSources><clear /></packageSources></configuration>
 XML
-dotnet restore "$HERE/VulkanDiag.csproj" --configfile "$OUT/NuGet.Config" --artifacts-path "$OUT/art" -p:NuGetAudit=false > "$OUT/build.log" 2>&1
-dotnet build "$HERE/VulkanDiag.csproj" -c Release --no-restore --artifacts-path "$OUT/art" >> "$OUT/build.log" 2>&1
+bash "$ROOT/tools/cs_cache.sh" "$OUT/art" "$HERE/VulkanDiag.csproj" -- bash -c 'dotnet restore "$1" --configfile "$2" --artifacts-path "$3" -p:NuGetAudit=false${4:+ -p:S2AConsumer=$4} && dotnet build "$1" -c Release --no-restore --artifacts-path "$3"${4:+ -p:S2AConsumer=$4}' _ "$HERE/VulkanDiag.csproj" "$OUT/NuGet.Config" "$OUT/art" > "$OUT/build.log" 2>&1   # restore + build（树外缓存 tools/cs_cache.sh；下面 Runtime.Tests 构建时 Exec cc 编 asset_fixture.c，不走缓存）
 DLL="$OUT/art/bin/VulkanDiag/release/VulkanDiag.dll"
 env -u S2A_SHADER_CACHE_DIAG dotnet "$DLL"
 S2A_SHADER_CACHE_DIAG=1 dotnet "$DLL"
