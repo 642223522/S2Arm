@@ -177,7 +177,7 @@ typedef struct { uint32_t first, n; int has_sizes, has_bufs, has_offs; } a_xfb;
 typedef struct { uint32_t inst, first_inst; VkBuffer b; VkDeviceSize off; uint32_t ctr_off, stride; } a_bytecount;
 typedef struct { VkBuffer b; VkDeviceSize off; VkBuffer cb; VkDeviceSize coff; uint32_t max, stride; } a_indcount;
 typedef struct { VkQueryPool p; uint32_t q; VkQueryControlFlags fl; } a_query;
-// 暂存填充（对照 iOS nvn_rec.h 的常量缓冲拷贝线程 ubc_*）：核心把常量缓冲拷进本段临时上传片，旷野之息每帧约 1.1 万次、44 MB，占回放线程可观的一块。
+// 暂存填充（对照 iOS nvn_rec.h 的常量缓冲拷贝线程 ubc_*）：核心把常量缓冲拷进本段临时上传片，一款大型开放世界游戏（01007EF00011E000）神庙场景每帧约 1.1 万次、44 MB，占回放线程可观的一块。
 // 这份拷贝排进同一个队列由录制线程按序做：GPU 只在提交之后读上传片，而 vkEndCommandBuffer 先清空队列，所以提交前一定拷完；
 // 核心改来源内存之前按票号等（nvn_gpu_arena_fill_wait）。票号在生产者自旋锁里递增，录制线程按记录顺序做，所以「已做完」单调。
 typedef struct { void *d; const void *s; uint64_t n, seq; } a_memfill;
