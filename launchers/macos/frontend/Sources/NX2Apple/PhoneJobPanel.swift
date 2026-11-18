@@ -241,6 +241,11 @@ struct PhoneJobPanel: View {
                     Button { model.retryPhoneUpdate() } label: { LauncherHeroActionLabel(title: t("phone.retry"), symbol: "arrow.clockwise") }
                         .controllerButtonStyle(.plain).disabled(model.phoneBusy).controllerID("phone.retry").controllerShortcut(.rightTrigger)
                 }
+                // 装到 iPhone / 更新没走成（没连手机、签不上…）：换另一条路——导出自签包，不连手机也能一步走完
+                if !exporting, session.kind == .install || session.kind == .installUpdate {
+                    Button { model.switchToSelfSign(session, language: language) } label: { LauncherHeroActionLabel(title: t("phone.switch_export"), symbol: "square.and.arrow.up") }
+                        .controllerButtonStyle(.plain).disabled(model.phoneBusy).controllerID("phone.switchExport")
+                }
                 CopyReportButton(model: model, gameID: session.gameID, operations: [session.kind.rawValue], fallback: session.message)
             }
         }

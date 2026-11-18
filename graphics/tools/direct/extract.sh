@@ -27,7 +27,7 @@ source "$R/tools/progress.sh"
 say() { echo "[抽取] $*"; }
 why() { local w; w=$(grep -a '\[RED\]\|【红】' "$1" 2> /dev/null | tail -1); [ -n "$w" ] || w=$(grep -a . "$1" 2> /dev/null | tail -1); echo "$w" | sed 's/^\[RED\] *//' | cut -c1-200; }   # 失败原因：红行优先，没有取末行
 PS=0; prog() { PS=$((PS + 1)); say "第 ${PS}/4 步 $*"; prog_tick 抽取 $((PS - 1)) 4; }
-[ -d "$ROOT/romfs" ] && [ -f "$ROOT/exefs/main" ] || { say "🔴 $ROOT 缺 romfs/ 或 exefs/main"; exit 1; }
+{ [ -d "$ROOT/romfs" ] || [ -f "$ROOT/romfs.std" ]; } && [ -f "$ROOT/exefs/main" ] || { say "🔴 $ROOT 缺 romfs/（或镜像 romfs.std）或 exefs/main"; exit 1; }   # RomFS 目录或镜像都行（romfs_list.py image_of；下面读 RomFS 一律经 romfs_list）
 rm -rf "$X"; mkdir -p "$X/split" "$X/pkg" || exit 1
 # 资源目录列表走列表文件（一行一个，参数写 @<文件>），不拼进命令行：11-05 Windows 出包机怪猎崛起 273 个追加内容，逗号串超过 Windows 命令行 32767 字符上限，
 #   起 Python 就报「Argument list too long」

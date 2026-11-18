@@ -23,6 +23,7 @@ static _Atomic int compiler_calls, variant_calls, se_calls, vp_calls; static int
 static void (*registered)(int);
 void s2a_direct_summary_register(void (*fn)(int)) { registered = fn; }
 int s2a_gfx_mode(void) { return mode; }
+const char *s2a_app_version(void) { return ""; }   // 宿主 host_adapt.m 给 App 版本；本测的计数文件「app」由 sfb_write 参数直接给
 int mtl_shmap_known(const char *key) { (void)key; return known; }
 int mtl_shlib_has(const char *key) { (void)key; return inlib; }
 static char rt_stage[16];   // 最近一次 mtl_shmap_rt_add 的阶段名（32 / 33 核）
@@ -86,6 +87,13 @@ static void scenario(int n) {
     memcpy(ctl + 0x704, &size, 4); memcpy(ctl + 0x20, &csize, 4);
     setenv("DM_MSL_FALLBACK", "/dev/null", 1); // 编译器桩不写文件。
     check(registered != NULL);
+    if (n == 49) {   // 诊断#354a81：控制段自报长度越过映射末尾（放在一页可读的末尾、后面紧跟 PROT_NONE 页，自报 0x2000 字节）。
+        //   期望（手算）：修前 memcpy(e->ctl, ctl, nctl) 读到 PROT_NONE 页崩；修后 dsh_stage 判整段不可读 → 认不出阶段 → 跳过 1，不崩
+        long pg = sysconf(_SC_PAGESIZE); uint8_t *m = mmap(NULL, (size_t)pg * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0); check(m != MAP_FAILED);
+        check(mprotect(m + pg, (size_t)pg, PROT_NONE) == 0);
+        uint8_t *c2 = m + pg - 0x900; memcpy(c2, ctl, 0x900); uint32_t big = 0x2000; memcpy(c2 + 0x20, &big, 4);
+        dm_shader_miss(key, (uint64_t)(uintptr_t)code, c2);
+    }
     if (n == 1) call();
     if (n == 2) { compile_rc = 7; call(); }
     if (n == 43) {   // #442：翻译器报错时，控制段 / 代码区自动存进兜底目录 <键>.fail.ctl / .fail.code（不开 DM_NVN_SHDUMP），内容逐字节等于交给翻译器的那份
@@ -317,10 +325,11 @@ int main(void) {
         "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 45 guest 控制段过期时，从同链同指纹的本机 mesh MSL 缓存补齐
         "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 46 包内 mesh：仅在 Metal 拒绝时从 SetShaders 快照按需现编 MSL
         "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 47 包内 Switch 1 顶点：SetShaders 快照 → 控制段过期后照样出补齐变体
-        "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）"    // 48 负对照：没留快照 → 做不了
+        "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 48 负对照：没留快照 → 做不了
+        "成功 0、失败 0、跳过 1、复用上局 0、输出类型变体 0（正常收局）"    // 49 控制段自报长度越过映射末尾：放弃这一份、不崩（#354a81）
     };
     int bad = 0;
-    for (int n = 0; n < 49; n++) {
+    for (int n = 0; n < 50; n++) {
         int fd[2]; pipe(fd); pid_t p = fork();
         if (!p) { close(fd[0]); dup2(fd[1], 1); close(fd[1]); scenario(n); }
         close(fd[1]); char buf[1024]; size_t at = 0; ssize_t got;
@@ -331,5 +340,19 @@ int main(void) {
         printf("%s 现编汇总场景 %d\n", ok ? "✓" : "✗", n);
         if (!ok) { bad++; puts(buf); }
     }
-    printf("%s t_dsh_stats：49 场景，%d 处不符\n", bad ? "✗" : "✓", bad); return bad != 0;
+    {   // 着色器覆盖计数文件（sfb_write）：期望手算——新建计 2、再加 1 得 3、"app" 照给的写；兜底目录不是 …/wire/<程序号>/shaders 形状 → -1、不写文件
+        char t[] = "/tmp/t_dsh_sfb.XXXXXX"; if (!mkdtemp(t)) { puts("✗ 建临时目录失败"); return 1; }
+        char fb[512], js[600], b[256]; snprintf(fb, sizeof fb, "%s/0400486024DEC000/wire/0400486024DEC000/shaders", t); snprintf(js, sizeof js, "%s/0400486024DEC000/shader_fallback.json", t);
+        char mk[600]; snprintf(mk, sizeof mk, "mkdir -p '%s'", fb); system(mk);
+        int r1 = sfb_write(fb, 2, "0.6.0"); FILE *f = fopen(js, "r"); size_t z = f ? fread(b, 1, sizeof b - 1, f) : 0; if (f) fclose(f); b[z] = 0;
+        unsigned long long c1 = 0; char app1[16] = ""; sscanf(strstr(b, "\"count\"") ? strstr(b, "\"count\"") : "", "\"count\": %llu", &c1); const char *ap = strstr(b, "\"app\": \""); if (ap) sscanf(ap + 8, "%15[^\"]", app1);
+        int r2 = sfb_write(fb, 1, ""); f = fopen(js, "r"); z = f ? fread(b, 1, sizeof b - 1, f) : 0; if (f) fclose(f); b[z] = 0;
+        unsigned long long c2 = 0; sscanf(strstr(b, "\"count\"") ? strstr(b, "\"count\"") : "", "\"count\": %llu", &c2);
+        char bad_fb[512], bad_js[600]; snprintf(bad_fb, sizeof bad_fb, "%s/elsewhere/shaders", t); snprintf(bad_js, sizeof bad_js, "%s/shader_fallback.json", t);
+        int r3 = sfb_write(bad_fb, 1, "x"); int none = access(bad_js, F_OK) != 0;
+        int ok = r1 == 0 && c1 == 2 && !strcmp(app1, "0.6.0") && r2 == 0 && c2 == 3 && r3 == -1 && none;
+        printf("%s 着色器覆盖计数文件：新建 %llu（期望 2）、app %s（期望 0.6.0）、再加 1 → %llu（期望 3）、别的形状返回 %d（期望 -1）且不写文件 %d（期望 1）\n", ok ? "✓" : "✗", c1, app1, c2, r3, none);
+        bad += !ok; snprintf(mk, sizeof mk, "rm -rf '%s'", t); system(mk);
+    }
+    printf("%s t_dsh_stats：50 场景，%d 处不符\n", bad ? "✗" : "✓", bad); return bad != 0;
 }

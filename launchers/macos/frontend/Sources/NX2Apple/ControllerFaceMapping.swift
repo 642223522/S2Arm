@@ -56,9 +56,15 @@ struct ControllerFaceMapping: Equatable {
             ($0.0, family.symbol(source: source(for: $0.1)))
         })
         switch family {
-        case .playstation: symbols[.rightTrigger] = "r2.rectangle.roundedtop"
-        case .nintendo: symbols[.rightTrigger] = "zr.rectangle.roundedtop"
-        case .xbox, .other: symbols[.rightTrigger] = "rt.rectangle.roundedtop"
+        case .playstation:
+            symbols[.leftTrigger] = "l2.rectangle.roundedtop"
+            symbols[.rightTrigger] = "r2.rectangle.roundedtop"
+        case .nintendo:
+            symbols[.leftTrigger] = "zl.rectangle.roundedtop"
+            symbols[.rightTrigger] = "zr.rectangle.roundedtop"
+        case .xbox, .other:
+            symbols[.leftTrigger] = "lt.rectangle.roundedtop"
+            symbols[.rightTrigger] = "rt.rectangle.roundedtop"
         }
         return symbols
     }

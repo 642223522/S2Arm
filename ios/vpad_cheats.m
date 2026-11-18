@@ -65,7 +65,7 @@ UIDocumentPickerViewController *s2a_cheats_import_picker(void) {
 // status.txt 的状态值是与服务层 Cheats.cs 约定的串（比对照原样用中文），显示时换成当前语言；认不出的原样显示
 static NSString *cheat_status_text(NSString *st) {
     NSDictionary *t = @{@"生效中": S2AL(@"cheats.status.active"), @"生效中（编进游戏）": S2AL(@"cheats.status.packed"), @"地址未就绪": S2AL(@"cheats.status.addressNotReady"), @"执行出错": S2AL(@"cheats.status.execError"),
-        @"改代码，不支持": S2AL(@"cheats.status.modifiesCode"), @"格式不对": S2AL(@"cheats.status.badFormat"), @"版本不符": S2AL(@"cheats.status.versionMismatch"),
+        @"改代码，不支持": S2AL(@"cheats.status.modifiesCode"), @"改代码，没编进包": S2AL(@"cheats.status.notPacked"), @"格式不对": S2AL(@"cheats.status.badFormat"), @"版本不符": S2AL(@"cheats.status.versionMismatch"),
         @"关": S2AL(@"cheats.status.off"), @"游戏未装载": S2AL(@"cheats.status.gameNotLoaded"), @"指令有误": S2AL(@"cheats.status.badInstruction")};
     return st ? t[st] ?: st : nil;
 }

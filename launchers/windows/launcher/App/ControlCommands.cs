@@ -19,6 +19,21 @@ public sealed partial class EnvironmentWindow
     private static readonly bool ControlForced = Environment.GetCommandLineArgs().Contains("--control") ||
         Environment.GetEnvironmentVariable("S2ARM_CONTROL") == "1";
     private string ControlSwitchFile => Path.Combine(privateRoot, "ai-control.on");
+    // 「装到 iPhone 时带主屏小组件」（11-16，缺省开）：私有目录里有 home-widget.off 即关；关掉时装机 / 更新 / 导出请求带 widget: false
+    private string HomeWidgetOffFile => Path.Combine(privateRoot, "home-widget.off");
+    private bool HomeWidget => !File.Exists(HomeWidgetOffFile);
+    private string homeWidgetError = "";
+    private void SetHomeWidget(bool on)
+    {
+        homeWidgetError = "";
+        try
+        {
+            PrivateJobRequest.EnsurePrivateRoot(privateRoot);
+            if (on) File.Delete(HomeWidgetOffFile); else File.WriteAllBytes(HomeWidgetOffFile, []);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { homeWidgetError = error.Message; }
+        Render();
+    }
 
     /// <summary>崩溃日志用（LauncherCrash）：同 ResolvePrivateRoot，算不出（参数坏了）退回系统临时目录。</summary>
     internal static string PrivateRootForLogs()
@@ -107,7 +122,8 @@ public sealed partial class EnvironmentWindow
     /// <param name="export">mode = export（同游戏库「导出自签包」）：不连手机、出到文件夹</param>
     private ControlReply ControlInstall(LibraryGame game, IReadOnlySet<string> accept, bool export = false)
     {
-        if (ControlBusy) return Busy();
+        // 同游戏库「装到 iPhone」按钮（PhoneBlockedFor）：出包在跑照样能装，手机上装机在跑 / 这款正在出包由 InstallAsync 排队（11-16 维护者）
+        if (PhoneBlockedFor(game)) return Busy();
         selectedGame = game.Id;
         _ = InstallAsync(game, accept, ask: false, export: export);
         Navigate("install");
@@ -294,7 +310,7 @@ public sealed partial class EnvironmentWindow
                 switch (r.Text("action"))
                 {
                     case "restart":
-                        if (updateReady is null) return ControlReply.Bad("新版还没下载好", 409);
+                        if (updateReady is null && availableUpdate is null) return ControlReply.Bad("没有新版", 409);   // 还没下好：同玩家点「现在更新」，先下、下完接着装
                         if (ControlBusy) return Busy();
                         Dispatcher.UIThread.Post(RestartToUpdate, DispatcherPriority.Background);   // 先把回复发出去，再退出
                         return ControlReply.Ok();

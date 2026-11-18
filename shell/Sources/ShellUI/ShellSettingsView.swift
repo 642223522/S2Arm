@@ -151,7 +151,7 @@ struct ShellSettingsView: View {
                             }
                         }
                         SettingsGroup(title: ShellStrings.text("Sound")) {
-                            ForEach([ShellSettingsRows.silentRow(store), ShellSettingsRows.mixRow(store)]) { row in
+                            ForEach(soundRows) { row in
                                 SettingControl(gameID: ShellSettingsRows.gameID, row: row, targetPrefix: ShellSettingsRows.targetPrefix) {
                                     ShellSettingsRows.apply(row.id, value: $0, to: store)
                                 }.equatable()
@@ -175,7 +175,7 @@ struct ShellSettingsView: View {
                                 .accessibilityIdentifier("shellSettings.version")
                         }
                     }
-                    .padding(24).padding(.bottom, geometry.safeAreaInsets.bottom).frame(maxWidth: 640)
+                    .padding(24).padding(.bottom, geometry.safeAreaInsets.bottom).frame(maxWidth: 640 * ShellFonts.tvScale)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .scrollIndicators(.hidden)
@@ -193,5 +193,14 @@ struct ShellSettingsView: View {
         }
         .foregroundStyle(.white).preferredColorScheme(.dark)
         .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in revision += 1 }
+    }
+
+    /// 声音一组：Apple TV 没有静音开关，tvOS 上只留「与其他 App 混音」
+    private var soundRows: [SettingRow] {
+        #if os(tvOS)
+        [ShellSettingsRows.mixRow(store)]
+        #else
+        [ShellSettingsRows.silentRow(store), ShellSettingsRows.mixRow(store)]
+        #endif
     }
 }

@@ -47,6 +47,18 @@ with tempfile.TemporaryDirectory() as d:
     # ② 没有降级：空文件（调用方按有无行判，stage_extract.sh 无行就删旧表）
     shader_split.write_degrade(p, [], [], [])
     check(open(p, encoding="utf-8").read() == "", "② 没有降级应写空文件")
+# ③ 收尾行（skip_summary）：读不了、整份没抽的文件计红——个数 + 前 3 个；丢程序块 / 同键照旧黄。原先这三类并成一行黄，
+#    RomFS 只有镜像时 19012 个文件这样跳过、没有一行红。期望手写
+red = shader_split.skip_summary(["a: OSError: x", "b: OSError: y", "c: OSError: z", "d: OSError: w"], [], [])
+check(red == ["【红】直连抽取：4 个文件读不了、整份没抽（前 3 个：a: OSError: x；b: OSError: y；c: OSError: z），其余照抽；这些文件里的着色器运行时首遇现编，逐条见上方 [WARN]"],
+      f"③ 4 个读不了的文件应一行红（4 个、举前 3 个）：{red}")
+both = shader_split.skip_summary(["a: [RED] bad\nnext"], [("w", "why")], ["k"])
+check(len(both) == 2 and both[0].startswith("【红】直连抽取：1 个文件读不了") and "a: [RED] bad next" in both[0]
+      and both[1] == "【黄】直连抽取：丢了程序块 1 个、同键不同内容 1 处（留先到的），其余照抽；逐条见上方 [WARN] / [RED]",
+      f"③ 读不了 1 个 + 程序块 1 + 同键 1：一行红（说明压成一行）+ 一行黄：{both}")
+check(shader_split.skip_summary([], [], []) == [], "③ 没有降级不打收尾行")
+check(shader_split.skip_summary([], [("w", "why")], []) == ["【黄】直连抽取：丢了程序块 1 个、同键不同内容 0 处（留先到的），其余照抽；逐条见上方 [WARN] / [RED]"],
+      "③ 只丢程序块：只一行黄、没有红")
 shutil.rmtree(PROFILE, ignore_errors=True)
-print(("✗ shader_split_degrade：有不符合项" if bad else "✓ shader_split_degrade：程序块丢弃进降级表 / 逐条带名 / 上限并行 / 处数合计 / 收尾解析 → 通过"))
+print(("✗ shader_split_degrade：有不符合项" if bad else "✓ shader_split_degrade：程序块丢弃进降级表 / 逐条带名 / 上限并行 / 处数合计 / 收尾解析 / 读不了的文件计红 → 通过"))
 sys.exit(1 if bad else 0)

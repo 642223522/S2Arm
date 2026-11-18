@@ -75,9 +75,9 @@ FAR 补丁区容量不足、重选也放不下（需要超过 32 MiB）时保留
 
 ### FAR 容量重选（#290；C 版 10-25 同步）
 
-第一轮沿用原来的保守 FRONT，已成功的输入不改布局。仅当零 GAP、补丁容量不足时，按 `align64KiB(补丁字节数 + 16KiB)` 扩展 FRONT，从原 NSO 完整重做分析和编码。每轮保留全部 B、ADRP、compact 表头编码范围检查及已成功的自旋回边；容量候选严格增大，上限 127 MiB（10-30 起不再写死 32 MiB：够不够得着由每条 B 的编码检查判，越射程即整轮改用下面的双补丁岛）。
+第一轮沿用原来的保守 FRONT，已成功的输入不改布局。补丁容量不足时（11-17 起首轮有 GAP 也一样，#1476），按 `align64KiB(补丁字节数 + 16KiB)` 扩展 FRONT，从原 NSO 完整重做分析和编码。每轮保留全部 B、ADRP、compact 表头编码范围检查及已成功的自旋回边；容量候选严格增大，上限 127 MiB（10-30 起不再写死 32 MiB：够不够得着由每条 B 的编码检查判，越射程即整轮改用下面的双补丁岛）。
 
-重试前删除旧 `patched.bin`，中间轮不发布产物或 PFRW。首轮 GAP 返回 3；首轮零 GAP、重试后出现编码缺口时，保留完整明细，输出唯一 `fatal=1`，明确报告「重选后 B / ADRP 超出跳转范围」、text 末尾和新 FRONT，删除旧映像后返回 1。超过布局限额或丢失自旋回边也明确失败；最终容量失败复用 #268 的摘要与清理。Python 通过私有 `runpy` 入口建立全新上下文，从外部以其他 `run_name` 执行也进入同一驱动，成功以 `SystemExit(0)` 结束。
+重试前删除旧 `patched.bin`，中间轮不发布产物或 PFRW。首轮的 GAP 带到重试轮照常降级（返回 3、照出产物）；重试后 GAP 比触发重试那轮多时（新增的是编码缺口），保留完整明细，输出唯一 `fatal=1`，明确报告「重选后 B / ADRP 超出跳转范围」、text 末尾和新 FRONT，删除旧映像后返回 1。超过布局限额或丢失自旋回边也明确失败；最终容量失败复用 #268 的摘要与清理。Python 通过私有 `runpy` 入口建立全新上下文，从外部以其他 `run_name` 执行也进入同一驱动，成功以 `SystemExit(0)` 结束。
 
 C 已同步 SDK 地址削减 / aregion、mov 成环不动点和自动重选：C 内部按轮重建整个改写上下文（`attempt`），跨轮只带 FRONT 与成功的 (自旋头, 回边)，合成 FAR 模块回归 `python3 tests/rewrite_front_synth_test.py`（缺省用 `pack/rewriter.py c-path` 的 C 命令行）：125 MiB text，首轮 0x200000 不够，自动重选到 0x270000，五种产物与金样同。真实依据与限制见 FRONT 容量重选。
 
@@ -109,7 +109,7 @@ cmake --build build/rewriter-android --parallel 4
 - **前岛容量**：双岛首轮 FRONT = 1 MiB，放不下按 `align64KiB(前岛字节数 + 16KiB)` 整轮重做（双岛下前岛超容量那轮的缺口不作数，上限 127 MiB）。
 - **两岛都够不着**：必改点里能在信号里按原语义模拟的（`mrs tpidr_el0` / `mrs tpidrro_el0` / `msr tpidr_el0` / `mrs ctr_el0`，x18 目的除外）原地改成 `brk #(0x8000 + 序号)`（≤ 0x2000 个，0xA000 留给远跳，避开 macOS 截走的 0xB000–0xBFFF），装载器在 SIGTRAP 里模拟后 pc += 4（`runtime/src/traps.c`，每点计命中、收局打一行）；可选的自旋区不改写，但不许无声：日志打一行【红】汇总（几处、地址列表），表头 `SPIN_UNREACHED` 记数；其余单元（svc、x18 类、窗口、跳转表等）照旧记缺口（退出码 3），消息带 `B range frm … to … off …`。
 - **远跳**（出包线 10-31，Minecraft [128, 144) MiB 那段 6325 个 x18 改写点）：x18 窗口 / 改写点两岛都越射程（且不是上一条能在信号里模拟的种类）时，远跳模式重做一次：单元照常生成进岛，越射程的 B（原代码进岛那一跳 = 入口，岛里跳回原代码 = 出口）写成 `brk #0xA000`，fixups 表头 `# FAR_JUMPS n` 后跟 n 行 `# FAR <从> <到> <E|X>`（相对基址，有符号）；装载器排序后在 SIGTRAP 里按 pc 二分、把 pc 设到 <到>（信号返回不受 ±128 MiB 射程限制，块语义就是普通 x18 块），入口计命中，收局打一行（`runtime/src/traps.c`）。每执行一次单元多两次陷入；只给 x18 两类（块里没有 BL）
-- **表头**（只在双岛写，在 `IMAGE_SIZE / FILE_IMAGE_LEN` 之后、`KEY_*_IDX` 之前）：`# PATCH2_OFF`（另一个岛相对基址的偏移，有符号十六进制；近布局为 `−(FRONT + LOAD_BIAS)`，FAR 为后岛偏移）、`# PATCH2_LEN`（字节）、`# TRAP_SITES`（十进制）、`# SPIN_UNREACHED`（十进制），随后 `TRAP_SITES` 行 `# TRAP\t<偏移>\t<种类>\t<寄存器>\t<原字>`，序号即出现顺序。`PATCH_OFF` 仍是原布局那个岛。
+- **表头**（只在双岛写，在 `IMAGE_SIZE / FILE_IMAGE_LEN` 之后、`KEY_*_IDX` 之前）：`# PATCH2_OFF`（另一个岛相对基址的偏移，有符号十六进制；近布局为 `−(FRONT + LOAD_BIAS)`，FAR 为后岛偏移）、`# PATCH2_LEN`（字节）、`# TRAP_SITES`（十进制）、`# SPIN_UNREACHED`（十进制），随后 `TRAP_SITES` 行 `# TRAP\t<偏移>\t<种类>\t<寄存器>\t<原字>`，序号即出现顺序。`PATCH_OFF` 仍是原布局那个岛。单岛也可能有兜底点：36 位老 SDK 写死的可随机区 / 栈区（`sdk_as36_ranges`，#1503，种类 `as_aslr_lo` / `as_aslr_hi` / `as_stack_lo` / `as_stack_hi`）认出时，单岛在同一位置只写 `# TRAP_SITES` 与随后的 `# TRAP` 行；没有兜底点时单岛表头不变。
 - **patched.bin**：原布局的文件（近布局 = 映像 + 键页 + 补丁区；FAR = 映像前段 `FILE_IMAGE_LEN` + 前岛）之后，再接另一个岛的 `PATCH2_LEN` 字节。装载器（Mac / iOS / 安卓三条映射路径）按表头把它放到 `基址 + PATCH2_OFF` 并封只读可执行，岛与映像之间的空隙不可访问；iOS 内嵌节多一段 `__sw<名>x2`（`ios/embed.py`，16K 圆整）。门表返回点按「在任一岛内」核。
 - **合成回归**：`bash tests/rewrite_islands_test.sh`（近布局越线 → 前岛接住低地址单元；text > 128 MiB → 双岛 + brk + 自旋报红；产物与金样逐字节比，期望按布局公式手算）。
 

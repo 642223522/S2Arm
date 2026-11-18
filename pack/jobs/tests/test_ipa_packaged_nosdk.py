@@ -61,7 +61,7 @@ class PackagedNoSdk(unittest.TestCase):
         self.assertEqual(env["S2A_NX_UNPACK"], "/App/Engine/Binaries/Reader/nx_unpack")
         self.assertEqual(env.get("DOTNET_ROOT"), before, "不换成外部 SDK")
         self.assertTrue((Path(r["outputPath"]) / ".pack" / "manifest.json").is_file())   # 资源包进了这款的 image/ios（不再留单款 ipa）
-        self.assertTrue(any((p / "kit" / "main.npdm").is_file() for p in (self.c.library / ".programs").iterdir()))   # 程序件进了游戏程序专用文件夹
+        self.assertTrue(any((p / "recipe.tar.zst").is_file() for p in (self.c.library / ".programs").iterdir()))   # 程序件的配方进了程序常驻
 
     @shared_extract
     def test_packaged_missing_shell_is_reinstall(self):

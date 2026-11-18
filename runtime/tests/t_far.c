@@ -236,6 +236,29 @@ int main(void) {
         EQ("逐秒账：缺页 5、代执行 5", 1, strstr(buf, "缺页 5、代执行 5、") != NULL);
         if (lines != 1 || !strstr(buf, "缺页 5、代执行 5、")) printf("  截到：%s\n", buf);
         EQ("逐秒账退休", 0, s2a_far_session_reset()); }
+    {   // 即时存档：远端按游戏地址存 / 取。存完复位、换一块影子区重开（模拟新进程 / 新版本里影子落在别处），取回后经游戏地址读内容与权限
+        int s2a_snap_far_save(FILE *), s2a_snap_far_load(FILE *);
+        setenv("S2A_FAR_LINEAR", "0", 1);
+        uint8_t *s1raw = mmap(NULL, SH + 2 * MB, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0), *s1 = (uint8_t *)(((uint64_t)s1raw + 2 * MB - 1) & ~(2 * MB - 1));
+        s2a_far_set(G, G + SPAN, (uint64_t)s1, (uint64_t)s1 + SH);
+        EQ("快照：给页 G+16K", 0, s2a_far_map(G + 0x4000, 0x4000)); EQ("快照：给页 G+4M+32K", 0, s2a_far_map(G + 4 * MB + 0x8000, 0x4000)); EQ("快照：给页 G+6M", 0, s2a_far_map(G + 6 * MB, 0x4000));
+        uint8_t *a1 = s2a_far_g2h(G + 0x4000), *b1 = s2a_far_g2h(G + 4 * MB + 0x8000), *c1 = s2a_far_g2h(G + 6 * MB);
+        for (int i = 0; i < 0x4000; i++) { a1[i] = (uint8_t)(i * 7 + 1); b1[i] = (uint8_t)(i * 13 + 5); c1[i] = (uint8_t)(i ^ 0x5a); }
+        mprotect(c1, 0x4000, PROT_READ);   // 游戏那页是只读的
+        FILE *sf = tmpfile(); EQ("快照：存", 0, s2a_snap_far_save(sf));
+        EQ("快照：复位", 0, s2a_far_session_reset());
+        uint8_t *s2raw = mmap(NULL, SH + 4 * MB, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0), *s2 = (uint8_t *)(((uint64_t)s2raw + 4 * MB - 1) & ~(2 * MB - 1));
+        s2a_far_set(G, G + SPAN, (uint64_t)s2, (uint64_t)s2 + SH);
+        rewind(sf); EQ("快照：取", 0, s2a_snap_far_load(sf)); fclose(sf);
+        uint8_t *a2 = s2a_far_g2h(G + 0x4000), *b2 = s2a_far_g2h(G + 4 * MB + 0x8000), *c2 = s2a_far_g2h(G + 6 * MB);
+        EQ("快照：取回后影子在新影子区里（不是原宿主地址）", 1, a2 && (uint64_t)a2 >= (uint64_t)s2 && (uint64_t)a2 < (uint64_t)s2 + SH);
+        int okA = 1, okB = 1, okC = 1; for (int i = 0; i < 0x4000; i++) { okA &= a2 && a2[i] == (uint8_t)(i * 7 + 1); okB &= b2 && b2[i] == (uint8_t)(i * 13 + 5); okC &= c2 && c2[i] == (uint8_t)(i ^ 0x5a); }
+        EQ("快照：G+16K 内容逐字节一致", 1, okA); EQ("快照：G+4M+32K 内容逐字节一致", 1, okB); EQ("快照：G+6M 内容逐字节一致", 1, okC);
+        { vm_address_t ra = (vm_address_t)(uintptr_t)c2; vm_size_t rs = 0; vm_region_basic_info_data_64_t bi; mach_msg_type_number_t ct = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t ob;
+          int ro = c2 && vm_region_64(mach_task_self(), &ra, &rs, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&bi, &ct, &ob) == KERN_SUCCESS && (bi.protection & VM_PROT_READ) && !(bi.protection & VM_PROT_WRITE);
+          EQ("快照：只读页取回后仍只读", 1, ro); }
+        EQ("快照：没给过的页（G+8M）取回后仍没分块", 0, (uint64_t)(uintptr_t)s2a_far_g2h(G + 8 * MB));
+        EQ("快照：收尾复位", 0, s2a_far_session_reset()); }
     printf("%s t_far：%d / %d 项通过\n", bad ? "✗" : "✓", cnt - bad, cnt);
     return bad != 0;
 }

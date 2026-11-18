@@ -66,9 +66,15 @@ nvn_gpu_rc nvn_gpu_cmd_commit(nvn_gpu_cmd c, uint64_t signal, nvn_gpu_done_fn do
 }
 nvn_gpu_rc nvn_gpu_fence_wait(uint64_t v, uint64_t timeout_ns, nvn_gpu_err *err) { (void)v; (void)timeout_ns; (void)err; return ok_rc(); }
 void nvn_gpu_occlusion(nvn_gpu_cmd c, int32_t slot) { (void)c; (void)slot; }
+// 本用例不发 ReportCounter；无时间戳能力，误走采样 / 换钟路径必须报红。
+void nvn_gpu_caps_get(nvn_gpu_caps *out) { memset(out, 0, sizeof *out); }
+void nvn_gpu_timestamp(nvn_gpu_cmd c, uint32_t slot, uint32_t type) {
+    (void)c; (void)slot; (void)type; CHECK(0);
+}
 
 int s2a_nvn_render_cond(void) { return 0; }
 uint64_t s2a_guest_tick(void) { return 0; }
+int s2a_guest_tick_from_host_ns(uint64_t ns, uint64_t *out) { (void)ns; (void)out; CHECK(0); return 0; }
 void nvn_hle_queue_enter(void *q) { (void)q; }
 void nvn_hle_piece_begun(void) {}
 int nvn_cmd_call_resolve(uint64_t h, uint64_t *to) { *to = h; return 0; }   // hle_nvn.c 的 CALL 目标解析（main 的调用目标安全阀）：本用例只量耗时，照原地址执行

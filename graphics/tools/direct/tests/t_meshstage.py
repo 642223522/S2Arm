@@ -90,7 +90,11 @@ ck('② 网格有任务：[0, 16, 272, 5392] / 5776 字节', r[3].get('ok') == [
 ck('② 网格无任务：[0, 16, 16, 656] / 756 字节', r[4].get('ok') == [[0, 16, 16, 656], 756], r[4])
 # C 输出 0x10 + 3200 = 3216，图元位 = 3216 + 3200 = 6416；大小 3216 + 3200 = 6416
 ck('② 任务：[0, 16, 3216, 6416] / 6416 字节', r[5].get('ok') == [[0, 16, 3216, 6416], 6416], r[5])
-A, B, C = (x.get('ok') or '' for x in r[6:9])
+A0, B0, C0 = (x.get('ok') or '' for x in r[6:9])
+# #770 宿主自跑任务 / 网格阶段的入口与循环圈数上限都在 #ifdef S2A_MESH_EMU 里（出包不定义它）：③ 的逐字检查看去掉这些块之后的文本，⑦ 单独查它们
+import re
+def base(x): return re.sub(r'#ifdef S2A_MESH_EMU\n.*?#endif\n', '', x, flags=re.S)
+A, B, C = base(A0), base(B0), base(C0)
 ck('③ A：两个网格入口、有载荷参数、不带槽 29', A.count('[[mesh]] void main0(') == 1 and A.count('[[mesh]] void main0_z(') == 1 and 'const object_data dm_payload_t& dm_payload [[payload]]' in A and 'buffer(29)' not in A, A[-400:])
 ck('③ A：网格类型 64 顶点 126 图元无逐图元', 'using dm_mesh_t = metal::mesh<dm_vertex_t, void, 64, 126, metal::topology::triangle>;' in A)
 ck('③ A：线程号取计算核的 gl_LocalInvocationID.x、不另加 dm_lid', 'for (uint i = gl_LocalInvocationID.x; i < 1444u; i += 32u) _35[i] = 0u;' in A and 'dm_lid' not in A)
@@ -133,5 +137,22 @@ with tempfile.TemporaryDirectory(prefix='t_meshstage_') as t:
         f = os.path.join(t, nm + '.metal'); open(f, 'w').write(src)
         p = subprocess.run(['xcrun', '-sdk', 'iphoneos', 'metal', '-c', '-w', '-mios-version-min=18.0', '-fmetal-math-mode=relaxed', '-fpreserve-invariance', f, '-o', f + '.air'], capture_output=True, text=True)
         ck(f'⑤ {nm} 交 xcrun metal（iphoneos，出包 iOS 编法）编过', p.returncode == 0, p.stderr.strip()[-300:])
+# ⑦ #770 宿主自跑入口：有任务的网格出 main0_mc / main0_mc_z（计算核，读交换缓冲槽 28）与顶点函数 main0_mv；任务出 main0_tc；无任务的网格不带逐图元属性时也出（F），带的不出（B）；
+#   定义 S2A_MESH_EMU 后照出包编法编得过（宿主现编时定义它）
+ck('⑦ 有任务的网格：S2A_MESH_EMU 下有 main0_mc / main0_mc_z / main0_mv，读槽 28', all(k in A0 for k in ('kernel void main0_mc(', 'kernel void main0_mc_z(', 'vertex dm_vertex_t main0_mv(', '[[buffer(28)]]')) and 'kernel void main0_mc(' not in A)
+ck('⑦ 任务：S2A_MESH_EMU 下有 main0_tc，写载荷与派生数（钳 1024）', 'kernel void main0_tc(' in C0 and 'dm_xo[dm_xo[0] + dm_tg] = min(_35[805], 1024u);' in C0)
+ck('⑦ 无任务、带逐图元属性的网格（B）不出宿主入口（逐图元属性没有承载处）', 'main0_mc' not in B0 and 'S2A_MESH_EMU' not in B0)
+# ⑦ 无任务、无逐图元属性的网格（F，#1542：M1 上这类原先没有宿主入口、悄悄落回驱动网格）：出 main0_mc / main0_mc_z / main0_mv；没有载荷与排表，
+#   组号 = 派发线程组号（dm_j = dm_tg），工作组字 = 起始组号 + 组号（读槽 29 的 dm_first，同驱动入口），交换缓冲仍在槽 28
+F0 = dshfn.fn('mesh_to_stage', kernel(189, False), ctl(7, 32, 0, mv=32, mp=32).hex(), area().hex())
+F_EMU = F0.split('#ifdef S2A_MESH_EMU')[-1] if 'kernel void main0_mc(' in F0 else ''
+ck('⑦ 无任务、无逐图元属性的网格（F）：S2A_MESH_EMU 下有 main0_mc / main0_mc_z / main0_mv',
+   all(k in F_EMU for k in ('kernel void main0_mc(', 'kernel void main0_mc_z(', 'vertex dm_vertex_t main0_mv(', 'device uint* dm_xo [[buffer(28)]], constant uint* dm_first [[buffer(29)]]')), F0[-1500:])
+ck('⑦ F：组号取派发线程组号、工作组字 = 起始组号 + 组号，不读排表 / 载荷', 'uint dm_j = dm_tg;' in F_EMU and '_35[0] = dm_first[0] + dm_tg;' in F_EMU and 'dm_xo[dm_xo[2]' not in F_EMU and 'dm_xo[dm_xo[1]' not in F_EMU, F_EMU[:1200])
+with tempfile.TemporaryDirectory() as t:
+    for nm, src in (('A', A0), ('C', C0), ('F', F0)):
+        f = os.path.join(t, nm + '.metal'); open(f, 'w').write(src)
+        p = subprocess.run(['xcrun', '-sdk', 'macosx', 'metal', '-c', '-w', '-DS2A_MESH_EMU=1', '-fmetal-math-mode=relaxed', '-fpreserve-invariance', f, '-o', f + '.air'], capture_output=True, text=True)
+        ck(f'⑦ {nm} 定义 S2A_MESH_EMU 交 xcrun metal（macosx）编过', p.returncode == 0, p.stderr.strip()[-300:])
 print(f"{'✗' if bad else '✓'} meshstage：{n} 项，{bad} 项不符（手排 5 种控制段 / SPH、2 种拒绝、载荷中转、5 份 MSL 编 iOS）")
 sys.exit(bool(bad))

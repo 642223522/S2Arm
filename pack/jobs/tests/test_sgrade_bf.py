@@ -102,6 +102,125 @@ class UpgradeMac(unittest.TestCase):
             self.assertEqual(((rt / "shaders/direct/keys.tsv").read_text(), (rt / "manifest.json").read_text()), ("old\n", m0), "运行版本与清单一个字节不动、不记代数")
             self.assertFalse((rt / "shaders/direct.sgbf").exists(), "不留临时目录")
 
+    def test_mac_runtime_with_game_img(self):
+        # 一款一份资源（0.6.0）：Mac 运行版本只有 game.img（iPhone 资源包那份的硬链接）、没有 romfs.std / romfs/：重出时 rebuild 看到的 romfs.std
+        #   = game.img 的 RomFS 段（字节手写对比），补完删掉，game.img 不动
+        import os
+        with tempfile.TemporaryDirectory() as t:
+            t = Path(t); rt = t / "runtime"; (rt / "shaders/direct").mkdir(parents=True)
+            engine = Path(sgrade_bf.__file__).resolve().parents[2]
+            img = sgrade_bf._img(types.SimpleNamespace(engine=engine))
+            seg = os.urandom(50001); ro = img.PAGE
+            with open(rt / "game.img", "wb") as f:
+                f.write(img.HDR.pack(img.MAGIC, img.FORMAT, 0, b"0100AAAA00000000", b"", ro, len(seg), ro + len(seg), 0, ro + len(seg)))
+                f.seek(ro); f.write(seg)
+            before = (rt / "game.img").read_bytes()
+            (rt / "shaders/direct/keys.tsv").write_text("old\n")
+            (rt / "manifest.json").write_text(json.dumps({"files": {"game.img": [len(before), ""], "shaders/direct/keys.tsv": [4, ""]}}))
+            new = t / "new"; new.mkdir(); (new / "keys.tsv").write_text("k\n")
+            seen = []
+            def rebuild(c, gid, runtime, target, tmp):
+                seen.append((runtime / "romfs.std").read_bytes()); return new
+            c = types.SimpleNamespace(emit=lambda *a, **k: None, private=t, engine=engine)
+            with patch.object(sgrade_bf, "rebuild", rebuild):
+                self.assertTrue(sgrade_bf.upgrade_mac(c, "G", rt, None))
+            self.assertEqual(seen, [seg], "重出看到的 romfs.std = RomFS 段")
+            self.assertFalse((rt / "romfs.std").exists(), "补完删掉临时 romfs.std")
+            self.assertEqual((rt / "game.img").read_bytes(), before, "game.img 不动")
+
+
+class IosInputsImage(unittest.TestCase):
+    def test_romfs_segment_becomes_image_byte_for_byte(self):
+        # iPhone 款从 game.img 取材：标准 RomFS 段原样拷成临时产物根的 romfs.std（段内容按写进去的字节手写对比：不多不少），不展开成 romfs/ 散文件；
+        #   其余条目（aoc/…）照旧放回产物根
+        import os
+        import struct
+        with tempfile.TemporaryDirectory() as t:
+            t = Path(t); engine = Path(sgrade_bf.__file__).resolve().parents[2]
+            c = types.SimpleNamespace(engine=engine)
+            img = sgrade_bf._img(c)
+            seg, aoc = os.urandom(70001), b"dlc payload"
+            ro = img.PAGE; ao = img.up(ro + len(seg)); toc = img.toc_bytes([("aoc/1/data", ao, len(aoc))]); to = img.up(ao + len(aoc))
+            pack, kit, exefs = t / "pack", t / "kit", t / "exefs"
+            for d in (pack, kit, exefs): d.mkdir()
+            (exefs / "main").write_bytes(b"main")
+            with open(pack / "game.img", "wb") as f:
+                f.write(img.HDR.pack(img.MAGIC, img.FORMAT, 0, b"0100AAAA00000000", b"pk", ro, len(seg), to, len(toc), to + len(toc)))
+                f.seek(ro); f.write(seg); f.seek(ao); f.write(aoc); f.seek(to); f.write(toc)
+            fake_sgrade = types.SimpleNamespace(saved_program=lambda c, g: exefs)
+            with patch.object(sgrade_bf.layout, "ios_pack", return_value=pack), patch.object(sgrade_bf.layout, "ios_kit", return_value=kit), \
+                 patch.object(sgrade_bf.layout, "image_mac", return_value=t / "no-mac"), patch.dict("sys.modules", {"sgrade": fake_sgrade}):
+                root, how = sgrade_bf.ios_inputs(c, "0100AAAA00000000", t / "work")
+            self.assertEqual(how, "game.img")
+            self.assertEqual((root / "romfs.std").read_bytes(), seg, "镜像 = game.img 的 RomFS 段，逐字节相同")
+            self.assertFalse((root / "romfs").exists(), "不展开 romfs/")
+            self.assertEqual((root / "aoc/1/data").read_bytes(), aoc)
+            self.assertTrue(sgrade_bf._has_romfs(root))
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RechainIos(unittest.TestCase):
+    """0.6.0（11-17 维护者定）：着色器链变了只重编这款的着色器库、不重出整款（sgrade_bf.rechain_ios）。资源包与 game.json 是合成的，
+    rebuild（跑出包阶段脚本）与 ios_inputs（取原料）桩掉；期望按写进去的内容手算"""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        t = Path(self.tmp.name)
+        self.pack = t / "pack"
+        (self.pack / "romfs").mkdir(parents=True); (self.pack / "romfs/a").write_bytes(b"12345")
+        old = self.pack / "shaders/direct/b-old"; old.mkdir(parents=True)
+        (old / "lib.idx").write_bytes(b"OLD"); (self.pack / "shaders/direct/keys.tsv").write_text("k\n")
+        rows = ["romfs/a\t5\th1", "shaders/direct/b-old/lib.idx\t3\th2", "shaders/direct/keys.tsv\t2\th3"]
+        (self.pack / "index.tsv").write_text("".join(r + "\n" for r in rows), encoding="utf-8")
+        (self.pack / "manifest.json").write_text(json.dumps({"version": 2, "files": 3, "total": 10, "index_sha256": "pid0"}), encoding="utf-8")
+        self.new = t / "built/shaders/direct"
+        (self.new / "b-new").mkdir(parents=True); (self.new / "b-new/lib.idx").write_bytes(b"NEWLIB"); (self.new / "keys.tsv").write_text("k2\n")
+        self.info = {"ios": {"dmshChain": "old", "pack": "pid0", "bfGen": 0, "shellId": "S"}}
+        self.c = types.SimpleNamespace(emit=lambda *a, **k: None, private=str(t), logs=str(t), task="t")
+
+    def run_rechain(self, chain="new", src=True, rebuilt=None):
+        calls = []
+        def inputs(c, gid, work):
+            return (Path(work) / "root", "game.img") if src else (None, "none")
+        def build(c, gid, s, plat, work):
+            calls.append(plat); return rebuilt or self.new
+        with patch("host_update.engine_compat", lambda c: dict(hostAbi=1, dmshChain=chain)), \
+                patch.object(sgrade_bf.layout, "game_info", lambda c, g: self.info), patch.object(sgrade_bf.layout, "ios_pack", lambda c, g: self.pack), \
+                patch.object(sgrade_bf.layout, "update_info", lambda c, g, ios: self.info.update(ios=ios)), \
+                patch.object(sgrade_bf, "ios_inputs", inputs), patch.object(sgrade_bf, "rebuild", build):
+            return sgrade_bf.rechain_ios(self.c, "0100AAAA00000000"), calls
+
+    def test_same_chain_skips(self):
+        r, calls = self.run_rechain(chain="old")
+        self.assertEqual((r, calls), ("skip", []))
+
+    def test_chain_changed_rebuilds_only_shader_library(self):
+        r, calls = self.run_rechain()
+        self.assertEqual((r, calls), ("updated", ["ios"]))
+        d = self.pack / "shaders/direct"
+        self.assertEqual(sorted(p.name for p in d.iterdir()), ["b-new", "keys.tsv"], "旧库目录整份换掉")
+        self.assertEqual((d / "b-new/lib.idx").read_bytes(), b"NEWLIB")
+        self.assertEqual((self.pack / "romfs/a").read_bytes(), b"12345", "资源本体不动")
+        want_rows = ["romfs/a\t5\th1", f"shaders/direct/b-new/lib.idx\t6\t{hashlib.sha256(b'NEWLIB').hexdigest()}",
+                     f"shaders/direct/keys.tsv\t3\t{hashlib.sha256(b'k2' + bytes([10])).hexdigest()}"]
+        ix = (self.pack / "index.tsv").read_text(encoding="utf-8")
+        self.assertEqual(ix, "".join(r + "\n" for r in want_rows))
+        pid = hashlib.sha256(ix.encode()).hexdigest()
+        self.assertEqual(json.loads((self.pack / "manifest.json").read_text(encoding="utf-8"))["index_sha256"], pid)
+        self.assertEqual(self.info["ios"], {"dmshChain": "new", "pack": pid, "bfGen": sgrade_bf.BF_GEN, "shellId": "S"})
+        self.assertFalse((self.pack / "shaders/.direct-old").exists() or (self.pack / "shaders/.direct-new").exists(), "不留临时目录")
+
+    def test_no_material_unavailable_and_untouched(self):
+        before = (self.pack / "index.tsv").read_text(encoding="utf-8")
+        r, calls = self.run_rechain(src=False)
+        self.assertEqual((r, calls), ("unavailable", []))
+        self.assertEqual((self.pack / "index.tsv").read_text(encoding="utf-8"), before)
+        self.assertEqual(self.info["ios"]["dmshChain"], "old", "没重编就不记新链号（「建议更新」照旧提示）")
+
+    def test_incomplete_rebuild_raises_and_keeps_old(self):
+        bad = Path(self.tmp.name) / "bad/shaders/direct"; bad.mkdir(parents=True)
+        with self.assertRaises(Failure):
+            self.run_rechain(rebuilt=bad)
+        self.assertTrue((self.pack / "shaders/direct/b-old/lib.idx").is_file(), "重编不完整不动旧库")

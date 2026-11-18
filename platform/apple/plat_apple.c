@@ -4,6 +4,7 @@
 #include "../plat.h"
 
 #include <errno.h>
+#include <TargetConditionals.h>
 #include <mach/mach.h>
 #include <mach/mach_time.h>
 #include <mach/vm_map.h>
@@ -218,11 +219,16 @@ int plat_fault_altstack_init(void) {
     ss.ss_sp = p + pg;
     ss.ss_size = PLAT_ALTSTACK_SIZE;
     ss.ss_flags = 0;
+#if TARGET_OS_TV   // tvOS 禁用 sigaltstack（SDK 标 __TVOS_PROHIBITED）：信号照常在当前栈上处理，只是栈溢出时崩溃处理接不住
+    alt_unmap(p, len);
+    return ENOTSUP;
+#else
     if (sigaltstack(&ss, NULL)) {
         int e = errno;
         alt_unmap(p, len);
         return e;
     }
+#endif
     g_alt = p;
     g_alt_len = len;
     return 0;
@@ -233,7 +239,9 @@ void plat_fault_altstack_free(void) {
     stack_t ss;
     memset(&ss, 0, sizeof ss);
     ss.ss_flags = SS_DISABLE;
+#if !TARGET_OS_TV
     sigaltstack(&ss, NULL);
+#endif
     alt_unmap(g_alt, g_alt_len);
     g_alt = NULL;
     g_alt_len = 0;

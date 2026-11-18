@@ -38,7 +38,7 @@ def find_task(private, game=None, operations=None):
     """最近一条失败的作业；game / operations 只收窄范围。没有就抛 job_unknown。"""
     best = None
     for path in (p for d in _job_dirs(private) for p in d.glob("*.json")):
-        if path.name.endswith(".request.json"):
+        if path.name.endswith(".request.json") or path.name.startswith("._"):   # ._：exFAT 上的 AppleDouble 附属文件
             continue
         record = read(path)
         if not isinstance(record, dict) or record.get("state") not in FAILED_STATES:

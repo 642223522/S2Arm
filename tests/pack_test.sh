@@ -1,7 +1,7 @@
 #!/bin/bash
 # 资源包 v2 + 核对 + 版本化产物根单测（临时目录，秒级）：bash tests/pack_test.sh
 # 期望按规则手写：点开头的真文件进包、macOS 垃圾不进；--check 最新退 0、源变了退 1；重打只重算变了的 1 个；删源文件包里也删；
-# 包里改字节 / 多文件 → 核对红；产物根：提交后现行指向新版、新版写入不影响旧版（克隆独立）、同版本不许重开、只留 3 版、现行里有软链拒绝开新版
+# 包里改字节 / 多文件 / 源不一致 → 核对黄字（退 0 照常出包、原因写 pack.verify_warn.txt、不写核对记录；单测里 vf 把黄记成 3）；清单读不了 / 版本不对 → 照旧红；产物根：提交后现行指向新版、新版写入不影响旧版（克隆独立）、同版本不许重开、只留 3 版、现行里有软链拒绝开新版
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); bad=0
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
 source "$H/pack/ipa_key.sh"
@@ -27,7 +27,9 @@ key_mem_large=$(CFLAGS='-DS2A_MEM_NEED_MB=4500' kf)
 ck "不同编译预算不能复用同一 ipa 包键" '[ "$key_mem_small" != "$key_mem_large" ] && [ "$key_mem_small" != "$k3" ]'
 S=$T/data/romfs; mkdir -p $S/sub; echo a > $S/a.bin; echo b > $S/sub/b.bin; echo cfg > $S/.build.config; echo junk > $S/.DS_Store; echo junk > $S/._a.bin
 mkdir -p $T/font; echo f > $T/font/f.ttf
-PK="python3 $H/pack/pack.py $T/pack romfs=$S sysfont=$T/font"; VF="python3 $H/pack/verify.py $T/pack romfs=$S sysfont=$T/font"
+PK="python3 $H/pack/pack.py $T/pack romfs=$S sysfont=$T/font"; VF=vf
+# 维护者 11-17：核对对不上不再拒绝出包，改黄字照常继续（退 0）。vf：绿 → 0；黄（退 0 且留下 pack.verify_warn.txt）→ 3；红 → 原退出码
+vf() { python3 "$H/pack/verify.py" "$T/pack" romfs="$S" sysfont="$T/font"; local r=$?; [ $r = 0 ] && [ -e "$T/pack.verify_warn.txt" ] && return 3; return $r; }
 o=$($PK); ck "首次打包 4 个文件（含 .build.config，不含 .DS_Store / ._*）" 'grep -q "^4 个文件" <<< "$o" && grep -q "romfs/.build.config" $T/pack/index.tsv && ! grep -q "DS_Store\|/\._" $T/pack/index.tsv'
 ck "核对绿" '$VF > /dev/null'
 
@@ -39,29 +41,29 @@ printf '%s\n' noise > "$T/pack/romfs/sub/.DS_Store"; printf '%s\n' noise > "$T/p
 ck "包内子目录 .DS_Store / ._x 重生 → 核对绿且 index 字节不变" '$VF > "$T/metadata-nested.log" 2>&1 && cmp -s "$T/index-before-metadata.tsv" "$T/pack/index.tsv"'
 printf '%s\n' unexpected > "$T/pack/unlisted.bin"
 $VF > "$T/metadata-stray.log" 2>&1; metadata_rc=$?
-ck "macOS 元数据共存时普通清单外文件 → 退出 1 且指出 unlisted.bin" '[ "$metadata_rc" = 1 ] && grep -q "清单外的文件 1 个" "$T/metadata-stray.log" && grep -q "unlisted.bin" "$T/metadata-stray.log"'
+ck "macOS 元数据共存时普通清单外文件 → 黄字照常继续、指出 unlisted.bin" '[ "$metadata_rc" = 3 ] && grep -q "unlisted.bin" "$T/pack.verify_warn.txt" && grep -q "清单外的文件 1 个" "$T/metadata-stray.log" && grep -q "unlisted.bin" "$T/metadata-stray.log"'
 rm "$T/pack/unlisted.bin"
 printf '%s\n' unexpected > "$T/pack/.user.config"
 $VF > "$T/metadata-hidden-stray.log" 2>&1; metadata_rc=$?
-ck "非 macOS 的点开头清单外文件 → 退出 1 且指出 .user.config" '[ "$metadata_rc" = 1 ] && grep -q "清单外的文件 1 个" "$T/metadata-hidden-stray.log" && grep -q "\.user\.config" "$T/metadata-hidden-stray.log"'
+ck "非 macOS 的点开头清单外文件 → 黄字照常继续、指出 .user.config" '[ "$metadata_rc" = 3 ] && grep -q "清单外的文件 1 个" "$T/metadata-hidden-stray.log" && grep -q "\.user\.config" "$T/metadata-hidden-stray.log"'
 rm "$T/pack/.user.config" "$T/pack/.DS_Store" "$T/pack/._x" "$T/pack/romfs/sub/.DS_Store" "$T/pack/romfs/sub/._x"
-ck "清掉合成多余文件后 → 核对恢复绿、index 字节仍不变" '$VF > /dev/null && cmp -s "$T/index-before-metadata.tsv" "$T/pack/index.tsv"'
+ck "清掉合成多余文件后 → 核对恢复绿、黄字记录删掉、index 字节仍不变" '$VF > /dev/null && [ ! -e "$T/pack.verify_warn.txt" ] && cmp -s "$T/index-before-metadata.tsv" "$T/pack/index.tsv"'
 ck "--check：最新 → 退出 0" '$PK --check > /dev/null'
 sleep 0.05; echo a2 > $S/a.bin
 ck "--check：源变了 → 退出 1" '! $PK --check > /dev/null'
 o=$($PK); ck "重打只重算 1 个" 'grep -q "克隆 / 重算 1 个" <<< "$o" && $VF > /dev/null'
 rm $S/sub/b.bin; $PK > /dev/null; ck "删源文件 → 包里也删、核对绿" '[ ! -e $T/pack/romfs/sub/b.bin ] && $VF > /dev/null'
 python3 -c "f=open('$T/pack/romfs/a.bin','r+b'); f.write(b'X'); f.close()"; $VF > "$T/flip.log" 2>&1; flip=$?
-ck "包里改一个字节（同长）→ 核对红、点名 SHA 与 index 不符、源没被改（克隆独立）" '[ "$flip" = 1 ] && grep -q "romfs/a.bin（SHA 与 index 不符）" "$T/flip.log" && [ "$(cat $S/a.bin)" = a2 ]'
-# 核对红时已把不符的那行从状态表去掉（11-13 玩家 Windows：状态表照留时源没变，pack.py 沿用记下的 SHA、重试永远红）：不删状态表直接重打就绿
-ck "SHA 不符 → 红行写明已让这个文件下次重算、状态表里没有它了" 'grep -q "已让这 1 个文件下次出包重读重算" "$T/flip.log" && ! grep -q "^romfs/a.bin	" $T/pack.state.tsv && grep -q "^romfs/" $T/pack.state.tsv'
+ck "包里改一个字节（同长）→ 核对黄字照常继续、点名 SHA 与 index 不符、源没被改（克隆独立）" '[ "$flip" = 3 ] && grep -q "🟡" "$T/flip.log" && grep -q "romfs/a.bin（SHA 与 index 不符）" "$T/pack.verify_warn.txt" && grep -q "romfs/a.bin（SHA 与 index 不符）" "$T/flip.log" && [ "$(cat $S/a.bin)" = a2 ]'
+# 核对对不上时已把不符的那行从状态表去掉（11-13 玩家 Windows：状态表照留时源没变，pack.py 沿用记下的 SHA、重试永远红）：不删状态表直接重打就绿
+ck "SHA 不符 → 黄字写明已让这个文件下次重算、状态表里没有它了" 'grep -q "已让这 1 个文件下次出包重读重算" "$T/flip.log" && ! grep -q "^romfs/a.bin	" $T/pack.state.tsv && grep -q "^romfs/" $T/pack.state.tsv'
 $PK > /dev/null; ck "不删状态表直接重打 → 核对绿" '$VF > /dev/null'
 $PK > /dev/null; rm -f $T/pack.state.tsv; $PK > /dev/null; ck "丢状态表后重打 → 核对绿" '$VF > /dev/null'
-# 核对只读包里那份（11-06 维护者「少读一遍」）：普通源文件设成不可读（stat 仍可取）→ 核对照绿（不读源内容）；按全内容进包键的源不可读 → 红（照旧逐字节比源）
+# 核对只读包里那份（11-06 维护者「少读一遍」）：普通源文件设成不可读（stat 仍可取）→ 核对照绿（不读源内容）；按全内容进包键的源不可读 → 黄字（照旧逐字节比源）
 rm -f "$T/pack.verify.tsv"; chmod 000 $S/a.bin; $VF > "$T/oneread.log" 2>&1; oneread=$?; chmod 644 $S/a.bin
 ck "核对不读普通源的内容：romfs/a.bin 源不可读、核对照绿" '[ "$oneread" = 0 ]'
 rm -f "$T/pack.verify.tsv"; chmod 000 $T/font/f.ttf; $VF > "$T/fullread.log" 2>&1; fullread=$?; chmod 644 $T/font/f.ttf
-ck "按全内容进包键的照旧读源比：sysfont/f.ttf 源不可读 → 核对红" '[ "$fullread" = 1 ]'
+ck "按全内容进包键的照旧读源比：sysfont/f.ttf 源不可读 → 核对黄字照常继续" '[ "$fullread" = 3 ]'
 $VF > /dev/null   # 恢复核对记录（只在全绿时写），后面的增量用例要它
 o=$($VF); ck "核对增量：romfs 下源 / 包都没变的 2 个不再逐字节比；sysfont/f.ttf 按全内容进包键、每次都比（审计 #1534 P1-54）" 'grep -q "核 1 个，2 个与上次核对时源 / 包都没变" <<< "$o"'
 sleep 0.05; echo a3 > $S/a.bin; $PK > /dev/null; o=$($VF); ck "源改 1 个、重打后核对：逐字节比 romfs/a.bin 与 sysfont/f.ttf 共 2 个、绿" 'grep -q "核 2 个，1 个" <<< "$o"'
@@ -70,7 +72,7 @@ sleep 0.05; echo a3 > $S/a.bin; $PK > /dev/null; o=$($VF); ck "源改 1 个、�
 fmt=$(python3 -c "import os;print(os.stat('$T/font/f.ttf').st_mtime_ns)")
 python3 -c "import os;open('$T/font/f.ttf','wb').write(b'g\\n');os.utime('$T/font/f.ttf',ns=($fmt,$fmt))"
 $VF > "$T/p54-verify-old.log" 2>&1; p54v=$?
-ck "源只换内容（f → g，同长、修改时间改回）、包还没重打：有旧核对记录也照样红（原先签名全同、按记录跳过、绿）" '[ "$p54v" = 1 ] && grep -q "sysfont/f.ttf（内容与源不同）" "$T/p54-verify-old.log"'
+ck "源只换内容（f → g，同长、修改时间改回）、包还没重打：有旧核对记录也照样黄字（原先签名全同、按记录跳过、绿）" '[ "$p54v" = 3 ] && grep -q "sysfont/f.ttf（内容与源不同）" "$T/p54-verify-old.log"'
 o=$($PK); ck "重打：sysfont/f.ttf 按内容判过期、重克隆 1 个，包里换成新字节（原先「重算 0 个」、包里仍是 f）" 'grep -q "克隆 / 重算 1 个" <<< "$o" && [ "$(cat $T/pack/sysfont/f.ttf)" = g ] && grep -q "^sysfont/f.ttf	2	$(shasum -a 256 $T/font/f.ttf | cut -c1-64)$" $T/pack/index.tsv'
 ck "重打后核对绿；--check 认最新" '$VF > /dev/null && $PK --check > /dev/null'
 python3 -c "import os;open('$T/font/f.ttf','wb').write(b'h\\n');os.utime('$T/font/f.ttf',ns=($fmt,$fmt))"
@@ -85,8 +87,11 @@ o=$($PK); ck "换成另一个同大小同 mtime 的文件（新 inode，同 tar 
 cp -p $S/a.bin $S/.a.cp && mv $S/.a.cp $S/a.bin
 o=$($PK); ck "换成内容相同的副本（新 inode、同 mtime，同新版本根克隆来的 aoc）→ 只重读比内容、不重拷，重算 0 个" 'grep -q "克隆 / 重算 0 个" <<< "$o" && $VF > /dev/null'
 echo a3 > $S/a.bin; $PK > /dev/null
-python3 -c "import os;f=open('$T/pack/romfs/.build.config','r+b'); f.write(b'X'); f.close()"; ck "核对通过后包里改字节（同长，mtime 变）→ 照样核对红" '! $VF > /dev/null'; $PK > /dev/null; rm -f $T/pack.state.tsv; $PK > /dev/null
-echo x > $T/pack/stray.bin; ck "包里多文件 → 核对红" '! $VF > /dev/null'; rm $T/pack/stray.bin
+python3 -c "import os;f=open('$T/pack/romfs/.build.config','r+b'); f.write(b'X'); f.close()"; ck "核对通过后包里改字节（同长，mtime 变）→ 照样核对黄字" '$VF > /dev/null; [ $? = 3 ]'; $PK > /dev/null; rm -f $T/pack.state.tsv; $PK > /dev/null
+echo x > $T/pack/stray.bin; ck "包里多文件 → 核对黄字照常继续、这次不写核对记录（下次全量重核）" 'rm -f $T/pack.verify.tsv; $VF > /dev/null; [ $? = 3 ] && [ ! -e $T/pack.verify.tsv ]'; rm $T/pack/stray.bin
+ck "多文件拿掉后再核 → 绿、黄字记录删掉、核对记录写回" '$VF > /dev/null && [ ! -e $T/pack.verify_warn.txt ] && [ -e $T/pack.verify.tsv ]'
+cp $T/pack/manifest.json $T/manifest.bak; python3 -c "import json;p='$T/pack/manifest.json';m=json.load(open(p));m['version']=9;json.dump(m,open(p,'w'))"
+ck "清单版本不对（核不下去）→ 照旧红、退 1" '$VF > $T/v9.log 2>&1; [ $? = 1 ] && grep -q "🔴" $T/v9.log'; mv $T/manifest.bak $T/pack/manifest.json
 echo npdm > $T/main.npdm; PF="python3 $H/pack/pack.py $T/pack2 exefs/main.npdm=$T/main.npdm romfs=$S"
 o=$($PF); ck "单文件源：exefs/main.npdm 进包、核对绿" 'grep -q "^exefs/main.npdm	5	" $T/pack2/index.tsv && python3 $H/pack/verify.py $T/pack2 exefs/main.npdm=$T/main.npdm romfs=$S > /dev/null'
 ck "目录源用多级前缀（a/b=目录）→ 进包路径 a/b/…、核对绿" 'python3 $H/pack/pack.py $T/pack3 a/b=$S > /dev/null && grep -q "^a/b/a.bin	" $T/pack3/index.tsv && python3 $H/pack/verify.py $T/pack3 a/b=$S > /dev/null'

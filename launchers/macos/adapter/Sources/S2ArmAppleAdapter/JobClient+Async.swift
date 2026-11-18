@@ -5,7 +5,7 @@ public struct JobFailure: Error, LocalizedError {
     public let outcome: JobOutcome
     public init(_ outcome: JobOutcome) { self.outcome = outcome }
     public var state: JobOutcome.State { outcome.state }
-    public var code: String? { outcome.diagnostics.first?["code"] as? String }
+    public var code: String? { outcome.failureCode }
     public var errorDescription: String? { outcome.message.isEmpty ? JobOutcome.interruptedMessage : outcome.message }
 }
 

@@ -8,8 +8,10 @@
                     打包时建的单提交 Git 库只用来算 git 值（bundle_engine.seal_snapshot），算完删掉、不随包
   Runtime/          随包运行时（bundle_runtime_win.py：Python 嵌入版、bash、zstd、许可；不带 .NET）
   Shell/            预编壳（壳编号须等于 engine.json 的 shellId）
+  Shell-tvOS/       Apple TV 预编壳（--tv-shell 给了才有；壳编号须等于本引擎的 tvOS 壳编号；Mac 上 S2A_APPLE_OS=tvos pack/shell_build.sh 出）。
+                    没带的这一版 Windows 出不了 Apple TV 包（启动器导出页不显示 Apple TV）
   Fonts/            开源共享字体 7 份 .bfttf
-  ThirdParty/Impactor/  官方原版 Impactor + plumesign（v2.7.2，不改不重签，SHA-256 钉在 pack/jobs/impactor.py BUNDLED，不符拒打）+ 许可（MIT、内嵌 apple-codesign 的 MPL-2.0）+ 来源说明
+  ThirdParty/Impactor/  官方原版 Impactor + plumesign（v2.7.3，不改不重签，SHA-256 钉在 pack/jobs/impactor.py BUNDLED，不符拒打）+ 许可（MIT、内嵌 apple-codesign 的 MPL-2.0）+ 来源说明
 启动器作业请求：resources=<目标>、engineBundle=engineDir=<目标>\\Engine（同 Mac Store.swift）。
 预编壳、时区、字体三样目前只在 Mac 上产出（pack/shell_build.sh、services/systemdata/make_tzdata.sh --bundle-to、pack/fonts/make_open_fonts.py），作为输入给进来，这里只核对后收入。
 """
@@ -32,7 +34,7 @@ import bundle_runtime_win   # noqa: E402
 sys.path.insert(0, str(ROOT / "pack/jobs"))
 import impactor   # noqa: E402  随包 Impactor 的版本 / 文件名 / 哈希只此一份（作业层按同一份找）
 
-IMPACTOR_LICENSES = ROOT / "launchers/windows/third_party/impactor"   # v2.7.2 标签下的 LICENSE 与 3rdparty/apple-codesign-0.29.0/LICENSE 原文
+IMPACTOR_LICENSES = ROOT / "launchers/windows/third_party/impactor"   # v2.7.3 标签下的 LICENSE 与 3rdparty/apple-codesign-0.29.0/LICENSE 原文
 
 
 def say(m): print(m, flush=True)
@@ -123,7 +125,7 @@ def smoke_reader(runtime, engine):
     say(f"  读取器 {Path(exe).name} 起得来（只用随包运行时）")
 
 
-def bundle(target, shell, tzdata, fonts):
+def bundle(target, shell, tzdata, fonts, tv_shell=None):
     target = Path(target).resolve()
     if target.exists():
         raise SystemExit(f"【红】{target} 已存在：换个空目标，不混旧件")
@@ -137,6 +139,10 @@ def bundle(target, shell, tzdata, fonts):
     want = shell_manifest.current_id()
     if not (shell / "manifest.json").is_file() or shell_id(shell) != want:
         raise SystemExit(f"【红】预编壳 {shell} 不是本引擎的壳 {want}（Mac 上 pack/shell_build.sh 按同一提交出）")
+    if tv_shell:
+        tv_shell, want_tv = Path(tv_shell), shell_manifest.current_id("tvos")
+        if not (tv_shell / "manifest.json").is_file() or shell_id(tv_shell) != want_tv:
+            raise SystemExit(f"【红】Apple TV 预编壳 {tv_shell} 不是本引擎的 tvOS 壳 {want_tv}（Mac 上 S2A_APPLE_OS=tvos pack/shell_build.sh 按同一提交出）")
     engine = target / "Engine"
     fingerprint = bundle_engine.source_fingerprint(ROOT)
     say(f"[组装] 引擎快照：{snapshot(engine)} 个文件")
@@ -147,6 +153,10 @@ def bundle(target, shell, tzdata, fonts):
     say("[组装] 随包运行时"); bundle_runtime_win.main([str(target)])
     say("[组装] 自检：只用随包运行时起读取器"); smoke_reader(target / "Runtime", engine)
     shutil.copytree(shell, target / "Shell")
+    if tv_shell:
+        shutil.copytree(tv_shell, target / "Shell-tvOS")
+    else:
+        say("[组装] 🟡 没给 --tv-shell：本版不带 Apple TV 预编壳，Windows 出不了 Apple TV 包")
     (target / "Fonts").mkdir()
     for f in bft:
         shutil.copy2(f, target / "Fonts" / f.name)
@@ -174,8 +184,9 @@ def bundle(target, shell, tzdata, fonts):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("target"); ap.add_argument("--shell", required=True); ap.add_argument("--tzdata", required=True); ap.add_argument("--fonts", required=True)
+    ap.add_argument("--tv-shell", help="Apple TV 预编壳目录（可选；不给 = 这版 Windows 出不了 Apple TV 包）")
     a = ap.parse_args(argv)
-    bundle(a.target, a.shell, a.tzdata, a.fonts)
+    bundle(a.target, a.shell, a.tzdata, a.fonts, a.tv_shell)
 
 
 if __name__ == "__main__":

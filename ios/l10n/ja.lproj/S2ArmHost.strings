@@ -37,11 +37,12 @@
 "cheats.status.execError" = "実行エラー";
 "cheats.status.gameNotLoaded" = "ゲーム未読込";
 "cheats.status.modifiesCode" = "ゲームコードを変更するため、iPhone 上でインポートしても動作しません：コンピュータ上の S2Arm でこの txt をインポートしてから、iPhone 上の S2Arm を更新してください";
+"cheats.status.notPacked" = "ゲームコードを変更するため、今回のパッケージには入りませんでした（同じモジュールのパッチが多すぎる等。理由はコンピュータのエクスポート結果を参照）";
 "cheats.status.packed" = "有効";
 "cheats.status.off" = "オフ";
 "cheats.status.pending" = "反映待ち…";
-"cheats.status.versionMismatch" = "バージョン不一致";
-"cheats.status.versionMismatch.file" = "バージョン不一致のため反映されません";
+"cheats.status.versionMismatch" = "このゲームのバージョンと一致しないため無効";
+"cheats.status.versionMismatch.file" = "このゲームのバージョンと一致しないため無効（ゲームは通常どおり遊べます）";
 "cheats.title" = "チート";
 "cheats.unnamed" = "無題";
 "common.cancel" = "キャンセル";
@@ -270,8 +271,8 @@
 "app.fpsCap.restored" = "60 FPS に戻りました。";
 "app.lowRam.title" = "このデバイスはメモリが不足している可能性があります";
 "app.lowRam.body" = "このゲームはデバイスより多くのメモリを必要とします。起動はできますが、動作が重くなるか、システムに強制終了される場合があります。";
-"app.gpuStop.body" = "アプリスイッチャーでこの App を閉じて、ゲームをもう一度開いてください。";
-"app.gpuStop.title" = "グラフィックエラー — 停止しました";
+"app.gpuStop.body" = "アプリスイッチャーでこの App を閉じてから開き直せば、たいていゲームが最後に保存したところから続けられます。原因を調べてほしいときは「問題を報告」で診断を送ってください。";
+"app.gpuStop.title" = "ゲームが応答しなくなったため、安全に停止しました";
 "app.library.broken.title" = "ゲームファイルが不完全です";
 "app.library.cantOpen" = "このゲームは開けません";
 "app.library.cantOpen.message" = "このゲームの起動準備が完了しませんでした。アプリスイッチャーで App を閉じて再度開いてください。それでも失敗する場合は、診断をエクスポートしてご連絡ください。";
@@ -329,6 +330,8 @@
 "img.scanFailed.title" = "ゲームファイルをインポートできませんでした";
 "img.noShaders.title" = "このゲームファイルは不完全です";
 "img.noShaders.body" = "「%@」は不完全です。PC の「S2Arm Self-Sign Export」フォルダ内の「<ゲーム名>.img」に置き換えるか、iPhone を接続して PC の S2Arm で「Send to iPhone」をクリックしてください。";
+"img.updateSkipped.title" = "シェーダー更新をスキップしました";
+"img.updateSkipped.body" = "「%@」は現在のゲームのバージョンと対応していないため、スキップして適用していません。ゲームはそのまま遊べます。この更新を使うには、PC の同じエクスポートの完全な .img と一緒に入れてください。";
 "container.locked.title" = "S2Arm の一部のファイルがシステムにロックされています";
 "container.locked.body" = "この端末には、システムにロックされた S2Arm の古いファイルが %@ GB あります。S2Arm では変更も削除もできず、アプリを削除したときにだけ消えます。\n\n空き容量を戻すには：\n1. 各ゲームでメニュー →「セーブデータ管理」→「現在のセーブデータをエクスポート…」で、「ファイル」の S2Arm フォルダ以外の場所に保存（iCloud Drive など。アプリを削除すると S2Arm フォルダも消えます）\n2. S2Arm を削除して再インストール\n3. 「セーブデータ管理」→「確認するバックアップを選択…」でセーブを戻す";
 "diag.fileWord" = "診断";
@@ -338,7 +341,7 @@
 "diag.error.zip" = "バンドルを作成できませんでした(zip の書き込みに失敗しました。iPhone の空き容量が不足している可能性があります)";
 "diag.export" = "診断パッケージをエクスポート";
 "diag.prompt.abnormalExit" = "前回 S2Arm が正常に終了しませんでした(クラッシュ、フリーズ、またはシステムによる終了)";
-"diag.prompt.imlLost" = "前回 S2Arm が正常に終了しませんでした。このインストールは「メモリ上限の引き上げ」権限を失っているため、大容量ゲームでの終了はメモリ不足の可能性が高いです。コンピュータの S2Arm で「iPhone にインストール」から再インストールしてください（無料の Apple ID でもこの権限は付きます）。自分で署名する場合は Xcode か AltStore Classic v2.3 を使ってください。SideStore 0.7.0 で再署名すると失われます。インストール済みなら GetMoreRam で App ID に権限を追加してから再インストールすることもできます";
+"diag.prompt.imlLost" = "前回 S2Arm が正常に終了しませんでした。このインストールは「メモリ上限の引き上げ」権限を失っているため、大容量ゲームが終了したのはおそらくメモリ不足です。S2Arm をインストールした方法に合わせて付け直してください：\n· パソコンの S2Arm（無料・有料の Apple ID）：このゲームの「iPhone にインストール」を押して再インストールします。その後もこの案内が出る場合は、下の GetMoreRam で権限を追加してから、もう一度「iPhone にインストール」を押してください。\n· 自分の開発者証明書（.p12 + プロビジョニングプロファイル）：Apple Developer サイトで S2Arm の App ID（Apple が App ごとに登録する識別情報）の「Increased Memory Limit」をオンにし、プロファイルを作り直して、新しいプロファイルで署名し直してインストールします。\n· AltStore：AltStore Classic 2.2 以降で再インストールします（更新ではありません）。\n· SideStore 0.7.0：署名でこの権限が外れます。下の GetMoreRam で追加してから、SideStore で再インストールしてください。\n· Sideloadly：現在は非対応です。無料アカウントでこの権限が保たれるとは案内されておらず、カスタム権限には有料の Apple Developer アカウントが必要です。\n· GetMoreRam：S2Arm と同じ Apple ID で自分で署名してインストールし（無料アカウントの App 枠を 1 つ使います。使い終わったら削除してかまいません）、サインインして App IDs を開き、更新をタップ、S2Arm を選んで「Add Increased Memory Limit」をタップし、元の方法で S2Arm を再インストールします。";
 "diag.prompt.crash" = "システムは前回 S2Arm がクラッシュまたはフリーズしたと報告しています";
 "diag.prompt.message" = "%@。実行ログ、クラッシュレポート、ゲームが使用したグラフィックスパイプラインのリスト(シェーダー ID のみ)をアップロードします(セーブデータ、キー、ゲームファイルは含まれません)。短いコードが発行されます。";
 "diag.prompt.no" = "結構です";
@@ -366,6 +369,8 @@
 "dprompt.expiry.hours" = "約 %d 時間";
 "dprompt.expiry.lessThanHour" = "1 時間未満";
 "dprompt.expiry.title" = "署名の有効期限が近づいています";
+"dprompt.input.bad.body" = "今回は既定のボタン配置で起動します（%@）。";
+"dprompt.input.bad.title" = "ボタン設定を読み込めませんでした";
 "dprompt.ns2pro.body" = "画面を 4 本指で 1.5 秒長押しして設定を開き、「Switch 2 Pro コントローラーを有効にする」をオンにしてから、コントローラーのペアリングボタンを押してください。";
 "dprompt.ns2pro.title" = "Switch 2 Pro コントローラーを使用しますか？";
 "dprompt.motion.title" = "モーション操作";
@@ -385,7 +390,8 @@
 "gfx.fpsLimit" = "フレームレート上限";
 "gfx.fpsLimit.none" = "無制限";
 "gfx.resolution" = "レンダリング解像度";
-"iml.lost.body" = "大容量ゲームはメモリ不足で終了したり遅くなったりする可能性があります。コンピュータの S2Arm で「iPhone にインストール」から再インストールしてください（無料の Apple ID でもこの権限は付きます）。自分で署名する場合は Xcode か AltStore Classic v2.3 を使ってください。SideStore 0.7.0 で再署名すると失われます。インストール済みなら GetMoreRam で App ID に権限を追加してから再インストールすることもできます。";
+"iml.lost.body" = "大容量ゲームはメモリ不足で終了したり遅くなったりする可能性があります。S2Arm をインストールした方法に合わせて付け直してください：\n· パソコンの S2Arm（無料・有料の Apple ID）：このゲームの「iPhone にインストール」を押して再インストールします。その後もこの案内が出る場合は、下の GetMoreRam で権限を追加してから、もう一度「iPhone にインストール」を押してください。\n· 自分の開発者証明書（.p12 + プロビジョニングプロファイル）：Apple Developer サイトで S2Arm の App ID（Apple が App ごとに登録する識別情報）の「Increased Memory Limit」をオンにし、プロファイルを作り直して、新しいプロファイルで署名し直してインストールします。\n· AltStore：AltStore Classic 2.2 以降で再インストールします（更新ではありません）。\n· SideStore 0.7.0：署名でこの権限が外れます。下の GetMoreRam で追加してから、SideStore で再インストールしてください。\n· Sideloadly：現在は非対応です。無料アカウントでこの権限が保たれるとは案内されておらず、カスタム権限には有料の Apple Developer アカウントが必要です。\n· GetMoreRam：S2Arm と同じ Apple ID で自分で署名してインストールし（無料アカウントの App 枠を 1 つ使います。使い終わったら削除してかまいません）、サインインして App IDs を開き、更新をタップ、S2Arm を選んで「Add Increased Memory Limit」をタップし、元の方法で S2Arm を再インストールします。";
+"iml.lost.short" = "大容量ゲームはメモリ不足で終了することがあります。「詳しく見る」で、この権限を付けて署名し直す方法を確認できます。";
 "iml.lost.title" = "このインストールは「メモリ上限の引き上げ」権限を失いました";
 "lan.denied.later" = "後で";
 "lan.denied.message" = "システムが「%@」にローカルネットワーク上のデバイスの検索を許可していないため、マルチプレイヤーで他のプレイヤーを見つけられません。\n\n設定 › プライバシーとセキュリティ › ローカルネットワーク に移動し、「%@」をオンにしてから、戻ってマルチプレイヤーに再参加してください。";
@@ -566,3 +572,15 @@
 "sgrade.cpatch.detail" = "コミュニティパッチの詳細";
 "sgrade.state.off_auto.widen_fit" = "自動でオフにしました：%1$@ にフルスクリーンが画面いっぱいにならないか、画面が引き伸ばされました";
 "sgrade.notice.fullscreen_off" = "S2Arm 汎用フルスクリーンは今回うまく動かなかったため自動でオフにしました。ゲームはそのまま遊べます。もう一度試すにはギアメニューでオンにしてください。";
+
+/* 0.6.0 快照：游戏中菜单 */
+"vpad.snap.save" = "この瞬間を保存";
+"vpad.snap.restore" = "保存した瞬間に戻る";
+"vpad.snap.saving" = "この瞬間を保存中…";
+"vpad.snap.saved" = "この瞬間を保存しました";
+"vpad.snap.notSaved" = "今回は保存できませんでした。少ししてからもう一度";
+"vpad.snap.busy" = "前回の保存がまだ終わっていません";
+"vpad.snap.restoreFailed" = "戻れませんでした：%@";
+"vpad.snap.saveChanged.title" = "保存した瞬間に戻りますか？";
+"vpad.snap.saveChanged.body" = "その後ゲームがセーブしています。戻るとゲームのセーブもその時点に戻ります。今のセーブは先にバックアップします。";
+"vpad.snap.saveChanged.go" = "戻る";

@@ -9,14 +9,14 @@
   python -m pack.jobs.impactor guide [--ipa <ipa>]  生成并打开分步引导页（pack/jobs/impactor_guide.json → 本机临时 HTML）
   python -m pack.jobs.impactor explain "<报错原文>"  Impactor / 侧载工具报错 → 共用错误码 + 处理办法（pack/jobs/errors.py）
 
-实测口径（11-04 Windows 出包机 + 测试设备2）：Impactor v2.7.2 缺省设置签装，可用内存 8177 MB（保住「提高内存上限」）；同版本经 Wi-Fi 自动续签后仍 8177 MB。"""
+实测口径（11-04 Windows 出包机 + 测试设备2）：Impactor v2.7.2 缺省设置签装（11-17 升 v2.7.3：相对 2.7.2 只改登录时 anisette 头的大小写与 Mac 设备号两处，签名与权限代码未动，玩家反馈 2.7.3 登录恢复），可用内存 8177 MB（保住「提高内存上限」）；同版本经 Wi-Fi 自动续签后仍 8177 MB。"""
 import glob, json, os, re, subprocess, sys, tempfile, urllib.request, webbrowser
 
 H = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, H)
 from errors import recovery   # noqa: E402
 
-TESTED = '2.7.2'
+TESTED = '2.7.3'
 RELEASE_PAGE = f'https://github.com/claration/impactor/releases/tag/v{TESTED}'
 LATEST_API = 'https://api.github.com/repos/claration/impactor/releases/latest'
 PRODUCT = 'plumeimpactor'
@@ -26,8 +26,8 @@ PRODUCT = 'plumeimpactor'
 BUNDLE_DIR = 'ThirdParty/Impactor'
 IMPACTOR_EXE = 'Impactor-windows-x86_64-portable.exe'
 PLUMESIGN_EXE = 'plumesign-windows-x86_64.exe'
-BUNDLED = {IMPACTOR_EXE: 'f493cd99081370dca7c677676e119d8808418ebccab49e1f219744b3b71e88ef',
-           PLUMESIGN_EXE: 'b965e51a613341cb8c7e0f3594b24c09243a235b4187f669ea958a548e6a2fe0'}
+BUNDLED = {IMPACTOR_EXE: 'ebf939f8c8e74b4cd693d2f9871db4b8304f12396181fdd17404a127427b9923',
+           PLUMESIGN_EXE: '94664749fbbceb9a16bf89583f473dafb9b35c8d058a9d8665dc963b3453c6fc'}
 DOWNLOAD = f'https://github.com/claration/impactor/releases/download/v{TESTED}/'
 
 
@@ -91,10 +91,12 @@ EXPLAIN = (
     (r'anisette error[\s\S]{0,600}?(?:dns error|os error 1100[1-4]|client error \(connect\)|error sending request|connection (?:refused|reset)|timed out)', 'signing_server_unreachable'),
     # 保存的 Apple ID 会话过期（Apple 开发者接口 1100「Your session has expired. Please log in.」，plumesign 恢复会话时报，玩家反馈 v0.2.7）：
     #   要在 Impactor 里重新登录；原先落到 device_install_failed，建议写「检查设备连接与包的有效性」，把玩家往错的方向引
-    (r'developer api error 1100\b|\b1100\b[^\n]{0,40}session|session has expired|please log ?in again|not logged in', 'apple_session_expired'),
-    # 存了账号却没选中（D-ZM37 plumesign 原文「No account selected. Please login first」）：处理办法同过期——在 Impactor 里移除再添加，
-    #   添加即选中（v2.7.2 accounts_add 设 selected_account）；只存了一个的在签名前已替玩家选上（select_only_account），到这里的是存了多个
-    (r'no account selected', 'apple_session_expired'),
+    # 连不上苹果自己的服务器（登录 gsa.apple.com、签名 developerservices2.apple.com）：网络问题，不是 Apple ID 的问题（#edc5f5 拆分）
+    (r'error sending request for url \(https?://[^\s)]*\bapple\.com', 'apple_server_unreachable'),
+    (r'developer api error 1100\b|\b1100\b[^\n]{0,40}session|session has expired|please log ?in again', 'apple_session_expired'),
+    # 还没登录 / 存了账号却没选中（D-ZM37 plumesign 原文「No account selected. Please login first」）：原先归「登录已过期」，
+    #   对从没登录成功过的玩家措辞不对（#edc5f5）。添加即选中（v2.7.2 accounts_add 设 selected_account）；只存了一个的在签名前已替玩家选上（select_only_account）
+    (r'no account selected|please log ?in first|not logged in', 'apple_not_signed_in'),
     (r'-2097\d|-20101|incorrect|entered incorrectly', 'apple_id_wrong'),
     (r'-21669|verification code|two.?factor|2fa', 'two_factor_wrong'),
     (r'unknown error occured while reading the file|unknown error occurred while reading the file|zip64', 'ipa_needs_repack'),

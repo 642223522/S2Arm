@@ -23,6 +23,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // 强引用：游戏目标必须链接真实共享 core 对象，诊断 s2a_native_stub.c 不能提供这些入口。
@@ -48,6 +49,8 @@ __attribute__((visibility("hidden"))) int s2a_android_session_log_start(const ch
 // 可选：UI broker 只存在于 Android 外壳；宿主 runtime 单测没有它。调用是无条件的，
 // 所以弱声明也必须在 Android 条件之外，否则 host 单测在 -Werror 下编不过。
 __attribute__((weak)) int s2a_android_ui_bind_session(uint64_t);
+// 弱链接[runtime]：s2a_direct_diag_start
+__attribute__((weak)) int s2a_direct_diag_start(const char *, uint64_t);
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct s2a_android_runtime_status g_status;
@@ -70,6 +73,10 @@ static int failed(int error, int services_error, const char *why) {
     g_status.services_error = services_error;
     pthread_mutex_unlock(&g_lock);
     // 既有 HostApi 异步请求退出；此处不销毁仍可能使用中的 guest 内存、服务或 lease。
+    // 结束原因同时进会话日志：stop detail 只交给外壳，外壳关窗后就看不到了。用户停止 / guest 正常返回不算红。
+    int red = error != S2A_RUNTIME_STOP && error != S2A_RUNTIME_RETURNED;
+    fprintf(stderr, "[s2a] %sruntime %s %d (services %d): %s\n", red ? "【红】" : "", red ? "failed" : "ended",
+            error, services_error, why ? why : "");
     g_host->stop->request_stop(g_host->host, S2A_HOST_STOP_ERROR, why);
     return error;
 }
@@ -209,6 +216,8 @@ static int run_common(const struct s2a_android_runtime_request *r,
             services_v2->graphics = &frozen->table;
             services_v2->graphics_mode = 1;
             frozen_direct = 1;
+            if (s2a_direct_diag_start && s2a_direct_diag_start(getenv("S2A_FRAME_LOG_DIR"), r->services.session_id))
+                fprintf(stderr, "[s2a] 【红】direct trace 初始化失败，采集不可用\n");
             // 直连安全网（共用 dguard.c，接口 dguard_android.h）：NVN 直连已提交、客体代码
             // 还没跑——武装点与 iOS host_main 的 begin/arm 时机一致。满限 + 无人值守收局，
             // 有人局提示后照常武装继续；debug.s2a.dguard=0 整局不武装（launch 里判）。
@@ -234,6 +243,13 @@ static int run_common(const struct s2a_android_runtime_request *r,
         } else names[count++] = r->module_names[i];
     }
     // 包内能力清单（产物根 s2a_caps.tsv，tools/make_pack.py 放进游戏数据根，iOS / Mac 同一份）：装载前读，只在环境变量未设时写 S2A_WIDEN_CAPS / S2A_FPS60
+    // 停帧救场留下的「这款帧率补丁下次也关」（docs_android.h s2a_android_stall_off_apply；state 目录即上面绑的 S2A_DOCS）：要在能力清单之前，清单才不会把 60 帧写回 1
+    {
+        int stall = s2a_android_stall_off_apply(r->services.state_dir);
+        if (stall == 1) fprintf(stderr, "[s2a] 停帧救场标记 cpatch_stall_off 在：这款上次画面停住时关过帧率补丁，本局 60 帧 / 帧率补丁按关（S2A_FPS60=0）\n");
+        else if (stall == 2) fprintf(stderr, "[s2a] 停帧救场标记 cpatch_stall_off 在，但启动环境已给 S2A_FPS60，按启动环境\n");
+        else if (stall < 0) fprintf(stderr, "[s2a] 【红】停帧救场标记在，写 S2A_FPS60=0 失败（errno=%d），本局帧率补丁照清单\n", -stall);
+    }
     s2a_caps_apply(r->services.game_data_dir);
     if (r->module_source) {
         s2a_nro_table_load(r->services.game_data_dir);
@@ -457,7 +473,6 @@ int s2a_android_runtime_enter_guest_thread(void) {
         else
             snprintf(why, sizeof why, "缺页自检没过：故意制造的缺页没有被 S2Arm 接住（错误 %d），游戏没法起局。请到 GitHub #573 留言告诉我们机型和系统版本 / "
                      "Fault self-check failed (error %d); please report your device on GitHub #573", probe, probe);
-        fprintf(stderr, "[s2a] 【红】%s\n", why);
         return failed(S2A_RUNTIME_SIGNALS, probe, why);
     }
     if (!s2a_track_runtime_ready()) return failed(S2A_RUNTIME_TRACKING, 0, "guest thread final tracking admission failed");

@@ -26,8 +26,8 @@ python3 -I - "$APP" > "$APP.machos" <<'PY'
 import sys, pathlib
 magic = {b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"}
 root = pathlib.Path(sys.argv[1])
-SHELL = root / "Contents/Resources/Shell"   # 预编 iOS 壳：不签（见下）
-files = [p for p in root.rglob("*") if p.is_file() and not p.is_symlink() and "_CodeSignature" not in p.parts and SHELL not in p.parents and p.open("rb").read(4) in magic]
+SHELLS = (root / "Contents/Resources/Shell", root / "Contents/Resources/Shell-tvOS")   # 预编 iOS / Apple TV 壳：不签（见下）
+files = [p for p in root.rglob("*") if p.is_file() and not p.is_symlink() and "_CodeSignature" not in p.parts and not any(sh in p.parents for sh in SHELLS) and p.open("rb").read(4) in magic]
 for p in sorted(files, key=lambda p: -len(p.parts)):
     print(p)
 PY
@@ -39,8 +39,8 @@ rm -f "$APP.machos"
 python3 -I - "$APP" > "$APP.bundles" <<'PY'
 import sys, pathlib
 root = pathlib.Path(sys.argv[1])
-SHELL = root / "Contents/Resources/Shell"
-dirs = {p for p in (root / "Contents").rglob("*") if p.is_dir() and not p.is_symlink() and SHELL not in p.parents and p != SHELL and (p.suffix in (".app", ".framework") or (p.name != "Contents" and (p / "_CodeSignature").is_dir()))}
+SHELLS = (root / "Contents/Resources/Shell", root / "Contents/Resources/Shell-tvOS")
+dirs = {p for p in (root / "Contents").rglob("*") if p.is_dir() and not p.is_symlink() and not any(sh in p.parents or p == sh for sh in SHELLS) and (p.suffix in (".app", ".framework") or (p.name != "Contents" and (p / "_CodeSignature").is_dir()))}
 for p in sorted(dirs, key=lambda p: -len(p.parts)):
     print(p)
 PY
@@ -64,6 +64,7 @@ if bad:
     sys.exit("【红】引擎清单与签名后的文件对不上：" + "、".join(bad[:5]))
 PY
 python3 -I "$HERE/../../pack/shell/manifest.py" verify --root "$APP/Contents/Resources/Shell/root" --manifest "$APP/Contents/Resources/Shell/manifest.json" > /dev/null || { echo "【红】壳清单与签名后的文件对不上" >&2; exit 3; }
+python3 -I "$HERE/../../pack/shell/manifest.py" verify --root "$APP/Contents/Resources/Shell-tvOS/root" --manifest "$APP/Contents/Resources/Shell-tvOS/manifest.json" > /dev/null || { echo "【红】Apple TV 壳清单与签名后的文件对不上" >&2; exit 3; }
 codesign -d -r- "$APP" 2>&1 | grep -q 'designated => .*certificate leaf' || { echo "【红】指定要求不是证书形式" >&2; exit 3; }
 echo "签名：$n 个 Mach-O + 整包，Developer ID，强化运行时，校验通过"
 Z=$(dirname "$APP")/S2Arm.zip; rm -f "$Z"

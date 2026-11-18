@@ -35,6 +35,8 @@ enum { S2A_INIT_FAIL_EXIT = 1, S2A_INIT_FAIL_PAGE = 2 };
 // direct_lib_missing（码 id 沿用）：11-13 起没带直连库照样起局、着色器现编，只剩「设备本身跑不了直连」（无 Metal 4 / Metal 3 路径）会停在这里
 #define S2A_INIT_FAIL_MSG_SHADERS "这台设备的图形芯片跑不了 S2Arm（需要 A13 / M1 或更新的芯片）：换一台更新的 iPhone / iPad 再试。"
 #define S2A_INIT_FAIL_MSG_SHADERS_EN "This device's graphics chip can't run S2Arm (it needs an A13 / M1 or newer chip). Try a newer iPhone or iPad."
+#define S2A_INIT_FAIL_MSG_HEAP    "这款需要更多内存，已经记下，再点一次开始就能进。"
+#define S2A_INIT_FAIL_MSG_HEAP_EN "This game needs more memory. It has been noted, so tap Start again and it will run."
 #define S2A_INIT_FAIL_MSG_DEVICE  "这台设备的内存和地址空间不够运行这款游戏，换一台内存更大的 iPhone / iPad 再试；诊断里有它要多少、这台设备有多少。"
 #define S2A_INIT_FAIL_MSG_DEVICE_EN "This device doesn't have enough memory and address space to run this game. Try an iPhone or iPad with more memory; the diagnostics show how much it needs and how much this device has."
 // 错误码：由失败出口显式指定（host_main.c failed_session 的调用点一处一个），不从摘要文本猜。
@@ -48,7 +50,8 @@ enum { S2A_INIT_FAIL_EXIT = 1, S2A_INIT_FAIL_PAGE = 2 };
     X(S2A_INIT_FAIL_E_DGUARD_LIMIT,  "dguard_limit",  "直连安全网：此前已连续失败满 3 次，自动化局不停在提示页，收局（重新出包后从 0 数）", S2A_INIT_FAIL_MSG_GENERIC) \
     X(S2A_INIT_FAIL_E_GAME_FILES,    "game_files_missing", "服务会话初始化失败：资源包里没有 exefs/main.npdm（游戏文件不在机上 / 没导完）", S2A_INIT_FAIL_MSG_FILES) \
     X(S2A_INIT_FAIL_E_DIRECT_LIB,    "direct_lib_missing", "设备跑不了直连（无 Metal 4 / Metal 3 路径）；包里没带直连库不再停在这里（11-13 起现编）", S2A_INIT_FAIL_MSG_SHADERS) \
-    X(S2A_INIT_FAIL_E_DEVICE_ADDRESS, "device_address_space", "地址窗口连模块段、栈、堆前段都放不下：设备地址空间 / App 内存上限不够跑这款（#446，原先 abort 静默闪退）", S2A_INIT_FAIL_MSG_DEVICE)
+    X(S2A_INIT_FAIL_E_DEVICE_ADDRESS, "device_address_space", "地址窗口连模块段、栈、堆前段都放不下：设备地址空间 / App 内存上限不够跑这款（#446，原先 abort 静默闪退）", S2A_INIT_FAIL_MSG_DEVICE) \
+    X(S2A_INIT_FAIL_E_HEAP_LEARNED, "heap_learned", "普通堆超出堆区、游戏随后中止：已记下本款要的堆（wire/<程序号>/heap_need），下一局堆区按它给（D-NGH9）", S2A_INIT_FAIL_MSG_HEAP)
 #define S2A_INIT_FAIL_ENUM_(e, id, summary, msg) e,
 enum { S2A_INIT_FAIL_E_UNKNOWN = 0, S2A_INIT_FAIL_CODES(S2A_INIT_FAIL_ENUM_) S2A_INIT_FAIL_E_COUNT };
 #undef S2A_INIT_FAIL_ENUM_

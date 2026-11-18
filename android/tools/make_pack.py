@@ -330,9 +330,17 @@ def stage_system_data(root, staging, sysdata=None):
     return str(existing)
 
 
+def romfs_image(root):
+    """产物根的 RomFS 是镜像形态：romfs/ 目录不在、旁边是标准 RomFS 镜像 romfs.std（普通文件）"""
+    return not os.path.isdir(os.path.join(root, 'romfs')) and os.path.isfile(os.path.join(root, 'romfs.std'))
+
+
 def entries_from_root(root, staging, sysdata=None, direct_vulkan=False):
     """(pack path, source) pairs, as pack/ipa.sh chooses them, plus modules/."""
-    need = [('exefs/main.npdm', 'exefs/main.npdm'), ('romfs', 'romfs'), ('ctl/control.nacp', 'ctl/control.nacp')]
+    # RomFS 两种形态（约定同 graphics/nvn/tools/romfs_list.py、服务层 Application.cs StdOf / OpenStd）：romfs/ 目录，
+    #   或目录不在、只有标准 RomFS 镜像 romfs.std（出包缺省不落散文件，8fe66d7fe）——镜像整份进包，起局时服务层直接读它
+    image = romfs_image(root)
+    need = [('exefs/main.npdm', 'exefs/main.npdm'), ('romfs.std', 'romfs.std') if image else ('romfs', 'romfs'), ('ctl/control.nacp', 'ctl/control.nacp')]
     for _, rel in need:
         if not os.path.exists(os.path.join(root, rel)):
             sys.exit(f'{root} has no {rel}')
@@ -340,7 +348,8 @@ def entries_from_root(root, staging, sysdata=None, direct_vulkan=False):
     out = [(name, os.path.join(root, rel)) for name, rel in need]
     overlay = os.path.join(root, 'ui_overlay', 'romfs')
     if os.path.isdir(overlay):   # 界面布局覆盖层（pack/orch/stages.py _uilayout）：同 pack/pkg_srcs.py，同包内路径后者优先（romfs.s2aidx 按覆盖层大小建）
-        out.append(('romfs', overlay))
+        # 镜像形态没有 romfs/ 可叠：覆盖层原样放 ui_overlay/romfs/，服务层 OpenStd(镜像, <游戏目录>/ui_overlay/romfs) 同路径读覆盖那份
+        out.append(('ui_overlay/romfs' if image else 'romfs', overlay))
     # s2a_caps.tsv: the per-game capability list (fullscreen / 60 fps on unless a strong signal; rewrite stage writes it into the
     # product root for every platform) -- runtime.c applies it from the game data dir before loading modules, like iOS / Mac
     # fps.tsv：60 帧表与改写器读的是同一份（rewrite()），fps.c 从游戏数据根读（#48 D2）
@@ -608,7 +617,8 @@ def write_artifact(out, index_sha, files, total, graphics=None):
         'target': 'android', 'guestAbi': 'aarch64', 'rewriteAbi': REWRITE_ABI,
         'runtime': {'version': RUNTIME_VERSION, 'backend': 'vulkan'},
         'package': {'manifest': 'manifest.json', 'indexSha256': index_sha, 'files': files, 'bytes': total},
-        'npdm': 'exefs/main.npdm', 'control': 'ctl/control.nacp', 'romfs': 'romfs', 'modules': modules,
+        'npdm': 'exefs/main.npdm', 'control': 'ctl/control.nacp', 'modules': modules,
+        'romfs': 'romfs.std' if os.path.isfile(os.path.join(out, 'romfs.std')) else 'romfs',   # 镜像形态（romfs_image）：启动校验按文件核
         'createdAt': stamp.isoformat(timespec='seconds').replace('+00:00', 'Z'),
         'toolchain': {'rewriter': f'runtime/rewriter@{REWRITE_ABI}', 'packer': 'android/tools/make_pack.py@1'},
     }

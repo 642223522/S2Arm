@@ -29,11 +29,11 @@ import sys
 
 import batch as plans
 from core import Cancelled, Paused, atomic, journal
-from errors import Failure
+from errors import Failure, library_lock_failure
 import filelock
 
-OPERATION = {"mac": "build", "iphone": "ipa"}
-SUPPORTED = ("mac", "iphone") if sys.platform == "darwin" else ("iphone",)   # 这台电脑能出的平台：Mac 版只能在 Mac 上出
+OPERATION = {"mac": "build", "iphone": "ipa", "appletv": "ipa"}   # Apple TV：同一个 ipa 作业，请求带 platform = "tvos"（tvOS 壳与 image/tvos 由出包流程出）
+SUPPORTED = ("mac", "iphone", "appletv") if sys.platform == "darwin" else ("iphone", "appletv")   # 这台电脑能出的平台：Mac 版只能在 Mac 上出；Apple TV 包 Windows 也能出（要安装包带的 Shell-tvOS，tvos.derive）
 UNSUPPORTED_MESSAGE = "这台电脑出不了这个平台的包"
 CHILD_ENTRY = Path(__file__).resolve().with_name("main.py")
 CHILD_KEYS_DROPPED = ("plan", "taskId", "jobId", "operation", "gameId", "target", "followUp", "location", "spaceOverride", "parentPid")
@@ -55,7 +55,7 @@ def export(c):
         with filelock.held(c.private / "export.lock", holder=c.lock_holder()):
             return _run(c, plan)
     except filelock.Busy as busy:
-        raise Failure("已经有一个出包在进行：等它出完或取消后再出。", code="library_busy", holder=busy.holder) from None
+        raise library_lock_failure(busy.holder, "已经有一个出包在进行：等它出完或取消后再出。") from None
 
 
 class _Book:
@@ -158,6 +158,10 @@ def _run_step(c, child, gid, platform, plan, location, followUp):
         request["spaceOverride"] = True
     if platform == "iphone" and plan.get("deviceTarget"):
         request["target"] = plan["deviceTarget"]
+    if platform == "appletv":
+        request["platform"] = "tvos"
+        if sys.platform != "darwin":   # Windows 装不到电视：Apple TV 包出好接着导出安装包（.ipa，资源在 App 本体里，玩家自己签名装；tvos.export_tv）
+            request["tvExport"] = True
     if plan.get("sgrade") is False:   # 出包页取消「S 级优化（Beta）」（单款：计划顶层；批量：条目 sgrade，按款记住）：各平台都不带社区补丁与金手指（pack/jobs/patches.py prepare）
         request["sgrade"] = False
     if followUp:
@@ -165,7 +169,6 @@ def _run_step(c, child, gid, platform, plan, location, followUp):
     path = c.logs / "jobs" / (child + ".request.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic(path, request)
-    os.chmod(path, 0o600)
     seen = {}
     def relay(line):
         try:

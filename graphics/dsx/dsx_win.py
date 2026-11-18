@@ -10,6 +10,7 @@ COFF 不认 dsx_abi.h 的 visibility("default")，导出表按 C 源码里标 NX
   /Brepro 让时间戳取内容哈希；在临时子目录里按最终文件名链接，导出表记的名字不带进程号；SPIRV-Cross 的 assert 把 __FILE__（宽字符）编进库，
   -fmacro-prefix-map 把仓库根换成「.」，库里不带检出路径（Windows 出包机按提交号各一份检出）。
 """
+import os as _pw_os, sys as _pw_sys; _pw_sys.path.append(_pw_os.path.join(_pw_os.path.dirname(_pw_os.path.abspath(__file__)), '..', '..', 'tools')); from pool_workers import cores  # noqa: E402  核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
 import concurrent.futures
 import os
 import re
@@ -19,8 +20,9 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.abspath(os.path.join(HERE, '..', '..'))
 SPVC_DIR = os.path.join(ROOT, 'graphics', 'third_party', 'spirv_cross')
-SRCS = sorted(f for f in os.listdir(HERE) if f.endswith('.c'))   # = Makefile SRCS（本目录全部 *.c）
-HDRS = sorted(f for f in os.listdir(HERE) if f.endswith('.h'))   # = Makefile HDRS
+# 「._」开头的是 macOS 在 exFAT 等盘上给文件配的 AppleDouble 附属文件（引擎副本可以在玩家的外置盘上），不是源码；make 的 $(wildcard *.c) 也不匹配点开头的名字
+SRCS = sorted(f for f in os.listdir(HERE) if f.endswith('.c') and not f.startswith('._'))   # = Makefile SRCS（本目录全部 *.c）
+HDRS = sorted(f for f in os.listdir(HERE) if f.endswith('.h') and not f.startswith('._'))   # = Makefile HDRS
 SPVC_UNITS = ['spirv_cfg', 'spirv_cross', 'spirv_cross_c', 'spirv_cross_parsed_ir', 'spirv_glsl', 'spirv_msl', 'spirv_parser']   # = Makefile SPVC_SRC
 SPVC_DEF = ['-DSPIRV_CROSS_C_API_MSL=1', '-DSPIRV_CROSS_C_API_GLSL=1']   # = Makefile SPVC_DEF
 COMPAT = os.path.join(HERE, 'win_posix.h')   # Windows C 运行库缺的 asprintf / memmem
@@ -42,7 +44,7 @@ def link_cmd(cxx, lib, objs, names):
 
 
 def build(out):
-    spvc = [os.path.join(SPVC_DIR, f) for f in sorted(os.listdir(SPVC_DIR)) if f.endswith(('.cpp', '.hpp', '.h'))]
+    spvc = [os.path.join(SPVC_DIR, f) for f in sorted(os.listdir(SPVC_DIR)) if f.endswith(('.cpp', '.hpp', '.h')) and not f.startswith('._')]
     ins = [os.path.join(HERE, f) for f in SRCS + HDRS] + spvc + [os.path.abspath(__file__)]
     if os.path.exists(out) and os.path.getmtime(out) >= max(os.path.getmtime(p) for p in ins): return 0
     names = exports()
@@ -53,11 +55,12 @@ def build(out):
         jobs = [[cc, '-std=gnu11', '-O2', '-Wall', '-Wextra', '-Wno-unused-parameter', '-Werror', PMAP, *DEFS, '-include', COMPAT, '-I' + SPVC_DIR,
                  '-c', os.path.join(HERE, s), '-o', os.path.join(od, s + '.o')] for s in SRCS]
         jobs += [[cxx, '-std=c++17', '-O2', PMAP, *SPVC_DEF, '-c', os.path.join(SPVC_DIR, u + '.cpp'), '-o', os.path.join(od, u + '.o')] for u in SPVC_UNITS]
-        with concurrent.futures.ThreadPoolExecutor(os.cpu_count() or 4) as ex: rcs = list(ex.map(lambda c: subprocess.run(c).returncode, jobs))
+        with concurrent.futures.ThreadPoolExecutor(cores()) as ex: rcs = list(ex.map(lambda c: subprocess.run(c).returncode, jobs))
         bad = [os.path.basename(c[c.index('-c') + 1]) for c, r in zip(jobs, rcs) if r]
         if bad: print(f'【红】dsx.dll 编不出：{" ".join(bad)}', file=sys.stderr); return 1
         lib = os.path.join(od, os.path.basename(out))   # 链接器顺带出的导入库 .lib / .exp 也落在临时子目录，随它删
-        r = subprocess.run(link_cmd(cxx, lib, sorted(os.path.join(od, f) for f in os.listdir(od) if f.endswith('.o')), names))
+        # 只链接上面这些编译命令各自 -o 出来的目标文件（显式清单）。原先列临时目录收全部 .o：目录在 exFAT 盘上时 macOS 另写的 AppleDouble「._<名>.o」也被交给链接器
+        r = subprocess.run(link_cmd(cxx, lib, sorted(c[c.index('-o') + 1] for c in jobs), names))
         if r.returncode: print(f'【红】dsx.dll 链接失败（退出 {r.returncode}）', file=sys.stderr); return 1
         os.replace(lib, out)
     return 0

@@ -51,6 +51,17 @@ class ModsTests(unittest.TestCase):
         self.assertEqual(((d / "Data/a.bin").read_bytes(), (d / "b.txt").read_bytes()), (b"AA", b"B"))
         self.assertEqual(mods.listing(self.c, self.game), [{"name": "HD Textures", "enabled": True, "files": 2, "bytes": 3, "code": 0}])
 
+    def test_whole_program_mod_says_unsupported(self):
+        # exefs/ 里只有整份游戏程序（main / main.npdm）、没有 pchtxt / IPS：直说「整份替换游戏程序，不支持」（D-P4F5），不笼统报没找到
+        src = self.tree({f"atmosphere/contents/{GID}/exefs/main": b"NSO0", f"atmosphere/contents/{GID}/exefs/main.npdm": b"META"}, "Offline")
+        with self.assertRaises(Failure) as e:
+            mods.import_paths(self.c, self.game, [str(src)])
+        self.assertIn("整份替换游戏程序", str(e.exception))
+        empty = self.tree({"readme.txt": b"x"}, "Nothing")   # 什么都没有：照旧报没找到
+        with self.assertRaises(Failure) as e:
+            mods.import_paths(self.c, self.game, [str(empty)])
+        self.assertIn("里没找到 mod", str(e.exception))
+
     def test_variants_and_other_game_and_exefs(self):
         # Ryujinx 结构 <程序号>/<名字>/romfs：同一包里两个变体各成一份；标了别的程序号的不收；exefs 代码补丁跟着那份 mod 收进 exefs/、报一句「重新打包后生效」（11-15）
         src = self.tree({f"{GID}/Blue/romfs/x.bin": b"1", f"{GID}/Red/romfs/x.bin": b"2",

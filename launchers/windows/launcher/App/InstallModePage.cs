@@ -37,7 +37,9 @@ public sealed partial class EnvironmentWindow
         confirmDrop: () => _ = UpdatePhoneAsync(lastUpdate.AcceptStale, lastUpdate.Repack,
             new HashSet<string>(lastUpdate.Accept) { ConfirmCodes.GetValueOrDefault(updateAskCode, "acceptDropped") }, mode: lastUpdateMode, sgradeUpgrade: lastUpdateSGrade),
         dropTitle: ConfirmTitle(updateAskCode),
-        cancelDrop: () => { updateState = ""; updateOutcome = null; Navigate("library"); });
+        cancelDrop: () => { updateState = ""; updateOutcome = null; Navigate("library"); },
+        switchExport: updateState is "failed" or "invalid" or "interrupted" && lastUpdateMode != "export"
+            ? () => { IosAfterPack = "export"; _ = UpdatePhoneAsync(lastUpdate.AcceptStale, lastUpdate.Repack, lastUpdate.Accept, mode: "export", sgradeUpgrade: lastUpdateSGrade); } : null);
     private string updateDiagnostics = "";
     /// <summary>这一批是「更新并重新出这几款」排的：整批出完（没暂停、没取消）逐款装到 iPhone（BatchFinishedAsync）</summary>
     private bool batchInstallAfter;
@@ -190,10 +192,11 @@ public sealed partial class EnvironmentWindow
     /// 控制口发起的不弹、原样失败，由调用方带 acceptDropped 再发（v0.3.0 只换壳验收：原先这条路没接确认，提示「确认继续再点一次」却永远过不去）
     /// mode / sgradeUpgrade：「S 级优化升级」页的两个按钮（SGradeUpgradePage.cs，同 Mac）——mode = device / export 这次按它装（不改设置里的装法），
     /// sgradeUpgrade = 壳已是本版也重组容器、给游戏程序补上 S 级优化（install.update_phone）
-    private async Task UpdatePhoneAsync(bool acceptStale, IReadOnlyList<string> repack, IReadOnlySet<string>? accept = null, bool ask = true, string? mode = null, bool sgradeUpgrade = false)
+    private async Task UpdatePhoneAsync(bool acceptStale, IReadOnlyList<string> repack, IReadOnlySet<string>? accept = null, bool ask = true, string? mode = null, bool sgradeUpgrade = false, string? device = null)
     {
         if (connectedFolder is null || libraryId is null) return;
-        if (QueuePhone(null, () => UpdatePhoneAsync(acceptStale, repack, accept, ask, mode, sgradeUpgrade))) return;   // 出包在跑不挡；手机上有作业在跑 → 排队
+        mode ??= IosAfterPack == "export" ? "export" : null;   // 没指定这次怎么走：按出包页「出完之后」玩家选的那条（选了自签 = 不连手机、导出更新后的自签包）
+        if (QueuePhone(null, () => UpdatePhoneAsync(acceptStale, repack, accept, ask, mode, sgradeUpgrade, device))) return;   // 出包在跑不挡；手机上有作业在跑 → 排队
         accept ??= new HashSet<string>();
         lastUpdate = (acceptStale, repack, accept);   // 失败页「重试」/ 挤掉确认的「仍然继续」按同样的参数再来
         lastUpdateMode = mode; lastUpdateSGrade = sgradeUpgrade;
@@ -212,7 +215,10 @@ public sealed partial class EnvironmentWindow
             if (mode is "device" or "export") extra["mode"] = mode;
             if (sgradeUpgrade) extra["sgradeUpgrade"] = true;
             foreach (var key in accept) extra[key] = true;
-            if (PhoneUpdateTarget is { Device.Length: > 0 } target) extra["device"] = target.Device;
+            // 更新哪台：自动更新（PhoneAutoUpdate.cs）带连着的那台；否则壳旧了的那台（phoneUpdates 的设备记录键），作业层不自己挑
+            if (device is { Length: > 0 }) extra["device"] = device;
+            else if (PhoneUpdateTarget is { Device.Length: > 0 } target) extra["device"] = target.Device;
+            if (!HomeWidget) extra["widget"] = false;   // 玩家关了「装到 iPhone 时带主屏小组件」
             var job = await PackJobClient.RunAsync(PackRequest("installUpdate", "", extra.Count > 0 ? extra : null),
                 e => Dispatcher.UIThread.Post(() => IngestUpdateEvent(e)), front.Token, front.Next());
             succeeded = job.Report.Succeeded;
@@ -227,7 +233,7 @@ public sealed partial class EnvironmentWindow
         catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
             InvalidOperationException or OperationCanceledException or PlatformNotSupportedException or System.ComponentModel.Win32Exception)
         { updateOutcome = error.Message.Length > 0 ? error.Message : error.GetType().Name; updateMessage = updateOutcome; updateState = error is OperationCanceledException ? "cancelled" : "failed"; updateTrack.Ended = DateTime.UtcNow; }
-        finally { EndJob(front); phoneUpdating = false; Render(); }
+        finally { EndJob(front); phoneUpdating = false; DynamicFinished(updateState); AfterArtifactJob(); Render(); }
         // 会挤掉别处装的游戏：就在更新页里问（「仍然继续」/「先不」），不弹散的对话框（维护者 11-11：更新要有一页引导整个流程）
         if (dropAsk is not null) { updateState = "drop"; updateMessage = dropAsk; Render(); return; }
         await RefreshLibraryAsync();   // 游戏库作业在跑就记一笔、那一轮完了补刷（剃刀 W8），不再跳过

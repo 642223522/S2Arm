@@ -14,6 +14,11 @@ extern "C" {
 #define S2A_DPROMPT_SAVE_ATOMIC_MAC_EN "This disk can't save safely: move the game library to this Mac's disk. Force-quitting while saving may leave a half-written save."
 #define S2A_DPROMPT_SAVE_ATOMIC_IOS   "当前存储不能安全保存：保存过程中强退，可能留下写了一半的存档。请等游戏存完再退出。"
 #define S2A_DPROMPT_SAVE_ATOMIC_IOS_EN "This storage can't save safely: force-quitting while saving may leave a half-written save. Wait for the game to finish saving before you quit."
+// 键位映射读不懂（11-17 维护者：校验不过不再拒启）：这局用默认键位照常开始，提示条点名原因（%s = runtime/src/input_config.c 的英文原因）
+#define S2A_DPROMPT_INPUT_BAD_TITLE    "键位设置没读懂"
+#define S2A_DPROMPT_INPUT_BAD_TITLE_EN "Couldn't read the button settings"
+#define S2A_DPROMPT_INPUT_BAD_MAC      "这局先用默认键位照常开始（%s）。回到 S2Arm 的按键设置里重新保存一次就能恢复。"
+#define S2A_DPROMPT_INPUT_BAD_MAC_EN   "This game starts with the default buttons (%s). Save your button settings again in S2Arm to restore them."
 // 触屏提示（ios/vpad.m，11-04 维护者：脑锻炼标题页只认触屏；11-09 维护者 删掉屏幕上方的「键 / 触」切换钮，切换在齿轮菜单「按键布局」）：首次提示条带「切到触屏」一点就切
 #define S2A_DPROMPT_VPAD_TOUCH_TITLE   "这款游戏能用触屏"
 #define S2A_DPROMPT_VPAD_TOUCH_TITLE_EN "This game supports touch"

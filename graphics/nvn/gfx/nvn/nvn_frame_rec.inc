@@ -304,12 +304,12 @@ static int fr_dump_state(const char *path) {
     pthread_mutex_lock(&g_cpu_tex_mu);
     if (g_cpu_tex.n) { uint64_t *c2 = realloc(cpu, (hd.ncpu + g_cpu_tex.n + 1) * 8); if (c2) { cpu = c2; for (uint32_t i = 0; i < g_cpu_tex.cap; i++) if (g_cpu_tex.vals[i]) memcpy(&cpu[hd.ncpu++], g_cpu_tex.keys + (size_t)i * 8, 8); } }
     pthread_mutex_unlock(&g_cpu_tex_mu);
-    pthread_mutex_lock(&g_rmu);
+    os_unfair_lock_lock(&g_rmu);
     tr = malloc((size_t)(g_ntreg + 1) * sizeof *tr);
     for (int i = 0; tr && i < g_ntreg; i++) if (g_treg[i].ok) { fr_treg *e = &tr[hd.ntreg++]; memset(e, 0, sizeof *e); e->tid = i; e->t = g_treg[i].t; e->has_v = g_treg[i].has_v; if (e->has_v) e->v = g_treg[i].v; }
     sr = malloc((size_t)(g_nsreg + 1) * sizeof *sr);
     for (int i = 0; sr && i < g_nsreg; i++) if (g_sreg_ok[i]) sr[hd.nsreg++] = (fr_sreg){i, g_sreg[i]};
-    pthread_mutex_unlock(&g_rmu);
+    os_unfair_lock_unlock(&g_rmu);
     hd.nxv = (uint32_t)g_xv_npresent;
     int ok = pools && live && cpu && tr && sr && fr_w(f, &hd, sizeof hd) && fr_w(f, pools, hd.npool * sizeof *pools) && fr_w(f, live, hd.nlive * 8) && fr_w(f, cpu, hd.ncpu * 8)
              && fr_w(f, tr, hd.ntreg * sizeof *tr) && fr_w(f, sr, hd.nsreg * sizeof *sr) && fr_w(f, g_xv_present, hd.nxv * 8);

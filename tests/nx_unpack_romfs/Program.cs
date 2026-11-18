@@ -103,9 +103,10 @@ static class T {
         var bad = new Fixture(); bad.TamperData(0x4321); var br = Image(bad, "img-tampered");
         Check(br.Bypassed && ImageExact(bad, "img-tampered") && br.FirstBad != null && br.FirstBad.StartsWith("文件 romfs/big.bin，文件内偏移 "),
             "镜像形态·更新分区数据篡改：降级重读、镜像逐字节等于篡改后内容建的镜像、点名第一处坏块");
-        var strict = new Fixture(); strict.TamperData(0x4321); string strictDir = Path.Combine(Root, "img-base-only");
-        Exception se = Error(() => Image(strict, "img-base-only", patched: false));
-        Check(RomfsExtraction.IsDataHashFailure(se) && strict.None == 0 && Directory.GetFileSystemEntries(strictDir).Length == 0, "镜像形态·非更新分区：仍严格报红，不留镜像 / 暂存");
+        var strict = new Fixture(); strict.TamperData(0x4321);
+        var sr0 = Image(strict, "img-base-only", patched: false);   // 维护者 11-17：校验不过不再整单拒绝，本体分区与更新分区同样降级
+        Check(sr0.Bypassed && ImageExact(strict, "img-base-only") && sr0.FirstBad != null && sr0.FirstBad.StartsWith("文件 romfs/big.bin，文件内偏移 "),
+            "镜像形态·非更新分区数据篡改：同样降级重读、镜像逐字节等于篡改后内容建的镜像、点名第一处坏块");
         var front = new Fixture(); int cursor = 0x50;
         foreach (int field in new[] { 8, 0x18, 0x28, 0x38 }) {
             int old = (int)front.H(field), size = (int)front.H(field + 8);
@@ -193,13 +194,16 @@ static class T {
             Check(br.Bypassed && bad.Exact(Path.Combine(Root, "tampered", "romfs")) && br.Files == 3 && br.Bytes == bad.Expected.Sum(e => (long)e.Value.Length),
                 "数据块篡改：整分区降级后所有文件精确等于篡改后预期（含跨块 / 多任务 / 零长）");
             // #787：黄字末尾点名第一处坏块（只有 /big.bin 被篡改；并行哪一份先撞上坏块不定，只核到文件名与「文件内偏移」）
-            Check(captured.ToString().StartsWith("🟡 原件数据哈希不符（疑改版 / 整合版），已跳过 RomFS 完整性校验解出 3 个文件；第一处坏块在文件 romfs/big.bin，文件内偏移 ") &&
-                captured.ToString().EndsWith(Environment.NewLine) && captured.ToString().Split('\n').Length == 2 &&
-                File.ReadAllText(Path.Combine(Root, "tampered", "unpack.tsv")) == "title_id\tfixture\nintegrity\tbypassed\n", "生产清单写入：一行黄（点名坏块所在文件）+ unpack.tsv integrity=bypassed");
+            // 维护者 11-17：再加一行机读「【校验跳过】资源分区 RomFS\t\t<第一处坏块>」，作业层据它记 integritySkipped（期望手写：恰好两行，第二行坏块与黄字同一处）
+            string[] outLines = captured.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+            Check(outLines.Length == 2 && outLines[0].StartsWith("🟡 原件数据哈希不符（疑改版 / 整合版），已跳过 RomFS 完整性校验解出 3 个文件；第一处坏块在文件 romfs/big.bin，文件内偏移 ") &&
+                outLines[1] == "【校验跳过】资源分区 RomFS\t\t" + br.FirstBad && br.FirstBad.StartsWith("文件 romfs/big.bin，文件内偏移 ") &&
+                captured.ToString().EndsWith(Environment.NewLine) &&
+                File.ReadAllText(Path.Combine(Root, "tampered", "unpack.tsv")) == "title_id\tfixture\nintegrity\tbypassed\n", "生产清单写入：一行黄（点名坏块所在文件）+ 一行【校验跳过】机读 + unpack.tsv integrity=bypassed");
             var small = new Fixture(small: true); small.TamperData(7); var sr = Extract(small, "shared-block");
             Check(sr.Bypassed && small.Exact(Path.Combine(Root, "shared-block", "romfs")), "数据 / 头 / 目录共享 IVFC 块：结构合法仍能降级");
-            var baseOnly = new Fixture(); baseOnly.TamperData(0x4321); Exception baseError = Error(() => Extract(baseOnly, "base-only", patched: false));
-            Check(RomfsExtraction.IsDataHashFailure(baseError) && baseOnly.None == 0 && !Directory.Exists(Path.Combine(Root, "base-only", "romfs")), "非更新分区：仍严格，不扩展降级范围");
+            var baseOnly = new Fixture(); baseOnly.TamperData(0x4321); var bo = Extract(baseOnly, "base-only", patched: false);   // 维护者 11-17：本体分区也降级
+            Check(bo.Bypassed && baseOnly.Exact(Path.Combine(Root, "base-only", "romfs")), "非更新分区数据篡改：同样降级重读、解出篡改后的内容");
             var alias = new Fixture();
             // 第二文件 more 与 big 的前缀共用同一数据区；目录表可读，不能额外要求数据互斥。
             int fileMeta = (int)alias.H(0x38); int nextFile = (32 + (int)BinaryPrimitives.ReadUInt32LittleEndian(alias.Bytes.AsSpan(fileMeta + 28)) + 3) & ~3;

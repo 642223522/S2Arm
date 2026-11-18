@@ -16,8 +16,8 @@ struct BatchRow: Identifiable, Equatable {
 }
 
 extension S2ArmLauncherModel {
-    static func batchPlatform(_ p: ExportPlatform) -> String? { p == .ios ? "iphone" : p == .mac ? "mac" : nil }
-    static func exportPlatform(_ p: String) -> ExportPlatform? { p == "iphone" ? .ios : p == "mac" ? .mac : nil }
+    static func batchPlatform(_ p: ExportPlatform) -> String? { p == .ios ? "iphone" : p == .tvos ? "appletv" : p == .mac ? "mac" : nil }
+    static func exportPlatform(_ p: String) -> ExportPlatform? { p == "iphone" ? .ios : p == "appletv" ? .tvos : p == "mac" ? .mac : nil }
 
     /// 后端批次里的各款（show 的 batch.items）
     var batchItems: [[String: Any]] { (batchState?["batch"] as? [String: Any])?["items"] as? [[String: Any]] ?? [] }

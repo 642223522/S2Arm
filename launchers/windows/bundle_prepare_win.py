@@ -12,6 +12,7 @@
   gamedec/gamedec.exe + .src_digest     游戏自带解码器工具模式（oneclick_win.gamedec，身份 = gamedec_id）
   codecs/yaz0enc-<哈希>.exe             Yaz0 编码器（graphics/widen/scan/ui_lyt.py；名字即源码身份，同现编缓存名）
   codecs/libyaz0dec_<摘要>.dll          Yaz0 解码库（graphics/tools/nxfmt.py；同上）
+  astc/libbc2astc-<哈希>.dll            BC → ASTC 预转库（pack/astc_pack.py，Apple TV 包用；名字即源码与编译参数身份，同现编名）
   codecs/glsl_es-<哈希>.exe             GLSL 改写工具（translator/gl_shaders.py es_tool；名字即源码身份，同现编名）
   spvc/libspvc_cli.dll、spvc/cli/bin/spirv-cross.exe + cli/versions.json、spvc/.src_digest
                                         spirv-cross 进程内库与命令行（translator/spvc_inproc.py，身份 = prebuilt_id）
@@ -109,6 +110,11 @@ def bundle(target):
         env=dict(os.environ, RUSTFLAGS=(os.environ.get("RUSTFLAGS", "") + " -C target-feature=+crt-static").strip()))
     (tools / "devpush").mkdir()
     shutil.copy2(ROOT / "build/devpush-static/release/s2a-devpush.exe", tools / "devpush/s2a-devpush.exe")
+    # 电脑侧签程序库（pack/selfsign，同 Mac；静态 C 运行库同 devpush）
+    run(["cargo", "build", "--release", "--locked", "--manifest-path", ROOT / "pack/selfsign/Cargo.toml", "--target-dir", ROOT / "build/selfsign-static"], "selfsign.log",
+        env=dict(os.environ, RUSTFLAGS=(os.environ.get("RUSTFLAGS", "") + " -C target-feature=+crt-static").strip()))
+    (tools / "selfsign").mkdir()
+    shutil.copy2(ROOT / "build/selfsign-static/release/s2a-selfsign.exe", tools / "selfsign/s2a-selfsign.exe")
 
     # 开发者证书签名工具 rcodesign（apple-codesign 官方发布件，版本 / SHA-256 钉在 pack/jobs/devcert.py，不符拒打；v0.2.4）
     import devcert
@@ -134,6 +140,15 @@ def bundle(target):
     import nxsh_extract
     lib = nxsh_extract.cri_compile()   # 编不出 CalledProcessError / FileNotFoundError 当场红（玩家机器没有编译器）
     shutil.copy2(lib, tools / "codecs" / os.path.basename(lib))
+    # BC → ASTC 预转库（Apple TV 包，pack/jobs/tvos.py derive → pack/astc_pack.py）：玩家机没有 clang，用使用方同一个现编函数编进暂存目录再收；编不出就红
+    sys.path.insert(0, str(ROOT / "pack"))
+    import astc_pack
+    try:
+        lib = astc_pack.build_tool(str(stage / "astc"))
+    except (RuntimeError, OSError) as e:
+        raise SystemExit(f"【红】BC → ASTC 预转库编不出（graphics/tools/astc/bc2astc.c + astc-encoder，要 clang / clang++）：{e}")
+    (tools / "astc").mkdir()
+    shutil.copy2(lib, tools / "astc" / astc_pack.lib_name())
     # GLSL 改写工具（graphics/nvn/gfx/gl/gl_glsl_es.c 命令行入口；translator/gl_shaders.py es_tool 现编同一命令行、同一名字）：
     #   #852 玩家机没有 C 编译器时 OpenGL 款离线库只剩表头、全部落到运行时现编；编不出就红
     import gl_shaders

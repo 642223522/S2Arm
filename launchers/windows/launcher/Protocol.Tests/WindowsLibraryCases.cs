@@ -21,102 +21,61 @@ internal static class WindowsLibraryCases
         try
         {
             var privateRoot = Path.Combine(root, "Private");
+            var sid = WindowsIdentity.GetCurrent().User!;
+            var everyone = new SecurityIdentifier(WellKnownSidType.WorldSid, null);
+            FileSystemAccessRule[] Rules(string dir) => new DirectoryInfo(dir).GetAccessControl().GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>().ToArray();
+            // 不再自设权限（11-16 维护者：玩家的电脑就是自己在用）：普通建目录、写文件，请求文件不设受保护权限
             string file;
             using (var request = PrivateJobRequest.Create(privateRoot, "{\"schema\":1}"))
             {
                 file = request.FilePath;
-                check(File.ReadAllText(file) == "{\"schema\":1}", "private request content round trips");
-                check(new FileInfo(file).GetAccessControl().AreAccessRulesProtected, "request owns protected DACL from creation");
+                check(File.ReadAllText(file) == "{\"schema\":1}", "request content round trips");
+                check(!new FileInfo(file).GetAccessControl().AreAccessRulesProtected, "request file uses the folder's normal inherited permissions");
             }
-            check(!File.Exists(file), "private request deleted after use");
-            var weak = Path.Combine(root, "Weak");
-            var acl = new DirectorySecurity();
-            var sid = WindowsIdentity.GetCurrent().User!;
-            acl.SetOwner(sid); acl.SetAccessRuleProtection(true, false);
-            acl.AddAccessRule(new FileSystemAccessRule(sid, FileSystemRights.FullControl,
-                InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
-            acl.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.WorldSid, null), FileSystemRights.ReadData,
-                InheritanceFlags.ObjectInherit, PropagationFlags.InheritOnly, AccessControlType.Allow));
-            new DirectoryInfo(weak).Create(acl);
-            // #672：别的身份的权限就地去掉（当前账户是属主、有改权限的权利），不再拒绝；Everyone 那条规则必须没了才算修好
-            var everyone = new SecurityIdentifier(WellKnownSidType.WorldSid, null);
-            using (var healedWeak = PrivateJobRequest.Create(weak, "{}"))
-                check(File.Exists(healedWeak.FilePath), "private root granting Everyone is healed and accepts a request");
-            check(!new DirectoryInfo(weak).GetAccessControl().GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>()
-                .Any(r => r.IdentityReference.Equals(everyone)), "healed private root no longer grants Everyone");
-            // #672：属主是别的身份（玩家曾以管理员身份运行 → 属主 Administrators 组）。夹具要能把属主设成 Administrators：只有管理员会话做得到，普通会话跳过并写明
-            var foreign = Path.Combine(root, "Foreign");
-            Directory.CreateDirectory(foreign);
-            var admins = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
-            var fixtureOk = true;
-            try { var o = new DirectorySecurity(); o.SetOwner(admins); new DirectoryInfo(foreign).SetAccessControl(o); }
-            catch (Exception e) when (e is UnauthorizedAccessException or InvalidOperationException) { fixtureOk = false; Console.WriteLine("skip foreign-owner case: this session cannot set owner to Administrators"); }
-            if (fixtureOk)
+            check(!File.Exists(file), "request deleted after use");
+            // 升级：旧版收紧过的老目录（关了继承、只剩 SYSTEM，本人没有规则；旧版把属主设成本人）。第一次用时写不进去 → 恢复继承、补回本人的完全控制。
+            //   夹具里连 Administrators 都没有，提权会话也写不进去；再关掉全部特权（等同玩家的普通会话），只能靠补回权限才写得进
+            var tightened = Path.Combine(root, "Tightened");
             {
-                check(admins.Equals(new DirectoryInfo(foreign).GetAccessControl().GetOwner(typeof(SecurityIdentifier))), "fixture: private root owned by Administrators");
-                using (var taken = PrivateJobRequest.Create(foreign, "{}"))
-                    check(File.Exists(taken.FilePath), "private root owned by Administrators is taken over and accepts a request");
-                check(sid.Equals(new DirectoryInfo(foreign).GetAccessControl().GetOwner(typeof(SecurityIdentifier))), "taken-over private root is owned by the current user");
-            }
-            // 修不了时的话点名目录（玩家要知道删哪个）
-            check(PrivateJobRequest.Describe("owner", @"C:\X\private").Contains(@"C:\X\private"), "unrecoverable private root message names the folder");
-            check(PrivateJobRequest.Warning is null, "healthy private roots leave no warning");
-            // #754：收不紧（当前账户没有改权限的权利）不再抛、照常建请求，只留一句 Warning。夹具：属主是本人，但 OWNER RIGHTS 一条只给「修改」（读写建删，
-            //   不含改权限 / 取得所有权）——属主就不再隐含改权限的权利；再给 Everyone 读。管理员远程会话带着已启用的还原 / 取得所有权特权，
-            //   会绕过权限检查把它收紧（实测如此），所以这一项在关掉全部特权的模拟令牌里跑，等同玩家的普通会话
-            var stuck = Path.Combine(root, "Stuck");
-            {
-                var stuckAcl = new DirectorySecurity();
-                stuckAcl.SetOwner(sid); stuckAcl.SetAccessRuleProtection(true, false);
-                stuckAcl.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier("S-1-3-4"),
-                    FileSystemRights.Modify | FileSystemRights.DeleteSubdirectoriesAndFiles,
-                    InheritanceFlags.None, PropagationFlags.None, AccessControlType.Allow));
-                stuckAcl.AddAccessRule(new FileSystemAccessRule(everyone, FileSystemRights.ReadData,
-                    InheritanceFlags.None, PropagationFlags.None, AccessControlType.Allow));
-                new DirectoryInfo(stuck).Create(stuckAcl);
+                var t = new DirectorySecurity();
+                t.SetOwner(sid); t.SetAccessRuleProtection(true, false);
+                t.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null), FileSystemRights.FullControl,
+                    InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
+                new DirectoryInfo(tightened).Create(t);
             }
             WithoutPrivileges(() =>
             {
-                using var stuckRequest = PrivateJobRequest.Create(stuck, "{}");
-                check(File.Exists(stuckRequest.FilePath), "private root that cannot be tightened still accepts a request");
+                using var healed = PrivateJobRequest.Create(tightened, "{}");
+                check(File.Exists(healed.FilePath), "folder tightened by an older S2Arm is writable again after first use (normal session)");
             });
-            check(PrivateJobRequest.Warning is { } stuckWarning && stuckWarning.Contains(stuck), $"untightenable private root leaves a warning naming the folder: {PrivateJobRequest.Warning}");
-            check(new DirectoryInfo(stuck).GetAccessControl().GetAccessRules(true, false, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>()
-                .Any(r => r.IdentityReference.Equals(everyone)), "fixture: Everyone could not be removed");
-            // 重解析点：玩家用目录联接把数据目录挪到别的盘——指向本人自己的目录照常用；链接断了 / 指向不归本人的位置才拒，话里点名目录
+            var healedAcl = new DirectoryInfo(tightened).GetAccessControl();
+            check(!healedAcl.AreAccessRulesProtected, "repaired folder inherits again (back to the system default)");
+            check(Rules(tightened).Any(r => r.IdentityReference.Equals(sid) && r.AccessControlType == AccessControlType.Allow
+                    && (r.FileSystemRights & FileSystemRights.FullControl) == FileSystemRights.FullControl),
+                "repaired folder gives the current user full control");
+            // 不再收紧：别的账户已有的权限原样留着（原先会删掉 Everyone）
+            var shared = Path.Combine(root, "Shared");
+            {
+                var a = new DirectorySecurity();
+                a.AddAccessRule(new FileSystemAccessRule(sid, FileSystemRights.FullControl,
+                    InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
+                a.AddAccessRule(new FileSystemAccessRule(everyone, FileSystemRights.ReadData, InheritanceFlags.ObjectInherit, PropagationFlags.InheritOnly, AccessControlType.Allow));
+                new DirectoryInfo(shared).Create(a);
+            }
+            using (var s1 = PrivateJobRequest.Create(shared, "{}")) check(File.Exists(s1.FilePath), "folder shared with Everyone is used as is");
+            check(Rules(shared).Any(r => r.IdentityReference.Equals(everyone)), "other accounts' permissions are left alone (no tightening)");
+            // 联接：玩家把数据目录用目录联接挪到别的盘，照常用、写进目标
             var movedTarget = Path.Combine(root, "MovedTarget");
-            Directory.CreateDirectory(movedTarget);   // 临时目录下新建：属主本人或本人有完全控制
+            Directory.CreateDirectory(movedTarget);
             var junction = Path.Combine(root, "Junction");
             Junction(junction, movedTarget);
-            check((new DirectoryInfo(junction).Attributes & FileAttributes.ReparsePoint) != 0, "fixture: junction is a reparse point");
             using (var viaJunction = PrivateJobRequest.Create(junction, "{}"))
-                check(File.Exists(Path.Combine(movedTarget, Path.GetFileName(viaJunction.FilePath))), "private root junctioned to the user's own folder is used and writes into the target");
-            var dangling = Path.Combine(root, "Dangling");
-            var gone = Path.Combine(root, "Gone");
-            Directory.CreateDirectory(gone);
-            Junction(dangling, gone);
-            Directory.Delete(gone);
-            string? refused = null;
-            try { using var _ = PrivateJobRequest.Create(dangling, "{}"); } catch (IOException e) { refused = e.Message; }
-            check(refused is not null && refused.Contains(dangling), $"broken junction private root is refused naming the folder: {refused}");
-            // #580：私有目录被 Directory.CreateDirectory 先建出来（继承临时目录的权限：本人 / SYSTEM / Administrators），原先永远报 inherits permissions
+                check(File.Exists(Path.Combine(movedTarget, Path.GetFileName(viaJunction.FilePath))), "junctioned data folder is used and writes into the target");
+            // 继承上级权限的目录（Directory.CreateDirectory 建的）照常用、不再被改成不继承
             var inherited = Path.Combine(root, "Inherited");
             Directory.CreateDirectory(Path.Combine(inherited, "jobs"));
-            {   // 玩家机上普通用户建的目录属主就是本人；管理员会话里缺省属主是 Administrators 组，夹具改回本人，只留「继承」这一个问题。
-                //   只写属主这一节（新建的描述符只设了 Owner）：取回整套再写回会顺带把权限改成不继承，夹具就不像玩家的目录了
-                var own = new DirectorySecurity();
-                own.SetOwner(sid);
-                new DirectoryInfo(inherited).SetAccessControl(own);
-            }
-            check(!new DirectoryInfo(inherited).GetAccessControl().AreAccessRulesProtected, "fixture: directory starts with inherited DACL");
-            check(sid.Equals(new DirectoryInfo(inherited).GetAccessControl().GetOwner(typeof(SecurityIdentifier))), "fixture: directory owned by the current user");
-            using (var healed = PrivateJobRequest.Create(inherited, "{}"))
-                check(File.Exists(healed.FilePath), "inherited-only private root is healed and accepts a request");
-            var after = new DirectoryInfo(inherited).GetAccessControl();
-            check(after.AreAccessRulesProtected, "healed private root no longer inherits");
-            check(after.GetAccessRules(true, false, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>()
-                .Any(r => r.IdentityReference.Equals(sid) && r.AccessControlType == AccessControlType.Allow && (r.FileSystemRights & FileSystemRights.FullControl) == FileSystemRights.FullControl),
-                "healed private root keeps the current user's full control as an explicit rule");
+            using (var i1 = PrivateJobRequest.Create(inherited, "{}")) check(File.Exists(i1.FilePath), "inherited folder accepts a request");
+            check(!new DirectoryInfo(inherited).GetAccessControl().AreAccessRulesProtected, "inherited folder keeps inheriting (not tightened)");
             var engine = Path.Combine(root, "中文 & %S2A_MARKER% !", "Engine");
             var runtime = Path.Combine(root, "Runtime");
             Directory.CreateDirectory(Path.Combine(engine, "pack", "jobs"));

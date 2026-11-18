@@ -1,4 +1,5 @@
 // 崩溃现场（旧库 crash.c 改后搬，只留信号处理本身）：出错地址、pc / lr 换成模块内偏移、寄存器、帧指针回溯、线程表。
+#include <errno.h>
 #include "native.h"
 #include "s2a_docs.h"   // 崩溃落点标记写在文档根（s2a_crash_install 时算好路径，信号里只 open / write）
 #include "../../platform/plat.h"
@@ -379,10 +380,12 @@ static void crash_where_note(uint64_t pc, uint64_t lr) {
     if (fd >= 0) { (void)!write(fd, w, strlen(w)); close(fd); }
 }
 __attribute__((weak)) void s2a_guest_run_mark_crash(void) {}   // runtime/src/vawin.c 强定义：「在跑」标记改写成 crash（闪退不算死于内存，#909）
-__attribute__((weak)) void s2a_pso_archive_crash_note(void);   // graphics/nvn pso_archive.h：崩溃线程正在写管线归档 → 记全机标记（#756）
+// graphics/nvn pso_archive.h：崩溃线程正在写管线归档 → 记全机标记（#756）。装信号时 dlsym 取一次（同 g_dsh_crash_dump；信号处理里不调 dlsym）：
+//   原先写成 __attribute__((weak)) 的未定义声明，Mach-O 静态链接时弱引用也要找得到定义，Mac 宿主不链图形层就报 Undefined symbols（11-16 合入后宿主构建红）
+static void (*g_pso_crash_note)(void);
 static void crash_reraise(int sig) {
     s2a_guest_run_mark_crash();
-    if (s2a_pso_archive_crash_note) s2a_pso_archive_crash_note();
+    if (g_pso_crash_note) g_pso_crash_note();
     if (g_crash_quiet) _exit(128 + sig);   // 辅助运行 / 静默起局：现场已写进日志，不按信号死（不弹系统「意外退出」框）
     signal(sig, SIG_DFL);
     sigset_t m; sigemptyset(&m); sigaddset(&m, sig); pthread_sigmask(SIG_UNBLOCK, &m, NULL);
@@ -511,9 +514,15 @@ static void on_crash(int sig, siginfo_t *si, void *ctx) {
     crash_raw(sig, si, uc, 0);
     // 崩在现编着色器里（graphics/nvn/host/dsh_miss.inc，#467）：把正在编的那支输入落盘成 <键>.inflight.*，诊断包带走。只用 open / write，排在原始现场之后、完整报告之前
     { if (g_dsh_crash_dump) g_dsh_crash_dump(); }
-    { void (*ev)(const char *, int) = (void (*)(const char *, int))dlsym(RTLD_DEFAULT, "s2a_dguard_evidence"); if (ev) ev("崩溃", 0); }   // 直连安全网：这局算失败（有证据）；动态取，单测没链 dguard.c
+    // 直连安全网：这局算失败（有证据）；动态取，单测没链 dguard.c。先按现场归因：出事地址落在游戏早先要、宿主给不出的那段地址里（超出地址窗口、svc 回了内存不足，
+    //   游戏没理会照样访问，同 fault_region_note）= 已知不是直连——不计连续失败，下次起局说「这台设备内存不够」，不叫玩家更新重出包（D-GYNE：3 次都这么崩，误弹「更新后重新出包」）
+    { int va = 0; if ((sig == SIGBUS || sig == SIGSEGV) && s2a_va_short_last) { int num; uint64_t a, n, k; va = s2a_va_short_last((uint64_t)(uintptr_t)si->si_addr, &num, &a, &n, &k); }
+      if (va) { void (*kn)(const char *) = (void (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_dguard_known"); if (kn) kn("地址超出窗口"); }
+      else { void (*ev)(const char *, int) = (void (*)(const char *, int))dlsym(RTLD_DEFAULT, "s2a_dguard_evidence"); if (ev) ev("崩溃", 0); } }
     char bp[160], bl[160]; where(pc, bp, sizeof bp); where(lr, bl, sizeof bl);
     LOG("【红】CRASH 信号 %d 地址 %p pc %s lr %s sp %#llx", sig, si->si_addr, bp, bl, (unsigned long long)uc->uc_mcontext->__ss.__sp);
+    { const char *(*wn)(void) = (const char *(*)(void))dlsym(RTLD_DEFAULT, "s2a_waived_note"); const char *w = wn ? wn() : NULL;   // waived.c
+      if (w && *w) LOG("【红】之前这些校验没过（照常继续了）：%s", w); }
     for (int i = 0; i < 29; i += 4) LOG("  x%-2d %016llx %016llx %016llx %016llx", i, uc->uc_mcontext->__ss.__x[i], uc->uc_mcontext->__ss.__x[i + 1], i + 2 < 29 ? uc->uc_mcontext->__ss.__x[i + 2] : 0, i + 3 < 29 ? uc->uc_mcontext->__ss.__x[i + 3] : 0);
     s2a_backtrace(fp);
     code_note(pc, lr, fp);
@@ -544,12 +553,13 @@ void s2a_crash_thread_init(void) {
     // 缺页处模拟读的只读别名槽（alias.c，每线程 16 KB）
     s2a_alias_thread_init();
     int e = plat_fault_altstack_init();
-    if (e) LOG("【红】崩溃：备用栈安装失败 errno=%d", e);
+    if (e && e != ENOTSUP) LOG("【红】崩溃：备用栈安装失败 errno=%d", e);   // ENOTSUP = tvOS 没有备用栈（platform/apple/plat_apple.c），不算故障
 }
 void s2a_crash_install(void) {
     s2a_docs_path(g_where_path, sizeof g_where_path, "crash_where");
     int sigs[] = {SIGSEGV, SIGBUS, SIGILL, SIGTRAP, SIGFPE, SIGABRT};   // SIGABRT：die() 与 C# FailFast 都走 abort，要现场
     g_dsh_crash_dump = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_dsh_crash_dump");
+    g_pso_crash_note = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_pso_archive_crash_note");
     g_crash_quiet = s2a_crash_quiet();
     ww_start();
     for (size_t i = 0; i < sizeof sigs / sizeof *sigs; i++) {

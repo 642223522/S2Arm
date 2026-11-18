@@ -13,6 +13,7 @@ struct InstallView: View {
     @EnvironmentObject var loc: Localizer
     @Environment(\.dismiss) private var dismiss
     let gameID: String
+    var onOpenSettings: (() -> Void)? = nil
     @State private var showRemoveConfirm = false
     @State private var showRestoreConfirm = false
 
@@ -71,7 +72,9 @@ struct InstallView: View {
                                         // 团队号手填 / 引导项目收进环境检查「装到 iPhone 的方式」（v0.3.0）：这里只给一个去设置
                                         LauncherRowActions {
                                             Button(BackendText.launcherText("install.mode.go_settings", language: loc.lang.sharedCode)) {
-                                                dismiss(); DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { model.showEnvironment = true }
+                                                onOpenSettings?()
+                                                dismiss()
+                                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { model.showEnvironment = true }
                                             }
                                             .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("install.goSettings")
                                             Button(text("install.apple.open")) {
@@ -202,11 +205,18 @@ struct InstallView: View {
     }
 
     /// 装好以后的附加提示：只传到手机、要打开 S2Arm 才装完 / 第一次打开前信任开发者 / 免费 Apple ID 7 天到期
+    /// 信任开发者那一步：读到证书名就写「点「<名字>」→ 信任」，读不到退回原来不带名字的说法
+    private var trustNote: String {
+        model.installTrustName.isEmpty ? text("install.done.trust") : text("install.done.trustNamed").replacingOccurrences(of: "{0}", with: model.installTrustName)
+    }
+
     private var doneNotes: [String] {
+        // 更新 / 续签 S2Arm 重装了 App：只补信任那一句（换了团队要重新信任）
+        if model.lastPhoneSession?.kind == .installUpdate, (model.phoneOutcome?.exportFolder ?? "").isEmpty, !model.installTrustName.isEmpty { return [trustNote] }
         guard model.lastPhoneSession?.kind == .install, (model.phoneOutcome?.exportFolder ?? "").isEmpty else { return [] }   // 导出的说明在成功页自己那几行
         var n: [String] = []
         if model.installOpenToFinish { n.append(text("install.done.open")) }
-        n.append(text("install.done.trust"))
+        n.append(trustNote)
         if game?.iphoneFree == true { n.append(text("install.done.free")) }
         return n
     }
@@ -220,7 +230,7 @@ struct InstallView: View {
             if model.installOpenToFinish {
                 Text(text("install.done.open")).font(.manrope(15, .semibold)).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
             }
-            Text(text("install.done.trust")).font(LauncherTheme.TypeStyle.body).foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+            Text(trustNote).font(LauncherTheme.TypeStyle.body).foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
             if game?.iphoneFree == true {
                 Text(text("install.done.free")).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
             }

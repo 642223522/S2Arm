@@ -118,14 +118,14 @@ paths = [p for p in (root / 'exefs').iterdir() if p.is_file()]
 def walk_error(error):
     raise error
 romfs = root / 'romfs'
-if romfs.is_dir():
+if romfs_list.is_dir(romfs):   # RomFS 目录或镜像 romfs.std（romfs_list image_of）；镜像里的 NRO / NRR 下面经 open_file 读
     for directory, _, names in romfs_list.walk(romfs, onerror=walk_error):
         paths.extend(Path(directory) / name for name in names if name.lower().endswith(('.nro', '.nrr')))
 digest = hashlib.sha256(b'rewrite-inputs-v1\0')
 for path in sorted(paths, key=lambda p: os.fsencode(p.relative_to(root).as_posix())):
     relative = os.fsencode(path.relative_to(root).as_posix())
     content = hashlib.sha256()
-    with path.open('rb') as stream:
+    with romfs_list.open_file(path) as stream:   # 盘上的文件同 open；RomFS 只有镜像时从镜像读
         for block in iter(lambda: stream.read(1024 * 1024), b''):
             content.update(block)
     digest.update(len(relative).to_bytes(8, 'little'))

@@ -165,7 +165,7 @@ static inline void rs_bind_check(id<MTLTexture> t, const NvShader *sh, int nvn_s
 static void rs_pre_compute(NvShader *sh) {
     if (!rs_on() || !sh) return;
     __strong id<MTLTexture> q[32]; int n = 0;
-    pthread_mutex_lock(&g_rmu);
+    os_unfair_lock_lock(&g_rmu);
     for (int i = 0; i < sh->rf.nb && n < 32; i++) {
         const nvn_rbind *b = &sh->rf.b[i]; int reg = b->reg, tid = 0;
         if (b->kind == NVN_RB_TEX) tid = (int)(tex_slot_h(S.tex[5], S.img[5], reg) & 0xfffff);
@@ -176,7 +176,7 @@ static void rs_pre_compute(NvShader *sh) {
         id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
         if (t && rs_state(t) == RS_SCALED) q[n++] = rs_root(t);
     }
-    pthread_mutex_unlock(&g_rmu);
+    os_unfair_lock_unlock(&g_rmu);
     for (int k = 0; k < n; k++) if (rs_state(q[k]) == RS_SCALED) rs_rescale(q[k], 0, "计算派发读写");
     rs_flush();
 }
@@ -219,11 +219,11 @@ static void rs_pre_images(const NvShader *cs) {
     for (int it = 0; it < RS_PRE_MAX; it++) {
         (void)rs_bad_dropped();
         int stuck = 0;
-        pthread_mutex_lock(&g_rmu); int any = rs_image_slots(cs, 5, NULL, &stuck); pthread_mutex_unlock(&g_rmu);
+        os_unfair_lock_lock(&g_rmu); int any = rs_image_slots(cs, 5, NULL, &stuck); os_unfair_lock_unlock(&g_rmu);
         if (!any) { if (stuck) RS_RED_IMG("派发"); return; }
         rp_end(); rs_flush();
         if (!rs_bad_dropped()) {   // 队列清完了：槽里还有缩放图 = 退回失败（rs_rescale 失败时存储仍是缩放尺寸），报红
-            pthread_mutex_lock(&g_rmu); int left = rs_image_scaled(cs, 5); pthread_mutex_unlock(&g_rmu);
+            os_unfair_lock_lock(&g_rmu); int left = rs_image_scaled(cs, 5); os_unfair_lock_unlock(&g_rmu);
             if (left || stuck) RS_RED_IMG("派发");
             return; }
     }
@@ -240,9 +240,9 @@ static void rs_pre_draw(const NvProg *pr) {
     for (int it = 0; it < RS_PRE_MAX; it++) {
         int any = 0, fs_write = 0, stuck = 0;
         (void)rs_bad_dropped();
-        pthread_mutex_lock(&g_rmu);
+        os_unfair_lock_lock(&g_rmu);
         for (int st = 0; st < 5; st++) if (pr->sh[st]) any |= rs_image_slots(pr->sh[st], st, st == 1 ? &fs_write : NULL, &stuck);
-        pthread_mutex_unlock(&g_rmu);
+        os_unfair_lock_unlock(&g_rmu);
         if (fs_write && R.has_rt) for (int i = 0; i < 9; i++) {
             const tex_t *a = i < 8 ? (i < R.rt.n ? R.rt.color[i] : NULL) : R.rt.depth; id<MTLTexture> b = a ? tex_mtl(a) : nil; int state = rs_state(b);
             if (state == RS_SCALED) { rs_bad(b, "同一遍有片元阶段写存储图像"); any = 1; }
@@ -251,7 +251,7 @@ static void rs_pre_draw(const NvProg *pr) {
         if (!any) { if (stuck) RS_RED_IMG("绘制"); return; }
         rp_end(); rs_flush();
         if (!rs_bad_dropped()) {   // 同 rs_pre_images
-            int left = 0; pthread_mutex_lock(&g_rmu); for (int st = 0; st < 5 && !left; st++) if (pr->sh[st]) left = rs_image_scaled(pr->sh[st], st); pthread_mutex_unlock(&g_rmu);
+            int left = 0; os_unfair_lock_lock(&g_rmu); for (int st = 0; st < 5 && !left; st++) if (pr->sh[st]) left = rs_image_scaled(pr->sh[st], st); os_unfair_lock_unlock(&g_rmu);
             if (left || stuck) RS_RED_IMG("绘制");
             return; }
     }

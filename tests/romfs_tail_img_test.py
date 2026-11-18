@@ -5,7 +5,7 @@
   ① 两种形态的 pack.files 与 pack 的 index.tsv / manifest.json、romfs.imgmap、最终 game.img / game.imgmap / index.tsv / manifest.json 逐字节相同；
      index.tsv 的 romfs 行 = 夹具文件的长度与 SHA-256（测试里按夹具字节独立算）；界面覆盖层（ui_overlay/romfs）那个文件取覆盖后的字节
   ② 镜像形态的 pack.files 里是 romfs.std（不拆散文件），romfs/ 下只有覆盖层那个真文件；上一版是目录形态时留下的散文件删掉；pack 里是 romfs.std、没有 romfs.files/
-  ③ 核对：镜像形态绿；包里那份镜像改一个字节（落在某个文件里）→ 红、点名那个文件；重打 0 个要重算、核对增量全跳过
+  ③ 核对：镜像形态绿；包里那份镜像改一个字节（落在某个文件里）→ 黄字照常继续（退 0、原因写 <包目录>.verify_warn.txt）、点名那个文件；重打 0 个要重算、核对增量全跳过
   ④ 推送现拼（materialize）从 romfs.std 读：拼出的 romfs.img 长度 / SHA-256 = index.tsv 记的
   ⑤ 写 IMG 边写边腾（consume）：镜像独占（1 个链接）→ 写完镜像没了、game.img 不变；镜像另有硬链接 → 那份完好、这个名字删掉、game.img 不变
   ⑥ 镜像形态 + 就地改 RomFS 的界面覆盖（没有 ui_overlay/）→ 报红
@@ -155,10 +155,11 @@ with tempfile.TemporaryDirectory(prefix='romfs tail ') as t:
     off = RomfsImage(pi / 'pack.files/romfs.std').files()['d/e/f.bin'][0] + 5
     with open(pi / 'pack.files/romfs.std', 'r+b') as f: f.seek(off); b = f.read(1); f.seek(off); f.write(bytes([b[0] ^ 0xFF]))
     r = run(R / 'pack/verify.py', pi / 'pack.files', '@' + str(srcs))
-    ck(r.returncode == 1 and 'romfs/d/e/f.bin（SHA 与 index 不符）' in r.stdout, '③ 包里那份镜像改一个字节 → 核对红、点名 romfs/d/e/f.bin')
+    ck(r.returncode == 0 and '🟡' in r.stdout and (pi / 'pack.files.verify_warn.txt').is_file() and 'romfs/d/e/f.bin（SHA 与 index 不符）' in (pi / 'pack.files.verify_warn.txt').read_text(encoding='utf-8'),
+       '③ 包里那份镜像改一个字节 → 核对黄字照常继续、点名 romfs/d/e/f.bin')
     ck(read(I / 'romfs.std') != read(pi / 'pack.files/romfs.std'), '③ 改的是包里那份（克隆独立），源镜像没被带着改')
     r = run(R / 'pack/pack.py', pi / 'pack.files', '@' + str(srcs)); r2 = run(R / 'pack/verify.py', pi / 'pack.files', '@' + str(srcs))
-    ck(r2.returncode == 0, '③ 不删状态表直接重打 → 核对恢复绿')
+    ck(r2.returncode == 0 and '🟢' in r2.stdout and not (pi / 'pack.files.verify_warn.txt').exists(), '③ 不删状态表直接重打 → 核对恢复绿、黄字记录删掉')
 
 print('romfs_tail_img 单测' + ('全过' if not bad else f'有 {bad} 处不通'))
 sys.exit(1 if bad else 0)

@@ -137,6 +137,12 @@ public final class GamePackTest {
         check(info.titleId.equals("0100000000ABCDEF") && info.name.equals("S2Arm synthetic") && info.version.equals("0.1"), "nacp: " + info.titleId + " " + info.name + " " + info.version);
         check(info.files == 7 && info.modules.size() == 1 && info.modules.get(0).equals("main"), "counts / modules");
 
+        // RomFS 镜像形态（出包缺省）：没有 romfs/ 散文件、只有 romfs.std 也是完整的包；两样都没有照旧拒
+        Map<String, byte[]> image = valid(); image.remove("romfs/readme.txt"); image.put("romfs.std", new byte[64]);
+        check(GamePack.verifyDirectory(write(image, null, false), null).files == 7, "romfs.std image package accepted");
+        Map<String, byte[]> noRomfs = valid(); noRomfs.remove("romfs/readme.txt");
+        rejects(write(noRomfs, null, false), "no romfs at all", "romfs");
+
         File tampered = write(valid(), null, false);
         byte[] rom = Files.readAllBytes(new File(tampered, "romfs/readme.txt").toPath());
         rom[0] ^= 1;
