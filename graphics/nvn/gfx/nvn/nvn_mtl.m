@@ -14617,6 +14617,10 @@ static int mdx_next(const p_draw *dw, const p_draw_idx *di) {
     uint64_t cnt = dw ? dw->mdi_cnt : di->mdi_cnt, out; int i = dw ? dw->mdi_i : di->mdi_i;
     if (!g_mdxc.next || g_mdxc.next != g_exec_cur || !g_enc || g_mdxc.enc != (__bridge const void *)g_enc || g_mdxc.pass != g_stat_pass || g_mdxc.cnt != cnt || g_mdxc.i + 1 != i
         || g_defer_replaying || passdump() || !mdx_find(dw ? dw->ind : di->ind, cnt, &out) || !out) return 0;
+    // 同一笔多绘制的后续子绘制：上面的条件保证与前一条同编码器、同一遍、同计数、序号相连、中间没有别的指令——状态（程序、写掩码、深度模板）与第一条一样，
+    //   第一条 udc_note_draw 的精确写入记账对它同样成立。原先这里的编码按「没有精确记账」处理、把本遍全部附件记成写过：免加载的附件（到遍结束不写、没读入）
+    //   被当成写过、遍末写回没读入的片上内容，贴图成一块块的黑（#1468 Trine 5 标题页：G-buffer 一笔多绘制 5 张颜色附件，「lookahead wrong」wwhy=6）
+    g_udc_precise = 1;
     if (dw) enc_r_draw_indirect(g_enc, g_mdxc.mp, out); else enc_r_draw_indexed_indirect(g_enc, g_mdxc.mp, g_mdxc.it, g_mdxc.ig, g_mdxc.il, out);
     g_stat_draw++; g_mdx_fast++; g_mdxc.next = g_mdx_range ? g_exec_cur : g_exec_next; g_mdxc.i = i;
     return 1;
