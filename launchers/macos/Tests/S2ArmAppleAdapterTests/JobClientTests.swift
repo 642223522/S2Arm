@@ -225,8 +225,8 @@ final class JobClientTests: XCTestCase {
         let spy = Spy()
         let client = JobClient(environment: box.environment(), runner: spy)
         for op in ["installUpdatePrepare", "sgradeMac", "install", "build"] { _ = try client.start(operation: op) }
-        XCTAssertEqual(spy.seen, [true, true, false, false])
-        XCTAssertEqual(JobTrigger.automaticOperations, ["installUpdatePrepare", "sgradeMac"])
+        XCTAssertEqual(spy.seen, [true, false, false, false])   // sgradeMac 11-17 起玩家点了才做（S 级优化改手动），不算自动作业
+        XCTAssertEqual(JobTrigger.automaticOperations, ["installUpdatePrepare"])
     }
 
     /// 真进程：行都到了才报退出（快结束的作业最后一条结果不能被退出抢先）。
