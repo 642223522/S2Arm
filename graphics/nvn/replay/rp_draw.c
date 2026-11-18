@@ -1519,7 +1519,10 @@ void rp_dispatch(nvn_gpu_cmd c, const p_dispatch *dp, const void *rec) {
             if (!rp_S.samp_bound[5][e->src_reg2]) { skip("separate_sampler_unbound", rec); goto done; }
             ts[i] = rp_samp_for_tex((int)(rp_S.samp[5][e->src_reg2] >> 20), h ? (int)(h & 0xFFFFF) : rp_S.tex_base);
             if (!ts[i]) { skip("separate_sampler_unresolved", rec); goto done; }
-        } else ts[i] = rp_samp_for_tex(h ? (int)(h >> 20) : rp_S.samp_base, h ? (int)(h & 0xFFFFF) : rp_S.tex_base);
+        } else {
+            ts[i] = rp_samp_for_tex(h ? (int)(h >> 20) : rp_S.samp_base, h ? (int)(h & 0xFFFFF) : rp_S.tex_base);
+            if (tv[i] && !ts[i] && pg->sampler_unused[0][i]) ts[i] = rp_sampler_for_query();
+        }
     }
     { struct timespec tr1; clock_gettime(CLOCK_MONOTONIC, &tr1); rp_perf_add(RP_PERF_DISP_RESOLVE_NS, (uint64_t)tr1.tv_sec * 1000000000ull + (uint64_t)tr1.tv_nsec - r0); }
     { struct timespec tsb; clock_gettime(CLOCK_MONOTONIC, &tsb); uint64_t f0 = (uint64_t)tsb.tv_sec * 1000000000ull + (uint64_t)tsb.tv_nsec;
