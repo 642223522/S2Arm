@@ -18,7 +18,8 @@
 # 按款挑（tools/gate.sh 派 gate-host 时由 tests/visual/gate.sh 的子项键 widen/<款> 给）：WIDEN_GATE_SKIP="<款…>" 这几款不跑（别处另跑）、WIDEN_GATE_ONLY="<款…>" 只跑这几款；
 #   款名不在判据表里 = 红；末行写明另跑 / 只跑了哪几款。
 # 缓存 ${S2A_WIDEN_GATE_CACHE:-~/.s2arm/run/s2arm/cache/widen_gate}（都只省时间、不影响出图）：
-#   （录像解压不再缓存：10-24 盘紧，九款 + 正例 16 份解压后 12 GB 常驻，解压只要约 6 秒——改解到本次临时目录 $T/rec，退出即删）；
+#   rec/<录像名>.<压缩包内容哈希前 16 位>.rec 解压后的录像，按内容常驻复用（11-18：每次解到本次临时目录，16 份约 12 GB 落在系统临时目录、跑完才删，并行时把门禁主机内置盘挤到 3 GB；
+#   常驻每款只留当前版本一份，旧哈希的删）；缓存所在盘余量 < WIDEN_REC_MIN_FREE_GB（缺省 30）时退回旧做法——解到本次临时目录、退出即删（10-24 盘紧时的口径）；
 #   spv/ 回放见过的 SPIR-V（SW_GAL_SPV_DUMP 累积）→ lib/<键>/ 离线着色器库（graphics/metal/tools/gal_offline.py，与运行时现编同一份翻译代码；
 #   键 = tests/visual/widen_lib_key.sh：只认翻译代码 + 打包脚本，渲染器里翻译用不到的代码改了不换库）。原因：运行时现编在低优先级线程上，本机负载 60–80 时动森到第 30 帧 167 秒、
 #   带离线库 7 秒、出图逐字节相同（10-21 实测）。回放里有现编（库里没有的新 SPIR-V，如包装层改了着色器）就在判完后重建库，下次就快。
@@ -34,7 +35,25 @@ die() { echo "🔴 $1"; echo "宽屏门禁：期望 九款中间区 / 出图参�
 for k in ${WIDEN_GATE_SKIP:-} ${WIDEN_GATE_ONLY:-}; do cut -f1 "$TAB" | grep -qxF "$k" || die "按款挑的 $k 不在判据表 $TAB 里"; done
 [ -f "$RECS/list.tsv" ] || die "金样录像清单缺：$RECS/list.tsv"
 command -v zstd > /dev/null || die "没有 zstd（brew install zstd），录像解不了"
-mkdir -p "$T/rec" "$C/sh" || die "缓存目录建不了：$C"
+mkdir -p "$T/rec" "$C/sh" "$C/rec" || die "缓存目录建不了：$C"
+RECC=$C/rec; free_gb=$(df -Pk "$RECC" 2> /dev/null | awk 'NR == 2 { print int($4 / 1048576) }')
+[ "${free_gb:-0}" -ge "${WIDEN_REC_MIN_FREE_GB:-30}" ] || { echo "⚪ 录像缓存所在盘只剩 ${free_gb:-?} GB（< ${WIDEN_REC_MIN_FREE_GB:-30}）：本次解到临时目录、退出即删"; RECC=; }
+# rec_get <名> <压缩包>：让 $T/rec/<名>.rec 就位。有 RECC：按压缩包内容常驻（同内容直接用，别的树刚解完的也算——mv 原子到位；
+#   同一录像的旧版本删），本次临时目录里放软链；没有 RECC：解到本次临时目录。解压失败返回 1
+rec_get() {
+  local k=$1 z=$2 zh base cf old
+  [ -e "$T/rec/$k.rec" ] && return 0
+  if [ -n "$RECC" ]; then
+    zh=$(shasum -a 256 "$z" | cut -c1-16); base=${z#"$RECS"/}; base=${base%.zst}; base=${base//\//_}; cf=$RECC/$base.$zh.rec   # 基名 = 录像库里的相对路径（多款都叫 <款>/gal.rec.zst，只取文件名会互相当成旧版本删掉）
+    if [ ! -f "$cf" ]; then
+      zstd -q -d -f "$z" -o "$cf.tmp.$$" && mv "$cf.tmp.$$" "$cf" || { rm -f "$cf.tmp.$$"; return 1; }
+      for old in "$RECC/$base".????????????????.rec; do [ "$old" = "$cf" ] || rm -f "$old"; done
+    fi
+    ln -s "$cf" "$T/rec/$k.rec"
+  else
+    zstd -q -d -f "$z" -o "$T/rec/$k.rec.tmp.$$" && mv "$T/rec/$k.rec.tmp.$$" "$T/rec/$k.rec" || { rm -f "$T/rec/$k.rec.tmp.$$"; return 1; }
+  fi
+}
 
 # 量具正对照（判据会绿着失效）：合成一对图，正好居中 → 差异 0；错 1 列 → 差异 > 0
 python3 - "$T/pc" <<'EOF' || die "量具正对照没过（widen_mid.py 坏了）"
@@ -97,9 +116,7 @@ while IFS=$'\t' read -r g mode fr nn ns kn ks xc rok odk recc sc note; do
   if [ "${recc:--}" = - ]; then rec=$(awk -F'\t' -v g="$g" '$1 == g { print $2 }' "$RECS/list.tsv"); else rec=$recc; fi
   [ -n "$rec" ] && [ -f "$RECS/$rec" ] || { red=1; echo "🔴 ${g}：金样录像缺（${rec:-list.tsv 里没有这款}）"; continue; }
   z=$RECS/$rec
-  if [ ! -f "$T/rec/$g.rec" ]; then
-    zstd -q -d -f "$z" -o "$T/rec/$g.rec.tmp.$$" && mv "$T/rec/$g.rec.tmp.$$" "$T/rec/$g.rec" || { rm -f "$T/rec/$g.rec.tmp.$$"; red=1; echo "🔴 ${g}：录像解压失败 $z"; continue; }
-  fi
+  rec_get "$g" "$z" || { red=1; echo "🔴 ${g}：录像解压失败 $z"; continue; }
   GAMES+=("$g	$mode	$fr	$nn	$ns	$kn	$ks	$xc	$rok	$odk	${sc:--}")
 done < "$TAB"
 [ ${#GAMES[@]} -gt 0 ] || [ "$GAMES_O" -gt 0 ] || die "判据表里一款都没跑成"
@@ -188,9 +205,7 @@ if [ -z "${WIDEN_GATE_ONLY:-}" ]; then
     case $brec in ''|'#'*|录像) continue;; esac
     nb=$((nb + 1)); bk=bands_$(echo "$brec" | tr '/.' '__')
     [ -f "$RECS/$brec" ] || { red=1; echo "🔴 两侧来历正例录像缺：$RECS/${brec}（${bnote}）"; continue; }
-    if [ ! -f "$T/rec/$bk.rec" ]; then
-      zstd -q -d -f "$RECS/$brec" -o "$T/rec/$bk.rec.tmp.$$" && mv "$T/rec/$bk.rec.tmp.$$" "$T/rec/$bk.rec" || { rm -f "$T/rec/$bk.rec.tmp.$$"; red=1; echo "🔴 两侧来历正例录像解压失败：$brec"; continue; }
-    fi
+    rec_get "$bk" "$RECS/$brec" || { red=1; echo "🔴 两侧来历正例录像解压失败：$brec"; continue; }
     BA=(--widen 2.1727); [ -n "${bargs:-}" ] && read -r -a BA <<< "$bargs"   # 第 5 列回放参数（空 = 整套放宽）；按空格拆成数组，不靠 zsh / bash 分词差异
     # 录像旁有同名 .widen.idx（出包的宽屏索引）就按产品口径回放：没有它镜头点认不出，读改写镜头的绘制当界面画（10-23 八方2 存档页：无索引逐帧 3、有索引 0 / 2）
     BE=(); bidx="$RECS/${brec%.rec.zst}.widen.idx"; [ -f "$bidx" ] && BE=(S2A_WIDEN_IDX="$bidx")
@@ -208,9 +223,7 @@ if [ -z "${WIDEN_GATE_ONLY:-}" ]; then
     case $frec in ''|'#'*|录像) continue;; esac
     nfl=$((nfl + 1)); fk=fill_$(echo "$frec" | tr '/.' '__')
     [ -f "$RECS/$frec" ] || { red=1; echo "🔴 铺满正例录像缺：$RECS/${frec}（${fnote}）"; continue; }
-    if [ ! -f "$T/rec/$fk.rec" ]; then
-      zstd -q -d -f "$RECS/$frec" -o "$T/rec/$fk.rec.tmp.$$" && mv "$T/rec/$fk.rec.tmp.$$" "$T/rec/$fk.rec" || { rm -f "$T/rec/$fk.rec.tmp.$$"; red=1; echo "🔴 铺满正例录像解压失败：$frec"; continue; }
-    fi
+    rec_get "$fk" "$RECS/$frec" || { red=1; echo "🔴 铺满正例录像解压失败：$frec"; continue; }
     env "${ENVS[@]}" timeout 150 "$PLAY/galplay" "$T/rec/$fk.rec" "$T/$fk" --frames "$ffr" --until $((ffr + 1)) --widen 2.1727 > "$T/$fk.log" 2>&1
     line=$(python3 - "$T/$fk" "$ffr" "$flim" <<'EOF'
 import json, sys
