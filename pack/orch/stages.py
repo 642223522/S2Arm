@@ -52,6 +52,11 @@ REWRITE_OUTPUTS = tuple(('*.code_patch.tsv *.patched.bin *.fixups.tsv *.gates.ts
 
 LAYOUT_ZSTD = '1.5.7'   # 布局阶段要的 zstd 命令行钉版（Mac Homebrew 同版）；pack/orch/oneclick_win.py --check 起单前按它核
 
+def bfttf(folder):
+    """folder 里的共享字体 *.bfttf；「._」开头的是 exFAT 等盘上 macOS 给每个文件配的 AppleDouble 附属文件，不是字体（不然 7 份数成 14 份、拷进包、进字体身份）"""
+    return [p for p in Path(folder).glob('*.bfttf') if not p.name.startswith('._')]
+
+
 def _title_id(directory):
     """目录里 unpack.tsv 记的程序号（大写）；读不出 → ''"""
     return next((line.split('\t', 1)[1].strip().upper() for line in read(Path(directory) / 'unpack.tsv').splitlines() if line.startswith('title_id\t')), '')
@@ -350,7 +355,7 @@ def rewrite_plan(game, current, deps):
         b = (selection + '\n').encode() + (REPO / 'pack/cpatch.py').read_bytes()
         b += b''.join((d / 'INDEX.tsv').read_bytes() for d in dirs if (d / 'INDEX.tsv').is_file())
         b += b''.join(f.name.encode() + b'\n' + f.read_bytes() for d in cheats for f in (sorted(d.glob('*.txt')) if d.is_dir() else [])
-                   if f.is_file() and f.name not in ('enabled.txt', 'status.txt'))   # 开关与状态不进键：玩家开关不重跑改写
+                   if f.is_file() and f.name not in ('enabled.txt', 'status.txt') and not f.name.startswith('._'))   # 开关与状态不进键：玩家开关不重跑改写
         ck = ' cpatch=' + digest(b)
     ad = deps.work / 'addr'
     ad.mkdir()
@@ -993,9 +998,9 @@ class Stages:
             selected = Path(os.environ['S2A_FONTS'])
         else:
             selected = next((Path(p) for p in os.environ.get('S2A_APP_FONTS_DIRS', '').split(os.pathsep)
-                             if p and list(Path(p).glob('*.bfttf'))), None)
+                             if p and bfttf(p)), None)
         if selected is not None:
-            if is_link(selected) or not selected.is_dir() or not list(selected.glob('*.bfttf')):
+            if is_link(selected) or not selected.is_dir() or not bfttf(selected):
                 raise StageError('共享字体目录缺失/非法；配置S2A_FONTS', 75)
             return selected   # v0.2.3 清理：玩家选的字体目录只认 *.bfttf，里面别的条目（软链、.DS_Store）不管、不拒
         run_root = Path(os.environ.get('S2A_RUN_ROOT', Path.home() / '.s2arm/run'))
@@ -1004,7 +1009,7 @@ class Stages:
         stamp = hashlib.sha256(generator.read_bytes()).hexdigest()
         def ready():
             return (dest.is_dir() and not is_link(dest)
-                    and read(dest / '.generator.sha256') == stamp and len(list(dest.glob('*.bfttf'))) == 7)
+                    and read(dest / '.generator.sha256') == stamp and len(bfttf(dest)) == 7)
         if ready():
             return dest   # 自家生成的缓存：ready() 已核生成器指纹与 7 份字体，不再递归扫链接（v0.2.3 清理）
         if is_link(dest) or is_link(dest.parent):
@@ -1028,7 +1033,7 @@ class Stages:
                         or ('版本' in message and 'requirements.txt' in message)):
                     raise StageError('开源字体固定依赖/离线数据未就绪；不下载，或配置S2A_FONTS', 75) from error
                 raise
-            if len(list(temp.glob('*.bfttf'))) != 7:
+            if len(bfttf(temp)) != 7:
                 raise StageError('开源字体生成器没有产出7份字体')
             text(temp / '.generator.sha256', stamp + '\n')
             # The shared file lock protects replacement of this exact cache;
@@ -1109,7 +1114,7 @@ class Stages:
                 synth.append(fields[1])
         def font_rows(folder, algorithm):
             return [(p.name, hashlib.new(algorithm, p.read_bytes()).hexdigest())
-                    for p in sorted(folder.glob('*.bfttf'), key=lambda p: os.fsencode(p.name))]
+                    for p in sorted(bfttf(folder), key=lambda p: os.fsencode(p.name))]
         already = (font_rows(fonts, 'sha1') == font_rows(current / 'systemdata/fonts', 'sha1')
                    and zone is not None and zone.name == '010000000000080E' and not stale
                    and not copies and not synth and (read(current / '.stage_sysdata') == key
@@ -1124,7 +1129,7 @@ class Stages:
             target.mkdir(exist_ok=True)
             remove_owned(target / 'fonts')
             (target / 'fonts').mkdir()
-            for source in fonts.glob('*.bfttf'):
+            for source in bfttf(fonts):
                 copy_file(source, target / 'fonts' / source.name)
             zone = self._timezone(tx.path)
             if stale and zone:
@@ -1180,7 +1185,7 @@ class Stages:
                 raise StageError('S2A_NX_UNPACK未就绪', 75)
             return tool
         source = REPO / 'pack/nx_unpack'
-        inputs = [*sorted(source.glob('*.cs')), *sorted(source.glob('*.csproj'))]
+        inputs = [p for p in [*sorted(source.glob('*.cs')), *sorted(source.glob('*.csproj'))] if not p.name.startswith('._')]
         if not inputs:
             raise StageError('缺nx_unpack源码')
         identity = hashlib.sha256(b''.join(p.read_bytes() for p in inputs)).hexdigest()[:12]

@@ -113,7 +113,7 @@ def _tree(root):
 
 def _checked(entry, shell_id, hit):
     _plain(entry, True)
-    if {p.name for p in entry.iterdir()} != {"root", "manifest.json"}:
+    if {p.name for p in entry.iterdir() if not p.name.startswith("._")} != {"root", "manifest.json"}:   # ._：exFAT 上 macOS 配的 AppleDouble 附属文件，不算多出来的项
         raise CacheError("缓存版本目录必须且只能含 root/ 和 manifest.json")
     root, ledger = entry / "root", entry / "manifest.json"
     _plain(ledger, False)
