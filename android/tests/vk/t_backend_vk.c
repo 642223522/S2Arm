@@ -6404,6 +6404,68 @@ static void c68_stencil_ops(const char *dir) {
     free(vm); free(fm);
 }
 
+// C1581O：纯模板格式 STENCIL8（VK_FORMAT_S8_UINT）当模板附件（#1581 O）。S8 只有模板面：图像的面、默认视图的面都得是 STENCIL；
+//   管线的兼容渲染通道也要有这个附件（管线描述 dfmt = 0、sfmt = STENCIL8，附件格式不能只看 dfmt）。两笔同 C68：
+//   ① 只在左半屏（裁剪）画绿：函数 ALWAYS、通过时 REPLACE、参考值 1；② 整屏画蓝：函数 NOTEQUAL、参考值 1、操作全 KEEP。
+// 期望（手算）：左半绿、右半蓝，validation 0 条。面判成 DEPTH 时建视图报 VUID；管线通道没有模板附件时绘制报通道不兼容。
+static void c1581o_stencil8(const char *dir) {
+    if (!(nvn_gpu_format_caps(NVN_FORMAT_STENCIL8) & NVN_GPU_FMT_RENDER)) { CHECK(0, "C1581O 设备不能把 STENCIL8 当附件"); return; }
+    nvn_gpu_shader vs = NULL, fs = NULL, vs2 = NULL, fs2 = NULL; void *vm = NULL, *fm = NULL, *vm2 = NULL, *fm2 = NULL;
+    if (!load_shader_pair(dir, "tri3.vert", "solid_green.frag", NULL, NULL, &vs, &fs, &vm, &fm)) { CHECK(0, "C1581O 读不到 solid_green"); return; }
+    if (!load_shader_pair(dir, "tri3.vert", "solid_blue.frag", NULL, NULL, &vs2, &fs2, &vm2, &fm2)) { CHECK(0, "C1581O 读不到 solid_blue"); return; }
+    nvn_gpu_pipe_desc pd, pd2;
+    fill_gpipe_desc(&pd, vs, fs, 0); pd.sfmt = NVN_FORMAT_STENCIL8; pd.ds.st = 1;
+    pd.ds.sf_f = pd.ds.sf_b = 8;                                                     // 8 = ALWAYS
+    pd.ds.fail_f = pd.ds.zfail_f = 2; pd.ds.zpass_f = 3; pd.ds.fail_b = pd.ds.zfail_b = 2; pd.ds.zpass_b = 3;   // 2 = ZERO、3 = REPLACE
+    fill_gpipe_desc(&pd2, vs2, fs2, 0); pd2.sfmt = NVN_FORMAT_STENCIL8; pd2.ds.st = 1;
+    pd2.ds.sf_f = pd2.ds.sf_b = 6;                                                   // 6 = NOTEQUAL
+    pd2.ds.fail_f = pd2.ds.zfail_f = pd2.ds.zpass_f = 1; pd2.ds.fail_b = pd2.ds.zfail_b = pd2.ds.zpass_b = 1;   // 1 = KEEP
+    nvn_gpu_err e; memset(&e, 0, sizeof e);
+    nvn_gpu_pipe pipe = NULL, pipe2 = NULL;
+    CHECK(OK(nvn_gpu_pipe_get(&pd, NVN_GPU_PIPE_SYNC, &pipe, &e)), "C1581O pipe：%d %s", e.rc.code, e.why);
+    CHECK(OK(nvn_gpu_pipe_get(&pd2, NVN_GPU_PIPE_SYNC, &pipe2, &e)), "C1581O pipe2：%d %s", e.rc.code, e.why);
+    nvn_gpu_tex out = make_tex(64, 64, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED);
+    nvn_gpu_tex st = make_tex(64, 64, NVN_FORMAT_STENCIL8, NVN_GPU_TEX_RENDER);
+    nvn_gpu_view ov = make_view(out), sv = make_view(st);
+    nvn_gpu_buf rb = make_buf(64 * 64 * 4, NVN_GPU_MEM_SHARED, NULL);
+    nvn_gpu_buf vb = full_vb();
+    nvn_gpu_cmd c = begin_cmd();
+    nvn_gpu_pass_desc p; memset(&p, 0, sizeof p);
+    p.ncolor = 1; p.color[0].view = ov; p.color[0].load = NVN_GPU_LOAD_CLEAR; p.color[0].store = NVN_GPU_STORE_STORE; p.color[0].clear.f[3] = 1;
+    p.stencil.view = sv; p.stencil.load = NVN_GPU_LOAD_CLEAR; p.stencil.store = NVN_GPU_STORE_STORE; p.clear_stencil = 0;
+    p.w = 64; p.h = 64; p.layers = 1;
+    nvn_gpu_pass_begin(c, &p);
+    nvn_gpu_set_pipe(c, pipe);
+    nvn_gpu_dyn dyn; full_dyn(&dyn);
+    dyn.st_vmask[0] = dyn.st_vmask[1] = 0xFF; dyn.st_wmask[0] = dyn.st_wmask[1] = 0xFF; dyn.st_ref[0] = dyn.st_ref[1] = 1;
+    dyn.sc[2] = 32;   // ① 只画左半屏
+    nvn_gpu_set_dyn(c, &dyn);
+    nvn_gpu_set_vbuf(c, 0, vb, 0);
+    nvn_gpu_draw_args da; memset(&da, 0, sizeof da); da.prim = 4; da.count = 3; da.instances = 1;
+    nvn_gpu_draw(c, &da);
+    nvn_gpu_set_pipe(c, pipe2);   // ② 整屏、NOTEQUAL 1
+    dyn.sc[2] = 64;
+    nvn_gpu_set_dyn(c, &dyn);
+    nvn_gpu_set_vbuf(c, 0, vb, 0);
+    nvn_gpu_draw(c, &da);
+    nvn_gpu_pass_end(c);
+    nvn_gpu_copy_tex_buf(c, out, 0, 0, NULL, rb, 0, 64 * 4, 64 * 64 * 4);
+    nvn_gpu_rc r = nvn_gpu_cmd_commit(c, 1, on_done, NULL, &e);   // 自己一个会话（见 main）：围栏号 1
+    CHECK(OK(r), "C1581O commit：%d %s", r.code, e.why);
+    r = nvn_gpu_fence_wait(1, 5000000000ull, &e);
+    CHECK(OK(r), "C1581O wait：%d %s", r.code, e.why);
+    if (OK(r)) {
+        expect_rect(buf_cpu(rb), 0, 0, 32, 64, 0, 255, 0, "C1581O 左半（①写了模板 1，②被 NOTEQUAL 挡住：绿）");
+        expect_rect(buf_cpu(rb), 32, 0, 32, 64, 0, 0, 255, "C1581O 右半（模板还是 0，②画上：蓝）");
+    }
+    printf("C1581O 纯 STENCIL8 模板附件：已核对\n");
+    nvn_gpu_view_release(ov); nvn_gpu_view_release(sv);
+    nvn_gpu_tex_release(out); nvn_gpu_tex_release(st);
+    nvn_gpu_buf_release(vb, NULL, NULL); nvn_gpu_buf_release(rb, NULL, NULL);
+    nvn_gpu_shader_release(vs); nvn_gpu_shader_release(fs); free(vm); free(fm);
+    nvn_gpu_shader_release(vs2); nvn_gpu_shader_release(fs2); free(vm2); free(fm2);
+}
+
 // 平铺在 z = 0.5 的整屏三角形（C74 / C75 的深度测试用）
 static nvn_gpu_buf half_depth_vb(void) {
     const float verts[3][4] = {{-1, -1, 0.5f, 1}, {3, -1, 0.5f, 1}, {-1, 3, 0.5f, 1}};
@@ -8869,8 +8931,11 @@ static void c89_midrun_save(const char *sdir) {
             c89_sleep_ms(2);
         }
         CHECK(e10.made - b10.made == 84, "C89 ⑩ 两个线程应经缓存建出 84 条管线 → %llu 条", (unsigned long long)(e10.made - b10.made));
-        CHECK(e10.saves - b10.saves >= 3 && e10.failed == b10.failed && e10.ok - b10.ok == e10.saves - b10.saves,
-              "C89 ⑩ 并行建管线时局中写盘应发生多次且全部成功 → 触发 %llu 次（期望 ≥ 3）、成功 +%llu、失败 +%llu", (unsigned long long)(e10.saves - b10.saves), (unsigned long long)(e10.ok - b10.ok), (unsigned long long)(e10.failed - b10.failed));
+        // 触发次数只断言 ≥ 1：后台写在飞时新的触发直接跳过、不排队（plc_save_midrun_impl），次数取决于写盘耗时与两线程建管线的快慢，
+        //   慢的 CI 机上只有 1–2 次（main 与 #1561 / #1559 都偶发红过 ≥ 3）。≥ 1 是确定的：阈值每 2 条、首次不等时间，第 2 条建好就开写，
+        //   这时两个线程还要建满 84 条——要证的「并行建管线时局中写盘、全部写成、收尾文件合规」都还在。
+        CHECK(e10.saves - b10.saves >= 1 && e10.failed == b10.failed && e10.ok - b10.ok == e10.saves - b10.saves,
+              "C89 ⑩ 并行建管线时局中写盘应发生且全部成功 → 触发 %llu 次（期望 ≥ 1）、成功 +%llu、失败 +%llu", (unsigned long long)(e10.saves - b10.saves), (unsigned long long)(e10.ok - b10.ok), (unsigned long long)(e10.failed - b10.failed));
         nvn_gpu_shader_release(vsa); nvn_gpu_shader_release(fsa); nvn_gpu_shader_release(vsb); nvn_gpu_shader_release(fsb);
         for (int i = 0; i < 4; i++) free(ma[i]);
     }
@@ -9967,6 +10032,15 @@ int main(int argc, char **argv) {
         s2a_vk_device_destroy(&g_dev, 1);
         return g_fail ? 1 : 0;
     }
+    if (argc > 2 && !strcmp(argv[2], "--stencil8-only")) {   // 只跑 C1581O（默认档里也跑）；给红 / 绿 / 负控取证用
+        memset(&g_desc, 0, sizeof g_desc); g_desc.host_device = &g_dev; g_desc.app_label = "nvn-backend-vk-test";
+        if (!open_backend()) return 1;
+        c1581o_stencil8(argv[1]);
+        nvn_gpu_err e = {0}; CHECK(OK(nvn_gpu_close(5000000000ull, &e)), "C1581O close %s", e.why);
+        printf("C1581O failures=%d\n", g_fail);
+        s2a_vk_device_destroy(&g_dev, 1);
+        return g_fail ? 1 : 0;
+    }
     if (argc > 2 && !strcmp(argv[2], "--c63-same-view")) {   // 只跑 C63c（默认档里也跑）；给「红在被修的那一处」取证用
         memset(&g_desc, 0, sizeof g_desc); g_desc.host_device = &g_dev; g_desc.app_label = "nvn-backend-vk-test";
         if (!open_backend()) return 1;
@@ -10387,6 +10461,9 @@ int main(int argc, char **argv) {
         c87_resolve_reject(k);
         CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C87 拒绝 close：%s", e18.why);
     }
+    if (!open_backend()) return 1;   // 自己一个会话：围栏号 1
+    c1581o_stencil8(argv[1]);
+    CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "C1581O close：%s", e18.why);
     if (!open_backend()) return 1;   // 自己一个会话：围栏号 1、2
     cp06_cube_of_array(argv[1]);
     CHECK(OK(nvn_gpu_close(5000000000ull, &e18)), "P0-6 close：%s", e18.why);

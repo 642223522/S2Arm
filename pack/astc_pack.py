@@ -63,8 +63,9 @@ def astc_bytes(w, h):
 
 # ---- C 库 -------------------------------------------------------------------------------------------------------------------------------------------------------------------
 def _sources():
+    # 「._」开头：exFAT 等盘上 macOS 配的 AppleDouble 附属文件（引擎副本可以在外置盘上），不是源码
     cpp = sorted(os.path.join(ASTC_DIR, f) for f in os.listdir(ASTC_DIR) if f.startswith('astcenc_') and f.endswith('.cpp'))
-    hdr = sorted(os.path.join(ASTC_DIR, f) for f in os.listdir(ASTC_DIR) if f.endswith('.h'))
+    hdr = sorted(os.path.join(ASTC_DIR, f) for f in os.listdir(ASTC_DIR) if f.endswith('.h') and not f.startswith('._'))
     return cpp, hdr
 
 

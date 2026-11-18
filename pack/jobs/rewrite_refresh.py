@@ -278,7 +278,7 @@ def cheats_digest(c, gid):
     """这款金手指文件夹里各 txt 的名字与内容摘要（开关状态 enabled.txt / status.txt 不算：开关不改要编进程序的东西）；没有 = '-'"""
     import cheats
     d = cheats.cheats_dir(c, gid.upper(), create=False)
-    files = sorted(p for p in d.glob("*.txt") if p.is_file() and p.name not in cheats.SKIP) if d.is_dir() else []
+    files = sorted(p for p in d.glob("*.txt") if p.is_file() and p.name not in cheats.SKIP and not layout.os_junk(p.name)) if d.is_dir() else []
     if not files:
         return "-"
     h = hashlib.sha256()

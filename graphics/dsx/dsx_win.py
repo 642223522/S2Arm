@@ -20,8 +20,9 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.abspath(os.path.join(HERE, '..', '..'))
 SPVC_DIR = os.path.join(ROOT, 'graphics', 'third_party', 'spirv_cross')
-SRCS = sorted(f for f in os.listdir(HERE) if f.endswith('.c'))   # = Makefile SRCS（本目录全部 *.c）
-HDRS = sorted(f for f in os.listdir(HERE) if f.endswith('.h'))   # = Makefile HDRS
+# 「._」开头的是 macOS 在 exFAT 等盘上给文件配的 AppleDouble 附属文件（引擎副本可以在玩家的外置盘上），不是源码；make 的 $(wildcard *.c) 也不匹配点开头的名字
+SRCS = sorted(f for f in os.listdir(HERE) if f.endswith('.c') and not f.startswith('._'))   # = Makefile SRCS（本目录全部 *.c）
+HDRS = sorted(f for f in os.listdir(HERE) if f.endswith('.h') and not f.startswith('._'))   # = Makefile HDRS
 SPVC_UNITS = ['spirv_cfg', 'spirv_cross', 'spirv_cross_c', 'spirv_cross_parsed_ir', 'spirv_glsl', 'spirv_msl', 'spirv_parser']   # = Makefile SPVC_SRC
 SPVC_DEF = ['-DSPIRV_CROSS_C_API_MSL=1', '-DSPIRV_CROSS_C_API_GLSL=1']   # = Makefile SPVC_DEF
 COMPAT = os.path.join(HERE, 'win_posix.h')   # Windows C 运行库缺的 asprintf / memmem
@@ -43,7 +44,7 @@ def link_cmd(cxx, lib, objs, names):
 
 
 def build(out):
-    spvc = [os.path.join(SPVC_DIR, f) for f in sorted(os.listdir(SPVC_DIR)) if f.endswith(('.cpp', '.hpp', '.h'))]
+    spvc = [os.path.join(SPVC_DIR, f) for f in sorted(os.listdir(SPVC_DIR)) if f.endswith(('.cpp', '.hpp', '.h')) and not f.startswith('._')]
     ins = [os.path.join(HERE, f) for f in SRCS + HDRS] + spvc + [os.path.abspath(__file__)]
     if os.path.exists(out) and os.path.getmtime(out) >= max(os.path.getmtime(p) for p in ins): return 0
     names = exports()
@@ -58,7 +59,8 @@ def build(out):
         bad = [os.path.basename(c[c.index('-c') + 1]) for c, r in zip(jobs, rcs) if r]
         if bad: print(f'【红】dsx.dll 编不出：{" ".join(bad)}', file=sys.stderr); return 1
         lib = os.path.join(od, os.path.basename(out))   # 链接器顺带出的导入库 .lib / .exp 也落在临时子目录，随它删
-        r = subprocess.run(link_cmd(cxx, lib, sorted(os.path.join(od, f) for f in os.listdir(od) if f.endswith('.o')), names))
+        # 只链接上面这些编译命令各自 -o 出来的目标文件（显式清单）。原先列临时目录收全部 .o：目录在 exFAT 盘上时 macOS 另写的 AppleDouble「._<名>.o」也被交给链接器
+        r = subprocess.run(link_cmd(cxx, lib, sorted(c[c.index('-o') + 1] for c in jobs), names))
         if r.returncode: print(f'【红】dsx.dll 链接失败（退出 {r.returncode}）', file=sys.stderr); return 1
         os.replace(lib, out)
     return 0

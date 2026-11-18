@@ -676,6 +676,20 @@ static void lt_waiter(uint64_t arg) { (void)arg;
     atomic_store(&g_lt_b, atomic_fetch_add(&g_lt_seq, 1) + 1);
     uint64_t y[31] = {0}; svc_thread(0x0B, y);   // 再进系统调用：唤醒方的「等它跑到下一次系统调用」在这里满足
     uint64_t e[31] = {0}; svc_thread(0x0A, e); }
+// ③b（#1520 D-BJZ6）：等待中途游戏关掉被等的事件读端句柄。Horizon 等的是对象：事件还被写端持着，从写端触发照样唤醒（甲）；不触发就按超时返回（乙），都不回句柄无效
+static uint32_t g_cw_h; static _Atomic int g_cw_done; static uint64_t g_cw_r0, g_cw_r1;
+static void cw_waiter(uint64_t arg) { uint32_t hs[1] = {g_cw_h}; uint64_t r[31] = {0, (uint64_t)hs, 1, arg}; svc_thread(0x18, r);
+    g_cw_r0 = r[0]; g_cw_r1 = r[1]; atomic_store(&g_cw_done, 1); uint64_t e[31] = {0}; svc_thread(0x0A, e); }
+static void cw_case(int signal_after, uint64_t timeout_ns, uint64_t want) {
+    uint64_t ev[31] = {0}; svc_thread(0x45, ev); uint32_t hw = (uint32_t)ev[1]; g_cw_h = (uint32_t)ev[2]; atomic_store(&g_cw_done, 0);
+    uint64_t r[31] = {0, (uint64_t)cw_waiter, timeout_ns, 0, 44, 0}; svc_thread(0x08, r); uint64_t s_[31] = {r[1]}; svc_thread(0x09, s_);
+    while (!s2a_test_blocked(r[1])) usleep(100);   // 真进了 0x18
+    uint64_t cl[31] = {g_cw_h}; svc_thread(0x16, cl);   // 游戏关掉被等的读端
+    if (signal_after) { uint64_t sg[31] = {hw}; svc_thread(0x11, sg); }
+    while (!atomic_load(&g_cw_done)) usleep(1000);
+    CHECK(g_cw_r0 == want && (want || g_cw_r1 == 0), "③b 等待中关读端%s：期望 %#llx → %#llx（下标 %llu；0xe401 = 句柄无效，旧实现醒来按句柄重查）",
+          signal_after ? "、再从写端触发" : "、不触发", (unsigned long long)want, (unsigned long long)g_cw_r0, (unsigned long long)g_cw_r1);
+    uint64_t cw[31] = {hw}; svc_thread(0x16, cw); }
 static volatile long g_lc[4]; static _Atomic int g_lc_done;
 static void lc_worker(uint64_t arg) { (void)arg;
     for (int round = 0; round < 5; round++) {
@@ -963,6 +977,8 @@ int main(void) {
       s2a_event_signal(cc); s2a_event_release(cc); }
     CHECK(s2a_handle_get(S2A_H_CUR_THREAD, &k, &ck) && ck == g_wtag, "当前线程伪句柄 cookie 仍为句柄（伪句柄约定不变）");
 
+    g_case = "③b 等待中关句柄";
+    cw_case(1, 5000000000ull, 0); cw_case(0, 300000000ull, 0xEA01);
     // ④
     g_case = "④ SignalToAddress 类型 2";
     arb64_case(); arb_case(0, 0, 11, 0); arb_case(2, 0, 8, 2); arb_case(2, -1, 8, 2); arb_case(1, 1, 9, 1); arb_case(2, 2, 9, 2); arb_case(3, 2, 10, 2); arb_case(2, 1, 10, 1);

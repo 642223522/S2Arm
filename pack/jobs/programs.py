@@ -187,7 +187,7 @@ def exefs_dir(c, gid):
 
 def recipe_files(kit, modules):
     drop = {f"{m}.{o}" for m in modules for o in OUTPUTS}
-    return [p for p in Path(kit).rglob("*") if p.is_file() and not (p.parent == Path(kit) and p.name in drop) and p.suffix != ".log"]
+    return [p for p in Path(kit).rglob("*") if p.is_file() and not (p.parent == Path(kit) and p.name in drop) and p.suffix != ".log" and not layout.os_junk(p.name)]
 
 
 def save_recipe(c, gid, full=False):
@@ -303,7 +303,7 @@ def _rebuilds_same(c, gid, kit):
             return False
         if built is None:
             return False
-        files = lambda d: {p.relative_to(d).as_posix() for p in Path(d).rglob("*") if p.is_file() and p.suffix != ".log"}
+        files = lambda d: {p.relative_to(d).as_posix() for p in Path(d).rglob("*") if p.is_file() and p.suffix != ".log" and not layout.os_junk(p.name)}
         a, b = files(keep), files(built)
         return a == b and all((keep / f).read_bytes() == (built / f).read_bytes() for f in a)
     finally:

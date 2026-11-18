@@ -256,6 +256,10 @@ int main(void) {
             //   期望手算：源整张红 (255, 0, 0, 255)；目标按 BGRA 字节序存，小端读一个像素 = B | G << 8 | R << 16 | A << 24 = ffff0000（改前目标没被写，读 0）
             static tex_t s1, d1; g_fmt = NVN_FORMAT_RGBA8; make_tex(&s1, 1280, 720, 1); g_fmt = NVN_FORMAT_BGRA8; make_tex(&d1, 1280, 720, 1); g_fmt = NVN_FORMAT_RGBA8;
             REQUIRE(tex_mtl(&s1).pixelFormat == MTLPixelFormatRGBA8Unorm && tex_mtl(&d1).pixelFormat == MTLPixelFormatBGRA8Unorm);   // 前提：就是 #751 日志里的 70 → 80
+            //   上一句是两张贴图的首次使用：初始内容（按池存储填，这里全 0）由后端排进下一次提交。编码线程开着（11-16 1c1c20d0a 起 Mac 缺省开）时它延后到
+            //   编码线程上做，下面 clear_red 用的是测试自己的队列、不在这条时间线上，先清的红会被随后的初始填充盖回 0（读出 00000000，看着像 #751 回归）。
+            //   先空提交一次等它跑完，再从外部写源图；游戏的写入都经后端、排在同一条时间线上，不会这样
+            { nvn_be_sub_begin(); uint64_t f0 = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f0, 10000000000ull)); }
             clear_red(tex_mtl(&s1));
             nvn_be_sub_begin();
             p_copy_t2t c; memset(&c, 0, sizeof c); c.src = &s1; c.dst = &d1; c.flags = DM_COPY_RESOLVE; c.sr = (NVNcopyRegion){.width = 1280, .height = 720, .depth = 1}; c.dr = c.sr;

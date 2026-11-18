@@ -8,6 +8,5 @@ mkdir -p "$OUT"
 cat > "$OUT/NuGet.Config" <<'XML'
 <configuration><packageSources><clear /></packageSources></configuration>
 XML
-dotnet restore "$HERE/SharedContracts.csproj" --configfile "$OUT/NuGet.Config" --artifacts-path "$OUT/art" -p:NuGetAudit=false > "$OUT/build.log" 2>&1
-dotnet build "$HERE/SharedContracts.csproj" -c Release --no-restore --artifacts-path "$OUT/art" >> "$OUT/build.log" 2>&1
+bash "$ROOT/tools/cs_cache.sh" "$OUT/art" "$HERE/SharedContracts.csproj" -- bash -c 'dotnet restore "$1" --configfile "$2" --artifacts-path "$3" -p:NuGetAudit=false${4:+ -p:S2AConsumer=$4} && dotnet build "$1" -c Release --no-restore --artifacts-path "$3"${4:+ -p:S2AConsumer=$4}' _ "$HERE/SharedContracts.csproj" "$OUT/NuGet.Config" "$OUT/art" > "$OUT/build.log" 2>&1   # restore + build（树外缓存 tools/cs_cache.sh）
 dotnet "$OUT/art/bin/SharedContracts/release/SharedContracts.dll"
