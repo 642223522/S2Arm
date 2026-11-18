@@ -12,7 +12,8 @@
 //   ③ 收尾被拒后表换成空表：下一局不许按身份命中上一代设备的旧句柄；
 //   ④ 还没发布 → 0；失败项 → 0（不是可用程序）；停局 / NULL 参数 / 表满 → -1 并计数；
 //   ⑤ 借用表满（256 格）→ 第 257 个如实 -1，不静默降级成裸指针；读数带峰值与拒绝数；
-//   ⑥ 无主归还：计数并报一次红，借用表不动。
+//   ⑥ 无主归还：计数并报一次红，借用表不动；
+//   ⑦ 身份粒度诊断缺省关（#1328）：玩家包 nvn_plat_flag 恒返回缺省值，缺省必须是 0，且不打「身份粒度」行。
 //
 // 编译与运行（cc 直编，不需要 CMake / NDK 工具链；Vulkan 头用仓库第三方目录）：
 //   cc -std=c11 -O1 -g -pthread -fsanitize=address -D_GNU_SOURCE
@@ -118,6 +119,14 @@ int s2a_program_cache_load(const char *dir, const uint8_t identity[32], uint8_t 
     memcpy(*bytes, g_payload, sizeof g_payload);
     *len = sizeof g_payload;
     return 0;
+}
+// 结果合并（#1355）读头：这个夹具没有缓存目录，永远「没有可合并的」；结果合并本身由 nvk_shader_alias_test 覆盖。
+int s2a_program_cache_probe(const char *dir, const uint8_t identity[32], uint8_t result_sha[32], uint64_t *len,
+                            char *why, size_t why_size) {
+    (void)dir; (void)identity; (void)why; (void)why_size;
+    if (result_sha) memset(result_sha, 0, 32);
+    if (len) *len = 0;
+    return -1;
 }
 int s2a_offline_library_fetch(const char *revision_root, const struct s2a_offline_request *request,
                               struct s2a_offline_program *out, char *why, size_t why_size) {
@@ -395,6 +404,18 @@ static void case_borrow_table_full(void) {
     CHECK(log_has("（峰值 256）"), "读数记下借用峰值 256（实测：%s）", log_select("程序借用读数"));
 }
 
+// ⑦ 身份粒度诊断缺省关（#1328）：玩家包里 nvn_plat_flag 恒返回缺省值，缺省必须是 0——
+//    缺省 1 就是玩家包每笔绘制多算一遍 input_sig（分组键）、慢路径多记账、每 5 秒多打一行「身份粒度」。
+//    本文件的 nvn_plat_flag 替身同样「开关一律取缺省」，这里读到的就是玩家包的状态。
+//    负对照：把 nvk_shader.c 里 idg_on 的缺省 0 改回 1，下面三条都必须变红。
+int nvk_shader_ident_diag_test(int force_log);   // nvk_shader.c 的用例钩子
+static void case_ident_diag_default(void) {
+    log_reset();
+    CHECK(nvk_shader_ident_diag_test(0) == 0, "身份粒度诊断缺省应关着（玩家包 nvn_plat_flag 恒返回缺省值）");
+    CHECK(nvk_shader_ident_diag_test(1) == 0, "把「上次打日志」拨到很早再调一次，诊断仍应关着");
+    CHECK(!log_has("身份粒度"), "缺省不应出现「身份粒度」日志行（实测：%s）", log_select("身份粒度"));
+}
+
 int main(void) {
     printf("nvk_shader 程序借用宿主单测（链生产 nvk_shader.c；ASan 下读收尾后的程序记录）\n");
     // 预热发布路径只在有跨局缓存目录时去取结果字节；离线库走 S2A_OFFLINE_MISS 替身。
@@ -407,6 +428,7 @@ int main(void) {
     case_quiesce_counts_borrow();
     case_edges();
     case_borrow_table_full();
+    case_ident_diag_default();
     printf("%s：%d 项断言，%d 失败；阶段装载 %d 次、释放 %d 次\n",
            g_fail ? "FAIL" : "PASS", g_checks, g_fail, g_load_calls, g_release_calls);
     return g_fail ? 1 : 0;

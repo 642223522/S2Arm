@@ -47,9 +47,10 @@ def plan_steps(sign, app_only):
 
 
 def dev_facilities():
-    """Info.plist S2ADevFacilities：启动器给玩家出包（S2A_PACK_PURPOSE=user）写 "0"，宿主不起停住现场 / 地址走势 / 内存与音频周期账；
-    别的用途（实验 / 普查 / 手测）返回空串 = 删键 = 开发设施照开（11-07 质量线，cmdr/壳内开发设施盘点.md）"""
-    return '0' if os.environ.get('S2A_PACK_PURPOSE') == 'user' else ''
+    """Info.plist S2ADevFacilities：只有我们自己的开发包（S2A_PACK_PURPOSE=dev）写 "1"；其余一律写 "0"（宿主不起停住现场 / 地址走势 /
+    内存与音频周期账 / 录手柄）。11-17 反过来：原先只有玩家包写 "0"、别的删键 = 开，哪条出包路径漏设 S2A_PACK_PURPOSE 就漏开
+    （玩家手机 Documents/padrec 一小时长 3 GB）。宿主缺省也改关（runtime/src/dev_facilities.h），要开发设施的局起局时设 S2A_DEV_FACILITIES=1"""
+    return '1' if os.environ.get('S2A_PACK_PURPOSE') == 'dev' else '0'
 
 def tick():   # = tools/progress.sh prog_tick 出包 <已走> <总>（启动器进度条读 S2A_PROGRESS）
     PROG[0] += 1
@@ -161,7 +162,7 @@ def assemble(a):
     kv = [('S2ABuildID', build_id(a.key)), ('S2APsoTarget', pso_target(w)), ('S2AGameTitle', a.title), ('S2AGraphicsMode', 'direct'),   # 只有直连（11-07 拆通用模式）
           ('S2ADirectLibVersion', direct_lib_version(w)), ('S2ADisplayVersion', display_version(R)),
           ('S2APackTime', datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')),
-          ('S2ADevFacilities', dev_facilities())]   # 开发设施开关（runtime/src/os.c s2a_dev_on）：玩家包写 "0"，开发包删键（= 开）
+          ('S2ADevFacilities', dev_facilities())]   # 开发设施开关（runtime/src/os.c s2a_dev_on）：开发包（S2A_PACK_PURPOSE=dev）写 "1"，其余 "0"
     for k, v in kv:
         if run([PY, os.path.join(H, 'app_bundle.py'), 'update_metadata', app, '--set', f'{k}={v}'], bl): raise Red(f'Info.plist 写 {k} 失败')
     ent = os.path.join(H, 'app.entitlements')
@@ -188,7 +189,8 @@ def assemble(a):
     want = sorted((n for n in os.listdir(hl) if n.endswith('.metallib')), key=lambda s: s.encode()) if os.path.isdir(hl) else []
     with zipfile.ZipFile(ipa) as z:
         got = sorted((n.rsplit('/', 1)[1] for n in z.namelist() if re.match(r'Payload/[^/]+\.app/gal_helpers/m3/[^/]+\.metallib$', n)), key=lambda s: s.encode())
-    if not want or want != got: raise Red(f'ipa 里 Metal 3 兼容辅助库与构建目录不符（构建 {len(want)} 个、包里 {len(got)} 个）')
+    if not want or want != got:   # 维护者 11-17：校验不过不再整个拒绝——只影响这款，黄字说清后照常出包
+        print(f'🟡 ipa 里 Metal 3 兼容辅助库与构建目录不符（构建 {len(want)} 个、包里 {len(got)} 个），照常继续；Metal 3 机型首次进新场景可能现编卡顿')
     if a.app_only: return ipa
     check_pack_inputs(w, g)
     srcs = os.path.join(pkg, 'srcs.txt')

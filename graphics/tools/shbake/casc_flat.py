@@ -2,13 +2,14 @@
 # 扁平 CASC 归档（暴雪游戏 Switch 版：romfs/data 下 build_manifest.psv + <chunk>-<archive>.data）的条目读取，通用容器层之一（同 Yaz0 / SARC / zstd）。
 # 清单每行给条目在归档里的位置（EKey 末 7 字节 = chunk / archive / 40 位偏移）、编码长度与编码方式：n 原样、z 裸 zlib、b:… 分块 BLTE（N / Z / F 嵌套）。
 # 解码失败一律抛异常，不回半截数据。取自小菠萝 xbl/data/reference/tools/swcasc.py（同一项目），改成按目录传参。
-import os, struct, zlib
+import io, os, struct, sys, zlib
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'nvn', 'tools')); import romfs_list   # 按路径读经 romfs_list（目录形态同 open；RomFS 不落散文件、只有镜像时从镜像读）
 
 
 def entries(d):
     """[(路径, chunk, archive, 偏移, 编码长度, 原长, 编码)]；编码 n 原样 / z 裸 zlib / b:… 分块 BLTE"""
     out = []
-    with open(os.path.join(d, 'build_manifest.psv'), encoding='utf-8', errors='replace') as f:
+    with io.TextIOWrapper(romfs_list.open_file(os.path.join(d, 'build_manifest.psv')), encoding='utf-8', errors='replace') as f:
         f.readline()
         for line in f:
             if line.startswith('##'): continue
@@ -43,7 +44,7 @@ def blte(b):
 
 def read(d, e):
     path, ch, ar, off, es, cs, enc = e
-    with open(os.path.join(d, '%02d-%08d.data' % (ch, ar)), 'rb') as f: f.seek(off); raw = f.read(es)
+    with romfs_list.open_file(os.path.join(d, '%02d-%08d.data' % (ch, ar))) as f: f.seek(off); raw = f.read(es)
     if len(raw) != es: raise IOError('读不满：' + path)
     x = raw if enc == 'n' else zlib.decompress(raw) if enc == 'z' else blte(raw) if enc.startswith('b:') else None
     if x is None: raise ValueError('编码 %r 不支持：%s' % (enc, path))

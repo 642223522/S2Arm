@@ -6,7 +6,7 @@
 判法（静态，按「这次遍历的目标是不是 RomFS」）：
   Python（.py，以及 .sh 里内嵌的 Python 段）：遍历调用 = os.walk / os.fwalk / os.scandir / os.listdir / glob.glob / glob.iglob / 任意对象的 .rglob / .iterdir / .glob
     （re.glob 之类不算；romfs_list.* 本身不算）。目标是 RomFS ⇔ 参数（含方法的接收者）文字里有 romfs，或参数里的变量在同一函数里由含 romfs 的式子赋值 / 循环取值；
-    递归类（os.walk / os.fwalk / os.scandir / .rglob / 带 ** 的 glob）另加：所在函数里有含 romfs 的字符串常量。
+    递归类（os.walk / os.fwalk / os.scandir / .rglob / 带 ** 的 glob）另加：所在函数里有含 romfs 的字符串常量（文档字符串不算，那是说明文字）。
   shell（.sh）：find / ls -R / du 的同一条命令里出现 romfs（字面或由含 romfs 的变量给出）；内嵌 Python 段（<<'X' … X）开头那行带 romfs、段里有遍历调用。
   C#（.cs）：Directory.EnumerateFiles / GetFiles / EnumerateDirectories / GetDirectories / EnumerateFileSystemEntries / GetFileSystemEntries，文件里提到 romfs。
 不扫：compat/（上游树）、tests 目录（单测自建夹具）、romfs_list.py 本身、本文件。
@@ -47,9 +47,6 @@ ALLOW = {
         "不给清单时的现枚举只给运行期 / 单测（安卓 core-runtime 单测直接调 Write(目录, 输出)）；出包期 romfsidx 阶段一律带 --list（romfs_list.py sizes 盘点）",
     ("services/S2A.Services/Application.cs", "*"):
         "运行期（起局）：没有预建索引时现建 RomFS 镜像，要在设备上枚举游戏目录；出包期不经这里",
-    ("pack/jobs/library.py", "freeable:scandir"):
-        "不是出包步骤：释放空间页按玩家勾的部件（可能含解包 / 运行版本里的 RomFS 副本）量「删掉真能腾出多少」，要逐文件 lstat 块数与 APFS 克隆独占量"
-        "（romfs_list 只给路径 / 大小，给不了已分配块与克隆族），只走玩家勾选的目录、不进出包流程",
     ("services/S2A.Services/Host.cs", "*"):
         "运行期（宿主服务）：设备上读游戏数据目录，不是出包步骤",
     ("pack/jobs/mods.py", "_find:rglob"):
@@ -95,6 +92,10 @@ def python_hits(src, offset=0, scope_hint=None, every=False, receiver=False):
         for c in ast.iter_child_nodes(p):
             parent[c] = p
     lines = src.split("\n")
+    # 文档字符串是说明文字、不是代码：函数说明里提到 romfs（比如「推 romfs.img 后核大小」）不算这个函数在遍历 RomFS
+    docs = {id(n.body[0].value) for n in ast.walk(tree)
+            if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n.body
+            and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant) and isinstance(n.body[0].value.value, str)}
     out = []
     for call in ast.walk(tree):
         if not isinstance(call, ast.Call):
@@ -130,7 +131,8 @@ def python_hits(src, offset=0, scope_hint=None, every=False, receiver=False):
             # romfs_list.*(…) 参数里的常量不算（已经经模块了）
             skip = {id(c) for n in ast.walk(scope) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
                     and isinstance(n.func.value, ast.Name) and n.func.value.id == "romfs_list" for c in ast.walk(n)}
-            hit = any(isinstance(c, ast.Constant) and isinstance(c.value, str) and R.search(c.value) and id(c) not in skip for c in ast.walk(scope))
+            hit = any(isinstance(c, ast.Constant) and isinstance(c.value, str) and R.search(c.value) and id(c) not in skip and id(c) not in docs
+                      for c in ast.walk(scope))
         if hit:
             out.append((call.lineno + offset, f"{scope_name}:{name}", lines[call.lineno - 1].strip()))
     return out

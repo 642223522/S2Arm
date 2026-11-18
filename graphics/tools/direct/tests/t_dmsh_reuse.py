@@ -122,7 +122,7 @@ check(r0.returncode == 0 and not bad, f'①′ --check-stamp：本树出的库�
 #     = 本树源码摘要）时取发版记下的 .xfp 当本树值——记录 = 本树指纹 → 过；记录换一位 → 红；源码摘要不同（内置件不在用）→ 退回现算，没 SDK → 红；不给 S2A_PREBUILT_TOOLS 没 SDK → 红
 import dsh_batch
 nosdk = os.path.join(t, 'nosdk_dotnet'); open(nosdk, 'w').write('#!/bin/sh\necho "No .NET SDKs were found." >&2\nexit 1\n'); os.chmod(nosdk, 0o755)
-pre = os.path.join(t, 'prebuilt'); os.makedirs(os.path.join(pre, 'dsh_batch')); open(os.path.join(pre, 'dsh_batch', 'dsh_batch.dll'), 'w').close()
+pre = os.path.join(t, 'prebuilt'); os.makedirs(os.path.join(pre, 'dsh_batch')); open(os.path.join(pre, 'dsh_batch', 'dsh_batch'), 'w').close()   # 发版件是 NativeAOT 单文件（dsh_batch.prebuilt 只认 dsh_batch / dsh_batch.exe）
 DG = dsh_batch.src_digest(os.path.join(dsh_batch.DSH, 'batch', 'dsh_batch.csproj'))
 def chk_player(digest, xfp, prebuilt=True):
     open(os.path.join(pre, 'dsh_batch', '.src_digest'), 'w').write(digest + '\n'); open(os.path.join(pre, 'dsh_batch', '.xfp'), 'w').write(xfp + '\n')

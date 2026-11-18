@@ -25,7 +25,7 @@
 #   switchbrew 没有这一版的定义。不猜签名长：「大小」字段等于文件长、紧跟着程序种类、再后面是哈希表偏移与个数，按这个锚点在头里找（nrr_table）；
 #   找错了也不会收错模块——只有整份 SHA-256 对得上登记的 NRO 才收。
 import hashlib, os, struct, sys
-# 仓库里唯一的 RomFS 遍历（graphics/nvn/tools/romfs_list.py，walk 同 os.walk）
+# 仓库里唯一的 RomFS 遍历（graphics/nvn/tools/romfs_list.py，walk 同 os.walk）；RomFS 文件按路径读经 romfs_list.open_file / read_file（romfs/ 不在、只有 romfs.std 时从镜像读）
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'graphics', 'nvn', 'tools')); import romfs_list
 
 PAGE = 0x1000
@@ -83,11 +83,11 @@ def nrr_table(d):
 def nrr_hashes(romfs):
     """romfs/.nrr/*.nrr 登记的 NRO 哈希（十六进制），按 NRR 文件名、表内顺序，去重；没有 .nrr 目录 → []。认不出的 NRR 跳过、打【黄】"""
     nd = os.path.join(romfs, '.nrr')
-    if not os.path.isdir(nd): return []
+    if not romfs_list.is_dir(nd): return []
     out, seen = [], set()
     for f in sorted(romfs_list.listdir(nd)):
-        if not f.lower().endswith('.nrr') or not os.path.isfile(os.path.join(nd, f)): continue
-        d = open(os.path.join(nd, f), 'rb').read()
+        if not f.lower().endswith('.nrr') or not romfs_list.is_file(os.path.join(nd, f)): continue
+        d = romfs_list.read_file(os.path.join(nd, f))
         t = nrr_table(d) if len(d) >= 0x350 and d[:4] == b'NRR0' else None
         if not t:
             print(f'【黄】.nrr/{f}：认不出哈希表（{len(d):#x} 字节，开头 {d[:4]!r}），这一份不用；它登记的、又不是 *.nro 文件的模块这次收不到', file=sys.stderr); continue
@@ -101,8 +101,8 @@ def nrr_hashes(romfs):
 def scan(path, rel, want, hit, zstd, out):
     """流式扫一个文件，SHA-256 在 want 里的原样 / zstd 内嵌 NRO 当场写成 <输出目录>/.<哈希>（不攒在内存：大乱斗 764 个约 1.45 GB），
     hit[哈希] = 来源，并从 want 去掉"""
-    with open(path, 'rb') as f:
-        size = os.fstat(f.fileno()).st_size; base = 0
+    with romfs_list.open_file(path) as f:
+        size = romfs_list.file_size(path); base = 0
 
         def pread(n, off):   # 按偏移读（不用 os.pread：Windows 的 Python 没有它，11-06 Windows 出包机马力欧高尔夫改写阶段 AttributeError、整单红）
             f.seek(off); return f.read(n)
@@ -153,7 +153,7 @@ def main(argv):
     except OSError as e: print(f'【黄】.nrr 读不了（{e}），不按登记找藏起来的 NRO', file=sys.stderr); reg = []
     mods = {}   # SHA-256 → [模块名, 大小, bss, 来源…]
     for rel in found:
-        d = open(os.path.join(romfs, rel), 'rb').read()
+        d = romfs_list.read_file(os.path.join(romfs, rel))
         try: segs, bss = parse(d, rel)
         except (ValueError, struct.error) as e: print(f'【黄】{e}：这一份不转，游戏装它时会失败；其余照转', file=sys.stderr); continue
         k = hashlib.sha256(d).hexdigest()

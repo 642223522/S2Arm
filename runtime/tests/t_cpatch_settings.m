@@ -124,6 +124,12 @@ int main(int argc, char **argv) {
         ck(lg.count == 1 && [((S2ACPatchGroup *)lg[0]).kind isEqual:@"gfx"] && [[li valueForKey:@"ident"] isEqual:@[@"gfx:L"]],
            [NSString stringWithFormat:@"⑮ 画面类只列方向 load 的一份 gfx:L → %@", [li valueForKey:@"ident"]]);
 
+        // ⑯ 降负载画面补丁缺省关（11-16 维护者）：⑮ 的 gfx:L（方向 load）没设过 → 开着 0 项；玩家开了（写回列表带 gfx:L）→ 开着 gfx:L
+        [d removeObjectForKey:S2ACPatchDefaultsKey];
+        ck(S2ACPatchEnabled(lg, d).count == 0, [NSString stringWithFormat:@"⑯ 降负载没设过：开着 %@", S2ACPatchEnabled(lg, d)]);
+        S2ACPatchSetEnabled(lg, d, @"gfx:L", YES);
+        ck([S2ACPatchEnabled(lg, d) isEqual:[NSSet setWithObject:@"gfx:L"]] && [[d objectForKey:S2ACPatchDefaultsKey] isEqual:@[@"gfx:L"]],
+           [NSString stringWithFormat:@"⑯ 玩家开了 gfx:L → 写回 %@", [d objectForKey:S2ACPatchDefaultsKey]]);
         [d removePersistentDomainForName:@"s2a.t_cpatch_settings"];
         if (bad) { fprintf(stderr, "✗ t_cpatch_settings：%d/%d 项不符\n", bad, n); return 1; }
         printf("✓ t_cpatch_settings：%d 项全符（真 cpatch.tsv 夹具 xc3 / mk8d / acnh：名字分组（与类别交叉）、中文名、缺省开、写回值、帧率项不写、旧写法、组序、同编号去重）\n", n);

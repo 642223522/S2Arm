@@ -30,7 +30,7 @@ NX = HERE.parent
 NO_STATIC_SIGNAL = (
     "present_interval", "fps_hold", "render_cond", "tex_flush_upload",
     "tex_dirty_upload", "tex_dyn_slots", "gpu_timestamps", "vconv_range",
-    "feedback_snap", "alpha_from_red", "core_preempt",
+    "feedback_snap", "alpha_from_red",
 )
 # Local generation policy, never a static deduction or an upstream rule change.
 PROFILE_POLICY = {
@@ -228,12 +228,13 @@ def input_facts(root, manifest=None, title=None):
             with p.open("rb") as stream:
                 unsupported(stream.read(4) != b"NSO0", f"unsupported module name: {p.name}")
     romfs = Path(manifest) if manifest else root / "romfs"
-    require(romfs.exists(), "missing RomFS directory/manifest")
+    # romfs_list.exists / is_dir：RomFS 不落散文件（romfs/ 不在、只有 romfs.std 镜像）时也算 RomFS 目录，条目经 romfs_walk 从镜像盘点
+    require(romfs_list.exists(romfs), "missing RomFS directory/manifest")
     if romfs.is_file():
         manifest_check(romfs)
         facts = pg.facts_of(exefs, romfs)
     else:
-        require(romfs.is_dir(), "invalid RomFS input")
+        require(romfs_list.is_dir(romfs), "invalid RomFS input")
         entries = romfs_walk(romfs)
         for e in entries:
             unsupported(not e.symlink, "RomFS symlinks unsupported")
@@ -256,7 +257,7 @@ def input_facts(root, manifest=None, title=None):
     unsupported("main" in facts["mods"], "main is not an NSO")
     # 图形接口与出包分流同一判法（gfx_api.py，单一来源）：NVN 不一定由 main 导入——引擎可在 subsdk 或 romfs 的 NRO 里（11-02 EA SPORTS FC 26），
     #   只认 main 会把这类 NVN 款拒掉；不是 NVN 时报出实际接口与依据（GL / Vulkan / 判不出），普查按这行归「非 NVN 款」
-    api, why = gfx_api.classify(gfx_api.features(str(exefs), str(romfs) if romfs.is_dir() else None))
+    api, why = gfx_api.classify(gfx_api.features(str(exefs), str(romfs) if romfs_list.is_dir(romfs) else None))
     unsupported(api == "nvn", f"unsupported graphics API: {api}（{why}）")
     return actual, facts
 

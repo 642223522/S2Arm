@@ -45,6 +45,13 @@ TS0=$SECONDS; TM=$L/tm.tsv
 tm() { printf '%s\t%s\n' "$1" "$2" >> "$TM"; }
 tsum() { [ -s "$TM" ] || return 0
   echo "⏱ $G 刷新分阶段用时（秒，并行段各记各的墙钟）：$(awk -F'\t' '{printf "%s%s %s", (NR > 1 ? " · " : ""), $1, $2}' "$TM")；刷新共 $((SECONDS - TS0)) 秒"; }
+# 出包收尾当场修剪（#338 的补全）：「只留现行 + 上一版」在出包收尾就该成立——最后一笔提交时并行段进程还活着、各自的钉都有效，
+#   只剪得动没人钉的；各段先后退出后再没有取现行的点（root_gc 只在取现行时顺手收 + 同款 10 分钟节流），多余版本连带 .trash /
+#   死钉 / 无主 RomFS 身份一直滞留到这款下次出包 / 起局。实测（11-17 Mac，10.2 GB 的款出包成功 8.5 小时后）：roots 滞留 5 份版本
+#   + .trash 908 MB + 两个 RomFS 身份 + 25 个死钉，du 口径整款 50.7 GB、克隆感知实占 13.1 GB（同 #303 / library.disk_bytes）——
+#   物理上是 APFS 克隆、几乎不另占盘，但访达 / du 按份数重复计克隆块，玩家照目录大小当磁盘被吃掉来报（#1471）。
+#   S2A_ROOT_GC_FORCE 越过刚写下的节流戳；钉 / 提交锁照旧在 root_gc 里保护在读者；收不成不挡出包（root_gc 失败只返回 0）
+tail_gc() { [ -n "${S2A_ROOT_CUR:-}" ] || S2A_ROOT_GC_FORCE=1 root_gc "$G"; }
 # v0.2.3 清理：不再每次刷新都核「现行程序版本 = 本机原件」（pack/srcver.sh 留作开发共享根手动核对）。它防的是 10-25 开发共享根停在旧版本，
 #   玩家流程里产物根的键已含所选包身份（inputIdentity），换了原件就是另一个根；同 11-07「出包不重算原件校验」
 # Android keeps its existing make_pack rewrite as the sole module producer.
@@ -110,6 +117,7 @@ PYEOF
     fi
   fi
   prog_tick 刷新各阶段 6 6
+  tail_gc   # 出包收尾当场修剪（见上）：各段刚退出、钉已失效
   echo "🟢 $G Android 共享资源已刷新：$(basename "$(root_cur "$G")")${DY:+；🟡 1 项：$DY}"
   exit 0
 fi
@@ -190,4 +198,5 @@ rt 2
 [ -s "$L/side.rc" ] && side_join   # 旁路已结束：红就在开编直连库之前停
 direct_tail
 side_join; rt 4
+tail_gc   # 出包收尾当场修剪（见上）：各段刚退出、钉已失效
 echo "🟢 $G 现行产物根各阶段与本树一致：$(basename "$(root_cur "$G")")"; exit 0

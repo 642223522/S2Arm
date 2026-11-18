@@ -140,6 +140,10 @@ ck "--title-keys 指的文件不在：rc=2（用法错，不冒作 3 = 容器读
 S2A_NXUNPACK_TEST_THROW=agg-key run "$T/a1" "$K" "$T/oa" "$T/junk.bin"
 ck "并行异常第二条才是缺密钥：分类 keys_missing、rc=1、不出调用栈" '[ "$(cat "$T/a1.rc")" = 1 ] && grep -q "【原因 keys_missing】" "$T/a1" && ! grep -q "Unhandled exception\|   at " "$T/a1"'
 
+# ---- 用例：分区头魔数不对（#1511：2002-4644 PartitionSignatureVerificationFailed，解出来是乱码 = 密钥不对）——不当哈希不符降级重跑、不报 hash_mismatch ----
+S2A_NXUNPACK_TEST_THROW=magic run "$T/m1" "$K" "$T/om" "$T/junk.bin"
+ck "分区头魔数不对：分类 keys_wrong、rc=1、不出「校验跳过」与 hash_mismatch、不出调用栈" '[ "$(cat "$T/m1.rc")" = 1 ] && grep -q "【原因 keys_wrong】" "$T/m1" && ! grep -q "校验跳过\|hash_mismatch\|哈希校验不过" "$T/m1" && ! grep -q "Unhandled exception\|   at " "$T/m1"'
+
 # ---- 用例：并行异常里带位置的哈希错（#787：原先只有一行原因，不说读到哪个文件 / 偏移）----
 S2A_NXUNPACK_TEST_THROW=agg-hash run "$T/h1" "$K" "$T/oh" "$T/junk.bin"
 ck "并行异常第二条是带位置的哈希错：rc=1、报哈希红、点名阶段 + 文件 + 偏移、不出调用栈" '[ "$(cat "$T/h1.rc")" = 1 ] && grep -q "源文件数据哈希校验不过" "$T/h1" && grep -q "读到坏块时在：建索引，文件 romfs/x.bin，文件内偏移 7" "$T/h1" && ! grep -q "Unhandled exception\|   at " "$T/h1"'
@@ -149,6 +153,10 @@ S2A_NXUNPACK_TEST_THROW=denied-out run "$T/d1" "$K" "$T/od" "$T/junk.bin"
 ck "写自己的工作目录被拒：分类 access_denied、点名是 S2Arm 的解包工作目录、不说源文件截断、rc=1" '[ "$(cat "$T/d1.rc")" = 1 ] && grep -q "【原因 access_denied】" "$T/d1" && grep -q "被拒的是S2Arm 自己的解包工作目录" "$T/d1" && ! grep -q "截断" "$T/d1"'
 S2A_NXUNPACK_TEST_THROW=denied-src run "$T/d2" "$K" "$T/od2" "$T/junk.bin"
 ck "源文件读被拒：分类 access_denied、点名是源文件" '[ "$(cat "$T/d2.rc")" = 1 ] && grep -q "【原因 access_denied】" "$T/d2" && grep -q "被拒的是源文件" "$T/d2"'
+
+# ---- Windows 挂载卷：RomFS 发布拒绝按目录改名退避；非 Windows 不重试 ----
+run "$T/p1" --test-romfs-publish "$T/publish"
+ck "发布拒绝句柄等待后成功；非 Windows 直接失败；持续拒绝按 9 档退避并给出路径建议，暂存保留" '[ "$(cat "$T/p1.rc")" = 0 ] && grep -qE "Windows 同盘句柄(测试|对照)：" "$T/p1" && grep -q "负对照：windows=false 的直接发布遇一次 E_ACCESSDENIED 即原样失败" "$T/p1" && grep -q "负控：持续拒绝 → 按 dirrename 重试 9 次（总等待 60.8 秒）后报红" "$T/p1"'
 
 echo "-----"
 echo "$([ "$fail" = 0 ] && echo "✓" || echo "✗") nx_unpack 解包失败回归：$((pass + fail)) 项，不通 $fail"

@@ -10,6 +10,27 @@ public sealed record LibraryJobResult(string State, string Message, JsonElement 
 {
     public bool Succeeded => State == "succeeded";
 
+    /// <summary>让这次作业停下的那条诊断的码（同 Mac JobOutcome.failureDiagnostic）。</summary>
+    public string? FailureCode => FailureCodeOf(Diagnostics);
+
+    /// <summary>
+    /// 作业层把终态错误追加在诊断列表最后（pack/jobs/core.py report_failure），前面可能有中途记的警告。
+    /// 取最后一条 error 级的码，没有就取最后一条带码的。原先取第一条：更新 iPhone 时先记了补着色器的警告，
+    /// 停装码 save_backup_failed 排在后面，认不出、不问「仍然继续」。
+    /// </summary>
+    public static string? FailureCodeOf(JsonElement diagnostics)
+    {
+        if (diagnostics.ValueKind != JsonValueKind.Array) return null;
+        string? lastError = null, last = null;
+        foreach (var d in diagnostics.EnumerateArray())
+        {
+            if (d.ValueKind != JsonValueKind.Object || !d.TryGetProperty("code", out var code) || code.ValueKind != JsonValueKind.String || code.GetString() is not { Length: > 0 } c) continue;
+            last = c;
+            if (d.TryGetProperty("severity", out var s) && s.ValueKind == JsonValueKind.String && s.GetString() == "error") lastError = c;
+        }
+        return lastError ?? last;
+    }
+
     // Jobs NDJSON is not the oneclick ev/t stream. A terminal event alone is not process success.
     //   整段输出也逐行交 JobEventReader：事件流规则只有那一份（剃刀 W17：原先这里另写一遍，改一处漏一处）
     public static LibraryJobResult Parse(string ndjson, int exitCode, string jobId, string operation)
@@ -44,7 +65,8 @@ public sealed record LibraryJobResult(string State, string Message, JsonElement 
 }
 
 /// <summary>One registered package in the library (base / update / dlc), mirrors GamePackage in the Mac adapter.</summary>
-public sealed record GamePackage(string Type, string TitleId, int Version, string Display, long Size, string Format, string Sha256 = "", long ContentBytes = 0);
+/// <summary>IntegritySkipped：导入时内容哈希对不上、跳过完整性校验照常导入了（catalog packages[].integritySkipped 非空，11-17 维护者：校验不过不再拒收）</summary>
+public sealed record GamePackage(string Type, string TitleId, int Version, string Display, long Size, string Format, string Sha256 = "", long ContentBytes = 0, bool IntegritySkipped = false);
 
 /// <param name="NeedsKeys">出包要不要 prod.keys：作业层 catalog 直接给（library.KEYLESS_FORMATS 一份判据；剃刀 W10：原先这里另抄一份格式名单）。</param>
 public sealed record LibraryGame(string Id, string Name, string Version, string Cover, bool Hidden,
@@ -55,6 +77,9 @@ public sealed record LibraryGame(string Id, string Name, string Version, string 
 {
     /// <summary>Storage state (library layout v3): ok / offline / missing / none; older catalogues without the field read as none.</summary>
     public string LocationState => Location?.State ?? "none";
+
+    /// <summary>有原件导入时跳过了完整性校验（同 Mac GameSummary.integritySkipped）：游戏库卡片标「数据校验不过」</summary>
+    public bool IntegritySkipped => Packages?.Any(p => p.IntegritySkipped) == true;
 
     /// <summary>可以显示的本地封面路径：只认作业层给的、就在这款自己文件夹里（catalog location.folder，按英文名或游戏号命名都行）的
     /// cover.jpg（游戏包自带图标）、玩家换的 cover.custom.&lt;8 位十六进制&gt;.jpg（作业层 _CUSTOM_COVER），或没有自带图标时的商店横图 banner.jpg；其它一律 null。
@@ -159,6 +184,8 @@ public sealed record LibraryCatalog(IReadOnlyList<LibraryGame> Games, bool KeysR
 {
     /// <summary>壳比本版旧的手机（游戏库顶栏「更新 iPhone 上的 S2Arm」按钮）；旧后端没有这个字段时为空。</summary>
     public IReadOnlyList<PhoneUpdate> PhoneUpdates { get; init; } = [];
+    /// <summary>这台电脑往几台手机装过游戏（catalog phoneDevices）：更新弹窗据此写「更新启动器和 iPhone App」；旧后端没有时为 0。</summary>
+    public int PhoneDevices { get; init; }
 
     public static LibraryCatalog Parse(JsonElement result)
     {
@@ -187,7 +214,8 @@ public sealed record LibraryCatalog(IReadOnlyList<LibraryGame> Games, bool KeysR
                         var format = p.TryGetProperty("format", out var f) && f.ValueKind == JsonValueKind.String ? f.GetString() ?? "" : "";
                         var sha = p.TryGetProperty("sha256", out var sh) && sh.ValueKind == JsonValueKind.String ? sh.GetString() ?? "" : "";
                         var content = p.TryGetProperty("contentBytes", out var cb) && cb.ValueKind == JsonValueKind.Number ? cb.GetInt64() : 0;
-                        packages.Add(new(ptype, titleId, version, display, size, format, sha, content));
+                        var skipped = p.TryGetProperty("integritySkipped", out var isk) && isk.ValueKind == JsonValueKind.Array && isk.GetArrayLength() > 0;
+                        packages.Add(new(ptype, titleId, version, display, size, format, sha, content, skipped));
                     }
                 // iphoneInstall: { at, free, deviceKey } — matches the Mac adapter's LibraryProvider；deviceKey = 当初装的那台（续签装回它，不换别的）
                 double? iphoneAt = null; var iphoneFree = false; var iphoneDevice = "";
@@ -215,7 +243,11 @@ public sealed record LibraryCatalog(IReadOnlyList<LibraryGame> Games, bool KeysR
             }
             var keys = result.GetProperty("keys");
             return new(games.AsReadOnly(), keys.GetProperty("ready").GetBoolean(),
-                LibraryJobResult.Text(keys, "message", true)) { PhoneUpdates = PhoneUpdate.ParseList(result) };
+                LibraryJobResult.Text(keys, "message", true))
+            {
+                PhoneUpdates = PhoneUpdate.ParseList(result),
+                PhoneDevices = result.TryGetProperty("phoneDevices", out var pd) && pd.ValueKind == JsonValueKind.Number && pd.TryGetInt32(out var n) ? n : 0
+            };
         }
         catch (Exception error) when (error is InvalidOperationException or KeyNotFoundException)
         {
@@ -239,14 +271,21 @@ public sealed record GameLocation(string State, string Path, string Folder, stri
 
 /// <summary>Per-part size of one game in bytes (catalog game.sizes / storageOverview games[].sizes, pack/jobs/sizes.py; mirrors GameSizes in the Mac adapter).
 /// Cache = build cache + shader cache; Sources = referenced game files, a file shared by n games counts size / n for each.
-/// Measured is false until a job has measured the game: the four folder parts are then 0 and shown as not counted.</summary>
-public sealed record GameSizes(long ImageMac, long ImageIos, long Saves, long Cache, long Sources, bool Measured)
+/// Measured is false until a job has measured the game: the four folder parts are then 0 and shown as not counted.
+/// Categories (0.6.0, only when the universal shell switch is on): resources / programs / playerData / cache by "what happens if deleted"
+/// (pack/jobs/sizes.py categories); null = show the old parts.</summary>
+public sealed record GameSizes(long ImageMac, long ImageIos, long Saves, long Cache, long Sources, bool Measured, IReadOnlyDictionary<string, long>? Categories = null)
 {
+    public static readonly string[] CategoryOrder = ["resources", "programs", "playerData", "cache"];
+
     public static GameSizes Parse(JsonElement value)
     {
         long N(string key) => value.TryGetProperty(key, out var n) && n.ValueKind == JsonValueKind.Number ? n.GetInt64() : 0;
+        Dictionary<string, long>? categories = null;
+        if (value.TryGetProperty("categories", out var c) && c.ValueKind == JsonValueKind.Object)
+            categories = CategoryOrder.ToDictionary(k => k, k => c.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt64() : 0);
         return new(N("imageMac"), N("imageIos"), N("saves"), N("cache"), N("sources"),
-            value.TryGetProperty("measured", out var m) && m.ValueKind == JsonValueKind.True);
+            value.TryGetProperty("measured", out var m) && m.ValueKind == JsonValueKind.True, categories);
     }
 }
 

@@ -154,6 +154,8 @@ static void big_wrap(void) {
     unsigned n = 0;
     for (unsigned i = 0; i < NVN_NFUNC; i++) if (nvn_big_real[i]) { nvn_big_real[i] = sw_xstack_wrap(nvn_names[i], nvn_big_real[i]); n++; }
     LOG("直连：%u 个 NVN 函数经 S2Arm 切栈桩跑在宿主栈上（其余命令录制留在游戏栈）", n);
+    void nvn_leaf_wrap(void *(*leaf)(const char *, void *)); void *sw_xstack_leaf(const char *name, void *fn);
+    nvn_leaf_wrap(sw_xstack_leaf);   // 留在游戏栈上的那些套叶子桩：游戏 sp 不对齐时先对齐再调（runtime/src/xstack.c）
 }
 
 // ---------- 兜底现编（§12.3，着色器线 s2a_dsh_compile）----------

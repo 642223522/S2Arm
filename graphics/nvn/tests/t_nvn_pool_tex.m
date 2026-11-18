@@ -46,14 +46,14 @@ static tex_t *texture(int id, uint32_t w, uint32_t h, int flags) { return textur
 static uint64_t table_entry(int tid, int unused, uint64_t *gpu) {
     (void)unused; const pool_tab *tp = NULL; for (int i = 0; i < POOL_TABS; i++) if (g_ptab[i].used && !g_ptab[i].samp && g_ptab[i].base == 0) tp = &g_ptab[i];
     REQUIRE(tp);
-    pthread_mutex_lock(&g_rmu);
+    os_unfair_lock_lock(&g_rmu);
     __unsafe_unretained id<MTLBuffer> b = nil; uint64_t a = pool_gpu(0, tp->dtt, tp->dpf, 0, &b); REQUIRE(b);
     uint64_t e = ((const uint64_t *)((const uint8_t *)b.contents + DMSH_POOL_HEAD))[tid];
-    pthread_mutex_unlock(&g_rmu);
+    os_unfair_lock_unlock(&g_rmu);
     if (gpu) *gpu = a;
     return e;
 }
-static uint64_t cur_rid(int tid) { pthread_mutex_lock(&g_rmu); uint64_t r = tex_fast_rid(tid, NULL); pthread_mutex_unlock(&g_rmu); return r; }
+static uint64_t cur_rid(int tid) { os_unfair_lock_lock(&g_rmu); uint64_t r = tex_fast_rid(tid, NULL); os_unfair_lock_unlock(&g_rmu); return r; }
 static int resident(id<MTLResource> r) { pthread_mutex_lock(&g_res_mu); int k = [g_res_objects containsObject:r]; pthread_mutex_unlock(&g_res_mu); return k; }
 static void empty_sub(void) { nvn_be_sub_begin(); uint64_t f = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f, 10000000000ull)); }
 static int made(int id) { return tex_get(texs[id].serial) != nil; }

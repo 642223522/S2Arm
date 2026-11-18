@@ -40,8 +40,29 @@ def install(c):
 
 
 def _ready(c, destination, manifest):
-    """有安装标记且清单里的文件都在、大小对"""
-    return read(destination / ".installed.json", {}).get("schema") == 2 and _intact(c, destination, manifest, full=False)
+    """有安装标记且清单里的文件都在、大小对（装的时候 App 包里就对不上、已提示过的那几个不再核，见 _reinstall）"""
+    mark = read(destination / ".installed.json", {})
+    return mark.get("schema") == 2 and _intact(c, destination, manifest, _skip(manifest.get("files"), mark), full=False)
+
+
+def _skip(files, mark):
+    """清单去掉安装标记里 bundleMismatch 记的文件（App 包里本来就对不上、装时已提示照常继续的）；没记就原样"""
+    accepted = set(mark.get("bundleMismatch") or [])
+    return {k: v for k, v in (files or {}).items() if k not in accepted} if accepted and isinstance(files, dict) else files
+
+
+def _bundle_mismatch(c, source, files):
+    """App 包里和清单对不上（缺失 / 不是普通文件 / 大小不同）的文件名，逐个核（只在整份校验没过时走这里）"""
+    from build import validate_files
+    bad = []
+    for name, expected in (files or {}).items():
+        try:
+            validate_files(c, source, {name: expected})
+        except Failure as e:
+            if e.code != "runtime_invalid":
+                raise
+            bad.append(name)
+    return bad
 
 
 @contextlib.contextmanager
@@ -59,20 +80,27 @@ def _install_lock(root, timeout=1800):
 
 
 def _reinstall(c, source, manifest, root, destination, identity):
-    """持 _install_lock 调：坏副本（或没装完的）挪开，从 App 包解一份新的。App 包本身的文件不对 → engine_incomplete（只能重装 App）"""
+    """持 _install_lock 调：坏副本（或没装完的）挪开，从 App 包解一份新的。
+    App 包本身的文件和清单对不上（11-17 维护者：校验不过不整个拒绝，提示后照常继续）：黄字提示是哪几个、建议重装 S2Arm，照样解出来用；
+    对不上的文件名记进安装标记 bundleMismatch，之后复核跳过它们（不然每次用都判「被改过」、反复重解）。真用到时缺东西由那一步照实报"""
     from build import clone_tree, validate_files
     if destination.exists():
         _set_aside(c, root, destination, "已装的内置引擎文件被改过" if read(destination / ".installed.json", {}).get("schema") == 2 else "上次没装完的内置引擎")  # 非玩家句
     c.begin("初始化内置 S2Arm 引擎")
+    mismatch = []
     try:
         validate_files(c, source, manifest.get("files"))
     except Failure as e:
-        raise Failure("S2Arm 应用里的内置引擎文件不完整（" + str(e).rsplit("：", 1)[-1] + "），请重新安装完整的 S2Arm。", code="engine_incomplete") from e  # 非玩家句
+        if e.code != "runtime_invalid":
+            raise
+        mismatch = _bundle_mismatch(c, source, manifest.get("files"))
+        note = f"S2Arm 应用里的内置引擎有 {len(mismatch)} 个文件和清单对不上（如 {'、'.join(mismatch[:3])}），照常继续；后面出包或开游戏要是出错，重新安装完整的 S2Arm 一般就好。"  # 非玩家句
+        c.diagnostic(note, "engine_incomplete", severity="warning", internal="；".join(mismatch[:50]))
     temporary = destination.with_name(identity + "." + uuid.uuid4().hex + ".partial")
     temporary.mkdir(parents=True)
     try:
         clone_tree(c, source, temporary)   # v0.2.3 清理：不再对刚拷出的副本再核一遍——源刚核过，clone_tree 拷错会自己报
-        atomic(temporary / ".installed.json", dict(schema=2, id=identity))
+        atomic(temporary / ".installed.json", dict(schema=2, id=identity, **({"bundleMismatch": mismatch} if mismatch else {})))
         c.check()
         os.rename(temporary, destination)
     finally:
@@ -180,7 +208,8 @@ def artifact(c, name):
     files = {p: v for p, v in manifest.get("files", {}).items() if p.startswith(prefix + "/")}
     if not files:
         raise Failure("应用内置引擎产物缺失，请重新安装完整应用。")
-    if not _intact(c, c.engine, manifest, files):
+    files = _skip(files, read(c.engine / ".installed.json", {}))   # App 包里本来就对不上、装时已提示过的不再核（_reinstall）
+    if files and not _intact(c, c.engine, manifest, files):
         if not c.r.get("engineBundle"):   # 源码树开发：没有 App 包可重解，照原样报
             from build import validate_files
             validate_files(c, c.engine, files)
@@ -193,5 +222,7 @@ def artifact(c, name):
                 c.emit("message", "内置引擎里的 " + name + " 被改过")  # 非玩家句
                 _reinstall(c, source, bundle, c.engine.parent, c.engine, bundle.get("id", c.engine.name))
         from build import validate_files
-        validate_files(c, c.engine, files)
+        left = _skip(files, read(c.engine / ".installed.json", {}))
+        if left:
+            validate_files(c, c.engine, left)
     return c.engine / prefix

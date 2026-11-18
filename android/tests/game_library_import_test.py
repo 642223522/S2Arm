@@ -90,7 +90,8 @@ STUBS = {
  public static Intent createChooser(Intent intent,CharSequence title){throw new AssertionError("diagnostic share unexpectedly called");}
  public Intent addCategory(String category){throw new AssertionError("diagnostic save unexpectedly called");} }''',
 'android/view/View.java': '''package android.view; public class View { public static final int VISIBLE=0, GONE=8; public void setBackgroundColor(int c){} public void setPadding(int a,int b,int c,int d){} private int vis; public void setVisibility(int v){vis=v;} public int getVisibility(){return vis;} public interface OnClickListener {void onClick(View v);} public void setEnabled(boolean enabled){throw new AssertionError("diagnostic export unexpectedly called");}
- private static int nextId=1; private int id; public static int generateViewId(){return nextId++;} public void setId(int v){id=v;} public int getId(){return id;} }''',
+ private static int nextId=1; private int id; public static int generateViewId(){return nextId++;} public void setId(int v){id=v;} public int getId(){return id;}
+ public Object layoutParams; public void setLayoutParams(Object p){layoutParams=p;} }''',
 'android/widget/TextView.java': '''package android.widget; import android.view.View; import android.content.Context; import java.util.concurrent.*;
  public class TextView extends View { public static final BlockingQueue<String> messages=new LinkedBlockingQueue<>();
  public TextView(Context c){} public void setText(String s){messages.add(s);} public void setText(int i){} public void setTextSize(float f){} public void setTextColor(int c){} }''',
@@ -103,7 +104,9 @@ STUBS = {
  public void setOnCheckedChangeListener(OnCheckedChangeListener value){listener=value;} }''',
 'android/widget/CheckBox.java': '''package android.widget; import android.content.Context; public class CheckBox extends CompoundButton { public CheckBox(Context c){super(c);} }''',
 'android/widget/LinearLayout.java': '''package android.widget; import android.content.Context; import android.view.View; public class LinearLayout extends View {
- public static final int HORIZONTAL=0, VERTICAL=1; public LinearLayout(Context c){} public void setOrientation(int x){} public void setPadding(int a,int b,int c,int d){} public void addView(View v){} public void removeAllViews(){} }''',
+ public static final int HORIZONTAL=0, VERTICAL=1; public LinearLayout(Context c){} public void setOrientation(int x){} public void setPadding(int a,int b,int c,int d){}
+ public final java.util.List<View> children=new java.util.ArrayList<>(); public void addView(View v){children.add(v);} public void addView(View v,LayoutParams p){children.add(v);v.layoutParams=p;} public void removeAllViews(){children.clear();}
+ public static class LayoutParams { public final int width,height; public final float weight; public int marginEnd; public LayoutParams(int w,int h){this(w,h,0);} public LayoutParams(int w,int h,float g){width=w;height=h;weight=g;} public void setMarginEnd(int m){marginEnd=m;} } }''',
 'android/widget/RadioButton.java': '''package android.widget; import android.content.Context; public class RadioButton extends CompoundButton { public RadioButton(Context c){super(c);} }''',
 'android/widget/RadioGroup.java': '''package android.widget; import android.content.Context; import android.view.View;
  public class RadioGroup extends LinearLayout { public interface OnCheckedChangeListener {void onCheckedChanged(RadioGroup group,int checkedId);}
@@ -113,7 +116,7 @@ STUBS = {
 'android/view/Gravity.java': '''package android.view; public class Gravity { public static final int END=8388613, BOTTOM=80; }''',
 'android/widget/FrameLayout.java': '''package android.widget; import android.content.Context; import android.view.View; public class FrameLayout extends View {
  public static class LayoutParams { public LayoutParams(int w,int h){} public LayoutParams(int w,int h,int g){} }
- public FrameLayout(Context c){} public void addView(View v){} public void addView(View v,LayoutParams p){} }''',
+ public FrameLayout(Context c){} public final java.util.List<View> children=new java.util.ArrayList<>(); public void addView(View v){children.add(v);} public void addView(View v,LayoutParams p){children.add(v);} }''',
 'org/s2arm/android/LibraryShelf.java': '''package org.s2arm.android; import android.content.Context; import android.view.View; import java.io.File;
  final class LibraryShelf extends View { interface Listener { void play(String titleId); void openGameSettings(); void openControllers(); void openSettings(); }
  static final java.util.List<String> added=new java.util.ArrayList<>();
@@ -143,7 +146,8 @@ STUBS = {
  last_session_dismiss=119, quality_high=139, quality_saver=140, quality_note=141,
  mods_title=142, mods_for_game=143, mods_no_game=144, mods_import_zip=145, mods_import_folder=146, mods_none=147, mods_item=148, mods_remove=149,
  mods_working=150, mods_imported=151, mods_failed=152, mods_err_not_archive=153, mods_err_too_many=154, mods_err_too_large=155, mods_err_no_romfs=156,
- mods_err_missing=157, mods_err_name_taken=158, mods_note_other_game=159, mods_note_exefs=160, mods_note_empty=161, mods_note=162; } }''',
+ mods_err_missing=157, mods_err_name_taken=158, mods_note_other_game=159, mods_note_exefs=160, mods_note_empty=161, mods_note=162,
+ stall_off_note=163, stall_reopen=164, stall_reopen_failed=165; } }''',
 # These unrelated app boundaries must never be called in an import test.
 'org/s2arm/android/DiagnosticExport.java': '''package org.s2arm.android; import android.content.Context; import java.io.IOException; import java.nio.file.Path;
  public class DiagnosticExport { public static Path run(Context context) throws IOException {throw new AssertionError("diagnostic export unexpectedly called");} }''',

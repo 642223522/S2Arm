@@ -8,6 +8,7 @@
 目标没有 index.tsv 或 manifest.json（第一次交付 / 上次中途失败前的旧格式）→ 整份重做。
 单文件镜像（#329）：源里没有 <前缀>romfs.img、只有 <前缀>romfs.files/（镜像各文件的硬链接，pack/romfs_image.py v2）时，交付这棵目录
 （逐文件克隆，同一克隆族不另占盘），镜像行没变且目标那棵在就不动；目标里旧格式留下的 romfs.img 删掉（库里只留一份）。
+RomFS 不落散文件（源里是 <前缀>romfs.std 标准 RomFS 镜像、没有 romfs.files/）：交付克隆这一个文件，镜像行没变且目标那份在就不动；两种库内形态互斥，换形态时删掉目标里的另一种。
 输出一行：<文件数>\t<总字节>\t<克隆数>\t<删除数>\t<模式>
 """
 import ctypes, os, shutil, struct, sys
@@ -65,9 +66,21 @@ def main():
     for p, (size, sha) in new.items():
         q = os.path.join(dst, p)
         files = os.path.join(src, p[:-len('romfs.img')] + 'romfs.files') if p.endswith('romfs.img') else None
+        std = os.path.join(src, p[:-len('romfs.img')] + 'romfs.std') if p.endswith('romfs.img') else None
+        if std and not os.path.lexists(os.path.join(src, p)) and not os.path.isdir(files) and os.path.isfile(std):
+            # RomFS 不落散文件：库内形态是一份标准 RomFS 镜像 <前缀>romfs.std（pack/romfs_image.py 硬链进来的，不进 index.tsv），交付克隆这一个文件
+            qs = os.path.join(dst, p[:-len('romfs.img')] + 'romfs.std')
+            qf = os.path.join(dst, p[:-len('romfs.img')] + 'romfs.files')
+            if os.path.lexists(q): os.remove(q); removed += 1   # 旧格式交付的真镜像
+            if os.path.lexists(qf): shutil.rmtree(qf)   # 上一次交付的逐文件形态：库里只留一份
+            if old.get(p) == (size, sha) and os.path.isfile(qs): continue
+            clone(std, qs); cloned += 1
+            continue
         if files and not os.path.lexists(os.path.join(src, p)) and os.path.isdir(files):
             qf = os.path.join(dst, p[:-len('romfs.img')] + 'romfs.files')
             if os.path.lexists(q): os.remove(q); removed += 1   # 旧格式交付的真镜像
+            qs = os.path.join(dst, p[:-len('romfs.img')] + 'romfs.std')
+            if os.path.lexists(qs): os.remove(qs)   # 上一次交付的镜像形态：库里只留一份
             if old.get(p) == (size, sha) and os.path.isdir(qf): continue
             if os.path.lexists(qf): shutil.rmtree(qf)
             for rel in image_files(src, p[:-len('romfs.img')]):   # 清单来自索引 + 偏移表，不遍历 RomFS 目录（tools/romfs_walk_lint.py）

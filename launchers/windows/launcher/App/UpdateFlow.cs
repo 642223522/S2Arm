@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 S2Arm contributors
+using System.Diagnostics;
 using System.Text.Json;
 using Avalonia;
 using Avalonia.Controls;
@@ -25,6 +26,13 @@ public sealed partial class EnvironmentWindow
     private static string AppVersion => UpdateClient.CurrentVersion(InstallDir) is { Length: > 0 } version ? version : "-";
     private string UpdatesFolder => Path.Combine(privateRoot, "updates");
     private bool UpdateBlocked => AnyJob;
+    private string InstallerLog => Path.Combine(privateRoot, "logs", "installer.log");   // 安装程序 /LOG 写在这里，诊断包按 logs/ 收进去
+    private string PendingInstall => Path.Combine(UpdatesFolder, "pending-install.json");   // 点了更新、交给安装程序的那一版：下次启动对版本号判装没装上
+    private string installFailedTarget = "";   // 上次要装的版本（没装上时顶栏写进那句话）
+    /// <summary>退出让位给安装程序时，关窗走到哪一步（兜底记日志用）</summary>
+    internal static volatile string ExitStep = "";
+    /// <summary>NetSparkle 的脚本最多等旧进程 90 秒（每秒查一次，到点不装就退出）：关窗 15 秒还没退，结束本进程，让安装程序接着装</summary>
+    private static readonly TimeSpan ExitGuard = TimeSpan.FromSeconds(15);
 
     private Dictionary<string, object?> UpdateStatus => updateProgress.Length > 0
         ? new() { ["state"] = "working", ["detail"] = updateProgress }
@@ -32,13 +40,64 @@ public sealed partial class EnvironmentWindow
         : updateFailure.Length > 0 ? new() { ["state"] = "failed", ["detail"] = updateFailure, ["reason"] = updateFailureMessage }
         : new() { ["state"] = "idle" };
 
-    /// <summary>上一版换版留下的东西（旧自写更新器的 updates/ 下的标记）不再有人读：NetSparkle 的状态在它自己的配置文件里</summary>
-    private void FinishPendingUpdate() { }
+    /// <summary>上次点了更新、交给安装程序的那一版这次装上没有：静默安装失败时脚本照样拉起旧版，玩家什么也看不到（34 次里 14 次没装上）。
+    /// 版本没到就在顶栏说「上次更新到 vX 没装上」，给「重试」和「打开下载页」；装上了只记一行。标记读完就删，只说一次</summary>
+    private void FinishPendingUpdate()
+    {
+        string target = "";
+        try
+        {
+            if (!File.Exists(PendingInstall)) return;
+            using var doc = JsonDocument.Parse(File.ReadAllText(PendingInstall));
+            target = doc.RootElement.TryGetProperty("version", out var v) ? v.GetString() ?? "" : "";
+            File.Delete(PendingInstall);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException) { }
+        if (target.Length == 0 || AppVersion == "-") return;
+        var log = Path.Combine(privateRoot, "logs", "update.log");
+        if (VersionAtLeast(AppVersion, target)) { UpdateLog.Write(log, $"上次更新到 {target}：装上了"); return; }
+        var why = InstallerFailure();
+        UpdateLog.Write(log, $"上次更新到 {target} 没装上，现在还是 {AppVersion}：{why}");
+        installFailedTarget = target; updateFailure = "update_install_failed"; updateFailureMessage = why;
+    }
+
+    internal static bool VersionAtLeast(string have, string want) =>
+        Version.TryParse(have, out var h) && Version.TryParse(want, out var w) && h >= w;
+
+    /// <summary>安装程序日志里说明失败的那一行（Inno：Fatal exception / Exception message / Setup is exiting / Aborting）；没有日志或没找到给一句说明（进诊断、不上界面）</summary>
+    private string InstallerFailure()
+    {
+        try
+        {
+            if (!File.Exists(InstallerLog)) return "没有安装程序日志（安装程序没跑起来，或旧进程没退出、脚本等满 90 秒放弃）";
+            var hit = File.ReadLines(InstallerLog).LastOrDefault(l => l.Contains("Fatal exception", StringComparison.OrdinalIgnoreCase) || l.Contains("Exception message", StringComparison.OrdinalIgnoreCase)
+                || l.Contains("Setup is exiting", StringComparison.OrdinalIgnoreCase) || l.Contains("Aborting", StringComparison.OrdinalIgnoreCase) || l.Contains("Installation process failed", StringComparison.OrdinalIgnoreCase));
+            return hit?.Trim() ?? "安装程序日志里没有失败行";
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return "安装程序日志读不了：" + error.Message; }
+    }
+
+    /// <summary>NetSparkle 已写好「等本进程退出 → 装 → 拉起」的脚本，要本进程让位：关窗，每一步记进 update.log；
+    /// 15 秒还没退（关窗被卡住，比如显卡驱动里销毁窗口不返回）先记下停在哪一步，再 TerminateProcess 结束自己——
+    /// 不用 Environment.Exit：它要跑终结器、等别的线程，卡住时照样可能退不出去</summary>
+    private void ExitForInstaller()
+    {
+        ExitStep = "等界面线程关窗";
+        CloseLog("让位给安装程序：开始关窗（15 秒没退出就结束本进程）");
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(ExitGuard);
+            CloseLog($"让位给安装程序：关窗 {ExitGuard.TotalSeconds:0} 秒进程还在，停在「{ExitStep}」；结束本进程，让安装程序接着装");
+            Process.GetCurrentProcess().Kill();
+        });
+        Dispatcher.UIThread.Post(() => { ExitStep = "关窗（Close）"; CloseLog("让位给安装程序：界面线程开始关窗"); Close(); });
+    }
 
     // ── 打开时给玩家看什么（11-13 维护者定稿草图，判定在 pack/jobs/updater.py inbox，两端共用「永远只给最新一期」）：
     //    最多一个弹窗（这版更新了什么 / 有新版）、横幅（最新一条没看过的重要公告）、「消息」列表与未读数（只算最新那条公告）
     private JsonElement? updatePopup;   // {kind: update | afterUpdate, version, notes?}；kind = feature 是新功能大窗（FeatureSpotlight.cs）
     private JsonElement? availableUpdate;   // 有新版那一版 {version, notes?}：顶栏「有新版 vX」点开回到弹窗
+    private bool installWhenReady;   // 玩家点了「现在更新」时还没下：下完接着装（同 Mac S2ArmLauncherModel.installWhenReady）
     private JsonElement[] messages = [];
     private int unreadMessages;
     private bool messagesOpen;
@@ -57,7 +116,7 @@ public sealed partial class EnvironmentWindow
             availableUpdate = update;
         updatePopup = value.TryGetProperty("popup", out var popup) && popup.ValueKind == JsonValueKind.Object ? popup : null;
         Render();
-        if (availableUpdate is not null) await DownloadUpdateAsync();   // 后台下好，不打断玩家
+        // 有新版只提示，不自动下载（11-16 维护者：启动器与手机端都改成手动更新；同 Mac restartToUpdate #1283）：玩家点「现在更新」才下、下完接着装
     }
 
     private void Seen(params string[] args) => _ = UpdateClient.RunAsync(paths, new[] { "inbox-seen", "--private-root", privateRoot }.Concat(args), null, TimeSpan.FromSeconds(20));
@@ -80,7 +139,7 @@ public sealed partial class EnvironmentWindow
         if (availableUpdate is not { } update) return;
         var version = update.GetProperty("version").GetString() ?? "";
         var notes = update.TryGetProperty("notes", out var n) ? n.GetRawText() : "null";
-        using var doc = JsonDocument.Parse($"{{\"kind\":\"update\",\"version\":{JsonSerializer.Serialize(version)},\"notes\":{notes}}}");
+        using var doc = JsonDocument.Parse($"{{\"kind\":\"update\",\"version\":{JsonOut.Serialize(version)},\"notes\":{notes}}}");
         updatePopup = doc.RootElement.Clone(); Render();
     }
 
@@ -150,7 +209,10 @@ public sealed partial class EnvironmentWindow
         else
         {
             buttons.Children.Add(Action("update.popup.later", CloseUpdatePopup));
-            buttons.Children.Add(Action("update.popup.now", RestartToUpdate, updateReady is not null));
+            // 装过 iPhone、自动更新开着：写「更新启动器和 iPhone App」，新版启动后自动把 iPhone App 也更新（PhoneAutoUpdate.cs）；自动化 id 照旧
+            var now = Action("update.popup.now", RestartToUpdate, updateReady is not null || availableUpdate is not null);   // 没下也能点：点了才下、下完接着装；手动更新（11-16）：启动器升级不再顺带装手机，按钮不再写「和 iPhone App」
+            Avalonia.Automation.AutomationProperties.SetAutomationId(now, "update.popup.now");
+            buttons.Children.Add(now);
         }
         panel.Children.Add(buttons);
         body.Children.Add(Card(panel, 32));
@@ -216,15 +278,21 @@ public sealed partial class EnvironmentWindow
             Configuration = new NetSparkleUpdater.Configurations.JSONConfiguration(new VersionAccessor(AppVersion), Path.Combine(UpdatesFolder, "netsparkle.json")),
             RelaunchAfterUpdate = true,
             // 静默装进现在这个目录（便携版也原地更新，不另装一份）；数据不在程序目录里（私有目录、游戏库），装新版不碰
-            CustomInstallerArguments = $"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR=\"{InstallDir}\"",
+            // /LOG：安装程序日志写进私有 logs/（诊断包收），静默安装失败时脚本照样拉起旧版、看不到原因，只能靠它
+            CustomInstallerArguments = $"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR=\"{InstallDir}\" /LOG=\"{InstallerLog}\"",
             RelaunchAfterUpdateCommandSuffix = string.Join(" ", Environment.GetCommandLineArgs().Skip(1).Select(a => "\"" + a.Replace("\"", "") + "\"")),
+            // 装完拉起不靠当前目录（11-16 第 2 份候选手动更新：装好了却没拉起）：NetSparkle 写的脚本是 cd "<目录>" 再跑 "<可执行文件名>"，
+            //   cd 不带 /d 换不了盘——脚本在系统盘的临时目录里跑，程序装在别的盘（便携版放 D:、测试装在 R:）时 cd 落空，相对的 S2Arm.exe 找不到，静默不拉起。
+            //   可执行文件给绝对路径，前缀再 cd /d 到安装目录（工作目录同安装程序「现在打开」的 WorkingDir {app}）
+            RestartExecutableName = Path.Combine(InstallDir, Path.GetFileName(Environment.ProcessPath ?? "S2Arm.exe")),
+            RelaunchAfterUpdateCommandPrefix = $"cd /d \"{InstallDir}\" && ",
             LogWriter = new UpdateLog(Path.Combine(privateRoot, "logs", "update.log")),
         };
-        updater.CloseApplicationAsync += () => { Dispatcher.UIThread.Post(Close); return Task.CompletedTask; };
+        updater.CloseApplicationAsync += () => { ExitForInstaller(); return Task.CompletedTask; };
         updater.DownloadMadeProgress += (_, item, e) => Dispatcher.UIThread.Post(() =>
         { updateProgress = T("update.downloading").Replace("{0}", e.ProgressPercentage.ToString()); RefreshLive(); });
         updater.DownloadFinished += (item, path) => Dispatcher.UIThread.Post(() =>
-        { updateProgress = ""; updateReady = item; updateReadyPath = path; Render(); });
+        { updateProgress = ""; updateReady = item; updateReadyPath = path; Render(); if (installWhenReady) RestartToUpdate(); });
         updater.DownloadHadError += (item, path, error) => Dispatcher.UIThread.Post(() => Fail("update_failed", error.Message));
         updater.InstallUpdateFailed += (reason, path) => { Dispatcher.UIThread.Post(() => Fail("update_failed", reason.ToString())); return true; };
         return sparkle = updater;
@@ -276,8 +344,12 @@ public sealed partial class EnvironmentWindow
     {
         // 草图④：有任务在跑先拦下说明，弹窗不关
         if (UpdateBlocked) { updateGate = "update.gate.busy"; if (updatePopup is null) ShowUpdatePopup(); Render(); return; }
+        if (updateReady is null && availableUpdate is not null) { installWhenReady = true; _ = DownloadUpdateAsync(); return; }   // 玩家点了才下：下完在 DownloadFinished 里接着装
         if (updateReady is not { } ready || sparkle is null) return;
+        installWhenReady = false;
         UpdateLog.Write(Path.Combine(privateRoot, "logs", "update.log"), $"玩家点了更新并重启：交给 NetSparkle 运行安装程序 {ready.Version}");
+        try { Directory.CreateDirectory(UpdatesFolder); File.WriteAllText(PendingInstall, $"{{\"version\":{JsonOut.Serialize(ready.Version ?? "")},\"from\":{JsonOut.Serialize(AppVersion)}}}"); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }   // 记不下只是下次判不了装没装上，不挡更新
         _ = sparkle.InstallUpdate(ready, updateReadyPath);   // 写好等本程序退出再跑安装程序、装完拉起的脚本，再经 CloseApplicationAsync 关掉本程序
     }
 
@@ -331,7 +403,16 @@ public sealed partial class EnvironmentWindow
         var bar = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 10, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center };
         if (updateProgress.Length > 0)
             bar.Children.Add(new TextBlock { Text = updateProgress, FontSize = 12, Foreground = Brush.Parse("#A8A6A1"), VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center });
-        else if (updateReady is not null && availableUpdate is { } update)   // 草图：「以后再说」后顶栏留「有新版 vX」，点开回到弹窗；重启只在弹窗里点
+        else if (updateFailure == "update_install_failed")   // 上次没装上：排在「有新版」前面（启动时查到新版会把它盖掉）；重试 = 重新下载、下完接着装
+        {
+            bar.Children.Add(Action("update.retry", () => { installWhenReady = true; _ = DownloadUpdateAsync(); }));
+            var why = new TextBlock { Text = T("update.error.update_install_failed").Replace("{0}", installFailedTarget) + " · " + T("update.code").Replace("{0}", updateFailure), FontSize = 12,
+                Foreground = Brush.Parse("#A8A6A1"), MaxWidth = 360, TextWrapping = Avalonia.Media.TextWrapping.Wrap, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center };
+            Avalonia.Automation.AutomationProperties.SetAutomationId(why, "update.failure");
+            bar.Children.Add(why);
+            bar.Children.Add(Action("update.download_page", () => _ = OpenOfficialAsync(DownloadPage)));
+        }
+        else if (availableUpdate is { } update)   // 草图：「以后再说」后顶栏留「有新版 vX」，点开回到弹窗；重启只在弹窗里点
         {
             var available = new Button { Content = T("update.top.available").Replace("{0}", update.GetProperty("version").GetString() ?? ""), Padding = new Thickness(14, 8),
                 CornerRadius = new CornerRadius(8), Background = Accent, Foreground = Canvas };

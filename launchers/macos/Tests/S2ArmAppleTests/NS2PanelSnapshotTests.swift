@@ -142,10 +142,14 @@ import XCTest
             XCTAssertEqual(real.title(lang: zh ? "zh" : "en"), "DualSense Wireless Controller", "顶栏按钮照旧写系统手柄的真名（#901）")
             XCTAssertEqual(real.switch2Title(lang: zh ? "zh" : "en"), "Joy-Con 2 · Pro 2", "面板顶部只讲 Switch 2 手柄（型号未知：Joy-Con 2 · Pro 2）")
         }
-        // #1151 ①：HID 兜底手柄（GameController 认不出，宿主 hid_pad.m 按 HID 读）面板也列。认法同宿主：名字带「Pro Controller」、大小写不敏感，
-        //   GameController 已列出的同名不重复，别的 HID 手柄（键号各家不同、宿主不接）不列
-        XCTAssertEqual(HIDFallbackPads.listed(hid: ["Lic Pro Controller", "Generic USB Joystick", "PRO CONTROLLER", "Pro Controller"], system: ["Pro Controller"]),
-                       ["Lic Pro Controller"], "Generic 不带 Pro Controller 不列；PRO CONTROLLER / Pro Controller 与系统已列的同名（不分大小写）不重复")
+        // #1151 ①：HID 兜底手柄（GameController 认不出，宿主 hid_pad.m 按 HID 读）面板也列。认法同宿主（hid_generic.h）：名字带「Pro Controller」的都列，
+        //   别的通用手柄（Stadia、八位堂 D-input 等）除微软 / 索尼 / 任天堂外也列；GameController 已列出的同名不重复
+        XCTAssertEqual(HIDFallbackPads.listed(hid: ["Lic Pro Controller", "Stadia Controller", "PRO CONTROLLER", "Pro Controller"], system: ["Pro Controller"]),
+                       ["Lic Pro Controller", "Stadia Controller"], "通用手柄也列；PRO CONTROLLER / Pro Controller 与系统已列的同名（不分大小写）不重复")
+        XCTAssertTrue(HIDFallbackPads.hostReads(name: "Stadia Controller", vendor: 0x18d1) && HIDFallbackPads.hostReads(name: "", vendor: 0x2dc8), "非原生厂商的通用手柄宿主读")
+        XCTAssertTrue(HIDFallbackPads.hostReads(name: "Pro Controller", vendor: 0x057e) && HIDFallbackPads.hostReads(name: "Lic Pro Controller", vendor: 0), "Pro 那一支不看厂商号")
+        XCTAssertFalse(HIDFallbackPads.hostReads(name: "Xbox Wireless Controller", vendor: 0x045e) || HIDFallbackPads.hostReads(name: "Wireless Controller", vendor: 0x054c)
+                       || HIDFallbackPads.hostReads(name: "Joy-Con (L)", vendor: 0x057e), "微软 / 索尼 / 任天堂通用手柄交给 GameController，面板不另列")
         XCTAssertEqual(HIDFallbackPads.listed(hid: ["Lic Pro Controller", "Lic Pro Controller"], system: []), ["Lic Pro Controller", "Lic Pro Controller"], "两只同名各算一只")
         XCTAssertEqual(HIDFallbackPads.listed(hid: [], system: ["DualSense Wireless Controller"]), [])
         try snapshot("system_hid_only_zh", Self.panel(Self.isolated(), S(pads: [], hidNames: ["Lic Pro Controller"]), true))

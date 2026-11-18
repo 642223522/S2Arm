@@ -29,6 +29,8 @@ struct FocusTargets: PreferenceKey {
 struct FocusAppearance: Equatable {
     var id: String?
     var visible = false
+    /// tvOS：每次请求把焦点交给 `id` 加一，同一个 id 再请求一次也算变化（TVLibraryView）。iOS / macOS 不用，始终 0
+    var generation = 0
 }
 private struct FocusAppearanceKey: EnvironmentKey {
     static var defaultValue: FocusAppearance { FocusAppearance() }
@@ -55,6 +57,29 @@ struct ShellFocusTarget: ViewModifier {
     let radius: CGFloat
     let action: () -> Void
     @Environment(\.shellFocus) private var focus
+    #if os(tvOS)
+    /// tvOS：焦点由系统焦点引擎移动（遥控器滑动 / 手柄十字键），这里只画同一个奶油色焦点框，并在库界面请求时把系统焦点交给自己
+    ///   （打开 / 关掉面板后焦点落在哪，沿用 iOS 的焦点 id：`set.play`、`shs.close`、`pick.<选项>`、`set.row.<行>` …）
+    @FocusState private var systemFocused: Bool
+    func body(content: Content) -> some View {
+        content
+            .focused($systemFocused)
+            .overlay {
+                if systemFocused {
+                    RoundedRectangle(cornerRadius: radius + 5).strokeBorder(ShellPalette.cream, lineWidth: 3)
+                        .padding(-5).allowsHitTesting(false).accessibilityHidden(true)
+                }
+            }
+            .onAppear { if focus.id == id { claim() } }
+            .onChange(of: focus) { _, new in if new.id == id { claim() } }
+            .id(id)
+    }
+    /// 下一拍再要：请求与面板出现 / 底下一层恢复可用在同一次更新里，这一拍它可能还不可聚焦
+    private func claim() {
+        guard enabled else { return }
+        DispatchQueue.main.async { systemFocused = true }
+    }
+    #else
     func body(content: Content) -> some View {
         content
             .overlay {
@@ -77,6 +102,7 @@ struct ShellFocusTarget: ViewModifier {
             }
             .id(id)
     }
+    #endif
 }
 extension View {
     func shellTarget(_ id: String, enabled: Bool = true, radius: CGFloat = 12, action: @escaping () -> Void) -> some View {

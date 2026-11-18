@@ -12,6 +12,8 @@ out = root / 'build/696-real-compiler'
 if out.exists():
     shutil.rmtree(out)
 out.mkdir(parents=True)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import dotnet_chain  # noqa: E402
 source_dir = out / 'maxwell'
 source_dir.mkdir()
 
@@ -53,18 +55,18 @@ for name, code in [('vs', vs), ('fs', fs), ('gs', gs)]:
 
 cli = root / 'graphics/tools/direct/compiler/cli'
 fixtures = root / 'graphics/tools/direct/tests/compiler'
-subprocess.run(['dotnet','run','-c','Release','--project',str(fixtures),'--','--emit-caps',str(out/'caps')], check=True)
+dotnet_chain.run(fixtures, ['--emit-caps', out/'caps'], out)
 caps = json.loads((out/'caps/caps.json').read_text())
 caps['features']['geometryShader'] = True
 caps['features']['geometryShaderOcclusionQuery'] = True
 (out/'caps-gs.json').write_text(json.dumps(caps, separators=(',', ':')))
-subprocess.run(['dotnet','run','-c','Release','--project',str(cli),'--','profile','--caps',str(out/'caps-gs.json'),'--output',str(out/'profile.json')], check=True)
-identity = subprocess.check_output(['dotnet','run','-c','Release','--project',str(cli),'--','identity'], text=True)
+dotnet_chain.run(cli, ['profile', '--caps', out/'caps-gs.json', '--output', out/'profile.json'], out)
+identity = dotnet_chain.run(cli, ['identity'], out, capture=True)
 closure = json.loads(identity)['translatorClosure']
 subprocess.run([sys.executable,str(root/'android/tests/nvk_shader_pool_test.py'),'--emit-real',str(out/'profile.json'),closure,str(source_dir),str(out/'request.json')], check=True)
 req = json.loads((out/'request.json').read_text())
 assert req['schema'] == 's2a-direct-compile-v2' and [s and s['stage'] for s in req['program']['stages']] == ['vs','fs','gs',None,None]
-subprocess.run(['dotnet','run','-c','Release','--project',str(cli),'--','compile','--request',str(out/'request.json'),'--output',str(out/'compiled')], check=True)
+dotnet_chain.run(cli, ['compile', '--request', out/'request.json', '--output', out/'compiled'], out)
 cc = ['cc','-std=c11','-Wall','-Wextra','-Werror','-I'+str(root/'android/native'),'-I'+str(root/'android/native/direct'),'-I'+str(root/'android/native/nvn')]
 subprocess.run(cc + [str(root/'android/tests/gs_result_extract.c'),str(root/'android/native/nvn/nvn_vk_program_result.c'),str(root/'android/native/direct/jv.c'),str(root/'android/native/direct/json.c'),'-o',str(out/'parse')], check=True)
 subprocess.run([str(out/'parse'),str(out/'compiled/program.json'),str(out)], check=True)
@@ -84,8 +86,7 @@ for variant in ('texture', 'rt', 'inactive'):
                     '--emit-reuse-' + variant,str(out/'profile.json'),closure,str(source_dir),str(request)], check=True)
     changed = json.loads(request.read_text()) != req
     assert changed == (variant == 'texture'), 'only texture changes submitted compiler facts: ' + variant
-    subprocess.run(['dotnet','run','--no-build','-c','Release','--project',str(cli),'--','compile',
-                    '--request',str(request),'--output',str(result_dir)], check=True)
+    dotnet_chain.run(cli, ['compile', '--request', request, '--output', result_dir], out)
     actual = canonical(json.loads((result_dir/'program.json').read_text())['content'])
     assert actual == expected, 'compiler content changed for relaxed input: ' + variant
     print('PASS: independently compiled content byte-for-byte equal: ' + variant)

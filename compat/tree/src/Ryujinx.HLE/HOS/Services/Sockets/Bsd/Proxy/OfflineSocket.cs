@@ -107,8 +107,16 @@ namespace Ryujinx.HLE.HOS.Services.Sockets.Bsd.Proxy
             return IPAddress.IsLoopback(address) || address.Equals(IPAddress.Any) || address.Equals(IPAddress.IPv6Any);
         }
 
-        private static SocketException Error(SocketError error)
+        // S2Arm（#1285 取证）：离线网络上返回给游戏的错误记前 32 次（哪个操作、什么错）。DOOM 离线时反复建 UDP 套接字、绑 27016 后立刻关、
+        //   游戏记 InitPort -1，日志里看不出是哪一步回了错
+        private static int _errorsLogged;
+        private static SocketException Error(SocketError error, [System.Runtime.CompilerServices.CallerMemberName] string op = "")
         {
+            if (Interlocked.Increment(ref _errorsLogged) <= 32)
+            {
+                Logger.Info?.PrintMsg(LogClass.ServiceBsd, $"Offline console: {op} returns {error} to the game");
+            }
+
             return new SocketException((int)error);
         }
 

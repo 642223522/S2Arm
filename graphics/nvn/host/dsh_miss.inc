@@ -66,7 +66,7 @@ static void dsh_dump(const char *k, const void *control, uint32_t nctl, uint64_t
     snprintf(path, sizeof path, "%s/%s.ctl", shd, k); if ((f = fopen(path, "wb"))) { fwrite(control, 1, nctl, f); fclose(f); }
     snprintf(path, sizeof path, "%s/%s.code", shd, k); if ((f = fopen(path, "wb"))) { fwrite((const void *)(uintptr_t)code, 1, ncode, f); fclose(f); }
 }
-static int dsh_stage(const uint8_t *cd, const uint8_t *ctl, uint32_t *ncode, uint32_t *nctl) {
+static int dsh_stage_raw(const uint8_t *cd, const uint8_t *ctl, uint32_t *ncode, uint32_t *nctl) {
     // Switch 2 的 NVN2 控制段（graphics/nvn/gfx/nvn/nvn2.h，版本 0xc9）：代码长在 +0x44、阶段在 +0x56（0 顶点 1 像素 2 几何 5 计算 6 任务 7 网格；外壳 / 域现编不支持），
     //   控制段取自报长度（+0x30，文件里 0xd8 / 0xe0、内存里可能是 0）、不足或认不出按最短的 0xd8；现编链（S2A.Dsh Nvn2Job）认 0xc9 走 Ampere 前端
     if (nvn2_on() && nvn2_ctl(ctl)) {
@@ -74,10 +74,36 @@ static int dsh_stage(const uint8_t *cd, const uint8_t *ctl, uint32_t *ncode, uin
         int st = ctl[0x56] == 0 ? 0 : ctl[0x56] == 1 ? 1 : ctl[0x56] == 5 ? 2 : ctl[0x56] == 2 ? 3 : ctl[0x56] == 6 ? 4 : ctl[0x56] == 7 ? 5 : -1;   // 4 / 5 = S2A.Dsh 的 ts / ms（11-05 时之笛 11aa3147be208368 阶段字节 6 不能现编）
         return !*ncode || *ncode >= (1u << 24) ? -1 : st;
     }
+    if (nvn2_on()) {   // Switch 2 进程里控制段不是认得的 NVN2 格式（#1520：全按 Switch 1 读出「控制段 0 / 0x2fa 字节」）：头 8 字节（魔数、版本）记几行，定是不是新版 GLSLC
+        static _Atomic int said; uint32_t m, v; memcpy(&m, ctl, 4); memcpy(&v, ctl + 4, 4);
+        if (atomic_fetch_add(&said, 1) < 4) LOG("【红】直连：Switch 2 游戏的着色器控制段不是认得的 NVN2 格式（头 0x%08x、版本 0x%x；认得的是 0x%08x / 0x%x），按 Switch 1 读", m, v, (unsigned)NVN2_CTL_MAGIC, (unsigned)NVN2_CTL_VERSION);
+    }
     uint32_t w; memcpy(ncode, ctl + 0x704, 4); memcpy(nctl, ctl + 0x20, 4); memcpy(&w, cd + 0x30, 4);
     static const uint8_t gfx_magic[4] = {0x78, 0x56, 0x34, 0x12}; int t = (w >> 10) & 0xf; if (t == 0 && (w & 0x1f) == 1) t = 1;
     int st = memcmp(cd, gfx_magic, 4) ? 2 : t == 1 ? 0 : t == 5 ? 1 : t == 4 ? 3 : -1;
     return !*ncode || *ncode >= (1u << 24) || *nctl < 0x100 || *nctl >= (1u << 20) ? -1 : st;
+}
+// [p, p + n) 逐页都能读（诊断#354a81：Switch 2 控制段 +0x30 自报 25116 字节，游戏放在内存里的那段排在一块映射末尾，
+//   memcpy(e->ctl, ctl, nctl) 读到 0x7522000000 SIGBUS——调用方只核过控制段前 0x880）。vm_read_overwrite 读不到只回错，不让进程崩
+#include <mach/mach.h>
+static int dsh_bytes_ok(const void *p, uint64_t n) {
+    if (!p || !n) return 0;
+    uintptr_t a = (uintptr_t)p, e = a + (uintptr_t)n, pg = (uintptr_t)vm_page_size;
+    if (e < a) return 0;
+    for (uintptr_t q = a & ~(pg - 1); q < e; q += pg) {
+        uint8_t b; vm_size_t got = 0; uintptr_t at = q < a ? a : q;
+        if (vm_read_overwrite(mach_task_self(), (vm_address_t)at, 1, (vm_address_t)&b, &got) != KERN_SUCCESS || got != 1) return 0;
+    }
+    return 1;
+}
+// 认阶段并核长度：自报的控制段 / 代码区要整段可读，否则按认不出（-1）——登记、补料、导出、后台预编都经这里，越界的这一份放弃、记一行红
+static int dsh_stage(const uint8_t *cd, const uint8_t *ctl, uint32_t *ncode, uint32_t *nctl) {
+    int st = dsh_stage_raw(cd, ctl, ncode, nctl);
+    if (st >= 0 && (!dsh_bytes_ok(ctl, *nctl) || !dsh_bytes_ok(cd, *ncode))) {
+        static _Atomic int said; if (atomic_fetch_add(&said, 1) < 4) LOG("【红】直连：着色器控制段 %u 字节 / 代码区 %u 字节不是整段可读（自报长度越过映射末尾），这一份放弃（不登记、不补料）", *nctl, *ncode);
+        return -1;
+    }
+    return st;
 }
 #include "dsh_salvage.inc"
 // 着色器补料（dsh_salvage.inc）：k = 16 位十六进制键；control / code = 此刻有效的控制段 / 代码区（认不出阶段就只记索引）
@@ -172,15 +198,15 @@ static void dsh_src_hold(const uint8_t key[8], int st, const uint8_t *ctl, uint3
 }
 void dm_shader_mesh_hold_key(const uint8_t key[8], uint64_t code, const void *control) {
     if (!nvn2_on() || !code || !control || (uintptr_t)control >= (1ull << 47)) return;
-    const uint8_t *ctl = control; if (!nvn2_ctl(ctl) || ctl[0x56] != 7) return;
+    const uint8_t *ctl = control; if (!nvn2_ctl(ctl) || (ctl[0x56] != 7 && ctl[0x56] != 6)) return;   // 网格；任务（6）也存：#770 宿主自跑任务阶段要它的源码（dm_shader_base_cached）
     uint32_t ncode = 0, nctl = 0; memcpy(&ncode, ctl + 0x44, 4); memcpy(&nctl, ctl + 0x30, 4);
     if (!ncode || ncode >= (1u << 24)) return;
     if (nctl < 0xd8 || nctl > NVN2_CTL_COPY) nctl = 0xd8;
-    dsh_src_hold(key, 5, ctl, nctl, code, ncode);
+    dsh_src_hold(key, ctl[0x56] == 6 ? 4 : 5, ctl, nctl, code, ncode);
 }
 void dm_shader_mesh_hold(uint64_t code, const void *control) {
     if (!nvn2_on() || !code || !control || (uintptr_t)control >= (1ull << 47)) return;
-    const uint8_t *ctl = control; if (!nvn2_ctl(ctl) || ctl[0x56] != 7) return;
+    const uint8_t *ctl = control; if (!nvn2_ctl(ctl) || (ctl[0x56] != 7 && ctl[0x56] != 6)) return;
     uint8_t key[8]; if (nvn2_key(ctl, (const void *)(uintptr_t)code, key)) dm_shader_mesh_hold_key(key, code, control);
 }
 // Switch 1 vertex shader at SetShaders, under the key keys_hash gave it (its final key: Switch 1 keys are not deferred). NVN2 stages are keyed at first use: not here
@@ -464,6 +490,27 @@ int dm_shader_vpad_cached(const uint8_t key[8], int st, uint32_t mask, char *pat
     if (rc == 3) return 3;
     if (rc) { atomic_fetch_add_explicit(&g_dsh_failed, 1, memory_order_relaxed); return 1; }
     LOG("直连%s补齐变体：%s 从本机同链同指纹源码补 user(locn) 掩码 %#x（控制段已过期）", st == 5 ? "网格" : "顶点", k, mask);
+    return 0;
+}
+// #770 宿主自跑任务阶段（nvn_geometry.inc mtk_emu_fn）：任务（st 4）/ 网格（st 5）着色器在本机的基础源码 <键>_b.metal（带 S2A_MESH_EMU 入口），没有就按 SetShaders / Bind 时的源快照现翻一份。
+//   成功 0（path = 源码），做不了 1
+int dm_shader_base_cached(const uint8_t key[8], int st, char *path, size_t n) {
+    static const char *const js[6] = {"vs", "ps", "cs", "gs", "ts", "ms"};
+    if (st != 4 && st != 5) return 1;
+    char k[17], meta[1200], b[8192]; for (int i = 0; i < 8; i++) snprintf(k + 2 * i, 3, "%02x", key[i]);
+    const char *out = getenv("DM_MSL_FALLBACK"); if (!out || !*out) return 1;
+    mkdir(out, 0755);
+    if (!dsh_have(out, k)) {
+        dsh_src_snap *src = dsh_src_snap_get(key, st); dsh_comp_fn comp = dsh_comp();
+        if (!src || !comp) { LOG("【红】直连%s源码：%s 没有源快照或翻译器，宿主跑不了它的任务阶段", st == 4 ? "任务" : "网格", k); return 1; }
+        if (dsh_comp_src_locked(comp, k, st, src->bytes + src->nctl, src->ncode, src->bytes, src->nctl, out)) return 1;
+    }
+    if (!dsh_have(out, k)) return 1;
+    snprintf(meta, sizeof meta, "%s/%s_b.json", out, k);
+    FILE *f = fopen(meta, "r"); if (!f) return 1;
+    size_t z = fread(b, 1, sizeof b - 1, f); fclose(f); b[z] = 0;
+    if (!dsh_json_eq(b, "stage", js[st])) return 1;
+    snprintf(path, n, "%s/%s_b.metal", out, k);
     return 0;
 }
 // 后台出归约变体用的拷贝（nvn_mtl.m se_kick）：控制段只在 SetShaders 里保证有效、代码区游戏也可能另用，提交线程上先整份拷下（控制段在前、代码区在后），

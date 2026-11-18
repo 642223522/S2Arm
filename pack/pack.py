@@ -12,17 +12,21 @@ SHA-256 记在 <输出包目录>.state.tsv（路径、字节数、源 mtime 纳�
   Windows 上 os.stat 的 ctime 是创建时间：原地改内容再改回 mtime 抓不到，换成另一个文件（tar / rsync 新建、inode 变）照样抓到。
   按全内容进包键的那几类（系统数据、RomFS 索引、npdm / nacp 等，pack/pkg_inputs_key.py content_keyed）照旧每次比源的 SHA（审计 #1534 P1-54）。
 只跳过 macOS 垃圾（.DS_Store、._*）：游戏数据里有点开头的真文件（旧库暗黑2 CASC 的 data/.build.config 漏收 → 真机启动即返回）。
+源目录不在、旁边有 <源目录>.std（标准 RomFS 镜像，RomFS 不落散文件）：index.tsv 照旧逐文件记（与目录形态逐字节相同），包里放一份镜像克隆 <包内前缀>.std、不拆散文件。
 --check：清单最新则退出 0，否则 1（不改任何文件）。"""
 import ctypes, hashlib, json, multiprocessing as mp, os, shutil, sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tools'))
+from pool_workers import process_pool_size, env_jobs   # 进程池路数（Windows 至多 61，#1332）
 from progress import Ticker   # 出包进度（S2A_PROGRESS，tools/progress.sh）：克隆 + 算 SHA 两段按文件数记
 from refs_clone import clone_file as refs_clone   # Windows ReFS / 开发驱动器块克隆（#1100）
 import sha256_fast   # 文件 SHA：Windows 走 CNG（hashlib 在玩家 Python 上没用 SHA 指令，Windows 出包机单核 0.37 → 1.46 GB/s）
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pkg_inputs_key import content_keyed   # 哪些源按全内容进包键（同一份判法）
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'graphics', 'nvn', 'tools'))
+import romfs_list   # 源目录遍历一律经它（tools/romfs_walk_lint.py）；目录不在、旁边有 <目录>.std 时从标准 RomFS 镜像列
 COPIED = [0]   # Windows 上没克隆成、退回整份拷贝的文件数（收尾打一行黄）
 LINKED = [0]   # Windows 上没克隆成、改用同卷硬链接的文件数
-NJ = int(os.environ.get('J') or os.environ.get('S2A_JOBS') or os.cpu_count() or 1)   # 并行路数（tools/cores.sh S2A_JOBS）
+NJ = env_jobs('J', 'S2A_JOBS')   # 并行路数（tools/cores.sh S2A_JOBS）
 if sys.platform == 'darwin':
     libc = ctypes.CDLL('libc.dylib', use_errno=True); libc.clonefile.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32]
 def copy_sha(src, dst):   # 整份拷贝、边拷边算 SHA-256（11-06 出包速度线：拷完再回头读一遍源算 SHA，0100F2C0115B6000 16 GB 多读一遍）→ SHA
@@ -58,8 +62,17 @@ def clone(src, dst):   # → 拷贝时顺手算出的 SHA；块克隆（不读�
         e = ctypes.get_errno()
         if e not in (18, 45, 1): raise OSError(e, os.strerror(e), dst)   # EXDEV / ENOTSUP / EPERM 才退回普通拷贝
         shutil.copy2(src, dst)
-def sha_file(p):
+def sha_file(p):   # p：文件路径，或镜像里的一个文件 (镜像路径, 偏移, 长度, 包里那份镜像的包内路径)
     h = sha256_fast.new()
+    if isinstance(p, tuple):
+        img, off, left, _ = p
+        with open(img, 'rb') as f:
+            f.seek(off)
+            while left:
+                b = f.read(min(1 << 22, left))
+                if not b: raise OSError(f'{img} 里偏移 {off} 起读不满')
+                h.update(b); left -= len(b)
+        return h.hexdigest()
     with open(p, 'rb') as f:
         for b in iter(lambda: f.read(1 << 22), b''): h.update(b)
     return h.hexdigest()
@@ -81,7 +94,7 @@ def main():
         name, _, src = a.partition('=')
         bad = not name or not src or name in ('manifest.json', 'index.tsv') or name.startswith('/') or '..' in name.split('/')
         if bad: sys.exit(f'参数应为 <包内前缀>=<源目录> 或 <包内路径>=<源文件>（不许绝对路径和 ..）：{a}')
-        if not os.path.exists(src): sys.exit(f'源不存在：{src}')
+        if not os.path.exists(src) and not romfs_list.image_of(src): sys.exit(f'源不存在：{src}')
         roots.append((name, os.path.abspath(src)))
     STATE = out.rstrip('/') + '.state.tsv'
     files = []   # (包内路径, 源路径, 字节数, 源 mtime 纳秒, 源 inode, 源 ctime 纳秒)
@@ -91,13 +104,20 @@ def main():
             st = os.stat(root); files.append((name, root, st.st_size, st.st_mtime_ns, st.st_ino, st.st_ctime_ns))
             if content_keyed(name): ck[name] = root
             continue
-        for d, ds, fs in os.walk(root):
+        # 源目录不在、旁边有 <源目录>.std（标准 RomFS 镜像，RomFS 不落散文件）：条目与顺序同目录形态，字节数取镜像记的长度，
+        #   修改时间 / inode / ctime 取镜像文件的（镜像换了全部重算）；包里放一份镜像克隆 <前缀>.std，不拆成散文件，index.tsv 照旧逐文件记
+        tree = romfs_list.scan(root, stat_entries=False); im = tree.image
+        spans, ist = (im.files(), os.stat(im.path)) if im is not None else (None, None)
+        for d, ds, fs in tree.walk():
             ds.sort()
             for f in sorted(fs):
                 if f == '.DS_Store' or f.startswith('._'): continue
-                p = os.path.join(d, f); rel = name + '/' + os.path.relpath(p, root).replace(os.sep, '/')
+                p = os.path.join(d, f); r = os.path.relpath(p, root).replace(os.sep, '/'); rel = name + '/' + r
                 if '\t' in rel or '\n' in rel: sys.exit(f'路径带制表符 / 换行，index.tsv 记不了：{rel!r}')
-                st = os.stat(p); files.append((rel, p, st.st_size, st.st_mtime_ns, st.st_ino, st.st_ctime_ns))
+                if im is not None:
+                    p = (im.path, *spans[r], name + '.std'); files.append((rel, p, spans[r][1], ist.st_mtime_ns, ist.st_ino, ist.st_ctime_ns))
+                else:
+                    st = os.stat(p); files.append((rel, p, st.st_size, st.st_mtime_ns, st.st_ino, st.st_ctime_ns))
                 if content_keyed(name): ck[rel] = p
     # 同一包内路径出现多次（界面布局覆盖层叠在 romfs/ 上，pack/pkg_srcs.py）：后给的源优先，位置留在第一次出现处
     pos, merged = {}, []
@@ -105,6 +125,8 @@ def main():
         if f[0] in pos: merged[pos[f[0]]] = f
         else: pos[f[0]] = len(merged); merged.append(f)
     files = merged; ck = {rel: merged[pos[rel]][1] for rel in ck}
+    held = {rel: p[3] for rel, p, *_ in files if isinstance(p, tuple)}   # 从镜像来的文件 → 包里那份镜像（<前缀>.std）的包内路径
+    stds = {p[3]: p[0] for _, p, *_ in files if isinstance(p, tuple)}   # 包里那份镜像 → 源镜像
     state = {}
     try:
         for l in open(STATE, encoding='utf-8'):
@@ -112,15 +134,15 @@ def main():
             state[rel] = (int(sz), int(mt), sha, int(c[4]) if len(c) > 5 else None, int(c[5]) if len(c) > 5 else None)   # 旧格式（4 列）没有 inode / ctime：按身份变了处理
     except (OSError, ValueError): state = {}
     csha = {}   # 要比内容的源（按全内容进包键的、身份变了的）：算过的 SHA
-    def same_size_mtime(rel, sz, mt):
-        s = state.get(rel); q = os.path.join(out, rel)
-        return bool(s and s[0] == sz and s[1] == mt and os.path.isfile(q) and os.path.getsize(q) == sz)
+    def same_size_mtime(rel, sz, mt):   # 从镜像来的：包里那份是整个镜像，比它与源镜像同长
+        s = state.get(rel); q = os.path.join(out, held.get(rel, rel)); qsz = os.path.getsize(stds[held[rel]]) if rel in held else sz
+        return bool(s and s[0] == sz and s[1] == mt and os.path.isfile(q) and os.path.getsize(q) == qsz)
     # 大小 + mtime 都对上、包里那份在，但要比内容的：全内容进包键的，或源 inode / ctime 与状态表不同的 → 并行算一遍源 SHA（判沿用与写 index 共用）
     need = [(rel, p) for rel, p, sz, mt, ino, ct in files if same_size_mtime(rel, sz, mt) and (rel in ck or state[rel][3:] != (ino, ct))]
     if need:
         method = 'fork' if 'fork' in mp.get_all_start_methods() else 'spawn'
         ps = [p for _, p in need]
-        with mp.get_context(method).Pool(NJ) as pool: hs = [h for part in pool.imap(sha_block, [ps[i:i + 64] for i in range(0, len(ps), 64)]) for h in part]
+        with mp.get_context(method).Pool(process_pool_size(NJ)) as pool: hs = [h for part in pool.imap(sha_block, [ps[i:i + 64] for i in range(0, len(ps), 64)]) for h in part]
         for (rel, _), h in zip(need, hs): csha[rel] = h
     def fresh(rel, sz, mt):
         if not same_size_mtime(rel, sz, mt): return False
@@ -137,22 +159,26 @@ def main():
     todo = [(rel, p) for rel, p, sz, mt, *_ in files if not fresh(rel, sz, mt)]
     tk = Ticker('资源包', 2 * len(todo))
     copied = {}   # 拷贝时已算出 SHA 的（Windows 克隆不了的那些）：不再回头读源
+    recloned = set()   # 从镜像来的：整个镜像克隆一次（Windows 退回拷贝时算出的是整个镜像的 SHA，不当逐文件的用）
     for rel, p in todo:
-        h = clone(p, os.path.join(out, rel))
-        if h: copied[rel] = h
+        if isinstance(p, tuple):
+            if p[3] not in recloned: clone(p[0], os.path.join(out, p[3])); recloned.add(p[3])
+        else:
+            h = clone(p, os.path.join(out, rel))
+            if h: copied[rel] = h
         tk.step()
     tset = {rel for rel, _ in todo}; shas = {rel: state[rel][2] for rel, *_ in files if rel not in tset}
     csha.update((rel, h) for rel, h in copied.items() if rel not in csha)
     if todo:
         method = 'fork' if 'fork' in mp.get_all_start_methods() else 'spawn'
-        with mp.get_context(method).Pool(NJ) as pool:   # 只算新克隆 / 变了的文件
+        with mp.get_context(method).Pool(process_pool_size(NJ)) as pool:   # 只算新克隆 / 变了的文件
             need = [(rel, p) for rel, p in todo if rel not in csha]; ps = [p for _, p in need]   # 判沿用时已经算过 SHA 的不再算
             hs = [h for part in pool.imap(sha_block, [ps[i:i + 64] for i in range(0, len(ps), 64)]) for h in part]
             for (rel, _), h in zip(need, hs): shas[rel] = h
             for rel, _ in todo:
                 if rel in csha: shas[rel] = csha[rel]
             tk.step(len(todo))
-    keep = {rel for rel, *_ in files} | {'manifest.json', 'index.tsv'}   # 上一版有、这一版没有的文件删掉
+    keep = {rel for rel, *_ in files if rel not in held} | set(stds) | {'manifest.json', 'index.tsv'}   # 上一版有、这一版没有的文件删掉（镜像形态：散文件删掉、留 <前缀>.std）
     for d, ds, fs in os.walk(out, topdown=False):
         for f in fs:
             q = os.path.join(d, f)

@@ -820,7 +820,7 @@ namespace S2A.Services
                 if (eventInput)
                 {
                     _padReadEx(&snapshot);
-                    if (OperatingSystem.IsIOS() && !_externalController && snapshot.Source is 1 or 2)
+                    if ((OperatingSystem.IsIOS() || OperatingSystem.IsTvOS()) && !_externalController && snapshot.Source is 1 or 2)   // 平台例外：tvOS 同 iOS 走触屏 / 手柄来源判断（Apple TV 一期，遥控器按触屏来源上报）
                     {
                         // 只在首次真实 BLE / 系统手柄出现时改配；断线或后台的触屏快照不撤销偏好。
                         _externalController = true;

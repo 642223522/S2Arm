@@ -5,6 +5,7 @@
 #   符号按首次出现次序改名为 @f0 / @g0…（合编把内部函数包进 namespace，修饰名不同），去掉属性组号 #N 与元数据挂件编号（模块内编号次序不同）；
 #   入口的 air.vertex / air.fragment / air.kernel 元数据节点（参数 / 绑定描述）递归展开成文本一并比。
 # 输出：比了多少个入口、一致多少、不一致清单（前 20 个，附首个不同行）；退出 0 = 全一致。
+import os as _pw_os, sys as _pw_sys; _pw_sys.path.append(_pw_os.path.join(_pw_os.path.dirname(_pw_os.path.abspath(__file__)), '..', '..', '..', 'tools')); from pool_workers import cores  # noqa: E402  核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
 import os, re, subprocess, sys, random, concurrent.futures as cf
 sdk = os.environ.get('UNITY_CHECK_SDK', 'iphoneos')
 
@@ -95,7 +96,7 @@ def main():
     batches = sorted(f for f in os.listdir(d2) if re.fullmatch(r'[0-9a-f]{16}_u\d+(?:_[a-z?])?\.air', f))   # 批按阶段拆的子批带 _v / _f / _k 后缀（gal_offline.py，10-24）
     # 合编里退回逐支编的那些也直接是 <键>.air：它们与逐支一致无需比，但要认账
     batch_keys = {}
-    with cf.ThreadPoolExecutor(os.cpu_count() or 8) as ex:
+    with cf.ThreadPoolExecutor(cores()) as ex:
         for f, txt in zip(batches, ex.map(lambda f: ll_of(os.path.join(d2, f)), batches)):
             fs, gs, md, em, ty = parse(txt)
             for e in entries_of(fs): batch_keys[e] = (f, fs, gs, md, em, ty)
@@ -114,7 +115,7 @@ def main():
                 i = next((j for j in range(min(len(la), len(lb))) if la[j] != lb[j]), min(len(la), len(lb)))
                 res.append(('diff', e, f'{bf} 第 {i} 行：逐支「{la[i][:120] if i < len(la) else "∅"}」 合编「{lb[i][:120] if i < len(lb) else "∅"}」'))
         return res
-    with cf.ThreadPoolExecutor(os.cpu_count() or 8) as ex:
+    with cf.ThreadPoolExecutor(cores()) as ex:
         for res in ex.map(one, singles):
             for kind, e, why in res:
                 n += 1

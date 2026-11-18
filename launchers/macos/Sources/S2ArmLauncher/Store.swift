@@ -191,7 +191,7 @@ final class WorkerOutput: @unchecked Sendable {
         if let overrideResources { resources = overrideResources }
         else if let r = Bundle.main.resourceURL, Bundle.main.bundleURL.pathExtension == "app" || FileManager.default.fileExists(atPath:r.appendingPathComponent("Jobs/main.py").path) { resources = r }
         else { resources = Store.sourceTree?.appendingPathComponent("launchers/macos") ?? Bundle.main.bundleURL }
-        try? FileManager.default.createDirectory(at:privateRoot,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
+        try? FileManager.default.createDirectory(at:privateRoot,withIntermediateDirectories:true)
         if let data = try? Data(contentsOf:privateRoot.appendingPathComponent("preferences.json")), let p = try? JSONDecoder().decode(Preferences.self,from:data) { preferences = p }
         // 旧默认库（私有目录里的「游戏库」）已被作业层同盘改名到 ~/S2Arm（layout.relocate_default）：设置跟着换，别当成库丢了
         let moved = S2ArmPaths.library(privateRoot:privateRoot, saved:preferences.library)
@@ -274,7 +274,6 @@ final class WorkerOutput: @unchecked Sendable {
     @discardableResult func persist(_ data: Data, to url: URL, _ what: String, privateFile: Bool = false) -> Bool {
         do {
             try data.write(to:url,options:.atomic)
-            if privateFile { try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:url.path) }
             return true
         } catch {
             self.error="\(what)没能写进磁盘（\(error.localizedDescription)）。这次运行里仍按新的来，下次打开会回到旧值；请检查磁盘空间和权限。"
@@ -637,9 +636,9 @@ final class WorkerOutput: @unchecked Sendable {
             req["libraryId"] = ""
             req["storageLibraryId"] = preferences.libraryId
         }
-        let dir = privateRoot.appendingPathComponent("requests"); try? FileManager.default.createDirectory(at:dir,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700]); let file = dir.appendingPathComponent(id+".json")
+        let dir = privateRoot.appendingPathComponent("requests"); try? FileManager.default.createDirectory(at:dir,withIntermediateDirectories:true); let file = dir.appendingPathComponent(id+".json")
         do {
-            let data = try JSONSerialization.data(withJSONObject:req); try data.write(to:file,options:.atomic); try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:file.path)
+            let data = try JSONSerialization.data(withJSONObject:req); try data.write(to:file,options:.atomic)
             let python = try pythonExecutable()
             let isGUI = operation.hasPrefix("platform")
             let entry = try isGUI ? guiJobURL() : jobEngineURL()

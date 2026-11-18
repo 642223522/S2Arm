@@ -19,6 +19,10 @@ MATH=(-fmetal-math-mode=relaxed -fpreserve-invariance)
 XC=(--msl --msl-version 30100 --msl-decoration-binding)
 glslangValidator -V --target-env vulkan1.1 "$R/tests/msl_nocontraction/t.comp" -o "$T/t.spv" > /dev/null || { echo "不通 glslang 编不出测试着色器"; exit 1; }
 spirv-cross "${XC[@]}" "$T/t.spv" --output "$T/ref.metal" || { echo "不通 命令行 spirv-cross 失败"; exit 1; }
+# ⓪ 本仓源码编的命令行版（Windows 随包那份，spvc_inproc.py cli）必须与上游命令行逐字节相同：versions.json 写的是上游版本号
+CLI=$(cd "$R/translator" && "$PY" spvc_inproc.py cli) || { echo "不通 命令行版编不出"; exit 1; }
+"$CLI" "${XC[@]}" "$T/t.spv" --output "$T/cli.metal" || { echo "不通 命令行版跑不起来"; exit 1; }
+ck "⓪ 本仓源码编的命令行版 MSL 与上游命令行逐字节相同（不带本仓改动）" $(cmp -s "$T/ref.metal" "$T/cli.metal" && echo 1 || echo 0)
 (cd "$R/translator" && "$PY" -c "import spvc_inproc, sys; r = spvc_inproc.run(sys.argv[1:]); sys.exit(r.returncode)" "${XC[@]}" "$T/t.spv" --output "$T/new.metal") || { echo "不通 进程内 spirv-cross 失败"; exit 1; }
 # ④ 的负对照：原版辅助函数换成不受保护的写法
 "$PY" - "$T/ref.metal" "$T/plain.metal" <<'PY'

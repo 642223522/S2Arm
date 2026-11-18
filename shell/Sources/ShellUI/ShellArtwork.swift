@@ -7,6 +7,8 @@ import ImageIO
 public struct Artwork: Equatable, @unchecked Sendable {
     public let id: String
     let image: CGImage
+    /// The full picture, for the host to hand on (the home-screen widget keeps its own small copy).
+    public var cgImage: CGImage { image }
     /// About 48 px across. Scaled up and blurred, it gives the same backdrop as the full picture for a fraction of the work.
     let thumbnail: CGImage
     /// The picture's mean colour in sRGB, 0 to 1.

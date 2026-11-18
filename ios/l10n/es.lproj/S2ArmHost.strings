@@ -37,11 +37,12 @@
 "cheats.status.execError" = "Error de ejecución";
 "cheats.status.gameNotLoaded" = "Juego no cargado";
 "cheats.status.modifiesCode" = "Modifica el código del juego, por lo que no puede ejecutarse al importarse en el teléfono: importa este txt en S2Arm en tu computadora y luego actualiza S2Arm en el teléfono";
+"cheats.status.notPacked" = "Modifica el código del juego y no se incluyó en este paquete (demasiados parches para el módulo, etc.; consulta los resultados de exportación en tu computadora)";
 "cheats.status.packed" = "Activo";
 "cheats.status.off" = "Desactivado";
 "cheats.status.pending" = "Esperando aplicarse…";
-"cheats.status.versionMismatch" = "Versión no coincide";
-"cheats.status.versionMismatch.file" = "Versión no coincide, no se aplicará";
+"cheats.status.versionMismatch" = "No coincide con esta versión del juego, desactivado";
+"cheats.status.versionMismatch.file" = "No coincide con esta versión del juego, desactivado (el juego funciona con normalidad)";
 "cheats.title" = "Trucos";
 "cheats.unnamed" = "Sin título";
 "common.cancel" = "Cancelar";
@@ -109,7 +110,8 @@
 "settings.fps.patchTitle" = "Velocidad de fotogramas";
 "settings.fps.patchNote" = "Parche de la comunidad · hasta %ld fps";
 "settings.fps.pick" = "Nivel de velocidad de fotogramas";
-"settings.fps.pick.auto" = "Automático (coincidir con pantalla)";
+"settings.fps.pick.auto" = "Automático (60 FPS)";
+"settings.fps.pick.note" = "120 FPS necesita un dispositivo que realmente los alcance; si no, el juego se ralentiza.";
 "settings.fps.pick.level" = "%ld fps";
 "settings.patchNote" = "Parche de la comunidad";
 "settings.fullscreen.patchNote" = "Parche de pantalla completa de la comunidad";
@@ -269,8 +271,8 @@
 "app.fpsCap.restored" = "60 FPS restablecidos.";
 "app.lowRam.title" = "Es posible que este dispositivo no tenga suficiente memoria";
 "app.lowRam.body" = "Este juego necesita más memoria de la que tiene este dispositivo. Seguirá iniciándose, pero puede ralentizarse o ser cerrado por el sistema.";
-"app.gpuStop.body" = "Desliza esta app en el selector de apps y abre el juego de nuevo.";
-"app.gpuStop.title" = "Error de gráficos — detenido";
+"app.gpuStop.body" = "Cierra esta app desde el selector de apps y vuelve a abrirla; normalmente podrás seguir jugando desde el último guardado del juego. Para ayudarnos a encontrar la causa, toca «Informar de un problema» y envíanos el diagnóstico.";
+"app.gpuStop.title" = "El juego se quedó bloqueado y se detuvo de forma segura";
 "app.library.broken.title" = "Los archivos del juego están incompletos";
 "app.library.cantOpen" = "No se puede abrir este juego";
 "app.library.cantOpen.message" = "No se pudo preparar este juego para iniciarse. Desliza la app en el selector de apps y ábrela de nuevo; si sigue fallando, exporta el diagnóstico y envíanoslo.";
@@ -328,6 +330,8 @@
 "img.scanFailed.title" = "No se pudo importar el archivo del juego";
 "img.noShaders.title" = "Este archivo del juego está incompleto";
 "img.noShaders.body" = "«%@» está incompleto. Reemplázalo con el «<nombre del juego>.img» de la carpeta «S2Arm Self-Sign Export» en tu ordenador, o conecta tu teléfono y haz clic en «Send to iPhone» en S2Arm en tu ordenador.";
+"img.updateSkipped.title" = "Actualización de shaders omitida";
+"img.updateSkipped.body" = "«%@» no corresponde a la versión actual de este juego, así que se omitió y no se aplicó. El juego funciona con normalidad. Para usar esta actualización, añade junto con ella el .img completo de la misma exportación de tu ordenador.";
 "container.locked.title" = "El sistema bloqueó algunos archivos de S2Arm";
 "container.locked.body" = "En este dispositivo hay %@ GB de archivos antiguos de S2Arm bloqueados por el sistema. S2Arm no puede cambiarlos ni borrarlos; solo se eliminan al borrar la app.\n\nPara liberar ese espacio:\n1. En cada juego abre el menú → Gestionar partidas guardadas → Exportar partida guardada actual…, a un lugar de Archivos fuera de la carpeta de S2Arm (por ejemplo iCloud Drive; la carpeta de S2Arm se borra junto con la app)\n2. Borra y vuelve a instalar S2Arm\n3. Usa Gestionar partidas guardadas → Elige una copia de seguridad para comprobar… para recuperar tus partidas";
 "diag.fileWord" = "diag";
@@ -337,6 +341,7 @@
 "diag.error.zip" = "No se pudo crear el paquete (falló al escribir el zip; el teléfono puede estar sin espacio)";
 "diag.export" = "Exportar diagnóstico";
 "diag.prompt.abnormalExit" = "S2Arm no se cerró normalmente la última vez (se bloqueó, se congeló o fue cerrado por el sistema)";
+"diag.prompt.imlLost" = "S2Arm no se cerró normalmente la última vez. Esta instalación perdió el permiso «Límite de memoria ampliado», así que si un juego grande se cierra, lo más probable es que se haya quedado sin memoria. Arréglalo según cómo instalaste S2Arm:\n· S2Arm en tu ordenador (Apple ID gratuito o de pago): pulsa «Instalar en el iPhone» para este juego y reinstala. Si después sigues viendo este aviso, añade el permiso con GetMoreRam (abajo) y vuelve a pulsar «Instalar en el iPhone».\n· Tu propio certificado de desarrollador (.p12 + perfil de aprovisionamiento): en el sitio web de Apple Developer, activa «Increased Memory Limit» para el App ID de S2Arm (la identidad que Apple registra para cada app), vuelve a generar el perfil y firma e instala de nuevo con el perfil nuevo.\n· AltStore: reinstala (no actualices) con AltStore Classic 2.2 o posterior.\n· SideStore 0.7.0: su firma elimina este permiso; añádelo con GetMoreRam (abajo) y luego reinstala en SideStore.\n· Sideloadly: no compatible por ahora; no indica que conserve este permiso con un Apple ID gratuito y los permisos personalizados requieren una cuenta de Apple Developer de pago.\n· GetMoreRam: instálalo firmándolo con el mismo Apple ID que usaste para S2Arm (ocupa una de las plazas de apps de una cuenta gratuita; bórralo después), inicia sesión, abre App IDs, toca Actualizar, elige S2Arm, toca «Add Increased Memory Limit» y reinstala S2Arm como lo hiciste antes.";
 "diag.prompt.crash" = "El sistema informó que S2Arm se bloqueó o congeló la última vez";
 "diag.prompt.message" = "%@. Esto sube registros de ejecución, informes de bloqueo y la lista de canales gráficos que usaron los juegos (solo ID de sombreadores), sin partidas guardadas, claves ni archivos de juego, y te da un código corto.";
 "diag.prompt.no" = "No, gracias";
@@ -364,6 +369,8 @@
 "dprompt.expiry.hours" = "unos %d horas";
 "dprompt.expiry.lessThanHour" = "menos de 1 hora";
 "dprompt.expiry.title" = "La firma expira pronto";
+"dprompt.input.bad.body" = "Esta partida empieza con los botones predeterminados (%@).";
+"dprompt.input.bad.title" = "No se pudo leer la configuración de botones";
 "dprompt.ns2pro.body" = "Mantén cuatro dedos en la pantalla durante 1,5 segundos para abrir Ajustes, activa «Habilitar mando Switch 2 Pro» y luego pulsa el botón de emparejamiento del mando.";
 "dprompt.ns2pro.title" = "¿Usas un mando Switch 2 Pro?";
 "dprompt.motion.title" = "Controles de movimiento";
@@ -383,7 +390,8 @@
 "gfx.fpsLimit" = "Límite de velocidad de fotogramas";
 "gfx.fpsLimit.none" = "Sin límite";
 "gfx.resolution" = "Resolución de renderizado";
-"iml.lost.body" = "Es posible que los juegos grandes se queden sin memoria o se ralenticen. Vuelve a firmar con Xcode o AltStore Classic v2.3 y reinstala, o usa GetMoreRam para añadir el permiso al App ID y reinstala.";
+"iml.lost.body" = "Los juegos grandes pueden quedarse sin memoria y cerrarse o ralentizarse. Arréglalo según cómo instalaste S2Arm:\n· S2Arm en tu ordenador (Apple ID gratuito o de pago): pulsa «Instalar en el iPhone» para este juego y reinstala. Si después sigues viendo este aviso, añade el permiso con GetMoreRam (abajo) y vuelve a pulsar «Instalar en el iPhone».\n· Tu propio certificado de desarrollador (.p12 + perfil de aprovisionamiento): en el sitio web de Apple Developer, activa «Increased Memory Limit» para el App ID de S2Arm (la identidad que Apple registra para cada app), vuelve a generar el perfil y firma e instala de nuevo con el perfil nuevo.\n· AltStore: reinstala (no actualices) con AltStore Classic 2.2 o posterior.\n· SideStore 0.7.0: su firma elimina este permiso; añádelo con GetMoreRam (abajo) y luego reinstala en SideStore.\n· Sideloadly: no compatible por ahora; no indica que conserve este permiso con un Apple ID gratuito y los permisos personalizados requieren una cuenta de Apple Developer de pago.\n· GetMoreRam: instálalo firmándolo con el mismo Apple ID que usaste para S2Arm (ocupa una de las plazas de apps de una cuenta gratuita; bórralo después), inicia sesión, abre App IDs, toca Actualizar, elige S2Arm, toca «Add Increased Memory Limit» y reinstala S2Arm como lo hiciste antes.";
+"iml.lost.short" = "Los juegos grandes pueden quedarse sin memoria y cerrarse. Toca «Más información» para ver cómo volver a firmar S2Arm con este permiso.";
 "iml.lost.title" = "Esta instalación perdió el permiso «Límite de memoria ampliado»";
 "lan.denied.later" = "Ahora no";
 "lan.denied.message" = "El sistema no ha permitido que «%@» detecte dispositivos en tu red local, por lo que el modo multijugador no puede encontrar a otros jugadores.\n\nVe a Ajustes › Privacidad y seguridad › Red local, activa «%@» y vuelve a unirte al multijugador.";
@@ -564,3 +572,15 @@
 "sgrade.cpatch.detail" = "Detalles de los parches de la comunidad";
 "sgrade.state.off_auto.widen_fit" = "Desactivado automáticamente: el %1$@ la pantalla completa no llenó la pantalla o estiró la imagen";
 "sgrade.notice.fullscreen_off" = "La pantalla completa de S2Arm no funcionó esta vez, así que se desactivó y el juego sigue con normalidad. Puedes volver a activarla desde el menú del engranaje para intentarlo de nuevo.";
+
+/* 0.6.0 快照：游戏中菜单 */
+"vpad.snap.save" = "Guardar este momento";
+"vpad.snap.restore" = "Volver al momento guardado";
+"vpad.snap.saving" = "Guardando este momento…";
+"vpad.snap.saved" = "Momento guardado";
+"vpad.snap.notSaved" = "No se pudo guardar esta vez. Inténtalo de nuevo en un momento";
+"vpad.snap.busy" = "Aún se está guardando el anterior";
+"vpad.snap.restoreFailed" = "No se pudo volver: %@";
+"vpad.snap.saveChanged.title" = "¿Volver al momento guardado?";
+"vpad.snap.saveChanged.body" = "El juego guardó después de ese momento. Volver también devuelve su partida a ese momento; la partida actual se copia antes.";
+"vpad.snap.saveChanged.go" = "Volver";

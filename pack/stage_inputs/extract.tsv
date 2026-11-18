@@ -56,6 +56,7 @@
 外	tools/nostall.py	无进展看门狗，只决定挂死时停不停，不改产物
 外	tools/nospace.sh	无空格路径别名（编 Mac 宿主时给 make 用，不改产物）
 外	tools/progress.py	进度打印
+外	tools/pool_workers.py	进程池路数（Windows 至多 61）
 外	tools/progress.sh	进度打印
 外	pack/stage_keyfiles.sh	算键脚本本身（只读本表算键，不改产物）
 

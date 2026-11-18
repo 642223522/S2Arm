@@ -52,11 +52,20 @@ struct s2a_vk_device {
     int custom_border_enabled;
     int custom_border_without_format;
     uint32_t custom_border_max;
+    // #976：VK_EXT_sampler_filter_minmax 已启用（采样器 min / max 归约）；minmax_image_mapping = filterMinmaxImageComponentMapping
+    // （0 时仅 R 分量有定义，未证明分量使用前拒绝归约）。
+    int sampler_minmax_enabled;
+    int minmax_image_mapping;
     // 0 = 没有校准扩展；1 = VK_KHR_calibrated_timestamps；2 = VK_EXT_calibrated_timestamps。
     // GPU 时间戳换算到游戏时钟需要用它求 GPU 域与 CLOCK_MONOTONIC 的偏移。
     int calibrated_timestamps;
     VkPhysicalDeviceFeatures core_features;
     uint32_t device_extension_count;
+    // descriptor indexing 仅建可选设备能力；编译器的 non-uniform profile 仍独立关闭。
+    // ext_state: -1 枚举失败（未知），0 未列出，1 列出。后续位为物理设备支持，不等于启用。
+    int descriptor_indexing_ext_state, descriptor_indexing_enabled;
+    int descriptor_indexing_runtime, descriptor_indexing_partial, descriptor_indexing_sampled_nonuniform;
+    int descriptor_indexing_storage_nonuniform, descriptor_indexing_variable_count, descriptor_indexing_sampled_update_after_bind;
     // #1199：逐格式 BC 能力位（bit i 对应 NVN 格式 0x41+i）。
     // native=optimal-tiling 有 SAMPLED_IMAGE；decode=要走 compute 解码（native 补集，force 时全 1）。
     uint32_t bc_native_mask;

@@ -18,6 +18,7 @@ sys.path.insert(0, str(JOBS))
 import core
 import toolchain
 from jobcase import OsView, as_windows, ios_fixture
+import jobcase  # noqa: E402（作业上下文替身统一工厂 jobcase.fake_context）
 import layout
 
 
@@ -65,11 +66,12 @@ class RuntimeEnv(unittest.TestCase):
     def test_paths_are_bundled_only(self):
         env = core.win_runtime_env(r"D:\S2Arm\Runtime", r"D:\S2Arm\Engine", r"C:\Windows")
         self.assertEqual(env["PATH"].split(";"), [
-            r"D:\S2Arm\Runtime\python", r"D:\S2Arm\Runtime\python\Scripts", r"D:\S2Arm\Runtime\dotnet",
+            r"D:\S2Arm\Runtime\python", r"D:\S2Arm\Runtime\python\Scripts",
             r"D:\S2Arm\Runtime\git\usr\bin", r"D:\S2Arm\Runtime\zstd",
             r"C:\Windows\system32", r"C:\Windows", r"C:\Windows\System32\WindowsPowerShell\v1.0"])
-        self.assertEqual((env["DOTNET_ROOT"], env["S2A_BASH"], env["PYTHONHOME"], env["S2A_PREBUILT_TOOLS"]),
-                         (r"D:\S2Arm\Runtime\dotnet", r"D:\S2Arm\Runtime\git\usr\bin\bash.exe",
+        self.assertNotIn("DOTNET_ROOT", env, "v0.5.0 起不带 .NET：C# 件是 NativeAOT 单文件")
+        self.assertEqual((env["S2A_BASH"], env["PYTHONHOME"], env["S2A_PREBUILT_TOOLS"]),
+                         (r"D:\S2Arm\Runtime\git\usr\bin\bash.exe",
                           r"D:\S2Arm\Runtime\python", r"D:\S2Arm\Engine\Binaries\Prepare"))
         self.assertEqual(env["LC_ALL"], "C.UTF-8", "机器上 LANG=C / en_US 时 cygpath 在中文处截断路径（#85）")
 
@@ -132,7 +134,10 @@ class RuntimeEnv(unittest.TestCase):
             self.assertEqual(ow.metal_exe(dict(stale, S2A_METAL_PICKED=str(Path(d, "手选后删了"))), reg=([str(fresh.parent)], [])), fresh)   # 选过的被删了：照常往下找
             rows = ow.metal_search(stale, reg=([], [str(Path(d, "没装"))]))
             self.assertEqual([r[0] for r in rows], ["启动器启动时的 PATH", "注册表里现在的 PATH", "官方安装器登记的安装目录", "官方安装器登记的安装目录", "官方默认目录", "官方默认目录"])
-            self.assertFalse(any(ok for _, _, ok in rows))
+            # 最后那条写死的 C:\Program Files\Metal Developer Tools 查的是这台机器真的系统目录：装了 Metal 工具的 Windows 上会找到（11-16 原生 Windows 上红），
+            #   不算在「夹具里各处都没有」里
+            sysdef = r"c:\program files\metal developer tools"
+            self.assertFalse(any(ok for _, path, ok in rows if not str(path).lower().startswith(sysdef)))
             text = ow.metal_search_text(rows)
             self.assertIn("启动器启动时的 PATH：里面没有 metal.exe", text)
             self.assertIn(str(Path(d, "没装", "ios", "bin", "metal.exe")) + " → 没有", text)
@@ -153,26 +158,37 @@ class RuntimeEnv(unittest.TestCase):
 class Reader(unittest.TestCase):
     def setUp(self):
         self.t = Path(tempfile.mkdtemp()); self.addCleanup(lambda: __import__("shutil").rmtree(self.t, ignore_errors=True))
-        self.c = types.SimpleNamespace(engine=self.t)
+        self.diags = []
+        self.c = types.SimpleNamespace(engine=self.t, diagnostic=lambda message, **kw: self.diags.append(dict(kw, message=message)))
         self.d = self.t / "Binaries/Prepare/nx_unpack"; self.d.mkdir(parents=True)
         fake = types.SimpleNamespace(nx_unpack_id=lambda: "abc123abc123")   # 身份由 oneclick_win 算（另有单测）；这里只核「相同才用」
         self.mods = patch.dict(sys.modules, {"pack.orch.oneclick_win": fake, "pack.orch": types.SimpleNamespace(oneclick_win=fake)})
         self.mods.start(); self.addCleanup(self.mods.stop)
 
     def test_prebuilt_same_identity(self):
-        """给能直接执行的 nx_unpack.exe（调用方都直接执行它；Windows 直接执行 .dll 交给旧 .NET Framework，报找不到 System.Runtime 10.0）"""
-        (self.d / "nx_unpack.dll").write_bytes(b"x"); (self.d / "nx_unpack.exe").write_bytes(b"x"); (self.d / ".src_digest").write_text("abc123abc123\n")
+        """给 NativeAOT 单文件 nx_unpack.exe（调用方都直接执行它，不再有 .dll）"""
+        (self.d / "nx_unpack.exe").write_bytes(b"x"); (self.d / ".src_digest").write_text("abc123abc123\n")
         with as_windows(toolchain):
             self.assertEqual(toolchain.reader(self.c), self.d / "nx_unpack.exe")
+        self.assertEqual(self.diags, [])
 
-    def test_stale_or_missing_is_named_failure(self):
-        (self.d / "nx_unpack.dll").write_bytes(b"x"); (self.d / ".src_digest").write_text("000000000000\n")
-        for case in ("stale", "missing"):
+    def test_stale_warns_and_continues(self):
+        """维护者 11-17：校验不过不再拒绝。期望手写：身份对不上、exe 在 → 照常返回 exe、发一条 warning 级 reader_unavailable；
+        身份不在（.src_digest 读不到）同样照用；exe 不在 → 物理上用不了，照旧报 reader_unavailable"""
+        (self.d / "nx_unpack.exe").write_bytes(b"x")
+        for case in ("stale", "no_digest"):
             with self.subTest(case=case), as_windows(toolchain):
-                if case == "missing": (self.d / "nx_unpack.dll").unlink()   # exe 本来就没放：只有 dll 也算缺
-                with self.assertRaises(core.Failure) as e:
-                    toolchain.reader(self.c)
-                self.assertEqual(e.exception.code, "reader_unavailable")
+                self.diags.clear()
+                if case == "stale": (self.d / ".src_digest").write_text("000000000000\n")
+                else: (self.d / ".src_digest").unlink()
+                self.assertEqual(toolchain.reader(self.c), self.d / "nx_unpack.exe")
+                self.assertEqual([(d["code"], d["severity"]) for d in self.diags], [("reader_unavailable", "warning")])
+
+    def test_missing_is_named_failure(self):
+        (self.d / ".src_digest").write_text("abc123abc123\n")   # 身份对、exe 不在
+        with as_windows(toolchain), self.assertRaises(core.Failure) as e:
+            toolchain.reader(self.c)
+        self.assertEqual(e.exception.code, "reader_unavailable")
 
 
 class WinOneclick(unittest.TestCase):
@@ -232,14 +248,16 @@ class WinOneclick(unittest.TestCase):
 
 class ShellEngineMatch(unittest.TestCase):
     """#1043：应用内更新回滚不完整，Engine/engine.json 新壳号、Shell/manifest.json 旧壳号 → 出包开头就报「没装完整、覆盖安装」（engine_incomplete），
-    不等到 ship_ext 核壳编号才挂。期望手写（壳号取自玩家原报）：对得上 → 照常返回 Shell 目录；对不上 → engine_incomplete、内部原文带两个壳号；
-    任一边没写壳号（开发树 / 旧格式）→ 不拦"""
+    不等到 ship_ext 核壳编号才挂。维护者 11-17：校验不过不再拒绝出包。期望手写（壳号取自玩家原报）：对得上 → 照常返回 Shell 目录、不发诊断；
+    对不上 → 照常返回 Shell 目录、发一条 warning 级 engine_incomplete（说「照常出包」与「覆盖安装」、内部原文带两个壳号）；任一边没写壳号（开发树 / 旧格式）→ 不发"""
     def setUp(self):
         import ipa
         self.ipa = ipa
         self.t = Path(tempfile.mkdtemp()); self.addCleanup(lambda: __import__("shutil").rmtree(self.t, ignore_errors=True))
         (self.t / "Shell").mkdir(); (self.t / "Engine").mkdir()
-        self.c = types.SimpleNamespace(r={"resources": str(self.t)}, private=self.t, engine=self.t / "Engine")
+        self.diags = []
+        self.c = types.SimpleNamespace(r={"resources": str(self.t)}, private=self.t, engine=self.t / "Engine",
+                                       diagnostic=lambda message, **kw: self.diags.append(dict(kw, message=message)))
 
     def put(self, engine, shell):
         import json
@@ -248,21 +266,21 @@ class ShellEngineMatch(unittest.TestCase):
 
     def test_same_shell_ok(self):
         self.put("e0c983c072e29416", "e0c983c072e29416")
-        self.assertEqual(self.ipa.bundled_shell(self.c), self.t / "Shell")
+        self.assertEqual(self.ipa.bundled_shell(self.c), self.t / "Shell"); self.assertEqual(self.diags, [])
 
-    def test_half_updated_app_is_named(self):
+    def test_half_updated_app_warns_and_continues(self):
         self.put("e0c983c072e29416", "b96e9b50fef413c0")
-        with self.assertRaises(core.Failure) as e:
-            self.ipa.bundled_shell(self.c)
-        self.assertEqual(e.exception.code, "engine_incomplete")
-        self.assertIn("覆盖安装", str(e.exception))
-        self.assertIn("e0c983c072e29416", e.exception.internal); self.assertIn("b96e9b50fef413c0", e.exception.internal)
+        self.assertEqual(self.ipa.bundled_shell(self.c), self.t / "Shell")
+        self.assertEqual(len(self.diags), 1); d = self.diags[0]
+        self.assertEqual((d["code"], d["severity"]), ("engine_incomplete", "warning"))
+        self.assertIn("照常出包", d["message"]); self.assertIn("覆盖安装", d["message"])
+        self.assertIn("e0c983c072e29416", d["internal"]); self.assertIn("b96e9b50fef413c0", d["internal"])
 
     def test_missing_ids_do_not_block(self):
         for engine, shell in ((None, "b96e9b50fef413c0"), ("e0c983c072e29416", None), (None, None)):
             with self.subTest(engine=engine, shell=shell):
                 self.put(engine, shell)
-                self.assertEqual(self.ipa.bundled_shell(self.c), self.t / "Shell")
+                self.assertEqual(self.ipa.bundled_shell(self.c), self.t / "Shell"); self.assertEqual(self.diags, [])
 
 
 class FakeW:
@@ -286,6 +304,10 @@ class FakeW:
                                               unselected_accounts=lambda: self.unselected, select_only_account=select_only)
         self.logged = False
         self.plumesign_path = lambda given=None: "C:/plumesign.exe" if plume else None
+        self.cert_hit, self.cert_calls = None, []   # cert_check（签前核开发证书）：缺省「不用问」；用例给 {name, machine, created} 测问玩家
+    def cert_check(self, exe, team, log=None):
+        self.cert_calls.append((exe, team))
+        return self.cert_hit
     def mux_devices(self):
         if isinstance(self.devs, Exception): raise self.devs
         return self.devs
@@ -315,12 +337,15 @@ class WinInstall(unittest.TestCase):
         self.m = install
         self.t = Path(tempfile.mkdtemp()); self.addCleanup(lambda: __import__("shutil").rmtree(self.t, ignore_errors=True))
         p = patch.object(install, "phone_games", lambda c, ph: set()); p.start(); self.addCleanup(p.stop)   # 读手机游戏清单另有用例
+        # 读手机账本另有用例（test_install）：不打桩时它走 devpush_client 调 c.env()，本替身没有 env——单跑时推送工具导入失败被当「读不到账本」，
+        #   全量跑时前面的用例已导入过 push_pack（模块缓存），这里就撞上 AttributeError（11 个 WinInstall 用例只在全量 discover 时红）
+        p = patch.object(install, "phone_removed", lambda c, ph: None); p.start(); self.addCleanup(p.stop)
         p = patch.object(install, "pick_pack_root", lambda c, ph, g: f"Library/Application Support/S2Arm/games/{g}/资源包"); p.start(); self.addCleanup(p.stop)   # 选哪处另有用例（test_install）
         (self.t / "lib").mkdir(); (self.t / "logs").mkdir()
         self.gid = "0100000000000047"
         self.progress_events = []   # 作业计数事件 (done, total, unit)
         emit = lambda *a, **k: self.progress_events.append((k.get("done"), k.get("total"), k.get("unit"))) if k.get("unit") else None
-        self.c = types.SimpleNamespace(r={"gameId": self.gid}, library=self.t / "lib", private=self.t, logs=self.t / "logs", task="k", engine=self.t, emit=emit,
+        self.c = jobcase.fake_context(self.t, r={"gameId": self.gid}, library=self.t / "lib", work_root=self.t / "work", private=self.t, logs=self.t / "logs", task="k", engine=self.t, emit=emit,
                                        begin=lambda *a, **k: None, last_log=None, catalog=lambda: {"schema": 1, "games": []},
                                        lock=lambda *a, **k: contextlib.nullcontext())   # 装机类作业的手机锁 / 程序锁（ipa.phone_lock / program_locks）
         ios_fixture(self.c, self.gid)   # 出好的 iPhone 版：image/ios/kit + image/ios/pack
@@ -463,6 +488,19 @@ class WinInstall(unittest.TestCase):
             self.go(FakeW([("U1", "USB", 3)], fail="login_identity_rejected"))
         self.assertEqual(e.exception.code, "login_identity_rejected")
 
+    def test_cert_revoke_asked_before_signing(self):
+        # plumesign 要新建证书、列表里有别人的：签名装机之前停下问（cert_revoke_confirm），不调 install_app；玩家点继续（acceptCertRevoke）照装
+        w = FakeW([("U1", "USB", 3)]); w.cert_hit = dict(name="Apple Development: Fake Xcode", machine="Fake-Mac", created="2025-03-01")
+        p = patch.object(self.m.WinPhone, "backup", lambda self, g: None); p.start(); self.addCleanup(p.stop)
+        with self.assertRaises(core.Failure) as e:
+            self.go(w)
+        self.assertEqual(e.exception.code, "cert_revoke_confirm")
+        self.assertIn("「Apple Development: Fake Xcode」", str(e.exception))
+        self.assertEqual(w.calls, [])
+        self.assertEqual(w.cert_calls, [("C:/plumesign.exe", w.team)])
+        self.go(w, acceptCertRevoke=True)
+        self.assertEqual(len(w.calls), 1)
+
     def test_appid_limit_shows_plain_reason_not_plumesign_english(self):
         """Apple 9120（Windows 实机原文：Developer API error 9120 … maximum App ID limit）：上屏是 free_appid_limit 的人话原因与办法，英文原文只进诊断"""
         w = FakeW([("U1", "USB", 3)], fail="free_appid_limit")
@@ -494,8 +532,11 @@ class WinInstall(unittest.TestCase):
             seen["push"] = (udid, bid, Path(pack).name, devpush, full)
             progress(4 << 30, 8 << 30, 4, 8)   # Windows 推送进度回调 → 作业字节计数（#266 / #308）
             return (0, 0)
+        # 玩家 Impactor 里选中的团队（impactor.selected_team，读真机 %APPDATA% 的 Impactor 账号存储）：登录过 Impactor 的 Windows 上能读到，
+        #   装机就会带 --custom-identifier <容器包名>（install_win.sign_install 的设计）。这里按 11-06 那次「没读到团队」的期望测，带包名的另有用例
         with patch.object(W, "plumesign_path", return_value="C:/Impactor/plumesign.exe"), \
              patch.object(W, "mux_devices", return_value=[("U1", "Network", 9), ("U1", "USB", 7)]), \
+             patch.object(W.impactor, "selected_team", lambda *a, **k: None), \
              patch.object(W.subprocess, "run", fake_run), patch.object(W, "push_pack", fake_push):
             res = self.go(W)
         cmd = seen["cmd"]
@@ -526,7 +567,8 @@ class WinInstall(unittest.TestCase):
         login = r["items"][2]
         self.assertEqual((login["ok"], login["action"], login["url"]), (False, "openImpactor", None)); self.assertTrue(r["ready"])
         (d / impactor.PLUMESIGN_EXE).unlink()
-        with patch.object(self.m, "win_install_mod", return_value=w):
+        # 随包不全时会接着找玩家自己装的 Impactor（卸载登记、桌面 / 下载）：真装了 Impactor 的 Windows 上会找到，这里按「没装」测
+        with patch.object(self.m, "win_install_mod", return_value=w), patch.object(impactor, "candidates", lambda: iter(())):
             r = self.m.readiness_windows(self.c, self.gid)
         imp = r["items"][1]
         self.assertFalse(imp["ok"]); self.assertTrue(r["ready"])   # 随包不全就接着认玩家自己装的；认不出也只提示
@@ -631,7 +673,7 @@ class WinPreflight(unittest.TestCase):
     # 环境检查在 Windows 上 = winenv（子进程、作业环境）：清单与 ready 原样转给启动器；winenv 没给 JSON → win_check_failed，不当成就绪
     def setUp(self):
         self.t = Path(tempfile.mkdtemp()); self.addCleanup(lambda: __import__("shutil").rmtree(self.t, ignore_errors=True))
-        self.c = types.SimpleNamespace(r={"resources": str(self.t)}, private=self.t, engine=ROOT, library=self.t / "lib",
+        self.c = jobcase.fake_context(self.t, r={"resources": str(self.t)}, private=self.t, engine=ROOT, library=self.t / "lib",
                                        env=lambda: {"PATH": "x"}, fonts_dir=lambda: self.t / "Fonts")
 
     def run_with(self, stdout):
@@ -730,5 +772,17 @@ class SealedRomfsPrune(unittest.TestCase):
                 pass
             else:
                 self.skipTest("当前令牌不受拒写 ACL 约束（提权管理员），封存复现不了；用普通令牌跑")
+            library._rmtree(Path(d, "work"))
+            self.assertFalse(Path(d, "work").exists())
+
+    def test_rmtree_removes_readonly_attribute_files(self):
+        # 11-16 维护者：只读位（别的来源放进来的只读文件）os.unlink 不认、报 WinError 5；library._rmtree 要去掉只读位后删干净。期望手写：整棵删掉
+        import stat
+        import library
+        with tempfile.TemporaryDirectory() as d:
+            sub = Path(d, "work", "sub"); sub.mkdir(parents=True); (sub / "a.bin").write_bytes(b"a")
+            os.chmod(sub / "a.bin", stat.S_IREAD)
+            with self.assertRaises(PermissionError):
+                os.unlink(sub / "a.bin")
             library._rmtree(Path(d, "work"))
             self.assertFalse(Path(d, "work").exists())

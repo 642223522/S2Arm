@@ -39,7 +39,7 @@
 extern "C" {
 #endif
 
-#define NVN_GPU_CONTRACT_VERSION 8   // 改任何签名或语义 +1；两个后端与核心同批改，t_nvn_backend.c 的签名表同批改
+#define NVN_GPU_CONTRACT_VERSION 11   // 改任何签名或语义 +1；两个后端与核心同批改，t_nvn_backend.c 的签名表同批改
 /* 定稿 #1（调用形式）：链接期直接调用 nvn_gpu_*。每个平台构建只链一个后端，Metal 3 / 4 的选择留在 Metal 后端内部。
    理由：零间接、可内联；同进程 A/B 对照没有真实消费者，不为它新增注册实体（vickwv 同意）。 */
 
@@ -51,6 +51,7 @@ typedef struct nvn_gpu_samp_s *nvn_gpu_samp;     // 采样器
 typedef struct nvn_gpu_shader_s *nvn_gpu_shader; // 一个阶段的着色器代码 + 已核对的布局
 typedef struct nvn_gpu_pipe_s *nvn_gpu_pipe;     // 图形或计算管线
 typedef struct nvn_gpu_cmd_s *nvn_gpu_cmd;       // 一段命令，提交或丢弃即失效
+typedef struct nvn_gpu_pool_table_s *nvn_gpu_pool_table; // 不可变的按池 ID 索引资源快照
 typedef struct nvn_gpu_surface_s *nvn_gpu_surface; // 上屏面（接收平台层已建好的窗口 / WSI）
 
 // ---------- 出错（定稿 A5 / A7） ----------
@@ -108,6 +109,9 @@ enum {
     NVN_GPU_CAP_BLIT_DEPTH_STENCIL = 1u << 20, // 同格式 D24S8/D32FS8、二维单采样、最近点缩放（含全部模板位）
     NVN_GPU_CAP_NO_ATTACH_PASS    = 1u << 21,  // 能开一个附件都不挂的渲染通道（NVN 不挂目标照样绘制：片元只写存储 / 只为遮挡计数）。尺寸由 pass_desc 的 w / h 给；
                                                //   Vulkan 核心 1.0 恒有（零附件子通道 + 带宽高的帧缓冲）；Metal 的 renderTargetWidth / Height 没接，不置位 → 核心照旧跳过并记账
+    NVN_GPU_CAP_REPORT_TIMESTAMP  = 1u << 22,  // 逐报告位置的时间戳：已校准 CLOCK_MONOTONIC ns；首版仅 Vulkan，Metal 明确不置位
+    NVN_GPU_CAP_STORAGE_SRGB_ALIAS = 1u << 23, // 带图像标志的 sRGB 贴图可按同位宽 UNORM 视图当存储图像写（字节原样，不做 sRGB 编码；建图 EXTENDED_USAGE、
+                                               //   其余视图剥掉存储用途）。Vulkan（1.1+）置位；Metal 不置位，核心照旧按「不可写」跳过
 };
 // 绑定资源类别（布局项 cls；描述符上限按它分）
 enum { NVN_GPU_RES_UBO = 0, NVN_GPU_RES_SSBO, NVN_GPU_RES_TEX, NVN_GPU_RES_SAMP, NVN_GPU_RES_TEX_SAMP, NVN_GPU_RES_IMAGE,
@@ -369,6 +373,30 @@ typedef struct {
     uint32_t elem;           // 数组项的元素号
     union { struct { nvn_gpu_buf buf; uint64_t off, len; } b; nvn_gpu_view view; nvn_gpu_samp samp; struct { nvn_gpu_view view; nvn_gpu_samp samp; } ts; uint64_t va; } u;
 } nvn_gpu_binding;
+// 按池 ID 的资源快照：两个表分别存采样贴图和采样器；调用方区分真正空项和已登记但资源未构建。
+// 空项、类型不符和界外项使用调用方提供的同类型零资源；已登记但不可用的资源必须拒绝，不能换 dummy 报成功。
+// 图像类型由 dummy_view 的目标和数值类别确定。所有非空句柄创建时均须存活；创建成功后由快照保活。
+// 描述符表尾额外有一个 dummy（下标 count），着色器须将越界 ID 限到 count；容量检查须包含这个表尾。
+// 快照不可原地更新，换表先创建新快照；bind 后 release 不影响该命令段，资源至少活到段完成或 abort。
+// 默认没有消费者调用此接口，不启用游戏编译能力。设备能力不足、上限不足明确返回 UNSUPPORTED 并写明 why。
+// create / release 线程：[任意]；bind 线程：[提交]，失败记该 cmd 的粘滞错误。布局来源须为 NVN_RB_TEXP / NVN_RB_SAMPP，
+// 布局 count 等于池 count + 1；当前布局 count 为 16 位，超过其可表达上限要具名拒绝。
+enum { NVN_GPU_POOL_IMAGE = 1, NVN_GPU_POOL_SAMPLER = 2 };
+enum { NVN_GPU_POOL_EMPTY = 0, NVN_GPU_POOL_READY = 1, NVN_GPU_POOL_UNAVAILABLE = 2 };
+typedef struct {
+    uint32_t state;
+    union { nvn_gpu_view view; nvn_gpu_samp samp; } resource;
+} nvn_gpu_pool_item;
+typedef struct {
+    uint32_t kind, count;
+    uint32_t sampler_integer; // sampler 表供整数采样：使用整数兼容的采样器；只认 0 或 1
+    const nvn_gpu_pool_item *items;
+    union { nvn_gpu_view view; nvn_gpu_samp samp; } dummy;
+} nvn_gpu_pool_desc;
+nvn_gpu_rc nvn_gpu_pool_create(const nvn_gpu_pool_desc *d, nvn_gpu_pool_table *out, nvn_gpu_err *err);
+nvn_gpu_rc nvn_gpu_pool_bind(nvn_gpu_cmd c, nvn_gpu_stage st, uint32_t ent, nvn_gpu_pool_table table, nvn_gpu_err *err);
+void nvn_gpu_pool_release(nvn_gpu_pool_table table);
+
 // 给某阶段一次给全本笔的绑定（替换整张表；没给到的项按布局给空资源）。表项引用的句柄须活到本 cmd 完成（核心保证）。
 // 线程：[提交]。出错：粘滞 NVN_GPU_E_LAYOUT（ent 越界 / cls 不符）。
 void nvn_gpu_bind(nvn_gpu_cmd c, nvn_gpu_stage st, const nvn_gpu_binding *b, uint32_t n);
@@ -423,6 +451,15 @@ void nvn_gpu_barrier(nvn_gpu_cmd c, uint32_t nvn_barrier_bits);
 void nvn_gpu_occlusion(nvn_gpu_cmd c, int32_t slot);   // 之后的绘制计入 slot，-1 停止。通道内且 pass_desc.occlusion = 1
 void nvn_gpu_label(nvn_gpu_cmd c, const char *text);   // 调试标签压栈，NULL 出栈
 
+// #653：槽归命令段，按需分配、上限 64，不预扫命令流。仅 CAP_REPORT_TIMESTAMP 时调用。
+// 线程：[提交]，通道内外均可；type 仅 NVN TIMESTAMP / TIMESTAMP_TOP（普通=全部命令完成，TOP=管线顶）。
+// 每槽最多编码一次；重复 / slot>=64 / 类型非法为粘滞 ARG，无能力为粘滞 UNSUPPORTED。
+// 核心不为超额报告调用此入口：该报告沿用 guest_tick 并记账，不能让整段失败。
+// abort 不产生结果；查询资源活到 done 返回。无校准、不可用及失败结果不能伪装成主机时间。
+enum { NVN_GPU_TIMESTAMP_SLOTS = 64 };
+void nvn_gpu_timestamp(nvn_gpu_cmd c, uint32_t slot, uint32_t nvn_counter_type);
+typedef struct { uint64_t host_ns; uint8_t valid; } nvn_gpu_timestamp_result; // 0 是合法时间，必须看 valid
+
 // ---------- 提交与完成（定稿 A4 / A6） ----------
 enum {
     NVN_GPU_DONE_OK = 0,      // 已执行完
@@ -436,6 +473,7 @@ typedef struct {
     nvn_gpu_rc rc; const char *why;   // why 只在回调期间有效
     uint32_t time_kind;       // NONE：没有时间；DURATION：只有 gpu_dur_ns 可信；HOST：gpu_t0 / gpu_t1 也可信（主机单调时钟 ns，CAP_GPU_TIME_HOST）
     uint64_t gpu_dur_ns, gpu_t0, gpu_t1;   // 不可信的字段为 0，0 不表示「零耗时」，看 time_kind
+    const nvn_gpu_timestamp_result *timestamps; uint32_t ntimestamps; // 回调期间只读；FAILED 无有效槽，FAULT 仅消费 valid 槽
     const uint64_t *occlusion; uint32_t nocclusion;   // 各槽样本数（只在回调期间有效；FAILED 时为 NULL）
 } nvn_gpu_done;
 typedef void (*nvn_gpu_done_fn)(void *user, const nvn_gpu_done *d);

@@ -22,7 +22,8 @@ class SGradeBadgeTests(unittest.TestCase):
         self.t = Path(tempfile.mkdtemp()); self.c = types.SimpleNamespace(private=self.t, r={})
         self.img = self.t / "img"; self.img.mkdir(); self.kit = self.t / "kit"; self.kit.mkdir()
         self.info = {}
-        for p in (patch.object(layout, "game_info", side_effect=lambda c, g: self.info), patch.object(layout, "ios_kit", return_value=self.kit)):
+        for p in (patch.object(layout, "game_info", side_effect=lambda c, g: self.info), patch.object(layout, "ios_kit", return_value=self.kit),
+                  patch.object(layout, "ios_kit_present", return_value=self.kit)):   # 金色 S 只读已有的程序件（清单里不迁移）
             p.start(); self.addCleanup(p.stop)
 
     def test_badge_only_when_applied(self):

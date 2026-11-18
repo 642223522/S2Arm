@@ -5,6 +5,7 @@
 //   结果写 Documents/memsearch_out.txt：命中数，前 200 个「堆+偏移 = 值」，以及离 S2A_MEMSEARCH_REF（缺省 0x5C27B318，奥德赛 9999 Coins Save 1）最近的几处与差值。
 //   只读常驻页（mincore），读一律经 vm_read_overwrite（页被写跟踪改成不可读也只是读失败，不崩），不在游戏线程上跑。
 #import <Foundation/Foundation.h>
+#include "s2a_docs.h"   // s2a_container_docs：容器文档根（Apple TV 在 Library/Caches/S2Arm）
 #include <mach/mach.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -16,7 +17,7 @@
 void s2a_mem_guest_split(uint64_t *heap_lo, uint64_t *heap_len, uint64_t *alias_lo, uint64_t *alias_len, uint64_t *phys);
 
 static uint32_t *g_hit; static size_t g_nhit, g_chit;
-static NSString *docs(NSString *n) { return [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject stringByAppendingPathComponent:n]; }
+static NSString *docs(NSString *n) { return [({ char _d[1024]; s2a_container_docs(_d, sizeof _d); @(_d); }) stringByAppendingPathComponent:n]; }
 static int rd(uint64_t a, void *out, size_t n) { vm_size_t got = 0; return vm_read_overwrite(mach_task_self(), (vm_address_t)a, n, (vm_address_t)out, &got) == KERN_SUCCESS && got == n; }
 
 static void find(uint64_t lo, uint64_t len, uint32_t v) {

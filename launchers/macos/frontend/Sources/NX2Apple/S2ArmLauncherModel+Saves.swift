@@ -106,8 +106,10 @@ extension S2ArmLauncherModel {
         return r["outputPath"] as? String ?? destination.path
     }
 
-    func saveInspect(_ gameID: String, source: URL, events: EventSink? = nil) async throws -> SavePreviewInfo {
+    /// sync：云存档自动同步调用（没人看提示、不经玩家确认）——版本 / DLC 组合、用户归属对不上时作业层照旧拒绝；玩家手动恢复不带，只提示、照常恢复
+    func saveInspect(_ gameID: String, source: URL, sync: Bool = false, events: EventSink? = nil) async throws -> SavePreviewInfo {
         var extra: [String: Any] = ["path": source.path]
+        if sync { extra["sync"] = true }
         // 本地玩家（#623）：社区存档导进当前玩家的账号存档（pack/jobs/saves.py external_archive）；恢复时带同一个玩家
         if let player = S2ArmLauncherModel.playerRequest() { extra["player"] = player }
         let r = try await saveJob("saveInspect", gameID: gameID, extra: extra, events: events)
@@ -116,9 +118,10 @@ extension S2ArmLauncherModel {
     }
 
     /// 用检查过的备份覆盖当前存档：带回检查时的三个校验值，备份或当前存档变了作业层拒绝（save_changed）。
-    func saveRestore(_ gameID: String, preview: SavePreviewInfo, events: EventSink? = nil) async throws -> SaveRestoreInfo {
+    func saveRestore(_ gameID: String, preview: SavePreviewInfo, sync: Bool = false, events: EventSink? = nil) async throws -> SaveRestoreInfo {
         var extra: [String: Any] = ["path": preview.source.path, "archiveSha256": preview.archiveSha256,
                                     "targetFingerprint": preview.targetFingerprint, "previewLibraryId": preview.previewLibraryId]
+        if sync { extra["sync"] = true }
         if let player = S2ArmLauncherModel.playerRequest() { extra["player"] = player }
         return SaveRestoreInfo(try await saveJob("saveRestore", gameID: gameID, extra: extra, events: events))
     }

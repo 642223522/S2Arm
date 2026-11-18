@@ -338,7 +338,9 @@ final class BootContract {
         String romfs = path(art, "romfs", artifactRel);
         requireFile(content, npdm, "npdm");
         requireFile(content, control, "control");
-        requireDirectory(content, romfs, "romfs");
+        // 镜像形态（make_pack.romfs_image）：artifact 写 romfs.std，是文件；否则是 romfs/ 目录
+        if (romfs.equals("romfs.std")) requireFile(content, romfs, "romfs");
+        else requireDirectory(content, romfs, "romfs");
         if (art.containsKey("systemData")) requireDirectory(content, path(art, "systemData", artifactRel), "systemData");
 
         List<Object> modules = array(art, "modules", artifactRel);

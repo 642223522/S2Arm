@@ -119,6 +119,12 @@ public final class BootSpecTest {
         check(s.timezone(null).equals("UTC") && s.timezone("").equals("UTC") && s.timezone("Local Time").equals("UTC"), "unusable ids -> UTC");
         check(s.language("zh-Hans-CN").equals("zh-Hans-CN") && s.language("en").equals("en"), "BCP 47 kept");
         check(s.language("und").equals("en") && s.language("").equals("en"), "unusable language -> en");
+        // Android 14+ Regional preferences add Unicode extensions to the default locale's tag.
+        check(s.language("zh-Hans-CN-u-fw-mon-mu-celsius").equals("zh-Hans-CN"), "-u- extensions dropped (zh-Hans-CN)");
+        check(s.language("zh-CN-u-mu-celsius").equals("zh-CN"), "-u- extensions dropped (zh-CN)");
+        check(s.language("en-US-u-mu-fahrenhe").equals("en-US"), "-u- extensions dropped (en-US)");
+        check(s.language("ja-JP-u-ca-japanese-x-lvariant-JP").equals("ja-JP"), "-u- and -x- dropped (ja-JP)");
+        check(s.language("x-private").equals("en"), "private-use-only tag -> en");
         check("CN".equals(BootSpec.region("CN")) && BootSpec.region("") == null && BootSpec.region("419") == null, "region");
         check(BootSpec.quote("a\"b\\c\n").equals("\"a\\\"b\\\\c\\u000a\""), "JSON escaping");
 
