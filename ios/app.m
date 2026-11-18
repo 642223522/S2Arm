@@ -435,7 +435,7 @@ void s2a_ios_hide_notice(void) {
 // Leave UIKit and diagnostic export alive instead of throwing across NativeAOT.
 // 直连安全网提示页（host_main.c 起游戏主线程前、本款直连已连续失败满 3 次时调，宿主线程）：同一套提示页样子（notice.m），一句话 + 「导出诊断包」「仍然启动」。
 //   诊断信息（失败记录）进 host.log、随诊断包带走，不上屏（11-02 维护者：内部词不上屏）。阻塞到玩家点「仍然启动」才返回；宿主在主线程上时也一样等（审计 P2-16），见 s2a_ios_wait_ui_signal
-@interface S2ADguardTarget : NSObject { @public dispatch_semaphore_t go; UIView *page; BOOL pending; } @end
+@interface S2ADguardTarget : NSObject { @public dispatch_semaphore_t go; UIView *page; BOOL pending, device; } @end
 @implementation S2ADguardTarget
 @end
 static S2ADguardTarget *g_dguard_target;
@@ -444,7 +444,9 @@ static void dguard_build(S2ADguardTarget *t) {
     __weak S2ADguardTarget *w = t;
     UIButton *diag = s2a_notice_button(S2APICK(S2A_DGUARD_DIAG), NO, ^(UIButton *b) { (void)b; s2a_diag_report(); });
     UIButton *go = s2a_notice_button(S2APICK(S2A_DGUARD_GO), YES, ^(UIButton *b) { (void)b; S2ADguardTarget *x = w; if (!x) return; [x->page removeFromSuperview]; x->page = nil; dispatch_semaphore_signal(x->go); });
-    UIView *page = s2a_notice_page(g_root.bounds, @"exclamationmark.triangle.fill", S2APICK(S2A_DGUARD_TITLE), S2APICK(S2A_DGUARD_MSG), -1, nil, @[diag, go]);
+    UIView *page = t->device   // 上一局已知不是直连（这台设备给不了这款要的内存）：换说明，「仍然启动」照常
+        ? s2a_notice_page(g_root.bounds, @"memorychip", S2APICK(S2A_DGUARD_DEVICE_TITLE), S2APICK(S2A_DGUARD_DEVICE_MSG), -1, nil, @[diag, go])
+        : s2a_notice_page(g_root.bounds, @"exclamationmark.triangle.fill", S2APICK(S2A_DGUARD_TITLE), S2APICK(S2A_DGUARD_MSG), -1, nil, @[diag, go]);
     t->page = page; [g_root addSubview:page]; [g_root bringSubviewToFront:page];
     LOG("直连安全网：提示页已显示");
 }
@@ -453,8 +455,8 @@ static void dguard_show_pending(void) {
     S2ADguardTarget *t = g_dguard_target;
     if (t && t->pending && g_root) { t->pending = NO; dguard_build(t); }
 }
-void s2a_ios_dguard_prompt(const char *diag) {
-    S2ADguardTarget *t = [S2ADguardTarget new]; t->go = dispatch_semaphore_create(0); g_dguard_target = t;
+void s2a_ios_dguard_prompt(const char *diag, int device) {   // device = 1：上一局已知不是直连（diag 是原因），说这台设备内存不够
+    S2ADguardTarget *t = [S2ADguardTarget new]; t->go = dispatch_semaphore_create(0); t->device = device != 0; g_dguard_target = t;
     LOG("直连安全网：诊断信息（随诊断包带走，不上屏）\n%s", diag);
     // 窗口还没建：记下，建好窗口时补画（dguard_show_pending），调用方照旧等玩家选；不放行（审计 P2-5：原先直接照常起局，玩家不知道在强行再试直连）
     void (^show)(void) = ^{ if (g_root) dguard_build(t); else { t->pending = YES; LOG("直连安全网：窗口还没建，建好窗口再画提示页"); } };
