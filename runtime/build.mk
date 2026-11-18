@@ -260,8 +260,9 @@ $(BUILD)/tests/t_nvn_%: CFLAGS += -I$(abspath $(NVN_TEST_DIR)/nvn/gen)
 # NVN 单测不链原生层 / 渲染器：libnvn 里弱引用的宿主符号在链接行一律放行（新单测照用这个变量，别逐行抄标志——10-25 t_nvn_a / t_nvn_event 两次漏 _s2a_autoplay_on 链接失败）
 # Switch 2 视频解码接管（graphics/nvn/gfx/nvn/nvn2_codec.c，在 libnvn.a 里）用 VideoToolbox / CoreMedia / CoreVideo：系统框架，NVN 单测链 libnvn.a 时一起带上（同 graphics/build.mk HOST_LIBS）
 # 链宿主目标文件（NVN_TEST_HOST_OBJS）必带的系统框架：手机端自签（runtime/src/selfsign.c）要 Security 与 CoreFoundation（宿主本体的 HOST_LIBS 经 Foundation 转出 CoreFoundation，
-#   不带 Foundation 的单测也要链）。没带上时这些单测全部链接失败（_SecPKCS12Import / _CFArrayGetCount 等未定义）。宿主对象再加系统依赖就加在这里
-NVN_TEST_HOST_LIBS := -framework Security -framework CoreFoundation
+#   不带 Foundation 的单测也要链）；快照存档（runtime/src/snapshot.c）压缩内存块要 libcompression。没带上时这些单测全部链接失败
+#   （_SecPKCS12Import / _CFArrayGetCount / _compression_encode_buffer 等未定义）。宿主对象再加系统依赖就加在这里
+NVN_TEST_HOST_LIBS := -framework Security -framework CoreFoundation -lcompression
 NVN_TEST_WEAK := $(call S2A_WEAK_U,nvntest) -framework VideoToolbox -framework CoreMedia -framework CoreVideo $(NVN_TEST_HOST_LIBS)
 $(NVN_TEST_DIR)/host/%.o: % runtime/src/native.h $(wildcard runtime/include/*.h) platform/plat.h platform/plat_asm.h graphics/track/s2a_track.h $(BUILD)/.host_cfg
 	@mkdir -p $(dir $@)
