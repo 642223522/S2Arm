@@ -115,9 +115,9 @@ void rp_exec_dump_ops(char *b, size_t n);   // 逐命令类型耗时前几名（
 void rp_sync_lag_present(void);   // 上屏之后调：给「每帧只放行一次同步等待」补一次额度（开关 nvk_sync_lag=3）
 void rp_bind_tm_take(uint64_t *tot, uint64_t *backend, uint64_t *n);   // 绑定重建：总时间 / 其中交后端 / 次数（纳秒，取即清零）
 void rp_bind_tm_take2(uint64_t *drv, uint64_t *buf, uint64_t *rest);
-void rp_bind_tm_take3(uint64_t *alloc, uint64_t *copy);
+void rp_bind_tm_take3(uint64_t *alloc, uint64_t *copy);   // 暂存：申请 / 内容拷贝  // 其中：驱动段 / 常量缓冲与支持块 / 其它
 // 回放线程要在 CPU 上改游戏内存 [addr, addr+len) 之前调：还没填完、来源与它相交的常量缓冲暂存先等填完（rp_draw.c，见 nvn_gpu_arena_fill）
-void rp_ub_fill_fence(uint64_t addr, uint64_t len);   // 暂存：申请 / 内容拷贝  // 其中：驱动段 / 常量缓冲与支持块 / 其它
+void rp_ub_fill_fence(uint64_t addr, uint64_t len);
 uint64_t rp_sub_fence(void);        // 正在回放的这次提交最后一段的栅栏值
 uint64_t rp_fx_report_types(void);  // 诊断读数：上次调用以来计数器报告用到的类型（位图，取完清零）
 int rp_res_new_sizes_take(void);     // 诊断读数：上次调用以来新建贴图的宽高有几种（最多数到 64，取完清零）
