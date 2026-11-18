@@ -10322,5 +10322,9 @@
  {
   "source": "杀毒软件",
   "en": "Antivirus software"
+ },
+ {
+  "source": "这次签好的 S2Arm 没带「提高内存上限」权限：装上后能玩，但大游戏可能内存不够、开局中止。",
+  "en": "The S2Arm signed this time is missing the \"Increased Memory Limit\" entitlement: it installs and runs, but large games may run out of memory and stop at launch."
  }
 ]

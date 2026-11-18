@@ -85,6 +85,37 @@ def bundle_id_of(ipa):
         return plistlib.loads(z.read(n))['CFBundleIdentifier']
 
 
+IML_KEY = 'com.apple.developer.kernel.increased-memory-limit'
+
+
+def iml_facts(ipa):
+    """签好的 ipa 里主 App 的描述文件（embedded.mobileprovision）：带不带「提高内存上限」、描述文件名、应用号 → dict；读不到 → None。
+    plumesign 签主 App 用的权限就是描述文件里的那份（v2.7.2 signer.rs sign_single_bundle：merge_entitlements 只补钥匙串组），
+    描述文件里没有 = 装上就丢（宿主首启复核【红】[IML]，诊断 #7c32b3 等一族 4 份，丢在哪一步原先看不到）"""
+    try:
+        with zipfile.ZipFile(ipa) as z:
+            n = next((x for x in z.namelist() if re.fullmatch(r'Payload/[^/]+\.app/embedded\.mobileprovision', x)), None)
+            if not n:
+                return None
+            raw = z.read(n)
+        a, b = raw.find(b'<?xml'), raw.rfind(b'</plist>')
+        prof = plistlib.loads(raw[a:b + 8]) if a >= 0 and b > a else {}
+    except (OSError, zipfile.BadZipFile, plistlib.InvalidFileException, ValueError):
+        return None
+    ent = prof.get('Entitlements') or {}
+    return dict(iml=bool(ent.get(IML_KEY)), name=str(prof.get('Name') or ''), app_id=str(ent.get('application-identifier') or ''),
+                team=str((prof.get('TeamIdentifier') or [''])[0]))
+
+
+def iml_line(ipa):
+    """装机日志 / 进度里的一行：签出的 S2Arm 带不带「提高内存上限」。丢了的那行以「【IML 丢了】」开头（作业层据此记诊断、黄字提示玩家）"""
+    f = iml_facts(ipa)
+    if f is None:
+        return '【IML】读不到签好的包里的描述文件，没核「提高内存上限」'  # 非玩家句
+    where = f'描述文件「{f["name"]}」、应用号 {f["app_id"]}、团队 {f["team"]}'  # 非玩家句
+    return f'【IML】签好的 S2Arm 带「提高内存上限」（{where}）' if f['iml'] else f'【IML 丢了】签好的 S2Arm 描述文件里没有「提高内存上限」（{where}）'  # 非玩家句
+
+
 def legacy_case_bundle(bundle):
     """容器包名的旧写法：0.2.1 及以前 Windows 由 plumesign 自己在包名后接「.大写团队号」（io.s2arm.games.<大写团队号>），0.2.2 起和 Mac 统一小写。
     苹果的包名不分大小写，这个 Apple ID 早先注册过大写那个时，新写法去注册会被拒（9401），plumesign 查已有 App ID 却分大小写、认不出旧的。
@@ -393,6 +424,12 @@ def install_app(a, say=lambda m: print(m, flush=True)):
             finally:
                 Path(log).write_text(first + f'\n--- 9401：改用 {legacy} 重试 ---\n' + Path(log).read_text(encoding='utf-8', errors='replace'), encoding='utf-8')
         bid = bundle_id_of(out) if out.is_file() else None
+        if out.is_file():
+            line = iml_line(out)   # 核对结果一律进装机日志；丢了才交给调用方（作业层记黄字诊断，不当进度显示）
+            with open(log, 'a', encoding='utf-8') as f:
+                f.write('\n' + line + '\n')
+            if line.startswith('【IML 丢了】'):
+                say(line)
     if not bid: raise Fail('装好了但读不到签好的 ipa 里的包名，推不了资源包', 1, 'device_install_failed')
     return bid
 
