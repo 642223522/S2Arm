@@ -8500,6 +8500,10 @@
   "en": "Invalid Switch 2 Pro native channel setting."
  },
  {
+  "source": "Xbox GIP 本机通道设置无效。",
+  "en": "Invalid Xbox GIP native channel setting."
+ },
+ {
   "source": "这款游戏的运行包认不得自定义键位，这次先用默认键位；重新打包这款后自定义键位就会生效。",
   "en": "This game's runtime package doesn't support custom key bindings, so the default bindings are used this time. Build this game again and your custom bindings will apply."
  },

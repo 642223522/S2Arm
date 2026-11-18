@@ -3277,6 +3277,7 @@
   "游戏语言代码无效。": "Code de langue du jeu invalide.",
   "Switch 2 Pro 自动连接设置无效。": "Réglage de connexion automatique Switch 2 Pro invalide.",
   "Switch 2 Pro 本机通道设置无效。": "Réglage de canal natif Switch 2 Pro invalide.",
+  "Xbox GIP 本机通道设置无效。": "Réglage de canal natif Xbox GIP invalide.",
   "这款游戏的运行包认不得自定义键位，这次先用默认键位；重新打包这款后自定义键位就会生效。": "Le paquet d'exécution de ce jeu ne prend pas en charge les attributions de touches personnalisées, les attributions par défaut sont donc utilisées cette fois. Recompilez ce jeu et vos attributions personnalisées s'appliqueront.",
   "游戏运行中意外退出了（退出码 {0}）。": "Le jeu s'est arrêté de manière inattendue (code de sortie {0}).",
   "本局映射快照清理失败，请检查应用数据目录权限。": "Impossible de nettoyer l'instantané de mappage de cette session. Vérifiez les permissions du dossier de données de l'app.",

@@ -3,6 +3,7 @@
 import AppKit
 import Foundation
 import Combine
+import LauncherPadBridge
 import NXModel
 import S2ArmAppleAdapter
 import SaveSync
@@ -393,6 +394,8 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     let provider: S2ArmEngineProvider
     let controller: NS2LauncherController
+    let xboxGipSocketURL: URL
+    private var xboxGipRelayStarted = false
     private var running: RunningGame?
     /// iCloud 存档同步进行中（开局前 / 退出后）：不重复开局
     @Published var cloudSyncing = false
@@ -414,6 +417,10 @@ public final class S2ArmLauncherModel: ObservableObject {
         provider = S2ArmEngineProvider(client: client)
         controller = NS2LauncherController(
             socketURL: provider.client.environment.privateRoot.appendingPathComponent("ns2-relay.sock"), watchGame: true)   // 游戏的手柄设置画面交给面板分配玩家（#520 E）
+        let preferredXboxSocket = provider.client.environment.privateRoot.appendingPathComponent("xbox-gip-relay.sock")
+        xboxGipSocketURL = preferredXboxSocket.path.utf8.count < 100
+            ? preferredXboxSocket
+            : URL(fileURLWithPath: "/tmp/s2arm-xbox-gip-\(getuid()).sock")
         exportChoice = provider.settings.exportTargets
         // 启动首帧即先载入上次列表快照，避免先闪出加载占位页再切换成首页卡片排
         if let known = provider.library.lastKnownGames(), !known.isEmpty {
@@ -1314,6 +1321,7 @@ public final class S2ArmLauncherModel: ObservableObject {
             "switch2ProAutoConnect": relaySocket == nil ? "0" : "1",   // 有通道就让游戏自己接（还没连上时游戏会重试）
         ]
         if let relaySocket { controllerArguments["switch2ProRelaySocket"] = relaySocket }
+        if xboxGipRelayStarted { controllerArguments["xboxGipRelaySocket"] = xboxGipSocketURL.path }
         // 本地玩家（#623）：顶栏选的玩家随 launch 请求给作业层（pack/jobs/build.py runtime_env → 服务层 S2A_PLAYER_USER / 这个玩家的 SaveData）；没建过玩家不带（旧行为）
         if let player = Self.launchPlayer() {
             controllerArguments["playerUser"] = player.serviceUser
@@ -1333,7 +1341,16 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
     }
 
-    func startControllerConnection() { controller.startIfEnabled() }
+    func startControllerConnection() {
+        controller.startIfEnabled()
+        let env = ProcessInfo.processInfo.environment
+        guard !xboxGipRelayStarted,
+              env["XCTestConfigurationFilePath"] == nil,
+              env["S2ARM_CONTROL"] != "1" else { return }
+        if s2a_xbox_gip_relay_start(xboxGipSocketURL.path, nil, nil) == 0 {
+            xboxGipRelayStarted = true
+        }
+    }
 
     // ---- 本地玩家（#623，规则在共享包 SaveSync LocalPlayers，同 iPhone / iPad）----
 
@@ -1349,7 +1366,13 @@ public final class S2ArmLauncherModel: ObservableObject {
     static func playerRequest(_ defaults: UserDefaults = .standard) -> [String: String]? {
         launchPlayer(defaults).map { ["user": $0.serviceUser, "name": $0.name, "folder": $0.folder] }
     }
-    func shutdownControllerConnection() { controller.shutdown() }
+    func shutdownControllerConnection() {
+        controller.shutdown()
+        if xboxGipRelayStarted {
+            s2a_xbox_gip_relay_stop()
+            xboxGipRelayStarted = false
+        }
+    }
 
     // ---- 放密钥 / 删除 / 诊断（本机控制口用；参数与作业同旧启动器）----
 

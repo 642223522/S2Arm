@@ -36,3 +36,10 @@ int s2a_launcher_pad_decode(const void *bytes, size_t length, s2a_launcher_pad_s
 int s2a_launcher_face_valid(int map);
 int s2a_launcher_face_source(int map, int target);
 uint64_t s2a_launcher_face_apply(uint64_t buttons, int map);
+
+// 启动器常驻独占 Xbox 有线手柄（USB GIP）并通过本机 Unix 域套接字转发给 s2arm-host。
+typedef void (*s2a_xbox_gip_status_cb)(const char *name, int connected, const char *blocked_by, void *ctx);
+int s2a_xbox_gip_relay_start(const char *socket_path, s2a_xbox_gip_status_cb cb, void *ctx);
+int s2a_xbox_gip_relay_start_ex(const char *socket_path, int enable_usb, s2a_xbox_gip_status_cb cb, void *ctx);
+int s2a_xbox_gip_relay_publish_for_test(const void *raw, size_t len);
+void s2a_xbox_gip_relay_stop(void);
