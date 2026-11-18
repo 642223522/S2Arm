@@ -2442,7 +2442,7 @@ def _keep_stage_logs(c, gid):
     dest = c.logs / (c.task + "-stages")
     count = 0
     for root in roots:
-        for log in sorted(root.glob("*.log")):
+        for log in sorted(p for p in root.glob("*.log") if not layout.os_junk(p.name)):
             if count >= 64 or not log.is_file() or log.stat().st_size > 8 << 20:
                 continue
             dest.mkdir(parents=True, exist_ok=True)

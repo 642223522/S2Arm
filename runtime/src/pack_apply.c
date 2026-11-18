@@ -489,7 +489,7 @@ int s2a_pack_apply(const char *docs) {
     if (!rc) { int r = img_unzst(root, inc, logp, &ntar, &nb); if (r) { rc = r; snprintf(what, sizeof what, "解压缩传输的 game.img 块"); } }   // 解开的块计进「解开 N 个包」
     // 待解包只由推送端（tools/push_pack.py）写进 .incoming：不再跳过访达拷来的 `._` 附属文件、不设个数上限（iOS 装机剃刀 #20，随 #28）
     DIR *d = rc ? NULL : opendir(inc); char **names = NULL; int nn = 0, cap = 0;
-    if (d) { struct dirent *e; while ((e = readdir(d))) { size_t l = strlen(e->d_name); if (l > 4 && !strcmp(e->d_name + l - 4, ".tar")) {
+    if (d) { struct dirent *e; while ((e = readdir(d))) { size_t l = strlen(e->d_name); if (l > 4 && !strcmp(e->d_name + l - 4, ".tar") && strncmp(e->d_name, "._", 2)) {
         if (nn == cap) { char **grown = realloc(names, (size_t)(cap = cap ? cap * 2 : 64) * sizeof *names); if (!grown) break; names = grown; }
         names[nn++] = strdup(e->d_name); } } closedir(d); }
     if (nn) qsort(names, (size_t)nn, sizeof *names, name_cmp);
@@ -594,7 +594,7 @@ int s2a_import_state(const char *docs) {
     if (applied_ready(root)) return S2A_IMPORT_READY;
     if (partial_ready(root)) return S2A_IMPORT_PARTIAL;
     char inc[2100]; snprintf(inc, sizeof inc, "%s/.incoming", root); int ntar = 0;
-    DIR *d = opendir(inc); if (d) { struct dirent *e; while ((e = readdir(d))) if (ends_with(e->d_name, ".tar")) ntar++; closedir(d); }
+    DIR *d = opendir(inc); if (d) { struct dirent *e; while ((e = readdir(d))) if (ends_with(e->d_name, ".tar") && strncmp(e->d_name, "._", 2)) ntar++; closedir(d); }
     if (ntar || has_zchunks(inc)) return S2A_IMPORT_PENDING;   // 压缩传输的 game.img 块（img_unzst）同待解包
     char mf[2100]; snprintf(mf, sizeof mf, "%s/manifest.json", root);
     if (stat(mf, &st)) return S2A_IMPORT_NONE;
@@ -666,7 +666,7 @@ int s2a_pack_migrate_one(const char *docs) {
         //   否则旧位置是重复 / 删到一半的残留：新位置已就绪 → 删旧的；新位置没就绪 → 两处都不动、下次再判（不丢任何一份）
         char inc[2300], omf[2300], nap[2300], osha[200] = "", nsha[200] = ""; snprintf(inc, sizeof inc, "%s/.incoming", old);
         snprintf(omf, sizeof omf, "%s/manifest.json", old); snprintf(nap, sizeof nap, "%s/.applied", neu);
-        int pending = 0; DIR *d = opendir(inc); if (d) { struct dirent *e; while (!pending && (e = readdir(d))) if (ends_with(e->d_name, ".tar")) { char tp[2600]; snprintf(tp, sizeof tp, "%s/%s", inc, e->d_name); pending = tar_has_entry(tp); } closedir(d); }
+        int pending = 0; DIR *d = opendir(inc); if (d) { struct dirent *e; while (!pending && (e = readdir(d))) if (ends_with(e->d_name, ".tar") && strncmp(e->d_name, "._", 2)) { char tp[2600]; snprintf(tp, sizeof tp, "%s/%s", inc, e->d_name); pending = tar_has_entry(tp); } closedir(d); }
         FILE *f = fopen(nap, "r"); if (f) { size_t k = fread(nsha, 1, sizeof nsha - 1, f); fclose(f); nsha[k] = 0; nsha[strcspn(nsha, "\r\n")] = 0; }
         int differs = !manifest_sha(omf, osha, sizeof osha) && strcmp(osha, nsha);
         if (pending || differs) {
@@ -1180,7 +1180,7 @@ int s2a_import_transferring(const char *root, char *why, size_t n) {
     if (!idx || stat(p, &st)) { snprintf(why, n, "%s还没到", idx ? "manifest.json" : "index.tsv"); return 1; }
     if (manifest_sha(p, sha, sizeof sha)) { snprintf(why, n, "manifest.json 还没写完（读不出 index_sha256）"); return 1; }
     snprintf(p, sizeof p, "%s/.incoming", root); DIR *d = opendir(p); int busy = 0;
-    if (d) { struct dirent *e; while (!busy && (e = readdir(d))) { if (!ends_with(e->d_name, ".tar")) continue;
+    if (d) { struct dirent *e; while (!busy && (e = readdir(d))) { if (!ends_with(e->d_name, ".tar") || !strncmp(e->d_name, "._", 2)) continue;
         char t[2400]; snprintf(t, sizeof t, "%s/%s", p, e->d_name); if (!tar_done(t)) { busy = 1; snprintf(why, n, "%s 还没写完", e->d_name); } } closedir(d); }
     return busy;
 }

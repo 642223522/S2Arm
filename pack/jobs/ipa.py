@@ -865,7 +865,7 @@ def drop_from_ipa(c, ipa, gid):
     log = c.logs / (c.task + "-container.log")
     r = subprocess.run(["/usr/bin/ditto", "-x", "-k", str(ipa), str(tmp / "x")] if os.name != "nt" else
                        [os.sys.executable, "-c", "import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])", str(ipa), str(tmp / "x")], capture_output=True, text=True)
-    base = next((tmp / "x" / "Payload").glob("*.app"), None)
+    base = next((p for p in (tmp / "x" / "Payload").glob("*.app") if p.is_dir()), None)
     if r.returncode or base is None:
         shutil.rmtree(tmp, ignore_errors=True)
         raise Failure("手机上的 S2Arm 在游戏库里的那份读不了：先给手机上的游戏各「打 iPhone 包」一次，再删。", code="container_stale")
