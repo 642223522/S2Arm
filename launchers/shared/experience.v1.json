@@ -1105,7 +1105,7 @@
       {"id": "busy.game", "zh-Hans": "《{0}》", "en": "“{0}”"},
       {"id": "busy.export", "zh-Hans": "出包", "en": "Packaging"},
       {"id": "busy.install", "zh-Hans": "装到 iPhone", "en": "Installing to iPhone"},
-      {"id": "install.third_party", "zh-Hans": "签名使用附带的 Impactor v2.7.2 原版（MIT，github.com/claration/impactor），Apple ID 密码仅在该工具中输入并发送给 Apple", "en": "Signing uses the bundled, unmodified Impactor v2.7.2 (MIT, github.com/claration/impactor), which sends your Apple ID password only to Apple"},
+      {"id": "install.third_party", "zh-Hans": "签名使用附带的 Impactor v2.7.3 原版（MIT，github.com/claration/impactor），Apple ID 密码仅在该工具中输入并发送给 Apple", "en": "Signing uses the bundled, unmodified Impactor v2.7.3 (MIT, github.com/claration/impactor), which sends your Apple ID password only to Apple"},
       {"id": "install.checking", "zh-Hans": "正在检查装机条件…", "en": "Checking install requirements…"},
       {"id": "install.no_report", "zh-Hans": "这次没查到手机状态，可以直接开始装，出问题会告诉你原因", "en": "Phone status is unavailable, but you can start installing and see any problem as it occurs"},
       {"id": "install.device", "zh-Hans": "设备", "en": "Device"},
