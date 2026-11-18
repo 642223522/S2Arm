@@ -119,7 +119,11 @@ def pick(c, want=""):
         return tvs[0]
     if not tvs:
         raise Failure(S_NO_TV, code="device_not_connected")
-    raise Failure(S_MANY_TV.replace("{0}", "、".join("「" + (tv_name(d) or KIND) + "」" for d in tvs)), code="device_required")
+    from diag import reachable
+    online = [d for d in tvs if reachable(d)]
+    if len(online) == 1:   # 两台已配对、只有一台在线：直接用在线的那台，别让玩家先在一台关机的电视和一台开机的电视里选
+        return online[0]
+    raise Failure(S_MANY_TV.replace("{0}", "、".join("「" + (tv_name(d) or KIND) + "」" for d in (online or tvs))), code="device_required")
 
 
 def devices_job(c):
