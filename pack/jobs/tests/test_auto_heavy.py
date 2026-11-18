@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 S2Arm contributors
-"""打开启动器时自动起的后台重活（main.AUTO_HEAVY：installUpdatePrepare、sgradeMac；#1439 / #1442 / #1443）。期望按规则手写：
+"""打开启动器时自动起的后台重活（main.AUTO_HEAVY：installUpdatePrepare；sgradeMac 11-17 起不自动、不算；#1439 / #1442 / #1443）。期望按规则手写：
 ① 跑的时候拿着游戏库的 auto-heavy 锁，别的作业不拿；② 锁被另一项自动任务占着时排队，对方放了才开始（串行）；
 ③ 只有这两项降优先级；④ 降优先级是真的：本进程 nice 19，之后起的子进程也是 19"""
 import subprocess
@@ -44,18 +44,18 @@ class AutoHeavyTests(JobCase):
             return {}
         for op in ("installUpdatePrepare", "sgradeMac", "ipa", "catalog"):
             self.assertEqual(self.run_op(op, probe), 0)
-        self.assertEqual(seen, [("installUpdatePrepare", True), ("sgradeMac", True), ("ipa", False), ("catalog", False)])
+        self.assertEqual(seen, [("installUpdatePrepare", True), ("sgradeMac", False), ("ipa", False), ("catalog", False)])   # sgradeMac 11-17 起玩家点了才做，不拿自动任务锁
         self.assertFalse(self.held_by_other())   # 跑完放开
 
     def test_second_auto_task_waits_for_the_first(self):
-        # 另一项自动任务（线程里模拟）拿着锁 1.5 秒；这边的 sgradeMac 要等它放了才开始
+        # 另一项自动任务（线程里模拟）拿着锁 1.5 秒；这边的第二个自动任务要等它放了才开始
         released, started = [], []
         ready = threading.Event()
         def other():
             with filelock.held(self.lock_path(), holder={"taskId": "first", "operation": "installUpdatePrepare"}):
                 ready.set(); time.sleep(1.5); released.append(time.monotonic())
         t = threading.Thread(target=other); t.start(); ready.wait(5)
-        self.assertEqual(self.run_op("sgradeMac", lambda c: started.append(time.monotonic()) or {}), 0)
+        self.assertEqual(self.run_op("installUpdatePrepare", lambda c: started.append(time.monotonic()) or {}), 0)
         t.join()
         self.assertEqual(len(started), 1)
         self.assertGreaterEqual(started[0], released[0])
@@ -68,7 +68,7 @@ class AutoHeavyTests(JobCase):
             with patch("library.store_meta_background"), patch("embedded.install"), patch("layout.heal_folder_names"), \
                     patch.object(main, "background_priority", lambda op=op: calls.append(op)):
                 main.run_request(path, operation_overrides={op: lambda c: {}})
-        self.assertEqual(calls, ["installUpdatePrepare", "sgradeMac"])
+        self.assertEqual(calls, ["installUpdatePrepare"])
 
     @unittest.skipUnless(hasattr(__import__("os"), "nice"), "没有 nice（Windows）")
     def test_background_priority_is_inherited_by_children(self):

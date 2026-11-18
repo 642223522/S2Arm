@@ -451,12 +451,16 @@ static int host_run(int argc, char **argv) {
     //   首帧后前台满 60 秒清零（ap_host.c 上屏 / app.m 前后台）。放在起游戏主线程之前：此前的崩溃都发生在游戏线程起来之后
     if (s2a_gfx_mode() == S2A_GFX_DIRECT) { uint64_t s2a_npdm_program_id(void); const char *s2a_ios_host_commit(void);   // diag.m：Info.plist S2ACommit
         int fails = s2a_dguard_begin(s2a_npdm_program_id(), s2a_dguard_pack_fp(getenv("S2A_GAME_DATA")), s2a_ios_host_commit());
-        if (fails >= S2A_DGUARD_LIMIT) {
+        char known[48];
+        if (s2a_dguard_known_last(known, sizeof known)) {   // 上一局已知不是直连（游戏要的地址超出这台设备给的窗口等）：说设备内存不够，不叫更新重出包；不拦
+            LOG("直连安全网：上一局失败已知不是直连（%s），起局前说明这台设备内存不够", known);
+            if (!s2a_unattended()) { void s2a_ios_dguard_prompt(const char *diag, int device); s2a_ios_dguard_prompt(known, 1); LOG("直连安全网：玩家选了仍然启动"); }
+        } else if (fails >= S2A_DGUARD_LIMIT) {
             static char diag[2048]; s2a_dguard_diag(diag, sizeof diag, s2a_main_build_id(), DMSH_CHAIN);
             LOG("【红】直连安全网：本款直连已连续失败 %d 次，起局前提示玩家更新后重新出包；诊断：\n%s", fails, diag);
             // 自动化 / 开发工具起的局（s2a_unattended.h）不停在提示页：记录留着（出包指纹或宿主提交号变了才从 0 数），本局收掉
             if (s2a_unattended()) failed_session(S2A_INIT_FAIL_E_DGUARD_LIMIT);
-            void s2a_ios_dguard_prompt(const char *diag); s2a_ios_dguard_prompt(diag);   // 玩家点「仍然启动」才返回
+            void s2a_ios_dguard_prompt(const char *diag, int device); s2a_ios_dguard_prompt(diag, 0);   // 玩家点「仍然启动」才返回
             LOG("直连安全网：玩家选了仍然启动");
         }
         s2a_dguard_arm(now_ns());
@@ -491,7 +495,7 @@ const char *s2a_host_pre_ui_checks(void) {
       if (!(e && *e == '1')) imp = s2a_import_needs_ui(); }
     int saves = manage_saves && manage_saves();
     // 直连安全网（dguard.c）：记录里已连续失败满 3 次，起局前要弹提示页、等玩家选
-    if (!imp && s2a_dguard_needs_ui()) { imp = 2; LOG("直连安全网：此前连续失败已满 %d 次，起局前提示", S2A_DGUARD_LIMIT); }
+    if (!imp && s2a_dguard_needs_ui()) { imp = 2; LOG("直连安全网：此前连续失败已满 %d 次或上一局已知不是直连，起局前提示", S2A_DGUARD_LIMIT); }
     // 加载页进度模型（loadprog.c）：本包没完整预热过 = 首次（完整加载页），否则简短启动画面
     { const char *gd = getenv("S2A_GAME_DATA"); if (!gd || !*gd) gd = s2a_launch_ctx_get()->game_data;
       s2a_load_begin(now_ns(), s2a_load_first_run(s2a_dguard_pack_fp(gd))); }

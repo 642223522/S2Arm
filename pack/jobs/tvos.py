@@ -119,7 +119,11 @@ def pick(c, want=""):
         return tvs[0]
     if not tvs:
         raise Failure(S_NO_TV, code="device_not_connected")
-    raise Failure(S_MANY_TV.replace("{0}", "、".join("「" + (tv_name(d) or KIND) + "」" for d in tvs)), code="device_required")
+    from diag import reachable
+    online = [d for d in tvs if reachable(d)]
+    if len(online) == 1:   # 两台已配对、只有一台在线：直接用在线的那台，别让玩家先在一台关机的电视和一台开机的电视里选
+        return online[0]
+    raise Failure(S_MANY_TV.replace("{0}", "、".join("「" + (tv_name(d) or KIND) + "」" for d in (online or tvs))), code="device_required")
 
 
 def devices_job(c):
@@ -490,7 +494,7 @@ def verify(c, dev_id, bid, gid, pack):
         raise Failure("核对不了 Apple TV 上的资源包（列不出电视上的文件）：" + (err.splitlines()[-1] if err else f"devicectl 退出 {rc}"), code="resource_transfer_failed")  # 非玩家句
     there = {(f.get("relativePath") or f.get("path")): (f.get("metadata") or {}).get("size")
              for f in ((data.get("result") or {}).get("files") or []) if isinstance(f, dict) and not (f.get("resources") or {}).get("isDirectory")}
-    want = ["index.tsv", "manifest.json"] + sorted(p.relative_to(pack).as_posix() for p in pack.rglob("*") if p.is_file() and IMG.search(p.relative_to(pack).as_posix()))
+    want = ["index.tsv", "manifest.json"] + sorted(p.relative_to(pack).as_posix() for p in pack.rglob("*") if p.is_file() and not layout.os_junk(p.name) and IMG.search(p.relative_to(pack).as_posix()))
     for rel in want:
         local = pack / rel
         if not local.is_file():

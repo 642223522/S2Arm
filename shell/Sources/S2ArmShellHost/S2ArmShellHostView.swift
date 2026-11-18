@@ -159,6 +159,15 @@ import UIKit
 
 @MainActor private var g_refreshModel: S2ArmShellHostModel?   // 刷新回调指向的模型（见 s2a_shell_library_vc）
 
+/// 游戏库页的根控制器：关掉 iPhone Duo 的竖栏。系统缺省给竖向状态栏留一整列（iOS 27.1 preferredVerticalBarBehavior = automatic，
+/// 外屏竖着安全区右 84 / 下 34），库页右侧和底部就空成黑边；关掉后状态栏回到顶部横放，整屏归库页。没有竖栏的机型系统不问这个属性
+final class LibraryHostingController<Content: View>: UIHostingController<Content> {
+    #if compiler(>=6.4) && os(iOS)
+    @available(iOS 27.1, *)
+    override var preferredVerticalBarBehavior: UIVerticalBarBehavior { .disabled }
+    #endif
+}
+
 /// app.m 用的 C 入口（声明在 S2ArmShellBridge/include/s2a_shell.h）：返回 +1 的 UIHostingController。
 /// 只在主线程调（头文件约定）；@MainActor 让 Swift 侧按主线程隔离编译。
 @MainActor @_cdecl("s2a_shell_library_vc")
@@ -173,7 +182,7 @@ public func s2a_shell_library_vc(_ cataloguePath: UnsafePointer<CChar>?) -> Unsa
         guard let ctx else { return }
         MainActor.assumeIsolated { Unmanaged<S2ArmShellHostModel>.fromOpaque(ctx).takeUnretainedValue().refreshGameData() }
     }, Unmanaged.passUnretained(model).toOpaque())
-    let vc = UIHostingController(rootView: S2ArmShellHostView(model: model))
+    let vc = LibraryHostingController(rootView: S2ArmShellHostView(model: model))
     return Unmanaged.passRetained(vc as UIViewController).toOpaque()
 }
 #endif

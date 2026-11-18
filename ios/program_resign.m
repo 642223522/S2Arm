@@ -41,7 +41,16 @@ static NSString *str(id v) { return [v isKindOfClass:NSString.class] && [v lengt
 
 // 1 = 重签了（module_dir / images 改指新版本目录，各 n 字节）；0 = 不用签（没有手机身份、签名身份已是现在这张、电脑按同团队签好的）；
 // -1 = 要签但没签成（why 写原因，调用方照旧用原程序库）
+// force：不看「签名身份是不是已是现在这张 / 同团队」，只要手机上有身份就重签（注册签名失败时用：证书相同、但签名格式老，
+//   如 Windows plumesign 签的小 IPA 程序库，系统照样不认；11-17 Windows 付费团队真机 errno=1）
+static int program_resign(const char *home, const char *game_data, const char *gid, char *module_dir, char *images, size_t n, char *why, size_t why_n, int force);
 int s2a_program_resign_if_needed(const char *home, const char *game_data, const char *gid, char *module_dir, char *images, size_t n, char *why, size_t why_n) {
+    return program_resign(home, game_data, gid, module_dir, images, n, why, why_n, 0);
+}
+int s2a_program_resign_force(const char *home, const char *game_data, const char *gid, char *module_dir, char *images, size_t n, char *why, size_t why_n) {
+    return program_resign(home, game_data, gid, module_dir, images, n, why, why_n, 1);
+}
+static int program_resign(const char *home, const char *game_data, const char *gid, char *module_dir, char *images, size_t n, char *why, size_t why_n, int force) {
     @autoreleasepool {
         if (why && why_n) why[0] = 0;
         if (!home || !game_data || !gid || !module_dir || !images) return 0;
@@ -53,8 +62,8 @@ int s2a_program_resign_if_needed(const char *home, const char *game_data, const 
         NSDictionary *cat = read_json(catp); if (!cat) return 0;
         NSDictionary *signer = [cat[@"signer"] isKindOfClass:NSDictionary.class] ? cat[@"signer"] : nil;
         NSString *was_sha = str(signer[@"cert_sha1"]).lowercaseString, *team = str(cat[@"team"]);
-        if (was_sha ? [was_sha isEqualToString:cur_sha] : (team && cur_team && [team isEqualToString:cur_team])) return 0;
-        NSString *why_sign = was_sha ? @"程序库是另一张证书签的" : team ? @"程序库是别的团队签的" : @"程序库还没签名";
+        if (!force && (was_sha ? [was_sha isEqualToString:cur_sha] : (team && cur_team && [team isEqualToString:cur_team]))) return 0;
+        NSString *why_sign = force ? @"程序库签名本机注册不了" : was_sha ? @"程序库是另一张证书签的" : team ? @"程序库是别的团队签的" : @"程序库还没签名";
         uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
 #define FAIL(...) do { if (why && why_n) snprintf(why, why_n, __VA_ARGS__); RLOG("【黄】起局重签：游戏 %s %s，要用手机上的签名身份重签，没签成：%s；照旧用原来的程序库", gid, why_sign.UTF8String, why); return -1; } while (0)
         SecKeyRef key = NULL; SecCertificateRef leaf = NULL;
@@ -72,6 +81,7 @@ int s2a_program_resign_if_needed(const char *home, const char *game_data, const 
         NSString *dir = [NSString stringWithFormat:@"v-%@-phone", [sha substringToIndex:16]], *dst = [prog stringByAppendingPathComponent:dir];
         NSString *img = @(images).lastPathComponent, *mrel = [NSString stringWithFormat:@"Games/%s", gid];
         NSFileManager *fm = NSFileManager.defaultManager;
+        if ([dst isEqualToString:@(images).stringByDeletingLastPathComponent]) { free(out); FAIL("新签出的和现在这一版是同一份（%s）", dir.UTF8String); }   // 不能删掉正在用的这版再从它拷
         [fm removeItemAtPath:dst error:nil];   // 同一份签名结果的残留（上次写了一半）
         if (![fm createDirectoryAtPath:[dst stringByAppendingPathComponent:@"Games"] withIntermediateDirectories:YES attributes:nil error:nil]) { free(out); FAIL("建不了版本目录 %s", dst.UTF8String); }
         NSString *mdst = [dst stringByAppendingPathComponent:mrel];

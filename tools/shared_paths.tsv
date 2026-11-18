@@ -3,6 +3,7 @@
 # 运行时缺省（iOS 是 App 容器私有；Mac 上是整台机器共用，Mac 局一律由 runtime/run_mac.sh / tools/mac_health.sh 显式给局目录，不许落到这里）
 ~/.s2arm/run/s2arm/ab_pair	画幅线	能力 A/B 对照局目录（tools/ab_pair.sh）	每局一个带时间戳的子目录，不共写
 ~/.s2arm/run/s2arm/cache/ccache	构建工具	编译缓存（tools/cc_cache.sh）	ccache 自身并发安全
+~/.s2arm/run/s2arm/cache/native_gate_times	构建工具	runtime 钩子各组上次耗时（runtime/gate.sh，派发排序用，S2A_NATIVE_GATE_TIMES 可改）	写临时文件再原子 mv，多树并发写最后一个为准；只影响派发顺序，删了下次重学
 ~/.s2arm/run/s2arm/deps/rewriter-deps	出包线	改写器固定依赖（tools/doctor.sh 查）	只读校验，准备步骤写入
 ~/.s2arm/run/s2arm/env/layout.env	维护方	本机布局标记（tools/s2a_machine.sh 只读判断）	只读
 ~/.s2arm/run/s2arm/evidence/gate_crash	门禁	崩溃现场留证（tests/visual/crash_keep.sh）	按崩溃各建子目录，不共写
@@ -117,3 +118,4 @@ run	测试出包	记分板 / 全绿 / 里程碑 tsv	只追加单行（< 4 KB 原
 ~/.s2a/update-signing/ed25519.key	维护方	发版清单签名私钥（tools/sign_update_manifest.py 读；只在发版机上，不进仓库）	只读；权限 600，目录 700；脚本启动时校验它与启动器内置公钥一致，对不上就拒绝签名
 ~/.s2arm/run/s2arm/shell_src	合入运维	出壳（pack/shell_build.sh）的按树私有镜像（shell_src/<树号>/src，含镜像里的 build/ 增量产物）	shell_build.sh 持本树镜像锁 src.lock（pid 存活检查）；不同树互不排队；只有出壳本身读写
 ~/.s2arm/run/s2arm/gate_depskip	合入运维	runtime 钩子按源文件跳组的缓存（src.<规则哈希>/<组>.txt 源文件清单、full.<日期> 当天已全跑标记）	写入只发生在钩子跑时；规则文件一变换新目录，旧的可随时删
+~/.cargo/bin/cargo	构建工具	Rust 工具链（门禁机 PATH 里没有 cargo 时按它找，tests/pc_selfsign_test.sh；同 launchers/macos/bundle_engine.py）	只读

@@ -11,7 +11,7 @@
   Shell-tvOS/       Apple TV 预编壳（--tv-shell 给了才有；壳编号须等于本引擎的 tvOS 壳编号；Mac 上 S2A_APPLE_OS=tvos pack/shell_build.sh 出）。
                     没带的这一版 Windows 出不了 Apple TV 包（启动器导出页不显示 Apple TV）
   Fonts/            开源共享字体 7 份 .bfttf
-  ThirdParty/Impactor/  官方原版 Impactor + plumesign（v2.7.2，不改不重签，SHA-256 钉在 pack/jobs/impactor.py BUNDLED，不符拒打）+ 许可（MIT、内嵌 apple-codesign 的 MPL-2.0）+ 来源说明
+  ThirdParty/Impactor/  官方原版 Impactor + plumesign（v2.7.3，不改不重签，SHA-256 钉在 pack/jobs/impactor.py BUNDLED，不符拒打）+ 许可（MIT、内嵌 apple-codesign 的 MPL-2.0）+ 来源说明
 启动器作业请求：resources=<目标>、engineBundle=engineDir=<目标>\\Engine（同 Mac Store.swift）。
 预编壳、时区、字体三样目前只在 Mac 上产出（pack/shell_build.sh、services/systemdata/make_tzdata.sh --bundle-to、pack/fonts/make_open_fonts.py），作为输入给进来，这里只核对后收入。
 """
@@ -34,7 +34,7 @@ import bundle_runtime_win   # noqa: E402
 sys.path.insert(0, str(ROOT / "pack/jobs"))
 import impactor   # noqa: E402  随包 Impactor 的版本 / 文件名 / 哈希只此一份（作业层按同一份找）
 
-IMPACTOR_LICENSES = ROOT / "launchers/windows/third_party/impactor"   # v2.7.2 标签下的 LICENSE 与 3rdparty/apple-codesign-0.29.0/LICENSE 原文
+IMPACTOR_LICENSES = ROOT / "launchers/windows/third_party/impactor"   # v2.7.3 标签下的 LICENSE 与 3rdparty/apple-codesign-0.29.0/LICENSE 原文
 
 
 def say(m): print(m, flush=True)

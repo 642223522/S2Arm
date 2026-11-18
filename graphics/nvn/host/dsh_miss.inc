@@ -6,6 +6,36 @@ static _Atomic uint64_t g_dsh_eager_n, g_dsh_eager_ok, g_dsh_eager_hit, g_dsh_ea
 // 开发浮层「首遇现建」读（runtime/src/hud.c 经 dlsym）：成功 / 失败 / 跳过 / 复用上局 / 输出类型变体
 void s2a_dsh_stats(uint64_t out[5]) { out[0] = atomic_load(&g_dsh_ok); out[1] = atomic_load(&g_dsh_failed); out[2] = atomic_load(&g_dsh_skipped); out[3] = atomic_load(&g_dsh_reused); out[4] = atomic_load(&g_dsh_typed); }
 static void dsh_salvage_summary(void);   // 着色器补料收局一行（dsh_salvage.inc，在下面才包含）
+// 着色器覆盖计数（0.6.0「出包着色器全覆盖」；电脑端「建议重新出包」角标读，pack/jobs）：每支「包里没有、在这台设备上第一次翻译」的着色器 +1，
+//   写进兜底目录（DM_MSL_FALLBACK = <游戏目录>/wire/<程序号>/shaders）往上三级的 <游戏目录>/shader_fallback.json = {"count": 累计, "at": Unix 秒, "app": App 版本}：
+//   iOS Documents/games/<程序号>/、Mac 游戏库 temp/<程序号>/。只加不减；读兜底缓存复用的不计（那支包里同样没有，但第一次翻时已计过）。
+//   合并写：累加在内存里，最多每 2 秒落一次盘（首遇一帧可能几百支，不在提交线程上逐支写盘）
+const char *s2a_app_version(void) __attribute__((weak));   // host_adapt.m：iOS 的 App 版本；Mac 宿主是命令行程序，没有（"app" 写空）
+// 成功 0；兜底目录不是 …/wire/<程序号>/shaders 这种形状 → -1（不往别处写）
+static int sfb_write(const char *fb, uint64_t add, const char *app) {
+    size_t n = fb ? strlen(fb) : 0; if (n < 30) return -1;
+    const char *sh = fb + n - 8; if (strcmp(sh, "/shaders")) return -1;   // …/wire/<16 位程序号>/shaders
+    const char *tid = sh - 16, *wire = tid - 6;
+    if (tid < fb + 6 || strncmp(wire, "/wire/", 6)) return -1;
+    for (int i = 0; i < 16; i++) { char c = tid[i]; if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) return -1; }
+    char path[1200], tmp[1220]; snprintf(path, sizeof path, "%.*s/shader_fallback.json", (int)(wire - fb), fb); snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    unsigned long long old = 0; FILE *f = fopen(path, "r");
+    if (f) { char b[256]; size_t z = fread(b, 1, sizeof b - 1, f); fclose(f); b[z] = 0; const char *c = strstr(b, "\"count\""); if (c) sscanf(c, "\"count\": %llu", &old); }
+    if (!(f = fopen(tmp, "w"))) return -1;
+    fprintf(f, "{\"count\": %llu, \"at\": %lld, \"app\": \"%s\"}\n", old + (unsigned long long)add, (long long)time(NULL), app ? app : "");
+    if (fclose(f) || rename(tmp, path)) { unlink(tmp); return -1; }
+    return 0;
+}
+static _Atomic uint64_t g_sfb_new; static _Atomic int g_sfb_sched;
+static void sfb_flush(void *u) {
+    (void)u; atomic_store(&g_sfb_sched, 0);
+    uint64_t n = atomic_exchange(&g_sfb_new, 0); if (!n) return;
+    sfb_write(getenv("DM_MSL_FALLBACK"), n, s2a_app_version ? s2a_app_version() : "");
+}
+static void sfb_note(void) {   // 一支「包里没有」的着色器在这台设备上第一次翻译好了
+    atomic_fetch_add(&g_sfb_new, 1);
+    if (!atomic_exchange(&g_sfb_sched, 1)) dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, 2 * (int64_t)NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), NULL, sfb_flush);
+}
 static void dsh_summary(int normal) {
     if (s2a_gfx_mode() != S2A_GFX_DIRECT) return;
     LOG("直连着色器现编汇总：成功 %llu、失败 %llu、跳过 %llu、复用上局 %llu、输出类型变体 %llu（%s）",
@@ -339,7 +369,7 @@ int dm_shader_miss_late(const char *k16, uint64_t code, const void *control) {
                 int st = e->st; free(e); dsh_job_put(j);
                 mtl_shmap_rt_add(k, dsh_nm[st]); atomic_fetch_add(&g_dsh_eager_hit, 1);
                 uint64_t n = atomic_fetch_add_explicit(&g_dsh_ok, 1, memory_order_relaxed) + 1;
-                LOG("直连着色器首遇现编 %llu 次：%s（%s，后台预编好，提交线程等 %.1f ms）", (unsigned long long)n, k, dsh_nm[st], (now_ns() - w0) / 1e6);
+                LOG("直连着色器首遇现编 %llu 次：%s（%s，后台预编好，提交线程等 %.1f ms）", (unsigned long long)n, k, dsh_nm[st], (now_ns() - w0) / 1e6); sfb_note();
                 return 1;
             }
         }
@@ -357,13 +387,23 @@ int dm_shader_miss_late(const char *k16, uint64_t code, const void *control) {
         snprintf(fp, sizeof fp, "%s/%s.fail.code", out, k); if ((f = fopen(fp, "wb"))) { fwrite(cd, 1, ncode, f); fclose(f); }
         LOG("直连着色器现编失败的输入已存：%s/%s.fail.ctl / .fail.code（控制段 %u 字节、代码区 %u 字节；反馈问题时请附上）", out, k, e->nctl, ncode);
     }
+    // #1520（诊断）：一款 Switch 2 游戏的片元着色器控制段正常、长度自洽（+0x38 = 0x80 字节 SPH + 指令），代码区开头却直接是指令、整段找不到 SPH，翻译器把指令当 SPH 读出阶段 14。
+    //   没有原件，分不清是「SPH 在代码地址前 0x80 字节」还是新布局：图形阶段失败时记下开头一个字与代码地址前 0x80 字节（只在与代码区同一页时读，不碰别的页），前 8 次
+    if (rc > 0 && code && ncode >= 4 && (e->st == 0 || e->st == 1 || e->st == 3) && nvn2_on() && nvn2_ctl(e->ctl)) {
+        static _Atomic int said;
+        if (atomic_fetch_add(&said, 1) < 8) {
+            uint32_t w0; memcpy(&w0, cd, 4); char hx[0x80 * 2 + 1] = "";
+            if ((code & 0xfff) >= 0x80) for (int i = 0; i < 0x80; i++) snprintf(hx + 2 * i, 3, "%02x", cd[i - 0x80]);
+            LOG("【红】直连：Switch 2 %s（%s）现编失败，代码区开头 %08x；代码地址前 0x80 字节：%s", k, dsh_nm[e->st], w0, hx[0] ? hx : "跨页，不读");
+        }
+    }
     int st = e->st; uint32_t enctl = e->nctl; uint8_t *ectl = rc > 0 ? malloc(enctl) : NULL; if (ectl) memcpy(ectl, e->ctl, enctl); free(e);
     if (rc) { atomic_fetch_add_explicit(&g_dsh_failed, 1, memory_order_relaxed); atomic_fetch_add(&g_dsh_bad, 1); LOG("【红】直连着色器现编失败：%s（%s）rc=%d", k, dsh_nm[st], rc);
         if (rc > 0) { char why[64]; snprintf(why, sizeof why, "translator rc=%d (%s)", rc, dsh_nm[st]); if (ectl) dsh_salvage_put(k, DSV_COMPFAIL, st, ectl, enctl, code ? (const void *)(uintptr_t)code : NULL, ncode, why); }   // 着色器补料：控制段用待编表里的拷贝
         free(ectl); return 0; }
     mtl_shmap_rt_add(k, dsh_nm[st]);
     uint64_t n = atomic_fetch_add_explicit(&g_dsh_ok, 1, memory_order_relaxed) + 1;
-    LOG("直连着色器首遇现编 %llu 次：%s（%s，%.1f ms）", (unsigned long long)n, k, dsh_nm[st], (now_ns() - t0) / 1e6);
+    LOG("直连着色器首遇现编 %llu 次：%s（%s，%.1f ms）", (unsigned long long)n, k, dsh_nm[st], (now_ns() - t0) / 1e6); sfb_note();
     return 1;
 }
 
