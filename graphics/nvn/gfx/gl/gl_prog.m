@@ -447,7 +447,9 @@ GL(glGetAttribLocation, GLint, GLuint name, const GLchar *nm) {
 enum { ELEM = 4096 };   // 位置编码：成员号 < 4096，数组元素号放高位
 GL(glGetUniformLocation, GLint, GLuint name, const GLchar *nm) {
     CTX(-1); struct gl_program *p = gl_name_get(&gl_programs, name); if (!p || !p->linked) { gl_set_error(GL_INVALID_OPERATION); return -1; }
-    char base[64]; strlcpy(base, nm, sizeof base); int elem = 0; char *br = strchr(base, '[');
+    // 结构体数组展开出的成员（「Lights[1].color」）按全名登记：先比全名；再按 GL 规则只认末尾的「[n]」是数组下标（「Lights[1].pos[2]」= 成员数组 Lights[1].pos 的第 2 项）
+    for (int i = 0; i < p->nu && i < ELEM; i++) if (!strcmp(p->u[i].name, nm)) return i;
+    char base[64]; strlcpy(base, nm, sizeof base); int elem = 0; char *br = strrchr(base, '[');
     if (br) { char *end; long e = strtol(br + 1, &end, 10); if (end == br + 1 || *end != ']' || end[1] || e < 0) return -1; elem = (int)e; *br = 0; }
     for (int i = 0; i < p->nu; i++) if (!strcmp(p->u[i].name, base)) return elem < (p->u[i].count ? p->u[i].count : 1) && i < ELEM ? i + elem * ELEM : -1;
     for (int i = 0; i < p->nsmp; i++) if (!strcmp(p->smp[i].name, base) && p->smp[i].elem == elem && (!br || p->smp[i].arr > 1)) return p->nu + i;   // 采样器数组：「tex」=「tex[0]」，「tex[i]」= 第 i 项
