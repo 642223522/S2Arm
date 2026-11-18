@@ -33,7 +33,10 @@ def dll():
         # -m:1：只用进程内节点、不起 MSBuild 子节点（11-14 macOS 宿主门禁 dsh_harden 红 MSB4166「Child node "2" exited prematurely」：
         #   子节点进程起来约 1 秒就崩，系统日志有它的 corpse，与被测代码无关）。单节点从机制上没有子节点可崩；
         #   这棵工程树（dsh_cmp → S2A.Dsh → Ryujinx.Graphics.Shader / Widen.Shader）可并行的少，本机重负载下实测单节点不慢于 -m:6
-        r = subprocess.run([dotnet(), 'build', PROJ, '-c', 'Release', '-nodeReuse:false', '-v', 'q', '-m:1', *([] if dg == last else ['--no-incremental'])],
+        # 全量重编只在「上次编出过产物、但源内容已变」时需要（不信旧 obj 的时间戳）；干净树（门禁每步 git clean -fdx）没有旧产物，
+        #   增量编就是从零编，还能复用同树里 dsh_batch 刚编好的被引用工程（原先戳记一缺就 --no-incremental，同一闭包一步里冷编两遍）
+        stale = dg != last and (last or os.path.exists(OUT))
+        r = subprocess.run([dotnet(), 'build', PROJ, '-c', 'Release', '-nodeReuse:false', '-v', 'q', '-m:1', *(['--no-incremental'] if stale else [])],
                            capture_output=True, text=True)
         if not r.returncode and os.path.exists(OUT): open(stamp, 'w').write(dg + '\n')
     if r.returncode or not os.path.exists(OUT):

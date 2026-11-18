@@ -105,8 +105,11 @@ def build():
         with xlock.held(os.path.join(OUT, '.lock')):   # 单测编 dsh_cmp（graphics/tools/direct/tests/dshfn.py）拿同一把锁：两边都编 S2A.Dsh 工程、共用它的 obj/（xlock：Mac flock / Windows msvcrt，同 #1100 W6）
             last = open(stamp).read().strip() if os.path.exists(stamp) else ''
             # 源码摘要与上次编成时相同、产物在 → 不再调 dotnet build（无改动的增量编也要起 MSBuild 几秒；11-06 出包速度线：refresh 快路预热之后直连库那次直接用）
-            r = subprocess.CompletedProcess([], 0) if dg == last and os.path.isfile(os.path.join(OUT, 'dsh_batch.dll')) else subprocess.run([dn, 'build', proj, '-c', 'Release', '-o', OUT, '-nodeReuse:false', '-v', 'q', '-p:UseSharedCompilation=false', *([] if dg == last else ['--no-incremental'])],
-                               capture_output=True, text=True)   # 源内容和上次编出这份产物时不同 → 全量重编（含引用工程）
+            # 源内容和上次编出这份产物时不同 → 全量重编（含引用工程）；从没编出过（干净树：门禁每步 git clean -fdx）→ 增量编即从零编，
+            #   并复用同树里 dshfn 刚编好的被引用工程（S2A.Dsh / Ryujinx.Graphics.Shader …），不再同一闭包冷编两遍
+            stale = dg != last and (last or os.path.isfile(os.path.join(OUT, 'dsh_batch.dll')))
+            r = subprocess.CompletedProcess([], 0) if dg == last and os.path.isfile(os.path.join(OUT, 'dsh_batch.dll')) else subprocess.run([dn, 'build', proj, '-c', 'Release', '-o', OUT, '-nodeReuse:false', '-v', 'q', '-p:UseSharedCompilation=false', *(['--no-incremental'] if stale else [])],
+                               capture_output=True, text=True)
             if not r.returncode: open(stamp, 'w').write(dg + '\n')
         if r.returncode:
             sys.exit("[RED] dsh_batch does not build: " + (r.stdout + r.stderr).strip()[-800:])

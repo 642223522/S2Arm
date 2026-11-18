@@ -5,7 +5,7 @@
 #   （暗黑的控制段能唯一标识着色器；塞尔达 10918 份机器码只有 7163 种控制段，键必须把机器码算进去）
 # 用法：nxsh_extract.py <输出目录> <资源目录…> [--nso <主程序 NSO>…]   环境 J=并发
 # 输出：<输出目录>/src/<键>.code / .ctl，<输出目录>/index.tsv（键、阶段、来源、容器内变体号）
-import bisect, sys, os, re, struct, zlib, hashlib, collections, concurrent.futures as cf
+import bisect, sys, os, re, struct, zlib, hashlib, collections, concurrent.futures as cf, contextlib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')))
 import nxfmt
@@ -1102,6 +1102,8 @@ if __name__ == '__main__':
     # 字典目录：调用方给了 NXSH_ZSDICT 就往那里累加（tools/shscan.sh 分批扫：第一批小文件里收到的字典后面各批都用），没给用输出目录下 zsdict/
     zd = os.environ.get('NXSH_ZSDICT') or os.path.join(outdir, 'zsdict'); stat['zstd 字典'] = find_zsdicts(roots, zd); os.environ['NXSH_ZSDICT'] = zd
     import casc_flat
+    # 进程池整次抽取只建一个（原先每个资源目录建 5 个：macOS 起进程是 spawn，怪猎崛起 273 个追加内容目录 / 门禁 list_arg 300 个目录 → 上千次新起解释器）
+    pool = cf.ProcessPoolExecutor(J)
     for root in roots:
         # 同一次盘点走两遍（原先两次 os.walk 各盘点一次）
         tree = romfs_list.scan(root)
@@ -1124,7 +1126,7 @@ if __name__ == '__main__':
                 if str(e) == '索引加密' or isinstance(e, ue_pak.Corrupt): files.remove(pp)
                 continue
             files.remove(pp); stat['pak'] += 1; stat['pak 条目'] += len(E)
-            with cf.ProcessPoolExecutor(J) as ex:
+            with contextlib.nullcontext(pool) as ex:
                 for r, s_ in ex.map(work_pak, [(pp, E[i::J * 8], outdir, key) for i in range(J * 8)]): rows += r; stat.update(s_)
         import re_pak
         kp = [f for f in files if f.lower().endswith('.pak') and re_pak.is_pak(f)]   # RE 引擎 pak：按补丁链取每个文件的最新版逐条解出再扫，pak 本身不进普通文件 / zlib 分段扫描
@@ -1134,7 +1136,7 @@ if __name__ == '__main__':
             for p in chain: files.remove(p)
             stat['RE pak'] += len(chain); stat['RE pak 文件（取最新版）'] += len(E); stat['RE pak 被补丁换掉的旧版（不扫）'] += shadowed
             E.sort(key=lambda e: (e[0], e[2]))   # 同一 pak 内按偏移顺序读
-            with cf.ProcessPoolExecutor(J) as ex:
+            with contextlib.nullcontext(pool) as ex:
                 for r, s_ in ex.map(work_kpka, [(E[i::J * 8], outdir) for i in range(J * 8)]): rows += r; stat.update(s_)
         import kitpak, hgpak
         for m in (kitpak, hgpak):   # 带索引 / 分卷的厂商档案（11-02 着色器容器族 B 组：Unravel Two 的 kit! 索引 + 数据卷、No Man's Sky 的 HGPAK）：按条目切成任务逐条解出，档案本身不进普通文件 / 分段扫描
@@ -1142,20 +1144,21 @@ if __name__ == '__main__':
             except (ValueError, RuntimeError) as e: stat['【红】厂商档案读不了'] += 1; print(f'【红】{m.__name__}：目录读不了（{e}）', file=sys.stderr, flush=True); continue
             if not taken: continue
             files = [f for f in files if f not in taken]; stat[m.__name__] += len(taken)
-            with cf.ProcessPoolExecutor(J) as ex:
+            with contextlib.nullcontext(pool) as ex:
                 for r, s_ in ex.map(work_members, [(root, m.__name__, e, outdir) for e in E]): rows += r; stat.update(s_)
         ur, ub = scan_unity(root, files, stat, hd)
         if ur: rows += ur; flush(ub, outdir); stat['Unity 着色器条目'] += len({(r[2], r[3]) for r in ur})
         for cd in cdirs:
             E = casc_flat.entries(cd); pick = [e for e in E if 'shader' in e[0].lower()] or E   # 路径带 shader 的优先（暗黑2 164 个包）；没有就全扫
             stat['CASC 条目'] += len(E); stat['CASC 扫的条目'] += len(pick)
-            with cf.ProcessPoolExecutor(J) as ex:
+            with contextlib.nullcontext(pool) as ex:
                 for r, s in ex.map(work_casc, [(cd, pick[i::J * 4], outdir) for i in range(J * 4)]): rows += r; stat.update(s)
         zt = [(root, p, lo, min(lo + BIG, romfs_list.file_size(p)), outdir) for p in files if big_split(p) and not (top_wwise(p) and not WWISE_AUDIT) for lo in range(0, romfs_list.file_size(p), BIG)]
-        with cf.ProcessPoolExecutor(J) as ex:
+        with contextlib.nullcontext(pool) as ex:
             fz = [ex.submit(work_zlib, t) for t in sorted(zt, key=lambda t: t[1])]
             for r, s in ex.map(work, [(root, files[i::J * 8], outdir) for i in range(J * 8)]): rows += r; stat.update(s)
             for x in fz: r, s = x.result(); rows += r; stat.update(s)
+    pool.shutdown()
     for p in nsos:
         blobs = {}; img = nso_image(p); scan_blob('nso:' + os.path.basename(p), img, rows, blobs, stat)
         scan_nso_zstd('nso:' + os.path.basename(p), img, rows, blobs, stat)
