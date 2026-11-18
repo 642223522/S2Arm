@@ -21,11 +21,14 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "S2Arm", __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "S2Arm", __VA_ARGS__)
 #define S2A_PHONE_SESSION_BASE 0x5048000000000000ull   // 手机马达的震动会话号（同 iOS，与 NS2 的小整数会话号不相交）
+// 只给体感的会话（同 iOS controller.m MOTION_ONLY_SESSION 的用法）：在前台但没有能震的马达（设置关了 / 没马达 / 接着手柄）时报它，
+//   服务层的反馈对象照留（InputPump.RefreshFeedback 见 0 会拆掉整个对象，六轴也跟着没了）；拿它提交的震动一律丢
+#define S2A_MOTION_ONLY_SESSION 0x4d4f000000000001ull
 enum { SENSOR_PERIOD_US = 5000 };   // 200 Hz，同 iOS；安卓 12+ 不申请 HIGH_SAMPLING_RATE_SENSORS 时的上限正好是 200 Hz
 
 // ---------- 设置与前后台（主线程写，HID / 反馈线程读）----------
-static _Atomic int g_gyro_pref = 1, g_rumble_pref = 1, g_has_vibrator, g_foreground = 1, g_rotation = 1;
-static _Atomic uint64_t g_session = S2A_PHONE_SESSION_BASE + 1;
+static _Atomic int g_gyro_pref = 1, g_rumble_pref = 1, g_has_vibrator, g_gamepad, g_foreground = 1, g_rotation = 1;
+static _Atomic uint64_t g_session = S2A_PHONE_SESSION_BASE + 1;   // 手机马达这一代的会话号：退后台、改设置、接拔手柄换号
 
 // ---------- 六轴 ----------
 // 传感器线程只在第一次要六轴时起，之后常驻（ALooper 绑在它身上）；开关只调 enable / disable，不拆线程
@@ -168,12 +171,17 @@ static void rumble_apply(const s2a_pad_vibration v[2], int kind) {
     static int said; if (send > 0 && !said++) LOGI("手机震动：首次 振幅 %d/255", send);
 }
 
+// 手机马达只在没接手柄时震（同 iOS：接着外接手柄时手机多半放在一边；手柄自己的马达是第二块）
 EXPORT uint64_t s2a_pad_rumble_session(void) {
-    if (!atomic_load(&g_rumble_pref) || !atomic_load(&g_has_vibrator) || !atomic_load(&g_foreground)) return 0;
+    if (!atomic_load(&g_foreground)) return 0;
+    if (!atomic_load(&g_rumble_pref) || !atomic_load(&g_has_vibrator) || atomic_load(&g_gamepad)) return S2A_MOTION_ONLY_SESSION;
     return atomic_load(&g_session);
 }
 
-static int owns(uint64_t session) { return session && session == s2a_pad_rumble_session(); }
+static int owns(uint64_t session) {
+    uint64_t now = s2a_pad_rumble_session();
+    return session && session == now && now != S2A_MOTION_ONLY_SESSION;
+}
 
 static void rumble_stop(void) {
     if (atomic_load(&g_mb_ready)) s2a_phone_rumble_mailbox_submit_stop();   // STOP 在信箱里压过 PLAY
@@ -217,9 +225,21 @@ void s2a_android_phone_feedback_foreground(int foreground) {
     pthread_mutex_unlock(&g_mu);
 }
 
+// 服务层登记（android/core-runtime/AndroidGameRuntime.cs → InputPump.Feedback，字段次序同 InputPump.HostFeedback）：
+//   本库以 RTLD_LOCAL 载入，服务层按名查主程序导出查不到上面这几个函数，改由平台装配把地址交过去
+typedef struct { void *rumble_session, *set_rumble_pair, *stop_rumble, *set_motion_enabled, *read_motion; } s2a_android_pad_feedback_hooks;
+EXPORT void s2a_android_pad_feedback(s2a_android_pad_feedback_hooks *out) {
+    if (!out) return;
+    out->rumble_session = (void *)s2a_pad_rumble_session;
+    out->set_rumble_pair = (void *)s2a_pad_set_rumble_pair;
+    out->stop_rumble = (void *)s2a_pad_stop_rumble;
+    out->set_motion_enabled = (void *)s2a_pad_set_motion_enabled;
+    out->read_motion = (void *)s2a_pad_read_motion;
+}
+
 JNIEXPORT void JNICALL
 Java_org_s2arm_android_NativeBridge_configurePhoneFeedback(JNIEnv *env, jclass bridge, jstring package, jboolean gyro, jboolean rumble,
-                                                           jboolean has_vibrator) {
+                                                           jboolean has_vibrator, jboolean gamepad) {
     (void)bridge;
     if (!g_vm) (*env)->GetJavaVM(env, &g_vm);
     if (!g_feedback_class) {
@@ -238,9 +258,15 @@ Java_org_s2arm_android_NativeBridge_configurePhoneFeedback(JNIEnv *env, jclass b
         if (p) { strncpy(g_package, p, sizeof g_package - 1); (*env)->ReleaseStringUTFChars(env, package, p); }
     }
     pthread_mutex_unlock(&g_mu);
-    int was = atomic_exchange(&g_rumble_pref, rumble != JNI_FALSE);
+    // 能不能震变了就换会话号：服务层见到变化清掉本地震动状态（ControllerFeedback.ObserveSession），旧会话的迟到提交不再震
+    uint64_t before = s2a_pad_rumble_session();
+    atomic_store(&g_rumble_pref, rumble != JNI_FALSE);
     atomic_store(&g_has_vibrator, has_vibrator != JNI_FALSE && g_vibrate != NULL);
-    if (was && rumble == JNI_FALSE) { atomic_fetch_add(&g_session, 1); rumble_stop(); }
+    atomic_store(&g_gamepad, gamepad != JNI_FALSE);
+    if (s2a_pad_rumble_session() != before) {
+        if (before != S2A_MOTION_ONLY_SESSION) rumble_stop();
+        atomic_fetch_add(&g_session, 1);
+    }
     atomic_store(&g_gyro_pref, gyro != JNI_FALSE);
     pthread_mutex_lock(&g_mu);
     sensors_apply_locked();

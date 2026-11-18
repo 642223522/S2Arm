@@ -21,11 +21,13 @@ final class PhoneFeedback implements DisplayManager.DisplayListener {
     private final Context context;
     private final SharedPreferences prefs;
     private final DisplayManager displays;
+    private final java.util.function.BooleanSupplier gamepad;
     private boolean listening;
 
-    PhoneFeedback(Context context, SharedPreferences prefs) {
+    PhoneFeedback(Context context, SharedPreferences prefs, java.util.function.BooleanSupplier gamepad) {
         this.context = context;
         this.prefs = prefs;
+        this.gamepad = gamepad;
         this.displays = context.getSystemService(DisplayManager.class);
         Vibrator v;
         if (Build.VERSION.SDK_INT >= 31) {
@@ -58,8 +60,9 @@ final class PhoneFeedback implements DisplayManager.DisplayListener {
         if (displays != null && listening) displays.unregisterDisplayListener(this);
         listening = false;
     }
-    private void publish() {
-        NativeBridge.configurePhoneFeedback(context.getPackageName(), gyro(), rumble(), hasVibrator());
+    /** Also on input device changes: whether a gamepad is attached decides if the phone motor may rumble. */
+    void publish() {
+        NativeBridge.configurePhoneFeedback(context.getPackageName(), gyro(), rumble(), hasVibrator(), gamepad.getAsBoolean());
     }
 
     // 180° turns (landscape <-> reverse landscape) keep the surface size, so surfaceChanged cannot be relied on here.

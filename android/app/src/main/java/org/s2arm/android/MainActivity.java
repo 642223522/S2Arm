@@ -408,7 +408,7 @@ public class MainActivity extends Activity
             if (game != null) capabilities += "\n" + game;
             status.setText(capabilities);
             applyTouchPassthrough();
-            if (gameMode) phoneFeedback = new PhoneFeedback(this, getSharedPreferences(PREFS, MODE_PRIVATE));
+            if (gameMode) phoneFeedback = new PhoneFeedback(this, getSharedPreferences(PREFS, MODE_PRIVATE), MainActivity::gamepadConnected);
             requestDebugLifecycle(getIntent());
         } catch (LinkageError | RuntimeException e) {
             Log.e("S2Arm", "Native host startup failed", e);
@@ -1146,9 +1146,10 @@ public class MainActivity extends Activity
                 | android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
         }
     }
-    @Override public void onInputDeviceAdded(int id) { updateTouchPad(); }
-    @Override public void onInputDeviceChanged(int id) { clearInput(); updateTouchPad(); }
-    @Override public void onInputDeviceRemoved(int id) { clearInput(); updateTouchPad(); }
+    @Override public void onInputDeviceAdded(int id) { updateTouchPad(); publishPhoneFeedback(); }
+    @Override public void onInputDeviceChanged(int id) { clearInput(); updateTouchPad(); publishPhoneFeedback(); }
+    @Override public void onInputDeviceRemoved(int id) { clearInput(); updateTouchPad(); publishPhoneFeedback(); }
+    private void publishPhoneFeedback() { if (phoneFeedback != null && resumed) phoneFeedback.publish(); }
     private static boolean gamepadConnected() {
         for (int id : InputDevice.getDeviceIds()) {
             InputDevice device = InputDevice.getDevice(id);
