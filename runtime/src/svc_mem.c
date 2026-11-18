@@ -515,6 +515,14 @@ uint64_t s2a_npdm_pid(const char *npdm) {
     uint32_t t, ms; uint64_t sr, pid;
     return npdm_read(npdm, &t, &sr, &ms, &pid, 0) ? 0 : pid;
 }
+// 装模块前认出本款是不是 Switch 2：1 = 是、0 = 不是、−1 = 读不到 NPDM。装载器重定位时 s2a_direct_lookup 逐个导入问直连图形层（nvn2.c nvn2_on = s2a_platform_ounce），
+//   Switch 2 的 SDK 接管要靠这个标志。苹果侧 load_modules 经 s2a_mem_mod_base → layout_prepare 在重定位前读过 NPDM；安卓 APK 装载（load_modules_from_source）
+//   不经那条路，标志要等装完模块的 s2a_mem_init 才有，重定位时恒为 0——runtime.c 在装模块前调一次。
+//   同 s2a_npdm_pid 的 apply = 0 读法：npdm_read 里 Switch 2 标志与应用池两样都设（见上），其余 NPDM 状态（优先级 / 核 / 系统调用许可）留给 s2a_mem_init。
+int s2a_npdm_ounce(const char *npdm) {
+    uint32_t t, ms; uint64_t sr, pid;
+    return npdm_read(npdm, &t, &sr, &ms, &pid, 0) ? -1 : g_npdm_ounce;
+}
 void s2a_thread_set_caps(uint64_t core_mask, uint64_t prio_mask);   // thread.c：CreateThread 按 NPDM 核 / 优先级掩码校验
 void s2a_thread_set_npdm(int def_core, int main_prio);              // thread.c：NPDM 缺省核 / 主线程优先级（S2A_SCHED_HZ 用）
 // 返回主线程栈顶。主线程栈放栈区最高处、登记成 Stack（SDK 对自己的 sp 做 QueryMemory 求主线程栈区间）
@@ -2479,6 +2487,9 @@ int svc_mem(int num, uint64_t *regs, uint64_t orig) {
 static int snap_w(FILE *f, const void *p, size_t n) { return fwrite(p, 1, n, f) == n ? 0 : -1; }
 #include "snapfmt.h"
 void s2a_snap_mark_old(void);   // snapshot.c：记「旧版快照接不上」（给玩家的提示分类）
+// 单独链本文件的单测（t_svc_mem）没有快照引擎：弱缺省 = 快照关、不记；宿主 / iOS 壳链进 snapshot.c / snapsw.c 的真定义
+__attribute__((weak)) void s2a_snap_mark_old(void) {}
+__attribute__((weak)) int s2a_snap_restoring(void) { return 0; }
 // 内存账（带版本字段格式，snapfmt.h 段 "svcmem" 版本 1）：头记录 = 布局各字段 + 堆 / TLR / 熵；其余每条记录字段 50 标种类：1 映射 2 跨度 3 权限 4 属性 5 物理映射掩码页
 #define SVCMEM_LAYOUT(X) X(1, win_base) X(2, win_size) X(3, alias_base) X(4, alias_size) X(5, heap_base) X(6, heap_size) X(7, stack_base) X(8, stack_size) \
     X(9, tlsio_base) X(10, tlsio_size) X(11, aslr_base) X(12, aslr_size) X(13, sys_resource_size) X(14, as_type)

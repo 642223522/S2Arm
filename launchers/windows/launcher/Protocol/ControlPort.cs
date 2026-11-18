@@ -198,7 +198,7 @@ public static class ControlJournal
         string[] files;
         try { files = Directory.GetFiles(LibraryPaths.JobsDir(privateRoot), "*.json"); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return []; }
-        foreach (var file in files.Where(f => !f.EndsWith(".request.json", StringComparison.OrdinalIgnoreCase)))
+        foreach (var file in files.Where(f => !f.EndsWith(".request.json", StringComparison.OrdinalIgnoreCase) && !Path.GetFileName(f).StartsWith("._", StringComparison.Ordinal)))
         {
             try
             {

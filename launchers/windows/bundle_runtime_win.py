@@ -64,7 +64,7 @@ def python(rt, versions):
         [sys.executable, "-m", "pip", "download", "--disable-pip-version-check", *target, "-d", str(folder), *missing], check=True))
     subprocess.run([sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-compile", "--no-index", "--find-links", str(wheels),
                     *target, "--target", str(site), *pins()], check=True, env=dict(os.environ, SOURCE_DATE_EPOCH="1262304000"))   # pip 生成的 .exe 启动器内含打包时刻，钉住才可复现
-    import pil_prune   # Pillow 只留出包用得到的（去 AVIF / 画字 / Tk 扩展，压缩后约 5 MB；Windows 轮子依赖静态链在 .pyd 里）
+    import pil_prune   # Pillow 只留出包用得到的（去 AVIF / Tk 扩展；画字留着，下游做包工具要用，#1570；Windows 轮子依赖静态链在 .pyd 里）
     pil_prune.prune(site)
     versions["python"] = PY_VER; versions["python_url"] = PY_URL; versions["python_packages"] = pins()
 
@@ -183,7 +183,7 @@ def env_cmd(rt):
 
 def smoke(rt):   # 每件跑一下：Python 带四个库、bash 跑管道、zstd 版本
     env = dict(os.environ, PATH=os.pathsep.join([str(rt / "python"), str(rt / "git/usr/bin"), str(rt / "zstd"), os.environ.get("SystemRoot", r"C:\Windows") + r"\system32"]))
-    checks = [([str(rt / "python/python.exe"), "-B", "-c", "import capstone, lz4.block, numpy, PIL.Image, zstandard, ctypes, zlib, hashlib, multiprocessing; print('python ok', numpy.__version__)"], "python ok"),
+    checks = [([str(rt / "python/python.exe"), "-B", "-c", "import capstone, lz4.block, numpy, PIL.Image, PIL.ImageFont, PIL._imagingft, zstandard, ctypes, zlib, hashlib, multiprocessing; print('python ok', numpy.__version__)"], "python ok"),
               ([str(rt / "git/usr/bin/bash.exe"), "-c", "printf 'b\\na\\n' | sort | head -1 | awk '{print \"bash \" $1}'"], "bash a"),
               ([str(rt / "zstd/zstd.exe"), "--version"], "v1.5.7"),
               ([str(rt / "python/python.exe"), "-B", "-c", "import ctypes, os, sys; [ctypes.WinDLL(os.path.join(sys.argv[1], n)) for n in sys.argv[2:]]; print('vcrt ok')", str(rt / "vcrt"), *sorted(VC_RUNTIME)], "vcrt ok")]

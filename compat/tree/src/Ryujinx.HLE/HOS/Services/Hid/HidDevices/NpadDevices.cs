@@ -14,6 +14,7 @@ namespace Ryujinx.HLE.HOS.Services.Hid
     public class NpadDevices : BaseDevice
     {
         private const int NoMatchNotifyFrequencyMs = 2000;
+        private const ulong SixAxisSamplePeriodNs = 5_000_000;
         private int _activeCount;
         private long _lastNotifyTimestamp;
 
@@ -497,6 +498,7 @@ namespace Ryujinx.HLE.HOS.Services.Hid
         {
             ref SixAxisSensorState previousEntry = ref lifo.GetCurrentEntryRef();
 
+            state.DeltaTime = SixAxisSamplePeriodNs;
             state.SamplingNumber = previousEntry.SamplingNumber + 1;
 
             lifo.Write(ref state);

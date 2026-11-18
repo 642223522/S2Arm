@@ -112,6 +112,14 @@ class PushGameTests(JobCase):
         self.assertEqual(r["games"], [GID])
 
 
+    def test_pushes_even_when_record_says_same_pack(self):
+        # 11-18 真机：记录里这款资源包号已是 P2（推过），手机上的 game.img 却不在（删 App 重装 / 手机上删过）→ 原先按记录跳过、推 0 个文件、起局卡「资源包不完整」。
+        #   期望：照样交 push_pack（它按 sha256 核手机实况，只推缺的），记录仍是 P2
+        layout.save_device(self.c, self.ph.key, dict(shellId="S1", bundleId=self.ph.bid, games={GID: dict(program=self.prog, pack="P2")}))
+        install.push_game(self.c, GID, self.ph, steps=False)
+        self.assertEqual(self.ph.calls, [("push", GID)])
+        self.assertEqual(layout.load_device(self.c, self.ph.key)["games"][GID]["pack"], "P2")
+
     def test_shader_chain_rebuilt_on_push_before_programs(self):
         # 11-17 维护者定：着色器链变了在玩家推这一款时只重编着色器库（sgrade_bf.rechain_ios），在改写核对与推程序之前；没原料不挡推送
         import sgrade_bf

@@ -4,7 +4,7 @@
   · writes：主程序偏移 → 字节（MASTER_WRITE 的 asm_a64 / bytes，与 DECLARATIONS 的代码块放进代码段末页尾巴后的字节），交 pack/cpatch.py 当一份 fps 补丁编进包（跟「60 帧」开关）
   · runtime：ALL_FPS 条目（地址里的 VARIABLE 换成主程序偏移）+ 变量表，写进产物根 fpslocker.json，运行时服务层（services/S2A.Services/FpsLocker.cs）在 60 帧生效时按目标帧率定期写
 认不出的写法（a32、自带帮助函数 _fpsLock() 等、跳不到的符号）整份不收，原因写回调用方"""
-import os, re, struct, subprocess, sys, tempfile
+import os, re, shutil, struct, subprocess, sys, tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # 同目录的 miniyaml（Signed：写了 + / - 的跳转目标）；调用方按文件路径装载时也找得到
 import miniyaml  # noqa: E402
 
@@ -53,18 +53,78 @@ def _target(t, site, labels, syms):
     raise Unsupported(f'跳转目标 {t} 看不懂')
 
 
+def _clang_command():
+    """FPSLocker 汇编器入口。macOS 继续经 xcrun 选工具链；Windows 找 LLVM clang。"""
+    if sys.platform == 'darwin':
+        return ['xcrun', 'clang'] if shutil.which('xcrun') else None
+    configured = os.environ.get('S2A_CLANG')
+    if configured and os.path.isfile(configured): return [configured]
+    found = shutil.which('clang')
+    if found: return [found]
+    if os.name == 'nt':
+        for root in (os.environ.get('ProgramFiles'), os.environ.get('ProgramW6432'), r'C:\Program Files'):
+            if root:
+                candidate = os.path.join(root, 'LLVM', 'bin', 'clang.exe')
+                if os.path.isfile(candidate): return [candidate]
+    return None
+
+
+def _macho_text(data):
+    """从 clang 的 64 位 arm64 Mach-O object 中取 __TEXT,__text 原始机器码。"""
+    if len(data) < 32: raise Unsupported('AArch64 汇编结果太短')
+    magic, cpu, _, filetype, ncmds, sizeofcmds, _, _ = struct.unpack_from('<IiiIIIII', data)
+    if magic != 0xFEEDFACF or cpu != 0x0100000C or filetype != 1:
+        raise Unsupported('AArch64 汇编结果不是 64 位 arm64 Mach-O object')
+    end = 32 + sizeofcmds
+    if end > len(data): raise Unsupported('AArch64 汇编结果的 load commands 越界')
+    at, found = 32, None
+    for _ in range(ncmds):
+        if at + 8 > end: raise Unsupported('AArch64 汇编结果的 load command 不完整')
+        cmd, cmdsize = struct.unpack_from('<II', data, at)
+        if cmdsize < 8 or at + cmdsize > end: raise Unsupported('AArch64 汇编结果的 load command 长度无效')
+        if cmd == 0x19:  # LC_SEGMENT_64
+            if cmdsize < 72: raise Unsupported('AArch64 汇编结果的 segment command 不完整')
+            seg = struct.unpack_from('<16sQQQQiiII', data, at + 8)
+            nsects = seg[-2]
+            if 72 + nsects * 80 > cmdsize: raise Unsupported('AArch64 汇编结果的 section 列表越界')
+            sec_at = at + 72
+            for _ in range(nsects):
+                sect = struct.unpack_from('<16s16sQQIIIIIIII', data, sec_at)
+                sectname, secseg, size, offset = sect[0].split(b'\0', 1)[0], sect[1].split(b'\0', 1)[0], sect[3], sect[4]
+                # Mach-O relocatable objects commonly leave LC_SEGMENT_64.segname empty;
+                # the authoritative segment name is the section_64.segname field.
+                if secseg == b'__TEXT' and sectname == b'__text':
+                    if found is not None: raise Unsupported('AArch64 汇编结果含多个 __TEXT,__text sections')
+                    if size % 4 or offset + size > len(data): raise Unsupported('AArch64 汇编结果的 __text 范围无效')
+                    found = data[offset:offset + size]
+                sec_at += 80
+        at += cmdsize
+    if at != end: raise Unsupported('AArch64 汇编结果的 load command 总长度不匹配')
+    if found is None: raise Unsupported('AArch64 汇编结果没有 __TEXT,__text section')
+    return found
+
+
 def _assemble(lines):
     with tempfile.TemporaryDirectory() as d:
-        open(f'{d}/a.s', 'w').write('.text\n' + ''.join(f'{l}\n' for l in lines))
+        source, obj = os.path.join(d, 'a.s'), os.path.join(d, 'a.o')
+        with open(source, 'w', encoding='utf-8', newline='\n') as f:
+            f.write('.text\n' + ''.join(f'{l}\n' for l in lines))
         try:
-            r = subprocess.run(['xcrun', 'clang', '-c', '-target', 'arm64-apple-macos13', f'{d}/a.s', '-o', f'{d}/a.o'], capture_output=True, text=True)
+            clang = _clang_command()
+            if not clang:
+                raise Unsupported('本机没有 AArch64 汇编器（需要 LLVM clang；可通过 S2A_CLANG 指定）')
+            r = subprocess.run([*clang, '-c', '-target', 'arm64-apple-macos13', source, '-o', obj], capture_output=True, text=True)
             if r.returncode: raise Unsupported('汇编不了：' + (r.stderr.strip().splitlines() or ['?'])[-1][:120])
-            out = subprocess.run(['xcrun', 'otool', '-t', '-X', f'{d}/a.o'], capture_output=True, text=True).stdout.split()
+            if sys.platform == 'darwin':
+                out = subprocess.run(['xcrun', 'otool', '-t', '-X', obj], capture_output=True, text=True)
+                if out.returncode: raise Unsupported('读取汇编结果失败：' + (out.stderr.strip().splitlines() or ['otool 退出异常'])[-1][:120])
+                return [int(w, 16) for w in out.stdout.split() if re.fullmatch(r'[0-9a-f]{8}', w)]
+            with open(obj, 'rb') as f:
+                try: code = _macho_text(f.read())
+                except struct.error as e: raise Unsupported('AArch64 汇编结果结构损坏') from e
         except OSError as e:
-            # 汇编器起不来（Windows / 没装 Xcode 命令行工具：WinError 2）：这份 FPSLocker 补丁不收、原因写回，别的补丁与出包照常（#1173：原先异常没人接，
-            #   cpatch plan 整个退 1，Windows 上带 FPSLocker 配置的款出包全挂）
-            raise Unsupported(f'本机没有汇编器（xcrun clang）：{e.strerror or e}') from e
-        return [int(w, 16) for w in out if re.fullmatch(r'[0-9a-f]{8}', w)]
+            raise Unsupported(f'本机 AArch64 汇编器无法启动：{e.strerror or e}') from e
+        return list(struct.unpack(f'<{len(code) // 4}I', code))
 
 
 def _encode(ins, site, labels, syms):

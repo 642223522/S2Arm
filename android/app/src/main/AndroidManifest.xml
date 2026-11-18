@@ -23,6 +23,9 @@
         <!-- #48 A4：两个 supports 都 false = 不接管 Game Mode 优化，保留 OEM 厂商干预；
              系统省电档由应用内轮询 getGameMode() 读到后限直连 present 周期。 -->
         <meta-data android:name="android.game_mode_config" android:resource="@xml/game_mode_config" />
+        <!-- 允许 shell 做性能采样（simpleperf 按应用采样，Android 10+）：不开放调试 / run-as / 数据访问，玩家无感；
+             回放线程逐函数热点要在玩家包上量（调试包计时有额外开销）。 -->
+        <profileable android:shell="true" />
         <!-- Rotation / resize reach surfaceChanged (swapchain rebuild) instead of recreating the activity.
              screenOrientation (app/build.gradle): a per-game app runs landscape either way up, as the
              first version's screen configuration assumes (implementation plan §7.4); the diagnostic app

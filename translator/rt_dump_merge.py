@@ -56,7 +56,7 @@ def main():
     for ln in open(mapf, encoding='utf-8'):
         c = ln.rstrip('\n').split('\t')
         if len(c) > 4 and not ln.startswith('#'): have.add(c[3])
-    keys = sorted(f[:-5] for f in os.listdir(dump) if f.endswith('.code') and os.path.isfile(os.path.join(dump, f[:-5] + '.ctl')))
+    keys = sorted(f[:-5] for f in os.listdir(dump) if f.endswith('.code') and not f.startswith('._') and os.path.isfile(os.path.join(dump, f[:-5] + '.ctl')))
     recs, rows, facts, stat, skipped = collections.defaultdict(list), [], [], collections.Counter(), 0
     bad = []   # 单支转储坏了：跳过这一支、记一笔，其余照并（v0.3.1 拿不准不停 ⑭；原先任一支坏整个合并退出）
     def skip(k, why): bad.append(f'{k}：{why}'); print(f'[WARN] 转储 {k}：{why}，跳过这一支', flush=True)
