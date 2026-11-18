@@ -3,6 +3,7 @@
 //   设备侧（ASensor / Vibrator）在 phone_feedback.c，换算规矩与 iOS ios/phone_motion.m 同一套，坐标换算本身复用 runtime/src/phone_axes.c。
 #include <stdint.h>
 #include "s2a_pad.h"
+#include "motion_pick.h"
 
 // Display.getRotation()（ROTATION_0..270，画面相对自然方向顺时针转了几个 90°，即机身逆时针转了几个 90°）
 //   → 屏幕「右」「上」在传感器坐标（x 自然方向右、y 自然方向上、z 出屏，同 CoreMotion 机身坐标）里的方向，交给 s2a_phone_axes_basis。
@@ -53,4 +54,64 @@ static inline int s2a_android_rumble_step(s2a_android_rumble_state *s, int level
     }
     s->level = level; s->issued_ns = now_ns;
     return level;
+}
+
+// ---------- 外接手柄自己的马达 / 六轴（#528 第 10 项第二块）----------
+// 手柄两路马达（安卓 InputDevice 的 VibratorManager：id 0 = 左 / 强马达、id 1 = 右 / 弱马达，EventHub 的 FF_RUMBLE strong / weak）：
+//   同 iOS 系统手柄分左右（ios/controller.m LeftHandle / RightHandle）：左侧 low / high 取大给左马达，右侧给右马达。≤ 0.01 当停
+static inline int s2a_android_side_level(const s2a_pad_vibration *v) {
+    float amp = v->low_amp > v->high_amp ? v->low_amp : v->high_amp;
+    if (!(amp > 0.01f)) return 0;   // 也挡 NaN（任一路 NaN 时比较取到 NaN 那路或另一路，NaN 一样落进这里）
+    if (amp > 1) amp = 1;
+    int level = (int)(amp * 255 + 0.5f);
+    return level < 1 ? 1 : level;
+}
+// 左右两路合成一个节奏键交给 s2a_android_rumble_step（左 << 8 | 右；两路都停才是 0）：任一侧变了都算振幅变了，节流 / 续租规矩同手机
+static inline int s2a_android_pad_rumble_key(const s2a_pad_vibration v[2]) {
+    return s2a_android_side_level(&v[0]) << 8 | s2a_android_side_level(&v[1]);
+}
+
+// 手柄六轴的坐标系：安卓（InputDevice.getSensorManager，API 31）只把 Linux 驱动的读数换成 m/s²、rad/s，不统一轴向，
+//   轴向由驱动定（对照 Linux drivers/hid 与 SDL src/joystick/hidapi，两边同一套）：
+//   PlayStation（hid-playstation / hid-sony，DS4、DualSense）：x 右、y 正面法线（平拿朝天）、z 朝玩家（下沿）；
+//   任天堂（hid-nintendo，Pro、Joy-Con，右 Joy-Con 驱动已翻成同向）：x 上沿（扳机方向）、y 左、z 正面法线。
+//   都是右手系，加速度报支撑反力（平放静止法线方向 +9.8）。认不出的厂商不猜轴向：当没有手柄六轴，回落手机陀螺仪。
+enum { S2A_ANDROID_PAD_FRAME_NONE = 0, S2A_ANDROID_PAD_FRAME_PLAYSTATION, S2A_ANDROID_PAD_FRAME_NINTENDO };
+static inline int s2a_android_pad_frame(int vendor_id) {
+    if (vendor_id == 0x054c) return S2A_ANDROID_PAD_FRAME_PLAYSTATION;   // Sony
+    if (vendor_id == 0x057e) return S2A_ANDROID_PAD_FRAME_NINTENDO;      // Nintendo
+    return S2A_ANDROID_PAD_FRAME_NONE;
+}
+// 手柄读数（加速度 m/s² 支撑反力、角速度 rad/s，驱动坐标）→ NS2 原始坐标（x 右、y 上沿、z 正面法线；g、度/秒，
+//   同 runtime/include/phone_axes.h s2a_gc_motion_axes 的口径）。返回 0 = 坐标系认不出，out 不动
+static inline int s2a_android_pad_axes(int frame, const float a[3], const float w[3], float acc[3], float gyr[3]) {
+    int src[3], sign[3];   // NS2 第 i 轴 = sign[i] × 驱动第 src[i] 轴
+    if (frame == S2A_ANDROID_PAD_FRAME_PLAYSTATION) {          // 右 = x、上沿 = −z（z 朝玩家）、法线 = y
+        src[0] = 0; sign[0] = 1; src[1] = 2; sign[1] = -1; src[2] = 1; sign[2] = 1;
+    } else if (frame == S2A_ANDROID_PAD_FRAME_NINTENDO) {      // 右 = −y（y 朝左）、上沿 = x、法线 = z
+        src[0] = 1; sign[0] = -1; src[1] = 0; sign[1] = 1; src[2] = 2; sign[2] = 1;
+    } else return 0;
+    for (int i = 0; i < 3; i++) {
+        acc[i] = (float)(sign[i] * (double)a[src[i]] / S2A_ANDROID_STANDARD_GRAVITY);
+        gyr[i] = (float)(sign[i] * (double)w[src[i]] * 57.29577951308232);
+    }
+    return 1;
+}
+
+// 玩家 1 的六轴走哪一路（宿主每帧调；挑法本身是共用的 runtime/src/motion_pick.c：有样本的手柄优先，手柄给不出才用手机）。
+//   这里只管宿主那半：换源丢一帧（返回 drop = 1，服务层见 known = 0 清姿态，不跨两台刚体积分，同 iOS），
+//   手柄稳定供样本满 S2A_ANDROID_PHONE_GRACE_MS 后让手机传感器歇着（yield_phone = 1；手柄断了样本立刻要回来）
+enum { S2A_ANDROID_PHONE_GRACE_MS = 2000 };
+typedef struct { int src; uint64_t pad_since_ns; } s2a_android_motion_route;   // src：S2A_MOTION_*，零值 = 还没选过
+typedef struct { int src, drop, yield_phone; } s2a_android_motion_pick;
+static inline s2a_android_motion_pick s2a_android_motion_step(s2a_android_motion_route *r, int gamepad, int pad_known, int phone_known, uint64_t now_ns) {
+    s2a_android_motion_pick out = {0, 0, 0};
+    out.src = s2a_motion_pick(gamepad ? S2A_PAD_SYSTEM : S2A_PAD_TOUCH, 0, pad_known, phone_known);
+    if (out.src != r->src) {
+        out.drop = r->src != 0 && out.src != 0;
+        r->src = out.src;
+        r->pad_since_ns = out.src == S2A_MOTION_GC ? now_ns : 0;
+    }
+    out.yield_phone = out.src == S2A_MOTION_GC && now_ns - r->pad_since_ns >= (uint64_t)S2A_ANDROID_PHONE_GRACE_MS * 1000000u;
+    return out;
 }
