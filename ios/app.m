@@ -807,6 +807,7 @@ static void audio_category_apply(void) {
 @interface S2ASceneDelegate : UIResponder <UIWindowSceneDelegate>
 @property (strong, nonatomic) UIWindow *window;
 @property BOOL managingSaves;
+@property BOOL previousAsked;                       // 本进程已判过「要不要回到上一份存档」（ios/save_transfer.m s2a_ios_previous_save_prompt）
 @property BOOL cloudSynced;                         // 本进程已跑过起局前的 iCloud 存档同步
 @property BOOL cloudSyncing;                        // 同步页正盖着：期间切走再回来不起宿主（11-09 审查：曾在同步页底下直接起局）
 @property(strong) UIViewController *previousRoot;   // 同步页盖住之前的根（游戏界面），同步完换回
@@ -927,6 +928,7 @@ void s2a_shell_restore_snapshot(const char *gid) {   // 主线程
     [a addAction:[UIAlertAction actionWithTitle:S2AL(@"vpad.snap.saveChanged.go") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *x) { snap_library_go(g, dir, YES); }]];
     UIViewController *p = sd.window.rootViewController; while (p.presentedViewController) p = p.presentedViewController; [p presentViewController:a animated:YES completion:nil];
 }
+extern NSString *g_s2a_prev_last_game;   // ios/save_transfer.m 定义。多款容器：这次点开始之前上一局是哪款（library_play_go 覆盖 S2ALastGameId 前记下）；单款 App 一直 nil
 static void library_play(const char *gid, void *ctx) {   // 主线程（s2a_shell.h 约定）
     S2ASceneDelegate *sd = (__bridge S2ASceneDelegate *)ctx;
     if (!atomic_load(&g_game_picked)) crash_auto_off(gid);
@@ -977,6 +979,7 @@ static void library_play_go(const char *gid, S2ASceneDelegate *sd) {
         return;
     }
     atomic_store(&g_game_picked, 1);
+    g_s2a_prev_last_game = [NSUserDefaults.standardUserDefaults stringForKey:@"S2ALastGameId"] ?: @"";   // 覆盖前记下上一局是哪款：起局前「回到上一份存档」按它认上一局死的是不是这一款（save_transfer.m）
     [NSUserDefaults.standardUserDefaults setObject:@(gid) forKey:@"S2ALastGameId"];   // 诊断包在库里导出时认这一款（diag.m last_container_game_root）
     s2a_boot_rebase("点 Play（多款容器选了游戏、启动上下文已冻结）");   // 起局计时从这里算，库界面停留不计
     LOG("游戏库：选了 %s，%s", gid, s2a_host_pre_ui_checks());
@@ -1478,6 +1481,13 @@ static void widget_open(NSURL *url, void *ctx) {
             owner.managingSaves = NO; [owner startHost];
         });
         return;
+    }
+    // 上一局死在前台、这款有上一份存档：起宿主前问要不要回到上一份（不拦；玩家选完再起局）
+    if (!self.previousAsked) {
+        self.previousAsked = YES;
+        int s2a_ios_previous_save_prompt(UIViewController *, void (^)(void));
+        __weak S2ASceneDelegate *weakSelf = self;
+        if (s2a_ios_previous_save_prompt(self.window.rootViewController, ^{ [weakSelf startHost]; })) return;
     }
     [self startHost];
 }

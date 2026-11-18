@@ -158,7 +158,8 @@ int s2a_ios_save_management_requested(void) {
 @property(copy) void (^startGame)(void);
 @property(strong) NSDictionary *game;
 @property(strong) UILabel *status;
-@property(strong) UIButton *importButton, *exportButton, *backupButton, *startButton, *overrideButton, *quitButton;
+@property(strong) UIButton *importButton, *exportButton, *backupButton, *startButton, *overrideButton, *quitButton, *previousButton;
+@property BOOL hasPrevious;   // 有上一份存档（<存档>/.s2a_prev，服务层 previous）才显示「换到上一份」
 @property(strong) UIActivityIndicatorView *spinner;
 @property(strong) NSDictionary *preview;
 @property(copy) NSString *importPath, *backupPath, *temporaryExportPath;
@@ -222,7 +223,9 @@ S2A_VERTICAL_BAR_OFF
     self.overrideButton = [self button:S2AL(@"save.override") action:@selector(confirmOverride)];
     // #1206「退出」：清掉「下次先进存档管理」直接退出，下次打开照常进游戏（多款容器进游戏库）；有待恢复事务时不出
     self.quitButton = [self button:S2AL(@"save.leave") action:@selector(quitManagement)];
-    for (UIButton *button in @[self.exportButton, self.importButton, self.backupButton, self.startButton, self.overrideButton, self.quitButton]) [stack addArrangedSubview:button];
+    self.previousButton = [self button:S2AL(@"save.previous.button") action:@selector(switchPrevious)];   // 回到上一份存档：可逆，再点一次换回来
+    self.previousButton.accessibilityHint = S2AL(@"save.previous.detail"); self.previousButton.hidden = YES;
+    for (UIButton *button in @[self.exportButton, self.importButton, self.backupButton, self.previousButton, self.startButton, self.overrideButton, self.quitButton]) [stack addArrangedSubview:button];
     [stack addArrangedSubview:where];
     self.dataRoot = data_root();
     where.text = save_location(self.dataRoot);
@@ -247,6 +250,7 @@ S2A_VERTICAL_BAR_OFF
     struct s2a_save_buttons b = s2a_save_buttons(self.phase, self.recoveryOverridden, self.game != nil, self.hasSave, self.busy);
     self.importButton.enabled = b.import; self.exportButton.enabled = b.export_;
     self.backupButton.enabled = !self.busy && self.backupPath.length;
+    self.previousButton.hidden = !self.hasPrevious; self.previousButton.enabled = !self.busy && b.import;   // 能导入（没在恢复失败的状态里）才能换
     self.startButton.enabled = b.start; self.overrideButton.hidden = !b.override; self.quitButton.hidden = !b.quit;
     if (self.busy) [self.spinner startAnimating]; else [self.spinner stopAnimating];
 }
@@ -342,7 +346,12 @@ S2A_VERTICAL_BAR_OFF
         self.hasSave = [result[@"hasSave"] boolValue];
         self.backupPath = [result[@"previousBackup"] isKindOfClass:NSString.class] ? result[@"previousBackup"] : nil;
         self.status.text = self.hasSave ? S2AL(@"save.status.hasSave") : S2AL(@"save.status.noSave");
+        [self request:@{ @"operation": @"previous" } completion:^(NSDictionary *prev) { self.hasPrevious = [prev[@"hasPrevious"] boolValue]; }];
     }];
+}
+// 回到上一份存档：已提交版本与上一份互换（服务层 restorePrevious，可逆），换完告诉玩家可以随时换回来
+- (void)switchPrevious {
+    [self request:@{ @"operation": @"restorePrevious" } completion:^(__unused NSDictionary *result) { self.status.text = S2AL(@"save.previous.done"); }];
 }
 - (void)start {
     if (!s2a_save_buttons(self.phase, self.recoveryOverridden, self.game != nil, self.hasSave, self.busy).start) return;
@@ -487,4 +496,48 @@ void s2a_ios_save_present(UIViewController *presenter) {
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ s2a_host_shutdown("打开存档管理"); });
     }]];
     [presenter presentViewController:alert animated:YES completion:nil];
+}
+// ---------- 回到上一份存档：开始前问（不拦、不自动覆盖） ----------
+// 上一局死在前台、死的就是这一款（会话标记 runtime/src/sesdiag.c，同 app.m crash_auto_off 的认法）且这款有上一份存档（服务层 previous）：
+//   问「这款上次没能正常读存档，要回到上一份存档吗？」——「回到上一份」走 restorePrevious（换完再告诉玩家可以随时换回来）/「照常开始」。
+//   要问就返回 1，玩家选完调 go；不用问返回 0，调用方自己接着起局。起宿主之前调（存档还没挂载）
+#include "s2a_sesdiag.h"
+#include "s2a_docs.h"
+static NSDictionary *previous_call(NSString *op) {
+    char *ctx = s2a_shell_save_context();
+    if (!ctx) return nil;
+    NSMutableDictionary *req = [[NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:ctx length:strlen(ctx)] options:NSJSONReadingMutableContainers error:nil] mutableCopy]; free(ctx);
+    if (![req isKindOfClass:NSMutableDictionary.class]) return nil;
+    req[@"operation"] = op;
+    NSData *json = [NSJSONSerialization dataWithJSONObject:req options:0 error:nil];
+    char *raw = json ? s2a_shell_save_request([[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding].UTF8String) : NULL;
+    NSDictionary *r = raw ? [NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:raw length:strlen(raw)] options:0 error:nil] : nil; free(raw);
+    return [r isKindOfClass:NSDictionary.class] ? r : nil;
+}
+NSString *g_s2a_prev_last_game;   // 多款容器点开始前的上一款（app.m library_play_go 覆盖 S2ALastGameId 前记下；此时那个键已是这一款）；单款 App 一直 nil
+static BOOL previous_died_here(void) {
+    char d[1024]; if (s2a_container_docs(d, sizeof d) <= 0 || s2a_sesmark_prev(d) != S2A_SESMARK_FG) return NO;
+    NSString *last = g_s2a_prev_last_game ?: [NSUserDefaults.standardUserDefaults stringForKey:@"S2ALastGameId"];
+    NSString *gid = game_identity()[@"id"];
+    return !last.length || !gid.length || [last caseInsensitiveCompare:gid] == NSOrderedSame;   // 单款 App 没记过 = 就是这一款
+}
+int s2a_ios_previous_save_prompt(UIViewController *presenter, void (^go)(void)) {
+    if (!presenter || !go || !previous_died_here()) return 0;
+    NSDictionary *p = previous_call(@"previous");
+    if (![p[@"ok"] boolValue] || ![p[@"result"][@"hasPrevious"] boolValue]) return 0;
+    fprintf(stderr, "[S2A 存档] 上一局死在前台、这款有上一份存档，开始前问要不要回到上一份\n");
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:S2AL(@"save.previous.ask.title") message:S2AL(@"save.previous.ask.body") preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"save.previous.ask.start") style:UIAlertActionStyleCancel handler:^(__unused UIAlertAction *x) { go(); }]];
+    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"save.previous.ask.restore") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *x) {
+        NSDictionary *r = previous_call(@"restorePrevious");
+        BOOL ok = [r[@"ok"] boolValue];
+        NSString *why = [r[@"error"] isKindOfClass:NSDictionary.class] ? r[@"error"][@"message"] : nil;
+        fprintf(stderr, "[S2A 存档] 回到上一份%s%s\n", ok ? "成功" : "失败：", ok ? "" : (why ?: @"服务层没回应").UTF8String);
+        UIAlertController *done = [UIAlertController alertControllerWithTitle:ok ? S2AL(@"save.previous.done.title") : S2AL(@"save.errorPrefix")
+                                                                      message:ok ? S2AL(@"save.previous.done") : (why ?: S2AL(@"save.serviceInvalid")) preferredStyle:UIAlertControllerStyleAlert];
+        [done addAction:[UIAlertAction actionWithTitle:S2AL(@"save.previous.done.ok") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *y) { go(); }]];
+        [presenter presentViewController:done animated:YES completion:nil];
+    }]];
+    [presenter presentViewController:a animated:YES completion:nil];
+    return 1;
 }
