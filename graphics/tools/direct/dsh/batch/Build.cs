@@ -33,9 +33,11 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
     internal static Side MAC, IOS;
     static readonly UTF8Encoding U8 = new(false);
 
-    // 编译约定（与原 dmsh_build.py MAC_METAL / ios_metal.py 逐字相同：记录写进每个反射 chain_metal）
-    internal static readonly string[] MacMetal = { "xcrun", "-sdk", "macosx", "metal", "-c", "-w", "-fmetal-math-mode=relaxed", "-fpreserve-invariance", "-mmacosx-version-min=15.0" };
-    static readonly string[] IosMetal = { "xcrun", "-sdk", "iphoneos", "metal", "-c", "-w", "-mios-version-min=18.0", "-fmetal-math-mode=relaxed", "-fpreserve-invariance" };
+    // 编译约定（记录写进每个反射 chain_metal）。-O1 -fwrapv（#1560）：不写 -O 时 metal 按 -O2 编（产物与 -O2 逐字节相同），-O2 的优化遍在个别批上停不下来
+    //   （玩家 Windows 出包最后一批两个 metal 进程跑了三个半小时）；-O1 同另一款开源移植的离线编法，-fwrapv 让有符号整数溢出按补码回绕（Switch 着色器的整数语义），
+    //   优化器不能拿「溢出未定义」删分支。改编法 = 改编译身份（Ident 含这份记录），旧缓存不命中，玩家下次出包时重编
+    internal static readonly string[] MacMetal = { "xcrun", "-sdk", "macosx", "metal", "-c", "-w", "-O1", "-fwrapv", "-fmetal-math-mode=relaxed", "-fpreserve-invariance", "-mmacosx-version-min=15.0" };
+    static readonly string[] IosMetal = { "xcrun", "-sdk", "iphoneos", "metal", "-c", "-w", "-O1", "-fwrapv", "-mios-version-min=18.0", "-fmetal-math-mode=relaxed", "-fpreserve-invariance" };
     internal static readonly string MacRecord = string.Join(' ', MacMetal) + "; xcrun -sdk macosx metallib";
     static readonly string IosRecord = string.Join(' ', IosMetal) + "; xcrun -sdk iphoneos metallib";
 
@@ -937,7 +939,9 @@ sealed class Ticker : IDisposable
     }
 }
 
-sealed class CompileError : Exception { public CompileError(string m) : base(m) { } }
+class CompileError : Exception { public CompileError(string m) : base(m) { } }
+/// <summary>编译器超过限时没结束（Metal.Limit），已整组杀掉</summary>
+sealed class CompileTimeout : CompileError { public CompileTimeout(string m) : base(m) { } }
 
 /// <summary>Metal 编译（同原 dmsh_mtlcache.py：按「编译约定 + 编译器身份 + MSL」内容寻址；并发闸限同时在编的路数；编不过先查环境、再重试一次）</summary>
 static class Metal
@@ -1009,7 +1013,9 @@ static class Metal
         var dir = Path.Combine(Work, "pch-" + name); Directory.CreateDirectory(dir);
         string h = Path.Combine(dir, "s2a_pre.h"), pch = Path.Combine(dir, "s2a_pre.pch"), mc = "-fmodules-cache-path=" + Path.Combine(dir, "mcache");
         File.WriteAllText(h, PchPrelude);
-        var (rc, err) = Exec(Native(cmd).Where(a => a != "-c").Concat(new[] { mc, "-x", "metal-header", h, "-o", pch }).ToArray());
+        int rc; string err;
+        try { (rc, err) = Exec(Native(cmd).Where(a => a != "-c").Concat(new[] { mc, "-x", "metal-header", h, "-o", pch }).ToArray()); }
+        catch (CompileTimeout e) { (rc, err) = (-1, e.Message); }
         if (rc == 0 && File.Exists(pch)) { Pch[name] = new[] { mc, "-include-pch", pch }; Note($"[分段] {name} 预编头 {sw.Elapsed.TotalSeconds:F1} 秒"); }
         else Note($"🟡 {name} 预编头没建成（rc={rc}：{Trunc(CompilerWhy(err) ?? err, 200)}），本次不带预编头编");
     }
@@ -1077,8 +1083,17 @@ static class Metal
             {
                 var pre = attempt == 1 && Pch.TryGetValue(target, out var p) ? p : Array.Empty<string>();   // 第二次不带预编头（见 BuildPch 注）
                 if (attempt == 1) withPch = pre.Length > 0;
-                var (rc, err) = Exec(Native(cmd).Concat(pre).Concat(new[] { m, "-o", air }).ToArray());
-                if (rc == 0) (rc, err) = Exec(Tool(sdk, "metallib", air, "-o", lib));
+                int rc; string err;
+                try
+                {
+                    (rc, err) = Exec(Native(cmd).Concat(pre).Concat(new[] { m, "-o", air }).ToArray(), Limit(src.Length));
+                    if (rc == 0) (rc, err) = Exec(Tool(sdk, "metallib", air, "-o", lib), Limit(src.Length));
+                }
+                catch (CompileTimeout)   // 超时不重编第二遍（再等一个限时也一样停不下来）：交给调用方——编批库拆成逐支编，逐支仍超时的留给设备首遇
+                {
+                    St.AddOrUpdate(target + " failed", 1, (_, v) => v + 1); St.AddOrUpdate(target + " timeout", 1, (_, v) => v + 1);
+                    throw;
+                }
                 if (rc == 0)
                 {
                     if (attempt == 1 && withPch) St.AddOrUpdate(target + " pch ok", 1, (_, v) => v + 1);
@@ -1113,20 +1128,30 @@ static class Metal
             .Select(l => System.Text.RegularExpressions.Regex.Replace(l, @"^\S*/", "")).ToList();
         return ls.Count > 0 ? string.Join("; ", ls) : null;
     }
-    static (int, string) Exec(string[] a)
+    // 单次编译限时（#1560：玩家 Windows 出包最后一批两个 metal 进程跑了三个半小时不结束，出包停在 4028 / 4029）：180 秒起、源码每 MB 加 20 秒。
+    //   编批每批至多约 0.5 MB（DMSH_UNITY_BATCH_MB），正常一批零点几秒到几秒，这个限时留了两个数量级的余量；超时整组杀掉、抛 CompileTimeout。
+    //   S2A_METAL_TIMEOUT_S 直接给秒数（单测用）
+    internal static int Limit(long bytes) =>
+        int.TryParse(Environment.GetEnvironmentVariable("S2A_METAL_TIMEOUT_S"), out var s) && s > 0 ? s : 180 + (int)Math.Min(20L * (bytes >> 20), 3600);
+    static (int, string) Exec(string[] a) => Exec(a, Limit(0));
+    static (int, string) Exec(string[] a, int limitS)
     {
         // 只接 stderr、同步读：metal / metallib 成功时 stdout 无输出；原先 stdout 同步读 + stderr 异步读，异步完成要池线程，编译线程又都占着池线程 → 饥饿
         //   macOS 走 posix_spawn（Spawn）：Process.Start 在本进程里 fork，fork 期间 macOS 分配器（xzone）锁住全进程的 malloc，翻译线程全停在 _xzm_fork_lock_wait（11-02 sample 实证；
         //   本进程常驻约 5 GB，马车8 一局 1.4 万次 fork，Spare-host 翻译段 CPU 只用到 3.1 / 8 核）
-        if (OperatingSystem.IsMacOS()) return Spawn.Run(a);
+        if (OperatingSystem.IsMacOS()) return Spawn.Run(a, limitS) is var (rc0, err0, late) && late ? throw TimedOut(a, limitS) : (rc0, err0);
         var psi = new ProcessStartInfo(a[0]) { RedirectStandardError = true, UseShellExecute = false };
         string[] args = a[1..];
         if (WinBin != null && args.Any(WinUnsafe)) { args = WinRelative(args, Work); psi.WorkingDirectory = Work; }
         foreach (var x in args) psi.ArgumentList.Add(x);
         using var p = Process.Start(psi);
-        var err = p.StandardError.ReadToEnd(); p.StandardError.Dispose(); p.WaitForExit();   // 显式关管道：Process.Dispose 不关重定向的流，每次漏一个描述符等 GC（实测 1000 次 25→1059），mk8d 编到上限 Too many open files
+        bool killed = false; string err;
+        using (new Timer(_ => { try { if (!p.HasExited) { p.Kill(entireProcessTree: true); killed = true; } } catch { } }, null, limitS * 1000L, Timeout.Infinite))   // 杀整棵树：stderr 管道被子孙进程拿着时 ReadToEnd 才能返回
+        { err = p.StandardError.ReadToEnd(); p.StandardError.Dispose(); p.WaitForExit(); }   // 显式关管道：Process.Dispose 不关重定向的流，每次漏一个描述符等 GC（实测 1000 次 25→1059），mk8d 编到上限 Too many open files
+        if (killed) throw TimedOut(a, limitS);
         return (p.ExitCode, err);
     }
+    static CompileTimeout TimedOut(string[] a, int limitS) => new($"metal timeout: {Path.GetFileName(a[0])} 超过 {limitS} 秒没结束，已终止（{Path.GetFileName(a.FirstOrDefault(x => x.EndsWith(".metal", StringComparison.Ordinal) || x.EndsWith(".air", StringComparison.Ordinal)) ?? "")}）");
     // 苹果官方 Windows 版 metal.exe / metallib.exe 会把参数里的空格再拆开，引号挡不住（#257：用户名带空格「C:\Users\<带空格的用户名>」时工作区在
     //   AppData 下，每支都报 no such file 'C:\Users\<用户名前半>'，一个键都没出；11-09 Windows 出包机实测按参数整体传、源文件 / 输出 / 模块缓存 / metallib 输出
     //   四种带空格全失败，工作目录设成带空格的目录、参数只写相对路径则全过）。所以带空格的路径参数（含 -xxx=<路径>）改成相对工作区 Work 的写法、
@@ -1297,7 +1322,10 @@ static unsafe class Spawn
     [DllImport("libc", SetLastError = true)] static extern int pipe(int* fds);
     [DllImport("libc")] static extern int close(int fd);
     [DllImport("libc", SetLastError = true)] static extern int waitpid(int pid, int* status, int options);
-    const short SETSIGDEF = 0x04, SETSIGMASK = 0x08, CLOEXEC_DEFAULT = 0x4000;   // <spawn.h>（CLOEXEC_DEFAULT 是 Apple 扩展）
+    [DllImport("libc")] static extern int posix_spawnattr_setpgroup(IntPtr* attr, int pgroup);
+    [DllImport("libc")] static extern int kill(int pid, int sig);
+    const short SETPGROUP = 0x02, SETSIGDEF = 0x04, SETSIGMASK = 0x08, CLOEXEC_DEFAULT = 0x4000;   // <spawn.h>（CLOEXEC_DEFAULT 是 Apple 扩展）
+    const int SIGKILL = 9;
     const int EINTR = 4;
     static readonly Lazy<IntPtr[]> Env = new(() =>   // 出库期间不改环境（DMSH_BF 在 Init 前设好）：只拼一次
     {
@@ -1305,7 +1333,9 @@ static unsafe class Spawn
         foreach (System.Collections.DictionaryEntry e in Environment.GetEnvironmentVariables()) l.Add(Marshal.StringToCoTaskMemUTF8($"{e.Key}={e.Value}"));
         l.Add(IntPtr.Zero); return l.ToArray();
     });
-    public static (int, string) Run(string[] a)
+    // limitS 秒没结束 → 杀子进程所在的整个进程组（子进程自成一组：xcrun → metal → 编译器各段的孙进程一起停；仍在本会话里，出包作业按会话收尾照样收得到），
+    //   回 (…, 超时 = true)
+    public static (int, string, bool) Run(string[] a, int limitS)
     {
         var argv = new IntPtr[a.Length + 1];
         for (int i = 0; i < a.Length; i++) argv[i] = Marshal.StringToCoTaskMemUTF8(a[i]);
@@ -1317,16 +1347,22 @@ static unsafe class Spawn
             posix_spawn_file_actions_addinherit_np(&fa, 0); posix_spawn_file_actions_addinherit_np(&fa, 1); posix_spawn_file_actions_adddup2(&fa, fds[1], 2);
             uint none = 0, all = ~((1u << (9 - 1)) | (1u << (17 - 1)));   // 除 SIGKILL / SIGSTOP 外全回缺省
             posix_spawnattr_setsigmask(&attr, &none); posix_spawnattr_setsigdefault(&attr, &all);
-            posix_spawnattr_setflags(&attr, (short)(SETSIGDEF | SETSIGMASK | CLOEXEC_DEFAULT));
+            posix_spawnattr_setpgroup(&attr, 0);
+            posix_spawnattr_setflags(&attr, (short)(SETPGROUP | SETSIGDEF | SETSIGMASK | CLOEXEC_DEFAULT));
             fixed (IntPtr* av = argv, ev = Env.Value) rc = posix_spawnp(out pid, a[0], &fa, &attr, av, ev);
         }
         finally { posix_spawn_file_actions_destroy(&fa); posix_spawnattr_destroy(&attr); close(fds[1]); foreach (var x in argv) Marshal.FreeCoTaskMem(x); }
         if (rc != 0) { close(fds[0]); throw new System.ComponentModel.Win32Exception(rc, $"posix_spawnp {a[0]} 失败（errno {rc}）"); }
-        string err;
-        using (var r = new StreamReader(new FileStream(new Microsoft.Win32.SafeHandles.SafeFileHandle((IntPtr)fds[0], true), FileAccess.Read, 1), Encoding.UTF8)) err = r.ReadToEnd();
+        string err; int late = 0, g = pid;
+        // 读完 stderr（管道关 = 组里进程都退出了或被杀）之后、waitpid 收尸之前停掉计时器：子进程没收尸，进程号不会被复用，kill(-pid) 不会打到别人
+        using (var tm = new Timer(_ => { if (Interlocked.Exchange(ref late, 1) == 0) kill(-g, SIGKILL); }, null, limitS * 1000L, Timeout.Infinite))
+        {
+            using (var r = new StreamReader(new FileStream(new Microsoft.Win32.SafeHandles.SafeFileHandle((IntPtr)fds[0], true), FileAccess.Read, 1), Encoding.UTF8)) err = r.ReadToEnd();
+            using var done = new ManualResetEvent(false); tm.Dispose(done); done.WaitOne();   // 等可能正在跑的回调跑完
+        }
         int st;
         while (waitpid(pid, &st, 0) < 0) if (Marshal.GetLastPInvokeError() != EINTR) throw new IOException($"waitpid {pid} 失败（errno {Marshal.GetLastPInvokeError()}）");
-        return ((st & 0x7f) == 0 ? (st >> 8) & 0xff : 128 + (st & 0x7f), err);
+        return ((st & 0x7f) == 0 ? (st >> 8) & 0xff : 128 + (st & 0x7f), err, late == 1);
     }
 }
 
