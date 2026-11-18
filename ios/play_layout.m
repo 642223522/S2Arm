@@ -194,17 +194,24 @@ CGRect S2APlayDivision(UIView *view) {
 @property(nonatomic) BOOL flipped;
 @end
 @implementation S2AHoldFollower
-- (void)observeValueForKeyPath:(NSString *)path ofObject:(id)obj change:(NSDictionary *)change context:(void *)ctx { dispatch_async(dispatch_get_main_queue(),^{ [self update]; }); }
-- (void)update {
+- (void)observeValueForKeyPath:(NSString *)path ofObject:(id)obj change:(NSDictionary *)change context:(void *)ctx { dispatch_async(dispatch_get_main_queue(),^{ [self updateLearning:YES]; }); }
+- (void)update { [self updateLearning:NO]; }
+// learn：只在系统刚转完界面（effectiveGeometry 变化）时学差值——设备方向通知先到、界面后转，通知那一刻读到的是「新设备方向 + 旧界面方向」，学进去就错
+//   （维护者真机 Duo 11-17：差值在 0° / 90° / 180° / 270° 之间乱跳，倒着拿一次也没触发）
+- (void)updateLearning:(BOOL)learn {
     UIWindow *w=self.window; UIWindowScene *ws=w.windowScene; if (!ws) return;
     if (ws!=self.scene) { [self.scene removeObserver:self forKeyPath:@"effectiveGeometry"]; self.scene=ws; [ws addObserver:self forKeyPath:@"effectiveGeometry" options:0 context:NULL]; }
     int dev=(int)UIDevice.currentDevice.orientation, ui=(int)ws.effectiveGeometry.interfaceOrientation;
     // 差值按屏记（Duo 内外屏不同），学到就存下：外屏 / 普通手机（主屏）没学到前按 0；别的屏没学到前不动（先等一次横屏）
     UIScreen *sc=ws.screen; NSString *key=[NSString stringWithFormat:@"S2AHoldK.%.0fx%.0f",sc.nativeBounds.size.width,sc.nativeBounds.size.height];
     NSUserDefaults *d=NSUserDefaults.standardUserDefaults; id kv=[d objectForKey:key];
-    int k=kv ? [kv intValue] : (sc==UIScreen.mainScreen ? 0 : -1), lk=S2APlayLearnK(dev,ui);
-    if (lk>=0 && lk!=k) { [d setInteger:lk forKey:key]; fprintf(stderr,"[S2A 布局] 这块屏（%s）界面与设备方向差 %d°（横屏时学到）\n",key.UTF8String,lk); k=lk; }
+    // 主屏（普通手机、Duo 外屏）：设备方向就是按这块屏定义的，差值恒 0°、不学；别的屏（Duo 内屏）系统转完界面时学
+    BOOL main=sc==UIScreen.mainScreen;
+    int k=main ? 0 : kv ? [kv intValue] : -1, lk=!main && learn ? S2APlayLearnK(dev,ui) : -1;
+    if (lk>=0 && lk!=k) { [d setInteger:lk forKey:key]; fprintf(stderr,"[S2A 布局] 这块屏（%s）界面与设备方向差 %d°（系统转完横屏时学到）\n",key.UTF8String,lk); k=lk; }
     int act=S2APlayHoldAction(dev,ui,k);
+    { static int ld=-9, lu=-9, lkk=-9; if (dev!=ld || ui!=lu || k!=lkk) { ld=dev; lu=ui; lkk=k;
+        fprintf(stderr,"[S2A 布局] 握持：设备方向 %d、界面方向 %d、差 %d°（%s）→ %s\n",dev,ui,k,main?"主屏":"副屏",act==1?"转 180°":act==2?"先申请竖屏":act==0?"跟随系统":"判不了、保持"); } }
     UIViewController *root=w.rootViewController;
     if (act==2 && (root.supportedInterfaceOrientations&UIInterfaceOrientationMaskPortrait))
         [ws requestGeometryUpdateWithPreferences:[[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:UIInterfaceOrientationMaskPortrait] errorHandler:nil];
