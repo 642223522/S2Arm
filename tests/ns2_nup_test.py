@@ -348,8 +348,9 @@ else:
                     out[rel] = hashlib.sha256(rd(os.path.join(dp, f))).hexdigest()[:16]
         return out
 
-    def extract(src, out, image):   # image：True = S2A_ROMFS_IMAGE=1，False = 0（目录形态），None = 不设（缺省）
+    def extract(src, out, image, extra=None):   # image：True = S2A_ROMFS_IMAGE=1，False = 0（目录形态），None = 不设（缺省）
         env = {k: v for k, v in os.environ.items() if k != 'S2A_ROMFS_IMAGE'}
+        env.update(extra or {})
         env['S2A_NX_UNPACK'] = NXU
         if image is not None:
             env['S2A_ROMFS_IMAGE'] = '1' if image else '0'
@@ -379,6 +380,14 @@ else:
             c = os.path.join(t, name + '-default')   # 缺省（不设开关）= 镜像形态，与 =1 那份逐字节相同
             rc_ = extract(s, c, None)
             chk(f'⑪ {name}：缺省是镜像形态（romfs.std 同 =1、没有 romfs/）', (rc_.returncode, rd(os.path.join(c, 'romfs.std')) == rd(os.path.join(b, 'romfs.std')), os.path.exists(os.path.join(c, 'romfs'))), (0, True, False))
+        # #1612 建镜像报进度：给了 S2A_PROGRESS，nx_unpack 按出包进度协议写「时刻 解包·资源镜像（MB） 已写 总数」；夹具 romfs 不到 1 MB → 总数 1，
+        #   开头一行已写 0、收尾一行已写 = 总数；进度行（标准输出）透进日志、不再整段收住
+        pf = os.path.join(t, 'progress.tsv')
+        r = extract(src, os.path.join(t, 'prog-img'), True, {'S2A_PROGRESS': pf})
+        rows = [l.rstrip('\n').split('\t')[1:] for l in open(pf, encoding='utf-8')] if os.path.exists(pf) else []
+        rows = [x for x in rows if x and x[0] == '解包·资源镜像（MB）']
+        chk('⑪ 建镜像写进度：开头已写 0 / 1、收尾 1 / 1', (r.returncode, rows[:1], rows[-1:]),
+            (0, [['解包·资源镜像（MB）', '0', '1']], [['解包·资源镜像（MB）', '1', '1']]))
         # 展开这一步不写 romfs 散文件：只出清单（全量容器：本体 + 最新更新各一份 romfs.nupmap）
         dump = os.path.join(t, 'dump-img')
         env = dict(os.environ, S2A_ROMFS_IMAGE='1')

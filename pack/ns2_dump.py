@@ -285,12 +285,14 @@ def write_image(rom, out):
             else:
                 n = os.path.getsize(a)
                 f.write(f'{r}\t{n}\t{os.path.abspath(a)}\t0\t{n}\tfile\t-\n')
+    # 标准输出（进度行、黄字）透传进出包日志，只收标准错误做报红原因（#1612：原先整段收住，玩家日志在这一步一行没有，4 小时分不清在跑还是卡住）
+    sys.stdout.flush()
     try:
-        r = subprocess.run([nxu, '--romfs-image', lst, out], capture_output=True, text=True)
+        r = subprocess.run([nxu, '--romfs-image', lst, out], stderr=subprocess.PIPE, text=True)
     finally:
         os.unlink(lst)
     if r.returncode:
-        red(f'建 romfs.std 失败（nx_unpack 退出 {r.returncode}）：{(r.stderr or r.stdout).strip()[-300:]}')
+        red(f'建 romfs.std 失败（nx_unpack 退出 {r.returncode}）：{(r.stderr or "").strip()[-300:]}')
 
 
 def same_file(rb, ru, limit=64):
