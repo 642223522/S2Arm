@@ -1270,6 +1270,7 @@ extern int s2a_source_hold_pending(uint64_t prog_serial, uint32_t stage, const v
 extern int s2a_source_pending_control(uint64_t prog_serial, uint32_t stage, const uint8_t **control,
                                       uint32_t *control_bytes) __attribute__((weak));
 extern int s2a_source_has(const uint8_t key[8]) __attribute__((weak));
+extern void s2a_source_drop_pending_stage(uint64_t prog_serial, uint32_t stage) __attribute__((weak));   // 源已存好：释放该阶段的自持控制段
 
 // Control +0x20 是该控制段的自描述长度：>=0x880 用 0x880；SDK 10 的 0x850 段只用它自己的长度。
 static uint32_t prog_control_len(const void *control) {
@@ -1518,8 +1519,9 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData 
             if (s2a_source_keep && sd[i].data && ((k->ok >> i) & 1)) {
                 uint32_t ncode = 0; memcpy(&ncode, (const uint8_t *)sd[i].control + 0x704, 4);
                 if (ncode && ncode < (1u << 24)) {
-                    (void)s2a_source_keep(k->key[i], (uint32_t)i, (const void *)(uintptr_t)sd[i].data, ncode,
-                                          sd[i].control, nctl);
+                    if (s2a_source_keep(k->key[i], (uint32_t)i, (const void *)(uintptr_t)sd[i].data, ncode,
+                                        sd[i].control, nctl) == 0 && k->stage[i] != 0xff && s2a_source_drop_pending_stage)
+                        s2a_source_drop_pending_stage(o->serial, (uint32_t)i);   // 源已存好、键与阶段都已算出：刚自持的控制段冗余（Bind 不会再要）
                     // 立刻 pin 住；先不挂到 psnap_ent（该条目还没建），循环后统一记账，避免 N5 的额外 prog_keys。
                     if (s2a_source_pin_key && npin < NVN_PROGRAM_PIN_MAX) {
                         int dup = 0;
@@ -2398,11 +2400,13 @@ NVN(nvnCommandBufferBindProgram, void, NVNcommandBuffer *c, const NVNprogram *p,
                         LOG("[nvn] bind: stage %u key completed from the control held at SetShaders (code was unmapped then)", i);
                 } else if (s2a_source_has && s2a_source_has(keys[i])) {
                     prog_source_pin(snap.serial, p, keys[i]);
+                    if (stage[i] != 0xff && s2a_source_drop_pending_stage) s2a_source_drop_pending_stage(snap.serial, i);   // 源已在、阶段已知：自持控制段冗余（阶段没认出时 Bind 还要靠它补）
                     continue;   // 已有完整快照：不重读 guest control
                 }
                 src_diag("bind", (int)i, (stage[i] == 0xff) ? -1 : stage[i], keys[i],
                          (const void *)(uintptr_t)sd->data, ncode, ctl, (int)((kok >> i) & 1));
-                (void)s2a_source_keep(keys[i], i, (const void *)(uintptr_t)sd->data, ncode, ctl, nctl);
+                if (s2a_source_keep(keys[i], i, (const void *)(uintptr_t)sd->data, ncode, ctl, nctl) == 0 && stage[i] != 0xff && s2a_source_drop_pending_stage)
+                    s2a_source_drop_pending_stage(snap.serial, i);   // 源已存好、阶段已知：自持控制段冗余
                 prog_source_pin(snap.serial, p, keys[i]);
             }
             if (completed) {
