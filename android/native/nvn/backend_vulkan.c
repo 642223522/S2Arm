@@ -610,7 +610,7 @@ static VkImageLayout pass_att_layout(const nvn_gpu_pass_desc *d, const struct nv
 // 采样这张图要用哪个布局：深度模板只有 DEPTH_STENCIL_READ_ONLY 这一种只读布局
 static VkImageLayout sample_layout_for(const struct nvn_gpu_tex_s *t) {
     if (!(t->usage & (VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT))) return VK_IMAGE_LAYOUT_GENERAL;
-    return (t->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    return (t->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;   // 纯模板 S8 也是深度模板图像（#1581 O）
 }
 // 绑定项里的贴图（采样 / 存储图像；别的类别没有图）
 static struct nvn_gpu_tex_s *bind_tex_of(const nvn_gpu_binding *b) {
@@ -3035,8 +3035,11 @@ static VkRenderPass make_pipeline_pass(const nvn_gpu_pipe_desc *d) {
     }
     int has_depth = 0;
     VkAttachmentReference dref = {0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
-    if (d->dfmt) {
-        VkFormat f = nvn_vk_tex_format(d->dfmt);
+    // 深度模板附件：深度格式优先，只挂模板（纯 STENCIL8，dfmt = 0）时按 sfmt 挂——与开通道时
+    //   「深度视图，没有就模板视图」同一口径，否则管线的兼容通道少一个附件、和实际通道不兼容（#1581 O）
+    const uint32_t dsfmt = d->dfmt ? d->dfmt : d->sfmt;
+    if (dsfmt) {
+        VkFormat f = nvn_vk_tex_format(dsfmt);
         if (f == VK_FORMAT_UNDEFINED) return VK_NULL_HANDLE;
         memset(&att[natt], 0, sizeof att[natt]);
         att[natt].format = f;
@@ -5547,9 +5550,10 @@ static uint32_t fmt_bpp(VkFormat f) {
     }
 }
 
+// 图像有的面：纯模板 S8_UINT 只有模板面（#1581 O：原先一律带深度面，S8 的视图取成 DEPTH）
 static VkImageAspectFlags fmt_aspect(VkFormat f) {
     if (!nvn_vk_format_is_depth(f)) return VK_IMAGE_ASPECT_COLOR_BIT;
-    return VK_IMAGE_ASPECT_DEPTH_BIT | (nvn_vk_format_has_stencil(f) ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
+    return (nvn_vk_format_has_depth(f) ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) | (nvn_vk_format_has_stencil(f) ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
 }
 
 static VkPipelineStageFlags layout_dst_stage(VkImageLayout l) {
@@ -6543,7 +6547,8 @@ void nvn_gpu_clear_view(nvn_gpu_cmd ch, nvn_gpu_view vh, const float rgba[4], co
         set_sticky(c, NVN_GPU_E_UNSUPPORTED, "clear_view 不支持视图覆盖格式");
         return;
     }
-    if (!(t->aspect & VK_IMAGE_ASPECT_DEPTH_BIT)) {
+    const int ds_img = (t->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) != 0;   // 纯模板 S8 也走深度模板清除（#1581 O）
+    if (!ds_img) {
         nvn_fmt_info fi;
         if (nvn_fmt_info_of(v->nvn_format, &fi)) {
             int fmt_int = fi.kind == NVN_FMT_UINT || fi.kind == NVN_FMT_SINT;
@@ -6556,7 +6561,7 @@ void nvn_gpu_clear_view(nvn_gpu_cmd ch, nvn_gpu_view vh, const float rgba[4], co
     VkImageSubresourceRange range = {t->aspect, v->base_level, v->levels, v->base_layer, v->layers};
     full_barrier(c);
     image_barrier(c, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    if (t->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) {
+    if (ds_img) {
         VkClearDepthStencilValue ds;
         ds.depth = rgba ? rgba[0] : 1.0f;
         ds.stencil = 0;
