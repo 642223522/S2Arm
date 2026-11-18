@@ -351,8 +351,8 @@ static void snap_take_(const char *final_dir, int exit_after) {
     double t3 = now_s();
     f = open_in(dir, "mem.bin", "wb"); e |= !f || dump_mem(f, &raw, &comp, &nreg) || close_sync(f);
     double t4 = now_s();
-    { int s2a_snap_cs_moved(void); int mv = s2a_snap_cs_moved();   // 在服务请求里阻塞、按入口记的线程：存档途中它的请求完成了，回复与请求日志都已在快照里，恢复再重发就多一次——这次不算
-      if (mv) { LOG("【黄】即时存档：%d 条在服务请求里阻塞的线程在存档途中等到了回复，这次不存（游戏照常跑；换个时机再存）", mv); e = 1; } }
+    { int s2a_snap_cs_moved(void); int mv = s2a_snap_cs_moved();   // 在服务请求里阻塞、按入口记、进了请求日志的线程：存档途中它的请求完成了，可能已建句柄、改了正在写的内核账——这次不算（不进日志的照存，见 thread.c）
+      if (mv) { LOG("【黄】即时存档：%d 条进了请求日志的阻塞请求在存档途中等到了回复，这次不存（游戏照常跑；换个时机再存）", mv); e = 1; } }
     f = open_in(dir, "manifest.tsv", "w");
     if (f) {
         fprintf(f, "版本\t1\n构建号\t%s\n宿主二进制\t%s\n程序号\t%s\n窗口\t%s\n布局\t%s\n存档目录\t%s\n存档文件数\t%d\n", id.build, id.exe, id.prog, id.win, id.layout, id.save, id.save_n);

@@ -430,12 +430,20 @@ static int32_t a_create_instance(const void *ci, const void *alloc, void *inst) 
     pthread_once(&watch, fail_watch_start);
     return ((create_instance_fn)dm_vk_lookup("vkCreateInstance"))(ci, alloc, inst);
 }
-static void *vk_export(const char *name) {
-    if (!name || strncmp(name, "vk", 2)) return NULL;
+void s2a_snap_handout_id(uint64_t v, const char *id) __attribute__((weak));   // runtime/src/snapshot.c（登记见 hle_nvn.c）
+static void *vk_export_raw(const char *name) {
     if (!strcmp(name, "vkGetInstanceProcAddr") || !strcmp(name, "vkGetDeviceProcAddr")) return sw_xstack_wrap(name, (void *)a_get_proc);
     if (!strcmp(name, "vkCreateInstance")) return sw_xstack_wrap(name, (void *)a_create_instance);
     void *fn = dm_vk_lookup(name);
     return fn && vk_big(name) ? sw_xstack_wrap(name, fn) : fn;
+}
+// 交给游戏的每个 vk* 地址（导入解析与运行中 vkGet*ProcAddr 都走这里）按「vk:export:<名>」登记身份：切栈桩按本进程第几个被套编号，
+//   另一个进程里同一个函数的桩号不同（或还没套过、那个桩号空着），恢复时游戏内存里拿着的旧地址按身份换成本进程的（vk_snap.inc vk_snap_resolve）
+static void *vk_export(const char *name) {
+    if (!name || strncmp(name, "vk", 2)) return NULL;
+    void *p = vk_export_raw(name);
+    if (p && s2a_snap_handout_id) { char id[128]; snprintf(id, sizeof id, "vk:export:%s", name); s2a_snap_handout_id((uint64_t)(uintptr_t)p, id); }
+    return p;
 }
 // 直连模式下装载器解析游戏的 vk* 导入（重定位期）：回实现地址，没有回 NULL（装载器照原路径找，找不到报红）
 void *s2a_vk_entry(const char *name) {

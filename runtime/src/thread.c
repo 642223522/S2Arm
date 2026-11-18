@@ -124,6 +124,7 @@ typedef struct thr {
     // 交给 C# 服务层处理的系统调用（s2a_svc_ctx_fill / s2a_svc_cs_returned）：号、会话句柄、开始时刻、回来次数。
     //   即时存档：同步 IPC 在 C# 里阻塞（等网络、等别的服务）时线程不会回门，冻结把它当「入口」安全点（恢复后重发这次请求），见 snap_cs_blocked
     int cs_svc; uint32_t cs_h; uint64_t cs_t0; _Atomic uint32_t cs_ret;
+    int cs_seq, snap_cs_seq;   // 正在 C# 里处理的这条请求在服务请求日志里的序号（不进日志的 / 没在处理 < 0）；冻结判齐那一刻另存一份
     int snap_cs; uint32_t snap_cs_ret; uint8_t snap_cs_frame[832], snap_cs_msg[256];   // 冻结判齐那一刻另存的门帧与请求消息（C# 写回复之前）
     // 最近 8 次同步类系统调用（0x1a–0x1d / 0x34 / 0x35）：号、参数、地址处的值（调前 / 调后）、返回码、返回地址。
     //   停帧现场只打「在跑」线程的：同步原语每圈都掉进系统调用的空转（11-14 #35fdbb 166 号 SignalToAddress 11 万次、162 号对空闲锁 ArbitrateLock 2.6 万次）
@@ -269,7 +270,7 @@ static snap_hlog_t *g_hlog; static int g_nhlog, g_caphlog; static _Atomic int g_
 static __thread int t_cs_h, t_snap_ctx = -2;
 static __thread const uint32_t *t_force; static __thread int t_nforce, t_iforce;
 int s2a_snap_mode(void); int s2a_snap_logging(void);
-void s2a_snap_hctx(int seq) { t_snap_ctx = seq; if (seq >= 0) atomic_store(&g_snap_lastseq, seq); }   // C# 请求开始 / 结束时设（结束设 -2）
+void s2a_snap_hctx(int seq) { t_snap_ctx = seq; if (seq >= 0) atomic_store(&g_snap_lastseq, seq); thr_t *t = thread_current_or_null(); if (t) t->cs_seq = seq; }   // C# 请求开始 / 结束时设（结束设 -2）
 void s2a_snap_force(const uint32_t *v, int n) { t_force = v; t_nforce = n; t_iforce = 0; }        // 恢复重放：本线程接下来服务层建的句柄按这串值分
 int s2a_snap_force_left(void) { return t_nforce - t_iforce; }
 static void hlog_add(int op, uint32_t h, uint32_t kind, int cs, void *obj) {   // 持 G
@@ -2179,7 +2180,7 @@ int s2a_snap_freeze(int timeout_ms, int *nthr, int *nst) {
         if (!left) {   // 判齐：C# 里阻塞的那些，此刻另存门帧与请求消息（之后它若完成、C# 会改写这两处）
             for (thr_t *t = g_all; t; t = t->all) { t->snap_cs = 0; if (atomic_load(&t->paused_ack) || t->wkind || !snap_cs_blocked(t)) continue;
                 t->snap_cs_ret = atomic_load(&t->cs_ret); memcpy(t->snap_cs_frame, t->svc_regs, sizeof t->snap_cs_frame); memcpy(t->snap_cs_msg, t->tlr, sizeof t->snap_cs_msg);
-                if (atomic_load(&t->cs_ret) == t->snap_cs_ret && snap_cs_blocked(t)) { t->snap_cs = 1; LOG("即时存档：线程 id %llu 在服务请求里阻塞（会话 %#x），按入口记、恢复后重发", (unsigned long long)t->id, t->cs_h); } }
+                if (atomic_load(&t->cs_ret) == t->snap_cs_ret && snap_cs_blocked(t)) { t->snap_cs = 1; t->snap_cs_seq = t->cs_seq; LOG("即时存档：线程 id %llu 在服务请求里阻塞（会话 %#x），按入口记、恢复后重发", (unsigned long long)t->id, t->cs_h); } }
             *nthr = n; pthread_mutex_unlock(&G); return (int)((now_ns() - t0) / 1000); }   // 持 G 判定全员到齐；之后调用方再持 G 抓现场
 #if defined(__APPLE__)
         // 0.5 秒还没到门的：不在系统调用里、停在游戏原代码上（忙等等着别的已冻线程）——Mach 挂住、取完整现场，当作安全点；停在宿主代码 / 补丁岛的放开再等
@@ -2223,7 +2224,21 @@ int s2a_snap_freeze(int timeout_ms, int *nthr, int *nst) {
     }
 }
 // 存档写完前核对：判齐时按入口记下的「C# 里阻塞」线程，期间有没有哪条的请求完成了（完成 = 回复已写进游戏内存 / 请求日志，快照前后不一致）。回完成了的条数
-int s2a_snap_cs_moved(void) { int n = 0; glock(); for (thr_t *t = g_all; t; t = t->all) if (t->snap_cs && atomic_load(&t->cs_ret) != t->snap_cs_ret) n++; pthread_mutex_unlock(&G); return n; }
+// 按入口记的阻塞请求在存档途中完成了：只有进了服务请求日志的才作数（它完成时可能建句柄、改内核账，而内核账正在写）。
+//   不进日志的（套接字等待 / 读取）完成了也不改服务状态，回复写进的 TLS 恢复时按判齐那一刻的请求消息写回、重发，输出缓冲在回复前对游戏无意义——照存
+int s2a_snap_cs_moved(void) {
+    int n = 0, quiet = 0; glock();
+    for (thr_t *t = g_all; t; t = t->all) if (t->snap_cs && atomic_load(&t->cs_ret) != t->snap_cs_ret) { if (t->snap_cs_seq >= 0) n++; else quiet++; }
+    pthread_mutex_unlock(&G);
+    if (quiet) LOG("即时存档：%d 条不进请求日志的阻塞请求在存档途中等到了回复（不影响这份快照，恢复后照常重发）", quiet);
+    return n;
+}
+// 按入口记、进了服务请求日志的阻塞请求的序号（SnapLog.cs 存日志时把这几条换成「跳过」：恢复时由线程从入口重发一次，日志再重放就成了两次）
+int s2a_snap_cs_inflight(int *out, int max) {
+    int n = 0; glock();
+    for (thr_t *t = g_all; t; t = t->all) if (t->snap_cs && t->snap_cs_seq >= 0 && n < max) out[n++] = t->snap_cs_seq;
+    pthread_mutex_unlock(&G); return n;
+}
 static int sw(FILE *f, const void *p, size_t n) { return fwrite(p, 1, n, f) == n ? 0 : -1; }
 // 线程记录（版本 1）。门帧 832 字节原样存：[0,800) 寄存器 / 状态、[800] 客体 sp（含借的 32 字节）；客体栈上借存的 x16/x17 随游戏内存走
 typedef struct {
@@ -3271,7 +3286,7 @@ void s2a_svc_ctx_fill(s2a_svc_ctx *c, int num, uint64_t *regs) {
         uint32_t h = (uint32_t)(num == 0x21 ? regs[0] : regs[2]);
         glock(); int i = h_idx(h); if (i) { c->obj_kind = g_h[i].kind; c->obj = g_h[i].cookie; } pthread_mutex_unlock(&G);
     }
-    if (t) { t->cs_svc = num; t->cs_h = (uint32_t)(num == 0x21 ? regs[0] : regs[2]); t->cs_t0 = now_ns(); }
+    if (t) { t->cs_svc = num; t->cs_h = (uint32_t)(num == 0x21 ? regs[0] : regs[2]); t->cs_t0 = now_ns(); t->cs_seq = -1; }   // 序号由 C# 请求开始时设（s2a_snap_hctx）
     if (t) { t->svc_regs = regs; atomic_store(&t->in_svc, 1); }   // C# 里可能阻塞：算在系统调用里（暂停取门帧）
 }
 // C# 处理完一次系统调用、回到原生层的第一时间（gate.c，取核之前）：回复已写进游戏的消息区 / 寄存器帧。即时存档据此判断「判齐后这次请求有没有完成」

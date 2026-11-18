@@ -17,9 +17,10 @@ int s2a_snap_mode(void) { return snap_sw() != 0; }
 int s2a_snap_logging(void) { int v = atomic_load(&g_snap_live); if (v < 0) { v = snap_sw() == 1; atomic_store(&g_snap_live, v); } return v; }
 void s2a_snap_live_set(int on) { atomic_store(&g_snap_live, on ? 1 : 0); }
 #if !defined(__APPLE__)
-// 安卓：快照引擎（thread.c / snapshot.c 的苹果段）不编，开关恒关，服务层 C#（SnapLog.cs）不会真调下面三个；
+// 安卓：快照引擎（thread.c / snapshot.c 的苹果段）不编，开关恒关，服务层 C#（SnapLog.cs）不会真调下面四个；
 //   NativeAOT 静态链接要求它 P/Invoke 的符号都有定义，给不做事的实现
 int s2a_snap_need_handle(uint32_t h) { (void)h; return 0; }
 int s2a_snap_replay_begin(int seq) { (void)seq; return 0; }
 int s2a_snap_replay_end(int seq) { (void)seq; return 0; }
+int s2a_snap_cs_inflight(int *out, int max) { (void)out; (void)max; return 0; }
 #endif

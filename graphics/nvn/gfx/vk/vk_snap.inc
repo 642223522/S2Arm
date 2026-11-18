@@ -24,8 +24,10 @@ __attribute__((constructor)) static void vs_ranges(void) {   // 静态区的三�
     s2a_snap_handout_range((uint64_t)(uintptr_t)&g_device, sizeof g_device, "vk.device");
     s2a_snap_handout_range((uint64_t)(uintptr_t)&g_queue, sizeof g_queue, "vk.queue");
 }
+void *s2a_vk_entry(const char *name) __attribute__((weak_import));   // graphics/nvn/host_adapt.m（交给游戏的 vk* 地址，含切栈桩；登记见 hle_vk.m）
 uint64_t vk_snap_resolve(const char *id) {   // 快照引擎：身份 → 本进程的值（不认的回 0）
     if (!strncmp(id, "vk:proc:", 8)) return (uint64_t)(uintptr_t)vk_lookup(id + 8);
+    if (!strncmp(id, "vk:export:", 10)) return s2a_vk_entry ? (uint64_t)(uintptr_t)s2a_vk_entry(id + 10) : 0;
     return 0;
 }
 int vk_snap_used(void) { return g_vs && g_objects; }
