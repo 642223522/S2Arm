@@ -150,7 +150,7 @@ public sealed partial class EnvironmentWindow
                 box.Children.Add(WrappedMuted(X("macNote"), 12));
                 var buttons = new WrapPanel { Orientation = Orientation.Horizontal };
                 // 「在电脑上升级」（11-18 维护者：玩家点了才升）：页上可升级的款排进后台单款升级（Windows 补 iPhone 程序件），进度画在各款封面与主按钮上（SGradeUpgrade.cs）；
-                //   原先「升级并安装 / 导出」去掉：装到 iPhone / 导出某款只补那一款（11-18 总指挥），升级完照常装 / 导出就带上
+                //   原先「升级并安装 / 导出」去掉：装到 iPhone / 导出某款只补那一款（11-18 维护者定），升级完照常装 / 导出就带上
                 var ids = yes.Select(g => g.TryGetProperty("id", out var v) ? v.GetString() ?? "" : "").Where(x => x.Length > 0).ToList();
                 var here = Primary(X("here"), () => { sgradeOpen = false; UpgradeSGrade(ids); Navigate("library"); });
                 AutomationId(here, "sgrade.upgrade.here"); here.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(here);
