@@ -2806,7 +2806,10 @@ namespace S2A.Services.Tests
             }
             else
             {
-                CheckUncovered("动森登记 + fs 读 RomFS", $"未覆盖（没有 {game}/romfs，玩家自己的游戏数据）");
+                if (Environment.GetEnvironmentVariable("S2A_TEST_GAME") != null)   // gate sets it: data missing must fail loudly, not pass as uncovered
+                    Check("动森登记 + fs 读 RomFS", "有测试数据", $"缺测试数据：{game}/romfs");
+                else
+                    CheckUncovered("动森登记 + fs 读 RomFS", $"未覆盖（没有 {game}/romfs，玩家自己的游戏数据）");
             }
 
             // ---- 系统数据按号（fsp-srv OpenDataStorageByDataId）：0100152000022000 产物根的 0100000000000802 Mii 资源 ----
@@ -2834,7 +2837,10 @@ namespace S2A.Services.Tests
             }
             else
             {
-                CheckUncovered("系统数据按号", $"未覆盖（没有 {sysRoot}/0100000000000802，玩家自己的游戏数据）");
+                if (Environment.GetEnvironmentVariable("S2A_TEST_SYSTEMDATA") != null)
+                    Check("系统数据按号", "有测试数据", $"缺测试数据：{sysRoot}/0100000000000802");
+                else
+                    CheckUncovered("系统数据按号", $"未覆盖（没有 {sysRoot}/0100000000000802，玩家自己的游戏数据）");
             }
 
             // ---- 共享字体（pl:u）：本机旧库字体数据（S2A_SHARED_FONT_DIR，不进仓库；没有就记未测）----
