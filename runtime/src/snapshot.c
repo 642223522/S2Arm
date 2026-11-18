@@ -239,17 +239,27 @@ static uint64_t handout_resolve(const char *id) {
 typedef struct { uint64_t a, n; } span_t;
 static int in_ranges(uint64_t a, const uint64_t *b, const uint64_t *n, int k) { for (int i = 0; i < k; i++) if (a >= b[i] && a < b[i] + n[i]) return 1; return 0; }
 static int page_zero(const uint8_t *p) { const uint64_t *q = (const uint64_t *)p; for (size_t i = 0; i < 0x4000 / 8; i++) if (q[i]) return 0; return 1; }
+static int g_dump_noread; static uint64_t g_dump_noread_b;
 static int dump_mem(FILE *f, uint64_t *raw_out, uint64_t *comp_out, int *nreg) {
     uint64_t base, size; s2a_window_get(&base, &size); const uint64_t pg = 0x4000, CH = 8ull << 20;
     uint64_t sb[1024], sn[1024]; int ns = s2a_snap_shared_ranges(sb, sn, 1023);
     { int s2a_far_shadow_in_window(uint64_t *, uint64_t *); uint64_t fl, fh; if (s2a_far_shadow_in_window(&fl, &fh)) { sb[ns] = fl; sn[ns++] = fh - fl; } }   // 远端影子块按游戏地址另存（far.bin）
     span_t *sp = NULL; int nsp = 0, cap = 0; *nreg = 0;
+    struct { uint64_t a, n; int prot; } *nr = NULL; int nnr = 0, cnr = 0;   // 临时加了读权限的段（存完原样还原）
+    g_dump_noread = 0; g_dump_noread_b = 0;
     // 1) 收集要存的连续页段：当前可读、非代码、不在服务层共享内存里、驻留（含换出）、非全零
     for (vm_address_t a = base; a < base + size; ) {   // vm_region_*_64：iOS SDK 不给 mach_vm.h（同 vawin.c / far.c）
         vm_address_t r = a; vm_size_t sz = 0; natural_t depth = 0; vm_region_submap_info_data_64_t info; mach_msg_type_number_t cnt = VM_REGION_SUBMAP_INFO_COUNT_64;
         if (vm_region_recurse_64(mach_task_self(), &r, &sz, &depth, (vm_region_recurse_info_t)&info, &cnt) != KERN_SUCCESS || r >= base + size) break;
         uint64_t lo = r < base ? base : r, hi = r + sz > base + size ? base + size : r + sz; a = r + sz;
-        if (!(info.protection & VM_PROT_READ) || s2a_prot_is_code(info.protection, info.max_protection)) continue;
+        if (s2a_prot_is_code(info.protection, info.max_protection)) continue;
+        // 宿主为模拟游戏设的权限（MapMemory 期间的源页、SetMemoryPermission 设成不可访问的页）把页设成不可读，数据仍有用：冻结中临时加读、存完原样还原
+        //   （原先跳过这类页，恢复后是全零——一款 Switch 2 游戏切纤程时读到全零的上下文，崩在游戏自带的校验陷阱上）
+        int noread = !(info.protection & VM_PROT_READ);
+        if (noread && (!(info.max_protection & VM_PROT_READ) || mprotect((void *)lo, hi - lo, PROT_READ))) continue;
+        if (noread) { g_dump_noread++; g_dump_noread_b += hi - lo;
+            if (nnr == cnr) { cnr = cnr ? cnr * 2 : 64; nr = realloc(nr, sizeof *nr * (size_t)cnr); }
+            nr[nnr].a = lo; nr[nnr].n = hi - lo; nr[nnr].prot = info.protection; nnr++; }
         (*nreg)++;
         size_t np = (size_t)((hi - lo) / pg); char *vec = malloc(np); if (!vec || mincore((void *)lo, hi - lo, vec)) { free(vec); continue; }
         for (size_t i = 0; i < np; i++) {
@@ -278,7 +288,9 @@ static int dump_mem(FILE *f, uint64_t *raw_out, uint64_t *comp_out, int *nreg) {
         free(out); free(ol);
     }
     uint64_t z = 0; e |= fwrite(&z, 8, 1, f) != 1;
-    free(sp); *raw_out = raw; *comp_out = comp; return e ? -1 : 0;
+    for (int i = 0; i < nnr; i++) mprotect((void *)nr[i].a, nr[i].n, (nr[i].prot & VM_PROT_WRITE ? PROT_WRITE : 0) | (nr[i].prot & VM_PROT_EXECUTE ? PROT_EXEC : 0));   // 还原（原先没有读）
+    if (nnr) LOG("即时存档：不可读的内存段 %d 段 %.1f MB 临时加读存进快照（游戏设的权限，恢复时照权限账收回）", nnr, g_dump_noread_b / 1048576.0);
+    free(nr); free(sp); *raw_out = raw; *comp_out = comp; return e ? -1 : 0;
 }
 
 // ---------- 存 ----------
@@ -339,6 +351,8 @@ static void snap_take_(const char *final_dir, int exit_after) {
     double t3 = now_s();
     f = open_in(dir, "mem.bin", "wb"); e |= !f || dump_mem(f, &raw, &comp, &nreg) || close_sync(f);
     double t4 = now_s();
+    { int s2a_snap_cs_moved(void); int mv = s2a_snap_cs_moved();   // 在服务请求里阻塞、按入口记的线程：存档途中它的请求完成了，回复与请求日志都已在快照里，恢复再重发就多一次——这次不算
+      if (mv) { LOG("【黄】即时存档：%d 条在服务请求里阻塞的线程在存档途中等到了回复，这次不存（游戏照常跑；换个时机再存）", mv); e = 1; } }
     f = open_in(dir, "manifest.tsv", "w");
     if (f) {
         fprintf(f, "版本\t1\n构建号\t%s\n宿主二进制\t%s\n程序号\t%s\n窗口\t%s\n布局\t%s\n存档目录\t%s\n存档文件数\t%d\n", id.build, id.exe, id.prog, id.win, id.layout, id.save, id.save_n);
