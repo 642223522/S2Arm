@@ -142,6 +142,15 @@ class RuntimeEnv(unittest.TestCase):
             self.assertIn("启动器启动时的 PATH：里面没有 metal.exe", text)
             self.assertIn(str(Path(d, "没装", "ios", "bin", "metal.exe")) + " → 没有", text)
 
+    def test_env_cmd_is_pure_ascii(self):
+        # cmd 按玩家机代码页（中文系统 936）读 .cmd：不带 BOM 的 UTF-8 中文会按 GBK 拆字、吞掉行尾，下一行 set 失效
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("brw", ROOT / "launchers/windows/bundle_runtime_win.py")
+        brw = importlib.util.module_from_spec(spec); spec.loader.exec_module(brw)
+        with tempfile.TemporaryDirectory() as d:
+            brw.env_cmd(Path(d)); raw = Path(d, "s2arm_env.cmd").read_bytes()
+        self.assertEqual([b for b in raw if b > 0x7F], [])
+
     def test_same_path_as_bundled_env_cmd(self):
         # 作业环境与随包 s2arm_env.cmd（启动器 / 手工起出包用）同一份 PATH：两处各写一遍，这里核一致
         import importlib.util, ntpath
