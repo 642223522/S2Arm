@@ -17,7 +17,7 @@ import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
-from core import Failure, contained, display_version, read, release_version, resolve_path
+from core import Failure, atomic, contained, display_version, read, release_version, resolve_path
 import layout
 
 
@@ -377,12 +377,16 @@ def _build(c):
     c.begin("清理出包中间产物")
     pack_dir = out / (ipa.stem + "资源包")   # 同 pack/oneclick/oneclick.sh 的交付布局
     patches.record(c, gid, "ios", product_root(c, gid))   # 补丁打入结果（打上 / 没打上，完成页列；deliver 之前产物根还在，11-14）
+    from library import iphone_ready
+    had_iphone = iphone_ready(c, gid)   # 出包前这款就有能装的 iPhone 包（只出 Apple TV 时据此决定派生完要不要撤掉顺带出的 iPhone 交付件，#1459）
     deliver(c, gid, product_root(c, gid), pack_dir, ipa)
     finish_kit_state(c, gid)
     tv_out = None
     if c.r.get("platform") == "tvos":   # Apple TV（11-15）：同一份改写产物派生（pack/jobs/tvos.py derive），要在清解包目录之前（ASTC 预转读 romfs）
         import tvos
         tvos.derive(c, gid, extraction)
+        if not had_iphone:
+            drop_iphone_delivery(c, gid)
         if c.r.get("tvExport"):   # Windows（export_plan 带）：接着导出 Apple TV 安装包，完成卡给 .ipa 的位置
             tv_out = tvos.export_tv(c)
     prune_unless_follow_up(c, gid)
@@ -537,6 +541,21 @@ def _swap_pack(c, gid, pack_dir, want):
     from rewrite_refresh import rewriter_id   # 这次的改写产物出自哪版改写器：改写器以后修了，更新手机时只核记号不同的款（rewrite_refresh.py）
     from sgrade_bf import BF_GEN   # 这次的直连库出自本引擎翻译器：可读瓦片版代数（S 级升级按它判要不要补 _bf，pack/jobs/sgrade_bf.py）
     layout.update_info(c, gid, ios=dict(shellId=current_shell_id(c), pack=want, rewriterId=rewriter_id(c), bfGen=BF_GEN, builtBy=host_update.built_by(c), **compat))
+
+
+def drop_iphone_delivery(c, gid):
+    """只出 Apple TV（#1459）：电视包是从 iPhone 那份派生的，派生完把这次顺带交付的 iPhone 资源包与 game.json 的 ios 记录撤掉，
+    游戏库不再显示「可装到 iPhone」。只在出包前这款没有 iPhone 包时调（原来就有的不动）。电视资源包里的 game.img 是硬链接、
+    Mac 运行版本合并到这份 game.img 也是硬链接（onerom），删掉 iPhone 这个名字不丢数据；程序件（常驻 .programs）电视照样要用，不动"""
+    from library import _rm
+    image = layout.image_ios(c, gid, create=False)
+    if image.is_dir():
+        _rm(c, layout.root_of(c, gid), image)
+    d = layout.game_dir(c, gid)
+    info = read(d / layout.GAME_JSON, {})
+    if "ios" in info:
+        info.pop("ios")
+        atomic(d / layout.GAME_JSON, info)
 
 
 CONSUME_MARK = ".img_consume_inflight"   # 出包工作目录里：写 IMG 正在边写边删产物根 RomFS（#746），写成功才删
