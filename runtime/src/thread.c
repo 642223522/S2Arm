@@ -270,7 +270,8 @@ static snap_hlog_t *g_hlog; static int g_nhlog, g_caphlog; static _Atomic int g_
 static __thread int t_cs_h, t_snap_ctx = -2;
 static __thread const uint32_t *t_force; static __thread int t_nforce, t_iforce;
 int s2a_snap_mode(void); int s2a_snap_logging(void);
-void s2a_snap_hctx(int seq) { t_snap_ctx = seq; if (seq >= 0) atomic_store(&g_snap_lastseq, seq); thr_t *t = thread_current_or_null(); if (t) t->cs_seq = seq; }   // C# 请求开始 / 结束时设（结束设 -2）
+void s2a_snap_hctx(int seq) { t_snap_ctx = seq; thr_t *t = thread_current_or_null(); if (t) t->cs_seq = seq; }   // C# 请求开始时设本线程的请求序号（结束设 -2）
+void s2a_snap_hcommit(int seq) { if (seq >= 0) atomic_store(&g_snap_lastseq, seq); }   // C# 请求完成、追加进日志时设：此后的关闭记在它之后（日志按完成先后，SnapLog.cs）   // C# 请求开始 / 结束时设（结束设 -2）
 void s2a_snap_force(const uint32_t *v, int n) { t_force = v; t_nforce = n; t_iforce = 0; }        // 恢复重放：本线程接下来服务层建的句柄按这串值分
 int s2a_snap_force_left(void) { return t_nforce - t_iforce; }
 static void hlog_add(int op, uint32_t h, uint32_t kind, int cs, void *obj) {   // 持 G
@@ -2225,19 +2226,13 @@ int s2a_snap_freeze(int timeout_ms, int *nthr, int *nst) {
 }
 // 存档写完前核对：判齐时按入口记下的「C# 里阻塞」线程，期间有没有哪条的请求完成了（完成 = 回复已写进游戏内存 / 请求日志，快照前后不一致）。回完成了的条数
 // 按入口记的阻塞请求在存档途中完成了：只有进了服务请求日志的才作数（它完成时可能建句柄、改内核账，而内核账正在写）。
-//   不进日志的（套接字等待 / 读取）完成了也不改服务状态，回复写进的 TLS 恢复时按判齐那一刻的请求消息写回、重发，输出缓冲在回复前对游戏无意义——照存
+//   它完成后才追加进请求日志（SnapLog.cs 按完成先后记），可能已写进刚存的日志之外，恢复时照常从入口重发；不进日志的（套接字等待 / 读取）完成了也不改服务状态，回复写进的 TLS 恢复时按判齐那一刻的请求消息写回、重发，输出缓冲在回复前对游戏无意义——照存
 int s2a_snap_cs_moved(void) {
     int n = 0, quiet = 0; glock();
     for (thr_t *t = g_all; t; t = t->all) if (t->snap_cs && atomic_load(&t->cs_ret) != t->snap_cs_ret) { if (t->snap_cs_seq >= 0) n++; else quiet++; }
     pthread_mutex_unlock(&G);
     if (quiet) LOG("即时存档：%d 条不进请求日志的阻塞请求在存档途中等到了回复（不影响这份快照，恢复后照常重发）", quiet);
     return n;
-}
-// 按入口记、进了服务请求日志的阻塞请求的序号（SnapLog.cs 存日志时把这几条换成「跳过」：恢复时由线程从入口重发一次，日志再重放就成了两次）
-int s2a_snap_cs_inflight(int *out, int max) {
-    int n = 0; glock();
-    for (thr_t *t = g_all; t; t = t->all) if (t->snap_cs && t->snap_cs_seq >= 0 && n < max) out[n++] = t->snap_cs_seq;
-    pthread_mutex_unlock(&G); return n;
 }
 static int sw(FILE *f, const void *p, size_t n) { return fwrite(p, 1, n, f) == n ? 0 : -1; }
 // 线程记录（版本 1）。门帧 832 字节原样存：[0,800) 寄存器 / 状态、[800] 客体 sp（含借的 32 字节）；客体栈上借存的 x16/x17 随游戏内存走
