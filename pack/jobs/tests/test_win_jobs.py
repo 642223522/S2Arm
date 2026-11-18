@@ -293,7 +293,7 @@ class FakeW:
         def status(resources=None):   # 随包判定走真实现（resources 下有没有两份二进制）；不随包时按用例给
             st = real.status(resources=resources) if resources else None
             return st if st else {"verdict": impactor, "code": None if impactor == "ok" else "impactor_missing",
-                                  "download": "https://github.com/claration/impactor/releases/tag/v2.7.2"}
+                                  "download": "https://github.com/claration/impactor/releases/tag/v2.7.3"}
         self.team = "ABCDE12345"   # 真实 accounts.json 每个账号都带十位团队号（审计 P2-253 Windows 实机核过）
         self.unselected, self.picks = [], []   # 账号存档里存着却没选中的 Apple ID（D-ZM37）；picks 记 select_only_account 收到的 plumesign
         def select_only(exe):
@@ -611,7 +611,7 @@ class WinInstall(unittest.TestCase):
         pins = {n: hashlib.sha256((impactor.DOWNLOAD + n).encode()).hexdigest() for n in impactor.BUNDLED}
         with patch.object(impactor, "BUNDLED", pins):
             bundle_win.bundle_impactor(self.t / "out1", cache=cache, fetch=fetch)
-            self.assertEqual(got, [impactor.DOWNLOAD + n for n in pins])                  # 缺才下，下的是官方 v2.7.2 发布页
+            self.assertEqual(got, [impactor.DOWNLOAD + n for n in pins])                  # 缺才下，下的是官方 v2.7.3 发布页
             self.assertEqual(sorted(p.name for p in (self.t / "out1").iterdir()),
                              sorted([*pins, "LICENSE-Impactor-MIT.txt", "LICENSE-apple-codesign-MPL-2.0.txt", "README-来源与许可.txt"]))
             readme = (self.t / "out1/README-来源与许可.txt").read_text(encoding="utf-8")
@@ -633,7 +633,7 @@ class WinInstall(unittest.TestCase):
         self.assertEqual([(i["id"], i["ok"]) for i in r["items"]], [("package", True), ("impactor", False), ("connected", True)])
         self.assertEqual((r["ready"], r["device"]), (True, "U1"))   # 缺 Impactor 只提示，直接去签名
         # 缺 Impactor 那一项带官方发布页（启动器按钮），其余项没有链接
-        self.assertEqual([i["url"] for i in r["items"]], [None, "https://github.com/claration/impactor/releases/tag/v2.7.2", None])
+        self.assertEqual([i["url"] for i in r["items"]], [None, "https://github.com/claration/impactor/releases/tag/v2.7.3", None])
         with patch.object(self.m, "win_install_mod", return_value=FakeW([("U1", "USB", 3)])):
             self.assertIsNone(self.m.readiness_windows(self.c, self.gid)["items"][1]["url"])
 

@@ -362,7 +362,7 @@ def install_ios(c, game, scheme):
     log = c.private / "logs" / (c.task + "-install.log")
     try:
         r = subprocess.run(["/usr/bin/ditto", "-x", "-k", rec["ipa"], str(stage)], capture_output=True, text=True)
-        app = next((stage / "Payload").glob("*.app"), None)
+        app = next((p for p in (stage / "Payload").glob("*.app") if p.is_dir()), None)
         if r.returncode or not app:
             raise Failure("解不开 iPhone 包：" + (r.stderr.strip()[-200:] or rec["ipa"]), code="job_failed")  # 非玩家句
         info = app / "Info.plist"
@@ -444,7 +444,7 @@ def install_ios_win(c, game, scheme):
                 z.extractall(stage)
         except (OSError, zipfile.BadZipFile) as e:
             raise Failure(f"解不开 iPhone 包：{e}", code="job_failed") from e  # 非玩家句
-        app = next((stage / "Payload").glob("*.app"), None)
+        app = next((p for p in (stage / "Payload").glob("*.app") if p.is_dir()), None)
         if not app:
             raise Failure("解不开 iPhone 包：" + rec["ipa"], code="job_failed")  # 非玩家句
         c.begin("写进 App 要申请的权限", 2, 4)

@@ -736,7 +736,7 @@ uint64_t s2a_module_span(const char *dir) {   // 模块目录里全部 <名>.fix
     uint64_t t = 0; struct dirent *e;
     while ((e = readdir(d))) {
         size_t l = strlen(e->d_name); const char *suf = ".fixups.tsv"; size_t sl = strlen(suf);
-        if (l <= sl || strcmp(e->d_name + l - sl, suf)) continue;
+        if (l <= sl || strcmp(e->d_name + l - sl, suf) || !strncmp(e->d_name, "._", 2)) continue;   // ._：exFAT 上 macOS 配的 AppleDouble 附属文件
         char nm[64]; if (l - sl >= sizeof nm) continue; memcpy(nm, e->d_name, l - sl); nm[l - sl] = 0;
         t += mod_footprint(dir, nm);
     }

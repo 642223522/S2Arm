@@ -105,7 +105,7 @@ public static class PackCases
         // ---- checklist results ----
         const string checklist = """
 {"gameId":"G","items":[{"id":"package","ok":true,"waiting":false,"title":"t","detail":"","who":"human"},
- {"id":"impactor","ok":false,"waiting":false,"title":"t","detail":"d","who":"human","url":"https://github.com/claration/impactor/releases/tag/v2.7.2"},
+ {"id":"impactor","ok":false,"waiting":false,"title":"t","detail":"d","who":"human","url":"https://github.com/claration/impactor/releases/tag/v2.7.3"},
  {"id":"connected","ok":false,"waiting":false,"title":"t","detail":"d","who":"human"}],"ready":false,"device":"","account":""}
 """;
         using (var doc = JsonDocument.Parse(checklist))

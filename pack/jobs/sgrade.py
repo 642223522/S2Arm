@@ -132,7 +132,6 @@ def mac_all(c):
       库里有任务在用这把锁（正在玩 / 正在出包）就这款不做，不抢 CPU；改写在锁外的临时目录里做，只有换进运行版本那一下「没人用才拿锁」，
       拿不到就放弃这款——开始游戏起局前自己会补它（build.launch → refresh_mac）"""
     from rewrite_refresh import refresh_mac
-    import sgrade_bf
     games = [g for g in c.catalog()["games"] if (layout.image_mac(c, g["id"], create=False) / "exefs/main").is_file()]
     c.begin("给 Mac 游戏补上 S 级优化", 1, 1)
     done = []
@@ -145,9 +144,9 @@ def mac_all(c):
             # 后台：只补补丁记号变了的；改写器指纹单独变了不重改写（11-17 维护者定），开始游戏起局前 build.launch 前台会做这一款
             if refresh_mac(c, g["id"], layout.image_mac(c, g["id"], create=False), hold=lambda: c.idle("execution"), ignore_rewriter=True):
                 done.append(g["id"].upper())
-            # 老包直连库缺可读瓦片版着色器（_bf）：整份重出在锁外做（几分钟到几十分钟），换进运行版本前同样进 c.idle，玩家正在开局就这次放弃
-            if sgrade_bf.upgrade_mac(c, g["id"], layout.image_mac(c, g["id"], create=False), hold=lambda: c.idle("execution")) and g["id"].upper() not in done:
-                done.append(g["id"].upper())
+            # 老包直连库缺可读瓦片版着色器（_bf）不在这里补（11-17 D-FCMF：升级到新版后每次打开启动器都在后台整份重出直连库，几分钟到几十分钟，
+            #   玩家一开局就放弃、下次再从头来，从没做完；维护者 11-17「后台重新改写全部游戏以后不要做了」）。_bf 只是性能优化，缺了照常能玩：
+            #   升级页（scan 的 bfPending）照旧标出来，玩家对这一款点重出时前台补
         except (Failure, OSError) as e:
             c.emit("message", f"【黄】{g.get('name') or g['id']} 这次没补上：{str(e)[:160]}")
     if done:

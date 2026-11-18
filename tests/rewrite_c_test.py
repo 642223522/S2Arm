@@ -45,6 +45,12 @@ EXTRA_CASES = [
       svc #32
       ret
     """),
+    dict(name='20b_pacga_deterministic', asm="""
+      .inst 0x9ad13262
+      .inst 0x9ac733c7
+      .inst 0x9adf3002
+      ret
+    """),
     dict(name='21_cond_and_pc', asm="""
       adr x18, out
       cbz x18, out
