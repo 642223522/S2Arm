@@ -16192,8 +16192,9 @@ static void copy_b2t(const p_copy_b2t *c) {
         for (int z = 0; z < nz; z++)
             enc_b_copy_buffer_texture(b, (__bridge id<MTLBuffer>)mb, mo + z * img, row, img, MTLSizeMake(c->r.width, c->r.height, 1), t, layer0 + c->r.zoffset + z, level, MTLOriginMake(c->r.xoffset, c->r.yoffset, 0));
 storage_uploaded:
-    if (!texture_storage_upload(c, (__bridge id<MTLBuffer>)mb, mo, row, img))
-        RED_ONCE(205, "buffer-to-texture upload cannot update its pool storage (ser=%llu format %#x)", (unsigned long long)c->tex->serial, c->tex->d.format);
+    { const char *why = texture_storage_upload(c, (__bridge id<MTLBuffer>)mb, mo, row, img);
+      if (why) RED_ONCE(205, "buffer-to-texture upload cannot update its pool storage (ser=%llu format %#x target %d flags %#x %ux%ux%u region %d,%d,%d %dx%dx%d): %s", (unsigned long long)c->tex->serial, c->tex->d.format,
+                        c->tex->d.target, c->tex->d.flags, c->tex->d.width, c->tex->d.height, c->tex->d.depth, c->r.xoffset, c->r.yoffset, c->r.zoffset, c->r.width, c->r.height, c->r.depth, why); }
 }
 
 // Texture copies a blit cannot do -- a format change, a scaled region or a mirrored one (MIRROR_X / MIRROR_Y) (Link's Awakening converts its 1408x792 RG11B10F scene to RGBA16F every frame; Super Mario 3D World scales 1920x1080 to 1280x720
