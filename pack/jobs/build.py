@@ -462,11 +462,15 @@ def compile_host(c, fingerprint, env, log_root):
         raise Failure("S2Arm Mac 宿主缺地址窗口护栏库 libs2a_vaguard.dylib。")
     shutil.copy2(guard, executable.parent / guard.name)
     c.run(["codesign", "--force", "--sign", "-", executable.parent / guard.name], log_root / "sign.log", env)
-    plist = dict(CFBundleIdentifier="org.s2arm.macos.game", CFBundleName="S2Arm Game",
+    # 不进系统「游戏模式」：游戏模式下 GPU 忙着也被压在最低频（上游参考实现（MIT）cb59a672 / frame-rate.md：一个约 100 行、不含宿主代码的全屏 Metal 程序
+    #   游戏模式下约 160 秒后 618 → 338 MHz、9.5 → 18 ms 一帧；关掉 924 MHz、约 7 ms；一款大型开放世界游戏 10.5 → 19.7 ms 落到 30 帧）。LSSupportsGameMode false 是苹果给的关法，
+    #   保留游戏类别。系统记得认过游戏的包名，同一包名改成 false 仍开着游戏模式：包名换成 org.s2arm.macos.host，老玩家机器也从头算（第一次起会再问一次蓝牙权限）；
+    #   手柄重连记忆的存储名 org.s2arm.macos.game（NS2LauncherController 的 UserDefaults 套件）与包名无关，不改
+    plist = dict(CFBundleIdentifier="org.s2arm.macos.host", CFBundleName="S2Arm Game",
                  CFBundleExecutable="s2arm-host", CFBundlePackageType="APPL", LSMinimumSystemVersion="15.0",
                  NSBluetoothAlwaysUsageDescription="连接 Switch 2 Pro 手柄，接收按键与体感并发送游戏震动。",  # 非玩家句
-                 NSHighResolutionCapable=True, LSSupportsGameMode=True,
-                 LSApplicationCategoryType="public.app-category.games")   # 游戏模式要系统靠类别认出是游戏（11-01 调研：Mac 全屏才进游戏模式）
+                 NSHighResolutionCapable=True, LSSupportsGameMode=False,
+                 LSApplicationCategoryType="public.app-category.games")
     (app / "Contents/Info.plist").write_bytes(plistlib.dumps(plist))
     c.run(["codesign", "--force", "--sign", "-", app], log_root / "sign.log", env)
     atomic(host_root / "ready.json", dict(schema=1, sha256=digest(executable), guard_sha256=digest(executable.parent / VAGUARD)))
