@@ -630,3 +630,4 @@
 20261118-1343-audio-slow-tick-faults.patch
 20261118-1303-fs-stream-pace.patch
 20261118-0245-f16x2-atomic-add.patch
+20261118-0453-mac-audio-enqueue-stuck-heal.patch
