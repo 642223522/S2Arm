@@ -23,9 +23,15 @@ extern "C" {
 #define S2A_DGUARD_DIAG_EN "Report a problem"
 #define S2A_DGUARD_GO "仍然启动"
 #define S2A_DGUARD_GO_EN "Start anyway"
+// 已知归因、不是直连的失败（D-GYNE：游戏要的堆超出宿主给的地址窗口、svc 回了内存不足，游戏没理会照样访问崩出 SIGBUS——重新出包没用）：
+//   起局前换成这一页，告诉玩家是这台设备给这款的内存不够；「仍然启动」照常可点（不拦）
+#define S2A_DGUARD_DEVICE_TITLE "这台设备的内存不够运行这款游戏"
+#define S2A_DGUARD_DEVICE_TITLE_EN "This device doesn't have enough memory for this game"
+#define S2A_DGUARD_DEVICE_MSG "上次启动时游戏要的内存超出了这台设备能给的，所以没能启动，重新出包或重装也一样。可以换一台内存更大的 iPhone / iPad；也可以点「仍然启动」再试一次。"
+#define S2A_DGUARD_DEVICE_MSG_EN "Last time this game asked for more memory than this device can give it, so it couldn't start. Rebuilding or reinstalling won't change that. Try an iPhone or iPad with more memory, or tap \"Start anyway\" to try again."
 // 起局前要不要先起界面（main 里判，还不知道程序号）：记录里已连续失败 ≥ S2A_DGUARD_LIMIT 次 = 1；自动化 / 开发工具起的局（s2a_unattended.h）恒 0，
 //   起局时满 3 次就记日志收局、不停在提示页。只读文件，不改
-int s2a_dguard_needs_ui(void);
+int s2a_dguard_needs_ui(void);   // 最近一局是已知归因的失败（s2a_dguard_known_last）也 = 1：起局前换说明页
 // 资源包的出包指纹：<游戏数据>/manifest.json 的 index_sha256 前 16 位；读不到 = "-"。返回静态串
 const char *s2a_dguard_pack_fp(const char *game_data);
 // 直连起局、起游戏主线程之前调：读记录（程序号、出包指纹、宿主提交号任一不同 = 新包，从 0 数），返回此前连续失败的次数（不含本次）。之后才能 arm
@@ -39,6 +45,10 @@ void s2a_dguard_frame(uint64_t now);
 void s2a_dguard_background(int on, uint64_t now);
 // 本次的失败证据：why = "崩溃" / "内存告警" / "画面停住"（stall = 1，帧又走了用 why = NULL 撤回）。崩溃处理里可调（拿不到锁照写）
 void s2a_dguard_evidence(const char *why, int stall);
+// 本次是已知归因、不是直连的失败（崩溃处理按现场认出，见 crash.c）：这局记一行「!」，不计连续失败；崩溃处理里可调（拿不到锁照写）
+void s2a_dguard_known(const char *why);
+// 记录里最近一局是不是已知归因的失败：是返回 1，why（可空）填原因。只读文件
+int s2a_dguard_known_last(char *why, size_t n);
 // 诊断信息（中文多行：程序号、主程序构建号、出包指纹、翻译链、设备、系统、每次失败的阶段），写进 out，返回长度
 size_t s2a_dguard_diag(char *out, size_t n, const char *build_id, const char *chain);
 #ifdef __cplusplus

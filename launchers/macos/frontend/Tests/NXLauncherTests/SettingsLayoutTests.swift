@@ -1392,7 +1392,7 @@ import S2ArmAppleAdapter
         let games = (1...9).map { SGradeScanGame(["id": "original-\($0)", "name": "Original game \($0)", "program": "original", "total": 1, "iphone": true, "patches": ["fps": 1]]) }
         for language in [Lang.zh, .en] {
             let code = language == .zh ? "zh-Hans" : "en"
-            let page = AnyView(SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh, busy: false,
+            let page = AnyView(SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh,
                 x: { BackendText.launcherText("sgrade.upgrade." + $0, language: code) }, upgrade: { _ in }, close: {}).frame(height: 500))
             let (host, window) = try await render(page, fixture: fixture, language: language)
             defer { window.close() }
@@ -1400,11 +1400,93 @@ import S2ArmAppleAdapter
             let list = try XCTUnwrap(scrollViews(in: host).first { $0.hasVerticalScroller })
             XCTAssertGreaterThan(list.contentView.bounds.height, 60, "游戏列表不能被压成不可见的滚动区")
             XCTAssertGreaterThan(try XCTUnwrap(list.documentView).bounds.height, 100)
-            for id in ["sgrade.upgrade.install", "sgrade.upgrade.export"] {
+            for id in ["sgrade.upgrade.close"] {
                 let action = try XCTUnwrap(fixture.navigation.controlTargets(in: window).first { $0.id == id }, "升级操作必须始终可见")
                 XCTAssertTrue(bounds.contains(action.frame))
             }
             try snapshot(host, "upgrade-short-\(language.code)")
+        }
+    }
+
+    /// S 级优化手动 / 批量升级（11-18 维护者：点了才做；可批量，写明批量升级、有全选）：每款一个勾选框和「升级」，
+    ///   点某款「升级」只交那一款；页脚「批量升级所选（N 款）」N 跟勾选走、没勾时不可点；正在升级的那款勾选框和按钮都不可用；
+    ///   批量进行中页脚换成「第 i 款 / 共 n 款」+「停止」；没有可升级的款不出行按钮；进度环 / 进度条四种状态出图
+    func testSGradeManualUpgradeOnMac() async throws {
+        let fixture = try SettingsFixture()
+        defer { fixture.remove() }
+        let games = [SGradeScanGame(["id": "alpha", "name": "Original Alpha", "program": "original", "total": 2, "patches": ["fps": 1, "widescreen": 1]]),
+                     SGradeScanGame(["id": "beta", "name": "Original Beta", "program": "original", "total": 1, "patches": ["fps": 1]])]
+        for language in [Lang.zh, .en] {
+            let code = language == .zh ? "zh-Hans" : "en"
+            let x = { (k: String) in BackendText.launcherText("sgrade.upgrade." + k, language: code) }
+            var picked: [[String]] = []
+            let body = SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh, x: x, upgrade: { picked.append($0) }, close: {}, upgrading: ["beta"])
+            body.upgrade(["alpha"])
+            XCTAssertEqual(picked, [["alpha"]], "点某款只交那一款")
+            XCTAssertEqual(body.chosen, [], "没勾选时批量所选为空")
+            let (host, window) = try await render(AnyView(body), fixture: fixture, language: language)
+            defer { window.close() }
+            let ids = Set(fixture.navigation.controlTargets(in: window).map(\.id))
+            XCTAssertTrue(ids.isSuperset(of: ["sgrade.upgrade.row.alpha", "sgrade.upgrade.pick.alpha", "sgrade.upgrade.selectAll"]), "每款有勾选和「升级」，组标题旁有全选")
+            XCTAssertFalse(ids.contains("sgrade.upgrade.row.beta"), "正在升级的那款按钮不可点")
+            XCTAssertFalse(ids.contains("sgrade.upgrade.pick.beta"), "正在升级的那款勾选框不可选")
+            XCTAssertFalse(ids.contains("sgrade.upgrade.batch"), "没勾选时「批量升级所选」不可点")
+            XCTAssertEqual(x("batch").replacingOccurrences(of: "{0}", with: "2"), language == .zh ? "批量升级所选（2 款）" : "Batch upgrade selected (2)")
+            try snapshot(host, "sgrade-manual-page-" + language.code)
+            let running = SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh, x: x, upgrade: { _ in }, close: {},
+                                            upgrading: ["alpha", "beta"], batch: SGradeBatch(running: true, index: 1, count: 2),
+                                            states: ["alpha": "running", "beta": "queued"], progress: ["alpha": 0.37])
+            XCTAssertEqual(running.rowTitle("alpha"), language == .zh ? "正在升级 37%" : "Upgrading 37%", "正在做的那行带百分比")
+            XCTAssertEqual(running.rowTitle("beta"), language == .zh ? "排队中" : "Queued", "排着的写排队中，不冒充在升")
+            let after = SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh, x: x, upgrade: { _ in }, close: {},
+                                          states: ["alpha": "done", "beta": "incomplete"])
+            XCTAssertEqual(after.rowTitle("alpha"), language == .zh ? "已完成" : "Done")
+            XCTAssertEqual(after.rowTitle("beta"), language == .zh ? "继续升级" : "Resume upgrade", "被停 / 出错的款再点接着升")
+            let skipped = SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh, x: x, upgrade: { _ in }, close: {}, states: ["alpha": "skipped"])
+            XCTAssertEqual(skipped.rowTitle("alpha"), language == .zh ? "正在玩，稍后再升" : "Playing — upgrade later")
+            XCTAssertEqual(skipped.rowTitle("beta"), language == .zh ? "升级" : "Upgrade")
+            // 作业层说已没有要补的段（bfPending 全 false）：写「已完成」、不可点不可选；有一边要补的照常「升级」
+            let current = [SGradeScanGame(["id": "gamma", "name": "Up to date", "program": "original", "total": 3, "bfPending": ["iphone": false, "mac": false]]),
+                           SGradeScanGame(["id": "delta", "name": "Needs iPhone", "program": "original", "total": 3, "bfPending": ["iphone": true, "mac": false]])]
+            let cur = SGradeUpgradeBody(games: current, failure: nil, zh: language == .zh, x: x, upgrade: { _ in }, close: {})
+            XCTAssertEqual(cur.rowTitle("gamma"), language == .zh ? "已完成" : "Done", "已是最新的款不再显示「升级」")
+            XCTAssertTrue(cur.locked("gamma")); XCTAssertFalse(cur.locked("delta"))
+            XCTAssertEqual(cur.rowTitle("delta"), language == .zh ? "升级" : "Upgrade")
+            let curStopped = SGradeUpgradeBody(games: current, failure: nil, zh: language == .zh, x: x, upgrade: { _ in }, close: {}, states: ["gamma": "incomplete"])
+            XCTAssertFalse(curStopped.locked("gamma"), "被停的款即使查找时没要补的也能再点（查找结果可能是旧的）")
+            // 没有补丁（total 0）但还缺片上读取用的着色器（bfPending 有一边 true）：进可升组、能点能勾（同作业层 upgradable 计数）
+            let bfOnly = SGradeUpgradeBody(games: [SGradeScanGame(["id": "eps", "name": "Shader only", "program": "original", "total": 0, "bfPending": ["iphone": true, "mac": false]]),
+                                                  SGradeScanGame(["id": "zeta", "name": "Nothing", "program": "original", "total": 0, "bfPending": ["iphone": false, "mac": false]])],
+                                           failure: nil, zh: language == .zh, x: x, upgrade: { _ in }, close: {})
+            XCTAssertEqual(bfOnly.upgradeIDs, ["eps"], "只缺片上读取着色器的款可升，什么都不缺的不进可升组")
+            XCTAssertFalse(bfOnly.locked("eps"))
+            XCTAssertEqual(x("bf"), language == .zh ? "补上片上读取用的着色器" : "Add on-chip read shaders")
+            let (host3, window3) = try await render(AnyView(running), fixture: fixture, language: language)
+            defer { window3.close() }
+            let ids3 = Set(fixture.navigation.controlTargets(in: window3).map(\.id))
+            XCTAssertTrue(ids3.contains("sgrade.upgrade.stop"), "批量进行中有「停止」")
+            XCTAssertFalse(ids3.contains("sgrade.upgrade.batch"), "批量进行中不出「批量升级所选」")
+            XCTAssertEqual(x("batchProgress").replacingOccurrences(of: "{0}", with: "1").replacingOccurrences(of: "{1}", with: "2"),
+                           language == .zh ? "批量升级：第 1 款 / 共 2 款" : "Batch upgrade: game 1 of 2")
+            try snapshot(host3, "sgrade-manual-batch-running-" + language.code)
+            let noPatch = [SGradeScanGame(["id": "delta", "name": "No patch", "program": "original", "total": 0])]
+            let none = AnyView(SGradeUpgradeBody(games: noPatch, failure: nil, zh: language == .zh, x: x, upgrade: { _ in }, close: {}))
+            let (_, window2) = try await render(none, fixture: fixture, language: language)
+            defer { window2.close() }
+            XCTAssertFalse(fixture.navigation.controlTargets(in: window2).contains { $0.id.hasPrefix("sgrade.upgrade.row.") }, "没有可升级的款不出行按钮")
+            let txt = { (id: String) in BackendText.launcherText(id, language: code) }
+            XCTAssertEqual(LauncherView.sgradeUpgradingTitle(0.379, txt), language == .zh ? "正在升级 37%" : "Upgrading 37%")
+            XCTAssertEqual(LauncherView.sgradeUpgradingTitle(nil, txt), language == .zh ? "正在升级…" : "Upgrading…")
+        }
+        for (name, p) in [("0", 0.0), ("37", 0.37), ("100", 1.0), ("wait", -1.0)] as [(String, Double)] {
+            let progress: Double? = p < 0 ? nil : p
+            let view = AnyView(VStack(spacing: 18) {
+                SGradeUpgradeRing(progress: progress, side: 180).frame(width: 180, height: 180).background(Color.gray)
+                SGradeUpgradeBar(progress: progress).frame(width: 220).padding(8).background(Color.white)
+            }.padding(20))
+            let (host, window) = try await render(view, fixture: fixture, language: .zh)
+            defer { window.close() }
+            try snapshot(host, "sgrade-manual-progress-" + name)
         }
     }
 
@@ -1419,25 +1501,26 @@ import S2ArmAppleAdapter
         ]
         for language in [Lang.zh, .en] {
             let code = language == .zh ? "zh-Hans" : "en"
-            let page = AnyView(SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh, busy: false,
+            let page = AnyView(SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh,
                 x: { BackendText.launcherText("sgrade.upgrade." + $0, language: code) }, upgrade: { _ in }, close: {}))
             let (host, window) = try await render(page, fixture: fixture, language: language)
             defer { window.close() }
             let bounds = window.convertToScreen(host.bounds)
             let actions = fixture.navigation.controlTargets(in: window)
-            XCTAssertEqual(actions.count, 1)
-            let button = try XCTUnwrap(actions.first)
+            XCTAssertTrue(Set(actions.map(\.id)).isSuperset(of: ["sgrade.upgrade.row.alpha", "sgrade.upgrade.row.beta", "sgrade.upgrade.selectAll", "sgrade.upgrade.close"]), "每款「升级」、全选、关闭都在")
+            let button = try XCTUnwrap(actions.first { $0.id == "sgrade.upgrade.close" })   // 最右那颗量边距
             print("upgrade-footer \(language.code): bottom=\(button.frame.minY - bounds.minY), right=\(bounds.maxX - button.frame.maxX)")
             XCTAssertEqual(button.frame.minY - bounds.minY, 16, accuracy: 1, "升级弹窗应使用与设置页一致的 16 pt 底边距")
             XCTAssertEqual(bounds.maxX - button.frame.maxX, 32, accuracy: 1)
             let document = try XCTUnwrap(scrollViews(in: host).first?.documentView)
             let bitmap = try XCTUnwrap(document.bitmapImageRepForCachingDisplay(in: document.bounds))
             document.cacheDisplay(in: document.bounds, to: bitmap)
-            // Only the two gray descriptions occupy the right half; the title and names are on the left.
+            // Only the two gray descriptions occupy the middle column; names are on the left, the per-game buttons and
+            //   「全选」 on the far right (scan stops before them).
             var rows: [(firstY: Int, lastY: Int, minX: Int)] = []
             for y in 0..<bitmap.pixelsHigh {
                 var first: Int?
-                for x in (bitmap.pixelsWide / 2)..<bitmap.pixelsWide {
+                for x in (bitmap.pixelsWide / 2)..<(bitmap.pixelsWide * 7 / 10) {
                     if let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB),
                        min(color.redComponent, color.greenComponent, color.blueComponent) > 0.4 {
                         first = x; break
@@ -1749,7 +1832,7 @@ import S2ArmAppleAdapter
                 ("update", AnyView(UpdatePopupView(model: fixture.model, language: uiLanguage))),
                 ("messages", AnyView(MessagesPanel(model: fixture.model, language: uiLanguage))),
                 ("diagnostics", AnyView(UploadDiagnosticsSheet(model: fixture.model, gameID: nil, operations: nil, fallback: "") {})),
-                ("upgrade", AnyView(SGradeUpgradeBody(games: [], failure: nil, zh: language == .zh, busy: false,
+                ("upgrade", AnyView(SGradeUpgradeBody(games: [], failure: nil, zh: language == .zh,
                     x: { BackendText.launcherText("sgrade.upgrade." + $0, language: uiLanguage) }, upgrade: { _ in }, close: {})))
             ]
             for (name, page) in pages {
@@ -1949,6 +2032,7 @@ private final class SettingsRunner: JobProcessRunner {
     var requests: [[String: Any]] { lock.withLock { captured } }
     func start(executable: URL, arguments: [String], environment: [String: String], onLine: @escaping (Data) -> Void,
                onStderr: @escaping (Data) -> Void, onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle {
+        objc_sync_enter(self); defer { objc_sync_exit(self) }   // 作业客户端在并发线程池里同时调 start：替身状态串行改（无锁并发追加数组会 SIGSEGV 带崩整个测试进程）
         let request = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: arguments.last!))) as! [String: Any]
         lock.withLock { captured.append(request) }
         var result: [String: Any] = [:]

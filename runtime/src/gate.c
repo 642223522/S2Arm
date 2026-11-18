@@ -11,6 +11,8 @@
 #include <stdlib.h>
 // 弱缺省定义：真定义在 crash.c（同一个程序里强定义盖过它）；只链 gate.c 的单测没有 crash.c，用这份返回 0
 __attribute__((weak)) uint64_t s2a_sp_unaligned_count(void) { return 0; }
+// 同理：真定义在 thread.c（即时存档记「C# 回复已写好」）；只链 gate.c 的单测用这份空实现
+__attribute__((weak)) void s2a_svc_cs_returned(void) {}
 
 enum { G_SVC, G_CNTPCT, G_CNTVCT, G_WIDE, G_SPIN, G_AREGION };
 typedef struct { uint64_t ret; int kind, arg; uint64_t orig; } gate_t;
