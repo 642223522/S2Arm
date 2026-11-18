@@ -94,7 +94,7 @@ class PreemptAuto(JobCase):
                 pass
 
     def test_two_auto_jobs_no_deadlock(self):
-        a = self.start("bgA", "sgradeMac", ["auto-heavy", f"program-{GID}"])
+        a = self.start("bgA", "installUpdatePrepare", ["auto-heavy", f"program-{GID}"])
         b = self.start("bgB", "installUpdatePrepare", ["auto-heavy"], wait_holding=False)   # 排在 auto-heavy 后面
         t0 = time.monotonic()
         with install.packer_phone_lock(self.c):

@@ -209,6 +209,7 @@ CGRect S2APlayDivision(UIView *view) {
     UITraitCollection *t=self.view.window.windowScene.traitCollection; return t.horizontalSizeClass==UIUserInterfaceSizeClassRegular && t.verticalSizeClass==UIUserInterfaceSizeClassRegular;
 #endif
 }
+S2A_VERTICAL_BAR_OFF
 #if !TARGET_OS_TV
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations { return self.resizable ? UIInterfaceOrientationMaskAll : s2a_ios_play_orientations(); }   // 自由窗口：全部方向、不申请
 #endif

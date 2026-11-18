@@ -17,7 +17,7 @@ HEAD = ('# Prewarm seed list (shipped in the app, next to shader_map.tsv). Rows:
 
 def files(srcs):
     for s in srcs:
-        if os.path.isdir(s): yield from (os.path.join(s, f) for f in sorted(os.listdir(s)) if f.endswith('.tsv'))
+        if os.path.isdir(s): yield from (os.path.join(s, f) for f in sorted(os.listdir(s)) if f.endswith('.tsv') and not f.startswith('._'))   # ._：exFAT 上的 AppleDouble 附属文件
         elif os.path.isfile(s): yield s
 
 def main(out, keys_tsv, shmap, skey_bytes, srcs):   # shmap 留在参数里（direct_lib.sh 调用口径不变），不再读
