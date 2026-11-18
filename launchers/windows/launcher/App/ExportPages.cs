@@ -1744,17 +1744,16 @@ public sealed partial class EnvironmentWindow
 
     /// <summary>accept：玩家已同意的确认参数（ConfirmCodes 的值，逐次累积）。ask = false（控制口）原样失败、不弹确认，由调用方带参数再发。</summary>
     /// <param name="export">游戏库「导出自签包」：不连手机、不签名，出到文件夹（作业层 install 请求带 mode = export，不带设备）</param>
-    /// <param name="toDevice">推哪台（0.6.0 总控台「更新所选」推总控台那台）；不带 = 照旧按装机页选的 / 这款上次装的那台</param>
-    private async Task InstallAsync(LibraryGame game, IReadOnlySet<string>? accept = null, bool ask = true, bool export = false, string? toDevice = null)
+    private async Task InstallAsync(LibraryGame game, IReadOnlySet<string>? accept = null, bool ask = true, bool export = false)
     {
-        if (QueuePhone(game.Id, () => InstallAsync(game, accept, ask, export, toDevice))) return;   // 出包在跑不挡；手机上装机在跑 / 这款正在出包 → 排队
+        if (QueuePhone(game.Id, () => InstallAsync(game, accept, ask, export))) return;   // 出包在跑不挡；手机上装机在跑 / 这款正在出包 → 排队
         accept ??= new HashSet<string>();
         installExport = export;
         var front = BeginPhoneJob(game, "");
         string? dropAsk = null, askCode = null;
         try
         {
-            var extra = AcceptExtra(accept, export ? "" : toDevice ?? InstallDevice(game)) ?? new Dictionary<string, object?>();
+            var extra = AcceptExtra(accept, export ? "" : InstallDevice(game)) ?? new Dictionary<string, object?>();
             if (export) extra["mode"] = "export";
             if (!HomeWidget) extra["widget"] = false;   // 玩家关了「装到 iPhone 时带主屏小组件」
             var job = await PackJobClient.RunAsync(PackRequest("install", game.Id, extra), e => Dispatcher.UIThread.Post(() => IngestPhoneEvent(e)), front.Token, front.Next());
