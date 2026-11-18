@@ -55,4 +55,14 @@ o9=$(DP $T/s7 $T/d6); r9=$?
 ck "⑦ 再交付一次镜像行没变：rc=${r9}、输出「${o9}」（克隆 0）" '[ $r9 = 0 ] && [ "$(cut -f3 <<< "$o9")" = 0 ]'
 rm $T/s7/romfs.std; rm -rf $T/d7; DP $T/s7 $T/d7 > /dev/null 2>&1; r10=$?
 ck "⑦ 负对照：源里镜像 / 逐文件 / romfs.img 都没有 → 退出非 0：rc=${r10}" '[ $r10 != 0 ]'
+# ⑧ 非 macOS（Windows）交付 romfs.std 先硬链、不另占盘（诊断 #9ac7f7：原先整份真拷，镜像占两份、大游戏交付写满盘 WinError 112）：
+#    进程内把 sys.platform 设成 win32 调 link_image → 目标与源同一个 inode（链接数 2）；目标已有旧文件先换掉
+printf 'OLD' > $T/s7/romfs.std.old; printf 'STDIMAGE8' > $T/s8std
+o11=$(cd "$H" && python3 -c "
+import os, sys; sys.path.insert(0, 'pack/oneclick'); import deliver_pack as d
+sys.platform = 'win32'
+d.link_image('$T/s8std', '$T/s7/romfs.std.old')
+a, b = os.stat('$T/s8std'), os.stat('$T/s7/romfs.std.old')
+print(a.st_ino == b.st_ino, b.st_nlink, open('$T/s7/romfs.std.old').read())" 2>&1)
+ck "⑧ 非 macOS 交付镜像：同 inode / 链接数 / 内容「${o11}」" '[ "$o11" = "True 2 STDIMAGE8" ]'
 [ $bad = 0 ] && echo "deliver_pack 单测全过" || { echo "deliver_pack 单测有不通"; exit 1; }
