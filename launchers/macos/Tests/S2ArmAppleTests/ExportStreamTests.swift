@@ -29,12 +29,12 @@ import S2ArmAppleAdapter
         XCTAssertEqual(mac.state, .completed); XCTAssertEqual(mac.output, "/out/mac")
         XCTAssertEqual(iphone.state, .failed); XCTAssertEqual(iphone.code, "disk_full")
         XCTAssertEqual(iphone.message, "磁盘空间不足"); XCTAssertEqual(iphone.suggestion, "释放空间后重试")
-        let startupReads: Set<String> = ["catalog", "storeMeta", "sgradeMac", "updateHints", "phoneOverview"]
+        let startupReads: Set<String> = ["catalog", "storeMeta", "updateHints", "phoneOverview"]
         XCTAssertEqual(runner.operations.filter { !startupReads.contains($0) }, ["export"], "只起一个出包编排作业")
         // 0.6.0 建议更新 / 总控台（开关后面）：只在启动器打开时读一次，出包中途重读游戏库不跟着起（原先每次重读都起，main 红在这里）
         XCTAssertEqual(runner.operations.filter { $0 == "updateHints" }.count, 1, "建议更新只在打开时比对一次")
         XCTAssertEqual(runner.operations.filter { $0 == "phoneOverview" }.count, 1, "总控台只在打开时读一次")
-        XCTAssertEqual(runner.operations.filter { $0 == "sgradeMac" }.count, 1, "启动器打开那次刷新后台补一次 Mac 游戏的 S 级优化（v0.4.0），之后的刷新不再补")
+        XCTAssertEqual(runner.operations.filter { $0 == "sgradeMac" }.count, 0, "S 级优化不再自动运行（11-18 维护者）：启动器打开不起 sgradeMac，玩家点了才升")
         let plan = try XCTUnwrap(runner.exportPlan)
         XCTAssertEqual(plan["source"] as? String, "inline")
         XCTAssertEqual(((plan["items"] as? [[String: Any]])?.first?["platforms"] as? [String]), ["iphone", "mac"])

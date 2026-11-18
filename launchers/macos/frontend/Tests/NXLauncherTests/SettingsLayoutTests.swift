@@ -1408,6 +1408,47 @@ import S2ArmAppleAdapter
         }
     }
 
+    /// S 级优化手动升级（11-18 维护者：不自动运行）：可升级、Mac 上能玩的款出「在 Mac 上升级」，点了交出这些款的号；
+    ///   没有 Mac 款时不出；进度环 / 进度条四种状态出图；开始按钮标题「正在升级 xx%」/ 没百分比「正在升级…」
+    func testSGradeManualUpgradeOnMac() async throws {
+        let fixture = try SettingsFixture()
+        defer { fixture.remove() }
+        let games = [SGradeScanGame(["id": "alpha", "name": "Original Alpha", "program": "original", "total": 2, "patches": ["fps": 1, "widescreen": 1]]),
+                     SGradeScanGame(["id": "beta", "name": "Original Beta", "program": "original", "total": 1, "patches": ["fps": 1]]),
+                     SGradeScanGame(["id": "gamma", "name": "Not on Mac", "program": "original", "total": 1, "patches": ["fps": 1]])]
+        for language in [Lang.zh, .en] {
+            let code = language == .zh ? "zh-Hans" : "en"
+            let body = SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh, busy: true,
+                x: { BackendText.launcherText("sgrade.upgrade." + $0, language: code) }, upgrade: { _ in }, close: {},
+                macIDs: ["alpha", "beta"], upgradeMac: { _ in })
+            XCTAssertEqual(body.macUpgrades.map(\.id), ["alpha", "beta"], "只交 Mac 上能玩的可升级款，按页面顺序")
+            let page = AnyView(body)
+            let (host, window) = try await render(page, fixture: fixture, language: language)
+            defer { window.close() }
+            XCTAssertNotNil(fixture.navigation.controlTargets(in: window).first { $0.id == "sgrade.upgrade.mac" }, "有 Mac 款可升级时要出「在 Mac 上升级」")
+            try snapshot(host, "sgrade-manual-page-" + language.code)
+            let none = AnyView(SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh, busy: false,
+                x: { BackendText.launcherText("sgrade.upgrade." + $0, language: code) }, upgrade: { _ in }, close: {}))
+            let (host2, window2) = try await render(none, fixture: fixture, language: language)
+            defer { window2.close() }
+            XCTAssertNil(fixture.navigation.controlTargets(in: window2).first { $0.id == "sgrade.upgrade.mac" }, "没有 Mac 款不出")
+            _ = host2
+            let txt = { (id: String) in BackendText.launcherText(id, language: code) }
+            XCTAssertEqual(LauncherView.sgradeUpgradingTitle(0.379, txt), language == .zh ? "正在升级 37%" : "Upgrading 37%")
+            XCTAssertEqual(LauncherView.sgradeUpgradingTitle(nil, txt), language == .zh ? "正在升级…" : "Upgrading…")
+        }
+        for (name, p) in [("0", 0.0), ("37", 0.37), ("100", 1.0), ("wait", -1.0)] as [(String, Double)] {
+            let progress: Double? = p < 0 ? nil : p
+            let view = AnyView(VStack(spacing: 18) {
+                SGradeUpgradeRing(progress: progress, side: 180).frame(width: 180, height: 180).background(Color.gray)
+                SGradeUpgradeBar(progress: progress).frame(width: 220).padding(8).background(Color.white)
+            }.padding(20))
+            let (host, window) = try await render(view, fixture: fixture, language: .zh)
+            defer { window.close() }
+            try snapshot(host, "sgrade-manual-progress-" + name)
+        }
+    }
+
     func testUpgradeRowsAndConfirmationUseConsistentAlignment() async throws {
         let fixture = try SettingsFixture()
         defer { fixture.remove() }

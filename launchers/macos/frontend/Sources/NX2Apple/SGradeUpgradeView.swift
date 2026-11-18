@@ -1,7 +1,9 @@
 // S2Arm（不是上游文件）：「S 级优化升级」页（v0.4.0 维护者：已经导出在 Mac 游戏库 / iPhone 上的游戏不用重出包就能用上 S 级优化）。
 //   打开即查（作业 sgradeScan，pack/jobs/sgrade.py）：逐款找原始程序（存下的 → 解包缓存 → Mac 版 → 原件），按本地补丁库报这个版本能补什么；
 //   分组显示：可升级 / 没有对应补丁 / 出包时选了不打入 / 没找到原始程序（要重新出包覆盖更新）。一款都升不了 → 只给「确认」。
-//   Mac 不用操作（启动器打开时后台补、开游戏时兜底）；iPhone 两个按钮都走 installUpdate（只换程序、资源包不推），sgradeUpgrade 让壳已是本版也重组。
+//   Mac：玩家点「在 Mac 上升级」才升（11-18 维护者：不自动运行），可升级、在这台 Mac 上能玩的款排进单款升级队列后关页，
+//   进度画在各款卡片与开始按钮上（S2ArmLauncherModel+SGradeUpgrade.swift），不挡别的操作；
+//   iPhone 两个按钮都走 installUpdate（只换程序、资源包不推），sgradeUpgrade 让壳已是本版也重组。
 import SwiftUI
 import NXCore
 import NXModel
@@ -35,7 +37,9 @@ struct SGradeUpgradeView: View {
         SGradeUpgradeBody(games: games, failure: failure.map(loc.backend), zh: loc.cjkPunctuation, busy: model.busy,   // 作业层原句按界面语言显示
                           x: { BackendText.launcherText("sgrade.upgrade." + $0, language: lang) },
                           upgrade: { mode in model.updatePhone(acceptStale: false, repack: [], language: lang, mode: mode, sgradeUpgrade: true); dismiss() },
-                          close: { dismiss() })
+                          close: { dismiss() },
+                          macIDs: Set(model.games.filter(\.playable).map(\.id)),
+                          upgradeMac: { ids in model.upgradeSGrade(ids); dismiss() })
             .task { await scan() }
     }
 
@@ -56,6 +60,9 @@ struct SGradeUpgradeBody: View {
     let x: (String) -> String
     let upgrade: (String) -> Void
     let close: () -> Void
+    /// 在这台 Mac 上能玩的款（游戏库 playable）：可升级的里面有这些就出「在 Mac 上升级」
+    var macIDs: Set<String> = []
+    var upgradeMac: ([String]) -> Void = { _ in }
     var sImage: NSImage = SGradeCardView.sGold
 
     var body: some View {
@@ -73,17 +80,17 @@ struct SGradeUpgradeBody: View {
             .padding(.bottom, LauncherTheme.Space.section)
             if games != nil || failure != nil {
                 LauncherSheetFooter {
-                    if failure == nil, upgrades.contains(where: \.iphone) {
+                    if failure == nil, upgrades.contains(where: \.iphone) || !macUpgrades.isEmpty {
                         ViewThatFits(in: .horizontal) {
-                            HStack { installButton; exportButton; Spacer(); closeButton }
-                            VStack(alignment: .leading, spacing: 8) { installButton; exportButton; closeButton }
+                            HStack { macButton; phoneButtons; Spacer(); closeButton }
+                            VStack(alignment: .leading, spacing: 8) { macButton; phoneButtons; closeButton }
                         }
                     } else {
                         Spacer()
                         Button(x("ok")) { close() }.controllerButtonStyle(LauncherPrimaryButtonStyle())
                             .keyboardShortcut(.defaultAction).controllerID("sgrade.upgrade.ok").controllerShortcut(.rightTrigger, .back)
                     }
-                }.disabled(failure == nil && upgrades.contains(where: \.iphone) && busy)
+                }
             }
         }
         .launcherSheet(.form, height: nil)
@@ -91,6 +98,8 @@ struct SGradeUpgradeBody: View {
     }
 
     private var upgrades: [SGradeScanGame] { (games ?? []).filter { $0.found && $0.total > 0 && !$0.off } }
+    /// 可升级、在这台 Mac 上能玩的款
+    var macUpgrades: [SGradeScanGame] { upgrades.filter { macIDs.contains($0.id) } }
 
     @ViewBuilder private var content: some View {
         if let failure {
@@ -176,6 +185,18 @@ struct SGradeUpgradeBody: View {
         }
     }
 
+    /// 「在 Mac 上升级」：排进后台单款升级队列后关页，不挡别的操作（不随主槽忙置灰）
+    @ViewBuilder private var macButton: some View {
+        if !macUpgrades.isEmpty {
+            Button(x("mac")) { upgradeMac(macUpgrades.map(\.id)) }.controllerButtonStyle(LauncherPrimaryButtonStyle())
+                .controllerID("sgrade.upgrade.mac").fixedSize()
+        }
+    }
+    /// iPhone 两个按钮走主槽（installUpdate）：主槽忙时置灰（同原先整排置灰，现只管这两个）
+    @ViewBuilder private var phoneButtons: some View {
+        if upgrades.contains(where: \.iphone) { installButton.disabled(busy); exportButton.disabled(busy) }
+    }
+
     private var installButton: some View {
         Button(x("install")) { upgrade("device") }.controllerButtonStyle(LauncherPrimaryButtonStyle())
             .controllerID("sgrade.upgrade.install").controllerShortcut(.rightTrigger).fixedSize()
@@ -187,5 +208,56 @@ struct SGradeUpgradeBody: View {
     private var closeButton: some View {
         Button(x("close")) { close() }.controllerButtonStyle(LauncherSecondaryButtonStyle())
             .controllerID("sgrade.upgrade.close").controllerShortcut(.back).fixedSize()
+    }
+}
+
+/// 升级中的进度（开始按钮底部的细条）：有百分比画实条，没有（排队 / 作业还没给出）画来回走的不定条
+struct SGradeUpgradeBar: View {
+    let progress: Double?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        GeometryReader { g in
+            ZStack(alignment: .leading) {
+                Capsule().fill(.black.opacity(0.18))
+                if let p = progress {
+                    Capsule().fill(SGradeCardView.gold).frame(width: max(4, g.size.width * p)).animation(.easeOut(duration: 0.3), value: p)
+                } else {
+                    TimelineView(.animation(paused: reduceMotion)) { t in
+                        let x = (t.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.4)) / 1.4
+                        Capsule().fill(SGradeCardView.gold).frame(width: g.size.width * 0.3).offset(x: (g.size.width * 1.3) * x - g.size.width * 0.3)
+                    }
+                    .clipShape(Capsule())
+                }
+            }
+        }
+        .frame(height: 3).accessibilityHidden(true)
+    }
+}
+
+/// 升级中的卡片（小图标）：压暗一层、中间进度环 + 百分比；没有百分比时环转圈
+struct SGradeUpgradeRing: View {
+    let progress: Double?
+    let side: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        let d = max(34, side * 0.34)
+        ZStack {
+            RoundedRectangle(cornerRadius: 15).fill(.black.opacity(0.45))
+            ZStack {
+                Circle().stroke(.white.opacity(0.18), lineWidth: 4)
+                if let p = progress {
+                    Circle().trim(from: 0, to: max(0.02, p)).stroke(SGradeCardView.gold, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                        .rotationEffect(.degrees(-90)).animation(.easeOut(duration: 0.3), value: p)
+                    Text("\(Int((p * 100).rounded(.down)))%").font(.manrope(max(10, d * 0.26), .bold)).foregroundStyle(.white).monospacedDigit()
+                } else {
+                    TimelineView(.animation(paused: reduceMotion)) { t in
+                        Circle().trim(from: 0, to: 0.28).stroke(SGradeCardView.gold, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                            .rotationEffect(.degrees(t.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1) * 360))
+                    }
+                }
+            }
+            .frame(width: d, height: d)
+        }
+        .accessibilityElement().accessibilityIdentifier("sgrade.upgrading.card")
     }
 }
