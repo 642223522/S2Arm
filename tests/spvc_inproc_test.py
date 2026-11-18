@@ -9,6 +9,8 @@
 #   ⑧ Windows 垫片并发（11-05 Windows 出包机鬼灭之刃 9 支「mem:in 建临时文件 失败（GetLastError 5）」）：16 线程 × 200 次内存进出全部 rc 0、MSL 与单次逐字节同，
 #      跑完临时目录里没有本进程名下的 s2a_spvc_<进程号>_* 文件（关闭即删；只在 Windows 跑）
 #   ⑥ 输出身份（进缓存键）不含编译器版本：换 clang 版本身份不变、编好的库目录变（11-01 跨机实测：带编译器版本时本机与 Spare-host 全部着色器键不同）
+#   ⑨ #1529（引擎在 exFAT 盘）：编库目录里另有 AppleDouble「._<名>.o」和别的文件时，链接只收本次编出的 <单元>.o（期望集合手写）；
+#      源码目录里多出「._<名>.cpp」时输出身份不变
 import os, subprocess, sys, tempfile, threading
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__))); sys.path.insert(0, os.path.join(ROOT, 'translator'))
 import spvc_inproc as S
@@ -78,5 +80,20 @@ for ver in ('clang-2100.1.1.101', 'clang-2100.3.34.2'):
     finally: subprocess.run = _run
 S._id = None
 ck(f'⑥ 换编译器版本：输出身份 {ids[0][0]} / {ids[1][0]} 相同、库目录 {ids[0][1]} / {ids[1][1]} 不同', ids[0][0] == ids[1][0] and ids[0][1] != ids[1][1])
+# ⑨ exFAT 上的 AppleDouble 附属文件不进链接、不进身份
+import shutil
+with tempfile.TemporaryDirectory(prefix='spvc_own_') as T:
+    for f in ('spirv_cfg.o', 'main.o', 'shim.o', '._spirv_cfg.o', '._main.o', 'stray.o', 'notes.txt'): open(os.path.join(T, f), 'wb').close()
+    got = sorted(os.path.basename(x) for x in S._own_objects(T, ['spirv_cfg', 'main', 'shim']))
+    ck(f'⑨ 链接只收本次编出的目标文件：{got}', got == ['main.o', 'shim.o', 'spirv_cfg.o'])
+    base = S.identity()
+    src, shim = os.path.join(T, 'src'), os.path.join(T, 'shim')
+    shutil.copytree(S.SRC, src); shutil.copytree(S.SHIM, shim)
+    open(os.path.join(src, '._spirv_msl.cpp'), 'wb').write(b'\x00\x05\x16\x07AppleDouble')
+    open(os.path.join(shim, '._shim.h'), 'wb').write(b'\x00\x05\x16\x07AppleDouble')
+    keep = S.SRC, S.SHIM; S.SRC, S.SHIM, S._id = src, shim, None
+    try: other = S.identity()
+    finally: S.SRC, S.SHIM = keep; S._id = None
+    ck(f'⑨ 源码目录多出「._」附属文件：输出身份 {base} / {other} 相同', base == other)
 print('spvc_inproc 单测' + ('全过' if not bad else '有不通'))
 sys.exit(1 if bad else 0)
