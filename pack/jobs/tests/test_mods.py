@@ -112,6 +112,36 @@ class ModsTests(unittest.TestCase):
         self.assertEqual((self.t / "lib" / GID / "mods" / "Fix2" / "romfs" / "a.bin").read_bytes(), b"new")
         self.assertEqual([(m["name"], m["files"]) for m in mods.listing(self.c, self.game)], [("Fix", 1), ("Fix2", 2)])   # 按名字升序
 
+    def test_subprogram_resources_keep_their_full_target(self):
+        target = GID[:-1] + "1"
+        foreign = "0100FFFF00000001"
+        package = self.zip({f"atmosphere/contents/{GID}/romfs/a.bin": b"main",
+                            f"atmosphere/contents/{target.lower()}/romfs/a.bin": b"sub",
+                            f"atmosphere/contents/{target}/exefs/sub.ips": b"PATCHEOF",
+                            f"atmosphere/contents/{foreign}/romfs/a.bin": b"foreign"}, "Bundle.zip")
+        result = mods.import_paths(self.c, self.game, [str(package)])
+        name = f"Bundle-{target}"
+        home = self.t / "lib" / GID / "mods"
+        self.assertEqual(set(result["imported"]), {"Bundle", name})
+        self.assertEqual((home / "Bundle/romfs/a.bin").read_bytes(), b"main")
+        self.assertEqual((home / name / f"romfs.{target}/a.bin").read_bytes(), b"sub")
+        self.assertFalse((home / name / "romfs").exists())
+        self.assertIsNone(mods.code_index(self.c, self.game))
+        self.assertTrue(any(foreign in note for note in result["notes"]))
+        mods.set_enabled(self.c, self.game, {name: False})
+        self.assertIn({"name": name, "enabled": False, "files": 1, "bytes": 3, "code": 0}, mods.listing(self.c, self.game))
+
+    def test_direct_target_directory_and_romfs_keep_their_full_target(self):
+        target = GID[:-1] + "1"
+        source = self.tree({f"{target}/romfs/a.bin": b"sub"}) / target
+        home = self.t / "lib" / GID / "mods"
+        for path in (source, source / "romfs"):
+            with self.subTest(path=path):
+                result = mods.import_paths(self.c, self.game, [str(path)])
+                name, = result["imported"]
+                self.assertEqual((home / name / f"romfs.{target}/a.bin").read_bytes(), b"sub")
+                self.assertFalse((home / name / "romfs").exists())
+
     def test_rejects(self):
         with self.assertRaises(Failure):   # 没有 romfs
             mods.import_paths(self.c, self.game, [str(self.zip({"readme.txt": b"x"}))])

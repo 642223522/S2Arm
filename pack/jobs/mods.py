@@ -2,7 +2,7 @@
   · 布局：mods/<名字>/romfs/**（服务层 services/S2A.Services/RomFsMods.cs 起局时按文件夹名升序叠到本体 RomFS 上，后叠的覆盖先叠的）。
     Mac 起局经 S2A_MODS_DIR 指到这里（pack/jobs/build.py）；装到 iPhone 时推进机上本款文档根 mods/（pack/jobs/install.py push_mods）。
   · 导入：玩家给 zip 或文件夹，按常见发布结构找出每个 romfs/（Atmosphere atmosphere/contents/<程序号>/romfs、Ryujinx <程序号>/<名字>/romfs、
-    直接 <名字>/romfs、只有 romfs/），一个 romfs 一份 mod；标了别的程序号的 romfs 不收（不是这款的）。
+    直接 <名字>/romfs、只有 romfs/），一个 romfs 一份 mod；合集子程序存成 mods/<名字>/romfs.<完整程序号>，其他游戏的不收。
   · 不收：exefs/（代码补丁：pchtxt / IPS，走社区补丁那条路，这里只报一句）、romfs 以外的东西、符号链接、逃出目录的路径。
   · 只是文件搬运：不解析、不执行 mod 里的任何东西。"""
 from __future__ import annotations
@@ -99,14 +99,16 @@ def _whole_program(root):
 
 
 def _find(root, gid):
-    """→ ([(mod 名, romfs 目录或 None, 代码补丁目录或 None)], [说明]）。mod 根 = 下面有 romfs/ 或带代码补丁的 exefs/ 的文件夹（大小写都认；
+    """→ ([(mod 名, romfs 目录或 None, 代码补丁目录或 None, 子程序号或 None)], [说明]）。mod 根 = 下面有 romfs/ 或带代码补丁的 exefs/ 的文件夹（大小写都认；
     玩家直接选 romfs / exefs 本身也认），或 Atmosphere 的 exefs_patches/<名>/（IPS 文件名是构建号、不带程序号：对不上这款的出包时自然不打）。
-    路径上出现别的程序号 = 不是这款，不收"""
+    路径上最近的程序号决定目标。合集子程序只收资源替换，不改变代码补丁的出包路径。"""
     found, notes = [], []
     root = Path(root)
-    if root.name.lower() in ("romfs", "exefs"):   # 玩家直接选的就是 romfs / exefs 文件夹：它的上一级当 mod 根
-        return [("",) + _parts(root.parent)], notes
-    cands = [root] + sorted(p for p in root.rglob("*") if p.is_dir() and not p.is_symlink() and p.name.lower() not in ("romfs", "exefs"))
+    if root.name.lower() in ("romfs", "exefs"):
+        root = root.parent
+        cands = [root]
+    else:
+        cands = [root] + sorted(p for p in root.rglob("*") if p.is_dir() and not p.is_symlink() and p.name.lower() not in ("romfs", "exefs"))
     for d in cands:
         rel = d.relative_to(root).parts
         if any(q.lower() in ("romfs", "exefs") for q in rel):
@@ -114,12 +116,18 @@ def _find(root, gid):
         rd, code = _parts(d)
         if not (rd or code):
             continue
-        ids = [q.upper() for q in rel if GID_RE.match(q)]
-        if ids and gid.upper() not in ids:
-            notes.append("「%s」是给另一款游戏（%s）的，没收" % ("/".join(rel) or d.name, ids[-1]))
-            continue
+        target = next((q.upper() for q in reversed((root.name,) + rel) if GID_RE.fullmatch(q)), gid)
+        if target != gid:
+            if not gid.endswith("0") or target[:-1] != gid[:-1]:
+                notes.append("「%s」是给另一款游戏（%s）的，没收" % ("/".join(rel) or d.name, target))
+                continue
+            if code:
+                notes.append("子程序 %s 的代码补丁暂不支持，没收" % target)
+            if not rd:
+                continue
+            code = None
         label = [q for q in rel if not GID_RE.match(q) and q.lower() not in ("atmosphere", "contents", "mods", "exefs_patches")]
-        found.append(("/".join(label[-2:]) if label else "", rd, code))
+        found.append(("/".join(label[-2:]), rd, code, target if target != gid else None))
     return found, notes
 
 
@@ -138,11 +146,15 @@ def import_paths(c, game, paths):
             found, why = _find(root, gid)
             notes += why
             if not found:
+                if why:
+                    raise Failure("；".join(why), code="job_failed")
                 if _whole_program(root):   # exefs/ 里只有整份游戏程序（main / subsdk / main.npdm 等）、没有补丁：直说不支持（D-P4F5）
                     raise Failure("「%s」是整份替换游戏程序的 mod，S2Arm 不支持：S2Arm 出包时要改写游戏程序，只能把 exefs/ 里的 pchtxt / IPS 补丁编进去；资源替换类（romfs/）照常能用。" % src.name, code="job_failed")
                 raise Failure("「%s」里没找到 mod：资源替换要带 romfs/（如 atmosphere/contents/%s/romfs），代码补丁要带 exefs/ 里的 pchtxt / IPS（或 atmosphere/exefs_patches/<名字>/）。" % (src.name, gid), code="job_failed")
-            for label, rd, cd in found:
+            for label, rd, cd, target in found:
                 name = _safe_name(base if len(found) == 1 or not label else "%s - %s" % (base, label.replace("/", " - ")))
+                if target and not name.upper().endswith(target):
+                    name = f"{name[:80 - len(target) - 1]}-{target}"
                 code = _code_files(cd) if cd else []
                 files = [f for f in layout.entries(rd, recursive=True) if f.is_file() and not f.is_symlink()] if rd else []
                 if not files and not code:
@@ -151,7 +163,8 @@ def import_paths(c, game, paths):
                 tmp = home / (".importing-" + name)
                 shutil.rmtree(tmp, ignore_errors=True); tmp.mkdir()
                 if files:
-                    shutil.copytree(rd, tmp / "romfs", symlinks=True, ignore=lambda d, ns: [n for n in ns if Path(d, n).is_symlink()])
+                    romfs_name = f"romfs.{target}" if target else "romfs"
+                    shutil.copytree(rd, tmp / romfs_name, symlinks=True, ignore=lambda d, ns: [n for n in ns if Path(d, n).is_symlink()])
                 if code:
                     (tmp / "exefs").mkdir()
                     for f in code:
@@ -184,7 +197,9 @@ def listing(c, game):
     """→ [{name, enabled, files, bytes}]（按叠加顺序：名字升序；关着的照列，enabled 为假）"""
     out = []
     for name, (d, on) in sorted(_folders(mods_dir(c, game["id"].upper(), create=False)).items()):
-        files = [f for f in layout.entries(d / "romfs", recursive=True) if f.is_file()]
+        roots = [p for p in layout.entries(d) if p.is_dir() and not p.is_symlink() and
+                 (p.name == "romfs" or (p.name.startswith("romfs.") and GID_RE.fullmatch(p.name[6:])))]
+        files = [f for root in roots for f in layout.entries(root, recursive=True) if f.is_file()]
         out.append(dict(name=name, enabled=on, files=len(files), bytes=sum(f.stat().st_size for f in files), code=len(_code_files(d / "exefs"))))
     return out
 
