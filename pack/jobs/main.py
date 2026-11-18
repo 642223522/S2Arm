@@ -117,7 +117,7 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
             embedded.install(c)
         if c.operation not in NO_LIBRARY:
             layout.ensure(c)   # 旧布局的库先一次性整理成新结构（layout.py），之后各作业只按新布局找路径
-        if c.operation in AUTO_HEAVY:
+        if c.operation in AUTO_HEAVY or c.operation in LOW_PRIORITY:
             background_priority()
         with c.lock("auto-heavy", wait=AUTO_HEAVY_WAIT_S) if c.operation in AUTO_HEAVY else contextlib.nullcontext(), \
                 awake.keep_awake() if c.operation in KEEP_AWAKE else contextlib.nullcontext():
@@ -222,11 +222,18 @@ CLEANS_AFTER_STOP = ("build", "ipa")
 #   互相串行（游戏库里一把「auto-heavy」锁，后到的排队、显示在等谁、能取消），整条链低优先级（nice 19 子进程继承；macOS 再加后台档），不和玩家抢机器
 AUTO_HEAVY = ("installUpdatePrepare",)   # sgradeMac 11-17 起不自动（玩家点了才做单款，sgrade.upgrade_game），不再算后台重活
 AUTO_HEAVY_WAIT_S = 6 * 3600
+# 玩家点的 S 级升级（单款；界面「批量升级所选」是逐款排队、同一时刻只起一个单款作业）：不算自动任务（不拿 auto-heavy 锁、启动器照常算玩家发起），
+#   但同样整条链降到后台档——11-17 维护者「做好线程管理和内存管理，不要一次批量升级就把用户电脑干爆了」；路数另按 upgrade_budget 定
+LOW_PRIORITY = ("sgradeUpgradeGame",)
 
 
 def background_priority():
-    """本进程（及之后起的子进程）降到最低优先级：nice 19；macOS 再设后台档（PRIO_DARWIN_BG：CPU / 磁盘都让前台）。做不成不挡作业"""
+    """本进程（及之后起的子进程）降到最低优先级：nice 19；macOS 再设后台档（PRIO_DARWIN_BG：CPU / 磁盘都让前台）；
+    Windows 设空闲优先级类（IDLE_PRIORITY_CLASS，之后起的子进程继承）。做不成不挡作业"""
     try:
+        if sys.platform == "win32":
+            import ctypes
+            ctypes.windll.kernel32.SetPriorityClass(ctypes.windll.kernel32.GetCurrentProcess(), 0x40)   # IDLE_PRIORITY_CLASS
         if hasattr(os, "nice"):
             os.nice(max(0, 19 - os.nice(0)))
         if hasattr(os, "PRIO_DARWIN_BG"):
