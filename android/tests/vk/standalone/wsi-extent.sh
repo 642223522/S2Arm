@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 S2Arm contributors
 set -euo pipefail
-repo=$(cd "$(dirname "$0")/../../.." && pwd)
+repo=$(cd "$(dirname "$0")/../../../.." && pwd)
 mode=${1:-}
 case "$mode" in ''|--negative-size|--negative-zero|--negative-transform|--negative-revoke) ;; *) exit 64 ;; esac
 out="$repo/build/vk-wsi-extent"
