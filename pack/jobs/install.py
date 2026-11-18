@@ -3052,6 +3052,7 @@ def push_game(c, gid, ph, steps=True):
         rec = layout.load_device(c, ph.key)
         layout.save_device(c, ph.key, dict(rec, games=dict(rec.get("games") or {}, **{gid: dict(program=progs[gid], pack=pushed, **({"mods": mods} if mods else {}))}),
                                            at=time.time()))
+    pull_shader_counts(c, ph, [gid])
     extra = dict(unpackPending=ph.pending) if ph.pending else {}
     return dict(bundleId=ph.bid, games=[gid], packFiles=files, packBytes=size, **ph.info, **extra, openToFinish=True)
 
@@ -3341,6 +3342,31 @@ def _kept_pull_many(c):
     return busy or idle or _kept_pull_none()
 
 
+def pull_shader_counts(c, ph, games):
+    """各款手机上宿主写的着色器现场翻译计数（Documents/games/<号>/shader_fallback.json，几十字节）拉回这台的设备记录 shaderFallback，
+    给「建议重新出包」角标判（host_update.shader_hint）。读不到（没有 / 断开）照旧，不挡推送"""
+    import host_update
+    got = {}
+    try:
+        with tempfile.TemporaryDirectory(dir=c.private) as w:
+            cl = ph.client(w)
+            for g in [str(x).upper() for x in games]:
+                dst = Path(w) / f"{g}.json"
+                if cl.get(f"{game_docs(g)}/{host_update.SHADER_FALLBACK}", dst):
+                    try:
+                        d = json.loads(dst.read_text(encoding="utf-8"))
+                        got[g] = dict(count=int(d.get("count") or 0), at=d.get("at"), app=d.get("app"))
+                    except (ValueError, TypeError, AttributeError):
+                        pass
+    except Exception as e:   # noqa: BLE001 —— 只是给角标的读数，读不到不挡推送
+        trace(c, f"着色器计数没拉回：{type(e).__name__} {str(e)[:200]}")  # 非玩家句
+        return {}
+    if got:
+        rec = layout.load_device(c, ph.key)
+        layout.save_device(c, ph.key, dict(rec, shaderFallback=dict(rec.get("shaderFallback") or {}, **got)))
+    return got
+
+
 def _kept_pull_on(c, ph):
     rec = layout.load_device(c, ph.key)
     games = [g for g in rec.get("games") or [] if isinstance(g, str)]
@@ -3351,6 +3377,7 @@ def _kept_pull_on(c, ph):
         if not free:
             return _kept_pull_none()
         new = ph.pull_kept(games)
+        pull_shader_counts(c, ph, games)   # 顺手拉回着色器现场翻译计数（给「建议重新出包」角标）
     import rewrite_refresh
     kept = [g for g in games if rewrite_refresh.kept_todo(c, g, layout.ios_kit(c, g))]   # 没补进的款（手动按钮兜底同 phone_updates）
     # 这台手机上的 S2Arm 壳比本版旧（启动器升级了）：shellUpdate = 可以不问玩家直接更新（没有要按新版重新出包的款）；
