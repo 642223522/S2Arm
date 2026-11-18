@@ -283,6 +283,10 @@ public struct ShellActions {
     public var onDeleteGame: ((_ gameID: String, _ saves: Bool) -> Void)?
     /// Opens the game's save management (export / import saves) before it starts. nil: no item in the card's menu.
     public var onManageSaves: ((_ gameID: String) -> Void)?
+    /// Instant snapshot (0.6.0): whether this game has a complete snapshot to go back to, and going back to it (starts the
+    /// game restored to that moment). Both nil: no snapshot item anywhere in the library.
+    public var snapshotAvailable: ((_ gameID: String) -> Bool)? = nil
+    public var onRestoreSnapshot: ((_ gameID: String) -> Void)? = nil
     public init(onSelect: @escaping (String) -> Void = { _ in }, onPlay: @escaping (String) -> Void = { _ in },
                 onChange: @escaping (String, String, String) -> Void = { _, _, _ in },
                 onPickGameData: @escaping (String) -> Void = { _ in }, onUseAppData: ((String) -> Void)? = nil,

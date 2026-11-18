@@ -578,3 +578,15 @@
 "sgrade.cpatch.detail" = "社群修補檔明細";
 "sgrade.state.off_auto.widen_fit" = "已自動關：%1$@ 滿螢幕沒鋪滿或畫面被拉伸";
 "sgrade.notice.fullscreen_off" = "S2Arm 通用滿螢幕這局沒成功，已自動關掉，遊戲照常玩。想再試可以在齒輪選單裡重新打開。";
+
+/* 0.6.0 快照：游戏中菜单 */
+"vpad.snap.save" = "存下這一刻";
+"vpad.snap.restore" = "回到上次存下的這一刻";
+"vpad.snap.saving" = "正在存下這一刻…";
+"vpad.snap.saved" = "已存下這一刻";
+"vpad.snap.notSaved" = "這次沒存成，稍後再試一次";
+"vpad.snap.busy" = "還在存上一次，稍等";
+"vpad.snap.restoreFailed" = "這次回不去：%@";
+"vpad.snap.saveChanged.title" = "回到存下的那一刻？";
+"vpad.snap.saveChanged.body" = "存下那一刻之後遊戲又存過檔。回去會把遊戲存檔也退回那一刻；現在的存檔會先備份。";
+"vpad.snap.saveChanged.go" = "回去";

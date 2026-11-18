@@ -52,6 +52,8 @@ function(s2a_android_diagnostic_sources output)
         # dguard_android.c / bridge.cpp 引用的共用出口：诊断目标编入同一实现（无武装点，
         # 只靠弱回退的日志与 stub 的 s2a_host_session_state 空转），行为与游戏目标一致。
         ../runtime/src/dguard.c ../runtime/src/direct_prompt.c
+        # 即时存档开关（snapsw.c，安卓恒关）：服务层 SnapLog.cs 与 hle_nvn.c 引用，诊断目标同编（游戏目标由 Runtime.cmake 的 core 列表提供）
+        ../runtime/src/snapsw.c
         # 诊断目标没有原生会话核心：direct_prompt.c 要的 s2a_host_session_state 等会话入口由 stub 给
         # （恒报 FAILED）。不论服务层是否静态链入都要它，否则缺省 assembleDebug（S2A_CS_SERVICES=0）
         # 在 -z defs 下报 undefined symbol: s2a_host_session_state。

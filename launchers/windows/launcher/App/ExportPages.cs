@@ -935,7 +935,7 @@ public sealed partial class EnvironmentWindow
                     packFailureCode = job is not null ? DiagnosticCode(job.Report.Diagnostics) : null;
                 }
                 EndJob(front); if (packJob == front) packJob = null;
-                Render();
+                AfterArtifactJob(); Render();
                 if (batch) _ = BatchExportEndedAsync(job?.Report, error);
                 else if (exportAfterPack is { } g) { exportAfterPack = null; selfSignAfterPack.Remove(g.Id); _ = InstallAsync(g, export: true); }
                 else if (installAfterPackGame is { } ig) { installAfterPackGame = null; installAfterPack.Remove(ig.Id); _ = InstallAsync(ig); Navigate("install"); }   // 选了「出完装到 iPhone」：接着装
@@ -1776,7 +1776,7 @@ public sealed partial class EnvironmentWindow
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or
             OperationCanceledException or PlatformNotSupportedException or System.ComponentModel.Win32Exception)
         { installState = "failed"; installDiagnostics = error.Message; }
-        finally { EndJob(front); readinessFor = null; DynamicFinished(installState); Render(); }
+        finally { EndJob(front); readinessFor = null; DynamicFinished(installState); AfterArtifactJob(); Render(); }
         if (dropAsk is not null && await ConfirmInstallActionAsync("install.drop", dropAsk, ConfirmTitle(askCode)))
             await InstallAsync(game, new HashSet<string>(accept) { ConfirmCodes[askCode!] }, export: export);
     }
@@ -1949,7 +1949,7 @@ public sealed partial class EnvironmentWindow
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or
             OperationCanceledException or PlatformNotSupportedException or System.ComponentModel.Win32Exception)
         { installState = "failed"; installMessage = T(prefix + "_failed"); installDiagnostics = error.Message; }
-        finally { EndJob(front); Render(); }
+        finally { EndJob(front); AfterArtifactJob(); Render(); }
         if (dropAsk is not null && await ConfirmInstallActionAsync("install.drop", dropAsk, ConfirmTitle(askCode)))
             await RunPhoneJobAsync(game, operation, prefix, new HashSet<string>(accept) { ConfirmCodes[askCode!] });
     }

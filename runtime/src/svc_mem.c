@@ -439,6 +439,8 @@ static void layout_prepare(const char *npdm) {
     { uint64_t (*span_seen)(uint64_t) = (uint64_t (*)(uint64_t))dlsym(RTLD_DEFAULT, "s2a_window_span_seen");   // vawin.c；安卓 / 单测没有就不收
       uint64_t (*for_span)(uint64_t) = (uint64_t (*)(uint64_t))dlsym(RTLD_DEFAULT, "s2a_window_for_span");
       uint64_t cap = span_seen && for_span ? for_span(span_seen(pid)) : 0;
+      // 即时存档恢复：窗口要与快照时一样（vawin.c 构造期已按快照清单占），学到的跨度不再收（两局之间学到的不同，收了就「窗口不符」）
+      { int s2a_snap_restoring(void); if (cap && s2a_snap_restoring()) { LOG("即时存档恢复：不按本款学到的跨度收窗口（窗口保持快照时的 %llu MB）", (unsigned long long)(ws >> 20)); cap = 0; } }
       if (ws < g_lay_need && cap && cap < ws) { LOG("地址窗口：按本款（%016llx）学到的跨度收到 %llu MB（原 %llu MB），其余还给宿主", (unsigned long long)pid, (unsigned long long)(cap >> 20), (unsigned long long)(ws >> 20)); ws = cap; } }
     int alias_gb = alias_first_hint(npdm, pid);
     { void s2a_layout_heap_floor_set(uint64_t); uint64_t hn = heap_need_read(pid); s2a_layout_heap_floor_set(hn);   // 上一局真要过的普通堆（见 heap_need_path）
@@ -2468,3 +2470,160 @@ int svc_mem(int num, uint64_t *regs, uint64_t orig) {
     return handled;
 #endif
 }
+
+#if !defined(__ANDROID__)   // 即时存档只在苹果平台（安卓不编 snapshot.c，开关恒关：runtime/src/snapsw.c）
+// ---------- 即时存档：内存账导出 ----------
+// 冻结后调（全部游戏线程已停在安全点）。把 svc_mem 的全部账写成一块：布局 L、堆、物理映射掩码（只写非零字节）、映射表、跨度表、权限 / 属性账、TLR / 确定性 arena。
+//   内容（页数据）由 snapshot.c 按窗口逐段另存；这里只给「重建映射要知道的结构」。恢复（阶段 2）按同一顺序读回
+#define SNAP_SVCMEM_MAGIC 0x324D5653u   // "SVM2"：段式带版本字段格式（snapfmt.h）
+static int snap_w(FILE *f, const void *p, size_t n) { return fwrite(p, 1, n, f) == n ? 0 : -1; }
+#include "snapfmt.h"
+void s2a_snap_mark_old(void);   // snapshot.c：记「旧版快照接不上」（给玩家的提示分类）
+// 内存账（带版本字段格式，snapfmt.h 段 "svcmem" 版本 1）：头记录 = 布局各字段 + 堆 / TLR / 熵；其余每条记录字段 50 标种类：1 映射 2 跨度 3 权限 4 属性 5 物理映射掩码页
+#define SVCMEM_LAYOUT(X) X(1, win_base) X(2, win_size) X(3, alias_base) X(4, alias_size) X(5, heap_base) X(6, heap_size) X(7, stack_base) X(8, stack_size) \
+    X(9, tlsio_base) X(10, tlsio_size) X(11, aslr_base) X(12, aslr_size) X(13, sys_resource_size) X(14, as_type)
+int s2a_snap_svcmem_save(FILE *f) {
+    int e = 0; uint32_t mg = SNAP_SVCMEM_MAGIC; GMU_LOCK();
+    e |= snap_w(f, &mg, 4);
+    sfw w; sfw_sec(&w, f, "svcmem", 1);
+    uint64_t heap = (uint64_t)(uintptr_t)g_heap, hc = g_heap_cur, tf = (uint64_t)(uintptr_t)g_tlr_free;
+    sfw_rec(&w);
+#define WL(id, fld) sfw_u64(&w, id, (uint64_t)L.fld);
+    SVCMEM_LAYOUT(WL)
+#undef WL
+    sfw_u64(&w, 20, heap); sfw_u64(&w, 21, hc); sfw_u64(&w, 22, g_phys); sfw_u64(&w, 23, g_mstack);
+    sfw_u64(&w, 30, g_tlr_next); sfw_u64(&w, 31, tf); sfw_u64(&w, 32, g_user_exception_context); sfw_u64(&w, 33, g_det_arena_top);
+    sfw_blob(&w, 40, g_entropy, sizeof g_entropy); sfw_u64(&w, 41, (uint64_t)g_entropy_ready);
+    sfw_end_rec(&w);
+    for (int i = 0; i < g_nmap; i++) { sfw_rec(&w); sfw_u64(&w, 50, 1); sfw_u64(&w, 1, g_map[i].base); sfw_u64(&w, 2, g_map[i].size); sfw_u64(&w, 3, g_map[i].src); sfw_u64(&w, 4, g_map[i].state); sfw_u64(&w, 5, g_map[i].h); sfw_u64(&w, 6, g_map[i].perm); sfw_end_rec(&w); }
+    for (int i = 0; i < g_nspan; i++) { sfw_rec(&w); sfw_u64(&w, 50, 2); sfw_u64(&w, 1, g_span[i].lo); sfw_u64(&w, 2, g_span[i].hi); sfw_end_rec(&w); }
+    for (int i = 0; i < g_nperm; i++) { sfw_rec(&w); sfw_u64(&w, 50, 3); sfw_u64(&w, 1, g_perm[i].lo); sfw_u64(&w, 2, g_perm[i].hi); sfw_u64(&w, 3, g_perm[i].perm); sfw_end_rec(&w); }
+    for (int i = 0; i < g_nattr; i++) { sfw_rec(&w); sfw_u64(&w, 50, 4); sfw_u64(&w, 1, g_attr[i].lo); sfw_u64(&w, 2, g_attr[i].hi); sfw_u64(&w, 3, g_attr[i].perm); sfw_end_rec(&w); }
+    uint64_t na = g_amask ? L.alias_size / HPG : 0, nz = 0;
+    for (uint64_t i = 0; i < na; i++) if (g_amask[i]) { nz++; sfw_rec(&w); sfw_u64(&w, 50, 5); sfw_u64(&w, 1, i); sfw_u64(&w, 2, g_amask[i]); sfw_end_rec(&w); }
+    e |= sfw_end(&w);
+    GMU_UNLOCK();
+    LOG("即时存档：内存账 堆 %llu MB、物理映射 %llu MB（掩码非零 %llu 页）、映射表 %d 项、跨度 %d、权限账 %d / 属性账 %d、TLR 到 %#llx、arena 顶 %#llx",
+        (unsigned long long)(hc >> 20), (unsigned long long)(g_phys >> 20), (unsigned long long)nz, g_nmap, g_nspan, g_nperm, g_nattr, (unsigned long long)g_tlr_next, (unsigned long long)g_det_arena_top);
+    return e ? -1 : 0;
+}
+// 映射表里「共享内存」类区段（内容由服务层重新生成，不存页数据）：snapshot.c 存页时跳过。回个数
+int s2a_snap_shared_ranges(uint64_t *b, uint64_t *n, int max) {
+    int k = 0; GMU_LOCK();
+    for (int i = 0; i < g_nmap && k < max; i++) if (g_map[i].state == ST_SHARED) { b[k] = g_map[i].base; n[k++] = g_map[i].size; }
+    GMU_UNLOCK(); return k;
+}
+// 恢复（阶段 2）：在 B 里按 A 的账重建映射。前提：B 正常开局到装完模块（布局已定、主线程栈已映射），游戏线程未起、C# 服务已起。
+//   做法：整表换成 A 的账，再把宿主侧的保护 / 别名按账做出来；页内容由 snapshot.c 随后写回。共享内存（服务层的 buffer）在服务重放后另调 s2a_snap_svcmem_shared。
+//   失败回 -1（调用方当场退出，不起游戏线程）
+static int snap_r(FILE *f, void *p, size_t n) { return fread(p, 1, n, f) == n ? 0 : -1; }
+static int snap_rw(uint64_t lo, uint64_t hi) {   // [lo, hi) 按宿主页外扩成读写
+    lo &= ~(HPG - 1); hi = (hi + HPG - 1) & ~(HPG - 1);
+    return hi > lo && mprotect((void *)(uintptr_t)lo, (size_t)(hi - lo), PROT_READ | PROT_WRITE) ? -1 : 0;
+}
+int s2a_snap_svcmem_load(FILE *f) {
+    uint32_t mg = 0; uint64_t heap, hc, phys, mstack, nz = 0, tf, tn, uec, dat;
+    if (snap_r(f, &mg, 4) || mg != SNAP_SVCMEM_MAGIC) { LOG("【红】即时存档恢复：内存账文件头不对（旧的整块格式本版不读）"); return -1; }
+    sfr r; int rc = sfr_sec(&r, f, "svcmem", 1);
+    if (rc || sfr_rec(&r) != 1) { LOG("【红】即时存档恢复：内存账段读不了%s", rc == -2 ? "（格式比本版新）" : ""); sfr_done(&r); return -1; }
+    {   // 游戏看得见的布局：逐字段与本局相同才接得上（不同 = 布局变了，C 档）
+        int bad = 0;
+#define CL(id, fld) if (sfr_u64(&r, id, ~0ull) != (uint64_t)L.fld) { LOG("【红】即时存档恢复：内存布局 %s 与快照不同（快照 %#llx，当前 %#llx）", #fld, (unsigned long long)sfr_u64(&r, id, 0), (unsigned long long)L.fld); bad++; }
+        SVCMEM_LAYOUT(CL)
+#undef CL
+        if (bad) { LOG("【红】即时存档恢复：这个快照是旧版存的，内存布局接不上，拒绝恢复；游戏自己的存档不受影响"); s2a_snap_mark_old(); sfr_done(&r); return -1; }
+    }
+    heap = sfr_u64(&r, 20, 0); hc = sfr_u64(&r, 21, 0); phys = sfr_u64(&r, 22, 0); mstack = sfr_u64(&r, 23, 0);
+    tn = sfr_u64(&r, 30, 0); tf = sfr_u64(&r, 31, 0); uec = sfr_u64(&r, 32, 0); dat = sfr_u64(&r, 33, 0);
+    uint8_t ent[sizeof g_entropy]; int ent_ok = sfr_into(&r, 40, ent, sizeof ent); int ent_ready = (int)sfr_u64(&r, 41, 0);
+    if (heap != (uint64_t)(uintptr_t)g_heap && g_heap) { LOG("【红】即时存档恢复：堆基址不同（快照 %#llx，当前 %p）", (unsigned long long)heap, (void *)g_heap); sfr_done(&r); return -1; }
+    GMU_LOCK();
+    int e = 0;
+    g_heap = (uint8_t *)(uintptr_t)heap; g_heap_cur = hc; g_phys = phys; g_mstack = mstack;
+    if (hc) e |= snap_rw(heap, heap + hc);
+    // 映射表、跨度、权限 / 属性账、物理映射掩码：整表换成快照的
+    g_nmap = 0; g_nspan = 0; free(g_perm); g_perm = NULL; g_nperm = 0; free(g_attr); g_attr = NULL; g_nattr = 0; int cperm = 0, cattr = 0, far_pages = 0;
+    for (;;) {
+        int t = sfr_rec(&r); if (t == 0) break; if (t < 0) { e = -1; break; }
+        switch ((int)sfr_u64(&r, 50, 0)) {
+        case 1: if (g_nmap >= MAX_MAP) { e = -1; break; }
+            g_map[g_nmap].base = sfr_u64(&r, 1, 0); g_map[g_nmap].size = sfr_u64(&r, 2, 0); g_map[g_nmap].src = sfr_u64(&r, 3, 0);
+            g_map[g_nmap].state = (uint32_t)sfr_u64(&r, 4, 0); g_map[g_nmap].h = (uint32_t)sfr_u64(&r, 5, 0); g_map[g_nmap].perm = (uint32_t)sfr_u64(&r, 6, 3); g_nmap++; break;
+        case 2: if (g_nspan >= MAX_MAP) { e = -1; break; } g_span[g_nspan].lo = sfr_u64(&r, 1, 0); g_span[g_nspan].hi = sfr_u64(&r, 2, 0); g_nspan++; break;
+        case 3: case 4: { int k = (int)sfr_u64(&r, 50, 0) == 3; struct perm_ov **pp = k ? &g_perm : &g_attr; int *np = k ? &g_nperm : &g_nattr, *cp = k ? &cperm : &cattr;
+            if (*np == *cp) { *cp = *cp ? *cp * 2 : 64; *pp = realloc(*pp, sizeof **pp * (size_t)*cp); }
+            (*pp)[*np].lo = sfr_u64(&r, 1, 0); (*pp)[*np].hi = sfr_u64(&r, 2, 0); (*pp)[*np].perm = (uint32_t)sfr_u64(&r, 3, 0); (*np)++; break; }
+        case 5: { uint64_t ix = sfr_u64(&r, 1, 0); uint8_t v = (uint8_t)sfr_u64(&r, 2, 0); nz++;
+            *amask_at(L.alias_base + ix * HPG) = v;
+            uint64_t a = L.alias_base + ix * HPG, wb, ws; s2a_window_get(&wb, &ws);
+            if (a + HPG > wb + ws) { far_pages++; break; }
+            e |= snap_rw(a, a + HPG); break; }
+        default: break;   // 新版加的种类：本版不认，跳过
+        }
+        if (e) break;
+    }
+    sfr_done(&r);
+    if (far_pages) LOG("即时存档恢复：物理映射有 %d 页在远端（窗口外），由远端按游戏地址恢复（far.bin）", far_pages);
+    // 映射表里各段的宿主侧做出来（共享内存除外，等服务重放）
+    int nalias = 0, ncopy = 0, nshared = 0;
+    for (int i = 0; i < g_nmap && !e; i++) {
+        uint32_t st = g_map[i].state;
+        if (st == ST_SHARED) { nshared++; continue; }
+        if (st == ST_STACK && g_map[i].src && g_map[i].h == MAP_ALIAS) { if (alias_map(g_map[i].base, g_map[i].src, g_map[i].size, VM_PROT_READ | VM_PROT_WRITE)) { LOG("【红】即时存档恢复：栈别名 %#llx 重建失败", (unsigned long long)g_map[i].base); e = -1; } nalias++; continue; }
+        if (st == ST_STACK) { e |= snap_rw(g_map[i].base, g_map[i].base + g_map[i].size); ncopy++; continue; }
+        if (st == ST_TMEM || st == ST_TMEM_ISO) { if (alias_map(g_map[i].base, g_map[i].src, g_map[i].size, VM_PROT_READ | VM_PROT_WRITE)) e = -1; nalias++; continue; }
+        LOG("【红】即时存档恢复：映射表第 %d 项状态 %#x（代码内存等）首版不支持，拒绝恢复", i, st); e = -1;
+    }
+    // TLR 与确定性 arena（线程 TLS 块 / 线程对象）
+    g_tlr_next = tn; g_tlr_free = (void *)(uintptr_t)tf; g_user_exception_context = uec; g_det_arena_top = dat;
+    if (tn > L.tlsio_base) e |= snap_rw(L.tlsio_base, tn);
+    if (dat && dat < L.tlsio_base + L.tlsio_size) e |= snap_rw(dat, L.tlsio_base + L.tlsio_size);
+    if (ent_ok) { memcpy(g_entropy, ent, sizeof g_entropy); g_entropy_ready = ent_ready; }
+    GMU_UNLOCK();
+    LOG("%s即时存档恢复：内存账 堆 %llu MB、物理映射页 %llu、映射表 %d 项（别名 %d、拷贝栈 %d、共享内存待接 %d）", e ? "【红】" : "", (unsigned long long)(hc >> 20), (unsigned long long)nz, g_nmap, nalias, ncopy, nshared);
+    return e ? -1 : 0;
+}
+// 页内容写回后：按 A 的权限账收紧保护（只收紧整宿主页、同 0x02 的规则：模块映像里的不改宿主保护）
+void s2a_snap_svcmem_perms(void) {
+    GMU_LOCK(); int n = 0;
+    for (int i = 0; i < g_nperm; i++) {
+        uint64_t lo = (g_perm[i].lo + HPG - 1) & ~(HPG - 1), hi = g_perm[i].hi & ~(HPG - 1); if (hi <= lo) continue;
+        uint32_t p = g_perm[i].perm; int prot = (p & 1 ? PROT_READ : 0) | (p & 2 ? PROT_WRITE : 0);
+        if (p & 4) continue;   // 可执行的段（模块代码）不动
+        if (!mprotect((void *)(uintptr_t)lo, (size_t)(hi - lo), prot)) n++;
+    }
+    GMU_UNLOCK(); LOG("即时存档恢复：权限账收紧 %d 段", n);
+}
+// 服务重放后：共享内存映射按句柄找到 B 里的后备 buffer，在 A 的地址重新别名映射
+void *s2a_shmem_lookup(uint32_t h, uint64_t *size);
+int s2a_snap_svcmem_shared(void) {
+    GMU_LOCK(); int e = 0, n = 0;
+    for (int i = 0; i < g_nmap; i++) if (g_map[i].state == ST_SHARED) {
+        uint64_t sz = 0; uint8_t *buf = s2a_shmem_lookup(g_map[i].h, &sz);
+        if (!buf) { LOG("【红】即时存档恢复：共享内存句柄 %#x 在 B 里没有对象", g_map[i].h); e = -1; continue; }
+        uint64_t span = (g_map[i].size + HPG - 1) & ~(HPG - 1);
+        vm_address_t a = (vm_address_t)g_map[i].base; vm_prot_t cur, max;
+        if (vm_remap(mach_task_self(), &a, (vm_size_t)span, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE, mach_task_self(), (vm_address_t)buf, FALSE, &cur, &max, VM_INHERIT_SHARE) != KERN_SUCCESS) { e = -1; continue; }
+        int prot = (g_map[i].perm & 1 ? VM_PROT_READ : 0) | (g_map[i].perm & 2 ? VM_PROT_WRITE : 0);
+        vm_protect(mach_task_self(), a, (vm_size_t)span, FALSE, prot); n++;
+    }
+    GMU_UNLOCK(); LOG("%s即时存档恢复：共享内存重接 %d 段", e ? "【红】" : "", n); return e;
+}
+// 即时存档恢复：当前堆（已提交部分）的起点与大小（重放暂存区借堆顶用，先备份后还原）
+void s2a_snap_heap(uint64_t *base, uint64_t *cur) { GMU_LOCK(); *base = (uint64_t)(uintptr_t)g_heap; *cur = g_heap_cur; GMU_UNLOCK(); }
+// 即时存档恢复：服务重放暂存区。在别名区最顶端临时登记一段（打开读写），服务按游戏地址读写它认作已映射；重放完撤掉、改回不可访问
+//   （与游戏内存完全分开：之后若有服务异步往这里写，会当场崩在这个地址上，而不是悄悄写坏游戏数据）
+uint64_t s2a_snap_scratch_map(uint64_t n) {
+    // 取别名区顶端，但不能伸出宿主窗口：开远端时（iPhone 大地址档）别名区顶落在远端，那段游戏地址在服务层的内存追踪里无效，
+    //   重放请求的应答一写进消息后面的接收区就报无效内存区（一款大游戏：AudioDevice#10、DeliveryCacheProgressService#1 等）
+    uint64_t wb, ws; s2a_window_get(&wb, &ws); uint64_t top = L.alias_base + L.alias_size; if (top > wb + ws) top = wb + ws;
+    uint64_t a = top - n; GMU_LOCK();
+    for (uint64_t p = a; p < a + n; p += HPG) if (*amask_at(p)) { GMU_UNLOCK(); return 0; }
+    if (map_find(a, n) || mprotect((void *)(uintptr_t)a, (size_t)n, PROT_READ | PROT_WRITE)) { GMU_UNLOCK(); return 0; }
+    map_add(a, n, 0, ST_STACK, 0); GMU_UNLOCK(); return a;
+}
+void s2a_snap_scratch_unmap(uint64_t a, uint64_t n) {
+    GMU_LOCK(); int i = map_find(a, n); if (i) map_del(i - 1);
+    memset((void *)(uintptr_t)a, 0, (size_t)n); mprotect((void *)(uintptr_t)a, (size_t)n, PROT_NONE); GMU_UNLOCK();
+}
+#endif

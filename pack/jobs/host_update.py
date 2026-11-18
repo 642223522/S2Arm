@@ -11,6 +11,7 @@
 不兼容时照用原来的宿主，catalog 报 hostUpdate = "incompatible"，游戏库提示重新准备。
 """
 from __future__ import annotations
+import json
 import os
 import re
 import shutil
@@ -57,6 +58,64 @@ def engine_compat(c):
 HINT_REASONS = ("rewriter", "hostAbi", "shader")   # 改写器更新 / 宿主约定号变了 / 着色器链（直连库）更新
 
 
+SHADER_FALLBACK = "shader_fallback.json"   # 宿主写的「包里没有、现场首次翻译」的着色器支数（{count, at, app}，只加不减；iOS 在 Documents/games/<号>/，Mac 在游戏库 temp/<号>/）
+
+
+def built_by(c):
+    """出包时记下是哪一版启动器打的（game.json ios / Mac 运行版本清单的 builtBy）：着色器覆盖度判「这包比当前 App 旧」用"""
+    from core import release_version, display_version
+    return dict(version=release_version(c.engine), display=display_version(c.engine))
+
+
+def _vtuple(v):
+    try:
+        return tuple(int(x) for x in str(v).split("."))
+    except ValueError:
+        return None
+
+
+def built_older(c, built):
+    """这份包是不是比当前启动器早的版本打的：没记 builtBy（这条判据之前出的包）→ 是；当前版本号读不出 → 判不了，按否（不因此标角标）"""
+    from core import release_version
+    cur = _vtuple(release_version(c.engine))
+    if not cur:
+        return False
+    got = _vtuple((built or {}).get("version")) if built else None
+    return got is None or got < cur
+
+
+def shader_misses(c, gid):
+    """这款在各处现场翻译过多少支包里没有的着色器 → {ios: 各台手机里最大的, mac: Mac 局的}（读设备记录与游戏库 temp/<号>/，不读手机）"""
+    gid = gid.upper()
+    ios = 0
+    for _, rec in layout.devices(c):
+        if isinstance(rec, dict):
+            ios = max(ios, int(((rec.get("shaderFallback") or {}).get(gid) or {}).get("count") or 0))
+    try:
+        mac = int((json.loads((Path(c.library) / "temp" / gid / SHADER_FALLBACK).read_text(encoding="utf-8")) or {}).get("count") or 0)
+    except (OSError, ValueError, AttributeError, TypeError):
+        mac = 0
+    return dict(ios=ios, mac=mac)
+
+
+def _mac_built(c, gid):
+    try:
+        return (json.loads((layout.image_mac(c, gid, create=False) / "manifest.json").read_text(encoding="utf-8")) or {}).get("builtBy")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def shader_hint(c, gid, ios_count=None):
+    """着色器覆盖度（11-17 维护者定的判据，设备实测不按版本猜）：现场翻译过包里没有的着色器（count > 0）且这份包比当前启动器旧 → 重新出包能补上，
+    给 shaderMiss；count > 0 但包已是当前版本打的 → 重出也没用（是出包流程漏了，另由出包流程补），不标。ios_count 给了就只看这一台"""
+    got = shader_misses(c, gid)
+    n_ios = got["ios"] if ios_count is None else ios_count
+    ios = layout.program_info(c, gid) or {}
+    if n_ios > 0 and ios and built_older(c, ios.get("builtBy")):
+        return True
+    return ios_count is None and got["mac"] > 0 and built_older(c, _mac_built(c, gid))
+
+
 def update_hints(c):
     """0.6.0 通用壳（开关后面）：启动器新版本打开时的快速比对（《文件与程序管理体系》⑦ ③，11-17 维护者定）。每款只读程序兼容记录
     （game.json 的 ios，没有读专用文件夹那份，layout.program_info，几 KB），比对改写器指纹 / 宿主约定号 / 着色器链与本版启动器的值；
@@ -74,6 +133,8 @@ def update_hints(c):
     games = []
     for g in c.catalog()["games"]:
         why = _game_hint(c, g["id"], rid, want)
+        if shader_hint(c, g["id"]):
+            why.append("shaderMiss")
         if why:
             games.append(dict(gameId=g["id"].upper(), reasons=why))
     return dict(enabled=True, games=games)
@@ -194,6 +255,8 @@ def phone_overview(c):
                     why.append("hostAbi")
                 if rid and prog and prog.get("rewriter_id") not in (None, rid) and "rewriter" not in why:
                     why.append("rewriter")
+                if shader_hint(c, g, ios_count=int(((rec.get("shaderFallback") or {}).get(g) or {}).get("count") or 0)) and "shaderMiss" not in why:
+                    why.append("shaderMiss")   # 这台手机上现场翻译过包里没有的着色器、包又比当前启动器旧：重新出包能补上
                 games.append(dict(gameId=g, state="suggested", reasons=why) if why else dict(gameId=g, state="latest"))
         phone = dict(device=key, name=signed.get("device") or "", installed=bool(rec.get("shellId")), bundleId=rec.get("bundleId") or "",
                      shellCurrent=bool(sid) and rec.get("shellId") == sid, signedAt=at, free=free, signMode=_sign_mode(c, rec, signed),

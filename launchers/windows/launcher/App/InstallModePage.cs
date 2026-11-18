@@ -233,7 +233,7 @@ public sealed partial class EnvironmentWindow
         catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
             InvalidOperationException or OperationCanceledException or PlatformNotSupportedException or System.ComponentModel.Win32Exception)
         { updateOutcome = error.Message.Length > 0 ? error.Message : error.GetType().Name; updateMessage = updateOutcome; updateState = error is OperationCanceledException ? "cancelled" : "failed"; updateTrack.Ended = DateTime.UtcNow; }
-        finally { EndJob(front); phoneUpdating = false; DynamicFinished(updateState); Render(); }
+        finally { EndJob(front); phoneUpdating = false; DynamicFinished(updateState); AfterArtifactJob(); Render(); }
         // 会挤掉别处装的游戏：就在更新页里问（「仍然继续」/「先不」），不弹散的对话框（维护者 11-11：更新要有一页引导整个流程）
         if (dropAsk is not null) { updateState = "drop"; updateMessage = dropAsk; Render(); return; }
         await RefreshLibraryAsync();   // 游戏库作业在跑就记一笔、那一轮完了补刷（剃刀 W8），不再跳过

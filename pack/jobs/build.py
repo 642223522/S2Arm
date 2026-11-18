@@ -184,6 +184,8 @@ def runtime_env(c, game, runtime, input_ok=True):
     # 游玩时间（runtime/src/playtime.c）写进这款的游戏文件夹：S2A_DOCS 在 temp/（总览里算可清的临时件），清了不能把累计时长一起清掉
     env.update(S2A_GAME_DATA=str(runtime), S2A_RYU_DATA=str(save), S2A_DOCS=str(docs), S2A_SAVE_FOLDER=str(save_folder),
                S2A_PLAYTIME=str(layout.path(c, game["id"], "playtime.json")),
+               # 即时快照（0.6.0）落在这款的游戏文件夹里（同游玩时间，不放可清的 temp/），删这款时随文件夹一起删；宿主 runtime/src/snapshot.c s2a_snap_dir_for 读
+               S2A_SNAPSHOT_DIR=str(layout.path(c, game["id"], "snapshot")),
                NXGAL_SHADER_CACHE_DIR=str(cache / "shaders"), NXGAL_PSO_DEV_DIR=str(cache / "pso"),
                S2A_MACRO_DUMP=str(cache / "macros"),
                S2A_DOCKED=docked_default(c),   # 缺省掌机（11-17 维护者定，同 iPhone）；玩家在这款设置里选过的由 launch() 里 community.launch_env 盖上
@@ -948,7 +950,7 @@ def prepare(c):
                             engine="S2Arm", gameId=game["id"], gameName=game["name"], compatibility="unverified",
                             files=snapshot(c, temporary), **(host_update.engine_compat(c) or {}),   # 只换宿主的判据（host_update.py）
                             rewriterId=__import__("rewrite_refresh").rewriter_id(c),
-                            bfGen=__import__("sgrade_bf").BF_GEN)   # 直连库的可读瓦片版代数（S 级升级按它判要不要补 _bf，pack/jobs/sgrade_bf.py）   # 改写产物出自哪版改写器：改写器修了，起局前只核记号不同的（rewrite_refresh.refresh_mac）
+                            bfGen=__import__("sgrade_bf").BF_GEN, builtBy=host_update.built_by(c))   # 直连库的可读瓦片版代数（S 级升级按它判要不要补 _bf，pack/jobs/sgrade_bf.py）   # 改写产物出自哪版改写器：改写器修了，起局前只核记号不同的（rewrite_refresh.refresh_mac）
             atomic(temporary / "manifest.json", manifest)   # v0.2.3 清理：不再紧接着全量复验——清单就是同一进程刚从这些文件量出来的
             sha = host_update.install_host(c, host)
             c.check()

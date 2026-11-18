@@ -172,6 +172,10 @@ static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER;
 static uint64_t g_done;                         // Highest completed fence value (written by the completion callback)
 static uint64_t g_arena_made, g_arena_cuts; static uint64_t arena_bytes(void), arena_waits(void);
+static int g_snap_newtex_log;
+static nvn_hmap g_snap_ghost_pend = {.klen = 8}; static void snap_ghost_apply(uint64_t ser, id pk);   // 即时存档：已销毁贴图的待写回内容（nvn_snap.inc）
+static int g_snap_restored;   // 即时存档：本进程是从快照恢复的（nvn_snap_restore 置 1）。只在恢复局才走的分支看它，正常局一行不走
+static int g_snap_newtex_log;   // 即时存档诊断：恢复完成后新建的前若干张贴图逐张记一行
 static int g_allocprof = -1; static uint64_t g_ap_bytes[64], g_ap_fn[8];
 static _Atomic uint64_t g_tex_init_n, g_tex_rel_n;   // DM_NVN_ALLOCPROF: texture lifecycle counters (see nvn_be_tex_tick)
 #define AP_B uint64_t _ap0 = g_allocprof > 0 ? g_dev.currentAllocatedSize : 0
@@ -3105,7 +3109,15 @@ static nvn_hmap g_ghost = {.klen = 8}; static uint64_t g_ghost_ring[NGHOST]; sta
 int nvn_be_tex_is_live(uint64_t ser) { pthread_mutex_lock(&g_smu); int r = nvn_hm_get(&g_tex_live, &ser) != NULL; pthread_mutex_unlock(&g_smu); return r; }   // 这个序号的贴图对象还活着（没 Finalize / 重新初始化）
 uint32_t nvn_be_tex_live_n(void) { pthread_mutex_lock(&g_smu); uint32_t n = g_tex_live.n; pthread_mutex_unlock(&g_smu); return n; }   // 活着的贴图对象数（宽屏胶水表满时对照：是游戏真有这么多，还是登记漏还）
 static void tp_reg(const tex_t *t);   // upload ahead (with page_count)
-void nvn_be_tex_init(const tex_t *t) { if (!t->serial) return; atomic_fetch_add(&g_tex_init_n, 1); pthread_mutex_lock(&g_smu); nvn_hm_put(&g_tex_live, &t->serial, (void *)1); pthread_mutex_unlock(&g_smu); tp_reg(t); }
+static nvn_hmap g_snap_texaddr; static int g_snap_on = -1;   // 即时存档：对象序号 → 游戏里贴图对象的地址（恢复时按地址把 GPU 私有贴图建出来再写回内容）
+int s2a_snap_saving(void) __attribute__((weak));   // runtime/src/snapshot.c：即时存档开关的唯一定义处
+// 弱链接[nvntest]：s2a_snap_saving（runtime/src/snapsw.c 提供；图形单测不链宿主，链接行按这行放行未定义）
+// 弱链接[nvntest]：s2a_snap_arena_get（runtime/src/vawin.c 提供，nvn_snap.inc 用；同上）
+// 弱链接[nvntest]：s2a_snap_arena_set（同上）
+static int snap_on(void) { if (g_snap_on < 0) g_snap_on = s2a_snap_saving ? s2a_snap_saving() : 0; return g_snap_on; }
+void nvn_be_tex_init(const tex_t *t) { if (!t->serial) return; atomic_fetch_add(&g_tex_init_n, 1); pthread_mutex_lock(&g_smu); nvn_hm_put(&g_tex_live, &t->serial, (void *)1);
+    if (snap_on()) { if (!g_snap_texaddr.klen) nvn_hm_init(&g_snap_texaddr, 8); nvn_hm_put(&g_snap_texaddr, &t->serial, (void *)t); }
+    pthread_mutex_unlock(&g_smu); tp_reg(t); }
 static void obj_drop(id o) { if (alias_has(o)) defer_obj_unref(o); else defer_obj_release(o); }   // caller holds g_smu
 // A submission can resolve more finalized textures than the ring holds (S2Arm 11-05, after upstream PR #1299 commit 2 "A bindless pool churns finalized textures within a submission",
 //   MIT, seedds/upstream 9fb44679: about 12,000 finalized descriptors in Ocarina of Time's Kokiri Forest, 18.9 GB resident on the Mac). The ring then evicted a texture that draws already
@@ -5148,6 +5160,7 @@ static void cpu_unc_drop(void) {
     free(ser);
 }
 static void pkg_gpu_wrote(const tex_t *t, unsigned level, unsigned layer0, unsigned nlayers, uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    if (g_snap_newtex_log > 0 && t && t->serial < 100) { g_snap_newtex_log--; MLOG("即时存档诊断：GPU 写预排布贴图 ser=%llu 级 %u 区 %u,%u %ux%u", (unsigned long long)t->serial, level, x, y, w, h); }
     if (!t || !t->serial || !t->mem) return;
     gpw_mark(t, level, layer0, nlayers, x, y, w, h);   // copy / clear destination: the bytes of this rectangle (see gpw_mark)
     __unsafe_unretained id o = tex_get(t->serial); if (![o isKindOfClass:[NvPkg class]]) return;
@@ -5420,6 +5433,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
                             if (gens[k] > pk->pgpu[k]) { const uint8_t *lo; size_t m; page_span(t, (size_t)k, &lo, &m); tex_bytes_rects(t, (uint64_t)(lo - t->mem), (uint64_t)(lo - t->mem) + m, rect_add, &L); up = 1; }
                             pk->ph[k] = nh[k];
                         }
+                        if (up && g_snap_newtex_log > 0) { g_snap_newtex_log--; MLOG("即时存档诊断：预排布贴图按页补传 ser=%llu %ux%u 格式 %#x 矩形 %d 个", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, (int)L.n); }
                         if (!up || !pkg_upload_rects(t, pk->tex, &L)) { pk->stamp = st; pk->seen = nvn_dirty_now(); clean = 1; if (up) g_pkg_partial++; else g_pkg_gpu_kept++; g_ser_gen++;
                             if (dirtycheck()) pk->hash = full_hash(t->mem, t->L.size); }   // the check's reference: guest memory as now accepted (pages left to the GPU differ on purpose)
                         free(L.r);
@@ -5455,6 +5469,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
                 if (pk->spare && pk->spare != nt) defer_obj_release(pk->spare);   // still in use, or of another shape: retired as before
                 if (pk->sparse) sparse_view(pk, t);
                 zb_report(t, pk->sparse ? (unsigned)pk->vbase : 0, "re-upload");
+                if (g_snap_newtex_log > 0) { g_snap_newtex_log--; MLOG("即时存档诊断：预排布贴图整张重传 ser=%llu %ux%u 格式 %#x 池 %p+%#llx", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, (void *)t->pool, (unsigned long long)t->off); }
                 pk->spare = old; pk->spare_fence = g_fence + 1; g_ser_gen++; pk->stamp = st; pk->vgen = pk->vseen = vg; pk->span = nvn_dirty_span(t->mem, t->L.size); pk->seen = nvn_dirty_now(); g_pkg_reuploads++; if (dirtycheck() && !pk->sparse) pk->hash = full_hash(t->mem, t->L.size); }
             return pk->view ? pk->view : pk->tex;
         }
@@ -5471,6 +5486,8 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
         if (pk->sparse) sparse_view(pk, t);
         zb_report(t, pk->sparse ? (unsigned)pk->vbase : 0, "upload");
         tex_put(t->serial, pk);
+        if (g_snap_newtex_log > 0) { g_snap_newtex_log--; MLOG("即时存档诊断：新建预排布贴图 ser=%llu %ux%u 级 %u 格式 %#x 池 %p+%#llx 稀疏 %d 从显卡贴图带过来的格 %d", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.levels, t->d.format, (void *)t->pool, (unsigned long long)t->off, pk->sparse, gn); }
+        if (g_snap_ghost_pend.n) snap_ghost_apply(t->serial, pk);
         if (gn) carry_gpu(t, pk->tex, gfrom, gr, gn, gb);   // after tex_put: pkg_gpu_wrote notes the pages on this NvPkg
         free(gr);
         return pk->view ? pk->view : pk->tex;
@@ -5545,7 +5562,9 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
         mt = [g_dev newTextureWithDescriptor:d];
         stl_add(STL_GNEW, stl0);
         if (!mt) { RED_ONCE(2, "failed to create MTLTexture ser=%llu %ux%u format %#x target %d samples %d levels %u", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, t->d.target, t->d.samples, t->d.levels); return nil; }
-        res_add(mt); stl0 = stl_now(); if (!tex_init_fill(t, mt)) tex_zero_fill(mt); stl_add(STL_FILL, stl0);   // register residency before filling (the copy destination must be resident too)
+        res_add(mt); stl0 = stl_now(); int filled_ = tex_init_fill(t, mt); if (!filled_) tex_zero_fill(mt); stl_add(STL_FILL, stl0);
+        if (g_snap_newtex_log > 0) { g_snap_newtex_log--; MLOG("即时存档诊断：恢复后新建贴图 ser=%llu %ux%ux%u 级 %u 格式 %#x 目标 %d flags %#x 池 %p+%#llx 内容=%s", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.levels,
+                                          t->d.format, t->d.target, t->d.flags, (void *)t->pool, (unsigned long long)t->off, filled_ ? "游戏内存" : "全零"); }   // register residency before filling (the copy destination must be resident too)
         if (big_tex_on() && mt.allocatedSize >= (4u << 20)) {   // 大贴图建立账（big_tex_res）：NVN 侧描述 + 存储有没有被游戏碰过（mincore，不读页）
             uint64_t touched = 0; size_t pg = (size_t)getpagesize(); unsigned char vec[512];
             for (uint64_t a = (uint64_t)(uintptr_t)t->mem & ~(uint64_t)(pg - 1), e = (uint64_t)(uintptr_t)t->mem + t->L.size; t->mem && a < e; a += sizeof vec * pg) {
@@ -7561,7 +7580,9 @@ static void *prog_get_ptr(const prog_t *cp) {   // Called only on the submit thr
     //   rewrite z for the other convention, so whole scenes (characters, terrain) fell outside the depth range. A program resolved under the other mode is resolved again
     __unsafe_unretained NvProg *have = p->serial ? serial_get(p->serial) : nil;
     if (have && !prog_depth_stale(have, dz)) { g_prog_last_ptr = p; g_prog_last_serial = p->serial; g_prog_last_gen = gen; g_prog_last = have; return (__bridge void *)have; }
-    if (have) { NvProg *re = bind_rebuild(p, have); if (re) { serial_put(p->serial, re); return (__bridge void *)re; } }   // a combined program has no shaders of its own (nstage 0): its stages' programs again
+    // A combined program has no shaders of its own (nstage 0): its stages' programs again. Also, in a process restored from an instant save, when none is registered under its serial yet: the restore
+    //   brings the bind cache back but not the host objects (an instant-save restore: every draw lost to "no vertex stage", the picture black for the whole minute after restore)
+    if (have || g_snap_restored) { NvProg *re = bind_rebuild(p, have); if (re) { serial_put(p->serial, re); return (__bridge void *)re; } }   // normal runs: a combined program is registered when made, have is never nil, same as before
     shmap_load();
     NvProg *o = [NvProg new];
     for (unsigned i = 0; i < p->nstage; i++) {
@@ -18686,6 +18707,7 @@ void nvn_be_alloc_stats(uint64_t *waits, uint64_t *grown, int *n) { *waits = g_a
 // 弱链接[nvntest]：s2a_frame_replay_screen（同上，runtime/src/widen.c）
 // 弱链接[nvntest]：s2a_npdm_program_id_set（同上，runtime/src/gfxmode.c）
 #include "nvn_frame_rec.inc"   // 帧录放（graphics/nvn/docs/frame_replay.md）
+#include "nvn_snap.inc"   // 即时存档：图形实时状态存 / 取
 #pragma clang attribute pop
 
 // This backend still uses its own PoolArrays implementation; the new cross-platform

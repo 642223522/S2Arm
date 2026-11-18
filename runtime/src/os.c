@@ -212,6 +212,8 @@ void guest_clock_freeze_for(int reason, int on) {
     pthread_mutex_unlock(&g_clk_mu);
 }
 void guest_clock_freeze(int on) { guest_clock_freeze_for(1, on); }
+// 即时存档恢复：游戏线程放行前把游戏时间设成快照那一刻的值（之后照常随宿主钟走；冻结中不改）
+void s2a_guest_clock_set(uint64_t gns) { pthread_mutex_lock(&g_clk_mu); if (!atomic_load(&g_clk_fz)) atomic_store(&g_clk_lost, now_ns() - gns); pthread_mutex_unlock(&g_clk_mu); }
 // 前后台 / 焦点与底座（缺口扫描族 1 / 族 2，维护者 11-01 派体验线）：平台壳是唯一写者（iOS 前后台、Mac 失焦），
 //   服务层每拍读它们、变了就转成游戏的焦点消息 / ChangeDockedModeState；游戏要不要「失焦就暂停」由服务层按 SetOutOfFocusSuspendingEnabled
 //   写回，平台壳失焦时按它冻结（iOS 后台本来就整体冻结，不看它）

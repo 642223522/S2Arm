@@ -528,9 +528,12 @@ public final class S2ArmLauncherModel: ObservableObject {
                 self.games = games; self.libraryError = nil; self.showingSnapshot = false
                 self.phoneUpdates = self.provider.library.phoneUpdates
                 self.phoneDevices = self.provider.library.phoneDevices
-                self.refreshUpdateHints()   // 打开时和每次重读游戏库后快速比对一次（只读 game.json，不排后台活）
-                self.refreshPhoneOverview()   // 总控台：只读设备记录（秒回），不探 USB
-                if !self.startupLoopsStarted { self.startupLoopsStarted = true; self.sgradeMacInBackground(); self.keptModulesLoop(); self.preparePhoneUpdate(); self.appleTVBackupLoop() }
+                if !self.startupLoopsStarted {
+                    self.startupLoopsStarted = true; self.sgradeMacInBackground(); self.keptModulesLoop(); self.preparePhoneUpdate(); self.appleTVBackupLoop()
+                    // 0.6.0（开关后面）：启动器打开时快速比对「建议更新」、读一次总控台（都只读，秒回）。之后只在出包 / 手机作业做完时再读（finish），
+                    //   不跟着每次重读游戏库起：出包过程中会重读好几次，每次多起两个作业进程是浪费（ExportStreamTests）
+                    self.refreshUpdateHints(); self.refreshPhoneOverview()
+                }
                 if self.selectedID == nil || !games.contains(where: { $0.id == self.selectedID }) { self.selectedID = games.first?.id }
             case .failure(let error):
                 self.libraryError = error.message
@@ -1690,6 +1693,8 @@ public final class S2ArmLauncherModel: ObservableObject {
         session.ended = Date()
         setJob(slot, session)
         if session.isPhoneJob { lastPhoneSession = session; dynamicFinished(state) }
+        // 出包 / 推完 / 装完：game.json 的产物记录和设备记录才会变，建议更新和总控台再读一次（开关关着不读）
+        if phoneOverview != nil, session.isPhoneJob || [.export, .prepare].contains(session.kind) { refreshUpdateHints(); refreshPhoneOverview() }
         if slot == .main { running = nil; work = nil } else { phoneWork = nil }
         defer { pumpPhone() }   // 手机槽空了 / 主槽这单不再占着那款：起排着的手机作业
         if session.kind == .play, controllerGameStarted {
