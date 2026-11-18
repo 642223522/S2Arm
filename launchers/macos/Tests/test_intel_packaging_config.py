@@ -95,6 +95,12 @@ class IntelPackagingConfigTest(unittest.TestCase):
         self.assertEqual(ios.group(1), "26")
         self.assertEqual(tvos.group(1), "26")
 
+    def test_build_app_rename_tolerates_proxy_double_execution(self):
+        """宿主代理已把 staging 改成目标却回报失败时，构建不能误报失败。"""
+        text = (ROOT / "launchers/macos/build_app.py").read_text()
+        self.assertIn("if not app.exists() and destination.exists():", text)
+        self.assertIn("pass", text)
+
     def test_declared_minimum_follows_bundled_binaries(self):
         import runtime_audit
         with tempfile.TemporaryDirectory() as folder:

@@ -292,9 +292,14 @@ def main():
     try:
         app.rename(destination)
     except OSError:
-        if previous.exists():
+        # 宿主代理完成重命名却回报失败时（沙箱 shim 双执行），源已不在、目标已是新包：按成功收尾
+        if not app.exists() and destination.exists():
+            pass
+        elif previous.exists():
             previous.rename(destination)
-        raise
+            raise
+        else:
+            raise
     print(destination)
 
 
