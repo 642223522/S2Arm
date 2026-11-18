@@ -10230,5 +10230,25 @@
  {
   "source": "程序文件 {0} 的 {1} 段解不开：这个程序文件坏了或被改过，请重新导出（最好导成 NSP / XCI）。",
   "en": "The {1} segment of program file {0} can't be decompressed: this program file is damaged or has been modified. Export it again (preferably as an NSP / XCI)."
+ },
+ {
+  "source": "证书里的私钥读不出来，没能交给 iPhone 上的 S2Arm：在设置里重新导入一次证书。",
+  "en": "Couldn't read the private key in your certificate, so it wasn't handed to S2Arm on your iPhone. Import the certificate again in Settings."
+ },
+ {
+  "source": "把证书交给 iPhone 上的 S2Arm",
+  "en": "Handing the certificate to S2Arm on your iPhone"
+ },
+ {
+  "source": "现在没在用你自己的开发者证书签名，没有要交给 iPhone 的证书：先在设置里导入并选用你的证书。",
+  "en": "You're not signing with your own developer certificate, so there's no certificate to hand to your iPhone. Import and select your certificate in Settings first."
+ },
+ {
+  "source": "苹果的证书列表里找不到这台电脑签名用的那张证书，没能交给 iPhone 上的 S2Arm：先在电脑上「安装 S2Arm」一次。",
+  "en": "Apple's certificate list doesn't have the certificate this computer signs with, so it wasn't handed to S2Arm on your iPhone. Run “Install S2Arm” on this computer once first."
+ },
+ {
+  "source": "没能把证书写进 iPhone 上的 S2Arm：确认 iPhone 连着、已解锁，再试一次。",
+  "en": "Couldn't write the certificate into S2Arm on your iPhone. Make sure the iPhone is connected and unlocked, then try again."
  }
 ]
