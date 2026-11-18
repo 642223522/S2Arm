@@ -84,6 +84,14 @@ static const char *usrc_ids(int st, const struct rp_usrc *u, int *tid, int *sid)
     return NULL;
 }
 
+// 布局项分离采样器来源 src_reg2 的形状（nvn_backend.h）：UINT16_MAX = 无；0..127 = NVN 采样器槽；
+//   NVN_GPU_SAMP2_CONST | 12 位池下标 = 着色器里的立即数采样器池下标（#1594，标记位与下标位之外必须为 0）。别的值认不出，调用方具名跳过。
+static int samp2_shape_ok(uint16_t r) {
+    if (r == UINT16_MAX) return 1;
+    if (r & NVN_GPU_SAMP2_CONST) return !(r & ~(NVN_GPU_SAMP2_CONST | NVN_GPU_SAMP2_ID_MASK));
+    return r < 128;
+}
+
 static const struct rp_prog *g_prog; static nvn_gpu_pipe g_pipe; static nvn_gpu_cmd g_pipe_cmd;
 static uint64_t g_draws, g_skips, g_dispatches; static uint32_t g_prim = ~0u; static int g_quads = -1, g_face = -1;   // g_quads：这笔的索引展开方式（EXP_*）
 static int g_ms_off;   // #1015：当前管线是「多重采样目标上关了多重采样」（游戏 ms.enable = 0、目标样本数 > 1）
@@ -1145,7 +1153,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
             continue;
         }
         if (e->src_kind != NVN_RB_TEX) continue;
-        if (e->src_reg >= RP_NTEX || (e->src_reg2 != UINT16_MAX && (e->count != 1 || e->src_reg2 >= 128))) {
+        if (e->src_reg >= RP_NTEX || (e->src_reg2 != UINT16_MAX && e->count != 1) || !samp2_shape_ok(e->src_reg2)) {
             skip("separate_texture_shape", rec); goto draw_done;
         }
         if (e->count > 1) {
@@ -1172,7 +1180,13 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
                                          tt->mem && tt->L.size >= 8 ? (unsigned)((const uint32_t *)(const void *)tt->mem)[0] : 0u, tt->mem && tt->L.size >= 8 ? (unsigned)((const uint32_t *)(const void *)tt->mem)[1] : 0u, (unsigned)tt->d.flags, tt->pool ? (unsigned)tt->pool->flags : 0xffffu, (int)tt->has_layout);
             else tn += (size_t)snprintf(tl + tn, sizeof tl - tn, " t%d.%u=#%d(无)", st, (unsigned)e->src_reg, id);
         }
-        if (e->src_reg2 != UINT16_MAX) {
+        if (e->src_reg2 != UINT16_MAX && (e->src_reg2 & NVN_GPU_SAMP2_CONST)) {
+            // 类型 3 句柄（#1594）：采样器池下标是着色器里的立即数，硬件按当前绑定的采样器池取——登记号 = 池下标 + 池起点
+            //   （同 usrc_ids 读出的句柄高 12 位；号 0 取池第 0 项）。不经 NVN 采样器槽，也不看贴图字高位（那里是别的数）。
+            //   没登记的号具名跳过，不拿别的采样器顶替。
+            ts[st][i] = rp_samp_for_tex((int)(e->src_reg2 & NVN_GPU_SAMP2_ID_MASK) + rp_S.samp_base, h ? (int)(h & 0xFFFFF) : rp_S.tex_base);
+            if (!ts[st][i]) { skip("const_sampler_unresolved", rec); goto draw_done; }
+        } else if (e->src_reg2 != UINT16_MAX) {
             if (!rp_S.samp_bound[st][e->src_reg2]) { skip("separate_sampler_unbound", rec); goto draw_done; }
             uint64_t sh = rp_S.samp[st][e->src_reg2];
             ts[st][i] = rp_samp_for_tex((int)(sh >> 20), h ? (int)(h & 0xFFFFF) : rp_S.tex_base);

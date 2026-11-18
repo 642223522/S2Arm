@@ -689,7 +689,17 @@ static int layout_ent(const struct fd_binding *b, nvn_gpu_layout_ent *e) {
         e->cls = NVN_GPU_RES_TBUF; e->src_kind = NVN_RB_TBUF; e->src_reg = (uint16_t)b->tex_slot; return 1;
     }
     if (b->kind == 2 && !b->texel_buffer && b->count > 1 && b->slot == 0) { e->cls = NVN_GPU_RES_TEX_SAMP; e->src_kind = NVN_RB_TEX; e->src_reg = 0; e->count = b->count; return 1; }
-    if (b->kind == 2 && !b->texel_buffer && b->tex_slot >= 0) { e->cls = NVN_GPU_RES_TEX_SAMP; e->src_kind = NVN_RB_TEX; e->src_reg = (uint16_t)b->tex_slot; e->src_reg2 = b->samp_slot >= 0 ? (uint16_t)b->samp_slot : UINT16_MAX; return 1; }
+    if (b->kind == 2 && !b->texel_buffer && b->tex_slot >= 0) {
+        e->cls = NVN_GPU_RES_TEX_SAMP; e->src_kind = NVN_RB_TEX; e->src_reg = (uint16_t)b->tex_slot;
+        // 分离采样器来源：c2 采样器表的槽（samp_slot）/ 着色器里的立即数采样器池下标（#1594，解析器把它放在 samp_src = FD_SAMP_ID，
+        // tex_ubo = 0 只有这一种）/ 没有（采样器取贴图字高位）。常量采样器编成标记位 + 池下标，旧回放读到会具名跳过。
+        if (b->samp_slot >= 0) e->src_reg2 = (uint16_t)b->samp_slot;
+        else if (b->samp_src == FD_SAMP_ID) {
+            if (b->samp_val > NVN_GPU_SAMP2_ID_MASK) return 0;   // 解析器已限 0..4095；越界不截断成别的下标，当作不支持的项
+            e->src_reg2 = (uint16_t)(NVN_GPU_SAMP2_CONST | b->samp_val);
+        }
+        return 1;
+    }
     // 存储缓冲：只认「NVN 存储槽」这一种来源（反射里的 nvnSlot）。地址来自 UBO 内 SbDescriptor / c1 段的要逐笔读
     // 常量缓冲内容，首版还没接，准确报红而不是猜槽位。
     if (b->kind == 1 && b->storage_kind == 1 && b->storage_slot >= 0 && b->storage_slot < 16) {
