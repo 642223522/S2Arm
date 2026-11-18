@@ -147,11 +147,11 @@ def mac_all(c):
     """作业 sgradeMac（旧启动器打开时自动起）：11-17 维护者定 S 级优化不再自动运行（「改成不自动运行，玩家手动点击 S 级优化再升级」）——
     不带 gameId 什么都不做；带了等同单款升级（upgrade_game）"""
     if c.r.get("gameId"):
-        return upgrade_game(c)
+        return upgrade_batch(c)
     return dict(updated=[], checked=0, manual=True)
 
 
-def upgrade_game(c):
+def upgrade_game(c, on_progress=None):
     """作业 sgradeUpgradeGame：玩家对这一款点「S 级优化」才升级（11-17 维护者定，不自动）。Mac 运行版本补 S 级补丁（rewrite_refresh.refresh_mac）
     与可读瓦片版着色器（sgrade_bf.upgrade_mac）；有 iPhone 程序件的一并补（rewrite_refresh.refresh_ios，Windows 只有这一段）。
     进度事件 done / total（每做完一段进一格），阶段事件 stageKey sgrade.mac / sgrade.bf / sgrade.ios；升级中这款开始游戏被拒（game_lock），别的游戏照常；
@@ -175,6 +175,8 @@ def upgrade_game(c):
         steps = [k for k, on in (("mac", mac), ("bf", mac), ("ios", iphone)) if on]
         done = {}
         c.emit("progress", done=0, total=len(steps))   # 界面画百分比（done / total，做完一段进一格）；段名看阶段事件 stageKey
+        if on_progress:
+            on_progress(0, len(steps))
         for n, k in enumerate(steps, 1):
             if k == "mac":
                 c.begin("补上 S 级优化（满屏 / 帧率 / 金手指）", n, len(steps), key="sgrade.mac")
@@ -187,9 +189,159 @@ def upgrade_game(c):
                 with packer.program_locks(c, [gid]):
                     done[k] = bool(refresh_ios(c, [gid]))
             c.emit("progress", done=n, total=len(steps))
+            if on_progress:
+                on_progress(n, len(steps))
         marker.unlink(missing_ok=True)
     return dict(gameId=gid, updated=[gid] if any(done.values()) else [], steps=done, mac=mac, iphone=iphone)
 
+
+
+# ---- 升级队列（11-17 维护者「可以做批量升级……有全选功能没问题」；排队只在作业层一套，两端界面只提交 / 停止 / 读状态）----
+# 游戏库里一份队列文件：作业 sgradeUpgradeBatch {gameIds} 提交——没有在跑的队列就自己当跑队列的作业，逐款串行升（同一时刻只一款，每款 = upgrade_game）；
+#   已有在跑的就把没在队里的款追加到队尾，立刻返回（joined = 跑队列的任务号）。单款「升级」= 只有一款的批量（sgradeUpgradeGame 走同一入口）。
+#   每款状态 queued 排队中 / running 正在升（progress 0–1）/ done 做完 / skipped 这款正在运行没升（reason）/ incomplete 没做完（出错或被停：未完成标记留着）。
+#   关掉升级页 / 窗口队列照跑（作业进程不归页面）；跑队列的作业被停（sgradeUpgradeStop → 取消它）或启动器退出：排着的不做（从队列去掉），
+#   正做的那款标记留着 = 未完成；下次打开不自动续跑。读状态：catalog 每款 sgradeState / sgradeProgress、顶层 sgradeBatch，或作业 sgradeUpgradeStatus
+QUEUE = ".sgrade-queue.json"
+QUEUE_STATES = ("queued", "running", "done", "skipped", "incomplete")
+
+
+def _queue_lock(c):
+    import filelock
+    return filelock.held(c.library / ".sgrade-queue.lock", wait_s=30)   # 不经 c.lock：被取消的作业收尾也要写队列（c.lock 先查取消）
+
+
+def _queue_live(q):
+    from core import pid_alive, pid_start
+    if not isinstance(q, dict) or not q.get("pid") or q.get("finished"):
+        return False
+    return pid_alive(q["pid"]) and (not q.get("pidStart") or pid_start(q["pid"]) == q["pidStart"])
+
+
+def _queue_write(c, q):
+    from core import atomic
+    atomic(c.library / QUEUE, q)
+
+
+def queue_status(c):
+    """队列现状（界面直接用）→ {running, task, index, count, games: [{gameId, state, progress, reason}]}。跑队列的作业已不在（被停 / 启动器退出 / 崩溃）：
+    running 的那款记 incomplete、排着的去掉。index = 正在升的是第几款（没在升 = 已结束的款数），count = 这一批共几款（含去掉前已结束的）"""
+    from core import read
+    q = read(c.library / QUEUE, None)
+    if not isinstance(q, dict):
+        return dict(running=False, task=None, index=0, count=0, games=[])
+    live = _queue_live(q)
+    games = []
+    for it in q.get("items") or []:
+        st = it.get("state")
+        if not live and st == "queued":
+            continue
+        if not live and st == "running":
+            st = "incomplete"
+        games.append(dict(gameId=it["gameId"], state=st, progress=1.0 if st == "done" else float(it.get("progress") or 0), reason=it.get("reason") or ""))
+    ended = sum(1 for g in games if g["state"] in ("done", "skipped", "incomplete"))
+    run = next((n for n, g in enumerate(games, 1) if g["state"] == "running"), None)
+    return dict(running=live, task=q.get("task"), index=run or ended, count=len(games), games=games)
+
+
+def upgrade_batch(c):
+    """作业 sgradeUpgradeBatch {gameIds}（也收单个 gameId）：见上方队列说明。跑队列时每款发 type=batch 事件 phase start / end（index / count，
+    end 带 status），每款内部照发单款的 progress（done / total，事件带 gameId）"""
+    import os, time
+    from core import Cancelled, pid_start, read, trace
+    ids = []
+    for g in list(c.r.get("gameIds") or []) + ([c.r["gameId"]] if c.r.get("gameId") else []):
+        g = str(g or "").upper()
+        if g and g not in ids:
+            ids.append(g)
+    if not ids:
+        raise Failure("没有选要升级的游戏。", code="job_failed")  # 非玩家句（只有启动器传错参数才会到）
+    with _queue_lock(c):
+        q = read(c.library / QUEUE, None)
+        if _queue_live(q):
+            have = {it["gameId"] for it in q["items"] if it.get("state") in ("queued", "running")}
+            add = [g for g in ids if g not in have]
+            q["items"] += [dict(gameId=g, state="queued") for g in add]
+            _queue_write(c, q)
+            trace(c, f"S 级升级队列在跑（{q['task']}）：追加 {len(add)} 款 {' '.join(add)}")  # 非玩家句
+            return dict(joined=q["task"], added=add, status=queue_status(c))
+        q = dict(task=c.task, pid=os.getpid(), pidStart=pid_start(os.getpid()), started=time.time(), items=[dict(gameId=g, state="queued") for g in ids])
+        _queue_write(c, q)
+    keep, cur = c.r, None
+
+    def update(gid, **kw):
+        with _queue_lock(c):
+            q = read(c.library / QUEUE, {}) or {}
+            for it in q.get("items") or []:
+                if it["gameId"] == gid and it.get("state") in ("queued", "running"):
+                    it.update(kw)
+                    break
+            _queue_write(c, q)
+            return q
+
+    try:
+        while True:
+            with _queue_lock(c):
+                q = read(c.library / QUEUE, {}) or {}
+                items = q.get("items") or []
+                nxt = next((it for it in items if it.get("state") == "queued"), None)
+                if nxt is None:
+                    q["finished"] = time.time()
+                    _queue_write(c, q)
+                    break
+                nxt.update(state="running", progress=0)
+                _queue_write(c, q)
+                cur, index, count = nxt["gameId"], items.index(nxt) + 1, len(items)
+            c.r = dict(keep, gameId=cur)
+            c.emit("batch", "", phase="start", index=index, count=count)
+            try:
+                upgrade_game(c, on_progress=lambda d, t, g=cur: update(g, progress=round(d / t, 4) if t else 1.0))
+                state, reason = "done", ""
+            except Cancelled:
+                raise
+            except Failure as e:
+                state, reason = ("skipped" if e.code == "library_busy" else "incomplete"), str(e)
+            except Exception as e:   # noqa: BLE001 —— 一款出错不停整批：这款记未完成（标记留着，玩家可再点），接着做下一款
+                state, reason = "incomplete", f"{type(e).__name__}: {e}"[:300]
+            update(cur, state=state, reason=reason, progress=1.0 if state == "done" else None)
+            trace(c, f"S 级升级 {index}/{count} {cur}：{state}" + (f"（{reason}）" if reason else ""))  # 非玩家句
+            c.emit("batch", "", phase="end", index=index, count=count, status=state, reason=reason)
+            cur = None
+            c.r = keep
+    except Cancelled:
+        # 停止：正做的那款记未完成（未完成标记由 upgrade_game 留着），排着的去掉，队列结束
+        with _queue_lock(c):
+            q = read(c.library / QUEUE, {}) or {}
+            q["items"] = [dict(it, state="incomplete") if it.get("state") == "running" else it
+                          for it in q.get("items") or [] if it.get("state") != "queued"]
+            q["finished"] = time.time()
+            _queue_write(c, q)
+        raise
+    finally:
+        c.r = keep
+    st = queue_status(c)
+    return dict(st, updated=[g["gameId"] for g in st["games"] if g["state"] == "done"])
+
+
+def upgrade_one(c):
+    """作业 sgradeUpgradeGame {gameId}：单款升级 = 只有一款的批量（同一个队列入口）"""
+    return upgrade_batch(c)
+
+
+def upgrade_stop(c):
+    """作业 sgradeUpgradeStop：停整批——取消跑队列的作业（同界面点取消：SIGTERM → 正做的那款按记号保留已做完的段、标记留着；排着的不做）"""
+    import core
+    from core import read
+    q = read(c.library / QUEUE, None)
+    if not _queue_live(q):
+        return dict(stopped=False, status=queue_status(c))
+    r = core.cancel(c.private, q["task"])
+    return dict(stopped=bool(r.get("cancelled")), task=q["task"], status=queue_status(c))
+
+
+def upgrade_status(c):
+    """作业 sgradeUpgradeStatus：只读队列现状（不靠起批量的那个窗口）"""
+    return queue_status(c)
 
 # S 级优化按类状态（11-15 维护者「优化 S 级优化，让满屏更好用」；口径与体验梳理线 cmdr/S级状态与文案_三端对照 第二节一致，界面按它显示）：
 #   每款四类 widescreen / fps / gfx / cheats，各一段 {state, source（满屏才有）, active, lastRun, autoOff, versions}。state 取值：

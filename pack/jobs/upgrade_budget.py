@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 S2Arm contributors
-"""S 级优化升级（单款作业 sgradeUpgradeGame，pack/jobs/sgrade.py；界面批量升级是逐款排队起它）的并行度与内存预算：不让一次升级把玩家的电脑吃满。
+"""S 级优化升级（队列作业 sgradeUpgradeBatch / 单款 sgradeUpgradeGame，pack/jobs/sgrade.py；同一时刻只升一款）的并行度与内存预算：不让一次升级把玩家的电脑吃满。
 
 升级里的重活（重出直连着色器库、抽取、改写）都由 c.run 起的出包阶段脚本做，脚本按 S2A_JOBS / S2A_CPU_BAKE 开路数
 （pack/stage_direct.sh、stage_extract.sh、stage_rewrite.sh；不给就按本机全部核数开）。升级作业每次起子进程前（core.Context.env）
@@ -18,7 +18,7 @@ import sys
 
 BAKE_MB = 1536    # 每路吃内存的重活（改写、抽取、直连库编译）估计，同 tools/cores.sh S2A_CPU_BAKE 的 1.5 GB
 FILE_MB = 512     # 每路文件级并行（make -j、逐文件核对）估计
-OPERATIONS = ("sgradeUpgradeGame", "sgradeMac")   # 按此预算起子进程的作业（sgradeMac 带 gameId 时等同单款升级）
+OPERATIONS = ("sgradeUpgradeGame", "sgradeUpgradeBatch", "sgradeMac")   # 按此预算起子进程的作业（sgradeMac 带 gameId 时等同单款升级）
 
 
 def physical_cores():
