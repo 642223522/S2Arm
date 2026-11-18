@@ -239,7 +239,12 @@ uint64_t s2a_direct_lookup(const char *name) {
 // 装载器（loader.c relocate）对 s2a_direct_lookup、游戏模块、libc、romfs NRO 都找不到的导入最后问一次：直连模式下 gl* 核心名交安全空实现
 //   （GL 驱动模块不装，游戏按报的 GL 版本直接调，留未解析就是一调即中止）；其余名字、通用模式回 0。
 //   空实现只能在找遍之后给：放进 s2a_direct_lookup 会先于游戏模块，游戏自己导出的同名函数被什么都不做的空实现顶掉（#601 glslc*）
+//   带前导下划线的 _gl* / _egl*：NVIDIA GL 驱动模块（直连模式不装）同时导出的另一份名字，有的游戏 main 直接导入它（LIMBO 01009C8009026000：
+//   66 个 _glActiveTexture… 全未解析，模块初始化一调即中止）。同样找遍之后才问：去掉下划线按 egl* / gl* 交直连 GL 层，层里没有的 gl* 核心名给安全空实现；
+//   游戏自己的模块要是导出了带下划线的同名函数，前面已经解析到它，到不了这里
 uint64_t s2a_direct_stub(const char *name) {
-    if (s2a_gfx_mode() != S2A_GFX_DIRECT || strncmp(name, "gl", 2) || !s2a_gl_stub) return 0;
+    if (s2a_gfx_mode() != S2A_GFX_DIRECT) return 0;
+    if (name[0] == '_' && (!strncmp(name + 1, "gl", 2) || !strncmp(name + 1, "egl", 3))) { uint64_t v = s2a_direct_lookup(name + 1); if (v) return v; name++; }
+    if (strncmp(name, "gl", 2) || !s2a_gl_stub) return 0;
     return (uint64_t)s2a_gl_stub(name);
 }

@@ -237,14 +237,14 @@ public static partial class SaveTransfer
         return new() { ["format"] = "S2ArmSave", ["schema"] = 1, ["layout"] = "ryujinx-data-v1", ["platform"] = "ios",
             ["createdAt"] = DateTimeOffset.UtcNow.ToString("O"), ["game"] = Copy(c.Game), ["saveEntries"] = entries,
             ["users"] = Users(entries), ["deviceSettings"] = Settings(c.Request["deviceSettings"]),
-            ["directories"] = new JsonArray(scan.Directories.Where(n => Allowed(n, true)).Select(n => (JsonNode)JsonValue.Create(n)).ToArray()), ["files"] = new JsonArray() };
+            ["directories"] = new JsonArray(scan.Directories.Where(n => Exported(n, true)).Select(n => (JsonNode)JsonValue.Create(n)).ToArray()), ["files"] = new JsonArray() };
     }
     private static JsonObject WriteArchive(Context c, string root, string path)
     {
         CheckLinks(path);
         Require(!File.Exists(path) && !Directory.Exists(path), T("同名备份已存在。", "A backup with the same name already exists."), "save_exists");
         var manifest = MakeManifest(c, root, out var scan);
-        long total = scan.Files.Where(p => Allowed(p.Key)).Sum(p => p.Value);
+        long total = scan.Files.Where(p => Exported(p.Key)).Sum(p => p.Value);
         Space(Path.GetDirectoryName(path), total + (64 << 20));
         string before = Fingerprint(root);
         string temporary = path + "." + Guid.NewGuid().ToString("N") + ".partial";
@@ -254,7 +254,7 @@ public static partial class SaveTransfer
             {
                 using (var zip = new ZipArchive(output, ZipArchiveMode.Create, leaveOpen: true))
                 {
-                    foreach (var file in scan.Files.Where(p => Allowed(p.Key)))
+                    foreach (var file in scan.Files.Where(p => Exported(p.Key)))
                     {
                         var entry = zip.CreateEntry("payload/" + file.Key, CompressionLevel.Fastest);
                         entry.ExternalAttributes = 0x180 << 16;
