@@ -81,18 +81,20 @@ extension S2ArmLauncherModel {
         }
     }
 
-    /// 队列在跑时每 1.5 秒查一次作业层状态（只起一个轮询）；停了再重读一次游戏库
+    /// 队列在跑时每 1.5 秒查一次作业层状态（只起一个轮询）；跑过、停了再重读一次游戏库
     func pollSGrade() {
         guard !sgradePolling else { return }
         sgradePolling = true
         Task { [weak self] in
+            var ran = false
             while let self, !Task.isCancelled {
                 let running = await self.readSGradeStatus()
                 if !running { break }
+                ran = true
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
             }
             self?.sgradePolling = false
-            self?.refresh()
+            if ran { self?.refresh() }   // 一次都没在跑：游戏库不用重读
         }
     }
 
