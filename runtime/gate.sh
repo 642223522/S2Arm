@@ -22,7 +22,7 @@ G=0; R=0; WHY=; DET=; TM=
 SER=" thread thread_plat svc_mem vawin vawin_ios26 nvn_bufreg_rate "   # nvn_bufreg_rate：耗时比判据，并行组抢核会抖
 J=${NATIVE_GATE_J:-$(( $(sysctl -n hw.ncpu 2> /dev/null || nproc 2> /dev/null || echo 4) / 2 ))}; [ "$J" -ge 1 ] 2> /dev/null || J=1
 OUT=$(mktemp -d "${TMPDIR:-/tmp}/s2a_native_gate_XXXXXX"); trap 'rm -rf "$OUT"' EXIT
-TF=${BUILD:-build}/.native_gate_times; mkdir -p "${TF%/*}" 2> /dev/null || TF=   # 各组上次耗时（派发排序用，见 run_groups）
+TF=${S2A_NATIVE_GATE_TIMES:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/cache/native_gate_times}; mkdir -p "${TF%/*}" 2> /dev/null || TF=   # 各组上次耗时（派发排序用，见 run_groups）。放树外：门禁每步 git clean -fdx，放 build/ 下永远读不到、「慢组先派」退回按名字排；只影响派发顺序，不影响判红绿；写法是临时文件 + 原子 mv，多树并发写安全
 # 编译缓存（tools/cc_cache.sh）：门禁入口（tools/gate.sh）已开就不动；单独跑本钩子时这里开。一步编链的单测也经它逐源缓存（tools/ccshim/shim split_link）
 [ -n "${S2A_CCACHE_BIN:-}" ] || { [ -f tools/cc_cache.sh ] && { source tools/cc_cache.sh; s2a_ccache_on "$PWD"; }; }
 # 工具链目录解析一次传给每组的 make（11-14 门禁提速：没设时顶层 Makefile 每次解析都起 bash 跑 tools/toolchain.sh，350 组各一次）。
