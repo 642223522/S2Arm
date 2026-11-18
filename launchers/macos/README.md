@@ -183,7 +183,7 @@ python3 launchers/macos/prepare_build.py            # add --check to only inspec
 
 | Dependency | Rule | Prepared by the command |
 | --- | --- | --- |
-| macOS arm64 or x86_64 | The runtime keeps the build machine's slice only; x86_64 builds are packaging-only (no Mac game host) | Checked |
+| macOS arm64 or x86_64 | The runtime keeps the build machine's slice only; x86_64 builds are packaging-only (no Mac game host, but the iPhone shell still includes the game-library UI) | Checked |
 | Full Xcode with iOS platform and Metal Toolchain | Resolved like packaging (`tools/toolchain.sh`): `S2A_DEVELOPER_DIR` or `tools/machine.local`, then `xcode-select`. A Metal compiler version different from `translator/dmsh_chain.lock` prints a `note` only (`dmsh_chain.py --build-env` lets it through; the shader cache is keyed by compiler, so a different Xcode just recompiles) | Checked |
 | .NET SDK | Whatever `compat/tree/global.json` accepts: `version` plus `rollForward: latestFeature` (currently 10.0.403 or a later 10.0 feature band / patch). The command runs `dotnet --version` inside `compat/tree`, so .NET itself applies the rule. Install with `python3 pack/jobs/applenv.py --install dotnet` (the same path the launcher uses) | Checked |
 | Homebrew `python@3.12 spirv-tools spirv-cross glslang zstd bash cmake meson ninja` | Runtime collection (`bundle_runtime.py`), C rewriter (CMake 3.18+), dav1d (meson / ninja; skipped with `S2A_DAV1D=0`) | Checked; prints the `brew install` line |

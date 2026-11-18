@@ -89,6 +89,7 @@ class IntelPackagingConfigTest(unittest.TestCase):
         self.assertIn('uname -m', text)
         self.assertIn('swift build --disable-sandbox', text)
         self.assertIn('-force_load,$(SHELLUI_PRODUCTS)/libS2ArmShellHost.a', text)
+        self.assertIn('xcodebuild -quiet -scheme S2ArmShellHost', text)   # arm64 仍走原路径
 
     def test_runtime_versions_probe_covers_every_pin(self):
         pins = [line.split('==')[0] for line in (ROOT / "launchers/macos/requirements-runtime.txt").read_text().splitlines()
