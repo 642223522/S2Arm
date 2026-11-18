@@ -187,6 +187,10 @@ struct PhoneJobPanel: View {
                     : t("phone.done.export.fresh").replacingOccurrences(of: "{0}", with: o.exportFresh.joined(separator: "、")).replacingOccurrences(of: "{1}", with: "\(o.exportReused)")))
                     .font(.manrope(15, .semibold)).fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("phone.export.fresh")
             }
+            if !o.exportUnwritten.isEmpty {   // 只新写了点的那款：别的款这次没写 .img，说清手机上已有照常能玩、没有怎么办（Windows PhoneJobCard 同）
+                Text(LauncherCopy.note(t("phone.done.export.unwritten").replacingOccurrences(of: "{0}", with: o.exportUnwritten.joined(separator: "、"))))
+                    .font(.manrope(15, .semibold)).fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("phone.export.unwritten")
+            }
             HStack(alignment: .top, spacing: 52) {
                 ForEach(Array(stats.enumerated()), id: \.offset) { _, s in
                     VStack(alignment: .leading, spacing: 6) {
@@ -235,7 +239,12 @@ struct PhoneJobPanel: View {
             HStack(spacing: 12) {
                 if session.kind == .installUpdate {
                     Button { model.retryPhoneUpdate() } label: { LauncherHeroActionLabel(title: t("phone.retry"), symbol: "arrow.clockwise") }
-                        .controllerButtonStyle(.plain).disabled(model.busy).controllerID("phone.retry").controllerShortcut(.rightTrigger)
+                        .controllerButtonStyle(.plain).disabled(model.phoneBusy).controllerID("phone.retry").controllerShortcut(.rightTrigger)
+                }
+                // 装到 iPhone / 更新没走成（没连手机、签不上…）：换另一条路——导出自签包，不连手机也能一步走完
+                if !exporting, session.kind == .install || session.kind == .installUpdate {
+                    Button { model.switchToSelfSign(session, language: language) } label: { LauncherHeroActionLabel(title: t("phone.switch_export"), symbol: "square.and.arrow.up") }
+                        .controllerButtonStyle(.plain).disabled(model.phoneBusy).controllerID("phone.switchExport")
                 }
                 CopyReportButton(model: model, gameID: session.gameID, operations: [session.kind.rawValue], fallback: session.message)
             }
@@ -259,7 +268,7 @@ struct PhoneJobPanel: View {
             HStack(spacing: 12) {
                 Button { if let d = model.dropConfirm { model.confirmDrop(d) } } label: { LauncherHeroActionLabel(title: t("install.drop_confirm"), symbol: "arrow.right") }
                     .controllerButtonStyle(.plain).controllerID("phone.drop.confirm").controllerShortcut(.rightTrigger)
-                Button(t("phone.drop.cancel")) { model.dropConfirm = nil; model.backToLibrary() }
+                Button(t("phone.drop.cancel")) { model.dropConfirm = nil; model.backFromPhone() }
                     .controllerButtonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("phone.drop.cancel")
             }
         }

@@ -11,6 +11,7 @@ import Sparkle
     private var expected: UInt64 = 0, received: UInt64 = 0
     /// 下载解开好、等玩家点「现在更新并重启」时 Sparkle 给的回复
     private var installReply: ((SPUUserUpdateChoice) -> Void)?
+    private var downloadCancel: (() -> Void)?
     private(set) var foundVersion: String?
 
     init(model: S2ArmLauncherModel) {
@@ -25,7 +26,7 @@ import Sparkle
         ProcessInfo.processInfo.environment["S2A_UPDATE_FEED"].flatMap { $0.isEmpty ? nil : $0 }
     }
 
-    /// 玩家点了才下载（同原流程：有新版就后台下好，换版要玩家点）
+    /// 玩家点了「现在更新」才下载（S2ArmLauncherModel.restartToUpdate）：Sparkle 下好解开的新版在 App 退出时一定会装上，不能先下
     func checkAndDownload() {
         guard updater.canCheckForUpdates else { return }
         updater.checkForUpdates()
@@ -39,6 +40,18 @@ import Sparkle
         installReply = nil
         log("玩家点了更新并重启：交给 Sparkle 替换 \(foundVersion ?? "?")")
         QuitAfterSheets.run(terminate: { reply(.install) })
+    }
+
+    /// 跳过此版本时取消挂起的下载或已就绪的安装回复，防止 App 退出时自动安装已跳过的版本
+    func cancelOrSkipReadyUpdate() {
+        if let cancel = downloadCancel {
+            downloadCancel = nil
+            cancel()
+        }
+        if let reply = installReply {
+            installReply = nil
+            reply(.skip)
+        }
     }
 
     // MARK: SPUUserDriver
@@ -75,18 +88,21 @@ import Sparkle
         installReply = nil
         acknowledgement()
     }
-    func showDownloadInitiated(cancellation: @escaping () -> Void) { expected = 0; received = 0; model?.updateState = .working("update.downloading", 0) }
+    func showDownloadInitiated(cancellation: @escaping () -> Void) { expected = 0; received = 0; downloadCancel = cancellation; model?.updateState = .working("update.downloading", 0) }
     func showDownloadDidReceiveExpectedContentLength(_ expectedContentLength: UInt64) { expected = expectedContentLength }
     func showDownloadDidReceiveData(ofLength length: UInt64) {
         received += length
         model?.updateState = .working("update.downloading", expected > 0 ? Int(min(received, expected) * 100 / expected) : nil)
     }
-    func showDownloadDidStartExtractingUpdate() { model?.updateState = .working("update.verifying", nil) }
+    func showDownloadDidStartExtractingUpdate() { downloadCancel = nil; model?.updateState = .working("update.verifying", nil) }
     func showExtractionReceivedProgress(_ progress: Double) { model?.updateState = .working("update.unpacking", Int(progress * 100)) }
     func showReady(toInstallAndRelaunch reply: @escaping (SPUUserUpdateChoice) -> Void) {
-        log("新版 \(foundVersion ?? "?") 已下载并验签，等玩家点更新并重启")
+        log("新版 \(foundVersion ?? "?") 已下载并验签")
+        downloadCancel = nil
         installReply = reply
         model?.updateState = .ready
+        if model?.installWhenReady == true { model?.restartToUpdate() }   // 玩家点「现在更新」时还没下：下好接着换
+        else { model?.onAutoDownloadReady() }
     }
     func showInstallingUpdate(withApplicationTerminated applicationTerminated: Bool, retryTerminatingApplication: @escaping () -> Void) {
         log("Sparkle 正在替换（App 已退出：\(applicationTerminated)）")

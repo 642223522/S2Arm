@@ -27,7 +27,7 @@ BASE = "https://dl.s2arm.com/patches/v2"
 TIMEOUT = 10
 MAX_BYTES = 4 << 20
 UA = "S2Arm-patches"
-FIELDS = {"fps": "target_fps", "widescreen": "aspect", "gfx": None, "other": None}   # other：认不出是画面的（声音 / 玩法等，tools/patch_index.py）
+FIELDS = {"fps": "target_fps", "widescreen": "aspect", "gfx": "dir", "other": None}   # other：认不出是画面的（声音 / 玩法等，tools/patch_index.py）
 
 
 def module_bids(exefs):
@@ -56,6 +56,11 @@ def _get(url):
     return data
 
 
+def lzma_error():
+    import lzma
+    return lzma.LZMAError
+
+
 def _base():
     return (os.environ.get("S2A_PATCH_BASE") or BASE).rstrip("/")
 
@@ -67,25 +72,39 @@ def _snapshot_path(c):
     if e:
         return Path(e)
     r = getattr(c, "r", None) or {}
-    return Path(r.get("resources") or c.private) / "CommunityPatches" / "patches-v2.tar"
+    d = Path(r.get("resources") or c.private) / "CommunityPatches"
+    return d / "patches-v3.tar" if (d / "patches-v3.tar").is_file() else d / "patches-v2.tar"   # 0.5.0 起随包是 v3（分块 xz），老安装是 v2
 
 
 def _snapshot(c):
-    """→ (清单 bundles, 取包函数) ；没有快照 / 读不了 = ({}, None)"""
+    """→ (清单 bundles, 取包函数) ；没有快照 / 读不了 = ({}, None)。
+    取包函数自己按快照清单核内容，核不过回 None：v2（tar 里各包是 .json.gz）核 gz 的 sha256、回 gz 字节；
+    v3（tools/patch_pack.py to_v3：包原文按约 1 MB 一块拼起来 xz 压，安装包小 11 MB）核原文的 raw_sha256、回原文。bundle 两种都认"""
     import tarfile
     p = _snapshot_path(c)
     if not p.is_file():
         return {}, None
-    def fetch(key):   # 每次取包开一次、用完即关（不让快照句柄挂到进程结束）
-        with tarfile.open(p) as t:
-            return t.extractfile(key + ".json.gz").read()
     try:
         with tarfile.open(p) as t:
             index = json.load(t.extractfile("index.json"))
-        return index.get("bundles", {}), fetch
     except (OSError, KeyError, ValueError, tarfile.TarError) as e:
         print(f"补丁：本地快照读不了（{type(e).__name__}），只用云端", file=sys.stderr)
         return {}, None
+    bundles = index.get("bundles", {})
+    def fetch(key):   # 每次取包开一次、用完即关（不让快照句柄挂到进程结束）
+        meta = bundles.get(key) or {}
+        try:
+            with tarfile.open(p) as t:
+                if index.get("schema") == 3:
+                    import lzma
+                    blk = lzma.decompress(t.extractfile(f"blk/{meta['block']:04d}.xz").read())
+                    data, want = blk[meta["off"]:meta["off"] + meta["len"]], meta.get("raw_sha256")
+                else:
+                    data, want = t.extractfile(key + ".json.gz").read(), meta.get("sha256")
+        except (OSError, KeyError, ValueError, tarfile.TarError, lzma_error()):
+            return None
+        return data if want and hashlib.sha256(data).hexdigest() == want else None
+    return bundles, fetch
 
 
 def cloud_manifest():
@@ -134,8 +153,8 @@ def bundle(c, key, cloud, snap, snap_get):
         data = _local(have, snap, snap_get, key)
         if data is None:
             return []
-    try:
-        return json.loads(gzip.decompress(data)).get("items", [])
+    try:   # 增量缓存 / 云端 / v2 快照给 gz，v3 快照给原文
+        return json.loads(gzip.decompress(data) if data[:2] == b"\x1f\x8b" else data).get("items", [])
     except (OSError, ValueError):
         return []
 
@@ -144,9 +163,8 @@ def _local(have, snap, snap_get, key):
     """本地已有的这个包：增量下过的（私有缓存）> 随启动器装的快照（核过快照清单里的 sha256）；都没有 = None"""
     if have is not None:
         return have
-    sw = (snap.get(key) or {}).get("sha256")
-    data = snap_get(key) if snap_get and sw else None
-    return data if data is not None and hashlib.sha256(data).hexdigest() == sw else None
+    # 快照的取包函数自己按快照清单核过内容（v2 核 gz、v3 核原文），这里不再按 gz 的 sha256 重核
+    return snap_get(key) if snap_get and (snap.get(key) or {}).get("sha256") else None
 
 
 _MANIFEST = {}
@@ -199,8 +217,9 @@ def cheat_rows(c, gid, bids):
 
 def fetch(c, game, exefs, target="mac"):
     """→ 交 S2A_CPATCH_DIRS 的索引目录列表（每类一个：fps / widescreen / gfx）；什么都没取到 = []。
-    target = "ios" 时不带画面类（gfx）：11-13 维护者定「画面补丁 iOS 不进包、Mac 进包」。画面类多是主机模式分辨率（1080p / 4K 底座），
-    手机上用不着，还和满屏补丁改同一处（渲染分辨率）——一起进包时改写器只收先排到的一份，满屏补丁整批被挤掉（暗黑三实测 9 份满屏全落选）"""
+    target = "ios" 时画面类（gfx）只带降负载的（条目 dir = load，tools/patch_index.py gfx_dir：关后处理 / 降阴影 / ≤720p 等；11-16 维护者拍板，
+    取代 11-13「画面补丁 iOS 不进包」）。提画质与认不出的照旧不带：多是主机模式分辨率（1080p / 4K 底座），手机上用不着、可能被系统杀。
+    和满屏补丁改同一处时满屏优先（pack/cpatch.py plan 排序：画面类最后占位，落选的在结果页写「和别的补丁改同一处」）"""
     gid = game["id"].upper()
     cache = Path(c.private) / "community-cache"
     bids = module_bids(exefs)
@@ -208,7 +227,8 @@ def fetch(c, game, exefs, target="mac"):
     seeds = [x for x in rows if x[0].get("kind") == "pso"]; rows = [x for x in rows if x[0].get("kind") != "pso"]
     pso_write(cache / "games" / gid / "pso", seeds)
     if target == "ios":
-        rows = [x for x in rows if (x[0].get("cat") if x[0].get("cat") in FIELDS else "other") not in ("gfx", "other")]   # iPhone 不打画面类与其它类
+        rows = [x for x in rows if (x[0].get("cat") if x[0].get("cat") in FIELDS else "other") != "other"
+                and (x[0].get("cat") != "gfx" or x[0].get("dir") == "load")]   # iPhone 不打其它类；画面类只打降负载的
     out = {}
     for it, data in rows:
         cat = it.get("cat") if it.get("cat") in FIELDS else "other"   # 认不出的类别按其它（不默认开），不当画面
@@ -300,6 +320,7 @@ def prepare(c, game, extraction, env, target="mac"):
 #   读产物根里编译器自己的记录（pack/cpatch.py plan / prune）：cpatch.tsv = 最终打进去的；cpatch_plan.log 的「收 / 不收 / 移植不了」行与
 #   cpatch_excluded.tsv（改写器缺口剔掉的）= 没打上的及原因。原因翻成玩家看得懂的话；本来就不该打的（版本不对、同画幅已收另一份、本款有我方帧率表）不算失败、不列
 _WHY = (   # (原因里出现的字样, 给玩家的话)；None = 不算失败
+    (("没写构建号",), "result.why.nobid"),  # 非玩家句（#1321：金手指文件没写构建号，出包核不了版本、不编进包；要告诉玩家，pack/cpatch.py scan_cheats）
     (("FPSLocker 配置不支持",), "result.why.unsupported"),  # 非玩家句（pack/cpatch.py：FPSLocker 配置里有 S2Arm 还不支持的写法，#934）
     (("mod 构建号对不上",), "result.why.version"),  # 非玩家句（玩家自己导入的 mod 是别的版本的：要告诉玩家，pack/cpatch.py scan mod_miss）
     (("版本不对", "同画幅", "我方帧率表"), None),  # 非玩家句
@@ -405,7 +426,8 @@ def boost(c, game, image, result=None):
     result（record 记的这次打入结果）给了：再带 applied / failed（逐条名字；没打上的带原因文案键），完成页列「没打上」（11-14）"""
     import cheats
     out = dict(cheats=sum(1 for it in cheats.listing(c, game)["items"] if it["ok"]), fps=0, widescreen=0, gfx=0)
-    tsv = next((p for p in (Path(image) / "cpatch.tsv", Path(image) / "kit" / "cpatch.tsv") if p.is_file()), None)   # Mac 运行版本根 / iPhone kit（ship_ext 拷进去的）
+    import layout
+    tsv = next((p for p in (Path(image) / "cpatch.tsv", layout.ios_kit(c, game["id"]) / "cpatch.tsv") if p.is_file()), None)   # Mac 运行版本根 / iPhone 程序件（ship_ext 拷进去的）
     seen = set()
     for line in (tsv.read_text(encoding="utf-8", errors="replace").splitlines()[1:] if tsv else []):
         uid = line.split("\t", 1)[0]

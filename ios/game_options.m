@@ -93,6 +93,21 @@ BOOL s2a_ios_cheats_write_enabled(NSString *dir, NSSet<NSString *> *on) {
     return [[body stringByAppendingString:@"\n"] writeToFile:[dir stringByAppendingPathComponent:@"enabled.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
+// 游戏语言（#1252：游戏库每款设置页也能选，开局前选好进游戏直接生效）：{"pick","levels":[{"value","label"}],"note"}，同游戏内设置页（app_settings.m）口径——
+//   第一项跟随系统；只列这款支持的（资源包 ctl/control.nacp），读不到就列全部；已选的这款没有也留着；note = 选的这款不支持时起局实际用哪种
+static NSDictionary *game_language_json(NSString *gid, NSUserDefaults *d) {
+    NSArray<NSString *> *supported;
+    if ([gid isEqualToString:current_gid() ?: @""]) supported = s2a_ios_game_supported_languages();
+    else { char docs[1024], gdocs[1200], root[1400]; s2a_container_docs(docs, sizeof docs); snprintf(gdocs, sizeof gdocs, "%s/games/%s", docs, gid.UTF8String);
+           s2a_pack_root(root, sizeof root, gdocs); supported = s2a_ios_game_supported_languages_in(@(root)); }
+    NSString *cur = [d stringForKey:S2AGameLanguageKey];
+    NSArray<NSString *> *all = s2a_ios_game_languages();
+    NSMutableArray *levels = [NSMutableArray array];
+    for (NSUInteger i = 0; i < all.count; i++)
+        if (i == 0 || supported.count == 0 || [supported containsObject:all[i]] || [all[i] isEqualToString:cur]) [levels addObject:@{@"value": all[i], @"label": s2a_ios_game_language_label(all[i])}];
+    return @{@"pick": cur && [all containsObject:cur] ? cur : @"system", @"levels": levels, @"note": s2a_ios_game_language_note_with(d, supported) ?: @""};
+}
+
 static char *dup_json(id obj) {
     NSData *d = [NSJSONSerialization dataWithJSONObject:obj options:0 error:nil];
     if (!d) return NULL;
@@ -128,7 +143,7 @@ char *s2a_shell_game_options_json(const char *game_id) {
             if (fpsP) {
                 fps[@"title"] = S2AL(@"settings.fps.patchTitle"); fps[@"enabled"] = @YES; fps[@"on"] = @(s2a_ios_fps60_on_for(gid));
                 fps[@"note"] = target > 0 ? [NSString stringWithFormat:S2AL(@"settings.fps.patchNote"), (long)target] : S2AL(@"settings.patchNote");
-                // 帧率档位（11-13 维护者：60 / 120 帧补丁都带进去，玩家自己选；同 app_settings.m 帧率档位行）：两档以上才给，值 0 = 自动（不超过屏幕刷新率的最高一档）
+                // 帧率档位（11-13 维护者：60 / 120 帧补丁都带进去，玩家自己选；同 app_settings.m 帧率档位行）：两档以上才给，值 0 = 自动（不超过 60 帧的最高一档）
                 NSMutableOrderedSet *lv = [NSMutableOrderedSet orderedSet];
                 for (S2ACPatchGroup *g in groups) for (S2ACPatchItem *it in g.items) if (it.followsFps60) [lv addObject:@(it.targetFps > 0 ? it.targetFps : 60)];
                 NSArray *sorted = [lv.array sortedArrayUsingSelector:@selector(compare:)];
@@ -158,17 +173,23 @@ char *s2a_shell_game_options_json(const char *game_id) {
             [cheats addObject:@{@"key": e[@"key"], @"name": e[@"name"], @"on": @([con containsObject:e[@"key"]]), @"note": [e[@"fixed"] boolValue] ? S2AL(@"cheats.fixedAddress") : @""}];
         // 游戏音量（#1186，同齿轮菜单「声音」）：0–100，没设过 = 100
         id vo = [d objectForKey:@"S2AGameVolume"]; NSInteger volume = vo ? MAX(0, MIN(100, [vo integerValue])) : 100;
-        return dup_json(@{@"fps": fps, @"fullscreen": full, @"patches": patches, @"cheats": cheats, @"volume": @(volume)});
+        return dup_json(@{@"fps": fps, @"fullscreen": full, @"patches": patches, @"cheats": cheats, @"volume": @(volume), @"language": game_language_json(gid, d)});
     }
 }
 
-// kind = fps / fpspick / fullscreen / patch / cheat；key = 补丁编号 / 「文件名/条目名」（fps、fullscreen 不看）。返回 1 存成 / 0 没存成
+// kind = fps / fpspick / fullscreen / patch / cheat / volume / language；key = 补丁编号 / 「文件名/条目名」（fps、fullscreen 不看）。返回 1 存成 / 0 没存成
 int s2a_shell_game_option_set(const char *game_id, const char *kind, const char *key, int on) {
     @autoreleasepool {
         if (!gid_ok(game_id) || !kind) return 0;
         NSString *gid = @(game_id), *k = @(kind), *item = key ? @(key) : @"";
         if ([k isEqual:@"fps"]) { s2a_ios_set_fps60_for(gid, on != 0); return 1; }
         if ([k isEqual:@"volume"]) { [s2a_ios_settings_defaults_for(gid) setInteger:MAX(0, MIN(100, item.integerValue)) forKey:@"S2AGameVolume"]; return 1; }   // 游戏音量：key = 百分比，on 不看（#1186）
+        if ([k isEqual:@"language"]) {   // 游戏语言：key = 宿主枚举名，"system" = 跟随系统（删掉这款的值），on 不看（#1252）
+            if (![s2a_ios_game_languages() containsObject:item]) return 0;
+            NSUserDefaults *gd = s2a_ios_settings_defaults_for(gid);
+            if ([item isEqual:@"system"]) [gd removeObjectForKey:S2AGameLanguageKey]; else [gd setObject:item forKey:S2AGameLanguageKey];
+            return 1;
+        }
         if ([k isEqual:@"fpspick"]) { [s2a_ios_settings_defaults_for(gid) setInteger:MAX(0, item.integerValue) forKey:@"S2AFpsPick"]; return 1; }   // 帧率档位：key = 目标帧率（"0" = 自动），on 不看
         if ([k isEqual:@"fullscreen"]) { BOOL now; if (s2a_ios_fullscreen_state(gid, &now)) return 0; s2a_ios_set_fullscreen(gid, on != 0); return 1; }
         if ([k isEqual:@"patch"]) { S2ACPatchSetEnabled(patch_groups(gid), s2a_ios_settings_defaults_for(gid), item, on != 0); return 1; }
@@ -316,8 +337,12 @@ NSDictionary *s2a_ios_sgrade_state(NSString *gid) {
     NSArray *fSt = nil; for (NSString *k in st) if ([k hasPrefix:@"fps:"] && [st[k][0] isEqual:@"开"]) { fSt = st[k]; break; }   // 非玩家句
     s = opted ? @"opted_out" : !fpsP ? missing(@"fps") : !fon ? (fAuto ? @"off_auto" : @"off_user") : @"on";
     out[@"fps"] = @{@"state": s, @"lastRun": s2a_ios_cpatch_result(fSt) ?: @"", @"autoOff": fAuto ?: NSNull.null, @"versions": kit[@"fps"][@"versions"] ?: @{}};
-    // 画面：iPhone 一律不打
-    out[@"gfx"] = @{@"state": opted ? @"opted_out" : @"mac_only"};
+    // 画面：iPhone 只打降负载的（11-16，表第 14 列方向 load，见 cpatch_model.m）；包里没有降负载画面补丁 = 画面补丁只在 Mac 版
+    NSSet *gon = S2ACPatchEnabled(groups, d); NSArray *gIds = nil; for (S2ACPatchGroup *g in groups) if ([g.kind isEqual:@"gfx"]) gIds = [g.items valueForKey:@"ident"];
+    BOOL gAny = NO; NSDictionary *gAuto = nil; for (NSString *k in gIds) { if ([gon containsObject:k]) gAny = YES; if (!gAuto) gAuto = autoOff[[@"patch\t" stringByAppendingString:k]]; }
+    out[@"gfx"] = @{@"state": opted ? @"opted_out" : !gIds.count ? @"mac_only" : gAny ? @"on" : (gAuto ? @"off_auto" : @"off_user"),
+                    @"active": gAny ? [gIds filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(id k, id b) { (void)b; return [gon containsObject:k]; }]] : @[],
+                    @"autoOff": gAuto ?: NSNull.null};
     // 金手指
     NSString *dir = s2a_ios_cheats_dir_for(gid); NSSet *con = cheats_enabled(dir); NSArray *ents = s2a_ios_cheat_entries(dir);
     NSDictionary *cAuto = nil; for (NSDictionary *e in ents) if (!cAuto) cAuto = autoOff[[@"cheat\t" stringByAppendingString:e[@"key"]]];

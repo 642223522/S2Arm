@@ -43,7 +43,7 @@ def src_digest(proj):   # 工程按内容的摘要：ProjectReference 闭包里�
     return h.hexdigest()
 
 
-def _dotnet():  # 本机的 dotnet 命令（现编用；Windows 预编件随包 .NET 运行时也经它跑，见 build()）
+def _dotnet():  # 本机的 dotnet 命令（源码树现编用；发版件是原生单文件、不经它）
     return os.environ.get("DOTNET") or (
         os.path.expanduser("~/.dotnet/dotnet")
         if os.path.exists(os.path.expanduser("~/.dotnet/dotnet"))
@@ -54,8 +54,7 @@ def _dotnet():  # 本机的 dotnet 命令（现编用；Windows 预编件随包 
 def prebuilt(
     dg,
 ):  # 启动器内置的一份（launchers/macos/bundle_engine.py 发版时编进 <App>/…/Binaries/Prepare/dsh_batch，并写下按 App 内源码算的摘要）：摘要相同才用，不同（源码被改过）不用。
-    #   → 内置件程序的路径；两种发版形态不会同目录并存，按件认：Mac 发版是 NativeAOT 单文件（直接执行、不要 .NET 运行时），
-    #   Windows 发版照旧 dll + 随包 .NET 运行时跑（launchers/windows/bundle_prepare_win.py，另案）
+    #   → 内置件程序的路径：Mac / Windows 发版都是 NativeAOT 单文件（直接执行、不要 .NET 运行时；Windows 是 dsh_batch.exe，launchers/windows/bundle_prepare_win.py）
     d = os.environ.get('S2A_PREBUILT_TOOLS')
     if not d: return None
     p = os.path.join(d, 'dsh_batch')
@@ -63,7 +62,7 @@ def prebuilt(
     except OSError: return None
     if not same:
         return None
-    for name in ("dsh_batch", "dsh_batch.dll"):
+    for name in ("dsh_batch.exe", "dsh_batch"):
         f = os.path.join(p, name)
         if os.path.isfile(f):
             return f
@@ -112,11 +111,7 @@ def build():
         if r.returncode:
             sys.exit("[RED] dsh_batch does not build: " + (r.stdout + r.stderr).strip()[-800:])
         cmd = [dn, os.path.join(out, "dsh_batch.dll")]
-    elif out.endswith(
-        ".dll"
-    ):  # Windows 发版件：dll 经随包 .NET 运行时跑（另案）；Mac 发版件是 NativeAOT 单文件，直接执行
-        cmd = [_dotnet() or "dotnet", out]
-    else:
+    else:   # 发版件（Mac / Windows）都是 NativeAOT 单文件，直接执行
         cmd = [out]
     x = subprocess.run([*cmd, "--xfp"], capture_output=True, text=True).stdout.strip()
     if not re.fullmatch(r"[0-9a-f]{16}", x):

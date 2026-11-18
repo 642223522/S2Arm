@@ -125,7 +125,7 @@ namespace Ryujinx.Audio.Backends.Apple
 
             if (string.IsNullOrEmpty(d))
             {
-                d = OperatingSystem.IsIOS() ? Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments) : Directory.GetCurrentDirectory();
+                d = (OperatingSystem.IsIOS() || OperatingSystem.IsTvOS()) ? Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments) : Directory.GetCurrentDirectory();   // 平台例外：tvOS 与 iOS 走同一分支
             }
 
             return Path.Combine(d, p);
@@ -141,6 +141,10 @@ namespace Ryujinx.Audio.Backends.Apple
         // S2Arm (#1182 无声诊断)：本 10 秒交设备样本的峰值（int16 绝对值最大，已乘音量；只算 16 位会话，别的位宽行里写「不适用」）。
         //   OnSubmit 在泵锁内写，reporter 取走清零（Interlocked.Exchange）：交界那一笔的峰值可能记进下一窗，不影响「整窗全 0」的判断
         private int _peak;
+        // S2Arm (11-16，「交设备峰值非零却听不到」#1245 / 诊断#a51362)：本 10 秒同声道相邻两帧样本差的最大值（int16，已乘音量）。峰值高、这个≈0 = 交出去的是不动的直流（听起来静音）；
+        //   与 _peak 同口径（泵锁内写、reporter 取走清零）。_prev：上一笔最后一帧各声道的样本（跨笔接上，首笔从 0 起）
+        private int _ac;
+        private short[] _prev;
         private long _framesSubmitted;
         private long _framesPlayed;
         private long _underruns;
@@ -233,8 +237,9 @@ namespace Ryujinx.Audio.Backends.Apple
                     }
             }
 
-            // S2Arm 11-07: player builds (S2A_DEV_FACILITIES=0, exported by the native host from Info.plist S2ADevFacilities) do not start the 10 s reporter thread
-            if (Environment.GetEnvironmentVariable("S2A_DEV_FACILITIES") != "0" && Interlocked.Exchange(ref _reporterStarted, 1) == 0)
+            // S2Arm 11-17: the 10 s reporter is a log-only diagnostic reading (device peak / frames handed over), started in player builds too;
+            //   remote triage of "no sound" needs it. It no longer follows the developer-facilities switch S2A_DEV_FACILITIES
+            if (Interlocked.Exchange(ref _reporterStarted, 1) == 0)
             {
                 new Thread(ReporterLoop) { IsBackground = true, Name = "S2A.AudioDiag" }.Start();
             }
@@ -310,7 +315,8 @@ namespace Ryujinx.Audio.Backends.Apple
 
             if (_bitsPerSample == 16)
             {
-                int peak = Volatile.Read(ref _peak);
+                int peak = Volatile.Read(ref _peak), ac = Volatile.Read(ref _ac), ch = Math.Max(_channels, 1), k = 0;
+                _prev ??= new short[ch];
 
                 foreach (short sample in MemoryMarshal.Cast<byte, short>(data))
                 {
@@ -320,9 +326,20 @@ namespace Ryujinx.Audio.Backends.Apple
                     {
                         peak = magnitude;
                     }
+
+                    int step = Math.Abs(sample - _prev[k]);
+
+                    if (step > ac)
+                    {
+                        ac = step;
+                    }
+
+                    _prev[k] = sample;
+                    k = k + 1 == ch ? 0 : k + 1;
                 }
 
                 Volatile.Write(ref _peak, peak);
+                Volatile.Write(ref _ac, ac);
             }
 
             if (_latW - _latR < LatRing)
@@ -602,9 +619,9 @@ namespace Ryujinx.Audio.Backends.Apple
                         continue;
                     }
 
-                    int peak = Interlocked.Exchange(ref d._peak, 0);
+                    int peak = Interlocked.Exchange(ref d._peak, 0), acStep = Interlocked.Exchange(ref d._ac, 0);
                     // S2Arm (#1182)：峰值 0 且交设备帧数正常 = 交出去的全是静音（渲染出 0 / NaN 被饱和成 0），不是设备没播；NaN 数 > 0 指向渲染器混音 / DSP
-                    string level = $"；交设备峰值 {(d._bitsPerSample == 16 ? peak.ToString() : $"不适用（{d._bitsPerSample} 位）")}（int16 绝对值，已乘音量；0 = 交出去的全是静音）、渲染 NaN 样本 {nanSamples}（饱和转 int16 前，全渲染器）";
+                    string level = $"；交设备峰值 {(d._bitsPerSample == 16 ? peak.ToString() : $"不适用（{d._bitsPerSample} 位）")}（int16 绝对值，已乘音量；0 = 交出去的全是静音）、相邻帧最大跳变 {(d._bitsPerSample == 16 ? acStep.ToString() : "不适用")}（峰值高而这个≈0 = 不动的直流，听起来静音）、渲染 NaN 样本 {nanSamples}（饱和转 int16 前，全渲染器）";
 
                     long minInFlight = d._minInFlight;
                     double maxStarveMs = d._maxStarveTicks * 1000.0 / Stopwatch.Frequency;

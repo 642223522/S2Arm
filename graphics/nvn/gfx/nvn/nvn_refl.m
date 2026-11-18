@@ -153,6 +153,13 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
         }
         for (NSNumber *li in lead_for) {   // #798：前导项配给它的纹素缓冲（名字对上、且是纹素缓冲那几种）
             NSNumber *ti = by_name[lead_for[li]]; int L = li.intValue, T = ti ? ti.intValue : -1;
+            // 几何拓扑缓冲 trb_data：翻译器先把它声明成纹素缓冲，spv_tbias（gal_spvx.c）照例给它加了前导项；几何变体再把它改写成宿主填的 uint 指针
+            //   （Dsh.cs TopologyPointer），反射里成了几何辅助缓冲。宿主自己写的缓冲没有不对齐偏移，前导数恒为 0——不配对正是 0（tbl_lead_of 无配对返回 0），
+            //   和 #798 之前一样。原先整支判失败：几何核编不出、整批几何绘制被跳过（11-16 一款 Switch 2 游玩帧 121 笔）。
+            // 图像纹素缓冲（可写，img / img_ubo 声明成 texture_buffer）：spv_tbias 同样给它加前导项，宿主的前导视图（tbl_view）只做只读纹素缓冲，
+            //   不配对 = 前导数 0 = #798 之前的行为（那时这些着色器照常编、照常画）。原先整支判失败（11-16 一款 Unreal 游戏一局 188 处）。别的种类照旧报错
+            if (T >= 0 && T < o->nb && (o->b[T].kind == NVN_RB_GEOMETRY ||
+                ((o->b[T].kind == NVN_RB_IMG || o->b[T].kind == NVN_RB_IMGU) && o->b[T].dtt == (uint8_t)MTLTextureTypeTextureBuffer))) continue;
             if (T < 0 || T >= o->nb || !(o->b[T].kind == NVN_RB_TBUF || o->b[T].kind == NVN_RB_TBUFU || (o->b[T].kind == NVN_RB_TEX && o->b[T].dtt == (uint8_t)MTLTextureTypeTextureBuffer)))
                 FAIL("B binding gal_tbl_%s: no texel buffer of that name", [lead_for[li] description].UTF8String);
             o->b[T].tbl = (uint16_t)(L + 1); o->b[L].tbl = (uint16_t)(T + 1); o->has_tbl = 1;

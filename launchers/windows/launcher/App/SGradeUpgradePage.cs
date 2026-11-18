@@ -149,9 +149,9 @@ public sealed partial class EnvironmentWindow
             {
                 box.Children.Add(WrappedMuted(X("iphoneNote"), 12));
                 var buttons = new WrapPanel { Orientation = Orientation.Horizontal };
-                var install = Primary(X("install"), () => { sgradeOpen = false; _ = UpdatePhoneAsync(false, [], mode: "device", sgradeUpgrade: true); }, !installBusy && !PackBusy);
+                var install = Primary(X("install"), () => { sgradeOpen = false; _ = UpdatePhoneAsync(false, [], mode: "device", sgradeUpgrade: true); }, !installBusy);   // 出包在跑不挡（手机槽）
                 AutomationId(install, "sgrade.upgrade.install"); install.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(install);
-                var export = Action("sgrade.upgrade.export", () => { sgradeOpen = false; _ = UpdatePhoneAsync(false, [], mode: "export", sgradeUpgrade: true); }, !installBusy && !PackBusy);
+                var export = Action("sgrade.upgrade.export", () => { sgradeOpen = false; _ = UpdatePhoneAsync(false, [], mode: "export", sgradeUpgrade: true); }, !installBusy);
                 export.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(export);
                 buttons.Children.Add(Action("sgrade.upgrade.close", Close));
                 box.Children.Add(buttons);

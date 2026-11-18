@@ -8,55 +8,84 @@
 #   不比 inode：新版本产物根整目录克隆自上一版，每个文件 inode 都是新的（10-21 实测带 inode 时一个都没跳过）
 #   按全内容进包键的那几类（系统数据、RomFS 索引、npdm / nacp 等，pack/pkg_inputs_key.py content_keyed，合计几十 MB）不走增量、每次逐字节比（审计 #1534 P1-54：
 #   源只换内容、保住大小与修改时间时，签名全同，旧核对记录会让包里的上一版照样过）
-import hashlib, json, os, stat, sys
+# 源是标准 RomFS 镜像（源目录不在、旁边有 <源目录>.std，pack.py 包里放镜像克隆 <前缀>.std）：逐文件照旧核，包里那份按包里镜像自己的文件表读；签名取源 / 包两份镜像
+import os as _pw_os, sys as _pw_sys; _pw_sys.path.append(_pw_os.path.join(_pw_os.path.dirname(_pw_os.path.abspath(__file__)), '..', 'tools')); from pool_workers import env_jobs  # noqa: E402  核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
+import hashlib, json, os, stat, struct, sys
 from concurrent.futures import ThreadPoolExecutor
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tools'))
 from progress import Ticker
 import sha256_fast   # 文件 SHA：Windows 走 CNG（同 pack/pack.py）
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pkg_inputs_key import content_keyed   # 哪些源按全内容进包键（同 pack.py）
-NJ = int(os.environ.get('J') or os.environ.get('S2A_JOBS') or os.cpu_count() or 1)   # 并行路数（tools/cores.sh S2A_JOBS）
+from romfs_img import RomfsImage, RomfsError   # 标准 RomFS 镜像读取（包里那份镜像的文件表）
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'graphics', 'nvn', 'tools'))
+import romfs_list   # 源目录遍历一律经它（tools/romfs_walk_lint.py）；目录不在、旁边有 <目录>.std 时从标准 RomFS 镜像列（同 pack.py）
+NJ = env_jobs('J', 'S2A_JOBS')   # 并行路数（tools/cores.sh S2A_JOBS）
 if len(sys.argv) < 3: sys.exit('用法：verify.py <包目录> <前缀>=<源目录> …')
 P = sys.argv[1]
 SRCS = [l for a in sys.argv[2:] for l in (open(a[1:], encoding='utf-8').read().splitlines() if a.startswith('@') else [a]) if l]   # @<文件>：源清单从文件读（同 pack.py）
-def red(msg): print(f'🔴 资源包核对 {P}：{msg}'); sys.exit(1)
+def red(msg): print(f'🔴 资源包核对 {P}：{msg}'); sys.exit(1)   # 只留给核不下去的（清单读不了 / 格式不对 / 镜像打不开）
+# 维护者 11-17：校验不过不再整个拒绝出包。对得上与否的几项（index 摘要、路径集合、逐文件 SHA / 字节数、清单外文件）记成黄字、照常出包，
+#   原因写进 <包目录>.verify_warn.txt（出包作业读它记进这款的 integrityNotes，之后起局 / 装机 / 出包失败时报错补一句「之前出包这里校验不过」）
+WARN = []
+def warn(msg): WARN.append(msg); print(f'🟡 资源包核对 {P}：{msg}（照常继续出包）')
 try: man = json.load(open(f'{P}/manifest.json'))
 except (OSError, ValueError) as e: red(f'读不到 manifest.json（{e}）')
 if man.get('version') != 2: red(f'manifest version 是 {man.get("version")}，不是 2')
 raw = open(f'{P}/index.tsv', 'rb').read()
-if hashlib.sha256(raw).hexdigest() != man.get('index_sha256'): red('index.tsv 的 SHA-256 与 manifest index_sha256 不符')
+if hashlib.sha256(raw).hexdigest() != man.get('index_sha256'): warn('index.tsv 的 SHA-256 与 manifest index_sha256 不符')
 idx = [l.split('\t') for l in raw.decode().splitlines() if l]
 if any(len(x) != 3 for x in idx): red('index.tsv 每行应为「路径<TAB>字节数<TAB>SHA-256」')
 packed = {rel: (int(sz), sha) for rel, sz, sha in idx}
 if len(packed) != len(idx): red('index.tsv 里有重复路径')
 src = {}; full = set()   # full：按全内容进包键、每次逐字节比的
+stds = set()   # 源是标准 RomFS 镜像的前缀：包里那份镜像 <前缀>.std（pack.py 克隆的），逐文件按镜像的文件表读
 for a in SRCS:
     name, _, root = a.partition('=')
     if os.path.isfile(root):
         src[name] = root
         if content_keyed(name): full.add(name)
         continue
-    for d, _, fs in os.walk(root):
+    tree = romfs_list.scan(root, stat_entries=False); im = tree.image
+    spans = im.files() if im is not None else None
+    if im is not None: stds.add(name + '.std')
+    for d, _, fs in tree.walk():
         for f in fs:
             if f == '.DS_Store' or f.startswith('._'): continue
-            p = os.path.join(d, f); rel = name + '/' + os.path.relpath(p, root).replace(os.sep, '/'); src[rel] = p   # 包内路径一律 /（Windows 上 relpath 出反斜杠）
+            p = os.path.join(d, f); r = os.path.relpath(p, root).replace(os.sep, '/'); rel = name + '/' + r   # 包内路径一律 /（Windows 上 relpath 出反斜杠）
+            src[rel] = p if im is None else (im.path, *spans[r], name + '.std', r)   # 镜像里的：(源镜像, 偏移, 长度, 包里那份镜像, 镜像内路径)
             if content_keyed(name): full.add(rel)
 miss = sorted(set(src) - set(packed)); extra = sorted(set(packed) - set(src))
-if miss or extra: red(f'路径不一致：包里缺 {len(miss)} 个（如 {miss[:3]}），多 {len(extra)} 个（如 {extra[:3]}）')
+if miss or extra: warn(f'路径不一致：包里缺 {len(miss)} 个（如 {miss[:3]}），多 {len(extra)} 个（如 {extra[:3]}）')
 VS = P.rstrip('/') + '.verify.tsv'; prev = {}
 try:
     for l in open(VS, encoding='utf-8'): r = l.rstrip('\n').split('\t'); prev[r[0]] = tuple(r[1:])
 except (OSError, ValueError): prev = {}
 def sig(p, q, sha, a=None, b=None):   # a / b：调用方已取的 os.stat（Windows 上每次 stat 都要开文件，11-06 出包速度线：0100F2C0115B6000 30.5 万个文件核对 236 秒）
     a, b = a or os.stat(p), b or os.stat(q); return (str(a.st_size), str(a.st_mtime_ns), str(b.st_size), str(b.st_mtime_ns), sha)
+# 包里的镜像各读一次文件表（核对读的是包里那份：镜像里 rel 的偏移 / 长度按包里那份自己的文件表取，不借源的）
+held = {}
+for n in sorted(stds):
+    try: held[n] = RomfsImage(f'{P}/{n}').files()
+    except (OSError, RomfsError, struct.error, UnicodeDecodeError) as e: red(f'包里的 RomFS 镜像 {n} 读不了（{e}）')
+def blocks(path, off=0, left=None):   # 文件（或镜像里从 off 起 left 字节的一段）按 4 MB 一块读
+    with open(path, 'rb') as f:
+        f.seek(off)
+        while left is None or left > 0:
+            b = f.read(1 << 22 if left is None else min(1 << 22, left))
+            if not b: return
+            if left is not None: left -= len(b)
+            yield b
 bad = []; rec = {}; todo = []; UNSTABLE = set()
 for rel, p in src.items():
-    q = f'{P}/{rel}'; sz, sha = packed[rel]
-    if rel not in full and rel in prev and os.path.isfile(q) and prev[rel] == sig(p, q, sha): rec[rel] = prev[rel]; continue   # 没有上次记录（冷）就不取 stat
+    if rel not in packed: continue   # 包里缺的已在上面「路径不一致」记了黄字，逐文件只核两边都有的
+    q = f'{P}/{p[3]}' if isinstance(p, tuple) else f'{P}/{rel}'; sz, sha = packed[rel]   # 镜像里的：签名取源镜像与包里那份镜像
+    if rel not in full and rel in prev and os.path.isfile(q) and prev[rel] == sig(p[0] if isinstance(p, tuple) else p, q, sha): rec[rel] = prev[rel]; continue   # 没有上次记录（冷）就不取 stat
     todo.append((rel, p, q, sz, sha))
 skip = len(rec)
 def check(t):   # 一个文件：字节数 → 逐字节比源 → SHA 对 index；返回（路径，错因或签名）
     rel, p, q, sz, sha = t
+    if isinstance(p, tuple): return check_img(t)
     try: sq, sp = os.stat(q), os.stat(p)   # 源 / 包各取一次 stat，字节数、同一文件、签名都用它（原先 isfile + getsize×2 + samefile×2 + 签名×2 共 7 次）
     except OSError: return rel, f'{rel}（字节数）'
     if not stat.S_ISREG(sq.st_mode) or sq.st_size != sz or sp.st_size != sz: return rel, f'{rel}（字节数）'
@@ -84,11 +113,31 @@ def check(t):   # 一个文件：字节数 → 逐字节比源 → SHA 对 index
         UNSTABLE.update([rel] if h2.hexdigest() != h.hexdigest() else [])
         return rel, f'{rel}（SHA 与 index 不符）'
     return rel, sig(p, q, sha, sp, sq)
+def check_img(t):   # 镜像里的一个文件：同上，只是源 / 包里那份都是各自镜像里的一段
+    rel, (img, soff, ssz, _, r), q, sz, sha = t
+    span = held[t[1][3]].get(r)
+    if span is None or span[1] != sz or ssz != sz: return rel, f'{rel}（字节数）'
+    h = sha256_fast.new()
+    if rel not in full:
+        for b in blocks(q, span[0], sz): h.update(b)
+    else:
+        for a, b in zip(blocks(img, soff, sz), blocks(q, span[0], sz)):
+            if a != b: return rel, f'{rel}（内容与源不同）'
+            h.update(b)
+    if h.hexdigest() != sha:
+        h2 = sha256_fast.new()
+        for b in blocks(q, span[0], sz): h2.update(b)
+        UNSTABLE.update([rel] if h2.hexdigest() != h.hexdigest() else [])
+        return rel, f'{rel}（SHA 与 index 不符）'
+    return rel, sig(img, q, sha)
 # 逐文件互不依赖：按本机核数并行（S2A_JOBS，tools/cores.sh；10-25 维护者「要适配机器的核心数」——原先串行，01006F8002326000 11 万个文件核对 33 秒只用 0.47 核）；
 #   读文件、算哈希期间释放 GIL，线程即可。进度写 S2A_PROGRESS（tools/progress.py）
 tk = Ticker('资源包核对', len(todo))
+def check_safe(t):   # 读不到某个文件（权限 / 盘出错）：记这一个对不上、其余照核（原先整个核对抛异常退出）
+    try: return check(t)
+    except OSError as e: return t[0], f'{t[0]}（读不到：{e.strerror or e}）'
 def block(b):
-    return [check(t) for t in b]
+    return [check_safe(t) for t in b]
 with ThreadPoolExecutor(max_workers=NJ) as ex:
     for part in ex.map(block, [todo[i:i + 64] for i in range(0, len(todo), 64)]):
         for rel, r in part:
@@ -107,13 +156,19 @@ if bad:
     why = ''
     if sha_bad:
         why = (f'；其中 {len(UNSTABLE)} 个同一文件两次读出的内容不同（读盘不稳定）' if UNSTABLE else '') + f'；已让这 {len(sha_bad)} 个文件下次出包重读重算'
-    red(f'{len(bad)} 个文件不对：{sorted(bad)[:5]}{why}')
+    warn(f'{len(bad)} 个文件不对：{sorted(bad)[:5]}{why}')
 # 包目录这边也要跳过 macOS 自己留的垃圾（.DS_Store / ._*）：pack.py 复制时已经跳过它们，
-# 但 Finder / Spotlight 会在 pkg/pack 里重新生成，不过滤就会把「清单外文件」误报成出包失败。
-stray = [os.path.relpath(os.path.join(d, f), P).replace(os.sep, '/') for d, _, fs in os.walk(P) for f in fs
+# 但 Finder / Spotlight 会在 pkg/pack 里重新生成，不过滤就会把「清单外文件」误报成出包失败。包里有 RomFS 的逐文件拷贝，遍历同样经 romfs_list。
+stray = [os.path.relpath(os.path.join(d, f), P).replace(os.sep, '/') for d, _, fs in romfs_list.walk(P) for f in fs
          if f != '.DS_Store' and not f.startswith('._')]
-stray = [s for s in stray if s not in packed and s not in ('manifest.json', 'index.tsv')]
-if stray: red(f'包目录里有清单外的文件 {len(stray)} 个：{stray[:5]}')
+stray = [s for s in stray if s not in packed and s not in ('manifest.json', 'index.tsv') and s not in stds]   # 镜像形态：包里那份镜像不在 index.tsv（index 逐文件记）
+if stray: warn(f'包目录里有清单外的文件 {len(stray)} 个：{stray[:5]}')
+WF = P.rstrip('/') + '.verify_warn.txt'
+if WARN:   # 有对不上的：不写「上次核对通过」记录（下次全量重核），原因落盘给出包作业记进 integrityNotes；照常退出 0
+    with open(WF, 'w', encoding='utf-8', newline='\n') as f: f.write('\n'.join(WARN) + '\n')
+    print(f'🟡 资源包核对：{len(WARN)} 项对不上，照常出包；原因记在 {WF}，之后出问题时报错会提到这里（{P}）'); sys.exit(0)
+try: os.remove(WF)   # 这次全对：上次留下的黄字记录作废
+except OSError: pass
 with open(VS + '.tmp', 'w', encoding='utf-8', newline='\n') as f: f.writelines('\t'.join((rel,) + v) + '\n' for rel, v in rec.items())
 os.replace(VS + '.tmp', VS)
 print(f'🟢 资源包核对：{len(packed)} 个文件与源一致、SHA 对得上、无多余文件（核 {len(packed) - skip} 个，{skip} 个与上次核对时源 / 包都没变）（{P}）')

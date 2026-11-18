@@ -4,7 +4,7 @@
 # 期望：本仓库 runtime/src 的 weak_import 全部登记 → check 退出 0、host 放行参数与 make 收到的一致；
 #   临时仓库里给 gfxmode.c 加一个新弱符号并引用：只在源码登记一处 → check 绿、原生单测 gfxmode 照常编过跑过、Python 侧放行参数含它（7 处手抄归一后无需再改别处）；
 #   不登记 → check 退出 1、点名这个符号与文件行（明确报错在一处），gfxmode 单测链接失败
-set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); bad=0
+set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); T=$(cd "$T" && pwd -P); bad=0   # 物理路径：macOS 的 /var 是 /private/var 的软链，路径写法统一编译缓存才能按基准改相对
 WU=-Wl,; WU=${WU}-U   # 链接放行参数前缀拼出来写：全仓 check 不许字面出现（本单测也不例外）
 trap 'rm -rf "$T"' EXIT
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
@@ -22,6 +22,10 @@ ck "Python 侧与 make 侧 host 放行参数同一份（$(echo "$py" | grep -c .
 # 负对照：临时仓库里加一个新弱符号 s2a_zz_probe（gfxmode.c 声明并引用）
 git clone -q --shared "$H" "$T/c" 2> /dev/null && git -C "$T/c" checkout -q "$(git -C "$H" rev-parse HEAD)" 2> /dev/null
 for f in tools/weak_link_decl.py runtime/build.mk runtime/src/gfxmode.c runtime/src/host_main.c runtime/tests/t_gfxmode.c graphics/nvn/Makefile tests/vk_indirect_count/Makefile; do cp "$H/$f" "$T/c/$f"; done
+# 编译缓存（门禁经 tools/cc_cache.sh 开的 ccache）按 CCACHE_BASEDIR 把路径改成相对才能跨次命中：临时克隆和产物目录不在门禁树下，
+#   路径每次随机、58 次编译只中 2 次（11-16 门禁提速）。克隆里编、产物也放克隆的 build/ 下，基准指到克隆
+[ -n "${CCACHE_BASEDIR:-}" ] && export CCACHE_BASEDIR="$T/c"
+B=$T/c/build/wl; mkdir -p "$B"
 cat >> "$T/c/runtime/src/gfxmode.c" <<'EOF'
 void *s2a_zz_probe(void) __attribute__((weak_import));   // 单测探针：新弱符号
 int s2a_zz_probe_linked(void) { return s2a_zz_probe != 0; }
@@ -29,7 +33,7 @@ EOF
 o=$(cd "$T/c" && python3 tools/weak_link_decl.py check 2>&1); r=$?
 ck "不登记：check 退出 1 并点名 s2a_zz_probe 与 gfxmode.c 行（rc=${r}）" '[ $r = 1 ] && [[ "$o" == *"弱符号 s2a_zz_probe（runtime/src/gfxmode.c:"* ]]'
 if [ "$(uname -s)" = Darwin ]; then
-  (cd "$T/c" && make -s native-test-gfxmode BUILD=$T/b1 > "$T/u.log" 2>&1); r=$?
+  (cd "$T/c" && make -s native-test-gfxmode BUILD=$B/b1 > "$T/u.log" 2>&1); r=$?
   ck "不登记：gfxmode 单测链接失败（rc=${r}，$(grep -m1 -o '_s2a_zz_probe' "$T/u.log" || echo 未见符号名)）" '[ $r != 0 ] && grep -q _s2a_zz_probe "$T/u.log"'
 fi
 sed -i.bak '1a\
@@ -38,7 +42,7 @@ o=$(cd "$T/c" && python3 tools/weak_link_decl.py check 2>&1); r=$?
 ck "只登记一处：check 绿（rc=${r}）" '[ $r = 0 ]'
 ck "只登记一处：Python 侧放行参数含它" '(cd "$T/c" && python3 tools/weak_link_decl.py flags host) | grep -q -- "${WU},_s2a_zz_probe"'
 if [ "$(uname -s)" = Darwin ]; then
-  (cd "$T/c" && make -s native-test-gfxmode BUILD=$T/b2 > "$T/r.log" 2>&1); r=$?
+  (cd "$T/c" && make -s native-test-gfxmode BUILD=$B/b2 > "$T/r.log" 2>&1); r=$?
   ck "只登记一处：gfxmode 单测照常编过跑过（rc=${r}）" '[ $r = 0 ]'
 fi
 
@@ -49,14 +53,14 @@ ck "手写放行参数：check 退出 1 并点名文件行（rc=${r}）" '[ $r =
 cp "$H/tests/vk_indirect_count/Makefile" "$T/c/tests/vk_indirect_count/Makefile"
 printf '\nint s2a_zz_nvnprobe(void);   /* 单测探针：直连层新引用的宿主符号 */\nint s2a_zz_nvnprobe_used(void) { return s2a_zz_nvnprobe(); }\n' >> "$T/c/graphics/nvn/gfx/nvn/hle_nvn.c"
 if [ "$(uname -s)" = Darwin ]; then
-  (cd "$T/c" && make -s -C graphics/nvn OUT="$T/nvn" "$T/nvn/tests/t_nvn_m3" > "$T/nu.log" 2>&1); r=$?
+  (cd "$T/c" && make -s -C graphics/nvn OUT="$B/nvn" "$B/nvn/tests/t_nvn_m3" > "$T/nu.log" 2>&1); r=$?
   ck "graphics/nvn 不登记：t_nvn_m3 链接失败（rc=${r}，$(grep -m1 -o '_s2a_zz_nvnprobe' "$T/nu.log" || echo 未见符号名)）" '[ $r != 0 ] && grep -q _s2a_zz_nvnprobe "$T/nu.log"'
 fi
 sed -i.bak '1a\
 // 弱链接[nvntest]：s2a_zz_nvnprobe（单测探针）' "$T/c/graphics/nvn/gfx/nvn/hle_nvn.c"; rm -f "$T/c/graphics/nvn/gfx/nvn/hle_nvn.c.bak"
 ck "graphics/nvn 只登记一处：nvntest 放行参数含它" '(cd "$T/c" && python3 tools/weak_link_decl.py flags nvntest) | grep -q -- "${WU},_s2a_zz_nvnprobe"'
 if [ "$(uname -s)" = Darwin ]; then
-  (cd "$T/c" && make -s -C graphics/nvn OUT="$T/nvn" "$T/nvn/tests/t_nvn_m3" > "$T/nr.log" 2>&1); r=$?
+  (cd "$T/c" && make -s -C graphics/nvn OUT="$B/nvn" "$B/nvn/tests/t_nvn_m3" > "$T/nr.log" 2>&1); r=$?
   ck "graphics/nvn 只登记一处：t_nvn_m3 链得过（rc=${r}）" '[ $r = 0 ]'
 fi
 # 场合按整词认（11-05 维护者：make 侧原先按子串收「[^]]*host[^]]*」、Python 侧按逗号拆开整词比；安卓登记 android_draw_host

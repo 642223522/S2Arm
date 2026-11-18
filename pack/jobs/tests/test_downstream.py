@@ -24,6 +24,10 @@ class FakeContext:
     def __init__(self, private, request=None):
         self.private, self.r = Path(private), request or {}
 
+    def lock(self, *a, **k):   # 装机类作业的手机锁（ipa.phone_lock）
+        import contextlib
+        return contextlib.nullcontext()
+
 
 def game(*updates, gid=TITLE):
     pk = [dict(type="base", version=0, titleId=gid, sha256="b", display="1.0.0")]
@@ -205,6 +209,41 @@ class BundleTest(unittest.TestCase):
             with self.assertRaisesRegex(Failure, "不一致"):
                 ds.fetch_bundle(c, s)
 
+    def test_corrupt_download_is_fetched_again(self):
+        """维护者 11-17（玩家判断不了的我们替他判）：下载的包件 SHA 不对 → 不用它、自动重下；重下对了就照常用。期望手写：
+        第一次读到坏字节、第二次读到原样 → 照常解开，同一地址共请求 2 次"""
+        import io, unittest.mock as um
+        with tempfile.TemporaryDirectory() as d:
+            z, sha = self.make(d)
+            good = z.read_bytes(); calls = []
+            class Resp(io.BytesIO):
+                headers = {}
+                def __enter__(self): return self
+                def __exit__(self, *a): return False
+            def fake(req, timeout=None):
+                calls.append(req.full_url)
+                return Resp(b"bad" if len(calls) == 1 else good)
+            s = scheme(bundle=dict(tag="v1", commit=COMMIT, urls=["https://example.invalid/b.zip"], sha256=sha))
+            c = FakeContext(Path(d) / "private"); c.private.mkdir()
+            with um.patch.object(ds.urllib.request, "urlopen", fake):
+                root = ds.fetch_bundle(c, s)
+            self.assertEqual((root / "src/dm/tools/d2rm_pack.py").read_bytes(), b"print(1)\n")
+            self.assertEqual(len(calls), 2)
+
+    def test_other_commit_is_fetched_again_then_refused_and_not_kept(self):
+        """内容和登记的不一致：删掉这份、整件重下一遍；还不对才报（说明重下过），且不留这份 zip（下次不再用它）。期望手写：请求 2 次"""
+        import unittest.mock as um
+        with tempfile.TemporaryDirectory() as d:
+            z, sha = self.make(d, commit="d" * 40)
+            s = scheme(bundle=dict(tag="v1", commit=COMMIT, urls=[z.as_uri()], sha256=sha))
+            c = FakeContext(Path(d) / "private"); c.private.mkdir()
+            real = ds.urllib.request.urlopen; calls = []
+            with um.patch.object(ds.urllib.request, "urlopen", lambda req, timeout=None: (calls.append(1), real(req, timeout=timeout))[1]):
+                with self.assertRaisesRegex(Failure, "重新下载后还是不对"):
+                    ds.fetch_bundle(c, s)
+            self.assertEqual(len(calls), 2)
+            self.assertFalse(list((c.private / "downstream").rglob("*.zip")))
+
     def test_unpublished_bundle_says_so(self):
         with self.assertRaisesRegex(Failure, "还没上线"):
             ds.fetch_bundle(FakeContext("/nonexistent"), scheme())
@@ -316,7 +355,7 @@ class WinInstallTest(unittest.TestCase):
         W = FakeWin(team=None)
         with self.assertRaises(Failure) as e:
             self.go(W)
-        self.assertEqual(e.exception.code, "apple_session_expired")
+        self.assertEqual(e.exception.code, "apple_not_signed_in")
         self.assertIsNone(W.ns)
 
     def test_signing_failure_keeps_its_code(self):
@@ -342,6 +381,30 @@ class ExportTest(unittest.TestCase):
                 with self.assertRaises(Failure) as e:
                     inst.install(c)
             self.assertEqual(e.exception.code, "downstream_export_unsupported")
+
+
+class HostTest(unittest.TestCase):
+    """方案能在哪些电脑上出包（登记表 targets.ios.hosts，#1272）：本机平台不在里面 → 不能选、原因说只能在 Mac 上出"""
+    def test_mac_only_scheme_on_windows(self):
+        s = scheme(targets=dict(ios=dict(tool="t.py", hosts=["mac"])))
+        ok, why = ds.eligibility(s, game(), host="windows")
+        self.assertFalse(ok); self.assertIn("Mac", why)
+        self.assertFalse(ds.eligibility(s, game(), "en", host="windows")[0])
+        self.assertEqual(ds.eligibility(s, game(), host="mac"), (True, ""))
+
+    def test_hosts_default_is_mac_only(self):
+        s = scheme(targets=dict(ios=dict(tool="t.py")))
+        self.assertFalse(ds.eligibility(s, game(), host="windows")[0])
+        self.assertTrue(ds.eligibility(s, game(), host="mac")[0])
+
+    def test_windows_listed_opens_it(self):
+        s = scheme(targets=dict(ios=dict(tool="t.py", hosts=["mac", "windows"])))
+        self.assertEqual(ds.eligibility(s, game(), host="windows"), (True, ""))
+
+    def test_real_registry_opens_windows(self):
+        # 下游 v2.3.3 起做包不再要 C 编译器 / .NET / spirv-cross（壳里自带预编件，#1272），Windows 也能出：登记表放开
+        real = ds.load()
+        self.assertEqual(ds.hosts(real["d2r-mobile"]), ["mac", "windows"])
 
 
 if __name__ == "__main__":

@@ -45,6 +45,7 @@ import XCTest
     }
 
     func testRunningDoneAndFailedPages() async throws {
+        // 手机作业走手机槽（11-16 起可与出包同时跑）：进度 / 结局读 model.phoneSession
         // 进行中：第 5 / 6 步，作业层整体进度 0.62
         model.start(session()) { sink in
             self.emit(sink, "stage", ["stage": "找签名账号与 iPhone", "message": "找签名账号与 iPhone", "stageIndex": 1, "stageCount": 6, "overall": 0.0])
@@ -52,11 +53,11 @@ import XCTest
             self.emit(sink, "stage", ["stage": "用你的 Apple ID 签名", "message": "用你的 Apple ID 签名", "stageIndex": 4, "stageCount": 6, "overall": 0.5, "keychainPrompt": true])
             try await Task.sleep(for: .seconds(30)); return nil
         }
-        for _ in 0..<100 where model.session?.stage != "用你的 Apple ID 签名" { try? await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertEqual(model.session?.progress.overall, 0.5)
-        XCTAssertEqual(model.session?.progress.keychainPrompt, true, "要玩家动手的阶段：页面在步骤上方挂醒目提示")
+        for _ in 0..<100 where model.phoneSession?.stage != "用你的 Apple ID 签名" { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(model.phoneSession?.progress.overall, 0.5)
+        XCTAssertEqual(model.phoneSession?.progress.keychainPrompt, true, "要玩家动手的阶段：页面在步骤上方挂醒目提示")
         try snapshot("phone_running")
-        model.stop()
+        model.stopPhone()
         for _ in 0..<300 where model.busy { try? await Task.sleep(for: .milliseconds(10)) }
 
         // 成功：只换壳，一个资源包都没推
@@ -67,8 +68,8 @@ import XCTest
             return nil
         }
         for _ in 0..<300 where model.busy { try? await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertEqual(model.session?.phase, .finished(.completed))
-        XCTAssertNotNil(model.session?.ended)
+        XCTAssertEqual(model.phoneSession?.phase, .finished(.completed))
+        XCTAssertNotNil(model.phoneSession?.ended)
         XCTAssertEqual(model.lastPhoneSession?.kind, .installUpdate, "手机作业结束记成最近一次手机作业，装机页结局区读它")
         try snapshot("phone_done")
 
@@ -81,7 +82,7 @@ import XCTest
                                         diagnostics: [["code": "apple_session_expired", "suggestion": next, "summary": "apple_session_expired"]], stderr: ""))
         }
         for _ in 0..<300 where model.busy { try? await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertEqual(model.session?.suggestion, next)
+        XCTAssertEqual(model.phoneSession?.suggestion, next)
         try snapshot("phone_failed")
 
         // 会挤掉别处装的游戏：就在更新页里问（不弹框）；「仍然继续」按同样的参数带 acceptDropped 再来
@@ -93,7 +94,7 @@ import XCTest
                                         diagnostics: [["code": "container_would_drop", "summary": drop]], stderr: ""))
         }
         for _ in 0..<300 where model.busy { try? await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertEqual(model.session?.failureCode, "container_would_drop")
+        XCTAssertEqual(model.phoneSession?.failureCode, "container_would_drop")
         try snapshot("phone_drop")
     }
 

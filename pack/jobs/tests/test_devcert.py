@@ -13,6 +13,7 @@ import sys
 import tempfile
 import types
 import unittest
+import jobcase  # noqa: E402（作业上下文替身统一工厂 jobcase.fake_context）
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -206,7 +207,7 @@ class InstallWiring(unittest.TestCase):
         self.m = install
         self.t = Path(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, self.t, True)
         (self.t / "lib").mkdir(); (self.t / "logs").mkdir()
-        self.c = types.SimpleNamespace(r={}, library=self.t / "lib", private=self.t, logs=self.t / "logs", task="k", engine=self.t,
+        self.c = jobcase.fake_context(self.t, r={}, library=self.t / "lib", work_root=self.t / "work", private=self.t, logs=self.t / "logs", task="k", engine=self.t,
                                        emit=lambda *a, **k: None, begin=lambda *a, **k: None, last_log=None)
         d = self.t / "devcert"; d.mkdir()
         (d / "cert.p12").write_bytes(b"p12")

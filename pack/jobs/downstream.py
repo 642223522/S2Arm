@@ -105,8 +105,22 @@ def update_of(game):
     return max(ups, key=lambda p: p["version"]) if ups else None
 
 
-def eligibility(scheme, game, lang="zh"):
-    """(能选, 原因)。下游按某一版程序逐字节改写，别的版本做不出来：原因写清只支持哪一版、现在是哪一版、怎么办（lang = zh / en）"""
+HOST = "windows" if os.name == "nt" else "mac"
+
+
+def hosts(scheme):
+    """这个方案能在哪些电脑上出包：登记表 targets.ios.hosts（mac / windows）；没写 = 只有 mac（下游做包工具要在这台电脑上跑，
+    Windows 上能不能跑由下游包件决定，下游声明了才放开，#1272）"""
+    return (scheme["targets"].get("ios") or {}).get("hosts") or ["mac"]
+
+
+def eligibility(scheme, game, lang="zh", host=None):
+    """(能选, 原因)。① 这台电脑出不了这个方案的包（登记表 hosts 没有本机平台）；② 下游按某一版程序逐字节改写，别的版本做不出来：
+    原因写清只支持哪一版、现在是哪一版、怎么办（lang = zh / en）"""
+    if (host or HOST) not in hosts(scheme):
+        if lang == "en":
+            return False, f"{scheme['name']} can be built on a Mac only for now; use S2Arm on a Mac to choose it"
+        return False, f"{scheme['name']} 目前只能在 Mac 上出包：用 Mac 版 S2Arm 才能选它"  # 非玩家句
     need = scheme["needs"].get("updateVersion")
     if need is None:
         return True, ""
@@ -199,36 +213,48 @@ def fetch_bundle(c, scheme, progress=None):
         return root
     root.mkdir(parents=True, exist_ok=True)
     z = root.parent / (b["sha256"][:16] + ".zip")
-    last = ""
-    if not (z.is_file() and file_sha256(z) == b["sha256"]):
-        for url in b["urls"]:
-            part = z.with_suffix(".part")
-            try:
-                with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "S2Arm"}), timeout=60) as r, open(part, "wb") as f:
-                    total, done = int(r.headers.get("Content-Length") or 0), 0
-                    for chunk in iter(lambda: r.read(1 << 20), b""):
-                        f.write(chunk); done += len(chunk)
-                        if progress and total:
-                            progress(done, total)
-                if file_sha256(part) != b["sha256"]:
-                    last = "校验不对"; part.unlink(missing_ok=True); continue  # 非玩家句
-                os.replace(part, z); break
-            except OSError as e:   # urllib 的网络错误都是 OSError 子类
-                last = str(e); part.unlink(missing_ok=True)
-        else:
-            raise Failure(f"{scheme['name']} 的包件下载不下来：{last}。检查网络后再点一次。", code="download_failed")
-    tmp = Path(tempfile.mkdtemp(prefix="x-", dir=root.parent))
-    try:
-        with zipfile.ZipFile(z) as zf:
-            zf.extractall(tmp)
-        info = read(tmp / "bundle.json", {})
-        if info.get("commit") != b["commit"] or not (tmp / "shell.zip").is_file() or not (tmp / "src").is_dir():
-            raise Failure(f"{scheme['name']} 的包件内容和登记的不一致（提交 {str(info.get('commit'))[:12]}）：没有用它。", code="download_failed")
-        shutil.rmtree(root, ignore_errors=True)
-        os.replace(tmp, root)
-        ok.write_text(b["sha256"])
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+    # 维护者 11-17（玩家判断不了的我们替他判）：核不上不装坏的那份，自动重下一遍；重下还不对才报。
+    #   SHA 不对：每个地址最多下两遍；内容（提交号 / shell.zip / src/）和登记的不一致：删掉这份、整件再下一遍
+    for attempt in (1, 2):
+        last = ""
+        if not (z.is_file() and file_sha256(z) == b["sha256"]):
+            z.unlink(missing_ok=True)
+            for url in [u for u in b["urls"] for _ in (1, 2)]:
+                part = z.with_suffix(".part")
+                try:
+                    with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "S2Arm"}), timeout=60) as r, open(part, "wb") as f:
+                        total, done = int(r.headers.get("Content-Length") or 0), 0
+                        for chunk in iter(lambda: r.read(1 << 20), b""):
+                            f.write(chunk); done += len(chunk)
+                            if progress and total:
+                                progress(done, total)
+                    if file_sha256(part) != b["sha256"]:
+                        last = "校验不对"; part.unlink(missing_ok=True); continue  # 非玩家句
+                    os.replace(part, z); break
+                except OSError as e:   # urllib 的网络错误都是 OSError 子类
+                    last = str(e); part.unlink(missing_ok=True)
+            else:
+                raise Failure(f"{scheme['name']} 的包件下载不下来：{last}。检查网络后再点一次。", code="download_failed")
+        tmp = Path(tempfile.mkdtemp(prefix="x-", dir=root.parent))
+        try:
+            with zipfile.ZipFile(z) as zf:
+                zf.extractall(tmp)
+            info = read(tmp / "bundle.json", {})
+            if info.get("commit") != b["commit"] or not (tmp / "shell.zip").is_file() or not (tmp / "src").is_dir():
+                z.unlink(missing_ok=True)   # 不留这份：下次也不会再用它
+                if attempt == 1:
+                    continue
+                raise Failure(f"{scheme['name']} 的包件内容和登记的不一致（提交 {str(info.get('commit'))[:12]}），重新下载后还是不对：没有用它。", code="download_failed")
+            shutil.rmtree(root, ignore_errors=True)
+            os.replace(tmp, root)
+            ok.write_text(b["sha256"])
+            return root
+        except zipfile.BadZipFile:
+            z.unlink(missing_ok=True)
+            if attempt == 2:
+                raise Failure(f"{scheme['name']} 的包件解不开，重新下载后还是不对：没有用它。", code="download_failed")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
     return root
 
 
@@ -336,7 +362,7 @@ def install_ios(c, game, scheme):
     log = c.private / "logs" / (c.task + "-install.log")
     try:
         r = subprocess.run(["/usr/bin/ditto", "-x", "-k", rec["ipa"], str(stage)], capture_output=True, text=True)
-        app = next((stage / "Payload").glob("*.app"), None)
+        app = next((p for p in (stage / "Payload").glob("*.app") if p.is_dir()), None)
         if r.returncode or not app:
             raise Failure("解不开 iPhone 包：" + (r.stderr.strip()[-200:] or rec["ipa"]), code="job_failed")  # 非玩家句
         info = app / "Info.plist"
@@ -406,7 +432,7 @@ def install_ios_win(c, game, scheme):
         c.emit("message", "Impactor 里存着一个 Apple ID 但没选中，已替你选上")
     team = W.impactor.selected_team()
     if not team:
-        raise Failure("读不到 Impactor 当前选中的 Apple ID：在 Impactor 里登录并选中你的 Apple ID 后再装。", code="apple_session_expired")
+        raise Failure("读不到 Impactor 当前选中的 Apple ID：在 Impactor 里登录并选中你的 Apple ID 后再装。", code="apple_not_signed_in")
     udid = inst.win_udid(c, W)
     bid = bundle_id(scheme, team)
     log = c.private / "logs" / (c.task + "-install.log")
@@ -418,7 +444,7 @@ def install_ios_win(c, game, scheme):
                 z.extractall(stage)
         except (OSError, zipfile.BadZipFile) as e:
             raise Failure(f"解不开 iPhone 包：{e}", code="job_failed") from e  # 非玩家句
-        app = next((stage / "Payload").glob("*.app"), None)
+        app = next((p for p in (stage / "Payload").glob("*.app") if p.is_dir()), None)
         if not app:
             raise Failure("解不开 iPhone 包：" + rec["ipa"], code="job_failed")  # 非玩家句
         c.begin("写进 App 要申请的权限", 2, 4)

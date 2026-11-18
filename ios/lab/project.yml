@@ -31,6 +31,7 @@ targets:
       - ios/diag.m
       - ios/diagzip.m
       - ios/diagredact.m
+      - ios/diagcollect.m
       - runtime/src/pad.c
       - runtime/src/caps.c
       - runtime/src/motion_pick.c

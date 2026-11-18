@@ -49,8 +49,12 @@ NSArray *s2a_ios_per_game_keys(void);
 NSArray<NSString *> *s2a_ios_game_languages(void);
 // 这款支持的游戏语言（资源包 ctl/control.nacp 支持语言标志，位序 = 宿主 TitleLanguage 枚举名）；读不到 / 标志为 0 / 合成件（显示版本「?」）→ 空（不知道）
 NSArray<NSString *> *s2a_ios_game_supported_languages(void);
+NSArray<NSString *> *s2a_ios_game_supported_languages_in(NSString *dir);   // 同上，读给定资源包目录（游戏库里还没进游戏的那款，game_options.m）
+// 一种游戏语言给玩家看的名字（"system" / 空 = 「跟随系统」）：游戏内设置页、游戏库每款设置页同一份
+NSString *s2a_ios_game_language_label(NSString *value);
 // 选的游戏语言（没选 = 系统语言）这款不支持时的一句说明（「这款不支持 X，起局用 Y。」），支持或不知道 → nil
 NSString *s2a_ios_game_language_note(void);
+NSString *s2a_ios_game_language_note_with(NSUserDefaults *defaults, NSArray<NSString *> *supported);   // 同上，给定这款的偏好与支持表
 // Discrete values compatible with Settings.bundle and normalized in-app values.
 NSArray<NSDictionary *> *s2a_ios_graphics_options(void);
 NSDictionary *s2a_ios_graphics_snapshot(NSUserDefaults *defaults);

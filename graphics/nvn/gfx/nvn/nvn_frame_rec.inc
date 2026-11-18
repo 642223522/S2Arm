@@ -304,12 +304,12 @@ static int fr_dump_state(const char *path) {
     pthread_mutex_lock(&g_cpu_tex_mu);
     if (g_cpu_tex.n) { uint64_t *c2 = realloc(cpu, (hd.ncpu + g_cpu_tex.n + 1) * 8); if (c2) { cpu = c2; for (uint32_t i = 0; i < g_cpu_tex.cap; i++) if (g_cpu_tex.vals[i]) memcpy(&cpu[hd.ncpu++], g_cpu_tex.keys + (size_t)i * 8, 8); } }
     pthread_mutex_unlock(&g_cpu_tex_mu);
-    pthread_mutex_lock(&g_rmu);
+    os_unfair_lock_lock(&g_rmu);
     tr = malloc((size_t)(g_ntreg + 1) * sizeof *tr);
     for (int i = 0; tr && i < g_ntreg; i++) if (g_treg[i].ok) { fr_treg *e = &tr[hd.ntreg++]; memset(e, 0, sizeof *e); e->tid = i; e->t = g_treg[i].t; e->has_v = g_treg[i].has_v; if (e->has_v) e->v = g_treg[i].v; }
     sr = malloc((size_t)(g_nsreg + 1) * sizeof *sr);
     for (int i = 0; sr && i < g_nsreg; i++) if (g_sreg_ok[i]) sr[hd.nsreg++] = (fr_sreg){i, g_sreg[i]};
-    pthread_mutex_unlock(&g_rmu);
+    os_unfair_lock_unlock(&g_rmu);
     hd.nxv = (uint32_t)g_xv_npresent;
     int ok = pools && live && cpu && tr && sr && fr_w(f, &hd, sizeof hd) && fr_w(f, pools, hd.npool * sizeof *pools) && fr_w(f, live, hd.nlive * 8) && fr_w(f, cpu, hd.ncpu * 8)
              && fr_w(f, tr, hd.ntreg * sizeof *tr) && fr_w(f, sr, hd.nsreg * sizeof *sr) && fr_w(f, g_xv_present, hd.nxv * 8);
@@ -580,9 +580,13 @@ int nvn_frame_replay(const char *dir) {
         uint64_t tk = nvn_be_present(pt, period, crop[2] || crop[3] ? crop : NULL);
         nvn_be_present_wait(tk); mtl_finish_gpu();
         uint64_t nd = dr1 - dr0;
+        // 本遍 GPU 独占时间（gpu_tag_done 按帧号累加，同局里 frames.tsv 的 gpu_us）：完成回调可能晚于 mtl_finish_gpu 返回，等本遍各份回报完（至多 200 ms）
+        uint64_t gf = base_frame + (uint64_t)it; unsigned gk = gf % GRING;
+        for (int w = 0; w < 200 && atomic_load(&g_gpu[gk].frame) == gf && atomic_load(&g_gpu[gk].pending) > 0; w++) usleep(1000);
+        double gms = atomic_load(&g_gpu[gk].frame) == gf ? atomic_load(&g_gpu[gk].ns) / 1e6 : -1;
         // 周期数（本线程自己跑的 CPU 周期，不含被抢占、不随别的进程起伏）：tools/frame_bench.sh 拿它比编译参数，墙钟 ms 在多会话共用的机器上波动超 3%
-        MLOG("回放第 %d / %d 遍：%llu 遍渲染、%llu 笔绘制，提交线程 %.2f ms、%llu 条指令、%llu 个周期%s", it + 1, N, (unsigned long long)(ps1 - ps0), (unsigned long long)nd, (w1 - w0) / 1e6,
-             (unsigned long long)(c1[0] - c0[0]), (unsigned long long)(c1[1] - c0[1]), nd ? [NSString stringWithFormat:@"，每笔 %.1fk 条指令", (double)(c1[0] - c0[0]) / nd / 1000].UTF8String : "");
+        MLOG("回放第 %d / %d 遍：%llu 遍渲染、%llu 笔绘制，提交线程 %.2f ms、%llu 条指令、%llu 个周期%s；GPU %.3f ms", it + 1, N, (unsigned long long)(ps1 - ps0), (unsigned long long)nd, (w1 - w0) / 1e6,
+             (unsigned long long)(c1[0] - c0[0]), (unsigned long long)(c1[1] - c0[1]), nd ? [NSString stringWithFormat:@"，每笔 %.1fk 条指令", (double)(c1[0] - c0[0]) / nd / 1000].UTF8String : "", gms);
         if (it == 0) { int put = 0, miss = 0; snprintf(p, sizeof p, "%s/gpu.bin", dir); fr_restore_gpu(p, &put, &miss); MLOG("回放：GPU 私有贴图写回 %d 张（尺寸 / 格式对不上没写 %d 张，靠重画）", put, miss); }
     }
     for (int i = 0; i < 500 && !__atomic_load_n(&grabbed, __ATOMIC_ACQUIRE); i++) usleep(10000);

@@ -80,9 +80,30 @@ def _signature(st):
     return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
 
 
+def _touch_title(private, gid, now):
+    """本款直连缓存仓「最近用过」（同 trim 扫描里对 current_gid 的那一步：dmsh 命中不改修改时间，按整款记）；路径上有链接就不动"""
+    for root, suffix in roots(private):
+        if suffix != 'direct':
+            continue
+        base = root / gid / 'store'
+        try:
+            if _safe_root(private, base) != 'safe':
+                continue
+            if os.utime in os.supports_follow_symlinks:
+                os.utime(base, (now, now), follow_symlinks=False)
+            else:
+                os.utime(base, (now, now))
+        except OSError:
+            continue
+
+
 def trim(private, *, keep_titles=KEEP_TITLES, min_free_bytes=MIN_FREE_BYTES,
-         now=None, current_gid=None, free_bytes=None):
+         now=None, current_gid=None, free_bytes=None, skip_scan_when_free=False):
     """Trim completed cold entries, oldest first; report observed regular-file bytes.
+
+    skip_scan_when_free（出包收尾用，11-16 极速出包定因）：盘余量已不低于底线时一条都不会删，原先照样全量扫一遍
+    （Windows 上逐文件 lstat，缓存大时几十秒）——这时只刷新本款「最近用过」、不扫，返回 scanned=False、字节统计为 None。
+    要统计数字的调用方（释放空间页）不传它。
 
     Only content-addressed compiler outputs are eligible. No directory, link,
     temporary file, unknown payload or recently used entry is removed. Concurrent
@@ -99,6 +120,18 @@ def trim(private, *, keep_titles=KEEP_TITLES, min_free_bytes=MIN_FREE_BYTES,
     candidates = []
     protected_titles = set()
     free_bytes = free_bytes or (lambda: shutil.disk_usage(private).free)
+    if skip_scan_when_free:
+        try:
+            free_now = free_bytes()
+        except OSError:
+            free_now = None
+        if isinstance(free_now, int) and not isinstance(free_now, bool) and free_now >= min_free_bytes:
+            if current_gid is not None:
+                _touch_title(private, current_gid, now)
+            return dict(keepTitles=keep_titles, protectedTitles=[], minFreeBytes=min_free_bytes, freeBytes=free_now,
+                        pressureRemaining=False, diskErrors=0, observedBytes=None, retainedBytes=None,
+                        removedBytes=0, removedEntries=0, changedEntries=0, unscannedRoots=0, protectedLinks=0,
+                        accountingComplete=True, scanErrors=0, evictionErrors=0, errors=[], scanned=False)
     total = removed = count = skipped = unscanned = links = 0
     errors = []
     scan_errors = eviction_errors = 0
@@ -226,7 +259,7 @@ def trim(private, *, keep_titles=KEEP_TITLES, min_free_bytes=MIN_FREE_BYTES,
         total -= observed.st_size
         count += 1
         free = available()  # APFS clones/sparse files: never add logical removed bytes.
-    return dict(keepTitles=keep_titles, protectedTitles=sorted(protected_titles),
+    return dict(scanned=True, keepTitles=keep_titles, protectedTitles=sorted(protected_titles),
                 minFreeBytes=min_free_bytes, freeBytes=free,
                 pressureRemaining=None if free is None else free < min_free_bytes,
                 diskErrors=disk_errors, observedBytes=before, retainedBytes=total,

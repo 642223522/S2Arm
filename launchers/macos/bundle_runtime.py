@@ -126,6 +126,8 @@ def build(out):
     for p in installed.iterdir():
         if p.name.lower().startswith(keep):
             cp(p, site/p.name)
+    import pil_prune   # Pillow 只留出包用得到的（去 AVIF / 画字 / Tk 与只被它们引用的库，约 6.5 MB）
+    pil_prune.prune(site, lambda f: [l.strip().split(' ')[0].rsplit('/', 1)[-1] for l in output(['otool', '-L', f]).splitlines()[1:]])
     (out/'python/bin/python3').unlink(missing_ok=True)
     (out/'python/bin/python3').symlink_to('python3.12')
     (out/'bin').mkdir()

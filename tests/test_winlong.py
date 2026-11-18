@@ -117,6 +117,20 @@ class LongPathTest(unittest.TestCase):
         self.assertEqual(sr.group_targets(["R:\\lib\\iPhone\\g\\work", "R:\\lib\\cache\\g\\extract"]), ["R:\\lib"])
         self.assertEqual(sorted(sr.group_targets(["R:\\lib\\w", "D:\\x"])), ["D:\\x", "R:\\lib\\w"])
 
+    def test_target_never_holds_entry_dir(self):
+        # 公共上级把短入口目录自己包进去 → 联接指向自己的上级、遍历绕圈（Windows 单测：工作区在 Temp、工具缓存已是 S2A\j\<短号> 下的短路径，
+        #   公共上级 = AppData\Local → 入口 i8wr 指向 Local，WinError 1921、600 秒超时）。期望手写：不合并、各建各的；已在入口下的不再套
+        from pack.orch import shortroot as sr
+        local = r"R:\profile\AppData\Local"   # 应用数据目录（LOCALAPPDATA）
+        j = local + r"\S2A\j"
+        tmp, short = local + r"\Temp\t1\out", j + r"\zqgx\s2a_run"
+        self.assertEqual(sr.group_targets([tmp, short], j), [tmp])
+        lib = r"R:\profile"   # 游戏库设在用户目录：工作区与工具缓存的公共上级 = 用户目录，包住 AppData\Local\S2A\j
+        work, cache = lib + r"\iPhone\g\work", lib + r"\tool-cache"
+        self.assertEqual(sr.group_targets([work, cache], j), [work, cache])
+        self.assertEqual(sr.group_targets([r"R:\lib\w", r"R:\lib\c"], j), [r"R:\lib"])   # 不包入口的照旧合并
+        self.assertEqual(sr.junction_targets([tmp, short], j), [tmp])
+
     def test_unc_share_is_not_used_as_junction_target(self):
         from pack.orch import shortroot as sr
         local = r"R:\lib\iPhone\g\work"

@@ -187,7 +187,14 @@ void s2a_host_shutdown(const char *why) {
     { void s2a_det_summary(void); s2a_det_summary(); }
     LOG("未解析导入：%u 个", s2a_unresolved_count());
     s2a_direct_summary(1);   // _exit 不跑 atexit；显式打印现编汇总，不改变停机语义
+#if defined(__ANDROID__)
+    // 安卓：钩子在同一个单库里（android/native/runtime/platform/lifecycle_android.c），dlsym(RTLD_DEFAULT) 取不到库内符号
+    //   （docs/坑记录.md「安卓单库里 dlsym(RTLD_DEFAULT) 找不到服务层导出」），改链接期弱引用；不带它的宿主单测链接里为空，照旧跳过。
+    // 弱链接[android]：s2a_sesmark_clear_home（只有安卓 NDK 单库与 Linux 宿主单测链这一支，都不走 ld64，不需要放行参数）
+    { extern void s2a_sesmark_clear_home(void) __attribute__((weak)); if (s2a_sesmark_clear_home) s2a_sesmark_clear_home(); }   // 会话标记：只删 Java 干净收尾写的 end（#528 第 15 项）
+#else
     { void (*clr)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_sesmark_clear_home"); if (clr) clr(); }   // 会话标记（sesdiag.c）：正常收尾，下次启动不问「上次没正常退出」
+#endif
     LOG("优雅退出完成（%.3f 秒）", (now_ns() - t0) / 1e9);
     s2a_logcon_flush(); _exit(atomic_load(&g_exit_code));
 }

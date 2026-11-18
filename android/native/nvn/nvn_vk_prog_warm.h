@@ -35,7 +35,7 @@ extern "C" {
 //     不现实，热点优先才让常见路线先安全）。
 struct nvk_prog_rec {
     uint8_t identity[32];
-    uint32_t stage_mask;                    // rp_shader_graphics_stages() 的取值
+    uint32_t stage_mask;                    // 图形阶段掩码，或 32 = 计算阶段
     uint8_t keys[NVK_PROG_REC_STAGES][8];
     uint8_t c1_ok;                          // 位 i = 阶段 i 的 c1 完整（口径同 views[st].c1_bytes >= 0x100）
     uint8_t lp_ok;                          // 记录时的状态与出包预编库的翻译状态相符（nvk_shader.c libpack_state_ok）；旧清单读作 0 = 走现场编
@@ -60,7 +60,7 @@ int nvk_prog_warm_pending(void);
 int nvk_prog_warm_build(const struct nvk_prog_rec *rec);
 
 // 真实 resolve 成功后记录一条（提交线程）：带上当次源快照的 c1 与 uses=1。去重（identity 已有则
-// uses++、刷新记录）与有界（上限按 uses 淘汰最冷的一条；`debug.s2a.nvk_warm_max` 可改，缺省 2048）。
+// uses++、刷新记录）与有界（上限按 uses 淘汰最冷的一条；`debug.s2a.nvk_warm_max` 可改，缺省 8192、硬顶 16384）。
 void nvk_prog_warm_note(const struct nvk_prog_rec *rec);
 
 // 同步落盘（Stop / 会话收尾）。失败只计数，不影响收尾。

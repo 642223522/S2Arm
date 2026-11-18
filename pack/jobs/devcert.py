@@ -359,6 +359,88 @@ def stored(c):
     return d / "cert.p12", (d / "profile.mobileprovision").read_bytes(), pw
 
 
+def _orch(c):
+    """pack/orch/install_win.py 里的 DER 小工具（pkcs1_der / cert_modulus_and_start，两端通用的纯 Python）：按请求给的引擎树（c.engine）导入，
+    同 install.win_install_mod（App 里作业层和引擎分两处，按本文件位置找不到 pack/orch）；引擎树里没有时（单测的空引擎）才退回本文件所在的源码树"""
+    import sys
+    d = Path(c.engine) / "pack/orch"
+    d = str(d if (d / "install_win.py").is_file() else Path(__file__).resolve().parents[1] / "orch")
+    if d not in sys.path:
+        sys.path.insert(0, d)
+    import install_win
+    return install_win
+
+
+def _der_len(n):
+    if n < 0x80:
+        return bytes([n])
+    b = n.to_bytes((n.bit_length() + 7) // 8, "big")
+    return bytes([0x80 | len(b)]) + b
+
+
+def _der_int(raw):
+    """大端无符号字节 → DER INTEGER（去前导零，最高位是 1 就补一个 0）"""
+    raw = raw.lstrip(b"\0") or b"\0"
+    if raw[0] & 0x80:
+        raw = b"\0" + raw
+    return b"\x02" + _der_len(len(raw)) + raw
+
+
+def _pkcs1_from_params(p):
+    """.NET RSAParameters（各字段 base64、大端）→ RSAPrivateKey（PKCS#1）DER"""
+    body = _der_int(b"\0") + b"".join(_der_int(base64.b64decode(p[k])) for k in ("Modulus", "Exponent", "D", "P", "Q", "DP", "DQ", "InverseQ"))
+    return b"\x30" + _der_len(len(body)) + body
+
+
+def _key_modulus(c, der):
+    w = _orch(c)
+    _, s, e = w._tlv(der, 0)
+    _, ms, me = w._children(der, s, e)[1]
+    return int.from_bytes(der[ms:me], "big")
+
+
+def _read_p12(c, p12, password):
+    """规整后的 p12 → (PKCS#1 私钥 DER, 签名用的那张证书 DER)。私钥只在内存里（管道 / 标准输出），不落盘"""
+    env = dict(os.environ, S2A_P12_PW=password, S2A_P12_IN=str(p12))
+    if os.name == "nt":
+        ps = ("$ErrorActionPreference='Stop';$f=[System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable;"
+              "$c=New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection;$c.Import($env:S2A_P12_IN,$env:S2A_P12_PW,$f);"
+              "$x=$c|Where-Object{$_.HasPrivateKey}|Select-Object -First 1;"
+              "$k=[System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($x).ExportParameters($true);"
+              "$o=@{cert=[Convert]::ToBase64String($x.RawData)};foreach($n in 'Modulus','Exponent','D','P','Q','DP','DQ','InverseQ'){$o[$n]=[Convert]::ToBase64String($k.$n)};"
+              "$o|ConvertTo-Json -Compress")
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], env=env, capture_output=True, text=True, errors="replace")
+        if r.returncode:
+            raise Failure("证书里的私钥读不出来，没能交给 iPhone 上的 S2Arm：在设置里重新导入一次证书。", code="devcert_invalid", internal=r.stderr.strip()[-400:])
+        import json
+        got = json.loads(r.stdout)
+        return _pkcs1_from_params(got), base64.b64decode(got["cert"])
+    r = subprocess.run(["/usr/bin/openssl", "pkcs12", "-in", str(p12), "-passin", "env:S2A_P12_PW", "-nodes", "-clcerts"], env=env, capture_output=True)
+    pem = r.stdout.decode("ascii", errors="replace")
+    keys = re.findall(r"-----BEGIN ([A-Z ]*PRIVATE KEY)-----.*?-----END \1-----", pem, re.S)
+    key = re.search(r"-----BEGIN ([A-Z ]*PRIVATE KEY)-----.*?-----END \1-----", pem, re.S)
+    cert = re.search(r"-----BEGIN CERTIFICATE-----(.*?)-----END CERTIFICATE-----", pem, re.S)
+    der = _orch(c).pkcs1_der(key.group(0)) if key else None
+    if r.returncode or len(keys) != 1 or not cert or der is None:
+        raise Failure("证书里的私钥读不出来，没能交给 iPhone 上的 S2Arm：在设置里重新导入一次证书。", code="devcert_invalid",
+                      internal=r.stderr.decode(errors="replace").strip()[-400:])
+    return der, base64.b64decode("".join(cert.group(1).split()))
+
+
+def identity(c):
+    """0.6.0 通用壳（install.deliver_identity）：证书签名用户交给 App 的身份——导入时存的 p12 里的私钥（PKCS#1）+ 签名用的那张证书（DER）。
+    → {key, cert, created, key_fp, team}；key_fp = 存着的 p12 文件 SHA-256 前 16 位（换证书 / 重新导入就变，调用方据此判「交过了」）。
+    没在用自己的证书 → None；证书缺件 / 读不出私钥 / 私钥和证书对不上 → Failure"""
+    if not active(c):
+        return None
+    p12, _, pw = stored(c)
+    key, cert = _read_p12(c, p12, pw)
+    mod, created = _orch(c).cert_modulus_and_start(cert)
+    if mod is None or mod != _key_modulus(c, key):
+        raise Failure("证书里的私钥读不出来，没能交给 iPhone 上的 S2Arm：在设置里重新导入一次证书。", code="devcert_invalid", internal="私钥与证书公钥对不上")  # 非玩家句（internal 只进日志）
+    return dict(key=key, cert=cert, created=created, key_fp=hashlib.sha256(Path(p12).read_bytes()).hexdigest()[:16], team=team(c)["id"])
+
+
 def summary(c, udid=None):
     """当前证书的体检结果（启动器出包页 / 装机前清单用）；没导入 → None"""
     if not state(c).get("certSha1"):

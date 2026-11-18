@@ -37,6 +37,23 @@ int main(int argc, char **argv) {
     const uint64_t MS = 1000000ull;
     const uint64_t T0 = 5000ull * MS;   // CLOCK_UPTIME_RAW 的任意起点
 
+    // ---- 左右马达（11-16）：分不分侧、单侧 / 合成的强度与锐度。期望手算：强度 = 最大振幅；锐度 = (按振幅加权的频率 − 160) / 160 × 0.5 + 0.3，夹在 0–1 ----
+    check(s2a_hp_split(true, true), "同时支持左右 → 分两路");
+    check(!s2a_hp_split(true, false) && !s2a_hp_split(false, true) && !s2a_hp_split(false, false), "缺一侧 → 合成一路（退回）");
+    {   float a, sh;
+        const float lo[2] = {0.2f, 0}, hi[2] = {0, 0.8f}, lz[2] = {160, 160}, hz[2] = {320, 320};
+        s2a_hp_mix(2, lo, hi, lz, hz, &a, &sh);   // 合成：强度 0.8；频率 (0.2×160 + 0.8×320) / 1.0 = 288 → (128/160)×0.5 + 0.3 = 0.7
+        check(fabsf(a - 0.8f) < 1e-6f && fabsf(sh - 0.7f) < 1e-5f, "合成一路：强度 0.8、锐度 0.7");
+        s2a_hp_mix(1, &lo[0], &hi[0], &lz[0], &hz[0], &a, &sh);   // 左：0.2 @ 160 → 锐度 0.3
+        check(fabsf(a - 0.2f) < 1e-6f && fabsf(sh - 0.3f) < 1e-5f, "左侧：强度 0.2、锐度 0.3（不被右侧带高）");
+        s2a_hp_mix(1, &lo[1], &hi[1], &lz[1], &hz[1], &a, &sh);   // 右：0.8 @ 320 → (160/160)×0.5 + 0.3 = 0.8
+        check(fabsf(a - 0.8f) < 1e-6f && fabsf(sh - 0.8f) < 1e-5f, "右侧：强度 0.8、锐度 0.8（不被左侧拉低）");
+        const float z[2] = {0, 0}; s2a_hp_mix(2, z, z, lz, hz, &a, &sh);
+        check(a == 0 && fabsf(sh - 0.3f) < 1e-6f, "全 0：强度 0、锐度按 160 Hz 取 0.3");
+        const float nan[1] = {NAN}, big[1] = {9999}; s2a_hp_mix(1, nan, z, big, big, &a, &sh);
+        check(a == 0 && fabsf(sh - 0.3f) < 1e-6f, "NaN 振幅按 0、频率夹 1250 不影响（没有振幅就不加权）");
+    }
+
     // ---- 行为：正常路径 ----
     s2a_hp_state st = {0};
     check(s2a_hp_should_try(&st, T0) == S2A_HP_TRY, "初始状态允许尝试");
@@ -81,8 +98,7 @@ int main(int argc, char **argv) {
     check(count_in(source, "#include \"haptic_retry.h\"") == 1, "controller.m 引入 haptic_retry.h");
     check(count_in(source, "s2a_hp_should_try(") == 1, "只在 system_play_on_queue 里判一次（唯一入口）");
     check(after(source, "static void system_play_on_queue", "s2a_hp_should_try("), "退避检查在震动播放路径里");
-    check(after(source, "s2a_hp_should_try(", "createEngineWithLocality:"),
-          "退避检查在 createEngineWithLocality 之前（跳过时不碰 CoreHaptics）");
+    check(after(source, "s2a_hp_should_try(", "system_channel_on_queue(k,"), "退避检查在逐路建引擎 / 播放（system_channel_on_queue）之前（跳过时不碰 CoreHaptics）");
     check(count_in(source, "s2a_hp_on_fail(") == 1, "失败只从 system_fail_on_queue 归档一次");
     check(count_in(source, "system_fail_on_queue(") == 6, "system_fail_on_queue：1 处定义 + 5 个失败点（建引擎 / 起引擎 / 建播放器 / 播放 / 更新）");
     check(count_in(source, "s2a_hp_on_ok(") == 1, "成功后清零只在播放成功那一处");

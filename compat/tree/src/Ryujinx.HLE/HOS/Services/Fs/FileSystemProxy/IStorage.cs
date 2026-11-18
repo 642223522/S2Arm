@@ -12,6 +12,8 @@ namespace Ryujinx.HLE.HOS.Services.Fs.FileSystemProxy
 {
     class IStorage : DisposableIpcService
     {
+        private static int s_failLogged;   // S2Arm：读失败黄字只记前 32 次
+
         private SharedRef<LibHac.FsSrv.Sf.IStorage> _baseStorage;
 
         public IStorage(ref SharedRef<LibHac.FsSrv.Sf.IStorage> baseStorage)
@@ -54,6 +56,12 @@ namespace Ryujinx.HLE.HOS.Services.Fs.FileSystemProxy
                         $"Encountered corrupted data in filesystem storage @ offset 0x{offset:X8}, size 0x{size:X8}. " +
                         "Please redump the current game and/or update from your console.");
                     result = ResultFs.NonRealDataVerificationFailed;
+                }
+
+                // S2Arm（11-17）：读失败原先只有数据校验失败那一种记日志，其余（宿主文件对不上 / 越界等）静默交回游戏；每次只记前 32 次
+                if (result.IsFailure() && !result.Equals(ResultFs.NonRealDataVerificationFailed.Value) && System.Threading.Interlocked.Increment(ref s_failLogged) <= 32)
+                {
+                    Logger.Warning?.Print(LogClass.ServiceFs, $"读存储失败 @ 偏移 0x{offset:X}，请求 0x{size:X}，结果 {result.ToStringWithName()}");
                 }
 
                 if (context.Device.DirtyHacks.IsEnabled(DirtyHack.Xc2MenuSoftlockFix) && IsXc2)

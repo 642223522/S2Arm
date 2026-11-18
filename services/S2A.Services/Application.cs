@@ -104,20 +104,33 @@ namespace S2A.Services
 
             string romfs = Path.Combine(programDir, "romfs");
 
-            IStorage imgV1 = RomFsIndex.OpenImg(programDir);   // 单一 IMG v1（v0.3.0）：有 game.img 就用它；旧形态（romfs.img 三件套 / romfs/ 目录）照旧支持
+            string overlayDir = Path.Combine(programDir, "ui_overlay", "romfs");   // 界面布局覆盖层（RomFsIndex.OverlayFiles）：同路径读覆盖层那份
+            string readLogAs = $"程序 {programIndex}";   // 诊断读记录（S2A_ROMFS_READLOG，RomFsIndex.ReadLog）里的来源名
+
+            // 单一 IMG v1（v0.3.0）：有 game.img 就用它（Mac 运行目录里的是 iPhone 资源包那份的硬链接，0.6.0 一款一份资源）；旧形态（romfs.img 三件套 / romfs/ 目录）照旧支持。
+            //   Mac 运行目录的界面覆盖层在 ui_overlay/romfs（iPhone 资源包是 romfs_overlay，OpenImg 缺省）
+            IStorage imgV1 = RomFsIndex.OpenImg(programDir, Directory.Exists(overlayDir) ? overlayDir : null);
             if (imgV1 != null)
             {
-                imgV1 = RomFsMods.ApplyAtLaunch(imgV1, programIndex);   // 资源替换类 mod（RomFsMods.cs）：没有 mod 原对象返回；下面两处同
-                device.Configuration.VirtualFileSystem.SetRomFs(pid, imgV1);
+                imgV1 = RomFsMods.ApplyAtLaunch(imgV1, programIndex);   // 资源替换类 mod（RomFsMods.cs）：没有 mod 原对象返回；下面几处同
+                device.Configuration.VirtualFileSystem.SetRomFs(pid, RomFsIndex.ReadLog(imgV1, readLogAs));
                 Native.Mark("服务：RomFS 单一 IMG\0"u8);
             }
-            IStorage imageStorage = imgV1 != null ? null : RomFsIndex.OpenImage(programDir);
-            RomFsIndex.Source source = imgV1 != null ? RomFsIndex.Source.Missing : RomFsIndex.Decide(imageStorage != null, File.Exists(Path.Combine(programDir, RomFsIndex.ImageName)), Directory.Exists(romfs), programDir);
+            // 标准 RomFS 镜像（Mac 运行版本 / 产物根里 romfs/ 不在、只有 romfs.std）：整个文件就是游戏要的 RomFS，直接交（RomFsIndex.OpenStd）；romfs/ 在照旧读目录
+            string std = imgV1 != null ? null : RomFsIndex.StdOf(romfs);
+            if (std != null)
+            {
+                IStorage image = RomFsMods.ApplyAtLaunch(RomFsIndex.OpenStd(std, overlayDir), programIndex);
+                device.Configuration.VirtualFileSystem.SetRomFs(pid, RomFsIndex.ReadLog(image, readLogAs));
+                Native.Mark("服务：RomFS 标准镜像\0"u8);
+            }
+            IStorage imageStorage = imgV1 != null || std != null ? null : RomFsIndex.OpenImage(programDir);
+            RomFsIndex.Source source = imgV1 != null || std != null ? RomFsIndex.Source.Missing : RomFsIndex.Decide(imageStorage != null, File.Exists(Path.Combine(programDir, RomFsIndex.ImageName)), Directory.Exists(romfs), programDir);
 
             if (source == RomFsIndex.Source.Image)
             {
                 imageStorage = RomFsMods.ApplyAtLaunch(imageStorage, programIndex);
-                device.Configuration.VirtualFileSystem.SetRomFs(pid, imageStorage);
+                device.Configuration.VirtualFileSystem.SetRomFs(pid, RomFsIndex.ReadLog(imageStorage, readLogAs));
                 Native.Mark("服务：RomFS 单文件镜像\0"u8);
             }
             else if (source == RomFsIndex.Source.Directory)
@@ -126,7 +139,7 @@ namespace S2A.Services
                     Red.Report("RomFS 单文件镜像不完整（多半推到一半），这局改读 romfs/ 目录", programDir);   // 审计 P1-151：不静默改读
                 // 出包时预建的索引（RomFsIndex）优先：免去起局枚举十几万文件；没有就按目录现建（慢，打一行提示）
                 string index = Path.Combine(programDir, RomFsIndex.FileName);
-                string overlay = Path.Combine(programDir, "ui_overlay", "romfs");   // 界面布局覆盖层（RomFsIndex.OverlayFiles）：同路径读覆盖层那份
+                string overlay = overlayDir;
                 IStorage image;
 
                 if (File.Exists(index))
@@ -140,12 +153,12 @@ namespace S2A.Services
                 }
 
                 image = RomFsMods.ApplyAtLaunch(image, programIndex);
-                device.Configuration.VirtualFileSystem.SetRomFs(pid, image);   // 镜像本身按偏移读：各数据存储会话互不共享读位置（#883），大读也不租中间数组
+                device.Configuration.VirtualFileSystem.SetRomFs(pid, RomFsIndex.ReadLog(image, readLogAs));   // 镜像本身按偏移读：各数据存储会话互不共享读位置（#883），大读也不租中间数组
                 Native.Mark("服务：RomFS 目录表建\0"u8);
             }
-            else if (imgV1 == null)
+            else if (imgV1 == null && std == null)
             {
-                Red.Report("游戏数据缺 romfs/", programDir);
+                Red.Report("游戏数据缺 romfs/（也没有 romfs.std）", programDir);
             }
 
             Aoc.Register(gameDir);   // DLC：aoc.tsv 里的全部登记为已拥有（有数据的挂 aoc/<idx>/，仅授权的挂载时报红）
@@ -310,13 +323,9 @@ namespace S2A.Services
 
                 // 长度来自目录枚举或预建索引：文件被换过（索引过期）就对不上，读出的数据会错位。
                 //   回失败、不按索引长度补零当完整（审计 #1534 P1-6）；不缓存这个句柄，下次读再核
+                // 11-17 维护者：校验不过不整个拒——黄字记下、照常按实际文件读（读到文件尾就是实际长度），出问题时报红会带上这条
                 if (opened.Length != _size)
-                {
-                    Red.Report("RomFS 文件长度与索引不符（romfs.s2aidx 过期？），本次读回失败", $"{_path}：索引 {_size}，实际 {opened.Length}");
-                    opened.Dispose();
-                    bytesRead = 0;
-                    return ResultFs.HostFileDataCorrupted.Value;
-                }
+                    Red.Waive($"RomFS 文件长度与索引不符（romfs.s2aidx 过期？版本不配，可能读错或闪退，重新装到 iPhone 可解），照常按实际文件读", $"{_path}：索引 {_size}，实际 {opened.Length}");
 
                 lock (_lock)
                 {

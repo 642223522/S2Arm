@@ -96,15 +96,72 @@ def refs(path, by_name, direct=False):
     return _REFS[k]
 
 
-def _refs(path, by_name, direct):
-    try: txt = open(path, encoding='utf-8', errors='replace').read()
-    except OSError: return frozenset(), ''
-    got = set()   # 只看代码行：整行注释里提到的文件名（「见 oneshot.sh」）不是依赖
+def _toks(path, txt):
+    """一份文件按文本点名的候选文件名（只取决于文件内容和是不是 .py；还没按仓库文件列表解析）"""
+    # 只看代码行：整行注释里提到的文件名（「见 oneshot.sh」）不是依赖
     src = drop_docstrings(txt) if path.endswith('.py') else txt
     code = '\n'.join(re.sub(r'\s#\s.*$', '', l) for l in src.split('\n') if not l.lstrip().startswith('#'))   # 行尾「  # 说明」也去掉
     code = drop_prose(code)
     if path.endswith('.py'): code = PYCALL.sub('', code)   # Python 方法调用（run.sh(…)、r.json()）不是文件名
-    toks = set(TOK.findall(code)) | {m + '.py' for m in re.findall(r'^\s*(?:from|import)\s+(\w+)', code, re.M)}   # Python 同目录模块 import
+    return set(TOK.findall(code)) | {m + '.py' for m in re.findall(r'^\s*(?:from|import)\s+(\w+)', code, re.M)}   # Python 同目录模块 import
+
+
+# 点名词表的跨次缓存（11-16 门禁提速）：_toks 只取决于文件内容，换一棵合并树绝大多数文件没变，不必再解析一遍（冷算全仓约 10 秒，
+#   解析 Python 去文档字符串占大头）。键 = 本文件版本 + 是否 .py + 内容摘要；存 git 公共目录 s2a-gate-route/toks.<本文件版本>.pickle，
+#   和覆盖面缓存同处（那边只清 .json）。GATE_ROUTE_CACHE=0 照样用它：它按内容寻址，不改变任何结果，只省解析
+_TOKC, _TOKC_NEW, _TOKC_PATH = None, 0, None
+
+
+def _tok_cache():
+    global _TOKC, _TOKC_PATH
+    if _TOKC is None:
+        _TOKC = {}
+        import hashlib, pickle
+        try:
+            ver = hashlib.sha1(open(__file__, 'rb').read()).hexdigest()[:12]
+            gd = subprocess.run(['git', 'rev-parse', '--git-common-dir'], capture_output=True, text=True, check=True).stdout.strip()
+            _TOKC_PATH = os.path.join(os.path.abspath(gd), 's2a-gate-route', f'toks.{ver}.pickle')
+            with open(_TOKC_PATH, 'rb') as f:
+                _TOKC = pickle.load(f)
+        except (OSError, ValueError, EOFError, subprocess.CalledProcessError, pickle.UnpicklingError):
+            pass
+    return _TOKC
+
+
+def file_toks(path, txt):
+    global _TOKC_NEW
+    import hashlib
+    k = ('py' if path.endswith('.py') else 'tx') + hashlib.sha1(txt.encode('utf-8', 'surrogateescape')).hexdigest()
+    c = _tok_cache()
+    if k not in c:
+        c[k] = frozenset(_toks(path, txt)); _TOKC_NEW += 1
+    return c[k]
+
+
+def save_tok_cache():
+    """有新解析的才写；写临时文件再改名（几个门禁进程并发写，最后一个赢，丢的只是缓存条目）"""
+    if not _TOKC_NEW or not _TOKC_PATH:
+        return
+    import pickle
+    try:
+        os.makedirs(os.path.dirname(_TOKC_PATH), exist_ok=True)
+        tmp = f'{_TOKC_PATH}.{os.getpid()}.tmp'
+        with open(tmp, 'wb') as f:
+            pickle.dump(_TOKC, f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, _TOKC_PATH)
+        d = os.path.dirname(_TOKC_PATH)   # 本文件改过后旧版本的词表没用了
+        for n in os.listdir(d):
+            if n.startswith('toks.') and n.endswith('.pickle') and os.path.join(d, n) != _TOKC_PATH:
+                os.unlink(os.path.join(d, n))
+    except OSError:
+        pass
+
+
+def _refs(path, by_name, direct):
+    try: txt = open(path, encoding='utf-8', errors='replace').read()
+    except OSError: return frozenset(), ''
+    got = set()
+    toks = file_toks(path, txt)
     for t in toks:
         # 单测自己（direct）带目录点名的文件按仓库路径认，不限本线目录、不按文件名猜：从整段起逐级去掉开头一段，取第一个与仓库文件路径相同的（「$H/graphics/…」取出来是 H/gfx/…）。
         #   10-22：tests/xc_key_test.sh 写的是 $H/graphics/tools/shbake/xc_key.sh，原先只按文件名在本线目录里找、找不到就丢，11 份单测的本线外依赖都不进路由。
@@ -404,4 +461,7 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    finally:
+        save_tok_cache()

@@ -6,7 +6,7 @@
 ② 接 pack/ns2_dump.py：出的解包目录 exefs/main.npdm 程序号 = 合成值，ctl/control.nacp = 原件（不是合成件），romfs 取最新更新
 ③ 同一容器再跑：复用（打「NUP 没变」），输出目录 inode 不变
 ④ 没有本体（更新带 standalone_update）：打黄字，最新更新同时写成 base/
-⑤ 改坏数据区一个字节 → 报红（SHA-256 对不上），不留输出
+⑤ 改坏数据区一个字节 → 打黄（SHA-256 对不上）照常展开（维护者 11-17 撤掉校验不过即拒绝）
 ⑥ --detect：.nup 文件、含一个 .nup 的文件夹 → 退出 0；普通文件、含两个 .nup 的文件夹 → 退出 1
 """
 import hashlib
@@ -233,7 +233,8 @@ with tempfile.TemporaryDirectory() as t:
     build(src3, pk, corrupt=True)
     out3 = os.path.join(t, 'dump3')
     r5 = run(NUP, src3, out3)
-    chk('⑤ 坏字节报红', (r5.returncode, 'SHA-256' in r5.stderr, os.path.exists(out3)), (1, True, False))
+    # 维护者 11-17：「校验不过就整个拒绝」一律撤掉——数据区改坏一个字节（大小不变）只打黄 + 【校验跳过】，照常展开
+    chk('⑤ 坏字节：退出 0、打黄点名、机读行、照常出', (r5.returncode, 'SHA-256 和目录表对不上' in r5.stdout, '【校验跳过】NUP 容器' in r5.stdout, os.path.exists(out3)), (0, True, True, True))
     # ⑥
     plain = os.path.join(t, 'plain.bin')
     open(plain, 'wb').write(b'not a nup')
@@ -328,6 +329,71 @@ with tempfile.TemporaryDirectory() as t:
     with mock.patch.object(ns2_nup.sys, 'platform', 'win32'), mock.patch.object(ctypes, 'CDLL', side_effect=TypeError('NoneType')) as cdll:
         got = ns2_nup._clone(src, dst)
     chk('⑩ 非 macOS：真拷、不调 ctypes', (got == dst, open(dst, 'rb').read(), cdll.called), (True, b'content', False))
+
+# ⑪ 镜像形态（缺省；S2A_ROMFS_IMAGE=1 同，pack/ns2_nup.py + pack/ns2_dump.py + nx_unpack --romfs-image）：
+#   期望 = 目录形态（S2A_ROMFS_IMAGE=0，照旧展开散文件）出的 romfs/ 交 services/romfs_index.sh --std（旧路径的建镜像工具）建的镜像；镜像形态的 romfs.std 与它逐字节相同，
+#   其余产物（exefs / ctl / aoc / unpack.tsv）逐字节相同、文件集合相同；展开目录里没有 romfs 散文件（只有 romfs.nupmap）；
+#   全量更新 / 差量更新 / 无本体三种都核；容器里 romfs 文件的数据坏一个字节 → 报红、不留产物（SHA-256 在 nx_unpack 写镜像时核）。
+#   要真 nx_unpack 与 romfs_index：tests/ns2_nup_test.sh 编好后经 S2A_TEST_NXU / S2A_TEST_ROMFS_INDEX 给；没给 = 不通（不静默跳过）
+NXU, RIDX = os.environ.get('S2A_TEST_NXU'), os.environ.get('S2A_TEST_ROMFS_INDEX')
+if not (NXU and RIDX):
+    chk('⑪ 镜像形态：要 S2A_TEST_NXU / S2A_TEST_ROMFS_INDEX（经 tests/ns2_nup_test.sh 跑）', bool(NXU and RIDX), True)
+else:
+    def tree(root, skip):   # 相对路径 → SHA-256（跳过 skip 开头的；.ns2_dump_key 按设计带形态、两种形态不同，不比）
+        out = {}
+        for dp, _, fs in os.walk(root):
+            for f in fs:
+                rel = os.path.relpath(os.path.join(dp, f), root)
+                if not rel.startswith(skip) and rel != '.ns2_dump_key':
+                    out[rel] = hashlib.sha256(rd(os.path.join(dp, f))).hexdigest()[:16]
+        return out
+
+    def extract(src, out, image):   # image：True = S2A_ROMFS_IMAGE=1，False = 0（目录形态），None = 不设（缺省）
+        env = {k: v for k, v in os.environ.items() if k != 'S2A_ROMFS_IMAGE'}
+        env['S2A_NX_UNPACK'] = NXU
+        if image is not None:
+            env['S2A_ROMFS_IMAGE'] = '1' if image else '0'
+        return subprocess.run([PY, NUP, '--to-extract', src, out], capture_output=True, text=True, env=env)
+
+    with tempfile.TemporaryDirectory() as t:
+        src = os.path.join(t, 'full.nup')
+        build(src, pk)
+        delta = os.path.join(t, 'delta.nup')   # 更新里没有与本体逐字节相同的文件 → 差量（本体叠更新）
+        build(delta, [(0, APP, 0, 0, {'main': MAIN_B, 'main.npdm': npdm(APP)}, {'a.bin': b'base-a', 'keep/k.bin.z': BIG, '._junk': b'J'}, {}),
+                      (1, APP | 0x800, 131072, 0, {'main': MAIN_U, 'main.npdm': npdm(APP)}, {'a.bin': b'upd-a', 'new/n.bin': b'N' * 33}, {2: NACP})])
+        nobase = os.path.join(t, 'nobase.nup')
+        build(nobase, [(1, APP | 0x800, 131072, 1, {'main': MAIN_U, 'main.npdm': npdm(APP)}, {'a.bin': b'upd-a', 'z/e.bin': b''}, {})])
+        for name, s in (('全量', src), ('差量', delta), ('无本体', nobase)):
+            a, b = os.path.join(t, name + '-dir'), os.path.join(t, name + '-img')
+            ra, rb = extract(s, a, False), extract(s, b, True)
+            ref = os.path.join(t, name + '-ref.std')
+            open(ref, 'wb').close()
+            rr = subprocess.run(['bash', RIDX, '--std', os.path.join(a, 'romfs'), '-', ref, '0'], capture_output=True, text=True)
+            chk(f'⑪ {name}：两种形态都退出 0、参照镜像建得出', (ra.returncode, rb.returncode, rr.returncode), (0, 0, 0))
+            if ra.returncode or rb.returncode or rr.returncode:
+                print(ra.stdout[-400:], ra.stderr[-400:], rb.stdout[-400:], rb.stderr[-400:], rr.stderr[-400:])
+                continue
+            chk(f'⑪ {name}：romfs.std 与「romfs/ + romfs_index --std」逐字节相同', rd(os.path.join(b, 'romfs.std')) == rd(ref), True)
+            chk(f'⑪ {name}：镜像形态没有 romfs/ 散文件', os.path.exists(os.path.join(b, 'romfs')), False)
+            chk(f'⑪ {name}：其余产物逐字节相同', tree(b, 'romfs.std'), tree(a, 'romfs' + os.sep))
+            c = os.path.join(t, name + '-default')   # 缺省（不设开关）= 镜像形态，与 =1 那份逐字节相同
+            rc_ = extract(s, c, None)
+            chk(f'⑪ {name}：缺省是镜像形态（romfs.std 同 =1、没有 romfs/）', (rc_.returncode, rd(os.path.join(c, 'romfs.std')) == rd(os.path.join(b, 'romfs.std')), os.path.exists(os.path.join(c, 'romfs'))), (0, True, False))
+        # 展开这一步不写 romfs 散文件：只出清单（全量容器：本体 + 最新更新各一份 romfs.nupmap）
+        dump = os.path.join(t, 'dump-img')
+        env = dict(os.environ, S2A_ROMFS_IMAGE='1')
+        r = subprocess.run([PY, NUP, src, dump], capture_output=True, text=True, env=env)
+        chk('⑪ 展开：只有 romfs.nupmap、没有 romfs/ 目录', (r.returncode, sorted(p for p in tree(dump, '.') if 'romfs' in p and not p.startswith('dlc'))),
+            (0, ['base/romfs.nupmap', 'updates/131072/romfs.nupmap']))
+        # 容器里更新的 romfs 文件 a.bin（原样存，内容 upd-a）坏一个字节：镜像形态照常出（维护者 11-17）
+        bad_src = os.path.join(t, 'bad-img.nup')
+        body = bytearray(rd(src))
+        body[body.index(b'upd-a') + 2] ^= 0xFF
+        open(bad_src, 'wb').write(body)
+        out_bad = os.path.join(t, 'bad-img')
+        r = extract(bad_src, out_bad, True)
+        # 维护者 11-17：「校验不过就整个拒绝」一律撤掉——镜像形态下坏的那份只在建镜像时核（nx_unpack --romfs-image 打黄 + 【校验跳过】），照常出产物
+        chk('⑪ 容器里 romfs 数据坏（大小不变）：照常出产物、退出 0', (r.returncode, os.path.exists(out_bad)), (0, True))
 
 print(f'{"✓" if not bad else "✗"} ns2_nup：{ok} 过 / {bad} 不过')
 sys.exit(1 if bad else 0)

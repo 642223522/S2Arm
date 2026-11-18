@@ -63,7 +63,7 @@ gap() {
 export J=${J:-${S2A_CPU_BAKE:-${S2A_JOBS:-$(getconf _NPROCESSORS_ONLN)}}}
 source "$R/tools/progress.sh"
 PS=0; prog() { PS=$((PS + 1)); say "第 ${PS}/5 步 $*"; prog_tick 直连库 $((PS - 1)) 5; }
-[ -d "$ROOT/romfs" ] && [ -f "$ROOT/exefs/main" ] || { say "🔴 $ROOT 缺 romfs/ 或 exefs/main"; exit 1; }
+{ [ -d "$ROOT/romfs" ] || [ -f "$ROOT/romfs.std" ]; } && [ -f "$ROOT/exefs/main" ] || { say "🔴 $ROOT 缺 romfs/（或镜像 romfs.std）或 exefs/main"; exit 1; }   # RomFS 目录或镜像都行（romfs_list.py image_of；下面读 RomFS 一律经 romfs_list）
 source "$R/pack/srcs.sh"; TID=$(prog_id "$ROOT"); [ -n "$TID" ] || { say "🔴 取不到程序号"; exit 1; }
 # Vulkan 款（main 直接导入 vk*：哈迪斯、超级马力欧银河 1 / 2）：直连走直连层的 Vulkan 层（graphics/nvn/gfx/vk/hle_vk.m），着色器是 RomFS 里的 SPIR-V，
 #   出包时用 vk_shaders.py（spirv-cross）离线翻成一个库：<输出目录>/vk/vk_shaders.metallib + vk_shaders.tsv（运行时 <DM_MSL_DIR>/vk/，DM_MSL_DIR = shaders/direct）。

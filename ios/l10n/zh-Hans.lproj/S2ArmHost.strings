@@ -38,11 +38,12 @@
 "cheats.status.execError" = "执行出错";
 "cheats.status.gameNotLoaded" = "游戏未装载";
 "cheats.status.modifiesCode" = "要改游戏代码，手机上导入的用不了：在电脑上的 S2Arm 里导入这份 txt，再更新手机上的 S2Arm 就能用";
+"cheats.status.notPacked" = "要改游戏代码，这次出包没编进去（同一模块的补丁太多等，原因见电脑上出包完成页）";
 "cheats.status.packed" = "已生效";
 "cheats.status.off" = "关";
 "cheats.status.pending" = "等待生效…";
-"cheats.status.versionMismatch" = "版本不符";
-"cheats.status.versionMismatch.file" = "版本不符，不会生效";
+"cheats.status.versionMismatch" = "和当前游戏版本不符，已停用";
+"cheats.status.versionMismatch.file" = "和当前游戏版本不符，已停用（游戏照常玩）";
 "cheats.title" = "金手指";
 "cheats.unnamed" = "未命名";
 "common.cancel" = "取消";
@@ -110,7 +111,8 @@
 "settings.fps.patchTitle" = "帧率";
 "settings.fps.patchNote" = "社区补丁接管 · 最高 %ld 帧";
 "settings.fps.pick" = "帧率档位";
-"settings.fps.pick.auto" = "自动（跟随屏幕）";
+"settings.fps.pick.auto" = "自动（60 帧）";
+"settings.fps.pick.note" = "120 帧要机器真跑得满 120 帧，跑不满时游戏会变慢。";
 "settings.fps.pick.level" = "%ld 帧";
 "settings.patchNote" = "社区补丁接管";
 "settings.fullscreen.patchNote" = "社区满屏补丁接管";
@@ -230,6 +232,7 @@
 "vpad.menu.face.xbox" = "手柄按键：Xbox 布局";
 "vpad.menu.face.xbox.note" = "按 Xbox 的按键位置，下键确认";
 "vpad.menu.gyro" = "手机陀螺仪";
+"vpad.menu.gyro.note" = "八位堂、盖世小鸡这类 Xbox 外形的手柄，切到 Switch 模式才有体感。";
 "vpad.menu.haptic.note" = "按下时轻震一下";
 "vpad.menu.holdLock.note" = "按住 2 秒锁定，只对这款游戏";
 "vpad.menu.hud" = "性能浮层";
@@ -273,8 +276,8 @@
 "app.fpsCap.restored" = "60 帧已恢复。";
 "app.lowRam.title" = "这台设备内存可能不够";
 "app.lowRam.body" = "这款游戏需要的内存比这台设备多。照样可以开始，但可能卡顿，或被系统关掉。";
-"app.gpuStop.body" = "请从后台划掉本 App，再重新打开游戏。\nPlease reopen the game.";
-"app.gpuStop.title" = "画面出错，已停止\nGraphics error — stopped";
+"app.gpuStop.body" = "从后台划掉本 App 再打开，一般能接着玩，存档停在游戏上次保存的地方。想让我们查原因，点「故障报修」把诊断发给我们。";
+"app.gpuStop.title" = "游戏卡住了，已经安全停下";
 "app.library.broken.title" = "游戏资源不完整";
 "app.library.cantOpen" = "这款游戏打不开";
 "app.library.cantOpen.message" = "启动这款游戏前的准备没做完。请从后台划掉 App 后重新打开再试；还是不行的话，导出诊断包发给我们。";
@@ -332,6 +335,8 @@
 "img.scanFailed.title" = "没能导入游戏文件";
 "img.noShaders.title" = "这个游戏文件不完整";
 "img.noShaders.body" = "「%@」不完整。请换成电脑上「S2Arm 自签导出」文件夹里的「<游戏名>.img」，或者在电脑的 S2Arm 里连着手机点「推到手机」。";
+"img.updateSkipped.title" = "这份着色器更新已跳过";
+"img.updateSkipped.body" = "「%@」和当前游戏版本不配套，已跳过、没有套用。游戏照常能玩；要用这份更新，请把电脑上同一次导出的完整 .img 和它一起放进来。";
 "container.locked.title" = "S2Arm 的部分文件被系统锁住了";
 "container.locked.body" = "这台设备上有 %@ GB 的 S2Arm 旧文件被系统锁住，S2Arm 改不了也删不掉，只能删除 App 时一起清掉。\n\n要腾出这些空间：\n1. 在每款游戏里打开菜单 →「存档管理」→「导出当前存档…」，存到「文件」里 S2Arm 文件夹以外（比如 iCloud 云盘；删除 App 时 S2Arm 文件夹会一起被删）\n2. 删除并重新安装 S2Arm\n3. 用「存档管理」→「选择备份并检查…」导回存档";
 "diag.fileWord" = "诊断";
@@ -341,6 +346,7 @@
 "diag.error.zip" = "打包失败（写 zip 出错，可能是手机空间不够）";
 "diag.export" = "导出诊断包";
 "diag.prompt.abnormalExit" = "上次 S2Arm 没有正常退出（崩溃、卡住或被系统关掉）";
+"diag.prompt.imlLost" = "上次 S2Arm 没有正常退出。这次安装丢了「提高内存上限」权限，玩大游戏时退出多半是内存不够。按你装 S2Arm 的方式补上：\n· 电脑上的 S2Arm（免费或付费 Apple ID）：对这款游戏点「装到 iPhone」重装一次；重装后还看到这条提示，就用下面的 GetMoreRam 补上，再点一次「装到 iPhone」。\n· 自己的开发者证书（.p12 + 描述文件）：在苹果开发者网站给 S2Arm 的 App ID（苹果给每个 App 登记的身份）打开「Increased Memory Limit」，重新生成描述文件，用新描述文件重签再装。\n· AltStore：用 AltStore Classic 2.2 或更新版重装（不是刷新）。\n· SideStore 0.7.0：签名会丢这项权限，用下面的 GetMoreRam 补上后，在 SideStore 里重装。\n· Sideloadly：暂不支持，它没说免费账号会保留这项权限，自定义权限要付费开发者账号。\n· GetMoreRam：用装 S2Arm 的同一个 Apple ID 把它自签装到手机（占免费账号一个 App 名额，用完可删），登录后打开 App IDs、点刷新、选 S2Arm、点「Add Increased Memory Limit」，再用原来的方式重装 S2Arm。";
 "diag.prompt.crash" = "系统报告上次 S2Arm 崩溃或卡住了";
 "diag.prompt.message" = "%@。会上传运行日志、崩溃记录和游戏用过的图形管线清单（只有着色器编号），不传存档、密钥和游戏文件；传完给你一个短码。";
 "diag.prompt.no" = "不用了";
@@ -368,6 +374,8 @@
 "dprompt.expiry.hours" = "约 %d 小时";
 "dprompt.expiry.lessThanHour" = "不到 1 小时";
 "dprompt.expiry.title" = "签名快到期了";
+"dprompt.input.bad.body" = "这局先用默认键位照常开始（%@）。";
+"dprompt.input.bad.title" = "键位设置没读懂";
 "dprompt.ns2pro.body" = "四指长按屏幕 1.5 秒打开设置，打开「启用 Switch 2 Pro 手柄」，再按手柄上的配对键。";
 "dprompt.ns2pro.title" = "用 Switch 2 Pro 手柄？";
 "dprompt.motion.title" = "体感操作";
@@ -387,7 +395,8 @@
 "gfx.fpsLimit" = "帧率上限";
 "gfx.fpsLimit.none" = "不限";
 "gfx.resolution" = "渲染分辨率";
-"iml.lost.body" = "大游戏可能内存不够或变慢。请用 Xcode 或 AltStore Classic v2.3 重签后重装，或用 GetMoreRam 给 App ID 补上权限后重装。";
+"iml.lost.body" = "大游戏可能内存不够闪退或变慢。按你装 S2Arm 的方式补上：\n· 电脑上的 S2Arm（免费或付费 Apple ID）：对这款游戏点「装到 iPhone」重装一次；重装后还看到这条提示，就用下面的 GetMoreRam 补上，再点一次「装到 iPhone」。\n· 自己的开发者证书（.p12 + 描述文件）：在苹果开发者网站给 S2Arm 的 App ID（苹果给每个 App 登记的身份）打开「Increased Memory Limit」，重新生成描述文件，用新描述文件重签再装。\n· AltStore：用 AltStore Classic 2.2 或更新版重装（不是刷新）。\n· SideStore 0.7.0：签名会丢这项权限，用下面的 GetMoreRam 补上后，在 SideStore 里重装。\n· Sideloadly：暂不支持，它没说免费账号会保留这项权限，自定义权限要付费开发者账号。\n· GetMoreRam：用装 S2Arm 的同一个 Apple ID 把它自签装到手机（占免费账号一个 App 名额，用完可删），登录后打开 App IDs、点刷新、选 S2Arm、点「Add Increased Memory Limit」，再用原来的方式重装 S2Arm。";
+"iml.lost.short" = "大游戏可能内存不够闪退。点「了解详情」看怎么重新签名带上这项权限。";
 "iml.lost.title" = "这次安装丢了「提高内存上限」权限";
 "lan.denied.later" = "以后再说";
 "lan.denied.message" = "系统没有允许「%@」查找本地网络中的设备，联机找不到其他玩家。\n\n请到「设置 › 隐私与安全性 › 本地网络」，打开「%@」，再回来重新进联机。";
@@ -569,3 +578,15 @@
 "sgrade.cpatch.detail" = "社区补丁明细";
 "sgrade.state.off_auto.widen_fit" = "已自动关：%1$@ 满屏没铺满或画面被拉伸";
 "sgrade.notice.fullscreen_off" = "S2Arm 通用满屏这局没成功，已自动关掉，游戏照常玩。想再试可以在齿轮菜单里重新打开。";
+
+/* 0.6.0 快照：游戏中菜单 */
+"vpad.snap.save" = "存下这一刻";
+"vpad.snap.restore" = "回到上次存下的这一刻";
+"vpad.snap.saving" = "正在存下这一刻…";
+"vpad.snap.saved" = "已存下这一刻";
+"vpad.snap.notSaved" = "这次没存成，稍后再试一次";
+"vpad.snap.busy" = "还在存上一次，稍等";
+"vpad.snap.restoreFailed" = "这次回不去：%@";
+"vpad.snap.saveChanged.title" = "回到存下的那一刻？";
+"vpad.snap.saveChanged.body" = "存下那一刻之后游戏又存过档。回去会把游戏存档也退回那一刻；现在的存档会先备份。";
+"vpad.snap.saveChanged.go" = "回去";

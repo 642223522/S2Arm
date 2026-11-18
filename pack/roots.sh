@@ -11,7 +11,8 @@
 #   root_abort <款> <提交>        出包失败：删 W.tmp，现行不动
 #   root_cur <款>                 打印现行版本的实际目录（读方一律先解析成实际目录再读，别跟着软链读到一半被切换）
 #   root_gc <款>                  取现行时自动调（root_cur）：修剪旧版 + 清无主 RomFS 身份 + 死持有者 .tmp / .trash 残余；提交锁被占就跳过
-# 每款只留现行 + 上一版（10-19 维护者：磁盘；commit 与取现行时都修剪，#338）。根目录 S2A_ROOTS，缺省 ~/.s2arm/run/s2arm/roots。
+#                                 S2A_ROOT_GC_FORCE=1 越过 10 分钟节流（出包收尾当场收，pack/refresh.sh 的 tail_gc：开工的取现行刚写过节流戳）
+# 每款只留现行 + 上一版（10-19 维护者：磁盘；commit、取现行与出包收尾都修剪，#338）。根目录 S2A_ROOTS，缺省 ~/.s2arm/run/s2arm/roots。
 # RomFS 共享存储（11-03 维护者「火纹冷出包 30 分钟」：Switch 2 火纹 RomFS 27.4 万条目，每个阶段开工克隆整棵根、提交后删旧版，Spare-host 上各约 14 秒、7 个阶段累计 3–4 分钟）：
 #   RomFS 是不可变的游戏输入，只有播种与界面布局阶段换它的内容。各版本的 romfs 是指向 $S2A_ROOTS/.romfs_store/<款>/<身份>/ 的相对软链（../.romfs_store/<款>/<身份>），
 #   开发 / 门禁机（S2A_ROMFS_SEAL=1，tools/gate.sh 设）身份目录整棵只读（chmod a-w：阶段往 romfs 写 / 删 / 建都会 EACCES 响亮失败，改不到共享份）；
@@ -346,7 +347,7 @@ root_gc() {
   [ -d "$S2A_ROOTS" ] || return 0
   [ -z "${_ROOT_LOCK_PID:-}" ] || return 0   # 自己持着提交锁（root_commit 里取现行）：commit 收尾自己修剪，不再试锁
   stamp="$S2A_ROOTS/.gc.$g.stamp"
-  [ -n "$(find "$stamp" -mmin -10 2> /dev/null)" ] && return 0   # 节流：同一款 10 分钟内最多回收一次
+  [ -z "${S2A_ROOT_GC_FORCE:-}" ] && [ -n "$(find "$stamp" -mmin -10 2> /dev/null)" ] && return 0   # 节流：同一款 10 分钟内最多回收一次；出包收尾的强制回收（S2A_ROOT_GC_FORCE=1，pack/refresh.sh tail_gc）越过节流——最后一笔提交时并行段进程还活着钉着各自的根，只剪得动一部分，收尾各段已退出才收得全
   type plock_take > /dev/null 2>&1 || source "$(dirname "${BASH_SOURCE[0]}")/../tools/plock.sh" || return 0
   # 有 commit 在跑：它收尾会修剪；同样记一次节流，别让并行的 root_cur 反复起锁进程试锁
   plock_take "$S2A_ROOTS/.$g.commit.lock" 0 > /dev/null 2>&1 || { touch "$stamp" 2> /dev/null; return 0; }

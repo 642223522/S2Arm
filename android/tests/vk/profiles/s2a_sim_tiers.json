@@ -155,6 +155,13 @@
                 }
             }
         },
+        "no_int16": {
+            "features": {
+                "VkPhysicalDeviceFeatures": {
+                    "shaderInt16": false
+                }
+            }
+        },
         "no_dual_src_blend": {
             "features": {
                 "VkPhysicalDeviceFeatures": {
@@ -187,9 +194,45 @@
                 }
             }
         },
-        "unchanged": {}
+        "ssbo_align_256": {
+            "properties": {
+                "VkPhysicalDeviceProperties": {
+                    "limits": {
+                        "minStorageBufferOffsetAlignment": 256
+                    }
+                }
+            }
+        },
+        "unchanged": {},
+        "no_fmt_filter_blend": {
+            "formats": {
+                "VK_FORMAT_R16G16B16A16_UNORM": {
+                    "VkFormatPropertiesRemove": {
+                        "optimalTilingFeatures": [
+                            "VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT"
+                        ]
+                    }
+                },
+                "VK_FORMAT_R32_SFLOAT": {
+                    "VkFormatPropertiesRemove": {
+                        "optimalTilingFeatures": [
+                            "VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT"
+                        ]
+                    }
+                }
+            }
+        }
     },
     "profiles": {
+        "VP_S2A_SIM_ssbo_align_256": {
+            "version": 1,
+            "api-version": "1.1.0",
+            "label": "存储缓冲偏移对齐 256",
+            "description": "模拟存储缓冲偏移对齐 256 字节，回放窗口及像素正确，校验层无错误。",
+            "contributors": {},
+            "history": [{"revision": 1, "date": "2026-11-16", "author": "S2Arm", "comment": "只模拟 Vulkan 的存储缓冲对齐上限"}],
+            "capabilities": ["ssbo_align_256"]
+        },
         "VP_S2A_SIM_no_bc": {
             "version": 1,
             "api-version": "1.1.0",
@@ -260,6 +303,24 @@
             ],
             "capabilities": [
                 "no_clip_distance"
+            ]
+        },
+        "VP_S2A_SIM_no_int16": {
+            "version": 1,
+            "api-version": "1.1.0",
+            "label": "无 16 位整数",
+            "description": "藏掉 shaderInt16（#1340）。期望：仍建得了设备（shaderInt16 不再是整机门槛）；声明 OpCapability Int16 的模块装载即按规定报 UNSUPPORTED 并点名特性、不交给驱动，不声明的照常建（C1340），validation 0 条，契约绿。",
+            "contributors": {},
+            "history": [
+                {
+                    "revision": 1,
+                    "date": "2026-11-16",
+                    "author": "S2Arm",
+                    "comment": "首版（#1340）：只按 Vulkan 规范特性名手写，不含任何设备报告数据"
+                }
+            ],
+            "capabilities": [
+                "no_int16"
             ]
         },
         "VP_S2A_SIM_no_dual_src_blend": {
@@ -386,6 +447,42 @@
             ],
             "capabilities": [
                 "unchanged"
+            ]
+        },
+        "VP_S2A_SIM_no_minmax": {
+            "version": 1,
+            "api-version": "1.1.0",
+            "label": "无 min / max 归约",
+            "description": "由 sim_tiers.sh 排除 VK_EXT_sampler_filter_minmax；min / max 归约具名 UNSUPPORTED。",
+            "contributors": {},
+            "history": [
+                {
+                    "revision": 1,
+                    "date": "2026-11-14",
+                    "author": "S2Arm",
+                    "comment": "只按 Vulkan 规范扩展名手写，不含设备报告数据"
+                }
+            ],
+            "capabilities": [
+                "unchanged"
+            ]
+        },
+        "VP_S2A_SIM_no_fmt_filter_blend": {
+            "version": 1,
+            "api-version": "1.1.0",
+            "label": "格式不能过滤 / 不能混合",
+            "description": "RGBA16 UNORM 去掉 SAMPLED_IMAGE_FILTER_LINEAR、R32F 去掉 COLOR_ATTACHMENT_BLEND（同 Mali-G710 的报告）。期望：契约绿，后端如实报这两个格式没有 FMT_FILTER / FMT_BLEND（核心据此退最近点 / 关混合）。",
+            "contributors": {},
+            "history": [
+                {
+                    "revision": 1,
+                    "date": "2026-11-15",
+                    "author": "S2Arm",
+                    "comment": "#1072：只按 Vulkan 规范格式名 / 特性位手写，不含任何设备报告数据"
+                }
+            ],
+            "capabilities": [
+                "no_fmt_filter_blend"
             ]
         }
     }

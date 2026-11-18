@@ -2,7 +2,7 @@
 # Copyright 2026 S2Arm contributors
 # nftw needs feature-test declarations on glibc; no Apple SDK is needed by this test.
 NATIVE_TEST_OWN += pack_apply
-PACK_APPLY_TEST_CPPFLAGS :=
+PACK_APPLY_TEST_CPPFLAGS := -DS2A_ZCHUNK=65536   # 压缩传输块大小编成 64 KB（正式 1 GiB，两端同值由 tests/push_pack_test.py 核）：单测夹具几百 KB 就能切成多块
 ifeq ($(S2A_UNAME),Linux)
 PACK_APPLY_TEST_CPPFLAGS += -D_GNU_SOURCE
 endif

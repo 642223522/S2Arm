@@ -18,3 +18,40 @@ __attribute__((constructor)) static void s2a_uncaught_install(void) {
     g_prev = NSGetUncaughtExceptionHandler();
     NSSetUncaughtExceptionHandler(s2a_uncaught);
 }
+
+#if TARGET_OS_IPHONE
+// 后台线程改 UIKit 视图的取证（D-F2G7 / D-TARV，11-16）：「Modifications to the layout engine must not be performed from a background thread」
+//   崩在系统 GCD 线程提交 CoreAnimation 隐式事务时，改视图的那段代码早已返回、栈里没有它。这里给最常用的几个 UIView / UILabel 改动方法套一层：
+//   不在主线程调用时记一次调用方的栈（全程最多 8 次），只记日志、照原样调下去，不改行为
+#import <UIKit/UIKit.h>
+#import <objc/runtime.h>
+static _Atomic int g_offmain_n;
+static void offmain_note(const char *sel) {
+    if (NSThread.isMainThread || g_offmain_n >= 8) return;
+    int n = ++g_offmain_n; if (n > 8) return;
+    LOG("【红】后台线程改界面（第 %d 次，最多记 8 次）：-%s，线程 %s", n, sel, NSThread.currentThread.description.UTF8String ?: "?");
+    NSArray<NSString *> *st = NSThread.callStackSymbols;
+    for (NSUInteger i = 2; i < st.count && i < 18; i++) LOG("  改界面栈 %s", st[i].UTF8String ?: "");
+}
+__attribute__((constructor)) static void s2a_offmain_install(void) {
+    const char *e = getenv("S2A_OFFMAIN_UI"); if (e && *e == '0') return;
+    { Method m = class_getInstanceMethod(UIView.class, @selector(setFrame:)); void (*o)(id, SEL, CGRect) = (void (*)(id, SEL, CGRect))method_getImplementation(m);
+      method_setImplementation(m, imp_implementationWithBlock(^(id s, CGRect r) { offmain_note("setFrame:"); o(s, @selector(setFrame:), r); })); }
+    { Method m = class_getInstanceMethod(UIView.class, @selector(setBounds:)); void (*o)(id, SEL, CGRect) = (void (*)(id, SEL, CGRect))method_getImplementation(m);
+      method_setImplementation(m, imp_implementationWithBlock(^(id s, CGRect r) { offmain_note("setBounds:"); o(s, @selector(setBounds:), r); })); }
+    { Method m = class_getInstanceMethod(UIView.class, @selector(setCenter:)); void (*o)(id, SEL, CGPoint) = (void (*)(id, SEL, CGPoint))method_getImplementation(m);
+      method_setImplementation(m, imp_implementationWithBlock(^(id s, CGPoint p) { offmain_note("setCenter:"); o(s, @selector(setCenter:), p); })); }
+    { Method m = class_getInstanceMethod(UIView.class, @selector(setHidden:)); void (*o)(id, SEL, BOOL) = (void (*)(id, SEL, BOOL))method_getImplementation(m);
+      method_setImplementation(m, imp_implementationWithBlock(^(id s, BOOL h) { offmain_note("setHidden:"); o(s, @selector(setHidden:), h); })); }
+    { Method m = class_getInstanceMethod(UIView.class, @selector(addSubview:)); void (*o)(id, SEL, id) = (void (*)(id, SEL, id))method_getImplementation(m);
+      method_setImplementation(m, imp_implementationWithBlock(^(id s, id v) { offmain_note("addSubview:"); o(s, @selector(addSubview:), v); })); }
+    { Method m = class_getInstanceMethod(UIView.class, @selector(removeFromSuperview)); void (*o)(id, SEL) = (void (*)(id, SEL))method_getImplementation(m);
+      method_setImplementation(m, imp_implementationWithBlock(^(id s) { offmain_note("removeFromSuperview"); o(s, @selector(removeFromSuperview)); })); }
+    { Method m = class_getInstanceMethod(UIView.class, @selector(setNeedsLayout)); void (*o)(id, SEL) = (void (*)(id, SEL))method_getImplementation(m);
+      method_setImplementation(m, imp_implementationWithBlock(^(id s) { offmain_note("setNeedsLayout"); o(s, @selector(setNeedsLayout)); })); }
+    { Method m = class_getInstanceMethod(UILabel.class, @selector(setText:)); void (*o)(id, SEL, id) = (void (*)(id, SEL, id))method_getImplementation(m);
+      method_setImplementation(m, imp_implementationWithBlock(^(id s, id t) { offmain_note("UILabel setText:"); o(s, @selector(setText:), t); })); }
+    { Method m = class_getInstanceMethod(UILabel.class, @selector(setAttributedText:)); void (*o)(id, SEL, id) = (void (*)(id, SEL, id))method_getImplementation(m);
+      method_setImplementation(m, imp_implementationWithBlock(^(id s, id t) { offmain_note("UILabel setAttributedText:"); o(s, @selector(setAttributedText:), t); })); }
+}
+#endif

@@ -47,6 +47,8 @@ public final class LastSessionTest {
             marker(dir, "b"); expect("只读到 1 字节：读不全按 fg", LastSession.FOREGROUND, LastSession.read(d));
             marker(dir, ""); expect("空文件：读不全按 fg", LastSession.FOREGROUND, LastSession.read(d));
             marker(dir, "xx\n"); expect("认不出的内容按 fg", LastSession.FOREGROUND, LastSession.read(d));
+            marker(dir, "end\n"); expect("end（干净收尾、原生收尾没走完）按 fg", LastSession.FOREGROUND, LastSession.read(d));
+            marker(dir, "end"); expect("没有换行的 end 也按 fg", LastSession.FOREGROUND, LastSession.read(d));
             Files.delete(dir.resolve(LastSession.FILE));
             Files.createDirectory(dir.resolve(LastSession.FILE));
             expect("标记在但读不了（是个目录）：按 fg", LastSession.FOREGROUND, LastSession.read(d));
@@ -57,6 +59,9 @@ public final class LastSessionTest {
             marker(dir, "fg\n-and-a-much-longer-old-tail");
             LastSession.mark(d, LastSession.BACKGROUND); expect("改写成 bg 不留旧尾巴", "bg\n", content(dir));
             LastSession.mark(d, LastSession.FOREGROUND); expect("回前台再写 fg", "fg\n", content(dir));
+            LastSession.mark(d, LastSession.ENDING);
+            expect("干净收尾写 end：恰好是原生只删的那 4 个字节（lifecycle_android.c）", "end\n", content(dir));
+            LastSession.mark(d, LastSession.BACKGROUND); expect("end 之后再写 bg 不留尾巴", "bg\n", content(dir));
             LastSession.mark(d, LastSession.NONE);
             expect("干净收尾删掉标记", false, Files.exists(dir.resolve(LastSession.FILE)));
             LastSession.mark(d, LastSession.NONE);

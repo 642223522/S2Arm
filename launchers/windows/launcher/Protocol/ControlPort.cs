@@ -46,11 +46,9 @@ public sealed record ControlRequest(string Method, string Path, IReadOnlyDiction
 
 public sealed record ControlReply(int Code, string Type, byte[] Body)
 {
-    // 错误文字是 s2armctl 原样打给 AI 和玩家看的，中文不转义
-    private static readonly JsonSerializerOptions Readable = new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
-
+    // 错误文字是 s2armctl 原样打给 AI 和玩家看的，中文不转义（JsonOut.SerializeRelaxed）
     public static ControlReply Json(object? value, int code = 200) =>
-        new(code, "application/json; charset=utf-8", JsonSerializer.SerializeToUtf8Bytes(value, Readable));
+        new(code, "application/json; charset=utf-8", JsonOut.SerializeRelaxed(value));
     public static ControlReply Ok(string? note = null) =>
         Json(note is null ? new Dictionary<string, object?> { ["ok"] = true } : new Dictionary<string, object?> { ["ok"] = true, ["note"] = note });
     public static ControlReply Bad(string message, int code = 400) => Json(new Dictionary<string, object?> { ["error"] = message }, code);
@@ -82,7 +80,7 @@ public sealed class ControlPort : IDisposable
         Port = ((IPEndPoint)listener.LocalEndpoint).Port;
         // 先写临时文件再换名：客户端按修改时间等新文件，不能读到半截
         var temporary = ControlFile + ".tmp";
-        File.WriteAllText(temporary, JsonSerializer.Serialize(new Dictionary<string, object?>
+        File.WriteAllText(temporary, JsonOut.Serialize(new Dictionary<string, object?>
             { ["port"] = Port, ["token"] = Token, ["pid"] = Environment.ProcessId }));
         File.Move(temporary, ControlFile, overwrite: true);
         try { File.Delete(Path.Combine(privateRoot, ErrorFileName)); }
@@ -157,8 +155,12 @@ public sealed class ControlPort : IDisposable
 /// <summary>作业层自己写的作业记录（pack/jobs/core.py：&lt;私有目录&gt;/jobs/&lt;任务&gt;.json）当 GET /state 的 tasks，同 Mac ControlJournal。</summary>
 public static class ControlJournal
 {
-    private static readonly HashSet<string> Visible = new(StringComparer.Ordinal)
-        { "install", "installRemove", "installRestore", "installUpdate", "import", "keys", "ipa", "moveGame", "setup" };
+    // 控制口是给 s2armctl 这类程序读的接口，作业记录默认全给，读的一方自己挑。原先是白名单，漏一项（v0.5.1 漏了 delete）s2armctl 的 wait_op
+    //   就看不见那个作业，删完了还等到 1800 秒报失败；新加作业也得记得来这里登记。改成只挡下面几类：启动器自己每次刷新都起的只读小作业
+    //   （作业层 core.py KEEP_TOTAL 注释：一天上千条），s2armctl 从不等它们；/state 只回最近 60 条，不挡的话它们会把真作业挤出窗口，
+    //   s2armctl errors 翻不到昨天失败的出包、状态摘要的最近 8 条也全是刷新
+    private static readonly HashSet<string> Refresh = new(StringComparer.Ordinal)
+        { "catalog", "storageOverview", "spaceSurvey", "locations" };
 
     // 进程被强制结束时作业层来不及写终态：记录还是 running 而进程已不在，要按中断报，否则 s2armctl 一直等。
     //   「在不在」按进程号 + 起始时刻认，同作业层 core.describe（剃刀 W9：原先只看进程号，进程号被复用时早死的作业一直报 running）
@@ -169,7 +171,8 @@ public static class ControlJournal
             Alive(id, task.TryGetProperty("pidStart", out var started) && started.ValueKind == JsonValueKind.String ? started.GetString() : null)) return task.Clone();
         var node = System.Text.Json.Nodes.JsonNode.Parse(task.GetRawText())!.AsObject();
         node["state"] = "interrupted"; node["message"] = "作业进程已不在";
-        return JsonSerializer.SerializeToElement(node);
+        using var doc = JsonDocument.Parse(node.ToJsonString());
+        return doc.RootElement.Clone();
     }
 
     private static bool Alive(int pid, string? pidStart)
@@ -195,7 +198,7 @@ public static class ControlJournal
         string[] files;
         try { files = Directory.GetFiles(LibraryPaths.JobsDir(privateRoot), "*.json"); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return []; }
-        foreach (var file in files.Where(f => !f.EndsWith(".request.json", StringComparison.OrdinalIgnoreCase)))
+        foreach (var file in files.Where(f => !f.EndsWith(".request.json", StringComparison.OrdinalIgnoreCase) && !Path.GetFileName(f).StartsWith("._", StringComparison.Ordinal)))
         {
             try
             {
@@ -203,7 +206,7 @@ public static class ControlJournal
                 using var document = JsonDocument.Parse(stream);
                 var root = document.RootElement;
                 if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("id", out var id) || id.ValueKind != JsonValueKind.String ||
-                    !root.TryGetProperty("operation", out var operation) || operation.GetString() is not { } name || !Visible.Contains(name)) continue;
+                    !root.TryGetProperty("operation", out var operation) || operation.GetString() is not { } name || Refresh.Contains(name)) continue;
                 found.Add((root.TryGetProperty("started", out var s) && s.ValueKind == JsonValueKind.Number ? s.GetDouble() : 0, Reconcile(root)));
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException) { }   // 作业正在改写这份记录：下一秒再读

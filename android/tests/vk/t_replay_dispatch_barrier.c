@@ -74,6 +74,8 @@ void rp_view_pin_begin(void){}void rp_view_pin_end(void){}
 nvn_gpu_view rp_view_by_id(int i,nvn_gpu_cmd c,const tex_t **t){(void)i;(void)c;(void)t;return NULL;}
 nvn_gpu_view rp_view_by_id_decl(int i,uint8_t t,uint8_t k,int e,nvn_gpu_cmd c,const tex_t **o){(void)i;(void)t;(void)k;(void)e;(void)c;(void)o;return NULL;}
 nvn_gpu_samp rp_samp_by_id(int i){(void)i;return NULL;}
+nvn_gpu_samp rp_samp_for_tex(int sid, int tid){(void)tid;return rp_samp_by_id(sid);}
+uint32_t rp_fmt_caps(uint32_t f){return nvn_gpu_format_caps(f);}
 int rp_tex_snap_by_id(int i,tex_t *t,view_t *v,int *h){(void)i;(void)t;(void)v;(void)h;return 0;}
 uint64_t rp_tex_reg_gen(void){return 1;}uint64_t rp_tex_fact_sig(const uint64_t *h,int n,int b,int c){(void)h;(void)n;(void)b;(void)c;return 0;}
 void rp_tex_mark_gpu_written(const tex_t *t){(void)t;}int rp_tex_debug_state(uint64_t s){(void)s;return 0;}
@@ -131,4 +133,12 @@ int main(int argc,char **argv){
  rp_draw_reset();rp_buf_reset();nvn_gpu_shader_release(prog.sh[0]);
  GPU(nvn_gpu_close(5000000000ull,&err));REQUIRE(!s2a_vk_device_destroy(&d,1));
  return bad?1:0;
+}
+
+// 本夹具不模拟真实块代号；返回未知，让回放沿用逐页保守路径。
+int nvn_dirty_log_open(const void *s, uint64_t *i, uint64_t *c) { (void)s; (void)i; (void)c; return 0; }   // 本夹具没有脏页追加日志：回放核心走原路径
+int nvn_dirty_log_read(const void *s, uint64_t i, uint64_t *c, void (*f)(void *, uintptr_t, uintptr_t), void *u) { (void)s; (void)i; (void)c; (void)f; (void)u; return 0; }
+int nvn_dirty_page_armed(const void *s, const void *a) { (void)s; (void)a; return 0; }
+int nvn_dirty_block_snapshot(const void *s, const void *a, size_t n, uint64_t *v, uint64_t *e) {
+    (void)s; (void)a; (void)n; (void)v; (void)e; return 0;
 }

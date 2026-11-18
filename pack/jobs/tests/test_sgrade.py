@@ -2,6 +2,7 @@
 # Copyright 2026 S2Arm contributors
 """S 级优化升级（pack/jobs/sgrade.py，v0.4.0）：原始程序存一份 / 按顺序找 / 升级前查找的分组 / Mac 逐款补。游戏库换成临时目录，期望手写"""
 import contextlib
+import shutil
 import tempfile
 import types
 import unittest
@@ -38,6 +39,10 @@ class SGradeTests(unittest.TestCase):
         for p in (patch.object(layout, "path", side_effect=game_path),
                   patch.object(layout, "image_mac", side_effect=lambda c, g, create=True: game_path(c, g, "image", "mac")),
                   patch.object(layout, "ios_kit", side_effect=lambda c, g: game_path(c, g, "image", "ios", "kit")),
+                  patch.object(layout, "program_exefs", side_effect=lambda c, g: game_path(c, g, "original-exefs")),
+                  patch.object(layout, "has_ios_kit", side_effect=lambda c, g: (game_path(c, g, "image", "ios", "kit") / "main.npdm").is_file()),
+                  patch("programs.save_exefs", side_effect=lambda c, g, src: (shutil.rmtree(game_path(c, g, "original-exefs"), ignore_errors=True),
+                                                                               shutil.copytree(src, game_path(c, g, "original-exefs")))[1]),   # 常驻归档另有单测（test_programs_store）
                   patch.object(layout, "game_info", side_effect=lambda c, g: self.info.get(g.upper(), {})),
                   patch.object(build, "extract_valid", return_value=False)):
             p.start(); self.addCleanup(p.stop)
@@ -87,7 +92,8 @@ class SGradeTests(unittest.TestCase):
         for g in ("0100A", "0100B"):
             nso(self.t / "lib" / g / "image/mac/exefs", "1111111111111111")
         import rewrite_refresh
-        def refresh(c, gid, rt, hold=None):
+        def refresh(c, gid, rt, hold=None, ignore_rewriter=False):
+            assert ignore_rewriter is True, "后台补 S 级不因改写器指纹单独变了重改写（11-17 维护者定）"
             if gid == "0100A": raise Failure("坏了")
             return True
         with patch.object(rewrite_refresh, "refresh_mac", side_effect=refresh):
@@ -113,13 +119,24 @@ class SGradeTests(unittest.TestCase):
         self.c.lock = lambda name: (_ for _ in ()).throw(AssertionError("后台不该排队等锁"))
         seen = []
         import rewrite_refresh
-        def refresh(c, gid, rt, hold=None):
+        def refresh(c, gid, rt, hold=None, ignore_rewriter=False):
             with hold() as ok:
                 seen.append(ok)
             return True
         with patch.object(rewrite_refresh, "refresh_mac", side_effect=refresh):
             r = sgrade.mac_all(self.c)
         self.assertEqual((r["updated"], seen), (["0100A"], [True]))
+
+    def test_mac_all_never_rebuilds_direct_library(self):
+        # 11-17 D-FCMF：打开启动器的后台活不再整份重出直连库补 _bf（几分钟到几十分钟，玩家一开局就放弃、永远做不完）；升级页照旧标 bfPending、玩家点重出时前台补
+        self.games = [("0100A", "甲")]
+        nso(self.t / "lib" / "0100A" / "image/mac/exefs", "1111111111111111")
+        import rewrite_refresh
+        import sgrade_bf
+        with patch.object(rewrite_refresh, "refresh_mac", return_value=False), \
+             patch.object(sgrade_bf, "upgrade_mac", side_effect=AssertionError("后台不该重出直连库")):
+            r = sgrade.mac_all(self.c)
+        self.assertEqual(r, {"updated": [], "checked": 1})
 
 
 if __name__ == "__main__":

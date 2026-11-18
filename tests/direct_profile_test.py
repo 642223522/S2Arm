@@ -309,6 +309,15 @@ class Profiles(unittest.TestCase):
             path = dp.NX / "games" / name if name in ("game.py", "profile_guess.py") else dp.HERE / name
             self.assertEqual(value, dp.file_digest(path))
 
+    def test_unreal4_marker_needs_word_start(self):
+        # 11-16 出包提速：「Unreal 4」特征从带后顾断言的正则换成字节查找 + 看前一个字节（逐字等价 (?<![A-Za-z])UE4）。期望手写：
+        #   VALUE4（暗黑3 main 里的误报源）不算；UE4Game / 开头的 UE4 / 前面是 _ 或 . 的算；只出现在字母后面的不算，后面又有一处独立的就算
+        sys.path.insert(0, str(REPO / "graphics/nvn/games")); sys.path.insert(0, str(REPO / "graphics/nvn/tools"))
+        import profile_guess as g
+        pat = next(p for p, name in g.MARKERS if name == "Unreal 4")
+        cases = [(b"xx VALUE4 yy", False), (b"UE4Game", True), (b"UE4", True), (b"_UE4", True), (b"aUE4 bUE4", False), (b"aUE4 .UE4", True), (bytearray(b"\x00UE4"), True)]
+        self.assertEqual([g.hit(pat, img) for img, _ in cases], [want for _, want in cases])
+
     def test_compressed_segments_and_hashes(self):
         shutil.rmtree(self.root)
         extraction(self.root, compressed=True)

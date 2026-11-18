@@ -81,6 +81,10 @@ public class MainActivity extends Activity
     private final Runnable lifecycleSample = this::sampleLifecyclePresent;
     // 游玩时间（共用 runtime/src/playtime.c）：游戏在前台时每 10 秒落一次盘（同 iOS app.m 的 10 秒心跳），闪退 / 被杀最多丢这 10 秒；
     //   onPause 与收局前另各落一次。计时本身在原生上屏出口里，这里只管什么时候写文件
+    // 停帧看门的屏上提示（StallNotice 定显示哪条）：画面下方一条半透明字，不可点、不挡操作
+    private final StallNotice stallState = new StallNotice();
+    private TextView stallText;
+    private final Runnable stallRender = this::renderStallNotice;
     private final Runnable playtimeTick = new Runnable() {
         @Override public void run() {
             if (!resumed || !gameMode || !runtimeLoaded || gameStopping) return;
@@ -257,6 +261,16 @@ public class MainActivity extends Activity
             loadTouchLayout();
             frameRate = new FrameRateOverlay(this);
             root.addView(frameRate, fpsLayout);
+            stallText = new TextView(this);
+            stallText.setTextColor(0xFFFFFFFF); stallText.setTextSize(15); stallText.setBackgroundColor(0xCC000000);
+            stallText.setGravity(android.view.Gravity.CENTER); stallText.setClickable(false); stallText.setFocusable(false);
+            { int sp = Math.round(10 * getResources().getDisplayMetrics().density); stallText.setPadding(sp * 2, sp, sp * 2, sp); }
+            stallText.setVisibility(android.view.View.GONE);
+            FrameLayout.LayoutParams stallLayout = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+                android.view.Gravity.BOTTOM | android.view.Gravity.CENTER_HORIZONTAL);
+            stallLayout.bottomMargin = Math.round(32 * getResources().getDisplayMetrics().density);
+            root.addView(stallText, stallLayout);
             updateFrameRate(getIntent());
         }
         root.setOnApplyWindowInsetsListener((view, insets) -> {
@@ -424,6 +438,8 @@ public class MainActivity extends Activity
             configureRedLogDir();
             configureDiagDir();
             java.io.File externalFiles = getExternalFilesDir(null);
+            // 除了外挂驱动，原生收尾也靠这里存下的 files 目录删会话标记的 end（#528 第 15 项，lifecycle_android.c）：
+            //   每次装载后都要调、不能挪到起局之后，否则每次正常退局库页都会误报「上一局异常结束」（exit_order_test 守着这一行）
             int gpuDriverRc = NativeBridge.configureGpuDriver(getFilesDir().getAbsolutePath(),
                 externalFiles == null ? "" : externalFiles.getAbsolutePath());
             if (gpuDriverRc != 0) Log.w("S2Arm", "自定义驱动目录不可用（errno=" + gpuDriverRc + "）");
@@ -625,13 +641,14 @@ public class MainActivity extends Activity
 
     // normal 只表示“这是一次正常收局”（用户/游戏主动停止），异常清理（启动失败、
     // Activity 被销毁但没有正常结束会话）不能清 attempt 锁，否则下一局 AUTO 会误回 direct。
-    // cleanEnd（#528 第 15 项）：玩家或游戏自己结束了这一局，删会话标记，库页下次不问「上一局异常结束」。
-    //   运行时报错停局（HostApi 低内存 / 显卡设备丢失 / 不可恢复错误）也是 normal，但不算干净收尾，标记留着。
-    //   删在原生收尾之前：原生收尾以 _exit 结束进程，之后的 Java 不一定还能跑。
+    // cleanEnd（#528 第 15 项）：玩家或游戏自己结束了这一局，会话标记写成 end（干净收尾、待原生确认）。
+    //   原生优雅收尾走到最后一步才删它（lifecycle_android.c 的 s2a_sesmark_clear_home）；收尾中途失败或被兜底结束时 end 留着，
+    //   库页照样提示。运行时报错停局（HostApi 低内存 / 显卡设备丢失 / 不可恢复错误）也是 normal，但不算干净收尾，标记留着 fg。
+    //   没有原生宿主（host == 0）就没有这一局的标记，也没有原生收尾来删 end：不动标记。
     private void stopGame(String why, boolean normal, boolean cleanEnd) {
         if (!gameMode || gameStopping) return;
         gameStopping = true;
-        if (cleanEnd) sessionMark(LastSession.NONE);
+        if (cleanEnd && host != 0) sessionMark(LastSession.ENDING);
         if (frameRate != null) frameRate.setResumed(false);
         saveAtomicProbe.removeCallbacks(saveAtomicSample);
         if (gameAudioFocus != null) gameAudioFocus.pause();
@@ -655,7 +672,7 @@ public class MainActivity extends Activity
     }
 
     // #528 第 15 项：会话标记（LastSession，iOS sesdiag.c 的安卓侧），库页读它决定要不要提示「上一局异常结束」。
-    //   只在真有一局时写（游戏进程、有原生宿主、没在收局）：回前台 fg、进后台 bg。收局中不再改：干净收尾已删，异常收尾留着。
+    //   只在真有一局时写（游戏进程、有原生宿主、没在收局）：回前台 fg、进后台 bg。收局中不再改：干净收尾已写 end（原生收尾走完才删），异常收尾留着 fg。
     private void markSession(boolean foreground) {
         if (!gameMode || !runtimeLoaded || host == 0 || gameStopping) return;
         sessionMark(foreground ? LastSession.FOREGROUND : LastSession.BACKGROUND);
@@ -1139,6 +1156,8 @@ public class MainActivity extends Activity
         return false;
     }
     private void loadTouchLayout() {
+        touchPad.setOpacityPercent(getSharedPreferences(PREFS, MODE_PRIVATE)
+            .getInt("touch_opacity_percent", 100));
         try {
             TouchLayout saved = touchLayouts.load();
             touchPad.setLayout(saved);
@@ -1179,6 +1198,7 @@ public class MainActivity extends Activity
         java.util.List<String> labels = new java.util.ArrayList<>();
         java.util.List<Runnable> actions = new java.util.ArrayList<>();
         labels.add(getString(R.string.touch_menu_edit_positions)); actions.add(this::beginTouchEdit);
+        labels.add(getString(R.string.touch_appearance_opacity)); actions.add(this::showTouchOpacity);
         // 接了手柄时虚拟手柄自动收起；玩家随时能叫回来或收起（不替玩家决定，本局有效）
         boolean padShown = touchPad.controlsVisible();
         labels.add(getString(padShown ? R.string.touch_menu_hide_pad : R.string.touch_menu_show_pad));
@@ -1206,6 +1226,37 @@ public class MainActivity extends Activity
             .setTitle(R.string.touch_menu_title)
             .setItems(labels.toArray(new String[0]), (dialog, which) -> actions.get(which).run())
             .setNegativeButton(android.R.string.cancel, null)
+            .show();
+    }
+
+    private void showTouchOpacity() {
+        int original = touchPad.opacityPercent();
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        android.widget.TextView value = new android.widget.TextView(this);
+        value.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
+        value.setText(getString(R.string.touch_appearance_opacity_value, original));
+        content.addView(value);
+        android.widget.SeekBar slider = new android.widget.SeekBar(this);
+        slider.setMax(100);
+        slider.setProgress(original);
+        slider.setContentDescription(getString(R.string.touch_appearance_opacity));
+        slider.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
+            public void onProgressChanged(android.widget.SeekBar bar, int progress, boolean fromUser) {
+                touchPad.setOpacityPercent(progress);
+                value.setText(getString(R.string.touch_appearance_opacity_value, progress));
+            }
+            public void onStartTrackingTouch(android.widget.SeekBar bar) { }
+            public void onStopTrackingTouch(android.widget.SeekBar bar) { }
+        });
+        content.addView(slider);
+        new android.app.AlertDialog.Builder(this)
+            .setTitle(R.string.touch_appearance_opacity).setView(content)
+            .setPositiveButton(android.R.string.ok, (dialog, which) ->
+                getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                    .putInt("touch_opacity_percent", slider.getProgress()).apply())
+            .setNegativeButton(android.R.string.cancel, (dialog, which) -> touchPad.setOpacityPercent(original))
+            .setOnCancelListener(dialog -> touchPad.setOpacityPercent(original))
             .show();
     }
 
@@ -1246,16 +1297,22 @@ public class MainActivity extends Activity
     private void beginTouchEdit() {
         touchPad.beginEditing();
         touchEditBar = new LinearLayout(this);
-        touchEditBar.setOrientation(LinearLayout.HORIZONTAL);
+        touchEditBar.setOrientation(LinearLayout.VERTICAL);
         touchEditBar.setBackgroundColor(0xE6101820);
-        String[] names = {getString(R.string.touch_edit_save), getString(R.string.touch_edit_default), getString(R.string.touch_edit_cancel)};
-        Runnable[] actions = {this::saveTouchEdit, () -> { endTouchEdit(); resetTouchLayout(); }, () -> { endTouchEdit(); loadTouchLayout(); }};
+        String[] names = {getString(R.string.touch_edit_save), getString(R.string.touch_edit_default), getString(R.string.touch_edit_cancel), getString(R.string.touch_appearance_smaller), getString(R.string.touch_appearance_larger)};
+        Runnable[] actions = {this::saveTouchEdit, () -> { endTouchEdit(); resetTouchLayout(); }, () -> { endTouchEdit(); loadTouchLayout(); }, () -> resizeTouchButtons(0.9), () -> resizeTouchButtons(1.0 / 0.9)};
+        LinearLayout row = null;
         for (int i = 0; i < names.length; i++) {
+            if (i == 0 || i == 3) {
+                row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                touchEditBar.addView(row);
+            }
             android.widget.Button button = new android.widget.Button(this);
             button.setText(names[i]);
             Runnable action = actions[i];
             button.setOnClickListener(v -> action.run());
-            touchEditBar.addView(button);
+            row.addView(button);
         }
         touchPad.setEditDragListener(dragging -> {
             if (touchEditBar == null) return;
@@ -1265,10 +1322,22 @@ public class MainActivity extends Activity
         // Screen centre: the one place no built-in control sits (− / + are at the top centre).
         root.addView(touchEditBar, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,
             FrameLayout.LayoutParams.WRAP_CONTENT, android.view.Gravity.CENTER));
+        touchEditBar.post(this::placeTouchEditBar);
     }
 
-    /** Keep the editor bar off the controls: the free spot nearest the screen centre; none free, it stays see-through. */
+    private void resizeTouchButtons(double factor) {
+        try {
+            touchPad.scaleEditingButtons(factor);
+            if (touchEditBar != null) touchEditBar.post(this::placeTouchEditBar);
+        } catch (IllegalArgumentException error) {
+            android.widget.Toast.makeText(this, getString(R.string.touch_layout_save_failed, error.getMessage()),
+                android.widget.Toast.LENGTH_LONG).show();
+        }
+    }
+
+    /** Keep the editor bar off the controls; if none is free, keep it see-through. */
     private void placeTouchEditBar() {
+        if (touchEditBar == null) return;
         int w = touchEditBar.getWidth(), h = touchEditBar.getHeight(), rw = root.getWidth(), rh = root.getHeight();
         int low = windowInsets[1], high = rh - windowInsets[3] - h;
         if (w == 0 || h == 0 || high < low) return;
@@ -1281,6 +1350,7 @@ public class MainActivity extends Activity
             if (!covers && (best == null || Math.abs(top - centre) < Math.abs(best - centre))) best = top;
         }
         if (best == null) { touchEditBar.setAlpha(0.5f); return; }
+        touchEditBar.setAlpha(1f);
         FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) touchEditBar.getLayoutParams();
         lp.gravity = android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL;
         lp.topMargin = best;
@@ -1542,6 +1612,26 @@ public class MainActivity extends Activity
      * DguardNotice 弹页等到玩家选「仍然启动」。没有前台 Activity / 主线程被调时直接返回
      * ——同 iOS 提示出口拿不到窗口时记日志照走的口径（提示是提醒不是闸门）。
      */
+    /** 停帧看门的屏上提示（NativeBridge.stallNotice，看门线程上来）：派回主线程按 StallNotice 显示 / 收。 */
+    static void stallNotice(int kind, int seconds) {
+        final MainActivity activity = current;
+        if (activity == null) { Log.i("S2Arm", "stall notice " + kind + " dropped: no foreground activity"); return; }
+        Log.i("S2Arm", "stall notice " + kind + " (" + seconds + " s)");
+        activity.runOnUiThread(() -> { activity.stallState.on(kind, seconds, android.os.SystemClock.uptimeMillis()); activity.renderStallNotice(); });
+    }
+    private void renderStallNotice() {
+        if (stallText == null) return;
+        long now = android.os.SystemClock.uptimeMillis();
+        int kind = stallState.visible(now);
+        // 「约 30 秒」= 看门判停帧的窗口（ap_host.c 的 30 秒环、s2a_ap_crawl_due：30 秒里新上屏 ≤ 15 帧才救场）
+        if (kind == StallNotice.PATCH_OFF) stallText.setText(getString(R.string.stall_patch_off, 30));
+        else if (kind == StallNotice.WAIT) stallText.setText(R.string.stall_wait);
+        stallText.setVisibility(kind == StallNotice.NONE ? android.view.View.GONE : android.view.View.VISIBLE);
+        stallText.removeCallbacks(stallRender);
+        long next = stallState.changeIn(now);
+        if (next >= 0) stallText.postDelayed(stallRender, next + 50);
+    }
+
     static void dguardPrompt(String diag) {
         final MainActivity activity = current;
         if (activity == null || activity.dguardNotice == null) { Log.i("S2Arm", "dguard prompt dropped: no foreground activity"); return; }

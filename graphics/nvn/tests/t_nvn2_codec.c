@@ -15,6 +15,8 @@
 //   - H.264（VideoToolbox，诊断 #ea0964：原先宿主没接、初始化回失败，游戏的播放库随即中止）：同一份红色原始 YUV 用 libx264 编（命令见
 //     t_nvn2_codec_h264.inc），起始码分隔与 4 字节长度前缀两种输入各走一遍整条接管路径，两帧像素都按上面手算的 (254, 0, 0, 255)，有损 ±3；
 //     NAL 切分：帧 0 切出 SPS / PPS / IDR 三个（类型 7 / 8 / 5），长度前缀越界的包回 -1。
+//   - HDR 布局码（10–13）建池（PR2）：同一对 VP9 红帧走整条接管路径，ReadDecoderOutputImageRgbaHdr 转发 Rgba 路径按 8 位读出同像素
+//     （(254,0,0,255)±1，与 Rgba 路径逐字节一致）；ReadDecoderOutputImageRgbaHdrFloat 保持失败（float 读回布局未核，不编 fp16/fp32）。
 //   - 同步句柄：模式 1 比 64 位、其它 32 位回绕比；全 0 句柄算达到。
 // 可选参数 <时间单元文件> <av1C 文件>：再核一对真片子的数据（一次性核对用，不进门禁）
 #include <stdio.h>
@@ -62,6 +64,9 @@ uint64_t s2a_event_create(uint32_t *hr, uint32_t *hw) { int i = g_nev++; g_ev[i]
 // 读档自中止复现钩子（11-06 时之笛）：对 g_hook_ev 的下一次触发，先让 g_hook_fn 在另一条线程上跑、最多等它 300 ms，再真正置位。
 //   旧实现在锁外触发，另一条线程这时能完成「取消 + 重新请求」，迟到的触发落在新请求上；修好后触发在锁内，另一条线程要等它
 static _Atomic uint64_t g_hook_ev; static void *(*g_hook_fn)(void *); static _Atomic int g_hook_done, g_hook_fired;
+// 出图节奏挂点（hle_nvn.c s2a_video_frame 的替身）：数 Switch 2 解码交出的新帧
+static _Atomic unsigned g_vframes;
+void s2a_video_frame(void) { atomic_fetch_add(&g_vframes, 1); }
 void s2a_event_signal(uint64_t ev) {
     if (ev && atomic_load(&g_hook_ev) == ev && atomic_exchange(&g_hook_ev, 0) == ev) {
         pthread_t th; CHECK(!pthread_create(&th, NULL, g_hook_fn, NULL)); pthread_detach(th);
@@ -144,6 +149,8 @@ static const struct codec H264 = { "_ZN2nn5codec37InitializeH264DecoderByTransfe
 #define POOL_FINI "_ZN2nn5codec24FinalizeDecoderImagePoolEPNS0_25VideoDecoderImagePoolTypeE"
 #define POOL_HANDLE "_ZN2nn5codec36GetDecoderImagePoolNativeImageHandleEPKNS0_25VideoDecoderImagePoolTypeEj"
 #define READ_RGBA "_ZN2nn5codec26ReadDecoderOutputImageRgbaEPKNS0_25VideoDecoderImagePoolTypeEjttttPvmm"
+#define READ_RGBA_HDR "_ZN2nn5codec29ReadDecoderOutputImageRgbaHdrEPKNS0_25VideoDecoderImagePoolTypeEjttttPvmm"
+#define READ_RGBA_HDR_FLOAT "_ZN2nn5codec34ReadDecoderOutputImageRgbaHdrFloatEPKNS0_25VideoDecoderImagePoolTypeEjttttPvmm"
 #define SP_CREATE "_ZN2nn6syncpt3sdk20CreateSyncPointEventEPNS1_18SyncPointEventTypeE"
 #define SP_DESTROY "_ZN2nn6syncpt3sdk21DestroySyncPointEventEPNS1_18SyncPointEventTypeE"
 #define SP_REQUEST "_ZN2nn6syncpt3sdk21RequestSyncPointEventEPNS1_18SyncPointEventTypeERKNS1_15SyncPointHandleE"
@@ -156,11 +163,11 @@ static const uint8_t red_av1_0[] = {0x12, 0x00, 0x0a, 0x0b, 0x02, 0x00, 0x00, 0x
 static const uint8_t red_av1_1[] = {0x12, 0x00, 0x32, 0x11, 0x30, 0x02, 0x00, 0x00, 0x00, 0x00, 0x7a, 0x50, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x9c, 0x50};
 static const uint8_t av1c_want[] = {0x81, 0x00, 0x0c, 0x00, 0x0a, 0x0b, 0x02, 0x00, 0x00, 0x05, 0x55, 0x7f, 0xfc, 0x6a, 0xf9, 0x80, 0x40};
 
-// 一个解码器 + 2 张图像（各一个池，同火纹 subsdk2+0xf7a8 每池 1 张），偏好 = 图块模式 2、输出格式 2（布局码 5，RGBA）
+// 一个解码器 + 2 张图像（各一个池，同火纹 subsdk2+0xf7a8 每池 1 张），偏好 = 图块模式 2、输出格式 2（布局码 kind：5 = RGBA，10–13 = HDR，cv_kind）
 typedef struct { _Alignas(16) uint8_t obj[0x400]; _Alignas(16) uint8_t pool[2][0x20]; uint8_t *mem[2]; uint64_t size; } rig;
-static void rig_up(rig *r, const struct codec *c, uint32_t w, uint32_t h) {
+static void rig_up_kind(rig *r, const struct codec *c, uint32_t w, uint32_t h, uint32_t kind) {
     memset(r, 0, sizeof *r);
-    uint32_t pref[16] = {0, 5, (w - 1) | (h - 1) << 16};
+    uint32_t pref[16] = {0, kind, (w - 1) | (h - 1) << 16};
     uint64_t align = 0;
     CHECK(((f_psize)E(POOL_SIZE))(&r->size, &align, pref, 1) == 0 && align >= 0x1000 && r->size >= (uint64_t)w * h * 4);
     for (int i = 0; i < 2; i++) {
@@ -173,6 +180,7 @@ static void rig_up(rig *r, const struct codec *c, uint32_t w, uint32_t h) {
     CHECK(((f_t)E(c->start))(r->obj) == 0);
     CHECK(((f_ev)E(c->ready))(r->obj) == r->obj + 8);
 }
+static void rig_up(rig *r, const struct codec *c, uint32_t w, uint32_t h) { rig_up_kind(r, c, w, h, 5); }
 static void rig_down(rig *r, const struct codec *c) {
     int d0 = g_destroys;
     ((f_t)E(c->fini))(r->obj);
@@ -308,6 +316,9 @@ int main(int argc, char **argv) {
         void *f1 = s2a_codec_entry("_ZN2nn2oe26SetGraphicsTargetFrameRateENS0_23GraphicsTargetFrameRateE"), *f2 = s2a_codec_entry("_ZN2nn2oe26SetGraphicsTargetFrameRateEi");
         CHECK(f1 && f1 == f2 && !nvn2_gs_booted() && ((Result (*)(int))f1)(30) == 0 && ((Result (*)(int))f1)(60) == 0);
         CHECK(!s2a_codec_entry("_ZN2nn2oe20SetAudioOutputPolicyENS0_17AudioOutputPolicyE"));   // 负对照：oe 的其余函数照走 sdk
+        // D-SM6Y：自动档（无参数）同样在 sdk 内直调 gs 帧长模式；接管后 gs 没启动也回成功
+        void *f3 = s2a_codec_entry("_ZN2nn2oe30SetGraphicsTargetFrameRateAutoEv");
+        CHECK(f3 && f3 != f1 && !nvn2_gs_booted() && ((Result (*)(void))f3)() == 0);
     }
     // nn::vi::GetDisplayVsyncEvent（金刚 / raiders，11-04）：nvn2.c 的 vi 表弱引用到本文件实现；挂到游戏 SystemEvent（托管、自动清除），宿主线程按 60 Hz 触发
     {
@@ -383,11 +394,12 @@ int main(int argc, char **argv) {
     // ---------- VP9（libvpx，无损）：两帧红，按登记次序填 ----------
     {
         rig r; rig_up(&r, &VP9, 64, 64);
-        uint64_t id = 0;
+        uint64_t id = 0; unsigned vf0 = atomic_load(&g_vframes);
         CHECK(((f_sub)E(VP9.sub))(&id, r.obj, red_vp9_0, sizeof red_vp9_0, 33333000, 0) == 0 && id == 1);
         CHECK(((f_sub)E(VP9.sub))(&id, r.obj, red_vp9_1, sizeof red_vp9_1, 66666999, 0) == 0 && id == 2);
         sync_h h1, h2; uint32_t i1 = take(&r, &VP9, &spev, &h1), i2 = take(&r, &VP9, &spev, &h2);
         CHECK(i1 == 0 && i2 == 1 && h2.value == h1.value + 1 && h1.id_inv == h2.id_inv);
+        CHECK(atomic_load(&g_vframes) - vf0 == 2);   // 两帧新解码的画面各报一次出图节奏（nvn_vpace：≤30 帧片源据此封顶）
         uint16_t w, h, w2, h2_; int64_t pts; uint8_t eos;
         CHECK(((f_props)E(VP9.props))(&w, &h, &w2, &h2_, &pts, &eos, r.obj, i1) == 0 && w == 64 && h == 64 && w2 == 64 && h2_ == 64 && pts == 33333000 && !eos);
         CHECK(((f_props)E(VP9.props))(&w, &h, &w2, &h2_, &pts, &eos, r.obj, i2) == 0 && pts == 66666000 && !eos);
@@ -411,6 +423,7 @@ int main(int argc, char **argv) {
         sync_h h3; uint32_t i3 = take(&r, &VP9, &spev, &h3);
         CHECK(i3 == i1 && h3.value == h2.value + 1);
         CHECK(((f_props)E(VP9.props))(&w, &h, &w2, &h2_, &pts, &eos, r.obj, i3) == 0 && eos == 1 && w == 64);
+        CHECK(atomic_load(&g_vframes) - vf0 == 2);   // 流结束标记（重复上一帧）不报
         rig_down(&r, &VP9);
     }
 
@@ -493,6 +506,27 @@ int main(int argc, char **argv) {
         uint64_t t0 = now_ns(); int got = tw2(&far, 10000000); uint64_t dt = now_ns() - t0;
         CHECK(!got && dt >= 9000000 && tw2(&h1, 0) == 1);
         ((void (*)(const sync_h *))E("_ZN2nn2gs14WaitNativeSyncERKNS0_16NativeSyncHandleE"))(&h1);   // 已达到：立即返回
+        rig_down(&r, &VP9);
+    }
+    // ---------- PR2 HDR 视频读回非致命回退：HDR 布局码（10–13）建池 → 现有红色码流解码 → RgbaHdr 按 8 位 RGBA 读出 ----------
+    //   池布局对 HDR 布局码本就按 8 位 RGBA 写出（cv_kind 记 IMG_HDR、cv_layout 非 NV12 一律 4 字节/像素行距）：ReadDecoderOutputImageRgbaHdr
+    //   转发 cv_read_rgba，期望成功、像素与 Rgba 路径逐字节一致（红 (254,0,0,255)±1）；ReadDecoderOutputImageRgbaHdrFloat 保持失败
+    //   （float 读回布局未核，不编 fp16/fp32）。真实 HDR 视频标题（火纹）的整链行为本机不可测：未测项，验收口径 = 单测 + 边界诚实。
+    for (uint32_t code = 10; code <= 13; code++) {
+        rig r; rig_up_kind(&r, &VP9, 64, 64, code);
+        uint64_t id = 0;
+        CHECK(((f_sub)E(VP9.sub))(&id, r.obj, red_vp9_0, sizeof red_vp9_0, 33333000, 0) == 0);
+        CHECK(((f_sub)E(VP9.sub))(&id, r.obj, red_vp9_1, sizeof red_vp9_1, 66666999, 0) == 0);
+        sync_h h1, h2; take(&r, &VP9, &spev, &h1); take(&r, &VP9, &spev, &h2);
+        for (uint32_t k = 0; k < 2; k++) {
+            uint8_t q[4] = {9, 9, 9, 9}, p[4] = {9, 9, 9, 9};
+            px(&r, k, p);   // Rgba 路径：同一张图像同一矩形
+            CHECK(((f_rgba)E(READ_RGBA_HDR))(r.pool[k], 0, 3, 5, 1, 1, q, 4, 4) == 0);
+            printf("VP9 HDR 布局码 %u 第 %u 帧 RgbaHdr 像素 (%u,%u,%u,%u)，Rgba 路径 (%u,%u,%u,%u)\n", code, k, q[0], q[1], q[2], q[3], p[0], p[1], p[2], p[3]);
+            CHECK(!memcmp(p, q, 4) && q[0] >= 253 && q[1] <= 1 && q[2] <= 1 && q[3] == 255);
+        }
+        uint8_t qf[4] = {9, 9, 9, 9};
+        CHECK(((f_rgba)E(READ_RGBA_HDR_FLOAT))(r.pool[0], 0, 3, 5, 1, 1, qf, 4, 4) != 0 && qf[0] == 9 && qf[3] == 9);   // float 读回保持失败：不写缓冲
         rig_down(&r, &VP9);
     }
     // ---------- 读档自中止（11-06 时之笛 Switch 2：subsdk0 movie 库 0x4480 取帧 TryWait 未达到 → AbortImpl，sdk+0x1a5560 Break）----------

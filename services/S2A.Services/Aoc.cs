@@ -9,7 +9,7 @@ namespace S2A.Services
 {
     // 追加内容（DLC）登记（维护者 10-20：维护者 要暗黑2 认出术士君临 DLC，九款通用）。
     //   出包在游戏数据目录放 aoc.tsv（表头 idx / title_id / version / files / bytes，每个 DLC 一行；files = -1 = 仅授权，没有数据）
-    //   与 aoc/<idx>/（该 DLC 数据分区 RomFS 解开后的目录树，仅 files ≥ 0 的有）。
+    //   与 aoc/<idx>/（该 DLC 数据分区 RomFS 解开后的目录树，仅 files ≥ 0 的有；目录不在时可以是同内容的标准 RomFS 镜像 aoc/<idx>.std）。
     //   全部 DLC（含仅授权）向 Ryujinx ContentManager 登记为已拥有 → aoc:u Count / List 按清单回答；
     //   游戏挂载数据（fs OpenDataStorageByDataId → ContentManager.GetAocDataStorage → S2AHooks.OpenAocDataStorage）：
     //   有数据的从 aoc/<idx>/ 现建 RomFS；仅授权的报红、不给数据（不静默回成功）
@@ -61,7 +61,7 @@ namespace S2A.Services
                 }
 
                 string dir = Path.Combine(gameDir, "aoc", c[ci].Trim());
-                bool data = int.TryParse(c[cf].Trim(), out int files) && files >= 0 && Directory.Exists(dir);
+                bool data = int.TryParse(c[cf].Trim(), out int files) && files >= 0 && (Directory.Exists(dir) || RomFsIndex.StdOf(dir) != null);   // 目录或标准 RomFS 镜像 aoc/<idx>.std
 
                 if (_dirs.TryAdd(id, data ? dir : null))
                 {
@@ -87,8 +87,10 @@ namespace S2A.Services
                 return null;
             }
 
-            Console.Error.WriteLine($"[S2A DLC] 挂载 {id:X16} ← {dir}");
-            return Application.RomFsFromDirectory(dir);
+            // aoc/<idx>/ 目录在照旧现建；不在、只有 aoc/<idx>.std（标准 RomFS 镜像，同本体 romfs.std）就整个交给游戏
+            string std = RomFsIndex.StdOf(dir);
+            Console.Error.WriteLine($"[S2A DLC] 挂载 {id:X16} ← {std ?? dir}");
+            return RomFsIndex.ReadLog(std != null ? RomFsIndex.OpenStd(std) : Application.RomFsFromDirectory(dir), $"DLC {id:X16}");
         }
     }
 }

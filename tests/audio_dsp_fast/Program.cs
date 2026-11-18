@@ -7,8 +7,10 @@
 // 跑两遍：缺省（快路径开）与 S2A_AUDIO_DSP_FAST=0（关，两项都应平凡相同）。
 using Ryujinx.Audio.Renderer.Common;
 using Ryujinx.Audio.Renderer.Dsp;
+using Ryujinx.Audio.Renderer.Dsp.Command;
 using Ryujinx.Audio.Renderer.Dsp.State;
 using Ryujinx.Audio.Renderer.Parameter;
+using Ryujinx.Audio.Renderer.Server.Performance;
 using Ryujinx.Memory;
 using System;
 using System.Runtime.CompilerServices;
@@ -40,6 +42,12 @@ static class Program
         cases++;
         if (!Same(w.State0, g.State0) || !Same(w.State1, g.State1) || !Same(w.State2, g.State2) || !Same(w.State3, g.State3))
             Fail($"{what} state want ({w.State0:R},{w.State1:R},{w.State2:R},{w.State3:R}) got ({g.State0:R},{g.State1:R},{g.State2:R},{g.State3:R})");
+    }
+
+    static void CheckFloat(string what, float want, float got)
+    {
+        cases++;
+        if (!Same(want, got)) Fail($"{what} want {want:R} (0x{BitConverter.SingleToInt32Bits(want):X8}) got {got:R} (0x{BitConverter.SingleToInt32Bits(got):X8})");
     }
 
     // ---- ① 双二阶：原循环逐字拷贝（BiquadFilterHelper 里 S2ADspFast 分支下方那段） ----
@@ -160,7 +168,6 @@ static class Program
     // ---- ② 波形缓冲：栈上先填垃圾再解码，两种垃圾输出必须一样 ----
     const int TempShorts = 0x3F00;
     const int PoisonShorts = TempShorts * 2 + 8192;   // 盖住 ProcessWaveBuffers 的整个栈帧（临时区 32 KB + 局部量）
-
     [SkipLocalsInit, MethodImpl(MethodImplOptions.NoInlining)]
     static void Poison(short v)
     {
@@ -286,12 +293,344 @@ static class Program
         Console.WriteLine($"datasource: {combos} voice configurations × 4 calls, poison probe {hits}/{TempShorts}");
     }
 
+    // ---- ③ Mix / Volume 命令：向量路径与标量尾部统一为就近取偶（上游向量路径是 Ceiling） ----
+    static CommandList NewCommandList(float[] data, int sampleCount, int bufferCount)
+    {
+        return new CommandList(null, new Memory<float>(data), (uint)sampleCount, 48000, (uint)bufferCount, 0);
+    }
+
+    static void TestMixVolume(Random r)
+    {
+        int[] counts = { 0, 1, 3, 4, 5, 7, 8, 9, 15, 16, 17, 159, 160, 161, 240, 241 };
+        float[] midpoints = { 0.5f, 1.5f, 2.5f, 3.5f, -0.5f, -1.5f, -2.5f, -3.5f };
+
+        foreach (int n in counts)
+        {
+            for (int rep = 0; rep < 32; rep++)
+            {
+                float volume = rep < midpoints.Length ? midpoints[rep] : (float)(r.NextDouble() * 8 - 4);
+                var input = new float[n];
+
+                for (int i = 0; i < n; i++)
+                {
+                    input[i] = (r.Next(3) == 0) ? midpoints[r.Next(midpoints.Length)] : (float)(r.NextDouble() * 8 - 4);
+                }
+
+                // 混音：output += round(input * volume)
+                var mixData = new float[2 * n];
+                for (int i = 0; i < n; i++)
+                {
+                    mixData[i] = input[i];
+                    mixData[n + i] = (float)(r.NextDouble() * 8 - 4);
+                }
+
+                var mixWant = new float[n];
+                Array.Copy(mixData, n, mixWant, 0, n);
+
+                for (int i = 0; i < n; i++)
+                {
+                    mixWant[i] += MathF.Round(input[i] * volume);
+                }
+
+                using (CommandList list = NewCommandList(mixData, n, 2))
+                {
+                    list.AddCommand(new MixCommand().Initialize(0, 1, 7, volume));
+                    list.Process(null);
+                }
+
+                CheckFloats($"mix n={n} volume={volume:R} rep={rep}", mixWant, mixData.AsSpan(n, n));
+
+                // 音量：output = round(input * volume)，覆盖写
+                var volumeData = new float[n];
+                Array.Copy(input, volumeData, n);
+
+                var volumeWant = new float[n];
+
+                for (int i = 0; i < n; i++)
+                {
+                    volumeWant[i] = MathF.Round(input[i] * volume);
+                }
+
+                using (CommandList list = NewCommandList(volumeData, n, 1))
+                {
+                    list.AddCommand(new VolumeCommand().Initialize(volume, 0, 8));
+                    list.Process(null);
+                }
+
+                CheckFloats($"volume n={n} volume={volume:R} rep={rep}", volumeWant, volumeData);
+            }
+        }
+    }
+
+    // ---- ④ 双二阶 + 混音四变体：状态放局部变量后的逐位对拍（参考循环 = 原 ref 读写写法） ----
+    static void RefAndMix(float a0, float a1, float a2, float b1, float b2, ref BiquadFilterState state,
+        Span<float> outputBuffer, ReadOnlySpan<float> inputBuffer, uint sampleCount, float volume)
+    {
+        for (int i = 0; i < sampleCount; i++)
+        {
+            float input = inputBuffer[i];
+            float output = input * a0 + state.State0 * a1 + state.State1 * a2 + state.State2 * b1 + state.State3 * b2;
+
+            state.State1 = state.State0;
+            state.State0 = input;
+            state.State3 = state.State2;
+            state.State2 = output;
+
+            outputBuffer[i] += MathF.Round(output * volume);
+        }
+
+        RefRestart(ref state);
+    }
+
+    static float RefAndMixRamp(float a0, float a1, float a2, float b1, float b2, ref BiquadFilterState state,
+        Span<float> outputBuffer, ReadOnlySpan<float> inputBuffer, uint sampleCount, float volume, float ramp)
+    {
+        float mixState = 0f;
+
+        for (int i = 0; i < sampleCount; i++)
+        {
+            float input = inputBuffer[i];
+            float output = input * a0 + state.State0 * a1 + state.State1 * a2 + state.State2 * b1 + state.State3 * b2;
+
+            state.State1 = state.State0;
+            state.State0 = input;
+            state.State3 = state.State2;
+            state.State2 = output;
+
+            mixState = MathF.Round(output * volume);
+
+            outputBuffer[i] += mixState;
+            volume += ramp;
+        }
+
+        RefRestart(ref state);
+
+        return mixState;
+    }
+
+    static void RefDoubleAndMix(float a00, float a10, float a20, float b10, float b20,
+        float a01, float a11, float a21, float b11, float b21,
+        ref BiquadFilterState state0, ref BiquadFilterState state1,
+        Span<float> outputBuffer, ReadOnlySpan<float> inputBuffer, uint sampleCount, float volume)
+    {
+        for (int i = 0; i < sampleCount; i++)
+        {
+            float input = inputBuffer[i];
+            float output = input * a00 + state0.State0 * a10 + state0.State1 * a20 + state0.State2 * b10 + state0.State3 * b20;
+
+            state0.State1 = state0.State0;
+            state0.State0 = input;
+            state0.State3 = state0.State2;
+            state0.State2 = output;
+
+            input = output;
+            output = input * a01 + state1.State0 * a11 + state1.State1 * a21 + state1.State2 * b11 + state1.State3 * b21;
+
+            state1.State1 = state1.State0;
+            state1.State0 = input;
+            state1.State3 = state1.State2;
+            state1.State2 = output;
+
+            outputBuffer[i] += MathF.Round(output * volume);
+        }
+
+        RefRestart(ref state0);
+        RefRestart(ref state1);
+    }
+
+    static float RefDoubleAndMixRamp(float a00, float a10, float a20, float b10, float b20,
+        float a01, float a11, float a21, float b11, float b21,
+        ref BiquadFilterState state0, ref BiquadFilterState state1,
+        Span<float> outputBuffer, ReadOnlySpan<float> inputBuffer, uint sampleCount, float volume, float ramp)
+    {
+        float mixState = 0f;
+
+        for (int i = 0; i < sampleCount; i++)
+        {
+            float input = inputBuffer[i];
+            float output = input * a00 + state0.State0 * a10 + state0.State1 * a20 + state0.State2 * b10 + state0.State3 * b20;
+
+            state0.State1 = state0.State0;
+            state0.State0 = input;
+            state0.State3 = state0.State2;
+            state0.State2 = output;
+
+            input = output;
+            output = input * a01 + state1.State0 * a11 + state1.State1 * a21 + state1.State2 * b11 + state1.State3 * b21;
+
+            state1.State1 = state1.State0;
+            state1.State0 = input;
+            state1.State3 = state1.State2;
+            state1.State2 = output;
+
+            mixState = MathF.Round(output * volume);
+
+            outputBuffer[i] += mixState;
+            volume += ramp;
+        }
+
+        RefRestart(ref state0);
+        RefRestart(ref state1);
+
+        return mixState;
+    }
+
+    static void TestBiquadAndMix(Random r)
+    {
+        foreach (int n in new[] { 0, 1, 7, 160, 240, 960 })
+        {
+            for (int rep = 0; rep < 40; rep++)
+            {
+                float volume = (rep & 1) == 0 ? 0.5f : (float)(r.NextDouble() * 4 - 2);
+                float ramp = (rep % 7) == 0 ? -0f : (float)(r.NextDouble() * 0.004 - 0.002);
+
+                BiquadFilterParameter2 p0 = RandParam(r);
+                BiquadFilterParameter2 p1 = RandParam(r);
+                Span<float> n0 = p0.Numerator.AsSpan(), d0 = p0.Denominator.AsSpan();
+                Span<float> n1 = p1.Numerator.AsSpan(), d1 = p1.Denominator.AsSpan();
+                BiquadFilterState s0 = RandState(r), s1 = RandState(r);
+
+                foreach (bool inPlace in new[] { false, true })
+                {
+                    float[] input = RandSamples(r, n);
+                    float[] outSeed = inPlace ? (float[])input.Clone() : RandSamples(r, n);
+
+                    // 单级 AndMix
+                    {
+                        float[] wantOut = (float[])outSeed.Clone();
+                        float[] gotOut = (float[])outSeed.Clone();
+                        BiquadFilterState sw = s0, sg = s0;
+                        BiquadFilterParameter2 pg = p0;
+
+                        RefAndMix(n0[0], n0[1], n0[2], d0[0], d0[1], ref sw, wantOut, inPlace ? wantOut : input, (uint)n, volume);
+                        BiquadFilterHelper.ProcessBiquadFilterAndMix(ref pg, ref sg, gotOut, inPlace ? gotOut : input, (uint)n, volume);
+
+                        string tag = $"biquad-and-mix n={n} inPlace={inPlace} rep={rep}";
+                        CheckFloats(tag, wantOut, gotOut);
+                        CheckState(tag, sw, sg);
+                    }
+
+                    // 单级 AndMixRamp
+                    {
+                        float[] wantOut = (float[])outSeed.Clone();
+                        float[] gotOut = (float[])outSeed.Clone();
+                        BiquadFilterState sw = s0, sg = s0;
+                        BiquadFilterParameter2 pg = p0;
+
+                        float wantState = RefAndMixRamp(n0[0], n0[1], n0[2], d0[0], d0[1], ref sw, wantOut, inPlace ? wantOut : input, (uint)n, volume, ramp);
+                        float gotState = BiquadFilterHelper.ProcessBiquadFilterAndMixRamp(ref pg, ref sg, gotOut, inPlace ? gotOut : input, (uint)n, volume, ramp);
+
+                        string tag = $"biquad-and-mix-ramp n={n} inPlace={inPlace} rep={rep}";
+                        CheckFloats(tag, wantOut, gotOut);
+                        CheckState(tag, sw, sg);
+                        CheckFloat(tag + " state", wantState, gotState);
+                    }
+
+                    // 双级 AndMix
+                    {
+                        float[] wantOut = (float[])outSeed.Clone();
+                        float[] gotOut = (float[])outSeed.Clone();
+                        BiquadFilterState sw0 = s0, sw1 = s1, sg0 = s0, sg1 = s1;
+                        BiquadFilterParameter2 pg0 = p0, pg1 = p1;
+
+                        RefDoubleAndMix(n0[0], n0[1], n0[2], d0[0], d0[1], n1[0], n1[1], n1[2], d1[0], d1[1], ref sw0, ref sw1, wantOut, inPlace ? wantOut : input, (uint)n, volume);
+                        BiquadFilterHelper.ProcessDoubleBiquadFilterAndMix(ref pg0, ref pg1, ref sg0, ref sg1, gotOut, inPlace ? gotOut : input, (uint)n, volume);
+
+                        string tag = $"double-biquad-and-mix n={n} inPlace={inPlace} rep={rep}";
+                        CheckFloats(tag, wantOut, gotOut);
+                        CheckState(tag + " stage0", sw0, sg0);
+                        CheckState(tag + " stage1", sw1, sg1);
+                    }
+
+                    // 双级 AndMixRamp
+                    {
+                        float[] wantOut = (float[])outSeed.Clone();
+                        float[] gotOut = (float[])outSeed.Clone();
+                        BiquadFilterState sw0 = s0, sw1 = s1, sg0 = s0, sg1 = s1;
+                        BiquadFilterParameter2 pg0 = p0, pg1 = p1;
+
+                        float wantState = RefDoubleAndMixRamp(n0[0], n0[1], n0[2], d0[0], d0[1], n1[0], n1[1], n1[2], d1[0], d1[1], ref sw0, ref sw1, wantOut, inPlace ? wantOut : input, (uint)n, volume, ramp);
+                        float gotState = BiquadFilterHelper.ProcessDoubleBiquadFilterAndMixRamp(ref pg0, ref pg1, ref sg0, ref sg1, gotOut, inPlace ? gotOut : input, (uint)n, volume, ramp);
+
+                        string tag = $"double-biquad-and-mix-ramp n={n} inPlace={inPlace} rep={rep}";
+                        CheckFloats(tag, wantOut, gotOut);
+                        CheckState(tag + " stage0", sw0, sg0);
+                        CheckState(tag + " stage1", sw1, sg1);
+                        CheckFloat(tag + " state", wantState, gotState);
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- ⑤ 命令异常隔离：单条命令抛异常只丢这一拍，调用方（inline 的渲染线程）不被打穿 ----
+    static void TestCommandFaultIsolation()
+    {
+        const int n = 8;
+        var data = new float[2 * n];
+
+        for (int i = 0; i < n; i++)
+        {
+            data[i] = 1f;
+            data[n + i] = 2f;
+        }
+
+        var initial = (float[])data.Clone();
+        bool threw = false;
+
+        try
+        {
+            using CommandList list = NewCommandList(data, n, 2);
+
+            // SetStartTime 写到 BaseMemory 之外：Process 必然抛 IndexOutOfRangeException
+            PerformanceEntryAddresses addresses = new() { BaseMemory = new int[1], StartTimeOffset = 4, EntryCountOffset = 0, ProcessingTimeOffset = 0 };
+            list.AddCommand(new PerformanceCommand().Initialize(ref addresses, PerformanceCommand.Type.Start, 101));
+            list.AddCommand(new VolumeCommand().Initialize(0.5f, 1, 102));
+
+            list.Process(null);
+        }
+        catch (Exception ex)
+        {
+            threw = true;
+            Console.WriteLine($"  command fault propagated: {ex.GetType().Name}: {ex.Message}");
+        }
+
+        cases++;
+
+        if (threw)
+        {
+            Fail("command fault isolation: CommandList.Process let a command exception escape");
+        }
+
+        // 丢拍：异常命令之后的命令不应再跑（缓冲 1 保持原值）
+        bool laterRan = false;
+
+        for (int i = 0; i < n; i++)
+        {
+            if (BitConverter.SingleToInt32Bits(data[n + i]) != BitConverter.SingleToInt32Bits(initial[n + i]))
+            {
+                laterRan = true;
+                break;
+            }
+        }
+
+        cases++;
+
+        if (laterRan)
+        {
+            Fail("command fault isolation: commands after the failing one still ran");
+        }
+    }
+
     static int Main()
     {
         bool fast = Environment.GetEnvironmentVariable("S2A_AUDIO_DSP_FAST") != "0";
         var r = new Random(630);
         TestBiquad(r);
+        TestBiquadAndMix(r);
+        TestMixVolume(r);
         TestDataSource(r);
+        TestCommandFaultIsolation();
         Console.WriteLine(fails == 0 ? $"audio_dsp_fast: all green ({cases} comparisons, fast={fast})" : $"audio_dsp_fast: {fails} red of {cases} (fast={fast})");
         return fails == 0 ? 0 : 1;
     }

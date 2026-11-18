@@ -32,7 +32,36 @@ for name, path, text, want in [
 ]: ck(name, P.classify(path, text)[0], want)
 ck('⑪ 画面合集仓库里只写版本号的 → gfx（按仓库）', P.classify('Yoshi/1.0.1.pchtxt', '# Yoshi [01006000040C2800]', 'cucholix/NX-IPS-romfs-compilation')[0], 'gfx')
 ck('⑪b 同样的文件在别的仓库 → other', P.classify('Yoshi/1.0.1.pchtxt', '# Yoshi [01006000040C2800]', 'someone/other-repo')[0], 'other')
+# ⑬ 金手指文件认法（11-16 加 tomvita 库）：cheats/<构建号>.txt 与多一层目录 cheats/<程序号或游戏名>/<构建号>.txt 都认，构建号大小写不论；别的文件名不认
+for name, path, want in [('⑬a 直接放', 'x/cheats/044BED84A37A2F63.txt', '044BED84A37A2F63'), ('⑬b 多一层程序号', 'cheats/0100000000010000/3ca12dfaaf9c82da.txt', '3ca12dfaaf9c82da'),
+                         ('⑬c 多一层游戏名', 'cheats/Vampire Survivors/0123456789ABCDEF.txt', '0123456789ABCDEF'), ('⑬d toggles.txt 不认', 'cheats/0100000000010000/toggles.txt', None),
+                         ('⑬e 多两层不认', 'cheats/a/b/0123456789ABCDEF.txt', None)]:
+    m = P.CHEAT.search(path); ck(name, m.group(1) if m else None, want)
 ck('⑥ own_name 取 exefs 往上两级', P.own_name('a/b/c/[mod]/exefs/x.pchtxt'), 'c/[mod]/exefs/x.pchtxt')
+# ⑫ 画面类方向（gfx_dir，11-16 维护者：iOS 只收降负载；判据 cmdr 判据表：比底座档默认少干活 = load、多干活 = quality、判不出 / 中性 = ''）
+D = lambda name, text='': P.gfx_dir(f'Repo/Game [0100000000010000][mods].zip/[{name} v1.3.0]/exefs/1.3.0.pchtxt', text)
+for name, got, want in [
+ ('⑫a 关 FXAA → load', D('Disable FXAA'), 'load'),
+ ('⑫b 去景深（段注释 Removed depth of field）→ load', D('No DOF', '# Game [0100000000010000] v1.3.0 - No DOF\n\n// Removed depth of field\n@enabled\n00000010 1F2003D5\n'), 'load'),
+ ('⑫c 低阴影 → load', D('Low Quality Shadows'), 'load'),
+ ('⑫d 1280x720 底座 → load', D('1280x720 Docked'), 'load'),
+ ('⑫e 4K → quality', D('4K'), 'quality'),
+ ('⑫f 2560x1440 → quality', D('2560x1440'), 'quality'),
+ ('⑫g 关动态分辨率（锁最高档）→ quality', D('Disable Dynamic Resolution'), 'quality'),
+ ('⑫h 1080p（900p–1080p 判不出升降）→ 认不出', D('1080p'), ''),
+ ('⑫i 1080p-720p 一对 → 认不出', D('1080p-720p'), ''),
+ ('⑫j 名字关 FXAA、文件头写 Improved Quality（两类都中）→ 认不出', D('Disable FXAA', '# Game [0100000000010000] 1.3.0 - Improved Quality\n// Disable FXAA and improve mipmap lodbias\n'), ''),
+ ('⑫k 关 FXAA 和动态分辨率（关动态分辨率 = 提画质）→ 认不出', D('Disable FXAA & Dynamic Resolution'), ''),
+ ('⑫l 关景深 + 加视野（中性改动，整份开关）→ 认不出', D('Disable DOF + Increase FOV'), ''),
+ ('⑫m 720p 掌机档目标（我们跑底座档）→ 认不出', D('720p Handheld Target'), ''),
+ ('⑫n 汇编备注里的 handheld resx 不算信号；只剩 LOD → 认不出', D('LOD', '// mov w9, #0x500 (handheld resx)\n'), ''),
+ ('⑫o 游戏名里的词不算（文件头游戏名带 4K、变体是关泛光）→ load', D('Disable Bloom', '# 4K Racing [0100000000010000] v1.3.0 - Disable Bloom\n'), 'load'),
+ ('⑫p 版本号 1.0.720 不当 720p；只写 LOD → 认不出', P.gfx_dir('Game/LOD/exefs/1.0.720.pchtxt'), ''),
+ ('⑫q 4:3 画幅 + 960x720 掌机 → 认不出', D('1440x1080', '// 4:3 Standard\n// 1440x1080 Docked 960x720 Handheld\n'), ''),
+ ('⑫r 否定词写在后面「Force FXAA Off」→ load', D('Force FXAA Off'), 'load'),
+ ('⑫s 「DOF Off」→ load', D('Blur Removal', '# Game [0100000000010000] v1.3.0 - DOF\n// DOF off\n'), 'load'),
+ ('⑫t 「Force FXAA On」（开 FXAA）→ 不算降负载', D('Force FXAA On'), ''),
+]: ck(name, got, want)
 sys.exit(1 if bad else 0)
 PY
 r=$?; [ $r = 0 ] && echo "✅ patch_classify_test 全过" || { echo "🔴 patch_classify_test 有不通项"; exit 1; }

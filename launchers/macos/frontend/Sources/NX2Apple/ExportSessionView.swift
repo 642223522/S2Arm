@@ -50,7 +50,7 @@ struct ExportSessionView: View {
     }
 
     /// 这次出包是为了导出自签包（游戏库「导出自签包」点在没出过包的款上）：按钮和说明照导出写，出完自动接着导出
-    private var exportMode: Bool { model.selfSignAfterPack.contains(session.gameID ?? "") || (model.selfSigning && model.session?.kind == .install) }
+    private var exportMode: Bool { model.selfSignAfterPack.contains(session.gameID ?? "") || (model.selfSigning && model.phoneSession?.kind == .install) }
     private func x(_ id: String) -> String { BackendText.launcherText("export." + id, language: uiLanguage) }
 
     var body: some View {
@@ -136,7 +136,7 @@ struct ExportSessionView: View {
         }
     }
 
-    private func platformName(_ p: ExportPlatform) -> String { loc.t("s2arm.export.platform." + p.rawValue) }
+    private func platformName(_ p: ExportPlatform) -> String { p.title(loc) }
 
     /// 一个平台的排队情况：做完（勾 + 用时）、在做（转圈）、排队、没成。
     private func pill(_ k: Int, _ platform: ExportPlatform) -> some View {
@@ -362,7 +362,7 @@ struct ExportSessionView: View {
                     LauncherHeadingLine {
                         Text(finished == .completed ? x("done.title") : statusText).font(.manrope(52, .heavy)).tracking(-1.6)
                     } subtitle: {
-                        let subtitle = x(succeeded.contains(.ios) ? "done.ios" : "done.mac")
+                        let subtitle = x(succeeded.contains(.ios) ? "done.ios" : succeeded.contains(.tvos) ? "done.tvos" : "done.mac")
                         Text(subtitle).font(.manrope(18)).foregroundStyle(.secondary).help(subtitle)
                     }
                 }
@@ -370,7 +370,7 @@ struct ExportSessionView: View {
                     BoostBanner(boost: boost, text: { BackendText.launcherText($0, language: uiLanguage) })   // 自动配好了金手指 / 补丁：S 级加强生效（开不开玩家在启动设置里定）。横幅里的键已带「export.」前缀，不能再过 x（v0.4.0 候选完成页显示成 [export.export.boost.title]）
                 }
                 // 补丁打入结果（11-14）：逐条列打上 / 没打上（带原因）；两端都出了就分 Mac / iPhone 写
-                SGradeResultView(results: succeeded.compactMap { p in run.outcomes[p].map { o in var r = o.sgrade; r.cheats = 0; return SGradeGameResult(name: p == .ios ? "iPhone" : "Mac", outcome: r) } },   // 金手指条数横幅里已写
+                SGradeResultView(results: succeeded.compactMap { p in run.outcomes[p].map { o in var r = o.sgrade; r.cheats = 0; return SGradeGameResult(name: p == .ios ? "iPhone" : p == .tvos ? "Apple TV" : "Mac", outcome: r) } },   // 金手指条数横幅里已写
                                  text: { BackendText.launcherText($0, language: uiLanguage) })
                 ForEach(succeeded, id: \.self) { platform in success(platform) }
             }
@@ -392,8 +392,8 @@ struct ExportSessionView: View {
             if run.platforms.count > 1 { Text(platformName(platform)).font(.manrope(15, .bold)) }
             HStack(alignment: .top, spacing: 52) {
                 bigStat(x("done.time"), clock(o.seconds))
-                if let bytes = o.appBytes { bigStat(x(platform == .ios ? "done.ipa" : "done.macSize"), size(bytes)) }
-                if platform == .ios, let bytes = o.packBytes { bigStat(x("done.pack"), size(bytes)) }
+                if let bytes = o.appBytes { bigStat(x(platform == .mac ? "done.macSize" : "done.ipa"), size(bytes)) }
+                if platform != .mac, let bytes = o.packBytes { bigStat(x("done.pack"), size(bytes)) }
                 Spacer(minLength: 0)
             }
             if !o.notes.isEmpty {   // 降级继续的玩家提示（作业层原句）：出成了照常给按钮，这里说清哪里用了兼容做法
@@ -427,6 +427,12 @@ struct ExportSessionView: View {
                 }
                 .controllerButtonStyle(LauncherPrimaryButtonStyle(prominent: true)).keyboardShortcut(.defaultAction)
                 .controllerID("result.ios.install").controllerShortcut(.rightTrigger, focused: run.platforms.count > 1)
+            } else if platform == .tvos {   // Apple TV：装到电视（tvInstall 作业）
+                Button { if let game { model.installAppleTV(game) } } label: {
+                    Label(x("installAppleTV"), systemImage: "appletv")
+                }
+                .controllerButtonStyle(LauncherPrimaryButtonStyle(prominent: true))
+                .controllerID("result.tvos.install").controllerShortcut(.rightTrigger, focused: run.platforms.count > 1)
             } else {
                 Button { if let game { model.backToLibrary(); model.play(game, uiLanguage: uiLanguage) } } label: {
                     Label(loc.t("library.play"), systemImage: "play.fill")
@@ -468,6 +474,10 @@ struct ExportSessionView: View {
                         Button(loc.t("library.play")) { if let game { model.backToLibrary(); model.play(game, uiLanguage: uiLanguage) } }
                             .controllerID("result.mac.play").controllerShortcut(.rightTrigger, focused: true)
                         if let game { Button(loc.t("s2arm.export.openGameFolder")) { model.reveal(game) } }
+                    } else if platform == .tvos {
+                        Button(x("installAppleTV")) { if let game { model.installAppleTV(game) } }
+                            .controllerID("result.tvos.install").controllerShortcut(.rightTrigger, focused: true)
+                        if let game { Button(loc.t("s2arm.export.openGameFolder")) { model.reveal(game) } }
                     } else {
                         Button(loc.t(model.installKey("s2arm.action.install"))) { install(session.gameID ?? "") }
                             .controllerID("result.ios.install").controllerShortcut(.rightTrigger, focused: true)
@@ -504,7 +514,7 @@ struct ExportSessionView: View {
                 Button(copied == platform ? loc.t("s2arm.export.copied") : loc.t("s2arm.export.copyError")) {
                     let fallback = S2ArmLauncherModel.reportUnavailable(loc.backend(outcome.message), code: outcome.code)
                     Task {
-                        await model.copyErrorReport(platform: name, gameID: session.gameID, operations: [platform == .ios ? "ipa" : "build"], fallback: fallback)
+                        await model.copyErrorReport(platform: name, gameID: session.gameID, operations: [platform == .mac ? "build" : "ipa"], fallback: fallback)
                         copied = platform
                         try? await Task.sleep(for: .seconds(2))
                         if copied == platform { copied = nil }

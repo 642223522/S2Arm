@@ -410,11 +410,25 @@ namespace Ryujinx.Audio.Renderer.Dsp
 
             for (int i = 0; i < _sessionCommandList.Length; i++)
             {
-                if (_sessionCommandList[i] != null)
+                RendererSession session = _sessionCommandList[i];
+
+                if (session != null)
                 {
-                    _sessionCommandList[i].CommandList.Process(OutputDevices[i]);
-                    _sessionCommandList[i].CommandList.Dispose();
-                    _sessionCommandList[i] = null;
+                    // S2Arm: 命令级异常已在 CommandList.Process 内按拍隔离；这里再兜一层非命令异常，
+                    //   保证会话槽一定清空、下一拍还能继续（inline 模式下异常原本会打穿渲染线程）
+                    try
+                    {
+                        session.CommandList.Process(OutputDevices[i]);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Error?.Print(LogClass.AudioRenderer, $"DSP session {i} failed; dropping period: {ex}");
+                    }
+                    finally
+                    {
+                        session.CommandList.Dispose();
+                        _sessionCommandList[i] = null;
+                    }
                 }
             }
 

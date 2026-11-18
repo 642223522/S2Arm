@@ -53,7 +53,11 @@ MinVersion=10.0
 ; 只给调界面用（ISCC /DFast）：不压缩，编得快；发版不带
 Compression=none
 #else
-Compression=lzma2/max
+; 11-16 安装包瘦身：字典 256 MB（缺省 max 档 64 MB 以内）——整个安装目录约 600 MB 固实压缩，大字典能把相隔很远的重复内容
+;   （各处的 Python 库、引擎源码）对上；同一份内容实测 xz 32 MB 字典 165.9 MB → 256 MB 字典 154.8 MB。解压要同样大小的内存，Win10 机器都够
+Compression=lzma2/ultra64
+LZMADictionarySize=262144
+LZMAUseSeparateProcess=yes
 SolidCompression=yes
 #endif
 OutputBaseFilename=S2Arm-windows-x64-setup

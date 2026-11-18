@@ -14,7 +14,8 @@ Ryujinx（compat/tree，以及 graphics/vulkan/wsi）
 Copyright (c) Ryujinx Team and Contributors
 MIT License. 许可全文：compat/tree/LICENSE.txt
 
-直连图形层部分代码（graphics/nvn、translator/tbdr_*.py，以及 compat 中标注「Ported (MIT, Copyright (c) 2026 seedds …)」的文件）
+直连图形层部分代码（graphics/nvn、translator/tbdr_*.py，以及 compat 中标注「Ported (MIT, Copyright (c) 2026 seedds …)」的文件；
+graphics/nvn/gfx/nvn/nvn_stex.inc 移植自 nxnative 的分支 kartnative，https://github.com/pahorema/kartnative ）
 Copyright (c) 2026 seedds
 MIT License. 许可全文：graphics/nvn/LICENSE
 

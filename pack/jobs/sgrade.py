@@ -19,31 +19,32 @@ from pathlib import Path
 import layout
 from core import Failure
 
-PROGRAM_DIR = "original-exefs"
+PROGRAM_DIR = layout.PROGRAM_EXEFS
 MODULES = ("main", "main.npdm", "sdk") + tuple(f"subsdk{i}" for i in range(10))
 
 
 def saved_program(c, gid):
-    d = layout.path(c, gid, PROGRAM_DIR, create=False)
+    d = layout.program_exefs(c, gid)
     return d if (d / "main").is_file() and (d / "main.npdm").is_file() else None
 
 
 def save_program(c, gid, exefs):
-    """原始程序存一份到这款游戏文件夹（已存且主程序相同就不动）→ 存下的目录；源目录不完整 → None"""
+    """原始程序存进游戏程序常驻（.programs/<号>/exefs.tar.zst，pack/jobs/programs.py；已存且主程序相同就不动）→ 解开的那份（缓存）；源目录不完整 → None"""
     exefs = Path(exefs)
     if not ((exefs / "main").is_file() and (exefs / "main.npdm").is_file()):
         return None
-    dest = layout.path(c, gid, PROGRAM_DIR)
+    dest = layout.program_exefs(c, gid)
     if (dest / "main").is_file() and (dest / "main").read_bytes()[0x40:0x60] == (exefs / "main").read_bytes()[0x40:0x60]:
         return dest
-    tmp = dest.with_name(PROGRAM_DIR + ".partial")
-    shutil.rmtree(tmp, ignore_errors=True); tmp.mkdir(parents=True)
-    for m in MODULES:
-        if (exefs / m).is_file():
-            shutil.copyfile(exefs / m, tmp / m)
-    shutil.rmtree(dest, ignore_errors=True)
-    tmp.rename(dest)
-    return dest
+    tmp = Path(tempfile.mkdtemp(prefix=".exefs-"))
+    try:
+        for m in MODULES:
+            if (exefs / m).is_file():
+                shutil.copyfile(exefs / m, tmp / m)
+        import programs
+        return programs.save_exefs(c, gid, tmp)   # 常驻 exefs.tar.zst + 缓存解开的一份
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def find_program(c, game, extract=True):
@@ -101,7 +102,7 @@ def scan(c):
     for g in c.catalog()["games"]:
         gid = g["id"].upper()
         info = layout.game_info(c, gid)
-        iphone = (layout.ios_kit(c, gid) / "main.npdm").is_file()
+        iphone = layout.has_ios_kit(c, gid)
         mac = (layout.image_mac(c, gid, create=False) / "exefs/main").is_file()
         if not (iphone or mac):
             continue   # 没出过包：没有可升级的东西（出包时就会带上 S 级优化）
@@ -131,7 +132,6 @@ def mac_all(c):
       库里有任务在用这把锁（正在玩 / 正在出包）就这款不做，不抢 CPU；改写在锁外的临时目录里做，只有换进运行版本那一下「没人用才拿锁」，
       拿不到就放弃这款——开始游戏起局前自己会补它（build.launch → refresh_mac）"""
     from rewrite_refresh import refresh_mac
-    import sgrade_bf
     games = [g for g in c.catalog()["games"] if (layout.image_mac(c, g["id"], create=False) / "exefs/main").is_file()]
     c.begin("给 Mac 游戏补上 S 级优化", 1, 1)
     done = []
@@ -141,11 +141,12 @@ def mac_all(c):
                 pass
             if not free:
                 continue
-            if refresh_mac(c, g["id"], layout.image_mac(c, g["id"], create=False), hold=lambda: c.idle("execution")):
+            # 后台：只补补丁记号变了的；改写器指纹单独变了不重改写（11-17 维护者定），开始游戏起局前 build.launch 前台会做这一款
+            if refresh_mac(c, g["id"], layout.image_mac(c, g["id"], create=False), hold=lambda: c.idle("execution"), ignore_rewriter=True):
                 done.append(g["id"].upper())
-            # 老包直连库缺可读瓦片版着色器（_bf）：整份重出在锁外做（几分钟到几十分钟），换进运行版本前同样进 c.idle，玩家正在开局就这次放弃
-            if sgrade_bf.upgrade_mac(c, g["id"], layout.image_mac(c, g["id"], create=False), hold=lambda: c.idle("execution")) and g["id"].upper() not in done:
-                done.append(g["id"].upper())
+            # 老包直连库缺可读瓦片版着色器（_bf）不在这里补（11-17 D-FCMF：升级到新版后每次打开启动器都在后台整份重出直连库，几分钟到几十分钟，
+            #   玩家一开局就放弃、下次再从头来，从没做完；维护者 11-17「后台重新改写全部游戏以后不要做了」）。_bf 只是性能优化，缺了照常能玩：
+            #   升级页（scan 的 bfPending）照旧标出来，玩家对这一款点重出时前台补
         except (Failure, OSError) as e:
             c.emit("message", f"【黄】{g.get('name') or g['id']} 这次没补上：{str(e)[:160]}")
     if done:
@@ -275,7 +276,7 @@ def state(c, game, match=None):
                   "autoOff": auto([("fps", "fps60")]), "versions": versions("fps")}
     # 画面：Mac 才打（iPhone 一律 mac_only）
     gfx = [it for it in community.packed_patches(c, gid) if it["kind"] == "gfx"]
-    gon = [it for it in gfx if pset.get(it["id"]) is not False]
+    gon = [it for it in gfx if community.patch_on(pset, it)]   # 没选过：降负载的缺省关（11-16）
     gkeys = [("patch", it["id"]) for it in gfx]
     if opted: s = "opted_out"
     elif not gfx: s = missing("gfx")

@@ -4,7 +4,7 @@
   ① nx_unpack / gamedec（pack/orch/oneclick_win.py）：预编件在且 .src_digest = 源码身份（nx_unpack 身份按「*.cs + *.csproj 排序拼接的 sha256 前 12 位」在这里另算）
      → 直接用预编件、一次 dotnet build 都不调；身份不符 / 没设 → 照旧 dotnet build
   ② 直连库（oneclick_win.direct，按 Windows 走）：预编 dsx/dsx.dll 在 → 不编 dsx、DSX_LIB 指它；预编 glslangValidator 在 → GLSLANG 指它；没设 → 照旧编 dsx、不设 GLSLANG
-  ③ RomFS 索引还原（oneclick_win.stages）：预编 romfs_index.dll 在 → 不调 dotnet restore
+  ③ RomFS 索引还原（oneclick_win.stages）：预编 romfs_index（NativeAOT 单文件）在 → 不调 dotnet restore
   ④ spirv-cross（translator/spvc_inproc.py）：预编库 / 命令行在且身份同 → lib_path / cli_path 回预编件、不问编译器版本（_build_id 不调）；身份不符 → 照旧走编译
   ⑤ Yaz0 解码库（graphics/tools/nxfmt.py）：预编 codecs/libyaz0dec_<yaz0dec.c sha256 前 12 位> 在 → 直接回它、不找 cc；没设 → 照旧找 cc
   ⑥ Yaz0 编码器（graphics/widen/scan/ui_lyt.py）：预编 codecs/yaz0enc-<yaz0enc.c sha1 前 12 位> 在 → 用它压（假编码器输出带记号）、CC 指不存在也不退回字面量；没设且编不了 → 照旧只写字面量
@@ -12,7 +12,7 @@
   ⑩ CRI 解压库（graphics/tools/shbake/nxsh_extract.py）：预编 codecs/libcrilayla_<crilayla.c sha256 前 12 位>.dylib 在 → 加载它、一次 subprocess 都不调；没设 → 照旧调 clang
   ⑧ 改写器（pack/rewriter.py）：预编 rewriter/s2a-rewrite + .source = 源码指纹 → bundled / c_path 回它（不找 cmake）；指纹不符 → bundled 回 None
   ⑨ 环境自检（oneclick_win --check）：设了 S2A_PREBUILT_TOOLS → 不出 cmake / clang++ / rewriter-deps 项，clang / spirv-cross / rewriter / prebuilt-dotnet 项核预编件，
-     dotnet 项核运行时 10.x；缺 dsx/dsx.dll → clang ❌（哪怕系统有 clang）；运行时只有 8.0 → dotnet ❌；没设 → 照旧有 cmake / clang++ 项"""
+     不出 dotnet 项（预编 C# 件是 NativeAOT 单文件、玩家机不要 .NET，v0.5.0）；缺 dsx/dsx.dll → clang ❌（哪怕系统有 clang）；没设 → 照旧有 cmake / clang++ / dotnet 项"""
 import hashlib, glob, os, shutil, subprocess, sys, tempfile, unittest
 from pathlib import Path
 from unittest import mock
@@ -49,9 +49,9 @@ def make_pre(d, skip=()):
         if ident is not None: (d / rel).parent.joinpath('.src_digest').write_text(ident + '\n')
     put('nx_unpack/nx_unpack' + EXE, nx_unpack_ident())
     put('gamedec/gamedec' + EXE, oneclick_win.gamedec_id())
-    put('romfs/romfs_index.dll')
-    put('dsh_batch/dsh_batch.dll', dsh_batch.src_digest(os.path.join(dsh_batch.DSH, 'batch', 'dsh_batch.csproj')))
-    if 'dsh_batch/.xfp' not in skip and 'dsh_batch/dsh_batch.dll' not in skip: (d / 'dsh_batch/.xfp').write_text('0123456789abcdef\n')   # 形状对即可（值由发版脚本算）
+    put('romfs/romfs_index' + EXE)
+    put('dsh_batch/dsh_batch' + EXE, dsh_batch.src_digest(os.path.join(dsh_batch.DSH, 'batch', 'dsh_batch.csproj')))
+    if 'dsh_batch/.xfp' not in skip and 'dsh_batch/dsh_batch' + EXE not in skip: (d / 'dsh_batch/.xfp').write_text('0123456789abcdef\n')   # 形状对即可（值由发版脚本算）
     put('dsx/dsx.dll')
     put('codecs/' + ui_lyt.yaz0enc_name())
     put('codecs/libyaz0dec_' + hashlib.sha256((R / 'graphics/tools/yaz0dec.c').read_bytes()).hexdigest()[:12] + ('.dll' if os.name == 'nt' else '.dylib' if sys.platform == 'darwin' else '.so'))
@@ -226,8 +226,9 @@ class Check(Base):   # ⑨
     def test_prebuilt_items(self):
         got = self.check(make_pre(self.t / 'pre'))
         for k in ('cmake', 'clang++', 'rewriter-deps'): self.assertNotIn(k, got)
-        self.assertEqual({k: got.get(k) for k in ('dotnet', 'prebuilt-dotnet', 'clang', 'rewriter', 'spirv-cross', 'glslang')},
-                         dict.fromkeys(('dotnet', 'prebuilt-dotnet', 'clang', 'rewriter', 'spirv-cross', 'glslang'), '✅'))
+        self.assertEqual({k: got.get(k) for k in ('prebuilt-dotnet', 'clang', 'rewriter', 'spirv-cross', 'glslang')},
+                         dict.fromkeys(('prebuilt-dotnet', 'clang', 'rewriter', 'spirv-cross', 'glslang'), '✅'))
+        self.assertNotIn('dotnet', got, '预编件是原生单文件：不再要求 .NET 运行时（系统没有也不该红）')
 
     def test_missing_piece_red(self):
         got = self.check(make_pre(self.t / 'pre', skip=('dsx/dsx.dll',)))
@@ -235,7 +236,7 @@ class Check(Base):   # ⑨
         cri = 'codecs/libcrilayla_' + hashlib.sha256((R / 'graphics/tools/shbake/crilayla.c').read_bytes()).hexdigest()[:12] + '.dylib'
         self.assertEqual(self.check(make_pre(self.t / 'pre4', skip=(cri,)))['clang'], '❌', '玩家机没有 clang：缺预编 CRI 库起单前就要红（#95）')
         got = self.check(make_pre(self.t / 'pre2'), runtimes='Microsoft.NETCore.App 8.0.11 [/x]')
-        self.assertEqual(got['dotnet'], '❌')
+        self.assertEqual(got.get('prebuilt-dotnet'), '✅', '机器上的 .NET 版本与预编件无关')
         got = self.check(make_pre(self.t / 'pre3', skip=('dsh_batch/.xfp',)))
         self.assertEqual(got['prebuilt-dotnet'], '❌', '预编 dsh_batch 缺 .xfp：没 SDK 的玩家机出库后核不了库印章，起单前就要红（11-07 Windows 出包机运行时验收）')
 
