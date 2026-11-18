@@ -46,7 +46,7 @@ def profile_teams(env=None):
     out, seen = [], set()
     now = datetime.datetime.now(datetime.timezone.utc)
     for folder in folders:
-        for path in sorted(folder.glob("*.mobileprovision")):
+        for path in sorted(p for p in folder.glob("*.mobileprovision") if not layout.os_junk(p.name)):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return out
@@ -1865,7 +1865,7 @@ def sign_and_install(c, ipa, team, dev, udid, bid, games, steps=True):
     try:
         # ditto 解：保留可执行位与符号链接（zipfile 会丢，codesign / 安装都要）
         r = subprocess.run(["/usr/bin/ditto", "-x", "-k", str(ipa), str(stage)], capture_output=True, text=True)
-        app = next((stage / "Payload").glob("*.app"), None)
+        app = next((p for p in (stage / "Payload").glob("*.app") if p.is_dir()), None)
         if r.returncode or not app:
             raise Failure("解不开 iPhone 包：" + (r.stderr.strip()[-200:] or str(ipa)), code="job_failed")  # 非玩家句
         info = app / "Info.plist"
@@ -2378,7 +2378,7 @@ class WinPhone:
             import zipfile
             with zipfile.ZipFile(ipa) as z:
                 z.extractall(stage)
-            app = next((stage / "Payload").glob("*.app"), None)
+            app = next((p for p in (stage / "Payload").glob("*.app") if p.is_dir()), None)
             if not app:
                 raise Failure("解不开 iPhone 包：" + str(ipa), code="job_failed")  # 非玩家句
             widget_prepare(c, app, devcert.state(c)["bundleId"], devcert=True)   # 自己的证书只有主程序一份描述文件：去掉小组件扩展（玩家关了不提示）

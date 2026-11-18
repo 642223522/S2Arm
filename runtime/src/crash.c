@@ -515,7 +515,11 @@ static void on_crash(int sig, siginfo_t *si, void *ctx) {
     crash_raw(sig, si, uc, 0);
     // 崩在现编着色器里（graphics/nvn/host/dsh_miss.inc，#467）：把正在编的那支输入落盘成 <键>.inflight.*，诊断包带走。只用 open / write，排在原始现场之后、完整报告之前
     { if (g_dsh_crash_dump) g_dsh_crash_dump(); }
-    { void (*ev)(const char *, int) = (void (*)(const char *, int))dlsym(RTLD_DEFAULT, "s2a_dguard_evidence"); if (ev) ev("崩溃", 0); }   // 直连安全网：这局算失败（有证据）；动态取，单测没链 dguard.c
+    // 直连安全网：这局算失败（有证据）；动态取，单测没链 dguard.c。先按现场归因：出事地址落在游戏早先要、宿主给不出的那段地址里（超出地址窗口、svc 回了内存不足，
+    //   游戏没理会照样访问，同 fault_region_note）= 已知不是直连——不计连续失败，下次起局说「这台设备内存不够」，不叫玩家更新重出包（D-GYNE：3 次都这么崩，误弹「更新后重新出包」）
+    { int va = 0; if ((sig == SIGBUS || sig == SIGSEGV) && s2a_va_short_last) { int num; uint64_t a, n, k; va = s2a_va_short_last((uint64_t)(uintptr_t)si->si_addr, &num, &a, &n, &k); }
+      if (va) { void (*kn)(const char *) = (void (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_dguard_known"); if (kn) kn("地址超出窗口"); }
+      else { void (*ev)(const char *, int) = (void (*)(const char *, int))dlsym(RTLD_DEFAULT, "s2a_dguard_evidence"); if (ev) ev("崩溃", 0); } }
     char bp[160], bl[160]; where(pc, bp, sizeof bp); where(lr, bl, sizeof bl);
     LOG("【红】CRASH 信号 %d 地址 %p pc %s lr %s sp %#llx", sig, si->si_addr, bp, bl, (unsigned long long)uc->uc_mcontext->__ss.__sp);
     { const char *(*wn)(void) = (const char *(*)(void))dlsym(RTLD_DEFAULT, "s2a_waived_note"); const char *w = wn ? wn() : NULL;   // waived.c

@@ -270,8 +270,13 @@ static snap_hlog_t *g_hlog; static int g_nhlog, g_caphlog; static _Atomic int g_
 static __thread int t_cs_h, t_snap_ctx = -2;
 static __thread const uint32_t *t_force; static __thread int t_nforce, t_iforce;
 int s2a_snap_mode(void); int s2a_snap_logging(void);
+// 单独链本文件的线程单测（t_thread / t_thread_plat / t_thread_wait_diag，含安卓适配层那份）没有快照引擎：弱缺省 = 快照关、不记；
+//   放在苹果专属段外面（安卓适配层把那段整个关掉，hlog_add / svc_thread 照样引用）。宿主 / iOS 壳链进 snapshot.c / snapsw.c 的真定义
+__attribute__((weak)) void s2a_snap_mark_old(void) {}
+__attribute__((weak)) int s2a_snap_restoring(void) { return 0; }
+__attribute__((weak)) int s2a_snap_logging(void) { return 0; }
 void s2a_snap_hctx(int seq) { t_snap_ctx = seq; thr_t *t = thread_current_or_null(); if (t) t->cs_seq = seq; }   // C# 请求开始时设本线程的请求序号（结束设 -2）
-void s2a_snap_hcommit(int seq) { if (seq >= 0) atomic_store(&g_snap_lastseq, seq); }   // C# 请求完成、追加进日志时设：此后的关闭记在它之后（日志按完成先后，SnapLog.cs）   // C# 请求开始 / 结束时设（结束设 -2）
+void s2a_snap_hcommit(int seq) { if (seq >= 0) atomic_store(&g_snap_lastseq, seq); }   // C# 请求完成、追加进日志时设：此后的关闭记在它之后（日志按完成先后，SnapLog.cs）
 void s2a_snap_force(const uint32_t *v, int n) { t_force = v; t_nforce = n; t_iforce = 0; }        // 恢复重放：本线程接下来服务层建的句柄按这串值分
 int s2a_snap_force_left(void) { return t_nforce - t_iforce; }
 static void hlog_add(int op, uint32_t h, uint32_t kind, int cs, void *obj) {   // 持 G
@@ -2255,6 +2260,9 @@ void s2a_snap_mark_old(void);   // snapshot.c：记「旧版快照接不上」�
 enum { THR_F_XREGS = 50, THR_F_VREGS = 51, THR_F_NZCV = 52, THR_F_FPSR = 53, THR_F_FPCR = 54, THR_F_GSP = 55, THR_F_SWSLOT = 56, THR_F_GATE_ORIG = 57, THR_F_GATE_KIND = 58,
        THR_F_RUN_REGS = 60, THR_F_RUN_NEON = 61, THR_F_RUN_FPSR = 62, THR_F_RUN_FPCR = 63, THR_F_CS_MSG = 64 };
 int s2a_gate_identity(uint64_t ret, uint64_t *orig, int *kind); uint64_t s2a_gate_by_identity(uint64_t orig, int kind);   // gate.c
+// 单独链本文件的线程单测没有门表：弱缺省 = 门身份查不到；宿主 / iOS 壳链进 gate.c 的真定义
+__attribute__((weak)) int s2a_gate_identity(uint64_t ret, uint64_t *orig, int *kind) { (void)ret; (void)orig; (void)kind; return -1; }
+__attribute__((weak)) uint64_t s2a_gate_by_identity(uint64_t orig, int kind) { (void)orig; (void)kind; return 0; }
 static int g_snap_gate_miss;   // 恢复：门身份在本版门表里找不到的线程数（> 0 = 改写器约定变了，C 档拒绝）
 // 本版门帧格局（entry.S sw_gate）：x0–x30 在 0、q0–q31 在 256、nzcv 768、fpsr 776、fpcr 784、客体 sp 800、切栈槽 816
 enum { GF_X = 0, GF_Q = 256, GF_NZCV = 768, GF_FPSR = 776, GF_FPCR = 784, GF_GSP = 800, GF_SWSLOT = 816 };
@@ -2556,11 +2564,15 @@ int s2a_snap_replay_prelude(void) { return snap_apply_closes(-1); }
 uint64_t gate_dispatch(uint64_t ret_addr, uint64_t *regs);
 void *sw_xstack_slot(void);
 void sw_snap_resume(void *frame) __attribute__((noreturn));
+// 线程单测不链 gate.c / entry.S：快照恢复线程在单测里永远不起（快照关），弱缺省只为链得上
+__attribute__((weak)) uint64_t gate_dispatch(uint64_t ret_addr, uint64_t *regs) { (void)ret_addr; (void)regs; return 0; }
+__attribute__((weak)) void *sw_xstack_slot(void) { return 0; }
+__attribute__((weak, noreturn)) void sw_snap_resume(void *frame) { (void)frame; abort(); }
 static _Atomic int g_snap_settled;
 // 恢复的游戏线程：绑宿主、按快照装 TSD / TLR，宿主栈上做一个门帧，按停法续跑。全程 g_frz 开着：续跑出来的线程都停回门里，等全体就位后统一放开
 #if defined(__APPLE__)
-// 弱链接[host,ios,touchtest]：gl_snap_thread_bind（GL 出图层 graphics/nvn/gfx/gl/egl.m 提供：线程本地的当前上下文按快照接回；不链图形库的宿主构建没有）
-void gl_snap_thread_bind(uint64_t tid) __attribute__((weak_import));
+// 弱缺省定义：真定义在 GL 出图层 graphics/nvn/gfx/gl/egl.m（线程本地的当前上下文按快照接回，同一个程序里强定义盖过它）；不链图形库的宿主构建与只链 thread.c 的单测用这份空实现
+__attribute__((weak)) void gl_snap_thread_bind(uint64_t tid) { (void)tid; }
 #endif
 // 当前线程的客体线程号（不是游戏线程回 0）：GL 出图层按它记各线程的当前上下文（即时存档）
 uint64_t s2a_snap_thread_self(void) { thr_t *t = thread_current_or_null(); return t ? t->id : 0; }
@@ -2574,7 +2586,7 @@ static void *snap_thread_main(void *arg) {
     t->mport = pthread_mach_thread_np(pthread_self()); t->tsd = plat_tsd_base(); t->pt = pthread_self();
     s2a_crash_thread_init();
 #if defined(__APPLE__)
-    if (gl_snap_thread_bind) gl_snap_thread_bind(t->id);
+    gl_snap_thread_bind(t->id);
 #endif
     pthread_setspecific(g_keygate, (void *)sw_gate);
     pthread_setspecific(g_key18, (void *)(uintptr_t)r->k18);

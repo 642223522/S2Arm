@@ -39,11 +39,15 @@ def build_layout(root, tmp):
     resources.mkdir(parents=True)
     jobs = jobs_bundle.stage_jobs(root, resources)
     engines = []
+    # 引擎快照只拷 .py 和导入时要读的数据文件（host_update 在 Windows 布局下从引擎读 s2a_host_abi.h）：本检查只导入作业层与引擎包、
+    #   跑 setup / catalog，用不到快照里其余数千个源码 / 数据文件；读到的仓库文件都会进门禁缓存键，整份拷让无关改动也重跑本检查。
+    #   哪天要读别的数据文件了，缺它会在导入或最小作业里红，不会假绿
+    data = {"runtime/include/s2a_host_abi.h"}
     for side in ("mac", "win"):
         eng = tmp / side / "Engine"
         for rel in bundle_engine.snapshot_files(Path(root)):
             src = Path(root) / rel
-            if src.is_file():
+            if (src.suffix == ".py" or str(rel) in data) and src.is_file():
                 (eng / rel).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, eng / rel)
         engines.append(eng)

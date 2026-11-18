@@ -36,6 +36,14 @@ int s2a_ios_screen_max_fps(void);   // 屏幕最高刷新率（Hz），帧率补
 #if !TARGET_OS_TV   // 电视只有横屏，没有方向这一族（11-15 Apple TV 版）
 UIInterfaceOrientationMask s2a_ios_play_orientations(void);
 #endif
+// iPhone Duo 外屏：系统缺省给竖向状态栏留一整列（iOS 27.1 UIViewController.preferredVerticalBarBehavior = Automatic，安全区右 84 / 下 34），
+//   游戏和各全屏页都不用竖栏，关掉后状态栏回到顶部横放、那一列还给画面（外屏右侧和底部黑边的根因）。各全屏页的视图控制器在 @implementation 里写这一行；
+//   没有竖栏的机型系统不问这个属性，行为不变
+#if defined(__IPHONE_27_1) && __IPHONE_OS_VERSION_MAX_ALLOWED>=__IPHONE_27_1
+#define S2A_VERTICAL_BAR_OFF - (UIVerticalBarBehavior)preferredVerticalBarBehavior API_AVAILABLE(ios(27.1)) { return UIVerticalBarBehaviorDisabled; }
+#else
+#define S2A_VERTICAL_BAR_OFF
+#endif
 int s2a_ios_play_resizable(void);   // 游戏窗口可自由缩放（Duo 内屏 / iPad）：方向交给系统，设置里的横 / 竖不起作用
 CGRect S2APlayDivision(UIView *view);
 // 游戏壳和无商业资源的输入工作台共用铰链、方向和区域生命周期。

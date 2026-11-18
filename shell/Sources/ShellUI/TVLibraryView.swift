@@ -32,6 +32,7 @@ public struct TVLibraryView: View {
     /// 请求把系统焦点交给某个焦点 id（`ShellFocusTarget` 在 tvOS 上接）
     @State private var request = FocusAppearance()
     @FocusState private var focusedTile: String?
+    @FocusState private var focusedTop: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(games: [GameDetail], controllers: [ControllerInfo] = [], actions: ShellActions = ShellActions(),
@@ -169,6 +170,8 @@ public struct TVLibraryView: View {
             topBar
             EmptyLibraryView()
         }
+        .focusSection()
+        .defaultFocus($focusedTop, "settings")
     }
 
     /// 左上版本字（截图定版），右上玩家 / 手柄 / App 设置
@@ -184,11 +187,13 @@ public struct TVLibraryView: View {
                 }
             }
             .buttonStyle(ChipButtonStyle())
+            .focused($focusedTop, equals: "controllers")
             .accessibilityLabel(ShellStrings.text("Controllers") + ", \(controllers.count)")
             .accessibilityIdentifier("controllers.open")
             .shellTarget("lib.controllers", radius: 22, action: openControllers)
             Button(action: openShellSettings) { Image(systemName: "gearshape") }
                 .buttonStyle(ChipButtonStyle())
+                .focused($focusedTop, equals: "settings")
                 .accessibilityLabel(ShellStrings.text("Settings"))
                 .accessibilityIdentifier("shellSettings.open")
                 .shellTarget("lib.shellSettings", radius: 22, action: openShellSettings)

@@ -5968,16 +5968,16 @@
   "en": "The environment check failed. Follow the diagnostics to check tool installation and permissions, resolve the problem, then click Recheck."
  },
  {
-  "source": "先装 Impactor：在 S2Arm 里点「打开官方页面」打开官方发布页（https://github.com/claration/impactor/releases/tag/v2.7.2），下载免安装版放到桌面，再点「重新检查」。",
-  "en": "Install Impactor first: click Open the official page in S2Arm to open the official release page (https://github.com/claration/impactor/releases/tag/v2.7.2), save the portable build to the desktop, then click Recheck."
+  "source": "先装 Impactor：在 S2Arm 里点「打开官方页面」打开官方发布页（https://github.com/claration/impactor/releases/tag/v2.7.3），下载免安装版放到桌面，再点「重新检查」。",
+  "en": "Install Impactor first: click Open the official page in S2Arm to open the official release page (https://github.com/claration/impactor/releases/tag/v2.7.3), save the portable build to the desktop, then click Recheck."
  },
  {
   "source": "S2Arm Windows 版自带的签名工具 Impactor 不在了（安装包不完整）：重新下载并完整解压 S2Arm Windows 版，用里面的 S2Arm.exe 打开后再试。",
   "en": "The Impactor signing tool that ships with S2Arm for Windows is missing (incomplete package): download S2Arm for Windows again, extract it fully, and open the S2Arm.exe inside."
  },
  {
-  "source": "换成实测过的 Impactor 2.7.2（官方发布页 https://github.com/claration/impactor/releases/tag/v2.7.2）；别的版本可能丢掉「提高内存上限」权限，大游戏会闪退。",
-  "en": "Switch to the tested Impactor 2.7.2 (official release page https://github.com/claration/impactor/releases/tag/v2.7.2); other versions may drop the increased-memory-limit entitlement and large games may crash."
+  "source": "换成实测过的 Impactor 2.7.3（官方发布页 https://github.com/claration/impactor/releases/tag/v2.7.3）；别的版本可能丢掉「提高内存上限」权限，大游戏会闪退。",
+  "en": "Switch to the tested Impactor 2.7.3 (official release page https://github.com/claration/impactor/releases/tag/v2.7.3); other versions may drop the increased-memory-limit entitlement and large games may crash."
  },
  {
   "source": "Apple ID 或密码不对：把输入法切到英文后重新登录（全角字符会被判错）；密码只发给 Apple。",

@@ -603,7 +603,7 @@ def collect_degrade(c, root):
     if not root:
         return []
     rows = []
-    for p in sorted(Path(root).glob("degrade.*.tsv")):
+    for p in sorted(p for p in Path(root).glob("degrade.*.tsv") if not layout.os_junk(p.name)):
         got, bad = degrade_rows(p.read_text(encoding="utf-8", errors="replace"))
         rows += got
         if bad:

@@ -20,7 +20,10 @@ public sealed partial class EnvironmentWindow
     private string? consoleDevice;
     private readonly HashSet<string> consoleSelection = new(StringComparer.OrdinalIgnoreCase);
     private HashSet<string> consoleSeeded = new(StringComparer.OrdinalIgnoreCase);
-    private readonly List<string> consoleBatch = new();
+    private FrontJob? consoleJob;                 // 「更新所选」那一单（作业 pushSelected）；null = 没在更新
+    private int consoleDone, consoleTotal;        // 这一轮推完几款 / 共几款（作业 progress 事件 done / total）
+    private string? consolePushing;               // 正在推的那款（progress 事件 current）
+    private bool ConsoleUpdating => consoleJob is not null;
     private bool ConsoleSelected => phoneOverview is not null && selectedGame == ConsoleId;
     private PhoneOverview.Phone? ConsolePhone => phoneOverview?.Pick(consoleDevice);
 
@@ -51,43 +54,48 @@ public sealed partial class EnvironmentWindow
     private string Tf(string key, params object[] args) =>
         args.Select((a, i) => (a, i)).Aggregate(T(key), (s, x) => s.Replace("{" + x.i + "}", x.a is DateTimeOffset d ? d.LocalDateTime.ToString("g") : x.a.ToString()));
 
-    private int ConsoleBatchDone =>
-        consoleBatch.Count(id => !phoneQueue.Any(q => string.Equals(q.GameId, id, StringComparison.OrdinalIgnoreCase))
-                                 && !(installBusy && string.Equals(installGameId, id, StringComparison.OrdinalIgnoreCase)));
-
     private string ConsoleStatusText()
     {
-        var (key, args) = PhoneOverview.Status(ConsolePhone, DateTimeOffset.Now, ConsoleBatchDone, consoleBatch.Count);
+        var (key, args) = PhoneOverview.Status(ConsolePhone, DateTimeOffset.Now, consoleDone, ConsoleUpdating ? Math.Max(consoleTotal, 1) : 0);
         return Tf(key, args);
     }
 
-    /// <summary>「更新所选」：按游戏库顺序一款款推总控台这台（装机作业本身一次一款，后面的自动排进手机队列）</summary>
+    /// <summary>「更新所选」：一单作业 pushSelected 按游戏库顺序推总控台这台（同 Mac updateSelected）。作业层一款失败接着推下一款，
+    /// 换哪款都做不下去（没装 App / 手机断开）才整轮停；「停下」= 取消这一单，推完的留着</summary>
     private void UpdateSelected()
     {
-        if (consoleBatch.Count > 0 || ConsolePhone is not { } phone) return;
-        var order = (catalog?.Games ?? []).Where(g => !g.Hidden && consoleSelection.Contains(g.Id)).ToList();
-        if (order.Count == 0) return;
-        consoleBatch.AddRange(order.Select(g => g.Id.ToUpperInvariant()));
-        foreach (var g in order) _ = InstallAsync(g, toDevice: phone.Device);
-        Render();
+        if (ConsoleUpdating || ConsolePhone is not { } phone) return;
+        var order = (catalog?.Games ?? []).Where(g => !g.Hidden && consoleSelection.Contains(g.Id)).Select(g => g.Id.ToUpperInvariant()).ToList();
+        if (order.Count > 0) _ = PushSelectedAsync(order, phone.Device);
     }
 
-    /// <summary>「停下」：停在当前这款（推完照样算数；没推完的下次接着推），排着的不再推</summary>
-    private void StopUpdateSelected()
+    private async Task PushSelectedAsync(IReadOnlyList<string> order, string device)
     {
-        var batch = consoleBatch.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        phoneQueue.RemoveAll(q => q.GameId is { } id && batch.Contains(id));
-        consoleBatch.RemoveAll(id => !(installBusy && string.Equals(installGameId, id, StringComparison.OrdinalIgnoreCase)));
+        if (QueuePhone(null, () => PushSelectedAsync(order, device))) return;   // 手机上有作业在跑 → 排队
+        var front = BeginJob(JobKind.Phone); consoleJob = front; consoleDone = 0; consoleTotal = order.Count; consolePushing = null;
+        var state = "running";
         Render();
+        try
+        {
+            var extra = new Dictionary<string, object?> { ["gameIds"] = order.ToArray(), ["device"] = device };
+            var job = await PackJobClient.RunAsync(PackRequest("pushSelected", "", extra), e => Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            {
+                if (e.TryGetProperty("done", out var d) && d.ValueKind == System.Text.Json.JsonValueKind.Number) consoleDone = d.GetInt32();
+                if (e.TryGetProperty("total", out var t) && t.ValueKind == System.Text.Json.JsonValueKind.Number && t.GetInt32() > 0) consoleTotal = t.GetInt32();
+                if (e.TryGetProperty("current", out var c) && c.ValueKind == System.Text.Json.JsonValueKind.String) consolePushing = c.GetString()?.ToUpperInvariant();
+                Render();
+            }), front.Token, front.Next());
+            state = job.Report.State;
+        }
+        catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
+            InvalidOperationException or OperationCanceledException or System.ComponentModel.Win32Exception)
+        { state = error is OperationCanceledException ? "cancelled" : "failed"; Console.Error.WriteLine("S2Arm pushSelected: " + error.Message); }
+        finally { EndJob(front); consoleJob = null; consolePushing = null; DynamicFinished(state); Render(); }
+        await RefreshPhoneOverviewAsync();
     }
 
-    /// <summary>手机槽空出且队里没有了（JobSlots.EndJob）：这一轮推完就收尾、重读总览</summary>
-    private void ConsoleBatchStep()
-    {
-        if (consoleBatch.Count == 0 || ConsoleBatchDone < consoleBatch.Count) return;
-        consoleBatch.Clear();
-        _ = RefreshPhoneOverviewAsync();
-    }
+    /// <summary>「停下」：取消这一单（推完的留着；没推完的那款下次续推）</summary>
+    private void StopUpdateSelected() => consoleJob?.Cancellation.Cancel();
 
     /// <summary>游戏库列表第一行「S2Arm」</summary>
     private Control ConsoleRow()
@@ -163,10 +171,10 @@ public sealed partial class EnvironmentWindow
             var g = phone.Games.FirstOrDefault(x => string.Equals(x.GameId, game.Id, StringComparison.OrdinalIgnoreCase))
                     ?? new PhoneOverview.Game(game.Id.ToUpperInvariant(), PhoneOverview.GameState.NotPushed, [], null);
             var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
-            var box = new CheckBox { IsChecked = consoleSelection.Contains(game.Id), IsEnabled = consoleBatch.Count == 0 };
+            var box = new CheckBox { IsChecked = consoleSelection.Contains(game.Id), IsEnabled = !ConsoleUpdating };
             box.IsCheckedChanged += (_, _) => { if (box.IsChecked == true) consoleSelection.Add(game.Id); else consoleSelection.Remove(game.Id); Render(); };
             row.Children.Add(box);
-            var pushing = installBusy && consoleBatch.Contains(game.Id.ToUpperInvariant()) && string.Equals(installGameId, game.Id, StringComparison.OrdinalIgnoreCase);
+            var pushing = ConsoleUpdating && string.Equals(consolePushing, game.Id, StringComparison.OrdinalIgnoreCase);
             row.Children.Add(new TextBlock { Text = (pushing ? "⟳ " : "") + game.Name, MinWidth = 180, Foreground = Ink, VerticalAlignment = VerticalAlignment.Center });
             var (text, color) = g.State switch
             {
@@ -180,16 +188,16 @@ public sealed partial class EnvironmentWindow
             sync.Children.Add(row);
         }
         var run = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, Margin = new Thickness(0, 6, 0, 0) };
-        if (consoleBatch.Count == 0)
+        if (!ConsoleUpdating)
         {
             run.Children.Add(Primary(Tf("console.updateSelected", consoleSelection.Count), UpdateSelected, consoleSelection.Count > 0 && !offline));
             if (offline) run.Children.Add(Offline());
         }
         else
         {
-            var done = ConsoleBatchDone; var total = consoleBatch.Count;
+            var done = consoleDone; var total = Math.Max(consoleTotal, 1);
             run.Children.Add(new ProgressBar { Minimum = 0, Maximum = Math.Max(total, 1), Value = done, Width = 240, VerticalAlignment = VerticalAlignment.Center });
-            run.Children.Add(new TextBlock { Text = Tf("console.progress", Math.Min(done + 1, total), total) + (installGameName is { Length: > 0 } n ? " · " + n : ""), Foreground = Ink, VerticalAlignment = VerticalAlignment.Center });
+            run.Children.Add(new TextBlock { Text = Tf("console.progress", Math.Min(done + 1, total), total) + (consolePushing is { } cur && catalog?.Games.FirstOrDefault(g => string.Equals(g.Id, cur, StringComparison.OrdinalIgnoreCase)) is { } cg ? " · " + cg.Name : ""), Foreground = Ink, VerticalAlignment = VerticalAlignment.Center });
             run.Children.Add(Action("console.stop", StopUpdateSelected));
         }
         sync.Children.Add(run);
@@ -202,5 +210,42 @@ public sealed partial class EnvironmentWindow
         page.Children.Add(ConsoleSection("console.section.help", help));
         Avalonia.Automation.AutomationProperties.SetAutomationId(page, "console.panel");
         return Card(page, 24);
+    }
+
+    // ---- 顶栏动态窗口（同 Mac S2ArmLauncherModel+PhoneConsole「顶栏动态窗口」）：有和 App 相关的作业时「游戏库」那颗显示进度，做完闪 ✓，失败 / 停下留「!」直到点开 ----
+    private bool dynamicDone, dynamicAlert;
+
+    private void DynamicFinished(string state)
+    {
+        if (phoneOverview is null) return;
+        if (state is "succeeded" or "needsPlayer")
+        {
+            dynamicDone = true;
+            _ = Task.Delay(2000).ContinueWith(_ => Avalonia.Threading.Dispatcher.UIThread.Post(() => { dynamicDone = false; Render(); }));
+        }
+        else if (state is "failed" or "interrupted" or "cancelled" or "invalid") dynamicAlert = true;
+    }
+
+    /// <summary>顶栏「游戏库」那颗此刻显示什么；null = 照旧</summary>
+    private string? DynamicLibraryText()
+    {
+        if (phoneOverview is null) return null;
+        if (ConsoleUpdating) return "⟳ " + Tf("dynamic.batch", Math.Min(consoleDone + 1, Math.Max(consoleTotal, 1)), Math.Max(consoleTotal, 1));
+        if (installBusy || phoneUpdating)
+        {
+            var pct = installDone is { } d && installTotal is { } t && t > 0 ? " " + (100 * d / t) + "%" : "";
+            return "⟳ " + (installGameName is { Length: > 0 } n && installBusy ? n : T("console.button.update")) + pct;
+        }
+        if (dynamicAlert) return "! " + T("nav.library");
+        if (dynamicDone) return "✓ " + T("nav.library");
+        return null;
+    }
+
+    /// <summary>点动态窗口：直接到总控台（选中首位「S2Arm」），看过就收起「!」</summary>
+    private void OpenConsoleFromTopBar()
+    {
+        dynamicAlert = false;
+        selectedGame = ConsoleId;
+        Navigate("library");
     }
 }
