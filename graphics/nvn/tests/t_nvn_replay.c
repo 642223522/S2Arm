@@ -3968,8 +3968,9 @@ static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管
     for (int i = 0; i < 256; i++) g_pmem[PG + 128 + i] = (uint8_t)(i ^ 0x5a);
     g_nbw = 0;
     stream s = {0}; put_set_rt(&s, &rtt, NULL);
-    p_bind_vattr *va = put(&s, OP_BIND_VATTR, sizeof *va); va->n = 1; va_st a0 = {.fmt = 0x2A, .offset = 0, .stream = 1}; memcpy(&va->st[0], &a0, 4);
-    p_bind_vstream *vs = put(&s, OP_BIND_VSTREAM, sizeof *vs); vs->n = 2; vs->st[1].stride = 16;
+    // 属性 1 游戏设了格式、挂在流 2，但着色器不读（attr_mask = 1）：它和流 2 都不该进管线描述（管线键不烘不读的属性）
+    p_bind_vattr *va = put(&s, OP_BIND_VATTR, sizeof *va); va->n = 2; va_st a0 = {.fmt = 0x2A, .offset = 0, .stream = 1}, a1 = {.fmt = 0x2A, .offset = 4, .stream = 2}; memcpy(&va->st[0], &a0, 4); memcpy(&va->st[1], &a1, 4);
+    p_bind_vstream *vs = put(&s, OP_BIND_VSTREAM, sizeof *vs); vs->n = 3; vs->st[1].stride = 16; vs->st[2].stride = 32;
     p_bind_vbuf_single *vb = put(&s, OP_BIND_VBUF, sizeof *vb); vb->first = 1; vb->size = 64; vb->addr = base + 2 * PG + 32 - 0x1000;   // 记录里是 GPU 地址（替身的换算是 +0x1000）
     p_bind_buf *ub = put(&s, OP_BIND_UBO, sizeof *ub); ub->stage = 0; ub->index = 2; ub->addr = base + PG + 128; ub->size = 256;
     p_bind_handles *bh = put(&s, OP_BIND_TEX, sizeof *bh); bh->stage = 1; bh->first = 5; bh->n = 1; bh->h[0] = 7 | 3 << 20;
@@ -3986,6 +3987,7 @@ static void t_draw(void) {   // 绘制：状态在绘制时才变成后端的管
     CHECK(g_last_req.prim == 5 && g_last_req.rt_count == 1 && g_last_req.rt_format[0] == NVN_FORMAT_RGBA8);
     CHECK(g_last_pdesc.st[0].sh == &g_fsh[0] && g_last_pdesc.st[1].sh == &g_fsh[1] && g_last_pdesc.cfmt[0] == NVN_FORMAT_RGBA8 && g_last_pdesc.dfmt == 0);
     CHECK(g_last_pdesc.attr[0].fmt == 0x2A && g_last_pdesc.attr[0].stream == 1 && g_last_pdesc.stream[1].stride == 16);
+    CHECK(g_last_pdesc.attr[1].fmt == 0 && g_last_pdesc.attr[1].stream == 0 && g_last_pdesc.stream[2].stride == 0);   // 不读的属性与它独占的流不进管线
     { blend_st z3; memset(&z3, 0, sizeof z3); CHECK(g_last_pdesc.chmask.mask == 0xf && !memcmp(&g_last_pdesc.blend[3], &z3, sizeof z3)); }   // 只有槽 0 有图：其余槽的写掩码与混合状态清掉
     CHECK(g_last_dyn.nvp == 1 && g_last_dyn.vp[0][2] == 64 && g_last_dyn.vp[0][5] == 1 && g_last_dyn.origin_ll == 1 && g_last_dyn.st_vmask[0] == 0xff);
     CHECK(g_nvb == 3 && g_vb[0].stream == 1 && g_vb[0].off == 2 * PG + 32);              // 顶点缓冲地址做了 GPU → CPU 换算
