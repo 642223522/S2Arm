@@ -1540,8 +1540,24 @@ def main():
     # The first version's source column is unchanged; later versions are prefixed with their workspace directory name (e.g. v327680): /v327680/Shader/…, main@v327680. They sort after the first version, so existing rows keep their package indices.
     romfs_v, main_v = list_arg(romfs_l), list_arg(main_l)
     if len(romfs_v) != len(main_v): red(f'{len(romfs_v)} RomFS and {len(main_v)} main: they must pair one to one')
-    files, results, common = [], [], None
+    files, common = [], None
     nsos = {}
+    # 每个文件的结果一到就并进按键去重的总表 keys（先到先留，并入顺序同原先「全部收齐再按顺序并」：main → 大文件分段 → 逐文件 → 第二遍 Unity），
+    #   只留小件（变体配对、类型树、丢弃记录）。原先整份 results 留到最后再并：同一支着色器在多个文件里各一份字节，再加 keys、拼包记录、join 各一份，
+    #   主进程常驻是去重后着色器字节的三四倍（11-18 8 GB 机器 S 级升级实测抽取段超线）
+    keys, pairs, skipped, file_red, same_key, trees, defer = {}, set(), [], [], [], {}, []
+    per_src = collections.Counter()
+    def fold(r):
+        rel, uniq, pr, extra, sk = r
+        if extra == 'defer': defer.append(rel); return
+        if extra: trees.update(extra)
+        pairs.update(pr)
+        for x in sk: (file_red.append(x[1]) if x[0] == FILE_RED else skipped.append(x))
+        for key, v in uniq.items():
+            if key in keys:
+                if not same_shader(keys[key][2:4], v[2:4]): same_key.append(f'key {key} is the same but the control section or code area differs ({v[0]} / {keys[key][0]}): kept the first')
+                continue
+            keys[key] = v; per_src[group(v[0])] += 1
     remaining = collections.Counter(os.path.realpath(p) for p in main_v)
     for i, (romfs, mainnso) in enumerate(zip(romfs_v, main_v)):
         tag = os.path.basename(os.path.dirname(os.path.abspath(romfs))) if i else ''
@@ -1575,11 +1591,10 @@ def main():
         names = sorted(f for f in os.listdir(ued) if f.endswith('.ushaderbytecode') and not f.startswith('._')) if os.path.isdir(ued) else []
         if not names and uepak.unreal_paks(romfs, legacy=False): red(f'the RomFS has Unreal paks, but there are no decoded shader code archives in {ued} (the NSP script writes them)')
         for nm in names: found += ue_shaders(romfs_list.open_file(os.path.join(ued, nm)).read(), f'/ue_shaders/{nm}')
-        results.append(('main', {skey(c, k): (w, s, c, k) for w, s, c, k in found}, var_pairs(found), {}, []))
+        fold(('main', {skey(c, k): (w, s, c, k) for w, s, c, k in found}, var_pairs(found), {}, []))
         remaining[path] -= 1
         if not remaining[path]: del nsos[path]
     zdicts = {k: v for r in romfs_v for k, v in zs_dicts(r).items()}   # Tears of the Kingdom's zstd dictionaries (zs_dicts)
-    keys = {}
     # First pass: every file; Unity bundles carry type trees, and the Shader trees are collected on the way. Second pass: Unity serialized files without type trees are scanned again with the borrowed trees
     from pool_workers import process_pool_size, env_jobs   # tools/ is on sys.path (progress, above)
     J = process_pool_size(env_jobs('J', 'S2A_JOBS'))   # workers = J (no J = S2A_JOBS / every core); at most 61 on Windows (#1332)
@@ -1596,32 +1611,18 @@ def main():
     with cf.ProcessPoolExecutor(J, initializer=_pool_init, initargs=(common, {}, zdicts)) as ex:
         tk = Ticker('直连库·直连抽取', len(big) + len(files))
         for m in (ex.map(scan_counted, big), ex.map(scan_counted, files, chunksize=16)):
-            for r in m: results.append(r); tk.step()
-    trees, defer = {}, []
-    for rel, uniq, pr, extra, _ in results:
-        if extra == 'defer': defer.append(rel)
-        elif extra: trees.update(extra)
+            for r in m: fold(r); tk.step()
     if defer:
         # a hash no bundle supplied takes the layout unityfs.py has for it (KNOWN_TREES), then the one generated from the file's Unity version (SECOND); only here, so files a bundle lends
         # a tree to keep their place in the tables (Ace Attorney's built-ins)
         import unityfs
         for k in unityfs.KNOWN_TREES: trees.setdefault(k, unityfs.known_tree(*k))
         byrel = {r: p for p, r in files}
-        with cf.ProcessPoolExecutor(J, initializer=_pool_init, initargs=(common, trees, zdicts, True)) as ex: again = list(ex.map(scan_counted, [(byrel[r], r) for r in defer]))
-        for rel, uniq, pr, extra, _ in again:
-            if extra == 'defer': red(f'{rel}: Unity serialized file without type trees, no bundle has a Shader type tree of the same hash to borrow, and no layout comes from its Unity version (see the [RED] above)')
-        results = [r for r in results if r[3] != 'defer'] + again
-    per_src = collections.Counter(); pairs = set()
-    skipped = [x for r in results for x in r[4] if x[0] != FILE_RED]
-    file_red = [x[1] for r in results for x in r[4] if x[0] == FILE_RED]   # files left out whole (scan_counted)
-    same_key = []
-    for rel, uniq, pr, _, _ in results:
-        pairs |= pr
-        for key, v in uniq.items():
-            if key in keys:
-                if not same_shader(keys[key][2:4], v[2:4]): same_key.append(f'key {key} is the same but the control section or code area differs ({v[0]} / {keys[key][0]}): kept the first')
-                continue
-            keys[key] = v; per_src[group(v[0])] += 1
+        first, defer[:] = defer[:], []
+        with cf.ProcessPoolExecutor(J, initializer=_pool_init, initargs=(common, trees, zdicts, True)) as ex:
+            for r in ex.map(scan_counted, [(byrel[r], r) for r in first]):
+                if r[3] == 'defer': red(f'{r[0]}: Unity serialized file without type trees, no bundle has a Shader type tree of the same hash to borrow, and no layout comes from its Unity version (see the [RED] above)')
+                fold(r)
     if skipped and not keys: red(f'every Unity program block was left out ({len(skipped)}, the first: {skipped[0][0]}: {skipped[0][1]}): a reader that is wrong for this game, not bad blocks')
     # 降级汇总（v0.3.1）：读不了的文件 / 同键不同内容逐条打 [WARN]，写 <shader_map.tsv 同目录>/degrade.tsv（pack/stage_extract.sh 并进 degrade.extract.tsv，
     #   出包收尾存进任务日志目录、诊断包收它）。#1122：被丢的 Unity 程序块原先只在 split.log 打 [RED]，诊断里看不到——两位玩家 1.2.0 映射表比 1.1.0 少 53 条、无从定位
@@ -1634,19 +1635,22 @@ def main():
     os.makedirs(pkg, exist_ok=True)
     for f in os.listdir(pkg):
         if f.endswith('.bin'): os.unlink(os.path.join(pkg, f))
-    recs = collections.defaultdict(list); rows = []; facts = {}; stat = collections.Counter()
-    for key in sorted(keys, key=lambda k: (group(keys[k][0]), keys[k][0], k)):   # the same input gives byte-identical output
+    # 包文件逐条写（原先每条记录先进 recs、最后每个包 b''.join：着色器字节在内存里又多两份）；同一包内的顺序与序号同原先
+    outs = {}; nrec = collections.Counter(); rows = []; facts = {}; stat = collections.Counter()
+    try:
+      for key in sorted(keys, key=lambda k: (group(keys[k][0]), keys[k][0], k)):   # the same input gives byte-identical output
         where, st, ctl, code = keys[key]
         name = f'{st}_{group(where)}.bin'
-        rec = pkg_record(key, ctl, code)
-        rows.append((name, len(recs[name]), STAGE_NAME[st], key, where)); recs[name].append(bytes(rec)); stat[st] += 1
+        if name not in outs: outs[name] = open(os.path.join(pkg, name), 'wb')
+        outs[name].write(pkg_record(key, ctl, code))
+        rows.append((name, nrec[name], STAGE_NAME[st], key, where)); nrec[name] += 1; stat[st] += 1
         if st == 'cs':
             nvn2 = ns2.is_nvn2(ctl)
             (x, y, z), sh = ns2.compute_facts(ctl) if nvn2 else (struct.unpack_from('<3I', ctl, 0x748), struct.unpack_from('<I', ctl, 0x754)[0])
             if not x * y * z: red(f'compute shader {key}: control +{0x58 if nvn2 else 0x748:#x} thread group is 0 ({where})')
             facts[key] = {'local': [x, y, z], 'shared': (sh + 15) // 16 * 16}
-    for name, rr in recs.items():
-        with open(os.path.join(pkg, name), 'wb') as f: f.write(b''.join(rr))
+    finally:
+        for f in outs.values(): f.close()
     with open(mapout, 'w') as f:
         kinds = ' / '.join(k for k, hit in (('BNSH / BAHS', any('#BNSH@' in r[4] or '#BAHS@' in r[4] for r in rows)), ('Unity Shader', any('#var' in r[4] and '#BNSH@' not in r[4] and '#MSHD#' not in r[4] and '#SDF#' not in r[4] for r in rows)),
                                             ('MSHD', any('#MSHD#' in r[4] for r in rows)), ('GLSLC', any('#GLSLC@' in r[4] or '#GLSLC2@' in r[4] for r in rows)), ('RE Engine SDF', any('#SDF#' in r[4] for r in rows)),

@@ -2,7 +2,8 @@
 # zstd 解压入口单测（graphics/tools/shbake/zstd_lib.py，11-02 出包线：玩家 App 的 Python 3.12 没有 compression.zstd，改调 zstd 命令旁边的 libzstd）：约 1 秒，退出 0 = 全过
 # 夹具都用 zstd 命令行压（不跑被测实现、不依赖 Python 的 zstd 模块），期望 = 原文：
 #   ① 记原长的帧；② 管道压出的不记原长的帧 + ① 首尾相接 → 两份原文；③ 只要前 7 字节；④ zstd --train 训出的字典压、按字典解；
-#   ⑤ 反证：截断 10 字节 → ZstdError；不是 zstd → ZstdError；⑥ 字典帧不给字典 → ZstdError（不静默出错字节）；⑦ 解出恰好一个输出缓冲（131072）及其倍数不误判截断
+#   ⑤ 反证：截断 10 字节 → ZstdError；不是 zstd → ZstdError；⑥ 字典帧不给字典 → ZstdError（不静默出错字节）；⑦ 解出恰好一个输出缓冲（131072）及其倍数不误判截断；
+#   ⑧ 连解 5 次数据缓冲不进引用环（循环垃圾里的 ctypes 数组实例 0 个）
 import os, sys, random, subprocess, tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))); import zstd_lib
 fail = cases = 0
@@ -33,6 +34,13 @@ for n in (131072, 262144):
     ce = subprocess.run(['zstd', '-q', '-c', '--check', fe], capture_output=True, check=True).stdout
     got = err(lambda: zstd_lib.decompress(ce))
     ck(got == '没报' and zstd_lib.decompress(ce) == E, f'⑦ 解出恰好 {n} 字节（带校验和）：不报截断、逐字节同原文（实得 {got}）')
+# ⑧ 数据缓冲不进引用环（11-18：原先 ctypes.cast 取指针，结果与缓冲区互相引用，整份压缩数据与输出缓冲要等循环垃圾回收才放）：
+#   关掉自动回收连解 5 次，循环垃圾里的 ctypes 数组实例（数据缓冲）= 0 个（create_string_buffer 每种长度新建的数组类型是自引用小对象，不算）
+import ctypes, gc
+gc.disable(); gc.collect(); gc.set_debug(gc.DEBUG_SAVEALL)
+for _ in range(5): zstd_lib.decompress(c)
+gc.collect(); nbuf = sum(isinstance(o, ctypes.Array) for o in gc.garbage); gc.set_debug(0); gc.garbage.clear(); gc.enable()
+ck(nbuf == 0, f'⑧ 连解 5 次数据缓冲不进引用环：循环垃圾里的缓冲 {nbuf} 个（期望 0）')
 r1, r2, r3 = err(lambda: zstd_lib.decompress(c[:-10])), err(lambda: zstd_lib.decompress(b'not zstd at all')), err(lambda: zstd_lib.decompress(dc))
 ck(r1.startswith('ZstdError') and r2.startswith('ZstdError'), f'⑤ 截断 → {r1}；不是 zstd → {r2}')
 ck(r3.startswith('ZstdError'), f'⑥ 字典帧不给字典 → {r3}')
