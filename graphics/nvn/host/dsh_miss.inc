@@ -6,6 +6,36 @@ static _Atomic uint64_t g_dsh_eager_n, g_dsh_eager_ok, g_dsh_eager_hit, g_dsh_ea
 // 开发浮层「首遇现建」读（runtime/src/hud.c 经 dlsym）：成功 / 失败 / 跳过 / 复用上局 / 输出类型变体
 void s2a_dsh_stats(uint64_t out[5]) { out[0] = atomic_load(&g_dsh_ok); out[1] = atomic_load(&g_dsh_failed); out[2] = atomic_load(&g_dsh_skipped); out[3] = atomic_load(&g_dsh_reused); out[4] = atomic_load(&g_dsh_typed); }
 static void dsh_salvage_summary(void);   // 着色器补料收局一行（dsh_salvage.inc，在下面才包含）
+// 着色器覆盖计数（0.6.0「出包着色器全覆盖」；电脑端「建议重新出包」角标读，pack/jobs）：每支「包里没有、在这台设备上第一次翻译」的着色器 +1，
+//   写进兜底目录（DM_MSL_FALLBACK = <游戏目录>/wire/<程序号>/shaders）往上三级的 <游戏目录>/shader_fallback.json = {"count": 累计, "at": Unix 秒, "app": App 版本}：
+//   iOS Documents/games/<程序号>/、Mac 游戏库 temp/<程序号>/。只加不减；读兜底缓存复用的不计（那支包里同样没有，但第一次翻时已计过）。
+//   合并写：累加在内存里，最多每 2 秒落一次盘（首遇一帧可能几百支，不在提交线程上逐支写盘）
+const char *s2a_app_version(void) __attribute__((weak));   // host_adapt.m：iOS 的 App 版本；Mac 宿主是命令行程序，没有（"app" 写空）
+// 成功 0；兜底目录不是 …/wire/<程序号>/shaders 这种形状 → -1（不往别处写）
+static int sfb_write(const char *fb, uint64_t add, const char *app) {
+    size_t n = fb ? strlen(fb) : 0; if (n < 30) return -1;
+    const char *sh = fb + n - 8; if (strcmp(sh, "/shaders")) return -1;   // …/wire/<16 位程序号>/shaders
+    const char *tid = sh - 16, *wire = tid - 6;
+    if (tid < fb + 6 || strncmp(wire, "/wire/", 6)) return -1;
+    for (int i = 0; i < 16; i++) { char c = tid[i]; if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) return -1; }
+    char path[1200], tmp[1220]; snprintf(path, sizeof path, "%.*s/shader_fallback.json", (int)(wire - fb), fb); snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    unsigned long long old = 0; FILE *f = fopen(path, "r");
+    if (f) { char b[256]; size_t z = fread(b, 1, sizeof b - 1, f); fclose(f); b[z] = 0; const char *c = strstr(b, "\"count\""); if (c) sscanf(c, "\"count\": %llu", &old); }
+    if (!(f = fopen(tmp, "w"))) return -1;
+    fprintf(f, "{\"count\": %llu, \"at\": %lld, \"app\": \"%s\"}\n", old + (unsigned long long)add, (long long)time(NULL), app ? app : "");
+    if (fclose(f) || rename(tmp, path)) { unlink(tmp); return -1; }
+    return 0;
+}
+static _Atomic uint64_t g_sfb_new; static _Atomic int g_sfb_sched;
+static void sfb_flush(void *u) {
+    (void)u; atomic_store(&g_sfb_sched, 0);
+    uint64_t n = atomic_exchange(&g_sfb_new, 0); if (!n) return;
+    sfb_write(getenv("DM_MSL_FALLBACK"), n, s2a_app_version ? s2a_app_version() : "");
+}
+static void sfb_note(void) {   // 一支「包里没有」的着色器在这台设备上第一次翻译好了
+    atomic_fetch_add(&g_sfb_new, 1);
+    if (!atomic_exchange(&g_sfb_sched, 1)) dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, 2 * (int64_t)NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), NULL, sfb_flush);
+}
 static void dsh_summary(int normal) {
     if (s2a_gfx_mode() != S2A_GFX_DIRECT) return;
     LOG("直连着色器现编汇总：成功 %llu、失败 %llu、跳过 %llu、复用上局 %llu、输出类型变体 %llu（%s）",
@@ -339,7 +369,7 @@ int dm_shader_miss_late(const char *k16, uint64_t code, const void *control) {
                 int st = e->st; free(e); dsh_job_put(j);
                 mtl_shmap_rt_add(k, dsh_nm[st]); atomic_fetch_add(&g_dsh_eager_hit, 1);
                 uint64_t n = atomic_fetch_add_explicit(&g_dsh_ok, 1, memory_order_relaxed) + 1;
-                LOG("直连着色器首遇现编 %llu 次：%s（%s，后台预编好，提交线程等 %.1f ms）", (unsigned long long)n, k, dsh_nm[st], (now_ns() - w0) / 1e6);
+                LOG("直连着色器首遇现编 %llu 次：%s（%s，后台预编好，提交线程等 %.1f ms）", (unsigned long long)n, k, dsh_nm[st], (now_ns() - w0) / 1e6); sfb_note();
                 return 1;
             }
         }
@@ -363,7 +393,7 @@ int dm_shader_miss_late(const char *k16, uint64_t code, const void *control) {
         free(ectl); return 0; }
     mtl_shmap_rt_add(k, dsh_nm[st]);
     uint64_t n = atomic_fetch_add_explicit(&g_dsh_ok, 1, memory_order_relaxed) + 1;
-    LOG("直连着色器首遇现编 %llu 次：%s（%s，%.1f ms）", (unsigned long long)n, k, dsh_nm[st], (now_ns() - t0) / 1e6);
+    LOG("直连着色器首遇现编 %llu 次：%s（%s，%.1f ms）", (unsigned long long)n, k, dsh_nm[st], (now_ns() - t0) / 1e6); sfb_note();
     return 1;
 }
 
