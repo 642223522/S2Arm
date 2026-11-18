@@ -236,6 +236,7 @@ static int dump_mem(FILE *f, uint64_t *raw_out, uint64_t *comp_out, int *nreg) {
     uint64_t sb[1024], sn[1024]; int ns = s2a_snap_shared_ranges(sb, sn, 1023);
     { int s2a_far_shadow_in_window(uint64_t *, uint64_t *); uint64_t fl, fh; if (s2a_far_shadow_in_window(&fl, &fh)) { sb[ns] = fl; sn[ns++] = fh - fl; } }   // 远端影子块按游戏地址另存（far.bin）
     span_t *sp = NULL; int nsp = 0, cap = 0; *nreg = 0;
+    int s2a_guest_fd(void); int gfd = s2a_guest_fd(); uint64_t nfile = 0;   // vawin.c：客体内存文件后备的描述符（没开 = -1）
     struct { uint64_t a, n; int prot; } *nr = NULL; int nnr = 0, cnr = 0;   // 临时加了读权限的段（存完原样还原）
     g_dump_noread = 0; g_dump_noread_b = 0;
     // 1) 收集要存的连续页段：当前可读、非代码、不在服务层共享内存里、驻留（含换出）、非全零
@@ -253,6 +254,15 @@ static int dump_mem(FILE *f, uint64_t *raw_out, uint64_t *comp_out, int *nreg) {
             nr[nnr].a = lo; nr[nnr].n = hi - lo; nr[nnr].prot = info.protection; nnr++; }
         (*nreg)++;
         size_t np = (size_t)((hi - lo) / pg); char *vec = malloc(np); if (!vec || mincore((void *)lo, hi - lo, vec)) { free(vec); continue; }
+        // 文件后备窗口（S2A_GUEST_FILE，iPhone 缺省开；runtime/src/vawin.c 窗口映射在后备文件偏移 0）：写过的页被系统写回文件、撤出内存后，mincore 既不报
+        //   驻留也不报换出（换出标志只管匿名内存），原先按「没碰过」跳过，恢复后是全零（11-17 iPhone 一款大游戏恢复后 6 秒崩在分配器读空指针，同款 Mac 没开后备、正常）。
+        //   后备文件是稀疏的：从没写过 / 游戏还页打过洞的地方是洞。这段在文件里有数据的页，mincore 没报也照样读（读时系统从文件读回）
+        if (gfd >= 0) for (off_t o = (off_t)(lo - base), end = (off_t)(hi - base); o < end; ) {
+            off_t d = lseek(gfd, o, SEEK_DATA); if (d < 0 || d >= end) break;
+            off_t h = lseek(gfd, d, SEEK_HOLE); if (h < 0 || h > end) h = end;
+            for (off_t q = d & ~(off_t)(pg - 1); q < h; q += pg) { size_t i = (size_t)((uint64_t)q - (lo - base)) / pg; if (i < np && !(vec[i] & (MINCORE_INCORE | MINCORE_PAGED_OUT))) { vec[i] |= MINCORE_PAGED_OUT; nfile++; } }
+            o = h;
+        }
         for (size_t i = 0; i < np; i++) {
             uint64_t pa = lo + i * pg;
             if (!(vec[i] & (MINCORE_INCORE | MINCORE_PAGED_OUT))) continue;
@@ -280,6 +290,7 @@ static int dump_mem(FILE *f, uint64_t *raw_out, uint64_t *comp_out, int *nreg) {
     }
     uint64_t z = 0; e |= fwrite(&z, 8, 1, f) != 1;
     for (int i = 0; i < nnr; i++) mprotect((void *)nr[i].a, nr[i].n, (nr[i].prot & VM_PROT_WRITE ? PROT_WRITE : 0) | (nr[i].prot & VM_PROT_EXECUTE ? PROT_EXEC : 0));   // 还原（原先没有读）
+    if (gfd >= 0) LOG("即时存档：客体内存文件后备 已写回文件、不在内存里的页 %llu 个按文件数据区补存（%.1f MB）", (unsigned long long)nfile, nfile * (double)pg / 1048576.0);
     if (nnr) LOG("即时存档：不可读的内存段 %d 段 %.1f MB 临时加读存进快照（游戏设的权限，恢复时照权限账收回）", nnr, g_dump_noread_b / 1048576.0);
     free(nr); free(sp); *raw_out = raw; *comp_out = comp; return e ? -1 : 0;
 }
