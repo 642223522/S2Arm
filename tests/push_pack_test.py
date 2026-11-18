@@ -190,10 +190,10 @@ class Apply(Base):
     def test_pushed_waits_for_new_done_line(self):
         self.assertTrue(self.ap({}, 1, True)); self.assertEqual(self.dev.launches, [{"S2A_PACK_APPLY_ONLY": "1"}])
 
-    def cant_launch(self, player_opens_at=None):
+    def cant_launch(self, player_opens_at=None, why="RSD 里没有 app_service"):
         """电脑拉不起 App（#192）；player_opens_at 给了就在该时刻起算玩家手动打开、解完。返回 (结果或异常, 结束时刻)"""
         dev = Fake({}); self.dev = dev; clock = [0.0]
-        def boom(env): raise push.Fail("起 App 失败：RSD 里没有 app_service")
+        def boom(env): raise push.Fail("起 App 失败：" + why)
         dev.launch = boom
         def sleep(x):
             clock[0] += x
@@ -215,6 +215,20 @@ class Apply(Base):
     def test_cant_launch_not_locked_says_how_to_fix(self):   # 报错不是锁屏那句：原因写开发者模式 / 信任开发者，不说锁屏
         r, _ = self.cant_launch()
         self.assertIn("开发者模式", str(r)); self.assertIn("VPN 与设备管理", str(r)); self.assertNotIn("锁着屏", str(r))
+
+    def test_cant_launch_untrusted_says_trust_or_renew_with_name(self):
+        # 手机拒绝打开（devicectl 原文一句包三种原因：没信任开发者 / 签名过期 / 换了团队）：两步都写，装机时读到的证书名填进要点的那一项；
+        #   读不到名字时写「点你的开发者 App」。期望手写
+        why = ("Unable to launch io.s2arm.games.T because it has an invalid code signature, inadequate entitlements "
+               "or its profile has not been explicitly trusted by the user.")
+        with mock.patch.dict(os.environ, {"S2A_TRUST_NAME": "Apple Development: tester@example.com (ABCDE12345)"}):
+            r, _ = self.cant_launch(why=why)
+        self.assertIsInstance(r, push.NeedsPlayer)
+        self.assertIn("设置 → 通用 → VPN 与设备管理 → 点「Apple Development: tester@example.com (ABCDE12345)」 → 信任", str(r))
+        self.assertIn("续签 S2Arm", str(r)); self.assertNotIn("开发者模式", str(r))
+        with mock.patch.dict(os.environ, {"S2A_TRUST_NAME": ""}):
+            r, _ = self.cant_launch(why=why)
+        self.assertIn("点你的开发者 App → 信任", str(r))
 
     def locked_then(self, unlock_at=None):
         """锁屏（11-09 测试设备实测：锁屏时写文件照样成功，只有拉 App 失败，报 XPC response missing CoreDevice.output）；unlock_at 给了就在该时刻解锁，之后拉得起、拉起即解完。返回 (结果或异常, 结束时刻, 拉了几次)"""

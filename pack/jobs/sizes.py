@@ -108,6 +108,9 @@ def categories(c, gid, d=None, state=None):
         rest = [p for p in d.iterdir() if p not in named]
     except OSError:
         rest = []
+    # 玩家自己导入的客体着色器缓存（启动器「导入着色器缓存」→ <私有目录>/着色器缓存/<程序号>，出包时并入；docs/客体着色器缓存导入.md）：
+    #   玩家带来的、删了现建不回来，不是运行时缓存（游戏文件夹 shader-cache/ 才是，玩的时候自己长）→ 归这款的「玩家数据」
+    rest.append(c.private / "着色器缓存" / gid)
     state = {} if state is None else state
     for k, paths in (("resources", res), ("programs", prog), ("playerData", rest), ("cache", cache)):
         out[k] = _bytes([p for p in paths if os.path.lexists(p)], state=state)

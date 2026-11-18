@@ -138,6 +138,15 @@ def _sign_mode(c, rec, signed):
     return "external" if rec.get("games") or rec.get("shellId") else None
 
 
+def _can_sign(rec):
+    """这台手机上的 S2Arm 有没有能自己签程序的身份（完成页「未签名导出」要不要补「导入后要回电脑更新」）：
+    设备记录里有交过的身份（install.deliver_identity 写的 identity：Windows Apple ID 的私钥或证书用户的证书）→ True；
+    我们装过 App（有壳号）却没交过 → False（换了团队 = 换包名，install.forget_other_app 会把旧身份一并清掉，同样落到 False）；没有这台的记录 → None"""
+    if (rec.get("identity") or {}).get("cert_sha1"):
+        return True
+    return False if rec.get("shellId") else None
+
+
 def phone_overview(c):
     """0.6.0 通用壳（开关后面）：「iPhone 总控台」的只读总览。每台见过的手机（设备记录）：名字、App 装没装、壳是不是本版、签名时刻 /
     免费账号与否 / 按苹果规则估的到期时刻 / 上次连上（lastSeen = 设备记录最后一次写入：装 App、推游戏时连着才会写）；每款状态 latest（最新）|
@@ -190,7 +199,7 @@ def phone_overview(c):
                      shellCurrent=bool(sid) and rec.get("shellId") == sid, signedAt=at, free=free, signMode=_sign_mode(c, rec, signed),
                      expiresAtEstimate=(at + SIGN_LIFETIME["free" if free else "paid"]) if at else None,
                      remainingDays=max(0, math.ceil((at + SIGN_LIFETIME["free" if free else "paid"] - time.time()) / 86400)) if at else None,
-                     lastSeen=rec.get("at") if isinstance(rec.get("at"), (int, float)) else None, games=games)
+                     lastSeen=rec.get("at") if isinstance(rec.get("at"), (int, float)) else None, canSign=_can_sign(rec), games=games)
         if online is not None:
             phone["online"] = online.get(key)
         phones.append(phone)
