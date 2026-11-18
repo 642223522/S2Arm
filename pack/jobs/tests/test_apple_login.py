@@ -138,23 +138,35 @@ class SignerSwitched(unittest.TestCase):
 @unittest.skipIf(os.name == "nt", "Mac 打包")
 class BundlePlumesign(unittest.TestCase):
     def test_hash_pinned(self):
+        # 随包的是自编修改版：只从缓存取（不再下载），缓存缺 / 哈希不符都拒打；补丁原文与「修改版」说明随包
         sys.path.insert(0, str(ROOT / "launchers/macos"))
         import build_app
         import impactor
+        import hashlib
         t = Path(tempfile.mkdtemp()); self.addCleanup(__import__("shutil").rmtree, t, True)
+        with self.assertRaises(SystemExit) as e:
+            build_app.bundle_plumesign(t / "res0", cache=t / "empty")
+        self.assertIn("plumesign_build.py", str(e.exception))
+        (t / "cache").mkdir(); (t / "cache/plumesign-macos-universal").write_bytes(b"not it")
         with patch.object(impactor, "BUNDLED_MAC", {"plumesign-macos-universal": "00" * 32}):
             with self.assertRaises(SystemExit) as e:
-                build_app.bundle_plumesign(t / "res", cache=t / "cache", fetch=lambda url, to: Path(to).write_bytes(b"not it"))
+                build_app.bundle_plumesign(t / "res", cache=t / "cache")
             self.assertIn("拒打", str(e.exception))
-        import hashlib
         body = b"fake plumesign"
+        (t / "cache/plumesign-macos-universal").write_bytes(body)
         with patch.object(impactor, "BUNDLED_MAC", {"plumesign-macos-universal": hashlib.sha256(body).hexdigest()}):
-            (t / "cache/plumesign-macos-universal").write_bytes(body)
-            build_app.bundle_plumesign(t / "res2", cache=t / "cache", fetch=lambda url, to: self.fail("缓存里有就不下"))
-        out = t / "res2" / impactor.BUNDLE_DIR / "plumesign-macos-universal"
+            build_app.bundle_plumesign(t / "res2", cache=t / "cache")
+        d = t / "res2" / impactor.BUNDLE_DIR
+        out = d / "plumesign-macos-universal"
         self.assertEqual(out.read_bytes(), body)
         self.assertTrue(os.access(out, os.X_OK))
         self.assertEqual(impactor.bundled(str(t / "res2")), {"plumesign": str(out)})
+        self.assertTrue((d / "0001-anisette-v3-server.patch").is_file())
+        self.assertIn("修改版", (d / "README-来源与许可.txt").read_text(encoding="utf-8"))
+
+    def test_pinned_mac_hash_is_own_build(self):
+        import impactor
+        self.assertEqual(impactor.BUNDLED_MAC, {"plumesign-macos-universal": "d3ca590e1e92a1e7416f1c27c1ec6749c4ad05389c9c8724faaa53bbf63ce511"})
 
 
 if __name__ == "__main__":

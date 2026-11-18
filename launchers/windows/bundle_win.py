@@ -34,7 +34,7 @@ import bundle_runtime_win   # noqa: E402
 sys.path.insert(0, str(ROOT / "pack/jobs"))
 import impactor   # noqa: E402  随包 Impactor 的版本 / 文件名 / 哈希只此一份（作业层按同一份找）
 
-IMPACTOR_LICENSES = ROOT / "launchers/windows/third_party/impactor"   # v2.7.3 标签下的 LICENSE 与 3rdparty/apple-codesign-0.29.0/LICENSE 原文
+IMPACTOR_LICENSES = ROOT / "launchers/windows/third_party/impactor"   # v2.7.3 标签下的 LICENSE 与 3rdparty/apple-codesign-0.29.0/LICENSE 原文；patches/ 是自编补丁
 
 
 def say(m): print(m, flush=True)
@@ -74,38 +74,39 @@ def sha256(path):
 
 
 def impactor_cache():
-    return Path(os.environ.get("S2A_IMPACTOR_CACHE") or Path(os.environ.get("S2A_RUN_ROOT") or Path.home() / ".s2arm/run") / "s2arm/cache/impactor" / ("v" + impactor.TESTED))
+    return Path(os.environ.get("S2A_IMPACTOR_CACHE") or Path(os.environ.get("S2A_RUN_ROOT") or Path.home() / ".s2arm/run")
+                / "s2arm/cache/impactor" / f"v{impactor.TESTED}-{impactor.OWN_BUILD}")
 
 
-def bundle_impactor(dest, cache=None, fetch=None):
-    """官方原版 Impactor + plumesign 随启动器下发（11-07 维护者：玩家不再跳转下载）：缓存里有就用（离线构建），没有从官方发布页下；
-    逐个核 SHA-256 = impactor.BUNDLED，不符报红拒打（不改、不重签、不换版本）；附许可原文与来源说明"""
-    cache = Path(cache or impactor_cache()); cache.mkdir(parents=True, exist_ok=True); dest = Path(dest); dest.mkdir(parents=True)
-    if fetch is None:
-        import urllib.request
-        fetch = lambda url, to: urllib.request.urlretrieve(url, to)   # noqa: E731
+IMPACTOR_PATCHES = IMPACTOR_LICENSES / "patches"
+
+
+def bundle_impactor(dest, cache=None):
+    """自编的 Impactor + plumesign 随启动器下发（11-07 维护者：玩家不再跳转下载；11-18 起自编，见 pack/jobs/impactor.py OWN_BUILD）：
+    从自编产物缓存取（tools/plumesign_build.py 编出的 dist/ 放进 impactor_cache()），逐个核 SHA-256 = impactor.BUNDLED，不符报红拒打；
+    缓存里没有就报红说清怎么编，不去官方发布页下（官方原版没有补丁）。附许可原文、补丁与来源说明"""
+    cache = Path(cache or impactor_cache()); dest = Path(dest); dest.mkdir(parents=True)
     lines = []
     for name, want in impactor.BUNDLED.items():
         src = cache / name
         if not src.is_file():
-            say(f"[组装] 下载 {name}（官方发布页 v{impactor.TESTED}）"); tmp = src.with_suffix(".part")
-            try:
-                fetch(impactor.DOWNLOAD + name, tmp)
-            except OSError as e:   # 11-07 Windows 出包机直连 github.com 被重置：Windows 出包机多半下不了，先在能连 GitHub 的机器（Mac 构建机）下好、核过哈希放进缓存
-                raise SystemExit(f"【红】取不到 {impactor.DOWNLOAD + name}（{e}）：在能连 GitHub 的机器上下好放进 {cache}（或用 S2A_IMPACTOR_CACHE 指过去）再打")
-            tmp.replace(src)
+            raise SystemExit(f"【红】自编产物缓存里没有 {name}（{cache}）：在 Windows 实机跑 python tools/plumesign_build.py <工作目录>，"
+                             f"把 <工作目录>/dist/ 下的文件放进 {cache}（或用 S2A_IMPACTOR_CACHE 指过去）再打")
         got = sha256(src)
         if got != want:
-            raise SystemExit(f"【红】{src} 的 SHA-256 是 {got}，钉的是 {want}（{impactor.RELEASE_PAGE}）：不是官方 v{impactor.TESTED} 原版，拒打")
+            raise SystemExit(f"【红】{src} 的 SHA-256 是 {got}，钉的是 {want}：不是 tools/plumesign_build.py 自编的 v{impactor.TESTED}-{impactor.OWN_BUILD}，拒打")
         shutil.copy2(src, dest / name); lines.append(f"{name}\t{src.stat().st_size} 字节\tSHA-256 {want}")
     for f in sorted(IMPACTOR_LICENSES.glob("LICENSE-*.txt")): shutil.copy2(f, dest / f.name)
+    patches = sorted(IMPACTOR_PATCHES.glob("*.patch"))
+    for f in patches: shutil.copy2(f, dest / f.name)
     (dest / "README-来源与许可.txt").write_text("\r\n".join([
-        f"Impactor v{impactor.TESTED}（第三方开源工具，作者 Samara M / claration，MIT 许可：LICENSE-Impactor-MIT.txt）",
-        "S2Arm 原样随附官方发布文件，未修改、未重新签名，用于把出好的 iPhone 包签名并装到你的 iPhone；Apple ID 密码只在 Impactor 里输入、只发给 Apple。",
-        f"来源：{impactor.RELEASE_PAGE}", *lines,
-        "其中内嵌的 apple-codesign 0.29.0 以 MPL-2.0 发布（LICENSE-apple-codesign-MPL-2.0.txt），源码：",
-        f"  https://github.com/claration/impactor/tree/v{impactor.TESTED}/3rdparty/apple-codesign-0.29.0",
-        f"Impactor 完整源码：https://github.com/claration/impactor/tree/v{impactor.TESTED}", ""]), encoding="utf-8")
+        f"Impactor v{impactor.TESTED}（第三方开源工具，作者 Samara M / claration，MIT 许可：LICENSE-Impactor-MIT.txt）的修改版，用于把出好的 iPhone 包签名并装到你的 iPhone；",
+        "Apple ID 密码只在 Impactor 里输入、只发给 Apple。",
+        f"S2Arm 基于上游 v{impactor.TESTED} 源码打上以下补丁后自行编译（随附补丁原文）：" + "、".join(f.name for f in patches),
+        "  改动只有一处：默认 anisette 服务器被 Apple 以 SRP -23782（要求 macOS 10.13 以上）拒绝登录时，换用备用服务器重试并记住。",
+        f"上游源码：{impactor.SOURCE_TREE}", *lines,
+        "其中内嵌的 apple-codesign 0.29.0（未修改）以 MPL-2.0 发布（LICENSE-apple-codesign-MPL-2.0.txt），源码：",
+        f"  {impactor.SOURCE_TREE}/3rdparty/apple-codesign-0.29.0", ""]), encoding="utf-8")
 
 
 def smoke_reader(runtime, engine):
