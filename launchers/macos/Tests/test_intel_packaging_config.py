@@ -8,6 +8,7 @@ toolchain pins and RIDs, while the Apple Silicon path stays unchanged.
 import pathlib
 import re
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -93,6 +94,16 @@ class IntelPackagingConfigTest(unittest.TestCase):
         tvos = re.search(r"^TVOS_SDK_MAJOR=(\d+)$", text, re.M)
         self.assertEqual(ios.group(1), "26")
         self.assertEqual(tvos.group(1), "26")
+
+    def test_declared_minimum_follows_bundled_binaries(self):
+        import runtime_audit
+        with tempfile.TemporaryDirectory() as folder:
+            binary = pathlib.Path(folder) / "bash"
+            binary.write_bytes(b"\xcf\xfa\xed\xfe")
+            info = "cmd LC_BUILD_VERSION\n platform MACOS\n    minos 26.0\n"
+            with mock.patch.object(runtime_audit.subprocess, "check_output", return_value=info):
+                self.assertEqual(runtime_audit.declared_minimum_macos(folder, "15.0"), "26.0")
+                self.assertEqual(runtime_audit.declared_minimum_macos(folder, "27.0"), "27.0")
 
 
 if __name__ == "__main__":

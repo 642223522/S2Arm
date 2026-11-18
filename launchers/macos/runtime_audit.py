@@ -42,6 +42,17 @@ def version_tuple(text):
     return tuple(int(part) for part in text.split('.'))
 
 
+def declared_minimum_macos(root,base):
+    """包内 Mach-O 实际要求的最低系统高于 base（出包 MacPorts bash 要求 26）时照实抬高声明。"""
+    highest=base
+    for path in Path(root).rglob('*'):
+        if path.is_symlink() or not path.is_file() or not macho(path):
+            continue
+        for minimum in minimum_macos(subprocess.check_output(['vtool','-show-build',path],text=True)):
+            if version_tuple(minimum)>version_tuple(highest): highest=minimum
+    return highest
+
+
 def verify_minimum_macos(app,declared):
     """App 声明支持 declared，包内每个 macOS 程序的最低系统都不能更高。返回检查的 Mach-O 个数。"""
     app=Path(app).resolve();limit=version_tuple(declared);bad=[];count=0

@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import sys
 from bundle_engine import bundle, seal_runtime
-from runtime_audit import verify_minimum_macos, verify_portable_runtime
+from runtime_audit import declared_minimum_macos, verify_minimum_macos, verify_portable_runtime
 import runtime_sources
 from bundle_runtime import TOOLS, runtime_deps_fingerprint
 import frontend_layout
@@ -242,8 +242,9 @@ def main():
     bundle(resources / "Engine", args.developer_dir)
     bundle_shell(resources / "Engine/engine.json", resources / "Shell", env)
     bundle_shell(resources / "Engine/engine.json", resources / "Shell-tvOS", env, "tvos")   # Apple TV 预编壳（0.5.2：0.5.0 发版没带，出 Apple TV 包必败）
+    declared_min = declared_minimum_macos(app, runtime_sources.deployment_target())   # 随包程序（Intel 的 MacPorts bash）要求高于编译下限时照实声明，不谎报最低系统
     info = dict(**frontend_layout.info_identity(front), CFBundlePackageType="APPL",
-                CFBundleIconFile="S2Arm", LSMinimumSystemVersion=runtime_sources.deployment_target(),
+                CFBundleIconFile="S2Arm", LSMinimumSystemVersion=declared_min,
                 NSHighResolutionCapable=True, CFBundleDevelopmentRegion="en", CFBundleLocalizations=["en", "zh-Hans", "zh-Hant", "ja", "es", "fr"],   # 同界面语言（frontend/l10n）；系统语言不在其中时照 CFBundleDevelopmentRegion 用英文
                 NSBluetoothAlwaysUsageDescription=json.loads((ROOT / "launchers/macos/frontend/l10n/en.json").read_text())["bluetooth.usage"],
                 **release_identity(resources / "Engine/engine.json"))
@@ -274,7 +275,7 @@ def main():
             subprocess.run(["codesign", "--force", "--sign", "-", str(p)], env=env, check=True)
     subprocess.run(["codesign", "--force", "--sign", "-", str(app)], env=env, check=True)
     subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], env=env, check=True)
-    print("最低系统检查：", verify_minimum_macos(app, runtime_sources.deployment_target()), "个 Mach-O")
+    print("最低系统检查：", verify_minimum_macos(app, declared_min), "个 Mach-O（声明", declared_min + "）")
     smoke_env = dict(env, PATH="/usr/bin:/bin:/usr/sbin:/sbin", PYTHONNOUSERSITE="1")
     subprocess.run([str(resources / "Runtime/python/bin/python3"), "-B", "-I", "-c",
                     "import capstone,lz4.block,numpy,zstandard; "
