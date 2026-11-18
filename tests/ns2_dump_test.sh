@@ -80,6 +80,7 @@ chk('① aoc.tsv', open(f'{o}/aoc.tsv').read() == 'idx\ttitle_id\tversion\tfiles
 n = open(f'{o}/ctl/control.nacp', 'rb').read()
 chk('① nacp 0x4000 字节', len(n) == 0x4000, len(n))
 chk('① nacp 存档属主 = 程序号', struct.unpack_from('<Q', n, 0x3078)[0] == TID)
+chk('① nacp 应用号（0x3038）= 程序号（安卓出包 / 装机 / 启动按它认游戏，0 则出包末步停）', struct.unpack_from('<Q', n, 0x3038)[0] == TID, hex(struct.unpack_from('<Q', n, 0x3038)[0]))
 chk('① nacp 标题 16 份', all(n[i * 0x300:i * 0x300 + 4] == b'Game' for i in range(16)))
 chk('① nacp 支持语言只声明美式英语（#401：留 0 = 一种都不支持，系统语言原样给游戏）', struct.unpack_from('<I', n, 0x302C)[0] == 1, hex(struct.unpack_from('<I', n, 0x302C)[0]))
 chk('① nacp 账号存档 128/64 MB', struct.unpack_from('<qq', n, 0x3080) == (0x08000000, 0x04000000))
@@ -179,6 +180,7 @@ rc, out = run(d9, o9); g9 = open(f'{o9}/ctl/control.nacp', 'rb').read()
 chk('⑨ 标题照原件', rc == 0 and g9[0:6] == b'Pokoti' and g9[0x200:0x206] == b'Publsh', out)
 chk('⑨ 补存档字段、语言位 0', g9[0x3025] == 1 and struct.unpack_from('<Q', g9, 0x3078)[0] == 0x040074A01BF12000 and struct.unpack_from('<q', g9, 0x3080)[0] == 0x08000000
     and struct.unpack_from('<q', g9, 0x3088)[0] == 0x04000000 and struct.unpack_from('<I', g9, 0x302C)[0] == 0, g9[0x3020:0x3090].hex())
+chk('⑨ 补应用号（0x3038）= 程序号', struct.unpack_from('<Q', g9, 0x3038)[0] == 0x040074A01BF12000, hex(struct.unpack_from('<Q', g9, 0x3038)[0]))
 # ⑥ 识别：本身 / 下一层；不是导出目录退出 1
 rc, out = run('--detect', d); chk('⑥ 本身', rc == 0 and out.startswith('040074A01BF12000\t'), out)
 os.makedirs(f'{T}/lib/040074A01BF12000'); os.rename(d, f'{T}/lib/040074A01BF12000/Game')

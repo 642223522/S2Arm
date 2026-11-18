@@ -25,6 +25,44 @@ regenerated signing certificates, live in `OHOS_EMU_HOME` (default `~/.cache/s2a
 nothing is written into the repository. QEMU writes to the image directory (`userdata.img`):
 to reset the device, stop it, delete `${OHOS_EMU_HOME}/image` and rerun `setup.sh`.
 
+## Host first frame (lavapipe)
+
+```sh
+bash ohos/tools/emu/lavapipe/build.sh    # once, ~40 min
+bash ohos/tools/emu/host-smoke.sh --hap ... --pack ... --key ... --title ...
+```
+
+Needs an unsigned host build (`ohos/app` + engine, built outside this directory) and a
+resource tar made with `pack/targets/ohos/cli.py package <key>`. The script adds lavapipe
+and OpenSSL, signs, installs, imports and waits for `首帧上屏` without taking screenshots.
+`--timeout` defaults to 900 seconds; `--keep` leaves an emulator it started running.
+`setup.sh` grows userdata to `EMU_USERDATA_GB` (default 48 GiB), never shrinks it, and
+defers resizing while QEMU is running; rerun after stopping it.
+
+`device.sh` remounts `/` writable, adds a lavapipe ICD JSON pointing into the app sandbox
+(retaining SwiftShader), saves the original time zone and sets UTC because game system
+data has no zone files. `bash ohos/tools/emu/device.sh --undo` removes that JSON and
+restores the saved time zone.
+
+The per-title `debug-env.txt` (read by the host before the engine starts) sets:
+- `DEBUG_S2A_VA39=1`, handled by the lavapipe build (`lavapipe/lvp_ohos.c`, at library load):
+  the emulator kernel has a 48-bit user address space, phones a 39-bit one, and guest-visible
+  host memory must stay below 2^39. Every gap above 2^39 is reserved so unhinted mappings land
+  below; a kernel that ignores `MAP_FIXED_NOREPLACE` places the mapping elsewhere and it is
+  released again.
+- `DEBUG_S2A_AUDIO=dummy`: the emulator image has no primary audio adapter, so every OHAudio
+  stream fails to start. The host needs the matching switch (not part of this directory).
+
+Lavapipe is a CPU renderer: in 3D load stages a frame takes seconds and the process keeps
+growing (about 0.5 GB/min of anonymous memory in the measured session, cause not yet
+determined; that session had compiled about 2000 pipelines). `EMU_MEM_MB`
+therefore defaults to 10240; at 6144 the kernel OOM-kills the app after about 3 minutes.
+
+Negative control: without lavapipe (`bash ohos/tools/emu/device.sh --undo`), the session
+log reported `required feature missing: shaderInt16` (measured before #1340). Since #1340
+shaderInt16 is optional, so on current main the first miss is expected to be
+`shaderImageGatherExtended` (not re-measured).
+
 ## External inputs
 
 Downloaded, verified against the SHA-256 in `common.sh`, never redistributed:
