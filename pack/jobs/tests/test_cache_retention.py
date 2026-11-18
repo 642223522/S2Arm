@@ -13,6 +13,34 @@ import layout
 import library
 
 
+class CacheRootsTests(unittest.TestCase):
+    """trim(cache_roots=…)：缓存根经软链放在别处时，按 private 推的固定布局带链接、整根不扫（unscannedRoots 1、删 0）；
+    传真实路径就扫得到，按同一规则回收最冷的、最近 3 款不动。期望手写"""
+    def test_symlinked_root_needs_cache_roots(self):
+        import os, time
+        import cache_retention
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            real = d / 'ext/s2arm_run/cache'
+            paths = []
+            for i in range(4):
+                store = real / f'direct/{i:016X}/store'
+                p = store / 'dshb/aa' / ('aa' + 'f' * 62 + '.e')
+                p.parent.mkdir(parents=True); p.write_bytes(b'x' * 1000)
+                old = time.time() - 7200 - i * 100
+                os.utime(p, (old, old)); os.utime(store, (old, old))
+                paths.append(p)
+            priv = d / 'priv'; (priv / 'run/s2arm').mkdir(parents=True)
+            os.symlink(real, priv / 'run/s2arm/cache')
+            r = cache_retention.trim(priv, min_free_bytes=1 << 30, free_bytes=lambda: 0)
+            self.assertEqual((r['unscannedRoots'] >= 1, r['removedEntries']), (True, 0))   # 带链接：整根不扫
+            r = cache_retention.trim(d / 'ext/s2arm_run', min_free_bytes=1 << 30, free_bytes=lambda: (1 << 40) if not paths[3].exists() else 0,
+                                     cache_roots=((real / 'direct', 'direct'),))
+            self.assertEqual(r['removedEntries'], 1)
+            self.assertFalse(paths[3].exists())                 # 最冷的一款回收
+            self.assertTrue(all(p.exists() for p in paths[:3]))  # 最近 3 款不动
+
+
 class CompilerRetentionTests(unittest.TestCase):
     def _preflight_fixture(self, root):
         import os

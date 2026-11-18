@@ -25,6 +25,8 @@ def ck(ok, msg):
 def romfs_index_cmd(t):   # 同 tests/romfs_img_test.py
     dotnet = shutil.which('dotnet') or (os.path.join(os.environ['DOTNET_ROOT'], 'dotnet') if os.environ.get('DOTNET_ROOT') else None)
     if not dotnet: return None, '没有 dotnet'
+    pre = os.environ.get('S2A_ROMFS_INDEX_DLL')   # tests/romfs_img_test.sh 编好一次交给 4 份脚本共用；没设（单独跑本脚本）照旧自己编
+    if pre and os.path.isfile(pre): return f'{shlex.quote(dotnet)} {shlex.quote(pre)}', ''
     out = os.path.join(t, 'ri')
     r = subprocess.run([dotnet, 'build', str(R / 'services/romfs_index'), '-c', 'Release', '-o', out], capture_output=True, text=True)
     if r.returncode: return None, '编 services/romfs_index 失败：' + r.stdout[-300:]

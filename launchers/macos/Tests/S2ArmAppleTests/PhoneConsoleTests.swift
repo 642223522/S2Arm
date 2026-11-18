@@ -90,38 +90,58 @@ import S2ArmAppleAdapter
         XCTAssertEqual(m.consoleSelection, ["0100B"], "新出现的建议更新款补勾")
     }
 
-    func testUpdateSelectedPushesInOrderToThisPhoneAndStop() async throws {
-        let runner = ConsoleRunner(holdFirst: true)
+    // 顶栏动态窗口：做完闪 ✓（2 秒后收起，一轮里还有排着的不闪），失败 / 停下留橙色「!」直到点开；开关关着都不出。期望手写
+    func testDynamicWindowDoneAndAlert() async throws {
+        let m = try makeModel()
+        m.dynamicFinished(.completed)
+        XCTAssertFalse(m.dynamicDone, "开关关着不出")
+        m.phoneOverview = PhoneOverview(phones: [phone()])
+        m.dynamicFinished(.completed)
+        XCTAssertTrue(m.dynamicDone, "做完闪一下")
+        for _ in 0..<300 where m.dynamicDone { try? await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertFalse(m.dynamicDone, "2 秒后回普通图标")
+        m.dynamicFinished(.failed)
+        XCTAssertTrue(m.dynamicAlert, "失败留橙色「!」")
+        m.openConsoleFromTopBar()
+        XCTAssertFalse(m.dynamicAlert, "点开看过就收起"); XCTAssertTrue(m.consoleSelected, "点它直接到总控台")
+    }
+
+    func testUpdateSelectedIsOneJobInOrderToThisPhoneAndStopCancelsIt() async throws {
+        let runner = ConsoleRunner(holdPush: true)
         let m = try makeModel(runner)
         m.refresh()   // 假 catalog 给 A、B、C 三款；假 phoneOverview 给一台 D9
         for _ in 0..<300 where m.games.count < 3 || m.phoneOverview == nil { try? await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual(m.consolePhone?.device, "D9")
         m.consoleSelection = ["0100C", "0100A", "0100B"]
         m.updateSelected()
-        XCTAssertEqual(m.consoleBatch, ["0100A", "0100B", "0100C"], "按游戏库顺序")
-        for _ in 0..<300 where runner.installs.isEmpty { try? await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertEqual(runner.installs.first?["gameId"] as? String, "0100A"); XCTAssertEqual(runner.installs.first?["device"] as? String, "D9", "推总控台这台")
-        XCTAssertEqual(m.consoleStatus(now: now), .updating(done: 0, total: 3))
+        for _ in 0..<300 where runner.pushes.isEmpty { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(runner.pushes.count, 1, "更新所选是一单作业（pushSelected），不是三单装机")
+        XCTAssertEqual(runner.pushes.first?["gameIds"] as? [String], ["0100A", "0100B", "0100C"], "按游戏库顺序")
+        XCTAssertEqual(runner.pushes.first?["device"] as? String, "D9", "推总控台这台")
+        XCTAssertTrue(m.consoleUpdating)
+        if case .updating = m.consoleStatus(now: now) {} else { XCTFail("首位卡写正在更新") }
         m.stopUpdateSelected()
-        XCTAssertEqual(m.consoleBatch, ["0100A"], "停在当前这款")
-        runner.release()
-        for _ in 0..<300 where !m.consoleBatch.isEmpty { try? await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertEqual(runner.installs.count, 1, "排着的不再推")
-        XCTAssertTrue(m.consoleBatch.isEmpty, "这一轮收尾")
+        for _ in 0..<300 where m.consoleUpdating { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertFalse(m.consoleUpdating, "停下 = 取消这一单")
+        XCTAssertEqual(runner.installs.count, 0, "不再一款款排装机作业")
     }
 }
 
-/// 假作业进程：install 记下请求；holdFirst 时第一单挂着直到 release()，其余作业照常成功
+/// 假作业进程：记下 install / pushSelected 请求；holdPush 时 pushSelected 挂着直到取消，其余作业照常成功
 private final class ConsoleRunner: JobProcessRunner {
     final class Handle: JobProcessHandle { func terminate() {} }
+    final class Held: JobProcessHandle {
+        var onTerminate: (() -> Void)?
+        func terminate() { onTerminate?(); onTerminate = nil }
+    }
     var installs: [[String: Any]] = []
-    let holdFirst: Bool
-    private var held: (() -> Void)?
-    init(holdFirst: Bool = false) { self.holdFirst = holdFirst }
-    func release() { held?(); held = nil }
+    var pushes: [[String: Any]] = []
+    let holdPush: Bool
+    init(holdPush: Bool = false) { self.holdPush = holdPush }
     func start(executable: URL, arguments: [String], environment: [String: String],
                onLine: @escaping (Data) -> Void, onStderr: @escaping (Data) -> Void,
                onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle {
+        objc_sync_enter(self); defer { objc_sync_exit(self) }   // 作业客户端在并发线程池里同时调 start：替身状态串行改（无锁并发追加数组会 SIGSEGV 带崩整个测试进程）
         var taskId = ""; var request: [String: Any] = [:]
         if let last = arguments.last, last.hasSuffix(".json"), let data = try? Data(contentsOf: URL(fileURLWithPath: last)),
            let r = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] { request = r; taskId = r["taskId"] as? String ?? "" }
@@ -132,9 +152,16 @@ private final class ConsoleRunner: JobProcessRunner {
         }
         let event: [String: Any] = ["schema": 1, "taskId": taskId, "type": "result", "state": "succeeded", "result": result, "message": ""]
         let finish = { onLine(try! JSONSerialization.data(withJSONObject: event)); onExit(0) }
-        if request["operation"] as? String == "install" {
-            installs.append(request)
-            if holdFirst && installs.count == 1 { held = { DispatchQueue.main.async(execute: finish) }; return Handle() }
+        if request["operation"] as? String == "install" { installs.append(request) }
+        if request["operation"] as? String == "pushSelected" {
+            pushes.append(request)
+            if holdPush {   // 挂着直到取消（SIGTERM）：作业层以取消收尾、退出码 130
+                let h = Held()
+                h.onTerminate = { DispatchQueue.main.async {
+                    let ev: [String: Any] = ["schema": 1, "taskId": taskId, "type": "result", "state": "cancelled", "result": [:], "message": ""]
+                    onLine(try! JSONSerialization.data(withJSONObject: ev)); onExit(130) } }
+                return h
+            }
         }
         DispatchQueue.main.async(execute: finish)
         return Handle()

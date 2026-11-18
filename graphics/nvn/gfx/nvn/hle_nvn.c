@@ -1013,9 +1013,13 @@ NVN(nvnProgramInitialize, NVNboolean, NVNprogram *p, NVNdevice *d) {
     memset(p, 0, sizeof(prog_t)); ((prog_t *)p)->magic = MAGIC('P', 'R', 'O', 'G'); return 1;
 }
 static void pk_drop(const void *p);
+#if defined(__ANDROID__)
+extern void s2a_source_drop_pending(uint64_t prog_serial) __attribute__((weak));   // android/native/direct/source_store.c
+#endif
 NVN(nvnProgramFinalize, void, NVNprogram *p) {
 #if defined(__ANDROID__)
     prog_pin_release(((prog_t *)p)->serial, p);
+    if (s2a_source_drop_pending) s2a_source_drop_pending(((prog_t *)p)->serial);   // SetShaders 自持的控制段随程序释放（#1622：原先 256 格环满了静默挤掉）
 #endif
     nvn_be_prog_release((prog_t *)p); ((prog_t *)p)->magic = 0; pk_drop(p);
 }
@@ -1414,6 +1418,34 @@ uint64_t nvn_prog_set_ns(uint64_t serial) {
     uint64_t ns = atomic_load_explicit(&e[1], memory_order_relaxed);
     return atomic_load_explicit(&e[0], memory_order_acquire) == serial ? ns : 0;
 }
+#if !defined(__ANDROID__)
+// 控制段只在 SetShaders 这次调用里保证有效（游戏之后可以复用那块内存），键却有留到首用（prog_key）才算的：Switch 2 阶段一律首用才算（代码区到首次绘制前还会变），
+//   Switch 1 阶段在代码区还不在已登记内存池时也是。原先首用时读游戏的控制段指针，读到的可能已是别的数据：
+//   0.5.7 iPhone 奥日2（Switch 1）+0x700 成了一个地址、+0x704 成了 0x76，键对不上库、代码长度取成 118 字节，现编越界；
+//   一款 Switch 2 游戏 108 支现编失败里 98 支的「控制段」连 NVN2 魔数都没有，宿主按 Switch 1 硬读（#1520 当成「新版控制段没认出」）。
+//   这里按内容去重拷一份自持，首用算键、首遇现编、补齐 / 输出类型变体都读它。同一份只存一份、不释放：总量以不同着色器数为界，程序快照也可能还引用着它。
+//   （DM_NVN_SHDUMP 诊断档一直整份拷控制段，所以开转存复现不出来；安卓走自己的自持控制段 s2a_source_hold_pending）
+typedef struct ctl_own { struct ctl_own *next; uint32_t n; uint8_t md[CC_SHA256_DIGEST_LENGTH]; uint8_t bytes[0x880]; } ctl_own;
+static const void *ctl_intern(const void *ctl, uint32_t n) {
+    enum { B = 4096 }; static ctl_own *tab[B]; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    uint8_t md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256(ctl, n, md);
+    uint32_t h; memcpy(&h, md, 4); h %= B;
+    pthread_mutex_lock(&mu);
+    ctl_own *e = tab[h];
+    while (e && (e->n != n || memcmp(e->md, md, sizeof md))) e = e->next;
+    if (!e && (e = calloc(1, sizeof *e))) { e->n = n; memcpy(e->md, md, sizeof md); memcpy(e->bytes, ctl, n); e->next = tab[h]; tab[h] = e; }   // 0x880 以内没拷的部分是 0
+    pthread_mutex_unlock(&mu);
+    return e ? e->bytes : ctl;
+}
+// 要首用才算键的这一阶段，控制段该自持多少字节（0 = 不自持：已在 SetShaders 算出键、控制段指针不是地址或读不了）
+static uint32_t ctl_hold_len(const NVNshaderData *sd, int keyed) {
+    if (!sd->control || (uint64_t)(uintptr_t)sd->control >= (1ull << 47)) return 0;
+    uint64_t a = (uint64_t)(uintptr_t)sd->control;
+    if (nvn2_on() && shader_bytes_readable(a, 8) && nvn2_ctl(sd->control))
+        return shader_bytes_readable(a, NVN2_CTL_COPY) ? NVN2_CTL_COPY : shader_bytes_readable(a, 0xd8) ? 0xd8 : 0;
+    return !keyed && shader_bytes_readable(a, 0x880) ? 0x880 : 0;
+}
+#endif
 NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData *sd) {
     prog_t *o = (prog_t *)p;
     if (n < 0 || n > 6) { LOG("【红】 ProgramSetShaders stage count %d", n); return 0; }
@@ -1436,6 +1468,10 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData 
         dm_shader_mesh_hold(sd[i].data, sd[i].control);   // NVN2 keys are deferred, but control + code are valid here; retain only mesh inputs
         if (keys_hash(&sd[i], 1, k->key[i])) { k->ok |= (uint8_t)(1u << i); dm_shader_miss(k->key[i], sd[i].data, sd[i].control); dm_shader_vs_hold_key(k->key[i], sd[i].data, sd[i].control); nvn_be_shader_prefetch(k->key[i]); }   // S2Arm: a key missing from the map is translated on the device now (graphics/nvn/host_adapt.m)
         else { uint8_t early[8]; if (keys_hash_early(&sd[i], early)) nvn_be_shader_prefetch(early); }   // S2Arm #674: Switch 2 stages, keyed at first use
+#if !defined(__ANDROID__)
+        // 首用才算键的阶段（Switch 2 一律；Switch 1 代码区还不在已登记内存池时），控制段先自持一份（ctl_intern）
+        { uint32_t hl = ctl_hold_len(&sd[i], k->ok >> i & 1); if (hl) o->sd[i].control = ctl_intern(sd[i].control, hl); }
+#endif
 #if defined(__ANDROID__)   // Android 直连的阶段 / 源快照 / 按 serial 记 key；Apple 回放不读这些，保持 main 原行为
         // 阶段只在 control 仍有效、code 已映射的本次调用内读定；code 未映射时留给 Bind
         // 用自持 control + 当时的 code 补算，Bind 不碰 guest control。

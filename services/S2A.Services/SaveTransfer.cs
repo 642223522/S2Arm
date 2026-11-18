@@ -126,6 +126,10 @@ public static partial class SaveTransfer
     }
     private static bool Allowed(string name, bool directory = false) =>
         (!directory && name == Profile) || Trees.Any(t => directory && name == t || name.StartsWith(t + "/", StringComparison.Ordinal));
+    // 进备份 / 算存档指纹的：在三处存档范围里，且不是存档事务自己的内部项（路径里有 .s2a_ 开头的一节：上一份 .s2a_prev、护栏标记 .s2a_guard、
+    //   提交中途的 .s2a_new 等，见 compat S2ASaveCommit.cs）。导入校验、恢复时跳过存档仍按 Allowed（旧备份里带着这些的照样能导入）
+    private static bool Exported(string name, bool directory = false) =>
+        Allowed(name, directory) && !name.Split('/').Any(p => p.StartsWith(".s2a_", StringComparison.Ordinal));
     private sealed record Snapshot(SortedDictionary<string, long> Files, List<string> Directories);
     private static Snapshot Scan(string root)
     {
@@ -174,9 +178,9 @@ public static partial class SaveTransfer
     {
         var scan = Scan(root);
         var value = new JsonArray(Directory.Exists(root));
-        value.Add((JsonNode)new JsonArray(scan.Directories.Where(d => Allowed(d, directory: true)).Select(d => (JsonNode)JsonValue.Create(d)).ToArray()));
+        value.Add((JsonNode)new JsonArray(scan.Directories.Where(d => Exported(d, directory: true)).Select(d => (JsonNode)JsonValue.Create(d)).ToArray()));
         var files = new JsonArray();
-        foreach (var file in scan.Files.Where(f => Allowed(f.Key))) files.Add((JsonNode)new JsonArray(file.Key, file.Value, HashFile(Path.Combine(root, file.Key))));
+        foreach (var file in scan.Files.Where(f => Exported(f.Key))) files.Add((JsonNode)new JsonArray(file.Key, file.Value, HashFile(Path.Combine(root, file.Key))));
         value.Add((JsonNode)files);
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value.ToJsonString())));
     }
