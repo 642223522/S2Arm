@@ -314,6 +314,7 @@ struct VkPipeline_T {
     //   着色器编好后第一次绘制 / 派发补建（pipe_finish / cpipe_finish）；编好之前的绘制照安全网跳过。原先顶点着色器在编的整条交空句柄回失败码（游戏不重试就永久缺这条），
     //   片元着色器在编的建成「没有片元函数」的管线、编好也不补（静默不出颜色）。指现编条目（rt_ent，整个进程不释放），不指模块：游戏建完管线可以销毁模块
     __strong MTLRenderPipelineDescriptor *pend_pd; struct rt_ent *pend_v, *pend_f, *pend_c; int pend_dual; __strong NSData *pend_spv;
+    void *recipe;   // 即时存档：快照开时的建法（区里，vk_snap.inc；图形 = 深拷贝的创建信息，计算 = 模块键 + 布局），恢复按它重填
 };
 struct VkCommandPool_T { struct VkCommandBuffer_T *cbs; };
 struct VkCommandBuffer_T { void *loader; VkCommandPool pool; struct VkCommandBuffer_T *prev, *next; uint8_t *buf; size_t n, cap; };
@@ -1239,18 +1240,34 @@ static id vk_se_obj(VkPipeline p, int comp) {
     }
     return p->se_state == 1 ? (comp ? (id)p->cps_se : (id)p->pso_se) : nil;
 }
-VKB(vkCreateShaderModule, VkResult, VkDevice d, const VkShaderModuleCreateInfo *ci, const VkAllocationCallbacks *a, VkShaderModule *out) {
-    (void)d; (void)a; dev_init();
-    uint8_t h[CC_SHA256_DIGEST_LENGTH]; CC_SHA256(ci->pCode, (CC_LONG)ci->codeSize, h);
-    VkShaderModule m = obj_alloc(sizeof *m, O_SHADER);
+// 即时存档：快照开时按源码键在固定区里留一份 SPIR-V（同键一份、不释放）——游戏建完管线常销毁模块，恢复时按键临时建回模块重建管线（vk_snap.inc）
+typedef struct vs_spv { struct vs_spv *next; char key[17]; uint32_t size; uint32_t code[]; } vs_spv;
+static vs_spv *g_vs_spv;   // 表头在区外（宿主静态区）：存档记它的值、恢复写回；节点在区里
+static void vs_spv_note(const char *key, const void *code, size_t size) {
+    if (!vs_on()) return;
+    pthread_mutex_lock(&g_vs_mu); vs_spv *e = g_vs_spv; while (e && memcmp(e->key, key, 16)) e = e->next; pthread_mutex_unlock(&g_vs_mu);
+    if (e) return;
+    e = vs_alloc(sizeof *e + size); memcpy(e->key, key, 17); e->size = (uint32_t)size; memcpy(e->code, code, size);
+    pthread_mutex_lock(&g_vs_mu); e->next = g_vs_spv; g_vs_spv = e; pthread_mutex_unlock(&g_vs_mu);
+}
+static const vs_spv *vs_spv_find(const char *key) { pthread_mutex_lock(&g_vs_mu); vs_spv *e = g_vs_spv; while (e && memcmp(e->key, key, 16)) e = e->next; pthread_mutex_unlock(&g_vs_mu); return e; }
+// 按 SPIR-V 填模块（建模块、即时存档恢复都走这里）
+static void mod_fill(VkShaderModule m, const uint32_t *code, size_t size) {
+    uint8_t h[CC_SHA256_DIGEST_LENGTH]; CC_SHA256(code, (CC_LONG)size, h);
     for (int i = 0; i < 8; i++) snprintf(m->key + 2 * i, 3, "%02x", h[i]);
-    sh_capture(m->key, ci->pCode, ci->codeSize);
-    vin_scan(ci->pCode, ci->codeSize / 4, &m->vin_s, &m->vin_u);
-    if (g_vk_lb_emu || m->vin_s || m->vin_u) m->spv = [NSData dataWithBytes:ci->pCode length:ci->codeSize];   // #800：偏置模拟变体要在设备上重翻它（vk_se_fn）；顶点输入格式与符号性不一致时重翻（vk_vin.inc）
+    sh_capture(m->key, code, size);
+    vs_spv_note(m->key, code, size);
+    vin_scan(code, size / 4, &m->vin_s, &m->vin_u);
+    if (g_vk_lb_emu || m->vin_s || m->vin_u) m->spv = [NSData dataWithBytes:code length:size];   // #800：偏置模拟变体要在设备上重翻它（vk_se_fn）；顶点输入格式与符号性不一致时重翻（vk_vin.inc）
     m->si = sh_find(m->key);
     @autoreleasepool { if (m->si && g_lib) m->fn = [g_lib newFunctionWithName:[NSString stringWithFormat:@"vk_%s", m->key]]; }
-    if (!m->fn) { m->rt = rt_get(m->key, ci->pCode, ci->codeSize); mod_ready(m); }   // 离线库没有：设备现编（已编好 / 上次持久化的直接用，否则后台编，编好前建的管线照安全网跳过）
+    if (!m->fn) { m->rt = rt_get(m->key, code, size); mod_ready(m); }   // 离线库没有：设备现编（已编好 / 上次持久化的直接用，否则后台编，编好前建的管线照安全网跳过）
     else OLOG("CreateShaderModule %s", m->key);
+}
+VKB(vkCreateShaderModule, VkResult, VkDevice d, const VkShaderModuleCreateInfo *ci, const VkAllocationCallbacks *a, VkShaderModule *out) {
+    (void)d; (void)a; dev_init();
+    VkShaderModule m = obj_alloc(sizeof *m, O_SHADER);
+    mod_fill(m, ci->pCode, ci->codeSize);
     *out = m; return VK_SUCCESS;
 }
 VKB(vkDestroyShaderModule, void, VkDevice d, VkShaderModule m, const VkAllocationCallbacks *a) { (void)d; (void)a; if (m) { m->fn = m->fn_d = nil; m->spv = nil; obj_free(m); } }
@@ -1290,8 +1307,9 @@ static int dual_source(const VkPipelineColorBlendStateCreateInfo *cb) {   // a b
     return 0;
 }
 static int rt_state(struct rt_ent *e) { return e ? atomic_load_explicit(&e->state, memory_order_acquire) : 1; }
-static VkPipeline pipe_make(const VkGraphicsPipelineCreateInfo *ci) {
-    VkPipeline p = obj_alloc(sizeof *p, O_PIPELINE); p->layout = ci->layout;
+// 按创建信息填管线（建管线、即时存档恢复都走这里；恢复时 Metal 字段已清空）
+static void pipe_fill(VkPipeline p, const VkGraphicsPipelineCreateInfo *ci) {
+    p->layout = ci->layout;
     @autoreleasepool {
         MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
         char keys[64] = ""; int dual = dual_source(ci->pColorBlendState); VkShaderModule vm = NULL; uint32_t u8 = 0, u16 = 0;
@@ -1314,7 +1332,7 @@ static VkPipeline pipe_make(const VkGraphicsPipelineCreateInfo *ci) {
             else { RED1("shader stage %#x not implemented", st->stage); p->feat = 1; if (st->stage == VK_SHADER_STAGE_GEOMETRY_BIT) p->gs = 1; }
             strlcat(keys, s ? " " : "", sizeof keys); strlcat(keys, m->key, sizeof keys);
         }
-        if (!pd.vertexFunction && !p->pend_v) { LOG("[vk] 【红】 pipeline has no usable vertex shader (%s)", keys); return p; }
+        if (!pd.vertexFunction && !p->pend_v) { LOG("[vk] 【红】 pipeline has no usable vertex shader (%s)", keys); return; }
         const VkPipelineVertexInputStateCreateInfo *vi = ci->pVertexInputState;
         MTLVertexDescriptor *vd = [MTLVertexDescriptor vertexDescriptor];
         uint32_t used = 0;   // bindings some mapped attribute reads: Metal's validation rejects a buffer layout no attribute uses
@@ -1336,7 +1354,7 @@ static VkPipeline pipe_make(const VkGraphicsPipelineCreateInfo *ci) {
         pd.vertexDescriptor = vd;
         if (u8 | u16) {   // 8 / 16 位无符号格式喂有符号输入：用按本管线格式重翻的那支顶点着色器（vk_vin.inc）
             rt_ent *v = vin_variant(vm, u8, u16); int vs = rt_state(v);
-            if (vs == 2) { LOG("[vk] 【红】 pipeline (%s): the vertex shader retranslated for its integer attribute formats is not usable", keys); return p; }
+            if (vs == 2) { LOG("[vk] 【红】 pipeline (%s): the vertex shader retranslated for its integer attribute formats is not usable", keys); return; }
             if (vs == 1) { pd.vertexFunction = v->fn; p->vs = &v->si; p->pend_v = NULL; } else { pd.vertexFunction = nil; p->pend_v = v; }
         }
         switch (ci->pInputAssemblyState ? ci->pInputAssemblyState->topology : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST) {
@@ -1406,7 +1424,7 @@ static VkPipeline pipe_make(const VkGraphicsPipelineCreateInfo *ci) {
         if (!p->dyn_sc && vs && vs->pScissors && vs->scissorCount) { p->sc = vs->pScissors[0]; p->has_sc = 1; }
         if (p->pend_v || p->pend_f) {   // 着色器还在现编：描述存下，编好后第一次绘制补建（pipe_finish）
             p->pend_pd = pd; static _Atomic int n; if (n++ < 20) LOG("[vk] 现编：管线 (%s) 的着色器还在编，句柄先交，编好后第一次绘制补建（第 %llu 帧）", keys, (unsigned long long)g_frames);
-            return p;
+            return;
         }
         NSError *err = nil;
         p->pso = [g_dev newRenderPipelineStateWithDescriptor:pd error:&err];
@@ -1414,6 +1432,13 @@ static VkPipeline pipe_make(const VkGraphicsPipelineCreateInfo *ci) {
         else g_n_pso++;
         if (p->pso && p->se_spv) p->se_pd = pd;   // 偏置模拟变体照同一份描述建，只换片元函数
     }
+    return;
+}
+static void *vs_pipe_recipe(const VkGraphicsPipelineCreateInfo *ci);   // vk_snap.inc：快照开时把创建信息深拷贝进区（模块按键记）
+static VkPipeline pipe_make(const VkGraphicsPipelineCreateInfo *ci) {
+    VkPipeline p = obj_alloc(sizeof *p, O_PIPELINE);
+    if (vs_on()) p->recipe = vs_pipe_recipe(ci);
+    pipe_fill(p, ci);
     return p;
 }
 static _Atomic uint64_t g_pend_made, g_pend_bad;   // 等现编的管线：补建成 / 着色器编不过（补不成，绘制照安全网跳过）
