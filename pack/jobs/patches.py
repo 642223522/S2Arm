@@ -303,7 +303,8 @@ def prepare(c, game, extraction, env, target="mac"):
     try:
         cheats.fetch(c, game)
         d = cheats.cheats_dir(c, game["id"].upper(), create=False)
-        if d.is_dir() and any(f.name not in cheats.SKIP for f in d.glob("*.txt")):
+        import layout
+        if any(f.name not in cheats.SKIP for f in layout.entries(d, "*.txt")):   # 不算 exFAT 的 ._<名>.txt 附属文件
             env["S2A_CHEATS_DIRS"] = str(d)
         dirs = fetch(c, game, os.path.join(str(extraction), "exefs"), target)
         seed = pso_dir(c, game)
