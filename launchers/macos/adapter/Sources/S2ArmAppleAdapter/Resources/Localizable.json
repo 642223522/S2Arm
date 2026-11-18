@@ -10248,8 +10248,8 @@
   "en": "Apple ID sign-in failed: {0}"
  },
  {
-  "source": "还没用 Apple ID 登录：在 S2Arm 的「用 Apple ID 签名」里填邮箱和密码登录（手机上会弹验证码），再点一次「装到 iPhone」。密码只用于这次向 Apple 登录，S2Arm 不保存。",
-  "en": "Not signed in with an Apple ID yet: sign in under “Sign with Apple ID” in S2Arm with your email and password (a verification code will pop up on your phone), then click “Install on iPhone” again. Your password is only used to sign in to Apple this time; S2Arm doesn't save it."
+  "source": "还没用 Apple ID 登录：在 S2Arm 的「用 Apple ID 签名」里填邮箱和密码登录（你的苹果设备上会弹出验证码），再点一次「装到 iPhone」。密码只用于这次向 Apple 登录，S2Arm 不保存。",
+  "en": "No Apple ID signed in: in S2Arm, open \"Sign with Apple ID\", enter your email and password (a verification code will appear on your Apple devices), then click \"Install to iPhone\" again. The password is only used for this sign-in with Apple; S2Arm doesn't store it."
  },
  {
   "source": "还没用 Apple ID 登录：在 S2Arm 里用你的 Apple ID 登录一次（邮箱、密码、手机上的验证码），再装到 iPhone。",

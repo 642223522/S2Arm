@@ -35,6 +35,9 @@ FAKE = textwrap.dedent('''\
     sys.stdout.write("Enter password: "); sys.stdout.flush()
     pw = sys.stdin.readline().strip()
     open(rec + ".stdin", "w").write(pw + "\\n")
+    if mode == "echo":
+        print("Enter password: " + pw)   # 回显密码（终端交互登录时 plumesign 会显示）：作业层要抹掉
+        print("Error: Authentication failed: -20101 Your Apple ID or password was entered incorrectly."); sys.exit(1)
     if mode == "badpw":
         print("Error: Authentication failed: -20101 Your Apple ID or password was entered incorrectly."); sys.exit(1)
     print("Logging in...")
@@ -97,6 +100,15 @@ class AppleLogin(unittest.TestCase):
                     apple_login.login(self.c)
                 self.assertEqual(e.exception.code, want)
                 self.assertNotIn(PASSWORD, str(e.exception) + e.exception.internal)
+
+    def test_echoed_password_scrubbed(self):
+        with patch.dict(os.environ, {"FAKE_PLUME_MODE": "echo"}):
+            with self.assertRaises(Failure) as e:
+                apple_login.login(self.c)
+        self.assertEqual(e.exception.code, "apple_id_wrong")
+        log = (self.t / "logs/login1-login.log").read_text(encoding="utf-8")
+        self.assertIn("Enter password: ***", log)
+        self.assertNotIn(PASSWORD, log + str(e.exception) + e.exception.internal)
 
     def test_switch_off_touches_nothing(self):
         with patch.dict(os.environ, {"S2A_UNIVERSAL_SHELL": "0"}):

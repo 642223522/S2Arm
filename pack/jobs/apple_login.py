@@ -88,7 +88,6 @@ def login(c):
     try:
         proc.stdin.write(password + "\n")
         proc.stdin.flush()
-        password = None
         while proc.poll() is None and not c.cancelled:
             if asked.wait(0.3):
                 asked.clear()
@@ -114,6 +113,9 @@ def login(c):
                 pass
         _code_file(c).unlink(missing_ok=True)
     text = "".join(lines)
+    if password:   # plumesign 若把读到的密码回显出来（终端里交互登录时会显示），进日志 / 报错前抹掉
+        text = text.replace(password, "***")
+    password = None
     log = c.logs / (c.task + "-login.log")
     log.write_text(text, encoding="utf-8")   # plumesign 不回显密码；这里只有它的提示与报错
     c.check()   # 取消（再发一次 / 关掉登录框）：照作业取消收尾
