@@ -3083,10 +3083,11 @@ def push_game(c, gid, ph, steps=True):
     files = size = 0
     pushed, mods = old.get("pack", ""), old.get("mods") or {}
     try:
-        if pack_id(pack) != pushed:
-            ph.before_push({gid: pack})
-            files, size = ph.push(gid, pack)
-            pushed = pack_id(pack)
+        # 这一款照推，不按电脑上的记录跳过（同 put_game「这款照推」）：push_pack 按 sha256 核手机上的实况，只推缺的 / 变了的。
+        #   记录说推过、手机上却没有（玩家在手机上删过这款、删 App 重装清了数据、别处装过同包名）时，原先推 0 个文件、起局卡「资源包不完整」（11-18 真机查出）
+        ph.before_push({gid: pack})
+        files, size = ph.push(gid, pack)
+        pushed = pack_id(pack)
         mods = push_mods(c, ph, gid, mods)
     finally:
         rec = layout.load_device(c, ph.key)
