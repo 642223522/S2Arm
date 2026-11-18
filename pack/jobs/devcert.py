@@ -552,6 +552,8 @@ CHOOSE = "有几张开发者证书，这台设备还没选用哪一张：在启�
 
 def _need(c, s):
     """本作业用的那张：第一次挑定后记在作业对象上（包名、团队、签名、remember 都是这一张；中途有人导入新证书也不换）"""
+    if not s["entries"]:
+        raise Failure("还没导入开发者证书。", code="devcert_missing")
     eid = getattr(c, "devcert_entry", None)
     if eid in s["entries"]:
         return eid
@@ -580,6 +582,23 @@ def state(c):
         return {}
     eid = _need(c, s)
     return dict(s["entries"][eid], active=s["active"], entry=eid)
+
+
+def ready(c):
+    """设置里选「自己的证书」前查：至少导入了一张、（按绑定的设备，没绑用缺省那张）不缺件；不报 devcert_choose。没有 / 缺件 → devcert_missing"""
+    s = store(c)
+    if not s["entries"]:
+        raise Failure("还没导入开发者证书。", code="devcert_missing")
+    stored(c, _shown(c, s))
+
+
+def set_active(c, on):
+    """切「在用」开关（同 operation use，但没导入时不报错、什么也不做）"""
+    with _locked(c):
+        s = store(c)
+        if s["entries"] and s["active"] != bool(on):
+            s["active"] = bool(on)
+            _write(c, s)
 
 
 def team(c):

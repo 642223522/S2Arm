@@ -1132,13 +1132,12 @@ def sign_mode_set(c):
     if mode not in SIGN_MODES:
         raise Failure("签名方式只能是 Apple ID、自己的证书或自己用别的工具签。", code="job_failed")  # 非玩家句（只有启动器传错参数才会到）
     if mode == "devCert":
-        devcert.stored(c)
+        devcert.ready(c)   # 几张证书时不按设备挑（设置里没有设备）：有一张、不缺件就行
     if mode == "external":
         atomic(c.private / SIGN_CHOICE, dict(mode="external"))
     else:
         (c.private / SIGN_CHOICE).unlink(missing_ok=True)
-        if devcert.state(c).get("certSha1") and devcert.active(c) != (mode == "devCert"):
-            atomic(devcert.folder(c) / "state.json", dict(devcert.state(c), active=mode == "devCert"))
+        devcert.set_active(c, mode == "devCert")   # 经证书库改（在锁里，根下旧版那份跟着写）
     return dict(signMode=chosen_sign_mode(c))
 
 

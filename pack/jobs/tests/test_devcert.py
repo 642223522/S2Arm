@@ -317,6 +317,20 @@ class MultiCert(unittest.TestCase):
         th.join(5)
         self.assertEqual(order, ["main", "thread"])
 
+    def test_sign_mode_set_with_two_certs(self):
+        # 设置里切签名方式（没有设备）：几张证书时不报 devcert_choose，开关经证书库改
+        import install
+        with self.assertRaises(Failure) as e:
+            install.sign_mode_set(self.ctx(mode="devCert"))
+        self.assertEqual(e.exception.code, "devcert_missing")
+        self.imp("a", "a"); self.imp("b", "b", add=True)
+        patch.object(install, "chosen_sign_mode", lambda c: "x").start(); self.addCleanup(patch.stopall)
+        install.sign_mode_set(self.ctx(mode="appleId"))
+        self.assertFalse(devcert.store(self.ctx())["active"])
+        self.assertFalse(json.loads((self.t / "private/devcert/state.json").read_text())["active"])
+        install.sign_mode_set(self.ctx(mode="devCert"))
+        self.assertTrue(devcert.store(self.ctx())["active"])
+
     def test_installed_here_marks_current_app(self):
         self.imp("a", "a"); self.imp("b", "b", add=True)
         self.installed(self.U1, "io.s2arm.games.abcde12345")
