@@ -201,7 +201,7 @@ class FlowTests(unittest.TestCase):
             z.writestr("Payload/S2Arm.app/Info.plist", plistlib.dumps({"CFBundleIdentifier": "io.s2arm.games", "CFBundleExecutable": "S2Arm"}))
             z.writestr("Payload/S2Arm.app/S2Arm", b"bin")
 
-    def _install(self, gid, pushed, applied_before, mbps=0, unpack_ok=True, existing=(), cant_open=False, locked=False):
+    def _install(self, gid, pushed, applied_before, mbps=0, unpack_ok=True, existing=(), cant_open=False, locked=False, install_errs=()):
         """跑 install.install（容器流程）：替身 assemble 出容器（含已有各款 + 本款）、签名装机、只推 fresh 的款。
         existing = 这台手机上已有的款（同壳、资源包号与设备记录一致），现组时带上、不再推。替身按 push_pack.apply 口径记起 App 解包"""
         if existing:
@@ -244,7 +244,11 @@ class FlowTests(unittest.TestCase):
                         Path(log).write_text("【红】资源包推进去了，但机上解包 180 秒没有新进展（停在第 13 包）：打开这款游戏、保持在前台等它导入完\n", encoding="utf-8")
                         raise install.Failure("tool", code="tool_exit")
                     state["applied"] = "cafe01"
+        errs = list(install_errs)   # devicectl device install app 依次回的错误原文（用完 = 成功）
         def devicectl(c, *a, timeout=0):
+            if a[:3] == ("device", "install", "app"):
+                seen["installs"] = seen.get("installs", 0) + 1
+                return (1, {}, errs.pop(0)) if errs else (0, {}, "")
             if a[:3] == ("device", "process", "launch"):
                 launches.append(a)
                 if unpack_ok: state["applied"] = "cafe01"; state["unpack"] += "11-06 12:00:00 解开 1 个包 2 个文件 0 MB，.applied = cafe01（0.1 秒）\n"
@@ -274,6 +278,22 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(push[-1], (3 << 20, 3 << 20, "B")); self.assertTrue(all(t == 3 << 20 and u == "B" for _, t, u in push))
         self.assertFalse(any(str(e.get("message", "")).startswith("机上解包") for e in ev))   # 不等机上解开
         self.assertTrue(r["openToFinish"])
+
+    E4016 = ("ERROR: The device is not able to fulfill the requested usage assertion requirements. (com.apple.dt.CoreDeviceError error 4016 (0xFB0))\n"
+             "       RequestedDeviceStates = (\n           \"com.apple.coredevice.coreDeviceServicesLoaded\",\n       )\n       CurrentlyAssertableStates = (\n       )")
+
+    def test_tunnel_4016_retried_once_then_installs(self):   # #1578 D-43MF：开发者通道这一下没建起来（4016）→ 等一下再装一次，第二次成了就照常装好
+        gid = "0100535012974000"; self._fixture(gid); self.c.r.update(gameId=gid)
+        r, runs, seen, launches = self._install(gid, pushed=2, applied_before="", install_errs=[self.E4016])
+        self.assertEqual(seen["installs"], 2)
+        self.assertTrue(r["openToFinish"])
+
+    def test_tunnel_4016_twice_reports_tunnel_code(self):   # 两次都 4016 → device_tunnel_unavailable（原先落 device_install_failed + 「保持手机解锁」，误导）；只重试一次
+        gid = "0100535012974000"; self._fixture(gid); self.c.r.update(gameId=gid)
+        with self.assertRaises(install.Failure) as e:
+            self._install(gid, pushed=2, applied_before="", install_errs=[self.E4016, self.E4016, self.E4016])
+        self.assertEqual(e.exception.code, "device_tunnel_unavailable")
+        self.assertEqual(install.classify(self.E4016), "device_tunnel_unavailable")
 
     def test_locked_phone_push_reports_device_locked(self):   # #333：推包探针写不进 → device_locked，原因原话上屏（不是笼统的 resource_transfer_failed）
         gid = "0100535012974000"; self._fixture(gid); self.c.r.update(gameId=gid)
