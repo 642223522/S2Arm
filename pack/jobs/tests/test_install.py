@@ -1416,9 +1416,14 @@ class AssembleTests(unittest.TestCase):
         import ipa as packer, host_update
         self.sid = "SID1"
         shell = self.c.private / "shell"; shell.mkdir(exist_ok=True); (shell / "manifest.json").write_text("{}")
+        import rewrite_refresh
+        refreshed = []
         with um.patch.object(packer, "current_shell_id", return_value="SID1"), um.patch.object(packer, "container_shell", return_value=shell), \
-             um.patch.object(host_update, "engine_compat", return_value=dict(self.COMPAT)), um.patch.object(self.c, "run", self._run([])):
+             um.patch.object(host_update, "engine_compat", return_value=dict(self.COMPAT)), um.patch.object(self.c, "run", self._run([])), \
+             um.patch.object(rewrite_refresh, "refresh_ios", lambda c, games, **kw: refreshed.append(list(games)) or []):
             r = install.put_game(self.c, A, ph)
+        # 11-17 维护者「玩家点了才做、只做这一款」：装甲只补甲，同容器的乙、丙不顺带补 S 级 / 重改写（期望手写）
+        self.assertEqual(refreshed, [[A]])
         self.assertEqual(pushed, [A, C])
         self.assertEqual(signed, [([A, B, C], ([A, B, C], "SID1"))])
         rec = layout.load_device(self.c, "dev1")
@@ -2015,6 +2020,7 @@ class ExportPhoneTests(unittest.TestCase):
         self.sid = "SID1"
         shell = self.c.private / "shell"; shell.mkdir(exist_ok=True); (shell / "manifest.json").write_text("{}")
         self.c.r = dict(self.c.r, **{"mode": "export", **request})   # 导出自签包：请求带 mode = export（11-15 起没有装法设置）
+        self.refreshed = []
         def no_phone(c):
             raise AssertionError("导出不该找手机")
         fake = self._run([])
@@ -2026,7 +2032,7 @@ class ExportPhoneTests(unittest.TestCase):
             return fake(args, log, env, cwd, on_line)
         with um.patch.object(packer, "current_shell_id", return_value="SID1"), um.patch.object(packer, "container_shell", return_value=shell), \
              um.patch.object(host_update, "engine_compat", return_value=dict(self.COMPAT)), um.patch.object(self.c, "run", run), \
-             um.patch.object(rewrite_refresh, "refresh_ios", lambda c, games, **kw: None), um.patch.object(install, "phone_for", no_phone), \
+             um.patch.object(rewrite_refresh, "refresh_ios", lambda c, games, **kw: self.refreshed.append(list(games))), um.patch.object(install, "phone_for", no_phone), \
              um.patch.object(install, "_devpush_exe", lambda c: "s2a-devpush"), um.patch.object(install, "_devpush_lines", getattr(self, "lines", lambda c, exe, *a: (0, [], ""))):
             return (fn or install.install)(self.c)
 
@@ -2137,6 +2143,7 @@ class ExportPhoneTests(unittest.TestCase):
         self._img(A, b"S2AIMG01-a"); self._img(B, b"S2AIMG01-b"); ios_fixture(self.c, C)
         r = self._export(dict(gameId=A))
         self.assertEqual((r["games"], r["unwritten"]), ([A, B], ["乙"]), "点甲：乙的程序进容器，.img 只写甲")
+        self.assertEqual(self.refreshed, [[A]], "点甲导出只补甲，乙不顺带补 S 级 / 重改写（11-17 维护者「只做这一款」）")
         r = self._export(dict(gameId=B))   # 再点乙：乙的 .img 写上、甲沿用，文件夹里两款齐
         out = self.c.library / install.EXPORT_DIRS["zh"]
         self.assertEqual((r["exported"], r["outputPath"], sorted(r["games"]), r["skipped"], r["unwritten"]), (True, str(out), sorted([A, B]), ["丙"], []))
@@ -2842,48 +2849,19 @@ class WinWidgetInstallTests(unittest.TestCase):
 
 
 class UpdatePrepareTests(unittest.TestCase):
-    """「更新 iPhone」电脑侧准备（installUpdatePrepare，update_prepare）：不连手机；各台手机记录里、游戏库里还在的款逐款补（refresh_ios），
-    每款在自己的程序件锁里补；游戏库里已删的款不补。期望按规则手写"""
+    """「更新 iPhone」电脑侧准备（installUpdatePrepare，update_prepare）：11-17 起 S 级优化不自动，这里不做事。期望按规则手写"""
     A, B, C = "0100000000010000", "0100000000020000", "0100000000030000"
 
-    def test_prepares_recorded_games_one_lock_each_without_phone(self):
-        import contextlib, ipa as packer, rewrite_refresh
-        with tempfile.TemporaryDirectory() as t:
-            lib = Path(t); (lib / "devices").mkdir()
-            (lib / "devices/UDID1.json").write_text(json.dumps({"games": {self.B: {}, self.C: {}}}))   # C 已从游戏库删掉
-            (lib / "devices/UDID2.json").write_text(json.dumps({"games": {self.A.lower(): {}}}))
-            held, calls = [], []
-            @contextlib.contextmanager
-            def lock(name, wait=None):
-                held.append(name); yield; held.remove(name)
-            c = jobcase.fake_context(lib.parent, library=lib, catalog=lambda: {"games": [{"id": self.A}, {"id": self.B}]}, begin=lambda *a: None, lock=lock)
-            def refresh(cc, games, ignore_rewriter=False):
-                assert ignore_rewriter is True, "后台准备更新不因改写器指纹单独变了重改写（11-17 维护者定）"
-                calls.append((list(games), list(held))); return [g for g in games if g == self.B]
-            def no_phone(cc):
-                raise AssertionError("准备段不该找手机")
-            with um.patch.object(rewrite_refresh, "refresh_ios", refresh), um.patch.object(install, "phone_for", no_phone):
-                r = install.update_prepare(c)
-        self.assertEqual(calls, [([self.A], ["program-" + self.A]), ([self.B], ["program-" + self.B])])
-        self.assertEqual(r, {"prepared": [self.A, self.B], "updated": [self.B]})
-
-    def test_stops_when_foreground_install_holds_phone_lock(self):
-        # 11-17 #1450：前台装机类作业拿着手机锁时，后台准备更新不再拿程序锁跟它抢——做完手上这款就停，剩下的前台按正常优先级做
-        import contextlib, rewrite_refresh
+    def test_does_nothing_since_sgrade_is_manual(self):
+        # 11-17 维护者：S 级优化不再自动运行。打开启动器起的 installUpdatePrepare 原先逐款 refresh_ios（做的全是 S 级补丁与 _bf），现在一款都不碰、也不找手机
+        import rewrite_refresh
         with tempfile.TemporaryDirectory() as t:
             lib = Path(t); (lib / "devices").mkdir()
             (lib / "devices/UDID1.json").write_text(json.dumps({"games": {self.A: {}, self.B: {}}}))
-            calls, busy = [], []
-            @contextlib.contextmanager
-            def idle(name="execution"):
-                yield not (name == "phone" and busy)
-            c = jobcase.fake_context(lib.parent, library=lib, catalog=lambda: {"games": [{"id": self.A}, {"id": self.B}]}, begin=lambda *a: None, idle=idle)
-            def refresh(cc, games, ignore_rewriter=False):
-                calls.append(list(games)); busy.append(1); return []   # 补完第一款时，前台装机作业进来拿了手机锁
-            with um.patch.object(rewrite_refresh, "refresh_ios", refresh):
-                r = install.update_prepare(c)
-        self.assertEqual(calls, [[self.A]])
-        self.assertEqual(r, {"prepared": [self.A], "updated": []})
+            c = jobcase.fake_context(lib.parent, library=lib, catalog=lambda: {"games": [{"id": self.A}, {"id": self.B}]}, begin=lambda *a: None)
+            with um.patch.object(rewrite_refresh, "refresh_ios", side_effect=AssertionError("不该自动补")), \
+                    um.patch.object(install, "phone_for", side_effect=AssertionError("准备段不该找手机")):
+                self.assertEqual(install.update_prepare(c), {"prepared": [], "updated": [], "manual": True})
 
     def test_operation_registered(self):
         import core

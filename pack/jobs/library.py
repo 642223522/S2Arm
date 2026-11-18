@@ -2010,6 +2010,9 @@ def catalog(c):
         game["needsPreparation"] = not game["ready"] or manifest.get("inputIdentity") != input_identity(game)
         game["iphoneReady"] = iphone_ready(c, game["id"])
         game["iphoneExportable"] = game["iphoneReady"] and iphone_img(c, game["id"])   # 「导出自签包」能直接导出（单一 IMG 资源包）；旧格式要先重出
+        import sgrade
+        st = sgrade.upgrade_state(c, game["id"])   # S 级优化单款升级（11-17 起玩家手动点）：在跑 → 界面画进度、禁开始；标记在但作业不在 → 「升级未完成，点 S 级优化继续」
+        game["sgradeUpgrading"], game["sgradeIncomplete"] = st == "upgrading", st == "incomplete"
         game["appleTvReady"] = tvos_ready(c, game["id"])   # Apple TV 版已出好（image/tvos 的容器件 + 资源包，pack/jobs/tvos.py）：出包页给「装到 Apple TV」
         game["downstream"] = downstream.describe(c, game)   # 下游深度方案（pack/downstream/schemes.json）：命中时启动器弹确认页
         game["sgrade"] = sgrade_badge(c, game["id"], image)   # 游戏库封面左上角金色 S（v0.4.0）
