@@ -83,6 +83,13 @@ class IntelPackagingConfigTest(unittest.TestCase):
         self.assertIn('SHELLUI=0', text)
         self.assertIn('S2A_SHELLUI:-', text)
 
+    def test_intel_shellui_builds_without_xcodebuild_sandbox(self):
+        """Intel 出壳的库界面走 swift build --disable-sandbox：xcodebuild 的 SwiftPM 在临时镜像里 sandbox_apply 会被拦。"""
+        text = (ROOT / "runtime/build.mk").read_text()
+        self.assertIn('uname -m', text)
+        self.assertIn('swift build --disable-sandbox', text)
+        self.assertIn('-force_load,$(SHELLUI_PRODUCTS)/libS2ArmShellHost.a', text)
+
     def test_runtime_versions_probe_covers_every_pin(self):
         pins = [line.split('==')[0] for line in (ROOT / "launchers/macos/requirements-runtime.txt").read_text().splitlines()
                 if '==' in line and not line.startswith('#')]
