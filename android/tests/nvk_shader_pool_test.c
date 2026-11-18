@@ -1091,6 +1091,14 @@ int main(int argc, char **argv) {
             CHECK(strstr(last_reason, reasons[i]) && strstr(last_reason, "count=1"),
                   "compiler reason counted accurately: %s", last_reason);
         }
+        {   // 诊断开关关着（玩家包口径）：拒绝原因照样数、第一次拒绝就打一行（全库普查按款汇总它）；整份程序统计不打
+            const int d0 = diag_enabled; diag_enabled = 0; rp_shader_reset(); nvn_unimpl_reset(); last_reason[0] = last_stats[0] = 0;
+            fake_compile_error = errors[3]; bind_pools(524288); compiler_calls = 0;
+            CHECK(rp_shader_resolve(&q, &p) != 0 && compiler_calls == 1, "player build: compiler rejection still happens once");
+            CHECK(strstr(last_reason, "reason=MISSING_FACT.QueryTextureFormat count=1") && !last_stats[0],
+                  "player build: reject reason counted and logged without the diagnostic switch, program stats stay off: reason=%s stats=%s", last_reason, last_stats);
+            rp_shader_reset(); diag_enabled = d0;
+        }
         rp_shader_reset(); nvn_unimpl_reset(); fake_compile_error = errors[2]; bind_pools(101);
         CHECK(rp_shader_resolve(&q, &p) != 0, "first missing fact rejected");
         fake_compile_error = errors[3]; bind_pools(102);
