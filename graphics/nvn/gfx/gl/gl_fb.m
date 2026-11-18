@@ -893,6 +893,7 @@ GL(glGetFramebufferAttachmentParameteriv, void, GLenum target, GLenum attachment
 // ---------- 即时存档：帧缓冲对象（附件按「对象名字 + 级 / 面」，不含 Metal 贴图）与渲染缓冲（存储整张存） ----------
 enum { GF_NAME = 1, GF_ATT, GF_DRAW, GF_READ, GF_USED, GR_NAME = 1, GR_FORMAT, GR_USED, GR_HAS };
 int gl_fb_snap_save(FILE *f) {
+    if (!nvn_snap_tex_save) return -1;
     sfw w; sfw_sec(&w, f, "gl.fbo", 1);
     for (GLuint i = 1; i < framebuffers.n; i++) { struct gl_framebuffer *b = framebuffers.v[i]; if (!b) continue;
         sfw_rec(&w); GLSF_W(&w, GF_NAME, i); GLSF_W(&w, GF_ATT, b->att); GLSF_W(&w, GF_DRAW, b->draw); GLSF_W(&w, GF_READ, b->read); GLSF_W(&w, GF_USED, b->used); sfw_end_rec(&w); }
@@ -905,6 +906,7 @@ int gl_fb_snap_save(FILE *f) {
     return 0;
 }
 int gl_fb_snap_restore(FILE *f) {
+    if (!nvn_snap_tex_load) return -1;
     sfr r; int bad = sfr_sec(&r, f, "gl.fbo", 1) != 0;
     while (!bad && sfr_rec(&r) == 1) { GLuint nm = 0; GLSF_R(&r, GF_NAME, nm); struct gl_framebuffer *b = calloc(1, sizeof *b); if (!nm || !b) { free(b); continue; }
         GLSF_R(&r, GF_ATT, b->att); GLSF_R(&r, GF_DRAW, b->draw); GLSF_R(&r, GF_READ, b->read); GLSF_R(&r, GF_USED, b->used);

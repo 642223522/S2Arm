@@ -1023,12 +1023,16 @@ static int tx_finish(tx_pend *p, NSArray *roots) {   // 建视图；该有却建
     if (p->sv.root >= 0) { t->sample = tx_view_make(&p->sv, roots); ok &= t->sample != nil; }
     return ok;
 }
+// 弱链接[nvntest]：nvn_snap_tex_save（直连层 graphics/nvn/gfx/nvn/nvn_snap.inc 提供；GL 单测只链 GL 片，链接行按这行放行未定义）
+// 弱链接[nvntest]：nvn_snap_tex_load（同上）
 static int roots_write(FILE *f, NSArray *roots, uint64_t *nc) {
+    if (!nvn_snap_tex_save) return -1;
     uint32_t n = (uint32_t)roots.count; if (fwrite(&n, 4, 1, f) != 1) return -1;
     for (id<MTLTexture> r in roots) { int k = nvn_snap_tex_save(f, (__bridge void *)r); if (k < 0) return -1; if (!k && nc) (*nc)++; }
     return 0;
 }
 static NSMutableArray *roots_read(FILE *f) {
+    if (!nvn_snap_tex_load) return nil;
     uint32_t n; if (fread(&n, 4, 1, f) != 1) return nil; NSMutableArray *a = [NSMutableArray arrayWithCapacity:n];
     for (uint32_t i = 0; i < n; i++) { void *p = nvn_snap_tex_load(f); if (p) [a addObject:(__bridge_transfer id<MTLTexture>)p]; else return nil; }
     return a;
