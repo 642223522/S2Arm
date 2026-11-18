@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "launchers/macos"))
 sys.path.insert(0, str(ROOT / "launchers/shared"))
 
 import bundle_engine  # noqa: E402
+import bundle_runtime  # noqa: E402
 import prepare_build  # noqa: E402
 import runtime_cache  # noqa: E402
 import runtime_sources  # noqa: E402
@@ -71,6 +72,13 @@ class IntelPackagingConfigTest(unittest.TestCase):
         self.assertTrue(prepare_build.can_build_on("Darwin", "x86_64"))
         self.assertFalse(prepare_build.can_build_on("Darwin", "ppc64"))
         self.assertFalse(prepare_build.can_build_on("Linux", "x86_64"))
+
+    def test_runtime_versions_probe_covers_every_pin(self):
+        pins = [line.split('==')[0] for line in (ROOT / "launchers/macos/requirements-runtime.txt").read_text().splitlines()
+                if '==' in line and not line.startswith('#')]
+        code = bundle_runtime.installed_versions_probe(pins)
+        for name in pins:
+            self.assertIn(name, code)
 
     def test_sdk_major_follows_installed_xcode(self):
         text = (ROOT / "tools/toolchain.env").read_text()

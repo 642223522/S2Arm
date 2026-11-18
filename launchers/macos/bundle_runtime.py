@@ -64,6 +64,12 @@ def output(args):
     return subprocess.check_output([str(a) for a in args], text=True).strip()
 
 
+def installed_versions_probe(names):
+    """随包 Python 里跑的一段只读代码：把钉版清单的每一行都记进 versions.json。"""
+    return ("import json,sys,importlib.metadata as m; names=" + json.dumps(list(names)) +
+            "; print(json.dumps(dict(python=sys.version.split()[0], **{p:m.version(p) for p in names})))")
+
+
 def cp(src, dst):
     src, dst = pathlib.Path(src), pathlib.Path(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -239,6 +245,9 @@ def build(out):
             for p in prefix.glob("*"):
                 if p.is_file() and any(x in p.name.upper() for x in ("LICENSE", "COPYING", "NOTICE")):
                     shutil.copy2(p, licenses / (name + "-" + p.name))
+    # 版本记录要覆盖 requirements-runtime.txt 的每一行：漏记 Pillow / zstandard 会让 build_app 每次都判 Runtime 过期重收。
+    names = [pin.split('==')[0] for pin in pins]
+    probe = installed_versions_probe(names)
     versions = json.loads(
         output(
             [
@@ -246,7 +255,7 @@ def build(out):
                 "-B",
                 "-I",
                 "-c",
-                'import json,sys,importlib.metadata as m; print(json.dumps(dict(python=sys.version.split()[0], **{p:m.version(p) for p in ["capstone","lz4","numpy"]})))',
+                probe,
             ]
         )
     )
