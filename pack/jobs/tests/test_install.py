@@ -1416,9 +1416,14 @@ class AssembleTests(unittest.TestCase):
         import ipa as packer, host_update
         self.sid = "SID1"
         shell = self.c.private / "shell"; shell.mkdir(exist_ok=True); (shell / "manifest.json").write_text("{}")
+        import rewrite_refresh
+        refreshed = []
         with um.patch.object(packer, "current_shell_id", return_value="SID1"), um.patch.object(packer, "container_shell", return_value=shell), \
-             um.patch.object(host_update, "engine_compat", return_value=dict(self.COMPAT)), um.patch.object(self.c, "run", self._run([])):
+             um.patch.object(host_update, "engine_compat", return_value=dict(self.COMPAT)), um.patch.object(self.c, "run", self._run([])), \
+             um.patch.object(rewrite_refresh, "refresh_ios", lambda c, games, **kw: refreshed.append(list(games)) or []):
             r = install.put_game(self.c, A, ph)
+        # 11-17 维护者「玩家点了才做、只做这一款」：装甲只补甲，同容器的乙、丙不顺带补 S 级 / 重改写（期望手写）
+        self.assertEqual(refreshed, [[A]])
         self.assertEqual(pushed, [A, C])
         self.assertEqual(signed, [([A, B, C], ([A, B, C], "SID1"))])
         rec = layout.load_device(self.c, "dev1")
@@ -2015,6 +2020,7 @@ class ExportPhoneTests(unittest.TestCase):
         self.sid = "SID1"
         shell = self.c.private / "shell"; shell.mkdir(exist_ok=True); (shell / "manifest.json").write_text("{}")
         self.c.r = dict(self.c.r, **{"mode": "export", **request})   # 导出自签包：请求带 mode = export（11-15 起没有装法设置）
+        self.refreshed = []
         def no_phone(c):
             raise AssertionError("导出不该找手机")
         fake = self._run([])
@@ -2026,7 +2032,7 @@ class ExportPhoneTests(unittest.TestCase):
             return fake(args, log, env, cwd, on_line)
         with um.patch.object(packer, "current_shell_id", return_value="SID1"), um.patch.object(packer, "container_shell", return_value=shell), \
              um.patch.object(host_update, "engine_compat", return_value=dict(self.COMPAT)), um.patch.object(self.c, "run", run), \
-             um.patch.object(rewrite_refresh, "refresh_ios", lambda c, games, **kw: None), um.patch.object(install, "phone_for", no_phone), \
+             um.patch.object(rewrite_refresh, "refresh_ios", lambda c, games, **kw: self.refreshed.append(list(games))), um.patch.object(install, "phone_for", no_phone), \
              um.patch.object(install, "_devpush_exe", lambda c: "s2a-devpush"), um.patch.object(install, "_devpush_lines", getattr(self, "lines", lambda c, exe, *a: (0, [], ""))):
             return (fn or install.install)(self.c)
 
@@ -2137,6 +2143,7 @@ class ExportPhoneTests(unittest.TestCase):
         self._img(A, b"S2AIMG01-a"); self._img(B, b"S2AIMG01-b"); ios_fixture(self.c, C)
         r = self._export(dict(gameId=A))
         self.assertEqual((r["games"], r["unwritten"]), ([A, B], ["乙"]), "点甲：乙的程序进容器，.img 只写甲")
+        self.assertEqual(self.refreshed, [[A]], "点甲导出只补甲，乙不顺带补 S 级 / 重改写（11-17 维护者「只做这一款」）")
         r = self._export(dict(gameId=B))   # 再点乙：乙的 .img 写上、甲沿用，文件夹里两款齐
         out = self.c.library / install.EXPORT_DIRS["zh"]
         self.assertEqual((r["exported"], r["outputPath"], sorted(r["games"]), r["skipped"], r["unwritten"]), (True, str(out), sorted([A, B]), ["丙"], []))
