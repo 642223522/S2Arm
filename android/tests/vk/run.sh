@@ -339,7 +339,7 @@ case "$mode" in
     --tsan) cflags+=(-fsanitize=thread) ;;
     --asan) cflags+=(-fsanitize=address,undefined -fno-omit-frame-pointer) ;;
     --shown-only) cflags+=(-DS2A_C883_TEST=1) ;;
-    ""|--sampler-minmax-only|--c63-same-view|--msaa-only|--msaa-neg-pick|--msaa-neg-pipe|--msaa-neg-sampled|--msaa-neg-attachment|--present-only|--present-upscale|--separate-core|--separate-neg-sampler|--tbuf-core|--tbuf-compiler-core|--tbuf-neg-resolve|--tbuf-neg-format|--tbuf-neg-elements|--gs-only|--gs-compiler|--gs-core|--gs-no-cap|--gs-neg-stage|--gs-neg-flags|--gs-neg-cap) ;;
+    ""|--sampler-minmax-only|--c63-same-view|--stencil8-only|--msaa-only|--msaa-neg-pick|--msaa-neg-pipe|--msaa-neg-sampled|--msaa-neg-attachment|--present-only|--present-upscale|--separate-core|--separate-neg-sampler|--tbuf-core|--tbuf-compiler-core|--tbuf-neg-resolve|--tbuf-neg-format|--tbuf-neg-elements|--gs-only|--gs-compiler|--gs-core|--gs-no-cap|--gs-neg-stage|--gs-neg-flags|--gs-neg-cap) ;;
     *) echo "未知参数：${mode}（可用 --tsan / --asan）" >&2; exit 64 ;;
 esac
 # 撤改只写入临时源码副本；逐项必须红在指定行为断言。
@@ -588,6 +588,18 @@ if [ "$mode" = "--c63-same-view" ]; then
     done
     unset S2A_TEST_DESC_MEMO
     echo '【绿】C63 同 view 双元素：两遍（备忘开/关）都读回 128，validation 0 条'; exit 0
+fi
+
+# C1581O：纯模板格式 STENCIL8 当模板附件：图像 / 视图的面只有模板面，管线的兼容通道按 sfmt 挂上这个附件。左绿右蓝、validation 0 条才绿。
+if [ "$mode" = "--stencil8-only" ]; then
+    set +e
+    timeout 120 "$out/t_backend_vk" "$out/shaders" --stencil8-only 2>&1 | tee "$out/stencil8.log"
+    rc=${PIPESTATUS[0]}
+    set -e
+    if [ "$rc" -ne 0 ] || ! grep -q 'C1581O failures=0' "$out/stencil8.log" || grep -qE 'Validation Error|VUID-|SYNC-HAZARD-' "$out/stencil8.log"; then
+        echo "【红】C1581O 纯 STENCIL8 模板附件：rc=${rc}，没有 failures=0 或有 validation 报错" >&2; exit 1
+    fi
+    echo '【绿】C1581O 纯 STENCIL8 模板附件：左绿右蓝，validation 0 条'; exit 0
 fi
 
 if [ "$mode" = "--present-only" ]; then
