@@ -544,6 +544,23 @@ static NSString *vp_running_gid(void) { const char *g = getenv("S2A_LAUNCH_GAME_
     __weak S2AVPadView *ws = self; S2AVPadLayoutStore *st = _layoutStore; NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
     _menuLive = [NSMutableDictionary dictionary];
     NSMutableArray<UIMenuElement *> *items = [NSMutableArray array];
+    // 0.6.0 快照（起局带了存档开关才有）：「存下这一刻」一点就存、游戏不停；有完整快照时多「回到上次存下的这一刻」
+    // 弱链接[lab]：s2a_snap_logging（即时快照：runtime/src/snapsw.c、snapshot.c、session.c 提供；输入工作台不链原生核，取不到菜单就不出这两项）
+    // 弱链接[lab]：s2a_snap_dir_for（即时快照：runtime/src/snapsw.c、snapshot.c、session.c 提供；输入工作台不链原生核，取不到菜单就不出这两项）
+    // 弱链接[lab]：s2a_snap_exists（即时快照：runtime/src/snapsw.c、snapshot.c、session.c 提供；输入工作台不链原生核，取不到菜单就不出这两项）
+    // 弱链接[lab]：s2a_snap_on_done（即时快照：runtime/src/snapsw.c、snapshot.c、session.c 提供；输入工作台不链原生核，取不到菜单就不出这两项）
+    // 弱链接[lab]：s2a_snap_request_save（即时快照：runtime/src/snapsw.c、snapshot.c、session.c 提供；输入工作台不链原生核，取不到菜单就不出这两项）
+    // 弱链接[lab]：s2a_snap_save_changed（即时快照：runtime/src/snapsw.c、snapshot.c、session.c 提供；输入工作台不链原生核，取不到菜单就不出这两项）
+    // 弱链接[lab]：s2a_host_restart（即时快照：runtime/src/snapsw.c、snapshot.c、session.c 提供；输入工作台不链原生核，取不到菜单就不出这两项）
+    { int s2a_snap_logging(void) __attribute__((weak)); int s2a_snap_dir_for(const char *, char *, size_t) __attribute__((weak)); int s2a_snap_exists(const char *) __attribute__((weak));
+      char sd[2048];
+      if (s2a_snap_logging && s2a_snap_logging() && s2a_snap_dir_for && !s2a_snap_dir_for(NULL, sd, sizeof sd)) {
+          NSString *dir = @(sd);
+          NSMutableArray<UIMenuElement *> *snap = [NSMutableArray array];
+          [snap addObject:vp_act(S2AL(@"vpad.snap.save"), @"camera.viewfinder", NO, ^{ [ws afterMenu:^{ [ws snapSave:dir]; }]; })];
+          if (s2a_snap_exists && s2a_snap_exists(sd)) [snap addObject:vp_act(S2AL(@"vpad.snap.restore"), @"clock.arrow.circlepath", NO, ^{ [ws afterMenu:^{ [ws snapRestore:dir]; }]; })];
+          [items addObject:vp_inline(snap)];
+      } }
     [items addObject:[self sgradeSection]];
     UIAction *edit = vp_act(S2AL(@"vpad.edit.title"), @"gamecontroller", NO, ^{ [ws afterMenu:^{ [ws beginEditing]; }]; });
     if (_touchOnly) { edit.attributes = UIMenuElementAttributesDisabled; edit.subtitle = S2AL(@"vpad.menu.editDisabled"); }
@@ -643,6 +660,46 @@ static NSString *vp_running_gid(void) { const char *g = getenv("S2A_LAUNCH_GAME_
     // 故障报修（11-13 维护者定：各页面齿轮菜单最下面）：写一句发生了什么（可不填）→ 打包上传、给短码（diag.m s2a_diag_report）
     [items addObject:vp_act(S2AL(@"diag.report.title"), @"exclamationmark.bubble", NO, ^{ [ws afterMenu:^{ void s2a_diag_report(void); s2a_diag_report(); }]; })];
     return items;
+}
+// ---------- 0.6.0 快照：存下这一刻 / 回到上次存下的这一刻 ----------
+- (void)snapToast:(NSString *)text {   // 轻提示：屏幕上方一行字，2 秒淡出，不挡操作
+    UIWindow *w = self.window; if (!w) return;
+    UILabel *l = [UILabel new]; l.text = [@"  " stringByAppendingString:[text stringByAppendingString:@"  "]]; l.textColor = UIColor.whiteColor; l.font = [UIFont boldSystemFontOfSize:15];
+    l.backgroundColor = [UIColor colorWithWhite:0 alpha:0.7]; l.layer.cornerRadius = 10; l.clipsToBounds = YES; l.userInteractionEnabled = NO; l.layer.zPosition = 20001;
+    [l sizeToFit]; CGRect f = l.frame; f.size.height += 12; f.origin.x = (w.bounds.size.width - f.size.width) / 2; f.origin.y = w.safeAreaInsets.top + 16; l.frame = f;
+    [w addSubview:l]; [UIView animateWithDuration:0.4 delay:2.0 options:0 animations:^{ l.alpha = 0; } completion:^(__unused BOOL done) { [l removeFromSuperview]; }];
+}
+static __weak S2AVPadView *g_snap_view;
+static void snap_done(int ok, const char *dir) { (void)dir; dispatch_async(dispatch_get_main_queue(), ^{ [g_snap_view snapToast:ok ? S2AL(@"vpad.snap.saved") : S2AL(@"vpad.snap.notSaved")]; }); }
+- (void)snapSave:(NSString *)dir {
+    void s2a_snap_on_done(void (*)(int, const char *)) __attribute__((weak)); int s2a_snap_request_save(const char *) __attribute__((weak));
+    if (!s2a_snap_request_save) return;
+    g_snap_view = self; if (s2a_snap_on_done) s2a_snap_on_done(snap_done);
+    int rc = s2a_snap_request_save(dir.fileSystemRepresentation);
+    [self snapToast:rc == 0 ? S2AL(@"vpad.snap.saving") : rc == -2 ? S2AL(@"vpad.snap.busy") : S2AL(@"vpad.snap.notSaved")];
+}
+static void snap_restart_result(int result, const char *detail, void *context) {
+    (void)context; if (!result) return;
+    NSString *why = detail ? @(detail) : @""; dispatch_async(dispatch_get_main_queue(), ^{ [g_snap_view snapToast:[NSString stringWithFormat:S2AL(@"vpad.snap.restoreFailed"), why]]; });
+}
+- (void)snapRestoreNow:(NSString *)dir rollback:(BOOL)rollback {
+    int s2a_host_restart(void (*)(int, const char *, void *), void *) __attribute__((weak));
+    if (!s2a_host_restart) return;
+    setenv("S2A_SNAP_RESTORE", dir.fileSystemRepresentation, 1);
+    if (rollback) setenv("S2A_SNAP_SAVE_ROLLBACK", "1", 1); else unsetenv("S2A_SNAP_SAVE_ROLLBACK");
+    g_snap_view = self;
+    int rc = s2a_host_restart(snap_restart_result, NULL);
+    if (rc) { unsetenv("S2A_SNAP_RESTORE"); unsetenv("S2A_SNAP_SAVE_ROLLBACK"); [self snapToast:[NSString stringWithFormat:S2AL(@"vpad.snap.restoreFailed"), @""]]; }
+}
+- (void)snapRestore:(NSString *)dir {
+    int s2a_snap_save_changed(const char *) __attribute__((weak));
+    // 存快照之后游戏又存过档：回去会把游戏存档退回那一刻——先问玩家（当前存档会先整棵备份）；没变过就直接回
+    if (!(s2a_snap_save_changed && s2a_snap_save_changed(dir.fileSystemRepresentation) == 1)) { [self snapRestoreNow:dir rollback:NO]; return; }
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:S2AL(@"vpad.snap.saveChanged.title") message:S2AL(@"vpad.snap.saveChanged.body") preferredStyle:UIAlertControllerStyleAlert];
+    __weak S2AVPadView *ws = self;
+    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.cancel") style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"vpad.snap.saveChanged.go") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *x) { [ws snapRestoreNow:dir rollback:YES]; }]];
+    UIViewController *p = self.window.rootViewController; while (p.presentedViewController) p = p.presentedViewController; [p presentViewController:a animated:YES completion:nil];
 }
 - (void)showScreenLock {
     UIWindow *window = self.window; if (_screenLock || !window) return;

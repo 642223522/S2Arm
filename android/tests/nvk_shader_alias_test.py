@@ -114,7 +114,7 @@ ALIAS_MUTANTS = [
      [('if (alias_on() && e->res_ok && !e->failed && !nvn_hm_get(&g_res_tab, e->res_key)) (void)nvn_hm_put(&g_res_tab, e->res_key, e);', ';', 1)], '',
      '发布时不登记结果：永远合并不上（①）'),
     ('failed-entries-aliased',
-     [('if (e && !e->failed && have_res && alias_on())', 'if (e && have_res && alias_on())', 2),
+     [('e && !e->failed && have_res && alias_on())', 'e && have_res && alias_on())', 2),   # 不带「if (」：c59eae4a8 起预热那一处前面多了「!compute &&」
       ('e->res_ok && !e->failed &&', 'e->res_ok &&', 1),
       ('else if (!r || r->failed)', 'else if (!r)', 1)], '',
      '失败项也挂比对键、也登记、也被合并：同结果的另一个身份被合并成失败项（⑤；三道闸一起撤，单撤任一道仍被另两道挡住）'),

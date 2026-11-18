@@ -39,6 +39,9 @@
 static int g_ok;            // 1 = 窗口已占到（首选位置整块 64 GB，或退路：2^39 以下最大空洞里的一块，见 vawin_reserve）
 static int g_noreserve;
 static uint64_t g_base, g_size;
+#if !TARGET_OS_OSX
+static uint64_t g_snap_below;   // 即时存档（iOS）：占窗口时在宿主段最底部给命令记录区多留的长度（0 = 没留）
+#endif
 static uint64_t g_keep_lo;   // 放不下标准布局时窗口下方留给宿主的那段起点（0 = 没有）：Mac 复现 iPhone 约束时不占它（iphone_va_fence）
 static uint64_t g_res;       // 起局时预留的大小（收尾部前的 g_size）：「还给系统 / 交尾部分配的那段」= [g_base + g_size, g_base + g_res)
 // 客体内存改文件后备（S2A_GUEST_FILE；11-05 时之笛 Switch 2 iPhone 读档进场景被单进程上限 8192 MB 杀）。开不开见 s2a_guest_file_wanted：
@@ -933,10 +936,21 @@ static void vawin_reserve(void) {
     // 放不下标准布局不再起不了局（docs/方案_地址空间根修.md）：占最大一块、下方留 HOST_BELOW（3 GiB）给宿主（Metal / GC），布局小区在前、别名区伸出窗口（layout.c 乙）。
     //   宿主保留段不能放窗口上方：别名区伸出段覆盖那里，宿主放进去的东西会被游戏的远端访问静默读写
     { void (*lim)(uint64_t) = (void (*)(uint64_t))dlsym(RTLD_DEFAULT, "s2a_mem_span_limit"); if (lim && g_fit) lim(g_fit); }   // 学跨度只认空洞以内的地址（svc_mem.c）
+    // 即时存档恢复：窗口必须与存档时同址同长（快照里全是游戏地址）。学到的跨度会改「窗口下方留多少」、布局时还会把窗口往下扩（s2a_window_widen_lo），
+    //   两局之间学到的不同（一款大游戏 iPhone：存档局是容器里第一局、没学到，窗口 59392 MB；恢复局学到了上一局，窗口 5120 MB → 「窗口不符」拒绝），
+    //   所以恢复局不用学到的跨度，并按清单「窗口」原样占（下面占之前覆盖 at / want）
+    int s2a_snap_manifest_win(uint64_t *base, uint64_t *size); uint64_t sw_b = 0, sw_s = 0;
+    int snap_win = s2a_snap_restoring() && !s2a_snap_manifest_win(&sw_b, &sw_s);
+    if (snap_win && g_span_learned) { LOG("即时存档恢复：不用本机学到的跨度 %llu MB，窗口按快照原样占", (unsigned long long)(g_span_learned >> 20)); g_span_learned = 0; }
     if (g_span_learned && !s2a_window_span_rec_ok(g_span_learned, g_fit)) {
         LOG("【黄】地址窗口：本机学到的跨度 %llu MB 不小于这块空洞 %llu MB（旧版把窗口外的远端映射也算进去了），当作没学到、这一局重新学", (unsigned long long)(g_span_learned >> 20), (unsigned long long)(g_fit >> 20));
         g_span_learned = 0; }
-    if (!sz && g_fit >= MIN_WIN + HOST_BELOW) { uint64_t below = s2a_window_host_below(g_fit, g_span_learned); at = fat + below; want = g_fit - below; g_keep_lo = fat;
+    if (!sz && g_fit >= MIN_WIN + HOST_BELOW) { uint64_t below = s2a_window_host_below(g_fit, g_span_learned);
+#if !TARGET_OS_OSX
+        { const char *rec = getenv("S2A_FRAME_REC"); uint64_t A = (1ull << 30) + (2ull << 30);   // 即时存档（1 GB 同下文 CMD_ARENA）：命令记录区 1 GB + 虚拟池区 2 GB 从窗口里让出来，放宿主段最底部（cmd_arena_reserve）
+          if (!(rec && *rec) && s2a_snap_mode() && g_fit >= below + A + MIN_WIN) { below += A; g_snap_below = A; } }
+#endif
+        at = fat + below; want = g_fit - below; g_keep_lo = fat;
         LOG("地址窗口按需：本款标准布局要 %llu MB，本机 %s 以下最大一块 %llu MB（%#llx 起，地址上限 %#llx）——照样起局，下方 %llu MB 留宿主、其余作窗口（本机学到的跨度 %llu MB，0 = 没学到）",
             (unsigned long long)(g_need >> 20), hb, (unsigned long long)(g_fit >> 20), (unsigned long long)fat, (unsigned long long)top, (unsigned long long)(below >> 20),
             (unsigned long long)(g_span_learned >> 20)); }
@@ -944,6 +958,9 @@ static void vawin_reserve(void) {
         LOG("【红】地址窗口不足：本机 %s 以下最大能放的一块 %llu MB，连模块与小区都放不下（本款标准布局要 %llu MB，地址上限 %#llx），起不了局", hb, (unsigned long long)(g_fit >> 20), (unsigned long long)(g_need >> 20), (unsigned long long)top);
         s2a_window_probe("窗口放不下"); return; }
     else want = g_need + TL_TAKE <= sz ? g_need + TL_TAKE : sz;   // 尾部统一分配最多 2 GB，空洞里剩多少给多少（63.25 GB 的款在 64 GB 空洞里只剩 766 MB）
+    if (snap_win && (sw_b != at || sw_s != want)) {
+        LOG("即时存档恢复：窗口按快照占 %#llx +%llu MB（本局自己会选 %#llx +%llu MB）", (unsigned long long)sw_b, (unsigned long long)(sw_s >> 20), (unsigned long long)at, (unsigned long long)(want >> 20));
+        at = sw_b; want = sw_s; }
     void *p = mmap((void *)at, want, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);   // 不带 MAP_FIXED：核对落点，不盖别人
     // errno 紧接 mmap 取：后面的 dlsym / 打日志会改它（10-24 #100 作者指出）；映射成功但落在别处时 errno 是旧值，不报
     int er = p == MAP_FAILED ? errno : 0;
@@ -978,11 +995,43 @@ void s2a_window_reserve(void) {
 #define VP_ARENA (64ull << 30)
 static uint64_t g_ca_base, g_ca_used, g_va_used, g_va_cap = VP_ARENA; static int g_ca_cut;
 static pthread_mutex_t g_ca_mu = PTHREAD_MUTEX_INITIALIZER;
+int s2a_snap_manifest_u64(const char *key, uint64_t *a, uint64_t *b);   // snapshot.c：读恢复目标快照清单里的两个数（没有 = -1）
+// 即时存档恢复：命令记录区 / 虚拟池区的地址写在游戏内存里（命令句柄、贴图 / 缓冲地址），必须与存档时同址。按快照清单里记的基址与长度直接占，
+//   不靠两次进程「最高空洞」碰巧相同（跨版本时宿主的库与堆布局会变）。占到返回 1；清单里没有 / 占不到返回 0（走原来的选址，图形恢复核基址时会拒绝）
+static int cmd_arena_at_snapshot(void) {
+    uint64_t at = 0, len = 0;
+    if (!s2a_snap_restoring() || s2a_snap_manifest_u64("命令记录区", &at, &len) || !at || len <= CMD_ARENA) return 0;
+    void *m = mmap((void *)at, len, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (m != (void *)at) { if (m != MAP_FAILED) munmap(m, len); LOG("【红】即时存档恢复：命令记录区占不到快照时的地址 %#llx +%llu MB", (unsigned long long)at, (unsigned long long)(len >> 20)); return 0; }
+    g_ca_base = at; g_ca_cut = 1; g_va_cap = len - CMD_ARENA;
+    LOG("即时存档恢复：命令记录区按快照占在 %#llx +%llu MB（其后虚拟池区 +%llu GB）", (unsigned long long)at, (unsigned long long)(CMD_ARENA >> 20), (unsigned long long)(g_va_cap >> 30));
+    return 1;
+}
 static void cmd_arena_reserve(void) {   // 占窗口那一步在围栏前调；窗口没占到提前返回的路径由 vawin_boot 补调（只占一次）
     static int done; if (done++) return;
+#if !TARGET_OS_OSX
+    // 即时存档（不录帧）、窗口放不下标准布局：占窗口时已在宿主段最底部多留了命令记录区（g_snap_below，见 vawin_reserve），这里就地占上。
+    //   不取「最高空洞」：那时最高空洞就是窗口下方的宿主保留段，1 GB + 2 GB 正好把它占满，Metal 没处放着色器库、首帧前 NSMallocException
+    //   （一款大游戏的 iPhone 实测：「下方 3072 MB 留宿主」与「0x7000000000 +1024 MB、其后 +2 GB」严丝合缝）。也不能从窗口顶端切：窗口之上是别名区伸出段，
+    //   游戏的远端访问会静默读写到那里的宿主内存。存档与恢复两次进程窗口落点相同（清单「窗口」项核），这块地址也相同
+    if (g_snap_below && g_keep_lo) {
+        uint64_t at = g_keep_lo, A = g_snap_below;
+        void *m = mmap((void *)at, A, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        if (m != (void *)at) { if (m != MAP_FAILED) munmap(m, A); LOG("【红】即时存档：宿主段底部 %#llx +%llu MB 占不到，命令记录区没有，快照这一局存不了 / 恢复不了", (unsigned long long)at, (unsigned long long)(A >> 20)); return; }
+        g_ca_base = at; g_ca_cut = 1; g_va_cap = A - CMD_ARENA;
+        uint64_t mat = 0, mlen = 0;
+        if (s2a_snap_restoring() && (s2a_snap_manifest_u64("命令记录区", &mat, &mlen) || mat != at || mlen != A))
+            LOG("【红】即时存档恢复：命令记录区在 %#llx +%llu MB，快照时在 %#llx +%llu MB（窗口落点变了），图形恢复会拒绝", (unsigned long long)at, (unsigned long long)(A >> 20), (unsigned long long)mat, (unsigned long long)(mlen >> 20));
+        LOG("即时存档：命令记录区在宿主段最底部 %#llx +%llu MB，其后虚拟池区 +%llu GB；窗口下方宿主保留段 %llu MB 不少",
+            (unsigned long long)at, (unsigned long long)(CMD_ARENA >> 20), (unsigned long long)(g_va_cap >> 30), (unsigned long long)((g_base - g_keep_lo - A) >> 20));
+        return;
+    }
+#endif
+    if (cmd_arena_at_snapshot()) return;
 #if TARGET_OS_OSX
     const char *rec = getenv("S2A_FRAME_REC"), *rp = getenv("S2A_FRAME_REPLAY"), *on = getenv("S2A_CMD_ARENA");
-    int r = rec && *rec, p = rp && *rp; if (!r && !p && !(on && *on == '1')) return;
+    int sn = s2a_snap_mode();   // 即时存档：存档 / 恢复也要命令记录区（命令句柄落点固定）；开关读唯一定义处（snapshot.c）
+    int r = rec && *rec, p = rp && *rp; if (!r && !p && !(on && *on == '1') && !sn) return;
     uint64_t top = s2a_va_top(), at, sz, fit, fat, lat; if (!top) top = 1ull << 47;
     pick_hole(top, CMD_ARENA + VP_ARENA, &at, &sz, &fit, &fat, 0, &lat);
     if (sz) at = at + sz - CMD_ARENA - VP_ARENA;   // 最高那个空洞的顶端一段（pick_hole 给的是空洞起点）
@@ -996,7 +1045,9 @@ static void cmd_arena_reserve(void) {   // 占窗口那一步在围栏前调；�
     // iOS 帧录（11-06 旷野之息测试设备1）：命令记录块原先 mmap(NULL) 落在低区（0x169800000 一带），Mac 回放进程这段是它自己的库，放不回、整帧回放不了。
     //   录的进程同样占一块区，放在地址上限以下最高空洞的顶端（窗口尾之上；Mac 回放进程复现 iPhone 地址约束时这里是不可访问的保留，按原地址盖得上）。
     //   iOS 地址空间小（上限 2^39），虚拟池区按空洞剩余给，最多 16 GB；占不到就照旧不占（块回到 mmap(NULL)，回放可能放不回）
-    const char *rec = getenv("S2A_FRAME_REC"); if (!rec || !*rec) return;
+    //   即时存档：存档 / 恢复同样要命令记录区（命令句柄落点固定）；两次进程起来区落在同一地址才放得回（图形恢复核基址，不同即拒绝）
+    const char *rec = getenv("S2A_FRAME_REC");
+    if (!(rec && *rec) && !s2a_snap_mode()) return;
     uint64_t top = s2a_va_top(), at, sz, fit, fat, lat, vp = 16ull << 30; if (!top) return;
     pick_hole(top, CMD_ARENA + (1ull << 30), &at, &sz, &fit, &fat, 0, &lat);
     if (!sz) { LOG("【红】命令记录区（iOS 帧录）：没有 %llu MB 的空洞，命令记录块照旧落低区，Mac 回放可能放不回", (unsigned long long)((CMD_ARENA + (1ull << 30)) >> 20)); return; }
@@ -1029,6 +1080,10 @@ void *s2a_vp_arena_map(uint64_t len) {   // 录的进程：给一段不可访问
     return r;
 }
 int s2a_vp_arena_has(const void *p, uint64_t n) { uint64_t a = (uint64_t)(uintptr_t)p, b = g_ca_base + CMD_ARENA; return g_ca_base && a >= b && a + n <= b + g_va_cap; }
+// 即时存档：命令记录区 / 虚拟池区的基址与已用量（存时记、恢复后接着切）
+uint64_t s2a_snap_arena_len(void) { return g_ca_base ? CMD_ARENA + g_va_cap : 0; }   // 即时存档：命令记录区 + 虚拟池区的总长（记进清单，恢复按它同址占）
+void s2a_snap_arena_get(uint64_t *base, uint64_t *used, uint64_t *vused) { pthread_mutex_lock(&g_ca_mu); *base = g_ca_base; *used = g_ca_used; *vused = g_va_used; pthread_mutex_unlock(&g_ca_mu); }
+void s2a_snap_arena_set(uint64_t used, uint64_t vused) { pthread_mutex_lock(&g_ca_mu); if (used > g_ca_used) g_ca_used = used; if (vused > g_va_used) g_va_used = vused; pthread_mutex_unlock(&g_ca_mu); }
 int s2a_cmd_arena_has(const void *p, uint64_t n) { uint64_t a = (uint64_t)(uintptr_t)p; return g_ca_base && a >= g_ca_base && a + n <= g_ca_base + CMD_ARENA; }
 // 区里的块还回：盖回不可访问（地址不再切，录局里会话重建才走到）
 void s2a_cmd_arena_unmap(void *p, uint64_t len) { if (s2a_cmd_arena_has(p, len)) mmap(p, len, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0); else munmap(p, len); }

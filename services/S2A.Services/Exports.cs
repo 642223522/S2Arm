@@ -287,6 +287,12 @@ namespace S2A.Services
 
             string baseDir = configuration?.StateDirectory ?? Environment.GetEnvironmentVariable("S2A_RYU_DATA")
                 ?? System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Personal), "S2A", "ryujinx");
+            if (SnapSwitch.Any)   // 即时存档开着：服务层起来之前把开关转给音频两处（它们在 Ryujinx 里，不读环境变量、不另判）
+            {
+                SnapLog.DataRoot = baseDir;
+                Ryujinx.Horizon.Audio.AudioManagers.S2ASnapOn = true;
+                Ryujinx.Audio.Renderer.Server.AudioRenderSystem.S2ASnapOn = true;
+            }   // 即时存档：存档树的根以服务层实际用的为准（关着不碰 SnapLog，不触发它的静态初始化）
 
             var audio = new AudioPeakDriver(CreateAudioDriver());
             try

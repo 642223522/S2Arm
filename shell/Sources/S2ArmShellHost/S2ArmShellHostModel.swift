@@ -384,7 +384,12 @@ public final class S2ArmShellHostModel {
                      onDeleteGame: { [weak self] id, saves in self?.deleteGame(id, saves: saves) },
                      onManageSaves: { [weak self] id in self?.manageSaves(id) })
         actions.onReorderGames = { [weak self] sources, before in self?.reorderGames(sources, before: before) ?? false }
-        actions.onReportProblem = { s2a_shell_report_problem() }   // 故障报修（宿主 ios/diag.m：可不填的一句说明 + 打包上传、给短码）
+        actions.onReportProblem = { s2a_shell_report_problem() }
+        // 快照（0.6.0）：有完整快照的那款，长按卡片多一项「回到上次存下的这一刻」（宿主 ios/app.m；开关关着时宿主回 0，菜单里没有这一项）
+        actions.snapshotAvailable = { id in s2a_shell_snapshot_available(id) != 0 }
+        actions.onRestoreSnapshot = { [weak self] id in
+            guard let self, let g = self.allGames.first(where: { $0.id == id }), g.game.state == .playable else { return }
+            s2a_shell_restore_snapshot(id) }   // 故障报修（宿主 ios/diag.m：可不填的一句说明 + 打包上传、给短码）
         return actions
     }
 

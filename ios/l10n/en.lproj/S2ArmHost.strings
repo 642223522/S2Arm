@@ -578,3 +578,15 @@
 "sgrade.cpatch.detail" = "Community patch details";
 "sgrade.state.off_auto.widen_fit" = "Turned off automatically: on %1$@ full screen didn't fill the screen or stretched the picture";
 "sgrade.notice.fullscreen_off" = "S2Arm full screen didn't work this time, so it was turned off and the game runs as usual. You can turn it back on from the gear menu to try again.";
+
+/* 0.6.0 快照：游戏中菜单 */
+"vpad.snap.save" = "Save this moment";
+"vpad.snap.restore" = "Go back to the saved moment";
+"vpad.snap.saving" = "Saving this moment…";
+"vpad.snap.saved" = "Moment saved";
+"vpad.snap.notSaved" = "Couldn’t save this time. Try again in a moment";
+"vpad.snap.busy" = "Still saving the last one";
+"vpad.snap.restoreFailed" = "Couldn’t go back: %@";
+"vpad.snap.saveChanged.title" = "Go back to the saved moment?";
+"vpad.snap.saveChanged.body" = "The game saved after that moment. Going back also takes the game’s save back to that moment; your current save is backed up first.";
+"vpad.snap.saveChanged.go" = "Go back";

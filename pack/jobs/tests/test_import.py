@@ -96,6 +96,15 @@ class ImportTests(JobCase):
         self.assertIn("解不开", diagnostic["summary"]); self.assertNotIn("换一份", diagnostic["summary"])
         self.assertNotIn("master_key_", diagnostic["summary"])   # 读取器没给密钥代：不补那句
 
+    def test_damaged_content_not_blamed_on_keys(self):
+        # #1511 再判：读取器判出同代密钥的别的内容能解开（【原因 content_damaged】）→ 报文件被改过 / 坏了（content_invalid），不叫玩家重导 prod.keys；期望句手写
+        self.import_keys(); self.install_reader_fixture()
+        source = self.root / "damaged.xci"; source.write_bytes(b"damaged fixture")
+        _, terminal = self.worker("import", paths=[str(source)])
+        diagnostic = self.assert_failure(terminal, "content_invalid")
+        self.assertIn("这份文件的内容被改过或损坏了：同一份文件里用同一代密钥的其它内容能正常解开，密钥是对的。请换一份原版完整的文件（XCI / NSP）再导入。", diagnostic["summary"])
+        self.assertNotIn("prod.keys", diagnostic["summary"])
+
     def test_wrong_keys_names_key_generation(self):
         # #1511：读取器给了【密钥代】（要的代、prod.keys 有到的代，十六进制）→ 玩家句补一句；期望句子手写
         self.import_keys(); self.install_reader_fixture()
