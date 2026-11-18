@@ -1344,8 +1344,9 @@ public final class S2ArmLauncherModel: ObservableObject {
     func startControllerConnection() {
         controller.startIfEnabled()
         let env = ProcessInfo.processInfo.environment
+        // 单测里不起（会去独占真实 USB 手柄）：XCTestConfigurationFilePath 只有 Xcode 跑测试才设，swift test 不设，另按 XCTest 是否已加载判
         guard !xboxGipRelayStarted,
-              env["XCTestConfigurationFilePath"] == nil,
+              env["XCTestConfigurationFilePath"] == nil, NSClassFromString("XCTestCase") == nil,
               env["S2ARM_CONTROL"] != "1" else { return }
         if s2a_xbox_gip_relay_start(xboxGipSocketURL.path, nil, nil) == 0 {
             xboxGipRelayStarted = true

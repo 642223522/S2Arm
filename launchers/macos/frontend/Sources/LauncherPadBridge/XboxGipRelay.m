@@ -523,9 +523,10 @@ int s2a_xbox_gip_relay_start_ex(const char *socket_path, int enable_usb, s2a_xbo
     strlcpy(addr.sun_path, socket_path, sizeof(addr.sun_path));
 
     pthread_mutex_lock(&g_relay_mu);
-    if (g_running) {
+    if (g_running) {   // 已在跑：同一路径算成功；别的路径不是这次要的服务，如实回失败（原先一律回 0，调用方以为在新路径上听着）
+        int same = strcmp(g_socket_path, socket_path) == 0;
         pthread_mutex_unlock(&g_relay_mu);
-        return 0;
+        return same ? 0 : -1;
     }
     pthread_mutex_unlock(&g_relay_mu);
 

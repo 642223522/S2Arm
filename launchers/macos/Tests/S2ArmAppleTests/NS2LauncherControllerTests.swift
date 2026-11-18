@@ -349,6 +349,7 @@ final class NS2LauncherControllerTests: XCTestCase {
         // 启动器常驻独占 Xbox GIP：不碰真实 USB，用 server-only 模式验证切游戏（客户端 A 断开 → 客户端 B 连入）
         // 不会丢在线快照，第二局一连上立刻收到在线状态与新按键。
         let sockPath = "/tmp/s2arm-xbox-relay-test-\(getpid()).sock"
+        s2a_xbox_gip_relay_stop()   // 同进程里别处起过的中继先停掉（只能有一个），否则这里的路径不会被监听
         XCTAssertEqual(s2a_xbox_gip_relay_start_ex(sockPath, 0, nil, nil), 0)
         defer { s2a_xbox_gip_relay_stop() }
 
