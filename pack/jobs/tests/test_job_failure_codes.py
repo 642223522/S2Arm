@@ -18,7 +18,7 @@ import zipfile
 
 from jobcase import JobCase, JOBS, ROOT, ios_fixture
 from core import Context, Failure, Cancelled, atomic
-from errors import RECOVERY
+from errors import RECOVERY, WINDOWS_RECOVERY
 import build
 import ipa
 import install
@@ -470,7 +470,10 @@ class FreeAccountLimits(unittest.TestCase):
             with self.subTest(code=code):
                 self.assertTrue(loc.get(RECOVERY[code]) and spec[code]["title"]["en"] and spec[code]["detail"]["en"] and code in guide)
                 self.assertEqual(ctl.AI_NEXT[code][0], "human")
-        self.assertIn("添加账号", RECOVERY["apple_not_signed_in"]); self.assertNotIn("过期", RECOVERY["apple_not_signed_in"])
+        self.assertIn("添加账号", WINDOWS_RECOVERY["apple_not_signed_in"]); self.assertNotIn("过期", WINDOWS_RECOVERY["apple_not_signed_in"])
+        # Mac 通用壳登录框（apple_login）：Mac 不再叫玩家去开 Impactor（期望手写）
+        self.assertNotIn("Impactor", RECOVERY["apple_not_signed_in"]); self.assertIn("S2Arm 不保存", RECOVERY["apple_not_signed_in"])
+        self.assertTrue(loc.get(WINDOWS_RECOVERY["apple_not_signed_in"]))
         self.assertIn("DNS", RECOVERY["apple_server_unreachable"]); self.assertIn("不是 Apple ID", RECOVERY["apple_server_unreachable"])
         for other, code in (("Developer API error 9401: An App ID with Identifier 'x' is not available.", "app_id_taken"),
                             ("-21669 verification code", "two_factor_wrong"), ("-20101 entered incorrectly", "apple_id_wrong")):

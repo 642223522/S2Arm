@@ -78,6 +78,26 @@ static void copy_case(int together, int gpu_source, int partial) {
     printf("%s %s CPU/GPU 源=%d 局部=%d：%u/%u 纹素不符\n",bad?"FAIL":"PASS",phase,gpu_source,partial,bad,SIDE*SIDE);
     API(nvnTextureFinalize)(&a); API(nvnTextureFinalize)(&b);
 }
+// 带 SPARSE 标志、放在普通（物理）池里的贴图（某款开局 8x8 四级、池标志 0xe2）：同样按池字节存放，上传也要写回池存储，
+//   之后按字节搬到另一张贴图再读回仍是上传的内容
+static void sparse_case(void) {
+    cases++; phase="物理池里的 SPARSE 贴图";
+    NVNtexture a={0},b={0}; NVNtextureBuilder ba,bb; size_t ao,an,bo,bn;
+    builder(&ba,&ao,&an); API(nvnTextureBuilderSetFlags)(&ba,NVN_TEXTURE_FLAGS_SPARSE); an=API(nvnTextureBuilderGetStorageSize)(&ba); make(&a,&ba,ao,an,1);
+    builder(&bb,&bo,&bn); API(nvnTextureBuilderSetFlags)(&bb,NVN_TEXTURE_FLAGS_SPARSE); bn=API(nvnTextureBuilderGetStorageSize)(&bb); make(&b,&bb,bo,bn,1); REQUIRE(an==bn);
+    const uint8_t want[4]={0x5a,0x6b,0x7c,0x8d}; const size_t linear=READ_OFFSET+cases*65536;
+    for(unsigned i=0;i<SIDE*SIDE;i++) memcpy((uint8_t*)storage+linear+4*i,want,4);
+    memset((uint8_t*)storage+READ_OFFSET,0xa5,SIDE*SIDE*4);
+    NVNbufferAddress base=API(nvnMemoryPoolGetBufferAddress)(&pool); NVNcopyRegion r={0,0,0,SIDE,SIDE,1};
+    begin();
+    API(nvnCommandBufferCopyBufferToTexture)(&commands,base+linear,&a,NULL,&r,0);
+    API(nvnCommandBufferCopyBufferToBuffer)(&commands,base+ao,base+bo,an,0);
+    API(nvnCommandBufferCopyTextureToBuffer)(&commands,&b,NULL,&r,base+READ_OFFSET,0); submit();
+    unsigned bad=0; for(unsigned i=0;i<SIDE*SIDE;i++) bad+=memcmp((uint8_t*)storage+READ_OFFSET+4*i,want,4)!=0;
+    checks++; fails+=bad!=0;
+    printf("%s %s：%u/%u 纹素不符\n",bad?"FAIL":"PASS",phase,bad,SIDE*SIDE);
+    API(nvnTextureFinalize)(&a); API(nvnTextureFinalize)(&b);
+}
 // 不用被测的 swizzle / deswizzle 算期望：手算一个 GOB 内 16 字节段的地址。
 static void gob_case(int gob2, int alias) {
     phase=alias?"线性源与贴图存储重叠":"GOB 原始字节";
@@ -168,6 +188,7 @@ int main(void) { @autoreleasepool {
     setup();
     for(int together=0;together<2;together++) for(int gpu=0;gpu<2;gpu++) for(int partial=0;partial<2;partial++) copy_case(together,gpu,partial);
     for(int gob=0;gob<2;gob++) for(int alias=0;alias<2;alias++) gob_case(gob,alias);
+    sparse_case();
     shaped_case(NVN_FORMAT_RGBA_DXT1,NVN_TEXTURE_TARGET_2D,64,64,1,7);
     shaped_case(NVN_FORMAT_RGBA_DXT5,NVN_TEXTURE_TARGET_2D_ARRAY,32,16,3,5);
     shaped_case(NVN_FORMAT_RGBA8,NVN_TEXTURE_TARGET_3D,17,9,5,3);
