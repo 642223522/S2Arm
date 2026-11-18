@@ -321,6 +321,9 @@ static const void *snap_addr_lookup(uint64_t ser) { return g_snap_addr_lk ? nvn_
 int nvn_snap_restore(const char *dir) {
     g_snap_restored = 1;
     char p[1200]; nvn_snap_live lv; int ok = 1;
+    // 分步计时（11-17 iPhone 大金刚「核对」1.09 s，其中图形一段要拆开看）：命令块 / 回放层表 / 共享存储贴图 / GPU 私有贴图 / 只读普通贴图 / 预排布贴图 / 后端状态 + 视频
+    double tg[9]; int ng = 0; tg[ng++] = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9;
+#define SNAP_TG() (tg[ng < 9 ? ng++ : 8] = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9)
     g_snap_newtex_log = 600;
     if (s2a_gl_first_use) s2a_gl_first_use(); else MLOG("【红】 即时存档恢复：宿主没有着色器路径初始化入口");
     { snprintf(p, sizeof p, "%s/gfx_live.bin", dir); FILE *f = fopen(p, "rb"); ok = f && fr_r(f, &lv, sizeof lv) && lv.magic == 0x31534E4Eu; if (f) fclose(f); }
@@ -339,6 +342,7 @@ int nvn_snap_restore(const char *dir) {
       if (s2a_snap_arena_set) s2a_snap_arena_set(lv.ca_used, lv.va_used);
       MLOG("%s即时存档恢复：命令记录宿主块 %d 块 %.1f MB 放回原地址", ok ? "" : "【红】", nd, bytes / 1048576.0); }
     if (!ok) return -1;
+    SNAP_TG();
     { snprintf(p, sizeof p, "%s/gfx_progkeys.bin", dir); FILE *f = fopen(p, "rb"); ok = f && s2a_hle_pk_load(f) >= 0; if (f) fclose(f); }
     { snprintf(p, sizeof p, "%s/gfx_vpool.bin", dir); FILE *f = fopen(p, "rb"); ok = ok && f && s2a_hle_vpool_load(f) >= 0; if (f) fclose(f); }
     { snprintf(p, sizeof p, "%s/gfx_hle.bin", dir); FILE *f = fopen(p, "rb"); ok = ok && f && hle_snap_restore(f) == 0; if (f) fclose(f); }
@@ -351,7 +355,9 @@ int nvn_snap_restore(const char *dir) {
     atomic_store(&g_cur_frame, lv.frame);
     { snprintf(p, sizeof p, "%s/gfx_gs.bin", dir); FILE *f = fopen(p, "rb"); int in = f && nvn2_snap_gs_restore ? nvn2_snap_gs_restore(f) : -1; if (f) fclose(f);
       if (in < 0) { MLOG("【红】 即时存档恢复：图形系统启动记账读不了"); return -1; } }
+    SNAP_TG();
     { snprintf(p, sizeof p, "%s/gfx_alias.bin", dir); if (snap_alias_restore(p)) { MLOG("【红】 即时存档恢复：共享存储贴图读不了"); return -1; } }
+    SNAP_TG();
     {   // GPU 私有贴图：gpu.bin 里每张按序号找游戏里的贴图对象，先建出 Metal 贴图，再整份写回内容
         nvn_hmap addr = {0}; nvn_hm_init(&addr, 8); uint64_t r[2]; int na = 0, made = 0, put = 0, miss = 0;
         snprintf(p, sizeof p, "%s/gfx_texaddr.bin", dir); FILE *f = fopen(p, "rb");
@@ -365,6 +371,7 @@ int nvn_snap_restore(const char *dir) {
         snap_up_sync();
         fr_restore_gpu(p, &put, &miss);
         MLOG("即时存档恢复：GPU 私有贴图 按地址建 %d 张（地址表 %d 项），内容写回 %d 张、没写回 %d 张", made, na, put, miss);
+        SNAP_TG();
         {   int qp = 0, qm = 0, qmade = 0; snprintf(p, sizeof p, "%s/gfx_plain.bin", dir); FILE *pf = fopen(p, "rb"); fr_tex_hd hd;
             while (pf && fr_r(pf, &hd, sizeof hd)) {
                 const tex_t *tt = nvn_hm_get(&addr, &hd.ser); if (tt && tt->serial == hd.ser && tex_mtl(tt)) qmade++;
@@ -376,14 +383,20 @@ int nvn_snap_restore(const char *dir) {
             }
             if (pf) fclose(pf);
             MLOG("即时存档恢复：只读的显卡私有普通贴图 按地址建 %d 张，写回 %d 张、没写回 %d 张", qmade, qp, qm); }
+        SNAP_TG();
         g_snap_addr_lk = &addr; hle_snap_ft_restore(snap_addr_lookup); g_snap_addr_lk = NULL;
         int pp = 0, pm = 0; snprintf(p, sizeof p, "%s/gfx_pkg.bin", dir); snap_put_pkg(p, &addr, &pp, &pm);
         MLOG("即时存档恢复：GPU 写过的预排布贴图 写回 %d 张、没写回 %d 张", pp, pm);
     }
+    SNAP_TG();
     { snprintf(p, sizeof p, "%s/gfx_mtl.bin", dir); FILE *f = fopen(p, "rb"); int r = f ? snap_mtl_restore(f) : -1; if (f) fclose(f);
       if (r) { MLOG("【红】 即时存档恢复：后端延续状态读不了"); return -1; } }
     { snprintf(p, sizeof p, "%s/gfx_codec.bin", dir); FILE *f = fopen(p, "rb"); int nc = f && nvn2_snap_codec_restore ? nvn2_snap_codec_restore(f) : -1; if (f) fclose(f);
       if (nc < 0) { MLOG("【红】 即时存档恢复：视频解码器表读不了"); return -1; } if (nc) MLOG("即时存档恢复：视频解码器 %d 个按原参数重建", nc); }
+    SNAP_TG();
+    if (ng == 8) MLOG("即时存档恢复：图形拆账 命令块 %.2f、回放层表 %.2f、共享存储贴图 %.2f、GPU 私有贴图 %.2f、只读普通贴图 %.2f、预排布贴图 %.2f、后端状态 + 视频 %.2f（秒）",
+                      tg[1] - tg[0], tg[2] - tg[1], tg[3] - tg[2], tg[4] - tg[3], tg[5] - tg[4], tg[6] - tg[5], tg[7] - tg[6]);
+#undef SNAP_TG
     MLOG("即时存档恢复：图形 贴图登记 %d 个、栅栏接到 %llu、出图序号接到 %llu、对象序号下限 %llu、帧 %llu（GPU 私有贴图首版不写回）", ntreg, (unsigned long long)g_fence, (unsigned long long)lv.pq_in, (unsigned long long)lv.serial + 1, (unsigned long long)lv.frame);
     return 0;
 }
