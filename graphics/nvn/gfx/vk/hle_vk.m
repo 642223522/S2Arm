@@ -335,7 +335,6 @@ static void *zalloc(size_t n) { void *p = calloc(1, n); if (!p) die("[vk] out of
 // 快照开（S2A_SNAP_MODE / S2A_SNAP_RESTORE）时，交给游戏的对象（句柄就是它们的地址）和对象自有的数组从命令记录区（runtime/src/vawin.c s2a_cmd_arena_map，
 //   固定地址、快照按原址存回）里切；快照关时一律 calloc / free，与原来逐字节相同。分配器自己的账（块链、空闲链）也放在区里，随区一起存回
 // 弱链接[nvntest]：s2a_cmd_arena_map（runtime/src/vawin.c 提供；图形单测不链宿主，没有就不进区）
-// 弱链接[nvntest]：s2a_snap_handout_range（runtime/src/snapshot.c 提供；vk_snap.inc 登记静态区句柄用，同上）
 // 弱链接[nvntest]：s2a_vk_entry（graphics/nvn/host_adapt.m 提供；vk_snap.inc 恢复时按「vk:export:<名>」换算交给游戏的 vk* 地址，图形单测不链它）
 void *s2a_cmd_arena_map(uint64_t len) __attribute__((weak)); int s2a_cmd_arena_has(const void *p, uint64_t n) __attribute__((weak));
 int s2a_snap_mode(void) __attribute__((weak));

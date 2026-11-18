@@ -10,16 +10,17 @@
 // 已知限制（这一版）：宽屏放宽是每个进程各自的状态，恢复出来的图像 / 视图按不放宽处理（wid 清 0）；GPU 私有图像内容整张存，超 256 MB 或格式不认的只存描述（下一帧重画）。
 
 #include "../../../../runtime/src/snapfmt.h"
-void s2a_snap_handout_id(uint64_t v, const char *id) __attribute__((weak));
-void s2a_snap_handout_range(uint64_t lo, uint64_t n, const char *name) __attribute__((weak));
+// 交出指针登记：真定义在 runtime/src/snapshot.c（同一个程序里强定义盖过）；这里给空的弱缺省，只链图形库的单测在本文件内就解析掉，
+//   不去 libnvn.a 里另一份弱缺省所在的 nvn2_codec.c.o 拉整个成员（它还要 guest_sym 等单测没有的符号）
+__attribute__((weak)) void s2a_snap_handout_id(uint64_t v, const char *id) { (void)v; (void)id; }
+__attribute__((weak)) void s2a_snap_handout_range(uint64_t lo, uint64_t n, const char *name) { (void)lo; (void)n; (void)name; }
 int nvn_snap_tex_save(FILE *f, void *tex) __attribute__((weak)); void *nvn_snap_tex_load(FILE *f) __attribute__((weak));   // 直连层 nvn_snap.inc
 // 这几个弱符号的「弱链接[nvntest]」登记写在 hle_vk.m（登记工具只扫 .m / .c）
 void vs_ho(const void *p, const char *fmt, const char *arg) {
-    if (!p || !s2a_snap_handout_id || !s2a_snap_mode || !s2a_snap_mode()) return;
+    if (!p || !s2a_snap_mode || !s2a_snap_mode()) return;
     char id[128]; snprintf(id, sizeof id, fmt, arg); s2a_snap_handout_id((uint64_t)(uintptr_t)p, id);
 }
 __attribute__((constructor)) static void vs_ranges(void) {   // 静态区的三个句柄：快照引擎按「同名段的新起点 + 段内偏移」换算
-    if (!s2a_snap_handout_range) return;
     s2a_snap_handout_range((uint64_t)(uintptr_t)&g_pdev, sizeof g_pdev, "vk.pdev");
     s2a_snap_handout_range((uint64_t)(uintptr_t)&g_device, sizeof g_device, "vk.device");
     s2a_snap_handout_range((uint64_t)(uintptr_t)&g_queue, sizeof g_queue, "vk.queue");
