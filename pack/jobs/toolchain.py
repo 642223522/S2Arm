@@ -6,6 +6,7 @@ import json
 import os
 import platform
 import re
+import tempfile
 import threading
 import time
 import subprocess
@@ -300,8 +301,12 @@ def preflight(c):
         add("library_location", "游戏库所在位置", cloud is None or accepted,
             (libloc.CLOUD_ACCEPTED_MESSAGE if accepted else libloc.CLOUD_MESSAGE).format(cloud=cloud) if cloud else "游戏库不在云盘同步目录里。",
             action="library", code="library_in_cloud", group="storage")
-    add("apple_silicon", "Apple Silicon", platform.system() == "Darwin" and platform.machine() == "arm64",
-        "需要 Apple Silicon Mac。", ("prepare", "launch"))
+    if platform.system() == "Darwin" and platform.machine() == "x86_64":
+        # 给 iPhone 出包是 Intel Mac 的正式用法（#152）：Mac 本机起游戏才要 Apple 芯片，别把出包路径整段标红
+        add("apple_silicon", "Apple Silicon", True, "Intel Mac：给 iPhone 出包可用；在 Mac 上起游戏仍要 Apple 芯片。", ("ipa",))
+    else:
+        add("apple_silicon", "Apple Silicon", platform.system() == "Darwin" and platform.machine() == "arm64",
+            "需要 Apple Silicon Mac。", ("prepare", "launch"))
     add("macos", "macOS", platform.system() == "Darwin" and int(platform.mac_ver()[0].split(".")[0] or 0) >= 15,
         "启动器需要 macOS 15 或更新版本。", ("prepare", "launch"))
     add("python", "Python", sys.version_info >= PYTHON_MINIMUM, "需要 Python %s 或更新版本。" % ".".join(map(str, PYTHON_MINIMUM)), ("prepare", "launch"))
@@ -496,6 +501,24 @@ def _wait_runtime_ready(c, allowed, ver, seconds):
     return _runtime_ready(c, allowed, ver)
 
 
+def _iphoneos_sdk_usable(c):
+    """Intel Mac 不跑模拟器：只要 xcrun clang 能用这套 iphoneos SDK 编出 arm64 目标，就能出壳 / 打 IPA。
+    临时文件用完即删，不动仓库，也不下载。"""
+    env = c.env()
+    sdk = subprocess.run(["xcrun", "--sdk", "iphoneos", "--show-sdk-path"], env=env,
+                         capture_output=True, text=True)
+    if sdk.returncode != 0 or not sdk.stdout.strip():
+        return False
+    with tempfile.TemporaryDirectory() as folder:
+        source = Path(folder) / "probe.c"
+        source.write_text("int s2a_probe(void) { return 0; }\n", encoding="utf-8")
+        probe = subprocess.run(["xcrun", "--sdk", "iphoneos", "clang", "-arch", "arm64",
+                                "-isysroot", sdk.stdout.strip(), "-c", str(source),
+                                "-o", str(Path(folder) / "probe.o")],
+                               env=env, capture_output=True, text=True)
+        return probe.returncode == 0
+
+
 def ios_platform(c):
     """选中 Xcode 的 iOS 平台组件装了没有 → (ok, SDK 版本, 详情, 一键处理)；ok=None 表示读不到、不判。
     11-07 定因（本机 Xcode 26.6 编得过、gate-host 同版编不过对照）：Xcode 26 起「iOS 平台」= 与该 Xcode 的 iOS SDK 配套的 iOS 模拟器运行时，首次打开时另下；
@@ -513,6 +536,10 @@ def ios_platform(c):
     have = [f"{v}（{b or '?'}）" for v, b, _ in rows]
     why = (f"SDK {ver}（{build}）可配运行时 {sorted(allowed)}，已装 {have or '无'}" if allowed else  # 非玩家句
            f"SDK {ver}（{build or '?'}）没有配套表，按同版本号比；已装 {have or '无'}")  # 非玩家句
+    # Intel Mac 不出 Mac 局、也不跑 iOS 模拟器：装 8 GB 模拟器运行时对出 iPhone 包没有用处。
+    # 只要本机 SDK 能直接编 arm64 目标就认这套 Xcode 可用（Xcode 26.5 / SDK 26.5 实走）。
+    if platform.system() == "Darwin" and platform.machine() == "x86_64" and _iphoneos_sdk_usable(c):
+        return True, ver, why + "；Intel Mac 用 iphoneos SDK 直接出壳，不要求模拟器运行时", None
     ready = [r for r in rows if r[2] and _runtime_matches(ver, allowed, r[0], r[1])]
     pending = [r for r in rows if not r[2] and _runtime_matches(ver, allowed, r[0], r[1])]
     if ready:

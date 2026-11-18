@@ -163,9 +163,8 @@ App 的签名，再校验 DMG，成功后才替换目标文件。签名校验也
 
 ## Build and run
 
-Apple Silicon and macOS 15+ are needed for the S2Arm app and direct-mode play on the Mac (games execute natively as arm64).
-Intel Macs are supported for building iPhone packages only, through the command-line `pack/oneclick/oneclick.sh`
-(check the environment first with `python3 pack/jobs/applenv.py`). The application bundles Python 3.12,
+Apple Silicon and macOS 15+ are needed for direct-mode play on the Mac (games execute natively as arm64).
+Intel Macs are supported for building iPhone packages only: `S2Arm.app` can be built on x86_64 to run the packaging UI and produce an IPA plus resource pack, but it contains no working Mac game host. The command-line `pack/oneclick/oneclick.sh` remains available; check the environment first with `python3 pack/jobs/applenv.py`. The application bundles Python 3.12,
 pinned `capstone`, `lz4`, `numpy`, .NET 10 runtime, `zstd`, SPIRV-Tools,
 the in-tree perl `timeout` (`tools/bin/timeout`) and the precompiled S2Arm preparation helpers. Players install no Python
 packages, .NET SDK or Homebrew. Preparing games uses an external full Xcode with
@@ -184,7 +183,7 @@ python3 launchers/macos/prepare_build.py            # add --check to only inspec
 
 | Dependency | Rule | Prepared by the command |
 | --- | --- | --- |
-| Apple Silicon Mac | The runtime keeps arm64 slices only | Checked |
+| macOS arm64 or x86_64 | The runtime keeps the build machine's slice only; x86_64 builds are packaging-only (no Mac game host) | Checked |
 | Full Xcode with iOS platform and Metal Toolchain | Resolved like packaging (`tools/toolchain.sh`): `S2A_DEVELOPER_DIR` or `tools/machine.local`, then `xcode-select`. A Metal compiler version different from `translator/dmsh_chain.lock` prints a `note` only (`dmsh_chain.py --build-env` lets it through; the shader cache is keyed by compiler, so a different Xcode just recompiles) | Checked |
 | .NET SDK | Whatever `compat/tree/global.json` accepts: `version` plus `rollForward: latestFeature` (currently 10.0.403 or a later 10.0 feature band / patch). The command runs `dotnet --version` inside `compat/tree`, so .NET itself applies the rule. Install with `python3 pack/jobs/applenv.py --install dotnet` (the same path the launcher uses) | Checked |
 | Homebrew `python@3.12 spirv-tools spirv-cross glslang zstd bash cmake meson ninja` | Runtime collection (`bundle_runtime.py`), C rewriter (CMake 3.18+), dav1d (meson / ninja; skipped with `S2A_DAV1D=0`) | Checked; prints the `brew install` line |
