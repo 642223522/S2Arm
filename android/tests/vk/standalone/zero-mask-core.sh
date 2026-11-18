@@ -3,7 +3,7 @@
 # Copyright 2026 S2Arm contributors
 # Production pass/draw replay, actual Vulkan images, validation required.
 set -euo pipefail
-repo=$(cd "$(dirname "$0")/../../.." && pwd)
+repo=$(cd "$(dirname "$0")/../../../.." && pwd)
 out="$repo/build/vk-zero-mask-core"
 mkdir -p "$out/shaders"
 : "${S2A_LAVAPIPE_ICD:?lavapipe required}"
