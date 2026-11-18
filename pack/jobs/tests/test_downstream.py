@@ -407,5 +407,35 @@ class HostTest(unittest.TestCase):
         self.assertEqual(ds.hosts(real["d2r-mobile"]), ["mac", "windows"])
 
 
+class DownstreamInput(unittest.TestCase):
+    """#1570：共用解包只有 RomFS 镜像 romfs.std 时，交给下游做包工具的目录要有逐文件的 romfs/。期望手写：
+    ① 只有 romfs.std → 工具拿到 work/downstream-input：exefs、ctl 里的文件是解包目录对应文件的硬链接（同 inode），romfs/ 下每个文件与镜像里逐字节相同，镜像不放进去；
+    ② 解包目录本来就有 romfs/ 真目录 → 原样交解包目录、不展开；③ 两种都没有 → 原样交（缺什么由工具自己报）"""
+    def setUp(self):
+        from test_onerom import std_romfs
+        self.d = Path(tempfile.mkdtemp()); self.addCleanup(lambda: __import__("shutil").rmtree(self.d, ignore_errors=True))
+        self.ex = self.d / "extract"; (self.ex / "exefs").mkdir(parents=True); (self.ex / "ctl").mkdir()
+        (self.ex / "exefs/main").write_bytes(b"MAIN")
+        self.files = {"build_manifest.psv": b"psv" * 1000, "a.bin": bytes(range(256)) * 300, "empty": b""}
+        self.std = std_romfs(self.files)
+        c = unittest.mock.Mock(); c.engine = str(JOBS.parents[1]); self.c = c
+
+    def test_image_is_expanded(self):
+        (self.ex / "romfs.std").write_bytes(self.std)
+        got, expanded = ds._downstream_input(self.c, self.ex, self.d / "work")
+        self.assertEqual((got, expanded), (self.d / "work/downstream-input", self.d / "work/downstream-input/romfs"))
+        self.assertEqual(sorted(p.name for p in got.iterdir()), ["ctl", "exefs", "romfs"])
+        self.assertEqual(((got / "exefs/main").read_bytes(), (got / "exefs/main").stat().st_ino), (b"MAIN", (self.ex / "exefs/main").stat().st_ino))
+        self.assertEqual({p.name: p.read_bytes() for p in (got / "romfs").iterdir()}, self.files)
+
+    def test_real_romfs_dir_passes_through(self):
+        (self.ex / "romfs").mkdir(); (self.ex / "romfs/x").write_bytes(b"x")
+        self.assertEqual(ds._downstream_input(self.c, self.ex, self.d / "work"), (self.ex, None))
+        self.assertFalse((self.d / "work").exists())
+
+    def test_no_romfs_passes_through(self):
+        self.assertEqual(ds._downstream_input(self.c, self.ex, self.d / "work"), (self.ex, None))
+
+
 if __name__ == "__main__":
     unittest.main()
