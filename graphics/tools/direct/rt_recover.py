@@ -206,7 +206,7 @@ def recover(dirs, cache, library, tables, header, host_log=None):
             if KEY.fullmatch(source.name[:-8]) and not (directory / (source.name[:-6] + '.json')).is_file():
                 counts['invalid'] += 1
                 issues.append({'path': str(source), 'reason': 'MSL 缺对应反射 JSON'})
-        for path in sorted(directory.glob('*_b.json')):
+        for path in sorted(p for p in directory.glob('*_b.json') if not p.name.startswith('._')):   # ._：exFAT 上的 AppleDouble 附属文件
             key = path.name[:-7]
             try:
                 if not KEY.fullmatch(key) or path.is_symlink():

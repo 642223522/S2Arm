@@ -186,7 +186,7 @@ def assemble(a):
         raise Red(f'打 ipa 失败（{reason or "没有输出"}）')
     # 进包核对：ipa 里 gal_helpers/m3/ 的库文件名集合 = 壳的 m3/（Metal 3 兼容辅助库漏拷时预热静默现编）
     hl = os.path.join(a.shell, 'root', 'gal_helpers', 'm3')
-    want = sorted((n for n in os.listdir(hl) if n.endswith('.metallib')), key=lambda s: s.encode()) if os.path.isdir(hl) else []
+    want = sorted((n for n in os.listdir(hl) if n.endswith('.metallib') and not n.startswith('._')), key=lambda s: s.encode()) if os.path.isdir(hl) else []
     with zipfile.ZipFile(ipa) as z:
         got = sorted((n.rsplit('/', 1)[1] for n in z.namelist() if re.match(r'Payload/[^/]+\.app/gal_helpers/m3/[^/]+\.metallib$', n)), key=lambda s: s.encode())
     if not want or want != got:   # 维护者 11-17：校验不过不再整个拒绝——只影响这款，黄字说清后照常出包

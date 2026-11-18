@@ -106,6 +106,8 @@ static void id_case(const char *dir, const char *tag, const char *sha_in_json, i
 }
 int main(void) {
     char dir[] = "/tmp/t_selfsign.XXXXXX"; if (!mkdtemp(dir)) { puts("【红】建不了临时目录"); return 1; }
+    // openssl 用测试自带的最小配置：不依赖本机 openssl.cnf（一台门禁机的 Homebrew openssl 缺配置文件，req 直接失败、整组红）
+    { char cnf[600]; snprintf(cnf, sizeof cnf, "%s/openssl.cnf", dir); FILE *f = fopen(cnf, "w"); if (f) { fputs("[req]\ndistinguished_name = dn\n[dn]\n", f); fclose(f); setenv("OPENSSL_CONF", cnf, 1); } }
     // 输入：arm64 小可执行文件，签名标识 t_selfsign_in；证书：自签名 RSA 2048，OU = 团队号
     int r = sh("printf 'int main(void){return 0;}' > %s/m.c && cc -arch arm64 -o %s/in %s/m.c && codesign -f -s - -i t_selfsign_in %s/in 2>/dev/null", dir)
          || sh("openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj '/CN=t_selfsign/OU=ABCDE12345'"

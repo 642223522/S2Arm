@@ -387,6 +387,16 @@ int dm_shader_miss_late(const char *k16, uint64_t code, const void *control) {
         snprintf(fp, sizeof fp, "%s/%s.fail.code", out, k); if ((f = fopen(fp, "wb"))) { fwrite(cd, 1, ncode, f); fclose(f); }
         LOG("直连着色器现编失败的输入已存：%s/%s.fail.ctl / .fail.code（控制段 %u 字节、代码区 %u 字节；反馈问题时请附上）", out, k, e->nctl, ncode);
     }
+    // #1520（诊断）：一款 Switch 2 游戏的片元着色器控制段正常、长度自洽（+0x38 = 0x80 字节 SPH + 指令），代码区开头却直接是指令、整段找不到 SPH，翻译器把指令当 SPH 读出阶段 14。
+    //   没有原件，分不清是「SPH 在代码地址前 0x80 字节」还是新布局：图形阶段失败时记下开头一个字与代码地址前 0x80 字节（只在与代码区同一页时读，不碰别的页），前 8 次
+    if (rc > 0 && code && ncode >= 4 && (e->st == 0 || e->st == 1 || e->st == 3) && nvn2_on() && nvn2_ctl(e->ctl)) {
+        static _Atomic int said;
+        if (atomic_fetch_add(&said, 1) < 8) {
+            uint32_t w0; memcpy(&w0, cd, 4); char hx[0x80 * 2 + 1] = "";
+            if ((code & 0xfff) >= 0x80) for (int i = 0; i < 0x80; i++) snprintf(hx + 2 * i, 3, "%02x", cd[i - 0x80]);
+            LOG("【红】直连：Switch 2 %s（%s）现编失败，代码区开头 %08x；代码地址前 0x80 字节：%s", k, dsh_nm[e->st], w0, hx[0] ? hx : "跨页，不读");
+        }
+    }
     int st = e->st; uint32_t enctl = e->nctl; uint8_t *ectl = rc > 0 ? malloc(enctl) : NULL; if (ectl) memcpy(ectl, e->ctl, enctl); free(e);
     if (rc) { atomic_fetch_add_explicit(&g_dsh_failed, 1, memory_order_relaxed); atomic_fetch_add(&g_dsh_bad, 1); LOG("【红】直连着色器现编失败：%s（%s）rc=%d", k, dsh_nm[st], rc);
         if (rc > 0) { char why[64]; snprintf(why, sizeof why, "translator rc=%d (%s)", rc, dsh_nm[st]); if (ectl) dsh_salvage_put(k, DSV_COMPFAIL, st, ectl, enctl, code ? (const void *)(uintptr_t)code : NULL, ncode, why); }   // 着色器补料：控制段用待编表里的拷贝

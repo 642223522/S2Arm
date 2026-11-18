@@ -127,6 +127,17 @@ class SGradeTests(unittest.TestCase):
             r = sgrade.mac_all(self.c)
         self.assertEqual((r["updated"], seen), (["0100A"], [True]))
 
+    def test_mac_all_never_rebuilds_direct_library(self):
+        # 11-17 D-FCMF：打开启动器的后台活不再整份重出直连库补 _bf（几分钟到几十分钟，玩家一开局就放弃、永远做不完）；升级页照旧标 bfPending、玩家点重出时前台补
+        self.games = [("0100A", "甲")]
+        nso(self.t / "lib" / "0100A" / "image/mac/exefs", "1111111111111111")
+        import rewrite_refresh
+        import sgrade_bf
+        with patch.object(rewrite_refresh, "refresh_mac", return_value=False), \
+             patch.object(sgrade_bf, "upgrade_mac", side_effect=AssertionError("后台不该重出直连库")):
+            r = sgrade.mac_all(self.c)
+        self.assertEqual(r, {"updated": [], "checked": 1})
+
 
 if __name__ == "__main__":
     unittest.main()

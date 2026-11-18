@@ -325,6 +325,29 @@ struct LauncherView: View {
                 phonePill
                 updateButton
                 HStack(spacing: 4) {
+                    // 0.6.0 动态窗口（通用壳开关后面，iPhone 总控台「五」）：有和 App 相关的作业时出现一颗圆钮——外圈进度环 + 一行小字，做完闪 ✓，
+                    //   失败 / 停下留橙色「!」，点它到总控台；没有作业、开关关着：不出现（顶栏照 #1402 只留玩家 → 手柄 → 消息 → 设置 → 报修）
+                    if consoleEnabled && (model.dynamicJob != nil || model.dynamicDone || model.dynamicAlert) {
+                        Button { installFor = nil; model.openConsoleFromTopBar() } label: {
+                            HStack(spacing: 6) {
+                                ZStack {
+                                    Image(systemName: model.dynamicAlert ? "exclamationmark" : model.dynamicDone ? "checkmark" : "square.grid.2x2")
+                                        .foregroundStyle(model.dynamicAlert ? .orange : model.dynamicDone ? .green : .white)
+                                    if let job = model.dynamicJob {
+                                        Circle().trim(from: 0, to: CGFloat(job.fraction ?? 0.25)).stroke(LauncherPalette.cream, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                                            .rotationEffect(.degrees(-90)).frame(width: 26, height: 26)   // 拿不到进度时显示一段静止的环
+                                    }
+                                }
+                                if let job = model.dynamicJob {
+                                    Text(job.label + (job.fraction.map { " \(Int($0 * 100))%" } ?? "")).font(.manrope(11)).monospacedDigit().lineLimit(1).frame(maxWidth: 150)
+                                }
+                            }
+                            .accessibilityLabel(loc.t("s2arm.nav.library")).accessibilityValue(model.dynamicJob?.label ?? "")
+                        }
+                        .controllerButtonStyle(ConsoleIconButtonStyle(backgroundless: true)).help(model.dynamicJob.map(\.label) ?? loc.t("s2arm.nav.library"))
+                        .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: model.dynamicDone)
+                        .controllerID("top.library")
+                    }
                     PlayerToolbarButton(loc: loc)   // 标题栏另起视图树，显式传入本地化对象。
                     ControllerToolbarButton(controller: model.controller, show: $showController,
                                             lang: loc.lang.code)
