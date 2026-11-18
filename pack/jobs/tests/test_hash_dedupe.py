@@ -17,6 +17,10 @@ class HashDedupe(JobCase):
         self.c.r["engineBundle"] = "/Applications/S2Arm.app/Contents/Resources/engine"
         self.assertIsNone(build.source_fingerprint(self.c))
         del self.c.r["engineBundle"]
+        # 源码树开发：对临时目录里的小假引擎算（真引擎要哈希 ENGINE_SOURCES 下全部文件，这里只证明给了源码摘要）
+        engine = self.root / "fake-engine"; (engine / "runtime").mkdir(parents=True)
+        (engine / "runtime" / "a.c").write_text("int a;\n"); (engine / "Makefile").write_text("all:\n")
+        self.c.engine = engine
         fp = build.source_fingerprint(self.c)
         self.assertIsInstance(fp, str); self.assertEqual(len(fp), 64)
 
