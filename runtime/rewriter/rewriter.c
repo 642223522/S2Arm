@@ -2344,6 +2344,12 @@ static void scan(void) {
     } else if ((w & 0xffffffe0) == 0xd53b0020) {
       k = "ctr";
       arg = w & 31;
+    } else if ((w & 0xffe0fc00) == 0x9ac03000) {
+      /* pacga Xd, Xn, Xm|SP：通用指针认证。宿主进程的 GA 密钥每个进程不同（实测同一输入三次运行三个结果），游戏把它算出的校验值存进内存
+         （较新 Switch 2 SDK 切纤程：nn::os DispatchFiberContext），换进程（即时快照恢复）后校验不过、游戏主动陷阱。换成固定密钥的确定性实现，
+         同一进程内语义等价（同输入同输出、只占高 32 位） */
+      k = "pacga";
+      arg = (int)(w & 0x001f03ff);
     } else if ((w & 0xffe0001f) == 0xd4200000 && ((w >> 5) & 65535) >= 0xb000 &&
                ((w >> 5) & 65535) <= 0xbfff) {
       gap(a, "brk", "brk #0x%x：macOS 内核截走 0xB000–0xBFFF，进程无声被杀", (w >> 5) & 65535);
@@ -3526,6 +3532,44 @@ static void gensite(Site* s) {
       emit(LDPOST(T, tmp, 31, 16));
     else {
       emit(LDUR(tmp, 31, -24));
+      emit(LDUR(T, 31, -16));
+    }
+    emit(branch(here(), s->at + 4));
+    bump(s->kind);
+  } else if (eq(s->kind, "pacga")) {
+    /* 确定性 pacga：h = (n ^ ror(m, 23)) * K；h ^= h >> 29；h *= K；h ^= h >> 32；Xd = h << 32（低 32 位为 0，同硬件结果的形状） */
+    const int d = s->arg & 31, n = (s->arg >> 5) & 31, m = (s->arg >> 16) & 31;
+    int T, U;
+    pick(BIT(d) | BIT(n) | BIT(m) | BIT(18), &T, &U);
+    if (noredzone())
+      emit(STPRE(T, U, 31, -16));
+    else {
+      emit(STUR(T, 31, -16));
+      emit(STUR(U, 31, -24));
+    }
+    if (n == 31)
+      emit(MOVZ(T, 0, 0));
+    else
+      emit(0xaa0003e0u | (n << 16) | T); /* mov T, Xn */
+    if (m == 31)
+      emit(ADDI(U, 31, noredzone() ? 16 : 0, 0)); /* mov U, sp（压栈过的要加回 16） */
+    else
+      emit(0xaa0003e0u | (m << 16) | U);           /* mov U, Xm */
+    emit(0xca000000u | (3u << 22) | (U << 16) | (23u << 10) | (T << 5) | T); /* eor T, T, U, ror #23 */
+    emit(MOVZ(U, 0x9e37, 3));
+    emit(MOVK(U, 0x79b9, 2));
+    emit(MOVK(U, 0x7f4a, 1));
+    emit(MOVK(U, 0x7c15, 0));
+    emit(0x9b007c00u | (U << 16) | (T << 5) | T);                             /* mul T, T, U */
+    emit(0xca000000u | (1u << 22) | (T << 16) | (29u << 10) | (T << 5) | T); /* eor T, T, T, lsr #29 */
+    emit(0x9b007c00u | (U << 16) | (T << 5) | T);                             /* mul T, T, U */
+    emit(0xca000000u | (1u << 22) | (T << 16) | (32u << 10) | (T << 5) | T); /* eor T, T, T, lsr #32 */
+    if (d != 31)
+      emit(0xd3400000u | (32u << 16) | (31u << 10) | (T << 5) | d);          /* lsl Xd, T, #32 */
+    if (noredzone())
+      emit(LDPOST(T, U, 31, 16));
+    else {
+      emit(LDUR(U, 31, -24));
       emit(LDUR(T, 31, -16));
     }
     emit(branch(here(), s->at + 4));

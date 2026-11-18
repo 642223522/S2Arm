@@ -121,6 +121,10 @@ typedef struct thr {
     uint64_t wseq;                     // 登记等待的先后：同优先级先到先醒（同 Horizon KThread 等待树）
     struct thr *next, *all;            // 等待链 / 全部线程链
     int last_svc; uint64_t last_lr, last_fp, nsvc;
+    // 交给 C# 服务层处理的系统调用（s2a_svc_ctx_fill / s2a_svc_cs_returned）：号、会话句柄、开始时刻、回来次数。
+    //   即时存档：同步 IPC 在 C# 里阻塞（等网络、等别的服务）时线程不会回门，冻结把它当「入口」安全点（恢复后重发这次请求），见 snap_cs_blocked
+    int cs_svc; uint32_t cs_h; uint64_t cs_t0; _Atomic uint32_t cs_ret;
+    int snap_cs; uint32_t snap_cs_ret; uint8_t snap_cs_frame[832], snap_cs_msg[256];   // 冻结判齐那一刻另存的门帧与请求消息（C# 写回复之前）
     // 最近 8 次同步类系统调用（0x1a–0x1d / 0x34 / 0x35）：号、参数、地址处的值（调前 / 调后）、返回码、返回地址。
     //   停帧现场只打「在跑」线程的：同步原语每圈都掉进系统调用的空转（11-14 #35fdbb 166 号 SignalToAddress 11 万次、162 号对空闲锁 ArbitrateLock 2.6 万次）
     //   要看游戏给了什么、我们回了什么，光有最后一个调用号判不了是哪个输入错
@@ -2144,6 +2148,9 @@ static int snap_state(thr_t *t) {   // 持 G
     if (st >= SNAP_T_ENTRY && st <= SNAP_T_SLEEP && t->svc_regs && !((const uint64_t *)t->svc_regs)[816 / 8]) return 0;
     return st;
 }
+// 同步 IPC（0x21 走 TLS 消息）在 C# 服务里已阻塞 0.3 秒以上：回复还没写，门帧与 TLS 里的请求原样——当入口安全点（恢复后重发这次请求）。
+//   短请求不算（照旧等它回门停在出口），免得判齐后它恰好完成、这次存档作废
+static int snap_cs_blocked(thr_t *t) { return atomic_load(&t->in_svc) && t->cs_svc == 0x21 && t->tlr && t->svc_regs && now_ns() - t->cs_t0 > 300000000ull; }
 static int snap_state_raw(thr_t *t) {   // 持 G
     if (t->exited) return SNAP_T_DEAD;
     if (!t->started && !t->is_main) return SNAP_T_UNSTARTED;
@@ -2154,6 +2161,7 @@ static int snap_state_raw(thr_t *t) {   // 持 G
     int ins = atomic_load(&t->in_svc);
     if (ins && t->wkind && !t->woke) return SNAP_T_WAIT;
     if (ins && t->last_svc == 0x0B && !atomic_load(&t->paused_ack)) return SNAP_T_SLEEP;
+    if (snap_cs_blocked(t)) return SNAP_T_ENTRY;
     return 0;
 }
 // 解冻（存档进程）：Mach 挂住的线程放开（停在原指令上，接着跑）；门里停着的线程放开冻结标志后各自继续。冻结放弃、存完接着玩都走这里
@@ -2170,7 +2178,11 @@ int s2a_snap_freeze(int timeout_ms, int *nthr, int *nst) {
         int n = 0, left = 0; memset(nst, 0, sizeof(int) * 8);
         glock();
         for (thr_t *t = g_all; t; t = t->all) { n++; int st = snap_state(t); nst[st]++; if (!st) left++; }
-        if (!left) { *nthr = n; pthread_mutex_unlock(&G); return (int)((now_ns() - t0) / 1000); }   // 持 G 判定全员到齐；之后调用方再持 G 抓现场
+        if (!left) {   // 判齐：C# 里阻塞的那些，此刻另存门帧与请求消息（之后它若完成、C# 会改写这两处）
+            for (thr_t *t = g_all; t; t = t->all) { t->snap_cs = 0; if (atomic_load(&t->paused_ack) || t->wkind || !snap_cs_blocked(t)) continue;
+                t->snap_cs_ret = atomic_load(&t->cs_ret); memcpy(t->snap_cs_frame, t->svc_regs, sizeof t->snap_cs_frame); memcpy(t->snap_cs_msg, t->tlr, sizeof t->snap_cs_msg);
+                if (atomic_load(&t->cs_ret) == t->snap_cs_ret && snap_cs_blocked(t)) { t->snap_cs = 1; LOG("即时存档：线程 id %llu 在服务请求里阻塞（会话 %#x），按入口记、恢复后重发", (unsigned long long)t->id, t->cs_h); } }
+            *nthr = n; pthread_mutex_unlock(&G); return (int)((now_ns() - t0) / 1000); }   // 持 G 判定全员到齐；之后调用方再持 G 抓现场
 #if defined(__APPLE__)
         // 0.5 秒还没到门的：不在系统调用里、停在游戏原代码上（忙等等着别的已冻线程）——Mach 挂住、取完整现场，当作安全点；停在宿主代码 / 补丁岛的放开再等
         if (now_ns() - t0 > 500000000ull) for (thr_t *t = g_all; t; t = t->all) {
@@ -2200,6 +2212,8 @@ int s2a_snap_freeze(int timeout_ms, int *nthr, int *nst) {
         usleep(100);
     }
 }
+// 存档写完前核对：判齐时按入口记下的「C# 里阻塞」线程，期间有没有哪条的请求完成了（完成 = 回复已写进游戏内存 / 请求日志，快照前后不一致）。回完成了的条数
+int s2a_snap_cs_moved(void) { int n = 0; glock(); for (thr_t *t = g_all; t; t = t->all) if (t->snap_cs && atomic_load(&t->cs_ret) != t->snap_cs_ret) n++; pthread_mutex_unlock(&G); return n; }
 static int sw(FILE *f, const void *p, size_t n) { return fwrite(p, 1, n, f) == n ? 0 : -1; }
 // 线程记录（版本 1）。门帧 832 字节原样存：[0,800) 寄存器 / 状态、[800] 客体 sp（含借的 32 字节）；客体栈上借存的 x16/x17 随游戏内存走
 typedef struct {
@@ -2208,6 +2222,7 @@ typedef struct {
     int32_t wval, _q;
     uint8_t frame[832];
     uint64_t rregs[34]; uint8_t rneon[32 * 16]; uint32_t rfpsr, rfpcr;   // RUN：Mach 现场（x0–x28、fp、lr、sp、pc、cpsr；向量寄存器；浮点状态）
+    uint8_t csmsg[256]; uint32_t has_csmsg;   // 入口停在 C# 阻塞的 IPC 里：判齐那一刻的 TLS 请求消息（恢复时写回再重发）
 } snap_thr_rec;
 #include "snapfmt.h"
 void s2a_snap_mark_old(void);   // snapshot.c：记「旧版快照接不上」（给玩家的提示分类）
@@ -2218,7 +2233,7 @@ void s2a_snap_mark_old(void);   // snapshot.c：记「旧版快照接不上」�
     X(12, pinned) X(13, pin_core) X(14, wkind) X(15, wtype) X(16, wtag) X(17, yielded) X(20, id) X(21, entry) X(22, arg) X(23, stack_top) X(24, mask) \
     X(25, pin_mask) X(26, waddr) X(27, wkey) X(28, wtmo_left) X(29, wseq) X(30, tlr) X(31, k18) X(32, ktls) X(33, ktlr) X(34, own_tls) X(35, own_obj) X(36, wval)
 enum { THR_F_XREGS = 50, THR_F_VREGS = 51, THR_F_NZCV = 52, THR_F_FPSR = 53, THR_F_FPCR = 54, THR_F_GSP = 55, THR_F_SWSLOT = 56, THR_F_GATE_ORIG = 57, THR_F_GATE_KIND = 58,
-       THR_F_RUN_REGS = 60, THR_F_RUN_NEON = 61, THR_F_RUN_FPSR = 62, THR_F_RUN_FPCR = 63 };
+       THR_F_RUN_REGS = 60, THR_F_RUN_NEON = 61, THR_F_RUN_FPSR = 62, THR_F_RUN_FPCR = 63, THR_F_CS_MSG = 64 };
 int s2a_gate_identity(uint64_t ret, uint64_t *orig, int *kind); uint64_t s2a_gate_by_identity(uint64_t orig, int kind);   // gate.c
 // 单独链本文件的线程单测没有门表：弱缺省 = 门身份查不到；宿主 / iOS 壳链进 gate.c 的真定义
 __attribute__((weak)) int s2a_gate_identity(uint64_t ret, uint64_t *orig, int *kind) { (void)ret; (void)orig; (void)kind; return -1; }
@@ -2235,6 +2250,7 @@ static void snap_thr_write(sfw *w, const snap_thr_rec *r) {
     sfw_blob(w, THR_F_XREGS, F + GF_X, 31 * 8); sfw_blob(w, THR_F_VREGS, F + GF_Q, 32 * 16);
     uint64_t v; memcpy(&v, F + GF_NZCV, 8); sfw_u64(w, THR_F_NZCV, v); memcpy(&v, F + GF_FPSR, 8); sfw_u64(w, THR_F_FPSR, v); memcpy(&v, F + GF_FPCR, 8); sfw_u64(w, THR_F_FPCR, v);
     memcpy(&v, F + GF_GSP, 8); sfw_u64(w, THR_F_GSP, v); memcpy(&v, F + GF_SWSLOT, 8); sfw_u64(w, THR_F_SWSLOT, v != 0);
+    if (r->has_csmsg) sfw_blob(w, THR_F_CS_MSG, r->csmsg, sizeof r->csmsg);
     if (r->state == SNAP_T_RUN) { sfw_blob(w, THR_F_RUN_REGS, r->rregs, sizeof r->rregs); sfw_blob(w, THR_F_RUN_NEON, r->rneon, sizeof r->rneon); sfw_u64(w, THR_F_RUN_FPSR, r->rfpsr); sfw_u64(w, THR_F_RUN_FPCR, r->rfpcr); }
     if (r->state >= SNAP_T_ENTRY && r->state <= SNAP_T_SLEEP) {   // 门帧的返回点（x30）在补丁岛里：另记门身份，跨版本按身份换回新返回点
         uint64_t ret; memcpy(&ret, F + GF_X + 30 * 8, 8); uint64_t orig; int kind;
@@ -2252,6 +2268,7 @@ static void snap_thr_read(const sfr *rd, snap_thr_rec *r) {
     v = sfr_u64(rd, THR_F_GSP, 0); memcpy(F + GF_GSP, &v, 8); v = sfr_u64(rd, THR_F_SWSLOT, 0); memcpy(F + GF_SWSLOT, &v, 8);   // 非 0 = 有切栈槽，续跑时改成本进程的槽
     sfr_into(rd, THR_F_RUN_REGS, r->rregs, sizeof r->rregs); sfr_into(rd, THR_F_RUN_NEON, r->rneon, sizeof r->rneon);
     r->rfpsr = (uint32_t)sfr_u64(rd, THR_F_RUN_FPSR, 0); r->rfpcr = (uint32_t)sfr_u64(rd, THR_F_RUN_FPCR, 0);
+    if (sfr_get(rd, THR_F_CS_MSG, NULL)) { sfr_into(rd, THR_F_CS_MSG, r->csmsg, sizeof r->csmsg); r->has_csmsg = 1; }
     if (sfr_get(rd, THR_F_GATE_ORIG, NULL)) {   // 门帧：按门身份在本版门表里取返回点（同一份镜像时与原值相同）
         uint64_t orig = sfr_u64(rd, THR_F_GATE_ORIG, 0); int kind = (int)sfr_u64(rd, THR_F_GATE_KIND, 0); uint64_t nr = s2a_gate_by_identity(orig, kind);
         if (!nr) { g_snap_gate_miss++; if (g_snap_gate_miss <= 4) LOG("【红】即时存档恢复：线程 id %llu 停在原地址 %#llx 的门（类型 %d），本版门表里没有这道门", (unsigned long long)r->id, (unsigned long long)orig, kind); }
@@ -2301,7 +2318,8 @@ int s2a_snap_kernel_save(FILE *f) {
         r.wseq = t->wseq; r.tlr = (uint64_t)(uintptr_t)t->tlr; r.wval = t->wval;
         if (t->tsd && !t->exited && r.state != SNAP_T_DEAD && r.state != SNAP_T_UNSTARTED) { /* 已退出的线程宿主栈已还，TSD 基址失效 */ r.k18 = tsd_slot(t, g_key18); r.ktls = tsd_slot(t, g_keytls); r.ktlr = tsd_slot(t, g_keytlr); uint64_t own = tsd_slot(t, g_own_key);
             if (own) { r.own_tls = ((uint64_t *)(uintptr_t)own)[0]; r.own_obj = ((uint64_t *)(uintptr_t)own)[1]; } }
-        if ((r.state >= SNAP_T_ENTRY && r.state <= SNAP_T_SLEEP) && t->svc_regs) memcpy(r.frame, t->svc_regs, sizeof r.frame);
+        if (t->snap_cs && r.state == SNAP_T_ENTRY && atomic_load(&t->cs_ret) == t->snap_cs_ret) { memcpy(r.frame, t->snap_cs_frame, sizeof r.frame); memcpy(r.csmsg, t->snap_cs_msg, sizeof r.csmsg); r.has_csmsg = 1; }
+        else if ((r.state >= SNAP_T_ENTRY && r.state <= SNAP_T_SLEEP) && t->svc_regs) memcpy(r.frame, t->svc_regs, sizeof r.frame);
         else if (r.state >= SNAP_T_ENTRY && r.state <= SNAP_T_SLEEP) bad++;
         if (!r.state) bad++;   // 不在安全点的线程绝不写成空现场（上面已判齐，这里只是兜住）
 #if defined(__APPLE__)
@@ -2565,6 +2583,7 @@ static void *snap_thread_main(void *arg) {
     } else {
         // 入口停 / 睡眠 / 可重发的等待：门帧是入参，重新分派一次（冻结中会停在入口，放开后照常执行）
         if (r->last_svc == 0x18) LOG("即时存档恢复诊断：线程 id %llu 停法 %u 重发 svc 0x18 x0 %#llx x1 %#llx x2 %llu 首句柄 %#x", (unsigned long long)t->id, r->state, (unsigned long long)F[0], (unsigned long long)F[1], (unsigned long long)F[2], F[1] ? *(uint32_t *)(uintptr_t)F[1] : 0);
+        if (r->has_csmsg && r->tlr) memcpy((void *)(uintptr_t)r->tlr, r->csmsg, sizeof r->csmsg);   // C# 里阻塞的 IPC：判齐那一刻的请求消息写回 TLS，再重发
         gate_dispatch(F[30], F);
     }
     sw_snap_resume(F);
@@ -3240,8 +3259,11 @@ void s2a_svc_ctx_fill(s2a_svc_ctx *c, int num, uint64_t *regs) {
         uint32_t h = (uint32_t)(num == 0x21 ? regs[0] : regs[2]);
         glock(); int i = h_idx(h); if (i) { c->obj_kind = g_h[i].kind; c->obj = g_h[i].cookie; } pthread_mutex_unlock(&G);
     }
+    if (t) { t->cs_svc = num; t->cs_h = (uint32_t)(num == 0x21 ? regs[0] : regs[2]); t->cs_t0 = now_ns(); }
     if (t) { t->svc_regs = regs; atomic_store(&t->in_svc, 1); }   // C# 里可能阻塞：算在系统调用里（暂停取门帧）
 }
+// C# 处理完一次系统调用、回到原生层的第一时间（gate.c，取核之前）：回复已写进游戏的消息区 / 寄存器帧。即时存档据此判断「判齐后这次请求有没有完成」
+void s2a_svc_cs_returned(void) { thr_t *t = thread_current_or_null(); if (t) { t->cs_svc = 0; atomic_fetch_add(&t->cs_ret, 1); } }
 void s2a_svc_ctx_done(void) { thr_t *t = thread_current_or_null(); if (t) {
 #if !defined(__APPLE__)
     svc_exit(t);
