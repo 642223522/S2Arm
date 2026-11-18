@@ -122,9 +122,11 @@ def cmd_shell(a):
         for n in per_game(r, tables):
             (r / n).unlink()
         info = plistlib.loads((r / "Info.plist").read_bytes())
+        keep_icon = (r / "Assets.car").is_file()   # tvOS 壳：图标已编进 Assets.car（pack/tv_icon.py），CFBundleIcons 指着它，留着；iPhone 壳照旧去掉、组装时按游戏图标写
         for k in ("CFBundleIcons", "CFBundleIcons~ipad", "S2ABuildID", "S2APsoTarget", "S2AGraphicsMode",
                   "S2ADirectLibVersion", "S2APackTime", "S2ADevFacilities"):
-            info.pop(k, None)
+            if not (keep_icon and k == "CFBundleIcons"):
+                info.pop(k, None)
         info.update(CFBundleIdentifier=PLACEHOLDER_ID, CFBundleDisplayName=PLACEHOLDER_NAME)
         (r / "Info.plist").write_bytes(plistlib.dumps(info, fmt=plistlib.FMT_XML, sort_keys=True))
         widget_ext.retarget(r, PLACEHOLDER_ID)   # 主屏小组件扩展包名跟着占位包名（组装 / 装机换包名时再跟一次）

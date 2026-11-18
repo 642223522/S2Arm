@@ -165,6 +165,8 @@ def write_icons(icon_path, app_dir):
         print(f'【黄】空图标 {icon}：不加 AppIcon，沿用系统缺省图标')
         return False
     app, _ = _tree(app_dir, unsigned=True)
+    if (app / 'Assets.car').is_file():   # tvOS 壳：主屏图标已编进 Assets.car（pack/tv_icon.py，tvOS 不认散装 PNG），不写、不覆盖 CFBundleIcons（#1457）
+        return False
     info = _info(app)
     try:
         from PIL import Image
