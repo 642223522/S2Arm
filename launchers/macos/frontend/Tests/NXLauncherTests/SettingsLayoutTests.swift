@@ -1434,7 +1434,13 @@ import S2ArmAppleAdapter
             XCTAssertEqual(x("batch").replacingOccurrences(of: "{0}", with: "2"), language == .zh ? "批量升级所选（2 款）" : "Batch upgrade selected (2)")
             try snapshot(host, "sgrade-manual-page-" + language.code)
             let running = SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh, x: x, upgrade: { _ in }, close: {},
-                                            upgrading: ["alpha", "beta"], batch: (done: 0, total: 2))
+                                            upgrading: ["alpha", "beta"], batch: (done: 0, total: 2),
+                                            running: "alpha", runningProgress: 0.37, queued: ["beta"])
+            XCTAssertEqual(running.rowTitle("alpha"), language == .zh ? "正在升级 37%" : "Upgrading 37%", "正在做的那行带百分比")
+            XCTAssertEqual(running.rowTitle("beta"), language == .zh ? "排队中" : "Queued", "排着的写排队中，不冒充在升")
+            let finished = SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh, x: x, upgrade: { _ in }, close: {}, done: ["alpha"])
+            XCTAssertEqual(finished.rowTitle("alpha"), language == .zh ? "已完成" : "Done")
+            XCTAssertEqual(finished.rowTitle("beta"), language == .zh ? "升级" : "Upgrade")
             let (host3, window3) = try await render(AnyView(running), fixture: fixture, language: language)
             defer { window3.close() }
             let ids3 = Set(fixture.navigation.controlTargets(in: window3).map(\.id))

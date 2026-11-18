@@ -145,7 +145,7 @@ public sealed partial class EnvironmentWindow
                     pick.Click += (_, _) => { if (pick.IsChecked == true) sgradeSelected.Add(id); else sgradeSelected.Remove(id); Render(); };
                     AutomationId(pick, "sgrade.upgrade.pick." + id);
                     line.Children.Add(pick);
-                    var b = new Button { Content = X(busy ? "rowBusy" : "row"), IsEnabled = !busy, Padding = new Thickness(12, 5), Margin = new Thickness(12, 2, 0, 2), FontSize = 12.5 };
+                    var b = new Button { Content = SGradeRowTitle(id), IsEnabled = !busy, Padding = new Thickness(12, 5), Margin = new Thickness(12, 2, 0, 2), FontSize = 12.5 };
                     b.Click += (_, _) => UpgradeSGrade([id]);
                     AutomationId(b, "sgrade.upgrade.row." + id);
                     Grid.SetColumn(b, 3); line.Children.Add(b);

@@ -1147,10 +1147,12 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// S 级优化单款升级（11-18 维护者：不自动运行，玩家在「S 级优化升级」页点了才升级）：游戏号 → 进度（nil = 排队中 / 还没给出百分比）。
     ///   在后台作业里跑、不占主槽：别的游戏照常能开，只有这款开始按钮写「正在升级 xx%」不可点（S2ArmLauncherModel+SGradeUpgrade.swift）
     @Published var sgradeUpgrades: [String: Double?] = [:]
-    var sgradeQueue: [String] = []
-    var sgradeRunning: String?
+    @Published var sgradeQueue: [String] = []
+    @Published var sgradeRunning: String?
     /// 这一批的总进度（第几款 / 共几款，升级页上显示）；队列空了清零
     @Published var sgradeBatch: (done: Int, total: Int)?
+    /// 这次打开启动器里升级做完的款（升级页那一行写「已完成」）
+    @Published var sgradeDoneIDs: Set<String> = []
     var sgradeTask: Task<Void, Never>?
     var keptLoopStarted = false, keptAutoTried: Set<String> = []   // keptModulesLoop（#8be819）
     var phoneAutoFails: [String: Int] = [:]   // 自动更新后台作业连续失败次数（notePhoneAuto，+PhoneBanner.swift）

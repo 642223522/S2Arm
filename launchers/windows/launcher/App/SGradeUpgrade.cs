@@ -27,22 +27,38 @@ public sealed partial class EnvironmentWindow
     private CancellationTokenSource? sgradeCancel;
     /// <summary>升级页上勾选的款</summary>
     private readonly HashSet<string> sgradeSelected = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>这次打开启动器里升级做完的款（升级页那一行写「已完成」）</summary>
+    private readonly HashSet<string> sgradeDone = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>这款正在升级 / 排队（含游戏库 sgradeUpgrading：别的启动器进程起的还在跑）</summary>
     private bool SGradeUpgrading(LibraryGame game) => sgradeUpgrades.ContainsKey(game.Id) || game.SGradeUpgrading;
     private double? SGradeProgress(LibraryGame game) => sgradeUpgrades.TryGetValue(game.Id, out var p) ? p : null;
 
-    /// <summary>「正在升级 xx%」；没有百分比（排队 / _bf 段）写「正在升级…」</summary>
-    private string SGradeUpgradingTitle(LibraryGame game) => SGradeProgress(game) is { } p
-        ? T("sgrade.upgrading").Replace("{0}", ((int)Math.Floor(p * 100)).ToString())
+    /// <summary>排在队里还没轮到（一次只升一款）</summary>
+    private bool SGradeQueued(string id) => sgradeQueue.Contains(id);
+
+    /// <summary>主按钮上的字：排着的「排队中」；在升的「正在升级 xx%」，没有百分比（_bf 段）写「正在升级…」</summary>
+    private string SGradeUpgradingTitle(LibraryGame game) => SGradeQueued(game.Id) ? T("sgrade.upgrade.queued")
+        : SGradeProgress(game) is { } p ? T("sgrade.upgrading").Replace("{0}", ((int)Math.Floor(p * 100)).ToString())
         : T("sgrade.upgrading.wait");
+
+    /// <summary>升级页行按钮上的字：正在做的「正在升级 37%」、排着的「排队中」、做完的「已完成」、其余「升级」</summary>
+    private string SGradeRowTitle(string id)
+    {
+        if (id == sgradeRunning) return sgradeUpgrades.TryGetValue(id, out var p) && p is { } v
+            ? T("sgrade.upgrade.rowProgress").Replace("{0}", ((int)Math.Floor(v * 100)).ToString()) : T("sgrade.upgrade.rowBusy");
+        if (SGradeQueued(id)) return T("sgrade.upgrade.queued");
+        if (SGradeBusy(id)) return T("sgrade.upgrade.rowBusy");
+        if (sgradeDone.Contains(id)) return T("sgrade.upgrade.done");
+        return T("sgrade.upgrade.row");
+    }
 
     /// <summary>玩家点了升级（单款或「批量升级所选」）：排进队列（已在队里 / 在升的不重复），批量总数跟着加</summary>
     private void UpgradeSGrade(IEnumerable<string> ids)
     {
         var added = 0;
         foreach (var id in ids)
-            if (!sgradeUpgrades.ContainsKey(id)) { sgradeUpgrades[id] = null; sgradeQueue.Enqueue(id); sgradeErrors.Remove(id); sgradeSelected.Remove(id); added++; }
+            if (!sgradeUpgrades.ContainsKey(id)) { sgradeUpgrades[id] = null; sgradeQueue.Enqueue(id); sgradeErrors.Remove(id); sgradeSelected.Remove(id); sgradeDone.Remove(id); added++; }
         if (added > 0) sgradeBatch = (sgradeBatch?.Done ?? 0, (sgradeBatch?.Total ?? 0) + added);
         Render();
         PumpSGrade();
@@ -86,7 +102,8 @@ public sealed partial class EnvironmentWindow
                 {
                     if (sgradeUpgrades.ContainsKey(id) && SGradeStageProgress(e, out var p)) { sgradeUpgrades[id] = p; Render(); }
                 }), sgradeCancel.Token);
-            if (!job.Report.Succeeded && !sgradeCancel.IsCancellationRequested) sgradeErrors[id] = job.Report.Message;   // 没成：这款上就近写原因，不弹框；玩家点停止不算失败
+            if (job.Report.Succeeded) sgradeDone.Add(id);
+            else if (!sgradeCancel.IsCancellationRequested) sgradeErrors[id] = job.Report.Message;   // 没成：这款上就近写原因，不弹框；玩家点停止不算失败
         }
         catch (OperationCanceledException) { }
         catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
@@ -111,9 +128,10 @@ public sealed partial class EnvironmentWindow
         var grid = new Avalonia.Controls.Grid();
         grid.Children.Add(cover);
         grid.Children.Add(new Avalonia.Controls.Border { Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromArgb(115, 0, 0, 0)), CornerRadius = new Avalonia.CornerRadius(8) });
-        grid.Children.Add(new Avalonia.Controls.TextBlock { Text = p is { } v ? ((int)Math.Floor(v * 100)) + "%" : "…", FontSize = Math.Max(11, size / 5.0), FontWeight = Avalonia.Media.FontWeight.Bold,
+        var queued = SGradeQueued(game.Id);   // 排着的只写「排队中」、不画在走的进度（不冒充在升）
+        grid.Children.Add(new Avalonia.Controls.TextBlock { Text = queued ? T("sgrade.upgrade.queued") : p is { } v ? ((int)Math.Floor(v * 100)) + "%" : "…", FontSize = Math.Max(11, size / 5.0), FontWeight = Avalonia.Media.FontWeight.Bold,
             Foreground = Avalonia.Media.Brushes.White, HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center });
-        grid.Children.Add(new Avalonia.Controls.ProgressBar { Minimum = 0, Maximum = 1, Value = p ?? 0, IsIndeterminate = p is null, Height = 4, MinHeight = 4,
+        if (!queued) grid.Children.Add(new Avalonia.Controls.ProgressBar { Minimum = 0, Maximum = 1, Value = p ?? 0, IsIndeterminate = p is null, Height = 4, MinHeight = 4,
             Foreground = Avalonia.Media.Brush.Parse("#E8C46A"), VerticalAlignment = Avalonia.Layout.VerticalAlignment.Bottom, Margin = new Avalonia.Thickness(6, 0, 6, 6) });
         Avalonia.Automation.AutomationProperties.SetAutomationId(grid, "card.sgradeUpgrading");
         return grid;

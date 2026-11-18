@@ -17,12 +17,15 @@ extension S2ArmLauncherModel {
     }
     /// 这款的升级进度 0–1；排队中 / 作业还没给出百分比为 nil
     func sgradeProgress(_ gameID: String) -> Double? { sgradeUpgrades[gameID] ?? nil }
+    /// 这款排在队里、还没轮到（一次只升一款）
+    func sgradeQueued(_ gameID: String) -> Bool { sgradeQueue.contains(gameID) }
 
     /// 玩家点了升级（单款或「批量升级所选」）：排进队列（已在队里 / 在升的不重复），空着就马上起；批量总数跟着加
     func upgradeSGrade(_ gameIDs: [String]) {
         var added = 0
         for id in gameIDs where sgradeUpgrades[id] == nil {
             sgradeUpgrades[id] = .some(nil)
+            sgradeDoneIDs.remove(id)
             sgradeQueue.append(id)
             added += 1
         }
@@ -54,7 +57,7 @@ extension S2ArmLauncherModel {
         }
         sgradeTask = Task { [weak self] in
             guard let self else { return }
-            do { _ = try await self.saveJob("sgradeUpgradeGame", gameID: id, events: sink) }
+            do { _ = try await self.saveJob("sgradeUpgradeGame", gameID: id, events: sink); self.sgradeDoneIDs.insert(id) }
             catch where !Task.isCancelled { self.failAction(error.localizedDescription, game: id) }   // 没成：这款上就近写原因（同其他按款操作），不弹框
             catch {}   // 玩家点了停止：不当失败
             self.sgradeUpgrades[id] = nil

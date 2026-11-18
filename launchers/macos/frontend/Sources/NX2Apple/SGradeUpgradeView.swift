@@ -41,7 +41,9 @@ struct SGradeUpgradeView: View {
                           upgrade: { ids in model.upgradeSGrade(ids) },
                           close: { dismiss() },
                           upgrading: Set(model.games.map(\.id).filter(model.sgradeUpgrading)),
-                          batch: model.sgradeBatch, stop: { model.stopSGrade() })
+                          batch: model.sgradeBatch, stop: { model.stopSGrade() },
+                          running: model.sgradeRunning, runningProgress: model.sgradeRunning.flatMap(model.sgradeProgress),
+                          queued: Set(model.sgradeQueue), done: model.sgradeDoneIDs)
             .task { await scan() }
     }
 
@@ -67,6 +69,11 @@ struct SGradeUpgradeBody: View {
     /// 这一批进行到第几款 / 共几款；nil = 没在批量升级
     var batch: (done: Int, total: Int)? = nil
     var stop: () -> Void = {}
+    /// 行状态（一次只升一款）：正在做的那款与进度、排着的、这次做完的
+    var running: String? = nil
+    var runningProgress: Double? = nil
+    var queued: Set<String> = []
+    var done: Set<String> = []
     @State private var selected: Set<String> = []
     var sImage: NSImage = SGradeCardView.sGold
 
@@ -195,6 +202,15 @@ struct SGradeUpgradeBody: View {
         }
     }
 
+    /// 行按钮上的字：正在做的「正在升级 37%」（没百分比「正在升级…」）、排着的「排队中」、做完的「已完成」、其余「升级」
+    func rowTitle(_ id: String) -> String {
+        if id == running { return runningProgress.map { x("rowProgress").replacingOccurrences(of: "{0}", with: String(Int(($0 * 100).rounded(.down)))) } ?? x("rowBusy") }
+        if queued.contains(id) { return x("queued") }
+        if upgrading.contains(id) { return x("rowBusy") }   // 别的启动器进程起的升级（catalog sgradeUpgrading）
+        if done.contains(id) { return x("done") }
+        return x("row")
+    }
+
     /// 「可以升级」组：每行 名字 · 能补什么 · 「升级」（升级中写「正在升级…」不可点）
     private func upgradeGroup(_ rows: [SGradeScanGame]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -216,7 +232,7 @@ struct SGradeUpgradeBody: View {
                             .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, LauncherTheme.Space.small)
                         Text(gains(g)).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, LauncherTheme.Space.small)
-                        Button(busy ? x("rowBusy") : x("row")) { upgrade([g.id]); selected.remove(g.id) }.controllerButtonStyle(LauncherSecondaryButtonStyle())
+                        Button(rowTitle(g.id)) { upgrade([g.id]); selected.remove(g.id) }.controllerButtonStyle(LauncherSecondaryButtonStyle())
                             .disabled(busy).controllerID("sgrade.upgrade.row." + g.id).fixedSize()
                     }
                     if index < rows.count - 1 { Divider().opacity(0.18).gridCellUnsizedAxes(.horizontal) }
@@ -257,6 +273,8 @@ struct SGradeUpgradeBar: View {
 struct SGradeUpgradeRing: View {
     let progress: Double?
     let side: CGFloat
+    /// 排在队里还没轮到：只写「排队中」，不转圈（不冒充在升）
+    var queuedText: String? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         let d = max(34, side * 0.34)
@@ -264,7 +282,9 @@ struct SGradeUpgradeRing: View {
             RoundedRectangle(cornerRadius: 15).fill(.black.opacity(0.45))
             ZStack {
                 Circle().stroke(.white.opacity(0.18), lineWidth: 4)
-                if let p = progress {
+                if let q = queuedText {
+                    Text(q).font(.manrope(max(9, d * 0.2), .bold)).foregroundStyle(.white).multilineTextAlignment(.center).minimumScaleFactor(0.6)
+                } else if let p = progress {
                     Circle().trim(from: 0, to: max(0.02, p)).stroke(SGradeCardView.gold, style: StrokeStyle(lineWidth: 4, lineCap: .round))
                         .rotationEffect(.degrees(-90)).animation(.easeOut(duration: 0.3), value: p)
                     Text("\(Int((p * 100).rounded(.down)))%").font(.manrope(max(10, d * 0.26), .bold)).foregroundStyle(.white).monospacedDigit()

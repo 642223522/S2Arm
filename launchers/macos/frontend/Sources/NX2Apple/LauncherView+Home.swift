@@ -278,7 +278,7 @@ extension LauncherView {
                             }
                         }.padding(8)
                     }
-                    .overlay { if model.sgradeUpgrading(game.id) { SGradeUpgradeRing(progress: model.sgradeProgress(game.id), side: artworkSide) } }
+                    .overlay { if model.sgradeUpgrading(game.id) { SGradeUpgradeRing(progress: model.sgradeProgress(game.id), side: artworkSide, queuedText: model.sgradeQueued(game.id) ? txt("sgrade.upgrade.queued") : nil) } }
                     .overlay(alignment: .bottomLeading) { expiryBadge(game) }
                     .overlay(alignment: .bottomTrailing) {   // 导入时数据校验不过、照常导入的款（11-17）：黄色提示角标，悬停 / 读屏说明见卡片 help
                         if game.integritySkipped {
@@ -334,6 +334,7 @@ extension LauncherView {
         return "shippingbox"
     }
     func homePrimaryTitle(_ game: GameSummary) -> String {
+        if model.sgradeQueued(game.id) { return txt("sgrade.upgrade.queued") }   // 排在队里还没轮到：写「排队中」，不冒充在升
         if model.sgradeUpgrading(game.id) { return Self.sgradeUpgradingTitle(model.sgradeProgress(game.id), txt) }   // 这款在升 S 级优化：按钮上直接写进度，不另弹框
         if model.mainBusy { return loc.t("home.currentTask") }
         if game.playable { return loc.t(model.cloudSyncing ? "s2arm.cloud.syncing" : "library.play") }
