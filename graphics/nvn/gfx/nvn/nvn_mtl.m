@@ -16523,12 +16523,13 @@ static uint64_t g_cut_draw0, g_cuts, g_copy_cuts, g_cut_busy;   // g_cut_busy: b
 static void sub_cut_begin(void) { g_cut_draw0 = g_stat_draw; }
 // Segment times without the segments (upstream reference implementation, MIT). A report in segment mode takes the GPU start or end of the segment it fell in, and what a game's controller makes of those depends on where the boundaries lie.
 // So the boundaries stay every cut_draws() draws, each with a GPU timestamp, whether or not the host commits there (sub_cut): the game reads what it read, and a GPU still busy gets no extra command buffer.
-// Metal 3 and the encode thread record their encoders without such a write: with them each boundary stays a commit
+// Metal 3 records its encoders without such a write: with it each boundary stays a commit. The encode thread writes them as recorded (nvn_rec.h RO_R_TS / RO_C_TS): it was left without
+//   the heap, so with the encode thread on (the default) every 64-draw boundary committed and DM_NVN_CUT_BUSY never applied (upstream reference implementation, MIT, 3304d6a0)
 enum { TS_SLOTS = 4096 };   // the largest timestamp heap Metal makes
 static uint32_t g_ts_next; static int g_ts_state, g_ts_s0;   // state: 0 not tried, 1 on, -1 off; s0: the slot of this submission's first boundary
 static int ts_on(void) {
     if (!g_ts_state) { g_ts_state = -1;
-        if (seg_ts() && !g_m3 && !rec_on()) { NSError *er = nil;
+        if (seg_ts() && !g_m3) { NSError *er = nil;
             g_ts_heap = ts_heap_new(TS_SLOTS, &er);
             if (g_ts_heap) g_ts_state = 1; else MLOG("【红】 counter timestamps: no counter heap (%s): every segment boundary stays a commit", er.description.UTF8String); } }
     return g_ts_state > 0;
