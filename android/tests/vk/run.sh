@@ -313,7 +313,7 @@ case "$mode" in
     --tsan) cflags+=(-fsanitize=thread) ;;
     --asan) cflags+=(-fsanitize=address,undefined -fno-omit-frame-pointer) ;;
     --shown-only) cflags+=(-DS2A_C883_TEST=1) ;;
-    ""|--sampler-minmax-only|--c63-same-view|--msaa-only|--msaa-neg-pick|--msaa-neg-pipe|--msaa-neg-sampled|--msaa-neg-attachment|--present-only|--present-upscale|--separate-core|--separate-neg-sampler|--tbuf-core|--tbuf-compiler-core|--tbuf-neg-resolve|--tbuf-neg-format|--tbuf-neg-elements|--gs-only|--gs-compiler|--gs-core|--gs-no-cap|--gs-neg-stage|--gs-neg-flags|--gs-neg-cap) ;;
+    ""|--sampler-minmax-only|--c63-same-view|--ds-upload-only|--msaa-only|--msaa-neg-pick|--msaa-neg-pipe|--msaa-neg-sampled|--msaa-neg-attachment|--present-only|--present-upscale|--separate-core|--separate-neg-sampler|--tbuf-core|--tbuf-compiler-core|--tbuf-neg-resolve|--tbuf-neg-format|--tbuf-neg-elements|--gs-only|--gs-compiler|--gs-core|--gs-no-cap|--gs-neg-stage|--gs-neg-flags|--gs-neg-cap) ;;
     *) echo "未知参数：${mode}（可用 --tsan / --asan）" >&2; exit 64 ;;
 esac
 # 撤改只写入临时源码副本；逐项必须红在指定行为断言。
@@ -562,6 +562,19 @@ if [ "$mode" = "--c63-same-view" ]; then
     done
     unset S2A_TEST_DESC_MEMO
     echo '【绿】C63 同 view 双元素：两遍（备忘开/关）都读回 128，validation 0 条'; exit 0
+fi
+
+# C1581K：D24S8 的 CPU 上传拆成深度面、模板面两个区域（一个区域只能有一个面，VUID-VkBufferImageCopy-aspectMask-09103），
+#   深度面回读低 24 位一致、上传的模板经模板测试看得见。validation 0 条才绿。
+if [ "$mode" = "--ds-upload-only" ]; then
+    set +e
+    timeout 120 "$out/t_backend_vk" "$out/shaders" --ds-upload-only 2>&1 | tee "$out/ds-upload.log"
+    rc=${PIPESTATUS[0]}
+    set -e
+    if [ "$rc" -ne 0 ] || ! grep -q 'C1581K failures=0' "$out/ds-upload.log" || grep -qE 'Validation Error|VUID-|SYNC-HAZARD-' "$out/ds-upload.log"; then
+        echo "【红】C1581K 深度模板上传：rc=${rc}，没有 failures=0 或有 validation 报错" >&2; exit 1
+    fi
+    echo '【绿】C1581K 深度模板上传：深度面回读一致、模板面生效，validation 0 条'; exit 0
 fi
 
 if [ "$mode" = "--present-only" ]; then
