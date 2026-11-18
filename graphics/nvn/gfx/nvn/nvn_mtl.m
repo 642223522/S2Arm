@@ -7974,8 +7974,8 @@ static void tex_idle_reclaim(void) {
         uint32_t k = 0; for (uint32_t j = 1; j < m; j++) if (c[j].used < c[k].used) k = j;   // least recently used first
         cand_t x = c[k]; c[k] = c[--m];
         id o = hm_get_id(&g_by_serial, &x.ser); if ((__bridge void *)o != x.o) continue;   // replaced or finalized meanwhile
-        if (alias_has(o)) defer_obj_unref(o); else defer_obj_release(o);   // as serial_del: a shared texture stays in the sharing table (unreferenced now, alias_orphan_pass)
-        hm_del_id(&g_by_serial, &x.ser); freed += x.bytes; cnt++;
+        if (alias_has(o)) defer_obj_unref(o); else defer_obj_release(o); hm_del_id(&g_by_serial, &x.ser);   // as serial_del (deferred, borrow-safe): a shared texture stays in the sharing table (unreferenced now, alias_orphan_pass)
+        freed += x.bytes; cnt++;
         if (g_alias_dead_n == g_alias_dead_cap) { uint32_t cc = g_alias_dead_cap ? 2 * g_alias_dead_cap : 64; uint64_t *q = realloc(g_alias_dead_ser, cc * sizeof *q); if (q) { g_alias_dead_ser = q; g_alias_dead_cap = cc; } }
         if (g_alias_dead_n < g_alias_dead_cap) g_alias_dead_ser[g_alias_dead_n++] = x.ser;
     }
