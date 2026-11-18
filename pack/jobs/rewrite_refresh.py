@@ -196,11 +196,22 @@ def _original_nup_exefs(c, game, packages, work):
             shutil.rmtree(scratch, ignore_errors=True)
 
 
+def own_table_ok(env):
+    """我方帧率表（fps.tsv 的 c 行改指令）只在内部对照口径 S2A_CAPS_OWN=1 打进程序，同 stage_rewrite.sh FT（11-18，#1607）：
+    11-13 撤我方 60 帧后运行时只把槽写成关值，c 行却照样改了游戏的限帧代码，60 帧关着也能跑到 60"""
+    return env.get("S2A_CAPS_OWN") == "1"
+
+
+def own_table(p):
+    """旧包产物根里带改指令（c 行）的我方帧率表"""
+    return p.name == "fps.tsv" and any(l.split("#", 1)[0].split()[:1] == ["c"] for l in p.read_text(encoding="utf-8", errors="replace").splitlines())
+
+
 def rewrite_env(c, kit, exefs, target):   # exefs None：不带随包代码补丁（补丁按主程序构建号认，只改 exefs 模块）
     env = dict(c.env(), S2A_TARGET=target, S2A_REWRITE_SPIN=os.environ.get("S2A_REWRITE_SPIN", "1"))
     for k in ("S2A_FPS_TSV", "S2A_CPATCH_TSV", "S2A_CODE_PATCH", "S2A_CODE_BUILD", "S2A_FIX_TSV"):
         env.pop(k, None)
-    if (kit / "fps.tsv").is_file():
+    if (kit / "fps.tsv").is_file() and own_table_ok(env):
         env["S2A_FPS_TSV"] = str(kit / "fps.tsv")
     # 游戏缺陷修补表：同 stage_rewrite.sh（引擎里的 runtime/fix/<main 构建号前 16 位>.tsv）
     if exefs is not None and (exefs / "main").is_file():
@@ -324,7 +335,8 @@ def sgrade_rewrite(c, game, base, exefs, target, work):
     shutil.copytree(Path(exefs).resolve(), root / "exefs")
     skip = tuple("." + e for e in OUTPUTS)
     for p in Path(base).iterdir():   # 逐款表照拷（出表读 fps.tsv 判「本款已有我方帧率表」、改写读 widen_sites.tsv）；改写产物与旧补丁表不拷
-        if p.is_file() and not p.name.endswith(skip) and not p.name.startswith(("cpatch", "cheat-src.")) and p.suffix != ".log":
+        if p.is_file() and not p.name.endswith(skip) and not p.name.startswith(("cpatch", "cheat-src.")) and p.suffix != ".log" \
+                and not (own_table(p) and not own_table_ok(c.env())):   # 旧包带的我方帧率表不再照拷：不打改指令，出表也不因它拒社区帧率补丁
             shutil.copyfile(p, root / p.name)
     dirs = patches.fetch(c, game, str(exefs), "ios" if target == "ios" else "mac")
     try:
