@@ -331,14 +331,11 @@ static int await_inflight(const uint8_t identity[32], struct entry **out) {
         (void)pthread_cond_timedwait(&g_progs_cv, &g_progs_mu, &dl);
     }
 }
-static void pool_stats(const char *phase) {
-    if (!g_texpool_diag) return;
+// 拒绝原因（兜底直连编译器 ResolvePoolSlots 拒绝的按原因计数）在玩家包里也数、也打：拒绝只在编译时偶发，不在每帧热路径上；
+// 全库普查按款汇总这几行（定「贴图句柄从常量缓冲取」这类还剩多少）。整份程序统计与借用读数仍只在诊断开关（nvk_texpool_log）下打。
+static uint64_t g_pool_log_ms; static int g_pool_log_dirty;   // 上次打拒绝原因的时刻；之后又有新拒绝还没打
+static void pool_reject_lines(void) {
     char line[320];
-    snprintf(line, sizeof line, "texture_pool_program_stats phase=%s programs=%llu compile_attempts=%llu compile_successes=%llu compile_rejected=%llu array_unsupported=%llu request_rejected=%llu",
-        phase, (unsigned long long)g_pool_programs, (unsigned long long)g_pool_attempts,
-        (unsigned long long)g_pool_compiled, (unsigned long long)g_pool_rejected,
-        (unsigned long long)g_pool_unsupported, (unsigned long long)g_pool_request_rejected);
-    nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", line);
     for (unsigned i = 0; i < g_pool_reason_count; i++) {
         snprintf(line, sizeof line, "texture_pool_compile_reject reason=%.79s count=%llu", g_pool_reasons[i].name,
                  (unsigned long long)g_pool_reasons[i].count);
@@ -352,18 +349,36 @@ static void pool_stats(const char *phase) {
         snprintf(line, sizeof line, "texture_pool_request_reject reason=other count=%llu", (unsigned long long)g_pool_request_other);
         nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", line);
     }
+    g_pool_log_ms = mono_ms(); g_pool_log_dirty = 0;
+}
+static void pool_stats(const char *phase) {
+    if (!g_texpool_diag) { if (g_pool_reason_count || g_pool_request_facts || g_pool_request_other) pool_reject_lines(); return; }
+    char line[320];
+    snprintf(line, sizeof line, "texture_pool_program_stats phase=%s programs=%llu compile_attempts=%llu compile_successes=%llu compile_rejected=%llu array_unsupported=%llu request_rejected=%llu",
+        phase, (unsigned long long)g_pool_programs, (unsigned long long)g_pool_attempts,
+        (unsigned long long)g_pool_compiled, (unsigned long long)g_pool_rejected,
+        (unsigned long long)g_pool_unsupported, (unsigned long long)g_pool_request_rejected);
+    nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", line);
+    pool_reject_lines();
     // 借用读数跟着同一份诊断走：管线预热在用程序时，「借用」非 0 就是收尾必须等的那部分。
     { struct borrow_snap bs; borrow_snap_take(&bs); borrow_log(NVN_PLAT_LOG_INFO, phase, &bs); }
 }
 /* The normal Android process exit calls this after services/GPU stop. It does
  * not pass through rp_shader_reset, which belongs to session retirement. */
 static void pool_final_summary(int normal) {
-    if (normal && (g_pool_programs || g_pool_request_rejected)) pool_stats("final");
+    if (normal && (g_pool_programs || g_pool_request_rejected || g_pool_reason_count)) pool_stats("final");
+}
+// 新拒绝：第一次立刻打，之后最多每 5 秒打一次（普查局是强停收局，等不到 final）；没打的由 pool_log_flush 在后续取程序时补
+static void pool_reject_tick(void) {
+    if (!g_pool_log_ms || mono_ms() - g_pool_log_ms >= 5000) pool_stats("progress"); else g_pool_log_dirty = 1;
+}
+static void pool_log_flush(void) {   // 取程序路径上调，每 1024 次才看一次时钟
+    static unsigned k;
+    if (g_pool_log_dirty && !(++k & 1023) && mono_ms() - g_pool_log_ms >= 5000) pool_stats("progress");
 }
 /* The producer's failure summary embeds its s2a-direct-error-v1 JSON. Missing,
  * truncated or malformed errors stay explicitly unclassified. */
 static void compiler_rejected(const char *summary) {
-    if (!g_texpool_diag) return;
     char code[64] = "", message[256] = "", schema[48] = "", reason[80] = "unclassified";
     const char *p = strstr(summary, " 原因=");
     if (p) {
@@ -403,7 +418,7 @@ static void compiler_rejected(const char *summary) {
         else { snprintf(g_pool_reasons[i].name, sizeof g_pool_reasons[i].name, "%s", reason); g_pool_reason_count++; }
     }
     g_pool_reasons[i].count++; g_pool_rejected++;
-    if (g_pool_rejected == 1 || !(g_pool_rejected % 50)) pool_stats("progress");
+    pool_reject_tick();
 }
 static void array_unsupported(const char *why) {
     nvn_unimpl("shader", "texture_pool_array_unsupported", NULL);
@@ -1798,12 +1813,10 @@ static int resolve_compute_slow(const struct rp_prog **out, const struct s2a_dir
     static struct nvk_compute_request rq; memset(&rq, 0, sizeof rq); char why[256] = "";
     if (nvk_compute_request_prepare(&st, &pc, &tf, 1, unaligned, ident, &rq, why, sizeof why)) {
         red1("compute_request_failed", why);
-        if (g_texpool_diag) {
-            g_pool_request_rejected++;
-            if (!strcmp(why, "missing or out-of-range descriptor-pool facts")) g_pool_request_facts++;
-            else g_pool_request_other++;
-            if (g_pool_request_rejected == 1 || !(g_pool_request_rejected % 50)) pool_stats("progress");
-        }
+        g_pool_request_rejected++;
+        if (!strcmp(why, "missing or out-of-range descriptor-pool facts")) g_pool_request_facts++;
+        else g_pool_request_other++;
+        pool_reject_tick();
         return -1;
     }
     pthread_mutex_lock(&g_progs_mu);
@@ -1871,6 +1884,7 @@ static int resolve_compute_slow(const struct rp_prog **out, const struct s2a_dir
 }
 
 int rp_shader_resolve(const struct rp_shader_req *q, const struct rp_prog **out) {
+    pool_log_flush();
     if (shader_enter()) { *out = NULL; nvn_unimpl("shader", "compile_stopped", NULL); return -1; }
     int rc = shader_resolve_graphics(q, out); shader_leave(); return rc;
 }
@@ -1932,7 +1946,7 @@ void rp_shader_reset(void) {
     g_cs_hits = g_cs_misses = g_cs_hit_ns = g_cs_miss_ns = 0; g_mark_cs_hits = g_mark_cs_misses = g_mark_cs_hit_ns = g_mark_cs_miss_ns = 0;
     g_cache_calls = g_cache_hits = g_cache_misses = g_cache_hit_ns = g_cache_miss_ns = 0; g_sig_recomp = 0;
     g_mark_calls = g_mark_hits = g_mark_misses = g_mark_hit_ns = g_mark_miss_ns = g_mark_sig = 0;
-    g_texpool_logged = g_texpool_last_over_limit = g_texpool_diag = 0;
+    g_texpool_logged = g_texpool_last_over_limit = g_texpool_diag = 0; g_pool_log_ms = 0; g_pool_log_dirty = 0;
     g_pool_programs = g_pool_attempts = g_pool_compiled = g_pool_rejected = g_pool_unsupported = 0;
     g_pool_request_rejected = g_pool_request_facts = g_pool_request_other = 0;
     g_pool_reason_count = 0; memset(g_pool_reasons, 0, sizeof g_pool_reasons);
