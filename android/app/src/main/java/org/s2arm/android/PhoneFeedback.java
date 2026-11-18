@@ -12,7 +12,7 @@ import android.view.Display;
  * Phone as the handheld's six-axis sensor and rumble motor (#528 item 10, piece 1), as iOS ios/phone_motion.m.
  * Native side: native/phone_feedback.c (ASensor for motion; rumble comes back here through {@link #vibrate}
  * on the rumble mailbox thread, the NDK has no vibrator API). Settings live in the in-game four-finger menu,
- * both on by default like iOS. External controllers' own motors and sensors are piece 2, not here.
+ * both on by default like iOS. External controllers' own motors and sensors (piece 2) are {@link PadFeedback}.
  */
 final class PhoneFeedback implements DisplayManager.DisplayListener {
     static final String PREF_GYRO = "phone_gyro", PREF_RUMBLE = "phone_rumble";
