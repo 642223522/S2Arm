@@ -270,7 +270,8 @@ namespace Ryujinx.Audio.Renderer.Server
                 long s2aT2 = System.Diagnostics.Stopwatch.GetTimestamp();
                 S2ATaskFaults.Read(out long s2aF0, out long s2aP0);
                 Processor.Signal();
-                long s2aDsp = System.Diagnostics.Stopwatch.GetTimestamp() - s2aT2;
+                // S2Arm (#1598): the wait for a frozen guest to resume is not DSP time (inline Signal waits on the pause event first)
+                long s2aDsp = System.Diagnostics.Stopwatch.GetTimestamp() - s2aT2 - Processor.S2ALastPauseWaitTicks;
                 S2ATaskFaults.Read(out long s2aF1, out long s2aP1);
                 S2ALogSlowPeriod(s2aT0, s2aCmd, s2aDsp, s2aF1 - s2aF0, s2aP1 - s2aP0);
                 Processor.Wait();
