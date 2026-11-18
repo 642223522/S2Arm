@@ -86,6 +86,7 @@ enum { RP_PERF_SUBMIT_NS, RP_PERF_COMMIT_NS, RP_PERF_SUBS, RP_PERF_WAIT_NS, RP_P
        RP_PERF_PASSEND_N,                             // 收通道次数（含换目标、通道中途的清除、提交收尾）
        RP_PERF_BIND_NS, RP_PERF_BIND_REBUILD_N,       // 发绑定总耗时、整组重建的次数（分 B1 快路与重建两块看）
        RP_PERF_UBO_N, RP_PERF_UBO_KB, RP_PERF_UBO_C1_N,   // 常量缓冲暂存的次数 / 千字节 / 其中程序自带常量段（C1）的次数
+       RP_PERF_UBO_FILL_N, RP_PERF_UBO_FILL_WAIT_N,   // 其中交给后端异步填的次数（nvn_gpu_arena_fill）/ 改游戏内存前因区间重叠等它填完的次数（rp_ub_fill_fence）
        RP_PERF_BUF_FAST_N, RP_PERF_BUF_SLOW_N, RP_PERF_BUF_NOSPAN_N, RP_PERF_BUF_PAGES_N,   // 缓冲解析：快路命中 / 走逐页慢路 / 不受写跟踪 / 慢路里一共查了多少页
        RP_PERF_BUF_BLOCK_SKIP_N, // 已跳过的块数（窗口总量）
        RP_PERF_BUF_LOG_EV, RP_PERF_BUF_LOG_WORDS, RP_PERF_BUF_LOG_REBUILD,   // 脏页追加日志（nvk_buf_dirtylog）：灌进镜像的事件数 / 求交时看的位图字数 / 日志不可用、按逐页代号重建的次数
@@ -114,7 +115,9 @@ void rp_exec_dump_ops(char *b, size_t n);   // 逐命令类型耗时前几名（
 void rp_sync_lag_present(void);   // 上屏之后调：给「每帧只放行一次同步等待」补一次额度（开关 nvk_sync_lag=3）
 void rp_bind_tm_take(uint64_t *tot, uint64_t *backend, uint64_t *n);   // 绑定重建：总时间 / 其中交后端 / 次数（纳秒，取即清零）
 void rp_bind_tm_take2(uint64_t *drv, uint64_t *buf, uint64_t *rest);
-void rp_bind_tm_take3(uint64_t *alloc, uint64_t *copy);   // 暂存：申请 / 内容拷贝  // 其中：驱动段 / 常量缓冲与支持块 / 其它
+void rp_bind_tm_take3(uint64_t *alloc, uint64_t *copy);
+// 回放线程要在 CPU 上改游戏内存 [addr, addr+len) 之前调：还没填完、来源与它相交的常量缓冲暂存先等填完（rp_draw.c，见 nvn_gpu_arena_fill）
+void rp_ub_fill_fence(uint64_t addr, uint64_t len);   // 暂存：申请 / 内容拷贝  // 其中：驱动段 / 常量缓冲与支持块 / 其它
 uint64_t rp_sub_fence(void);        // 正在回放的这次提交最后一段的栅栏值
 uint64_t rp_fx_report_types(void);  // 诊断读数：上次调用以来计数器报告用到的类型（位图，取完清零）
 int rp_res_new_sizes_take(void);     // 诊断读数：上次调用以来新建贴图的宽高有几种（最多数到 64，取完清零）

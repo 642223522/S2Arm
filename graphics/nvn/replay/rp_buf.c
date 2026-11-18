@@ -483,18 +483,18 @@ void rp_op_update_ub(const void *a, const void *rec) {
     uint64_t d, n; memcpy(&d, a, 8); memcpy(&n, (const uint8_t *)a + 8, 8);
     if (!n) return;
     if (!in_pool(d, n)) { nvn_unimpl("buf", "update_outside_pools", rec); return; }
-    memcpy((void *)(uintptr_t)d, (const uint8_t *)a + 16, (size_t)n); rp_cpu_write_gen++; rp_write_note(d, n);
+    rp_ub_fill_fence(d, n); memcpy((void *)(uintptr_t)d, (const uint8_t *)a + 16, (size_t)n); rp_cpu_write_gen++; rp_write_note(d, n);
 }
 void rp_op_copy_b2b(const void *a, const void *rec) {
     uint64_t s, d, n; memcpy(&s, a, 8); memcpy(&d, (const uint8_t *)a + 8, 8); memcpy(&n, (const uint8_t *)a + 16, 8);
     if (!n) return;
     if (!in_pool(s, n) || !in_pool(d, n)) { nvn_unimpl("buf", "copy_outside_pools", rec); return; }
-    memmove((void *)(uintptr_t)d, (const void *)(uintptr_t)s, (size_t)n); rp_cpu_write_gen++; rp_write_note(d, n);
+    rp_ub_fill_fence(d, n); memmove((void *)(uintptr_t)d, (const void *)(uintptr_t)s, (size_t)n); rp_cpu_write_gen++; rp_write_note(d, n);
 }
 void rp_op_clear_buf(const p_clear_buf *cb, const void *rec) {   // 32 位样式填充（不是按字节）
     if (!cb->size) return;
     if (!in_pool(cb->addr, cb->size)) { nvn_unimpl("buf", "clear_outside_pools", rec); return; }
-    uint8_t *p = (uint8_t *)(uintptr_t)cb->addr; uint64_t n = cb->size, i = 0; rp_cpu_write_gen++; rp_write_note(cb->addr, cb->size);
+    rp_ub_fill_fence(cb->addr, cb->size); uint8_t *p = (uint8_t *)(uintptr_t)cb->addr; uint64_t n = cb->size, i = 0; rp_cpu_write_gen++; rp_write_note(cb->addr, cb->size);
     for (; i + 4 <= n; i += 4) memcpy(p + i, &cb->value, 4);
     if (i < n) memcpy(p + i, &cb->value, (size_t)(n - i));
 }

@@ -233,6 +233,7 @@ struct nvn_gpu_cmd_s {
     uint64_t *refseen;               // 本段已引用句柄的备忘（#1194）：直接映射，槽里 = 句柄指针 | 类型；第一次引用时懒分配，随段释放
     uint64_t refseen_epoch;          // 备忘建表（或上次清空）时的 g_rel_epoch；与现在不一致就整表作废
     uint32_t refseen_hits;           // 本段备忘命中的次数（只给宿主用例读：nvn_gpu_vk_test_cmd_refseen_hits）
+    uint64_t fill_last;              // 本段最后一次交给录制线程的暂存填充票号（nvn_gpu_arena_fill）；0 = 没有。放弃段释放上传片之前先等它
     struct vk_staging *staging;
     uint32_t nstaging, scap;
     struct nvn_gpu_buf_s *arena;
@@ -1519,6 +1520,8 @@ static void detach_live(struct nvn_gpu_cmd_s *c) {
 
 static void finish_cmd(struct nvn_gpu_cmd_s *c, int executed) {
     if (!c) return;
+    // 放弃的段（abort / 带粘滞错误不提交）没走过 vkEndCommandBuffer 的清空：录制线程可能还要往它的上传片里填，先等完再归还 / 释放下面的暂存缓冲
+    if (c->fill_last) vk_dq_fill_wait(c->fill_last);
     // 布局按段跟踪（c->lay）：段不执行时命令缓冲里什么都没跑，没有要回滚的；t->layout 只做诊断。
     detach_live(c);   // 已提交的 cmd 在 commit 时已摘下，这里兜底
     pthread_mutex_lock(&g_mu);
@@ -2482,6 +2485,18 @@ nvn_gpu_rc nvn_gpu_arena_alloc(nvn_gpu_cmd ch, uint64_t bytes, uint32_t align, n
     c->arena_used = off + bytes;
     return rc(NVN_GPU_OK);
 }
+
+// 暂存填充（契约见 nvn_backend.h）：两级回放开着时交录制线程按序拷（nvn_vk_dq.inc vk_dq_fill），关着就地拷。
+// 段提交时 vkEndCommandBuffer 的包装先清空队列，所以 GPU 读上传片之前一定拷完；放弃段在 finish_cmd 开头等 fill_last。
+uint64_t nvn_gpu_arena_fill(nvn_gpu_cmd ch, const nvn_gpu_slice *sl, const void *src, uint64_t bytes) {
+    if (!sl || !sl->cpu || !src || !bytes) return 0;
+    struct nvn_gpu_cmd_s *c = ch;
+    if (!c) { memcpy(sl->cpu, src, (size_t)bytes); return 0; }
+    const uint64_t t = vk_dq_fill(sl->cpu, src, bytes);
+    if (t) c->fill_last = t;
+    return t;
+}
+uint64_t nvn_gpu_arena_fill_wait(uint64_t ticket) { return vk_dq_fill_wait(ticket); }
 
 // ---------------------------------------------------------------- 录制原语
 
