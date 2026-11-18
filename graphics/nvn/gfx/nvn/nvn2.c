@@ -449,15 +449,17 @@ static struct {
 static int hdr_chg_log(unsigned long long *n) { return ++*n && (*n & (*n - 1)) == 0; }   // 变化计到 2 的幂次才打（mtl_sub_counter 先例）；首次变化 = 1 必打
 static uint32_t vi_ok_cap(void *disp, unsigned on) {
     (void)disp;
+    on &= 0xff;   // bool 参数：寄存器只有低 8 位有定义，高位垃圾不能算成「变了」
     pthread_mutex_lock(&g_hdr_mu);
     int ch = g_hdr.cap != on; if (ch) g_hdr.cap = on;
     int first = ch && hdr_chg_log(&g_hdr.chg[0]);
     pthread_mutex_unlock(&g_hdr_mu);
-    if (first) LOG("vi::SetDisplay{Hdr,HdrPrivate,120HzRefreshRate}Capability on=%u：HDR 探针记下（只是「允许」，宿主出 SDR 60 Hz，查询回答不变）", on & 0xff);
+    if (first) LOG("vi::SetDisplay{Hdr,HdrPrivate,120HzRefreshRate}Capability on=%u：HDR 探针记下（只是「允许」，宿主出 SDR 60 Hz，查询回答不变）", on);
     return 0;
 }
 static uint32_t vi_ok_hdr(void *layer, unsigned lo, unsigned hi) {
     (void)layer;
+    lo &= 0xffff; hi &= 0xffff;   // u16 亮度：只取原宽度，高位垃圾不能算成「变了」、也不进日志
     pthread_mutex_lock(&g_hdr_mu);
     int ch = g_hdr.lo != lo || g_hdr.hi != hi; if (ch) { g_hdr.lo = lo; g_hdr.hi = hi; }
     int first = ch && hdr_chg_log(&g_hdr.chg[1]);
