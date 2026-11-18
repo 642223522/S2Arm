@@ -163,7 +163,8 @@ class DevcertDelivery(unittest.TestCase):
         with patch.object(install, "deliver_identity", lambda c, p: seen.append("deliver")), patch.object(packer, "assemble_shell", lambda c: ("x.ipa", [], "S1")), \
                 patch.object(packer, "ipa_digest", lambda i: "dg"), patch.object(packer, "commit_phone_ipa", lambda *a: None), \
                 patch.object(install.layout, "load_device", lambda c, k: {}), patch.object(install.layout, "save_device", lambda *a: None), \
-                patch.object(install.layout, "phone_ipa", lambda c: self.t / "S2Arm.ipa"), patch.object(install, "note", lambda *a: None):
+                patch.object(install.layout, "phone_ipa", lambda c: self.t / "S2Arm.ipa"), patch.object(install, "note", lambda *a: None), \
+                patch.object(install, "signer_kind", lambda c, p: "devCert"):
             for same in (False, True):
                 with patch.object(install, "same_app", lambda *a, s=same: s):
                     install.install_shell(self.c, ph, steps=False)

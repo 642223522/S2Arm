@@ -270,9 +270,26 @@ void s2a_direct_relayout(void) {   // App 壳视图控制器 viewDidLayoutSubvie
         re ? "，宽屏核心下一个渲染遍按新比例出图" : "");
     if (!re && fabs(va / g_out_a - 1) > 0.01) LOG("【黄】直连：可用区域比例 %.3f 与出图比例 %.3f 不同，按实际出图比例居中；固定尺寸的路径须重新启动游戏后应用新比例", va, g_out_a);
 }
+unsigned s2a_session_generation(void) __attribute__((weak));   // runtime/src/session.c：会话代号（同进程「立刻重启」新一局加一）
+static _Atomic unsigned g_layer_gen;   // 出图比例按哪一局算的（会话代号）
+// 同进程新一局重算出图比例（#1169）：游戏内「立刻重启」重读设置后，满屏 / 补丁画幅可能变了，宽屏核心按新屏宽高出图；
+//   出图层却只在进程首次建层时算过一次比例，新画幅被装进上一局的层（iPad 横屏开满屏后重启：1.532 的画面塞进 16:9 层、四边留黑，冷启动才对）。
+//   渲染线程每次取层比一次代号，换局了交主线程重算比例并按同一条重摆路摆层（后台等回前台补，同布局回调）
+static void layer_session_check(void) {
+    if (!g_layer || !s2a_session_generation) return;
+    unsigned g = s2a_session_generation(), o = atomic_load(&g_layer_gen);
+    if (g == o || !atomic_compare_exchange_strong(&g_layer_gen, &o, g)) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        double a0 = g_out_a, a1 = out_aspect(); if (!(a1 > 0) || a1 == a0) return;
+        g_out_a = a1; CGSize d0 = g_layer.drawableSize; s2a_direct_relayout(); CGSize d1 = g_layer.drawableSize;
+        if (d0.width == d1.width && d0.height == d1.height) { g_relayout_due = 1; return; }   // 没摆（在后台）：回前台补（front_metal_layer 登记的通知）
+        LOG("直连：新一局出图比例 %.3f → %.3f，出图层重摆为 %.0fx%.0f 像素", a0, a1, g_layer.drawableSize.width, g_layer.drawableSize.height);
+    });
+}
 void *front_metal_layer(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+        if (s2a_session_generation) atomic_store(&g_layer_gen, s2a_session_generation());
         if (!s2a_ios_root_view) { LOG("【红】直连：没有 App 壳根视图（s2a_ios_root_view），无出图层"); return; }
         void (^mk)(void) = ^{
             UIView *v = present_view(); if (!v) return;
@@ -298,6 +315,7 @@ void *front_metal_layer(void) {
                          g_layer.drawableSize.width / g_layer.drawableSize.height, s2a_widen_game() ? "开" : out_wide() ? "关、直连第三层整套放宽" : out_tall() ? "关、直连第三层上下加高" : "关");
         else LOG("【红】直连：根视图还没建好，没挂上出图层");
     });
+    layer_session_check();
     return (__bridge void *)g_layer;
 }
 #else

@@ -33,7 +33,7 @@ struct HomeSearchControl: View {
             .buttonStyle(.plain).controllerControl(id: "home.search", activate: editFromController)
             .controllerID("home.search")
             .onHover { hovered = $0 }
-            .help(loc.t(isExpanded ? "home.collapseSearch" : "home.search"))
+            .launcherTooltip(loc.t(isExpanded ? "home.collapseSearch" : "home.search"), placement: .below)
             .accessibilityLabel(loc.t(isExpanded ? "home.collapseSearch" : "home.search"))
             .accessibilityValue(text).accessibilityAddTraits(isExpanded ? .isSelected : [])
             // Keep the field mounted so focus changes target an existing native text control,
@@ -52,7 +52,7 @@ struct HomeSearchControl: View {
                             .frame(width: 28, height: 36).contentShape(Rectangle())
                     }
                     .controllerButtonStyle(.plain).controllerID("home.search.clear")
-                    .help(loc.t("home.clearSearch")).accessibilityLabel(loc.t("home.clearSearch"))
+                    .launcherTooltip(loc.t("home.clearSearch"), placement: .below).accessibilityLabel(loc.t("home.clearSearch"))
                 }
             }
             .padding(.leading, LauncherTheme.Space.xSmall).padding(.trailing, LauncherTheme.Space.medium)

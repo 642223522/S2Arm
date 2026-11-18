@@ -348,14 +348,14 @@ struct LauncherView: View {
                     }
                     .accessibilityLabel(loc.t("s2arm.nav.library")).accessibilityValue(model.dynamicJob?.label ?? "")
                 }
-                .controllerButtonStyle(ConsoleIconButtonStyle()).help(model.dynamicJob.map(\.label) ?? loc.t("s2arm.nav.library"))
+                .controllerButtonStyle(ConsoleIconButtonStyle()).launcherTooltip(model.dynamicJob.map(\.label) ?? loc.t("s2arm.nav.library"), placement: .below)
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: model.dynamicDone)
                 .controllerID("top.library")
                 Button { model.showAddGames = true } label: {
                     Label(loc.t("s2arm.action.import"), systemImage: "plus")
                 }
                 .controllerButtonStyle(ConsoleIconButtonStyle()).disabled(model.busy)
-                .help(loc.t("s2arm.action.import")).controllerID("top.import")
+                .launcherTooltip(loc.t("s2arm.action.import"), placement: .below).controllerID("top.import")
                 // 设置按钮角标只在「缺东西、要处理」时挂红点（#1426：原先就绪时常驻绿点，玩家当成未读，点进去找不到新内容）；
                 //   就绪 / 检查中都不挂，「环境已就绪」在设置页里看。悬停与无障碍在缺东西时说清是什么事
                 Button { model.showEnvironment = true } label: {
@@ -366,7 +366,7 @@ struct LauncherView: View {
                     }
                 }
                 .controllerButtonStyle(ConsoleIconButtonStyle())
-                .help(environmentNeedsAction ? txt("nav.settings") + "：" + loc.t("s2arm.env.missing") : txt("nav.settings"))
+                .launcherTooltip(environmentNeedsAction ? txt("nav.settings") + "：" + loc.t("s2arm.env.missing") : txt("nav.settings"), placement: .below)
                 .accessibilityLabel(txt("nav.settings"))
                 .accessibilityValue(environmentNeedsAction ? loc.t("s2arm.env.missing") : "")
                 .controllerID("top.settings")
@@ -375,7 +375,7 @@ struct LauncherView: View {
                 Button { model.diagUploadFor = "" } label: {
                     Label(BackendText.launcherText("report.button", language: uiLanguage), systemImage: "exclamationmark.bubble")
                 }
-                .controllerButtonStyle(ConsoleIconButtonStyle()).help(txt("report.button"))
+                .controllerButtonStyle(ConsoleIconButtonStyle()).launcherTooltip(txt("report.button"), placement: .below)
                 .controllerID("top.report").accessibilityIdentifier("top.report")
         }
         .padding(.trailing, LauncherTheme.Space.section)
@@ -503,7 +503,7 @@ struct LauncherView: View {
                 Label(txt("update.top.available").replacingOccurrences(of: "{0}", with: model.availableUpdate?["version"] as? String ?? ""), systemImage: "arrow.down.circle")
             }
             .controllerButtonStyle(ConsoleIconButtonStyle())
-            .help(txt("update.top.available").replacingOccurrences(of: "{0}", with: model.availableUpdate?["version"] as? String ?? ""))
+            .launcherTooltip(txt("update.top.available").replacingOccurrences(of: "{0}", with: model.availableUpdate?["version"] as? String ?? ""), placement: .below)
             .controllerID("top.update")
         case .failed(let code):
             // 顶栏只留「重试」；失败原因（人话 + 错误码 + 打开下载页）放到底部的错误 toast，× 可关，不再挤在顶栏里跑版
@@ -556,7 +556,7 @@ struct LauncherView: View {
                 }
             }
         }
-        .controllerButtonStyle(ConsoleIconButtonStyle()).help(txt("messages.button"))
+        .controllerButtonStyle(ConsoleIconButtonStyle()).launcherTooltip(txt("messages.button"), placement: .below)
         .accessibilityLabel(txt("messages.button")).accessibilityValue("\(model.unreadMessages)").controllerID("top.messages")
         .popover(isPresented: $showMessages, arrowEdge: .bottom) { MessagesPanel(model: model, language: uiLanguage) }
     }
@@ -674,7 +674,7 @@ private struct ControllerToolbarButton: View {
             }
         }
         .controllerButtonStyle(ConsoleIconButtonStyle())
-        .help(controller.title(lang: lang) + "：" + toolbarStatus)   // #901：顶栏提示写实际连着的手柄名（两条通道合并看）
+        .launcherTooltip(controller.title(lang: lang) + "：" + toolbarStatus, placement: .below)   // #901：顶栏提示写实际连着的手柄名（两条通道合并看）
         .accessibilityLabel(controller.title(lang: lang) + "：" + toolbarStatus)
         .controllerID("top.controller")
         // 面板用 AppKit 的 NSPopover 自己开关，不用 SwiftUI .popover：实机上 .popover 会在背后重新呈现、套回打开时记下的高度，

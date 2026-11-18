@@ -43,7 +43,7 @@ extension LauncherView {
                 .font(.manrope(20, .semibold)).multilineTextAlignment(.center)
             Button { home.group = .all; home.search = "" } label: { Image(systemName: "square.grid.2x2") }
                 .controllerButtonStyle(ConsoleIconButtonStyle(size: 48))
-                .help(loc.t("home.showAll")).accessibilityLabel(loc.t("home.showAll")).controllerID("home.showAll")
+                .launcherTooltip(loc.t("home.showAll"), placement: .above).accessibilityLabel(loc.t("home.showAll")).controllerID("home.showAll")
         }.frame(maxWidth: .infinity, maxHeight: .infinity).padding(24)
     }
 
@@ -104,7 +104,7 @@ extension LauncherView {
                     .controllerButtonStyle(ConsolePlayButtonStyle()).disabled(model.cloudSyncing || model.sgradeUpgrading(game.id))
                     .overlay(alignment: .bottom) { if model.sgradeUpgrading(game.id) { SGradeUpgradeBar(progress: model.sgradeProgress(game.id)).padding(.horizontal, 14).padding(.bottom, 5) } }
                     .keyboardShortcut(.return, modifiers: [])
-                    .help(homePrimaryTitle(game)).accessibilityLabel(homePrimaryTitle(game))
+                    .launcherTooltip(homePrimaryTitle(game), placement: .above).accessibilityLabel(homePrimaryTitle(game))
                     .controllerID(game.playable ? "hero.play" : game.iphoneReady ? "hero.install" : "hero.export").controllerShortcut(.rightTrigger)
                 Button {
                     model.exportSelfSign(game)
@@ -113,7 +113,7 @@ extension LauncherView {
                     fitLabel(txt("library.hero.selfSign"), "square.and.arrow.up")
                 }
                 .controllerButtonStyle(ConsolePillButtonStyle()).controllerID("hero.selfSign")
-                .help(txt("library.hero.selfSign")).accessibilityLabel(txt("library.hero.selfSign"))
+                .launcherTooltip(txt("library.hero.selfSign"), placement: .above).accessibilityLabel(txt("library.hero.selfSign"))
                 // 能直接导出的走手机槽（出包在跑也行，手机槽忙就排队）；要先出 iPhone 包的，主槽在跑非出包作业时等（出包在跑会排队）
                 .disabled(game.iphoneExportable ? model.phoneQueued(game.id) : model.mainBusy && model.session?.export == nil)
                 // 主按钮是「开始游戏」时，出过 iPhone 包的款照样要能一键装到 iPhone（主线游戏库两个都在）
@@ -122,24 +122,24 @@ extension LauncherView {
                         fitLabel(txt(game.iphoneInstalledAt != nil && game.iphoneFree ? "library.hero.renew" : "library.hero.install"), "iphone")
                     }
                     .controllerButtonStyle(ConsolePillButtonStyle()).controllerID("hero.install")   // 只开装机窗：别的作业在跑，窗里点装机会排队
-                    .help(txt(game.iphoneInstalledAt != nil && game.iphoneFree ? "library.hero.renew" : "library.hero.install"))
+                    .launcherTooltip(txt(game.iphoneInstalledAt != nil && game.iphoneFree ? "library.hero.renew" : "library.hero.install"), placement: .above)
                 }
                 if game.playable || game.iphoneReady {
                     Button { model.exportFor = game.id } label: {
                         fitLabel(loc.t("s2arm.export.action"), "shippingbox")
                     }
                     .controllerButtonStyle(ConsolePillButtonStyle()).controllerID("hero.export")
-                    .help(loc.t("s2arm.export.action")).accessibilityLabel(loc.t("s2arm.export.action"))
+                    .launcherTooltip(loc.t("s2arm.export.action"), placement: .above).accessibilityLabel(loc.t("s2arm.export.action"))
                 }
                 // 只留两个人人认得的圆钮（…、♡）；「查看出包结果」「启动设置」收进「…」菜单（11-16 维护者：三条横杠看不出是启动设置，一行三种形状不统一）
                 Button { moreFor = game.id } label: { Image(systemName: "ellipsis") }
                     .controllerButtonStyle(ConsoleIconButtonStyle(size: 52)).controllerID("hero.more")
-                    .help(loc.t("home.details")).accessibilityLabel(loc.t("home.details"))
+                    .launcherTooltip(loc.t("home.details"), placement: .above).accessibilityLabel(loc.t("home.details"))
                     .popover(isPresented: Binding(get: { moreFor == game.id }, set: { if !$0 { moreFor = nil } }), arrowEdge: .bottom) { moreMenu(game) }
                 Button { home.toggleFavorite(game.id) } label: {
                     Image(systemName: home.favorites.contains(game.id) ? "heart.fill" : "heart")
                 }.controllerButtonStyle(ConsoleIconButtonStyle(size: 52)).controllerID("hero.favorite")
-                    .help(loc.t(home.favorites.contains(game.id) ? "home.unfavorite" : "home.favorite"))
+                    .launcherTooltip(loc.t(home.favorites.contains(game.id) ? "home.unfavorite" : "home.favorite"), placement: .above)
                     .accessibilityLabel(loc.t(home.favorites.contains(game.id) ? "home.unfavorite" : "home.favorite"))
                     .accessibilityAddTraits(home.favorites.contains(game.id) ? .isSelected : [])
             }.padding(.top, compact ? 4 : 10)
@@ -167,7 +167,7 @@ extension LauncherView {
                 Image(nsImage: SGradeCardView.sGold).resizable().interpolation(.high).aspectRatio(contentMode: .fit).frame(width: 18, height: 18)
             }.controllerButtonStyle(ConsoleIconButtonStyle()).disabled(model.busy || model.games.isEmpty)
                 .controllerID("library.sgradeUpgrade")
-                .help(txt("sgrade.upgrade.button")).accessibilityLabel(txt("sgrade.upgrade.button"))
+                .launcherTooltip(txt("sgrade.upgrade.button"), placement: .below).accessibilityLabel(txt("sgrade.upgrade.button"))
             HomeSearchControl(isExpanded: $showHomeSearch, text: $home.search,
                               width: size.width < 1000 ? LauncherControl.width : LauncherTheme.Metrics.navigationWidth) { finished in
                 navigation.focus("home.search.field")
@@ -175,7 +175,7 @@ extension LauncherView {
             }
             Button { model.refresh() } label: { Image(systemName: "arrow.clockwise") }
                 .controllerButtonStyle(ConsoleIconButtonStyle()).disabled(model.loading).controllerID("home.refresh")
-                .help(loc.t("s2arm.library.refresh")).accessibilityLabel(loc.t("s2arm.library.refresh"))
+                .launcherTooltip(loc.t("s2arm.library.refresh"), placement: .below).accessibilityLabel(loc.t("s2arm.library.refresh"))
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: showHomeSearch)
     }

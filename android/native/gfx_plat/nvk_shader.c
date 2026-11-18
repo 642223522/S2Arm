@@ -19,6 +19,7 @@
 #include "direct/input_identity.h"
 #include "direct/source_store.h"
 #include "direct/texture_facts.h"
+#include "spirv_sampler_use.h"
 #include "direct/offline_library.h"
 #include "direct/libpack_vk.h"
 #include "../../../graphics/nvn/gfx/nvn/dmsh_chain.h"   // b-<DMSH_CHAIN>-vk：出包预编库目录名（同 nvn_vk_draw.c）
@@ -1681,6 +1682,10 @@ static struct entry *build_compute(const uint8_t *bytes, size_t len, const struc
         if (le->cls == NVN_GPU_RES_TBUF && e->prog.dtt[0][e->prog.nent[0]] != NVN_TEXTURE_TARGET_BUFFER + 1) {
             red1("tbuf_shader_type_unproven", "cs"); e->failed = 1; break;
         }
+        if (le->src_kind == NVN_RB_TEX && le->src_reg >= 32 && le->src_reg < 40 &&
+            le->src_reg2 == UINT16_MAX && le->cls == NVN_GPU_RES_TEX_SAMP && le->count == 1)
+            e->prog.sampler_unused[0][e->prog.nent[0]] = (uint8_t)s2a_spirv_sampler_unused(
+                (const uint32_t *)cp.stage.spirv, cp.stage.spirv_bytes, (unsigned)b->set, (unsigned)b->binding);
         e->prog.nent[0]++;
     }
     if (!e->failed && !cp.stage.present) { red1("stage_missing_in_result", "cs"); e->failed = 1; }

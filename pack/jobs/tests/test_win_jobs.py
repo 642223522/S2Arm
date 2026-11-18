@@ -602,30 +602,31 @@ class WinInstall(unittest.TestCase):
         (base / "PlumeImpactor/accounts.json").write_text(_j.dumps({"selected_account": "a@b.c", "accounts": {"a@b.c": {}}}))
         self.assertTrue(impactor.logged_in(str(base)))
 
-    def test_bundle_pins_official_hashes(self):
-        # 打包：缓存缺就从官方发布页下（这里换成假下载），SHA-256 必须等于钉的值，不符拒打；带许可与来源说明
+    def test_bundle_pins_own_build_hashes(self):
+        # 打包（11-18 起自编版）：从自编产物缓存取，SHA-256 必须等于钉的值，不符拒打；缓存里没有报红说清怎么编、不去官方发布页下；
+        #   带许可、补丁原文与「基于上游 v2.7.3 的修改版」来源说明
         import hashlib, impactor
         sys.path.insert(0, str(ROOT / "launchers/windows")); import bundle_win
-        cache = self.t / "cache"; got = []
-        def fetch(url, to): got.append(url); Path(to).write_bytes(url.encode())
-        pins = {n: hashlib.sha256((impactor.DOWNLOAD + n).encode()).hexdigest() for n in impactor.BUNDLED}
+        cache = self.t / "cache"; cache.mkdir()
+        for n in impactor.BUNDLED: (cache / n).write_bytes(n.encode())
+        pins = {n: hashlib.sha256(n.encode()).hexdigest() for n in impactor.BUNDLED}
+        patches = sorted(p.name for p in bundle_win.IMPACTOR_PATCHES.glob("*.patch"))
+        self.assertTrue(patches, "仓库里有自编补丁")
         with patch.object(impactor, "BUNDLED", pins):
-            bundle_win.bundle_impactor(self.t / "out1", cache=cache, fetch=fetch)
-            self.assertEqual(got, [impactor.DOWNLOAD + n for n in pins])                  # 缺才下，下的是官方 v2.7.3 发布页
+            bundle_win.bundle_impactor(self.t / "out1", cache=cache)
             self.assertEqual(sorted(p.name for p in (self.t / "out1").iterdir()),
-                             sorted([*pins, "LICENSE-Impactor-MIT.txt", "LICENSE-apple-codesign-MPL-2.0.txt", "README-来源与许可.txt"]))
+                             sorted([*pins, *patches, "LICENSE-Impactor-MIT.txt", "LICENSE-apple-codesign-MPL-2.0.txt", "README-来源与许可.txt"]))
             readme = (self.t / "out1/README-来源与许可.txt").read_text(encoding="utf-8")
-            self.assertIn("3rdparty/apple-codesign-0.29.0", readme); self.assertIn(pins[impactor.PLUMESIGN_EXE], readme)
-            bundle_win.bundle_impactor(self.t / "out2", cache=cache, fetch=fetch); self.assertEqual(len(got), 2)   # 离线：缓存命中不再下
+            for want in ("修改版", patches[0], "3rdparty/apple-codesign-0.29.0", pins[impactor.PLUMESIGN_EXE], impactor.SOURCE_TREE):
+                self.assertIn(want, readme)
             (cache / impactor.IMPACTOR_EXE).write_bytes(b"tampered")
             with self.assertRaises(SystemExit) as e:
-                bundle_win.bundle_impactor(self.t / "out3", cache=cache, fetch=fetch)
+                bundle_win.bundle_impactor(self.t / "out2", cache=cache)
             self.assertIn("拒打", str(e.exception))
             (cache / impactor.IMPACTOR_EXE).unlink()
-            def offline(url, to): raise ConnectionResetError(10054, "reset")
-            with self.assertRaises(SystemExit) as e:                                             # 构建机连不上 GitHub：说清去哪放缓存
-                bundle_win.bundle_impactor(self.t / "out4", cache=cache, fetch=offline)
-            self.assertIn(str(cache), str(e.exception))
+            with self.assertRaises(SystemExit) as e:                                             # 缓存里没有：说清怎么编、放哪
+                bundle_win.bundle_impactor(self.t / "out3", cache=cache)
+            self.assertIn("plumesign_build.py", str(e.exception)); self.assertIn(str(cache), str(e.exception))
 
     def test_readiness(self):
         with patch.object(self.m, "win_install_mod", return_value=FakeW([("U1", "USB", 3)], impactor="missing")):

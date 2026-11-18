@@ -210,13 +210,17 @@ static partial class P {
     //   判「解出来对不对」：每个 NCA 第一个 AesCtr / AesXts 段解密后的开头——PFS0 段是「PFS0」、RomFS 段头长 0x50（不加密的段用什么密钥都能读，不算；
 //   更新的补丁段 AesCtrEx 离了本体读不出，也不算）。
     //   → 能正常解开的那份的说明（「控制数据（内容 xxxxxxxx）」）；判不出（没有同代对照、或全都解不对）→ null，照旧按密钥报
+    // 任天堂带板载更新的修订版卡带会把本体 NCA 被更新覆盖的分段做成稀疏段（SparseInfo.Generation != 0）：
+    //   本体 ExeFS 常被整段裁空（物理块数 0）、RomFS 只留未被覆盖的块；这类分段不能脱离更新单独打开或校验（空洞读出全 0，会触发 2002-4644）
+    internal static bool IsSparseSection(Nca nca, NcaSectionType type) =>
+        Nca.TryGetSectionIndexFromType(type, nca.Header.ContentType, out int idx) && nca.SectionExists(idx) && nca.GetFsHeader(idx).ExistsSparseLayer();
     internal static string SiblingDecrypts() {
         if (Ks == null) return null;
         var good = new Dictionary<(int, bool), string>(); var bad = new HashSet<(int, bool)>();
         foreach (var (id, open) in Where.ToList()) {
             try {
                 var n = new Nca(Ks, open());
-                int s = Enumerable.Range(0, 4).FirstOrDefault(i => n.SectionExists(i) && n.GetFsHeader(i).EncryptionType is NcaEncryptionType.AesCtr or NcaEncryptionType.AesXts, -1);   // 更新的补丁段（AesCtrEx）离了本体单独读不出来，不拿来作对照
+                int s = Enumerable.Range(0, 4).FirstOrDefault(i => n.SectionExists(i) && !n.GetFsHeader(i).ExistsSparseLayer() && n.GetFsHeader(i).EncryptionType is NcaEncryptionType.AesCtr or NcaEncryptionType.AesXts, -1);   // 更新的补丁段（AesCtrEx）与稀疏本体段（ExistsSparseLayer）离了配对 NCA 单独读不出来，不拿来作对照
                 if (s < 0) continue;
                 var key = (KeyIndex(n.Header.KeyGeneration), n.Header.HasRightsId);
                 var head = new byte[8];
@@ -272,10 +276,13 @@ static partial class P {
         for (int s = 0; s < 4; s++) {
             if (!nca.SectionExists(s)) continue;
             string kind = nca.Header.ContentType == NcaContentType.Program ? s switch { 0 => "可执行", 1 => "资源", 2 => "标志", _ => "?" } : "数据";
-            // 更新的资源段（AesCtrEx + 重定位表）单独打开不是哈希校验层，LibHac 回 Unchecked——#787 v0.3.3 把它当「不过」报给了玩家；要叠在本体那段上核对
+            // 更新的资源段（AesCtrEx + 重定位表）单独打开不是哈希校验层，LibHac 回 Unchecked——#787 v0.3.3 把它当「不过」报给了玩家；要叠在本体那段上核对。
+            // 稀疏本体段（ExistsSparseLayer）裁掉了被更新覆盖的块，单独校验必报不过，不能当损坏报给玩家
+            bool sparse = nca.GetFsHeader(s).ExistsSparseLayer();
             bool patch = nca.GetFsHeader(s).EncryptionType == NcaEncryptionType.AesCtrEx;
             string v;
-            try {
+            if (sparse) v = "没核对（稀疏段，要叠上更新才能读）";
+            else try {
                 Validity r = !patch ? nca.VerifySection(s)
                     : PatchBase.TryGetValue(id, out var b) && Where.TryGetValue(b, out var ob) ? new Nca(Ks, ob()).VerifySection(nca, s) : Validity.Unchecked;
                 v = r switch { Validity.Valid => "通过", Validity.Invalid => "不过", _ => "没核对（这段要叠在本体上才能读）" } + (patch && r != Validity.Unchecked ? "（叠在本体上核对）" : "");
@@ -456,6 +463,8 @@ static partial class P {
             if (nacpOnly && !File.Exists(Path.Combine(D, "ctl", "control.nacp"))) { Console.Error.WriteLine("🔴 清单里没有控制分区（或不在给的文件里）"); return 1; }
             // 版本核对：元数据必须和输出目录里已有的 exefs 同一版本——比 main 模块的构建号（NSO 头 0x40 起 16 字节）
             var bn0 = new Nca(Ks, Where[baseId]());
+            if (patId == null && IsSparseSection(bn0, NcaSectionType.Code))
+                throw new SourceError($"本体程序 {baseId[..8]} 是稀疏本体（可执行分区已裁掉，须叠在更新上），请把对应的更新包一起提供");
             IFileSystem ex0 = patId == null ? bn0.OpenFileSystem(NcaSectionType.Code, LevelOf(baseId))
                                             : bn0.OpenFileSystemWithPatch(new Nca(Ks, Where[patId]()), NcaSectionType.Code, LevelOf(baseId, patId));
             byte[] m0 = ReadAll(ex0, "/main"); string have = Path.Combine(D, "exefs", "main");
@@ -478,6 +487,8 @@ static partial class P {
         if (!aocOnly) {   // ---- 可执行分区 ----
         Stage = $"可执行分区（本体 {baseId[..8]}{(patId == null ? "" : " + 更新 " + patId[..8])}）";
         var bn = new Nca(Ks, Where[baseId]());
+        if (patId == null && IsSparseSection(bn, NcaSectionType.Code))
+            throw new SourceError($"本体程序 {baseId[..8]} 是稀疏本体（可执行分区已裁掉，须叠在更新上），请把对应的更新包一起提供");
         IFileSystem exefs = patId == null ? bn.OpenFileSystem(NcaSectionType.Code, LevelOf(baseId))
                                           : bn.OpenFileSystemWithPatch(new Nca(Ks, Where[patId]()), NcaSectionType.Code, LevelOf(baseId, patId));
         string ex = Path.Combine(D, "exefs"); Directory.CreateDirectory(ex);
@@ -512,6 +523,8 @@ static partial class P {
             Console.WriteLine("程序没有资源分区（RomFS）：按空资源出包");
         }
         if (!aocOnly && hasRomfs) {
+            if (patId == null && IsSparseSection(new Nca(Ks, Where[baseId]()), NcaSectionType.Data))
+                throw new SourceError($"本体程序 {baseId[..8]} 的资源分区是稀疏本体段（已裁掉被更新覆盖的数据），请把对应的更新包一起提供");
             Stage = $"资源分区 RomFS（本体 {baseId[..8]}{(patId == null ? "" : " + 更新 " + patId[..8])}）";
             if (romfsImage) {
                 try { romfsResult = RomfsExtraction.ExtractImage(RomfsOpener, romfsImagePath, patched: patId != null); }

@@ -1,0 +1,61 @@
+diff --git a/src/Ryujinx.HLE/HOS/Services/Hid/HidDevices/NpadDevices.cs b/src/Ryujinx.HLE/HOS/Services/Hid/HidDevices/NpadDevices.cs
+index 9be0ab4b785382b191bacceddb1187f3a56f3169..e02a403e044700fa66b37bb61474f0fb3b7eeb21 100644
+--- a/src/Ryujinx.HLE/HOS/Services/Hid/HidDevices/NpadDevices.cs
++++ b/src/Ryujinx.HLE/HOS/Services/Hid/HidDevices/NpadDevices.cs
+@@ -14,6 +14,7 @@ namespace Ryujinx.HLE.HOS.Services.Hid
+     public class NpadDevices : BaseDevice
+     {
+         private const int NoMatchNotifyFrequencyMs = 2000;
++        private const ulong SixAxisSamplePeriodNs = 5_000_000;
+         private int _activeCount;
+         private long _lastNotifyTimestamp;
+ 
+@@ -497,6 +498,7 @@ namespace Ryujinx.HLE.HOS.Services.Hid
+         {
+             ref SixAxisSensorState previousEntry = ref lifo.GetCurrentEntryRef();
+ 
++            state.DeltaTime = SixAxisSamplePeriodNs;
+             state.SamplingNumber = previousEntry.SamplingNumber + 1;
+ 
+             lifo.Write(ref state);
+diff --git a/src/Ryujinx.Input/Motion/MotionSensorFilter.cs b/src/Ryujinx.Input/Motion/MotionSensorFilter.cs
+index e51633c1829c1b1da5e5f329d6ee9e0502b634e4..5368e0424bfef7a34ae9650360b1b2829b93fc59 100644
+--- a/src/Ryujinx.Input/Motion/MotionSensorFilter.cs
++++ b/src/Ryujinx.Input/Motion/MotionSensorFilter.cs
+@@ -7,11 +7,6 @@ namespace Ryujinx.Input.Motion
+     // Based on: https://github.com/xioTechnologies/Open-Source-AHRS-With-x-IMU/blob/master/x-IMU%20IMU%20and%20AHRS%20Algorithms/x-IMU%20IMU%20and%20AHRS%20Algorithms/AHRS/MahonyAHRS.cs
+     class MotionSensorFilter
+     {
+-        /// <summary>
+-        /// Sample rate coefficient.
+-        /// </summary>
+-        public const float SampleRateCoefficient = 0.45f;
+-
+         /// <summary>
+         /// Gets or sets the sample period.
+         /// </summary>
+@@ -104,6 +99,7 @@ namespace Ryujinx.Input.Motion
+             float q3 = Quaternion.Y;
+             float q4 = Quaternion.Z;
+             float q1 = Quaternion.W;
++            float oldQ1 = q1;
+ 
+             // Estimated direction of gravity.
+             Vector3 gravity = new()
+@@ -135,11 +131,12 @@ namespace Ryujinx.Input.Motion
+ 
+             // Integrate rate of change of quaternion.
+             Vector3 delta = new(q2, q3, q4);
++            float halfSamplePeriod = 0.5f * SamplePeriod;
+ 
+-            q1 += (-q2 * gyro.X - q3 * gyro.Y - q4 * gyro.Z) * (SampleRateCoefficient * SamplePeriod);
+-            q2 += (q1 * gyro.X + delta.Y * gyro.Z - delta.Z * gyro.Y) * (SampleRateCoefficient * SamplePeriod);
+-            q3 += (q1 * gyro.Y - delta.X * gyro.Z + delta.Z * gyro.X) * (SampleRateCoefficient * SamplePeriod);
+-            q4 += (q1 * gyro.Z + delta.X * gyro.Y - delta.Y * gyro.X) * (SampleRateCoefficient * SamplePeriod);
++            q1 += (-q2 * gyro.X - q3 * gyro.Y - q4 * gyro.Z) * halfSamplePeriod;
++            q2 += (oldQ1 * gyro.X + delta.Y * gyro.Z - delta.Z * gyro.Y) * halfSamplePeriod;
++            q3 += (oldQ1 * gyro.Y - delta.X * gyro.Z + delta.Z * gyro.X) * halfSamplePeriod;
++            q4 += (oldQ1 * gyro.Z + delta.X * gyro.Y - delta.Y * gyro.X) * halfSamplePeriod;
+ 
+             // Normalise quaternion.
+             Quaternion quaternion = new(q2, q3, q4, q1);

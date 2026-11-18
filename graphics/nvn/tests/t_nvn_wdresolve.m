@@ -268,6 +268,24 @@ int main(void) {
             uint32_t a = px_at(tex_mtl(&d1), 0, 0), b = px_at(tex_mtl(&d1), 1279, 719);
             VERIFY(a == 0xffff0000u && b == 0xffff0000u, "⑯ 单样本 RGBA8 → BGRA8 同尺寸 Downsample：(0, 0) = %08x、(1279, 719) = %08x（期望都是 ffff0000：BGRA 存的红；改前 0，整步跳过）", a, b);
         }
+        {   // ⑯b 同 ⑯ 的同尺寸转格式 Downsample，但源图的红经后端写（设目标 + 清色两条命令走 nvn_be_exec，同游戏的写入），同一次提交里紧接着 Downsample，
+            //   不加空提交：两张贴图的首次使用（初始内容填充）、清色、Downsample 全在后端一条时间线上，编码线程开 / 关都得是红（#751 的生产路径；⑯ 那次读 0 只因测试用自己的队列清色）。
+            //   期望手算同 ⑯：源整张红 (1, 0, 0, 1)，目标 BGRA 小端读一个像素 = ffff0000
+            static tex_t s2, d2; g_fmt = NVN_FORMAT_RGBA8; make_tex(&s2, 1280, 720, 1); g_fmt = NVN_FORMAT_BGRA8; make_tex(&d2, 1280, 720, 1); g_fmt = NVN_FORMAT_RGBA8;
+            p_set_rt rt; memset(&rt, 0, sizeof rt); rt.n = 1; rt.color[0] = &s2;
+            static uint8_t ops[1024]; size_t on = 0; uint32_t rn = (uint32_t)set_rt_size(&rt); REQUIRE(rn + 3 * sizeof(op_hdr) + sizeof(p_clear_color) <= sizeof ops);
+            { op_hdr h = {OP_SET_RT, (uint32_t)(sizeof h + rn)}; memcpy(ops + on, &h, sizeof h); on += sizeof h; set_rt_put(ops + on, &rt); on += rn; }
+            { const p_clear_color cc = {.index = 0, .mask = 0xf, .rgba = {1, 0, 0, 1}}; op_hdr h = {OP_CLEAR_COLOR, (uint32_t)(sizeof h + sizeof cc)}; memcpy(ops + on, &h, sizeof h); on += sizeof h; memcpy(ops + on, &cc, sizeof cc); on += sizeof cc; }
+            { op_hdr h = {OP_END, sizeof h}; memcpy(ops + on, &h, sizeof h); on += sizeof h; }
+            nvn_be_sub_begin();
+            nvn_be_exec(ops); rp_end();
+            p_copy_t2t c; memset(&c, 0, sizeof c); c.src = &s2; c.dst = &d2; c.flags = DM_COPY_RESOLVE; c.sr = (NVNcopyRegion){.width = 1280, .height = 720, .depth = 1}; c.dr = c.sr;
+            copy_t2t(&c);
+            uint64_t f = nvn_be_sub_commit(); REQUIRE(nvn_be_wait(f, 10000000000ull)); REQUIRE(!mtl_last_commit_error());
+            REQUIRE(tex_mtl(&s2).pixelFormat == MTLPixelFormatRGBA8Unorm && tex_mtl(&d2).pixelFormat == MTLPixelFormatBGRA8Unorm);
+            uint32_t a = px_at(tex_mtl(&d2), 0, 0), b = px_at(tex_mtl(&d2), 1279, 719);
+            VERIFY(a == 0xffff0000u && b == 0xffff0000u, "⑯b 源图经后端清红、同一次提交里同尺寸 RGBA8 → BGRA8 Downsample（编码线程%s）：(0, 0) = %08x、(1279, 719) = %08x（期望都是 ffff0000）", rec_on() ? "开" : "关", a, b);
+        }
         nvn_be_drain();
         printf("%s t_nvn_wdresolve：%u 项，%u 项失败（%s）\n", failures ? "✗" : "✓", checks, failures, g_m3 ? "Metal 3" : "Metal 4");
         return failures != 0;

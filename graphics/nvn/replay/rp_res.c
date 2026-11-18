@@ -46,6 +46,7 @@ static void alias_key_of(alias_key *k, const tex_t *t) { memset(k, 0, sizeof *k)
 struct registered_view { nvn_gpu_view view; struct registered_view *next; };
 typedef struct { tex_t t; view_t v; uint8_t ok, has_v; nvn_gpu_view view; struct registered_view *owned; struct rp_tex *of; uint64_t gen; } treg_t;
 typedef struct { samp_par p; uint8_t ok; nvn_gpu_samp s, sn; } sreg_t;   // sn：同参数的最近点采样器（#1072，配不能线性过滤的格式时用），用到才建
+static nvn_gpu_samp g_query_sampler;
 
 static pthread_mutex_t g_rmu = PTHREAD_MUTEX_INITIALIZER;
 static treg_t *g_treg; static int g_ntreg;
@@ -727,6 +728,22 @@ static _Atomic uint64_t g_empty_slot_zero;   // 空槽绑零贴图的次数（#1
 uint64_t rp_empty_slot_zero_count(void) { return atomic_load(&g_empty_slot_zero); }
 nvn_gpu_view rp_view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, int elem, nvn_gpu_cmd c, const tex_t **t_out) {
     if (!dtt) return rp_view_by_id(id, c, t_out);
+    if (elem) {
+        tex_t t; view_t v; int has_v;
+        if (rp_tex_snap_by_id(id, &t, &v, &has_v)) {
+            nvn_fmt_info fi;
+            uint32_t fmt = has_v && v.set_format ? v.format : (uint32_t)t.d.format;
+            if (nvn_fmt_info_of(fmt, &fi)) {
+                int stencil = fi.stencil && (!fi.depth || (has_v && v.set_dsmode && v.dsmode == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL));
+                int cls = stencil || fi.kind == NVN_FMT_UINT ? 1 : fi.kind == NVN_FMT_SINT ? 2 : 0;
+                if (cls && cls != dcls) {
+                    if (t_out) *t_out = NULL;
+                    nvn_unimpl("tex", "sampled_array_numeric_mismatch", NULL);
+                    return NULL;   // 不能用零元素掩盖已登记的整数视图。
+                }
+            }
+        }
+    }
     nvn_gpu_view out = view_by_id_decl(id, dtt, dcls, c, t_out);
     // 贴图数组里取不到的元素：描述符数组每项都要有效，用声明类型的零贴图顶上（类型与声明一致，不再拿别的元素凑）
     if (!out && elem) out = decl_zero(dtt, dcls, c);
@@ -753,33 +770,24 @@ static nvn_gpu_view view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, nvn_gpu_c
     if (t_out) *t_out = &g_treg[id].t;
     pthread_mutex_unlock(&g_rmu);
     int want = dtt - 1, have = has_v && v.set_target ? v.target : t.d.target;
-    if (want == have) return rp_view_by_id(id, c, t_out);
-    uint32_t layers = t.d.target == NVN_TEXTURE_TARGET_CUBEMAP ? 6 :
-        t.d.target == NVN_TEXTURE_TARGET_2D_ARRAY || t.d.target == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY ? t.d.depth : 1;
-    if (has_v && v.set_layers) layers = v.nlayers ? v.nlayers : (layers > v.min_layer ? layers - v.min_layer : 1);   // 0 = 从起点取到底（同 iOS）
-    uint32_t n = 0;
-    int layered = have == NVN_TEXTURE_TARGET_2D || have == NVN_TEXTURE_TARGET_2D_ARRAY ||
-        have == NVN_TEXTURE_TARGET_CUBEMAP || have == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY;
-    if (layered) {
-        if (want == NVN_TEXTURE_TARGET_2D) n = 1;
-        else if (want == NVN_TEXTURE_TARGET_2D_ARRAY) n = layers;
-        else if (want == NVN_TEXTURE_TARGET_CUBEMAP && layers >= 6) n = 6;
-        else if (want == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY && layers >= 6) n = layers / 6 * 6;
-    }
-    if ((want == NVN_TEXTURE_TARGET_2D_MULTISAMPLE && have == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY) ||
-        (want == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY && have == NVN_TEXTURE_TARGET_2D_MULTISAMPLE)) n = 1;
-    int cube = want == NVN_TEXTURE_TARGET_CUBEMAP || want == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY;
-    if (!n && cube && (have == NVN_TEXTURE_TARGET_2D || (have == NVN_TEXTURE_TARGET_2D_ARRAY && layers < 6))) {
-        if (!g_zero_cube_logged) {
-            g_zero_cube_logged = 1;
-            nvn_plat_log(NVN_PLAT_LOG_INFO, "tex", "声明为立方体的二维占位贴图绑定零贴图");
+    int planned = rp_decl_view_target(&t, &v, has_v, dtt);
+    if (!planned) return rp_view_by_id(id, c, t_out);
+    if (planned < 0) {
+        uint32_t layers = t.d.target == NVN_TEXTURE_TARGET_CUBEMAP ? 6 :
+            t.d.target == NVN_TEXTURE_TARGET_2D_ARRAY || t.d.target == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY ? t.d.depth : 1;
+        if (has_v && v.set_layers) layers = v.nlayers ? v.nlayers : (layers > v.min_layer ? layers - v.min_layer : 1);
+        int cube = want == NVN_TEXTURE_TARGET_CUBEMAP || want == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY;
+        if (cube && (have == NVN_TEXTURE_TARGET_2D || (have == NVN_TEXTURE_TARGET_2D_ARRAY && layers < 6))) {
+            if (!g_zero_cube_logged) {
+                g_zero_cube_logged = 1;
+                nvn_plat_log(NVN_PLAT_LOG_INFO, "tex", "声明为立方体的二维占位贴图绑定零贴图");
+            }
+            return decl_zero(dtt, dcls, c);
         }
-        return decl_zero(dtt, dcls, c);
-    }
-    if (!n || n > UINT16_MAX) {
-        // 不同维度的组合（如 3D 贴图被声明成二维数组读，#936）：Vulkan 不许这种视图，原样绑下去是未定义行为（Maleoon 上整片黑斑）。
-        // 同 iOS 层（nvn_mtl.m tex_fit 之后）与 Ryujinx（Texture.GetTargetTexture 对非同维目标返回 null、槽位读作未绑定）：绑声明类型的零贴图。
-        // 记账照旧；零贴图建不出时才退回原视图（描述符必须有效）
+        if (cube && have == NVN_TEXTURE_TARGET_2D_ARRAY && layers >= 6) {
+            nvn_unimpl("tex", "cube_view_of_2d_array", NULL);
+            return decl_zero(dtt, dcls, c);
+        }
         if (nvn_unimpl("tex", "decl_type_mismatch", NULL) == 1) {
             char m[160];
             snprintf(m, sizeof m, "贴图类型不符：着色器声明目标 %d，贴图是 %d（%ux%ux%u）：按 iOS / Ryujinx 绑声明类型的零贴图", want, have,
@@ -788,16 +796,6 @@ static nvn_gpu_view view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, nvn_gpu_c
         }
         nvn_gpu_view z = decl_zero(dtt, dcls, c);
         return z ? z : rp_view_by_id(id, c, t_out);
-    }
-    if (!has_v) memset(&v, 0, sizeof v);
-    v.set_target = 1; v.target = (uint8_t)want;
-    v.set_layers = 1; v.nlayers = (uint16_t)n;
-    // 非立方体存储（≥6 层的二维数组）当立方体读：同 iOS tex_fit 直接建立方体视图。后端给方形、≥6 层、单采样的二维数组建图时
-    // 带立方体兼容（P0-6），这种照交下去；别的（非方形等）Vulkan 建不了立方体兼容的图，必被后端拒绝：记账（不静默）并绑声明类型的零贴图
-    int cube_compat_array = t.d.target == NVN_TEXTURE_TARGET_2D_ARRAY && t.d.width == t.d.height && t.d.samples <= 1 && t.d.depth >= 6;
-    if (cube && t.d.target != NVN_TEXTURE_TARGET_CUBEMAP && t.d.target != NVN_TEXTURE_TARGET_CUBEMAP_ARRAY && !cube_compat_array) {
-        nvn_unimpl("tex", "cube_view_of_2d_array", NULL);
-        return decl_zero(dtt, dcls, c);
     }
     return rp_view_for(&t, &v, c);
 }
@@ -911,6 +909,24 @@ nvn_gpu_samp rp_samp_for_tex(int sid, int tid) {
     return out;
 }
 
+nvn_gpu_samp rp_sampler_for_query(void) {
+    pthread_mutex_lock(&g_rmu);
+    if (!g_query_sampler) {
+        // 查询不会读取这些值；给后端一个有效的物理对象，不登记为任何 NVN 池槽。
+        // 取法对齐 Ryujinx DescriptorSetUpdater 的空 sampler 表示。
+        samp_par p = {0}; p.minf = NVN_MIN_FILTER_NEAREST; p.magf = NVN_MAG_FILTER_NEAREST;
+        p.ws = p.wt = p.wr = NVN_WRAP_MODE_REPEAT; p.cmp_mode = NVN_COMPARE_MODE_NONE;
+        p.cmp_func = NVN_COMPARE_FUNC_ALWAYS; p.aniso = 1.f;
+        nvn_gpu_err err = {0};
+        if (!nvn_gpu_ok(nvn_gpu_samp_create(&p, &g_query_sampler, &err))) {
+            g_query_sampler = NULL;
+            if (nvn_unimpl("gpu", "query_sampler_create", NULL) == 1 && err.why[0]) nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", err.why);
+        }
+    }
+    nvn_gpu_samp result = g_query_sampler;
+    pthread_mutex_unlock(&g_rmu); return result;
+}
+
 void rp_res_reset(void) {
     pthread_mutex_lock(&g_rmu);
     for (int i = 0; i < g_ntreg; i++) treg_drop_view(&g_treg[i]);
@@ -922,6 +938,8 @@ void rp_res_reset(void) {
     memset(g_zero, 0, sizeof g_zero); g_zero_cube_logged = 0;
     for (int i = 0; i < g_nsreg; i++) { if (g_sreg[i].s) nvn_gpu_samp_release(g_sreg[i].s); if (g_sreg[i].sn) nvn_gpu_samp_release(g_sreg[i].sn); }
     memset(g_fmt_caps, 0, sizeof g_fmt_caps);
+    if (g_query_sampler) nvn_gpu_samp_release(g_query_sampler);
+    g_query_sampler = NULL;
     free(g_treg); g_treg = NULL; g_ntreg = 0; __atomic_fetch_add(&g_treg_gen, 1, __ATOMIC_RELEASE); free(g_sreg); g_sreg = NULL; g_nsreg = 0; g_tpool_n = 0;
     // 一份存储可能同时挂在序号表（多次）和共用表里：先收集去重再放
     struct rp_tex **all = NULL; int n = 0, cap = 0;

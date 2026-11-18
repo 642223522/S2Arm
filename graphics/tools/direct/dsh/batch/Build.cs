@@ -15,6 +15,7 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -264,6 +265,7 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
               + $"{failed.Count} keys still failing; {N("unity same MSL keys")} keys with the MSL of another key took its library; {N("unity main0_u shared")} main0_u entry points compiled on main0's body (dmsh_ushare.py)");
         }
         SeFinish(); Phase("采样模拟变体");
+        VpFinish(); Phase("顶点补齐变体");
         // 待编源码（Defer / VinSrc，spill.dat）只在编批库里读，到这里已没人用：就地放掉，不叠在后面「两张表收尾 / 发布打包」的盘峰值上（v0.2.4 出包空间：怪猎崛起 827 MB）
         Say(WorkUsage()); Spill.Close();
         Summaries(res);
@@ -724,13 +726,17 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
         return 0;
     }
 
-    // ---------------- 采样模拟变体（缺口族 31：跑局见过的键预编进库，种类 51） ----------------
+    // ---------------- 采样模拟变体（缺口族 31，种类 51） ----------------
+    //   0.6.0 出包着色器全覆盖（11-17）：原先只预编跑局见过的键（se_want.tsv），没见过的要到设备首遇才现编（编好前这对绘制照旧用 main0、采样走样）。
+    //   现在库里每个键都试：FsRd 改不动的（没有要模拟的采样）不出库；se_want.tsv 只用来报覆盖（见过的里有几个出了）
     static void SeFinish()
     {
         var f = Table("se_want.tsv");
-        var want = File.Exists(f) ? File.ReadLines(f).Select(l => l.Trim()).Where(l => l.Length > 0 && !l.StartsWith('#')).ToList() : new List<string>();
+        var want = File.Exists(f) ? File.ReadLines(f).Select(l => l.Trim()).Where(l => l.Length > 0 && !l.StartsWith('#')).ToHashSet(StringComparer.Ordinal) : new HashSet<string>(StringComparer.Ordinal);
         Count("se wanted", want.Count);
-        Parallel.ForEach(InOrder(want.Where(k => MAC.Has(k + "_b.metal"))), new ParallelOptions { MaxDegreeOfParallelism = NJ * 2 }, k =>
+        var all = Keys.Where(k => MAC.Has(k + "_b.metal")).ToList();
+        Count("se tried", all.Count);
+        Parallel.ForEach(InOrder(all), new ParallelOptions { MaxDegreeOfParallelism = NJ * 2 }, k =>
         {
             string s0 = MAC.Text(k + "_b.metal"), v;
             try { v = DshCompiler.FsRd(s0); }
@@ -738,7 +744,41 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
             if (v == s0) { Count("se nothing to emulate"); return; }
             var e2 = VarLib(k, "_se", v);
             if (e2 != null) { Count("se failed"); Say($"[RED] {k}: the sampler-emulation variant does not compile ({Trunc(e2, 120)}): the device compiles it at first use"); }
-            else Count("se built");
+            else { Count("se built"); if (want.Contains(k)) Count("se wanted built"); }
+        });
+    }
+
+    // ---------------- 顶点补齐变体（0.6.0 出包着色器全覆盖，种类 54） ----------------
+    //   片元读、顶点不写的 user(locn)：原先出包只按配对表（跑局见过的顶点 × 片元对，vs_pad）补进顶点主翻译，游戏按阶段拼程序，没见过的对到设备首遇才缺，
+    //   后台现编、编好前这对的绘制跳过（graphics/nvn/host/dsh_miss.inc dm_shader_vpad，484 份诊断）。现在每个顶点着色器另出一份 <键>_vp：
+    //   补的位 = 库里全部片元着色器 user(locn) 输入的并集 − 本顶点着色器已写的，补法同 vs_pad（float4 (0,0,0,1)，DshCompiler.VsPadMask）——任一对缺的都是并集的子集，一份覆盖全部。
+    //   掩码随库带：库里多一个空函数 dm_vp_mask_<十六进制>（nvn_mtl.m vp_pack 从函数名读出、填 vp_main / vp_mask）。只在缺口对上换用它，不缺的对照旧用主翻译（不多写插值）
+    //   阶段按映射表认（包名前两字，同 job_for 的 name[:2]），不按本次翻译结果：翻译缓存全命中时结果里没有反射（第一次真包实测 0 支顶点着色器）
+    static void VpFinish()
+    {
+        var stage = Keys.Where(k => Loc.TryGetValue(k, out var l) && l.Pkg.Length >= 2 && MAC.Has(k + "_b.metal")).ToDictionary(k => k, k => Loc[k].Pkg[..2], StringComparer.Ordinal);
+        uint union = 0;
+        // 位置只认 main0 的级间接口（DshCompiler UserLocs：片元 main0_in / 顶点 main0_out，同宿主建管线时核对的那份）；全文正则会把深度 / 变换反馈等别的入口里的 user(locn) 也算进来
+        //   （第二次真包实测：顶点别处出现 locn1 被当成「已写」，运行时缺 0x2 的 96 对掩码不够）
+        static uint Bits(List<object> ls) { uint b = 0; foreach (var o in ls ?? new()) { long l = Convert.ToInt64(o); if (l >= 0 && l < 32) b |= 1u << (int)l; } return b; }
+        foreach (var (k, st) in stage)
+            if (st == "ps" && MAC.Text(k + "_b.metal") is { } t) union |= Bits(DshCompiler.UserLocs(t, "ps"));
+        var vs = stage.Where(x => x.Value == "vs").Select(x => x.Key).Where(k => MAC.Has(k + "_b.metal")).ToList();
+        Count("vp vertex shaders", vs.Count);
+        if (union == 0) return;
+        Parallel.ForEach(InOrder(vs), new ParallelOptions { MaxDegreeOfParallelism = NJ * 2 }, k =>
+        {
+            string s0 = MAC.Text(k + "_b.metal");
+            uint have = Bits(DshCompiler.UserLocs(s0, "vs"));
+            uint mask = union & ~have;
+            if (mask == 0) { Count("vp nothing to pad"); return; }
+            var (v, added) = DshCompiler.VsPadMask(s0, mask);
+            if (added.Count == 0) { Count("vp nothing to pad"); return; }
+            uint got = 0; foreach (long l in added) got |= 1u << (int)l;
+            v += $"\nvertex float4 dm_vp_mask_{got:x}() {{ return float4(0.0); }}\n";   // 掩码随库带：宿主从函数名读（nvn_mtl.m vp_pack）
+            var e = VarLib(k, "_vp", v);
+            if (e != null) { Count("vp failed"); Say($"[RED] {k}: the padded vertex variant (user(locn) mask {got:#x}) does not compile ({Trunc(e, 120)}): the device makes one per pair at first use"); }
+            else { Count("vp built"); Count("vp padded outputs", added.Count); }
         });
     }
 
@@ -751,7 +791,8 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
         Say($"ast mem order kept: {N("astmem kept")} in {N("astmem keys")} keys (counted {N("astmem counted")} keys, uncounted {N("astmem uncounted")})");
         Say($"variant cache{(BfOn ? "" : " (readable-tile _bf off, DMSH_BF unset)")}: generated {N("bf generated")}");
         Say($"typed-output variants (ft_finish, fout_want.tsv {FoutWant.Values.Sum(s => s.Count)} requests): {N("ft entries")} entry points in {N("ft libs")} libraries, {N("ft covered")} covered by main0_u or nothing integer after the colour filter, {N("ft failed")} libraries failed");
-        Say($"sampler-emulation variants (<key>_se, se_want.tsv {N("se wanted")} keys): built {N("se built")}, nothing to emulate {N("se nothing to emulate")}, failed {N("se failed")}");
+        Say($"sampler-emulation variants (<key>_se, every key tried {N("se tried")}): built {N("se built")} (of se_want.tsv's {N("se wanted")} keys {N("se wanted built")}), nothing to emulate {N("se nothing to emulate")}, failed {N("se failed")}");
+        Say($"padded vertex variants (<key>_vp, union of every pixel shader's user(locn) inputs): {N("vp vertex shaders")} vertex shaders, built {N("vp built")} ({N("vp padded outputs")} outputs added), nothing to pad {N("vp nothing to pad")}, failed {N("vp failed")}");
         Say($"shadow-input libraries (<key>_bv, S2A.Dsh DshVin): {N("vin generated")} generated ({N("vin batches")} batches), {N("vin failed")} failed to compile, {N("vin not generated")} not generated; {N("vin inputs")} integer inputs shadowed, {N("vin float only")} of them with no other-sign shadow (attribute indices ran out)");
         Say(Metal.Summary());
         var ok = res.Where(r => r.St == "ok" && FinFlags.ContainsKey(r.Key)).Select(r => FinFlags[r.Key]).ToList();

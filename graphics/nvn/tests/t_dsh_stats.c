@@ -94,6 +94,17 @@ static void scenario(int n) {
         uint8_t *c2 = m + pg - 0x900; memcpy(c2, ctl, 0x900); uint32_t big = 0x2000; memcpy(c2 + 0x20, &big, 4);
         dm_shader_miss(key, (uint64_t)(uintptr_t)code, c2);
     }
+    if (n == 50) {   // #fb7116：控制段 +0x20 自报 0x302 字节（< 代码长字段 +0x704 的位置），+0x704 处是段外的数。
+        //   期望（手算）：0x302 < 0x708 → 认不出阶段 → 跳过 1、不调编译器。修前：登记拷 0x302 字节、首遇从拷贝 +0x704 读段外的数当代码长 → 编译器被调（成功 1）
+        uint32_t small = 0x302; memcpy(ctl + 0x20, &small, 4); call(); check(compiler_calls == 0);
+    }
+    if (n == 51) {   // 登记后代码区被解除映射（懒清零改不可访问）：代码区放在一页末尾，登记时可读，首遇前 mprotect 成不可访问。
+        //   期望（手算）：首遇时代码区不是整段可读 → 放弃、跳过 1、不调编译器、不崩。修前：照样把这段交给翻译器（真翻译器读到就崩；替身不读 → 成功 1）
+        long pg = sysconf(_SC_PAGESIZE); uint8_t *m = mmap(NULL, (size_t)pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0); check(m != MAP_FAILED);
+        uint8_t *c2 = m + pg - sizeof code; memcpy(c2, code, sizeof code);
+        dm_shader_miss(key, (uint64_t)(uintptr_t)c2, ctl); check(mprotect(m, (size_t)pg, PROT_NONE) == 0);
+        dm_shader_miss_late("0000000000000000", (uint64_t)(uintptr_t)c2, NULL); check(compiler_calls == 0);
+    }
     if (n == 1) call();
     if (n == 2) { compile_rc = 7; call(); }
     if (n == 43) {   // #442：翻译器报错时，控制段 / 代码区自动存进兜底目录 <键>.fail.ctl / .fail.code（不开 DM_NVN_SHDUMP），内容逐字节等于交给翻译器的那份
@@ -326,10 +337,12 @@ int main(void) {
         "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 46 包内 mesh：仅在 Metal 拒绝时从 SetShaders 快照按需现编 MSL
         "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 47 包内 Switch 1 顶点：SetShaders 快照 → 控制段过期后照样出补齐变体
         "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 48 负对照：没留快照 → 做不了
-        "成功 0、失败 0、跳过 1、复用上局 0、输出类型变体 0（正常收局）"    // 49 控制段自报长度越过映射末尾：放弃这一份、不崩（#354a81）
+        "成功 0、失败 0、跳过 1、复用上局 0、输出类型变体 0（正常收局）",   // 49 控制段自报长度越过映射末尾：放弃这一份、不崩（#354a81）
+        "成功 0、失败 0、跳过 1、复用上局 0、输出类型变体 0（正常收局）",   // 50 控制段短于代码长字段位置：认不出、不现编（#fb7116）
+        "成功 0、失败 0、跳过 1、复用上局 0、输出类型变体 0（正常收局）"    // 51 登记后代码区被解除映射：首遇放弃、不崩
     };
     int bad = 0;
-    for (int n = 0; n < 50; n++) {
+    for (int n = 0; n < 52; n++) {
         int fd[2]; pipe(fd); pid_t p = fork();
         if (!p) { close(fd[0]); dup2(fd[1], 1); close(fd[1]); scenario(n); }
         close(fd[1]); char buf[1024]; size_t at = 0; ssize_t got;
@@ -354,5 +367,5 @@ int main(void) {
         printf("%s 着色器覆盖计数文件：新建 %llu（期望 2）、app %s（期望 0.6.0）、再加 1 → %llu（期望 3）、别的形状返回 %d（期望 -1）且不写文件 %d（期望 1）\n", ok ? "✓" : "✗", c1, app1, c2, r3, none);
         bad += !ok; snprintf(mk, sizeof mk, "rm -rf '%s'", t); system(mk);
     }
-    printf("%s t_dsh_stats：50 场景，%d 处不符\n", bad ? "✗" : "✓", bad); return bad != 0;
+    printf("%s t_dsh_stats：52 场景，%d 处不符\n", bad ? "✗" : "✓", bad); return bad != 0;
 }

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Windows 签名装机交给玩家自己装的 Impactor（11-04 维护者：「让玩家自己装 impactor，做好引导和体验」）：启动器与命令行共用的这一层。
-我们不自己做签名、不改苹果组件；11-07 起发版启动器随包带官方原版 Impactor + plumesign（BUNDLED，不改不重签），玩家零跳转；源码树 / 命令行仍找玩家自己放的。
+我们不自己做签名、不改苹果组件；11-07 起发版启动器随包带 Impactor + plumesign（BUNDLED），玩家零跳转；源码树 / 命令行仍找玩家自己放的。
+11-18 起随包的是自编版：上游 v2.7.3 源码 + launchers/windows/third_party/impactor/patches/（tools/plumesign_build.py 编），
+只改 anisette 服务器的选择（默认服务器被 Apple 以 -23782 拒绝的账号才换备用服务器，见 patches/README.md）。
 这一层：找到 / 核对 Impactor、出包后在资源管理器里选中 ipa、分步引导、把 Impactor 报错翻成共用错误码。
 
   python -m pack.jobs.impactor status [--online]   装没装、版本对不对（--online 再问 GitHub 最新版）；一行 JSON
@@ -20,15 +22,22 @@ TESTED = '2.7.3'
 RELEASE_PAGE = f'https://github.com/claration/impactor/releases/tag/v{TESTED}'
 LATEST_API = 'https://api.github.com/repos/claration/impactor/releases/latest'
 PRODUCT = 'plumeimpactor'
-# 随 Windows 启动器下发的原版 Impactor 与 plumesign（11-07 维护者：「能不能随咱们安装包下发，而不是让玩家再去跳转一次下载」，取代 11-04「不内置」）：
-#   官方发布页原文件、不改不重签，版本钉 TESTED，SHA-256 与 GitHub 发布页 digest 一致（11-07 核）；launchers/windows/bundle_win.py 打包时核哈希、不符拒打。
-#   放在启动器目录（作业请求 resources）下 BUNDLE_DIR；许可（MIT + 内嵌 apple-codesign 的 MPL-2.0）与来源说明同目录。升级走我们发版
+# 随 Windows 启动器下发的 Impactor 与 plumesign（11-07 维护者：「能不能随咱们安装包下发，而不是让玩家再去跳转一次下载」，取代 11-04「不内置」）：
+#   11-18 起是自编版（OWN_BUILD）：上游 v{TESTED} + patches/，tools/plumesign_build.py 在 Windows 实机按钉死的 Rust 版本编（可重复出同样的产物），
+#   SHA-256 钉在 BUNDLED；launchers/windows/bundle_win.py 打包时从自编产物缓存取、核哈希、不符拒打（不再从官方发布页下：官方原版没有补丁）。
+#   放在启动器目录（作业请求 resources）下 BUNDLE_DIR；许可（MIT + 内嵌 apple-codesign 的 MPL-2.0）、补丁与来源说明同目录。升级走我们发版
 BUNDLE_DIR = 'ThirdParty/Impactor'
 IMPACTOR_EXE = 'Impactor-windows-x86_64-portable.exe'
 PLUMESIGN_EXE = 'plumesign-windows-x86_64.exe'
-BUNDLED = {IMPACTOR_EXE: 'ebf939f8c8e74b4cd693d2f9871db4b8304f12396181fdd17404a127427b9923',
-           PLUMESIGN_EXE: '94664749fbbceb9a16bf89583f473dafb9b35c8d058a9d8665dc963b3453c6fc'}
-DOWNLOAD = f'https://github.com/claration/impactor/releases/download/v{TESTED}/'
+BUNDLED = {IMPACTOR_EXE: '1748e5595cc8750fb34cf48d7265d65d3cd6d07dced23a4595a0c5b5f028ab23',   # 自编 v2.7.3-s2a1（Windows 实机，rustc 1.99.1；两个工作目录各编一次逐字节相同）
+           PLUMESIGN_EXE: '84ce275398d2fa008eadbd11b2a6da2ffe012d18e1dd874cf1814bddc9f2c2d1'}
+# Mac 启动器随包同版 plumesign（0.6.0 通用壳：Mac 的 Apple ID 改用它登录、签名，自管私钥，免费团队也能签程序库）。
+#   自编 v2.7.3-s2a1 通用版（Mac 实机，rustc 1.94.0，固定目标目录两次编逐字节相同）；Mac 发版要公证，随包时由 sign_release.sh 用我们的开发者身份重签外层签名，内容不改
+PLUMESIGN_MAC = 'plumesign-macos-universal'
+BUNDLED_MAC = {PLUMESIGN_MAC: 'd3ca590e1e92a1e7416f1c27c1ec6749c4ad05389c9c8724faaa53bbf63ce511'}
+PLUME_HOME_ENV = 'S2A_PLUME_HOME'   # 设了就是 plumesign 的数据目录（XDG_CONFIG_HOME，下面 PlumeImpactor/）：Mac 通用壳放启动器私有目录，不碰玩家 ~/.config
+OWN_BUILD = 's2a1'   # 自编版号（补丁或 Rust 版本变了加一，产物缓存目录 v{TESTED}-{OWN_BUILD}）
+SOURCE_TREE = f'https://github.com/claration/impactor/tree/v{TESTED}'
 
 
 def bundled(resources):
@@ -36,18 +45,34 @@ def bundled(resources):
     if not resources: return None
     d = os.path.join(resources, *BUNDLE_DIR.split('/'))
     got = {k: os.path.join(d, n) for k, n in (('impactor', IMPACTOR_EXE), ('plumesign', PLUMESIGN_EXE))}
-    return got if all(os.path.isfile(v) for v in got.values()) else {}
+    if all(os.path.isfile(v) for v in got.values()): return got
+    mac = os.path.join(d, PLUMESIGN_MAC)   # Mac 启动器只带 plumesign（0.6.0 通用壳）
+    return {'plumesign': mac} if os.path.isfile(mac) else {}
+
+
+def data_base(appdata=None):
+    """plumesign 数据目录的上一级（同版 v2.7.2 apps/plumesign/src/main.rs get_data_path：Windows %APPDATA%，别的系统 $XDG_CONFIG_HOME 或 ~/.config）；
+    S2A_PLUME_HOME 设了就用它（作业起 plumesign 时同样把它给 XDG_CONFIG_HOME，见 install_win.plumesign_env）"""
+    return (appdata or os.environ.get(PLUME_HOME_ENV) or os.environ.get('APPDATA') or os.environ.get('XDG_CONFIG_HOME')
+            or os.path.join(os.path.expanduser('~'), '.config'))
+
+
+def plume_env():
+    """起 plumesign 的环境（同 install_win.plumesign_env）：日志级别固定 info；S2A_PLUME_HOME 设了就给 XDG_CONFIG_HOME"""
+    env = dict(os.environ, RUST_LOG='info')
+    if os.environ.get(PLUME_HOME_ENV): env['XDG_CONFIG_HOME'] = os.environ[PLUME_HOME_ENV]
+    return env
 
 
 def logged_in(appdata=None):
     """Impactor / plumesign 共用的账号存档（%APPDATA%\\PlumeImpactor\\accounts.json，Impactor 源码 plume_store AccountStore）里有没有 Apple ID"""
-    base = appdata or os.environ.get('APPDATA') or os.path.join(os.path.expanduser('~'), '.config')
+    base = data_base(appdata)
     try:
         with open(os.path.join(base, 'PlumeImpactor', 'accounts.json'), encoding='utf-8') as f: return bool(json.load(f).get('accounts'))
     except (OSError, ValueError, AttributeError): return False
 
 def _store(appdata=None):
-    base = appdata or os.environ.get('APPDATA') or os.path.join(os.path.expanduser('~'), '.config')
+    base = data_base(appdata)
     try:
         with open(os.path.join(base, 'PlumeImpactor', 'accounts.json'), encoding='utf-8') as f: store = json.load(f)
         return store if isinstance(store, dict) and isinstance(store.get('accounts') or {}, dict) else {}
@@ -69,14 +94,14 @@ def select_only_account(exe, appdata=None):
     → 选上的邮箱；不需要 / 选不上 → None（照旧往下签，plumesign 失败按原文归码）"""
     left = unselected_accounts(appdata)
     if len(left) != 1 or not exe: return None
-    try: subprocess.run([exe, 'account', 'switch', left[0]], capture_output=True, timeout=60, env=dict(os.environ, RUST_LOG='info'))
+    try: subprocess.run([exe, 'account', 'switch', left[0]], capture_output=True, timeout=60, env=plume_env())
     except (OSError, subprocess.SubprocessError): return None
     return left[0] if not unselected_accounts(appdata) else None
 
 
 def selected_team(appdata=None):
     """账号存档里当前选中账号的团队号（accounts.json 的 selected_account → accounts[账号].team_id）；读不到 → None"""
-    base = appdata or os.environ.get('APPDATA') or os.path.join(os.path.expanduser('~'), '.config')
+    base = data_base(appdata)
     try:
         with open(os.path.join(base, 'PlumeImpactor', 'accounts.json'), encoding='utf-8') as f: store = json.load(f)
         team = (store.get('accounts') or {}).get(store.get('selected_account') or '', {}).get('team_id')
@@ -97,8 +122,9 @@ EXPLAIN = (
     # 还没登录 / 存了账号却没选中（D-ZM37 plumesign 原文「No account selected. Please login first」）：原先归「登录已过期」，
     #   对从没登录成功过的玩家措辞不对（#edc5f5）。添加即选中（v2.7.2 accounts_add 设 selected_account）；只存了一个的在签名前已替玩家选上（select_only_account）
     (r'no account selected|please log ?in first|not logged in', 'apple_not_signed_in'),
-    (r'-2097\d|-20101|incorrect|entered incorrectly', 'apple_id_wrong'),
+    # 验证码不对排在「incorrect」前：苹果这句是「Incorrect verification code」（-21669），原先先命中账号密码那条，玩家被叫去重输密码
     (r'-21669|verification code|two.?factor|2fa', 'two_factor_wrong'),
+    (r'-2097\d|-20101|incorrect|entered incorrectly', 'apple_id_wrong'),
     (r'unknown error occured while reading the file|unknown error occurred while reading the file|zip64', 'ipa_needs_repack'),
     (r'name for this app is invalid', 'ipa_needs_repack'),
     # 免费 Apple ID 两个上限分开报（依据同 pack/jobs/install.py SIGN_ERRORS 注释）：说「App ID」/ 9120 的是 7 天 10 个包名额度，
