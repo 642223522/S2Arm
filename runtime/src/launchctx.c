@@ -486,6 +486,15 @@ const char *s2a_launch_ctx_select(const char *gid) {
         if (ks < 0) waive("游戏 %s 的程序包核不了：%s", gid, w);
         int (*open_pk)(const char *, void **, char *, size_t) = (int (*)(const char *, void **, char *, size_t))dlsym(RTLD_DEFAULT, "s2a_imgpack_open");
         void *pk = NULL; int rc = c.from_program && open_pk ? open_pk(c.images, &pk, w, sizeof w) : 0;   // 只对程序包里的款：App 包里的款（0.6.0 前玩家手上全是这种）照旧进局后由装载器打开，行为同改造前
+        if (rc == 3) {   // 注册签名失败（证书和手机身份相同、但签名格式老，如 Windows plumesign 签的程序库）：手机上有身份就当场强制重签一次，签好再注册；还不行才回游戏库
+            int (*rf)(const char *, const char *, const char *, char *, char *, size_t, char *, size_t) =
+                (int (*)(const char *, const char *, const char *, char *, char *, size_t, char *, size_t))dlsym(RTLD_DEFAULT, "s2a_program_resign_force");
+            char rw[300] = "";
+            if (rf && rf(getenv("HOME"), c.game_data, gid, c.module_dir, c.images, sizeof c.images, rw, sizeof rw) == 1) {
+                char w0[600]; snprintf(w0, sizeof w0, "%s", w); pk = NULL; rc = open_pk(c.images, &pk, w, sizeof w);
+                LOG("启动上下文：%s 的程序库注册签名失败（%s），已用手机上的签名身份重签 → 再注册%s", gid, w0, rc ? "仍失败" : "成功");
+            }
+        }
         if (rc == 3) { snprintf(why, sizeof why, "ios_program_resign：游戏 %s 的程序库签名本机不认（%s）：要在电脑上重新签名这款", gid, w); g_sel_kind = S2A_SELECT_NEEDS_RESIGN; r = why; goto out; }   // 3 = S2A_IMG_ESIGN（runtime/src/imgpack.h）
         if (rc) { snprintf(why, sizeof why, "游戏 %s 的程序库打不开（返回 %d）：%s", gid, rc, w); g_sel_kind = S2A_SELECT_APP_INCOMPLETE; r = why; goto out; }
     }

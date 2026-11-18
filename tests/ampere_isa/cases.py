@@ -441,6 +441,23 @@ refl('SURED.MAX / SURED.OR（9507c221c）', True,
      [MOVC(4, 0), MOVC(5, 0), MOVC(6, 0), SURED(2), SURED(6), MOVI(0, 0), MOVI(1, 0), MOVI(2, 0), MOVI(3, 0)],
      lambda msl, j: None if 'atomic_fetch_max' in msl and 'atomic_fetch_or' in msl else 'MSL 里没有图像原子 max / or', '修前只认 ADD，别的操作拒翻')
 
+# 句柄在游戏自己的 uniform 缓冲（库 3，字偏移 0x10 = 字节 0x40，避开输入用的 c[3] 前几个字）：原先 SUATOM / SURED 见非 c[2] 库就拒翻（「SUATOM handle in bank 3」，
+# 一款 Switch 2 游戏 7 支计算着色器）；SULD / SUST 早已带库号下去、宿主按 uniform 字绑图像（img_ubo / NVN_RB_IMGU，可做原子）。期望：反射有 img_ubo 槽 0（c3）字节 0x40、
+# MSL 有图像原子。SUATOM 字 2 = 0x001ee000 | 操作 << 23（= SURED 的 0x0010e000 加 Pu 81..83 = PT，同玩家那支原指令字 001ea400001ee000_20c0000100017593）
+SUATOM = lambda op, bank, h: inst(0x593, rd=(16, 7), ra=(24, 4), rb=(32, 6), h=(40, h), bank=(54, bank), dim=(61, 3), w2=(64, 0x001ee000 | op << 23))
+def img_ubo_atomic(fn):
+    def f(msl, j):
+        b = [(x.get('kind'), x.get('reg'), x.get('off')) for x in json.loads(j).get('bindings', [])]
+        return None if ('img_ubo', 0, 0x40) in b and fn in msl else f'绑定 {b}，MSL 里 {fn}：{fn in msl}'
+    return f
+refl('SUATOM.ADD 句柄在 c[3]（带库号，同 SULD / SUST）', True,
+     [MOVC(4, 0), MOVC(5, 0), MOVC(6, 0), SUATOM(0, 3, 0x10), MOVI(0, 0), MOVI(1, 0), MOVI(2, 0), MOVI(3, 0)],
+     img_ubo_atomic('atomic_fetch_add'), '修前 ASuatom 见库 3 抛「SUATOM handle in bank 3」')
+refl('SURED.OR 句柄在 c[3]（带库号，同 SULD / SUST）', True,
+     [MOVC(4, 0), MOVC(5, 0), MOVC(6, 0), inst(0x59f, ra=(24, 4), rb=(32, 6), h=(40, 0x10), bank=(54, 3), dim=(61, 3), w2=(64, 0x0010e000 | 6 << 23)),
+      MOVI(0, 0), MOVI(1, 0), MOVI(2, 0), MOVI(3, 0)],
+     img_ubo_atomic('atomic_fetch_or'), '修前 ASured 见库 3 抛「SURED handle in bank 3」')
+
 # 时之笛 d17eefaff4f0bc23（计算，真机现编报 SURED form 0310e000）那条原样：0001e2000310e000600084000400159f = SURED [R0], R4，二维（61..64 = 3），句柄 c[0] 字 0x84（0x210），
 # 字 2 = 0x0010e000 | 6 << 23（OR）。c[0] 布局按控制段：推送 0、uniform 0、storage 0、纹理 64 项（0x10..0x210）、图像 1 项 → 0x210 是图像槽 0（AMapC0 → c[2] 0x120）
 refl('SURED.OR 句柄在计算 c[0]（时之笛 d17eefaff4f0bc23 原指令字）', True,
