@@ -1392,7 +1392,7 @@ import S2ArmAppleAdapter
         let games = (1...9).map { SGradeScanGame(["id": "original-\($0)", "name": "Original game \($0)", "program": "original", "total": 1, "iphone": true, "patches": ["fps": 1]]) }
         for language in [Lang.zh, .en] {
             let code = language == .zh ? "zh-Hans" : "en"
-            let page = AnyView(SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh, busy: false,
+            let page = AnyView(SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh,
                 x: { BackendText.launcherText("sgrade.upgrade." + $0, language: code) }, upgrade: { _ in }, close: {}).frame(height: 500))
             let (host, window) = try await render(page, fixture: fixture, language: language)
             defer { window.close() }
@@ -1400,7 +1400,7 @@ import S2ArmAppleAdapter
             let list = try XCTUnwrap(scrollViews(in: host).first { $0.hasVerticalScroller })
             XCTAssertGreaterThan(list.contentView.bounds.height, 60, "游戏列表不能被压成不可见的滚动区")
             XCTAssertGreaterThan(try XCTUnwrap(list.documentView).bounds.height, 100)
-            for id in ["sgrade.upgrade.install", "sgrade.upgrade.export"] {
+            for id in ["sgrade.upgrade.here", "sgrade.upgrade.close"] {
                 let action = try XCTUnwrap(fixture.navigation.controlTargets(in: window).first { $0.id == id }, "升级操作必须始终可见")
                 XCTAssertTrue(bounds.contains(action.frame))
             }
@@ -1408,30 +1408,30 @@ import S2ArmAppleAdapter
         }
     }
 
-    /// S 级优化手动升级（11-18 维护者：不自动运行）：可升级、Mac 上能玩的款出「在 Mac 上升级」，点了交出这些款的号；
-    ///   没有 Mac 款时不出；进度环 / 进度条四种状态出图；开始按钮标题「正在升级 xx%」/ 没百分比「正在升级…」
+    /// S 级优化手动升级（11-18 维护者：不自动运行）：有可升级的款出「在电脑上升级」，交出页上全部可升级款的号；
+    ///   没有可升级的款不出；进度环 / 进度条四种状态出图；开始按钮标题「正在升级 xx%」/ 没百分比「正在升级…」
     func testSGradeManualUpgradeOnMac() async throws {
         let fixture = try SettingsFixture()
         defer { fixture.remove() }
         let games = [SGradeScanGame(["id": "alpha", "name": "Original Alpha", "program": "original", "total": 2, "patches": ["fps": 1, "widescreen": 1]]),
                      SGradeScanGame(["id": "beta", "name": "Original Beta", "program": "original", "total": 1, "patches": ["fps": 1]]),
-                     SGradeScanGame(["id": "gamma", "name": "Not on Mac", "program": "original", "total": 1, "patches": ["fps": 1]])]
+                     SGradeScanGame(["id": "gamma", "name": "Gamma", "program": "original", "total": 1, "patches": ["fps": 1]])]
         for language in [Lang.zh, .en] {
             let code = language == .zh ? "zh-Hans" : "en"
-            let body = SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh, busy: true,
-                x: { BackendText.launcherText("sgrade.upgrade." + $0, language: code) }, upgrade: { _ in }, close: {},
-                macIDs: ["alpha", "beta"], upgradeMac: { _ in })
-            XCTAssertEqual(body.macUpgrades.map(\.id), ["alpha", "beta"], "只交 Mac 上能玩的可升级款，按页面顺序")
+            let body = SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh,
+                x: { BackendText.launcherText("sgrade.upgrade." + $0, language: code) }, upgrade: { _ in }, close: {})
+            XCTAssertEqual(body.upgradeIDs, ["alpha", "beta", "gamma"], "交页上全部可升级款，按页面顺序（Mac 版与 iPhone 程序件作业层一起补）")
             let page = AnyView(body)
             let (host, window) = try await render(page, fixture: fixture, language: language)
             defer { window.close() }
-            XCTAssertNotNil(fixture.navigation.controlTargets(in: window).first { $0.id == "sgrade.upgrade.mac" }, "有 Mac 款可升级时要出「在 Mac 上升级」")
+            XCTAssertNotNil(fixture.navigation.controlTargets(in: window).first { $0.id == "sgrade.upgrade.here" }, "有可升级的款要出「在电脑上升级」")
             try snapshot(host, "sgrade-manual-page-" + language.code)
-            let none = AnyView(SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh, busy: false,
+            let noPatch = [SGradeScanGame(["id": "delta", "name": "No patch", "program": "original", "total": 0])]
+            let none = AnyView(SGradeUpgradeBody(games: noPatch, failure: nil, zh: language == .zh,
                 x: { BackendText.launcherText("sgrade.upgrade." + $0, language: code) }, upgrade: { _ in }, close: {}))
             let (host2, window2) = try await render(none, fixture: fixture, language: language)
             defer { window2.close() }
-            XCTAssertNil(fixture.navigation.controlTargets(in: window2).first { $0.id == "sgrade.upgrade.mac" }, "没有 Mac 款不出")
+            XCTAssertNil(fixture.navigation.controlTargets(in: window2).first { $0.id == "sgrade.upgrade.here" }, "没有可升级的款不出")
             _ = host2
             let txt = { (id: String) in BackendText.launcherText(id, language: code) }
             XCTAssertEqual(LauncherView.sgradeUpgradingTitle(0.379, txt), language == .zh ? "正在升级 37%" : "Upgrading 37%")
@@ -1460,14 +1460,14 @@ import S2ArmAppleAdapter
         ]
         for language in [Lang.zh, .en] {
             let code = language == .zh ? "zh-Hans" : "en"
-            let page = AnyView(SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh, busy: false,
+            let page = AnyView(SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh,
                 x: { BackendText.launcherText("sgrade.upgrade." + $0, language: code) }, upgrade: { _ in }, close: {}))
             let (host, window) = try await render(page, fixture: fixture, language: language)
             defer { window.close() }
             let bounds = window.convertToScreen(host.bounds)
             let actions = fixture.navigation.controlTargets(in: window)
-            XCTAssertEqual(actions.count, 1)
-            let button = try XCTUnwrap(actions.first)
+            XCTAssertEqual(Set(actions.map(\.id)), ["sgrade.upgrade.here", "sgrade.upgrade.close"], "可升级时页脚是「在电脑上升级」+「关闭」")
+            let button = try XCTUnwrap(actions.first { $0.id == "sgrade.upgrade.close" })   // 最右那颗量边距
             print("upgrade-footer \(language.code): bottom=\(button.frame.minY - bounds.minY), right=\(bounds.maxX - button.frame.maxX)")
             XCTAssertEqual(button.frame.minY - bounds.minY, 16, accuracy: 1, "升级弹窗应使用与设置页一致的 16 pt 底边距")
             XCTAssertEqual(bounds.maxX - button.frame.maxX, 32, accuracy: 1)
@@ -1790,7 +1790,7 @@ import S2ArmAppleAdapter
                 ("update", AnyView(UpdatePopupView(model: fixture.model, language: uiLanguage))),
                 ("messages", AnyView(MessagesPanel(model: fixture.model, language: uiLanguage))),
                 ("diagnostics", AnyView(UploadDiagnosticsSheet(model: fixture.model, gameID: nil, operations: nil, fallback: "") {})),
-                ("upgrade", AnyView(SGradeUpgradeBody(games: [], failure: nil, zh: language == .zh, busy: false,
+                ("upgrade", AnyView(SGradeUpgradeBody(games: [], failure: nil, zh: language == .zh,
                     x: { BackendText.launcherText("sgrade.upgrade." + $0, language: uiLanguage) }, upgrade: { _ in }, close: {})))
             ]
             for (name, page) in pages {

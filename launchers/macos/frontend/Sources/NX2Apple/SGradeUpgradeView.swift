@@ -1,9 +1,9 @@
 // S2Arm（不是上游文件）：「S 级优化升级」页（v0.4.0 维护者：已经导出在 Mac 游戏库 / iPhone 上的游戏不用重出包就能用上 S 级优化）。
 //   打开即查（作业 sgradeScan，pack/jobs/sgrade.py）：逐款找原始程序（存下的 → 解包缓存 → Mac 版 → 原件），按本地补丁库报这个版本能补什么；
 //   分组显示：可升级 / 没有对应补丁 / 出包时选了不打入 / 没找到原始程序（要重新出包覆盖更新）。一款都升不了 → 只给「确认」。
-//   Mac：玩家点「在 Mac 上升级」才升（11-18 维护者：不自动运行），可升级、在这台 Mac 上能玩的款排进单款升级队列后关页，
-//   进度画在各款卡片与开始按钮上（S2ArmLauncherModel+SGradeUpgrade.swift），不挡别的操作；
-//   iPhone 两个按钮都走 installUpdate（只换程序、资源包不推），sgradeUpgrade 让壳已是本版也重组。
+//   玩家点「在电脑上升级」才升（11-18 维护者：不自动运行）：页上可升级的款排进单款升级队列（sgradeUpgradeGame：Mac 版、有 iPhone
+//   程序件的也一起补）后关页，进度画在各款卡片与开始按钮上（S2ArmLauncherModel+SGradeUpgrade.swift），不挡别的操作。
+//   原先的「升级并安装 / 导出」两个按钮去掉：装到 iPhone / 导出某款只补那一款（11-18 总指挥），升级完照常装 / 导出就带上。
 import SwiftUI
 import NXCore
 import NXModel
@@ -34,12 +34,10 @@ struct SGradeUpgradeView: View {
 
     var body: some View {
         let lang = loc.lang.sharedCode
-        SGradeUpgradeBody(games: games, failure: failure.map(loc.backend), zh: loc.cjkPunctuation, busy: model.busy,   // 作业层原句按界面语言显示
+        SGradeUpgradeBody(games: games, failure: failure.map(loc.backend), zh: loc.cjkPunctuation,   // 作业层原句按界面语言显示
                           x: { BackendText.launcherText("sgrade.upgrade." + $0, language: lang) },
-                          upgrade: { mode in model.updatePhone(acceptStale: false, repack: [], language: lang, mode: mode, sgradeUpgrade: true); dismiss() },
-                          close: { dismiss() },
-                          macIDs: Set(model.games.filter(\.playable).map(\.id)),
-                          upgradeMac: { ids in model.upgradeSGrade(ids); dismiss() })
+                          upgrade: { ids in model.upgradeSGrade(ids); dismiss() },
+                          close: { dismiss() })
             .task { await scan() }
     }
 
@@ -56,13 +54,10 @@ struct SGradeUpgradeBody: View {
     let games: [SGradeScanGame]?
     let failure: String?
     let zh: Bool
-    let busy: Bool
     let x: (String) -> String
-    let upgrade: (String) -> Void
+    /// 「在电脑上升级」：交出页上可升级各款的号（排进后台单款升级队列）
+    let upgrade: ([String]) -> Void
     let close: () -> Void
-    /// 在这台 Mac 上能玩的款（游戏库 playable）：可升级的里面有这些就出「在 Mac 上升级」
-    var macIDs: Set<String> = []
-    var upgradeMac: ([String]) -> Void = { _ in }
     var sImage: NSImage = SGradeCardView.sGold
 
     var body: some View {
@@ -80,10 +75,10 @@ struct SGradeUpgradeBody: View {
             .padding(.bottom, LauncherTheme.Space.section)
             if games != nil || failure != nil {
                 LauncherSheetFooter {
-                    if failure == nil, upgrades.contains(where: \.iphone) || !macUpgrades.isEmpty {
-                        ViewThatFits(in: .horizontal) {
-                            HStack { macButton; phoneButtons; Spacer(); closeButton }
-                            VStack(alignment: .leading, spacing: 8) { macButton; phoneButtons; closeButton }
+                    if failure == nil, !upgrades.isEmpty {
+                        ViewThatFits(in: .horizontal) {   // 标题排不下就竖排，不截断
+                            HStack { upgradeButton; Spacer(); closeButton }
+                            VStack(alignment: .leading, spacing: 8) { upgradeButton; closeButton }
                         }
                     } else {
                         Spacer()
@@ -98,8 +93,8 @@ struct SGradeUpgradeBody: View {
     }
 
     private var upgrades: [SGradeScanGame] { (games ?? []).filter { $0.found && $0.total > 0 && !$0.off } }
-    /// 可升级、在这台 Mac 上能玩的款
-    var macUpgrades: [SGradeScanGame] { upgrades.filter { macIDs.contains($0.id) } }
+    /// 「在电脑上升级」交出的号（页面顺序）
+    var upgradeIDs: [String] { upgrades.map(\.id) }
 
     @ViewBuilder private var content: some View {
         if let failure {
@@ -130,9 +125,6 @@ struct SGradeUpgradeBody: View {
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 LauncherReadingPane { groups }
                 Text(x("macNote")).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                if yes.contains(where: \.iphone) {
-                    Text(x("iphoneNote")).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
             }
         } else {
             HStack(spacing: 8) { ProgressView().controlSize(.small); Text(x("scanning")).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary) }
@@ -185,25 +177,10 @@ struct SGradeUpgradeBody: View {
         }
     }
 
-    /// 「在 Mac 上升级」：排进后台单款升级队列后关页，不挡别的操作（不随主槽忙置灰）
-    @ViewBuilder private var macButton: some View {
-        if !macUpgrades.isEmpty {
-            Button(x("mac")) { upgradeMac(macUpgrades.map(\.id)) }.controllerButtonStyle(LauncherPrimaryButtonStyle())
-                .controllerID("sgrade.upgrade.mac").fixedSize()
-        }
-    }
-    /// iPhone 两个按钮走主槽（installUpdate）：主槽忙时置灰（同原先整排置灰，现只管这两个）
-    @ViewBuilder private var phoneButtons: some View {
-        if upgrades.contains(where: \.iphone) { installButton.disabled(busy); exportButton.disabled(busy) }
-    }
-
-    private var installButton: some View {
-        Button(x("install")) { upgrade("device") }.controllerButtonStyle(LauncherPrimaryButtonStyle())
-            .controllerID("sgrade.upgrade.install").controllerShortcut(.rightTrigger).fixedSize()
-    }
-    private var exportButton: some View {
-        Button(x("export")) { upgrade("export") }.controllerButtonStyle(LauncherSecondaryButtonStyle())
-            .controllerID("sgrade.upgrade.export").controllerShortcut(.rightTrigger, focused: true).fixedSize()
+    /// 「在电脑上升级」：排进后台单款升级队列后关页，不挡别的操作（不随主槽忙置灰）
+    private var upgradeButton: some View {
+        Button(x("here")) { upgrade(upgradeIDs) }.controllerButtonStyle(LauncherPrimaryButtonStyle())
+            .keyboardShortcut(.defaultAction).controllerID("sgrade.upgrade.here").controllerShortcut(.rightTrigger).fixedSize()
     }
     private var closeButton: some View {
         Button(x("close")) { close() }.controllerButtonStyle(LauncherSecondaryButtonStyle())

@@ -2,7 +2,7 @@
 //   11-14 维护者：Windows 出包和 macOS 使用者一样多，功能和体验对齐 macOS）。已经装在 iPhone 上 / 导出过的游戏不用重出包就补上 S 级优化：
 //   打开即跑 sgradeScan（pack/jobs/sgrade.py）：逐款找原始程序、按启动器内置补丁库看这个版本能补什么 → 分组：可升级 / 没有对应补丁 / 出包时选了不打入 /
 //   没找到原始程序（要重新出包覆盖更新）。一款都升不了只给「确认」；有可升级的 iPhone 款给「插上手机，一键升级并安装」「自签导出 IPA」
-//   （installUpdate + sgradeUpgrade，只换程序、资源包不推；结果页列打上 / 没打上，PhoneJobCard.cs）。Windows 不运行游戏，没有 Mac 那句「下次启动自动生效」
+//   （11-18 起：玩家点「在电脑上升级」后台逐款升级 iPhone 程序件，之后照常装 / 导出就带上）
 using System.Text.Json;
 using Avalonia;
 using Avalonia.Controls;
@@ -145,17 +145,15 @@ public sealed partial class EnvironmentWindow
             if (no.Count > 0) Group(X("no.none"), no);
             if (off.Count > 0) Group(X("off"), off);
             if (missing.Count > 0) Group(X("missing"), missing);
-            if (yes.Any(g => Bo(g, "iphone")))
+            if (yes.Count > 0)
             {
-                box.Children.Add(WrappedMuted(X("iphoneNote"), 12));
+                box.Children.Add(WrappedMuted(X("macNote"), 12));
                 var buttons = new WrapPanel { Orientation = Orientation.Horizontal };
-                // 「在电脑上升级」（11-18 维护者：玩家点了才升）：只补 iPhone 程序件、后台跑不挡别的，进度画在各款封面与主按钮上（SGradeUpgrade.cs）；之后装到 iPhone 就用上
-                var ids = yes.Where(g => Bo(g, "iphone")).Select(g => g.TryGetProperty("id", out var v) ? v.GetString() ?? "" : "").Where(x => x.Length > 0).ToList();
+                // 「在电脑上升级」（11-18 维护者：玩家点了才升）：页上可升级的款排进后台单款升级（Windows 补 iPhone 程序件），进度画在各款封面与主按钮上（SGradeUpgrade.cs）；
+                //   原先「升级并安装 / 导出」去掉：装到 iPhone / 导出某款只补那一款（11-18 总指挥），升级完照常装 / 导出就带上
+                var ids = yes.Select(g => g.TryGetProperty("id", out var v) ? v.GetString() ?? "" : "").Where(x => x.Length > 0).ToList();
                 var here = Primary(X("here"), () => { sgradeOpen = false; UpgradeSGrade(ids); Navigate("library"); });
                 AutomationId(here, "sgrade.upgrade.here"); here.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(here);
-                var install = Action("sgrade.upgrade.install", () => { sgradeOpen = false; _ = UpdatePhoneAsync(false, [], mode: "device", sgradeUpgrade: true); }, !installBusy);   // 出包在跑不挡（手机槽） install.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(install);
-                var export = Action("sgrade.upgrade.export", () => { sgradeOpen = false; _ = UpdatePhoneAsync(false, [], mode: "export", sgradeUpgrade: true); }, !installBusy);
-                export.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(export);
                 buttons.Children.Add(Action("sgrade.upgrade.close", Close));
                 box.Children.Add(buttons);
             }
