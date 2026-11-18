@@ -6410,10 +6410,14 @@ static void c68_stencil_ops(const char *dir) {
 //   ② 模板载入（LOAD）画整屏蓝：函数 NOTEQUAL、参考值 1、操作全 KEEP、深度测试关 → 只有模板是 0 的右半画上。
 // 期望（手算）：左半黑（清屏色）、右半蓝。模板面没传上去（全 0）时整屏蓝；aspectMask 同时带深度与模板时 validation 报 09103。
 // subst = 1：#398 D24 换 D32 存储（三星 Xclipse 那类设备）。深度面走换算，按字节回读本就不支持（E_UNSUPPORTED），这一臂只核模板面。
+//   设备自己的换存储掩码（vk_device 按格式能力定的）每臂结束原样还回去；设备本就没有 D24S8 附件（模拟档 no_d24）时原生臂不跑。
 extern void nvn_vk_format_set_depth_subst(uint32_t mask);
+extern uint32_t nvn_vk_format_depth_subst(void);
 static void c1581k_ds_upload_arm(const char *dir, int subst) {
-    nvn_vk_format_set_depth_subst(subst ? 1u /* NVN_VK_DEPTH_SUBST_D24S8 */ : 0u);
-    if (!(nvn_gpu_format_caps(NVN_FORMAT_DEPTH24_STENCIL8) & NVN_GPU_FMT_DEPTH)) { CHECK(0, "C1581K 设备没有 D24S8 深度格式"); nvn_vk_format_set_depth_subst(0); return; }
+    const uint32_t dev_mask = nvn_vk_format_depth_subst();
+    if (!subst && (dev_mask & 1u /* NVN_VK_DEPTH_SUBST_D24S8 */)) { printf("C1581K 原生 D24S8 臂：设备没有 D24S8 附件、按 D32 存储，跳过（换存储臂照跑）\n"); return; }
+    nvn_vk_format_set_depth_subst(subst ? (dev_mask | 1u) : dev_mask);
+    if (!(nvn_gpu_format_caps(NVN_FORMAT_DEPTH24_STENCIL8) & NVN_GPU_FMT_DEPTH)) { CHECK(0, "C1581K 设备没有 D24S8 深度格式"); nvn_vk_format_set_depth_subst(dev_mask); return; }
     nvn_gpu_shader vs = NULL, fs = NULL; void *vm = NULL, *fm = NULL;
     if (!load_shader_pair(dir, "tri3.vert", "solid_blue.frag", NULL, NULL, &vs, &fs, &vm, &fm)) { CHECK(0, "C1581K 读不到 solid_blue"); return; }
     nvn_gpu_pipe_desc pd;
@@ -6470,7 +6474,7 @@ static void c1581k_ds_upload_arm(const char *dir, int subst) {
     nvn_gpu_tex_release(out); nvn_gpu_tex_release(ds);
     nvn_gpu_buf_release(vb, NULL, NULL); nvn_gpu_buf_release(rb, NULL, NULL); nvn_gpu_buf_release(rbd, NULL, NULL);
     nvn_gpu_shader_release(vs); nvn_gpu_shader_release(fs); free(vm); free(fm);
-    nvn_vk_format_set_depth_subst(0);
+    nvn_vk_format_set_depth_subst(dev_mask);
 }
 static void c1581k_ds_upload(const char *dir) { c1581k_ds_upload_arm(dir, 0); c1581k_ds_upload_arm(dir, 1); }
 
