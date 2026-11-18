@@ -23,7 +23,7 @@ from core import Failure  # noqa: E402
 
 PASSWORD = "Pw-Unit-7f3a9c"   # 测试密码：不许出现在日志、作业记录、子进程参数 / 环境里
 ACCOUNT = "player@example.com"
-TEAM = "FAKETEAM01"
+TEAM = "FAKETEAMAB"
 
 FAKE = textwrap.dedent('''\
     import json, os, sys
@@ -45,7 +45,7 @@ FAKE = textwrap.dedent('''\
         print("Error: -21669 Incorrect verification code"); sys.exit(1)
     home = os.path.join(os.environ["XDG_CONFIG_HOME"], "PlumeImpactor"); os.makedirs(home, exist_ok=True)
     user = sys.argv[sys.argv.index("-u") + 1]
-    json.dump(dict(selected_account=user, accounts={user: dict(email=user, first_name="Tester", adsid="x", xcode_gs_token="y", team_id="FAKETEAM01")}),
+    json.dump(dict(selected_account=user, accounts={user: dict(email=user, first_name="Tester", adsid="x", xcode_gs_token="y", team_id="FAKETEAMAB")}),
               open(os.path.join(home, "accounts.json"), "w"))
     print("[INFO plumesign::commands::account] Successfully logged in and account saved.")
 ''')
