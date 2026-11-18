@@ -2724,7 +2724,7 @@ def put_game(c, gid, ph, steps=True, others=None, skipped=()):
     extra = dict(unpackPending=ph.pending) if ph.pending else {}
     if img: extra["openToFinish"] = True   # 两端成功页写「已传到 iPhone，打开 S2Arm 会自动完成安装」（机上解开由 App 打开时游戏库完成）
     return dict(outputPath=str(layout.phone_ipa(c)), bundleId=ph.bid, games=games, packFiles=files, packBytes=size, **ph.info, **extra,
-                sgrade=patches_results(c))   # 这次补进 S 级优化的各款：打上 / 没打上（升级结果页列，11-14）
+                shellId=sid, sgrade=patches_results(c))   # 这次补进 S 级优化的各款：打上 / 没打上（升级结果页列，11-14）
 
 
 def program_root(pack_root):
@@ -3563,7 +3563,7 @@ def _update_phone(c):
         raise Failure("手机上的游戏都要按新版重新出包，这次没法只更新 S2Arm（更新后一款都打不开）。可以先给它们各「打 iPhone 包」，再点「装到 iPhone」，"
                       "游戏和 S2Arm 会一起换成新版；存档和资源都留在手机上。「只更新 S2Arm、暂不带游戏」下一版开放。", code="container_stale", internal=" ".join(stale))
     r = put_game(c, None, ph, others=keep, skipped=stale)
-    return dict(r, updated=True, fromShell=st["fromShell"], toShell=sid, skipped=stale)
+    return dict(r, updated=True, fromShell=st["fromShell"], toShell=r.get("shellId") or sid, skipped=stale)   # 实际组进 ipa 的壳号（ipa.built_shell），不是树的
 
 
 def install(c):

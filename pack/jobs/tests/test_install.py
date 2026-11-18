@@ -1480,6 +1480,27 @@ class AssembleTests(unittest.TestCase):
         self.assertEqual((rec["shellId"], rec["games"]), ("SID2", {A: dict(pack="pa")}))
         self.assertEqual(rec["staleAgreed"], {"SID2": [B]})   # #479：同意不带乙记在设备记录（按壳号）
 
+    def test_update_phone_reports_shell_actually_assembled(self):
+        """开发请求给了 shellDir（壳 manifest 写 SIDX），本树算出来是 SID2：组进 ipa 的是 SIDX——toShell、设备记录、装机产物都报 SIDX，不报树的 SID2
+        （11-17：toShell 报树的壳号、手机上装的却是请求给的旧壳，排查方向错了约 5 小时）"""
+        import json as _json
+        _, pushed, signed = self._update(sid="SIDX", acceptStale=True)
+        (self.c.private / "shell" / "manifest.json").write_text(_json.dumps(dict(details=dict(shellId="SIDX"))))
+        r = install.update_phone(self.c)
+        self.assertEqual((r["fromShell"], r["toShell"]), ("SID1", "SIDX"))
+        self.assertEqual(layout.load_device(self.c, "dev1")["shellId"], "SIDX")
+        self.assertEqual(install_ipa_games(layout.phone_ipa(self.c))[1], "SIDX")
+
+    def test_built_shell_reads_manifest_falls_back_to_tree(self):
+        import json as _json
+        import ipa as packer
+        shell = self.c.private / "shellx"; shell.mkdir()
+        with um.patch.object(packer, "current_shell_id", return_value="TREE"), um.patch.object(packer, "container_shell", return_value=shell):
+            (shell / "manifest.json").write_text(_json.dumps(dict(details=dict(shellId="OLD"))))
+            self.assertEqual(packer.built_shell(self.c), (shell, "OLD"))
+            (shell / "manifest.json").write_text("{}")
+            self.assertEqual(packer.built_shell(self.c), (shell, "TREE"), "manifest 没写壳号才退回树的")
+
     def test_update_phone_agreed_before_not_asked_again(self):
         """#479：这台手机在本版壳 SID2 上已同意过不带乙（staleAgreed）→ 不带 acceptStale 也不再问，照只带甲换壳；换了壳号的旧同意不算"""
         A, B = self.A, self.B
