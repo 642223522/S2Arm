@@ -77,7 +77,8 @@ class IntelPackagingConfigTest(unittest.TestCase):
         text = (ROOT / "pack/shell_build.sh").read_text()
         self.assertIn('uname -m', text)
         self.assertIn('x86_64', text)
-        self.assertIn('S2A_SHELLUI=0', text)
+        self.assertIn('SHELLUI=0', text)
+        self.assertIn('S2A_SHELLUI:-', text)
 
     def test_runtime_versions_probe_covers_every_pin(self):
         pins = [line.split('==')[0] for line in (ROOT / "launchers/macos/requirements-runtime.txt").read_text().splitlines()
