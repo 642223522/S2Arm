@@ -41,6 +41,7 @@ void s2a_fps_start(const char *);    // runtime/src/fps.c
 void s2a_ql_boot_mode(int docked);   // runtime/src/qladder_host.c
 unsigned s2a_unresolved_count(void);
 uint64_t s2a_mem_init(const char *);
+int s2a_npdm_ounce(const char *);   // runtime/src/svc_mem.c：装模块前认 Switch 2（1 / 0，读不到 −1）
 void *guest_sym(const char *);
 #if defined(__ANDROID__)
 // 同一 DSO 的私有 os.c 接缝，不扩展对外 native ABI。
@@ -251,6 +252,13 @@ static int run_common(const struct s2a_android_runtime_request *r,
         else if (stall < 0) fprintf(stderr, "[s2a] 【红】停帧救场标记在，写 S2A_FPS60=0 失败（errno=%d），本局帧率补丁照清单\n", -stall);
     }
     s2a_caps_apply(r->services.game_data_dir);
+    char npdm[1100];
+    int n = r->npdm_path ? snprintf(npdm, sizeof npdm, "%s", r->npdm_path) :
+        snprintf(npdm, sizeof npdm, "%s/main.npdm", r->module_dir);
+    if (n < 0 || (size_t)n >= sizeof npdm) return failed(S2A_RUNTIME_ARGUMENT, 0, "module path too long");
+    // 重定位前先认出 Switch 2：直连的 Switch 2 SDK 接管（direct_session.c s2a_direct_lookup → nvn2.c nvn2_on）在重定位时问这个标志；
+    //   苹果侧模块装载经 s2a_mem_mod_base 读过 NPDM，APK 装载不经那条路。读不到（−1）不拦：照 Switch 1 往下走，s2a_mem_init 读 NPDM 失败会自己报。
+    if (s2a_npdm_ounce(npdm) < 0) fprintf(stderr, "[s2a] 装模块前读不到 NPDM（%s），Switch 2 SDK 接管本局不启用，由 s2a_mem_init 再读\n", npdm);
     if (r->module_source) {
         s2a_nro_table_load(r->services.game_data_dir);
         load_modules_from_source(r->module_source, names, (int)count);
@@ -273,10 +281,6 @@ static int run_common(const struct s2a_android_runtime_request *r,
             frozen && frozen->reason[0] ? frozen->reason : "unrecorded");
         return failed(S2A_RUNTIME_DIRECT, S2A_DIRECT_RES_UNSUPPORTED, detail);
     }
-    char npdm[1100];
-    int n = r->npdm_path ? snprintf(npdm, sizeof npdm, "%s", r->npdm_path) :
-        snprintf(npdm, sizeof npdm, "%s/main.npdm", r->module_dir);
-    if (n < 0 || (size_t)n >= sizeof npdm) return failed(S2A_RUNTIME_ARGUMENT, 0, "module path too long");
     uint64_t stack = s2a_mem_init(npdm);
     if (!stack || (stack & 15) || s2a_program_id() != r->program_id)
         return failed(S2A_RUNTIME_MEMORY, 0, "native layout or program identity mismatch");

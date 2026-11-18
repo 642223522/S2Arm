@@ -12,7 +12,7 @@ set -euo pipefail
 : "${OHOS_IMAGE_SHA256:=5af7384040ae090f01e559d09564caeb4db2c292fcc286f256293ec9994ddab7}"
 : "${HVIGOR_VERSION:=6.26.20}"
 : "${HVIGOR_REGISTRY:=https://repo.harmonyos.com/npm/}"
-: "${HDC_PORT:=5555}" "${EMU_MEM_MB:=6144}" "${EMU_SMP:=4}"
+: "${HDC_PORT:=5555}" "${EMU_MEM_MB:=10240}" "${EMU_SMP:=4}"
 SDK_ROOT="${OHOS_EMU_HOME}/sdk"
 SDK_DIR="${SDK_ROOT}/${OHOS_SDK_API}"
 IMAGES="${OHOS_EMU_HOME}/image/openharmony-qemu-arm64-arm64_virt-phone/images"
