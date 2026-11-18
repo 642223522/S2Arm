@@ -1729,6 +1729,7 @@
       {"id": "sgrade.upgrade.iphoneNote", "zh-Hans": "只换程序，手机上的游戏资源和存档都不动；自签导出请用原来的包名签名", "en": "Replaces only the app while keeping iPhone game data and saves; use the same bundle ID when self-signing"},
       {"id": "sgrade.upgrade.ok", "zh-Hans": "确认", "en": "OK"},
       {"id": "sgrade.upgrade.close", "zh-Hans": "关闭", "en": "Close"},
+      {"id": "sgrade.upgrade.here", "zh-Hans": "在电脑上升级", "en": "Upgrade on this computer"},
       {"id": "sgrade.upgrade.mac", "zh-Hans": "在 Mac 上升级", "en": "Upgrade on Mac"},
       {"id": "sgrade.upgrade.incomplete", "zh-Hans": "升级未完成，点 S 级优化继续", "en": "Upgrade didn’t finish. Click S-grade upgrade to continue."},
       {"id": "sgrade.upgrading", "zh-Hans": "正在升级 {0}%", "en": "Upgrading {0}%"},

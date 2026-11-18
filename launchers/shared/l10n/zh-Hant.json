@@ -981,6 +981,7 @@
   "sgrade.upgrade.iphoneNote": "只換程式，手機上的遊戲資源和存檔都不動；自簽匯出請用原來的包名簽名。",
   "sgrade.upgrade.ok": "確認",
   "sgrade.upgrade.close": "關閉",
+  "sgrade.upgrade.here": "在電腦上升級",
   "sgrade.upgrade.mac": "在 Mac 上升級",
   "sgrade.upgrade.incomplete": "升級未完成，點 S 級優化繼續",
   "sgrade.upgrading": "正在升級 {0}%",

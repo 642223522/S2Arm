@@ -969,6 +969,7 @@
   "sgrade.upgrade.iphoneNote": "Solo se reemplaza la aplicación; los datos del juego y las partidas guardadas permanecen en el iPhone. Al autofirmar, mantén el mismo bundle ID.",
   "sgrade.upgrade.ok": "Entendido",
   "sgrade.upgrade.close": "Cerrar",
+  "sgrade.upgrade.here": "Mejorar en este ordenador",
   "sgrade.upgrade.mac": "Mejorar en Mac",
   "sgrade.upgrade.incomplete": "La mejora no terminó. Haz clic en Mejora de grado S para continuar.",
   "sgrade.upgrading": "Mejorando {0} %",

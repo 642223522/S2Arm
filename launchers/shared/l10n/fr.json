@@ -969,6 +969,7 @@
   "sgrade.upgrade.iphoneNote": "Seule l'application est remplacée ; les données de jeu et les sauvegardes sur l'iPhone sont conservées. Pour l'auto-signature, utilisez le même bundle ID.",
   "sgrade.upgrade.ok": "OK",
   "sgrade.upgrade.close": "Fermer",
+  "sgrade.upgrade.here": "Mettre à niveau sur cet ordinateur",
   "sgrade.upgrade.mac": "Mettre à niveau sur Mac",
   "sgrade.upgrade.incomplete": "La mise à niveau n’est pas terminée. Cliquez sur Mise à niveau de rang S pour continuer.",
   "sgrade.upgrading": "Mise à niveau {0} %",

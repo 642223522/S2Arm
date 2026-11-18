@@ -149,8 +149,11 @@ public sealed partial class EnvironmentWindow
             {
                 box.Children.Add(WrappedMuted(X("iphoneNote"), 12));
                 var buttons = new WrapPanel { Orientation = Orientation.Horizontal };
-                var install = Primary(X("install"), () => { sgradeOpen = false; _ = UpdatePhoneAsync(false, [], mode: "device", sgradeUpgrade: true); }, !installBusy);   // 出包在跑不挡（手机槽）
-                AutomationId(install, "sgrade.upgrade.install"); install.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(install);
+                // 「在电脑上升级」（11-18 维护者：玩家点了才升）：只补 iPhone 程序件、后台跑不挡别的，进度画在各款封面与主按钮上（SGradeUpgrade.cs）；之后装到 iPhone 就用上
+                var ids = yes.Where(g => Bo(g, "iphone")).Select(g => g.TryGetProperty("id", out var v) ? v.GetString() ?? "" : "").Where(x => x.Length > 0).ToList();
+                var here = Primary(X("here"), () => { sgradeOpen = false; UpgradeSGrade(ids); Navigate("library"); });
+                AutomationId(here, "sgrade.upgrade.here"); here.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(here);
+                var install = Action("sgrade.upgrade.install", () => { sgradeOpen = false; _ = UpdatePhoneAsync(false, [], mode: "device", sgradeUpgrade: true); }, !installBusy);   // 出包在跑不挡（手机槽） install.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(install);
                 var export = Action("sgrade.upgrade.export", () => { sgradeOpen = false; _ = UpdatePhoneAsync(false, [], mode: "export", sgradeUpgrade: true); }, !installBusy);
                 export.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(export);
                 buttons.Children.Add(Action("sgrade.upgrade.close", Close));
