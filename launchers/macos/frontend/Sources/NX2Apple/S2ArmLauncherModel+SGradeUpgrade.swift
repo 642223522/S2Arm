@@ -18,13 +18,23 @@ extension S2ArmLauncherModel {
     /// 这款的升级进度 0–1；排队中 / 作业还没给出百分比为 nil
     func sgradeProgress(_ gameID: String) -> Double? { sgradeUpgrades[gameID] ?? nil }
 
-    /// 玩家点了升级：排进队列（已在队里 / 在升的不重复），空着就马上起
+    /// 玩家点了升级（单款或「批量升级所选」）：排进队列（已在队里 / 在升的不重复），空着就马上起；批量总数跟着加
     func upgradeSGrade(_ gameIDs: [String]) {
+        var added = 0
         for id in gameIDs where sgradeUpgrades[id] == nil {
             sgradeUpgrades[id] = .some(nil)
             sgradeQueue.append(id)
+            added += 1
         }
+        if added > 0 { sgradeBatch = (sgradeBatch?.done ?? 0, (sgradeBatch?.total ?? 0) + added) }
         pumpSGrade()
+    }
+
+    /// 中途停止：排着的不做了，在升的那款请作业停（作业层按记号保留已做完的段，没做完的那款显示「升级未完成」）；已做完的款不动
+    func stopSGrade() {
+        for id in sgradeQueue { sgradeUpgrades[id] = nil }
+        sgradeQueue.removeAll()
+        sgradeTask?.cancel()
     }
 
     /// 阶段事件 → 进度：第 i 段开始 = (i−1)/n；_bf 段没有段内百分比 → .some(nil)（画不定进度）；不是阶段事件 → nil（不改）
@@ -42,12 +52,15 @@ extension S2ArmLauncherModel {
             guard let frac = Self.sgradeStageProgress(e.fields) else { return }
             Task { @MainActor in if self?.sgradeUpgrades[id] != nil { self?.sgradeUpgrades[id] = frac } }
         }
-        Task { [weak self] in
+        sgradeTask = Task { [weak self] in
             guard let self else { return }
             do { _ = try await self.saveJob("sgradeUpgradeGame", gameID: id, events: sink) }
-            catch { self.failAction(error.localizedDescription, game: id) }   // 没成：这款上就近写原因（同其他按款操作），不弹框
+            catch where !Task.isCancelled { self.failAction(error.localizedDescription, game: id) }   // 没成：这款上就近写原因（同其他按款操作），不弹框
+            catch {}   // 玩家点了停止：不当失败
             self.sgradeUpgrades[id] = nil
             self.sgradeRunning = nil
+            self.sgradeTask = nil
+            if let b = self.sgradeBatch { self.sgradeBatch = self.sgradeQueue.isEmpty ? nil : (b.done + 1, b.total) }
             self.refresh()
             self.pumpSGrade()
         }

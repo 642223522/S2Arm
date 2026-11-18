@@ -1149,6 +1149,9 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var sgradeUpgrades: [String: Double?] = [:]
     var sgradeQueue: [String] = []
     var sgradeRunning: String?
+    /// 这一批的总进度（第几款 / 共几款，升级页上显示）；队列空了清零
+    @Published var sgradeBatch: (done: Int, total: Int)?
+    var sgradeTask: Task<Void, Never>?
     var keptLoopStarted = false, keptAutoTried: Set<String> = []   // keptModulesLoop（#8be819）
     var phoneAutoFails: [String: Int] = [:]   // 自动更新后台作业连续失败次数（notePhoneAuto，+PhoneBanner.swift）
     var phonePrepareStarted = false   // 首启在电脑侧准备 iPhone 更新只做一次（准备期间不出横幅，不能再靠横幅状态挡重复）

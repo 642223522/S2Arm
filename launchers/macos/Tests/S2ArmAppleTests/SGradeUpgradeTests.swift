@@ -16,7 +16,7 @@ import S2ArmAppleAdapter
     static let texts = ["title": "S 级优化升级", "scanning": "正在查找游戏库里各款游戏的原始程序…", "found": "找到了 {0} 款游戏的原始程序。",
                         "yes": "可以升级到 S 级优化", "no.none": "补丁库里没有", "no.version": "补丁是别的版本的", "version.mine": "（你这份是 {0}）", "cat.cheatPlain": "金手指", "off": "出包时选了不打入，不升级", "missing": "没找到原始程序，需要重新出包覆盖更新",
                         "none": "以下游戏均不支持 S 级优化。", "nothing": "很遗憾，本游戏库中没有找到可供升级的源文件，需要麻烦您重新出包覆盖更新。",
-                        "macNote": "macOS 玩家无需额外操作，下次启动游戏自动生效。", "here": "在电脑上升级",
+                        "macNote": "macOS 玩家无需额外操作，下次启动游戏自动生效。", "row": "升级", "rowBusy": "正在升级…",
                         "iphoneNote": "只换程序，手机上的游戏资源和存档都不动；自签导出请用原来的包名签名。", "ok": "确认", "close": "关闭",
                         "cat.widescreen": "满屏", "cat.fps": "帧率", "cat.cheat": "金手指 {0} 条", "cat.gfx": "画面"]
 
@@ -75,15 +75,4 @@ import S2ArmAppleAdapter
         XCTAssertGreaterThan(none.pixelsHigh, scanning.pixelsHigh)
     }
 
-    // 同一正文、同一页宽，只改变按钮标题；不能用不同语言的总高度推断按钮是否换行，正文与页宽也会影响高度。
-    func testLongButtonsStackInsteadOfTruncating() throws {
-        let games = [Self.g("A", "甲", patches: ["fps": 1])]
-        let short = try render(games, "buttons_short", lang: "en", buttonTitles: ["here": "Upgrade", "close": "Close"])
-        let long = try render(games, "buttons_long", lang: "en", buttonTitles: [
-            "here": "Upgrade every listed game on this computer in the background, one at a time",
-            "close": "Close the S-grade upgrade page and go back to the library"
-        ])
-        XCTAssertEqual(long.pixelsWide, short.pixelsWide)
-        XCTAssertGreaterThan(long.pixelsHigh, short.pixelsHigh + 40, "长按钮排不下时应竖排，不能截断到与短标题同高")
-    }
 }

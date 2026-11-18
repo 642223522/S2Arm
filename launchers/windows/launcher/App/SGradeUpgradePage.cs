@@ -111,7 +111,7 @@ public sealed partial class EnvironmentWindow
             if (C("cheat") > 0) parts.Add(X("cat.cheat").Replace("{0}", C("cheat").ToString()));
             return string.Join(language == "en" ? ", " : "、", parts);
         }
-        void Group(string title, IEnumerable<JsonElement> rows, bool gold = false, bool gains = false, Func<JsonElement, string>? detail = null)
+        void Group(string title, IEnumerable<JsonElement> rows, bool gold = false, bool gains = false, Func<JsonElement, string>? detail = null, bool rowUpgrade = false)
         {
             // 分组标题与游戏行要一眼分得开（11-14 体验走查：同号同色粗体分不清哪行是标题）：标题小一号、金 / 灰色、带款数，游戏行缩进（同 Mac SGradeUpgradeView）
             var list = rows.ToList();
@@ -121,11 +121,35 @@ public sealed partial class EnvironmentWindow
                 if (gold) t.Foreground = new SolidColorBrush(SGold);
                 box.Children.Add(t);
             }
+            if (rowUpgrade)
+            {
+                // 「全选」（11-18 维护者：可批量、有全选）：勾上 = 选中这组里没在升级的全部
+                var free = list.Select(g => S(g, "id")).Where(id => !SGradeBusy(id)).ToList();
+                var all = new CheckBox { Content = X("selectAll"), FontSize = 12, IsEnabled = free.Count > 0, IsChecked = free.Count > 0 && free.All(sgradeSelected.Contains), Margin = new Thickness(12, 0, 0, 0) };
+                all.Click += (_, _) => { if (all.IsChecked == true) sgradeSelected.UnionWith(free); else sgradeSelected.ExceptWith(free); Render(); };
+                AutomationId(all, "sgrade.upgrade.selectAll");
+                box.Children.Add(all);
+            }
             foreach (var g in list)
             {
-                var line = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(title.Length > 0 ? 12 : 0, 0, 0, 0) };
-                line.Children.Add(new TextBlock { Text = S(g, "name"), FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis });
-                if (gains || detail is not null) { var gtx = Muted(detail is not null ? detail(g) : Gains(g), 12); Grid.SetColumn(gtx, 1); line.Children.Add(gtx); }
+                var line = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto"), Margin = new Thickness(title.Length > 0 ? 12 : 0, 0, 0, 0) };
+                var nameText = new TextBlock { Text = S(g, "name"), FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
+                Grid.SetColumn(nameText, 1); line.Children.Add(nameText);
+                if (gains || detail is not null) { var gtx = Muted(detail is not null ? detail(g) : Gains(g), 12); gtx.VerticalAlignment = VerticalAlignment.Center; Grid.SetColumn(gtx, 2); line.Children.Add(gtx); }
+                if (rowUpgrade)
+                {
+                    // 每款勾选 +「升级」（11-18 维护者：点了才做；可批量）：点「升级」只升这一款，勾选后「批量升级所选」逐款排队；页面不关（SGradeUpgrade.cs）
+                    var id = S(g, "id");
+                    var busy = SGradeBusy(id);
+                    var pick = new CheckBox { IsChecked = !busy && sgradeSelected.Contains(id), IsEnabled = !busy, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) };
+                    pick.Click += (_, _) => { if (pick.IsChecked == true) sgradeSelected.Add(id); else sgradeSelected.Remove(id); Render(); };
+                    AutomationId(pick, "sgrade.upgrade.pick." + id);
+                    line.Children.Add(pick);
+                    var b = new Button { Content = X(busy ? "rowBusy" : "row"), IsEnabled = !busy, Padding = new Thickness(12, 5), Margin = new Thickness(12, 2, 0, 2), FontSize = 12.5 };
+                    b.Click += (_, _) => UpgradeSGrade([id]);
+                    AutomationId(b, "sgrade.upgrade.row." + id);
+                    Grid.SetColumn(b, 3); line.Children.Add(b);
+                }
                 box.Children.Add(line);
             }
         }
@@ -140,24 +164,30 @@ public sealed partial class EnvironmentWindow
         else
         {
             box.Children.Add(Label(X("found").Replace("{0}", found.Count.ToString()), 14));
-            Group(X("yes"), yes, gold: true, gains: true);
+            Group(X("yes"), yes, gold: true, gains: true, rowUpgrade: true);
             if (noVer.Count > 0) Group(X("no.version"), noVer, detail: Versions);
             if (no.Count > 0) Group(X("no.none"), no);
             if (off.Count > 0) Group(X("off"), off);
             if (missing.Count > 0) Group(X("missing"), missing);
-            if (yes.Count > 0)
+            box.Children.Add(WrappedMuted(X("macNote"), 12));
+            var footer = new WrapPanel { Orientation = Orientation.Horizontal };
+            if (sgradeBatch is { } batch)
             {
-                box.Children.Add(WrappedMuted(X("macNote"), 12));
-                var buttons = new WrapPanel { Orientation = Orientation.Horizontal };
-                // 「在电脑上升级」（11-18 维护者：玩家点了才升）：页上可升级的款排进后台单款升级（Windows 补 iPhone 程序件），进度画在各款封面与主按钮上（SGradeUpgrade.cs）；
-                //   原先「升级并安装 / 导出」去掉：装到 iPhone / 导出某款只补那一款（11-18 维护者定），升级完照常装 / 导出就带上
-                var ids = yes.Select(g => g.TryGetProperty("id", out var v) ? v.GetString() ?? "" : "").Where(x => x.Length > 0).ToList();
-                var here = Primary(X("here"), () => { sgradeOpen = false; UpgradeSGrade(ids); Navigate("library"); });
-                AutomationId(here, "sgrade.upgrade.here"); here.Margin = new Thickness(0, 0, 12, 0); buttons.Children.Add(here);
-                buttons.Children.Add(Action("sgrade.upgrade.close", Close));
-                box.Children.Add(buttons);
+                // 批量进行中：总进度（第几款 / 共几款）+「停止」（已做完的保留）
+                var progress = Label(X("batchProgress").Replace("{0}", Math.Min(batch.Total, batch.Done + 1).ToString()).Replace("{1}", batch.Total.ToString()), 13);
+                progress.Foreground = new SolidColorBrush(SGold); progress.VerticalAlignment = VerticalAlignment.Center; progress.Margin = new Thickness(0, 0, 12, 0);
+                AutomationId(progress, "sgrade.upgrade.batchProgress"); footer.Children.Add(progress);
+                var stop = Action("sgrade.upgrade.stop", StopSGrade); stop.Margin = new Thickness(0, 0, 12, 0); footer.Children.Add(stop);
             }
-            else OkRow();
+            else
+            {
+                var chosen = yes.Select(g => S(g, "id")).Where(id => sgradeSelected.Contains(id) && !SGradeBusy(id)).ToList();
+                var batchButton = Primary(X("batch").Replace("{0}", chosen.Count.ToString()), () => UpgradeSGrade(chosen), chosen.Count > 0);
+                AutomationId(batchButton, "sgrade.upgrade.batch"); batchButton.Margin = new Thickness(0, 0, 12, 0); footer.Children.Add(batchButton);
+            }
+            footer.Children.Add(Action("sgrade.upgrade.close", Close));
+            box.Children.Add(footer);
+
         }
         body.Children.Add(Card(box));
     }

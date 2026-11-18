@@ -1,8 +1,10 @@
 // S2Arm（不是上游文件）：「S 级优化升级」页（v0.4.0 维护者：已经导出在 Mac 游戏库 / iPhone 上的游戏不用重出包就能用上 S 级优化）。
 //   打开即查（作业 sgradeScan，pack/jobs/sgrade.py）：逐款找原始程序（存下的 → 解包缓存 → Mac 版 → 原件），按本地补丁库报这个版本能补什么；
 //   分组显示：可升级 / 没有对应补丁 / 出包时选了不打入 / 没找到原始程序（要重新出包覆盖更新）。一款都升不了 → 只给「确认」。
-//   玩家点「在电脑上升级」才升（11-18 维护者：不自动运行）：页上可升级的款排进单款升级队列（sgradeUpgradeGame：Mac 版、有 iPhone
-//   程序件的也一起补）后关页，进度画在各款卡片与开始按钮上（S2ArmLauncherModel+SGradeUpgrade.swift），不挡别的操作。
+//   玩家点了才升（11-18 维护者：不自动运行；可批量，名字写明批量升级、有全选）：可升级的每行一个勾选框和「升级」，组标题旁「全选」，
+//   页脚「批量升级所选（N 款）」；都排进后台单款升级队列逐款跑（sgradeUpgradeGame：Mac 版、有 iPhone 程序件的也一起补；线程 / 内存
+//   限额在作业层），页面不关，进行中页脚显示「第 i 款 / 共 n 款」和「停止」（已做完的保留）；每款进度画在它的卡片与开始按钮上
+//   （S2ArmLauncherModel+SGradeUpgrade.swift），不挡别的操作。
 //   原先的「升级并安装 / 导出」两个按钮去掉：装到 iPhone / 导出某款只补那一款（11-18 维护者定），升级完照常装 / 导出就带上。
 import SwiftUI
 import NXCore
@@ -36,8 +38,10 @@ struct SGradeUpgradeView: View {
         let lang = loc.lang.sharedCode
         SGradeUpgradeBody(games: games, failure: failure.map(loc.backend), zh: loc.cjkPunctuation,   // 作业层原句按界面语言显示
                           x: { BackendText.launcherText("sgrade.upgrade." + $0, language: lang) },
-                          upgrade: { ids in model.upgradeSGrade(ids); dismiss() },
-                          close: { dismiss() })
+                          upgrade: { ids in model.upgradeSGrade(ids) },
+                          close: { dismiss() },
+                          upgrading: Set(model.games.map(\.id).filter(model.sgradeUpgrading)),
+                          batch: model.sgradeBatch, stop: { model.stopSGrade() })
             .task { await scan() }
     }
 
@@ -55,9 +59,15 @@ struct SGradeUpgradeBody: View {
     let failure: String?
     let zh: Bool
     let x: (String) -> String
-    /// 「在电脑上升级」：交出页上可升级各款的号（排进后台单款升级队列）
+    /// 某一行的「升级」交出这一款，「批量升级所选」交出勾选的各款（都排进后台单款升级队列）
     let upgrade: ([String]) -> Void
     let close: () -> Void
+    /// 正在升级 / 排队的款：那一行按钮写「正在升级…」、不可再点、勾选框不可选
+    var upgrading: Set<String> = []
+    /// 这一批进行到第几款 / 共几款；nil = 没在批量升级
+    var batch: (done: Int, total: Int)? = nil
+    var stop: () -> Void = {}
+    @State private var selected: Set<String> = []
     var sImage: NSImage = SGradeCardView.sGold
 
     var body: some View {
@@ -76,10 +86,16 @@ struct SGradeUpgradeBody: View {
             if games != nil || failure != nil {
                 LauncherSheetFooter {
                     if failure == nil, !upgrades.isEmpty {
-                        ViewThatFits(in: .horizontal) {   // 标题排不下就竖排，不截断
-                            HStack { upgradeButton; Spacer(); closeButton }
-                            VStack(alignment: .leading, spacing: 8) { upgradeButton; closeButton }
+                        if let b = batch {
+                            Text(x("batchProgress").replacingOccurrences(of: "{0}", with: String(min(b.total, b.done + 1))).replacingOccurrences(of: "{1}", with: String(b.total)))
+                                .font(LauncherTheme.TypeStyle.detail).foregroundStyle(SGradeCardView.gold).accessibilityIdentifier("sgrade.upgrade.batchProgress")
+                            Button(x("stop")) { stop() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("sgrade.upgrade.stop").fixedSize()
+                        } else {
+                            Button(x("batch").replacingOccurrences(of: "{0}", with: String(chosen.count))) { upgrade(chosen); selected = [] }
+                                .controllerButtonStyle(LauncherPrimaryButtonStyle()).disabled(chosen.isEmpty)
+                                .controllerID("sgrade.upgrade.batch").controllerShortcut(.rightTrigger).fixedSize()
                         }
+                        Spacer(); closeButton
                     } else {
                         Spacer()
                         Button(x("ok")) { close() }.controllerButtonStyle(LauncherPrimaryButtonStyle())
@@ -93,8 +109,10 @@ struct SGradeUpgradeBody: View {
     }
 
     private var upgrades: [SGradeScanGame] { (games ?? []).filter { $0.found && $0.total > 0 && !$0.off } }
-    /// 「在电脑上升级」交出的号（页面顺序）
+    /// 可升级的款（页面顺序）
     var upgradeIDs: [String] { upgrades.map(\.id) }
+    /// 勾选了、又没在升级的款（页面顺序）：「批量升级所选」交出这些
+    var chosen: [String] { upgradeIDs.filter { selected.contains($0) && !upgrading.contains($0) } }
 
     @ViewBuilder private var content: some View {
         if let failure {
@@ -117,7 +135,7 @@ struct SGradeUpgradeBody: View {
             } else {
                 Text(x("found").replacingOccurrences(of: "{0}", with: String(found.count))).font(.manrope(14, .medium))
                 let groups = VStack(alignment: .leading, spacing: 14) {
-                    group(x("yes"), yes.map { ($0.name, gains($0)) }, gold: true)
+                    upgradeGroup(yes)
                     if !noVer.isEmpty { group(x("no.version"), noVer.map { ($0.name, versions($0)) }) }
                     if !no.isEmpty { group(x("no.none"), no.map { ($0.name, "") }) }
                     if !off.isEmpty { group(x("off"), off.map { ($0.name, "") }) }
@@ -177,10 +195,34 @@ struct SGradeUpgradeBody: View {
         }
     }
 
-    /// 「在电脑上升级」：排进后台单款升级队列后关页，不挡别的操作（不随主槽忙置灰）
-    private var upgradeButton: some View {
-        Button(x("here")) { upgrade(upgradeIDs) }.controllerButtonStyle(LauncherPrimaryButtonStyle())
-            .keyboardShortcut(.defaultAction).controllerID("sgrade.upgrade.here").controllerShortcut(.rightTrigger).fixedSize()
+    /// 「可以升级」组：每行 名字 · 能补什么 · 「升级」（升级中写「正在升级…」不可点）
+    private func upgradeGroup(_ rows: [SGradeScanGame]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("\(x("yes")) · \(rows.count)").font(LauncherTheme.TypeStyle.caption).foregroundStyle(SGradeCardView.gold)
+                Spacer()
+                let free = rows.map(\.id).filter { !upgrading.contains($0) }
+                Toggle(x("selectAll"), isOn: Binding(get: { !free.isEmpty && free.allSatisfy(selected.contains) },
+                                                     set: { selected = $0 ? Set(free) : [] }))
+                    .toggleStyle(PadToggleStyle(.checkbox)).font(LauncherTheme.TypeStyle.caption).disabled(free.isEmpty).controllerID("sgrade.upgrade.selectAll")
+            }
+            Grid(alignment: .leading, horizontalSpacing: LauncherTheme.Space.large, verticalSpacing: 0) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { index, g in
+                    GridRow(alignment: .center) {
+                        let busy = upgrading.contains(g.id)
+                        Toggle("", isOn: Binding(get: { selected.contains(g.id) && !busy }, set: { if $0 { selected.insert(g.id) } else { selected.remove(g.id) } }))
+                            .toggleStyle(PadToggleStyle(.checkbox)).labelsHidden().disabled(busy).controllerID("sgrade.upgrade.pick." + g.id)
+                        Text(g.name).font(LauncherTheme.TypeStyle.detail).lineLimit(2)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, LauncherTheme.Space.small)
+                        Text(gains(g)).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, LauncherTheme.Space.small)
+                        Button(busy ? x("rowBusy") : x("row")) { upgrade([g.id]); selected.remove(g.id) }.controllerButtonStyle(LauncherSecondaryButtonStyle())
+                            .disabled(busy).controllerID("sgrade.upgrade.row." + g.id).fixedSize()
+                    }
+                    if index < rows.count - 1 { Divider().opacity(0.18).gridCellUnsizedAxes(.horizontal) }
+                }
+            }
+        }
     }
     private var closeButton: some View {
         Button(x("close")) { close() }.controllerButtonStyle(LauncherSecondaryButtonStyle())
