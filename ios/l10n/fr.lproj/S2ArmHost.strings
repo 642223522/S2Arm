@@ -468,7 +468,8 @@
 "save.restored" = "Sauvegarde restaurée. Vous pouvez démarrer le jeu pour vérifier votre progression. Une sauvegarde préalable à la restauration a été conservée (aucune n'est créée s'il n'y avait pas de sauvegarde avant).";
 "save.serviceInvalid" = "Le service de sauvegarde n'a pas renvoyé de résultat valide. Fermez puis rouvrez l'app ; vos données existantes sont conservées.";
 "save.previous.ask.title" = "Ce jeu n’a pas pu charger sa sauvegarde la dernière fois. Revenir à la sauvegarde précédente ?";
-"save.previous.ask.body" = "La dernière session ne s’est pas terminée normalement. Vous pourrez revenir en arrière à tout moment.";
+"save.previous.ask.crash" = "La dernière session s’est fermée dès le début. Vous pourrez revenir en arrière à tout moment.";
+"save.previous.ask.guard" = "Une vérification de sauvegarde n’a pas correspondu lors de la dernière session. Vous pourrez revenir en arrière à tout moment.";
 "save.previous.ask.restore" = "Revenir à la précédente";
 "save.previous.ask.start" = "Démarrer normalement";
 "save.previous.done.title" = "Retour à la sauvegarde précédente";

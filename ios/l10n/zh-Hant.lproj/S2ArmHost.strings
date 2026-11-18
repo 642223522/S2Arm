@@ -443,7 +443,8 @@
 "save.restored" = "存檔已回復。可開始遊戲檢查進度；回復前備份已保留（先前沒有存檔時不會產生備份）。";
 "save.serviceInvalid" = "存檔服務沒有傳回有效結果。請關閉後重新開啟 App，現有資料會保留。";
 "save.previous.ask.title" = "這款上次沒能正常讀取存檔，要回到上一份存檔嗎？";
-"save.previous.ask.body" = "上一局沒有正常結束。回到上一份後也能隨時換回來。";
+"save.previous.ask.crash" = "上一局一開始就退出了。回到上一份後也能隨時換回來。";
+"save.previous.ask.guard" = "上一局保存時有一次存檔沒核對上。回到上一份後也能隨時換回來。";
 "save.previous.ask.restore" = "回到上一份";
 "save.previous.ask.start" = "照常開始";
 "save.previous.done.title" = "已回到上一份存檔";

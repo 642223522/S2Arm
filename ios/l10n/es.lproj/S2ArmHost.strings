@@ -468,7 +468,8 @@
 "save.restored" = "Partida guardada restaurada. Puedes iniciar el juego para comprobar tu progreso. Se conservó una copia previa a la restauración (no se crea si no había partida guardada antes).";
 "save.serviceInvalid" = "El servicio de partidas guardadas no devolvió un resultado válido. Cierra y vuelve a abrir la app; se conservan los datos existentes.";
 "save.previous.ask.title" = "Este juego no pudo cargar su partida la última vez. ¿Volver a la partida guardada anterior?";
-"save.previous.ask.body" = "La última sesión no terminó con normalidad. Puedes volver a cambiar en cualquier momento.";
+"save.previous.ask.crash" = "La última sesión se cerró justo al empezar. Puedes volver a cambiar en cualquier momento.";
+"save.previous.ask.guard" = "Una comprobación de la partida no coincidió en la última sesión. Puedes volver a cambiar en cualquier momento.";
 "save.previous.ask.restore" = "Volver a la anterior";
 "save.previous.ask.start" = "Empezar igualmente";
 "save.previous.done.title" = "Has vuelto a la partida anterior";

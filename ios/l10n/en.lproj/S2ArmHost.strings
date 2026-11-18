@@ -473,7 +473,8 @@
 "save.restored" = "Save restored. You can start the game to check your progress. A pre-restore backup was kept (none is created if there was no save before).";
 "save.serviceInvalid" = "The save service didn’t return a valid result. Close and reopen the app; your existing data is kept.";
 "save.previous.ask.title" = "This game couldn’t load its save last time. Go back to the previous save?";
-"save.previous.ask.body" = "The last session didn’t end normally. You can switch back at any time.";
+"save.previous.ask.crash" = "The last session quit right at the start. You can switch back at any time.";
+"save.previous.ask.guard" = "A save check didn’t match during the last session. You can switch back at any time.";
 "save.previous.ask.restore" = "Go back";
 "save.previous.ask.start" = "Start as usual";
 "save.previous.done.title" = "Back to the previous save";

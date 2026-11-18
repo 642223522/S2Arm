@@ -84,14 +84,18 @@ if (args.Length == 1 && args[0] == "--previous")
     var p = Call(Req("previous"));
     Expect(Code(p) == "ok" && p["result"]["hasPrevious"].GetValue<bool>() && p["result"]["saveIds"][0].GetValue<string>() == "0000000000000001", "previous lists the save that has .s2a_prev");
     Expect(Code(Call(Req("previous"), true)) == "ok", "running: previous allowed (read only)");
+    Expect(!p["result"]["guardRed"].GetValue<bool>(), "no guard mark: guardRed false");
+    File.WriteAllText(Path.Combine(save, ".s2a_guard"), "commit 3 refused");
+    Expect(Call(Req("previous"))["result"]["guardRed"].GetValue<bool>(), "guard mark next to the save: guardRed true");
     Expect(Code(Call(Req("restorePrevious"), true)) == "save_running" && Read("0") == "newer", "running: restorePrevious refused, save untouched");
     var r1 = Call(Req("restorePrevious"));
     Expect(Code(r1) == "ok" && r1["result"]["restored"].GetValue<int>() == 1 && Read("0") == "older" && Read(".s2a_prev") == "newer", "restorePrevious: committed is now the previous version, the newer one kept as previous");
+    Expect(!File.Exists(Path.Combine(save, ".s2a_guard")), "restorePrevious clears the guard mark");
     var r2 = Call(Req("restorePrevious"));
     Expect(Code(r2) == "ok" && Read("0") == "newer" && Read(".s2a_prev") == "older", "restorePrevious again: switched back exactly");
     Directory.Delete(tmp, true);
     if (fails.Count > 0) { Console.WriteLine($"✗ previous: {fails.Count} failed"); Environment.Exit(1); }
-    Console.WriteLine("✓ previous: 7 checks");
+    Console.WriteLine("✓ previous: 10 checks");
     return;
 }
 if (args.Length == 4 && args[0] == "--crash-child")

@@ -5,8 +5,9 @@ saveRestorePrevious  起局前（stopped：游戏没在跑、没收尾的存档�
                      同 platform/apple/cs/savecommit/AppleHostDirectoryTransaction.Exchange），再 F_FULLFSYNC 存档目录；再做一次就换回来。
                      一棵失败就把这次已换过的几棵换回去，整次报失败——不留「一半新一半旧」
 
-起局结果（note_launch，build.launch 收局时记）：开局 EARLY_SECONDS 内游戏异常退出记 earlyCrash，正常收局清掉；带那局日志路径，
-savePrevious 再从里面找存档护栏红行（GUARD_RED）。只用来决定问不问，不拦、不自动覆盖。
+起局结果（note_launch，build.launch 收局时记）：开局 EARLY_SECONDS 内游戏异常退出记 earlyCrash，正常收局清掉。
+存档护栏：compat S2ASaveCommit 拦下一次提交时在 <存档>/.s2a_guard 留记号、之后正常提交删掉（GUARD_MARK，同服务层 SaveTransfer.GuardMark）。
+两样只用来决定问不问，不拦、不自动覆盖。
 """
 import ctypes
 import errno
@@ -15,12 +16,11 @@ import os
 import time
 from pathlib import Path
 
-import layout
 from saves import fail, locations, stopped
 
 PREVIOUS_DIR = ".s2a_prev"
 EARLY_SECONDS = 60          # 同 host_update.TRIAL_OK_SECONDS：玩过这么久才崩不算「读存档就崩」
-GUARD_RED = ("【红】存档事务：第 ", "和游戏写的不一样")   # compat S2ASaveCommit 提交护栏拦下那行（两段都在才算；这个前缀还有挂载 / 落盘 / 交换失败在用）  # 非玩家句
+GUARD_MARK = ".s2a_guard"
 RENAME_SWAP = 0x2
 F_FULLFSYNC = 51
 
@@ -64,8 +64,8 @@ def _outcome_path(c, gid):
     return Path(c.private) / "launch-outcome" / (gid.upper() + ".json")
 
 
-def note_launch(c, gid, log, early_crash):
-    """build.launch 收局时调：开局就崩记下（带日志路径），正常收局清掉。写不下不影响收局"""
+def note_launch(c, gid, early_crash):
+    """build.launch 收局时调：开局就崩记下，正常收局清掉。写不下不影响收局"""
     p = _outcome_path(c, gid)
     try:
         if not early_crash:
@@ -73,28 +73,20 @@ def note_launch(c, gid, log, early_crash):
             return
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_suffix(".partial")
-        tmp.write_text(json.dumps({"earlyCrash": True, "log": str(log), "at": time.time()}, ensure_ascii=False), encoding="utf-8")
+        tmp.write_text(json.dumps({"earlyCrash": True, "at": time.time()}), encoding="utf-8")
         os.replace(tmp, p)
     except OSError:
         pass
 
 
-def _guard_red(log):
-    try:
-        with open(log, "r", encoding="utf-8", errors="replace") as f:
-            return any(all(part in line for part in GUARD_RED) for line in f)
-    except OSError:
-        return False
-
-
-def trouble(c, gid):
-    """上一局读存档出事的迹象 → 原因码（earlyCrash / guardRed）或空串"""
+def trouble(c, gid, dirs):
+    """上一局读存档出事的迹象 → 原因码（guardRed 护栏拦下过 / earlyCrash 开局就崩）或空串"""
+    if any((d / GUARD_MARK).exists() for d in dirs):
+        return "guardRed"
     try:
         rec = json.loads(_outcome_path(c, gid).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return ""
-    if rec.get("log") and _guard_red(rec["log"]):
-        return "guardRed"
     return "earlyCrash" if rec.get("earlyCrash") else ""
 
 
@@ -103,7 +95,7 @@ def status(c):
     game = c.game()
     root, _, _ = locations(c, game)
     dirs = previous_dirs(root)
-    return dict(hasPrevious=bool(dirs), saveIds=[d.name for d in dirs], trouble=trouble(c, game["id"]) if dirs else "")
+    return dict(hasPrevious=bool(dirs), saveIds=[d.name for d in dirs], trouble=trouble(c, game["id"], dirs) if dirs else "")
 
 
 def restore(c):
@@ -119,6 +111,7 @@ def restore(c):
                 _exchange(d / PREVIOUS_DIR, d / "0")
                 _full_sync_dir(d)
                 done.append(d)
+                (d / GUARD_MARK).unlink(missing_ok=True)   # 回过去了：这棵的护栏记号已处理
             except OSError as error:
                 stuck = []
                 for back in done:

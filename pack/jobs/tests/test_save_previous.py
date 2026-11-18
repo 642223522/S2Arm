@@ -78,20 +78,18 @@ class SavePreviousTest(unittest.TestCase):
         self.put("0", b"newer")
         self.put(".s2a_prev", b"older")
         c = self.context(operation="savePrevious")
-        log = Path(self.tmp.name) / "game.log"
-        log.write_text("[s2a] 起局\n", encoding="utf-8")
-        save_previous.note_launch(c, GID, log, True)
-        self.assertEqual(save_previous.status(self.context(operation="savePrevious"))["trouble"], "earlyCrash")
-        log.write_text("[s2a] 起局\n【红】存档事务：挂载失败\n", encoding="utf-8")   # 同前缀的别的存档事务失败：不算护栏
-        self.assertEqual(save_previous.status(self.context(operation="savePrevious"))["trouble"], "earlyCrash")
-        log.write_text("[s2a] 起局\n【红】存档事务：第 3 次提交 /x 时克隆出的新版本和游戏写的不一样（slot.bin），这次不提交\n", encoding="utf-8")
-        self.assertEqual(save_previous.status(self.context(operation="savePrevious"))["trouble"], "guardRed")
-        save_previous.note_launch(c, GID, log, False)   # 好好收局清掉
-        self.assertEqual(save_previous.status(self.context(operation="savePrevious"))["trouble"], "")
-        save_previous.note_launch(c, GID, log, True)
-        save_previous.restore(self.context(operation="saveRestorePrevious"))   # 回过去了：记号清掉，不再问
-        self.assertEqual(save_previous.status(self.context(operation="savePrevious"))["trouble"], "")
-
+        status = lambda: save_previous.status(self.context(operation="savePrevious"))["trouble"]
+        self.assertEqual(status(), "", "有上一份、上一局没出事：不问")
+        save_previous.note_launch(c, GID, True)
+        self.assertEqual(status(), "earlyCrash")
+        save_previous.note_launch(c, GID, False)   # 好好收局清掉
+        self.assertEqual(status(), "")
+        (self.save / ".s2a_guard").write_text("commit 3 refused", encoding="utf-8")
+        self.assertEqual(status(), "guardRed", "护栏拦下过（存档旁的记号）")
+        save_previous.note_launch(c, GID, True)
+        save_previous.restore(self.context(operation="saveRestorePrevious"))   # 回过去了：记号和开局就崩都清掉，不再问
+        self.assertFalse((self.save / ".s2a_guard").exists())
+        self.assertEqual(status(), "")
 
 if __name__ == "__main__":
     unittest.main()

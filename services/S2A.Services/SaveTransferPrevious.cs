@@ -14,6 +14,7 @@ namespace S2A.Services;
 //                    一棵失败就把这次已换过的几棵换回去，整次报失败——不留「一半新一半旧」
 public static partial class SaveTransfer
 {
+    internal const string GuardMark = ".s2a_guard";   // 存档提交护栏拦下过、之后还没好好提交过（compat S2ASaveCommit 写、正常提交删）
     private static List<string> PreviousSaveDirs(Context c)
     {
         string root = Path.Combine(c.Root, "bis", "user", "save");
@@ -32,7 +33,8 @@ public static partial class SaveTransfer
     private static JsonObject PreviousSaves(Context c)
     {
         var dirs = PreviousSaveDirs(c);
-        return new() { ["hasPrevious"] = dirs.Count != 0, ["saveIds"] = new JsonArray(dirs.Select(d => (JsonNode)Path.GetFileName(d)).ToArray()) };
+        return new() { ["hasPrevious"] = dirs.Count != 0, ["saveIds"] = new JsonArray(dirs.Select(d => (JsonNode)Path.GetFileName(d)).ToArray()),
+            ["guardRed"] = dirs.Any(d => File.Exists(Path.Combine(d, GuardMark))) };
     }
 
     private static JsonObject RestorePreviousSaves(Context c)
@@ -43,7 +45,7 @@ public static partial class SaveTransfer
         foreach (string dir in dirs)
         {
             string why = S2ASaveTransaction.RestorePrevious(dir);
-            if (why == null) { done.Add(dir); continue; }
+            if (why == null) { done.Add(dir); File.Delete(Path.Combine(dir, GuardMark)); continue; }   // 回过去了：这棵的护栏记号已处理
             System.Console.Error.WriteLine("回到上一份存档失败：" + Path.GetFileName(dir) + "：" + why);
             var stuck = new List<string>();
             foreach (string back in done)
