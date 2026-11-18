@@ -268,8 +268,11 @@ namespace Ryujinx.Audio.Renderer.Server
                 }
 
                 long s2aT2 = System.Diagnostics.Stopwatch.GetTimestamp();
+                S2ATaskFaults.Read(out long s2aF0, out long s2aP0);
                 Processor.Signal();
-                S2ALogSlowPeriod(s2aT0, s2aCmd, System.Diagnostics.Stopwatch.GetTimestamp() - s2aT2);
+                long s2aDsp = System.Diagnostics.Stopwatch.GetTimestamp() - s2aT2;
+                S2ATaskFaults.Read(out long s2aF1, out long s2aP1);
+                S2ALogSlowPeriod(s2aT0, s2aCmd, s2aDsp, s2aF1 - s2aF0, s2aP1 - s2aP0);
                 Processor.Wait();
             }
         }
@@ -279,7 +282,9 @@ namespace Ryujinx.Audio.Renderer.Server
         //   period), the DSP itself. At most 40 lines a run
         private static int s_s2aSlowLines;
 
-        private static void S2ALogSlowPeriod(long sessionWait, long cmd, long dsp)
+        //   faults / pageins: whole-process fault and page-in counts during the DSP pass (#1240: a DSP pass of 0.3–2 s with no lock wait and no
+        //   command time on an 8 GB Mac, where guest memory is file-backed; page-ins here say the pass waited for pages)
+        private static void S2ALogSlowPeriod(long sessionWait, long cmd, long dsp, long faults, long pageins)
         {
             long f = System.Diagnostics.Stopwatch.Frequency;
             long total = sessionWait + cmd + dsp;
@@ -297,7 +302,7 @@ namespace Ryujinx.Audio.Renderer.Server
             }
 
             Console.Error.WriteLine($"[声] 渲染一拍用了 {total * 1000.0 / f:F1} ms：等会话锁 {sessionWait * 1000.0 / f:F1} ms、生成命令 {cmd * 1000.0 / f:F1} ms" +
-                                    $"（其中等游戏 Update 占着的锁 {AudioRenderSystem.S2ARenderLockWaitTicks * 1000.0 / f:F1} ms；这一拍里游戏 Update 最长持锁 {hold * 1000.0 / f:F1} ms）、DSP {dsp * 1000.0 / f:F1} ms");
+                                    $"（其中等游戏 Update 占着的锁 {AudioRenderSystem.S2ARenderLockWaitTicks * 1000.0 / f:F1} ms；这一拍里游戏 Update 最长持锁 {hold * 1000.0 / f:F1} ms）、DSP {dsp * 1000.0 / f:F1} ms（这段里全进程缺页 {faults} 次、读盘换入 {pageins} 次）");
         }
 
         /// <summary>
