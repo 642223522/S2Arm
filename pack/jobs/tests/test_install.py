@@ -2810,6 +2810,7 @@ class WinWidgetInstallTests(unittest.TestCase):
         c = types.SimpleNamespace(r=r, private=self.tmp, logs=self.tmp / "logs", task="t", emit=lambda *a, **k: None, begin=lambda *a, **k: None,
                                   last_log=None, diagnostic=um.MagicMock())
         me = types.SimpleNamespace(W=W, c=c, udid="U", key="dev1", bid=None, backup=lambda g: None, bundle_for_signing=lambda: None)
+        me.say = lambda m: install.WinPhone.say(me, m)   # install_win 的进度回调（签好后核 IML 的那行也经它）
         with um.patch.object(install.devcert, "active", return_value=False), um.patch.object(install.layout, "load_device", return_value={}), \
              um.patch.object(install.layout, "save_device"):
             install.WinPhone.install(me, self.ipa, [], steps=False)

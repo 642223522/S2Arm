@@ -2266,6 +2266,15 @@ def win_install_failure(e):
     return Failure(str(e), code=code)
 
 
+def win_say(c, m):
+    """install_win.install_app 的进度回调（容器与下游单款 App 共用）：进度行照常发出；签好的包丢了「提高内存上限」（install_win.iml_line 以「【IML 丢了】」开头）
+    不当进度显示，记一条黄字 iml_missing（办法见 errors.RECOVERY），原句进 internal——不挡装机"""
+    if not m.startswith("【IML 丢了】"):  # 非玩家句
+        c.emit("message", m)
+    else:
+        c.diagnostic("这次签好的 S2Arm 没带「提高内存上限」权限：装上后能玩，但大游戏可能内存不够、开局中止。", code="iml_missing", severity="warning", internal=m)
+
+
 class WinPhone:
     """Windows：Impactor 同版 plumesign 签名装机（包名由它按账号定、装完才知道，记在这台的设备记录 devices/<设备>.json 的 bundleId，供下次覆盖前备份）+ s2a-devpush 备份 / 推 / 删"""
 
@@ -2352,7 +2361,7 @@ class WinPhone:
                 ipa, had = plain, False
             ns = argparse.Namespace(ipa=str(ipa), udid=self.udid, name=None, plumesign=b.get("plumesign"), log=str(log), bundle=self.bundle_for_signing())
             try:
-                self.bid = self.W.install_app(ns, say=lambda m: self.c.emit("message", m))
+                self.bid = self.W.install_app(ns, say=self.say)
             except self.W.Fail as e:
                 if not had:
                     raise win_install_failure(e) from e
@@ -2360,7 +2369,7 @@ class WinPhone:
                 print(f"[装机] 带小组件签名装机没成（{e.err or ''}：{e}），去掉小组件重来", file=sys.stderr, flush=True)  # 非玩家句
                 ns.ipa = str(plain)
                 try:
-                    self.bid = self.W.install_app(ns, say=lambda m: self.c.emit("message", m))
+                    self.bid = self.W.install_app(ns, say=self.say)
                 except self.W.Fail as e2:
                     raise win_install_failure(e2) from e2
                 why = WIDGET_QUOTA if e.err == "free_appid_limit" else str(first)
@@ -2396,6 +2405,9 @@ class WinPhone:
         self.bid = bid
         rec = layout.load_device(c, self.key)
         layout.save_device(c, self.key, dict(rec, bundleId=bid))
+
+    def say(self, m):
+        win_say(self.c, m)
 
     def bundle_for_signing(self):
         """交给 plumesign 的包名：和 Mac 同一个（container_bundle_id(团队号)，团队号取 Impactor 当前账号）。这台记录过只差大小写的包名

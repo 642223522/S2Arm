@@ -455,7 +455,7 @@ def install_ios_win(c, game, scheme):
         name = str(c.r["displayName"])[:30] if c.r.get("displayName") else None
         ns = argparse.Namespace(ipa=str(ipa), udid=udid, name=name, plumesign=b.get("plumesign"), log=str(log), bundle=bid)
         try:
-            bid = W.install_app(ns, say=lambda m: c.emit("message", m))
+            bid = W.install_app(ns, say=lambda m: inst.win_say(c, m))
         except W.Fail as e:
             raise inst.win_install_failure(e) from e
     finally:

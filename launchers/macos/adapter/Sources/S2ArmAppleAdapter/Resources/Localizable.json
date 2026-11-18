@@ -10250,5 +10250,9 @@
  {
   "source": "没能把证书写进 iPhone 上的 S2Arm：确认 iPhone 连着、已解锁，再试一次。",
   "en": "Couldn't write the certificate into S2Arm on your iPhone. Make sure the iPhone is connected and unlocked, then try again."
+ },
+ {
+  "source": "这次签好的 S2Arm 没带「提高内存上限」权限：装上后能玩，但大游戏可能内存不够、开局中止。",
+  "en": "The S2Arm signed this time is missing the \"Increased Memory Limit\" entitlement: it installs and runs, but large games may run out of memory and stop at launch."
  }
 ]
