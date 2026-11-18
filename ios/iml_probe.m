@@ -35,6 +35,11 @@ static int proc_ent_has(const char *key) {
 // 这次安装的进程有没有「提高内存上限」权限：1 带、0 不带（丢了）、-1 读不到；-2 = 还没读。首启复核读一次记下，诊断询问（diag.m）复用，没读过就现读
 static int g_iml_ent = -2;
 static int iml_ent(void) {
+#if TARGET_OS_TV
+    // tvOS 没有这项权限（Xcode 能力表 Increased Memory Limit 只列 iOS / visionOS）：不适用，按「读不到」不判，
+    //   库顶提示条、游戏里提示条、诊断询问都不出（#1456：电视上提示「重新签名带上权限」是一条做不到的路）
+    g_iml_ent = -1;
+#endif
     if (g_iml_ent == -2) { int e = proc_ent_has(IML_KEY); g_iml_ent = e >= 0 ? e : s2a_ent_has(&_mh_execute_header, IML_KEY); }
     return g_iml_ent;
 }
@@ -83,6 +88,9 @@ void s2a_iml_probe_check(void) {
     @autoreleasepool {
         int ent = proc_ent_has(IML_KEY), from_proc = ent >= 0;
         if (!from_proc) ent = s2a_ent_has(&_mh_execute_header, IML_KEY);   // 进程权限读不到才退回读主程序签名
+#if TARGET_OS_TV
+        ent = -1;   // tvOS 没有这项权限：不判、不提示（同 iml_ent）
+#endif
         g_iml_ent = ent;
         uint64_t need = 0, fit = 0, top = s2a_va_top(); s2a_window_need(&need, &fit);
         int jumbo = s2a_va_jumbo(top);

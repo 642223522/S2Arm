@@ -10,6 +10,7 @@
 #   ⑩ 11-04 巫师3 c1104_w3astc 现场（抽取工作进程整 600 秒停在 mmap 缺页读、CPU 不涨、没写输出，被误杀）：树内 CPU 不涨、没人写、无编译器，
 #     只有磁盘读字节在涨 → 不杀、退 0；⑩反：读写字节停在一个非零值不动（不是「有过读」就算）→ 照样停，发停时刻 = 最后一次涨（0.5）+ 2 = 2.5
 #     ⑩ 读数来源（真进程）：子进程用 F_NOCACHE（绕过页缓存，次次真读盘）读回 8 MB，读数之间磁盘读写字节涨 ≥ 8 MB
+#   ⑪ #1560：编译子进程一直活着、CPU 一直涨，但产出（被盯路径 / 日志 / S2A_PROGRESS 出包进度）连续 窗口 × 6 秒不动 → 照样停（在动不等于在前进）
 #   ⑨ 10-31 符文工房5 现场：盯外层目录，写入落在其下一层平铺 2 万个文件的 b-x/ 里 → 不杀、退 0；算一次目录指纹 stat < 100 次（只看目录自身与前 64 项，不随文件数涨；旧版逐个 stat 2 万个文件）
 # 怎么测（11-02 合入线：main 无缓存全套 361 步并发、gate-host 负载 20+ 时 ②⑤⑧ 反复红——② 忙循环 2 秒窗口里没拿到 CPU 被判挂死、⑤ 喂文件进程 2 秒没被调度、
 #   ⑧ 停树 + 抓栈用了 11–17 秒超「< 10 秒」）：判挂死本来就按墙钟窗口，真进程 + 2 秒窗口 = 赌调度。拆成两半：
@@ -168,6 +169,19 @@ ck(f'⑩ 只在读盘（CPU 不涨、没人写、无编译器，磁盘读字节�
 rc, p, err = run(['--watch', os.path.join(T, 'out'), '2'], 30.0, io=lambda t: 5 << 30, stdout_log=log6)
 ck(f'⑩反 读写字节停在 5 GiB 不动（假时钟）→ rc={rc}（124）、假时刻 {p.term_at} 发 TERM（2.5）、打【红】',
    rc == 124 and p.term_at == 2.5 and '【红】无进展看门狗' in err)
+# ⑪ #1560（玩家出包最后一批两个 metal 进程卡了三个半小时，看门狗一直当它在干活）：在动不等于在前进。窗口 2 秒 → 产出上限 2 × 6 = 12 秒：
+#   编译子进程一直活着、CPU 一直涨，被盯路径 / 日志 / 出包进度一次都没写 → 发停时刻 ∈ [12, 12.5]、红行写「产出没有前进」；
+#   ⑪b 同样忙、出包进度文件（S2A_PROGRESS，不在 --watch 里）每格写一行 → 不杀；⑪c 产出每 10 秒才前进一次（< 12）→ 不杀
+rc, p, err = run(['--watch', os.path.join(T, 'out'), '2'], 30.0, cpu=lambda t: t * 0.8, names=('sh', 'metal'), stdout_log=log6)
+ck(f'⑪ 编译器一直活着、CPU 一直涨、产出 30 秒不动（假时钟）→ rc={rc}（124）、假时刻 {p.term_at} 发 TERM（∈ [12, 12.5]）、红行写产出没有前进',
+   rc == 124 and p.term_at is not None and 12.0 <= p.term_at <= 12.5 and '产出没有前进' in err)
+prog = os.path.join(T, 'progress.tsv'); open(prog, 'w').close(); os.environ['S2A_PROGRESS'] = prog
+try:
+    rc, p, _ = run(['--watch', os.path.join(T, 'out'), '2'], 30.0, work=append(prog), cpu=lambda t: t * 0.8, names=('sh', 'metal'), stdout_log=log6)
+    ck(f'⑪b 同样忙、出包进度文件每格写一行（假时钟）→ rc={rc}（0）、发停时刻 {p.term_at}（None）', rc == 0 and p.term_at is None)
+    rc, p, _ = run(['--watch', os.path.join(T, 'out'), '2'], 30.0, work=lambda k: k % 20 == 0 and append(prog)(k), cpu=lambda t: t * 0.8, names=('sh', 'metal'), stdout_log=log6)
+    ck(f'⑪c 产出每 10 秒前进一次（假时钟）→ rc={rc}（0）、发停时刻 {p.term_at}（None）', rc == 0 and p.term_at is None)
+finally: del os.environ['S2A_PROGRESS']
 rc, p, _ = run(['--watch', os.path.join(T, 'ms'), '2'], 4.0, work=newfile(os.path.join(T, 'ms', 'b-x')))
 n = [0]; st = os.stat
 def counting(*a, **k): n[0] += 1; return st(*a, **k)

@@ -14,6 +14,7 @@
 int s2a_selfsign_identity(const void *p12, size_t n, const char *password, SecKeyRef *key, CFArrayRef *chain);
 int s2a_program_resign_if_needed(const char *home, const char *game_data, const char *gid, char *module_dir, char *images, size_t n, char *why, size_t why_n);
 void s2a_program_resign_test_identity(int (*f)(SecKeyRef *, SecCertificateRef *));
+int s2a_program_resign_force(const char *home, const char *game_data, const char *gid, char *module_dir, char *images, size_t n, char *why, size_t why_n);
 
 static int bad;
 static void ck(int ok, NSString *what) { printf("%s %s\n", ok ? "  通" : "  【红】", what.UTF8String); if (!ok) bad++; }
@@ -69,6 +70,11 @@ int main(void) { @autoreleasepool {
     ck([sha_file([v0 stringByAppendingPathComponent:img]) isEqualToString:src_sha], @"① 旧版本目录原样（这局可能还开着）");
     rc = s2a_program_resign_if_needed(home.fileSystemRepresentation, gd.fileSystemRepresentation, G.UTF8String, md, im, sizeof md, why, sizeof why);
     ck(rc == 0 && [json(catp)[@"dir"] isEqualToString:newdir], [NSString stringWithFormat:@"② 再起一次：返回 %d（期望 0），清单不变", rc]);
+    // ②b 注册签名失败时强制重签（证书与手机身份相同、签名格式老）：不看「已是这张」照样重签，出新版本目录（签名时间不同 → 内容不同），随行目录跟过去
+    sleep(1); rc = s2a_program_resign_force(home.fileSystemRepresentation, gd.fileSystemRepresentation, G.UTF8String, md, im, sizeof md, why, sizeof why);
+    { NSString *d2 = json(catp)[@"dir"];
+      ck(rc == 1 && d2 && ![d2 isEqualToString:newdir] && [fm fileExistsAtPath:[[prog stringByAppendingPathComponent:d2] stringByAppendingPathComponent:[NSString stringWithFormat:@"Games/%@/x.txt", G]]],
+         [NSString stringWithFormat:@"②b 强制重签：返回 %d（期望 1）、新目录 %@（不同于 %@）、随行目录在", rc, d2, newdir]); }
     put_json(catp, cat0); [fm removeItemAtPath:[idir stringByAppendingPathComponent:@"current.json"] error:nil];
     ARGS(); rc = s2a_program_resign_if_needed(home.fileSystemRepresentation, gd.fileSystemRepresentation, G.UTF8String, md, im, sizeof md, why, sizeof why);
     ck(rc == 0 && [json(catp)[@"dir"] isEqualToString:@"v-0000000000000000-pc"], [NSString stringWithFormat:@"③ 没有 current.json：返回 %d（期望 0），清单不动", rc]);

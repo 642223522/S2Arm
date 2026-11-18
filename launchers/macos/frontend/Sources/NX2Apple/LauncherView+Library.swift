@@ -210,6 +210,14 @@ extension LauncherView {
             Label(loc.backend(LauncherView.integritySkippedNote), systemImage: "exclamationmark.triangle.fill")
                 .font(.manrope(12, .medium)).foregroundStyle(.yellow).fixedSize(horizontal: false, vertical: true)
         }
+        // S 级优化升级没做完（上次中途退出了启动器）：一行说明，点了打开「S 级优化升级」页接着升（11-18 维护者）
+        if game.sgradeIncomplete && !model.sgradeUpgrading(game.id) {
+            Button { model.sgradeUpgradeOpen = true } label: {
+                Label(txt("sgrade.upgrade.incomplete"), systemImage: "exclamationmark.arrow.circlepath")
+                    .font(.manrope(12, .medium)).foregroundStyle(SGradeCardView.gold).fixedSize(horizontal: false, vertical: true)
+            }
+            .buttonStyle(.plain).accessibilityIdentifier("sgrade.incomplete." + game.id)
+        }
         updateHintLines(game)
         }
         .accessibilityElement(children: .contain)
