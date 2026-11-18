@@ -47,18 +47,18 @@ class SelfsignSigner(unittest.TestCase):
     def test_signer_args_and_failure(self):
         key = self.t / "key.pem"; key.write_text("k")
         run = program_pack.selfsign_signer(self.c, str(self.tool), key, b"\x30\x82CERT")
-        run(self.t / "S2AImages-X.dylib", "TEAMFAKE01", "io.example.app")
+        run(self.t / "S2AImages-X.dylib", "TEAMFAKEAB", "io.example.app")
         (call,) = self.calls()
         self.assertEqual(call["args"][:2], ["--key", str(key)])
-        self.assertEqual(call["args"][4:], ["--bundle-id", "io.example.app", "--team", "TEAMFAKE01", str(self.t / "S2AImages-X.dylib")])
+        self.assertEqual(call["args"][4:], ["--bundle-id", "io.example.app", "--team", "TEAMFAKEAB", str(self.t / "S2AImages-X.dylib")])
         self.assertEqual(call["cert"], b"\x30\x82CERT".hex(), "证书字节原样交给工具")
         self.assertEqual(list(self.c.private.iterdir()), [], "证书临时文件用完就删")
         with patch.dict(os.environ, SS_FAIL="1"), self.assertRaises(Failure) as e:
-            run(self.t / "S2AImages-X.dylib", "TEAMFAKE01", "io.example.app")
+            run(self.t / "S2AImages-X.dylib", "TEAMFAKEAB", "io.example.app")
         self.assertIn("私钥和证书对不上", str(e.exception))
 
     def win(self, fp="fp1", ident=True):
-        key = self.t / "keys/TEAMFAKE01/key.pem"; key.parent.mkdir(parents=True, exist_ok=True); key.write_text("k")
+        key = self.t / "keys/TEAMFAKEAB/key.pem"; key.parent.mkdir(parents=True, exist_ok=True); key.write_text("k")
         listed = []
         def plume_identity(exe, team, log=None):
             listed.append(team); return dict(key=b"K", cert=b"CERT-" + fp.encode(), created="2026-01-01", key_fp=fp) if ident else None
@@ -68,22 +68,22 @@ class SelfsignSigner(unittest.TestCase):
         W, listed = self.win()
         with patch.dict(os.environ, S2A_SELFSIGN=str(self.tool)), patch.object(install, "trace", lambda *a, **k: None):
             for _ in range(2):
-                install.win_selfsign_signer(self.c, W, "plumesign.exe", "TEAMFAKE01")(self.t / "a.dylib", "TEAMFAKE01", "io.example.app")
-            self.assertEqual(listed, ["TEAMFAKE01"], "私钥没换：第二次不再联网列证书")
+                install.win_selfsign_signer(self.c, W, "plumesign.exe", "TEAMFAKEAB")(self.t / "a.dylib", "TEAMFAKEAB", "io.example.app")
+            self.assertEqual(listed, ["TEAMFAKEAB"], "私钥没换：第二次不再联网列证书")
             self.assertEqual([c["cert"] for c in self.calls()], [b"CERT-fp1".hex()] * 2)
             W2, listed2 = self.win(fp="fp2")
-            install.win_selfsign_signer(self.c, W2, "plumesign.exe", "TEAMFAKE01")(self.t / "a.dylib", "TEAMFAKE01", "io.example.app")
-            self.assertEqual((listed2, self.calls()[-1]["cert"]), (["TEAMFAKE01"], b"CERT-fp2".hex()), "换了私钥：重新列、用新证书")
+            install.win_selfsign_signer(self.c, W2, "plumesign.exe", "TEAMFAKEAB")(self.t / "a.dylib", "TEAMFAKEAB", "io.example.app")
+            self.assertEqual((listed2, self.calls()[-1]["cert"]), (["TEAMFAKEAB"], b"CERT-fp2".hex()), "换了私钥：重新列、用新证书")
 
     def test_win_falls_back_when_missing(self):
         W, _ = self.win()
         with patch.object(install, "trace", lambda *a, **k: None):
-            self.assertIsNone(install.win_selfsign_signer(self.c, W, "plumesign.exe", "TEAMFAKE01"), "源码树没编工具")
+            self.assertIsNone(install.win_selfsign_signer(self.c, W, "plumesign.exe", "TEAMFAKEAB"), "源码树没编工具")
             with patch.dict(os.environ, S2A_SELFSIGN=str(self.tool)):
                 W.plume_key_path = lambda team: self.t / "nokey.pem"
-                self.assertIsNone(install.win_selfsign_signer(self.c, W, "plumesign.exe", "TEAMFAKE01"), "还没有这个团队的私钥")
+                self.assertIsNone(install.win_selfsign_signer(self.c, W, "plumesign.exe", "TEAMFAKEAB"), "还没有这个团队的私钥")
                 W3, _ = self.win(ident=False)
-                self.assertIsNone(install.win_selfsign_signer(self.c, W3, "plumesign.exe", "TEAMFAKE01"), "列不出证书")
+                self.assertIsNone(install.win_selfsign_signer(self.c, W3, "plumesign.exe", "TEAMFAKEAB"), "列不出证书")
 
 
 if __name__ == "__main__":
