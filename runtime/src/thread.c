@@ -2158,6 +2158,9 @@ void s2a_snap_thaw(void) {
 #endif
     glock(); atomic_store(&g_frz, 0); atomic_store(&g_snap_frz, 0); pthread_cond_broadcast(&g_pause_cv); pthread_mutex_unlock(&G);
 }
+#if !defined(S2A_UNIT_TEST)
+void s2a_where(uint64_t a, char *b, size_t n); int s2a_frames_of(uint64_t fp, uint64_t *lr, int max);   // crash.c
+#endif
 int s2a_snap_freeze(int timeout_ms, int *nthr, int *nst) {
     glock(); atomic_store(&g_snap_frz, 1); atomic_store(&g_frz, 1); pthread_mutex_unlock(&G);
     uint64_t t0 = now_ns(), dl = t0 + (uint64_t)timeout_ms * 1000000;
@@ -2189,7 +2192,19 @@ int s2a_snap_freeze(int timeout_ms, int *nthr, int *nst) {
             glock(); int k = 0;
             for (thr_t *t = g_all; t; t = t->all) { if (snap_state(t)) continue; int raw = snap_state_raw(t);
                 if (k++ < 8) LOG("即时存档诊断：线程 id %llu 没到安全点（原始停法 %d、在系统调用 %d、最近 svc %#x、等待种类 %d、门帧%s切栈槽）", (unsigned long long)t->id, raw, atomic_load(&t->in_svc), t->last_svc, t->wkind,
-                                 t->svc_regs ? (((const uint64_t *)t->svc_regs)[816 / 8] ? "有" : "没有") : "（无）"); }
+                                 t->svc_regs ? (((const uint64_t *)t->svc_regs)[816 / 8] ? "有" : "没有") : "（无）");
+#if defined(__APPLE__) && !defined(S2A_UNIT_TEST)   // 单测单独链本文件、不链 crash.c
+                // 停在宿主函数里的（门里调宿主、宿主那边等着）：挂一下只取 pc 与帧链（只读内存、不取锁），放开后再符号化打日志——
+                //   挂着时打日志会和被挂线程手里的锁（malloc / dyld）互等。定因用：说清卡在哪个宿主函数
+                if (k <= 8 && t->mport && thread_suspend(t->mport) == KERN_SUCCESS) {
+                    arm_thread_state64_t st; mach_msg_type_number_t cnt = ARM_THREAD_STATE64_COUNT; uint64_t pc = 0, lr[12]; int nf = 0;
+                    if (thread_get_state(t->mport, ARM_THREAD_STATE64, (thread_state_t)&st, &cnt) == KERN_SUCCESS) {
+                        pc = (uint64_t)__darwin_arm_thread_state64_get_pc(st); nf = s2a_frames_of((uint64_t)__darwin_arm_thread_state64_get_fp(st), lr, 12); }
+                    thread_resume(t->mport);
+                    if (pc) { char w[160]; s2a_where(pc, w, sizeof w); LOG("即时存档诊断：线程 id %llu 现在 pc %s", (unsigned long long)t->id, w);
+                        for (int f = 0; f < nf; f++) { s2a_where(lr[f], w, sizeof w); LOG("即时存档诊断：  #%d %s", f, w); } } }
+#endif
+            }
             pthread_mutex_unlock(&G);
             *nthr = n; s2a_snap_thaw(); return -1; }
         usleep(100);
