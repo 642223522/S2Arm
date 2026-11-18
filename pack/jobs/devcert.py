@@ -25,10 +25,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import zipfile
 from pathlib import Path
 
-from core import Failure, atomic, read
+from core import Failure, atomic, read, replace_retrying
 
 # S2Arm 要的权限：提高内存上限（大游戏必需，Apple ID 模式也带）+ 扩展寻址（付费账号才有，大地址窗口）；描述文件没开就不带、提示大游戏可能闪退
 WANT = ("com.apple.developer.kernel.increased-memory-limit", "com.apple.developer.kernel.extended-virtual-addressing")
@@ -352,6 +353,20 @@ def secrets(c, eid=None):
     return getattr(c, "devcert_secrets", None) or Secrets(entry_dir(c, eid) if eid else folder(c))
 
 
+def _put(dst, src=None, data=None):
+    """整份换文件（临时文件 + 改名）：签名读这些文件时不拿锁，不能让它读到半份"""
+    dst = Path(dst)
+    tmp = dst.with_name(dst.name + ".tmp")
+    try:
+        if src is not None:
+            shutil.copy2(src, tmp)
+        else:
+            tmp.write_bytes(data)
+        replace_retrying(tmp, dst)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def _udid(u):
     return str(u or "").strip().upper()
 
@@ -377,22 +392,20 @@ def _udids(prof):
 
 @contextlib.contextmanager
 def _locked(c):
-    """devcert 读改写锁；同一作业里嵌套调用不再拿（可重入）"""
-    if getattr(c, "_devcert_lock_depth", 0):
-        c._devcert_lock_depth += 1
-        try:
-            yield
-        finally:
-            c._devcert_lock_depth -= 1
+    """devcert 读改写锁；同一作业、同一线程里嵌套调用不再拿（可重入）。计数按线程分：EarlyInstall 在子线程里拿锁时照常排队"""
+    held = c.__dict__.setdefault("_devcert_lock_held", set())
+    me = threading.get_ident()
+    if me in held:
+        yield
         return
     import filelock
     try:
         with filelock.held(folder(c) / ".state.lock", wait_s=LOCK_WAIT_S):
-            c._devcert_lock_depth = 1
+            held.add(me)
             try:
                 yield
             finally:
-                c._devcert_lock_depth = 0
+                held.discard(me)
     except filelock.Busy as e:
         raise Failure("开发者证书正被另一个任务读写，稍后再试。") from e  # 非玩家句
 
@@ -429,10 +442,10 @@ def store(c):
                 sha, prof = stray
                 eid = _fresh_id(s, str(prof.get("UUID") or sha).lower())
                 to = entry_dir(c, eid)
-                to.mkdir(parents=True, exist_ok=True, mode=0o700)
+                to.mkdir(parents=True, exist_ok=True)
                 for n in ROOT_FILES:
                     if (folder(c) / n).is_file():
-                        shutil.copy2(folder(c) / n, to / n)
+                        _put(to / n, folder(c) / n)
                 s["entries"][eid] = dict(certSha1=sha, profileUuid=str(prof.get("UUID") or "").lower(), appId=_appid(prof),
                                          bundleId=root.get("bundleId", ""), teamId=root.get("teamId", ""), teamName=root.get("teamName", ""),
                                          profileName=prof.get("Name") or "", imported=root.get("imported") or _now())
@@ -459,7 +472,7 @@ def _write(c, s):
     for n in ROOT_FILES:   # 给旧版的那份先写、条目表最后写：中途断了不会让删掉 / 换掉的那张复活
         src = entry_dir(c, first) / n
         if src.is_file():
-            shutil.copy2(src, d / n)
+            _put(d / n, src)
         else:
             (d / n).unlink(missing_ok=True)
     m = s["entries"][first]
@@ -493,6 +506,12 @@ def _newest(s, ids):
     return max(ids, key=lambda k: s["entries"][k].get("imported") or "") if ids else None
 
 
+def _by_installed(c, s, udid):
+    """包名对得上这台现装 App、描述文件又不排除这台的那几条（同团队两份通配描述文件算出的包名一样：管不管这台先筛掉）"""
+    bid = _installed_bid(c, udid)
+    return [k for k, v in s["entries"].items() if bid and v.get("bundleId") == bid and covers(c, k, udid) is not False]
+
+
 def resolve(c, udid, s=None):
     """这台用哪个条目：玩家选过的（还在）> 这台现装 App 包名对得上的 > 描述文件管这台的 > 只有一张 > None（要玩家选）；同档几张取最新导入的"""
     s = s or store(c)
@@ -502,8 +521,7 @@ def resolve(c, udid, s=None):
         chosen = s["devices"].get(_udid(udid))
         if chosen in s["entries"]:
             return chosen
-        bid = _installed_bid(c, udid)
-        hit = _newest(s, [k for k, v in s["entries"].items() if bid and v.get("bundleId") == bid])
+        hit = _newest(s, _by_installed(c, s, udid))
         hit = hit or _newest(s, [k for k in s["entries"] if covers(c, k, udid)])
         if hit:
             return hit
@@ -511,28 +529,36 @@ def resolve(c, udid, s=None):
 
 
 def needs_choice(c, udid, s=None):
-    """启动器要不要问这台：证书模式、有证书、这台没选过、也没有包名对得上它现装 App 的（老玩家已在用的那台不问）"""
+    """启动器要不要问这台：证书模式、不止一张证书、这台没选过、也没有包名对得上它现装 App 的（老玩家已在用的那台不问）。
+    只有一张不问：同旧版，就用它"""
     s = s or store(c)
-    if not (udid and s["active"] and s["entries"]):
+    if not (udid and s["active"] and len(s["entries"]) > 1):
         return False
     if s["devices"].get(_udid(udid)) in s["entries"]:
         return False
-    bid = _installed_bid(c, udid)
-    return not any(bid and v.get("bundleId") == bid for v in s["entries"].values())
+    return not _by_installed(c, s, udid)
 
 
 def bind(c, udid):
-    """作业认出目标设备后调（每次都覆盖，空串 = 不绑）：本作业之后的证书读取都按这台"""
-    c.devcert_udid = _udid(udid)
+    """作业认出目标设备后调（每次都覆盖，空串 = 不绑）：本作业之后的证书读取都按这台。换了设备才清掉本作业定下的那张"""
+    u = _udid(udid)
+    if getattr(c, "devcert_udid", None) != u:
+        c.devcert_entry = None
+    c.devcert_udid = u
 
 
 CHOOSE = "有几张开发者证书，这台设备还没选用哪一张：在启动器里给这台选一张证书再装。"
 
 
 def _need(c, s):
+    """本作业用的那张：第一次挑定后记在作业对象上（包名、团队、签名、remember 都是这一张；中途有人导入新证书也不换）"""
+    eid = getattr(c, "devcert_entry", None)
+    if eid in s["entries"]:
+        return eid
     eid = resolve(c, getattr(c, "devcert_udid", "") or "", s)
     if eid is None:
         raise Failure(CHOOSE, code="devcert_choose")
+    c.devcert_entry = eid
     return eid
 
 
@@ -577,15 +603,14 @@ def stored(c, eid=None):
 
 
 def remember(c):
-    """App 装好了：这台还没记过选哪张 → 记下这次用的（作业层自己挑的那张，下次不再挑）。尽力而为：记不下不影响已装好的结果"""
-    udid = getattr(c, "devcert_udid", "")
+    """App 装好了：这台还没记过选哪张 → 记下这次签名实际用的那张（_need 定在作业对象上的，不重挑）。尽力而为：记不下不影响已装好的结果"""
+    udid, eid = getattr(c, "devcert_udid", ""), getattr(c, "devcert_entry", None)
     try:
-        if not udid or not active(c):
+        if not udid or not eid or not active(c):
             return
         with _locked(c):
             s = store(c)
-            eid = resolve(c, udid, s)
-            if eid and s["devices"].get(udid) not in s["entries"]:
+            if eid in s["entries"] and s["devices"].get(udid) not in s["entries"]:
                 s["devices"][udid] = eid
                 _write(c, s)
     except (Failure, OSError) as e:
@@ -682,15 +707,15 @@ def operation(c):
                 if old and old != sha:   # 先删旧密码再存新的：Windows 两份都在这个条目目录里，后删会把刚存的删掉
                     _drop_secret(c, s, old, eid)
                 to = entry_dir(c, eid)
-                to.mkdir(parents=True, exist_ok=True, mode=0o700)
+                to.mkdir(parents=True, exist_ok=True)
                 secrets(c, eid).save(sha, password)
                 for k, v in s["entries"].items():   # 同一张证书的别的条目：换成这次规整的 p12（都用最新的密码打得开）
                     if k != eid and v.get("certSha1") == sha:
-                        shutil.copy2(norm, entry_dir(c, k) / "cert.p12")
+                        _put(entry_dir(c, k) / "cert.p12", norm)
                         if os.name == "nt":
                             secrets(c, k).save(sha, password)
                 os.replace(norm, to / "cert.p12")
-                (to / "profile.mobileprovision").write_bytes(prof)
+                _put(to / "profile.mobileprovision", data=prof)
                 os.chmod(to / "profile.mobileprovision", 0o600)
                 s["entries"][eid] = dict(certSha1=sha, profileUuid=str(parsed.get("UUID") or "").lower(), appId=_appid(parsed), bundleId=got["bundleId"],
                                          teamId=got["teamId"], teamName=got["teamName"], profileName=parsed.get("Name") or "", imported=_now())

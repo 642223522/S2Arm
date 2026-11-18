@@ -263,20 +263,59 @@ class MultiCert(unittest.TestCase):
         with self.assertRaises(Failure) as e:
             devcert.operation(self.ctx(action="choose", device=self.U1, cert="nope"))
         self.assertEqual(e.exception.code, "devcert_missing")
-        devcert.remember(self.on(self.U2))   # 自动挑的装好了：记下
+        c = self.on(self.U2); devcert.stored(c); devcert.remember(c)   # 自动挑的签好装好了：记下
         self.assertEqual(devcert.store(self.ctx())["devices"], {self.U3: self.PB, self.U1: self.PB, self.U2: self.PB})
 
     def test_status_asks_once_per_device(self):
         self.imp("a", "a")
         st = devcert.operation(self.ctx(action="status", device=self.U2))
-        self.assertEqual((st["needsChoice"], st["chosen"], st["current"]), (True, None, self.PA))   # 只有一张也问（玩家自己定）；作业层照旧用它
+        self.assertEqual((st["needsChoice"], st["chosen"], st["current"]), (False, None, self.PA))   # 只有一张不问：同旧版，就用它
         self.assertEqual([(x["entry"], x["deviceListed"]) for x in st["certs"]], [(self.PA, False)])
+        self.imp("a", "c", add=True)   # 出包页「再导入一张」（不带设备）：有两张了，没选过的那台要问
+        self.assertTrue(devcert.operation(self.ctx(action="status", device=self.U3))["needsChoice"])
         self.imp("b", "b", device=self.U2, add=True)   # 选证书窗里「导入新证书」：导入即给这台选它
         st = devcert.operation(self.ctx(action="status", device=self.U2))
         self.assertEqual((st["needsChoice"], st["chosen"], st["cert"]["bundleId"]), (False, self.PB, "com.foo.ipad"))
-        self.assertEqual({x["entry"]: x["deviceListed"] for x in st["certs"]}, {self.PA: False, self.PB: True})
+        self.assertEqual({x["entry"]: x["deviceListed"] for x in st["certs"]}, {self.PA: False, self.PC: True, self.PB: True})
         devcert.operation(self.ctx(action="use", active=False))
         self.assertFalse(devcert.operation(self.ctx(action="status", device=self.U3))["needsChoice"])   # Apple ID 签名时不问
+
+    def test_installed_bid_needs_profile_cover(self):
+        # 同团队两份通配描述文件（A 管 U1、D 管 U2）算出的包名一样：U1 现装的那个包名不能把 D 挑给 U1（签出来装不上）
+        self.imp("a", "a")
+        (self.t / "d.mobileprovision").write_bytes(profile(devices=(self.U2,), uuid="dddddddd-0000-0000-0000-000000000004", name="iPad wildcard"))
+        self.imp("a", "d", add=True)
+        self.installed(self.U1, "io.s2arm.games.abcde12345")
+        self.installed(self.U2, "io.s2arm.games.abcde12345")
+        self.assertEqual(devcert.state(self.on(self.U1))["entry"], self.PA)
+        self.assertEqual(devcert.state(self.on(self.U2))["entry"], "dddddddd-0000-0000-0000-000000000004")
+        self.installed(self.U3, "io.s2arm.games.abcde12345")   # 哪份都不管 U3：包名对得上也不算，要问
+        self.assertTrue(devcert.needs_choice(self.ctx(), self.U3))
+
+    def test_remember_writes_entry_used_for_signing(self):
+        # 签名和记录之间导入了一张更新、也管这台的：记下的仍是签名时用的那张，下次包名不变
+        self.imp("a", "a")
+        c = self.on(self.U1)
+        self.assertEqual(devcert.stored(c)[0].parent.name, self.PA)
+        (self.t / "e.mobileprovision").write_bytes(profile(appid=f"{TEAM}.com.foo.newer", devices=(self.U1,), uuid="eeeeeeee-0000-0000-0000-000000000005", name="newer"))
+        self.imp("a", "e", add=True)
+        self.assertEqual(devcert.state(c)["entry"], self.PA)   # 同一作业里不换
+        devcert.remember(c)
+        self.assertEqual(devcert.store(self.ctx())["devices"], {self.U1: self.PA})
+        c2 = self.ctx(); devcert.remember(c2)   # 没签过名的作业：不记
+        self.assertEqual(devcert.store(self.ctx())["devices"], {self.U1: self.PA})
+
+    def test_lock_reentry_is_per_thread(self):
+        # 同一作业对象、另一线程：要等主线程放锁，不能当成重入直接进
+        import threading
+        self.imp("a", "a")
+        c, order = self.ctx(), []
+        with devcert._locked(c):
+            th = threading.Thread(target=lambda: (devcert._locked(c).__enter__(), order.append("thread")))
+            th.start(); th.join(0.5)
+            order.append("main")
+        th.join(5)
+        self.assertEqual(order, ["main", "thread"])
 
     def test_installed_here_marks_current_app(self):
         self.imp("a", "a"); self.imp("b", "b", add=True)

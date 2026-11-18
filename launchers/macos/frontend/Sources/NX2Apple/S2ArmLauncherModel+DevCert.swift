@@ -1,6 +1,6 @@
 // S2Arm（不是上游文件）：开发者证书签名的 Mac 一侧（v0.2.4，作业层 pack/jobs/devcert.py）。
 //   出包页「签名方式」选 Apple ID 或「我的开发者证书」；证书导入后出包装机都用它签。
-//   几张证书（#487）：按设备买的证书一台一张。选中的设备（插线或经隧道连着、有 UDID）第一次在证书签名下出现、还没给它选过证书时，
+//   几张证书（#487）：按设备买的证书一台一张。导入了不止一张时，选中的设备（插线或经隧道连着、有 UDID）第一次在证书签名下出现、还没给它选过证书时，
 //   弹窗问这台用哪张（或导入一张新的），记在作业层 devcert/state.json；之后这台装机 / 更新都用它，不再问。
 //   体检里的问题只提示、不挡出包和装机；密码只经环境变量交给导入那一次作业，不写进请求文件。
 import AppKit
@@ -27,8 +27,8 @@ extension S2ArmLauncherModel {
         catch { reportFailure("s2arm.fail.devCert", error, passive: true) }
     }
 
-    /// 几张证书（#487）：证书签名开着时，不管在哪一页都每 5 秒看一次连着的设备（同出包页设备行的探测），新插上的那台没选过证书就弹窗。
-    ///   出包页的设备行自己也在探测，两边都走 refreshTargets → askDevCertIfNew；Apple ID 签名时不探测
+    /// 几张证书（#487）：证书签名开着、导入了不止一张时，不管在哪一页都每 5 秒看一次连着的设备（同出包页设备行的探测），新插上的那台没选过证书就弹窗。
+    ///   出包页的设备行自己也在探测，两边都走 refreshTargets → askDevCertIfNew；Apple ID 签名、或只有一张证书（不会问）时不探测
     func devCertWatchLoop() {
         Task { [weak self] in
             while !Task.isCancelled {
@@ -36,7 +36,7 @@ extension S2ArmLauncherModel {
                 guard let self else { return }
                 guard NSApp.isActive else { continue }
                 if self.devCert == nil { await self.reloadDevCert() }
-                guard self.devCert?.active == true, self.devCertChoice == nil else { continue }
+                guard self.devCert?.active == true, (self.devCert?.certs.count ?? 0) > 1, self.devCertChoice == nil else { continue }
                 await self.refreshTargets()
             }
         }
