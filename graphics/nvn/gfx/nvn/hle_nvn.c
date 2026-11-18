@@ -3227,7 +3227,17 @@ static void nvn2_win_builder_defaults(NVNwindowBuilder *b);   // 「NVN2 入口�
 NVN(nvnWindowBuilderSetDefaults, void, NVNwindowBuilder *b) { NVNdevice *dev = WB(b)->dev; memset(b, 0, sizeof(win_builder_t)); WB(b)->dev = dev; WB(b)->interval = 1;
     if (nvn2_on()) nvn2_win_builder_defaults(b); }   // NVN2 字段在 0x40 之后：只有 Switch 2 的构建器有那么大
 NVN(nvnWindowBuilderSetDevice, void, NVNwindowBuilder *b, NVNdevice *d) { WB(b)->dev = d; }
-NVN(nvnWindowBuilderSetNativeWindow, void, NVNwindowBuilder *b, NVNnativeWindow w) { WB(b)->native = w; }
+#if defined(__ANDROID__)
+// 安卓平台件 android/native/nvn/guest_window_crop.c 提供（原生窗口裁剪交直连上屏，#1335）。只有安卓有这个实现：
+//   苹果的 iOS / Mac 链接不放行弱未定义（iOS 全量编译链不过），所以整段只在安卓编
+extern void nvn_plat_guest_window_watch(void *) __attribute__((weak));
+#endif
+NVN(nvnWindowBuilderSetNativeWindow, void, NVNwindowBuilder *b, NVNnativeWindow w) {
+    WB(b)->native = w;
+#if defined(__ANDROID__)
+    if (nvn_plat_guest_window_watch) nvn_plat_guest_window_watch(w);
+#endif
+}
 NVN(nvnWindowBuilderSetTextures, void, NVNwindowBuilder *b, int n, NVNtexture *const *t) {
     if (n < 0 || n > 4) { LOG("【红】 WindowBuilderSetTextures count %d", n); n = n < 0 ? 0 : 4; }
     WB(b)->ntex = n; for (int i = 0; i < n; i++) WB(b)->tex[i] = t[i];
