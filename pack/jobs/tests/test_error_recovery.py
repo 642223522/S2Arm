@@ -227,6 +227,21 @@ raise SystemExit(main.main())
         self.assertEqual(explain(Failure("No space left on device")).code, "job_failed")
         self.assertEqual(explain(ValueError("Check keys")).code, "job_failed")
 
+    def test_windows_app_control_block_named(self):
+        # #0745b9：Windows 应用控制（4551 智能应用控制 / WDAC、1260 组策略、225 / 226 杀毒软件）拦下我们自带的工具 → app_control_blocked，
+        #   上屏点名被拦的工具（winproc.popen 补的文件名）；原先落到「本地任务失败，请检查日志和输入」。errno 写成 EACCES 也先认应用控制
+        for code_w in (4551, 1260, 225, 226):
+            with self.subTest(winerror=code_w):
+                e = OSError(errno.EACCES, "应用程序控制策略已阻止此文件。", r"C:\S2Arm\Engine\tools\nx_reader.exe")
+                e.winerror = code_w
+                got = explain(e)
+                self.assertEqual(got.code, "app_control_blocked")
+                self.assertIn("「nx_reader.exe」", str(got))
+                self.assertIn(f"WinError {code_w}", got.internal)
+        e = OSError(errno.EINVAL, "x"); e.winerror = 4551
+        self.assertIn("「S2Arm 自带的工具」", str(explain(e)), "不带文件名照样认")
+        self.assertIn("app_control_blocked", RECOVERY)
+
     def test_unrecognized_volume_during_classification_does_not_mask_original_error(self):
         lib = self.root / "classify-volume-lib"
         src = self.root / "classify-volume-src"

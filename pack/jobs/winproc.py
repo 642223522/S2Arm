@@ -203,6 +203,10 @@ class _Job:
             raise OSError('job membership exceeds safety bound')
 
 
+# Windows 应用控制拦下要起的程序：4551 应用程序控制策略（智能应用控制 / WDAC）、1260 组策略（软件限制 / AppLocker）、225 / 226 杀毒软件判有毒
+APP_CONTROL_BLOCKED = (4551, 1260, 225, 226)
+
+
 def popen(args, **kwargs):
     """Create suspended, attach private job, then run. No breakaway window."""
     # Windows CreateProcess does not use env['PATH'] to locate its image.
@@ -223,19 +227,29 @@ def popen(args, **kwargs):
             _jobs[process.pid] = job
         _resume_initial_thread(process)
         return process
-    except BaseException:
-        if process is not None:
-            # This is the exact Popen-owned child, even if assignment failed.
-            with contextlib.suppress(OSError):
-                process.kill()
-                process.wait(timeout=5)
-            for stream in (process.stdin, process.stdout, process.stderr):
-                if stream is not None:
-                    stream.close()
-            with _jobs_lock:
-                _jobs.pop(process.pid, None)
-        job.close()
+    except OSError as error:
+        # 应用控制拦下（APP_CONTROL_BLOCKED，#0745b9）：CreateProcess 的报错不带文件名，补上被拦的那个工具，errors.explain 据此说清是哪个
+        if process is None and getattr(error, 'winerror', None) in APP_CONTROL_BLOCKED and not error.filename:
+            error.filename = str(kwargs.get('executable') or args[0])
+        _popen_cleanup(job, process)
         raise
+    except BaseException:
+        _popen_cleanup(job, process)
+        raise
+
+
+def _popen_cleanup(job, process):
+    if process is not None:
+        # This is the exact Popen-owned child, even if assignment failed.
+        with contextlib.suppress(OSError):
+            process.kill()
+            process.wait(timeout=5)
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+        with _jobs_lock:
+            _jobs.pop(process.pid, None)
+    job.close()
 
 
 def progress(process):

@@ -135,6 +135,19 @@ class WindowsBoundaries(OriginalContracts):
         import winproc
         self.w = winproc
 
+    def test_app_control_block_names_the_tool(self):
+        # #0745b9：CreateProcess 被应用控制拦下（WinError 4551）不带文件名 → popen 补上要起的程序，errors.explain 点名；私有作业对象照样关掉
+        def blocked(*a, **k):
+            e = OSError(13, "应用程序控制策略已阻止此文件。"); e.winerror = 4551
+            raise e
+        exe = str(Path(sys.executable))
+        with patch.object(subprocess, "Popen", blocked):
+            with self.assertRaises(OSError) as got:
+                self.w.popen([exe, "-c", "pass"])
+        self.assertEqual((got.exception.winerror, got.exception.filename), (4551, exe))
+        import errors
+        self.assertEqual(errors.explain(got.exception).code, "app_control_blocked")
+
     def child(self, *args, managed=True):
         spawn = self.w.popen if managed else subprocess.Popen
         p = spawn([sys.executable,'-u','-c',*args],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
