@@ -90,6 +90,16 @@ extension EnvironmentValues {
         set { self[ShellManageSavesKey.self] = newValue }
     }
 }
+/// Goes back to the game's saved moment (instant snapshot). Nil, or no snapshot for the game: no item in the card's menu.
+private struct ShellSnapshotKey: EnvironmentKey {
+    nonisolated(unsafe) static let defaultValue: (available: (String) -> Bool, restore: (String) -> Void)? = nil
+}
+extension EnvironmentValues {
+    var shellSnapshot: (available: (String) -> Bool, restore: (String) -> Void)? {
+        get { self[ShellSnapshotKey.self] }
+        set { self[ShellSnapshotKey.self] = newValue }
+    }
+}
 public extension Notification.Name {
     /// The host asks the library to open its own settings (the Home Screen quick action Settings).
     static let shellOpenSettings = Notification.Name("S2AShellOpenSettings")
@@ -103,8 +113,12 @@ struct GameTileMenu: ViewModifier {
     let openSettings: () -> Void
     @Environment(\.shellAskDelete) private var askDelete
     @Environment(\.shellManageSaves) private var manageSaves
+    @Environment(\.shellSnapshot) private var snapshot
     func body(content: Content) -> some View {
         content.contextMenu {
+            if let snapshot, detail.game.state == .playable, snapshot.available(detail.id) {
+                Button { snapshot.restore(detail.id) } label: { Label(ShellStrings.text("Go back to the saved moment"), systemImage: "clock.arrow.circlepath") }
+            }
             Button { select(detail.id); openSettings() } label: { Label(ShellStrings.text("Game settings"), systemImage: "slider.horizontal.3") }
             if let manageSaves {
                 Button { manageSaves(detail.id) } label: { Label(ShellStrings.text("Manage saves…"), systemImage: "externaldrive") }
