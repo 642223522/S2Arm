@@ -6775,7 +6775,7 @@ static void shmap_load_once(void) {
     uint8_t geo_pt;   // json geometry.passthrough: a passthrough geometry shader whose library has the fast path's _bgs<i> / _bgc (Dsh.cs GeometryFinish; nvn_geometry.inc geo_draw)
     id<MTLComputePipelineState> geo_pso; uint8_t geo_pso_bad;   // geo_pso_bad：建几何计算管线失败过，之后这支的几何绘制直接跳过、不重建（11-01 异度3 Spare-host：编译器内部错误每笔重建 13337 次）
     NSMutableDictionary<NSNumber *, id> *fn_t;   // S2Arm: per-output typed entry points main0_t built when a pipeline's attachments need them (pso_fout_variant), by need mask; NSNull = could not build
-    id vp_main; uint32_t vp_mask; uint8_t vp_st;   // S2Arm: the padded variant <key>_vp<mask> (vp_kick) and the user(locn) it adds; vp_st SE_* as se_st, all under g_vp_mu
+    id vp_main; uint32_t vp_mask; uint8_t vp_st, vp_pk;   // S2Arm: the padded variant <key>_vp<mask> (vp_kick) and the user(locn) it adds; vp_st SE_* as se_st, all under g_vp_mu
     id se_main; uint8_t se_st, se_fold;   // se_fold: the variant can read folded linear textures (its library has s2a_se_fold; se_lib_fold). S2Arm #800: the reduction variant <key>_se's main0 (se_fn) and where it stands (SE_NONE / SE_BUSY / SE_READY / SE_FAIL, atomic: se_want, se_done)
     uint8_t nts, size_abi, size_exact; int8_t exact; struct { uint8_t idx, img, reg; } ts[72];   // S2Arm widen: the scaled fetches (json tex_scales: render_scale index, image?, replay slot) and scale_exact (-1 = library without it); wd_tex_scales
     uint8_t ts_lost;   // S2Arm internal resolution: tex_scales entries not loaded (out of range): the shader counts as not exact for scaled textures (rs_support)
@@ -7074,7 +7074,8 @@ static int lp_kind_of(const char *name, int json) {
     if (!strcmp(s, "bf")) return json ? -1 : LP_K_BF;
     if (!strcmp(s, "bv")) return json ? -1 : LP_K_BV;
     if (!strcmp(s, "ft")) return json ? -1 : LP_K_FT;   // a pixel shader's typed-output variants (dmsh_build.py ft_finish)
-    if (!strcmp(s, "se")) return json ? -1 : LP_K_SE;   // a shader's sampler-emulation variant, precompiled where the census saw it used (se_packed)
+    if (!strcmp(s, "se")) return json ? -1 : LP_K_SE;   // a shader's sampler-emulation variant (se_packed; 0.6.0: built for every key the translator can rewrite)
+    if (!strcmp(s, "vp")) return json ? -1 : LP_K_VP;   // a vertex shader's padded variant for the union of every pixel shader's user(locn) inputs (vp_pack, Build.cs VpFinish)
     if (!strcmp(s, "bgv")) return json ? LP_K_BGVJSON : LP_K_BGV;
     if (!strcmp(s, "bgc")) return json ? LP_K_BGCJSON : LP_K_BGC;   // passthrough-geometry fast path (nvn_geometry.inc geo_draw)
     if (s[0] == 'b' && s[1] == 'g' && s[2] == 's' && s[3] >= '0' && s[3] <= '9' && !s[4]) return (json ? LP_K_BGSJSON : LP_K_BGS) + (s[3] - '0');
@@ -9385,6 +9386,23 @@ static uint32_t pso_pair_miss(NvShader *vs, NvShader *fs) {   // the user(locn) 
     if (!vs || !fs || !(vs->rf.has_user & 1) || !(fs->rf.has_user & 2)) return 0;
     return fs->rf.user_in & ~vs->rf.user_out;
 }
+// 0.6.0 出包着色器全覆盖：the package's <key>_vp (container kind LP_K_VP, Build.cs VpFinish) pads the union of every pixel shader's user(locn) inputs the vertex shader does not
+//   write, so it covers any pair's miss; its mask rides in the library as an empty function dm_vp_mask_<hex>. Tried once per shader (vp_pk); not there / unusable: the device makes
+//   one per pair at first use as before (vp_ask)
+static void vp_pack(NvShader *vs) {
+    pthread_mutex_lock(&g_vp_mu); int tried = vs->vp_pk, st = vs->vp_st; vs->vp_pk = 1; pthread_mutex_unlock(&g_vp_mu);
+    if (tried || st == SE_READY || st == SE_BUSY || !lp_pack_get()) return;
+    char nm[32]; snprintf(nm, sizeof nm, "%.16s_vp", vs->key);
+    NSError *e = nil; id<MTLLibrary> lib = lib_from_pack(nm, &e); if (!lib) return;
+    uint32_t mask = 0;
+    for (NSString *n in lib.functionNames) if ([n hasPrefix:@"dm_vp_mask_"]) mask = (uint32_t)strtoul(n.UTF8String + 11, NULL, 16);
+    id<MTLFunction> f = lib_entry(lib, vs->ventry);
+    NSUInteger al = f && vs->rf.nb ? [f newArgumentEncoderWithBufferIndex:vs->rf.abi].encodedLength : vs->arg_len;
+    if (!f || !mask || al != vs->arg_len) { MLOG("【红】 packaged padded vertex variant %s %s: made on the device per pair instead", nm, !f ? "has no such entry" : !mask ? "carries no mask" : "takes another argument buffer than the library's entry"); return; }
+    pthread_mutex_lock(&g_vp_mu); int took = vs->vp_st != SE_READY; if (took) { vs->vp_main = f; vs->vp_mask = mask; vs->vp_st = SE_READY; } pthread_mutex_unlock(&g_vp_mu);
+    static _Atomic uint64_t n; uint64_t c = took ? atomic_fetch_add(&n, 1) + 1 : 0;
+    if (c && (c <= 8 || !(c & (c - 1)))) MLOG("vertex %s: packaged padded variant in use (user(locn) mask %#x), no device build (%llu so far)", vs->key, mask, (unsigned long long)c);
+}
 static id<MTLFunction> vp_fn(NvShader *vs, uint32_t miss) {   // the padded variant when it covers miss, else nil (any thread)
     pthread_mutex_lock(&g_vp_mu); id<MTLFunction> f = vs->vp_st == SE_READY && (vs->vp_mask & miss) == miss ? vs->vp_main : nil; pthread_mutex_unlock(&g_vp_mu);
     return f;
@@ -9596,9 +9614,10 @@ static void pso_predict_rest(void);
 // Checked before any pipeline with the pair is built (pso_get_, pso_pend_kick, the prewarm). report: one red line, and the pair goes to pso_user.tsv as a P row, from which the next
 // build's pairs (direct_lib.sh → shader_pairs.tsv) let vs_pad give the vertex shader those outputs as (0,0,0,1), what the hardware reads there. Positions unknown on either side
 // (a library from before user_locs, or a fallback translation without them): as before
-static uint32_t pso_pair_miss(NvShader *vs, NvShader *fs); static id<MTLFunction> vp_fn(NvShader *vs, uint32_t miss);
+static uint32_t pso_pair_miss(NvShader *vs, NvShader *fs); static id<MTLFunction> vp_fn(NvShader *vs, uint32_t miss); static void vp_pack(NvShader *vs);
 static int pso_pair_ok(NvShader *vs, NvShader *fs, int report) {
     uint32_t miss = pso_pair_miss(vs, fs);
+    if (miss) vp_pack(vs);   // the package's union padded variant first (0.6.0): covers every pair, so the first draw needs no device build
     if (!miss || vp_fn(vs, miss)) return 1;   // the vertex shader's padded variant writes them (vp_ask)
     if (report) { pso_user_record("P\t%.16s\t%.16s\n", vs->key, fs->key);
         static unsigned n; if (n++ < 16) MLOG("vertex %s does not write user(locn) mask %#x that fragment %s reads: its draws wait for the padded variant (vp_ask)", vs->key, miss, fs->key); }
