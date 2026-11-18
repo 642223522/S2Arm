@@ -13,9 +13,7 @@
 void s2a_snap_handout_id(uint64_t v, const char *id) __attribute__((weak));
 void s2a_snap_handout_range(uint64_t lo, uint64_t n, const char *name) __attribute__((weak));
 int nvn_snap_tex_save(FILE *f, void *tex) __attribute__((weak)); void *nvn_snap_tex_load(FILE *f) __attribute__((weak));   // 直连层 nvn_snap.inc
-// 弱链接[nvntest]：s2a_snap_handout_range（runtime/src/snapshot.c 提供；图形单测不链宿主）
-// 弱链接[nvntest]：nvn_snap_tex_save（直连层 nvn_snap.inc 提供）
-// 弱链接[nvntest]：nvn_snap_tex_load（同上）
+// 这几个弱符号的「弱链接[nvntest]」登记写在 hle_vk.m（登记工具只扫 .m / .c）
 void vs_ho(const void *p, const char *fmt, const char *arg) {
     if (!p || !s2a_snap_handout_id || !s2a_snap_mode || !s2a_snap_mode()) return;
     char id[128]; snprintf(id, sizeof id, fmt, arg); s2a_snap_handout_id((uint64_t)(uintptr_t)p, id);
