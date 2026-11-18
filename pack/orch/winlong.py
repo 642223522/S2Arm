@@ -112,7 +112,15 @@ def _wrap_realpath():
     original = ntpath.realpath
 
     def realpath(path, **kwargs):
-        result = original(path, **kwargs)
+        try:
+            result = original(path, **kwargs)
+        except OSError:
+            # 不严格模式（缺省）下 Python 只吞几种「解析不了」的错误码（ntpath._getfinalpathname_nonstrict 的 allowed_winerror），
+            #   有的盘的驱动（内存盘 / 虚拟盘 / 网盘挂载）取最终路径回 WinError 6「控制代码无效」，整个出包停在轻阶段（#1582 D-AHTT，4 次）。
+            #   不严格就按文档语义退回规整后的绝对路径；要求严格的照旧抛
+            if kwargs.get("strict"):
+                raise
+            result = ntpath.abspath(path)
         text = os.environ.get("S2A_SHORT_ROOTS")
         if not text or not isinstance(result, str):
             return result

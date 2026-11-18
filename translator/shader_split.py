@@ -518,13 +518,27 @@ class Mapped(mmap.mmap):
     def __contains__(self, x): return self.find(x) >= 0 if isinstance(x, (bytes, bytearray)) else super().__contains__(x)
     def __iter__(self): return iter(memoryview(self))
 
+class MappedSpan(romfs_list._ImageSpan):
+    """镜像里起点不对齐的大文件（romfs_list.map_file 的 _ImageSpan：文件映射、下标平移）：补上 Mapped 的「多字节包含」按内容判与逐字节遍历给整数"""
+    def __contains__(self, x): return self.find(x if isinstance(x, (bytes, bytearray)) else bytes([x])) >= 0
+    def __iter__(self): return iter(memoryview(self))
+
 def map_big(path):
-    """大文件按 Mapped 映射（同 Mapped(open(path).fileno(), 0, ACCESS_READ)）。RomFS 只有镜像 romfs.std（不落散文件）时没有可映射的文件：
-    拷进同长的匿名 Mapped（页由系统按需给、可换出，同 graphics/nvn/tools/romfs_list.py map_file 不对齐那条路），读法与盘上映射相同"""
+    """大文件按 Mapped 映射（同 Mapped(open(path).fileno(), 0, ACCESS_READ)）。RomFS 只有镜像 romfs.std（不落散文件，Windows 单一 IMG 出包正是这样）时
+    映射镜像里那一段：起点按映射粒度对齐就是镜像上的 Mapped，不对齐就是 MappedSpan（同 romfs_list.map_file，#1439）；都是文件映射、零拷贝，页走系统文件缓存。
+    原先这里拷进同长的匿名映射：大乱斗特别版 RomFS 那个约 16 GB 的单文件一拷就是 16 GB，15 GB 内存的 Windows 机在「直连抽取 0/114」卡死、整机换页（#1560）。
+    Python 3.12 以下没有 __buffer__（PEP 688），不对齐时正则 / struct 拿不到平移后的内容，才退回拷贝"""
     try:
         with open(path, 'rb') as f: return Mapped(f.fileno(), 0, access=mmap.ACCESS_READ)
     except FileNotFoundError:
         pass
+    hit = romfs_list._in_image(path)
+    if hit is not None and hit[1] in hit[0]:
+        im, rel = hit; start, size = im.span(rel); delta = start % mmap.ALLOCATIONGRANULARITY
+        if size and (delta == 0 or sys.version_info >= (3, 12)):
+            with open(im.path, 'rb') as g:
+                if delta == 0: return Mapped(g.fileno(), size, offset=start, access=mmap.ACCESS_READ)
+                return MappedSpan(mmap.mmap(g.fileno(), size + delta, offset=start - delta, access=mmap.ACCESS_READ), delta, size)
     n = romfs_list.file_size(path); m = Mapped(-1, n)
     with romfs_list.open_file(path) as f:
         view, at = memoryview(m), 0
@@ -1489,14 +1503,14 @@ def scan_file(args):
 
 def scan_plain(path, rel, d, found, trees):
     """The rest of scan_file for a plain file's contents d: bytes, or an mmap of a big file (slicing, `in`, find, re and struct read it the same; the Yaz0 and Unity readers take bytes, so those copy)"""
-    if d[:4] == b'Yaz0': d = yaz0(d[:] if isinstance(d, Mapped) else d)
+    if d[:4] == b'Yaz0': d = yaz0(d[:] if isinstance(d, (Mapped, MappedSpan)) else d)
     if path.endswith('.xxx') and d[:4] == struct.pack('<I', 0x9E2A83C1) or UE3_DNBC in d or d[:4] == b'BMSG':   # an Unreal Engine 3 package, or a file holding its shader blocks plain (GlobalShaderCache-NX.bin, -Switch.bin)
         u = ue3_package(d, '/' + rel) if path.endswith('.xxx') else d
         ue3_dnbc_shaders(u, '/' + rel, found); ue3_lz4_shaders(u, '/' + rel, found)
         return rel, uniq_keys(found), var_pairs(found), trees
     if d[:8] == b'UnityFS\0' or (d[8:11] == b'\0\0\0' and __import__('unityfs').is_serialized(d)):
         import unityfs
-        try: unity_shaders(d[:] if isinstance(d, Mapped) else d, '/' + rel, found, trees if not TREES else dict(TREES))
+        try: unity_shaders(d[:] if isinstance(d, (Mapped, MappedSpan)) else d, '/' + rel, found, trees if not TREES else dict(TREES))
         except unityfs.NoTree as e:
             if SECOND: print(f'[RED] /{rel}: {e}', flush=True)
             return rel, {}, set(), 'defer'

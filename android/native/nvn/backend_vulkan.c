@@ -232,6 +232,8 @@ struct nvn_gpu_cmd_s {
     struct clr_pipe_temp *clear_pipes;   // 清除缓存满后的段自有管线，完成 / 放弃时回收
     struct feedback_copy *feedback, *feedback_stop; // 本笔 [feedback, stop)，历史项活到 fence
     int feedback_on;
+    int feedback_read_on;
+    uint16_t feedback_read_mask; // 颜色 bit0..7、深度模板物理附件 bit8：本物理通道 LOAD / NONE
     int recording;
     int in_pass;
     // 上一道全屏障之后录过「缓冲作目标」的传输：传输只在开头带屏障，绘制有渲染通道开头的外部依赖兜着，
@@ -416,6 +418,7 @@ static uint64_t g_life_ns[8], g_life_n[8];
 #define LIFE_ADD(i) do { if (g_draw_tm) { uint64_t ln_ = now_ns(); __atomic_fetch_add(&g_life_ns[i], ln_ - lt_, __ATOMIC_RELAXED); __atomic_fetch_add(&g_life_n[i], 1, __ATOMIC_RELAXED); lt_ = ln_; } } while (0)
 static uint64_t now_ns(void);
 static int g_draw_tm; static uint64_t g_draw_ns[3];   // 绘制入口分段计时：描述符 / 状态 / 顶点索引与绘制调用
+static uint64_t g_feedback_stats[3]; // nvk_gputime：只读采样 draw / 快照 vkCmdCopyImage / 反馈重开次数，只增不清零
 static uint64_t g_draw_log_ns = 5000000000ull;         // 逐笔读数（nvn_gpu_draw 末尾）的周期，缺省 5 秒；测试钩子 nvn_gpu_vk_test_diag_timing 可缩短
 static void draw_tm_init(void) { if (!g_draw_tm) g_draw_tm = nvn_plat_flag("nvk_gputime", 0) != 0; }   // 与 GPU 时间戳同一个开关
 // 回放线程取 g_mu（nvk_gputime 开着才计）：先 trylock，没拿到的记「真等了几次、等了多久」。持 g_mu 的别的线程（游戏工作线程销毁视图、
@@ -1531,6 +1534,9 @@ static void clr_cmd_free(struct nvn_gpu_cmd_s *c);   // backend_vulkan_clear.inc
 
 static void finish_cmd(struct nvn_gpu_cmd_s *c, int executed) {
     if (!c) return;
+    // 放弃的段（abort / 带粘滞错误不提交）没走过 vkEndCommandBuffer 的清空：两级回放队列里可能还有它的记录（往上传片里填、引用它的暂存缓冲 / 管线），
+    // 先整队清空再归还 / 销毁下面这些资源。执行过的段已经过了 GPU 完成，记录早就做完了
+    if (!executed) vk_dq_drain();
     // 布局按段跟踪（c->lay）：段不执行时命令缓冲里什么都没跑，没有要回滚的；t->layout 只做诊断。
     detach_live(c);   // 已提交的 cmd 在 commit 时已摘下，这里兜底
     // 放弃 / 提交前失败的段仍可能有 DQ 待录命令引用快照；先排空录制，再销毁。
@@ -2495,6 +2501,16 @@ nvn_gpu_rc nvn_gpu_arena_alloc(nvn_gpu_cmd ch, uint64_t bytes, uint32_t align, n
     c->arena_used = off + bytes;
     return rc(NVN_GPU_OK);
 }
+
+// 暂存填充（契约见 nvn_backend.h）：两级回放开着时交录制线程按序拷（nvn_vk_dq.inc vk_dq_fill），关着就地拷。
+// 段提交时 vkEndCommandBuffer 的包装先清空队列，所以 GPU 读上传片之前一定拷完；放弃段在 finish_cmd 开头整队清空。
+uint64_t nvn_gpu_arena_fill(nvn_gpu_cmd ch, const nvn_gpu_slice *sl, const void *src, uint64_t bytes) {
+    if (!sl || !sl->cpu || !src || !bytes) return 0;
+    struct nvn_gpu_cmd_s *c = ch;
+    if (!c) { memcpy(sl->cpu, src, (size_t)bytes); return 0; }
+    return vk_dq_fill(sl->cpu, src, bytes);
+}
+uint64_t nvn_gpu_arena_fill_wait(uint64_t ticket) { return vk_dq_fill_wait(ticket); }
 
 // ---------------------------------------------------------------- 录制原语
 
@@ -4379,18 +4395,21 @@ static int pass_p16_reject(struct nvn_gpu_cmd_s *c, const nvn_gpu_pass_desc *d) 
 // att_tex / att_lay 回填各附件的贴图与这一段用的布局；att_tex 可能重复（同一张图的不同级 / 层挂在不同槽）。
 static VkRenderPass make_pass(const nvn_gpu_pass_desc *d, VkImageView fb_views[9], VkAttachmentDescription att[9],
                               VkAttachmentReference col[8], VkAttachmentReference *dref, uint32_t *natt_out, int *has_depth,
-                              struct nvn_gpu_tex_s *att_tex[9], VkImageLayout att_lay[9], int opt, int feedback) {
-    int is_depth[9];
+                              struct nvn_gpu_tex_s *att_tex[9], VkImageLayout att_lay[9], int opt, int feedback, uint16_t read_mask) {
+    int is_depth[9], is_read[9];
     uint32_t natt = 0, a = 0, ncol = 0;
     for (uint32_t i = 0; i < d->ncolor && i < 8; i++) {   // 先归拢：真正挂上的颜色附件（按槽序），空槽不算附件
         struct nvn_gpu_view_s *v = d->color[i].view;
         if (!v) continue;
-        att_tex[natt] = v->tex; is_depth[natt] = 0; natt++;
+        att_tex[natt] = v->tex; is_depth[natt] = 0; is_read[natt] = (read_mask & (1u << i)) != 0; natt++;
     }
     if (d->depth.view || d->stencil.view) {   // 深度模板只算一个附件（描述里没给视图的那一面不关心）
-        att_tex[natt] = (d->depth.view ? d->depth.view : d->stencil.view)->tex; is_depth[natt] = 1; natt++;
+        att_tex[natt] = (d->depth.view ? d->depth.view : d->stencil.view)->tex;
+        is_depth[natt] = 1; is_read[natt] = (read_mask & (1u << 8)) != 0; natt++;
     }
-    for (uint32_t i = 0; i < natt; i++) att_lay[i] = pass_att_layout(d, att_tex[i], is_depth[i], opt);
+    // 只读采样的 GENERAL 仅属于这个物理通道，不永久标记纹理 fb_sample。
+    // 后续普通通道仍按 opt 选附件布局；同一图多级/层的布局一致性由下面的归并保证。
+    for (uint32_t i = 0; i < natt; i++) att_lay[i] = is_read[i] ? VK_IMAGE_LAYOUT_GENERAL : pass_att_layout(d, att_tex[i], is_depth[i], opt);
     for (uint32_t i = 0; i < natt; i++)   // 同一张图的几个级 / 层挂在不同槽：布局必须一致，有一个要走 GENERAL 就都走 GENERAL
         for (uint32_t j = i + 1; j < natt; j++)
             if (att_tex[i] == att_tex[j] && att_lay[i] != att_lay[j]) att_lay[i] = att_lay[j] = VK_IMAGE_LAYOUT_GENERAL;
@@ -4411,6 +4430,10 @@ static VkRenderPass make_pass(const nvn_gpu_pass_desc *d, VkImageView fb_views[9
         // 逻辑通道可能在后续 draw 的反馈采样处拆开；内部边界必须保存附件。
         // DONTCARE 允许丢弃，并不要求丢弃，不能在尚未结束的逻辑通道提前丢内容。
         att[a].storeOp = feedback || d->color[i].store != NVN_GPU_STORE_DONTCARE ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        if (read_mask & (1u << i)) {
+            att[a].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            att[a].storeOp = VK_ATTACHMENT_STORE_OP_NONE_EXT;
+        }
         att[a].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         att[a].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         att[a].finalLayout = att_lay[a];
@@ -4435,6 +4458,11 @@ static VkRenderPass make_pass(const nvn_gpu_pass_desc *d, VkImageView fb_views[9
         att[a].initialLayout = att_lay[a];
         att[a].storeOp = (feedback && (t->aspect & VK_IMAGE_ASPECT_DEPTH_BIT)) || (d->depth.view && d->depth.store != NVN_GPU_STORE_DONTCARE) ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
         att[a].stencilStoreOp = (feedback && (t->aspect & VK_IMAGE_ASPECT_STENCIL_BIT)) || (d->stencil.view && d->stencil.store != NVN_GPU_STORE_DONTCARE) ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        if (read_mask & (1u << 8)) {
+            // 同一物理深度模板附件的两面都只读；未声明的面也不能 DONT_CARE 写。
+            att[a].loadOp = att[a].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            att[a].storeOp = att[a].stencilStoreOp = VK_ATTACHMENT_STORE_OP_NONE_EXT;
+        }
         att[a].finalLayout = att_lay[a];
         dref->attachment = a;
         dref->layout = att_lay[a];
@@ -4527,6 +4555,14 @@ static int pass_attached(struct nvn_gpu_cmd_s *c, struct nvn_gpu_tex_s *t) {
 
 static void image_barrier(struct nvn_gpu_cmd_s *c, struct nvn_gpu_tex_s *t, VkImageLayout to);   // 下面「贴图 / 视图 / 采样器」一节
 
+static void pass_read_sync(struct nvn_gpu_cmd_s *c) {
+    if (!c->feedback_read_mask) return;
+    // NONE 没有隐式 store 写，须覆盖图形采样读到后续写的执行依赖。
+    // 放在通道外：不能只改实际 pass 的依赖，否则不再兼容建管线的 pass 模板。
+    mem_barrier(c, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
+}
+
 // 反馈环 / 通道内要改布局：当前通道的附件又要被采样（这张图这一段退回 GENERAL），或存储图像要 GENERAL 而它现在是只读布局。
 // Vulkan 通道内不许改布局，所以在通道边界上重开：结束当前通道（附件内容按 finalLayout 留在显存里），
 // 把要改的图在通道外迁好，再按 LOAD / STORE 重开同一组附件。只在 nvk_opt_layout=1 时才会走到；
@@ -4558,6 +4594,7 @@ static int pass_reopen(struct nvn_gpu_cmd_s *c, const struct reopen_fix *fx, uin
     vkCmdEndRenderPass(c->cb);
     c->in_pass = 0;
     c->pass_occl = 0;
+    pass_read_sync(c);
     VkImageView fb_views[9];
     VkAttachmentDescription att[9];
     VkAttachmentReference col[8];
@@ -4567,7 +4604,7 @@ static int pass_reopen(struct nvn_gpu_cmd_s *c, const struct reopen_fix *fx, uin
     int has_depth = 0;
     g_pc_use = pc_on();
     if (pass_p16_reject(c, &d)) return 0;
-    VkRenderPass pass = make_pass(&d, fb_views, att, col, &dref, &natt, &has_depth, att_tex, att_lay, c->opt, c->feedback_on);
+    VkRenderPass pass = make_pass(&d, fb_views, att, col, &dref, &natt, &has_depth, att_tex, att_lay, c->opt, c->feedback_on, c->feedback_read_mask);
     if (!pass) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "通道重开：渲染通道创建失败"); return 0; }
     for (uint32_t i = 0; i < natt; i++) {   // 新布局（fb_sample 置位的附件变成 GENERAL），要在开新通道之前转完
         image_barrier(c, att_tex[i], att_lay[i]);
@@ -4656,7 +4693,7 @@ void nvn_gpu_pass_begin(nvn_gpu_cmd ch, const nvn_gpu_pass_desc *d) {
     int has_depth = 0;
     g_pc_use = pc_on();
     if (pass_p16_reject(c, d)) return;
-    VkRenderPass pass = make_pass(d, fb_views, att, col, &dref, &natt, &has_depth, att_tex, att_lay, c->opt, c->feedback_on);
+    VkRenderPass pass = make_pass(d, fb_views, att, col, &dref, &natt, &has_depth, att_tex, att_lay, c->opt, c->feedback_on, c->feedback_read_mask);
     PBP_STEP(0);
     if (!pass) { set_sticky(c, NVN_GPU_E_UNSUPPORTED, "渲染通道创建失败（附件格式 / 采样数）"); return; }
     // 附件先从现在的布局迁到这一段要用的布局：必须在 vkCmdBeginRenderPass 之前，通道内不许再迁
@@ -4733,6 +4770,8 @@ void nvn_gpu_pass_end(nvn_gpu_cmd ch) {
     vkCmdEndRenderPass(c->cb);
     c->in_pass = 0;
     c->pass_natt = 0;
+    pass_read_sync(c);
+    c->feedback_read_mask = 0;
     if (c->tsq && c->ntsp < TS_PASS_MAX) { vkCmdWriteTimestamp(c->cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, c->tsq, 3 + 2 * c->ntsp); c->ntsp++; }
     // 附件在通道里用的布局由 make_pass 定（缺省全程 GENERAL，开 nvk_opt_layout 时用附件专用布局），通道内不迁移：
     // 出通道后本段第一次用到它时按需迁移（采样 / 存储 / 传输 / 再当附件），段末统一转回 GENERAL（lay_rest_at_commit）。
@@ -6396,9 +6435,19 @@ static void bc_readback(struct nvn_gpu_cmd_s *c, struct nvn_gpu_tex_s *t, uint32
 static void bc_copy_from_buf(struct nvn_gpu_cmd_s *c, struct nvn_gpu_tex_s *t, uint32_t level, uint32_t layer, const NVNcopyRegion *r,
                              struct nvn_gpu_buf_s *b, uint64_t off, uint64_t row_bytes, uint64_t image_bytes);   // 见 bc_upload 后
 // 线性内容上传 / 缓冲 ↔ 贴图拷贝。全部在通道外，按 GPU 顺序执行。
-// depth_f32：#398 D24 换 D32 存储的贴图，缓冲里已是换算好的 D32 深度面（每纹素 4 字节 float），只拷深度面。
+// 缓冲 ↔ 贴图拷贝的一个区域只能有一个面（VUID-VkBufferImageCopy-aspectMask-09103，#1581 K）。深度模板贴图的整字拷贝
+//   （NVN D24S8 一个 32 位字：低 24 位深度、高 8 位模板）只走深度面：Vulkan 深度面的缓冲布局正是每纹素 4 字节、D24 在低 24 位，
+//   写入时高 8 位忽略、读出时高 8 位未定义。模板面另走一个每纹素 1 字节的区域（COPY_FACE_STENCIL，nvn_gpu_tex_upload 拆出来）。
+static VkImageAspectFlags copy_face_aspect(const struct nvn_gpu_tex_s *t) {
+    return (t->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) ? VK_IMAGE_ASPECT_DEPTH_BIT : t->aspect;
+}
+// face：COPY_FACE_DEFAULT = 按贴图格式（深度模板贴图取深度面，见 copy_face_aspect）；
+//   COPY_FACE_DEPTH_F32 = #398 D24 换 D32 存储的贴图，缓冲里已是换算好的 D32 深度面（每纹素 4 字节 float），只拷深度面；
+//   COPY_FACE_STENCIL = 只拷模板面，缓冲每纹素 1 字节。
+enum { COPY_FACE_DEFAULT = 0, COPY_FACE_DEPTH_F32 = 1, COPY_FACE_STENCIL = 2 };
 static void copy_buf_tex_impl(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint64_t row_bytes, uint64_t image_bytes,
-                              nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r, int depth_f32) {
+                              nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r, int face) {
+    const int depth_f32 = face == COPY_FACE_DEPTH_F32, stencil = face == COPY_FACE_STENCIL;
     { struct nvn_gpu_cmd_s *cc = ch; if (cc && cc->in_pass && rc_is(cc->sticky, NVN_GPU_OK)) { set_sticky(cc, NVN_GPU_E_ORDER, "传输操作在通道内"); return; } }
     struct nvn_gpu_cmd_s *c = ch;
     if (!c || !rc_is(c->sticky, NVN_GPU_OK)) return;
@@ -6418,14 +6467,15 @@ static void copy_buf_tex_impl(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint
         bc_copy_from_buf(c, t, level, layer, r, b, off, row_bytes, image_bytes);
         return;
     }
-    if (t && !depth_f32 && nvn_vk_format_substituted(t->nvn_format)) {   // 格式能力已报 NVN_GPU_FMT_SUBST：调用方给的是 D24 字节
+    if (t && stencil && !(t->aspect & VK_IMAGE_ASPECT_STENCIL_BIT)) { set_sticky(c, NVN_GPU_E_ARG, "模板面拷贝：贴图没有模板面（0x%x）", t->nvn_format); return; }
+    if (t && face == COPY_FACE_DEFAULT && nvn_vk_format_substituted(t->nvn_format)) {   // 格式能力已报 NVN_GPU_FMT_SUBST：调用方给的是 D24 字节
         set_sticky(c, NVN_GPU_E_UNSUPPORTED, "替换存储格式（D24 换 D32）的缓冲字节不能直接拷（0x%x），走 nvn_gpu_tex_upload", t->nvn_format);
         return;
     }
-    uint32_t bpp = depth_f32 ? 4 : t ? fmt_bpp(t->format) : 0;
+    uint32_t bpp = depth_f32 ? 4 : stencil ? 1 : t ? fmt_bpp(t->format) : 0;
     // 块信息：压缩格式一行是一排块（blk_w x blk_h 纹素、blk 字节）；没列进 fmt_bpp 的非压缩格式按 NVN 格式表的每纹素字节数
     uint32_t blk_w = 1, blk_h = 1, blk = bpp;
-    if (t && !depth_f32 && !bpp) {
+    if (t && face == COPY_FACE_DEFAULT && !bpp) {
         nvn_fmt_info fi;
         if (nvn_fmt_info_of(t->nvn_format, &fi) && !nvn_fmt_expand_target(t->nvn_format, NULL, NULL)) { blk_w = fi.bw; blk_h = fi.bh; blk = fi.bytes; bpp = blk; }
     }
@@ -6457,7 +6507,7 @@ static void copy_buf_tex_impl(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint
     bc.bufferOffset = off;
     bc.bufferRowLength = (uint32_t)(row_bytes / blk) * blk_w;   // 以纹素计；压缩格式是块数 × 块宽
     bc.bufferImageHeight = t->target == NVN_TEXTURE_TARGET_3D ? ((e.height + blk_h - 1) / blk_h) * blk_h : (uint32_t)(image_bytes / row_bytes) * blk_h;
-    bc.imageSubresource = (VkImageSubresourceLayers){depth_f32 ? VK_IMAGE_ASPECT_DEPTH_BIT : t->aspect, level,
+    bc.imageSubresource = (VkImageSubresourceLayers){depth_f32 ? VK_IMAGE_ASPECT_DEPTH_BIT : stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : copy_face_aspect(t), level,
                                                      t->target == NVN_TEXTURE_TARGET_3D ? 0 : layer, 1};
     bc.imageOffset = o;
     bc.imageExtent = e;
@@ -6469,7 +6519,7 @@ static void copy_buf_tex_impl(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint
 
 void nvn_gpu_copy_buf_tex(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint64_t row_bytes, uint64_t image_bytes,
                           nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r) {
-    copy_buf_tex_impl(ch, bh, off, row_bytes, image_bytes, th, level, layer, r, 0);
+    copy_buf_tex_impl(ch, bh, off, row_bytes, image_bytes, th, level, layer, r, COPY_FACE_DEFAULT);
 }
 
 void nvn_gpu_copy_tex_buf(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r,
@@ -6525,7 +6575,7 @@ void nvn_gpu_copy_tex_buf(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32
     bc.bufferOffset = off;
     bc.bufferRowLength = (uint32_t)(row_bytes / blk) * blk_w;   // 以纹素计；压缩格式是块数 × 块宽
     bc.bufferImageHeight = t->target == NVN_TEXTURE_TARGET_3D ? ((e.height + blk_h - 1) / blk_h) * blk_h : (uint32_t)(image_bytes / row_bytes) * blk_h;   // 块压缩要是块高的整数倍（同 copy_buf_tex_impl）；非压缩 blk_h = 1，原样 e.height
-    bc.imageSubresource = (VkImageSubresourceLayers){t->aspect, level, t->target == NVN_TEXTURE_TARGET_3D ? 0 : layer, 1};
+    bc.imageSubresource = (VkImageSubresourceLayers){copy_face_aspect(t), level, t->target == NVN_TEXTURE_TARGET_3D ? 0 : layer, 1};   // 深度模板贴图只回读深度面（#1581 K）
     bc.imageOffset = o;
     bc.imageExtent = e;
     vkCmdCopyImageToBuffer(c->cb, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, b->buffer, 1, &bc);
@@ -6938,6 +6988,31 @@ static void bc_copy_from_buf(struct nvn_gpu_cmd_s *c, struct nvn_gpu_tex_s *t, u
     free(rg);
 }
 
+// D24S8 上传的模板面（#1581 K）：从每纹素 32 位字的高 8 位抽出来，按每纹素 1 字节另交一个只有模板面的区域。
+//   深度面那一区（整字或 #398 换算后的 D32）由调用方先交；两区都在本段、按 GPU 顺序执行。
+static void upload_d24s8_stencil(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r,
+                                 const uint8_t *src, uint64_t row_bytes, uint64_t image_bytes, uint32_t ew, uint32_t eh) {
+    struct nvn_gpu_cmd_s *c = ch;
+    if (!rc_is(c->sticky, NVN_GPU_OK)) return;   // 深度面那一区已判非法：不再补交
+    if (row_bytes < (uint64_t)ew * 4 || image_bytes < row_bytes * (eh - 1) + (uint64_t)ew * 4) {
+        set_sticky(c, NVN_GPU_E_ARG, "tex_upload D24S8 模板面越界（行 %llu、总 %llu、区域 %ux%u）",
+                   (unsigned long long)row_bytes, (unsigned long long)image_bytes, ew, eh);
+        return;
+    }
+    nvn_gpu_slice sl;
+    nvn_gpu_err e;
+    if (!rc_is(nvn_gpu_arena_alloc(ch, (uint64_t)ew * eh, 4, &sl, &e), NVN_GPU_OK)) {
+        set_sticky(c, e.rc.code, "tex_upload 模板面暂存：%s", e.why);
+        return;
+    }
+    uint8_t *dst = (uint8_t *)sl.cpu;
+    for (uint32_t y = 0; y < eh; y++) {
+        const uint8_t *row = src + (uint64_t)y * row_bytes;
+        for (uint32_t x = 0; x < ew; x++) dst[(uint64_t)y * ew + x] = row[(uint64_t)x * 4 + 3];
+    }
+    copy_buf_tex_impl(ch, sl.buf, sl.off, ew, (uint64_t)ew * eh, th, level, layer, r, COPY_FACE_STENCIL);
+}
+
 void nvn_gpu_tex_upload(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r,
                         const void *src, uint64_t row_bytes, uint64_t image_bytes) {
     { struct nvn_gpu_cmd_s *cc = ch; if (cc && cc->in_pass && rc_is(cc->sticky, NVN_GPU_OK)) { set_sticky(cc, NVN_GPU_E_ORDER, "传输操作在通道内"); return; } }
@@ -6991,10 +7066,13 @@ void nvn_gpu_tex_upload(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32_t
         if (row_bytes & 3) { set_sticky(c, NVN_GPU_E_ARG, "tex_upload D24 行宽未 4 对齐"); return; }
         memcpy(sl.cpu, src, (size_t)image_bytes);
         nvn_vk_depth24_to_f32(sl.cpu, (size_t)image_bytes / 4);
-        copy_buf_tex_impl(ch, sl.buf, sl.off, row_bytes, image_bytes, th, level, layer, r, 1);
+        copy_buf_tex_impl(ch, sl.buf, sl.off, row_bytes, image_bytes, th, level, layer, r, COPY_FACE_DEPTH_F32);
+        if (t->nvn_format == NVN_FORMAT_DEPTH24_STENCIL8) upload_d24s8_stencil(ch, th, level, layer, r, src, row_bytes, image_bytes, ew, eh);   // 换存储后模板面照样要传
     } else {
         memcpy(sl.cpu, src, (size_t)image_bytes);
-        nvn_gpu_copy_buf_tex(ch, sl.buf, sl.off, row_bytes, image_bytes, th, level, layer, r);
+        nvn_gpu_copy_buf_tex(ch, sl.buf, sl.off, row_bytes, image_bytes, th, level, layer, r);   // 深度模板贴图：这一区只有深度面（copy_face_aspect）
+        if (t->nvn_format == NVN_FORMAT_DEPTH24_STENCIL8 && (t->aspect & VK_IMAGE_ASPECT_STENCIL_BIT))
+            upload_d24s8_stencil(ch, th, level, layer, r, src, row_bytes, image_bytes, ew, eh);
     }
 }
 
@@ -7015,6 +7093,7 @@ void nvn_gpu_clear_rect(nvn_gpu_cmd ch, const nvn_gpu_clear *d) {
     }
     uint32_t cm = d->color >= 0 ? d->color_mask & 0xfu : 0xfu, sm = d->stencil ? d->stencil_mask : 0xffu;
     if (!cm || !sm) { set_sticky(c, NVN_GPU_E_ARG, "clear_rect 写掩码为 0（颜色 %#x 模板 %#x）", (unsigned)d->color_mask, (unsigned)d->stencil_mask); return; }
+    if (c->feedback_read_mask && !feedback_restart(c, 0, 0)) return;
     // 一律画一笔整屏三角形（backend_vulkan_clear.inc：不用附件清除命令，理由见那里）。颜色、深度、模板同一笔做
     clr_draw(c, d->color, cm, &d->value, d->depth != 0, d->stencil ? sm : 0, d->stencil_value, d);
     c->desc_layout = VK_NULL_HANDLE; c->desc_dirty = 0xfu;   // 内部清除改绑状态：下一笔全部重建
@@ -7218,6 +7297,7 @@ nvn_gpu_rc nvn_gpu_cmd_begin(const nvn_gpu_cmd_desc *d, nvn_gpu_cmd *out, nvn_gp
     c->q_active = -1;
     c->opt = nvn_plat_flag("nvk_opt_layout", 0) != 0;   // 附件 / 采样用对齐语义的布局（缺省 0 = 全 GENERAL 的旧行为）
     c->feedback_on = nvn_plat_flag("nvk_fb_copy", 1) != 0; // 0 仅供回退诊断，不保证反馈采样正确
+    c->feedback_read_on = c->feedback_on && g.dev->load_store_op_none_enabled && nvn_plat_flag("nvk_fb_read", 0) != 0;
     {   // 调试读数（debug 开关 nvk_gputime）：段首尾各写一个 GPU 时间戳，完成时算这一段在 GPU 上从开始到结束用了多久
         static int on = -1; if (on < 0) on = nvn_plat_flag("nvk_gputime", 0);
         VkQueryPoolCreateInfo qi; memset(&qi, 0, sizeof qi);

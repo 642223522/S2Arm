@@ -46,6 +46,7 @@ static void alias_key_of(alias_key *k, const tex_t *t) { memset(k, 0, sizeof *k)
 struct registered_view { nvn_gpu_view view; struct registered_view *next; };
 typedef struct { tex_t t; view_t v; uint8_t ok, has_v; nvn_gpu_view view; struct registered_view *owned; struct rp_tex *of; uint64_t gen; } treg_t;
 typedef struct { samp_par p; uint8_t ok; nvn_gpu_samp s, sn; } sreg_t;   // sn：同参数的最近点采样器（#1072，配不能线性过滤的格式时用），用到才建
+static nvn_gpu_samp g_query_sampler;
 
 static pthread_mutex_t g_rmu = PTHREAD_MUTEX_INITIALIZER;
 static treg_t *g_treg; static int g_ntreg;
@@ -892,6 +893,24 @@ nvn_gpu_samp rp_samp_for_tex(int sid, int tid) {
     return out;
 }
 
+nvn_gpu_samp rp_sampler_for_query(void) {
+    pthread_mutex_lock(&g_rmu);
+    if (!g_query_sampler) {
+        // 查询不会读取这些值；给后端一个有效的物理对象，不登记为任何 NVN 池槽。
+        // 取法对齐 Ryujinx DescriptorSetUpdater 的空 sampler 表示。
+        samp_par p = {0}; p.minf = NVN_MIN_FILTER_NEAREST; p.magf = NVN_MAG_FILTER_NEAREST;
+        p.ws = p.wt = p.wr = NVN_WRAP_MODE_REPEAT; p.cmp_mode = NVN_COMPARE_MODE_NONE;
+        p.cmp_func = NVN_COMPARE_FUNC_ALWAYS; p.aniso = 1.f;
+        nvn_gpu_err err = {0};
+        if (!nvn_gpu_ok(nvn_gpu_samp_create(&p, &g_query_sampler, &err))) {
+            g_query_sampler = NULL;
+            if (nvn_unimpl("gpu", "query_sampler_create", NULL) == 1 && err.why[0]) nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", err.why);
+        }
+    }
+    nvn_gpu_samp result = g_query_sampler;
+    pthread_mutex_unlock(&g_rmu); return result;
+}
+
 void rp_res_reset(void) {
     pthread_mutex_lock(&g_rmu);
     for (int i = 0; i < g_ntreg; i++) treg_drop_view(&g_treg[i]);
@@ -903,6 +922,8 @@ void rp_res_reset(void) {
     memset(g_zero, 0, sizeof g_zero); g_zero_cube_logged = 0;
     for (int i = 0; i < g_nsreg; i++) { if (g_sreg[i].s) nvn_gpu_samp_release(g_sreg[i].s); if (g_sreg[i].sn) nvn_gpu_samp_release(g_sreg[i].sn); }
     memset(g_fmt_caps, 0, sizeof g_fmt_caps);
+    if (g_query_sampler) nvn_gpu_samp_release(g_query_sampler);
+    g_query_sampler = NULL;
     free(g_treg); g_treg = NULL; g_ntreg = 0; __atomic_fetch_add(&g_treg_gen, 1, __ATOMIC_RELEASE); free(g_sreg); g_sreg = NULL; g_nsreg = 0; g_tpool_n = 0;
     // 一份存储可能同时挂在序号表（多次）和共用表里：先收集去重再放
     struct rp_tex **all = NULL; int n = 0, cap = 0;
