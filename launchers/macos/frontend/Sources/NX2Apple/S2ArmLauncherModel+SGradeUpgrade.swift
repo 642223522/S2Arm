@@ -45,11 +45,15 @@ extension S2ArmLauncherModel {
             let f = e.fields
             Task { @MainActor in self?.ingestSGrade(id: id, event: e.ev, fields: f) }
         }
+        // 轮询不在这里起：作业层收下号、写好队列之前查到的是「没在跑」，轮询会当场停、还会把刚画的排队中清掉。
+        //   本次作业跑队列：第一条 batch 事件（队列已写好）起轮询（ingestSGrade）；追加到在跑的队列：作业立刻返回，返回后起轮询；
+        //   作业结束（整批做完 / 被停）再读一次状态收尾，页底回到「批量升级所选」
         Task { [weak self] in
             guard let self else { return }
-            self.pollSGrade()
             do { _ = try await self.saveJob("sgradeUpgradeBatch", gameID: "", extra: ["gameIds": ids], events: sink) }
+            catch let f as JobFailure where f.state == .cancelled {}   // 玩家点了「停止」：不是失败，各行状态（继续升级）已说明
             catch { self.failAction(error.localizedDescription, game: ids.count == 1 ? ids[0] : nil) }   // 提交没成：就近写原因，不弹框
+            if await self.readSGradeStatus() { self.pollSGrade() }
             self.refresh()
         }
     }
@@ -71,6 +75,7 @@ extension S2ArmLauncherModel {
             sgradeBatchLive = SGradeBatch(running: true, index: i, count: n)
         }
         if f["type"] as? String == "batch" || event == "batch" {
+            pollSGrade()   // 队列已在作业层写好：从这里起轮询（只起一个）
             let phase = f["phase"] as? String
             if phase == "start" { sgradeLive[id] = SGradeLive(state: "running", progress: 0) }
             else if phase == "end" { sgradeLive[id] = SGradeLive(state: f["status"] as? String == "updated" || f["status"] as? String == "unchanged" ? "done" : (f["status"] as? String ?? "done"), progress: nil); refresh() }

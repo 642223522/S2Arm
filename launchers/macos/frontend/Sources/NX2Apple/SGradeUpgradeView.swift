@@ -16,6 +16,9 @@ struct SGradeScanGame: Identifiable, Equatable {
     let id: String, name: String, program: String, total: Int, patches: [String: Int], iphone: Bool, off: Bool, ownWiden: Bool
     /// 这款的显示版本与补丁库里「别的版本」按类的版本号（作业层 versions，只收这一版没有的类；作业层 feat/sgrade-state）
     let mine: String, available: [String: [String]]
+    /// 还有没补上的段（作业层 bfPending：iPhone / Mac 包任一边要补）；全 false = 这款 S 级优化已是最新，行写「已完成」、不可点不可选。
+    ///   作业层没给这个字段（旧版）当作要补
+    let pending: Bool
     init(_ d: [String: Any]) {
         id = d["id"] as? String ?? ""; name = d["name"] as? String ?? id; program = d["program"] as? String ?? "none"
         total = (d["total"] as? NSNumber)?.intValue ?? 0; iphone = d["iphone"] as? Bool ?? false; off = d["off"] as? Bool ?? false
@@ -23,6 +26,7 @@ struct SGradeScanGame: Identifiable, Equatable {
         let v = d["versions"] as? [String: Any] ?? [:]
         mine = v["mine"] as? String ?? ""; available = (v["available"] as? [String: Any] ?? [:]).compactMapValues { $0 as? [String] }.filter { !$0.value.isEmpty }
         patches = (d["patches"] as? [String: Any] ?? [:]).compactMapValues { ($0 as? NSNumber)?.intValue }
+        pending = (d["bfPending"] as? [String: Any]).map { $0.values.contains { ($0 as? Bool) == true } } ?? true
     }
     var found: Bool { program != "none" }
 }
@@ -117,8 +121,14 @@ struct SGradeUpgradeBody: View {
     private var upgrades: [SGradeScanGame] { (games ?? []).filter { $0.found && $0.total > 0 && !$0.off } }
     /// 可升级的款（页面顺序）
     var upgradeIDs: [String] { upgrades.map(\.id) }
-    /// 勾选了、又没在升级的款（页面顺序）：「批量升级所选」交出这些
-    var chosen: [String] { upgradeIDs.filter { selected.contains($0) && !upgrading.contains($0) } }
+    /// 这一行不能点也不能勾：在升 / 排队、刚做完，或作业层说已没有要补的段（被停 / 轮到时在玩的除外，可再点）
+    func locked(_ id: String) -> Bool {
+        if upgrading.contains(id) || states[id] == "done" { return true }
+        if states[id] == "incomplete" || states[id] == "skipped" { return false }
+        return upgrades.first { $0.id == id }.map { !$0.pending } ?? false
+    }
+    /// 勾选了、又能升的款（页面顺序）：「批量升级所选」交出这些
+    var chosen: [String] { upgradeIDs.filter { selected.contains($0) && !locked($0) } }
 
     @ViewBuilder private var content: some View {
         if let failure {
@@ -201,7 +211,7 @@ struct SGradeUpgradeBody: View {
         }
     }
 
-    /// 行按钮上的字：正在做的「正在升级 37%」（没百分比「正在升级…」）、排着的「排队中」、做完的「已完成」、其余「升级」
+    /// 行按钮上的字：正在做的「正在升级 37%」（没百分比「正在升级…」）、排着的「排队中」、做完 / 已没有要补的「已完成」、其余「升级」
     func rowTitle(_ id: String) -> String {
         switch states[id] {
         case "running": return progress[id].map { x("rowProgress").replacingOccurrences(of: "{0}", with: String(Int(($0 * 100).rounded(.down)))) } ?? x("rowBusy")
@@ -209,7 +219,7 @@ struct SGradeUpgradeBody: View {
         case "done": return x("done")
         case "skipped": return x("skipped")     // 轮到时这款正在玩，没升；可再点
         case "incomplete": return x("resume")   // 出错或被停，再点接着升（已做完的段跳过）
-        default: return upgrading.contains(id) ? x("rowBusy") : x("row")
+        default: return upgrading.contains(id) ? x("rowBusy") : locked(id) ? x("done") : x("row")
         }
     }
 
@@ -219,7 +229,7 @@ struct SGradeUpgradeBody: View {
             HStack {
                 Text("\(x("yes")) · \(rows.count)").font(LauncherTheme.TypeStyle.caption).foregroundStyle(SGradeCardView.gold)
                 Spacer()
-                let free = rows.map(\.id).filter { !upgrading.contains($0) }
+                let free = rows.map(\.id).filter { !locked($0) }
                 Toggle(x("selectAll"), isOn: Binding(get: { !free.isEmpty && free.allSatisfy(selected.contains) },
                                                      set: { selected = $0 ? Set(free) : [] }))
                     .toggleStyle(PadToggleStyle(.checkbox)).font(LauncherTheme.TypeStyle.caption).disabled(free.isEmpty).controllerID("sgrade.upgrade.selectAll")
@@ -227,7 +237,7 @@ struct SGradeUpgradeBody: View {
             Grid(alignment: .leading, horizontalSpacing: LauncherTheme.Space.large, verticalSpacing: 0) {
                 ForEach(Array(rows.enumerated()), id: \.offset) { index, g in
                     GridRow(alignment: .center) {
-                        let busy = upgrading.contains(g.id)
+                        let busy = locked(g.id)
                         Toggle("", isOn: Binding(get: { selected.contains(g.id) && !busy }, set: { if $0 { selected.insert(g.id) } else { selected.remove(g.id) } }))
                             .toggleStyle(PadToggleStyle(.checkbox)).labelsHidden().disabled(busy).controllerID("sgrade.upgrade.pick." + g.id)
                         Text(g.name).font(LauncherTheme.TypeStyle.detail).lineLimit(2)

@@ -41,8 +41,20 @@ public sealed partial class EnvironmentWindow
         : SGradeProgress(game) is { } p ? T("sgrade.upgrading").Replace("{0}", ((int)Math.Floor(p * 100)).ToString())
         : T("sgrade.upgrading.wait");
 
-    /// <summary>升级页行按钮上的字：在升「正在升级 37%」、排着「排队中」、做完「已完成」、轮到时在玩「正在玩，稍后再升」、被停 / 出错「继续升级」、其余「升级」</summary>
-    private string SGradeRowTitle(string id)
+    /// <summary>这款还有没补上的段（作业层 sgradeScan 的 bfPending：iPhone / Mac 包任一边要补）；没给这个字段（旧版作业层）当作要补</summary>
+    private static bool SGradePending(JsonElement g) =>
+        !g.TryGetProperty("bfPending", out var bf) || bf.ValueKind != JsonValueKind.Object || bf.EnumerateObject().Any(p => p.Value.ValueKind == JsonValueKind.True);
+
+    /// <summary>这一行不能点也不能勾：在升 / 排队、刚做完，或已没有要补的段（被停 / 轮到时在玩的除外，可再点）</summary>
+    private bool SGradeLocked(string id, bool pending)
+    {
+        if (SGradeBusy(id) || SGradeState(id) == "done") return true;
+        if (SGradeState(id) is "incomplete" or "skipped") return false;
+        return !pending;
+    }
+
+    /// <summary>升级页行按钮上的字：在升「正在升级 37%」、排着「排队中」、做完 / 已没有要补的「已完成」、轮到时在玩「正在玩，稍后再升」、被停 / 出错「继续升级」、其余「升级」</summary>
+    private string SGradeRowTitle(string id, bool pending = true)
     {
         var game = catalog?.Games.FirstOrDefault(g => g.Id == id);
         return SGradeState(id) switch
@@ -52,7 +64,7 @@ public sealed partial class EnvironmentWindow
             "done" => T("sgrade.upgrade.done"),
             "skipped" => T("sgrade.upgrade.skipped"),
             "incomplete" => T("sgrade.upgrade.resume"),
-            _ => SGradeBusy(id) ? T("sgrade.upgrade.rowBusy") : T("sgrade.upgrade.row"),
+            _ => SGradeBusy(id) ? T("sgrade.upgrade.rowBusy") : SGradeLocked(id, pending) ? T("sgrade.upgrade.done") : T("sgrade.upgrade.row"),
         };
     }
 
@@ -63,7 +75,9 @@ public sealed partial class EnvironmentWindow
         if (list.Count == 0) return;
         foreach (var id in list) { sgradeLive[id] = ("queued", null); sgradeErrors.Remove(id); sgradeSelected.Remove(id); }   // 先画排队中，以作业层为准
         Render();
-        _ = PollSGradeAsync();
+        // 轮询不在这里起：作业层收下号、写好队列之前查到的是「没在跑」，轮询会当场停、还会把刚画的排队中清掉。
+        //   本次作业跑队列：第一条 batch 事件（队列已写好）起轮询（IngestSGrade）；追加到在跑的队列：作业立刻返回，返回后起轮询；
+        //   作业结束（整批做完 / 被停）再读一次状态收尾，页底回到「批量升级所选」
         _ = RunSGradeBatchAsync(list);
     }
 
@@ -73,10 +87,11 @@ public sealed partial class EnvironmentWindow
         {
             var job = await PackJobClient.RunAsync(PackRequest("sgradeUpgradeBatch", "", new Dictionary<string, object?> { ["gameIds"] = ids }),
                 e => Dispatcher.UIThread.Post(() => IngestSGrade(e)), CancellationToken.None);
-            if (!job.Report.Succeeded && ids.Count == 1) sgradeErrors[ids[0]] = job.Report.Message;   // 提交没成：就近写原因，不弹框
+            if (!job.Report.Succeeded && job.Report.State != "cancelled" && ids.Count == 1) sgradeErrors[ids[0]] = job.Report.Message;   // 提交没成：就近写原因，不弹框；玩家点「停止」不算失败
         }
         catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
             InvalidOperationException or System.ComponentModel.Win32Exception) { Console.Error.WriteLine("S2Arm sgradeUpgradeBatch: " + error.Message); }
+        if (await ReadSGradeStatusAsync()) _ = PollSGradeAsync();
         await RefreshLibraryAsync();
         Render();
     }
@@ -101,6 +116,7 @@ public sealed partial class EnvironmentWindow
             sgradeBatchLive = new SGradeBatch(true, i.GetInt32(), n.GetInt32());
         if (e.TryGetProperty("type", out var t) && t.ValueKind == JsonValueKind.String && t.GetString() == "batch")
         {
+            _ = PollSGradeAsync();   // 队列已在作业层写好：从这里起轮询（只起一个）
             var phase = e.TryGetProperty("phase", out var ph) && ph.ValueKind == JsonValueKind.String ? ph.GetString() : null;
             if (phase == "start") sgradeLive[id] = ("running", 0);
             else if (phase == "end")

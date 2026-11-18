@@ -125,7 +125,7 @@ public sealed partial class EnvironmentWindow
             if (rowUpgrade)
             {
                 // 「全选」（11-18 维护者：可批量、有全选）：勾上 = 选中这组里没在升级的全部
-                var free = list.Select(g => S(g, "id")).Where(id => !SGradeBusy(id)).ToList();
+                var free = list.Where(g => !SGradeLocked(S(g, "id"), SGradePending(g))).Select(g => S(g, "id")).ToList();
                 var all = new CheckBox { Content = X("selectAll"), FontSize = 12, IsEnabled = free.Count > 0, IsChecked = free.Count > 0 && free.All(sgradeSelected.Contains), Margin = new Thickness(12, 0, 0, 0) };
                 all.Click += (_, _) => { if (all.IsChecked == true) sgradeSelected.UnionWith(free); else sgradeSelected.ExceptWith(free); Render(); };
                 AutomationId(all, "sgrade.upgrade.selectAll");
@@ -141,12 +141,12 @@ public sealed partial class EnvironmentWindow
                 {
                     // 每款勾选 +「升级」（11-18 维护者：点了才做；可批量）：点「升级」只升这一款，勾选后「批量升级所选」逐款排队；页面不关（SGradeUpgrade.cs）
                     var id = S(g, "id");
-                    var busy = SGradeBusy(id);
+                    var busy = SGradeLocked(id, SGradePending(g));
                     var pick = new CheckBox { IsChecked = !busy && sgradeSelected.Contains(id), IsEnabled = !busy, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) };
                     pick.Click += (_, _) => { if (pick.IsChecked == true) sgradeSelected.Add(id); else sgradeSelected.Remove(id); Render(); };
                     AutomationId(pick, "sgrade.upgrade.pick." + id);
                     line.Children.Add(pick);
-                    var b = new Button { Content = SGradeRowTitle(id), IsEnabled = !busy, Padding = new Thickness(12, 5), Margin = new Thickness(12, 2, 0, 2), FontSize = 12.5 };
+                    var b = new Button { Content = SGradeRowTitle(id, SGradePending(g)), IsEnabled = !busy, Padding = new Thickness(12, 5), Margin = new Thickness(12, 2, 0, 2), FontSize = 12.5 };
                     b.Click += (_, _) => UpgradeSGrade([id]);
                     AutomationId(b, "sgrade.upgrade.row." + id);
                     Grid.SetColumn(b, 3); line.Children.Add(b);
@@ -182,7 +182,7 @@ public sealed partial class EnvironmentWindow
             }
             else
             {
-                var chosen = yes.Select(g => S(g, "id")).Where(id => sgradeSelected.Contains(id) && !SGradeBusy(id)).ToList();
+                var chosen = yes.Where(g => sgradeSelected.Contains(S(g, "id")) && !SGradeLocked(S(g, "id"), SGradePending(g))).Select(g => S(g, "id")).ToList();
                 var batchButton = Primary(X("batch").Replace("{0}", chosen.Count.ToString()), () => UpgradeSGrade(chosen), chosen.Count > 0);
                 AutomationId(batchButton, "sgrade.upgrade.batch"); batchButton.Margin = new Thickness(0, 0, 12, 0); footer.Children.Add(batchButton);
             }

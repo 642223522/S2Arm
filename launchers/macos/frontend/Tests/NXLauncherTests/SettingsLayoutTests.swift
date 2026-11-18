@@ -1445,6 +1445,15 @@ import S2ArmAppleAdapter
             let skipped = SGradeUpgradeBody(games: games, failure: nil, zh: language == .zh, x: x, upgrade: { _ in }, close: {}, states: ["alpha": "skipped"])
             XCTAssertEqual(skipped.rowTitle("alpha"), language == .zh ? "正在玩，稍后再升" : "Playing — upgrade later")
             XCTAssertEqual(skipped.rowTitle("beta"), language == .zh ? "升级" : "Upgrade")
+            // 作业层说已没有要补的段（bfPending 全 false）：写「已完成」、不可点不可选；有一边要补的照常「升级」
+            let current = [SGradeScanGame(["id": "gamma", "name": "Up to date", "program": "original", "total": 3, "bfPending": ["iphone": false, "mac": false]]),
+                           SGradeScanGame(["id": "delta", "name": "Needs iPhone", "program": "original", "total": 3, "bfPending": ["iphone": true, "mac": false]])]
+            let cur = SGradeUpgradeBody(games: current, failure: nil, zh: language == .zh, x: x, upgrade: { _ in }, close: {})
+            XCTAssertEqual(cur.rowTitle("gamma"), language == .zh ? "已完成" : "Done", "已是最新的款不再显示「升级」")
+            XCTAssertTrue(cur.locked("gamma")); XCTAssertFalse(cur.locked("delta"))
+            XCTAssertEqual(cur.rowTitle("delta"), language == .zh ? "升级" : "Upgrade")
+            let curStopped = SGradeUpgradeBody(games: current, failure: nil, zh: language == .zh, x: x, upgrade: { _ in }, close: {}, states: ["gamma": "incomplete"])
+            XCTAssertFalse(curStopped.locked("gamma"), "被停的款即使查找时没要补的也能再点（查找结果可能是旧的）")
             let (host3, window3) = try await render(AnyView(running), fixture: fixture, language: language)
             defer { window3.close() }
             let ids3 = Set(fixture.navigation.controlTargets(in: window3).map(\.id))
