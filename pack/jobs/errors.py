@@ -187,6 +187,9 @@ RECOVERY = {
     'save_version': '备份与当前游戏版本或 DLC 不一致；使用匹配版本的游戏和备份后重试。',
     'save_wrong_game': '这份备份属于另一款游戏；回到对应游戏恢复，或选择当前游戏的备份。',
     'save_wrong_user': '这份备份属于另一用户；选择对应用户或该用户自己的备份后重试。',
+    "app_control_blocked": "在「Windows 安全中心 → 保护历史记录」看是谁拦的。杀毒软件拦的：把 S2Arm 安装文件夹加进信任再重试；"
+                           "「智能应用控制」拦的：它不能单独放行，只能在「应用和浏览器控制 → 智能应用控制」里关掉（关掉后要重装 Windows 才能再打开）；"
+                           "公司电脑请让管理员放行。",
 }
 
 
@@ -267,6 +270,9 @@ def _is_directory(path):
         return None
 
 
+APP_CONTROL_BLOCKED = (4551, 1260, 225, 226)   # 同 winproc.APP_CONTROL_BLOCKED：应用控制策略 / 组策略 / 杀毒软件拦下要起的程序（#0745b9）
+
+
 def explain(error, sources=(), library=None):
     """OSError 按 errno 归码，不猜原文；「原件不见了」「去系统设置授权」只给确知是玩家这边的路径（启动器剃刀 H8，11-11）：
     sources = 这次作业的原件（导入的路径、这款登记的原件），library = 游戏库根。
@@ -279,7 +285,12 @@ def explain(error, sources=(), library=None):
         if error.errno in (errno.ENOSPC, errno.EDQUOT):
             return Failure("任务所在磁盘空间不足。", code="disk_full")
         paths = [p for p in (error.filename, error.filename2) if p]
-        internal = f"{type(error).__name__} errno {error.errno}：{error.strerror or error}" + ("；路径 " + " → ".join(map(str, paths)) if paths else "")  # 非玩家句
+        winerror = getattr(error, "winerror", None)
+        internal = f"{type(error).__name__} errno {error.errno}" + (f" WinError {winerror}" if winerror else "") + f"：{error.strerror or error}" + ("；路径 " + " → ".join(map(str, paths)) if paths else "")  # 非玩家句
+        if winerror in APP_CONTROL_BLOCKED:   # 先于 EACCES：4551 / 1260 也会被映射成拒绝访问，原因不同、办法不同
+            tool = __import__("ntpath").basename(str(error.filename)) if error.filename else "S2Arm 自带的工具"   # ntpath：\\ 与 / 都认
+            who = {4551: "Windows 的「智能应用控制」", 1260: "这台电脑的组策略（公司 / 学校管理的电脑常见）"}.get(winerror, "杀毒软件")
+            return Failure(f"{who}拦下了 S2Arm 自带的工具「{tool}」，没让它运行。", code="app_control_blocked", internal=internal)
         if error.errno in (errno.EACCES, errno.EPERM, errno.EROFS):
             if any(_under(p, [*sources, *([library] if library else [])]) for p in paths):
                 return Failure("文件或目录不可访问或不可写。", code="permission_denied", internal=internal)

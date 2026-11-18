@@ -10298,5 +10298,29 @@
  {
   "source": "还没用 Apple ID 登录：在 S2Arm 里用你的 Apple ID 登录一次（邮箱、密码、手机上的验证码），再装到 iPhone。",
   "en": "Not signed in with an Apple ID yet: sign in with your Apple ID in S2Arm once (email, password and the verification code on your phone), then install on iPhone."
+ },
+ {
+  "source": "在「Windows 安全中心 → 保护历史记录」看是谁拦的。杀毒软件拦的：把 S2Arm 安装文件夹加进信任再重试；「智能应用控制」拦的：它不能单独放行，只能在「应用和浏览器控制 → 智能应用控制」里关掉（关掉后要重装 Windows 才能再打开）；公司电脑请让管理员放行。",
+  "en": "Check Windows Security → Protection history to see what blocked it. If it was antivirus, add the S2Arm install folder to its trusted list and try again. If it was Smart App Control, it can't allow a single app — it can only be turned off under App & browser control → Smart App Control (turning it off needs a Windows reinstall to turn it back on). On a work PC, ask your administrator to allow it."
+ },
+ {
+  "source": "S2Arm 自带的工具",
+  "en": "one of S2Arm's own tools"
+ },
+ {
+  "source": "{0}拦下了 S2Arm 自带的工具「{1}」，没让它运行。",
+  "en": "{0} stopped S2Arm's tool \"{1}\" from running."
+ },
+ {
+  "source": "Windows 的「智能应用控制」",
+  "en": "Windows Smart App Control"
+ },
+ {
+  "source": "这台电脑的组策略（公司 / 学校管理的电脑常见）",
+  "en": "this PC's group policy (common on work or school PCs)"
+ },
+ {
+  "source": "杀毒软件",
+  "en": "Antivirus software"
  }
 ]
