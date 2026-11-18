@@ -106,6 +106,22 @@ class ProgramPackTests(JobCase):
         program_pack.sign(self.c, GID, "TEAMA", "io.example.games", signer, pkg=pkg); self.assertEqual(len(calls), 1, "同团队同包名不再签")
         program_pack.sign(self.c, GID, "TEAMB", "io.example.games", signer, pkg=pkg); self.assertEqual(len(calls), 2, "换团队要重签")
 
+    def test_sign_cache_follows_signer_kind(self):
+        # 同团队同包名、换了签法（Mac 从 Xcode 钥匙串换到 plumesign + s2a-selfsign）：不能命中旧签法的缓存，要重签，签好的哈希随之变（推送按哈希判要不要推）
+        pkg = self.build(); calls = []
+        def mk(kind):
+            def run(dylib, team, bundle):
+                calls.append(kind); Path(dylib).write_bytes(Path(dylib).read_bytes() + kind.encode())
+            run.kind = kind
+            return run
+        a = program_pack.sign(self.c, GID, "TEAMA", "io.b", mk("xcode"), pkg=pkg)
+        sha_a = json.loads((a / "catalogue.json").read_text(encoding="utf-8"))["image_sha256"]
+        program_pack.sign(self.c, GID, "TEAMA", "io.b", mk("xcode"), pkg=pkg)
+        self.assertEqual(calls, ["xcode"], "同签法不再签")
+        b = program_pack.sign(self.c, GID, "TEAMA", "io.b", mk("selfsign:abc"), pkg=pkg)
+        self.assertEqual(calls, ["xcode", "selfsign:abc"], "换签法要重签")
+        self.assertNotEqual(json.loads((b / "catalogue.json").read_text(encoding="utf-8"))["image_sha256"], sha_a)
+
     def test_sign_keeps_only_signed_copy(self):
         # 0.6.0 程序缓存瘦身：生产路径（不传 pkg，sign 自己出未签名包）签好后删掉未签名 dylib，只留键与元数据；
         #   同团队再要 → 直接用签好的（不重出未签名包、不重签）；换团队 → 按键重出未签名包再签，签完照样删。期望手写

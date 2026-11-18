@@ -44,6 +44,7 @@
 #include "nvn_fmt_expand.h"
 #include "vk_device.h"
 #include "spirv_storage.h"   // 顶点阶段的存储写检查（与直连接纳同一份，按 Vulkan 规范的 NonWritable 判）
+#include "spirv_workgroup.h" // 最终 SPIR-V 的实际计算工作组尺寸（含 WorkgroupSize 的优先级）
 #include "../capprobe/capprobe.h"
 #include "nvn_vk_dq.inc"   // 两级回放：从这里往下 vkCmd* 等名字走它的包装（调试开关 nvk_dq，缺省开）
 S2A_CAPPROBE_RUNTIME_LOST_WEAK_REF;   // 宿主链接单元无 bridge.cpp 时解析为 NULL
@@ -269,7 +270,7 @@ struct nvn_gpu_cmd_s {
     VkQueryPool tsq;                         // 调试读数 nvk_gputime：段首尾各一个 GPU 时间戳，后面每个通道首尾各一个（没开就是空）
     struct { uint16_t w, h, draws; uint8_t ncol, ds; } tsp[TS_PASS_MAX];
     uint32_t ntsp;
-    VkCommandBuffer init_cb;                 // 本段提交时带上的「新建图像转 GENERAL」命令缓冲（没有就是空）
+    VkCommandBuffer init_cb;                 // 本池复用的前置命令缓冲；本段需要时录入图像转布局 / 时间戳重置
     struct nvn_gpu_tex_s **newimg;           // 上面那个命令缓冲转的图像（各持一份引用，段完成时归还；段没执行则放回待转表）
     uint32_t n_newimg;
     struct cmd_lay *lay;   // 本段内每张图当前的布局（段首一律 GENERAL，段末转回 GENERAL）
@@ -629,35 +630,35 @@ static struct nvn_gpu_tex_s *bind_tex_of(const nvn_gpu_binding *b) {
     return v ? v->tex : NULL;
 }
 
-// 命令段用完的命令池（带它那一个命令缓冲）和描述符池留下来给后面的段用，不再每段新建、段完成就销毁。
+// 命令段用完的命令池（带主缓冲与按需分配的前置缓冲）和描述符池留下来给后面的段用，不再每段新建、段完成就销毁。
 // 真机取样（一款 3D 游戏，每帧 9 个命令段）：回放线程约 14% 的时间在驱动向内核要显存（kgsl_sharedmem_alloc → ioctl + mmap），
 // 开命令段 nvn_gpu_cmd_begin 一项占 6%；每帧新建 9.2 个命令池、5.0 个描述符池。
 // 段做完后：命令池、描述符池各放进一张空闲表；开段 / 要描述符池时先从表里取，取出来再重置（vkResetCommandPool / vkResetDescriptorPool）。
 // 重置之后上一段分出去的描述符组句柄全部失效——段内的影子（desc_sets、备忘表）都随段对象一起没了，不会带到下一段。
 // 表有上限（多出来的照旧销毁），会话收尾全部销毁。诊断开关 nvk_seg_reuse=0 关掉（同一局里对照用），缺省开。
 enum { SEGPOOL_CMD_N = 32, SEGPOOL_DESC_N = 64 };
-static struct { VkCommandPool pool; VkCommandBuffer cb; } g_seg_cmd[SEGPOOL_CMD_N];
+static struct { VkCommandPool pool; VkCommandBuffer cb, init_cb; } g_seg_cmd[SEGPOOL_CMD_N];
 static VkDescriptorPool g_seg_desc[SEGPOOL_DESC_N];
 static uint32_t g_seg_ncmd, g_seg_ndesc; static uint64_t g_seg_hit_cmd, g_seg_hit_desc;
 static int g_seg_closed;   // 会话收尾已经清过表：之后再还回来的一律直接销毁（持 g_seg_mu 读写）
 static pthread_mutex_t g_seg_mu = PTHREAD_MUTEX_INITIALIZER;
 static int seg_reuse_on(void) { static int cur = -1; static uint32_t k; int c = __atomic_load_n(&cur, __ATOMIC_RELAXED); if (c < 0 || !(__atomic_add_fetch(&k, 1, __ATOMIC_RELAXED) & 63)) { c = nvn_plat_flag("nvk_seg_reuse", 1) != 0; __atomic_store_n(&cur, c, __ATOMIC_RELAXED); } return c; }
-static int seg_take_cmd(VkCommandPool *pool, VkCommandBuffer *cb) {
+static int seg_take_cmd(VkCommandPool *pool, VkCommandBuffer *cb, VkCommandBuffer *init_cb) {
     int ok = 0;
     pthread_mutex_lock(&g_seg_mu);
-    if (g_seg_ncmd) { g_seg_ncmd--; *pool = g_seg_cmd[g_seg_ncmd].pool; *cb = g_seg_cmd[g_seg_ncmd].cb; g_seg_hit_cmd++; ok = 1; }
+    if (g_seg_ncmd) { g_seg_ncmd--; *pool = g_seg_cmd[g_seg_ncmd].pool; *cb = g_seg_cmd[g_seg_ncmd].cb; *init_cb = g_seg_cmd[g_seg_ncmd].init_cb; g_seg_hit_cmd++; ok = 1; }
     pthread_mutex_unlock(&g_seg_mu);
     // 重置放在取用的这一刻、由要用它的线程做：放回时（完成线程）就重置的话，两条线程会在驱动里抢同一把锁，
     // 真机上「交后端」从 0.4 涨到 1.5–2.2 毫秒 / 帧
-    if (ok && vkResetCommandPool(g.d, *pool, 0) != VK_SUCCESS) { vkDestroyCommandPool(g.d, *pool, NULL); *pool = VK_NULL_HANDLE; *cb = VK_NULL_HANDLE; ok = 0; }
+    if (ok && vkResetCommandPool(g.d, *pool, 0) != VK_SUCCESS) { vkDestroyCommandPool(g.d, *pool, NULL); *pool = VK_NULL_HANDLE; *cb = VK_NULL_HANDLE; *init_cb = VK_NULL_HANDLE; ok = 0; }
     return ok;
 }
-static void seg_give_cmd(VkCommandPool pool, VkCommandBuffer cb) {   // 这一段已经做完（或被放弃），池里没有在用的命令缓冲
+static void seg_give_cmd(VkCommandPool pool, VkCommandBuffer cb, VkCommandBuffer init_cb) {   // 这一段已经做完（或被放弃），池里没有在用的命令缓冲
     if (!pool) return;
     int kept = 0;
     if (cb && seg_reuse_on()) {
         pthread_mutex_lock(&g_seg_mu);
-        if (!g_seg_closed && g_seg_ncmd < SEGPOOL_CMD_N) { g_seg_cmd[g_seg_ncmd].pool = pool; g_seg_cmd[g_seg_ncmd].cb = cb; g_seg_ncmd++; kept = 1; }
+        if (!g_seg_closed && g_seg_ncmd < SEGPOOL_CMD_N) { g_seg_cmd[g_seg_ncmd].pool = pool; g_seg_cmd[g_seg_ncmd].cb = cb; g_seg_cmd[g_seg_ncmd].init_cb = init_cb; g_seg_ncmd++; kept = 1; }
         pthread_mutex_unlock(&g_seg_mu);
     }
     if (!kept) vkDestroyCommandPool(g.d, pool, NULL);   // 池同时回收它的命令缓冲
@@ -1530,6 +1531,9 @@ static void clr_cmd_free(struct nvn_gpu_cmd_s *c);   // backend_vulkan_clear.inc
 
 static void finish_cmd(struct nvn_gpu_cmd_s *c, int executed) {
     if (!c) return;
+    // 放弃的段（abort / 带粘滞错误不提交）没走过 vkEndCommandBuffer 的清空：两级回放队列里可能还有它的记录（往上传片里填、引用它的暂存缓冲 / 管线），
+    // 先整队清空再归还 / 销毁下面这些资源。执行过的段已经过了 GPU 完成，记录早就做完了
+    if (!executed) vk_dq_drain();
     // 布局按段跟踪（c->lay）：段不执行时命令缓冲里什么都没跑，没有要回滚的；t->layout 只做诊断。
     detach_live(c);   // 已提交的 cmd 在 commit 时已摘下，这里兜底
     // 放弃 / 提交前失败的段仍可能有 DQ 待录命令引用快照；先排空录制，再销毁。
@@ -1588,7 +1592,7 @@ static void finish_cmd(struct nvn_gpu_cmd_s *c, int executed) {
         free(b);
     }
     clr_cmd_free(c);   // 先解除旧命令的管线依赖，再把命令池交给另一线程复用
-    seg_give_cmd(c->pool, c->cb);
+    seg_give_cmd(c->pool, c->cb, c->init_cb);
     free(c->refs);
     free(c->refseen);
     free(c->staging);
@@ -2495,6 +2499,16 @@ nvn_gpu_rc nvn_gpu_arena_alloc(nvn_gpu_cmd ch, uint64_t bytes, uint32_t align, n
     return rc(NVN_GPU_OK);
 }
 
+// 暂存填充（契约见 nvn_backend.h）：两级回放开着时交录制线程按序拷（nvn_vk_dq.inc vk_dq_fill），关着就地拷。
+// 段提交时 vkEndCommandBuffer 的包装先清空队列，所以 GPU 读上传片之前一定拷完；放弃段在 finish_cmd 开头整队清空。
+uint64_t nvn_gpu_arena_fill(nvn_gpu_cmd ch, const nvn_gpu_slice *sl, const void *src, uint64_t bytes) {
+    if (!sl || !sl->cpu || !src || !bytes) return 0;
+    struct nvn_gpu_cmd_s *c = ch;
+    if (!c) { memcpy(sl->cpu, src, (size_t)bytes); return 0; }
+    return vk_dq_fill(sl->cpu, src, bytes);
+}
+uint64_t nvn_gpu_arena_fill_wait(uint64_t ticket) { return vk_dq_fill_wait(ticket); }
+
 // ---------------------------------------------------------------- 录制原语
 
 // 保守的全局内存屏障：传输操作前后与段末各来一次（先保证正确，后面再按访问类型收窄）。
@@ -2925,6 +2939,33 @@ static const char *spv_vertex_missing(const void *blob, size_t bytes, nvn_gpu_st
     return NULL;
 }
 
+static nvn_gpu_rc compute_workgroup_check(const nvn_gpu_shader_src *s, nvn_gpu_err *err) {
+    const char *entry = s->entry && s->entry[0] ? s->entry : "main";
+    // The driver must receive the exact entry whose execution mode we checked.
+    if (strlen(entry) >= sizeof(((struct nvn_gpu_shader_s *)0)->entry))
+        return fail(err, NVN_GPU_E_UNSUPPORTED, "compute workgroup: entry name exceeds backend capacity");
+    uint32_t local[3] = {0};
+    const char *why = s2a_spirv_workgroup_size(s->blob, s->bytes, entry, local);
+    if (why) return fail(err, NVN_GPU_E_UNSUPPORTED, "%s (entry=%s)", why, entry);
+    const VkPhysicalDeviceLimits *limits = &g.dev->properties.limits;
+    for (unsigned k = 0; k < 3; k++) {
+        if (!local[k]) return fail(err, NVN_GPU_E_UNSUPPORTED, "compute workgroup: LocalSize[%u]=0 (entry=%s)", k, entry);
+        if (local[k] > limits->maxComputeWorkGroupSize[k])
+            return fail(err, NVN_GPU_E_UNSUPPORTED, "compute workgroup: LocalSize=%ux%ux%u exceeds maxComputeWorkGroupSize[%u]=%u (entry=%s)",
+                        local[0], local[1], local[2], k, limits->maxComputeWorkGroupSize[k], entry);
+    }
+    uint32_t threads = 1;
+    for (unsigned k = 0; k < 3; k++) {
+        // Divide before multiplying: even a malformed three-dimensional product
+        // cannot wrap around and appear to fit the device's invocation limit.
+        if (local[k] > limits->maxComputeWorkGroupInvocations / threads)
+            return fail(err, NVN_GPU_E_UNSUPPORTED, "compute workgroup: LocalSize=%ux%ux%u exceeds maxComputeWorkGroupInvocations=%u (entry=%s)",
+                        local[0], local[1], local[2], limits->maxComputeWorkGroupInvocations, entry);
+        threads *= local[k];
+    }
+    return rc(NVN_GPU_OK);
+}
+
 nvn_gpu_rc nvn_gpu_shader_load(const nvn_gpu_shader_src *s, nvn_gpu_shader *out, nvn_gpu_err *err) {
     if (!session_accepting()) return fail(err, NVN_GPU_E_STOPPED, "会话正在关闭 / 未打开");
     if (!out) return fail(err, NVN_GPU_E_ARG, "out 为空");
@@ -2938,6 +2979,10 @@ nvn_gpu_rc nvn_gpu_shader_load(const nvn_gpu_shader_src *s, nvn_gpu_shader *out,
     // 按程序报 UNSUPPORTED、why 点名特性；程序层据此记未接清单 shader int16_not_supported。
     if (!g.dev->core_features.shaderInt16 && s2a_spirv_declares_cap(s->blob, s->bytes, 22) == 1)
         return fail(err, NVN_GPU_E_UNSUPPORTED, "shaderInt16：设备没有 16 位整数，模块声明了 OpCapability Int16（stage %d）", (int)s->stage);
+    if (s->stage == NVN_GPU_SH_CS) {   // 计算工作组预检：非法尺寸不交给驱动创建模块 / 管线。
+        nvn_gpu_rc workgroup = compute_workgroup_check(s, err);
+        if (!nvn_gpu_ok(workgroup)) return workgroup;
+    }
     struct nvn_gpu_shader_s *sh = calloc(1, sizeof *sh);
     if (!sh) return fail(err, NVN_GPU_E_OOM, "着色器结构分配失败");
     sh->stage = s->stage;
@@ -6364,9 +6409,19 @@ static void bc_readback(struct nvn_gpu_cmd_s *c, struct nvn_gpu_tex_s *t, uint32
 static void bc_copy_from_buf(struct nvn_gpu_cmd_s *c, struct nvn_gpu_tex_s *t, uint32_t level, uint32_t layer, const NVNcopyRegion *r,
                              struct nvn_gpu_buf_s *b, uint64_t off, uint64_t row_bytes, uint64_t image_bytes);   // 见 bc_upload 后
 // 线性内容上传 / 缓冲 ↔ 贴图拷贝。全部在通道外，按 GPU 顺序执行。
-// depth_f32：#398 D24 换 D32 存储的贴图，缓冲里已是换算好的 D32 深度面（每纹素 4 字节 float），只拷深度面。
+// 缓冲 ↔ 贴图拷贝的一个区域只能有一个面（VUID-VkBufferImageCopy-aspectMask-09103，#1581 K）。深度模板贴图的整字拷贝
+//   （NVN D24S8 一个 32 位字：低 24 位深度、高 8 位模板）只走深度面：Vulkan 深度面的缓冲布局正是每纹素 4 字节、D24 在低 24 位，
+//   写入时高 8 位忽略、读出时高 8 位未定义。模板面另走一个每纹素 1 字节的区域（COPY_FACE_STENCIL，nvn_gpu_tex_upload 拆出来）。
+static VkImageAspectFlags copy_face_aspect(const struct nvn_gpu_tex_s *t) {
+    return (t->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) ? VK_IMAGE_ASPECT_DEPTH_BIT : t->aspect;
+}
+// face：COPY_FACE_DEFAULT = 按贴图格式（深度模板贴图取深度面，见 copy_face_aspect）；
+//   COPY_FACE_DEPTH_F32 = #398 D24 换 D32 存储的贴图，缓冲里已是换算好的 D32 深度面（每纹素 4 字节 float），只拷深度面；
+//   COPY_FACE_STENCIL = 只拷模板面，缓冲每纹素 1 字节。
+enum { COPY_FACE_DEFAULT = 0, COPY_FACE_DEPTH_F32 = 1, COPY_FACE_STENCIL = 2 };
 static void copy_buf_tex_impl(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint64_t row_bytes, uint64_t image_bytes,
-                              nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r, int depth_f32) {
+                              nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r, int face) {
+    const int depth_f32 = face == COPY_FACE_DEPTH_F32, stencil = face == COPY_FACE_STENCIL;
     { struct nvn_gpu_cmd_s *cc = ch; if (cc && cc->in_pass && rc_is(cc->sticky, NVN_GPU_OK)) { set_sticky(cc, NVN_GPU_E_ORDER, "传输操作在通道内"); return; } }
     struct nvn_gpu_cmd_s *c = ch;
     if (!c || !rc_is(c->sticky, NVN_GPU_OK)) return;
@@ -6386,14 +6441,15 @@ static void copy_buf_tex_impl(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint
         bc_copy_from_buf(c, t, level, layer, r, b, off, row_bytes, image_bytes);
         return;
     }
-    if (t && !depth_f32 && nvn_vk_format_substituted(t->nvn_format)) {   // 格式能力已报 NVN_GPU_FMT_SUBST：调用方给的是 D24 字节
+    if (t && stencil && !(t->aspect & VK_IMAGE_ASPECT_STENCIL_BIT)) { set_sticky(c, NVN_GPU_E_ARG, "模板面拷贝：贴图没有模板面（0x%x）", t->nvn_format); return; }
+    if (t && face == COPY_FACE_DEFAULT && nvn_vk_format_substituted(t->nvn_format)) {   // 格式能力已报 NVN_GPU_FMT_SUBST：调用方给的是 D24 字节
         set_sticky(c, NVN_GPU_E_UNSUPPORTED, "替换存储格式（D24 换 D32）的缓冲字节不能直接拷（0x%x），走 nvn_gpu_tex_upload", t->nvn_format);
         return;
     }
-    uint32_t bpp = depth_f32 ? 4 : t ? fmt_bpp(t->format) : 0;
+    uint32_t bpp = depth_f32 ? 4 : stencil ? 1 : t ? fmt_bpp(t->format) : 0;
     // 块信息：压缩格式一行是一排块（blk_w x blk_h 纹素、blk 字节）；没列进 fmt_bpp 的非压缩格式按 NVN 格式表的每纹素字节数
     uint32_t blk_w = 1, blk_h = 1, blk = bpp;
-    if (t && !depth_f32 && !bpp) {
+    if (t && face == COPY_FACE_DEFAULT && !bpp) {
         nvn_fmt_info fi;
         if (nvn_fmt_info_of(t->nvn_format, &fi) && !nvn_fmt_expand_target(t->nvn_format, NULL, NULL)) { blk_w = fi.bw; blk_h = fi.bh; blk = fi.bytes; bpp = blk; }
     }
@@ -6425,7 +6481,7 @@ static void copy_buf_tex_impl(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint
     bc.bufferOffset = off;
     bc.bufferRowLength = (uint32_t)(row_bytes / blk) * blk_w;   // 以纹素计；压缩格式是块数 × 块宽
     bc.bufferImageHeight = t->target == NVN_TEXTURE_TARGET_3D ? ((e.height + blk_h - 1) / blk_h) * blk_h : (uint32_t)(image_bytes / row_bytes) * blk_h;
-    bc.imageSubresource = (VkImageSubresourceLayers){depth_f32 ? VK_IMAGE_ASPECT_DEPTH_BIT : t->aspect, level,
+    bc.imageSubresource = (VkImageSubresourceLayers){depth_f32 ? VK_IMAGE_ASPECT_DEPTH_BIT : stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : copy_face_aspect(t), level,
                                                      t->target == NVN_TEXTURE_TARGET_3D ? 0 : layer, 1};
     bc.imageOffset = o;
     bc.imageExtent = e;
@@ -6437,7 +6493,7 @@ static void copy_buf_tex_impl(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint
 
 void nvn_gpu_copy_buf_tex(nvn_gpu_cmd ch, nvn_gpu_buf bh, uint64_t off, uint64_t row_bytes, uint64_t image_bytes,
                           nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r) {
-    copy_buf_tex_impl(ch, bh, off, row_bytes, image_bytes, th, level, layer, r, 0);
+    copy_buf_tex_impl(ch, bh, off, row_bytes, image_bytes, th, level, layer, r, COPY_FACE_DEFAULT);
 }
 
 void nvn_gpu_copy_tex_buf(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r,
@@ -6493,7 +6549,7 @@ void nvn_gpu_copy_tex_buf(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32
     bc.bufferOffset = off;
     bc.bufferRowLength = (uint32_t)(row_bytes / blk) * blk_w;   // 以纹素计；压缩格式是块数 × 块宽
     bc.bufferImageHeight = t->target == NVN_TEXTURE_TARGET_3D ? ((e.height + blk_h - 1) / blk_h) * blk_h : (uint32_t)(image_bytes / row_bytes) * blk_h;   // 块压缩要是块高的整数倍（同 copy_buf_tex_impl）；非压缩 blk_h = 1，原样 e.height
-    bc.imageSubresource = (VkImageSubresourceLayers){t->aspect, level, t->target == NVN_TEXTURE_TARGET_3D ? 0 : layer, 1};
+    bc.imageSubresource = (VkImageSubresourceLayers){copy_face_aspect(t), level, t->target == NVN_TEXTURE_TARGET_3D ? 0 : layer, 1};   // 深度模板贴图只回读深度面（#1581 K）
     bc.imageOffset = o;
     bc.imageExtent = e;
     vkCmdCopyImageToBuffer(c->cb, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, b->buffer, 1, &bc);
@@ -6906,6 +6962,31 @@ static void bc_copy_from_buf(struct nvn_gpu_cmd_s *c, struct nvn_gpu_tex_s *t, u
     free(rg);
 }
 
+// D24S8 上传的模板面（#1581 K）：从每纹素 32 位字的高 8 位抽出来，按每纹素 1 字节另交一个只有模板面的区域。
+//   深度面那一区（整字或 #398 换算后的 D32）由调用方先交；两区都在本段、按 GPU 顺序执行。
+static void upload_d24s8_stencil(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r,
+                                 const uint8_t *src, uint64_t row_bytes, uint64_t image_bytes, uint32_t ew, uint32_t eh) {
+    struct nvn_gpu_cmd_s *c = ch;
+    if (!rc_is(c->sticky, NVN_GPU_OK)) return;   // 深度面那一区已判非法：不再补交
+    if (row_bytes < (uint64_t)ew * 4 || image_bytes < row_bytes * (eh - 1) + (uint64_t)ew * 4) {
+        set_sticky(c, NVN_GPU_E_ARG, "tex_upload D24S8 模板面越界（行 %llu、总 %llu、区域 %ux%u）",
+                   (unsigned long long)row_bytes, (unsigned long long)image_bytes, ew, eh);
+        return;
+    }
+    nvn_gpu_slice sl;
+    nvn_gpu_err e;
+    if (!rc_is(nvn_gpu_arena_alloc(ch, (uint64_t)ew * eh, 4, &sl, &e), NVN_GPU_OK)) {
+        set_sticky(c, e.rc.code, "tex_upload 模板面暂存：%s", e.why);
+        return;
+    }
+    uint8_t *dst = (uint8_t *)sl.cpu;
+    for (uint32_t y = 0; y < eh; y++) {
+        const uint8_t *row = src + (uint64_t)y * row_bytes;
+        for (uint32_t x = 0; x < ew; x++) dst[(uint64_t)y * ew + x] = row[(uint64_t)x * 4 + 3];
+    }
+    copy_buf_tex_impl(ch, sl.buf, sl.off, ew, (uint64_t)ew * eh, th, level, layer, r, COPY_FACE_STENCIL);
+}
+
 void nvn_gpu_tex_upload(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32_t layer, const NVNcopyRegion *r,
                         const void *src, uint64_t row_bytes, uint64_t image_bytes) {
     { struct nvn_gpu_cmd_s *cc = ch; if (cc && cc->in_pass && rc_is(cc->sticky, NVN_GPU_OK)) { set_sticky(cc, NVN_GPU_E_ORDER, "传输操作在通道内"); return; } }
@@ -6959,10 +7040,13 @@ void nvn_gpu_tex_upload(nvn_gpu_cmd ch, nvn_gpu_tex th, uint32_t level, uint32_t
         if (row_bytes & 3) { set_sticky(c, NVN_GPU_E_ARG, "tex_upload D24 行宽未 4 对齐"); return; }
         memcpy(sl.cpu, src, (size_t)image_bytes);
         nvn_vk_depth24_to_f32(sl.cpu, (size_t)image_bytes / 4);
-        copy_buf_tex_impl(ch, sl.buf, sl.off, row_bytes, image_bytes, th, level, layer, r, 1);
+        copy_buf_tex_impl(ch, sl.buf, sl.off, row_bytes, image_bytes, th, level, layer, r, COPY_FACE_DEPTH_F32);
+        if (t->nvn_format == NVN_FORMAT_DEPTH24_STENCIL8) upload_d24s8_stencil(ch, th, level, layer, r, src, row_bytes, image_bytes, ew, eh);   // 换存储后模板面照样要传
     } else {
         memcpy(sl.cpu, src, (size_t)image_bytes);
-        nvn_gpu_copy_buf_tex(ch, sl.buf, sl.off, row_bytes, image_bytes, th, level, layer, r);
+        nvn_gpu_copy_buf_tex(ch, sl.buf, sl.off, row_bytes, image_bytes, th, level, layer, r);   // 深度模板贴图：这一区只有深度面（copy_face_aspect）
+        if (t->nvn_format == NVN_FORMAT_DEPTH24_STENCIL8 && (t->aspect & VK_IMAGE_ASPECT_STENCIL_BIT))
+            upload_d24s8_stencil(ch, th, level, layer, r, src, row_bytes, image_bytes, ew, eh);
     }
 }
 
@@ -7153,7 +7237,7 @@ nvn_gpu_rc nvn_gpu_cmd_begin(const nvn_gpu_cmd_desc *d, nvn_gpu_cmd *out, nvn_gp
     pci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
     pci.queueFamilyIndex = g.dev->queue_family;
-    if (!seg_reuse_on() || !seg_take_cmd(&c->pool, &c->cb)) {   // 空闲表里没有：新建一个池和它的命令缓冲
+    if (!seg_reuse_on() || !seg_take_cmd(&c->pool, &c->cb, &c->init_cb)) {   // 空闲表里没有：新建一个池和它的命令缓冲
     OC(OC_CPOOL);
     if (vkCreateCommandPool(g.d, &pci, NULL, &c->pool) != VK_SUCCESS) {
         free(c);
@@ -7285,7 +7369,7 @@ static uint32_t submit_cbs(struct nvn_gpu_cmd_s *c, VkCommandBuffer cbs[2]) {
     ai.commandPool = c->pool;
     ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     ai.commandBufferCount = 1;
-    if (vkAllocateCommandBuffers(g.d, &ai, &c->init_cb) != VK_SUCCESS) { c->init_cb = VK_NULL_HANDLE; return 0; }
+    if (!c->init_cb && vkAllocateCommandBuffers(g.d, &ai, &c->init_cb) != VK_SUCCESS) { c->init_cb = VK_NULL_HANDLE; return 0; }
     VkCommandBufferBeginInfo bi;
     memset(&bi, 0, sizeof bi);
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;

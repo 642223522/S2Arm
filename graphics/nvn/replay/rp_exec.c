@@ -139,7 +139,8 @@ static uint64_t g_split_base;  // 上次中途交段时的累计绘制笔数
 static int g_ret_n;            // OP_CALL 嵌套深度
 int nvn_cmd_call_resolve(uint64_t h, uint64_t *to);   // hle_nvn.c：CALL 目标解析（0 照执行，2 跳到同设备地址的新录制，1 隔离中，-1 块已复用）
 
-static void red(const char *fmt, const char *why) { char b[256]; snprintf(b, sizeof b, fmt, why); nvn_plat_log(NVN_PLAT_LOG_RED, "replay", b); }
+// 缓冲 512：最长的中文前缀约 150 字节 + 原因串最多 191 字节；256 时 gcc -O2 -Werror=format-truncation 在 Linux 容器编译红
+static void red(const char *fmt, const char *why) { char b[512]; snprintf(b, sizeof b, fmt, why); nvn_plat_log(NVN_PLAT_LOG_RED, "replay", b); }
 static void pre_done(void *user, const nvn_gpu_done *d) {
     struct pre_note *p = user;
     if (d->status == NVN_GPU_DONE_FAILED) red("前置段失败：%s", d->why ? d->why : "?");
@@ -669,9 +670,9 @@ static uint64_t exec_list(const uint8_t *p) {
             case OP_CLEAR_TEX: rp_pass_flush(g_cmd); rp_op_clear_tex(g_cmd, a, p); break;
             case OP_COPY_B2T: rp_pass_flush(g_cmd); rp_op_copy_b2t(g_cmd, a, p); break;   // 传输在通道外
             case OP_COPY_T2T: rp_pass_flush(g_cmd); rp_op_copy_t2t(g_cmd, a, p); break;   // 先落地待折清除：拷贝可能读写那些目标
-            case OP_UPDATE_UB: rp_op_update_ub(a, p); break;
-            case OP_COPY_B2B: rp_op_copy_b2b(a, p); break;
-            case OP_CLEAR_BUF: rp_op_clear_buf(a, p); break;
+            case OP_UPDATE_UB: if (!rp_op_update_ub_gpu(g_cmd, a, p)) rp_op_update_ub(a, p); break;   // 碰到还没落地的 GPU 写才走 GPU（#1022）
+            case OP_COPY_B2B: if (!rp_op_copy_b2b_gpu(g_cmd, a, p)) rp_op_copy_b2b(a, p); break;
+            case OP_CLEAR_BUF: if (!rp_op_clear_buf_gpu(g_cmd, a, p)) rp_op_clear_buf(a, p); break;
             case OP_WAIT_SYNC: {
                 const sync_t *s; void *ev; uint64_t v;
                 memcpy(&s, a, sizeof s);

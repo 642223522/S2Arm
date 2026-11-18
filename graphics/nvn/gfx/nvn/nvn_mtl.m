@@ -16192,8 +16192,9 @@ static void copy_b2t(const p_copy_b2t *c) {
         for (int z = 0; z < nz; z++)
             enc_b_copy_buffer_texture(b, (__bridge id<MTLBuffer>)mb, mo + z * img, row, img, MTLSizeMake(c->r.width, c->r.height, 1), t, layer0 + c->r.zoffset + z, level, MTLOriginMake(c->r.xoffset, c->r.yoffset, 0));
 storage_uploaded:
-    if (!texture_storage_upload(c, (__bridge id<MTLBuffer>)mb, mo, row, img))
-        RED_ONCE(205, "buffer-to-texture upload cannot update its pool storage (ser=%llu format %#x)", (unsigned long long)c->tex->serial, c->tex->d.format);
+    { const char *why = texture_storage_upload(c, (__bridge id<MTLBuffer>)mb, mo, row, img);
+      if (why) RED_ONCE(205, "buffer-to-texture upload cannot update its pool storage (ser=%llu format %#x target %d flags %#x %ux%ux%u region %d,%d,%d %dx%dx%d): %s", (unsigned long long)c->tex->serial, c->tex->d.format,
+                        c->tex->d.target, c->tex->d.flags, c->tex->d.width, c->tex->d.height, c->tex->d.depth, c->r.xoffset, c->r.yoffset, c->r.zoffset, c->r.width, c->r.height, c->r.depth, why); }
 }
 
 // Texture copies a blit cannot do -- a format change, a scaled region or a mirrored one (MIRROR_X / MIRROR_Y) (Link's Awakening converts its 1408x792 RG11B10F scene to RGBA16F every frame; Super Mario 3D World scales 1920x1080 to 1280x720
@@ -16605,12 +16606,13 @@ static uint64_t g_cut_draw0, g_cuts, g_copy_cuts, g_cut_busy;   // g_cut_busy: b
 static void sub_cut_begin(void) { g_cut_draw0 = g_stat_draw; }
 // Segment times without the segments (upstream reference implementation, MIT). A report in segment mode takes the GPU start or end of the segment it fell in, and what a game's controller makes of those depends on where the boundaries lie.
 // So the boundaries stay every cut_draws() draws, each with a GPU timestamp, whether or not the host commits there (sub_cut): the game reads what it read, and a GPU still busy gets no extra command buffer.
-// Metal 3 and the encode thread record their encoders without such a write: with them each boundary stays a commit
+// Metal 3 records its encoders without such a write: with it each boundary stays a commit. The encode thread writes them as recorded (nvn_rec.h RO_R_TS / RO_C_TS): it was left without
+//   the heap, so with the encode thread on (the default) every 64-draw boundary committed and DM_NVN_CUT_BUSY never applied (upstream reference implementation, MIT, 3304d6a0)
 enum { TS_SLOTS = 4096 };   // the largest timestamp heap Metal makes
 static uint32_t g_ts_next; static int g_ts_state, g_ts_s0;   // state: 0 not tried, 1 on, -1 off; s0: the slot of this submission's first boundary
 static int ts_on(void) {
     if (!g_ts_state) { g_ts_state = -1;
-        if (seg_ts() && !g_m3 && !rec_on()) { NSError *er = nil;
+        if (seg_ts() && !g_m3) { NSError *er = nil;
             g_ts_heap = ts_heap_new(TS_SLOTS, &er);
             if (g_ts_heap) g_ts_state = 1; else MLOG("【红】 counter timestamps: no counter heap (%s): every segment boundary stays a commit", er.description.UTF8String); } }
     return g_ts_state > 0;
