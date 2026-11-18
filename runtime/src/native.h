@@ -75,6 +75,8 @@ void s2a_log_session_start(void);   // iOS 主线程：正式激活才轮换日�
 // energy.c：进程能耗分账（快照单位：纳秒 / 纳焦；s2a_energy_log 打「上次调用以来」一行）
 typedef struct { uint64_t wall, cpu, pcpu, nj, pnj, cyc, pcyc, intr, idle; double gpu_ms, gpu_clk_ms; int ok_g; } s2a_esnap;   // gpu_ms：直连层 GPU 忙累计毫秒（时间，非能耗；ok_g = 有直连层）
 int s2a_energy_snap(s2a_esnap *s);
+// 即时存档开关（runtime/src/snapshot.c，唯一定义处）：存档中 / 恢复中 / 两者之一。关着时三者都是 0
+int s2a_snap_saving(void); int s2a_snap_restoring(void); int s2a_snap_mode(void); int s2a_snap_logging(void);
 // 两次采样之间的 GPU 忙 ms/s：分母取 GPU 时钟差（gpu_clk_ms，已入账各帧最晚 GPU 结束），不取墙钟——GPU 忙晚 8 帧在 CPU 帧边界入账，墙钟窗口会把慢帧前的时间挤进来；
 //   读不到（没有直连层）返回 -1，这段时间没有帧入账返回 0
 double s2a_gpu_busy_rate(const s2a_esnap *a, const s2a_esnap *b);
@@ -91,6 +93,8 @@ static inline int s2a_crash_quiet(void) {
     return (q && q[0] == '1') || getenv("DM_GLSLC_JOB") || getenv("DM_OODLE_SERVE") || getenv("S2A_PSO_HARVEST") || getenv("S2A_FRAME_REPLAY");
 }
 __attribute__((noreturn)) static inline void s2a_native_fatal(void) {
+    { const char *(*wn)(void) = (const char *(*)(void))dlsym(RTLD_DEFAULT, "s2a_waived_note"); const char *w = wn ? wn() : NULL;   // waived.c：带着没过的校验跑到这里
+      if (w && *w) LOG("【红】之前这些校验没过（照常继续了）：%s", w); }
     void (*boot_abort)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_session_abort_boot");
     if (boot_abort) boot_abort();
     if (s2a_crash_quiet()) _exit(70);
@@ -176,6 +180,7 @@ uint64_t s2a_app_pool(void); void s2a_app_pool_set(uint64_t v);   // layout.c
 #define S2A_HEAP_DEFAULT (S2A_APP_POOL & ~((2ull << 20) - 1))
 // 标准布局（各区全有宿主地址）的跨度，含模块段；0 = 地址空间类型不支持
 uint64_t s2a_layout_need(uint32_t as_type, uint64_t sys_resource_size, uint64_t module_span);
+uint64_t s2a_alias_report_size(uint64_t alias_base, uint64_t alias_size, uint64_t win_end, uint64_t hole, uint64_t need, int alias_gb, int full_flag);   // layout.c：报给游戏的别名区大小（#1441）
 // 按宿主占到的窗口 [win_base, +win_size) 排布局：放得下标准布局就照标准排，放不下就小区在前、别名区伸出窗口。
 //   out->win_size = 布局实际用的宿主地址（其余还给宿主）；*mod_base = 模块段起点。0 成功，-1 地址空间类型不支持，-2 窗口连前段都放不下
 //   alias_gb：出包静态认出的开局别名区大区（GiB，含 SDK 元数据；0 = 没有）——非 0 即别名优先，乙里放得下它时别名区收到窗口末、不伸出；
@@ -224,6 +229,7 @@ void s2a_thread_set_hw_cores(int n); int s2a_thread_hw_cores(void);   // thread.
 // 游戏时钟按原因冻结（1 后台会话、2 系统键盘、3 Mac 失焦、4 安卓退后台），全部解除才接着走（os.c）。
 void guest_clock_freeze_for(int reason, int on);
 void guest_clock_freeze(int on);                    // = 原因 1
+void s2a_guest_clock_set(uint64_t gns);   // 即时存档恢复：游戏时间接到快照时刻
 uint64_t s2a_entropy64(void);
 
 // ---------- 模块（loader.c）----------
@@ -310,8 +316,10 @@ static inline int s2a_guest_where(uint64_t a, char *b, size_t n) {
     if (w >= (int)n) s2a_utf8_trim(b, n);
     return 1;
 }
-// brk 兜底点（改写器双岛模式下两岛都够不着的必改点）：种类与序号见 traps.c
-enum { S2A_TRAP_TPIDR_R, S2A_TRAP_TPIDRRO_R, S2A_TRAP_TPIDR_W, S2A_TRAP_CTR };
+// brk 兜底点（改写器双岛模式下两岛都够不着的必改点；36 位老 SDK 写死的可随机区 / 栈区起止，#1503）：种类与序号见 traps.c
+enum { S2A_TRAP_TPIDR_R, S2A_TRAP_TPIDRRO_R, S2A_TRAP_TPIDR_W, S2A_TRAP_CTR, S2A_TRAP_ASLR_LO, S2A_TRAP_ASLR_HI, S2A_TRAP_STACK_LO, S2A_TRAP_STACK_HI, S2A_TRAP_NKIND };
+// 本局布局的可随机区（stack = 0）/ 栈区（1）起止 [*lo, *hi)，给 36 位老 SDK 兜底点用（svc_mem.c）；布局没定回 -1
+int s2a_mem_as_region(int stack, uint64_t *lo, uint64_t *hi);
 struct s2a_trap { uint64_t off, hits; uint32_t orig; uint8_t kind, reg; };
 #define S2A_TRAP_IMM0 0x8000u
 #define S2A_TRAP_MAX 0x2000u   // 按编号的 brk #0x8000–0x9FFF；0xA000 是远跳

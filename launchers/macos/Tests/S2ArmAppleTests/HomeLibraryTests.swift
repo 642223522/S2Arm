@@ -18,7 +18,7 @@ import LauncherPadBridge
         try Self.writeArtwork(to: root)
         let now = Date().timeIntervalSince1970, day = 86400.0
         // 第 0 款：6.5 天前装 → 还剩 1 天；第 1 款：8 天前 → 已过期；第 2 款：1 天前 → 还剩 6 天
-        let runner = HomeCatalogRunner(artwork: root, installs: [0: now - 6.5 * day, 1: now - 8 * day, 2: now - day])
+        let runner = HomeCatalogRunner(artwork: root, installs: [0: now - 6.5 * day, 1: now - 8 * day, 2: now - day], skipped: [2, 3])
         let model = S2ArmLauncherModel(client: JobClient(environment: JobEnvironment(privateRoot: root, resources: root,
             library: root.appendingPathComponent("lib").path, libraryId: "fixture"), runner: runner))
         model.refresh()
@@ -34,6 +34,8 @@ import LauncherPadBridge
         // 角标是卡片按钮里的装饰（无障碍信息合进卡片按钮），这里只核天数口径；样子看 S2A_SNAPSHOT_OUT 出的 home-cards.png
         XCTAssertEqual(model.games.first { $0.id == String(format: "%016X", 2) }?.iphoneDaysLeft(), 6)
         XCTAssertNil(model.games.first { $0.id == String(format: "%016X", 3) }?.iphoneDaysLeft(), "没装过的款没有角标")
+        // 数据校验不过的款（11-17）：第 2、3 款标，其余不标；角标样子同看 home-cards.png（右下角黄色三角）
+        XCTAssertEqual(model.games.filter(\.integritySkipped).map(\.id), [2, 3].map { String(format: "%016X", $0) })
         for _ in 0..<20 { host.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(30)) }
         if let output = ProcessInfo.processInfo.environment["S2A_SNAPSHOT_OUT"] {
             let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
@@ -195,8 +197,10 @@ import LauncherPadBridge
     }
 
     /// 取像素前等画面真的到位：每 30 毫秒重排、重画、取一次，满足条件就返回，最多等 timeout 秒（到点返回最后一次，交给断言报红）。
-    ///   原先固定等 80 / 400 毫秒再取，门禁主机负载高时换图动画、图片解码没走完，偶发报红（11-17 bab00cb5c 上那次）
-    private func waitPixel(_ host: NSView, x: CGFloat, y: CGFloat, timeout: TimeInterval = 5, until ok: (NSColor) -> Bool) async throws -> NSColor {
+    ///   原先固定等 80 / 400 毫秒再取，门禁主机负载高时换图动画、图片解码没走完，偶发报红（11-17 bab00cb5c 上那次）。
+    ///   上限 20 秒：背景图在后台队列读盘解码（CoverCache），本机负载 82 时等满 5 秒仍没换上（11-17 05:34 那次读数红 0.19 / 蓝 0.05）；
+    ///   满足条件就返回，平时不多等，判据不变
+    private func waitPixel(_ host: NSView, x: CGFloat, y: CGFloat, timeout: TimeInterval = 20, until ok: (NSColor) -> Bool) async throws -> NSColor {
         let deadline = Date().addingTimeInterval(timeout)
         var color = try pixel(host, x: x, y: y)
         while !ok(color), Date() < deadline {
@@ -235,7 +239,9 @@ private final class HomeCatalogRunner: JobProcessRunner {
     let artwork: URL
     /// 第几款是用免费账号装到 iPhone 的、什么时候装的（Unix 秒）；没写的款没装过
     let installs: [Int: Double]
-    init(artwork: URL, installs: [Int: Double] = [:]) { self.artwork = artwork; self.installs = installs }
+    /// 第几款导入时数据校验不过（packages 带 integritySkipped，11-17）
+    let skipped: Set<Int>
+    init(artwork: URL, installs: [Int: Double] = [:], skipped: Set<Int> = []) { self.artwork = artwork; self.installs = installs; self.skipped = skipped }
     private let lock = NSLock()
     private var launch: String?
     var lastLaunch: String? { lock.withLock { launch } }
@@ -247,12 +253,16 @@ private final class HomeCatalogRunner: JobProcessRunner {
         if request["operation"] as? String == "launch" { lock.withLock { launch = request["gameId"] as? String } }
         if request["operation"] as? String == "catalog" {
             // 分开异构 JSON 的类型推断，避免 CI 工具链在整条 map 表达式上耗尽求解预算。
+            let skippedContent: [String: Any] = ["stage": "import", "contents": ["x"], "place": "romfs"]
+            let skippedPackage: [String: Any] = ["type": "base", "integritySkipped": [skippedContent]]
             let games = (0..<21).map { index -> [String: Any] in
+                let packages = skipped.contains(index) ? [skippedPackage] : []
                 var game: [String: Any] = ["id": String(format: "%016X", index),
                     "name": index == 19 ? "Original Fixture 19 — A Very Long Adventure Across the Mountains and the Distant Sea" : "Original Fixture \(index)",
                     "ready": true, "missing": [],
                     "customCover": false, "cover": artwork.appendingPathComponent("cover.png").path,
-                    "banner": artwork.appendingPathComponent(index % 2 == 0 ? "banner-red.png" : "banner-blue.png").path]
+                    "banner": artwork.appendingPathComponent(index % 2 == 0 ? "banner-red.png" : "banner-blue.png").path,
+                    "packages": packages]
                 if let at = installs[index] {
                     game["iphoneInstall"] = ["at": at, "free": true] as [String: Any]
                 } else {

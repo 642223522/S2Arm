@@ -25,7 +25,8 @@ NATIVE_INC  := -Iruntime/include
 ifeq ($(S2A_UNAME),Darwin)
 S2A_HOST_WEAK := $(call S2A_WEAK_U,host)   # 立即求值一次：几十条链接行都引用它，别每次都起一次 python3
 # Mac 宿主热状态 / 低电量（runtime/src/host_main.c dm_thermal_now，经 objc 运行时读 NSProcessInfo，审计 P1-80）：原生层单独构建（runtime/gate.sh）不带 graphics/build.mk 的 Foundation，这里自己链
-HOST_LIBS += -framework Foundation
+HOST_LIBS += -framework Foundation -framework Security   # Security：手机端自签（runtime/src/selfsign.c）
+HOST_LIBS += -lcompression   # 即时存档压缩页内容（runtime/src/snapshot.c）；不链 C# 的构建（S2A_CS=0）没有 services/nxaot.sh 带进来的那份
 endif
 
 # 依赖（全部 HOST_SRCS、头文件、构建配置戳）由顶层 Makefile 在读完所有 build.mk 之后统一写，这里只写配方（配方延迟展开，链的是完整 HOST_SRCS）
@@ -108,6 +109,7 @@ IOS_LIBS   +=   # ExternalAccessory：GameSir G8+ MFi 有线的马达走配件�
 IOS_LIBS   += -framework MetricKit $(if $(filter tvos,$(S2A_APPLE_OS)),,-framework CoreTelephony)   # CoreTelephony：上传断网时认「无线数据」授权被拒（CTCellularData）
 # 静音键下照样出声（ios/app.m audio_category_apply，#789）：AVAudioSession
 IOS_LIBS   += -framework AVFAudio
+IOS_LIBS   += -framework Security   # 手机端自签（runtime/src/selfsign.c）
 # 诊断包自己写 zip（文件放根目录、文件名带 UTF-8 标记；系统「为上传而读」会多套一层文件夹、中文名按 cp437 解成乱码）：deflate 用系统 zlib
 IOS_LIBS   += -lz
 IOS_BUNDLE ?= local.s2arm.app
@@ -216,6 +218,8 @@ ios: ios-ns2pro
 	  if [ $(S2A_APPLE_OS) = ios ]; then \
 	  /usr/bin/plutil -insert UIFileSharingEnabled -bool YES $(IOS_APP)/Info.plist; \
 	  /usr/bin/plutil -insert LSSupportsOpeningDocumentsInPlace -bool YES $(IOS_APP)/Info.plist; \
+	  /usr/bin/plutil -insert UTExportedTypeDeclarations -json '[{"UTTypeIdentifier":"com.s2arm.game","UTTypeDescription":"S2Arm game package","UTTypeConformsTo":["public.data"],"UTTypeTagSpecification":{"public.filename-extension":["s2arm"]}}]' $(IOS_APP)/Info.plist; \
+	  /usr/bin/plutil -insert CFBundleDocumentTypes -json '[{"CFBundleTypeName":"S2Arm game package","CFBundleTypeRole":"Viewer","LSHandlerRank":"Owner","LSItemContentTypes":["com.s2arm.game"]}]' $(IOS_APP)/Info.plist; \
 	  /usr/bin/plutil -insert CADisableMinimumFrameDurationOnPhone -bool YES $(IOS_APP)/Info.plist; \
 	  /usr/bin/plutil -insert UIApplicationShortcutItems -json "$$(cat ios/shortcuts.json)" $(IOS_APP)/Info.plist; \
 	  fi; \

@@ -80,5 +80,17 @@ class AutoHeavyTests(JobCase):
         self.assertEqual(out.stdout.split(), ["19", "19", "19"])
 
 
+class AutoListSameAsLauncherTests(unittest.TestCase):
+    def test_launcher_list_matches_auto_heavy(self):
+        # 「自动任务」一处概念两端用：Mac 启动器 JobTrigger.automaticOperations（不开 userInitiated、进程按 utility）与作业层 AUTO_HEAVY（串行、低优先级）。
+        #   名单不一致 = 一边按自动任务让路、另一边不让 → 红。读 Swift 那一行字面量（逗号后可有空格），不跑被测代码推期望
+        import re
+        src = (JOBS.parents[1] / "launchers/macos/adapter/Sources/S2ArmAppleAdapter/JobProcess.swift").read_text(encoding="utf-8")
+        m = re.search(r"automaticOperations\s*:\s*Set<String>\s*=\s*\[(.*?)\]", src)
+        self.assertIsNotNone(m, "JobProcess.swift 里找不到 automaticOperations 的字面量")
+        swift = {x.strip().strip('"') for x in m.group(1).split(",") if x.strip()}
+        self.assertEqual(swift, set(main.AUTO_HEAVY))
+
+
 if __name__ == "__main__":
     unittest.main()

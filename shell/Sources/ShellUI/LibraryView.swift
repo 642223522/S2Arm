@@ -339,6 +339,9 @@ public struct LibraryView: View {
         .environment(\.shellShowHelp, { game in openHelp(game.id) })
         .environment(\.shellAskDelete, actions.onDeleteGame == nil ? nil : { game in openDelete(game.id) })
         .environment(\.shellManageSaves, guardedActions.onManageSaves)
+        .environment(\.shellSnapshot, { () -> (available: (String) -> Bool, restore: (String) -> Void)? in
+            guard let has = actions.snapshotAvailable, let go = guardedActions.onRestoreSnapshot else { return nil }
+            return (available: has, restore: go) }())
         .environment(\.shellOpenGameOrder, actions.onReorderGames == nil ? nil : {
             guard libraryPressAllowed, noteTouch() else { return }
             gameOrderOpen = true
@@ -515,6 +518,7 @@ public struct LibraryView: View {
         a.onGlobalPadMapReset = o.onGlobalPadMapReset.map { act in { if !echo() { act() } } }
         a.onDeleteGame = o.onDeleteGame.map { act in { if !echo() { act($0, $1) } } }
         a.onManageSaves = o.onManageSaves.map { act in { if !echo() { act($0) } } }
+        a.onRestoreSnapshot = o.onRestoreSnapshot.map { act in { if !echo() { act($0) } } }
         return a
     }
     /// An action that did not come from a controller or key came from touch: hints and focus ring step back. False when
@@ -539,7 +543,7 @@ public struct LibraryView: View {
         case .playable: actions.onPlay(detail.id)
         case .needsGameData: actions.onPickGameData(detail.id)
         case .needsAppUpdate: actions.onAppUpdate?()
-        case .needsGameUpdate, .needsGameReinstall: break   // needsHelp：上面已展开说明
+        case .needsGameUpdate: break   // needsHelp：上面已展开说明
         case .broken: actions.onShowLog?(detail.id)
         case .installing(let stage): if stage.phase == .failed { actions.onPlay(detail.id) }   // 重试解开；传着 / 解着按了不动
         }

@@ -99,6 +99,20 @@ red() { echo "【红】$1：$2" >&2; fails=$((fails + 1)); }
 has() { grep -qF -- "$2" "$1"; }
 
 # $1 档名（空 = 基线，不挂层）$2 日志；其余参数是额外环境变量
+# 失败时打什么：CI 日志只留这里打的。run.sh 一次跑好几遍整套（缺省 / 两级回放开 / 备忘关…），出错的用例行（FAIL 文件:行）
+# 往往在日志中段，末尾 40 行只剩汇总「红（N 处不符）」看不出是哪条（11-17 run 44072797348）。先打全日志里的 FAIL / 【红】行
+# （带日志行号，最多 40 条），再打末尾 40 行。
+show_fail() {
+    # FAIL 行单独先打：绿的整套本来就有十来条预期的【红】（驱动缺特性的具名跳过），混在一起取前 40 条会把真正的 FAIL 挤掉。
+    echo "  日志：${1}；FAIL 行（行号:内容，最多 40 条）：" >&2
+    local hits; hits=$(grep -nE '^FAIL ' "$1" || true)
+    if [ -n "$hits" ]; then printf '%s\n' "$hits" | head -40 >&2; else echo "    （没有 FAIL 行）" >&2; fi
+    echo "  【红】行（最多 40 条）：" >&2
+    hits=$(grep -n '【红】' "$1" || true)
+    if [ -n "$hits" ]; then printf '%s\n' "$hits" | head -40 >&2; else echo "    （没有【红】行）" >&2; fi
+    echo "  末尾 40 行：" >&2
+    tail -40 "$1" >&2
+}
 run_tier() {
     local tier=$1 log=$2; shift 2
     local capabilities=SIMULATE_FEATURES_BIT,SIMULATE_FORMATS_BIT
@@ -205,7 +219,7 @@ check_tier() {
         *) echo "未知档：${tier}（可用：${all[*]}）" >&2; exit 64 ;;
     esac
     local t=$((SECONDS - start))
-    if [ "$fails" -eq "$before" ]; then echo "【绿】${tier}（${t}s）"; else echo "  日志：${log}（失败时末尾 40 行如下）" >&2; tail -40 "$log" >&2; fi
+    if [ "$fails" -eq "$before" ]; then echo "【绿】${tier}（${t}s）"; else show_fail "$log"; fi
 }
 
 
@@ -215,7 +229,7 @@ if [ "$run_baseline" -eq 1 ]; then
     if [ "$rc" -eq 2 ] && grep -q "找不到" "$out/baseline.log"; then
         cat "$out/baseline.log" >&2; env_missing "run.sh 找不到依赖（见上）"
     fi
-    if [ "$rc" -ne 0 ]; then red 基线 "run.sh rc=$rc"; tail -40 "$out/baseline.log" >&2; else echo "【绿】基线（不挂层，$((SECONDS - start))s）"; fi
+    if [ "$rc" -ne 0 ]; then red 基线 "run.sh rc=$rc"; show_fail "$out/baseline.log"; else echo "【绿】基线（不挂层，$((SECONDS - start))s）"; fi
 fi
 
 for tier in ${want[@]+"${want[@]}"}; do

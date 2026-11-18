@@ -441,6 +441,9 @@ int s2a_ios_save_management_requested(void) {
     NSString *users = [manifest[@"users"][@"ids"] componentsJoinedByString:@"\n"];
     NSString *size = [NSByteCountFormatter stringFromByteCount:[self.preview[@"totalBytes"] longLongValue] countStyle:NSByteCountFormatterCountStyleFile];
     NSString *message = [NSString stringWithFormat:S2AL(@"save.restore.message"), manifest[@"game"][@"name"], manifest[@"game"][@"version"], manifest[@"createdAt"], users.length ? users : S2AL(@"save.deviceSave"), self.preview[@"fileCount"], size];
+    // 版本 / DLC 组合、账号归属对不上：服务层不再拒绝，给出提示句（已按界面语言），确认前放在说明最前面
+    NSArray *warnings = [self.preview[@"warnings"] isKindOfClass:NSArray.class] ? self.preview[@"warnings"] : @[];
+    if (warnings.count) message = [NSString stringWithFormat:@"⚠️ %@\n\n%@", [warnings componentsJoinedByString:@"\n⚠️ "], message];
     self.status.text = S2AL(@"save.inspected");
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:S2AL(@"save.restore.title") message:message preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:S2AL(@"common.cancel") style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {

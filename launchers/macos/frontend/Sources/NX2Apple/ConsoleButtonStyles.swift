@@ -47,8 +47,8 @@ struct ConsolePlayButtonStyle: ButtonStyle {
             .padding(.horizontal, 24)
             .frame(minWidth: 92, minHeight: 52, maxHeight: 52)
             .foregroundStyle(.black.opacity(0.85))
-            .background(.white.opacity(enabled ? (configuration.isPressed ? 0.75 : 1) : 0.4), in: Capsule())
-            .overlay(Capsule().strokeBorder(.white.opacity(hovered ? 1 : 0), lineWidth: 2).padding(-4))
+            .background(LauncherPalette.cream.opacity(enabled ? (configuration.isPressed ? 0.78 : 1) : 0.4), in: Capsule())
+            .overlay(Capsule().strokeBorder(LauncherPalette.cream.opacity(hovered ? 1 : 0), lineWidth: 2).padding(-4))
             .shadow(color: .black.opacity(0.18), radius: 16, y: 5)
             .contentShape(Capsule())
             .onHover { hovered = $0 }

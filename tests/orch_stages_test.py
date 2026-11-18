@@ -284,7 +284,7 @@ class StageTest(unittest.TestCase):
             'pack/roots.sh', 'pack/stage_rewrite.sh', 'pack/stage_keyfiles.sh', 'pack/rewriter.py',
             'pack/cpatch.py', 'runtime/rewriter', 'graphics/widen/scan', 'tools/addr_need.py',
             'tools/stage_deps.py', 'tools/stage_deps_hook', 'graphics/nvn/tools/romfs_list.py',
-            'tools/nso_plain.py', 'pack/pkg_srcs.py'])   # 11-06：10b9156f3 起 addr_need.py 顶层 import nso_plain、stages.selected_tables 加载 pack/pkg_srcs.py，镜像少这两个 8 例红
+            'tools/nso_plain.py', 'pack/pkg_srcs.py', 'tools/pool_workers.py'])   # 11-06：10b9156f3 起 addr_need.py 顶层 import nso_plain、stages.selected_tables 加载 pack/pkg_srcs.py，镜像少这两个 8 例红；#1332 起 wide_scan / romfs_list / stages 经 tools/pool_workers.py 取核数与进程池路数
         for name in listed.decode('utf-8').split('\0'):
             if name and (original / name).is_file():
                 dest = mirror / name
@@ -453,6 +453,21 @@ class StageTest(unittest.TestCase):
                     self.assertIn('改写空间超过了能放下的上限', str(raised.exception))
         self.assertIn('degrade.rewrite.tsv', stages.REWRITE_OUTPUTS)   # 降级表随改写产物进产物根（出包作业收尾读它给玩家提示）
 
+    def test_rewrite_failure_keeps_this_games_logs(self):
+        """#1476：改写失败、事务回滚删临时版本目录前，本款各模块的 <模块>.rewrite.log 拷进 <产物根>/.failed/<款>_<模块>.rewrite.log；
+        本款上一次失败留的同类日志清掉（只留这一次的），别款的不动、改写日志以外的不拷"""
+        work = self.home / 'failwork'; work.mkdir()
+        (work / 'main.rewrite.log').write_text('main 这一次\n', encoding='utf-8')
+        (work / 'sdk.rewrite.log').write_text('sdk 这一次\n', encoding='utf-8')
+        (work / 'widen_scan.log').write_text('不是改写日志\n', encoding='utf-8')
+        kept = self.store.path / '.failed'; kept.mkdir()
+        (kept / 'probe_subsdk0.rewrite.log').write_text('上一次\n', encoding='utf-8')
+        (kept / 'other_main.rewrite.log').write_text('别款\n', encoding='utf-8')
+        stages.Stages(self.store)._keep_failed_logs(work, 'probe')
+        self.assertEqual(sorted(p.name for p in kept.iterdir()), ['other_main.rewrite.log', 'probe_main.rewrite.log', 'probe_sdk.rewrite.log'])
+        self.assertEqual((kept / 'probe_main.rewrite.log').read_text(encoding='utf-8'), 'main 这一次\n')
+        self.assertEqual((kept / 'other_main.rewrite.log').read_text(encoding='utf-8'), '别款\n')
+
     def test_code_patch_present_absent_key_and_forwarding(self):
         self._optional_input_pair('code')
 
@@ -581,6 +596,7 @@ class StageTest(unittest.TestCase):
             tx.abort(); deps.close()
 
     def test_index_manifest_preserves_eight_baseline_repository_rows(self):
+        # #1332：romfs_list / resource_input_key 经 tools/pool_workers.py 取核数，它照实进依赖清单（改它会换 romfsidx 的键）
         refresh.seed(self.store, '原创', self.source)
         engine = stages.Stages(self.store)
         def original_core_boundary(tx, deps):
@@ -595,7 +611,7 @@ class StageTest(unittest.TestCase):
         self.assertEqual(names, [
             'R:graphics/nvn/tools/romfs_list.py', 'R:pack/resource_input_key.py',
             'R:pack/stage_keyfiles.sh', 'R:pack/stages/romfsidx.sh',
-            'R:tools/clonedir.py', 'R:tools/direct_shards.py', 'R:tools/stage_deps.py',
+            'R:tools/clonedir.py', 'R:tools/direct_shards.py', 'R:tools/pool_workers.py', 'R:tools/stage_deps.py',
             'R:tools/stage_deps_hook/sitecustomize.py'])
 
     @unittest.skipUnless(os.environ.get('S2A_ORCH_TEST_DOTNET') or shutil.which('dotnet'), 'existing .NET tool required; never downloaded')

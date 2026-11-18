@@ -12,16 +12,19 @@ public struct GamePackage: Equatable {
     public let sha256: String
     /// 原件形态：空 = NSP / XCI（要密钥）；nup / dump / extract / loose 不加密，不要密钥。
     public let format: String
+    /// 导入时有内容哈希对不上、跳过完整性校验照常导入了（catalog packages[].integritySkipped 非空，11-17 维护者：校验不过不再拒收）
+    public let integritySkipped: Bool
 
-    public init(type: String, titleId: String = "", version: Int = 0, display: String = "", size: Int64 = 0, sha256: String = "", format: String = "") {
+    public init(type: String, titleId: String = "", version: Int = 0, display: String = "", size: Int64 = 0, sha256: String = "", format: String = "", integritySkipped: Bool = false) {
         self.type = type; self.titleId = titleId; self.version = version; self.display = display; self.size = size; self.sha256 = sha256; self.format = format
+        self.integritySkipped = integritySkipped
     }
 
     init?(catalog p: [String: Any]) {
         guard let type = p["type"] as? String else { return nil }
         self.init(type: type, titleId: p["titleId"] as? String ?? "", version: (p["version"] as? NSNumber)?.intValue ?? 0,
                   display: p["display"] as? String ?? "", size: (p["size"] as? NSNumber)?.int64Value ?? 0, sha256: p["sha256"] as? String ?? "",
-                  format: p["format"] as? String ?? "")
+                  format: p["format"] as? String ?? "", integritySkipped: !((p["integritySkipped"] as? [Any]) ?? []).isEmpty)
     }
 }
 
@@ -139,6 +142,8 @@ public struct GameSummary: Identifiable, Equatable {
     }
 
     /// DLC 个数（按程序号去重）。
+    /// 这款有原件导入时跳过了完整性校验（游戏库卡片标「数据校验不过」）
+    public var integritySkipped: Bool { packages.contains(where: \.integritySkipped) }
     public var dlcCount: Int { Set(packages.filter { $0.type == "dlc" }.map(\.titleId)).count }
 
     /// 原件总大小（同一个文件里的多项只算一次，同旧启动器 ExportGameCard）。
@@ -246,7 +251,8 @@ public final class LibraryProvider {
             return try client.start(operation: "catalog", extra: startup ? ["startup": true] : [:], onFinish: { outcome in
                 guard outcome.state == .completed else {
                     if outcome.state == .failed, self.forgetLibraryIfGone() { completion(.failure(JobClientError(Self.noLibraryMessage))); return }
-                    completion(.failure(JobClientError(outcome.message.isEmpty ? JobOutcome.interruptedMessage : outcome.message)))
+                    completion(.failure(JobClientError(outcome.message.isEmpty ? JobOutcome.interruptedMessage : outcome.message,
+                                                       code: outcome.failureCode)))   // 带失败码：前端按码给动作（library_id_mismatch 问要不要改用这个库）
                     return
                 }
                 self.remember(outcome.result)
@@ -328,6 +334,9 @@ public struct GameSizes: Equatable {
     public var cache: Int64 = 0
     public var sources: Int64 = 0
     public var measured = false
+    /// 0.6.0 四类（作业层 pack/jobs/sizes.py categories：resources / programs / playerData / cache；通用壳开关开着才带）。nil = 照旧五项显示
+    public var categories: [String: Int64]?
+    public static let categoryOrder = ["resources", "programs", "playerData", "cache"]
     public init() {}
     public init(imageMac: Int64, imageIos: Int64, saves: Int64, cache: Int64, sources: Int64, measured: Bool) {
         self.imageMac = imageMac; self.imageIos = imageIos; self.saves = saves; self.cache = cache; self.sources = sources; self.measured = measured
@@ -336,6 +345,9 @@ public struct GameSizes: Equatable {
         func n(_ k: String) -> Int64 { (s[k] as? NSNumber)?.int64Value ?? 0 }
         imageMac = n("imageMac"); imageIos = n("imageIos"); saves = n("saves"); cache = n("cache"); sources = n("sources")
         measured = s["measured"] as? Bool ?? false
+        if let c = s["categories"] as? [String: Any] {
+            categories = Dictionary(uniqueKeysWithValues: Self.categoryOrder.map { ($0, (c[$0] as? NSNumber)?.int64Value ?? 0) })
+        }
     }
 }
 

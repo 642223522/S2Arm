@@ -34,6 +34,7 @@ import diag_upload
 import downstream
 import embedded
 import export_plan
+import host_update
 import install
 import tvos
 import ipa
@@ -93,12 +94,18 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
                   "setup": library.setup, "keys": library.keys, "import": library.import_games,
                   "catalog": library.catalog, "customize": library.customize, "remove": library.remove, "delete": library.delete, "clean": library.clean,
                   "spaceSurvey": library.space_survey, "spaceFree": library.space_free, "storageOverview": sizes.overview,
+                  "phoneSaves": install.phone_saves,
+                  "phoneSaveRestore": install.restore_phone_save,
                   "diagnostics": library.diagnostics, "diagnosticsUpload": diag_upload.upload, "saveInput": library.save_input,
+                  "phoneUsage": install.phone_usage,
                   "locations": library.list_locations, "moveGame": library.move_game, "relinkGame": library.relink_game, "forgetGame": library.forget_game,
-                  "build": build.prepare, "launch": build.launch, "pullDiagnostics": diag.pull, "ipa": ipa.build, "downstreamChoice": downstream.set_choice, "install": install.install, "installRemove": install.remove_from_phone, "installRestore": install.restore_previous, "installUpdate": install.update_phone, "installUpdatePrepare": install.update_prepare, "phoneKeptPull": install.phone_kept_pull, "exportPush": install.push_export_job, "installMode": install.install_mode_job, "installCheck": install.readiness, "signingProject": install.signing_project, "installDotnet": toolchain.install_dotnet, "targetDevice": target.probe,
+                  "phoneIdentity": install.phone_identity,
+                  "build": build.prepare, "launch": build.launch, "pullDiagnostics": diag.pull, "ipa": ipa.build, "downstreamChoice": downstream.set_choice, "install": install.install, "installRemove": install.remove_from_phone, "installRestore": install.restore_previous, "installUpdate": install.update_phone, "installUpdatePrepare": install.update_prepare, "phoneKeptPull": install.phone_kept_pull, "pushSelected": install.push_selected, "exportPush": install.push_export_job, "installMode": install.install_mode_job, "installCheck": install.readiness, "signingProject": install.signing_project, "installDotnet": toolchain.install_dotnet, "targetDevice": target.probe,
                   "tvInstall": tvos.install_tv, "tvExport": tvos.export_tv, "tvDevices": tvos.devices_job, "tvSaveBackup": tvos.autobackup,   # Apple TV（tvOS 版，pack/jobs/tvos.py）
+                  "pushSelected": install.push_selected,
+                  "signModeSet": install.sign_mode_set,
                   "saveStatus": saves.status, "saveBackup": saves.backup, "saveInspect": saves.inspect, "saveRestore": saves.restore,
-                  "community": community.listing, "communitySave": community.save, "patchMatch": patches.match, "sgradeScan": sgrade.scan, "sgradeMac": sgrade.mac_all, "sgradeReenable": sgrade.reenable, "devCert": devcert.operation, "export": export_plan.export}
+                  "community": community.listing, "communitySave": community.save, "patchMatch": patches.match, "sgradeScan": sgrade.scan, "updateHints": host_update.update_hints, "phoneOverview": host_update.phone_overview, "sgradeMac": sgrade.mac_all, "sgradeReenable": sgrade.reenable, "devCert": devcert.operation, "export": export_plan.export}
     if operation_overrides:
         operations.update(operation_overrides)
     try:
@@ -156,6 +163,7 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
             del c.job["diagnostics"][kept:]
             return _finish_cancelled(c)
         message = diagnostic["summary"]
+        integrity_note(c)
         if c.operation in CLEANS_AFTER_STOP:   # 错误摘要要读产物根里的日志，所以排在它后面
             library.clean_after_stop(c)
         c.finish("failed", message, partial_import_result(c))
@@ -163,6 +171,26 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
     finally:
         ended.set()
         _drop_job_tmp(c)
+
+
+def integrity_note(c):
+    """出包 / 起局等带游戏号的作业失败时：这款导入时有内容跳过了完整性校验 → 补一条 warning 级诊断（维护者 11-17：免得难查）。
+    读不到游戏库或不是游戏作业就不补，不让补充说明本身把失败收尾弄坏"""
+    gid = c.r.get("gameId")
+    if not gid:
+        return
+    try:
+        game = next((g for g in c.catalog()["games"] if g["id"] == gid), None)
+        if library.integrity_skipped(game):
+            c.diagnostic(library.SOURCE_INTEGRITY_FAILED_NOTE, code="source_integrity_skipped", severity="warning")
+        # 出包时资源包核对没对上（pack/verify.py 改黄后照常出包，原因落 <包目录>.verify_warn.txt；全对时它会删掉旧的）：现行产物根里还留着就补一句
+        if any(layout.build_dir(c, gid, create=False).glob("*/roots/*@现行/pkg/*.verify_warn.txt")):  # 非玩家句（路径）
+            c.diagnostic(PACK_VERIFY_NOTE, code="source_integrity_skipped", severity="warning")
+    except (Failure, OSError, ValueError, KeyError, TypeError):
+        pass
+
+
+PACK_VERIFY_NOTE = "之前出包时这款的资源包核对没对上（包里有文件和原件不一致），这次失败可能与此有关；重新出包一次再试。"
 
 
 def _finish_cancelled(c):

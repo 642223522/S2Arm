@@ -405,7 +405,18 @@ static int export_env(void) {   // 冻结后的四个根写进进程环境（覆
     }
     return 0;
 }
+// selfsign.c：手机端自签真机验证（开发用环境变量，没设就直接返回）。这里给弱的空实现：链了 selfsign.c 的（App / 宿主）用它的强定义，
+//   只链 launchctx.c 的单测和工具不用跟着链 Security
+__attribute__((weak)) void s2a_selfsign_probe(void) {}
+// 校验没过、照常继续（11-17 维护者，waived.c）：打【黄】并记下，FATAL / 崩溃时补报
+static void waive(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void waive(const char *fmt, ...) {
+    char m[700]; va_list ap; va_start(ap, fmt); vsnprintf(m, sizeof m, fmt, ap); va_end(ap);
+    void (*f)(const char *) = (void (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_check_waived");
+    if (f) f(m); else LOG("【黄】校验没过，照常继续：%s", m);
+}
 static void decide(void) {
+    s2a_selfsign_probe();
     char exe[S2A_LCTX_PATH]; uint32_t n = sizeof exe;
     if (_NSGetExecutablePath(exe, &n)) { snprintf(g_err, sizeof g_err, "取不到可执行文件路径"); return; }
     char *sl = strrchr(exe, '/'); if (sl) *sl = 0;
@@ -457,18 +468,22 @@ const char *s2a_launch_ctx_select(const char *gid) {
     {   // 宿主约定号（s2a_host_abi.h）：产物是按别的约定出的就不载入——不然改写器与运行时对不上，进游戏后静默崩。对不上 → 回游戏库标「要更新」
         char prog[S2A_LCTX_PATH], app[S2A_LCTX_PATH]; int have = 0;
         int k = join(app, g_bundle, "s2a_catalogue.json") ? -1 : s2a_host_abi_check(s2a_program_catalogue_path(prog, sizeof prog, c.game_data) ? NULL : prog, app, gid, &have, w, sizeof w);
-        if (k == 1) {
-            snprintf(why, sizeof why, "ios_host_abi_mismatch：游戏 %s 的程序按宿主约定号 %d 出，本宿主是 %d：要在电脑上按新版更新这款", gid, have, S2A_HOST_ABI);
-            g_sel_kind = S2A_SELECT_NEEDS_UPDATE; r = why; goto out;   // 被拒原因由 out 处统一记【红】行（带诊断码进诊断包）
-        }
-        if (k < 0) { snprintf(why, sizeof why, "宿主约定号核不了：%s", w[0] ? w : "App 包目录太长"); g_sel_kind = S2A_SELECT_APP_INCOMPLETE; r = why; goto out; }
+        // 11-17 维护者：校验不过不再整个拒绝，黄字提示照常进，之后出问题时报错带上这条（waived.c）
+        if (k == 1) waive("游戏 %s 的程序按宿主约定号 %d 出，本宿主是 %d：版本不配，可能闪退，在电脑上重新出包 / 装到 iPhone 可解（ios_host_abi_mismatch）", gid, have, S2A_HOST_ABI);
+        if (k < 0) waive("游戏 %s 的宿主约定号核不了：%s", gid, w[0] ? w : "App 包目录太长");
+    }
+    if (c.from_program) {   // 起局按款重签（0.6.0 通用壳，ios/program_resign.m）：签名身份不是手机上现在这张 / 没签 → 当场用手机上的身份签好，路径改指新版本目录；
+        //   做不了照旧用原程序库（原因进日志）。按名取（只链本文件的单测 / 工具没有它）
+        int (*rs)(const char *, const char *, const char *, char *, char *, size_t, char *, size_t) =
+            (int (*)(const char *, const char *, const char *, char *, char *, size_t, char *, size_t))dlsym(RTLD_DEFAULT, "s2a_program_resign_if_needed");
+        if (rs) { char rw[300]; rs(getenv("HOME"), c.game_data, gid, c.module_dir, c.images, sizeof c.images, rw, sizeof rw); }
     }
     {   // 程序签名（通用壳 11-16）：程序包里的程序库要和清单 image_sha256 一致（推了一半 / 换了别的版本 = 清单和库不是同一次出的），
         //   且能被本机这份 App 注册签名 + 库校验（同团队）。对不上 → 回游戏库标「要在电脑上重新签名」，不进宿主（原先进局后 loader.c die「外置镜像包打不开」，
         //   App 无提示直接退回主屏，11-16 Duo 实测 ad-hoc 程序库 errno=1）。注册在这里先做一次，进局后 s2a_imgpack_open 同一路径回同一个包
         int ks = c.from_program ? program_sha_check(c.game_data, gid, c.images, w, sizeof w) : 0;
-        if (ks > 0) { snprintf(why, sizeof why, "ios_program_resign：%s", w); g_sel_kind = S2A_SELECT_NEEDS_RESIGN; r = why; goto out; }
-        if (ks < 0) { snprintf(why, sizeof why, "程序包核不了：%s", w); g_sel_kind = S2A_SELECT_APP_INCOMPLETE; r = why; goto out; }
+        if (ks > 0) waive("%s：版本不配，可能闪退，在电脑上重新签名 / 装到 iPhone 可解（ios_program_resign）", w);   // 校验不过照常进（11-17 维护者）；签名系统不认（下面 rc == 3）物理上加载不了，照旧拒
+        if (ks < 0) waive("游戏 %s 的程序包核不了：%s", gid, w);
         int (*open_pk)(const char *, void **, char *, size_t) = (int (*)(const char *, void **, char *, size_t))dlsym(RTLD_DEFAULT, "s2a_imgpack_open");
         void *pk = NULL; int rc = c.from_program && open_pk ? open_pk(c.images, &pk, w, sizeof w) : 0;   // 只对程序包里的款：App 包里的款（0.6.0 前玩家手上全是这种）照旧进局后由装载器打开，行为同改造前
         if (rc == 3) { snprintf(why, sizeof why, "ios_program_resign：游戏 %s 的程序库签名本机不认（%s）：要在电脑上重新签名这款", gid, w); g_sel_kind = S2A_SELECT_NEEDS_RESIGN; r = why; goto out; }   // 3 = S2A_IMG_ESIGN（runtime/src/imgpack.h）

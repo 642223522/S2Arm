@@ -34,6 +34,18 @@ static int gtab_put(gtab_t *t, gate_t g) {
     return 0;
 }
 
+// 即时存档（跨版本 B 档）：门的身份 = (原指令地址, 门类型)。存档时按返回点查身份，恢复时按身份在本版门表里找新返回点（维护者：
+//   同一份改写产物里 (原地址, 类型) 唯一；跨版本找不到就归 C 档拒绝，不猜最近的门）
+int s2a_gate_identity(uint64_t ret, uint64_t *orig, int *kind) {
+    gtab_t *t = atomic_load_explicit(&g_tab, memory_order_acquire); if (!t) return -1;
+    for (unsigned i = 0; i < (1u << t->bits); i++) if (t->e[i].ret == ret) { *orig = t->e[i].orig; *kind = t->e[i].kind; return 0; }
+    return -1;
+}
+uint64_t s2a_gate_by_identity(uint64_t orig, int kind) {
+    gtab_t *t = atomic_load_explicit(&g_tab, memory_order_acquire); if (!t) return 0;
+    for (unsigned i = 0; i < (1u << t->bits); i++) if (t->e[i].ret && t->e[i].orig == orig && t->e[i].kind == kind) return t->e[i].ret;
+    return 0;
+}
 void gate_register(uint64_t ret_abs, const char *kind, int arg, uint64_t orig) {
     int k = !strcmp(kind, "svc") ? G_SVC : !strcmp(kind, "cntpct") ? G_CNTPCT : !strcmp(kind, "cntvct") ? G_CNTVCT : !strcmp(kind, "wide") ? G_WIDE : !strcmp(kind, "spin") ? G_SPIN : !strcmp(kind, "aregion") ? G_AREGION : -1;
     if (k < 0) die("不认识的门类 %s（改写器与原生层版本不符）", kind);

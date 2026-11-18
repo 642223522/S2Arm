@@ -547,3 +547,12 @@ void nvn2_device_init(void) {
     nvn_gob_switch2 = getenv("DM_NVN_GOB_X1") ? 0 : 1;   // DM_NVN_GOB_X1=1 (diagnostic): the Tegra X1's order, to compare against on a Switch 2 game
     LOG("[nvn] Switch 2 进程：NVN2 设备（贴图按 Switch 2 的 GOB 内次序解交错，着色器按 NVN2 控制段取键）");
 }
+// 即时存档：图形系统启动记账（nv::InitializeGraphics 的池、游戏分配器）存取；指针都是游戏地址
+int nvn2_snap_gs_save(FILE *f) { int in = atomic_load(&g_nv_pool.inited); uint64_t m = (uint64_t)(uintptr_t)g_nv_pool.mem, s = g_nv_pool.size;
+    return fwrite(&in, 4, 1, f) != 1 || fwrite(&m, 8, 1, f) != 1 || fwrite(&s, 8, 1, f) != 1 || fwrite(&g_nv_alloc, sizeof g_nv_alloc, 1, f) != 1 || fwrite(&g_nv_devtools_alloc, sizeof g_nv_devtools_alloc, 1, f) != 1 ? -1 : 0; }
+int nvn2_snap_gs_restore(FILE *f) { int in; uint64_t m, s;
+    if (fread(&in, 4, 1, f) != 1 || fread(&m, 8, 1, f) != 1 || fread(&s, 8, 1, f) != 1 || fread(&g_nv_alloc, sizeof g_nv_alloc, 1, f) != 1 || fread(&g_nv_devtools_alloc, sizeof g_nv_devtools_alloc, 1, f) != 1) return -1;
+    g_nv_pool.mem = (void *)(uintptr_t)m; g_nv_pool.size = (size_t)s; atomic_store(&g_nv_pool.inited, in); return in; }
+
+#include "../../../../runtime/src/snapfmt.h"
+void nvn2_snap_fps(void (*cb)(const char *name, uint64_t fp)) { cb("nvn2.alloc", SNAP_FP_OF(g_nv_alloc)); cb("nvn2.pool", SNAP_FP_OF(g_nv_pool)); }

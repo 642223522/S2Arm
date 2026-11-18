@@ -109,9 +109,9 @@ void s2a_log_session_start(void) {
 #endif
 }
 // 开发设施总开关（11-07 质量线，维护者：壳里为开发测试集成的设施是能耗来源；方案见 cmdr/壳内开发设施盘点.md）。
-//   判定只此一处：环境变量 S2A_DEV_FACILITIES（0 / 1，排查玩家问题时强制打开）> Info.plist 的 S2ADevFacilities（启动器给玩家出包 S2A_PACK_PURPOSE=user 时
-//   pack/ipa_tail.py 写 "0"）> 缺省开（开发包 / Mac 开发局 / 普查都没有这个键）。管：停住现场看门（ap_host.c）、地址走势（vawin.c va_watch）、
-//   C# 的 MemDiag 周期账与 AudioDiag、iOS 录手柄（ios/vpad.m padrec，#845）。不管安全网：崩溃现场、直连异常看门、低区腾退、GPU 看门狗、帧率表写入照起
+//   判定只此一处：环境变量 S2A_DEV_FACILITIES（0 / 1，排查玩家问题 / 开发局时显式打开）> Info.plist 的 S2ADevFacilities（pack/ipa_tail.py：
+//   只有 S2A_PACK_PURPOSE=dev 写 "1"，其余一律 "0"）> 缺省关（11-17：原先缺省开，漏写的出包路径就漏开，玩家手机 padrec 一小时长 3 GB）。管：iOS 录手柄（ios/vpad.m padrec，#845）。11-17 起停住现场 / 地址走势 /
+//   MemDiag / AudioDiag 周期账归「诊断读数」，不再看本开关（见 dev_facilities.h）。不管安全网：崩溃现场、直连异常看门、低区腾退、GPU 看门狗、帧率表写入照起
 int s2a_dev_on(void) {
     static _Atomic int v = -1; int r = atomic_load(&v); if (r >= 0) return r;
     const char *e = getenv("S2A_DEV_FACILITIES"); int on = 1, has = 0;
@@ -212,6 +212,8 @@ void guest_clock_freeze_for(int reason, int on) {
     pthread_mutex_unlock(&g_clk_mu);
 }
 void guest_clock_freeze(int on) { guest_clock_freeze_for(1, on); }
+// 即时存档恢复：游戏线程放行前把游戏时间设成快照那一刻的值（之后照常随宿主钟走；冻结中不改）
+void s2a_guest_clock_set(uint64_t gns) { pthread_mutex_lock(&g_clk_mu); if (!atomic_load(&g_clk_fz)) atomic_store(&g_clk_lost, now_ns() - gns); pthread_mutex_unlock(&g_clk_mu); }
 // 前后台 / 焦点与底座（缺口扫描族 1 / 族 2，维护者 11-01 派体验线）：平台壳是唯一写者（iOS 前后台、Mac 失焦），
 //   服务层每拍读它们、变了就转成游戏的焦点消息 / ChangeDockedModeState；游戏要不要「失焦就暂停」由服务层按 SetOutOfFocusSuspendingEnabled
 //   写回，平台壳失焦时按它冻结（iOS 后台本来就整体冻结，不看它）

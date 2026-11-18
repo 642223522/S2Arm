@@ -432,9 +432,10 @@ class FlowTests(unittest.TestCase):
             with self.assertRaises(Failure) as e: packer.assemble(self.c, "0100000000090000")
         self.assertEqual(e.exception.code, "container_stale")
 
-    def test_container_program_number_mismatch_says_files_dont_match(self):
-        """组装结果里这款的程序号（main.npdm）和游戏库的号（导入时 CNMT 发行号）不一样 → game_files_mismatch，原因说人话、两个号都给出；
-        核对本身保留（玩家实报：把别的游戏的程序换进了这款的包里，放过去就推到手机上错的目录）"""
+    def test_container_program_number_mismatch_routes_by_program_number(self):
+        """组装结果里这款的程序号（main.npdm）和游戏库的号（导入时 CNMT 发行号）不一样（玩家实报：把别的游戏的程序换进了这款的包里）。
+        维护者 11-17（按新规矩改：原先 game_files_mismatch 拒绝）：多出来的程序号只有一个 → 就是这款，照常组装、按程序号放、资源取回游戏包号那款；
+        发 warning 级 game_files_mismatch、两个号都给出；多出来不止一个（认不出是哪个）→ 照旧报错。期望手写"""
         import ipa as packer
         A, OTHER = "0100DD2053220000", "010051F0207B2000"
         ios_fixture(self.c, A, shell="SID1")
@@ -451,11 +452,16 @@ class FlowTests(unittest.TestCase):
              um.patch.object(packer, "container_shell", return_value=shell), \
              um.patch.object(packer, "release_version", return_value="9.8.7"), \
              um.patch.object(self.c, "run", run):
-            with self.assertRaises(Failure) as e: packer.assemble(self.c, A)
-        self.assertEqual(e.exception.code, "game_files_mismatch")
-        text = str(e.exception)
-        self.assertIn(OTHER, text); self.assertIn(A, text); self.assertIn("原版游戏文件重新导入", text)
-        self.assertNotIn("产物根", text)
+            diags = []
+            with um.patch.object(self.c, "diagnostic", create=True, side_effect=lambda m, **kw: diags.append(dict(kw, message=m))):
+                _, games, _ = packer.assemble(self.c, A)
+        self.assertEqual(games, [OTHER])
+        self.assertEqual(packer.library_id(self.c, OTHER), A); self.assertEqual(packer.library_id(self.c, A), A)
+        self.assertEqual([(d["code"], d["severity"]) for d in diags], [("game_files_mismatch", "warning")])
+        self.assertIn(OTHER, diags[0]["message"]); self.assertIn(A, diags[0]["message"]); self.assertNotIn("产物根", diags[0]["message"])
+        with self.assertRaises(Failure) as e:
+            packer.title_mismatch(self.c, A, (), [OTHER, "0100000000000BBB"])
+        self.assertEqual(e.exception.code, "game_files_mismatch"); self.assertIn("原版游戏文件重新导入", str(e.exception))
 
     def _ready(self, devices, teams=(dict(id="team-a", name="我", free=True),), rc=0, usb=(), raises=None, want="测试设备2"):
         """跑装机前清单：devicectl list devices 回 devices（手造的 devicectl 行），Xcode 团队 teams；want = 玩家选的那台（None = 没选）"""
@@ -1062,6 +1068,97 @@ class SaveBackupTests(unittest.TestCase):
         self._accept()
         self.assertEqual(self._run([], list_rc=124, apps_rc=124)[0], None)
 
+    def _cloud(self, has_copy, placeholder=False):
+        """玩家开了云存档：请求带云存档文件夹（Mac 启动器随请求带 cloudSavesFolder）；has_copy = 这款在 iCloud 里有快照"""
+        folder = self.root / "iCloud Saves"; d = folder / "S2Arm Saves" / "0100C2500FC20000"; d.mkdir(parents=True, exist_ok=True)
+        if has_copy: (d / (".head-iPhone.json.icloud" if placeholder else "head-iPhone.json")).write_text("{}")
+        self.c.r["cloudSavesFolder"] = str(folder)
+
+    def _messages(self):
+        ev = [json.loads(l) for l in self.c.events.read_text(encoding="utf-8").splitlines() if l.strip()] if self.c.events.is_file() else []
+        return [e.get("text") or e.get("message") or "" for e in ev if e.get("type") == "message" or e.get("event") == "message"]
+
+    def test_saves_local_cloud_or_both(self):
+        """维护者 11-17（玩家更新手机上的 S2Arm 卡在「确认不了 iPhone 上有…」）三种存档位置，期望手写：
+        ① 只在本地（没开云存档）：照常拉回 1 个文件；② 只在 iCloud（手机上没有存档目录，或备份做不成但云端有这款快照）：不报 save_backup_failed、照装，
+        做不成时提示「这款存档在 iCloud 云存档里有一份」；③ 两边都有：本地照常备份（云端有快照不跳过本地备份）"""
+        local = [("0000000000000001/0/save.dat", False)]
+        d, got = self._run(local)                                                     # ①
+        self.assertEqual(len(got), 1); self.assertTrue((d / "0000000000000001/0/save.dat").is_file())
+        self._cloud(True)
+        self.assertEqual(self._run([], list_rc=1, installed=False)[0], None)          # ② 手机上没有：第一次装 / 没存档，照装
+        r, _ = self._run([], list_rc=124, apps_rc=124)                                # ② 备份做不成（问不出装没装过），云端有快照 → 照装
+        self.assertIsNone(r)
+        self.assertTrue(any("这款存档在 iCloud 云存档里有一份" in m for m in self._messages()), self._messages())
+        self.assertIn("云存档里有这款的快照，照装", self._decisions())
+        d, got = self._run(local)                                                     # ③ 两边都有：本地照常备份
+        self.assertEqual(len(got), 1); self.assertTrue((d / "0000000000000001/0/save.dat").is_file())
+
+    def test_cloud_folder_without_this_game_still_asks(self):
+        # 开了云存档但这款没有快照（或只有别的游戏的）：不能放行，照旧问「仍然继续 / 先不」；iCloud 没下载到本机的占位 head 也算有快照
+        self._cloud(False)
+        with self.assertRaises(Failure) as e:
+            self._run([], list_rc=124, apps_rc=124)
+        self.assertEqual(e.exception.code, "save_backup_failed")
+        self._cloud(True, placeholder=True)
+        self.assertIsNone(self._run([], list_rc=124, apps_rc=124)[0])
+
+    def test_full_mac_disk_says_so(self):
+        """玩家截图 [Errno 28]：Mac 磁盘满，devicectl 结果 / 拉回的存档写不下（diag.devicectl 回 28）。期望：不报笼统的「确认不了 iPhone 上有…」，
+        而是 save_backup_failed 带「这台 Mac 空间不够…腾出 1 GB 再试，或者确认后继续」；确认后照装；云端有这款快照时照装不问"""
+        import diag
+        def run(stage):
+            def devicectl(c, *a, timeout=0):
+                if a[:3] == ("device", "info", "files"):
+                    if stage == "list": return diag.DEVICECTL_NOSPACE, {}, "这台 Mac 磁盘满了，devicectl 的结果写不下"
+                    return 0, {"result": {"files": [dict(relativePath="0000000000000001/0/save.dat", resources=dict(isDirectory=False))]}}, ""
+                if a[:3] == ("device", "info", "apps"):
+                    return 0, {"result": {"apps": [{"bundleIdentifier": "s2arm.z.0100c2500fc20000"}]}}, ""
+                return diag.DEVICECTL_NOSPACE, {}, "ERROR: No space left on device"
+            with um.patch.object(diag, "devicectl", devicectl):
+                return install.backup_saves(self.c, "C891", "s2arm.z.0100c2500fc20000", "0100C2500FC20000")
+        for stage in ("list", "copy"):
+            with self.assertRaises(Failure) as e:
+                run(stage)
+            self.assertEqual(e.exception.code, "save_backup_failed", stage)
+            self.assertIn("这台 Mac 空间不够，存档备份放不下", e.exception.internal); self.assertIn("腾出 1 GB 再试，或者确认后继续", e.exception.internal)
+            self.assertNotIn("确认不了 iPhone 上有", e.exception.internal)
+        self._accept()
+        self.assertIsNone(run("list")); self._accept(False)
+        self._cloud(True)
+        self.assertIsNone(run("copy"))
+
+    def test_locked_phone_waits_for_unlock_then_backs_up(self):
+        """#a442de（维护者 11-17：玩家判断不了的我们替他判）：手机锁着（RemotePairingError 1016）→ 不先问「仍然继续」，提示解锁、自动重试；
+        解锁后照常备份。期望手写：前两次列存档报锁屏、第三次列得出 → 提示「请解锁手机」一次、共列 3 次、备份照常（拉回 1 个文件）、不报 save_backup_failed；
+        一直锁着到等满 → 走原来的确认（save_backup_failed）"""
+        import diag
+        LOCK = "ERROR: com.apple.dt.RemotePairingError error 1016 (0x3F8) The device has not been unlocked recently"
+        def run(locked_times):
+            calls = []
+            def devicectl(c, *a, timeout=0):
+                if a[:3] == ("device", "info", "files"):
+                    calls.append(1)
+                    if len(calls) <= locked_times:
+                        return 1, {}, LOCK
+                    return 0, {"result": {"files": [dict(relativePath="0000000000000001/0/a.bin")]}}, ""
+                if a[:3] == ("device", "copy", "from"):
+                    d = Path(a[a.index("--destination") + 1]); d.parent.mkdir(parents=True, exist_ok=True); d.write_bytes(b"s"); return 0, {}, ""
+                if a[:3] == ("device", "info", "apps"):
+                    return 0, {"result": {"apps": [{"bundleIdentifier": "s2arm.z.games"}]}}, ""
+                raise AssertionError(a)
+            said = []
+            with um.patch.object(diag, "devicectl", devicectl), um.patch.object(install, "UNLOCK_POLL_S", 0), um.patch.object(install.time, "sleep", lambda s: None), \
+                 um.patch.object(self.c, "emit", lambda kind, text="", **kw: said.append(text), create=True):
+                return install.backup_saves(self.c, "C891", "s2arm.z.games", "0100C2500FC20000"), calls, said
+        dest, calls, said = run(2)
+        self.assertEqual(len(calls), 3)
+        self.assertTrue((Path(dest) / "0000000000000001/0/a.bin").is_file())
+        self.assertEqual(sum("请解锁手机" in t for t in said), 1)
+        with um.patch.object(install, "UNLOCK_WAIT_S", 0), self.assertRaises(Failure) as e:
+            run(10 ** 6)
+        self.assertEqual(e.exception.code, "save_backup_failed")
+
     def _tree(self, tree, docs, locked=()):
         # 假设备文件系统（11-07 满屏线 Duo 实测）：列不存在的目录 devicectl 也报「failed to get a list of files」——和锁屏同一个错，只能靠父目录分辨
         def devicectl(c, *a, timeout=0):
@@ -1588,7 +1685,7 @@ class AssembleTests(unittest.TestCase):
 
     def test_install_mode_job_reads_signing_and_drops_old_setting(self):
         """11-15 导出不再是装法：installMode 作业只回签名身份；旧版留下的 install.json（装法设置）迁移时删掉，之后导不导出只看请求带的 mode"""
-        self.assertEqual(install.install_mode_job(self.c), dict(exportAvailable=True, signMode="appleId"))
+        self.assertEqual(install.install_mode_job(self.c), dict(exportAvailable=True, signMode="appleId", signChoice="appleId"))
         self.assertFalse((self.c.private / "install.json").exists(), "旧装法设置迁移一次就删")
         self.assertFalse(install.wants_export(self.c), "没带 mode：一键装")
         self.c.r = dict(self.c.r, mode="export"); self.assertTrue(install.wants_export(self.c))
@@ -1929,7 +2026,7 @@ class ExportPhoneTests(unittest.TestCase):
             return fake(args, log, env, cwd, on_line)
         with um.patch.object(packer, "current_shell_id", return_value="SID1"), um.patch.object(packer, "container_shell", return_value=shell), \
              um.patch.object(host_update, "engine_compat", return_value=dict(self.COMPAT)), um.patch.object(self.c, "run", run), \
-             um.patch.object(rewrite_refresh, "refresh_ios", lambda c, games: None), um.patch.object(install, "phone_for", no_phone), \
+             um.patch.object(rewrite_refresh, "refresh_ios", lambda c, games, **kw: None), um.patch.object(install, "phone_for", no_phone), \
              um.patch.object(install, "_devpush_exe", lambda c: "s2a-devpush"), um.patch.object(install, "_devpush_lines", getattr(self, "lines", lambda c, exe, *a: (0, [], ""))):
             return (fn or install.install)(self.c)
 
@@ -2760,7 +2857,8 @@ class UpdatePrepareTests(unittest.TestCase):
             def lock(name, wait=None):
                 held.append(name); yield; held.remove(name)
             c = jobcase.fake_context(lib.parent, library=lib, catalog=lambda: {"games": [{"id": self.A}, {"id": self.B}]}, begin=lambda *a: None, lock=lock)
-            def refresh(cc, games):
+            def refresh(cc, games, ignore_rewriter=False):
+                assert ignore_rewriter is True, "后台准备更新不因改写器指纹单独变了重改写（11-17 维护者定）"
                 calls.append((list(games), list(held))); return [g for g in games if g == self.B]
             def no_phone(cc):
                 raise AssertionError("准备段不该找手机")
@@ -2768,6 +2866,24 @@ class UpdatePrepareTests(unittest.TestCase):
                 r = install.update_prepare(c)
         self.assertEqual(calls, [([self.A], ["program-" + self.A]), ([self.B], ["program-" + self.B])])
         self.assertEqual(r, {"prepared": [self.A, self.B], "updated": [self.B]})
+
+    def test_stops_when_foreground_install_holds_phone_lock(self):
+        # 11-17 #1450：前台装机类作业拿着手机锁时，后台准备更新不再拿程序锁跟它抢——做完手上这款就停，剩下的前台按正常优先级做
+        import contextlib, rewrite_refresh
+        with tempfile.TemporaryDirectory() as t:
+            lib = Path(t); (lib / "devices").mkdir()
+            (lib / "devices/UDID1.json").write_text(json.dumps({"games": {self.A: {}, self.B: {}}}))
+            calls, busy = [], []
+            @contextlib.contextmanager
+            def idle(name="execution"):
+                yield not (name == "phone" and busy)
+            c = jobcase.fake_context(lib.parent, library=lib, catalog=lambda: {"games": [{"id": self.A}, {"id": self.B}]}, begin=lambda *a: None, idle=idle)
+            def refresh(cc, games, ignore_rewriter=False):
+                calls.append(list(games)); busy.append(1); return []   # 补完第一款时，前台装机作业进来拿了手机锁
+            with um.patch.object(rewrite_refresh, "refresh_ios", refresh):
+                r = install.update_prepare(c)
+        self.assertEqual(calls, [[self.A]])
+        self.assertEqual(r, {"prepared": [self.A], "updated": []})
 
     def test_operation_registered(self):
         import core

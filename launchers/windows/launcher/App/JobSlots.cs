@@ -47,6 +47,7 @@ public partial class EnvironmentWindow
         // 有排着的出包、这个作业又可能是挡着它的那个（如出包收尾的刷新游戏库）：排到这次收尾之后再看能不能接着出（ExportPages.PumpExportQueue）
         if (exportQueue.Count > 0) Avalonia.Threading.Dispatcher.UIThread.Post(PumpExportQueue);
         if (phoneQueue.Count > 0) Avalonia.Threading.Dispatcher.UIThread.Post(PumpPhoneQueue);   // 手机槽空了 / 出包那款出完：接上排着的手机作业
+        else if (consoleBatch.Count > 0) Avalonia.Threading.Dispatcher.UIThread.Post(ConsoleBatchStep);   // 总控台「更新所选」这一轮推完就收尾（PhoneConsole.cs）
     }
 
     /// <summary>手机作业排队（11-16 维护者「出包的时候没办法同时安装其他游戏到 iPhone 上，这个控制纯属多余」；同 Mac phoneQueue）：
@@ -117,6 +118,8 @@ public partial class EnvironmentWindow
 
     /// <summary>关窗口的每一步记进 logs/update.log（更新启动器靠关窗口让位给安装程序，卡在哪一步要看得见）</summary>
     private void CloseLog(string line) => UpdateLog.Write(Path.Combine(privateRoot, "logs", "update.log"), line);
+    /// <summary>应用级退出步骤（Program.cs）：同 CloseLog 写 update.log，私有目录按 PrivateRootForLogs 算</summary>
+    internal static void ExitLog(string line) => UpdateLog.Write(Path.Combine(PrivateRootForLogs(), "logs", "update.log"), line);
 
     /// <summary>有任何作业在跑（控制口拒新命令、更新启动器要等）</summary>
     private bool AnyJob => jobs.Count > 0;

@@ -5,6 +5,11 @@
   ③ need：六种原因各一例 + 都对得上 = 空集
   ④ sign_dylibs：假 plumesign 收到 --custom-identifier <包名>、没有 --register-and-install；小 IPA 里没有 PlugIns/；签好的 dylib 原地换回
   ⑤ Devpush.mv：假工具收到「mv <源> <目标>」
+  ⑥ 开关（第 2 段）：缺省关；S2A_UNIVERSAL_SHELL=1 开、=0 关、别的值按缺省
+  ⑦ 签名器按模式选：开发者证书 → rcodesign 读 p12 只签这个 dylib（不带 -e 权限、不嵌描述文件）；否则 Mac → dev_sign --dylib
+  ⑧ install.push_program（写入规则 11-17 定稿）：手写的调用顺序（版本目录 v-<sha16>-pc/ 下 dylib → Games 各文件 → catalogue.json.pc.tmp → 改名覆盖 catalogue.json），
+     清单带 dir；换上后只删换上前清单指着的旧版本目录（没有旧清单 / 指的就是这次的 → 不删）；续推时机上已完整（长度 + 开头一页对）的文件跳过；改名失败报红
+  ⑨ install.push_programs：设备记录与要推的包对得上 → 不推、记录原样；没推过 → 推、记录换成这次的
 """
 import hashlib
 import json
@@ -62,8 +67,18 @@ class ProgramPackTests(JobCase):
         super().setUp()
         self.shell = make_shell(self.root / "s"); self.kit = make_kit(self.root / "k")
 
-    def build(self):
-        return program_pack.build(self.c, GID, kit=self.kit, shell=self.shell, info=INFO)
+    def build(self, banner=""):
+        return program_pack.build(self.c, GID, kit=self.kit, shell=self.shell, info=INFO, banner=banner)
+
+    def test_banner_goes_into_package_and_key(self):
+        b = self.root / "banner.jpg"; b.write_bytes(b"JPGbanner")
+        pkg = self.build(banner=b)
+        self.assertEqual((pkg / "Games" / GID / "banner.jpg").read_bytes(), b"JPGbanner")
+        out = program_pack.sign(self.c, GID, "T", "io.b", lambda d, t, bd: None, pkg=pkg)
+        self.assertEqual(json.loads((out / "catalogue.json").read_text(encoding="utf-8"))["banner"], f"Games/{GID}/banner.jpg")
+        t0 = (pkg / "meta.json").stat().st_mtime_ns
+        b.write_bytes(b"JPGbanner2"); self.build(banner=b)
+        self.assertNotEqual((pkg / "meta.json").stat().st_mtime_ns, t0, "横图换了要重出")
 
     def test_build_matches_ship_ext_and_caches(self):
         pkg = self.build()
@@ -90,6 +105,31 @@ class ProgramPackTests(JobCase):
         self.assertEqual(sorted(p.name for p in out.iterdir() if not p.name.startswith(".")), ["Games", f"S2AImages-{GID}.dylib", "catalogue.json"])
         program_pack.sign(self.c, GID, "TEAMA", "io.example.games", signer, pkg=pkg); self.assertEqual(len(calls), 1, "同团队同包名不再签")
         program_pack.sign(self.c, GID, "TEAMB", "io.example.games", signer, pkg=pkg); self.assertEqual(len(calls), 2, "换团队要重签")
+
+    def test_sign_keeps_only_signed_copy(self):
+        # 0.6.0 程序缓存瘦身：生产路径（不传 pkg，sign 自己出未签名包）签好后删掉未签名 dylib，只留键与元数据；
+        #   同团队再要 → 直接用签好的（不重出未签名包、不重签）；换团队 → 按键重出未签名包再签，签完照样删。期望手写
+        from unittest import mock
+        import programs
+        calls, builds = [], []
+        def signer(dylib, team, bundle):
+            calls.append(team); Path(dylib).write_bytes(Path(dylib).read_bytes() + team.encode())
+        real = program_pack.build
+        def build(c, gid, **k):
+            builds.append(1); return real(c, gid, kit=self.kit, shell=self.shell, info=INFO, banner="")
+        with mock.patch.object(program_pack, "build", build), mock.patch.object(programs, "kit_dir", lambda c, g: self.kit), \
+             mock.patch.object(program_pack, "compat", lambda c: INFO), mock.patch("layout.path", lambda *a, **k: self.root / "no-banner.jpg"):
+            out = program_pack.sign(self.c, GID, "TEAMA", "io.b", signer)
+            pkg = programs.cache(self.c, GID) / program_pack.PACKAGE
+            self.assertFalse((pkg / f"S2AImages-{GID}.dylib").exists(), "签好后未签名 dylib 删掉")
+            self.assertTrue((pkg / ".key").is_file() and (pkg / "meta.json").is_file(), "键与元数据留着")
+            self.assertTrue((out / f"S2AImages-{GID}.dylib").read_bytes().endswith(b"TEAMA"))
+            self.assertEqual(program_pack.sign(self.c, GID, "TEAMA", "io.b", signer), out)
+            self.assertEqual((calls, len(builds)), (["TEAMA"], 1), "同团队再要：直接用签好的，不重出不重签")
+            out_b = program_pack.sign(self.c, GID, "TEAMB", "io.b", signer)
+            self.assertEqual((calls, len(builds)), (["TEAMA", "TEAMB"], 2), "换团队：重出未签名包再签")
+            self.assertTrue((out_b / f"S2AImages-{GID}.dylib").read_bytes().endswith(b"TEAMB"))
+            self.assertFalse((pkg / f"S2AImages-{GID}.dylib").exists(), "签完照样删")
 
     def test_need_reasons(self):
         want = dict(host_abi=7, rewriter_id="rw01", image_sha256="s1")
@@ -144,6 +184,144 @@ class DevpushMvTests(unittest.TestCase):
             ok, _ = dp.mv("Library/x/catalogue.json.tmp", "Library/x/catalogue.json")
             self.assertTrue(ok)
             self.assertEqual(json.loads(rec.read_text())[-3:], ["mv", "Library/x/catalogue.json.tmp", "Library/x/catalogue.json"])
+
+
+class SwitchAndSignerTests(JobCase):
+    def test_switch_default_off(self):
+        self.assertFalse(program_pack.ON_BY_DEFAULT, "0.6.0 之前缺省关（维护者 11-17 定）")
+        from unittest import mock
+        # 读作业进程自己的环境：给子工具的 c.env() 会清掉 S2A_*（core.Context.env），替身照样清，开关不能靠它
+        self.c.env = lambda: {k: v for k, v in os.environ.items() if not k.startswith("S2A_")}
+        for v, want in (("", False), ("1", True), ("0", False), ("yes", False)):
+            with mock.patch.dict(os.environ, {"S2A_UNIVERSAL_SHELL": v}):
+                self.assertEqual(program_pack.enabled(self.c), want, repr(v))
+        with mock.patch.dict(os.environ, clear=False):
+            os.environ.pop("S2A_UNIVERSAL_SHELL", None)
+            self.assertFalse(program_pack.enabled(self.c))
+
+    def test_signer_by_mode(self):
+        import devcert
+        from unittest import mock
+        dylib = self.root / "a.dylib"; dylib.write_bytes(b"x")
+        runs = []
+        self.c.run = lambda args, log=None, env=None, **k: runs.append([str(a) for a in args])
+        with mock.patch.object(devcert, "active", lambda c: True), mock.patch.object(devcert, "stored", lambda c: (Path("/p/cert.p12"), b"prof", "pw")), \
+             mock.patch.object(devcert, "rcodesign_path", lambda c: "/bin/rcodesign"), mock.patch.object(devcert, "folder", lambda c: self.root):
+            program_pack.signer_for(self.c)(dylib, "TEAMA", "io.example.games")
+        a = runs[-1]
+        self.assertEqual(a[:4], ["/bin/rcodesign", "sign", "--p12-file", "/p/cert.p12"])
+        self.assertEqual(a[a.index("--team-name") + 1], "TEAMA"); self.assertEqual(a[a.index("--timestamp-url") + 1], "none")
+        self.assertEqual(a[-1], str(dylib)); self.assertNotIn("-e", a, "只签 dylib：不带权限")
+        if os.name != "nt":
+            with mock.patch.object(devcert, "active", lambda c: False):
+                program_pack.signer_for(self.c)(dylib, "TEAMA", "io.example.games")
+            self.assertEqual(runs[-1][1:], [str(Path(self.c.engine) / "pack/dev_sign.py"), "--dylib", str(dylib), "io.example.games", "TEAMA"])
+
+
+class FakeClient:
+    def __init__(self, mv_ok=True, have=None):
+        self.calls, self.mv_ok, self.have, self.puts = [], mv_ok, dict(have or {}), {}
+    def rm(self, rel):
+        self.calls.append(("rm", rel)); return True, ""
+    def head(self, rel, n):
+        b = self.have.get(rel); return (-1, b"") if b is None else (len(b), b[:n])
+    def get(self, rel, dst):
+        self.calls.append(("get", rel)); b = self.have.get(rel)
+        if b is None: return False
+        Path(dst).write_bytes(b); return True
+    def put(self, src, rel):
+        self.calls.append(("put", Path(src).name, rel)); self.puts[rel] = Path(src).read_bytes()
+    def mv(self, a, b):
+        self.calls.append(("mv", a, b)); return self.mv_ok, "" if self.mv_ok else "afc error"
+
+
+class PushProgramTests(JobCase):
+    def setUp(self):
+        super().setUp()
+        import install
+        self.install = install
+        pkg = self.root / "pkg"; (pkg / "Games" / GID / "sub").mkdir(parents=True)
+        (pkg / f"S2AImages-{GID}.dylib").write_bytes(b"dy" * 3000)
+        (pkg / "Games" / GID / "main.npdm").write_bytes(b"n"); (pkg / "Games" / GID / "sub/t.tsv").write_text("t")
+        (pkg / "catalogue.json").write_text(json.dumps(dict(image=f"S2AImages-{GID}.dylib", image_sha256="0123456789abcdef" + "f" * 48, team="T", host_abi=7, rewriter_id="rw")))
+        self.pkg = pkg
+        self.pr = f"Library/Application Support/S2Arm/games/{GID}/资源包"
+        self.P = f"Library/Application Support/S2Arm/games/{GID}/program"
+        self.V = f"{self.P}/v-0123456789abcdef-pc"
+
+    def test_order(self):
+        cl = FakeClient()
+        got = self.install.push_program(cl, GID.lower(), self.pkg, self.pr)
+        P, V = self.P, self.V
+        self.assertEqual(cl.calls, [("put", f"S2AImages-{GID}.dylib", f"{V}/S2AImages-{GID}.dylib"),
+                                    ("put", "main.npdm", f"{V}/Games/{GID}/main.npdm"), ("put", "t.tsv", f"{V}/Games/{GID}/sub/t.tsv"),
+                                    ("get", f"{P}/catalogue.json"),
+                                    ("put", "catalogue.json", f"{P}/catalogue.json.pc.tmp"), ("mv", f"{P}/catalogue.json.pc.tmp", f"{P}/catalogue.json")])   # 第一次推：没有旧清单，不删
+        self.assertEqual(json.loads(cl.puts[f"{P}/catalogue.json.pc.tmp"])["dir"], "v-0123456789abcdef-pc")
+        self.assertEqual(got, dict(sha="0123456789abcdef" + "f" * 48, team="T", host_abi=7, rewriter_id="rw", dir="v-0123456789abcdef-pc", look=self.install.look_of(None)))
+
+    def test_resume_skips_complete_files(self):
+        V = self.V
+        cl = FakeClient(have={f"{V}/S2AImages-{GID}.dylib": b"dy" * 3000, f"{V}/Games/{GID}/main.npdm": b"x",
+                              f"{V}/Games/{GID}/sub/t.tsv": b""})   # dylib 已完整；npdm 长度对、内容不对；t.tsv 写了一半
+        self.install.push_program(cl, GID, self.pkg, self.pr)
+        self.assertEqual([c[2] for c in cl.calls if c[0] == "put"], [f"{V}/Games/{GID}/main.npdm", f"{V}/Games/{GID}/sub/t.tsv", f"{self.P}/catalogue.json.pc.tmp"])
+
+    def test_deletes_only_previous_pointed_dir(self):
+        P = self.P
+        cl = FakeClient(have={f"{P}/catalogue.json": json.dumps(dict(dir="v-aaaaaaaaaaaaaaaa-import")).encode()})
+        self.install.push_program(cl, GID, self.pkg, self.pr)
+        self.assertEqual([c for c in cl.calls if c[0] == "rm"], [("rm", f"{P}/v-aaaaaaaaaaaaaaaa-import")])
+        self.assertEqual(cl.calls[-2][0], "mv", "先换上、再删旧的")
+        cl = FakeClient(have={f"{P}/catalogue.json": json.dumps(dict(dir="v-0123456789abcdef-pc")).encode()})
+        self.install.push_program(cl, GID, self.pkg, self.pr)
+        self.assertEqual([c for c in cl.calls if c[0] == "rm"], [], "旧清单指的就是这次的目录：不删")
+        cl = FakeClient(have={f"{P}/catalogue.json": json.dumps(dict(dir="v-aaaaaaaaaaaaaaaa-import")).encode()})
+        self.install.push_program(cl, GID, self.pkg, self.pr, keep_old=True)
+        self.assertEqual([c for c in cl.calls if c[0] == "rm"], [], "这款可能在运行（keep_old）：不删，留给 App 清")
+        cl = FakeClient(have={f"{P}/catalogue.json": json.dumps(dict(dir="../资源包")).encode()})
+        self.install.push_program(cl, GID, self.pkg, self.pr)
+        self.assertEqual([c for c in cl.calls if c[0] == "rm"], [], "清单里不是版本目录名：不删")
+
+    def test_custom_name_and_cover(self):
+        # 只有壳的 App 不带各款条目：启动器里改的名字写进清单、封面盖到版本目录的 Games/<号>/icon.jpg（在随行文件之后、清单之前）
+        cover = self.root / "my.jpg"; cover.write_bytes(b"JPGmine")
+        cl = FakeClient()
+        got = self.install.push_program(cl, GID, self.pkg, self.pr, custom=dict(custom=True, name="我的名字", cover=str(cover)))
+        puts = [c for c in cl.calls if c[0] == "put"]
+        self.assertEqual(puts[-2], ("put", "my.jpg", f"{self.V}/Games/{GID}/icon.jpg"))
+        shown = json.loads(cl.puts[f"{self.P}/catalogue.json.pc.tmp"])
+        self.assertEqual((shown["name"], shown["icon"]), ("我的名字", f"Games/{GID}/icon.jpg"))
+        self.assertEqual(got["look"], self.install.look_of(dict(name="我的名字", cover=str(cover))))
+        self.assertNotEqual(got["look"], self.install.look_of(None), "改了名字封面指纹要变")
+
+    def test_look_change_triggers_push(self):
+        import ipa
+        from unittest import mock
+        same = dict(sha="0123456789abcdef" + "f" * 48, team="T", host_abi=7, rewriter_id="rw", dir="v-0123456789abcdef-pc", look=self.install.look_of(None))
+        with mock.patch.object(program_pack, "sign", lambda c, g, team, bundle, signer: self.pkg), \
+             mock.patch.object(ipa, "container_custom", lambda c: {GID: dict(custom=True, name="新名字", cover="")}):
+            cl = FakeClient()
+            got = self.install.push_programs(self.c, cl, [GID], dict(games={GID: dict(program=same)}), "T", "io.b", None, {GID: self.pr})
+        self.assertEqual(cl.calls[-1][0], "mv", "只改了名字：照推（程序文件续推会跳过）")
+        self.assertEqual(json.loads(cl.puts[f"{self.P}/catalogue.json.pc.tmp"])["name"], "新名字")
+        self.assertNotEqual(got[GID]["look"], same["look"])
+
+    def test_mv_failure_raises(self):
+        with self.assertRaises(self.install.Failure):
+            self.install.push_program(FakeClient(mv_ok=False), GID, self.pkg, self.pr)
+
+    def test_push_programs_skips_matching_record(self):
+        from unittest import mock
+        import ipa
+        same = dict(sha="0123456789abcdef" + "f" * 48, team="T", host_abi=7, rewriter_id="rw", dir="v-0123456789abcdef-pc", look=self.install.look_of(None))
+        with mock.patch.object(program_pack, "sign", lambda c, g, team, bundle, signer: self.pkg), mock.patch.object(ipa, "container_custom", lambda c: {}):
+            cl = FakeClient()
+            got = self.install.push_programs(self.c, cl, [GID], dict(games={GID: dict(program=same)}), "T", "io.b", None, {GID: self.pr})
+            self.assertEqual((cl.calls, got), ([], {GID: same}), "对得上：一个文件都不推")
+            cl = FakeClient()
+            got = self.install.push_programs(self.c, cl, [GID], dict(games={}), "T", "io.b", None, {GID: self.pr})
+            self.assertEqual(cl.calls[-1][0], "mv"); self.assertEqual(got, {GID: same}, "没推过：推了、记录换成这次的")
 
 
 if __name__ == "__main__":

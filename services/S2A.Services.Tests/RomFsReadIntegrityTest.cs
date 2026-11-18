@@ -101,13 +101,16 @@ namespace S2A.Services.Tests
                     Check("P1-6 索引长度与宿主文件不符（4096 / 1000）", $"{ResultFs.HostFileDataCorrupted.Value}", $"{r}{(r.IsSuccess() && d[2000] == 0 ? "（尾部补了零）" : "")}");
                 }
 
-                // P1-6 ①'：建索引之后文件被换成更长的（读得满，但已不是索引记下的那份）：同样回失败
+                // P1-6 ①'：建索引之后文件被换成更长的（读得满，但已不是索引记下的那份）：11-17 维护者「校验不过不整个拒」——
+                //   照常读实际文件（交出换过的内容），黄字记下这项没过的校验，之后报红时带上
                 byte[] longer = new byte[Len + 904]; Array.Fill(longer, (byte)0x22);
                 File.WriteAllBytes(Path.Combine(rom, "long.bin"), longer);
                 {
+                    Red.Reset();
                     using IStorage s = RomFsIndex.Open(rom, index);
                     (Result r, byte[] d) = Read(s, E("long.bin").Offset, Len);
-                    Check("P1-6 索引长度与宿主文件不符（4096 / 5000）", $"{ResultFs.HostFileDataCorrupted.Value}", $"{r}{(r.IsSuccess() && d[0] == 0x22 ? "（交了换过的内容）" : "")}");
+                    Check("P1-6 索引长度与宿主文件不符（4096 / 5000）：照常读、记下没过的校验", "Success（交了实际内容）/记下", $"{r}{(r.IsSuccess() && d[0] == 0x22 ? "（交了实际内容）" : "")}/{(Red.WaivedNote.Contains("长度与索引不符") ? "记下" : "没记")}");
+                    Red.Reset();
                 }
 
                 // P1-6 ②：打开时长度对得上、之后文件变短 → 短读要失败，不补零当完整

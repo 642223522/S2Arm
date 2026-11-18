@@ -286,6 +286,14 @@ int s2a_pad_order_rank(const s2a_pad_order *order, int ns2_player, const char *n
     for (int i = 0; i < order->dropped_count && i < S2A_PAD_ORDER_MAX; i++) if (order_match(&order->dropped[i], ns2_player, name, index)) return S2A_PAD_ORDER_DROPPED;
     return S2A_PAD_ORDER_UNLISTED;
 }
+void s2a_slot_pin(const void **prev, const void *const *live, const int *rank, int count, int max) {
+    for (int j = 0; j < count; j++) {
+        int r = rank[j];
+        if (r < 0 || r >= max || !live[j] || prev[r] == live[j]) continue;
+        for (int i = 0; i < max; i++) if (prev[i] == live[j]) prev[i] = NULL;
+        prev[r] = live[j];
+    }
+}
 int s2a_slot_plan(const void *const *prev, const void *const *live, int count, int max, int *slot_of) {
     for (int j = 0; j < count; j++) {
         slot_of[j] = -1;

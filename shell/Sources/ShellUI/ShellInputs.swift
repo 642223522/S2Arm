@@ -7,10 +7,9 @@ public enum GameState: Equatable, Sendable {
     case playable
     case needsGameData
     case needsAppUpdate
-    /// The game's files were built for an older version of this app and must be built again on the computer (the opposite direction of needsAppUpdate).
+    /// The game's program on this device does not match this app (built for another version, signed from another computer or Apple ID,
+    /// or installed only partly). One state for all three: the fix is the same, install this game again from the computer.
     case needsGameUpdate
-    /// The game's program on this device does not match this app (installed only partly, or signed from another computer or Apple ID) and must be installed again from the computer.
-    case needsGameReinstall
     /// `reason` is one short line for under the title, such as "Game files damaged". `detail` is a plain sentence
     /// for the player (what happened, what to do), shown under the title and in the How to fix sheet. `technical`
     /// is the underlying message, shown only as small secondary Details in the sheet.
@@ -284,6 +283,10 @@ public struct ShellActions {
     public var onDeleteGame: ((_ gameID: String, _ saves: Bool) -> Void)?
     /// Opens the game's save management (export / import saves) before it starts. nil: no item in the card's menu.
     public var onManageSaves: ((_ gameID: String) -> Void)?
+    /// Instant snapshot (0.6.0): whether this game has a complete snapshot to go back to, and going back to it (starts the
+    /// game restored to that moment). Both nil: no snapshot item anywhere in the library.
+    public var snapshotAvailable: ((_ gameID: String) -> Bool)? = nil
+    public var onRestoreSnapshot: ((_ gameID: String) -> Void)? = nil
     public init(onSelect: @escaping (String) -> Void = { _ in }, onPlay: @escaping (String) -> Void = { _ in },
                 onChange: @escaping (String, String, String) -> Void = { _, _, _ in },
                 onPickGameData: @escaping (String) -> Void = { _ in }, onUseAppData: ((String) -> Void)? = nil,

@@ -34,7 +34,7 @@ jobs:
     # 每档都要整套 run.sh（lavapipe 上几分钟），十几档串行在一个 job 里会超时限：按片并行，片数随档数调（sim_tiers.sh 的 S2A_SIM_SHARD）。
     name: contract-sim (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45   # 池表夹具 11-17 起每档真跑：分片 0（基线 + 4 档）实测 29 分 48 秒，30 分钟上限在全绿后 13 毫秒处取消
     strategy:
       fail-fast: false
       matrix:

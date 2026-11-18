@@ -9,19 +9,27 @@ set -u
 H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 # 真 ZBIC 用例要真 nx_unpack（--nso-normalize）与真 ZBIC 样本；构建产物放 <仓库根>/build/ns2_dump_test
 OUT=$H/build/ns2_dump_test; mkdir -p "$OUT"
+export DOTNET_ROOT=${DOTNET_ROOT:-$HOME/.dotnet}; export PATH=$DOTNET_ROOT:$PATH
 timeout 500 dotnet build "$H/pack/nx_unpack/nx_unpack.csproj" -c Release --artifacts-path "$OUT/art" -v quiet -nologo > "$OUT/build.log" 2>&1 || { tail -20 "$OUT/build.log"; echo "不通 nx_unpack 编译（期望编过）"; exit 1; }
 timeout 500 dotnet build "$H/tests/nx_unpack_zbic/ZbicTest.csproj" -c Release --artifacts-path "$OUT/artz" -v quiet -nologo >> "$OUT/build.log" 2>&1 || { tail -20 "$OUT/build.log"; echo "不通 ZbicTest 编译（期望编过）"; exit 1; }
 NXD=$(find "$OUT/art/bin" -name nx_unpack.dll | head -1); ZB=$(find "$OUT/artz/bin" -name ZbicTest.dll | head -1); [ -n "$NXD" ] && [ -n "$ZB" ] || { echo "不通 没找到构建产物"; exit 1; }
+# ⑩ 的参照只用 romfs_index 的产物，不需要每个用例都经 services/romfs_index.sh 重新 build 一次（脚本每次 build 同一个工程，门禁并行时会互等构建锁）。
+# 这里构建一次到本测试自己的 artifacts，再给 wrapper；构建覆盖仍由 services/ 自己的门禁负责。
+RIOUT=$OUT/ri
+RIB=(dotnet build "$H/services/romfs_index" -c Release -o "$RIOUT" -v quiet -nologo)
+[ -f "$H/services/romfs_index/obj/project.assets.json" ] && RIB+=(--no-restore)   # 有本地 assets 就不走 restore（门禁/本机离线时 restore 会等源）
+timeout 500 "${RIB[@]}" >> "$OUT/build.log" 2>&1 || { tail -20 "$OUT/build.log"; echo "不通 romfs_index 编译（期望编过）"; exit 1; }
+RID=$RIOUT/romfs_index.dll; [ -s "$RID" ] || { echo "不通 没找到 romfs_index.dll"; exit 1; }
+printf '#!/bin/bash\nexec dotnet "%s" "$@"\n' "$RID" > "$T/ri"; chmod +x "$T/ri"
 printf '#!/bin/bash\nexec dotnet "%s" "$@"\n' "$NXD" > "$T/nxu"; chmod +x "$T/nxu"
 printf '#!/bin/bash\n# 另一份程序（字节不同、行为相同）：验键里带 nx_unpack 程序哈希、换了重做\nexec dotnet "%s" "$@"\n' "$NXD" > "$T/nxu2"; chmod +x "$T/nxu2"
 dotnet "$ZB" --emit "$T/zbic.nso" "$T/zbic-exp.nso" > /dev/null || { echo "不通 --emit 0xBF 样本"; exit 1; }
 dotnet "$ZB" --emit "$T/zbicff.nso" "$T/zbicff-exp.nso" FF > /dev/null || { echo "不通 --emit 0xFF 样本"; exit 1; }
-export NXU="$T/nxu" NXU2="$T/nxu2" RIDX="$H/services/romfs_index.sh"   # RIDX：⑩ 镜像形态的参照（旧路径 romfs/ 建镜像的工具）
+export NXU="$T/nxu" NXU2="$T/nxu2" RIDX="$T/ri"   # RIDX：⑩ 镜像形态的参照（预编 romfs_index，不再每个用例 build）
 export S2A_ROMFS_IMAGE=0   # ①–⑨ 按目录形态（romfs/ 散文件）写期望；缺省是镜像形态（romfs.std），见 ⑩
-export DOTNET_ROOT=${DOTNET_ROOT:-$HOME/.dotnet}; export PATH=$DOTNET_ROOT:$PATH
 PY=${S2A_PY:-$HOME/.s2arm/venv/bin/python3}   # 钉版解释器（lz4，同 pack_rewrite_test.sh）：被测 ns2_dump 解 LZ4 段用出包 Python 的 lz4，gate-host 的系统 python3 没有
 "$PY" - "$H/pack/ns2_dump.py" "$T" <<'PY'
-import os, struct, subprocess, sys
+import hashlib, os, struct, subprocess, sys
 tool, T = sys.argv[1], sys.argv[2]
 TID = 0x040074A01BF12000
 ok = bad = 0
@@ -34,9 +42,12 @@ def w(p, b):
 def npdm(tid):
     b = bytearray(0x200); b[:4] = b'META'; struct.pack_into('<II', b, 0x70, 0x100, 0x40)
     b[0x100:0x104] = b'ACI0'; struct.pack_into('<Q', b, 0x110, tid); return bytes(b)
+def seghash(b, i, plain):   # 段哈希（头 0xA0 起每段 SHA-256，按解开后的内容；同真 NSO，标志 3–5 位要求核）
+    b[0xA0 + i * 32:0xC0 + i * 32] = hashlib.sha256(plain).digest()
 def nso(build, flags=0x3F, text=b''):   # text：放进第一段的字节（不压缩，段压缩位 0–2 清掉）
     b = bytearray(0x100); b[:4] = b'NSO0'; struct.pack_into('<I', b, 0x0C, flags & ~7 if text else flags); b[0x40:0x50] = build
     if text: struct.pack_into('<III', b, 0x10, 0x100, 0, len(text)); struct.pack_into('<I', b, 0x60, len(text))
+    for i in range(3): seghash(b, i, text if i == 0 else b'')
     return bytes(b) + text
 def run(*a):
     r = subprocess.run([sys.executable, tool, *a], capture_output=True, text=True); return r.returncode, r.stdout + r.stderr
@@ -80,6 +91,7 @@ db = f'{T}/TmpSave'; mk(db); sym = b'\0_ZN2nn2fs21MountTemporaryStorageEPKc\0_ZN
 w(f'{db}/updates/458752/exefs/main', nso(b'\x55' * 16, 0x3F, sym))
 comp = lz4.block.compress(b'pad' * 64 + b'\0_ZN2nn2fs17MountCacheStorageEPKc\0', store_size=False)   # subsdk0 第一段 LZ4 压缩
 sd = bytearray(nso(b'\x56' * 16)); struct.pack_into('<III', sd, 0x10, 0x100, 0, 3 * 64 + 35); struct.pack_into('<I', sd, 0x60, len(comp)); struct.pack_into('<I', sd, 0x0C, 0x39)
+seghash(sd, 0, b'pad' * 64 + b'\0_ZN2nn2fs17MountCacheStorageEPKc\0')
 w(f'{db}/updates/458752/exefs/subsdk0', bytes(sd) + comp); ob = f'{T}/xb'
 rc, out = run(db, ob); nb = open(f'{ob}/ctl/control.nacp', 'rb').read()
 chk('①b 退出 0', rc == 0, out)
@@ -203,6 +215,23 @@ chk('⑩ 缺省是镜像形态：出 romfs.std、没有 romfs/，与 =1 逐字�
 chk('⑩ 负对照 S2A_ROMFS_IMAGE=0：出 romfs/、没有 romfs.std', os.path.isdir(f'{T}/x10a全量/romfs') and not os.path.exists(f'{T}/x10a全量/romfs.std'))
 rc, out = run_env(f'{T}/Img全量', f'{T}/x10c', S2A_ROMFS_IMAGE='1')
 chk('⑩ 镜像形态没给 nx_unpack：报红、不留产物', rc != 0 and 'S2A_NX_UNPACK' in out and not os.path.exists(f'{T}/x10c'), out)
+# ⑪ #1522：程序文件坏了（LZ4 段解不开 / 段哈希对不上）→ 退出 1，红字点名哪个文件、哪一段，给「重新导出」的下一步，不出 Python 栈、不留产物
+plain = b'pad' * 64 + b'\0_ZN2nn2fs17MountCacheStorageEPKc\0'
+def lz4nso(build, payload, plain_for_hash):   # 第一段 LZ4 压缩、三段都核哈希（标志 0x3F 同真件）
+    b = bytearray(nso(build)); struct.pack_into('<III', b, 0x10, 0x100, 0, len(plain)); struct.pack_into('<I', b, 0x60, len(payload))
+    struct.pack_into('<I', b, 0x0C, 0x3F); seghash(b, 0, plain_for_hash); return bytes(b) + payload
+good = lz4.block.compress(plain, store_size=False)
+broken = bytes([0xFF]) * 8 + good[8:]   # 前 8 字节改成 0xFF：LZ4 块解不开
+dd = f'{T}/Badlz4'; mk(dd); w(f'{dd}/updates/458752/exefs/subsdk0', lz4nso(b'\x58' * 16, broken, plain)); od = f'{T}/xbadlz4'
+rc, out = run(dd, od)
+chk('⑪ LZ4 解不开：退出 1、红字点名「subsdk0 的 text 段解不开」、给重新导出（最好 NSP / XCI）', rc == 1 and 'subsdk0 的 text 段解不开' in out and '请重新导出（最好导成 NSP / XCI）' in out, out)
+chk('⑪ LZ4 解不开：不出 Python 栈、不留产物', 'Traceback' not in out and not os.path.exists(od) and not os.path.exists(od + '.tmp'), out)
+dd = f'{T}/Badhash'; mk(dd); w(f'{dd}/updates/458752/exefs/subsdk0', lz4nso(b'\x58' * 16, good, plain + b'x')); od = f'{T}/xbadhash'
+rc, out = run(dd, od)   # 维护者 11-17：校验不过不拒收（可能是打过补丁 / mod 的程序）
+chk('⑪ 哈希对不上：照常整理（退出 0）、黄字点名「subsdk0 的 text 段数据和文件头记录的哈希对不上」', rc == 0 and '🟡 程序文件 subsdk0 的 text 段数据和文件头记录的哈希对不上' in out and os.path.isfile(f'{od}/exefs/subsdk0'), out)
+sys.path.insert(0, os.path.dirname(tool)); import ns2_dump as nd
+w(f'{T}/okx/exefs/subsdk0', lz4nso(b'\x59' * 16, good, plain)); w(f'{T}/okh/exefs/subsdk0', lz4nso(b'\x59' * 16, good, plain + b'x'))
+chk('⑪ check_exefs：好件 → 没有对不上的段；哈希对不上 → [(subsdk0, text)]、不抛', nd.check_exefs(f'{T}/okx/exefs') == [] and nd.check_exefs(f'{T}/okh/exefs') == [('subsdk0', 'text')])
 print(f'ns2_dump：{ok} 过 / {bad} 红'); sys.exit(1 if bad else 0)
 PY
 r=$?

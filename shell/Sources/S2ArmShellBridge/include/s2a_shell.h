@@ -102,6 +102,10 @@ void s2a_shell_cloud_upload_background(const char *game_id);
 
 // 故障报修（游戏库设置页最下面）：实现在宿主 ios/diag.m（可不填的一句说明 → 打包上传、给短码）；本包弱定义缺省什么也不做
 void s2a_shell_report_problem(void);
+/// Instant snapshot (0.6.0): 1 = the game has a complete snapshot to go back to (host ios/app.m; the shell's weak stub says 0).
+int s2a_shell_snapshot_available(const char *game_id);
+/// Starts the game back at its saved moment (asks first when the game saved after that moment). The shell's weak stub does nothing.
+void s2a_shell_restore_snapshot(const char *game_id);
 
 #ifdef __cplusplus
 }

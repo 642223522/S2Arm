@@ -119,7 +119,11 @@ def pick(c, want=""):
         return tvs[0]
     if not tvs:
         raise Failure(S_NO_TV, code="device_not_connected")
-    raise Failure(S_MANY_TV.replace("{0}", "、".join("「" + (tv_name(d) or KIND) + "」" for d in tvs)), code="device_required")
+    from diag import reachable
+    online = [d for d in tvs if reachable(d)]
+    if len(online) == 1:   # 两台已配对、只有一台在线：直接用在线的那台，别让玩家先在一台关机的电视和一台开机的电视里选
+        return online[0]
+    raise Failure(S_MANY_TV.replace("{0}", "、".join("「" + (tv_name(d) or KIND) + "」" for d in (online or tvs))), code="device_required")
 
 
 def devices_job(c):
@@ -205,11 +209,37 @@ def clone_tree(src, dst):
     shutil.copytree(src, dst)
 
 
+def _clone_file(src, dst):
+    """单个文件：Mac cp -c（APFS 克隆，不同卷自动退成拷贝），别的平台整份拷"""
+    if sys.platform == "darwin":
+        r = subprocess.run(["cp", "-c", str(src), str(dst)], capture_output=True, text=True)
+        if r.returncode:
+            raise OSError((r.stderr.strip().splitlines() or ["cp 失败"])[-1])  # 非玩家句
+        return dst
+    return shutil.copy2(src, dst)
+
+
+def clone_pack(c, src, dst):
+    """iPhone 资源包派生给 Apple TV：0.6.0（通用壳开关开，体系文档 L）game.img 用硬链接引用 iPhone 那份（同一个文件，Windows NTFS 也不再实拷几 GB），
+    其余小件照拷（电视这份要改清单、加 astc.pack，都是写新文件替换，不动 game.img）。建不了硬链接（跨盘 / exFAT）→ game.img 照旧拷。
+    开关关：整棵照旧（clone_tree）"""
+    import program_pack
+    img = Path(src) / "game.img"
+    if not program_pack.enabled(c) or not img.is_file() or img.is_symlink():
+        return clone_tree(src, dst)
+    shutil.copytree(src, dst, ignore=lambda d, names: ["game.img"] if Path(d) == Path(src) else [], copy_function=_clone_file)
+    try:
+        os.link(img, Path(dst) / "game.img")
+    except OSError:
+        _clone_file(img, Path(dst) / "game.img")
+
+
 def derive(c, gid, extraction):
     """出 Apple TV 包（ipa 作业带 platform = "tvos"，iPhone 版刚交付、解包目录还没清时调）：电视与 iPhone 跑同一份改写产物，差别只在
     组装时镜像包标的平台（ios/embed.py 按 S2A_APPLE_OS 写）、tvOS 壳、和多一个 ASTC 预转包（A15 不支持 BC 贴图，不转会在 CPU 上整张解成未压缩、
     贴图内存涨 4–8 倍，电视约 2 GB 就被系统结束）。所以：
-      ① image/tvos/kit、image/tvos/.pack 从 image/ios 拷一份（clone_tree：Mac APFS 克隆不占空间，Windows 整份拷贝；资源包同一份，电视上按 Library/Caches 推）
+      ① image/tvos/kit、image/tvos/.pack 从 image/ios 拷一份（clone_tree：Mac APFS 克隆不占空间，Windows 整份拷贝；资源包同一份，电视上按 Library/Caches 推；
+         0.6.0 起 .pack/game.img 是 iPhone 那份的硬链接，clone_pack）
       ② 解开的 romfs → image/tvos/.pack/astc.pack（只给电视推，iPhone 资源包不带）
       ③ 开发树本机还没有本版 tvOS 壳就出一个（发版应用自带 Shell-tvOS/）
       ④ game.json 记 tvos：壳号、兼容判据、资源包号（usable_kit 按它判）"""
@@ -226,7 +256,7 @@ def derive(c, gid, extraction):
         tmp = dst / (name + ".partial")
         shutil.rmtree(tmp, ignore_errors=True)
         try:
-            clone_tree(src, tmp)
+            (clone_pack(c, src, tmp) if name == layout.IOS_PACK else clone_tree(src, tmp))
         except (OSError, shutil.Error) as e:
             shutil.rmtree(tmp, ignore_errors=True)
             raise Failure("Apple TV 包的文件拷不出来：" + (str(e).strip().splitlines() or ["?"])[-1], code="package_failed") from e  # 非玩家句
@@ -334,10 +364,11 @@ def assemble(c, gid, others, shell, sid):
         raise
     packer.finish_container(c, app, log)
     games = [g["title_id"] for g in json.loads((app / "s2a_catalogue.json").read_text(encoding="utf-8"))["games"]]
-    if gid not in games:   # 同 ipa.assemble：程序文件和游戏包的程序号对不上，设备侧目录按程序号，放过去就推错地方
+    try:   # 同 ipa.assemble：程序号和游戏包号对不上时按程序号放、资源取回游戏包号那款（认不出是哪个才停）
+        packer.title_mismatch(c, gid, list(others), games)
+    except Failure:
         shutil.rmtree(out, ignore_errors=True)
-        raise Failure(f"这款游戏的程序文件和游戏包对不上（程序里是 {' '.join(games)}，游戏包是 {gid}），可能是游戏文件被改过或混了别的游戏。请用原版游戏文件重新导入。",
-                      code="game_files_mismatch")
+        raise
     return out, app, games
 
 
@@ -758,7 +789,7 @@ def install_tv(c):
         install_app(c, dev["identifier"], app)
     finally:
         shutil.rmtree(out, ignore_errors=True)
-    packs = {g: (tv_pack(c, g) if (tv_pack(c, g) / "manifest.json").is_file() else None) for g in games}
+    packs = {g: (tv_pack(c, packer.library_id(c, g)) if (tv_pack(c, packer.library_id(c, g)) / "manifest.json").is_file() else None) for g in games}
     moved = rec.get("bundleId") not in ("", bid)
     stale = [g for g in games if packs[g] is not None and (moved or g == gid or install.pack_id(packs[g]) != (rec["games"].get(g) or {}).get("pack"))]
     c.begin("把游戏推进 Apple TV（只推变了的文件；第一次大游戏要几分钟）", 6, 6)

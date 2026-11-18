@@ -72,7 +72,8 @@ for rel in "${front_srcs[@]}"; do
 done
 # 只打印生产构建定义的弱引用参数，不运行 runtime/build.mk 的构建配方。
 # 例如自动玩家在本集成测试中不链接；缺省弱引用须保持为空，不能提供替身。
-weak_output=$(printf '%s\n' 'present-residency-weak:;@echo $(NVN_TEST_WEAK)' | \
+# 原生层链接库同生产（runtime/build.mk 的 HOST_LIBS：Foundation、Security 等）：本脚本整目录编 runtime/src，手写框架表会漏新依赖（11-17 selfsign.c 加 Security 后这里链接红）
+weak_output=$(printf '%s\n' 'present-residency-weak:;@echo $(NVN_TEST_WEAK) $(HOST_LIBS)' | \
     make -s -f "$root/runtime/build.mk" -f - present-residency-weak)
 read -r -a weak_flags <<< "$weak_output"
 xcrun --sdk macosx clang "${common[@]}" -std=gnu11 -fobjc-arc \

@@ -92,6 +92,26 @@ import S2ArmAppleAdapter
         XCTAssertEqual(model.provider.client.environment.library, "", "忘掉了这个库：添加游戏时按新玩家在 ~/S2Arm 重建")
     }
 
+    // 11-17：游戏库文件夹里是另一个游戏库（作业层 library_id_mismatch）：不当「没有游戏库」忘掉，弹换库确认，确认对象就是这个文件夹、
+    //   码照传（标题按码取「这里是另一个游戏库」），上次的列表留着；玩家点「仍然继续」才重走选库
+    func testOtherLibraryInPlaceAsksToUseIt() async throws {
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("s2arm-otherlib-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("Jobs"), withIntermediateDirectories: true)
+        try Data().write(to: root.appendingPathComponent("Jobs/main.py"))
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("lib"), withIntermediateDirectories: true)
+        let runner = KeptRunner(); runner.catalogFails = true; runner.catalogFailCode = "library_id_mismatch"; runner.catalog = ["games": [[String: Any]]()]
+        let model = S2ArmLauncherModel(client: JobClient(environment: JobEnvironment(
+            privateRoot: root, resources: root, library: root.appendingPathComponent("lib").path, libraryId: "fixture"), runner: runner))
+        model.refresh()
+        for _ in 0..<300 where !model.libraryLoaded || model.loading { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(model.libraryConfirm?.code, "library_id_mismatch")
+        XCTAssertEqual(model.libraryConfirm?.url.standardizedFileURL.path, root.appendingPathComponent("lib").standardizedFileURL.path)
+        XCTAssertEqual(model.libraryConfirm?.move, false)
+        XCTAssertEqual(model.provider.client.environment.library, root.appendingPathComponent("lib").path, "没忘掉这个库")
+    }
+
     func testStartupLoopsStartOnFirstSuccessfulLoad() async throws {
         _ = NSApplication.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("s2arm-loops-" + UUID().uuidString)
@@ -164,6 +184,8 @@ private final class KeptRunner: JobProcessRunner {
     var catalog: [String: Any] = [:]
     var catalogs = 0
     var catalogFails = false
+    /// 读库失败时带的失败码（作业层 diagnostics[0].code）；nil 不带
+    var catalogFailCode: String?
     func start(executable: URL, arguments: [String], environment: [String: String],
                onLine: @escaping (Data) -> Void, onStderr: @escaping (Data) -> Void,
                onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle {
@@ -178,7 +200,8 @@ private final class KeptRunner: JobProcessRunner {
         let result: [String: Any] = op == "phoneKeptPull" ? ["device": "00008160-FIXTURE", "new": kept.count, "kept": kept, "shellUpdate": shellUpdate, "stale": [String](), "running": running]
             : op == "catalog" ? catalog : [:]
         let failed = (op == "installUpdatePrepare" && prepareFails) || (op == "catalog" && catalogFails)
-        let event: [String: Any] = ["schema": 1, "taskId": taskId, "type": "result", "state": failed ? "failed" : "succeeded", "result": result, "message": failed ? "fixture" : ""]
+        var event: [String: Any] = ["schema": 1, "taskId": taskId, "type": "result", "state": failed ? "failed" : "succeeded", "result": result, "message": failed ? "fixture" : ""]
+        if failed, op == "catalog", let code = catalogFailCode { event["diagnostics"] = [["code": code, "message": "fixture"]] }
         DispatchQueue.main.async { onLine(try! JSONSerialization.data(withJSONObject: event)); onExit(0) }
         return Handle()
     }

@@ -89,6 +89,7 @@ public sealed partial class EnvironmentWindow
     /// <summary>上一次装机失败的错误码（apple_session_expired 时失败页给「打开 Impactor 重新登录」，重新登录完自动再装）</summary>
     private string? installCode;
     private bool installOpenToFinish;   // 刚装完的那次是单一 IMG：成功卡片多写一句「打开 S2Arm 会自动完成安装」（作业结果 openToFinish）
+    private string installTrustName = "";   // 这次签名的证书名（作业结果 trustName）：成功卡片「点「<名字>」→ 信任」；Windows 上作业读不到时为空，退回不带名字的说法
     private string revealProblem = "";   // 「显示 IPA」「打开游戏文件夹」找不到目标时的提示（不打开空的资源管理器）
     // 当前 / 最近一次手机作业属于哪一款（#308：原先只有一份「当前安装」状态、没记是哪款，回游戏库再点别的游戏，进度会画到那款上）。
     //   installSeen：跑完后玩家回安装页看过结果没有；没看过时顶栏胶囊一直在。进度计数来自作业事件 done / total / unit（推资源包按字节，机上解包按包）
@@ -934,7 +935,7 @@ public sealed partial class EnvironmentWindow
                     packFailureCode = job is not null ? DiagnosticCode(job.Report.Diagnostics) : null;
                 }
                 EndJob(front); if (packJob == front) packJob = null;
-                Render();
+                AfterArtifactJob(); Render();
                 if (batch) _ = BatchExportEndedAsync(job?.Report, error);
                 else if (exportAfterPack is { } g) { exportAfterPack = null; selfSignAfterPack.Remove(g.Id); _ = InstallAsync(g, export: true); }
                 else if (installAfterPackGame is { } ig) { installAfterPackGame = null; installAfterPack.Remove(ig.Id); _ = InstallAsync(ig); Navigate("install"); }   // 选了「出完装到 iPhone」：接着装
@@ -1681,6 +1682,9 @@ public sealed partial class EnvironmentWindow
         // 装机 / 续签 / 删除 / 装回：同一张结局卡（PhoneJobCard.cs，同 Mac PhoneJobPanel）；Apple ID 登录过期另给「打开 Impactor 重新登录」
         var notes = new List<string>();
         if (installState == "succeeded" && installTrack.Kind == "install" && installOpenToFinish) notes.Add(T("install.done.open"));
+        // 第一次打开前信任开发者（同 Mac InstallView doneNotes）：读到证书名就写要点哪一项，读不到退回不带名字的说法；导出模式不连手机，不写
+        if (installState == "succeeded" && installTrack.Kind == "install" && !installExport)
+            notes.Add(installTrustName.Length > 0 ? T("install.done.trustNamed").Replace("{0}", installTrustName) : T("install.done.trust"));
         var state = new StackPanel { Spacing = 16 };
         state.Children.Add(PhoneJobCard(installTrack, installState, installMessage, installDiagnostics, game.Id, notes, showsOperation: showsOperation,
             switchExport: installState is "failed" or "interrupted" && !installExport && installTrack.Kind == "install" ? () => { IosAfterPack = "export"; ExportSelfSign(game); } : null));
@@ -1729,7 +1733,7 @@ public sealed partial class EnvironmentWindow
     internal static readonly IReadOnlyDictionary<string, string> ConfirmCodes = new Dictionary<string, string>
     {
         ["container_would_drop"] = "acceptDropped", ["save_backup_failed"] = "acceptNoBackup", ["container_stale"] = "acceptStale",
-        ["device_space_low"] = "acceptLowSpace",
+        ["device_space_low"] = "acceptLowSpace", ["cert_revoke_confirm"] = "acceptCertRevoke",
     };
 
     /// <summary>可确认的停装码要问的那句标题：文案表有 errors.&lt;码&gt;.title 就用它，没有用通用的 install.drop_title</summary>
@@ -1740,16 +1744,17 @@ public sealed partial class EnvironmentWindow
 
     /// <summary>accept：玩家已同意的确认参数（ConfirmCodes 的值，逐次累积）。ask = false（控制口）原样失败、不弹确认，由调用方带参数再发。</summary>
     /// <param name="export">游戏库「导出自签包」：不连手机、不签名，出到文件夹（作业层 install 请求带 mode = export，不带设备）</param>
-    private async Task InstallAsync(LibraryGame game, IReadOnlySet<string>? accept = null, bool ask = true, bool export = false)
+    /// <param name="toDevice">推哪台（0.6.0 总控台「更新所选」推总控台那台）；不带 = 照旧按装机页选的 / 这款上次装的那台</param>
+    private async Task InstallAsync(LibraryGame game, IReadOnlySet<string>? accept = null, bool ask = true, bool export = false, string? toDevice = null)
     {
-        if (QueuePhone(game.Id, () => InstallAsync(game, accept, ask, export))) return;   // 出包在跑不挡；手机上装机在跑 / 这款正在出包 → 排队
+        if (QueuePhone(game.Id, () => InstallAsync(game, accept, ask, export, toDevice))) return;   // 出包在跑不挡；手机上装机在跑 / 这款正在出包 → 排队
         accept ??= new HashSet<string>();
         installExport = export;
         var front = BeginPhoneJob(game, "");
         string? dropAsk = null, askCode = null;
         try
         {
-            var extra = AcceptExtra(accept, export ? "" : InstallDevice(game)) ?? new Dictionary<string, object?>();
+            var extra = AcceptExtra(accept, export ? "" : toDevice ?? InstallDevice(game)) ?? new Dictionary<string, object?>();
             if (export) extra["mode"] = "export";
             if (!HomeWidget) extra["widget"] = false;   // 玩家关了「装到 iPhone 时带主屏小组件」
             var job = await PackJobClient.RunAsync(PackRequest("install", game.Id, extra), e => Dispatcher.UIThread.Post(() => IngestPhoneEvent(e)), front.Token, front.Next());
@@ -1763,6 +1768,7 @@ public sealed partial class EnvironmentWindow
             if (job.Report.Succeeded && job.Report.Result.TryGetProperty("unpackPending", out var pending) && pending.ValueKind == JsonValueKind.String)
             { installState = "needsPlayer"; installMessage = pending.GetString() ?? ""; }
             installOpenToFinish = job.Report.Succeeded && job.Report.Result.TryGetProperty("openToFinish", out var open) && open.ValueKind == JsonValueKind.True;
+            installTrustName = job.Report.Succeeded && job.Report.Result.TryGetProperty("trustName", out var trust) && trust.ValueKind == JsonValueKind.String ? trust.GetString() ?? "" : "";
             installDiagnostics = JobDiagnostics(job);
             installTrack.Finish(job, GameName);
             if (job.Report.Succeeded && installTrack.ExportFolder.Length > 0) OpenFolder(installTrack.ExportFolder);   // 导出自签包：打开放好的文件夹
@@ -1771,7 +1777,7 @@ public sealed partial class EnvironmentWindow
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or
             OperationCanceledException or PlatformNotSupportedException or System.ComponentModel.Win32Exception)
         { installState = "failed"; installDiagnostics = error.Message; }
-        finally { EndJob(front); readinessFor = null; Render(); }
+        finally { EndJob(front); readinessFor = null; AfterArtifactJob(); Render(); }
         if (dropAsk is not null && await ConfirmInstallActionAsync("install.drop", dropAsk, ConfirmTitle(askCode)))
             await InstallAsync(game, new HashSet<string>(accept) { ConfirmCodes[askCode!] }, export: export);
     }
@@ -1801,13 +1807,7 @@ public sealed partial class EnvironmentWindow
         return extra.Count > 0 ? extra : null;
     }
 
-    private static string? JobCode(LibraryJobOutput job)
-    {
-        if (job.Report.Diagnostics.ValueKind != JsonValueKind.Array) return null;
-        foreach (var d in job.Report.Diagnostics.EnumerateArray())
-            if (d.TryGetProperty("code", out var code) && code.ValueKind == JsonValueKind.String) return code.GetString();
-        return null;
-    }
+    private static string? JobCode(LibraryJobOutput job) => job.Report.FailureCode;
 
     private async Task ChooseCoverAsync(LibraryGame game)
     {
@@ -1950,7 +1950,7 @@ public sealed partial class EnvironmentWindow
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or
             OperationCanceledException or PlatformNotSupportedException or System.ComponentModel.Win32Exception)
         { installState = "failed"; installMessage = T(prefix + "_failed"); installDiagnostics = error.Message; }
-        finally { EndJob(front); Render(); }
+        finally { EndJob(front); AfterArtifactJob(); Render(); }
         if (dropAsk is not null && await ConfirmInstallActionAsync("install.drop", dropAsk, ConfirmTitle(askCode)))
             await RunPhoneJobAsync(game, operation, prefix, new HashSet<string>(accept) { ConfirmCodes[askCode!] });
     }

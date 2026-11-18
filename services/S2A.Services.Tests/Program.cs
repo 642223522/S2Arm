@@ -2341,6 +2341,9 @@ namespace S2A.Services.Tests
                     // 目录带进程号（10-24 门禁偶发红 2002-1002：几棵树的门禁同时跑、共用 TMPDIR，固定目录被别的门禁删掉重建，DLC 数据中途消失）
                     string ad = Path.Combine(Path.GetTempPath(), $"s2a_aoc_test_{Environment.ProcessId}");
                     if (Directory.Exists(ad)) Directory.Delete(ad, true);
+                    // aoc:u Count / List 按全局 DLC 目录回答：前面登记的外部游戏（S2A_TEST_GAME）若带 DLC 会算进来（#386：带 1 个 DLC 的数据 2 → 3 误红）。
+                    //   这一批只验夹具清单的两项，先清空登记再登记夹具；批次后再清掉，夹具条目不带给后面的用例（后面没有用例依赖 DLC）
+                    Aoc.Reset(); Host.Device.System.ContentManager.ClearAocData();
                     Directory.CreateDirectory(Path.Combine(ad, "aoc", "1"));
                     File.WriteAllText(Path.Combine(ad, "aoc", "1", "hello.txt"), "s2a dlc");
                     File.WriteAllText(Path.Combine(ad, "aoc.tsv"), $"idx\ttitle_id\tversion\tfiles\tbytes\n1\t{Base + 1:x16}\t0\t1\t7\n2\t{Base + 2:x16}\t0\t-1\t0\n");
@@ -2374,6 +2377,7 @@ namespace S2A.Services.Tests
                     Check("DLC 挂载：有数据的给 RomFS（头长 0x50）、仅授权的挂不上", "结果 0、头长 0x50 / 失败",
                         $"结果 {od1.Result}、头长 0x{(dst != 0 ? *(ulong*)dlch : 0):X} / {(od2.Result != 0 && od2.Move.Count == 0 ? "失败" : $"结果 {od2.Result}、{od2.Move.Count} 个句柄")}");
                     try { Directory.Delete(ad, true); } catch (IOException) { }
+                    Aoc.Reset(); Host.Device.System.ContentManager.ClearAocData();
                 }
 
                 // appletOE 命令 10 OpenApplicationProxyWithFlags（Switch 2 SDK 起局用它替代命令 0，0400A3A01EE4C000）：标志 0 → 回一个 IApplicationProxy 对象，且能照常取 ICommonStateGetter（命令 0）

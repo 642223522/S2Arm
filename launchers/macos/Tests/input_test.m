@@ -17,6 +17,14 @@ void s2a_host_shutdown(const char *why) { (void)why; if (guide_preview) exit(0);
 void s2a_clock_catchup(void) {}   // 游戏日历补时（runtime/src/os.c，Mac 唤醒通知调）在这里不测
 void s2a_heartbeat_mac(void) {}   // Mac 心跳（macos/heartbeat_mac.c，前端 10 秒定时器调）在这里不测
 int s2a_playtime_flush(void) { return 0; }   // 游玩时间落盘（runtime/src/playtime.c，同一个 10 秒定时器调）在这里不测
+// 即时快照（runtime/src/snapsw.c、snapshot.c）在这里不测：开关关着，菜单不出这两项
+int s2a_snap_logging(void) { return 0; }
+int s2a_snap_dir_for(const char *gid, char *out, size_t n) { (void)gid; (void)out; (void)n; return -1; }
+int s2a_snap_exists(const char *dir) { (void)dir; return 0; }
+int s2a_snap_save_changed(const char *dir) { (void)dir; return -1; }
+int s2a_snap_request_save(const char *dir) { (void)dir; return -1; }
+void s2a_snap_on_done(void (*cb)(int, const char *)) { (void)cb; }
+int s2a_host_restart(void (*done)(int, const char *, void *), void *ctx) { (void)done; (void)ctx; return -1; }   // 进程内重启（runtime/src/session.c）在这里不测
 uint64_t now_ns(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }   // 宿主单调时钟（runtime/src/os.c）：前台焦点计时用（#965 起 front_mac.m 引用），给真时钟
 // 生命周期桩（接口 v2.15，缺口扫描族 1）：记下前端报的焦点 / 睡眠、客机冻结与时钟原因 3 的开关次数
 static int stub_focus = 1, stub_suspend, stub_sleep, stub_freeze_on, stub_freeze_off, stub_clock3_on, stub_clock3_off;
@@ -518,6 +526,8 @@ static void test_capture_key_order(void) {
 static FakeController *fake_controller(FakePad *pad) { FakeController *c = [FakeController new]; c.extendedGamepad = pad; pad.controller = c; return c; }
 @interface FakeProSensor : NSObject
 @property BOOL sensorsRequireManualActivation, hasRotationRate, hasGravityAndUserAcceleration, sensorsActive;
+@property GCRotationRate rotationRate;
+@property GCAcceleration gravity, userAcceleration, acceleration;
 @end
 @implementation FakeProSensor
 @end
@@ -527,13 +537,13 @@ static void test_pro_sensor_control(void) {
     atomic_store(&g_motion_wanted, 1);
     sample_motion((GCExtendedGamepad *)pad);
     expect(m.sensorsActive, "Pro public sensor control is requested even without separated gravity / usable calibrated samples");
-    expect(!g_motion_known, "uncalibrated Pro data still uses the existing raw sample path, not fabricated GC values");
+    expect(g_motion_known == 1, "rotation without separated gravity gives an acceleration-only sample (DualSense), ranked below the Pro raw HID path in s2a_pad_read_motion");
     atomic_store(&g_motion_wanted, 0); sample_motion(nil);
     expect(!m.sensorsActive, "motion disable releases public Pro sensor request");
     sample_motion(nil);
     GCController *old = pad_owner[1]; pad_owner[1] = (GCController *)c;
     atomic_store(&g_motion_wanted, 1); sample_slot_motion(NULL);
-    expect(m.sensorsActive && !g_slot_motion_known[1], "P2 sensor control also stays independent of calibrated sample availability");
+    expect(m.sensorsActive && g_slot_motion_known[1] == 1, "P2 sensor control stays independent of calibrated samples; an acceleration-only sample still reaches P2 (DualSense)");
     atomic_store(&g_motion_wanted, 0); sample_slot_motion(NULL);
     expect(!m.sensorsActive, "P2 motion disable releases its public request");
     pad_owner[1] = old;
@@ -681,6 +691,33 @@ static void test_pad_slots(void) {
     expect(s2a_slot_plan(owners, five, 5, 4, slot_of) == 4 && slot_of[4] == -1, "a fifth pad is ignored");
     // 全断开：回到只有槽 0（键盘 / 鼠标）的那一位
     expect(s2a_slot_plan(owners, live, 0, 4, slot_of) == 1, "no pads: back to one slot for keyboard and mouse");
+}
+
+// #1264（D-7VG4 现场）：兜底手柄 a（PowerA，顺序表认不到它）先占槽 0；游戏中途连上 DualSense b 进槽 1；面板把 b 登记成 P1（顺序表 rank 0）。
+//   期望手算：钉住后 b 在槽 0、a 被挤到槽 1；再关掉 a，b 仍在槽 0（单人游戏读玩家 1 就是它）。没登记的手柄不受钉住影响、照旧留原槽
+static void test_pad_slot_pin(void) {
+    int ids[3] = {1, 2, 3};
+    const void *a = &ids[0], *b = &ids[1], *c = &ids[2];
+    const void *owners[4] = {a, b, NULL, NULL};
+    int slot_of[3];
+    const void *ab[2] = {a, b}; int rank_ab[2] = {S2A_PAD_ORDER_UNLISTED, 0};
+    s2a_slot_pin(owners, ab, rank_ab, 2, 4);
+    expect(s2a_slot_plan(owners, ab, 2, 4, slot_of) == 2 && slot_of[1] == 0 && slot_of[0] == 1,
+        "a pad the panel lists as P1 takes slot 0; the unlisted one moves to slot 1");
+    apply_slots(owners, ab, slot_of, 2, 4);
+    const void *only_b[1] = {b}; int rank_b[1] = {0};
+    s2a_slot_pin(owners, only_b, rank_b, 1, 4);
+    expect(s2a_slot_plan(owners, only_b, 1, 4, slot_of) == 1 && slot_of[0] == 0, "turning the old pad off leaves the listed P1 in slot 0");
+    // 没登记的两只（a 槽 1、c 槽 2）+ 登记 P1 的 b 已在槽 0：钉住什么都不动
+    const void *owners2[4] = {b, a, c, NULL};
+    const void *bac[3] = {b, a, c}; int rank_bac[3] = {0, S2A_PAD_ORDER_UNLISTED, S2A_PAD_ORDER_UNLISTED};
+    s2a_slot_pin(owners2, bac, rank_bac, 3, 4);
+    expect(owners2[0] == b && owners2[1] == a && owners2[2] == c && owners2[3] == NULL, "pinning leaves pads already in place and unlisted pads alone");
+    // 登记成 P2（rank 1）、P1 不在：钉在槽 1，不提前到槽 0（同原机：玩家号不跳）
+    const void *owners3[4] = {NULL, NULL, NULL, NULL};
+    const void *only_c[1] = {c}; int rank_c[1] = {1};
+    s2a_slot_pin(owners3, only_c, rank_c, 1, 4);
+    expect(s2a_slot_plan(owners3, only_c, 1, 4, slot_of) == 2 && slot_of[0] == 1, "a listed P2 stays in slot 1 when P1 is absent");
 }
 
 // 只有通用物理描述的手柄（没有扩展手柄档）：按标准键名从 physicalInputProfile 读、回调装在 valueDidChangeHandler 上。
@@ -1205,7 +1242,10 @@ static void test_shared_input_config(void) {
     const s2a_input_config *active = s2a_ios_input_config_current();
     CONFIG_EXPECT(active && active->keyboard[0].code == 49 && active->axes[0].source == 3, "iOS published table is the parsed custom mapping");
     CONFIG_EXPECT([[@"{" dataUsingEncoding:NSUTF8StringEncoding] writeToFile:path atomically:YES], "replace own fixture with invalid JSON");
-    CONFIG_EXPECT(s2a_ios_input_config_load() == S2A_INPUT_CONFIG_JSON && !s2a_ios_input_config_current(), "failed iOS startup load cannot expose previous mapping");
+    // 11-17 维护者：读不懂不再拒启——仍回错误码（调用方黄字说明），这局换成默认键位，不沿用上一份映射
+    { s2a_input_config fallback; s2a_input_config_default(&fallback);
+      const s2a_input_config *now = (s2a_ios_input_config_load() == S2A_INPUT_CONFIG_JSON) ? s2a_ios_input_config_current() : NULL;
+      CONFIG_EXPECT(now && !memcmp(now, &fallback, sizeof fallback), "failed iOS startup load falls back to the default mapping, not the previous one"); }
     if (savedDocs) setenv("S2A_DOCS",savedDocs.UTF8String,1); else unsetenv("S2A_DOCS");
     if (savedPath) setenv("S2A_INPUT_CONFIG",savedPath.UTF8String,1); else unsetenv("S2A_INPUT_CONFIG");
     CONFIG_EXPECT([NSFileManager.defaultManager removeItemAtPath:directory error:NULL], "remove only synthetic fixture directory created by this test");
@@ -1261,6 +1301,14 @@ int main(int argc, const char **argv) {
                ax[0] == 32767 && ax[1] == 0 && ax[2] == -32767 && ax[3] == 32767, "Pro 0x30 report: buttons and sticks");
         uint8_t simple[12]; memcpy(simple, rep, sizeof simple); simple[0] = 0x3F;
         expect(s2a_pro_parse(simple, sizeof simple, &d, &d, &bt, ax) == 0, "Pro parser leaves the simple HID report (0x3F) to the element path");
+        //   读不到出厂校准（#1264 PowerA）：缺省行程 1003、随读数放大。期望手算：+500 → 500 / 1003 × 32767 = 16334.6 → 16334；
+        //   推到 +1200（超过 1003）→ 行程放大到 1200、满量程 32767；之后 +600 → 600 / 1200 × 32767 = 16383.5 → 16383；
+        //   负向没动过：-700 → -700 / 1003 × 32767 = -22868.3 → -22868（行程两向分开记）
+        s2a_pro_cal g; s2a_pro_cal_default(&g);
+        int16_t g1 = s2a_pro_axis_grow(2548, g.cx, &g.xmax, &g.xmin), g2 = s2a_pro_axis_grow(3248, g.cx, &g.xmax, &g.xmin);
+        int16_t g3 = s2a_pro_axis_grow(2648, g.cx, &g.xmax, &g.xmin), g4 = s2a_pro_axis_grow(1348, g.cx, &g.xmax, &g.xmin);
+        expect(g1 == 16334 && g2 == 32767 && g.xmax == 1200 && g3 == 16383 && g4 == -22868 && g.xmin == 1003,
+               "Pro stick without factory calibration: range starts at 1003 and grows to the farthest reading");
         expect(s2a_pro_player_lights(0) == 0x1 && s2a_pro_player_lights(1) == 0x3 && s2a_pro_player_lights(3) == 0xF, "Pro player lights: first n lit for player n");
         // Xbox 有线手柄 GIP 协议纯函数验证（#1406）
         expect(s2a_is_xbox_gip(0x045E, 0x02D1) == 1, "Xbox GIP: 0x045E:0x02D1 (Xbox One)");
@@ -1508,6 +1556,7 @@ int main(int argc, const char **argv) {
         test_active_pad();
         test_pro_sensor_control();
         test_pad_slots();
+    test_pad_slot_pin();
         // 同一个真实前端实现：通用 attach 先发布层，detach 先通知再清层；
         // 直连只发布/清层，不通知尚未初始化且不应初始化的通用 NxGal。
         CAMetalLayer *front = [CAMetalLayer layer];

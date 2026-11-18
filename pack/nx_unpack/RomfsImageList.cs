@@ -4,7 +4,7 @@
 // 清单每行 TAB 分隔 7 列：相对路径（/ 分隔）、字节数、来源文件、来源偏移、来源长度、编码（file 整个文件 | raw 原样一段 | zstd 单帧 zstd 一段）、SHA-256（十六进制，或 - 不核）。
 // 布局与 RomfsExtraction.ExtractImage、services/romfs_index.sh --std 是同一个 LibHac RomFsBuilder（相对路径 Ordinal 排序加文件、跳过宿主垃圾名），
 //   所以与「先展开成 romfs/ 再建镜像」逐字节相同。头与四张表从 RomFsBuilder 取；文件数据按文件分给各线程，各自顺序写进自己的位置（zstd 只能顺序解）；
-//   每个文件核长度，带 SHA-256 的再核哈希，对不上整份作废（先写暂存，成功才改名）。
+//   每个文件核长度（对不上整份作废，先写暂存、成功才改名）；带 SHA-256 的再核哈希，对不上只打黄照常写（维护者 11-17）。
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
@@ -101,7 +101,11 @@ static class RomfsImageList {
 
     static void Check(Src s, long n, byte[] got) {
         if (n != s.Size) throw new InvalidDataException($"RomFS 文件 {s.Rel} 读出 {n} 字节，清单里是 {s.Size}（来源 {s.From}）");
-        if (s.Sha != null && !got.AsSpan().SequenceEqual(s.Sha)) throw new InvalidDataException($"RomFS 文件 {s.Rel} 的 SHA-256 对不上（来源 {s.From} 损坏？）");
+        // SHA-256 对不上不再整份作废（维护者 11-17：「校验不过就整个拒绝」一律撤掉，D-RE44）：打黄 + 【校验跳过】机读行，照常写进镜像；长度不符仍报（布局按长度排定，物理上放不进）
+        if (s.Sha != null && !got.AsSpan().SequenceEqual(s.Sha)) {
+            Console.WriteLine($"🟡 RomFS 文件 {s.Rel} 的 SHA-256 和清单对不上（来源 {Path.GetFileName(s.From)}，疑改版 / 整合版或损坏），照常写进镜像");
+            P.SkipLine("资源镜像 RomFS", "", $"文件 {s.Rel}");
+        }
     }
 
     // 只给 RomFsBuilder 定长度、排布局；数据由 Copy 直接写，不经它读

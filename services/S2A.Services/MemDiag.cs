@@ -159,12 +159,7 @@ namespace S2A.Services
             }
 
             // 每 30 秒一行（GC 次数 / 累计停顿 / 进程足迹随局走势；GC 段大小等配置的 A/B 读这个）
-            // 开发设施（11-07 质量线）：玩家口径（原生层 s2a_dev_on 判 0 并导出 S2A_DEV_FACILITIES=0）不起这条周期账线程；堆审计显式要时照起
-            if (Environment.GetEnvironmentVariable("S2A_DEV_FACILITIES") == "0" && !heapAudit)
-            {
-                Console.Error.WriteLine("[S2A 内存] 开发设施关（玩家口径）：不起 30 秒周期账线程");
-                return;
-            }
+            // 11-17 拆开：这条 30 秒一行、只进日志，归「诊断读数」，玩家包也起（远程定因要它）；不再看开发设施总开关 S2A_DEV_FACILITIES
             _monitorStop.Reset();
             _monitorThread = new(() =>
             {

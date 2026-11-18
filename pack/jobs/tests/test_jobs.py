@@ -87,6 +87,23 @@ class JobsTests(unittest.TestCase):
         self.redirect.__exit__(None, None, None)
         self.tmp.cleanup()
 
+    def test_other_library_in_place_asks_instead_of_rejecting(self):
+        # 11-17 维护者：游戏库标识和记下的库号不同，不直接拒、也不悄悄改用：说清是哪个（文件夹名 + 路径）、有几款，前端问玩家。
+        #   期望手写：库里 2 款、其中 1 款隐藏 → 「有 1 款游戏」，码 library_id_mismatch，facts 带它的库号；标识文件没了 → 照旧「未连接或标识不符」
+        lib = Path(self.request["library"])
+        marker = json.loads((lib / ".s2arm-library.json").read_text(encoding="utf-8"))
+        (lib / "catalog.json").write_text(json.dumps({"games": [{"id": "a"}, {"id": "b", "hidden": True}]}), encoding="utf-8")
+        c = Context(self.request | dict(taskId="other-lib", libraryId="remembered-elsewhere"))
+        with self.assertRaises(Failure) as e:
+            c.require_library()
+        self.assertEqual(e.exception.code, "library_id_mismatch")
+        self.assertEqual(e.exception.facts, {"libraryId": marker["id"]})
+        self.assertIn(f"「{lib.resolve().name}」（{lib.resolve()}）里是另一个游戏库，有 1 款游戏", str(e.exception))
+        (lib / ".s2arm-library.json").unlink()
+        with self.assertRaises(Failure) as e:
+            c.require_library()
+        self.assertEqual((e.exception.code, str(e.exception)), ("job_failed", "游戏库未连接或标识不符，请重新选择游戏库。"))
+
     def test_game_required_when_request_has_no_game(self):
         """客户端不再按名单拦「要不要游戏号」（自己人之间不设允许清单，#1149）：要游戏的作业请求里没带游戏号，
         作业层说清缺的是游戏号，不是「游戏未登记」；带了但库里没有照旧是未登记"""
@@ -467,6 +484,63 @@ class JobsTests(unittest.TestCase):
             with um.patch.object(self.c, "run", fake("Unhandled exception: disk full")):
                 with self.assertRaises(Failure) as e: library.inspect(self.c, self.root / "a.xci", self.root, keys)
                 self.assertEqual(str(e.exception), "S2Arm 工具退出，当前阶段未完成。")
+
+    def test_inspect_success_after_integrity_skip_warns_not_fails(self):
+        # 维护者 11-17：校验不过不再整单拒收（#1467）。读取器哈希不符后跳过完整性校验照常读出、退出 0，输出里带「🟡 原件有数据和原版对不上…」→
+        #   期望（手写）：照常返回包信息，并发一条 warning 级诊断 source_integrity_skipped（句子 = library.SOURCE_INTEGRITY_SKIPPED）；没有这行就不发
+        import unittest.mock as um
+        keys = self.root / "prod.keys"; keys.write_text("header_key = " + "0" * 64 + "\n")
+        pkg = '{"schema": 1, "packages": [{"titleId": "0100000000010000", "baseId": "0100000000010000", "type": "base", "version": 0}]}'
+        def fake(*msgs):
+            def run(args, log=None, env=None, cwd=None, on_line=None):
+                for m in msgs: on_line(m)
+            return run
+        for skipped in (True, False):
+            lines = (["🟡 原件有数据和原版对不上（导入检查：控制数据（内容 aabbccdd），内容 aabbccdd）：…", "【校验跳过】导入检查：控制数据（内容 aabbccdd）\taabbccdd00\t文件 /control.nacp"] if skipped else []) + [pkg]
+            with um.patch.object(library.toolchain, "reader", return_value="nx_unpack.dll"), um.patch.object(self.c, "run", fake(*lines)), \
+                 um.patch.object(self.c, "diagnostic", create=True) as diag:
+                got = library.inspect(self.c, self.root / "a.xci", self.root, keys)
+            self.assertEqual(got[0]["titleId"], "0100000000010000")
+            want = [dict(stage="导入检查：控制数据（内容 aabbccdd）", contents="aabbccdd00", place="文件 /control.nacp")]
+            if skipped:
+                diag.assert_called_once_with(library.SOURCE_INTEGRITY_SKIPPED, code="source_integrity_skipped", severity="warning",
+                                             internal="导入检查：控制数据（内容 aabbccdd） aabbccdd00 文件 /control.nacp")
+                self.assertEqual(got[0]["integritySkipped"], want)   # 记进包记录：游戏库标「数据校验不过」、之后失败补说明都按它
+                self.assertTrue(library.integrity_skipped(dict(packages=got)))
+            else:
+                diag.assert_not_called(); self.assertNotIn("integritySkipped", got[0]); self.assertFalse(library.integrity_skipped(dict(packages=got)))
+
+    def test_failure_of_integrity_skipped_game_adds_note(self):
+        # 维护者 11-17：导入时数据校验不过的款，之后出包 / 起局失败要补一句。期望（手写）：游戏有包带 integritySkipped → 补一条
+        #   warning 级 source_integrity_skipped（句子 = SOURCE_INTEGRITY_FAILED_NOTE）；没有、或请求没带游戏号 → 不补；读游戏库出错 → 不补、不抛
+        import unittest.mock as um, main
+        games = {"games": [{"id": "A", "packages": [{"integritySkipped": [{"stage": "x", "contents": "", "place": ""}]}]}, {"id": "B", "packages": [{}]}]}
+        for gid, want in (("A", True), ("B", False), (None, False)):
+            with um.patch.object(self.c, "r", {"gameId": gid} if gid else {}), um.patch.object(self.c, "catalog", return_value=games), \
+                 um.patch.object(self.c, "diagnostic", create=True) as diag:
+                main.integrity_note(self.c)
+            if want: diag.assert_called_once_with(library.SOURCE_INTEGRITY_FAILED_NOTE, code="source_integrity_skipped", severity="warning")
+            else: diag.assert_not_called()
+        with um.patch.object(self.c, "r", {"gameId": "A"}), um.patch.object(self.c, "catalog", side_effect=OSError("坏")), \
+             um.patch.object(self.c, "diagnostic", create=True) as diag:
+            main.integrity_note(self.c)
+        diag.assert_not_called()
+
+    def test_failure_after_pack_verify_mismatch_adds_note(self):
+        # 维护者 11-17：出包时资源包核对没对上（pack/verify.py 改黄照常出包，原因落 <包目录>.verify_warn.txt），之后这款失败补一句。
+        #   期望（手写）：现行产物根 pkg/ 下有 *.verify_warn.txt → 补一条 warning 级 source_integrity_skipped（句子 = PACK_VERIFY_NOTE）；
+        #   只有非现行版本里有、或没有 → 不补
+        import unittest.mock as um, main, layout
+        games = {"games": [{"id": "A", "packages": [{}]}]}
+        for where, want in (("ios/roots/ta@现行/pkg", True), ("ios/roots/ta@v1/pkg", False), (None, False)):
+            with tempfile.TemporaryDirectory() as d:
+                if where:
+                    (Path(d) / where).mkdir(parents=True); (Path(d) / where / "pack.files.verify_warn.txt").write_text("x\n")
+                with um.patch.object(self.c, "r", {"gameId": "A"}), um.patch.object(self.c, "catalog", return_value=games), \
+                     um.patch.object(layout, "build_dir", return_value=Path(d)), um.patch.object(self.c, "diagnostic", create=True) as diag:
+                    main.integrity_note(self.c)
+            if want: diag.assert_called_once_with(main.PACK_VERIFY_NOTE, code="source_integrity_skipped", severity="warning")
+            else: diag.assert_not_called()
 
     def test_connected_counts_wired_paired_with_idle_tunnel(self):
         # 10-26 测试设备2：数据线连着、已配对，隧道空闲 disconnected → 算连着。11-13 起（维护者：插着手机别说识别不了）：
@@ -1577,7 +1651,7 @@ class JobsTests(unittest.TestCase):
             for name in ("S2A_SAVE_DIR", "S2A_AUTOPLAY", "S2A_ROUTE"):
                 os.environ.pop(name)
         self.assertEqual(env["S2A_SYSTEM_LANGUAGE"], "TraditionalChinese")
-        self.assertEqual(env["S2A_DOCKED"], "1")
+        self.assertEqual(env["S2A_DOCKED"], "1")   # 请求明给 docked=True
         self.assertEqual(env["S2A_AUTOPLAY"], "0")
         self.assertNotIn("S2A_SAVE_DIR", env)
         self.assertNotIn("S2A_ROUTE", env)
@@ -1592,9 +1666,11 @@ class JobsTests(unittest.TestCase):
         finally:
             os.environ.pop("S2A_SYSTEM_LANGUAGE")
         self.assertNotIn("S2A_SYSTEM_LANGUAGE", env)
-        self.assertEqual(env["S2A_DOCKED"], "1")
+        self.assertEqual(env["S2A_DOCKED"], "0")   # 没选过：缺省掌机
         self.c.r["docked"] = False
         self.assertEqual(build.runtime_env(self.c, self.game(), self.root / "runtime")["S2A_DOCKED"], "0")
+        self.c.r["docked"] = True   # 请求明给主机照给的
+        self.assertEqual(build.runtime_env(self.c, self.game(), self.root / "runtime")["S2A_DOCKED"], "1")
 
     def test_invalid_language_is_rejected(self):
         self.c.r["gameLanguage"] = "zhHans; command"
@@ -1798,7 +1874,7 @@ class JobsTests(unittest.TestCase):
         runtime.mkdir(parents=True, exist_ok=True); (runtime / "ok.bin").write_bytes(b"12")
         manifest = {"gameId": game["id"], "memoryRequirementsVersion": 2, "files": {"ok.bin": [2, ""], "romfs/gone.bin": [9, ""]}}
         calls = []
-        def quick(c, rt, full=False, files=True):
+        def quick(c, rt, full=False, files=True, doubts=None):
             calls.append(files); return manifest
         def crash(command, log, env, **kwargs):
             self.c.last_rc = 139; raise Failure("游戏运行中失败（退出码 139）：fixture", code="tool_exit")
@@ -1813,6 +1889,27 @@ class JobsTests(unittest.TestCase):
             with self.assertRaises(Failure) as e:
                 build.launch(self.c)
         self.assertEqual(e.exception.code, "game_crashed")   # 文件都好：是真崩溃
+
+    def test_launch_warns_and_continues_when_checks_fail(self):
+        # 11-17 维护者：校验不过不再拒起局。期望手写：请求带旧字段 vammLayout + 快核记下一条「主程序大小不符」→ 不抛错、照常起到 c.run，
+        #   黄字两条（runtime_invalid / warning，原句 + 「先照常启动」）；这局崩了（139、文件都好）→ 仍是 game_crashed，消息末尾带「起局前这里校验就没过」两条原因
+        game = self.game(); self.catalogue([game]); self.c.r["gameId"] = game["id"]; self.c.r["vammLayout"] = "legacy"
+        self.fake_host(game["id"])
+        runtime = layout.image_mac(self.c, game["id"], create=False); runtime.mkdir(parents=True, exist_ok=True)
+        manifest = {"gameId": game["id"], "memoryRequirementsVersion": 2, "files": {}}
+        def quick(c, rt, full=False, files=True, doubts=None):
+            doubts.append("运行文件 main 缺失或大小不符"); return manifest
+        ran = []
+        def crash(command, log, env, **kwargs):
+            ran.append(command); self.c.last_rc = 139; raise Failure("游戏运行中失败（退出码 139）：fixture", code="tool_exit")
+        with patch.object(build, "validate_runtime", side_effect=quick), patch.object(self.c, "run", side_effect=crash):
+            with self.assertRaises(Failure) as e:
+                build.launch(self.c)
+        self.assertEqual(len(ran), 1)   # 照常起了
+        warned = [(d["code"], d["severity"]) for d in self.c.job["diagnostics"] if "先照常启动" in str(d)]
+        self.assertEqual(warned, [("runtime_invalid", "warning")] * 2)
+        self.assertEqual(e.exception.code, "game_crashed")
+        self.assertTrue(str(e.exception).endswith("\n起局前这里校验就没过：请求里带着已停用的旧内存布局设置（vammLayout）；运行文件 main 缺失或大小不符"))
 
     def test_bad_or_unsupported_input_mapping_falls_back_to_default_keys(self):
         # v0.3.1（认不出的直接做）：键位映射不合规 / 宿主不认映射 → 这局用默认键位照常起，不让玩家先去重新打包
@@ -2043,6 +2140,24 @@ class JobsTests(unittest.TestCase):
         self.assertEqual(save.read_text(), "keep")
         self.assertTrue((self.c.library / package["path"]).exists())
         self.assertTrue(all(f.exists() for f in other))
+
+    def test_delete_keeps_every_kind_of_save(self):
+        # 维护者 11-17：「删除游戏」原先只留 saves/、save-backups/，把 SaveData*（Mac 原生格式存档位置）和 save_backup/（装机前从 iPhone /
+        #   Apple TV 拉回的存档备份）一起删了。期望（手写）：带齐四种存档（另加一个玩家的 SaveData-<玩家>）的款删完，五样都在、内容不变；
+        #   金手指、mod、封面、Mac 运行版本这些照删；清单里没有这款。存档类以 layout.save_entries 为唯一来源
+        package = self.package(); game = self.game(packages=[package]); self.catalogue([game])
+        g = layout.game_dir(self.c, game["id"])
+        saves = {"saves/a.sav": "s", "save-backups/20261117/a.sav": "b", "save_backup/20261117-080000/0000000000000001/0/x.bin": "p",
+                 "SaveData/account/x.bin": "n", "SaveData-Player2/account/y.bin": "m"}
+        others = ["cheats/c.txt", "mods/m/romfs/a.bin", "cover.jpg", "image/mac/main.patched.bin", "seen/dev.tsv"]
+        for rel, text in list(saves.items()) + [(r, "x") for r in others]:
+            (g / rel).parent.mkdir(parents=True, exist_ok=True); (g / rel).write_text(text)
+        self.assertEqual(sorted(p.name for p in layout.save_entries(g)), ["SaveData", "SaveData-Player2", "save-backups", "save_backup", "saves"])
+        self.c.r["gameId"] = game["id"]
+        library.delete(self.c)
+        self.assertEqual({rel: (g / rel).read_text() for rel in saves if (g / rel).is_file()}, saves)
+        self.assertEqual([r for r in others if (g / r).exists()], [])
+        self.assertEqual([x["id"] for x in self.c.catalog()["games"]], [])
 
     def test_delete_removes_the_program_store_too(self):
         # 期望（手写）：「删除游戏」= 从库里删、也从手机记录摘掉，这款在游戏程序专用文件夹 .programs/<程序号>/ 的 kit / 原始程序 / 兼容记录一并删；别款的不动

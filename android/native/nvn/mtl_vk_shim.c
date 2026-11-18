@@ -684,6 +684,7 @@ void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNc
 // ---------------- 上屏 ----------------
 // This backend resolves and uploads the source in nvn_vk_session_present_tex
 // after shim_drain; it has no separate present-thread initialization to publish.
+void nvn_be_present_target(int interval, uint64_t set_ns) { (void)interval; (void)set_ns; }   // 按目标帧率分段的「分时」只在回放核心（rp_present.c）
 void nvn_be_present_prepare(const tex_t *t) { (void)t; }
 
 // provider_vk.c 提供：会话激活早于窗口就绪时，这里再向 WSI lease 要一次窗口；窗口换代/

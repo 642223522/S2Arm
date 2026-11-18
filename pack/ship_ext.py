@@ -16,6 +16,7 @@
   ship_ext.py container-drop --base <已有容器 App> --game <游戏号> --out <新 App 路径>   从容器摘掉一款（其余各款逐字节不变，不换壳）
   ship_ext.py container --shell <壳目录> --out <新 App 路径> [--base <已有容器 App>] --game <产物根> [--game …] --bundle-id <包名> --icon <图标>
               [--display-name S2Arm] [--sign none|adhoc|dev] [--team <团队>]
+  ship_ext.py container --shell-only --shell <壳目录> --out <新 App 路径> --bundle-id <包名> --icon <图标> …   只有壳（通用壳，不带任何一款）
          多款容器（布局见「多款容器」段）：每款随行表进 Games/<游戏号>/、镜像包写成 Frameworks/S2AImages-<游戏号>.dylib，生成 s2a_catalogue.json，
          整包统一签名；--base 给已有容器 = 加一款 / 换一款，其余各款原样带过来。地址窗口需求不在组装期算（宿主构造期对包内各款自己算、取最大，runtime/src/vawin.c），
          组装期只核各款 NPDM 地址空间类型一致（与宿主同一判据），全程纯 Python、Windows / Mac 同一份
@@ -166,15 +167,21 @@ def cmd_shell(a):
 
 
 def shell_checked(shell_dir):
-    """壳目录 → (壳 root, 随包表, 壳编号)：逐文件核壳、要求壳编号 = 本打包器源码算出的编号（不配套报红）"""
+    """壳目录 → (壳 root, 随包表, 壳编号)：逐文件核壳、核壳编号 = 本打包器源码算出的编号。
+    维护者 11-17：校验不过不再整个拒绝——被改 / 缺失 / 多出、壳编号不配套都只黄字提示、照常组装（缺的文件到用时自己报真原因）；
+    清单本身读不了（ShellError 非 Mismatch）才报红。返回的壳编号取这份壳清单自己写的（容器目录记的是真正用的那份壳）"""
     shell_dir = Path(shell_dir); shell, man = shell_dir / "root", shell_dir / "manifest.json"
     try:
-        shell_manifest.verify(shell, man)   # 逐文件重算：被改 / 缺失 / 多出点名
-        need = shell_manifest.current_id()
-        shell_manifest.require(man, need)   # 壳与本打包器同一提交 / 链号 / iOS 最低版本，不配套就停
-    except Exception as e:   # noqa: BLE001 —— ShellError 等，统一报红
+        sid = shell_manifest.load(man)["details"]["shellId"]
+    except Exception as e:   # noqa: BLE001 —— 清单读不了 / 不合法：核不下去
         red(f"壳 {shell_dir} 不能用：{e}")
-    return shell, [t for t in (shell / TABLES).read_text(encoding="utf-8").split("\n") if t], need
+    for check in (lambda: shell_manifest.verify(shell, man),   # 逐文件重算：被改 / 缺失 / 多出点名
+                  lambda: shell_manifest.require(man, shell_manifest.current_id())):   # 壳与本打包器同一提交 / 链号 / iOS 最低版本
+        try:
+            check()
+        except shell_manifest.Mismatch as e:
+            print(f"🟡 壳 {shell_dir} 校验不过，照常继续组装：{e}", file=sys.stderr)
+    return shell, [t for t in (shell / TABLES).read_text(encoding="utf-8").split("\n") if t], sid
 
 
 def shell_chain(shell_dir):
@@ -371,6 +378,15 @@ def cmd_program(a):
         place_game(root, tmp / GAMES / gid, tmp / program_image(gid), tables)
         if (root / "icon.jpg").is_file():   # 游戏库卡片图标（同容器 Games/<游戏号>/icon.jpg）：游戏库改由各款 program/catalogue.json 拼时从这里取
             shutil.copyfile(root / "icon.jpg", tmp / GAMES / gid / "icon.jpg")
+        if a.banner and Path(a.banner).is_file():   # 游戏库横版封面（游戏库那份，组装不联网；同容器 _place_banner 的 --banner）：只有壳的容器不带各款，横图随程序包走
+            shutil.copyfile(a.banner, tmp / GAMES / gid / "banner.jpg")
+        # 存档游戏身份（同容器，核过才放）：程序包款宿主按模块目录 = program/Games/<号>/ 读它（ios/save_transfer.m），11-17 与 iOS 加载侧定随程序包走
+        si = root / "save-identity.json"
+        if si.is_file():
+            r = subprocess.run([sys.executable, str(HERE / "save_identity.py"), "--check", str(si), "--output", str(tmp / GAMES / gid / "save-identity.json")],
+                               capture_output=True, text=True)
+            if r.returncode:
+                red(f"{gid} 存档游戏身份校验失败：{(r.stderr or r.stdout).strip()[-200:]}")
         os.replace(tmp, out)
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -387,7 +403,9 @@ def cmd_container(a):
     roots = [Path(r) for r in a.game]
     banners = {k.upper(): Path(v) for k, _, v in (b.partition("=") for b in a.banner) if v}
     compat = dict(host_abi=a.host_abi, chain=shell_chain(a.shell))
-    if not roots:
+    if a.shell_only and (roots or a.base):
+        red("--shell-only 只装壳：不带 --game / --base")
+    if not roots and not a.shell_only:
         red("至少给一款 --game <产物根>")
     if a.sign == "dev" and not a.team:
         red("开发直签要 --team")
@@ -440,7 +458,7 @@ def cmd_container(a):
                 games.append(e)
             else:
                 games[at] = e
-        if len(set(kinds.values())) != 1:   # 宿主构造期同一判据报红不占窗口（vawin.c s2a_window_container_need）：组装期先拒，不出起不了局的包
+        if not a.shell_only and len(set(kinds.values())) != 1:   # 宿主构造期同一判据报红不占窗口（vawin.c s2a_window_container_need）：组装期先拒，不出起不了局的包
             red("各款 NPDM 地址空间类型不一致，装不进同一个窗口：" + "、".join(f"{g} 类型 {t}" for g, t in sorted(kinds.items())))
         app = app_bundle.assemble(shell, work / "S2Arm.app", bundle_id=a.bundle_id, display_name=a.display_name, icon=a.icon,
                                   metadata={**({"CFBundleShortVersionString": a.version} if a.version else {}),
@@ -471,6 +489,9 @@ def cmd_container(a):
         os.replace(app, out)
     finally:
         shutil.rmtree(work, ignore_errors=True)
+    if a.shell_only:
+        print(f"🟢 只有壳的容器 {out}（不带任何一款；各款程序包另推进手机 program/），签名 {a.sign}")
+        return
     print(f"🟢 多款容器 {out}：{len(games)} 款（{' '.join(e['title_id'] for e in games)}；本次组装 {len(new)} 款），地址空间类型 {next(iter(kinds.values()))}，签名 {a.sign}")
 
 
@@ -508,6 +529,7 @@ def main():
     b.add_argument("--set", action="append", default=[])
     c = sub.add_parser("container"); c.add_argument("--shell", required=True); c.add_argument("--out", required=True); c.add_argument("--base"); c.add_argument("--custom")
     c.add_argument("--game", action="append", default=[]); c.add_argument("--bundle-id", required=True); c.add_argument("--icon", required=True)
+    c.add_argument("--shell-only", action="store_true", help="通用壳（0.6.0）：只装壳，s2a_catalogue.json 的 games 为空，不带任何一款的 Games/ 与 S2AImages-*（各款程序包另推进手机 program/）")
     c.add_argument("--banner", action="append", default=[], help="游戏号=横图路径（游戏库那份；组装不联网）")
     c.add_argument("--version", default="", help="写进 Info.plist CFBundleShortVersionString 的发版号（同电脑上的 S2Arm）")
     c.add_argument("--display-version", default="", help="写进 Info.plist S2ADisplayVersion 的界面版本字（pack/jobs/core.py display_version）")
@@ -518,6 +540,7 @@ def main():
     g = sub.add_parser("sign"); g.add_argument("--app", required=True); g.add_argument("--sign", choices=("none", "adhoc", "dev"), required=True)
     g.add_argument("--bundle-id", default=""); g.add_argument("--team", default="")
     q = sub.add_parser("program"); q.add_argument("--shell", required=True); q.add_argument("--root", required=True); q.add_argument("--out", required=True)
+    q.add_argument("--banner", help="横版封面路径（游戏库那份）：拷进 Games/<游戏号>/banner.jpg")
     a = ap.parse_args()
     {"shell": cmd_shell, "build": cmd_build, "container": cmd_container, "container-drop": cmd_container_drop, "program": cmd_program,
      "sign": lambda a: sign_app(Path(a.app), a.sign, a.bundle_id, a.team)}[a.cmd](a)

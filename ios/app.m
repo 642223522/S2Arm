@@ -311,6 +311,7 @@ static const char *host_text(const char *s) {
         {S2A_INIT_FAIL_MSG_GAME, S2A_INIT_FAIL_MSG_GAME_EN}, {S2A_INIT_FAIL_MSG_GENERIC, S2A_INIT_FAIL_MSG_GENERIC_EN},
         {S2A_INIT_FAIL_MSG_FILES, S2A_INIT_FAIL_MSG_FILES_EN}, {S2A_INIT_FAIL_NEXT, S2A_INIT_FAIL_NEXT_EN},
         {S2A_INIT_FAIL_MSG_DEVICE, S2A_INIT_FAIL_MSG_DEVICE_EN},   // #446 设备地址空间 / 内存不够
+        {S2A_INIT_FAIL_MSG_HEAP, S2A_INIT_FAIL_MSG_HEAP_EN},       // D-NGH9 普通堆不够、已记下，再点一次开始
         {S2A_INIT_FAIL_MSG_SHADERS, S2A_INIT_FAIL_MSG_SHADERS_EN},   // direct_lib_missing：电脑装 / 自签导入两条路各说一句
     };
     if (!s || s2a_l10n_zh()) return s;
@@ -898,6 +899,32 @@ static void crash_auto_off(const char *gid) {
     LOG("崩溃恢复：%s 上一局开着 %s 时死在前台，这一局启动前已关掉（玩家可在设置里再开）", gid, names.UTF8String);
     { void s2a_diag_note_crash_off(NSString *); s2a_diag_note_crash_off(names); }   // 进游戏后诊断询问（diag.m，上次死在前台必问）一并说，不另弹横幅
 }
+// ---------- 0.6.0 快照：游戏库长按卡片「回到上次存下的这一刻」 ----------
+// 有没有：开关关着（起局不带存档开关）一律 0（菜单里就没有这一项）；开着时看这款快照目录里有没有完整清单
+static void *g_snap_play_ctx;
+int s2a_shell_snapshot_available(const char *gid) {
+    int s2a_snap_saving(void), s2a_snap_dir_for(const char *, char *, size_t), s2a_snap_exists(const char *);
+    char d[2048]; return gid && *gid && s2a_snap_saving() && !s2a_snap_dir_for(gid, d, sizeof d) && s2a_snap_exists(d);
+}
+static void library_play(const char *gid, void *ctx);
+static void snap_library_go(NSString *gid, NSString *dir, BOOL rollback) {
+    setenv("S2A_SNAP_RESTORE", dir.fileSystemRepresentation, 1);   // 起局（host_run）时读：核对 → 起服务层 → 按快照恢复，不从头起游戏
+    if (rollback) setenv("S2A_SNAP_SAVE_ROLLBACK", "1", 1); else unsetenv("S2A_SNAP_SAVE_ROLLBACK");
+    LOG("游戏库：%s 回到上次存下的这一刻（%s）", gid.UTF8String, rollback ? "玩家确认退回存档" : "存档没变过");
+    library_play(gid.UTF8String, g_snap_play_ctx);
+}
+void s2a_shell_restore_snapshot(const char *gid) {   // 主线程
+    int s2a_snap_dir_for(const char *, char *, size_t), s2a_snap_exists(const char *), s2a_snap_save_changed(const char *);
+    char d[2048]; if (!gid || !*gid || !g_snap_play_ctx || s2a_snap_dir_for(gid, d, sizeof d) || !s2a_snap_exists(d)) return;
+    NSString *g = @(gid), *dir = @(d);
+    // 存快照之后游戏又存过档：回去会把游戏存档退回那一刻——先问（当前存档会先整棵备份）；没变过直接回
+    if (s2a_snap_save_changed(d) != 1) { snap_library_go(g, dir, NO); return; }
+    S2ASceneDelegate *sd = (__bridge S2ASceneDelegate *)g_snap_play_ctx;
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:S2AL(@"vpad.snap.saveChanged.title") message:S2AL(@"vpad.snap.saveChanged.body") preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.cancel") style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"vpad.snap.saveChanged.go") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *x) { snap_library_go(g, dir, YES); }]];
+    UIViewController *p = sd.window.rootViewController; while (p.presentedViewController) p = p.presentedViewController; [p presentViewController:a animated:YES completion:nil];
+}
 static void library_play(const char *gid, void *ctx) {   // 主线程（s2a_shell.h 约定）
     S2ASceneDelegate *sd = (__bridge S2ASceneDelegate *)ctx;
     if (!atomic_load(&g_game_picked)) crash_auto_off(gid);
@@ -974,7 +1001,7 @@ int s2a_shell_game_needs_host_update(const char *gid) {
 }
 // 库里后台解开传完的那款（装机阶段 2，s2a_shell.h）：同一条 s2a_pack_apply（解包日志、.applied、清旧文件都同起局闸门），同时只解一款；
 //   解的时候关自动锁屏（锁屏 = 挂起 = 解包停住），进度经 s2a_pack_apply_progress 记下给库画蒙版，解完回主线程让库重判
-int s2a_pack_apply(const char *docs); extern void (*s2a_pack_apply_progress)(int done, int total); const char *s2a_pack_apply_failure(void); const char *s2a_pack_apply_code(void);   // pack_apply.c
+unsigned s2a_pack_repair_tree(const char *dir); int s2a_pack_apply(const char *docs); extern void (*s2a_pack_apply_progress)(int done, int total); const char *s2a_pack_apply_failure(void); const char *s2a_pack_apply_code(void);   // pack_apply.c
 // 装机 / 导入失败按码说人话（11-11 维护者：原文和码只进诊断，不上屏）：码表 launchers/shared/experience.v1.json errors.items，
 //   「标题 + 下一步」由 launchers/shared/experience_strings.py 出包时生成进包里的 S2ArmHost.strings（键 error.<码>.title / .next，仓库表里不放）。
 //   规格里查不到的码一律按 ios_install_unknown（键是拼出来的，不走 S2AL 字面量）
@@ -1097,6 +1124,7 @@ static void library_pack_help_show(NSString *gid, BOOL again, int st);
 int s2a_img_scan(const char *proc_docs);   // pack_apply.c
 const char *s2a_img_scan_failure(void); const char *s2a_img_scan_code(void);   // pack_apply.c：最近一次认领失败的原因 / 码（空串 = 没失败）
 const char *s2a_img_scan_noshaders(void);   // pack_apply.c：这次认领里不带着色器库的文件名（空串 = 没有）
+const char *s2a_img_scan_skipped(void);   // pack_apply.c：这次扫描跳过的着色器更新包（和当前游戏版本不配套）文件名（空串 = 没有）
 static int img_scan_now(void) {   // 后台线程
     if (atomic_load(&g_game_picked)) return 0;
     char d[1024]; s2a_container_docs(d, sizeof d); int n = s2a_img_scan(d);
@@ -1114,6 +1142,16 @@ static void img_scan_report(void) {   // 主线程
           [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.gotIt") style:UIAlertActionStyleCancel handler:nil]];
           [lib_top() presentViewController:a animated:YES completion:nil];
           return;   // 一次只弹一个；认领失败的那句下次回前台再说
+      } }
+    // 着色器更新包和当前游戏版本不配套（维护者 11-17：替玩家判，不套用、不报错）：说一句已跳过，游戏照常玩（同一个文件只说一次）
+    { static char told[256]; const char *f = s2a_img_scan_skipped();
+      if (f && *f && strcmp(f, told) && g_lib_window) {
+          strlcpy(told, f, sizeof told);
+          UIAlertController *a = [UIAlertController alertControllerWithTitle:S2AL(@"img.updateSkipped.title")
+              message:[NSString stringWithFormat:S2AL(@"img.updateSkipped.body"), @(f)] preferredStyle:UIAlertControllerStyleAlert];
+          [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.gotIt") style:UIAlertActionStyleCancel handler:nil]];
+          [lib_top() presentViewController:a animated:YES completion:nil];
+          return;
       } }
     static char shown[600]; const char *why = s2a_img_scan_failure();
     if (!why || !*why || !strcmp(why, shown) || !g_lib_window) return;
@@ -1161,6 +1199,9 @@ static void img_scan_bg(void) {
         static atomic_int checked; int r = 0;
         if (!atomic_exchange(&checked, 1) && !atomic_load(&g_game_picked)) { char d[1024]; s2a_container_docs(d, sizeof d);
             char line[1600]; uint64_t fb = 0; if (s2a_foreign_scan(NSHomeDirectory().fileSystemRepresentation, &fb, line, sizeof line)) { LOG("【黄】%s", line); g_foreign_bytes = fb; r = 1; }
+            { unsigned fixed = s2a_pack_repair_tree(d);   // 先补 App 自己名下缺写权限的目录 / 文件（D-A76N），电脑端下一次推送就写得进
+              NSString *lib = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/S2Arm"]; fixed += s2a_pack_repair_tree(lib.fileSystemRepresentation);
+              if (fixed) LOG("启动：%u 个目录 / 文件是 App 自己的但缺写权限，已补回属主读写（D-A76N）", fixed); }
             pack_layout_prepare(d);
             int gc = s2a_program_gc(NSHomeDirectory().fileSystemRepresentation, time(NULL));   // 程序包旧版本目录（电脑端换上新版后留下的、推断了的）：启动时清，一进程一次
             if (gc) LOG("程序包清理：本次启动清掉 %d 项", gc); }
@@ -1222,7 +1263,27 @@ static void cloud_sync_done(void *ctx) {
 // 主屏小组件点封面（s2arm://play/<游戏号>，11-16 维护者：小组件进 0.5.0；Info.plist 的 CFBundleURLTypes 见 runtime/build.mk）：
 //   游戏库还开着 → 同玩家点「开始」（library_play：崩溃恢复 → 起局前检查 → 起宿主；资源不在手机上的款照常说明为什么开不了）；
 //   这一进程已经在玩（一进程一款）→ 只把 App 拉到前台，不弹「再开一款」的提示
+// 小游戏包 .s2arm（0.6.0 通用壳，电脑「导出」出的两件套之一）：从「文件」或别的 App 用 S2Arm 打开（Info.plist 的文档类型见 runtime/build.mk）→
+//   后台导入这一款（pack_apply.c s2a_s2arm_import：程序进 program/、派生件进 资源包/），导好刷新游戏库；game.img 照常放「放这里导入」认领。
+//   系统拷进 Documents/Inbox 的那份导完删掉；原地打开的（别处的原文件）不动。失败按码说人话（同导入文件夹认领失败）
+int s2a_s2arm_import(const char *proc_docs, const char *src, char *gid_out, size_t gid_n); const char *s2a_s2arm_import_code(void);   // pack_apply.c
+static void s2arm_open(NSURL *url) {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        BOOL scoped = [url startAccessingSecurityScopedResource];
+        char d[1024], gid[17] = ""; s2a_container_docs(d, sizeof d);
+        int r = s2a_s2arm_import(d, url.fileSystemRepresentation, gid, sizeof gid);
+        NSString *code = r < 0 ? @(s2a_s2arm_import_code()) : nil;
+        if (scoped) [url stopAccessingSecurityScopedResource];
+        if (!r && [url.path containsString:@"/Documents/Inbox/"]) [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+        LOG(".s2arm 打开：%s → %s", url.lastPathComponent.UTF8String, !r ? gid : r > 0 ? "还没拷完，稍后再打开一次" : code.UTF8String);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!r) { if (s2a_shell_refresh) s2a_shell_refresh(); return; }
+            if (r < 0 && g_lib_window) top_alert(g_lib_window, S2AL(@"img.scanFailed.title"), install_error_text(code.UTF8String));
+        });
+    });
+}
 static void widget_open(NSURL *url, void *ctx) {
+    if (url.isFileURL && [url.pathExtension.lowercaseString isEqualToString:@"s2arm"]) { s2arm_open(url); return; }
     if (!url || ![url.scheme isEqualToString:@"s2arm"] || ![url.host isEqualToString:@"play"]) return;
     NSString *gid = url.lastPathComponent.uppercaseString;
     if (gid.length != 16 || [gid rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"0123456789ABCDEF"].invertedSet].location != NSNotFound) {
@@ -1248,6 +1309,7 @@ static void widget_open(NSURL *url, void *ctx) {
     }
     NSString *cat = [@(s2a_launch_ctx_bundle_dir()) stringByAppendingPathComponent:@"s2a_catalogue.json"];
     s2a_shell_set_play_handler(library_play, (__bridge void *)self);
+    g_snap_play_ctx = (__bridge void *)self;   // 快照：游戏库「回到上次存下的这一刻」走同一条起局路
     g_lib_window = self.window;
     self.window.rootViewController = (__bridge_transfer UIViewController *)s2a_shell_library_vc(cat.fileSystemRepresentation);
     LOG("游戏库：已挂库界面（清单 %s）%s", cat.UTF8String, s2a_process_prewarmed() ? "，预热进程只显示库、不起宿主" : "");
@@ -1285,7 +1347,12 @@ static void widget_open(NSURL *url, void *ctx) {
     self.window = [[UIWindow alloc] initWithWindowScene:ws];
     if (s2a_launch_ctx_container() && !atomic_load(&g_game_picked)) {   // 多款容器：先出游戏库，不建游戏界面、不挂加载页
         [self showLibrary];
+#if TARGET_OS_TV
+        // 电视上的焦点 / 遥控器只送给 key window；iOS 那套「窗口只显示、不成为 key」不适用（否则画面可见但遥控器完全进不来）
+        [self.window makeKeyAndVisible];
+#else
         { const char *e = getenv("S2A_NO_KEY_WINDOW"); if (e && !strcmp(e, "0")) [self.window makeKeyAndVisible]; else self.window.hidden = NO; }
+#endif
         { NSURL *u = options.URLContexts.anyObject.URL; S2ASceneDelegate *sd = self;   // 冷启动是点主屏小组件来的：库界面挂上后再开（同点「开始」）
           if (u) dispatch_async(dispatch_get_main_queue(), ^{ widget_open(u, (__bridge void *)sd); }); }
         LOG("iOS 壳：窗口已建 %.0fx%.0f（场景，多款容器游戏库）", self.window.bounds.size.width, self.window.bounds.size.height);
@@ -1298,7 +1365,11 @@ static void widget_open(NSURL *url, void *ctx) {
     // 窗口只显示、不成为 key 窗口（缺省；S2A_NO_KEY_WINDOW=0 回到 makeKeyAndVisible）。10-26 测试设备2 全量系统日志：游戏模式开局弹游戏浮层，浮层收起后键盘事件转发目标回到
     //   我们 key 窗口所在的场景，UIKit 重建键盘代理、拉起听写（AFDictationConnection）查网络，包名禁网即弹「无线数据」框。触摸按落点分发、手柄走 GameController，都不靠 key 窗口
     //   10-26 测试设备1 同包对位：不成为 key 的两局浮层照出、App 进程听写 / 网络检测 0 行；对照局 3 行
+#if TARGET_OS_TV
+    [self.window makeKeyAndVisible];   // 电视焦点 / 遥控器只送给 key window
+#else
     { const char *e = getenv("S2A_NO_KEY_WINDOW"); if (e && !strcmp(e, "0")) [self.window makeKeyAndVisible]; else { self.window.hidden = NO; LOG("iOS 壳：窗口只显示、不成为 key 窗口"); } }
+#endif
     note_build();
     if (g_help_args) help_build(g_help_args[0], g_help_args[1], g_help_args[2]);
     dguard_show_pending();
@@ -1372,7 +1443,10 @@ static void widget_open(NSURL *url, void *ctx) {
     if (!entry) return;   // 先领取，再启动；后续激活只走现有恢复路径
     { void s2a_ios_test_save_op(void); s2a_ios_test_save_op(); }   // 测试开关 S2A_TEST_SAVE_OP（ios/save_transfer.m）：游戏已选定、宿主还没起，导出 / 导回一次存档
     int inputError = s2a_ios_input_config_load();
-    if (inputError) { LOG("【红】iOS 输入配置损坏，拒绝启动（%d: %s）", inputError, s2a_input_config_error_message(inputError)); exit(2); }
+    if (inputError) {   // 11-17 维护者：校验不过不再拒启。默认键位照常起，横幅点名原因（这条只在开发 / 自动化起局设了 S2A_INPUT_CONFIG 时出现）
+        LOG("【黄】iOS 输入配置读不懂（%d: %s），这局用默认键位照常启动", inputError, s2a_input_config_error_message(inputError));
+        s2a_dprompt_notice(S2AL(@"dprompt.input.bad.title"), [NSString stringWithFormat:S2AL(@"dprompt.input.bad.body"), @(s2a_input_config_error_message(inputError))], 3, 12);
+    }
     s2a_log_session_start();
     BOOT_MARK("预热 → 场景激活");
     { uint64_t base, size; s2a_window_get(&base, &size);

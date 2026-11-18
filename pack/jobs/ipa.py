@@ -169,12 +169,13 @@ def bundled_shell(c):
         raise Failure("应用自带的预编壳缺失，请重新安装完整的 S2Arm。", code="tool_missing")
     # 壳和引擎必须是同一版（#1043：0.3.9 → 0.3.10 应用内更新回滚不完整，Engine/engine.json 是新壳号、Shell/manifest.json 还是旧的，
     #   出包到 ship_ext 核壳编号才挂、原因看不懂）。两边都写了壳号且对不上 = 这份 S2Arm 只装了一半：开头就说清、给出路
+    #   维护者 11-17：校验不过不再整个拒绝——黄字说清、照常出包（ship_ext 核壳同样只提示），出包 / 起局真失败时这条诊断还在结果里
     want = (read(Path(c.engine) / "engine.json", {}) or {}).get("shellId")
     have = ((read(d / "manifest.json", {}) or {}).get("details") or {}).get("shellId")
     if want and have and want != have:
-        raise Failure("这份 S2Arm 没装完整：程序的两部分来自不同版本（多半是应用内更新中途失败、回滚没退干净）。"
-                      "请从发布页下载最新的安装包，覆盖安装一次（游戏库、存档、密钥都在别处，不受影响），再出包。",
-                      code="engine_incomplete", internal=f"引擎要的壳 {want}，应用自带的壳 {have}（{d}）")  # 非玩家句
+        c.diagnostic("这份 S2Arm 没装完整：程序的两部分来自不同版本（多半是应用内更新中途失败、回滚没退干净）。"
+                     "这次照常出包；出包失败或游戏起不来时，请从发布页下载最新的安装包，覆盖安装一次（游戏库、存档、密钥都在别处，不受影响）。",
+                     code="engine_incomplete", severity="warning", internal=f"引擎要的壳 {want}，应用自带的壳 {have}（{d}）")  # 非玩家句（internal）
     return d
 
 
@@ -407,7 +408,9 @@ def _build(c):
     if early:   # 打完放进容器装到这台：早装推过的不再推，push_pack 按机上已解开的清单只补差量（着色器库 + 变了的小文件）
         import install as inst
         c.begin("装到 iPhone 并补推资源包（出包期间已先推 %d 个文件）" % pre.get("files", 0))
-        done = inst.put_game(c, gid, inst.MacPhone(c, early.team, early.dev, early.udid), steps=False)
+        import program_pack
+        ph = inst.MacPhone(c, early.team, early.dev, early.udid)
+        done = (inst.push_game if program_pack.enabled(c) else inst.put_game)(c, gid, ph, steps=False)   # 通用壳（缺省关）：只推这一款，不装壳
         shutil.rmtree(early.dir, ignore_errors=True)
         result.update(done, outputPath=str(image), packFiles=done["packFiles"] + pre.get("files", 0), packBytes=done["packBytes"] + pre.get("bytes", 0), earlyPack=pre)
     lib_ipa = refresh_library_ipa(c)
@@ -462,10 +465,15 @@ PROGRAM_LOCK_WAIT_S, PHONE_LOCK_WAIT_S = 1800, 7200
 
 @contextlib.contextmanager
 def program_locks(c, games):
+    from core import trace
+    want = sorted({str(g).upper() for g in games if g})
     with contextlib.ExitStack() as stack:
-        for g in sorted({str(g).upper() for g in games if g}):
+        for g in want:
+            trace(c, f"拿程序锁 {g}…")
             stack.enter_context(c.lock("program-" + g, wait=PROGRAM_LOCK_WAIT_S))
+            trace(c, f"拿到程序锁 {g}")
         yield
+        if want: trace(c, "放程序锁 " + " ".join(want))  # 非玩家句
 
 
 def phone_lock(c):
@@ -500,6 +508,8 @@ def deliver(c, gid, root, pack_dir, ipa):
         raise Failure(f"资源包缺清单或清单没有 index_sha256（{pack_dir}）：请重新打 iPhone 包。", code="package_failed")
     with program_locks(c, [gid]):   # 换资源包 + 记 ios：装机正在推 / 读这款时等它那段做完
         _swap_pack(c, gid, pack_dir, want)
+    import onerom   # 一款一份资源（0.6.0）：这款也有 Mac 版、RomFS 是同一份 → Mac 运行版本改链到这份 game.img、删掉它的 romfs.std（出包本来就在等，玩家不多等）
+    onerom.note(c, gid, onerom.dedupe(c, gid))
     Path(ipa).unlink(missing_ok=True)
 
 
@@ -523,7 +533,7 @@ def _swap_pack(c, gid, pack_dir, want):
     compat = host_update.engine_compat(c) or {}
     from rewrite_refresh import rewriter_id   # 这次的改写产物出自哪版改写器：改写器以后修了，更新手机时只核记号不同的款（rewrite_refresh.py）
     from sgrade_bf import BF_GEN   # 这次的直连库出自本引擎翻译器：可读瓦片版代数（S 级升级按它判要不要补 _bf，pack/jobs/sgrade_bf.py）
-    layout.update_info(c, gid, ios=dict(shellId=current_shell_id(c), pack=want, rewriterId=rewriter_id(c), bfGen=BF_GEN, **compat))
+    layout.update_info(c, gid, ios=dict(shellId=current_shell_id(c), pack=want, rewriterId=rewriter_id(c), bfGen=BF_GEN, builtBy=host_update.built_by(c), **compat))
 
 
 CONSUME_MARK = ".img_consume_inflight"   # 出包工作目录里：写 IMG 正在边写边删产物根 RomFS（#746），写成功才删
@@ -759,6 +769,8 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None, agreed=None)
     # 横图取游戏库那份（导入时作业层抓好，library.store_meta）：组装不联网，Mac / iPhone / Windows 读同一份
     banners = {g: layout.path(c, g, "banner.jpg", create=False) for g in roots}
     banner_args = [x for g, b in banners.items() if b.is_file() for x in ("--banner", f"{g}={b}")]
+    from core import trace
+    trace(c, f"组容器开始：{len(roots)} 款（{' '.join(sorted(roots))}）")
     try:
         c.run([os.sys.executable, "-X", "utf8", "-B", c.engine / "pack/ship_ext.py", "container", "--shell", shell, "--out", app, "--bundle-id", CONTAINER_BUNDLE,
                "--icon", icon, "--sign", "none", "--custom", out / "custom.json", "--host-abi", str(host_update.HOST_ABI),
@@ -771,14 +783,55 @@ def assemble(c, gid, others=(), *, failed=(), root=None, dest=None, agreed=None)
         raise
     finish_container(c, app, log)
     write_container_ipa(c, app, ipa, log)
+    trace(c, "组容器结束")
     games = [g["title_id"] for g in json.loads((app / "s2a_catalogue.json").read_text(encoding="utf-8"))["games"]]
-    if gid and gid not in games:
-        # 程序文件（main.npdm 的程序号）和游戏包（导入时 CNMT 的发行号）对不上：游戏文件被改过、或混进了别的游戏的程序
-        #   （玩家实报：把别的游戏的程序换进了这款的包里）。设备侧目录按程序号，放过去就推错地方，这道核对保留，只把原因说清
-        raise Failure(f"这款游戏的程序文件和游戏包对不上（程序里是 {' '.join(games)}，游戏包是 {gid}），可能是游戏文件被改过或混了别的游戏。请用原版游戏文件重新导入。",
-                      code="game_files_mismatch")
+    title_mismatch(c, gid, others, games)
     shutil.rmtree(app, ignore_errors=True)
     return ipa, games, sid
+
+
+def title_mismatch(c, gid, others, games):
+    """程序文件（main.npdm 的程序号）和游戏包（导入时 CNMT 的发行号）对不上：游戏文件被改过、或混进了别的游戏的程序（玩家实报）。
+    维护者 11-17（玩家自己判断不了的我们替他判，不拦）：设备侧目录按程序号，容器里多出来的程序号恰好一个 → 就是这款，资源包推到程序号的位置
+    （记进 c.title_alias，取资源包时 library_id 换回游戏包号），发一条 warning 说清，不再拒绝。认不出是哪个（没多出或多出不止一个）才停"""
+    if not gid or gid in games:
+        return
+    expected = {g.upper() for g in [gid, *others] if g}
+    extra = [g for g in games if g.upper() not in expected]
+    if len(extra) != 1:
+        raise Failure(f"这款游戏的程序文件和游戏包对不上（程序里是 {' '.join(games)}，游戏包是 {gid}），可能是游戏文件被改过或混了别的游戏。请用原版游戏文件重新导入。",
+                      code="game_files_mismatch")
+    c.title_alias = dict(getattr(c, "title_alias", {}) or {}, **{extra[0]: gid})
+    c.diagnostic(f"这款游戏的程序号（{extra[0]}）和游戏包（{gid}）对不上，多半是游戏文件被改过；已按程序号放进设备，照常安装。玩不了时请用原版游戏文件重新导入。",
+                 code="game_files_mismatch", severity="warning")
+
+
+def library_id(c, g):
+    """容器里的程序号 → 游戏库里这款的游戏号（title_mismatch 记过的换回去，其余原样）"""
+    return (getattr(c, "title_alias", {}) or {}).get(g, g)
+
+
+def assemble_shell(c, *, dest=None):
+    """通用壳（pack/jobs/program_pack.enabled，0.6.0）：只有壳的容器——本版 iPhone 壳，s2a_catalogue.json 的 games 为空，不带任何一款（各款程序包由
+    「推到 iPhone」另推进手机 program/，install.push_game）。出 S2Arm.app + S2Arm.ipa 到 dest（缺省游戏库同盘临时目录）。→ (ipa, [], 壳号)；签名同 assemble"""
+    import host_update
+    sid = current_shell_id(c)
+    shell = container_shell(c, sid)
+    icon = c.engine / "launchers/macos/Branding/AppIcon-iOS.png"
+    if not icon.is_file():
+        raise Failure("这个 S2Arm 安装包不完整（缺应用图标），请重新下载 S2Arm。", code="engine_incomplete")
+    out = Path(dest) if dest else Path(tempfile.mkdtemp(prefix=".container-", dir=c.library))
+    out.mkdir(parents=True, exist_ok=True)
+    app, ipa = out / "S2Arm.app", out / "S2Arm.ipa"
+    log = c.logs / (c.task + "-container.log")
+    shutil.rmtree(app, ignore_errors=True)
+    c.run([os.sys.executable, "-X", "utf8", "-B", c.engine / "pack/ship_ext.py", "container", "--shell-only", "--shell", shell, "--out", app,
+           "--bundle-id", CONTAINER_BUNDLE, "--icon", icon, "--sign", "none", "--host-abi", str(host_update.HOST_ABI),
+           "--version", release_version(c.engine), "--display-version", display_version(c.engine)], log, c.env())
+    finish_container(c, app, log)
+    write_container_ipa(c, app, ipa, log)
+    shutil.rmtree(app, ignore_errors=True)
+    return ipa, [], sid
 
 
 def ipa_games(ipa):

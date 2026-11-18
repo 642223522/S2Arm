@@ -118,3 +118,21 @@ class BuildTests(JobCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HeapLearned(unittest.TestCase):
+    """D-NGH9：Mac 局非零退出时，这一局（起局时刻之后）运行时写过 <文档根>/wire/<程序号>/heap_need → 按「需要更多内存、已记下」报（game_heap_learned）。期望手写"""
+    def test_heap_learned_now(self):
+        import build, os, tempfile, time
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as t:
+            p = Path(t) / "wire" / "0100ABCD00000000" / "heap_need"
+            env = {"S2A_DOCS": t}
+            self.assertFalse(build.heap_learned_now(env, "0100abcd00000000", time.time()), "没有记录")
+            p.parent.mkdir(parents=True); p.write_text("3292528640\n")
+            now = time.time()
+            os.utime(p, (now, now))
+            self.assertTrue(build.heap_learned_now(env, "0100abcd00000000", now - 5), "这一局写的")
+            os.utime(p, (now - 3600, now - 3600))
+            self.assertFalse(build.heap_learned_now(env, "0100abcd00000000", now - 5), "上一局留下的旧记录不算")
+            self.assertFalse(build.heap_learned_now({}, "0100abcd00000000", 0), "没有文档根")

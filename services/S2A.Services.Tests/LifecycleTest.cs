@@ -4,7 +4,7 @@ namespace S2A.Services.Tests
 {
     // 前后台 / 焦点 / 底座 / 睡眠（缺口扫描族 1 / 2，11-01 体验线）：走真实 IPC 看游戏收到什么。期望按 am / psc 语义手写：
     //   ① 游戏 SetOutOfFocusSuspendingEnabled(false) → 原生层收到 0（平台壳据此不冻结）
-    //   ② 平台壳报失焦 → 游戏 ReceiveMessage 读到 FocusStateChanged(15)、GetCurrentFocusState = OutOfFocus(2)；回前台 → 15 + ChangeIntoForeground(1)、InFocus(1)
+    //   ② 平台壳报失焦 → 游戏 ReceiveMessage 读到 FocusStateChanged(15)、GetCurrentFocusState = OutOfFocus(2)；回前台 → 只有 15、InFocus(1)（应用程序不收 ChangeIntoForeground，Eden lifecycle_manager）
     //   ③ 平台壳切主机 → OperationModeChanged(30) + PerformanceModeChanged(31)；游戏先关了操作模式通知 → 只有 31
     //   ④ psc:m 模块初始化后 GetRequest = FullAwake(0)；平台壳报睡眠 → 事件点亮、GetRequest = SleepReady(2)；Acknowledge 后回 FullAwake
     //   ⑤⑥⑦ 焦点处理模式（P2-37）：第一个标志关通知、第三个标志与失焦暂停合成 am 的三种模式（参照 libnx appletSetFocusHandlingMode 与 yuzu 系 LifecycleManager）
@@ -42,7 +42,7 @@ namespace S2A.Services.Tests
                 return string.Join(",", got);
             }
             byte Focus() => *Domain(Msg.Cmif(9), common).Data;      // GetCurrentFocusState
-            Drain();   // 起局时的 InFocus + ChangeIntoForeground
+            Drain();   // 起局时的焦点消息
 
             Domain(Msg.Cmif(16, Bytes((byte)0)), self);            // SetOutOfFocusSuspendingEnabled(false)
             Check("① 游戏关失焦暂停 → 原生层收到", "0", $"{_lcSuspendSeen}");
@@ -50,7 +50,7 @@ namespace S2A.Services.Tests
             _lcFocus = 0; Lifecycle.Tick(system);
             Check("② 失焦 → 消息 / 焦点状态", "15 / 2", $"{Drain()} / {Focus()}");
             _lcFocus = 1; Lifecycle.Tick(system);
-            Check("② 回前台 → 消息 / 焦点状态", "15,1 / 1", $"{Drain()} / {Focus()}");
+            Check("② 回前台 → 消息 / 焦点状态", "15 / 1", $"{Drain()} / {Focus()}");
 
             // P2-37 焦点处理模式按 am 语义生效（libnx appletSetFocusHandlingMode 的四种组合，SetFocusHandlingMode 后跟 SetOutOfFocusSuspendingEnabled）：
             //   ⑤ SuspendHomeSleep = (0,0,1) + 失焦暂停 0：不冻结、失焦焦点状态照变，但第一个标志（通知）关 → 没有焦点消息
@@ -76,7 +76,7 @@ namespace S2A.Services.Tests
             _lcFocus = 0; Lifecycle.Tick(system);
             Check("⑦ NoSuspend 失焦 → 消息 / 焦点状态", "15 / 2", $"{Drain()} / {Focus()}");
             _lcFocus = 1; Lifecycle.Tick(system);
-            Check("⑦ NoSuspend 回前台 → 消息 / 焦点状态", "15,1 / 1", $"{Drain()} / {Focus()}");
+            Check("⑦ NoSuspend 回前台 → 消息 / 焦点状态", "15 / 1", $"{Drain()} / {Focus()}");
 
             _lcMode = 1; Lifecycle.Tick(system);
             Check("③ 切主机 → 消息", "30,31", Drain());
