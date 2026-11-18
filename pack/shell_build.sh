@@ -54,9 +54,16 @@ s2a_tc_sweep "$S/build/.${OS}_toolchain" "$S/build/gal$GX/ios" "$S/build/nvn$GX/
 SN=$(s2a_nospace "$S") || { echo "【红】建不了无空格别名（${S}）"; exit 1; }
 "${S2A_PY:-python3}" "$H/shell/closure.py" mark "$S" --list-from "$R" || { echo "【红】设不了出壳镜像文件访问时间（壳输入闭包）"; exit 1; }
 t0=$SECONDS
-# 游戏库界面（runtime/build.mk S2A_SHELLUI）开不开只看壳输入表：有「入 shell」行才编进壳。不收外部开关——表与表里的目录都进壳编号，
-#   开关与库界面源码一变壳编号必变，同一壳编号不会对应带 / 不带库界面两种壳
+# 游戏库界面（runtime/build.mk S2A_SHELLUI）缺省按壳输入表：有「入 shell」行才编进壳。
+# Intel Mac 上 Xcode 的 arm64Only iOS 运行时在 x86_64 主机加载不了，xcodebuild 解析不出 generic/platform=iOS；
+# 这不是 iPhone 出包链的依赖，默认跳过库界面。装了 universal 运行时要 S2A_SHELLUI=1 显式打开。
 SHELLUI=0; printf '%s\n' "$IN" | grep -qx 'shell' && SHELLUI=1
+if [ "$(uname -m)" = x86_64 ] && [ "$SHELLUI" = 1 ] && [ -z "${S2A_SHELLUI:-}" ]; then
+  echo "🟡 Intel Mac：跳过游戏库界面（本机 arm64Only iOS 运行时不能给 xcodebuild 当 iOS 目标）；单款 IPA 出包不受影响"
+  SHELLUI=0
+elif [ -n "${S2A_SHELLUI:-}" ]; then
+  SHELLUI=$S2A_SHELLUI
+fi
 # 提交号在工作树里取好再交给 make（镜像没有 .git：runtime/build.mk 写进 Info.plist 的 S2ACommit 原先现取 git rev-parse，镜像里会成 unknown）
 HC=$(git -C "$R" rev-parse HEAD) || { echo "【红】取不到本树提交号"; exit 1; }
 "$MK" -C "$SN" ROOT="$SN" -j"$S2A_JOBS" -s ios S2A_APPLE_OS=$OS S2A_CS=1 S2A_SHELLUI=$SHELLUI IOS_BUNDLE=dev.s2arm.shell IOS_DISPLAY=S2Arm BUILD="$B/build" IOS_OBJ_CACHE="$SN/build/${OS}_objcache" S2A_COMMIT="$HC" > "$B/make.log" 2>&1 \

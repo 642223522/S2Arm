@@ -73,6 +73,12 @@ class IntelPackagingConfigTest(unittest.TestCase):
         self.assertFalse(prepare_build.can_build_on("Darwin", "ppc64"))
         self.assertFalse(prepare_build.can_build_on("Linux", "x86_64"))
 
+    def test_intel_shell_build_skips_unavailable_shellui(self):
+        text = (ROOT / "pack/shell_build.sh").read_text()
+        self.assertIn('uname -m', text)
+        self.assertIn('x86_64', text)
+        self.assertIn('S2A_SHELLUI=0', text)
+
     def test_runtime_versions_probe_covers_every_pin(self):
         pins = [line.split('==')[0] for line in (ROOT / "launchers/macos/requirements-runtime.txt").read_text().splitlines()
                 if '==' in line and not line.startswith('#')]
