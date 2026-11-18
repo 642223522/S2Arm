@@ -96,6 +96,8 @@ class SGradeTests(unittest.TestCase):
             nso(self.t / "lib" / g / "image/mac/exefs", "1111111111111111")
         kit = self.t / "lib" / gid / "image/ios/kit"; kit.mkdir(parents=True, exist_ok=True); (kit / "main.npdm").write_bytes(b"M")
         self.c.r = {"gameId": gid}; self.c.task = "sg1"
+        self.progress = []
+        self.c.emit = lambda k, text="", **kw: self.progress.append((kw["done"], kw["total"])) if k == "progress" else self.events.append(text)
         p = patch.object(layout, "game_dir", side_effect=lambda c, g: self.t / "lib" / g.upper()); p.start(); self.addCleanup(p.stop)
         import ipa
         p = patch.object(ipa, "program_locks", lambda c, games: contextlib.nullcontext()); p.start(); self.addCleanup(p.stop)
@@ -128,6 +130,7 @@ class SGradeTests(unittest.TestCase):
              patch.object(rewrite_refresh, "refresh_ios", side_effect=mark("ios")):
             r = sgrade.upgrade_game(self.c)
         self.assertEqual(seen, [("mac", "0100A"), ("bf", "0100A"), ("ios", ("0100A",))])
+        self.assertEqual(self.progress, [(0, 3), (1, 3), (2, 3), (3, 3)], "进度 done / total：开始 0、每做完一段进一格")
         self.assertEqual((r["updated"], r["steps"]), (["0100A"], {"mac": True, "bf": True, "ios": True}))
         self.assertFalse((self.t / "lib/0100A" / sgrade.UPGRADING).exists())
 

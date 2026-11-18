@@ -154,7 +154,7 @@ def mac_all(c):
 def upgrade_game(c):
     """作业 sgradeUpgradeGame：玩家对这一款点「S 级优化」才升级（11-17 维护者定，不自动）。Mac 运行版本补 S 级补丁（rewrite_refresh.refresh_mac）
     与可读瓦片版着色器（sgrade_bf.upgrade_mac）；有 iPhone 程序件的一并补（rewrite_refresh.refresh_ios，Windows 只有这一段）。
-    阶段事件 stageKey sgrade.mac / sgrade.bf / sgrade.ios（界面画进度，stageIndex / stageCount）；升级中这款开始游戏被拒（game_lock），别的游戏照常；
+    进度事件 done / total（每做完一段进一格），阶段事件 stageKey sgrade.mac / sgrade.bf / sgrade.ios；升级中这款开始游戏被拒（game_lock），别的游戏照常；
     开始时写未完成标记、做完删——中途退出启动器，下次打开不续跑，catalog 标 sgradeIncomplete，玩家再点就是同一个单款升级（已做完的部分各步按记号跳过）"""
     import json, os, sys
     from rewrite_refresh import refresh_mac, refresh_ios
@@ -174,6 +174,7 @@ def upgrade_game(c):
         atomic(marker, dict(task=c.task, pid=os.getpid()))
         steps = [k for k, on in (("mac", mac), ("bf", mac), ("ios", iphone)) if on]
         done = {}
+        c.emit("progress", done=0, total=len(steps))   # 界面画百分比（done / total，做完一段进一格）；段名看阶段事件 stageKey
         for n, k in enumerate(steps, 1):
             if k == "mac":
                 c.begin("补上 S 级优化（满屏 / 帧率 / 金手指）", n, len(steps), key="sgrade.mac")
@@ -185,6 +186,7 @@ def upgrade_game(c):
                 c.begin("补上 iPhone 版的 S 级优化", n, len(steps), key="sgrade.ios")
                 with packer.program_locks(c, [gid]):
                     done[k] = bool(refresh_ios(c, [gid]))
+            c.emit("progress", done=n, total=len(steps))
         marker.unlink(missing_ok=True)
     return dict(gameId=gid, updated=[gid] if any(done.values()) else [], steps=done, mac=mac, iphone=iphone)
 
