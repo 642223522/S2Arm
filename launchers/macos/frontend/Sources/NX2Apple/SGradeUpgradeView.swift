@@ -19,6 +19,8 @@ struct SGradeScanGame: Identifiable, Equatable {
     /// 还有没补上的段（作业层 bfPending：iPhone / Mac 包任一边要补）；全 false = 这款 S 级优化已是最新，行写「已完成」、不可点不可选。
     ///   作业层没给这个字段（旧版）当作要补
     let pending: Bool
+    /// 作业层明说还缺片上读取用的着色器（bfPending 有一边 true）：没有补丁（total 0）或关了 S 级也有东西可升，进「可以升级」组（同作业层 upgradable 计数）
+    let bfDue: Bool
     init(_ d: [String: Any]) {
         id = d["id"] as? String ?? ""; name = d["name"] as? String ?? id; program = d["program"] as? String ?? "none"
         total = (d["total"] as? NSNumber)?.intValue ?? 0; iphone = d["iphone"] as? Bool ?? false; off = d["off"] as? Bool ?? false
@@ -26,7 +28,8 @@ struct SGradeScanGame: Identifiable, Equatable {
         let v = d["versions"] as? [String: Any] ?? [:]
         mine = v["mine"] as? String ?? ""; available = (v["available"] as? [String: Any] ?? [:]).compactMapValues { $0 as? [String] }.filter { !$0.value.isEmpty }
         patches = (d["patches"] as? [String: Any] ?? [:]).compactMapValues { ($0 as? NSNumber)?.intValue }
-        pending = (d["bfPending"] as? [String: Any]).map { $0.values.contains { ($0 as? Bool) == true } } ?? true
+        bfDue = (d["bfPending"] as? [String: Any]).map { $0.values.contains { ($0 as? Bool) == true } } ?? false
+        pending = d["bfPending"] == nil || bfDue
     }
     var found: Bool { program != "none" }
 }
@@ -118,7 +121,7 @@ struct SGradeUpgradeBody: View {
         .accessibilityIdentifier("sgrade.upgrade")
     }
 
-    private var upgrades: [SGradeScanGame] { (games ?? []).filter { $0.found && $0.total > 0 && !$0.off } }
+    private var upgrades: [SGradeScanGame] { (games ?? []).filter { $0.found && (($0.total > 0 && !$0.off) || $0.bfDue) } }
     /// 可升级的款（页面顺序）
     var upgradeIDs: [String] { upgrades.map(\.id) }
     /// 这一行不能点也不能勾：在升 / 排队、刚做完，或作业层说已没有要补的段（被停 / 轮到时在玩的除外，可再点）
@@ -135,8 +138,8 @@ struct SGradeUpgradeBody: View {
             Text(failure).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary)
         } else if let games {
             let found = games.filter(\.found)
-            let yes = upgrades, off = found.filter { $0.total > 0 && $0.off }
-            let noVer = found.filter { $0.total == 0 && !$0.available.isEmpty }, no = found.filter { $0.total == 0 && $0.available.isEmpty }
+            let yes = upgrades, off = found.filter { $0.total > 0 && $0.off && !$0.bfDue }
+            let noVer = found.filter { $0.total == 0 && !$0.bfDue && !$0.available.isEmpty }, no = found.filter { $0.total == 0 && !$0.bfDue && $0.available.isEmpty }
             let missing = games.filter { !$0.found }
             if found.isEmpty {
                 Text(x("nothing")).font(LauncherTheme.TypeStyle.body).fixedSize(horizontal: false, vertical: true)
@@ -181,6 +184,7 @@ struct SGradeUpgradeBody: View {
         if (g.patches["fps"] ?? 0) > 0 { parts.append(x("cat.fps")) }
         if (g.patches["gfx"] ?? 0) > 0 { parts.append(x("cat.gfx")) }
         if let n = g.patches["cheat"], n > 0 { parts.append(x("cat.cheat").replacingOccurrences(of: "{0}", with: String(n))) }
+        if parts.isEmpty && g.bfDue { parts.append(x("bf")) }   // 没有补丁、只缺片上读取用的着色器
         return parts.joined(separator: zh ? "、" : ", ")
     }
 

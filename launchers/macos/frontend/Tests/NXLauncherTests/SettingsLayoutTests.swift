@@ -1454,6 +1454,13 @@ import S2ArmAppleAdapter
             XCTAssertEqual(cur.rowTitle("delta"), language == .zh ? "升级" : "Upgrade")
             let curStopped = SGradeUpgradeBody(games: current, failure: nil, zh: language == .zh, x: x, upgrade: { _ in }, close: {}, states: ["gamma": "incomplete"])
             XCTAssertFalse(curStopped.locked("gamma"), "被停的款即使查找时没要补的也能再点（查找结果可能是旧的）")
+            // 没有补丁（total 0）但还缺片上读取用的着色器（bfPending 有一边 true）：进可升组、能点能勾（同作业层 upgradable 计数）
+            let bfOnly = SGradeUpgradeBody(games: [SGradeScanGame(["id": "eps", "name": "Shader only", "program": "original", "total": 0, "bfPending": ["iphone": true, "mac": false]]),
+                                                  SGradeScanGame(["id": "zeta", "name": "Nothing", "program": "original", "total": 0, "bfPending": ["iphone": false, "mac": false]])],
+                                           failure: nil, zh: language == .zh, x: x, upgrade: { _ in }, close: {})
+            XCTAssertEqual(bfOnly.upgradeIDs, ["eps"], "只缺片上读取着色器的款可升，什么都不缺的不进可升组")
+            XCTAssertFalse(bfOnly.locked("eps"))
+            XCTAssertEqual(x("bf"), language == .zh ? "补上片上读取用的着色器" : "Add on-chip read shaders")
             let (host3, window3) = try await render(AnyView(running), fixture: fixture, language: language)
             defer { window3.close() }
             let ids3 = Set(fixture.navigation.controlTargets(in: window3).map(\.id))

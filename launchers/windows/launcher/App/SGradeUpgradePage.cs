@@ -79,7 +79,9 @@ public sealed partial class EnvironmentWindow
         bool Bo(JsonElement e, string k) => e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.True;
         var all = scan.TryGetProperty("games", out var gs) && gs.ValueKind == JsonValueKind.Array ? gs.EnumerateArray().ToList() : [];
         var found = all.Where(g => S(g, "program") is { Length: > 0 } p && p != "none").ToList();
-        var yes = found.Where(g => N(g, "total") > 0 && !Bo(g, "off")).ToList();
+        // 作业层明说还缺片上读取用的着色器（bfPending 有一边 true）：没有补丁或关了 S 级也有东西可升，进可升组（同作业层 upgradable 计数、同 Mac）
+        bool BfDue(JsonElement g) => g.TryGetProperty("bfPending", out var bf) && bf.ValueKind == JsonValueKind.Object && bf.EnumerateObject().Any(p => p.Value.ValueKind == JsonValueKind.True);
+        var yes = found.Where(g => (N(g, "total") > 0 && !Bo(g, "off")) || BfDue(g)).ToList();
         // 没有对应补丁拆两组（定稿表，同 Mac）：补丁库里有别的版本的 → 写版本号；一类都没有 → 补丁库里没有（作业层 versions）
         Dictionary<string, List<string>> Avail(JsonElement g) =>
             g.TryGetProperty("versions", out var vs) && vs.ValueKind == JsonValueKind.Object && vs.TryGetProperty("available", out var av) && av.ValueKind == JsonValueKind.Object
@@ -88,8 +90,8 @@ public sealed partial class EnvironmentWindow
                     .Where(kv => kv.Value.Count > 0).ToDictionary(kv => kv.Key, kv => kv.Value)
                 : new();
         string Mine(JsonElement g) => g.TryGetProperty("versions", out var vs) && vs.ValueKind == JsonValueKind.Object ? S(vs, "mine") : "";
-        var noVer = found.Where(g => N(g, "total") == 0 && Avail(g).Count > 0).ToList();
-        var no = found.Where(g => N(g, "total") == 0 && Avail(g).Count == 0).ToList();
+        var noVer = found.Where(g => N(g, "total") == 0 && !BfDue(g) && Avail(g).Count > 0).ToList();
+        var no = found.Where(g => N(g, "total") == 0 && !BfDue(g) && Avail(g).Count == 0).ToList();
         string Versions(JsonElement g)
         {
             var a = Avail(g); var mine = Mine(g);
@@ -98,7 +100,7 @@ public sealed partial class EnvironmentWindow
                 .Where(s => s is not null);
             return string.Join(language == "en" ? ", " : "、", parts) + (mine.Length > 0 ? X("version.mine").Replace("{0}", mine) : "");
         }
-        var off = found.Where(g => N(g, "total") > 0 && Bo(g, "off")).ToList();
+        var off = found.Where(g => N(g, "total") > 0 && Bo(g, "off") && !BfDue(g)).ToList();
         var missing = all.Where(g => !found.Contains(g)).ToList();
         string Gains(JsonElement g)
         {
@@ -110,6 +112,7 @@ public sealed partial class EnvironmentWindow
             if (C("fps") > 0) parts.Add(X("cat.fps"));
             if (C("gfx") > 0) parts.Add(X("cat.gfx"));
             if (C("cheat") > 0) parts.Add(X("cat.cheat").Replace("{0}", C("cheat").ToString()));
+            if (parts.Count == 0 && BfDue(g)) parts.Add(X("bf"));   // 没有补丁、只缺片上读取用的着色器
             return string.Join(language == "en" ? ", " : "、", parts);
         }
         void Group(string title, IEnumerable<JsonElement> rows, bool gold = false, bool gains = false, Func<JsonElement, string>? detail = null, bool rowUpgrade = false)

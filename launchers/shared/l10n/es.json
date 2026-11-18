@@ -976,6 +976,7 @@
   "sgrade.upgrade.skipped": "Jugando: mejorar más tarde",
   "sgrade.upgrade.resume": "Reanudar mejora",
   "sgrade.upgrade.row": "Mejorar",
+  "sgrade.upgrade.bf": "Añadir shaders de lectura en chip",
   "sgrade.upgrade.rowBusy": "Mejorando…",
   "sgrade.upgrade.incomplete": "La mejora no terminó. Haz clic en Mejora de grado S para continuar.",
   "sgrade.upgrading": "Mejorando {0} %",

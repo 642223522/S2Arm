@@ -988,6 +988,7 @@
   "sgrade.upgrade.skipped": "正在玩，稍後再升",
   "sgrade.upgrade.resume": "繼續升級",
   "sgrade.upgrade.row": "升級",
+  "sgrade.upgrade.bf": "補上片上讀取用的著色器",
   "sgrade.upgrade.rowBusy": "正在升級…",
   "sgrade.upgrade.incomplete": "升級未完成，點 S 級優化繼續",
   "sgrade.upgrading": "正在升級 {0}%",

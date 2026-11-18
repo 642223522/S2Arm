@@ -976,6 +976,7 @@
   "sgrade.upgrade.skipped": "プレイ中 — あとでアップグレード",
   "sgrade.upgrade.resume": "アップグレードを再開",
   "sgrade.upgrade.row": "アップグレード",
+  "sgrade.upgrade.bf": "オンチップ読み取り用シェーダーを追加",
   "sgrade.upgrade.rowBusy": "アップグレード中…",
   "sgrade.upgrade.incomplete": "アップグレードが完了していません。S グレード最適化アップグレードをクリックして続行してください。",
   "sgrade.upgrading": "アップグレード中 {0}%",
