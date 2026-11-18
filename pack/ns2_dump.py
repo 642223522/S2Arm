@@ -14,7 +14,7 @@ Switch 2 游戏现在拿到手的形态是主机上导出的松散目录（11-04
              没有 = 差量，本体叠更新（更新覆盖），打黄字说明
              镜像形态（缺省，S2A_ROMFS_IMAGE=0 回 romfs/ 散文件）：不出 romfs/ 散文件，选出的文件交 nx_unpack --romfs-image 直接建 romfs.std（标准 RomFS）；
              版本目录里是 romfs.nupmap（镜像形态的 pack/ns2_nup.py 展开）时，数据直接从 NUP 容器读
-    aoc/<序号>/ + aoc.tsv   序号 = DLC 标题号 − 程序号 − 0x1000（同 nx_unpack）
+    aoc/<序号>/ + aoc.tsv   序号 = DLC 标题号 − 应用号（程序号去掉末位）− 0x1000（同 nx_unpack）
     ctl/control.nacp       导出带了控制分区（版本目录里 romfs 之外的 control.nacp）就用原件 + icon.jpg；没带才合成（README.synth 标明非原件，
                            标题取目录名、不是游戏自带信息）：16 语言标题、启动要账号、存档属主 = 程序号、账号存档 128 MB / 日志 64 MB；游戏代码挂临时存储 / 本机存档 / 缓存存储的（按 nn::fs 导入名判）另声明对应大小（save_kinds）
                            （字段与取值同 11-03 火纹合成件，那份在 Mac / 测试设备2 实玩过）
@@ -421,7 +421,7 @@ def convert(dump, out, name=None):
             atid = int(d, 16)
         except ValueError:
             continue
-        idx = atid - tid - 0x1000
+        idx = atid - (tid & ~0xF) - 0x1000   # 按应用号（程序号去掉末位）：单独导出的程序 n（#1567）的 DLC 也是应用号 + 0x1000 + 序号
         if not 0 < idx < 0x1000:
             print(f'🟡 DLC {d} 不属于程序号 {tid:016x}，跳过')
             continue
