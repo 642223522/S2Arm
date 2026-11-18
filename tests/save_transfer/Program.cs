@@ -12,6 +12,32 @@ if (args.Length == 2 && args[0] == "--request")
     Console.WriteLine(SaveTransfer.Execute(File.ReadAllText(args[1])));
     return;
 }
+if (args.Length == 1 && args[0] == "--linked-root")
+{
+    // 诊断 D-R52E：数据根所在路径上有链接（游戏库挪到外置盘再链回来、/tmp 系统链接）照常做；只拦解开后跑出存档目录的（事务目录下的备份目录链到外面）。期望手写
+    string tmp = Directory.CreateDirectory(Path.Combine("/private/tmp", "s2a-linked-root-" + Guid.NewGuid().ToString("N"))).FullName;
+    string real = Path.Combine(tmp, "外置盘", "游戏库"), linkParent = Path.Combine(tmp, "链回来");
+    Directory.CreateDirectory(Path.Combine(real, "data")); Directory.CreateDirectory(Path.Combine(tmp, "work"));
+    Directory.CreateSymbolicLink(linkParent, Path.Combine(tmp, "外置盘"));
+    string id = "0100000000010000";
+    JsonObject Req(string op, string root, string work) => new() { ["operation"] = op, ["dataRoot"] = root, ["workRoot"] = work, ["path"] = Path.Combine(tmp, "x.s2asave"),
+        ["game"] = new JsonObject { ["id"] = id, ["version"] = 0, ["contentIdentity"] = new string('a', 64), ["name"] = "t" } };
+    string Code(JsonObject r) { var n = JsonNode.Parse(SaveTransfer.Execute(r.ToJsonString())); return n["ok"].GetValue<bool>() ? "ok" : n["error"]["code"].GetValue<string>(); }
+    var fails = new List<string>();
+    void Expect(bool ok, string what) { Console.WriteLine((ok ? "PASS " : "FAIL ") + what); if (!ok) fails.Add(what); }
+    string viaLink = Path.Combine(linkParent, "游戏库", "data");
+    Expect(Code(Req("status", viaLink, Path.Combine(tmp, "work"))) == "ok", "data root reached through a linked parent folder: status ok");
+    string viaTmp = "/tmp" + Path.Combine(real, "data").Substring("/private/tmp".Length);
+    Expect(Code(Req("status", viaTmp, Path.Combine(tmp, "work"))) == "ok", "data root under the /tmp system link: status ok");
+    string outside = Directory.CreateDirectory(Path.Combine(tmp, "elsewhere")).FullName;
+    Directory.CreateDirectory(Path.Combine(tmp, "work", "save-backups"));
+    Directory.CreateSymbolicLink(Path.Combine(tmp, "work", "save-backups", id), outside);
+    Expect(Code(Req("status", viaLink, Path.Combine(tmp, "work"))) == "save_unsafe_path", "backup folder linked outside the save folders: still save_unsafe_path");
+    Directory.Delete(tmp, true);
+    if (fails.Count > 0) { Console.WriteLine($"✗ linked root: {fails.Count} failed"); Environment.Exit(1); }
+    Console.WriteLine("✓ linked root: 3 checks");
+    return;
+}
 if (args.Length == 1 && args[0] == "--running-gate")
 {
     // 诊断#a87296：游戏在跑（hostRunning）时只放只读的 status / export / inspect；restore / recover、留着没收尾的事务一律 save_running；不需要私有存档

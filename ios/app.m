@@ -899,6 +899,32 @@ static void crash_auto_off(const char *gid) {
     LOG("崩溃恢复：%s 上一局开着 %s 时死在前台，这一局启动前已关掉（玩家可在设置里再开）", gid, names.UTF8String);
     { void s2a_diag_note_crash_off(NSString *); s2a_diag_note_crash_off(names); }   // 进游戏后诊断询问（diag.m，上次死在前台必问）一并说，不另弹横幅
 }
+// ---------- 0.6.0 快照：游戏库长按卡片「回到上次存下的这一刻」 ----------
+// 有没有：开关关着（起局不带存档开关）一律 0（菜单里就没有这一项）；开着时看这款快照目录里有没有完整清单
+static void *g_snap_play_ctx;
+int s2a_shell_snapshot_available(const char *gid) {
+    int s2a_snap_saving(void), s2a_snap_dir_for(const char *, char *, size_t), s2a_snap_exists(const char *);
+    char d[2048]; return gid && *gid && s2a_snap_saving() && !s2a_snap_dir_for(gid, d, sizeof d) && s2a_snap_exists(d);
+}
+static void library_play(const char *gid, void *ctx);
+static void snap_library_go(NSString *gid, NSString *dir, BOOL rollback) {
+    setenv("S2A_SNAP_RESTORE", dir.fileSystemRepresentation, 1);   // 起局（host_run）时读：核对 → 起服务层 → 按快照恢复，不从头起游戏
+    if (rollback) setenv("S2A_SNAP_SAVE_ROLLBACK", "1", 1); else unsetenv("S2A_SNAP_SAVE_ROLLBACK");
+    LOG("游戏库：%s 回到上次存下的这一刻（%s）", gid.UTF8String, rollback ? "玩家确认退回存档" : "存档没变过");
+    library_play(gid.UTF8String, g_snap_play_ctx);
+}
+void s2a_shell_restore_snapshot(const char *gid) {   // 主线程
+    int s2a_snap_dir_for(const char *, char *, size_t), s2a_snap_exists(const char *), s2a_snap_save_changed(const char *);
+    char d[2048]; if (!gid || !*gid || !g_snap_play_ctx || s2a_snap_dir_for(gid, d, sizeof d) || !s2a_snap_exists(d)) return;
+    NSString *g = @(gid), *dir = @(d);
+    // 存快照之后游戏又存过档：回去会把游戏存档退回那一刻——先问（当前存档会先整棵备份）；没变过直接回
+    if (s2a_snap_save_changed(d) != 1) { snap_library_go(g, dir, NO); return; }
+    S2ASceneDelegate *sd = (__bridge S2ASceneDelegate *)g_snap_play_ctx;
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:S2AL(@"vpad.snap.saveChanged.title") message:S2AL(@"vpad.snap.saveChanged.body") preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.cancel") style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"vpad.snap.saveChanged.go") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *x) { snap_library_go(g, dir, YES); }]];
+    UIViewController *p = sd.window.rootViewController; while (p.presentedViewController) p = p.presentedViewController; [p presentViewController:a animated:YES completion:nil];
+}
 static void library_play(const char *gid, void *ctx) {   // 主线程（s2a_shell.h 约定）
     S2ASceneDelegate *sd = (__bridge S2ASceneDelegate *)ctx;
     if (!atomic_load(&g_game_picked)) crash_auto_off(gid);
@@ -1237,7 +1263,27 @@ static void cloud_sync_done(void *ctx) {
 // 主屏小组件点封面（s2arm://play/<游戏号>，11-16 维护者：小组件进 0.5.0；Info.plist 的 CFBundleURLTypes 见 runtime/build.mk）：
 //   游戏库还开着 → 同玩家点「开始」（library_play：崩溃恢复 → 起局前检查 → 起宿主；资源不在手机上的款照常说明为什么开不了）；
 //   这一进程已经在玩（一进程一款）→ 只把 App 拉到前台，不弹「再开一款」的提示
+// 小游戏包 .s2arm（0.6.0 通用壳，电脑「导出」出的两件套之一）：从「文件」或别的 App 用 S2Arm 打开（Info.plist 的文档类型见 runtime/build.mk）→
+//   后台导入这一款（pack_apply.c s2a_s2arm_import：程序进 program/、派生件进 资源包/），导好刷新游戏库；game.img 照常放「放这里导入」认领。
+//   系统拷进 Documents/Inbox 的那份导完删掉；原地打开的（别处的原文件）不动。失败按码说人话（同导入文件夹认领失败）
+int s2a_s2arm_import(const char *proc_docs, const char *src, char *gid_out, size_t gid_n); const char *s2a_s2arm_import_code(void);   // pack_apply.c
+static void s2arm_open(NSURL *url) {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        BOOL scoped = [url startAccessingSecurityScopedResource];
+        char d[1024], gid[17] = ""; s2a_container_docs(d, sizeof d);
+        int r = s2a_s2arm_import(d, url.fileSystemRepresentation, gid, sizeof gid);
+        NSString *code = r < 0 ? @(s2a_s2arm_import_code()) : nil;
+        if (scoped) [url stopAccessingSecurityScopedResource];
+        if (!r && [url.path containsString:@"/Documents/Inbox/"]) [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+        LOG(".s2arm 打开：%s → %s", url.lastPathComponent.UTF8String, !r ? gid : r > 0 ? "还没拷完，稍后再打开一次" : code.UTF8String);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!r) { if (s2a_shell_refresh) s2a_shell_refresh(); return; }
+            if (r < 0 && g_lib_window) top_alert(g_lib_window, S2AL(@"img.scanFailed.title"), install_error_text(code.UTF8String));
+        });
+    });
+}
 static void widget_open(NSURL *url, void *ctx) {
+    if (url.isFileURL && [url.pathExtension.lowercaseString isEqualToString:@"s2arm"]) { s2arm_open(url); return; }
     if (!url || ![url.scheme isEqualToString:@"s2arm"] || ![url.host isEqualToString:@"play"]) return;
     NSString *gid = url.lastPathComponent.uppercaseString;
     if (gid.length != 16 || [gid rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"0123456789ABCDEF"].invertedSet].location != NSNotFound) {
@@ -1263,6 +1309,7 @@ static void widget_open(NSURL *url, void *ctx) {
     }
     NSString *cat = [@(s2a_launch_ctx_bundle_dir()) stringByAppendingPathComponent:@"s2a_catalogue.json"];
     s2a_shell_set_play_handler(library_play, (__bridge void *)self);
+    g_snap_play_ctx = (__bridge void *)self;   // 快照：游戏库「回到上次存下的这一刻」走同一条起局路
     g_lib_window = self.window;
     self.window.rootViewController = (__bridge_transfer UIViewController *)s2a_shell_library_vc(cat.fileSystemRepresentation);
     LOG("游戏库：已挂库界面（清单 %s）%s", cat.UTF8String, s2a_process_prewarmed() ? "，预热进程只显示库、不起宿主" : "");
