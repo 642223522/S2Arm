@@ -1411,6 +1411,42 @@ import S2ArmAppleAdapter
     /// S 级优化手动 / 批量升级（11-18 维护者：点了才做；可批量，写明批量升级、有全选）：每款一个勾选框和「升级」，
     ///   点某款「升级」只交那一款；页脚「批量升级所选（N 款）」N 跟勾选走、没勾时不可点；正在升级的那款勾选框和按钮都不可用；
     ///   批量进行中页脚换成「第 i 款 / 共 n 款」+「停止」；没有可升级的款不出行按钮；进度环 / 进度条四种状态出图
+    /// 回到上一份存档（Mac）：上一局出事才问；回到上一份 → 再换回，两次都交 saveRestorePrevious、状态翻回原样；齿轮页一行有上一份才出
+    func testPreviousSaveAskRestoreAndSwitchBack() async throws {
+        let fixture = try SettingsFixture()
+        defer { fixture.remove() }
+        let game = GameSummary(id: "fixture", name: "Original UI fixture")
+        fixture.runner.previousTrouble = ""
+        let quiet = await fixture.model.previousSavePromptIfNeeded(game, uiLanguage: "zh-Hans")
+        XCTAssertNil(quiet, "有上一份但上一局没出事：不问")
+        fixture.runner.previousTrouble = "earlyCrash"
+        let ask = await fixture.model.previousSavePromptIfNeeded(game, uiLanguage: "zh-Hans")
+        XCTAssertEqual(ask?.trouble, "earlyCrash", "上一局开局就崩、有上一份：问")
+        let first = await fixture.model.switchPreviousSave("fixture")
+        XCTAssertNil(first)
+        XCTAssertTrue(fixture.runner.previousSwapped, "回到上一份")
+        XCTAssertEqual(fixture.model.previousSaveSwitched, "fixture", "换完提示可以换回来")
+        fixture.model.previousSaveSwitched = nil
+        let second = await fixture.model.switchPreviousSave("fixture")
+        XCTAssertNil(second)
+        XCTAssertFalse(fixture.runner.previousSwapped, "再点一次换回原样")
+        XCTAssertEqual(fixture.runner.requests.filter { $0["operation"] as? String == "saveRestorePrevious" }.count, 2)
+        for language in [Lang.zh, .en] {
+            let code = language == .zh ? "zh-Hans" : "en"
+            let t = { (k: String) in BackendText.launcherText(k, language: code) }
+            XCTAssertEqual(t("save.previous.ask.title"), language == .zh ? "这款上次没能正常读存档，要回到上一份存档吗？" : "This game couldn’t load its save last time. Go back to the previous save?")
+            XCTAssertEqual(t("save.previous.ask.restore"), language == .zh ? "回到上一份" : "Go back")
+            XCTAssertEqual(t("save.previous.ask.start"), language == .zh ? "照常开始" : "Start as usual")
+            let (host, window) = try await render(AnyView(PreviousSaveRow(model: fixture.model, gameID: "fixture", t: t).frame(width: 640).padding(24).launcherSheet()), fixture: fixture, language: language)
+            defer { window.close() }
+            for _ in 0..<40 where !Set(fixture.navigation.controlTargets(in: window).map(\.id)).contains("save.previous.switch") { try await Task.sleep(nanoseconds: 50_000_000) }
+            XCTAssertTrue(Set(fixture.navigation.controlTargets(in: window).map(\.id)).contains("save.previous.switch"), "有上一份：齿轮页出「换到上一份」")
+            window.setContentSize(host.fittingSize)   // 首次渲染时还没查到「有上一份」、那一行是空的，窗口按空的量：查到后按实际内容重量再截
+            host.layoutSubtreeIfNeeded()
+            try snapshot(host, "previous-save-row-" + language.code)
+        }
+    }
+
     func testSGradeManualUpgradeOnMac() async throws {
         let fixture = try SettingsFixture()
         defer { fixture.remove() }
@@ -2029,6 +2065,14 @@ private final class SettingsRunner: JobProcessRunner {
         get { lock.withLock { playtime } }
         set { lock.withLock { playtime = newValue } }
     }
+    private var trouble = ""
+    private var swapped = false
+    /// 回到上一份存档：savePrevious 回的 trouble；saveRestorePrevious 每次把「已换到上一份」翻转一次（作业层的交换是可逆的）
+    var previousTrouble: String {
+        get { lock.withLock { trouble } }
+        set { lock.withLock { trouble = newValue } }
+    }
+    var previousSwapped: Bool { lock.withLock { swapped } }
     var requests: [[String: Any]] { lock.withLock { captured } }
     func start(executable: URL, arguments: [String], environment: [String: String], onLine: @escaping (Data) -> Void,
                onStderr: @escaping (Data) -> Void, onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle {
@@ -2066,6 +2110,8 @@ private final class SettingsRunner: JobProcessRunner {
         if request["operation"] as? String == "preflight" {
             result = ["checks": [["id": "xcode", "name": "Xcode", "ok": true, "group": "apple", "requiredFor": ["prepare", "launch", "ipa"]]]]
         }
+        if request["operation"] as? String == "savePrevious" { result = ["hasPrevious": true, "saveIds": ["0000000000000001"], "trouble": previousTrouble] }
+        if request["operation"] as? String == "saveRestorePrevious" { lock.withLock { swapped.toggle() }; result = ["restored": 1] }
         if request["operation"] as? String == "saveStatus" {
             result = ["hasSave": true, "fileCount": 3, "totalBytes": 20480]
         }

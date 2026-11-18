@@ -190,6 +190,10 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var downstreamPromptFor: String?
     /// 上次开着金手指 / 画面补丁时这款异常退出、已被关掉（作业层 pack/jobs/cheats.py note_crash / crashed）：开始游戏时通知一句（LaunchSettingsSheet.swift CrashPromptHost）
     @Published var crashPrompt: CrashPrompt?
+    /// 开始前问「要回到上一份存档吗」（上一局读存档出事、且有上一份，S2ArmLauncherModel+SavePrevious）；不拦，玩家选了再开局
+    @Published var previousSavePrompt: PreviousSavePrompt?
+    /// 刚回到上一份存档的那一款：提示一次「可以随时换回来」
+    @Published var previousSaveSwitched: String?
     var downstreamPending: (platforms: [ExportPlatform]?, deviceTarget: [String: Any]?, spaceOverride: Bool, location: String?)?
     /// 存放位置（游戏库结构 v3）：出包页下拉框的各项、上次用的位置号
     @Published var locations: [StorageLocation] = []
@@ -1266,9 +1270,16 @@ public final class S2ArmLauncherModel: ObservableObject {
                 crashPrompt = CrashPrompt(game: game, uiLanguage: uiLanguage, names: names)
                 _ = try? await saveJob("communitySave", gameID: game.id, extra: ["crashAnswer": "ack"])
             }
+            // 上一局读存档出事、且有上一份存档：先问要不要回到上一份（PreviousSavePromptHost），玩家选了再开局
+            if let prompt = await previousSavePromptIfNeeded(game, uiLanguage: uiLanguage) {
+                previousSavePrompt = prompt
+                return
+            }
             playChecked(game, uiLanguage: uiLanguage)
         }
     }
+
+    func startAfterPreviousSave(_ game: GameSummary, uiLanguage: String?) { playChecked(game, uiLanguage: uiLanguage) }
 
     private func crashedBeforePlay(_ gameID: String) async throws -> [String] {
         let result = try await saveJob("community", gameID: gameID, extra: [:])
