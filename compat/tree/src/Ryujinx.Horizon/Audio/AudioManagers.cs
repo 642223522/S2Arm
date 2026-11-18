@@ -11,12 +11,14 @@ using System.Threading;
 
 namespace Ryujinx.Horizon.Audio
 {
-    class AudioManagers : IDisposable
+    public class AudioManagers : IDisposable   // S2Arm 即时存档：服务层要访问
     {
         public AudioManager AudioManager { get; }
         public AudioOutputManager AudioOutputManager { get; }
         public AudioInputManager AudioInputManager { get; }
         public AudioRendererManager AudioRendererManager { get; }
+        public static AudioManagers S2ALast { get; private set; }
+        public static bool S2ASnapOn;   // S2Arm 即时存档开着（服务层启动时按原生层的唯一开关置）
         public VirtualDeviceSessionRegistry AudioDeviceSessionRegistry { get; }
 
         public AudioManagers(IHardwareDeviceDriver audioDeviceDriver, ITickSource tickSource)
@@ -25,6 +27,8 @@ namespace Ryujinx.Horizon.Audio
             AudioOutputManager = new AudioOutputManager();
             AudioInputManager = new AudioInputManager();
             AudioRendererManager = new AudioRendererManager(tickSource);
+            if (S2ASnapOn)
+                S2ALast = this;   // S2Arm 即时存档：服务层按它找渲染器会话（只在存档 / 恢复时留这个静态引用，关着不改对象生命周期）
             AudioDeviceSessionRegistry = new VirtualDeviceSessionRegistry(audioDeviceDriver);
 
             IWritableEvent[] audioOutputRegisterBufferEvents = new IWritableEvent[Constants.AudioOutSessionCountMax];

@@ -617,3 +617,4 @@
 20261117-0608-audio-diag-always-on.patch
 20261117-0911-fs-read-fail-short-log.patch
 20261117-1504-nfp-detection-loop.patch
+20261117-1546-snapshot-hooks.patch
