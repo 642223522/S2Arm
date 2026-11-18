@@ -45,6 +45,8 @@ namespace S2A.DirectCompiler
         private int _uniforms, _storage, _textures, _images;
         public readonly int ReservedConstantBuffers;
         public readonly List<DirectBinding> Bindings = new();
+        // 请求里的 requestId 原样（宿主：各阶段 8 字节程序键的十六进制连写）。只在被拒的错误消息里标出是哪个程序，不参与任何判断；缺省 null（离线 / 用例）。
+        public string RequestKey;
 
         public DirectAllocator(DirectProfile profile)
         {
@@ -323,6 +325,9 @@ namespace S2A.DirectCompiler
         // 反射到 cbuf 句柄时能否当作同一个组合槽：只认经 c2 句柄表读的、且有同句柄直接事实
         public bool HasDirectTextureFact(int handle, int cbufSlot) => cbufSlot == HandleTableCbuf &&
             _program.Textures.Any(t => t.Stage == _stage.Stage && t.Handle == handle && t.CbufSlot == -1);
+        // 是否有这个 c2 字本身的精确事实（运行时句柄从驱动句柄表读；类型 / 格式由翻译期的同字事实给出）
+        public bool HasTextureFact(int handle, int cbufSlot) =>
+            _program.Textures.Any(t => t.Stage == _stage.Stage && t.Handle == handle && t.CbufSlot == cbufSlot);
 
         public SamplerType QuerySamplerType(int handle, int cbufSlot = -1) =>
             Record("QuerySamplerType", $"handle={handle},cbufSlot={cbufSlot}",
@@ -343,6 +348,10 @@ namespace S2A.DirectCompiler
             if (f == TextureFormat.Unknown) throw Missing("QueryTextureFormat", $"stage={_stage.Stage},handle={handle},cbufSlot={cbufSlot},format=Unknown");
             return Record("QueryTextureFormat", $"handle={handle},cbufSlot={cbufSlot}", f, "texture-fact:" + _stage.Stage + ":" + handle + ":" + cbufSlot);
         }
+        public TextureFormat QueryS2ASampledTextureFormat(int handle, int cbufSlot = -1) =>
+            Record("QueryS2ASampledTextureFormat", $"handle={handle},cbufSlot={cbufSlot}",
+                NeedTexture("QueryS2ASampledTextureFormat", handle, cbufSlot).Format,
+                "texture-fact:" + _stage.Stage + ":" + handle + ":" + cbufSlot);
         public int QueryTextureArrayLengthFromPool() =>
             Record("QueryTextureArrayLengthFromPool", "stage=" + _stage.Stage, _program.TextureArrayLength, "texture-pool-capacity");
         public int QuerySamplerArrayLengthFromPool() =>

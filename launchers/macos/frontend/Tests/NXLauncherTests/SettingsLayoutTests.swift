@@ -13,6 +13,62 @@ import S2ArmAppleAdapter
 
 /// Real SwiftUI pages with original, asset-free job responses; never reads the player's library.
 @MainActor final class SettingsLayoutTests: XCTestCase {
+    func testHomeIconTooltipsAppearImmediatelyAndPointTowardTheirButtons() async throws {
+        let fixture = try SettingsFixture()
+        defer { fixture.remove() }
+        fixture.model.refresh()
+        for _ in 0..<100 where fixture.model.games.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        for language in [Lang.zh, .en] {
+            for width: CGFloat in [800, 1120, 1440] {
+                let page = AnyView(LauncherView(model: fixture.model, brand: "Original tooltip fixture")
+                    .frame(width: width, height: 760))
+                let (host, window) = try await render(page, fixture: fixture, language: language)
+                defer { window.close() }
+                // 刷新按钮在游戏库读取期间置灰（.disabled(model.loading)），置灰的按钮不登记手柄目标：先等读完，再轮询等目标出现
+                for _ in 0..<300 where fixture.model.loading { try await Task.sleep(for: .milliseconds(10)) }
+                let anchors = descendants(try XCTUnwrap(window.contentView?.superview))
+                    .filter { $0.identifier?.rawValue == "launcher.tooltip.anchor" }
+                for (id, above) in [("hero.more", true), ("top.settings", false), ("home.refresh", false)] {
+                    var found = fixture.model.gamepad.controlTargets(in: window).first { $0.id == id }
+                    for _ in 0..<300 where found == nil {
+                        try await Task.sleep(for: .milliseconds(10))
+                        found = fixture.model.gamepad.controlTargets(in: window).first { $0.id == id }
+                    }
+                    let button = try XCTUnwrap(found, "\(id) 的手柄目标没出现")
+                    let anchor = try XCTUnwrap(anchors.first {
+                        let frame = window.convertToScreen($0.convert($0.bounds, to: nil))
+                        return abs(frame.midX - button.frame.midX) < 2 && abs(frame.midY - button.frame.midY) < 2
+                    }, "\(id) 必须使用即时提示，不能等系统 help 的计时器")
+                    let event = try XCTUnwrap(NSEvent.enterExitEvent(with: .mouseEntered, location: .zero,
+                        modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                        eventNumber: 0, trackingNumber: 0, userData: nil))
+                    let started = ProcessInfo.processInfo.systemUptime
+                    anchor.mouseEntered(with: event)
+                    let panel = try XCTUnwrap(window.childWindows?.first { $0.identifier?.rawValue == "launcher.tooltip" && $0.isVisible },
+                        "悬停进入时必须同步显示提示")
+                    let elapsed = ProcessInfo.processInfo.systemUptime - started
+                    print("tooltip \(language.code)/\(Int(width))/\(id): \(elapsed * 1000) ms, above=\(above)")
+                    XCTAssertLessThan(elapsed, 0.1)
+                    XCTAssertTrue(panel.ignoresMouseEvents, "提示不能挡住原按钮的鼠标操作")
+                    XCTAssertFalse(panel.canBecomeKey, "提示不能夺走键盘或手柄窗口")
+                    let frame = window.convertToScreen(anchor.convert(anchor.bounds, to: nil))
+                    if above { XCTAssertGreaterThanOrEqual(panel.frame.minY, frame.maxY + 4) }
+                    else { XCTAssertLessThanOrEqual(panel.frame.maxY, frame.minY - 4) }
+                    XCTAssertTrue(window.frame.insetBy(dx: 4, dy: 4).contains(panel.frame), "提示不能跑出窗口边缘")
+                    let label = try XCTUnwrap(descendants(try XCTUnwrap(panel.contentView)).compactMap { $0 as? NSTextField }.first)
+                    XCTAssertFalse(label.stringValue.isEmpty)
+                    XCTAssertEqual(label.textColor, NSColor.white)
+                    XCTAssertGreaterThanOrEqual(label.frame.width, label.intrinsicContentSize.width, "提示文字必须完整显示，包含原生控件的内边距")
+                    if width == 1120 { try snapshot(try XCTUnwrap(panel.contentView), "tooltip-\(id)-\(language.code)") }
+                    anchor.mouseExited(with: event)
+                    XCTAssertFalse(panel.isVisible, "离开图标立即收起")
+                }
+                _ = host
+            }
+        }
+    }
+
     func testControllerSettingsHideSharedFaceBindingsForEveryPlayer() async throws {
         let fixture = try SettingsFixture()
         defer { fixture.remove() }

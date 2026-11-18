@@ -13,6 +13,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace S2A.DirectCompiler
@@ -27,8 +28,13 @@ namespace S2A.DirectCompiler
         public const string ContentContract = "s2a-direct-program-content-v1";
         public const int MaxRequestBytes = 256 << 20;
 
+        [ThreadStatic] private static string _requestSha;
+        private static string RequestSha() => _requestSha ?? "unknown";
+
         public static byte[] Compile(byte[] requestUtf8)
         {
+            // 诊断：拒收行带上请求 sha，真机上就能把拒收与同一条请求对上（不用另开请求落盘开关）。
+            _requestSha = Convert.ToHexStringLower(Sha256.HashData(requestUtf8));
             using JsonDocument document = JsonStrict.Parse(requestUtf8, MaxRequestBytes);
             JsonElement root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object)
@@ -74,7 +80,7 @@ namespace S2A.DirectCompiler
             _ = sourceParserVersion;
 
             var queries = new List<DirectQuery>();
-            var allocator = new DirectAllocator(profile);
+            var allocator = new DirectAllocator(profile) { RequestKey = requestId };
             var accessors = new List<DirectGpuAccessor>();
             var translated = new List<(DirectStage stage, ShaderProgram shader, DirectGpuAccessor accessor)>();
             using var context = new GpuContext(new ProfileOnlyRenderer(profile.Caps), new DirtyHacks(Array.Empty<ulong>()))
@@ -340,7 +346,8 @@ namespace S2A.DirectCompiler
                         resolved.HandleIndex < 0 || (long)resolved.HandleIndex * 4 + 4 > UserUboMaxBytes ? "offset outside 64 KiB" : null;
                     if (shape != null)
                         throw new DirectCompileException("UNSUPPORTED_PROGRAM",
-                            binding.Stage + ": texture handle from cbuf slot " + resolved.CbufSlot + " is not implemented (" + shape + ")");
+                            WithHandleDetail(binding.Stage + ": texture handle from cbuf slot " + resolved.CbufSlot + " is not implemented (" + shape + ")",
+                                HandleDetailFields(allocator, binding, resolved, messageHasShape: false)));
                     binding.Slot = -1;
                     binding.UboSlot = resolved.CbufSlot - UserUboFirstCbuf;
                     binding.UboOffset = resolved.HandleIndex * 4;
@@ -361,15 +368,89 @@ namespace S2A.DirectCompiler
                     bool c2Image = binding.Kind == "image" && resolved.CbufSlot == 2 && resolved.HandleIndex >= 72 && resolved.HandleIndex < 88 &&
                                    (resolved.HandleIndex & 1) == 0 && binding.Count == 1 && resolved.ArrayLength <= 1 &&
                                    entry.accessor.HasDirectTextureFact(resolved.HandleIndex, resolved.CbufSlot);
-                    if (!handleTableArray && !c2Image && (binding.Kind != "texture" || !entry.accessor.HasDirectTextureFact(resolved.HandleIndex, resolved.CbufSlot)))
+                    // 单值贴图句柄直接从 c2 句柄表读（运行时句柄 / 游戏自己的句柄表）：翻译阶段已经靠同字
+                    // 事实拿到了类型与格式；这里按句柄值当槽位交给回放（解析器换算 slot = (handle − 8) / 2）。
+                    // 数组仍只认 HandleIndex == 0 的整表数组（非零起点的数组回放侧还没有消费口径）。
+                    bool c2SingleHandle = binding.Kind == "texture" && resolved.CbufSlot == 2 &&
+                                          resolved.HandleIndex >= 0 && binding.Count == 1 && resolved.ArrayLength <= 1 &&
+                                          entry.accessor.HasTextureFact(resolved.HandleIndex, resolved.CbufSlot);
+                    // 计算阶段的 c2 句柄表数组：编译先放行，回放侧现在按具名 skip "compute_texture_array" 计数
+                    // （C3 接池表消费）；图形数组仍只认 HandleIndex == 0 的整表数组。
+                    bool c2ComputeArray = binding.Kind == "texture" && resolved.CbufSlot == 2 && binding.Stage == "cs" &&
+                                          resolved.HandleIndex >= 0 && binding.Count > 1 &&
+                                          binding.Count == resolved.ArrayLength;
+                    if (!handleTableArray && !c2Image && !c2SingleHandle && !c2ComputeArray &&
+                        (binding.Kind != "texture" || !entry.accessor.HasDirectTextureFact(resolved.HandleIndex, resolved.CbufSlot)))
                         throw new DirectCompileException("UNSUPPORTED_PROGRAM",
-                            binding.Stage + ": texture handle from cbuf slot " + resolved.CbufSlot + " is not implemented");
+                            WithHandleDetail(binding.Stage + ": texture handle from cbuf slot " + resolved.CbufSlot +
+                                " is not implemented (handle=" + resolved.HandleIndex + ", arrayLength=" + resolved.ArrayLength +
+                                ", count=" + binding.Count + ", request=" + RequestSha() + ")",
+                                HandleDetailFields(allocator, binding, resolved, messageHasShape: true)));
                 }
                 if (resolved.Separate)
                     throw new DirectCompileException("UNSUPPORTED_PROGRAM",
                         binding.Stage + ": separate sampler slot is not implemented");
                 binding.Slot = resolved.HandleIndex;
             }
+        }
+
+        // #999：被拒的贴图句柄的现场，接在「texture handle from cbuf slot N is not implemented …」后面，写成 " [字段 字段 …]"，只进消息文字，不参与任何判断。
+        //   字段按重要性从前往后排，放不下的从最后一项起整项丢掉（不截半项）：
+        //   kind   = 绑定种类（texture / image）；
+        //   handle = TextureDescriptor.HandleIndex 原值（与 MISSING_FACT 消息里的 handle= 同一个数）；
+        //   word   = 句柄字在常量缓冲里的字偏移（字节偏移 = word × 4）；分离的 / 带类型的句柄（高 4 位是类型）按 TextureHandle.UnpackOffsets 拆成
+        //            word（贴图字）/ word2（采样器字）/ type（TextureHandleType 的整数值）；
+        //   cbuf   = 槽号带高 16 位时（TextureHandle.PackSlots），拆成 贴图常量缓冲号 / 采样器常量缓冲号；
+        //   count / array = 绑定的描述符个数 / 反射到的数组长度（两者决定「是不是数组」这条拒绝）；
+        //   key    = 请求的 requestId（宿主 nvk_shader.c：vs / fs / gs 各阶段的 8 字节程序键，各 16 个十六进制字符，连写，这里只取前 48 个字符）；没有就写 "-"。
+        // messageHasShape = 前面的消息已经带了 handle= / arrayLength= / count= / request=<sha>（#1488 补的 c2 / 打包槽那一处）：handle / count / array 三项不再重复写；
+        //   用户 UBO 那一处只有括号里的形态词，这三项由这里补（程序标识用 key，不带请求 sha）。
+        // 宿主按消息里的「texture handle from cbuf slot 」归类（nvk_shader.c compiler_rejected），前缀与括号里的形态词不动。
+        // 宿主（android/native/direct/compile_request.c）把整段错误 JSON 抄进 reason[320]（最多 319 个字符），截断了的 JSON 在
+        //   nvk_shader.c compiler_rejected 里解析不出来，整条归成 unclassified；JSON 的信封
+        //   {"schema":"s2a-direct-error-v1","code":"UNSUPPORTED_PROGRAM","message":"…"} 占 74 个字符，所以消息整条 ≤ 245 个字符是硬限
+        //   （第二道 message[256] 更宽）。#1488 的那条基础消息（含 64 个字符的请求 sha）典型 175 个字符（边界用例实测）、各数取 int 极值最坏 204，
+        //   留给现场的只有 41～70 个字符；
+        //   超了就从最低优先级的字段起丢（用例钉最坏情形与边界；宿主用例钉「245 个字符的消息仍归类」）。
+        private const int HandleDetailKeyChars = 48;
+        private const int HostMessageMaxChars = 245;
+
+        private static List<string> HandleDetailFields(DirectAllocator allocator, DirectBinding binding, TextureDescriptor descriptor, bool messageHasShape)
+        {
+            var fields = new List<string> { "kind=" + binding.Kind };
+            if (!messageHasShape) fields.Add("handle=" + descriptor.HandleIndex);
+            (int word, int word2, TextureHandleType type) = TextureHandle.UnpackOffsets(descriptor.HandleIndex);
+            fields.Add(type == TextureHandleType.CombinedSampler
+                ? "word=" + descriptor.HandleIndex
+                : "word=" + word + " word2=" + word2 + " type=" + (int)type);
+            if (descriptor.CbufSlot >= 0x10000)
+            {
+                (int textureBuffer, int samplerBuffer) = TextureHandle.UnpackSlots(descriptor.CbufSlot, descriptor.CbufSlot);
+                fields.Add("cbuf=" + textureBuffer + "/" + samplerBuffer);
+            }
+            if (!messageHasShape)
+            {
+                fields.Add("count=" + binding.Count);
+                fields.Add("array=" + descriptor.ArrayLength);
+            }
+            string key = allocator.RequestKey;
+            fields.Add("key=" + (string.IsNullOrEmpty(key) ? "-" : key.Length > HandleDetailKeyChars ? key.Substring(0, HandleDetailKeyChars) : key));
+            return fields;
+        }
+
+        private static string WithHandleDetail(string message, List<string> fields)
+        {
+            var text = new StringBuilder(message);
+            bool open = false;
+            foreach (string field in fields)
+            {
+                // 前面的空格（第一项是 " ["）+ 本项 + 收尾的 "]"；整条不超过宿主缓冲，一项放不下就停（后面的更低优先级，不再往后凑）
+                if (text.Length + (open ? 1 : 2) + field.Length + 1 > HostMessageMaxChars) break;
+                text.Append(open ? " " : " [").Append(field);
+                open = true;
+            }
+            if (open) text.Append(']');
+            return text.ToString();
         }
 
         // Same address provenance rules as dmsh_build.py, without guessing from allocation order.
