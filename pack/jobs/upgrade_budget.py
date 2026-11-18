@@ -30,7 +30,18 @@ def physical_cores():
                 return n
         except (OSError, ValueError, subprocess.SubprocessError):
             pass
-    return os.cpu_count() or 1
+    return _pool_workers().cores()   # 核数唯一取法（tools/pool_workers.py，#1332；认 S2A_NCPU）
+
+
+def _pool_workers():
+    # App 里 build_app.py 把 tools/pool_workers.py 拷进 Resources/Jobs（jobs_bundle.py）；源码树里从仓库 tools/ 取（同 core.shared_redact）
+    try:
+        import pool_workers
+    except ImportError:
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
+        import pool_workers
+    return pool_workers
 
 
 def available_mb():
