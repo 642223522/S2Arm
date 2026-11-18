@@ -55,11 +55,11 @@ SN=$(s2a_nospace "$S") || { echo "【红】建不了无空格别名（${S}）"; 
 "${S2A_PY:-python3}" "$H/shell/closure.py" mark "$S" --list-from "$R" || { echo "【红】设不了出壳镜像文件访问时间（壳输入闭包）"; exit 1; }
 t0=$SECONDS
 # 游戏库界面（runtime/build.mk S2A_SHELLUI）缺省按壳输入表：有「入 shell」行才编进壳。
-# Intel Mac 上 Xcode 的 arm64Only iOS 运行时在 x86_64 主机加载不了，xcodebuild 解析不出 generic/platform=iOS；
-# 这不是 iPhone 出包链的依赖，默认跳过库界面。装了 universal 运行时要 S2A_SHELLUI=1 显式打开。
+# Intel Mac 只有 tvOS 平台组件没装、xcodebuild 解析不出 generic/platform=tvOS；iOS 平台组件已装，xcodebuild 能编出库界面。
+# 通用容器 App（s2a_catalogue.json）必须带库界面，否则 iPad 上打开就报「没带游戏库」，不能为了省编译跳过。
 SHELLUI=0; printf '%s\n' "$IN" | grep -qx 'shell' && SHELLUI=1
-if [ "$(uname -m)" = x86_64 ] && [ "$SHELLUI" = 1 ] && [ -z "${S2A_SHELLUI:-}" ]; then
-  echo "🟡 Intel Mac：跳过游戏库界面（本机 arm64Only iOS 运行时不能给 xcodebuild 当 iOS 目标）；单款 IPA 出包不受影响"
+if [ "$(uname -m)" = x86_64 ] && [ "$OS" = tvos ] && [ "$SHELLUI" = 1 ] && [ -z "${S2A_SHELLUI:-}" ]; then
+  echo "🟡 Intel Mac：本机没装 tvOS 平台组件，跳过电视壳的游戏库界面；iPhone 壳照常带库界面"
   SHELLUI=0
 elif [ -n "${S2A_SHELLUI:-}" ]; then
   SHELLUI=$S2A_SHELLUI

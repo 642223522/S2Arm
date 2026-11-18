@@ -74,10 +74,12 @@ class IntelPackagingConfigTest(unittest.TestCase):
         self.assertFalse(prepare_build.can_build_on("Darwin", "ppc64"))
         self.assertFalse(prepare_build.can_build_on("Linux", "x86_64"))
 
-    def test_intel_shell_build_skips_unavailable_shellui(self):
+    def test_intel_shell_build_includes_ios_library_ui(self):
+        """Intel 出 iPhone 壳必须带库界面：通用容器 App 打开就要显示游戏库。"""
         text = (ROOT / "pack/shell_build.sh").read_text()
         self.assertIn('uname -m', text)
         self.assertIn('x86_64', text)
+        self.assertIn('"$OS" = tvos', text)   # 只在 tvOS 平台组件没装时跳过；iOS 不再整段跳过
         self.assertIn('SHELLUI=0', text)
         self.assertIn('S2A_SHELLUI:-', text)
 
