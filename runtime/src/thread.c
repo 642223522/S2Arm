@@ -2546,8 +2546,8 @@ __attribute__((weak, noreturn)) void sw_snap_resume(void *frame) { (void)frame; 
 static _Atomic int g_snap_settled;
 // 恢复的游戏线程：绑宿主、按快照装 TSD / TLR，宿主栈上做一个门帧，按停法续跑。全程 g_frz 开着：续跑出来的线程都停回门里，等全体就位后统一放开
 #if defined(__APPLE__)
-// 弱链接[host,ios,touchtest]：gl_snap_thread_bind（GL 出图层 graphics/nvn/gfx/gl/egl.m 提供：线程本地的当前上下文按快照接回；不链图形库的宿主构建没有）
-void gl_snap_thread_bind(uint64_t tid) __attribute__((weak_import));
+// 弱缺省定义：真定义在 GL 出图层 graphics/nvn/gfx/gl/egl.m（线程本地的当前上下文按快照接回，同一个程序里强定义盖过它）；不链图形库的宿主构建与只链 thread.c 的单测用这份空实现
+__attribute__((weak)) void gl_snap_thread_bind(uint64_t tid) { (void)tid; }
 #endif
 // 当前线程的客体线程号（不是游戏线程回 0）：GL 出图层按它记各线程的当前上下文（即时存档）
 uint64_t s2a_snap_thread_self(void) { thr_t *t = thread_current_or_null(); return t ? t->id : 0; }
@@ -2561,7 +2561,7 @@ static void *snap_thread_main(void *arg) {
     t->mport = pthread_mach_thread_np(pthread_self()); t->tsd = plat_tsd_base(); t->pt = pthread_self();
     s2a_crash_thread_init();
 #if defined(__APPLE__)
-    if (gl_snap_thread_bind) gl_snap_thread_bind(t->id);
+    gl_snap_thread_bind(t->id);
 #endif
     pthread_setspecific(g_keygate, (void *)sw_gate);
     pthread_setspecific(g_key18, (void *)(uintptr_t)r->k18);
