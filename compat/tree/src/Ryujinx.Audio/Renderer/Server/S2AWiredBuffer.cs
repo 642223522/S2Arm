@@ -51,4 +51,11 @@ namespace Ryujinx.Audio.Renderer.Server
             NativeMemory.AlignedFree(p);
         }
     }
+
+    // S2Arm: the DSP reads the memory pools the game attaches to the renderer (sample data) on the realtime audio thread. The host
+    // sets this hook to keep a pool resident while it is attached (on = true at map, false at unmap); null = nothing to do.
+    public static unsafe class S2AAudioPoolResident
+    {
+        public static delegate*<ulong, ulong, bool, void> Hook;
+    }
 }

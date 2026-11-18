@@ -294,6 +294,11 @@ namespace S2A.Services
                 Ryujinx.Audio.Renderer.Server.AudioRenderSystem.S2ASnapOn = true;
             }   // 即时存档：存档树的根以服务层实际用的为准（关着不碰 SnapLog，不触发它的静态初始化）
 
+            if (!OperatingSystem.IsWindows())   // 音频内存池挂着期间常驻物理内存（见 GuestMemory.AudioPoolResident）
+            {
+                Ryujinx.Audio.Renderer.Server.S2AAudioPoolResident.Hook = &GuestMemory.AudioPoolResident;
+            }
+
             var audio = new AudioPeakDriver(CreateAudioDriver());
             try
             {
