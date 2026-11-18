@@ -40,7 +40,7 @@ enum CloudSaves {
         guard let data = store.cloudSavesBookmark else { return .off }   // 没开云存档：正常情况，不打日志
         var stale = false
         let url: URL
-        do { url = try URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale) }
+        do { url = try resolveBookmark(data, stale: &stale) }
         catch { NSLog("S2Arm 云存档：【红】读不出选的文件夹（书签 %d 字节）：%@", data.count, String(describing: error)); return .lost(lostReason) }
         let scoped = url.startAccessingSecurityScopedResource()
         // 试读一次目录：解析得出但系统不给访问的（换签名后旧授权不认）在这里就暴露，不拖到同步中途才报
@@ -53,6 +53,17 @@ enum CloudSaves {
         NSLog("S2Arm 云存档：文件夹 %@（%@，访问授权 %@）", url.lastPathComponent, stale ? "书签已过期、已刷新" : "书签有效", scoped ? "拿到" : "没拿到")
         if stale, let fresh = try? url.bookmarkData() { store.defaults.set(fresh, forKey: ShellSettingsStore.cloudSavesKey) }
         return .ready(url)
+    }
+    /// 解析书签；和系统文件服务的连接被中断 / 失效（NSCocoaErrorDomain 4097 NSXPCConnectionInterrupted、4099 NSXPCConnectionInvalid）
+    ///   是系统层的瞬时故障、重连就好，再解析一次（诊断 D-4Y69：一次 4097 就被判成「授权丢了、请重新选文件夹」，指引是错的）。
+    ///   再不行才按授权丢失处理
+    static func resolveBookmark(_ data: Data, stale: inout Bool,
+                                resolve: (Data, inout Bool) throws -> URL = { d, s in try URL(resolvingBookmarkData: d, options: [], relativeTo: nil, bookmarkDataIsStale: &s) }) throws -> URL {
+        do { return try resolve(data, &stale) }
+        catch let e as NSError where e.domain == NSCocoaErrorDomain && (e.code == 4097 || e.code == 4099) {
+            NSLog("S2Arm 云存档：解析书签时和系统文件服务的连接中断（%d），重试一次", e.code)
+            return try resolve(data, &stale)
+        }
     }
     static var lostReason: String { shellText("The system no longer lets S2Arm open the iCloud folder you chose before (this happens after the app is signed again with a different certificate). Choose the same folder again to keep syncing.") }
 

@@ -26,10 +26,11 @@ def identity():
     global _id
     if _id is None:
         h = hashlib.sha256()
+        # 「._」开头的是 macOS 在 exFAT 等盘上给每个文件配的 AppleDouble 附属文件（存扩展属性），不是源码：算进来同一份源码换个盘身份就变
         for d, names in ((SRC, sorted(os.listdir(SRC))), (SHIM, sorted(os.listdir(SHIM)))):
             for n in names:
                 p = os.path.join(d, n)
-                if os.path.isfile(p) and n.endswith(('.cpp', '.hpp', '.h')): h.update(n.encode() + b'\0' + open(p, 'rb').read() + b'\0')
+                if os.path.isfile(p) and n.endswith(('.cpp', '.hpp', '.h')) and not n.startswith('._'): h.update(n.encode() + b'\0' + open(p, 'rb').read() + b'\0')
         h.update(' '.join(FLAGS).encode())
         _id = h.hexdigest()[:16]
     return _id
@@ -38,6 +39,12 @@ def identity():
 def _build_id():   # 编好的库放哪：输出身份 + 编译器版本 + Windows 胶水（换了工具链 / 胶水就重编库，但不改缓存键）
     win = open(os.path.join(SHIM, 'win', 'shim.cpp'), 'rb').read() if WIN else b''   # 11-05：win/shim.cpp 不进输出身份，原先改了它旧库照用
     return hashlib.sha256((identity() + '\0' + subprocess.run([*_cxx(), '--version'], capture_output=True, text=True).stdout).encode() + b'\0' + win).hexdigest()[:16]
+
+
+def _own_objects(tmp, units):
+    """tmp 里本次编出的 <单元>.o，按目录列出的顺序；目录里别的文件（如 exFAT 上的 AppleDouble「._<名>.o」）不收"""
+    own = {u + '.o' for u in units}
+    return [os.path.join(tmp, f) for f in os.listdir(tmp) if f in own]
 
 
 def _build(out):
@@ -52,7 +59,9 @@ def _build(out):
         lib = os.path.join(tmp, LIB)
         # Windows 链接带 /Brepro：库整文件哈希进翻译键（dsh/batch/Build.cs LibFp，PE 不拆节），lld-link 缺省写链接时刻，同源每编一次字节不同、
         #   Windows 出包机每份新检出全部着色器翻译缓存作废；/Brepro 时间戳取内容哈希。Mac 照旧（LibFp 按 Mach-O 节内容算，不看文件头）
-        subprocess.run([*_cxx(), *(['-shared', '-Wl,/Brepro'] if WIN else ['-dynamiclib']), '-o', lib, *[os.path.join(tmp, f) for f in os.listdir(tmp) if f.endswith('.o')]], check=True)
+        # 只链接上面自己编出的目标文件。原先按「目录里所有 .o」收：引擎在 exFAT 盘上时 macOS 给每个 .o 另写一个 AppleDouble「._<名>.o」，
+        #   一并交给 ld 报 unknown file type，直连库每次都出不来（#1529）。仍按目录列出的顺序链接：APFS 上这个顺序固定，库各节内容与原先相同
+        subprocess.run([*_cxx(), *(['-shared', '-Wl,/Brepro'] if WIN else ['-dynamiclib']), '-o', lib, *_own_objects(tmp, [*UNITS, 'main', 'shim'])], check=True)
         os.replace(lib, out)
     finally: shutil.rmtree(tmp, ignore_errors=True)
 
@@ -130,7 +139,7 @@ def cli_path(upstream=True):
             procs.append(subprocess.Popen([*cc, *pre, '-c', os.path.join(SRC, 'main.cpp'), '-o', os.path.join(tmp, 'main.o')]))
             if any(x.wait() for x in procs): raise RuntimeError('spirv-cross 命令行编译失败（见上方编译器输出）')
             exe = os.path.join(tmp, CLI)
-            subprocess.run([*_cxx(), '-o', exe, *[os.path.join(tmp, f) for f in os.listdir(tmp) if f.endswith('.o')]], check=True)
+            subprocess.run([*_cxx(), '-o', exe, *_own_objects(tmp, [*UNITS, 'main'])], check=True)
             with open(os.path.join(d, 'versions.json'), 'w', encoding='utf-8', newline='\n') as f: json.dump({'spirvCross': 'spirv-cross ' + m.group(1)}, f)
             os.replace(exe, p)
         finally: shutil.rmtree(tmp, ignore_errors=True)

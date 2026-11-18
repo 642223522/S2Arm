@@ -4,6 +4,10 @@
 set -u
 H=$(cd "$(dirname "$0")/.." && pwd)
 export DOTNET_ROOT=${DOTNET_ROOT:-$HOME/.dotnet}; export PATH=$DOTNET_ROOT:$PATH
+# services/romfs_index 只编一次，下面 4 份脚本经 S2A_ROMFS_INDEX_DLL 共用（各脚本原先各编一遍）；没有 dotnet 或编不过就不设，各脚本照旧自己处理
+B=$(mktemp -d); trap 'rm -rf "$B"' EXIT
+command -v dotnet > /dev/null && dotnet build "$H/services/romfs_index" -c Release -o "$B/ri" > "$B/build.log" 2>&1 && [ -f "$B/ri/romfs_index.dll" ] \
+  && export S2A_ROMFS_INDEX_DLL=$B/ri/romfs_index.dll
 python3 "$H/tests/romfs_img_test.py" || exit 1
 # 目录不在、旁边有 <目录>.std 时 romfs_list.py 从镜像盘点（11-16），与目录盘点对拍
 python3 "$H/tests/romfs_list_img_test.py" || exit 1

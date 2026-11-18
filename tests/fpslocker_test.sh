@@ -1,13 +1,13 @@
 #!/bin/bash
 # 门禁覆盖：pack/fpslocker.py pack/miniyaml.py
-# FPSLocker 配置转换单测（pack/miniyaml.py + pack/fpslocker.py，约 2 秒；汇编那几项要 xcrun clang，没有就跳过并说明）：bash tests/fpslocker_test.sh
+# FPSLocker 配置转换单测（pack/miniyaml.py + pack/fpslocker.py，约 2 秒；有 AArch64 clang 时做实际汇编）：bash tests/fpslocker_test.sh
 # 期望（按 FORMAT.md 与 A64 编码手算，不跑被测实现推期望）：
 #   ① 小 YAML：流式列表里的 :标签、"!" 写回、跨行流式列表、键下缩进的「- 值」块列表、# 注释（引号内不算）
 #   ② MASTER_WRITE asm_a64：cmp x26, 3 = 0xF1000F5F；mov w1, 3 = 0x52800061；adrp x10, 0x30a7000 放在 0x193cea8 处 = 页差 0x176b → 0xF000B5AA
 #   ③ bytes：uint32 列表按小端连写
 #   ④ DECLARATIONS：变量排在变量区（8 对齐）、初值非 0 才写；ALL_FPS 里 [VARIABLE, $名] 换成 [MAIN, 偏移]；block 丢弃
 #   ⑤ 调 FPSLocker 自带帮助函数 _fpsLock() → 不收（Unsupported）
-#   ⑥ 汇编器起不来（Windows 没有 xcrun，FileNotFoundError）→ 这份不收（Unsupported），不冲垮补丁出表（#1173）
+#   ⑥ 没有 clang / 汇编器进程起不来 → 这份不收（Unsupported），不冲垮补丁出表（#1173）
 #   ⑦⑧ 见对应段落：_convertTickToTimeSpan() 我方实现；mov / movk 里的常量按 16 位片段
 set -u; H=$(cd "$(dirname "$0")/.." && pwd)
 python3 - "$H" <<'EOF'
@@ -54,7 +54,20 @@ mw = doc['MASTER_WRITE']
 ck('① 流式列表：标签 / "!" / 嵌套', mw[0]['instructions'] == [['b.ne', ':skip'], ['nop'], ':skip', ['str', 'x8', ['x0', 16], '!']])
 ck('① 缩进块列表与行尾注释', mw[1]['value'] == [0xD503201F, 0x52800061])
 ck('① 引号内 # 不算注释', doc['ALL_FPS'][0]['value'] == 'FPS_TARGET # 不是注释')
-have_clang = subprocess.run(['xcrun', '--find', 'clang'], capture_output=True).returncode == 0
+have_clang = F._clang_command() is not None
+def macho_fixture(code):
+    seg_size = 72 + 80
+    header = struct.pack('<IiiIIIII', 0xFEEDFACF, 0x0100000C, 0, 1, 1, seg_size, 0, 0)
+    segment = struct.pack('<II16sQQQQiiII', 0x19, seg_size, b'__TEXT', 0, len(code), 0, len(code), 7, 5, 1, 0)
+    section = struct.pack('<16s16sQQIIIIIIII', b'__text', b'__TEXT', 0, len(code), 32 + seg_size, 2, 0, 0, 0, 0, 0, 0)
+    return header + segment + section + code
+ck('Mach-O __TEXT,__text 提取', F._macho_text(macho_fixture(struct.pack('<I', 0xD503201F))) == struct.pack('<I', 0xD503201F))
+wrong_arch = bytearray(macho_fixture(struct.pack('<I', 0xD503201F))); struct.pack_into('<i', wrong_arch, 4, 7)
+try:
+    F._macho_text(wrong_arch); ok = False
+except F.Unsupported:
+    ok = True
+ck('Mach-O 负对照：拒绝非 arm64 object', ok)
 w, rt = F.convert(dict(MASTER_WRITE=[dict(type='bytes', main_offset=0x200, value_type='uint32', value=[0xD503201F, 0x52800061])]), (0, 0), (0x1000, 0x2000))
 ck('③ bytes 小端连写', w == {0x200: struct.pack('<II', 0xD503201F, 0x52800061)})
 if have_clang:
@@ -76,8 +89,20 @@ if have_clang:
     ck('② cmp x26,3 / mov w1,3', w[0xF45DFC] == struct.pack('<II', 0xF1000F5F, 0x52800061))
     im = (0x30a7000 >> 12) - (0x193CEA8 >> 12)
     ck(f'② adrp 页差 {im:#x}', w[0x193CEA8] == struct.pack('<I', 0x90000000 | ((im & 3) << 29) | (((im >> 2) & 0x7ffff) << 5) | 10))
+    patch_ops, _ = F.convert(miniyaml.load('''MASTER_WRITE:
+  -
+    type: asm_a64
+    main_offset: 0x1000
+    instructions: [
+      [nop],
+      [fmov, s0, 1.0],
+      [ldr, x0, [x1]],
+      [cbz, x0, +8]
+    ]
+'''), (0, 0), (0x1000, 0x2000))
+    ck('② FC27 汇编类别 nop / fmov / ldr / cbz', patch_ops[0x1000] == struct.pack('<IIII', 0xD503201F, 0x1E2E1000, 0xF9400020, 0xB4000040))
 else:
-    print('跳过 ② 汇编（本机没有 xcrun clang）')
+    print('跳过 ② 汇编（本机没有 AArch64 clang）')
 w, rt = F.convert(dict(DECLARATIONS=doc['DECLARATIONS'], ALL_FPS=doc['ALL_FPS']), (0, 0), (0x1003, 0x2000))
 ck('④ 变量 8 对齐、初值 30.0 写进去', w == {0x1008: struct.pack('<f', 30.0)} and rt['variables']['fps_target']['offset'] == 0x1008)
 ck('④ VARIABLE 地址换成 MAIN 偏移、block 丢弃', rt['all_fps'] == [dict(type='evaluate_write', address=['MAIN', 0x1008], value_type='float', value='FPS_TARGET # 不是注释')])
@@ -114,7 +139,7 @@ try:
        and words(0x100c) == [0xD2804E21, 0x9B017C00, 0xD2800181, 0x9AC10800, 0xD65F03C0])
     ck('⑧ mov / movk 里的常量按 16 位片段编码', words(0x1000)[1:] == [0x52940AA0, 0x72A03F80])
 except F.Unsupported as e:
-    if 'xcrun' in str(e): print('跳过 ⑦⑧：本机没有汇编器')
+    if 'AArch64 汇编器' in str(e): print('跳过 ⑦⑧：本机没有汇编器')
     else: ck(f'⑦⑧ 不该不收：{e}', False)
 # ⑨ D-7AQ2：跳转目标写了 + / - 的是相对当前指令（[b, +160]），没写符号的是主程序里的绝对偏移（[b, 0x1000]）。原先 +160 读成 160、按绝对跳到 main+0xa0。
 #   期望按 A64 B 编码手算（0x14000000 | ((目标 − 本条) / 4 的低 26 位)）：0x1000 处 b +160 → 0x10a0 = 0x14000028；0x1004 处 b -8 → 0xffc = 0x17fffffe；
@@ -131,17 +156,16 @@ if have_clang:
         ck(f'⑨ 不该不收：{e}', False)
 else:
     print('跳过 ⑨ 编码：本机没有汇编器')
-real = subprocess.run
-def gone(*a, **k): raise FileNotFoundError(2, '系统找不到指定的文件。')
-subprocess.run = gone
+real_clang = F._clang_command
+F._clang_command = lambda: None
 try:
     F._assemble(['nop']); ok = False
 except F.Unsupported as e:
-    ok = 'xcrun' in str(e)
+    ok = 'LLVM clang' in str(e)
 except Exception:
     ok = False
 finally:
-    subprocess.run = real
+    F._clang_command = real_clang
 ck('⑥ 没有汇编器：这份不收、不抛别的异常', ok)
 print(('🔴 fpslocker_test 有不通项' if bad else '✅ fpslocker_test 全过'))
 sys.exit(bad)

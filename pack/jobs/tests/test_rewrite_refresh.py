@@ -16,12 +16,12 @@ import rewrite_refresh as rr
 from core import Failure
 
 
-def fake_rewriter(d, hits):
+def fake_rewriter(d, hits, key="x18_spdyn"):
     """假改写器：<NSO> <输出目录> <模块> [宽屏表] → 写 <模块>.patched.bin（内容 = 模块名 + new），统计行里 x18_spdyn 按 hits 给"""
     p = Path(d) / "fake-rewrite"
     p.write_text("#!/bin/sh\nprintf 'new-%s' \"$3\" > \"$2/$3.patched.bin\"\nprintf 'fx' > \"$2/$3.fixups.tsv\"\n"
                  "case \" " + " ".join(hits) + " \" in *\" $3 \"*) n=38;; *) n=0;; esac\n"
-                 "echo \"$3 {'plain': 1, 'x18_spdyn': $n}\"\n")
+                 "echo \"$3 {'plain': 1, '" + key + "': $n}\"\n")
     p.chmod(p.stat().st_mode | stat.S_IEXEC)
     return str(p)
 
@@ -57,9 +57,9 @@ class RewriteRefreshTests(unittest.TestCase):
             return root, list(mods), [root / "cpatch.tsv", root / "cheat-src.a.txt"]
         return run
 
-    def run_refresh(self, games, hits, fail=(), sgrade=None):
+    def run_refresh(self, games, hits, fail=(), sgrade=None, key="x18_spdyn"):
         """sgrade = None：这些款出包时取消了 S 级优化（只按改写器核，原有用例的口径）；给记号串 = 要补 S 级优化、这次的补丁记号"""
-        binary = fake_rewriter(self.tmp, hits)
+        binary = fake_rewriter(self.tmp, hits, key)
         real = rr.rewrite_modules   # 真的那份：桩里只在「这款要失败」时拦，其余照真函数跑假改写器
         cur = {}
         def exefs_of(c, game, work):
@@ -90,6 +90,13 @@ class RewriteRefreshTests(unittest.TestCase):
         self.assertEqual((k / "main.fixups.tsv").read_bytes(), b"fx")
         self.assertEqual((k / "sdk.patched.bin").read_bytes(), b"old-sdk", "没命中的模块一个字节不动")
         self.assertEqual(self.info["0100A"]["ios"], {"shellId": "s1", "pack": "p1", "rewriterId": "rid-new", "mainBid": ""}, "记下改写器指纹，原有字段保留")
+
+    def test_pacga_module_counts_as_affected(self):
+        # 11-17：改写器把 pacga 换成确定性实现；只带 pacga 的模块（统计行 pacga > 0、x18_spdyn 没有）也要换新产物
+        updated, kits = self.run_refresh(["0100A"], hits=["sdk"], key="pacga")
+        self.assertEqual(updated, ["0100A"])
+        self.assertEqual((kits["0100A"] / "sdk.patched.bin").read_bytes(), b"new-sdk")
+        self.assertEqual((kits["0100A"] / "main.patched.bin").read_bytes(), b"old-main")
 
     def test_sgrade_rewrite_needs_no_symlink_privilege(self):
         # #1153：Windows 没开开发者模式建目录软链 WinError 1314，每款都「补丁打入失败」；改写根里的 exefs 要是真目录、内容同原件

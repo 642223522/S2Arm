@@ -1096,6 +1096,9 @@ class Context:
                    S2A_MACHINE_NO_LOCAL="1", S2A_CPU_LEDGER="0",
                    # 玩家导入的客体着色器缓存（启动器社区资源面板拷进 <数据目录>/着色器缓存/<程序号>/，出包时自动并入；着色器线 docs/客体着色器缓存导入.md）
                    S2A_USER_SHCACHE=str(self.private / "着色器缓存"))
+        import upgrade_budget
+        if getattr(self, "operation", None) in upgrade_budget.OPERATIONS:   # S 级升级：按此刻核数 / 可用内存 / 有没有游戏在跑定路数，不吃满玩家的机器
+            env.update(upgrade_budget.env(self))
         # 作业临时目录（游戏库结构 v3，出包修复线约定）：这款所在存放位置的 temp/<任务号>，与游戏数据同卷；作业结束由 main.run_request 删
         gid = self.r.get("gameId")
         if gid and self.r.get("library") and (self.library / ".s2arm-library.json").is_file():
