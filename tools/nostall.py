@@ -14,6 +14,9 @@
 #     缺页等盘几乎不涨 CPU、也还没写输出，旧版判挂死）。实测 mmap 缺页读计入 ri_diskio_bytesread（一款第一方游戏网球 xci 随机页读 5 秒：+452 MB，ri_pageins +26766）
 #   ③ 的来由（10-31 mhrise-formal-f285 02:03 被误杀、01007EF00011E000 rc=124 同类）：Metal 编译真正在算的是系统的 MTLCompilerService，
 #     它由 launchd 起、不在本进程树里；树里的 xcrun / metal 只在等它，树内 CPU 不涨，旧版只看 ②，把正在编库的出库判成挂死。
+#   「在动」不等于「在前进」（#1560：玩家出包最后一批两个 metal 进程卡了三个半小时——编译子进程一直活着、CPU 一直在涨，②③ 每轮都算进展，看门狗永远不判）：
+#     ②③④ 只说明进程在忙，只有 ① 说明产出在前进。所以另设产出上限：连续 <无进展秒> × OUT_X 秒 ① 一次都没成立（被盯路径、日志、出包进度文件都没有新写入），
+#     不管 ②③④ 怎样都判挂死。出包进度文件 = 环境变量 S2A_PROGRESS 指的那份（dsh_batch 每编完一批写一行，不写心跳），设了就自动盯上
 #   判挂死：打一行「【红】无进展看门狗：…」到标准错误、TERM 整棵树、10 秒后 KILL，退出 124（同 timeout，调用方按超时归类）。
 #   停之前先给树里每个进程抓 1 秒原生调用栈（/usr/bin/sample，各进程同时抓），写进第一个被盯目录下的 nostall_stacks.<命令进程号>.log，红行写明路径
 #   （11-02 无主之地3 S2Arm 抽取 600 秒无进展被停、CPU 停在 17.2 秒，只剩一行红：看不出是哪个进程停在管道读、信号量还是锁上；
@@ -23,6 +26,7 @@
 import ctypes, os, re, signal, stat, subprocess, sys, time
 
 COMPILER = re.compile(r'^(xcrun|metal[-\w.]*|metallib|air[-\w.]*|clang(\+\+)?(-\d+)?|spirv-[-\w.]+|glslc|glslangValidator|dxc)$')
+OUT_X = 6   # 产出上限 = <无进展秒> × OUT_X（出包链缺省 600 → 3600 秒）：正常最慢的一步（满载换页、缺页读）也在几百秒内写出东西
 PEEK, DEPTH = 64, 3   # 被盯目录只看自身与前 PEEK 项里的子目录（至多 DEPTH 层），不列全目录（10-31 符文工房5：一层平铺 26.9 万个文件，全量列一次 36 秒以上、卡在 IO 等待）
 
 WIN = sys.platform == 'win32'
@@ -175,6 +179,7 @@ def main():
     if len(a) < 3 or a[1] != '--': sys.exit('用法：nostall.py [--watch <目录或文件>]… <无进展秒> -- <命令…>')
     limit, cmd = float(a[0]), a[2:]
     poll = float(os.environ.get('S2A_NOSTALL_POLL', '30'))
+    if os.environ.get('S2A_PROGRESS'): watch.append(os.environ['S2A_PROGRESS'])
     for fd in (1, 2):   # 标准输出 / 错误是日志文件就一并盯
         try:
             if stat.S_ISREG(os.fstat(fd).st_mode):
@@ -190,24 +195,32 @@ def main():
                 if not WIN: raise
     signal.signal(signal.SIGTERM, fwd); signal.signal(signal.SIGINT, fwd)
     last_cpu, last_fp, last_io, since = -1.0, footprint(watch), {}, time.time()
+    since_out = since
     while True:
         try: rc = p.wait(timeout=poll); return rc if rc >= 0 else 128 - rc
         except subprocess.TimeoutExpired: pass
         t = tree(p.pid); c = sum(v[0] for v in t.values()); fp = footprint(watch)
         comp = sorted({v[1] for v in t.values() if COMPILER.match(v[1])})
         io = diskio(t)   # 按进程比（进程退出不让合计倒退）；新出现的进程和 0 比
-        moved = c > last_cpu or fp != last_fp or comp or any(v > last_io.get(x, 0) for x, v in io.items())
+        out = fp != last_fp
+        moved = out or c > last_cpu or comp or any(v > last_io.get(x, 0) for x, v in io.items())
         last_cpu, last_fp, last_io = max(c, last_cpu), fp, io
-        if moved: since = time.time(); continue
-        if time.time() - since >= limit:
+        now = time.time()
+        if out: since_out = now
+        if moved: since = now
+        if now - since >= limit:
             print(f'【红】无进展看门狗：{" ".join(cmd)[:160]} {limit:.0f} 秒没有任何进展——进程树 CPU 时间没涨（停在 {c:.1f} 秒）、磁盘读写字节没涨、'
                   f'被盯的输出 / 日志没有新写入（{len(watch)} 处）、树里没有编译子进程，判挂死、停掉', file=sys.stderr, flush=True)
-            d = next((w for w in watch if os.path.isdir(w)), None)
-            got = d and stacks(t, os.path.join(d, f'nostall_stacks.{p.pid}.log'))
-            if got: print(f'  停之前各进程的调用栈（{len(t)} 个进程）：{got}', file=sys.stderr, flush=True)
-            fwd(signal.SIGTERM, None)
-            try: p.wait(timeout=10)
-            except subprocess.TimeoutExpired: fwd(getattr(signal, 'SIGKILL', signal.SIGTERM), None); p.wait()   # Windows 的 os.kill 本就是 TerminateProcess
-            return 124
+        elif now - since_out >= limit * OUT_X:
+            print(f'【红】无进展看门狗：{" ".join(cmd)[:160]} {limit * OUT_X:.0f} 秒产出没有前进——被盯的输出 / 日志 / 出包进度（{len(watch)} 处）一次新写入都没有，'
+                  f'进程却还在忙（CPU {c:.1f} 秒、编译子进程 {", ".join(comp) or "无"}），判卡死、停掉', file=sys.stderr, flush=True)
+        else: continue
+        d = next((w for w in watch if os.path.isdir(w)), None)
+        got = d and stacks(t, os.path.join(d, f'nostall_stacks.{p.pid}.log'))
+        if got: print(f'  停之前各进程的调用栈（{len(t)} 个进程）：{got}', file=sys.stderr, flush=True)
+        fwd(signal.SIGTERM, None)
+        try: p.wait(timeout=10)
+        except subprocess.TimeoutExpired: fwd(getattr(signal, 'SIGKILL', signal.SIGTERM), None); p.wait()   # Windows 的 os.kill 本就是 TerminateProcess
+        return 124
 
 if __name__ == '__main__': sys.exit(main())

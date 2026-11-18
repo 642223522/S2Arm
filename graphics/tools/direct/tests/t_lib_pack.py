@@ -20,6 +20,7 @@ def pack(src, out, chain): return subprocess.run([*CMD, '--libpack', 'pack', src
 K1, K2, CHAIN = '0000000000000abc', 'fedcba9876543210', '0a7dae3c1e7b'
 _inc = open(os.path.join(HERE, '../../../nvn/lib_pack_core.inc'), encoding='utf-8').read()
 check('LP_K_SE = 51' in _inc, '宿主 graphics/nvn/lib_pack_core.inc 的 LP_K_SE = 51（下面打包用同号）')
+check('LP_K_VP = 54' in _inc, '宿主 graphics/nvn/lib_pack_core.inc 的 LP_K_VP = 54（顶点并集补齐变体，下面打包用同号）')
 MSL = '#include <metal_stdlib>\nusing namespace metal;\nfragment float4 main0() { return float4(%s); }\n'
 
 def build(t):
@@ -90,6 +91,12 @@ with tempfile.TemporaryDirectory() as t:
     check(out == '2', f'两键 _b 切片各建得了库、取到 main0（{out}/2）')
     r = pack(d, o, CHAIN)
     check(r.returncode == 1 and '已有 lib.idx' in r.stderr, f'反证：再打一次 → 退出 1、报已有 lib.idx（{r.returncode}）')
+
+with tempfile.TemporaryDirectory() as t:   # 种类 54：顶点着色器的并集补齐变体 <键>_vp.metallib（Build.cs VpFinish）；没有自己的反射
+    d = os.path.join(t, 'src'); os.makedirs(d)
+    open(os.path.join(d, f'{K1}_b.json'), 'w').write('{}'); open(os.path.join(d, f'{K1}_vp.metallib'), 'wb').write(b'vp lib bytes')
+    r = pack(d, os.path.join(t, 'o1'), CHAIN); recs = parse(os.path.join(t, 'o1'))[4] if r.returncode == 0 else []
+    check(r.returncode == 0 and [(x[0], x[1]) for x in recs] == [(int(K1, 16), 1), (int(K1, 16), 54)], f'种类表：_vp.metallib → 54（{[(hex(x[0]), x[1]) for x in recs]}）')
 
 with tempfile.TemporaryDirectory() as t:   # 种类 51：采样模拟变体 <键>_se.metallib；变体没有自己的反射，_se.json 不是键文件
     d = os.path.join(t, 'src'); os.makedirs(d)

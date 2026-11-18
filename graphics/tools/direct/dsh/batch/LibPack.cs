@@ -115,7 +115,7 @@ static partial class LibPack
     // ---------------- lib_swap.py ----------------
     static readonly Regex KEY = new(@"\A([0-9a-f]{16})_b\.(metal|metallib|json)$", RegexOptions.CultureInvariant);
     /// <summary>lib_swap.LIBFILE：发布那一侧里属于库容器的文件（键文件 + 批库 u&lt;16 位&gt;.metallib）；含直通几何快路的 _bgs&lt;i&gt; / _bgc（11-06 漏收：Build.cs 编了、PackFiles 认了，发布这道过滤没收，金刚 kong_pt 包种类 64–97 为 0）</summary>
-    static readonly Regex LIBFILE = new(@"\A(?:[0-9a-f]{16}_(?:b\.metallib|b\.json|bf\.metallib|bv\.metallib|ft\.metallib|se\.metallib|b_t[0-2]\.metallib|bg\d+\.(?:metallib|json)|bgv\.(?:metallib|json)|bgs\d+\.(?:metallib|json)|bgc\.(?:metallib|json))|u[0-9a-f]{16}\.metallib)$", RegexOptions.CultureInvariant);
+    static readonly Regex LIBFILE = new(@"\A(?:[0-9a-f]{16}_(?:b\.metallib|b\.json|bf\.metallib|bv\.metallib|ft\.metallib|se\.metallib|vp\.metallib|b_t[0-2]\.metallib|bg\d+\.(?:metallib|json)|bgv\.(?:metallib|json)|bgs\d+\.(?:metallib|json)|bgc\.(?:metallib|json))|u[0-9a-f]{16}\.metallib)$", RegexOptions.CultureInvariant);
     public static bool IsLibFile(string name) => LIBFILE.IsMatch(name);
     public static readonly IReadOnlyDictionary<string, string> Sdk = new Dictionary<string, string> { ["ios"] = "iphoneos", ["mac"] = "macosx" };
 
@@ -223,19 +223,19 @@ static partial class LibPack
     // ---------------- lib_pack.py ----------------
     const int VER = 1, ALIGN = 16; const long SHARD_MAX = 64L << 20;   // 分片上限 64 MB（运行时按需映射，iOS 虚拟地址紧）
     static readonly byte[] MAGIC = Encoding.ASCII.GetBytes("S2ALIB\0\0");
-    static readonly Regex NAME = new(@"\A([0-9a-f]{16})_(b\.metallib|b\.json|b\.spv|bf\.metallib|bv\.metallib|ft\.metallib|se\.metallib|b_t([0-2])\.metallib|bg(\d+)\.(metallib|json)|bgv\.(metallib|json)|bgs(\d+)\.(metallib|json)|bgc\.(metallib|json))$", RegexOptions.CultureInvariant);
+    static readonly Regex NAME = new(@"\A([0-9a-f]{16})_(b\.metallib|b\.json|b\.spv|bf\.metallib|bv\.metallib|ft\.metallib|se\.metallib|vp\.metallib|b_t([0-2])\.metallib|bg(\d+)\.(metallib|json)|bgv\.(metallib|json)|bgs(\d+)\.(metallib|json)|bgc\.(metallib|json))$", RegexOptions.CultureInvariant);
     static readonly Regex VKFP = new(@"\A[0-9a-f]{16}\z", RegexOptions.CultureInvariant);
     const int K_SPV = 52;   // Vulkan 库的 _b.spv（#783）；0–51 是 Metal 的种类
     static readonly Regex CHAIN = new(@"\A[0-9a-z]{1,12}\z", RegexOptions.CultureInvariant);
     static readonly Regex KEYFILE = new(@"\A[0-9a-f]{16}_", RegexOptions.CultureInvariant);
     static readonly Regex BATCH = new(@"\Au[0-9a-f]{16}\z", RegexOptions.CultureInvariant);
 
-    /// <summary>种类号（lib_pack.kind）：0 _b.metallib 1 _b.json 2 _bf 3 _bv 4+d _b_t&lt;d&gt; 16+i _bg&lt;i&gt;.metallib 32+i _bg&lt;i&gt;.json 48/49 _bgv 50 _ft 51 _se 52 _b.spv（Vulkan 库）
+    /// <summary>种类号（lib_pack.kind）：0 _b.metallib 1 _b.json 2 _bf 3 _bv 4+d _b_t&lt;d&gt; 16+i _bg&lt;i&gt;.metallib 32+i _bg&lt;i&gt;.json 48/49 _bgv 50 _ft 51 _se 52 _b.spv（Vulkan 库）54 _vp（顶点着色器的并集补齐变体）
     /// 64+i _bgs&lt;i&gt;.metallib 80+i _bgs&lt;i&gt;.json 96/97 _bgc（直通几何快路：只算副作用的几何核、读抓顶点的主遍顶点变体）；i &gt; 15 → null</summary>
     static int? Kind(Match m)
     {
         string s = m.Groups[2].Value;
-        switch (s) { case "b.metallib": return 0; case "b.json": return 1; case "bf.metallib": return 2; case "bv.metallib": return 3; case "ft.metallib": return 50; case "se.metallib": return 51; case "b.spv": return K_SPV; }
+        switch (s) { case "b.metallib": return 0; case "b.json": return 1; case "bf.metallib": return 2; case "bv.metallib": return 3; case "ft.metallib": return 50; case "se.metallib": return 51; case "vp.metallib": return 54; case "b.spv": return K_SPV; }
         if (m.Groups[3].Success) return 4 + (m.Groups[3].Value[0] - '0');
         if (m.Groups[4].Success)
         {

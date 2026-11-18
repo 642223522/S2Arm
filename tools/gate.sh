@@ -55,6 +55,7 @@ apple_step() {
 #   固定解释器 ~/.s2arm/venv 里按 tools/rewriter-requirements.txt 钉了版本、doctor.sh 预检核它）：没给 S2A_PY 且固定解释器在 → 各步统一用它
 [ -z "${S2A_PY:-}" ] && [ -x "$HOME/.s2arm/venv/bin/python3" ] && export S2A_PY=$HOME/.s2arm/venv/bin/python3
 # 单跑钩子的一部分（11-14 新门禁按组拆步）：GATE_HOOK_ONLY / GATE_HOOK_SKIP=<子项键…> → 本机整步跑的钩子带 GATE_ONLY / GATE_SKIP（钩子自己认键，认不得报红）；
+#   GATE_HOOK_ONLY 也原样转给钩子：认它的钩子（graphics/gate.sh 的子项键与它自己的 GATE_ONLY 本机键是两套）按它挑，其余钩子只看 GATE_ONLY；
 #   下文统一 unset GATE_ONLY / GATE_SKIP（远端计划用），这里先记下
 HONLY=${GATE_HOOK_ONLY:-}; HSKIP=${GATE_HOOK_SKIP:-}; unset GATE_HOOK_ONLY GATE_HOOK_SKIP
 TIER=${GATE_TIER:-full}; PLANM=${GATE_PLAN:-}; RER=${GATE_RERUN:-}; NOLQ=${GATE_NO_LOADQ:-}   # 列车起的门禁（下文 unset 前先记下：本机预跑令牌豁免它）
@@ -435,7 +436,7 @@ GP=$$; ( while sleep "${GATE_BEAT_S:-300}" > /dev/null 2>&1 < /dev/null; kill -0
 echo $HB > "$L/hb.pid"; [ -f tools/gate_reap.py ] && python3 tools/gate_reap.py $$ "$L" 2> /dev/null   # 收尸进程：本主进程被 KILL 时停掉在跑的步与心跳（见 tools/gate_reap.py）
 # 本机那份：整步本机的 + 拆出来的子项；gate-host 那份一次 维护方工具 跑完（带 @gate 共享数据，结果目录拉回 $L/r），两边同时跑
 for i in $(seq 1 $N); do s=${STEPS[$((i - 1))]}; [ "${WH[$i]}" = 本机 ] && { r1=${s#*	}; c=${r1%	*}
-  case ${s%%	*} in 钩子\ *) [ -n "$HSKIP" ] && c="export GATE_SKIP='$HSKIP'; $c"; [ -n "$HONLY" ] && c="export GATE_ONLY='$HONLY'; $c";; esac
+  case ${s%%	*} in 钩子\ *) [ -n "$HSKIP" ] && c="export GATE_SKIP='$HSKIP'; $c"; [ -n "$HONLY" ] && c="export GATE_ONLY='$HONLY' GATE_HOOK_ONLY='$HONLY'; $c";; esac
   if [ -n "$HONLY$HSKIP" ]; then job "$i" "$c" "${s##*	}"; else job "$i" "$(tcw "$i" "$c")" "${s##*	}"; fi; }; done   # 只跑一部分：不进按步结果缓存（缓存键不含子项键，部分绿会被当整步绿）
 { j=0; for i in ${LPI[@]+"${LPI[@]}"}; do s=${STEPS[$((i - 1))]}; r1=${s#*	}; job "$i.k$j" "export GATE_ONLY='${LPK[$j]}'; ${r1%	*}" "${s##*	}"; j=$((j + 1)); done; }
 [ ${#LJ[@]} -gt 0 ] && detwait
