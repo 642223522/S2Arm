@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Windows 签名装机交给玩家自己装的 Impactor（11-04 维护者：「让玩家自己装 impactor，做好引导和体验」）：启动器与命令行共用的这一层。
-我们不自己做签名、不改苹果组件；11-07 起发版启动器随包带官方原版 Impactor + plumesign（BUNDLED，不改不重签），玩家零跳转；源码树 / 命令行仍找玩家自己放的。
+我们不自己做签名、不改苹果组件；11-07 起发版启动器随包带 Impactor + plumesign（BUNDLED），玩家零跳转；源码树 / 命令行仍找玩家自己放的。
+11-18 起随包的是自编版：上游 v2.7.3 源码 + launchers/windows/third_party/impactor/patches/（tools/plumesign_build.py 编），
+只改 anisette 服务器的选择（默认服务器被 Apple 以 -23782 拒绝的账号才换备用服务器，见 patches/README.md）。
 这一层：找到 / 核对 Impactor、出包后在资源管理器里选中 ipa、分步引导、把 Impactor 报错翻成共用错误码。
 
   python -m pack.jobs.impactor status [--online]   装没装、版本对不对（--online 再问 GitHub 最新版）；一行 JSON
@@ -20,20 +22,22 @@ TESTED = '2.7.3'
 RELEASE_PAGE = f'https://github.com/claration/impactor/releases/tag/v{TESTED}'
 LATEST_API = 'https://api.github.com/repos/claration/impactor/releases/latest'
 PRODUCT = 'plumeimpactor'
-# 随 Windows 启动器下发的原版 Impactor 与 plumesign（11-07 维护者：「能不能随咱们安装包下发，而不是让玩家再去跳转一次下载」，取代 11-04「不内置」）：
-#   官方发布页原文件、不改不重签，版本钉 TESTED，SHA-256 与 GitHub 发布页 digest 一致（11-07 核）；launchers/windows/bundle_win.py 打包时核哈希、不符拒打。
-#   放在启动器目录（作业请求 resources）下 BUNDLE_DIR；许可（MIT + 内嵌 apple-codesign 的 MPL-2.0）与来源说明同目录。升级走我们发版
+# 随 Windows 启动器下发的 Impactor 与 plumesign（11-07 维护者：「能不能随咱们安装包下发，而不是让玩家再去跳转一次下载」，取代 11-04「不内置」）：
+#   11-18 起是自编版（OWN_BUILD）：上游 v{TESTED} + patches/，tools/plumesign_build.py 在 Windows 实机按钉死的 Rust 版本编（可重复出同样的产物），
+#   SHA-256 钉在 BUNDLED；launchers/windows/bundle_win.py 打包时从自编产物缓存取、核哈希、不符拒打（不再从官方发布页下：官方原版没有补丁）。
+#   放在启动器目录（作业请求 resources）下 BUNDLE_DIR；许可（MIT + 内嵌 apple-codesign 的 MPL-2.0）、补丁与来源说明同目录。升级走我们发版
 BUNDLE_DIR = 'ThirdParty/Impactor'
 IMPACTOR_EXE = 'Impactor-windows-x86_64-portable.exe'
 PLUMESIGN_EXE = 'plumesign-windows-x86_64.exe'
-BUNDLED = {IMPACTOR_EXE: 'ebf939f8c8e74b4cd693d2f9871db4b8304f12396181fdd17404a127427b9923',
-           PLUMESIGN_EXE: '94664749fbbceb9a16bf89583f473dafb9b35c8d058a9d8665dc963b3453c6fc'}
+BUNDLED = {IMPACTOR_EXE: '1748e5595cc8750fb34cf48d7265d65d3cd6d07dced23a4595a0c5b5f028ab23',   # 自编 v2.7.3-s2a1（Windows 实机，rustc 1.99.1；两个工作目录各编一次逐字节相同）
+           PLUMESIGN_EXE: '84ce275398d2fa008eadbd11b2a6da2ffe012d18e1dd874cf1814bddc9f2c2d1'}
 # Mac 启动器随包同版 plumesign（0.6.0 通用壳：Mac 的 Apple ID 改用它登录、签名，自管私钥，免费团队也能签程序库）。
-#   官方发布页原文件，SHA-256 与 GitHub 发布页 digest 一致（11-17 核）；Mac 发版要公证，随包时由 sign_release.sh 用我们的开发者身份重签外层签名，内容不改
+#   自编 v2.7.3-s2a1 通用版（Mac 实机，rustc 1.94.0，固定目标目录两次编逐字节相同）；Mac 发版要公证，随包时由 sign_release.sh 用我们的开发者身份重签外层签名，内容不改
 PLUMESIGN_MAC = 'plumesign-macos-universal'
-BUNDLED_MAC = {PLUMESIGN_MAC: '24bdc78f334f7db324d0d3ae35b1fc67d69f3f8f4a354d10b9967bc3fc261a08'}
+BUNDLED_MAC = {PLUMESIGN_MAC: 'd3ca590e1e92a1e7416f1c27c1ec6749c4ad05389c9c8724faaa53bbf63ce511'}
 PLUME_HOME_ENV = 'S2A_PLUME_HOME'   # 设了就是 plumesign 的数据目录（XDG_CONFIG_HOME，下面 PlumeImpactor/）：Mac 通用壳放启动器私有目录，不碰玩家 ~/.config
-DOWNLOAD = f'https://github.com/claration/impactor/releases/download/v{TESTED}/'
+OWN_BUILD = 's2a1'   # 自编版号（补丁或 Rust 版本变了加一，产物缓存目录 v{TESTED}-{OWN_BUILD}）
+SOURCE_TREE = f'https://github.com/claration/impactor/tree/v{TESTED}'
 
 
 def bundled(resources):
