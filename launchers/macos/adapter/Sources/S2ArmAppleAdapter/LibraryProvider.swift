@@ -12,16 +12,19 @@ public struct GamePackage: Equatable {
     public let sha256: String
     /// 原件形态：空 = NSP / XCI（要密钥）；nup / dump / extract / loose 不加密，不要密钥。
     public let format: String
+    /// 导入时有内容哈希对不上、跳过完整性校验照常导入了（catalog packages[].integritySkipped 非空，11-17 维护者：校验不过不再拒收）
+    public let integritySkipped: Bool
 
-    public init(type: String, titleId: String = "", version: Int = 0, display: String = "", size: Int64 = 0, sha256: String = "", format: String = "") {
+    public init(type: String, titleId: String = "", version: Int = 0, display: String = "", size: Int64 = 0, sha256: String = "", format: String = "", integritySkipped: Bool = false) {
         self.type = type; self.titleId = titleId; self.version = version; self.display = display; self.size = size; self.sha256 = sha256; self.format = format
+        self.integritySkipped = integritySkipped
     }
 
     init?(catalog p: [String: Any]) {
         guard let type = p["type"] as? String else { return nil }
         self.init(type: type, titleId: p["titleId"] as? String ?? "", version: (p["version"] as? NSNumber)?.intValue ?? 0,
                   display: p["display"] as? String ?? "", size: (p["size"] as? NSNumber)?.int64Value ?? 0, sha256: p["sha256"] as? String ?? "",
-                  format: p["format"] as? String ?? "")
+                  format: p["format"] as? String ?? "", integritySkipped: !((p["integritySkipped"] as? [Any]) ?? []).isEmpty)
     }
 }
 
@@ -139,6 +142,8 @@ public struct GameSummary: Identifiable, Equatable {
     }
 
     /// DLC 个数（按程序号去重）。
+    /// 这款有原件导入时跳过了完整性校验（游戏库卡片标「数据校验不过」）
+    public var integritySkipped: Bool { packages.contains(where: \.integritySkipped) }
     public var dlcCount: Int { Set(packages.filter { $0.type == "dlc" }.map(\.titleId)).count }
 
     /// 原件总大小（同一个文件里的多项只算一次，同旧启动器 ExportGameCard）。
@@ -187,9 +192,37 @@ public final class LibraryProvider {
 
     private var snapshotFile: URL { client.environment.privateRoot.appendingPathComponent("library-snapshot.json") }
 
-    /// 上一次读到的游戏列表：启动时先显示它，catalog 作业在后台跑完再替换。换了游戏库（libraryId 不符）或没读过时为 nil。
+    /// 配着的游戏库文件夹整个不在了（玩家在访达里删了 / 挪走了，#1412）：库所在的盘连着、文件夹本身没有。
+    ///   外接盘没插上不算（作业层照旧报「磁盘没连上」，插上就回来，不能忘掉）
+    public var libraryFolderGone: Bool {
+        let path = client.environment.library
+        guard !path.isEmpty else { return false }
+        let parts = URL(fileURLWithPath: path).pathComponents
+        if parts.count > 2, parts[1] == "Volumes", !FileManager.default.fileExists(atPath: "/Volumes/" + parts[2]) { return false }
+        return !FileManager.default.fileExists(atPath: path)
+    }
+
+    /// 读游戏库失败、且游戏库文件夹确实没了：忘掉它（preferences.json 的游戏库两项清空、删上次列表快照），回到新玩家的样子——欢迎页，
+    ///   放密钥 / 添加游戏时按 ensureLibrary 在 ~/S2Arm 重建（#1412：原先照旧显示上次的列表，顶上报「游戏库未连接或标识不符」，点删除也只是重复报错）。
+    ///   只在作业层也读不了时才忘（作业层是游戏库连没连上的权威判断）；返回忘没忘
+    private func forgetLibraryIfGone() -> Bool {
+        guard libraryFolderGone else { return false }
+        try? JobEnvironment.saveLibrary(privateRoot: client.environment.privateRoot, library: "", libraryId: "")
+        client.environment.library = ""
+        client.environment.libraryId = ""
+        try? FileManager.default.removeItem(at: snapshotFile)
+        return true
+    }
+
+    /// 上一次读到的游戏列表：启动时先显示它，catalog 作业在后台跑完再替换。换了游戏库（libraryId 不符）、游戏库文件夹没了或没读过时为 nil。
     public func lastKnownGames() -> [GameSummary]? {
-        guard !client.environment.libraryId.isEmpty, let data = try? Data(contentsOf: snapshotFile),
+        guard !client.environment.libraryId.isEmpty, !client.environment.library.isEmpty else { return nil }
+        // 库标记不在（库被删 / 搬走）或库号不符：缓存列表不能当成还在。只核 libraryId 会让删库后的旧列表一直挂着，删除 / 刷新都报 library_not_connected。
+        let marker = URL(fileURLWithPath: client.environment.library).appendingPathComponent(".s2arm-library.json")
+        guard let markerData = try? Data(contentsOf: marker),
+              let markerInfo = (try? JSONSerialization.jsonObject(with: markerData)) as? [String: Any],
+              markerInfo["id"] as? String == client.environment.libraryId else { return nil }
+        guard let data = try? Data(contentsOf: snapshotFile),
               let saved = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               saved["libraryId"] as? String == client.environment.libraryId,
               let result = saved["result"] as? [String: Any] else { return nil }
@@ -217,7 +250,9 @@ public final class LibraryProvider {
         do {
             return try client.start(operation: "catalog", extra: startup ? ["startup": true] : [:], onFinish: { outcome in
                 guard outcome.state == .completed else {
-                    completion(.failure(JobClientError(outcome.message.isEmpty ? JobOutcome.interruptedMessage : outcome.message)))
+                    if outcome.state == .failed, self.forgetLibraryIfGone() { completion(.failure(JobClientError(Self.noLibraryMessage))); return }
+                    completion(.failure(JobClientError(outcome.message.isEmpty ? JobOutcome.interruptedMessage : outcome.message,
+                                                       code: outcome.failureCode)))   // 带失败码：前端按码给动作（library_id_mismatch 问要不要改用这个库）
                     return
                 }
                 self.remember(outcome.result)
@@ -235,7 +270,9 @@ public final class LibraryProvider {
     /// 同 load，async（EngineProvider 用）：没配游戏库直接抛错，不起作业。
     public func games() async throws -> [GameSummary] {
         guard !client.environment.library.isEmpty else { throw JobClientError(Self.noLibraryMessage) }
-        let result = try await client.perform("catalog").result
+        let result: [String: Any]
+        do { result = try await client.perform("catalog").result }
+        catch { if forgetLibraryIfGone() { throw JobClientError(Self.noLibraryMessage) }; throw error }
         remember(result)
         return Self.games(in: result)
     }
@@ -297,6 +334,9 @@ public struct GameSizes: Equatable {
     public var cache: Int64 = 0
     public var sources: Int64 = 0
     public var measured = false
+    /// 0.6.0 四类（作业层 pack/jobs/sizes.py categories：resources / programs / playerData / cache；通用壳开关开着才带）。nil = 照旧五项显示
+    public var categories: [String: Int64]?
+    public static let categoryOrder = ["resources", "programs", "playerData", "cache"]
     public init() {}
     public init(imageMac: Int64, imageIos: Int64, saves: Int64, cache: Int64, sources: Int64, measured: Bool) {
         self.imageMac = imageMac; self.imageIos = imageIos; self.saves = saves; self.cache = cache; self.sources = sources; self.measured = measured
@@ -305,6 +345,9 @@ public struct GameSizes: Equatable {
         func n(_ k: String) -> Int64 { (s[k] as? NSNumber)?.int64Value ?? 0 }
         imageMac = n("imageMac"); imageIos = n("imageIos"); saves = n("saves"); cache = n("cache"); sources = n("sources")
         measured = s["measured"] as? Bool ?? false
+        if let c = s["categories"] as? [String: Any] {
+            categories = Dictionary(uniqueKeysWithValues: Self.categoryOrder.map { ($0, (c[$0] as? NSNumber)?.int64Value ?? 0) })
+        }
     }
 }
 

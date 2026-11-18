@@ -315,6 +315,45 @@ class PutDir(unittest.TestCase):
         self.assertEqual(calls, ["kit", "kit", "kit.partial"])   # 挪开旧的：第一次被拒、第二次成功；再把新的改名就位
         self.assertEqual((self.dest / "new.txt").read_text(), "新")
 
+    def test_mounted_volume_rename_error_is_retried_without_copy_fallback(self):
+        sys.path.append(str(Path(programs.__file__).resolve().parents[2]))
+        from pack.orch import dirrename
+        real, calls = Path.rename, []
+        def rename(src, dst):
+            calls.append((src.name, dst.name))
+            if len(calls) == 1:
+                error = OSError(22, "不支持该请求")
+                error.winerror = 50
+                raise error
+            return real(src, dst)
+        with mock.patch.object(dirrename, "os", SimpleNamespace(name="nt")), \
+             mock.patch.object(dirrename, "DIR_RENAME_UNSUPPORTED_RETRIES", (0,)), \
+             mock.patch.object(Path, "rename", rename):
+            programs._put_dir(self.c, self.part, self.dest)
+        self.assertEqual(calls, [("kit", "kit.old-" + str(os.getpid())),
+                                 ("kit", "kit.old-" + str(os.getpid())),
+                                 ("kit.partial", "kit")])
+        self.assertEqual(sorted(p.name for p in self.dest.iterdir()), ["new.txt"])
+        self.assertEqual(sorted(p.name for p in self.t.iterdir()), ["kit"])
+
+    def test_persistent_mounted_volume_rename_error_is_reported(self):
+        sys.path.append(str(Path(programs.__file__).resolve().parents[2]))
+        from pack.orch import dirrename
+        calls = []
+        def rename(src, dst):
+            calls.append((src.name, dst.name))
+            error = OSError(22, "不支持该请求")
+            error.winerror = 50
+            raise error
+        with mock.patch.object(dirrename, "os", SimpleNamespace(name="nt")), \
+             mock.patch.object(dirrename, "DIR_RENAME_UNSUPPORTED_RETRIES", (0, 0)), \
+             mock.patch.object(Path, "rename", rename):
+            with self.assertRaisesRegex(OSError, "WinError 50.*卷不支持"):
+                programs._put_dir(self.c, self.part, self.dest)
+        self.assertEqual(len(calls), 3)   # 原目录挪开重试后失败；不尝试复制或覆盖
+        self.assertTrue((self.dest / "old.txt").is_file())
+        self.assertTrue((self.part / "new.txt").is_file())
+
     def test_app_layout_imports_from_engine_root(self):
         # App 里作业层（Resources/Jobs）和引擎（Resources/Engine）是兄弟目录：按本文件位置往上推找不到 pack，
         # 必须从 c.engine 导入（11-16 第 4 份候选出包即 No module named 'pack'）。独立进程、只把作业层放进 sys.path，同作业主程序
@@ -328,6 +367,27 @@ class PutDir(unittest.TestCase):
                            capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 0, r.stderr[-600:])
         self.assertEqual(r.stdout.strip(), "['new.txt']")
+
+    def test_after_iml_check_loaded_by_path(self):
+        # #1424（0.5.1 Mac 出包选了设备）：ipa._iml_device_hint 按路径加载 Engine/pack/iml_check.py，它原先把 Engine/pack 插到 sys.path 最前，
+        #   那里有 pack.py（模块）→ 之后 import pack 命中它，换目录报「'pack' is not a package」。两种先后都要过：
+        #   a 引擎根还不在 sys.path（_rename_dir 现加）；b 引擎根早已在 sys.path（library 等先插过），iml_check 后加载又插到它前面
+        res = self.t / "Resources"; jobs = res / "Jobs"
+        shutil.copytree(Path(programs.__file__).resolve().parent, jobs, ignore=shutil.ignore_patterns("tests", "__pycache__"))
+        (res / "Engine").symlink_to(self.c.engine, target_is_directory=True)
+        #   c 不管是谁、Engine/pack（有 pack.py）已在 sys.path 最前：换目录也不能靠 sys.path 先后（命名空间包会被同名模块压过），按文件路径载入 dirrename
+        for case, pre in (("a", ""), ("b", "sys.path.insert(0, sys.argv[2]); "), ("c", "sys.path.insert(0, sys.argv[2] + '/pack'); ")):
+            with self.subTest(case=case):
+                shutil.rmtree(self.t / "kit", ignore_errors=True); (self.t / "kit.partial").mkdir(exist_ok=True); (self.t / "kit.partial" / "new.txt").write_text("新")
+                code = (pre + "import importlib.util; from pathlib import Path; from types import SimpleNamespace; import programs; "
+                        "e = Path(sys.argv[2]); s = importlib.util.spec_from_file_location('iml_check', e / 'pack' / 'iml_check.py'); "
+                        "m = importlib.util.module_from_spec(s); s.loader.exec_module(m); "
+                        "t = Path(sys.argv[1]); programs._put_dir(SimpleNamespace(engine=e), t / 'kit.partial', t / 'kit'); "
+                        "print(sorted(p.name for p in (t / 'kit').iterdir()))")
+                r = subprocess.run([sys.executable, "-I", "-c", f"import sys; sys.path.insert(0, {str(jobs)!r}); exec({code!r})", str(self.t), str(res / "Engine")],
+                                   capture_output=True, text=True, timeout=60)
+                self.assertEqual(r.returncode, 0, r.stderr[-600:])
+                self.assertEqual(r.stdout.strip(), "['new.txt']")
 
 
 if __name__ == "__main__":

@@ -5,6 +5,8 @@
   · runtime：ALL_FPS 条目（地址里的 VARIABLE 换成主程序偏移）+ 变量表，写进产物根 fpslocker.json，运行时服务层（services/S2A.Services/FpsLocker.cs）在 60 帧生效时按目标帧率定期写
 认不出的写法（a32、自带帮助函数 _fpsLock() 等、跳不到的符号）整份不收，原因写回调用方"""
 import os, re, struct, subprocess, sys, tempfile
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # 同目录的 miniyaml（Signed：写了 + / - 的跳转目标）；调用方按文件路径装载时也找得到
+import miniyaml  # noqa: E402
 
 BR = {'b', 'bl', 'cbz', 'cbnz', 'tbz', 'tbnz'} | {'b.' + c for c in 'eq ne cs hs cc lo mi pl vs vc hi ls ge lt gt le al nv'.split()}
 VT = {'uint8': 'B', 'int8': 'b', 'uint16': 'H', 'int16': 'h', 'uint32': 'I', 'int32': 'i', 'uint64': 'Q', 'int64': 'q', 'float': 'f', 'double': 'd'}
@@ -41,6 +43,7 @@ def _target(t, site, labels, syms):
         if t not in labels: raise Unsupported(f'标签 {t} 没定义')
         return labels[t]
     if isinstance(t, str) and t[:1] in '+-': return site + int(t, 0)
+    if isinstance(t, miniyaml.Signed): return site + int(t)   # 写了 + / - 的数：相对当前指令（[b, +160]）；没写符号的是主程序里的绝对偏移（[b, 0x580B064]）
     if isinstance(t, int): return t
     s = str(t)
     if s.endswith('()'):

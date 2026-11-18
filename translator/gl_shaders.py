@@ -31,6 +31,7 @@
 #   D                                            the fragment shader writes gl_FragDepth (Metal needs a depth attachment for it; the GL layer attaches a scratch one when the target has none)
 # <TAB> where it came from
 # Usage: gl_shaders.py <input path>... <out dir> [--ios <dir>]   (input paths: the RomFS, the main NSO, capture folders)
+import os as _pw_os, sys as _pw_sys; _pw_sys.path.append(_pw_os.path.join(_pw_os.path.dirname(_pw_os.path.abspath(__file__)), '..', 'tools')); from pool_workers import cores  # noqa: E402  核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
 import argparse
 import concurrent.futures as cf
 import hashlib
@@ -432,7 +433,7 @@ def main():
         help="只验证阶段组件，不出运行时 GL 表；允许计算 / UBO / SSBO",
     )
     parser.add_argument(
-        "-j", "--jobs", type=int, default=os.cpu_count() or 1, help="并行翻译与 Metal 编译数量"
+        "-j", "--jobs", type=int, default=cores(), help="并行翻译与 Metal 编译数量"
     )
     args = parser.parse_args()
     if len(args.paths) < 2 or args.jobs < 1:

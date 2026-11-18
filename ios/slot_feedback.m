@@ -12,6 +12,8 @@
 #include "haptic_retry.h"
 #include "haptic_safe.h"
 #include "phone_axes.h"
+int s2a_ios_ble_slot_rumble(int slot, const s2a_pad_vibration raw[2]);   // controller.m：玩家 2–4 是 NS2 Pro 时由它出
+int s2a_ios_ble_slot_motion(int slot, s2a_pad_motion *out);
 #include <math.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -154,6 +156,7 @@ static void rumbler_play(S2ASlotRumbler *r, const s2a_pad_vibration pair[2]) {
 // 服务层按玩家交来的震动（P1 以外，槽 1–3）：values[0] 左、values[1] 右（原始振幅）
 __attribute__((visibility("default"), used)) void s2a_pad_set_rumble_slot(int slot, const s2a_pad_vibration values[2]) {
     if (!values || slot <= 0 || slot >= SLOT_PADS || !atomic_load(&g_active)) return;
+    if (s2a_ios_ble_slot_rumble(slot, values)) return;   // 这个槽是 NS2 Pro（controller.m，#1428）
     float gain = s2a_ios_rumble_gain();
     if (!(gain > 0)) return;
     pthread_mutex_lock(&g_mu);
@@ -203,6 +206,7 @@ __attribute__((visibility("default"), used)) int s2a_pad_read_motion_slot(int sl
     if (!out) return 0;
     out[0] = out[1] = (s2a_pad_motion){0};
     if (slot < 0 || slot >= SLOT_PADS || !atomic_load(&g_active)) return 0;
+    if (slot > 0 && s2a_ios_ble_slot_motion(slot, &out[0])) return 1;   // 这个槽是 NS2 Pro（controller.m，#1428）
     pthread_mutex_lock(&g_mu);
     int known = g_motion_known[slot];
     if (known) out[0] = g_motion[slot];

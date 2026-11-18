@@ -242,6 +242,11 @@ public final class S2ArmEngineProvider: EngineProvider {
         return try await client.perform("tvInstall", extra: extra, events: events).result
     }
 
+    /// 导出 Apple TV 安装包（tvExport 作业，11-16）：未签名 .ipa、游戏资源在 App 本体里，玩家用自己的签名工具签名装；结果 ipa = 文件位置。
+    public func exportAppleTV(gameId: String, events: EventSink = .discard) async throws -> [String: Any] {
+        try await client.perform("tvExport", extra: ["gameId": gameId], events: events).result
+    }
+
     /// 电视存档自动备份一轮（tvSaveBackup 作业）：没连电视不算错（state = unreachable）。
     public func appleTVSaveBackup() async throws -> [String: Any] {
         try await client.perform("tvSaveBackup").result
@@ -302,17 +307,32 @@ public final class S2ArmEngineProvider: EngineProvider {
     public func install(gameId: String, teamId: String? = nil, device: String? = nil, acceptDropped: Bool = false, accept: Set<String> = [], mode: String? = nil,
                         events: EventSink = .discard) async throws -> InstallResult {
         try await installer.install(gameId: gameId, teamId: teamId, device: device, acceptDropped: acceptDropped, accept: accept, mode: mode,
-                                    widget: settings.homeWidget, events: events)
+                                    widget: settings.homeWidget, cloudSaves: settings.cloudSavesFolder, events: events)
     }
 
     public func exportPush(gameId: String?, device: String? = nil, events: EventSink = .discard) async throws -> [String] {
         try await installer.exportPush(gameId: gameId, device: device, events: events)
     }
     public func installMode() async throws -> InstallModeInfo { try await installer.installMode() }
+    /// 0.6.0 通用壳（开关后面）的快速比对「建议更新」（作业 updateHints，pack/jobs/host_update.py）：每款只读 game.json。
+    ///   开关关着 → nil（界面什么都不出）；开着 → 游戏号（大写）→ 原因（rewriter / hostAbi / shader），没对不上的款不在表里
+    /// 0.6.0 iPhone 总控台：所有见过的手机与每款在那台上的状态（作业 phoneOverview）；开关关着 → nil。probe：顺带问 USB 上连着谁（要几秒）
+    public func phoneOverview(probe: Bool = false) async throws -> PhoneOverview? {
+        PhoneOverview(result: try await client.perform("phoneOverview", extra: probe ? ["probe": true] : [:]).result)
+    }
+    public func updateHints() async throws -> [String: [String]]? {
+        let r = try await client.perform("updateHints").result
+        guard r["enabled"] as? Bool == true else { return nil }
+        var out: [String: [String]] = [:]
+        for g in r["games"] as? [[String: Any]] ?? [] {
+            if let id = g["gameId"] as? String, let why = g["reasons"] as? [String], !why.isEmpty { out[id.uppercased()] = why }
+        }
+        return out
+    }
     public func updatePhone(acceptStale: Bool = false, acceptDropped: Bool = false, accept: Set<String> = [], mode: String? = nil, sgradeUpgrade: Bool = false,
                             device: String? = nil, events: EventSink = .discard) async throws -> [String: Any] {
         try await installer.updatePhone(acceptStale: acceptStale, acceptDropped: acceptDropped, accept: accept, mode: mode, sgradeUpgrade: sgradeUpgrade, device: device,
-                                        widget: settings.homeWidget, events: events)
+                                        widget: settings.homeWidget, cloudSaves: settings.cloudSavesFolder, events: events)
     }
 
     public func restorePhone(device: String? = nil, events: EventSink = .discard) async throws {

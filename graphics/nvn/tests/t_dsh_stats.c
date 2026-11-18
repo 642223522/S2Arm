@@ -86,6 +86,13 @@ static void scenario(int n) {
     memcpy(ctl + 0x704, &size, 4); memcpy(ctl + 0x20, &csize, 4);
     setenv("DM_MSL_FALLBACK", "/dev/null", 1); // 编译器桩不写文件。
     check(registered != NULL);
+    if (n == 49) {   // 诊断#354a81：控制段自报长度越过映射末尾（放在一页可读的末尾、后面紧跟 PROT_NONE 页，自报 0x2000 字节）。
+        //   期望（手算）：修前 memcpy(e->ctl, ctl, nctl) 读到 PROT_NONE 页崩；修后 dsh_stage 判整段不可读 → 认不出阶段 → 跳过 1，不崩
+        long pg = sysconf(_SC_PAGESIZE); uint8_t *m = mmap(NULL, (size_t)pg * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0); check(m != MAP_FAILED);
+        check(mprotect(m + pg, (size_t)pg, PROT_NONE) == 0);
+        uint8_t *c2 = m + pg - 0x900; memcpy(c2, ctl, 0x900); uint32_t big = 0x2000; memcpy(c2 + 0x20, &big, 4);
+        dm_shader_miss(key, (uint64_t)(uintptr_t)code, c2);
+    }
     if (n == 1) call();
     if (n == 2) { compile_rc = 7; call(); }
     if (n == 43) {   // #442：翻译器报错时，控制段 / 代码区自动存进兜底目录 <键>.fail.ctl / .fail.code（不开 DM_NVN_SHDUMP），内容逐字节等于交给翻译器的那份
@@ -317,10 +324,11 @@ int main(void) {
         "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 45 guest 控制段过期时，从同链同指纹的本机 mesh MSL 缓存补齐
         "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 46 包内 mesh：仅在 Metal 拒绝时从 SetShaders 快照按需现编 MSL
         "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 47 包内 Switch 1 顶点：SetShaders 快照 → 控制段过期后照样出补齐变体
-        "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）"    // 48 负对照：没留快照 → 做不了
+        "成功 0、失败 0、跳过 0、复用上局 0、输出类型变体 0（正常收局）",   // 48 负对照：没留快照 → 做不了
+        "成功 0、失败 0、跳过 1、复用上局 0、输出类型变体 0（正常收局）"    // 49 控制段自报长度越过映射末尾：放弃这一份、不崩（#354a81）
     };
     int bad = 0;
-    for (int n = 0; n < 49; n++) {
+    for (int n = 0; n < 50; n++) {
         int fd[2]; pipe(fd); pid_t p = fork();
         if (!p) { close(fd[0]); dup2(fd[1], 1); close(fd[1]); scenario(n); }
         close(fd[1]); char buf[1024]; size_t at = 0; ssize_t got;
@@ -331,5 +339,5 @@ int main(void) {
         printf("%s 现编汇总场景 %d\n", ok ? "✓" : "✗", n);
         if (!ok) { bad++; puts(buf); }
     }
-    printf("%s t_dsh_stats：49 场景，%d 处不符\n", bad ? "✗" : "✓", bad); return bad != 0;
+    printf("%s t_dsh_stats：50 场景，%d 处不符\n", bad ? "✗" : "✓", bad); return bad != 0;
 }

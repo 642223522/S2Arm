@@ -15,6 +15,7 @@ struct ExportView: View {
     @ObservedObject var covers: CoverCache
     /// 当前页面的选择；打开时恢复上次手动选择，没有时由模型选缺省位置。
     @State private var location = ""
+    @State private var hoveredPlatform: ExportPlatform?
     /// S 级优化卡片报了「这款什么都没有」的游戏号（整张卡不出）
     let game: GameSummary
     /// 打开装机页（已出过 iPhone 包的款直接装）。
@@ -22,12 +23,13 @@ struct ExportView: View {
 
     var body: some View {
         ExportPageLayout {
-            VStack(alignment: .leading, spacing: 34) {
+            VStack(alignment: .leading, spacing: 20) {
                 ExportGameHeader(model: model, covers: covers, game: game)
                 // The patch and Mod choices stay in the setup page.
                 SGradeCard(model: model, gameID: game.id)
                 downstream
-                platforms
+                platformsSection
+                optionsSection
             }
         } actions: {
             actionBar
@@ -58,7 +60,7 @@ struct ExportView: View {
 
     // ---- platforms ----
 
-    private var platforms: some View {
+    private var platformsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text(loc.t("s2arm.export.platforms")).font(.manrope(15, .semibold)).foregroundStyle(.secondary).padding(.leading, 2)
@@ -72,11 +74,20 @@ struct ExportView: View {
                     Button(x("installAppleTV")) { model.installAppleTV(game) }
                         .controllerButtonStyle(.plain).font(.manrope(12.5, .semibold)).foregroundStyle(LauncherPalette.cream.opacity(0.85))
                         .disabled(model.busy).controllerID("export.installAppleTV")
+                    Button(x("exportAppleTV")) { model.exportAppleTV(game) }   // 导出安装包（.ipa，资源在包里）：玩家用自己的签名工具签名装（11-16）
+                        .controllerButtonStyle(.plain).font(.manrope(12.5, .semibold)).foregroundStyle(LauncherPalette.cream.opacity(0.85))
+                        .disabled(model.busy).controllerID("export.exportAppleTV")
                 }
             }
             HStack(alignment: .top, spacing: 12) {
                 ForEach(ExportPlatform.allCases) { platform in tile(platform) }
             }
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var optionsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
             locationRow
             if model.exportTargets.contains(.ios) { IosAfterPackPicker(model: model) }   // 出完之后：装到 iPhone / 导出自签 IPA（11-16 维护者：一个入口、两条分叉各走到底）
             if model.exportTargets.contains(.tvos) || game.appleTvReady { appleTVRow }   // 签名 / 安装方式收进环境检查（v0.3.0），这里只读 + 更改
@@ -109,6 +120,7 @@ struct ExportView: View {
         }
         .padding(.horizontal, 14).padding(.vertical, 12)
         .background(LauncherPalette.surface.opacity(0.7), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(LauncherTheme.Colors.border, lineWidth: 1))
         .onAppear { model.loadAppleTVs() }
     }
 
@@ -141,7 +153,7 @@ struct ExportView: View {
         }
         .padding(.horizontal, 14).padding(.vertical, 12)
         .background(LauncherPalette.surface.opacity(0.7), in: RoundedRectangle(cornerRadius: 12))
-        .padding(.top, 4)
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(LauncherTheme.Colors.border, lineWidth: 1))
         .onAppear {
             if location.isEmpty { location = model.defaultLocation(for: game) }
             model.loadLocations()
@@ -178,6 +190,7 @@ struct ExportView: View {
     private func tile(_ platform: ExportPlatform) -> some View {
         let on = model.exportTargets.contains(platform)
         let open = platform.released
+        let hovered = open && hoveredPlatform == platform
         return Button { model.toggleExport(platform) } label: {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .top) {
@@ -203,9 +216,9 @@ struct ExportView: View {
                 }
                 Spacer(minLength: 0)
             }
-            .padding(18).frame(maxWidth: .infinity, minHeight: 142, alignment: .topLeading)
-            .background(on ? LauncherPalette.cream.opacity(0.05) : LauncherPalette.surface.opacity(open ? 0.75 : 0.4), in: RoundedRectangle(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(on ? LauncherPalette.cream.opacity(0.7) : Color.white.opacity(0.06), lineWidth: on ? 1.5 : 1))
+            .padding(16).frame(maxWidth: .infinity, minHeight: 126, maxHeight: .infinity, alignment: .topLeading)
+            .background(on ? LauncherPalette.cream.opacity(hovered ? 0.08 : 0.05) : LauncherPalette.surface.opacity(open ? (hovered ? 0.9 : 0.75) : 0.4), in: RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(on ? LauncherPalette.cream.opacity(hovered ? 0.85 : 0.7) : (hovered ? Color.white.opacity(0.18) : LauncherTheme.Colors.border), lineWidth: on ? 1.5 : 1))
             .contentShape(RoundedRectangle(cornerRadius: 14))
             .opacity(open ? 1 : 0.5)
         }
@@ -213,7 +226,7 @@ struct ExportView: View {
         .controllerID("export.platform." + platform.rawValue)
         .disabled(!open || model.mainBusy)
         .busyHint(model, disabled: open)
-        .padTarget("export." + platform.rawValue, scope: "main", radius: 16) { model.toggleExport(platform) }
+        .onHover { hoveredPlatform = $0 ? platform : (hoveredPlatform == platform ? nil : hoveredPlatform) }
         .accessibilityLabel(platform.title(loc))
         .accessibilityValue(open ? loc.t(on ? "s2arm.export.checked" : "s2arm.export.unchecked") : loc.t("s2arm.export.soon"))
         .accessibilityAddTraits(on ? .isSelected : [])
@@ -234,7 +247,6 @@ struct ExportView: View {
 
     private var actionBar: some View {
         let blocker = model.exportBlocker(game)
-        let count = model.exportTargets.count
         return HStack(spacing: 14) {
             if let blocker {
                 Label(reason(blocker), systemImage: "info.circle").font(.manrope(13)).foregroundStyle(.secondary)
@@ -283,11 +295,12 @@ extension ExportView {
 struct IosAfterPackPicker: View {
     @ObservedObject var model: S2ArmLauncherModel
     @EnvironmentObject var loc: Localizer
+    @State private var hoveredOption: String?
     private func x(_ id: String) -> String { BackendText.launcherText("export." + id, language: loc.lang.sharedCode) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(x("after.title")).font(.manrope(13, .semibold)).foregroundStyle(.secondary).padding(.leading, 2).padding(.top, 4)
+            Text(x("after.title")).font(.manrope(13, .semibold)).foregroundStyle(.secondary).padding(.leading, 2)
             HStack(alignment: .top, spacing: 12) {
                 option("install", x("after.install"), x("after.install_note"), "iphone.and.arrow.forward")
                 option("export", x("after.export"), x("after.export_note"), "square.and.arrow.up")
@@ -303,6 +316,7 @@ struct IosAfterPackPicker: View {
 
     private func option(_ id: String, _ title: String, _ note: String, _ symbol: String) -> some View {
         let on = model.iosAfterPack == id
+        let hovered = hoveredOption == id
         return Button { model.iosAfterPack = id } label: {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: on ? "largecircle.fill.circle" : "circle").font(.system(size: 16, weight: .semibold))
@@ -314,11 +328,12 @@ struct IosAfterPackPicker: View {
                 Spacer(minLength: 0)
             }
             .padding(14).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(LauncherPalette.surface.opacity(on ? 0.95 : 0.55), in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(on ? LauncherPalette.cream.opacity(0.75) : .white.opacity(0.08), lineWidth: on ? 1.5 : 1))
+            .background(LauncherPalette.surface.opacity(on ? 0.95 : (hovered ? 0.75 : 0.55)), in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(on ? LauncherPalette.cream.opacity(hovered ? 0.9 : 0.75) : (hovered ? Color.white.opacity(0.18) : LauncherTheme.Colors.border), lineWidth: on ? 1.5 : 1))
             .contentShape(RoundedRectangle(cornerRadius: 12))
         }
         .controllerButtonStyle(.plain).controllerID("export.after." + id)
+        .onHover { hoveredOption = $0 ? id : (hoveredOption == id ? nil : hoveredOption) }
         .accessibilityAddTraits(on ? .isSelected : [])
         .accessibilityIdentifier("export.after." + id)
     }

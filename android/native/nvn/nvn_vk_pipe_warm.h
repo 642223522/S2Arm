@@ -1,4 +1,4 @@
-// 管线预热清单：本机玩这款游戏真实建过的图形管线配方（跨会话、设备侧增长）。下次开局由预热线程
+// 管线预热清单：本机真实建过的图形 / 计算管线配方（跨会话、设备侧增长）。计算预热以 debug.s2a.nvk_compute_warm 隔离，缺省关。下次开局由预热线程
 // 用同一份配方提前 nvn_gpu_pipe_get，装进后端的管线缓存；真实 draw 拿同一份 nvn_gpu_pipe_desc 取时
 // 命中缓存、直接拿到预建对象（验收看 backend 的 warm 命中计数 nvn_gpu_pipe_warm_hits）。
 //
@@ -39,6 +39,7 @@ struct rp_prog;   // 回放核心的程序解析结果（rp_shader.h）；note_p
 #define NVK_PW_DESC_BYTES 352
 
 // 一条记录：程序内容身份 + 紧凑配方 + 字节长度 + 使用次数（只用于排序/淘汰，不进配方判据）。
+// 计算配方首字节 0x80、其余为零；旧图形配方首字节仅使用低 5 位，因此现有文件无需迁移。
 struct nvk_pipe_rec {
     uint8_t prog_identity[32];                 // 程序内容身份（rp_prog.identity / g_progs 键）
     uint8_t desc[NVK_PW_DESC_BYTES];           // 紧凑 nvn_gpu_pipe_desc：st[].sh / nspec / spec 不存，其余逐字段
@@ -96,6 +97,34 @@ struct nvk_pipe_warm_stats {
     uint64_t tag_hits;    // 换管线时标签对得上、只加了计数的次数（没走序列化 / 散列 / 查表）
 };
 void nvk_pipe_warm_stats(struct nvk_pipe_warm_stats *out);
+
+// ---- 清单颠簸 / 逐帧变化量诊断（#1372；debug.s2a.nvk_pw_diag，缺省 0）----
+// 清单满了以后每新记一条要整表扫一遍挑淘汰目标；站着不动时这一项每秒都在发生。原因有两种：(a) 被淘汰的配方过一会儿又要
+// 用、再插回来（颠簸）；(b) 配方里混进了逐帧变化的量，同一条管线每帧都被当成新配方。下面的计数和日志用来分辨它们。
+// 只读计数 + 日志：不改清单的任何判定、顺序和落盘字节。玩家包的 nvn_plat_flag 恒取缺省 0 → 整块不运行（不分配、不读时钟、
+// 不打日志）。开着时（调试包 setprop debug.s2a.nvk_pw_diag 1）：
+//   · note 每次进锁读一次单调时钟，每 5 秒打一行窗口汇总（note 次数 / 新记 / 此前没见过 / 被淘汰过又插回 / 淘汰扫描耗时 /
+//     淘汰集合清空次数 / 条数）；
+//   · 淘汰时把被淘汰配方的散列记进集合（1 MiB，满 3/4 清空并计数）；新记时查它，分成「此前没见过」与「被淘汰过又插回」；
+//   · 每个窗口每类各抽 1 条新记配方做样本（每类最多 24 条）：整表找最近的一条，打出身份是否相同、差几个字节、差在哪些字段。
+//     持锁只做内存拷贝（这条新配方 + 一份清单快照，快照缓冲诊断开时才分配）；整表比对和所有日志都在锁外，
+//     所以抽样不会让回放线程多等 1–3 毫秒把读数自己污染（样本行里带「快照拷贝 N 微秒（持锁）」「比对 N 微秒（锁外）」）。
+struct nvk_pipe_warm_diag {
+    int on;                  // 1 = 诊断开着；0 = 关着（其余字段全 0）
+    uint64_t calls;          // 过了身份 / 特化筛、进到锁里的 note 次数
+    uint64_t memo_hits;      // 最近 4 条 memo 命中（只 uses++）
+    uint64_t chain_hits;     // 桶链命中（只 uses++）
+    uint64_t news;           // 新记条数（与 stats.recorded 同口径，从诊断开着起算）
+    uint64_t evicts;         // 新记时表已满、挤掉一条的次数（≠ stats.rejected：后者还混着 nspec 跳过和整份拒绝）
+    uint64_t fresh;          // 新记里：此前没被淘汰过
+    uint64_t reins;          // 新记里：此前被淘汰过又插回来（颠簸）
+    uint64_t scans;          // 淘汰扫描次数（含表未满时找空位的那一遍）
+    uint64_t scan_ns;        // 扫描总耗时（纳秒）
+    uint64_t ev_clears;      // 淘汰散列集合装满清空的次数（清空之后的「插回」会漏数）
+    uint64_t samples_fresh, samples_reins;   // 已输出的样本条数
+};
+void nvk_pipe_warm_diag_stats(struct nvk_pipe_warm_diag *out);
+void nvk_pipe_warm_diag_flush(void);   // 立刻输出当前窗口一行并开新窗口（用例用；诊断关着时什么也不做）
 
 // ---- 后端协作（实现在 backend_vulkan.c；宿主单测不链后端，本模块按弱符号调） ----
 // 预热线程建管线的作用域：1 = 接下来的创建算「预建」，后端据此在对象上打 warm 标记并计 warm 创建数。

@@ -42,6 +42,7 @@
 退出码：0 成功；1 失败（标准输出末行【红】说明）；2 用法"""
 from __future__ import annotations
 
+import os as _pw_os, sys as _pw_sys; _pw_sys.path.append(_pw_os.path.dirname(_pw_os.path.abspath(__file__))); from pool_workers import cores  # noqa: E402  核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
 import argparse
 from collections import deque
 import hashlib
@@ -65,13 +66,14 @@ IMG = re.compile(r"(^|.*/)romfs\.img$|game\.img")   # 单文件镜像（旧形�
 #   批次 tar（≤1 GB）照旧可以退回
 DC_FALLBACK_MAX = 2 << 30
 DENIED = "Permission denied"   # afc 打开写被拒的原文（s2a-devpush「打不开 <远端>：afc error: Permission denied」）
-REINSTALL_STEP = "重试没用：先在游戏菜单「存档管理」里导出存档（存到 S2Arm 文件夹以外，比如 iCloud 云盘），再删除并重新安装 S2Arm，装好后导回存档"   # 机上目录 App 写不进时唯一走得通的下一步（同失败码 ios_install_dir_unwritable）
+REINSTALL_STEP = "先试这两步：①在 iPhone 上打开一次 S2Arm，等游戏库界面出来；②回电脑对这款游戏再点一次「装到 iPhone」，会接着已传的部分继续，不用从头来。还是写不进，就要删掉 iPhone 上的 S2Arm App 再重装：先在游戏菜单「存档管理」里导出存档，存到 S2Arm 文件夹以外（比如 iCloud 云盘）；再在 iPhone 桌面长按 S2Arm，删除 App；然后在电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」；装好后在「存档管理」里导回存档。电脑上的游戏和 S2Arm 都不用删。"   # 机上目录 App 写不进时唯一走得通的下一步（同失败码 ios_install_dir_unwritable）
 
 
 def push_reason(text):
     """推送失败的原文 → 玩家一眼看得懂的一类（摘要第一条要能看出是哪种，11-12 v0.3.1 Mac 玩家「romfs.img 没传完」看不出原因）：
     USB 看不到手机 / 手机锁屏 / 连接断了；认不出就空串（照原文报）。按 s2a-devpush 与 devicectl 的报错特征认，不看英文全文"""
     t = str(text or "")
+    if nospace(t): return "手机空间写满了"
     if "找不到设备" in t or "No device" in t or "usbmuxd" in t.lower() and "connect" in t.lower(): return "USB 看不到手机（没插数据线，或手机只在无线连接上）"
     if DENIED in t: return "手机上这个文件 App 写不进（Permission denied）"
     if "锁屏" in t or "locked" in t.lower() or "passcode" in t.lower(): return "手机锁屏了"
@@ -121,6 +123,15 @@ class SpaceFull(Fail):
 
 
 FULL_LEFT = 256 << 20   # 推失败后手机空闲低于它 = 写满了（按写满报，不报成传输失败）
+# 手机写满的报错，同一族的说法都认（11-17：原先只认 devicectl 的 POSIX 28，s2a-devpush 的 AFC「No space left」被当成连接中断，
+#   还改走 devicectl 白等两分钟，最后报「devicectl 退出码 1，确认手机解锁、数据线插稳」）。实测原文：s2a-devpush「afc error: No space left」；
+#   devicectl「POSIX error code 28」「NSPOSIXErrorDomain error 28」「No space left on device」；libimobiledevice「AFC_E_NO_SPACE_LEFT」；ENOSPC
+NOSPACE = re.compile(r"No space left|ENOSPC|AFC_E_NO_SPACE_LEFT|POSIX error code 28(?!\d)|NSPOSIXErrorDomain error 28(?!\d)")
+
+
+def nospace(text):
+    """这段报错说的是手机写满了吗（同一族各种说法）"""
+    return bool(NOSPACE.search(text or ""))
 
 
 def gb1(n): return f"{n / 2**30:.1f}"
@@ -199,15 +210,26 @@ class Devpush:
         抛 DirUnwritable（手机原话 + 删除重装那一步，重试 / 续传 / 改走 devicectl 都没用）。→ (rc, 输出)"""
         ok, why = self.rm(rel)
         if not ok:
-            raise DirUnwritable(f"手机上的 {rel} 写不进也删不掉（{first.splitlines()[-1] if first else DENIED}；删除：{why.splitlines()[-1] if why else '失败'}）。" + REINSTALL_STEP)
+            raise DirUnwritable(f"iPhone 上的 S2Arm 写不进 {rel}，也删不掉它（{first.splitlines()[-1] if first else DENIED}；删除：{why.splitlines()[-1] if why else '失败'}）。" + REINSTALL_STEP)
         rc, out = self.call("put", src, rel)
         if rc and DENIED in out:   # 删掉了（或本来就不在）、新建照样被拒 = 它所在的目录 App 写不进，同删不掉（D-CY3B：原先报「重新装会续传」，重装次次一样）
-            raise DirUnwritable(f"手机上的 {rel} 删掉重写也写不进（{out.splitlines()[-1] if out else DENIED}）：它所在的文件夹 App 写不进。" + REINSTALL_STEP)
+            raise DirUnwritable(f"iPhone 上的 S2Arm 写不进 {rel}：删掉旧文件重写也被系统拒绝（{out.splitlines()[-1] if out else DENIED}），它所在的文件夹 S2Arm 写不进。" + REINSTALL_STEP)
         return rc, out
 
     def ls(self, rel):
         rc, out = self.call("ls", rel)
         return out.splitlines() if rc == 0 else None
+
+    def du(self, *rels):   # 量这几个目录的占用（只读文件信息）→ {目录: (字节, 文件数) | None（不在）}；工具太旧（没有 du）/ 断开 / 锁屏 → None
+        rc, out = self.call("du", *rels)
+        if rc:
+            return None
+        got = {}
+        for line in out.splitlines():
+            m = re.fullmatch(r"du (-?\d+) (\d+) (.+)", line.strip())
+            if m:
+                got[m[3]] = None if m[1] == "-1" else (int(m[1]), int(m[2]))
+        return got
 
     def get_tree(self, rel, dst):   # 整个目录拉回本机；目录不在 = 成功且 0 个文件。→ (成功?, 输出)
         rc, out = self.call("get-tree", rel, dst)
@@ -215,6 +237,10 @@ class Devpush:
 
     def rm(self, rel):   # 删机上一个文件或整个目录（已不在算成功）。→ (成功?, 输出)
         rc, out = self.call("rm", rel)
+        return rc == 0, out
+
+    def mv(self, src, dst):   # 容器内改名（目标在就覆盖；通用壳程序包 catalogue.json 先写临时名再改名就位）。→ (成功?, 输出)
+        rc, out = self.call("mv", src, dst)
         return rc == 0, out
 
     put_big = put
@@ -226,6 +252,13 @@ class Devpush:
         if not m: return None
         size = int(m[1])
         return (size, dst.read_bytes() if size >= 0 and dst.is_file() else b"")
+
+    def mkdir(self, rel):
+        """以 App 身份（AFC）逐级建 rel 并核实末级可写。→ None 建好可写；写不进的那一级（相对路径）；工具太旧不认 mkdir / 连不上 → False"""
+        rc, out = self.call("mkdir", rel)
+        if rc == 0: return None
+        m = re.search(r"^S2A_DIR_UNWRITABLE (.*)$", out, re.M)
+        return m.group(1).strip() if m else False
 
     def put_at(self, src, rel, off):   # 本地从 off 起接着写进机上同一文件的 off 处（不截短）
         rc, out = self.call("put-at", src, rel, off)
@@ -272,11 +305,13 @@ class Devicectl:
     有 s2a-devpush + UDID 时流式写批次、核待解批完整性借它（手机只在 CoreDevice 无线隧道上、usbmuxd 看不到时那批退回 devicectl）"""
     kind = "devicectl"
     docs, ctx, pack = DOCS, None, None
+    say = staticmethod(lambda m: print(m, flush=True))   # device() 换成调用方的；直接构造（单测）时打到标准输出
 
     def __init__(self, device, bid, work, udid=None, devpush=None, env=None):
         self.device, self.bid, self.work, self.udid, self.env = device, bid, Path(work), udid, env
         self.dc = shlex.split((env or os.environ).get("S2A_DEVICECTL") or "xcrun devicectl")
         self.dp = Devpush(devpush, udid, bid, work, env) if devpush and udid else None
+        self.made = set()   # 已以 App 身份建好的机上目录（put 前建一次）
 
     def dcp(self, t, *args, log=None):
         s0 = time.time(); margin = int((self.env or os.environ).get("S2A_DC_MARGIN", "30"))
@@ -307,6 +342,10 @@ class Devicectl:
         return rc == 0 and Path(dst).is_file()
 
     def put(self, src, rel):   # 超时 = S2A_CP_T0（缺省 60）秒 + 每 10 MB 1 秒（实测推送约 33 MB/s，留 3 倍余量）
+        # devicectl 会代建缺的父目录，iOS 26.x 上代建的归 root、App 再也写不进（a48655）：有 s2a-devpush 时先以 App 身份把父目录建好（每个目录一次）
+        d = rel.rsplit("/", 1)[0] if "/" in rel else ""
+        if hasattr(self.dp, "mkdir") and d and d not in self.made:
+            self.made.add(d); self.dp.mkdir(d)
         s0 = time.time(); t = int((self.env or os.environ).get("S2A_CP_T0", "60")) + Path(src).stat().st_size // (10 << 20)
         for i in (1, 2):
             rc, _ = self.dcp(t, "device", "copy", "to", *self.container(), "--source", src, "--destination", rel, log="cp.log")
@@ -324,12 +363,15 @@ class Devicectl:
                 except DirUnwritable:
                     raise
                 except Fail as first:   # 流式断一次多半是瞬时的（插拔 / 同网切线）：隔 3 秒再流一次，再不行才考虑 devicectl（预检清单 #77）
+                    if nospace(str(first)): raise   # 手机写满了：重试、换 devicectl 都写不进，直接交给 run 按写满报
                     self.say(f"流式写 {Path(rel).name} 断了（{str(first)[-160:]}），3 秒后再试一次")
                     time.sleep(3)
                     return self.dp.put(src, rel)
             except DirUnwritable:
+                self.say(self.owner_note(rel))   # 机上那条目录归谁、什么权限：定是「App 自己的、只是缺写权限」还是「归别的用户」（D-A76N）
                 raise
             except Fail as e:
+                if nospace(str(e)): raise
                 # devicectl 会把整个文件读进系统设备服务的内存（#641）：本机可用内存的一半装得下才交给它（至少放行 S2A_DC_FALLBACK_MAX / 2 GiB）
                 size, mem = Path(src).stat().st_size, avail_mem()
                 cap = max(int((self.env or os.environ).get("S2A_DC_FALLBACK_MAX") or DC_FALLBACK_MAX), mem // 2)
@@ -338,6 +380,24 @@ class Devicectl:
                                "交给 devicectl 会把整份读进内存、拖垮系统的设备服务，不改走 devicectl") from None
                 self.say(f"流式写 {Path(rel).name} 没成（{str(e)[-160:]}），改走 devicectl")
         self.put(src, rel)
+
+    def owner_note(self, rel):
+        """写不进时读机上「文件所在目录」与文件本身的属主 / 权限（devicectl device info files --no-recurse --json-output，只列一层）→ 一句非玩家读数。
+        D-A76N：afc 删掉重写也被拒、devicectl 却写得进。测试设备复现过一种成因：目录是 App 自己的（uid 501）但权限 0555——afc 建 / 删都拒、devicectl 照写；
+        另一种是 #569 归别的用户（root）。两种修法不同（前者 App 能自己补权限，后者只能重装），所以把读数记下来"""
+        d, name = rel.rsplit("/", 1) if "/" in rel else ("", rel)
+        parent, dname = d.rsplit("/", 1) if "/" in d else ("", d)
+        notes = []
+        for sub, want in ((parent, dname), (d, name)):
+            js = self.work / "owner.json"; js.unlink(missing_ok=True)
+            rc, _ = self.dcp(30, "device", "info", "files", *self.container(), *(["--subdirectory", sub] if sub else []), "--no-recurse", "--json-output", js)
+            try:
+                files = json.loads(js.read_text(encoding="utf-8"))["result"]["files"]
+                m = next(f["metadata"] for f in files if f.get("relativePath", f.get("name")) == want or f.get("name") == want)
+                notes.append(f"{sub + '/' if sub else ''}{want}：属主 uid {m.get('ownerUid')}、权限 {int(m.get('permissions', 0)):o}")
+            except (OSError, ValueError, KeyError, TypeError, StopIteration):
+                notes.append(f"{sub + '/' if sub else ''}{want}：读不到（devicectl rc={rc}）")
+        return "写不进的位置（机上属主 / 权限，非玩家句）：" + "；".join(notes)
 
     def head(self, rel, n):   # 续传只走 s2a-devpush（devicectl 读不了文件的一段）
         return self.dp.head(rel, n) if self.dp else None
@@ -380,7 +440,11 @@ class Devicectl:
         except (OSError, ValueError, KeyError, TypeError):
             return None
 
-    def free(self):   # 机上可写字节（ideviceinfo AmountDataAvailable）；UDID 没给就按设备标识从 devicectl 设备列表换；读不到 None
+    def free(self):   # 机上可写字节：有 s2a-devpush 先问它（AFC 设备信息），再退 ideviceinfo AmountDataAvailable；UDID 没给就按设备标识从 devicectl 设备列表换；读不到 None
+        # 11-17：原先只问 ideviceinfo，玩家机上多半没装 libimobiledevice，推之前一律「读不到 iPhone 剩余空间」照推，推到一半写满才停
+        if self.dp:
+            v = self.dp.free()
+            if v is not None: return v
         ud = self.udid
         if not ud:
             js = self.work / "devlist.json"
@@ -419,7 +483,7 @@ class Devicectl:
             tail = (self.work / "cp.log").read_text(errors="replace").splitlines()[-40:]
         except OSError:
             return False
-        return any(re.search(r"POSIX error code 28[^0-9]|NSPOSIXErrorDomain error 28[^0-9]", l + " ") for l in tail)
+        return any(nospace(l) for l in tail)
 
     say = staticmethod(lambda m: None)
 
@@ -472,7 +536,8 @@ def plan(dev, pack, work, full=False, say=print):
     for f in work.glob("push_*.tsv"): f.unlink()
     ver = jver((pack / "manifest.json").read_text(encoding="utf-8") if (pack / "manifest.json").is_file() else "")
     if ver not in (2, 3):   # 3 = v0.3.0 单一 IMG（pack/img.py convert：game.img + 照旧按文件的着色器库 / 覆盖层）
-        say(f"【红】资源包清单版本 {ver} 不认（只认 2、3：{pack}/manifest.json）"); raise Fail("资源包清单版本不认")
+        # 维护者 11-17：「校验不过就整个拒绝」一律撤掉——版本不认只打黄、照常按清单推；真推不了（缺 index.tsv 等）在后面按原因报
+        say(f"【黄】资源包清单版本 {ver} 这个工具不认（只认 2、3：{pack}/manifest.json），照常推送")
     if full:
         have, pushed, keep = {}, {}, []
         say("资源包：S2A_PUSH_FULL=1，整包推送")
@@ -622,7 +687,7 @@ def zstd_compressor():
     Python 3.14 用 compression.zstd，随包 Python 3.12 用 zstandard（launchers/macos/requirements-runtime.txt、Windows 同钉版）"""
     try:
         from compression import zstd
-        opts = {zstd.CompressionParameter.compression_level: ZLEVEL, zstd.CompressionParameter.nb_workers: os.cpu_count() or 1,
+        opts = {zstd.CompressionParameter.compression_level: ZLEVEL, zstd.CompressionParameter.nb_workers: cores(),
                 zstd.CompressionParameter.checksum_flag: 1}
         return lambda b: zstd.compress(b, options=opts)
     except ImportError:
@@ -867,6 +932,14 @@ CANT_OPEN_WHY = ("电脑拉不起手机上的 App，常见原因：iPhone 没开
 NO_DEVMODE_WHY = "电脑连不上手机的开发服务：请在 iPhone 上打开开发者模式（设置 → 隐私与安全性 → 开发者模式，要 iOS 17 以上）。处理好后"
 LOCKED_SIGNS = ("XPC response missing CoreDevice.output", "locked", "Locked")   # 锁屏时拉 App 的报错（Windows s2a-devpush 实测原文；devicectl 带 locked 字样）
 DEVMODE_SIGNS = ("CoreDeviceProxy",)   # s2a-devpush 建不了隧道（没开开发者模式 / iOS 17 以下）
+# 手机拒绝打开 App（devicectl 原文「…invalid code signature, inadequate entitlements or its profile has not been explicitly trusted by the user」）：
+#   一句里包了三种原因——还没信任开发者、签名 / 描述文件过期、换了团队。照着做的两步都写上；装机时读到的证书名（S2A_TRUST_NAME，install.py profile_trust_name）填进要点的那一项
+UNTRUSTED_SIGNS = ("explicitly trusted", "invalid code signature")
+def untrusted_why(name=None):
+    name = os.environ.get("S2A_TRUST_NAME", "") if name is None else name
+    item = f"点「{name}」" if name else "点你的开发者 App"
+    return (f"iPhone 拒绝打开 S2Arm：第一次装或换了 Apple ID，要在 iPhone 上：设置 → 通用 → VPN 与设备管理 → {item} → 信任；"
+            "如果签名已经过期，在启动器点「续签 S2Arm」。处理好后")
 RELAUNCH_S = 10   # 拉不起时每隔几秒再拉一次（拉一次约 1 秒；等待总长仍按 STALL_S 无进展判）
 PROGRESS = re.compile(r"进度：解开 \S+（(\d+)/(\d+)）")
 FAILED = re.compile(r"解包失败：(.+)")   # App 解开失败时写进解包日志的那一行（runtime/src/pack_apply.c s2a_pack_apply 收尾）：原因原样带回
@@ -932,7 +1005,8 @@ def apply(dev, pack, work, nb, say=print, sleep=time.sleep, now=time.time, stall
             break
         sleep(3)
     if cant_open:
-        why = LOCKED_WHY if was_locked else NO_DEVMODE_WHY if any(k in cant_open for k in DEVMODE_SIGNS) else CANT_OPEN_WHY
+        why = (LOCKED_WHY if was_locked else NO_DEVMODE_WHY if any(k in cant_open for k in DEVMODE_SIGNS)
+               else untrusted_why() if any(k in cant_open for k in UNTRUSTED_SIGNS) else CANT_OPEN_WHY)
         raise NeedsPlayer(f"资源包已传完，还差最后一步：{why}{OPEN_BY_HAND}（电脑这边打不开手机上的 App：{cant_open}）")
     # 解包停住（装机原则 11-11）：资源已经全在手机上，玩家打开 App 会接着装——和拉不起 App 同一口径（传输成功 + 提醒），不报装机失败
     raise NeedsPlayer(f"资源包已传完，还差最后一步：机上解包 {stall} 秒没有新进展（停在第 {seen} 包）。{OPEN_BY_HAND}" if seen else
@@ -943,6 +1017,32 @@ PROBE = ".s2a-write-probe"   # 推之前写的几字节探针（资源包目录�
 
 
 LOCKED_MSG = "iPhone 写不进资源包：手机锁屏了。解锁手机、保持亮屏，再点一次。"
+
+
+FIXED_DIRS = {"", "Documents", "Library", "Library/Application Support", "Library/Application Support/S2Arm"}   # 容器骨架：写不进也不挪
+
+
+def app_dirs(dev, rel, say=print):
+    """推之前以 App 身份（s2a-devpush / AFC）建好 rel（资源包 / .incoming），不让 devicectl 去代建（a48655：iOS 26.2 上 devicectl 代建的目录归 root、
+    权限 755，AFC 和 App 都写不进，原先只能删除重装）。已经归了别的用户的那一级：在原父目录里改名挪开（.s2a-foreign-<名>-<时刻>，同目录改名只要父目录可写），
+    再以 App 身份重建；挪开的那份 App 删不掉，删除重装时随容器一起清。没有 s2a-devpush（只有无线隧道）/ 工具太旧：不做，照旧推"""
+    dp = dev if isinstance(dev, Devpush) else getattr(dev, "dp", None)
+    if not hasattr(dp, "mkdir"): return   # 别的设备对象（假设备、没有 AFC 通道的）：不做
+    for _ in range(4):
+        bad = dp.mkdir(rel)
+        if bad is None or bad is False: return
+        d = bad
+        while True:
+            if d in FIXED_DIRS or "/" not in d:
+                raise DirUnwritable(f"iPhone 上的 S2Arm 写不进 {bad}，也没法把它挪开。" + REINSTALL_STEP)
+            parent, name = d.rsplit("/", 1)
+            aside = f"{parent}/.s2a-foreign-{name}-{int(time.time())}"
+            ok, out = dp.mv(d, aside)
+            if ok:
+                say(f"🟡 手机上 {d} 归别的用户、S2Arm 写不进（多半是旧版推送时 devicectl 代建的）：已挪到 {aside}，以 S2Arm 自己的身份重建后接着装，这款要整份重推")
+                break
+            d = parent
+    raise DirUnwritable(f"iPhone 上的 S2Arm 写不进 {rel}：挪开写不进的目录后还是建不出来。" + REINSTALL_STEP)
 
 
 def probe(dev, work, sleep=None):
@@ -977,6 +1077,7 @@ def run(dev, pack, work, full=False, say=print, env=None, on_plan=None, progress
     stage(名字, 已做, 总量)：推之前的准备步骤报给装机页（核对手机上的文件 / 检查手机空间 / 准备资源（拼镜像）按字节），每一刻都看得到在做什么"""
     stage = stage or (lambda name, done=None, total=None: None)
     stage(STAGE_CHECK)
+    app_dirs(dev, inc(dev), say)
     probe(dev, work)
     nb, nt, nbytes = plan(dev, pack, work, full, say)
     if on_plan: on_plan(nb, nt, nbytes)
@@ -987,8 +1088,10 @@ def run(dev, pack, work, full=False, say=print, env=None, on_plan=None, progress
         if fb is None: say(f"🟡 读不到 iPhone 剩余空间，这次要传 {max(1, nbytes >> 30)} GB：空间不够时会中途停下，请确认手机上留有足够空间")
         elif fb < need:
             # 手机报的空闲（AFC）不含系统随时能清掉的空间，比「设置 → 储存空间」里的「可用」小，常差好几 GB：估算不够不等于放不下
-            head = (f"iPhone 剩余空间看起来不够：这次要传约 {gb1(nbytes)} GB，连同解开时临时多占的约要 {gb1(need)} GB，"
-                    + (f"手机可用约 {gb1(fb)} GB（含系统随时能清掉的空间）。" if imp else f"手机报的空闲约 {gb1(fb)} GB。"))
+            # 「估算」写进句子（11-17 维护者）：手机报的空闲偏小，能读到空间以后提示变多，玩家要知道这是估的、可以照传
+            head = (f"按估算，iPhone 剩余空间可能不够：这次要传约 {gb1(nbytes)} GB，连同解开时临时多占的约要 {gb1(need)} GB，"
+                    + (f"手机可用约 {gb1(fb)} GB（含系统随时能清掉的空间）" if imp else f"手机报的空闲约 {gb1(fb)} GB")
+                    + f"，还差约 {gb1(need - fb)} GB。")
             if not accept:
                 raise LowSpace(head + ("可以先在「设置 → 通用 → iPhone 储存空间」腾出一些，或者" if imp else
                                        "「设置 → 通用 → iPhone 储存空间」里的「可用」还包括系统随时能清掉的空间，实际多半放得下；")
@@ -1000,9 +1103,11 @@ def run(dev, pack, work, full=False, say=print, env=None, on_plan=None, progress
         raise
     except Fail as e:
         left = dev.free() if nbytes else None
-        if left is not None and left < FULL_LEFT:
-            raise SpaceFull(f"iPhone 空间写满了，传到一半停下：这次要传约 {gb1(nbytes)} GB，手机现在只剩 {left >> 20} MB。"
-                            f"在「设置 → 通用 → iPhone 储存空间」腾出空间后再装一次（已传完的文件不用重传）。") from e
+        # 报错原文就说写满了（AFC「No space left」等，见 NOSPACE），或推完再量空闲已近 0：都按写满报，不报成连接中断
+        if nospace(str(e)) or (left is not None and left < FULL_LEFT):
+            raise SpaceFull((f"iPhone 空间写满了，传到一半停下：这次要传约 {gb1(nbytes)} GB，手机现在只剩 {left >> 20} MB。" if left is not None else
+                             f"iPhone 空间写满了，传到一半停下：这次要传约 {gb1(nbytes)} GB。")   # 两句整句进对照表（BackendText 按整句 / 句式翻）
+                            + "在「设置 → 通用 → iPhone 储存空间」腾出空间后再装一次（已传完的文件不用重传）。") from e
         raise
     return nb, nt, nbytes
 

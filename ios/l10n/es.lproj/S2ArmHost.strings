@@ -41,8 +41,8 @@
 "cheats.status.packed" = "Activo";
 "cheats.status.off" = "Desactivado";
 "cheats.status.pending" = "Esperando aplicarse…";
-"cheats.status.versionMismatch" = "Versión no coincide";
-"cheats.status.versionMismatch.file" = "Versión no coincide, no se aplicará";
+"cheats.status.versionMismatch" = "No coincide con esta versión del juego, desactivado";
+"cheats.status.versionMismatch.file" = "No coincide con esta versión del juego, desactivado (el juego funciona con normalidad)";
 "cheats.title" = "Trucos";
 "cheats.unnamed" = "Sin título";
 "common.cancel" = "Cancelar";
@@ -330,6 +330,8 @@
 "img.scanFailed.title" = "No se pudo importar el archivo del juego";
 "img.noShaders.title" = "Este archivo del juego está incompleto";
 "img.noShaders.body" = "«%@» está incompleto. Reemplázalo con el «<nombre del juego>.img» de la carpeta «S2Arm Self-Sign Export» en tu ordenador, o conecta tu teléfono y haz clic en «Send to iPhone» en S2Arm en tu ordenador.";
+"img.updateSkipped.title" = "Actualización de shaders omitida";
+"img.updateSkipped.body" = "«%@» no corresponde a la versión actual de este juego, así que se omitió y no se aplicó. El juego funciona con normalidad. Para usar esta actualización, añade junto con ella el .img completo de la misma exportación de tu ordenador.";
 "container.locked.title" = "El sistema bloqueó algunos archivos de S2Arm";
 "container.locked.body" = "En este dispositivo hay %@ GB de archivos antiguos de S2Arm bloqueados por el sistema. S2Arm no puede cambiarlos ni borrarlos; solo se eliminan al borrar la app.\n\nPara liberar ese espacio:\n1. En cada juego abre el menú → Gestionar partidas guardadas → Exportar partida guardada actual…, a un lugar de Archivos fuera de la carpeta de S2Arm (por ejemplo iCloud Drive; la carpeta de S2Arm se borra junto con la app)\n2. Borra y vuelve a instalar S2Arm\n3. Usa Gestionar partidas guardadas → Elige una copia de seguridad para comprobar… para recuperar tus partidas";
 "diag.fileWord" = "diag";
@@ -339,7 +341,7 @@
 "diag.error.zip" = "No se pudo crear el paquete (falló al escribir el zip; el teléfono puede estar sin espacio)";
 "diag.export" = "Exportar diagnóstico";
 "diag.prompt.abnormalExit" = "S2Arm no se cerró normalmente la última vez (se bloqueó, se congeló o fue cerrado por el sistema)";
-"diag.prompt.imlLost" = "S2Arm no se cerró normalmente la última vez. Esta instalación perdió el permiso «Límite de memoria ampliado», así que si un juego grande se cerró, lo más probable es que se quedara sin memoria. Vuelve a instalar con «Instalar en el iPhone» en S2Arm en tu ordenador (un Apple ID gratuito también conserva este permiso). Si lo firmas tú, usa Xcode o AltStore Classic 2.2 o posterior; al volver a firmar con SideStore 0.7.0 se pierde. Si ya está instalado, también puedes añadir el permiso al App ID con GetMoreRam y reinstalar";
+"diag.prompt.imlLost" = "S2Arm no se cerró normalmente la última vez. Esta instalación perdió el permiso «Límite de memoria ampliado», así que si un juego grande se cierra, lo más probable es que se haya quedado sin memoria. Arréglalo según cómo instalaste S2Arm:\n· S2Arm en tu ordenador (Apple ID gratuito o de pago): pulsa «Instalar en el iPhone» para este juego y reinstala. Si después sigues viendo este aviso, añade el permiso con GetMoreRam (abajo) y vuelve a pulsar «Instalar en el iPhone».\n· Tu propio certificado de desarrollador (.p12 + perfil de aprovisionamiento): en el sitio web de Apple Developer, activa «Increased Memory Limit» para el App ID de S2Arm (la identidad que Apple registra para cada app), vuelve a generar el perfil y firma e instala de nuevo con el perfil nuevo.\n· AltStore: reinstala (no actualices) con AltStore Classic 2.2 o posterior.\n· SideStore 0.7.0: su firma elimina este permiso; añádelo con GetMoreRam (abajo) y luego reinstala en SideStore.\n· Sideloadly: no compatible por ahora; no indica que conserve este permiso con un Apple ID gratuito y los permisos personalizados requieren una cuenta de Apple Developer de pago.\n· GetMoreRam: instálalo firmándolo con el mismo Apple ID que usaste para S2Arm (ocupa una de las plazas de apps de una cuenta gratuita; bórralo después), inicia sesión, abre App IDs, toca Actualizar, elige S2Arm, toca «Add Increased Memory Limit» y reinstala S2Arm como lo hiciste antes.";
 "diag.prompt.crash" = "El sistema informó que S2Arm se bloqueó o congeló la última vez";
 "diag.prompt.message" = "%@. Esto sube registros de ejecución, informes de bloqueo y la lista de canales gráficos que usaron los juegos (solo ID de sombreadores), sin partidas guardadas, claves ni archivos de juego, y te da un código corto.";
 "diag.prompt.no" = "No, gracias";
@@ -367,6 +369,8 @@
 "dprompt.expiry.hours" = "unos %d horas";
 "dprompt.expiry.lessThanHour" = "menos de 1 hora";
 "dprompt.expiry.title" = "La firma expira pronto";
+"dprompt.input.bad.body" = "Esta partida empieza con los botones predeterminados (%@).";
+"dprompt.input.bad.title" = "No se pudo leer la configuración de botones";
 "dprompt.ns2pro.body" = "Mantén cuatro dedos en la pantalla durante 1,5 segundos para abrir Ajustes, activa «Habilitar mando Switch 2 Pro» y luego pulsa el botón de emparejamiento del mando.";
 "dprompt.ns2pro.title" = "¿Usas un mando Switch 2 Pro?";
 "dprompt.motion.title" = "Controles de movimiento";
@@ -386,7 +390,7 @@
 "gfx.fpsLimit" = "Límite de velocidad de fotogramas";
 "gfx.fpsLimit.none" = "Sin límite";
 "gfx.resolution" = "Resolución de renderizado";
-"iml.lost.body" = "Los juegos grandes pueden quedarse sin memoria y cerrarse o ralentizarse. Vuelve a instalar con «Instalar en el iPhone» en S2Arm en tu ordenador (un Apple ID gratuito también conserva este permiso). Si lo firmas tú, usa Xcode o AltStore Classic 2.2 o posterior; al volver a firmar con SideStore 0.7.0 se pierde. Si ya está instalado, también puedes añadir el permiso al App ID con GetMoreRam y reinstalar.";
+"iml.lost.body" = "Los juegos grandes pueden quedarse sin memoria y cerrarse o ralentizarse. Arréglalo según cómo instalaste S2Arm:\n· S2Arm en tu ordenador (Apple ID gratuito o de pago): pulsa «Instalar en el iPhone» para este juego y reinstala. Si después sigues viendo este aviso, añade el permiso con GetMoreRam (abajo) y vuelve a pulsar «Instalar en el iPhone».\n· Tu propio certificado de desarrollador (.p12 + perfil de aprovisionamiento): en el sitio web de Apple Developer, activa «Increased Memory Limit» para el App ID de S2Arm (la identidad que Apple registra para cada app), vuelve a generar el perfil y firma e instala de nuevo con el perfil nuevo.\n· AltStore: reinstala (no actualices) con AltStore Classic 2.2 o posterior.\n· SideStore 0.7.0: su firma elimina este permiso; añádelo con GetMoreRam (abajo) y luego reinstala en SideStore.\n· Sideloadly: no compatible por ahora; no indica que conserve este permiso con un Apple ID gratuito y los permisos personalizados requieren una cuenta de Apple Developer de pago.\n· GetMoreRam: instálalo firmándolo con el mismo Apple ID que usaste para S2Arm (ocupa una de las plazas de apps de una cuenta gratuita; bórralo después), inicia sesión, abre App IDs, toca Actualizar, elige S2Arm, toca «Add Increased Memory Limit» y reinstala S2Arm como lo hiciste antes.";
 "iml.lost.short" = "Los juegos grandes pueden quedarse sin memoria y cerrarse. Toca «Más información» para ver cómo volver a firmar S2Arm con este permiso.";
 "iml.lost.title" = "Esta instalación perdió el permiso «Límite de memoria ampliado»";
 "lan.denied.later" = "Ahora no";

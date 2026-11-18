@@ -76,6 +76,19 @@ class _Scene:
             if self.END in line: self.in_block = False
 
 
+def key_generation_note(lines):
+    """读取器解不开时多打的「【密钥代】<要的代>\t<prod.keys 有到>\t<带 rights id>」（十六进制，同 prod.keys 里 master_key_XX 的写法，#1511）
+    → 玩家句补一句「这份要第几代、你的有到第几代」；读取器没给（读不出 NCA 头）就不补"""
+    line = next((x for x in lines if x.startswith("【密钥代】")), None)  # 非玩家句
+    parts = line[len("【密钥代】"):].split("\t") if line else []  # 非玩家句
+    if len(parts) < 2 or parts[1] == "-":
+        return ""
+    need, top = parts[0], parts[1]
+    if int(need, 16) > int(top, 16):
+        return "\n" + f"这份文件要 master_key_{need}，你的 prod.keys 只到 master_key_{top}：不够新。"
+    return "\n" + f"这份文件要 master_key_{need}，你的 prod.keys 有到 master_key_{top}：代数够，多半是这一行的值不对。"
+
+
 def _scene_text(summary, block, budget=DIAGNOSTIC_LOG_SCENE):
     """整段放得下就整段；放不下按优先级：崩溃摘要 → 现场块头 → 第一个非等待线程的整段栈 → 其余线程的头一行 → 现场完"""
     text = b"\n".join(summary + block)
@@ -109,9 +122,11 @@ def diagnostic_log_chunks(source, size, head=None, tail=None):
     + 中间的心跳行与最后一次崩溃摘要、全线程现场 + 结尾 tail（从行首起）。最后一块之后返回 (留下的字节, 截掉的字节)，经 StopIteration.value 取"""
     head = DIAGNOSTIC_LOG_HEAD if head is None else head
     tail = DIAGNOSTIC_LOG_TAIL if tail is None else tail
+    # 只读到打开时量的 size 为止（11-17 D-4PE6：游戏开着、日志边导边涨，原先读到文件尾，导出慢的时候一份 game.log 涨过收件单个成员 16 MB 上限，
+    #   整包被拒「单个文件超过 16 MB」）；导出之后才写进来的部分不收
     if size <= head + tail:
         kept = 0
-        while chunk := source.read(DIAGNOSTIC_LOG_CHUNK):
+        while kept < size and (chunk := source.read(min(DIAGNOSTIC_LOG_CHUNK, size - kept))):
             kept += len(chunk); yield chunk
         return kept, 0
     first = _line_head(source, head)
@@ -149,8 +164,9 @@ def diagnostic_log_chunks(source, size, head=None, tail=None):
         mid += gap("中间最后一次崩溃摘要与全线程现场") + _scene_text(*scene.last)  # 非玩家句
     yield mid + gap("以下是日志结尾")  # 非玩家句
     source.seek(tail_start)
-    while chunk := source.read(DIAGNOSTIC_LOG_CHUNK):
-        kept += len(chunk); yield chunk
+    pos = tail_start
+    while pos < size and (chunk := source.read(min(DIAGNOSTIC_LOG_CHUNK, size - pos))):
+        pos += len(chunk); kept += len(chunk); yield chunk
     return kept, omitted
 
 
@@ -384,6 +400,22 @@ def extract_inspect(c, source, icon_dir):
             raise Failure(f"读不出解包目录的程序号（{source.name}）：{e}", code="content_invalid") from None
         main_path = source / "exefs" / "main"
         npdm_path = source / "exefs" / "main.npdm"
+
+    # 散文件 / Switch 2 导出没有整包校验：导入时先把程序文件（NSO）试解一遍，物理上解不开当场点名（#1522：原先到出包解包才抛 LZ4 的 Python 栈）；
+    #   段哈希对不上照常收、记黄（维护者 11-17：校验不过不拒收，可能是打过补丁 / mod 的程序）
+    if fmt in ("dump", "loose"):
+        exefs_dirs = [main_path.parent] + ([source / "updates" / n / "exefs" for n in dump.numdirs(str(source / "updates"))] if fmt == "dump" else [])
+        for exefs in exefs_dirs:
+            if not exefs.is_dir():
+                continue
+            rel = exefs.relative_to(source).as_posix()
+            try:
+                off = dump.check_exefs(str(exefs))
+            except dump.NsoDamaged as e:
+                raise Failure(f"程序文件 {rel}/{e.name} 的 {e.seg} 段解不开：这个程序文件坏了或被改过，请重新导出（最好导成 NSP / XCI）。", code="content_invalid") from None
+            if off:
+                c.diagnostic(SOURCE_INTEGRITY_SKIPPED, code="source_integrity_skipped", severity="warning",
+                             internal="；".join(f"{rel}/{n} 的 {s} 段哈希对不上" for n, s in off))  # 非玩家句
 
     # 读名称与显示版本；english = 文件夹取名用的英文名（unpack.tsv 的 name / NACP 美式 → 英式英语），没有就空
     english = ""
@@ -1069,6 +1101,26 @@ def keys(c):
 
 # 候选游戏文件自身有毛病（截断、缺票据）：密钥验不了，但不能据此判密钥无效；导入照常、记 verified=false，源文件错误留到读那款游戏时报
 KEYS_UNVERIFIABLE = ("content_truncated", "ticket_missing")
+def integrity_skips(lines):
+    """读取器的「【校验跳过】阶段\t内容号\t第一处坏块」行 → [{stage, contents, place}]（同一处只记一次，按出现顺序）"""
+    out = []
+    for line in lines:
+        if line.startswith("【校验跳过】"):  # 非玩家句
+            stage, _, rest = line[len("【校验跳过】"):].partition("\t")  # 非玩家句
+            contents, _, place = rest.partition("\t")
+            item = dict(stage=stage.strip(), contents=contents.strip(), place=place.strip())
+            if item not in out:
+                out.append(item)
+    return out
+
+
+def integrity_skipped(game):
+    """这款导入时有内容跳过了完整性校验（任一个包记了 integritySkipped）"""
+    return any(p.get("integritySkipped") for p in (game or {}).get("packages", []))
+
+
+SOURCE_INTEGRITY_FAILED_NOTE = "导入时这款数据校验不过（多半是改版 / 整合版或个别块损坏），这次失败可能与此有关；换一份原版完整的文件再试。"
+SOURCE_INTEGRITY_SKIPPED = "这份游戏文件里有数据和原版对不上（多半是改版 / 整合版，或个别块损坏），已跳过完整性校验照常导入。"
 KEYS_CANNOT_DECRYPT = ("无法读取游戏内容：可能是文件不完整、缺票据或密钥不匹配。请核对原始文件；"
                        "若已确认 Switch 密钥版本不足，再重新导出，到「设置 → 玩家密钥」重新导入。")
 
@@ -1104,6 +1156,13 @@ def inspect(c, source, icon_dir, keyfile=None, *, source_id=None):
             raise Failure("缺少内容对应的票据或标题密钥，请检查源文件是否完整。", code="ticket_missing") from None
         if any(line.startswith("【原因 keys_missing】") for line in lines):  # 非玩家句
             raise Failure("现有 prod.keys 缺少读取此文件所需的密钥。", code="keys_outdated") from None
+        # 解不开、但同一份文件里同代密钥的别的内容能解开（#1511 再判：玩家换两组密钥同处坏、控制数据能读）：密钥是对的，是文件本身被改过 / 坏了
+        if any(line.startswith("【原因 content_damaged】") for line in lines):  # 非玩家句
+            raise Failure("这份文件的内容被改过或损坏了：同一份文件里用同一代密钥的其它内容能正常解开，密钥是对的。请换一份原版完整的文件（XCI / NSP）再导入。", code="content_invalid") from None
+        # 解出来的数据对不上（分区头魔数不对，#1511）：prod.keys 里这款那一代的密钥不对，同「缺密钥」让玩家重新导出 prod.keys，原话说清是解不开、不是文件被改过
+        if any(line.startswith("【原因 keys_wrong】") for line in lines):  # 非玩家句
+            raise Failure("现有 prod.keys 解不开这份文件：解出来的数据对不上，多半是这款用的那一代密钥不对。请用升级到最新系统的 Switch 重新导出 prod.keys 再导入。"
+                          + key_generation_note(lines), code="keys_outdated") from None
         # 读取器自己给了确定原因（「【原因 hash_mismatch】源文件数据哈希校验不过…换一份原版完整的文件」等，pack/nx_unpack Inspect.cs / Program.cs）：
         #   照它的原话报，不再落到「文件不完整、缺票据或密钥不匹配」三选一的猜测（#1008：本体哈希校验不过，玩家被指去查密钥）
         reason = next((line.split("】", 1)[1].strip() for line in lines if line.startswith("【原因 ") and "】" in line and line.split("】", 1)[1].strip()), "")  # 非玩家句
@@ -1116,6 +1175,12 @@ def inspect(c, source, icon_dir, keyfile=None, *, source_id=None):
         scratch.cleanup()
     if "【内容截断】" in lines:  # 非玩家句
         raise Failure("游戏文件不完整，部分内容超出文件末尾。", code="content_truncated")
+    # 读取器哈希不符后只对那份内容跳过完整性校验、照常读出（维护者 11-17：校验不过不再整单拒收，#1467）：每处一行「【校验跳过】阶段\t内容号\t第一处坏块」。
+    #   记进这份原件的每个包（integritySkipped），游戏库据此标「数据校验不过」，之后出包 / 起局失败时报错补一句（main.py）；同时发一条 warning 级诊断
+    skipped = integrity_skips(lines)
+    if skipped:
+        c.diagnostic(SOURCE_INTEGRITY_SKIPPED, code="source_integrity_skipped", severity="warning",
+                     internal="；".join(" ".join(x for x in s.values() if x) for s in skipped))
     try:
         output = json.loads(next(line for line in reversed(lines) if line.startswith("{")))
         if output.get("schema") != 1 or not output["packages"]:
@@ -1125,6 +1190,9 @@ def inspect(c, source, icon_dir, keyfile=None, *, source_id=None):
                 raise ValueError()
             if package["type"] not in ("base", "update", "dlc") or not isinstance(package["version"], int):
                 raise ValueError()
+        if skipped:
+            for package in output["packages"]:
+                package["integritySkipped"] = skipped
         return output["packages"]
     except (KeyError, ValueError, StopIteration, TypeError):
         raise Failure("内容读取器返回的元数据不完整。", code="content_invalid") from None
@@ -1920,6 +1988,7 @@ def catalog(c):
     if startup:
         sweep_residue(c)   # 崩溃 / 断电 / 被杀留下的解包与中间产物：启动时扫一次（剃刀 H14：原先每次刷新都扫两遍；正常失败与取消由 clean_after_stop 当场清）
         sweep_trash(c)   # 删除时挪进 .s2a-trash 而当时没删干净的：同在启动时清一次（玩家反馈 11-11 删除先挪再删）
+        sweep_private_tmp(c)   # 作业被打断（卡死 / 强退 / 断电）留在私有目录的临时目录：同在启动时清一次（#1471）
         unseal_builds(c)   # 旧版本留下的只读 RomFS 共享存储：每款一次加回写权限，玩家手动删旧产物不再被挡
     cat = c.catalog()
     input_supported, input_reason = toolchain.input_interface(c)
@@ -2368,7 +2437,8 @@ def _keep_stage_logs(c, gid):
     roots = [*work.glob("roots/*@现行"), *work.glob("work/pkg/product"), *layout.build_dir(c, gid, create=False).glob("*/roots/*@现行"),  # 非玩家句
              *work.glob("work"),   # Windows 一键出包各步的日志（seed.log 等，pack/orch/oneclick_win.py Run.sh 写在工作目录下）：#754 失败后随 build/ 删掉，诊断包里没有
              # 阶段失败时各阶段把自己的日志拷进产物根旁的 .failed/（如改写 pack/stage_rewrite.sh 的 <款>_<模块>.log）：玩家报出包超时 / 改写失败时要的就是它（#251 诊断包里没有）
-             *work.glob("roots/.failed"), *layout.build_dir(c, gid, create=False).glob("*/roots/.failed")]
+             *work.glob("roots/.failed"), *layout.build_dir(c, gid, create=False).glob("*/roots/.failed"),
+             *work.glob("work/roots/.failed")]   # Windows 一键出包的产物根在工作目录下（pack/jobs/ipa.py win_oneclick --out <工作目录>/work）：改写失败留的 <款>_<模块>.rewrite.log（#1476 诊断包里只有 light.log）
     dest = c.logs / (c.task + "-stages")
     count = 0
     for root in roots:
@@ -2544,12 +2614,10 @@ def delete(c):
         #   下次再删又卡在同一个文件上（11-11 玩家反馈「删除有时生效有时不生效」，真 App 复现）。挪走的删不干净只记黄字，空闲时 sweep_trash 接着删
         trashed = []
         if gdir and gdir.exists():
-            # 存档有内容就保留
-            saves = gdir / "saves"
-            backups = gdir / "save-backups"
-            has_saves = layout.has_content(saves) or layout.has_content(backups)   # 只有 .DS_Store 之类不算有存档
+            # 存档类（layout.save_entries 唯一来源：saves/、save-backups/、save_backup/、SaveData*）有内容就全部保留，其余照删（金手指、mod 不算存档）
+            has_saves = any(layout.has_content(p) for p in layout.save_entries(gdir))   # 只有 .DS_Store 之类不算有存档
             root = gdir.parent.parent   # 这款所在存放位置的根（root_of 靠 find_game，认不出时会退回默认位置）
-            for item in ([i for i in gdir.iterdir() if i.name not in ("saves", "save-backups")] if has_saves else [gdir]):
+            for item in ([i for i in gdir.iterdir() if not layout.is_save_entry(i.name)] if has_saves else [gdir]):
                 moved = _to_trash(c, root, item, gid)
                 if moved:
                     trashed.append((root, moved))
@@ -2606,6 +2674,39 @@ def _to_trash(c, root, item, gid):
     except OSError as e:
         raise Failure(f"删不掉「{item.name}」：{e.strerror or e}。确认这块盘没被设成只读、文件没被别的程序锁住，再删一次。", code="job_failed") from e
     return dest
+
+
+# 私有目录里作业建的临时目录：TemporaryDirectory(dir=c.private) 的缺省名 tmp + 8 位，装机 / 下游装机的 mkdtemp 前缀。只认这几种名字（我们自己建的）
+PRIVATE_TMP = re.compile(r"(tmp|s2a-install-|s2a-ds-install-)[a-z0-9_]{8}")
+PRIVATE_TMP_AGE_S = 24 * 3600
+
+
+def sweep_private_tmp(c, now=None):
+    """作业被打断后留在私有目录的临时目录（#1471：S 级优化给 Mac 补着色器的临时产物根 tmp*/roots 被打断就留下，玩家看到几十 GB）。
+    启动器开局时清：只清我们自己建的名字（PRIVATE_TMP）、真目录（不跟软链）、本库没有任务在跑（执行锁与自动重活锁都拿得到）、
+    且它和第一层内容超过一天没动过（防另一份游戏库 / 另一个启动器实例的任务还在用）。删不掉的下次再试；→ 删了几个"""
+    now = time.time() if now is None else now
+    try:
+        cands = [p for p in c.private.iterdir() if PRIVATE_TMP.fullmatch(p.name) and p.is_dir() and not _is_link(p)]
+    except OSError:
+        return 0
+    if not cands:
+        return 0
+    n = 0
+    with c.idle("execution") as free, c.idle("auto-heavy") as auto_free:
+        if not (free and auto_free):
+            return 0
+        for p in cands:
+            try:
+                newest = max([p.lstat().st_mtime] + [e.stat(follow_symlinks=False).st_mtime for e in os.scandir(p)])
+                if now - newest < PRIVATE_TMP_AGE_S:
+                    continue
+                _rm(c, c.private, p); n += 1
+            except (Failure, OSError):
+                continue
+    if n:
+        print(f"清掉私有目录里作业被打断留下的临时目录 {n} 个", file=sys.stderr)  # 非玩家句
+    return n
 
 
 def sweep_trash(c):
@@ -2707,7 +2808,7 @@ def space_parts(c, gid):
         "shaders": [p for p in game_caches(c, gid) if p not in shared] + [Path(c.work_root) / "cache" / "programs" / gid.upper()],   # 程序缓存：缺了按常驻配方现建（pack/jobs/programs.py）；出包收尾不清它
         "mac": [layout.image_mac(c, gid, create=False)] if gdir and gdir.exists() else [],
         "ipa": ipa,
-        "saves": [layout.path(c, gid, "saves", create=False)],
+        "saves": layout.save_entries(gdir) if gdir else [],   # 只报不删（SPACE_KEPT）；存档类唯一来源 layout.save_entries
         "logs": [out / "logs"],
     }
     return {k: [p for p in v if p.exists() or p.is_symlink()] for k, v in parts.items()}

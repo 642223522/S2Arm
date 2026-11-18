@@ -16,7 +16,6 @@ struct ExportPageLayout<Content: View, Actions: View>: View {
         VStack(spacing: 0) {
             ScrollView(.vertical) {
                 content
-                    .frame(maxWidth: 960, alignment: .leading)
                     .padding(.horizontal, LauncherTheme.Metrics.libraryInset)
                     .padding(.top, 22).padding(.bottom, 40)
                     .frame(maxWidth: .infinity, alignment: .leading)

@@ -532,3 +532,119 @@ class OriginalExefsFormatTests(unittest.TestCase):
              patch.object(library, "engine_tool", side_effect=lambda _c, name: ns2_dump):
             self.original()
         self.assertEqual(seen, [str(reader)])
+
+
+class NoBackgroundRewriteTests(unittest.TestCase):
+    """11-17 维护者定：改写器指纹变了不再在后台重改写全部游戏（准备更新 iPhone、打开启动器补 S 级都走 ignore_rewriter），
+    只在玩家对这一款出包 / 推送 / 装机 / 起局时前台做；补丁记号里改写器之后的部分（补丁库版本、金手指等）变了照旧补。
+    改写器本身换成计数的替身，期望按规则手写"""
+    G = "0100000000010000"
+
+    def run_ios(self, stored, now_key, ignore):
+        c = types.SimpleNamespace(emit=lambda *a, **k: None, catalog=lambda: {"games": [{"id": self.G, "name": "甲"}]})
+        calls, saved = [], {"ios": dict(stored)}
+        def check(cc, g, kit, target, rid, ignore_rewriter=False):
+            calls.append((g, rid)); return "unaffected"
+        with patch.object(rr, "rewriter_id", lambda cc: "NEWRID"), patch.object(rr, "ios_key", lambda cc, g, rid: now_key(rid)), \
+                patch.object(rr, "kept_todo", lambda *a: False), patch.object(rr, "check_and_update", check), \
+                patch.object(rr, "_refresh_bf_ios", lambda cc, games: []), \
+                patch.object(rr.layout, "game_info", lambda cc, g: saved), patch.object(rr.layout, "ios_kit", lambda cc, g: Path("/kit")), \
+                patch("core.trace", lambda *a, **k: None, create=True), patch("programs.save_recipe", lambda *a: None, create=True):
+            rr.refresh_ios(c, [self.G], ignore_rewriter=ignore)
+        return calls
+
+    def test_rewriter_change_alone_skipped_in_background(self):
+        # 改写器指纹从 OLDRID 换成 NEWRID、补丁记号其余部分不变：后台（ignore_rewriter）0 次改写；前台（玩家推这一款）改写 1 次
+        stored = dict(rewriterId="OLDRID", sgradeKey="OLDRID:plan:v1:-")
+        key = lambda rid: f"{rid}:plan:v1:-"
+        self.assertEqual(self.run_ios(stored, key, True), [])
+        self.assertEqual(self.run_ios(stored, key, False), [(self.G, "NEWRID")])
+
+    def test_patch_library_change_still_refreshed_in_background(self):
+        # 补丁库版本 v1 → v2（记号里改写器之后的部分变了）：后台照旧补（11-14 维护者：补丁库更新 / 导入金手指要补进程序）
+        stored = dict(rewriterId="OLDRID", sgradeKey="OLDRID:plan:v1:-")
+        self.assertEqual(self.run_ios(stored, lambda rid: f"{rid}:plan:v2:-", True), [(self.G, "NEWRID")])
+
+    def test_sgrade_off_game_never_rewritten_in_background(self):
+        # 出包时取消过 S 级优化（记号 None，只看改写器指纹）：后台 0 次；前台照旧按新改写器做
+        stored = dict(rewriterId="OLDRID")
+        self.assertEqual(self.run_ios(stored, lambda rid: None, True), [])
+        self.assertEqual(self.run_ios(stored, lambda rid: None, False), [(self.G, "NEWRID")])
+
+    def test_mac_background_skips_rewriter_change_alone(self):
+        # Mac 运行版本（打开启动器后台补 S 级用 ignore_rewriter）：改写器指纹单独变了直接返回，不跑改写器；前台起局（不带）要跑
+        with tempfile.TemporaryDirectory() as t:
+            rt = Path(t)
+            (rt / "exefs").mkdir()
+            (rt / "exefs/main").write_bytes(bytes(0x48))
+            import json as _json
+            (rt / "manifest.json").write_text(_json.dumps({"files": {}, "rewriterId": "OLDRID"}))
+            c = types.SimpleNamespace(emit=lambda *a, **k: None, catalog=lambda: {"games": []}, private=t)
+            ran = []
+            def boom(*a, **k):
+                ran.append(1); raise Failure("前台才该跑到这里")
+            with patch.object(rr, "rewriter_id", lambda cc: "NEWRID"), patch.object(rr, "sgrade_off", lambda cc, g: True), \
+                    patch.object(rr, "rewriter_bin", boom):
+                self.assertFalse(rr.refresh_mac(c, self.G, rt, ignore_rewriter=True))
+                self.assertEqual(ran, [])
+                self.assertFalse(rr.refresh_mac(c, self.G, rt))   # 前台：要按新改写器做（替身抛错 → 核不了不挡起局，返回 False）
+                self.assertEqual(ran, [1])
+
+
+class FpslKey(unittest.TestCase):
+    """D-7AQ2：FPSLocker 转换代码修了，已出过包的款要走 S 级补进重出表。补丁记号（sgrade_key）只在这款带 FPSLocker 配置时多一段 :fpsl<转换代码指纹>：
+    期望手写——带配置：记号以 :fpsl<指纹> 结尾、转换代码一变记号就变；不带：记号与没加这段时一字不差（不让别的款白白重补）；补丁库取不到：当没带"""
+    def key(self, items, fp="aaaaaaaaaaaa"):
+        c = types.SimpleNamespace(engine=Path(__file__).resolve().parents[3])
+        import patches
+        with patch.object(patches, "version_key", return_value="vk"), patch.object(rr, "plan_code_id", return_value="pc"), \
+             patch.object(rr, "cheats_digest", return_value="-"), patch("mods.code_digest", return_value="-"), \
+             patch.object(rr, "fpsl_code_id", return_value=fp), patch.object(patches, "items_for", side_effect=items if callable(items) else (lambda *a: items)):
+            return rr.sgrade_key(c, "0100AD80208A8000", "rid", "68E3A0EA176A79F4")
+
+    def test_key(self):
+        # 替身与真函数同形：patches.items_for 返回 [(条目字典, 内容字节)]（11-17 原先替身给字典，真函数给元组，单测绿、真游戏上 AttributeError）
+        base = "rid:pc:vk:-"
+        self.assertEqual(self.key([({"kind": "fpsl", "name": "68E3A0EA176A79F4.yaml"}, b"MASTER_WRITE:")]), base + ":fpslaaaaaaaaaaaa")
+        self.assertNotEqual(self.key([({"kind": "fpsl"}, b"")], fp="bbbbbbbbbbbb"), self.key([({"kind": "fpsl"}, b"")]), "转换代码变了记号跟着变")
+        self.assertEqual(self.key([({"kind": "pchtxt", "name": "x.pchtxt"}, b"")]), base, "不带 FPSLocker 配置：记号不变")
+        def gone(*a):
+            raise OSError("补丁库取不到")
+        self.assertEqual(self.key(gone), base, "补丁库取不到：当没带")
+
+    def test_code_id_tracks_converter_files(self):
+        c = types.SimpleNamespace(engine=Path(__file__).resolve().parents[3])
+        a = rr.fpsl_code_id(c)
+        self.assertRegex(a, r"^[0-9a-f]{12}$")
+
+
+class FpslKeyRealLibrary(unittest.TestCase):
+    """补丁记号拿真补丁库条目算（11-17 维护者：替身与真函数不同形，单测绿、真游戏上 AttributeError）：造一份与随启动器装的快照同格式的补丁库
+    （tools/patch_pack.py snapshot：index.json + 各款 g/<程序号>.json.gz），不替换 patches.items_for，走真函数读条目。期望手写——
+    带 FPSLocker 配置（kind fpsl、*.yaml）的款记号以 :fpsl<转换代码指纹> 结尾；只有别的补丁的款没有这段；补丁库里没有的款没有这段；都不抛异常"""
+    def test_key_from_real_items_for(self):
+        import base64, gzip, hashlib, io, json, tarfile, tempfile
+        import patches
+        def item(name, kind, data):
+            return dict(name=name, kind=kind, cat="fps", data=base64.b64encode(data).decode(), sha256=hashlib.sha256(data).hexdigest())
+        bundles = {"g/0100AAAA00000000": [item("68E3A0EA176A79F4.yaml", "fpsl", b"MASTER_WRITE:\n")],
+                   "g/0100BBBB00000000": [item("60fps.pchtxt", "pchtxt", b"@nsobid-0000\n")]}
+        with tempfile.TemporaryDirectory() as t:
+            snap = Path(t) / "patches-v2.tar"; man, blobs = {}, {}
+            for k, items in bundles.items():
+                blob = gzip.compress(json.dumps(dict(schema=2, key=k, items=items)).encode()); blobs[k] = blob
+                man[k] = dict(sha256=hashlib.sha256(blob).hexdigest(), size=len(blob), items=len(items))
+            with tarfile.open(snap, "w") as tf:
+                for n, data in [("index.json", json.dumps(dict(schema=2, generated=1, upstreams={}, bundles=man)).encode())] + [(k + ".json.gz", b) for k, b in blobs.items()]:
+                    ti = tarfile.TarInfo(n); ti.size = len(data); tf.addfile(ti, io.BytesIO(data))
+            c = types.SimpleNamespace(engine=Path(__file__).resolve().parents[3], private=Path(t) / "private", r={})
+            env = dict(os.environ, S2A_PATCH_SNAPSHOT=str(snap))
+            with patch.dict(os.environ, env), patch.object(patches, "cloud_manifest", return_value=None), patch.dict(patches._MANIFEST, clear=True), \
+                 patch.object(rr, "cheats_digest", return_value="-"), patch("mods.code_digest", return_value="-"):
+                self.assertEqual(len(patches.items_for(c, "0100AAAA00000000", "")), 1, "夹具自证：真 items_for 读得到快照里的条目")
+                fp = rr.fpsl_code_id(c)
+                a = rr.sgrade_key(c, "0100AAAA00000000", "rid", "")
+                b = rr.sgrade_key(c, "0100BBBB00000000", "rid", "")
+                n = rr.sgrade_key(c, "0100CCCC00000000", "rid", "")
+        self.assertTrue(a.endswith(":fpsl" + fp), a)
+        self.assertNotIn(":fpsl", b); self.assertNotIn(":fpsl", n)

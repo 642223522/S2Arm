@@ -123,6 +123,15 @@ public struct JobOutcome {
     /// 作业进程的标准错误（中断时给诊断用）。
     public let stderr: String
 
+    /// 让这次作业停下的那条诊断：作业层把终态错误追加在诊断列表最后（pack/jobs/core.py report_failure），
+    ///   前面可能有中途记的警告（磁盘快满、补着色器没补上……）。取最后一条 error 级的，没有就取最后一条。
+    ///   原先取第一条：更新 iPhone 时先记了一条补着色器失败的警告，停装码 save_backup_failed 排在后面，结局页认不出、不出「仍然继续」。
+    public var failureDiagnostic: [String: Any]? { Self.failureDiagnostic(diagnostics) }
+    public var failureCode: String? { failureDiagnostic?["code"] as? String }
+    public static func failureDiagnostic(_ diagnostics: [[String: Any]]) -> [String: Any]? {
+        diagnostics.last(where: { $0["severity"] as? String == "error" }) ?? diagnostics.last
+    }
+
     public static let interruptedMessage = "工作进程已退出。可重试并验证完成阶段。"
 }
 
@@ -317,6 +326,7 @@ public final class JobClient {
             process = try runner.start(
                 executable: python, arguments: ["-B", "-I", entry.path, "run", "--request", file.path],
                 environment: processEnvironment().merging(secrets) { _, s in s },
+                automatic: JobTrigger.automaticOperations.contains(operation),
                 onLine: { line in
                     guard let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else { return }
                     guard let event = JobEvent(json: object) else {

@@ -3,13 +3,22 @@
 #include "native.h"
 #include "s2a_launch_ctx.h"
 #include "s2a_docs.h"   // 多款容器每款资源包根（s2a_pack_root）
+#include "s2a_host_abi.h"
+#include <CommonCrypto/CommonDigest.h>   // 程序包 image_sha256 核对（program_sha_check）
+#include <dlfcn.h>                       // s2a_imgpack_open：宿主才链（imgpack.c），单测不链 → 不预注册   // S2A_HOST_ABI：宿主读产物的约定号（选游戏时核）
 #include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
+#include <sys/clonefile.h>
+#include <unistd.h>
+#include <dirent.h>
+#include <ftw.h>
+#include <time.h>
 #include <mach-o/dyld.h>
 
 #define WHY(...) do { if (why && why_n) snprintf(why, why_n, __VA_ARGS__); } while (0)
@@ -104,8 +113,9 @@ static int is_file(const char *p) { struct stat st; return !stat(p, &st) && S_IS
 int s2a_launch_ctx_is_container_dir(const char *b) {
     char p[S2A_LCTX_PATH];
     if (!b || !*b) return 0;
-    if (join(p, b, "s2a_catalogue.json") || !is_file(p)) return 0;
-    return !join(p, b, "Games") && is_dir(p);
+    // 只看 s2a_catalogue.json（只有多款容器的组装才写它，pack/ship_ext.py container）：0.6.0 通用壳「只装壳」的容器清单只有 shell_id、games 为空，
+    //   也不带 Games/（各款的程序与随行表都在程序包 program/ 里）。原先还要求有 Games/，只装壳的容器会被当成单款包起，FATAL
+    return !join(p, b, "s2a_catalogue.json") && is_file(p);
 }
 // 清单里有没有这款：逐个找键 "title_id" 后的字符串值比对（title_id 是 16 位十六进制，不含转义；值里有反斜杠的条目不认）。
 //   界面（S2ArmShellHost Catalogue.swift）读同一份清单；这里只核成员，不判 state（界面只对 playable 放 Play）
@@ -128,6 +138,222 @@ static int catalogue_has(const char *path, const char *gid, char *why, size_t wh
     free(buf);
     return hit;
 }
+// ---------- 宿主约定号核对（11-16）：清单 JSON 里找这款的对象，取 host_abi ----------
+// 跳过一个 JSON 字符串（p 指向开头的引号）→ 结尾引号之后；没闭合 → NULL
+static const char *skip_str(const char *p, const char *e) {
+    for (p++; p < e; p++) { if (*p == '\\') { p++; continue; } if (*p == '"') return p + 1; }
+    return NULL;
+}
+static const char *skip_ws(const char *p, const char *e) { while (p < e && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) p++; return p; }
+// 对象 [s, e)（s 指向 {）里本层的键 key 的值的开头；没有 → NULL。嵌套对象 / 数组里的同名键不算
+static const char *obj_value(const char *s, const char *e, const char *key) {
+    size_t kl = strlen(key); int depth = 0;
+    for (const char *p = s; p < e; ) {
+        if (*p == '"') {
+            const char *q = skip_str(p, e); if (!q) return NULL;
+            if (depth == 1) { const char *c = skip_ws(q, e); if (c < e && *c == ':' && (size_t)(q - p - 2) == kl && !memcmp(p + 1, key, kl)) return skip_ws(c + 1, e); }
+            p = q; continue;
+        }
+        if (*p == '{' || *p == '[') depth++;
+        else if (*p == '}' || *p == ']') depth--;
+        p++;
+    }
+    return NULL;
+}
+// 整份清单里 title_id == gid 的那个对象 [*os, *oe)；回 1 找到、0 没这款
+static int find_obj(const char *buf, size_t n, const char *gid, const char **os, const char **oe) {
+    const char *e = buf + n, *st[32]; int sp = 0; size_t gl = strlen(gid);
+    for (const char *p = buf; p < e; ) {
+        if (*p == '"') { p = skip_str(p, e); if (!p) return 0; continue; }
+        if (*p == '{') { if (sp < 32) st[sp] = p; sp++; }
+        else if (*p == '}' && sp > 0) {
+            sp--;
+            if (sp < 32) { const char *v = obj_value(st[sp], p + 1, "title_id");
+                if (v && *v == '"' && v + 1 + gl < e && !memcmp(v + 1, gid, gl) && v[1 + gl] == '"') { *os = st[sp]; *oe = p + 1; return 1; } }
+        }
+        p++;
+    }
+    return 0;
+}
+// 对象里字符串键 key 的值（不含转义的简单串）拷进 out；没有 / 不是串 / 放不下 → 0
+static int obj_str(const char *s, const char *e, const char *key, char *out, size_t n) {
+    const char *v = obj_value(s, e, key); if (!v || *v != '"') return 0;
+    const char *q = v + 1; while (q < e && *q != '"' && *q != '\\') q++;
+    if (q >= e || *q != '"' || (size_t)(q - v - 1) >= n) return 0;
+    memcpy(out, v + 1, (size_t)(q - v - 1)); out[q - v - 1] = 0; return 1;
+}
+// 整份清单里 title_id == gid 的那个对象 → 它的 host_abi（没记 = 1，记成非数字 = -1）；回 1 找到、0 没这款
+static int find_abi(const char *buf, size_t n, const char *gid, int *abi) {
+    const char *e = buf + n, *st[32]; int sp = 0; size_t gl = strlen(gid);
+    for (const char *p = buf; p < e; ) {
+        if (*p == '"') { p = skip_str(p, e); if (!p) return 0; continue; }
+        if (*p == '{') { if (sp < 32) st[sp] = p; sp++; }
+        else if (*p == '}' && sp > 0) {
+            sp--;
+            if (sp < 32) {
+                const char *v = obj_value(st[sp], p + 1, "title_id");
+                if (v && *v == '"' && v + 1 + gl < e && !memcmp(v + 1, gid, gl) && v[1 + gl] == '"') {
+                    const char *a = obj_value(st[sp], p + 1, "host_abi");
+                    if (!a) *abi = 1;
+                    else { char *end; long x = strtol(a, &end, 10); *abi = end > a && x >= 0 && x < 1000000 ? (int)x : -1; }
+                    return 1;
+                }
+            }
+        }
+        p++;
+    }
+    return 0;
+}
+static char *slurp(const char *path, size_t *n, char *why, size_t why_n) {
+    FILE *f = fopen(path, "r");
+    if (!f) { WHY("清单 %s 打不开（errno %d）", path, errno); return NULL; }
+    enum { CAP = 4 << 20 }; char *buf = malloc(CAP + 1); *n = buf ? fread(buf, 1, CAP + 1, f) : 0; fclose(f);
+    if (!buf) { WHY("清单：内存不够"); return NULL; }
+    if (*n > CAP) { free(buf); WHY("清单 %s 超过 4 MB", path); return NULL; }
+    buf[*n] = 0; return buf;
+}
+int s2a_host_abi_check(const char *program_catalogue, const char *app_catalogue, const char *gid, int *have, char *why, size_t why_n) {
+    if (why && why_n) why[0] = 0;
+    int abi = 1; size_t n; char *buf;
+    if (program_catalogue && *program_catalogue && is_file(program_catalogue)) {   // 程序包自带的清单：随程序走，以它为准；不是这一款 = 清单和程序不是一套
+        if (!(buf = slurp(program_catalogue, &n, why, why_n))) return -1;
+        int hit = find_abi(buf, n, gid, &abi); free(buf);
+        if (!hit) { WHY("程序清单 %s 里没有 %s：清单和程序不是同一次出的", program_catalogue, gid); return -1; }
+    } else if (app_catalogue && *app_catalogue) {   // 程序还在 App 里：看 App 包根清单这款的条目；没有这款同「没记」（成员另由 catalogue_has 核）
+        if (!(buf = slurp(app_catalogue, &n, why, why_n))) return -1;
+        find_abi(buf, n, gid, &abi); free(buf);
+    }
+    if (have) *have = abi;
+    return abi == S2A_HOST_ABI ? 0 : 1;
+}
+int s2a_program_catalogue_path(char *out, size_t n, const char *game_data) {
+    const char *sl = game_data ? strrchr(game_data, '/') : NULL;
+    if (!sl || (size_t)(sl - game_data) + sizeof "/program/catalogue.json" > n) return -1;
+    snprintf(out, n, "%.*s/program/catalogue.json", (int)(sl - game_data), game_data);
+    return 0;
+}
+
+// 程序包清单里这款的 image_sha256（64 位十六进制）与程序库整份文件的 SHA-256 比：→ 0 一致或清单没写这一项；1 不一致；-1 读不了（why 写原因）
+static int program_sha_check(const char *game_data, const char *gid, const char *image, char *why, size_t why_n) {
+    char pc[S2A_LCTX_PATH], want[80] = ""; size_t n;
+    if (s2a_program_catalogue_path(pc, sizeof pc, game_data)) { WHY("资源包根太长"); return -1; }
+    char *buf = slurp(pc, &n, why, why_n); if (!buf) return -1;
+    const char *os, *oe; int has = find_obj(buf, n, gid, &os, &oe) && obj_str(os, oe, "image_sha256", want, sizeof want); free(buf);
+    if (!has) return 0;
+    if (strlen(want) != 64) { WHY("程序包清单 image_sha256 不是 64 位十六进制"); return 1; }
+    FILE *f = fopen(image, "rb"); if (!f) { WHY("程序库 %s 打不开（errno %d）", image, errno); return -1; }
+    CC_SHA256_CTX x; CC_SHA256_Init(&x); unsigned char blk[1 << 16]; size_t got;
+    while ((got = fread(blk, 1, sizeof blk, f)) > 0) CC_SHA256_Update(&x, blk, (CC_LONG)got);
+    int err = ferror(f); fclose(f); if (err) { WHY("程序库 %s 读失败", image); return -1; }
+    unsigned char d[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_Final(d, &x); char hex[65];
+    for (int i = 0; i < 32; i++) snprintf(hex + 2 * i, 3, "%02x", d[i]);
+    if (strcasecmp(hex, want)) { WHY("游戏 %s 的程序库和程序包清单不是同一次出的（SHA-256 %.12s…，清单 %.12s…）：要在电脑上重新签名推回去", gid, hex, want); return 1; }
+    return 0;
+}
+// 本款程序包（game_data = 这款资源包根）：清单不在 → 0；在 → 写随行目录 <程序包>/Games/<gid> 与镜像包 <程序包>/<清单 image>、回 1；
+//   清单读不了 / 没这款 / image 不合规 / 缺件 → -1（why 写原因）。module_dir、images 各 S2A_LCTX_PATH 字节
+static int program_paths(const char *game_data, const char *gid, char *module_dir, char *images, char *why, size_t why_n) {
+    char pc[S2A_LCTX_PATH], rel[300], img[160] = ""; size_t n;
+    if (s2a_program_catalogue_path(pc, sizeof pc, game_data) || !is_file(pc)) return 0;
+    char *buf = slurp(pc, &n, why, why_n);
+    if (!buf) return -1;
+    char dir[160] = "";
+    const char *os, *oe; int hit = find_obj(buf, n, gid, &os, &oe), ok = hit && obj_str(os, oe, "image", img, sizeof img);
+    if (hit) obj_str(os, oe, "dir", dir, sizeof dir);
+    free(buf);
+    if (!hit) { WHY("程序包清单 %s 里没有 %s：清单和程序不是同一次出的", pc, gid); return -1; }
+    if (!ok || !id_ok(img) || img[0] == '.') { WHY("程序包清单 %s 的 image 不合规（只收 [A-Za-z0-9._-]、不以 . 开头）", pc); return -1; }
+    // 写入规则（0.6.0 通用壳，cmdr 方案「写入规则」）：每个写入方把整份程序写进自己的版本目录 program/v-<sha16>-<写入方>/，最后改名覆盖 catalogue.json 换上，
+    //   清单的 dir 指向这一份。dir 不合规（只收 v- 开头的 [A-Za-z0-9._-]）→ 拒；没写 dir（第 1 段的布局）→ 程序直接在 program/ 下
+    if (dir[0] && (strncmp(dir, "v-", 2) || !id_ok(dir) || strstr(dir, ".."))) { WHY("程序包清单 %s 的 dir「%s」不合规（只收 v- 开头的 [A-Za-z0-9._-]）", pc, dir); return -1; }
+    char *sl = strrchr(pc, '/'); *sl = 0;   // pc → 程序包目录
+    if (dir[0] && (strlen(pc) + 1 + strlen(dir) >= sizeof pc)) { WHY("程序包路径太长"); return -1; }
+    if (dir[0]) { strcat(pc, "/"); strcat(pc, dir); }   // → 清单指着的那个版本目录
+    snprintf(rel, sizeof rel, "Games/%s", gid);
+    if (join(module_dir, pc, rel) || !is_dir(module_dir)) { WHY("游戏 %s 的程序包随行目录 %s 不在", gid, module_dir); return -1; }
+    if (join(images, pc, img) || !is_file(images)) { WHY("游戏 %s 的程序包镜像包 %s 不在", gid, images); return -1; }
+    return 1;
+}
+// ---- 程序包版本目录清理（0.6.0 通用壳写入规则）：电脑端换上新版后不删旧版本目录（App 可能正开着那一版），由 App 启动时清。
+//   清：没被本款 catalogue.json 的 dir 指着、且目录里最新一个文件的修改时间离现在超过 1 小时的 program/v-* 目录（大文件边写边刷新修改时间，
+//   这样避开电脑正在推的那份）；catalogue.json.*.tmp 同一判据（每次推都会被覆盖，留着的是推断了的）。返回删掉的条目数；纯文件操作，单测 t_launchctx
+static time_t g_gc_newest;
+static int gc_newest_one(const char *p, const struct stat *st, int flag, struct FTW *w) { (void)p; (void)flag; (void)w; if (st->st_mtime > g_gc_newest) g_gc_newest = st->st_mtime; return 0; }
+static int gc_rm_one(const char *p, const struct stat *st, int flag, struct FTW *w) { (void)st; (void)w; return flag == FTW_DP ? rmdir(p) : unlink(p); }
+#define S2A_PROGRAM_GC_IDLE (60 * 60)
+// 程序包款的随行目录快照（0.6.0 写入规则的双保险）：选中游戏时把 program/<dir>/Games/<号>/ 用 APFS 克隆拍一份到本进程临时目录
+//   （<HOME>/tmp/s2a-mod-<号>-<pid>，瞬间完成、不占空间），这局的模块目录 / 能力清单目录改指快照。电脑端换上新版后删旧版本目录，
+//   正在玩的这局读的是快照：设置页再读 s2a_caps.tsv / cpatch.tsv / sgrade_state.json 也读得到。克隆不了（不是 APFS 等）→ 原样用原目录、记一行黄。
+//   旧进程留下的快照由 s2a_program_gc 清。成功写 out（S2A_LCTX_PATH）回 0
+int s2a_program_snapshot(const char *home, const char *gid, const char *module_dir, char *out) {
+    char t[S2A_LCTX_PATH];
+    if (!module_dir || !*module_dir || !gid || !id_ok(gid) || snprintf(t, sizeof t, "%s/tmp", home && *home ? home : ".") >= (int)sizeof t) return -1;
+    mkdir(t, 0755);
+    if (snprintf(out, S2A_LCTX_PATH, "%s/s2a-mod-%s-%d", t, gid, (int)getpid()) >= S2A_LCTX_PATH) return -1;
+    if (is_dir(out)) { g_gc_newest = 0; nftw(out, gc_rm_one, 16, FTW_DEPTH | FTW_PHYS); }   // 同 pid 的旧快照（pid 复用）
+#if defined(__APPLE__)
+    if (clonefile(module_dir, out, 0)) { LOG("【黄】启动上下文：随行目录 %s 拍快照失败（errno %d），这局直接用原目录（电脑端运行中删旧版时设置页可能读不到）", module_dir, errno); out[0] = 0; return -1; }
+    return 0;
+#else
+    out[0] = 0; return -1;
+#endif
+}
+int s2a_program_gc(const char *home, time_t now) {
+    char root[S2A_LCTX_PATH]; int removed = 0;
+    {   // 旧进程留下的随行目录快照（s2a_program_snapshot）：<HOME>/tmp/s2a-mod-<号>-<pid>，不是本进程的都删
+        char t[S2A_LCTX_PATH]; snprintf(t, sizeof t, "%s/tmp", home && *home ? home : ".");
+        DIR *td = opendir(t); struct dirent *te; char mine[64]; snprintf(mine, sizeof mine, "-%d", (int)getpid());
+        while (td && (te = readdir(td))) { size_t L = strlen(te->d_name), M = strlen(mine);
+            if (strncmp(te->d_name, "s2a-mod-", 8) || (L > M && !strcmp(te->d_name + L - M, mine))) continue;
+            char sp[S2A_LCTX_PATH]; if (snprintf(sp, sizeof sp, "%s/%s", t, te->d_name) >= (int)sizeof sp) continue;
+            if (!nftw(sp, gc_rm_one, 16, FTW_DEPTH | FTW_PHYS)) removed++; }
+        if (td) closedir(td); }
+    if (s2a_program_games_root(root, sizeof root, home)) return removed;
+    DIR *g = opendir(root); if (!g) return removed;
+    struct dirent *e;
+    while ((e = readdir(g))) {
+        if (e->d_name[0] == '.' || !id_ok(e->d_name)) continue;
+        char pd[S2A_LCTX_PATH], cat[S2A_LCTX_PATH], dir[160] = "";
+        if (snprintf(pd, sizeof pd, "%s/%s/program", root, e->d_name) >= (int)sizeof pd || !is_dir(pd)) continue;
+        snprintf(cat, sizeof cat, "%s/catalogue.json", pd);
+        if (is_file(cat)) { size_t n; char w[200]; char *buf = slurp(cat, &n, w, sizeof w); const char *os, *oe;
+            if (buf && find_obj(buf, n, e->d_name, &os, &oe)) obj_str(os, oe, "dir", dir, sizeof dir);
+            free(buf); }
+        DIR *d = opendir(pd); if (!d) continue;
+        struct dirent *v;
+        while ((v = readdir(d))) {
+            int vdir = !strncmp(v->d_name, "v-", 2), tmp = !strncmp(v->d_name, "catalogue.json.", 15) && strlen(v->d_name) > 19 && !strcmp(v->d_name + strlen(v->d_name) - 4, ".tmp");
+            if (!vdir && !tmp) continue;
+            if (vdir && dir[0] && !strcmp(v->d_name, dir)) continue;   // 清单正指着的这一版
+            char vp[S2A_LCTX_PATH]; if (snprintf(vp, sizeof vp, "%s/%s", pd, v->d_name) >= (int)sizeof vp) continue;
+            g_gc_newest = 0; struct stat st;
+            if (vdir) { if (!is_dir(vp) || nftw(vp, gc_newest_one, 16, FTW_PHYS)) continue; }
+            else { if (stat(vp, &st)) continue; g_gc_newest = st.st_mtime; }
+            if (now - g_gc_newest <= S2A_PROGRAM_GC_IDLE) continue;   // 一小时内还有写入：可能是电脑正在推的那份，不动
+            int r = vdir ? nftw(vp, gc_rm_one, 16, FTW_DEPTH | FTW_PHYS) : unlink(vp);
+            LOG("程序包清理：%s %s/%s（%s，最新文件 %ld 分钟前）", r ? "【黄】删不掉" : "删掉", e->d_name, v->d_name, vdir ? "没被清单指着的版本目录" : "推断了留下的临时清单", (long)((now - g_gc_newest) / 60));
+            if (!r) removed++;
+        }
+        closedir(d);
+    }
+    closedir(g);
+    return removed;
+}
+int s2a_program_game_paths(const char *home, const char *gid, char *module_dir, char *images, char *why, size_t why_n) {
+    char hd[S2A_LCTX_PATH], docs[S2A_LCTX_PATH], gd[S2A_LCTX_PATH], rel[300];
+    if (!gid || !id_ok(gid) || gid[0] == '.' || strlen(gid) > 200) { WHY("游戏编号「%s」不合规", gid ? gid : ""); return -1; }
+    snprintf(rel, sizeof rel, "games/%s", gid);
+    if (join(hd, home && *home ? home : ".", S2A_CONTAINER_DOCS_REL) || join(docs, hd, rel) || s2a_pack_root(gd, sizeof gd, docs) >= (int)sizeof gd) { WHY("HOME 太长"); return -1; }
+    return program_paths(gd, gid, module_dir, images, why, why_n);
+}
+int s2a_program_games_root(char *out, size_t n, const char *home) {
+    char hd[S2A_LCTX_PATH], docs[S2A_LCTX_PATH];   // 按一款占位编号 0 的资源包根 <根>/0/资源包 退两级，和 s2a_pack_root 同一套位置判定（备用位置在就是它）
+    if (join(hd, home && *home ? home : ".", S2A_CONTAINER_DOCS_REL) || join(docs, hd, "games/0")) return -1;
+    int r = s2a_pack_root(out, n, docs); if (r <= 0 || r >= (int)n) return -1;
+    static const char tail[] = "/0/资源包"; size_t l = strlen(out), t = sizeof tail - 1;
+    if (l <= t || strcmp(out + l - t, tail)) return -1;
+    out[l - t] = 0; return 0;
+}
 int s2a_launch_ctx_resolve_game(s2a_launch_ctx *c, const char *b, const char *home, const char *gid, char *why, size_t why_n) {
     memset(c, 0, sizeof *c);
     if (why && why_n) why[0] = 0;
@@ -135,19 +361,29 @@ int s2a_launch_ctx_resolve_game(s2a_launch_ctx *c, const char *b, const char *ho
     if (!home || !*home) home = ".";
     // gid 进路径（Games/<gid>、S2AImages-<gid>.dylib、Documents/games/<gid>）：只收 [A-Za-z0-9._-]、不以 . 开头（挡 .. 与隐藏目录）
     if (!gid || !id_ok(gid) || gid[0] == '.' || strlen(gid) >= sizeof c->game_id) { WHY("游戏编号「%s」不合规（只收 [A-Za-z0-9._-]、不以 . 开头、≤127 字）", gid ? gid : ""); return -1; }
-    char p[S2A_LCTX_PATH], rel[300];
-    if (join(p, b, "s2a_catalogue.json")) { WHY("App 包目录太长"); return -1; }
-    int has = catalogue_has(p, gid, why, why_n);
-    if (has < 0) return -1;
-    if (!has) { WHY("游戏 %s 不在本包游戏清单 %s 里", gid, p); return -1; }
-    snprintf(rel, sizeof rel, "Games/%s", gid);
-    if (join(c->module_dir, b, rel) || !is_dir(c->module_dir)) { WHY("游戏 %s 的随行目录 %s 不在", gid, c->module_dir); memset(c, 0, sizeof *c); return -1; }
-    snprintf(rel, sizeof rel, "Frameworks/S2AImages-%s.dylib", gid);
-    if (join(c->images, b, rel) || !is_file(c->images)) { WHY("游戏 %s 的镜像包 %s 不在", gid, c->images); memset(c, 0, sizeof *c); return -1; }
-    char hd[S2A_LCTX_PATH]; snprintf(rel, sizeof rel, "games/%s", gid);
-    // 资源包根：Library/Application Support/S2Arm/games/<游戏号>/资源包（s2a_docs.h s2a_pack_root，v0.3.0 挪出 Documents）；存档仍在本款文档根下
-    if (join(hd, home, S2A_CONTAINER_DOCS_REL) || join(c->docs, hd, rel) || s2a_pack_root(c->game_data, sizeof c->game_data, c->docs) >= (int)sizeof c->game_data
-        || join(c->ryu_data, c->docs, "S2A/ryujinx")
+    char p[S2A_LCTX_PATH], rel[300], hd[S2A_LCTX_PATH];
+    // 文档根 / 资源包根先算：资源包根：Library/Application Support/S2Arm/games/<游戏号>/资源包（s2a_docs.h s2a_pack_root，v0.3.0 挪出 Documents）；存档仍在本款文档根下
+    snprintf(rel, sizeof rel, "games/%s", gid);
+    if (join(hd, home, S2A_CONTAINER_DOCS_REL) || join(c->docs, hd, rel) || s2a_pack_root(c->game_data, sizeof c->game_data, c->docs) >= (int)sizeof c->game_data) {
+        WHY("HOME 太长"); memset(c, 0, sizeof *c); return -1; }
+    // 通用壳（11-16）：资源包根旁有程序包 program/catalogue.json → 这款的程序（镜像包 + 随行目录）从程序包取，App 包里没有它也行；
+    //   清单是写入的最后一步（电脑端先写 dylib、Games/，最后改名写清单），清单在 = 程序包写完。没有清单 → 照旧取 App 包内（过渡：程序都挪出 App
+    //   且各台手机推过一次新壳后删掉这一支）
+    int fp = program_paths(c->game_data, gid, c->module_dir, c->images, why, why_n);
+    if (fp < 0) { memset(c, 0, sizeof *c); return -1; }
+    if (fp) {
+        c->from_program = 1;
+    } else {
+        if (join(p, b, "s2a_catalogue.json")) { WHY("App 包目录太长"); memset(c, 0, sizeof *c); return -1; }
+        int has = catalogue_has(p, gid, why, why_n);
+        if (has < 0) { memset(c, 0, sizeof *c); return -1; }
+        if (!has) { WHY("游戏 %s 不在本包游戏清单 %s 里", gid, p); memset(c, 0, sizeof *c); return -1; }
+        snprintf(rel, sizeof rel, "Games/%s", gid);
+        if (join(c->module_dir, b, rel) || !is_dir(c->module_dir)) { WHY("游戏 %s 的随行目录 %s 不在", gid, c->module_dir); memset(c, 0, sizeof *c); return -1; }
+        snprintf(rel, sizeof rel, "Frameworks/S2AImages-%s.dylib", gid);
+        if (join(c->images, b, rel) || !is_file(c->images)) { WHY("游戏 %s 的镜像包 %s 不在", gid, c->images); memset(c, 0, sizeof *c); return -1; }
+    }
+    if (join(c->ryu_data, c->docs, "S2A/ryujinx")
         || put(c->caps_dir, c->module_dir) || put(c->bundle_dir, b) || put(c->log_dir, hd)) { WHY("HOME 或 App 包目录太长"); memset(c, 0, sizeof *c); return -1; }
     strcpy(c->game_id, gid);
     c->source = S2A_LCTX_CONTAINER;
@@ -169,7 +405,18 @@ static int export_env(void) {   // 冻结后的四个根写进进程环境（覆
     }
     return 0;
 }
+// selfsign.c：手机端自签真机验证（开发用环境变量，没设就直接返回）。这里给弱的空实现：链了 selfsign.c 的（App / 宿主）用它的强定义，
+//   只链 launchctx.c 的单测和工具不用跟着链 Security
+__attribute__((weak)) void s2a_selfsign_probe(void) {}
+// 校验没过、照常继续（11-17 维护者，waived.c）：打【黄】并记下，FATAL / 崩溃时补报
+static void waive(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void waive(const char *fmt, ...) {
+    char m[700]; va_list ap; va_start(ap, fmt); vsnprintf(m, sizeof m, fmt, ap); va_end(ap);
+    void (*f)(const char *) = (void (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_check_waived");
+    if (f) f(m); else LOG("【黄】校验没过，照常继续：%s", m);
+}
 static void decide(void) {
+    s2a_selfsign_probe();
     char exe[S2A_LCTX_PATH]; uint32_t n = sizeof exe;
     if (_NSGetExecutablePath(exe, &n)) { snprintf(g_err, sizeof g_err, "取不到可执行文件路径"); return; }
     char *sl = strrchr(exe, '/'); if (sl) *sl = 0;
@@ -178,7 +425,7 @@ static void decide(void) {
     if (!(ctx && *ctx) && s2a_launch_ctx_is_container_dir(g_bundle)) {   // ③ 容器：此刻不冻结，等 s2a_launch_ctx_select
         g_container = 1;
         snprintf(g_err, sizeof g_err, "多款容器还没选游戏：s2a_launch_ctx_select 之前不许读游戏相关值");
-        LOG("启动上下文：多款容器（%s 有 s2a_catalogue.json 与 Games/），构造期不冻结，等玩家选游戏", g_bundle);
+        LOG("启动上下文：多款容器（%s 有 s2a_catalogue.json），构造期不冻结，等玩家选游戏", g_bundle);
         return;
     }
     if (s2a_launch_ctx_resolve(&g_ctx, g_bundle, getenv("HOME"), ctx, g_err, sizeof g_err)) return;
@@ -198,18 +445,50 @@ const char *s2a_launch_ctx_error(void) { return s2a_launch_ctx_get() ? NULL : g_
 int s2a_launch_ctx_container(void) { pthread_once(&g_once, decide); return g_container; }
 const char *s2a_launch_ctx_bundle_dir(void) { pthread_once(&g_once, decide); return g_bundle; }
 
+int s2a_launch_ctx_game_needs_update(const char *gid) {
+    pthread_once(&g_once, decide);
+    if (!g_container) return 0;
+    s2a_launch_ctx c; char w[600], prog[S2A_LCTX_PATH], app[S2A_LCTX_PATH];
+    if (s2a_launch_ctx_resolve_game(&c, g_bundle, getenv("HOME"), gid, w, sizeof w) || join(app, g_bundle, "s2a_catalogue.json")) return 0;
+    return s2a_host_abi_check(s2a_program_catalogue_path(prog, sizeof prog, c.game_data) ? NULL : prog, app, gid, NULL, w, sizeof w) == 1;
+}
+
 static int g_sel_kind;   // 上一次 s2a_launch_ctx_select 被拒的类别（S2A_SELECT_*）：库界面按它给玩家说人话，原文只进日志
 int s2a_launch_ctx_select_kind(void) { return g_sel_kind; }
 const char *s2a_launch_ctx_select(const char *gid) {
     static char why[700];
     pthread_once(&g_once, decide);
     g_sel_kind = S2A_SELECT_OTHER;
-    if (!g_container) return "不是多款容器（包根没有 s2a_catalogue.json 与 Games/，或设了 S2A_LAUNCH_CTX）：启动上下文已在构造期定好，不能再选游戏";
+    if (!g_container) return "不是多款容器（包根没有 s2a_catalogue.json，或设了 S2A_LAUNCH_CTX）：启动上下文已在构造期定好，不能再选游戏";
     pthread_mutex_lock(&g_sel_mu);
     const char *r = NULL;
     if (g_selected) { snprintf(why, sizeof why, "本进程已经选过游戏 %s，同一进程不再起第二款：请关掉 App 重新打开", g_ctx.game_id); r = why; goto out; }
     s2a_launch_ctx c; char w[600];
     if (s2a_launch_ctx_resolve_game(&c, g_bundle, getenv("HOME"), gid, w, sizeof w)) { snprintf(why, sizeof why, "%s", w); g_sel_kind = S2A_SELECT_APP_INCOMPLETE; r = why; goto out; }
+    {   // 宿主约定号（s2a_host_abi.h）：产物是按别的约定出的就不载入——不然改写器与运行时对不上，进游戏后静默崩。对不上 → 回游戏库标「要更新」
+        char prog[S2A_LCTX_PATH], app[S2A_LCTX_PATH]; int have = 0;
+        int k = join(app, g_bundle, "s2a_catalogue.json") ? -1 : s2a_host_abi_check(s2a_program_catalogue_path(prog, sizeof prog, c.game_data) ? NULL : prog, app, gid, &have, w, sizeof w);
+        // 11-17 维护者：校验不过不再整个拒绝，黄字提示照常进，之后出问题时报错带上这条（waived.c）
+        if (k == 1) waive("游戏 %s 的程序按宿主约定号 %d 出，本宿主是 %d：版本不配，可能闪退，在电脑上重新出包 / 装到 iPhone 可解（ios_host_abi_mismatch）", gid, have, S2A_HOST_ABI);
+        if (k < 0) waive("游戏 %s 的宿主约定号核不了：%s", gid, w[0] ? w : "App 包目录太长");
+    }
+    if (c.from_program) {   // 起局按款重签（0.6.0 通用壳，ios/program_resign.m）：签名身份不是手机上现在这张 / 没签 → 当场用手机上的身份签好，路径改指新版本目录；
+        //   做不了照旧用原程序库（原因进日志）。按名取（只链本文件的单测 / 工具没有它）
+        int (*rs)(const char *, const char *, const char *, char *, char *, size_t, char *, size_t) =
+            (int (*)(const char *, const char *, const char *, char *, char *, size_t, char *, size_t))dlsym(RTLD_DEFAULT, "s2a_program_resign_if_needed");
+        if (rs) { char rw[300]; rs(getenv("HOME"), c.game_data, gid, c.module_dir, c.images, sizeof c.images, rw, sizeof rw); }
+    }
+    {   // 程序签名（通用壳 11-16）：程序包里的程序库要和清单 image_sha256 一致（推了一半 / 换了别的版本 = 清单和库不是同一次出的），
+        //   且能被本机这份 App 注册签名 + 库校验（同团队）。对不上 → 回游戏库标「要在电脑上重新签名」，不进宿主（原先进局后 loader.c die「外置镜像包打不开」，
+        //   App 无提示直接退回主屏，11-16 Duo 实测 ad-hoc 程序库 errno=1）。注册在这里先做一次，进局后 s2a_imgpack_open 同一路径回同一个包
+        int ks = c.from_program ? program_sha_check(c.game_data, gid, c.images, w, sizeof w) : 0;
+        if (ks > 0) waive("%s：版本不配，可能闪退，在电脑上重新签名 / 装到 iPhone 可解（ios_program_resign）", w);   // 校验不过照常进（11-17 维护者）；签名系统不认（下面 rc == 3）物理上加载不了，照旧拒
+        if (ks < 0) waive("游戏 %s 的程序包核不了：%s", gid, w);
+        int (*open_pk)(const char *, void **, char *, size_t) = (int (*)(const char *, void **, char *, size_t))dlsym(RTLD_DEFAULT, "s2a_imgpack_open");
+        void *pk = NULL; int rc = c.from_program && open_pk ? open_pk(c.images, &pk, w, sizeof w) : 0;   // 只对程序包里的款：App 包里的款（0.6.0 前玩家手上全是这种）照旧进局后由装载器打开，行为同改造前
+        if (rc == 3) { snprintf(why, sizeof why, "ios_program_resign：游戏 %s 的程序库签名本机不认（%s）：要在电脑上重新签名这款", gid, w); g_sel_kind = S2A_SELECT_NEEDS_RESIGN; r = why; goto out; }   // 3 = S2A_IMG_ESIGN（runtime/src/imgpack.h）
+        if (rc) { snprintf(why, sizeof why, "游戏 %s 的程序库打不开（返回 %d）：%s", gid, rc, w); g_sel_kind = S2A_SELECT_APP_INCOMPLETE; r = why; goto out; }
+    }
     // 本款文档根第一次用时还不在（存档 / wire / 加载页标记各自只建最后一级）：逐级建好
     for (char *q = c.docs + 1; ; q++) {
         if (*q && *q != '/') continue;
@@ -217,6 +496,8 @@ const char *s2a_launch_ctx_select(const char *gid) {
         if (bad) { snprintf(why, sizeof why, "建不了游戏 %s 的文档根 %s（errno %d）", c.game_id, c.docs, errno); g_sel_kind = S2A_SELECT_STORAGE; r = why; goto out; }
         if (!k) break;
     }
+    if (c.from_program) { char snap[S2A_LCTX_PATH];   // 程序包款：随行目录拍快照，这局读快照（电脑端换上新版后删旧版本目录也不影响，见 s2a_program_snapshot）
+        if (!s2a_program_snapshot(getenv("HOME"), gid, c.module_dir, snap)) { LOG("启动上下文：%s 的随行目录拍了快照 %s（原目录 %s）", gid, snap, c.module_dir); put(c.module_dir, snap); put(c.caps_dir, snap); } }
     g_ctx = c;
     if (export_env()) { snprintf(why, sizeof why, "%s", g_err); memset(&g_ctx, 0, sizeof g_ctx); r = why; goto out; }
     g_selected = 1; atomic_store(&g_ok, 1);

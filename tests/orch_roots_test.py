@@ -683,6 +683,58 @@ class PlainRootsTest(unittest.TestCase):
         self.assertEqual((cur / 'romfs/a').read_bytes(), b'r')
 
 
+class FailedSymlinkStubTest(unittest.TestCase):
+    # #1431：玩家 Windows（26300、库在 ReFS 开发驱动器、没开开发者模式）上 os.symlink 报失败时 link 处已经留下了东西，
+    #   junction 退路随即 mkdir 撞 WinError 183，播种每次都红；撤回时 remove_owned 又删不掉这份残留，abort 报「目录不是空的」。期望手写：
+    #   ① nt（模拟）：软链失败前 link 不在、失败后在 → 删掉残留再走退路，退路建链时 link 不在；软链前 link 已经在 → 不删，照原样把错误交给退路
+    #   ② remove_owned：在、但既不是链接也不是文件 / 目录的残留 → 删掉，上一级能删空
+    #   ③ 原生 Windows：软链失败并留下空目录 → 照样建成 junction，经它读到目标里的文件
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='s2a-1431-'); self.home = Path(self.temp.name)
+        (self.home / 'target').mkdir(); (self.home / 'target/f').write_bytes(b'T')
+
+    def tearDown(self): self.temp.cleanup()
+
+    def stub_symlink(self, src, dst, target_is_directory=False):   # 失败但留下一个空目录（玩家机上看到的样子）
+        os.mkdir(dst)
+        e = OSError(22, '客户端没有所需的特权。'); e.winerror = 1314; raise e
+
+    def run_nt(self, link):
+        fake = _Os('nt'); fake.symlink = self.stub_symlink; seen = []
+        def junction(target, at):   # 同 _junction 第一步：link.mkdir()，已在就是 WinError 183
+            seen.append(os.path.lexists(at)); Path(at).mkdir()
+        with patch.object(roots, 'os', fake), patch.object(roots, 'table_now', return_value=[]), \
+             patch.object(roots, '_junction', junction), contextlib.redirect_stderr(io.StringIO()):
+            roots.directory_link(self.home / 'target', link)
+        return seen
+
+    def test_nt_removes_stub_left_by_failed_symlink(self):
+        self.assertEqual(self.run_nt(self.home / 'link'), [False])
+
+    def test_nt_existing_link_path_is_not_removed(self):
+        (self.home / 'link').mkdir(); (self.home / 'link/keep').write_bytes(b'K')
+        with self.assertRaises(FileExistsError):
+            self.run_nt(self.home / 'link')
+        self.assertEqual((self.home / 'link/keep').read_bytes(), b'K')
+
+    def test_remove_owned_removes_unknown_stub(self):
+        box = self.home / 'box'; box.mkdir(); (box / 'stub').mkdir()
+        real_lexists = os.path.lexists
+        with patch.object(roots, 'is_link', lambda p: False), \
+             patch.object(Path, 'is_dir', lambda p: False if p.name == 'stub' else os.path.isdir(p)), \
+             patch.object(Path, 'exists', lambda p: False if p.name == 'stub' else real_lexists(p)):
+            roots.remove_owned(box)
+        self.assertFalse(real_lexists(box))
+
+    @unittest.skipUnless(os.name == 'nt', 'native Windows junction fallback')
+    def test_native_junction_after_stub(self):
+        link = self.home / 'link'
+        with patch.object(roots.os, 'symlink', self.stub_symlink), contextlib.redirect_stderr(io.StringIO()):
+            roots.directory_link(self.home / 'target', link)
+        self.assertTrue(link.is_junction())
+        self.assertEqual((link / 'f').read_bytes(), b'T')
+
+
 class ShortRootLinkTest(unittest.TestCase):
     # #461：Windows 上目录链接一律写绝对的玩家路径（短根换回长路径）；读链接自己拼，老的相对链接经短根联接也读得出。期望手写：
     #   ① nt（模拟）：给了 relative、目标在短根下 → os.symlink 收到的是长路径下的绝对目标，不是相对、不是短路径

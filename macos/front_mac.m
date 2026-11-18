@@ -166,6 +166,7 @@ static NSDictionary *input_config_dictionary(const s2a_input_config *c) {
         @"mouseOptions": @{@"mode": c->mouse_camera ? @"camera" : @"off", @"sensitivityX": @(c->sensitivity_x), @"sensitivityY": @(c->sensitivity_y),
             @"invertX": @((BOOL)c->invert_x), @"invertY": @((BOOL)c->invert_y), @"recenter": @((BOOL)c->recenter)}};
 }
+static char g_input_bad[96];   // 玩家 1 的键位映射读不懂时的原因（s2a_front_run 记下，窗口提示条起来后显示一次再清空）
 static NSDictionary *default_config(void) { s2a_input_config c; s2a_input_config_default(&c); return input_config_dictionary(&c); }
 static int mac_input_config_read(const char *path, s2a_input_config *out) {
     if (!out) return S2A_INPUT_CONFIG_JSON;
@@ -511,14 +512,7 @@ static void sample_motion(GCExtendedGamepad *pad) {
     GCMotion *m = atomic_load(&g_motion_wanted) && !ns2 ? pad.controller.motion : nil;
     set_motion_source(m);
     s2a_pad_motion sample = {0};
-    int known = m.hasRotationRate && m.hasGravityAndUserAcceleration;
-    if (known) {
-        double gravity[3] = {m.gravity.x, m.gravity.y, m.gravity.z}, user[3] = {m.userAcceleration.x, m.userAcceleration.y, m.userAcceleration.z};
-        double rotation[3] = {m.rotationRate.x, m.rotationRate.y, m.rotationRate.z};
-        float acceleration[3], gyro[3];
-        s2a_gc_motion_axes(gravity, user, rotation, acceleration, gyro);
-        sample = (s2a_pad_motion){clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000, acceleration[0], acceleration[1], acceleration[2], gyro[0], gyro[1], gyro[2]};
-    }
+    int known = s2a_gc_motion_sample(m, &sample);
     pthread_mutex_lock(&g_motion_mu);
     g_motion = sample; g_motion_known = known;
     pthread_mutex_unlock(&g_motion_mu);
@@ -545,13 +539,13 @@ __attribute__((visibility("default"), used)) int s2a_pad_read_motion(s2a_pad_mot
     int known = g_motion_switched ? 0 : g_motion_known;
     *out = g_motion; g_motion_switched = 0;
     pthread_mutex_unlock(&g_motion_mu);
-    if (known) return 1;
-    // GameController 无六轴时回退 Joy-Con HID（优先右、否则左）
+    if (known == 2) return 1;
+    // GameController 没有校准六轴时先回退 Joy-Con / Pro HID（优先右、否则左），HID 没数据再用只有总加速度的那份（DualSense）
     s2a_pad_motion l = {0}, r = {0};
     int mask = s2a_joycon_imu_read(&l, &r);
     if (mask & 2) { *out = r; return 1; }
     if (mask & 1) { *out = l; return 1; }
-    return 0;
+    return known != 0;
 }
 // 左右 Joy-Con 各一路；只有 GCMotion 时退回单源写在 out[0]
 __attribute__((visibility("default"), used)) int s2a_pad_read_motion_pair(s2a_pad_motion out[2]) {
@@ -1088,15 +1082,8 @@ static void sample_slot_motion(GCController *const owner_before[S2A_MAX_PADS]) {
     for (int s = 1; s < S2A_MAX_PADS; s++) {
         GCMotion *m = want ? pad_owner[s].motion : nil;
         s2a_motion_power_select(&g_slot_motion_source[s], m, g_motion_source);
-        BOOL known = m.hasRotationRate && m.hasGravityAndUserAcceleration;
         s2a_pad_motion sample = {0};
-        if (known) {
-            double gravity[3] = {m.gravity.x, m.gravity.y, m.gravity.z}, user[3] = {m.userAcceleration.x, m.userAcceleration.y, m.userAcceleration.z};
-            double rotation[3] = {m.rotationRate.x, m.rotationRate.y, m.rotationRate.z};
-            float acceleration[3], gyro[3];
-            s2a_gc_motion_axes(gravity, user, rotation, acceleration, gyro);
-            sample = (s2a_pad_motion){clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000, acceleration[0], acceleration[1], acceleration[2], gyro[0], gyro[1], gyro[2]};
-        }
+        BOOL known = s2a_gc_motion_sample(m, &sample);
         pthread_mutex_lock(&g_motion_mu);
         g_slot_motion[s] = sample; g_slot_motion_known[s] = known;
         pthread_mutex_unlock(&g_motion_mu);
@@ -1383,6 +1370,8 @@ static void sample_input(void) {
     if (kbd_own && n < S2A_LIVE_MAX) { live_ids[n] = &kbd_slot_id; live_pads[n] = nil; live_ctrls[n] = nil; live_ble[n] = S2A_PAD_ORDER_KEYBOARD; n++; }
     atomic_store(&kbd_buttons_snap, kbd_own ? 0 : kbd_buttons);   // 手柄快速路径合槽 0 时读这份：键盘有自己的槽就不合
     if (kbd_own) for (int i = 0; i < 4; i++) atomic_store(&kbd_sticks_snap[i], 0);
+    int live_rank[S2A_LIVE_MAX];   // 顺序表里排第几（没登记 = S2A_PAD_ORDER_UNLISTED）：下面 s2a_slot_pin 照它把登记过的钉在自己那格
+    for (int j = 0; j < S2A_LIVE_MAX; j++) live_rank[j] = S2A_PAD_ORDER_UNLISTED;
     if (g_order_loaded) {
         int rank[S2A_LIVE_MAX], m = 0; NSMutableDictionary<NSString *, NSNumber *> *seen = [NSMutableDictionary new];
         for (int j = 0; j < n; j++) {
@@ -1397,7 +1386,7 @@ static void sample_input(void) {
         for (int k = 0; k < n; k++) {
             int j = order_idx[k];
             if (rank[j] == S2A_PAD_ORDER_DROPPED) continue;   // 分配时没登记：同原机断开（系统手柄 S2Arm 断不了蓝牙，游戏不读它）
-            ids[m] = live_ids[j]; pads[m] = live_pads[j]; ctrls[m] = live_ctrls[j]; bles[m] = live_ble[j]; keys2[m] = live_key[j]; hids[m] = live_hid[j]; m++;
+            ids[m] = live_ids[j]; pads[m] = live_pads[j]; ctrls[m] = live_ctrls[j]; bles[m] = live_ble[j]; keys2[m] = live_key[j]; hids[m] = live_hid[j]; live_rank[m] = rank[j]; m++;
         }
         for (int k = 0; k < m; k++) { live_ids[k] = ids[k]; live_pads[k] = pads[k]; live_ctrls[k] = ctrls[k]; live_ble[k] = bles[k]; live_key[k] = keys2[k]; live_hid[k] = hids[k]; }
         for (int k = m; k < n; k++) live_ctrls[k] = nil;
@@ -1411,6 +1400,9 @@ static void sample_input(void) {
     }
     logged_mix = mix;
     int slot_of[S2A_LIVE_MAX];
+    // 面板里登记成第几位就是游戏里的第几位（#1264：中途连上 DualSense、面板 P1 是它，宿主却照「已在玩的留原位」把玩家 1 留给原手柄，
+    //   原手柄关掉后 DualSense 还在二号位，单人游戏读不到）；没登记的手柄照旧留原槽
+    if (g_order_loaded) s2a_slot_pin(pad_id, live_ids, live_rank, n, S2A_MAX_PADS);
     int live = s2a_slot_plan(pad_id, live_ids, n, S2A_MAX_PADS, slot_of);
     // 断开清槽：整表重建，只有本轮还在的才写回（强引用随之释放，不会留悬空指针）
     GCController *owner_before[S2A_MAX_PADS];
@@ -1878,6 +1870,10 @@ static __weak S2AMacDelegate *g_delegate;
     self.controllerStatus.title = [NSString stringWithFormat:@"%s：%@", s2a_mac_ns2_kind_name(s2a_mac_ns2_kind()), state];
     // 存档不能原子提交（审计 P2-13；判定与 iOS 共用 runtime/src/direct_prompt.c s2a_save_atomic_poll）：非 0 提示一次
     if (s2a_save_atomic_poll()) [self.banner showTitle:@S2A_DPROMPT_SAVE_ATOMIC_TITLE body:@S2A_DPROMPT_SAVE_ATOMIC_MAC accept:nil decline:nil seconds:15];
+    if (g_input_bad[0] && self.banner.hidden) {
+        [self.banner showTitle:@S2A_DPROMPT_INPUT_BAD_TITLE body:[NSString stringWithFormat:@S2A_DPROMPT_INPUT_BAD_MAC, g_input_bad] accept:nil decline:nil seconds:15];
+        g_input_bad[0] = 0;
+    }
     // 横幅正显示别的提醒时先不查，等它收起再提示，免得互相盖掉
     NSString *lan = self.banner.hidden ? lan_warning() : nil;
     if (lan) [self.banner showTitle:@"本地联机" body:lan accept:nil decline:nil seconds:15];
@@ -1962,7 +1958,11 @@ void s2a_front_run(void (*guest_main)(void)) {
         keys = [NSMutableSet set]; mouse = [NSMutableSet set];
         s2a_input_config decoded;
         int inputError = mac_input_config_read(getenv("S2A_INPUT_CONFIG"), &decoded);
-        if (inputError) { fprintf(stderr, "[s2a] 【红】Mac 输入配置损坏，拒绝启动（%d: %s）\n", inputError, s2a_input_config_error_message(inputError)); exit(2); }
+        if (inputError) {   // 11-17 维护者：校验不过不再拒启。默认键位照常起，游戏窗口的提示条点名原因（窗口建好后由状态刷新显示）
+            fprintf(stderr, "[s2a] 【黄】Mac 输入配置读不懂（%d: %s），这局用默认键位照常启动\n", inputError, s2a_input_config_error_message(inputError));
+            s2a_input_config_default(&decoded);
+            snprintf(g_input_bad, sizeof g_input_bad, "%s", s2a_input_config_error_message(inputError));
+        }
         config = input_config_dictionary(&decoded);
         // 玩家 2–4 自己的键位映射（启动器按玩家保存：起局时给了 S2A_INPUT_CONFIG_P2..P4 才有，见 slot_cfg）。
         //   可选映射读不懂只记一笔、照玩家 1 的键位，不像玩家 1 那份直接拒启——不该挡开局

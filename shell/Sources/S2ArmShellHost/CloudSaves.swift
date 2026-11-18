@@ -90,7 +90,12 @@ enum CloudSaves {
         defer { free(raw) }
         let response = (try? JSONSerialization.jsonObject(with: Data(String(cString: raw).utf8))) as? [String: Any] ?? [:]
         guard response["ok"] as? Bool == true else {
-            throw ServiceError(message: ((response["error"] as? [String: Any])?["message"] as? String) ?? shellText("The save service didn’t return a valid result."))
+            let error = response["error"] as? [String: Any]
+            // 自动同步（sync）遇到云端那份版本 / 账号对不上或有文件坏了：服务层照旧不覆盖，这里告诉玩家本机进度没动、可以去存档管理手动恢复
+            if op["sync"] as? Bool == true, let code = error?["code"] as? String, ["save_version", "save_wrong_user", "save_damaged"].contains(code) {
+                throw ServiceError(message: shellText("The iCloud save is from a different version, belongs to another account, or has damaged files, so it didn’t overwrite your progress on this device. To use it, restore it manually in save management."))
+            }
+            throw ServiceError(message: (error?["message"] as? String) ?? shellText("The save service didn’t return a valid result."))
         }
         return response["result"] as? [String: Any] ?? [:]
     }
@@ -102,10 +107,11 @@ enum CloudSaves {
                 guard try call(context, ["operation": "status"])["hasSave"] as? Bool == true else { return false }
                 _ = try call(context, ["operation": "export", "path": url.path]); return true
             },
-            inspect: { url in try files(call(context, ["operation": "inspect", "path": url.path])) },
+            // sync：自动同步没人看提示、不经玩家确认——版本 / DLC 组合、账号归属对不上时服务层照旧拒绝，不悄悄换掉进度（玩家手动恢复不带，只提示）
+            inspect: { url in try files(call(context, ["operation": "inspect", "path": url.path, "sync": true])) },
             restore: { url in
-                let preview = try call(context, ["operation": "inspect", "path": url.path])
-                _ = try call(context, ["operation": "restore", "path": url.path,
+                let preview = try call(context, ["operation": "inspect", "path": url.path, "sync": true])
+                _ = try call(context, ["operation": "restore", "path": url.path, "sync": true,
                                        "archiveSha256": preview["archiveSha256"] ?? "", "targetFingerprint": preview["targetFingerprint"] ?? ""])
                 // 收掉已提交的事务记录，不然下次起局会先进存档管理页。此时存档已经换了：失败要照实说（基线不前进，下次同步内容相同只记基线）
                 do { _ = try call(context, ["operation": "recover"]) }

@@ -153,6 +153,56 @@ class Sizes(JobCase):
         self.assertIsNotNone(layout.read_sizes(self.c, GID))
         self.assertEqual(g[OTHER]["sizes"]["sources"], 5 * MIB)
 
+    def test_060_four_categories_add_up_to_disk(self):
+        """0.6.0 空间页四类（体系文档 K，通用壳开关开着）：期望手写——
+        这款 resources = image/（mac 2 + kit 2 + pack 1 + .pack/game.img 3，Mac 的 game.img 是它的硬链接只算一次）+ 导出文件夹里这款的 .img 1；
+        programs = 程序常驻 1 + 程序缓存 1；playerData = saves 1 + save-backups 1 + cheats 1 + 私有目录里玩家导入的着色器缓存 1（+ game.json 等小文件）；cache = 出包工作目录 + 着色器缓存（克隆块记在先量的资源上）。
+        公共件多出 exports（导出文件夹里不归任何一款的：S2Arm.ipa 2）、other（默认位置根下其余：库清单等小文件 + 一个 1 MiB 的记录）。
+        各款四类 + 公共件 + 原件副本 = 对默认位置、私有目录里 S2Arm 的东西按文件身份去重独立走一遍的总数，差 < 1%（这里没有克隆以外的近似，应逐字节相等或只差克隆）"""
+        import install, programs
+        L, P, W = self.c.library, self.c.private, self.c.work_root
+        d = self.dir
+        g = write(d / "image" / "ios" / ".pack" / "game.img", 3 * MIB)
+        os.link(g, d / "image" / "mac" / "game.img")
+        write(layout.program_store(self.c, GID, create=True) / "exefs.tar.zst", 1 * MIB)
+        write(programs.cache(self.c, GID) / "package" / "meta.json", 1 * MIB)
+        write(d / "cheats" / "c.txt", 1 * MIB)
+        write(P / "着色器缓存" / GID / "user.bin", 1 * MIB)   # 玩家导入的客体着色器缓存（私有目录）：玩家带来的，归这款「玩家数据」
+        ex = L / install.EXPORT_DIRS["zh"]
+        with open(write(ex / "异度神剑3.img", 1 * MIB), "r+b") as f:
+            f.write(b"S2AIMG01" + bytes(8) + GID.encode())
+        write(ex / "S2Arm.ipa", 2 * MIB)
+        write(L / "迁移记录.json", 1 * MIB)
+        write(L / "hosts" / "mac" / "h.bin", 1 * MIB)
+        with patch.dict(os.environ, {"S2A_UNIVERSAL_SHELL": "1"}):
+            out = sizes.overview(self.context("storageOverview"))
+        cat = {r["gameId"]: r for r in out["games"]}[GID]["sizes"]["categories"]
+        imgs = 2 + 2 + 1 + 3 + 3   # mac 2 + kit 2 + pack 1 + game.img 3（硬链接只算一次）+ 镜像里的 romfs 3（它与解包是克隆：资源先量，共享块记在资源上）
+        self.assert_mib(cat["resources"], imgs + 1, "resources")
+        self.assert_mib(cat["programs"], 2, "programs")
+        self.assertGreaterEqual(cat["playerData"], 4 * MIB); self.assertLess(cat["playerData"], 4 * MIB + 4 * SLACK)
+        self.assert_mib(cat["cache"], 1 + 1 + 1 + (0 if self.cloned else 3), "cache")   # roots 1 + 出包日志 1 + 着色器缓存 1；解包 romfs 与镜像是克隆时块已记在资源，复制的盘上是独立一份
+        shared = {r["id"]: r["bytes"] for r in out["shared"]}
+        self.assertEqual(list(shared)[-2:], ["exports", "other"])
+        self.assert_mib(shared["exports"], 2, "exports")
+        self.assertGreaterEqual(shared["other"], 1 * MIB)
+        # 独立走一遍：默认位置与私有目录里 S2Arm 的东西（外部原件不在里面），按 (卷, inode) 去重、st_blocks 计
+        seen, total = set(), 0
+        for top in (L, P / "logs", P / "jobs", P / "engines", P / "着色器缓存"):
+            for root, dirs, files in os.walk(top):
+                for n in dirs + files:
+                    st = os.lstat(os.path.join(root, n))
+                    if (st.st_dev, st.st_ino) not in seen:
+                        seen.add((st.st_dev, st.st_ino)); total += st.st_blocks * 512
+        listed = sum(sum(r["sizes"].get("categories", {}).values()) for r in out["games"]) + sum(shared.values())
+        if self.cloned:   # 克隆共享的块独立走法按两份算、我们按一份：差的就是那 3 MiB
+            total -= 3 * MIB
+        self.assertLess(abs(listed - total), total * 0.01, f"四类 + 公共件 {listed} 与盘上 {total} 差 ≥ 1%")
+        with patch.dict(os.environ, {"S2A_UNIVERSAL_SHELL": "0"}):
+            off = sizes.overview(self.context("storageOverview"))
+        self.assertNotIn("categories", {r["gameId"]: r for r in off["games"]}[GID]["sizes"], "开关关着不带四类")
+        self.assertEqual([r["id"] for r in off["shared"]], ["hosts", "ipa", "toolCache", "temp", "logs"], "开关关着公共件照旧五项")
+
     def test_overview_offline_location(self):
         gone = self.root / "拔掉的盘"
         layout.register_location(self.c, gone)

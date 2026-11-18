@@ -158,7 +158,8 @@ class RuntimeEnv(unittest.TestCase):
 class Reader(unittest.TestCase):
     def setUp(self):
         self.t = Path(tempfile.mkdtemp()); self.addCleanup(lambda: __import__("shutil").rmtree(self.t, ignore_errors=True))
-        self.c = types.SimpleNamespace(engine=self.t)
+        self.diags = []
+        self.c = types.SimpleNamespace(engine=self.t, diagnostic=lambda message, **kw: self.diags.append(dict(kw, message=message)))
         self.d = self.t / "Binaries/Prepare/nx_unpack"; self.d.mkdir(parents=True)
         fake = types.SimpleNamespace(nx_unpack_id=lambda: "abc123abc123")   # 身份由 oneclick_win 算（另有单测）；这里只核「相同才用」
         self.mods = patch.dict(sys.modules, {"pack.orch.oneclick_win": fake, "pack.orch": types.SimpleNamespace(oneclick_win=fake)})
@@ -169,15 +170,25 @@ class Reader(unittest.TestCase):
         (self.d / "nx_unpack.exe").write_bytes(b"x"); (self.d / ".src_digest").write_text("abc123abc123\n")
         with as_windows(toolchain):
             self.assertEqual(toolchain.reader(self.c), self.d / "nx_unpack.exe")
+        self.assertEqual(self.diags, [])
 
-    def test_stale_or_missing_is_named_failure(self):
-        (self.d / "nx_unpack.exe").write_bytes(b"x"); (self.d / ".src_digest").write_text("000000000000\n")
-        for case in ("stale", "missing"):
+    def test_stale_warns_and_continues(self):
+        """维护者 11-17：校验不过不再拒绝。期望手写：身份对不上、exe 在 → 照常返回 exe、发一条 warning 级 reader_unavailable；
+        身份不在（.src_digest 读不到）同样照用；exe 不在 → 物理上用不了，照旧报 reader_unavailable"""
+        (self.d / "nx_unpack.exe").write_bytes(b"x")
+        for case in ("stale", "no_digest"):
             with self.subTest(case=case), as_windows(toolchain):
-                if case == "missing": (self.d / "nx_unpack.exe").unlink(); (self.d / ".src_digest").write_text("abc123abc123\n")   # 身份对、exe 不在
-                with self.assertRaises(core.Failure) as e:
-                    toolchain.reader(self.c)
-                self.assertEqual(e.exception.code, "reader_unavailable")
+                self.diags.clear()
+                if case == "stale": (self.d / ".src_digest").write_text("000000000000\n")
+                else: (self.d / ".src_digest").unlink()
+                self.assertEqual(toolchain.reader(self.c), self.d / "nx_unpack.exe")
+                self.assertEqual([(d["code"], d["severity"]) for d in self.diags], [("reader_unavailable", "warning")])
+
+    def test_missing_is_named_failure(self):
+        (self.d / ".src_digest").write_text("abc123abc123\n")   # 身份对、exe 不在
+        with as_windows(toolchain), self.assertRaises(core.Failure) as e:
+            toolchain.reader(self.c)
+        self.assertEqual(e.exception.code, "reader_unavailable")
 
 
 class WinOneclick(unittest.TestCase):
@@ -237,14 +248,16 @@ class WinOneclick(unittest.TestCase):
 
 class ShellEngineMatch(unittest.TestCase):
     """#1043：应用内更新回滚不完整，Engine/engine.json 新壳号、Shell/manifest.json 旧壳号 → 出包开头就报「没装完整、覆盖安装」（engine_incomplete），
-    不等到 ship_ext 核壳编号才挂。期望手写（壳号取自玩家原报）：对得上 → 照常返回 Shell 目录；对不上 → engine_incomplete、内部原文带两个壳号；
-    任一边没写壳号（开发树 / 旧格式）→ 不拦"""
+    不等到 ship_ext 核壳编号才挂。维护者 11-17：校验不过不再拒绝出包。期望手写（壳号取自玩家原报）：对得上 → 照常返回 Shell 目录、不发诊断；
+    对不上 → 照常返回 Shell 目录、发一条 warning 级 engine_incomplete（说「照常出包」与「覆盖安装」、内部原文带两个壳号）；任一边没写壳号（开发树 / 旧格式）→ 不发"""
     def setUp(self):
         import ipa
         self.ipa = ipa
         self.t = Path(tempfile.mkdtemp()); self.addCleanup(lambda: __import__("shutil").rmtree(self.t, ignore_errors=True))
         (self.t / "Shell").mkdir(); (self.t / "Engine").mkdir()
-        self.c = types.SimpleNamespace(r={"resources": str(self.t)}, private=self.t, engine=self.t / "Engine")
+        self.diags = []
+        self.c = types.SimpleNamespace(r={"resources": str(self.t)}, private=self.t, engine=self.t / "Engine",
+                                       diagnostic=lambda message, **kw: self.diags.append(dict(kw, message=message)))
 
     def put(self, engine, shell):
         import json
@@ -253,21 +266,21 @@ class ShellEngineMatch(unittest.TestCase):
 
     def test_same_shell_ok(self):
         self.put("e0c983c072e29416", "e0c983c072e29416")
-        self.assertEqual(self.ipa.bundled_shell(self.c), self.t / "Shell")
+        self.assertEqual(self.ipa.bundled_shell(self.c), self.t / "Shell"); self.assertEqual(self.diags, [])
 
-    def test_half_updated_app_is_named(self):
+    def test_half_updated_app_warns_and_continues(self):
         self.put("e0c983c072e29416", "b96e9b50fef413c0")
-        with self.assertRaises(core.Failure) as e:
-            self.ipa.bundled_shell(self.c)
-        self.assertEqual(e.exception.code, "engine_incomplete")
-        self.assertIn("覆盖安装", str(e.exception))
-        self.assertIn("e0c983c072e29416", e.exception.internal); self.assertIn("b96e9b50fef413c0", e.exception.internal)
+        self.assertEqual(self.ipa.bundled_shell(self.c), self.t / "Shell")
+        self.assertEqual(len(self.diags), 1); d = self.diags[0]
+        self.assertEqual((d["code"], d["severity"]), ("engine_incomplete", "warning"))
+        self.assertIn("照常出包", d["message"]); self.assertIn("覆盖安装", d["message"])
+        self.assertIn("e0c983c072e29416", d["internal"]); self.assertIn("b96e9b50fef413c0", d["internal"])
 
     def test_missing_ids_do_not_block(self):
         for engine, shell in ((None, "b96e9b50fef413c0"), ("e0c983c072e29416", None), (None, None)):
             with self.subTest(engine=engine, shell=shell):
                 self.put(engine, shell)
-                self.assertEqual(self.ipa.bundled_shell(self.c), self.t / "Shell")
+                self.assertEqual(self.ipa.bundled_shell(self.c), self.t / "Shell"); self.assertEqual(self.diags, [])
 
 
 class FakeW:
@@ -291,6 +304,10 @@ class FakeW:
                                               unselected_accounts=lambda: self.unselected, select_only_account=select_only)
         self.logged = False
         self.plumesign_path = lambda given=None: "C:/plumesign.exe" if plume else None
+        self.cert_hit, self.cert_calls = None, []   # cert_check（签前核开发证书）：缺省「不用问」；用例给 {name, machine, created} 测问玩家
+    def cert_check(self, exe, team, log=None):
+        self.cert_calls.append((exe, team))
+        return self.cert_hit
     def mux_devices(self):
         if isinstance(self.devs, Exception): raise self.devs
         return self.devs
@@ -470,6 +487,19 @@ class WinInstall(unittest.TestCase):
         with self.assertRaises(core.Failure) as e:
             self.go(FakeW([("U1", "USB", 3)], fail="login_identity_rejected"))
         self.assertEqual(e.exception.code, "login_identity_rejected")
+
+    def test_cert_revoke_asked_before_signing(self):
+        # plumesign 要新建证书、列表里有别人的：签名装机之前停下问（cert_revoke_confirm），不调 install_app；玩家点继续（acceptCertRevoke）照装
+        w = FakeW([("U1", "USB", 3)]); w.cert_hit = dict(name="Apple Development: Fake Xcode", machine="Fake-Mac", created="2025-03-01")
+        p = patch.object(self.m.WinPhone, "backup", lambda self, g: None); p.start(); self.addCleanup(p.stop)
+        with self.assertRaises(core.Failure) as e:
+            self.go(w)
+        self.assertEqual(e.exception.code, "cert_revoke_confirm")
+        self.assertIn("「Apple Development: Fake Xcode」", str(e.exception))
+        self.assertEqual(w.calls, [])
+        self.assertEqual(w.cert_calls, [("C:/plumesign.exe", w.team)])
+        self.go(w, acceptCertRevoke=True)
+        self.assertEqual(len(w.calls), 1)
 
     def test_appid_limit_shows_plain_reason_not_plumesign_english(self):
         """Apple 9120（Windows 实机原文：Developer API error 9120 … maximum App ID limit）：上屏是 free_appid_limit 的人话原因与办法，英文原文只进诊断"""

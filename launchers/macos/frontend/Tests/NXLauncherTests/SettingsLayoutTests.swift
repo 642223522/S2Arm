@@ -667,13 +667,20 @@ import S2ArmAppleAdapter
                 // 平台卡按标识认（iPhone / Apple TV / Mac 三张，Apple TV 卡在出包机配了 Apple TV 时才有），不按高度猜
                 let platforms = targets.filter { $0.id.hasPrefix("export.platform.") }.sorted { $0.frame.minX < $1.frame.minX }
                 let mac = try XCTUnwrap(platforms.first { $0.id == "export.platform.mac" })
+                // 复选框与平台之间夹着 mod 一行（「？」格式说明，11-17）：方向键逐行走，不跳行
+                let modHelp = targets.first { $0.id == "export.sgrade.mod.help" }
                 navigation.focus(mac.id); navigation.handle(.up)
+                if let modHelp {
+                    XCTAssertEqual(navigation.focusedID, modHelp.id, "向上应先进平台上方紧邻的 mod 一行")
+                    navigation.handle(.up)
+                }
                 XCTAssertEqual(navigation.focusedID, checkbox.id, "向上应先经过紧邻的平台上方的复选框，不能跳过整行")
                 navigation.focus("export.name"); navigation.handle(.down)
                 XCTAssertEqual(navigation.focusedID, checkbox.id, "标题向下也应进入复选框，不能停在同一行的封面")
                 navigation.focus(checkbox.id); navigation.handle(.up)
                 XCTAssertNotEqual(navigation.focusedID, checkbox.id, "向上应离开复选框回到游戏信息")
                 navigation.focus(checkbox.id); navigation.handle(.down)
+                if let modHelp { XCTAssertEqual(navigation.focusedID, modHelp.id, "向下先进 mod 一行"); navigation.handle(.down) }
                 XCTAssertTrue(platforms.contains { $0.id == navigation.focusedID }, "向下应离开复选框进入可选平台")
                 let before = fixture.model.sgradeOn(game.id)
                 navigation.focus(checkbox.id); navigation.handle(.confirm)
@@ -681,6 +688,7 @@ import S2ArmAppleAdapter
                 XCTAssertEqual(fixture.model.sgradeOn(game.id), !before)
                 XCTAssertEqual(navigation.focusedID, checkbox.id, "切换勾选后仍保持有效焦点")
                 navigation.handle(.down)
+                if let modHelp { XCTAssertEqual(navigation.focusedID, modHelp.id); navigation.handle(.down) }
                 XCTAssertTrue(platforms.contains { $0.id == navigation.focusedID }, "勾选状态改变后也能移出")
                 XCTAssertEqual(fixture.model.sgradeOn(game.id), !before, "方向导航不能修改勾选")
             }
@@ -909,7 +917,7 @@ import S2ArmAppleAdapter
                 let bounds = window.convertToScreen(host.bounds)
                 print("titlebar-right-edge \(language.code)/\(width): report=\(bounds.maxX - report.frame.maxX), home=\(bounds.maxX - refresh.frame.maxX)")
                 XCTAssertEqual(report.frame.maxX, refresh.frame.maxX, accuracy: 0.5, "报修按钮应与游戏库控件共用右边缘")
-                XCTAssertEqual(bounds.maxX - report.frame.maxX, 48, accuracy: 0.5)
+                XCTAssertEqual(bounds.maxX - report.frame.maxX, LauncherTheme.Space.section, accuracy: 0.5)
                 try snapshot(host, "titlebar-alignment-\(language.code)-\(Int(width))")
             }
         }
@@ -1471,9 +1479,9 @@ import S2ArmAppleAdapter
                 let cover = try XCTUnwrap(targets.first { $0.id == "export.cover" })
                 let start = try XCTUnwrap(padFocus.frames["main"]?.first { $0.id == "export.start" })
                 // 接鼠标、没接触控板的 Mac 是常显滚动条，要从可用宽度里扣掉它占的那条
-                let expectedContentWidth = min(960, width - 96 - (scrollViews(in: host).first.map(scrollerReserve) ?? 0))
+                let expectedContentWidth = width - 96 - (scrollViews(in: host).first.map(scrollerReserve) ?? 0)
                 print("export-bounded \(language.code)/\(width): left=\(cover.frame.minX - bounds.minX), right=\(width - start.frame.maxX)")
-                XCTAssertEqual(cover.frame.minX - bounds.minX, 48, accuracy: 1, "出包内容最多 960 pt 宽并靠左，左边距保持 48 pt")
+                XCTAssertEqual(cover.frame.minX - bounds.minX, 48, accuracy: 1, "出包内容与底栏共用 48 pt 左边距")
                 XCTAssertEqual(width - start.frame.maxX, 48, accuracy: 1, "底栏操作应保持距窗口右边缘 48 pt")
                 XCTAssertTrue(bounds.contains(cover.frame))
                 XCTAssertTrue(CGRect(x: 0, y: 0, width: width, height: 630).contains(start.frame))

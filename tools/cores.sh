@@ -31,6 +31,15 @@ s2a_mem_gb() {   # 本机物理内存（GB，取整），不经 Python：macOS s
   k=$(awk '/^MemTotal:/ { print $2; exit }' "${S2A_PROC_MEMINFO:-/proc/meminfo}" 2> /dev/null)   # S2A_PROC_MEMINFO：单测在 Mac 上模拟 Linux 用
   [ "$k" -gt 0 ] 2> /dev/null && echo $(( k >> 20 ))
 }
+s2a_avail_mb() {   # 此刻可用内存（MB）：macOS vm_stat 的空闲 + 非活跃 + 预读 + 可清除页，Linux /proc/meminfo MemAvailable；读不到输出空（调用方按物理内存算）
+  #   S2A_MEM_AVAIL_MB 覆盖（单测给定）。#1439/#1442：原先只按物理内存估，别的出包 / 玩家的程序已占着的内存不算，两单各按整机开满
+  [ -n "${S2A_MEM_AVAIL_MB:-}" ] && { echo "$S2A_MEM_AVAIL_MB"; return; }
+  local v k
+  v=$(vm_stat 2> /dev/null | awk '/page size of/ { ps = $8 } /^Pages (free|inactive|speculative|purgeable):/ { gsub(/\./, "", $NF); n += $NF } END { if (ps > 0 && n > 0) print int(n * ps / 1048576) }')
+  [ "$v" -gt 0 ] 2> /dev/null && { echo "$v"; return; }
+  k=$(awk '/^MemAvailable:/ { print $2; exit }' "${S2A_PROC_MEMINFO:-/proc/meminfo}" 2> /dev/null)
+  [ "$k" -gt 0 ] 2> /dev/null && echo $(( k >> 10 ))
+}
 s2a_cores() {
   local nc gb ln mj live
   # 出包整条链降优先级（子进程继承）：只往低调、不往高调（已更低的不动；调高要 root）。S2A_NICE 改档，0 = 不调
@@ -50,15 +59,21 @@ s2a_cores() {
     gb=${S2A_MEM_TOTAL_GB:-$(s2a_mem_gb)}
     [ "$gb" -ge 1 ] 2> /dev/null || { echo "【红】并行度：读不出物理内存（sysctl -n hw.memsize、/proc/meminfo 都没读到）；可用 S2A_MEM_TOTAL_GB=<GB> 手动指定" >&2; return 1; }
   fi
+  # 本单内存预算（MB）= min(物理内存 × 3/4 ÷ 同机道数, 此刻可用内存 ÷ 2)（#1439/#1442：另一单 / 玩家的程序已占着的不再当成本单的；留一半给系统与别的程序）
+  local am=0 av
+  if [ -z "${S2A_CPU_BAKE:-}" ] || [ -z "${S2A_DIRECT_J:-}" ]; then
+    am=$(( gb * 1024 * 3 / 4 / ln )); av=$(s2a_avail_mb)
+    [ "$av" -gt 0 ] 2> /dev/null && [ $(( av / 2 )) -lt "$am" ] && am=$(( av / 2 ))
+  fi
   if [ -z "${S2A_CPU_BAKE:-}" ]; then
-    mj=$(( gb * 3 / 4 / ln * 2 / 3 )); [ "$mj" -ge 1 ] || mj=1
+    mj=$(( am / 1536 )); [ "$mj" -ge 1 ] || mj=1   # 每路重活 1.5 GB
     export S2A_CPU_BAKE=$(( S2A_JOBS < mj ? S2A_JOBS : mj ))
   fi
   if [ -z "${S2A_DIRECT_J:-}" ]; then
-    local am=$(( gb * 1024 * 3 / 4 / ln )) dj
+    local dj
     dj=$(( 1 + (am - ${S2A_DIRECT_MAIN_MB:-1740} - ${S2A_DIRECT_METAL_PEAK_MB:-1065}) / ${S2A_DIRECT_METAL_P90_MB:-420} ))
     [ "$dj" -gt "$S2A_JOBS" ] && dj=$S2A_JOBS; [ "$dj" -ge 1 ] || dj=1
     export S2A_DIRECT_J=$dj
   fi
-  [ -n "${S2A_CORES_QUIET:-}" ] || echo "并行度：本机 ${nc} 核、同机 ${ln} 单、出包优先级 nice $(ps -o nice= -p $$ | tr -d ' ')；本单 ${S2A_JOBS} 核，重活 ${S2A_CPU_BAKE} 路、直连库编译 ${S2A_DIRECT_J} 路"
+  [ -n "${S2A_CORES_QUIET:-}" ] || echo "并行度：本机 ${nc} 核、同机 ${ln} 单、出包优先级 nice $(ps -o nice= -p $$ | tr -d ' ')；本单 ${S2A_JOBS} 核${am:+、内存预算 ${am} MB（可用 ${av:-?} MB）}，重活 ${S2A_CPU_BAKE} 路、直连库编译 ${S2A_DIRECT_J} 路"
 }

@@ -158,8 +158,8 @@ def materialize(pack, img_rel, size, want_sha, say=print, progress=None):
                         if not b: raise Red(f'{prefix}{FILES}/{rel} 读不满')
                         h.update(b); w.write(b); left -= len(b); pos += len(b)
                         if progress and time.monotonic() - last >= 1: progress(pos); last = time.monotonic()
-        if pos != size or h.hexdigest() != want_sha:
-            raise Red(f'现拼的 {img_rel} 与索引不符（长 {pos} / {size}，sha256 {h.hexdigest()[:12]} / {want_sha[:12]}）：资源包里的文件被改过，重打 iPhone 包')
+        if pos != size or h.hexdigest() != want_sha:   # 维护者 11-17：校验不过不再整个拒绝——坏也只坏这款的包，黄字说清后照常推
+            say(f'🟡 现拼的 {img_rel} 与索引不符（长 {pos} / {size}，sha256 {h.hexdigest()[:12]} / {want_sha[:12]}）：资源包里的文件被改过，照常继续；游戏里出问题时重打 iPhone 包')
         os.replace(part, dst)
     except BaseException:
         try: os.unlink(part)

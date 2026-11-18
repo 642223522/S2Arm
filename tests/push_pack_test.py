@@ -116,8 +116,10 @@ class PlanRules(Base):
         self.go(self.on_phone("a", "b"), full=True); self.assertEqual(self.dev.lists, [["a", "b"]])
 
     def test_not_v2(self):
+        # 维护者 11-17：「校验不过就整个拒绝」一律撤掉——清单版本不认只打一行黄、照常算批次推送（期望手写：不抛、日志有那行黄）
         (self.pk / "manifest.json").write_text('{"version": 1}')
-        with self.assertRaises(push.Fail): self.go({})
+        self.go({})
+        self.assertTrue(any(s.startswith("【黄】资源包清单版本 1 这个工具不认") and s.endswith("照常推送") for s in self.log), self.log)
 
 
 class Pending(Base):
@@ -188,10 +190,10 @@ class Apply(Base):
     def test_pushed_waits_for_new_done_line(self):
         self.assertTrue(self.ap({}, 1, True)); self.assertEqual(self.dev.launches, [{"S2A_PACK_APPLY_ONLY": "1"}])
 
-    def cant_launch(self, player_opens_at=None):
+    def cant_launch(self, player_opens_at=None, why="RSD 里没有 app_service"):
         """电脑拉不起 App（#192）；player_opens_at 给了就在该时刻起算玩家手动打开、解完。返回 (结果或异常, 结束时刻)"""
         dev = Fake({}); self.dev = dev; clock = [0.0]
-        def boom(env): raise push.Fail("起 App 失败：RSD 里没有 app_service")
+        def boom(env): raise push.Fail("起 App 失败：" + why)
         dev.launch = boom
         def sleep(x):
             clock[0] += x
@@ -213,6 +215,20 @@ class Apply(Base):
     def test_cant_launch_not_locked_says_how_to_fix(self):   # 报错不是锁屏那句：原因写开发者模式 / 信任开发者，不说锁屏
         r, _ = self.cant_launch()
         self.assertIn("开发者模式", str(r)); self.assertIn("VPN 与设备管理", str(r)); self.assertNotIn("锁着屏", str(r))
+
+    def test_cant_launch_untrusted_says_trust_or_renew_with_name(self):
+        # 手机拒绝打开（devicectl 原文一句包三种原因：没信任开发者 / 签名过期 / 换了团队）：两步都写，装机时读到的证书名填进要点的那一项；
+        #   读不到名字时写「点你的开发者 App」。期望手写
+        why = ("Unable to launch io.s2arm.games.T because it has an invalid code signature, inadequate entitlements "
+               "or its profile has not been explicitly trusted by the user.")
+        with mock.patch.dict(os.environ, {"S2A_TRUST_NAME": "Apple Development: tester@example.com (ABCDE12345)"}):
+            r, _ = self.cant_launch(why=why)
+        self.assertIsInstance(r, push.NeedsPlayer)
+        self.assertIn("设置 → 通用 → VPN 与设备管理 → 点「Apple Development: tester@example.com (ABCDE12345)」 → 信任", str(r))
+        self.assertIn("续签 S2Arm", str(r)); self.assertNotIn("开发者模式", str(r))
+        with mock.patch.dict(os.environ, {"S2A_TRUST_NAME": ""}):
+            r, _ = self.cant_launch(why=why)
+        self.assertIn("点你的开发者 App → 信任", str(r))
 
     def locked_then(self, unlock_at=None):
         """锁屏（11-09 测试设备实测：锁屏时写文件照样成功，只有拉 App 失败，报 XPC response missing CoreDevice.output）；unlock_at 给了就在该时刻解锁，之后拉得起、拉起即解完。返回 (结果或异常, 结束时刻, 拉了几次)"""
@@ -260,6 +276,26 @@ See 'devicectl device process launch --help' for more information.
         except push.Fail as e: r = e
         self.assertIsInstance(r, push.NeedsPlayer); self.assertIn("锁着屏", str(r)); self.assertNotIn("开发者模式", str(r))
         self.assertIn(f"资源包已传完。{push.LOCKED_WAIT}", self.log)
+
+    def test_unwritable_reads_owner_and_mode_of_dir_and_file(self):
+        # 期望（手写，D-A76N）：写不进时按 devicectl info files --no-recurse 的 JSON 读出「目录」与「文件」各自的属主和权限（八进制），
+        #   目录 0555（权限 365）、文件 0444（权限 292）；列不出的那一项说「读不到」，不抛
+        import stat
+        fake = Path(self.w) / "devicectl"
+        fake.write_text("#!/bin/sh\n" + f"exec {sys.executable} - \"$@\" <<'PY'\n" + """import json, sys
+a = sys.argv[1:]
+sub = a[a.index('--subdirectory') + 1] if '--subdirectory' in a else ''
+out = a[a.index('--json-output') + 1]
+table = {'L/games/X': [{'name': '资源包', 'relativePath': '资源包', 'metadata': {'ownerUid': 501, 'permissions': 365}}]}
+if sub in table: json.dump({'result': {'files': table[sub]}}, open(out, 'w'))
+else: sys.exit(1)
+PY
+""")
+        fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+        d = push.Devicectl("DEV", "io.s2arm.x", self.w, env=dict(os.environ, S2A_DEVICECTL=str(fake)))
+        note = d.owner_note("L/games/X/资源包/game.img")
+        self.assertIn("L/games/X/资源包：属主 uid 501、权限 555", note)
+        self.assertIn("L/games/X/资源包/game.img：读不到（devicectl rc=1）", note)
 
     def test_mac_launch_without_env_omits_flag(self):   # 多款容器拉起到游戏库 env 为空：devicectl 收 '{}' 会拒，得不带这个参数（11-10 测试设备实测）
         import stat
@@ -444,6 +480,63 @@ class BigFallback(unittest.TestCase):
         self.assertIn("本机可用内存", err)
 
 
+class NoSpace(unittest.TestCase):
+    """手机写满了：同一族报错各种说法都认，按写满报，不报成连接中断（11-17 Duo 实测：AFC「No space left」被说成「devicectl 退出码 1，确认数据线插稳」）。
+    原文取自真机日志与工具输出，期望手写"""
+    REAL = ["推 Library/Application Support/S2Arm/games/0400C3F00006E000/资源包/game.img 失败：写文件失败：afc error: No space left",   # s2a-devpush 写（11-17 Duo）
+            "打不开 Library/Application Support/S2Arm/games/0400C3F00006E000/资源包/game.img：afc error: No space left",            # s2a-devpush 再打开（同上）
+            "ERROR: The operation couldn’t be completed. (NSPOSIXErrorDomain error 28 - No space left on device)",                  # devicectl
+            "Underlying error: POSIX error code 28",                                                                              # devicectl cp.log
+            "afc_file_write returned AFC_E_NO_SPACE_LEFT",                                                                        # libimobiledevice
+            "OSError: [Errno 28] No space left on device (ENOSPC)"]
+    NOT = ["写文件失败：device socket io failed", "NSPOSIXErrorDomain error 280", "POSIX error code 2", "afc error: Permission denied", ""]
+
+    def test_family(self):
+        for t in self.REAL: self.assertTrue(push.nospace(t), t)
+        for t in self.NOT: self.assertFalse(push.nospace(t), t)
+        for t in self.REAL: self.assertEqual(push.push_reason(t), "手机空间写满了", t)
+
+    def test_stream_full_no_retry_no_devicectl(self):   # 流式写报写满：不隔 3 秒重试、不改走 devicectl（白等两分钟），原样交给 run
+        with tempfile.TemporaryDirectory() as t:
+            src = Path(t) / "game.img"; src.write_bytes(b"\0" * 512)
+            d = push.Devicectl("C891", "io.s2arm.games.t", t, env={"S2A_DC_FALLBACK_MAX": "4096"})
+            calls = []
+            class Stream:
+                def put(self, src, rel): calls.append(rel); raise push.Fail(f"资源包写进 iPhone 时中断（{NoSpace.REAL[0]}）：确认手机解锁、数据线插稳后再点一次")
+            d.dp = Stream(); copied, said = [], []; d.say = said.append; d.put = lambda src, rel: copied.append(rel)
+            with self.assertRaises(push.Fail) as e: d.put_big(src, "Documents/资源包/game.img")
+            self.assertTrue(push.nospace(str(e.exception)))
+            self.assertEqual((len(calls), copied, said), (1, [], []))
+
+    def test_run_reports_full_from_text_even_when_free_unreadable(self):   # 推的时候报写满、推完量不到空闲 → 照样按写满报（ios_install_no_space）
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t); pk = d / "pack"; pk.mkdir(); w = d / "w"; w.mkdir()
+            (pk / "a").write_bytes(b"A"); (pk / "index.tsv").write_text(f"a\t1\t{sha(b'A')}\n"); (pk / "manifest.json").write_text('{"version": 2}')
+            dev = Fake({})
+            def full(lst, root, rel): raise push.Fail(f"资源包写进 iPhone 时中断（{NoSpace.REAL[0]}）：确认手机解锁、数据线插稳后再点一次")
+            dev.put_tar = full
+            with self.assertRaises(push.SpaceFull) as e: push.run(dev, pk, w, full=True, say=lambda m: None, env={"S2A_PUSH_SPARE_GB": "0"})
+            self.assertEqual(e.exception.code, "ios_install_no_space"); self.assertIn("写满", str(e.exception)); self.assertNotIn("数据线", str(e.exception))
+
+    def test_devicectl_free_asks_devpush_first(self):   # 玩家机上多半没装 ideviceinfo：有 s2a-devpush 就按它读（AFC 设备信息），读到就不再问 ideviceinfo
+        with tempfile.TemporaryDirectory() as t:
+            d = push.Devicectl("C891", "io.s2arm.games.t", t)
+            class DP:
+                def free(self): return 123 << 30
+            d.dp = DP()
+            with mock.patch.object(push.shutil, "which", lambda n: self.fail("不该再找 ideviceinfo")):
+                self.assertEqual(d.free(), 123 << 30)
+
+    def test_low_space_says_how_much_short(self):   # 预检：要 8198 字节、手机报 8000 → 说清还差多少
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t); pk = d / "pack"; pk.mkdir(); w = d / "w"; w.mkdir()
+            (pk / "a").write_bytes(b"A"); (pk / "b").write_bytes(b"BB")
+            (pk / "index.tsv").write_text(f"a\t1\t{sha(b'A')}\nb\t2\t{sha(b'BB')}\n"); (pk / "manifest.json").write_text('{"version": 2}')
+            dev = Fake({}); dev.free = lambda: 8000
+            with self.assertRaises(push.LowSpace) as e: push.run(dev, pk, w, full=True, say=lambda m: None, env={"S2A_PUSH_SPARE_GB": "0"})
+            self.assertIn("还差约", str(e.exception))
+
+
 class PushReason(unittest.TestCase):
     """推送失败的原文 → 摘要里一眼看得懂的一类（11-12 v0.3.1 Mac 玩家「romfs.img 没传完」看不出是哪种）。期望按 s2a-devpush / devicectl 的报错特征手写"""
     def test_kinds(self):
@@ -529,7 +622,7 @@ class SpaceNeed(Base):
     def test_one_byte_short_accepted_pushes(self):
         self.dev = Fake({}); self.dev.free = lambda: 8197
         self.assertEqual(push.run(self.dev, self.pk, self.w, full=True, say=self.log.append, env={"S2A_PUSH_SPARE_GB": "0", "S2A_PUSH_ACCEPT_LOW_SPACE": "1"})[2], 3)
-        self.assertTrue(any(m.startswith("🟡 iPhone 剩余空间看起来不够") for m in self.log))
+        self.assertTrue(any(m.startswith("🟡 按估算，iPhone 剩余空间可能不够") for m in self.log))
 
     # 真写满：推失败后再量、空闲 < 256 MB → 报 ios_install_no_space，说清要传多少、手机还剩多少；空闲还多 = 别的原因，照原样往上抛
     def test_real_full_says_how_much(self):
@@ -978,7 +1071,7 @@ print(op + " 8 字节 → " + sys.argv[3])
         with self.assertRaises(push.Fail) as cm:
             dev.put(self.pk / "a", "Library/S2Arm/games/G/资源包/game.img")
         self.assertEqual(ops.read_text().split(), ["put", "rm"])
-        self.assertIn("Permission denied", str(cm.exception)); self.assertIn("删除并重新安装 S2Arm", str(cm.exception))
+        self.assertIn("Permission denied", str(cm.exception)); self.assertIn("删掉 iPhone 上的 S2Arm App 再重装", str(cm.exception))
         self.assertEqual(push.push_reason(str(cm.exception)), "手机上这个文件 App 写不进（Permission denied）")
 
     def test_denied_again_after_remove_reports_reinstall(self):
@@ -988,7 +1081,7 @@ print(op + " 8 字节 → " + sys.argv[3])
             dev.put(self.pk / "a", "Library/S2Arm/games/G/资源包/game.img")
         self.assertEqual(ops.read_text().split(), ["put", "rm", "put"])
         self.assertIsInstance(cm.exception, push.DirUnwritable)
-        self.assertIn("Permission denied", str(cm.exception)); self.assertIn("删除并重新安装 S2Arm", str(cm.exception))
+        self.assertIn("Permission denied", str(cm.exception)); self.assertIn("删掉 iPhone 上的 S2Arm App 再重装", str(cm.exception))
         self.assertEqual(push.push_reason(str(cm.exception)), "手机上这个文件 App 写不进（Permission denied）")
 
     def image_plan(self):
@@ -1009,13 +1102,13 @@ print(op + " 8 字节 → " + sys.argv[3])
         # 期望（手写，D-CY3B）：目录 App 写不进（DirUnwritable）→ 不原地再试、不说「重新装会续传 / 从头传」，原样抛出，码 ios_install_dir_unwritable
         self.image_plan(); dev = Fake({}); tries = []
         def put_big(*args):
-            tries.append(1); raise push.DirUnwritable("手机上的 x 删掉重写也写不进（afc error: Permission denied）：它所在的文件夹 App 写不进。" + push.REINSTALL_STEP)
+            tries.append(1); raise push.DirUnwritable("iPhone 上的 S2Arm 写不进 x：删掉旧文件重写也被系统拒绝（afc error: Permission denied），它所在的文件夹 S2Arm 写不进。" + push.REINSTALL_STEP)
         dev.put_big = put_big
         with self.assertRaises(push.DirUnwritable) as cm:
             push.send(dev, self.pk, self.w)
         self.assertEqual(len(tries), 1)
         self.assertEqual(cm.exception.code, "ios_install_dir_unwritable")
-        self.assertNotIn("续传", str(cm.exception)); self.assertNotIn("从头传", str(cm.exception)); self.assertIn("删除并重新安装 S2Arm", str(cm.exception))
+        self.assertNotIn("续传", str(cm.exception)); self.assertNotIn("从头传", str(cm.exception)); self.assertIn("删掉 iPhone 上的 S2Arm App 再重装", str(cm.exception))
 
     def test_partial_image_failure_never_reports_completion(self):
         self.image_plan(); dev = Fake({}); calls = []
@@ -1164,6 +1257,103 @@ class SendFail(Base):
     def test_nospc(self):
         with self.assertRaises(push.Fail) as e: self.go({}, full_disk=True)
         self.assertIn("测试设备空间不足", str(e.exception)); self.assertNotIn(f"{RP}/.pushed", self.dev.files)   # 没写完的批不记账
+
+
+
+class AppDirs(unittest.TestCase):
+    """a48655：推之前以 App 身份（AFC）建好资源包 / .incoming；归了别的用户（iOS 26.2 上 devicectl 代建的 root 目录）的那一级在原父目录里改名挪开再建。
+    假 s2a-devpush 按脚本回 mkdir / mv 的结果，期望手写"""
+    G = "Library/Application Support/S2Arm/games/0100ABCDE0000000"
+
+    class Dp(push.Devpush):
+        def __init__(self, script):
+            super().__init__("devpush", "U", "B", tempfile.mkdtemp()); self.script, self.calls = list(script), []
+        def call(self, *args):
+            self.calls.append(args); return self.script.pop(0) if self.script else (0, "")
+
+    def go(self, script):
+        dp, said = self.Dp(script), []
+        with mock.patch.object(push.time, "time", return_value=1700000000):
+            try: push.app_dirs(dp, f"{self.G}/资源包/.incoming", said.append); err = None
+            except push.DirUnwritable as e: err = e
+        return dp.calls, said, err
+
+    def test_writable_no_move(self):   # 建好可写：只调一次 mkdir，不挪任何东西
+        calls, said, err = self.go([(0, "mkdir x")])
+        self.assertEqual(calls, [("mkdir", f"{self.G}/资源包/.incoming")]); self.assertEqual(said, []); self.assertIsNone(err)
+
+    def test_root_pack_dir_moved_aside(self):   # 资源包归 root：同父目录改名为 .s2a-foreign-资源包-<时刻>，再建一次就成
+        calls, said, err = self.go([(1, f"S2A_DIR_UNWRITABLE {self.G}/资源包\n建不了"), (0, "mv"), (0, "mkdir")])
+        self.assertIsNone(err)
+        self.assertEqual(calls[1], ("mv", f"{self.G}/资源包", f"{self.G}/.s2a-foreign-资源包-1700000000"))
+        self.assertEqual(calls[2], ("mkdir", f"{self.G}/资源包/.incoming")); self.assertEqual(len(said), 1)
+
+    def test_parent_also_root_climbs(self):   # 资源包挪不动（它的父目录也归 root）→ 挪游戏目录本身
+        calls, said, err = self.go([(1, f"S2A_DIR_UNWRITABLE {self.G}/资源包"), (1, "改名失败"), (0, "mv"), (0, "mkdir")])
+        self.assertIsNone(err)
+        self.assertEqual(calls[2], ("mv", self.G, "Library/Application Support/S2Arm/games/.s2a-foreign-0100ABCDE0000000-1700000000"))
+
+    def test_skeleton_never_moved(self):   # 写不进的是容器骨架（S2Arm 目录）：不挪，报目录写不进
+        calls, said, err = self.go([(1, "S2A_DIR_UNWRITABLE Library/Application Support/S2Arm")])
+        self.assertIsInstance(err, push.DirUnwritable); self.assertEqual([c[0] for c in calls], ["mkdir"])
+
+    def test_old_tool_or_no_link_skips(self):   # 工具太旧（不认 mkdir、打用法退 2）/ 连不上：不挪不报，照旧推
+        calls, said, err = self.go([(2, "用法：s2a-devpush …")])
+        self.assertIsNone(err); self.assertEqual(len(calls), 1)
+
+    class Box(push.Devpush):
+        """模拟 App 容器的属主语义（期望按 POSIX 规则手写，不跑被测实现推导）：owner[目录] = 'app' / 'root'。
+        AFC 以 App 身份做事：在某目录下建 / 改名要该目录归 App；put 的父目录不在 → 「Object not found」（玩家原文）"""
+        def __init__(self, owner):
+            super().__init__("devpush", "U", "B", tempfile.mkdtemp()); self.owner = dict(owner); self.files = set(); self.calls = []
+        def parent(self, p): return p.rsplit("/", 1)[0] if "/" in p else ""
+        def call(self, *a):
+            self.calls.append(a); op = a[0]
+            if op == "mkdir":
+                cur = ""
+                for part in a[1].split("/"):
+                    nxt = f"{cur}/{part}" if cur else part
+                    if nxt not in self.owner:
+                        if self.owner.get(cur) != "app": return 1, f"S2A_DIR_UNWRITABLE {cur}\n建不了 {nxt}：afc error: Permission denied"
+                        self.owner[nxt] = "app"
+                    cur = nxt
+                return (0, "mkdir") if self.owner[cur] == "app" else (1, f"S2A_DIR_UNWRITABLE {cur}")
+            if op == "mv":
+                src, dst = a[1], a[2]
+                if self.owner.get(self.parent(src)) != "app": return 1, "afc error: Permission denied"
+                for k in [k for k in self.owner if k == src or k.startswith(src + "/")]: self.owner[dst + k[len(src):]] = self.owner.pop(k)
+                return 0, "mv"
+            if op == "put":
+                d = self.parent(a[2])
+                if d not in self.owner: return 1, f"打不开 {a[2]}：afc error: Object not found"
+                if self.owner[d] != "app": return 1, f"打不开 {a[2]}：afc error: Permission denied"
+                self.files.add(a[2]); return 0, "put"
+            return 0, ""
+
+    def test_root_chain_two_levels_rebuilt_and_put_works(self):   # 玩家现场：games/<号> 与 资源包 都归 root（devicectl 代建）
+        S = "Library/Application Support/S2Arm"
+        box = self.Box({"": "app", "Library": "app", "Library/Application Support": "app", S: "app", f"{S}/games": "app",
+                        self.G: "root", f"{self.G}/资源包": "root"})
+        src = Path(tempfile.mkdtemp()) / "f"; src.write_bytes(b"x")
+        with self.assertRaises(push.Fail): box.put(str(src), f"{self.G}/资源包/.incoming/a.zst")   # 修之前：Object not found（资源包下建不出 .incoming）
+        with mock.patch.object(push.time, "time", return_value=1700000000): push.app_dirs(box, f"{self.G}/资源包/.incoming", lambda m: None)
+        self.assertEqual([box.owner.get(d) for d in (self.G, f"{self.G}/资源包", f"{self.G}/资源包/.incoming")], ["app", "app", "app"])
+        self.assertEqual(box.owner.get(f"{S}/games/.s2a-foreign-0100ABCDE0000000-1700000000"), "root")   # 挪开的那份原样在（App 删不掉）
+        box.put(str(src), f"{self.G}/资源包/.incoming/a.zst"); self.assertIn(f"{self.G}/资源包/.incoming/a.zst", box.files)
+
+    def test_games_dir_root_moves_games_not_skeleton(self):   # games 本身归 root：挪 games（父目录 S2Arm 归 App），不碰 S2Arm 骨架
+        S = "Library/Application Support/S2Arm"
+        box = self.Box({"": "app", "Library": "app", "Library/Application Support": "app", S: "app", f"{S}/games": "root"})
+        with mock.patch.object(push.time, "time", return_value=1700000000): push.app_dirs(box, f"{self.G}/资源包/.incoming", lambda m: None)
+        self.assertEqual(box.owner.get(f"{S}/games"), "app"); self.assertEqual(box.owner.get(f"{S}/.s2a-foreign-games-1700000000"), "root")
+        self.assertEqual(box.owner.get(f"{self.G}/资源包/.incoming"), "app")
+
+    def test_devicectl_put_makes_parent_as_app_once(self):   # devicectl 拷文件前先以 App 身份建父目录，同一目录只建一次
+        dev = push.Devicectl("D", "B", tempfile.mkdtemp()); dev.dp = self.Dp([])
+        src = Path(tempfile.mkdtemp()) / "f"; src.write_bytes(b"ok")
+        with mock.patch.object(dev, "dcp", return_value=(0, "")):
+            dev.put(str(src), f"{self.G}/资源包/a"); dev.put(str(src), f"{self.G}/资源包/b")
+        self.assertEqual(dev.dp.calls, [("mkdir", f"{self.G}/资源包")])
 
 
 if __name__ == "__main__":

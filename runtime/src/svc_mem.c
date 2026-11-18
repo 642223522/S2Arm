@@ -6,6 +6,7 @@
 #include "s2a_init_fail.h"
 #include "native.h"
 #include "as_type.h"
+#include "s2a_docs.h"
 #include <errno.h>
 #include <stdatomic.h>
 #include <sys/mman.h>
@@ -382,15 +383,49 @@ static int alias_first_hint(const char *npdm, uint64_t pid) {
 __attribute__((weak)) void s2a_init_failed(int code) { (void)code; }   // 弱定义：宿主里 host_main.c 的强定义顶替（走初启失败出口、不返回）；只链本文件的单测用这份空的，返回后照旧 die
 // 布局只算一次：模块装载（loader.c 要模块段起点）早于 s2a_mem_init，两处都经这里。只看 NPDM 与宿主占到的窗口（layout.c）
 static int g_lay_ok; static uint64_t g_mod_base, g_shadow_base, g_lay_need;
+// 报给游戏的别名区大小（GetInfo AliasSize，#1441）：0 = 照 L.alias_size。内部布局与映射检查仍按 L.alias_size，只有告诉游戏的值可能收小（layout.c s2a_alias_report_size）
+static uint64_t g_alias_report, g_lay_pid;
+static int alias_full_path(char *out, size_t n, uint64_t pid) {
+    const char *ov = getenv("S2A_ALIAS_FULL"); if (ov && *ov) { snprintf(out, n, "%s", ov); return 1; }   // 单测 / 诊断指定
+    return pid ? s2a_docs_path(out, n, "wire/%016llX/alias_full", (unsigned long long)pid) : 0;
+}
+// 这款真要过的普通堆（字节，十进制一行）：SetHeapSize 超出堆区时记（只增不减），起局布局前读回给 layout.c s2a_layout_heap_floor_set（D-NGH9 / #947）
+static int heap_need_path(char *out, size_t n, uint64_t pid) {
+    const char *ov = getenv("S2A_HEAP_NEED"); if (ov && *ov) { snprintf(out, n, "%s", ov); return 1; }   // 单测 / 诊断指定
+    return pid ? s2a_docs_path(out, n, "wire/%016llX/heap_need", (unsigned long long)pid) : 0;
+}
+static uint64_t heap_need_read(uint64_t pid) {
+    char p[1024]; unsigned long long v = 0; FILE *f = heap_need_path(p, sizeof p, pid) ? fopen(p, "r") : NULL;
+    if (f) { if (fscanf(f, "%llu", &v) != 1) v = 0; fclose(f); }
+    return v;
+}
+static int heap_need_note(uint64_t pid, uint64_t size) {   // → 1 = 记下了（比原记录大才写）
+    if (size <= heap_need_read(pid)) return 1;
+    char p[1024]; FILE *f = heap_need_path(p, sizeof p, pid) ? fopen(p, "w") : NULL;
+    return f && fprintf(f, "%llu\n", (unsigned long long)size) > 0 && !fclose(f);
+}
+static _Atomic int g_heap_noted;   // 这一局 SetHeapSize 超出堆区、已记下要的堆
+static int alias_full_seen(uint64_t pid) { char p[1024]; FILE *f = alias_full_path(p, sizeof p, pid) ? fopen(p, "r") : NULL; if (f) fclose(f); return f != NULL; }   // 只用 fopen / fclose：安卓 VM 端点集合（check_endpoints.py）
+// 收小后游戏照旧映射到收掉的那段（它没按报的大小来，比如写死了 64 GiB）：这一局照常服务（那段在 L.alias_size 内，伸出窗口的走远端，同收小前），
+//   报一次红并记下本款，下次起局恢复原值——宁慢不写错
+static void alias_report_overrun(uint64_t a, uint64_t size) {
+    static _Atomic int said; if (atomic_exchange(&said, 1)) return;
+    char p[1024]; int ok = 0;
+    if (alias_full_path(p, sizeof p, g_lay_pid)) { FILE *f = fopen(p, "w"); if (f) ok = !fclose(f); }   // 空文件即标记；越界地址在下面这行红里
+    LOG("【红】别名区收小后游戏仍映射到收掉的那段（%#llx +%#llx，报给游戏的别名区到 %#llx）：这局照常走远端，%s", (unsigned long long)a, (unsigned long long)size,
+        (unsigned long long)(L.alias_base + g_alias_report), ok ? "已记下本款，下次起局别名区恢复原值" : "记录写不进，下次起局仍会收小");
+}
 static void layout_prepare(const char *npdm) {
     if (g_lay_ok) return;
     uint32_t t, ms; uint64_t sr, pid, wb, ws;
     if (npdm_read(npdm, &t, &sr, &ms, &pid, 1)) die("读不到 NPDM：%s", npdm);
     s2a_window_get(&wb, &ws);
+    uint64_t ws_hole = ws;   // 宿主占到的空洞（下面可能按学到的跨度再收）：判「放不下标准布局」用它（#1441）
     char detail[256] = {0};
     int platform_result = plat_layout_override(npdm, t, sr, pid, wb, ws, &L, &g_lay_need, detail, sizeof detail);
     if (!platform_result) {
         if (detail[0]) LOG("地址需求：%s", detail);
+        g_alias_report = L.alias_size;
         s2a_window_trim(L.win_size); g_lay_ok = 1; return;
     }
     if (platform_result != ENOTSUP) die("【红】平台地址布局失败：%s", detail);
@@ -406,6 +441,8 @@ static void layout_prepare(const char *npdm) {
       uint64_t cap = span_seen && for_span ? for_span(span_seen(pid)) : 0;
       if (ws < g_lay_need && cap && cap < ws) { LOG("地址窗口：按本款（%016llx）学到的跨度收到 %llu MB（原 %llu MB），其余还给宿主", (unsigned long long)pid, (unsigned long long)(cap >> 20), (unsigned long long)(ws >> 20)); ws = cap; } }
     int alias_gb = alias_first_hint(npdm, pid);
+    { void s2a_layout_heap_floor_set(uint64_t); uint64_t hn = heap_need_read(pid); s2a_layout_heap_floor_set(hn);   // 上一局真要过的普通堆（见 heap_need_path）
+      if (hn) LOG("地址布局：本款上一局要过 %llu MB 普通堆（wire/%016llX/heap_need），堆区至少给到这么多", (unsigned long long)(hn >> 20), (unsigned long long)pid); }
     int rc = s2a_layout_compute(t, sr, mod, alias_gb, wb, ws, &L, &g_mod_base, &g_shadow_base);
     if (rc == -1) die("【红】NPDM 地址空间类型 %u（%s）暂不支持（布局只支持类型 1 = 36 位、3 = 39 位）", t, s2a_as_type_bits(t));
     if (rc == -2) {   // 窗口按学到的跨度收窄了（#783）：当场放宽回缺省给法、重算一次（vawin.c；安卓 / 单测没有这个就不调）
@@ -424,11 +461,25 @@ static void layout_prepare(const char *npdm) {
     else if (L.win_size < g_lay_need)
         LOG("地址按需：标准布局要 %llu MB，宿主占到 %llu MB——小区在前、别名区伸出窗口 %llu MB（只是承诺）；游戏映射到宿主没占到的地址回内存不足并报红",
             (unsigned long long)(g_lay_need >> 20), (unsigned long long)(L.win_size >> 20), (unsigned long long)((L.alias_base + L.alias_size - L.win_base - L.win_size) >> 20));
+    g_lay_pid = pid;
+    { int full = alias_full_seen(pid);
+      g_alias_report = s2a_alias_report_size(L.alias_base, L.alias_size, L.win_base + L.win_size, ws_hole, g_lay_need, alias_gb, full);
+      if (g_alias_report < L.alias_size)
+          LOG("别名区收小到 %llu GB 报给游戏（原 %llu GB）：空洞 %llu MB 放不下标准布局 %llu MB、别名区伸出窗口，收到窗口末让游戏的内存落在窗口里、不走远端缺页代执行（#1441）",
+              (unsigned long long)(g_alias_report >> 30), (unsigned long long)(L.alias_size >> 30), (unsigned long long)(ws_hole >> 20), (unsigned long long)(g_lay_need >> 20));
+      else if (full && s2a_alias_report_size(L.alias_base, L.alias_size, L.win_base + L.win_size, ws_hole, g_lay_need, alias_gb, 0) < L.alias_size)
+          LOG("【黄】别名区不收小：本款上次收小后仍映射到收掉的那段（wire/%016llX/alias_full），这局照旧报 %llu GB、伸出段走远端", (unsigned long long)pid, (unsigned long long)(L.alias_size >> 30)); }
     s2a_window_trim(L.win_size);   // 布局之外的窗口尾部交给宿主（vawin.c）
     if (g_shadow_base) s2a_far_set(L.win_base + L.win_size, L.alias_base + L.alias_size, L.heap_base, L.heap_base + L.heap_size);   // 乙：别名区伸出窗口，伸出段走远端影子（far.c）
     g_lay_ok = 1;
 }
 uint64_t s2a_mem_mod_base(const char *npdm) { layout_prepare(npdm); return g_mod_base; }
+// 36 位老 SDK 兜底点（traps.c，#1503）：老 SDK 写死的两段 = 新 SDK 问 GetInfo 拿到的可随机区 / 栈区，这里给同一组值（同下面 GetInfo 0x0C–0x0F）
+int s2a_mem_as_region(int stack, uint64_t *lo, uint64_t *hi) {
+    if (!g_lay_ok) return -1;
+    *lo = stack ? L.stack_base : L.aslr_base; *hi = *lo + (stack ? L.stack_size : L.aslr_size);
+    return 0;
+}
 // 本局已碰到的地址跨度（#783）：同「地址按需」行的「本局所需跨度」口径（碰到的最高地址 − 窗口基址），但只读局内峰值、不扫别名区位图，心跳每 10 秒调也便宜：
 //   别名区高水位、堆峰值、栈区 / 可随机区用到的最高偏移、模块末（在窗口内的）。vawin.c 记进 wire/<程序号>/span_peak，下一局窗口放不下标准布局时按它给窗口。布局没定 = 0
 uint64_t s2a_mem_span_now(void) {
@@ -629,7 +680,9 @@ static void vma_report_start(void) {
 #endif
 static void free_span(uint64_t addr, uint64_t *base, uint64_t *size, uint32_t *state) {
     // 地址空间上界：本款类型的位宽（36 位款 2^36，39 位款 2^39，as_type.h）；别名区承诺末端越过它时（只在 Mac 上 macOS 27 模拟 iOS 26 时出现，真机别名区末远低于它）按别名区末
-    const uint64_t AS_TOP = s2a_as_type_top(L.as_type) ? s2a_as_type_top(L.as_type) : 1ull << 39;
+    //   36 位款窗口放在 2^36 以上那一块时（#1419，as_type.h s2a_as_type_end）按那一块的末端
+    const uint64_t AS_TOP = L.as_type == 1 && L.win_base >= 1ull << 36 && s2a_as_type_end(1, L.win_base, L.win_size) ? s2a_as_type_end(1, L.win_base, L.win_size)
+                          : s2a_as_type_top(L.as_type) ? s2a_as_type_top(L.as_type) : 1ull << 39;
     const uint64_t AS_END = L.alias_base + L.alias_size > AS_TOP ? L.alias_base + L.alias_size : AS_TOP;
     if (addr >= AS_END) { *base = AS_END; *size = 0 - AS_END; *state = ST_INACCESSIBLE; return; }
     uint64_t lo = 0, hi = AS_END;
@@ -769,9 +822,13 @@ int s2a_mem_mapped(uint64_t addr, uint64_t size) {
 //   只在「不是 0、本身不是游戏地址、补上第 39 位正好是游戏已映射的地址」时补——macOS 上窗口以下是宿主自己的内存，不会是游戏地址，没有歧义；
 //   iOS 的窗口在低位、2^39 之上没有游戏地址，原样返回
 static int in_as(uint64_t a, uint64_t n);
+//   36 位款窗口放在 2^36 以上那一块时（#1419，as_type.h s2a_as_type_end）：老 SDK 打包描述符只写地址 32–35 位（sdk HipcMessageBufferAccessor::SetSend），
+//   游戏地址的 36 位以上全丢。同一判据按窗口所在块补回：不是 0、本身不是游戏地址、补上块基址正好是游戏已映射的地址才补（块以下是宿主自己的内存，没有歧义）
 __attribute__((visibility("default"), used)) uint64_t s2a_ipc_addr39(uint64_t a) {
-    const uint64_t B39 = 1ull << 39;
-    if (!a || a >= B39 || in_as(a, 1)) return a;
+    const uint64_t B36 = 1ull << 36, B39 = 1ull << 39;
+    if (!a || in_as(a, 1)) return a;
+    if (L.as_type == 1 && L.win_base >= B36 && a < B36) { uint64_t hi = L.win_base & ~(B36 - 1); return s2a_mem_mapped(a | hi, 1) ? a | hi : a; }
+    if (a >= B39) return a;
     return s2a_mem_mapped(a | B39, 1) ? a | B39 : a;
 }
 // The copy provider needs a permission predicate, not QueryMemory's complete
@@ -850,8 +907,9 @@ void s2a_mem_test_lockorder_abort(void) { GMU_LOCK(); s2a_mem_lockorder_vp_enter
 static void punch_reset_locked(void);   // #258 懒清零状态复位（定义在 pages_release 前）
 #endif
 // 单测：不经 NPDM / 窗口，直接摆出别名区、堆、映射表与子页位
+void s2a_mem_test_alias_report(uint64_t v) { g_alias_report = v; }   // 单测：设报给游戏的别名区大小（#1441）
 void s2a_mem_test_setup(uint64_t alias_base, uint64_t alias_size, uint64_t win_base, uint64_t win_size, void *heap, uint64_t heap_cur) {
-    memset(&L, 0, sizeof L); L.alias_base = alias_base; L.alias_size = alias_size; L.win_base = win_base; L.win_size = win_size;
+    memset(&L, 0, sizeof L); L.alias_base = alias_base; L.alias_size = alias_size; L.win_base = win_base; L.win_size = win_size; g_alias_report = 0;
 #ifdef __ANDROID__
     s2a_android_mirror_init((uintptr_t)win_base, (size_t)win_size);
 #endif
@@ -1427,6 +1485,9 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
     switch (num) {
     case 0x01: {  // SetHeapSize(→x1 堆基址; x1 大小)
         uint64_t size = regs[1];
+        // 出参先置 0，失败的每条路都带着它返回（同 Ryujinx Syscall.SetHeapSize / KPageTableBase.SetHeapSize 开头 address = 0）：原先失败时 x1 原样留着请求的大小，
+        //   不看结果码的游戏拿它当堆基址往下写（D-ASK2 iPad mini 6：设堆 0xD001 后照样初始化堆，写进宿主只读代码段 SIGBUS）
+        regs[1] = 0;
         if (size & 0x1fffff) { regs[0] = 0xCA01; return 1; }   // InvalidSize：Horizon 要 2 MB 对齐
         GMU_LOCK();
         uint64_t fixed = pool_fixed();
@@ -1434,9 +1495,11 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
         if (size > g_pk_heap_request) { g_pk_heap_request = size; addr_need_report(); }
         if (size > heap_region()) {
             GMU_UNLOCK();
-            // 诊断兜底，不是玩家路径：出包时堆按应用池上限给、别名优先的款按静态识别让堆——到这里说明那两条都没覆盖到（本局需求已记进日志）
-            char b[256]; snprintf(b, sizeof b, "普通堆需要 %llu 字节，堆区只有 %llu 字节（诊断：出包缺省 / 静态识别没覆盖到这款，本局需求已记；请报给维护方）",
-                (unsigned long long)size, (unsigned long long)heap_region());
+            // 出包时堆按应用池上限给、别名优先的款按静态识别让堆——到这里说明那两条都没覆盖到（堆大小是运行时算的，D-NGH9）：记下本款要的堆，下一局布局至少给到这么多
+            int noted = heap_need_note(g_lay_pid, size);
+            if (noted) atomic_store(&g_heap_noted, 1);   // 游戏随后 Break（拿到 0xD001 中止）时按「需要更多内存、已记下」收（见 Break）
+            char b[320]; snprintf(b, sizeof b, "普通堆需要 %llu 字节，堆区只有 %llu 字节（出包缺省 / 静态识别没覆盖到这款）：%s",
+                (unsigned long long)size, (unsigned long long)heap_region(), noted ? "已记下本款要的堆，下次起局堆区按它给" : "记录写不进，下次起局仍按缺省");
             svc_fail_log(num, 0xD001, b); regs[0] = 0xD001; return 1;
         }
         if (size > g_heap_cur && map_find((uint64_t)g_heap + g_heap_cur, size - g_heap_cur)) { GMU_UNLOCK(); regs[0] = 0xD401; return 1; }
@@ -1730,7 +1793,7 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
         if (L.as_type == 1 && regs[2] >= 0x8000000ull && regs[2] < 0x100000000ull && regs[2] < L.win_base) {
             static _Atomic int said; if (!atomic_exchange(&said, 1))
                 LOG("【红】36 位款查询 Horizon 固定代码 / 栈区地址 %#llx（[0x8000000, 0x80000000)，老 SDK 写死不问 GetInfo）：宿主 4 GB 以下是 __PAGEZERO，游戏地址 = 宿主地址给不出，报不可访问；"
-                    "这款要地址转换才能跑，36 位布局本身管不了", (unsigned long long)regs[2]); }
+                    "出包改写器没认出写死这段的代码形状（runtime/rewriter sdk_as36_ranges：认出时换成本局可随机区 / 栈区，#1503）", (unsigned long long)regs[2]); }
         if (regs[0]) { host_write(regs[0], 0x28); uint8_t *o = (uint8_t *)regs[0]; memset(o, 0, 0x28); memcpy(o, &mi.base, 8); memcpy(o + 8, &mi.size, 8); memcpy(o + 0x10, &mi.state, 4); memcpy(o + 0x14, &mi.attr, 4); memcpy(o + 0x18, &mi.perm, 4); }
         regs[0] = 0; regs[1] = 0; return 1;
     }
@@ -1811,6 +1874,7 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
         if (!L.sys_resource_size) { regs[0] = 0xD401; return 1; }   // 没有 SystemResourceSize 不能用（Ryujinx：PersonalMmHeap 为 0 即拒）
         if ((a | size) & 0xfff || !size) { regs[0] = 0xCC01; return 1; }   // InvalidAddress
         if (a + size < a || a < L.alias_base || a + size > L.alias_base + L.alias_size) { regs[0] = 0xDC01; return 1; }   // InvalidMemoryRegion
+        if (num == 0x2C && g_alias_report && g_alias_report < L.alias_size && a + size > L.alias_base + g_alias_report) alias_report_overrun(a, size);   // #1441
         uint64_t lo = a & ~(HPG - 1), hi = (a + size + HPG - 1) & ~(HPG - 1);
 #ifdef __ANDROID__
         int mapping = num == 0x2C;
@@ -1989,6 +2053,9 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
             LOG("【红】Break 载荷结果码 %#x（%04u-%04u：模块 %u、描述 %u）", r, 2000 + (r & 0x1FF), (r >> 9) & 0x1FFF, r & 0x1FF, (r >> 9) & 0x1FFF);
         }
         s2a_backtrace(regs[29]);
+        // 这一局普通堆超出堆区、已记下要的堆（D-NGH9）：游戏拿到 0xD001 自己中止。告诉玩家「需要更多内存、已记下、再点一次开始」，不按崩溃说
+        //   （iOS 人手局停提示页，Mac / 自动化局失败退出，Mac 启动器按同一句话报，pack/jobs/build.py）。没记下（写不进）照旧走下面
+        if (atomic_load(&g_heap_noted)) { LOG("游戏在堆不够后中止：本款要的堆已记下，下一局按它给"); s2a_init_failed(S2A_INIT_FAIL_E_HEAP_LEARNED); }
         session_guest_end("游戏 Break");
 #if TARGET_OS_IPHONE
         // 资源包缺 / 不全导致的 Break（10-26 测试设备2：缺 ctl/control.nacp，App 退出像闪退）：不退出，停住游戏、弹缺资源包说明页（pack_apply.c）
@@ -2197,7 +2264,7 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
         switch (id) {
         case I_CoreMask: v = g_core_mask; break;
         case I_PriorityMask: v = g_prio_mask; break;
-        case I_AliasAddr: v = L.alias_base; break;  case I_AliasSize: v = L.alias_size; break;
+        case I_AliasAddr: v = L.alias_base; break;  case I_AliasSize: v = g_alias_report ? g_alias_report : L.alias_size; break;
         case I_HeapAddr: v = L.heap_base; break;    case I_HeapSize: v = L.heap_size; break;
         case I_AslrAddr: v = L.aslr_base; break;    case I_AslrSize: v = L.aslr_size; break;
         case I_StackAddr: v = L.stack_base; break;  case I_StackSize: v = L.stack_size; break;

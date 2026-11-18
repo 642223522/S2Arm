@@ -3,6 +3,7 @@ using LibHac.Common;
 using LibHac.Fs;
 using LibHac.Sf;
 using Ryujinx.Common;
+using Ryujinx.Common.Logging;
 using Ryujinx.Memory;
 using System;
 
@@ -12,9 +13,15 @@ namespace Ryujinx.HLE.HOS.Services.Fs.FileSystemProxy
     {
         private SharedRef<LibHac.FsSrv.Sf.IFile> _baseFile;
 
-        public IFile(ref SharedRef<LibHac.FsSrv.Sf.IFile> baseFile)
+        // S2Arm（11-17）：读失败、以及返回成功却少于请求又没到文件末尾（静默短读）原先都不记日志，游戏拿到残缺数据后的崩溃查不出是不是读盘
+        //   出的问题。各记一行黄字（文件名、偏移、请求量、实得量 / 结果码），每类只记前 32 次
+        private readonly string _name;
+        private static int s_failLogged, s_shortLogged;
+
+        public IFile(ref SharedRef<LibHac.FsSrv.Sf.IFile> baseFile, string name = null)
         {
             _baseFile = SharedRef<LibHac.FsSrv.Sf.IFile>.CreateMove(ref baseFile);
+            _name = name;
         }
 
         [CommandCmif(0)]
@@ -32,6 +39,17 @@ namespace Ryujinx.HLE.HOS.Services.Fs.FileSystemProxy
 
             using WritableRegion region = context.Memory.GetWritableRegion(bufferAddress, (int)bufferLen, true);
             Result result = _baseFile.Get.Read(out long bytesRead, offset, new OutBuffer(region.Memory.Span), size, readOption);
+
+            if (result.IsFailure())
+            {
+                if (System.Threading.Interlocked.Increment(ref s_failLogged) <= 32)
+                    Logger.Warning?.Print(LogClass.ServiceFs, $"读文件失败：{_name ?? "?"} 偏移 0x{offset:X} 请求 0x{size:X}，结果 {result.ToStringWithName()}");
+            }
+            else if (bytesRead < size && _baseFile.Get.GetSize(out long fileSize).IsSuccess() && offset + bytesRead < fileSize
+                     && System.Threading.Interlocked.Increment(ref s_shortLogged) <= 32)
+            {
+                Logger.Warning?.Print(LogClass.ServiceFs, $"读文件静默短读：{_name ?? "?"} 偏移 0x{offset:X} 请求 0x{size:X} 实得 0x{bytesRead:X}（文件长 0x{fileSize:X}，没到末尾）");
+            }
 
             context.ResponseData.Write(bytesRead);
 

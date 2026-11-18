@@ -213,36 +213,48 @@ def fetch_bundle(c, scheme, progress=None):
         return root
     root.mkdir(parents=True, exist_ok=True)
     z = root.parent / (b["sha256"][:16] + ".zip")
-    last = ""
-    if not (z.is_file() and file_sha256(z) == b["sha256"]):
-        for url in b["urls"]:
-            part = z.with_suffix(".part")
-            try:
-                with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "S2Arm"}), timeout=60) as r, open(part, "wb") as f:
-                    total, done = int(r.headers.get("Content-Length") or 0), 0
-                    for chunk in iter(lambda: r.read(1 << 20), b""):
-                        f.write(chunk); done += len(chunk)
-                        if progress and total:
-                            progress(done, total)
-                if file_sha256(part) != b["sha256"]:
-                    last = "校验不对"; part.unlink(missing_ok=True); continue  # 非玩家句
-                os.replace(part, z); break
-            except OSError as e:   # urllib 的网络错误都是 OSError 子类
-                last = str(e); part.unlink(missing_ok=True)
-        else:
-            raise Failure(f"{scheme['name']} 的包件下载不下来：{last}。检查网络后再点一次。", code="download_failed")
-    tmp = Path(tempfile.mkdtemp(prefix="x-", dir=root.parent))
-    try:
-        with zipfile.ZipFile(z) as zf:
-            zf.extractall(tmp)
-        info = read(tmp / "bundle.json", {})
-        if info.get("commit") != b["commit"] or not (tmp / "shell.zip").is_file() or not (tmp / "src").is_dir():
-            raise Failure(f"{scheme['name']} 的包件内容和登记的不一致（提交 {str(info.get('commit'))[:12]}）：没有用它。", code="download_failed")
-        shutil.rmtree(root, ignore_errors=True)
-        os.replace(tmp, root)
-        ok.write_text(b["sha256"])
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+    # 维护者 11-17（玩家判断不了的我们替他判）：核不上不装坏的那份，自动重下一遍；重下还不对才报。
+    #   SHA 不对：每个地址最多下两遍；内容（提交号 / shell.zip / src/）和登记的不一致：删掉这份、整件再下一遍
+    for attempt in (1, 2):
+        last = ""
+        if not (z.is_file() and file_sha256(z) == b["sha256"]):
+            z.unlink(missing_ok=True)
+            for url in [u for u in b["urls"] for _ in (1, 2)]:
+                part = z.with_suffix(".part")
+                try:
+                    with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "S2Arm"}), timeout=60) as r, open(part, "wb") as f:
+                        total, done = int(r.headers.get("Content-Length") or 0), 0
+                        for chunk in iter(lambda: r.read(1 << 20), b""):
+                            f.write(chunk); done += len(chunk)
+                            if progress and total:
+                                progress(done, total)
+                    if file_sha256(part) != b["sha256"]:
+                        last = "校验不对"; part.unlink(missing_ok=True); continue  # 非玩家句
+                    os.replace(part, z); break
+                except OSError as e:   # urllib 的网络错误都是 OSError 子类
+                    last = str(e); part.unlink(missing_ok=True)
+            else:
+                raise Failure(f"{scheme['name']} 的包件下载不下来：{last}。检查网络后再点一次。", code="download_failed")
+        tmp = Path(tempfile.mkdtemp(prefix="x-", dir=root.parent))
+        try:
+            with zipfile.ZipFile(z) as zf:
+                zf.extractall(tmp)
+            info = read(tmp / "bundle.json", {})
+            if info.get("commit") != b["commit"] or not (tmp / "shell.zip").is_file() or not (tmp / "src").is_dir():
+                z.unlink(missing_ok=True)   # 不留这份：下次也不会再用它
+                if attempt == 1:
+                    continue
+                raise Failure(f"{scheme['name']} 的包件内容和登记的不一致（提交 {str(info.get('commit'))[:12]}），重新下载后还是不对：没有用它。", code="download_failed")
+            shutil.rmtree(root, ignore_errors=True)
+            os.replace(tmp, root)
+            ok.write_text(b["sha256"])
+            return root
+        except zipfile.BadZipFile:
+            z.unlink(missing_ok=True)
+            if attempt == 2:
+                raise Failure(f"{scheme['name']} 的包件解不开，重新下载后还是不对：没有用它。", code="download_failed")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
     return root
 
 

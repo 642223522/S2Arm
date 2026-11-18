@@ -106,15 +106,38 @@ public sealed partial class EnvironmentWindow
     }
 
     /// <summary>封面 + 已打上 S 级优化的左上角金色 S（同 Mac LauncherView+Library SGradeBadge：只有 S、没有框和底色，叠三层更实、加投影）</summary>
+    /// <summary>数据校验不过的说明（作业层原句，六种语言在对照表；同 Mac LauncherView+Home integritySkippedNote）</summary>
+    private const string IntegritySkippedNote = "这份游戏文件里有数据和原版对不上（多半是改版 / 整合版，或个别块损坏），已跳过完整性校验照常导入。";
+
     private Control GameCover(LibraryGame game, int size)
     {
-        var cover = GameCoverImage(game, size);
+        var cover = WithUpdateHintBadge(game, WithIntegrityBadge(game, GameCoverImage(game, size), size), size);
         if (!game.SGrade) return cover;
         var s = Math.Max(20, size / 3.2);
         var badge = new Panel { Width = s, Height = s, Margin = new Thickness(3), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top,
             Effect = new DropShadowEffect { Color = Color.FromArgb(115, 0, 0, 0), BlurRadius = s * 0.24, OffsetX = 0, OffsetY = s * 0.04 } };
         for (var k = 0; k < 3; k++) badge.Children.Add(new Image { Source = SGoldImage(), Stretch = Stretch.Uniform });
         Avalonia.Automation.AutomationProperties.SetAutomationId(badge, "card.sgrade");
+        return new Panel { Width = size, Height = size, Children = { cover, badge } };
+    }
+
+    /// <summary>选中区的黄字说明（同 Mac 状态行下那句）：卡片角标只有「!」，手柄玩家看不到悬停说明</summary>
+    private Control? IntegrityLine(LibraryGame game) => game.IntegritySkipped
+        ? new TextBlock { Text = "⚠ " + B(IntegritySkippedNote), Foreground = Brush.Parse("#FFD60A"), FontSize = 13, TextWrapping = TextWrapping.Wrap, MaxWidth = 720, HorizontalAlignment = HorizontalAlignment.Left }
+        : null;
+
+    /// <summary>导入时数据校验不过、照常导入的款（11-17）：封面右下角黄色「!」，悬停说明</summary>
+    private Control WithIntegrityBadge(LibraryGame game, Control cover, int size)
+    {
+        if (!game.IntegritySkipped) return cover;
+        var d = Math.Max(16, size / 5.0);
+        var badge = new Border { Width = d, Height = d, CornerRadius = new CornerRadius(d / 2), Margin = new Thickness(4),
+            Background = Brush.Parse("#99000000"), HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom,
+            Child = new TextBlock { Text = "!", FontWeight = FontWeight.Bold, FontSize = d * 0.62, Foreground = Brush.Parse("#FFD60A"),
+                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center } };
+        ToolTip.SetTip(badge, B(IntegritySkippedNote));
+        Avalonia.Automation.AutomationProperties.SetName(badge, B(IntegritySkippedNote));
+        Avalonia.Automation.AutomationProperties.SetAutomationId(badge, "card.integritySkipped");
         return new Panel { Width = size, Height = size, Children = { cover, badge } };
     }
 
@@ -210,8 +233,10 @@ public sealed partial class EnvironmentWindow
                 Padding = new Thickness(16, 12), Child = capsuleBar });
         }
 
+        EnsureUpdateHints();
         var games = catalog?.Games.Where(g => !g.Hidden).ToArray() ?? [];
-        var hero = games.FirstOrDefault(g => g.Id == selectedGame) ?? games.FirstOrDefault();
+        var hero = ConsoleSelected ? null : games.FirstOrDefault(g => g.Id == selectedGame) ?? games.FirstOrDefault();
+        if (ConsoleSelected) body.Children.Add(ConsolePanel());   // 选中首位「S2Arm」：大图区换成 iPhone 总控台
         if (hero is not null && HeroBanner(hero) is { } heroBanner)
         {
             // 顶部大图（11-14 维护者：「换成用 banner」）：商店横图 1920×1080 铺满整条，标题压在底部渐变上；没有横图的款退回下面的封面卡片
@@ -223,6 +248,8 @@ public sealed partial class EnvironmentWindow
             overlay.Children.Add(Muted(T(selectedGame is null ? "library.title" : "library.selected"), 14));
             overlay.Children.Add(Label(hero.Name, 32));
             overlay.Children.Add(Muted(T("library.version") + " · " + hero.Version, 14));
+            if (IntegrityLine(hero) is { } heroNote) overlay.Children.Add(heroNote);
+            if (UpdateHintLines(hero) is { } heroHint) overlay.Children.Add(heroHint);
             overlay.Children.Add(HeroActions(hero));   // 有横图时按钮也叠在底部渐变上（v0.4.5 修：说明写着「常驻」，之前只画了大图）
             art.Children.Add(overlay);
             body.Children.Add(new Border { CornerRadius = new CornerRadius(16), ClipToBounds = true, Child = art });
@@ -235,6 +262,8 @@ public sealed partial class EnvironmentWindow
             title.Children.Add(Label(T(selectedGame is null ? "library.title" : "library.selected")));
             title.Children.Add(Label(hero.Name, 28));
             title.Children.Add(Label(T("library.version") + " · " + hero.Version));
+            if (IntegrityLine(hero) is { } heroNote) title.Children.Add(heroNote);
+            if (UpdateHintLines(hero) is { } heroHint) title.Children.Add(heroHint);
             title.Children.Add(HeroActions(hero));
             Grid.SetColumn(title, 1); banner.Children.Add(title); body.Children.Add(Card(banner, 20));
         }
@@ -271,6 +300,7 @@ public sealed partial class EnvironmentWindow
 
         if (catalog is not null && games.Length > 0)   // 「S 级优化升级」入口（同 Mac 游戏库标题行，v0.4.0）
             body.Children.Add(new StackPanel { HorizontalAlignment = HorizontalAlignment.Right, Children = { SGradeUpgradeEntry() } });
+        if (catalog is not null && phoneOverview is not null) body.Children.Add(ConsoleRow());   // 首位固定「S2Arm」（0.6.0 开关后面），不算进游戏数
         foreach (var game in games)
         {
             var line = new Grid { ColumnDefinitions = new ColumnDefinitions("72,*,Auto"), ColumnSpacing = 18 };
@@ -795,6 +825,7 @@ public sealed partial class EnvironmentWindow
         if (operation != "setup" && (connectedFolder is null || libraryId is null)) return;
         var front = BeginJob(JobKind.Library); librarySummary = operation == "catalog" ? "library.loading" : "library.working";
         libraryDiagnostics = ""; Render();
+        string? otherLibrary = null;   // 这个位置是另一个游戏库（library_id_mismatch）时的说明：作业收尾后问玩家要不要改用它
         try
         {
             if (operation == "setup")
@@ -814,11 +845,11 @@ public sealed partial class EnvironmentWindow
             {
                 var output = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder!, libraryId, operation, selectedPaths, front.Token, jobId: front.Next());
                 DisplayJob(output);
-                if (!output.Report.Succeeded) { librarySummary = "library.failed"; return; }
+                if (!output.Report.Succeeded) { librarySummary = "library.failed"; if (JobCode(output) == "library_id_mismatch") otherLibrary = output.Report.Message; return; }
             }
             var listing = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder!, libraryId, "catalog", null, front.Token, jobId: front.Next(), startup: TakeStartupCatalog());
             DisplayJob(listing);
-            if (!listing.Report.Succeeded) { librarySummary = "library.failed"; return; }
+            if (!listing.Report.Succeeded) { librarySummary = "library.failed"; if (JobCode(listing) == "library_id_mismatch") otherLibrary = listing.Report.Message; return; }
             catalog = LibraryCatalog.Parse(listing.Report.Result); ClearCovers();
             if (!catalog.Games.Any(g => g.Id == selectedGame && !g.Hidden)) selectedGame = null;
             librarySummary = "library.completed";
@@ -837,6 +868,14 @@ public sealed partial class EnvironmentWindow
         }
         finally
         { EndJob(front); Render(); }
+        // 另一个游戏库（11-17 维护者：说清是哪个、让玩家点一下确认，不直接拒、不悄悄改用）：「仍然继续」= 对这个文件夹重走选库（已有库直接打开、记下它的库号）
+        if (otherLibrary is not null && connectedFolder is not null && !closingLibrary
+            && await ConfirmInstallActionAsync("install.drop", otherLibrary, ConfirmTitle("library_id_mismatch")))
+        {
+            libraryFolder = connectedFolder;
+            await RunLibraryAsync("setup", null);
+            return;
+        }
         if (catalogAgain && !closingLibrary) { catalogAgain = false; await RunLibraryAsync("catalog", null); }
     }
 

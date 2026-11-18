@@ -228,7 +228,7 @@ static const int g_devinfo[] = {
     [0x45] = 1, [0x46] = 5, [0x47] = 1, [0x48] = 1, [0x49] = 1, [0x4A] = 1, [0x4B] = 1, [0x4C] = 1, [0x4D] = 16,
     [0x4E] = 1024, [0x4F] = 32, [0x50] = 4096, [0x51] = 65536, [0x52] = 65536, [0x53] = 256, [0x54] = 16384,
     [0x55] = 262144, [0x56] = 4096, [0x57] = 1, [0x58] = 4, [0x59] = 2, [0x5A] = 0, [0x5B] = 4096, [0x5C] = 16384,
-    [0x5D] = 4096, [0x5E] = 128, [0x5F] = 4096,
+    [0x5D] = 4096, [0x5E] = 128, [0x5F] = 32,
 };
 // The NVN API version the game's own driver would report follows its SDK: games check it and create no device on a mismatch. SDK 10 and older are API 53 (Super Mario 3D World 10.4,
 // Age of Calamity 9.6, Link's Awakening 8, Odyssey 7.3, Three Houses 6.5); SDK 11 and later take 55.15
@@ -253,12 +253,13 @@ NVN(nvnDeviceGetInteger, void, const NVNdevice *d, NVNdeviceInfo what, int *out)
     (void)d;
     unsigned w = (unsigned)what;
     if (nvn2_on() && nvn2_device_integer(w, out)) { OLOG("DeviceGetInteger %#x -> %d (NVN2)", w, *out); return; }   // Switch 2: NVN2's own values (nvn2.c); unhandled items fall to the X1 table
-    // 0x5F separate sampler binding count and 0x60/0x61 are not in the table measured on SMO: 0x5F is given 4096 per the sampler pool limit, unverified; 0x60/0x61 report a failure and return 0
+    // 0x5F separate sampler bindings were not measured on SMO: use 32 as a fallback, and prefer the game's driver when recognized; 0x60/0x61 report a failure and return 0
     // 0x67 (SDK 19): FINAL FANTASY TACTICS - The Ivalice Chronicles reads it before every program it loads and passes it as the alignment of its copies of the shader's control section and code
     // (main+0x49800; its allocator raises anything below 8 to 8). Not measured on hardware: 256, the alignment of shader code in a memory pool; the host reads shaders by key, so any value works
     if (w == 0x67) { *out = 256; return; }
     if (w >= sizeof g_devinfo / sizeof *g_devinfo) { LOG("【红】 nvnDeviceGetInteger unknown item %#x, returning 0", w); *out = 0; return; }
     *out = g_devinfo[w];
+    if (w == NVN_DEVICE_INFO_SEPARATE_SAMPLER_BINDINGS_PER_STAGE) { int dv; if (dm_nvn_driver_item((int)w, &dv)) *out = dv; }
     // 0x2E / 0x30, the newest GPU code version the driver runs: the table's 1.14 is SMO's SDK 7 driver, while each SDK's driver runs the code of the GLSLC in the same SDK. A game that compiles
     // at run time checks its GLSLC's version against this range first (Catherine: Full Body, SDK 8.2.1: its GLSLC writes 1.15, main+0x330dcc refused it, no built-in program was compiled
     // and the first uniform lookup read a null program, main+0x3316dc), so the host reports at least the version of the GLSLC the game carries
@@ -725,9 +726,13 @@ void nvn_ft_poll(void) {
     pthread_mutex_unlock(&g_ft_mu);
     static uint64_t nup, nkept;   // under g_sub_mu (the submit path); first lines, then at powers of two
     for (size_t i = 0; i < nhit; i++) {   // outside g_ft_mu: the ownership check takes the ledger's lock
-        const tex_t *t = &hit[i]; int kept = nvn_be_tex_gpu_owned_since(t->serial, hst[i]); uint64_t k = kept ? ++nkept : ++nup;
+        // 多重采样贴图（2D_MULTISAMPLE / _ARRAY）的采样只在宿主 GPU 上，客体内存里排不出（nvn_deswizzle 不支持，GPU 解交错也不支持）：按客体内存重传会换上一张
+        //   内容未定义的新贴图（#1499 被囚禁的掌心 iPhone：警告页之后整屏黑，日志「deswizzle failed format 0x29 target 5」）。它只能是 GPU 画出来的，一律留着
+        const tex_t *t = &hit[i];
+        const int msaa = t->d.target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE || t->d.target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY;
+        int kept = msaa || nvn_be_tex_gpu_owned_since(t->serial, hst[i]); uint64_t k = kept ? ++nkept : ++nup;
         if (k <= 8 || !(k & (k - 1))) LOG("[nvn] texture ser=%llu %ux%ux%u format %#x flags %#x: pages written after its first use, %s (%llu so far)", (unsigned long long)t->serial,
-                                          t->d.width, t->d.height, t->d.depth, t->d.format, t->d.flags, kept ? "kept as the GPU wrote it (its GPU-written bytes are unchanged in guest memory)" : "uploaded from guest memory", (unsigned long long)k);
+                                          t->d.width, t->d.height, t->d.depth, t->d.format, t->d.flags, msaa ? "kept as the GPU wrote it (multisample: its samples are not in guest memory)" : kept ? "kept as the GPU wrote it (its GPU-written bytes are unchanged in guest memory)" : "uploaded from guest memory", (unsigned long long)k);
         if (!kept) nvn_be_tex_cpu_written(t);
     }
 }
@@ -1287,7 +1292,32 @@ static int prog_stage_index_parts(const void *control, uint32_t nctl, const void
 // 着色器控制段 / 代码区地址可用：不在最低 64 KB 里（任何布局下那里都没有游戏内存；空地址加小偏移都落在这里，11-16 D-XDQS 代码区 = 0x100），且虚拟池里已映射（nvn_host_readable）。
 //   不按游戏地址空间核权限：单测 / 回放工具的着色器在宿主自己的内存里，按地址空间核会误判、整批丢键
 int nvn_host_readable(uint64_t a, uint64_t n);   // 本文件后面定义
-static int shader_bytes_readable(uint64_t a, uint64_t n) { return a >= 0x10000 && nvn_host_readable(a, n); }
+// 弱链接[nvntest]：s2a_mem_mapped（游戏映射表，runtime/src/svc_mem.c；NVN 单测不链原生层，链接行按这行放行未定义，runtime/build.mk 自动收）
+int s2a_mem_mapped(uint64_t addr, uint64_t size) __attribute__((weak));
+// [a, a + n) 逐页真读得到（vm_read_overwrite 读不到只回错、不让进程崩；同 graphics/nvn/host/dsh_miss.inc dsh_bytes_ok）
+static int pages_readable(uint64_t a, uint64_t n) {
+#if defined(__APPLE__)
+    uint64_t e = a + n, pg = (uint64_t)vm_page_size;
+    if (e < a) return 0;
+    for (uint64_t q = a & ~(pg - 1); q < e; q += pg) {
+        uint8_t b; vm_size_t got = 0; uint64_t at = q < a ? a : q;
+        if (vm_read_overwrite(mach_task_self(), (vm_address_t)at, 1, (vm_address_t)&b, &got) != KERN_SUCCESS || got != 1) return 0;
+    }
+#else
+    (void)a; (void)n;
+#endif
+    return 1;
+}
+// 不在虚拟池里的地址原先一律当可读（#713 D-ZBQS 0.5.1：Switch 2 款着色器代码区落在游戏窗口里游戏没映射的一页，prog_key → CC_SHA256 SIGBUS）：
+//   游戏映射表里有就照常读（常态，零额外开销）；映射表里没有再逐页真读一次，读不到才不算键（本阶段按「不在着色器表」报，不崩）。
+//   映射表没有、但宿主自己的内存（单测 / 回放工具）逐页读得到，照常读，不误丢键
+static int shader_bytes_readable(uint64_t a, uint64_t n) {
+    if (a < 0x10000 || !nvn_host_readable(a, n)) return 0;
+    if (s2a_mem_mapped && !s2a_mem_mapped(a, n) && !pages_readable(a, n)) {
+        static _Atomic int said; if (atomic_fetch_add(&said, 1) < 8) LOG("【红】 shader bytes %#llx +%#llx are not mapped by the game and not readable: no key, the stage is reported missing", (unsigned long long)a, (unsigned long long)n);
+        return 0; }
+    return 1;
+}
 // mapped = 1: computed only when the code area is in a registered memory pool (at SetShaders: Mario sets some programs with an unmapped address first and fills it in before the first draw)
 static int keys_hash(const NVNshaderData *sd, int mapped, uint8_t out[8]) {
     uint32_t ncode = 0; void *mb; uint64_t mo;
@@ -1347,6 +1377,29 @@ int prog_key(const prog_t *p, unsigned st, uint8_t key[8]) {
 }
 // S2Arm: a stage's key from the bytes there now (prog_key returns the one computed at SetShaders): equal to it only while the game still holds the same control section and code (nvn_mtl.m pso_fout_variant)
 int prog_key_live(const prog_t *p, unsigned st, uint8_t key[8]) { return st < p->nstage && keys_hash(&p->sd[st], 0, key); }
+// 首遇等待诊断（#1001，DM_NVN_FU_SETAT=1，缺省关）：按序号记 SetShaders 的时刻，nvn_mtl.m 的首遇等待行报「登记到这次绘制隔了多久」，
+//   看两级建管线（SetShaders 时先建基础管线）有没有提前量。直接映射表 64K 项（1 MB，开了才分配）：同槽后来的序号顶掉先前的，查到序号对不上算没记到
+enum { FU_SETAT_N = 1 << 16 };
+static _Atomic uint64_t (*g_fu_setat)[2];
+static int fu_setat_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("DM_NVN_FU_SETAT"); on = e && *e && strcmp(e, "0"); } return on; }
+static void fu_setat_note(uint64_t serial) {
+    if (!fu_setat_on()) return;
+    if (!atomic_load_explicit((_Atomic(void *) *)&g_fu_setat, memory_order_acquire)) {
+        void *n = calloc(FU_SETAT_N, sizeof *g_fu_setat), *z = NULL;
+        if (!n || !atomic_compare_exchange_strong((_Atomic(void *) *)&g_fu_setat, &z, n)) free(n);
+    }
+    _Atomic uint64_t *e = g_fu_setat ? g_fu_setat[serial & (FU_SETAT_N - 1)] : NULL; if (!e) return;
+    atomic_store_explicit(&e[0], 0, memory_order_relaxed);
+    atomic_store_explicit(&e[1], now_ns(), memory_order_relaxed);
+    atomic_store_explicit(&e[0], serial, memory_order_release);
+}
+uint64_t nvn_prog_set_ns(uint64_t serial) {
+    _Atomic uint64_t (*t)[2] = atomic_load_explicit((_Atomic(void *) *)&g_fu_setat, memory_order_acquire); if (!t) return 0;
+    _Atomic uint64_t *e = t[serial & (FU_SETAT_N - 1)];
+    if (atomic_load_explicit(&e[0], memory_order_acquire) != serial) return 0;
+    uint64_t ns = atomic_load_explicit(&e[1], memory_order_relaxed);
+    return atomic_load_explicit(&e[0], memory_order_acquire) == serial ? ns : 0;
+}
 NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData *sd) {
     prog_t *o = (prog_t *)p;
     if (n < 0 || n > 6) { LOG("【红】 ProgramSetShaders stage count %d", n); return 0; }
@@ -1355,6 +1408,7 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData 
     uint64_t old_serial = o->serial;   // 旧阶段的 pin 等到新阶段存好/ pin 好之后再解，换 SetShaders 期间不留空窗
 #endif
     nvn_be_prog_release(o); o->nstage = n; memcpy(o->sd, sd, n * sizeof *sd); o->serial = nvn_new_serial();
+    fu_setat_note(o->serial);
     // The keys are computed here (see prog_key in nvn_obj.h): the control section is only guaranteed valid during this call; the code area lives in a memory pool and stays valid while the program is in use
     static int dump = -1; if (dump < 0) dump = getenv("DM_NVN_SHDUMP") != NULL;
     prog_keys_t *k = pk_get(p, 1);
@@ -2219,7 +2273,8 @@ NVN(nvnCommandBufferBindProgram, void, NVNcommandBuffer *c, const NVNprogram *p,
     // Snapshot only mesh inputs under that final key; SetShaders' mapped=1 key path intentionally skips NVN2.
     if (nvn2_on()) for (unsigned i = 0; i < o->nstage && i < 6; i++) {
         const void *ctl = o->sd[i].control; uint8_t md[8];
-        if (ctl && (uintptr_t)ctl < (1ull << 47) && nvn2_ctl(ctl) && ((const uint8_t *)ctl)[0x56] == 7 &&
+        // #713 D-ZBQS 0007（0.5.1 SIGBUS）：SetShaders 之后游戏可能已放掉控制段那块内存，指针还在、页不可读——先核整段可读再看魔数 / 阶段字节（同 keys_hash 的 shader_bytes_readable）
+        if (ctl && (uintptr_t)ctl < (1ull << 47) && shader_bytes_readable((uint64_t)(uintptr_t)ctl, 0x58) && nvn2_ctl(ctl) && ((const uint8_t *)ctl)[0x56] == 7 &&
             prog_key(o, i, md)) dm_shader_mesh_hold_key(md, o->sd[i].data, ctl);
     }
     prog_t snap; memcpy(&snap, o, sizeof snap);
@@ -3023,6 +3078,27 @@ static int nvn_stack_args(const char *n) {
     return !strcmp(n, "nvnWindowBuilderSetHdrDisplayMetadata") || !strcmp(n, "nvnWindowBuilderGetHdrDisplayMetadata") ||
            !strcmp(n, "nvnWindowSetHdrDisplayMetadata") || !strcmp(n, "nvnWindowGetHdrDisplayMetadata");
 }
+#if !defined(__ANDROID__)
+// 留在游戏栈上的 NVN 实现（命令录制 nvnCommandBuffer* 等，每帧上万次）套叶子桩（11-17，同 runtime/src/xstack.c 叶子名单）：游戏 sp 不是 16 字节对齐时
+//   （Horizon 不查、苹果芯片查），宿主实现开头一压栈就 SIGBUS；叶子桩 sp 对齐直接尾跳，不对齐先对齐、调完恢复。
+//   不套叶子桩：未实现桩 / 大栈入口 / 计时入口（靠跳板给的 x16 = 槽地址找实现，叶子桩会改写 x16；未实现桩与计时入口自己在汇编里对齐，
+//   大栈入口切栈前不碰 sp、切到对齐的宿主栈）。带栈上参数的四个（挪 sp 会读错参数）改指 nvn_stackarg_entry：对齐时尾跳，不对齐时连栈参一起挪到对齐处再调。
+//   host_adapt.m big_wrap 直连起用时调一次；幂等。leaf = sw_xstack_leaf（不链运行时的单测不调）
+extern void nvn_prof_entry(void);
+extern void nvn_stackarg_entry(void);
+void *nvn_sa_real[NVN_NFUNC];   // 带栈参入口的真实现（nvn_entry.S nvn_stackarg_entry 按槽号取）
+void nvn_leaf_wrap(void *(*leaf)(const char *, void *)) {
+    static int done; if (done || !leaf) return; done = 1;
+    unsigned n = 0, sa = 0;
+    for (unsigned i = 0; i < NVN_NFUNC; i++) {
+        void *f = nvn_slot[i].fn;
+        if (f == (void *)nvn_unimpl_entry || f == (void *)nvn_big_entry || f == (void *)nvn_prof_entry) continue;
+        if (nvn_stack_args(nvn_names[i])) { nvn_sa_real[i] = f; nvn_slot[i].fn = (void *)nvn_stackarg_entry; sa++; continue; }
+        nvn_slot[i].fn = leaf(nvn_names[i], f); n++;
+    }
+    LOG("[nvn] 留在游戏栈上的 %u 个实现套叶子桩、%u 个带栈参的经对齐入口（游戏 sp 不对齐时先对齐再调）", n, sa);
+}
+#endif
 __attribute__((constructor)) static void nvn_nops_register(void) {
     // Empty implementations overwrite the unimplemented stubs after the slot table is initialized; a misspelled name (not in main's name table) reports a failure and aborts at startup
     nvn_init_slots();
@@ -3130,14 +3206,27 @@ NVN(nvnWindowGetNativeWindow, NVNnativeWindow, const NVNwindow *w) { return ((co
 //   sdk 里的显示层代码就读写这一处），出图时按它走。直连层不走系统显示层，原先只记在自己的 win_t 里：公开库常见的帧率金手指（指针链落到原生窗口 +0xF14 写 1）
 //   写成功却不生效（一款游戏开着仍 30 帧）。这里照驱动的做法双向同步：设间隔时写进去，每次出图读回来，被别人改了（金手指）就跟着改。
 //   只在建窗口时这一处是系统缺省值 1 时才开（别的 SDK 版本这里若不是交换间隔，不写它）
+// 游戏改交换间隔的时刻（now_ns，与回放核心上屏用的同一单调时钟）：上屏时随间隔一起交给后端（nvn_be_present_target），「分时」按它分段
+static _Atomic uint64_t g_itv_set_ns;
 static volatile int32_t *nat_itv(const win_t *o) { return o->nat && o->native ? (volatile int32_t *)((char *)o->native + NAT_ITV_OFF) : NULL; }
 static void nat_itv_sync(win_t *o) {
     volatile int32_t *p = nat_itv(o); if (!p) return;
     int v = itv_in(*p);   // 真机范围 0–5（原先只认 0–4，5 合法却被丢）；超界同 itv_in 按 0
-    if (v != o->interval) { LOG("[nvn] 原生窗口交换间隔被改成 %d（游戏设的 %d；金手指等直接写系统窗口），出图跟它", v, o->interval); o->interval = v; }
+    if (v != o->interval) {
+        const uint64_t t = now_ns(); atomic_store(&g_itv_set_ns, t);
+        LOG("[nvn] 原生窗口交换间隔被改成 %d（游戏设的 %d；金手指等直接写系统窗口），出图跟它（单调时钟 %.3f 秒，这个窗口已上屏 %llu 帧）", v, o->interval, (double)t / 1e9, (unsigned long long)o->presents);
+        o->interval = v;
+    }
 }
 NVN(nvnWindowGetPresentInterval, int, const NVNwindow *w) { nat_itv_sync((win_t *)w); return ((const win_t *)w)->interval; }   // 原生窗口被改过（金手指）先读回来，同驱动   // Link's Awakening reads it back every frame
-NVN(nvnWindowSetPresentInterval, void, NVNwindow *w, int v) { win_t *o = (win_t *)w; v = itv_in(v); if (o->interval != v) LOG("[nvn] the game sets present interval %d → %d", o->interval, v); o->interval = v; volatile int32_t *p = nat_itv(o); if (p) *p = v; }
+NVN(nvnWindowSetPresentInterval, void, NVNwindow *w, int v) {
+    win_t *o = (win_t *)w; v = itv_in(v);
+    if (o->interval != v) {
+        const uint64_t t = now_ns(); atomic_store(&g_itv_set_ns, t);
+        LOG("[nvn] the game sets present interval %d → %d（单调时钟 %.3f 秒，这个窗口已上屏 %llu 帧）", o->interval, v, (double)t / 1e9, (unsigned long long)o->presents);
+    }
+    o->interval = v; volatile int32_t *p = nat_itv(o); if (p) *p = v;
+}
 // 显示层裁切（nn::vi::SetLayerCrop，说明见 graphics/nvn/host_adapt.m s2a_vi_entry）：上屏取窗口贴图的区域。nvnWindowSetCrop 写的是同一个系统窗口裁切，谁最后写算谁
 static pthread_mutex_t g_vi_mu = PTHREAD_MUTEX_INITIALIZER; static int g_vi_crop[4];
 int32_t h_vi_set_layer_crop(void *layer, int32_t x, int32_t y, int32_t w, int32_t h) {
@@ -3577,7 +3666,8 @@ static void rt_comp_tick(uint64_t period_ns) {
     double p90 = v[107], comp = fmax(p90 * 1.25, v[119] * 1.1), cap = period_ns * 0.9 / 1e6; if (comp > cap) comp = cap; if (comp < 1) comp = 1;
     if (comp > g_rt_comp_ms * 1.15 || comp < g_rt_comp_ms * 0.85) set_time_constraint_comp(period_ns, (uint64_t)(comp * 1e6));
 }
-// 提交 / 编码线程的实时声明（DM_RT_SUBMIT，按位：1 提交线程、2 编码线程 dm-encode（nvn_rec.h，iOS 缺省开的延后编码），3 两条；缺省 0 关）：
+// 提交 / 编码线程的实时声明（DM_RT_SUBMIT，按位：1 提交线程、2 编码线程 dm-encode（nvn_rec.h，iOS 缺省开的延后编码），3 两条；iOS 缺省 3、Mac 缺省 0，DM_RT_SUBMIT=0 关）：
+//   iPhone 两款凉机 ABBA（30 帧锁定档与 60 帧档各一）帧率 / p95 / 功耗无回归才改的缺省；Mac 没量过、照旧关
 //   实时约束只声明在取图线程上；回放 + 提交的那条线程（游戏渲染线程）每帧 8–19 ms，
 //   只有 QoS 0x21、没有帧截止时间，性能控制器按普通线程给核给频率。0400486024DEC000 一台测试手机上：这条线程 0% 在性能核、能效核 1.28 GHz，每帧 CPU 19.1 ms、
 //   墙钟 20.3 ms > 16.7，帧率 53。这里给它同样的声明（周期 = 取图线程声明的帧周期，计算量按这条线程每帧 CPU 的口径同 rt_comp_tick：120 帧窗口取
@@ -3585,7 +3675,7 @@ static void rt_comp_tick(uint64_t period_ns) {
 //   要和功耗一起读：10-30 帧间隔工作组 all 档同样把线程推上性能核，60 帧不变而整机 1.69 → 2.47 W
 static _Thread_local struct { uint64_t frame, c0; double win[120], decl; int n; } t_rts;
 static void rt_work_tick(int who) {
-    static int on = -1; if (on < 0) { const char *e = getenv("DM_RT_SUBMIT"); on = e ? atoi(e) & 3 : 0; if (on) LOG("[nvn] DM_RT_SUBMIT=%d: the time-constraint policy also goes to the %s", on, on == 3 ? "submit and encode threads" : on == 1 ? "submit thread" : "encode thread"); }
+    static int on = -1; if (on < 0) { const char *e = getenv("DM_RT_SUBMIT"); on = e ? atoi(e) & 3 : (TARGET_OS_IPHONE ? 3 : 0); if (on) LOG("[nvn] DM_RT_SUBMIT=%d: the time-constraint policy also goes to the %s", on, on == 3 ? "submit and encode threads" : on == 1 ? "submit thread" : "encode thread"); }
     if (!(on & who) || g_rt_period_ms <= 0 || atomic_load(&g_rt_port) == pthread_mach_thread_np(pthread_self())) return;
     uint64_t f = dm_nvn_frame_count(), c = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID);
     if (!t_rts.frame) { t_rts.frame = f; t_rts.c0 = c; return; }
@@ -3685,10 +3775,22 @@ __attribute__((weak)) int s2a_fps_present_hook(void) { return 0; }
 __attribute__((weak)) int s2a_fps60_display_source(void) { return 0; }   // runtime/src/caps.c；没链能力清单的宿主 / 图形单测没有清单来源
 __attribute__((weak)) void s2a_qp_frame(uint32_t draws, int video, int cutscene, int game_itv) { (void)draws; (void)video; (void)cutscene; (void)game_itv; }   // runtime/src/qprompt_host.c；图形单测没有宿主
 static _Atomic int g_fps_game_itv;   // 这一帧按游戏自己设的间隔（不走 display 模式）
+// 社区帧率补丁改在 sdk 里 NVN 驱动的交换间隔（D-36F4：真机上游戏照旧调 nvnWindowSetPresentInterval(2)，被补丁改过的驱动按 1 交帧）：
+//   直连层接管了 NVN，sdk 里那段驱动代码不执行，游戏传的 2 原样进出图节拍、补丁开着仍 30 帧。补丁开着时 runtime/src/cpatch.c 经这里把间隔封到补丁意图（1），
+//   关掉 / 停帧救场时回 0（不封，跟游戏）。只封出图节拍用的间隔；游戏读回的 nvnWindowGetPresentInterval 仍是它自己设的（同真机：补丁改的是驱动交帧，不改游戏的变量）
+static _Atomic int g_itv_cap;
+void nvn_present_itv_cap(int cap) {
+    if (cap < 0) cap = 0;
+    if (atomic_exchange(&g_itv_cap, cap) != cap) LOG("[nvn] 出图间隔上限 %d（%s）", cap, cap ? "社区帧率补丁改的是 sdk 里的驱动交帧，直连层按补丁意图交帧" : "不封，跟游戏设的间隔");
+}
+static int game_itv(const win_t *o) {
+    int v = o->interval > 0 ? o->interval : 1, cap = atomic_load(&g_itv_cap);
+    return cap > 0 && v > cap ? cap : v;
+}
 static int present_itv(const win_t *o) {   // vsyncs per frame that presentation follows
     int c = fps_step_cap(), k = atomic_load(&g_fs_k);
     if (c) return k && fstep_on() ? k : 60 / c;
-    int itv = g_display_mode && !atomic_load(&g_fps_game_itv) ? 1 : o->interval > 0 ? o->interval : 1;
+    int itv = g_display_mode && !atomic_load(&g_fps_game_itv) ? 1 : game_itv(o);
     return itv < 2 && g_hz > 0 && video_cap() ? 2 : itv;   // 放 ≤ 30 帧视频：至少隔 2 拍（60 Hz 节拍下 30 帧）
 }
 // 显示链等几个 60 Hz vsync（nvn_be_link_wait_tick 的口径；0 = 一个真实链接拍）：出图节拍被放开到 60 Hz 以上（g_hz，社区帧率补丁经 DM_PRESENT_HZ / nvn_present_hz）时，
@@ -3711,7 +3813,7 @@ int nvn_present_fps(void) {
 }
 static uint64_t present_period(const win_t *o) {
     present_cfg(o);
-    int was = atomic_load(&g_game_itv), want = o->interval > 0 ? o->interval : 1;
+    int was = atomic_load(&g_game_itv), want = game_itv(o);
     if (want != was) {
         atomic_store(&g_game_itv, want);
         // 奇数间隔在 30 Hz 链路上没有整刻度（间隔 3 = 1.5 刻度，原先取整成 2 刻度 67 ms）：只有偶数间隔计入「降到 30 Hz」的连续段，
@@ -3874,6 +3976,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         if (nvn_frec_on()) nvn_frec_present(CTX(o->tex[idx]), present_period(o) / 1e9, crop);   // 帧录：持提交锁落盘，这一帧之后的提交等它
         pthread_mutex_unlock(&g_sub_mu);
     }
+    nvn_be_present_target(o->interval, atomic_load(&g_itv_set_ns));   // 游戏此刻申请的交换间隔（只给「分时」分段记账，不改上屏节拍）
     if (idx >= 0 && idx < o->ntex && idx < 4) o->ticket[idx] = nvn_be_present(CTX(o->tex[idx]), present_period(o) / 1e9, crop);   // enqueue only, return immediately
     if (idx >= 0 && idx < o->ntex) __atomic_store_n(&o->shown, idx + 1, __ATOMIC_RELAXED);   // 屏上换成这张：上一张归还（AcquireTexture 的 #141 报红看它）
     pthread_mutex_lock(&g_flip_mu); pthread_cond_broadcast(&g_flip_cv); pthread_mutex_unlock(&g_flip_mu);   // 撞上还在屏上那张的取图（#141）等这次呈现翻走；每帧一次锁内广播，无等者时开销可不计

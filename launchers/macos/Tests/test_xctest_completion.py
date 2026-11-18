@@ -32,6 +32,13 @@ class XCTestCompletionTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("未完成：S2ArmAppleTests.HomeTests/testHome", result.stderr)
 
+    def test_debug_output_glued_to_the_result_line_still_counts(self):
+        # 用例自己打的调试输出没换行，结局行接在它后面（11-17 SettingsLayoutTests 明明 passed 却被判「未完成」，门禁假红）
+        result = self.check("S2ArmAppleTests.SettingsLayoutTests/testLayout\n",
+                            "row widths: [312, 312, 298]Test Case '-[S2ArmAppleTests.SettingsLayoutTests testLayout]' passed (0.02 seconds).\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("发现 1，完成 1", result.stdout)
+
     def test_identical_case_names_in_different_modules_are_distinct(self):
         result = self.check("S2ArmLauncherTests.HomeTests/testHome\nS2ArmAppleTests.HomeTests/testHome\n",
                             "Test Case '-[S2ArmLauncherTests.HomeTests testHome]' passed (0.01 seconds).\n"

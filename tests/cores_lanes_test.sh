@@ -42,9 +42,10 @@ hold; P4=$!; hold; P5=$!; for i in $(seq 1 50); do [ -e "$D/$P4" ] && [ -e "$D/$
 echo mac > "$D/$P5"
 ck "$(run)" "$(( nc / 2 > 0 ? nc / 2 : 1 ))" "⑩ 另 2 道在跑、其中 1 道已进跑局（登记 mac）→ 只摊出包中的 → 核数 ÷ 2"; kill $P4 $P5; wait $P4 $P5 2> /dev/null
 # ⑫ 直连库编译路数 S2A_DIRECT_J（11-04 玩家路径 J）= min(S2A_JOBS, 1 + (物理 × 0.75 ÷ 道数 − 1740 − 1065) ÷ 420 MB)，下限 1；期望手算：
+#   （可用内存钉成 1 TB：预算只由物理内存定，#1439 后预算 = min(物理 × 3/4 ÷ 道数, 可用 ÷ 2)）
 #   8 GB / 8 核单道：可用 6144 MB → 1 + 3339 ÷ 420 = 1 + 7 = 8 → 8 路（重活 S2A_CPU_BAKE 仍 = 8 × 3/4 × 2/3 = 4，原先直连库也用它 = 4 路）
 #   16 GB / 10 核：12288 → 1 + 22 = 23 → 封顶核数 10；4 GB / 8 核：3072 → 1 + 0 = 1；8 GB / 8 核、S2A_LANES=2：可用 3072 → 1，且 ≤ 核数 ÷ 2 = 4
-dj() { env -u S2A_JOBS -u S2A_CPU_BAKE -u S2A_DIRECT_J -u S2A_LANES S2A_LANE_DIR="$D" S2A_CORES_QUIET=1 "$@" bash -c "source '$H/tools/cores.sh'; s2a_cores; echo \$S2A_DIRECT_J/\$S2A_CPU_BAKE"; }
+dj() { env -u S2A_JOBS -u S2A_CPU_BAKE -u S2A_DIRECT_J -u S2A_LANES S2A_LANE_DIR="$D" S2A_MEM_AVAIL_MB=1048576 S2A_CORES_QUIET=1 "$@" bash -c "source '$H/tools/cores.sh'; s2a_cores; echo \$S2A_DIRECT_J/\$S2A_CPU_BAKE"; }
 ck "$(dj env S2A_NCPU=8 S2A_MEM_TOTAL_GB=8)" "8/4" "⑫ 8 GB / 8 核：直连库 8 路、重活 4 路"
 ck "$(dj env S2A_NCPU=10 S2A_MEM_TOTAL_GB=16)" "10/8" "⑫ 16 GB / 10 核：直连库封顶核数 10、重活 8"
 ck "$(dj env S2A_NCPU=8 S2A_MEM_TOTAL_GB=4)" "1/2" "⑫ 4 GB / 8 核：直连库 1 路（下限）、重活 2"
@@ -57,7 +58,7 @@ ck "$(grep -c 'CT=${J:-${S2A_DIRECT_J:-$S2A_CPU_BAKE}}' "$H/pack/refresh.sh")" "
 F=$(mktemp -d "${TMPDIR:-/tmp}/s2a-fakepy-XXXXXX")
 printf '#!/bin/sh\necho "ValueError: unrecognized configuration name" >&2\nexit 1\n' > "$F/python3"; chmod +x "$F/python3"
 if [ "$(uname -s)" = Darwin ]; then want_gb=$(( $(sysctl -n hw.memsize) >> 30 )); else want_gb=$(( $(awk '/^MemTotal:/ { print $2; exit }' /proc/meminfo) >> 20 )); fi
-mem() { env -u S2A_JOBS -u S2A_CPU_BAKE -u S2A_DIRECT_J -u S2A_LANES -u S2A_MEM_TOTAL_GB -u S2A_PYTHON PATH="$F:$PATH" S2A_LANE_DIR="$D" S2A_CORES_QUIET=1 S2A_NCPU=8 \
+mem() { env -u S2A_JOBS -u S2A_CPU_BAKE -u S2A_DIRECT_J -u S2A_LANES -u S2A_MEM_TOTAL_GB -u S2A_PYTHON PATH="$F:$PATH" S2A_LANE_DIR="$D" S2A_MEM_AVAIL_MB=1048576 S2A_CORES_QUIET=1 S2A_NCPU=8 \
   bash -c "source '$H/tools/cores.sh'; s2a_cores > /dev/null 2>&1 && echo \$(( (\$S2A_CPU_BAKE > 0) )) || echo 失败"; }
 ck "$(mem)" "1" "⑭ PATH 上的 python3 坏了（anaconda 3.9 那种），不给 S2A_MEM_TOTAL_GB 也算得出并行度（本机 ${want_gb} GB）"; rm -rf "$F"
 # ⑮ 入口接线（#447 评审）：一键出包选定 Python 后把它所在目录放到 PATH 最前，出包链各 .sh 的裸 python3 都落到同一个解释器

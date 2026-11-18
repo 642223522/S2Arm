@@ -260,7 +260,7 @@ CGRect S2APlayDivision(UIView *view) {
     BOOL changed=!CGRectEqualToRect(l.game,g_layout.game) || !CGRectEqualToRect(l.controls,g_layout.controls) || !CGRectEqualToRect(l.division,g_layout.division) || l.split!=g_layout.split;
     g_layout=l;
     S2APlayPublishSplit(l.split);
-    S2APlayReflectionLayout(s,l);
+    S2APlayBackgroundLayout(s,l);
     BOOL portrait=s.bounds.size.height>s.bounds.size.width;
     if (atomic_exchange(&g_resizable, self.resizable) != self.resizable) [self updatePlayPreferences];   // 换窗口类型（Duo 合上 / 展开）：重新定要不要申请方向
     BOOL expectedPortrait=self.resizable ? portrait : play_wants_portrait();   // 自由窗口按实际方向（不再等转到玩家选的方向）

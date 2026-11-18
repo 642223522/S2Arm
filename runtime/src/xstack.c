@@ -16,7 +16,7 @@ int s2a_android_is_host_code(uint64_t address);
 #endif
 
 #define XS_MAX 8192   // = entry.S xs_stubs 条数
-extern const uint32_t xs_stubs[];
+extern const uint32_t xs_stubs[], xs_leaf_stubs[];
 // entry.S uses direct PC-relative references within this DSO. ELF must not
 // preempt these two private objects; keep Apple's existing visibility.
 #if defined(__ANDROID__)
@@ -37,22 +37,33 @@ __attribute__((constructor)) static void xs_key_init(void) {   // 键须在任�
     pthread_key_t k; if (pthread_key_create(&k, NULL)) die("切栈：pthread_key_create 失败");
     g_xs_key = (uint64_t)k;
 }
-// 不套桩的叶子函数（libc 直通表里的内存 / 字符串 / 基本数学）：调用极频繁（每帧上万次），自身几乎不用栈，跑在游戏栈上与真机 SDK 的同名函数一样浅。
+// 不切栈的叶子函数（libc 直通表里的内存 / 字符串 / 基本数学；11-17 起套叶子桩，只在 sp 不对齐时先对齐）：调用极频繁（每帧上万次），自身几乎不用栈，跑在游戏栈上与真机 SDK 的同名函数一样浅。
 // 不在此列的直通函数（strtod / strftime / mktime / localtime_r 等用栈较多、可能进系统库深处）照样切栈
 static const char *const k_leaf[] = {"memcpy", "memset", "memmove", "memcmp", "memchr", "strlen", "strnlen", "strcmp", "strncmp", "strcpy", "strncpy",
     "strcat", "strncat", "strchr", "strrchr", "strstr", "strspn", "strcspn", "strpbrk", "strcasecmp", "strncasecmp", "atoi",
     "sqrtf", "cbrtf", "expf", "acosf", "cosf", "sinf", "atan2f", "fmodf", "cos", "sin", "powf", "atanf", "tanf", "asinf", "log10", "pow", "logf",
     "ldexpf", "log10f", "log", "ldexp", "frexp", "atan2", "modff", "exp2f", "exp2", "log2f", "log2", "lroundf"};
-void *sw_xstack_wrap(const char *name, void *fn) {
+#ifdef S2A_UNIT_TEST
+const char *s2a_xs_leaf_name(unsigned i) { return i < sizeof k_leaf / sizeof *k_leaf ? k_leaf[i] : NULL; }   // 单测逐个核整份名单
+#endif
+// 叶子函数也套桩（11-17 D-DVZZ：客体 sp 不对齐时宿主叶子函数开头一压栈就 SIGBUS）：叶子桩 xs_leaf_stubs 不切栈，只在 sp 不对齐时先对齐、调完恢复（entry.S xs_leaf_entry）
+static void *xs_wrap(const char *name, void *fn, int leaf) {
     if (!fn) return fn;
-    for (unsigned i = 0; i < sizeof k_leaf / sizeof *k_leaf; i++) if (!strcmp(name, k_leaf[i])) return fn;
+    const uint32_t *stubs = leaf ? xs_leaf_stubs : xs_stubs;
     pthread_mutex_lock(&g_xs_mu);
-    for (unsigned i = 0; i < g_nxs; i++) if (g_xs_fn[i] == fn) { pthread_mutex_unlock(&g_xs_mu); return (void *)&xs_stubs[2 * i]; }   // 同一实现共用一个桩
+    for (unsigned i = 0; i < g_nxs; i++) if (g_xs_fn[i] == fn) { pthread_mutex_unlock(&g_xs_mu); return (void *)&stubs[2 * i]; }   // 同一实现共用一个编号（两种桩按名字取）
     if (g_nxs == XS_MAX) { pthread_mutex_unlock(&g_xs_mu); die("切栈桩不够（%d）：%s", XS_MAX, name); }
     unsigned i = g_nxs++; g_xs_fn[i] = fn;
     pthread_mutex_unlock(&g_xs_mu);
-    return (void *)&xs_stubs[2 * i];
+    return (void *)&stubs[2 * i];
 }
+void *sw_xstack_wrap(const char *name, void *fn) {
+    int leaf = 0;
+    for (unsigned i = 0; i < sizeof k_leaf / sizeof *k_leaf && !leaf; i++) leaf = !strcmp(name, k_leaf[i]);
+    return xs_wrap(name, fn, leaf);
+}
+// 不在名单里、但同样留在游戏栈上跑的宿主函数（直连层 NVN 命令录制，每帧上万次；graphics/nvn/gfx/nvn/hle_nvn.c nvn_leaf_wrap）：一律给叶子桩
+void *sw_xstack_leaf(const char *name, void *fn) { return xs_wrap(name, fn, 1); }
 // 客体线程在宿主栈上、进客体之前调：top = 宿主代码从这里往下用（调用方自己的活帧在其上）
 static void xs_plat_init(void) {
     uint64_t off;

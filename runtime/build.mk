@@ -25,7 +25,7 @@ NATIVE_INC  := -Iruntime/include
 ifeq ($(S2A_UNAME),Darwin)
 S2A_HOST_WEAK := $(call S2A_WEAK_U,host)   # 立即求值一次：几十条链接行都引用它，别每次都起一次 python3
 # Mac 宿主热状态 / 低电量（runtime/src/host_main.c dm_thermal_now，经 objc 运行时读 NSProcessInfo，审计 P1-80）：原生层单独构建（runtime/gate.sh）不带 graphics/build.mk 的 Foundation，这里自己链
-HOST_LIBS += -framework Foundation
+HOST_LIBS += -framework Foundation -framework Security   # Security：手机端自签（runtime/src/selfsign.c）
 endif
 
 # 依赖（全部 HOST_SRCS、头文件、构建配置戳）由顶层 Makefile 在读完所有 build.mk 之后统一写，这里只写配方（配方延迟展开，链的是完整 HOST_SRCS）
@@ -108,6 +108,7 @@ IOS_LIBS   +=   # ExternalAccessory：GameSir G8+ MFi 有线的马达走配件�
 IOS_LIBS   += -framework MetricKit $(if $(filter tvos,$(S2A_APPLE_OS)),,-framework CoreTelephony)   # CoreTelephony：上传断网时认「无线数据」授权被拒（CTCellularData）
 # 静音键下照样出声（ios/app.m audio_category_apply，#789）：AVAudioSession
 IOS_LIBS   += -framework AVFAudio
+IOS_LIBS   += -framework Security   # 手机端自签（runtime/src/selfsign.c）
 # 诊断包自己写 zip（文件放根目录、文件名带 UTF-8 标记；系统「为上传而读」会多套一层文件夹、中文名按 cp437 解成乱码）：deflate 用系统 zlib
 IOS_LIBS   += -lz
 IOS_BUNDLE ?= local.s2arm.app
@@ -216,15 +217,17 @@ ios: ios-ns2pro
 	  if [ $(S2A_APPLE_OS) = ios ]; then \
 	  /usr/bin/plutil -insert UIFileSharingEnabled -bool YES $(IOS_APP)/Info.plist; \
 	  /usr/bin/plutil -insert LSSupportsOpeningDocumentsInPlace -bool YES $(IOS_APP)/Info.plist; \
+	  /usr/bin/plutil -insert UTExportedTypeDeclarations -json '[{"UTTypeIdentifier":"com.s2arm.game","UTTypeDescription":"S2Arm game package","UTTypeConformsTo":["public.data"],"UTTypeTagSpecification":{"public.filename-extension":["s2arm"]}}]' $(IOS_APP)/Info.plist; \
+	  /usr/bin/plutil -insert CFBundleDocumentTypes -json '[{"CFBundleTypeName":"S2Arm game package","CFBundleTypeRole":"Viewer","LSHandlerRank":"Owner","LSItemContentTypes":["com.s2arm.game"]}]' $(IOS_APP)/Info.plist; \
 	  /usr/bin/plutil -insert CADisableMinimumFrameDurationOnPhone -bool YES $(IOS_APP)/Info.plist; \
 	  /usr/bin/plutil -insert UIApplicationShortcutItems -json "$$(cat ios/shortcuts.json)" $(IOS_APP)/Info.plist; \
 	  fi; \
 	  /usr/bin/plutil -insert CFBundleLocalizations -json '["en","en-GB","zh-Hans","zh-Hant","ja","ko","fr","fr-CA","de","it","es","es-419","pt","pt-BR","nl","ru","pl","th","sv"]' $(IOS_APP)/Info.plist; \
 	  /usr/bin/plutil -insert CFBundleDevelopmentRegion -string en $(IOS_APP)/Info.plist; \
 	  if [ $(S2A_APPLE_OS) = ios ]; then \
-	  for k in UISupportedInterfaceOrientations UISupportedInterfaceOrientations~ipad; do /usr/bin/plutil -insert $$k -xml '<array><string>UIInterfaceOrientationLandscapeRight</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationPortrait</string></array>' $(IOS_APP)/Info.plist; done; \
+	  for k in UISupportedInterfaceOrientations UISupportedInterfaceOrientations~ipad; do /usr/bin/plutil -insert $$k -xml '<array><string>UIInterfaceOrientationLandscapeRight</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationPortraitUpsideDown</string></array>' $(IOS_APP)/Info.plist; done; \
 	  /usr/bin/plutil -insert UIRequiresFullScreen -bool YES $(IOS_APP)/Info.plist; /usr/bin/plutil -insert UIStatusBarHidden -bool YES $(IOS_APP)/Info.plist; \
-	  fi   # 只许横屏、全屏、无状态栏；以上文件共享 / 屏幕方向 / 主屏快捷项 / 高刷键只有 iPhone 有（Apple TV 不写，11-15）
+	  fi   # 方向四个都声明（竖屏倒置：Duo 镜头一侧朝下握也能竖屏分屏，#1364 应用层放开全部方向，但系统按 Info.plist 取交集，原先没写倒置就转不过去）；全屏、无状态栏；以上文件共享 / 屏幕方向 / 主屏快捷项 / 高刷键只有 iPhone 有（Apple TV 不写，11-15）
 	@[ $(S2A_APPLE_OS) != tvos ] || /usr/bin/plutil -insert UIUserInterfaceStyle -string Dark $(IOS_APP)/Info.plist   # 电视：深色界面（同电视系统缺省）
 	@/usr/bin/plutil -insert LSSupportsGameMode -bool YES $(IOS_APP)/Info.plist   # 声明支持系统游戏模式（10-20 维护者二分：动森整机 5.88 → 3.37 W、30 帧不变，性能核 3.9 → 2.2 GHz；旧 S2A 包有此键、S2Arm 漏了）
 	@/usr/bin/plutil -insert LSApplicationCategoryType -string public.app-category.games $(IOS_APP)/Info.plist   # 系统靠类别认出是游戏才进游戏模式（11-01 调研：LSSupportsGameMode 之外还要类别键）
@@ -234,7 +237,7 @@ ios: ios-ns2pro
 	@/usr/bin/plutil -insert NSBluetoothAlwaysUsageDescription -string "Connect a Switch 2 Pro Controller when enabled in Settings." $(IOS_APP)/Info.plist
 	@/usr/bin/plutil -insert UIApplicationSceneManifest -json '{"UIApplicationSupportsMultipleScenes":false,"UISceneConfigurations":{"UIWindowSceneSessionRoleApplication":[{"UISceneConfigurationName":"Default","UISceneDelegateClassName":"S2ASceneDelegate"}]}}' $(IOS_APP)/Info.plist   # iOS 27 场景生命周期（27.1 SDK 强制 UIScene adoption，否则启动即崩）：指向 app.m 的 S2ASceneDelegate
 	@[ "$(S2A_SHELLUI)" != 1 ] || /usr/bin/plutil -insert CFBundleURLTypes -json '[{"CFBundleURLName":"s2arm","CFBundleURLSchemes":["s2arm"]}]' $(IOS_APP)/Info.plist   # 主屏小组件点封面：s2arm://play/<游戏号>（app.m 场景代理交给游戏库「开始」）
-	@[ "$(S2A_SHELLUI)" != 1 ] || $(MAKE) --no-print-directory ios-widget
+	@[ "$(S2A_SHELLUI)" != 1 ] || [ $(S2A_APPLE_OS) = tvos ] || $(MAKE) --no-print-directory ios-widget   # 主屏小组件只给 iPhone / iPad（tvOS 没有第三方主屏小组件；按 iOS 三元组编、tvOS SDK 下编不过）
 	@echo "iOS App：$(IOS_APP)（$$(du -sh $(IOS_APP) | cut -f1)，包名 $(IOS_BUNDLE)，未签名）"
 
 # NVN 查询测试共用完整生产 bootstrap / swnvn / NVN 跳板；保留签名检查，不提供测试替身。

@@ -2,7 +2,7 @@
 
 宿主放 <库>/hosts/mac/<可执行文件摘要前 12 位>/S2ArmGame.app，每款镜像 games/<英文名>/image/mac 不含宿主；game.json 的 hostMac 记这款在用的宿主。
 升级 S2Arm 后，新宿主认得旧镜像就直接换用，不用重新准备。判据两项，都对上才换：
-  hostAbi    —— 宿主读每款产物的约定号，就是下面的 HOST_ABI。改了宿主读产物的方式（改写器与运行时的约定：跳板 / 虚拟寄存器槽 / 门控表，
+  hostAbi    —— 宿主读每款产物的约定号，就是下面的 HOST_ABI（从 runtime/include/s2a_host_abi.h 读，宿主编的是同一个数）。改了宿主读产物的方式（改写器与运行时的约定：跳板 / 虚拟寄存器槽 / 门控表，
                 *.fixups / *.sites / *.gates / addr_need.tsv 等表的格式，镜像目录布局）就把它加 1；只修宿主自身的 bug 不动它。
   dmshChain  —— 直连着色器库版本 V（graphics/nvn/gfx/nvn/dmsh_chain.h 的 DMSH_CHAIN，宿主只读 shaders/direct/b-<V>/），从引擎源码机械读出。
 镜像的 manifest.json 记准备时的这两项；本字段之前（v0.1.0 起的公开版）出的镜像 hostAbi 按 1，dmshChain 按目录里实有的 b-<V> 认。
@@ -16,13 +16,26 @@ import re
 import shutil
 import stat
 import subprocess
+import time
+import math
 import sys
 from pathlib import Path
 
 import layout
 from core import Failure, contained, digest, read
 
-HOST_ABI = 1
+def _host_abi():
+    """宿主读产物的约定号：从 runtime/include/s2a_host_abi.h 机械读（与宿主编进去的是同一个数，不两处各写一份）"""
+    here = Path(__file__).resolve()
+    # Mac 应用里作业层在 Contents/Resources/Jobs，头文件随包放同目录（launchers/macos/jobs_bundle.py EXTRA）；源码树 / Windows 引擎快照里在 runtime/include
+    head = here.parent / "s2a_host_abi.h"
+    if not head.is_file():
+        head = here.parents[2] / "runtime/include/s2a_host_abi.h"
+    text = head.read_text(encoding="utf-8")
+    return int(re.search(r"^#define S2A_HOST_ABI (\d+)$", text, re.M).group(1))
+
+
+HOST_ABI = _host_abi()
 TRIAL_OK_SECONDS = 60
 APP = "S2ArmGame.app"
 EXE = APP + "/Contents/MacOS/s2arm-host"
@@ -39,6 +52,158 @@ def engine_compat(c):
         return None
     m = re.search(r'^#define DMSH_CHAIN "([0-9a-f]+)"', text, re.M)
     return dict(hostAbi=HOST_ABI, dmshChain=m.group(1)) if m else None
+
+
+HINT_REASONS = ("rewriter", "hostAbi", "shader")   # 改写器更新 / 宿主约定号变了 / 着色器链（直连库）更新
+
+
+def update_hints(c):
+    """0.6.0 通用壳（开关后面）：启动器新版本打开时的快速比对（《文件与程序管理体系》⑦ ③，11-17 维护者定）。每款只读程序兼容记录
+    （game.json 的 ios，没有读专用文件夹那份，layout.program_info，几 KB），比对改写器指纹 / 宿主约定号 / 着色器链与本版启动器的值；
+    对不上的款给出「建议更新」与原因，玩家点了才做。不读游戏大文件（game.img、资源包、程序件）、不排后台重活、不改任何东西。
+    没打过 iPhone 包的款没有记录，不标。开关关着 → {enabled: False, games: []}"""
+    import program_pack
+    if not program_pack.enabled(c):
+        return dict(enabled=False, games=[])
+    want = engine_compat(c) or {}
+    import rewrite_refresh
+    try:
+        rid = rewrite_refresh.rewriter_id(c)
+    except (Failure, OSError, subprocess.SubprocessError):
+        rid = None   # 取不到改写器指纹：这一项不判（不因此给所有款标「建议更新」）
+    games = []
+    for g in c.catalog()["games"]:
+        why = _game_hint(c, g["id"], rid, want)
+        if why:
+            games.append(dict(gameId=g["id"].upper(), reasons=why))
+    return dict(enabled=True, games=games)
+
+
+SIGN_LIFETIME = dict(free=7 * 86400, paid=365 * 86400)   # 按苹果规则估：免费账号描述文件 7 天、付费 / 证书一年（手机上 App 自己读描述文件给准数）
+
+
+def _game_hint(c, gid, rid, want):
+    """一款的程序兼容记录对本版启动器的原因（同 update_hints）"""
+    ios = layout.program_info(c, gid)
+    if not ios:
+        return []
+    why = []
+    if rid and ios.get("rewriterId") != rid:
+        why.append("rewriter")
+    if want and ios.get("hostAbi", 1) != want["hostAbi"]:
+        why.append("hostAbi")
+    if want and ios.get("dmshChain", LEGACY_CHAIN) != want["dmshChain"]:
+        why.append("shader")
+    return why
+
+
+def _online(c):
+    """现在连着的手机 → {UDID: 'usb' | 'network'}；读不到 → {}（probe 时才调，可能要几秒）"""
+    out = {}
+    try:
+        if os.name == "nt":
+            import install
+            for u, kind, _ in install.win_install_mod(c).mux_devices():
+                if u:
+                    out[u] = "network" if str(kind).lower().startswith("net") else "usb"
+        else:
+            from diag import devicectl
+            rc, data, _ = devicectl(c, "list", "devices", timeout=30)
+            for d in data.get("result", {}).get("devices", []) if rc == 0 else []:
+                u = (d.get("hardwareProperties") or {}).get("udid")
+                cp = d.get("connectionProperties") or {}
+                if u and cp.get("tunnelState") != "unavailable":
+                    out[u] = "network" if cp.get("transportType") == "localNetwork" else "usb"
+    except (Failure, OSError, ValueError, subprocess.SubprocessError):
+        return {}
+    return out
+
+
+def _has_game_img(c, gid):
+    try:
+        return (Path(layout.ios_pack(c, gid)) / "game.img").is_file()
+    except (Failure, OSError):
+        return False
+
+
+def _sign_mode(c, rec, signed):
+    """这台的 S2Arm 是怎么签的：appleId | devCert（我们签的，记在 signed.mode）| external（推过游戏、却没有我们的签名记录 = 玩家用别的工具装的）| None（判不出）。
+    signed.mode 之前的旧记录（只有 free）：按这台电脑现在的签名方式算（证书模式是玩家在设置里选的，平时不换）"""
+    if signed:
+        mode = signed.get("mode")
+        if mode in ("appleId", "devCert"):
+            return mode
+        import devcert
+        return "devCert" if devcert.active(c) else "appleId"
+    return "external" if rec.get("games") or rec.get("shellId") else None
+
+
+def _can_sign(rec):
+    """这台手机上的 S2Arm 有没有能自己签程序的身份（完成页「未签名导出」要不要补「导入后要回电脑更新」）：
+    设备记录里有交过的身份（install.deliver_identity 写的 identity：Windows Apple ID 的私钥或证书用户的证书）→ True；
+    我们装过 App（有壳号）却没交过 → False（换了团队 = 换包名，install.forget_other_app 会把旧身份一并清掉，同样落到 False）；没有这台的记录 → None"""
+    if (rec.get("identity") or {}).get("cert_sha1"):
+        return True
+    return False if rec.get("shellId") else None
+
+
+def phone_overview(c):
+    """0.6.0 通用壳（开关后面）：「iPhone 总控台」的只读总览。每台见过的手机（设备记录）：名字、App 装没装、壳是不是本版、签名时刻 /
+    免费账号与否 / 按苹果规则估的到期时刻 / 上次连上（lastSeen = 设备记录最后一次写入：装 App、推游戏时连着才会写）；每款状态 latest（最新）|
+    suggested（建议更新，附 reasons，同 update_hints）| notPushed（游戏库里有、这台没推过）| needsData（程序推过、资源没推）；notPushed / needsData 带 dataOnComputer =
+    游戏库里还有没有 game.img；signMode 见 _sign_mode。缺省只读记录（几 KB，秒回）；请求带 probe: true 才查现在连着的手机（可能要几秒），
+    结果里 online = 'usb' | 'network' | None（没查时没有这个键）。不改任何东西、不排后台活。开关关着 → {enabled: False, phones: []}"""
+    import program_pack
+    if not program_pack.enabled(c):
+        return dict(enabled=False, phones=[])
+    import ipa as packer
+    import rewrite_refresh
+    want = engine_compat(c) or {}
+    try:
+        rid = rewrite_refresh.rewriter_id(c)
+    except (Failure, OSError, subprocess.SubprocessError):
+        rid = None
+    try:
+        sid = packer.current_shell_id(c)
+    except (Failure, OSError, subprocess.SubprocessError):
+        sid = None
+    library = [g["id"].upper() for g in c.catalog()["games"]]
+    hints = {g: _game_hint(c, g, rid, want) for g in library}
+    online = _online(c) if c.r.get("probe") is True else None
+    phones = []
+    for key, rec in layout.devices(c):
+        if not isinstance(rec, dict):
+            continue
+        signed = rec.get("signed") or {}
+        at = signed.get("at") if isinstance(signed.get("at"), (int, float)) else None
+        free = bool(signed.get("free", True))
+        recs = {str(g).upper(): v for g, v in (rec.get("games") or {}).items() if isinstance(v, dict)}
+        games = []
+        for g in library:
+            r = recs.get(g)
+            if r is None or not (r.get("program") or r.get("pack")):
+                games.append(dict(gameId=g, state="notPushed", dataOnComputer=_has_game_img(c, g)))
+            elif not r.get("pack"):   # 电脑上还有没有资源本体（只看文件在不在，不打开）：界面分「点推到 iPhone 就行」和「要原件」
+                games.append(dict(gameId=g, state="needsData", dataOnComputer=_has_game_img(c, g)))
+            elif not r.get("program"):   # 资源推过、手机上没有这款的程序包（0.5.x 整包 App 装的款：装上通用 App 后程序不在了）→ 点「推到 iPhone」只补程序
+                games.append(dict(gameId=g, state="suggested", reasons=["missing"]))
+            else:
+                why = list(hints[g])
+                prog = r.get("program") or {}
+                if want and prog and prog.get("host_abi", want["hostAbi"]) != want["hostAbi"] and "hostAbi" not in why:
+                    why.append("hostAbi")
+                if rid and prog and prog.get("rewriter_id") not in (None, rid) and "rewriter" not in why:
+                    why.append("rewriter")
+                games.append(dict(gameId=g, state="suggested", reasons=why) if why else dict(gameId=g, state="latest"))
+        phone = dict(device=key, name=signed.get("device") or "", installed=bool(rec.get("shellId")), bundleId=rec.get("bundleId") or "",
+                     shellCurrent=bool(sid) and rec.get("shellId") == sid, signedAt=at, free=free, signMode=_sign_mode(c, rec, signed),
+                     expiresAtEstimate=(at + SIGN_LIFETIME["free" if free else "paid"]) if at else None,
+                     remainingDays=max(0, math.ceil((at + SIGN_LIFETIME["free" if free else "paid"] - time.time()) / 86400)) if at else None,
+                     lastSeen=rec.get("at") if isinstance(rec.get("at"), (int, float)) else None, canSign=_can_sign(rec), games=games)
+        if online is not None:
+            phone["online"] = online.get(key)
+        phones.append(phone)
+    return dict(enabled=True, phones=phones)
 
 
 def compatible(c, entry):

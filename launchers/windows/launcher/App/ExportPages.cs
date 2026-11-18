@@ -41,11 +41,8 @@ public sealed partial class EnvironmentWindow
     private const string PlatformIos = "ios";
     private const string PlatformTv = "tvos";
     private bool exportIos = true;
-    /// <summary>出包页勾了 Apple TV（11-16 维护者：Windows 也出 Apple TV 包；装到电视暂时只有 Mac 版能做）</summary>
+    /// <summary>出包页勾了 Apple TV（11-16 维护者：Windows 出 Apple TV 包后导出安装包 .ipa，玩家自己签名装到电视）</summary>
     private bool exportTv;
-    /// <summary>安装包带了 Apple TV 预编壳（启动器目录 Shell-tvOS，launchers/windows/bundle_win.py --tv-shell）：没带的这版不能勾 Apple TV</summary>
-    private bool TvShellReady => Directory.Exists(TvShellDir(paths));
-    internal static string TvShellDir(LauncherPaths p) => Path.Combine(Path.GetDirectoryName(Path.GetFullPath(p.Shell)) ?? "", "Shell-tvOS");
     // 存放位置（游戏库结构 v3）：locations 作业读回的各位置、为哪款读的、出包页选中的文件夹（"" = 还没定，不传，后端按这款现在的位置）
     private StorageLocations? locations;
     private string? locationsFor;
@@ -92,6 +89,7 @@ public sealed partial class EnvironmentWindow
     /// <summary>上一次装机失败的错误码（apple_session_expired 时失败页给「打开 Impactor 重新登录」，重新登录完自动再装）</summary>
     private string? installCode;
     private bool installOpenToFinish;   // 刚装完的那次是单一 IMG：成功卡片多写一句「打开 S2Arm 会自动完成安装」（作业结果 openToFinish）
+    private string installTrustName = "";   // 这次签名的证书名（作业结果 trustName）：成功卡片「点「<名字>」→ 信任」；Windows 上作业读不到时为空，退回不带名字的说法
     private string revealProblem = "";   // 「显示 IPA」「打开游戏文件夹」找不到目标时的提示（不打开空的资源管理器）
     // 当前 / 最近一次手机作业属于哪一款（#308：原先只有一份「当前安装」状态、没记是哪款，回游戏库再点别的游戏，进度会画到那款上）。
     //   installSeen：跑完后玩家回安装页看过结果没有；没看过时顶栏胶囊一直在。进度计数来自作业事件 done / total / unit（推资源包按字节，机上解包按包）
@@ -362,7 +360,7 @@ public sealed partial class EnvironmentWindow
         var tiles = new UniformGrid { Columns = 5 };
         foreach (var platform in new[] { PlatformIos, PlatformTv, "mac", "android", "ohos" })
         {
-            var open = platform == PlatformIos || platform == PlatformTv && TvShellReady;
+            var open = platform == PlatformIos || platform == PlatformTv;   // Apple TV 不藏不锁（维护者 11-16）：安装包没带 tvOS 预编壳时出包作业照实报
             var on = open && (platform == PlatformTv ? exportTv : exportIos);
             var tile = new StackPanel { Spacing = 10 };
             var top = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
@@ -372,7 +370,7 @@ public sealed partial class EnvironmentWindow
             tile.Children.Add(top);
             tile.Children.Add(Muted(T(platform switch
             {
-                PlatformIos => "export.note.ios", PlatformTv => TvShellReady ? "export.note.tvos_win" : "export.note.tvos_win_missing",
+                PlatformIos => "export.note.ios", PlatformTv => "export.note.tvos_win",
                 "mac" => "export.note.mac_only", _ => "export.soon"
             })));
             var card = new Button
@@ -535,7 +533,9 @@ public sealed partial class EnvironmentWindow
             var modBtn = new Button { Content = T("export.sgrade.mod.import"), FontSize = 12.5 };
             modBtn.Click += (_, _) => OpenMods(game);
             Avalonia.Automation.AutomationProperties.SetAutomationId(modBtn, "export.sgrade.mod.import");
-            Row(T("export.sgrade.cat.mod"), Hit("mod") > 0 ? T("export.sgrade.hit.mod").Replace("{0}", Hit("mod").ToString()) : T("export.sgrade.mod.note"), action: modBtn);
+            var modAct = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };   // mod 格式说明「？」放在「导入 Mod」旁（11-17，ModsPage.cs ModHelp）
+            modAct.Children.Add(ModHelp()); modAct.Children.Add(modBtn);
+            Row(T("export.sgrade.cat.mod"), Hit("mod") > 0 ? T("export.sgrade.hit.mod").Replace("{0}", Hit("mod").ToString()) : T("export.sgrade.mod.note"), action: modAct);
             var build = r.TryGetProperty("build", out var b) ? b.GetString() ?? "" : "";
             // 补丁按版本生效（11-14 维护者）：写明对应玩家这份游戏的哪个版本；列出的别的版本不会打入（同 Mac SGradeCard）
             var ver = r.TryGetProperty("version", out var vv) ? vv.GetString() ?? "" : "";
@@ -970,7 +970,7 @@ public sealed partial class EnvironmentWindow
                 packTrack.Finish(Clock); packSeconds = (DateTime.UtcNow - packStarted).TotalSeconds;
                 packState = o.State == "completed" ? "succeeded" : o.State;
                 packSummary = o.Message; packIpa = o.Ipa; packIpaBytes = o.IpaBytes; packPackBytes = o.PackBytes; packNotes = o.Notes ?? []; packBoost = o.Boost; packFailureCode = o.Code;
-                if (ended.Where.Platform == "appletv" && o.State == "completed") packNotes = [.. packNotes, T("export.done.tvos_win")];   // Windows 出好 Apple TV 包：说清装到电视暂时要 Mac
+                if (ended.Where.Platform == "appletv" && o.State == "completed") packNotes = [.. packNotes, T("export.done.tvos_win")];   // Windows 出好 Apple TV 包并导出了安装包：说清在哪、自己签名装
                 packDiagnostics = exportChildReport is { } r
                     ? JobDiagnostics(new LibraryJobOutput(r, new ProbeOutput(r.State == "succeeded" ? 0 : r.State == "cancelled" ? 130 : 1, "", "")))
                     : o.Message;
@@ -1682,6 +1682,9 @@ public sealed partial class EnvironmentWindow
         // 装机 / 续签 / 删除 / 装回：同一张结局卡（PhoneJobCard.cs，同 Mac PhoneJobPanel）；Apple ID 登录过期另给「打开 Impactor 重新登录」
         var notes = new List<string>();
         if (installState == "succeeded" && installTrack.Kind == "install" && installOpenToFinish) notes.Add(T("install.done.open"));
+        // 第一次打开前信任开发者（同 Mac InstallView doneNotes）：读到证书名就写要点哪一项，读不到退回不带名字的说法；导出模式不连手机，不写
+        if (installState == "succeeded" && installTrack.Kind == "install" && !installExport)
+            notes.Add(installTrustName.Length > 0 ? T("install.done.trustNamed").Replace("{0}", installTrustName) : T("install.done.trust"));
         var state = new StackPanel { Spacing = 16 };
         state.Children.Add(PhoneJobCard(installTrack, installState, installMessage, installDiagnostics, game.Id, notes, showsOperation: showsOperation,
             switchExport: installState is "failed" or "interrupted" && !installExport && installTrack.Kind == "install" ? () => { IosAfterPack = "export"; ExportSelfSign(game); } : null));
@@ -1730,7 +1733,7 @@ public sealed partial class EnvironmentWindow
     internal static readonly IReadOnlyDictionary<string, string> ConfirmCodes = new Dictionary<string, string>
     {
         ["container_would_drop"] = "acceptDropped", ["save_backup_failed"] = "acceptNoBackup", ["container_stale"] = "acceptStale",
-        ["device_space_low"] = "acceptLowSpace",
+        ["device_space_low"] = "acceptLowSpace", ["cert_revoke_confirm"] = "acceptCertRevoke",
     };
 
     /// <summary>可确认的停装码要问的那句标题：文案表有 errors.&lt;码&gt;.title 就用它，没有用通用的 install.drop_title</summary>
@@ -1741,16 +1744,17 @@ public sealed partial class EnvironmentWindow
 
     /// <summary>accept：玩家已同意的确认参数（ConfirmCodes 的值，逐次累积）。ask = false（控制口）原样失败、不弹确认，由调用方带参数再发。</summary>
     /// <param name="export">游戏库「导出自签包」：不连手机、不签名，出到文件夹（作业层 install 请求带 mode = export，不带设备）</param>
-    private async Task InstallAsync(LibraryGame game, IReadOnlySet<string>? accept = null, bool ask = true, bool export = false)
+    /// <param name="toDevice">推哪台（0.6.0 总控台「更新所选」推总控台那台）；不带 = 照旧按装机页选的 / 这款上次装的那台</param>
+    private async Task InstallAsync(LibraryGame game, IReadOnlySet<string>? accept = null, bool ask = true, bool export = false, string? toDevice = null)
     {
-        if (QueuePhone(game.Id, () => InstallAsync(game, accept, ask, export))) return;   // 出包在跑不挡；手机上装机在跑 / 这款正在出包 → 排队
+        if (QueuePhone(game.Id, () => InstallAsync(game, accept, ask, export, toDevice))) return;   // 出包在跑不挡；手机上装机在跑 / 这款正在出包 → 排队
         accept ??= new HashSet<string>();
         installExport = export;
         var front = BeginPhoneJob(game, "");
         string? dropAsk = null, askCode = null;
         try
         {
-            var extra = AcceptExtra(accept, export ? "" : InstallDevice(game)) ?? new Dictionary<string, object?>();
+            var extra = AcceptExtra(accept, export ? "" : toDevice ?? InstallDevice(game)) ?? new Dictionary<string, object?>();
             if (export) extra["mode"] = "export";
             if (!HomeWidget) extra["widget"] = false;   // 玩家关了「装到 iPhone 时带主屏小组件」
             var job = await PackJobClient.RunAsync(PackRequest("install", game.Id, extra), e => Dispatcher.UIThread.Post(() => IngestPhoneEvent(e)), front.Token, front.Next());
@@ -1764,6 +1768,7 @@ public sealed partial class EnvironmentWindow
             if (job.Report.Succeeded && job.Report.Result.TryGetProperty("unpackPending", out var pending) && pending.ValueKind == JsonValueKind.String)
             { installState = "needsPlayer"; installMessage = pending.GetString() ?? ""; }
             installOpenToFinish = job.Report.Succeeded && job.Report.Result.TryGetProperty("openToFinish", out var open) && open.ValueKind == JsonValueKind.True;
+            installTrustName = job.Report.Succeeded && job.Report.Result.TryGetProperty("trustName", out var trust) && trust.ValueKind == JsonValueKind.String ? trust.GetString() ?? "" : "";
             installDiagnostics = JobDiagnostics(job);
             installTrack.Finish(job, GameName);
             if (job.Report.Succeeded && installTrack.ExportFolder.Length > 0) OpenFolder(installTrack.ExportFolder);   // 导出自签包：打开放好的文件夹
@@ -1802,13 +1807,7 @@ public sealed partial class EnvironmentWindow
         return extra.Count > 0 ? extra : null;
     }
 
-    private static string? JobCode(LibraryJobOutput job)
-    {
-        if (job.Report.Diagnostics.ValueKind != JsonValueKind.Array) return null;
-        foreach (var d in job.Report.Diagnostics.EnumerateArray())
-            if (d.TryGetProperty("code", out var code) && code.ValueKind == JsonValueKind.String) return code.GetString();
-        return null;
-    }
+    private static string? JobCode(LibraryJobOutput job) => job.Report.FailureCode;
 
     private async Task ChooseCoverAsync(LibraryGame game)
     {

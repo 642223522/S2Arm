@@ -88,7 +88,7 @@ enum {
     RO_R_DRAW, RO_R_DRAW_INST, RO_R_DRAW_IND, RO_R_DRAW_IDX, RO_R_DRAW_IDX_IND, RO_R_STORE_C, RO_R_STORE_D, RO_R_STORE_S,
     RO_C_TABLE, RO_C_PSO, RO_C_DISPATCH, RO_C_DISPATCH_IND, RO_C_DISPATCH_THREADS, RO_C_COPY_BB, RO_C_COPY_BT, RO_C_COPY_TB, RO_C_COPY_TT, RO_C_FILL,
     RO_T_ADDR, RO_T_TEX, RO_T_SAMP,
-    RO_LABEL, RO_R_TS, RO_C_TS,   // diagnostics: DM_NVN_ENC_LABEL, DM_NVN_GPUPROF
+    RO_LABEL, RO_R_TS, RO_C_TS, RO_SIGNPOST,   // diagnostics: DM_NVN_ENC_LABEL, DM_NVN_GPUPROF, DM_NVN_FAULT_ENC
     // Metal 3 (the old encoders on this thread; DM_NVN_ENC_THREAD=1 there): what m3_wait / m4_end / m3_table_apply / blit_barrier and the buffer-and-offset draws ask of an encoder,
     // the copy encoder and the descriptor forms (GPUPROF's sample buffer rides on the descriptor), and a commit of g_q3 (completed handlers, the event signal, commit: m3_commit)
     RO_M3_WAIT, RO_M3_UPD, RO_M3_MB, RO_M3_BUF, RO_M3_TEX, RO_M3_SMP, RO_CB_BLIT, RO_CE_BEGIN_D, RO_COMMIT_M3,
@@ -100,6 +100,10 @@ typedef struct { uint32_t op, nobj; uint64_t a[15]; } rec_t;   // the first nobj
 enum { REC_BLK = 256 };
 typedef struct rec_blk { struct rec_blk *next; int n; rec_t r[REC_BLK]; } rec_blk;
 
+// On by default on the Mac too (Metal 4) since 11-16: a Switch 2 title's fixed scene (save point, no input after it, same spot checked from screenshots), off / on / on / off:
+//   30.0-32.1 fps against 59.9-60.0, frame time p95 34-51 ms against 27-33, whole CPU power not higher; on the Mac it used to stay off and the game held 30 there.
+//   A 30 fps-locked Switch title (11-17, entered the game in all 4 runs, same spot): fps 29.98 / 29.90 off against 29.95 / 29.85 on, CPU power 1.96 / 2.09 W
+//   against 1.87 / 1.84 W (about 8% lower, no overlap), p95 +3.7% (about 1.3 ms); that run's load went 17.8 -> 20.3, so read it as a reference only.
 // On by default on iOS: Breath of the Wild on an iPhone 17 Pro Max (handheld, the Great Plateau) took about 8 ms of submit thread per frame without it and 3.3–4.5 ms with it
 static int g_rec = -1;
 static inline int rec_on(void) {
@@ -109,11 +113,7 @@ static inline int rec_on(void) {
         // Metal 3：只在显式 =1 时开（编码器 / 参数表绑定需要额外适配，暂为保守方案）
         g_rec = e && atoi(e) > 0;
     } else {
-#if TARGET_OS_IPHONE
-        g_rec = !e || atoi(e) > 0;
-#else
-        g_rec = e && atoi(e) > 0;
-#endif
+        g_rec = !e || atoi(e) > 0;   // Metal 4: on by default on the Mac too (11-16, the Mac A/B above), as on iOS; DM_NVN_ENC_THREAD=0 turns it off
     }
     if (g_rec) MLOG("Metal encoding runs on its own thread (DM_NVN_ENC_THREAD=0 turns it off)");
     return g_rec;
@@ -138,7 +138,7 @@ static void dlss_fx_run(id cb, const uint64_t *a);   // nvn_dlss.inc: a[0] scale
 static void rec_exec(const rec_t *r) {
     const uint64_t *a = r->a; id e = g_rx_enc;
     switch (r->op) {
-    case RO_CB_NEW: g_rx_cb = g_m3 ? [g_q3 commandBufferWithUnretainedReferences] : [g_dev newCommandBuffer]; break;   // Metal 3: as m3_cb
+    case RO_CB_NEW: g_rx_cb = g_m3 ? m3_cb() : [g_dev newCommandBuffer]; break;   // Metal 3: m3_cb
     case RO_CB_BEGIN: if (!g_m3) [(id<MTL4CommandBuffer>)g_rx_cb beginCommandBufferWithAllocator:rec_id(a[0])]; break;   // Metal 3: the old command buffer has no allocator
     case RO_CB_END: if (!g_m3) [(id<MTL4CommandBuffer>)g_rx_cb endCommandBuffer]; break;   // Metal 3: m3_commit takes a buffer without endCommandBuffer, as on the submit thread
     case RO_COMMIT: case RO_COMMIT_REAL: {
@@ -197,6 +197,7 @@ static void rec_exec(const rec_t *r) {
     case RO_T_TEX: [(id<MTL4ArgumentTable>)rec_id(a[0]) setTexture:(MTLResourceID){a[1]} atIndex:a[2]]; break;
     case RO_T_SAMP: [(id<MTL4ArgumentTable>)rec_id(a[0]) setSamplerState:(MTLResourceID){a[1]} atIndex:a[2]]; break;
     case RO_LABEL: [(id<MTL4CommandEncoder>)e setLabel:rec_id(a[0])]; break;
+    case RO_SIGNPOST: [(id<MTLCommandEncoder>)e insertDebugSignpost:rec_id(a[0])]; break;
     case RO_R_TS: [(id<MTL4RenderCommandEncoder>)e writeTimestampWithGranularity:a[1] afterStage:a[2] intoHeap:rec_id(a[0]) atIndex:a[3]]; break;
     case RO_C_TS: [(id<MTL4ComputeCommandEncoder>)e writeTimestampWithGranularity:a[1] intoHeap:rec_id(a[0]) atIndex:a[2]]; break;
     // Metal 3: the old encoders. The fence is g_fence3 in every case (m3_wait / m4_end); a[0] says render (stages in a[1]) or not
@@ -431,6 +432,7 @@ static inline id rec_table_real(id t) { return [t isKindOfClass:[DmRecTable clas
 - (void)fillBuffer:(id)b range:(NSRange)rg value:(uint8_t)v { rec_t *r = rec_put(RO_C_FILL, 1); r->a[0] = rec_obj(b); r->a[1] = rg.location; r->a[2] = rg.length; r->a[3] = v; }
 // Diagnostics: encoder labels (DM_NVN_ENC_LABEL) and timestamps into a counter heap (DM_NVN_GPUPROF); the render form names a stage, the compute form none
 - (void)setLabel:(NSString *)l { rec_put(RO_LABEL, 1)->a[0] = rec_obj(l); }
+- (void)insertDebugSignpost:(NSString *)l { rec_put(RO_SIGNPOST, 1)->a[0] = rec_obj(l); }
 - (void)writeTimestampWithGranularity:(MTL4TimestampGranularity)g afterStage:(MTLRenderStages)st intoHeap:(id)h atIndex:(NSUInteger)i { rec_t *r = rec_put(RO_R_TS, 1); r->a[0] = rec_obj(h); r->a[1] = g; r->a[2] = st; r->a[3] = i; }
 - (void)writeTimestampWithGranularity:(MTL4TimestampGranularity)g intoHeap:(id)h atIndex:(NSUInteger)i { rec_t *r = rec_put(RO_C_TS, 1); r->a[0] = rec_obj(h); r->a[1] = g; r->a[2] = i; }
 @end

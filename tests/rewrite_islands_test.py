@@ -22,6 +22,7 @@
 （c）同（b）再在中段 0x804000c 放一条 x18 改写点（add x3, x18, #8：不能在信号里模拟）：两岛都够不着 → 远跳（10-31 出包线，Minecraft 6325 点）：
      单元照常生成进岛，原字换成 brk #0xA000（0xd4340000）；期望 rc 0、gaps.tsv 没有缺口行、出 patched.bin；# FAR_JUMPS 2，
      一条入口 0x804000c → 岛里（E），一条出口 岛里 → 0x8040010（X），产物对金样。
+（e）单前岛（FAR）首轮有缺口、补丁又超前岛容量：同零缺口一样放大前岛重做，缺口照常降级（rc 3、出产物）（#1476）。
 用法：python3 tests/rewrite_islands_test.py（C 命令行取 pack/rewriter.py c-path；可用 REW_C 换）。
 """
 import importlib.util
@@ -156,6 +157,27 @@ def case_d(t, rew_c):
     ck(any(f[0] == '0x8040024' and f[2] == 'E' and not (0 <= int(f[1], 16) < 0x8080000) for f in far), f'（d）有一条 0x8040024 → 岛里 的远跳入口 → {far}')
 
 
+def case_e(t, rew_c):
+    # #1476（热门大作 FAR 布局出不了包）：单前岛首轮既有缺口、补丁又超前岛容量时，原先不放大前岛、直接删产物返回 3（出包整包失败）；
+    #   修后同零缺口时一样按实际长度放大前岛重做，原有缺口照常降级（退出码 3、产物照出），只有重做后缺口变多才算布局失败。
+    #   text 0x400000、bss 0x7000000：end + bss 超 0x7000000 → FAR；128 MiB − text − 1 MiB = 0x7b00000 ≥ 1 MiB → 单前岛，首轮 FRONT = min(32 MiB, …) = 0x2000000。
+    #   0x1000 起 900000 个 svc（每块 10 字 = 40 字节）→ 补丁 900000 × 40 = 0x2255100 > 0x2000000 − 0x4000：首轮容量不足；
+    #   重做 FRONT = align64K(0x2255100 + 0x4000) = 0x2260000。0x3f0000 放 brk #0xB000（macOS 截走的号段 → 缺口 brk），首轮就有 1 个缺口。
+    #   期望：rc 3；出 patched.bin；gaps.tsv 只有 0x3f0000 一行；日志「补丁容量不足，重新生成：FRONT 0x2000000 → 0x2260000」；+0x1000 的 B 跳到前岛首（−0x2261000）
+    nso = os.path.join(t, 'e.nso')
+    words = {0x1000 + 4 * k: SVC for k in range(900000)}
+    words[0x3F0000] = 0xD4200000 | (0xB000 << 5)
+    make(nso, 0x400000, 0x7000000, words)
+    rc, log, out = one('（e）单前岛首轮有缺口且容量不足 → 放大重做', nso, t, rew_c, want_rc=3)
+    ck(os.path.exists(os.path.join(out, 'main.patched.bin')), '（e）有缺口照出 patched.bin（缺口降级，不整包失败）')
+    ck('补丁容量不足，重新生成：FRONT 0x2000000 → 0x2260000' in log, '（e）前岛 FRONT 0x2000000 → 0x2260000 重做一次')
+    rows = [l.rstrip('\n').split('\t')[0] for l in open(os.path.join(out, 'main.gaps.tsv')) if l.startswith('0x')] if os.path.exists(os.path.join(out, 'main.gaps.tsv')) else None
+    ck(rows == ['0x3f0000'], f'（e）缺口只有 0x3f0000 → {rows}')
+    if not os.path.exists(os.path.join(out, 'main.patched.bin')): return
+    img = open(os.path.join(out, 'main.patched.bin'), 'rb').read()
+    ck(b_off(word(img, 0x1000)) == -0x2261000, f'（e）+0x1000 B 期望 −0x2261000（前岛首）→ {b_off(word(img, 0x1000)):#x}')
+
+
 B_WORDS = {0x1000: SVC, 0x2000: 0xD53BD045, 0x3000: SPIN[0], 0x3004: SPIN[1],
            0x8040000: 0xD53BD047, 0x8040004: 0xD51BD046, 0x8040008: 0xD53B0020, 0x8040010: SPIN[0], 0x8040014: SPIN[1],
            0x8078000: 0xD53BD049, 0x8078004: SVC, 0x8078010: SPIN[0], 0x8078014: SPIN[1]}
@@ -192,6 +214,7 @@ def main():
         case_b(t, rew_c)
         case_c(t, rew_c)
         case_d(t, rew_c)
+        case_e(t, rew_c)
     for err in GOLDEN.finish():
         ck(False, err)
     print(f'{"✓" if not bad else "✗"} rewrite_islands：{bad} 处不符')
