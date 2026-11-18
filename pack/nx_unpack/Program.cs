@@ -1,7 +1,7 @@
 // 游戏原始输入解包（底本旧库 tools/nx_unpack @497552d；出包第一步，零配置新游戏从这里进）：
 //   nx_unpack <prod.keys> <输出目录> [--nacp-only | --aoc-only] <xci / nsp 文件…>
 // 直接读卡带 / 安装包（不先把 NCA 拷出来），按内容清单（cnmt）认基础程序、最新更新、追加内容（DLC），一遍解密写出：
-//   <输出目录>/exefs/（main、sdk、subsdk*、main.npdm、rtld）、romfs/（更新叠加后的资源分区；S2A_ROMFS_IMAGE=1 时改出 romfs.std 标准 RomFS 镜像、不写散文件）、aoc/<序号>/（每个 DLC 的数据分区）、
+//   <输出目录>/exefs/（main、sdk、subsdk*、main.npdm、rtld）、romfs.std（更新叠加后的资源分区，标准 RomFS 镜像、不写散文件；S2A_ROMFS_IMAGE=0 时照旧出 romfs/ 散文件）、aoc/<序号>/（每个 DLC 的数据分区）、
 //   ctl/control.nacp（取最新更新的控制分区；服务层 am / ns / acc 读）、icon.jpg、unpack.tsv（程序号、名称、显示版本、构建号、DLC 序号）。
 // 源文件按内容认格式（不看扩展名）：0x100 处魔数 HEAD = 卡带镜像（xci，及其压缩版 xcz），否则按安装包（nsp / nsz 的 PFS0）开；
 //   里面的 .ncz（nsz / xcz 的压缩 NCA）由 Ncz.cs 还原成原 NCA 再交 LibHac。
@@ -14,7 +14,8 @@
 //   清单里有、数据不在给的文件里或解不开的 DLC 也记一行，文件数 -1（仅授权：服务层只报已拥有、不挂数据——暗黑2 卡带里的 DLC 是 100 KB 的密钥代号 0 占位包，哈希校验过不了）。
 // 追加内容按内容认：清单类型 AddOnContent 且标题号去掉低 12 位 = 程序号 + 0x1000（序号 = 低 12 位），别的游戏的 DLC / 更新文件一起给也只取本游戏的。
 // 资源包不在这里出（pack/pack.py 按文件 clonefile 出资源包 v2；旧库的第 1 版分卷输出已删）。
-// 完整性：先开 LibHac ErrorOnInvalid；仅更新叠加的 RomFS 遇 2002-4604 可在结构合法时重读一次 None、打黄并记 bypassed；可执行分区始终严格，密钥值不打印。
+// 完整性：先开 LibHac ErrorOnInvalid；遇数据哈希不符（2002-4604）不再整单失败（维护者 11-17）：RomFS（本体或叠加更新）就地重读一次 None、打黄并记 bypassed；
+//   程序 / 控制 / 元数据 / 导入检查只把出错那份内容记进 LenientIds、打黄后整次重跑（其余内容照常核）。密钥值不打印。
 // 为什么不用 nstool：nstool 先把 NCA 整个拷出再软件 AES 解密写出，暗黑三 16 GB 用 234 秒；SDK 20 起的分区压缩它也不认（丝之歌）。
 using System;
 using System.Collections.Generic;
@@ -44,6 +45,30 @@ static partial class P {
     static KeySet Ks;
     // 内容号（32 位十六进制）→ 打开它的办法（每次调用都从源文件新开一份读视图，给并行线程各用各的）
     static readonly Dictionary<string, Func<IStorage>> Where = new();
+    // 完整性校验（维护者 11-17：「校验不过就整个拒绝」一律撤掉）：缺省按 LibHac ErrorOnInvalid 核；某个阶段读到数据哈希不符，
+    //   只把这个阶段用到的内容（StageIds，本体 / 更新 / 控制 / 元数据各自的内容号）记进 LenientIds，打一行黄 + 一行【校验跳过】机读行，整次重跑——
+    //   重跑时只有这几份内容按 None 读，别的照常核。#1467：整合包模拟器能玩、我们整单拒收。RomFS 与 DLC 各自就地降级（RomfsExtraction / aocBypass）
+    static readonly HashSet<string> LenientIds = new();
+    static string[] StageIds = Array.Empty<string>();
+    static IntegrityCheckLevel LevelOf(params string[] ids) {
+        StageIds = ids.Where(i => i != null).ToArray();
+        return StageIds.Any(LenientIds.Contains) ? IntegrityCheckLevel.None : IntegrityCheckLevel.ErrorOnInvalid;
+    }
+    // 机读行（作业层 pack/jobs/library.py 收集，记进包记录 integritySkipped、游戏库标「数据校验不过」）：【校验跳过】<哪一段>\t<内容号>\t<第一处坏块>
+    internal static void SkipLine(string what, string ids, string place) => Console.WriteLine($"【校验跳过】{what}\t{ids}\t{place ?? ""}");
+    static string FirstPlace(Exception e) => Chain(e).OfType<ReadPlace>().Select(r => r.Message).FirstOrDefault();
+    // 这次失败能不能按内容降级再来一次：是数据哈希不符、且当前阶段有还没降级的内容 → 记下、打黄、返回 true；否则 false（交原有报红）
+    static bool SkipAndRetry(Exception e) {
+        if (HashFail(e) == null && !RomfsExtraction.IsDataHashFailure(e)) return false;
+        var fresh = StageIds.Where(i => !LenientIds.Contains(i)).ToArray();
+        if (fresh.Length == 0) return false;
+        foreach (var i in fresh) LenientIds.Add(i);
+        string place = FirstPlace(e), ids = string.Join(",", fresh.Select(i => i[..8]));
+        Console.Error.WriteLine($"🟡 原件有数据和原版对不上（{Stage}，内容 {ids}{(place == null ? "" : "，第一处坏块在" + place)}）：疑改版 / 整合版或个别块损坏，只对这份内容跳过完整性校验，其余照常核，继续解出");
+        SkipLine(Stage, string.Join(",", fresh), place);
+        ResetForRetry(); return true;
+    }
+    static void ResetForRetry() { Where.Clear(); Copies.Clear(); Broken.Clear(); Involved.Clear(); FromOf.Clear(); PatchBase.Clear(); NczCores.Clear(); NczCore.CleanupAll(); }
     // 建索引时同一内容号的每一份（来源文件, 打开办法）；全部建完由 Resolve 按 CopyPick 选定一份进 Where
     static readonly Dictionary<string, List<(string From, Func<IStorage> Open)>> Copies = new();
     const long PartSize = 1024L << 20;
@@ -60,7 +85,12 @@ static partial class P {
         // 输出固定 UTF-8（无 BOM）：Windows 上 .NET 控制台缺省按系统代码页（中文 Windows 为 GBK）编码，调用方按 UTF-8 读会解不开
         //   （11-04 Windows 出包机01007EF00011E000：追加内容阶段读 --nacp-only 的中文提示报 UnicodeDecodeError）；Mac / Linux 缺省本就是 UTF-8，字节不变
         Console.OutputEncoding = new System.Text.UTF8Encoding(false);
-        try { return Run(a); }
+        try {
+            while (true) {
+                try { return Run(a); }
+                catch (Exception e) when (SkipAndRetry(e)) { }
+            }
+        }
         catch (SourceError e) { Console.Error.WriteLine("🔴 " + e.Message); return 1; }
         catch (UsageError e) { Console.Error.WriteLine("🔴 " + e.Message); return 2; }
         catch (Exception e) when (HashFail(e) is HorizonResultException h) {   // 数据块哈希不对（10-26 生死格斗沙滩排球3 整合版：资源被改过、哈希没更新）
@@ -78,6 +108,7 @@ static partial class P {
     static void Report(string code, string message, Exception e) {
         Console.Error.WriteLine("🔴 " + message);
         Console.Error.WriteLine($"【原因 {code}】");   // 与 --inspect 同形，日志聚合按「【原因 」分类
+        KeyGenLine(code);
         if (Trace()) Console.Error.WriteLine(e.ToString());
     }
     // 带 S2A_NXUNPACK_TRACE=1 重跑时把调用栈打到 stderr（默认不打印：普查日志里没用的噪音）
@@ -85,7 +116,7 @@ static partial class P {
     // 任何没被专门接住的异常翻译成「能照做的红字 + 分类码」。分类码是给普查 / 日志聚合看的，不参与成功判定。
     //   异常链里每一个（含并行读包 AggregateException 的全部 inner）各分一次类，按 Prio 取最具体的那个（#772 F-nxunpack-leaf-first：
     //   原先只顺着第一条 inner 走到底，缺密钥 / 容器坏排在第二条时记成 internal，普查和「内部错误」混在一起）
-    static readonly string[] Prio = { "disk_full", "access_denied", "ticket_missing", "keys_missing", "hash_mismatch", "container_invalid", "out_of_range", "io", "oom", "hresult", "source", "usage", "internal" };
+    static readonly string[] Prio = { "disk_full", "access_denied", "ticket_missing", "keys_missing", "keys_wrong", "hash_mismatch", "container_invalid", "out_of_range", "io", "oom", "hresult", "source", "usage", "internal" };
     static (string Code, string Message) Explain(Exception e) {
         (string Code, string Message) best = ExplainOne(e); int bi = Array.IndexOf(Prio, best.Code);
         foreach (Exception x in Chain(e)) { var r = ExplainOne(x); int i = Array.IndexOf(Prio, r.Code); if (i < bi) { best = r; bi = i; } }
@@ -120,6 +151,10 @@ static partial class P {
                 return ("ticket_missing", "缺少内容对应的票据或标题密钥，请检查源文件是否完整");
             case LibHac.Common.Keys.MissingKeyException m:
                 return ("keys_missing", $"prod.keys 里没有 {m.Name}：这款游戏用了更新的密钥版本，要用系统版本更新的 Switch 重新导出 prod.keys（{first}）");
+            case HorizonResultException h when MagicFail(h) && SiblingDecrypts() is string ok:
+                return ("content_damaged", $"解出来的数据对不上（分区头不是 PFS0 / HFS0，{first}）：同一份文件里{ok}用同一代密钥能正常解开，密钥是对的，是这份内容本身被改过或损坏了。请换一份原版完整的文件（XCI / NSP）再导入");
+            case HorizonResultException h when MagicFail(h):
+                return ("keys_wrong", $"解出来的数据对不上（分区头不是 PFS0 / HFS0，{first}）：多半是 prod.keys 里这款用的那一代密钥不对（文件改过不会这样，只会哈希对不上）。{KeyGenNote()}请用升级到最新系统的 Switch 重新导出 prod.keys 再导入");
             case HorizonResultException h when h.Message.Contains("VerificationFailed"):
                 return ("hash_mismatch", $"源文件数据哈希校验不过（{first}）：文件被改过（如合进改版资源的整合版）或损坏，换一份原版完整的文件");
             case HorizonResultException h:
@@ -152,9 +187,69 @@ static partial class P {
     // 哈希错可能被并行读包在 AggregateException 里（10-26 普查：RomFS 分卷并行读时崩成 rc=134 调用栈，上面的红没接住）；
     //   10-28 #633：原先只看 InnerExceptions[0]，并行里多条任务同时失败时哈希错可能排在后面 → 仍然漏成 134，改成看全部
     static HorizonResultException HashFail(Exception e) {
-        foreach (Exception x in Chain(e)) if (x is HorizonResultException h && h.Message.Contains("VerificationFailed")) return h;
+        foreach (Exception x in Chain(e)) if (x is HorizonResultException h && h.Message.Contains("VerificationFailed") && !MagicFail(h)) return h;
         return null;
     }
+    // 分区头魔数对不上（LibHac PartitionFileSystemMeta：开头不是 PFS0 / HFS0 → PartitionSignatureVerificationFailed 2002-4644；名字叫「签名」其实是魔数）：
+    //   解密后的分区开头是乱码 = 解密用的密钥不对（prod.keys 里这款那一代的密钥 / 标题密钥）。改版文件不会这样（只会哈希对不上）。
+    //   #1511：原先当哈希不符降级重跑，跳过校验照样是乱码，再报 hash_mismatch 叫玩家换文件；按「真解不开」报真原因（keys_wrong）
+    // #1511：解不开时说清「这份内容要第几代密钥、prod.keys 实际有到第几代」，玩家不用猜是不是 prod.keys 不够新。
+    //   代数：NCA 头 KeyGeneration（两处取大），第 g 代用 master_key_{g-1}（g 为 0 / 1 都是 master_key_00，同 LibHac）；
+    //   titlekek / key_area_key 缺了 LibHac 会由 master_key 自己推（内置原料），所以只比 master_key。带 rights id 的内容另要票据里的标题密钥
+    internal static int KeyIndex(byte keyGeneration) => keyGeneration == 0 ? 0 : keyGeneration - 1;
+    internal static int TopMasterKey(KeySet ks) {
+        for (int i = ks.MasterKeys.Length - 1; i >= 0; i--) foreach (byte b in ks.MasterKeys[i].DataRo) if (b != 0) return i;
+        return -1;
+    }
+    internal static (int Need, int Top, bool Rights)? KeyGen;   // KeyGenNote 算出来的（读出 NCA 头才有）：随【原因 keys_wrong】多打一行【密钥代】给作业层拼玩家句
+    internal static void KeyGenLine(string code) {
+        if (code == "keys_wrong" && KeyGen is var (n, t, r)) Console.Error.WriteLine($"【密钥代】{n:x2}\t{(t < 0 ? "-" : t.ToString("x2"))}\t{(r ? 1 : 0)}");
+    }
+    // #1511：解不开不一定是密钥不对。同一次读取里，同一代密钥、同样有无 rights id（同一把密钥区密钥 / 同一种标题密钥）的 NCA，
+    //   有的解出来对、有的不对 → 密钥是对的，是解不对的那份被改过或坏了（玩家换两组密钥同处坏、控制数据照常能读）。
+    //   判「解出来对不对」：每个 NCA 第一个 AesCtr / AesXts 段解密后的开头——PFS0 段是「PFS0」、RomFS 段头长 0x50（不加密的段用什么密钥都能读，不算；
+//   更新的补丁段 AesCtrEx 离了本体读不出，也不算）。
+    //   → 能正常解开的那份的说明（「控制数据（内容 xxxxxxxx）」）；判不出（没有同代对照、或全都解不对）→ null，照旧按密钥报
+    internal static string SiblingDecrypts() {
+        if (Ks == null) return null;
+        var good = new Dictionary<(int, bool), string>(); var bad = new HashSet<(int, bool)>();
+        foreach (var (id, open) in Where.ToList()) {
+            try {
+                var n = new Nca(Ks, open());
+                int s = Enumerable.Range(0, 4).FirstOrDefault(i => n.SectionExists(i) && n.GetFsHeader(i).EncryptionType is NcaEncryptionType.AesCtr or NcaEncryptionType.AesXts, -1);   // 更新的补丁段（AesCtrEx）离了本体单独读不出来，不拿来作对照
+                if (s < 0) continue;
+                var key = (KeyIndex(n.Header.KeyGeneration), n.Header.HasRightsId);
+                var head = new byte[8];
+                bool right;
+                try {
+                    n.OpenStorage(s, IntegrityCheckLevel.None).Read(0, head).ThrowIfFailure();
+                    right = n.GetFsHeader(s).FormatType == NcaFormatType.Pfs0 ? head.AsSpan(0, 4).SequenceEqual("PFS0"u8) : BitConverter.ToUInt64(head) == 0x50;
+                } catch (Exception) { right = false; }
+                if (right) good.TryAdd(key, $"{n.Header.ContentType switch { NcaContentType.Control => "控制数据", NcaContentType.Program => "程序", NcaContentType.Manual => "说明书", NcaContentType.Meta => "内容清单", _ => "数据" }}（内容 {id[..Math.Min(8, id.Length)]}）");
+                else bad.Add(key);
+            } catch (Exception) { }
+        }
+        foreach (var k in bad) if (good.TryGetValue(k, out var who)) return who;
+        return null;
+    }
+    internal static string KeyGenNote() {
+        if (Ks == null) return "";   // 还没读 prod.keys 就失败（单测钩子）：不补这句
+        int need = -1; bool rights = false;
+        foreach (string id in (Involved.Count > 0 ? Involved.Select(x => x.Id) : Where.Keys).ToList()) {
+            if (!Where.TryGetValue(id, out var open)) continue;
+            try { var n = new Nca(Ks, open()); need = Math.Max(need, KeyIndex(n.Header.KeyGeneration)); rights |= n.Header.HasRightsId; } catch (Exception) { }
+        }
+        int top = TopMasterKey(Ks);
+        if (need < 0) return "";
+        KeyGen = (need, top, rights);
+        string have = top < 0 ? "prod.keys 里一条 master_key 都没有" : $"prod.keys 里 master_key 有到 {top:x2}";
+        string tk = rights ? "；这份内容还要票据里的标题密钥" : "";
+        return need > top
+            ? $"这份内容要第 {need:x2} 代密钥（master_key_{need:x2}），{have}：prod.keys 不够新{tk}。"
+            : $"这份内容要第 {need:x2} 代密钥（master_key_{need:x2}），{have}，代数够：多半是 master_key_{need:x2} 这一行的值不对{(rights ? "，或票据里的标题密钥不对" : "")}。";
+    }
+    static bool MagicFail(HorizonResultException h) => h.ResultValue == LibHac.Fs.ResultFs.PartitionSignatureVerificationFailed.Value
+        || h.ResultValue == LibHac.Fs.ResultFs.Sha256PartitionSignatureVerificationFailed.Value;
     // #787：哈希校验不过只有一行原因，玩家分不出坏的是本体、更新还是 DLC，也分不出是整合包改过还是解包器的问题。
     //   报红后补两行：读到坏块时在读什么（阶段 + 文件 + 文件内偏移，ReadPlace 包在异常链里），再把本次用到的内容逐个整份核对一遍、
     //   逐段写通过 / 不过（只在失败时做，读一遍全部内容，大游戏要几分钟）
@@ -207,12 +302,20 @@ static partial class P {
         Copies.Clear();
     }
     static int Run(string[] a) {
+        if (a.Length == 2 && a[0] == "--test-romfs-publish") {
+            try { RomfsExtraction.TestPublish(a[1]); return 0; }
+            catch (Exception e) { Console.Error.WriteLine("🔴 " + e.Message); return 1; }
+        }
         // 单测注入（tests/nx_unpack_fail_test.sh）：造并行读包那种 AggregateException——第一条普通异常、第二条缺密钥，走真实的兜底路径
         if (Environment.GetEnvironmentVariable("S2A_NXUNPACK_TEST_THROW") == "agg-key")
             throw new AggregateException(new Exception("并行任务一：普通异常"), new LibHac.Common.Keys.MissingKeyException("单测：缺密钥", "titlekek_10", LibHac.Common.Keys.KeyType.Common));
         if (Environment.GetEnvironmentVariable("S2A_NXUNPACK_TEST_THROW") == "agg-hash") {   // #787：并行里第二条是带位置的真 2002-4604
             Exception hash = null; try { ResultFs.NonRealDataVerificationFailed.Value.ThrowIfFailure(); } catch (Exception x) { hash = x; }
             throw new AggregateException(new Exception("并行任务一：普通异常"), new ReadPlace("文件 romfs/x.bin，文件内偏移 7（读 16 字节）", hash));
+        }
+        if (Environment.GetEnvironmentVariable("S2A_NXUNPACK_TEST_THROW") == "magic") {   // #1511：真的 2002-4644（分区头魔数不对 = 解出来是乱码）
+            Exception magic = null; try { ResultFs.PartitionSignatureVerificationFailed.Value.ThrowIfFailure(); } catch (Exception x) { magic = x; }
+            throw magic;
         }
         if (a.Length == 2 && a[0] == "--npdm-isa") return NpdmIsaCli(a[1]);   // 不要密钥：只读一份已解出的 main.npdm
         if (a.Length == 3 && a[0] == "--nso-normalize") {   // 不要密钥：一份 NSO 解成段不压缩（ZBIC 才动，别的原样拷），给 Switch 2 导出目录 / NUP 路径（pack/ns2_dump.py）用
@@ -224,17 +327,24 @@ static partial class P {
             catch (Exception e) when (e is InvalidDataException or IOException or UnauthorizedAccessException) { Console.Error.WriteLine($"🔴 {e.Message}"); return 1; }
         }
         if (a.Length >= 3 && a[1] == "--inspect") return Inspect(a);
-        if (a.Length < 3) { Console.Error.WriteLine("用法：nx_unpack <prod.keys> <输出目录> [--nacp-only | --aoc-only | --exefs-only] [--aoc-index] [--title-id=<16 hex>] [--program-index=<0..15>] [--title-keys=<title.keys>] <xci/nsp…>"); return 2; }
+        if (a.Length < 3) {
+            Console.Error.WriteLine("用法：nx_unpack <prod.keys> <输出目录> [--nacp-only | --aoc-only | --exefs-only] [--aoc-index] [--title-id=<16 hex>] [--program-index=<0..15>] [--title-keys=<title.keys>] [--base-only] <xci/nsp…>");
+            Console.Error.WriteLine("测试专用：nx_unpack --test-romfs-publish <尚不存在的测试目录>");
+            return 2;
+        }
         var t0 = DateTime.UtcNow;
         Ks = ExternalKeyReader.ReadKeyFile(a[0]); string D = a[1]; OutDir = D; bool nacpOnly = false, aocOnly = false, aocIndex = false, exefsOnly = false;
         // 单测注入（tests/nx_unpack_fail_test.sh，#792）：Windows 目录改名被拦的原样异常（IOException + E_ACCESSDENIED），被拒路径在输出目录里 / 外
         if (Environment.GetEnvironmentVariable("S2A_NXUNPACK_TEST_THROW") is "denied-out" or "denied-src")
             throw new IOException($"Access to the path '{(Environment.GetEnvironmentVariable("S2A_NXUNPACK_TEST_THROW") == "denied-out" ? Path.Combine(D, "build", "extract", ".romfs-extract-40b3") : Path.Combine(Path.GetTempPath(), "src.xci"))}' is denied.", unchecked((int)0x80070005));
         var srcs = new List<string>(); ulong? selectedTitle = null; string titleKeys = null; int programIndex = 0;
+        // 只解本体、不叠更新（诊断用：同一份整合包复现旧版本的问题）：--base-only 或环境 S2A_UNPACK_BASE_ONLY=1（出包流水线经环境带下来）。缺省照旧叠最新更新
+        bool baseOnly = Environment.GetEnvironmentVariable("S2A_UNPACK_BASE_ONLY") == "1";
         for (int i = 2; i < a.Length; i++) {
             if (a[i] == "--nacp-only") nacpOnly = true;
             else if (a[i] == "--aoc-index") aocIndex = true;
             else if (a[i] == "--exefs-only") exefsOnly = true;
+            else if (a[i] == "--base-only") baseOnly = true;
             else if (a[i] == "--aoc-only") aocOnly = true;
             else if (a[i].StartsWith("--title-keys=", StringComparison.Ordinal)) titleKeys = a[i].Substring(13);
             // 多程序合集（ProgramPick.cs）：解同一应用里第几支程序（Program / Control 按内容自己的序号挑），缺省 0
@@ -269,7 +379,7 @@ static partial class P {
             try { nca = new Nca(Ks, open()); }
             catch (Exception e) when (e is not LibHac.Common.Keys.MissingKeyException) { Console.WriteLine($"🟡 内容 {id[..8]} 头部读不出 / 校验不过（{e.GetType().Name}：{e.Message.Split('\n')[0]}），跳过"); Where.Remove(id); continue; }
             if (nca.Header.ContentType != NcaContentType.Meta) continue;
-            var fs = nca.OpenFileSystem(0, IntegrityCheckLevel.ErrorOnInvalid);
+            var fs = nca.OpenFileSystem(0, LevelOf(id));
             foreach (DirectoryEntryEx e in fs.EnumerateEntries("*.cnmt", SearchOptions.Default)) {
                 using var f = new UniqueRef<IFile>(); fs.OpenFile(ref f.Ref, e.FullPath.ToU8Span(), OpenMode.Read).ThrowIfFailure();
                 metas.Add(new Cnmt(f.Release().AsStream()));
@@ -301,6 +411,7 @@ static partial class P {
         }
         Cnmt app = Newest(apps[0], "本体"); ulong tid = app.TitleId;
         Cnmt pat = Newest(metas.Where(m => m.Type == ContentMetaType.Patch && m.ApplicationTitleId == tid), "更新");
+        if (baseOnly && pat != null) { Console.WriteLine($"🟡 只解本体：不叠更新 v{pat.TitleVersion.Version}（--base-only / S2A_UNPACK_BASE_ONLY=1）"); pat = null; }
         var dlc = metas.Where(m => m.Type == ContentMetaType.AddOnContent && (m.TitleId & ~0xFFFUL) == tid + 0x1000).GroupBy(m => m.TitleId).Select(g => g.OrderBy(m => m.TitleVersion.Version).Last())
                      .OrderBy(m => (m.TitleId - tid - 0x1000).ToString(), StringComparer.Ordinal).ToList();   // 按序号的字符串序（= pack.py 遍历 data/<游戏>/aoc 时子目录的排序）
         string baseId = CidAt(app, ContentType.Program), patId = pat == null ? null : CidAt(pat, ContentType.Program);
@@ -335,7 +446,7 @@ static partial class P {
         Directory.CreateDirectory(D); string name = "", nameZh = "", dver = "";
         if (!aocOnly && ctrlId != null && Where.ContainsKey(ctrlId)) {
             Stage = $"控制数据（内容 {ctrlId[..8]}）";
-            var cfs = new Nca(Ks, Where[ctrlId]()).OpenFileSystem(NcaSectionType.Data, IntegrityCheckLevel.ErrorOnInvalid);
+            var cfs = new Nca(Ks, Where[ctrlId]()).OpenFileSystem(NcaSectionType.Data, LevelOf(ctrlId));
             byte[] nacp = ReadAll(cfs, "/control.nacp"); Directory.CreateDirectory(Path.Combine(D, "ctl")); File.WriteAllBytes(Path.Combine(D, "ctl", "control.nacp"), nacp);
             name = TitleName(nacp, 0); nameZh = TitleName(nacp, 14) ?? TitleName(nacp, 13) ?? name; name ??= nameZh ?? ""; dver = Encoding.ASCII.GetString(nacp, 0x3060, 0x10).TrimEnd('\0');
             foreach (string lang in IconLangs) { byte[] ic = ReadAll(cfs, $"/icon_{lang}.dat"); if (ic != null) { File.WriteAllBytes(Path.Combine(D, "icon.jpg"), ic); break; } }
@@ -345,8 +456,8 @@ static partial class P {
             if (nacpOnly && !File.Exists(Path.Combine(D, "ctl", "control.nacp"))) { Console.Error.WriteLine("🔴 清单里没有控制分区（或不在给的文件里）"); return 1; }
             // 版本核对：元数据必须和输出目录里已有的 exefs 同一版本——比 main 模块的构建号（NSO 头 0x40 起 16 字节）
             var bn0 = new Nca(Ks, Where[baseId]());
-            IFileSystem ex0 = patId == null ? bn0.OpenFileSystem(NcaSectionType.Code, IntegrityCheckLevel.ErrorOnInvalid)
-                                            : bn0.OpenFileSystemWithPatch(new Nca(Ks, Where[patId]()), NcaSectionType.Code, IntegrityCheckLevel.ErrorOnInvalid);
+            IFileSystem ex0 = patId == null ? bn0.OpenFileSystem(NcaSectionType.Code, LevelOf(baseId))
+                                            : bn0.OpenFileSystemWithPatch(new Nca(Ks, Where[patId]()), NcaSectionType.Code, LevelOf(baseId, patId));
             byte[] m0 = ReadAll(ex0, "/main"); string have = Path.Combine(D, "exefs", "main");
             if (File.Exists(have)) {
                 byte[] m1 = File.ReadAllBytes(have);
@@ -367,8 +478,8 @@ static partial class P {
         if (!aocOnly) {   // ---- 可执行分区 ----
         Stage = $"可执行分区（本体 {baseId[..8]}{(patId == null ? "" : " + 更新 " + patId[..8])}）";
         var bn = new Nca(Ks, Where[baseId]());
-        IFileSystem exefs = patId == null ? bn.OpenFileSystem(NcaSectionType.Code, IntegrityCheckLevel.ErrorOnInvalid)
-                                          : bn.OpenFileSystemWithPatch(new Nca(Ks, Where[patId]()), NcaSectionType.Code, IntegrityCheckLevel.ErrorOnInvalid);
+        IFileSystem exefs = patId == null ? bn.OpenFileSystem(NcaSectionType.Code, LevelOf(baseId))
+                                          : bn.OpenFileSystemWithPatch(new Nca(Ks, Where[patId]()), NcaSectionType.Code, LevelOf(baseId, patId));
         string ex = Path.Combine(D, "exefs"); Directory.CreateDirectory(ex);
         foreach (DirectoryEntryEx e in exefs.EnumerateEntries("*", SearchOptions.Default)) {
             if (e.Type != DirectoryEntryType.File) continue; byte[] raw;
@@ -388,9 +499,9 @@ static partial class P {
             var fs = new RomFsFileSystem(opener()); Walk(fs, "/", root, dst, opener, items);
         }
         RomfsExtraction.Result romfsResult = null;
-        // 镜像形态（S2A_ROMFS_IMAGE=1）：资源分区不拆散文件，直接出 <输出目录>/romfs.std（标准 RomFS，RomfsExtraction.ExtractImage）；缺省照旧出 romfs/。
-        //   读取方全迁到镜像之前只给对照 / 测试开；DLC（aoc/）不受影响
-        bool romfsImage = Environment.GetEnvironmentVariable("S2A_ROMFS_IMAGE") == "1";
+        // 镜像形态（缺省；S2A_ROMFS_IMAGE=0 回旧路径出 romfs/ 散文件）：资源分区不拆散文件，直接出 <输出目录>/romfs.std（标准 RomFS，RomfsExtraction.ExtractImage）。
+        //   下游各阶段入口目录 / 镜像都认（graphics/nvn/tools/romfs_list.py image_of）；DLC（aoc/）不受影响
+        bool romfsImage = Environment.GetEnvironmentVariable("S2A_ROMFS_IMAGE") != "0";
         string romfsImagePath = Path.Combine(D, RomfsExtraction.ImageName);
         // 程序 NCA 没有资源段（第 1 段）的款（#620，数据全在 exefs 里的小游戏）：没有 RomFS，产出空 romfs 目录（空 RomFS 的下游同 #578），
         //   原先照开第 1 段，抛「NCA section 1 does not exist」整次解包失败。只看本体：更新的资源段要叠在本体那段上，本体没有就无从叠
@@ -406,7 +517,7 @@ static partial class P {
                 try { romfsResult = RomfsExtraction.ExtractImage(RomfsOpener, romfsImagePath, patched: patId != null); }
                 catch (InvalidDataException e) { throw new SourceError(e.Message); }
             }
-            else if (patId == null) AddFs("romfs", () => RomfsOpener(IntegrityCheckLevel.ErrorOnInvalid), Path.Combine(D, "romfs"));
+            else if (patId == null) AddFs("romfs", () => RomfsOpener(LevelOf(baseId)), Path.Combine(D, "romfs"));
             else {
                 try { romfsResult = RomfsExtraction.Extract(RomfsOpener, Path.Combine(D, "romfs"), patched: true); }
                 catch (InvalidDataException e) { throw new SourceError(e.Message); }
@@ -468,8 +579,10 @@ static partial class P {
                 fref.Destroy();
             }
         });
-        foreach (var (idx, place) in aocBypass.OrderBy(kv => kv.Key))
+        foreach (var (idx, place) in aocBypass.OrderBy(kv => kv.Key)) {
             Console.WriteLine($"🟡 DLC 序号 {idx} 原件数据哈希不符（疑改版 / 整合版），已跳过这个 DLC 的完整性校验照常解出；第一处坏块在{place}");
+            SkipLine($"DLC 序号 {idx} 数据分区", "", place);
+        }
         if (aocOnly) {
             File.WriteAllText(Path.Combine(D, "aoc.tsv"), "idx\ttitle_id\tversion\tfiles\tbytes\n" + string.Concat(aocRows.Select(r => r + "\n")));
             Console.WriteLine($"🟢 追加内容：程序号 {tid:x16}；清单里 {dlc.Count} 个，解出 {aocIdx.Count} 个（{items.Sum(i => i.Size) >> 20} MB）{string.Concat(aocRows.Select(r => "；" + r.Split('\t')[1]))}；{(DateTime.UtcNow - t0).TotalSeconds:F0} 秒");
@@ -486,7 +599,7 @@ static partial class P {
 
     internal static void WriteResourceManifest(string path, string contents, RomfsExtraction.Result romfs) {
         File.WriteAllText(path, contents + (romfs?.Manifest ?? ""));
-        if (romfs?.Warning is string warning) Console.WriteLine(warning);
+        if (romfs?.Warning is string warning) { Console.WriteLine(warning); SkipLine("资源分区 RomFS", "", romfs.FirstBad); }
     }
 
     // Lenient：只有 DLC 有——读到数据哈希不符时换这个不校验的视图重读（#787），Aoc = DLC 序号

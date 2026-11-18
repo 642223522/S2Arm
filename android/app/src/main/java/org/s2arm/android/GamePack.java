@@ -160,7 +160,9 @@ final class GamePack {
             : new String[] {"exefs/main.npdm", "ctl/control.nacp"};
         for (String need : needs)
             if (!paths.contains(need)) throw new BadPack("package has no " + need);
-        if (paths.stream().noneMatch(p -> p.startsWith("romfs/"))) throw new BadPack("package has no romfs/ files");
+        // RomFS：romfs/ 下的散文件，或一份标准 RomFS 镜像 romfs.std（出包缺省形态；服务层 Application.cs 直接读它）
+        if (!paths.contains("romfs.std") && paths.stream().noneMatch(p -> p.startsWith("romfs/")))
+            throw new BadPack("package has no romfs/ files or romfs.std");
         for (String p : paths) {
             if (!p.startsWith("modules/") || !p.endsWith(".patched.bin")) continue;
             String base = p.substring(0, p.length() - ".patched.bin".length());

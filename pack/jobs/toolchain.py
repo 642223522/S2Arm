@@ -175,7 +175,10 @@ def reader(c):
         except OSError:
             same = False
         # nx_unpack.exe 是 NativeAOT 单文件（v0.5.0 Windows 去 .NET，bundle_prepare_win.py），调用方直接执行，作业环境不带 .NET
-        if same and (d / "nx_unpack.exe").is_file():
+        #   维护者 11-17：校验不过不再整个拒绝——源码身份对不上但读取工具在，就黄字提示后照常用（读取器只读原件、只产出这款的产物）；工具根本不在才停
+        if (d / "nx_unpack.exe").is_file():
+            if not same:
+                c.diagnostic("S2Arm 读取工具与引擎版本不符，这次照常使用；解包出错时请重新安装完整的 S2Arm。", code="reader_unavailable", severity="warning")
             return d / "nx_unpack.exe"
         raise Failure("S2Arm 读取工具缺失或与引擎版本不符，请重新安装完整的 S2Arm。", code="reader_unavailable")
     from embedded import artifact
@@ -258,7 +261,7 @@ def preflight(c):
     checks = []
     c.last_log = c.logs / (c.task + "-preflight.log")
     c.last_log.parent.mkdir(parents=True, exist_ok=True)
-    c.last_log.touch(mode=0o600)
+    c.last_log.touch()
     def add(cid, name, ok, message, scopes=("prepare",), action=None, code=None, group=None):
         # cid：稳定的英文检查项 id（剃刀 M11：前端原先按中文 name 分组判状态，这里一改名四行工具全显示「等待」）；name 只给人看
         check = dict(id=cid, name=name, ok=bool(ok), message=message, requiredFor=list(scopes),

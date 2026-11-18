@@ -26,7 +26,7 @@ class StageBudgetEnv(unittest.TestCase):
         with patch.dict(os.environ, inherited or {}, clear=True), patch('core.os.cpu_count', return_value=8):
             return Context.env(context)
 
-    def budgets(self, env, memory, lanes=1, explicit=None, cpu=8):
+    def budgets(self, env, memory, lanes=1, explicit=None, cpu=8, avail=None):
         # 执行生产阶段的实际参数赋值，避免测试自己复制 J 的优先级。
         extract = re.search(r'^J=\$\{J:-.*?;', (ROOT / 'pack/stage_extract.sh').read_text(), re.M).group()[:-1]
         direct = re.findall(r'CT=\$\{J:-[^\n;]+', (ROOT / 'pack/refresh.sh').read_text())
@@ -34,7 +34,8 @@ class StageBudgetEnv(unittest.TestCase):
         script = 'source "$1/tools/cores.sh"; s2a_lanes() { echo "$S2A_LANES"; }; s2a_cores || exit; ( ' + extract + '; printf "%s " "$J" ); '
         script += '; '.join(x + '; printf "%s " "$CT"' for x in direct)
         env = dict(env, S2A_NICE='0', S2A_CORES_QUIET='1', S2A_NCPU=str(cpu),
-                   S2A_MEM_TOTAL_GB=str(memory), S2A_LANES=str(lanes))
+                   S2A_MEM_TOTAL_GB=str(memory), S2A_LANES=str(lanes),
+                   S2A_MEM_AVAIL_MB=str(memory * 1024 if avail is None else avail))   # 此刻可用内存：缺省 = 整机空闲
         env.pop('S2A_JOBS', None)  # 实跑 cores 的 CPU/道数分配；只替换活跃道数探测，不写真实登记。
         if explicit is not None:
             env['J'] = str(explicit)
@@ -45,7 +46,10 @@ class StageBudgetEnv(unittest.TestCase):
     def test_gui_automatic_stage_budgets(self):
         with tempfile.TemporaryDirectory() as d:
             env = self.gui_env(Path(d))
-            for memory, lanes, expected in [(8, 1, (4, 8, 8)), (16, 1, (8, 8, 8)),
+            # 内存预算 am = min(物理 × 3/4 ÷ 道数, 可用 ÷ 2)；重活 = min(核, am ÷ 1536)；直连 = min(核, 1 + (am − 2805) ÷ 420)，都下限 1（手算见各行）
+            #   8 GB：am = min(6144, 4096) = 4096 → 重活 2、直连 1 + 1291 // 420 = 4；16 GB：am = 8192 → 5、8；48 GB：am = 24576 → 8、8；
+            #   8 GB 两道：am = min(3072, 4096) = 3072 → 2、1 + 267 // 420 = 1
+            for memory, lanes, expected in [(8, 1, (2, 4, 4)), (16, 1, (5, 8, 8)),
                                              (48, 1, (8, 8, 8)), (8, 2, (2, 1, 1))]:
                 with self.subTest(memory=memory, lanes=lanes):
                     self.assertEqual(self.budgets(env, memory, lanes), expected)
@@ -53,9 +57,23 @@ class StageBudgetEnv(unittest.TestCase):
     def test_gui_auto_budget_can_exceed_legacy_eight(self):
         with tempfile.TemporaryDirectory() as d:
             env = self.gui_env(Path(d))
-            for cpu, memory, expected in [(10, 16, (8, 10, 10)), (16, 48, (16, 16, 16))]:
+            # 10 核 16 GB：am = 8192 → 重活 5、直连 1 + 5387 // 420 = 13 → 10；16 核 48 GB 全空：am = 24576 → 16、16
+            for cpu, memory, expected in [(10, 16, (5, 10, 10)), (16, 48, (16, 16, 16))]:
                 with self.subTest(cpu=cpu, memory=memory):
                     self.assertEqual(self.budgets(env, memory, cpu=cpu), expected)
+
+    def test_budget_follows_available_memory(self):
+        # #1439 / #1442 / #1443：路数按此刻可用内存封顶（别的出包 / 玩家的程序已占的不算本单的）。期望手算：
+        #   16 核 48 GB、可用 40 GB：am = min(36864, 20480) = 20480 → 重活 13、直连 1 + 17675 // 420 = 43 → 16
+        #   16 核 48 GB、另一单已占、可用 20 GB：am = 10240 → 重活 6、直连 1 + 7435 // 420 = 18 → 16
+        #   8 核 8 GB、可用 2.5 GB：am = 1280 → 重活 0 → 下限 1、直连 1 + (1280 − 2805) // 420 < 1 → 1
+        #   10 核 32 GB（#1439 那台）、可用 24 GB：am = 12288 → 重活 8、直连 1 + 9483 // 420 = 23 → 10
+        with tempfile.TemporaryDirectory() as d:
+            env = self.gui_env(Path(d))
+            for cpu, memory, avail, expected in [(16, 48, 40960, (13, 16, 16)), (16, 48, 20480, (6, 16, 16)),
+                                                 (8, 8, 2560, (1, 1, 1)), (10, 32, 24576, (8, 10, 10))]:
+                with self.subTest(cpu=cpu, memory=memory, avail=avail):
+                    self.assertEqual(self.budgets(env, memory, cpu=cpu, avail=avail), expected)
 
     def test_gui_ignores_unrelated_inherited_j(self):
         with tempfile.TemporaryDirectory() as d:
@@ -63,7 +81,7 @@ class StageBudgetEnv(unittest.TestCase):
                 with self.subTest(value=value):
                     env = self.gui_env(Path(d), {'J': value})
                     self.assertNotIn('J', env)
-                    self.assertEqual(self.budgets(env, 8), (4, 8, 8))
+                    self.assertEqual(self.budgets(env, 8), (2, 4, 4))
 
     def test_direct_cli_explicit_j_is_preserved(self):
         with tempfile.TemporaryDirectory() as d:

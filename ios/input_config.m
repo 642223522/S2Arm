@@ -27,8 +27,8 @@ int s2a_ios_input_config_read(const char *path, s2a_input_config *out) {
 int s2a_ios_input_config_load(void) {
     s2a_input_config next;
     int error = s2a_ios_input_config_read(getenv("S2A_INPUT_CONFIG"), &next);
-    current_valid = !error;
-    if (!error) current_config = next;
+    if (error) s2a_input_config_default(&next);   // 读不懂（11-17 维护者：校验不过不再拒启）：这局用默认键位，调用方黄字说明
+    current_config = next; current_valid = 1;
     return error;
 }
 const s2a_input_config *s2a_ios_input_config_current(void) { return current_valid ? &current_config : NULL; }

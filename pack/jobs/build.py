@@ -79,24 +79,41 @@ def validate_files(c, root, files, full=False):
 QUICK_FILES = ("main", "main.npdm")   # 游戏库列表快判也核的几个文件（主程序与程序描述）：在、是普通文件、大小同清单
 
 
+def heap_learned_now(env, gid, since):
+    """这一局（since 之后）运行时记下了这款要的普通堆（runtime/src/svc_mem.c heap_need_note → <文档根>/wire/<程序号>/heap_need）"""
+    docs = env.get("S2A_DOCS")
+    if not docs:
+        return False
+    p = Path(docs) / "wire" / gid.upper() / "heap_need"
+    try:
+        return p.stat().st_mtime >= since - 1
+    except OSError:
+        return False
+
+
 def has_runtime_romfs(root):
-    """运行版本里的 RomFS 两种形态（约定同 graphics/nvn/tools/romfs_list.py）：romfs/ 真目录，或目录不在、只有标准 RomFS 镜像 romfs.std（普通文件，
-    宿主 services/S2A.Services/RomFsIndex.cs OpenStd 整个交给游戏）。软链都不算：运行版本要独立于构建缓存"""
-    romfs, std = root / "romfs", root / "romfs.std"
+    """运行版本里的 RomFS 三种形态（约定同 graphics/nvn/tools/romfs_list.py）：romfs/ 真目录，或目录不在、只有标准 RomFS 镜像 romfs.std（普通文件，
+    宿主 services/S2A.Services/RomFsIndex.cs OpenStd 整个交给游戏），或 game.img（0.6.0 一款一份资源：iPhone 资源包那份的硬链接，pack/jobs/onerom.py；
+    宿主 OpenImg 先认它）。软链都不算：运行版本要独立于构建缓存"""
+    romfs, std, img = root / "romfs", root / "romfs.std", root / "game.img"
     if romfs.is_symlink() or romfs.exists():
         return romfs.is_dir() and not romfs.is_symlink()
-    return std.is_file() and not std.is_symlink()
+    return (std.is_file() and not std.is_symlink()) or (img.is_file() and not img.is_symlink())
 
 
-def validate_runtime(c, runtime, full=False, files=True):
-    """files=False：只看清单和入口（游戏库列表用），不逐文件读状态，只核主程序 / main.npdm 在且大小对（QUICK_FILES，审计 P2-212：
+def validate_runtime(c, runtime, full=False, files=True, doubts=None):
+    """doubts：起局传一个列表（11-17 维护者：校验不过不再拒起局）：清单的 schema / engine / target 对不上、主程序 / 程序描述缺或大小不符都记进去、照常返回，
+    由起局黄字说明、照常起；不传照旧抛错（游戏库判「就绪」用）。files=False：只看清单和入口（游戏库列表用），不逐文件读状态，只核主程序 / main.npdm 在且大小对（QUICK_FILES，审计 P2-212：
     原先清单没变、主程序被删也报就绪，点开始才报错）。起局也用它（v0.3.1：原先每次起局逐个核约 6 万个文件，又慢、任何一个不对就不让玩）；
     其余文件真坏了，游戏会非正常退出，launch 那时再完整核一遍、说清缺了什么（missing_after_crash）"""
     root = resolve_path(runtime)
     layout.require_in_location(c, root)
     manifest = read(root / "manifest.json", {})
     if manifest.get("schema") != 1 or manifest.get("engine") != "S2Arm" or manifest.get("target") != "macos-arm64":
-        raise Failure("当前游戏没有完整的 S2Arm Mac 运行版本。", code="runtime_invalid")
+        if doubts is None:
+            raise Failure("当前游戏没有完整的 S2Arm Mac 运行版本。", code="runtime_invalid")
+        got = f"schema={manifest.get('schema')}, engine={manifest.get('engine')}, target={manifest.get('target')}"
+        doubts.append(f"运行版本清单对不上（{got}）")
     if not has_runtime_romfs(root):
         raise Failure("运行包缺少独立的 RomFS 游戏资源目录，请重新准备。", code="runtime_invalid")
     if files:
@@ -104,7 +121,12 @@ def validate_runtime(c, runtime, full=False, files=True):
     elif isinstance(manifest.get("files"), dict):
         quick = {k: manifest["files"][k] for k in QUICK_FILES if k in manifest["files"]}
         if quick:
-            validate_files(c, root, quick, full=False)
+            try:
+                validate_files(c, root, quick, full=False)
+            except Failure as e:
+                if doubts is None:
+                    raise
+                doubts.append(f"运行文件 {str(e).split('：', 1)[-1]} 缺失或大小不符")
     if manifest.get("memoryRequirementsVersion") == 2:
         table = root / "addr_need.tsv"
         if not table.is_file() or manifest.get("memoryRequirementsSha256") != digest(table):
@@ -126,13 +148,16 @@ def missing_after_crash(c, runtime, manifest):
     return None
 
 
-def require_automatic_memory(c):
-    if "vammLayout" in c.r:
-        raise Failure("启动器版本过旧，请更新后重新打包这款游戏。", code="runtime_invalid")
+def docked_default(c):
+    """没选过档位时的运行模式：只认共用设置定义表 game_settings.v1.json 的 docked 缺省（iPhone / Mac 同一处来源，11-17 起两端都是掌机）。
+    请求明给布尔（作业测试 / 内部调用）照给的；玩家按款选过的不在这里，launch() 用 community.launch_env 覆盖"""
+    v = c.r.get("docked")
+    if isinstance(v, bool):
+        return "1" if v else "0"
+    return "1" if community._default(community.settings_table(c)["docked"], {}, "mac") == "docked" else "0"
 
 
 def runtime_env(c, game, runtime, input_ok=True):
-    require_automatic_memory(c)
     # 游戏语言：请求带 gameLanguage（玩家在启动设置里逐款选）就设 S2A_SYSTEM_LANGUAGE；不带就跟 Mac 系统首选语言（宿主 services/S2A.Services/Host.cs PickLanguage
     #   → SystemLocale.FromPreferred；11-13 起不跟启动器界面语言：界面只有中英，日 / 韩语玩家的 Switch 存档名字会乱码）；游戏不支持的落英语，英语也没有用游戏自己的缺省
     language = c.r.get("gameLanguage")
@@ -159,9 +184,11 @@ def runtime_env(c, game, runtime, input_ok=True):
     # 游玩时间（runtime/src/playtime.c）写进这款的游戏文件夹：S2A_DOCS 在 temp/（总览里算可清的临时件），清了不能把累计时长一起清掉
     env.update(S2A_GAME_DATA=str(runtime), S2A_RYU_DATA=str(save), S2A_DOCS=str(docs), S2A_SAVE_FOLDER=str(save_folder),
                S2A_PLAYTIME=str(layout.path(c, game["id"], "playtime.json")),
+               # 即时快照（0.6.0）落在这款的游戏文件夹里（同游玩时间，不放可清的 temp/），删这款时随文件夹一起删；宿主 runtime/src/snapshot.c s2a_snap_dir_for 读
+               S2A_SNAPSHOT_DIR=str(layout.path(c, game["id"], "snapshot")),
                NXGAL_SHADER_CACHE_DIR=str(cache / "shaders"), NXGAL_PSO_DEV_DIR=str(cache / "pso"),
                S2A_MACRO_DUMP=str(cache / "macros"),
-               S2A_DOCKED="0" if c.r.get("docked") is False else "1",   # Mac 缺省主机模式（维护者 11-07）；只有请求明说 false 才掌机
+               S2A_DOCKED=docked_default(c),   # 缺省掌机（11-17 维护者定，同 iPhone）；玩家在这款设置里选过的由 launch() 里 community.launch_env 盖上
                S2A_AUTOPLAY="0", S2A_GAME_NAME=game["name"], S2A_GAME_ID=game["id"],
                S2A_INPUT_GUIDE_PREFS=str(c.private / "input-guides" / (game["id"] + ".json")),
                # 金手指（11-12）：这款游戏文件夹的 cheats/（玩家导入 + 启动器从公开库取的 txt、开关 enabled.txt），Mac 宿主 Cheats.cs 读它
@@ -283,7 +310,6 @@ def keep_runtime_nros(c, game_id, source):
 
 
 def launch(c):
-    require_automatic_memory(c)
     with c.lock("execution"):
         game = c.game()
         from saves import recover
@@ -294,8 +320,15 @@ def launch(c):
         refresh_mac(c, game["id"], runtime)
         kept_nros_mac(c, game["id"], runtime)   # 运行时留下、还没补进的 NRO（#8be819）：上次收局没补成的这里再补
         c.begin("验证运行文件")
-        manifest = validate_runtime(c, runtime, files=False)   # 只核主程序 / 程序描述（QUICK_FILES），其余直接起（v0.3.1）
+        # 校验不过不拒起局（11-17 维护者）：请求带已停用的旧字段 vammLayout（旧启动器发的，照常起、不用它）、清单对不上、主程序 / 程序描述缺或大小不符，
+        #   都黄字点名哪里没过、照常起；这局真出问题时，报错里带上「起局前这里校验就没过」
+        doubts = ["请求里带着已停用的旧内存布局设置（vammLayout）"] if "vammLayout" in c.r else []
+        manifest = validate_runtime(c, runtime, files=False, doubts=doubts)   # 只核主程序 / 程序描述（QUICK_FILES），其余直接起（v0.3.1）
         print("[起局] 只核主程序与程序描述，其余文件不逐个核（真读到坏的、游戏退出后再核、说清缺什么）", file=sys.stderr, flush=True)
+        for doubt in doubts:
+            print("[起局] 校验没过，照常起局：" + doubt, file=sys.stderr, flush=True)  # 非玩家句
+            c.diagnostic(f"{doubt}，先照常启动；起不来的话重新出一次 Mac 版。", code="runtime_invalid", severity="warning")
+        doubt_note = ("\n" + f"起局前这里校验就没过：{'；'.join(doubts)}") if doubts else ""
         if manifest.get("gameId") != game["id"]:
             raise Failure("运行资源与所选游戏不匹配。", code="runtime_invalid")
         if manifest.get("memoryRequirementsVersion") != 2:
@@ -330,22 +363,25 @@ def launch(c):
         try:
             c.begin("游戏运行中", key="game_running")
             log = c.logs / (c.task + "-game.log")
-            started = time.monotonic()
+            started, wall = time.monotonic(), time.time()
             try:
-                c.run([executable, runtime], log, env, cwd=c.library / "temp" / game["id"])
+                import onerom   # 一款一份资源（0.6.0）：游戏跑过加载期后在后台把 Mac 运行版本合并到 iPhone 那份 game.img（玩家不等，退出就停、下次接着）
+                onerom.during(c, game["id"], lambda: c.run([executable, runtime], log, env, cwd=c.library / "temp" / game["id"]))
             except Failure as f:
                 if trial:   # 新宿主试玩：TRIAL_OK_SECONDS 内异常退出 = 不认这款，下次退回原来的；玩过这么久才崩不怪宿主
                     host_update.settle(c, game["id"], host, ok=time.monotonic() - started >= host_update.TRIAL_OK_SECONDS)
+                if f.code == "tool_exit" and heap_learned_now(env, game["id"], wall):   # 这一局普通堆不够、已记下要的堆（runtime svc_mem.c heap_need）：下一局按它给，不是崩溃、不关金手指
+                    raise Failure("这款需要更多内存：已经记下要多少，再点一次开始就能进。", code="game_heap_learned", internal=str(f)) from None
                 if f.code == "tool_exit":   # 游戏进程自己非 0 退出（多为崩溃，139 = 段错误）：给启动页一个说人话的码，原文与退出码随错误摘要带走
                     import cheats   # 开着金手指 / 补丁时退出：当场关掉、记下，下次开始时启动器通知关了哪几条（11-13 维护者改定：不问，cheats.note_crash）
                     cheats.note_crash(c, game, env.get("S2A_DOCS"))   # 带文档根：读运行时写的崩溃落点（宿主自己崩第一次不关）
                     broken = missing_after_crash(c, runtime, manifest)
                     if broken:   # 起局前没逐个核（v0.3.1）：退出后再核，运行文件缺 / 坏了就直说，别让玩家以为是游戏崩了
-                        raise Failure(f"这款游戏的 Mac 运行文件缺了或坏了（例：{broken}），游戏读到它时退出了。重新出一次 Mac 版就能修好；存档不受影响。",
+                        raise Failure(f"这款游戏的 Mac 运行文件缺了或坏了（例：{broken}），游戏读到它时退出了。重新出一次 Mac 版就能修好；存档不受影响。" + doubt_note,
                                       code="runtime_invalid", internal=str(f)) from None
-                    if getattr(c, "last_rc", None) == 86:   # 显卡挂死，运行时安全停下这局（graphics/nvn/host_adapt.m s2a_gpu_safe_stop、gal_core.m 命令缓冲出错），不是玩完（#1257）
-                        raise Failure("显卡卡住了，S2Arm 把这局安全停下了。", code="game_gpu_stopped", internal=str(f)) from None
-                    raise Failure(f"游戏运行中意外退出了（退出码 {getattr(c, 'last_rc', '?')}）。", code="game_crashed", internal=str(f)) from None
+                    if getattr(c, "last_rc", None) == 86:   # 游戏卡住后被停下（显卡挂死安全停 graphics/nvn/host_adapt.m s2a_gpu_safe_stop、gal_core.m 命令缓冲出错、卡住暂停时玩家选退出 macos/front_mac.m），不是玩完（#1257、#1378）
+                        raise Failure("游戏卡住了，S2Arm 把这局安全停下了。" + doubt_note, code="game_gpu_stopped", internal=str(f)) from None
+                    raise Failure(f"游戏运行中意外退出了（退出码 {getattr(c, 'last_rc', '?')}）。" + doubt_note, code="game_crashed", internal=str(f)) from None
                 raise
             if trial:
                 host_update.settle(c, game["id"], host, ok=True)
@@ -577,7 +613,6 @@ def collect_degrade(c, root):
     try:
         log = c.logs / f"{c.task}-degrade.log"
         log.write_text(DEGRADE_HEAD + "\n" + "".join("\t".join([r["stage"], r["kind"], str(r["count"]), r["hint"], r["note"]]) + "\n" for r in rows), encoding="utf-8")
-        log.chmod(0o600)
     except OSError as e:
         c.emit("message", f"降级表没存进日志目录（{e}），诊断包里会少这一份；出包结果不受影响")
     return list(dict.fromkeys(r["hint"] for r in rows if r["hint"]))
@@ -674,18 +709,28 @@ def ensure_extract(c, game, packages, env, logs, valid=None):
         elif any(p.get("format") in EXTRACTED_FORMATS for p in packages):
             extract_folder(c, game, packages, extraction, env, logs)
         else:
-            c.run(
-                [
-                    toolchain.reader(c),
-                    c.keys,
-                    extraction,
-                    "--aoc-index",
-                    "--title-id=" + game["id"],
-                    *paths,
-                ],
-                logs / "extract.log",
-                env,
-            )
+            try:
+                c.run(
+                    [
+                        toolchain.reader(c),
+                        c.keys,
+                        extraction,
+                        "--aoc-index",
+                        "--title-id=" + game["id"],
+                        *paths,
+                    ],
+                    logs / "extract.log",
+                    env,
+                )
+            except Failure as error:
+                # #1411：打 iPhone 包（ipa）在自己里面解包，读取器失败原先落进通用 tool_exit（「工具跑失败」），原因被藏；
+                #   Mac 准备（build）在 core.run 里已按 build_tool_failure 归好类、码不是 tool_exit，不走这里。两种作业同一判法：按解包阶段归类
+                if error.code != "tool_exit":
+                    raise
+                from errors import cause_facts, classify_failure, player_reason, tool_reason
+                code, why = classify_failure("unpack", logs / "extract.log")
+                raise Failure(player_reason(code), code=code, internal="解包失败：" + tool_reason(logs / "extract.log") + "\n" + why,  # 非玩家句
+                              facts=cause_facts(code, logs / "extract.log")) from error
         c.emit(
             "message", "解包已完成，正在校验合并结果并写入缓存"
         )  # 解包读满 100% 后还要校验、写缓存：说明在做什么，进度不停在「解包 100%」（社区贡献者补丁 #8）
@@ -916,6 +961,8 @@ def prepare(c):
                 os.replace(image, old)
             os.replace(temporary, image)
             layout.update_info(c, game["id"], hostMac=sha, hostFailed=[], imageKey=key)
+            import onerom   # 一款一份资源（0.6.0）：这款已有 iPhone 资源包、RomFS 是同一份 → 新 Mac 运行版本直接链到它、删掉刚克隆进来的 romfs.std
+            onerom.note(c, game["id"], onerom.dedupe(c, game["id"]))
             # 出包实测账（library.record_pack_usage）：在清旧镜像之前量，新旧同在盘上才是这一单真占到的峰值
             from library import record_pack_usage
             record_pack_usage(c, game)

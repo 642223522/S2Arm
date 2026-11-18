@@ -192,6 +192,17 @@ int main(void) {
           VERIFY(t4 && [t4->vkey isEqual:@"3333333333333333_b"] && !t4->tkey.length && t4->pad == 0, "④c 预热解析 M 行：网格键 3333…、片元键 ffff…、无任务、掩码 0（实得 %s / %s / %s / %#x）",
                  t4 ? t4->vkey.UTF8String : "-", t4 ? t4->fkey.UTF8String : "-", t4 ? t4->tkey.UTF8String : "-", t4 ? t4->pad : 0);
           REQUIRE(t4);
+          // ④f D-75KF：同一对（④ 那行的 pso_skey、无任务）既有补齐行（掩码 20）又有不补齐行（掩码 0）→ 预热丢掉不补齐那行（它被拒过）；⑤ 那行（有任务键）没有补齐行、照留。
+          //   期望（按规则手写）：kind 4 里 3333…/ffff… 无任务的只剩掩码 0x20 一条；⑤ 那条在
+          { NSString *rest = [[row4 componentsSeparatedByString:@"\t"][1] copy], *pp = [NSTemporaryDirectory() stringByAppendingPathComponent:@"t_nvn_mesh_pad_rows.tsv"];
+            NSString *txt = [NSString stringWithFormat:@"%@\nM\t%@\t-\t20\n%@\n", row4, rest, row5];
+            [txt writeToFile:pp atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            long ln = 0; NSArray<WarmTask *> *tp = warm_parse(@[pp], &ln); int unpadded = 0, padded = 0, with_task = 0;
+            for (WarmTask *t in tp) if (t->kind == 4 && [t->fkey isEqual:@"ffffffffffffffff_b"]) {
+                if ([t->vkey isEqual:@"3333333333333333_b"] && !t->tkey.length) { if (t->pad) padded += t->pad == 0x20; else unpadded++; }
+                else if (t->tkey.length) with_task++; }
+            VERIFY(unpadded == 0 && padded == 1 && with_task == 1 && ln == 2, "④f 同对有补齐行时预热丢掉不补齐那行（实得 不补齐 %d / 补齐 %d / 带任务 %d / 行数 %ld，期望 0 / 1 / 1 / 2）", unpadded, padded, with_task, ln);
+            [NSFileManager.defaultManager removeItemAtPath:pp error:nil]; }
           pso_skey sk; [t4->rs[0] getBytes:&sk length:sizeof sk]; mtk_key mk; mtk_warm_key(&sk, NULL, md, fs, 0, &mk);
           os_unfair_lock_lock(&g_pso_mtk_lock); id had = hm_get_id(&g_pso_mtk, &mk); os_unfair_lock_unlock(&g_pso_mtk_lock);
           VERIFY(had && had != NSNull.null && had != g_pso_mtk_building, "④c 按 M 行拼回的键在网格管线表里查得到 ④ 编好的那条（%p）", (__bridge void *)had);

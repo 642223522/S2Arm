@@ -18,6 +18,7 @@ cp "$H/pack/roots.sh" "$H/pack/srcs.sh" "$H/pack/stage_extract.sh" "$H/pack/ue_p
 cp "$H/graphics/tools/direct/extract.sh" $T/repo/graphics/tools/direct/; cp "$H/graphics/tools/shbake/pak_crypto.py" "$H/graphics/tools/shbake/unreal_pak.py" "$H/graphics/tools/shbake/zstd_lib.py" $T/repo/graphics/tools/shbake/
 # romfs_list.py：仓库里唯一的 RomFS 遍历（11-03），被测脚本经它列 RomFS
 cp "$H/graphics/nvn/tools/romfs_list.py" $T/repo/graphics/nvn/tools/
+mkdir -p "$T/repo/tools"; cp "$H/tools/pool_workers.py" "$T/repo/tools/"   # romfs_list / pak_crypto 经它取核数（#1332：核数唯一来源）
 cp "$H/graphics/nvn/tools/gfx_api.py" $T/repo/graphics/nvn/tools/
 for f in translator/uepak.py translator/unityfs.py graphics/nvn/games/game.py graphics/nvn/tools/nso_syms.py graphics/nvn/tools/lz4blk.py; do echo x > $T/repo/$f; done   # 只进键，假抽取器不导入
 # 假抽取器：记一行「工具 J DM_GAME DM_UE_SHADERS」（另记一行「splitcap DM_GLSLC_CAPTURE」），出最小产物；FAKE_FAIL=split 时 shader_split 失败；

@@ -55,9 +55,11 @@ ck "⑧ 本机没有工作盘 → 直接跑、账上 0 单（${o8}）；负对�
 # ⑨ 子进程拿调用方原样的区域（11-06 手测脚本经准入重起后「装测试设备 + 变量 DEV + 全角括号」报 DEV�: unbound variable）：调用方没设区域 → 子进程环境里也没有 LC_CTYPE（Python 区域强转加的 C.UTF-8 不外泄），
 #   脚本里「变量紧跟全角字」照常展开；负对照：子进程显式带 LC_CTYPE=C.UTF-8 → 同一脚本报 unbound
 printf '#!/bin/bash\nset -u\nDEV=2\necho "装测试设备%sDEV）"\n' '$' > $T/loc.sh   # 夹具故意写「变量紧跟全角字」；用 %s 拼出 $，仓库源码里不留这种写法
-o9=$(env -u LANG -u LC_ALL -u LC_CTYPE S2A_DISK_FREE_GB=100 python3 $H/tools/disk_admit.py run --cat c --name loc --gb 1 -- bash -c 'echo "ct=${LC_CTYPE:-无}"; bash '$T'/loc.sh' 2>&1 | tr '\n' ' ')
-o9n=$(env -u LANG -u LC_ALL LC_CTYPE=C.UTF-8 bash $T/loc.sh 2>&1 | tr '\n' ' ')
-ck "⑨ 调用方没设区域 → 子进程也没有 LC_CTYPE、全角字紧跟变量照常（${o9}）；负对照带 C.UTF-8 报错（${o9n:0:60}）" '[ "$o9" = "ct=无 装测试设备2） " ] && grep -q "unbound variable" <<< "$o9n"'
+#   正向与负对照都钉死：/bin/bash（系统自带 3.2；Homebrew bash 在不设区域时按系统语言本地化、中文系统上连字节切分都变）+ LC_MESSAGES=C（报错英文，
+#   负对照认「unbound variable」）。11-16：一台系统语言为中文的门禁主机上，这里两半都按机器语言走、合入后一直红；与「区域不外泄」的被测行为无关
+o9=$(env -u LANG -u LC_ALL -u LC_CTYPE LC_MESSAGES=C S2A_DISK_FREE_GB=100 python3 $H/tools/disk_admit.py run --cat c --name loc --gb 1 -- /bin/bash -c 'echo "ct=${LC_CTYPE:-无}"; /bin/bash '$T'/loc.sh' 2>&1 | LC_ALL=C tr '\n' ' ')
+o9n=$(env -u LANG -u LC_ALL LC_MESSAGES=C LC_CTYPE=C.UTF-8 /bin/bash $T/loc.sh 2>&1 | LC_ALL=C tr '\n' ' ')   # tr / grep 按字节：输出里有被切坏的半个字（DEV\357），外层是 UTF-8 区域时 tr 遇非法序列会截断
+ck "⑨ 调用方没设区域 → 子进程也没有 LC_CTYPE、全角字紧跟变量照常（${o9}）；负对照带 C.UTF-8 报错（${o9n:0:60}）" '[ "$o9" = "ct=无 装测试设备2） " ] && LC_ALL=C grep -q "unbound variable" <<< "$o9n"'
 # ⑩ 嵌套（11-06 金刚 c3：外层 run 记 40G、里面Windows 出包机道 hold 同一单再排 40G，剩 159 − 98 − 40 < 50 自己挡自己）：剩 100、外层 40 排到后里面再套 run 40 →
 #   期望（按规则手写）：里层不排队直接跑、退出码透传、跑时账上只 1 单（外层那笔）；负对照：同样的里层不在外层里（另起、不带 S2A_DISK_HELD）且外层占着 → 等满退 75
 o10=$($DA run --cat c --name outer --gb 40 -- bash -c "$DA run --cat c --name inner --gb 40 --max-wait 2 --poll 1 -- bash -c 'ls $T/acct | grep -c ^use\\.; exit 4' 2> $T/e10; echo rc=\$?" 2> /dev/null | tr '\n' ' ')

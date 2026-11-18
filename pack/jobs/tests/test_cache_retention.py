@@ -4,6 +4,7 @@ os.environ.setdefault("S2A_BANNER_FETCH", "0")   # 同 jobcase.py：作业开始
 import sys
 import tempfile
 import unittest
+import jobcase  # noqa: E402（作业上下文替身统一工厂 jobcase.fake_context）
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,7 +17,7 @@ class CompilerRetentionTests(unittest.TestCase):
     def _preflight_fixture(self, root):
         import os
         import time
-        c = SimpleNamespace(private=root / 'private', work_root=root / 'private', library=root / 'library', emit=lambda *a, **k: None, warnings=[])
+        c = jobcase.fake_context(root, private=root / 'private', work_root=root / 'private', library=root / 'library', emit=lambda *a, **k: None, warnings=[])
         c.diagnostic = lambda *a, **k: c.warnings.append((a, k))
         c.library.mkdir()
         paths = []
@@ -89,7 +90,7 @@ class CompilerRetentionTests(unittest.TestCase):
     def test_success_cleanup_keeps_compiler_inputs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            c = SimpleNamespace(private=root / 'private', work_root=root / 'private', library=root / 'library')
+            c = jobcase.fake_context(root, private=root / 'private', work_root=root / 'private', library=root / 'library')
             files = [c.private / 'cache/air/ios/aa' / ('a' * 64 + '.air'),
                      c.private / 'cache/pso/bb' / ('b' * 64 + '.bin'),
                      c.private / 'run/gal_dl_cache/ios/cc' / ('c' * 64 + '.metallib')]
@@ -108,7 +109,7 @@ class CompilerRetentionTests(unittest.TestCase):
     def test_success_keeps_direct_store_and_removes_only_transients(self):
         # S2Arm 10-31: the direct cache is store/ (shard files) + logs/; the former per-key trees ios/ and mac/ are the old layout, cleared like work/
         with tempfile.TemporaryDirectory() as directory:
-            c = SimpleNamespace(private=Path(directory) / 'private', work_root=Path(directory) / 'private', library=Path(directory) / 'library')
+            c = jobcase.fake_context(directory, private=Path(directory) / 'private', work_root=Path(directory) / 'private', library=Path(directory) / 'library')
             gid = '0100000000000000'
             direct = c.private / 'run/s2arm/cache/direct' / gid
             kept = [direct / 'store/dshb/aa' / ('aa' + '0' * 62 + '.e'), direct / 'logs/build.log', direct / 'future-format/unknown',
@@ -130,7 +131,7 @@ class CompilerRetentionTests(unittest.TestCase):
         import os
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as directory:
-            c = SimpleNamespace(private=Path(directory) / 'private', work_root=Path(directory) / 'private', library=Path(directory) / 'library', begin=lambda *a, **k: None)
+            c = jobcase.fake_context(directory, private=Path(directory) / 'private', work_root=Path(directory) / 'private', library=Path(directory) / 'library', begin=lambda *a, **k: None)
             gid = '0100000000000000'
             c.library.mkdir()
             roots = layout.ios_work(c, gid) / 'roots'
@@ -156,7 +157,7 @@ class CompilerRetentionTests(unittest.TestCase):
         for name in ('work', 'merged', 'ios.stage.12345'):
             for destination in ('store', 'logs', '../0100000000000001/store'):
                 with self.subTest(name=name, destination=destination), tempfile.TemporaryDirectory() as directory:
-                    c = SimpleNamespace(private=Path(directory) / 'private', work_root=Path(directory) / 'private', library=Path(directory) / 'library')
+                    c = jobcase.fake_context(directory, private=Path(directory) / 'private', work_root=Path(directory) / 'private', library=Path(directory) / 'library')
                     direct = c.private / 'run/s2arm/cache/direct/0100000000000000'
                     direct.mkdir(parents=True)
                     target = direct / destination
@@ -174,7 +175,7 @@ class CompilerRetentionTests(unittest.TestCase):
 
     def test_link_replacement_after_selection_is_rechecked_at_deletion(self):
         with tempfile.TemporaryDirectory() as directory:
-            c = SimpleNamespace(private=Path(directory) / 'private', work_root=Path(directory) / 'private', library=Path(directory) / 'library')
+            c = jobcase.fake_context(directory, private=Path(directory) / 'private', work_root=Path(directory) / 'private', library=Path(directory) / 'library')
             direct = c.private / 'run/s2arm/cache/direct/0100000000000000'
             work = direct / 'work'
             work.mkdir(parents=True)
@@ -225,6 +226,24 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual((result['observedBytes'], result['retainedBytes'], result['removedBytes']), (12, 8, 4))
         self.assertEqual((result['removedEntries'], result['pressureRemaining']), (1, False))
         self.assertEqual(self.trim(free=1)['removedEntries'], 0)
+
+    def test_skip_scan_when_free_leaves_everything_and_refreshes_current_title(self):
+        # 期望手写（11-16 出包收尾不全量扫）：盘余量 5 ≥ 底线 1 → 不扫（scanned False、字节统计 None）、一个文件都不动、
+        #   本款直连仓 store 的修改时间刷成 NOW；盘余量 0 < 底线 → 照旧扫描并删最旧的（同上一条用例）
+        gid = '0100000000010000'
+        air = self.put('cache/air/ios/aa/' + 'a' * 64 + '.air', age=9000)
+        store = self.private / 'run/s2arm/cache/direct' / gid / 'store'
+        store.mkdir(parents=True)
+        os.utime(store, (self.NOW - 50000, self.NOW - 50000))
+        result = self.trim(free=5, current_gid=gid, skip_scan_when_free=True)
+        self.assertEqual((result['scanned'], result['observedBytes'], result['retainedBytes'], result['removedEntries']), (False, None, None, 0))
+        self.assertEqual((result['accountingComplete'], result['pressureRemaining'], result['freeBytes']), (True, False, 5))
+        self.assertTrue(air.exists())
+        self.assertEqual(int(store.stat().st_mtime), int(self.NOW))
+        low = self.trim(readings=[0, 0, 1], current_gid=gid, skip_scan_when_free=True)   # 快路径先读一次盘余量（0，不够）
+        self.assertTrue(low['scanned'])
+        self.assertFalse(air.exists())
+        self.assertEqual(low['removedEntries'], 1)
 
     def test_hot_future_temporary_and_unknown_are_retained_above_budget(self):
         files = [self.put('cache/air/ios/aa/' + 'a' * 64 + '.air', age=3599),

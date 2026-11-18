@@ -320,6 +320,7 @@ def prepare(c, game, extraction, env, target="mac"):
 #   读产物根里编译器自己的记录（pack/cpatch.py plan / prune）：cpatch.tsv = 最终打进去的；cpatch_plan.log 的「收 / 不收 / 移植不了」行与
 #   cpatch_excluded.tsv（改写器缺口剔掉的）= 没打上的及原因。原因翻成玩家看得懂的话；本来就不该打的（版本不对、同画幅已收另一份、本款有我方帧率表）不算失败、不列
 _WHY = (   # (原因里出现的字样, 给玩家的话)；None = 不算失败
+    (("没写构建号",), "result.why.nobid"),  # 非玩家句（#1321：金手指文件没写构建号，出包核不了版本、不编进包；要告诉玩家，pack/cpatch.py scan_cheats）
     (("FPSLocker 配置不支持",), "result.why.unsupported"),  # 非玩家句（pack/cpatch.py：FPSLocker 配置里有 S2Arm 还不支持的写法，#934）
     (("mod 构建号对不上",), "result.why.version"),  # 非玩家句（玩家自己导入的 mod 是别的版本的：要告诉玩家，pack/cpatch.py scan mod_miss）
     (("版本不对", "同画幅", "我方帧率表"), None),  # 非玩家句

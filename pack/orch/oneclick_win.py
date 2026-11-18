@@ -23,7 +23,8 @@
 退出码：0 成功；1 失败（标准输出最后一行【红】说明停在哪一步）；3 内容缺口（直连库出不了）；75 环境缺件（--check 同口径）。
 今晚实测（11-05 Windows 出包机 20 核）：旷野之息 解包 39 秒 / 轻阶段 ~260 秒 / 直连库 267 秒 / ipa 136 秒；金刚 导出整理 91 秒 / 轻阶段 ~300 秒 / 直连库 493 秒 / ipa 196 秒。
 """
-import argparse, glob, json, os, re, shutil, subprocess, sys, tempfile, time
+import os as _pw_os, sys as _pw_sys; _pw_sys.path.append(_pw_os.path.join(_pw_os.path.dirname(_pw_os.path.abspath(__file__)), '..', '..', 'tools')); from pool_workers import cores  # noqa: E402  核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
+import argparse, glob, json, ntpath, os, re, shutil, stat, subprocess, sys, tempfile, time
 from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 from pack.orch import shortroot   # noqa: E402
@@ -355,7 +356,7 @@ def unpack(run, sources, title_id, program_index=0):
     nup = [p for p in sources if p.lower().endswith('.nup')] or (glob.glob(os.path.join(glob.escape(sources[0]), '*.nup')) if s.is_dir() else [])
     export = next((d for d in [s] + ([Path(p) for p in glob.glob(os.path.join(glob.escape(sources[0]), '*'))] if s.is_dir() else []) if (d / 'base/exefs/main.npdm').is_file()), None)
     drop_seed_link(x)
-    shutil.rmtree(x, ignore_errors=True)
+    rmtree_loud(x)
     if export is None and nup:   # Switch 2 NUP 容器：先展开成导出目录
         name = re.sub(r' \[.*$', '', Path(nup[0]).stem)
         export = run.out / 'ns2_dump' / name
@@ -414,12 +415,12 @@ def gamedec(run):
     b = Path(os.environ.get('S2A_BIN') or run.out / 'bin') / ('gamedec_' + ident)
     exe = b / ('gamedec.exe' if WIN else 'gamedec')
     if not exe.is_file():
-        tmp = b.with_name(b.name + f'.tmp{os.getpid()}'); shutil.rmtree(tmp, ignore_errors=True)
+        tmp = b.with_name(b.name + f'.tmp{os.getpid()}'); rmtree_loud(tmp)
         run.sh(['dotnet', 'build', '-c', 'Release', str(R / 'pack/gamedec/gamedec.csproj'), '-o', str(tmp), '-nologo', '-v', 'q'], 'gamedec_build.log', ok=(0,))
         try: tmp.rename(b)
         except OSError:   # 别的作业同时编好了同一身份：用它的
             if not exe.is_file(): raise
-            shutil.rmtree(tmp, ignore_errors=True)
+            rmtree_loud(tmp, strict=False)
     return exe
 
 
@@ -578,7 +579,7 @@ def direct(run, cur, target, jobs, tid=None, name='direct'):
     if src: env['S2A_PSO_SOURCES'] = src
     bash = bash_exe()
     if not bash: raise Fail('没有 Git Bash（直连库脚本要它）', 75)
-    shutil.rmtree(out, ignore_errors=True)
+    rmtree_loud(out)
     label = '抽取 + 直连库' if name == 'direct' else f'抽取 + 直连库（{name}）'; dname = 'dcache' if name == 'direct' else f'dcache_{name}'   # 多程序合集各序号的私有缓存 / 日志分开
     croot = os.environ.get('S2A_DIRECT_CACHE_ROOT') if not os.environ.get('S2A_DIRECT_CACHE') and tid else None
     if not croot:
@@ -591,11 +592,38 @@ def direct(run, cur, target, jobs, tid=None, name='direct'):
         run.say(f'直连缓存（常驻）：{c}')
         try: run.step(label, lambda: run.sh([bash, mixed(R / 'graphics/tools/direct/direct_lib.sh'), mixed(cur), mixed(out)], 'direct_lib.log', env=env))
         finally:
-            mine = run.out / dname / 'logs'; shutil.rmtree(mine, ignore_errors=True); mine.mkdir(parents=True)
+            mine = run.out / dname / 'logs'; rmtree_loud(mine); mine.mkdir(parents=True)
             for f in (c / 'logs').glob('*.log'): shutil.copy2(f, mine / f.name)
-        dcache_lru(run, root, tid.upper())
     finally: lk.close()
+    # 淘汰放在放锁之后（11-16 极速出包定因：原先拿着同款锁淘汰，同款下一单白等 98 秒）：本款照旧列在「在用」里、整款不动，接手的同款单用的也是这一款
+    dcache_lru(run, root, tid.upper())
     return out
+
+
+def rmtree_loud(p, strict=True):
+    """删整棵目录：不在就算删完；只读文件（只读位，os.unlink 不认、报 WinError 5）先去掉只读再删；还删不掉的报出来——
+    strict 抛错（之后要在原处重建的输出目录，残留会混进新产物），否则说一句黄（只是收尾清理）。原先 rmtree(ignore_errors=True) 静默留残留"""
+    def retry(func, path, exc):
+        error = exc if isinstance(exc, BaseException) else exc[1]
+        if isinstance(error, FileNotFoundError):
+            return
+        if isinstance(error, PermissionError) and os.path.lexists(path) and not os.path.islink(path):
+            for q in (os.path.dirname(path), path):   # Windows 是文件的只读位；别处是父目录没有写权限
+                if not os.path.islink(q):
+                    os.chmod(q, stat.S_IMODE(os.stat(q).st_mode) | stat.S_IWRITE | stat.S_IREAD | (stat.S_IEXEC if os.path.isdir(q) else 0))
+            return func(path)
+        raise error
+    if not os.path.lexists(p):
+        return
+    try:
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(p, onexc=retry)
+        else:
+            shutil.rmtree(p, onerror=retry)
+    except OSError as e:
+        if strict:
+            raise OSError(e.errno, f'删不掉 {p}（{e.strerror or e}；{getattr(e, "filename", "") or ""}）') from e
+        print(f'【黄】没删干净 {p}：{e}', file=sys.stderr)
 
 
 def junction(dst, src):
@@ -680,7 +708,7 @@ def Early(run, a, cur, game):
     d = run.out / 'early'; log = d / 'early.log'
 
     def build():
-        shutil.rmtree(d, ignore_errors=True); d.mkdir(parents=True)
+        rmtree_loud(d); d.mkdir(parents=True)
         w = product(run, cur, None, d / 'product')
         title = subprocess.run([PY, '-X', 'utf8', str(R / 'pack/display_name.py'), str(w), '--title'], capture_output=True, text=True, encoding='utf-8').stdout.strip()
         suffix = a.suffix if a.suffix is not None else 'Win'
@@ -722,12 +750,54 @@ def share_walk_dir(out):
 TEMP_MAX = 200   # TMP / TEMP 的上限：超过 MAX_PATH 时 CreateProcess 的兼容性查询（BasepQueryAppCompat）在 GetTempPath 上无限循环，子进程永远起不来
 
 
+def _mapped_network_roots():
+    """返回当前登录会话的映射盘与 UNC 共享根；Metal 的 Windows 版不能读 UNC 源文件。"""
+    if not WIN: return []
+    import ctypes as C
+    from ctypes import wintypes as W
+    get = C.WinDLL('mpr', use_last_error=True).WNetGetConnectionW
+    get.argtypes = (W.LPCWSTR, W.LPWSTR, C.POINTER(W.DWORD)); get.restype = W.DWORD
+    roots = []
+    for letter in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
+        size = W.DWORD(32768); remote = C.create_unicode_buffer(size.value)
+        if get(letter + ':', remote, C.byref(size)) == 0:
+            roots.append((letter + ':', remote.value))
+    return roots
+
+
+def _map_unc_to_drive(path, roots):
+    """把 UNC 工作目录换回指向同一共享的已映射盘；没有匹配时保留原路径。"""
+    text = os.fspath(path)
+    if text.startswith('\\\\?\\UNC\\'): text = '\\\\' + text[8:]
+    if not text.startswith('\\\\'): return text
+    target = ntpath.normpath(text)
+    key = ntpath.normcase(target)
+    matches = []
+    for drive, remote in roots:
+        if remote.startswith('\\\\?\\UNC\\'): remote = '\\\\' + remote[8:]
+        root = ntpath.normpath(remote).rstrip('\\')
+        folded = ntpath.normcase(root)
+        if key == folded or key.startswith(folded + '\\'):
+            matches.append((len(folded), drive, target[len(root):]))
+    if not matches: return text
+    _, drive, suffix = max(matches)
+    return ntpath.splitdrive(drive)[0].rstrip('\\') + (suffix or '\\')
+
+
+def _work_temp_root(out):
+    """Windows 临时目录保留或反查映射盘写法：Path.resolve()/realpath() 会将其折叠成 Metal 不支持的 UNC。"""
+    if not WIN: return str(Path(out).resolve())
+    path = os.fspath(out)
+    if path.startswith('\\\\'): path = _map_unc_to_drive(path, _mapped_network_roots())
+    return ntpath.abspath(path)
+
+
 def work_temp(out):
     """临时文件跟工作目录走（11-06 维护者：Windows 出包机 C 盘被编库临时文件写满，时之笛出库两次失败；玩家机 C 盘常常很小）：
     本进程与全部子进程（C# 编库 Path.GetTempPath、Python tempfile、dotnet、bash）的 TMP / TEMP / TMPDIR 指到 <工作目录>/tmp，
     不再落系统盘的用户 Temp。在 main 起步时设一次，之后起的子进程都继承；S2A_KEEP_SYSTEM_TEMP=1 时保持原样（排查用）"""
     if os.environ.get('S2A_KEEP_SYSTEM_TEMP') == '1': return None
-    t = Path(out).resolve() / 'tmp'   # out 已是短入口下的路径：实际落在玩家选的目录
+    t = Path(_work_temp_root(out)) / 'tmp'   # Windows 用词法绝对路径，避免把映射盘解析成 Metal 不支持的 UNC
     if WIN and len(str(t)) > TEMP_MAX:   # 只有建不了短入口才会走到这里：TEMP 不能超长，退回系统 Temp
         print('【黄】工作目录路径太长且建不了短路径入口，临时文件用系统 Temp', file=sys.stderr)
         return None
@@ -742,7 +812,7 @@ def main(argv=None):
         if hasattr(s, 'reconfigure'): s.reconfigure(encoding='utf-8')
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('source', nargs='*'); ap.add_argument('--out'); ap.add_argument('--target', choices=('ios', 'mac'), default='ios')
-    ap.add_argument('--title-id'); ap.add_argument('--bundle-id'); ap.add_argument('--shell'); ap.add_argument('--jobs', type=int, default=os.cpu_count() or 8)
+    ap.add_argument('--title-id'); ap.add_argument('--bundle-id'); ap.add_argument('--shell'); ap.add_argument('--jobs', type=int, default=cores())
     ap.add_argument('--check', action='store_true'); ap.add_argument('--from-extract'); ap.add_argument('--events')
     ap.add_argument('--rt-shaders', metavar='DIR')   # 内部验证包：真机转储的着色器并进解包目录（put_rt）；不给 = 不带（缺省行为不变）
     ap.add_argument('--install', metavar='UDID'); ap.add_argument('--name'); ap.add_argument('--suffix'); ap.add_argument('--plumesign'); ap.add_argument('--devpush')

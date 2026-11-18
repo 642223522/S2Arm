@@ -15,12 +15,14 @@ import contextlib
 import json
 import os
 import re
+import socket
 import sys
 import shutil
 import time
 from pathlib import Path
 
 from core import Failure, atomic, contained, read, resolve_path
+from errors import library_lock_failure
 
 VERSION = 4   # 2：每款进 games/<英文名>/；3：iPhone 产物进每款 image/ios、装机产物与设备记录进默认位置根（_upgrade_3）；4：库外的工具缓存 / 日志搬进默认位置（_upgrade_4）
 GAME_JSON = "game.json"
@@ -324,9 +326,9 @@ def _move_folder(c, gid, src, dest_root):
         try:
             copy_tree_links(src, temporary)
             _verify_copy(src, temporary, strict=False)
-            for sub in ("saves", "save-backups"):
-                if (src / sub).is_dir():
-                    _verify_copy(src / sub, temporary / sub, strict=True)
+            for sub in save_entries(src):   # 存档类逐字节核（唯一来源 save_entries）
+                if sub.is_dir():
+                    _verify_copy(sub, temporary / sub.name, strict=True)
         except Failure:
             shutil.rmtree(temporary, ignore_errors=True)
             raise Failure("拷到新位置后核对不一致，没有移动（原位置的文件都还在）。", code="job_failed")
@@ -435,10 +437,10 @@ def image_ios(c, gid, create=True):
     return path(c, gid, "image", "ios", create=create)
 
 
-# ---- 游戏程序专用文件夹（11-16 维护者：玩家打完包常删输出目录、之后不碰电脑，更新 S2Arm 时组容器要的游戏程序跟着丢了）----
-# 默认位置根 .programs/<程序号>/：kit/（组容器的程序件）、original-exefs/（原始程序，S 级升级用，sgrade.py）、ios.json（程序件的兼容记录，同 game.json 的 ios）。
-#   按程序号分、不在游戏文件夹里：删游戏文件夹、换存放位置删旧位置、「释放空间」都不碰它；只有「删除游戏」（library.delete：从库里删掉、也从各台手机记录摘掉）才删。
-#   旧库的 image/ios/kit、original-exefs 第一次用到时搬过来（同卷改名，跨卷拷后删）。一款约 56–238 MB（11-16 常驻库 14 款实测合计 1971 MB）
+# ---- 游戏程序常驻（11-16 维护者：玩家打完包常删输出目录、之后不碰电脑，更新 S2Arm 时组容器要的游戏程序跟着丢了；又定「极致压缩」）----
+# 默认位置根 .programs/<程序号>/：exefs.tar.zst（原始程序）、recipe.tar.zst（配方）、ios.json（程序件的兼容记录，同 game.json 的 ios）。
+#   按程序号分、不在游戏文件夹里：删游戏文件夹、换存放位置删旧位置、「释放空间」都不碰它；只有「删除游戏」（library.delete）才删。
+#   kit 与解开的原始程序是缓存（工具缓存 cache/programs/<程序号>），缺了按配方现建：见 pack/jobs/programs.py
 PROGRAMS, PROGRAM_INFO, PROGRAM_EXEFS = ".programs", "ios.json", "original-exefs"
 
 
@@ -450,25 +452,41 @@ def program_store(c, gid, create=False):
     return d
 
 
-def _adopt(c, gid, name, legacy):
-    """专用文件夹里还没有 name、游戏文件夹里的旧位置 legacy 有 → 搬过来；搬不动（盘只读 / 被占用）就先用旧位置，下次再搬"""
-    new = program_store(c, gid) / name
-    if os.path.lexists(new) or not os.path.isdir(legacy):
-        return new
-    try:
-        program_store(c, gid, create=True)
-        _move_any(legacy, new)
-    except OSError:
-        return legacy
-    return new
-
-
 def ios_kit(c, gid):
-    return _adopt(c, gid, IOS_KIT, image_ios(c, gid, create=False) / IOS_KIT)
+    """iPhone 程序件（组容器读）：缓存在就用、缺了按常驻配方现建（programs.kit_dir）；只问「有没有」用 has_ios_kit（不现建）"""
+    import programs
+    return programs.kit_dir(c, gid)
+
+
+def ios_kit_present(c, gid):
+    """已有的 iPhone 程序件目录（缓存 kit，或还没迁移的旧布局）→ 路径 | None。只看文件，不迁移、不现建：给游戏库清单这类只读的地方用
+    （11-16：清单画金色 S 调 ios_kit，升级首启在读库里做旧布局迁移，与后台作业撞上 WinError 32，整个清单读失败）"""
+    import programs
+    for kit in (programs.cache(c, gid) / "kit", program_store(c, gid) / IOS_KIT, image_ios(c, gid, create=False) / IOS_KIT):
+        if (kit / "main.npdm").is_file():
+            return kit
+    return None
+
+
+def has_ios_kit(c, gid):
+    """有没有 iPhone 程序件（游戏库清单每款都问：只看文件，不迁移、不现建——旧布局的迁移要压缩 + 现建对拍，留到真用程序件时做）"""
+    import programs
+    if programs.has_kit(c, gid):
+        return True
+    for kit in (program_store(c, gid) / IOS_KIT, image_ios(c, gid, create=False) / IOS_KIT):   # 还没迁移的旧布局
+        try:
+            if (kit / "main.npdm").stat().st_size > 0 and any(kit.glob("*.fixups.tsv")):
+                return True
+        except OSError:
+            pass
+    return False
 
 
 def program_exefs(c, gid):
-    return _adopt(c, gid, PROGRAM_EXEFS, path(c, gid, PROGRAM_EXEFS, create=False))
+    """解开的原始程序目录（缓存，缺了从常驻归档解）；没有 → 不存在的路径"""
+    import programs
+    programs.adopt(c, gid)
+    return programs.exefs_dir(c, gid) or programs.cache(c, gid) / "exefs"
 
 
 def program_info(c, gid):
@@ -995,6 +1013,27 @@ def entries(d, pattern="*", recursive=False):
     return sorted(p for p in found if not any(os_junk(part) for part in p.relative_to(d).parts))
 
 
+# 每款游戏文件夹里「存档类」的东西：唯一来源（维护者 11-17：删除游戏只留了 saves/、save-backups/，把 SaveData*（Mac 原生格式存档位置）
+#   和 save_backup/（iPhone / Apple TV 装机前拉回的存档备份，手机存档在电脑上唯一的一份）一起删了）。删除游戏、腾空间、换位置核对、空间统计都读这一份。
+#   saves/：Ryujinx 数据根（build.py）；save-backups/：存档管理的备份；save_backup/：装机前 / 电视拉回（install.py、tvos.py）；
+#   SaveData、SaveData-<玩家>：原生格式存档位置（build.py、saves.py）。金手指、mod 不算存档
+SAVE_DIRS = ("saves", "save-backups", "save_backup")
+SAVE_DATA = re.compile(r"SaveData(-.+)?")
+
+
+def is_save_entry(name):
+    """游戏文件夹里这一项（名字）是不是存档类"""
+    return name in SAVE_DIRS or bool(SAVE_DATA.fullmatch(name))
+
+
+def save_entries(gdir):
+    """游戏文件夹里现有的存档类各项（不跟软链认不认：按名字认，删除 / 保留由调用方定）；文件夹不在 → []"""
+    try:
+        return sorted(p for p in Path(gdir).iterdir() if is_save_entry(p.name))
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+
+
 def has_content(d):
     """d 里除了系统自动生成的文件还有没有别的东西（d 不存在 / 不是目录 → False）"""
     try:
@@ -1048,11 +1087,12 @@ def _relocate_lock(private):
         return
     try:
         with filelock.held(private / RELOCATE_LOCK, wait_s=RELOCATE_LOCK_WAIT, poll=0.05,
-                           holder=dict(operation="relocate", pid=os.getpid(), startedAt=round(time.time(), 3))):
+                           holder=dict(operation="relocate", pid=os.getpid(), host=socket.gethostname(),
+                                       startedAt=round(time.time(), 3))):
             yield
     except filelock.Busy as busy:
-        raise Failure("另一个任务正在使用游戏库，请稍后重试。", code="library_busy", holder=busy.holder,
-                      internal=f"等了 {RELOCATE_LOCK_WAIT} 秒，旧默认游戏库搬家锁仍被占（{busy.holder}）") from None  # 非玩家句
+        detail = f"等了 {RELOCATE_LOCK_WAIT} 秒，旧默认游戏库搬家锁仍被占（{busy.holder}）"  # 非玩家句
+        raise library_lock_failure(busy.holder, "另一个任务正在使用游戏库，请稍后重试。", detail) from None  # 非玩家句
 
 
 def _relocate_locked(private, library):

@@ -221,6 +221,8 @@ final class NativeBridge {
     static void dguardPrompt(byte[] diag) {
         MainActivity.dguardPrompt(diag == null ? "" : new String(diag, java.nio.charset.StandardCharsets.UTF_8));
     }
+    /** 停帧看门的屏上提示（native bridge.cpp stall_notice 在看门线程上调）：种类见 StallNotice，seconds 是横幅显示秒数。 */
+    static void stallNotice(int kind, int seconds) { MainActivity.stallNotice(kind, seconds); }
     /** 直连安全网：onTrimMemory/onLowMemory 前台内存告警，记一次失败证据（未武装时空转）。 */
     static native void memoryWarning();
     /** #48 P8：热状态（PowerManager.THERMAL_STATUS_*，读不到 -1）与省电模式，进共用 dm_thermal_now / dm_low_power_now。 */

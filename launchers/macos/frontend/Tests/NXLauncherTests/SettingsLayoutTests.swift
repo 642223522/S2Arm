@@ -23,6 +23,7 @@ import S2ArmAppleAdapter
                 navigation.source.controllers = { [] }; navigation.attach(window); navigation.source.stop()
                 window.makeKeyAndOrderFront(nil)
                 defer { navigation.detach(); window.close() }
+                try await settle(window, navigation, fixture.model.gamepad)
                 let players = navigation.controlTargets(in: window).filter { abs($0.frame.height - 30) < 0.5 }
                     .sorted { $0.frame.minX < $1.frame.minX }
                 XCTAssertEqual(players.count, 4)
@@ -58,7 +59,7 @@ import S2ArmAppleAdapter
                     if player == 3 && target == "X" { try snapshot(host, "input-shared-faces-" + language.code) }
                 }
                 navigation.focus("input.gamepad"); navigation.handle(.confirm)
-                try await Task.sleep(for: .milliseconds(80))
+                try await waitUntil { navigation.controlTargets(in: window).contains { $0.id == "dropdown.leftShoulder" } }
                 let ids = navigation.controlTargets(in: window).map(\.id)
                 for code in InputConfig.padCodes.prefix(4) {
                     XCTAssertFalse(ids.contains("dropdown." + code), "所有玩家都不能用逐游戏配置覆盖实体四键")
@@ -356,6 +357,156 @@ import S2ArmAppleAdapter
         }
     }
 
+    func testSelfSignSessionMatchesTheExportPageLayout() async throws {
+        let fixture = try SettingsFixture()
+        defer { fixture.remove() }
+        fixture.runner.catalogCover = "original-export-cover"
+        let artwork = NSImage(size: CGSize(width: 100, height: 100), flipped: false) { rect in
+            NSColor(deviceRed: 0.9, green: 0.05, blue: 0.9, alpha: 1).setFill()
+            rect.fill(); return true
+        }
+        let covers = CoverCache { _, _ in CoverCache.Loaded(version: "original", image: artwork) }
+        fixture.model.refresh()
+        for _ in 0..<100 where fixture.model.games.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        let game = try XCTUnwrap(fixture.model.games.first)
+        fixture.model.selfSignAfterPack.insert(game.id)
+        for language in [Lang.zh, .en] {
+            for width: CGFloat in [800, 1120, 1440] {
+                fixture.model.session = nil
+                let focus = PadFocus()
+                let reference = AnyView(ExportView(model: fixture.model, covers: covers, game: game, install: {})
+                    .environmentObject(focus).padScope("main", focus).background(Color.black)
+                    .frame(width: width, height: 630))
+                let (referenceHost, referenceWindow) = try await render(reference, fixture: fixture, language: language)
+                defer { referenceWindow.close() }
+                let referenceBounds = referenceWindow.convertToScreen(referenceHost.bounds)
+                let cover = try XCTUnwrap(fixture.navigation.controlTargets(in: referenceWindow).first { $0.id == "export.cover" })
+                XCTAssertEqual(cover.frame.minX - referenceBounds.minX, 48, accuracy: 1)
+                XCTAssertEqual(referenceBounds.maxY - cover.frame.maxY, 22, accuracy: 1)
+                XCTAssertEqual(cover.frame.width, 236, accuracy: 1)
+                XCTAssertEqual(cover.frame.height, 236 / 1.8, accuracy: 1)
+                let expectedArtwork = try exportArtworkBounds(referenceHost)
+                for state in [JobOutcome.State.cancelled, .completed, .failed] {
+                    var run = ExportRun(platforms: [.ios])
+                    if state == .completed { run.outcomes[.ios] = .init(state: .completed, appBytes: 1024, packBytes: 2048, seconds: 90) }
+                    if state == .failed { run.outcomes[.ios] = .init(state: .failed, message: "Original output volume is full", code: "disk_full", suggestion: "Free space and retry") }
+                    let session = JobSession(kind: .export, gameID: game.id, name: game.name, phase: .finished(state), export: run)
+                    fixture.model.session = session
+                    let page = AnyView(ExportSessionView(model: fixture.model, covers: covers, session: session, run: run,
+                        install: { _ in }, freeSpace: { _ in }, uiLanguage: language.sharedCode)
+                        .background(Color.black).foregroundStyle(LauncherTheme.Colors.text).frame(width: width, height: 630))
+                    let (host, window) = try await render(page, fixture: fixture, language: language)
+                    defer { window.close() }
+                    // Compare painted pixels with the reference page: the rounded border
+                    // excludes its outer pixels from the original magenta artwork.
+                    let artworkBounds = try exportArtworkBounds(host)
+                    print("self-sign-layout \(language.code)/\(width)/\(state): artwork=\(artworkBounds), reference=\(expectedArtwork)")
+                    XCTAssertEqual(artworkBounds.minX, expectedArtwork.minX, accuracy: 1)
+                    XCTAssertEqual(artworkBounds.minY, expectedArtwork.minY, accuracy: 1)
+                    XCTAssertEqual(artworkBounds.width, expectedArtwork.width, accuracy: 1)
+                    XCTAssertEqual(artworkBounds.height, expectedArtwork.height, accuracy: 1)
+                    let bounds = window.convertToScreen(host.bounds)
+                    let targets = fixture.navigation.controlTargets(in: window)
+                    let back = try XCTUnwrap(targets.first { $0.id == (state == .completed ? "result.ios.install" : "export.session.back") })
+                    print("self-sign-footer: right=\(bounds.maxX - back.frame.maxX), bottom=\(back.frame.minY - bounds.minY), height=\(back.frame.height)")
+                    XCTAssertEqual(bounds.maxX - back.frame.maxX, 48, accuracy: 1)
+                    XCTAssertEqual(back.frame.minY - bounds.minY, 16, accuracy: 1)
+                    XCTAssertEqual(back.frame.height, 48, accuracy: 1)
+                    for target in targets { XCTAssertTrue(bounds.insetBy(dx: -1, dy: -1).contains(target.frame), "\(state)/\(width): \(target.id) \(target.frame)") }
+                    if state == .completed {
+                        let action = try XCTUnwrap(targets.first { $0.id == "result.ios.install" })
+                        XCTAssertEqual(action.frame.height, 48, accuracy: 1, "结果页的主动作沿用出包页按钮规格")
+                        XCTAssertEqual(action.id, back.id, "单平台结果的主动作应在底栏最右侧")
+                        let footer = targets.filter { $0.frame.maxY < bounds.minY + 90 }
+                        XCTAssertTrue(footer.contains { $0.id == "export.session.back" })
+                        for target in footer { XCTAssertTrue(bounds.contains(target.frame)); XCTAssertEqual(target.frame.height, 48, accuracy: 1) }
+                    }
+                    try snapshot(host, "self-sign-\(language.code)-\(Int(width))-\(state)")
+                }
+            }
+        }
+    }
+
+    func testExportIosAfterPackPickerShowsBothBranches() async throws {
+        let fixture = try SettingsFixture()
+        defer { fixture.remove() }
+        let saved = fixture.model.iosAfterPack
+        defer { fixture.model.iosAfterPack = saved }
+        if !fixture.model.exportTargets.contains(.ios) { fixture.model.toggleExport(.ios) }
+        fixture.model.refresh()
+        for _ in 0..<100 where fixture.model.games.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        let game = try XCTUnwrap(fixture.model.games.first)
+        for language in [Lang.zh, .en] {
+            for branch in ["install", "export"] {
+                fixture.model.iosAfterPack = branch
+                let padFocus = PadFocus()
+                let page = AnyView(ExportView(model: fixture.model, covers: CoverCache(), game: game, install: {})
+                    .environmentObject(padFocus).padScope("main", padFocus).frame(width: 1120, height: 720))
+                let (host, window) = try await render(page, fixture: fixture, language: language)
+                fixture.navigation.source.controllers = { [] }; fixture.navigation.attach(window)
+                defer { fixture.navigation.detach(); window.close() }
+                if let scroll = scrollViews(in: host).first, let document = scroll.documentView {
+                    let clip = scroll.contentView
+                    clip.scroll(to: CGPoint(x: 0, y: document.isFlipped ? max(0, document.bounds.height - clip.bounds.height) : 0))
+                    scroll.reflectScrolledClipView(clip)
+                }
+                try await Task.sleep(for: .milliseconds(70))
+                let targets = fixture.navigation.controlTargets(in: window)
+                let install = try XCTUnwrap(targets.first { $0.id == "export.after.install" })
+                let export = try XCTUnwrap(targets.first { $0.id == "export.after.export" })
+                XCTAssertEqual(install.frame.height, export.frame.height, accuracy: 1, "「出完之后」两张卡同高")
+                XCTAssertEqual(install.frame.minY, export.frame.minY, accuracy: 1)
+                try self.snapshot(host, "export-after-\(branch)-\(language.code)")
+            }
+        }
+    }
+
+    func testSelfSignSessionFooterKeepsBackgroundCancelAndReturnActions() async throws {
+        let fixture = try SettingsFixture()
+        defer { fixture.remove() }
+        fixture.model.refresh()
+        for _ in 0..<100 where fixture.model.games.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        let game = try XCTUnwrap(fixture.model.games.first)
+        for phase in [JobSession.Phase.running, .stopping, .finished(.cancelled), .finished(.failed)] {
+            let run = ExportRun(platforms: [.ios])
+            let session = JobSession(kind: .export, gameID: game.id, name: game.name, phase: phase, export: run)
+            fixture.model.session = session
+            let page = AnyView(ExportSessionView(model: fixture.model, covers: CoverCache(), session: session, run: run,
+                install: { _ in }, freeSpace: { _ in }, uiLanguage: "en").frame(width: 800, height: 450))
+            let (host, window) = try await render(page, fixture: fixture, language: .en)
+            let navigation = fixture.navigation
+            navigation.source.controllers = { [] }; navigation.attach(window); navigation.source.stop()
+            navigation.source.isActive = { true }
+            defer { navigation.detach(); window.close() }
+            let bounds = window.convertToScreen(host.bounds)
+            let targets = navigation.controlTargets(in: window)
+            switch phase {
+            case .running, .stopping:
+                let background = try XCTUnwrap(targets.first { $0.id == "export.session.background" })
+                XCTAssertTrue(bounds.contains(background.frame))
+                XCTAssertEqual(background.frame.height, 48, accuracy: 1)
+                navigation.focus(background.id); navigation.handle(.confirm)
+                XCTAssertTrue(fixture.model.sessionHidden, "回库时导出仍在后台进行")
+                XCTAssertEqual(fixture.model.session?.phase, phase)
+                fixture.model.sessionHidden = false
+                if phase == .stopping { XCTAssertFalse(targets.contains { $0.id == "export.session.cancel" }) }
+                else {
+                    navigation.handle(.submit)
+                    XCTAssertEqual(fixture.model.session?.phase, .stopping, "右扳机仍执行原取消动作")
+                }
+            case .finished:
+                let back = try XCTUnwrap(targets.first { $0.id == "export.session.back" })
+                XCTAssertEqual(bounds.maxX - back.frame.maxX, 48, accuracy: 1)
+                for action in [LauncherPadAction.confirm, .submit, .back] {
+                    fixture.model.session = session
+                    navigation.focus(back.id); navigation.handle(action)
+                    XCTAssertNil(fixture.model.session, "结束后的回库操作必须清除会话")
+                }
+            }
+            XCTAssertFalse(fixture.runner.requests.contains { $0["operation"] as? String == "export" }, "底栏不能意外开始另一单导出")
+        }
+    }
+
     func testExportSubmitShortcutUsesTheExistingExportAction() async throws {
         let fixture = try SettingsFixture()
         defer { fixture.remove() }
@@ -512,24 +663,32 @@ import S2ArmAppleAdapter
                 defer { navigation.detach(); window.close() }
                 let targets = navigation.controlTargets(in: window)
                 let checkbox = try XCTUnwrap(targets.first { $0.id == "export.sgrade.toggle" })
-                let platforms = targets.filter { $0.frame.height >= 142 && $0.frame.height < 240 }
-                    .sorted { $0.frame.minX < $1.frame.minX }
-                let mac = try XCTUnwrap(platforms.dropFirst().first)
                 print("export-checkbox \(language.code)/\(width): \(targets.map { "\($0.id)=\($0.frame)" }.joined(separator: ", "))")
+                // 平台卡按标识认（iPhone / Apple TV / Mac 三张，Apple TV 卡在出包机配了 Apple TV 时才有），不按高度猜
+                let platforms = targets.filter { $0.id.hasPrefix("export.platform.") }.sorted { $0.frame.minX < $1.frame.minX }
+                let mac = try XCTUnwrap(platforms.first { $0.id == "export.platform.mac" })
+                // 复选框与平台之间夹着 mod 一行（「？」格式说明，11-17）：方向键逐行走，不跳行
+                let modHelp = targets.first { $0.id == "export.sgrade.mod.help" }
                 navigation.focus(mac.id); navigation.handle(.up)
+                if let modHelp {
+                    XCTAssertEqual(navigation.focusedID, modHelp.id, "向上应先进平台上方紧邻的 mod 一行")
+                    navigation.handle(.up)
+                }
                 XCTAssertEqual(navigation.focusedID, checkbox.id, "向上应先经过紧邻的平台上方的复选框，不能跳过整行")
                 navigation.focus("export.name"); navigation.handle(.down)
                 XCTAssertEqual(navigation.focusedID, checkbox.id, "标题向下也应进入复选框，不能停在同一行的封面")
                 navigation.focus(checkbox.id); navigation.handle(.up)
                 XCTAssertNotEqual(navigation.focusedID, checkbox.id, "向上应离开复选框回到游戏信息")
                 navigation.focus(checkbox.id); navigation.handle(.down)
+                if let modHelp { XCTAssertEqual(navigation.focusedID, modHelp.id, "向下先进 mod 一行"); navigation.handle(.down) }
                 XCTAssertTrue(platforms.contains { $0.id == navigation.focusedID }, "向下应离开复选框进入可选平台")
                 let before = fixture.model.sgradeOn(game.id)
                 navigation.focus(checkbox.id); navigation.handle(.confirm)
-                try await Task.sleep(for: .milliseconds(100))
+                try await waitUntil { fixture.model.sgradeOn(game.id) != before }
                 XCTAssertEqual(fixture.model.sgradeOn(game.id), !before)
                 XCTAssertEqual(navigation.focusedID, checkbox.id, "切换勾选后仍保持有效焦点")
                 navigation.handle(.down)
+                if let modHelp { XCTAssertEqual(navigation.focusedID, modHelp.id); navigation.handle(.down) }
                 XCTAssertTrue(platforms.contains { $0.id == navigation.focusedID }, "勾选状态改变后也能移出")
                 XCTAssertEqual(fixture.model.sgradeOn(game.id), !before, "方向导航不能修改勾选")
             }
@@ -632,8 +791,12 @@ import S2ArmAppleAdapter
                     pad.rightShoulder.setValue(1); navigation.source.tick(now: time)
                     pad.rightShoulder.setValue(0); navigation.source.tick(now: time + 0.01)
                     time += 0.1
-                    try await Task.sleep(for: .milliseconds(100))
                     let id = "home.group." + expected.rawValue
+                    try await waitUntil {
+                        guard fixture.model.home.group == expected, navigation.focusedID == id,
+                              let tab = navigation.controlTargets(in: window).first(where: { $0.id == id }) else { return false }
+                        return navigation.focusRingFrame(in: window) == tab.frame
+                    }
                     XCTAssertEqual(fixture.model.home.group, expected)
                     XCTAssertEqual(navigation.focusedID, id, "肩键切页后焦点应与新 tab 同步，包括空分组")
                     let tab = try XCTUnwrap(navigation.controlTargets(in: window).first { $0.id == id })
@@ -642,7 +805,7 @@ import S2ArmAppleAdapter
                 navigation.focus("card.fixture")
                 pad.leftShoulder.setValue(1); navigation.source.tick(now: time)
                 pad.leftShoulder.setValue(0); navigation.source.tick(now: time + 0.01)
-                try await Task.sleep(for: .milliseconds(100))
+                try await waitUntil { fixture.model.home.group == .favorites && navigation.focusedID == "home.group.favorites" }
                 XCTAssertEqual(fixture.model.home.group, .favorites)
                 XCTAssertEqual(navigation.focusedID, "home.group.favorites", "从卡片切页也应聚焦新 tab")
                 navigation.source.controllers = { [] }
@@ -754,7 +917,7 @@ import S2ArmAppleAdapter
                 let bounds = window.convertToScreen(host.bounds)
                 print("titlebar-right-edge \(language.code)/\(width): report=\(bounds.maxX - report.frame.maxX), home=\(bounds.maxX - refresh.frame.maxX)")
                 XCTAssertEqual(report.frame.maxX, refresh.frame.maxX, accuracy: 0.5, "报修按钮应与游戏库控件共用右边缘")
-                XCTAssertEqual(bounds.maxX - report.frame.maxX, 48, accuracy: 0.5)
+                XCTAssertEqual(bounds.maxX - report.frame.maxX, LauncherTheme.Space.section, accuracy: 0.5)
                 try snapshot(host, "titlebar-alignment-\(language.code)-\(Int(width))")
             }
         }
@@ -874,6 +1037,12 @@ import S2ArmAppleAdapter
         }
     }
 
+    /// 屏幕键盘已出现且面板上的按键已登记（可以按键 / 提交）
+    private func keyboardReady(_ navigation: LauncherPadNavigation) -> Bool {
+        guard let k = navigation.keyboard else { return false }
+        return navigation.activeWindow === k.panel && navigation.controlTargets(in: k.panel).contains { $0.id == "pad.key.q" }
+    }
+
     private func waitUntil(_ ready: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
         for _ in 0..<100 {
             if ready() { return }
@@ -990,7 +1159,8 @@ import S2ArmAppleAdapter
             navigation.focus("home.search")
             pad.buttonA.setValue(1); navigation.source.tick(now: 0.01)
             pad.buttonA.setValue(0); navigation.source.tick(now: 0.02)
-            try await Task.sleep(for: .milliseconds(350))
+            // 键盘出来还不够：要等键盘面板上的按键已登记（面板布局完），否则按键 / 提交落在半成品面板上，关键盘时焦点回不到输入框
+            try await waitUntil { keyboardReady(navigation) && navigation.controlTargets(in: window).contains { $0.id == "home.search.field" } }
             let keyboard = try XCTUnwrap(navigation.keyboard, "手柄确认展开搜索时应自动弹出屏幕键盘")
             XCTAssertTrue(navigation.controlTargets(in: window).contains { $0.id == "home.search.field" }, "键盘不能使搜索框失焦收起")
             XCTAssertTrue(navigation.activeWindow === keyboard.panel)
@@ -999,25 +1169,25 @@ import S2ArmAppleAdapter
             XCTAssertEqual(keyboard.value, "Originalq")
             try snapshot(try XCTUnwrap(keyboard.panel.contentView), "search-keyboard-" + language.code)
             navigation.handle(.submit)
-            try await Task.sleep(for: .milliseconds(350))
+            try await waitUntil { navigation.keyboard == nil && navigation.focusedID == "home.search.field" && window.firstResponder is NSTextView }
             XCTAssertNil(navigation.keyboard)
             XCTAssertEqual(fixture.model.home.search, "Originalq")
             XCTAssertTrue(navigation.controlTargets(in: window).contains { $0.id == "home.search.field" })
             XCTAssertEqual(navigation.focusedID, "home.search.field", "关闭键盘后，手柄焦点应回到输入框")
             XCTAssertTrue(window.firstResponder is NSTextView, "关闭键盘后恢复原生文本焦点")
             navigation.handle(.confirm)
-            try await Task.sleep(for: .milliseconds(100))
+            try await waitUntil { keyboardReady(navigation) }
             let cancelled = try XCTUnwrap(navigation.keyboard)
             cancelled.value = "discarded"
             navigation.handle(.back)
-            try await Task.sleep(for: .milliseconds(150))
+            try await waitUntil { navigation.keyboard == nil && window.firstResponder is NSTextView }
             XCTAssertEqual(fixture.model.home.search, "Originalq", "B 取消不改变查询")
             XCTAssertTrue(window.firstResponder is NSTextView)
             navigation.handle(.back)
-            try await Task.sleep(for: .milliseconds(300))
+            try await waitUntil { !navigation.controlTargets(in: window).contains { $0.id == "home.search.field" } }
             XCTAssertFalse(navigation.controlTargets(in: window).contains { $0.id == "home.search.field" })
             navigation.handle(.search)
-            try await Task.sleep(for: .milliseconds(150))
+            try await waitUntil { keyboardReady(navigation) }
             let shortcutKeyboard = try XCTUnwrap(navigation.keyboard, "搜索快捷键与搜索按钮共用屏幕键盘入口")
             let key = try XCTUnwrap(navigation.controlTargets(in: shortcutKeyboard.panel).first { $0.id == "pad.key.q" })
             let rect = shortcutKeyboard.panel.convertFromScreen(key.frame)
@@ -1044,13 +1214,25 @@ import S2ArmAppleAdapter
             navigation.text = { loc.t($0) }
             navigation.editText(value: "Original", label: "Name") { _ in }
             let keyboard = try XCTUnwrap(navigation.keyboard)
+            let controller = GCController.withExtendedGamepad()
+            let pad = try XCTUnwrap(controller.extendedGamepad)
+            navigation.source.controllers = { [controller] }
+            navigation.source.isActive = { true }
+            navigation.source.tick(now: 0)
+            pad.leftTrigger.setValue(1); navigation.source.tick(now: 0.1)
+            XCTAssertEqual(keyboard.value, "", "左扳机应清空屏幕键盘中的文字")
+            keyboard.value = "Original"
+            navigation.source.tick(now: 0.8)
+            XCTAssertEqual(keyboard.value, "Original", "长按左扳机不能重复清空")
+            pad.leftTrigger.setValue(0); navigation.source.tick(now: 0.9)
             for connected in [false, true] {
                 navigation.presentation.connected = connected
                 navigation.presentation.symbols = ControllerFaceMapping.identity.symbols(for: .playstation)
                 try await Task.sleep(for: .milliseconds(120))
                 let targets = navigation.controlTargets(in: keyboard.panel)
                 let shortcuts = navigation.shortcutTargets(in: keyboard.panel)
-                for (shortcut, key) in [(PadShortcut.tertiary, "space"), (.back, "cancel"), (.rightTrigger, "done")] {
+                let clearShortcut = try XCTUnwrap(PadShortcut(rawValue: "leftTrigger"), "清空提示应支持左扳机")
+                for (shortcut, key) in [(PadShortcut.tertiary, "space"), (.back, "cancel"), (.rightTrigger, "done"), (clearShortcut, "clear")] {
                     let id = try XCTUnwrap(shortcuts[shortcut]?.first)
                     let target = try XCTUnwrap(targets.first { $0.id == id })
                     let label = NSHostingView(rootView: Text(loc.t("home.keyboard." + key)).font(.manrope(13, .semibold)))
@@ -1297,9 +1479,9 @@ import S2ArmAppleAdapter
                 let cover = try XCTUnwrap(targets.first { $0.id == "export.cover" })
                 let start = try XCTUnwrap(padFocus.frames["main"]?.first { $0.id == "export.start" })
                 // 接鼠标、没接触控板的 Mac 是常显滚动条，要从可用宽度里扣掉它占的那条
-                let expectedContentWidth = min(1120, width - 96 - (scrollViews(in: host).first.map(scrollerReserve) ?? 0))
+                let expectedContentWidth = width - 96 - (scrollViews(in: host).first.map(scrollerReserve) ?? 0)
                 print("export-bounded \(language.code)/\(width): left=\(cover.frame.minX - bounds.minX), right=\(width - start.frame.maxX)")
-                XCTAssertEqual(cover.frame.minX - bounds.minX, 48, accuracy: 1, "出包内容最多 1120 pt 宽并靠左，左边距保持 48 pt")
+                XCTAssertEqual(cover.frame.minX - bounds.minX, 48, accuracy: 1, "出包内容与底栏共用 48 pt 左边距")
                 XCTAssertEqual(width - start.frame.maxX, 48, accuracy: 1, "底栏操作应保持距窗口右边缘 48 pt")
                 XCTAssertTrue(bounds.contains(cover.frame))
                 XCTAssertTrue(CGRect(x: 0, y: 0, width: width, height: 630).contains(start.frame))
@@ -1624,6 +1806,22 @@ import S2ArmAppleAdapter
         }
     }
 
+    private func exportArtworkBounds(_ host: NSView) throws -> CGRect {
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let scale = CGFloat(bitmap.pixelsWide) / host.bounds.width
+        var xs: [Int] = [], ys: [Int] = []
+        for y in 0..<400 {
+            for x in 0..<600 {
+                guard let color = bitmap.colorAt(x: Int(CGFloat(x) * scale), y: Int(CGFloat(y) * scale))?.usingColorSpace(.deviceRGB),
+                      color.redComponent - color.greenComponent > 0.5, color.blueComponent - color.greenComponent > 0.5 else { continue }
+                xs.append(x); ys.append(y)
+            }
+        }
+        let left = try XCTUnwrap(xs.min()), top = try XCTUnwrap(ys.min())
+        return CGRect(x: left, y: top, width: try XCTUnwrap(xs.max()) - left + 1, height: try XCTUnwrap(ys.max()) - top + 1)
+    }
+
     private func render(_ page: AnyView, fixture: SettingsFixture, language: Lang) async throws -> (NSView, NSWindow) {
         _ = NSApplication.shared
         let host = NSHostingView(rootView: page.environmentObject(Localizer(language))
@@ -1634,10 +1832,24 @@ import S2ArmAppleAdapter
         window.isReleasedWhenClosed = false
         window.contentView = host
         window.orderBack(nil)
-        host.layoutSubtreeIfNeeded()
-        try await Task.sleep(for: .milliseconds(250))
-        host.layoutSubtreeIfNeeded()
+        try await settle(window, fixture.navigation, fixture.model.gamepad)
         return (host, window)
+    }
+
+    /// 等页面布局稳定再量：手柄可操作的控件已登记、位置连续 3 次采样（约 90 ms）不变；一个控件都没有的页面，空着连续约 300 ms 也算稳。
+    /// 设置类页面的控件登记在 fixture.navigation，首页（LauncherView）登记在 model.gamepad，两张表都看。
+    /// 固定等 250 ms 在整套 / 门禁高负载下会量到还没登记的控件（XCTUnwrap 落空）或还在挪的位置（点歪、焦点框差几 pt）。最多等 5 秒，超时交给后面的断言报真实状态
+    private func settle(_ window: NSWindow, _ registries: LauncherPadNavigation...) async throws {
+        var last = "", same = 0
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            window.contentView?.layoutSubtreeIfNeeded()
+            let now = registries.flatMap { $0.controlTargets(in: window) }.map { "\($0.id)@\($0.frame)" }.joined(separator: ";")
+            same = now == last ? same + 1 : 0
+            if same >= (now.isEmpty ? 10 : 3) { return }
+            last = now
+            try await Task.sleep(for: .milliseconds(30))
+        }
     }
 
     /// 常显滚动条占掉的宽度（浮层滚动条为 0）。

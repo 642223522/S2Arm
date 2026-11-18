@@ -60,8 +60,10 @@ public static class LibraryJobClient
         using var forcedStop = new CancellationTokenSource();
         var running = EnvironmentProbe.RunProcessAsync(info, forcedStop.Token, 8 * 1024 * 1024);
         var interrupted = Task.Delay(Timeout.Infinite, cancellationToken);
+        var cancelRequested = false;
         if (await Task.WhenAny(running, interrupted) != running)
         {
+            cancelRequested = true;
             await PackJobClient.CancelAsync(paths, request.FilePath, privateRoot, jobId);   // 同一份取消（剃刀 W17）
             // 点取消时作业恰好已经跑完：照它的真实结局走，不一律报已中断（社区贡献者补丁 #7，原先只在 PackJobClient）
             if (await Task.WhenAny(running, Task.Delay(TimeSpan.FromSeconds(3))) != running)
@@ -73,10 +75,15 @@ public static class LibraryJobClient
             }
         }
         var output = await running;
-        try { return new(LibraryJobResult.Parse(output.StandardOutput, output.ExitCode, jobId, operation), output); }
+        LibraryJobResult report;
+        try { report = LibraryJobResult.Parse(output.StandardOutput, output.ExitCode, jobId, operation); }
         catch (LibraryProtocolException error)
         {
             throw new LibraryProtocolException(error.Message + "\nExit: " + output.ExitCode + "\n" + output.StandardError, error);
         }
+        // 3 秒内结束且作业自己报「已取消」= 取消生效：按取消抛给调用方（同 3 秒没结束的强停分支）。作业抢在取消前真跑完（succeeded / failed）才照真实结局返回（社区贡献者补丁 #7）。
+        //   原先这里一律正常返回 state=cancelled 的结果，调用方当成「完成」处理（Windows 测试「accepted library cancellation」在任何机器上都红）
+        if (cancelRequested && report.State == "cancelled") throw new OperationCanceledException(cancellationToken);
+        return new(report, output);
     }
 }

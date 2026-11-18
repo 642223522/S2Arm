@@ -2783,7 +2783,9 @@ id<MTLLibrary> gal_helper_lib(int k, NSError **e) {
 static void dev_caps(uint64_t out[4]) {
     id<MTLDevice> d = g_gdev; memset(out, 0, 4 * sizeof *out); if (!d) return;
     int apple1 = [d supportsFamily:MTLGPUFamilyApple1], apple2 = [d supportsFamily:MTLGPUFamilyApple2];
-    out[0] = (d.supportsBCTextureCompression ? NXGAL_CAP_BC : 0) | (apple2 ? NXGAL_CAP_ASTC : 0) | (apple1 ? NXGAL_CAP_ETC2 | NXGAL_CAP_PACKED16 : 0)
+    // BC：设备原生支持，或设备不支持而 BC 贴图经 ASTC 预转包（NXGAL_ASTC_PACK，gal_tex.m「BC → ASTC」）——后者让 Gpu 层交来原始 BC、由渲染器查包传 ASTC，不在 CPU 上整张解压
+    int bce = gal_bce_on();   // 先判：它读 NXGAL_ASTC_FORCE（Mac 上把本机当成不支持 BC）
+    out[0] = ((d.supportsBCTextureCompression && !gal_bce_test_nobc) || bce ? NXGAL_CAP_BC : 0) | (apple2 ? NXGAL_CAP_ASTC : 0) | (apple1 ? NXGAL_CAP_ETC2 | NXGAL_CAP_PACKED16 : 0)
            | ([d supportsFamily:MTLGPUFamilyApple6] ? NXGAL_CAP_ASTC_HDR : 0);
     out[1] = d.maxThreadgroupMemoryLength; out[2] = d.recommendedMaxWorkingSetSize;
 }
@@ -2864,7 +2866,7 @@ NXGAL_API int nxgal_init(int debug_level) { GAL_API_LOCK();
         thermal_start();   // 热状态记录（初始化 / 每 10 秒 / 变化）
         { uint64_t c[4]; dev_caps(c);
           GLOG("初始化：设备 %s；能力（MTLDevice 当场查询）：BC 压缩贴图 %s，ASTC %s（HDR %s），ETC2 %s，16 位紧凑格式 %s，计算共享内存 %llu KB，建议工作集 %.2f GB",
-               g_gdev.name.UTF8String, c[0] & NXGAL_CAP_BC ? "原生支持" : "不支持", c[0] & NXGAL_CAP_ASTC ? "支持" : "不支持", c[0] & NXGAL_CAP_ASTC_HDR ? "支持" : "不支持",
+               g_gdev.name.UTF8String, !(c[0] & NXGAL_CAP_BC) ? "不支持" : gal_bce_on() ? "设备不支持、经 ASTC 包" : "原生支持", c[0] & NXGAL_CAP_ASTC ? "支持" : "不支持", c[0] & NXGAL_CAP_ASTC_HDR ? "支持" : "不支持",
                c[0] & NXGAL_CAP_ETC2 ? "支持" : "不支持", c[0] & NXGAL_CAP_PACKED16 ? "支持" : "不支持", (unsigned long long)(c[1] >> 10), c[2] / 1073741824.0); }
     }
     return 0;

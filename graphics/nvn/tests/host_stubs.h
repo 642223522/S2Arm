@@ -30,9 +30,11 @@ uint64_t s2a_npdm_program_id(void) { return 0; }
 void s2a_res_report_register(void *fn) { (void)fn; }
 int s2a_screen_w(void) { return 1920; }
 int s2a_screen_h(void) { return 1080; }
+int s2a_widen_force_native(int on) { (void)on; return 0; }   // runtime/src/widen.c：张量核顶替在满屏放宽下退回 16:9（nvn_tensor.inc，#726）；单测屏幕恒 16:9，不会调到
 unsigned s2a_screen_gen(void) { return 0; } int s2a_screen_switch(int w, int h) { (void)w; (void)h; return 0; }   // 运行中换屏（runtime/src/widen.c）：单测不换
 void s2a_track_write_quiet(uint64_t a, uint64_t n) { (void)a; (void)n; }
 void *sw_xstack_wrap(const char *name, void *fn) { (void)name; return fn; }
+void *sw_xstack_leaf(const char *name, void *fn) { (void)name; return fn; }   // runtime/src/xstack.c 叶子桩（host_adapt.m big_wrap 交给 nvn_leaf_wrap）：单测原样返回
 // 宽屏（graphics/widen）：s2a_widen_game() = 0 时直连不调其余入口。
 // 把后端源码编进同一 TU 的单测会经 widen_glue.inc 拿到真实原型，这里按原型写不了，改由它们自己给（S2A_TEST_REAL_WIDEN）
 #ifndef S2A_TEST_REAL_WIDEN

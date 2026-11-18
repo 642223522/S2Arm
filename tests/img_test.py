@@ -327,4 +327,28 @@ try:
 finally:
     shutil.rmtree(T, ignore_errors=True)
 
+# ⑫ 边写边腾（free_clones）认 RomFS 镜像 romfs.std（单个文件，各版本间是克隆 / 硬链接）：夹具 = 工作目录 work 下 roots/ 里两个版本各有一份 romfs.std
+#   （v0 是 v1 的硬链接，同一族）、解包目录 extract/romfs.std、工作目录外的解包目录 ext/romfs.std。期望手写：
+#   keep = v1 的 romfs.std → 它本身字节不变、v0 与 extract 的那份删掉、工作目录外的不动；keep = 目录形态 v1/romfs → 各份镜像也删（只留 keep 那一份数据）
+for keep_image in (True, False):
+    T = Path(tempfile.mkdtemp(prefix='img test 11 '))
+    try:
+        W = T / 'work'; R = W / 'roots'; blob = os.urandom(5000)
+        for v in ('kuan@v0', 'kuan@v1'): (R / v).mkdir(parents=True)
+        (R / 'kuan@v1' / 'romfs.std').write_bytes(blob); os.link(R / 'kuan@v1' / 'romfs.std', R / 'kuan@v0' / 'romfs.std')
+        os.symlink('kuan@v1', R / 'kuan@现行')
+        (W / 'extract').mkdir(); (W / 'extract' / 'romfs.std').write_bytes(blob)
+        (T / 'ext').mkdir(); (T / 'ext' / 'romfs.std').write_bytes(blob)
+        if not keep_image: (R / 'kuan@v1' / 'romfs').mkdir(); (R / 'kuan@v1' / 'romfs' / 'a').write_bytes(b'a')
+        root = R / 'kuan@v1'; (root / 'seed.txt').write_text(f'src={W / "extract"}\n', encoding='utf-8')
+        pk = W / 'pack'; pk.mkdir(); (pk / 'index.tsv').write_text('', encoding='utf-8')
+        keep = root / ('romfs.std' if keep_image else 'romfs')
+        img.free_clones(str(root), str(keep), str(pk), str(W))
+        left = sorted(str(p.relative_to(T)) for p in T.rglob('romfs.std'))
+        want = (['ext/romfs.std', 'work/roots/kuan@v1/romfs.std'] if keep_image else ['ext/romfs.std'])
+        ck(left == want and (not keep_image or (root / 'romfs.std').read_bytes() == blob),
+           f'⑫ keep={"镜像" if keep_image else "目录"}：留下的镜像 {left}（期望 {want}）、keep 字节不变')
+    finally:
+        shutil.rmtree(T, ignore_errors=True)
+
 print(f'img 单测：{"全通" if not bad else f"{bad} 项不通"}'); sys.exit(1 if bad else 0)

@@ -50,7 +50,8 @@ def item(row, data):
                 bids=row['bids'], gids=row['gids'], target_fps=row['target_fps'], aspect=row['aspect'],
                 source=dict(repo=row['repo'], commit=row['commit'], path=row['path'], member=row.get('member', '')),
                 license=row['license'], author=row.get('author', ''), sha256=row['sha256'], data=base64.b64encode(data).decode(),
-                **({'dir': row['dir']} if row.get('dir') else {}))   # 画面类方向（load / quality，patch_index.gfx_dir；认不出不写，旧包同样没有）
+                **({'dir': row['dir']} if row.get('dir') else {}),   # 画面类方向（load / quality，patch_index.gfx_dir；认不出不写，旧包同样没有）
+                **({'adjusted': row['adjusted']} if row.get('adjusted') else {}))   # 发布前改过渲染分辨率（patch_index.res_fix）：原尺寸 / 新尺寸 / 上游原文 sha256，追溯用；客户端不读
 
 
 def gz(obj):

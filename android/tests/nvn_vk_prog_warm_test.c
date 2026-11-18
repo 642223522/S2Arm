@@ -1,5 +1,5 @@
 // 程序预热清单的宿主回归（nvn_vk_prog_warm.c）：纯逻辑 + 文件层，无 GPU。
-// 覆盖：首次无文件 / 记录去重与 uses / 有界淘汰最冷 / uses 热点排序 / 落盘→读回逐字段一致（含 c1）/
+// 覆盖：首次无文件 / 记录去重与 uses / 有界淘汰最冷（含缺省上限 8192）/ uses 热点排序 / 落盘→读回逐字段一致（含 c1）/
 //       坏文件整份拒绝（magic·版本·条目大小·条数·长度·FNV·截断）/ 本局有效性整份拒绝（profile·ABI·闭包）/
 //       结构坏条目只丢该条 / 落盘没变化不重写 / 统计记账 / reset。
 // 期望值不来自被测实现：uses 与淘汰结果按测试自己构造的顺序手算，文件长度按格式手算（60 + n*844 + 8）。
@@ -65,6 +65,16 @@ static struct nvk_prog_rec mkrec(int n, uint32_t mask) {
 static int rec_is(const struct nvk_prog_rec *r, int n) {
     struct nvk_prog_rec x = mkrec(n, r->stage_mask);
     return !memcmp(r->identity, x.identity, 32);
+}
+// 宽身份：mkrec 的身份只随 n 模 256 变；缺省上限用例要上万个互不相同的身份，把序号写进身份前 4 字节（小端），其余填固定非零字节。
+static struct nvk_prog_rec mkwide(uint32_t n) {
+    struct nvk_prog_rec r = mkrec(1, 1);
+    memset(r.identity, 0x5a, sizeof r.identity);
+    r.identity[0] = (uint8_t)n; r.identity[1] = (uint8_t)(n >> 8); r.identity[2] = (uint8_t)(n >> 16); r.identity[3] = (uint8_t)(n >> 24);
+    return r;
+}
+static uint32_t wide_of(const struct nvk_prog_rec *r) {
+    return (uint32_t)r->identity[0] | (uint32_t)r->identity[1] << 8 | (uint32_t)r->identity[2] << 16 | (uint32_t)r->identity[3] << 24;
 }
 static int read_file(const char *path, uint8_t **out, size_t *len) {
     FILE *f = fopen(path, "rb");
@@ -235,6 +245,42 @@ int main(void) {
         for (int i = 0; i < 3; i++) { if (!nvk_prog_warm_take(&got) || !rec_is(&got, expect[i])) order_ok = 0; }
         CHECK(order_ok, "hot order: uses desc, then most-recently-used (expected 1,5,4)");
         CHECK(nvk_prog_warm_pending() == 0, "take cursor drives pending to 0");
+    }
+
+    // 3b) 缺省上限 8192（#1325）：没设 nvk_warm_max 时清单留 8192 条，挤掉的是最冷的。
+    //     期望手算：热组 1..100 各记 3 次（uses 3），冷组 101..9000 各记 1 次（8900 条）。前 8192 条进表后表满
+    //     （100 热 + 冷 101..8192），之后每进一条冷的就挤掉冷里最老的一条：8193..9000 共 808 条进来，挤掉 101..908；
+    //     留下 100 热 + 冷 909..9000（8092 条）= 8192 条。落盘 → 读回逐条核对集合，热的排在最前。
+    //     变异体：缺省回到 4096 → 读回 4096 条；缺省抬到硬顶 16384 → 读回 9000 条；两个都红。
+    {
+        dir_reset();   // g_warm_max = -1：nvn_plat_flag 返回代码里传进来的缺省值
+        for (uint32_t n = 1; n <= 100; n++) { struct nvk_prog_rec r = mkwide(n); for (int k = 0; k < 3; k++) nvk_prog_warm_note(&r); }
+        for (uint32_t n = 101; n <= 9000; n++) { struct nvk_prog_rec r = mkwide(n); nvk_prog_warm_note(&r); }
+        nvk_prog_warm_save();
+        nvk_prog_warm_reset();
+        int nloaded = load_now();
+        CHECK(nloaded == 8192, "default limit keeps exactly 8192 entries, got %d", nloaded);
+        static unsigned char seen[9001];
+        memset(seen, 0, sizeof seen);
+        int dup = 0, hot_first = 1, taken = 0;
+        struct nvk_prog_rec got;
+        while (nvk_prog_warm_take(&got)) {
+            uint32_t n = wide_of(&got);
+            if (n < 1 || n > 9000) { dup = -1; break; }
+            if (seen[n]) dup++;
+            seen[n] = 1;
+            if (taken < 100 && n > 100) hot_first = 0;   // uses 降序：前 100 条必须是热组
+            taken++;
+        }
+        CHECK(dup == 0 && taken == 8192, "take hands out 8192 distinct identities (dup %d, taken %d)", dup, taken);
+        int hot_ok = 1, evicted_ok = 1, kept_ok = 1;
+        for (uint32_t n = 1; n <= 100; n++) if (!seen[n]) hot_ok = 0;
+        for (uint32_t n = 101; n <= 908; n++) if (seen[n]) evicted_ok = 0;
+        for (uint32_t n = 909; n <= 9000; n++) if (!seen[n]) kept_ok = 0;
+        CHECK(hot_ok, "all 100 hot entries (uses 3) survive the default limit");
+        CHECK(evicted_ok, "the 808 oldest cold entries (101..908) are the ones evicted");
+        CHECK(kept_ok, "the newest 8092 cold entries (909..9000) are kept");
+        CHECK(hot_first, "hot entries are handed out first (uses desc)");
     }
 
     // 4) 落盘格式与「没变化不重写」：文件长度按格式手算；dirty 清掉后 save 不碰文件。

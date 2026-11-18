@@ -29,6 +29,9 @@ from pack.jobs import filelock
 from graphics.nvn.tools import romfs_list
 
 REPO = Path(__file__).resolve().parents[2]
+# 产物根里的 RomFS 镜像（标准 RomFS，与 romfs/ 同级；graphics/nvn/tools/romfs_list.py image_of）：单个不可变文件，没有阶段原地改它（界面布局只写覆盖层），
+#   版本之间按 copy_file(link_ok=True) 共用同一份数据——克隆（APFS / ReFS / Linux 块克隆）或 Windows NTFS 同卷硬链接，不实拷十几 GB
+ROMFS_IMAGE = 'romfs.std'
 
 
 class UnsafeRoot(ValueError):
@@ -125,14 +128,26 @@ def directory_link(target, link, *, relative=None):
         #   有的 Windows（玩家实测 26320）stat / listdir / realpath 一律 WinError 3，同一链接走长路径或改写绝对目标都正常；没开开发者模式时走的
         #   junction 退路本来就只能写绝对目标。写长路径不写短路径：短根入口任务结束就拆，链接不能指向它
         target, relative = Path(to_long(str(target.absolute()), table_now())), None
+    existed = os.path.lexists(link)
     try:
         # Windows stores the substitute name verbatim; '/' in a relative
         # reparse target can be created successfully but fails kernel traversal.
         value = relative if relative is not None else str(target)
         os.symlink(os.path.normpath(value), link, target_is_directory=True)
-    except OSError:
+    except OSError as error:
         if os.name != 'nt':
             raise
+        # #1431：有的 Windows（玩家 26300、库在 ReFS 开发驱动器、没开开发者模式）软链报失败时 link 处已经留下了东西，紧跟着的 junction 退路
+        #   mkdir 撞 WinError 183，播种 / 提交每次都在这里红，撤回再被它卡住。软链之前没有、失败之后有的，只能是这次失败留下的：删掉再走退路
+        if not existed and os.path.lexists(link):
+            try:
+                os.rmdir(link)
+            except OSError:
+                try:
+                    os.unlink(link)
+                except OSError as stuck:
+                    error.add_note(f'（软链失败后 {link.name} 处留下的残留删不掉：{stuck!r}）')
+                    raise error
         print(f'【黄】目录软链不可用，显式 junction 退路：{link.name}', file=sys.stderr)
         _junction(target, link)
 
@@ -214,9 +229,9 @@ def links_supported(path):
     return fs.value.upper() in ('NTFS', 'REFS')
 
 
-def copy_file(source, dest, link_ok=False):
+def copy_file(source, dest, link_ok=False, refs=None):
     """克隆优先（Mac clonefile / Linux FICLONE / Windows ReFS 块克隆，写时复制）；都没有时实拷。
-    link_ok（#291，只给播种 RomFS 用）：Windows 上同卷非 ReFS（NTFS）先建硬链接，不逐文件实拷——RomFS 按设计不可变（没有阶段原地改它，
+    link_ok（#291，只给 RomFS 用：播种的 romfs/ 与各版本的镜像 romfs.std）：Windows 上同卷非 ReFS（NTFS）先建硬链接，不逐文件实拷——RomFS 按设计不可变（没有阶段原地改它，
     门禁机上还封成拒写），写单一 IMG 时边写边腾删的是产物根里的这个名字，共用解包目录里的那份数据不受影响。
     11-13 Windows NTFS 读数：18 万个文件的 RomFS 逐个实拷播种 1042 秒，8 万个的 433 秒。建不了（跨卷、FAT 类卷）照旧实拷"""
     source, dest = Path(source), Path(dest)
@@ -244,7 +259,8 @@ def copy_file(source, dest, link_ok=False):
                 print(f'【黄】块克隆不可用：实拷 {source.name}', file=sys.stderr)
                 shutil.copyfileobj(src, dst, 1024 * 1024)
                 cloned = True
-    if not cloned and refs_same_volume(source, dest):
+    # refs：调用方已按整棵树判过「同一 ReFS 卷」就直接给（_copy_tree）；None = 这一个文件现判（每个文件两次 realpath + 两次查卷，11-16 出包轻阶段定因）
+    if not cloned and (refs_same_volume(source, dest) if refs is None else refs):
         class Params(C.Structure):
             _fields_ = [('size', W.DWORD), ('flags', W.DWORD),
                         ('cancel', C.c_void_p), ('progress', C.c_void_p), ('context', C.c_void_p)]
@@ -350,9 +366,20 @@ def remove_owned(path):
                 time.sleep(0.2 * (attempt + 1))
     elif path.exists():
         if os.name == 'nt':
+            # 封存（拒写项，seal）不拒删：先直接删。共用数据树的文件是各版本共用的硬链接，解封会连带解掉别的版本（访问控制项挂在文件本身上）
+            try:
+                path.unlink()
+                return
+            except PermissionError:
+                pass
             _win_acl(path, False)
         path.chmod(stat.S_IMODE(path.stat().st_mode) | stat.S_IWUSR)
         path.unlink()
+    elif os.path.lexists(path):   # 在、但既不是链接也读不出是文件 / 目录（#1431：软链失败留下的残留）：原先一支都不认、什么都不删，上一级 rmdir 报「目录不是空的」
+        try:
+            os.rmdir(path)
+        except OSError:
+            os.unlink(path)
 
 
 def remove_patterns(directory, patterns):
@@ -450,6 +477,34 @@ def process_start(pid):
     return ' '.join(r.stdout.split())
 
 
+# 各版本共用、没有阶段原地改的数据目录（追加内容：只由 aoc 阶段整目录换掉）：阶段事务克隆现行时 Windows 上建硬链接，不逐个克隆
+#   （11-16 出包轻阶段定因：带 DLC 的款每个阶段事务都把几千个 DLC 文件逐个块克隆 + 设权限一遍，一款 7095 个文件每个阶段 6–30 秒）
+SHARED_TREES = ('aoc',)
+
+
+def shared_print(root):
+    """SHARED_TREES 各棵的指纹：{树名: (树目录 inode, {相对路径: (大小, 修改时间 ns)})}；没有这棵 = 不记。
+    守护「只许整目录替换、不许原地改」（硬链接的前提，11-16 维护者）：Transaction 开始时记一份，提交时树目录没换（inode 相同）就要逐项相同，
+    不同 = 有阶段原地写了共用数据（硬链接下会连带改坏别的版本与缓存），当场报冲突、不提交。逐层 scandir，7000 来个文件约 0.1 秒"""
+    out = {}
+    for name in SHARED_TREES:
+        top = Path(root) / name
+        if not top.is_dir() or is_link(top):
+            continue
+        files, stack = {}, [top]
+        while stack:
+            d = stack.pop()
+            with os.scandir(d) as it:
+                for e in it:
+                    if e.is_dir(follow_symlinks=False):
+                        stack.append(Path(e.path))
+                    else:
+                        st = e.stat(follow_symlinks=False)
+                        files[os.path.relpath(e.path, top)] = (st.st_size, st.st_mtime_ns)
+        out[name] = (top.stat().st_ino, files)
+    return out
+
+
 class Roots:
     def __init__(self, path=None, *, shared=None, repo=REPO):
         run = Path(os.environ.get('S2A_RUN_ROOT', Path.home() / '.s2arm/run')) / 's2arm'
@@ -532,7 +587,7 @@ class Roots:
                             if p.is_dir():
                                 self._copy_tree(p.resolve(), tx.path / p.name)
                             else:
-                                copy_file(p, tx.path / p.name)
+                                copy_file(p, tx.path / p.name, link_ok=p.name == ROMFS_IMAGE)
                         tx.commit()
                     except BaseException as e:
                         cleanup_after(e, tx.abort)
@@ -630,24 +685,40 @@ class Roots:
                 else:
                     directory_link(target, dest / 'romfs', relative=f'../.romfs_store/{game}/{target.name}')
             elif p.is_dir():
-                self._copy_tree(p, dest / p.name)
+                self._copy_tree(p, dest / p.name, hardlink=p.name in SHARED_TREES)
             else:
-                copy_file(p, dest / p.name)
+                copy_file(p, dest / p.name, link_ok=p.name == ROMFS_IMAGE)
         if not own_romfs and (dest / 'romfs').is_dir() and not target and sealing():
             seal(dest / 'romfs')
         self._resource('--root-clone', source, dest, env=env)
         self._shards(dest, '克隆现行(root_begin)', env=env)
 
-    def _copy_tree(self, source, dest, tick=None, link_ok=False):
+    def _copy_tree(self, source, dest, tick=None, link_ok=False, hardlink=False):
+        """hardlink（只给 SHARED_TREES 里各版本共用、不原地改的数据）：Windows 上逐个文件先建硬链接（同一份数据，不克隆、不改属性），建不了（跨卷、FAT 类卷）
+        这一棵余下的照常 copy_file。Mac / Linux 照旧克隆"""
         if is_link(source):
             raise UnsafeRoot('克隆拒绝未批准的链接')
         dest.mkdir(parents=True)
+        # 卷只判一次（11-16 出包轻阶段定因：每个阶段事务克隆现行，追加内容 7095 个文件逐个判卷，每个文件两次 realpath + 两次查卷）：
+        #   plain_entries 已拒绝树里的一切重解析点（链接 / 联接 / 挂载点），整棵源树与源根同卷；目标树是这里新建的子目录，与目标根同卷
+        refs = None
         for p in plain_entries(source):
             output = dest / p.relative_to(source)
             if p.is_dir():
                 output.mkdir(parents=True, exist_ok=True)
             else:
-                copy_file(p, output, link_ok=link_ok)
+                if hardlink and os.name == 'nt':
+                    try:
+                        os.link(long_path(str(p)), long_path(str(output)))
+                        if tick:
+                            tick()
+                        continue
+                    except OSError as error:
+                        print(f'【黄】硬链接不可用（{error.strerror or error}）：{source.name} 照常克隆', file=sys.stderr)
+                        hardlink = False
+                if refs is None:
+                    refs = refs_same_volume(source, dest / p.name)   # 判的是 source 与 dest 两个目录所在的卷（refs_same_volume 取目标的上一级）
+                copy_file(p, output, link_ok=link_ok, refs=refs)
                 if tick:
                     tick()
 
@@ -683,7 +754,9 @@ class Roots:
             text(dest / '.root_pid', f'{os.getpid()} {process_start(os.getpid())}\n')
             stages = sorted(current.glob('.stage_*')) if current else ()
             text(dest / '.root_base_stages', ''.join(f'{p.name}\t{read(p)}\n' for p in stages if p.is_file()))
-            return Transaction(self, game, tag, dest, env=env)
+            tx = Transaction(self, game, tag, dest, env=env)
+            tx.shared = shared_print(dest)
+            return tx
         except BaseException as e:
             cleanup_after(e, remove_owned, dest)
             raise
@@ -766,6 +839,7 @@ class Transaction:
         self.roots, self.game, self.tag, self.path = roots, game, tag, path
         self.closed = False
         self.env = env
+        self.shared = {}   # begin 记的 SHARED_TREES 指纹（shared_print）；提交时核
 
     def abort(self):
         if not self.closed:
@@ -825,6 +899,34 @@ class Transaction:
             raise
         return live
 
+    def replaced(self, name):
+        """本阶段把共用数据树 name 整目录换掉了（只有 aoc 阶段这么做）：提交时不再核它（见 commit 开头的守护）"""
+        self.shared.pop(name, None)
+
+    def _seal_shared(self):
+        """开发 / 门禁机（sealing()）上把共用数据树封成只读：之后任何阶段原地写它，在写的第一下就失败，不等提交守护（_check_shared）。
+        Windows 上它们是各版本共用的硬链接，原地写会连带改坏别的版本；玩家机不封（玩家看得见的游戏库不用权限做保护，同 sealing），靠提交守护兜底。
+        Windows 的封存是拒写的访问控制项：不挡建硬链接、不挡删（remove_owned 删它不用先解封）"""
+        if not sealing():
+            return
+        for name in SHARED_TREES:
+            tree = self.path / name
+            if tree.is_dir() and not is_link(tree):
+                for p in plain_entries(tree):
+                    if not p.is_dir():
+                        seal(p)
+
+    def _check_shared(self):
+        """守护「共用数据树只许整目录替换、不许原地改」（硬链接的前提，11-16）：begin 记的指纹（shared_print）与现在比，没声明换掉（replaced）却变了 = 原地改了，报冲突不提交。
+        在提交一开始、重放之前核：只核本阶段自己做的事（重放会合法地换成新现行的那份）。
+        不按树目录 inode 判「换没换」：ext4 上删掉的目录 inode 会马上被新目录复用（11-16 Linux 门禁误报），换掉要由换的一方显式声明"""
+        now = shared_print(self.path)
+        for name, (ino, files) in self.shared.items():
+            got = now.get(name, (None, {}))[1]
+            if got != files:
+                diff = sorted(set(files.items()) ^ set(got.items()))
+                raise Conflict(f'原地改了共用数据 {name}/{diff[0][0] if diff else ""}（{name}/ 只许由 aoc 阶段整目录替换，roots.SHARED_TREES；硬链接下会连带改坏别的版本）')
+
     def commit(self, *, replay=()):
         if self.closed or not self.path.is_dir():
             raise Conflict('事务已结束或缺失')
@@ -832,6 +934,7 @@ class Transaction:
         final = roots.path / f'{self.game}@{self.tag}'
         activation = roots.path / f'.{self.game}.current-{uuid.uuid4().hex}'
         try:
+            self._check_shared()   # 先核本阶段有没有原地改共用数据（重放之前）
             with roots.locked(self.game):
                 current = roots.cur(self.game, pin=False)
                 base = read(self.path / '.root_base')
@@ -848,6 +951,7 @@ class Transaction:
                     self._replay(current, tuple(replay))
                 roots._validate(self.path, self.game)
                 roots._intern(self.path, self.game)
+                self._seal_shared()
                 if roots.plain:
                     final = self._activate_plain(current)
                 else:

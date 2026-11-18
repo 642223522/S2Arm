@@ -47,6 +47,7 @@ public partial class EnvironmentWindow
         // 有排着的出包、这个作业又可能是挡着它的那个（如出包收尾的刷新游戏库）：排到这次收尾之后再看能不能接着出（ExportPages.PumpExportQueue）
         if (exportQueue.Count > 0) Avalonia.Threading.Dispatcher.UIThread.Post(PumpExportQueue);
         if (phoneQueue.Count > 0) Avalonia.Threading.Dispatcher.UIThread.Post(PumpPhoneQueue);   // 手机槽空了 / 出包那款出完：接上排着的手机作业
+        else if (consoleBatch.Count > 0) Avalonia.Threading.Dispatcher.UIThread.Post(ConsoleBatchStep);   // 总控台「更新所选」这一轮推完就收尾（PhoneConsole.cs）
     }
 
     /// <summary>手机作业排队（11-16 维护者「出包的时候没办法同时安装其他游戏到 iPhone 上，这个控制纯属多余」；同 Mac phoneQueue）：
@@ -90,6 +91,35 @@ public partial class EnvironmentWindow
         startupCatalogSent = true;
         return first;
     }
+
+    /// <summary>关窗口时等作业收尾的上限。到点还没收尾也照关：更新启动器时安装程序只等旧进程退出 90 秒（11-16 第 2 份候选手动更新：
+    /// 安装程序等了 90 秒放弃、没装上）；取消已经发给作业层（各作业客户端的取消路径会停它自己的进程树），关窗口不再被它挡住</summary>
+    private static readonly TimeSpan CloseWaitLimit = TimeSpan.FromSeconds(20);
+    /// <summary>等到点了：之后的关窗口不再拦（各关闭处理一律放行）</summary>
+    private bool closeAnyway;
+
+    /// <summary>关窗口前等这一类作业收尾：以作业登记处为准（不等某个任务变量——它可能被别处一个立刻返回的任务盖掉，等完了作业其实还在，
+    /// 重入时又被取消关闭、再也没人关，进程挂住）。等的时候每轮把这一类的作业都取消一遍，最多 CloseWaitLimit</summary>
+    private async Task WaitJobsEndAsync(JobKind kind)
+    {
+        var deadline = DateTime.UtcNow + CloseWaitLimit;
+        while (JobOf(kind) is not null && DateTime.UtcNow < deadline)
+        {
+            foreach (var job in jobs.Where(j => j.Kind == kind).ToList()) job.Cancellation.Cancel();
+            await Task.Delay(200);
+        }
+        if (JobOf(kind) is not null)
+        {
+            closeAnyway = true;
+            CloseLog($"关窗口：{kind} 作业 {CloseWaitLimit.TotalSeconds:0} 秒没收尾，照关（取消已发给作业层）");
+        }
+        else CloseLog($"关窗口：{kind} 作业已收尾");
+    }
+
+    /// <summary>关窗口的每一步记进 logs/update.log（更新启动器靠关窗口让位给安装程序，卡在哪一步要看得见）</summary>
+    private void CloseLog(string line) => UpdateLog.Write(Path.Combine(privateRoot, "logs", "update.log"), line);
+    /// <summary>应用级退出步骤（Program.cs）：同 CloseLog 写 update.log，私有目录按 PrivateRootForLogs 算</summary>
+    internal static void ExitLog(string line) => UpdateLog.Write(Path.Combine(PrivateRootForLogs(), "logs", "update.log"), line);
 
     /// <summary>有任何作业在跑（控制口拒新命令、更新启动器要等）</summary>
     private bool AnyJob => jobs.Count > 0;

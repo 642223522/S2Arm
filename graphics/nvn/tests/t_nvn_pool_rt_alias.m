@@ -24,10 +24,10 @@ int main(void) { @autoreleasepool {
     tex_t A, B, C; make(&A, pool, 0, 0); make(&B, pool, 0, NVN_TEXTURE_FLAGS_COMPRESSIBLE); make(&C, pool, 262144, NVN_TEXTURE_FLAGS_COMPRESSIBLE);
     id<MTLTexture> a = tex_mtl(&A); REQUIRE(a); gpw_mark(&A, 0, 0, 1, 0, 0, 0, 0);   // A drawn into (a pass's attachment)
     nvn_be_reg_tex(5, &B, NULL); nvn_be_reg_tex(6, &C, NULL);
-    pthread_mutex_lock(&g_rmu);
+    os_unfair_lock_lock(&g_rmu);
     int left = 0; uint64_t rid = 0; void *b = pool_tex_obj(5, UINT64_MAX, &left, &rid);
     int left2 = 0; uint64_t rid2 = 0; void *c = pool_tex_obj(6, UINT64_MAX, &left2, &rid2);
-    pthread_mutex_unlock(&g_rmu);
+    os_unfair_lock_unlock(&g_rmu);
     id<MTLTexture> bt = (__bridge id<MTLTexture>)b; id<MTLTexture> bb = bt.parentTexture ? bt.parentTexture : bt;
     CHECK(b && bb == a, "① A 已画、B 同存储同描述只多 COMPRESSIBLE：按池取 B 拿到 A 那张宿主贴图（取到 %p，A %p）", b, (__bridge void *)a);
     CHECK(!c && !tex_get(C.serial), "② 存储上从没建过贴图的 COMPRESSIBLE 目标 C：占位、没为读而建");

@@ -6,6 +6,17 @@
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); trap 'rm -rf "$T"' EXIT; bad=0
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
 W1=$(python3 -c 'print(chr(0x5929) + chr(0x773c))'); W2=$(python3 -c 'print(chr(0x6d4b) + chr(0x8bd5) + chr(0x673a))')
+# 内部称呼词表在仓外私有规则里（公开仓不明文写）：本单测自己造一份临时私有词表，词同样运行时拼，指给扫描器
+PRIV=$T/private_rules.json; export S2A_PRIVATE_SCAN_RULES=$PRIV
+W4=$(python3 -c 'print(chr(0x80fd) + chr(0x8017) + chr(0x7ebf))')
+python3 - "$PRIV" "$W1" "$W2" "$W4" <<'PYX'
+import json, sys
+p, w1, w2, w4 = sys.argv[1:]
+json.dump({"version": 1, "content_rules": [
+    {"id": "maintainer_alias", "category": "internal_name", "regex": w1},
+    {"id": "internal_device_word", "category": "internal_name", "regex": w2},
+    {"id": "internal_line_name", "category": "internal_name", "regex": w4}]}, open(p, "w", encoding="utf-8"), ensure_ascii=False)
+PYX
 g() { git -C "$T/r" -c user.name=t -c user.email=t@t "$@"; }
 git init -q -b main "$T/r"; echo a > "$T/r/a"; g add a; g commit -qm "old: ${W1} 之前的历史不管"; base=$(g rev-parse HEAD)
 echo b > "$T/r/b"; g add b; g commit -qm "fix: Windows 实机验证通过"; clean=$(g rev-parse HEAD)
@@ -17,7 +28,7 @@ o=$(S HEAD "$base"); r=$?
 ck "内部线名 + 设备代号 → 退 1、两处命中（第 3、5 行）（rc=${r}）" '[ $r = 1 ] && [ "$(grep -c "^🔴 提交" <<< "$o")" = 2 ] && grep -q "信息第 3 行" <<< "$o" && grep -q "信息第 5 行" <<< "$o"'
 ck "命中行不回显那个词、给出改法（rebase -i）" '! grep -q "${W1}\|${W2}" <<< "$o" && grep -q "rebase -i" <<< "$o"'
 # 内部线名（11-09 维护方：整词匹配；普通「主线 / 线程 / 线性」不误伤）
-W3=$(python3 -c 'print(chr(0x4e3b) + chr(0x7ebf) * 2)'); W4=$(python3 -c 'print(chr(0x80fd) + chr(0x8017) + chr(0x7ebf))')
+W3=$W4
 base2=$(g rev-parse HEAD); echo d > "$T/r/d"; g add d; g commit -qm "feat: 主线任务进度、线程池、线性贴图" -m "主线 全过"; plain=$(g rev-parse HEAD)
 o=$(S "$plain" "$base2"); r=$?
 ck "普通「主线 / 线程 / 线性」→ 退 0、命中 0（rc=${r}）" '[ $r = 0 ] && [[ "$o" == *"命中 0 处"* ]]'
@@ -26,7 +37,10 @@ o=$(S HEAD "$plain"); r=$?
 ck "内部线名 → 退 1、两处命中（第 3、5 行）（rc=${r}）" '[ $r = 1 ] && grep -q "信息第 3 行.*internal_line_name" <<< "$o" && grep -q "信息第 5 行.*internal_line_name" <<< "$o"'
 printf '交 %s 复核\n' "$W4" > "$T/r/g.md"; g add g.md; g commit -qm "docs: x"
 o=$(python3 "$H/tools/public_repo_scan.py" --repo "$T/r" --ref HEAD --path g.md --base HEAD~1 --format gate); r=$?
-ck "文件扫描暂不启用线名规则（messages_only；存量清完再开）→ 退 0（rc=${r}）" '[ $r = 0 ] && [[ "$o" == *"增量命中 0"* ]]'
+ck "文件新增行写内部线名 → 退 1（私有词表只判新增行；11-17 起文件也扫）（rc=${r}）" '[ $r = 1 ] && [[ "$o" == *"增量命中 1"* ]]'
+mv "$PRIV" "$PRIV.off"; o=$(S HEAD "$plain"); r=$?
+ck "私有词表不在（外部贡献者）→ 跳过、退 0（rc=${r}）" '[ $r = 0 ] && [[ "$o" == *"命中 0 处"* ]]'
+mv "$PRIV.off" "$PRIV"
 # 任天堂第一方游戏名（11-09 晚：#350 写进坑记录、#371 写进提交标题都没被拦）：提交信息与 docs/ 下 Markdown 新增行都拦；docs 存量行不改不报
 G1=$(python3 -c 'print(chr(0x65f6) + chr(0x4e4b) + chr(0x7b1b))'); G2=$(python3 -c 'print(chr(0x5854) + chr(0x5c14) + chr(0x8fbe))')
 base3=$(g rev-parse HEAD); echo h > "$T/r/h"; g add h; g commit -qm "docs(验证账): ${G1} 首批 Mac 实测入账"; gm=$(g rev-parse HEAD)

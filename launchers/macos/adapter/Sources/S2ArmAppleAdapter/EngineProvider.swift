@@ -18,6 +18,8 @@ public enum EngineTarget: String, CaseIterable {
     case mac = "macos-arm64"
     /// iPhone / iPad 安装包（IPA + 资源包）。
     case iPhone = "ios-arm64"
+    /// Apple TV（tvOS）安装包：同 iPhone 一样出容器件 + 资源包（作业层 ipa 作业带 platform = "tvos"）。
+    case appleTV = "tvos-arm64"
 }
 
 /// 引擎能力（设计稿：targets、Switch 2、120 fps、render scale、cheats、cloud saves、runtime shaders）。
@@ -120,7 +122,8 @@ public struct EngineEvent {
     public init(job e: JobEvent) {
         let diagnostics = e.fields["diagnostics"] as? [[String: Any]] ?? []
         let check = e.fields["check"] as? [String: Any]
-        let code = e.fields["code"] as? String ?? diagnostics.first?["code"] as? String
+        let failed = e.type == "result" && (e.state == "failed" || e.state == "interrupted")   // 失败结局取停下的那条（JobOutcome.failureDiagnostic），其余照旧取第一条
+        let code = e.fields["code"] as? String ?? (failed ? JobOutcome.failureDiagnostic(diagnostics) : diagnostics.first)?["code"] as? String
             ?? (check?["diagnostic"] as? [String: Any])?["code"] as? String
         let severity: Severity
         switch (e.type, e.state) {
@@ -137,7 +140,7 @@ public struct EngineEvent {
         var fields: [String: Any] = ["schema": 1, "taskId": o.taskId, "type": "result", "state": o.state.rawValue,
                                      "message": o.message, "result": o.result, "exitCode": Int(o.exitCode)]
         if !o.diagnostics.isEmpty { fields["diagnostics"] = o.diagnostics }
-        self.init(ev: "result", t: 0, code: o.diagnostics.first?["code"] as? String, severity: severity, fields: fields)
+        self.init(ev: "result", t: 0, code: severity == .error ? o.failureCode : o.diagnostics.first?["code"] as? String, severity: severity, fields: fields)
     }
 }
 

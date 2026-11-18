@@ -60,8 +60,8 @@ DB=(); while IFS= read -r l; do DB+=("$l"); done < <(cd "$R/translator" && pytho
 SPVC=$(cd "$R/translator" && python3 -c 'import spvc_inproc; print(spvc_inproc.lib_path())') && [ -f "$SPVC" ] || { echo "S2A.Dsh 对拍：取不到 libspvc_cli → 红"; exit 1; }
 # 命令行后端（dsh_cmp --backend cli，CliSpvCross）缺省跑 PATH 上的 spirv-cross（Homebrew 上游版）；离线考卷用仓库内置源码（graphics/third_party/spirv_cross，
 #   辅助函数 optnone 已改 inline），两边源码不同，①② 必然逐字不一致（11-15：上游「[[clang::optnone]] T spvFMul」对内置「inline T spvFMul」，182/300、21/40）。
-#   钉到同一份内置源码编出的命令行程序，两边才比的是翻译器而不是 SPIRV-Cross 版本
-SPIRV_CROSS=$(cd "$R/translator" && python3 -c 'import spvc_inproc; print(spvc_inproc.cli_path())') && [ -x "$SPIRV_CROSS" ] || { echo "S2A.Dsh 对拍：取不到内置 spirv-cross 命令行 → 红"; exit 1; }
+#   钉到同一份内置源码编出的命令行程序，两边才比的是翻译器而不是 SPIRV-Cross 版本（随包命令行版是换回上游原文的那份，这里要 upstream=False）
+SPIRV_CROSS=$(cd "$R/translator" && python3 -c 'import spvc_inproc; print(spvc_inproc.cli_path(upstream=False))') && [ -x "$SPIRV_CROSS" ] || { echo "S2A.Dsh 对拍：取不到内置 spirv-cross 命令行 → 红"; exit 1; }
 export SPIRV_CROSS
 exam() {
   local K=$1 D=$2 M=$3 C=$4; shift 4; mkdir -p "$D/prof/$TID" || return 1

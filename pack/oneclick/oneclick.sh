@@ -247,7 +247,7 @@ if [ -n "$FX" ]; then
   #   目录取盘点身份（graphics/nvn/tools/romfs_list.py：相对路径 + 大小 + 修改时间纳秒，只 lstat、不读内容，27 万文件也只是盘点一遍），没有的记「-」
   KA=$(cd "$FX" && "$PY" -c 'import os, sys; sys.path.insert(0, sys.argv[1]); import romfs_list
 for d in sys.argv[2:]:
-    i = romfs_list.scan(d).identity if os.path.isdir(d) else "-"
+    i = romfs_list.scan(d).identity if romfs_list.is_dir(d) else "-"   # is_dir：romfs/ 不在、只有镜像 romfs.std 时盘点镜像（身份随镜像换而换）
     if i is None: sys.exit(1)
     print(d, i)' "$P/../graphics/nvn/tools" romfs aoc && { [ ! -f aoc.tsv ] || shasum -a 256 < aoc.tsv; }) || die "盘点不了 $FX 的 romfs/ 或 aoc/"
   K=$( { cat "$FX/unpack.tsv"; echo "$KM"; echo "$KA"; } | shasum -a 256 | cut -c1-16); X=$FX

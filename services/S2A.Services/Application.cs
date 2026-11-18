@@ -107,7 +107,9 @@ namespace S2A.Services
             string overlayDir = Path.Combine(programDir, "ui_overlay", "romfs");   // 界面布局覆盖层（RomFsIndex.OverlayFiles）：同路径读覆盖层那份
             string readLogAs = $"程序 {programIndex}";   // 诊断读记录（S2A_ROMFS_READLOG，RomFsIndex.ReadLog）里的来源名
 
-            IStorage imgV1 = RomFsIndex.OpenImg(programDir);   // 单一 IMG v1（v0.3.0）：有 game.img 就用它；旧形态（romfs.img 三件套 / romfs/ 目录）照旧支持
+            // 单一 IMG v1（v0.3.0）：有 game.img 就用它（Mac 运行目录里的是 iPhone 资源包那份的硬链接，0.6.0 一款一份资源）；旧形态（romfs.img 三件套 / romfs/ 目录）照旧支持。
+            //   Mac 运行目录的界面覆盖层在 ui_overlay/romfs（iPhone 资源包是 romfs_overlay，OpenImg 缺省）
+            IStorage imgV1 = RomFsIndex.OpenImg(programDir, Directory.Exists(overlayDir) ? overlayDir : null);
             if (imgV1 != null)
             {
                 imgV1 = RomFsMods.ApplyAtLaunch(imgV1, programIndex);   // 资源替换类 mod（RomFsMods.cs）：没有 mod 原对象返回；下面几处同
@@ -321,13 +323,9 @@ namespace S2A.Services
 
                 // 长度来自目录枚举或预建索引：文件被换过（索引过期）就对不上，读出的数据会错位。
                 //   回失败、不按索引长度补零当完整（审计 #1534 P1-6）；不缓存这个句柄，下次读再核
+                // 11-17 维护者：校验不过不整个拒——黄字记下、照常按实际文件读（读到文件尾就是实际长度），出问题时报红会带上这条
                 if (opened.Length != _size)
-                {
-                    Red.Report("RomFS 文件长度与索引不符（romfs.s2aidx 过期？），本次读回失败", $"{_path}：索引 {_size}，实际 {opened.Length}");
-                    opened.Dispose();
-                    bytesRead = 0;
-                    return ResultFs.HostFileDataCorrupted.Value;
-                }
+                    Red.Waive($"RomFS 文件长度与索引不符（romfs.s2aidx 过期？版本不配，可能读错或闪退，重新装到 iPhone 可解），照常按实际文件读", $"{_path}：索引 {_size}，实际 {opened.Length}");
 
                 lock (_lock)
                 {

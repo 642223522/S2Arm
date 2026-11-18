@@ -100,10 +100,12 @@ struct InstallModeLine: View {
             Spacer(minLength: 12)
             Button(ix(loc, "install.mode.change")) { model.showEnvironment = true }
                 .controllerButtonStyle(.plain).font(.manrope(12.5, .semibold)).foregroundStyle(LauncherPalette.cream.opacity(0.85))
+                .controllerID("export.installMode.change")
                 .accessibilityIdentifier("export.installMode.change")
         }
         .padding(.horizontal, 14).padding(.vertical, 12)
         .background(LauncherPalette.surface.opacity(0.7), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(LauncherTheme.Colors.border, lineWidth: 1))
         .padding(.top, 4)
         .onAppear { model.refreshInstallMode(); model.refreshDevCert() }
     }

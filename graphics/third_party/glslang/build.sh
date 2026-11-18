@@ -11,11 +11,12 @@ VER=16.6.0; SHA=9c09b901149c729df745057dafa815278aaa101b84d2b6e14f16a42de52f97f2
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 source "$ROOT/android/tools/fetch_source.sh"
 C=${S2A_GLSLANG_CACHE:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/cache/glslang}; mkdir -p "$C"
-TCE=$ROOT/tools/toolchain.env; MMAC=$(sed -n 's/^MACOSX_DEPLOYMENT_TARGET=//p' "$TCE"); MIOS=$(sed -n 's/^IPHONEOS_DEPLOYMENT_TARGET=//p' "$TCE")
+TCE=$ROOT/tools/toolchain.env; MMAC=$(sed -n 's/^MACOSX_DEPLOYMENT_TARGET=//p' "$TCE"); MIOS=$(sed -n 's/^IPHONEOS_DEPLOYMENT_TARGET=//p' "$TCE"); MTVOS=$(sed -n 's/^TVOS_DEPLOYMENT_TARGET=//p' "$TCE")
 [ -n "$MMAC" ] && [ -n "$MIOS" ] || { echo "🔴 glslang：$TCE 里没有部署目标" >&2; exit 1; }
 case $PLAT in
   osx-arm64) SDK=macosx; SYS=(-DCMAKE_OSX_DEPLOYMENT_TARGET="$MMAC") ;;
   ios-arm64) SDK=iphoneos; SYS=(-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_DEPLOYMENT_TARGET="$MIOS") ;;
+  tvos-arm64) SDK=appletvos; SYS=(-DCMAKE_SYSTEM_NAME=tvOS -DCMAKE_OSX_DEPLOYMENT_TARGET="$MTVOS") ;;   # Apple TV（11-15）
   *) echo "🔴 glslang：不认识的平台 ${PLAT}（osx-arm64 / ios-arm64）" >&2; exit 1 ;;
 esac
 OUT=$C/$PLAT-$VER-$( { cat "$0"; echo "$MMAC $MIOS"; } | shasum -a 256 | cut -c1-12)

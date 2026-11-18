@@ -416,6 +416,7 @@ py_items() {
   job bnsh_slice timeout 60 "$PYV" graphics/tools/shbake/tests/t_bnsh_slice.py
   job whole_zstd_scan timeout 60 "$PYV" graphics/tools/shbake/tests/t_whole_zstd_scan.py
   job mmap_contains timeout 60 "$PYV" graphics/tools/shbake/tests/t_mmap_contains.py
+  job zstd_frame_nocopy timeout 60 "$PYV" graphics/tools/shbake/tests/t_zstd_frame_nocopy.py
   job zsdict_heads timeout 60 "$PYV" graphics/tools/shbake/tests/t_zsdict_heads.py
   job container_b timeout 60 "$PYV" -B graphics/tools/shbake/tests/t_container_b.py
   job wwise_skip timeout 120 "$PYV" graphics/tools/shbake/tests/t_wwise_skip.py
@@ -434,6 +435,7 @@ py_items() {
   job pso_seed timeout 30 python3 graphics/tools/direct/tests/t_pso_seed.py
   job lib_pack timeout 120 "$PYV" graphics/tools/direct/tests/t_lib_pack.py
   job lib_pack_vk timeout 120 "$PYV" graphics/tools/direct/tests/t_lib_pack_vk.py
+  job lib_pack_ident timeout 120 "$PYV" graphics/tools/direct/tests/t_lib_pack_ident.py   # 发布打包按存储身份同一份只读一次（#1331）
   job lib_overlay timeout 120 "$PYV" graphics/tools/direct/tests/t_lib_overlay.py   # S 级升级补可读瓦片版的覆盖层（LibPack.Overlay）
   job merge_extract timeout 30 python3 graphics/tools/direct/tests/t_merge_extract.py
   job unity_kernels timeout 30 python3 graphics/tools/direct/tests/t_unity_kernels.py

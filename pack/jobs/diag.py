@@ -4,8 +4,10 @@
 AltStore 重签后会在后面加团队号，按前缀认）→ 从 App 数据目录只拉诊断要的文件（Documents/diag 里 App 导出的诊断包、最近 3 次
 会话的 host.log、frames.tsv、threads.txt、unpack.log、metrickit/），不拉存档和资源包 → 放进 <私有目录>/diagnostics/<时间-随机>/<设备>_<包名>-随机/。
 请求里给 device（设备号或名字）就只拉那一台。
+Apple TV（11-15 tvOS 版）同一条路：同网配对过的 Apple TV 一起列进来，按 TV_ITEMS（文档根 Library/Caches/S2Arm）拉，之后照旧走诊断包导出 / 上传。
 """
 from __future__ import annotations
+import errno
 import json
 import os
 import re
@@ -21,6 +23,10 @@ PREFIXES = ("io.s2arm.", "io.s2arm-exp.", "local.s2arm.", "s2arm.")
 PULL_RECORD = "pull.json"   # 每次拉回的目录里：拉回时刻、来源设备（机型 / 系统）、各款文件数
 ITEMS = ("Documents/diag", "Documents/host.log", "Documents/logs", "Documents/frames.tsv",
          "Documents/threads.txt", "Documents/unpack.log", "Documents/metrickit")
+# Apple TV（tvOS）：App 只能长期写 Library/Caches，宿主的文档根是 Library/Caches/S2Arm（iOS 的 Documents 换到这里，
+#   每款同样在 games/<游戏号>/ 下，pack/jobs/tvos.py TV_DOCS）。拉的东西与 iPhone 同一份清单，只换根
+TV_DOCS = "Library/Caches/S2Arm"
+TV_ITEMS = tuple(TV_DOCS + i[len("Documents"):] for i in ITEMS)
 
 
 # 系统已装的 CoreDevice 框架（Xcode「附加组件」装进 /Library/Developer）。直接调它自带的 devicectl，不经 Xcode 的 usr/bin/devicectl：
@@ -32,24 +38,39 @@ NO_COREDEVICE = "这台 Mac 没装 Xcode 的设备组件（CoreDevice），读�
 
 
 DEVICECTL_TIMEOUT = 124   # devicectl 超时的返回码（同 coreutils timeout）
+DEVICECTL_NOSPACE = 28    # 这台 Mac 磁盘满、devicectl 的结果文件写不下（同 errno ENOSPC）
 
 
 def devicectl(c, *args, timeout=120):
     exe = COREDEVICE / "Resources/bin/devicectl"
     if not (exe.is_file() and os.access(exe, os.X_OK)):
         return 127, {}, NO_COREDEVICE
-    with tempfile.NamedTemporaryFile(suffix=".json", dir=c.private) as out:
-        try:
-            p = subprocess.run([str(exe), *args, "--json-output", out.name], env=c.env(), capture_output=True, text=True, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            # devicectl 会一直挂到超时（#333）：转成非零退出，不再裸 traceback 收场。原因如实只说「等了多久没返回」，不猜锁屏
-            #   （启动器剃刀 H21：推送链实测锁屏照样能写，一律说「可能锁屏了」会把玩家指错方向）；要不要提示解锁由调用方按它知道的事实判
-            return DEVICECTL_TIMEOUT, {}, f"devicectl 等了 {timeout} 秒没有返回，已停止等待"
-        try:
-            data = json.loads(Path(out.name).read_text() or "{}")
-        except ValueError:
-            data = {}
-    return p.returncode, data, (p.stderr or p.stdout).strip()
+    # 结果文件写在数据目录：Mac 磁盘满时建不出 / devicectl 写不进（玩家截图 [Errno 28]），原先 OSError 冲出去或被当成「问不出设备」。
+    #   建不出、读不全，或 devicectl 自己报没空间 → 返回 DEVICECTL_NOSPACE，调用方按「Mac 空间不够」说
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".json", dir=c.private) as out:
+            try:
+                p = subprocess.run([str(exe), *args, "--json-output", out.name], env=c.env(), capture_output=True, text=True, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                # devicectl 会一直挂到超时（#333）：转成非零退出，不再裸 traceback 收场。原因如实只说「等了多久没返回」，不猜锁屏
+                #   （启动器剃刀 H21：推送链实测锁屏照样能写，一律说「可能锁屏了」会把玩家指错方向）；要不要提示解锁由调用方按它知道的事实判
+                return DEVICECTL_TIMEOUT, {}, f"devicectl 等了 {timeout} 秒没有返回，已停止等待"
+            try:
+                data = json.loads(Path(out.name).read_text() or "{}")
+            except ValueError:
+                data = {}
+    except OSError as e:
+        if e.errno == errno.ENOSPC:
+            return DEVICECTL_NOSPACE, {}, f"这台 Mac 磁盘满了，devicectl 的结果写不下：{e}"  # 非玩家句（玩家看到的是 install.py save_backup_stuck 那句）
+        raise
+    err = (p.stderr or p.stdout).strip()
+    if p.returncode and NOSPACE.search(err):
+        return DEVICECTL_NOSPACE, data, err
+    return p.returncode, data, err
+
+
+# 磁盘满的各种说法（Python OSError / Foundation NSPOSIXErrorDomain 28 / NSCocoaErrorDomain 640 NSFileWriteOutOfSpaceError）
+NOSPACE = re.compile(r"No space left on device|Errno 28|NSPOSIXErrorDomain[^\n]{0,40}\b28\b|Code=28\b|NSFileWriteOutOfSpaceError|Code=640\b|not enough (free )?space|out of space", re.I)
 
 
 # Apple Vision Pro（visionOS）：按 iPad 兼容 App 装（「Designed for iPad」），走和 iPad 同一条路——理论支持、未真机验证（没有实物）。
@@ -71,6 +92,13 @@ def is_vision(d):
 def is_mobile(d):
     """能装 iPhone / iPad 版 S2Arm 的设备：iPhone、iPad，以及按 iPad 兼容装的 Apple Vision Pro"""
     return _hw(d).get("platform") in ("iOS", "iPadOS") or is_vision(d)
+
+
+def is_tv(d):
+    """Apple TV：读 devicectl 设备信息里的 deviceType / platform（不写死型号）；明确标成模拟器的不算"""
+    h = _hw(d)
+    kind = str(h.get("deviceType") or d.get("deviceType") or "").replace(" ", "").lower()
+    return h.get("reality") != "simulated" and (h.get("platform") == "tvOS" or kind == "appletv")
 
 
 def is_candidate(d):
@@ -125,7 +153,7 @@ def pull(c):
         raise Failure("读不到设备列表：需要完整的 Xcode（devicectl）。" + (err.splitlines()[-1] if err else ""))  # 非玩家句
     want = (c.r.get("device") or "").strip()
     devices = [d for d in data.get("result", {}).get("devices", [])
-               if is_mobile(d)
+               if (is_mobile(d) or is_tv(d))
                and reachable(d)
                and (not want or want in (d.get("identifier"), d.get("hardwareProperties", {}).get("udid"), d.get("deviceProperties", {}).get("name")))]
     if not devices:
@@ -139,6 +167,8 @@ def pull(c):
     for d in devices:
         dev = d["identifier"]
         hw = d.get("hardwareProperties", {})
+        tv = is_tv(d)
+        items, docs = (TV_ITEMS, TV_DOCS) if tv else (ITEMS, "Documents")
         name = re.sub(r"[^\w.-]+", "_", hw.get("marketingName") or hw.get("productType") or "iPhone")
         # 来源设备只记机型和系统，不记设备号、不记玩家给设备起的名字（诊断包要交到公开帖子里）
         sources.append(dict(model=hw.get("marketingName") or hw.get("productType") or "", platform=hw.get("platform") or "",
@@ -151,7 +181,7 @@ def pull(c):
             c.begin("拉回 " + (app.get("name") or bid), 3, 3)  # 非玩家句
             dest = Path(tempfile.mkdtemp(prefix=f"{name}_{bid}-", dir=root))
             got = 0
-            for item in ITEMS:
+            for item in items:
                 target = dest / Path(item).name
                 rc, _, _ = devicectl(c, "device", "copy", "from", "--device", dev, "--domain-type", "appDataContainer",
                                      "--domain-identifier", bid, "--source", item, "--destination", str(target), timeout=300)
@@ -168,7 +198,7 @@ def pull(c):
                 target = dest / "games" / gid / "unpack.log"
                 target.parent.mkdir(parents=True, exist_ok=True)
                 rc, _, _ = devicectl(c, "device", "copy", "from", "--device", dev, "--domain-type", "appDataContainer",
-                                     "--domain-identifier", bid, "--source", f"Documents/games/{gid}/unpack.log", "--destination", str(target), timeout=120)
+                                     "--domain-identifier", bid, "--source", f"{docs}/games/{gid}/unpack.log", "--destination", str(target), timeout=120)
                 if rc == 0 and target.is_file():
                     got += 1
                 else:

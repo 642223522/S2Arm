@@ -12,6 +12,7 @@
 #include "direct/s2a_direct.h"
 #include "direct/sha256.h"
 #include "direct/jv.h"
+#include "compiler_cli.h"
 #include <spawn.h>
 #include <sys/wait.h>
 extern char **environ;
@@ -51,6 +52,8 @@ void rp_view_pin_end(void) {}
 nvn_gpu_view rp_view_by_id(int id, nvn_gpu_cmd c, const tex_t **t) { (void)id; (void)c; (void)t; return NULL; }
 nvn_gpu_view rp_view_by_id_decl(int id, uint8_t tt, uint8_t cls, int elem, nvn_gpu_cmd c, const tex_t **t) { (void)id; (void)tt; (void)cls; (void)elem; (void)c; (void)t; return NULL; }
 nvn_gpu_samp rp_samp_by_id(int id) { (void)id; return NULL; }
+nvn_gpu_samp rp_samp_for_tex(int sid, int tid) { (void)tid; return rp_samp_by_id(sid); }   // #1072：替身不判过滤能力
+uint32_t rp_fmt_caps(uint32_t f) { return nvn_gpu_format_caps(f); }
 int rp_tex_snap_by_id(int id, tex_t *t, view_t *v, int *h) { (void)id; (void)t; (void)v; (void)h; return 0; }
 uint64_t rp_tex_reg_gen(void) { return 1; }
 uint64_t rp_tex_fact_sig(const uint64_t *h, int n, int b, int count) { (void)h; (void)n; (void)b; return (uint64_t)count; }
@@ -90,21 +93,7 @@ static int32_t compiled_result(uint64_t session, uint64_t generation, s2a_direct
     snprintf(result_path, sizeof result_path, "%s/core-compiler/program.json", case_dir);
     FILE *f = fopen(req_path, "wb"); if (!f) return -1;
     if (fwrite(req.data, 1, (size_t)req.bytes, f) != (size_t)req.bytes || fclose(f)) return -1;
-    // CLI 产物路径不写死（原来写死 /src/... 只在原作者的容器里成立，CI / 别的检出位置必失败）：
-    // 优先环境变量 S2A_DIRECT_COMPILER_CLI；默认按 run.sh 的约定 case_dir=<repo>/build/696-real-compiler
-    // 上溯两级定位仓库根，再拼出 gs_compiler_chain_test.py 落产物的固定相对路径。
-    const char *cli_env = getenv("S2A_DIRECT_COMPILER_CLI");
-    if (cli_env && *cli_env) {
-        snprintf(cli_dll, sizeof cli_dll, "%s", cli_env);
-    } else {
-        char repo_dir[1024]; snprintf(repo_dir, sizeof repo_dir, "%s", case_dir);
-        for (int i = 0; i < 2; i++) { char *slash = strrchr(repo_dir, '/'); if (slash) *slash = 0; }
-        snprintf(cli_dll, sizeof cli_dll, "%s/graphics/tools/direct/compiler/cli/bin/Release/net10.0/S2A.DirectCompiler.Cli.dll", repo_dir);
-    }
-    if (access(cli_dll, R_OK) != 0) {
-        fprintf(stderr, "FAIL: 找不到编译器 CLI 产物 %s（先跑 python3 android/tests/gs_compiler_chain_test.py 出产物，或用环境变量 S2A_DIRECT_COMPILER_CLI 指路）\n", cli_dll);
-        return -1;
-    }
+    if (s2a_test_compiler_cli(case_dir, cli_dll, sizeof cli_dll)) return -1;
     char *const argv[] = {"dotnet", cli_dll,
                           "compile", "--request", req_path, "--output", out_dir, NULL};
     pid_t pid; int status = 0;

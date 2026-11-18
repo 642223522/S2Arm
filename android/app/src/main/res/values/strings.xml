@@ -102,6 +102,12 @@
     <string name="library_playtime_today">today</string>
     <string name="library_playtime_yesterday">yesterday</string>
     <string name="library_playtime_days_ago">{0} days ago</string>
+    <!-- Stall watch (runtime/src/ap_host.c) notices in the game; stall_wait is verbatim S2A_UI_STALL_WAIT_EN (runtime/include/s2a_ui_text.h) -->
+    <string name="stall_patch_off">The picture barely moved for about %1$d seconds, so this game\'s frame-rate patch was turned off. It stays off when you start this game again; you can turn it back on from the settings panel at the top right of the library.</string>
+    <string name="stall_wait">The game picture is stuck\n\nIt may still be loading, so you can wait a little longer. If nothing changes, swipe this app away in the app switcher and open it again.</string>
+    <string name="stall_off_note">This game\'s frame-rate patch was turned off automatically because the picture froze. Turning it back on takes effect the next time you start the game.</string>
+    <string name="stall_reopen">Turn frame-rate patch back on</string>
+    <string name="stall_reopen_failed">Could not turn the frame-rate patch back on: %1$s</string>
     <string name="mods_title">Mods (asset replacement)</string>
     <string name="mods_for_game">For: %1$s</string>
     <string name="mods_no_game">Install a game first: mods are kept per game.</string>
@@ -123,5 +129,9 @@
     <string name="mods_note_exefs">Code patches inside (exefs pchtxt / IPS) are not imported here: only asset replacement (romfs)</string>
     <string name="mods_note_empty">The romfs of “%1$s” is empty; skipped</string>
     <string name="mods_note">Mods apply from the next launch, stacked by folder name (later ones win). Uncheck to turn one off. Change mods while the game is not running.</string>
+    <string name="touch_appearance_opacity">Control opacity</string>
+    <string name="touch_appearance_smaller">Smaller</string>
+    <string name="touch_appearance_larger">Larger</string>
+    <string name="touch_appearance_opacity_value">%1$d%%</string>
 </resources>
 

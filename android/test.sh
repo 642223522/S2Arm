@@ -304,6 +304,10 @@ s2a_gate_step "$out/nvn-vk-format-test"
 s2a_gate_step "${CC:-cc}" -std=gnu11 -Wall -Wextra -Werror -I "$android_dir/native/nvn" \
     "$android_dir/tests/ts_queue_test.c" -o "$out/ts-queue-test"
 s2a_gate_step "$out/ts-queue-test"
+# #653：逐报告时间戳校准纯数学（不建 Vulkan device，不替代真机/VVL 验证）。
+s2a_gate_step "${CC:-cc}" -std=gnu11 -Wall -Wextra -Werror -I "$android_dir/native/nvn" \
+    "$android_dir/tests/report_ts_test.c" -o "$out/report-ts-test"
+s2a_gate_step "$out/report-ts-test"
 # VM 夹具端点核对（宿主源码级，mac 也跑）：svc_*.c 新引用的 core 符号漏登记当场红，不等 Linux 真链
 s2a_gate_step "$PY" "$android_dir/core-link/runtime-tests/vm/check_endpoints.py" --out "$out/vm-endpoints"
 # 宽屏 screen_metrics 的宿主两步（screen-widen-test / widen-loader-test）11-01 挪进合入前层：tests/android_screen_host_test.sh
@@ -391,6 +395,11 @@ s2a_gate_step bash "$android_dir/tools/nvk_pipe_flight_test.sh"
 s2a_gate_step bash "$android_dir/tools/nvk_pipe_pend_test.sh"
 s2a_gate_step bash "$android_dir/tools/nvn_vk_pipe_demand_test.sh"
 s2a_gate_step bash "$android_dir/tools/nvk_shader_lease_test.sh"
+# 按结果合并（#1355 方案 A）：编译结果相同（结果摘要 + 负载长度 + 阶段数 + c1 有无与内容都相同）的身份共用一份
+# 着色器记录与句柄、管线随之合并；真 program_cache.c + 真缓存文件，ASan 下覆盖「收尾后不留悬空」。
+# 比对键每一项各有「只改这一项 → 不合并」的负对照；--mutants 逐项撤掉生产逻辑，每个都必须变红。
+s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_alias_test.py"
+s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_alias_test.py" --mutants
 s2a_gate_step "$PY" "$android_dir/tests/w2_observation_lifecycle_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/w2_observation_adapter_test.py"
 # vk_record host regression links the real Linux Vulkan loader; the dispatch itself is mocked.
@@ -435,6 +444,16 @@ s2a_gate_step javac -encoding UTF-8 -d "$out/java" -cp "$out/java" \
     "$android_dir/app/src/main/java/org/s2arm/android/Playtime.java" \
     "$android_dir/tests/PlaytimeTest.java"
 s2a_gate_step java -cp "$out/java" org.s2arm.android.PlaytimeTest "$android_dir/app/src/main/res"
+# 游戏库「重新打开帧率补丁」（StallOff：停帧救场标记在本款 state 目录，删了下次起局照常开；删不掉报真原因）
+s2a_gate_step javac -encoding UTF-8 -d "$out/java" -cp "$out/java" \
+    "$android_dir/app/src/main/java/org/s2arm/android/StallOff.java" \
+    "$android_dir/tests/StallOffTest.java"
+s2a_gate_step java -cp "$out/java" org.s2arm.android.StallOffTest
+# 停帧看门屏上提示（StallNotice：救场横幅定时收、「可能还在加载」等清除才收），文案对 s2a_ui_text.h
+s2a_gate_step javac -encoding UTF-8 -d "$out/java" \
+    "$android_dir/app/src/main/java/org/s2arm/android/StallNotice.java" \
+    "$android_dir/tests/StallNoticeTest.java"
+s2a_gate_step java -cp "$out/java" org.s2arm.android.StallNoticeTest "$android_dir/app/src/main/res" "$android_dir/../runtime/include/s2a_ui_text.h"
 # The shell's BootSpec against boot-spec.v1.schema.json (with and without a region).
 s2a_gate_step "$PY" - "$android_dir/contracts" "$out/boot-spec" <<'PY'
 import importlib.util, os, sys
@@ -638,6 +657,7 @@ s2a_gate_step "$PY" "$android_dir/tests/archive_check_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/compare_apks_test.py"
 s2a_gate_step "$PY" "$android_dir/tools/test_compare_apks.py"
 s2a_gate_step "$PY" "$android_dir/cs/test_nuget_verify.py"
+s2a_gate_step "$PY" "$android_dir/cs/test_static_cache.py"
 # doctor 源码布局与缓存契约（版本表、NDK 宿主目录、codec recipe-key 缓存）。
 s2a_gate_step "$PY" -B "$android_dir/doctor/test_doctor.py"
 

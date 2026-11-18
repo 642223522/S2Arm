@@ -1056,6 +1056,7 @@ static NS2Bridge *bridge;
     if ([self bondUpgradePending]) return YES;
     if (a && b) return NO;
     NS2Link *only = a ?: b;
+    if (ns2_pro_direct_pending(only->kind, only->streamReady, only->sessionFailed)) return YES;   // Pro 直连还没就绪：扫着等它的配对广播
     return ns2_scan_wants_other_side(only->kind, only->streamReady, only->sessionFailed);
 }
 // 开了绑定、还挂着一条直连记住的外设但它没绑定过本机：扫描照样开着，看到它长按 SYNC 的配对广播就给这条链路补上绑定
@@ -1136,8 +1137,9 @@ static NS2Bridge *bridge;
         CBPeripheral *known = identifier ? [self knownPeripheral:identifier] : nil;
         if (known) {
             [self connectPeripheral:known name:known.name RSSI:nil kind:kind];
-            if (self != bridge || ![self bondUpgradePending]) return;
-            LOG("NS2 Pro BLE 记住的手柄还没绑定本机：直连的同时扫描 %u 秒，长按 SYNC 即写入绑定", (unsigned)NS2_SCAN_SECONDS);
+            if (self != bridge) return;
+            // 直连的同时扫描：手柄长按 SYNC 发的配对广播有人接（didDiscover 撤掉直连改连它）；开了绑定时顺带写入绑定（bondUpgradeFor）
+            LOG("NS2 Pro BLE 直连记住的手柄，同时扫描 %u 秒：长按手柄顶部 SYNC 即可连上%s", (unsigned)NS2_SCAN_SECONDS, [self bondUpgradePending] ? "（并写入本机绑定）" : "");
             scanRequested = YES; [self scan];
             return;
         }
@@ -1333,6 +1335,14 @@ static NS2Bridge *bridge;
         if (![self wantsAnotherDevice]) [self stopScanning];
         return;
     }
+    // 挂着直连、还没建起链路的 Pro：扫到 Pro 的配对广播（玩家长按 SYNC）就撤掉直连改连扫到的（配对广播次次 1 秒内连上，直连要等手柄恰好广播）
+    for (unsigned i = 0; i < 2 && found == NS2_KIND_PRO; i++) {
+        NS2Link *w = links[i];
+        if (!w || !ns2_pro_take_pairing(w->kind, w->streamReady, w->device.state == CBPeripheralStateConnected, found, wake)) continue;
+        LOG("NS2 Pro BLE 扫到 Pro 的配对广播：撤掉挂着的直连，改连扫到的 id=%s", peripheral.identifier.UUIDString.UTF8String);
+        [self dropLink:w];
+        if (self != bridge) return;
+    }
     if (![self accepts:found peripheral:peripheral]) return;   // 已有一只 Joy-Con 时只接另一侧
     NSNumber *connectable = advertisement[CBAdvertisementDataIsConnectable];
     if (connectable && !connectable.boolValue) return;
@@ -1404,6 +1414,7 @@ static NS2Bridge *bridge;
     //   没绑定过本机的也挂（以前只挂绑定过的）：链路掉了但手柄还开着、回到范围内就接回；挂着等不占位，玩家照样能重新扫描或换一台。
     //   握手失败（fail 主动断开，sessionFailed）不重挂，免得反复连上又失败
     ns2_kind lostKind = link->kind;
+    BOOL wasReady = link->streamReady;
     BOOL rearm = ns2_rearm_after_disconnect(link->streamReady, link->sessionFailed);
     BOOL wasPair = [self removeLink:link];
     if (self != bridge) return;
@@ -1418,6 +1429,12 @@ static NS2Bridge *bridge;
         if (self != bridge) return;
         NS2Link *again = [self linkForPeripheral:peripheral];
         if (again && !again->waitsForWake) { again->waitsForWake = YES; again->deadline = 0; again->waitingFor = "controller return"; }
+    }
+    // Pro 直连从没就绪就断了（30 秒超时 / 被配对广播接管）：转一轮扫描，玩家这时长按 SYNC 就能连上（原先停在「已断开」，要玩家自己点重新连接）
+    if (!stopped && ns2_pro_rescan_after_drop(lostKind, wasReady, rearm) && !links[0] && !links[1]) {
+        LOG("NS2 Pro BLE 直连没连上：转扫描 %u 秒，长按手柄顶部 SYNC 即可连上", (unsigned)NS2_SCAN_SECONDS);
+        scanRequested = YES; [self scan];
+        if (self != bridge) return;
     }
     [self scheduleTimer];
 }

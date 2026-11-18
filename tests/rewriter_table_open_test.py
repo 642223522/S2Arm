@@ -15,7 +15,7 @@ import unittest
 
 CLI = str(Path(sys.argv.pop(1)).resolve())
 PRODUCTS = ("patched.bin", "fixups.tsv", "gaps.tsv", "gates.tsv", "sites.tsv")
-TABLES = (("S2A_FPS_TSV", "帧率表"), ("S2A_CPATCH_TSV", "社区补丁表"))
+TABLES = (("S2A_FPS_TSV", "帧率表"), ("S2A_CPATCH_TSV", "社区补丁表"), ("S2A_FIX_TSV", "游戏缺陷修补表"))
 
 
 def write_nso(path):
@@ -51,6 +51,8 @@ class TableOpenTest(unittest.TestCase):
             fps.write_text("c main 0x100 word 52800021 52800061\n")
             cpatch = root / "cpatch.tsv"
             cpatch.write_text("w main 0x104 52800042 52800082\n")
+            fix = root / "fix.tsv"
+            fix.write_text("c main 104 word 52800042 52800082\n")
             regular = root / "regular-file"
             regular.write_text("not a directory\n")
             missing = root / "missing.tsv"
@@ -92,6 +94,7 @@ class TableOpenTest(unittest.TestCase):
                 for name, tables, expected in (
                     ("fps", {"S2A_FPS_TSV": str(fps)}, (0x52800061, 0x52800042)),
                     ("cpatch", {"S2A_CPATCH_TSV": str(cpatch)}, (0x52800021, 0x52800082)),
+                    ("fix", {"S2A_FIX_TSV": str(fix)}, (0x52800021, 0x52800082)),
                     ("both", {"S2A_FPS_TSV": str(fps), "S2A_CPATCH_TSV": str(cpatch)},
                      (0x52800061, 0x52800082)),
                 ):

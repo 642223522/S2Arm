@@ -317,7 +317,8 @@ def references(p):
         except SyntaxError as error:
             parse_errors[p] = f'第 {error.lineno} 行：{error.msg}'
             return found
-        for node in ast.walk(tree):
+        nodes = list(ast.walk(tree))   # 整棵树只遍历一次，下面几类登记共用（原先每类各 ast.walk 一遍，全仓 4 遍约占扫描一半时间）
+        for node in nodes:
             if isinstance(node, ast.Import): names = [a.name for a in node.names]
             elif isinstance(node, ast.ImportFrom):
                 names = [node.module] if node.module else [a.name for a in node.names]
@@ -333,14 +334,14 @@ def references(p):
         #   subprocess.* 调用的第一个参数是列表、首项是 sys.executable / 'python3' / 'bash' 时，列表里字符串常量拼出的 .py / .sh 路径按脚本目录或仓库根解析，
         #   列表项是本文件赋值过的名字（SWAP = os.path.join(H, 'x.py')）也跟进一层；只认这种调用，不认字符串提及
         assigns = {}
-        for node in ast.walk(tree):
+        for node in nodes:
             if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name): assigns[node.targets[0].id] = node.value
         #   表达式里嵌的名字同样跟进（11-01：tests/metal_prof_test.py 的 gen = ROOT / 'tests' / ... ; subprocess.run([sys.executable, str(gen), …])）；按源码顺序深度优先取常量，ROOT / 'a' / 'b.py' 拼回 a/b.py
         def consts(n, depth=0):
             if isinstance(n, ast.Constant): return [n.value] if isinstance(n.value, str) else []
             if isinstance(n, ast.Name): return consts(assigns[n.id], depth + 1) if n.id in assigns and depth < 2 else []
             return [c for ch in ast.iter_child_nodes(n) for c in consts(ch, depth)]
-        for node in ast.walk(tree):
+        for node in nodes:
             if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in ('run', 'call', 'check_call', 'check_output', 'Popen')
                     and isinstance(node.func.value, ast.Name) and node.func.value.id == 'subprocess' and node.args and isinstance(node.args[0], ast.List) and node.args[0].elts): continue
             head = node.args[0].elts[0]
@@ -352,7 +353,7 @@ def references(p):
                     if c in files: found.add(c); break
         # Python 编跑 C# 单测工程（11-01 审计 P1-64：安卓 audio-lifetime-tests/run.py 的 here / 'AudioLifetime.csproj'、codecs managed_test.py 的 here/'managed/Avc.Tests.csproj'）：
         #   字符串常量以 .csproj 结尾、按脚本目录或仓库根解析正是那个工程才算；只认工程文件，不认 .py / .sh 的字符串提及
-        for node in ast.walk(tree):
+        for node in nodes:
             if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.endswith('.csproj'):
                 for c in (os.path.normpath(os.path.join(here, node.value)), os.path.normpath(node.value)):
                     if c in csp: found.add(c)
@@ -361,7 +362,16 @@ def references(p):
     return shell_references(p, text, False, '')
 
 
-def shell_references(p, text, make, cwd):   # make=True：text 是 make 配方（cwd 是 make 的工作目录，配方里的 $(MAKE) 从这里起）
+_sh_refs = {}
+
+
+def shell_references(p, text, make, cwd):   # 同一段文本（make 配方被多个目标点到）只解析一次；结果只取决于这四个参数
+    k = (p, text, make, cwd)
+    if k not in _sh_refs: _sh_refs[k] = _shell_references(p, text, make, cwd)
+    return set(_sh_refs[k])
+
+
+def _shell_references(p, text, make, cwd):   # make=True：text 是 make 配方（cwd 是 make 的工作目录，配方里的 $(MAKE) 从这里起）
     found = set()
     here = os.path.dirname(p)
     # 只展开仓库现有的静态路径写法；未知变量不按 basename 猜测试。
@@ -499,12 +509,10 @@ while todo:
         if t in tests: wired.add(t)
         if t not in seen: seen.add(t); todo.append(t)
 
-ok, bad = {}, [f'{p}：解析失败（{why}）' for p, why in sorted(parse_errors.items())]
-stale = []
-# 白名单 = 各单测文件头「门禁手动：<原因>」（tools/gate_decl.py manual；原 tests/test_wired_ok.tsv 中央表已拆回各文件，10-30 维护者批）；S2A_WIRED_OK：换一份白名单文件（单测反证用）
-okp = os.environ.get('S2A_WIRED_OK')
-okl = open(okp, encoding='utf-8').read().splitlines() if okp and os.path.exists(okp) else ['\t'.join(r) for r in decl('manual')]
-if okl:
+def verdict(okl, okp):
+    """按一份白名单出结论：(文本行, 退出码)。同一次扫描可按多份白名单出结论（S2A_WIRED_EMPTY_OUT），不必整仓重扫"""
+    ok, bad = {}, [f'{p}：解析失败（{why}）' for p, why in sorted(parse_errors.items())]
+    stale = []
     for n, l in enumerate(okl, 1):
         lab = f'白名单第 {n} 行' if okp else '文件头「门禁手动」'
         if not l.strip() or l.startswith('#'): continue
@@ -513,9 +521,21 @@ if okl:
         elif p not in tests: stale.append(f'{lab} {p} 不是现存的单测（改名 / 删了就删这一行）')   # 同上只提示：写错路径时那支本身照报没接线
         elif p in wired: stale.append(f'{lab} {p} 已经有门禁脚本调它了，可以删掉这一行')   # 只提示不算红（10-29 列车线：白名单 merge=union 后两支并行删相邻行会把删掉的行合回来，过期行不掩盖任何没接线的单测）
         else: ok[p] = why   # 不合格的行不豁免
-miss = [t for t in tests if t not in wired and t not in ok]
-for t in miss: bad.append(f'{t} 没有门禁脚本调它（graphics/gate.sh 等登记一行；跑不了的在它文件头写「门禁手动：<原因>」）')
-for b in bad: print('  ✗ ' + b)
-for b in stale: print('  · 提示：' + b)
-print(f'期望 0 处没接线 / 白名单不对 → 真结果 {len(bad)} 处（扫 {len(tests)} 支单测：门禁调到 {len(wired)}、白名单 {len(ok)}、没接线 {len(miss)}）')
-sys.exit(1 if bad else 0)
+    miss = [t for t in tests if t not in wired and t not in ok]
+    for t in miss: bad.append(f'{t} 没有门禁脚本调它（graphics/gate.sh 等登记一行；跑不了的在它文件头写「门禁手动：<原因>」）')
+    out = ['  ✗ ' + b for b in bad] + ['  · 提示：' + b for b in stale]
+    out.append(f'期望 0 处没接线 / 白名单不对 → 真结果 {len(bad)} 处（扫 {len(tests)} 支单测：门禁调到 {len(wired)}、白名单 {len(ok)}、没接线 {len(miss)}）')
+    return out, (1 if bad else 0)
+
+
+# 白名单 = 各单测文件头「门禁手动：<原因>」（tools/gate_decl.py manual；原 tests/test_wired_ok.tsv 中央表已拆回各文件，10-30 维护者批）；S2A_WIRED_OK：换一份白名单文件（单测反证用）
+okp = os.environ.get('S2A_WIRED_OK')
+okl = open(okp, encoding='utf-8').read().splitlines() if okp and os.path.exists(okp) else ['\t'.join(r) for r in decl('manual')]
+# S2A_WIRED_EMPTY_OUT=<文件>：同一次扫描再按空白名单出一份结论写进该文件（末行「退出码 N」）——单测反证空白名单时不必整仓再扫一遍（11-16 门禁提速）
+eo = os.environ.get('S2A_WIRED_EMPTY_OUT')
+if eo:
+    lines, rc = verdict([], 'empty')
+    open(eo, 'w', encoding='utf-8').write('\n'.join(lines + [f'退出码 {rc}']) + '\n')
+lines, rc = verdict(okl, okp)
+print('\n'.join(lines))
+sys.exit(rc)

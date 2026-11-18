@@ -7,6 +7,7 @@
 
 const char *rp_op_name(uint32_t op);   // 录制命令名（"OP_DRAW" …）；范围外返回 "OP_?"
 int rp_pool_count(void);                // 已登记的内存池个数
+uint64_t rp_pool_fast_hits(void);       // 调用线程的快路命中累计（只读；测试与调优观测点）
 void rp_pool_memo_stats(uint64_t *hits, uint64_t *lookups);   // 池查找的线程内备忘（rp_entry.c）：调用线程自己的累计命中数、查找数
 int rp_tex_live_n(void);                // 活贴图对象个数（只是登记数，不等于已建图的个数）
 int rp_depth_zero(void);                // NVN 深度模式：1 = 近平面为 0
@@ -70,7 +71,7 @@ void rp_draw_stats(uint64_t *draws, uint64_t *skips);
 enum { RP_PERF_SUBMIT_NS, RP_PERF_COMMIT_NS, RP_PERF_SUBS, RP_PERF_WAIT_NS, RP_PERF_WAIT_N, RP_PERF_DONE_NS, RP_PERF_DONE_N, RP_PERF_PASSES, RP_PERF_PRESENT_NS,
        RP_PERF_D_PROG, RP_PERF_D_PREP, RP_PERF_D_TEX, RP_PERF_D_PIPE, RP_PERF_D_DYN, RP_PERF_D_BIND, RP_PERF_D_DRAW, RP_PERF_D_TAIL, RP_PERF_D_PASS, RP_PERF_D_PGET, RP_PERF_PB_VIEW, RP_PERF_PB_BAR, RP_PERF_PB_BE, RP_PERF_PB_MARK, RP_PERF_RES_LOCK, RP_PERF_RES_NEW, RP_PERF_RES_INIT, RP_PERF_RES_VIEWMAKE, RP_PERF_PB_SHADOW, RP_PERF_RES_SCAN, RP_PERF_RES_UP, RP_PERF_RES_UPN, RP_PERF_RES_ZERO, RP_PERF_RES_ZERON, RP_PERF_RES_MAKE, RP_PERF_RES_ZDEFER, RP_PERF_BIND_SLICE_HIT, RP_PERF_BIND_SKIP,   // 绑定：段内切片表命中的块数、整组沿用没发的阶段数
       
-       RP_PERF_P_DS, RP_PERF_P_DS_IDLE, RP_PERF_P_LOADC, RP_PERF_P_KPIX, RP_PERF_P_ONE, RP_PERF_P_CUT_XFER, RP_PERF_P_CUT_CLEAR, RP_PERF_P_CUT_RT, RP_PERF_P_CUT_OP, RP_PERF_TEX_UP_N, RP_PERF_TEX_UP_KB, RP_PERF_BUF_SYNC_KB, RP_PERF_BUF_SYNC_DIRECT_KB, RP_PERF_FX_SUBS, RP_PERF_FX_EVENT, RP_PERF_FX_REPORT, RP_PERF_FX_OCC, RP_PERF_FX_GW, RP_PERF_FIN_SKIP,
+       RP_PERF_P_DS, RP_PERF_P_DS_IDLE, RP_PERF_P_LOADC, RP_PERF_P_KPIX, RP_PERF_P_ONE, RP_PERF_P_CUT_XFER, RP_PERF_P_CUT_CLEAR, RP_PERF_P_CUT_RT, RP_PERF_P_CUT_OP, RP_PERF_TEX_UP_N, RP_PERF_TEX_UP_KB, RP_PERF_TEX_UP_PART, RP_PERF_TEX_UP_ROWS, RP_PERF_BUF_SYNC_KB, RP_PERF_BUF_SYNC_DIRECT_KB, RP_PERF_FX_SUBS, RP_PERF_FX_EVENT, RP_PERF_FX_REPORT, RP_PERF_FX_OCC, RP_PERF_FX_GW, RP_PERF_FIN_SKIP,
        RP_PERF_P_CONT, RP_PERF_P_CLEARONLY, RP_PERF_P_PARK, RP_PERF_BIND_FAST, RP_PERF_BIND_CONT, RP_PERF_TEX_EPOCH, RP_PERF_PC_HIT, RP_PERF_PC_MISS, RP_PERF_WAIT_FIN_N, RP_PERF_WAIT_FIN_NS, RP_PERF_WAIT_SYNC_N, RP_PERF_WAIT_SYNC_NS,
        RP_PERF_P_TINY_DS, RP_PERF_P_TINY_NODS, RP_PERF_P_TINY_KPIX,   // 0–1 笔通道里：挂深度模板的、不挂的、它们的百万像素和（看通道碎片化构成）
        RP_PERF_P_AREA, RP_PERF_P_AREA_KPIX,   // 用了缩小渲染区域的通道数、这些区域的千像素和（面积优化到底有没有真的缩下来）
@@ -86,6 +87,8 @@ enum { RP_PERF_SUBMIT_NS, RP_PERF_COMMIT_NS, RP_PERF_SUBS, RP_PERF_WAIT_NS, RP_P
        RP_PERF_BIND_NS, RP_PERF_BIND_REBUILD_N,       // 发绑定总耗时、整组重建的次数（分 B1 快路与重建两块看）
        RP_PERF_UBO_N, RP_PERF_UBO_KB, RP_PERF_UBO_C1_N,   // 常量缓冲暂存的次数 / 千字节 / 其中程序自带常量段（C1）的次数
        RP_PERF_BUF_FAST_N, RP_PERF_BUF_SLOW_N, RP_PERF_BUF_NOSPAN_N, RP_PERF_BUF_PAGES_N,   // 缓冲解析：快路命中 / 走逐页慢路 / 不受写跟踪 / 慢路里一共查了多少页
+       RP_PERF_BUF_BLOCK_SKIP_N, // 已跳过的块数（窗口总量）
+       RP_PERF_BUF_LOG_EV, RP_PERF_BUF_LOG_WORDS, RP_PERF_BUF_LOG_REBUILD,   // 脏页追加日志（nvk_buf_dirtylog）：灌进镜像的事件数 / 求交时看的位图字数 / 日志不可用、按逐页代号重建的次数
        RP_PERF_RES_FIND_NS, RP_PERF_RES_FAST_NS, RP_PERF_RES_SLOW_NS, RP_PERF_RES_N,   // 缓冲解析三段耗时：找池与取镜像 / 快路逐页核对 / 慢路同步（开关 nvk_res_tm）
        RP_PERF_RES_LW_NS, RP_PERF_RES_LA_NS,   // 批量解析里：抢锁等待 / 持锁解析（开关 nvk_res_tm）
        RP_PERF_LAND_KB, RP_PERF_LAND_N, RP_PERF_MIRROR_N,   // 落地（GPU 写回游戏内存）的千字节 / 次数；新建镜像次数
@@ -96,6 +99,7 @@ enum { RP_PERF_SUBMIT_NS, RP_PERF_COMMIT_NS, RP_PERF_SUBS, RP_PERF_WAIT_NS, RP_P
        RP_PERF_TM_FRAMES,      // 分时抽样：窗口里逐步计时过的帧数（#1103）；绘制各步 / 开通道细分 / 贴图解析等锁持锁按它求每帧值
        RP_PERF_N };   // P_CONT：同目标续接命中的 SET_RT 次数；P_CLEARONLY：一笔绘制都没有的通道数；P_PARK：记进挂起表的待折清除条数；BIND_FAST：整组绑定直接沿用没重建；TEX_EPOCH：贴图内容检查按纪元跳过的次数；PC_HIT/MISS：后端开通道缓存命中 / 新建   /* FX_*：做完时要写回游戏内存的提交数，和各类回写的个数（事件 / 计数器报告 / 遮挡事件 / 显卡写缓冲） */   // TEX_UP_*：贴图整张上传的次数与千字节；BUF_SYNC_KB：池镜像同步的千字节   // P_*：通道的构成（见 rp_pass.c rp_pass_end）   // D_*：一笔绘制里各步（见 rp_draw.c）
 void rp_perf_add(int i, uint64_t v);
+void rp_buf_blocks_report(const uint64_t pf[RP_PERF_N]);
 // 分时读数抽样（#1103）：一笔绘制取 10 次时钟 + 9 次原子加、一次贴图解析取 3 次、一个通道取 5 次，世界稳态每帧合计约 2.2 万次取时钟，占回放线程约 3%。
 // 改成每 rp_tm_stride() 帧只完整计 1 帧（缺省 32）：采样帧里逐步计时照旧，其余帧一次时钟都不取；纯计数的项不动、每帧都记。
 // 「分时」里这几项按采样帧数（RP_PERF_TM_FRAMES）求每帧值，读数行的格式和含义不变。
@@ -117,6 +121,9 @@ int rp_res_new_sizes_take(void);     // 诊断读数：上次调用以来新建�
 int rp_fence_done(uint64_t f);       // 栅栏值 f 及之前交出去的活显卡都做完了
 extern int rp_split_draws;       // 中途交段：每段的笔数（见 rp_exec.c）
 uint64_t rp_seg_serial(void);   // 第几个后端段：段里的暂存内容（arena 切片）只在同一段里能复用
+void rp_exec_totals(uint64_t *exec_ns, uint64_t *subs);   // 进程累计：最外层回放用时 / 提交次数（与帧级账同源，只读）
+void rp_pool_stats_frame(void);   // [上屏] 帧边界：读一次开关；开着时每 1024 帧打一行 S2A_POOLSTATS
+void rp_pool_stats_end(void);     // 会话收尾：开着就再打一行（why=end）并关掉
 void rp_frame_take(uint64_t *exec_ns, uint64_t *draws, uint64_t *subs);   // 取走本帧的回放耗时 / 绘制笔数 / 提交次数（长帧日志用）
 // 逐帧分项账（长帧归因，开关 nvk_hitch_log）：5 秒窗口的 rp_perf 混了多帧，回答不了「这一帧的时间花在哪」。
 // 这一组只在帧边界由上屏线程取走一次（取即清零），累计点与 rp_perf 的 D_* 同源（见 rp_exec.c 的 fr_perf_project）。
@@ -150,3 +157,6 @@ void rp_pass_noatt_size(uint32_t *w, uint32_t *h);   // 当前是无附件通道
 // 调试读回（rp_draw.c）：上屏线程登记，提交线程在一次提交收尾时执行；fence 是提交线程的时间线值，每读一张 +1
 void rp_debug_dump_request(uint64_t present_serial, uint64_t frame);
 void rp_debug_dump_poll(uint64_t *fence);
+
+// #653：无能力 / 段超 64 槽时沿用 guest_tick 的报告数（OOM 不伪造读数），取走清零。
+uint64_t rp_timestamp_fallback_take(void);

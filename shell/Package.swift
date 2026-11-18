@@ -7,7 +7,7 @@ import PackageDescription
 
 let package = Package(
     name: "S2ArmShellUI",
-    platforms: [.iOS(.v18), .macOS(.v26)],
+    platforms: [.iOS(.v18), .tvOS(.v17), .macOS(.v26)],
     products: [
         .library(name: "ShellUI", targets: ["ShellUI"]),
         .library(name: "ShellControllers", targets: ["ShellControllers"]),

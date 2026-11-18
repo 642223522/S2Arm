@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#include "s2a_docs.h"   // s2a_container_docs：容器文档根（Apple TV 在 Library/Caches/S2Arm）
 #import "settings.h"
 #import "cpatch_model.h"
 #import "s2a_l10n.h"
@@ -341,7 +342,7 @@ void s2a_ios_apply_graphics_settings(NSUserDefaults *defaults) {
         apply_environment("S2A_DOCKED", @(docked));
         fprintf(stderr, "[S2A 画面设置] S2A_DOCKED=%s（本 App 设置）\n", docked);
     }
-    // 帧率档位（11-13 维护者：60 / 120 帧补丁都带进去，玩家自己选）：存 S2AFpsPick（0 = 自动：不超过屏幕刷新率的最高一档），运行时 runtime/src/cpatch.c fps_pick 读
+    // 帧率档位（11-13 维护者：60 / 120 帧补丁都带进去，玩家自己选）：存 S2AFpsPick（0 = 自动：不超过 60 帧的最高一档），运行时 runtime/src/cpatch.c fps_pick 读
     if (!getenv("S2A_FPS_PICK")) {
         NSInteger pick = [defaults integerForKey:@"S2AFpsPick"];
         if (pick > 0) { apply_environment("S2A_FPS_PICK", [NSString stringWithFormat:@"%ld", (long)pick]); fprintf(stderr, "[S2A 画面设置] S2A_FPS_PICK=%ld（本 App 设置）\n", (long)pick); }
@@ -502,6 +503,15 @@ float s2a_ios_res_scale(NSUserDefaults *defaults) {
     return v >= 0.25f && v <= 4.0f ? v : 1.0f;
 }
 
+// 容器文档根（Apple TV 在 Library/Caches/S2Arm，s2a_container_docs 只在 iOS / tvOS 编出来）；Mac 宿主单测编本文件时照旧取 Documents
+static NSString *settings_container_docs(void) {
+#if TARGET_OS_IPHONE
+    char d[1024]; s2a_container_docs(d, sizeof d); return @(d);
+#else
+    return NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+#endif
+}
+
 // 诊断局（#438，设置「诊断」组的开关 S2ADiagRunNext）：只管下一局。起局时读到开着就设上逐通道读数的环境变量、立刻关掉开关；
 //   读数写本款文档根下的 diagrun/（出图 PNG 与颜色目标 PNG；逐通道记录 [pass] 行走 stderr → host.log），导出诊断包时带上（diag.m）。
 //   帧号：第 3600 / 7200 次出图（60 帧游戏约 1 / 2 分钟）。这些是重探针、会拖慢帧率，所以只开一局。启动环境显式给的优先
@@ -510,7 +520,7 @@ void s2a_ios_apply_diag_run(NSUserDefaults *defaults) {
     if (![defaults boolForKey:@"S2ADiagRunNext"]) return;
     [defaults setBool:NO forKey:@"S2ADiagRunNext"];
     const char *d = getenv("S2A_DOCS");
-    NSString *docs = d && *d ? @(d) : NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *docs = d && *d ? @(d) : settings_container_docs();
     NSString *dir = [docs stringByAppendingPathComponent:@"diagrun"];
     NSFileManager *fm = NSFileManager.defaultManager;
     [fm removeItemAtPath:dir error:nil];   // 上一次诊断局的图不混进来
@@ -572,7 +582,7 @@ void s2a_ios_load_graphics_settings(void) {
         NSDictionary<NSString *, NSString *> *player = getenv("S2A_PLAYER_USER") ? nil : s2a_ios_local_player(NSUserDefaults.standardUserDefaults);
         if (!getenv("S2A_SAVE_FOLDER")) {
             const char *d = getenv("S2A_DOCS");
-            NSString *docs = d && *d ? @(d) : NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+            NSString *docs = d && *d ? @(d) : settings_container_docs();
             setenv("S2A_SAVE_FOLDER", [docs stringByAppendingPathComponent:player ? player[@"folder"] : @"SaveData"].fileSystemRepresentation, 0);
         }
         if (player) {

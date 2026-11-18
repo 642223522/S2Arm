@@ -539,6 +539,16 @@ static void bl_cv(uint64_t arg) { (void)arg;
     uint64_t r[31] = {(uint64_t)&g_bl_lock, (uint64_t)&g_bl_key, g_bl_h, (uint64_t)-1}; svc_thread(0x1C, r);
     atomic_store(&g_bl_rc, r[0]); atomic_store(&g_bl_done, 1);
     uint64_t e[31] = {0}; svc_thread(0x0A, e); }
+// ---- ArbitrateLock 快路径（期望照 Horizon：锁字已不是「持有者 | 等待位」→ 回 0，游戏回用户态重抢）：主线程持着全局锁 G，
+//   另一条游戏线程拿对不上的锁字调 0x1A，应 1 秒内回 0（不碰 G）。反证：去掉快路径，它卡在 glock() 上，1 秒内回不来
+void s2a_test_glock_hold(int on);
+static _Atomic uint32_t g_fp_lock; static _Atomic int g_fp_go, g_fp_done, g_fp_ready; static _Atomic uint64_t g_fp_rc = 1; static uint32_t g_fp_h;
+static void fp_arb(uint64_t arg) { (void)arg;
+    atomic_store(&g_fp_ready, 1);   // 线程起来（启动登记要用 G）之后主线程才拿 G
+    while (!atomic_load(&g_fp_go)) usleep(100);
+    uint64_t r[31] = {0x1234u, (uint64_t)&g_fp_lock, g_fp_h}; svc_thread(0x1A, r);   // 锁字 0（没人持有），对不上 0x1234 | 等待位
+    atomic_store(&g_fp_rc, r[0]); atomic_store(&g_fp_done, 1);
+    uint64_t e[31] = {0}; svc_thread(0x0A, e); }
 // ---- Horizon 时间片轮转：优先级 59 的两条线程都只能用 0 号核，A 空转，B 等核 ----
 static _Atomic int g_hz_ready, g_hz_done, g_hz_stop;
 __attribute__((noinline)) static void hz_spin(uint64_t arg) { (void)arg;
@@ -1438,6 +1448,16 @@ int main(void) {
         uint64_t sg[31] = {(uint64_t)&g_bl_key, 1}; svc_thread(0x1D, sg);
         CHECK(wait_flag(&g_bl_done, 2000) && atomic_load(&g_bl_rc) == 0xE401, "条件变量唤醒后锁字持有者无效：等待者应以 0xE401 醒来（%s，rc %#llx）",
               atomic_load(&g_bl_done) ? "醒了" : "2 秒没醒", (unsigned long long)atomic_load(&g_bl_rc));
+    }
+    {
+        g_case = "ArbitrateLock 快路径";
+        atomic_store(&g_fp_lock, 0); spawn(fp_arb, 0, &g_fp_h); wait_flag(&g_fp_ready, 2000); usleep(20000);
+        s2a_test_glock_hold(1); atomic_store(&g_fp_go, 1);
+        int done = wait_flag(&g_fp_done, 1000);
+        s2a_test_glock_hold(0);
+        if (!done) wait_flag(&g_fp_done, 2000);   // 反证路径：放了 G 它才回来，等它收尾
+        CHECK(done && atomic_load(&g_fp_rc) == 0, "锁字对不上时 ArbitrateLock 应不拿全局锁、1 秒内回 0（%s，rc %#llx）",
+              done ? "回来了" : "持 G 期间 1 秒没回（卡在全局锁上）", (unsigned long long)atomic_load(&g_fp_rc));
     }
     if (getenv("S2A_SCHED_HZ") || getenv("S2A_HZ_CORE")) {   // Horizon 核号 -2 / 时间片轮转（只在 S2A_HZ_CORE 开时跑；期望照 Ryujinx KThread.Initialize / KScheduler.RotateScheduledQueue）
         g_case = "Horizon 核号 -2 / 时间片轮转";

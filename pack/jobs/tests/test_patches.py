@@ -12,7 +12,7 @@ SDK = "A226048605D3597F90CB1067D141CD36647B90CD"
 
 
 class Ctx:
-    def __init__(self, root): self.private = root / "priv"; self.library = root / "lib"   # 游戏库：玩家导入的 mod 在 <库>/<款>/mods（fetch 带上 mod 代码补丁）
+    def __init__(self, root): self.private = root / "priv"; self.library = root / "lib"; self.work_root = root / "work"   # 游戏库：玩家导入的 mod 在 <库>/<款>/mods（fetch 带上 mod 代码补丁）
 
 
 def nso(path, bid_hex):

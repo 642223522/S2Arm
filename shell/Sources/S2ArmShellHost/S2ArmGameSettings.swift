@@ -110,6 +110,12 @@ public enum S2ArmGameSettings {
         func toggle(_ id: String, _ label: String, _ s: Options.Switch) -> SettingRow {
             SettingRow(id: id, label: label, note: s.note, kind: .toggle(on: "on", off: "off"), value: s.on ? "on" : "off", enabled: s.enabled)
         }
+        #if os(tvOS)
+        // 电视：没有改名字和封面（tvOS 没有相册选图）、没有分屏 / 屏幕朝向（折叠屏与手机转向才有），也没有触屏虚拟手柄（见下）
+        _ = (splitValue, direction)
+        var out: [SettingSection] = []
+        var picture: [SettingRow] = []
+        #else
         var out = [SettingSection(id: "s2a.identity", title: "Display", rows: [
             SettingRow(id: identity, label: "Name and Cover", note: "Only changes how it appears on this iPhone", kind: .choice([SettingOption("current", state.customIdentity ? "Customized" : "Default"), SettingOption(editIdentity, "Edit…")]), value: "current"),
         ])]
@@ -118,6 +124,7 @@ public enum S2ArmGameSettings {
             SettingRow(id: splitScreen, label: "Split screen", note: "Applies to all games; Automatic enables split screen only when partially folded", kind: .choice([SettingOption("auto", "Automatic"), SettingOption("on", "On"), SettingOption("off", "Off")]), value: ["auto", "on", "off"].contains(splitValue) ? splitValue : "auto"),
             SettingRow(id: screenOrientation, label: "Screen orientation", note: "Applies to all games; Automatic uses portrait for split screen and landscape otherwise", kind: .choice([SettingOption("auto", "Automatic"), SettingOption("landscape", "Landscape"), SettingOption("portrait", "Portrait")]), value: ["auto", "landscape", "portrait"].contains(direction) ? direction : "auto"),
         ]
+        #endif
         let o = stores.options(id)
         if let o {
             if !o.fps.hidden { picture.append(toggle(fps60, o.fps.title.isEmpty ? "60 FPS" : o.fps.title, o.fps)) }
@@ -127,7 +134,7 @@ public enum S2ArmGameSettings {
             }
             if !o.fullscreen.hidden { picture.append(toggle(fullscreen, o.fullscreen.title.isEmpty ? "Full screen" : o.fullscreen.title, o.fullscreen)) }
         }
-        out.append(SettingSection(id: "s2a.picture", title: "Picture", rows: picture))
+        if !picture.isEmpty { out.append(SettingSection(id: "s2a.picture", title: "Picture", rows: picture)) }
         if let o {
             if !o.patches.isEmpty {
                 out.append(SettingSection(id: "s2a.patches", title: "Community patches", rows: o.patches.map {
@@ -153,11 +160,15 @@ public enum S2ArmGameSettings {
             if !l.note.isEmpty { row.note += " · " + l.note }   // 宿主那句已按当前语言，不再查表
             out.append(SettingSection(id: "s2a.language", title: "Language", rows: [row]))
         }
+        #if !os(tvOS)   // 触屏虚拟手柄（布局 / 按住锁定 / 透明度）：电视上没有触屏
         out.append(SettingSection(id: "s2a.vpad", title: "Virtual controller", rows: [
             SettingRow(id: layout, label: "Button layout", note: "Adjust normal and split positions separately; applies to this game only", kind: .choice(options), value: current),
             SettingRow(id: holdLock, label: "Hold-lock ZL / ZR", note: "Hold for 2 s to lock, tap again to unlock; this game only", kind: .toggle(on: "on", off: "off"), value: state.holdLock ? "on" : "off"),
             SettingRow(id: opacity, label: "Button opacity", note: "Shared by all games; takes effect the next time you enter a game", kind: .range(min: 10, max: 100, step: 5, unit: "%"), value: String(Int((op * 100).rounded()))),
         ]))
+        #else
+        _ = (op, options, current)
+        #endif
         return out
     }
 
