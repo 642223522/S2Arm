@@ -50,6 +50,7 @@ public class MainActivity extends Activity
     private TextView games;
     private boolean gameMode;
     private GameSession gameSession;
+    private PhoneFeedback phoneFeedback;   // game mode: phone six-axis + rumble (#528 item 10)
     private boolean gameStopping;
     private GameAudioFocus gameAudioFocus;
     private boolean previousCacheExported;
@@ -407,6 +408,7 @@ public class MainActivity extends Activity
             if (game != null) capabilities += "\n" + game;
             status.setText(capabilities);
             applyTouchPassthrough();
+            if (gameMode) phoneFeedback = new PhoneFeedback(this, getSharedPreferences(PREFS, MODE_PRIVATE));
             requestDebugLifecycle(getIntent());
         } catch (LinkageError | RuntimeException e) {
             Log.e("S2Arm", "Native host startup failed", e);
@@ -714,6 +716,7 @@ public class MainActivity extends Activity
         if (powerSampler != null) powerSampler.start();
         if (systemTuning != null) systemTuning.start();
         if (powerState != null) powerState.start();
+        if (phoneFeedback != null) phoneFeedback.resume();   // settings + rotation before the game can ask for six-axis
         tryStartGame();
         if (gameMode) lifecycleProbe.postDelayed(geometrySample, 500);   // B3 输出尺寸轮询（开关关时全部回落 MATCH_PARENT）
         if (gameMode) { lifecycleProbe.removeCallbacks(playtimeTick); lifecycleProbe.postDelayed(playtimeTick, 10000); }
@@ -779,6 +782,7 @@ public class MainActivity extends Activity
         if (powerSampler != null) powerSampler.stop();
         if (systemTuning != null) systemTuning.stop();
         if (powerState != null) powerState.stop();
+        if (phoneFeedback != null) phoneFeedback.pause();
         super.onPause();
     }
     // #48 P8：PowerStateSampler 的出口（只在 onResume 之后跑，库被拒时 powerState 不会启动；这里再守一次）
@@ -1221,6 +1225,16 @@ public class MainActivity extends Activity
                 android.widget.Toast.makeText(this, live ? R.string.console_mode_switched : R.string.console_mode_saved,
                     android.widget.Toast.LENGTH_LONG).show();
             });
+        }
+        if (phoneFeedback != null) {   // 手机当掌机的六轴 / 震动（同 iOS 设置里的「手机陀螺仪」「手机震动」，缺省开，存下来下次照用）
+            PhoneFeedback feedback = phoneFeedback;
+            boolean gyro = feedback.gyro(), rumble = feedback.rumble();
+            labels.add(getString(gyro ? R.string.phone_gyro_on : R.string.phone_gyro_off));
+            actions.add(() -> feedback.setGyro(!gyro));
+            if (feedback.hasVibrator()) {
+                labels.add(getString(rumble ? R.string.phone_rumble_on : R.string.phone_rumble_off));
+                actions.add(() -> feedback.setRumble(!rumble));
+            }
         }
         new android.app.AlertDialog.Builder(this)
             .setTitle(R.string.touch_menu_title)
