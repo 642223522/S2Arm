@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""0.6.0 通用壳 Mac 的 Apple ID 登录（11-17 方案 A）：启动器自己的登录框 → 随包 plumesign account login，账号存档与私钥落私有目录 plumesign/
+（install.mac_plume）。之后签名、续签都用 plumesign 自己存的凭据，启动器不再碰密码。
+
+作业 appleLogin：请求 {account}；密码由适配层起作业进程时放环境变量 S2A_APPLE_PASSWORD，main.run_request 一启动就从环境里摘掉（同证书密码），
+  不进请求文件、不传给任何子进程的环境与参数、不写日志——只写进 plumesign 的标准输入（同版 v2.7.2 apps/plumesign/src/commands/account.rs login：
+  密码、两步验证码都是 stdin read_line，不要求终端）。
+  两步验证：plumesign 提示输入验证码时发 progress 事件 stageKey = appleLogin.needCode（带 account）；界面经适配层写 <私有目录>/login/<作业号>.code
+  （只放 6 位数字），作业读到立刻删、写进 plumesign 的标准输入；最多等 CODE_WAIT 秒。「没收到？再发一次」= 取消这次作业、重起一次。
+  结果 {account, team, teamName}；失败码：apple_id_wrong（账号或密码不对）/ two_factor_wrong（验证码不对或过期）/
+  signing_server_unreachable、apple_server_unreachable（连不上）/ 其余 job_failed + plumesign 原句。
+作业 appleAccount：当前登录的账号 → {account, team, teamName}；没登录 → {account: None}。
+通用壳开关关着（0.6.0 前缺省）两个作业都只回 {enabled: False}，什么都不做。"""
+import os, re, subprocess, threading, time
+from pathlib import Path
+
+from core import Failure
+
+PASSWORD_ENV = "S2A_APPLE_PASSWORD"
+CODE_WAIT = 600            # 等玩家填验证码的上限（秒）
+NEED_CODE = re.compile(r"enter (?:the code sent|2fa code)", re.I)   # 同版 account.rs tfa_closure 的三种提示
+LOGIN_OK = "Successfully logged in"
+SAY_SIGN_IN = "登录 Apple ID"
+SAY_CODE = "等你填验证码"
+
+
+def _code_file(c):
+    return Path(c.private) / "login" / (c.task + ".code")
+
+
+def _wait_code(c, proc):
+    """等界面写验证码文件 → 6 位数字（读到即删）；作业被取消 / plumesign 先退了 / 超时 → None"""
+    f = _code_file(c)
+    end = time.monotonic() + CODE_WAIT
+    while time.monotonic() < end and not c.cancelled and proc.poll() is None:
+        if f.is_file():
+            try:
+                text = f.read_text(encoding="utf-8").strip()
+            finally:
+                f.unlink(missing_ok=True)
+            if re.fullmatch(r"\d{6}", text):
+                return text
+        time.sleep(0.3)
+    return None
+
+
+def _classify(text):
+    """plumesign 登录输出 → 失败码（impactor.explain 同一份原文对照）"""
+    import impactor
+    code = impactor.explain(text)
+    return code if code in ("apple_id_wrong", "two_factor_wrong", "signing_server_unreachable", "apple_server_unreachable", "login_identity_rejected") else "job_failed"
+
+
+def _account_result(c, W):
+    import install
+    got = install.plume_account(c, W)
+    return dict(got, enabled=True) if got else dict(account=None, team=None, teamName="", enabled=True)
+
+
+def login(c):
+    """作业 appleLogin（见文件头）"""
+    import install
+    password = getattr(c, "apple_password", None)
+    c.apple_password = None
+    if not install.mac_plume(c):
+        return dict(enabled=False)
+    account = str(c.r.get("account") or "").strip()
+    if not account or not password:
+        raise Failure("填好 Apple ID 邮箱和密码再登录。", code="apple_id_wrong")
+    W = install.win_install_mod(c)
+    exe = install.plumesign_exe(c, W)
+    if not exe:
+        raise Failure("这个 S2Arm 安装包里缺登录要用的组件，请重新下载安装 S2Arm。", code="job_failed", internal="plumesign 不在随包目录 / S2A_PLUMESIGN / PATH")  # 非玩家句（internal 只进诊断）
+    c.begin(SAY_SIGN_IN, 1, 1, key="appleLogin")
+    _code_file(c).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    proc = subprocess.Popen([exe, "account", "login", "-u", account], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            env=W.impactor.plume_env(), text=True, encoding="utf-8", errors="replace")
+    lines = []
+    asked = threading.Event()
+
+    def pump():
+        for ln in proc.stdout:
+            lines.append(ln)
+            if NEED_CODE.search(ln):
+                asked.set()
+    reader = threading.Thread(target=pump, daemon=True)
+    reader.start()
+    try:
+        proc.stdin.write(password + "\n")
+        proc.stdin.flush()
+        password = None
+        while proc.poll() is None and not c.cancelled:
+            if asked.wait(0.3):
+                asked.clear()
+                c.begin(SAY_CODE, 1, 1, key="appleLogin.needCode")
+                c.emit("progress", account=account)
+                code = _wait_code(c, proc)
+                if code is None:
+                    break
+                c.begin(SAY_SIGN_IN, 1, 1, key="appleLogin")
+                proc.stdin.write(code + "\n")
+                proc.stdin.flush()
+    except (BrokenPipeError, OSError):
+        pass   # plumesign 先退了：按它的输出判
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+        reader.join(5)
+        for f in (proc.stdin, proc.stdout):
+            try:
+                f.close()
+            except OSError:
+                pass
+        _code_file(c).unlink(missing_ok=True)
+    text = "".join(lines)
+    log = c.logs / (c.task + "-login.log")
+    log.write_text(text, encoding="utf-8")   # plumesign 不回显密码；这里只有它的提示与报错
+    c.check()   # 取消（再发一次 / 关掉登录框）：照作业取消收尾
+    if proc.returncode == 0 and LOGIN_OK in text:
+        return _account_result(c, W)
+    code = _classify(text)
+    tail = [ln.strip() for ln in text.splitlines() if ln.strip() and "DEBUG" not in ln][-1:] or [""]
+    if code == "job_failed":
+        raise Failure(f"Apple ID 登录没成功：{tail[0][-300:]}", code=code)   # plumesign 英文原句上屏，前缀句式在对照表
+    from errors import recovery
+    raise Failure(recovery(code, packaged=bool(c.r.get("engineBundle"))), code=code, internal=tail[0][-300:])
+
+
+def account(c):
+    """作业 appleAccount（见文件头）"""
+    import install
+    if not install.mac_plume(c):
+        return dict(enabled=False, account=None)
+    return _account_result(c, install.win_install_mod(c))

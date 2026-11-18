@@ -2437,8 +2437,67 @@ def sign_mode(c):
     return "devCert" if devcert.active(c) else "appleId"
 
 
+def mac_plume(c):
+    """0.6.0 通用壳 Mac 的 Apple ID（11-17 方案 A）：改用随包 plumesign 登录、签名、自管私钥——系统 codesign 不给程序库 dylib 带权限，
+    免费团队签的程序库手机不认；plumesign 的私钥在自己手里，程序库就能用 s2a-selfsign 按免费团队认的签法签，私钥也能交给手机自签。
+    Mac、通用壳开着、没在用自己的开发者证书 → True，并把 plumesign 数据目录（账号存档 + keys/<团队>/key.pem）定在私有目录 plumesign/；
+    开关关着照旧 Xcode 钥匙串（0.5.x 行为不变）"""
+    import program_pack
+    if os.name == "nt" or devcert.active(c) or not program_pack.enabled(c):
+        return False
+    home = Path(c.private) / "plumesign"
+    home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.environ[win_install_mod(c).impactor.PLUME_HOME_ENV] = str(home)   # 作业进程内有效：impactor.data_base / plume_env 都认它
+    return True
+
+
+def plumesign_exe(c, W):
+    """随包 plumesign（启动器 Resources/ThirdParty/Impactor）> S2A_PLUMESIGN / PATH（源码树开发）；都没有 → None"""
+    return W.plumesign_path((W.impactor.bundled(c.r.get("resources")) or {}).get("plumesign"))
+
+
+APPLE_SIGN_IN = "还没用 Apple ID 登录：在 S2Arm 里用你的 Apple ID 登录一次（邮箱、密码、手机上的验证码），再装到 iPhone。"
+
+
+def plume_account(c, W):
+    """plumesign 账号存档里选中的账号 → {account, team, teamName}；没登录 / 没选中 → None。teamName：plumesign 命令行给不出团队名，
+    用账号存档里的名字（first_name；个人团队的团队名就是本人姓名）"""
+    try:
+        with open(Path(W.impactor.data_base()) / "PlumeImpactor" / "accounts.json", encoding="utf-8") as f:
+            store = json.load(f)
+        acct = store.get("selected_account")
+        got = (store.get("accounts") or {}).get(acct or "") or {}
+    except (OSError, ValueError, AttributeError):
+        return None
+    team = W.impactor.selected_team()
+    return dict(account=acct, team=team, teamName=got.get("first_name") or "") if acct and team else None
+
+
+class PlumeMacPhone(MacPhone):
+    """Mac 通用壳 Apple ID（mac_plume）：账号是随包 plumesign 自己登录的那个（作业 appleLogin），签名装机同 Windows
+    （plumesign sign --register-and-install，install_win.install_app），包名同 Mac 容器包名；备份 / 推 / 删 / 查进程照旧 Mac（devicectl + s2a-devpush）"""
+
+    def __init__(self, c, dev=None, udid=None):
+        self.W = win_install_mod(c)
+        acct = plume_account(c, self.W)
+        if not acct:
+            raise Failure(APPLE_SIGN_IN, code="apple_not_signed_in")
+        # free：plumesign 判不了付费 / 免费，一律按免费记（same_app 签名新鲜度走 3 天：当成付费 30 天，免费账号 7 天到期前就不会顺手续签）
+        super().__init__(c, team=dict(id=acct["team"], name=acct["teamName"] or acct["account"], free=True), dev=dev, udid=udid)
+
+    install = WinPhone.install                       # plumesign 签名装机（含 9401 旧写法、设备已登记、小组件去掉重来）
+    bundle_for_signing = WinPhone.bundle_for_signing
+
+    def install_devcert(self, ipa, steps):   # 证书签名用户不走这个类（mac_plume 已排除）
+        raise AssertionError("PlumeMacPhone 不处理证书签名")  # 非玩家句
+
+
+def mac_phone(c, team=None, dev=None, udid=None):
+    return PlumeMacPhone(c, dev, udid) if mac_plume(c) else MacPhone(c, team, dev, udid)
+
+
 def phone_for(c):
-    return WinPhone(c) if os.name == "nt" else MacPhone(c)
+    return WinPhone(c) if os.name == "nt" else mac_phone(c)
 
 
 GID_RE = re.compile(r"[0-9A-F]{16}")
@@ -2828,13 +2887,15 @@ def win_selfsign_signer(c, W, exe, team):
 
 def phone_signing(c, ph):
     """通用壳：这台手机上程序包按什么签 → (团队号, 包名, 签名器)。同装机签 App 的那一处：开发者证书 → 证书的团队与描述文件的包名；
-    Windows Apple ID → Impactor 当前账号的团队、plumesign 定的包名；Mac Apple ID → 钥匙串账号的团队、容器包名"""
+    Windows Apple ID / Mac 通用壳 Apple ID（PlumeMacPhone）→ plumesign 当前账号的团队、容器包名；开关关着的 Mac Apple ID → 钥匙串账号的团队、容器包名"""
     import program_pack
     if devcert.active(c):
         return devcert.team(c)["id"], devcert.state(c)["bundleId"], program_pack.devcert_signer(c)
-    if os.name == "nt":
+    if os.name == "nt" or isinstance(ph, PlumeMacPhone):   # Mac 通用壳 Apple ID 同 Windows：plumesign 的账号与私钥（mac_plume）
         team = ph.W.impactor.selected_team() if hasattr(ph.W.impactor, "selected_team") else None
         if not team:
+            if os.name != "nt":
+                raise Failure(APPLE_SIGN_IN, code="apple_not_signed_in")
             raise Failure("读不到 Impactor 里登录的 Apple ID：在 Impactor 里登录后再推到 iPhone。", code="xcode_account_missing")
         import ipa as packer
         exe = ph.W.plumesign_path((ph.W.impactor.bundled(c.r.get("resources")) or {}).get("plumesign"))
@@ -2990,12 +3051,13 @@ def _identity_on_phone(c, ph, sha1):
 
 def _identity_source(c, ph):
     """这次交给 App 的身份从哪来 → (团队号, 私钥指纹, 取身份的函数, source)；交不了 → None。
-    证书签名用户（devcert.active，两端都行）：导入时存的 p12；Windows Apple ID：Impactor / plumesign 的 keys/<团队>/key.pem。Mac Apple ID 借 Xcode 钥匙串，交不了"""
+    证书签名用户（devcert.active，两端都行）：导入时存的 p12；Windows Apple ID 与 Mac 通用壳 Apple ID（PlumeMacPhone）：plumesign 的 keys/<团队>/key.pem。
+    开关关着的 Mac Apple ID 借 Xcode 钥匙串，交不了"""
     if devcert.active(c):
         team = devcert.team(c)["id"]
         fp = hashlib.sha256((devcert.folder(c) / "cert.p12").read_bytes()).hexdigest()[:16]   # 同 devcert.identity 的 key_fp
         return team, fp, lambda: devcert.identity(c), "devCert"
-    if not hasattr(ph, "W"):   # 只有 Windows 的手机对象（WinPhone）带 W
+    if not hasattr(ph, "W"):   # 带 W 的只有 plumesign 签的手机对象（WinPhone、PlumeMacPhone）
         return None
     team = ph.W.impactor.selected_team()
     fp = ph.W.key_fingerprint(team) if team else None
@@ -3189,6 +3251,7 @@ def install_shell(c, ph, steps=True):
     手机上已是这一版壳、签名离到期还早（same_app）→ 不装，updated = False。装上后记壳号、包名、签名时刻；各款记录原样留着（程序包在手机上不受装壳影响）"""
     import ipa as packer
     rec = layout.load_device(c, ph.key)
+    before = last_signer(rec)   # 装之前取（换包名时 forget_other_app 会清记录）
     snapshot_phone_saves(c, ph, list(rec.get("games") or {}))   # 0.6.0：装壳前把手机上各款的存档拉回电脑（同 push_game）
     if steps: c.begin("组 S2Arm（不带游戏）", 2, 3)
     ipa, _, sid = packer.assemble_shell(c)
@@ -3201,10 +3264,27 @@ def install_shell(c, ph, steps=True):
     forget_other_app(c, ph)
     rec = layout.load_device(c, ph.key)
     signed = dict(signed=dict(at=time.time(), free=bool(ph.info["free"]), device=ph.info["device"], mode=sign_mode(c))) if "free" in ph.info else {}
-    layout.save_device(c, ph.key, dict(rec, shellId=sid, bundleId=ph.bid or rec.get("bundleId", ""), at=time.time(), **signed))
+    # 换了签名方式后第一次装（Mac 从 Xcode 钥匙串换到 plumesign、证书 ↔ Apple ID）：结果带 signerSwitched，完成页写「这一次要重新装一下」，只这一次
+    now = signer_kind(c, ph)
+    layout.save_device(c, ph.key, dict(rec, shellId=sid, bundleId=ph.bid or rec.get("bundleId", ""), at=time.time(), signer=now, **signed))
     packer.commit_phone_ipa(c, ipa, sid)
     deliver_identity(c, ph)   # 证书签名用户：装 App 时同时把证书交给 App，以后手机上自己签游戏（交过了跳过、交不出不挡）
-    return dict(updated=True, outputPath=str(layout.phone_ipa(c)), bundleId=ph.bid, games=[], toShell=sid, **ph.info)
+    return dict(updated=True, outputPath=str(layout.phone_ipa(c)), bundleId=ph.bid, games=[], toShell=sid,
+                **(dict(signerSwitched=True) if before and before != now else {}), **ph.info)
+
+
+def last_signer(rec):
+    """设备记录里上次装 App 的签名方式；记 signer 之前装的（0.5.x）按当时只有的签法推：证书模式 → devCert，Windows → plumesign，Mac → xcode；没装过 → None"""
+    if rec.get("signer"):
+        return rec["signer"]
+    if not rec.get("bundleId"):
+        return None
+    return "devCert" if (rec.get("signed") or {}).get("mode") == "devCert" else "plumesign" if os.name == "nt" else "xcode"
+
+
+def signer_kind(c, ph):
+    """这次 App 用什么签的（设备记录 signer，判「换了签名方式」）：devCert / plumesign（Windows、Mac 通用壳 Apple ID）/ xcode（Mac 钥匙串）"""
+    return "devCert" if devcert.active(c) else "plumesign" if hasattr(ph, "W") else "xcode"
 
 
 SAME_APP_FRESH = (3 * 86400, 30 * 86400)   # 跳过重签的签名新鲜度：免费账号描述文件 7 天到期，签了不到 3 天才跳过（照常装机就顺手续签）；付费 / 证书 30 天

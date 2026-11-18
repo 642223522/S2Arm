@@ -303,7 +303,10 @@ def _build(c):
             )
         state = {}
         # 出包与装机重叠（installAfter，pack/jobs/early.py）：开工前认账号与设备，旁路完成就先装 App、先推大头资源，与直连库编译并行
-        if c.r.get("installAfter") and os.name != "nt":   # Windows：出完再装（install.install 的 Windows 分支），不做出包期间早装
+        # Windows：出完再装（install.install 的 Windows 分支），不做出包期间早装；Mac 通用壳 Apple ID（plumesign 签，install.mac_plume）同样出完再装：
+        #   早装开工前要认 Xcode 账号，plumesign 玩家没有它
+        import install as _inst
+        if c.r.get("installAfter") and os.name != "nt" and not _inst.mac_plume(c):
             from early import EarlyInstall
             early = EarlyInstall(c, gid, env, out).start()
 

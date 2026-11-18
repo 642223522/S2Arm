@@ -96,7 +96,7 @@ def legacy_case_bundle(bundle):
 def plumesign_env():
     """起 plumesign 的环境：日志级别固定 info，不继承玩家机上的 RUST_LOG（#585：环境里有 RUST_LOG=warn，info 级的「Installation complete」
     被压掉，装好了、退出码 0 也判成失败）。判装机成功靠这行，级别得由我们定"""
-    return dict(os.environ, RUST_LOG='info')
+    return impactor.plume_env()   # S2A_PLUME_HOME 设了（Mac 通用壳）→ XDG_CONFIG_HOME：账号存档与私钥放启动器私有目录
 
 
 def sign_install(exe, ipa, dev_id, name, log, out_ipa, bundle=None, register=True):
@@ -204,7 +204,7 @@ PLUME_MACHINE_NAME = 'AltStore'   # plumesign v2.7.2 sign 不传机器名时的�
 def cert_check(exe, team, appdata=None, log=None, run=subprocess.run):
     """签名前核：要不要问玩家（见上）→ None（不用问）| {name, machine, created}（plumesign 这次会新建证书、列表里有别人的；满了会撤的那张 = 第一张）。
     列不出来（没联网 / 会话过期 / 工具旧）→ None：照原来签（判不了就不加阻碍，记日志）"""
-    base = appdata or os.environ.get('APPDATA') or os.path.join(os.path.expanduser('~'), '.config')
+    base = impactor.data_base(appdata)
     key = Path(base) / 'PlumeImpactor' / 'keys' / team / 'key.pem'
     mine = key_modulus(key.read_text(encoding='utf-8')) if key.is_file() else None
     try:
@@ -228,7 +228,7 @@ def cert_check(exe, team, appdata=None, log=None, run=subprocess.run):
 
 def plume_key_path(team, appdata=None):
     """plumesign 存私钥的地方（同版 v2.7.2 apps/plumesign/src/main.rs get_data_path）：Windows %APPDATA%，别的系统 $XDG_CONFIG_HOME 或 ~/.config；下面 PlumeImpactor/keys/<团队>/key.pem"""
-    base = appdata or os.environ.get('APPDATA') or os.environ.get('XDG_CONFIG_HOME') or os.path.join(os.path.expanduser('~'), '.config')
+    base = impactor.data_base(appdata)
     return Path(base) / 'PlumeImpactor' / 'keys' / team / 'key.pem'
 
 

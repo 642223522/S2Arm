@@ -26,6 +26,7 @@ if os.name == "nt":   # 作业主程序自己也要长路径处理：子 Python 
     sys.path.insert(1, str(Path(__file__).resolve().parents[2]))
     from pack.orch import winlong as _winlong
     _winlong.install()
+import apple_login
 import awake
 import community
 import devcert
@@ -61,6 +62,7 @@ def partial_import_result(c):
 def run_request(request_path, *, context_class=Context, operation_overrides=None):
     # 开发者证书密码（devCert 导入那一次由启动器经环境变量给，devcert.py ⑤）：先从环境摘掉，任何子进程都拿不到；请求文件里从不放
     devcert_password = os.environ.pop(devcert.PASSWORD_ENV, None)
+    apple_password = os.environ.pop(apple_login.PASSWORD_ENV, None)   # Mac 通用壳 Apple ID 登录（appleLogin）那一次：同上，只写进 plumesign 的标准输入
     winproc.prepare_child_environment()
     path = Path(request_path)
     request = json.loads(path.read_text())
@@ -78,6 +80,7 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
         print(f"[s2a] 【红】任务记录写不进磁盘，任务未开始：{error}", file=sys.stderr, flush=True)
         return 1
     c.devcert_password = devcert_password
+    c.apple_password = apple_password
     signal.signal(signal.SIGTERM, lambda *_: c.stop())
     signal.signal(signal.SIGINT, lambda *_: c.stop())
     ended = threading.Event()
@@ -100,6 +103,7 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
                   "phoneUsage": install.phone_usage,
                   "locations": library.list_locations, "moveGame": library.move_game, "relinkGame": library.relink_game, "forgetGame": library.forget_game,
                   "phoneIdentity": install.phone_identity,
+                  "appleLogin": apple_login.login, "appleAccount": apple_login.account,
                   "build": build.prepare, "launch": build.launch, "pullDiagnostics": diag.pull, "ipa": ipa.build, "downstreamChoice": downstream.set_choice, "install": install.install, "installRemove": install.remove_from_phone, "installRestore": install.restore_previous, "installUpdate": install.update_phone, "installUpdatePrepare": install.update_prepare, "phoneKeptPull": install.phone_kept_pull, "pushSelected": install.push_selected, "exportPush": install.push_export_job, "installMode": install.install_mode_job, "installCheck": install.readiness, "signingProject": install.signing_project, "installDotnet": toolchain.install_dotnet, "targetDevice": target.probe,
                   "tvInstall": tvos.install_tv, "tvExport": tvos.export_tv, "tvDevices": tvos.devices_job, "tvSaveBackup": tvos.autobackup,   # Apple TV（tvOS 版，pack/jobs/tvos.py）
                   "pushSelected": install.push_selected,
@@ -238,7 +242,7 @@ def background_priority():
 KEEP_AWAKE = ("build", "ipa", "install", "installUpdate", "installRestore", "exportPush", "tvInstall", "tvExport")   # 出包 / 推送期间电脑不空闲休眠（awake.py；v0.3.1 玩家推大包被休眠打断成「传输中断」）
 HEAL_AFTER = ("import", "build", "ipa")   # 结束时顺手把还叫游戏号的文件夹改英文名（layout.heal_folder_names）
 ORCHESTRATION = ("export",)   # 只起子作业的编排：引擎副本、游戏库结构由每一步的子作业自己核（剃刀 H13）
-NO_LIBRARY = ORCHESTRATION + ("preflight", "prepareEngine", "downloadMetal", "downloadIosPlatform", "installDotnet", "targetDevice", "setup", "signingProject", "devCert")
+NO_LIBRARY = ORCHESTRATION + ("preflight", "prepareEngine", "downloadMetal", "downloadIosPlatform", "installDotnet", "targetDevice", "setup", "signingProject", "devCert", "appleLogin", "appleAccount")
 
 
 def parser():
