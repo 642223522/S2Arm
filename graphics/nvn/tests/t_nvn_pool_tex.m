@@ -371,6 +371,36 @@ int main(void) { @autoreleasepool {
                "bias 2.25 那种的 %d 个号全改走 → 对象差 %lld、描述 %lld（期望 34 个、0、−1）",
                (unsigned long long)(s1 - s0), (unsigned long long)(d1 - d0), (long long)(s2 - s1), (unsigned long long)(d2 - d1), nb0, (long long)(s3 - s1), (long long)d3 - (long long)d2);
     }
+    // ⑮ 内存吃紧时放掉闲置的活对象贴图（#1386，nvn_mtl.m tex_idle_reclaim）。期望按语义手写：
+    //    150 闲置、存储没被 GPU 写过、不在池表里 → 被放（序号表里没了）；151 闲置但存储上有 GPU 写记录 → 留；152 刚用过 → 留；153 只经池表读过（登记在池表里，GPU 随时会读）→ 留；
+    //    放了 1 张；再经池读 150 → 从游戏内存重建，读得 150.50。余量充足（不设假余量）时什么都不放。
+    //    负对照：去掉 GPU 写判断 → 151 被放、红；去掉池表判断 → 池表那张被放、红；去掉闲置判断 → 152 被放、红
+    if (cs) {
+        texture(150, 4, 4, 0); texture(151, 4, 4, 0); texture(152, 4, 4, 0);
+        os_unfair_lock_lock(&g_rmu); REQUIRE(tex_by_id(150)); REQUIRE(tex_by_id(151)); REQUIRE(tex_by_id(152)); os_unfair_lock_unlock(&g_rmu);
+        gpw_mark(&texs[151], 0, 0, 1, 0, 0, 4, 4);
+        texture(153, 4, 4, 0); int pin = 153;   // 只经池表读过、存储没被 GPU 写过：池表登记是唯一挡住它的条件
+        read4(cs, 153u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20); read4(cs, 153u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20);
+        { __unsafe_unretained id o = tex_get(texs[pin].serial); id<MTLTexture> x = [o isKindOfClass:[NvPkg class]] ? ((NvPkg *)o)->tex : (id<MTLTexture>)o; REQUIRE(x && !x.buffer && tex_pinned((__bridge void *)x));
+          uint64_t *rr = NULL, bb = 0; REQUIRE(gpw_stale(texs[pin].mem, texs[pin].L.size, &rr, &bb) == 0); free(rr); }
+        empty_sub(); empty_sub(); empty_sub();
+        g_tex_idle_subs = 2;
+        os_unfair_lock_lock(&g_rmu);
+        for (int i = 0; i < g_ntreg; i++) if (g_treg[i].ok) g_treg[i].used = g_fence + 1;   // everything else counts as just used
+        g_treg[150].used = g_treg[151].used = 1; for (int h = (int)(uintptr_t)nvn_hm_get(&g_treg_ser, &texs[pin].serial); h; h = g_treg[h - 1].ser_next) g_treg[h - 1].used = 1;
+        os_unfair_lock_unlock(&g_rmu);
+        uint64_t n0 = g_reclaim_n; g_reclaim_next = 0; empty_sub();
+        int quiet = (int)(g_reclaim_n - n0);   // 余量未知（Mac、没设假余量）：不放
+        os_unfair_lock_lock(&g_rmu); g_treg[150].used = g_treg[151].used = 1; for (int h = (int)(uintptr_t)nvn_hm_get(&g_treg_ser, &texs[pin].serial); h; h = g_treg[h - 1].ser_next) g_treg[h - 1].used = 1; os_unfair_lock_unlock(&g_rmu);   // 上一次提交里池表重走会把登记着的贴图记成刚用过
+        atomic_store(&g_mem_avail_fake, (int64_t)100 << 20); g_reclaim_next = 0; empty_sub();
+        int gone150 = !made(150), kept = made(151) && made(152) && made(pin); uint64_t dn = g_reclaim_n - n0;
+        read4(cs, 150u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20);
+        read4(cs, 150u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20, 3u | 1u << 20);
+        VERIFY(quiet == 0 && gone150 && kept && dn == 1 && near(out4[0], 150.5f) && made(150),
+               "⑮ 闲置活对象贴图回收：余量未知时放 %d 张（期望 0）；余量 100 MB 时 150 放了 %d、151 / 152 / 池表 %d 都留 %d、共放 %llu 张（期望 1、1、1）；重建后读 150 得 %.2f（期望 150.50）",
+               quiet, gone150, pin, kept, (unsigned long long)dn, out4[0]);
+        atomic_store(&g_mem_avail_fake, -1); g_tex_idle_subs = TEX_IDLE_SUBS;
+    }
     printf("%s t_nvn_pool_tex：%u 项，%u 项失败（追不到槽的句柄按编号读池：池表 + 已读位图 + 未写渲染目标不建 + 小贴图预建 + 表复用）\n", fails ? "✗" : "✓", checks, fails);
     return fails != 0;
 } }

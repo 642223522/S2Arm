@@ -2689,6 +2689,7 @@ static void rp_flush(void);
 static void rt_keep_state(void);
 static void ghost_finish_submission(void);
 static void alias_dead_views(void);
+static void tex_idle_reclaim(void);
 static void bcal_sweep_overwritten(void);
 int nvn_cmd_call_target(uint64_t h);   // hle_nvn.c：回放 CALL 核目标（#768338 安全阀）
 int nvn_cmd_call_resolve(uint64_t h, uint64_t *to);   // hle_nvn.c：按设备地址解析 CALL 目标（#768338 根修）
@@ -2727,6 +2728,7 @@ uint64_t nvn_be_sub_commit(void) {
     up_flush();
     g_cut_copy = 0;
     ghost_finish_submission();   // before the fence is taken: what it drops is released behind this submission
+    tex_idle_reclaim();   // #1386: under memory pressure, idle live textures whose content the guest storage still holds (their views go in alias_dead_views below)
     alias_dead_views();   // likewise for the texture-ID views of textures dropped as overwritten
     bcal_sweep_overwritten();   // and the writer textures the block-compressed alias table keeps over storage since overwritten
     uint64_t fence = ++g_fence;
@@ -7654,7 +7656,8 @@ typedef struct { tex_t t; int ok; view_t v; int has_v; void *view; uint64_t view
                  void *ar, *ar_of; uint64_t ar_rid;                         // ar: the alpha-from-red view for the profile's alpha_from_red shaders (tex_alpha_red), ar_of = the view it was built from
                  void *im, *im_of; uint64_t im_rid;                         // im: the view an image slot reads in the shader's pixel class (img_fit), im_of = the view it was built from
                  uint8_t tt1, gone;   // tt1: Metal texture type + 1 a pool walk found here (0 = not looked; pool_gpu skips the ID in tables of another type); gone: its memory pool was finalized (treg_drop_pool_views), until registered again
-                 int ser_next, ser_prev; } treg_t;   // the other IDs registered with the same texture serial (g_treg_ser), as ID + 1, 0 = none
+                 int ser_next, ser_prev;
+                 uint64_t used; } treg_t;   // used: g_fence + 1 when a binding last resolved this ID (tex_fast / tex_fast_rid / tex_by_id_ptr); tex_idle_reclaim lets go of the textures idle longest   // the other IDs registered with the same texture serial (g_treg_ser), as ID + 1, 0 = none
 static treg_t *g_treg; static int g_ntreg;
 // Texture serial → the IDs registered with it (ok): the first ID + 1 here, the rest chained through ser_next / ser_prev. Exactly the IDs with ok set (linked where ok and t change:
 //   nvn_be_reg_tex, nvn_be_unreg_tex_range). A finalized texture's IDs are found by its serial (treg_sweep_gone, alias_dead_views): those passes walked the whole registry, about
@@ -7926,6 +7929,63 @@ static void alias_dead_views(void) {
     os_unfair_lock_unlock(&g_rmu);
     free(ser);
 }
+// #1386 (S2Arm 11-18): live texture objects the game keeps but no longer draws with. Each live object holds a private Metal texture until the game finalizes it; a streaming
+//   open world keeps thousands of objects alive, so the host copies only grew (D-53JX, Ocarina of Time on iOS 0.5.8: 151 textures / 345 MB at frame 600 → 3419 / 3129 MB at frame
+//   80700, 1403 MB left to the memory limit; on an 8 GB phone the same growth eats the page cache the file-backed guest memory needs, #1623). On the Switch a texture object is a
+//   descriptor over guest memory and costs nothing more. Under memory pressure (the headroom to the memory limit, mem_avail, under tex_reclaim_low) this lets go of the textures
+//   whose content the guest storage still holds — never GPU-written (no write on record over their bytes, gpw_stale), not named by a pool table (pinned: the GPU may read them any
+//   frame without a binding resolving them), not display / video-decode — idle at least TEX_IDLE_SUBS submissions, least recently used first, until the headroom is back to twice the
+//   threshold. They go as alias_take_over lets go of overwritten live textures: out of the serial table, the serial's ID views and view-cache set at the end of the submission
+//   (alias_dead_views), g_ser_gen moved so the next use makes the texture anew from guest memory. Unknown headroom (the Mac) never reclaims. Submit thread, before alias_dead_views
+enum { TEX_IDLE_SUBS = 300, TEX_RECLAIM_EVERY = 30 };
+static uint64_t g_tex_idle_subs = TEX_IDLE_SUBS;   // tests lower it
+static uint64_t g_reclaim_n, g_reclaim_b, g_reclaim_runs, g_reclaim_next;
+static int tex_pinned(void *o);
+static uint64_t tex_reclaim_low(void) { static int64_t v = -1; if (v < 0) { const char *e = getenv("DM_NVN_RECLAIM_MB"); int64_t m = e && *e ? (int64_t)atoll(e) : 1536; v = (m < 0 ? 0 : m) << 20; } return (uint64_t)v; }
+static void tex_idle_reclaim(void) {
+    if (g_fence < g_reclaim_next) return;
+    g_reclaim_next = g_fence + TEX_RECLAIM_EVERY;
+    uint64_t av = 0, lo = tex_reclaim_low(); if (!lo || !mem_avail(&av) || av >= lo) return;
+    typedef struct { uint64_t ser, used, bytes; const uint8_t *mem; uint64_t size; void *o; } cand_t;
+    uint32_t n = 0, cap = 0; cand_t *c = NULL;
+    os_unfair_lock_lock(&g_rmu); pthread_mutex_lock(&g_smu);
+    for (uint32_t i = 0; i < g_by_serial.cap; i++) {
+        void *v = g_by_serial.vals[i]; if (!v) continue;
+        __unsafe_unretained id o = (__bridge id)v; id<MTLTexture> tx = [o isKindOfClass:[NvPkg class]] ? ((NvPkg *)o)->tex : [o conformsToProtocol:@protocol(MTLTexture)] ? (id<MTLTexture>)o : nil;
+        if (!tx || tx.buffer || tex_pinned((__bridge void *)tx)) continue;
+        uint64_t ser; memcpy(&ser, g_by_serial.keys + (size_t)i * g_by_serial.klen, sizeof ser);
+        int h = (int)(uintptr_t)nvn_hm_get(&g_treg_ser, &ser); if (!h) continue;   // no registered ID: nothing tells when it was used
+        const tex_t *t = &g_treg[h - 1].t; uint64_t used = 0;
+        if (!t->mem || !t->L.size || (t->d.flags & (NVN_TEXTURE_FLAGS_DISPLAY | NVN_TEXTURE_FLAGS_VIDEO_DECODE))) continue;
+        for (int k = h; k; k = g_treg[k - 1].ser_next) used = MAX(used, g_treg[k - 1].used);
+        if (g_fence + 1 - used < g_tex_idle_subs) continue;
+        if (n == cap) { cap = cap ? cap * 2 : 256; cand_t *g = realloc(c, cap * sizeof *c); if (!g) break; c = g; }
+        c[n++] = (cand_t){ser, used, tx.allocatedSize, t->mem, t->L.size, v};
+    }
+    pthread_mutex_unlock(&g_smu); os_unfair_lock_unlock(&g_rmu);
+    uint32_t m = 0;
+    for (uint32_t j = 0; j < n; j++) {   // outside the locks: the write ledger has its own
+        uint64_t *runs = NULL, b = 0; int w = gpw_stale(c[j].mem, c[j].size, &runs, &b); free(runs);
+        if (w == 0) c[m++] = c[j];
+    }
+    uint64_t want = 2 * lo - av, freed = 0, cnt = 0;
+    pthread_mutex_lock(&g_smu);
+    while (freed < want && m) {
+        uint32_t k = 0; for (uint32_t j = 1; j < m; j++) if (c[j].used < c[k].used) k = j;   // least recently used first
+        cand_t x = c[k]; c[k] = c[--m];
+        id o = hm_get_id(&g_by_serial, &x.ser); if ((__bridge void *)o != x.o) continue;   // replaced or finalized meanwhile
+        if (alias_has(o)) defer_obj_unref(o); else defer_obj_release(o);   // as serial_del: a shared texture stays in the sharing table (unreferenced now, alias_orphan_pass)
+        hm_del_id(&g_by_serial, &x.ser); freed += x.bytes; cnt++;
+        if (g_alias_dead_n == g_alias_dead_cap) { uint32_t cc = g_alias_dead_cap ? 2 * g_alias_dead_cap : 64; uint64_t *q = realloc(g_alias_dead_ser, cc * sizeof *q); if (q) { g_alias_dead_ser = q; g_alias_dead_cap = cc; } }
+        if (g_alias_dead_n < g_alias_dead_cap) g_alias_dead_ser[g_alias_dead_n++] = x.ser;
+    }
+    if (cnt) { g_ser_gen++; g_reclaim_n += cnt; g_reclaim_b += freed; g_reclaim_runs++; }
+    pthread_mutex_unlock(&g_smu);
+    free(c);
+    if (cnt) MLOG("idle live textures let go for memory headroom: %llu, %llu MB (headroom %llu MB under %llu MB; %llu candidates); %llu, %llu MB in %llu runs so far",
+                  (unsigned long long)cnt, (unsigned long long)(freed >> 20), (unsigned long long)(av >> 20), (unsigned long long)(lo >> 20), (unsigned long long)n,
+                  (unsigned long long)g_reclaim_n, (unsigned long long)(g_reclaim_b >> 20), (unsigned long long)g_reclaim_runs);
+}
 static void treg_drop_pool_views(const void *pool) {
     os_unfair_lock_lock(&g_rmu);
     vc_drop_pool(pool);
@@ -7979,7 +8039,7 @@ void nvn_be_reg_tex(int tid, const tex_t *t, const view_t *v) {
         treg_drop_views(rr);
         if (rr->ok) treg_ser_unlink(id_);
         rr->ok = t != NULL; if (t) rr->t = *t; rr->has_v = v != NULL; if (v) rr->v = *v;
-        if (rr->ok) treg_ser_link(id_);
+        if (rr->ok) { treg_ser_link(id_); rr->used = g_fence + 1; }   // registering counts as a use: a texture made for it is not idle at once (tex_idle_reclaim)
         if (id_ < (1 << 20)) atomic_store_explicit(&g_tser[id_], t ? t->serial : 0, memory_order_release);
     }
     os_unfair_lock_unlock(&g_rmu);
@@ -8079,7 +8139,7 @@ static void *tex_by_id_ptr(int tid) {   // Caller holds g_rmu
     if (g_tpool_n && tid >= g_tpool_n) { if (!g_stat_tex_oob++) MLOG("texture ID %d outside the pool (capacity %d) treated as an empty slot: reads 0", tid, g_tpool_n); return NULL; }
     if (tid == 0 && !g_tid0_reg) { if (!g_stat_tex_null++) MLOG("texture ID 0 read with nothing registered there (a slot left at the zero handle): the empty descriptor, reads 0 (frame %llu, first case)", (unsigned long long)atomic_load(&g_cur_frame)); return NULL; }
     if (tid < 0 || tid >= g_ntreg || !g_treg[tid].ok) { RED_ONCE(10, "texture ID %d not registered", tid); return NULL; }
-    treg_t *rp = &g_treg[tid];
+    treg_t *rp = &g_treg[tid]; rp->used = g_fence + 1;
     uint64_t sg = g_ser_gen, dg = nvn_dirty_now();   // Take the generations first and then look up: if a change happens in between, the next time must take the slow path
     // A CPU-written texture checked in this check period (g_pkg_epoch: the submission, split at waits on another queue) is not checked again: every draw of a submission runs on the GPU
     //   after the submit and the replay runs inside the game's submit call, so one look at guest memory per period is what the GPU reads (11-02 Breath of the Wild outdoors: textures
@@ -8170,7 +8230,7 @@ static void *tex_by_id_ptr(int tid) {   // Caller holds g_rmu
 }
 // Hot-path object fetch: if the table entry is valid, return the table-held pointer directly (without ARC retain / autorelease), otherwise take the slow path to build / validate. Caller holds g_rmu.
 static inline __attribute__((always_inline)) void *tex_fast(int tid) {
-    if (tid >= 0 && tid < g_ntreg && g_treg[tid].ok && g_treg[tid].view && g_treg[tid].view_ser == g_ser_gen && (!g_treg[tid].view_pkg || g_treg[tid].view_dirty == nvn_dirty_now() || g_treg[tid].view_ep == g_pkg_epoch)) return g_treg[tid].view;
+    if (tid >= 0 && tid < g_ntreg && g_treg[tid].ok && g_treg[tid].view && g_treg[tid].view_ser == g_ser_gen && (!g_treg[tid].view_pkg || g_treg[tid].view_dirty == nvn_dirty_now() || g_treg[tid].view_ep == g_pkg_epoch)) { g_treg[tid].used = g_fence + 1; return g_treg[tid].view; }
     return tex_by_id_ptr(tid);
 }
 // The texture type the shader declares differs from the one the descriptor gives: use a compatible view. Maxwell sample instructions carry their own dimension, and a non-array instruction reading a 2D array texture reads layer 0;
@@ -8409,7 +8469,7 @@ static int img_atomic_prepare(NvShader *sh, int st) {
     return ok;
 }
 static inline __attribute__((always_inline)) uint64_t tex_fast_rid(int tid, void **out) {
-    if (tid >= 0 && tid < g_ntreg && g_treg[tid].ok && g_treg[tid].view && g_treg[tid].view_ser == g_ser_gen && (!g_treg[tid].view_pkg || g_treg[tid].view_dirty == nvn_dirty_now() || g_treg[tid].view_ep == g_pkg_epoch)) { if (out) *out = g_treg[tid].view; return g_treg[tid].view_rid; }
+    if (tid >= 0 && tid < g_ntreg && g_treg[tid].ok && g_treg[tid].view && g_treg[tid].view_ser == g_ser_gen && (!g_treg[tid].view_pkg || g_treg[tid].view_dirty == nvn_dirty_now() || g_treg[tid].view_ep == g_pkg_epoch)) { g_treg[tid].used = g_fence + 1; if (out) *out = g_treg[tid].view; return g_treg[tid].view_rid; }
     void *tp = tex_by_id_ptr(tid); __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tp; if (out) *out = tp; return t ? t.gpuResourceID._impl : 0;
 }
 // Buffer textures of a format the host expands (nvn_fmt_expanded: three-component RGB8 / 16 / 32, *_UI2F / *_I2F, RGB10A2 signed): Metal has no such texture buffer format,
@@ -10720,6 +10780,7 @@ static int pool_pin_keys(void *o, void *k[4]) {   // the allocations a table ent
     id root = objc_getAssociatedObject(x, &g_atomic_root_key); if (root) k[n++] = (__bridge void *)root;
     return n;
 }
+static int tex_pinned(void *o) { if (!atomic_load_explicit(&g_ptab_any, memory_order_relaxed)) return 0; pthread_mutex_lock(&g_pin_mu); int p = g_pin.n && nvn_hm_get(&g_pin, &o) != NULL; pthread_mutex_unlock(&g_pin_mu); return p; }   // a pool table names it (tex_idle_reclaim)
 static void pin_add(void *k, uint32_t code) {
     pthread_mutex_lock(&g_pin_mu);
     pin_list *l = nvn_hm_get(&g_pin, &k);
