@@ -172,7 +172,7 @@ namespace S2A.Services
             foreach (string f in Directory.EnumerateFiles(dir, "*.txt"))
             {
                 string n = Path.GetFileName(f);
-                if (n == "status.txt") continue;
+                if (n == "status.txt" || n.StartsWith("._", StringComparison.Ordinal)) continue;   // ._：exFAT 上 macOS 配的 AppleDouble 附属文件，不是金手指
                 parts.Add(n + "@" + File.GetLastWriteTimeUtc(f).Ticks);
             }
             parts.Sort(StringComparer.Ordinal);
@@ -190,7 +190,7 @@ namespace S2A.Services
             Layout* l = Imports.s2a_layout_get();
             ulong exe = Imports.s2a_main_base();
             var process = new GameProcess();
-            var files = new List<string>(Directory.EnumerateFiles(dir, "*.txt"));
+            var files = new List<string>(Directory.EnumerateFiles(dir, "*.txt").Where(f => !Path.GetFileName(f).StartsWith("._", StringComparison.Ordinal)));   // ._：exFAT 上的 AppleDouble 附属文件
             files.Sort(StringComparer.Ordinal);
             int nfiles = 0;
             seenNative = new HashSet<string>(StringComparer.Ordinal);

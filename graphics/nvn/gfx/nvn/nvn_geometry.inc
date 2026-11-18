@@ -150,17 +150,15 @@ static void mtk_publish(void) {   // pace on, submit thread, before a mesh draw 
 //   任务计算核 main0_tc 把每个任务组的载荷与派生数写进交换缓冲（S2A.Dsh MeshStage EMU_SLOT），排表核 mxe_scan 前缀和出「第几个网格组属于哪个任务组的第几组」，
 //   网格计算核 main0_mc 把顶点记录与紧排的索引写进交换缓冲，再用顶点函数 main0_mv 普通索引间接画。都在同一个命令缓冲里、GPU 上排好，CPU 不回读。
 //   入口只在宿主现编时定义 S2A_MESH_EMU 才有（dm_shader_base_cached：本机翻译器出的基础源码），其中的循环有圈数上限（MeshStage.GuardLoops）。
-//   缺省：macOS 且 GPU 不支持 Apple9 时开；S2A_MESH_EMU=1 / 0 两头强制。做不了的（载荷中转、逐图元输出、源码拿不到、参数缓冲对不上）照旧走驱动
+//   缺省：GPU 不支持 Apple9 时开（各平台，#1542）；S2A_MESH_EMU=1 / 0 两头强制。做不了的（载荷中转、逐图元输出、源码拿不到、参数缓冲对不上）开着时跳过并报红（#1542 安全阀，不再落回驱动），关着（Apple9 起）照旧走驱动
 enum { MXE_SLOT = 28, MXE_HEAD = 32, MXE_TASK_CAP = 4096 };
 _Static_assert(VB_SLOT(12) == MXE_SLOT, "slot 28 of the vertex table is vertex stream 12's: the host-stage draw writes it through enc_r_vbuf so the next vertex draw rebinds the stream");
 static int mtk_emu_on(void) {
     static int v = -1; if (v >= 0) return v;
     const char *e = getenv("S2A_MESH_EMU");
-#if TARGET_OS_OSX
+    // By GPU family, every platform (#1542): below Apple9 there is no hardware mesh shading, the driver's software mesh stage hangs on task / mesh draws, and an indirect mesh draw
+    //   (drawMeshThreadgroupsWithIndirectBuffer) is Apple9 and later in Apple's feature set tables. It was macOS only: A14–A16 iPhones and M1 / M2 iPads took the driver's way
     int dflt = ![g_dev supportsFamily:MTLGPUFamilyApple9];
-#else
-    int dflt = 0;
-#endif
     v = e && *e ? *e == '1' : dflt;
     MLOG("task / mesh draws: the task and mesh stages run %s (S2A_MESH_EMU %s)", v ? "on the host as compute kernels, drawn as an indexed draw of their vertex records (#770)" : "in the driver's object stage", e && *e ? e : "unset");
     return v;
@@ -177,14 +175,28 @@ static const char k_mxe_msl[] =
 "  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
 "  uint o = part[l];\n"
 "  for (uint t = a; t < b; t++) { uint c = h[h[0] + t]; for (uint j = 0; j < c && o + j < h[4]; j++) h[h[2] + o + j] = (t << 10) | j; o += c; }\n"
+"}\n"
+// #1542: an indirect task dispatch with the game's workgroup counts as given had no bound (capT only bounds what is written), so one command buffer could run into the GPU
+//   watchdog (M1 Pro rebooted). mxe_tclamp copies them clamped to x * y * z <= capT into h[20..22], and the task stage is dispatched from there
+"kernel void mxe_tclamp(device uint* h [[buffer(0)]], device const uint* ind [[buffer(1)]]) {\n"
+"  uint cap = max(h[3], 1u), x = min(ind[0], cap), y = min(ind[1], max(cap / max(x, 1u), 1u)), z = min(ind[2], max(cap / max(x * y, 1u), 1u));\n"
+"  h[20] = x; h[21] = y; h[22] = z;\n"
+"}\n"
+// A mesh draw without a task stage (#1542: these went to the driver's mesh stage, which hangs on these GPUs): its mesh workgroups, clamped to the exchange's room, and the indexed draw's arguments
+"kernel void mxe_monly(device uint* h [[buffer(0)]], device const uint* ind [[buffer(1)]]) {\n"
+"  ulong n = (ulong)ind[0] * ind[1] * ind[2];\n"
+"  h[8] = (uint)min(n, (ulong)h[4]); h[9] = 1; h[10] = 1; h[13] = 0; h[14] = 1; h[15] = 0; h[16] = 0; h[17] = 0; h[18] = (uint)min(n, (ulong)0xffffffffu); h[19] = 0;\n"
 "}\n";
-static id<MTLComputePipelineState> mxe_scan_pso(void) {
-    static id<MTLComputePipelineState> ps; static int failed; if (ps || failed) return ps;
+enum { MXE_SCAN, MXE_TCLAMP, MXE_MONLY };
+static id<MTLComputePipelineState> mxe_pso(int w) {   // the host stages' own kernels (k_mxe_msl), built together on first use
+    static id<MTLComputePipelineState> ps[3]; static int failed; if (ps[0] || failed) return failed ? nil : ps[w];
     NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_mxe_msl) options:nil error:&e];
-    ps = lib ? [g_dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"mxe_scan"] error:&e] : nil;
-    if (!ps) { failed = 1; MLOG("【红】 task / mesh host stages: the scan kernel failed: %s", e.localizedDescription.UTF8String); }
-    return ps;
+    static const char *const names[3] = {"mxe_scan", "mxe_tclamp", "mxe_monly"};
+    for (int i = 0; i < 3 && lib; i++) if (!(ps[i] = [g_dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@(names[i])] error:&e])) break;
+    if (!ps[0] || !ps[1] || !ps[2]) { failed = 1; ps[0] = ps[1] = ps[2] = nil; MLOG("【红】 task / mesh host stages: their kernels failed: %s", e.localizedDescription.UTF8String); return nil; }
+    return ps[w];
 }
+static id<MTLComputePipelineState> mxe_scan_pso(void) { return mxe_pso(MXE_SCAN); }
 static NSMutableDictionary *g_mxe_vs;   // mesh shader key → its vertex record's bytes
 static NSMutableDictionary *g_mxe;   // shader key + entry → MTLFunction (task: its compute pipeline) or NSNull (cannot); submit thread
 static id mtk_emu_get(NvShader *sh, int st, NSString *entry) {
@@ -216,8 +228,8 @@ static id mtk_emu_get(NvShader *sh, int st, NSString *entry) {
     else MLOG("【黄】 task / mesh host stages: %s %s %s: %s; its draws stay on the driver's mesh pipeline (#770)", st == 4 ? "task" : "mesh", sh->key, entry.UTF8String, why);
     return r;
 }
-static int mtk_emu_ready(NvShader *ts, NvShader *ms) {   // the stages' pipelines (first use: built here, on the submit thread)
-    if (!ts || ts->mesh_relay || !ms || !mtk_emu_on() || !mxe_scan_pso() || !mtk_emu_get(ts, 4, @"main0_tc")) return 0;
+static int mtk_emu_ready(NvShader *ts, NvShader *ms) {   // the stages' pipelines (first use: built here, on the submit thread); ts nil: a mesh draw without a task stage (#1542)
+    if ((ts && ts->mesh_relay) || !ms || !mtk_emu_on() || !mxe_scan_pso() || (ts && !mtk_emu_get(ts, 4, @"main0_tc"))) return 0;
     int z = [ms->ventry hasSuffix:@"_z"];
     return mtk_emu_get(ms, 5, z ? @"main0_mc_z" : @"main0_mc") && mtk_emu_get(ms, 5, @"main0_mv");
 }
@@ -262,25 +274,28 @@ static int mtk_emu_cap(NvShader *sh, int st, int vert, uint64_t *gpu, NSUInteger
 static int mtk_emu_prep(const p_draw *dw, NvShader *ts, NvShader *ms, uint64_t ind, mxe_job *j) {
     if (!mtk_emu_ready(ts, ms)) return 0;
     int z = [ms->ventry hasSuffix:@"_z"];
-    id<MTLComputePipelineState> tp = mtk_emu_get(ts, 4, @"main0_tc"), mp = mtk_emu_get(ms, 5, z ? @"main0_mc_z" : @"main0_mc");
+    id<MTLComputePipelineState> tp = ts ? mtk_emu_get(ts, 4, @"main0_tc") : nil, mp = mtk_emu_get(ms, 5, z ? @"main0_mc_z" : @"main0_mc");
     id<MTLFunction> vf = mtk_emu_get(ms, 5, @"main0_mv");
     uint32_t vs = [g_mxe_vs[@(ms->key)] unsignedIntValue], maxv = MAX(ms->mesh_maxv, 1u), maxp = MAX(ms->mesh_maxp, 1u);
     if (!vs) return 0;
     static uint64_t budget; if (!budget) { const char *ev = getenv("S2A_MESH_EMU_MB"); budget = (uint64_t)(ev && atoi(ev) > 0 ? atoi(ev) : 32) << 20; }   // the most one draw's exchange buffer may take
-    NSString *nk = [NSString stringWithFormat:@"%s/%s", ts->key, ms->key]; uint32_t sawT, sawM; mtk_emu_need(nk, &sawT, &sawM);
-    uint32_t capT = ind ? MIN(MAX(sawT + sawT / 4 + 16, 64u), MXE_TASK_CAP) : (uint32_t)MIN((uint32_t)dw->count, 65536u), pw = MAX(((uint32_t)ts->mesh_payload + 3) / 4, 1u);
-    uint32_t capM = MIN(capT * 32u, MAX(sawM + sawM / 4 + 32, 64u));   // a task workgroup derives at most its thread count of mesh workgroups in these games (ballot + popcount); more were seen: sawM says
+    NSString *nk = [NSString stringWithFormat:@"%s/%s", ts ? ts->key : "-", ms->key]; uint32_t sawT, sawM; mtk_emu_need(nk, &sawT, &sawM);
+    // no task stage (#1542): no task workgroups, payloads or scan; the mesh workgroups are the draw's own (direct: its count; indirect: as many as seen before, mxe_monly clamps)
+    uint32_t capT = !ts ? 0 : ind ? MIN(MAX(sawT + sawT / 4 + 16, 64u), MXE_TASK_CAP) : (uint32_t)MIN((uint32_t)dw->count, 65536u), pw = ts ? MAX(((uint32_t)ts->mesh_payload + 3) / 4, 1u) : 0;
+    uint32_t capM = ts ? MIN(capT * 32u, MAX(sawM + sawM / 4 + 32, 64u))   // a task workgroup derives at most its thread count of mesh workgroups in these games (ballot + popcount); more were seen: sawM says
+                       : ind ? MAX(sawM + sawM / 4 + 32, 64u) : (uint32_t)MAX(MIN((uint32_t)dw->count, 65536u), 1u);
     uint64_t per = (uint64_t)maxv * vs + (uint64_t)maxp * 12; capM = (uint32_t)MAX(1, MIN((uint64_t)capM, budget / per));
     uint64_t w0 = MXE_HEAD + capT + (uint64_t)capT * pw + capM, vbo = (w0 + 3) & ~3ull, ibo = vbo + (uint64_t)capM * maxv * (vs / 4), words = ibo + (uint64_t)capM * maxp * 3;
     id<MTLBuffer> xb; size_t xo = mxe_alloc((size_t)words * 4, &xb); uint32_t *h = (uint32_t *)((uint8_t *)xb.contents + xo); uint64_t xg = xb.gpuAddress + xo;
     memset(h, 0, MXE_HEAD * 4); h[0] = MXE_HEAD; h[1] = MXE_HEAD + capT; h[2] = MXE_HEAD + capT + capT * pw; h[3] = capT; h[4] = capM; h[5] = pw; h[6] = ind ? 0 : (uint32_t)dw->count;
     h[7] = maxp * 3; h[11] = (uint32_t)vbo; h[12] = (uint32_t)ibo;
+    if (!ts && !ind) { h[8] = MIN((uint32_t)dw->count, capM); h[9] = h[10] = 1; h[14] = 1; h[18] = (uint32_t)dw->count; }   // a direct mesh draw without a task stage: its groups and draw arguments, as mxe_monly writes them for an indirect one
     uint64_t first = ind ? ind + 16 : 0;
     if (!first) { id<MTLBuffer> b; size_t o = arena_alloc(16, &b); uint32_t f0 = (uint32_t)dw->first; memcpy((uint8_t *)b.contents + o, &f0, 4); first = b.gpuAddress + o; }
-    *j = (mxe_job){.tp = tp, .mp = mp, .first = first, .xg = xg, .ind = ind, .capT = capT, .tt = ts->mesh_threads, .mt = ms->mesh_threads};
-    j->tok = mtk_emu_cap(ts, 3, 0, &j->tg, &j->ta);
+    *j = (mxe_job){.tp = tp, .mp = mp, .first = first, .xg = xg, .ind = ind, .capT = capT, .tt = ts ? ts->mesh_threads : 0, .mt = ms->mesh_threads};
+    j->tok = ts ? mtk_emu_cap(ts, 3, 0, &j->tg, &j->ta) : 0;
     j->mok = mtk_emu_cap(ms, 4, 1, &j->mg, &j->ma);
-    if ((ts->arg_len && !j->tok) || (ms->arg_len && !j->mok)) return 0;   // no argument block captured: a stale one would stay bound
+    if ((ts && ts->arg_len && !j->tok) || (ms->arg_len && !j->mok)) return 0;   // no argument block captured: a stale one would stay bound
     memset(h + MXE_HEAD, 0, (size_t)capT * 4);   // counts of task workgroups that write none (past the cap) read 0
     { id<MTLBuffer> keep = xb; const uint32_t *hh = h; uint32_t ct = capT, cm = capM;   // learn the sizes once the GPU has run it
       [g_commit_blocks addObject:^{ (void)keep; mtk_emu_saw(nk, hh[19], hh[18]); if (hh[18] > cm || hh[19] > ct) { uint64_t n = atomic_fetch_add(&g_mxe_short, 1) + 1;
@@ -290,26 +305,32 @@ static int mtk_emu_prep(const p_draw *dw, NvShader *ts, NvShader *ms, uint64_t i
 }
 // The prepared draws' stages in one compute pass, three phases with one barrier between them (not one per dispatch): all task stages, all scans, all mesh stages
 static void mtk_emu_flush(id ce, const mxe_job *jb, int n) {
-    id<MTLComputePipelineState> sp = mxe_scan_pso(); NSUInteger nt = MIN((NSUInteger)1024, sp.maxTotalThreadsPerThreadgroup);
-    for (int i = 0; i < n; i++) { const mxe_job *j = &jb[i];
+    id<MTLComputePipelineState> sp = mxe_scan_pso(); NSUInteger nt = MIN((NSUInteger)1024, sp.maxTotalThreadsPerThreadgroup); int clamps = 0, tasks = 0;
+    for (int i = 0; i < n; i++) { const mxe_job *j = &jb[i]; if (!j->ind) continue;   // indirect counts first, clamped on the GPU (#1542): task groups to capT, mesh-only groups to the exchange's room
+        enc_c_pso(ce, mxe_pso(j->tp ? MXE_TCLAMP : MXE_MONLY)); enc_c_args(ce, j->xg, 0); enc_c_args(ce, j->ind, 1); enc_c_dispatch(ce, MTLSizeMake(1, 1, 1), MTLSizeMake(1, 1, 1)); clamps = 1; }
+    if (clamps) enc_c_dep(ce);
+    for (int i = 0; i < n; i++) { const mxe_job *j = &jb[i]; if (!j->tp) continue; tasks = 1;
         enc_c_pso(ce, j->tp); if (j->tok) enc_c_args(ce, j->tg, j->ta); enc_c_args(ce, j->first, MESH_FIRST_SLOT); enc_c_args(ce, j->xg, MXE_SLOT);
-        if (j->ind) enc_c_dispatch_indirect(ce, j->ind, MTLSizeMake(j->tt, 1, 1)); else enc_c_dispatch(ce, MTLSizeMake(j->capT, 1, 1), MTLSizeMake(j->tt, 1, 1)); }
-    enc_c_dep(ce); enc_c_pso(ce, sp);
-    for (int i = 0; i < n; i++) { const mxe_job *j = &jb[i]; enc_c_args(ce, j->xg, 0); enc_c_args(ce, j->ind ? j->ind : j->xg, 1); enc_c_dispatch(ce, MTLSizeMake(1, 1, 1), MTLSizeMake(nt, 1, 1)); }
-    enc_c_dep(ce);
+        if (j->ind) enc_c_dispatch_indirect(ce, j->xg + 20 * 4, MTLSizeMake(j->tt, 1, 1)); else enc_c_dispatch(ce, MTLSizeMake(j->capT, 1, 1), MTLSizeMake(j->tt, 1, 1)); }
+    if (tasks) {
+        enc_c_dep(ce); enc_c_pso(ce, sp);
+        for (int i = 0; i < n; i++) { const mxe_job *j = &jb[i]; if (!j->tp) continue; enc_c_args(ce, j->xg, 0); enc_c_args(ce, j->ind ? j->ind : j->xg, 1); enc_c_dispatch(ce, MTLSizeMake(1, 1, 1), MTLSizeMake(nt, 1, 1)); }
+        enc_c_dep(ce);
+    }
     for (int i = 0; i < n; i++) { const mxe_job *j = &jb[i];
-        enc_c_pso(ce, j->mp); if (j->mok) enc_c_args(ce, j->mg, j->ma); enc_c_args(ce, j->xg, MXE_SLOT); enc_c_dispatch_indirect(ce, j->xg + 32, MTLSizeMake(j->mt, 1, 1)); }
+        enc_c_pso(ce, j->mp); if (j->mok) enc_c_args(ce, j->mg, j->ma); enc_c_args(ce, j->xg, MXE_SLOT); if (!j->tp) enc_c_args(ce, j->first, MESH_FIRST_SLOT);
+        enc_c_dispatch_indirect(ce, j->xg + 32, MTLSizeMake(j->mt, 1, 1)); }
 }
 // Before the draw, outside the render pass: run the draw's task and mesh stages. 0 = not done (the draw goes the driver's way). One compute pass a draw: running the stages of the
 //   later draws of a pass in it too (replaying the state ops up to them on a copy of the replay state) made frames wait on cross-queue events, 2-5 fps (11-17 M1 Pro); left out
 static int mtk_emu_run(const p_draw *dw, NvShader *ts, NvShader *ms, uint64_t ind) {
-    if (!ts || ts->mesh_relay || !mtk_emu_on() || !mtk_emu_ready(ts, ms)) return 0;
+    if ((ts && ts->mesh_relay) || !mtk_emu_on() || !mtk_emu_ready(ts, ms)) return 0;
     if (defer_has_active()) defer_fallback();   // as tfd_args: a deferred merged pass and lazy clears land before a compute pass outside the render pass
     lc_land(); rp_flush(); rp_end(); ubd_land();
     mxe_job j; if (!mtk_emu_prep(dw, ts, ms, ind, &j)) { g_mtk.emu = 0; args_dirty_all(); return 0; }
     id ce = enc_c_begin(NULL); mtk_emu_flush(ce, &j, 1); enc_c_end(ce);
     args_dirty_all();
-    static uint64_t n; if (!n++) MLOG("task / mesh host stages: first draw (task %s mesh %s, %s)", ts->key, ms->key, ind ? "indirect" : "direct");
+    static uint64_t n; if (!n++) MLOG("task / mesh host stages: first draw (task %s mesh %s, %s)", ts ? ts->key : "-", ms->key, ind ? "indirect" : "direct");
     return 1;
 }
 // The pipeline descriptor of a task / mesh draw: the fragment function variant and the attachments as a vertex draw's (pso_desc, no vertex stage); pf: the padded mesh variant (#674) or nil.
@@ -525,7 +546,17 @@ static void mesh_tasks_draw(const p_draw *dw) {
     NvProg *raster = pr->geo_raster;   // the pixel stage alone (geo_draw keeps its reader program here; a mesh program has no geometry stage)
     if (!raster || raster->sh[0] || raster->sh[1] != pr->sh[1]) { raster = [NvProg new]; raster->sh[1] = pr->sh[1]; raster->gp = pr->gp; pr->geo_raster = raster; }
     mtk_publish();   // #770 S2A_MESH_PACE: deliver held pipelines first
-    g_mtk.emu = 0; g_mtk.emu_fn = nil; mtk_emu_run(dw, ts, ms, ind);   // #770: the host runs the stages on GPUs whose driver mesh stage hangs
+    g_mtk.emu = 0; g_mtk.emu_fn = nil;
+    // #770: the host runs the stages on GPUs whose driver mesh stage hangs. A draw it cannot run there is skipped, not left to the driver's mesh stage (#1542 safety valve:
+    //   a skipped draw beats a GPU hang that reboots the machine); each pair is reported once and counted with the extraction gaps, the cure is the host stages taking it
+    if (!mtk_emu_run(dw, ts, ms, ind) && mtk_emu_on()) {
+        static NSMutableSet *refused; if (!refused) refused = [NSMutableSet set];
+        NSString *pk = [NSString stringWithFormat:@"%s/%s", ts ? ts->key : "-", ms->key];
+        g_mtk_skip++; if (![refused containsObject:pk]) { [refused addObject:pk];
+            MLOG("【红】 task / mesh draw the host stages cannot run (task %s mesh %s%s): skipped, not left to the driver's mesh stage, which hangs on this GPU (#1542; %lu pairs so far)",
+                 ts ? ts->key : "-", ms->key, ts && ts->mesh_relay ? ", relayed payload" : "", (unsigned long)refused.count); }
+        return;
+    }
     g_mtk.on = 1; g_mtk.miss = 0; g_mtk.ts = ts; g_mtk.ms = ms; g_mtk.first = (uint32_t)dw->first; g_mtk.count = (uint32_t)dw->count; g_mtk.ind = ind;
     g_geo_program = raster;
     p_draw triangle = {.prim = 4, .count = 3, .instances = 1};

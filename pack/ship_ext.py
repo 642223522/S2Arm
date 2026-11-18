@@ -133,7 +133,7 @@ def cmd_shell(a):
         n = swidx_count(exe)
         if n is not None:
             red(f"出壳门：主程序里还有内嵌偏移表节（{n} 个游戏模块）：要本提交 make ios 出的壳")
-        left = [str(p.relative_to(r)) for p in r.rglob("*") if p.name == "S2AImages.dylib" or p.name.endswith((".fixups.tsv", ".patched.bin"))]
+        left = [str(p.relative_to(r)) for p in r.rglob("*") if not p.name.startswith("._") and (p.name == "S2AImages.dylib" or p.name.endswith((".fixups.tsv", ".patched.bin")))]
         if left:
             red(f"出壳门：壳里还有游戏镜像 {left}")
         ent = Path(a.entitlements or REPO / "pack/app.entitlements")

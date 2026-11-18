@@ -8869,8 +8869,11 @@ static void c89_midrun_save(const char *sdir) {
             c89_sleep_ms(2);
         }
         CHECK(e10.made - b10.made == 84, "C89 ⑩ 两个线程应经缓存建出 84 条管线 → %llu 条", (unsigned long long)(e10.made - b10.made));
-        CHECK(e10.saves - b10.saves >= 3 && e10.failed == b10.failed && e10.ok - b10.ok == e10.saves - b10.saves,
-              "C89 ⑩ 并行建管线时局中写盘应发生多次且全部成功 → 触发 %llu 次（期望 ≥ 3）、成功 +%llu、失败 +%llu", (unsigned long long)(e10.saves - b10.saves), (unsigned long long)(e10.ok - b10.ok), (unsigned long long)(e10.failed - b10.failed));
+        // 触发次数只断言 ≥ 1：后台写在飞时新的触发直接跳过、不排队（plc_save_midrun_impl），次数取决于写盘耗时与两线程建管线的快慢，
+        //   慢的 CI 机上只有 1–2 次（main 与 #1561 / #1559 都偶发红过 ≥ 3）。≥ 1 是确定的：阈值每 2 条、首次不等时间，第 2 条建好就开写，
+        //   这时两个线程还要建满 84 条——要证的「并行建管线时局中写盘、全部写成、收尾文件合规」都还在。
+        CHECK(e10.saves - b10.saves >= 1 && e10.failed == b10.failed && e10.ok - b10.ok == e10.saves - b10.saves,
+              "C89 ⑩ 并行建管线时局中写盘应发生且全部成功 → 触发 %llu 次（期望 ≥ 1）、成功 +%llu、失败 +%llu", (unsigned long long)(e10.saves - b10.saves), (unsigned long long)(e10.ok - b10.ok), (unsigned long long)(e10.failed - b10.failed));
         nvn_gpu_shader_release(vsa); nvn_gpu_shader_release(fsa); nvn_gpu_shader_release(vsb); nvn_gpu_shader_release(fsb);
         for (int i = 0; i < 4; i++) free(ma[i]);
     }

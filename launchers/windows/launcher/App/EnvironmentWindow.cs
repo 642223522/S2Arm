@@ -265,10 +265,13 @@ public sealed partial class EnvironmentWindow : Window
         rightBar.Children.Add(MessagesButton());   // 消息：公告和更新说明（旧的只在这里）
 
         // 游戏库：任何页面都能回去；出包还在跑就留在后台
+        // 0.6.0 动态窗口（开关后面）：有和 App 相关的作业时显示进度一行字、做完 ✓、失败「!」，这时点它到总控台（PhoneConsole.cs）
+        var dynamicText = DynamicLibraryText();
         var libraryBtn = new Button
         {
-            Content = T("nav.library"), Padding = new Thickness(14, 8), CornerRadius = new CornerRadius(8),
-            Background = page == "library" ? Accent : Brush.Parse("#29292D"), Foreground = page == "library" ? Canvas : Ink
+            Content = dynamicText ?? T("nav.library"), Padding = new Thickness(14, 8), CornerRadius = new CornerRadius(8),
+            Background = page == "library" ? Accent : Brush.Parse("#29292D"),
+            Foreground = dynamicAlert && dynamicText is not null ? Brush.Parse("#FF9F0A") : page == "library" ? Canvas : Ink
         };
         Avalonia.Automation.AutomationProperties.SetAutomationId(libraryBtn, "top.library");
         libraryBtn.Click += (_, _) =>
@@ -277,6 +280,7 @@ public sealed partial class EnvironmentWindow : Window
             welcomeGameId = null;   // 点「游戏库」就是要看游戏库：欢迎页记的那一款不再把它盖住（社区贡献者补丁 #1）
             welcomeHome = false;
             if (!libraryBusy) importDialog = null;   // 添加游戏弹窗开着也能直接从导航离开（同上 #3；正在导入时不关）
+            if (dynamicText is not null) { OpenConsoleFromTopBar(); return; }
             Navigate("library");
         };
         rightBar.Children.Add(libraryBtn);

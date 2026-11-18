@@ -39,13 +39,28 @@ def main():
             p = os.path.join(app, x)
             if os.path.isdir(p): shutil.rmtree(p)
             elif os.path.exists(p): os.remove(p)
-        ent = os.path.join(P, 'app.entitlements'); log = os.path.join(t, 'sign.log')
-        sign = ['/usr/bin/python3', os.path.join(P, 'dev_sign.py'), app, bid, a.team, ent]
-        rc = subprocess.run(sign, stdout=open(log, 'w'), stderr=subprocess.STDOUT).returncode
-        if rc == 3:
-            subprocess.run(['bash', os.path.join(P, 'ensure_profile.sh'), bid, a.team, ent], stdout=open(log, 'a'), stderr=subprocess.STDOUT)
+        ent = os.path.join(P, 'app.entitlements'); log = os.path.join(t, 'sign.log'); open(log, 'w').close()
+        def dev_sign(target, tbid, tent, *extra):   # 先用本机描述文件签，退出码 3（没有合适的）才 ensure_profile 申请再签（同 pack/jobs/install.py _sign_or_request）
+            sign = ['/usr/bin/python3', os.path.join(P, 'dev_sign.py'), target, tbid, a.team, tent, *extra]
             rc = subprocess.run(sign, stdout=open(log, 'a'), stderr=subprocess.STDOUT).returncode
-        if rc: red(f'签名失败 rc={rc}：{open(log, encoding="utf-8", errors="replace").read().strip().splitlines()[-1:]}')
+            if rc == 3:
+                subprocess.run(['bash', os.path.join(P, 'ensure_profile.sh'), tbid, a.team, tent], stdout=open(log, 'a'), stderr=subprocess.STDOUT)
+                rc = subprocess.run(sign, stdout=open(log, 'a'), stderr=subprocess.STDOUT).returncode
+            if rc: red(f'签名失败 rc={rc}（{tbid}）：{open(log, encoding="utf-8", errors="replace").read().strip().splitlines()[-1:]}')
+        # 主屏小组件扩展（PlugIns/*.appex，11-16 起壳里带）：包名跟主程序改成 <新包名>.widget，扩展先签、只带共享组，主程序再加共享组签
+        #   （同装机 pack/jobs/install.py widget_prepare / sign_with_widget 与 pack/widget_ext.py 同一份规则）；原先只改主程序包名，
+        #   手机拒装「Appex … does not have expected identifier prefix」
+        sys.path.insert(0, P); import widget_ext as W
+        if W.appexes(app):
+            W.retarget(app, bid)
+            group = f'group.s2arm.widget.{a.team}'   # 同 install.py widget_group
+            ext_ent = os.path.join(t, 'widget.entitlements'); main_ent = os.path.join(t, 'app.entitlements')
+            with open(ext_ent, 'wb') as f: plistlib.dump({'com.apple.security.application-groups': [group]}, f)
+            pl = plistlib.load(open(ent, 'rb')); pl['com.apple.security.application-groups'] = [group]
+            with open(main_ent, 'wb') as f: plistlib.dump(pl, f)
+            for x in W.appexes(app): dev_sign(x, W.bundle_id(bid), ext_ent, '--extension')
+            ent = main_ent
+        dev_sign(app, bid, ent)
         if subprocess.run([sys.executable, os.path.join(P, 'iml_check.py'), 'check_app', app], capture_output=True).returncode: red('签后提高内存上限权限核实没过')
         tmp = a.dst + '.tmp'
         if os.path.exists(tmp): os.remove(tmp)
