@@ -339,6 +339,26 @@ static void install_key_page(module_t *m) {
     if (mprotect(page, m->key_page_size, PROT_READ)) die("%s 键页 mprotect", m->name);
 }
 #endif
+#if !defined(__ANDROID__) && !defined(S2A_UNIT_TEST)   // 即时存档（只苹果平台）；单测用桩 mach 头（tests/support/hoststub），没有 vm_region_64
+// 即时存档恢复：游戏内存整块写回后，各模块键页里的线程键 TSD 偏移是 A 进程的（跨版本时宿主线程键的编号可能不同），按本进程重写；
+//   键页里别的槽（宽屏 / 补丁开关等玩家设置写的值）随快照照旧，不动
+int s2a_snap_keypages_reapply(void) {
+    int n = 0, fix = 0;
+    for (int i = 0; i < g_nmod; i++) { module_t *m = &g_mod[i]; if (!m->base || !m->key_page_size) continue;
+        uint64_t *page = (uint64_t *)(m->base + m->key_page_off);
+        // 改前记下当前权限，改完原样还回：键页运行中会被写（宽屏 / 补丁开关槽，s2a_key_page_writable 放开过），不能一律收成只读（11-17 回归：收成只读后补丁岛写键页 SIGBUS）
+        vm_address_t ra = (vm_address_t)(uintptr_t)page; vm_size_t rs = 0; vm_region_basic_info_data_64_t bi; mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t ob;
+        if (vm_region_64(mach_task_self(), &ra, &rs, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&bi, &cnt, &ob) != KERN_SUCCESS || ra > (vm_address_t)(uintptr_t)page) { LOG("【红】即时存档恢复：%s 键页查不到映射", m->name); return -1; }
+        int prot0 = (bi.protection & VM_PROT_READ ? PROT_READ : 0) | (bi.protection & VM_PROT_WRITE ? PROT_WRITE : 0) | (bi.protection & VM_PROT_EXECUTE ? PROT_EXEC : 0);
+        if (mprotect(page, m->key_page_size, PROT_READ | PROT_WRITE)) { LOG("【红】即时存档恢复：%s 键页放不开写（errno %d）", m->name, errno); return -1; }
+        for (unsigned k = 0; k < KEY_N; k++) { uint64_t off; if (plat_tsd_offset((uint32_t)key_value(k), &off)) { LOG("【红】即时存档恢复：取 %s 的 TSD 偏移失败", k_keyname[k]); return -1; }
+            if (page[m->key_idx[k]] != off) { page[m->key_idx[k]] = off; fix++; } }
+        if (mprotect(page, m->key_page_size, prot0)) { LOG("【红】即时存档恢复：%s 键页权限还原失败", m->name); return -1; }
+        n++; }
+    LOG("即时存档恢复：模块键页 %d 页按本进程重写线程键（改了 %d 处）", n, fix);
+    return 0;
+}
+#endif
 static void register_gates_text(module_t *m, struct loader_text *text) {
     char line[256]; int ng = 0;
     unsigned long ret, orig; char kind[16]; int arg;
@@ -478,6 +498,40 @@ static int reloc_foreign_debug(void) {
     if (v < 0) { const char *e = getenv("S2A_RELOC_DEBUG"); v = e && strcmp(e, "1") == 0; }
     return v;
 }
+// 即时存档：宿主地址槽登记（装载期）与恢复时重写
+static struct { uint64_t where, v; } *g_hslot; static size_t g_nhslot, g_caphslot;
+int s2a_snap_mode(void);   // snapshot.c：存档模式 / 恢复局（关着不记槽表，装载期不多分配）
+static void s2a_snap_hostslot_add(uint64_t where, uint64_t v) {
+    if (!s2a_snap_mode()) return;
+    if (g_nhslot == g_caphslot) { g_caphslot = g_caphslot ? g_caphslot * 2 : 4096; g_hslot = realloc(g_hslot, sizeof *g_hslot * g_caphslot); }
+    g_hslot[g_nhslot].where = where; g_hslot[g_nhslot++].v = v;
+}
+// 第 i 个槽（快照存档时逐个按「slot:<槽址>」登记交出指针的身份，snapshot.c handout_save）：回 0 有、-1 越界
+int s2a_snap_hostslot_at(size_t i, uint64_t *where, uint64_t *v) { if (i >= g_nhslot) return -1; *where = g_hslot[i].where; *v = g_hslot[i].v; return 0; }
+// 恢复：本进程装载器在这个槽写的值（跨版本换算「游戏拷走的宿主地址」用；没这个槽 = 0）
+uint64_t s2a_snap_hostslot_value(uint64_t where) { for (size_t i = 0; i < g_nhslot; i++) if (g_hslot[i].where == where) return g_hslot[i].v; return 0; }
+int s2a_snap_hostslots_save(FILE *f) { uint64_t n = g_nhslot; return fwrite(&n, 8, 1, f) != 1 || (n && fwrite(g_hslot, sizeof *g_hslot, n, f) != n) ? -1 : 0; }
+// 恢复：按 A 的槽表配出「A 的宿主地址 → 本进程的」对照（同槽对同槽），回对照条数；out 由调用方 free
+size_t s2a_snap_hostmap(FILE *f, uint64_t **from, uint64_t **to) {
+    uint64_t n = 0; if (fread(&n, 8, 1, f) != 1) return 0;
+    struct { uint64_t where, v; } *a = malloc(sizeof *a * (n ? n : 1)); if (n && fread(a, sizeof *a, n, f) != n) { free(a); return 0; }
+    *from = malloc(8 * (n ? n : 1)); *to = malloc(8 * (n ? n : 1)); size_t k = 0;
+    for (uint64_t i = 0; i < n && i < g_nhslot; i++) if (a[i].where == g_hslot[i].where && a[i].v != g_hslot[i].v) {
+        int dup = 0; for (size_t j = 0; j < k && !dup; j++) dup = (*from)[j] == a[i].v; if (dup) continue;
+        (*from)[k] = a[i].v; (*to)[k++] = g_hslot[i].v; }
+    free(a); return k;
+}
+int s2a_snap_hostslots_reapply(void) {
+    size_t changed = 0, fail = 0;
+    for (size_t i = 0; i < g_nhslot; i++) {
+        uint64_t *w = (uint64_t *)(uintptr_t)g_hslot[i].where; if (*w == g_hslot[i].v) continue;
+        uint64_t pg = (uint64_t)(uintptr_t)w & ~0x3fffull;
+        if (mprotect((void *)(uintptr_t)pg, 0x4000, PROT_READ | PROT_WRITE)) { fail++; continue; }
+        *w = g_hslot[i].v; changed++;
+    }
+    LOG("%s即时存档恢复：宿主地址槽 %zu 个，按本进程重写 %zu 个，失败 %zu", fail ? "【红】" : "", g_nhslot, changed, fail);
+    return fail ? -1 : 0;
+}
 static void relocate(module_t *m) {
     uint64_t rela = 0, relasz = 0, jmprel = 0, pltsz = 0;
     for (const Elf64_Dyn *d = m->dyn; d->d_tag; d++) switch (d->d_tag) {
@@ -520,7 +574,7 @@ static void relocate(module_t *m) {
                 if (!v) v = resolve_global(nm);
                 if (!v) { void *f = s2a_libc_lookup(nm); if (f) { v = (uint64_t)sw_xstack_wrap(nm, f); nlibc++; } }
 #if !defined(__ANDROID__)   // 安卓没有直连 GL 层（s2a_direct_lookup 在 android/native 自给）
-                if (!v && !s2a_nro_defer_lookup(nm)) v = s2a_direct_stub(nm);   // 都没定义（romfs NRO 也没有）的 gl* 核心名：安全空实现，放最后免得顶掉游戏模块自己的定义（#601）
+                if (!v && !s2a_nro_defer_lookup(nm)) v = s2a_direct_stub(nm);   // 都没定义（romfs NRO 也没有）的 gl* 核心名：安全空实现；GL 驱动的带下划线名 _gl* / _egl* 去掉下划线交 GL 层。放最后免得顶掉游戏模块自己的定义（#601）
 #endif
                 if (!v && (s->st_info >> 4) == 2) {   // D-WSFE：按名记下来（含槽位偏移），崩在「往全局指针写」时能对上是哪个；游戏自带 NRO 定义的另报红（起局置 0、nn::ro 装进来后不补）
                     const char *wnro = s2a_nro_defer_lookup(nm);
@@ -548,6 +602,12 @@ static void relocate(module_t *m) {
                 cnt[2]++; }
             else { *where = v + r->r_addend; cnt[1]++; }
         }
+    // 即时存档：记下写了「宿主地址」（窗口外）的槽与值——宿主函数地址每次进程启动随地址随机化变，恢复时游戏内存整块写回后要按本进程的值重写
+    if (s2a_snap_mode()) { uint64_t wb, ws; s2a_window_get(&wb, &ws);
+      for (int t = 0; t < 2; t++) for (uint64_t i = 0; i < sizes[t] / sizeof(Elf64_Rela); i++) {
+          uint64_t *where = (uint64_t *)(m->base + tabs[t][i].r_offset), v = *where;
+          if (v && (v < wb || v >= wb + ws)) s2a_snap_hostslot_add((uint64_t)(uintptr_t)where, v);
+      } }
     LOG("%s: 重定位 relative=%u abs/glob=%u jump=%u（libc 直通 %u，无定义弱符号置 0 %u）", m->name, cnt[0], cnt[1], cnt[2], nlibc, nweak0);
     if (rdbg && nforeign) LOG("%s: %u 处本模块已定义的符号绑到了先装的模块（样例：%s）", m->name, nforeign, foreign);
     if (ntls) LOG("%s: TLS 重定位 %u 条留给游戏 sdk 的 __nnmusl_init_dso（同任天堂 rtld）", m->name, ntls);
@@ -676,7 +736,7 @@ uint64_t s2a_module_span(const char *dir) {   // 模块目录里全部 <名>.fix
     uint64_t t = 0; struct dirent *e;
     while ((e = readdir(d))) {
         size_t l = strlen(e->d_name); const char *suf = ".fixups.tsv"; size_t sl = strlen(suf);
-        if (l <= sl || strcmp(e->d_name + l - sl, suf)) continue;
+        if (l <= sl || strcmp(e->d_name + l - sl, suf) || !strncmp(e->d_name, "._", 2)) continue;   // ._：exFAT 上 macOS 配的 AppleDouble 附属文件
         char nm[64]; if (l - sl >= sizeof nm) continue; memcpy(nm, e->d_name, l - sl); nm[l - sl] = 0;
         t += mod_footprint(dir, nm);
     }
@@ -1172,7 +1232,7 @@ unsigned s2a_unresolved_count(void) { return g_unresolved; }
 // iOS 不许运行时装入未签名的代码执行：NRO 在出包时与 exefs 模块一样改写、写进签名的外置镜像包（pack/stage_rewrite.sh、runtime/rewriter/nro_to_nso.py、ios/embed.py），
 //   这里按 NRO 文件的 SHA-256 在 nro_modules.tsv 里认出模块，映射改写好的映像（与起局模块同一 map_image，落在窗口模块段：s2a_module_span 已把它算进去），
 //   登记门，返回基址；重定位、DT_INIT 照真机由游戏的 nn::ro 做。卸了再装同一个 NRO：映回原地址、数据段重新取干净副本
-typedef struct { char name[16]; uint8_t sha[32]; uint64_t size, bss; int mod, loaded; } nro_mod_t;
+typedef struct { char name[16]; uint8_t sha[32]; uint64_t size, bss; int mod, loaded; } nro_mod_t;   // loaded：0 没装、1 已装、2 即时存档恢复时按快照预装、等服务层重放 LoadNro 来认领（不另加字段：关着时表项大小不变）
 static nro_mod_t *g_nro; static int g_nnro = -1, g_cnro;   // nro_modules.tsv 的行，按需增长（无上限）
 static pthread_mutex_t g_nro_mu = PTHREAD_MUTEX_INITIALIZER;
 #if !defined(__ANDROID__)   // NRO 映射表只在非安卓路径读（安卓 s2a_nro_map 直接回 5：模块映射走 APK 资源）
@@ -1210,6 +1270,7 @@ __attribute__((visibility("default"), used)) int s2a_nro_map(const uint8_t sha[3
     int rc = 0;
     if (!e) { rc = 1; LOG("【红】nn::ro 装 NRO：哈希 %02x%02x%02x%02x… 不在 nro_modules.tsv（包里没有这个 NRO 的改写映像：出包时 romfs 里没有它？）", sha[0], sha[1], sha[2], sha[3]); }
     else if (e->size != size || e->bss != bss) { rc = 2; LOG("【红】nn::ro 装 NRO：%s 大小 %#llx / bss %#llx 与包里 %#llx / %#llx 不符", e->name, (unsigned long long)size, (unsigned long long)bss, (unsigned long long)e->size, (unsigned long long)e->bss); }
+    else if (e->loaded == 2) { e->loaded = 1; *base = (uint64_t)g_mod[e->mod].base; LOG("即时存档恢复：服务层重放装 NRO %s，认领快照预装的同址映像 %p", e->name, (void *)*base); }
     else if (e->loaded) rc = 3;
     else if (e->mod < 0 && g_nmod >= g_mod_cap) { rc = 4; LOG("【红】nn::ro 装 NRO：模块表满（%d）装不下 %s（模块表按起局模块 + nro_modules.tsv 行数分配，不该发生）", g_mod_cap, e->name); }
     else if (e->mod < 0) {   // 第一次装：读布局、映射、建符号表、登记门，最后才把模块数加一（别的线程按 g_nmod 遍历模块表）
@@ -1243,6 +1304,34 @@ __attribute__((visibility("default"), used)) int s2a_nro_map(const uint8_t sha[3
     pthread_mutex_unlock(&g_nro_mu); return rc;
 #endif
 }
+#if !defined(__ANDROID__)   // 即时存档只在苹果平台
+// 即时存档：动态装载的 NRO（nn::ro）。存：按装载先后（模块表序）记每个装过的 NRO 的哈希 / 大小 / bss / 此刻装着没有；
+//   取：在写回游戏内存之前按原顺序重新装（游标顺次前进，落点与存档时相同；门、符号表、导入补绑都由本版装载器重做），
+//   存档时已卸下的随后标卸下；装着的标「等服务层认领」——服务层重放 LoadNro 时回成功 + 同址，它的账本照原样重建
+int s2a_snap_nro_save(FILE *f) {
+    pthread_mutex_lock(&g_nro_mu); nro_table(); int n = 0, e = 0;
+    for (int m = 0; m < g_nmod; m++) for (int i = 0; i < g_nnro; i++) if (g_nro[i].mod == m) n++;
+    e |= fwrite(&n, 4, 1, f) != 1;
+    for (int m = 0; m < g_nmod; m++) for (int i = 0; i < g_nnro; i++) if (g_nro[i].mod == m) {
+        e |= fwrite(g_nro[i].sha, 32, 1, f) != 1 || fwrite(&g_nro[i].size, 8, 1, f) != 1 || fwrite(&g_nro[i].bss, 8, 1, f) != 1 || fwrite(&g_nro[i].loaded, 4, 1, f) != 1; }
+    pthread_mutex_unlock(&g_nro_mu);
+    LOG("即时存档：动态装载的 NRO %d 个", n); return e ? -1 : 0;
+}
+int s2a_nro_unmap(uint64_t base);
+int s2a_snap_nro_preload(FILE *f) {
+    int n = 0, bad = 0, un = 0; if (fread(&n, 4, 1, f) != 1 || n < 0) return -1;
+    for (int k = 0; k < n; k++) {
+        uint8_t sha[32]; uint64_t size, bss, base = 0; int loaded;
+        if (fread(sha, 32, 1, f) != 1 || fread(&size, 8, 1, f) != 1 || fread(&bss, 8, 1, f) != 1 || fread(&loaded, 4, 1, f) != 1) return -1;
+        int rc = s2a_nro_map(sha, size, bss, &base);
+        if (rc) { LOG("【红】即时存档恢复：第 %d 个动态模块（哈希 %02x%02x%02x%02x…）预装失败 rc=%d", k, sha[0], sha[1], sha[2], sha[3], rc); bad++; continue; }
+        pthread_mutex_lock(&g_nro_mu); for (int i = 0; i < g_nnro; i++) if (!memcmp(g_nro[i].sha, sha, 32)) { if (loaded && g_nro[i].loaded) g_nro[i].loaded = 2; } pthread_mutex_unlock(&g_nro_mu);
+        if (!loaded) { s2a_nro_unmap(base); un++; }
+    }
+    LOG("%s即时存档恢复：动态模块按快照顺序预装 %d 个（其中存档时已卸下 %d 个）", bad ? "【红】" : "", n, un);
+    return bad ? -1 : 0;
+}
+#endif
 // UnloadNro：标记卸下（映像留在原地址，下次装同一个 NRO 映回同址）。0 = 成功，1 = 这个基址没有装着的 NRO
 __attribute__((visibility("default"), used)) int s2a_nro_unmap(uint64_t base) {
     pthread_mutex_lock(&g_nro_mu); int rc = 1;

@@ -184,6 +184,8 @@ def runtime_env(c, game, runtime, input_ok=True):
     # 游玩时间（runtime/src/playtime.c）写进这款的游戏文件夹：S2A_DOCS 在 temp/（总览里算可清的临时件），清了不能把累计时长一起清掉
     env.update(S2A_GAME_DATA=str(runtime), S2A_RYU_DATA=str(save), S2A_DOCS=str(docs), S2A_SAVE_FOLDER=str(save_folder),
                S2A_PLAYTIME=str(layout.path(c, game["id"], "playtime.json")),
+               # 即时快照（0.6.0）落在这款的游戏文件夹里（同游玩时间，不放可清的 temp/），删这款时随文件夹一起删；宿主 runtime/src/snapshot.c s2a_snap_dir_for 读
+               S2A_SNAPSHOT_DIR=str(layout.path(c, game["id"], "snapshot")),
                NXGAL_SHADER_CACHE_DIR=str(cache / "shaders"), NXGAL_PSO_DEV_DIR=str(cache / "pso"),
                S2A_MACRO_DUMP=str(cache / "macros"),
                S2A_DOCKED=docked_default(c),   # 缺省掌机（11-17 维护者定，同 iPhone）；玩家在这款设置里选过的由 launch() 里 community.launch_env 盖上
@@ -308,14 +310,16 @@ def keep_runtime_nros(c, game_id, source):
 
 
 def launch(c):
-    with c.lock("execution"):
+    import sgrade
+    with c.lock("execution"), c.idle(sgrade.game_lock(c.r.get("gameId") or "")) as free:
+        if not free:   # 这款正在升级 S 级优化（sgrade.upgrade_game 拿着这款的锁）：只挡这一款，升级做完自动解除
+            raise Failure("这款游戏正在升级 S 级优化，升级完成后就能开始。", code="sgrade_upgrading")
         game = c.game()
         from saves import recover
         recover(c, game, override=c.r.get("overrideRecovery") is True)   # 回退失败：玩家单独确认「仍要启动」才放行（同 iPhone，审计 18:00 P0-3）
         runtime = layout.image_mac(c, game["id"], create=False)
-        # 改写器修过的话：起局前按本引擎改写器核一遍这款，受影响的只换改写产物（rewrite_refresh.py；核不了不挡起局）
-        from rewrite_refresh import refresh_mac, kept_nros_mac
-        refresh_mac(c, game["id"], runtime)
+        # 起局前不再自动补 S 级优化 / 按新改写器重改写（11-17 维护者：「改成不自动运行，玩家手动点击 S 级优化再升级」，sgrade.upgrade_game）
+        from rewrite_refresh import kept_nros_mac
         kept_nros_mac(c, game["id"], runtime)   # 运行时留下、还没补进的 NRO（#8be819）：上次收局没补成的这里再补
         c.begin("验证运行文件")
         # 校验不过不拒起局（11-17 维护者）：请求带已停用的旧字段 vammLayout（旧启动器发的，照常起、不用它）、清单对不上、主程序 / 程序描述缺或大小不符，
@@ -460,11 +464,15 @@ def compile_host(c, fingerprint, env, log_root):
         raise Failure("S2Arm Mac 宿主缺地址窗口护栏库 libs2a_vaguard.dylib。")
     shutil.copy2(guard, executable.parent / guard.name)
     c.run(["codesign", "--force", "--sign", "-", executable.parent / guard.name], log_root / "sign.log", env)
-    plist = dict(CFBundleIdentifier="org.s2arm.macos.game", CFBundleName="S2Arm Game",
+    # 不进系统「游戏模式」：游戏模式下 GPU 忙着也被压在最低频（上游参考实现（MIT）cb59a672 / frame-rate.md：一个约 100 行、不含宿主代码的全屏 Metal 程序
+    #   游戏模式下约 160 秒后 618 → 338 MHz、9.5 → 18 ms 一帧；关掉 924 MHz、约 7 ms；一款大型开放世界游戏 10.5 → 19.7 ms 落到 30 帧）。LSSupportsGameMode false 是苹果给的关法，
+    #   保留游戏类别。系统记得认过游戏的包名，同一包名改成 false 仍开着游戏模式：包名换成 org.s2arm.macos.host，老玩家机器也从头算（第一次起会再问一次蓝牙权限）；
+    #   手柄重连记忆的存储名 org.s2arm.macos.game（NS2LauncherController 的 UserDefaults 套件）与包名无关，不改
+    plist = dict(CFBundleIdentifier="org.s2arm.macos.host", CFBundleName="S2Arm Game",
                  CFBundleExecutable="s2arm-host", CFBundlePackageType="APPL", LSMinimumSystemVersion="15.0",
                  NSBluetoothAlwaysUsageDescription="连接 Switch 2 Pro 手柄，接收按键与体感并发送游戏震动。",  # 非玩家句
-                 NSHighResolutionCapable=True, LSSupportsGameMode=True,
-                 LSApplicationCategoryType="public.app-category.games")   # 游戏模式要系统靠类别认出是游戏（11-01 调研：Mac 全屏才进游戏模式）
+                 NSHighResolutionCapable=True, LSSupportsGameMode=False,
+                 LSApplicationCategoryType="public.app-category.games")
     (app / "Contents/Info.plist").write_bytes(plistlib.dumps(plist))
     c.run(["codesign", "--force", "--sign", "-", app], log_root / "sign.log", env)
     atomic(host_root / "ready.json", dict(schema=1, sha256=digest(executable), guard_sha256=digest(executable.parent / VAGUARD)))
@@ -601,7 +609,7 @@ def collect_degrade(c, root):
     if not root:
         return []
     rows = []
-    for p in sorted(Path(root).glob("degrade.*.tsv")):
+    for p in sorted(p for p in Path(root).glob("degrade.*.tsv") if not layout.os_junk(p.name)):
         got, bad = degrade_rows(p.read_text(encoding="utf-8", errors="replace"))
         rows += got
         if bad:
@@ -948,7 +956,7 @@ def prepare(c):
                             engine="S2Arm", gameId=game["id"], gameName=game["name"], compatibility="unverified",
                             files=snapshot(c, temporary), **(host_update.engine_compat(c) or {}),   # 只换宿主的判据（host_update.py）
                             rewriterId=__import__("rewrite_refresh").rewriter_id(c),
-                            bfGen=__import__("sgrade_bf").BF_GEN)   # 直连库的可读瓦片版代数（S 级升级按它判要不要补 _bf，pack/jobs/sgrade_bf.py）   # 改写产物出自哪版改写器：改写器修了，起局前只核记号不同的（rewrite_refresh.refresh_mac）
+                            bfGen=__import__("sgrade_bf").BF_GEN, builtBy=host_update.built_by(c))   # 直连库的可读瓦片版代数（S 级升级按它判要不要补 _bf，pack/jobs/sgrade_bf.py）   # 改写产物出自哪版改写器：改写器修了，起局前只核记号不同的（rewrite_refresh.refresh_mac）
             atomic(temporary / "manifest.json", manifest)   # v0.2.3 清理：不再紧接着全量复验——清单就是同一进程刚从这些文件量出来的
             sha = host_update.install_host(c, host)
             c.check()

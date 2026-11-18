@@ -150,11 +150,11 @@ extension LauncherView {
             ForEach(model.games) { game in
                 let g = model.consoleGame(game)
                 let id = game.id.uppercased()
-                let pushing = model.consoleBatch.contains(id) && model.phoneSession?.gameID?.uppercased() == id && model.phoneBusy
+                let pushing = model.consoleUpdating && model.consolePushing == id
                 HStack(spacing: 10) {
                     Toggle("", isOn: Binding(get: { model.consoleSelection.contains(id) },
                                              set: { if $0 { model.consoleSelection.insert(id) } else { model.consoleSelection.remove(id) } }))
-                        .toggleStyle(.checkbox).labelsHidden().disabled(!model.consoleBatch.isEmpty)
+                        .toggleStyle(.checkbox).labelsHidden().disabled(model.consoleUpdating)
                     GameArtwork(covers: covers, cover: game.cover).frame(width: 28, height: 28).clipShape(RoundedRectangle(cornerRadius: 5))
                         .overlay { if pushing { Circle().stroke(.orange, lineWidth: 2).padding(-3) } }
                     Text(game.name).font(.manrope(13, .medium)).lineLimit(1).frame(minWidth: 160, alignment: .leading)
@@ -164,15 +164,16 @@ extension LauncherView {
                 .accessibilityElement(children: .combine).accessibilityIdentifier("console.game." + id)
             }
             HStack(spacing: 12) {
-                if model.consoleBatch.isEmpty {
+                if !model.consoleUpdating {
                     Button { model.updateSelected() } label: { Label(sx("console.updateSelected", model.consoleSelection.count), systemImage: "arrow.down.to.line") }
                         .controllerButtonStyle(ConsolePlayButtonStyle()).controllerID("console.updateSelected")
                         .disabled(model.consoleSelection.isEmpty || consoleOffline)
                     if consoleOffline { offlineReason(phone) }
                 } else {
-                    let done = model.consoleBatchDone, total = model.consoleBatch.count
-                    ProgressView(value: Double(done), total: Double(max(total, 1))).frame(maxWidth: 260)
-                    Text(sx("console.progress", min(done + 1, total), total) + (model.phoneSession.map { " · " + ($0.name) } ?? ""))
+                    let p = model.consoleProgress, total = max(p.total, 1)
+                    let current = model.consolePushing.flatMap { id in model.games.first { $0.id.uppercased() == id }?.name }
+                    ProgressView(value: Double(p.done), total: Double(total)).frame(maxWidth: 260)
+                    Text(sx("console.progress", min(p.done + 1, total), total) + (current.map { " · " + $0 } ?? ""))
                         .font(.manrope(12.5)).foregroundStyle(.white.opacity(0.8))
                     Button(sx("console.stop")) { model.stopUpdateSelected() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("console.stop")
                 }

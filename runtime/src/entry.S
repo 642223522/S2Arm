@@ -208,6 +208,8 @@ PLAT_ASM_SYM(sw_gate):
     mov x0, x30              // 返回点 = 门标识
     mov x1, sp               // regs
     bl PLAT_ASM_SYM(gate_dispatch)
+    .globl PLAT_ASM_SYM(sw_gate_ret)
+PLAT_ASM_SYM(sw_gate_ret):              // 即时存档续跑（sw_snap_resume）从这里接上门的返回段
     ldr x9, [sp, #784]
     msr fpcr, x9
     ldr x9, [sp, #776]
@@ -306,6 +308,13 @@ PLAT_ASM_SYM(sw_touch_tramp):
 PLAT_ASM_SYM(sw_touch_brk):
     brk #0x7a5
 #endif
+// 即时存档续跑：x0 = 本线程宿主栈上已填好的 832 字节门帧（同 sw_gate 的布局），切到它、走门的返回段回到游戏代码
+    .globl PLAT_ASM_SYM(sw_snap_resume)
+    .p2align 2
+PLAT_ASM_SYM(sw_snap_resume):
+    mov sp, x0
+    b PLAT_ASM_SYM(sw_gate_ret)
+
 #if defined(__ANDROID__)
     .section .note.GNU-stack,"",%progbits
 #endif

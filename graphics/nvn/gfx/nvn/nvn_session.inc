@@ -98,6 +98,11 @@ int nvn_be_shutdown_session(void) {
         if (t->ar) CFRelease(t->ar); if (t->im) CFRelease(t->im);
     }
     free(g_treg); g_treg = NULL; g_ntreg = g_tpool_n = 0;
+    // 「贴图序号 → 登记号」随登记表一起清：留着的话指向已释放的旧表（平时新一局序号一路往上不会撞；按快照恢复会把序号拨回快照时的值，撞上旧表项、链表越界写崩）
+    nvn_hm_clear(&g_treg_ser, NULL);
+    // 同理按贴图序号 / 上一局游戏内存建的：未压缩贴图 → 池、即时存档的贴图地址表与待写回表（新一局的池、贴图对象都是新的）
+    pthread_mutex_lock(&g_cpu_tex_mu); nvn_hm_clear(&g_cpu_unc, NULL); pthread_mutex_unlock(&g_cpu_tex_mu);
+    nvn_hm_clear(&g_snap_texaddr, NULL); nvn_hm_clear(&g_snap_ghost_pend, hm_rel);
     for (int i = 0; i < g_nsreg; i++) if (g_sview[i]) CFRelease(g_sview[i]);
     free(g_sreg); free(g_sreg_ok); free(g_sview); free(g_srid);
     g_sreg = NULL; g_sreg_ok = NULL; g_sview = NULL; g_srid = NULL; g_nsreg = 0;

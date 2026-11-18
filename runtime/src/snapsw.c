@@ -1,0 +1,25 @@
+// 即时存档开关（跨平台：苹果、安卓都编；安卓不做快照、不设这两个环境变量，恒为关）
+#include <stdatomic.h>
+#include <stdint.h>
+#include <stdlib.h>
+// 即时存档开关的唯一定义处：图形层（弱引用）、服务层（P/Invoke，再在启动时转给音频两处）都读这里，不各自读环境变量。
+//   能存 = 起局带了 S2A_SNAP_MODE=1（恢复局也可以带：回到那一刻之后还能再存）；恢复中 = 设了 S2A_SNAP_RESTORE；s2a_snap_mode = 两者之一。
+//   记日志（请求日志 / 句柄日志）= 能存且（不是恢复局，或恢复已完成）：恢复局里重放不记，恢复完成时把快照里的两份日志整份接过来当开头、序号接着编，之后照常记
+static int g_snap_sw = -1;   // 位 0 能存、位 1 恢复中
+static _Atomic int g_snap_live = -1;
+static int snap_sw(void) {
+    if (g_snap_sw < 0) { const char *m = getenv("S2A_SNAP_MODE"), *r = getenv("S2A_SNAP_RESTORE"); g_snap_sw = (m && *m == '1') | (r && *r) << 1; }
+    return g_snap_sw;
+}
+int s2a_snap_saving(void) { return snap_sw() & 1; }
+int s2a_snap_restoring(void) { return snap_sw() >> 1 & 1; }
+int s2a_snap_mode(void) { return snap_sw() != 0; }
+int s2a_snap_logging(void) { int v = atomic_load(&g_snap_live); if (v < 0) { v = snap_sw() == 1; atomic_store(&g_snap_live, v); } return v; }
+void s2a_snap_live_set(int on) { atomic_store(&g_snap_live, on ? 1 : 0); }
+#if !defined(__APPLE__)
+// 安卓：快照引擎（thread.c / snapshot.c 的苹果段）不编，开关恒关，服务层 C#（SnapLog.cs）不会真调下面三个；
+//   NativeAOT 静态链接要求它 P/Invoke 的符号都有定义，给不做事的实现
+int s2a_snap_need_handle(uint32_t h) { (void)h; return 0; }
+int s2a_snap_replay_begin(int seq) { (void)seq; return 0; }
+int s2a_snap_replay_end(int seq) { (void)seq; return 0; }
+#endif

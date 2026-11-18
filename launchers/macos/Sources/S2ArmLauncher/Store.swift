@@ -217,7 +217,7 @@ final class WorkerOutput: @unchecked Sendable {
     }
     func recoverTasks() {
         let paths = (try? FileManager.default.contentsOfDirectory(at:jobsRoot,includingPropertiesForKeys:nil)) ?? []
-        for path in paths where path.pathExtension == "json" {
+        for path in paths where path.pathExtension == "json" && !path.lastPathComponent.hasPrefix("._") {   // ._：exFAT 上 macOS 配的 AppleDouble 附属文件
             guard let data = try? Data(contentsOf:path), var obj = (try? JSONSerialization.jsonObject(with:data)) as? [String:Any], let state = obj["state"] as? String else { continue }
             // 作业进程还活着（上次启动器卡死 / 被关，作业是独立进程照跑）：接管，按作业记录接着显示进度，不改成「中断」（10-26 Spare-host 内存吃紧启动器失联）
             if ["running","cancelling"].contains(state), let pid = obj["pid"] as? Int, Self.jobAlive(pid, start:obj["pidStart"] as? String),

@@ -395,5 +395,18 @@ else:
         # 维护者 11-17：「校验不过就整个拒绝」一律撤掉——镜像形态下坏的那份只在建镜像时核（nx_unpack --romfs-image 打黄 + 【校验跳过】），照常出产物
         chk('⑪ 容器里 romfs 数据坏（大小不变）：照常出产物、退出 0', (r.returncode, os.path.exists(out_bad)), (0, True))
 
+# ⑫ 单独导出的程序 1（#1567，Switch 2 版程序 0400…8001）：程序号末位是程序序号，照收；DLC 按应用号（去掉末位）+ 0x1000 + 序号认，序号 1 的 DLC 不被跳过
+with tempfile.TemporaryDirectory() as t:
+    P1 = APP | 1
+    s12 = os.path.join(t, 'prog1.nup')
+    build(s12, [(0, P1, 0, 0, {'main': MAIN_B, 'main.npdm': npdm(P1)}, {'a.bin': b'p1'}, {}), (2, APP + 0x1001, 0, 0, None, {'dlc.bin': b'DLC1'}, {})])
+    d12, x12 = os.path.join(t, 'dump'), os.path.join(t, 'extract')
+    r = run(NUP, s12, d12)
+    chk('⑫ 程序 1：展开退出 0、DLC 写出', (r.returncode, rd(os.path.join(d12, f'dlc/{APP + 0x1001:016X}/0/romfs/dlc.bin'))), (0, b'DLC1'))
+    r = run(DUMP, d12, x12) if os.path.isdir(d12) else None
+    tsv = (rd(os.path.join(x12, 'aoc.tsv')) or b'').decode()
+    chk('⑫ 程序 1：ns2_dump 退出 0、程序号、DLC 序号 1 / 标题号', (r.returncode if r else None, f'title_id\t{P1:016x}' in (rd(os.path.join(x12, 'unpack.tsv')) or b'').decode(),
+        [l.split('\t')[:2] for l in tsv.splitlines()[1:]]), (0, True, [['1', f'{APP + 0x1001:016x}']]))
+
 print(f'{"✓" if not bad else "✗"} ns2_nup：{ok} 过 / {bad} 不过')
 sys.exit(1 if bad else 0)

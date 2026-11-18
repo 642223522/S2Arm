@@ -133,6 +133,7 @@ s2a_gate_step "$PY" "$android_dir/tests/direct_touch_generation_test.py"
 # 通用模式编译事件：原生文件生成、丢弃负控及读取器完整性校验。
 s2a_gate_step "$PY" "$android_dir/tests/generic_compile_events_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/compile_events_reader_test.py"
+s2a_gate_step "$PY" "$android_dir/tests/direct_trace_test.py"
 # 每线程缓冲（备忘槽/暂存的堆化）：线程退出后归还、同线程复用、扩容保留内容。
 s2a_gate_step bash "$android_dir/tools/nvn_vk_threadbuf_test.sh"
 # CMake 挑选规则的宿主单测（假 cmake，可移植，始终跑）
@@ -394,6 +395,8 @@ s2a_gate_step bash "$android_dir/tools/nvk_pipe_flight_test.sh"
 # 首用待定表（纯逻辑）与 demand 后台建管线（fake Vulkan）：状态机 / 同键合并 / 有界等待 / late-stuck / P0 不串管线。
 s2a_gate_step bash "$android_dir/tools/nvk_pipe_pend_test.sh"
 s2a_gate_step bash "$android_dir/tools/nvn_vk_pipe_demand_test.sh"
+# 新层首用管线异步的绘制级用例：真 rp_draw / rp_pass + 真 demand / 待定表 / 判定表，可控建管线闸（跳 / 等 / 预算 / 上限 / 停局丢弃）。
+s2a_gate_step bash "$android_dir/tools/nvk_pipe_async_draw_test.sh"
 s2a_gate_step bash "$android_dir/tools/nvk_shader_lease_test.sh"
 # 按结果合并（#1355 方案 A）：编译结果相同（结果摘要 + 负载长度 + 阶段数 + c1 有无与内容都相同）的身份共用一份
 # 着色器记录与句柄、管线随之合并；真 program_cache.c + 真缓存文件，ASan 下覆盖「收尾后不留悬空」。

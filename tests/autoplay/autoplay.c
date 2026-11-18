@@ -58,6 +58,7 @@ static uint64_t g_t0;   // 自动玩家起点（判据时钟）
 static double g_vis_s;
 static double run_left_s(void) {   // 宿主开了局时顺延（S2A_RUN_EXTEND_MAX）就把等模型的秒数（封顶）加回来，与 host_main.c run_timer 同口径
     static double rs = -1, ext = -1; if (rs < 0) { rs = envd("S2A_RUN_S", 0); ext = envd("S2A_RUN_EXTEND_MAX", 0); }
+    if (getenv("S2A_SNAP_RESTORE")) return 1e9;   // 即时存档恢复局：局时从恢复完成起由宿主计（host_main.c），自动玩家不按进程起点算剩余
     return rs > 0 ? rs + (g_vis_s < ext ? g_vis_s : ext) - (double)(now_ns() - g_t0) / 1e9 / tscale() : 1e9; }
 // ---- MARK 后段登记（autoplay_host.h s2a_ap_seg_open；11-04 普查提前收局）：段表只增不删，销号记结束时刻；收局判据只看「还有没有没销号的段」----
 enum { SEG_MAX = 16 };
@@ -1031,7 +1032,7 @@ static void *ap_main(void *a) {
     // 等首帧（首帧前按键会把游戏弄卡）：出图停 / 墙钟按 run_left 兜底
     g_last_new_f_t = real_ns();
     while (!poll_digest(0.5)) { if (run_left_s() < end_left) { snprintf(fin_why, sizeof fin_why, "导航卡住（离收局只剩 %.0f 秒还没出首帧）", run_left_s()); goto finish; }
-        if ((real_ns() - g_last_new_f_t) / 1e9 > 120) { snprintf(fin_why, sizeof fin_why, "120 秒没出首帧"); goto finish; } }
+        if ((real_ns() - g_last_new_f_t) / 1e9 > (getenv("S2A_SNAP_RESTORE") ? 900 : 120)) { snprintf(fin_why, sizeof fin_why, "120 秒没出首帧"); goto finish; } }   // 即时存档恢复局：进程要先排显卡局槽，首帧可能很晚
     t_first = now_ns(); LOG("自动玩家：首帧（帧 %llu，%.1f 秒）", (unsigned long long)g_cur_f, secs(t_first));
     // 基线：首帧后 3 秒、每秒一窗
     { uint32_t d[3], p[3]; for (int i = 0; i < 3; i++) window_med(&d[i], &p[i]); qsort(d, 3, sizeof *d, cmpu); qsort(p, 3, sizeof *p, cmpu); g_base_d = d[1]; g_base_p = p[1];

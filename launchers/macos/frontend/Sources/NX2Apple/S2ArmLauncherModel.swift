@@ -66,7 +66,7 @@ enum ExportBlocker: Equatable {
 /// 正在跑 / 刚结束的一个作业（一局、出包、准备运行、装到 iPhone、导入、一键处理环境、换游戏库）。同一时刻只有一个（同旧启动器「执行位」互斥）。
 struct JobSession: Equatable {
     enum Kind: String, CaseIterable { case play, export, prepare, install, installRemove, installRestore, installUpdate, importGames = "import", downloadMetal, downloadIosPlatform, installDotnet, setupLibrary = "setup",
-                        keys, delete, diagnostics, moveGame, clearCache, installTV = "tvInstall", exportTV = "tvExport" }
+                        keys, delete, diagnostics, moveGame, clearCache, installTV = "tvInstall", exportTV = "tvExport", pushSelected }
     enum Phase: Equatable { case running, stopping, finished(JobOutcome.State) }
     let kind: Kind
     let gameID: String?
@@ -95,7 +95,7 @@ struct JobSession: Equatable {
     /// 走过的阶段（阶段事件的作业层原句，按出现顺序、不重复）：手机作业进行中页的步骤列表
     var stages: [String] = []
     /// 手机作业（装到手机 / 续签、删除、装回、更新手机上的 S2Arm）：结局页统一用 PhoneJobPanel
-    var isPhoneJob: Bool { [.install, .installRemove, .installRestore, .installUpdate].contains(kind) }
+    var isPhoneJob: Bool { [.install, .installRemove, .installRestore, .installUpdate, .pushSelected].contains(kind) }
 }
 
 /// 手机作业做完后结局页要说的事实（从作业结果读，不猜）：装到哪台、这次推了多少、哪几款被跳过
@@ -217,8 +217,10 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var phoneOverview: PhoneOverview?
     @Published var consoleDevice: String?            // 总控台在管哪台（多台时顶部切换）；nil = 跟着默认那台
     @Published var consoleSelection: Set<String> = []   // ② 游戏同步里勾上的款（游戏号大写）
-    @Published var consoleBatch: [String] = []           // 「更新所选」这一轮要推的款（按顺序）；空 = 没在更新
+    @Published var consolePushing: String?               // 「更新所选」正在推的那款（作业 pushSelected 的 progress 事件 current）
     var consoleSeeded: Set<String> = []                  // 上次自动勾过的建议更新款（玩家取消的不重勾）
+    @Published var dynamicDone = false    // 顶栏动态窗口：手机作业刚做完，闪一下 ✓（2 秒后回普通图标，S2ArmLauncherModel+PhoneConsole）
+    @Published var dynamicAlert = false   // 手机作业失败 / 停下：橙色「!」一直留着，直到玩家点开看过
     @Published var phoneUpdates: [PhoneUpdate] = []
     @Published var phoneDevices = 0   // catalog phoneDevices：这台电脑往几台手机装过游戏（更新弹窗按钮写「更新启动器和 iPhone App」）
     @Published var phoneBanner: PhoneBanner?   // 新版启动器首次启动后的「iPhone 版 S2Arm」横幅（S2ArmLauncherModel+PhoneBanner.swift）
@@ -433,7 +435,6 @@ public final class S2ArmLauncherModel: ObservableObject {
     func mainHolds(_ gameID: String?) -> Bool { guard let gameID, mainBusy else { return false }; return session?.gameID == gameID }
     /// 手机槽空出来 / 主槽一单结束：起排着的第一个能起的（那款不被主槽占着）
     func pumpPhone() {
-        consoleBatchStep()   // 总控台「更新所选」这一轮全推完就收尾（S2ArmLauncherModel+PhoneConsole）
         guard !phoneBusy, let i = phoneQueue.firstIndex(where: { !mainHolds($0.gameID) }) else { return }
         phoneQueue.remove(at: i).run()
     }
@@ -448,20 +449,6 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     /// done：这次列完（成功或失败）后调；已经在列时不再起新作业，等那一次列完再调
-    /// 启动器打开后第一次读完游戏库：后台给有 Mac 版的游戏逐款补上 S 级优化（v0.4.0 维护者：Mac 玩家不用做任何事、开游戏也不用多等）。
-    ///   作业层按补丁记号跳过补过的（pack/jobs/sgrade.py mac_all）；补完重读一次，封面金色 S 跟着亮。失败只记日志：开游戏时那一次照样会补
-    func sgradeMacInBackground() {
-        guard !sgradeMacFlag, games.contains(where: { $0.ready }) else { return }
-        sgradeMacFlag = true
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                let r = try await self.saveJob("sgradeMac", gameID: "")
-                if !((r["updated"] as? [Any]) ?? []).isEmpty { self.refresh() }
-            } catch { NSLog("S2Arm：后台给 Mac 游戏补 S 级优化没成：%@", error.localizedDescription) }
-        }
-    }
-
     /// 「自动更新 iPhone 上的 S2Arm」开关（缺省开；存的是「关」，玩家没碰过就是开）：启动器升级后手机连上、没在玩就自动换新版 App
     static let autoUpdatePhoneOffKey = "S2AAutoUpdatePhoneOff"
     static func autoUpdatePhoneOn(_ defaults: UserDefaults = .standard) -> Bool { !defaults.bool(forKey: autoUpdatePhoneOffKey) }
@@ -527,9 +514,12 @@ public final class S2ArmLauncherModel: ObservableObject {
                 self.games = games; self.libraryError = nil; self.showingSnapshot = false
                 self.phoneUpdates = self.provider.library.phoneUpdates
                 self.phoneDevices = self.provider.library.phoneDevices
-                self.refreshUpdateHints()   // 打开时和每次重读游戏库后快速比对一次（只读 game.json，不排后台活）
-                self.refreshPhoneOverview()   // 总控台：只读设备记录（秒回），不探 USB
-                if !self.startupLoopsStarted { self.startupLoopsStarted = true; self.sgradeMacInBackground(); self.keptModulesLoop(); self.preparePhoneUpdate(); self.appleTVBackupLoop() }
+                if !self.startupLoopsStarted {
+                    self.startupLoopsStarted = true; self.resumeSGradeWatch(); self.keptModulesLoop(); self.preparePhoneUpdate(); self.appleTVBackupLoop()
+                    // 0.6.0（开关后面）：启动器打开时快速比对「建议更新」、读一次总控台（都只读，秒回）。之后只在出包 / 手机作业做完时再读（finish），
+                    //   不跟着每次重读游戏库起：出包过程中会重读好几次，每次多起两个作业进程是浪费（ExportStreamTests）
+                    self.refreshUpdateHints(); self.refreshPhoneOverview()
+                }
                 if self.selectedID == nil || !games.contains(where: { $0.id == self.selectedID }) { self.selectedID = games.first?.id }
             case .failure(let error):
                 self.libraryError = error.message
@@ -1155,7 +1145,12 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var dropConfirm: DropConfirm?
     /// 上一次「更新手机上的 S2Arm」的参数：失败页「重试」按它再来
     var lastUpdateArgs: UpdateArgs?
-    var sgradeMacFlag = false
+    /// S 级优化升级队列的实时状态（11-18 维护者：点了才升、可批量；队列只在作业层 sgradeUpgradeBatch 一份，两端共用）：
+    ///   游戏号 → (状态, 进度)，来自跑队列作业的事件与 sgradeUpgradeStatus 轮询，盖在游戏库 catalog 的 sgradeState / sgradeProgress 上
+    ///   （S2ArmLauncherModel+SGradeUpgrade.swift）
+    @Published var sgradeLive: [String: SGradeLive] = [:]
+    @Published var sgradeBatchLive: SGradeBatch?
+    var sgradePolling = false
     var keptLoopStarted = false, keptAutoTried: Set<String> = []   // keptModulesLoop（#8be819）
     var phoneAutoFails: [String: Int] = [:]   // 自动更新后台作业连续失败次数（notePhoneAuto，+PhoneBanner.swift）
     var phonePrepareStarted = false   // 首启在电脑侧准备 iPhone 更新只做一次（准备期间不出横幅，不能再靠横幅状态挡重复）
@@ -1688,7 +1683,9 @@ public final class S2ArmLauncherModel: ObservableObject {
         session.progress.finish()
         session.ended = Date()
         setJob(slot, session)
-        if session.isPhoneJob { lastPhoneSession = session }
+        if session.isPhoneJob { lastPhoneSession = session; dynamicFinished(state) }
+        // 出包 / 推完 / 装完：game.json 的产物记录和设备记录才会变，建议更新和总控台再读一次（开关关着不读）
+        if phoneOverview != nil, session.isPhoneJob || [.export, .prepare].contains(session.kind) { refreshUpdateHints(); refreshPhoneOverview() }
         if slot == .main { running = nil; work = nil } else { phoneWork = nil }
         defer { pumpPhone() }   // 手机槽空了 / 主槽这单不再占着那款：起排着的手机作业
         if session.kind == .play, controllerGameStarted {

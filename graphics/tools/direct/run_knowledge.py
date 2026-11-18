@@ -2,7 +2,8 @@
 """跑局知识快照（审计 #1534 P1-54 B1）：run_knowledge.py <输出目录> <程序号 | 产物根> [来源…]
 出包要用的「跑局学到的东西」只从这里取：把真跑来源整理成四张归一化表，直连库阶段（pack/stage_direct.sh）按其中三张进键、
 管线种子阶段（pack/stage_direct_seed.sh）按 seen.tsv 进键；出库只读快照，不再边出库边读活文件（出库途中又有一局追加也不影响这一次）。
-  来源：给了就用参数（pso_user.tsv 文件，或放 .tsv 的目录）；没给 = S2A_PSO_SOURCES（冒号分隔），再没有 = <运行根>/s2arm/pso_seed/<程序号>/
+  来源：给了就用参数（pso_user.tsv 文件，或放 .tsv 的目录）；没给 = S2A_PSO_SOURCES（冒号分隔），再没有 = <运行根>/s2arm/pso_seed/<程序号>/；
+    没给参数时再在后面接 S2A_PSO_SOURCES_EXTRA（系统分隔符；出包时 pack/jobs/patches.py 交来的补丁包管线种子）
     （测试设备局 tools/dev_run.sh、卸前 tools/dev_uninstall.sh、Mac 局 runtime/run_mac.sh 收局都拷进这一个目录；出包不读 ~/Documents/wire，
     所以同一提交、同一份 pso_seed/ 在 Mac 和Windows 出包机算出同一个键）。不存在的来源跳过。
   第二个参数给产物根目录时按 pack/srcs.sh prog_id 同一规则取程序号（unpack.tsv 的 title_id，没有就读 exefs/main.npdm）。
@@ -45,10 +46,12 @@ def program_id(a):   # = pack/srcs.sh prog_id
 
 
 def default_sources(tid):
+    # 补丁包带的管线种子（pack/jobs/patches.py 落到私有缓存后交 S2A_PSO_SOURCES_EXTRA，按系统分隔符）排在本机来源之后：本机真跑的首用序在前
+    extra = [p for p in os.environ.get('S2A_PSO_SOURCES_EXTRA', '').split(os.pathsep) if p]
     env = os.environ.get('S2A_PSO_SOURCES')
-    if env: return [p for p in env.split(':') if p]
+    if env: return [p for p in env.split(':') if p] + extra
     run = os.environ.get('S2A_RUN_ROOT') or os.path.join(os.path.expanduser('~'), '.s2arm', 'run')
-    return [os.path.join(run, 's2arm', 'pso_seed', tid)]
+    return [os.path.join(run, 's2arm', 'pso_seed', tid)] + extra
 
 
 def write(path, text):
