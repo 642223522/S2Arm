@@ -175,10 +175,12 @@ static nvn_gpu_view shadow_attach(nvn_gpu_cmd c, int i, const tex_t *t, uint32_t
 // ---------- 3D 贴图的深度切片当附件 ----------
 // NVN 视图的层号在 3D 贴图上是深度切片（nvn_mtl.m attach() 落到 depthPlane）。Vulkan 的 3D 视图起点只能是 0，深度子范围只能用 2D（阵列）视图
 //（nvn_vk_texview.h 文件头与 plan_make 的错误信息都这么说），所以 3D 附件带层号时请求 2D 阵列目标，层号、级别等其余字段原样。
-// 游戏自己设了目标的、没带层号的（首片）、不是 3D 的贴图：视图记录原样。tmp 由调用方给，生命期同这次取视图。
+// 游戏自己把目标设成 3D 也一样：Vulkan 的 3D 视图本身就不能当附件（不管起点是不是 0），附件只认层号，视图上的 3D 目标对附件没有意义
+//（真机实测有游戏对 3D 贴图的第 k 片显式设「3D 目标 + 层号 k」，原样递下去，后端就在通用视图那一步拒绝，#724）。
+// 游戏设的是 2D / 2D 阵列等附件合法的目标、没带层号的（首片）、不是 3D 的贴图：视图记录原样。tmp 由调用方给，生命期同这次取视图。
 static const view_t *att_view(const tex_t *t, int has_v, const view_t *v, view_t *tmp) {
     if (!has_v) return NULL;
-    if (t->d.target != NVN_TEXTURE_TARGET_3D || !v->set_layers || v->set_target) return v;
+    if (t->d.target != NVN_TEXTURE_TARGET_3D || !v->set_layers || (v->set_target && v->target != NVN_TEXTURE_TARGET_3D)) return v;
     *tmp = *v; tmp->set_target = 1; tmp->target = NVN_TEXTURE_TARGET_2D_ARRAY;
     return tmp;
 }
