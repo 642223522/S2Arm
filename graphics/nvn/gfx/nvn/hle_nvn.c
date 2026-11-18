@@ -3213,6 +3213,7 @@ static void nvn2_win_builder_defaults(NVNwindowBuilder *b);   // 「NVN2 入口�
 NVN(nvnWindowBuilderSetDefaults, void, NVNwindowBuilder *b) { NVNdevice *dev = WB(b)->dev; memset(b, 0, sizeof(win_builder_t)); WB(b)->dev = dev; WB(b)->interval = 1;
     if (nvn2_on()) nvn2_win_builder_defaults(b); }   // NVN2 字段在 0x40 之后：只有 Switch 2 的构建器有那么大
 NVN(nvnWindowBuilderSetDevice, void, NVNwindowBuilder *b, NVNdevice *d) { WB(b)->dev = d; }
+// 弱链接[nvntest]：nvn_plat_guest_window_watch（安卓平台件 android/native/nvn/guest_window_crop.c 提供；苹果与 NVN 单测不链它，链接行按这行放行未定义）
 extern void nvn_plat_guest_window_watch(void *) __attribute__((weak));
 NVN(nvnWindowBuilderSetNativeWindow, void, NVNwindowBuilder *b, NVNnativeWindow w) {
     WB(b)->native = w;
