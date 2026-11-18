@@ -196,7 +196,8 @@ def _set_aside(c, root, destination, why):
     shutil.rmtree(broken, ignore_errors=True)
 
 
-def artifact(c, name):
+def artifact(c, name, optional=False):
+    """取内置产物目录。optional=True：清单压根没列这项（如 Intel 出包 App 没有 Mac 宿主）返回 None；列了但文件缺失/被改仍报错。"""
     if c.r.get("engineBundle") and not (c.engine / "engine.json").is_file():
         # 发版应用里本作业在用的引擎副本不在了（被别的作业收走 / 重解中）：重新定位一次（install 持锁装好或找到现成的），不当成「没有内置产物」
         c.emit("message", "内置引擎副本不在原处，重新定位")
@@ -207,6 +208,8 @@ def artifact(c, name):
     prefix = "Binaries/" + name
     files = {p: v for p, v in manifest.get("files", {}).items() if p.startswith(prefix + "/")}
     if not files:
+        if optional and c.r.get("engineBundle"):
+            return None
         raise Failure("应用内置引擎产物缺失，请重新安装完整应用。")
     files = _skip(files, read(c.engine / ".installed.json", {}))   # App 包里本来就对不上、装时已提示过的不再核（_reinstall）
     if files and not _intact(c, c.engine, manifest, files):
