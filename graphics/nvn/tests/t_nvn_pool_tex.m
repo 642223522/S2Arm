@@ -352,6 +352,25 @@ int main(void) { @autoreleasepool {
             VERIFY(1, "⑬d 句柄 200（没登记）写进可写哑图，提交没报错");
         }
     }
+    // ⑭ 采样器按描述计数（老 GPU 缺口 #14：每个采样器号一个采样器对象，参数缓冲能引用的是不同描述的个数，Apple7 / 8 上限 996）。期望手写：
+    //    新登记 2000–2099 共 100 个号，参数只有 3 种（各号 lod_bias = 号 % 3），逐个取对象 → 活着的对象 +100、不同描述 +3；
+    //    再把 2000（2000 % 3 = 2，bias 2.25）改登记成第 4 种（bias 9.25）并取对象 → 对象数不变、不同描述 +1；
+    //    再把 % 3 == 2 的 34 个号（2000、2003 … 2099）全登记成 9.25、逐个取对象 → bias 2.25 那种一个不剩：对象数仍 100、不同描述比上一步 −1
+    {
+        os_unfair_lock_lock(&g_rmu); uint64_t s0 = g_samp_states, d0 = g_samp_distinct; os_unfair_lock_unlock(&g_rmu);
+        samp_par q; memset(&q, 0, sizeof q); q.lod_max = 1000;
+        for (int i = 2000; i < 2100; i++) { q.lod_bias = (float)(i % 3) + 0.25f; nvn_be_reg_samp(i, &q); }
+        os_unfair_lock_lock(&g_rmu); for (int i = 2000; i < 2100; i++) REQUIRE(samp_by_id(i)); uint64_t s1 = g_samp_states, d1 = g_samp_distinct; os_unfair_lock_unlock(&g_rmu);
+        q.lod_bias = 9.25f; nvn_be_reg_samp(2000, &q);
+        os_unfair_lock_lock(&g_rmu); REQUIRE(samp_by_id(2000)); uint64_t s2 = g_samp_states, d2 = g_samp_distinct; os_unfair_lock_unlock(&g_rmu);
+        int nb0 = 0;
+        for (int i = 2000; i < 2100; i++) if (i % 3 == 2) { nvn_be_reg_samp(i, &q); nb0++; }   // bias 2.25 那种（2000 已改走，剩 2003、2006 …）全改成 9.25
+        os_unfair_lock_lock(&g_rmu); for (int i = 2000; i < 2100; i++) REQUIRE(samp_by_id(i)); uint64_t s3 = g_samp_states, d3 = g_samp_distinct; os_unfair_lock_unlock(&g_rmu);
+        VERIFY(s1 - s0 == 100 && d1 - d0 == 3 && s2 == s1 && d2 - d1 == 1 && s3 == s1 && d3 == d2 - 1 && nb0 == 34,
+               "⑭ 采样器按描述计数：100 个号 3 种参数 → 对象 +%llu、描述 +%llu（期望 100、3）；改一个号成第 4 种 → 对象差 %lld、描述 +%llu（期望 0、1）；"
+               "bias 2.25 那种的 %d 个号全改走 → 对象差 %lld、描述 %lld（期望 34 个、0、−1）",
+               (unsigned long long)(s1 - s0), (unsigned long long)(d1 - d0), (long long)(s2 - s1), (unsigned long long)(d2 - d1), nb0, (long long)(s3 - s1), (long long)d3 - (long long)d2);
+    }
     printf("%s t_nvn_pool_tex：%u 项，%u 项失败（追不到槽的句柄按编号读池：池表 + 已读位图 + 未写渲染目标不建 + 小贴图预建 + 表复用）\n", fails ? "✗" : "✓", checks, fails);
     return fails != 0;
 } }

@@ -8001,6 +8001,7 @@ void nvn_be_reg_tex(int tid, const tex_t *t, const view_t *v) {
                  v ? v->set_format : 0, v ? v->format : 0, v ? v->base_level : 0, v ? v->nlevels : 0);
     }
 }
+static void samp_drop(const samp_par *p, int variant);   // sampler descriptions counted live (gap #14, below samp_by_id)
 void nvn_be_reg_samp(int sid, const samp_par *sp) {
     int id_ = sid; if (id_ < 0) return;
     os_unfair_lock_lock(&g_rmu);
@@ -8010,8 +8011,8 @@ void nvn_be_reg_samp(int sid, const samp_par *sp) {
             || !GROW(g_sbrid, (size_t)n * 2 * sizeof *g_sbrid, "sampler registration table")) { os_unfair_lock_unlock(&g_rmu); return; }   // tables grown so far keep the old count (g_nsreg): not registered
         memset(g_sreg_ok + g_nsreg, 0, n - g_nsreg); memset(g_sview + g_nsreg, 0, (n - g_nsreg) * sizeof *g_sview); memset(g_srid + g_nsreg, 0, (n - g_nsreg) * sizeof *g_srid);
         memset(g_sbview + 2 * g_nsreg, 0, (size_t)(n - g_nsreg) * 2 * sizeof *g_sbview); memset(g_sbrid + 2 * g_nsreg, 0, (size_t)(n - g_nsreg) * 2 * sizeof *g_sbrid); g_nsreg = n; }
-    if (g_sview[id_]) { CFRelease(g_sview[id_]); g_sview[id_] = NULL; g_srid[id_] = 0; }
-    for (int k = 0; k < 2; k++) if (g_sbview[2 * id_ + k]) { CFRelease(g_sbview[2 * id_ + k]); g_sbview[2 * id_ + k] = NULL; g_sbrid[2 * id_ + k] = 0; }
+    if (g_sview[id_]) { CFRelease(g_sview[id_]); g_sview[id_] = NULL; g_srid[id_] = 0; samp_drop(&g_sreg[id_], 0); }
+    for (int k = 0; k < 2; k++) if (g_sbview[2 * id_ + k]) { CFRelease(g_sbview[2 * id_ + k]); g_sbview[2 * id_ + k] = NULL; g_sbrid[2 * id_ + k] = 0; samp_drop(&g_sreg[id_], 2 + k); }
     { nvn_se_ent e; if (nvn_red_entry(0, sp->reduction, sp->minf, sp->magf, sp->ws, sp->wt, sp->wr, sp->cmp_mode, sp->lod_min, sp->lod_max, sp->lod_bias, sp->border, &e)) g_se_any = 1; }
     g_reg_gen++;
     if (g_sreg_ok[id_] && memcmp(&g_sreg[id_], sp, sizeof *sp)) g_samp_rereg++;
@@ -8448,11 +8449,37 @@ static id<MTLTexture> tbuf_expand(int tid, int rows2d, uint64_t *rid) {   // row
 }
 static MTLSamplerAddressMode wrapm(int w) { return (MTLSamplerAddressMode)nvn_samp_wrap(w); }   // the one NVN wrap table (nvn_red.h)
 static MTLSamplerDescriptor *samp_desc(samp_par p);
+// How many different sampler descriptions the app holds (gap #14 of the older-GPU audit): each registered sampler ID gets its own MTLSamplerState, but what an argument buffer may
+//   reference is bounded by the device's distinct samplers (maxArgumentBufferSamplerCount: 996 on Apple7 / Apple8, 500,000 from Apple9), and identical descriptions are one sampler to the
+//   driver. Counted by description (the NVN parameters plus which variant: as is, horizontal clamp, border black / white), logged as it doubles from 64 and red once past the limit, so a
+//   diagnosis says how close a game gets before anything merges descriptions. Caller holds g_rmu
+//   Live counts: a state released (its ID registered again) drops its description's count, and a description with none left no longer counts
+static nvn_hmap g_samp_desc = {.klen = 8}; static uint64_t g_samp_states, g_samp_distinct, g_samp_peak;   // live sampler states, live distinct descriptions, the most distinct at once
+static uint64_t samp_hash(const samp_par *p, int variant) {
+    uint64_t h = 1469598103934665603ull; const uint8_t *b = (const uint8_t *)p;
+    for (size_t i = 0; i < sizeof *p; i++) h = (h ^ b[i]) * 1099511628211ull;
+    return (h ^ (uint64_t)variant) * 1099511628211ull;
+}
+static void samp_note(const samp_par *p, int variant) {
+    uint64_t h = samp_hash(p, variant); uintptr_t n = (uintptr_t)nvn_hm_get(&g_samp_desc, &h);
+    nvn_hm_put(&g_samp_desc, &h, (void *)(n + 1)); g_samp_states++;
+    if (n) return;
+    if (++g_samp_distinct <= g_samp_peak) return;
+    g_samp_peak = g_samp_distinct; uint64_t lim = g_dev.maxArgumentBufferSamplerCount;
+    if (g_samp_peak >= 64 && !(g_samp_peak & (g_samp_peak - 1))) MLOG("samplers: %llu different descriptions in %llu sampler states (device limit %llu)", (unsigned long long)g_samp_peak, (unsigned long long)g_samp_states, (unsigned long long)lim);
+    if (g_samp_peak == lim + 1) MLOG("【红】 samplers: %llu different descriptions at once, past the device's %llu: argument buffers may reference more distinct samplers than the GPU holds", (unsigned long long)g_samp_peak, (unsigned long long)lim);
+}
+static void samp_drop(const samp_par *p, int variant) {
+    uint64_t h = samp_hash(p, variant); uintptr_t n = (uintptr_t)nvn_hm_get(&g_samp_desc, &h); if (!n) return;
+    g_samp_states--;
+    if (n > 1) { nvn_hm_put(&g_samp_desc, &h, (void *)(n - 1)); return; }
+    nvn_hm_del(&g_samp_desc, &h); g_samp_distinct--;
+}
 static id<MTLSamplerState> samp_by_id(int sid) {   // Caller holds g_rmu
     if (sid < 0 || sid >= g_nsreg || !g_sreg_ok[sid]) { RED_ONCE(12, "sampler ID %d not registered", sid); return nil; }
     if (g_sview[sid]) return (__bridge id<MTLSamplerState>)g_sview[sid];
     id<MTLSamplerState> s = [g_dev newSamplerStateWithDescriptor:samp_desc(g_sreg[sid])];
-    if (s) { g_sview[sid] = (void *)CFBridgingRetain(s); g_srid[sid] = s.gpuResourceID._impl; }
+    if (s) { g_sview[sid] = (void *)CFBridgingRetain(s); g_srid[sid] = s.gpuResourceID._impl; samp_note(&g_sreg[sid], 0); }
     return s;
 }
 // S2Arm widen (族 2, widen_glue.inc g_wd_uvext): the same sampler with horizontal clamp-to-edge, for a widened overlay whose sampling is extended past [0,1]
@@ -8461,7 +8488,7 @@ static uint64_t samp_clamp_rid(int sid, void **obj) {
     static void *view[4096]; static uint64_t rid[4096];
     if (sid <= 0 || sid >= g_nsreg || sid >= 4096 || !g_sreg_ok[sid]) return 0;
     if (!view[sid]) { MTLSamplerDescriptor *d = samp_desc(g_sreg[sid]); d.sAddressMode = MTLSamplerAddressModeClampToEdge;
-        id<MTLSamplerState> s = [g_dev newSamplerStateWithDescriptor:d]; if (!s) return 0; view[sid] = (void *)CFBridgingRetain(s); rid[sid] = s.gpuResourceID._impl; }
+        id<MTLSamplerState> s = [g_dev newSamplerStateWithDescriptor:d]; if (!s) return 0; view[sid] = (void *)CFBridgingRetain(s); rid[sid] = s.gpuResourceID._impl; samp_note(&g_sreg[sid], 1); }
     *obj = view[sid]; return rid[sid];
 }
 // The sampler of ID sid with a transparent black (white 0) / opaque white (white 1) border colour, all else the same (samp_desc): the two samples the emulation variant mixes a custom
@@ -8470,7 +8497,7 @@ static uint64_t samp_border_rid(int sid, int white) {
     if (sid <= 0 || sid >= g_nsreg || !g_sreg_ok[sid]) return 0;
     void **v = &g_sbview[2 * sid + white];
     if (!*v) { MTLSamplerDescriptor *d = samp_desc(g_sreg[sid]); d.borderColor = white ? MTLSamplerBorderColorOpaqueWhite : MTLSamplerBorderColorTransparentBlack;
-        id<MTLSamplerState> s = [g_dev newSamplerStateWithDescriptor:d]; if (!s) return 0; *v = (void *)CFBridgingRetain(s); g_sbrid[2 * sid + white] = s.gpuResourceID._impl; }
+        id<MTLSamplerState> s = [g_dev newSamplerStateWithDescriptor:d]; if (!s) return 0; *v = (void *)CFBridgingRetain(s); g_sbrid[2 * sid + white] = s.gpuResourceID._impl; samp_note(&g_sreg[sid], 2 + white); }
     return g_sbrid[2 * sid + white];
 }
 static MTLSamplerDescriptor *samp_desc(samp_par p) {
