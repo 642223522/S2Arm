@@ -276,6 +276,7 @@ static uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig) {
         void s2a_core_leave(void), s2a_core_enter(void); int ipc = num == 0x21 || num == 0x22 || num == 0x23;
         if (ipc) s2a_core_leave();   // IPC 阻塞在服务线程上：放开虚拟核（S2A_CORES，thread.c）
         t_in_cs = 1; int done = g_cs.svc(&c) == S2A_SVC_HANDLED;
+        { void s2a_svc_cs_returned(void); s2a_svc_cs_returned(); }   // 回复已写好：先记一笔（即时存档核对「判齐后完成了没有」，thread.c）
         t_in_cs = 0; atomic_fetch_sub(&g_cs_inflight, 1);   // 进 / 出配对：与上面的 fetch_add 一一对应（10-20 曾被下一行注释吞掉，收局在途计数只增不减）
         // 重取核放在出账之后：在途只记「人在 C# 里」，等核不算；已在收局就不再取核、直接停住（取核可能永远等不到）
         if (ipc) { if (atomic_load(&g_park)) park_forever(); s2a_core_enter(); }
