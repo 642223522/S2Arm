@@ -9,16 +9,16 @@
      重做为 align64K(0x124f800 + 0x4000) = 0x1260000；0x3880000 的 svc 进后岛（原 PATCH_OFF 处）。
      期望：rc 0；表头 PATCH_OFF 0x6ff0000、PATCH2_OFF −0x1260000、PATCH2_LEN 0x124f800、TRAP_SITES 0、SPIN_UNREACHED 0；
      patched.bin 长 0x6ff0000 + 40 + 0x124f800；+0x1000 是 B −0x1261000（到前岛首），+0x3880000 是 B 0x3770000（到后岛首）。
-（b）text > 128 MiB 用双岛 + brk：text 0x8080000、bss 0x7fda000（end = 0x8082000，end + bss = 0x1005c000 = 键页，IMAGE_SIZE 0x10060000，
-     后岛 PATCH2_OFF = align64K(0x10060000) = 0x10060000，SPLIT 0x8030000）；128 MiB − text − 1 MiB < 1 MiB → 直接双岛，FRONT 0x100000（PATCH_OFF −0x100000）。
+（b）text > 128 MiB 用双岛 + brk：text 0x8080000、bss 0x7fda000（end = 0x8082000，end + bss = 0x1005c000；键页前至少留 0x1000 空余（#1628）→ 键页 align16K(0x1005d000) = 0x10060000，
+     IMAGE_SIZE 0x10064000，后岛 PATCH2_OFF = align64K(0x10064000) = 0x10070000，SPLIT 0x8038000）；128 MiB − text − 1 MiB < 1 MiB → 直接双岛，FRONT 0x100000（PATCH_OFF −0x100000）。
      前段：0x1000 svc #1、0x2000 mrs x5,tpidr_el0、0x3000 自旋（ldr w8,[x0]; cbz w8,-4）。
      中段 0x8040000：mrs x7,tpidr_el0 / msr tpidr_el0,x6 / mrs x0,ctr_el0 / 0x8040010 自旋——前岛最远够到 0x7f00000 + 块内偏移，
-       后岛最近要 ≥ 0x10060000 − 2^27 = 0x8060000，两边都够不着。
+       后岛最近要 ≥ 0x10070000 − 2^27 = 0x8070000，两边都够不着。
      后段 0x8078000：mrs x9,tpidr_el0、svc #1、0x8078010 自旋。
      期望：rc 0；TRAP_SITES 3、SPIN_UNREACHED 1；# TRAP 行依次 0x8040000 tpidr_r 7 / 0x8040004 tpidr_w 6 / 0x8040008 ctr 0；
      三处原字换成 brk #0x8000 / #0x8001 / #0x8002（0xd4300000 / 0xd4300020 / 0xd4300040）；中段自旋回边 0x8040014 原字不动；
-     +0x1000 是 B −0x101000（前岛首）、+0x2000 是 B −0x101fd8（前岛 +40，svc 块 10 字）、+0x8078000 是 B 0x7fe8000（后岛首）、
-     +0x8078004 是 B 0x7fe801c（后岛 +32，tpidr_r 块 8 字）；前段自旋回边 0x3004 跳进前岛、后段 0x8078014 跳进后岛；日志有【红】自旋够不着行列出 0x8040010。
+     +0x1000 是 B −0x101000（前岛首）、+0x2000 是 B −0x101fd8（前岛 +40，svc 块 10 字）、+0x8078000 是 B 0x7ff8000（后岛首）、
+     +0x8078004 是 B 0x7ff801c（后岛 +32，tpidr_r 块 8 字）；前段自旋回边 0x3004 跳进前岛、后段 0x8078014 跳进后岛；日志有【红】自旋够不着行列出 0x8040010。
 （c）同（b）再在中段 0x804000c 放一条 x18 改写点（add x3, x18, #8：不能在信号里模拟）：两岛都够不着 → 远跳（10-31 出包线，Minecraft 6325 点）：
      单元照常生成进岛，原字换成 brk #0xA000（0xd4340000）；期望 rc 0、gaps.tsv 没有缺口行、出 patched.bin；# FAR_JUMPS 2，
      一条入口 0x804000c → 岛里（E），一条出口 岛里 → 0x8040010（X），产物对金样。
@@ -189,7 +189,7 @@ def case_b(t, rew_c):
     rc, log, out = one('（b）text > 128 MiB', nso, t, rew_c)
     if rc: return
     h, traps = header(out)
-    want = {'PATCH_OFF': '-0x100000', 'IMAGE_SIZE': '0x10060000', 'FILE_IMAGE_LEN': '0x8084000', 'PATCH2_OFF': '0x10060000',
+    want = {'PATCH_OFF': '-0x100000', 'IMAGE_SIZE': '0x10064000', 'FILE_IMAGE_LEN': '0x8084000', 'PATCH2_OFF': '0x10070000',
             'TRAP_SITES': '3', 'SPIN_UNREACHED': '1'}
     for k, v in want.items(): ck(h.get(k) == v, f'（b）表头 {k} 期望 {v} → {h.get(k)}')
     tw = [['0x8040000', 'tpidr_r', '7', '0xd53bd047'], ['0x8040004', 'tpidr_w', '6', '0xd51bd046'], ['0x8040008', 'ctr', '0', '0xd53b0020']]
@@ -197,12 +197,12 @@ def case_b(t, rew_c):
     img = open(os.path.join(out, 'main.patched.bin'), 'rb').read()
     for off, w in ((0x8040000, 0xD4300000), (0x8040004, 0xD4300020), (0x8040008, 0xD4300040), (0x8040014, SPIN[1])):
         ck(word(img, off) == w, f'（b）+{off:#x} 期望 {w:#010x} → {word(img, off):#010x}')
-    for off, d in ((0x1000, -0x101000), (0x2000, -0x101FD8), (0x8078000, 0x7FE8000), (0x8078004, 0x7FE801C)):
+    for off, d in ((0x1000, -0x101000), (0x2000, -0x101FD8), (0x8078000, 0x7FF8000), (0x8078004, 0x7FF801C)):
         got = b_off(word(img, off))
         ck(got == d, f'（b）+{off:#x} B 期望 {d:#x} → {got:#x}')
     t1 = 0x3004 + b_off(word(img, 0x3004)); t2 = 0x8078014 + b_off(word(img, 0x8078014)); l2 = int(h['PATCH2_LEN'], 16)
     ck(-0x100000 <= t1 < -0x4000, f'（b）前段自旋回边进前岛 → {t1:#x}')
-    ck(0x10060000 <= t2 < 0x10060000 + l2, f'（b）后段自旋回边进后岛 → {t2:#x}')
+    ck(0x10070000 <= t2 < 0x10070000 + l2, f'（b）后段自旋回边进后岛 → {t2:#x}')
     ck(any(l.startswith('【红】main 自旋区 1 处两个补丁岛都够不着') and '0x8040010' in l for l in log.splitlines()), '（b）日志【红】自旋够不着行列出 0x8040010')
 
 
