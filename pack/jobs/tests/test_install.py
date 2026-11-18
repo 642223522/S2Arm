@@ -2842,48 +2842,19 @@ class WinWidgetInstallTests(unittest.TestCase):
 
 
 class UpdatePrepareTests(unittest.TestCase):
-    """「更新 iPhone」电脑侧准备（installUpdatePrepare，update_prepare）：不连手机；各台手机记录里、游戏库里还在的款逐款补（refresh_ios），
-    每款在自己的程序件锁里补；游戏库里已删的款不补。期望按规则手写"""
+    """「更新 iPhone」电脑侧准备（installUpdatePrepare，update_prepare）：11-17 起 S 级优化不自动，这里不做事。期望按规则手写"""
     A, B, C = "0100000000010000", "0100000000020000", "0100000000030000"
 
-    def test_prepares_recorded_games_one_lock_each_without_phone(self):
-        import contextlib, ipa as packer, rewrite_refresh
-        with tempfile.TemporaryDirectory() as t:
-            lib = Path(t); (lib / "devices").mkdir()
-            (lib / "devices/UDID1.json").write_text(json.dumps({"games": {self.B: {}, self.C: {}}}))   # C 已从游戏库删掉
-            (lib / "devices/UDID2.json").write_text(json.dumps({"games": {self.A.lower(): {}}}))
-            held, calls = [], []
-            @contextlib.contextmanager
-            def lock(name, wait=None):
-                held.append(name); yield; held.remove(name)
-            c = jobcase.fake_context(lib.parent, library=lib, catalog=lambda: {"games": [{"id": self.A}, {"id": self.B}]}, begin=lambda *a: None, lock=lock)
-            def refresh(cc, games, ignore_rewriter=False):
-                assert ignore_rewriter is True, "后台准备更新不因改写器指纹单独变了重改写（11-17 维护者定）"
-                calls.append((list(games), list(held))); return [g for g in games if g == self.B]
-            def no_phone(cc):
-                raise AssertionError("准备段不该找手机")
-            with um.patch.object(rewrite_refresh, "refresh_ios", refresh), um.patch.object(install, "phone_for", no_phone):
-                r = install.update_prepare(c)
-        self.assertEqual(calls, [([self.A], ["program-" + self.A]), ([self.B], ["program-" + self.B])])
-        self.assertEqual(r, {"prepared": [self.A, self.B], "updated": [self.B]})
-
-    def test_stops_when_foreground_install_holds_phone_lock(self):
-        # 11-17 #1450：前台装机类作业拿着手机锁时，后台准备更新不再拿程序锁跟它抢——做完手上这款就停，剩下的前台按正常优先级做
-        import contextlib, rewrite_refresh
+    def test_does_nothing_since_sgrade_is_manual(self):
+        # 11-17 维护者：S 级优化不再自动运行。打开启动器起的 installUpdatePrepare 原先逐款 refresh_ios（做的全是 S 级补丁与 _bf），现在一款都不碰、也不找手机
+        import rewrite_refresh
         with tempfile.TemporaryDirectory() as t:
             lib = Path(t); (lib / "devices").mkdir()
             (lib / "devices/UDID1.json").write_text(json.dumps({"games": {self.A: {}, self.B: {}}}))
-            calls, busy = [], []
-            @contextlib.contextmanager
-            def idle(name="execution"):
-                yield not (name == "phone" and busy)
-            c = jobcase.fake_context(lib.parent, library=lib, catalog=lambda: {"games": [{"id": self.A}, {"id": self.B}]}, begin=lambda *a: None, idle=idle)
-            def refresh(cc, games, ignore_rewriter=False):
-                calls.append(list(games)); busy.append(1); return []   # 补完第一款时，前台装机作业进来拿了手机锁
-            with um.patch.object(rewrite_refresh, "refresh_ios", refresh):
-                r = install.update_prepare(c)
-        self.assertEqual(calls, [[self.A]])
-        self.assertEqual(r, {"prepared": [self.A], "updated": []})
+            c = jobcase.fake_context(lib.parent, library=lib, catalog=lambda: {"games": [{"id": self.A}, {"id": self.B}]}, begin=lambda *a: None)
+            with um.patch.object(rewrite_refresh, "refresh_ios", side_effect=AssertionError("不该自动补")), \
+                    um.patch.object(install, "phone_for", side_effect=AssertionError("准备段不该找手机")):
+                self.assertEqual(install.update_prepare(c), {"prepared": [], "updated": [], "manual": True})
 
     def test_operation_registered(self):
         import core

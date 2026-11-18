@@ -105,7 +105,7 @@ def run_request(request_path, *, context_class=Context, operation_overrides=None
                   "pushSelected": install.push_selected,
                   "signModeSet": install.sign_mode_set,
                   "saveStatus": saves.status, "saveBackup": saves.backup, "saveInspect": saves.inspect, "saveRestore": saves.restore,
-                  "community": community.listing, "communitySave": community.save, "patchMatch": patches.match, "sgradeScan": sgrade.scan, "updateHints": host_update.update_hints, "phoneOverview": host_update.phone_overview, "sgradeMac": sgrade.mac_all, "sgradeReenable": sgrade.reenable, "devCert": devcert.operation, "export": export_plan.export}
+                  "community": community.listing, "communitySave": community.save, "patchMatch": patches.match, "sgradeScan": sgrade.scan, "sgradeUpgradeGame": sgrade.upgrade_game, "updateHints": host_update.update_hints, "phoneOverview": host_update.phone_overview, "sgradeMac": sgrade.mac_all, "sgradeReenable": sgrade.reenable, "devCert": devcert.operation, "export": export_plan.export}
     if operation_overrides:
         operations.update(operation_overrides)
     try:
@@ -220,7 +220,7 @@ CLEANS_AFTER_STOP = ("build", "ipa")
 # 打开启动器时自动起的后台重活（#1439 / #1442 / #1443）：installUpdatePrepare（有手机要更新就预出包）、sgradeMac（S 级规则变了重出）。
 #   两件同时跑时各按整机开满路数，玩家的 Mac 内存耗尽 panic。这两项只由启动器自动发起（S2ArmLauncherModel / +PhoneBanner），按作业名就能认：
 #   互相串行（游戏库里一把「auto-heavy」锁，后到的排队、显示在等谁、能取消），整条链低优先级（nice 19 子进程继承；macOS 再加后台档），不和玩家抢机器
-AUTO_HEAVY = ("installUpdatePrepare", "sgradeMac")
+AUTO_HEAVY = ("installUpdatePrepare",)   # sgradeMac 11-17 起不自动（玩家点了才做单款，sgrade.upgrade_game），不再算后台重活
 AUTO_HEAVY_WAIT_S = 6 * 3600
 
 

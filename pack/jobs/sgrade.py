@@ -9,7 +9,7 @@
 作业：
   sgradeScan  「S 级优化升级」页打开时：逐款找原始程序（存下的 → 解包缓存 → Mac 运行版本 → 原件只解 exefs 并存下），
               按补丁库（本地：随启动器的快照与增量缓存，不联网）看这个版本有哪几类补丁 → 每款 {program, patches, iphone, mac, off}
-  sgradeMac   启动器打开时后台跑：游戏库里有 Mac 运行版本的款逐款补上 S 级优化（rewrite_refresh.refresh_mac，按补丁记号，补过的不重做）"""
+  sgradeUpgradeGame 玩家对一款点「S 级优化」才升级（11-17 起不自动）；sgradeMac 旧名，不带 gameId 不做事。原先：启动器打开时后台跑：游戏库里有 Mac 运行版本的款逐款补上 S 级优化（rewrite_refresh.refresh_mac，按补丁记号，补过的不重做）"""
 from __future__ import annotations
 
 import shutil
@@ -126,32 +126,67 @@ def scan(c):
                 noPatch=sum(1 for x in found if not x["total"]), missing=len(games) - len(found))
 
 
+UPGRADING = ".sgrade_upgrading.json"   # 这款的游戏文件夹里：单款升级开始写（作业号 / 进程号）、做完删；在且进程不在 = 升级没做完（catalog sgradeIncomplete）
+
+
+def game_lock(gid):
+    """这款的 S 级升级锁名（c.idle）：单款升级拿着它做完；开始游戏也拿它（build.launch），拿不到就说这款正在升级——两边只挡同一款，别的游戏照常"""
+    return "sgrade-" + gid.upper()
+
+
+def upgrade_state(c, gid):
+    """这款的 S 级升级状态（catalog 给界面）：'upgrading'（单款升级作业在跑）| 'incomplete'（标记在、作业已不在：上次中途退出了）| None"""
+    from core import read, pid_alive
+    m = read(layout.game_dir(c, gid) / UPGRADING, None)
+    if not isinstance(m, dict):
+        return None
+    return "upgrading" if m.get("pid") and pid_alive(m["pid"]) else "incomplete"
+
+
 def mac_all(c):
-    """启动器打开时后台跑（v0.4.0）：有 Mac 运行版本的款逐款补上 S 级优化；补丁记号没变的 refresh_mac 自己跳过。一款出错不挡别的
-    后台活给玩家让路（诊断 D-R8NG：原先整款改写都拿着与开始游戏同一把 execution 锁，一款要两分多钟，玩家点开始等 30 秒报「另一个任务正在使用游戏库」）：
-      库里有任务在用这把锁（正在玩 / 正在出包）就这款不做，不抢 CPU；改写在锁外的临时目录里做，只有换进运行版本那一下「没人用才拿锁」，
-      拿不到就放弃这款——开始游戏起局前自己会补它（build.launch → refresh_mac）"""
-    from rewrite_refresh import refresh_mac
-    games = [g for g in c.catalog()["games"] if (layout.image_mac(c, g["id"], create=False) / "exefs/main").is_file()]
-    c.begin("给 Mac 游戏补上 S 级优化", 1, 1)
-    done = []
-    for g in games:
-        try:
-            with c.idle("execution") as free:
-                pass
-            if not free:
-                continue
-            # 后台：只补补丁记号变了的；改写器指纹单独变了不重改写（11-17 维护者定），开始游戏起局前 build.launch 前台会做这一款
-            if refresh_mac(c, g["id"], layout.image_mac(c, g["id"], create=False), hold=lambda: c.idle("execution"), ignore_rewriter=True):
-                done.append(g["id"].upper())
-            # 老包直连库缺可读瓦片版着色器（_bf）不在这里补（11-17 D-FCMF：升级到新版后每次打开启动器都在后台整份重出直连库，几分钟到几十分钟，
-            #   玩家一开局就放弃、下次再从头来，从没做完；维护者 11-17「后台重新改写全部游戏以后不要做了」）。_bf 只是性能优化，缺了照常能玩：
-            #   升级页（scan 的 bfPending）照旧标出来，玩家对这一款点重出时前台补
-        except (Failure, OSError) as e:
-            c.emit("message", f"【黄】{g.get('name') or g['id']} 这次没补上：{str(e)[:160]}")
-    if done:
-        c.emit("message", f"已给 {len(done)} 款 Mac 游戏补上 S 级优化")
-    return dict(updated=done, checked=len(games))
+    """作业 sgradeMac（旧启动器打开时自动起）：11-17 维护者定 S 级优化不再自动运行（「改成不自动运行，玩家手动点击 S 级优化再升级」）——
+    不带 gameId 什么都不做；带了等同单款升级（upgrade_game）"""
+    if c.r.get("gameId"):
+        return upgrade_game(c)
+    return dict(updated=[], checked=0, manual=True)
+
+
+def upgrade_game(c):
+    """作业 sgradeUpgradeGame：玩家对这一款点「S 级优化」才升级（11-17 维护者定，不自动）。Mac 运行版本补 S 级补丁（rewrite_refresh.refresh_mac）
+    与可读瓦片版着色器（sgrade_bf.upgrade_mac）；有 iPhone 程序件的一并补（rewrite_refresh.refresh_ios，Windows 只有这一段）。
+    阶段事件 stageKey sgrade.mac / sgrade.bf / sgrade.ios（界面画进度，stageIndex / stageCount）；升级中这款开始游戏被拒（game_lock），别的游戏照常；
+    开始时写未完成标记、做完删——中途退出启动器，下次打开不续跑，catalog 标 sgradeIncomplete，玩家再点就是同一个单款升级（已做完的部分各步按记号跳过）"""
+    import json, os, sys
+    from rewrite_refresh import refresh_mac, refresh_ios
+    import sgrade_bf
+    import ipa as packer
+    from core import atomic
+    gid = str(c.r.get("gameId") or "").upper()
+    if not gid:
+        raise Failure("没有指定要升级的游戏。", code="job_failed")  # 非玩家句（只有启动器传错参数才会到）
+    runtime = layout.image_mac(c, gid, create=False)
+    mac = sys.platform == "darwin" and (runtime / "exefs/main").is_file()
+    iphone = layout.has_ios_kit(c, gid)
+    with c.idle(game_lock(gid)) as free:
+        if not free:
+            raise Failure("这款游戏正在运行或正在升级，等它结束后再点「S 级优化」。", code="library_busy")
+        marker = layout.game_dir(c, gid) / UPGRADING
+        atomic(marker, dict(task=c.task, pid=os.getpid()))
+        steps = [k for k, on in (("mac", mac), ("bf", mac), ("ios", iphone)) if on]
+        done = {}
+        for n, k in enumerate(steps, 1):
+            if k == "mac":
+                c.begin("补上 S 级优化（满屏 / 帧率 / 金手指）", n, len(steps), key="sgrade.mac")
+                done[k] = bool(refresh_mac(c, gid, runtime))   # 拿着这款的锁：起局拿不到，不用 hold
+            elif k == "bf":
+                c.begin("补上片上读取用的着色器（首次要几分钟）", n, len(steps), key="sgrade.bf")
+                done[k] = bool(sgrade_bf.upgrade_mac(c, gid, runtime))
+            else:
+                c.begin("补上 iPhone 版的 S 级优化", n, len(steps), key="sgrade.ios")
+                with packer.program_locks(c, [gid]):
+                    done[k] = bool(refresh_ios(c, [gid]))
+        marker.unlink(missing_ok=True)
+    return dict(gameId=gid, updated=[gid] if any(done.values()) else [], steps=done, mac=mac, iphone=iphone)
 
 
 # S 级优化按类状态（11-15 维护者「优化 S 级优化，让满屏更好用」；口径与体验梳理线 cmdr/S级状态与文案_三端对照 第二节一致，界面按它显示）：

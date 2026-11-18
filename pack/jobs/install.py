@@ -2454,7 +2454,7 @@ def dir_missing(out):
     return bool(re.search(r"no such file|object\s*not\s*found", out or "", re.I))
 
 
-PREEMPT_OPERATIONS = ("installUpdatePrepare", "sgradeMac")   # 前台装机让它们先停的后台自动作业：同 main.AUTO_HEAVY（单测锁住两处一致；main 是入口脚本，这里不 import 它）
+PREEMPT_OPERATIONS = ("installUpdatePrepare",)   # 前台装机让它们先停的后台自动作业：同 main.AUTO_HEAVY（单测锁住两处一致；main 是入口脚本，这里不 import 它）
 
 
 @contextlib.contextmanager
@@ -3463,33 +3463,10 @@ def other_device_current(c, want):
 
 
 def update_prepare(c):
-    """「更新 iPhone 上的 S2Arm」的电脑侧准备，不连手机（新版启动器首次启动时后台调，接着手机连上再走 installUpdate 装机）：
-    各台手机记录里、游戏库里还在的款，按本引擎核一遍 iPhone 程序（改写产物）、补可读瓦片版着色器（rewrite_refresh.refresh_ios，结果记进各款 game.json）。
-    之后装机时 refresh_ios 认出已是本版、直接跳过，装机只剩组容器、签名、装。
-    和出包并发安全：每款单独拿这款的程序件锁（ipa.program_locks），做完就放，不长时间挡住那款的出包交付；本进程降优先级（子进程跟着），让出包和游戏先跑。
-    → {prepared: 准备了哪几款, updated: 其中实际改了的}"""
-    import ipa as packer
-    from rewrite_refresh import refresh_ios
-    try:
-        os.nice(10)   # Windows 没有 os.nice：照常优先级
-    except (AttributeError, OSError):
-        pass
-    have = {g["id"].upper() for g in c.catalog()["games"]}
-    games = sorted({str(g).upper() for _, rec in layout.devices(c) if isinstance(rec, dict) for g in (rec.get("games") or {}) if str(g).upper() in have})
-    c.begin("准备更新 iPhone 上的 S2Arm", 1, 1)
-    updated = []
-    done = []
-    for g in games:
-        # 前台装机类作业在跑（拿着手机锁）：不再拿程序锁跟它抢（11-17 #1450：后台降到最低优先级，前台排在它后面就是倒置）——停下，剩下的前台自己做
-        with c.idle("phone") as free:
-            pass
-        if not free:
-            trace(c, "前台装机作业在跑：准备更新先停，剩下的由它按正常优先级做")
-            break
-        with packer.program_locks(c, [g]):
-            updated += refresh_ios(c, [g], ignore_rewriter=True)   # 后台：改写器指纹单独变了不重改写（11-17 维护者定），留到玩家对这一款操作时前台做
-        done.append(g)
-    return dict(prepared=done, updated=sorted(set(updated)))
+    """「更新 iPhone 上的 S2Arm」的电脑侧准备（新版启动器首次启动时后台调）。原先在这里按各台手机记录逐款 refresh_ios——改写器指纹单独变了本来就跳过，
+    做的全是 S 级补丁与可读瓦片版着色器（_bf）；11-17 维护者定 S 级优化不再自动运行（「改成不自动运行，玩家手动点击 S 级优化再升级」），
+    所以不做任何事：玩家对一款点 S 级优化（sgrade.upgrade_game）或装机 / 推送时前台做。→ {prepared: [], updated: []}"""
+    return dict(prepared=[], updated=[], manual=True)
 
 
 def update_phone(c):
