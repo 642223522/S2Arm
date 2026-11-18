@@ -582,7 +582,7 @@ def heads(top, listing=_AUTO, tree=None):
     path = _listing_path(listing, top, tree.identity) if listing is not None and tree.identity else None
     # 本标签没有：同目录下别的标签同身份的清单也认（身份 = 相对路径 + 类型 + 大小 + 修改时间纳秒，同身份即同一批文件；
     #   11-06 出包速度线：解包目录读过的头，播种搬进产物根后 caps 再冷读一遍，王国之泪 30.5 万个文件Windows 出包机约 119 秒）
-    alt = sorted(p for p in Path(listing).glob(f"*-{tree.identity}.json") if p != path) if path and not path.exists() and Path(listing).is_dir() else []
+    alt = sorted(p for p in Path(listing).glob(f"*-{tree.identity}.json") if p != path and not p.name.startswith("._")) if path and not path.exists() and Path(listing).is_dir() else []
     if not (path and (_load(path, tree) or any(_load(p, tree) for p in alt))):
         files = tree.files()
         if tree.image is not None:
