@@ -760,6 +760,24 @@ internal static unsafe class Program
             return;
         }
 
+        // 计算共享内存（#1592）：48 KiB 内但超过设备上限（本测 profile 32768）是设备做不到 → UNSUPPORTED_PROGRAM 带实际值；
+        //   超过 Maxwell 48 KiB / 负数才是坏请求 → MISSING_FIELD；等于上限过上限检查
+        {
+            string csRaw = Encoding.UTF8.GetString(RequestJson(profile, "compute", 2, 1, "shared-limit", cs: cs));
+            Func<int, byte[]> withShared = n => Encoding.UTF8.GetBytes(csRaw.Replace("\"sharedMemoryBytes\":0", "\"sharedMemoryBytes\":" + n));
+            // 等于上限过得了上限检查（之后按控制块核对 1x1x1 shared 0 不符才拒，那是另一道检查）
+            try { DirectShaderCompiler.Compile(withShared(32768)); Check(true, "shared 32768 passes the device limit check"); }
+            catch (Exception error) { Check(!error.Message.Contains("exceeds"), "shared 32768 = device limit passes the limit check: " + error.Message); }
+            try { DirectShaderCompiler.Compile(withShared(40960)); Check(false, "shared 40960 above device limit must be rejected"); }
+            catch (DirectCompileException error)
+            {
+                Check(error.Code == "UNSUPPORTED_PROGRAM" && error.Message.Contains("sharedMemoryBytes 40960") && error.Message.Contains("limit 32768"),
+                    "shared 40960 > device 32768 → UNSUPPORTED_PROGRAM with value and limit: " + error.Code + " " + error.Message);
+            }
+            Throws("MISSING_FIELD", () => DirectShaderCompiler.Compile(withShared(49153)), "shared above Maxwell 48 KiB is a bad request");
+            Throws("MISSING_FIELD", () => DirectShaderCompiler.Compile(withShared(-1)), "negative shared is a bad request");
+        }
+
         // A large pool must not prevent a program with constant texture handles from compiling.
         {
             byte[] fsConstant = Guest(true, new[] { Fadd32i(2, 0.5f), Fadd32i(3, 0.5f), Tex2D(0, 2) });
