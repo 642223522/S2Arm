@@ -137,13 +137,20 @@ with tempfile.TemporaryDirectory(prefix='t_meshstage_') as t:
         f = os.path.join(t, nm + '.metal'); open(f, 'w').write(src)
         p = subprocess.run(['xcrun', '-sdk', 'iphoneos', 'metal', '-c', '-w', '-mios-version-min=18.0', '-fmetal-math-mode=relaxed', '-fpreserve-invariance', f, '-o', f + '.air'], capture_output=True, text=True)
         ck(f'⑤ {nm} 交 xcrun metal（iphoneos，出包 iOS 编法）编过', p.returncode == 0, p.stderr.strip()[-300:])
-# ⑦ #770 宿主自跑入口：有任务的网格出 main0_mc / main0_mc_z（计算核，读交换缓冲槽 28）与顶点函数 main0_mv；任务出 main0_tc；无任务的网格不出；
+# ⑦ #770 宿主自跑入口：有任务的网格出 main0_mc / main0_mc_z（计算核，读交换缓冲槽 28）与顶点函数 main0_mv；任务出 main0_tc；无任务的网格不带逐图元属性时也出（F），带的不出（B）；
 #   定义 S2A_MESH_EMU 后照出包编法编得过（宿主现编时定义它）
 ck('⑦ 有任务的网格：S2A_MESH_EMU 下有 main0_mc / main0_mc_z / main0_mv，读槽 28', all(k in A0 for k in ('kernel void main0_mc(', 'kernel void main0_mc_z(', 'vertex dm_vertex_t main0_mv(', '[[buffer(28)]]')) and 'kernel void main0_mc(' not in A)
 ck('⑦ 任务：S2A_MESH_EMU 下有 main0_tc，写载荷与派生数（钳 1024）', 'kernel void main0_tc(' in C0 and 'dm_xo[dm_xo[0] + dm_tg] = min(_35[805], 1024u);' in C0)
-ck('⑦ 无任务的网格不出宿主入口', 'main0_mc' not in B0 and 'S2A_MESH_EMU' not in B0)
+ck('⑦ 无任务、带逐图元属性的网格（B）不出宿主入口（逐图元属性没有承载处）', 'main0_mc' not in B0 and 'S2A_MESH_EMU' not in B0)
+# ⑦ 无任务、无逐图元属性的网格（F，#1542：M1 上这类原先没有宿主入口、悄悄落回驱动网格）：出 main0_mc / main0_mc_z / main0_mv；没有载荷与排表，
+#   组号 = 派发线程组号（dm_j = dm_tg），工作组字 = 起始组号 + 组号（读槽 29 的 dm_first，同驱动入口），交换缓冲仍在槽 28
+F0 = dshfn.fn('mesh_to_stage', kernel(189, False), ctl(7, 32, 0, mv=32, mp=32).hex(), area().hex())
+F_EMU = F0.split('#ifdef S2A_MESH_EMU')[-1] if 'kernel void main0_mc(' in F0 else ''
+ck('⑦ 无任务、无逐图元属性的网格（F）：S2A_MESH_EMU 下有 main0_mc / main0_mc_z / main0_mv',
+   all(k in F_EMU for k in ('kernel void main0_mc(', 'kernel void main0_mc_z(', 'vertex dm_vertex_t main0_mv(', 'device uint* dm_xo [[buffer(28)]], constant uint* dm_first [[buffer(29)]]')), F0[-1500:])
+ck('⑦ F：组号取派发线程组号、工作组字 = 起始组号 + 组号，不读排表 / 载荷', 'uint dm_j = dm_tg;' in F_EMU and '_35[0] = dm_first[0] + dm_tg;' in F_EMU and 'dm_xo[dm_xo[2]' not in F_EMU and 'dm_xo[dm_xo[1]' not in F_EMU, F_EMU[:1200])
 with tempfile.TemporaryDirectory() as t:
-    for nm, src in (('A', A0), ('C', C0)):
+    for nm, src in (('A', A0), ('C', C0), ('F', F0)):
         f = os.path.join(t, nm + '.metal'); open(f, 'w').write(src)
         p = subprocess.run(['xcrun', '-sdk', 'macosx', 'metal', '-c', '-w', '-DS2A_MESH_EMU=1', '-fmetal-math-mode=relaxed', '-fpreserve-invariance', f, '-o', f + '.air'], capture_output=True, text=True)
         ck(f'⑦ {nm} 定义 S2A_MESH_EMU 交 xcrun metal（macosx）编过', p.returncode == 0, p.stderr.strip()[-300:])

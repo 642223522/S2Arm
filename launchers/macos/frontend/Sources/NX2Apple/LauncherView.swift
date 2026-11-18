@@ -328,11 +328,28 @@ struct LauncherView: View {
                 ControllerToolbarButton(controller: model.controller, show: $showController,
                                         lang: loc.lang.code)
                 messagesButton
-                Button { installFor = nil; model.goToLibrary() } label: {
-                    Label(loc.t("s2arm.nav.library"), systemImage: "square.grid.2x2")
-                        .foregroundStyle(showingHome && !model.showsWelcome ? LauncherPalette.cream : .white)
+                // 0.6.0 动态窗口（通用壳开关后面，iPhone 总控台「五」）：有和 App 相关的作业时外圈进度环 + 一行小字，做完闪 ✓，失败 / 停下留橙色「!」；
+                //   这时点它直接到总控台。没有作业、开关关着：照旧是「游戏库」
+                let dynamic = consoleEnabled && (model.dynamicJob != nil || model.dynamicDone || model.dynamicAlert)
+                Button { installFor = nil; if dynamic { model.openConsoleFromTopBar() } else { model.goToLibrary() } } label: {
+                    HStack(spacing: 6) {
+                        ZStack {
+                            Image(systemName: model.dynamicAlert && consoleEnabled ? "exclamationmark" : model.dynamicDone && consoleEnabled ? "checkmark" : "square.grid.2x2")
+                                .foregroundStyle(model.dynamicAlert && consoleEnabled ? .orange : model.dynamicDone && consoleEnabled ? .green
+                                                 : showingHome && !model.showsWelcome ? LauncherPalette.cream : .white)
+                            if consoleEnabled, let job = model.dynamicJob {
+                                Circle().trim(from: 0, to: CGFloat(job.fraction ?? 0.25)).stroke(LauncherPalette.cream, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                                    .rotationEffect(.degrees(-90)).frame(width: 26, height: 26)   // 拿不到进度时显示一段静止的环
+                            }
+                        }
+                        if consoleEnabled, let job = model.dynamicJob {
+                            Text(job.label + (job.fraction.map { " \(Int($0 * 100))%" } ?? "")).font(.manrope(11)).monospacedDigit().lineLimit(1).frame(maxWidth: 150)
+                        }
+                    }
+                    .accessibilityLabel(loc.t("s2arm.nav.library")).accessibilityValue(model.dynamicJob?.label ?? "")
                 }
-                .controllerButtonStyle(ConsoleIconButtonStyle()).help(loc.t("s2arm.nav.library"))
+                .controllerButtonStyle(ConsoleIconButtonStyle()).help(model.dynamicJob.map(\.label) ?? loc.t("s2arm.nav.library"))
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: model.dynamicDone)
                 .controllerID("top.library")
                 Button { model.showAddGames = true } label: {
                     Label(loc.t("s2arm.action.import"), systemImage: "plus")
