@@ -28,12 +28,8 @@ struct ExportView: View {
                 // The patch and Mod choices stay in the setup page.
                 SGradeCard(model: model, gameID: game.id)
                 downstream
-<<<<<<< HEAD
-                platforms
-=======
                 platformsSection
                 optionsSection
->>>>>>> origin/main
             }
         } actions: {
             actionBar
