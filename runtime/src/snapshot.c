@@ -666,8 +666,11 @@ int s2a_snap_restore(const char *dir) {
     double t4 = now_s();
     if (s2a_snap_defer_finish() || s2a_snap_kernel_post() || s2a_snap_svcmem_shared()) return -1;
     { char p[2048]; snprintf(p, sizeof p, "%s/audio.bin", dir); if (!S2A_SnapAudioRestore || S2A_SnapAudioRestore(p)) { LOG("【红】即时存档恢复：音频渲染器状态没拷回"); return -1; } }
+    double t4a = now_s();   // 「核对」拆账（11-17 iPhone 大金刚这一段 1.09 s，Mac 0.08 s）：服务收尾 + 音频 / 权限 / 图形 / 存档树各计各的
     s2a_snap_svcmem_perms();
+    double t4b = now_s();
     if (!nvn_snap_restore || nvn_snap_restore(dir)) { LOG("【红】即时存档恢复：图形状态没恢复"); return -1; }
+    double t4c = now_s();
     char st1[80]; int sn1; save_dir_hash(st1, &sn1);
     if (strcmp(st0, st1)) { LOG("【红】即时存档恢复：恢复过程中已提交的存档变了（%.12s… → %.12s…），停下不起游戏线程", st0, st1); return -1; }
     { char src[2048], want[256], full[80]; int fn; snprintf(src, sizeof src, "%s/save_tree", dir);
@@ -676,6 +679,7 @@ int s2a_snap_restore(const char *dir) {
       if (man_get(dir, "存档全量", want, sizeof want) || strcmp(want, full)) { LOG("【红】即时存档恢复：写回后存档树与快照时不一致（快照 %.12s…，当前 %.12s…），停下", want, full); return -1; }
       LOG("即时存档恢复：存档树与快照时一致（%d 个文件 %.12s…）", fn, full); }
     double t5 = now_s();
+    LOG("即时存档恢复：核对拆账 服务收尾 + 音频 %.2f、内存权限 %.2f、图形 %.2f、存档树 %.2f（秒）", t4a - t4, t4b - t4a, t4c - t4b, t5 - t4c);
     if (s2a_snap_threads_start()) return -1;
     double t6 = now_s();
     snap_live_after_restore();   // 游戏线程放开之前接上日志：放开后第一条新请求就记在快照日志之后
