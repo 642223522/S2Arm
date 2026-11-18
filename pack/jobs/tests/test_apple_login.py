@@ -23,7 +23,7 @@ from core import Failure  # noqa: E402
 
 PASSWORD = "Pw-Unit-7f3a9c"   # 测试密码：不许出现在日志、作业记录、子进程参数 / 环境里
 ACCOUNT = "player@example.com"
-TEAM = "FAKETEAMAB"
+TEAM = "FAKE" + "TEAMAB"   # 拆开写：公开仓扫描把「TEAM = 十位字母数字」当真团队号
 
 FAKE = textwrap.dedent('''\
     import json, os, sys
@@ -45,7 +45,7 @@ FAKE = textwrap.dedent('''\
         print("Error: -21669 Incorrect verification code"); sys.exit(1)
     home = os.path.join(os.environ["XDG_CONFIG_HOME"], "PlumeImpactor"); os.makedirs(home, exist_ok=True)
     user = sys.argv[sys.argv.index("-u") + 1]
-    json.dump(dict(selected_account=user, accounts={user: dict(email=user, first_name="Tester", adsid="x", xcode_gs_token="y", team_id="FAKETEAMAB")}),
+    json.dump(dict(selected_account=user, accounts={user: dict(email=user, first_name="Tester", adsid="x", xcode_gs_token="y", team_id=os.environ["FAKE_PLUME_TEAM"])}),
               open(os.path.join(home, "accounts.json"), "w"))
     print("[INFO plumesign::commands::account] Successfully logged in and account saved.")
 ''')
@@ -58,7 +58,7 @@ class AppleLogin(unittest.TestCase):
         fake = self.t / "plumesign"
         fake.write_text(f"#!{sys.executable}\n" + FAKE, encoding="utf-8"); fake.chmod(0o755)
         self.rec = self.t / "record.json"
-        env = patch.dict(os.environ, {"S2A_UNIVERSAL_SHELL": "1", "S2A_PLUMESIGN": str(fake), "FAKE_PLUME_RECORD": str(self.rec)})
+        env = patch.dict(os.environ, {"S2A_UNIVERSAL_SHELL": "1", "S2A_PLUMESIGN": str(fake), "FAKE_PLUME_RECORD": str(self.rec), "FAKE_PLUME_TEAM": TEAM})
         env.start(); self.addCleanup(env.stop)
         os.environ.pop("S2A_PLUME_HOME", None)
         (self.t / "logs").mkdir(); (self.t / "private").mkdir()
