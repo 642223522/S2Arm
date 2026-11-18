@@ -5,7 +5,7 @@
 里面放「App Icon & Top Shelf Image」分层品牌图标（App Icon 400x240 @1x/@2x 与 App Store 1280x768 两个图层栈 + 顶部架图 1920x720 / 2320x720）。
 图标是通用品牌图、不随游戏变，所以只在出 tvOS 壳时编一次放进壳（pack/shell_build.sh）；玩家机上组装直接沿用（不需要 actool / Apple TV 模拟器运行时，
 Windows 导出 Apple TV 包也一样）。actool 编 tvOS 资源要装 Apple TV 模拟器运行时（xcodebuild -downloadPlatform tvOS），没装时它只出 partial plist、
-不出 Assets.car——这里报红退出，不出没有图标的壳。
+不出 Assets.car——这时照出壳、打一行黄字说清缺图标的原因（不拦出壳）。
 
   tv_icon.py <品牌图标 PNG> <S2Arm.app>   → app 里写 Assets.car，Info.plist 并进 actool 给的 CFBundleIcons / TVTopShelfImage"""
 import json
@@ -72,13 +72,16 @@ def build(icon_png, app):
                             "--app-icon", BRAND, "--target-device", "tv", "--output-partial-info-plist", str(partial),
                             "--output-format", "human-readable-text", str(xc)], capture_output=True, text=True)
         car = out / "Assets.car"
-        if not car.is_file() or not partial.is_file():
+        if not car.is_file() or not partial.is_file():   # 照出壳（只是主屏没图标），不拦：原因写清楚
             why = " ".join(l.strip() for l in (r.stdout + r.stderr).splitlines() if "error" in l.lower())[:400]
-            sys.exit(f"【红】actool 没有产出 tvOS 图标 Assets.car（{why or 'rc=' + str(r.returncode)}）：要装 Apple TV 模拟器运行时，xcodebuild -downloadPlatform tvOS")
+            print(f"【黄】actool 没有产出 tvOS 图标 Assets.car（{why or 'rc=' + str(r.returncode)}），这个壳主屏没有 S2Arm 图标：装 Apple TV 模拟器运行时"
+                  "（xcodebuild -downloadPlatform tvOS）后重新出壳就有")
+            return False
         shutil.copy2(car, app / "Assets.car")
         info.update(plistlib.loads(partial.read_bytes()))   # CFBundleIcons（CFBundlePrimaryIcon = 品牌名）、TVTopShelfImage
         info_path.write_bytes(plistlib.dumps(info, fmt=plistlib.FMT_XML, sort_keys=True))
     print(f"🟢 tvOS 主屏图标：Assets.car {(app / 'Assets.car').stat().st_size} 字节")
+    return True
 
 
 if __name__ == "__main__":
