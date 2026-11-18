@@ -298,18 +298,21 @@ static int snap_alias_restore(const char *path) {
 }
 // GL 出图层（graphics/nvn/gfx/gl/egl.m）；图形单测不链 GL 片时为空
 int gl_snap_used(void) __attribute__((weak)); void gl_snap_fps(void (*cb)(const char *name, uint64_t fp)) __attribute__((weak)); int gl_snap_save(const char *path) __attribute__((weak)); int gl_snap_restore(const char *path) __attribute__((weak));
+// Vulkan 出图层（graphics/nvn/gfx/vk/vk_snap.inc）；图形单测不链 Vulkan 片时为空
+int vk_snap_used(void) __attribute__((weak)); void vk_snap_fps(void (*cb)(const char *name, uint64_t fp)) __attribute__((weak)); int vk_snap_save(const char *path) __attribute__((weak)); int vk_snap_restore(const char *path) __attribute__((weak));
 // 本文件按整块存的后端结构的布局指纹（不同 = 布局变了，恢复拒绝；见 snapfmt.h）
 void nvn_snap_fps(void (*cb)(const char *name, uint64_t fp)) {
     cb("mtl.S", SNAP_FP_OF(S)); cb("mtl.R", SNAP_FP_OF(R)); cb("mtl.bind_cache", SNAP_FP_OF(g_bind_cache)); cb("mtl.live", SNAP_FP_TYPE(nvn_snap_live));
     cb("mtl.gpw_blk", SNAP_FP_TYPE(gpw_blk)); cb("mtl.gpw_own", SNAP_FP_TYPE(gpw_own)); cb("mtl.tex_hd", SNAP_FP_TYPE(fr_tex_hd)); cb("mtl.alias_key", SNAP_FP_TYPE(alias_key));
     cb("mtl.tfs", SNAP_FP_OF(g_tfs[0]));
     if (gl_snap_fps) gl_snap_fps(cb);   // GL 出图层（egl.m）
+    if (vk_snap_fps) vk_snap_fps(cb);   // Vulkan 出图层（vk_snap.inc）
 }
 int nvn_snap_save(const char *dir) {
     if (!s2a_snap_arena_get) { MLOG("【红】 即时存档：宿主没有命令记录区接口"); return -1; }
     // GL 出图层（外部生产者）：先排空那一层、存它的对象与上下文（gfx/gl egl.m gl_snap_save）；Vulkan 层另做
     if (gl_snap_save && gl_snap_used && gl_snap_used()) { char gp[1200]; snprintf(gp, sizeof gp, "%s/gfx_gl.bin", dir); if (gl_snap_save(gp)) { MLOG("【红】 即时存档：GL 出图层状态没存成"); return -1; } }
-    else if (g_ext_ev) MLOG("【黄】 即时存档：外部出图层（Vulkan）开过，那一层的状态这一版还不存，恢复后由游戏下一帧重建");
+    if (vk_snap_save && vk_snap_used && vk_snap_used()) { char vp[1200]; snprintf(vp, sizeof vp, "%s/gfx_vk.bin", dir); if (vk_snap_save(vp)) { MLOG("【红】 即时存档：Vulkan 出图层状态没存成"); return -1; } }
     uint64_t ca = 0, cu = 0, vu = 0; s2a_snap_arena_get(&ca, &cu, &vu);
     if (!ca) { MLOG("【红】 即时存档：命令记录区没开（存档模式要 S2A_CMD_ARENA=1），命令句柄落点不固定，存不了"); return -1; }
     mtl_present_flush(); mtl_finish_gpu();
@@ -412,6 +415,7 @@ int nvn_snap_restore(const char *dir) {
     { snprintf(p, sizeof p, "%s/gfx_codec.bin", dir); FILE *f = fopen(p, "rb"); int nc = f && nvn2_snap_codec_restore ? nvn2_snap_codec_restore(f) : -1; if (f) fclose(f);
       if (nc < 0) { MLOG("【红】 即时存档恢复：视频解码器表读不了"); return -1; } if (nc) MLOG("即时存档恢复：视频解码器 %d 个按原参数重建", nc); }
     { snprintf(p, sizeof p, "%s/gfx_gl.bin", dir); if (!access(p, F_OK)) { if (!gl_snap_restore || gl_snap_restore(p)) { MLOG("【红】 即时存档恢复：GL 出图层状态没恢复"); return -1; } } }
+    { snprintf(p, sizeof p, "%s/gfx_vk.bin", dir); if (!access(p, F_OK)) { if (!vk_snap_restore || vk_snap_restore(p)) { MLOG("【红】 即时存档恢复：Vulkan 出图层状态没恢复"); return -1; } } }
     MLOG("即时存档恢复：图形 贴图登记 %d 个、栅栏接到 %llu、出图序号接到 %llu、对象序号下限 %llu、帧 %llu（GPU 私有贴图首版不写回）", ntreg, (unsigned long long)g_fence, (unsigned long long)lv.pq_in, (unsigned long long)lv.serial + 1, (unsigned long long)lv.frame);
     return 0;
 }

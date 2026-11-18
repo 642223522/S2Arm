@@ -11,12 +11,12 @@ static const VkAllocationCallbacks *debug_allocator(VkInstance i, const VkAlloca
     return a ? a : i && i->custom_allocator ? &i->allocator : NULL;
 }
 static void *debug_alloc(const VkAllocationCallbacks *a, size_t size, VkSystemAllocationScope scope) {
-    void *p = a ? a->pfnAllocation(a->pUserData, size, _Alignof(max_align_t), scope) : malloc(size);
+    void *p = a ? a->pfnAllocation(a->pUserData, size, _Alignof(max_align_t), scope) : vk_mem(size);   // 没给分配器：同对象走 vk_mem（即时存档开时进固定地址区，实例句柄恢复后原样有效）
     if (p) memset(p, 0, size);
     return p;
 }
 static void debug_free(const VkAllocationCallbacks *a, void *p) {
-    if (a) a->pfnFree(a->pUserData, p); else free(p);
+    if (a) a->pfnFree(a->pUserData, p); else vk_mfree(p);
 }
 static debug_callback *debug_add(VkInstance i, const VkAllocationCallbacks *a, int kind, int temporary, const void *ci) {
     debug_callback *c = debug_alloc(debug_allocator(i, a), sizeof *c, temporary ? VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE : VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);

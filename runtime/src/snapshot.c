@@ -224,8 +224,11 @@ uint64_t s2a_snap_hostslot_value(uint64_t where);   // loader.c
 uint64_t nvn_snap_proc(const char *name, int counting) __attribute__((weak_import));   // hle_nvn.c
 // 弱链接[host,ios,touchtest]：gl_snap_resolve（GL 出图层 graphics/nvn/gfx/gl/egl.m 提供：表面 / 上下文句柄、取函数地址、字符串、映射指针按身份换算；不链图形库的宿主构建没有）
 uint64_t gl_snap_resolve(const char *id) __attribute__((weak_import));
+// 弱链接[host,ios,touchtest]：vk_snap_resolve（Vulkan 出图层 graphics/nvn/gfx/vk/vk_snap.inc 提供：取函数地址按身份换算；不链图形库的宿主构建没有）
+uint64_t vk_snap_resolve(const char *id) __attribute__((weak_import));
 static uint64_t handout_resolve(const char *id) {
     if (!strncmp(id, "gl:", 3)) return gl_snap_resolve ? gl_snap_resolve(id) : 0;
+    if (!strncmp(id, "vk:", 3)) return vk_snap_resolve ? vk_snap_resolve(id) : 0;
     if (!strncmp(id, "slot:", 5)) return s2a_snap_hostslot_value(strtoull(id + 5, NULL, 16));
     if (!strncmp(id, "nvn:", 4) && nvn_snap_proc) { char nm[128]; snprintf(nm, sizeof nm, "%s", id + 4); char *c = strrchr(nm, ':'); if (!c) return 0; int cnt = c[1] == 'c'; *c = 0; return nvn_snap_proc(nm, cnt); }
     return 0;

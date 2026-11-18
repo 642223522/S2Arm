@@ -2669,7 +2669,9 @@ static void *vk_lookup(const char *name) {
     return fn;
 }
 void *dm_vk_lookup(const char *name) { return vk_lookup(name); }   // S2Arm 改：给 S2Arm 装载器 / 适配层（host_adapt.m）按名字取实现
-VK(vkGetInstanceProcAddr, PFN_vkVoidFunction, VkInstance i, const char *name) { (void)i; return (PFN_vkVoidFunction)vk_lookup(name); }
-VK(vkGetDeviceProcAddr, PFN_vkVoidFunction, VkDevice d, const char *name) { (void)d; return (PFN_vkVoidFunction)vk_lookup(name); }
+void vs_ho(const void *p, const char *fmt, const char *arg);   // vk_snap.inc：交出的取函数地址按身份登记（即时存档）
+VK(vkGetInstanceProcAddr, PFN_vkVoidFunction, VkInstance i, const char *name) { (void)i; void *f = vk_lookup(name); vs_ho(f, "vk:proc:%s", name); return (PFN_vkVoidFunction)f; }
+VK(vkGetDeviceProcAddr, PFN_vkVoidFunction, VkDevice d, const char *name) { (void)d; void *f = vk_lookup(name); vs_ho(f, "vk:proc:%s", name); return (PFN_vkVoidFunction)f; }
 
 #include "vk_session.inc"
+#include "vk_snap.inc"   // 即时存档（缺省关）

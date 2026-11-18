@@ -68,7 +68,7 @@ int dm_vk_shutdown_session(void) {
                 case O_LAYOUT: vk_mfree(((VkDescriptorSetLayout)node->ptr)->imm); break;
                 case O_COMMAND: vk_mfree(((VkCommandBuffer)node->ptr)->buf); break;
                 case O_QUERY: { VkQueryPool q = node->ptr; vk_mfree(q->val); vk_mfree(q->ticket); break; }
-                case O_PLAIN: break;
+                case O_PLAIN: case O_FENCE: case O_SWAPCHAIN: break;
             }
         }
         while (g_objects) { vk_object *node = g_objects; g_objects = node->next; vk_mfree(node->ptr); vk_mfree(node); }
