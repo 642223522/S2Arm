@@ -32,6 +32,22 @@ class XCTestCompletionTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("未完成：S2ArmAppleTests.HomeTests/testHome", result.stderr)
 
+    def test_crash_names_last_started_case(self):
+        # 进程中途退出：第 2 例开始了没有结局，第 3 例没开始 → 第一行点名第 2 例（11-17 main 上「发现 380、完成 257」只列未完成名单）
+        result = self.check("S2ArmAppleTests.A/testOne\nS2ArmAppleTests.A/testTwo\nS2ArmAppleTests.A/testThree\n",
+                            "Test Case '-[S2ArmAppleTests.A testOne]' started.\n"
+                            "Test Case '-[S2ArmAppleTests.A testOne]' passed (0.01 seconds).\n"
+                            "Test Case '-[S2ArmAppleTests.A testTwo]' started.\n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stderr.splitlines()[0], "中途退出：最后开始的用例 S2ArmAppleTests.A/testTwo（有开始、没有结局；之后 2 例没跑）")
+        self.assertIn("发现 3，完成 1", result.stderr)
+
+    def test_crash_between_cases_names_last_finished(self):
+        result = self.check("S2ArmAppleTests.A/testOne\nS2ArmAppleTests.A/testTwo\n",
+                            "Test Case '-[S2ArmAppleTests.A testOne]' started.\n"
+                            "Test Case '-[S2ArmAppleTests.A testOne]' passed (0.01 seconds).\n")
+        self.assertEqual(result.stderr.splitlines()[0], "中途退出：最后有结局的用例 S2ArmAppleTests.A/testOne（之后 1 例没开始）")
+
     def test_debug_output_glued_to_the_result_line_still_counts(self):
         # 用例自己打的调试输出没换行，结局行接在它后面（11-17 SettingsLayoutTests 明明 passed 却被判「未完成」，门禁假红）
         result = self.check("S2ArmAppleTests.SettingsLayoutTests/testLayout\n",
