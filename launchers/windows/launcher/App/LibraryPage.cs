@@ -857,6 +857,7 @@ public sealed partial class EnvironmentWindow
             catalog = LibraryCatalog.Parse(listing.Report.Result); ClearCovers();
             if (!catalog.Games.Any(g => g.Id == selectedGame && !g.Hidden)) selectedGame = null;
             librarySummary = "library.completed";
+            ResumeSGradeWatch();   // S 级批量升级队列还在跑就接着读进度（SGradeUpgrade.cs）
             _ = PreparePhoneUpdateAsync();   // 新版启动器头一次读到要更新的手机：后台准备 iPhone App 更新（PhoneAutoUpdate.cs）
         }
         catch (LibraryProtocolException error)

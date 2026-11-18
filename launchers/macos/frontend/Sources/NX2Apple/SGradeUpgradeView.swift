@@ -42,8 +42,9 @@ struct SGradeUpgradeView: View {
                           close: { dismiss() },
                           upgrading: Set(model.games.map(\.id).filter(model.sgradeUpgrading)),
                           batch: model.sgradeBatch, stop: { model.stopSGrade() },
-                          running: model.sgradeRunning, runningProgress: model.sgradeRunning.flatMap(model.sgradeProgress),
-                          queued: Set(model.sgradeQueue), done: model.sgradeDoneIDs)
+                          states: Dictionary(uniqueKeysWithValues: model.games.compactMap { g in model.sgradeState(g.id).map { (g.id, $0) } }),
+                          progress: Dictionary(uniqueKeysWithValues: model.games.compactMap { g in model.sgradeProgress(g.id).map { (g.id, $0) } }))
+            .task { await model.readSGradeStatus(); model.resumeSGradeWatch() }
             .task { await scan() }
     }
 
@@ -66,14 +67,12 @@ struct SGradeUpgradeBody: View {
     let close: () -> Void
     /// 正在升级 / 排队的款：那一行按钮写「正在升级…」、不可再点、勾选框不可选
     var upgrading: Set<String> = []
-    /// 这一批进行到第几款 / 共几款；nil = 没在批量升级
-    var batch: (done: Int, total: Int)? = nil
+    /// 作业层队列这一批：第 index 款 / 共 count 款；nil = 没在升
+    var batch: SGradeBatch? = nil
     var stop: () -> Void = {}
-    /// 行状态（一次只升一款）：正在做的那款与进度、排着的、这次做完的
-    var running: String? = nil
-    var runningProgress: Double? = nil
-    var queued: Set<String> = []
-    var done: Set<String> = []
+    /// 各款在作业层队列里的状态（queued / running / done / skipped / incomplete）与在升的进度
+    var states: [String: String] = [:]
+    var progress: [String: Double] = [:]
     @State private var selected: Set<String> = []
     var sImage: NSImage = SGradeCardView.sGold
 
@@ -94,7 +93,7 @@ struct SGradeUpgradeBody: View {
                 LauncherSheetFooter {
                     if failure == nil, !upgrades.isEmpty {
                         if let b = batch {
-                            Text(x("batchProgress").replacingOccurrences(of: "{0}", with: String(min(b.total, b.done + 1))).replacingOccurrences(of: "{1}", with: String(b.total)))
+                            Text(x("batchProgress").replacingOccurrences(of: "{0}", with: String(b.index)).replacingOccurrences(of: "{1}", with: String(b.count)))
                                 .font(LauncherTheme.TypeStyle.detail).foregroundStyle(SGradeCardView.gold).accessibilityIdentifier("sgrade.upgrade.batchProgress")
                             Button(x("stop")) { stop() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("sgrade.upgrade.stop").fixedSize()
                         } else {
@@ -204,11 +203,14 @@ struct SGradeUpgradeBody: View {
 
     /// 行按钮上的字：正在做的「正在升级 37%」（没百分比「正在升级…」）、排着的「排队中」、做完的「已完成」、其余「升级」
     func rowTitle(_ id: String) -> String {
-        if id == running { return runningProgress.map { x("rowProgress").replacingOccurrences(of: "{0}", with: String(Int(($0 * 100).rounded(.down)))) } ?? x("rowBusy") }
-        if queued.contains(id) { return x("queued") }
-        if upgrading.contains(id) { return x("rowBusy") }   // 别的启动器进程起的升级（catalog sgradeUpgrading）
-        if done.contains(id) { return x("done") }
-        return x("row")
+        switch states[id] {
+        case "running": return progress[id].map { x("rowProgress").replacingOccurrences(of: "{0}", with: String(Int(($0 * 100).rounded(.down)))) } ?? x("rowBusy")
+        case "queued": return x("queued")
+        case "done": return x("done")
+        case "skipped": return x("skipped")     // 轮到时这款正在玩，没升；可再点
+        case "incomplete": return x("resume")   // 出错或被停，再点接着升（已做完的段跳过）
+        default: return upgrading.contains(id) ? x("rowBusy") : x("row")
+        }
     }
 
     /// 「可以升级」组：每行 名字 · 能补什么 · 「升级」（升级中写「正在升级…」不可点）

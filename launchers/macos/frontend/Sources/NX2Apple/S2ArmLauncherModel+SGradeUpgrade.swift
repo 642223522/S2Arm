@@ -3,69 +3,114 @@
 import Foundation
 import S2ArmAppleAdapter
 
-/// S 级优化单款升级（11-18 维护者：「改成不自动运行，玩家手动点击 S 级优化再升级；升级过程给小图标和开始游戏按钮上加进度动画，
-///   不阻断玩家干别的，同时此时不能新开此游戏」）。
-///   作业 sgradeUpgradeGame（{gameId}，pack/jobs：Mac 运行版本补丁 → _bf → 有 iPhone 程序件再补 iPhone）在后台跑，不占主槽：
-///   别的游戏、设置照常可用；这款的卡片与开始按钮画进度，开始按钮不可点（作业层按款 S 级锁兜底：升级中开这款回 sgrade_upgrading）。
-///   进度按阶段：stageIndex / stageCount（2 或 3 段）算百分比；_bf 那段（stageKey sgrade.bf）可能几分钟、没有段内百分比，画不定进度。
-///   一次跑一款，点了多款就排队；做完重读游戏库（金色 S、升级未完成标记跟着变）。没做完就退出启动器的，作业层留标记，
-///   游戏库 sgradeIncomplete 为真，这款显示「升级未完成，点 S 级优化继续」
+/// S 级优化升级（11-18 维护者：「改成不自动运行，玩家手动点击 S 级优化再升级；升级过程给小图标和开始游戏按钮上加进度动画，
+///   不阻断玩家干别的，同时此时不能新开此游戏」；随后：「可以做批量升级，名字写明白就是批量升级……有全选功能没问题」）。
+///   排队只在作业层一份（sgradeUpgradeBatch，Mac / Windows 共用；关掉升级页或窗口队列照常跑）：界面只提交 / 追加号、调停止、读状态。
+///   状态来源：跑队列的作业事件（type=batch 每款 start / end，progress 带 gameId）实时更新；队列在跑时每 1.5 秒查一次
+///   sgradeUpgradeStatus（追加进来的、或别的窗口起的队列也看得到）；都盖在游戏库 catalog 的 sgradeState / sgradeProgress 上。
+///   升级中这款卡片与开始按钮画进度、开始按钮不可点（作业层按款锁兜底），其他游戏照常；资源限额（后台档、核 / 内存各一半、玩游戏时 1 路）在作业层
+struct SGradeLive: Equatable { var state: String; var progress: Double? }
+
 extension S2ArmLauncherModel {
-    /// 这款正在升级或排队升级（含游戏库 sgradeUpgrading：别的启动器进程起的升级还在跑）
+    /// 这款在升级队列里的状态：queued / running / done / skipped / incomplete；不在队里为 nil
+    func sgradeState(_ gameID: String) -> String? {
+        if let live = sgradeLive[gameID] { return live.state }
+        return games.first { $0.id == gameID }?.sgradeState
+    }
+    /// 这款正在升级或排队（含旧字段 sgradeUpgrading）
     func sgradeUpgrading(_ gameID: String) -> Bool {
-        sgradeUpgrades[gameID] != nil || games.contains { $0.id == gameID && $0.sgradeUpgrading }
+        let st = sgradeState(gameID)
+        return st == "running" || st == "queued" || (st == nil && games.contains { $0.id == gameID && $0.sgradeUpgrading })
     }
-    /// 这款的升级进度 0–1；排队中 / 作业还没给出百分比为 nil
-    func sgradeProgress(_ gameID: String) -> Double? { sgradeUpgrades[gameID] ?? nil }
     /// 这款排在队里、还没轮到（一次只升一款）
-    func sgradeQueued(_ gameID: String) -> Bool { sgradeQueue.contains(gameID) }
+    func sgradeQueued(_ gameID: String) -> Bool { sgradeState(gameID) == "queued" }
+    /// 在升的进度 0–1；排队 / 还没给出百分比为 nil
+    func sgradeProgress(_ gameID: String) -> Double? {
+        guard sgradeState(gameID) == "running" else { return nil }
+        return sgradeLive[gameID]?.progress ?? games.first { $0.id == gameID }?.sgradeProgress
+    }
+    /// 这一批：第几款 / 共几款（没在跑为 nil）
+    var sgradeBatch: SGradeBatch? {
+        let b = sgradeBatchLive ?? provider.library.sgradeBatch
+        return b?.running == true ? b : nil
+    }
 
-    /// 玩家点了升级（单款或「批量升级所选」）：排进队列（已在队里 / 在升的不重复），空着就马上起；批量总数跟着加
+    /// 单款「升级」或「批量升级所选」：都提交给作业层队列（没在跑就由这次的作业跑队列，在跑就追加到队尾、作业立刻返回）
     func upgradeSGrade(_ gameIDs: [String]) {
-        var added = 0
-        for id in gameIDs where sgradeUpgrades[id] == nil {
-            sgradeUpgrades[id] = .some(nil)
-            sgradeDoneIDs.remove(id)
-            sgradeQueue.append(id)
-            added += 1
-        }
-        if added > 0 { sgradeBatch = (sgradeBatch?.done ?? 0, (sgradeBatch?.total ?? 0) + added) }
-        pumpSGrade()
-    }
-
-    /// 中途停止：排着的不做了，在升的那款请作业停（作业层按记号保留已做完的段，没做完的那款显示「升级未完成」）；已做完的款不动
-    func stopSGrade() {
-        for id in sgradeQueue { sgradeUpgrades[id] = nil }
-        sgradeQueue.removeAll()
-        sgradeTask?.cancel()
-    }
-
-    /// 阶段事件 → 进度：第 i 段开始 = (i−1)/n；_bf 段没有段内百分比 → .some(nil)（画不定进度）；不是阶段事件 → nil（不改）
-    nonisolated static func sgradeStageProgress(_ f: [String: Any]) -> Double?? {
-        guard let i = (f["stageIndex"] as? NSNumber)?.doubleValue, let n = (f["stageCount"] as? NSNumber)?.doubleValue, n > 0 else { return nil }
-        if f["stageKey"] as? String == "sgrade.bf" { return .some(nil) }
-        return .some(min(1, max(0, (i - 1) / n)))
-    }
-
-    func pumpSGrade() {
-        guard sgradeRunning == nil, !sgradeQueue.isEmpty else { return }
-        let id = sgradeQueue.removeFirst()
-        sgradeRunning = id
+        let ids = gameIDs.filter { !sgradeUpgrading($0) }
+        guard !ids.isEmpty else { return }
+        for id in ids { sgradeLive[id] = SGradeLive(state: "queued", progress: nil) }   // 先画排队中，状态以作业层为准
         let sink = EventSink { [weak self] e in
-            guard let frac = Self.sgradeStageProgress(e.fields) else { return }
-            Task { @MainActor in if self?.sgradeUpgrades[id] != nil { self?.sgradeUpgrades[id] = frac } }
+            guard let id = e.fields["gameId"] as? String else { return }
+            let f = e.fields
+            Task { @MainActor in self?.ingestSGrade(id: id, event: e.ev, fields: f) }
         }
-        sgradeTask = Task { [weak self] in
+        Task { [weak self] in
             guard let self else { return }
-            do { _ = try await self.saveJob("sgradeUpgradeGame", gameID: id, events: sink); self.sgradeDoneIDs.insert(id) }
-            catch where !Task.isCancelled { self.failAction(error.localizedDescription, game: id) }   // 没成：这款上就近写原因（同其他按款操作），不弹框
-            catch {}   // 玩家点了停止：不当失败
-            self.sgradeUpgrades[id] = nil
-            self.sgradeRunning = nil
-            self.sgradeTask = nil
-            if let b = self.sgradeBatch { self.sgradeBatch = self.sgradeQueue.isEmpty ? nil : (b.done + 1, b.total) }
+            self.pollSGrade()
+            do { _ = try await self.saveJob("sgradeUpgradeBatch", gameID: "", extra: ["gameIds": ids], events: sink) }
+            catch { self.failAction(error.localizedDescription, game: ids.count == 1 ? ids[0] : nil) }   // 提交没成：就近写原因，不弹框
             self.refresh()
-            self.pumpSGrade()
         }
     }
+
+    /// 停止整批：排着的不做，在升的那款作业层按记号保留已做完的段（显示「升级未完成」），已做完的不动
+    func stopSGrade() {
+        Task { [weak self] in
+            guard let self else { return }
+            do { _ = try await self.saveJob("sgradeUpgradeStop", gameID: "") }
+            catch { NSLog("S2Arm：停止 S 级优化升级没成：%@", error.localizedDescription) }
+            await self.readSGradeStatus()
+            self.refresh()
+        }
+    }
+
+    /// 跑队列作业的一条事件：batch start → 在升；batch end → 结局（done / skipped / incomplete…）；progress done/total → 进度
+    func ingestSGrade(id: String, event: String, fields f: [String: Any]) {
+        if let i = (f["index"] as? NSNumber)?.intValue, let n = (f["count"] as? NSNumber)?.intValue {
+            sgradeBatchLive = SGradeBatch(running: true, index: i, count: n)
+        }
+        if f["type"] as? String == "batch" || event == "batch" {
+            let phase = f["phase"] as? String
+            if phase == "start" { sgradeLive[id] = SGradeLive(state: "running", progress: 0) }
+            else if phase == "end" { sgradeLive[id] = SGradeLive(state: f["status"] as? String == "updated" || f["status"] as? String == "unchanged" ? "done" : (f["status"] as? String ?? "done"), progress: nil); refresh() }
+            return
+        }
+        if let done = (f["done"] as? NSNumber)?.doubleValue, let total = (f["total"] as? NSNumber)?.doubleValue, total > 0 {
+            sgradeLive[id] = SGradeLive(state: "running", progress: min(1, max(0, done / total)))
+        }
+    }
+
+    /// 队列在跑时每 1.5 秒查一次作业层状态（只起一个轮询）；停了再重读一次游戏库
+    func pollSGrade() {
+        guard !sgradePolling else { return }
+        sgradePolling = true
+        Task { [weak self] in
+            while let self, !Task.isCancelled {
+                let running = await self.readSGradeStatus()
+                if !running { break }
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+            }
+            self?.sgradePolling = false
+            self?.refresh()
+        }
+    }
+
+    /// 读 sgradeUpgradeStatus，更新各款状态与批次；返回队列是否还在跑
+    @discardableResult
+    func readSGradeStatus() async -> Bool {
+        guard let r = try? await saveJob("sgradeUpgradeStatus", gameID: "") else { return false }
+        let running = r["running"] as? Bool ?? false
+        sgradeBatchLive = SGradeBatch(catalog: r)
+        var live: [String: SGradeLive] = [:]
+        for g in r["games"] as? [[String: Any]] ?? [] {
+            guard let id = g["gameId"] as? String, let st = g["state"] as? String else { continue }
+            live[id] = SGradeLive(state: st, progress: (g["progress"] as? NSNumber)?.doubleValue)
+        }
+        sgradeLive = live
+        return running
+    }
+
+    /// 启动器打开 / 重读游戏库时：作业层队列还在跑（别的窗口起的）就接着轮询
+    func resumeSGradeWatch() { if provider.library.sgradeBatch?.running == true { pollSGrade() } }
 }

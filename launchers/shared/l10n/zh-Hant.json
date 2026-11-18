@@ -985,6 +985,8 @@
   "sgrade.upgrade.rowProgress": "正在升級 {0}%",
   "sgrade.upgrade.queued": "排隊中",
   "sgrade.upgrade.done": "已完成",
+  "sgrade.upgrade.skipped": "正在玩，稍後再升",
+  "sgrade.upgrade.resume": "繼續升級",
   "sgrade.upgrade.row": "升級",
   "sgrade.upgrade.rowBusy": "正在升級…",
   "sgrade.upgrade.incomplete": "升級未完成，點 S 級優化繼續",

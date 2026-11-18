@@ -32,17 +32,6 @@ import S2ArmAppleAdapter
         return rep
     }
 
-    /// 单款升级的阶段进度（作业 sgradeUpgradeGame：stageIndex / stageCount，_bf 段 sgrade.bf 没有段内百分比）：
-    ///   期望手算：3 段的第 1 段开始 0、第 3 段开始 2/3；2 段第 2 段 1/2；_bf 段 → 不定进度；没有阶段字段 → 不改
-    func testStageProgress() {
-        typealias M = S2ArmLauncherModel
-        XCTAssertEqual(M.sgradeStageProgress(["stageKey": "sgrade.mac", "stageIndex": 1, "stageCount": 3]), .some(.some(0)))
-        XCTAssertEqual(M.sgradeStageProgress(["stageKey": "sgrade.ios", "stageIndex": 3, "stageCount": 3]), .some(.some(2.0 / 3.0)))
-        XCTAssertEqual(M.sgradeStageProgress(["stageKey": "sgrade.ios", "stageIndex": 2, "stageCount": 2]), .some(.some(0.5)))
-        XCTAssertEqual(M.sgradeStageProgress(["stageKey": "sgrade.bf", "stageIndex": 2, "stageCount": 3]), .some(.none))
-        XCTAssertNil(M.sgradeStageProgress(["message": "x"]))
-    }
-
     func testScanFieldsParse() {
         let a = SGradeScanGame(["id": "0100A", "name": "甲", "program": "none", "total": 0, "patches": ["fps": 2], "iphone": true])
         XCTAssertFalse(a.found); XCTAssertEqual(a.patches["fps"], 2); XCTAssertFalse(a.off)

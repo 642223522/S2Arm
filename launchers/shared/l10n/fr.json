@@ -973,6 +973,8 @@
   "sgrade.upgrade.rowProgress": "Mise à niveau {0} %",
   "sgrade.upgrade.queued": "En attente",
   "sgrade.upgrade.done": "Terminé",
+  "sgrade.upgrade.skipped": "En cours de jeu — mettre à niveau plus tard",
+  "sgrade.upgrade.resume": "Reprendre la mise à niveau",
   "sgrade.upgrade.row": "Mettre à niveau",
   "sgrade.upgrade.rowBusy": "Mise à niveau…",
   "sgrade.upgrade.incomplete": "La mise à niveau n’est pas terminée. Cliquez sur Mise à niveau de rang S pour continuer.",

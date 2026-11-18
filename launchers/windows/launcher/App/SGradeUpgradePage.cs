@@ -24,6 +24,7 @@ public sealed partial class EnvironmentWindow
     {
         if (libraryId is null || libraryBusy || PackBusy) return;
         sgradeOpen = true; sgradeScan = null; sgradeScanError = "";
+        _ = PollSGradeAsync();   // 打开就读一次作业层队列状态（在跑则每 1.5 秒续读）
         Render();   // 页面渲染时发起查找（RenderSGradeUpgrade：还没结果、也没在查 → ScanSGradeAsync）
     }
 
@@ -174,7 +175,7 @@ public sealed partial class EnvironmentWindow
             if (sgradeBatch is { } batch)
             {
                 // 批量进行中：总进度（第几款 / 共几款）+「停止」（已做完的保留）
-                var progress = Label(X("batchProgress").Replace("{0}", Math.Min(batch.Total, batch.Done + 1).ToString()).Replace("{1}", batch.Total.ToString()), 13);
+                var progress = Label(X("batchProgress").Replace("{0}", Math.Max(1, batch.Index).ToString()).Replace("{1}", batch.Count.ToString()), 13);
                 progress.Foreground = new SolidColorBrush(SGold); progress.VerticalAlignment = VerticalAlignment.Center; progress.Margin = new Thickness(0, 0, 12, 0);
                 AutomationId(progress, "sgrade.upgrade.batchProgress"); footer.Children.Add(progress);
                 var stop = Action("sgrade.upgrade.stop", StopSGrade); stop.Margin = new Thickness(0, 0, 12, 0); footer.Children.Add(stop);

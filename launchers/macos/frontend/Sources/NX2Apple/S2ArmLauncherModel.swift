@@ -514,7 +514,7 @@ public final class S2ArmLauncherModel: ObservableObject {
                 self.phoneUpdates = self.provider.library.phoneUpdates
                 self.phoneDevices = self.provider.library.phoneDevices
                 if !self.startupLoopsStarted {
-                    self.startupLoopsStarted = true; self.keptModulesLoop(); self.preparePhoneUpdate(); self.appleTVBackupLoop()
+                    self.startupLoopsStarted = true; self.resumeSGradeWatch(); self.keptModulesLoop(); self.preparePhoneUpdate(); self.appleTVBackupLoop()
                     // 0.6.0（开关后面）：启动器打开时快速比对「建议更新」、读一次总控台（都只读，秒回）。之后只在出包 / 手机作业做完时再读（finish），
                     //   不跟着每次重读游戏库起：出包过程中会重读好几次，每次多起两个作业进程是浪费（ExportStreamTests）
                     self.refreshUpdateHints(); self.refreshPhoneOverview()
@@ -1144,16 +1144,12 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var dropConfirm: DropConfirm?
     /// 上一次「更新手机上的 S2Arm」的参数：失败页「重试」按它再来
     var lastUpdateArgs: UpdateArgs?
-    /// S 级优化单款升级（11-18 维护者：不自动运行，玩家在「S 级优化升级」页点了才升级）：游戏号 → 进度（nil = 排队中 / 还没给出百分比）。
-    ///   在后台作业里跑、不占主槽：别的游戏照常能开，只有这款开始按钮写「正在升级 xx%」不可点（S2ArmLauncherModel+SGradeUpgrade.swift）
-    @Published var sgradeUpgrades: [String: Double?] = [:]
-    @Published var sgradeQueue: [String] = []
-    @Published var sgradeRunning: String?
-    /// 这一批的总进度（第几款 / 共几款，升级页上显示）；队列空了清零
-    @Published var sgradeBatch: (done: Int, total: Int)?
-    /// 这次打开启动器里升级做完的款（升级页那一行写「已完成」）
-    @Published var sgradeDoneIDs: Set<String> = []
-    var sgradeTask: Task<Void, Never>?
+    /// S 级优化升级队列的实时状态（11-18 维护者：点了才升、可批量；队列只在作业层 sgradeUpgradeBatch 一份，两端共用）：
+    ///   游戏号 → (状态, 进度)，来自跑队列作业的事件与 sgradeUpgradeStatus 轮询，盖在游戏库 catalog 的 sgradeState / sgradeProgress 上
+    ///   （S2ArmLauncherModel+SGradeUpgrade.swift）
+    @Published var sgradeLive: [String: SGradeLive] = [:]
+    @Published var sgradeBatchLive: SGradeBatch?
+    var sgradePolling = false
     var keptLoopStarted = false, keptAutoTried: Set<String> = []   // keptModulesLoop（#8be819）
     var phoneAutoFails: [String: Int] = [:]   // 自动更新后台作业连续失败次数（notePhoneAuto，+PhoneBanner.swift）
     var phonePrepareStarted = false   // 首启在电脑侧准备 iPhone 更新只做一次（准备期间不出横幅，不能再靠横幅状态挡重复）

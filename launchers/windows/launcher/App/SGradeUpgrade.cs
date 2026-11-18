@@ -11,113 +11,155 @@ using S2Arm.Launcher.Protocol;
 
 namespace S2Arm.Launcher;
 
-/// <summary>S 级优化单款升级（11-18 维护者：「改成不自动运行，玩家手动点击 S 级优化再升级；升级过程给小图标和开始游戏按钮上加进度动画，
-/// 不阻断玩家干别的，同时此时不能新开此游戏」；同 Mac S2ArmLauncherModel+SGradeUpgrade.swift）。
-/// 作业 sgradeUpgradeGame（{gameId}，Windows 上补 iPhone 程序件）在后台跑、不占出包 / 手机槽：别的游戏照常操作；
-/// 这款封面画进度、主按钮（Windows 没有「开始游戏」，是装到 iPhone / 出包）写「正在升级 xx%」不可点。一次一款，点了多款排队；
-/// 做完重读游戏库。进度按阶段事件 stageIndex / stageCount；_bf 段（sgrade.bf）没有段内百分比，画不定进度</summary>
+/// <summary>S 级优化升级（11-18 维护者：点了才升、可批量，名字写明批量升级、有全选；同 Mac S2ArmLauncherModel+SGradeUpgrade.swift）。
+/// 排队只在作业层一份（sgradeUpgradeBatch，两端共用；关掉升级页 / 窗口队列照常跑）：界面只提交 / 追加号、调停止（sgradeUpgradeStop）、读状态。
+/// 状态来源：跑队列作业的事件（type=batch 每款 start / end，progress 带 gameId）实时更新；队列在跑时每 1.5 秒查 sgradeUpgradeStatus；
+/// 都盖在游戏库 catalog 的 sgradeState / sgradeProgress 上。这款封面画进度、主按钮（装到 iPhone / 出包）写「正在升级 xx%」/「排队中」不可点</summary>
 public sealed partial class EnvironmentWindow
 {
-    private readonly Dictionary<string, double?> sgradeUpgrades = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Queue<string> sgradeQueue = new();
-    private string? sgradeRunning;
+    /// <summary>游戏号 → (状态, 进度)：事件与状态查询来的实时值</summary>
+    private readonly Dictionary<string, (string State, double? Progress)> sgradeLive = new(StringComparer.OrdinalIgnoreCase);
+    private SGradeBatch? sgradeBatchLive;
+    private bool sgradePolling;
     private readonly Dictionary<string, string> sgradeErrors = new(StringComparer.OrdinalIgnoreCase);
-    /// <summary>这一批第几款 / 共几款（升级页显示）；队列空了清掉</summary>
-    private (int Done, int Total)? sgradeBatch;
-    private CancellationTokenSource? sgradeCancel;
     /// <summary>升级页上勾选的款</summary>
     private readonly HashSet<string> sgradeSelected = new(StringComparer.OrdinalIgnoreCase);
-    /// <summary>这次打开启动器里升级做完的款（升级页那一行写「已完成」）</summary>
-    private readonly HashSet<string> sgradeDone = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>这款正在升级 / 排队（含游戏库 sgradeUpgrading：别的启动器进程起的还在跑）</summary>
-    private bool SGradeUpgrading(LibraryGame game) => sgradeUpgrades.ContainsKey(game.Id) || game.SGradeUpgrading;
-    private double? SGradeProgress(LibraryGame game) => sgradeUpgrades.TryGetValue(game.Id, out var p) ? p : null;
+    private string? SGradeState(string id) => sgradeLive.TryGetValue(id, out var l) ? l.State : catalog?.Games.FirstOrDefault(g => g.Id == id)?.SGradeState;
+    /// <summary>这款正在升级或排队（含旧字段 sgradeUpgrading）</summary>
+    private bool SGradeBusy(string id) => SGradeState(id) is "running" or "queued"
+        || (SGradeState(id) is null && (catalog?.Games.Any(g => g.Id == id && g.SGradeUpgrading) ?? false));
+    private bool SGradeUpgrading(LibraryGame game) => SGradeBusy(game.Id);
+    private bool SGradeQueued(string id) => SGradeState(id) == "queued";
+    private double? SGradeProgress(LibraryGame game) => SGradeState(game.Id) != "running" ? null
+        : sgradeLive.TryGetValue(game.Id, out var l) && l.Progress is { } p ? p : game.SGradeProgress;
+    /// <summary>这一批：第几款 / 共几款（没在跑为 null）</summary>
+    private SGradeBatch? sgradeBatch => (sgradeBatchLive ?? catalog?.SGradeBatch) is { Running: true } b ? b : null;
 
-    /// <summary>排在队里还没轮到（一次只升一款）</summary>
-    private bool SGradeQueued(string id) => sgradeQueue.Contains(id);
-
-    /// <summary>主按钮上的字：排着的「排队中」；在升的「正在升级 xx%」，没有百分比（_bf 段）写「正在升级…」</summary>
+    /// <summary>主按钮上的字：排着的「排队中」；在升的「正在升级 xx%」，没有百分比写「正在升级…」</summary>
     private string SGradeUpgradingTitle(LibraryGame game) => SGradeQueued(game.Id) ? T("sgrade.upgrade.queued")
         : SGradeProgress(game) is { } p ? T("sgrade.upgrading").Replace("{0}", ((int)Math.Floor(p * 100)).ToString())
         : T("sgrade.upgrading.wait");
 
-    /// <summary>升级页行按钮上的字：正在做的「正在升级 37%」、排着的「排队中」、做完的「已完成」、其余「升级」</summary>
+    /// <summary>升级页行按钮上的字：在升「正在升级 37%」、排着「排队中」、做完「已完成」、轮到时在玩「正在玩，稍后再升」、被停 / 出错「继续升级」、其余「升级」</summary>
     private string SGradeRowTitle(string id)
     {
-        if (id == sgradeRunning) return sgradeUpgrades.TryGetValue(id, out var p) && p is { } v
-            ? T("sgrade.upgrade.rowProgress").Replace("{0}", ((int)Math.Floor(v * 100)).ToString()) : T("sgrade.upgrade.rowBusy");
-        if (SGradeQueued(id)) return T("sgrade.upgrade.queued");
-        if (SGradeBusy(id)) return T("sgrade.upgrade.rowBusy");
-        if (sgradeDone.Contains(id)) return T("sgrade.upgrade.done");
-        return T("sgrade.upgrade.row");
+        var game = catalog?.Games.FirstOrDefault(g => g.Id == id);
+        return SGradeState(id) switch
+        {
+            "running" => game is not null && SGradeProgress(game) is { } v ? T("sgrade.upgrade.rowProgress").Replace("{0}", ((int)Math.Floor(v * 100)).ToString()) : T("sgrade.upgrade.rowBusy"),
+            "queued" => T("sgrade.upgrade.queued"),
+            "done" => T("sgrade.upgrade.done"),
+            "skipped" => T("sgrade.upgrade.skipped"),
+            "incomplete" => T("sgrade.upgrade.resume"),
+            _ => SGradeBusy(id) ? T("sgrade.upgrade.rowBusy") : T("sgrade.upgrade.row"),
+        };
     }
 
-    /// <summary>玩家点了升级（单款或「批量升级所选」）：排进队列（已在队里 / 在升的不重复），批量总数跟着加</summary>
+    /// <summary>单款「升级」或「批量升级所选」：都提交给作业层队列（没在跑就由这次的作业跑队列，在跑就追加到队尾、作业立刻返回）</summary>
     private void UpgradeSGrade(IEnumerable<string> ids)
     {
-        var added = 0;
-        foreach (var id in ids)
-            if (!sgradeUpgrades.ContainsKey(id)) { sgradeUpgrades[id] = null; sgradeQueue.Enqueue(id); sgradeErrors.Remove(id); sgradeSelected.Remove(id); sgradeDone.Remove(id); added++; }
-        if (added > 0) sgradeBatch = (sgradeBatch?.Done ?? 0, (sgradeBatch?.Total ?? 0) + added);
+        var list = ids.Where(id => !SGradeBusy(id)).ToList();
+        if (list.Count == 0) return;
+        foreach (var id in list) { sgradeLive[id] = ("queued", null); sgradeErrors.Remove(id); sgradeSelected.Remove(id); }   // 先画排队中，以作业层为准
         Render();
-        PumpSGrade();
+        _ = PollSGradeAsync();
+        _ = RunSGradeBatchAsync(list);
     }
 
-    /// <summary>中途停止：排着的不做了，在升的那款请作业停（作业层按记号保留已做完的段，这款显示「升级未完成」）；已做完的款不动</summary>
-    private void StopSGrade()
+    private async Task RunSGradeBatchAsync(List<string> ids)
     {
-        foreach (var id in sgradeQueue) sgradeUpgrades.Remove(id);
-        sgradeQueue.Clear();
-        sgradeCancel?.Cancel();
-        Render();
-    }
-
-    /// <summary>阶段事件 → 进度：第 i 段开始 = (i−1)/n；_bf 段 → 不定进度（null）；不是阶段事件 → 不改（返回 false）</summary>
-    internal static bool SGradeStageProgress(JsonElement e, out double? progress)
-    {
-        progress = null;
-        if (!e.TryGetProperty("stageIndex", out var i) || i.ValueKind != JsonValueKind.Number
-            || !e.TryGetProperty("stageCount", out var n) || n.ValueKind != JsonValueKind.Number || n.GetDouble() <= 0) return false;
-        if (e.TryGetProperty("stageKey", out var k) && k.ValueKind == JsonValueKind.String && k.GetString() == "sgrade.bf") return true;
-        progress = Math.Clamp((i.GetDouble() - 1) / n.GetDouble(), 0, 1);
-        return true;
-    }
-
-    private void PumpSGrade()
-    {
-        if (sgradeRunning is not null || sgradeQueue.Count == 0) return;
-        var id = sgradeQueue.Dequeue();
-        sgradeRunning = id;
-        _ = RunSGradeAsync(id);
-    }
-
-    private async Task RunSGradeAsync(string id)
-    {
-        sgradeCancel = new CancellationTokenSource();
         try
         {
-            var job = await PackJobClient.RunAsync(PackRequest("sgradeUpgradeGame", id),
-                e => Dispatcher.UIThread.Post(() =>
-                {
-                    if (sgradeUpgrades.ContainsKey(id) && SGradeStageProgress(e, out var p)) { sgradeUpgrades[id] = p; Render(); }
-                }), sgradeCancel.Token);
-            if (job.Report.Succeeded) sgradeDone.Add(id);
-            else if (!sgradeCancel.IsCancellationRequested) sgradeErrors[id] = job.Report.Message;   // 没成：这款上就近写原因，不弹框；玩家点停止不算失败
+            var job = await PackJobClient.RunAsync(PackRequest("sgradeUpgradeBatch", "", new Dictionary<string, object?> { ["gameIds"] = ids }),
+                e => Dispatcher.UIThread.Post(() => IngestSGrade(e)), CancellationToken.None);
+            if (!job.Report.Succeeded && ids.Count == 1) sgradeErrors[ids[0]] = job.Report.Message;   // 提交没成：就近写原因，不弹框
         }
-        catch (OperationCanceledException) { }
         catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
-            InvalidOperationException or System.ComponentModel.Win32Exception) { sgradeErrors[id] = error.Message; }
-        finally
+            InvalidOperationException or System.ComponentModel.Win32Exception) { Console.Error.WriteLine("S2Arm sgradeUpgradeBatch: " + error.Message); }
+        await RefreshLibraryAsync();
+        Render();
+    }
+
+    /// <summary>停止整批：排着的不做，在升的那款作业层按记号保留已做完的段（显示「升级未完成」），已做完的不动</summary>
+    private void StopSGrade() => _ = StopSGradeAsync();
+    private async Task StopSGradeAsync()
+    {
+        try { await PackJobClient.RunAsync(PackRequest("sgradeUpgradeStop", ""), null, CancellationToken.None); }
+        catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
+            InvalidOperationException or System.ComponentModel.Win32Exception) { Console.Error.WriteLine("S2Arm sgradeUpgradeStop: " + error.Message); }
+        await ReadSGradeStatusAsync();
+        await RefreshLibraryAsync();
+        Render();
+    }
+
+    /// <summary>跑队列作业的一条事件：batch start → 在升；batch end → 结局；progress done/total → 进度；index / count → 批次</summary>
+    private void IngestSGrade(JsonElement e)
+    {
+        if (!e.TryGetProperty("gameId", out var g) || g.ValueKind != JsonValueKind.String || g.GetString() is not { Length: > 0 } id) return;
+        if (e.TryGetProperty("index", out var i) && i.ValueKind == JsonValueKind.Number && e.TryGetProperty("count", out var n) && n.ValueKind == JsonValueKind.Number)
+            sgradeBatchLive = new SGradeBatch(true, i.GetInt32(), n.GetInt32());
+        if (e.TryGetProperty("type", out var t) && t.ValueKind == JsonValueKind.String && t.GetString() == "batch")
         {
-            sgradeUpgrades.Remove(id);
-            sgradeRunning = null;
-            sgradeCancel = null;
-            if (sgradeBatch is { } b) sgradeBatch = sgradeQueue.Count == 0 ? null : (b.Done + 1, b.Total);
-            await RefreshLibraryAsync();
-            Render();
-            PumpSGrade();
+            var phase = e.TryGetProperty("phase", out var ph) && ph.ValueKind == JsonValueKind.String ? ph.GetString() : null;
+            if (phase == "start") sgradeLive[id] = ("running", 0);
+            else if (phase == "end")
+            {
+                var status = e.TryGetProperty("status", out var st) && st.ValueKind == JsonValueKind.String ? st.GetString() ?? "done" : "done";
+                sgradeLive[id] = (status is "updated" or "unchanged" ? "done" : status, null);
+                if (status == "failed" && e.TryGetProperty("reason", out var r) && r.ValueKind == JsonValueKind.String) sgradeErrors[id] = r.GetString() ?? "";
+                _ = RefreshLibraryAsync();
+            }
         }
+        else if (e.TryGetProperty("done", out var d) && d.ValueKind == JsonValueKind.Number && e.TryGetProperty("total", out var tt) && tt.ValueKind == JsonValueKind.Number && tt.GetDouble() > 0)
+            sgradeLive[id] = ("running", Math.Clamp(d.GetDouble() / tt.GetDouble(), 0, 1));
+        Render();
+    }
+
+    /// <summary>队列在跑时每 1.5 秒查一次作业层状态（只起一个轮询）；跑过、停了再重读一次游戏库</summary>
+    private async Task PollSGradeAsync()
+    {
+        if (sgradePolling) return;
+        sgradePolling = true;
+        var ran = false;
+        try
+        {
+            while (await ReadSGradeStatusAsync()) { ran = true; await Task.Delay(1500); }
+        }
+        finally { sgradePolling = false; }
+        if (!ran) return;   // 一次都没在跑：游戏库不用重读
+        await RefreshLibraryAsync();
+        Render();
+    }
+
+    /// <summary>读 sgradeUpgradeStatus，更新各款状态与批次；返回队列是否还在跑</summary>
+    private async Task<bool> ReadSGradeStatusAsync()
+    {
+        try
+        {
+            var job = await PackJobClient.RunAsync(PackRequest("sgradeUpgradeStatus", ""), null, CancellationToken.None);
+            if (!job.Report.Succeeded) return false;
+            var r = job.Report.Result;
+            sgradeBatchLive = SGradeBatch.Parse(r);
+            sgradeLive.Clear();
+            if (r.TryGetProperty("games", out var games) && games.ValueKind == JsonValueKind.Array)
+                foreach (var g in games.EnumerateArray())
+                    if (g.TryGetProperty("gameId", out var id) && id.GetString() is { Length: > 0 } gid && g.TryGetProperty("state", out var st) && st.GetString() is { } state)
+                        sgradeLive[gid] = (state, g.TryGetProperty("progress", out var p) && p.ValueKind == JsonValueKind.Number ? p.GetDouble() : null);
+            Render();
+            return sgradeBatchLive.Running;
+        }
+        catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
+            InvalidOperationException or System.ComponentModel.Win32Exception) { Console.Error.WriteLine("S2Arm sgradeUpgradeStatus: " + error.Message); return false; }
+    }
+
+    /// <summary>启动后头一次读到游戏库：作业层队列还在跑（上次窗口关了、队列照跑）就接着轮询；只看这一次，轮询结束后的重读不再触发</summary>
+    private bool sgradeResumeChecked;
+    private void ResumeSGradeWatch()
+    {
+        if (sgradeResumeChecked || catalog is null) return;
+        sgradeResumeChecked = true;
+        if (catalog.SGradeBatch is { Running: true }) _ = PollSGradeAsync();
     }
 
     /// <summary>升级中的封面（小图标）：压暗一层、中间百分比（没有百分比写「…」）、底部进度条（不定进度时满条半透明）</summary>
@@ -151,6 +193,4 @@ public sealed partial class EnvironmentWindow
         return b;
     }
 
-    /// <summary>这款正在升级 / 排队（按号，升级页行里用）</summary>
-    private bool SGradeBusy(string id) => sgradeUpgrades.ContainsKey(id) || (catalog?.Games.Any(g => g.Id == id && g.SGradeUpgrading) ?? false);
 }

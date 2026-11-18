@@ -1737,6 +1737,8 @@
       {"id": "sgrade.upgrade.rowProgress", "zh-Hans": "正在升级 {0}%", "en": "Upgrading {0}%"},
       {"id": "sgrade.upgrade.queued", "zh-Hans": "排队中", "en": "Queued"},
       {"id": "sgrade.upgrade.done", "zh-Hans": "已完成", "en": "Done"},
+      {"id": "sgrade.upgrade.skipped", "zh-Hans": "正在玩，稍后再升", "en": "Playing — upgrade later"},
+      {"id": "sgrade.upgrade.resume", "zh-Hans": "继续升级", "en": "Resume upgrade"},
       {"id": "sgrade.upgrade.row", "zh-Hans": "升级", "en": "Upgrade"},
       {"id": "sgrade.upgrade.rowBusy", "zh-Hans": "正在升级…", "en": "Upgrading…"},
       {"id": "sgrade.upgrade.incomplete", "zh-Hans": "升级未完成，点 S 级优化继续", "en": "Upgrade didn’t finish. Click S-grade upgrade to continue."},
