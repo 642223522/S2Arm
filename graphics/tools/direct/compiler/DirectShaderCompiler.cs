@@ -334,6 +334,15 @@ namespace S2A.DirectCompiler
                     binding.SamplerSlot = samplerSlot;
                     continue;
                 }
+                if (binding.Kind == "texture" && !resolved.Separate &&
+                    entry.accessor.TrySeparateConstC2(resolved.HandleIndex, resolved.CbufSlot, out _, out _))
+                {
+                    // #1594 片 1：贴图字在 c2 分离贴图表、采样器是立即数采样器池下标（类型 3）。同字事实有了，译得下去；
+                    //   但结果里还没有立即数采样器的表达，不能只填 slot（宿主会把采样器绑成池里第 0 项，静默错绑），所以如实报未接，slot / samp_slot 一律不填。
+                    throw new DirectCompileException("UNSUPPORTED_PROGRAM",
+                        WithHandleDetail(binding.Stage + ": texture handle from cbuf slot " + resolved.CbufSlot + " is not implemented (constant sampler)",
+                            HandleDetailFields(allocator, binding, resolved, messageHasShape: false)));
+                }
                 if (resolved.CbufSlot >= UserUboFirstCbuf && resolved.CbufSlot <= UserUboLastCbuf)
                 {
                     // 句柄在游戏自己的 UBO 里（#999 第 2 片）：照 Ryujinx（TextureBindingsManager 每笔读绑定 UBO 当时的句柄字）
