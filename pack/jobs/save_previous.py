@@ -20,7 +20,7 @@ from saves import fail, locations, stopped
 
 PREVIOUS_DIR = ".s2a_prev"
 EARLY_SECONDS = 60          # 同 host_update.TRIAL_OK_SECONDS：玩过这么久才崩不算「读存档就崩」
-GUARD_RED = "【红】存档事务"   # compat S2ASaveCommit 提交校验没过的红行前缀  # 非玩家句
+GUARD_RED = ("【红】存档事务：第 ", "和游戏写的不一样")   # compat S2ASaveCommit 提交护栏拦下那行（两段都在才算；这个前缀还有挂载 / 落盘 / 交换失败在用）  # 非玩家句
 RENAME_SWAP = 0x2
 F_FULLFSYNC = 51
 
@@ -82,7 +82,7 @@ def note_launch(c, gid, log, early_crash):
 def _guard_red(log):
     try:
         with open(log, "r", encoding="utf-8", errors="replace") as f:
-            return any(GUARD_RED in line for line in f)
+            return any(all(part in line for part in GUARD_RED) for line in f)
     except OSError:
         return False
 

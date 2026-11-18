@@ -82,7 +82,9 @@ class SavePreviousTest(unittest.TestCase):
         log.write_text("[s2a] 起局\n", encoding="utf-8")
         save_previous.note_launch(c, GID, log, True)
         self.assertEqual(save_previous.status(self.context(operation="savePrevious"))["trouble"], "earlyCrash")
-        log.write_text("[s2a] 起局\n【红】存档事务：第 3 次提交 校验没过\n", encoding="utf-8")
+        log.write_text("[s2a] 起局\n【红】存档事务：挂载失败\n", encoding="utf-8")   # 同前缀的别的存档事务失败：不算护栏
+        self.assertEqual(save_previous.status(self.context(operation="savePrevious"))["trouble"], "earlyCrash")
+        log.write_text("[s2a] 起局\n【红】存档事务：第 3 次提交 /x 时克隆出的新版本和游戏写的不一样（slot.bin），这次不提交\n", encoding="utf-8")
         self.assertEqual(save_previous.status(self.context(operation="savePrevious"))["trouble"], "guardRed")
         save_previous.note_launch(c, GID, log, False)   # 好好收局清掉
         self.assertEqual(save_previous.status(self.context(operation="savePrevious"))["trouble"], "")
