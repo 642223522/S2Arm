@@ -1,6 +1,7 @@
 """装到 Apple TV / 电视存档自动备份 / 从电视拉诊断（pack/jobs/tvos.py、diag.py，11-15 tvOS 版）。devicectl 全部打桩（组里没有 Apple TV），
 期望值按 TVPort 的规则与本文件里写明的输入手算，不跑被测实现推。"""
 import json
+import sys
 import os, plistlib, shutil, sys, unittest
 import unittest.mock as um
 from pathlib import Path
@@ -156,6 +157,26 @@ class InstallTest(TvCase):
         self.assertEqual(e.exception.code, "resource_transfer_failed")
         self.assertIn("game.img", str(e.exception))
         self.assertEqual(tvos.load_rec(self.c, "TV-UDID")["games"], {G: dict(pack="")})
+
+    def test_zst_chunks_verified_not_final_size(self):
+        # #1460：game.img 走压缩分块推（电视上旧 game.img 先截空，App 打开才拼回）：推完照最终大小核必报 0 字节。期望（手写）：
+        #   块都在且字节对 → 过；缺一块 → resource_transfer_failed；App 已在解（game.img 有内容、已解完的块删了）→ 过
+        pack = layout.path(self.c, G, "image", "tvos", ".pack")
+        sha = "ab" * 32
+        (pack / "index.tsv").write_text(f"game.img\t7\t{sha}\n")
+        man = len((pack / "manifest.json").read_bytes())
+        names = [f".incoming/game.img.{sha[:16]}.{k:04d}.zst" for k in range(2)]
+        base = {"index.tsv": len((pack / "index.tsv").read_bytes()), "manifest.json": man}
+        sys.path.insert(0, str(tvos.Path(tvos.__file__).resolve().parents[2] / "tools"))
+        import push_pack as P
+        with um.patch.object(P, "zstd_plan", lambda pk, row, say=None, env=None, **k: [3, 2] if row[0] == "game.img" else None):
+            self.run_install([(0, "")], pack_sizes=dict(base, **{"game.img": 0, names[0]: 3, names[1]: 2}))
+            with self.assertRaises(Failure) as e:
+                self.run_install([(0, "")], pack_sizes=dict(base, **{"game.img": 0, names[0]: 3}))
+            self.assertEqual(e.exception.code, "resource_transfer_failed")
+            self.run_install([(0, "")], pack_sizes=dict(base, **{"game.img": 4, names[1]: 2}))
+            with self.assertRaises(Failure):
+                self.run_install([(0, "")], pack_sizes=dict(base, **{"game.img": 0, names[0]: 1, names[1]: 2}))   # 块字节不对
 
     def test_not_built_for_tv(self):
         shutil.rmtree(layout.path(self.c, G, "image", "tvos"))
