@@ -1219,12 +1219,34 @@ def s2arm_name(c, gid):
     return (f"{base} [{gid[-4:]}]" if clash else base) + S2ARM_SUFFIX
 
 
+def link_resource(src, dst):
+    """两件套的资源本体（《文件与程序管理体系》B / L 项：资源本体不再写新文件）：游戏库里的 game.img 硬链接进「S2Arm 游戏包」，
+    文件名同这款的 .s2arm（<名>.img，手机按文件头认游戏）——同一块盘上一个文件起两个名字，不占新空间、秒过，和 .s2arm 放在一起拿。
+    已是同一个文件 → 不动；同名的是别的文件（上次链的那份 game.img 后来换过）→ 换成现在这份。建不了硬链接（exFAT / FAT 等）→ None，
+    调用方照旧给游戏库里原文件的位置（界面「显示资源文件」）。→ 链接路径 | None"""
+    try:
+        if dst.exists() and os.path.samefile(src, dst):
+            return dst
+    except OSError:
+        pass
+    tmp = dst.with_name(f".{dst.name}.{os.getpid()}.link")
+    try:
+        tmp.unlink(missing_ok=True)
+        os.link(src, tmp)
+        os.replace(tmp, dst)
+    except OSError as e:
+        tmp.unlink(missing_ok=True)
+        print(f"[s2a] 资源文件没能硬链接进游戏包文件夹（{type(e).__name__} {e.errno}），给游戏库里的原位置", file=sys.stderr, flush=True)  # 非玩家句
+        return None
+    return dst
+
+
 def export_s2arm(c, gid):
     """0.6.0 通用壳（开关后面）两件套导出里的小游戏包 .s2arm（《文件与程序管理体系》B 项、⑦ ①，11-17 维护者定）：
     tar（只用 ustar、只有普通文件条目；路径放不进 ustar 就报错）整体压一个带内容校验的 zstd 帧；
     第一个条目 s2arm.json（格式、程序号、名字版本、约定号、改写器指纹、程序 sha、资源包号、bytes = 其余条目内容字节合计、signer），
     program/（同推送的程序包：dylib、Games/<号>/、catalogue.json，未签名，留给手机签），pack/（资源包目录里除 game.img 以外的派生件）。
-    资源本体 game.img 不拷：结果给出它在游戏库里的原位置（界面「显示资源文件」）。放游戏库根的固定文件夹（s2arm_dir），
+    资源本体 game.img 不拷：同盘硬链接进同一文件夹（link_resource），建不了硬链接就给出它在游戏库里的原位置（界面「显示资源文件」）。放游戏库根的固定文件夹（s2arm_dir），
     不加锁不加权限，玩家删了下次导出重新生成；只换这一款自己的 .s2arm，同文件夹里别的东西不动。这一款的改写、出程序包都在这里前台按需做"""
     import hashlib, io as _io, tarfile
     import program_pack
@@ -1290,8 +1312,9 @@ def export_s2arm(c, gid):
     lang = ui_lang(c)   # 这份文件夹的说明（玩家删了下次导出照样写回）
     write_s2arm_readme(folder, lang)
     game_img = Path(pack) / "game.img"
+    linked = link_resource(game_img, out.with_suffix(".img")) if game_img.is_file() else None
     return dict(gameId=gid, s2armPath=str(out), s2armBytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
-                resourcePath=str(game_img) if game_img.is_file() else "", exported=True,
+                resourcePath=str(linked or game_img) if game_img.is_file() else "", resourceLinked=bool(linked), exported=True,
                 signedWith=signed_with or dict(mode="none", name="", team=None))   # 完成页：「已用 Apple ID {name} 签好」/「未签名，导入后由手机签」
 
 
