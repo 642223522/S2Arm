@@ -130,6 +130,18 @@ static const char *CS_GMEM_JSON =
 // 最小合法 SPIR-V 头（magic / 1.0 / generator 0 / bound 1 / schema 0）：计算解析只核头；纹理分类证不出时按 source 缺省当普通纹理
 static const uint32_t CS_SPV[5] = { 0x07230203u, 0x00010000u, 0u, 1u, 0u };
 
+// 计算键 .spv 声明 support_buffer（绑定 47、组 0）而 _b.json 不列 support（11-18 扫 13 份按款预编库：一款开放世界游戏 72 个计算程序里
+//   52 个 .spv 用到 support_buffer、_b.json 不列）：只含 OpName + 两条 OpDecorate，lp_spv_bindings 只读这三样
+static const char *CS_NOSUP_JSON =
+    "{\"key\":\"e0e1e2e3e4e5e6e7_b\",\"stage\":\"cs\",\"dm_ctl\":\"e0e1e2e3e4e5e6e7\",\"bindings\":["
+    "{\"msl_name\":\"cp_c0\",\"kind\":\"drvcb\",\"bank\":0,\"arg_id\":0}]}";
+static const uint32_t CS_SUP_SPV[] = {
+    0x07230203u, 0x00010000u, 0u, 3u, 0u,
+    0x00060005u, 2u, 0x70707573u, 0x5f74726fu, 0x66667562u, 0x00007265u,   // OpName %2 "support_buffer"
+    0x00040047u, 2u, 33u, 47u,                                             // OpDecorate %2 Binding 47
+    0x00040047u, 2u, 34u, 0u,                                              // OpDecorate %2 DescriptorSet 0
+};
+
 static int has(const uint8_t *j, const char *sub) { return j && strstr((const char *)j, sub) != NULL; }
 
 // 片元输出映射用例（spirv-as 汇编、spirv-val 过）：FO1 = location 1 vec4 + location 3 vec2 带 Component 1 + FragDepth 内建；
@@ -620,6 +632,35 @@ int main(void) {
             nvn_vk_program_free_compute(&cp);
         }
         free(j); j = NULL;
+        s2a_libpack_close(cl); cl = NULL;
+        // .spv 声明 support_buffer、_b.json 不列 → 照图形口径按 .spv 补出 program 级 support 行（计算带 count 1），解析成 is_support；
+        //   修前计算程序不补，后端描述符布局缺这个绑定（.spv 用到的绑定不在布局里）
+        {
+            struct trec rs[2] = {
+                { .key = 0xe0e1e2e3e4e5e6e7, .kind = 1,  .len = (uint32_t)strlen(CS_NOSUP_JSON) },
+                { .key = 0xe0e1e2e3e4e5e6e7, .kind = 52, .len = sizeof CS_SUP_SPV },
+            };
+            const uint8_t *ps[2] = { (const uint8_t *)CS_NOSUP_JSON, (const uint8_t *)CS_SUP_SPV };
+            size_t ns[2] = { strlen(CS_NOSUP_JSON), sizeof CS_SUP_SPV };
+            CHECK(mk_pack(rs, 2, ps, ns, 1) == 0, "compute support-from-spv pack written");
+            CHECK(s2a_libpack_open(&cl, g_dir) == 1 && cl, "open compute support-from-spv pack");
+            const uint8_t ke[8] = { 0xe0, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7 };
+            rc = cl ? s2a_libpack_compute_v1(cl, ke, 1, "h", "c", &j, &jl, w, sizeof w) : -9;
+            if (rc) printf("  compute_v1: %s\n", w);
+            CHECK(rc == 0 && has(j, "\"kind\":\"support\",\"stage\":\"program\",\"set\":0,\"binding\":47,\"count\":1}"),
+                  ".spv 声明 support_buffer b47、_b.json 不列 → 补出 support b47 count 1");
+            static struct nvn_vk_compute_program cp; char pw[192] = "";
+            int prc = j ? nvn_vk_program_parse_compute(j, jl, &cp, pw, sizeof pw) : -9;
+            if (prc) printf("  parse_compute: %s\n", pw);
+            int sup = 0;
+            for (int i = 0; !prc && i < cp.binding_count; i++) sup += cp.bindings[i].binding == 47 && cp.bindings[i].is_support;
+            CHECK(prc == 0 && sup == 1 && cp.support_reads_unknown == 1, "解析：b47 is_support 恰一条、读集未知（运行时整块填恒等值）");
+            if (!prc) nvn_vk_program_free_compute(&cp);
+            free(j); j = NULL;
+            s2a_libpack_close(cl); cl = NULL;
+            CHECK(mk_pack(rc4, 4, pc, nc, 1) == 0, "compute pack rewritten");
+            CHECK(s2a_libpack_open(&cl, g_dir) == 1 && cl, "reopen compute pack");
+        }
         // 负控：拿图形键（stage vs）当计算键 → REJECT；缺席键 → MISS
         uint64_t r0 = s2a_libpack_rejects(), m0 = s2a_libpack_misses();
         const uint8_t ka[8] = { 0xde, 0xad, 0xbe, 0xef, 0x00, 0x11, 0x22, 0x33 };

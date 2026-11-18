@@ -368,6 +368,8 @@ s2a_gate_step "$PY" "$android_dir/tests/compile_export_w2_test.py"
 # kindCheck 调试开关只走请求 JSON（DirectShaderCompiler.cs:39 只读 JSON、不读进程 env）：默认构建不带该键，
 # 调试门开 + debug.s2a.kind_check=0 才写 "kindCheck":false；撤成 execute 里 setenv 或删掉该键必须红（宿主 C 编译，秒级）。
 s2a_gate_step "$PY" "$android_dir/tests/direct_compile_request_host_test.py"
+# 现编时翻译器崩溃留下输入（#1501 D②）：崩溃线程正在编的请求原样落 compile-inflight-<pid>-<槽>.log；crash.c 安卓分支弱引用调（宿主 C 编译，秒级）。
+s2a_gate_step "$PY" "$android_dir/tests/compile_inflight_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/w2_compute_integration_test.py"
 # W2 single missing coordinate: standalone synthetic host contract, no provider/device wiring.
 s2a_gate_step "$PY" "$android_dir/tests/w2_single_query_test.py"
@@ -483,6 +485,7 @@ s2a_gate_step javac -encoding UTF-8 -d "$out/java" -cp "$out/java" \
 s2a_gate_step java -cp "$out/java" org.s2arm.android.ImportReceiverTest
 s2a_gate_step "$PY" "$android_dir/tests/deploy_game_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/test_app_id_test.py"
+s2a_gate_step "$PY" "$android_dir/tests/ns2_synth_nacp_test.py"   # Switch 2 合成控制数据：应用号非 0、显示版本「?」不让 aapt 停
 s2a_gate_step "$PY" "$android_dir/tests/debug_app_admission_test.py"
 s2a_gate_step javac -encoding UTF-8 -d "$out/java" -cp "$out/java" "$android_dir/tests/GameSessionAdmissionTest.java" "$android_dir/tests/GameFingerprintTest.java"
 s2a_gate_step java -cp "$out/java" org.s2arm.android.GameSessionAdmissionTest

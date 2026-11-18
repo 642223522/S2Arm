@@ -206,6 +206,48 @@ void s2a_snap_handout_range(uint64_t lo, uint64_t n, const char *name) {
     if (!s2a_snap_mode()) return;
     pthread_mutex_lock(&g_ho_mu); if (g_nhor < 64) { g_hor[g_nhor].lo = lo; g_hor[g_nhor].n = n; snprintf(g_hor[g_nhor].name, sizeof g_hor[0].name, "%s", name); g_nhor++; } pthread_mutex_unlock(&g_ho_mu);
 }
+// 交给游戏的宿主内存块（本进程里的拷贝，游戏把它的地址存进自己的数据）：如 Switch 2 程序对象里的控制段自持拷贝（graphics/nvn/gfx/nvn/hle_nvn.c ctl_intern，
+//   11-18 iPhone 大金刚：快照时刻有「设过着色器、还没首用」的程序，恢复后程序对象里是 A 进程的堆地址，首用读它 SIGSEGV）。
+//   按内容身份登记：身份 = blob:<长度>:<SHA-256 前 20 字节>，值 = 块地址；存档时块内容随快照存（blob.bin），恢复时按身份在本进程重建一份（不释放），
+//   游戏内存里的旧地址照交出指针换算成新地址。只收登记后内容不再改的块（恢复时按内容核身份，改过的块解析不了、点名报红）
+typedef struct { uint64_t p; uint32_t n; } blob_ent; static blob_ent *g_blob; static size_t g_nblob, g_capblob;
+static void blob_id(const void *p, uint32_t n, char *id, size_t cap) {
+    uint8_t md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256(p, n, md); int k = snprintf(id, cap, "blob:%u:", n);
+    for (int i = 0; i < 20 && k > 0 && (size_t)k < cap; i++) k += snprintf(id + k, cap - (size_t)k, "%02x", md[i]);
+}
+void s2a_snap_handout_blob(const void *p, uint32_t n) {
+    if (!p || !n || !s2a_snap_mode()) return;
+    char id[128]; blob_id(p, n, id, sizeof id); s2a_snap_handout_id((uint64_t)(uintptr_t)p, id);
+    pthread_mutex_lock(&g_ho_mu);
+    if (g_nblob == g_capblob) { g_capblob = g_capblob ? g_capblob * 2 : 1024; g_blob = realloc(g_blob, sizeof *g_blob * g_capblob); }
+    g_blob[g_nblob++] = (blob_ent){(uint64_t)(uintptr_t)p, n};
+    pthread_mutex_unlock(&g_ho_mu);
+}
+#define BL_MAGIC 0x31304C42u   // "BL01"：块数；每块 [长度 u32][内容]
+static int blob_save(FILE *f) {
+    pthread_mutex_lock(&g_ho_mu); uint32_t mg = BL_MAGIC; uint64_t n = g_nblob, bytes = 0; int e = fwrite(&mg, 4, 1, f) != 1 || fwrite(&n, 8, 1, f) != 1;
+    for (size_t i = 0; i < g_nblob && !e; i++) { e |= fwrite(&g_blob[i].n, 4, 1, f) != 1 || fwrite((const void *)(uintptr_t)g_blob[i].p, 1, g_blob[i].n, f) != g_blob[i].n; bytes += g_blob[i].n; }
+    pthread_mutex_unlock(&g_ho_mu);
+    if (n) LOG("即时存档：交给游戏的宿主内存块 %llu 块 %.1f KB（按内容身份，恢复时重建）", (unsigned long long)n, bytes / 1024.0);
+    return e ? -1 : 0;
+}
+// 恢复：第一次按 blob: 身份解析时读 blob.bin，每块在本进程拷一份、按身份排序；之后二分查
+typedef struct { char id[64]; uint64_t p; } blob_res; static blob_res *g_blres; static size_t g_nblres; static int g_blob_loaded; static const char *g_blob_dir;
+static int blres_cmp(const void *a, const void *b) { return strcmp(((const blob_res *)a)->id, ((const blob_res *)b)->id); }
+static FILE *open_in(const char *dir, const char *name, const char *mode);
+static uint64_t blob_resolve(const char *id) {
+    if (!g_blob_loaded) { g_blob_loaded = 1; FILE *f = g_blob_dir ? open_in(g_blob_dir, "blob.bin", "rb") : NULL; uint32_t mg = 0; uint64_t n = 0;
+        if (!f || fread(&mg, 4, 1, f) != 1 || mg != BL_MAGIC || fread(&n, 8, 1, f) != 1) LOG("【红】即时存档恢复：快照缺宿主内存块表（blob.bin）");
+        else { g_blres = calloc(n ? n : 1, sizeof *g_blres);
+            for (uint64_t i = 0; i < n; i++) { uint32_t len = 0; if (fread(&len, 4, 1, f) != 1 || !len || len > (64u << 20)) break; void *c = malloc(len);
+                if (!c || fread(c, 1, len, f) != len) { free(c); break; }
+                blob_id(c, len, g_blres[g_nblres].id, sizeof g_blres[0].id); g_blres[g_nblres++].p = (uint64_t)(uintptr_t)c; }
+            qsort(g_blres, g_nblres, sizeof *g_blres, blres_cmp);
+            LOG("即时存档恢复：宿主内存块 %zu 块按内容重建（表里 %llu 块）", g_nblres, (unsigned long long)n); }
+        if (f) fclose(f); }
+    blob_res k; snprintf(k.id, sizeof k.id, "%s", id); const blob_res *r = bsearch(&k, g_blres, g_nblres, sizeof *g_blres, blres_cmp);
+    return r ? r->p : 0;
+}
 #define HO_MAGIC 0x33304F48u   // "HO03"：值 + 身份；段 = 名字 + 起点 + 长度
 int s2a_snap_hostslot_at(size_t i, uint64_t *where, uint64_t *v);   // loader.c
 static int handout_save(FILE *f) {
@@ -220,6 +262,7 @@ static int handout_save(FILE *f) {
 uint64_t s2a_snap_hostslot_value(uint64_t where);   // loader.c
 uint64_t nvn_snap_proc(const char *name, int counting) __attribute__((weak_import));   // hle_nvn.c
 static uint64_t handout_resolve(const char *id) {
+    if (!strncmp(id, "blob:", 5)) return blob_resolve(id);
     if (!strncmp(id, "slot:", 5)) return s2a_snap_hostslot_value(strtoull(id + 5, NULL, 16));
     if (!strncmp(id, "nvn:", 4) && nvn_snap_proc) { char nm[128]; snprintf(nm, sizeof nm, "%s", id + 4); char *c = strrchr(nm, ':'); if (!c) return 0; int cnt = c[1] == 'c'; *c = 0; return nvn_snap_proc(nm, cnt); }
     return 0;
@@ -347,6 +390,7 @@ static void snap_take_(const char *final_dir, int exit_after) {
     f = open_in(dir, "hlog.bin", "wb"); e |= !f || s2a_snap_hlog_save(f) || close_sync(f);
     f = open_in(dir, "hslot.bin", "wb"); e |= !f || s2a_snap_hostslots_save(f) || close_sync(f);
     f = open_in(dir, "handout.bin", "wb"); e |= !f || handout_save(f) || close_sync(f);
+    f = open_in(dir, "blob.bin", "wb"); e |= !f || blob_save(f) || close_sync(f);
     e |= !nvn_snap_save || nvn_snap_save(dir) != 0;   // 直连图形层实时状态
     { char p[2048]; snprintf(p, sizeof p, "%s/ipc.bin", dir); if (!S2A_SnapLogSave) { LOG("【红】即时存档：宿主没链服务层，无请求日志"); e = 1; } else e |= S2A_SnapLogSave(p) != 0; }
     { char p[2048]; snprintf(p, sizeof p, "%s/audio.bin", dir); e |= !S2A_SnapAudioSave || S2A_SnapAudioSave(p) != 0; }
@@ -593,6 +637,7 @@ static int load_mem(const char *dir, uint64_t *raw_out) {
     double tp0 = now_s();
     // 游戏把宿主函数地址拷进了自己的数据（分配器函数表等）：按 A→B 宿主地址对照换算。换算表先建好，写回时每段解压完（还在缓存里）当场换算，不再整片内存扫第二遍
     int hobad = 0;   // 交出指针 / 数据段换算失败（与解压失败分开计）
+    g_blob_dir = dir;
     uint64_t nm = 0, nunres = 0, nsame = 0, *from = NULL, *to = NULL, *rg = calloc(128, 8), *rgto = calloc(64, 8), *hk = NULL, *hv = NULL; int nr2 = 0; size_t hcap = 1;
     { FILE *hf = open_in(dir, "handout.bin", "rb"); uint32_t mg = 0;
       if (!hf || fread(&mg, 4, 1, hf) != 1 || mg != HO_MAGIC || fread(&nm, 8, 1, hf) != 1) { LOG("【红】即时存档恢复：快照缺交出指针表（或是旧格式）"); hobad++; nm = 0; }
