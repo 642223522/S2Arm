@@ -116,7 +116,7 @@ def _find(root, gid):
         rd, code = _parts(d)
         if not (rd or code):
             continue
-        target = next((q.upper() for q in reversed((root.name,) + rel) if GID_RE.fullmatch(q)), gid)
+        target = next((q.upper() for q in reversed((root.parent.name, root.name) + rel) if GID_RE.fullmatch(q)), gid)
         if target != gid:
             if not gid.endswith("0") or target[:-1] != gid[:-1]:
                 notes.append("「%s」是给另一款游戏（%s）的，没收" % ("/".join(rel) or d.name, target))

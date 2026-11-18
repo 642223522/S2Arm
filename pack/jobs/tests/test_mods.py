@@ -133,14 +133,17 @@ class ModsTests(unittest.TestCase):
 
     def test_direct_target_directory_and_romfs_keep_their_full_target(self):
         target = GID[:-1] + "1"
-        source = self.tree({f"{target}/romfs/a.bin": b"sub"}) / target
+        source = self.tree({f"{target}/romfs/a.bin": b"sub", f"{target}/Variant/romfs/a.bin": b"sub"}) / target
         home = self.t / "lib" / GID / "mods"
-        for path in (source, source / "romfs"):
+        for path in (source / "romfs", source / "Variant", source / "Variant" / "romfs"):
             with self.subTest(path=path):
                 result = mods.import_paths(self.c, self.game, [str(path)])
                 name, = result["imported"]
                 self.assertEqual((home / name / f"romfs.{target}/a.bin").read_bytes(), b"sub")
                 self.assertFalse((home / name / "romfs").exists())
+        result = mods.import_paths(self.c, self.game, [str(source)])
+        self.assertEqual(len(result["imported"]), 2)
+        self.assertTrue(all((home / name / f"romfs.{target}/a.bin").is_file() for name in result["imported"]))
 
     def test_rejects(self):
         with self.assertRaises(Failure):   # 没有 romfs
