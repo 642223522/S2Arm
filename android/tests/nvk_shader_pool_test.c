@@ -1125,6 +1125,19 @@ int main(int argc, char **argv) {
           "session stats count unique failed program once: %s", last_stats);
     fake_array_count = 0;
     {
+        // 编译器把被拒消息整条守在 245 个字符以内（DirectShaderCompiler.cs HostMessageMaxChars）：compile_request.c 把整段错误 JSON
+        // 抄进 reason[320]（≤ 319 个字符），信封 {"schema":…,"code":"UNSUPPORTED_PROGRAM","message":"…"} 占 74 个，245 + 74 = 319 正好装下；
+        // 再多一个字符 JSON 被截断、compiler_rejected 解析不出来，整条归成 unclassified。恰好 245 个字符的消息必须仍照常归类
+        char edge[640], edge_msg[300];
+        {
+            size_t n = (size_t)snprintf(edge_msg, sizeof edge_msg,
+                "fs: texture handle from cbuf slot 65538 is not implemented (handle=809517146, arrayLength=1, count=1, request=%064d)"
+                " [kind=texture word=90 word2=257 type=3 cbuf=2/0 key=", 0);
+            memset(edge_msg + n, 'k', 244 - n); edge_msg[244] = ']'; edge_msg[245] = 0;
+            CHECK(strlen(edge_msg) == 245, "boundary message is exactly 245 characters: %zu", strlen(edge_msg));
+            snprintf(edge, sizeof edge, "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"UNSUPPORTED_PROGRAM\",\"message\":\"%s\"}", edge_msg);
+            CHECK(strlen(edge) == 319, "boundary error JSON is exactly 319 characters: %zu", strlen(edge));
+        }
         const char *errors[] = {
             "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"UNSUPPORTED_PROGRAM\",\"message\":\"fs: texture handle from cbuf slot 0 is not implemented\"}",
             "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"UNSUPPORTED_PROGRAM\",\"message\":\"fs: separate sampler slot is not implemented\"}",
@@ -1132,10 +1145,18 @@ int main(int argc, char **argv) {
             "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"MISSING_FACT\",\"message\":\"QueryTextureFormat has no source (stage=fs,handle=3,cbufSlot=-1,format=Unknown)\"}",
             "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"MISSING_FACT\",\"message\":\"QueryTextureCoordNormalized has no source (stage=fs,handle=3,cbufSlot=-1)\"}",
             "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"MISSING_FACT\",\"message\":\"missing fact\"}",
+            // #999：编译器在「texture handle from cbuf slot N」后面补的现场（绑定种类 / 字偏移 / 类型 / 两个常量缓冲号；用户 UBO 那一处另有 handle / 个数 / 数组长度 / 程序键）：归类不变
+            "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"UNSUPPORTED_PROGRAM\",\"message\":\"fs: texture handle from cbuf slot 65538 is not implemented"
+                " (handle=809517146, arrayLength=1, count=1, request=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef)"
+                " [kind=texture word=90 word2=257 type=3 cbuf=2/0]\"}",
+            "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"UNSUPPORTED_PROGRAM\",\"message\":\"fs: texture handle from cbuf slot 4 is not implemented (offset outside 64 KiB)"
+                " [kind=texture handle=-2147483648 word=0 word2=0 type=8 count=1 array=1 key=0123456789abcdef0123456789abcdef0123456789abcdef]\"}",
+            edge,
             "invalid error"};
         const char *reasons[] = {"cbuf_handle_unsupported", "separate_sampler_unsupported",
             "MISSING_FACT.QueryTextureArrayLengthFromBuffer", "MISSING_FACT.QueryTextureFormat",
-            "MISSING_FACT.QueryTextureCoordNormalized", "MISSING_FACT.unclassified", "unclassified"};
+            "MISSING_FACT.QueryTextureCoordNormalized", "MISSING_FACT.unclassified",
+            "cbuf_handle_unsupported", "cbuf_handle_unsupported", "cbuf_handle_unsupported", "unclassified"};
         for (unsigned i = 0; i < sizeof errors / sizeof errors[0]; i++) {
             rp_shader_reset(); nvn_unimpl_reset(); last_stats[0] = last_reason[0] = 0;
             fake_compile_error = errors[i]; bind_pools(524288); compiler_calls = 0;

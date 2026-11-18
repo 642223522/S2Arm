@@ -864,6 +864,12 @@ internal static unsafe class Program
                       error.Message.Contains("handle=") && error.Message.Contains("arrayLength=") &&
                       error.Message.Contains("count=") && error.Message.Contains("request=" + reqSha),
                     "runtime handle reports its actual upstream cbuf limitation with shape and request sha: " + error.Message);
+                // #999：请求的 requestId 经 Compile → 分配器 → 被拒消息，原样出现在末尾「[kind=… key=…]」里（真实翻译器、真实请求）；
+                //   #1488 的基础消息已带 handle= / arrayLength= / count= / request=<sha>，现场不再重复写这三项
+                Check(error.Message.Contains(" [kind=texture word=0 word2=0 type=4 key=runtime-pool]") && error.Message.EndsWith("]") &&
+                      !error.Message.Contains("] [") && error.Message.IndexOf(" [kind=", StringComparison.Ordinal) > error.Message.IndexOf("request=" + reqSha + ")", StringComparison.Ordinal),
+                    "the request's requestId reaches the reject message through the real compile path, after the shape facts: " + error.Message);
+                Check(error.Message.Length <= 245, "the real-path reject message stays inside the host's 245-char limit (" + error.Message.Length + ")");
             }
         }
 
@@ -1901,9 +1907,9 @@ internal static unsafe class Program
                   uboAllocator.Bindings.Last().UboOffset == 0,
                 "a c4 handle is not bound as the combined slot with the same handle index (it is uboSlot 1 / uboOffset 0)");
             // 游戏 UBO 句柄只接单个、非分离的采样贴图；其余形态如实报未接，不给 uboSlot
-            string UboShape(string kind, string source, int count, int cbufSlot, int handleIndex, int arrayLength, bool separate)
+            string UboShape(string kind, string source, int count, int cbufSlot, int handleIndex, int arrayLength, bool separate, string requestKey = null)
             {
-                var allocator = new DirectAllocator(matrixProfile);
+                var allocator = new DirectAllocator(matrixProfile) { RequestKey = requestKey };
                 var b = new DirectBinding("fs", kind, source, kind == "image" ? 3 : 2, 0, count);
                 allocator.Bindings.Add(b);
                 var descriptor = new TextureDescriptor(kind == "image" ? 3 : 2, 0, source == "buffer-texture" ? SamplerType.TextureBuffer : SamplerType.Texture2D,
@@ -1927,13 +1933,15 @@ internal static unsafe class Program
                 }
             }
             Check(UboShape("texture", "texture", 1, 18, 0x3FFF, 1, false) == "bound 15/65532/-1", "c18 last word of a 64 KiB UBO is bound");
-            foreach (var (what, shape, outcome) in new[] {
-                ("image", "image", UboShape("image", "image", 1, 4, 256, 1, false)),
-                ("buffer texture", "buffer texture", UboShape("texture", "buffer-texture", 1, 4, 256, 1, false)),
-                ("separate", "separate", UboShape("texture", "texture", 1, 4, 256, 1, true)),
-                ("array", "array", UboShape("texture", "texture", 4, 4, 0, 4, false)),
-                ("offset past 64 KiB", "offset outside 64 KiB", UboShape("texture", "texture", 1, 4, 0x4000, 1, false)) })
-                Check(outcome == "UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 4 is not implemented (" + shape + ")",
+            // 被拒消息尾巴（#999）：「 [kind=<绑定种类> handle=<HandleIndex 原值> word=<字偏移> count=<绑定个数> array=<数组长度> key=<程序键，没有写 ->]」；
+            //   用例不给程序键，所以是 key=-；期望值手算：普通句柄 word = handle；count / array 就是 UboShape 传进去的两个数
+            foreach (var (what, shape, tail, outcome) in new[] {
+                ("image", "image", "[kind=image handle=256 word=256 count=1 array=1 key=-]", UboShape("image", "image", 1, 4, 256, 1, false)),
+                ("buffer texture", "buffer texture", "[kind=texture handle=256 word=256 count=1 array=1 key=-]", UboShape("texture", "buffer-texture", 1, 4, 256, 1, false)),
+                ("separate", "separate", "[kind=texture handle=256 word=256 count=1 array=1 key=-]", UboShape("texture", "texture", 1, 4, 256, 1, true)),
+                ("array", "array", "[kind=texture handle=0 word=0 count=4 array=4 key=-]", UboShape("texture", "texture", 4, 4, 0, 4, false)),
+                ("offset past 64 KiB", "offset outside 64 KiB", "[kind=texture handle=16384 word=16384 count=1 array=1 key=-]", UboShape("texture", "texture", 1, 4, 0x4000, 1, false)) })
+                Check(outcome == "UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 4 is not implemented (" + shape + ") " + tail,
                     "user-UBO " + what + " handle stays unsupported: " + outcome);
             // 图像句柄从 c2 图像句柄表读（字 72 + 2k，空轨 2nd 9000 计算「cbuf slot 2」）：有同字直接事实（宿主按图像槽出）→ 绑同号图像槽；
             //   没有事实的槽、表外的字、数组照旧报未接
@@ -1942,13 +1950,63 @@ internal static unsafe class Program
             foreach (var (what, handle, count, len) in new[] { ("without a fact", 74, 1, 1), ("outside the image table", 88, 1, 1), ("as an array", 72, 4, 4) })
             {
                 string r = UboShape("image", "image", count, 2, handle, len, false);
-                Check(r.StartsWith("UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 2 is not implemented (handle=") &&
-                      r.Contains("arrayLength=" + len) && r.Contains("count=" + count),
+                // c2 / 打包槽那一处：#1488 的基础消息已带 handle= / arrayLength= / count= / request=<sha>（sha 是本进程里最后一次 Compile 的，这里不比），
+                //   现场只补 kind / word（没给程序键，所以 key 是 -）
+                Check(r.StartsWith("UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 2 is not implemented (handle=" + handle +
+                                   ", arrayLength=" + len + ", count=" + count + ", request=") &&
+                      r.EndsWith(") [kind=image word=" + handle + " key=-]"),
                     "c2 image word " + what + " stays unsupported: " + r);
             }
             string c19 = UboShape("texture", "texture", 1, 19, 256, 1, false);
-            Check(c19.StartsWith("UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 19 is not implemented (handle="),
+            Check(c19.StartsWith("UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 19 is not implemented (handle=256, arrayLength=1, count=1, request=") &&
+                  c19.EndsWith(") [kind=texture word=256 key=-]"),
                 "cbuf 19 is outside the user UBO range: " + c19);
+            // #999 被拒现场：字段按重要性排序（kind、handle、word…、cbuf、count、array、key），放不下从最后一项起整项丢；
+            //   程序键原样带出（≤ 48 个字符，超出的截掉）；分离 / 带类型的句柄按 UnpackOffsets 拆字偏移与类型，槽号带高 16 位时拆两个常量缓冲号；
+            //   宿主把整段错误 JSON 抄进 reason[320]（≤ 319 个字符）、截断了归成 unclassified；JSON 信封占 74 个字符，所以消息整条 ≤ 245。期望值手算：
+            //   809517146 = 0x3040405A → 低 14 位 0x5A = 90（贴图字）、14..27 位 0x101 = 257（采样器字）、高 4 位 3（SeparateConstantSamplerHandle）；
+            //   65538 = 0x10002 → 贴图在 c2、采样器在 c(高 16 位 1 − 1) = c0。
+            const string Hex48 = "0123456789abcdef0123456789abcdef0123456789abcdef";
+            //   用户 UBO 那一处（#1488 没有补过）：基础消息短，什么都放得下，键放最后
+            string withKey = UboShape("texture", "texture", 1, 4, 0x4000, 1, false, Hex48);
+            Check(withKey == "UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 4 is not implemented (offset outside 64 KiB) " +
+                             "[kind=texture handle=16384 word=16384 count=1 array=1 key=" + Hex48 + "]",
+                "user-UBO reject message carries the 48-char program key verbatim, last: " + withKey);
+            string longKey = UboShape("texture", "texture", 1, 4, 0x4000, 1, false, Hex48 + "ZZZZZZZZ" + new string('Y', 71));
+            Check(longKey == withKey && !longKey.Contains("Z"), "program key longer than 48 chars is cut to its first 48: " + longKey);
+            Check(UboShape("texture", "texture", 1, 4, 0x4000, 1, false, "") == UboShape("texture", "texture", 1, 4, 0x4000, 1, false),
+                "an empty program key is written as '-', same as no key");
+            //   c2 / 打包槽那一处：基础消息（#1488，含 64 个字符的请求 sha）典型已有 ~176 个字符，现场尽量放，放不下的丢
+            string packed = UboShape("texture", "texture", 1, 65538, 809517146, 1, false, Hex48);
+            int shaAt = packed.IndexOf("request=", StringComparison.Ordinal);
+            Check(shaAt > 0 && packed.IndexOf(')', shaAt) - (shaAt + "request=".Length) == 64,
+                "the base message carries a 64-char request sha (the budget below assumes it): " + packed);
+            Check(packed.StartsWith("UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 65538 is not implemented (handle=809517146, arrayLength=1, count=1, request=") &&
+                  packed.EndsWith(") [kind=texture word=90 word2=257 type=3 cbuf=2/0]"),
+                "packed separate-constant-sampler handle is decoded into words, type and both cbufs; the 48-char key no longer fits and is dropped whole: " + packed);
+            string packedShortKey = UboShape("texture", "texture", 1, 65538, 809517146, 1, false, "abc");
+            Check(packedShortKey.EndsWith(") [kind=texture word=90 word2=257 type=3 cbuf=2/0 key=abc]"),
+                "a key that fits is kept, after the decoded fields: " + packedShortKey);
+            //   边界：这条的基础消息 175 个字符 + 现场 " [kind=texture word=90 word2=257 type=3 cbuf=2/0" 48 个 + " key=" 5 个 + 键 + "]"，键 16 个字符时正好 245；17 个字符就是 246，整项丢
+            string packedEdge = UboShape("texture", "texture", 1, 65538, 809517146, 1, false, new string('e', 16));
+            Check(packedEdge.Length - "UNSUPPORTED_PROGRAM ".Length == 245 && packedEdge.EndsWith(" cbuf=2/0 key=" + new string('e', 16) + "]"),
+                "a tail that ends exactly at 245 characters is kept: " + packedEdge.Length + " " + packedEdge);
+            string packedOver = UboShape("texture", "texture", 1, 65538, 809517146, 1, false, new string('e', 17));
+            Check(packedOver.EndsWith(" cbuf=2/0]") && !packedOver.Contains("key="),
+                "one character more and the key is dropped whole, not cut: " + packedOver);
+            // 最坏情形：槽号 / 句柄取 int 极值、个数 / 数组长度取合同上限 1048576、键 127 个字符（两处消息出口都有）。
+            //   整条 ≤ 245、前缀不动；有 key 就是完整的 48 个字符收尾（不截半项），一项都放不下就没有尾巴
+            string[] worst = {
+                UboShape("texture", "texture", 1048576, int.MaxValue, int.MinValue, 1048576, false, new string('K', 127)),
+                UboShape("texture", "texture", 1048576, 18, int.MinValue, 1048576, false, new string('K', 127)),
+                UboShape("texture", "texture", 1, 18, int.MinValue, 1, false, new string('K', 127)),
+                UboShape("texture", "texture", 1, 4, int.MinValue, 1, true, new string('K', 127)),
+                UboShape("image", "image", 1048576, 4, int.MaxValue, 1048576, false, new string('K', 127)),
+                UboShape("texture", "texture", 1048576, 0x7FFF0002, 0x3040405A, 1048576, false, new string('K', 127)) };
+            foreach (string w in worst)
+                Check(w.StartsWith("UNSUPPORTED_PROGRAM ") && w.Length - "UNSUPPORTED_PROGRAM ".Length <= 245 && w.Contains(" is not implemented (") &&
+                      (w.Contains(" key=") ? w.EndsWith(" key=" + new string('K', 48) + "]") : (w.EndsWith(")") || w.EndsWith("]"))),
+                    "worst-case reject message stays inside the host's 245-char limit (" + (w.Length - "UNSUPPORTED_PROGRAM ".Length) + "): " + w);
             // Facts alone do not implement separate binding; the production resolver must still refuse it.
             var separateAllocator = new DirectAllocator(matrixProfile);
             separateAllocator.Bindings.Add(new DirectBinding("fs", "texture", "test", 2, 0, 1));

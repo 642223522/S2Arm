@@ -45,6 +45,8 @@ namespace S2A.DirectCompiler
         private int _uniforms, _storage, _textures, _images;
         public readonly int ReservedConstantBuffers;
         public readonly List<DirectBinding> Bindings = new();
+        // 请求里的 requestId 原样（宿主：各阶段 8 字节程序键的十六进制连写）。只在被拒的错误消息里标出是哪个程序，不参与任何判断；缺省 null（离线 / 用例）。
+        public string RequestKey;
 
         public DirectAllocator(DirectProfile profile)
         {
