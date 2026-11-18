@@ -9,14 +9,14 @@
   python -m pack.jobs.impactor guide [--ipa <ipa>]  生成并打开分步引导页（pack/jobs/impactor_guide.json → 本机临时 HTML）
   python -m pack.jobs.impactor explain "<报错原文>"  Impactor / 侧载工具报错 → 共用错误码 + 处理办法（pack/jobs/errors.py）
 
-实测口径（11-04 Windows 出包机 + 测试设备2）：Impactor v2.7.2 缺省设置签装，可用内存 8177 MB（保住「提高内存上限」）；同版本经 Wi-Fi 自动续签后仍 8177 MB。"""
+实测口径（11-04 Windows 出包机 + 测试设备2）：Impactor v2.7.2 缺省设置签装（11-17 升 v2.7.3：相对 2.7.2 只改登录时 anisette 头的大小写与 Mac 设备号两处，签名与权限代码未动，玩家反馈 2.7.3 登录恢复），可用内存 8177 MB（保住「提高内存上限」）；同版本经 Wi-Fi 自动续签后仍 8177 MB。"""
 import glob, json, os, re, subprocess, sys, tempfile, urllib.request, webbrowser
 
 H = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, H)
 from errors import recovery   # noqa: E402
 
-TESTED = '2.7.2'
+TESTED = '2.7.3'
 RELEASE_PAGE = f'https://github.com/claration/impactor/releases/tag/v{TESTED}'
 LATEST_API = 'https://api.github.com/repos/claration/impactor/releases/latest'
 PRODUCT = 'plumeimpactor'
@@ -26,12 +26,12 @@ PRODUCT = 'plumeimpactor'
 BUNDLE_DIR = 'ThirdParty/Impactor'
 IMPACTOR_EXE = 'Impactor-windows-x86_64-portable.exe'
 PLUMESIGN_EXE = 'plumesign-windows-x86_64.exe'
-BUNDLED = {IMPACTOR_EXE: 'f493cd99081370dca7c677676e119d8808418ebccab49e1f219744b3b71e88ef',
-           PLUMESIGN_EXE: 'b965e51a613341cb8c7e0f3594b24c09243a235b4187f669ea958a548e6a2fe0'}
+BUNDLED = {IMPACTOR_EXE: 'ebf939f8c8e74b4cd693d2f9871db4b8304f12396181fdd17404a127427b9923',
+           PLUMESIGN_EXE: '94664749fbbceb9a16bf89583f473dafb9b35c8d058a9d8665dc963b3453c6fc'}
 # Mac 启动器随包同版 plumesign（0.6.0 通用壳：Mac 的 Apple ID 改用它登录、签名，自管私钥，免费团队也能签程序库）。
 #   官方发布页原文件，SHA-256 与 GitHub 发布页 digest 一致（11-17 核）；Mac 发版要公证，随包时由 sign_release.sh 用我们的开发者身份重签外层签名，内容不改
 PLUMESIGN_MAC = 'plumesign-macos-universal'
-BUNDLED_MAC = {PLUMESIGN_MAC: 'f07f8d25813e6a8c1e0e5ae8cec53e795b496c7f1fb6262eb725fde36eb3dafa'}
+BUNDLED_MAC = {PLUMESIGN_MAC: '24bdc78f334f7db324d0d3ae35b1fc67d69f3f8f4a354d10b9967bc3fc261a08'}
 PLUME_HOME_ENV = 'S2A_PLUME_HOME'   # 设了就是 plumesign 的数据目录（XDG_CONFIG_HOME，下面 PlumeImpactor/）：Mac 通用壳放启动器私有目录，不碰玩家 ~/.config
 DOWNLOAD = f'https://github.com/claration/impactor/releases/download/v{TESTED}/'
 

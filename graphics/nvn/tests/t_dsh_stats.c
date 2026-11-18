@@ -23,6 +23,7 @@ static _Atomic int compiler_calls, variant_calls, se_calls, vp_calls; static int
 static void (*registered)(int);
 void s2a_direct_summary_register(void (*fn)(int)) { registered = fn; }
 int s2a_gfx_mode(void) { return mode; }
+const char *s2a_app_version(void) { return ""; }   // 宿主 host_adapt.m 给 App 版本；本测的计数文件「app」由 sfb_write 参数直接给
 int mtl_shmap_known(const char *key) { (void)key; return known; }
 int mtl_shlib_has(const char *key) { (void)key; return inlib; }
 static char rt_stage[16];   // 最近一次 mtl_shmap_rt_add 的阶段名（32 / 33 核）
@@ -338,6 +339,20 @@ int main(void) {
         int ok = WIFEXITED(st) && WEXITSTATUS(st) == 0 && !strcmp(buf, n == 6 ? "" : line);
         printf("%s 现编汇总场景 %d\n", ok ? "✓" : "✗", n);
         if (!ok) { bad++; puts(buf); }
+    }
+    {   // 着色器覆盖计数文件（sfb_write）：期望手算——新建计 2、再加 1 得 3、"app" 照给的写；兜底目录不是 …/wire/<程序号>/shaders 形状 → -1、不写文件
+        char t[] = "/tmp/t_dsh_sfb.XXXXXX"; if (!mkdtemp(t)) { puts("✗ 建临时目录失败"); return 1; }
+        char fb[512], js[600], b[256]; snprintf(fb, sizeof fb, "%s/0400486024DEC000/wire/0400486024DEC000/shaders", t); snprintf(js, sizeof js, "%s/0400486024DEC000/shader_fallback.json", t);
+        char mk[600]; snprintf(mk, sizeof mk, "mkdir -p '%s'", fb); system(mk);
+        int r1 = sfb_write(fb, 2, "0.6.0"); FILE *f = fopen(js, "r"); size_t z = f ? fread(b, 1, sizeof b - 1, f) : 0; if (f) fclose(f); b[z] = 0;
+        unsigned long long c1 = 0; char app1[16] = ""; sscanf(strstr(b, "\"count\"") ? strstr(b, "\"count\"") : "", "\"count\": %llu", &c1); const char *ap = strstr(b, "\"app\": \""); if (ap) sscanf(ap + 8, "%15[^\"]", app1);
+        int r2 = sfb_write(fb, 1, ""); f = fopen(js, "r"); z = f ? fread(b, 1, sizeof b - 1, f) : 0; if (f) fclose(f); b[z] = 0;
+        unsigned long long c2 = 0; sscanf(strstr(b, "\"count\"") ? strstr(b, "\"count\"") : "", "\"count\": %llu", &c2);
+        char bad_fb[512], bad_js[600]; snprintf(bad_fb, sizeof bad_fb, "%s/elsewhere/shaders", t); snprintf(bad_js, sizeof bad_js, "%s/shader_fallback.json", t);
+        int r3 = sfb_write(bad_fb, 1, "x"); int none = access(bad_js, F_OK) != 0;
+        int ok = r1 == 0 && c1 == 2 && !strcmp(app1, "0.6.0") && r2 == 0 && c2 == 3 && r3 == -1 && none;
+        printf("%s 着色器覆盖计数文件：新建 %llu（期望 2）、app %s（期望 0.6.0）、再加 1 → %llu（期望 3）、别的形状返回 %d（期望 -1）且不写文件 %d（期望 1）\n", ok ? "✓" : "✗", c1, app1, c2, r3, none);
+        bad += !ok; snprintf(mk, sizeof mk, "rm -rf '%s'", t); system(mk);
     }
     printf("%s t_dsh_stats：50 场景，%d 处不符\n", bad ? "✗" : "✓", bad); return bad != 0;
 }
