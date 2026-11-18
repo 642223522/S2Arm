@@ -13,7 +13,8 @@ set -u; cd "$(dirname "$0")/.." || exit 1
 T=$(mktemp -d "${TMPDIR:-/tmp}/pc_selfsign.XXXXXX"); trap 'rm -rf "$T"' EXIT; bad=0
 ck() { if eval "$2"; then echo "  通 $1"; else echo "  【红】$1"; bad=1; fi; }
 B=${S2A_SELFSIGN_BIN:-build/selfsign/release/s2a-selfsign}
-[ -x "$B" ] || cargo build -q --release --manifest-path pack/selfsign/Cargo.toml --target-dir build/selfsign || { echo "✗ pc_selfsign：编不出 s2a-selfsign"; exit 1; }
+CARGO=${CARGO:-$(command -v cargo || echo "$HOME/.cargo/bin/cargo")}   # 门禁机 PATH 里没有 cargo（同 launchers/macos/bundle_engine.py 的找法）
+[ -x "$B" ] || { [ -x "$CARGO" ] || { echo "（环境未就绪：没有 cargo）"; exit 75; }; "$CARGO" build -q --release --manifest-path pack/selfsign/Cargo.toml --target-dir build/selfsign; } || { echo "✗ pc_selfsign：编不出 s2a-selfsign"; exit 1; }
 cd "$T"
 printf 'int f(void){return 1;}\nint g(void){return 2;}\n' > a.c && cc -arch arm64 -dynamiclib -o in.dylib a.c && codesign -f -s - in.dylib 2>/dev/null || { echo "✗ 造不出 ad-hoc dylib"; exit 1; }
 openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj '/CN=pc_selfsign_test/OU=ABCDE12345' -addext 'keyUsage=critical,digitalSignature' \
