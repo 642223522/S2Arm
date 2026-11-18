@@ -55,7 +55,7 @@ if { [ "$mode" = "--tbuf-compiler-core" ] || [ -z "$mode" ]; } && [ -z "${S2A_VU
      [ ! -f "$repo/build/tbuf-real-red/profile.json" ] || [ ! -f "$tbuf_cli" ]; }; then
     python3 "$repo/android/tests/tbuf_compiler_chain_test.py"
 fi
-if { [ "$mode" = "--shown-only" ] || [ "$mode" = "--descriptor-indexing" ] || [ "$mode" = "--compute-workgroup" ] || [ "$mode" = "--zero-mask-core" ] || [ "$mode" = "--wsi-extent" ] || [[ "$mode" == --pool-table* ]] || [ -z "$mode" ] || [[ "$mode" == --tbuf-* ]] || [ "$mode" = "--feedback-core" ]; } && [ -z "${S2A_VULKAN_IMAGE_ID:-}" ]; then
+if { [ "$mode" = "--shown-only" ] || [ "$mode" = "--descriptor-indexing" ] || [ "$mode" = "--compute-workgroup" ] || [ "$mode" = "--zero-mask-core" ] || [ "$mode" = "--wsi-extent" ] || [[ "$mode" == --pool-table* ]] || [ -z "$mode" ] || [[ "$mode" == --tbuf-* ]] || [ "$mode" = "--feedback-core" ] || [[ "$mode" == --feedback-read* ]]; } && [ -z "${S2A_VULKAN_IMAGE_ID:-}" ]; then
     . "$repo/android/tools/ndk_toolchain.sh"
     ndk=$(s2a_ndk_resolve) || { echo 'NDK 29 missing' >&2; exit 2; }
     grep -q '^Pkg.Revision = 29\.0\.14206865$' "$ndk/source.properties" || { echo 'NDK 29.0.14206865 required' >&2; exit 2; }
@@ -198,11 +198,18 @@ fi
 # 上面 find_icd / find_layer 已按通配找到 lavapipe 与 validation 层（各发行版 ICD 文件名不一，如 lvp_icd.json / lvp_icd.x86_64.json），
 #   原样传给池表用例，只留这一处负责找（11-17：池表用例自己只认 lvp_icd.x86_64.json，CI 上找不到、退 2，contract-sim 四片全红）
 export S2A_LAVAPIPE_ICD="$icd" S2A_VK_LAYER_DIR="$layer"
+if [ "$mode" = --feedback-read ]; then
+    exec bash "$repo/android/tests/vk/feedback_read.sh"
+fi
+if [ "$mode" = --feedback-read-mask-repro ]; then
+    exec bash "$repo/android/tests/vk/feedback_read.sh" --mask-repro
+fi
 if [ "$mode" = --feedback-core ]; then
     exec bash "$repo/android/tests/vk/feedback.sh"
 fi
 if [ -z "$mode" ]; then
     bash "$repo/android/tests/vk/feedback.sh"
+    bash "$repo/android/tests/vk/feedback_read.sh"
 fi
 if [ "$mode" = --zero-mask-core ]; then
     exec bash "$repo/android/tests/vk/zero_mask.sh"
@@ -351,7 +358,7 @@ case "$mode" in
     --tsan) cflags+=(-fsanitize=thread) ;;
     --asan) cflags+=(-fsanitize=address,undefined -fno-omit-frame-pointer) ;;
     --shown-only) cflags+=(-DS2A_C883_TEST=1) ;;
-    ""|--clear-capacity|--clear-capacity-neg|--cmdpool-only|--cmdpool-neg|--sampler-minmax-only|--c63-same-view|--msaa-only|--msaa-neg-pick|--msaa-neg-pipe|--msaa-neg-sampled|--msaa-neg-attachment|--present-only|--present-upscale|--separate-core|--separate-neg-sampler|--tbuf-core|--tbuf-compiler-core|--tbuf-neg-resolve|--tbuf-neg-format|--tbuf-neg-elements|--gs-only|--gs-compiler|--gs-core|--gs-no-cap|--gs-neg-stage|--gs-neg-flags|--gs-neg-cap|--stencil8-only) ;;
+    ""|--sampler-minmax-only|--c63-same-view|--stencil8-only|--ds-upload-only|--msaa-only|--msaa-neg-pick|--msaa-neg-pipe|--msaa-neg-sampled|--msaa-neg-attachment|--present-only|--present-upscale|--separate-core|--separate-neg-sampler|--tbuf-core|--tbuf-compiler-core|--tbuf-neg-resolve|--tbuf-neg-format|--tbuf-neg-elements|--gs-only|--gs-compiler|--gs-core|--gs-no-cap|--gs-neg-stage|--gs-neg-flags|--gs-neg-cap|--clear-capacity|--clear-capacity-neg|--cmdpool-only|--cmdpool-neg) ;;
     *) echo "未知参数：${mode}（可用 --tsan / --asan）" >&2; exit 64 ;;
 esac
 # 撤改只写入临时源码副本；逐项必须红在指定行为断言。
@@ -681,6 +688,19 @@ if [ "$mode" = "--c63-same-view" ]; then
     done
     unset S2A_TEST_DESC_MEMO
     echo '【绿】C63 同 view 双元素：两遍（备忘开/关）都读回 128，validation 0 条'; exit 0
+fi
+
+# C1581K：D24S8 的 CPU 上传拆成深度面、模板面两个区域（一个区域只能有一个面，VUID-VkBufferImageCopy-aspectMask-09103），
+#   深度面回读低 24 位一致、上传的模板经模板测试看得见。validation 0 条才绿。
+if [ "$mode" = "--ds-upload-only" ]; then
+    set +e
+    timeout 120 "$out/t_backend_vk" "$out/shaders" --ds-upload-only 2>&1 | tee "$out/ds-upload.log"
+    rc=${PIPESTATUS[0]}
+    set -e
+    if [ "$rc" -ne 0 ] || ! grep -q 'C1581K failures=0' "$out/ds-upload.log" || grep -qE 'Validation Error|VUID-|SYNC-HAZARD-' "$out/ds-upload.log"; then
+        echo "【红】C1581K 深度模板上传：rc=${rc}，没有 failures=0 或有 validation 报错" >&2; exit 1
+    fi
+    echo '【绿】C1581K 深度模板上传：深度面回读一致、模板面生效，validation 0 条'; exit 0
 fi
 
 # C1581O：纯模板格式 STENCIL8 当模板附件：图像 / 视图的面只有模板面，管线的兼容通道按 sfmt 挂上这个附件。左绿右蓝、validation 0 条才绿。

@@ -94,7 +94,8 @@ if(ANDROID)
         if(S2ARM_ANDROID_VK_BACKEND STREQUAL "nvk")
             # 新回放层直接实现 nvn_be_*：没有名字转接头，没有 shim。回放核心与后端源在 LinkSources.cmake 的 nvk 清单里。
             target_sources(s2arm_android PRIVATE ${s2a_frontend_c}
-                native/gfx_plat/provider_nvk.c native/direct/profile_compose.c)
+                native/gfx_plat/provider_nvk.c native/direct/profile_compose.c
+                native/nvn/guest_window_crop.c native/nvn/guest_window_crop.S)
             target_compile_definitions(s2arm_android PRIVATE S2A_ANDROID_VK_BACKEND_NVK=1)
         else()
             # 共享前端的后端入口名是 main 的 nvn_be_*；本线 Android 后端仍以 mtl_* 实现。
@@ -372,7 +373,7 @@ else()
     target_link_libraries(input_test PRIVATE Threads::Threads)
     add_test(NAME android_input COMMAND input_test)
     # 手机当掌机的六轴 / 震动（#528 第 10 项）：方向 → 坐标基、加速度口径、震动振幅与租约节奏，配共用 phone_axes.c 真跑
-    add_executable(phone_feedback_test tests/phone_feedback_test.c ../runtime/src/phone_axes.c)
+    add_executable(phone_feedback_test tests/phone_feedback_test.c ../runtime/src/phone_axes.c ../runtime/src/motion_pick.c)
     target_include_directories(phone_feedback_test PRIVATE native ../runtime/include)
     target_compile_options(phone_feedback_test PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(phone_feedback_test PRIVATE m)

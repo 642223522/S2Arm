@@ -51,12 +51,15 @@ public class MainActivity extends Activity
     private boolean gameMode;
     private GameSession gameSession;
     private PhoneFeedback phoneFeedback;   // game mode: phone six-axis + rumble (#528 item 10)
+    private PadFeedback padFeedback;       // game mode: the physical controller's own rumble + six-axis (#528 item 10)
+    private int faceDeviceId = Integer.MIN_VALUE;   // controller whose kind decided the auto face layout
     private boolean gameStopping;
     private GameAudioFocus gameAudioFocus;
     private boolean previousCacheExported;
     private static final String PREFS = "s2a";
     private static final String PREF_CONSOLE = "consoleMode";
-    private static final String PREF_GAMEPAD_MAPPING = "gamepadMapping";
+    private static final String PREF_PAD_FACE = "padFace";              // auto / switch / xbox, as iOS / Mac padFace
+    private static final String PREF_GAMEPAD_MAPPING = "gamepadMapping";   // before padFace: position / label
     private static final String GAMEPAD_MAPPING_EXTRA = "s2arm.gamemap";
     /** The resumed shell, for native-side UI requests (software keyboard) that arrive on a guest thread. */
     static volatile MainActivity current;
@@ -409,6 +412,7 @@ public class MainActivity extends Activity
             status.setText(capabilities);
             applyTouchPassthrough();
             if (gameMode) phoneFeedback = new PhoneFeedback(this, getSharedPreferences(PREFS, MODE_PRIVATE), MainActivity::gamepadConnected);
+            if (gameMode) padFeedback = new PadFeedback(getSharedPreferences(PREFS, MODE_PRIVATE));
             requestDebugLifecycle(getIntent());
         } catch (LinkageError | RuntimeException e) {
             Log.e("S2Arm", "Native host startup failed", e);
@@ -717,6 +721,7 @@ public class MainActivity extends Activity
         if (systemTuning != null) systemTuning.start();
         if (powerState != null) powerState.start();
         if (phoneFeedback != null) phoneFeedback.resume();   // settings + rotation before the game can ask for six-axis
+        if (padFeedback != null) padFeedback.resume();
         tryStartGame();
         if (gameMode) lifecycleProbe.postDelayed(geometrySample, 500);   // B3 输出尺寸轮询（开关关时全部回落 MATCH_PARENT）
         if (gameMode) { lifecycleProbe.removeCallbacks(playtimeTick); lifecycleProbe.postDelayed(playtimeTick, 10000); }
@@ -783,6 +788,7 @@ public class MainActivity extends Activity
         if (systemTuning != null) systemTuning.stop();
         if (powerState != null) powerState.stop();
         if (phoneFeedback != null) phoneFeedback.pause();
+        if (padFeedback != null) padFeedback.pause();
         super.onPause();
     }
     // #48 P8：PowerStateSampler 的出口（只在 onResume 之后跑，库被拒时 powerState 不会启动；这里再守一次）
@@ -1048,7 +1054,8 @@ public class MainActivity extends Activity
     // Debug: `am start ... --es s2arm.orientation landscape|reverse-landscape|portrait` rotates this activity only;
     // `--es s2arm.panel off|on` hides the diagnostic panel so screenshots show the surface;
     // `--es s2arm.touchpad on|off|auto` forces the on-screen gamepad, `--es s2arm.touchlog on` logs input changes.
-    // `--es s2arm.gamemap position|label` selects and saves physical face-button mapping.
+    // `--es s2arm.gamemap auto|switch|xbox` selects and saves the physical face-button layout (padFace; older
+    // position = switch, label = xbox). The four-finger menu sets the same preference.
     // Debug-only orientation lock (intent extra); normal runs never lock the orientation.
     @android.annotation.SuppressLint("SourceLockedOrientationActivity")
     private void requestOrientation(android.content.Intent intent) {
@@ -1066,20 +1073,32 @@ public class MainActivity extends Activity
         else if ("portrait".equals(o)) setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
         else if ("reverse-landscape".equals(o)) setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE);
     }
+    /** Saved padFace; an older saved gamepadMapping (position / label) carries over. Unknown = auto, as pad.c. */
+    private static int storedFace(android.content.SharedPreferences prefs) {
+        String face = prefs.getString(PREF_PAD_FACE, null);
+        if (face == null) face = prefs.getString(PREF_GAMEPAD_MAPPING, null);
+        int parsed = GamepadState.parseFace(face);
+        return parsed < 0 ? GamepadState.FACE_AUTO : parsed;
+    }
+    private void setFace(int face) {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(PREF_PAD_FACE, GamepadState.faceName(face)).apply();
+        gamepad.setMapping(GamepadState.faceName(face));
+        publishInput();
+    }
     @SuppressWarnings("deprecation")
     private void updateGamepadMapping(android.content.Intent intent) {
         android.content.SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        String mode = prefs.getString(PREF_GAMEPAD_MAPPING, "position");
+        String mode = GamepadState.faceName(storedFace(prefs));
         if (intent != null && intent.hasExtra(GAMEPAD_MAPPING_EXTRA)) {
             Object value = intent.getExtras().get(GAMEPAD_MAPPING_EXTRA);
-            if (!"position".equals(value) && !"label".equals(value)) {
-                String why = "s2arm.gamemap must be position or label";
+            if (!(value instanceof String) || GamepadState.parseFace((String) value) < 0) {
+                String why = "s2arm.gamemap must be auto, switch or xbox (or position / label)";
                 Log.e("S2Arm", why);
                 status.setText(why);
                 android.widget.Toast.makeText(this, why, android.widget.Toast.LENGTH_LONG).show();
             } else {
-                mode = (String) value;
-                prefs.edit().putString(PREF_GAMEPAD_MAPPING, mode).apply();
+                mode = GamepadState.faceName(GamepadState.parseFace((String) value));
+                prefs.edit().putString(PREF_PAD_FACE, mode).apply();
                 // Recreation must not reapply an older choice from the original launch intent.
                 android.content.Intent launchIntent = getIntent();
                 if (launchIntent != null) launchIntent.putExtra(GAMEPAD_MAPPING_EXTRA, mode);
@@ -1149,16 +1168,24 @@ public class MainActivity extends Activity
     @Override public void onInputDeviceAdded(int id) { updateTouchPad(); publishPhoneFeedback(); }
     @Override public void onInputDeviceChanged(int id) { clearInput(); updateTouchPad(); publishPhoneFeedback(); }
     @Override public void onInputDeviceRemoved(int id) { clearInput(); updateTouchPad(); publishPhoneFeedback(); }
-    private void publishPhoneFeedback() { if (phoneFeedback != null && resumed) phoneFeedback.publish(); }
+    private void publishPhoneFeedback() {
+        if (phoneFeedback != null && resumed) phoneFeedback.publish();
+        if (padFeedback != null && resumed) padFeedback.publish();
+    }
     private static boolean gamepadConnected() {
-        for (int id : InputDevice.getDeviceIds()) {
-            InputDevice device = InputDevice.getDevice(id);
-            // 只认真有手柄按键（A 键）的设备：有的手机自带一个报 JOYSTICK 来源的内置传感设备
-            // （压感 / 肩键一类，只有 X / Y 轴、没有手柄按键），算成「接了手柄」会把虚拟手柄永远藏掉。
-            if (device != null && !device.isVirtual() && controller(device.getSources())
-                    && device.hasKeys(KeyEvent.KEYCODE_BUTTON_A)[0]) return true;
-        }
+        // 只认真有手柄按键（A 键）的设备：有的手机自带一个报 JOYSTICK 来源的内置传感设备
+        // （压感 / 肩键一类，只有 X / Y 轴、没有手柄按键），算成「接了手柄」会把虚拟手柄永远藏掉。
+        for (int id : InputDevice.getDeviceIds()) if (PadFeedback.isGamepad(InputDevice.getDevice(id))) return true;
         return false;
+    }
+    /** A controller event: its kind decides what the auto face layout means; it becomes player 1's rumble / six-axis pad. */
+    private void noteController(InputDevice device) {
+        int id = device != null ? device.getId() : -1;
+        if (id != faceDeviceId) {
+            faceDeviceId = id;
+            gamepad.setNintendo(device != null && GamepadState.nintendo(device.getVendorId(), device.getName()));
+        }
+        if (padFeedback != null) padFeedback.noteInput(device);
     }
     private void loadTouchLayout() {
         touchPad.setOpacityPercent(getSharedPreferences(PREFS, MODE_PRIVATE)
@@ -1237,9 +1264,29 @@ public class MainActivity extends Activity
                 actions.add(() -> feedback.setRumble(!rumble));
             }
         }
+        if (padFeedback != null && padFeedback.hasMotor()) {   // 外接手柄自己的马达（同 iOS「游戏震动」管手柄那一路，缺省开）
+            PadFeedback feedback = padFeedback;
+            boolean on = feedback.rumble();
+            labels.add(getString(on ? R.string.pad_rumble_on : R.string.pad_rumble_off));
+            actions.add(() -> feedback.setRumble(!on));
+        }
+        if (gamepadConnected()) {   // 手柄按键布局（同 iOS / Mac 设置 padFace，所有游戏共用）
+            int[] faceNames = {R.string.pad_face_auto, R.string.pad_face_switch, R.string.pad_face_xbox};
+            labels.add(getString(R.string.pad_face_item, getString(faceNames[gamepad.face()])));
+            actions.add(this::showPadFace);
+        }
         new android.app.AlertDialog.Builder(this)
             .setTitle(R.string.touch_menu_title)
             .setItems(labels.toArray(new String[0]), (dialog, which) -> actions.get(which).run())
+            .setNegativeButton(android.R.string.cancel, null)
+            .show();
+    }
+
+    private void showPadFace() {
+        String[] names = {getString(R.string.pad_face_auto), getString(R.string.pad_face_switch), getString(R.string.pad_face_xbox)};
+        new android.app.AlertDialog.Builder(this)
+            .setTitle(R.string.pad_face_title)
+            .setSingleChoiceItems(names, gamepad.face(), (dialog, which) -> { setFace(which); dialog.dismiss(); })
             .setNegativeButton(android.R.string.cancel, null)
             .show();
     }
@@ -1493,7 +1540,8 @@ public class MainActivity extends Activity
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
         if (!controller(event.getSource()) || !resumed) return super.dispatchKeyEvent(event);
         int bit;
-        // Positional layout: Android's bottom A button is Switch B.
+        // Android key codes are positional (bottom = BUTTON_A on every pad): stored as Switch positions, bottom = Switch B;
+        // GamepadState applies padFace (auto / switch / xbox) when reading.
         switch (event.getKeyCode()) {
             case KeyEvent.KEYCODE_BUTTON_A: bit = 1; break;
             case KeyEvent.KEYCODE_BUTTON_B: bit = 0; break;
@@ -1514,6 +1562,7 @@ public class MainActivity extends Activity
             default: return super.dispatchKeyEvent(event);
         }
         if (event.getAction() != KeyEvent.ACTION_MULTIPLE) {
+            noteController(event.getDevice());
             gamepad.button(bit, event.getAction() == KeyEvent.ACTION_DOWN); publishInput();
         }
         return true;
@@ -1521,6 +1570,7 @@ public class MainActivity extends Activity
     @Override public boolean onGenericMotionEvent(MotionEvent event) {
         if (!controller(event.getSource()) || !resumed || event.getAction() != MotionEvent.ACTION_MOVE)
             return super.onGenericMotionEvent(event);
+        noteController(event.getDevice());
         gamepad.motion(event.getAxisValue(MotionEvent.AXIS_X), event.getAxisValue(MotionEvent.AXIS_Y),
             event.getAxisValue(MotionEvent.AXIS_Z), event.getAxisValue(MotionEvent.AXIS_RZ),
             event.getAxisValue(MotionEvent.AXIS_HAT_X), event.getAxisValue(MotionEvent.AXIS_HAT_Y),

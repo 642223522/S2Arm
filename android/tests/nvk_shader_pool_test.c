@@ -24,6 +24,8 @@
 #include "direct/program_cache.h"
 #include "nvn/nvn_vk_prog_warm.h"
 #include "tbuf_spirv_fixtures.h"
+#include "gfx_plat/spirv_sampler_use.h"
+#include "sampler_use_fixtures.h"
 
 // 实现在 nvk_shader.c，声明在 nvk_session.h。这里不包 nvk_session.h：nvk_compile_stop_test.py 拿本文件当夹具，
 // 会在同一个翻译单元里把 nvk_session_request_stop 等会话函数定义成 static，包了头就是「static 声明跟在非 static 声明后面」，编不过。
@@ -161,6 +163,16 @@ static int32_t fake_compile(uint64_t session, uint64_t gen, s2a_direct_bytes req
         fclose(f);
         s2a_direct_bytes payload = {bytes, (uint64_t)n};
         int32_t rc = emit(sink, payload); free(bytes); return rc;
+    }
+    if (fake_cs_success > 1) {
+        const char *code = fake_cs_success == 2 ? S2A_SAMPLER_QUERY_SPV : S2A_SAMPLER_SAMPLE_SPV;
+        const char *bindings = "[{\"stage\":\"cs\",\"kind\":\"storage\",\"set\":1,\"binding\":0,\"count\":1,\"rw\":true,\"cbSlot\":0,\"cbOffset\":784,\"nvnSlot\":0},"
+            "{\"stage\":\"cs\",\"kind\":\"texture\",\"source\":\"texture\",\"set\":2,\"binding\":0,\"slot\":72,\"count\":1}]";
+        char result[8192];
+        int n = snprintf(result, sizeof result, "{\"schema\":\"s2a-direct-program-v1\",\"content\":{\"contract\":\"s2a-direct-program-content-v1\",\"kind\":\"compute\",\"hasUnalignedStorageBuffer\":false,\"c0Reads\":[],\"supportReads\":[],\"supportLayout\":{\"requiredSize\":16},\"stages\":[{\"stage\":\"cs\",\"spirv\":\"%s\"}],\"bindings\":%s}}", code, bindings);
+        CHECK(n > 0 && (size_t)n < sizeof result, "compute result fixture fits");
+        s2a_direct_bytes payload = {(const uint8_t *)result, (uint64_t)n};
+        return emit(sink, payload);
     }
     if (fake_gs_success) {
         char result[1536];
@@ -971,6 +983,25 @@ static int compute_warm_off_test(void) {
     return failures ? 1 : 0;
 }
 
+static void query_sampler_test(void) {
+    CHECK(s2a_spirv_sampler_unused(sampler_query_spv, sizeof sampler_query_spv, 2, 0), "query descriptor does not use sampler");
+    CHECK(!s2a_spirv_sampler_unused(sampler_sample_spv, sizeof sampler_sample_spv, 2, 0), "actual sampling still needs sampler");
+    CHECK(s2a_spirv_sampler_unused(sampler_mixed_spv, sizeof sampler_mixed_spv, 2, 0) &&
+          !s2a_spirv_sampler_unused(sampler_mixed_spv, sizeof sampler_mixed_spv, 2, 1), "sampler use proof is per binding");
+    CHECK(!s2a_spirv_sampler_unused(sampler_query_spv, sizeof sampler_query_spv, 0, 0) &&
+          !s2a_spirv_sampler_unused(sampler_query_spv, sizeof sampler_query_spv - 1, 2, 0), "unknown descriptor and malformed word stream do not prove sampler unused");
+    for (int query = 0; query < 2; ++query) {
+        rp_state_reset(); rp_shader_reset(); source(); bind_pools(100); separate_fixture = 1;
+        fake_cs_success = query ? 2 : 3;
+        p_bind_handles b = {0}; b.stage = 5; b.n = 1; b.first = 0; b.h[0] = 77;
+        CHECK(rp_state_op(OP_BIND_IMG, &b, sizeof b), "query image handle binding");
+        const struct rp_prog *p = NULL;
+        CHECK(!rp_shader_resolve_compute(&p) && p && p->nent[0] == 2, "sampler proof fixture loads: %s", last_red);
+        if (p) CHECK(p->sampler_unused[0][1] == query, "production compute builder retains sampler use proof: query=%d", query);
+    }
+    fake_cs_success = 0;
+}
+
 static int diag_compile_test(void) {
     trace_on = 1; trace_begin_count = trace_end_count = 0; fake_gs_success = 0;
     gs_request_test();
@@ -1034,6 +1065,7 @@ int main(int argc, char **argv) {
     graphics_alias_fact_test(1);
     graphics_alias_fact_bg_test(1);
     graphics_ubo_handle_fact_test();
+    query_sampler_test();
     unsetenv("S2A_SHADER_REVISION_ROOT"); unsetenv("S2A_DIRECT_CACHE_DIR"); rp_state_reset(); source();
     for (int cs = 0; cs < 2; cs++) {
         run_case(cs, 0, 0, "texture_pool_missing");

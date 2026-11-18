@@ -27,9 +27,11 @@ struct gpu_write { uint64_t off, len, id; uint8_t mi; };   // GPU 写进镜像�
 // path：这份镜像走哪条核对路（建镜像时定，之后不变）：MP_LOG = 脏页追加日志（缺省，开关 nvk_buf_dirtylog=0 可关）；MP_PLAIN = 逐页（日志不可用时的退回路径）。
 // 脏页追加日志（#1501 A②）：stale 每页一位 =「这份镜像里这页是旧的」，stale_sum 每位汇总 stale 的一个字（一位管 64 页，一个字管 4096 页）；
 // log_cur / log_id：这份镜像在池的追加日志里读到哪（nvn_dirty_log_*）。两份镜像各有一套，互不影响。
-enum { MP_PLAIN = 0, MP_LOG = 2 };
+enum { MP_PLAIN = 0, MP_LOG = 2, READ_BUCKETS = 32 };
+struct read_range { uint64_t sub, lo, hi; };   // 页区间 [lo, hi]；同桶碰撞取包络，宁可多走有序传输
 struct mirror { nvn_gpu_buf buf; uint64_t *synced, *sub, *checked; uint64_t seen_map; uint8_t seen_ok, path; uint64_t use_sub, use_fence, prev_fence;
-                uint64_t *stale, *stale_sum; uint64_t log_cur, log_id; };
+                uint64_t *stale, *stale_sum; uint64_t log_cur, log_id;
+                struct read_range reads[READ_BUCKETS]; };
 // 每个池最多两份镜像。平时只有第 0 份；游戏的 Finish 被放行、不等上一帧做完时（rp_exec.c nvn_be_finish_publish），每帧换一份用：
 // 上一帧的活显卡还在做，读的是另一份。两份各记各的页代号，换回来时自己把这两帧里变过的页补上。
 // landing：正在锁外把 GPU 写回的内容拷进游戏内存（拷贝是 13 MB/帧量级，压在全局锁里会把提交线程挡住 11–21 毫秒/帧）。
@@ -187,6 +189,7 @@ static void sync_write(nvn_gpu_cmd xc, uint8_t *direct, struct shadow *s, struct
 
 // GPU 往池里写（计算着色器写存储缓冲）。提交线程登记这一段，返回登记号；段完成时 rp_buf_gpu_write_land 把结果拷回游戏内存、撤掉登记。
 // pool_key：这段所在池的起点（落地时凭它找镜像：池已经销毁就什么都不做）。0 = 地址不在登记过的池里。
+static int g_gw_live;   // 全部池里还没落地的 GPU 写登记数 + 正在锁外拷回的段数（原子；0 = rp_buf_gpu_pending 不用抢锁）
 uint64_t rp_buf_gpu_write_note(uint64_t addr, uint64_t len, uint64_t *pool_key) {
     static uint64_t next_id;
     const uint8_t *mem; uint64_t size;
@@ -196,7 +199,8 @@ uint64_t rp_buf_gpu_write_note(uint64_t addr, uint64_t len, uint64_t *pool_key) 
     if (s) {
         if (s->ngw == s->cgw) { int nc = s->cgw ? s->cgw * 2 : 8; struct gpu_write *n = realloc(s->gw, (size_t)nc * sizeof *n); if (n) { s->gw = n; s->cgw = nc; } }
         if (s->ngw < s->cgw) { int mi = 0; mirror_pick(s, addr - (uint64_t)(uintptr_t)mem, len, &mi);   // 和取这段缓冲时（rp_buf_resolve）挑的是同一份
-            id = ++next_id; s->gw[s->ngw++] = (struct gpu_write){addr - (uint64_t)(uintptr_t)mem, len, id, (uint8_t)mi}; *pool_key = (uint64_t)(uintptr_t)mem; }
+            id = ++next_id; s->gw[s->ngw++] = (struct gpu_write){addr - (uint64_t)(uintptr_t)mem, len, id, (uint8_t)mi}; *pool_key = (uint64_t)(uintptr_t)mem;
+            __atomic_add_fetch(&g_gw_live, 1, __ATOMIC_RELEASE); }
     }
     pthread_mutex_unlock(&g_bmu);
     return id;
@@ -223,6 +227,26 @@ void rp_buf_gpu_write_land(uint64_t pool_key, uint64_t id, int ok) {   // 线程
     s->landing--;
     if (s->landing <= 0 && s->dead) shadow_free(s);   // 拷贝期间池被销毁：现在收尾
     pthread_mutex_unlock(&g_bmu);
+    __atomic_sub_fetch(&g_gw_live, 1, __ATOMIC_RELEASE);   // 登记撤掉、拷回也做完：这一段在游戏内存里已是 GPU 的结果
+}
+
+// 每次成功解析只写一个桶，不逐页扫描；碰撞合并包络不会漏掉已读范围。
+// 只在脏页要同步时扫固定数量的桶；同一提交即使拆段也不能直接覆盖先前绘制会读的镜像。
+static void mirror_note_read(struct mirror *m, uint64_t lo, uint64_t hi) {
+    uint64_t sub = rp_sub_serial();
+    uint64_t h = lo ^ (hi * UINT64_C(0x9e3779b97f4a7c15));
+    struct read_range *r = &m->reads[(h ^ (h >> 32)) & (READ_BUCKETS - 1)];
+    if (r->sub != sub) { *r = (struct read_range){sub, lo, hi}; return; }
+    if (lo < r->lo) r->lo = lo;
+    if (hi > r->hi) r->hi = hi;
+}
+static int mirror_read_hit(struct mirror *m, uint64_t lo, uint64_t hi) {
+    uint64_t sub = rp_sub_serial();
+    for (int i = 0; i < READ_BUCKETS; i++) {
+        const struct read_range *r = &m->reads[i];
+        if (r->sub == sub && r->lo <= hi && lo <= r->hi) return 1;
+    }
+    return 0;
 }
 
 // 锁内版：调用方已持有 g_bmu，mem/size 是调用方查好的池。一笔绘制常要解析 3~4 段（顶点流 + 存储缓冲），
@@ -236,6 +260,7 @@ static inline void sync_run(struct shadow *s, struct mirror *m, const uint8_t *m
         if (b > (uintptr_t)mem + size) b = (uintptr_t)mem + size;
         nvn_dirty_protect((const void *)a, b - a); uint64_t st = nvn_dirty_now(); if (!st) st = 1;   // 先保护、取代号、再读
         uint64_t last = 0; for (uint64_t k = i; k <= j; k++) if (m->sub[k] > last) last = m->sub[k];
+        if (mirror_read_hit(m, i, j)) last = rp_sub_serial();   // 干净读取也属于本次提交，不得在 GPU 读之前直写镜像
         // 本次提交里第一次同步这一串：镜像是 CPU 也能写的共享缓冲，直接写进去，不录成 GPU 上的拷贝（理由与真机读数见坑记录）。
         // 正在拷回的段数多于登记数（表满 16 段没记上）→ 说不清哪段在拷，按原口径整池退回录拷贝
         int landing_hit = s->landing > s->nlr;   // 这一段里有没有正在锁外拷回的区间与 [a,b) 相交：有就只能退回录拷贝
@@ -320,12 +345,22 @@ static int resolve_part_locked(uint64_t addr, uint64_t len, const uint8_t *mem, 
     if (q0) rp_perf_add(RP_PERF_RES_LA_NS, res_now() - q0);
     return 1;
 }
+static int resolve_inner(uint64_t addr, uint64_t len, const uint8_t *mem, uint64_t size, struct shadow *s, struct mirror *m) {
+    if (m->path == MP_LOG) return resolve_log(addr, len, mem, size, s, m);
+    return resolve_part_locked(addr, len, mem, size, s, m, 1);   // 日志不可用（不受写跟踪 / 重叠池 / 跟踪不可靠 / 开关关）
+}
 static int resolve_locked(uint64_t addr, uint64_t len, const uint8_t *mem, uint64_t size) {
     struct shadow *s = shadow_get(mem, size);
     if (!s) return 0;
+    // 整段先选一次镜像：未落地的 GPU 写可能只覆盖其中一个摘要块。
     struct mirror *m = mirror_pick(s, addr - (uint64_t)(uintptr_t)mem, len, NULL);
-    if (m->path == MP_LOG) return resolve_log(addr, len, mem, size, s, m);
-    return resolve_part_locked(addr, len, mem, size, s, m, 1);   // 日志不可用（不受写跟踪 / 重叠池 / 跟踪不可靠 / 开关关）
+    int ok = resolve_inner(addr, len, mem, size, s, m);
+    if (ok) {
+        const size_t ps = nvn_dirty_page_size();
+        uint64_t lo = ((uintptr_t)addr - s->page0) / ps, hi = ((uintptr_t)addr + len - 1 - s->page0) / ps;
+        mirror_note_read(m, lo, hi);
+    }
+    return ok;
 }
 int rp_buf_resolve(nvn_gpu_cmd c, uint64_t addr, uint64_t len, nvn_gpu_buf *buf, uint64_t *off) {
     (void)c;
@@ -431,22 +466,76 @@ int rp_write_touched(uint64_t mark, uint64_t a, uint64_t n) {
     }
     return 0;
 }
+// [addr, addr+len) 与还没落地的 GPU 写相交吗（登记着的、正在锁外拷回的；表满说不清的按相交算）。线程：[提交]
+int rp_buf_gpu_pending(uint64_t addr, uint64_t len) {
+    if (!len || !__atomic_load_n(&g_gw_live, __ATOMIC_ACQUIRE)) return 0;
+    const uint8_t *mem; uint64_t size;
+    if (!rp_pool_find(addr, len, &mem, &size)) return 0;
+    uint64_t k = (uint64_t)(uintptr_t)mem, a = addr - k, b = a + len; int hit = 0;
+    pthread_mutex_lock(&g_bmu);
+    struct shadow *s = nvn_hm_get(&g_shadow, &k);
+    if (s) {
+        for (int i = 0; i < s->ngw && !hit; i++) hit = s->gw[i].off < b && a < s->gw[i].off + s->gw[i].len;
+        if (!hit) hit = s->landing > s->nlr;
+        for (int i = 0; i < s->nlr && !hit; i++) hit = s->lr[i].off < b && a < s->lr[i].off + s->lr[i].len;
+    }
+    pthread_mutex_unlock(&g_bmu);
+    return hit;
+}
+
+// 三条 CPU 改游戏内存的命令遇到还没落地的 GPU 写（#1022、#697）：CPU 现在读写游戏内存，读到的是 GPU 写之前的旧内容；写进去的又会被稍后的落地盖掉。
+// 这时改在 GPU 上按提交顺序做（照 iOS mtl_sub_copy / mtl_sub_fill）：在镜像里拷 / 填 / 写，目标登记成本次提交的 GPU 写——镜像同步跳过它、段完成时落回游戏内存；
+// 常量缓冲绑到这段时直接绑镜像（rp_draw.c）。不相交就返回 0，调用方照旧在 CPU 上做（绝大多数情况，零额外开销）。
+static int gpu_dst_done(uint64_t d, uint64_t n, const char *what, const void *rec) {
+    if (!rp_post_gpu_write(d, n)) nvn_unimpl("buf", what, rec);   // 登记不上：结果留在镜像里、落不回游戏内存（记账，不静默）
+    rp_cpu_write_gen++; rp_write_note(d, n);   // 目标内容变了（游戏内存要到落地才变）：段内切片表、整组沿用按它作废
+    rp_perf_add(RP_PERF_BUF_GPU_ORDER_N, 1);
+    return 1;
+}
+int rp_op_update_ub_gpu(nvn_gpu_cmd c, const void *a, const void *rec) {
+    uint64_t d, n; memcpy(&d, a, 8); memcpy(&n, (const uint8_t *)a + 8, 8);
+    if (!c || !n || !in_pool(d, n) || !rp_buf_gpu_pending(d, n)) return 0;
+    rp_pass_flush(c);
+    nvn_gpu_buf db; uint64_t off;
+    if (!rp_buf_resolve(c, d, n, &db, &off)) return 0;
+    nvn_gpu_buf_write(c, db, off, (const uint8_t *)a + 16, n);
+    return gpu_dst_done(d, n, "update_gpu_write_note_failed", rec);
+}
+int rp_op_copy_b2b_gpu(nvn_gpu_cmd c, const void *a, const void *rec) {
+    uint64_t s, d, n; memcpy(&s, a, 8); memcpy(&d, (const uint8_t *)a + 8, 8); memcpy(&n, (const uint8_t *)a + 16, 8);
+    if (!c || !n || !in_pool(s, n) || !in_pool(d, n) || (!rp_buf_gpu_pending(s, n) && !rp_buf_gpu_pending(d, n))) return 0;
+    if (s < d + n && d < s + n) { nvn_unimpl("buf", "copy_overlap_gpu_pending", rec); return 0; }   // 源目标重叠（GPU 拷贝不许）：照旧 CPU 做，记账
+    rp_pass_flush(c);
+    nvn_gpu_buf sb, db; uint64_t so, doff;
+    if (!rp_buf_resolve(c, s, n, &sb, &so) || !rp_buf_resolve(c, d, n, &db, &doff)) return 0;
+    nvn_gpu_copy_buf(c, sb, so, db, doff, n);
+    return gpu_dst_done(d, n, "copy_gpu_write_note_failed", rec);
+}
+int rp_op_clear_buf_gpu(nvn_gpu_cmd c, const p_clear_buf *cb, const void *rec) {
+    if (!c || !cb->size || !in_pool(cb->addr, cb->size) || !rp_buf_gpu_pending(cb->addr, cb->size)) return 0;
+    if ((cb->addr | cb->size) & 3) { nvn_unimpl("buf", "clear_unaligned_gpu_pending", rec); return 0; }   // GPU 填充要 4 字节对齐：照旧 CPU 做，记账
+    rp_pass_flush(c);
+    nvn_gpu_buf db; uint64_t off;
+    if (!rp_buf_resolve(c, cb->addr, cb->size, &db, &off)) return 0;
+    nvn_gpu_fill_buf(c, db, off, cb->size, cb->value);
+    return gpu_dst_done(cb->addr, cb->size, "clear_gpu_write_note_failed", rec);
+}
 void rp_op_update_ub(const void *a, const void *rec) {
     uint64_t d, n; memcpy(&d, a, 8); memcpy(&n, (const uint8_t *)a + 8, 8);
     if (!n) return;
     if (!in_pool(d, n)) { nvn_unimpl("buf", "update_outside_pools", rec); return; }
-    memcpy((void *)(uintptr_t)d, (const uint8_t *)a + 16, (size_t)n); rp_cpu_write_gen++; rp_write_note(d, n);
+    rp_ub_fill_fence(d, n); memcpy((void *)(uintptr_t)d, (const uint8_t *)a + 16, (size_t)n); rp_cpu_write_gen++; rp_write_note(d, n);
 }
 void rp_op_copy_b2b(const void *a, const void *rec) {
     uint64_t s, d, n; memcpy(&s, a, 8); memcpy(&d, (const uint8_t *)a + 8, 8); memcpy(&n, (const uint8_t *)a + 16, 8);
     if (!n) return;
     if (!in_pool(s, n) || !in_pool(d, n)) { nvn_unimpl("buf", "copy_outside_pools", rec); return; }
-    memmove((void *)(uintptr_t)d, (const void *)(uintptr_t)s, (size_t)n); rp_cpu_write_gen++; rp_write_note(d, n);
+    rp_ub_fill_fence(d, n); memmove((void *)(uintptr_t)d, (const void *)(uintptr_t)s, (size_t)n); rp_cpu_write_gen++; rp_write_note(d, n);
 }
 void rp_op_clear_buf(const p_clear_buf *cb, const void *rec) {   // 32 位样式填充（不是按字节）
     if (!cb->size) return;
     if (!in_pool(cb->addr, cb->size)) { nvn_unimpl("buf", "clear_outside_pools", rec); return; }
-    uint8_t *p = (uint8_t *)(uintptr_t)cb->addr; uint64_t n = cb->size, i = 0; rp_cpu_write_gen++; rp_write_note(cb->addr, cb->size);
+    rp_ub_fill_fence(cb->addr, cb->size); uint8_t *p = (uint8_t *)(uintptr_t)cb->addr; uint64_t n = cb->size, i = 0; rp_cpu_write_gen++; rp_write_note(cb->addr, cb->size);
     for (; i + 4 <= n; i += 4) memcpy(p + i, &cb->value, 4);
     if (i < n) memcpy(p + i, &cb->value, (size_t)(n - i));
 }
