@@ -135,6 +135,21 @@ class WindowsBoundaries(OriginalContracts):
         import winproc
         self.w = winproc
 
+    def test_access_denied_carries_file_facts(self):
+        # #3c209a：拒绝访问时报错带上这份文件的属性与 SDDL（诊断里才定得了因）。造法：给文件加一条拒绝本人读的规则
+        import getpass
+        f = Path(tempfile.mkdtemp()) / "state.json"; f.write_text("{}")
+        user = getpass.getuser()
+        subprocess.run(["icacls", str(f), "/deny", f"{user}:(RD)"], check=True, capture_output=True)
+        try:
+            with self.assertRaises(PermissionError) as got:
+                self.w.read_shared(f)
+            self.assertEqual(got.exception.filename, str(f))
+            self.assertIn("属性 0x", got.exception.strerror)
+            self.assertIn("权限 O:", got.exception.strerror)   # SDDL 以属主 O: 开头
+        finally:
+            subprocess.run(["icacls", str(f), "/remove:d", user], capture_output=True)
+
     def test_app_control_block_names_the_tool(self):
         # #0745b9：CreateProcess 被应用控制拦下（WinError 4551）不带文件名 → popen 补上要起的程序，errors.explain 点名；私有作业对象照样关掉
         def blocked(*a, **k):
