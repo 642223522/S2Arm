@@ -1198,6 +1198,7 @@ static void punch_reset_locked(void) {
     g_punch_inline_n = g_punch_forget_n = 0; g_unmap_n = g_unmap_ns = g_unmap_max_ns = 0;
 }
 #ifdef S2A_UNIT_TEST
+int s2a_mem_test_alias_eacces;   // 单测：对齐 MapMemory 的共享映射按「最大权限不含写」处理（真机 iPad 上源在私有文件映射里的情形，Mac 上造不出来）
 uint64_t s2a_mem_test_punch_pending(void) { return g_punch_pending_n; }
 void s2a_mem_test_punch_stats(uint64_t *inline_zero, uint64_t *forget) { *inline_zero = g_punch_inline_n; *forget = g_punch_forget_n; }
 #endif
@@ -1682,13 +1683,26 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
         if (!((dst | src | size) & (HPG - 1))) {
             if (backing_begin_locked(dst, size, src)) { GMU_UNLOCK(); regs[0] = 0xD401; return 1; }
             uint64_t ae = alias_map(dst, src, size, VM_PROT_READ | VM_PROT_WRITE);
-            if (!ae && mprotect((void *)dst, size, PROT_READ | PROT_WRITE)) die("MapMemory 共享映射 mprotect errno=%d", errno);   // 源被设过只读时 vm_remap 随源保护，栈要读写
-            if (ae) { backing_end_locked(dst, size, 0, 0); GMU_UNLOCK(); regs[0] = ae; return 1; }
-            punch_forget_locked(dst, dst + size);   // #258：目标原映射被盖掉，这段若是上次 UnmapMemory 释放的待清零页，只撤销标记
-            map_add(dst, size, src, ST_STACK, MAP_ALIAS);
-            backing_end_locked(dst, size, 1, 1);
-            GMU_UNLOCK();
-            regs[0] = 0; return 1;
+            int mpe = ae ? 0 : mprotect((void *)dst, size, PROT_READ | PROT_WRITE) ? errno : 0;   // 源被设过只读时 vm_remap 随源保护，栈要读写
+#ifdef S2A_UNIT_TEST
+            if (!ae && !mpe && s2a_mem_test_alias_eacces) mpe = EACCES;
+#endif
+            if (mpe == EACCES) {
+                // 共享映射的最大权限没有「写」（#4c853c：iPad 上游戏把线程栈放在主程序数据段、堆用 0 字节，数据段是从签名镜像文件私有映射来的，
+                //   vm_remap 共享过去最大权限只剩读，mprotect 读写 EACCES，原先 die 闪退；Mac 上同样的映射最大权限照旧可写）。
+                //   撤回这次共享映射，改走下面的拷贝路径（不对齐时本来就走它；解除时把内容搬回源）
+                alias_unmap(dst, size, src, PROT_READ | PROT_WRITE);
+                backing_end_locked(dst, size, 0, 1);
+                static _Atomic int said; if (!atomic_exchange(&said, 1)) LOG("MapMemory：%#llx 共享映射的最大权限不含写（源 %#llx 在只能私有映射的区域），改用拷贝", (unsigned long long)dst, (unsigned long long)src);
+            } else {
+                if (mpe) die("MapMemory 共享映射 mprotect errno=%d", mpe);
+                if (ae) { backing_end_locked(dst, size, 0, 0); GMU_UNLOCK(); regs[0] = ae; return 1; }
+                punch_forget_locked(dst, dst + size);   // #258：目标原映射被盖掉，这段若是上次 UnmapMemory 释放的待清零页，只撤销标记
+                map_add(dst, size, src, ST_STACK, MAP_ALIAS);
+                backing_end_locked(dst, size, 1, 1);
+                GMU_UNLOCK();
+                regs[0] = 0; return 1;
+            }
         }
         // 拷贝前同步源侧（审计 P1-48，同安卓同一协议）：GPU 改过的子页先回写到 CPU、跟踪中的页先解开，再 memcpy，否则拷进栈的是回写前的旧字节。
         //   换页事务 begin 不算：track.c 的 s2a_track_backing_begin 只等排空期结束、挡新排空期，不看 source、不回写不解开。
