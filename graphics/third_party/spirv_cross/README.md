@@ -10,6 +10,9 @@
   - 舍入不变：每步仍是一次 fma，运算元顺序与原版相同；0 / 1 不是编译期常数，前端与后端都不能把 fma(l, r, 0) 化简成 fmul（nsz 下本来合法）再去融合。
   - 后果：带这类辅助函数的 MSL 与 Homebrew spirv-cross 1.4.363.0 命令行不再逐字节相同（数值逐位相同，见 tests/msl_nocontraction_test.sh）；
     不带的照旧逐字节相同（tests/spvc_inproc_test.sh）。直连出库（进程内库）与 GAL 运行时现编用本仓源码，走 Homebrew 命令行的 Vulkan / OpenGL 款离线库照旧。
+  - 命令行版只能是上游原样（链锁 spirv-cross 一行两端同记上游版本号）：Windows 没有 Homebrew，translator/spvc_inproc.py cli_path 用这份源码编命令行时，
+    在临时副本里把改动段换回上游原文（translator/spvc_cli/msl_upstream_helpers.txt），输出与 Homebrew 1.4.363.0 逐字节相同（11-16：此前 Windows 命令行带着改动却写上游号）。
+    升级上游时这份原文一并换成新版对应段落。
   - 链锁的 spirv-cross 一行只记版本号；直连出库的着色器缓存键含本仓源码身份（spvc_inproc.identity），改动后照常重翻。
   - 升级上游时：换新版 SPIRV-Cross 后，在 spirv_msl.cpp 里找到上面六个辅助函数，重新把 `[[clang::optnone]]` 改成 `inline`、fma 的 0 / 1 改为取自函数内一次 `thread volatile float` 读，并标 `S2A:`；
     改完跑 tests/msl_nocontraction_test.sh，核对「GPU 输出与原版逐字相同、负对照（不受保护写法）有差异」。若上游已自行去掉 optnone 或改了写法，按该测试结果决定这处改动是否还要保留。

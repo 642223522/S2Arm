@@ -47,7 +47,42 @@ static int par_mark_writing(const char *path, NSString *batch) {
     pthread_mutex_unlock(&g_par_mkmu);
     return go;
 }
+// #756 进阶（11-16）：每款各自的 .writing 标记要每款先崩一次才学会，且用户划掉 / 内存杀也会留下它（玩家诊断 27.x 上 3214 局里 143 局），不能直接全机共享。另加两道：
+//   ① 版本先验：iOS 18.0–18.3.x 不写。依据玩家诊断：崩溃线程栈在归档写入器里的 7 局全在 18.1.1 / 18.3.2，18.2 / 18.3.2 有 18 局「上次死在写里」、0 局写成；18.4、18.7.x 共 13 局写成、0 崩
+//   ② 全机学习：只在崩溃线程正在写归档（g_par_in_write）时由崩溃处理器（runtime/src/crash.c）记一行系统版本串进全机标记（Application Support/S2Arm/pso_archive_dead.txt）；
+//      起局读到本系统版本串就不写。版本串含构建号，系统升级后自动不再命中、重新判
+static __thread int g_par_in_write;
+static char g_par_dead_path[1024], g_par_os_key[192];
+static int par_os_gate(int ios, long major, long minor) { return ios && major == 18 && minor < 4; }
+void s2a_pso_archive_crash_note(void);
+void s2a_pso_archive_crash_note(void) {   // 崩溃处理器在崩溃线程上调（信号处理里：只用 open / write / close）
+    if (!g_par_in_write || !g_par_dead_path[0] || !g_par_os_key[0]) return;
+    int fd = open(g_par_dead_path, O_WRONLY | O_CREAT | O_APPEND, 0644); if (fd < 0) return;
+    (void)!write(fd, g_par_os_key, strlen(g_par_os_key)); (void)!write(fd, "\n", 1); close(fd);
+}
+static int par_dead_global_has(void) {   // 全机标记里有本系统版本串
+    if (!g_par_dead_path[0] || !g_par_os_key[0]) return 0;
+    NSString *s = [NSString stringWithContentsOfFile:@(g_par_dead_path) encoding:NSUTF8StringEncoding error:nil];
+    for (NSString *ln in [s componentsSeparatedByString:@"\n"]) if ([ln isEqualToString:@(g_par_os_key)]) return 1;
+    return 0;
+}
+static void par_global_init(void) {
+    NSString *osk = NSProcessInfo.processInfo.operatingSystemVersionString ?: @""; snprintf(g_par_os_key, sizeof g_par_os_key, "%s", osk.UTF8String);
+    NSURL *as = [NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject;
+    if (!as) return;
+    NSString *dir = [as.path stringByAppendingPathComponent:@"S2Arm"];
+    [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    snprintf(g_par_dead_path, sizeof g_par_dead_path, "%s", [dir stringByAppendingPathComponent:@"pso_archive_dead.txt"].fileSystemRepresentation);
+}
+// ①② 之一命中返回 1（并打一行原因）。单测直接调
+static int par_gate_or_learned(int ios, long major, long minor) {
+    if (par_os_gate(ios, major, minor)) { MLOG("【黄】 pipeline archive: iOS %ld.%ld: Metal's archive writer crashes on iOS 18.0–18.3 (#756, player diagnoses): reading it as usual, writing nothing", major, minor); return 1; }
+    if (par_dead_global_has()) { MLOG("【黄】 pipeline archive: a game on this device crashed inside the archive writer on this OS version (%s, #756): reading it as usual, writing nothing", g_par_os_key); return 1; }
+    return 0;
+}
 static void par_check_dead_write(void) {   // 起局（打开归档目录时）调：上次进程死在写归档里 → 这个系统版本不再写
+    { NSOperatingSystemVersion v = NSProcessInfo.processInfo.operatingSystemVersion;
+      if (par_gate_or_learned(TARGET_OS_IPHONE, (long)v.majorVersion, (long)v.minorVersion)) { g_par_nowrite = 1; return; } }
     NSString *path = [g_par_dir stringByAppendingPathComponent:PAR_WRITING];
     NSData *d = [NSData dataWithContentsOfFile:path]; if (!d) return;
     NSString *s = [[[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] ?: @"";
@@ -180,6 +215,7 @@ static void par_open_dir(void) {
             g_par_bmap[c[0]] = c[1]; [g_par_have addObject:c[0]];
         }
         for (NSString *f in bfiles) { bytes += [[fm attributesOfItemAtPath:[g_par_dir stringByAppendingPathComponent:f] error:nil] fileSize]; nb++; }
+        par_global_init();
         par_check_dead_write();
         g_par_on = 1;
         MLOG("pipeline archive %s: %lu pipelines (%lu in %lu batch files, the rest one file each; %.1f MB), opened when used", g_par_dir.UTF8String, (unsigned long)g_par_have.count,
@@ -270,6 +306,7 @@ static void par_write_batch(NSArray<NSArray *> *items) {
     // #756：写之前留标记、写完（成不成都算）删掉；进程死在这一段里，标记留下，下次起局就不再写。#618：已在收局就不留、不写（par_mark_writing）
     const char *writing = [g_par_dir stringByAppendingPathComponent:PAR_WRITING].fileSystemRepresentation;
     if (!par_mark_writing(writing, name)) { par_ga_unlock(lk); pthread_mutex_unlock(&g_par_wmu); return; }
+    g_par_in_write = 1;   // 崩在这一段里：崩溃处理器记全机标记（s2a_pso_archive_crash_note）
     @autoreleasepool {
         id<MTLBinaryArchive> a = [g_dev newBinaryArchiveWithDescriptor:[MTLBinaryArchiveDescriptor new] error:&e];
         for (NSArray *it in todo) { NSError *e1 = nil; id desc = it[1];
@@ -277,6 +314,7 @@ static void par_write_batch(NSArray<NSArray *> *items) {
             if (one) [keys addObject:it[0]]; else { e = e1; atomic_fetch_add(&g_par_write_failed, 1); } }
         if (keys.count) ok = [a serializeToURL:[NSURL fileURLWithPath:temp] error:&e] && rename(temp.fileSystemRepresentation, path.fileSystemRepresentation) == 0;
     }
+    g_par_in_write = 0;
     unlink(writing);
     par_ga_remove_new(before);
     if (ok) {   // the index after the file: a line always names a file that is there

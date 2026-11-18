@@ -303,6 +303,33 @@ internal static unsafe class Program
         return MemoryMarshal.AsBytes(w.ToArray().AsSpan()).ToArray();
     }
 
+    // 计算模块里唯一一个存储图像（OpTypeImage Sampled = 2）的声明：(Image Format 操作数, Sampled Type 是否 uint)
+    private static (uint format, bool uintSampled, int images) StorageImageDecl(JsonElement stage)
+    {
+        uint[] words = MemoryMarshal.Cast<byte, uint>(stage.GetProperty("spirv").GetBytesFromBase64()).ToArray();
+        var ints = new Dictionary<uint, uint>(); uint format = 99, sampledType = 0; int images = 0;
+        for (int i = 5; i < words.Length;)
+        {
+            int count = (int)(words[i] >> 16); uint op = words[i] & 0xffff;
+            if (count == 0 || i + count > words.Length) throw new InvalidDataException("invalid SPIR-V instruction");
+            if (op == 21 && count >= 4) ints[words[i + 1]] = words[i + 3];
+            if (op == 25 && count >= 9 && words[i + 7] == 2) { images++; format = words[i + 8]; sampledType = words[i + 2]; }
+            i += count;
+        }
+        return (format, ints.TryGetValue(sampledType, out uint signed) && signed == 0, images);
+    }
+
+    // 原创合成 Maxwell CS：R0 = c0[0x310]（存储缓冲地址），R4 = R5 = 0，SULD.D.B32 R2, [R4]（二维、图像句柄 c2 字 74，按位读），STG [R0], R2。
+    //   SULD.D 的字段来自 InstSuldD（目的 0..7、坐标 8..15、谓词 16..18、大小 20..22 = B32、目的谓词 30..32、维度 33..35 = 2D、句柄 36..48）。
+    private static byte[] ComputeRawImageLoadGuest()
+    {
+        ulong[] ops = { 0xEF9500310007FF00UL, 0x1C0000000007FF04UL, 0x1C0000000007FF05UL, 0xEB1804A7C0470402UL, 0xEEDC200000070002UL, Exit };
+        byte[] code = new byte[((ops.Length + 2) / 3) * 32];
+        for (int i = 0; i < ops.Length; i++)
+            BinaryPrimitives.WriteUInt64LittleEndian(code.AsSpan((i / 3 * 4 + i % 3 + 1) * 8), ops[i]);
+        return code;
+    }
+
     private static byte[] ComputeTextureGuest()
     {
         ulong[] ops = { 0xEF9500310007FF00UL, Fadd32i(4, 0.5f), Fadd32i(5, 0.5f),
@@ -411,6 +438,47 @@ internal static unsafe class Program
 
     // 真机 Adreno 730 的实测形态用于合成测试（值是可解释的合成输入，不是从设备读的；真机同字节
     // 比对由 CLI profile 与设备日志的 caps 完成）。geometry/interlock 用来证明"硬件支持 ≠ enabled"。
+    // C1：在 CapsJson 的稳定输出里插 descriptorIndexing 对象（不改 CapsJson 签名，基线测试要能原样编译）。
+    // enabled=false 时全部七位为 false；enabled=true 时按 storage 参数造「四位齐」或「缺存储位」。
+    private static byte[] CapsJsonWithDescriptorIndexing(bool enabled, bool storage)
+    {
+        string text = Encoding.UTF8.GetString(CapsJson());
+        string objectText = "\"descriptorIndexing\":{\"enabled\":" + (enabled ? "true" : "false") +
+            ",\"runtimeArray\":" + (enabled ? "true" : "false") +
+            ",\"partiallyBound\":" + (enabled ? "true" : "false") +
+            ",\"sampledImageArrayNonUniformIndexing\":" + (enabled ? "true" : "false") +
+            ",\"storageImageArrayNonUniformIndexing\":" + (enabled && storage ? "true" : "false") +
+            ",\"variableDescriptorCount\":false,\"sampledImageUpdateAfterBind\":false},";
+        text = text.Replace("\"formats\":", objectText + "\"formats\":", StringComparison.Ordinal);
+        return Encoding.UTF8.GetBytes(text);
+    }
+
+    // C1：造一段最小 SPIR-V（头 + 能力 / 扩展前导段 + OpMemoryModel），只给能力核对用。
+    private static uint[] SpvDescriptorIndexing(bool ext, bool shaderNonUniform, bool sampled, bool storage)
+    {
+        var words = new List<uint> { 0x07230203, 0x00010300, 0, 1, 0 };
+        words.Add((2u << 16) | 17); words.Add(1);   // OpCapability Shader
+        if (ext)
+        {
+            const string name = "SPV_EXT_descriptor_indexing";
+            int count = (name.Length + 1 + 3) / 4;
+            words.Add(((uint)count + 1) << 16 | 10);   // OpExtension
+            uint word = 0;
+            for (int i = 0; i <= count * 4; i++)
+            {
+                byte b = i < name.Length ? (byte)name[i] : (byte)0;
+                word |= (uint)b << ((i % 4) * 8);
+                if (i % 4 == 3) { words.Add(word); word = 0; }
+            }
+        }
+        void Cap(uint cap) { words.Add((2u << 16) | 17); words.Add(cap); }
+        if (shaderNonUniform) Cap(5301);
+        if (sampled) Cap(5307);
+        if (storage) Cap(5309);
+        words.Add((3u << 16) | 14); words.Add(0); words.Add(1);   // OpMemoryModel Logical GLSL450
+        return words.ToArray();
+    }
+
     private static byte[] CapsJson(bool geometry = false, bool interlock = false, uint sampledImages = 64,
         string schema = null, string duplicateField = null, bool gsOccQuery = false)
     {
@@ -692,6 +760,24 @@ internal static unsafe class Program
             return;
         }
 
+        // 计算共享内存（#1592）：48 KiB 内但超过设备上限（本测 profile 32768）是设备做不到 → UNSUPPORTED_PROGRAM 带实际值；
+        //   超过 Maxwell 48 KiB / 负数才是坏请求 → MISSING_FIELD；等于上限过上限检查
+        {
+            string csRaw = Encoding.UTF8.GetString(RequestJson(profile, "compute", 2, 1, "shared-limit", cs: cs));
+            Func<int, byte[]> withShared = n => Encoding.UTF8.GetBytes(csRaw.Replace("\"sharedMemoryBytes\":0", "\"sharedMemoryBytes\":" + n));
+            // 等于上限过得了上限检查（之后按控制块核对 1x1x1 shared 0 不符才拒，那是另一道检查）
+            try { DirectShaderCompiler.Compile(withShared(32768)); Check(true, "shared 32768 passes the device limit check"); }
+            catch (Exception error) { Check(!error.Message.Contains("exceeds"), "shared 32768 = device limit passes the limit check: " + error.Message); }
+            try { DirectShaderCompiler.Compile(withShared(40960)); Check(false, "shared 40960 above device limit must be rejected"); }
+            catch (DirectCompileException error)
+            {
+                Check(error.Code == "UNSUPPORTED_PROGRAM" && error.Message.Contains("sharedMemoryBytes 40960") && error.Message.Contains("limit 32768"),
+                    "shared 40960 > device 32768 → UNSUPPORTED_PROGRAM with value and limit: " + error.Code + " " + error.Message);
+            }
+            Throws("MISSING_FIELD", () => DirectShaderCompiler.Compile(withShared(49153)), "shared above Maxwell 48 KiB is a bad request");
+            Throws("MISSING_FIELD", () => DirectShaderCompiler.Compile(withShared(-1)), "negative shared is a bad request");
+        }
+
         // A large pool must not prevent a program with constant texture handles from compiling.
         {
             byte[] fsConstant = Guest(true, new[] { Fadd32i(2, 0.5f), Fadd32i(3, 0.5f), Tex2D(0, 2) });
@@ -727,8 +813,11 @@ internal static unsafe class Program
                 Check(false, "runtime handle must not claim an unsupported cbuf layout is usable");
             }
             catch (DirectCompileException error) {
-                Check(error.Code == "UNSUPPORTED_PROGRAM" && error.Message.Contains("texture handle from cbuf slot 0"),
-                    "runtime handle reports its actual upstream cbuf limitation: " + error.Message);
+                string reqSha = Convert.ToHexStringLower(Sha256.HashData(Encoding.UTF8.GetBytes(dynamicRequest)));
+                Check(error.Code == "UNSUPPORTED_PROGRAM" && error.Message.Contains("texture handle from cbuf slot 0") &&
+                      error.Message.Contains("handle=") && error.Message.Contains("arrayLength=") &&
+                      error.Message.Contains("count=") && error.Message.Contains("request=" + reqSha),
+                    "runtime handle reports its actual upstream cbuf limitation with shape and request sha: " + error.Message);
             }
         }
 
@@ -794,6 +883,24 @@ internal static unsafe class Program
                 UboFact(256, 5) + "]", 1u << 4);
             Check(got.StartsWith("MISSING_FACT ", StringComparison.Ordinal) && got.EndsWith("has no source (stage=fs,handle=256,cbufSlot=4)", StringComparison.Ordinal),
                 "a c4 handle without its exact fact is MISSING_FACT at (fs, 256, 4): " + got);
+        }
+
+        // C2 探针：c2 句柄表里的运行时句柄（先看现实现拒在哪一句）。
+        {
+            byte[] fsC2 = Guest(true, new[] { Ldc(4, 0x20, 2), Fadd32i(2, 0.5f), Fadd32i(3, 0.5f), TexBindless2D(0, 2, 4) });
+            const string c2Fact = "[{\"stage\":\"fs\",\"handle\":8,\"cbufSlot\":2,\"samplerType\":\"2d\",\"format\":\"R8G8B8A8Unorm\",\"isBuffer\":false,\"normalized\":true,\"separate\":false,\"arrayLength\":1}]";
+            try
+            {
+                using JsonDocument r = ParseResult(DirectShaderCompiler.Compile(RequestJson(profile, "graphics", 1, 1, "c2-runtime-handle", vs, fsC2, textureFacts: c2Fact)));
+                JsonElement c2Binding = r.RootElement.GetProperty("content").GetProperty("bindings").EnumerateArray()
+                    .First(b => b.GetProperty("kind").GetString() == "texture");
+                Check(c2Binding.GetProperty("slot").GetInt32() == 8 && c2Binding.GetProperty("count").GetInt32() == 1,
+                    "c2 handle-table single texture binds by handle value: " + c2Binding.GetRawText());
+            }
+            catch (DirectCompileException error)
+            {
+                Check(false, "c2 handle-table single texture binds by handle value: " + error.Code + " " + error.Message);
+            }
         }
 
         // 1) 接口全覆盖（接口新增方法时这里先红）。
@@ -870,6 +977,48 @@ internal static unsafe class Program
             Throws("MISSING_FIELD", () => DirectProfileComposer.Compose(
                 Encoding.UTF8.GetBytes("{\"schema\":\"s2a-device-caps-v1\"}"), closure), "caps without fields rejected");
             Throws("UNSUPPORTED_PROFILE", () => DirectProfileComposer.Compose(caps, "bad closure"), "invalid closure rejected");
+
+            // C1：descriptorIndexing 关闭时 profile 必须与「caps 里没有这个对象」逐字节相同；
+            // 四位齐才开；缺存储位保持 false；SPIR-V 能力声明必须与 profile 一致。
+            byte[] capsOff = CapsJsonWithDescriptorIndexing(enabled: false, storage: true);
+            byte[] capsOn = CapsJsonWithDescriptorIndexing(enabled: true, storage: true);
+            byte[] capsNoStorage = CapsJsonWithDescriptorIndexing(enabled: true, storage: false);
+            byte[] profileOff = DirectProfileComposer.Compose(capsOff, closure);
+            Check(composed.SequenceEqual(profileOff),
+                "all-false descriptor-indexing bits compose the same profile as their absence");
+            Check(profileOff.SequenceEqual(DirectProfileComposer.Compose(capsOff, closure)),
+                "descriptor-indexing caps compose deterministically");
+            byte[] profileOn = DirectProfileComposer.Compose(capsOn, closure);
+            Check(!composed.SequenceEqual(profileOn), "enabling non-uniform indexing changes the profile");
+            using (JsonDocument onDoc = JsonDocument.Parse(profileOn))
+                Check(onDoc.RootElement.GetProperty("capabilities").GetProperty("supportsShaderNonUniformIndexing").GetBoolean(),
+                    "four descriptor-indexing bits enable non-uniform indexing");
+            using (JsonDocument noStoreDoc = JsonDocument.Parse(DirectProfileComposer.Compose(capsNoStorage, closure)))
+                Check(!noStoreDoc.RootElement.GetProperty("capabilities").GetProperty("supportsShaderNonUniformIndexing").GetBoolean(),
+                    "a missing storage non-uniform bit keeps non-uniform indexing disabled");
+            string buildClosure = DirectBuildIdentity.TranslatorClosure;
+            byte[] buildProfileAbsent = DirectProfileComposer.Compose(CapsJson(), buildClosure);
+            byte[] buildProfileOff = DirectProfileComposer.Compose(CapsJsonWithDescriptorIndexing(false, true), buildClosure);
+            Check(buildProfileAbsent.SequenceEqual(buildProfileOff),
+                "descriptor-indexing bits off compose the same build profile");
+            byte[] requestAbsent = RequestJson(buildProfileAbsent, "graphics", 1, 1, "dx-off", vs, fs);
+            byte[] requestOff = RequestJson(buildProfileOff, "graphics", 1, 1, "dx-off", vs, fs);
+            Check(DirectShaderCompiler.Compile(requestAbsent).SequenceEqual(DirectShaderCompiler.Compile(requestOff)),
+                "profile without descriptor indexing compiles byte-identical to the pre-C1 caps");
+            using (JsonDocument offDoc = JsonDocument.Parse(profileOff))
+            using (JsonDocument onDoc2 = JsonDocument.Parse(profileOn))
+            {
+                DirectProfile profOff = DirectProfile.Parse(offDoc.RootElement, "caps-off");
+                DirectProfile profOn = DirectProfile.Parse(onDoc2.RootElement, "caps-on");
+                Throws("SPIRV_INVALID", () => DirectShaderCompiler.ValidateDescriptorIndexing("fs", SpvDescriptorIndexing(true, true, true, true), profOff),
+                    "descriptor indexing with profile disabled is rejected");
+                DirectShaderCompiler.ValidateDescriptorIndexing("fs", SpvDescriptorIndexing(false, false, false, false), profOff);
+                DirectShaderCompiler.ValidateDescriptorIndexing("fs", SpvDescriptorIndexing(true, true, true, true), profOn);
+                Throws("SPIRV_INVALID", () => DirectShaderCompiler.ValidateDescriptorIndexing("fs", SpvDescriptorIndexing(true, true, false, true), profOn),
+                    "incomplete descriptor indexing declaration with profile enabled is rejected");
+                Throws("SPIRV_INVALID", () => DirectShaderCompiler.ValidateDescriptorIndexing("fs", SpvDescriptorIndexing(true, true, true, false), profOn),
+                    "missing storage capability with profile enabled is rejected");
+            }
         }
 
         // 1c) 翻译闭包身份（W2.1）：构建期嵌入的闭包是唯一来源，请求里的字符串必须等于它。
@@ -1209,6 +1358,21 @@ internal static unsafe class Program
             Check(content.GetProperty("kind").GetString() == "graphics", "vs-only kind is graphics");
             JsonElement stages = content.GetProperty("stages");
             Check(stages.GetArrayLength() == 1 && stages[0].GetProperty("stage").GetString() == "vs", "vs-only: exactly one stage, vs");
+        }
+        // 按位读（SULD.D）浮点贴图的存储图像：设备支持无格式读时声明 Unknown + uint（回放按贴图字节数绑 uint 视图），
+        //   不支持时保留按读大小的 R32ui（回放按声明格式能建就建、建不了报名跳过）。读的是 1x1 RG32F 曝光那一类（空轨 2nd update 核同形）。
+        {
+            const string rawFact = "[{\"stage\":\"cs\",\"handle\":74,\"cbufSlot\":-1,\"samplerType\":\"2d\",\"format\":\"R32G32Float\",\"isBuffer\":false,\"normalized\":false,\"separate\":false,\"arrayLength\":1}]";
+            string on = Encoding.UTF8.GetString(profile), off = on.Replace("\"supportsImageLoadFormatted\":true", "\"supportsImageLoadFormatted\":false");
+            Check(on != off, "profile carries supportsImageLoadFormatted");
+            foreach (bool formatless in new[] { true, false })
+            {
+                byte[] req = RequestJson(Encoding.UTF8.GetBytes(formatless ? on : off), "compute", 2, 1, "suld-raw", cs: ComputeRawImageLoadGuest(), csCbUse: 1, textureFacts: rawFact);
+                using JsonDocument doc = ParseResult(DirectShaderCompiler.Compile(req));
+                (uint format, bool uintSampled, int images) = StorageImageDecl(doc.RootElement.GetProperty("content").GetProperty("stages")[0]);
+                Check(images == 1 && uintSampled && format == (formatless ? 0u : 33u),
+                    $"raw SULD.D of an RG32F image: {(formatless ? "Unknown" : "R32ui")} with uint sampled type (got format {format}, uint {uintSampled}, images {images})");
+            }
         }
         byte[] computeRequest = RequestJson(profile, "compute", 2, 1, "req-compute", cs: cs);
         using (JsonDocument doc = ParseResult(DirectShaderCompiler.Compile(computeRequest)))
@@ -1730,10 +1894,13 @@ internal static unsafe class Program
             foreach (var (what, handle, count, len) in new[] { ("without a fact", 74, 1, 1), ("outside the image table", 88, 1, 1), ("as an array", 72, 4, 4) })
             {
                 string r = UboShape("image", "image", count, 2, handle, len, false);
-                Check(r == "UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 2 is not implemented", "c2 image word " + what + " stays unsupported: " + r);
+                Check(r.StartsWith("UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 2 is not implemented (handle=") &&
+                      r.Contains("arrayLength=" + len) && r.Contains("count=" + count),
+                    "c2 image word " + what + " stays unsupported: " + r);
             }
             string c19 = UboShape("texture", "texture", 1, 19, 256, 1, false);
-            Check(c19 == "UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 19 is not implemented", "cbuf 19 is outside the user UBO range: " + c19);
+            Check(c19.StartsWith("UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 19 is not implemented (handle="),
+                "cbuf 19 is outside the user UBO range: " + c19);
             // Facts alone do not implement separate binding; the production resolver must still refuse it.
             var separateAllocator = new DirectAllocator(matrixProfile);
             separateAllocator.Bindings.Add(new DirectBinding("fs", "texture", "test", 2, 0, 1));

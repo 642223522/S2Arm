@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 S2Arm contributors
 """Cleanup must unlink entries without following them into player data."""
+import errno
 import os
 from pathlib import Path
 import subprocess
@@ -8,6 +9,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+import jobcase  # noqa: E402（作业上下文替身统一工厂 jobcase.fake_context）
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core import Failure
@@ -20,7 +22,7 @@ class CleanupLinkTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="s2arm synthetic cleanup ")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.c = SimpleNamespace(library=self.root / "library", work_root=self.root / "work")
+        self.c = jobcase.fake_context(self.root, library=self.root / "library", work_root=self.root / "work")
         self.gid = "0100000000000000"
         self.c.library.mkdir()
         self.output = layout.ios_work(self.c, self.gid)   # 这款文件夹的出包工作目录 build/ios
@@ -62,6 +64,15 @@ class CleanupLinkTests(unittest.TestCase):
         library._keep_stage_logs(self.c, self.gid)
         self.assertEqual((logs / "t1-stages" / "seed.log").read_text(encoding="utf-8"), "OSError: [WinError 145] 原错误\n")
 
+    def test_stage_logs_include_windows_failed_rewrite_log(self):
+        # #1476：Windows 改写失败时本款的 <款>_main.rewrite.log 留在 build/ios/work/roots/.failed（pack/orch/stages.py _keep_failed_logs），
+        #   原先作业层不收这一处、诊断包里只有 light.log；期望拷进本任务的 <任务>-stages
+        logs = self.root / "logs"; self.c.logs = logs; self.c.task = "t2"
+        kept = self.output / "work" / "roots" / ".failed"; kept.mkdir(parents=True)
+        (kept / "g_main.rewrite.log").write_text("PFRW mod=main need=9\n", encoding="utf-8")
+        library._keep_stage_logs(self.c, self.gid)
+        self.assertEqual((logs / "t2-stages" / "g_main.rewrite.log").read_text(encoding="utf-8"), "PFRW mod=main need=9\n")
+
     def seed_root(self, root):
         (root / "ctl").mkdir(parents=True); (root / "programs/1").mkdir(parents=True); (root / "romfs").mkdir(); (root / ".stage_pkg").mkdir()
         for name in ("main.npdm", "main.fixups.tsv", "main.gates.tsv", "main.patched.bin", "icon.jpg", "romfs.s2aidx", "build.log", ".root_src", "ctl/control.nacp",
@@ -85,7 +96,10 @@ class CleanupLinkTests(unittest.TestCase):
         unpacked = layout.build_dir(self.c, self.gid); (unpacked / "x").write_bytes(b"x")
         library.save_container_kit(self.c, self.gid, root)
         library.prune_build(self.c, self.gid)
-        self.assertEqual(sorted(p.name for p in image.iterdir()), ["kit", "pack"])   # 交付件（容器件、资源包）在 image/ios，不动
+        self.assertEqual(sorted(p.name for p in image.iterdir()), ["pack"])   # 资源包在 image/ios，不动
+        import programs
+        self.assertTrue((layout.program_store(self.c, self.gid) / "recipe.tar.zst").is_file())   # 程序件的配方在程序常驻，不动
+        self.assertTrue((programs.cache(self.c, self.gid) / "kit" / "main.npdm").is_file())   # 程序件在程序缓存（不在出包工作目录 build/），出包收尾不清
         self.assertEqual(sorted(p.relative_to(unpacked).as_posix() for p in unpacked.rglob("*")), ["ios", "ios/logs", "ios/logs/refresh.log"])   # 解包、产物根、work 清掉，出包日志留
 
     def test_without_kit_prune_keeps_current_root(self):
@@ -168,6 +182,39 @@ class SharingViolationRetryTests(unittest.TestCase):
         with self.assertRaises(PermissionError) as e:
             library._retry_shared(lambda path: None, "x", self.busy(5), sleep=slept.append)
         self.assertEqual((slept, e.exception.winerror), ([], 5))
+
+
+class MissingPathDuringCleanupTests(unittest.TestCase):
+    def run_rmtree_callback(self, error):
+        parent = Path(tempfile.mkdtemp(prefix="s2arm synthetic volume error "))
+        root = parent / "tree"
+        target = root / "extract"
+        target.mkdir(parents=True)
+        try:
+            from unittest.mock import patch
+            def emulate_windows_rmtree(path, *, onexc):
+                if isinstance(error, FileNotFoundError):
+                    target.rmdir()
+                def failed_scan(path):
+                    raise error
+                onexc(failed_scan, str(target), error)
+            with patch.object(library.shutil, "rmtree", side_effect=emulate_windows_rmtree), \
+                 patch.object(os.path, "lexists", return_value=False):
+                library._rmtree(root)
+        finally:
+            import shutil
+            shutil.rmtree(parent, ignore_errors=True)
+
+    def test_missing_scan_target_is_treated_as_already_removed(self):
+        error = FileNotFoundError(errno.ENOENT, "synthetic vanished directory")
+        self.run_rmtree_callback(error)
+
+    def test_unrecognized_volume_error_is_not_treated_as_missing(self):
+        error = OSError(errno.EIO, "synthetic volume failure")
+        error.winerror = 1005
+        with self.assertRaises(OSError) as caught:
+            self.run_rmtree_callback(error)
+        self.assertEqual(caught.exception.winerror, 1005)
 
 
 if __name__ == "__main__":

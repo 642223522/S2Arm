@@ -76,38 +76,55 @@ def upgrade_mac(c, gid, runtime, hold=None):
     """Mac 运行版本补 _bf：整份重出直连库换进运行版本（运行版本自带全部输入，不用原件）→ True = 换了。代数已是本引擎的 / 这次放弃 → False。
     hold（同 rewrite_refresh.refresh_mac）：重出只读运行版本、在锁外做；换库与改清单前进 hold()，它 yield False（玩家正在开始游戏）就整款放弃、
       不记代数，下次再补。不给 hold = 调用方已持锁"""
-    import contextlib
     import tempfile
-    from core import atomic, read
+    from core import read
     runtime = Path(runtime)
     manifest = read(runtime / "manifest.json", {})
     if not isinstance(manifest.get("files"), dict) or not stale(manifest.get("bfGen")):
         return False
-    if not (runtime / "shaders/direct/keys.tsv").is_file() or not (runtime / "romfs").is_dir():
+    if not (runtime / "shaders/direct/keys.tsv").is_file() or not _has_romfs(runtime):
         return False   # 不是直连包 / 没有 RomFS：没有可补的
     c.emit("message", "正在给这款重出着色器库（补上片上读取用的着色器，资源不动；首次要几分钟到几十分钟）")
-    with tempfile.TemporaryDirectory(dir=c.private) as tmp:
-        new = rebuild(c, gid, runtime, "macos", Path(tmp))
-        stage = runtime / "shaders/direct.sgbf"; old = runtime / "shaders/direct.sgbf-old"
-        for p in (stage, old):
-            shutil.rmtree(p, ignore_errors=True)
-        shutil.copytree(new, stage, copy_function=_clone_file)
-        with (hold() if hold else contextlib.nullcontext(True)) as free:
-            if not free:
-                shutil.rmtree(stage, ignore_errors=True)
-                return False
-            manifest = read(runtime / "manifest.json", {})   # 锁里再读一次：重出期间别的作业可能改过清单（refresh_mac 补程序）
-            os.replace(runtime / "shaders/direct", old)
-            try:
-                os.replace(stage, runtime / "shaders/direct")
-            except OSError:
-                os.replace(old, runtime / "shaders/direct")   # 换不上：旧库原样回位
-                raise
-            files = {k: v for k, v in manifest["files"].items() if not k.startswith("shaders/direct/")}
-            for rel, size in _lib_files(runtime):
-                files[rel] = [size, ""]   # 同 build.snapshot：只记大小
-            atomic(runtime / "manifest.json", dict(manifest, files=files, bfGen=BF_GEN))
-        shutil.rmtree(old, ignore_errors=True)
+    # 运行版本的 RomFS 是 game.img（0.6.0 一款一份资源，pack/jobs/onerom.py）：重出要产物根形态的 romfs.std，同 iPhone 那条（ios_inputs）从 RomFS 段拷出一份，补完删掉
+    std = runtime / "romfs.std"
+    made = not _std_or_dir(runtime) and (runtime / "game.img").is_file()
+    if made:
+        h = _img(c).header(str(runtime / "game.img"))
+        with open(runtime / "game.img", "rb") as f:
+            _copy_range(f, h["romfs"][0], h["romfs"][1], std)
+    try:
+        with tempfile.TemporaryDirectory(dir=c.private) as tmp:
+            return _upgrade_mac(c, gid, runtime, hold, Path(tmp))
+    finally:
+        if made:
+            std.unlink(missing_ok=True)
+
+
+def _upgrade_mac(c, gid, runtime, hold, tmp):
+    """upgrade_mac 的重出与换库（tmp：重出用的临时目录）"""
+    import contextlib
+    from core import atomic, read
+    new = rebuild(c, gid, runtime, "macos", tmp)
+    stage = runtime / "shaders/direct.sgbf"; old = runtime / "shaders/direct.sgbf-old"
+    for p in (stage, old):
+        shutil.rmtree(p, ignore_errors=True)
+    shutil.copytree(new, stage, copy_function=_clone_file)
+    with (hold() if hold else contextlib.nullcontext(True)) as free:
+        if not free:
+            shutil.rmtree(stage, ignore_errors=True)
+            return False
+        manifest = read(runtime / "manifest.json", {})   # 锁里再读一次：重出期间别的作业可能改过清单（refresh_mac 补程序）
+        os.replace(runtime / "shaders/direct", old)
+        try:
+            os.replace(stage, runtime / "shaders/direct")
+        except OSError:
+            os.replace(old, runtime / "shaders/direct")   # 换不上：旧库原样回位
+            raise
+        files = {k: v for k, v in manifest["files"].items() if not k.startswith("shaders/direct/")}
+        for rel, size in _lib_files(runtime):
+            files[rel] = [size, ""]   # 同 build.snapshot：只记大小
+        atomic(runtime / "manifest.json", dict(manifest, files=files, bfGen=BF_GEN))
+    shutil.rmtree(old, ignore_errors=True)
     return True
 
 
@@ -140,8 +157,13 @@ def ios_inputs(c, gid, work):
     if gimg.is_file() and exefs is not None:
         root = Path(work) / "src"
         h = img.header(str(gimg))
-        _unpack_romfs(img, str(gimg), h["romfs"][0], root / "romfs") if h["romfs"][1] else (root / "romfs").mkdir(parents=True)
+        root.mkdir(parents=True)
         with open(gimg, "rb") as f:
+            # 标准 RomFS 段原样拷成产物根的镜像 romfs.std（段内偏移相对段首，拷出来就是独立的标准 RomFS），不再展开成几十万个散文件
+            if h["romfs"][1]:
+                _copy_range(f, h["romfs"][0], h["romfs"][1], root / "romfs.std")
+            else:
+                (root / "romfs").mkdir()
             for rel, off, size in img.entries(str(gimg)):   # 追加内容等其余条目（aoc/… 与 aoc.tsv）原样放回产物根
                 if rel.startswith("aoc/") or rel == "aoc.tsv":
                     _copy_range(f, off, size, root / rel)
@@ -155,7 +177,7 @@ def ios_inputs(c, gid, work):
         if (kit / "direct-profile").is_dir():
             shutil.copytree(kit / "direct-profile", root / "direct-profile")
         return root, "game.img"
-    if (mac / "romfs").is_dir() and (mac / "exefs/main").is_file():
+    if _has_romfs(mac) and (mac / "exefs/main").is_file():
         return mac, "mac"
     return None, "none"
 
@@ -180,12 +202,14 @@ def _img(c):
     return m
 
 
-def _unpack_romfs(img, path, base, out):
-    """game.img 标准 RomFS 段整份展开（img.std_files 只读元数据，这里按偏移拷数据）"""
-    out.mkdir(parents=True)
-    with open(path, "rb") as f:
-        for rel, (off, size) in img.std_files(path, base).items():
-            _copy_range(f, off, size, out / rel)
+def _std_or_dir(root):
+    """产物根形态的 RomFS：散文件目录 romfs/，或镜像 romfs.std（标准 RomFS，与 romfs/ 同级）"""
+    return (Path(root) / "romfs").is_dir() or (Path(root) / "romfs.std").is_file()
+
+
+def _has_romfs(root):
+    """目录有 RomFS：产物根形态（_std_or_dir），或 Mac 运行版本的 game.img（0.6.0 一款一份资源，用时拷出 RomFS 段）"""
+    return _std_or_dir(root) or (Path(root) / "game.img").is_file()
 
 
 def overlay(c, old_lib, new_lib, out):
@@ -233,8 +257,10 @@ def upgrade_ios(c, gid):
         c.emit("message", f"{gid}：正在重出着色器库补上片上读取用的着色器（原料取自 {where}；首次要几分钟到几十分钟，资源只推新增的）")  # 非玩家句
         new = rebuild(c, gid, src, "ios", Path(tmp) / "w")
         nl = lib_dir(new)
-        if nl is None or nl.name != old.name:
-            raise Failure(f"重出的库链版本 {nl.name if nl else '无'} 与资源包 {old.name} 不同：这款要重新出包")  # 非玩家句
+        if nl is None:
+            raise Failure(f"重出着色器库没产出库目录（资源包里是 {old.name}）")  # 非玩家句
+        if nl.name != old.name:   # 维护者 11-17：校验不过不再整个拒绝——只影响这款，黄字说清后照常补
+            c.diagnostic(f"重出的库链版本 {nl.name} 与资源包 {old.name} 不同，照常补上；这款游戏里画面出问题时重新出包", code="job_failed", severity="warning")  # 非玩家句
         out = Path(tmp) / "bf"
         got = overlay(c, old, nl, out)
         dst = old / "bf"
@@ -246,6 +272,43 @@ def upgrade_ios(c, gid):
         pid = add_to_pack(pack, dst.relative_to(pack).as_posix() + "/", rels)
     layout.update_info(c, gid, ios={**side, "bfGen": BF_GEN, "pack": pid})
     return "updated" if rels else "none"
+
+
+def rechain_ios(c, gid):
+    """0.6.0 通用壳（11-17 维护者定）：着色器链（直连库链号，game.json ios.dmshChain）和本引擎不同 → 只重编这款的着色器库，不重出整款。
+    原料同 upgrade_ios（ios_inputs：游戏库里的 game.img；没有就借同款 Mac 运行版本；都没有才要原件），按出包同一套阶段重出（rebuild），
+    新库（b-<新链>）整份换掉资源包里的 shaders/direct，改资源包清单（add_to_pack），记新链号与本代 _bf（整份重出已含）。
+    资源包号随之变，推送按机上清单只推变了的文件。由玩家对这一款「推到 iPhone」时前台调（install.push_game），不进后台。
+    → 'skip'（链号已是本引擎的 / 读不到本引擎链号 / 不是直连包）| 'unavailable'（没原料：调用方记一行，不挡推送）| 'updated'"""
+    import host_update
+    import tempfile
+    want = host_update.engine_compat(c)
+    side = layout.game_info(c, gid).get("ios") or {}
+    if not want or side.get("dmshChain", host_update.LEGACY_CHAIN) == want["dmshChain"]:
+        return "skip"
+    pack = Path(layout.ios_pack(c, gid))
+    direct = pack / "shaders/direct"
+    if lib_dir(direct) is None:
+        return "skip"   # 不是直连包
+    with tempfile.TemporaryDirectory(dir=c.private) as tmp:
+        src, where = ios_inputs(c, gid, Path(tmp))
+        if src is None:
+            return "unavailable"
+        c.emit("message", f"{gid}：着色器链更新了，正在用{where}重编这款的着色器库（不重出整款；首次要几分钟到几十分钟）")  # 非玩家句
+        new = rebuild(c, gid, src, "ios", Path(tmp) / "w")
+        if lib_dir(new) is None:
+            raise Failure("重编的直连着色器库不完整")  # 非玩家句
+        staged, old = pack / "shaders/.direct-new", pack / "shaders/.direct-old"
+        for d in (staged, old):
+            shutil.rmtree(d, ignore_errors=True)
+        shutil.copytree(new, staged)
+        os.replace(direct, old)
+        os.replace(staged, direct)
+        shutil.rmtree(old, ignore_errors=True)
+        rels = [p.relative_to(pack).as_posix() for p in sorted(direct.rglob("*")) if p.is_file()]
+        pid = add_to_pack(pack, "shaders/direct/", rels)
+    layout.update_info(c, gid, ios={**side, "dmshChain": want["dmshChain"], "bfGen": BF_GEN, "pack": pid})
+    return "updated"
 
 
 def due(c, gid):

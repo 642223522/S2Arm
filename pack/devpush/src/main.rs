@@ -266,7 +266,12 @@ async fn run(a: &[String]) -> Result<(), String> {
         for d in list { if !seen.contains(&d.udid) { println!("{}", d.udid); seen.push(d.udid); } }
         return Ok(());
     }
-    let dev = mux.get_device(udid).await.map_err(|e| format!("找不到设备 {udid}：{e}"))?;
+    // 同一台手机 usbmuxd 常同时列 USB 与 Wi-Fi 两条（同一 UDID）：idevice 的 get_device 取第一条，排到 Wi-Fi 那条就走无线，
+    //   推送从百来 MB/s 掉到个位数（11-17 Duo 实测：同时刻同一文件 devicectl 205 MiB/s、本工具 8.2 MiB/s）。同 devices 一样 USB 优先
+    let mut found = mux.get_devices().await.map_err(|e| format!("找不到设备 {udid}：{e}"))?;
+    found.retain(|d| d.udid == *udid);
+    found.sort_by_key(|d| !matches!(d.connection_type, idevice::usbmuxd::Connection::Usb));
+    let dev = found.into_iter().next().ok_or_else(|| format!("找不到设备 {udid}：{}", idevice::IdeviceError::DeviceNotFound))?;
     let provider = dev.to_provider(addr, "s2a-devpush");
     if op == "launch" {
         // CoreDevice app_service：idevice（钉的提交）自带的 launch_application 请求缺新系统要的字段（iOS 27 实测依次报缺 standardIOIdentifiers、
@@ -429,10 +434,49 @@ async fn run(a: &[String]) -> Result<(), String> {
             }
             println!("get-tree {n} 个文件 ← {root}");
         }
+        "du" => {   // 量占用（0.6.0 总控台「手机上每款占多少」）：du <目录> [<目录> …] 每个目录一行「du <字节> <文件数> <目录>」，目录不在 → 字节 -1；只读文件信息、不读内容
+            for root in a[4..].iter().map(|r| r.trim_start_matches('/').to_string()) {
+                if afc.get_file_info(root.clone()).await.is_err() { println!("du -1 0 {root}"); continue; }
+                let (mut stack, mut bytes, mut files) = (vec![root.clone()], 0u64, 0u64);
+                while let Some(dir) = stack.pop() {
+                    let names = afc.list_dir(dir.clone()).await.map_err(|e| format!("列 {dir} 失败：{e}"))?;
+                    for name in names.into_iter().filter(|x| x != "." && x != "..") {
+                        let path = format!("{dir}/{name}");
+                        let info = afc.get_file_info(path.clone()).await.map_err(|e| format!("读 {path} 失败：{e}"))?;
+                        if info.st_ifmt == "S_IFDIR" { stack.push(path); } else { bytes += info.size as u64; files += 1; }
+                    }
+                    ALIVE.store(now_ms(), Ordering::Relaxed);   // 文件多：每列完一个目录算一次进展
+                }
+                println!("du {bytes} {files} {root}");
+            }
+        }
+        "mkdir" => {   // 以 App 身份逐级建目录并核实末级可写（a48655：devicectl 代建的父目录在 iOS 26.x 上归 root，App / AFC 都写不进）。
+            //   建不了某一级、或末级建不出探针子目录 → 打「S2A_DIR_UNWRITABLE <写不进的那一级>」、退 1（调用方据此把那一级改名挪开再建）
+            let remote = a[4].trim_start_matches('/').trim_end_matches('/').to_string();
+            let mut cur = String::new();
+            for p in remote.split('/') {
+                if p.is_empty() { continue; }
+                let parent = cur.clone();
+                cur = if cur.is_empty() { p.to_string() } else { format!("{cur}/{p}") };
+                if afc.get_file_info(cur.clone()).await.is_ok() { continue; }
+                if let Err(e) = afc.mk_dir(cur.clone()).await { println!("S2A_DIR_UNWRITABLE {parent}"); return Err(format!("建不了 {cur}：{e}")); }
+            }
+            let probe = format!("{remote}/.s2a_wprobe");
+            match afc.mk_dir(probe.clone()).await {
+                Ok(_) => { let _ = afc.remove(probe).await; }
+                Err(e) => { println!("S2A_DIR_UNWRITABLE {remote}"); return Err(format!("{remote} 写不进：{e}")); }
+            }
+            println!("mkdir {remote}");
+        }
         "rm" => {   // 删一个文件或整目录（多款容器删一款）：已不在算成功
             let remote = a[4].trim_start_matches('/').to_string();
             if afc.get_file_info(remote.clone()).await.is_ok() { afc.remove_all(remote.clone()).await.map_err(|e| format!("删 {remote} 失败：{e}"))?; }
             println!("rm {remote}");
+        }
+        "mv" => {   // 容器内改名（通用壳程序包，11-16：catalogue.json 先写临时名、写完改名就位，手机上看不到写了一半的清单）；目标在就覆盖
+            let (from, to) = (a[4].trim_start_matches('/').to_string(), a.get(5).map(|s| s.trim_start_matches('/').to_string()).ok_or("mv 要 <源> <目标> 两个远端路径")?);
+            afc.rename(from.clone(), to.clone()).await.map_err(|e| format!("改名 {from} → {to} 失败：{e}"))?;
+            println!("mv {from} → {to}");
         }
         "free" => {   // 手机可写字节（推包前核空间）；调用约定与其它操作同，第 5 个参数占位
             let i = afc.get_device_info().await.map_err(|e| e.to_string())?; println!("{}", i.free_bytes);
@@ -456,6 +500,6 @@ async fn main() {
     let a: Vec<String> = std::env::args().collect();
     // launch 可以不带环境变量（多款容器推完拉起到游戏库，tools/push_pack.py Devpush.launch({})）：原先一律要 ≥ 5 个参数，这种调用只打用法、退 2，
     //   Windows 上「分开的文件」资源包推完永远拉不起 App（11-11 Windows 实机实测）
-    if a.len() < 5 && !(a.len() == 4 && (a[3] == "launch" || a[3] == "find-s2arm" || a[3] == "devices")) { eprintln!("用法：s2a-devpush <udid> <包名> put <本地> <远端> | put-at <本地> <远端> <偏移> | head <远端> <字节数> <本地> | get <远端> <本地> | ls <目录>"); std::process::exit(2); }
+    if a.len() < 5 && !(a.len() == 4 && (a[3] == "launch" || a[3] == "find-s2arm" || a[3] == "devices")) { eprintln!("用法：s2a-devpush <udid> <包名> put <本地> <远端> | put-at <本地> <远端> <偏移> | head <远端> <字节数> <本地> | get <远端> <本地> | ls <目录> | du <目录>… | mv <远端> <远端> | mkdir <远端目录>"); std::process::exit(2); }
     if let Err(e) = run(&a).await { eprintln!("{e}"); std::process::exit(1); }
 }

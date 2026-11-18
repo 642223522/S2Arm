@@ -154,11 +154,18 @@ static void big_wrap(void) {
     unsigned n = 0;
     for (unsigned i = 0; i < NVN_NFUNC; i++) if (nvn_big_real[i]) { nvn_big_real[i] = sw_xstack_wrap(nvn_names[i], nvn_big_real[i]); n++; }
     LOG("直连：%u 个 NVN 函数经 S2Arm 切栈桩跑在宿主栈上（其余命令录制留在游戏栈）", n);
+    void nvn_leaf_wrap(void *(*leaf)(const char *, void *)); void *sw_xstack_leaf(const char *name, void *fn);
+    nvn_leaf_wrap(sw_xstack_leaf);   // 留在游戏栈上的那些套叶子桩：游戏 sp 不对齐时先对齐再调（runtime/src/xstack.c）
 }
 
 // ---------- 兜底现编（§12.3，着色器线 s2a_dsh_compile）----------
 // ProgramSetShaders 时（控制段只在这次调用里保证有效）键不在映射表、也不是内置核：按代码区头判阶段，同步调 s2a_dsh_compile 把 <键>_b.metal / .json 写进
 // DM_MSL_FALLBACK（Documents/wire/<程序号>/shaders），成功就把「键 → 阶段」补进直连层映射表旁表；建管线时 shader_load 从兜底目录现场建库。只当最后一层保险
+const char *s2a_app_version(void) {   // dsh_miss.inc 着色器覆盖计数的 "app"：iOS 是 App 版本；Mac 宿主是命令行程序，没有 → ""
+    static char v[32]; static dispatch_once_t once;
+    dispatch_once(&once, ^{ NSString *s = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]; snprintf(v, sizeof v, "%s", s ? s.UTF8String : ""); });
+    return v;
+}
 #include "host/dsh_miss.inc"
 #include "host/dsh_cold.inc"
 

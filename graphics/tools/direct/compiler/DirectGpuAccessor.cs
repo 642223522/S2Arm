@@ -245,6 +245,9 @@ namespace S2A.DirectCompiler
         public bool QueryHostSupportsGeometryShader() => Record("QueryHostSupportsGeometryShader", "", _profile.Caps.SupportsGeometryShader, ProfileSource);
         public bool QueryHostSupportsGeometryShaderPassthrough() => Record("QueryHostSupportsGeometryShaderPassthrough", "", _profile.Caps.SupportsGeometryShaderPassthrough, ProfileSource);
         public bool QueryHostSupportsImageLoadFormatted() => Record("QueryHostSupportsImageLoadFormatted", "", _profile.Caps.SupportsImageLoadFormatted, ProfileSource);
+        // 按位读（SULD.D）的非缓冲图像也声明无格式：回放按着色器的数值类绑同字节数的视图（rp_draw.c image_view_format），
+        //   只在设备报了 shaderStorageImageReadWithoutFormat（profile supportsImageLoadFormatted）时打开；不支持时声明具体格式，回放按声明格式能建就建、建不了报名跳过
+        public bool QueryHostSupportsImageLoadFormattedRaw() => Record("QueryHostSupportsImageLoadFormattedRaw", "", _profile.Caps.SupportsImageLoadFormatted, ProfileSource);
         // 11-05 #1485（45bed0f5e）给 IGpuAccessor 加了这一问、接口缺省 true，直连 profile 没有对应能力（DirectDeviceCaps 未采 shaderStorageImageWriteWithoutFormat、
         //   profile JSON 严格键里也没有），合入后安卓直连实际按 true 翻译。这里显式写出同一值、记明来源，行为与合入后一致；接设备能力由 #1485 作者另做
         public bool QueryHostSupportsImageStoreFormatted() => Record("QueryHostSupportsImageStoreFormatted", "", true, "direct-v1:image-store-formatted 未接设备能力（与 #1485 合入时接口缺省一致）");
@@ -320,6 +323,9 @@ namespace S2A.DirectCompiler
         // 反射到 cbuf 句柄时能否当作同一个组合槽：只认经 c2 句柄表读的、且有同句柄直接事实
         public bool HasDirectTextureFact(int handle, int cbufSlot) => cbufSlot == HandleTableCbuf &&
             _program.Textures.Any(t => t.Stage == _stage.Stage && t.Handle == handle && t.CbufSlot == -1);
+        // 是否有这个 c2 字本身的精确事实（运行时句柄从驱动句柄表读；类型 / 格式由翻译期的同字事实给出）
+        public bool HasTextureFact(int handle, int cbufSlot) =>
+            _program.Textures.Any(t => t.Stage == _stage.Stage && t.Handle == handle && t.CbufSlot == cbufSlot);
 
         public SamplerType QuerySamplerType(int handle, int cbufSlot = -1) =>
             Record("QuerySamplerType", $"handle={handle},cbufSlot={cbufSlot}",

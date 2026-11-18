@@ -37,6 +37,10 @@
     <!-- 主界面与运行模式 -->
     <string name="console_mode_handheld">运行模式：掌机（点按切到主机）</string>
     <string name="console_mode_docked">运行模式：主机（点按切到掌机）</string>
+    <string name="phone_gyro_on">手机陀螺仪：开（点按关闭）</string>
+    <string name="phone_gyro_off">手机陀螺仪：关（点按打开）</string>
+    <string name="phone_rumble_on">手机震动：开（点按关闭）</string>
+    <string name="phone_rumble_off">手机震动：关（点按打开）</string>
     <string name="console_mode_switched">运行模式已切换。</string>
     <string name="console_mode_saved">运行模式已保存，下次启动游戏时生效。</string>
 
@@ -101,6 +105,11 @@
     <string name="library_playtime_today">今天</string>
     <string name="library_playtime_yesterday">昨天</string>
     <string name="library_playtime_days_ago">{0} 天前</string>
+    <string name="stall_patch_off">画面约 %1$d 秒几乎没有动，已关掉这款游戏的帧率补丁。之后再启动这款也保持关闭，可在游戏库右上角的设置面板里重新打开。</string>
+    <string name="stall_wait">游戏画面卡住了\n\n可能还在加载，可以再等一会儿；一直不动的话，请从后台划掉本 App，再重新打开。</string>
+    <string name="stall_off_note">这款的帧率补丁因画面停住被自动关闭了。重新打开后，下次启动生效。</string>
+    <string name="stall_reopen">重新打开帧率补丁</string>
+    <string name="stall_reopen_failed">没能重新打开帧率补丁：%1$s</string>
     <string name="mods_title">Mod（资源替换）</string>
     <string name="mods_for_game">当前游戏：%1$s</string>
     <string name="mods_no_game">先安装游戏：mod 按游戏存放。</string>
@@ -122,4 +131,8 @@
     <string name="mods_note_exefs">里面的代码补丁（exefs 的 pchtxt / IPS）这里不收：只导入资源替换（romfs）</string>
     <string name="mods_note_empty">「%1$s」的 romfs 是空的，没收</string>
     <string name="mods_note">mod 下次起局生效，按文件夹名顺序叠，后面的覆盖前面的；取消勾选即关闭。改 mod 前先结束游戏。</string>
+    <string name="touch_appearance_opacity">按键不透明度</string>
+    <string name="touch_appearance_smaller">缩小</string>
+    <string name="touch_appearance_larger">放大</string>
+    <string name="touch_appearance_opacity_value">%1$d%%</string>
 </resources>

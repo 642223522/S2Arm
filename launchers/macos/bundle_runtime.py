@@ -46,6 +46,7 @@ def runtime_deps_fingerprint():
     h.update((ROOT / 'launchers/macos/runtime_sources.py').read_bytes())
     h.update(runtime_sources.deployment_target().encode())
     h.update((ROOT / 'launchers/macos/bundle_runtime.py').read_bytes())   # 收什么、怎么收也算：11-02 只改拷贝规则补 Pillow，旧 Runtime 指纹不变照旧复用、玩家仍缺
+    h.update((ROOT / 'launchers/shared/pil_prune.py').read_bytes())   # 瘦身规则也算（#1570：只改它不换指纹，旧 Runtime 照旧缺画字）
     h.update((ROOT / 'launchers/macos/requirements-runtime.txt').read_bytes())
     h.update(b'\n')
     for formula, name in TOOLS:
@@ -126,6 +127,8 @@ def build(out):
     for p in installed.iterdir():
         if p.name.lower().startswith(keep):
             cp(p, site/p.name)
+    import pil_prune   # Pillow 只留出包用得到的（去 AVIF / Tk 与只被它们引用的库；画字留着，下游做包工具要用，#1570）
+    pil_prune.prune(site, lambda f: [l.strip().split(' ')[0].rsplit('/', 1)[-1] for l in output(['otool', '-L', f]).splitlines()[1:]])
     (out/'python/bin/python3').unlink(missing_ok=True)
     (out/'python/bin/python3').symlink_to('python3.12')
     (out/'bin').mkdir()
@@ -198,7 +201,7 @@ def build(out):
         if p.name not in ('python3', 'python3.12'):
             p.unlink()
     env = dict(os.environ, PYTHONNOUSERSITE='1', PYTHONDONTWRITEBYTECODE='1')
-    run([out/'python/bin/python3', '-B', '-I', '-c', 'import capstone,lz4.block,numpy,PIL.Image,zstandard,ctypes,zlib,hashlib; print("Portable Python dependencies OK")'], env=env)
+    run([out/'python/bin/python3', '-B', '-I', '-c', 'import capstone,lz4.block,numpy,PIL.Image,PIL.ImageFont,PIL._imagingft,zstandard,ctypes,zlib,hashlib; print("Portable Python dependencies OK")'], env=env)
     # zstd 解压要用 Runtime/bin/zstd 旁边的 ../lib/libzstd.1.dylib（App 的 Python 3.12 没有 compression.zstd；Python 侧入口 graphics/tools/shbake/zstd_lib.py 随 pack/uepak-v8 入）
     run([out/'python/bin/python3', '-B', '-I', '-c', f'import ctypes; ctypes.CDLL({str(out / "lib/libzstd.1.dylib")!r}).ZSTD_versionNumber; print("Runtime libzstd OK")'], env=env)
     licenses = out/'licenses'

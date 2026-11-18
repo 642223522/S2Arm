@@ -107,12 +107,12 @@ struct Switch2ProConnectionPopover: View {
             }
 
             // 蓝牙区块（#520 UI 稿 system.html）：系统蓝牙手柄——图、标题（一只写系统给的名字，太长一行截断、悬停看全名；多只写数量）、状态、「打开蓝牙设置」
-            //   HID 兜底手柄（#1151：GameController 认不出、游戏里按 HID 直读的「… Pro Controller」）一并列在这一块，按 Pro 样式手柄算
+            //   HID 兜底手柄（#1151：GameController 认不出、游戏里按 HID 直读的）一并列在这一块：「… Pro Controller」按 Pro 样式手柄算，别的通用手柄按其他手柄算
             //   没有任何蓝牙手柄时也显示（同 Switch 2 区块）：虚线图、「游戏手柄 / Game controller」（同 macOS 的叫法，不列品牌）、未连接，按钮照样能去系统蓝牙设置配对
             do {
                 let fallback = systems.fallback
                 let names = systems.pads.map(\.name) + fallback
-                let families = systems.pads.map(\.family) + fallback.map { _ in SystemControllers.Family.nintendoPro }
+                let families = systems.pads.map(\.family) + fallback.map { HIDFallbackPads.isPro($0) ? SystemControllers.Family.nintendoPro : .other }
                 let title = names.isEmpty ? t("gameController")
                     : names.count == 1 ? names[0] : t("bluetoothCount").replacingOccurrences(of: "{0}", with: "\(names.count)")
                 let glyph: ControllerIcon.Glyph = names.isEmpty ? .unknown
@@ -130,6 +130,9 @@ struct Switch2ProConnectionPopover: View {
                     }
                     .accessibilityElement(children: .combine)
                     .accessibilityIdentifier("controller.system.status")
+                    // 第三方手柄（八位堂、盖世小鸡等 Xbox 外形）切到 Switch 模式才有体感（11-16，同 iPhone 齿轮菜单「手柄与体感」）
+                    Text(t("thirdPartyMotion")).font(.manrope(12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("controller.system.motionHint")
                     Button(t("openBluetooth")) { SystemControllers.openBluetoothSettings() }
                         .controllerButtonStyle(LauncherSecondaryButtonStyle(fill: true))
                         .controllerID("controller.system.settings")

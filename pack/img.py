@@ -13,7 +13,7 @@
                    按它重建虚拟 RomFS（services RomFsIndex.OpenImg），不依赖 LibHac 的目录遍历
 格式号只在字节布局真变时加一；新壳必须保留读旧号的代码（坑记录与发版步骤）。
 
-用法：img.py build <RomFS 目录> <其余文件清单 tsv：相对路径\\t源文件> <输出 .img> --gid <游戏号> [--pack-id <资源包号>] [--romfs-index <romfs_index 命令>]
+用法：img.py build <RomFS 目录 | 标准 RomFS 镜像文件> <其余文件清单 tsv：相对路径\\t源文件> <输出 .img> --gid <游戏号> [--pack-id <资源包号>] [--romfs-index <romfs_index 命令>]
       img.py convert <产物根> <资源包目录> [--gid <游戏号>]   出包交付：资源包目录就地转 IMG 形态
       img.py ls <img>   列目录表（单测 / 诊断）"""
 import argparse, os, re, shlex, struct, subprocess, sys
@@ -70,21 +70,32 @@ def written(path):
 
 
 def build(romfs_dir, others, out, gid, pack_id='', romfs_index=None, say=print, consume=False):
-    """romfs_dir：RomFS 目录（None = 没有 RomFS）；others：[(相对路径, 源文件)]；→ 输出路径。
-    consume：RomFS 段边写边删原件（romfs_index --consume，#746），调用方先 free_clones 只留这一份"""
+    """romfs_dir：RomFS 目录，或已建好的标准 RomFS 镜像文件（RomFS 不落散文件：这段原样拷进来，不再从目录现建；None = 没有 RomFS）；
+    others：[(相对路径, 源文件)]；→ 输出路径。
+    consume：RomFS 段边写边删原件（目录：romfs_index --consume；镜像：从尾往前搬、搬一块截一块，#746），调用方先 free_clones 只留这一份"""
     if len(gid) != 16 or any(c not in '0123456789ABCDEFabcdef' for c in gid): raise Red(f'游戏号不对：{gid!r}')
     part = out + '.part'
+    std = romfs_dir if romfs_dir and os.path.isfile(romfs_dir) else None
     try:
         with open(part, 'wb') as f: f.truncate(PAGE)
         romfs_off = romfs_len = 0
         names = []
-        if romfs_dir:   # romfs.list：同 romfs_index 的文件集合（跳过 macOS 垃圾 .DS_Store / ._*，同 RomFsIndex.IsHostJunk），按字节序
+        if std:   # 镜像：romfs.list = 镜像文件表里的全部文件（同一字节序；镜像由 romfs_index 建，本来就不收 macOS 垃圾）
+            im = _romfs_img().RomfsImage(std)
+            names = [rel for rel, _, _ in im.entries()]
+            rom_bytes = sum(n for _, _, n in im.entries())
+        elif romfs_dir:   # romfs.list：同 romfs_index 的文件集合（跳过 macOS 垃圾 .DS_Store / ._*，同 RomFsIndex.IsHostJunk），按字节序
             names = sorted((os.path.relpath(os.path.join(d, n), romfs_dir).replace(os.sep, '/') for d, _, ns in romfs_list.walk(romfs_dir) for n in ns
                             if n != '.DS_Store' and not n.startswith('._')), key=lambda x: x.encode('utf-8'))
         # 字节进度（S2A_PROGRESS，tools/progress.py）：总数 = RomFS 各文件 + 其余文件的字节（RomFS 目录表几 MB 不计，报满前封顶）
-        rom_bytes = sum(os.path.getsize(os.path.join(romfs_dir, n)) for n in names)
+        if not std: rom_bytes = sum(os.path.getsize(os.path.join(romfs_dir, n)) for n in names)
         tk = Ticker('写单一 IMG', rom_bytes + sum(os.path.getsize(src) for _, src in others))
-        if romfs_dir:
+        if std:
+            romfs_off = PAGE
+            romfs_len = copy_std(std, part, romfs_off, lambda done: tk.step(max(0, min(done, rom_bytes - 1) - tk.done)), consume)
+            lst = out + '.romfs.list'; open(lst, 'w', encoding='utf-8', newline='\n').write(''.join(n + '\n' for n in names)); others = [*others, ('romfs.list', lst)]
+            tk.step(max(0, rom_bytes - tk.done))
+        elif romfs_dir:
             if not romfs_index: raise Red('写 RomFS 段要 romfs_index 命令（services/romfs_index）')
             romfs_off = PAGE
             # romfs_index 是另一个进程：每秒看 .part 实际分配的字节（st_blocks，与写入顺序无关）当已写量
@@ -126,6 +137,34 @@ def build(romfs_dir, others, out, gid, pack_id='', romfs_index=None, say=print, 
     return out
 
 
+def copy_std(std, part, at, progress, consume):
+    """标准 RomFS 镜像 std 整份写进 part 的 at 处（IMG 的 RomFS 段就是这段字节：RomFS 内部偏移相对段起点，搬到哪都不用改）→ 段长。
+    progress(已写字节)。consume（#746 边写边腾）：从尾往前一块块搬、每搬完一块就把镜像截短到那里，峰值只多一块；
+    镜像还有别的硬链接（截短会连带改掉别处那份）时照常从头拷，拷完只删这个名字。写到一半失败 = 镜像已残缺，调用方清掉整个出包工作目录重解"""
+    import stat
+    real = os.path.realpath(std); size = os.path.getsize(real); done = 0
+    with open(part, 'r+b') as w:
+        if consume and os.stat(real).st_nlink == 1:
+            os.chmod(real, os.stat(real).st_mode | stat.S_IWUSR)
+            with open(real, 'r+b') as r:
+                end = size
+                while end:
+                    start = max(0, end - (1 << 22)); r.seek(start); b = r.read(end - start)
+                    if len(b) != end - start: raise Red(f'RomFS 镜像 {std} 读不满（偏移 {start}）')
+                    w.seek(at + start); w.write(b); w.flush()
+                    r.truncate(start); end = start; done += len(b); progress(done)
+        else:
+            with open(real, 'rb') as r:
+                w.seek(at)
+                while b := r.read(1 << 22): w.write(b); done += len(b); progress(done)
+            if done != size: raise Red(f'RomFS 镜像 {std} 读不满（{done} / {size}）')
+    if consume:
+        d = os.path.dirname(real); os.chmod(d, os.stat(d).st_mode | stat.S_IWUSR | stat.S_IXUSR)   # RomFS 共享存储整棵只读（pack/roots.sh）：删要目录可写
+        os.unlink(real)
+        if std != real and os.path.islink(std): os.unlink(std)
+    return size
+
+
 SKIP = ('romfs/', 'romfs.', 'romfs_overlay/', 'shaders/')   # 资源包里不进 IMG 的：RomFS（另建标准段）、旧镜像件、界面覆盖层、直连库（派生产物）
 
 
@@ -142,23 +181,28 @@ def title_of(d):
 
 
 def orig_romfs(root, work):
-    """原始 RomFS（IMG 只装原始资源）→ (目录, 用完要删的临时目录或 None)。宽屏界面布局阶段（pack/stage_uilayout.sh）只把 ui_overlay.tsv 列的文件换进产物根 romfs、
+    """原始 RomFS（IMG 只装原始资源）→ (目录, 用完要删的临时目录或 None)。旧形态（11-16 前 Mac 宽屏界面布局阶段 pack/stage_uilayout.sh）把 ui_overlay.tsv 列的文件就地换进产物根 romfs、
     原版取自 seed.txt 记的游戏数据目录 /romfs；所以原件 = 产物根 romfs，但这几个文件换回数据目录里的原版。其余文件一律取产物根（与 romfs.s2aidx 天然一致；
     11-11 实测数据目录在播种后变过：别的文件长度与产物根差 1 字节，整棵取数据目录会和索引对不上）。临时目录建在 work 下：产物根 romfs 逐文件硬链（APFS / NTFS 都行、不占盘），
     覆盖文件换成原版。没有覆盖 → 直接用产物根 romfs；有覆盖但 seed.txt 缺或原版缺 → 报红"""
     romfs = os.path.join(root, 'romfs')
-    if not os.path.isdir(romfs): return None, None
+    std = None if os.path.isdir(romfs) else romfs_list.image_of(romfs)   # RomFS 不落散文件：产物根只有 romfs.std（标准 RomFS 镜像）→ 这段原样进 IMG
+    if not os.path.isdir(romfs) and not std: return None, None
     try: ov = [l.strip() for l in open(os.path.join(root, 'ui_overlay.tsv'), encoding='utf-8') if l.strip()]
     except FileNotFoundError: ov = []
+    if std:   # 镜像只能是原版：界面覆盖要在 ui_overlay/ 层（Windows 形态）；就地改 RomFS 的形态（Mac pack/stage_uilayout.sh）没有镜像可改
+        if ov and not os.path.isdir(os.path.join(root, 'ui_overlay')):
+            raise Red(f'产物根只有 RomFS 镜像 {std}，界面覆盖却是就地改 RomFS 的形态（没有 ui_overlay/），分不出原版：要重新出包')
+        return std, None
     if not ov: return romfs, None
-    # 覆盖层形态（Windows pack/orch/stages.py _uilayout，11-06 起）：产物根 romfs 本身一直是原版（仍联到共享存储那份不可变的身份），改动只写在 <版本>/ui_overlay/ 层，
+    # 覆盖层形态（Windows pack/orch/stages.py _uilayout 11-06 起，Mac pack/stage_uilayout.sh 11-16 起）：产物根 romfs 本身一直是原版（仍联到共享存储那份不可变的身份），改动只写在 <版本>/ui_overlay/ 层，
     #   原件就是产物根 romfs，不看 seed.txt。seed.txt 记的解包目录不可靠：Windows 播种从原件解时把它的 romfs 挪进共享存储、原处链接在播种那一版被修剪后悬空；
     #   玩家实报它还指到过别的款的解包目录（v0.3.0 Windows：有界面覆盖的款写 IMG 报「找不到原版」）
     if os.path.isdir(os.path.join(root, 'ui_overlay')): return romfs, None
     sf = os.path.join(root, 'seed.txt')
     src = next((l[4:].strip() for l in open(sf, encoding='utf-8') if l.startswith('src=')), '') if os.path.isfile(sf) else ''
     ts, tr = (title_of(src), title_of(root)) if src else ('', '')
-    if ts and tr and ts != tr:   # 就地改过的形态（Mac pack/stage_uilayout.sh）才要原版：解包目录必须是这一款的，别的款的文件绝不进 IMG
+    if ts and tr and ts != tr:   # 就地改过的旧形态（11-16 前 Mac pack/stage_uilayout.sh；之后两端都只写覆盖层）才要原版：解包目录必须是这一款的，别的款的文件绝不进 IMG
         raise Red(f'seed.txt 记的解包目录 {src} 是游戏 {ts} 的，不是这一款（{tr}）：要重新出包')
     lost = [r for r in ov if not os.path.isfile(os.path.join(src, 'romfs', r))] if src else ov
     if lost: raise Red(f'产物根 romfs 叠过 {len(ov)} 个界面覆盖文件，找不到其中 {len(lost)} 个的原版（seed.txt 的 src={src or "无"}，如 {lost[:2]}），不能当原件进 IMG')
@@ -243,12 +287,11 @@ def tool_error(text):
 
 
 def default_romfs_index():
-    """发版应用：预编工具（S2A_PREBUILT_TOOLS/romfs/romfs_index.dll，Windows 没有 bash）；开发树：services/romfs_index.sh 现编"""
+    """发版应用 Windows：预编工具 S2A_PREBUILT_TOOLS/romfs/romfs_index.exe（NativeAOT 单文件，Windows 没有 bash、不带 .NET）直接执行；
+    Mac 发版件经 services/romfs_index.sh 执行同一份预编件；开发树：services/romfs_index.sh 现编"""
     pre = os.environ.get('S2A_PREBUILT_TOOLS')
-    if pre and os.path.isfile(os.path.join(pre, 'romfs', 'romfs_index.dll')):
-        import shutil
-        dn = os.environ.get('DOTNET') or shutil.which('dotnet') or 'dotnet'
-        return f'{shlex.quote(dn)} {shlex.quote(os.path.join(pre, "romfs", "romfs_index.dll"))}'
+    if pre and os.path.isfile(os.path.join(pre, 'romfs', 'romfs_index.exe')):
+        return shlex.quote(os.path.join(pre, "romfs", "romfs_index.exe"))
     return f'bash {shlex.quote(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "services", "romfs_index.sh"))}'
 
 
@@ -284,7 +327,7 @@ def _is_junction(path):
 def free_clones(root, keep, pack_dir, work=None):
     """边写边删之前（#746）：和这次读的 RomFS（keep）共享数据块的其余各份都删掉，只留 keep 这一份——APFS 克隆 / 硬链要所有份都删了才真腾出空间。
     各份都在这款的出包工作目录里，从产物根自己的记录找，不按路径猜：
-      产物根各版本里是真目录的 romfs（链接不占空间，留着）、RomFS 共享存储（roots/.romfs_store/<款>/）里别的身份、seed.txt 记的解包目录 src/romfs、
+      产物根各版本里是真目录的 romfs（链接不占空间，留着）、RomFS 共享存储（roots/.romfs_store/<款>/）里别的身份、seed.txt 记的解包目录 src/romfs、各版本与解包目录里的 RomFS 镜像 romfs.std（单个文件，keep 本身也可以是它）、
       资源包清单里的 RomFS 行（Mac 是克隆、Windows 是另一份拷贝；本来写完 IMG 就删）和旧形态库内镜像 romfs.files。
     出包收尾本来就清掉整个出包工作目录（pack/jobs/library.py prune_build），这里只是提前；写到一半失败由调用方清掉整个工作目录、下次重新解包。
     work：这款的出包工作目录（作业层传 build/ios）。删的每一份都必须在它里面——玩家导入的原件（NSP / XCI，包括外接盘上只读引用的）、
@@ -294,8 +337,11 @@ def free_clones(root, keep, pack_dir, work=None):
     work = os.path.realpath(work or os.path.dirname(roots_dir))
     def inside(p): return os.path.realpath(p).startswith(work + os.sep)
     def other(p): r = os.path.realpath(p); return r != keep and not keep.startswith(r + os.sep) and inside(p)
+    def drop_image(p):   # RomFS 镜像 romfs.std（单个文件，各版本间是克隆 / 硬链接，同一族）：别的名字都删了，这一份的块才真腾出来
+        if os.path.isfile(p) and not os.path.islink(p) and other(p): os.unlink(p)
     for v in romfs_list.listdir(roots_dir):
         rf = os.path.join(roots_dir, v, 'romfs')
+        if not v.startswith('.'): drop_image(rf + '.std')   # 镜像形态（RomFS 不落散文件）：各版本里是真文件的 romfs.std 同理
         if v.startswith('.') or os.path.islink(rf) or _is_junction(rf) or not os.path.isdir(rf): continue
         if other(rf): drop_tree(rf)
     store = os.path.join(roots_dir, '.romfs_store')
@@ -309,24 +355,27 @@ def free_clones(root, keep, pack_dir, work=None):
     if src:
         s = os.path.join(src, 'romfs')
         if os.path.lexists(s) and not os.path.islink(s) and not _is_junction(s) and other(s): drop_tree(s)
+        drop_image(s + '.std')
     if not inside(pack_dir): return   # 资源包不在工作目录里（只可能是手工调用）：不碰
     for rel, _ in pack_rows(pack_dir):
         if rel.startswith(SKIP) and not rel.startswith(KEEP):
             try: os.unlink(os.path.join(pack_dir, rel))
             except FileNotFoundError: pass
     drop_tree(os.path.join(pack_dir, 'romfs.files'))
+    try: os.unlink(os.path.join(pack_dir, 'romfs.std'))   # 镜像形态的库内镜像（pack/romfs_image.py 硬链的，不在清单里）
+    except FileNotFoundError: pass
 
 
 def write(root, pack_dir, out_path, progress=None, romfs_index=None, gid=None, consume=False, work=None):
-    """产物根 root 的完整原始 romfs/ 建标准 RomFS 段（库里的 romfs.files 缺被覆盖层替换的原文件，不能用它建），
+    """产物根 root 的完整原始 romfs/ 建标准 RomFS 段（库里的 romfs.files 缺被覆盖层替换的原文件，不能用它建；产物根只有 romfs.std 时原样拷这段），
     资源包 pack_dir 清单（index.tsv）里的其余原始资源进其余文件段；游戏号 gid（没给取 root/unpack.tsv），资源包号 = image_id。
-    多程序合集（programs/）这一版不出 IMG（报红，调用方照旧出旧形态）。原子写（先 .part 再改名）"""
+    多程序合集序号 1.. 的 programs/<n>/…（#1545）同其余资源一样进其余文件段：手机解包（pack_apply.c img_extract）按原路径解回 资源包/programs/<n>/，
+    宿主照旧按文件读。原先报红不出 IMG，资源包永远是旧形态，「导出自签包」永远判旧格式、重出包也一样。原子写（先 .part 再改名）"""
     say = progress or (lambda *_: None)
     gid = gid or next((l.rstrip('\n').split('\t', 1)[1] for l in open(os.path.join(root, 'unpack.tsv'), encoding='utf-8') if l.startswith('title_id\t')), '')
     others = []
     for rel, _ in pack_rows(pack_dir):
         if rel.startswith(SKIP): continue
-        if rel.startswith('programs/'): raise Red('多程序合集（programs/）这一版不出 IMG')
         src = os.path.join(pack_dir, rel)
         if not os.path.isfile(src): raise Red(f'资源包清单里的 {rel} 不在 {pack_dir}')
         others.append((rel, src))
@@ -342,10 +391,9 @@ def write(root, pack_dir, out_path, progress=None, romfs_index=None, gid=None, c
 def convert(root, pack_dir, progress=None, romfs_index=None, gid=None, consume=False, work=None):
     """出包交付（pack/jobs/ipa.py deliver）：资源包目录就地转成 IMG 形态——game.img（游戏原始资源）+ 照旧按文件的着色器库 / 覆盖层 +
     新 index.tsv（game.img 一行，第三列 = 资源包号；其余行原样）+ manifest.json v3（format img、imgFile、index_sha256 = 新 index.tsv 的 SHA-256）。
-    进了 IMG 的旧形态文件删掉。多程序合集 → 返回 None、目录不动（照旧旧形态）。→ game.img 路径"""
+    进了 IMG 的旧形态文件删掉（多程序合集的 programs/ 同样进 IMG，见 write）。→ game.img 路径"""
     import hashlib, json
     rows = pack_rows(pack_dir)
-    if any(r.startswith('programs/') for r, _ in rows): return None
     out = os.path.join(pack_dir, 'game.img')
     write(root, pack_dir, out, progress, romfs_index, gid, consume, work)
     h = header(out)
@@ -368,6 +416,8 @@ def convert(root, pack_dir, progress=None, romfs_index=None, gid=None, consume=F
             except FileNotFoundError: pass
     import shutil
     shutil.rmtree(os.path.join(pack_dir, 'romfs.files'), ignore_errors=True)   # 旧形态库内镜像的硬链接目录（#329，不在清单里）：IMG 已有原件
+    try: os.unlink(os.path.join(pack_dir, 'romfs.std'))   # 镜像形态的库内镜像（pack/romfs_image.py 硬链的，不在清单里）：IMG 已有这段
+    except FileNotFoundError: pass
     for d, subs, files in os.walk(pack_dir, topdown=False):   # 删空了的目录
         if d != pack_dir and not os.listdir(d): os.rmdir(d)
     return out
@@ -495,7 +545,7 @@ def main(argv=None):
         elif a.cmd == 'update':
             print(update_pack(a.pack_dir, a.out))
         elif a.cmd == 'convert':
-            print(convert(a.root, a.pack_dir, gid=a.gid, consume=a.consume, work=a.work) or '多程序合集：照旧旧形态')
+            print(convert(a.root, a.pack_dir, gid=a.gid, consume=a.consume, work=a.work))
         else:
             print(header(a.img))
             for e in entries(a.img): print(*e, sep='\t')

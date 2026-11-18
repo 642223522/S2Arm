@@ -5,7 +5,9 @@ and records who holds it (启动器剃刀 H1 / H2，11-11：原先 7 把锁 7 �
 import contextlib
 import errno
 import json
+import math
 import os
+import socket
 import time
 
 
@@ -52,6 +54,48 @@ def read_holder(lock):
         return info if isinstance(info, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+def holder_is_stale(holder, *, current_host=None, windows=None, pid_start=None):
+    """Return True only when this host can prove the recorded process is gone or its PID was reused.
+
+    Missing/remote/legacy holder metadata and access-denied process queries are unknown, never stale.
+    The filesystem lock remains authoritative; this check must not be used to remove a lock file.
+    """
+    if not isinstance(holder, dict):
+        return None
+    host = holder.get("host")
+    current_host = socket.gethostname() if current_host is None else current_host
+    windows = os.name == "nt" if windows is None else windows
+    if not windows or not isinstance(host, str) or not host or host.casefold() != str(current_host).casefold():
+        return None
+    pid, started = holder.get("pid"), holder.get("startedAt")
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return None
+    if isinstance(started, bool) or not isinstance(started, (int, float)) or not math.isfinite(started):
+        return None
+    if pid_start is None:
+        try:
+            import winproc
+            pid_start = winproc.pid_start
+        except ImportError:
+            return None
+    try:
+        created_filetime = pid_start(pid)
+    except ProcessLookupError:
+        return True
+    except OSError as error:
+        if isinstance(error, PermissionError) or error.errno in (errno.EACCES, errno.EPERM) or getattr(error, "winerror", None) == 5:
+            return None
+        if getattr(error, "winerror", None) == 87 or error.errno == errno.ESRCH:
+            return True
+        return None
+    try:
+        from winproc import EPOCH_AS_FILETIME
+        created = (int(created_filetime) - EPOCH_AS_FILETIME) / 10_000_000
+    except (ImportError, TypeError, ValueError, OverflowError):
+        return None
+    return created > float(started)
 
 
 @contextlib.contextmanager

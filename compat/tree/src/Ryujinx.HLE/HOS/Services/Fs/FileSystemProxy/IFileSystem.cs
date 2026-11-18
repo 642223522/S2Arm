@@ -121,7 +121,7 @@ namespace Ryujinx.HLE.HOS.Services.Fs.FileSystemProxy
 
             if (result.IsSuccess())
             {
-                IFile fileInterface = new(ref file.Ref);
+                IFile fileInterface = new(ref file.Ref, name.ToString());   // S2Arm：带上路径，读失败 / 静默短读的黄字点名文件
 
                 MakeObject(context, fileInterface);
             }

@@ -1,3 +1,4 @@
+#if !os(tvOS)   // tvOS 不编本文件：触屏竖屏 / 网格库（电视版库界面见 TVLibraryView.swift，UPSTREAM.md「我方改动」）
 // S2Arm modification: add an entry to the dedicated game sorting list.
 import SwiftUI
 
@@ -327,3 +328,4 @@ struct HeroText: View {
         }
     }
 }
+#endif   // !os(tvOS)

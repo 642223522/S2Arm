@@ -120,7 +120,7 @@ public sealed partial class EnvironmentWindow
     }
 
     private Control PhoneJobCard(PhoneJobTrack tr, string state, string message, string diagnostics, string? gameId, IReadOnlyList<string>? notes = null,
-        Action? retry = null, Action? confirmDrop = null, Action? cancelDrop = null, string? dropTitle = null, bool showsOperation = true)
+        Action? retry = null, Action? confirmDrop = null, Action? cancelDrop = null, string? dropTitle = null, bool showsOperation = true, Action? switchExport = null)
     {
         var device = tr.Device.Length > 0 ? tr.Device : T("phone.device.unknown");
         var panel = new StackPanel { Spacing = 22, HorizontalAlignment = HorizontalAlignment.Stretch };   // 撑满卡片、贴左（同别的卡片对齐）：进度条、详细过程不被压窄
@@ -296,6 +296,12 @@ public sealed partial class EnvironmentWindow
                 var again = Primary(T("phone.retry"), retry);
                 AutomationId(again, "phone.retry");
                 actions.Children.Add(again);
+            }
+            if (switchExport is not null)   // 装到 iPhone / 更新没走成（没连手机、签不上…）：换另一条路——导出自签包，不连手机也能走完
+            {
+                var sw = Action("phone.switch_export", switchExport);
+                AutomationId(sw, "phone.switchExport");
+                actions.Children.Add(sw);
             }
             actions.Children.Add(CopyReportButton(gameId, [tr.Kind], () => message + "\n" + diagnostics));
             panel.Children.Add(actions);

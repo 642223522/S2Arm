@@ -12,6 +12,8 @@ OUT = ROOT / 'build/tbuf-real-red'
 if OUT.exists():
     shutil.rmtree(OUT)
 OUT.mkdir(parents=True)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import dotnet_chain  # noqa: E402
 SRC = OUT / 'maxwell'
 SRC.mkdir()
 
@@ -73,13 +75,13 @@ for name, code in [('vs', vs), ('fs', fs), ('gs', gs), ('cs', cs)]:
 
 cli = ROOT / 'graphics/tools/direct/compiler/cli'
 tests = ROOT / 'graphics/tools/direct/tests/compiler'
-subprocess.run(['dotnet', 'run', '-c', 'Release', '--project', str(tests), '--', '--emit-caps', str(OUT/'caps')], check=True)
+dotnet_chain.run(tests, ['--emit-caps', OUT/'caps'], OUT)
 caps = json.loads((OUT/'caps/caps.json').read_text())
 caps['features']['geometryShader'] = True
 caps['features']['geometryShaderOcclusionQuery'] = True
 (OUT/'caps-gs.json').write_text(json.dumps(caps, separators=(',', ':')))
-subprocess.run(['dotnet', 'run', '-c', 'Release', '--project', str(cli), '--', 'profile', '--caps', str(OUT/'caps-gs.json'), '--output', str(OUT/'profile.json')], check=True)
-identity = json.loads(subprocess.check_output(['dotnet', 'run', '-c', 'Release', '--project', str(cli), '--', 'identity'], text=True))
+dotnet_chain.run(cli, ['profile', '--caps', OUT/'caps-gs.json', '--output', OUT/'profile.json'], OUT)
+identity = json.loads(dotnet_chain.run(cli, ['identity'], OUT, capture=True))
 subprocess.run([sys.executable, str(ROOT/'android/tests/nvk_shader_pool_test.py'), '--emit-real-tbuf', str(OUT/'profile.json'),
                 identity['translatorClosure'], str(SRC), str(OUT/'production.json')], check=True)
 req = json.loads((OUT/'production.json').read_text())
@@ -95,8 +97,7 @@ def without_target_fact(request):
 def compile_request(request, name):
     path = OUT / (name + '.json')
     path.write_text(json.dumps(request, separators=(',', ':')))
-    return subprocess.run(['dotnet', 'run', '-c', 'Release', '--project', str(cli), '--', 'compile', '--request', str(path),
-                           '--output', str(OUT/name)], capture_output=True, text=True)
+    return dotnet_chain.run_result(cli, ['compile', '--request', path, '--output', OUT/name], OUT)
 
 
 fact = {'stage': 'fs', 'handle': 90, 'cbufSlot': 2, 'samplerType': 'buffer', 'format': 'R8G8B8A8Unorm',

@@ -26,6 +26,8 @@ int s2a_ql_fps60(int tier);              // 这一档 60 帧补丁开不开（S2
 //   返回 -1 = 不换档；否则返回新档（调用方去切），s2a_ql_why() 说原因
 int s2a_ql_frame(uint64_t now, int game, uint64_t dt, double gpu_ms, int thermal, int game_itv);
 int s2a_ql_why(void);
+// 刚才那次降档是 CPU 跟不上（GPU 没跑满仍达不到目标）：本局不再按 GPU 余量升回那一档（换档日志用）
+int s2a_ql_cpu_bound(void);
 // 这一档已经稳了（在本档连续 2 分钟局内画面没触发降档）：调用方据此把它记成「最后稳定档」；每次进新档后第一次稳住返回 1，之后返回 0
 int s2a_ql_stable_now(void);
 // 最近一次判定窗口的读数（换档日志用）

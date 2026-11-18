@@ -35,6 +35,7 @@ for f in files:
 sys.exit(rc)
 EOF
 printf '#!/bin/bash\necho "sysctl: command not found" >&2; exit 127\n' > "$T/gnu/sysctl"
+printf '#!/bin/bash\necho "vm_stat: command not found" >&2; exit 127\n' > "$T/gnu/vm_stat"   # Linux 没有 vm_stat（cores.sh s2a_avail_mb 读此刻可用内存先试它；不垫上门禁机读到真实可用内存，红时绿时）
 printf '#!/bin/bash\necho "stat: 坏了" >&2; exit 1\n' > "$T/nostat/stat"
 printf '#!/bin/bash\necho "getconf: 坏了" >&2; exit 1\n' > "$T/nogetconf/getconf"
 chmod +x "$T"/*/*
@@ -68,6 +69,11 @@ cores() { env -u S2A_JOBS -u S2A_CPU_BAKE -u S2A_MEM_TOTAL_GB -u S2A_MEM_BAKE_GB
 W=$("$PY" -c 'import os; n=os.cpu_count(); print(f"0 {n} {min(n, 32*3//4*2//3)}")')
 o=$(cores "$T/gnu" 2>&1)
 ck "⑤ 没有 sysctl：s2a_cores 读数「${o}」= 期望「${W}」" '[ "$o" = "$W" ]'
+# ⑤b 有 MemAvailable：路数按此刻可用内存封顶（#1439 / #1442）。手算：预算 = min(32768 × 3/4, 8192 ÷ 2) = 4096 MB → 重活 4096 // 1536 = 2，再与核数取小
+printf 'MemTotal:       33554432 kB\nMemFree:         1024 kB\nMemAvailable:    8388608 kB\n' > "$T/meminfo"
+W=$("$PY" -c 'import os; n=os.cpu_count(); print(f"0 {n} {min(n, 2)}")')
+o=$(cores "$T/gnu" 2>&1)
+ck "⑤b 有 MemAvailable 8 GB：s2a_cores 读数「${o}」= 期望「${W}」" '[ "$o" = "$W" ]'
 o=$(cores "$T/nogetconf" 2> "$T/e6"); r=${o%% *}
 ck "⑥ 核数读不出 → 报红、rc=${r} 非 0（${o}）" '[ "$r" != 0 ] && grep -q 读不出 "$T/e6"'
 

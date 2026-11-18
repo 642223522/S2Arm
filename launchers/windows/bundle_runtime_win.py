@@ -2,13 +2,13 @@
 """Windows 启动器随包运行时（启动器第 2 步，11-06 维护者：玩家「几乎不用额外装依赖」；同 Mac launchers/macos/bundle_runtime.py 的口径）。
 在 Windows 出包机上：python -X utf8 launchers/windows/bundle_runtime_win.py <目标>   → <目标>/Runtime/（不许已存在：不混旧件）
   python/        官方 Python 3.12 嵌入版（专为随应用分发）+ 钉版 capstone / lz4 / numpy / Pillow / zstandard（同 launchers/macos/requirements-runtime.txt）
-  dotnet/        .NET 10 运行时（dotnet.exe + host + shared/Microsoft.NETCore.App/<10.x>，不带 SDK：C# 件发版预编，见 bundle_prepare_win.py）
+  （不带 .NET：启动器与出包 C# 件都是 NativeAOT 原生可执行文件，v0.5.0 起，见 bundle_prepare_win.py；同 Mac #1135）
   git/usr/bin/   Git for Windows 的 usr/bin（bash 与 awk / sed / cut / join 等，直连库等出包脚本在 bash 下跑）；独立进程调用，不与我们的代码链接
   zstd/          官方 zstd-v1.5.7-win64（布局阶段钉版命令行 + libzstd）
   licenses/      各件许可原文 + 源码获取说明（GPL 件）
-  s2arm_env.cmd  出包作业的环境（PATH / DOTNET_ROOT / S2A_BASH）：启动器起作业前 call 它，并设 S2A_ENGINE=<引擎目录>（随包 Python 按它找 pack.*）
+  s2arm_env.cmd  出包作业的环境（PATH / S2A_BASH）：启动器起作业前 call 它，并设 S2A_ENGINE=<引擎目录>（随包 Python 按它找 pack.*）
   versions.json  各件版本与来源
-来源：Python 嵌入版、轮子从官方地址下载并缓存（launchers/shared/runtime_cache.py：命中不联网，每个文件核钉死的 SHA-256）；.NET 运行时、Git、zstd 从本机已装的官方发行版拷（路径见下面常量，可用环境变量改）。
+来源：Python 嵌入版、轮子从官方地址下载并缓存（launchers/shared/runtime_cache.py：命中不联网，每个文件核钉死的 SHA-256）；Git、zstd 从本机已装的官方发行版拷（路径见下面常量，可用环境变量改）。
 """
 import hashlib
 import json
@@ -25,7 +25,6 @@ sys.path.insert(0, str(ROOT / "launchers/shared"))
 import runtime_cache   # noqa: E402
 PY_VER = "3.12.10"
 PY_URL = f"https://www.python.org/ftp/python/{PY_VER}/python-{PY_VER}-embed-amd64.zip"
-DOTNET = Path(os.environ.get("S2A_RT_DOTNET", r"C:\Program Files\dotnet"))
 GIT = Path(os.environ.get("S2A_RT_GIT", r"C:\Program Files\Git"))
 ZSTD = Path(os.environ.get("S2A_RT_ZSTD", r"R:\s2a\deps\zstd\zstd-v1.5.7-win64"))
 GPL_OFFER = """S2Arm 的 Windows 运行时把 Git for Windows 的 usr/bin（GNU bash、coreutils、gawk、sed、grep 等 MSYS2 程序与 msys-2.0.dll 运行库）
@@ -65,25 +64,66 @@ def python(rt, versions):
         [sys.executable, "-m", "pip", "download", "--disable-pip-version-check", *target, "-d", str(folder), *missing], check=True))
     subprocess.run([sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-compile", "--no-index", "--find-links", str(wheels),
                     *target, "--target", str(site), *pins()], check=True, env=dict(os.environ, SOURCE_DATE_EPOCH="1262304000"))   # pip 生成的 .exe 启动器内含打包时刻，钉住才可复现
+    import pil_prune   # Pillow 只留出包用得到的（去 AVIF / Tk 扩展；画字留着，下游做包工具要用，#1570；Windows 轮子依赖静态链在 .pyd 里）
+    pil_prune.prune(site)
     versions["python"] = PY_VER; versions["python_url"] = PY_URL; versions["python_packages"] = pins()
 
 
-def dotnet(rt, versions):
-    d = rt / "dotnet"
-    have = sorted((DOTNET / "shared/Microsoft.NETCore.App").glob("10.*"), key=lambda p: tuple(int(x) for x in p.name.split(".")))
-    if not have: raise SystemExit(f"【红】{DOTNET} 下没有 .NET 10 运行时")
-    shutil.copytree(have[-1], d / "shared/Microsoft.NETCore.App" / have[-1].name)
-    shutil.copytree(DOTNET / "host", d / "host")
-    shutil.copy2(DOTNET / "dotnet.exe", d / "dotnet.exe")
-    versions["dotnet"] = have[-1].name
-
-
-# Git for Windows 的 usr/bin 里出包用不到的交互程序：vim 一族各 3.7 MB（共约 22 MB）。perl 留着（oneclick.sh / shader_pack.sh 等在用）
+# Git for Windows 的 usr/bin 只带出包用得到的（11-16 安装包瘦身：整份 95 MB，原先只去掉 vim 一族）：
+#   引擎快照里脚本 / Python / mk 文本中以独立词出现过的程序名（保守超集：叫得出名字的都留），加上它们 PE 导入表里的 msys DLL 闭包。
+#   发版时按这一版快照现算，以后脚本新用到的程序自动收进来；动态拼出来的命令名收不到，所以别在脚本里拼程序名。
+#   vim 一族照旧不带（交互编辑器，文本里「vim」只出现在这条注释类的说明里）
 GIT_SKIP = {"vim.exe", "vimdiff.exe", "view.exe", "rview.exe", "rvim.exe", "ex.exe", "vimtutor", "vi"}
+GIT_ALWAYS = {"bash.exe", "sh.exe", "env.exe", "cygpath.exe", "msys-2.0.dll"}   # 作业直接拉起 bash（S2A_BASH）、路径换算；不一定在脚本文本里以词出现
+SCRIPT_SUFFIXES = (".sh", ".bash", ".py", ".mk", ".awk", ".cmd", ".ps1")
+
+
+def pe_imports(path):
+    """PE 导入表里的 DLL 名（只读文件头，不加载）；不是 PE / 读坏 → []"""
+    import struct
+    d = Path(path).read_bytes()
+    try:
+        pe = struct.unpack_from("<I", d, 0x3C)[0]
+        if d[pe:pe + 4] != b"PE\0\0": return []
+        nsec, opt = struct.unpack_from("<H", d, pe + 6)[0], struct.unpack_from("<H", d, pe + 20)[0]
+        dd = pe + 24 + (112 if struct.unpack_from("<H", d, pe + 24)[0] == 0x20B else 96)
+        secs = [struct.unpack_from("<8sIIII", d, pe + 24 + opt + i * 40) for i in range(nsec)]
+        def off(r):
+            return next((r - va + ro for _, vs, va, rs, ro in secs if va <= r < va + max(vs, rs)), None)
+        o, out = off(struct.unpack_from("<I", d, dd + 8)[0]), []
+        while o is not None and struct.unpack_from("<I", d, o + 12)[0]:
+            n = off(struct.unpack_from("<I", d, o + 12)[0]); out.append(d[n:d.index(b"\0", n)].decode("ascii", "replace")); o += 20
+        return out
+    except (struct.error, ValueError):
+        return []
+
+
+def git_keep(usr_bin, texts):
+    """usr/bin 里要带的文件名：文本中出现过的程序（去 .exe 比）+ GIT_ALWAYS，再按导入表补 DLL 闭包；GIT_SKIP 一律不带"""
+    import re
+    names = {p.name for p in Path(usr_bin).iterdir() if p.is_file()}
+    low = {n.lower(): n for n in names}
+    words = set(re.findall(r"(?<![\w.\-/])([a-z][a-z0-9_+.\-]*[a-z0-9+])(?![\w\-])", "\n".join(texts).lower()))
+    keep = {n for n in names if (n.lower()[:-4] if n.lower().endswith(".exe") else n.lower()) in words} | {low[a] for a in GIT_ALWAYS if a in low}
+    keep = {n for n in keep if n.lower() not in GIT_SKIP}
+    todo = list(keep)
+    while todo:
+        for dll in pe_imports(Path(usr_bin) / todo.pop()):
+            n = low.get(dll.lower())
+            if n and n not in keep: keep.add(n); todo.append(n)
+    return keep
+
+
+def engine_texts():
+    sys.path.insert(0, str(ROOT / "launchers/macos")); sys.path.insert(0, str(ROOT / "pack/jobs"))
+    import bundle_engine   # noqa: E402  与发版引擎快照同一份文件清单
+    return [(ROOT / f).read_text(encoding="utf-8", errors="ignore") for f in bundle_engine.snapshot_files(ROOT)
+            if f.suffix in SCRIPT_SUFFIXES or f.name == "Makefile"]
 
 
 def git(rt, versions):
-    shutil.copytree(GIT / "usr/bin", rt / "git/usr/bin", ignore=lambda d, names: [n for n in names if n.lower() in GIT_SKIP])
+    keep = git_keep(GIT / "usr/bin", engine_texts())
+    shutil.copytree(GIT / "usr/bin", rt / "git/usr/bin", ignore=lambda d, names: [n for n in names if n not in keep])
     if (GIT / "etc").is_dir(): shutil.copytree(GIT / "etc", rt / "git/etc")   # bash 读 /etc 下的 profile / passwd 等（缺了照跑，带上少告警）
     out = subprocess.run([str(GIT / "cmd/git.exe"), "--version"], capture_output=True, text=True).stdout.strip()
     versions["git"] = out.replace("git version ", "")
@@ -117,8 +157,7 @@ def zstd(rt, versions):
 
 def licenses(rt):
     L = rt / "licenses"; L.mkdir()
-    pairs = [(rt / "python/LICENSE.txt", "Python-LICENSE.txt"), (DOTNET / "LICENSE.txt", "dotnet-LICENSE.txt"),
-             (DOTNET / "ThirdPartyNotices.txt", "dotnet-ThirdPartyNotices.txt"), (GIT / "LICENSE.txt", "git-LICENSE.txt"),
+    pairs = [(rt / "python/LICENSE.txt", "Python-LICENSE.txt"), (GIT / "LICENSE.txt", "git-LICENSE.txt"),
              (rt / "zstd/LICENSE", "Zstandard-LICENSE.txt"),
              (ROOT / "runtime/rewriter/LICENSES/capstone.txt", "capstone-LICENSE.txt"), (ROOT / "runtime/rewriter/LICENSES/lz4.txt", "lz4-LICENSE.txt")]
     for src, name in pairs:
@@ -133,20 +172,18 @@ def licenses(rt):
 def env_cmd(rt):
     (rt / "s2arm_env.cmd").write_bytes(("\r\n".join([
         "@echo off",
-        "rem S2Arm 出包作业环境（bundle_runtime_win.py 生成）：只用随包运行时，不依赖玩家机上另装的 Python / Git / .NET",
+        "rem S2Arm 出包作业环境（bundle_runtime_win.py 生成）：只用随包运行时，不依赖玩家机上另装的 Python / Git（.NET 不需要：C# 件都是原生单文件）",
         'set "S2A_RT=%~dp0"',
         "rem 玩家原来的 PATH 先存下（Metal 工具装在自定义目录、只加进 PATH 时，pack/orch/oneclick_win.metal_exe 按它找）；嵌套调用保留最外层那份",
         'if not defined S2A_USER_PATH set "S2A_USER_PATH=%PATH%"',
-        'set "PATH=%S2A_RT%python;%S2A_RT%python\\Scripts;%S2A_RT%dotnet;%S2A_RT%git\\usr\\bin;%S2A_RT%zstd;%SystemRoot%\\system32;%SystemRoot%;%SystemRoot%\\System32\\WindowsPowerShell\\v1.0"',
-        'set "DOTNET_ROOT=%S2A_RT%dotnet"', 'set "DOTNET_CLI_TELEMETRY_OPTOUT=1"',
+        'set "PATH=%S2A_RT%python;%S2A_RT%python\\Scripts;%S2A_RT%git\\usr\\bin;%S2A_RT%zstd;%SystemRoot%\\system32;%SystemRoot%;%SystemRoot%\\System32\\WindowsPowerShell\\v1.0"',
         'set "S2A_BASH=%S2A_RT%git\\usr\\bin\\bash.exe"', 'set "PYTHONUTF8=1"', 'set "LC_ALL=C.UTF-8"', 'set "PYTHONDONTWRITEBYTECODE=1"',
         'set "PYTHONHOME=%S2A_RT%python"', 'set "PYTHONNOUSERSITE=1"', 'set "PYTHONPATH="', ""]) ).encode("utf-8"))
 
 
-def smoke(rt):   # 每件跑一下：Python 带四个库、dotnet 只有运行时、bash 跑管道、zstd 版本
-    env = dict(os.environ, PATH=os.pathsep.join([str(rt / "python"), str(rt / "dotnet"), str(rt / "git/usr/bin"), str(rt / "zstd"), os.environ.get("SystemRoot", r"C:\Windows") + r"\system32"]))
-    checks = [([str(rt / "python/python.exe"), "-B", "-c", "import capstone, lz4.block, numpy, PIL.Image, zstandard, ctypes, zlib, hashlib, multiprocessing; print('python ok', numpy.__version__)"], "python ok"),
-              ([str(rt / "dotnet/dotnet.exe"), "--list-runtimes"], "Microsoft.NETCore.App 10."),
+def smoke(rt):   # 每件跑一下：Python 带四个库、bash 跑管道、zstd 版本
+    env = dict(os.environ, PATH=os.pathsep.join([str(rt / "python"), str(rt / "git/usr/bin"), str(rt / "zstd"), os.environ.get("SystemRoot", r"C:\Windows") + r"\system32"]))
+    checks = [([str(rt / "python/python.exe"), "-B", "-c", "import capstone, lz4.block, numpy, PIL.Image, PIL.ImageFont, PIL._imagingft, zstandard, ctypes, zlib, hashlib, multiprocessing; print('python ok', numpy.__version__)"], "python ok"),
               ([str(rt / "git/usr/bin/bash.exe"), "-c", "printf 'b\\na\\n' | sort | head -1 | awk '{print \"bash \" $1}'"], "bash a"),
               ([str(rt / "zstd/zstd.exe"), "--version"], "v1.5.7"),
               ([str(rt / "python/python.exe"), "-B", "-c", "import ctypes, os, sys; [ctypes.WinDLL(os.path.join(sys.argv[1], n)) for n in sys.argv[2:]]; print('vcrt ok')", str(rt / "vcrt"), *sorted(VC_RUNTIME)], "vcrt ok")]
@@ -159,8 +196,6 @@ def smoke(rt):   # 每件跑一下：Python 带四个库、dotnet 只有运行�
             p = subprocess.run(cmd, capture_output=True, text=True, env=env)
             if want not in p.stdout: raise SystemExit(f"【红】自检不过：{' '.join(cmd)[:120]} → {(p.stdout + p.stderr).strip()[-300:]}")
             say(f"  自检 {Path(cmd[-1] if cmd[-1].endswith('python') else cmd[0]).name}：{p.stdout.strip().splitlines()[0][:80]}")
-    if subprocess.run([str(rt / "dotnet/dotnet.exe"), "--list-sdks"], capture_output=True, text=True, env=env).stdout.strip():
-        raise SystemExit("【红】随包 dotnet 带了 SDK（只该带运行时）")
 
 
 def main(argv=None):
@@ -169,7 +204,7 @@ def main(argv=None):
     rt = Path(argv[0]) / "Runtime"
     if rt.exists(): raise SystemExit(f"【红】{rt} 已存在，不混旧件")
     rt.mkdir(parents=True); versions = {}
-    for step in (python, dotnet, git, zstd, vc_runtime):
+    for step in (python, git, zstd, vc_runtime):
         say(f"[运行时] {step.__name__}"); step(rt, versions)
     licenses(rt); env_cmd(rt)
     (rt / "versions.json").write_text(json.dumps(versions, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")

@@ -114,9 +114,16 @@ public struct ConnectedController: Equatable, Sendable {
         let x = dx != 0 ? dx : (stick?.xAxis.value ?? 0)
         let y = dy != 0 ? dy : (stick?.yAxis.value ?? 0)
         var buttons: Set<PadButton> = []
+        #if os(tvOS)
+        // tvOS：菜单键是系统的「返回」（Siri 遥控器的返回键在 GameController 里也叫 Menu），不当「游戏设置」，免得按返回同时开设置
+        let names: [(String, PadButton)] = [(GCInputButtonA, .a), (GCInputButtonB, .b), (GCInputButtonX, .x), (GCInputButtonY, .y),
+                                            (GCInputButtonOptions, .options),
+                                            (GCInputLeftShoulder, .leftShoulder), (GCInputRightShoulder, .rightShoulder)]
+        #else
         let names: [(String, PadButton)] = [(GCInputButtonA, .a), (GCInputButtonB, .b), (GCInputButtonX, .x), (GCInputButtonY, .y),
                                             (GCInputButtonMenu, .menu), (GCInputButtonOptions, .options),
                                             (GCInputLeftShoulder, .leftShoulder), (GCInputRightShoulder, .rightShoulder)]
+        #endif
         for (name, button) in names where pressed(name) { buttons.insert(button) }
         return PadState(x: x, y: y, buttons: buttons)
     }

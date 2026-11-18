@@ -36,7 +36,7 @@ enum PackShelf {
         var seen = Set<String>()
         for dir in (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? [] {
             let gid = dir.lastPathComponent
-            let ipas = ((try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []).filter { $0.pathExtension == "ipa" }
+            let ipas = ((try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []).filter { $0.pathExtension == "ipa" && !$0.lastPathComponent.hasPrefix("._") }   // ._：exFAT 上的 AppleDouble 附属文件
             guard !ipas.isEmpty else { continue }
             let packBytes = PackFacts.read(ipa: ipas[0].path).packBytes ?? 0   // 资源包每款一份（推送按内容增量），各版本共用
             let versions: [PackShelfVersion] = ipas.map { ipa in

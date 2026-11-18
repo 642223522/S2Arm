@@ -34,6 +34,19 @@ def oneclick_stages(source):
 REAL_ONECLICK_STAGES = oneclick_stages((ROOT / "pack/oneclick/oneclick.sh").read_text())
 
 
+# 导入路径跑完还原（11-16）：本文件有用例在进程内加载 pack/iml_check.py（它把自己所在的 pack/ 插到 sys.path 最前）、经作业层把 tools/ 插进 sys.path；
+#   不还原，同一进程里后跑的 test_win_jobs 导入 pack.orch 时 pack 解析成 pack/pack.py（「pack is not a package」），全量 discover 才红
+_SYS_PATH = []
+
+
+def setUpModule():
+    _SYS_PATH[:] = sys.path
+
+
+def tearDownModule():
+    sys.path[:] = _SYS_PATH
+
+
 class PackageFailures(JobCase):
     def setUp(self):
         super().setUp()
@@ -444,6 +457,21 @@ class FreeAccountLimits(unittest.TestCase):
         self.assertTrue(loc.get(RECOVERY["signing_server_unreachable"]) and spec["signing_server_unreachable"]["title"]["en"] and "signing_server_unreachable" in guide)
         self.assertEqual(ctl.AI_NEXT["signing_server_unreachable"][0], "human")
         self.assertEqual(impactor.explain("Anisette error: -80046 Apple rejected"), "login_identity_rejected")
+        # #edc5f5 拆三种（期望手写）：没登录 / 没选中 → apple_not_signed_in；连不上 *.apple.com → apple_server_unreachable；1100 仍是过期。
+        #   连不上 anisette 服务器（jkcoxson）仍归 signing_server_unreachable，不被新的那条吞掉；各处都登记
+        for raw, code in (("Error: No account selected. Please login first using 'plumesign account login'", "apple_not_signed_in"),
+                          ("Error: not logged in", "apple_not_signed_in"),
+                          ("Error: error sending request for url (https://gsa.apple.com/grandslam/GsService2)\n\nCaused by:\n    dns error", "apple_server_unreachable"),
+                          ("Error: Anisette error: Request Error error sending request for url (https://mac-ani.jkcoxson.com/v3/client_info) dns error", "signing_server_unreachable"),
+                          ("Error: Developer API error 1100 (HTTP Some(200)): Your session has expired. Please log in.", "apple_session_expired")):
+            with self.subTest(raw=raw[:40]):
+                self.assertEqual(impactor.explain(raw), code)
+        for code in ("apple_not_signed_in", "apple_server_unreachable"):
+            with self.subTest(code=code):
+                self.assertTrue(loc.get(RECOVERY[code]) and spec[code]["title"]["en"] and spec[code]["detail"]["en"] and code in guide)
+                self.assertEqual(ctl.AI_NEXT[code][0], "human")
+        self.assertIn("添加账号", RECOVERY["apple_not_signed_in"]); self.assertNotIn("过期", RECOVERY["apple_not_signed_in"])
+        self.assertIn("DNS", RECOVERY["apple_server_unreachable"]); self.assertIn("不是 Apple ID", RECOVERY["apple_server_unreachable"])
         for other, code in (("Developer API error 9401: An App ID with Identifier 'x' is not available.", "app_id_taken"),
                             ("-21669 verification code", "two_factor_wrong"), ("-20101 entered incorrectly", "apple_id_wrong")):
             self.assertEqual(impactor.explain(other), code)
@@ -716,6 +744,22 @@ class PlayerSummary(unittest.TestCase):
 
 
 class RecoveryCoverage(unittest.TestCase):
+    def test_library_busy_stays_short_and_stuck_lock_has_recovery(self):
+        source = RECOVERY["library_busy"]
+        self.assertEqual(source, "等正在用游戏库的那个任务结束（或在任务列表里取消它）再重试；什么都没有改动。")
+        stuck = RECOVERY["library_lock_stuck"]
+        self.assertIn("重新连接或重新挂载", stuck)
+        self.assertIn("不要手动删除锁文件", stuck)
+        translations = json.loads((ROOT / "launchers/macos/adapter/Sources/S2ArmAppleAdapter/Resources/Localizable.json").read_text())
+        self.assertTrue(next(i["en"] for i in translations if i.get("source") == source))
+        self.assertTrue(next(i["en"] for i in translations if i.get("source") == stuck))
+        spec = json.loads((ROOT / "launchers/shared/experience.v1.json").read_text())
+        error = next(i for i in spec["errors"]["items"] if i["code"] == "library_busy")
+        self.assertEqual(error["detail"]["zh-Hans"], "等它结束再试，这次什么都没有改动。")
+        stuck_error = next(i for i in spec["errors"]["items"] if i["code"] == "library_lock_stuck")
+        self.assertEqual(stuck_error["detail"]["zh-Hans"], stuck)
+        self.assertIn("remount", stuck_error["detail"]["en"].lower())
+
     def test_real_lap_names_are_all_mapped_and_unknown_names_fail(self):
         source = (ROOT / "pack/oneclick/oneclick.sh").read_text()
         self.assertEqual(set(oneclick_stages(source)), set(ipa.ONECLICK_PHASES))

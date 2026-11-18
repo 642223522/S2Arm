@@ -268,6 +268,8 @@ public sealed partial class EnvironmentWindow
         catch (LibraryProtocolException error)
         { librarySummary = "library.invalid_result"; libraryDiagnostics += "\n" + error.Message; importError = libraryFailure = LibraryFailed(folder, error.Message); }
         catch (OperationCanceledException) { librarySummary = "library.interrupted"; }
+        catch (UnauthorizedAccessException error)   // 写不进去：不甩英文原文，说清是哪个文件夹、怎么办（原文进诊断）
+        { librarySummary = "library.failed"; libraryDiagnostics += "\n" + error.Message; importError = libraryFailure = LibraryFailed(folder, NoWrite(error, folder)); }
         catch (Exception error)   // 玩家输入驱动的连接 / 创建：任何异常都报出来、不逃出去（玩家反馈：点「连接或创建游戏库」闪退）
         { librarySummary = "library.failed"; libraryDiagnostics += "\n" + error.Message; importError = libraryFailure = LibraryFailed(folder, error.Message); }
         finally { EndJob(front); Render(); }
@@ -387,6 +389,16 @@ public sealed partial class EnvironmentWindow
         panel.Children.Add(pcButtons);
         panel.Children.Add(ReportHintText());
         return panel;
+    }
+
+    /// <summary>「写不进去」的平实说明：异常原文里带被拒的路径就点名它所在的文件夹，取不到用给定的位置（11-16：原先直接显示
+    /// 「Access to the path '…request-….json' is denied.」）</summary>
+    private string NoWrite(UnauthorizedAccessException error, string fallback)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(error.Message, "'([^']+)'");
+        var where = m.Success ? m.Groups[1].Value : fallback;
+        if (Path.HasExtension(where)) where = Path.GetDirectoryName(where) ?? where;
+        return T("library.no_write").Replace("{0}", where);
     }
 
     private string LibraryFailed(string folder, string reason) =>

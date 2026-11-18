@@ -3,7 +3,7 @@
 """只重跑改写阶段（维护者 11-11：改写器修了，受影响的款不重出资源包，只换改写产物，随「更新 iPhone 上的 S2Arm」组进新壳）。
 
 为什么不靠缓存键：改写阶段的键含改写器源码指纹（pack/stage_rewrite.sh），改写器一改所有款的键都变；也不能比产物（游戏库里早些时候出的款，
-产物本来就跟今天的改写器对不上，比出差别不等于受这次修复影响）。判据由改写器自己报：统计行里 x18_spdyn > 0 的模块，产物会因这次修复而变
+产物本来就跟今天的改写器对不上，比出差别不等于受这次修复影响）。判据由改写器自己报：统计行里 x18_spdyn 或 pacga > 0 的模块，产物会因这次修复而变
 （开发丙 11-11 实测：九款金样全 0、产物逐字节同旧；路易吉洋馆 3 两个版本各 38）。
 
 做法（每款）：
@@ -11,7 +11,7 @@
   2. 取原始 exefs：共用解包目录还有效就用它，否则用读取器 --exefs-only 从原件只解 exefs（几秒）；原件不在（外接盘没插）→ 这次跳过、下次再核
   3. 对 main / sdk / subsdk0–9 跑改写器，输入与出包时相同：这款 kit 里的 widen_sites.tsv、fps.tsv，同一份随包代码补丁，S2A_TARGET / 自旋闸同出包
      （11-11 核过：旧改写器按这组输入重跑，产物与完整出包逐字节相同）
-  4. 任一模块 x18_spdyn > 0 → 这款受影响：该模块的改写产物（<模块>.patched.bin / .fixups.tsv / .gates.tsv / .sites.tsv / .gaps.tsv / .widen.tsv / .code_patch.tsv）
+  4. 任一模块 x18_spdyn / pacga > 0 → 这款受影响：该模块的改写产物（<模块>.patched.bin / .fixups.tsv / .gates.tsv / .sites.tsv / .gaps.tsv / .widen.tsv / .code_patch.tsv）
      换进 kit；资源包（game.img）、直连库不动不推
   5. 记下本引擎的改写器指纹
 romfs 里藏的 NRO 模块没有原件可取（资源在 game.img 里），不在这里重跑：保持 kit 原样。
@@ -34,9 +34,11 @@ import layout
 from core import Failure
 
 MODULE = re.compile(r"(main|sdk|subsdk[0-9])")
-SGRADE_TABLES = ("cpatch.tsv",)   # 随包表（runtime/src/cpatch.c 读）；另有 cheat-src.*（金手指原文随包）
+SGRADE_TABLES = ("cpatch.tsv", "cpatch_rows.tsv", "cpatch_excluded.tsv")   # 随包表（runtime/src/cpatch.c 读 cpatch.tsv）+ 改写用的补丁行表：一起换，kit 里的配方才与产物一致（按配方现建 kit 要用它，11-16）；另有 cheat-src.*（金手指原文随包）
 OUTPUTS = ("patched.bin", "fixups.tsv", "gates.tsv", "sites.tsv", "gaps.tsv", "widen.tsv", "code_patch.tsv")
-AFFECTED = re.compile(r"'x18_spdyn':\s*(\d+)")
+# 受这次（或往后）改写器修复影响的必改点类别：x18_spdyn（11-11 栈指针动态改写修复）、pacga（11-17 确定性指针认证：较新 Switch 2 SDK
+#   切纤程把 pacga 校验值存进内存，宿主密钥每进程不同，即时快照换进程恢复后校验不过；改写器把它换成固定密钥实现）
+AFFECTED = re.compile(r"'(?:x18_spdyn|pacga)':\s*(\d+)")
 
 
 def rewriter_id(c):
@@ -196,10 +198,15 @@ def _original_nup_exefs(c, game, packages, work):
 
 def rewrite_env(c, kit, exefs, target):   # exefs None：不带随包代码补丁（补丁按主程序构建号认，只改 exefs 模块）
     env = dict(c.env(), S2A_TARGET=target, S2A_REWRITE_SPIN=os.environ.get("S2A_REWRITE_SPIN", "1"))
-    for k in ("S2A_FPS_TSV", "S2A_CPATCH_TSV", "S2A_CODE_PATCH", "S2A_CODE_BUILD"):
+    for k in ("S2A_FPS_TSV", "S2A_CPATCH_TSV", "S2A_CODE_PATCH", "S2A_CODE_BUILD", "S2A_FIX_TSV"):
         env.pop(k, None)
     if (kit / "fps.tsv").is_file():
         env["S2A_FPS_TSV"] = str(kit / "fps.tsv")
+    # 游戏缺陷修补表：同 stage_rewrite.sh（引擎里的 runtime/fix/<main 构建号前 16 位>.tsv）
+    if exefs is not None and (exefs / "main").is_file():
+        fix = Path(c.engine) / "runtime/fix" / ((exefs / "main").read_bytes()[0x40:0x48].hex() + ".tsv")
+        if fix.is_file():
+            env["S2A_FIX_TSV"] = str(fix)
     # 随包代码补丁：同 stage_rewrite.sh（S2A_PATCH_DIR/<程序号>/patch.tsv，构建号 = main 头 0x40 起 16 字节）
     pdir = env.get("S2A_PATCH_DIR")
     if pdir and exefs is not None:
@@ -243,14 +250,35 @@ def sgrade_key(c, gid, rid, main_bid):
     import patches
     import mods   # 玩家导入的 mod 代码补丁（11-15）：导入 / 删了要重编；只开关不算（运行时开关）。没有 mod 代码补丁时记号与原来一字不差（不让所有老游戏白白重补）
     md = mods.code_digest(c, gid)
-    return f"{rid}:{plan_code_id(c)}:{patches.version_key(c, gid, main_bid)}:{cheats_digest(c, gid)}" + (f":{md}" if md != "-" else "")
+    fp = fpsl_code_id(c) if _has_fpsl(c, gid, main_bid) else ""   # 带 FPSLocker 配置的款：转换代码变了也要重出表（没带的款记号一字不变，不白白重补）
+    return (f"{rid}:{plan_code_id(c)}:{patches.version_key(c, gid, main_bid)}:{cheats_digest(c, gid)}" + (f":{md}" if md != "-" else "")
+            + (f":fpsl{fp}" if fp else ""))
+
+
+def fpsl_code_id(c):
+    """FPSLocker 配置转换代码的指纹（pack/fpslocker.py + pack/miniyaml.py）：改了 = 同一份配置会转出不同的补丁行
+    （11-17 D-7AQ2：「+160」原先读成绝对偏移，修了以后已出过包的款要按新转换重出表，走 S 级补进同一条路，玩家不用手动重出）"""
+    h = hashlib.sha256()
+    for f in ("pack/fpslocker.py", "pack/miniyaml.py"):
+        h.update((Path(c.engine) / f).read_bytes())
+    return h.hexdigest()[:12]
+
+
+def _has_fpsl(c, gid, main_bid):
+    """这款在补丁库里有没有 FPSLocker 配置（kind fpsl / .yaml）；取不到补丁库 → False（记号照旧）"""
+    import patches
+    try:
+        # items_for 返回 [(条目字典, 内容字节)]（patches.py）：11-17 原先按字典直接 .get，元组上 AttributeError、补丁库里有条目的款 sgrade_key 都抛
+        return any(it.get("kind") == "fpsl" or str(it.get("name", "")).lower().endswith(".yaml") for it, _ in patches.items_for(c, gid, main_bid))
+    except (OSError, ValueError, Failure):
+        return False
 
 
 def cheats_digest(c, gid):
     """这款金手指文件夹里各 txt 的名字与内容摘要（开关状态 enabled.txt / status.txt 不算：开关不改要编进程序的东西）；没有 = '-'"""
     import cheats
     d = cheats.cheats_dir(c, gid.upper(), create=False)
-    files = sorted(p for p in d.glob("*.txt") if p.is_file() and p.name not in cheats.SKIP) if d.is_dir() else []
+    files = sorted(p for p in d.glob("*.txt") if p.is_file() and p.name not in cheats.SKIP and not layout.os_junk(p.name)) if d.is_dir() else []
     if not files:
         return "-"
     h = hashlib.sha256()
@@ -259,13 +287,24 @@ def cheats_digest(c, gid):
     return h.hexdigest()[:12]
 
 
-def pending_ios(c, games, rid):
+def _current(stored_rid, stored_key, rid, key, ignore_rewriter=False):
+    """这款记下的改写器指纹 / 补丁记号是否已对上本引擎。ignore_rewriter（11-17 维护者定：后台不再因为改写器变了重改写全部游戏）：
+    只看补丁记号里改写器指纹之后的部分（补丁库版本、出表代码、金手指、mod 代码补丁）——改写器指纹单独变了不算要重做；
+    改写器的新产物留到玩家对这一款出包 / 推送 / 装机 / 起局时在前台做（那些路不带 ignore_rewriter）"""
+    if not ignore_rewriter:
+        return stored_rid == rid and (key is None or stored_key == key)
+    if key is None:
+        return True
+    return isinstance(stored_key, str) and stored_key.split(":", 1)[-1] == key.split(":", 1)[-1]
+
+
+def pending_ios(c, games, rid, ignore_rewriter=False):
     """这几款里 iPhone 件要按新版改写器 / 新补丁记号重做的（refresh_ios 与「更新 iPhone」判要不要真更新共用一个判据）"""
     out = []
     for g in games:
         side = layout.game_info(c, g).get("ios") or {}
         key = ios_key(c, g, rid)   # 补丁库随启动器内置（pack/jobs/patches.py version_key 读本地快照），不会取不到（11-14 维护者：不设这种兜底）
-        if side.get("rewriterId") != rid or (key is not None and side.get("sgradeKey") != key):
+        if not _current(side.get("rewriterId"), side.get("sgradeKey"), rid, key, ignore_rewriter):
             out.append(g)
     return out
 
@@ -466,12 +505,12 @@ def ios_key(c, gid, rid):
     return None if sgrade_off(c, gid) else sgrade_key(c, gid, rid, (info.get("ios") or {}).get("mainBid", ""))
 
 
-def check_and_update(c, gid, kit, target, rid):
+def check_and_update(c, gid, kit, target, rid, ignore_rewriter=False):
     """一款：→ 'skip'（改写器与补丁记号都没变）| 'unavailable'（原件取不到）| 'unaffected' | 'updated'"""
     info = layout.game_info(c, gid)
     side = info.get("ios") or {}
     key = ios_key(c, gid, rid)
-    if side.get("rewriterId") == rid and (key is None or side.get("sgradeKey") == key):
+    if _current(side.get("rewriterId"), side.get("sgradeKey"), rid, key, ignore_rewriter):
         return "skip"
     game = next((g for g in c.catalog()["games"] if g["id"].upper() == gid.upper()), None)
     if game is None or not (kit / "main.patched.bin").is_file():
@@ -497,11 +536,15 @@ def check_and_update(c, gid, kit, target, rid):
     return "updated" if hit else "unaffected"
 
 
-def refresh_ios(c, games):
+def refresh_ios(c, games, ignore_rewriter=False):
     """组容器前：这几款的 iPhone 容器件按本引擎改写器核一遍（见文件头），再补缺的可读瓦片版着色器（pack/jobs/sgrade_bf.py）。→ 换了改写产物 / 资源包的款"""
     if not games:
         return []
-    return sorted(set(_refresh_code_ios(c, games)) | set(_refresh_bf_ios(c, games)))
+    changed = sorted(set(_refresh_code_ios(c, games, ignore_rewriter)) | set(_refresh_bf_ios(c, games)))
+    import programs
+    for g in changed:   # kit 改过（补进的表、运行时收回的模块）：常驻配方跟着重存（pack/jobs/programs.py），之后按配方现建的 kit 与这份一致
+        programs.save_recipe(c, g)
+    return changed
 
 
 def _refresh_bf_ios(c, games):
@@ -528,7 +571,7 @@ def _refresh_bf_ios(c, games):
     return done
 
 
-def _refresh_code_ios(c, games):
+def _refresh_code_ios(c, games, ignore_rewriter=False):
     try:
         rid = rewriter_id(c)
     except (Failure, OSError, subprocess.SubprocessError) as e:
@@ -542,7 +585,7 @@ def _refresh_code_ios(c, games):
             c.emit("message", f"{g}：已补上 {len(names)} 个运行中才取到的代码模块（只更新程序，资源不用重推）")
         except (Failure, OSError, subprocess.SubprocessError) as e:
             c.emit("message", f"【红】{g}：运行中才取到的代码模块没补上，这款先保留原来的程序：{str(e)[:200]}")
-    todo = pending_ios(c, games, rid)
+    todo = pending_ios(c, games, rid, ignore_rewriter)
     if not todo:
         return nro
     c.emit("message", f"正在核对 {len(todo)} 款游戏的程序是否要按新版更新（含 S 级优化补丁）")
@@ -551,8 +594,11 @@ def _refresh_code_ios(c, games):
     for i, g in enumerate(todo, 1):
         # 逐款一行（#1132：升级后第一次导出，库里每款都在这一步重核，整体进度停在 0%，玩家看着像卡死）
         c.emit("message", f"核对程序 {i}/{len(todo)}：{names.get(g.upper(), g)}")
+        from core import trace
+        trace(c, f"改写核对开始 {g}（{i}/{len(todo)}）")
         try:
-            r = check_and_update(c, g, layout.ios_kit(c, g), "ios", rid)
+            r = check_and_update(c, g, layout.ios_kit(c, g), "ios", rid, ignore_rewriter)
+            trace(c, f"改写核对结束 {g}：{r}")
             if r == "updated":
                 updated.append(g)
             elif r == "unavailable":
@@ -577,7 +623,7 @@ def _refresh_code_ios(c, games):
     return updated
 
 
-def refresh_mac(c, gid, runtime, hold=None):
+def refresh_mac(c, gid, runtime, hold=None, ignore_rewriter=False):
     """起局前：这款的 Mac 运行版本按本引擎改写器核一遍（运行版本自带 exefs/，不用回原件）；记号记在运行版本的 manifest.json（rewriterId）。
     换了的文件同步改清单里的大小与摘要（起局前按清单核文件）。核不了不挡起局 → True = 换了改写产物
     hold（后台补 S 级用，诊断 D-R8NG）：改写只往临时目录写、不碰运行版本，放在锁外做；换进运行版本前才进 hold()，
@@ -592,7 +638,7 @@ def refresh_mac(c, gid, runtime, hold=None):
         rid = rewriter_id(c)
         bid = (runtime / "exefs/main").read_bytes()[0x40:0x48].hex().upper()
         key = None if sgrade_off(c, gid) else sgrade_key(c, gid, rid, bid)
-        if manifest.get("rewriterId") == rid and (key is None or manifest.get("sgradeKey") == key):
+        if _current(manifest.get("rewriterId"), manifest.get("sgradeKey"), rid, key, ignore_rewriter):
             return False
         game = next((g for g in c.catalog()["games"] if g["id"].upper() == gid.upper()), None)
         names = None
@@ -609,7 +655,7 @@ def refresh_mac(c, gid, runtime, hold=None):
                 if not held.enter_context(hold()):
                     return False
                 manifest = read(runtime / "manifest.json", {})   # 锁外算的这段时间里别的任务（起局）可能已经换过：按换进时的清单记，记号已对上就不再换
-                if not isinstance(manifest.get("files"), dict) or (manifest.get("rewriterId") == rid and (key is None or manifest.get("sgradeKey") == key)):
+                if not isinstance(manifest.get("files"), dict) or _current(manifest.get("rewriterId"), manifest.get("sgradeKey"), rid, key, ignore_rewriter):
                     return False
             if sg:
                 names = apply_sgrade(out, runtime, hit, tables)

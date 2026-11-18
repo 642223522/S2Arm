@@ -362,6 +362,7 @@ namespace Ryujinx.HLE.HOS.Services
         internal bool S2AIsDomain => _isDomain;
 
         internal string S2ADomainObjectName(int id) => GetObject(id)?.GetType().Name;
+        internal string S2ADomainObjectFullName(int id) => GetObject(id)?.GetType().FullName;   // S2Arm 即时存档：同名接口（AM / FS 都有 IStorage）按命名空间分
 
         public void SetParent(IpcService parent)
         {

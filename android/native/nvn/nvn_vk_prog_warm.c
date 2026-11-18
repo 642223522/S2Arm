@@ -16,9 +16,11 @@
 // 隐私上不多留原文）。任一与当前会话不一致就整份拒绝——那是另一台设备 / 另一版翻译器的清单，拿来做
 // 预热只会白读盘。条目的阶段键只作日志/定位：开局 source_store 还是空的，预热不依赖它（c1 随记录落盘）。
 //
-// 有界：上限 debug.s2a.nvk_warm_max（缺省 4096 条，一条 844 字节，约 3.4 MB）。满了淘汰 uses 最低
-// （同 uses 淘汰最久没用）的一条，不拒绝新条目：真机同进程 45 秒里出现 4430 个不同身份，热点优先
-// 才让常见路线先安全。
+// 有界：上限 debug.s2a.nvk_warm_max（缺省 8192 条，一条 844 字节，约 6.9 MB）。满了淘汰 uses 最低
+// （同 uses 淘汰最久没用）的一条，不拒绝新条目：热点优先才让常见路线先安全。
+// 缺省为什么是 8192：真机同进程 45 秒里出现 4430 个不同身份；世界场景一条路线（站着、前走、折返、转视角，约 6 分钟）
+// 一局出现 6533 个。缺省 4096 时只有走动才会用到的程序排在 uses 低位被挤掉，每次走进新区域都要在回放线程上
+// 读盘 / 现场编；读数见 docs/坑记录.md「预热清单上限 4096 → 8192」一条。
 #include "nvn_vk_prog_warm.h"
 
 #include <errno.h>
@@ -42,7 +44,7 @@
 #define NVK_PROG_WARM_SUM 8u                // 末尾 FNV-1a 64
 #define NVK_PROG_WARM_ENTRY 844u            // identity32 mask4 keys24 c1_ok1 pad3 c1 768 uses4 last_use8
 #define NVK_PROG_WARM_ABS_MAX 16384u        // 上限的硬顶（flag 调再大也不超过它）
-#define NVK_PROG_WARM_DEFAULT_MAX 4096      // 缺省上限（真机 45 秒 4430 个身份；一条 844 字节）
+#define NVK_PROG_WARM_DEFAULT_MAX 8192      // 缺省上限（真机走一圈 6533 个身份；一条 844 字节，约 6.9 MB）
 #define NVK_PROG_WARM_MAX_PATH 640
 
 struct slot {
@@ -92,6 +94,7 @@ static int identity_zero(const uint8_t id[32]) {
 }
 // 新层只产生这三种图形阶段掩码（rp_shader_graphics_stages：VS / VS+FS / VS+FS+GS）。
 static int stage_count(uint32_t mask) {
+    if (mask == 32u) return 1;   // CS（清单中独占掩码，不与 VS 1 混）
     if (mask == 1u) return 1;
     if (mask == 3u) return 2;
     if (mask == 7u) return 3;
@@ -280,7 +283,7 @@ int nvk_prog_warm_load(void) {
     free(g.plan); g.plan = NULL; g.plan_n = g.plan_i = 0;
     if (g.n) {
         g.plan = (struct nvk_prog_rec *)malloc((size_t)g.n * sizeof *g.plan);
-        if (g.plan) { for (uint32_t i = 0; i < g.n; i++) g.plan[i] = g.v[i].rec; g.plan_n = g.n; }
+        if (g.plan) { int cs = nvn_plat_flag("nvk_compute_warm", 0); for (uint32_t i = 0; i < g.n; i++) if (cs || g.v[i].rec.stage_mask != 32u) g.plan[g.plan_n++] = g.v[i].rec; }
         else nvn_plat_log(NVN_PLAT_LOG_RED, "warm", "【红】程序清单：本局预热集快照分配失败（本局不预热，清单照常记录）");
     }
     g.st.loaded = g.n;

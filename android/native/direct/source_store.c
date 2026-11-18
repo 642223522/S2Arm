@@ -59,14 +59,33 @@ static uint32_t g_poison_n, g_poison_next;
 static _Atomic uint64_t g_poison_overflow;
 
 struct pending_entry {
+    struct pending_entry *next;   // 同桶链
     uint64_t serial;
     uint32_t stage;
     uint8_t *control;
     uint32_t control_bytes;
     uint64_t seq;
 };
-static struct pending_entry g_pending[S2A_SOURCE_PENDING];
-static uint64_t g_pending_seq;
+enum { PENDING_BUCKETS = 4096 };
+static struct pending_entry *g_pending[PENDING_BUCKETS];
+static uint32_t g_pending_n;
+static uint64_t g_pending_seq, g_pending_evicted;
+static uint32_t pending_bucket(uint64_t serial, uint32_t stage) {
+    uint64_t h = (serial * 6u + stage) * UINT64_C(0x9e3779b97f4a7c15);
+    return (uint32_t)(h >> 52) & (PENDING_BUCKETS - 1);
+}
+static struct pending_entry **pending_find_locked(uint64_t serial, uint32_t stage) {
+    struct pending_entry **pp = &g_pending[pending_bucket(serial, stage)];
+    while (*pp && ((*pp)->serial != serial || (*pp)->stage != stage)) pp = &(*pp)->next;
+    return pp;
+}
+static void pending_unlink_free_locked(struct pending_entry **pp) {
+    struct pending_entry *e = *pp;
+    *pp = e->next;
+    free(e->control);
+    free(e);
+    g_pending_n--;
+}
 
 static void index_init_locked(void) {
     if (g_index_ready) return;
@@ -462,39 +481,44 @@ int s2a_source_hold_pending(uint64_t prog_serial, uint32_t stage, const void *co
     if (!copy) return -1;
     memcpy(copy, control, control_bytes);
     pthread_mutex_lock(&g_mu);
-    struct pending_entry *slot = NULL;
-    int oldest = -1;
-    for (uint32_t i = 0; i < S2A_SOURCE_PENDING; i++) {
-        struct pending_entry *e = &g_pending[i];
-        if (e->control && e->serial == prog_serial && e->stage == stage) { slot = e; break; }
-        if (!e->control && !slot) slot = e;
-        if (e->control && (oldest < 0 || e->seq < g_pending[oldest].seq)) oldest = (int)i;
+    struct pending_entry **pp = pending_find_locked(prog_serial, stage), *e = *pp;
+    if (e) {   // 同一程序同一阶段重设：换成新内容
+        free(e->control);
+    } else {
+        if (g_pending_n >= S2A_SOURCE_PENDING_MAX) {   // 安全阀：活程序数远到不了；到了说明有程序没走 Finalize，挤最旧并留痕
+            struct pending_entry **old = NULL;
+            for (uint32_t b = 0; b < PENDING_BUCKETS; b++)
+                for (struct pending_entry **q = &g_pending[b]; *q; q = &(*q)->next)
+                    if (!old || (*q)->seq < (*old)->seq) old = q;
+            if (old) pending_unlink_free_locked(old);
+            if (g_pending_evicted++ == 0 && s2a_source_log_line)
+                s2a_source_log_line("【红】源快照：自持控制段超过安全阀，开始挤掉最旧的（程序没走 Finalize？）");
+            pp = pending_find_locked(prog_serial, stage);   // 摘链后重新定位插入点
+        }
+        e = (struct pending_entry *)calloc(1, sizeof *e);
+        if (!e) { pthread_mutex_unlock(&g_mu); free(copy); return -1; }
+        e->serial = prog_serial;
+        e->stage = stage;
+        e->next = *pp;
+        *pp = e;
+        g_pending_n++;
     }
-    if (!slot) {
-        if (oldest < 0) { pthread_mutex_unlock(&g_mu); free(copy); return -1; }
-        slot = &g_pending[oldest];
-        free(slot->control);
-    }
-    slot->serial = prog_serial;
-    slot->stage = stage;
-    slot->control = copy;
-    slot->control_bytes = control_bytes;
-    slot->seq = ++g_pending_seq;
+    e->control = copy;
+    e->control_bytes = control_bytes;
+    e->seq = ++g_pending_seq;
     pthread_mutex_unlock(&g_mu);
     return 0;
 }
 
 int s2a_source_pending_control(uint64_t prog_serial, uint32_t stage, const uint8_t **control, uint32_t *control_bytes) {
-    if (!control || !control_bytes) return 0;
+    if (!control || !control_bytes || stage >= 6) return 0;
     int hit = 0;
     pthread_mutex_lock(&g_mu);
-    for (uint32_t i = 0; i < S2A_SOURCE_PENDING; i++) {
-        struct pending_entry *e = &g_pending[i];
-        if (!e->control || e->serial != prog_serial || e->stage != stage) continue;
-        *control = e->control;
+    struct pending_entry *e = *pending_find_locked(prog_serial, stage);
+    if (e) {
+        *control = e->control;   // 调用方在 hle_nvn.c 里立刻拷走；条目只在 Finalize / 重设 / 重置时释放
         *control_bytes = e->control_bytes;
         hit = 1;
-        break;
     }
     pthread_mutex_unlock(&g_mu);
     return hit;
@@ -502,13 +526,18 @@ int s2a_source_pending_control(uint64_t prog_serial, uint32_t stage, const uint8
 
 void s2a_source_drop_pending(uint64_t prog_serial) {
     pthread_mutex_lock(&g_mu);
-    for (uint32_t i = 0; i < S2A_SOURCE_PENDING; i++) {
-        struct pending_entry *e = &g_pending[i];
-        if (!e->control || e->serial != prog_serial) continue;
-        free(e->control);
-        memset(e, 0, sizeof *e);
+    for (uint32_t st = 0; st < 6; st++) {
+        struct pending_entry **pp = pending_find_locked(prog_serial, st);
+        if (*pp) pending_unlink_free_locked(pp);
     }
     pthread_mutex_unlock(&g_mu);
+}
+
+uint32_t s2a_source_pending_count(void) {
+    pthread_mutex_lock(&g_mu);
+    uint32_t n = g_pending_n;
+    pthread_mutex_unlock(&g_mu);
+    return n;
 }
 
 int s2a_source_pin_key(const uint8_t key[8], struct s2a_source_pin_ref *out) {
@@ -590,10 +619,8 @@ void s2a_source_clear(void) {
         }
         drop(e);
     }
-    for (uint32_t i = 0; i < S2A_SOURCE_PENDING; i++) {
-        free(g_pending[i].control);
-        memset(&g_pending[i], 0, sizeof g_pending[i]);
-    }
+    for (uint32_t b = 0; b < PENDING_BUCKETS; b++)
+        while (g_pending[b]) pending_unlink_free_locked(&g_pending[b]);
     g_poison_n = 0;
     g_poison_next = 0;
     atomic_fetch_add(&g_epoch, 1);

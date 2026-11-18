@@ -1576,13 +1576,17 @@ namespace S2A.Services.Tests
                 }
 
                 // 苹果声音输出（产品后端）：渲染线程每轮 AppendBuffer → 会话 QueueBuffer，CoreAudio 回调线程按播放进度出队；整进程 300 轮折算。
-                // 外部依赖防线（10-21 维护者定）：真 CoreAudio 是外部服务，整段放后台线程、墙钟 30 秒；超时报红并跳过（不挂死整个单测进程），
+                // 外部依赖防线（10-21 维护者定）：真 CoreAudio 是外部服务，整段放后台线程；卡死报红并跳过（不挂死整个单测进程），
                 //   打不开设备时跳过并记一行（不判红：门禁机没有可用的输出设备不是产品缺陷；长时间行为在真机 / 诊断局测）
                 if (Ryujinx.Audio.Backends.Apple.AppleHardwareDeviceDriver.IsSupported)
                 {
                     string openErr = null;
                     double appleBest = double.NaN;   // 后台线程只写这个，主线程确认跑完后再登记（超时后晚到的线程不碰共享列表）
                     string appleSplit = "";
+                    // 卡死判据按进度、不按墙钟（11-17）：一共约 2450 轮、每轮睡 5 ms，理想 12 秒；门禁里多个钩子并行、本机负载高时 Sleep(5) 被拉长、
+                    //   AppendBuffer 等回调取走，原先的「墙钟 30 秒」连红 13 次（同两个提交本机单跑都过，回调 598 / 599 圈）。要防的是收尾 / 回调卡死（10-21 Join 卡住）：
+                    //   轮数 10 秒不动才判卡死，整体上限 180 秒
+                    int appleProg = 0;
                     var appleTh = new System.Threading.Thread(() =>
                     {
                         try
@@ -1595,6 +1599,7 @@ namespace S2A.Services.Tests
                                 for (int i = 0; i < n; i++)
                                 {
                                     appleDev.AppendBuffer(silence, 2);
+                                    System.Threading.Interlocked.Increment(ref appleProg);
                                     System.Threading.Thread.Sleep(5);
                                 }
                             }
@@ -1631,9 +1636,17 @@ namespace S2A.Services.Tests
                     }) { IsBackground = true, Name = "单测·苹果声音输出" };
                     appleTh.Start();
 
-                    if (!appleTh.Join(30000))
+                    bool appleDone = false; int appleLast = -1; var appleSw = System.Diagnostics.Stopwatch.StartNew(); var appleIdle = System.Diagnostics.Stopwatch.StartNew();
+                    while (!(appleDone = appleTh.Join(500)) && appleSw.Elapsed.TotalSeconds < 180)
                     {
-                        Check("苹果声音输出用例 30 秒内跑完（真 CoreAudio，外部依赖）", "跑完", "超时（跳过；CoreAudio 回调 / 收尾等不到，见线程栈）");
+                        int pg = System.Threading.Volatile.Read(ref appleProg);
+                        if (pg != appleLast) { appleLast = pg; appleIdle.Restart(); }
+                        else if (appleIdle.Elapsed.TotalSeconds >= 10) break;
+                    }
+                    if (!appleDone)
+                    {
+                        Check("苹果声音输出用例不卡死（真 CoreAudio，外部依赖；10 秒没有新的一轮才算卡死，整体上限 180 秒）", "跑完",
+                            $"卡住（跳过；第 {System.Threading.Volatile.Read(ref appleProg)} 轮后 {appleIdle.Elapsed.TotalSeconds:0} 秒没动、已用 {appleSw.Elapsed.TotalSeconds:0} 秒，CoreAudio 回调 / 收尾等不到，见线程栈）");
                     }
                     else if (openErr != null)
                     {
@@ -2341,6 +2354,9 @@ namespace S2A.Services.Tests
                     // 目录带进程号（10-24 门禁偶发红 2002-1002：几棵树的门禁同时跑、共用 TMPDIR，固定目录被别的门禁删掉重建，DLC 数据中途消失）
                     string ad = Path.Combine(Path.GetTempPath(), $"s2a_aoc_test_{Environment.ProcessId}");
                     if (Directory.Exists(ad)) Directory.Delete(ad, true);
+                    // aoc:u Count / List 按全局 DLC 目录回答：前面登记的外部游戏（S2A_TEST_GAME）若带 DLC 会算进来（#386：带 1 个 DLC 的数据 2 → 3 误红）。
+                    //   这一批只验夹具清单的两项，先清空登记再登记夹具；批次后再清掉，夹具条目不带给后面的用例（后面没有用例依赖 DLC）
+                    Aoc.Reset(); Host.Device.System.ContentManager.ClearAocData();
                     Directory.CreateDirectory(Path.Combine(ad, "aoc", "1"));
                     File.WriteAllText(Path.Combine(ad, "aoc", "1", "hello.txt"), "s2a dlc");
                     File.WriteAllText(Path.Combine(ad, "aoc.tsv"), $"idx\ttitle_id\tversion\tfiles\tbytes\n1\t{Base + 1:x16}\t0\t1\t7\n2\t{Base + 2:x16}\t0\t-1\t0\n");
@@ -2374,6 +2390,7 @@ namespace S2A.Services.Tests
                     Check("DLC 挂载：有数据的给 RomFS（头长 0x50）、仅授权的挂不上", "结果 0、头长 0x50 / 失败",
                         $"结果 {od1.Result}、头长 0x{(dst != 0 ? *(ulong*)dlch : 0):X} / {(od2.Result != 0 && od2.Move.Count == 0 ? "失败" : $"结果 {od2.Result}、{od2.Move.Count} 个句柄")}");
                     try { Directory.Delete(ad, true); } catch (IOException) { }
+                    Aoc.Reset(); Host.Device.System.ContentManager.ClearAocData();
                 }
 
                 // appletOE 命令 10 OpenApplicationProxyWithFlags（Switch 2 SDK 起局用它替代命令 0，0400A3A01EE4C000）：标志 0 → 回一个 IApplicationProxy 对象，且能照常取 ICommonStateGetter（命令 0）
@@ -2789,7 +2806,10 @@ namespace S2A.Services.Tests
             }
             else
             {
-                CheckUncovered("动森登记 + fs 读 RomFS", $"未覆盖（没有 {game}/romfs，玩家自己的游戏数据）");
+                if (Environment.GetEnvironmentVariable("S2A_TEST_GAME") != null)   // gate sets it: data missing must fail loudly, not pass as uncovered
+                    Check("动森登记 + fs 读 RomFS", "有测试数据", $"缺测试数据：{game}/romfs");
+                else
+                    CheckUncovered("动森登记 + fs 读 RomFS", $"未覆盖（没有 {game}/romfs，玩家自己的游戏数据）");
             }
 
             // ---- 系统数据按号（fsp-srv OpenDataStorageByDataId）：0100152000022000 产物根的 0100000000000802 Mii 资源 ----
@@ -2817,7 +2837,10 @@ namespace S2A.Services.Tests
             }
             else
             {
-                CheckUncovered("系统数据按号", $"未覆盖（没有 {sysRoot}/0100000000000802，玩家自己的游戏数据）");
+                if (Environment.GetEnvironmentVariable("S2A_TEST_SYSTEMDATA") != null)
+                    Check("系统数据按号", "有测试数据", $"缺测试数据：{sysRoot}/0100000000000802");
+                else
+                    CheckUncovered("系统数据按号", $"未覆盖（没有 {sysRoot}/0100000000000802，玩家自己的游戏数据）");
             }
 
             // ---- 共享字体（pl:u）：本机旧库字体数据（S2A_SHARED_FONT_DIR，不进仓库；没有就记未测）----

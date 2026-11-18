@@ -58,6 +58,7 @@ mkdir -p "$R/pack/jobs" "$R/compat/tree"; cp "$H"/pack/jobs/*.py "$R/pack/jobs/"
 cp "$H/pack/roots.sh" "$H/pack/srcs.sh" "$H/pack/build_id.sh" "$R/pack/"
 for f in cores.sh progress.sh machine.sh nospace.sh; do cp "$H/tools/$f" "$R/tools/"; done
 mkdir -p "$R/graphics/nvn/tools"; cp "$H/graphics/nvn/tools/romfs_list.py" "$R/graphics/nvn/tools/"   # --from-extract 播种键盘点 romfs/ aoc/（审计 #1534 P1-54）
+mkdir -p "$R/tools"; cp "$H/tools/pool_workers.py" "$R/tools/"   # romfs_list / pak_crypto 经它取核数（#1332：核数唯一来源）
 printf '#!/bin/bash\nr=$S2A_ROOTS/$1@$2; mkdir -p "$r" && cp -R "$3/exefs" "$r/" && cp "$3"/*.tsv "$r/" 2> /dev/null; ln -sfn "$1@$2" "$S2A_ROOTS/$1@现行"; echo "🟢 播种桩 $r"\n' > "$R/pack/seed_root.sh"
 printf '#!/bin/bash\necho "🟢 刷新桩"\n' > "$R/pack/refresh.sh"
 cat > "$R/pack/ipa.sh" <<'EOF'

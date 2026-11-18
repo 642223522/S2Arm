@@ -134,13 +134,13 @@ static void warm_progress(const char *tag) {
     nvk_prog_warm_stats(&ps);
     nvk_pipe_warm_stats(&qs);
     warm_log("nvk warm %s: 程序 载入 %llu / 记录 %llu / 建 %llu / 失败 %llu / 本局 draw 命中 %llu 自备 %llu（剩 %llu）；"
-             "管线 载入 %llu / 记录 %llu / 建 %llu / 失败 %llu / draw 命中 %llu（剩 %llu）；%lld 毫秒",
+             "管线 载入 %llu / 记录 %llu / 建 %llu / 失败 %llu / draw 命中 %llu / 标签命中 %llu（剩 %llu）；%lld 毫秒",
              tag,
              (unsigned long long)ps.loaded, (unsigned long long)ps.recorded, (unsigned long long)ps.built,
              (unsigned long long)ps.failed, (unsigned long long)ps.draw_hits, (unsigned long long)ps.draw_miss,
              (unsigned long long)ps.pending,
              (unsigned long long)qs.loaded, (unsigned long long)qs.recorded, (unsigned long long)qs.built,
-             (unsigned long long)qs.failed, (unsigned long long)qs.draw_hits, (unsigned long long)qs.pending,
+             (unsigned long long)qs.failed, (unsigned long long)qs.draw_hits, (unsigned long long)qs.tag_hits, (unsigned long long)qs.pending,
              (long long)(g_t0 ? warm_now_ms() - g_t0 : 0));
 }
 

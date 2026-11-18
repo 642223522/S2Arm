@@ -83,6 +83,7 @@ NSArray<S2ACPatchGroup *> *S2ACPatchGroupsFromTSV(NSString *text) {
         it = [S2ACPatchItem new];
         it.ident = ident; it.name = ratio ?: c[4].length ? c[4] : c[0]; it.license = c[5]; it.defaultOn = [c[8] isEqual:@"1"];
         if (c.count > 9) it.targetFps = c[9].integerValue;
+        it.loadDir = [c[0] hasPrefix:@"gfx:"] && c.count > 13 && [c[13] isEqual:@"load"];
         it.group = adapt || ratio ? @"widescreen" : S2ACPatchClassify(it.name, c[3], c[0]);
         it.title = adapt ? S2AL(@"cpatch.title.adaptive") : ratio ? S2AL(@"cpatch.title.autoRatio") : S2ACPatchTitle(it.name, it.group);
         seen[ident] = it;
@@ -107,7 +108,7 @@ NSSet<NSString *> *S2ACPatchEnabled(NSArray<S2ACPatchGroup *> *groups, NSUserDef
     NSMutableSet<NSString *> *on = [NSMutableSet new];
     for (S2ACPatchGroup *g in groups)
         for (S2ACPatchItem *it in g.items)
-            if (!it.followsFps60 && (listed ? [listed containsObject:it.ident] : YES)) [on addObject:it.ident];   // 没设过 = 全开（11-13，同 runtime/src/cpatch.c；defaultOn 只作「我方已验」标签）
+            if (!it.followsFps60 && (listed ? [listed containsObject:it.ident] : !it.loadDir)) [on addObject:it.ident];   // 没设过 = 开（11-13，同 runtime/src/cpatch.c；defaultOn 只作「我方已验」标签），降负载的画面补丁除外（11-16 缺省关）
     return on;
 }
 

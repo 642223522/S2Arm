@@ -42,9 +42,9 @@ esac
 #   refresh 走通用、285 款普查按它归类派单；能部分出库的照常出（退 0，末行黄、列没出成的类别与计数）。其余非 0 = 基础设施出错（缺文件、工具 / 编译器起不来、
 #   脚本异常、超时、写盘失败）与判不清的，报红退 1；本机这台出包机做不了的退 75（环境缺件）。gap <日志> <步骤> 只认确定的内容缺口形状，认出就打黄退 3，认不出就返回（调用方照旧报红）：
 #   · 有 Python 异常栈 → 判不清（脚本异常）
-#   · NVN 出库（dmsh_build.py）一支着色器结构不支持就整份停住（在链版本清单里、改了九款整份重出，所以在这里认）：「[RED] <16 位键>: vertex shader of shader type 0 without a VertexB part」
-#     「[RED] <16 位键>: compute code area」「[RED] vertex shader without a main0 main function」
-#   · Vulkan 离线翻译（vk_shaders.py / graphics/tools/spirv_msl.py 的 red）一支翻不了就整份停住，消息带那支的路径：「[RED] /<路径>: <原因>」（没有部分出库的设计，整款走通用）
+#   · NVN 出库（dsh_batch build）是部分出库：单支翻不了 / 编不过记进 _b_build.json 与 direct_fail.log，库照出（Build.cs 收尾「成 N，败 M」）；只有三种本链不支持的 NVN 结构
+#     整份停住（Build.cs 收尾那三行）：「[RED] <16 位键>: vertex shader of shader type 0 without a VertexB part」「[RED] <16 位键>: compute code area」「[RED] vertex shader without a main0 main function」
+#   · Vulkan 离线翻译（vk_shaders.py）v0.3.1 起也逐支剔除、照出其余；仍整份停的只剩带那支路径的红行「[RED] /<路径>: <原因>」（gap 认它，本款走通用）
 gap() {
   local l k why
   grep -aq '^Traceback ' "$1" && return 0
@@ -63,7 +63,7 @@ gap() {
 export J=${J:-${S2A_CPU_BAKE:-${S2A_JOBS:-$(getconf _NPROCESSORS_ONLN)}}}
 source "$R/tools/progress.sh"
 PS=0; prog() { PS=$((PS + 1)); say "第 ${PS}/5 步 $*"; prog_tick 直连库 $((PS - 1)) 5; }
-[ -d "$ROOT/romfs" ] && [ -f "$ROOT/exefs/main" ] || { say "🔴 $ROOT 缺 romfs/ 或 exefs/main"; exit 1; }
+{ [ -d "$ROOT/romfs" ] || [ -f "$ROOT/romfs.std" ]; } && [ -f "$ROOT/exefs/main" ] || { say "🔴 $ROOT 缺 romfs/（或镜像 romfs.std）或 exefs/main"; exit 1; }   # RomFS 目录或镜像都行（romfs_list.py image_of；下面读 RomFS 一律经 romfs_list）
 source "$R/pack/srcs.sh"; TID=$(prog_id "$ROOT"); [ -n "$TID" ] || { say "🔴 取不到程序号"; exit 1; }
 # Vulkan 款（main 直接导入 vk*：哈迪斯、超级马力欧银河 1 / 2）：直连走直连层的 Vulkan 层（graphics/nvn/gfx/vk/hle_vk.m），着色器是 RomFS 里的 SPIR-V，
 #   出包时用 vk_shaders.py（spirv-cross）离线翻成一个库：<输出目录>/vk/vk_shaders.metallib + vk_shaders.tsv（运行时 <DM_MSL_DIR>/vk/，DM_MSL_DIR = shaders/direct）。
@@ -318,7 +318,7 @@ say "$(tail -1 "$W/se_want.log")"
 fi
 tm=$((SECONDS - s)); s=$SECONDS
 # ④⑤ 安卓（VK=1，#783）：graphics/tools/direct/vklib/dsh_vklib.py 按需编 dsh_vklib 再调：逐键出 Vulkan 产物进工作目录 $W/vk/keys（键按 shader_map.tsv 排序，
-#   gs / hs / ds 记 skipped、翻不了的记 failed，逐键状态 vk_build.tsv；有 failed 就报红停止，不发布部分库，再把成功批次打成 LibPack 容器 <临时输出>/b-<链>-vk/（lib.idx + lib.NNN.pak，头部记完整 Vulkan 侧指纹）；
+#   gs / hs / ds 记 skipped、翻不了的记 failed，逐键状态 vk_build.tsv；有 failed 也照常发布成功的那些（🟡 部分出库，缺的键运行时现编），把成功批次打成 LibPack 容器 <临时输出>/b-<链>-vk/（lib.idx + lib.NNN.pak，头部记完整 Vulkan 侧指纹）；
 #   收表、出 keys.tsv（只列出成的键）、vk_build.tsv 副本与 direct_lib.json，换进位。不编 Metal，不出 ps_inputs / c1_full / cb_extent / 管线种子表（都是 Metal 侧的）
 if [ "$VK" = 1 ]; then
   prog "翻译成 Vulkan"

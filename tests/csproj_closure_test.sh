@@ -25,4 +25,10 @@ echo '#define X 2' > $R/inc/h.h; com h; k3=$(cc --key)
 ck "改导入目标引的仓库文件 → 键变（${k3}）" '[ "$k3" != "$k2" ]'
 echo 'class C {}' > $R/B/c.cs; com c; L2=$(cc --files)
 ck "新加源码 → 清单含它（缓存按目录树号失效）" 'grep -qx B/c.cs <<< "$L2"'
+# 工程引用的几种写法（11-18 门禁 Vulkan 单测接缓存时撞到）：RepoRoot = $([System.IO.Path]::GetFullPath(...)) 拼出的路径、一个 Include 里分号列两个工程；
+#   目录里的包源配置叫 NuGet.Config（大小写与 UPCFG 拼写不同，Mac 盘不分大小写）→ 照样算出键、清单用 HEAD 里的真实文件名
+mkdir -p $R/D $R/E; echo 'class E {}' > $R/E/e.cs; echo "$P</Project>" > $R/E/E.csproj; echo '<configuration />' > $R/D/NuGet.Config; echo 'class D {}' > $R/D/d.cs
+echo "$P<PropertyGroup><RepoRoot Condition=\"'\$(RepoRoot)' == ''\">\$([System.IO.Path]::GetFullPath('\$(MSBuildThisFileDirectory)../'))</RepoRoot></PropertyGroup><ItemGroup><ProjectReference Include=\"\$(RepoRoot)B/B.csproj;../E/E.csproj\" /></ItemGroup></Project>" > $R/D/D.csproj
+com d; LD=$(python3 $R/tools/csproj_closure.py $R/D/D.csproj --files 2>&1); kd=$(python3 $R/tools/csproj_closure.py $R/D/D.csproj --key 2>&1)
+ck "GetFullPath 拼的 RepoRoot、分号列两个工程、NuGet.Config 大小写：键算得出（${kd}），清单含 B/b.cs、E/e.cs、D/NuGet.Config" '[[ $kd =~ ^[0-9a-f]{16}$ ]] && for f in B/b.cs E/e.cs D/NuGet.Config; do grep -qx "$f" <<< "$LD" || exit 1; done'
 [ $bad = 0 ] && echo "✓ csproj_closure 单测全过" || { echo "csproj_closure 单测有不通"; exit 1; }

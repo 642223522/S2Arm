@@ -39,6 +39,8 @@ void rp_view_pin_end(void) {}
 nvn_gpu_view rp_view_by_id(int id, nvn_gpu_cmd c, const tex_t **t) { (void)id; (void)c; (void)t; return NULL; }
 nvn_gpu_view rp_view_by_id_decl(int id, uint8_t tt, uint8_t cls, int elem, nvn_gpu_cmd c, const tex_t **t) { (void)tt; (void)cls; (void)elem; (void)c; (void)t; return id == 7 ? sample_view : NULL; }
 nvn_gpu_samp rp_samp_by_id(int id) { return id == 3 ? sample_sampler : id == 0 ? decoy_sampler : NULL; }
+nvn_gpu_samp rp_samp_for_tex(int sid, int tid) { (void)tid; return rp_samp_by_id(sid); }   // #1072：替身不判过滤能力
+uint32_t rp_fmt_caps(uint32_t f) { return nvn_gpu_format_caps(f); }
 int rp_tex_snap_by_id(int id, tex_t *t, view_t *v, int *h) { (void)id; (void)t; (void)v; (void)h; return 0; }
 uint64_t rp_tex_reg_gen(void) { return generation; }
 uint64_t rp_tex_fact_sig(const uint64_t *h, int n, int b, int count) { (void)h; (void)n; (void)b; return (uint64_t)count; }
@@ -53,7 +55,7 @@ void rp_pass_note_draw(int d) { (void)d; }
 // #950 新增的回放核心依赖：替身取保守中性值（写日志恒报「写过」= 不让暂存命中；没有待折清除、不缩渲染区域）
 uint64_t rp_write_mark(void) { return 0; }
 int rp_write_touched(uint64_t mark, uint64_t addr, uint64_t len) { (void)mark; (void)addr; (void)len; return 1; }
-void rp_pass_prepare_draw(nvn_gpu_cmd c) { (void)c; }
+void rp_pass_prepare_draw(nvn_gpu_cmd c, uint32_t color_write_mask) { (void)c; (void)color_write_mask; }
 void rp_pass_land_reads(nvn_gpu_cmd c, const tex_t *const *ts, int n) { (void)c; (void)ts; (void)n; }
 int rp_pass_parked(void) { return 0; }
 int rp_pass_begin(nvn_gpu_cmd c) {

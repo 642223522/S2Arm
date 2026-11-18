@@ -178,6 +178,7 @@ typedef struct {
   Alloc* allocs;
   /* 布局重选（同 patch_nso.py #290）：retry_front 非 0 = 本轮是容量不足后的重做；req / now = 上一轮 / 本轮成功的自旋回边 (头, 回边) */
   size_t retry_front, next_front;
+  size_t retry_gaps0, next_gaps0;   /* 触发本轮重做的那一轮的缺口数（#1476）：重做后缺口比它多才算布局重选失败 */
   int retry_dual, next_dual;   // 本轮 / 下一轮是双岛布局
   const Pair* req;
   size_t nreq;
@@ -680,6 +681,53 @@ static int wconst(A at, int* reg, uint32_t* value) {
 }
 static uint32_t movz_hi(int reg, uint32_t value) {
   return 0x52a00000 | ((value >> 16) << 5) | reg;
+}
+/* 游戏缺陷修补表（S2A_FIX_TSV = 仓库 runtime/fix/<main 构建号前 16 位>.tsv，11-16）：游戏自己代码里的缺陷、宿主调度挡不住的，按构建号精确改字。
+ * 改写器别处只认代码形状、不认具体游戏；这里是例外，所以只许最窄的一种：行格式同帧率表 c 行，只收 word 种类——
+ *   c <模块> <偏移> word <原字> <新字>    # 理由
+ * 原字不符（不是这一版）、点不在代码段 → 记缺口不改。分析前改（后面的分析看到的就是改好的代码）。与帧率表分开放：帧率表的存在本身有含义
+ * （「本款已有我方帧率表」→ 社区帧率补丁不收，pack/cpatch.py），修补表不该带上它。以后与按款旋钮表并成一套时按同一格式合并 */
+static void fix_rows(void) {
+  const char* path = g->r.fix_tsv;
+  if (!path || !*path)
+    return;
+  FILE* f = fopen(path, "rb");
+  if (!f) {
+    int error = errno;
+    if (error != ENOENT)
+      fail("无法打开游戏缺陷修补表：%s", strerror(error));
+    msg("[黄] %s 游戏缺陷修补表不存在，跳过\n", g->r.module);
+    return;
+  }
+  char line[512];
+  while (fgets(line, sizeof(line), f)) {
+    char* h = strchr(line, '#');
+    if (h)
+      *h = 0;
+    char *t0 = strtok(line, " \t\r\n"), *mod = strtok(NULL, " \t\r\n"), *offs = strtok(NULL, " \t\r\n"), *kind = strtok(NULL, " \t\r\n"),
+         *origs = strtok(NULL, " \t\r\n"), *news = strtok(NULL, " \t\r\n");
+    if (!t0 || !eq(t0, "c") || !mod || !eq(mod, g->r.module))
+      continue;
+    if (!offs || !kind || !eq(kind, "word") || !origs || !news) {
+      gap(0, "fix", "游戏缺陷修补表行不全或不是 word 种类");
+      continue;
+    }
+    A off = strtoll(offs, NULL, 16);
+    uint32_t orig = (uint32_t)strtoul(origs, NULL, 16), nw = (uint32_t)strtoul(news, NULL, 16), w = 0;
+    if (off < 0 || off % 4 || off + 4 > (A)g->text) {
+      gap(off, "fix", "修补点不在代码段");
+      continue;
+    }
+    memcpy(&w, g->img + off, 4);
+    if (w != orig) {
+      gap(off, "fix", "修补点原字 0x%x，表里写的是 0x%x（不是这一版）", w, orig);
+      continue;
+    }
+    memcpy(g->img + off, &nw, 4);
+    bump("game_fix");
+    msg("游戏缺陷修补：%s+%#llx %08x → %08x\n", g->r.module, (unsigned long long)off, w, nw);
+  }
+  fclose(f);
 }
 /* Recognize the SDK code shape, never a game identity or fixed address. Scan
  * and collect every constructor before changing any instruction, as Python does. */
@@ -2296,6 +2344,12 @@ static void scan(void) {
     } else if ((w & 0xffffffe0) == 0xd53b0020) {
       k = "ctr";
       arg = w & 31;
+    } else if ((w & 0xffe0fc00) == 0x9ac03000) {
+      /* pacga Xd, Xn, Xm|SP：通用指针认证。宿主进程的 GA 密钥每个进程不同（实测同一输入三次运行三个结果），游戏把它算出的校验值存进内存
+         （较新 Switch 2 SDK 切纤程：nn::os DispatchFiberContext），换进程（即时快照恢复）后校验不过、游戏主动陷阱。换成固定密钥的确定性实现，
+         同一进程内语义等价（同输入同输出、只占高 32 位） */
+      k = "pacga";
+      arg = (int)(w & 0x001f03ff);
     } else if ((w & 0xffe0001f) == 0xd4200000 && ((w >> 5) & 65535) >= 0xb000 &&
                ((w >> 5) & 65535) <= 0xbfff) {
       gap(a, "brk", "brk #0x%x：macOS 内核截走 0xB000–0xBFFF，进程无声被杀", (w >> 5) & 65535);
@@ -3482,6 +3536,44 @@ static void gensite(Site* s) {
     }
     emit(branch(here(), s->at + 4));
     bump(s->kind);
+  } else if (eq(s->kind, "pacga")) {
+    /* 确定性 pacga：h = (n ^ ror(m, 23)) * K；h ^= h >> 29；h *= K；h ^= h >> 32；Xd = h << 32（低 32 位为 0，同硬件结果的形状） */
+    const int d = s->arg & 31, n = (s->arg >> 5) & 31, m = (s->arg >> 16) & 31;
+    int T, U;
+    pick(BIT(d) | BIT(n) | BIT(m) | BIT(18), &T, &U);
+    if (noredzone())
+      emit(STPRE(T, U, 31, -16));
+    else {
+      emit(STUR(T, 31, -16));
+      emit(STUR(U, 31, -24));
+    }
+    if (n == 31)
+      emit(MOVZ(T, 0, 0));
+    else
+      emit(0xaa0003e0u | (n << 16) | T); /* mov T, Xn */
+    if (m == 31)
+      emit(ADDI(U, 31, noredzone() ? 16 : 0, 0)); /* mov U, sp（压栈过的要加回 16） */
+    else
+      emit(0xaa0003e0u | (m << 16) | U);           /* mov U, Xm */
+    emit(0xca000000u | (3u << 22) | (U << 16) | (23u << 10) | (T << 5) | T); /* eor T, T, U, ror #23 */
+    emit(MOVZ(U, 0x9e37, 3));
+    emit(MOVK(U, 0x79b9, 2));
+    emit(MOVK(U, 0x7f4a, 1));
+    emit(MOVK(U, 0x7c15, 0));
+    emit(0x9b007c00u | (U << 16) | (T << 5) | T);                             /* mul T, T, U */
+    emit(0xca000000u | (1u << 22) | (T << 16) | (29u << 10) | (T << 5) | T); /* eor T, T, T, lsr #29 */
+    emit(0x9b007c00u | (U << 16) | (T << 5) | T);                             /* mul T, T, U */
+    emit(0xca000000u | (1u << 22) | (T << 16) | (32u << 10) | (T << 5) | T); /* eor T, T, T, lsr #32 */
+    if (d != 31)
+      emit(0xd3400000u | (32u << 16) | (31u << 10) | (T << 5) | d);          /* lsl Xd, T, #32 */
+    if (noredzone())
+      emit(LDPOST(T, U, 31, 16));
+    else {
+      emit(LDUR(U, 31, -24));
+      emit(LDUR(T, 31, -16));
+    }
+    emit(branch(here(), s->at + 4));
+    bump(s->kind);
   } else if (eq(s->kind, "ctr")) {
     emit(MOVZ(N, 0xc004, 0));
     emit(MOVK(N, 0x8444, 1));
@@ -3635,6 +3727,122 @@ static void sdk_aregion(void) {
       gap(at, "aregion", "AssertionError: %s", g->error);
   }
   g->guarding = 0;
+}
+/* 36 位老 SDK 写死的两段地址区间（#1503）：nnosInitialize 用常数构造两个 nn::os::detail::AddressSpaceAllocator(起点, 终点, 保护区 0x4000)——
+ *   可随机区 [0x8000000, 2^36)、线程栈区 [0x8000000, 0x80000000)，就是 Horizon 36 位布局里的这两区，没问 GetInfo
+ *   （新 SDK 同两处取 GetInfo AslrRegion / StackRegion）。游戏地址 = 宿主地址，苹果 4 GB 以下是 __PAGEZERO，这两段宿主给不出。
+ *   认出后把装起点 / 终点的四条常数指令各写成一条 brk 兜底，运行时按本局布局填可随机区 / 栈区的起止（runtime/src/traps.c），每条只写自己的寄存器、pc + 4，
+ *   不假设别处不跳进这几条之间。只认代码形状：bl 前紧挨着最多 4 条，x1 = 0x8000000、x2 = 2^36 或 2^31、x3 = 0x4000 都由常数指令写
+ *   （MOVZ / MOVN / ORR 立即数），其余只许不碰 x1–x3 的 add x0, xN, #imm；两段都认出、调的是同一个函数才改，否则一处不改（记一行黄）。
+ *   样本：两个 36 位款的 SDK（构建号 99d55fb2…、cc774be5…）同形，都在 sdk+0x8c6xx，被调是 AddressSpaceAllocatorC1Emmm 的 PLT 桩 */
+static int xconst(uint32_t w, int* rd, uint64_t* v) {   /* mov 别名的常数写：MOVZ / MOVN / ORR Rd, ZR, #位掩码（32 位写零扩展） */
+  int sf = (int)(w >> 31);
+  uint64_t mask = sf ? ~0ull : 0xffffffffull;
+  *rd = (int)(w & 31);
+  if (((w >> 23) & 0x3f) == 0x25 && (((w >> 29) & 3) == 0 || ((w >> 29) & 3) == 2)) {
+    unsigned hw = (w >> 21) & 3;
+    if (!sf && hw > 1)
+      return 0;
+    uint64_t x = (uint64_t)((w >> 5) & 0xffff) << (16 * hw);
+    *v = ((w >> 29) & 3) == 0 ? ~x & mask : x;
+    return 1;
+  }
+  if (((w >> 23) & 0x3f) == 0x24 && ((w >> 29) & 3) == 1 && ((w >> 5) & 31) == 31) {
+    unsigned n = (w >> 22) & 1, immr = (w >> 16) & 0x3f, imms = (w >> 10) & 0x3f, len = 6;
+    if (!sf && n)
+      return 0;
+    while (len && !(((n << 6) | (~imms & 0x3f)) >> len & 1))
+      len--;
+    if (!len)
+      return 0;
+    unsigned esize = 1u << len, s = imms & (esize - 1), r = immr & (esize - 1);
+    if (s == esize - 1)
+      return 0;
+    uint64_t emask = esize == 64 ? ~0ull : (1ull << esize) - 1, e = (1ull << (s + 1)) - 1;
+    if (r)
+      e = ((e >> r) | (e << (esize - r))) & emask;
+    uint64_t x = 0;
+    for (unsigned k = 0; k < (sf ? 64u : 32u); k += esize)
+      x |= e << k;
+    *v = x & mask;
+    return 1;
+  }
+  return 0;
+}
+static void hex(FILE* f, A a);
+static void trap_rows(FILE* f) {   /* 序号 = 出现顺序（brk #(0x8000 + 序号)）：偏移 / 种类 / 寄存器 / 原字 */
+  for (size_t i = 0; i < g->traps.n; i++) {
+    fprintf(f, "# TRAP\t");
+    hex(f, g->traps.v[i].at);
+    fprintf(f, "\t%s\t%d\t0x%08x\n", g->traps.v[i].kind, g->traps.v[i].reg, g->traps.v[i].w);
+  }
+}
+static void sdk_as36_ranges(void) {
+  typedef struct {
+    A at[2], call;
+    int reg[2], stack;
+  } Ctor;
+  Ctor m[8];
+  int nm = 0, naslr = 0, nstack = 0, many = 0;
+  for (A b = 16; b + 4 <= (A)g->text; b += 4) {
+    uint32_t w = iw(b);
+    if ((w >> 26) != 0x25)   /* bl */
+      continue;
+    A at[4] = {-1, -1, -1, -1};
+    uint64_t v[4] = {0};
+    for (A p = b - 4; p >= 0 && p >= b - 16; p -= 4) {
+      uint32_t x = iw(p);
+      int rd;
+      uint64_t c;
+      if (xconst(x, &rd, &c) && rd >= 1 && rd <= 3) {
+        if (at[rd] < 0) {   /* 离 bl 最近的那次写才是实参 */
+          at[rd] = p;
+          v[rd] = c;
+        }
+        continue;
+      }
+      if ((x & 0xff80001fu) == 0x91000000u)   /* add x0, xN, #imm */
+        continue;
+      break;
+    }
+    if (at[1] < 0 || at[2] < 0 || at[3] < 0 || v[1] != 0x8000000 || v[3] != 0x4000 ||
+        (v[2] != 1ull << 36 && v[2] != 1ull << 31))
+      continue;
+    if (nm == 8) {
+      many = 1;
+      break;
+    }
+    int32_t imm = (int32_t)(w << 6) >> 6;
+    Ctor c = {{at[1], at[2]}, b + (A)imm * 4, {1, 2}, v[2] == 1ull << 31};
+    m[nm++] = c;
+    if (c.stack)
+      nstack++;
+    else
+      naslr++;
+  }
+  if (!nm)
+    return;
+  int same = 1, free_ = 1;
+  for (int i = 0; i < nm; i++) {
+    same &= m[i].call == m[0].call;
+    free_ &= !consumed(m[i].at[0]) && !consumed(m[i].at[1]);
+  }
+  if (many || !naslr || !nstack || !same || !free_ || g->traps.n + 2 * (size_t)nm > TRAP_MAX) {
+    msg("[黄] %s 36 位老 SDK 地址区间：认出 %d 处（可随机区 %d、栈区 %d）%s，不改\n", g->r.module, nm, naslr, nstack,
+        many ? "，超过 8 处" : !naslr || !nstack ? "，两段没认全" : !same ? "，调的不是同一个函数" : !free_ ? "，常数指令已被别的改写单元搬走" : "，兜底点已满");
+    return;
+  }
+  for (int i = 0; i < nm; i++)
+    for (int k = 0; k < 2; k++) {
+      static const char* const kinds[2][2] = {{"as_aslr_lo", "as_aslr_hi"}, {"as_stack_lo", "as_stack_hi"}};
+      Trap t = {m[i].at[k], kinds[m[i].stack][k], m[i].reg[k], iw(m[i].at[k])};
+      put(t.at, 0xd4200000u | ((uint32_t)(TRAP_IMM0 + g->traps.n) << 5));
+      PUSH(g->traps, t);
+      bump("sdk_as36_range");
+    }
+  for (int i = 0; i < nm; i++)
+    msg("36 位老 SDK %s：+0x%" PRIx64 " / +0x%" PRIx64 " 改 brk 兜底（构造函数 +0x%" PRIx64 "）\n", m[i].stack ? "栈区" : "可随机区",
+        (uint64_t)m[i].at[0], (uint64_t)m[i].at[1], (uint64_t)m[i].call);
 }
 /* Wide-screen recipe input is explicit; the library never discovers game data. */
 /* 帧率表改指令（S2A_FPS_TSV = 产物根里的 fps.tsv，帧率能耗线 10-26；体系提升方案 D）：按构建号把社区资料指出的位置按语义改成我方的写法，
@@ -4850,7 +5058,7 @@ static int cmpgap(const void* a, const void* b) {
 static int cmpbump(const void* a, const void* b) {
   return strcmp(((const Stat*)a)->key, ((const Stat*)b)->key);
 }
-/* 首轮零 GAP 且补丁放不进 FRONT 时按实际长度 align64KiB(补丁 + 16KiB) 整轮重做（上限 32 MiB）；自旋是可选优化，但换布局不许丢掉上一轮成功的回边 */
+/* 补丁放不进 FRONT 时按实际长度 align64KiB(补丁 + 16KiB) 整轮重做（首轮有 GAP 也重做，GAP 带到下一轮照常降级，#1476）；自旋是可选优化，但换布局不许丢掉上一轮成功的回边 */
 #define RETRY_RC (-100)
 static size_t lost_spins(void) {
   size_t n = 0;
@@ -4884,11 +5092,15 @@ static int outputs(void) {
     g->next_front = 0;
     return RETRY_RC;
   }
-  /* 双岛的前岛超容量时本轮的单元落点不作数（缺口可能就是越界落点造成的）：不看缺口，直接放大前岛重做 */
-  if ((g->dual || (!g->gaps.n && !lost)) && capacity_short) {
+  /* 前岛超容量时本轮的单元落点不作数（缺口可能就是越界落点造成的）：不看缺口，直接放大前岛重做。
+   *   单前岛原先只在零缺口时重做，首轮有缺口（与容量无关的 brk / 窗口等）又超容量就删产物返回 3，出包整包失败（#1476）；
+   *   现在单前岛同双岛一样放大重做，原有缺口照常降级出产物，重做后缺口比触发那轮多才算布局重选失败（retry_gaps） */
+  if ((g->dual || !lost) && capacity_short) {
     remove_output("patched.bin");
+    g->next_gaps0 = g->gaps.n;
     if (next_front <= front_max) {
-      msg("%s 补丁容量不足，重新生成：FRONT 0x%zx → 0x%zx，补丁 0x%zx\n", g->r.module, g->front, next_front, flen);
+      msg("%s 补丁容量不足，重新生成：FRONT 0x%zx → 0x%zx，补丁 0x%zx%s\n", g->r.module, g->front, next_front, flen,
+          g->gaps.n ? "（本轮已有缺口照常降级）" : "");
       g->next_dual = g->dual;
       g->next_front = next_front;
       return RETRY_RC;
@@ -4948,7 +5160,7 @@ static int outputs(void) {
     }
   }
   /* 能进入重做说明原布局零 GAP：此时新增缺口属于布局重选失败 */
-  int retry_gaps = !g->dual && g->retry_front && g->gaps.n;
+  int retry_gaps = !g->dual && g->retry_front && g->gaps.n > g->retry_gaps0;
   int layout_fatal = retry_gaps || (!g->gaps.n && (capacity_short || lost));
   msg("PFRW mod=%s need=%zu gaps=%zu fatal=%d\n", g->r.module, total, g->gaps.n, layout_fatal);
   if (g->gaps.n && !retry_gaps && (capacity_short || lost)) {
@@ -4964,8 +5176,8 @@ static int outputs(void) {
   if (layout_fatal) {
     remove_output("patched.bin");
     if (retry_gaps)
-      fail("补丁布局重选后 B / ADRP 超出跳转范围，新增 %zu 个编码缺口（text 末尾 0x%zx，新 FRONT 0x%zx）；首轮零 GAP，当前布局不可用，拒绝输出",
-           g->gaps.n, g->text, g->front);
+      fail("补丁布局重选后 B / ADRP 超出跳转范围，新增 %zu 个编码缺口（text 末尾 0x%zx，新 FRONT 0x%zx）；重做前 %zu 个，当前布局不可用，拒绝输出",
+           g->gaps.n - g->retry_gaps0, g->text, g->front, g->retry_gaps0);
     if (lost)
       fail("扩大补丁布局后丢失 %zu 条已成功的自旋回边，拒绝输出", lost);
     fail("补丁区 0x%zx 字节放不进首址前的 0x%zx（可用 0x%zx）；需要 0x%zx，布局策略上限 0x%zx", flen,
@@ -5014,16 +5226,16 @@ static int outputs(void) {
     char b[24];
     fprintf(f, "# PATCH2_OFF\t%s\n# PATCH2_LEN\t0x%zx\n# TRAP_SITES\t%zu\n# SPIN_UNREACHED\t%zu\n", shx(b, g->po2), g->patch2.n * 4,
             g->traps.n, g->spin_miss.n);
-    for (size_t i = 0; i < g->traps.n; i++) {   /* 序号 = 出现顺序（brk #(0x8000 + 序号)）：偏移 / 种类 / 寄存器 / 原字 */
-      fprintf(f, "# TRAP\t");
-      hex(f, g->traps.v[i].at);
-      fprintf(f, "\t%s\t%d\t0x%08x\n", g->traps.v[i].kind, g->traps.v[i].reg, g->traps.v[i].w);
-    }
+    trap_rows(f);
     if (g->fars.n) {   /* 远跳（brk #FAR_IMM）：<从> <到>（相对基址，有符号）<E 入口 | X 出口>；装载器按 <从> 二分查 */
       fprintf(f, "# FAR_JUMPS\t%zu\n", g->fars.n);
       for (size_t i = 0; i < g->fars.n; i++)
       { char b2[24]; fprintf(f, "# FAR\t%s\t%s\t%c\n", shx(b, g->fars.v[i].from), shx(b2, g->fars.v[i].to), g->fars.v[i].entry ? 'E' : 'X'); }
     }
+  }
+  if (!g->dual && g->traps.n) {   /* 单岛只有 36 位老 SDK 地址区间（sdk_as36_ranges）会出兜底点；没有时表头不变 */
+    fprintf(f, "# TRAP_SITES\t%zu\n", g->traps.n);
+    trap_rows(f);
   }
   fprintf(f, "# KEY_K18_IDX\t0\n# KEY_KTLS_IDX\t1\n# KEY_KTLR_IDX\t2\n# KEY_KGATE_IDX\t3\n");
   if (g->ohos)
@@ -5326,7 +5538,7 @@ static void rel_upgrade(void) {
   if (n) msg("独占存补 release：共 %d 处%s\n", n, n > 16 ? "（上面只列前 16 处）" : "");
 }
 static int attempt(const s2a_rewrite_request* r, const s2a_rewrite_options* options, FILE* log, size_t* front, int* dual,
-                   Pair** carry, size_t* ncarry) {
+                   size_t* gaps0, Pair** carry, size_t* ncarry) {
   RW *prev = g, *ctx = calloc(1, sizeof(*ctx));
   if (!ctx)
     return 1;
@@ -5334,6 +5546,7 @@ static int attempt(const s2a_rewrite_request* r, const s2a_rewrite_options* opti
   g->r = *r;
   g->retry_front = *front;
   g->retry_dual = *dual;
+  g->retry_gaps0 = *gaps0;
   g->req = *carry;
   g->nreq = *ncarry;
   g->log = log;
@@ -5356,6 +5569,7 @@ static int attempt(const s2a_rewrite_request* r, const s2a_rewrite_options* opti
     g->one = cs_malloc(g->cs);
     REQUIRE(g->one);
     load();
+    fix_rows();
     fps_rows(0);
     cpatch_rows(0);
     code_rows();
@@ -5368,6 +5582,7 @@ static int attempt(const s2a_rewrite_request* r, const s2a_rewrite_options* opti
     analyze();
     generate();
     sdk_aregion();
+    sdk_as36_ranges();
     widen();
     fps_rows(1);
     cpatch_rows(1);
@@ -5391,6 +5606,7 @@ static int attempt(const s2a_rewrite_request* r, const s2a_rewrite_options* opti
     free(*carry);
     *front = g->next_front;
     *dual = g->next_dual;
+    *gaps0 = g->next_gaps0;
     if (g->dual || g->next_dual) {   /* 双岛不带自旋回边（够不着的另出表头 SPIN_UNREACHED） */
       free(g->now);
       *carry = NULL;
@@ -5410,11 +5626,11 @@ int s2a_rewrite_files_with_options(const s2a_rewrite_request* r,
   if (!r || !r->input || !r->output_dir || !r->module || !r->module[0] || strchr(r->module, '/') ||
       strchr(r->module, '\\') || eq(r->module, ".") || eq(r->module, ".."))
     return 1;
-  size_t front = 0, ncarry = 0;
+  size_t front = 0, ncarry = 0, gaps0 = 0;
   int dual = 0;
   Pair* carry = NULL;
   int rc;
-  while ((rc = attempt(r, options, log, &front, &dual, &carry, &ncarry)) == RETRY_RC) {
+  while ((rc = attempt(r, options, log, &front, &dual, &gaps0, &carry, &ncarry)) == RETRY_RC) {
   }
   free(carry);
   return rc;

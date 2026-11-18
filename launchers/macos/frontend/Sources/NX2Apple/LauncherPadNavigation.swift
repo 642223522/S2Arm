@@ -144,8 +144,10 @@ enum LauncherPadSpatial {
         if previousScope == scope, let id = previousID, !id.hasPrefix("card.") {
             let selected = all.first { $0.id == id }
             let complete = selected.map { ($0.clippingFrame ?? window.frame).insetBy(dx: -1, dy: -1).contains($0.unclippedFrame ?? $0.frame) } ?? false
-            if !complete {
-                let scroll = controls.values.first { $0.id == id && $0.view.window === window }?.view.enclosingScrollView
+            let scroll = controls.values.first { $0.id == id && $0.view.window === window }?.view.enclosingScrollView
+            // 只有滚动区里的控件被滚出视野才换到附近的完整控件。不在滚动区里的控件（顶栏搜索框）被裁只是展开 / 收起动画的一瞬，
+            // 这时换走焦点就再也回不来：手柄关屏幕键盘后焦点跳到「刷新」「清空」
+            if !complete, scroll != nil {
                 let completeTargets = all.filter { ($0.clippingFrame ?? window.frame).insetBy(dx: -1, dy: -1).contains($0.unclippedFrame ?? $0.frame) }
                 let nearby = completeTargets.filter { ($0.element as? NSView)?.enclosingScrollView === scroll }
                 let candidates = nearby.isEmpty ? completeTargets : nearby
@@ -232,10 +234,13 @@ enum LauncherPadSpatial {
             })
         }
     }
-    func detach() {
+    /// teardown：SwiftUI 正在拆这棵视图（dismantleNSView，NSHostingView.deinit 里）。这时不写 presentation 的发布属性——
+    ///   拆图期间发布变更会撞上 SwiftUI 自己的独占访问，fatalError 关窗闪退（#1516，0.5.3–0.5.5）。拆完 presentation 随视图释放，
+    ///   重新接上窗口时 source.updatePresentation 照实写；窗口关闭通知那条路（图还在）照旧清
+    func detach(teardown: Bool = false) {
         source.stop(); clearRings(); keyboard?.close(apply: false); keyboard = nil
         nativeButtons.restore(); source.refresh = {}; source.updatePresentation = { _, _ in }
-        presentation.connected = false; presentation.symbols = [:]
+        if !teardown { presentation.connected = false; presentation.symbols = [:] }
         for monitor in monitors { NSEvent.removeMonitor(monitor) }; monitors.removeAll()
         for observer in notifications { NotificationCenter.default.removeObserver(observer) }; notifications.removeAll()
         for overlay in overlays.values { overlay.removeFromSuperview() }; overlays.removeAll()
@@ -542,5 +547,5 @@ struct LauncherPadHost: NSViewRepresentable {
     }
     func makeNSView(context: Context) -> Host { let host = Host(); host.navigation = navigation; return host }
     func updateNSView(_ view: Host, context: Context) { update(); if let window = view.window { navigation.attach(window) } }
-    static func dismantleNSView(_ view: Host, coordinator: ()) { if view.navigation?.window === view.lastWindow { view.navigation?.detach() } }
+    static func dismantleNSView(_ view: Host, coordinator: ()) { if view.navigation?.window === view.lastWindow { view.navigation?.detach(teardown: true) } }
 }

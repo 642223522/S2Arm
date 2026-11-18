@@ -23,6 +23,7 @@ public enum BackendText {
 
     /// 资源包：.app 里只认 Contents/Resources 下那份（缺了明说，不退回源码路径）；swift run / swift test 用 SwiftPM 的 Bundle.module。
     public static func resourceBundle() throws -> Bundle {
+        resourceReadsLock.lock(); resourceReads += 1; resourceReadsLock.unlock()
         if Bundle.main.bundleURL.pathExtension == "app" {
             guard let resources = Bundle.main.resourceURL,
                   let packaged = Bundle(url: resources.appendingPathComponent(bundleName)) else {
@@ -66,6 +67,19 @@ public enum BackendText {
         }
         overlays[language] = o
         return o
+    }
+
+    /// 启动时把对照表、界面文案和所有叠加语言一次读进内存。之后显示文字不再碰盘：
+    ///   App 开着时包被挪走 / 删掉（拖进「应用程序」、更新换包的空档），首次显示某句报错才去读文件会读不到而停
+    ///   （0.5.1 欢迎页崩溃）。资源真缺仍在这里当场停，装包错误照旧不放过
+    public static func preload() {
+        _ = entries; _ = english; _ = chinese; _ = forward; _ = reverse; _ = launcherItems
+        let resources = (try? resourceBundle().resourceURL) ?? nil
+        let names = resources.flatMap { try? FileManager.default.contentsOfDirectory(atPath: $0.path) } ?? []
+        for name in names where name.hasPrefix("l10n.") && name.hasSuffix(".json") {
+            _ = overlay(String(name.dropFirst("l10n.".count).dropLast(".json".count)))
+        }
+        for language in ["zh-Hans", "en"] { _ = overlay(language) }   // 简中 / 英文没有叠加文件：也先查一次、记空，之后不再去读资源包（同 510a74d1d 那份）
     }
 
     /// 这门语言还没翻的回落：繁中回落简中（中文读者看简中比英文顺），其余回落英文（11-14 i18n）
@@ -120,7 +134,11 @@ public enum BackendText {
         return entries
     }
 
-    /// 对照表 + 共享规格。读一次；资源缺了或坏了是装包错误，直接停（同旧启动器）。
+    /// 读资源包的次数（单测核：preload 之后再翻译 / 取界面文案一次都不读盘）
+    private static let resourceReadsLock = NSLock()
+    nonisolated(unsafe) static var resourceReads = 0
+
+    /// 对照表 + 共享规格。读一次（App 启动时 preload 读）；资源缺了或坏了是装包错误，直接停（同旧启动器）。
     public static let entries: [Entry] = {
         do {
             let bundle = try resourceBundle()

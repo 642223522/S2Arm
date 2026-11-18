@@ -12,8 +12,10 @@ void s2a_phone_axes_basis(const int right[2], const int up[2], const double acc_
     acc_raw[0] = (float)-ax; acc_raw[1] = (float)-ay; acc_raw[2] = (float)-az;   // 重力方向 → 支撑反力
     gyr_raw[0] = (float)(rx * deg); gyr_raw[1] = (float)(ry * deg); gyr_raw[2] = (float)(rz * deg);
 }
-void s2a_phone_panel_fix(int panel_w, int panel_h, int right[2], int up[2]) {
-    if (panel_w <= 0 || panel_h <= panel_w || (double)panel_h / panel_w >= 1.6) return;
+// 只给 iPhone（界面类型 phone）的近方形竖向面板补：折叠屏内屏（Duo 2007x2853）。iPad 的原生面板也近方形（iPad mini 1512x2316，高÷宽 1.53），
+//   但 UIKit 算出的屏幕右 / 上本来就对，再转 90° 就错（#1360：0.4.2 起 iPad mini 拉弓准星沿斜线走）
+void s2a_phone_panel_fix(int panel_w, int panel_h, int is_phone, int right[2], int up[2]) {
+    if (!is_phone || panel_w <= 0 || panel_h <= panel_w || (double)panel_h / panel_w >= 1.6) return;
     int r0 = right[0], r1 = right[1], u0 = up[0], u1 = up[1];
     right[0] = r1; right[1] = -r0; up[0] = u1; up[1] = -u0;   // 顺时针 90°：(x, y) → (y, −x)
 }

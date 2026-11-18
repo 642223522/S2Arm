@@ -6,5 +6,17 @@ static inline const char *s2a_as_type_bits(uint32_t t) { return t == 0 ? "32 位
 // 本类型的地址空间上界（游戏地址必须全在它以下；Ryujinx KPageTableBase.GetAddressSpaceWidth）：布局支持的类型 1（36 位）→ 2^36、3（39 位）→ 2^39，其余 0 = 不支持。
 //   宿主窗口按它取空洞（vawin.c）、布局按它核窗口（layout.c）、QueryMemory 按它报地址空间末（svc_mem.c）
 static inline uint64_t s2a_as_type_top(uint32_t t) { return t == 1 ? 1ull << 36 : t == 3 ? 1ull << 39 : 0; }
+// 窗口 [W, W + S) 所在地址空间的末端（游戏地址都在它以下），0 = 这个窗口本类型放不了。39 位款：窗口须在 2^39 以下，末端 2^39。
+//   36 位款：2^36 以下照旧；也可以整段放在 2^36 以上某一块按 2^36 对齐的 64 GiB 里（#1419：macOS 27 / iOS 27 的 2^36 以下被系统只读区与保护区占满，
+//   一块窗口也放不下），末端 = 那一块的末端。游戏地址仍等于宿主地址；老 SDK 打包 IPC 缓冲描述符只写地址 32–35 位，丢掉的 36 位以上由服务层按窗口所在块补回
+//   （svc_mem.c s2a_ipc_addr39）。纯函数，单测 runtime/tests/t_layout.c
+static inline uint64_t s2a_as_type_end(uint32_t t, uint64_t W, uint64_t S) {
+    uint64_t top = s2a_as_type_top(t);
+    if (!top || W + S < W) return 0;
+    if (W <= top && S <= top - W) return top;
+    if (t != 1 || !S) return 0;
+    uint64_t blk = W & ~(top - 1);
+    return W + S - 1 < blk + top ? blk + top : 0;
+}
 // 跨度为 0 时 vawin.c 读到的本款 NPDM 地址空间类型（0–7；-1 = 读不到 main.npdm 或不是 META，或跨度不为 0 没读）。自检页（selfcheck.c）按它分话术
 int s2a_window_astype(void);

@@ -385,14 +385,6 @@ def _current_sid():
         _close(token)
 
 
-def request_is_private(path):
-    """Mac / Linux：请求文件属主是本用户且只有本用户可读写（0600）。
-    Windows 不在这里再核（11-11 装机链路审查）：启动器建请求文件时已带只给本人的权限（PrivateJobRequest.cs），这层是重复的；
-    它遇到不认识的权限条目类型就判「不私有」，作业抛一句英文退出、没有错误码，比它防的「同机别的用户读到请求里的路径」更伤"""
-    path = Path(path)
-    return not (path.stat().st_mode & 0o077 or path.stat().st_uid != os.getuid())
-
-
 class _UnicodeString(C.Structure):
     _fields_ = [('length', W.WORD), ('maximum', W.WORD), ('buffer', W.LPWSTR)]
 

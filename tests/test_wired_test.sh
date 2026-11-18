@@ -1,7 +1,7 @@
 #!/bin/bash
 # 门禁覆盖：*.sh *.py Makefile *.mk
-# 单测接线扫描（tools/test_wired_lint.py，约 1 秒）：bash tests/test_wired_test.sh
-# 期望：① 本仓库全部接线或在白名单 → 退出 0；② 本仓库换成空白名单 → 退出 1 且点名仍需私有数据 / 参数的三支手动单测；
+# 单测接线扫描（tools/test_wired_lint.py，全仓一遍约 25 秒）：bash tests/test_wired_test.sh
+# 期望：① 本仓库全部接线或在白名单 → 退出 0；② 本仓库换成空白名单（同一次扫描出的第二份结论）→ 退出 1 且点名仍需私有数据 / 参数的三支手动单测；
 #   ③ 临时仓库：门禁调到的、经已接线脚本再调的、Python import 的、Makefile 配方里调的都算接上；只在注释里提到的、谁都没调的报出；
 #   白名单没写原因、白名单写了不存在 / 其实已接上的单测只提示，没写原因的报一条；不合格的白名单行不豁免（没写原因的那支照报没接线）
 #   ⑤ 文字提及、非执行选项、heredoc、同名不同目录都不算接线；真调用正控仍判接上；解析失败点名文件和原因。
@@ -16,10 +16,10 @@ fixture_lint() {
     git -C "$root" add -A || return
     python3 "$lint" "$root"
 }
-o=$(cd "$H" && python3 tools/test_wired_lint.py 2>&1); r=$?
+o=$(cd "$H" && S2A_WIRED_EMPTY_OUT=$T/empty.out python3 tools/test_wired_lint.py 2>&1); r=$?   # 同一次扫描顺带出空白名单那份结论（②用，不整仓重扫）
 ck "① 本仓库：全部接线或在白名单（$(echo "$o" | tail -1 | cut -c1-120)）" '[ $r = 0 ]'
 [ $r = 0 ] || echo "$o" | head -10
-: > "$T/empty.tsv"; o=$(cd "$H" && S2A_WIRED_OK=$T/empty.tsv python3 tools/test_wired_lint.py 2>&1); r=$?
+o=$(sed '$d' "$T/empty.out"); r=$(tail -1 "$T/empty.out" | sed 's/^退出码 //')
 ck "② 空白名单：退出 1（rc=${r}）" '[ $r = 1 ]'
 # 拼扩展名：现有扫描器会把断言里的完整文件名误当调用（#484 另行修复）。
 for stem in t_pkz_real t_smbw_bnsh t_fout_rule; do

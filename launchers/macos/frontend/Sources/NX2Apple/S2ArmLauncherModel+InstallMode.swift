@@ -24,6 +24,27 @@ extension S2ArmLauncherModel {
         if export(game, platforms: [.ios], mode: "export")?.stopsStart == true { selfSignAfterPack.remove(game.id); exportFor = game.id }   // 出不了（缺文件 / 缺密钥…）：去出包页看原因，不悄悄没反应
     }
 
+    /// 出包页的「开始」：出 iPhone 时按「出完之后」那条路一步走完——装到 iPhone（出好接着装）或导出自签包（出好接着导出，不连手机）
+    @discardableResult
+    func startExport(_ game: GameSummary, location: String? = nil) -> ExportBlocker? {
+        guard exportTargets.contains(.ios) else { return export(game, location: location) }
+        let selfSign = iosAfterPack == "export"
+        if selfSign { selfSignAfterPack.insert(game.id) } else { installAfterPack.insert(game.id) }
+        let b = export(game, location: location, mode: selfSign ? "export" : nil)
+        if b?.stopsStart == true { selfSignAfterPack.remove(game.id); installAfterPack.remove(game.id) }
+        return b
+    }
+
+    /// 装机 / 更新失败的那页上「改为导出自签包」：不连手机也能走完（11-16 维护者：没插手机就卡死是我们自己设的障碍）
+    func switchToSelfSign(_ session: JobSession, language: String) {
+        iosAfterPack = "export"
+        if session.kind == .installUpdate, let a = lastUpdateArgs {
+            updatePhone(acceptStale: a.acceptStale, repack: a.repack, language: language, accept: a.accept, mode: "export", sgradeUpgrade: a.sgradeUpgrade)
+        } else if let id = session.gameID, let game = games.first(where: { $0.id == id }) {
+            exportSelfSign(game)
+        }
+    }
+
     /// 签名身份（一键装时）：开发者证书开着 = devcert，否则 Xcode 账号
     var signIdentity: String { devCert?.active == true ? "devcert" : "xcode" }
 
@@ -32,7 +53,7 @@ extension S2ArmLauncherModel {
 
     /// 点「更新 iPhone 上的 S2Arm」：没有要重新出包的款直接更新；有就先弹三选一
     func requestPhoneUpdate(language: String) {
-        guard let u = phoneUpdate, !busy else { return }
+        guard let u = phoneUpdate else { return }   // 手机槽忙也能点：更新排到手机槽空出来（updatePhone）
         if u.stale.isEmpty { updatePhone(acceptStale: false, repack: [], language: language) } else { updateConfirm = u }
     }
 
@@ -42,7 +63,11 @@ extension S2ArmLauncherModel {
     func updatePhone(acceptStale: Bool, repack: [String], language: String, device: String? = nil, acceptDropped: Bool = false, accept: Set<String> = [], ask: Bool = true,
                      mode: String? = nil, sgradeUpgrade: Bool = false) {
         let accept = acceptDropped ? accept.union(["acceptDropped"]) : accept
-        guard !busy else { return }
+        let mode = mode ?? (iosAfterPack == "export" ? "export" : nil)   // 没指定这次怎么走：按出包页「出完之后」玩家选的那条（选了自签 = 不连手机、导出更新后的自签包）
+        guard !phoneBusy else {   // 出包等主槽作业照跑也能更新（手机槽）；手机槽忙 → 排队
+            phoneQueue.append((nil, { [weak self] in self?.updatePhone(acceptStale: acceptStale, repack: repack, language: language, device: device, accept: accept, ask: ask,
+                                                                       mode: mode, sgradeUpgrade: sgradeUpgrade) })); return
+        }
         updateConfirm = nil; updateRepack = repack
         // 更新哪台：壳旧了的那台（phoneUpdates 的设备记录键）；没有就是玩家选的那台。一律带上，作业层不自己挑（v0.3.0 验收测出连着两台报错；11-11 设备号贯穿所有装机入口）
         let device = mode == "export" ? nil : device ?? phoneUpdate?.device ?? installDeviceID
@@ -53,6 +78,7 @@ extension S2ArmLauncherModel {
             do {
                 let r = try await self?.provider.updatePhone(acceptStale: acceptStale, accept: accept, mode: mode, sgradeUpgrade: sgradeUpgrade, device: device, events: sink) ?? [:]
                 let names = Dictionary((self?.games ?? []).map { ($0.id.uppercased(), $0.name) }, uniquingKeysWith: { a, _ in a })
+                self?.installTrustName = r["trustName"] as? String ?? ""   // 重装了 App（换团队 / 续签）：完成页同样说要点哪一项信任
                 self?.phoneOutcome = PhoneOutcome(device: Self.deviceLabel(kind: r["deviceKind"] as? String ?? "", name: r["deviceName"] as? String ?? ""),
                                                   packFiles: (r["packFiles"] as? NSNumber)?.intValue, packBytes: (r["packBytes"] as? NSNumber)?.int64Value,
                                                   skipped: (r["skipped"] as? [String] ?? []).map { names[$0.uppercased()] ?? $0 },
@@ -102,8 +128,9 @@ extension S2ArmLauncherModel {
     }
 
     func installNextQueued() {
-        guard !busy, !installAfterQueue.isEmpty else { return }
+        guard !phoneBusy, !installAfterQueue.isEmpty else { return }   // 手机槽空就装（主槽在出别的款也装）
         let id = installAfterQueue.removeFirst()
+        installAfterPack.remove(id)
         if let game = games.first(where: { $0.id == id }) { install(game, export: selfSignAfterPack.remove(id) != nil) } else { installNextQueued() }
     }
 }

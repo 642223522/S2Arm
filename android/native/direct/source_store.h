@@ -27,7 +27,13 @@ extern "C" {
 #define S2A_SOURCE_MAX_CODE (256u * 1024u)
 #define S2A_SOURCE_CONTROL_BYTES 0x880u
 #define S2A_SOURCE_CONTROL_MIN 0x760u    // 控制段 +0x20 自描述长度（短 control）的最小合法值
-#define S2A_SOURCE_PENDING 256u
+// SetShaders 自持的控制段按 (程序序号, 阶段) 存到程序 Finalize（s2a_source_drop_pending）。原先是 256 格的环、满了静默挤掉最旧的：
+//   一款游戏进标题 3D 时一次注册几百个程序，先注册、代码区还没映射（键要到 Bind 才补算）的那些被挤掉，Bind 时拿不到控制段，
+//   源快照永远存不进去，每笔绘制都报 source_snapshot_missing（#1622：一局 13.5 万次，占 program_unresolved 的 64.6%）。
+//   现在跟活程序数走；S2A_SOURCE_PENDING_MAX 只是防泄漏的安全阀（正常远到不了），超了才挤最旧并打红行。
+#ifndef S2A_SOURCE_PENDING_MAX
+#define S2A_SOURCE_PENDING_MAX 65536u
+#endif
 
 struct s2a_source_entry_view {
     const uint8_t *key;      // 8 字节 control 键（完整内容摘要的前 8 字节）
@@ -92,6 +98,7 @@ int s2a_source_hold_pending(uint64_t prog_serial, uint32_t stage, const void *co
 // 取回 pending control 的借用指针（用于补算 key / keep）；命中返回 1。
 int s2a_source_pending_control(uint64_t prog_serial, uint32_t stage, const uint8_t **control, uint32_t *control_bytes);
 void s2a_source_drop_pending(uint64_t prog_serial);
+uint32_t s2a_source_pending_count(void);   // 现存自持控制段条数（单测 / 诊断用）
 
 void s2a_source_stats(uint32_t *entries, uint32_t *bytes, uint32_t *dropped);
 void s2a_source_clear(void);

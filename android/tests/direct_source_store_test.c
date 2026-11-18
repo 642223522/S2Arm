@@ -465,18 +465,32 @@ int main(void) {
     CHECK(s2a_source_keep(key_short_bad, 0, code_a, CODE_BYTES, short_ctl, 0x700) != 0,
           "too-short control is rejected");
 
-    // pending control：SetShaders 自持，Bind 取回同一份；有界淘汰。
+    // pending control：SetShaders 自持，Bind 取回同一份；存到程序 Finalize（drop_pending）为止，不按条数挤掉（#1622）。
     const uint8_t *pc = NULL;
     uint32_t pn = 0;
+    uint32_t n0 = s2a_source_pending_count();
     CHECK(s2a_source_hold_pending(4242, 1, ctl_a, S2A_SOURCE_CONTROL_BYTES) == 0, "hold pending control");
     CHECK(s2a_source_pending_control(4242, 1, &pc, &pn) == 1 && pn == S2A_SOURCE_CONTROL_BYTES &&
           !memcmp(pc, ctl_a, pn), "pending control returns the same bytes");
     CHECK(s2a_source_pending_control(4242, 0, &pc, &pn) == 0, "pending control is per stage");
-    for (int i = 0; i < (int)S2A_SOURCE_PENDING + 4; i++)
+    // 一次注册 3000 个程序 × 2 阶段（旧实现 256 格环：最早的 4242 和 1000..2743 早被挤掉）→ 全部还在
+    for (int i = 0; i < 3000; i++) {
         s2a_source_hold_pending((uint64_t)(1000 + i), 0, ctl_a, S2A_SOURCE_CONTROL_BYTES);
-    CHECK(s2a_source_pending_control(4242, 1, &pc, &pn) == 0, "pending table is bounded (oldest dropped)");
-    s2a_source_drop_pending(1000 + (uint64_t)S2A_SOURCE_PENDING + 3);
-    CHECK(s2a_source_pending_control(1000 + (uint64_t)S2A_SOURCE_PENDING + 3, 0, &pc, &pn) == 0, "drop pending");
+        s2a_source_hold_pending((uint64_t)(1000 + i), 4, ctl_b, S2A_SOURCE_CONTROL_BYTES);
+    }
+    CHECK(s2a_source_pending_control(4242, 1, &pc, &pn) == 1 && !memcmp(pc, ctl_a, pn), "earliest pending survives 6000 later holds");
+    CHECK(s2a_source_pending_control(1000, 4, &pc, &pn) == 1 && !memcmp(pc, ctl_b, pn), "first of the burst still retrievable per stage");
+    CHECK(s2a_source_pending_count() == n0 + 1 + 6000, "pending count = live program stages");
+    // 同程序同阶段重设：换内容、不增条数
+    CHECK(s2a_source_hold_pending(1000, 0, ctl_b, S2A_SOURCE_CONTROL_BYTES) == 0 && s2a_source_pending_control(1000, 0, &pc, &pn) == 1 &&
+          !memcmp(pc, ctl_b, pn) && s2a_source_pending_count() == n0 + 1 + 6000, "re-hold replaces in place");
+    // Finalize：该程序全部阶段一起释放，别的程序不受影响
+    s2a_source_drop_pending(1000);
+    CHECK(s2a_source_pending_control(1000, 0, &pc, &pn) == 0 && s2a_source_pending_control(1000, 4, &pc, &pn) == 0, "drop pending frees all stages");
+    CHECK(s2a_source_pending_control(1001, 4, &pc, &pn) == 1 && s2a_source_pending_count() == n0 + 1 + 5998, "drop pending leaves other programs");
+    for (int i = 1; i < 3000; i++) s2a_source_drop_pending((uint64_t)(1000 + i));
+    s2a_source_drop_pending(4242);
+    CHECK(s2a_source_pending_count() == n0, "all pending released after finalize");
 
     if (fails) { printf("direct source store test: %d FAILED\n", fails); return 1; }
     printf("direct source store test: ok\n");
