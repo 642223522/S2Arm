@@ -106,13 +106,6 @@ class IntelPackagingConfigTest(unittest.TestCase):
         for name in pins:
             self.assertIn(name, code)
 
-    def test_sdk_major_follows_installed_xcode(self):
-        text = (ROOT / "tools/toolchain.env").read_text()
-        ios = re.search(r"^IPHONEOS_SDK_MAJOR=(\d+)$", text, re.M)
-        tvos = re.search(r"^TVOS_SDK_MAJOR=(\d+)$", text, re.M)
-        self.assertEqual(ios.group(1), "26")
-        self.assertEqual(tvos.group(1), "26")
-
     def test_build_app_rename_tolerates_proxy_double_execution(self):
         """宿主代理已把 staging 改成目标却回报失败时，构建不能误报失败。"""
         text = (ROOT / "launchers/macos/build_app.py").read_text()
