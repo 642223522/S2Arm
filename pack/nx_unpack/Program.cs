@@ -152,9 +152,9 @@ static partial class P {
             case LibHac.Common.Keys.MissingKeyException m:
                 return ("keys_missing", $"prod.keys 里没有 {m.Name}：这款游戏用了更新的密钥版本，要用系统版本更新的 Switch 重新导出 prod.keys（{first}）");
             case HorizonResultException h when MagicFail(h) && SiblingDecrypts() is string ok:
-                return ("content_damaged", $"解出来的数据对不上（分区头不是 PFS0 / HFS0，{first}）：同一份文件里{ok}用同一代密钥能正常解开，密钥是对的，是这份内容本身被改过或损坏了。请换一份原版完整的文件（XCI / NSP）再导入");
+                return ("content_damaged", $"解出来的数据对不上（分区头不是 PFS0 / HFS0，{first}）：同一份文件里{ok}用同一代密钥能正常解开，密钥是对的，是这份内容本身被改过或损坏了。{TicketNote()}请换一份原版完整的文件（XCI / NSP）再导入");
             case HorizonResultException h when MagicFail(h):
-                return ("keys_wrong", $"解出来的数据对不上（分区头不是 PFS0 / HFS0，{first}）：多半是 prod.keys 里这款用的那一代密钥不对（文件改过不会这样，只会哈希对不上）。{KeyGenNote()}请用升级到最新系统的 Switch 重新导出 prod.keys 再导入");
+                return ("keys_wrong", $"解出来的数据对不上（分区头不是 PFS0 / HFS0，{first}）：多半是 prod.keys 里这款用的那一代密钥不对（文件改过不会这样，只会哈希对不上）。{KeyGenNote()}{TicketNote()}请用升级到最新系统的 Switch 重新导出 prod.keys 再导入");
             case HorizonResultException h when h.Message.Contains("VerificationFailed"):
                 return ("hash_mismatch", $"源文件数据哈希校验不过（{first}）：文件被改过（如合进改版资源的整合版）或损坏，换一份原版完整的文件");
             case HorizonResultException h:
@@ -214,15 +214,40 @@ static partial class P {
     //   本体 ExeFS 常被整段裁空（物理块数 0）、RomFS 只留未被覆盖的块；这类分段不能脱离更新单独打开或校验（空洞读出全 0，会触发 2002-4644）
     internal static bool IsSparseSection(Nca nca, NcaSectionType type) =>
         Nca.TryGetSectionIndexFromType(type, nca.Header.ContentType, out int idx) && nca.SectionExists(idx) && nca.GetFsHeader(idx).ExistsSparseLayer();
+    // #1511：每个 rights id 的标题密钥从哪来（随包票据 <文件名> / title.keys）；同一 rights id 只记最先导入的那份（ExternalKeySet 重复不收）。
+    //   解不开时报错里说清涉及内容的标题密钥来自哪里、或根本没找到（玩家原先只能猜读取器有没有用上包里的 .tik）
+    internal static readonly Dictionary<string, string> TitleKeyFrom = new(StringComparer.OrdinalIgnoreCase);
+    internal static bool AddTitleKey(ReadOnlySpan<byte> rightsId, ReadOnlySpan<byte> titleKey, string from) {
+        string rid = Convert.ToHexString(rightsId);
+        if (TitleKeyFrom.ContainsKey(rid)) return false;   // 同一 rights id 先到先用（LibHac 对同值重复添加也回成功，不能靠它判「已有」）
+        try { Ks.ExternalKeySet.Add(new RightsId(rightsId), new AccessKey(titleKey)).ThrowIfFailure(); } catch (Exception) { return false; }
+        TitleKeyFrom.TryAdd(rid, from); return true;
+    }
+    internal static string TicketNote() {
+        if (Ks == null) return "";
+        var seen = new SortedDictionary<string, string>();
+        foreach (string id in (Involved.Count > 0 ? Involved.Select(x => x.Id) : Where.Keys).ToList()) {
+            if (!Where.TryGetValue(id, out var open)) continue;
+            try {
+                var n = new Nca(Ks, open());
+                if (!n.Header.HasRightsId) continue;
+                string rid = Convert.ToHexString(n.Header.RightsId);
+                seen.TryAdd(rid, TitleKeyFrom.TryGetValue(rid, out var from) ? "来自" + from : "没找到（包里没有对应的通用票据、title.keys 里也没有）");
+            } catch (Exception) { }
+        }
+        return seen.Count == 0 ? "" : "标题密钥：" + string.Join("；", seen.Select(kv => $"rights id {kv.Key} {kv.Value}")) + "。";
+    }
     internal static string SiblingDecrypts() {
         if (Ks == null) return null;
-        var good = new Dictionary<(int, bool), string>(); var bad = new HashSet<(int, bool)>();
+        // 分组 = (密钥代数, rights id)：带 rights id 的内容各用自己 rights id 的标题密钥，不同 rights id 不能互作对照
+        //   （#1511 复查：原先只按「有没有 rights id」分组，一个 rights id 的标题密钥不对、另一个对时会误判成文件损坏）
+        var good = new Dictionary<(int, string), string>(); var bad = new HashSet<(int, string)>();
         foreach (var (id, open) in Where.ToList()) {
             try {
                 var n = new Nca(Ks, open());
                 int s = Enumerable.Range(0, 4).FirstOrDefault(i => n.SectionExists(i) && !n.GetFsHeader(i).ExistsSparseLayer() && n.GetFsHeader(i).EncryptionType is NcaEncryptionType.AesCtr or NcaEncryptionType.AesXts, -1);   // 更新的补丁段（AesCtrEx）与稀疏本体段（ExistsSparseLayer）离了配对 NCA 单独读不出来，不拿来作对照
                 if (s < 0) continue;
-                var key = (KeyIndex(n.Header.KeyGeneration), n.Header.HasRightsId);
+                var key = (KeyIndex(n.Header.KeyGeneration), n.Header.HasRightsId ? Convert.ToHexString(n.Header.RightsId) : "");
                 var head = new byte[8];
                 bool right;
                 try {
@@ -662,9 +687,12 @@ static partial class P {
         foreach (var e in ents) {
             if (e.Name.EndsWith(".tik", StringComparison.OrdinalIgnoreCase)) {
                 byte[] t = e.Size is > 0 and < (1 << 20) ? new byte[e.Size] : null;
-                if (t == null || e.Open().Read(0, t).IsFailure() || t.Length < 0x2c0 || t[0x281] != 0) { Console.Error.WriteLine($"【红】{e.Name} 不是通用票据，跳过"); continue; }
-                // 同一张票据可能在卡带 + 安装包里各有一份：重复导入不算错，跳过即可
-                try { Ks.ExternalKeySet.Add(new RightsId(t.AsSpan(0x2a0, 0x10)), new AccessKey(t.AsSpan(0x180, 0x10))).ThrowIfFailure(); } catch (Exception) { }
+                if (t == null || e.Open().Read(0, t).IsFailure() || t.Length < 0x2c0 || t[0x281] != 0) { Console.Error.WriteLine($"【红】{e.Name} 不是通用票据，跳过{(t != null && t.Length >= 0x2b0 ? $"（rights id {Convert.ToHexString(t.AsSpan(0x2a0, 0x10))}）" : "")}"); continue; }
+                // 同一张票据可能在卡带 + 安装包里各有一份：重复导入不算错，跳过即可。每张打一行（rights id 与是否用上，不打密钥值，#1511）
+                string rid = Convert.ToHexString(t.AsSpan(0x2a0, 0x10));
+                Console.WriteLine(AddTitleKey(t.AsSpan(0x2a0, 0x10), t.AsSpan(0x180, 0x10), "随包票据 " + e.Name)
+                    ? $"   随包票据 {e.Name}：rights id {rid}，标题密钥已载入"
+                    : $"   随包票据 {e.Name}：rights id {rid}，已有同 rights id 的标题密钥（{(TitleKeyFrom.TryGetValue(rid, out var was) ? was : "先载入的那份")}），这张不再用");
             } else if (e.Name.EndsWith(".nca", StringComparison.OrdinalIgnoreCase) || e.Name.EndsWith(".ncz", StringComparison.OrdinalIgnoreCase)) {
                 // 内容文件必须叫「32 位内容号 + .nca/.ncz」。名字不合规的（手工改名、转换工具加了前缀、只给裸 nca 的小包）跳过并点名，
                 //   不抛异常：10-28 #633 实测这里原是 e.Name[..32]，名字短于 32 字符 → ArgumentOutOfRange → 整进程 SIGABRT（rc=134）
@@ -736,7 +764,7 @@ static partial class P {
             if (line.Length == 0 || line[0] == '#') continue;
             int eq = line.IndexOf('=');
             if (eq <= 0 || !TryHex(line[..eq], 16, out byte[] rid) || !TryHex(line[(eq + 1)..], 16, out byte[] tk)) { bad++; continue; }
-            try { Ks.ExternalKeySet.Add(new RightsId(rid), new AccessKey(tk)).ThrowIfFailure(); ok++; } catch (Exception) { }
+            if (AddTitleKey(rid, tk, Path.GetFileName(p))) ok++;
         }
         // 条数与文件名可以打印，密钥值一律不打印
         if (ok > 0 || bad > 0) Console.WriteLine($"🟡 标题密钥：{Path.GetFileName(p)} 里 {ok} 条已载入" + (bad > 0 ? $"，{bad} 行格式不对跳过" : ""));
