@@ -259,35 +259,36 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published var unreadMessages = 0
     /// 有新版时的那一版 {version, notes?}：顶栏「有新版 vX」点开回到弹窗
     @Published var availableUpdate: [String: Any]?
-    /// 点「现在更新并重启」时有局 / 任务在跑：先拦下说明（文案号 update.gate.playing / update.gate.busy）
+    /// 主动重启会中断进行中的工作时，等待玩家确认。
     @Published var updateGate: String?
-    /// 玩家点了「现在更新」、新版还在下：下好就直接换（玩家已经选了，不再要第二次点）
-    var installWhenReady = false
+    static let autoRestartWhenReadyKey = "update.autoRestartWhenReady"
+    @Published var autoRestartWhenReady: Bool {
+        didSet { updateDefaults.set(autoRestartWhenReady, forKey: Self.autoRestartWhenReadyKey) }
+    }
+    @Published var isCheckingForUpdates = false
+    @Published var checkError: String?
+    @Published var updateRestarting = false
+    let updateDefaults: UserDefaults
+    let updateSimulationEnabled: Bool
+    var updateCheckTask: Task<Void, Never>?
+    var didStartManualUpdateCheck = false
+    private var didStartLauncher = false
     /// 更新失败时 Sparkle 给的原因（界面在错误码文案之外照原话显示，控制口 /state 的 update.reason）
     @Published var updateFailure: String?
     /// 自动检查更新（默认开）：开启后启动时静默向服务端确认是否有新版本
     static let autoCheckUpdatesOffKey = "S2AAutoCheckUpdatesOff"
-    @Published var autoCheckUpdates: Bool = !UserDefaults.standard.bool(forKey: S2ArmLauncherModel.autoCheckUpdatesOffKey) {
-        didSet { UserDefaults.standard.set(!autoCheckUpdates, forKey: Self.autoCheckUpdatesOffKey) }
+    @Published var autoCheckUpdates: Bool {
+        didSet { updateDefaults.set(!autoCheckUpdates, forKey: Self.autoCheckUpdatesOffKey) }
     }
-    /// 自动下载更新（默认关）：仅在「自动检查更新」也开启时生效；开启后后台自动下载并在下好后弹窗，关闭则查到新版即弹窗让用户自己选下载或跳过
+    /// 自动下载更新（默认关）：仅在「自动检查更新」也开启时生效；开启后后台下载，关闭则由玩家自己选何时下载
     static let autoDownloadUpdatesKey = "S2AAutoDownloadUpdates"
-    @Published var autoDownloadUpdates: Bool = UserDefaults.standard.bool(forKey: S2ArmLauncherModel.autoDownloadUpdatesKey) {
-        didSet { UserDefaults.standard.set(autoDownloadUpdates, forKey: Self.autoDownloadUpdatesKey) }
+    @Published var autoDownloadUpdates: Bool {
+        didSet { updateDefaults.set(autoDownloadUpdates, forKey: Self.autoDownloadUpdatesKey) }
     }
-    /// 用户主动点「跳过此版本」记下的版本号：以后自动检查不再弹这一版（手动点检查仍可查看）
-    static let skippedUpdateVersionKey = "S2ASkippedUpdateVersion"
-    @Published var skippedUpdateVersion: String? = UserDefaults.standard.string(forKey: S2ArmLauncherModel.skippedUpdateVersionKey) {
-        didSet { UserDefaults.standard.set(skippedUpdateVersion, forKey: Self.skippedUpdateVersionKey) }
-    }
-    /// 设置页手动「检查更新」的实时反馈（checking / upToDate / available / failed）
-    @Published var updateCheckFeedback: String?
-    /// 自动下载完成后待弹出的更新提示（仅在自动检查 + 自动下载模式下为 true）
-    var autoDownloadPopupPending = false
-    /// 应用内更新（Sparkle 2）：第一次用时起，起来后整个 App 生命周期只一份
-    lazy var sparkleUpdate = SparkleUpdate(model: self)
-    /// 换版走的接口：平时就是 Sparkle；单测换成替身（不起真 Sparkle、不真退出）
-    lazy var updateDriver: UpdateInstalling = sparkleUpdate
+    lazy var updateDriver: any LauncherUpdateDriver = {
+        if updateSimulationEnabled { return SimulatedUpdateDriver(model: self, defaults: updateDefaults) }
+        return SparkleUpdate(model: self)
+    }()
     @Published var showAddGames = false
     @Published var showKeys = false
     /// 选好了但缺密钥（作业层 keys_missing）：等放入密钥后接着导入。解包好的游戏不要密钥，不经过这里。
@@ -419,7 +420,17 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 导入后排着等准备的游戏（同旧启动器：放进来就自动准备，维护者 10-23 不让玩家选）。
     private static let logLimit = 200
 
-    public init(client: JobClient) {
+    public convenience init(client: JobClient) {
+        self.init(client: client, updateDefaults: .standard)
+    }
+
+    init(client: JobClient, updateDefaults: UserDefaults) {
+        self.updateDefaults = updateDefaults
+        updateSimulationEnabled = SimulatedUpdateDriver.isAllowed(preference: updateDefaults.bool(forKey: SimulatedUpdateDriver.enabledKey),
+                                                                  info: Bundle.main.infoDictionary)
+        autoRestartWhenReady = updateDefaults.bool(forKey: Self.autoRestartWhenReadyKey)
+        autoCheckUpdates = !updateDefaults.bool(forKey: Self.autoCheckUpdatesOffKey)
+        autoDownloadUpdates = updateDefaults.bool(forKey: Self.autoDownloadUpdatesKey)
         provider = S2ArmEngineProvider(client: client)
         controller = NS2LauncherController(
             socketURL: provider.client.environment.privateRoot.appendingPathComponent("ns2-relay.sock"), watchGame: true)   // 游戏的手柄设置画面交给面板分配玩家（#520 E）
@@ -456,6 +467,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// 原先 onAppear 一次并发起这几个作业，每个作业开头都做迁移 / 收日志：两个作业同时收私有目录日志、老库搬家时旧库目录被建回来（坑记录）。
     /// 不碰游戏库的（控制口、更新、公告、手柄中继）照常一起起。
     func startup() {
+        guard !didStartLauncher else { return }
+        didStartLauncher = true
         startControl(); finishPendingUpdate(); loadInbox(); startControllerConnection()
         refreshInstallMode(silent: true)   // 装法启动时就读（原先只在设置页 / 装机页出现时读）：控制口 /install 按它判断导出模式要不要 device，界面顶栏也按它
         refresh { [weak self] in self?.recoverBatch { self?.checkEnvironment() } }

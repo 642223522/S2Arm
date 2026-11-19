@@ -9,13 +9,13 @@ import S2ArmAppleAdapter
 // 「重启以更新」时有局 / 任务在跑：不再只能等，先说清会打断什么、玩家点「仍然重启」照样换版（11-18 维护者：认得出的风险让玩家确认后继续）。
 //   期望手写：点重启 → 出确认（不换版）→ 选「仍然重启」→ 停掉在跑的局、真的交给换版；选「取消」什么都不发生。
 @MainActor final class UpdateRestartConfirmTests: XCTestCase {
-    private final class FakeInstaller: UpdateInstalling {
+    private final class FakeInstaller: LauncherUpdateDriver {
         var readyToInstall = true
-        var foundVersion: String? = "9.9.9"
-        private(set) var installs = 0, downloads = 0
-        func checkAndDownload() { downloads += 1 }
+        var downloadBytes: (received: UInt64, expected: UInt64) { (0, 0) }
+        private(set) var installs = 0
+        func check(current: String, fresh: Bool) async -> [String: Any]? { nil }
+        func startDownload() {}
         func installNow() { installs += 1 }
-        func cancelOrSkipReadyUpdate() {}
     }
     private final class IdleRunner: JobProcessRunner {
         final class Handle: JobProcessHandle { func terminate() {} }

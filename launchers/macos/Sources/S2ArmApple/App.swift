@@ -73,18 +73,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
     }
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
 
 @main
 struct S2ArmAppleApp: App {
+    @Environment(\.openWindow) private var openWindow
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @StateObject private var model = S2ArmLauncherModel(client: JobClient(environment: AppSetup.environment()))
+    // 用 @State 只保住同一个 model，不订阅它的变更：@StateObject 会让整个 App body（含应用菜单）在每次进度变化时重建，
+    //   展开着的子菜单会被关掉；窗口里的视图和更新菜单各自观察自己要的部分
+    @State private var model = S2ArmLauncherModel(client: JobClient(environment: AppSetup.environment()))
 
     init() { BackendText.preload() }
 
     var body: some Scene {
-        WindowGroup(Brand.name) {
+        WindowGroup(Brand.name, id: "launcher") {
             S2ArmAppleRootView(model: model, brand: Brand.name)
         }
         .windowStyle(.hiddenTitleBar)
@@ -101,7 +104,19 @@ struct S2ArmAppleApp: App {
                         .credits: NSAttributedString(string: Brand.credits),
                     ])
                 }
+                Divider()
+                S2ArmUpdateMenu(model: model, activateWindow: activateLauncherWindow)
             }
+        }
+    }
+
+    private func activateLauncherWindow() {
+        NSApp.activate()
+        if let window = NSApp.windows.first(where: { $0.title == Brand.name && ($0.isVisible || $0.isMiniaturized) }) {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            openWindow(id: "launcher")
         }
     }
 }

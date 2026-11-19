@@ -224,6 +224,62 @@ class VersionTests(Base):
             self.assertTrue(updater.trusted("https://github.com/x"))
 
 
+class FreshCheckTests(Base):
+    args = ["check", "--platform", "mac", "--current", "0.1.1"]
+
+    def check(self, *flags):
+        out = io.StringIO()
+        with patch.object(sys, "stdout", out):
+            status = updater.main([*self.args, *flags])
+        return status, json.loads(out.getvalue())
+
+    def test_check_fresh_bypasses_and_replaces_recent_cache(self):
+        stale = {"available": False}
+        live = {"available": True, "version": "0.1.2", "notes": {"sections": []}}
+        cache = updater.latest_cache("mac", "0.1.1")
+        cache.write_text(json.dumps(stale), encoding="utf-8")
+        with patch.object(updater, "LATEST_TTL", 900), patch.object(updater, "query_latest", return_value=live) as query:
+            self.assertEqual(self.check(), (0, stale))
+            query.assert_not_called()
+            self.assertEqual(self.check("--fresh"), (0, live))
+            self.assertEqual(self.check(), (0, live))
+            query.assert_called_once_with("mac", "0.1.1")
+        self.assertEqual(json.loads(cache.read_text(encoding="utf-8")), live)
+
+    def test_check_fresh_reports_error_as_json_and_preserves_cache(self):
+        cache = updater.latest_cache("mac", "0.1.1")
+        cache.write_text('{"available": false}', encoding="utf-8")
+        for error, code in (
+            (updater.UpdateError("update_network", "offline"), "update_network"),
+            (updater.UpdateError("update_rate_limited", "HTTP 429"), "update_rate_limited"),
+            (updater.UpdateError("update_server", "HTTP 503"), "update_server"),
+            (updater.UpdateError("update_bad_signature", "bad signature"), "update_bad_signature"),
+            (ValueError("invalid JSON"), "update_failed"),
+        ):
+            with self.subTest(error=error), patch.object(updater, "query_latest", side_effect=error):
+                self.assertEqual(self.check("--fresh"), (0, {"available": False, "error": code}))
+        self.assertEqual(json.loads(cache.read_text(encoding="utf-8")), {"available": False})
+
+    def test_inbox_notices_only_does_not_run_update_operations(self):
+        feature = {"kind": "feature", "id": "feature-1"}
+        out = io.StringIO()
+        with patch.object(sys, "stdout", out), patch.object(updater, "notice_data", return_value=NoticeTests.ITEM), \
+                patch.object(updater, "feature_spotlight", return_value=feature), \
+                patch.object(updater, "latest") as latest, patch.object(updater, "installed_notes") as installed, \
+                patch.object(updater, "clear_stale_pending") as clear, patch.object(updater, "sweep_install_leftovers") as sweep:
+            status = updater.main(["inbox", "--platform", "mac", "--current", "0.1.1",
+                                   "--private-root", str(self.private), "--notices-only"])
+        self.assertEqual(status, 0)
+        for operation in (latest, installed, clear, sweep):
+            operation.assert_not_called()
+        info = json.loads(out.getvalue())
+        self.assertEqual(info["update"], {"available": False})
+        self.assertEqual(info["popup"], feature)
+        self.assertEqual(info["banner"]["id"], "n1")
+        self.assertEqual([(message["id"], message["kind"]) for message in info["messages"]], [("n1", "notice")])
+        self.assertEqual(info["unread"], 1)
+
+
 class NoticeTests(unittest.TestCase):
     """公告条（v0.2.3 起；11-13 加 messages / platforms）：官方下载页优先、取不到用随包那份、已撤不显示、链接只认官方 https。期望手写"""
     ITEM = {"schema": 1, "id": "n1", "text": {"zh-Hans": "中文公告", "en": "English notice"}, "url": "https://github.com/jhaizhou-ops/S2Arm#readme"}
