@@ -683,6 +683,7 @@ __attribute__((weak)) int s2a_direct_vk_sync_window(void);
 __attribute__((weak)) int s2a_direct_vk_try_attach_window(void);
 
 uint64_t mtl_present(const tex_t *t, double period_s, const int crop[4]) {
+    (void)period_s;   // 原先只给 ADPF 上报用；ADPF 已移到新回放层出图点（rp_present.c）
     nvk_require();
     if (g_lost_from_fence) {
         static int noted;
