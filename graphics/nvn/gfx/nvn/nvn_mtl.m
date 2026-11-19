@@ -21,6 +21,7 @@
 #include "nvn_mtl.h"
 #include "nvn_backend.h"
 #include "nvn_pfview.h"   // mtl_pf_bytes / mtl_pfv_compatible: never hand Metal an incompatible texture view (it aborts)
+#include "nvn_hdr_policy.h"   // HDR 上屏策略（评审稿 v3 §2.4 / §4 PR3b）：present 六态模式 + UV 常量缓冲参数包（纯函数）+ nvn2_hdr_present 出图热路径入口
 #include "../../../metal/mtl_slot.h"   // machine-wide Metal client slot
 #include "nvn_fps.h"
 #include "nvn_link_backoff.h"   // 低频链路档降档退避（link_sync）
@@ -848,7 +849,7 @@ void mtl_init(void) {
         g_present_args = [g_dev newArgumentTableWithDescriptor:pad error:&ate];
         if (!g_present_args) MDIE("failed to create the present argument table: %s", ate.localizedDescription.UTF8String);
         for (int i = 0; i < 3; i++) {
-            g_present_uv[i] = [g_dev newBufferWithLength:sizeof(float) * 8 options:MTLResourceStorageModeShared];
+            g_present_uv[i] = [g_dev newBufferWithLength:sizeof(float) * 16 options:MTLResourceStorageModeShared];   // PR3b：UV 常量缓冲扩到 16 浮点（后 8 = 模式参数 p[0..7]，着色器 Crop 全量读）
             if (!g_present_uv[i]) MDIE("failed to create present UV buffer[%d]", i);
             res_add(g_present_uv[i]);
         }
@@ -18310,12 +18311,65 @@ void mtl_present_test_stall(uint64_t ns) { g_present_stall_ns = ns; }
 static void present_pipeline(MTLPixelFormat format) {
     present_options();
     if (!g_blit_pso || g_blit_fmt != format) {
+        // PR3b：模式化片元着色器（评审稿 v3 §2.4 / §4 PR3b；数学移植自 nxnative #1176 present.metal——BT.709↔BT.2020 矩阵、ST 2084
+        //   EOTF/逆 EOTF、present_shoulder 有理肩部逐条对齐）。mode.x（nvn_hdr_policy.h hdr_present_mode / nvn2_hdr_present 出）：
+        //   0 = 原样采样（平凡直通与 PQ 直通同走这出口——改前的 trivial 采样逐字节一致，off 不变量所在）；1 = HDR10 窗 → 8 位 SDR
+        //   （先 BT.2020→BT.709 矩阵、负值截断在矩阵后，再肩部压缩到 SDR 白、SDR gamma 编码——次序铁律：先压缩后转换会把橙色高光变黄，
+        //   红绿比 6.9→4.6）；2 = SDR 源（含未答过的 10 位窗）→ PQ 层；3 = float 线性 BT.709 → PQ 层（负值矩阵后才截断，scRGB 广色域保真）；
+        //   4 = HDR10 窗 → PQ 层无 metadata 滚降（各通道都 ≤ 膝点码值 xf.y 的像素逐位直通）。转换态 alpha 写 1，mode 0 原样。
+        // Crop = UV 常量缓冲：rect/edge 裁切不变；mode =（模式号 / 纸白 / knee / target）；xf =（源峰 / 膝点码值 / SDR gamma）
         static const char *src_msl =
             "#include <metal_stdlib>\nusing namespace metal;\n"
             "struct V { float4 p [[position]]; float2 uv; };\n"
             "vertex V vs(uint id [[vertex_id]]) { float2 uv = float2((id << 1) & 2, id & 2); V o; o.p = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); o.uv = uv; return o; }\n"
-            "struct Crop { float4 rect; float4 edge; };\n"
-            "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant Crop& c [[buffer(0)]]) { return t.sample(s, clamp(in.uv * c.rect.zw + c.rect.xy, c.edge.xy, c.edge.zw)); }\n";
+            "struct Crop { float4 rect; float4 edge; float4 mode; float4 xf; };\n"
+            // 线性 BT.709 与 BT.2020（ITU-R BT.2087；每行和 = 1，白仍是白。Metal 的 float3x3 按列取参——这里的列即矩阵的列）
+            "constant float3x3 kRec709To2020 = float3x3(float3(0.627404, 0.069097, 0.016391), float3(0.329283, 0.919540, 0.088013), float3(0.043313, 0.011362, 0.895595));\n"
+            "constant float3x3 kRec2020To709 = float3x3(float3(1.660491, -0.124550, -0.018151), float3(-0.587641, 1.132900, -0.100579), float3(-0.072850, -0.008349, 1.118730));\n"
+            // SDR 图像码值 ↔ 线性光（BT.709 基色、D65）：gamma g 的纯幂曲线（g > 0），g = 0 时分段 sRGB 曲线（会抬暗部：码 16 = 2.2 的 2.3 倍光）
+            "static inline float3 present_sdr_to_linear(float3 c, float g) {\n"
+            "    if (g > 0.0) return pow(max(c, float3(0.0)), float3(g));\n"
+            "    float3 lo = c * (1.0 / 12.92);\n"
+            "    float3 hi = pow((c + 0.055) * (1.0 / 1.055), float3(2.4));\n"
+            "    return select(hi, lo, c <= 0.04045);\n"
+            "}\n"
+            "static inline float3 present_linear_to_sdr(float3 l, float g) {\n"
+            "    if (g > 0.0) return pow(max(l, float3(0.0)), float3(1.0 / g));\n"
+            "    float3 lo = l * 12.92;\n"
+            "    float3 hi = 1.055 * pow(l, float3(1.0 / 2.4)) - 0.055;\n"
+            "    return select(hi, lo, l <= 0.0031308);\n"
+            "}\n"
+            // ST 2084 EOTF：码值 → 绝对亮度（10000 nit = 1.0）再除纸白（1.0 = 屏的 SDR 白，其上是净空）
+            "static inline float3 present_pq_to_linear(float3 e, float paper) {\n"
+            "    const float m1 = 0.1593017578125, m2 = 78.84375, c1 = 0.8359375, c2 = 18.8515625, c3 = 18.6875;\n"
+            "    float3 ep = pow(max(e, float3(0.0)), float3(1.0 / m2));\n"
+            "    float3 num = max(ep - c1, float3(0.0));\n"
+            "    float3 den = max(c2 - c3 * ep, float3(1e-6));\n"
+            "    return 10000.0 * pow(num / den, float3(1.0 / m1)) / paper;\n"
+            "}\n"
+            // ST 2084 逆 EOTF：1.0 = 纸白的线性光 → 码值。pow 的底恒正（快速数学下安全）
+            "static inline float3 present_linear_to_pq(float3 l, float paper) {\n"
+            "    const float m1 = 0.1593017578125, m2 = 78.84375, c1 = 0.8359375, c2 = 18.8515625, c3 = 18.6875;\n"
+            "    float3 ym = pow(max(l * (paper / 10000.0), float3(1e-30)), float3(m1));\n"
+            "    return pow((c1 + c2 * ym) / (1.0 + c3 * ym), float3(m2));\n"
+            "}\n"
+            // 有理肩部：膝点 k 以上、最亮通道 m 向 target t 压缩，各通道同缩放保色相（线性光、目标基色、无负值）。
+            // 膝点处斜率 1、单调升、源峰 s 精确落 t（s ≤ t 时只在 t 截断）；每像素一次除法
+            "static inline float3 present_shoulder(float3 n, float k, float t, float s) {\n"
+            "    float m = max(max(n.r, n.g), n.b);\n"
+            "    if (!(m > k)) return n;\n"
+            "    float a = t - k, x = m - k, f = min(k + x / (1.0 + x * (1.0 / a - 1.0 / max(s - k, a))), t);\n"
+            "    return n * (f / m);\n"
+            "}\n"
+            "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant Crop& c [[buffer(0)]]) {\n"
+            "    float4 v = t.sample(s, clamp(in.uv * c.rect.zw + c.rect.xy, c.edge.xy, c.edge.zw));\n"   // mode 0：原样采样（改前 trivial 采样同式）
+            "    if (c.mode.x > 3.5) {   // 4：PQ 层无 metadata——游戏可能画过屏当前净空的，膝点（mode.z，nit）以上压进屏峰（mode.w，nit）\n"
+            "        if (max(max(v.r, v.g), v.b) > c.xf.y) v.rgb = present_linear_to_pq(present_shoulder(present_pq_to_linear(v.rgb, 1.0), c.mode.z, c.mode.w, c.xf.x), 1.0);\n"
+            "    } else if (c.mode.x > 2.5) {   // 3：float 源（线性 BT.709）按纸白编成 HDR10；负值在矩阵后才截断，scRGB 的广色域保住其 BT.2020 值\n"
+            "        v = float4(present_linear_to_pq(max(kRec709To2020 * clamp(v.rgb, -65504.0, 65504.0), 0.0), c.mode.y), 1.0);\n"
+            "    } else if (c.mode.x > 1.5) v = float4(present_linear_to_pq(kRec709To2020 * present_sdr_to_linear(v.rgb, c.xf.z), c.mode.y), 1.0);   // 2：SDR 源按纸白编成 HDR10\n"
+            "    else if (c.mode.x > 0.5) v = float4(present_linear_to_sdr(saturate(present_shoulder(max(kRec2020To709 * present_pq_to_linear(v.rgb, c.mode.y), 0.0), c.mode.z, c.mode.w, c.xf.x)), c.xf.z), 1.0);   // 1：先矩阵后肩部——BT.709 后压缩，保高光层次与色相\n"
+            "    return v; }\n";
         NSError *e = nil;
         id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(src_msl) options:nil error:&e];
         if (!lib) MDIE("present shader compile failed %s", e.localizedDescription.UTF8String);
@@ -18347,6 +18401,25 @@ static id<MTLTexture> present_raw_src(id<MTLTexture> src) {
 }
 __attribute__((weak)) double s2a_cpatch_present_aspect(void) { return 0; }   // native runtime/src/cpatch.c: current aspect while an adaptive community widescreen patch is on; graphics unit tests without the host have none
 #include "nvn_present_fit.h"   // pf_crop_fit (present_now) / pf_viewport (both blits); plain C, tested by graphics/nvn/tests/t_present_fit.c
+// PR3b：present 源/目标格式归类（MTLPixelFormat → nvn_hdr_policy.h 的纯种类；mode 选择的唯一平台侧输入）
+static int present_hdr_pf(MTLPixelFormat pf) {
+    if (pf == MTLPixelFormatRGB10A2Unorm) return HDR_PF_HDR10;    // 0x3d：游戏 HDR10 窗（vi 答过 latch 才当 PQ 码值，nvn2_hdr_present 判）
+    // float 窗：线性 BT.709——四款与 nxnative present_mode 逐一同（RGBA16/32F、RG11B10F、RGB9E5F；漏了后两款会让它们进 PQ 层时被当未知格式原样直通，浮点字节被当 PQ 码值）
+    if (pf == MTLPixelFormatRGBA16Float || pf == MTLPixelFormatRGBA32Float ||
+        pf == MTLPixelFormatRG11B10Float || pf == MTLPixelFormatRGB9E5Float) return HDR_PF_FLOAT;
+    if (pf == MTLPixelFormatRGBA8Unorm || pf == MTLPixelFormatBGRA8Unorm ||
+        pf == MTLPixelFormatRGBA8Unorm_sRGB || pf == MTLPixelFormatBGRA8Unorm_sRGB) return HDR_PF_SDR8;   // sRGB 存量经 present_raw_src 非 sRGB 视图按原样字节读
+    return HDR_PF_OTHER;
+}
+static int present_hdr_pt(MTLPixelFormat pf) { return pf == MTLPixelFormatRGB10A2Unorm ? HDR_PT_PQ10 : HDR_PT_SDR8; }   // PQ 层目标 = RGB10A2（PR4 起的层；单测直接建目标驱动全矩阵）
+// PR3b：UV 常量缓冲 p[8]（uv[8..15]）——只在画进画布（screen=1）的上屏拷贝选模式；中间拷贝（抗锯齿 / 放大器输入）恒平凡直通（HDR 窗口旁路是 PR3d 的活）。
+//   热路径口径（nvn_hdr_policy.h 头注）：非 PQ 目标上除「vi 答过 ∧ HDR10 源」（mode 1 本体，参数本就要取）外全走 nvn2_hdr_present 的一次原子读快路径——
+//   off 缺省 / 未答过 / 已答过的排空帧皆零锁，无逐帧新开销
+static void present_hdr_uv(float p[8], id<MTLTexture> src, id<MTLTexture> dst, BOOL screen) {
+    for (int i = 0; i < 8; i++) p[i] = 0.0f;
+    if (!screen) return;
+    nvn2_hdr_present(p, present_hdr_pf(src.pixelFormat), present_hdr_pt(dst.pixelFormat));
+}
 static int present_blit(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, const int crop[4], BOOL flip, int screen) {
     NSUInteger cx = 0, cy = 0, cw = src.width, ch = src.height;
     if (crop && (crop[2] || crop[3])) {
@@ -18378,9 +18451,10 @@ static int present_blit(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTextu
     id<MTLRenderCommandEncoder> en = [cb renderCommandEncoderWithDescriptor:rp];
     [en setViewport:vp];
     [en setRenderPipelineState:g_blit_pso]; [en setFragmentTexture:present_raw_src(src) atIndex:0]; [en setFragmentSamplerState:g_blit_samp atIndex:0];
-    float uv[8] = {(float)cx / src.width, (float)cy / src.height, (float)cw / src.width, (float)ch / src.height,
-                   (cx + 0.5f) / src.width, (cy + 0.5f) / src.height, (cx + cw - 0.5f) / src.width, (cy + ch - 0.5f) / src.height};
+    float uv[16] = {(float)cx / src.width, (float)cy / src.height, (float)cw / src.width, (float)ch / src.height,
+                    (cx + 0.5f) / src.width, (cy + 0.5f) / src.height, (cx + cw - 0.5f) / src.width, (cy + ch - 0.5f) / src.height};
     if (flip) { uv[1] += uv[3]; uv[3] = -uv[3]; }   // lower-left origin: the window image is stored bottom-up
+    present_hdr_uv(uv + 8, src, dst, screen);   // PR3b：UV 常量缓冲 p[0..7]（模式号 / 纸白 / knee / target / 源峰 / 膝点码值 / gamma）
     [en setFragmentBytes:uv length:sizeof uv atIndex:0];
     [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [en endEncoding];
@@ -18416,6 +18490,7 @@ static int present_blit_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MTLT
     uv[0] = (float)cx / src.width; uv[1] = (float)cy / src.height; uv[2] = (float)cw / src.width; uv[3] = (float)ch / src.height;
     uv[4] = (cx + 0.5f) / src.width; uv[5] = (cy + 0.5f) / src.height; uv[6] = (cx + cw - 0.5f) / src.width; uv[7] = (cy + ch - 0.5f) / src.height;
     if (flip) { uv[1] += uv[3]; uv[3] = -uv[3]; }   // normalized AA input is already upright
+    present_hdr_uv(uv + 8, src, dst, screen);   // PR3b：UV 常量缓冲 p[0..7]——同一份填充逻辑喂 Metal 3 的 setFragmentBytes 与 Metal 4 的槽缓冲
     tab_buf(table, uvBuffer, 0, 0);
     [en setViewport:vp]; [en setRenderPipelineState:g_blit_pso];
     [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
