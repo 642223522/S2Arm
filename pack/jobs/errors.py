@@ -105,6 +105,7 @@ RECOVERY = {
     "device_not_connected": "让你选的那台 iPhone / iPad 连上这台电脑：插上数据线，或解锁后和电脑连同一个 Wi-Fi；第一次连要在设备上点「信任」，并在「设置 → 隐私与安全性 → 开发者模式」打开开发者模式，然后再试。",
     "device_required": "在装机页选好要装到哪台 iPhone / iPad，再点装机。",
     "signing_failed": "查看本任务日志里签名那一步的报错；确认 Xcode 能用你的账号给这台 iPhone 签名，或改用 AltStore 安装。",
+    "device_tunnel_unavailable": "电脑连不上这台 iPhone 的开发者通道（手机通过 Wi-Fi 连着时最常见，不是没解锁）：用数据线把手机直接插到这台电脑（别经过扩展坞或集线器），解锁停在主屏幕，再点一次；还不行就重启一次手机，插上后在手机上重新点「信任」。",
     "device_locked": "解锁这台 iPhone（保持亮屏、停在主屏幕），再点一次「装到 iPhone」；装机过程中别锁屏。",
     "shell_install_required": "在 S2Arm 里先点「安装 S2Arm」把 App 装到这台 iPhone，再对这款点「推到 iPhone」。",   # 通用壳「推到 iPhone」：手机上还没装壳（install.push_game）
     "shell_update_required": "在 S2Arm 里先点「更新 S2Arm」，把手机上的 App 换成这一版，再对这款点「推到 iPhone」。",   # 通用壳「推到 iPhone」：手机上的壳不是本版
@@ -116,7 +117,7 @@ RECOVERY = {
     "bundle_id_switched": "这个包名之前被别的签名用过（多半是你自己签名装 S2Arm 时用了同一个包名），这次已自动换成新包名装好。手机上可能有两个 S2Arm：新装的这个里有这台电脑装的游戏；旧的那个不再需要的话可以删掉（先导出存档）。",   # 包名被占（9401）时 Mac 自动换 <包名>.s2 装好（install.MacPhone.install），黄字说明
     "signing_server_unreachable": "这台电脑连不上 Impactor 签名要用的登录辅助服务器（mac-ani.jkcoxson.com，Impactor 内置、改不了），已自动重试过一次。检查这台电脑的网络：浏览器能打开这个地址就再点一次「装到 iPhone」；打不开就换个 DNS（如 223.5.5.5 或 1.1.1.1）或开 / 关代理后再装。手机、已装的 App 和存档都不受影响。",   # #3fc02b：plumesign 取 anisette（mac-ani.jkcoxson.com，Impactor v2.7.3 omnisette 写死）时 DNS / 连接失败（impactor.explain）
     "apple_session_expired": "Apple ID 登录已过期，请重新登录后再装：在装机页点「打开 Impactor」→「设置」，选中你的 Apple ID 点「移除账号」，再点「添加账号」用同一个 Apple ID 重新登录（邮箱、密码、手机上的验证码，输入前切到英文输入法），然后回来再点一次「装到 iPhone」。密码只在 Impactor 里输，S2Arm 不经手。",   # Windows plumesign 恢复保存的会话时 Apple 1100（impactor.explain）；Mac 同类原文归 xcode_account_missing（去 Xcode 重新登录）
-    "apple_not_signed_in": "Impactor 里还没登录 Apple ID：在装机页点「打开 Impactor」→「设置」→「添加账号」，用你的 Apple ID 登录（邮箱、密码、手机上的验证码，输入前切到英文输入法）；已经存了几个账号的，选中要用的那个（或移除后重新添加）。然后回来再点一次「装到 iPhone」。密码只在 Impactor 里输，S2Arm 不经手。",   # Impactor 里没有选中的 Apple ID（从没登录 / 存了几个没选中，#edc5f5 从登录过期拆出）
+    "apple_not_signed_in": "还没用 Apple ID 登录：在 S2Arm 的「用 Apple ID 签名」里填邮箱和密码登录（你的苹果设备上会弹出验证码），再点一次「装到 iPhone」。密码只用于这次向 Apple 登录，S2Arm 不保存。",   # Mac 通用壳：随包 plumesign 自己的登录框（Windows 的 Impactor 说法在 WINDOWS_RECOVERY）
     "apple_server_unreachable": "这台电脑连不上苹果的服务器（Impactor 登录和签名都要连），不是 Apple ID 或密码的问题。检查这台电脑的网络：浏览器能打开 appleid.apple.com 就再点一次「装到 iPhone」；打不开就换个 DNS（如 223.5.5.5 或 1.1.1.1）或开 / 关代理后再装。手机、已装的 App 和存档都没动。",   # 连不上 *.apple.com（#edc5f5 拆分：网络问题，不让玩家去重登 Apple ID）
     "crash_restored": "照常玩就行；如果又崩溃，会再自动关掉，也可以在启动设置里自己关。",
     "aoc_missing": "本体已出好，照常安装即可；没解出的追加内容不在包里，游戏里用不到那部分内容。请导出诊断反馈，解码支持后重新打包即可带上。",
@@ -187,6 +188,9 @@ RECOVERY = {
     'save_version': '备份与当前游戏版本或 DLC 不一致；使用匹配版本的游戏和备份后重试。',
     'save_wrong_game': '这份备份属于另一款游戏；回到对应游戏恢复，或选择当前游戏的备份。',
     'save_wrong_user': '这份备份属于另一用户；选择对应用户或该用户自己的备份后重试。',
+    "app_control_blocked": "在「Windows 安全中心 → 保护历史记录」看是谁拦的。杀毒软件拦的：把 S2Arm 安装文件夹加进信任再重试；"
+                           "「智能应用控制」拦的：它不能单独放行，只能在「应用和浏览器控制 → 智能应用控制」里关掉（关掉后要重装 Windows 才能再打开）；"
+                           "公司电脑请让管理员放行。",
 }
 
 
@@ -203,6 +207,7 @@ DEVELOPMENT_RECOVERY = {
 #   Windows 上「拒绝访问」多半是文件 / 文件夹正被别的程序拿着（资源管理器开着、自签工具还拿着上次的 S2Arm.ipa、杀毒软件在扫），
 #   其次是「受控文件夹访问」（Windows 安全中心 → 病毒和威胁防护 → 勒索软件防护）拦了往文档 / 桌面写
 WINDOWS_RECOVERY = {
+    "apple_not_signed_in": "Impactor 里还没登录 Apple ID：在装机页点「打开 Impactor」→「设置」→「添加账号」，用你的 Apple ID 登录（邮箱、密码、手机上的验证码，输入前切到英文输入法）；已经存了几个账号的，选中要用的那个（或移除后重新添加）。然后回来再点一次「装到 iPhone」。密码只在 Impactor 里输，S2Arm 不经手。",   # Impactor 里没有选中的 Apple ID（从没登录 / 存了几个没选中，#edc5f5 从登录过期拆出）
     "permission_denied": "关掉打开着这个文件夹的资源管理器窗口和自签工具（如 Sideloadly），稍等杀毒软件扫完再重试；"
                          "若开了「受控文件夹访问」（Windows 安全中心 → 病毒和威胁防护 → 勒索软件防护），把 S2Arm 加进「允许的应用」。",
     "input_permission": "关掉正在使用这个游戏文件的程序再重试；若开了「受控文件夹访问」（Windows 安全中心 → 病毒和威胁防护 → 勒索软件防护），"
@@ -266,6 +271,9 @@ def _is_directory(path):
         return None
 
 
+APP_CONTROL_BLOCKED = (4551, 1260, 225, 226)   # 同 winproc.APP_CONTROL_BLOCKED：应用控制策略 / 组策略 / 杀毒软件拦下要起的程序（#0745b9）
+
+
 def explain(error, sources=(), library=None):
     """OSError 按 errno 归码，不猜原文；「原件不见了」「去系统设置授权」只给确知是玩家这边的路径（启动器剃刀 H8，11-11）：
     sources = 这次作业的原件（导入的路径、这款登记的原件），library = 游戏库根。
@@ -278,7 +286,12 @@ def explain(error, sources=(), library=None):
         if error.errno in (errno.ENOSPC, errno.EDQUOT):
             return Failure("任务所在磁盘空间不足。", code="disk_full")
         paths = [p for p in (error.filename, error.filename2) if p]
-        internal = f"{type(error).__name__} errno {error.errno}：{error.strerror or error}" + ("；路径 " + " → ".join(map(str, paths)) if paths else "")  # 非玩家句
+        winerror = getattr(error, "winerror", None)
+        internal = f"{type(error).__name__} errno {error.errno}" + (f" WinError {winerror}" if winerror else "") + f"：{error.strerror or error}" + ("；路径 " + " → ".join(map(str, paths)) if paths else "")  # 非玩家句
+        if winerror in APP_CONTROL_BLOCKED:   # 先于 EACCES：4551 / 1260 也会被映射成拒绝访问，原因不同、办法不同
+            tool = __import__("ntpath").basename(str(error.filename)) if error.filename else "S2Arm 自带的工具"   # ntpath：\\ 与 / 都认
+            who = {4551: "Windows 的「智能应用控制」", 1260: "这台电脑的组策略（公司 / 学校管理的电脑常见）"}.get(winerror, "杀毒软件")
+            return Failure(f"{who}拦下了 S2Arm 自带的工具「{tool}」，没让它运行。", code="app_control_blocked", internal=internal)
         if error.errno in (errno.EACCES, errno.EPERM, errno.EROFS):
             if any(_under(p, [*sources, *([library] if library else [])]) for p in paths):
                 return Failure("文件或目录不可访问或不可写。", code="permission_denied", internal=internal)
@@ -480,8 +493,13 @@ def _tool_present(name):
     return shutil.which(name) is not None
 
 
-def _confirm(code, line, log):
-    """候选码的事实核对 → (是否采信, 依据)。只核环境类的码，其余直接采信"""
+def _confirm(code, line, log, final=False):
+    """候选码的事实核对 → (是否采信, 依据)。只核环境类的码，其余直接采信。
+    final：命中行就是这段证据的最后一行（让这一步退出的那个异常，如回溯末行 OSError: [WinError 112]）——盘满就是真因，事后剩余空间不作数：
+      失败后临时文件已删、空间又回来了（诊断 #9ac7f7：写的时候满，事后量还剩 17 GB，原先不采信、落到「没归类」）"""
+    if code == "disk_full" and final:
+        free = _free_bytes(str(Path(log).parent)) if log else None
+        return True, "这一步写满了盘（失败后临时文件已删" + ("，现在剩 %.1f GB" % (free / (1 << 30)) if free is not None else "") + "）"  # 非玩家句
     if code == "disk_full":
         paths = [m.group(1) for m in _LOG_PATH_ANY.finditer(line)] + ([str(Path(log).parent)] if log else [])
         free = [(p, f) for p, f in ((p, _free_bytes(p)) for p in paths) if f is not None]
@@ -509,7 +527,8 @@ def log_cause(chunks, log=None):
                 start = text.rfind("\n", 0, m.start()) + 1
                 end = text.find("\n", m.end())
                 line = text[start:end if end >= 0 else None].strip()[:300]
-                ok, why = _confirm(code, line, log)
+                final = not text[end:].strip() if end >= 0 else True   # 命中行后面没有别的输出 = 让这一步退出的那个错误
+                ok, why = _confirm(code, line, log, final)
                 if ok:
                     return code, label, line, why
                 rejected.append("候选 %s 未采信：%s 里「%s」，%s" % (code, label, line, why))  # 非玩家句

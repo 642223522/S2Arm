@@ -46,7 +46,7 @@ void rp_pass_clear_color(nvn_gpu_cmd c, const p_clear_color *cc, const void *rec
 void rp_pass_clear_ds(nvn_gpu_cmd c, const p_clear_ds *cd, const void *rec);
 void rp_pass_barrier(uint32_t bits);
 uint32_t rp_pass_take_barrier(void);   // 通道外的计算派发前调：取走待发的游戏屏障位（取完清零），由调用方交给后端
-void rp_pass_prepare_draw(nvn_gpu_cmd c);   // 绘制前调：把这一笔要求的像素区域交给下一步开通道（超出当前通道区域就收通道重开）
+void rp_pass_prepare_draw(nvn_gpu_cmd c, uint32_t color_write_mask);   // 有效颜色写掩码（含片元输出映射）与像素区域；附件集合变了或区域超出时重开
 int rp_pass_begin(nvn_gpu_cmd c);     // 绘制前调：1 = 通道开着；0 = 开不了（已记账），跳过这笔
 // 被读之前必须落地（rp_pass.c）：ts 里这些贴图要以「采样贴图 / 图像 / 拷贝端点 / 上屏」身份被用到之前先调一次，
 // 把还挂着它们的待折清除落地（挂起见 rp_pass.c 的 park）。按贴图序号匹配：读的是整张图，级 / 层不参与匹配。
@@ -86,8 +86,9 @@ enum { RP_PERF_SUBMIT_NS, RP_PERF_COMMIT_NS, RP_PERF_SUBS, RP_PERF_WAIT_NS, RP_P
        RP_PERF_PASSEND_N,                             // 收通道次数（含换目标、通道中途的清除、提交收尾）
        RP_PERF_BIND_NS, RP_PERF_BIND_REBUILD_N,       // 发绑定总耗时、整组重建的次数（分 B1 快路与重建两块看）
        RP_PERF_UBO_N, RP_PERF_UBO_KB, RP_PERF_UBO_C1_N,   // 常量缓冲暂存的次数 / 千字节 / 其中程序自带常量段（C1）的次数
+       RP_PERF_BUF_GPU_ORDER_N, RP_PERF_UBO_MIRROR_N,   // 改 / 拷游戏内存的命令因还没落地的 GPU 写改在 GPU 上做的次数；常量缓冲因此直接绑镜像的次数（#1022）
+       RP_PERF_UBO_FILL_N, RP_PERF_UBO_FILL_WAIT_N,   // 其中交给后端异步填的次数（nvn_gpu_arena_fill）/ 改游戏内存前因区间重叠等它填完的次数（rp_ub_fill_fence）
        RP_PERF_BUF_FAST_N, RP_PERF_BUF_SLOW_N, RP_PERF_BUF_NOSPAN_N, RP_PERF_BUF_PAGES_N,   // 缓冲解析：快路命中 / 走逐页慢路 / 不受写跟踪 / 慢路里一共查了多少页
-       RP_PERF_BUF_BLOCK_SKIP_N, // 已跳过的块数（窗口总量）
        RP_PERF_BUF_LOG_EV, RP_PERF_BUF_LOG_WORDS, RP_PERF_BUF_LOG_REBUILD,   // 脏页追加日志（nvk_buf_dirtylog）：灌进镜像的事件数 / 求交时看的位图字数 / 日志不可用、按逐页代号重建的次数
        RP_PERF_RES_FIND_NS, RP_PERF_RES_FAST_NS, RP_PERF_RES_SLOW_NS, RP_PERF_RES_N,   // 缓冲解析三段耗时：找池与取镜像 / 快路逐页核对 / 慢路同步（开关 nvk_res_tm）
        RP_PERF_RES_LW_NS, RP_PERF_RES_LA_NS,   // 批量解析里：抢锁等待 / 持锁解析（开关 nvk_res_tm）
@@ -99,7 +100,6 @@ enum { RP_PERF_SUBMIT_NS, RP_PERF_COMMIT_NS, RP_PERF_SUBS, RP_PERF_WAIT_NS, RP_P
        RP_PERF_TM_FRAMES,      // 分时抽样：窗口里逐步计时过的帧数（#1103）；绘制各步 / 开通道细分 / 贴图解析等锁持锁按它求每帧值
        RP_PERF_N };   // P_CONT：同目标续接命中的 SET_RT 次数；P_CLEARONLY：一笔绘制都没有的通道数；P_PARK：记进挂起表的待折清除条数；BIND_FAST：整组绑定直接沿用没重建；TEX_EPOCH：贴图内容检查按纪元跳过的次数；PC_HIT/MISS：后端开通道缓存命中 / 新建   /* FX_*：做完时要写回游戏内存的提交数，和各类回写的个数（事件 / 计数器报告 / 遮挡事件 / 显卡写缓冲） */   // TEX_UP_*：贴图整张上传的次数与千字节；BUF_SYNC_KB：池镜像同步的千字节   // P_*：通道的构成（见 rp_pass.c rp_pass_end）   // D_*：一笔绘制里各步（见 rp_draw.c）
 void rp_perf_add(int i, uint64_t v);
-void rp_buf_blocks_report(const uint64_t pf[RP_PERF_N]);
 // 分时读数抽样（#1103）：一笔绘制取 10 次时钟 + 9 次原子加、一次贴图解析取 3 次、一个通道取 5 次，世界稳态每帧合计约 2.2 万次取时钟，占回放线程约 3%。
 // 改成每 rp_tm_stride() 帧只完整计 1 帧（缺省 32）：采样帧里逐步计时照旧，其余帧一次时钟都不取；纯计数的项不动、每帧都记。
 // 「分时」里这几项按采样帧数（RP_PERF_TM_FRAMES）求每帧值，读数行的格式和含义不变。
@@ -115,6 +115,11 @@ void rp_sync_lag_present(void);   // 上屏之后调：给「每帧只放行一�
 void rp_bind_tm_take(uint64_t *tot, uint64_t *backend, uint64_t *n);   // 绑定重建：总时间 / 其中交后端 / 次数（纳秒，取即清零）
 void rp_bind_tm_take2(uint64_t *drv, uint64_t *buf, uint64_t *rest);
 void rp_bind_tm_take3(uint64_t *alloc, uint64_t *copy);   // 暂存：申请 / 内容拷贝  // 其中：驱动段 / 常量缓冲与支持块 / 其它
+// 回放线程要在 CPU 上改游戏内存 [addr, addr+len) 之前调：还没填完、来源与它相交的常量缓冲暂存先等填完（rp_draw.c，见 nvn_gpu_arena_fill）
+void rp_ub_fill_fence(uint64_t addr, uint64_t len);
+int rp_buf_gpu_pending(uint64_t addr, uint64_t len);   // 这段与还没落地的 GPU 写相交（rp_buf.c）
+// 改 / 拷游戏内存的三条命令遇到还没落地的 GPU 写时改在 GPU 上按提交顺序做（#1022）；返回 0 = 不需要 / 做不了，调用方照旧走 CPU 版
+int rp_op_update_ub_gpu(nvn_gpu_cmd c, const void *a, const void *rec); int rp_op_copy_b2b_gpu(nvn_gpu_cmd c, const void *a, const void *rec); int rp_op_clear_buf_gpu(nvn_gpu_cmd c, const p_clear_buf *cb, const void *rec);
 uint64_t rp_sub_fence(void);        // 正在回放的这次提交最后一段的栅栏值
 uint64_t rp_fx_report_types(void);  // 诊断读数：上次调用以来计数器报告用到的类型（位图，取完清零）
 int rp_res_new_sizes_take(void);     // 诊断读数：上次调用以来新建贴图的宽高有几种（最多数到 64，取完清零）

@@ -523,8 +523,11 @@ static int lp_stage_emit(struct s2a_libpack *lp, const uint8_t key[8], unsigned 
             for (int i = 0; i < nb; i++) {
                 int skipped = 0;
                 if ((int)sb[i] == sup) {
-                    if (!compute && !lp_json_has_binding(top, stage_no, sb[i], &skipped)) {   // _b.json 有 support 行时 lp_emit_bindings 已经出过；计算程序的支撑缓冲走 supportLayout，不另出行
-                        jw_fmt(binds, "%s{\"kind\":\"support\",\"stage\":\"program\",\"set\":0,\"binding\":%u}", *bind_sep ? "," : "", sb[i]);
+                    // _b.json 有 support 行时 lp_emit_bindings 已经出过；没有就按 .spv 补出。计算程序同样要补：supportLayout 只给尺寸，
+                    //   后端建描述符布局 / 写描述符只认 bindings 里 is_support 的那一行（nvn_vk_compute.c），漏了 = .spv 用到的绑定不在布局里
+                    if (!lp_json_has_binding(top, stage_no, sb[i], &skipped)) {
+                        jw_fmt(binds, "%s{\"kind\":\"support\",\"stage\":\"program\",\"set\":0,\"binding\":%u%s}", *bind_sep ? "," : "", sb[i],
+                               compute ? ",\"count\":1" : "");
                         *bind_sep = 1;
                     }
                     continue;

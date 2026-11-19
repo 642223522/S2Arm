@@ -6,6 +6,7 @@
 #include "rp_state.h"
 #include "rp_res.h"
 #include "rp_exec.h"
+#include "replay_pass_barrier_fixture.h"
 #include "nvn_unimpl.h"
 #include "direct/compile_request.h"
 #include "direct/source_store.h"
@@ -59,8 +60,8 @@ int rp_pool_find(uint64_t a, uint64_t n, const uint8_t **m, uint64_t *s) {
 }
 void rp_view_pin_begin(void) {}
 void rp_view_pin_end(void) {}
-nvn_gpu_view rp_view_by_id(int id, nvn_gpu_cmd c, const tex_t **t) { (void)id; (void)c; (void)t; return NULL; }
-nvn_gpu_view rp_view_by_id_decl(int id, uint8_t tt, uint8_t cls, int elem, nvn_gpu_cmd c, const tex_t **t) { (void)id; (void)tt; (void)cls; (void)elem; (void)c; (void)t; return NULL; }
+nvn_gpu_view rp_view_by_id(int id, nvn_gpu_cmd c, tex_t *t) { (void)id; (void)c; if (t) memset(t, 0, sizeof *t); return NULL; }
+nvn_gpu_view rp_view_by_id_decl(int id, uint8_t tt, uint8_t cls, int elem, nvn_gpu_cmd c, tex_t *t) { (void)id; (void)tt; (void)cls; (void)elem; (void)c; if (t) memset(t, 0, sizeof *t); return NULL; }
 nvn_gpu_samp rp_samp_by_id(int id) { (void)id; return NULL; }
 // 这些隔离夹具只发 TBUF，不提供普通采样器；格式能力仍查真实后端。
 nvn_gpu_samp rp_samp_for_tex(int sid, int tid) { (void)tid; return rp_samp_by_id(sid); }
@@ -85,7 +86,7 @@ void rp_pass_note_draw(int d) { (void)d; }
 // These fixtures issue no deferred clears and leave pass-area optimization off.
 int rp_pass_parked(void) { return 0; }
 void rp_pass_land_reads(nvn_gpu_cmd c, const tex_t *const *t, int n) { (void)c; (void)t; (void)n; abort(); }
-void rp_pass_prepare_draw(nvn_gpu_cmd c) { (void)c; }
+void rp_pass_prepare_draw(nvn_gpu_cmd c, uint32_t color_write_mask) { (void)c; (void)color_write_mask; }
 int rp_pass_begin(nvn_gpu_cmd c) {
     nvn_gpu_pass_desc pass = {0}; pass.ncolor = 1; pass.color[0].view = target_view;
     pass.color[0].load = NVN_GPU_LOAD_CLEAR; pass.color[0].store = NVN_GPU_STORE_STORE;
@@ -177,6 +178,3 @@ int main(int argc, char **argv) {
 int nvn_dirty_log_open(const void *s, uint64_t *i, uint64_t *c) { (void)s; (void)i; (void)c; return 0; }   // 本夹具没有脏页追加日志：回放核心走原路径
 int nvn_dirty_log_read(const void *s, uint64_t i, uint64_t *c, void (*f)(void *, uintptr_t, uintptr_t), void *u) { (void)s; (void)i; (void)c; (void)f; (void)u; return 0; }
 int nvn_dirty_page_armed(const void *s, const void *a) { (void)s; (void)a; return 0; }
-int nvn_dirty_block_snapshot(const void *s, const void *a, size_t n, uint64_t *v, uint64_t *e) {
-    (void)s; (void)a; (void)n; (void)v; (void)e; return 0;
-}

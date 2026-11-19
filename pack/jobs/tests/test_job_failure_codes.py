@@ -18,7 +18,7 @@ import zipfile
 
 from jobcase import JobCase, JOBS, ROOT, ios_fixture
 from core import Context, Failure, Cancelled, atomic
-from errors import RECOVERY
+from errors import RECOVERY, WINDOWS_RECOVERY
 import build
 import ipa
 import install
@@ -470,7 +470,10 @@ class FreeAccountLimits(unittest.TestCase):
             with self.subTest(code=code):
                 self.assertTrue(loc.get(RECOVERY[code]) and spec[code]["title"]["en"] and spec[code]["detail"]["en"] and code in guide)
                 self.assertEqual(ctl.AI_NEXT[code][0], "human")
-        self.assertIn("添加账号", RECOVERY["apple_not_signed_in"]); self.assertNotIn("过期", RECOVERY["apple_not_signed_in"])
+        self.assertIn("添加账号", WINDOWS_RECOVERY["apple_not_signed_in"]); self.assertNotIn("过期", WINDOWS_RECOVERY["apple_not_signed_in"])
+        # Mac 通用壳登录框（apple_login）：Mac 不再叫玩家去开 Impactor（期望手写）
+        self.assertNotIn("Impactor", RECOVERY["apple_not_signed_in"]); self.assertIn("S2Arm 不保存", RECOVERY["apple_not_signed_in"])
+        self.assertTrue(loc.get(WINDOWS_RECOVERY["apple_not_signed_in"]))
         self.assertIn("DNS", RECOVERY["apple_server_unreachable"]); self.assertIn("不是 Apple ID", RECOVERY["apple_server_unreachable"])
         for other, code in (("Developer API error 9401: An App ID with Identifier 'x' is not available.", "app_id_taken"),
                             ("-21669 verification code", "two_factor_wrong"), ("-20101 entered incorrectly", "apple_id_wrong")):
@@ -650,6 +653,15 @@ class LogCauses(JobCase):
         self.assertEqual(d["code"], "package_failed")
         self.assertIn("候选 disk_full 未采信", d["detail"])
         self.assertIn("40.0 GB", d["detail"])
+
+    def test_final_disk_full_error_is_believed_despite_free_space(self):
+        # 诊断 #9ac7f7：让这一步退出的就是盘满那个异常（回溯末行 WinError 112），失败后临时文件已删、事后量还剩 17 GB → 照报 disk_full，
+        #   说明里写「这一步写满了盘」；旧字样后面还有别的输出的（上一条）仍按 H9 核实
+        with um.patch("errors._free_bytes", return_value=17 << 30):
+            error, d = self.mac_refresh(["Traceback (most recent call last):", '  File "deliver_pack.py", line 26, in clone', "    shutil.copy2(src, dst)",
+                                         "OSError: [WinError 112] 磁盘空间不足。"])
+        self.assertEqual(d["code"], "disk_full")
+        self.assertIn("这一步写满了盘", d["detail"])
 
     def test_command_not_found_for_present_tool_is_not_believed(self):
         # 剃刀 H9 反例：「x: command not found」但 x 现在找得到（可选探测、PATH 一时没带上）→ 不叫玩家去装工具，按阶段归

@@ -148,7 +148,7 @@ namespace S2A.Services
         internal static ulong MaxHeapSize => (ulong)Interlocked.Read(ref s_maxHeapSize);
         private const ulong HipcAddrLimit = 1UL << 39;
         [ThreadStatic] private static ulong t_heap;
-        [ThreadStatic] private static MemoryBlock t_heapBlock;
+        [ThreadStatic] private static IDisposable t_heapBlock;   // MemoryBlock 或 LowHeapBlock：释放各走各的（后者 munmap）
 
         // [ptr, ptr + len) 整段在 HIPC 描述符的 39 位地址内（结尾恰好 = 1<<39 算装得下）；先比 ptr 再比余量，不在 ptr + len 上溢出
         internal static bool FitsHipcAddr(ulong ptr, ulong len) => ptr <= HipcAddrLimit && len <= HipcAddrLimit - ptr;
@@ -165,8 +165,18 @@ namespace S2A.Services
             if (t_heap == 0)
             {
                 // 落在 39 位以外的块不当堆用（审计 #859：原先只报红、照样回 Success，服务拿截断的地址回写）：放掉、不记，回内存不足（服务 AbortOnFailure，响亮）
-                MemoryBlock block = new(HeapReserve);
-                ulong ptr = (ulong)block.Pointer;
+                MemoryBlock mb = new(HeapReserve);
+                IDisposable block = mb;
+                ulong ptr = (ulong)mb.Pointer;
+
+                // 48 位用户地址空间的 Linux 内核（鸿蒙模拟器等）上不带提示的 mmap 落到 39 位以外：换成带提示、不覆盖的低地址映射再试（#1339）。
+                //   其他平台 TryCreate 回 null，苹果路径照旧
+                if (!FitsHipcAddr(ptr, HeapReserve) && LowHeapBlock.TryCreate(HeapReserve) is LowHeapBlock low)
+                {
+                    mb.Dispose();
+                    block = low;
+                    ptr = low.Address;
+                }
 
                 if (!FitsHipcAddr(ptr, HeapReserve))
                 {
@@ -508,5 +518,53 @@ namespace S2A.Services
             t_tls = 0;
             NativeMemory.AlignedFree((void*)TlsAddress);
         }
+    }
+
+    // 39 位以内的 Horizon 服务堆（#1339，只在 MemoryBlock 落到 39 位以外时用；Linux / Android / 鸿蒙）：
+    //   从 2^39 往下按 1 GiB 步试 MAP_FIXED_NOREPLACE，最低试到 4 GiB（低 4 GiB 留给 32 位指针与游戏布局）。
+    //   老内核（< 4.17）不认 NOREPLACE、当普通提示：落在别处就 munmap 掉再试下一个候选，不拿错位的块当堆。
+    //   映射 / 解除映射可注入（单测用假 mmap 覆盖老内核语义与全部失败）；Dispose 用建块时的那个 munmap。
+    internal sealed class LowHeapBlock : IDisposable
+    {
+        internal const ulong Top = 1UL << 39, Step = 1UL << 30, Floor = 1UL << 32;
+        internal const ulong MapFailed = ulong.MaxValue;
+        private const int ProtReadWrite = 3, MapPrivateAnonymousNoReplace = 0x02 | 0x20 | 0x100000;
+
+        [DllImport("libc", EntryPoint = "mmap", SetLastError = true)]
+        private static extern IntPtr Mmap(IntPtr address, UIntPtr length, int protection, int flags, int fd, IntPtr offset);
+        [DllImport("libc", EntryPoint = "munmap", SetLastError = true)]
+        private static extern int Munmap(IntPtr address, UIntPtr length);
+
+        // (提示地址, 大小) → 实际地址，失败回 MapFailed
+        internal static Func<ulong, ulong, ulong> Map = static (hint, size) =>
+        {
+            IntPtr p = Mmap((IntPtr)(long)hint, (UIntPtr)size, ProtReadWrite, MapPrivateAnonymousNoReplace, -1, IntPtr.Zero);
+            return p == (IntPtr)(-1) ? MapFailed : (ulong)p;
+        };
+        internal static Action<ulong, ulong> Unmap = static (address, size) => Munmap((IntPtr)(long)address, (UIntPtr)size);
+
+        public ulong Address { get; }
+        public ulong Size { get; }
+        private Action<ulong, ulong> _unmap;
+
+        private LowHeapBlock(ulong address, ulong size, Action<ulong, ulong> unmap) { Address = address; Size = size; _unmap = unmap; }
+
+        public static LowHeapBlock TryCreate(ulong size) =>
+            OperatingSystem.IsLinux() || OperatingSystem.IsAndroid() ? Search(size, Map, Unmap) : null;   // 平台例外：MAP_FIXED_NOREPLACE 与 mmap 标志位取值是 Linux 内核的（Darwin 的 MAP_ANON 等取值不同），别的平台不试、照旧走 MemoryBlock
+
+        internal static LowHeapBlock Search(ulong size, Func<ulong, ulong, ulong> map, Action<ulong, ulong> unmap)
+        {
+            if (size == 0 || size > Top - Floor) return null;
+            for (ulong hint = Top - size; hint >= Floor; hint -= Step)
+            {
+                ulong p = map(hint, size);
+                if (p == MapFailed) continue;
+                if (p == hint) return new LowHeapBlock(hint, size, unmap);
+                unmap(p, size);   // 老内核把 NOREPLACE 当提示：不在提示处就放掉，试下一个
+            }
+            return null;
+        }
+
+        public void Dispose() => System.Threading.Interlocked.Exchange(ref _unmap, null)?.Invoke(Address, Size);
     }
 }

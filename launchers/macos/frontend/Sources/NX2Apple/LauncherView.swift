@@ -47,6 +47,7 @@ struct LauncherView: View {
     @State private var updateErrorDismissed = false   // 更新失败 toast 按 × 关掉；状态一变（重试 / 再失败）就重置
     @State private var titlebarActionsWidth: CGFloat = 0
     @State var showHomeSearch = false
+    @State var showHomeMore = false
     @State private var returnToInstallFromEnv: String?
     @State private var returnToDisplayFromInput: String?
     @State private var returnToEnvFromSpace = false
@@ -187,9 +188,11 @@ struct LauncherView: View {
                 UpdatePopupView(model: model, language: uiLanguage)
             }
         }
-        .alert(txt(model.updateGate ?? "update.gate.busy"), isPresented: Binding(get: { model.updateGate != nil && model.updatePopup == nil }, set: { if !$0 { model.updateGate = nil } })) {
-            Button(txt("update.after.ok"), role: .cancel) { model.updateGate = nil }
-        } message: { Text(txt((model.updateGate ?? "update.gate.busy") + ".body")) }
+        .alert(txt("update.gate.confirm.title"), isPresented: Binding(get: { model.updateGate != nil && model.updatePopup == nil }, set: { if !$0 { model.updateGate = nil } })) {
+            // 认得出的风险说清后让玩家选（11-18 维护者）：默认焦点在「取消」，「仍然重启」照样换版
+            Button(txt("update.gate.confirm.cancel"), role: .cancel) { model.updateGate = nil }.keyboardShortcut(.defaultAction)
+            Button(txt("update.gate.confirm.restart"), role: .destructive) { model.restartToUpdate(confirmed: true) }
+        } message: { Text(model.updateRestartImpactText(txt)) }
         .sheet(isPresented: Binding(get: { model.showKeys && !model.showEnvironment }, set: { model.showKeys = $0 })) {
             ImportSheet(model: model, kind: .keys).environmentObject(loc)
         }
@@ -323,62 +326,56 @@ struct LauncherView: View {
                 PhoneUpdateButton(model: model, language: uiLanguage)
                 phonePill
                 updateButton
-                // 玩家、手柄跟右边的圆钮放在一起（文字胶囊在左），右侧一排都是圆钮
-                PlayerToolbarButton(loc: loc)   // 本地玩家（#623）：这次用谁的身份玩，点开切换 / 添加；标题栏另起视图树、环境对象传不进去，显式给
-                ControllerToolbarButton(controller: model.controller, show: $showController,
-                                        lang: loc.lang.code)
-                messagesButton
-                // 0.6.0 动态窗口（通用壳开关后面，iPhone 总控台「五」）：有和 App 相关的作业时外圈进度环 + 一行小字，做完闪 ✓，失败 / 停下留橙色「!」；
-                //   这时点它直接到总控台。没有作业、开关关着：照旧是「游戏库」
-                let dynamic = consoleEnabled && (model.dynamicJob != nil || model.dynamicDone || model.dynamicAlert)
-                Button { installFor = nil; if dynamic { model.openConsoleFromTopBar() } else { model.goToLibrary() } } label: {
-                    HStack(spacing: 6) {
-                        ZStack {
-                            Image(systemName: model.dynamicAlert && consoleEnabled ? "exclamationmark" : model.dynamicDone && consoleEnabled ? "checkmark" : "square.grid.2x2")
-                                .foregroundStyle(model.dynamicAlert && consoleEnabled ? .orange : model.dynamicDone && consoleEnabled ? .green
-                                                 : showingHome && !model.showsWelcome ? LauncherPalette.cream : .white)
-                            if consoleEnabled, let job = model.dynamicJob {
-                                Circle().trim(from: 0, to: CGFloat(job.fraction ?? 0.25)).stroke(LauncherPalette.cream, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                                    .rotationEffect(.degrees(-90)).frame(width: 26, height: 26)   // 拿不到进度时显示一段静止的环
+                HStack(spacing: 4) {
+                    // 0.6.0 动态窗口（通用壳开关后面，iPhone 总控台「五」）：有和 App 相关的作业时出现一颗圆钮——外圈进度环 + 一行小字，做完闪 ✓，
+                    //   失败 / 停下留橙色「!」，点它到总控台；没有作业、开关关着：不出现（顶栏照 #1402 只留玩家 → 手柄 → 消息 → 设置 → 报修）
+                    if consoleEnabled && (model.dynamicJob != nil || model.dynamicDone || model.dynamicAlert) {
+                        Button { installFor = nil; model.openConsoleFromTopBar() } label: {
+                            HStack(spacing: 6) {
+                                ZStack {
+                                    Image(systemName: model.dynamicAlert ? "exclamationmark" : model.dynamicDone ? "checkmark" : "square.grid.2x2")
+                                        .foregroundStyle(model.dynamicAlert ? .orange : model.dynamicDone ? .green : .white)
+                                    if let job = model.dynamicJob {
+                                        Circle().trim(from: 0, to: CGFloat(job.fraction ?? 0.25)).stroke(LauncherPalette.cream, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                                            .rotationEffect(.degrees(-90)).frame(width: 26, height: 26)   // 拿不到进度时显示一段静止的环
+                                    }
+                                }
+                                if let job = model.dynamicJob {
+                                    Text(job.label + (job.fraction.map { " \(Int($0 * 100))%" } ?? "")).font(.manrope(11)).monospacedDigit().lineLimit(1).frame(maxWidth: 150)
+                                }
+                            }
+                            .accessibilityLabel(loc.t("s2arm.nav.library")).accessibilityValue(model.dynamicJob?.label ?? "")
+                        }
+                        .controllerButtonStyle(ConsoleIconButtonStyle(backgroundless: true)).launcherTooltip(model.dynamicJob.map(\.label) ?? loc.t("s2arm.nav.library"), placement: .below)
+                        .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: model.dynamicDone)
+                        .controllerID("top.library")
+                    }
+                    PlayerToolbarButton(loc: loc)   // 标题栏另起视图树，显式传入本地化对象。
+                    ControllerToolbarButton(controller: model.controller, show: $showController,
+                                            lang: loc.lang.code)
+                    messagesButton
+                    // 就绪 / 检查中不挂角标；环境缺项时用红点和无障碍说明提示玩家。
+                    Button { model.showEnvironment = true } label: {
+                        Image(systemName: "gearshape").overlay(alignment: .topTrailing) {
+                            if environmentNeedsAction {
+                                Circle().fill(LauncherPalette.danger).frame(width: 5, height: 5).offset(x: 5, y: -3)
                             }
                         }
-                        if consoleEnabled, let job = model.dynamicJob {
-                            Text(job.label + (job.fraction.map { " \(Int($0 * 100))%" } ?? "")).font(.manrope(11)).monospacedDigit().lineLimit(1).frame(maxWidth: 150)
-                        }
                     }
-                    .accessibilityLabel(loc.t("s2arm.nav.library")).accessibilityValue(model.dynamicJob?.label ?? "")
+                    .controllerButtonStyle(ConsoleIconButtonStyle(backgroundless: true))
+                    .launcherTooltip(environmentNeedsAction ? txt("nav.settings") + "：" + loc.t("s2arm.env.missing") : txt("nav.settings"), placement: .below)
+                    .accessibilityLabel(txt("nav.settings"))
+                    .accessibilityValue(environmentNeedsAction ? loc.t("s2arm.env.missing") : "")
+                    .controllerID("top.settings")
                 }
-                .controllerButtonStyle(ConsoleIconButtonStyle()).help(model.dynamicJob.map(\.label) ?? loc.t("s2arm.nav.library"))
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: model.dynamicDone)
-                .controllerID("top.library")
-                Button { model.showAddGames = true } label: {
-                    Label(loc.t("s2arm.action.import"), systemImage: "plus")
-                }
-                .controllerButtonStyle(ConsoleIconButtonStyle()).disabled(model.busy)
-                .help(loc.t("s2arm.action.import")).controllerID("top.import")
-                // 设置按钮角标只在「缺东西、要处理」时挂红点（#1426：原先就绪时常驻绿点，玩家当成未读，点进去找不到新内容）；
-                //   就绪 / 检查中都不挂，「环境已就绪」在设置页里看。悬停与无障碍在缺东西时说清是什么事
-                Button { model.showEnvironment = true } label: {
-                    Image(systemName: "gearshape").overlay(alignment: .topTrailing) {
-                        if environmentNeedsAction {
-                            Circle().fill(LauncherPalette.danger).frame(width: 5, height: 5).offset(x: 5, y: -3)
-                        }
-                    }
-                }
-                .controllerButtonStyle(ConsoleIconButtonStyle())
-                .help(environmentNeedsAction ? txt("nav.settings") + "：" + loc.t("s2arm.env.missing") : txt("nav.settings"))
-                .accessibilityLabel(txt("nav.settings"))
-                .accessibilityValue(environmentNeedsAction ? loc.t("s2arm.env.missing") : "")
-                .controllerID("top.settings")
-                // 故障报修（11-13）：任何页面同一位置（顶栏最右，Windows 同位），点开就是全局「上传给开发者」弹窗（不针对某款，
-                //   作业层自动附最近一次失败的错误摘要）；报错页的指引 ReportHint 指的就是它
+                // 报错页的 ReportHint 指向这里：所有页面保持同一个全局入口。
                 Button { model.diagUploadFor = "" } label: {
-                    Label(BackendText.launcherText("report.button", language: uiLanguage), systemImage: "exclamationmark.bubble")
+                    Label(txt("report.button"), systemImage: "exclamationmark.bubble")
                 }
-                .controllerButtonStyle(ConsoleIconButtonStyle()).help(txt("report.button"))
+                .controllerButtonStyle(ConsoleIconButtonStyle(backgroundless: true)).launcherTooltip(txt("report.button"), placement: .below)
                 .controllerID("top.report").accessibilityIdentifier("top.report")
         }
-        .padding(.trailing, LauncherTheme.Space.section)
+        .padding(.trailing, 6)
         .fixedSize()   // 放在标题栏里没有宽度约束，不固定的话按钮文字会被压成省略号
         .labelStyle(.titleAndIcon)   // Popovers keep their text; icon styles are local to each toolbar button.
         .tint(LauncherPalette.cream)
@@ -494,7 +491,7 @@ struct LauncherView: View {
                 Label(txt("update.top.available").replacingOccurrences(of: "{0}", with: model.availableUpdate?["version"] as? String ?? ""), systemImage: "arrow.down.circle.fill")
                     .foregroundStyle(LauncherPalette.cream)
             }
-            .controllerButtonStyle(ConsoleIconButtonStyle())
+            .controllerButtonStyle(ConsoleIconButtonStyle(backgroundless: true))
             .help(txt("update.top.available").replacingOccurrences(of: "{0}", with: model.availableUpdate?["version"] as? String ?? ""))
             .controllerID("top.update")
         case .idle where model.availableUpdate != nil:
@@ -502,8 +499,8 @@ struct LauncherView: View {
             Button { model.showUpdatePopup() } label: {
                 Label(txt("update.top.available").replacingOccurrences(of: "{0}", with: model.availableUpdate?["version"] as? String ?? ""), systemImage: "arrow.down.circle")
             }
-            .controllerButtonStyle(ConsoleIconButtonStyle())
-            .help(txt("update.top.available").replacingOccurrences(of: "{0}", with: model.availableUpdate?["version"] as? String ?? ""))
+            .controllerButtonStyle(ConsoleIconButtonStyle(backgroundless: true))
+            .launcherTooltip(txt("update.top.available").replacingOccurrences(of: "{0}", with: model.availableUpdate?["version"] as? String ?? ""), placement: .below)
             .controllerID("top.update")
         case .failed(let code):
             // 顶栏只留「重试」；失败原因（人话 + 错误码 + 打开下载页）放到底部的错误 toast，× 可关，不再挤在顶栏里跑版
@@ -556,7 +553,7 @@ struct LauncherView: View {
                 }
             }
         }
-        .controllerButtonStyle(ConsoleIconButtonStyle()).help(txt("messages.button"))
+        .controllerButtonStyle(ConsoleIconButtonStyle(backgroundless: true)).launcherTooltip(txt("messages.button"), placement: .below)
         .accessibilityLabel(txt("messages.button")).accessibilityValue("\(model.unreadMessages)").controllerID("top.messages")
         .popover(isPresented: $showMessages, arrowEdge: .bottom) { MessagesPanel(model: model, language: uiLanguage) }
     }
@@ -673,8 +670,8 @@ private struct ControllerToolbarButton: View {
                 Circle().fill(Color(nsColor: controller.buttonColor)).frame(width: 5, height: 5).offset(x: 5, y: -3)
             }
         }
-        .controllerButtonStyle(ConsoleIconButtonStyle())
-        .help(controller.title(lang: lang) + "：" + toolbarStatus)   // #901：顶栏提示写实际连着的手柄名（两条通道合并看）
+        .controllerButtonStyle(ConsoleIconButtonStyle(backgroundless: true))
+        .launcherTooltip(controller.title(lang: lang) + "：" + toolbarStatus, placement: .below)   // #901：顶栏提示写实际连着的手柄名（两条通道合并看）
         .accessibilityLabel(controller.title(lang: lang) + "：" + toolbarStatus)
         .controllerID("top.controller")
         // 面板用 AppKit 的 NSPopover 自己开关，不用 SwiftUI .popover：实机上 .popover 会在背后重新呈现、套回打开时记下的高度，

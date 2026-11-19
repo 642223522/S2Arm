@@ -106,11 +106,13 @@ static void run_group(int g2_def, char *out, size_t n) {
 }
 // ⑧ D-36F4：帧率补丁改在 sdk 模块（enabler_sdk 一类改驱动交换间隔，直连层接管 NVN 后那段驱动不执行）→ 跟随开时出图间隔上限 1、关时 0；
 //   改在 main 的帧率补丁不封（游戏自己的步长补丁，出图间隔照游戏）。期望手写：sdk 模块「开 1 关 0」，main 模块「开 0 关 0」
-static void run_itv(const char *mod, char *out, size_t n) {
+// ⑨ #1517：段名 FPSLocker（pack/cpatch.py 给 FPSLocker 配置的段名）的帧率补丁在 main 也封——真机 NX-FPS 插件按目标锁游戏设的间隔：
+//   目标 60 → 「开 1 关 0」；目标 30 → 「开 2 关 0」（60 Hz 节拍下 60 / 30）
+static void run_itv(const char *mod, const char *name, int tgt, char *out, size_t n) {
     char dir[] = "/tmp/t_cpatch_itv.XXXXXX"; if (!mkdtemp(dir)) { out[0] = 0; return; }
     char p[256]; snprintf(p, sizeof p, "%s/cpatch.tsv", dir); FILE *f = fopen(p, "w");
     fprintf(f, "编号\t模块\t位\t类别\t段名\t许可\t来源\t数据写入\t缺省开\t目标帧率\t画幅\t模式\n");
-    fprintf(f, "fps:S\t%s\t5\t60fps\t60 帧\t\ts.pchtxt\t\t1\t60\t\t\n", mod);
+    fprintf(f, "fps:S\t%s\t5\t60fps\t%s\t\ts.pchtxt\t\t1\t%d\t\t\n", mod, name, tgt);
     fclose(f);
     int pp[2]; pipe(pp); pid_t c = fork();
     if (c == 0) {
@@ -149,10 +151,14 @@ int main(void) {
     CHECK(!strcmp(got, "6 11 22 00 份 60 60 0"), "⑥⑦ 同档两组、都没验过 → 只开第一组、按份问只有它选中：期望 6 11 22 00 份 60 60 0，实得 %s", got);
     run_group(1, got, sizeof got);
     CHECK(!strcmp(got, "8 00 00 33 份 0 0 60"), "⑥⑦ 第二组我方验过 → 只开它、按份问只有它选中：期望 8 00 00 33 份 0 0 60，实得 %s", got);
-    run_itv("sdk", got, sizeof got);
+    run_itv("sdk", "60 帧", 60, got, sizeof got);
     CHECK(!strcmp(got, "开 1 关 0"), "⑧ sdk 模块的帧率补丁：期望 开 1 关 0，实得 %s", got);
-    run_itv("main", got, sizeof got);
+    run_itv("main", "60 帧", 60, got, sizeof got);
     CHECK(!strcmp(got, "开 0 关 0"), "⑧ main 模块的帧率补丁不封出图间隔：期望 开 0 关 0，实得 %s", got);
+    run_itv("main", "FPSLocker", 60, got, sizeof got);
+    CHECK(!strcmp(got, "开 1 关 0"), "⑨ FPSLocker 配置（main）目标 60 封出图间隔到 1：期望 开 1 关 0，实得 %s", got);
+    run_itv("main", "FPSLocker", 30, got, sizeof got);
+    CHECK(!strcmp(got, "开 2 关 0"), "⑨ FPSLocker 配置目标 30 封到 2：期望 开 2 关 0，实得 %s", got);
     run_screen(dir, got, sizeof got);
     const char *want5 = "起 40 55 1 屏120 40 55 1 再报 40 55 选60后屏120 40 55";
     CHECK(!strcmp(got, want5), "⑤ 起局后才知道屏幕 120 Hz：期望 %s，实得 %s", want5, got);
