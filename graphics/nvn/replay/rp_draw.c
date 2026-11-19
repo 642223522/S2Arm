@@ -73,12 +73,17 @@ static uint32_t ubo_packed(int st, const struct rp_uword *w) {
 // 这一项这一笔的纹理号 / 采样器号（宿主登记表里的号）。NULL = 取到；否则是跳过这笔的原因。
 //   纹理号 = 打包句柄低 20 位 + 当前贴图池起点（ID 0 是池的第 0 项，同硬件）。
 //   采样器：SAMPU = 打包句柄高 12 位 + 采样器池起点；SAMPI = 着色器里的常量号：samp_pool = 0 取原值（离线库的登记号），
-//   samp_pool = 1 是立即数采样器池下标（#1594 片 3）、登记号 = 下标 + 采样器池起点（同 SAMPU，号 0 取池第 0 项）；SAMP = NVN 采样器槽的句柄高 12 位（没绑过照 NVN_RB_TEX 分离采样器口径跳过）。
+//   samp_pool = 1 是立即数采样器池下标（#1594 片 3）、采样器号 = 贴图字高 12 位 | 下标（const_samp_id，同 Ryujinx ReadPackedId），登记号 = 采样器号 + 采样器池起点（同 SAMPU，号 0 取池第 0 项）；
+//   SAMP = NVN 采样器槽的句柄高 12 位（没绑过照 NVN_RB_TEX 分离采样器口径跳过）。
 //   iOS 把采样器号 0 与「没有采样器半边」绑成假采样器；这里没有假采样器，取采样器池第 0 项（= 号 0 在硬件上的意思）
+// 类型 3 句柄（SeparateConstantSamplerHandle）的采样器号：Ryujinx TextureBindingsManager.ReadPackedId 对它 samplerHandle = 立即数、<<= 20、handle |= samplerHandle，
+//   采样器号取 handle >> 20，即 贴图字高 12 位 | 立即数池下标。贴图字高 12 位为 0 时就是立即数；c2 分离贴图表的槽与游戏 UBO 里的字两种来源共用这一处。
+//   imm 不再掩：合同内 ≤ 4095（解析与库校验都拒更大的），越界的值落到没登记的号、走具名跳过，不折回低位去绑别的采样器。
+static inline int const_samp_id(uint32_t tex_word, unsigned imm) { return (int)(((tex_word >> 20) & NVN_GPU_SAMP2_ID_MASK) | imm); }
 static const char *usrc_ids(int st, const struct rp_usrc *u, int *tid, int *sid) {
     *tid = (int)(ubo_packed(st, &u->tex) & 0xFFFFF) + rp_S.tex_base;
     if (u->samp_kind == NVN_RB_SAMPU) *sid = (int)(ubo_packed(st, &u->samp) >> 20) + rp_S.samp_base;
-    else if (u->samp_kind == NVN_RB_SAMPI) *sid = u->samp_pool ? (int)u->samp_reg + rp_S.samp_base : u->samp_reg;
+    else if (u->samp_kind == NVN_RB_SAMPI) *sid = u->samp_pool ? const_samp_id(ubo_packed(st, &u->tex), u->samp_reg) + rp_S.samp_base : u->samp_reg;
     else if (u->samp_kind == NVN_RB_SAMP) {
         if (u->samp_reg >= 128 || !rp_S.samp_bound[st][u->samp_reg]) return "separate_sampler_unbound";
         *sid = (int)(rp_S.samp[st][u->samp_reg] >> 20);
@@ -1245,10 +1250,10 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
             else tn += (size_t)snprintf(tl + tn, sizeof tl - tn, " t%d.%u=#%d(无)", st, (unsigned)e->src_reg, id);
         }
         if (e->src_reg2 != UINT16_MAX && (e->src_reg2 & NVN_GPU_SAMP2_CONST)) {
-            // 类型 3 句柄（#1594）：采样器池下标是着色器里的立即数，硬件按当前绑定的采样器池取——登记号 = 池下标 + 池起点
-            //   （同 usrc_ids 读出的句柄高 12 位；号 0 取池第 0 项）。不经 NVN 采样器槽，也不看贴图字高位（那里是别的数）。
+            // 类型 3 句柄（#1594）：采样器号 = 贴图字高 12 位 | 着色器里的立即数池下标（const_samp_id，同 Ryujinx ReadPackedId），
+            //   硬件按当前绑定的采样器池取——登记号 = 采样器号 + 池起点（号 0 取池第 0 项）。不经 NVN 采样器槽。
             //   没登记的号具名跳过，不拿别的采样器顶替。
-            ts[st][i] = rp_samp_for_tex((int)(e->src_reg2 & NVN_GPU_SAMP2_ID_MASK) + rp_S.samp_base, h ? (int)(h & 0xFFFFF) : rp_S.tex_base);
+            ts[st][i] = rp_samp_for_tex(const_samp_id((uint32_t)h, e->src_reg2 & NVN_GPU_SAMP2_ID_MASK) + rp_S.samp_base, h ? (int)(h & 0xFFFFF) : rp_S.tex_base);
             if (!ts[st][i]) { skip("const_sampler_unresolved", rec); goto draw_done; }
         } else if (e->src_reg2 != UINT16_MAX) {
             if (!rp_S.samp_bound[st][e->src_reg2]) { skip("separate_sampler_unbound", rec); goto draw_done; }
