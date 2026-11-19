@@ -41,6 +41,7 @@
 #include "nvn_vk_pipe_warm.h"     // 预热清单：warm 标记 / 命中计数的口径
 #include "nvn_vk_driver_cache.h"   // 驱动管线缓存的落盘文件层（见「驱动管线缓存」一节）
 #include "nvn_fmt_info.h"
+#include "nvn_vk_border.h"   // 没有 VK_EXT_custom_border_color 时边框色就近取内置三档（纯逻辑，宿主单测）
 #include "nvn_fmt_expand.h"
 #include "vk_device.h"
 #include "spirv_storage.h"   // 顶点阶段的存储写检查（与直连接纳同一份，按 Vulkan 规范的 NonWritable 判）
@@ -6589,6 +6590,28 @@ static int32_t samp_border_int(float f) {
     return out;
 }
 
+// 没有 VK_EXT_custom_border_color 时的就近替代：同一组边框色只记一次（最多记 32 组，之后不再记）。
+static pthread_mutex_t g_border_approx_mu = PTHREAD_MUTEX_INITIALIZER;
+static float g_border_approx_seen[32][4];
+static uint32_t g_border_approx_n;
+static void samp_border_approx_once(const float b[4], int pf, int pi) {
+    static const char *const name[3] = {"透明黑", "不透明黑", "不透明白"};
+    int report = 0;
+    pthread_mutex_lock(&g_border_approx_mu);
+    if (g_border_approx_n < 32) {
+        report = 1;
+        for (uint32_t k = 0; k < g_border_approx_n; k++)
+            if (!memcmp(g_border_approx_seen[k], b, sizeof g_border_approx_seen[k])) { report = 0; break; }
+        if (report) memcpy(g_border_approx_seen[g_border_approx_n++], b, sizeof g_border_approx_seen[0]);
+    }
+    pthread_mutex_unlock(&g_border_approx_mu);
+    if (!report) return;
+    char line[240];
+    snprintf(line, sizeof line, "【黄】sampler_border_color_nearest：设备没有 VK_EXT_custom_border_color，边框色 %g %g %g %g 就近取浮点%s / 整数%s（近似，绘制照画）",
+             b[0], b[1], b[2], b[3], name[pf], name[pi]);
+    nvn_plat_log(NVN_PLAT_LOG_WARN, "gpu", line);
+}
+
 static void samp_border_unreserve(const struct nvn_gpu_samp_s *s) {
     if (!s->border_slots) return;
     pthread_mutex_lock(&g_mu);
@@ -6676,21 +6699,22 @@ nvn_gpu_rc nvn_gpu_samp_create(const samp_par *p, nvn_gpu_samp *out, nvn_gpu_err
     }
     // 边框色只在有一向是 CLAMP_TO_BORDER 时用得到；用不到时不建自定义边框色（不要扩展、不占配额），不是三档的取不透明黑（与改前相同）。
     const int preset = samp_border_preset(p->border);
-    const int custom = preset < 0 && (ci.addressModeU == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER ||
-                                      ci.addressModeV == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER ||
-                                      ci.addressModeW == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER);
-    if (custom && !g.dev->custom_border_enabled) {
-        free(s);
-        return fail(err, NVN_GPU_E_UNSUPPORTED, "sampler_border_color_custom：设备没有启用 VK_EXT_custom_border_color（边框色 %g %g %g %g）",
-                    p->border[0], p->border[1], p->border[2], p->border[3]);
-    }
+    const int reach = ci.addressModeU == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER ||
+                      ci.addressModeV == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER ||
+                      ci.addressModeW == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    // 设备没有 VK_EXT_custom_border_color（如 Maleoon 920）：不丢绘制，浮点 / 整数采样器各按 RGBA 距离取最近的内置档（见 nvn_vk_border.h），记一次黄色日志。
+    const int approx = preset < 0 && reach && !g.dev->custom_border_enabled;
+    const int custom = preset < 0 && reach && !approx;
+    const int preset_f = approx ? nvk_border_nearest(p->border, 0) : preset < 0 ? 1 : preset;
+    const int preset_i = approx ? nvk_border_nearest(p->border, 1) : preset < 0 ? 1 : preset;
+    if (approx) samp_border_approx_once(p->border, preset_f, preset_i);
     if (custom && !g.dev->custom_border_without_format) {
         free(s);
         return fail(err, NVN_GPU_E_UNSUPPORTED, "sampler_border_color_custom_format：设备没有 customBorderColorWithoutFormat，建采样器时不知道视图格式");
     }
     static const VkBorderColor fixed[3] = {VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK, VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK, VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE};
     static const VkBorderColor fixed_int[3] = {VK_BORDER_COLOR_INT_TRANSPARENT_BLACK, VK_BORDER_COLOR_INT_OPAQUE_BLACK, VK_BORDER_COLOR_INT_OPAQUE_WHITE};
-    ci.borderColor = custom ? VK_BORDER_COLOR_FLOAT_CUSTOM_EXT : fixed[preset < 0 ? 1 : preset];
+    ci.borderColor = custom ? VK_BORDER_COLOR_FLOAT_CUSTOM_EXT : fixed[preset_f];
     VkSamplerCustomBorderColorCreateInfoEXT cb, cbi;   // 浮点 / 整数两个采样器各一份；format 留 UNDEFINED（上面已要求 WithoutFormat）
     memset(&cb, 0, sizeof cb);
     memset(&cbi, 0, sizeof cbi);
@@ -6733,7 +6757,7 @@ nvn_gpu_rc nvn_gpu_samp_create(const samp_par *p, nvn_gpu_samp *out, nvn_gpu_err
         ii.pNext = NULL;   // 全最近点：归约不起作用，也不要求视图格式有 FILTER_MINMAX
         ii.magFilter = ii.minFilter = VK_FILTER_NEAREST; ii.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
         ii.anisotropyEnable = VK_FALSE; ii.maxAnisotropy = 1.0f;
-        ii.borderColor = custom ? VK_BORDER_COLOR_INT_CUSTOM_EXT : fixed_int[preset < 0 ? 1 : preset];
+        ii.borderColor = custom ? VK_BORDER_COLOR_INT_CUSTOM_EXT : fixed_int[preset_i];
         if (custom) {
             cbi.pNext = ii.pNext == &cb ? cb.pNext : ii.pNext;   // 换掉浮点那份，链上其余结构不动
             ii.pNext = &cbi;
