@@ -50,12 +50,16 @@ public class MainActivity extends Activity
     private TextView games;
     private boolean gameMode;
     private GameSession gameSession;
+    private PhoneFeedback phoneFeedback;   // game mode: phone six-axis + rumble (#528 item 10)
+    private PadFeedback padFeedback;       // game mode: the physical controller's own rumble + six-axis (#528 item 10)
+    private int faceDeviceId = Integer.MIN_VALUE;   // controller whose kind decided the auto face layout
     private boolean gameStopping;
     private GameAudioFocus gameAudioFocus;
     private boolean previousCacheExported;
     private static final String PREFS = "s2a";
     private static final String PREF_CONSOLE = "consoleMode";
-    private static final String PREF_GAMEPAD_MAPPING = "gamepadMapping";
+    private static final String PREF_PAD_FACE = "padFace";              // auto / switch / xbox, as iOS / Mac padFace
+    private static final String PREF_GAMEPAD_MAPPING = "gamepadMapping";   // before padFace: position / label
     private static final String GAMEPAD_MAPPING_EXTRA = "s2arm.gamemap";
     /** The resumed shell, for native-side UI requests (software keyboard) that arrive on a guest thread. */
     static volatile MainActivity current;
@@ -81,6 +85,10 @@ public class MainActivity extends Activity
     private final Runnable lifecycleSample = this::sampleLifecyclePresent;
     // 游玩时间（共用 runtime/src/playtime.c）：游戏在前台时每 10 秒落一次盘（同 iOS app.m 的 10 秒心跳），闪退 / 被杀最多丢这 10 秒；
     //   onPause 与收局前另各落一次。计时本身在原生上屏出口里，这里只管什么时候写文件
+    // 停帧看门的屏上提示（StallNotice 定显示哪条）：画面下方一条半透明字，不可点、不挡操作
+    private final StallNotice stallState = new StallNotice();
+    private TextView stallText;
+    private final Runnable stallRender = this::renderStallNotice;
     private final Runnable playtimeTick = new Runnable() {
         @Override public void run() {
             if (!resumed || !gameMode || !runtimeLoaded || gameStopping) return;
@@ -257,6 +265,16 @@ public class MainActivity extends Activity
             loadTouchLayout();
             frameRate = new FrameRateOverlay(this);
             root.addView(frameRate, fpsLayout);
+            stallText = new TextView(this);
+            stallText.setTextColor(0xFFFFFFFF); stallText.setTextSize(15); stallText.setBackgroundColor(0xCC000000);
+            stallText.setGravity(android.view.Gravity.CENTER); stallText.setClickable(false); stallText.setFocusable(false);
+            { int sp = Math.round(10 * getResources().getDisplayMetrics().density); stallText.setPadding(sp * 2, sp, sp * 2, sp); }
+            stallText.setVisibility(android.view.View.GONE);
+            FrameLayout.LayoutParams stallLayout = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+                android.view.Gravity.BOTTOM | android.view.Gravity.CENTER_HORIZONTAL);
+            stallLayout.bottomMargin = Math.round(32 * getResources().getDisplayMetrics().density);
+            root.addView(stallText, stallLayout);
             updateFrameRate(getIntent());
         }
         root.setOnApplyWindowInsetsListener((view, insets) -> {
@@ -393,6 +411,8 @@ public class MainActivity extends Activity
             if (game != null) capabilities += "\n" + game;
             status.setText(capabilities);
             applyTouchPassthrough();
+            if (gameMode) phoneFeedback = new PhoneFeedback(this, getSharedPreferences(PREFS, MODE_PRIVATE), MainActivity::gamepadConnected);
+            if (gameMode) padFeedback = new PadFeedback(getSharedPreferences(PREFS, MODE_PRIVATE));
             requestDebugLifecycle(getIntent());
         } catch (LinkageError | RuntimeException e) {
             Log.e("S2Arm", "Native host startup failed", e);
@@ -700,6 +720,8 @@ public class MainActivity extends Activity
         if (powerSampler != null) powerSampler.start();
         if (systemTuning != null) systemTuning.start();
         if (powerState != null) powerState.start();
+        if (phoneFeedback != null) phoneFeedback.resume();   // settings + rotation before the game can ask for six-axis
+        if (padFeedback != null) padFeedback.resume();
         tryStartGame();
         if (gameMode) lifecycleProbe.postDelayed(geometrySample, 500);   // B3 输出尺寸轮询（开关关时全部回落 MATCH_PARENT）
         if (gameMode) { lifecycleProbe.removeCallbacks(playtimeTick); lifecycleProbe.postDelayed(playtimeTick, 10000); }
@@ -765,6 +787,8 @@ public class MainActivity extends Activity
         if (powerSampler != null) powerSampler.stop();
         if (systemTuning != null) systemTuning.stop();
         if (powerState != null) powerState.stop();
+        if (phoneFeedback != null) phoneFeedback.pause();
+        if (padFeedback != null) padFeedback.pause();
         super.onPause();
     }
     // #48 P8：PowerStateSampler 的出口（只在 onResume 之后跑，库被拒时 powerState 不会启动；这里再守一次）
@@ -1030,7 +1054,8 @@ public class MainActivity extends Activity
     // Debug: `am start ... --es s2arm.orientation landscape|reverse-landscape|portrait` rotates this activity only;
     // `--es s2arm.panel off|on` hides the diagnostic panel so screenshots show the surface;
     // `--es s2arm.touchpad on|off|auto` forces the on-screen gamepad, `--es s2arm.touchlog on` logs input changes.
-    // `--es s2arm.gamemap position|label` selects and saves physical face-button mapping.
+    // `--es s2arm.gamemap auto|switch|xbox` selects and saves the physical face-button layout (padFace; older
+    // position = switch, label = xbox). The four-finger menu sets the same preference.
     // Debug-only orientation lock (intent extra); normal runs never lock the orientation.
     @android.annotation.SuppressLint("SourceLockedOrientationActivity")
     private void requestOrientation(android.content.Intent intent) {
@@ -1048,20 +1073,32 @@ public class MainActivity extends Activity
         else if ("portrait".equals(o)) setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
         else if ("reverse-landscape".equals(o)) setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE);
     }
+    /** Saved padFace; an older saved gamepadMapping (position / label) carries over. Unknown = auto, as pad.c. */
+    private static int storedFace(android.content.SharedPreferences prefs) {
+        String face = prefs.getString(PREF_PAD_FACE, null);
+        if (face == null) face = prefs.getString(PREF_GAMEPAD_MAPPING, null);
+        int parsed = GamepadState.parseFace(face);
+        return parsed < 0 ? GamepadState.FACE_AUTO : parsed;
+    }
+    private void setFace(int face) {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(PREF_PAD_FACE, GamepadState.faceName(face)).apply();
+        gamepad.setMapping(GamepadState.faceName(face));
+        publishInput();
+    }
     @SuppressWarnings("deprecation")
     private void updateGamepadMapping(android.content.Intent intent) {
         android.content.SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        String mode = prefs.getString(PREF_GAMEPAD_MAPPING, "position");
+        String mode = GamepadState.faceName(storedFace(prefs));
         if (intent != null && intent.hasExtra(GAMEPAD_MAPPING_EXTRA)) {
             Object value = intent.getExtras().get(GAMEPAD_MAPPING_EXTRA);
-            if (!"position".equals(value) && !"label".equals(value)) {
-                String why = "s2arm.gamemap must be position or label";
+            if (!(value instanceof String) || GamepadState.parseFace((String) value) < 0) {
+                String why = "s2arm.gamemap must be auto, switch or xbox (or position / label)";
                 Log.e("S2Arm", why);
                 status.setText(why);
                 android.widget.Toast.makeText(this, why, android.widget.Toast.LENGTH_LONG).show();
             } else {
-                mode = (String) value;
-                prefs.edit().putString(PREF_GAMEPAD_MAPPING, mode).apply();
+                mode = GamepadState.faceName(GamepadState.parseFace((String) value));
+                prefs.edit().putString(PREF_PAD_FACE, mode).apply();
                 // Recreation must not reapply an older choice from the original launch intent.
                 android.content.Intent launchIntent = getIntent();
                 if (launchIntent != null) launchIntent.putExtra(GAMEPAD_MAPPING_EXTRA, mode);
@@ -1128,20 +1165,31 @@ public class MainActivity extends Activity
                 | android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
         }
     }
-    @Override public void onInputDeviceAdded(int id) { updateTouchPad(); }
-    @Override public void onInputDeviceChanged(int id) { clearInput(); updateTouchPad(); }
-    @Override public void onInputDeviceRemoved(int id) { clearInput(); updateTouchPad(); }
+    @Override public void onInputDeviceAdded(int id) { updateTouchPad(); publishPhoneFeedback(); }
+    @Override public void onInputDeviceChanged(int id) { clearInput(); updateTouchPad(); publishPhoneFeedback(); }
+    @Override public void onInputDeviceRemoved(int id) { clearInput(); updateTouchPad(); publishPhoneFeedback(); }
+    private void publishPhoneFeedback() {
+        if (phoneFeedback != null && resumed) phoneFeedback.publish();
+        if (padFeedback != null && resumed) padFeedback.publish();
+    }
     private static boolean gamepadConnected() {
-        for (int id : InputDevice.getDeviceIds()) {
-            InputDevice device = InputDevice.getDevice(id);
-            // 只认真有手柄按键（A 键）的设备：有的手机自带一个报 JOYSTICK 来源的内置传感设备
-            // （压感 / 肩键一类，只有 X / Y 轴、没有手柄按键），算成「接了手柄」会把虚拟手柄永远藏掉。
-            if (device != null && !device.isVirtual() && controller(device.getSources())
-                    && device.hasKeys(KeyEvent.KEYCODE_BUTTON_A)[0]) return true;
-        }
+        // 只认真有手柄按键（A 键）的设备：有的手机自带一个报 JOYSTICK 来源的内置传感设备
+        // （压感 / 肩键一类，只有 X / Y 轴、没有手柄按键），算成「接了手柄」会把虚拟手柄永远藏掉。
+        for (int id : InputDevice.getDeviceIds()) if (PadFeedback.isGamepad(InputDevice.getDevice(id))) return true;
         return false;
     }
+    /** A controller event: its kind decides what the auto face layout means; it becomes player 1's rumble / six-axis pad. */
+    private void noteController(InputDevice device) {
+        int id = device != null ? device.getId() : -1;
+        if (id != faceDeviceId) {
+            faceDeviceId = id;
+            gamepad.setNintendo(device != null && GamepadState.nintendo(device.getVendorId(), device.getName()));
+        }
+        if (padFeedback != null) padFeedback.noteInput(device);
+    }
     private void loadTouchLayout() {
+        touchPad.setOpacityPercent(getSharedPreferences(PREFS, MODE_PRIVATE)
+            .getInt("touch_opacity_percent", 100));
         try {
             TouchLayout saved = touchLayouts.load();
             touchPad.setLayout(saved);
@@ -1182,6 +1230,7 @@ public class MainActivity extends Activity
         java.util.List<String> labels = new java.util.ArrayList<>();
         java.util.List<Runnable> actions = new java.util.ArrayList<>();
         labels.add(getString(R.string.touch_menu_edit_positions)); actions.add(this::beginTouchEdit);
+        labels.add(getString(R.string.touch_appearance_opacity)); actions.add(this::showTouchOpacity);
         // 接了手柄时虚拟手柄自动收起；玩家随时能叫回来或收起（不替玩家决定，本局有效）
         boolean padShown = touchPad.controlsVisible();
         labels.add(getString(padShown ? R.string.touch_menu_hide_pad : R.string.touch_menu_show_pad));
@@ -1205,10 +1254,71 @@ public class MainActivity extends Activity
                     android.widget.Toast.LENGTH_LONG).show();
             });
         }
+        if (phoneFeedback != null) {   // 手机当掌机的六轴 / 震动（同 iOS 设置里的「手机陀螺仪」「手机震动」，缺省开，存下来下次照用）
+            PhoneFeedback feedback = phoneFeedback;
+            boolean gyro = feedback.gyro(), rumble = feedback.rumble();
+            labels.add(getString(gyro ? R.string.phone_gyro_on : R.string.phone_gyro_off));
+            actions.add(() -> feedback.setGyro(!gyro));
+            if (feedback.hasVibrator()) {
+                labels.add(getString(rumble ? R.string.phone_rumble_on : R.string.phone_rumble_off));
+                actions.add(() -> feedback.setRumble(!rumble));
+            }
+        }
+        if (padFeedback != null && padFeedback.hasMotor()) {   // 外接手柄自己的马达（同 iOS「游戏震动」管手柄那一路，缺省开）
+            PadFeedback feedback = padFeedback;
+            boolean on = feedback.rumble();
+            labels.add(getString(on ? R.string.pad_rumble_on : R.string.pad_rumble_off));
+            actions.add(() -> feedback.setRumble(!on));
+        }
+        if (gamepadConnected()) {   // 手柄按键布局（同 iOS / Mac 设置 padFace，所有游戏共用）
+            int[] faceNames = {R.string.pad_face_auto, R.string.pad_face_switch, R.string.pad_face_xbox};
+            labels.add(getString(R.string.pad_face_item, getString(faceNames[gamepad.face()])));
+            actions.add(this::showPadFace);
+        }
         new android.app.AlertDialog.Builder(this)
             .setTitle(R.string.touch_menu_title)
             .setItems(labels.toArray(new String[0]), (dialog, which) -> actions.get(which).run())
             .setNegativeButton(android.R.string.cancel, null)
+            .show();
+    }
+
+    private void showPadFace() {
+        String[] names = {getString(R.string.pad_face_auto), getString(R.string.pad_face_switch), getString(R.string.pad_face_xbox)};
+        new android.app.AlertDialog.Builder(this)
+            .setTitle(R.string.pad_face_title)
+            .setSingleChoiceItems(names, gamepad.face(), (dialog, which) -> { setFace(which); dialog.dismiss(); })
+            .setNegativeButton(android.R.string.cancel, null)
+            .show();
+    }
+
+    private void showTouchOpacity() {
+        int original = touchPad.opacityPercent();
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        android.widget.TextView value = new android.widget.TextView(this);
+        value.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
+        value.setText(getString(R.string.touch_appearance_opacity_value, original));
+        content.addView(value);
+        android.widget.SeekBar slider = new android.widget.SeekBar(this);
+        slider.setMax(100);
+        slider.setProgress(original);
+        slider.setContentDescription(getString(R.string.touch_appearance_opacity));
+        slider.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
+            public void onProgressChanged(android.widget.SeekBar bar, int progress, boolean fromUser) {
+                touchPad.setOpacityPercent(progress);
+                value.setText(getString(R.string.touch_appearance_opacity_value, progress));
+            }
+            public void onStartTrackingTouch(android.widget.SeekBar bar) { }
+            public void onStopTrackingTouch(android.widget.SeekBar bar) { }
+        });
+        content.addView(slider);
+        new android.app.AlertDialog.Builder(this)
+            .setTitle(R.string.touch_appearance_opacity).setView(content)
+            .setPositiveButton(android.R.string.ok, (dialog, which) ->
+                getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                    .putInt("touch_opacity_percent", slider.getProgress()).apply())
+            .setNegativeButton(android.R.string.cancel, (dialog, which) -> touchPad.setOpacityPercent(original))
+            .setOnCancelListener(dialog -> touchPad.setOpacityPercent(original))
             .show();
     }
 
@@ -1249,16 +1359,22 @@ public class MainActivity extends Activity
     private void beginTouchEdit() {
         touchPad.beginEditing();
         touchEditBar = new LinearLayout(this);
-        touchEditBar.setOrientation(LinearLayout.HORIZONTAL);
+        touchEditBar.setOrientation(LinearLayout.VERTICAL);
         touchEditBar.setBackgroundColor(0xE6101820);
-        String[] names = {getString(R.string.touch_edit_save), getString(R.string.touch_edit_default), getString(R.string.touch_edit_cancel)};
-        Runnable[] actions = {this::saveTouchEdit, () -> { endTouchEdit(); resetTouchLayout(); }, () -> { endTouchEdit(); loadTouchLayout(); }};
+        String[] names = {getString(R.string.touch_edit_save), getString(R.string.touch_edit_default), getString(R.string.touch_edit_cancel), getString(R.string.touch_appearance_smaller), getString(R.string.touch_appearance_larger)};
+        Runnable[] actions = {this::saveTouchEdit, () -> { endTouchEdit(); resetTouchLayout(); }, () -> { endTouchEdit(); loadTouchLayout(); }, () -> resizeTouchButtons(0.9), () -> resizeTouchButtons(1.0 / 0.9)};
+        LinearLayout row = null;
         for (int i = 0; i < names.length; i++) {
+            if (i == 0 || i == 3) {
+                row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                touchEditBar.addView(row);
+            }
             android.widget.Button button = new android.widget.Button(this);
             button.setText(names[i]);
             Runnable action = actions[i];
             button.setOnClickListener(v -> action.run());
-            touchEditBar.addView(button);
+            row.addView(button);
         }
         touchPad.setEditDragListener(dragging -> {
             if (touchEditBar == null) return;
@@ -1268,10 +1384,22 @@ public class MainActivity extends Activity
         // Screen centre: the one place no built-in control sits (− / + are at the top centre).
         root.addView(touchEditBar, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,
             FrameLayout.LayoutParams.WRAP_CONTENT, android.view.Gravity.CENTER));
+        touchEditBar.post(this::placeTouchEditBar);
     }
 
-    /** Keep the editor bar off the controls: the free spot nearest the screen centre; none free, it stays see-through. */
+    private void resizeTouchButtons(double factor) {
+        try {
+            touchPad.scaleEditingButtons(factor);
+            if (touchEditBar != null) touchEditBar.post(this::placeTouchEditBar);
+        } catch (IllegalArgumentException error) {
+            android.widget.Toast.makeText(this, getString(R.string.touch_layout_save_failed, error.getMessage()),
+                android.widget.Toast.LENGTH_LONG).show();
+        }
+    }
+
+    /** Keep the editor bar off the controls; if none is free, keep it see-through. */
     private void placeTouchEditBar() {
+        if (touchEditBar == null) return;
         int w = touchEditBar.getWidth(), h = touchEditBar.getHeight(), rw = root.getWidth(), rh = root.getHeight();
         int low = windowInsets[1], high = rh - windowInsets[3] - h;
         if (w == 0 || h == 0 || high < low) return;
@@ -1284,6 +1412,7 @@ public class MainActivity extends Activity
             if (!covers && (best == null || Math.abs(top - centre) < Math.abs(best - centre))) best = top;
         }
         if (best == null) { touchEditBar.setAlpha(0.5f); return; }
+        touchEditBar.setAlpha(1f);
         FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) touchEditBar.getLayoutParams();
         lp.gravity = android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL;
         lp.topMargin = best;
@@ -1411,7 +1540,8 @@ public class MainActivity extends Activity
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
         if (!controller(event.getSource()) || !resumed) return super.dispatchKeyEvent(event);
         int bit;
-        // Positional layout: Android's bottom A button is Switch B.
+        // Android key codes are positional (bottom = BUTTON_A on every pad): stored as Switch positions, bottom = Switch B;
+        // GamepadState applies padFace (auto / switch / xbox) when reading.
         switch (event.getKeyCode()) {
             case KeyEvent.KEYCODE_BUTTON_A: bit = 1; break;
             case KeyEvent.KEYCODE_BUTTON_B: bit = 0; break;
@@ -1432,6 +1562,7 @@ public class MainActivity extends Activity
             default: return super.dispatchKeyEvent(event);
         }
         if (event.getAction() != KeyEvent.ACTION_MULTIPLE) {
+            noteController(event.getDevice());
             gamepad.button(bit, event.getAction() == KeyEvent.ACTION_DOWN); publishInput();
         }
         return true;
@@ -1439,6 +1570,7 @@ public class MainActivity extends Activity
     @Override public boolean onGenericMotionEvent(MotionEvent event) {
         if (!controller(event.getSource()) || !resumed || event.getAction() != MotionEvent.ACTION_MOVE)
             return super.onGenericMotionEvent(event);
+        noteController(event.getDevice());
         gamepad.motion(event.getAxisValue(MotionEvent.AXIS_X), event.getAxisValue(MotionEvent.AXIS_Y),
             event.getAxisValue(MotionEvent.AXIS_Z), event.getAxisValue(MotionEvent.AXIS_RZ),
             event.getAxisValue(MotionEvent.AXIS_HAT_X), event.getAxisValue(MotionEvent.AXIS_HAT_Y),
@@ -1545,6 +1677,26 @@ public class MainActivity extends Activity
      * DguardNotice 弹页等到玩家选「仍然启动」。没有前台 Activity / 主线程被调时直接返回
      * ——同 iOS 提示出口拿不到窗口时记日志照走的口径（提示是提醒不是闸门）。
      */
+    /** 停帧看门的屏上提示（NativeBridge.stallNotice，看门线程上来）：派回主线程按 StallNotice 显示 / 收。 */
+    static void stallNotice(int kind, int seconds) {
+        final MainActivity activity = current;
+        if (activity == null) { Log.i("S2Arm", "stall notice " + kind + " dropped: no foreground activity"); return; }
+        Log.i("S2Arm", "stall notice " + kind + " (" + seconds + " s)");
+        activity.runOnUiThread(() -> { activity.stallState.on(kind, seconds, android.os.SystemClock.uptimeMillis()); activity.renderStallNotice(); });
+    }
+    private void renderStallNotice() {
+        if (stallText == null) return;
+        long now = android.os.SystemClock.uptimeMillis();
+        int kind = stallState.visible(now);
+        // 「约 30 秒」= 看门判停帧的窗口（ap_host.c 的 30 秒环、s2a_ap_crawl_due：30 秒里新上屏 ≤ 15 帧才救场）
+        if (kind == StallNotice.PATCH_OFF) stallText.setText(getString(R.string.stall_patch_off, 30));
+        else if (kind == StallNotice.WAIT) stallText.setText(R.string.stall_wait);
+        stallText.setVisibility(kind == StallNotice.NONE ? android.view.View.GONE : android.view.View.VISIBLE);
+        stallText.removeCallbacks(stallRender);
+        long next = stallState.changeIn(now);
+        if (next >= 0) stallText.postDelayed(stallRender, next + 50);
+    }
+
     static void dguardPrompt(String diag) {
         final MainActivity activity = current;
         if (activity == null || activity.dguardNotice == null) { Log.i("S2Arm", "dguard prompt dropped: no foreground activity"); return; }

@@ -734,7 +734,7 @@ static class C1Cb
             else { Console.Error.WriteLine($"C1Cb：不认识的参数 {argv[i]}"); return 2; }
         }
         // 逐支读（11-02 出包内存）：原先先把目录里全部 .metal / .json 读进字典、再一次性建出全部任务（每个带整段 MSL），8 万键款子进程 13 GB；现在只列名字，并行循环里每支才读自己的两份
-        var metals = Directory.GetFiles(dir).Select(Path.GetFileName).Where(n => n.EndsWith(".metal", StringComparison.Ordinal)).OrderBy(n => n, StringComparer.Ordinal).ToList();
+        var metals = Directory.GetFiles(dir).Select(Path.GetFileName).Where(n => n.EndsWith(".metal", StringComparison.Ordinal) && !n.StartsWith("._", StringComparison.Ordinal)).OrderBy(n => n, StringComparer.Ordinal).ToList();
         var jobs = metals;
         Job Load(string n) { var j = Path.Combine(dir, KeyOf(n) + "_b.json"); return JobOf(n, File.ReadAllBytes(Path.Combine(dir, n)), File.Exists(j) ? File.ReadAllBytes(j) : null); }
         // 逐文件接住异常（Python 同样会抛的情形：<< 位数过大等）记成「!异常」行，对拍两边都这样记；出库路径（BothAll）照常抛

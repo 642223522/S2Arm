@@ -1,6 +1,46 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Go back to the saved moment": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Go back to the saved moment"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Volver al momento guardado"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Revenir à l’instant sauvegardé"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存した瞬間に戻る"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回到上次存下的这一刻"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回到上次存下的這一刻"
+          }
+        }
+      }
+    },
     "Reorder": {
       "localizations": {
         "en": {
@@ -2401,64 +2441,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "選擇與 Mac 上相同的 iCloud Drive 資料夾。"
-          }
-        }
-      }
-    },
-    "Choose this game's data to get ready to play.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Wähle die Daten dieses Spiels, um es spielbereit zu machen."
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Choose this game's data to get ready to play."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Elige los datos de este juego para prepararte para jugar."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Choisissez les données de ce jeu pour pouvoir y jouer."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Scegli i dati di questo gioco per poterci giocare."
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "プレイの準備のため、このゲームのデータを選んでください。"
-          }
-        },
-        "sv": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Välj spelets data för att göra det redo att spela."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "选择此游戏的数据以开始游戏。"
-          }
-        },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "選擇此遊戲的資料以開始遊戲。"
           }
         }
       }
@@ -13995,6 +13977,46 @@
         }
       }
     },
+    "The iCloud save is from a different version, belongs to another account, or has damaged files, so it didn’t overwrite your progress on this device. To use it, restore it manually in save management.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The iCloud save is from a different version, belongs to another account, or has damaged files, so it didn’t overwrite your progress on this device. To use it, restore it manually in save management."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La partida de iCloud es de otra versión, pertenece a otra cuenta o tiene archivos dañados, así que no sobrescribió tu progreso en este dispositivo. Para usarla, restáurala manualmente en la gestión de partidas."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La sauvegarde iCloud provient d'une autre version, appartient à un autre compte ou contient des fichiers endommagés ; elle n'a donc pas remplacé votre progression sur cet appareil. Pour l'utiliser, restaurez-la manuellement dans la gestion des sauvegardes."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iCloud のセーブデータはバージョンが異なるか、別のアカウントのものか、破損したファイルを含むため、このデバイスの進行状況は上書きしませんでした。使う場合はセーブデータ管理から手動で復元してください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "云端有一份和本机不同版本、属于另一个账号或有文件损坏的存档，没有自动覆盖你本机的进度；要用它可以在存档管理里手动恢复。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "雲端有一份和本機不同版本、屬於另一個帳號或有檔案損壞的存檔，沒有自動覆蓋你本機的進度；要用它可以在存檔管理裡手動恢復。"
+          }
+        }
+      }
+    },
     "The save service didn’t return a valid result.": {
       "localizations": {
         "en": {
@@ -16311,46 +16333,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在安裝這款遊戲，請別退出 App。"
-          }
-        }
-      }
-    },
-    "Connect this iPhone to the computer again to continue.": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Connect this iPhone to the computer again to continue."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Conecta este iPhone al ordenador de nuevo para continuar."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reconnectez cet iPhone à l'ordinateur pour continuer."
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "この iPhone をコンピュータに再接続して続行してください。"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "请重新连接电脑继续传输。"
-          }
-        },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "請重新連線電腦繼續傳輸。"
           }
         }
       }
@@ -20887,6 +20869,64 @@
         }
       }
     },
+    "Connect a controller in Bluetooth settings.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verbinde einen Controller in den Bluetooth-Einstellungen."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connect a controller in Bluetooth settings."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conecta un mando en los ajustes de Bluetooth."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connectez une manette dans les réglages Bluetooth."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collega un controller nelle impostazioni Bluetooth."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth 設定でコントローラーを接続してください。"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anslut en handkontroll i Bluetooth-inställningarna."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在蓝牙设置中连接手柄。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在藍牙設定中連線手把。"
+          }
+        }
+      }
+    },
     "Language": {
       "localizations": {
         "en": {
@@ -21083,6 +21123,1480 @@
           "stringUnit": {
             "state": "translated",
             "value": "只對這款遊戲；開始遊戲時生效"
+          }
+        }
+      }
+    },
+    "Learn more": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Learn more"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Más información"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En savoir plus"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "詳しく見る"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "了解详情"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "了解詳情"
+          }
+        }
+      }
+    },
+    "Keep “Increased Memory Limit” when signing": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep “Increased Memory Limit” when signing"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conservar «Límite de memoria aumentado» al firmar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conserver « Limite de mémoire augmentée » à la signature"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "署名時に「メモリ上限の引き上げ」を残す"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自签时带上「提高内存上限」"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自行簽署時帶上「提高記憶體上限」"
+          }
+        }
+      }
+    },
+    "S2Arm needs the “Increased Memory Limit” permission. Without it, large games can run out of memory and close. Whether your copy keeps it depends on how S2Arm was signed.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "S2Arm needs the “Increased Memory Limit” permission. Without it, large games can run out of memory and close. Whether your copy keeps it depends on how S2Arm was signed."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "S2Arm necesita el permiso «Límite de memoria aumentado». Sin él, los juegos grandes pueden quedarse sin memoria y cerrarse. Que tu copia lo conserve depende de cómo se firmó S2Arm."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "S2Arm a besoin du droit « Limite de mémoire augmentée ». Sans lui, les jeux volumineux peuvent manquer de mémoire et se fermer. Votre copie le conserve ou non selon la façon dont S2Arm a été signé."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "S2Arm には「メモリ上限の引き上げ」の権限が必要です。ないと大容量ゲームがメモリ不足で終了することがあります。この権限が残るかどうかは、S2Arm をどう署名してインストールしたかで決まります。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "S2Arm 需要「提高内存上限」权限，没有它大游戏可能内存不够闪退。这项权限在不在，取决于 S2Arm 是怎么签名安装的。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "S2Arm 需要「提高記憶體上限」權限，沒有它大型遊戲可能記憶體不足而閃退。這項權限在不在，取決於 S2Arm 是怎麼簽署安裝的。"
+          }
+        }
+      }
+    },
+    "S2Arm launcher (recommended)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "S2Arm launcher (recommended)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lanzador de S2Arm (recomendado)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lanceur S2Arm (recommandé)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "S2Arm ランチャー（おすすめ）"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "S2Arm 启动器（推荐）"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "S2Arm 啟動器（推薦）"
+          }
+        }
+      }
+    },
+    "Use AltStore Classic 2.2 or later and install S2Arm again (a refresh is not enough). A free Apple ID works.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use AltStore Classic 2.2 or later and install S2Arm again (a refresh is not enough). A free Apple ID works."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Usa AltStore Classic 2.2 o posterior y vuelve a instalar S2Arm (no basta con renovar). Funciona con un Apple ID gratuito."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Utilisez AltStore Classic 2.2 ou ultérieur et réinstallez S2Arm (une simple actualisation ne suffit pas). Un identifiant Apple gratuit fonctionne."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AltStore Classic 2.2 以降を使い、S2Arm をインストールし直してください（更新だけでは足りません）。無料の Apple ID でも使えます。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用 AltStore Classic 2.2 或更新版，重新安装 S2Arm（只续签不够）。免费 Apple ID 也行。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用 AltStore Classic 2.2 或更新版，重新安裝 S2Arm（只續簽不夠）。免費 Apple ID 也可以。"
+          }
+        }
+      }
+    },
+    "SideStore (0.7.0 and earlier) drops this permission when it signs. Add it with GetMoreRam below, then install S2Arm again in SideStore.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SideStore (0.7.0 and earlier) drops this permission when it signs. Add it with GetMoreRam below, then install S2Arm again in SideStore."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SideStore (0.7.0 y anteriores) elimina este permiso al firmar. Añádelo con GetMoreRam (abajo) y vuelve a instalar S2Arm en SideStore."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SideStore (0.7.0 et versions antérieures) supprime ce droit en signant. Ajoutez-le avec GetMoreRam ci-dessous, puis réinstallez S2Arm dans SideStore."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SideStore（0.7.0 以前）は署名時にこの権限を外してしまいます。下の GetMoreRam で追加してから、SideStore で S2Arm をインストールし直してください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SideStore（0.7.0 及更早）签名时会丢掉这项权限。先用下面的 GetMoreRam 补上，再在 SideStore 里重新安装 S2Arm。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SideStore（0.7.0 及更早）簽署時會遺失這項權限。先用下面的 GetMoreRam 補上，再在 SideStore 裡重新安裝 S2Arm。"
+          }
+        }
+      }
+    },
+    "Not supported for now: Sideloadly doesn’t say it keeps this permission with a free Apple ID. Its custom entitlement option needs a paid Apple Developer account.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not supported for now: Sideloadly doesn’t say it keeps this permission with a free Apple ID. Its custom entitlement option needs a paid Apple Developer account."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sin soporte por ahora: Sideloadly no indica que conserve este permiso con un Apple ID gratuito. Su opción de permisos personalizados necesita una cuenta de pago de Apple Developer."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Non pris en charge pour l'instant : Sideloadly n'indique pas conserver ce droit avec un identifiant Apple gratuit. Son option de droits personnalisés exige un compte Apple Developer payant."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "現在は非対応：Sideloadly は無料の Apple ID でこの権限が残るとは明記していません。カスタム権限のオプションには有料の Apple Developer アカウントが必要です。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂不支持：Sideloadly 没有说明用免费 Apple ID 签名会保留这项权限；它的「自定义权限」选项要付费的 Apple 开发者账号。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暫不支援：Sideloadly 沒有說明用免費 Apple ID 簽署會保留這項權限；它的「自訂權限」選項需要付費的 Apple 開發者帳號。"
+          }
+        }
+      }
+    },
+    "Keeps it": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keeps it"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lo conserva"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le conserve"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "残る"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "能带上"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "能帶上"
+          }
+        }
+      }
+    },
+    "Drops it": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drops it"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lo elimina"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le supprime"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "外れる"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "会丢"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "會遺失"
+          }
+        }
+      }
+    },
+    "Not supported for now": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not supported for now"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sin soporte por ahora"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Non pris en charge pour l'instant"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "現在は非対応"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂不支持"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暫不支援"
+          }
+        }
+      }
+    },
+    "Adds it back": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adds it back"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lo añade"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le rajoute"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "追加できる"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "能补上"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "能補上"
+          }
+        }
+      }
+    },
+    "Update on your computer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update on your computer"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actualízalo en tu ordenador"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "À mettre à jour sur l'ordinateur"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "パソコンで更新が必要"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要在电脑上更新"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要在電腦上更新"
+          }
+        }
+      }
+    },
+    "Choose this game's data to get ready to play. If it was installed from a computer, connect the iPhone and click “Install on iPhone” for this game in S2Arm: it picks up from what was already copied, so it won’t start over.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wähle die Daten dieses Spiels, um es spielbereit zu machen."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose this game's data to get ready to play. If it was installed from a computer, connect the iPhone and click “Install on iPhone” for this game in S2Arm: it picks up from what was already copied, so it won’t start over."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elige los datos de este juego para prepararte para jugar. Si se instaló desde un ordenador, conecta el iPhone y, en el lanzador de S2Arm, haz clic en «Instalar en el iPhone» para este juego: continúa desde lo que ya se copió, sin empezar de cero."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choisissez les données de ce jeu pour pouvoir y jouer. S'il a été installé depuis un ordinateur, connectez l'iPhone puis, dans le lanceur S2Arm, cliquez sur « Installer sur l'iPhone » pour ce jeu : la copie reprend là où elle s'était arrêtée, sans repartir de zéro."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scegli i dati di questo gioco per poterci giocare."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "プレイの準備のため、このゲームのデータを選んでください。コンピュータからインストールした場合は、iPhone をつないで S2Arm ランチャーでこのゲームの「iPhone にインストール」をクリックしてください。転送済みの部分から続きを送るので、最初からやり直す必要はありません。"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Välj spelets data för att göra det redo att spela."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择此游戏的数据以开始游戏。从电脑装的：连上电脑，在 S2Arm 启动器里对这款游戏点「装到 iPhone」，会从已传的部分接着继续，不用从头来。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "選擇此遊戲的資料以開始遊戲。從電腦裝的：連上電腦，在 S2Arm 啟動器裡對這款遊戲點「裝到 iPhone」，會從已傳的部分接著繼續，不用從頭來。"
+          }
+        }
+      }
+    },
+    "Connect this iPhone to the computer, then click “Install on iPhone” for this game in S2Arm. It picks up from what was already copied, so it won’t start over.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connect this iPhone to the computer, then click “Install on iPhone” for this game in S2Arm. It picks up from what was already copied, so it won’t start over."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连上电脑，在 S2Arm 启动器里对这款游戏点「装到 iPhone」，会从已传的部分接着继续，不用从头来。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "連上電腦，在 S2Arm 啟動器裡對這款遊戲點「裝到 iPhone」，會從已傳的部分接著繼續，不用從頭來。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "コンピュータにつないで、S2Arm ランチャーでこのゲームの「iPhone にインストール」をクリックしてください。転送済みの部分から続きを送るので、最初からやり直す必要はありません。"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conecta el iPhone al ordenador y, en el lanzador de S2Arm, haz clic en «Instalar en el iPhone» para este juego. Continúa desde lo que ya se copió, sin empezar de cero."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connectez l'iPhone à l'ordinateur, puis dans le lanceur S2Arm, cliquez sur « Installer sur l'iPhone » pour ce jeu. La copie reprend là où elle s'était arrêtée, sans repartir de zéro."
+          }
+        }
+      }
+    },
+    "On a Mac, click “Install on iPhone”. It signs with the Apple ID you added in Xcode and keeps this permission, even with a free Apple ID. On Windows, the launcher signs with Impactor 2.7.2, which keeps it too. If you still see the notice after reinstalling, add it with GetMoreRam below, then click “Install on iPhone” again.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On a Mac, click “Install on iPhone”. It signs with the Apple ID you added in Xcode and keeps this permission, even with a free Apple ID. On Windows, the launcher signs with Impactor 2.7.2, which keeps it too. If you still see the notice after reinstalling, add it with GetMoreRam below, then click “Install on iPhone” again."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En un Mac, haz clic en «Instalar en el iPhone». Firma con el Apple ID que añadiste en Xcode y conserva este permiso, incluso con un Apple ID gratuito. En Windows, el lanzador firma con Impactor 2.7.2, que también lo conserva. Si sigues viendo el aviso después de reinstalar, añádelo con GetMoreRam (abajo) y vuelve a hacer clic en «Instalar en el iPhone»."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sur Mac, cliquez sur « Installer sur l'iPhone ». La signature utilise l'identifiant Apple ajouté dans Xcode et conserve ce droit, même avec un identifiant gratuit. Sous Windows, le lanceur signe avec Impactor 2.7.2, qui le conserve aussi. Si l'avis apparaît encore après la réinstallation, ajoutez-le avec GetMoreRam (ci-dessous), puis cliquez à nouveau sur « Installer sur l'iPhone »."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mac では「iPhone にインストール」をクリックします。Xcode に追加した Apple ID で署名され、無料の Apple ID でもこの権限が付きます。Windows ではランチャーが Impactor 2.7.2 で署名し、同じく権限が付きます。再インストール後もこの案内が出る場合は、下の GetMoreRam で追加してから、もう一度「iPhone にインストール」をクリックしてください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 Mac 上点「装到 iPhone」，用你在 Xcode 里登录的 Apple ID 签名，会带上这项权限，免费 Apple ID 也行。Windows 上启动器用 Impactor 2.7.2 签名，同样会带上。重装后还看到这条提示，就用下面的 GetMoreRam 补上，再点一次「装到 iPhone」。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 Mac 上點「裝到 iPhone」，用你在 Xcode 裡登入的 Apple ID 簽署，會帶上這項權限，免費 Apple ID 也可以。Windows 上啟動器用 Impactor 2.7.2 簽署，同樣會帶上。重裝後還看到這則提示，就用下面的 GetMoreRam 補上，再點一次「裝到 iPhone」。"
+          }
+        }
+      }
+    },
+    "Your own developer certificate": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your own developer certificate"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tu propio certificado de desarrollador"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Votre propre certificat de développeur"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自分の開発者証明書"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自己的开发者证书"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自己的開發者憑證"
+          }
+        }
+      }
+    },
+    "If you sign with your own .p12 certificate and provisioning profile: on the Apple Developer website, turn on “Increased Memory Limit” for S2Arm’s App ID, regenerate the provisioning profile, then sign and install S2Arm again with the new profile. A profile without it can’t carry this permission.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "If you sign with your own .p12 certificate and provisioning profile: on the Apple Developer website, turn on “Increased Memory Limit” for S2Arm’s App ID, regenerate the provisioning profile, then sign and install S2Arm again with the new profile. A profile without it can’t carry this permission."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Si firmas con tu propio certificado .p12 y perfil de aprovisionamiento: en el sitio web de Apple Developer, activa «Increased Memory Limit» para el App ID de S2Arm, vuelve a generar el perfil y firma e instala S2Arm de nuevo con el perfil nuevo. Un perfil sin esta opción no puede llevar este permiso."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Si vous signez avec votre propre certificat .p12 et profil d'approvisionnement : sur le site Apple Developer, activez « Increased Memory Limit » pour l'App ID de S2Arm, régénérez le profil, puis signez et installez à nouveau S2Arm avec le nouveau profil. Un profil sans cette option ne peut pas porter ce droit."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自分の .p12 証明書とプロビジョニングプロファイルで署名している場合：Apple Developer サイトで S2Arm の App ID の「Increased Memory Limit」をオンにし、プロファイルを作り直してから、新しいプロファイルで S2Arm を署名し直してインストールします。この項目がないプロファイルでは権限は付きません。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用自己的 .p12 证书和描述文件签名的：在苹果开发者网站给 S2Arm 的 App ID 打开「Increased Memory Limit」，重新生成描述文件，用新描述文件重签并安装 S2Arm。描述文件里没有这一项，就带不上这项权限。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用自己的 .p12 憑證和描述檔簽署的：在蘋果開發者網站替 S2Arm 的 App ID 開啟「Increased Memory Limit」，重新產生描述檔，用新描述檔重新簽署並安裝 S2Arm。描述檔裡沒有這一項，就帶不上這項權限。"
+          }
+        }
+      }
+    },
+    "Already installed? Sideload GetMoreRam with the same Apple ID you used for S2Arm (it takes one of a free account’s app slots; delete it afterwards), sign in, open App IDs and tap Refresh, choose S2Arm, tap “Add Increased Memory Limit”, then install S2Arm again with the same tool.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Already installed? Sideload GetMoreRam with the same Apple ID you used for S2Arm (it takes one of a free account’s app slots; delete it afterwards), sign in, open App IDs and tap Refresh, choose S2Arm, tap “Add Increased Memory Limit”, then install S2Arm again with the same tool."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Ya lo tienes instalado? Instala GetMoreRam firmándolo con el mismo Apple ID que usaste para S2Arm (ocupa una de las plazas de apps de una cuenta gratuita; bórralo después), inicia sesión, abre App IDs y toca Actualizar, elige S2Arm, toca «Add Increased Memory Limit» y vuelve a instalar S2Arm con la misma herramienta."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Déjà installé ? Installez GetMoreRam en le signant avec le même identifiant Apple que pour S2Arm (il occupe l'une des places d'app d'un compte gratuit ; supprimez-le ensuite), connectez-vous, ouvrez App IDs et touchez Actualiser, choisissez S2Arm, touchez « Add Increased Memory Limit », puis réinstallez S2Arm avec le même outil."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "インストール済みの場合：S2Arm と同じ Apple ID で GetMoreRam を自分で署名してインストールし（無料アカウントの App 枠を 1 つ使います。使い終わったら削除してかまいません）、サインインして App IDs を開いて更新をタップ、S2Arm を選んで「Add Increased Memory Limit」をタップし、同じツールで S2Arm を再インストールします。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已经装好的：用装 S2Arm 的同一个 Apple ID 把 GetMoreRam 自签装到手机（占免费账号一个 App 名额，用完可删），登录后打开 App IDs 点刷新，选 S2Arm，点「Add Increased Memory Limit」，再用原来的工具重装 S2Arm。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已經裝好的：用安裝 S2Arm 的同一個 Apple ID 把 GetMoreRam 自簽裝到手機（佔免費帳號一個 App 名額，用完可刪），登入後開啟 App IDs 點重新整理，選 S2Arm，點「Add Increased Memory Limit」，再用原來的工具重裝 S2Arm。"
+          }
+        }
+      }
+    },
+    "This game on your phone doesn't match S2Arm on this phone, so it can't open: it was built for another version, installed from another computer or Apple ID, or didn't finish installing. Connect your phone to your computer and click \"Install on iPhone\" for this game in S2Arm.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This game on your phone doesn't match S2Arm on this phone, so it can't open: it was built for another version, installed from another computer or Apple ID, or didn't finish installing. Connect your phone to your computer and click \"Install on iPhone\" for this game in S2Arm."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este juego del teléfono no coincide con S2Arm en este teléfono y no puede abrirse: se generó para otra versión, se instaló desde otro ordenador u otro Apple ID, o no terminó de instalarse. Conecta el teléfono al ordenador y, en S2Arm, pulsa «Instalar en el iPhone» en este juego."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ce jeu sur le téléphone ne correspond pas à S2Arm sur ce téléphone et ne peut pas s'ouvrir : il a été généré pour une autre version, installé depuis un autre ordinateur ou un autre identifiant Apple, ou son installation n'est pas allée au bout. Branchez le téléphone à l'ordinateur et, dans S2Arm, cliquez sur « Installer sur l'iPhone » pour ce jeu."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "スマホのこのゲームはこのスマホの S2Arm と合わないため開けません（別のバージョン向けに作られた、別のパソコンや別の Apple ID でインストールされた、またはインストールが最後まで終わっていない）。スマホをパソコンにつなぎ、S2Arm でこのゲームの「iPhone にインストール」を押してください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "手机上这款和这台手机上的 S2Arm 对不上，打不开：可能是按别的版本出的、用别的电脑或别的 Apple ID 装的，或者没装完整。连上电脑，在 S2Arm 里对这款点「装到 iPhone」。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "手機上這款和這台手機上的 S2Arm 對不上，打不開：可能是按別的版本出的、用別的電腦或別的 Apple ID 裝的，或者沒裝完整。連接電腦，在 S2Arm 裡對這款點「裝到 iPhone」。"
+          }
+        }
+      }
+    },
+    "Output device": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ausgabegerät"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Output device"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dispositivo de salida"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Périphérique de sortie"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dispositivo di uscita"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "出力デバイス"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Utdataenhet"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输出设备"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "輸出裝置"
+          }
+        }
+      }
+    },
+    "Built-in speakers": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Eingebaute Lautsprecher"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Built-in speakers"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altavoces integrados"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Haut-parleurs intégrés"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altoparlanti integrati"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内蔵スピーカー"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inbyggda högtalare"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内置扬声器"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "內建喇叭"
+          }
+        }
+      }
+    },
+    "Headphones": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kopfhörer"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Headphones"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auriculares"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Casque"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cuffie"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ヘッドホン"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hörlurar"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "耳机"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "耳機"
+          }
+        }
+      }
+    },
+    "External / TV speakers": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Externe / TV-Lautsprecher"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "External / TV speakers"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altavoces externos / de TV"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Haut-parleurs externes / TV"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altoparlanti esterni / TV"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "外部 / テレビスピーカー"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Externa / TV-högtalare"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "外接 / 电视音箱"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "外接 / 電視音箱"
+          }
+        }
+      }
+    },
+    "Speaker virtual surround": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Virtueller Surround für Lautsprecher"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Speaker virtual surround"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sonido envolvente virtual de los altavoces"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Son surround virtuel des haut-parleurs"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Surround virtuale per gli altoparlanti"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "スピーカーのバーチャルサラウンド"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Virtuell surround för högtalare"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扬声器虚拟环绕"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "喇叭虛擬環繞"
+          }
+        }
+      }
+    },
+    "Headphone virtual surround": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Virtueller Surround für Kopfhörer"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Headphone virtual surround"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sonido envolvente virtual de los auriculares"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Son surround virtuel du casque"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Surround virtuale per le cuffie"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ヘッドホンのバーチャルサラウンド"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Virtuell surround för hörlurar"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "耳机虚拟环绕"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "耳機虛擬環繞"
+          }
+        }
+      }
+    },
+    "Pick what the sound plays on; Automatic follows the output device's channels (6 or more passes 5.1 through). Takes effect the next time this game starts.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wählt, worüber der Ton ausgegeben wird. „Automatisch“ folgt den Kanälen des Ausgabegeräts (mit 6 oder mehr Kanälen wird 5.1 durchgereicht). Wirkt beim nächsten Start dieses Spiels."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pick what the sound plays on; Automatic follows the output device's channels (6 or more passes 5.1 through). Takes effect the next time this game starts."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elige por dónde suena el audio; Automático sigue los canales del dispositivo de salida (con 6 o más canales, el 5.1 pasa directo). Se aplica la próxima vez que abras este juego."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choisit la sortie du son ; Automatique suit les canaux du périphérique de sortie (5.1 passe tel quel à partir de 6 canaux). Prend effet au prochain lancement de ce jeu."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scegli da dove esce l'audio; Automatico segue i canali del dispositivo di uscita (con 6 o più canali il 5.1 passa diretto). Ha effetto al prossimo avvio di questo gioco."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "サウンドの出力先を選びます。「自動」は出力デバイスの実際のチャンネル数で判定します（6 チャンネル以上は 5.1 をそのまま通します）。次回このゲームを起動したときに有効になります。"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Väljer var ljudet spelas upp; Automatiskt följer utdataenhetens kanaler (med 6 eller fler kanaler går 5.1 rakt igenom). Gäller nästa gång spelet startas."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选这台设备声音从哪出；「自动」按输出设备的真实声道判（≥6 声道直通 5.1）。下次启动这款游戏时生效。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "選擇聲音從哪個裝置播出；「自動」按輸出裝置的實際聲道判斷（6 聲道以上直通 5.1）。下次啟動這款遊戲時生效。"
+          }
+        }
+      }
+    },
+    "The game outputs 5.1; S2Arm folds it back to the speakers with spatial audio.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Das Spiel gibt 5.1 aus; S2Arm faltet es per Raumklang auf die zwei Lautsprecher zurück."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The game outputs 5.1; S2Arm folds it back to the speakers with spatial audio."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El juego emite en 5.1; S2Arm lo replega a los dos altavoces con audio espacial."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le jeu sort en 5.1 ; S2Arm le rabat sur les deux haut-parleurs en audio spatial."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Il gioco emette in 5.1; S2Arm lo riporta ai due altoparlanti con audio spaziale."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ゲームは 5.1 で出力し、S2Arm が空間オーディオで 2 チャンネルのスピーカーに折り畳みます。"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spelet matar ut 5.1; S2Arm viker tillbaka det till de två högtalarna med rumsligt ljud."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "游戏按 5.1 输出，S2Arm 用空间音频把它折回两声道扬声器。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "遊戲以 5.1 輸出，S2Arm 用空間音訊把它折回兩聲道喇叭。"
+          }
+        }
+      }
+    },
+    "The game outputs 5.1; S2Arm folds it back to the headphones with binaural rendering.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Das Spiel gibt 5.1 aus; S2Arm faltet es per binauraler Wiedergabe auf die zwei Kopfhörer zurück."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The game outputs 5.1; S2Arm folds it back to the headphones with binaural rendering."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El juego emite en 5.1; S2Arm lo replega a los dos auriculares con renderizado binaural."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le jeu sort en 5.1 ; S2Arm le rabat sur les deux écouteurs en rendu binaural."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Il gioco emette in 5.1; S2Arm lo riporta alle due cuffie con resa binaurale."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ゲームは 5.1 で出力し、S2Arm がバイノーラル処理で 2 チャンネルのヘッドホンに折り畳みます。"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spelet matar ut 5.1; S2Arm viker tillbaka det till de två hörlurarna med binaural rendering."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "游戏按 5.1 输出，S2Arm 用双耳渲染把它折回两声道耳机。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "遊戲以 5.1 輸出，S2Arm 用雙耳渲染把它折回兩聲道耳機。"
+          }
+        }
+      }
+    },
+    "6-channel devices pass 5.1 through; fewer channels fold down to stereo. No virtual surround.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Geräte mit 6 Kanälen geben 5.1 direkt durch; mit weniger Kanälen wird auf Stereo heruntergemischt. Kein virtueller Surround."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "6-channel devices pass 5.1 through; fewer channels fold down to stereo. No virtual surround."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los dispositivos de 6 canales pasan el 5.1 directo; con menos canales se mezcla a estéreo. Sin sonido envolvente virtual."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les périphériques 6 canaux laissent passer le 5.1 ; en dessous, c'est réduit en stéréo. Pas de surround virtuel."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "I dispositivi a 6 canali lasciano passare il 5.1; con meno canali si riduce a stereo. Nessun surround virtuale."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "6 チャンネルのデバイスは 5.1 をそのまま通し、それ未満はステレオに折り畳みます。バーチャルサラウンドは使いません。"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enheter med 6 kanaler släpper igenom 5.1; med färre kanaler mixas det ner till stereo. Ingen virtuell surround."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "6 声道设备直通 5.1；不足 6 声道折为立体声。不使用虚拟环绕。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "6 聲道裝置直通 5.1；不足 6 聲道折為立體聲。不使用虛擬環繞。"
+          }
+        }
+      }
+    },
+    "Only while the device type is Built-in speakers.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nur verfügbar, solange der Gerätetyp „Eingebaute Lautsprecher“ ist."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Only while the device type is Built-in speakers."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Solo disponible cuando el tipo de dispositivo es Altavoces integrados."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disponible uniquement quand le type de périphérique est Haut-parleurs intégrés."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disponibile solo quando il tipo di dispositivo è Altoparlanti integrati."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "デバイスの種類が「内蔵スピーカー」のときのみ使えます。"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bara tillgängligt medan enhetstypen är Inbyggda högtalare."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅当设备类型为「内置扬声器」时可用。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "僅當裝置類型為「內建喇叭」時可用。"
+          }
+        }
+      }
+    },
+    "Only while the device type is Headphones.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nur verfügbar, solange der Gerätetyp „Kopfhörer“ ist."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Only while the device type is Headphones."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Solo disponible cuando el tipo de dispositivo es Auriculares."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disponible uniquement quand le type de périphérique est Casque."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disponibile solo quando il tipo di dispositivo è Cuffie."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "デバイスの種類が「ヘッドホン」のときのみ使えます。"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bara tillgängligt medan enhetstypen är Hörlurar."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅当设备类型为「耳机」时可用。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "僅當裝置類型為「耳機」時可用。"
           }
         }
       }

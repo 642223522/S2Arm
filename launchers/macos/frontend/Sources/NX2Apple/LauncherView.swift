@@ -25,8 +25,10 @@ struct LauncherView: View {
     @ObservedObject var navigation: LauncherPadNavigation
     @EnvironmentObject var loc: Localizer
     @Environment(\.accessibilityReduceMotion) var reduceMotion
+    @Namespace var consoleSpace   // iPhone 总控台：首位卡手机轮廓升到页顶的共享元素过渡（LauncherView+PhoneConsole）
     @StateObject var padFocus = PadFocus()
     @StateObject var covers = CoverCache()
+    @State var updatePopupIsFeature = false
     @State var installFor: String?
     @State var spaceFor: String?
     @State var moreFor: String?
@@ -46,6 +48,10 @@ struct LauncherView: View {
     @State private var updateErrorDismissed = false   // 更新失败 toast 按 × 关掉；状态一变（重试 / 再失败）就重置
     @State private var titlebarActionsWidth: CGFloat = 0
     @State var showHomeSearch = false
+    @State var showHomeMore = false
+    @State private var returnToInstallFromEnv: String?
+    @State private var returnToDisplayFromInput: String?
+    @State private var returnToEnvFromSpace = false
     let brand: String
 
     init(model: S2ArmLauncherModel, brand: String) {
@@ -68,6 +74,7 @@ struct LauncherView: View {
             topBar
             if !showingHome { Divider().opacity(0.3) }
             noticeBar
+            phoneUpdateBar
             libraryNoticeBar
             if model.batchShown {
                 BatchExportView(model: model, covers: covers, install: { installFor = $0 }, freeSpace: { spaceFor = $0 }, uiLanguage: uiLanguage)
@@ -101,20 +108,21 @@ struct LauncherView: View {
         }
         .overlay(alignment: .bottom) { updateErrorToast }
         .animation(.easeOut(duration: 0.2), value: model.updateState)
+        .animation(.easeOut(duration: 0.2), value: model.checkError)
         .onChange(of: model.updateState) { _ in updateErrorDismissed = false }
         .padScope("main", padFocus)
         .environmentObject(padFocus)
         .launcherDropdownHost()
+        .ignoresSafeArea(.container, edges: .top)
         .background {
-            if showingHome { HomeBackdrop(game: homeSelected, covers: covers) }
-            else { LauncherWindowMaterial() }
+            if showingHome { HomeBackdrop(game: homeSelected, covers: covers).ignoresSafeArea() }
+            else { LauncherWindowMaterial().ignoresSafeArea() }
         }
         .background(LauncherWindowChrome())
         .background(LauncherPadHost(navigation: navigation, update: configurePadNavigation))
         .onReceive(model.controller.$deviceCount.dropFirst()) { _ in
             DispatchQueue.main.async { navigation.source.refreshPresentation() }
         }
-        .ignoresSafeArea(.container, edges: .top)
         .preferredColorScheme(.dark)
         .tint(LauncherPalette.cream)
         .font(LauncherTheme.TypeStyle.detail)
@@ -123,27 +131,43 @@ struct LauncherView: View {
         .onAppear { model.startup() }
         .sheet(isPresented: $model.sgradeUpgradeOpen) { SGradeUpgradeView(model: model).environmentObject(loc) }   // S 级优化升级（v0.4.0）
         .sheet(item: Binding(get: { installFor.map(OptionsTarget.init) }, set: { installFor = $0?.id })) { target in
-            InstallView(model: model, gameID: target.id).environmentObject(loc)
+            InstallView(model: model, gameID: target.id, onOpenSettings: { returnToInstallFromEnv = target.id }).environmentObject(loc)
         }
         .onChange(of: model.spaceRequest) { id in if let id { spaceFor = id; model.spaceRequest = nil } }   // 设置页「磁盘空间」
         .onChange(of: model.displayRequest) { id in if let id { displayFor = id; model.displayRequest = nil } }   // 控制口打开启动设置
-        .sheet(item: Binding(get: { spaceFor.map(OptionsTarget.init) }, set: { spaceFor = $0?.id })) { target in
+        .sheet(item: Binding(get: { spaceFor.map(OptionsTarget.init) }, set: {
+            spaceFor = $0?.id
+            if $0 == nil, returnToEnvFromSpace {
+                returnToEnvFromSpace = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { model.showEnvironment = true }
+            }
+        })) { target in
             FreeSpaceView(model: model, gameID: target.id).environmentObject(loc)
         }
         .sheet(item: Binding(get: { displayFor.map(OptionsTarget.init) }, set: { displayFor = $0?.id })) { target in
-            LaunchSettingsSheet(model: model, gameID: target.id, openInput: { inputFor = target.id }).environmentObject(loc)
+            LaunchSettingsSheet(model: model, gameID: target.id, openInput: {
+                returnToDisplayFromInput = target.id
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { inputFor = target.id }
+            }).environmentObject(loc)
         }
         .sheet(item: Binding(get: { saveFor.map(OptionsTarget.init) }, set: { saveFor = $0?.id; if $0 == nil { saveDrop = nil } })) { target in
             SaveManageSheet(model: model, gameID: target.id, source: saveDrop).environmentObject(loc)
         }
-        .sheet(item: Binding(get: { inputFor.map(OptionsTarget.init) }, set: { inputFor = $0?.id })) { target in
+        .sheet(item: Binding(get: { inputFor.map(OptionsTarget.init) }, set: {
+            inputFor = $0?.id
+            if $0 == nil, let back = returnToDisplayFromInput {
+                returnToDisplayFromInput = nil
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { displayFor = back }
+            }
+        })) { target in
             InputSettingsSheet(model: model, gameID: target.id).environmentObject(loc)
         }
         .sheet(item: Binding(get: { model.diagUploadFor.map(OptionsTarget.init) }, set: { model.diagUploadFor = $0?.id })) { target in   // 上传给开发者（游戏库菜单 / 控制口）
             UploadDiagnosticsSheet(model: model, gameID: target.id.isEmpty ? nil : target.id, operations: nil, fallback: "") { model.diagUploadFor = nil }.environmentObject(loc)
         }
         .background(DownstreamPromptHost(model: model))   // 下游深度方案确认页（DownstreamConfirmSheet.swift）
-        .background(CrashPromptHost(model: model))       // 上次开着金手指 / 补丁时异常退出：已当场关掉，开局时通知关了哪几条
+        .background(CrashPromptHost(model: model))
+        .background(PreviousSavePromptHost(model: model))   // 上一局读存档出事：开始前问要不要回到上一份存档；回过去后提示可以换回来       // 上次开着金手指 / 补丁时异常退出：已当场关掉，开局时通知关了哪几条
         .alert(txt("game.delete.title").replacingOccurrences(of: "{0}", with: deleteFor?.name ?? ""), isPresented: Binding(get: { deleteFor != nil }, set: { if !$0 { deleteFor = nil } })) {
             Button(txt("game.cancel"), role: .cancel) { deleteFor = nil }
             Button(txt("game.delete.confirm"), role: .destructive) { if let g = deleteFor { model.deleteGame(g) }; deleteFor = nil }
@@ -160,23 +184,59 @@ struct LauncherView: View {
         } message: { Text(loc.backend(model.libraryConfirm?.message ?? "")) }
         .sheet(isPresented: $model.showAddGames) { ImportSheet(model: model, kind: .games).environmentObject(loc) }
         // 打开时最多一个更新弹窗（有新版 / 这版更新了什么），只给最新一期；关掉（含 Esc）= 这一版不再弹
-        .sheet(isPresented: Binding(get: { model.updatePopup != nil && !model.showAddGames && !model.showKeys }, set: { if !$0, model.updatePopup != nil { model.closeUpdatePopup() } })) {
-            if model.updatePopup?["kind"] as? String == "feature" {   // 大版本首次打开的新功能大窗（docs/site/feature.json，updater.py feature_spotlight）
+        .sheet(isPresented: Binding(get: { isUpdatePopupPresented }, set: { if !$0, model.updatePopup != nil { model.closeUpdatePopup() } })) {
+            if updatePopupIsFeature {   // 大版本首次打开的新功能大窗（docs/site/feature.json，updater.py feature_spotlight）
                 FeatureSpotlightView(model: model, language: uiLanguage)
             } else {
                 UpdatePopupView(model: model, language: uiLanguage)
             }
         }
-        .alert(txt(model.updateGate ?? "update.gate.busy"), isPresented: Binding(get: { model.updateGate != nil && model.updatePopup == nil }, set: { if !$0 { model.updateGate = nil } })) {
-            Button(txt("update.after.ok"), role: .cancel) { model.updateGate = nil }
-        } message: { Text(txt((model.updateGate ?? "update.gate.busy") + ".body")) }
-        .sheet(isPresented: $model.showKeys) { ImportSheet(model: model, kind: .keys).environmentObject(loc) }
+        // 关窗淡出时 updatePopup 已清空：沿用最后一次的种类，不在淡出时换成另一种弹窗
+        .onReceive(model.$updatePopup) { if let next = $0 { updatePopupIsFeature = next["kind"] as? String == "feature" } }
+        .alert(txt("update.gate.confirm.title"), isPresented: Binding(get: { model.updateGate != nil && model.updatePopup == nil }, set: { if !$0 { model.updateGate = nil } })) {
+            // 认得出的风险说清后让玩家选（11-18 维护者）：默认焦点在「取消」，「仍然重启」照样换版
+            Button(txt("update.gate.confirm.cancel"), role: .cancel) { model.updateGate = nil }.keyboardShortcut(.defaultAction)
+            Button(txt("update.gate.confirm.restart"), role: .destructive) { model.restartToUpdate(confirmed: true) }
+        } message: { Text(model.updateRestartImpactText(txt)) }
+        .sheet(isPresented: Binding(get: { model.showKeys && !model.showEnvironment }, set: { model.showKeys = $0 })) {
+            ImportSheet(model: model, kind: .keys).environmentObject(loc)
+        }
         .sheet(isPresented: $model.showEnvironment) {
-            EnvironmentView(model: model).environmentObject(loc)
+            EnvironmentView(model: model, onOpenSpace: { returnToEnvFromSpace = true }).environmentObject(loc)
+        }
+        .onChange(of: model.showEnvironment) { shown in
+            if !shown, !returnToEnvFromSpace, let back = returnToInstallFromEnv {
+                returnToInstallFromEnv = nil
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { installFor = back }
+            }
         }
     }
 
     /// 删除游戏 / 清除缓存的进行中与结果（S2ArmLauncherModel.libraryNotice）：点下就出现，成功几秒后自己收起，失败留着等玩家关
+    /// 新版启动器首次启动后的 iPhone 版 S2Arm 横幅（S2ArmLauncherModel+PhoneBanner.swift）：准备中 / 已准备好 / 连上自动更新 / 更新进度
+    @ViewBuilder private var phoneUpdateBar: some View {
+        if let line = model.phoneBannerLine {
+            HStack(spacing: 10) {
+                if line.percent != nil || model.phoneBanner == .preparing { ProgressView().controlSize(.small) }
+                else { Image(systemName: "iphone.and.arrow.forward").foregroundStyle(LauncherPalette.cream) }
+                let label = Text(txt(line.key).replacingOccurrences(of: "{0}", with: "\(line.percent ?? 0)")).font(.manrope(13, .semibold)).monospacedDigit()
+                    .fixedSize(horizontal: false, vertical: true)
+                if line.percent == nil && model.phoneBanner != .preparing {   // 手动更新（11-16）：横幅文字点了 = 顶栏「更新 iPhone」，玩家点了才装
+                    Button { model.requestPhoneUpdate(language: model.provider.client.environment.uiLanguage ?? "zh-Hans") } label: { label }
+                        .controllerButtonStyle(.plain).accessibilityIdentifier("notice.phoneUpdate.open")
+                } else { label }
+                Spacer(minLength: 8)
+                if line.percent == nil {
+                    Button { model.phoneBanner = nil } label: { Image(systemName: "xmark") }.controllerButtonStyle(.plain).foregroundStyle(.secondary)
+                        .help(txt("notice.close")).accessibilityLabel(txt("notice.close")).accessibilityIdentifier("notice.phoneUpdate.close")
+                }
+            }
+            .padding(.horizontal, LauncherTheme.Metrics.libraryInset).padding(.vertical, 10)
+            .background(LauncherPalette.cream.opacity(0.10))
+            .accessibilityIdentifier("notice.phoneUpdate")
+        }
+    }
+
     @ViewBuilder private var libraryNoticeBar: some View {
         if let n = model.libraryNotice {
             let text = loc.t(n.key + "." + { switch n.kind { case .running: "running"; case .done: "done"; case .failed: "failed" } }())
@@ -194,7 +254,7 @@ struct LauncherView: View {
                         .accessibilityIdentifier("notice.library.close")
                 }
             }
-            .padding(.horizontal, 34).padding(.vertical, 10)
+            .padding(.horizontal, LauncherTheme.Metrics.libraryInset).padding(.vertical, 10)
             .background((n.kind == .failed ? LauncherPalette.danger : LauncherPalette.cream).opacity(0.10))
             .accessibilityIdentifier("notice.library")
             .task(id: n) { if n.kind == .done { try? await Task.sleep(nanoseconds: 6_000_000_000); if model.libraryNotice == n { model.libraryNotice = nil } } }
@@ -219,12 +279,16 @@ struct LauncherView: View {
         Text(verbatim: Self.displayVersion).font(.manrope(8.5, .medium)).monospacedDigit().foregroundStyle(.tertiary)
             .lineLimit(1).fixedSize().textSelection(.enabled).help(Self.displayVersion).accessibilityIdentifier("topbar.version")
     }
-    /// 「UI by NX2Apple & SkyRiN」：SkyRiN 链到界面作者主页，样式与正文一样。
+    /// 「UI by NX2Apple, SkyRiN & shenxianmq」：两位界面作者的名字各自链到主页，样式与正文一样（shenxianmq：11-17 首页 / 出包页 / 更新流程交互设计，#1498）。
     static let uiCredit: AttributedString = {
-        var text = AttributedString("UI by NX2Apple & ")
-        var name = AttributedString("SkyRiN")
-        name.link = URL(string: "https://x.com/skyrin1008")
-        text.append(name)
+        var text = AttributedString("UI by NX2Apple, ")
+        var skyrin = AttributedString("SkyRiN")
+        skyrin.link = URL(string: "https://x.com/skyrin1008")
+        text.append(skyrin)
+        text.append(AttributedString(" & "))
+        var shen = AttributedString("shenxianmq")
+        shen.link = URL(string: "https://github.com/shenxianmq")
+        text.append(shen)
         return text
     }()
 
@@ -267,37 +331,56 @@ struct LauncherView: View {
                 PhoneUpdateButton(model: model, language: uiLanguage)
                 phonePill
                 updateButton
-                // 玩家、手柄跟右边的圆钮放在一起（文字胶囊在左），右侧一排都是圆钮
-                PlayerToolbarButton(loc: loc)   // 本地玩家（#623）：这次用谁的身份玩，点开切换 / 添加；标题栏另起视图树、环境对象传不进去，显式给
-                ControllerToolbarButton(controller: model.controller, show: $showController,
-                                        lang: loc.lang.code)
-                messagesButton
-                Button { installFor = nil; model.goToLibrary() } label: {
-                    Label(loc.t("s2arm.nav.library"), systemImage: "square.grid.2x2")
-                }
-                .controllerButtonStyle(ConsoleIconButtonStyle()).help(loc.t("s2arm.nav.library"))
-                .controllerID("top.library")
-                Button { model.showAddGames = true } label: {
-                    Label(loc.t("s2arm.action.import"), systemImage: "plus")
-                }
-                .controllerButtonStyle(ConsoleIconButtonStyle()).disabled(model.busy)
-                .help(loc.t("s2arm.action.import")).controllerID("top.import")
-                Button { model.showEnvironment = true } label: {
-                    Image(systemName: "gearshape").overlay(alignment: .topTrailing) {
-                        Circle().fill(environmentColor).frame(width: 5, height: 5).offset(x: 5, y: -3)
+                HStack(spacing: 4) {
+                    // 0.6.0 动态窗口（通用壳开关后面，iPhone 总控台「五」）：有和 App 相关的作业时出现一颗圆钮——外圈进度环 + 一行小字，做完闪 ✓，
+                    //   失败 / 停下留橙色「!」，点它到总控台；没有作业、开关关着：不出现（顶栏照 #1402 只留玩家 → 手柄 → 消息 → 设置 → 报修）
+                    if consoleEnabled && (model.dynamicJob != nil || model.dynamicDone || model.dynamicAlert) {
+                        Button { installFor = nil; model.openConsoleFromTopBar() } label: {
+                            HStack(spacing: 6) {
+                                ZStack {
+                                    Image(systemName: model.dynamicAlert ? "exclamationmark" : model.dynamicDone ? "checkmark" : "square.grid.2x2")
+                                        .foregroundStyle(model.dynamicAlert ? .orange : model.dynamicDone ? .green : .white)
+                                    if let job = model.dynamicJob {
+                                        Circle().trim(from: 0, to: CGFloat(job.fraction ?? 0.25)).stroke(LauncherPalette.cream, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                                            .rotationEffect(.degrees(-90)).frame(width: 26, height: 26)   // 拿不到进度时显示一段静止的环
+                                    }
+                                }
+                                if let job = model.dynamicJob {
+                                    Text(job.label + (job.fraction.map { " \(Int($0 * 100))%" } ?? "")).font(.manrope(11)).monospacedDigit().lineLimit(1).frame(maxWidth: 150)
+                                }
+                            }
+                            .accessibilityLabel(loc.t("s2arm.nav.library")).accessibilityValue(model.dynamicJob?.label ?? "")
+                        }
+                        .controllerButtonStyle(ConsoleIconButtonStyle(backgroundless: true)).launcherTooltip(model.dynamicJob.map(\.label) ?? loc.t("s2arm.nav.library"), placement: .below)
+                        .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: model.dynamicDone)
+                        .controllerID("top.library")
                     }
+                    PlayerToolbarButton(loc: loc)   // 标题栏另起视图树，显式传入本地化对象。
+                    ControllerToolbarButton(controller: model.controller, show: $showController,
+                                            lang: loc.lang.code)
+                    messagesButton
+                    // 就绪 / 检查中不挂角标；环境缺项时用红点和无障碍说明提示玩家。
+                    Button { model.showEnvironment = true } label: {
+                        Image(systemName: "gearshape").overlay(alignment: .topTrailing) {
+                            if environmentNeedsAction {
+                                Circle().fill(LauncherPalette.danger).frame(width: 5, height: 5).offset(x: 5, y: -3)
+                            }
+                        }
+                    }
+                    .controllerButtonStyle(ConsoleIconButtonStyle(backgroundless: true))
+                    .launcherTooltip(environmentNeedsAction ? txt("nav.settings") + "：" + loc.t("s2arm.env.missing") : txt("nav.settings"), placement: .below)
+                    .accessibilityLabel(txt("nav.settings"))
+                    .accessibilityValue(environmentNeedsAction ? loc.t("s2arm.env.missing") : "")
+                    .controllerID("top.settings")
                 }
-                .controllerButtonStyle(ConsoleIconButtonStyle())
-                .help(txt("nav.settings")).accessibilityLabel(txt("nav.settings")).controllerID("top.settings")
-                // 故障报修（11-13）：任何页面同一位置（顶栏最右，Windows 同位），点开就是全局「上传给开发者」弹窗（不针对某款，
-                //   作业层自动附最近一次失败的错误摘要）；报错页的指引 ReportHint 指的就是它
+                // 报错页的 ReportHint 指向这里：所有页面保持同一个全局入口。
                 Button { model.diagUploadFor = "" } label: {
-                    Label(BackendText.launcherText("report.button", language: uiLanguage), systemImage: "exclamationmark.bubble")
+                    Label(txt("report.button"), systemImage: "exclamationmark.bubble")
                 }
-                .controllerButtonStyle(ConsoleIconButtonStyle()).help(txt("report.button"))
+                .controllerButtonStyle(ConsoleIconButtonStyle(backgroundless: true)).launcherTooltip(txt("report.button"), placement: .below)
                 .controllerID("top.report").accessibilityIdentifier("top.report")
         }
-        .padding(.trailing, LauncherTheme.Metrics.libraryInset)
+        .padding(.trailing, 6)
         .fixedSize()   // 放在标题栏里没有宽度约束，不固定的话按钮文字会被压成省略号
         .labelStyle(.titleAndIcon)   // Popovers keep their text; icon styles are local to each toolbar button.
         .tint(LauncherPalette.cream)
@@ -372,13 +455,8 @@ struct LauncherView: View {
 
     private struct OptionsTarget: Identifiable { let id: String }
 
-    private var environmentColor: Color {
-        switch model.environmentState {
-        case .unknown: return LauncherPalette.unbuilt
-        case .ready, .readyMac: return LauncherPalette.ready   // readyMac：Mac 上能玩，只差打 iPhone 包的项（环境检查页里单列）
-        case .missing: return LauncherPalette.danger
-        }
-    }
+    /// 环境缺东西、要玩家处理（顶栏设置按钮挂红点）。readyMac（Mac 上能玩、只差打 iPhone 包的项）照旧算就绪、不挂：只玩 Mac 的玩家不该一直看到提醒，缺的项在设置页单列
+    private var environmentNeedsAction: Bool { model.environmentState == .missing }
 
     /// 顶部公告条（v0.2.3）：醒目的琥珀色底、整条宽，压在内容上方但不盖住任何按钮；× 关掉后同一条不再出现。文字取自 notice.json，代码里不写公告内容
     @ViewBuilder private var noticeBar: some View {
@@ -395,66 +473,143 @@ struct LauncherView: View {
                 Button { model.dismissNotice() } label: { Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).frame(width: 22, height: 22).contentShape(Rectangle()) }
                     .controllerButtonStyle(.plain).foregroundStyle(LauncherPalette.cream.opacity(0.8)).help(txt("notice.close")).accessibilityLabel(txt("notice.close"))
             }
-            .padding(.horizontal, 24).padding(.vertical, 10)
+            .padding(.horizontal, LauncherTheme.Metrics.libraryInset).padding(.vertical, 10)
             .background(LauncherPalette.building.opacity(0.16))
             .overlay(alignment: .bottom) { Rectangle().fill(LauncherPalette.building.opacity(0.45)).frame(height: 1) }
         }
     }
 
-    /// 有新版：顶栏一颗「有新版 vX」（点开更新弹窗，玩家点「现在更新」才下）；下载时一行小字。都在顶栏，不打断玩家。
     @ViewBuilder private var updateButton: some View {
         switch model.updateState {
-        case .working(let id, let percent):
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.mini)
-                Text(txt(id).replacingOccurrences(of: "{0}", with: "\(percent ?? 0)")).font(.manrope(12)).monospacedDigit().foregroundStyle(.secondary)
-            }
-        case .ready, .idle where model.availableUpdate != nil:
-            // 草图：「以后再说」之后顶栏留「有新版 vX」，点开回到更新弹窗①（「现在更新并重启」在弹窗里；有局在跑时那里先拦下说明）
+        case .working(_, let percent):
+            let tip = downloadTooltip(percent: percent)
             Button { model.showUpdatePopup() } label: {
-                Label(txt("update.top.available").replacingOccurrences(of: "{0}", with: model.availableUpdate?["version"] as? String ?? ""), systemImage: "arrow.down.circle")
+                // 平时就是这颗 arrow.down.circle；下载中外圈调成半透明当底轨，实色进度叠在同一圈上（和头像等圆形图标一样大）
+                Image(systemName: "arrow.down.circle")
+                    .symbolRenderingMode(.palette).foregroundStyle(.white.opacity(0.95), .white.opacity(0.3))
+                    .overlay { downloadRing(percent: percent).padding(2.5).allowsHitTesting(false) }
             }
-            .controllerButtonStyle(ConsoleIconButtonStyle())
-            .help(txt("update.top.available").replacingOccurrences(of: "{0}", with: model.availableUpdate?["version"] as? String ?? ""))
-            .controllerID("top.update")
+            .controllerButtonStyle(ConsoleIconButtonStyle(backgroundless: true))
+            .launcherTooltip(tip, placement: .below).accessibilityLabel(tip).controllerID("top.update")
+        case .ready where model.showRestartUpdateButton:
+            let title = txt("update.top.restart")
+            Button { model.restartToUpdate() } label: {
+                Text(title)
+            }
+            .controllerButtonStyle(LauncherSecondaryButtonStyle())
+            .clipShape(Capsule())
+            .overlay(Capsule().strokeBorder(LauncherTheme.Colors.border).allowsHitTesting(false))
+            .launcherTooltip(title, placement: .below).controllerID("top.update")
+        case .ready:
+            Image(systemName: "arrow.down.circle")
+                .font(.system(size: 16, weight: .medium))
+                .symbolRenderingMode(.palette).foregroundStyle(.white.opacity(0.95), .white.opacity(0.3))
+                .overlay { downloadRing(percent: 100).padding(2.5) }
+                .frame(width: 40, height: 40)
+                .accessibilityHidden(true)
+        case .idle where model.availableUpdate != nil:
+            let version = model.availableUpdate?["version"] as? String ?? ""
+            updateIndicator(txt("update.menu.available").replacingOccurrences(of: "{0}", with: version), dot: LauncherPalette.cream)
         case .failed(let code):
-            // 顶栏只留「重试」；失败原因（人话 + 错误码 + 打开下载页）放到底部的错误 toast，× 可关，不再挤在顶栏里跑版
-            Button { model.downloadUpdate() } label: { Text(txt("update.retry")).font(.manrope(12.5, .semibold)).lineLimit(1) }
-                .controllerButtonStyle(LauncherSecondaryButtonStyle())
-                .help(txt("update.error." + code))
-        case .idle: EmptyView()
+            updateIndicator(txt("update.error." + code), dot: LauncherPalette.danger)
+        case .idle:
+            EmptyView()
         }
     }
 
-    /// 更新失败的错误 toast：贴在窗口底部，× 关掉后这次失败不再显示；再失败（重试后）会重新出现
+    private func updateIndicator(_ title: String, dot: Color) -> some View {
+        Button { model.showUpdatePopup() } label: {
+            Image(systemName: "arrow.down.circle").overlay(alignment: .topTrailing) {
+                Circle().fill(dot).frame(width: 5, height: 5).offset(x: 5, y: -3)
+            }
+        }
+        .controllerButtonStyle(ConsoleIconButtonStyle(backgroundless: true))
+        .launcherTooltip(title, placement: .below).accessibilityLabel(title).controllerID("top.update")
+    }
+
+    private func downloadTooltip(percent: Int?) -> String {
+        percent.map { txt("update.menu.downloading").replacingOccurrences(of: "{0}", with: "\($0)") }
+            ?? txt("update.menu.downloadingPlain")
+    }
+
+    @ViewBuilder private func downloadRing(percent: Int?) -> some View {
+        if let percent {
+            downloadArc(fraction: CGFloat(min(max(percent, 0), 100)) / 100)
+                .animation(.easeOut(duration: 0.2), value: percent)
+        } else if reduceMotion {
+            downloadArc(fraction: 0.26)
+        } else {
+            TimelineView(.animation) { context in
+                let turn = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.2) / 1.2
+                downloadArc(fraction: 0.26).rotationEffect(.degrees(turn * 360))
+            }
+        }
+    }
+
+    private func downloadArc(fraction: CGFloat) -> some View {
+        Circle().trim(from: 0, to: fraction)
+            .stroke(LauncherPalette.cream, style: StrokeStyle(lineWidth: 1.75, lineCap: .round))
+            .rotationEffect(.degrees(-90))
+    }
+
+    private var isUpdatePopupPresented: Bool {
+        model.updatePopup != nil && !model.showAddGames && !model.showKeys && !model.showEnvironment
+    }
+
     @ViewBuilder private var updateErrorToast: some View {
-        if case .failed(let code) = model.updateState, !updateErrorDismissed {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
+        if model.updatePopup == nil {
+            if let code = model.checkError {
+                updateErrorToast(code: code, checkFailure: true)
+            } else if case .failed(let code) = model.updateState, !updateErrorDismissed {
+                updateErrorToast(code: code, checkFailure: false)
+            }
+        }
+    }
+
+    private func updateErrorToast(code: String, checkFailure: Bool) -> some View {
+        VStack(alignment: .trailing, spacing: LauncherTheme.Space.small) {
+            HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "exclamationmark.circle.fill").foregroundStyle(LauncherPalette.danger)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(txt("update.error." + code)).font(.manrope(13, .semibold)).foregroundStyle(LauncherPalette.cream)
-                        .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 2).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    if checkFailure {
+                        Text(txt("update.checkFailed.title")).font(.manrope(13, .bold)).foregroundStyle(LauncherPalette.cream)
+                    }
+                    Text(txt("update.error." + code)).font(.manrope(13, checkFailure ? .regular : .semibold))
+                        .foregroundStyle(LauncherPalette.cream).fixedSize(horizontal: false, vertical: true)
                     Text(txt("update.code").replacingOccurrences(of: "{0}", with: code)).font(.manrope(11.5)).foregroundStyle(.secondary)
                 }
                 .textSelection(.enabled)
-                Spacer(minLength: 8)
-                Button { NSWorkspace.shared.open(S2ArmLauncherModel.downloadPage) } label: { Text(txt("update.download_page")).font(.manrope(12.5, .semibold)).lineLimit(1) }
-                    .controllerButtonStyle(LauncherSecondaryButtonStyle())
-                Button { withAnimation(.easeOut(duration: 0.2)) { updateErrorDismissed = true } } label: {
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Button {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        if checkFailure { model.checkError = nil }
+                        else { updateErrorDismissed = true }
+                    }
+                } label: {
                     Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).frame(width: 22, height: 22).contentShape(Rectangle())
                 }
                 .controllerButtonStyle(.plain).foregroundStyle(LauncherPalette.cream.opacity(0.8))
                 .help(txt("notice.close")).accessibilityLabel(txt("notice.close"))
             }
-            .padding(.horizontal, 16).padding(.vertical, 12)
-            .frame(maxWidth: 560)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-            .background(LauncherPalette.danger.opacity(0.14), in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(LauncherPalette.danger.opacity(0.5), lineWidth: 1))
-            .shadow(color: .black.opacity(0.35), radius: 16, y: 6)
-            .padding(.horizontal, 24).padding(.bottom, 24)
-            .transition(.move(edge: .bottom).combined(with: .opacity))
+            HStack(spacing: LauncherTheme.Space.small) {
+                Button(txt("update.popup.retryNow")) {
+                    if checkFailure { model.checkForUpdatesManually() }
+                    else { model.downloadUpdate() }
+                }
+                .controllerButtonStyle(LauncherSecondaryButtonStyle())
+                Button(txt("update.download_page")) { NSWorkspace.shared.open(S2ArmLauncherModel.downloadPage) }
+                    .controllerButtonStyle(LauncherSecondaryButtonStyle())
+            }
         }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .frame(maxWidth: 560)
+        .background(LauncherPalette.danger.opacity(0.14), in: RoundedRectangle(cornerRadius: 12))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(LauncherPalette.danger.opacity(0.5), lineWidth: 1).allowsHitTesting(false))
+        .shadow(color: .black.opacity(0.35), radius: 16, y: 6)
+        .padding(.horizontal, 24).padding(.bottom, 24)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
     func txt(_ id: String) -> String { BackendText.launcherText(id, language: uiLanguage) }
@@ -468,7 +623,7 @@ struct LauncherView: View {
                 }
             }
         }
-        .controllerButtonStyle(ConsoleIconButtonStyle()).help(txt("messages.button"))
+        .controllerButtonStyle(ConsoleIconButtonStyle(backgroundless: true)).launcherTooltip(txt("messages.button"), placement: .below)
         .accessibilityLabel(txt("messages.button")).accessibilityValue("\(model.unreadMessages)").controllerID("top.messages")
         .popover(isPresented: $showMessages, arrowEdge: .bottom) { MessagesPanel(model: model, language: uiLanguage) }
     }
@@ -585,8 +740,8 @@ private struct ControllerToolbarButton: View {
                 Circle().fill(Color(nsColor: controller.buttonColor)).frame(width: 5, height: 5).offset(x: 5, y: -3)
             }
         }
-        .controllerButtonStyle(ConsoleIconButtonStyle())
-        .help(controller.title(lang: lang) + "：" + toolbarStatus)   // #901：顶栏提示写实际连着的手柄名（两条通道合并看）
+        .controllerButtonStyle(ConsoleIconButtonStyle(backgroundless: true))
+        .launcherTooltip(controller.title(lang: lang) + "：" + toolbarStatus, placement: .below)   // #901：顶栏提示写实际连着的手柄名（两条通道合并看）
         .accessibilityLabel(controller.title(lang: lang) + "：" + toolbarStatus)
         .controllerID("top.controller")
         // 面板用 AppKit 的 NSPopover 自己开关，不用 SwiftUI .popover：实机上 .popover 会在背后重新呈现、套回打开时记下的高度，

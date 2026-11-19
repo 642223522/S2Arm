@@ -119,6 +119,16 @@ class BundleTests(unittest.TestCase):
         self.assertEqual(self.read_info()['CFBundleIcons'],
                          {'CFBundlePrimaryIcon': {'CFBundleIconFiles': ['AppIcon60x60']}})
 
+    def test_tvos_compiled_icon_kept(self):
+        # #1457（期望手写）：tvOS 壳里已有 actool 编的 Assets.car、CFBundleIcons 指着品牌名 → 组装不写散装 PNG、不覆盖图标键
+        (self.app / 'Assets.car').write_bytes(b'CAR')
+        info = self.read_info(); info['CFBundleIcons'] = {'CFBundlePrimaryIcon': 'App Icon'}
+        (self.app / 'Info.plist').write_bytes(plistlib.dumps(info))
+        before = inventory(self.app)
+        self.assertFalse(bundle.write_icons(self.icon, self.app))
+        self.assertEqual(inventory(self.app), before)
+        self.assertEqual(self.read_info()['CFBundleIcons'], {'CFBundlePrimaryIcon': 'App Icon'})
+
     def test_missing_and_empty_icon_leave_app_unchanged(self):
         before = inventory(self.app)
         missing = self.root / 'missing.png'
@@ -181,6 +191,22 @@ class BundleTests(unittest.TestCase):
                                  before['Frameworks/Probe.framework/Probe'])
                 self.assertTrue((self.out / '空 目录').is_dir())
         self.assertEqual(inventory(self.app), before)
+
+    def test_widget_extension_follows_main_bundle_id_and_stays_executable(self):
+        # 主屏小组件扩展（11-16）：组装换主包名时扩展包名跟着成 <主包名>.widget，扩展程序保留可执行位（打 IPA 同一张表）
+        from pack import widget_ext
+        x = self.app / 'PlugIns/S2ArmWidget.appex'
+        x.mkdir(parents=True)
+        (x / 'S2ArmWidget').write_bytes(b'original synthetic widget')
+        (x / 'Info.plist').write_bytes(plistlib.dumps({'CFBundleExecutable': 'S2ArmWidget', 'CFBundleIdentifier': 'local.s2arm.app.widget'}))
+        out = self.assemble(bundle_id='org.s2arm.library')
+        got = plistlib.loads((out / 'PlugIns/S2ArmWidget.appex/Info.plist').read_bytes())
+        self.assertEqual(got['CFBundleIdentifier'], 'org.s2arm.library.widget')
+        self.assertTrue(os.access(out / 'PlugIns/S2ArmWidget.appex/S2ArmWidget', os.X_OK))
+        self.assertEqual(widget_ext.executables(out), ['PlugIns/S2ArmWidget.appex/S2ArmWidget'])
+        self.assertTrue(widget_ext.strip(out))
+        self.assertFalse((out / 'PlugIns').exists())
+        self.assertFalse(widget_ext.strip(out))
 
     def test_identity_cannot_be_overridden_by_optional_metadata(self):
         self.assemble(metadata={'CFBundleIdentifier': 'org.wrong.id', 'CFBundleDisplayName': 'wrong'})
@@ -440,34 +466,73 @@ class BundleTests(unittest.TestCase):
     def test_ipa_over_zip32_budget_is_a_readable_red_line(self):
         """11-08 反馈：9.78 GB 的 PERSONA4 The GOLDEN 出包停在「出包 2/5」、错误码 package_failed「原因没认出来」。
         不写 zip64（侧载工具读不了）时超过 32 位上限，zipfile 收尾才抛 LargeZipFile——它不是 OSError，父进程只看到「打 ipa 失败」。
-        这里三层都按规则手写预期：条目数预先判死、单文件预先判死、收尾的 LargeZipFile 转成带体积账的 BundleError；三种都不留临时件"""
+        这里按规则手写预期：条目数预先判死、单文件预先判死，都不留临时件；压缩后整份装不下见 test_ipa_over_2_gib_archive_offset_is_a_readable_red_line"""
         entries = sum(1 for _ in bundle._tree(self.app)[1])
         with patch.object(bundle, 'ZIP32_ENTRIES', entries - 1):
             with self.assertRaises(ValueError) as got:
                 bundle.write_ipa(self.app, self.root / 'entries.ipa')
         self.assertIn(f'{entries} 个条目', str(got.exception))
         self.assertFalse((self.root / 'entries.ipa').exists())
-        with patch.object(bundle, 'ZIP32_MAX', 8):
+        with patch.object(bundle, 'ZIP32_ENTRY_MAX', 8):
             with self.assertRaises(ValueError) as got:
                 bundle.write_ipa(self.app, self.root / 'single.ipa')
         self.assertIn('单个文件超过 zip 32 位上限', str(got.exception))
         self.assertFalse((self.root / 'single.ipa').exists())
 
-        class _FullZip(bundle.zipfile.ZipFile):   # 压缩后装不下：zipfile 在收尾时抛 LargeZipFile（真实行为，见 zipfile._write_end_record）
-            def close(self):
-                raise zipfile.LargeZipFile('Filesize would require ZIP64 extensions')
-            def __del__(self):   # 桩：不让 GC 里再抛一次、把噪音写进被测进程的标准错误
-                pass
+    @unittest.skipIf(os.name == 'nt', '要稀疏文件才能便宜地造 2 GiB 以上的条目；NTFS 默认不稀疏，会真写 2.2 GB')
+    def test_ipa_entry_between_2_and_4_gib_stays_zip32(self):
+        """#636：2.40 GiB 的 Frameworks/S2AImages.dylib 被拒「单个文件超过 zip 32 位上限」。zip32 的大小字段是无符号 32 位（上限 4 GiB − 1），
+        侧载工具（AltServer Windows 的 minizip 1.01e）读大小也按无符号 uLong；真正卡在 2 GiB 的是它用有符号 long 做 fseek / ftell 的偏移，
+        即整份 IPA 的字节数，不是单个条目解压后的大小。这里造 2.2 GiB 的稀疏全零文件（压缩后只有几 MB）：
+        必须出成 IPA，且按原始字节核本地头 / 中央目录都是纯 zip32（无 zip64 额外字段、解压所需版本 ≤ 2.0、无数据描述符），大小字段 = 原大小"""
+        size = 2_200_000_000
+        big = self.app / 'Frameworks/S2AImages.dylib'
+        with big.open('wb') as f:
+            f.truncate(size)
+        output = self.root / 'big.ipa'
+        bundle.write_ipa(self.app, output)
+        raw = output.read_bytes()
+        self.assertLess(len(raw), 2 ** 31)
+        self.assertEqual(raw.rfind(b'PK\x06\x06'), -1, '不该有 zip64 结尾记录')
+        name = b'Payload/S2Arm.app/Frameworks/S2AImages.dylib'
+        found = False
+        off = 0
+        while True:   # 逐个本地头找目标条目
+            local = raw.find(b'PK\x03\x04', off)
+            if local < 0:
+                break
+            need, flags, method = struct.unpack_from('<HHH', raw, local + 4)
+            _, _, usize, nlen, xlen = struct.unpack_from('<IIIHH', raw, local + 14)
+            if raw[local + 30:local + 30 + nlen] == name:
+                found = True
+                self.assertEqual((usize, method, xlen, flags & 0x8), (size, 8, 0, 0))
+                self.assertLessEqual(need, 20)
+                break
+            off = local + 4
+        self.assertTrue(found)
+        with zipfile.ZipFile(output) as archive:
+            info = archive.getinfo(name.decode())
+            self.assertEqual(info.file_size, size)
+            self.assertFalse(any(info.extra[i:i + 2] == b'\x01\x00' for i in range(0, len(info.extra), 2)))
+            crc = 0
+            with archive.open(info) as stream:   # 读到底：zipfile 自己核 CRC，不符抛 BadZipFile
+                while chunk := stream.read(1 << 24):
+                    self.assertFalse(any(chunk))
+                    crc = zlib.crc32(chunk, crc)
+            self.assertEqual(crc, info.CRC)
 
-        with patch.object(bundle.zipfile, 'ZipFile', _FullZip):
+    def test_ipa_over_2_gib_archive_offset_is_a_readable_red_line(self):
+        """负对照（#636）：放宽的只是单条目大小；整份 IPA 的偏移仍不许过 2 GiB − 1（minizip 1.01e 在 Windows 上 fseek / ftell 用 32 位有符号 long）。
+        把这道闸调到 64 字节，模拟压缩后整份装不下：报带体积账的红行、不留临时件、不出 IPA"""
+        entries = sum(1 for _ in bundle._tree(self.app)[1])
+        with patch.object(bundle, 'ZIP32_ARCHIVE_MAX', 64):
             with self.assertRaises(ValueError) as got:
-                bundle.write_ipa(self.app, self.root / 'full.ipa')
+                bundle.write_ipa(self.app, self.root / 'offset.ipa')
         message = str(got.exception)
         self.assertIn('非 zip64 的 IPA 装不下这份 App', message)
         self.assertIn(f'{entries} 个条目', message)
         self.assertIn('文件合计', message)
-        self.assertIn('Filesize would require ZIP64 extensions', message)
-        self.assertFalse((self.root / 'full.ipa').exists())
+        self.assertFalse((self.root / 'offset.ipa').exists())
         self.assertFalse(list(self.root.glob('.ipa-*')))
 
     def test_main_turns_large_zipfile_into_one_red_line(self):
@@ -480,14 +545,14 @@ class BundleTests(unittest.TestCase):
 
     def test_archive_failure_cleans_temporary_output(self):
         output = self.root / 'failed.ipa'
-        with patch.object(bundle.zipfile.ZipFile, 'open', side_effect=OSError('synthetic failure')):
+        with patch.object(bundle._Zip32Writer, 'add_file', side_effect=OSError('synthetic failure')):
             with self.assertRaises(OSError):
                 bundle.write_ipa(self.app, output)
         self.assertFalse(output.exists())
         self.assertFalse(list(self.root.glob('.ipa-*')))
 
     def test_app_only_never_creates_zip(self):
-        with patch.object(bundle.zipfile, 'ZipFile', side_effect=AssertionError('must not zip')):
+        with patch.object(bundle, '_Zip32Writer', side_effect=AssertionError('must not zip')):
             self.assemble()
         self.assertTrue(self.out.is_dir())
         self.assertFalse(list(self.root.rglob('*.ipa')))

@@ -69,6 +69,11 @@ final class GameLibrary {
         });
     }
 
+    /** 库清单只给日志看：不当状态发给界面，不然收尾这行会盖掉刚报的失败原因 / 「已装好」。 */
+    private void logLibrary() {
+        Log.i("S2Arm", describe());
+    }
+
     private void status(String text) {
         Log.i("S2Arm", text);
         listener.onStatus(text);
@@ -150,7 +155,7 @@ final class GameLibrary {
             } catch (IOException error) {
                 failure("Game import deferred: " + error.getMessage(), R.string.player_err_import, error);
             }
-            status(describe());
+            logLibrary();
         });
     }
 
@@ -175,7 +180,7 @@ final class GameLibrary {
                         + " or its direct subfolders; pick the folder you copied the package into");
             } catch (GamePack.BadPack | IOException | RuntimeException e) {
                 failure("Game in-place registration refused: " + e.getMessage(), R.string.player_err_import, inPlaceAccess(e, true));
-                status(describe());
+                logLibrary();
                 return;
             }
             for (File dir : packages) {
@@ -196,7 +201,7 @@ final class GameLibrary {
                     failure("Game in-place registration of " + dir + " refused: " + e.getMessage(), R.string.player_err_import, inPlaceAccess(e, true));
                 }
             }
-            status(describe());
+            logLibrary();
         });
     }
 
@@ -268,7 +273,7 @@ final class GameLibrary {
             } catch (GamePack.BadPack | IOException | RuntimeException e) {
                 failure("Game import refused: " + e.getMessage(), R.string.player_err_import, e);
             }
-            status(describe());
+            logLibrary();
         });
     }
 

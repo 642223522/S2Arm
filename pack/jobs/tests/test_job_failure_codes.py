@@ -18,7 +18,7 @@ import zipfile
 
 from jobcase import JobCase, JOBS, ROOT, ios_fixture
 from core import Context, Failure, Cancelled, atomic
-from errors import RECOVERY
+from errors import RECOVERY, WINDOWS_RECOVERY
 import build
 import ipa
 import install
@@ -32,6 +32,19 @@ def oneclick_stages(source):
 
 
 REAL_ONECLICK_STAGES = oneclick_stages((ROOT / "pack/oneclick/oneclick.sh").read_text())
+
+
+# 导入路径跑完还原（11-16）：本文件有用例在进程内加载 pack/iml_check.py（它把自己所在的 pack/ 插到 sys.path 最前）、经作业层把 tools/ 插进 sys.path；
+#   不还原，同一进程里后跑的 test_win_jobs 导入 pack.orch 时 pack 解析成 pack/pack.py（「pack is not a package」），全量 discover 才红
+_SYS_PATH = []
+
+
+def setUpModule():
+    _SYS_PATH[:] = sys.path
+
+
+def tearDownModule():
+    sys.path[:] = _SYS_PATH
 
 
 class PackageFailures(JobCase):
@@ -444,6 +457,24 @@ class FreeAccountLimits(unittest.TestCase):
         self.assertTrue(loc.get(RECOVERY["signing_server_unreachable"]) and spec["signing_server_unreachable"]["title"]["en"] and "signing_server_unreachable" in guide)
         self.assertEqual(ctl.AI_NEXT["signing_server_unreachable"][0], "human")
         self.assertEqual(impactor.explain("Anisette error: -80046 Apple rejected"), "login_identity_rejected")
+        # #edc5f5 拆三种（期望手写）：没登录 / 没选中 → apple_not_signed_in；连不上 *.apple.com → apple_server_unreachable；1100 仍是过期。
+        #   连不上 anisette 服务器（jkcoxson）仍归 signing_server_unreachable，不被新的那条吞掉；各处都登记
+        for raw, code in (("Error: No account selected. Please login first using 'plumesign account login'", "apple_not_signed_in"),
+                          ("Error: not logged in", "apple_not_signed_in"),
+                          ("Error: error sending request for url (https://gsa.apple.com/grandslam/GsService2)\n\nCaused by:\n    dns error", "apple_server_unreachable"),
+                          ("Error: Anisette error: Request Error error sending request for url (https://mac-ani.jkcoxson.com/v3/client_info) dns error", "signing_server_unreachable"),
+                          ("Error: Developer API error 1100 (HTTP Some(200)): Your session has expired. Please log in.", "apple_session_expired")):
+            with self.subTest(raw=raw[:40]):
+                self.assertEqual(impactor.explain(raw), code)
+        for code in ("apple_not_signed_in", "apple_server_unreachable"):
+            with self.subTest(code=code):
+                self.assertTrue(loc.get(RECOVERY[code]) and spec[code]["title"]["en"] and spec[code]["detail"]["en"] and code in guide)
+                self.assertEqual(ctl.AI_NEXT[code][0], "human")
+        self.assertIn("添加账号", WINDOWS_RECOVERY["apple_not_signed_in"]); self.assertNotIn("过期", WINDOWS_RECOVERY["apple_not_signed_in"])
+        # Mac 通用壳登录框（apple_login）：Mac 不再叫玩家去开 Impactor（期望手写）
+        self.assertNotIn("Impactor", RECOVERY["apple_not_signed_in"]); self.assertIn("S2Arm 不保存", RECOVERY["apple_not_signed_in"])
+        self.assertTrue(loc.get(WINDOWS_RECOVERY["apple_not_signed_in"]))
+        self.assertIn("DNS", RECOVERY["apple_server_unreachable"]); self.assertIn("不是 Apple ID", RECOVERY["apple_server_unreachable"])
         for other, code in (("Developer API error 9401: An App ID with Identifier 'x' is not available.", "app_id_taken"),
                             ("-21669 verification code", "two_factor_wrong"), ("-20101 entered incorrectly", "apple_id_wrong")):
             self.assertEqual(impactor.explain(other), code)
@@ -623,6 +654,25 @@ class LogCauses(JobCase):
         self.assertIn("候选 disk_full 未采信", d["detail"])
         self.assertIn("40.0 GB", d["detail"])
 
+    def test_final_disk_full_error_is_believed_despite_free_space(self):
+        # 诊断 #9ac7f7：让这一步退出的就是盘满那个异常（回溯末行 WinError 112），失败后临时文件已删、事后量还剩 17 GB → 照报 disk_full，
+        #   说明里写「这一步写满了盘」；旧字样后面还有别的输出的（上一条）仍按 H9 核实
+        with um.patch("errors._free_bytes", return_value=17 << 30):
+            error, d = self.mac_refresh(["Traceback (most recent call last):", '  File "deliver_pack.py", line 26, in clone', "    shutil.copy2(src, dst)",
+                                         "OSError: [WinError 112] 磁盘空间不足。"])
+        self.assertEqual(d["code"], "disk_full")
+        self.assertIn("这一步写满了盘", d["detail"])
+
+    def test_disk_full_measures_the_disk_the_failed_write_names(self):
+        # #df9fd6：Windows 交付资源包 shutil.copy2 报 WinError 112，库盘还剩 226.7 GB、写满的是目标盘；winlong 给报错补上源 / 目标之后，
+        #   命中行点名两条路径。期望手写：按点名路径里剩得最少的那块盘核（C: 1.0 GB < 5 GB）→ 采信 disk_full，依据点名 C:
+        free = lambda p: (1 << 30) if str(p).startswith("C:") else int(226.7 * (1 << 30))
+        with um.patch("errors._free_bytes", side_effect=free):
+            error, d = self.mac_refresh(["OSError: [WinError 112] 磁盘空间不足。: 'E:\\lib\\games\\t1\\pack\\a.bin' -> 'C:\\out\\t1资源包\\a.bin'",
+                                         "【红】fixture 刷新停在 sysdata 阶段（rc=1），现行 = fixture@ex-1"])
+        self.assertEqual(error.code, "disk_full")
+        self.assertIn("C:", d["detail"]); self.assertIn("1.0 GB", d["detail"])
+
     def test_command_not_found_for_present_tool_is_not_believed(self):
         # 剃刀 H9 反例：「x: command not found」但 x 现在找得到（可选探测、PATH 一时没带上）→ 不叫玩家去装工具，按阶段归
         with um.patch("errors._tool_present", return_value=True):
@@ -716,6 +766,22 @@ class PlayerSummary(unittest.TestCase):
 
 
 class RecoveryCoverage(unittest.TestCase):
+    def test_library_busy_stays_short_and_stuck_lock_has_recovery(self):
+        source = RECOVERY["library_busy"]
+        self.assertEqual(source, "等正在用游戏库的那个任务结束（或在任务列表里取消它）再重试；什么都没有改动。")
+        stuck = RECOVERY["library_lock_stuck"]
+        self.assertIn("重新连接或重新挂载", stuck)
+        self.assertIn("不要手动删除锁文件", stuck)
+        translations = json.loads((ROOT / "launchers/macos/adapter/Sources/S2ArmAppleAdapter/Resources/Localizable.json").read_text())
+        self.assertTrue(next(i["en"] for i in translations if i.get("source") == source))
+        self.assertTrue(next(i["en"] for i in translations if i.get("source") == stuck))
+        spec = json.loads((ROOT / "launchers/shared/experience.v1.json").read_text())
+        error = next(i for i in spec["errors"]["items"] if i["code"] == "library_busy")
+        self.assertEqual(error["detail"]["zh-Hans"], "等它结束再试，这次什么都没有改动。")
+        stuck_error = next(i for i in spec["errors"]["items"] if i["code"] == "library_lock_stuck")
+        self.assertEqual(stuck_error["detail"]["zh-Hans"], stuck)
+        self.assertIn("remount", stuck_error["detail"]["en"].lower())
+
     def test_real_lap_names_are_all_mapped_and_unknown_names_fail(self):
         source = (ROOT / "pack/oneclick/oneclick.sh").read_text()
         self.assertEqual(set(oneclick_stages(source)), set(ipa.ONECLICK_PHASES))

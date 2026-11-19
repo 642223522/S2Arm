@@ -183,6 +183,7 @@ struct LaunchSettingsSheet: View {
                                 }
                             }
                         }
+                        PreviousSaveRow(model: model, gameID: gameID, t: t)   // 回到上一份存档（有上一份才显示）
                     }
                     .padding(.horizontal, LauncherTheme.Space.page).padding(.bottom, LauncherTheme.Space.section)
                 }
@@ -300,8 +301,11 @@ struct LaunchSettingsSheet: View {
             }
         case "mods":
             CardRow(title, detail: modsNote(item)) {
-                Button(t("display.mods.import")) { importMods() }.controllerButtonStyle(LauncherSecondaryButtonStyle())
-                    .controllerID("launch.mods.import").disabled(saving || model.busy)
+                HStack(spacing: 10) {
+                    ModHelpButton(text: t("mods.help"), label: t("mods.help.label"), id: "launch.mods.help")   // mod 格式说明（11-17 维护者：玩家不知道支持什么、去哪找）
+                    Button(t("display.mods.import")) { importMods() }.controllerButtonStyle(LauncherSecondaryButtonStyle())
+                        .controllerID("launch.mods.import").disabled(saving || model.busy)
+                }
             }
             ForEach(mods.items) { m in
                 CardRow("  " + m.id, detail: t("display.mods.files").replacingOccurrences(of: "{0}", with: String(m.files))

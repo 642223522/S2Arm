@@ -212,7 +212,7 @@ android {
         // One app per game, keyed by the stable title id (an application id segment starts with a letter).
         applicationId gameDir ? "org.s2arm.game.t${game.titleId.toLowerCase()}" : 'org.s2arm.android'
         manifestPlaceholders = [appLabel: gameDir ? '@string/game_name' : '@string/app_name',
-                                appIcon: gameDir ? '@drawable/ic_launcher' : '@drawable/ic_s2arm',
+                                appIcon: gameDir ? (game.launcherIcon == 'game' ? '@mipmap/game_icon' : '@drawable/ic_launcher') : '@drawable/ic_s2arm',
                                 screenOrientation: gameDir ? 'sensorLandscape' : 'unspecified']
         testInstrumentationRunner project.findProperty('s2arm.testRunner') ?: 'org.s2arm.android.GamepadMappingInstrumentation'
         // Same switch as the native S2A_ANDROID_EXPERIMENTAL_TOUCH below: the touch menu offers passthrough only when built in.

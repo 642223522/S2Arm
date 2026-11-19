@@ -73,7 +73,7 @@ void s2a_load_first_frame(uint64_t now);   // loadprog.c：首帧上屏 → 加�
 void s2a_frame_presented(void) { s2a_wg_frame(atomic_load_explicit(&g_nominal_fps, memory_order_relaxed)); uint64_t now = now_ns(); s2a_dguard_frame(now); s2a_playtime_frame(now, s2a_host_focused()); if (s2a_hud_on() || atomic_load_explicit(&g_hud_brief, memory_order_relaxed)) s2a_hud_frame(); uint64_t f = atomic_fetch_add_explicit(&g_frames, 1, memory_order_relaxed);
     resume_frame(f);
     if (!f) { BOOT_MARK("nnMain → 首帧上屏（游戏自身加载 + 渲染器首帧）"); s2a_load_first_frame(now_ns()); }
-    if (!f && !g_stall_started) { int m = s2a_ap_stall_mode(s2a_dev_on(), stall_s());
+    if (!f && !g_stall_started) { int m = s2a_ap_stall_mode(1, stall_s());   // 11-17 拆开：停住现场只在真停住时打、只进日志（一局至多 3 次），归「诊断读数」玩家包也开；S2A_STALL_DUMP_S=0 关
         if (m) { g_stall_rescue_only = m == 1; atomic_store(&g_stall_stop, 0); if (!pthread_create(&g_stall_thread, NULL, stall_watch, NULL)) g_stall_started = 1; } }
     if (dump_frame() && f + 1 == dump_frame()) { void (*td)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_thread_dump");   // 线程表在 thread.c；只链 ap_host 的单测里取不到就不打
         if (td) { LOG("线程表 [S2A_THREAD_DUMP_FRAME=%llu]：", (unsigned long long)(f + 1)); td(); } } }
@@ -199,6 +199,7 @@ static void *stall_watch(void *a) { s2a_thread_name("s2a-ap-stall");
                 "停帧就有外因，判引擎卡死前先看这一行）",
                 focused ? focused() : -1, suspend ? suspend() : -1, sleeping ? sleeping() : -1, frozen ? frozen() : -1);
             if (td) td();
+            { void (*wd)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "s2a_direct_wait_dump"); if (wd) wd(); }   // 直连：图形层各等待点（已提交 / 已完成栅栏、队列在等的别家事件；direct_host.c）——停帧多半是队列在等一个不来的事件；只链本文件的单测取不到就不打
             if (hd) { char w[96]; snprintf(w, sizeof w, "出图停住看门：停在第 %llu 帧已 %d 秒", (unsigned long long)f, stall_s()); hd(w); }
             continue;
         }

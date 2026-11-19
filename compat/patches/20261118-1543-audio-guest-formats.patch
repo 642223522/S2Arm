@@ -1,0 +1,238 @@
+diff --git a/src/Ryujinx.Audio/Backends/CompatLayer/CompatLayerHardwareDeviceDriver.cs b/src/Ryujinx.Audio/Backends/CompatLayer/CompatLayerHardwareDeviceDriver.cs
+index 8bc2a6016e0a06ac42177d19288a6c1743079c46..4b6492d4d6a4b17c1c9ebc889f5c79d96ce9d375 100644
+--- a/src/Ryujinx.Audio/Backends/CompatLayer/CompatLayerHardwareDeviceDriver.cs
++++ b/src/Ryujinx.Audio/Backends/CompatLayer/CompatLayerHardwareDeviceDriver.cs
+@@ -66,6 +66,14 @@ namespace Ryujinx.Audio.Backends.CompatLayer
+                 return targetSampleFormat;
+             }
+ 
++            // S2Arm: the session decodes any guest format to PCM16 first (CompatLayerHardwareDeviceSession.ReadSamples), so a format
++            //   the device lacks goes through PCM16: straight to it when the device takes PCM16, else on to the chain below (was:
++            //   only PCM16 guests could be converted; audsmx external streams also send PcmInt8 / PcmInt32 / PcmFloat)
++            if (targetSampleFormat != SampleFormat.PcmInt16)
++            {
++                return SelectHardwareSampleFormat(SampleFormat.PcmInt16);
++            }
++
+             // Attempt conversion from PCM16.
+             if (targetSampleFormat == SampleFormat.PcmInt16)
+             {
+diff --git a/src/Ryujinx.Audio/Backends/CompatLayer/CompatLayerHardwareDeviceSession.cs b/src/Ryujinx.Audio/Backends/CompatLayer/CompatLayerHardwareDeviceSession.cs
+index 0bd7a62b010caecd0eb1fe94628571111bd8405d..89cb3edf99c4171a875004c6c0e7808e1bac58b4 100644
+--- a/src/Ryujinx.Audio/Backends/CompatLayer/CompatLayerHardwareDeviceSession.cs
++++ b/src/Ryujinx.Audio/Backends/CompatLayer/CompatLayerHardwareDeviceSession.cs
+@@ -61,7 +61,9 @@ namespace Ryujinx.Audio.Backends.CompatLayer
+         {
+             SampleFormat realSampleFormat = _realSession.RequestedSampleFormat;
+ 
+-            if (_userSampleFormat != realSampleFormat)
++            // Guest buffers are converted as the device reads them (ReadSamples, any guest format); only samples already in Data
++            // (renderer output, PCM16) are converted here
++            if (_userSampleFormat != realSampleFormat && buffer.Data != null)
+             {
+                 if (_userSampleFormat != SampleFormat.PcmInt16)
+                 {
+@@ -73,21 +75,17 @@ namespace Ryujinx.Audio.Backends.CompatLayer
+                     throw new NotImplementedException($"Sample format conversion from {_userSampleFormat} to {realSampleFormat} not implemented.");
+                 }
+ 
+-                // Guest buffers are converted as the device reads them (ReadSamples); only samples already in Data are converted here
+-                if (buffer.Data != null)
+-                {
+-                    ReadOnlySpan<short> samples = MemoryMarshal.Cast<byte, short>(buffer.Data);
+-                    int convertedSize = BackendHelper.GetSampleSize(realSampleFormat) * samples.Length;
++                ReadOnlySpan<short> samples = MemoryMarshal.Cast<byte, short>(buffer.Data);
++                int convertedSize = BackendHelper.GetSampleSize(realSampleFormat) * samples.Length;
+ 
+-                    if (_convertedData == null || _convertedData.Length != convertedSize)
+-                    {
+-                        _convertedData = new byte[convertedSize];
+-                    }
++                if (_convertedData == null || _convertedData.Length != convertedSize)
++                {
++                    _convertedData = new byte[convertedSize];
++                }
+ 
+-                    ConvertSamples(samples, _convertedData);
++                ConvertSamples(samples, _convertedData);
+ 
+-                    buffer.Data = _convertedData;
+-                }
++                buffer.Data = _convertedData;
+             }
+ 
+             _realSession.QueueBuffer(buffer);
+@@ -102,11 +100,6 @@ namespace Ryujinx.Audio.Backends.CompatLayer
+ 
+             if (_downmix)
+             {
+-                if (_userSampleFormat != SampleFormat.PcmInt16)
+-                {
+-                    throw new NotImplementedException("Downmixing formats other than PCM16 is not supported.");
+-                }
+-
+                 if (_userChannelCount != 6 && !(_userChannelCount == 2 && _realSession.RequestedChannelCount == 1))
+                 {
+                     throw new NotImplementedException($"Downmixing from {_userChannelCount} to {_realSession.RequestedChannelCount} not implemented.");
+@@ -124,7 +117,8 @@ namespace Ryujinx.Audio.Backends.CompatLayer
+ 
+         public override void ReadSamples(AudioBuffer buffer, ulong offset, Span<byte> destination)
+         {
+-            Span<byte> input = stackalloc byte[UnitsPerChunk * 6 * sizeof(short)];
++            Span<byte> input = stackalloc byte[UnitsPerChunk * 6 * sizeof(float)];
++            Span<short> decoded = stackalloc short[UnitsPerChunk * 6];
+             Span<short> stereo = stackalloc short[UnitsPerChunk * 2];
+             Span<short> mono = stackalloc short[UnitsPerChunk];
+             Span<byte> output = stackalloc byte[UnitsPerChunk * 2 * sizeof(float)];
+@@ -139,7 +133,11 @@ namespace Ryujinx.Audio.Backends.CompatLayer
+ 
+                 MemoryManager.Read(buffer.DataPointer + unit * (ulong)_unitInSize, inBytes);
+ 
+-                ReadOnlySpan<short> samples = MemoryMarshal.Cast<byte, short>(inBytes);
++                // S2Arm: guest samples in another format (audsmx external streams: PcmInt8 / PcmInt32 / PcmFloat) are decoded to PCM16
++                //   first; the downmix and the conversion to the device format below work on PCM16
++                ReadOnlySpan<short> samples = _userSampleFormat == SampleFormat.PcmInt16
++                    ? MemoryMarshal.Cast<byte, short>(inBytes)
++                    : PcmHelper.DecodeToPcm16(_userSampleFormat, inBytes, decoded);
+ 
+                 if (_downmix)
+                 {
+@@ -160,7 +158,7 @@ namespace Ryujinx.Audio.Backends.CompatLayer
+ 
+                 Span<byte> outBytes = output[..(units * _unitOutSize)];
+ 
+-                if (_userSampleFormat != _realSession.RequestedSampleFormat)
++                if (_realSession.RequestedSampleFormat != SampleFormat.PcmInt16)
+                 {
+                     ConvertSamples(samples, outBytes);
+                 }
+diff --git a/src/Ryujinx.Audio/Renderer/Dsp/PcmHelper.cs b/src/Ryujinx.Audio/Renderer/Dsp/PcmHelper.cs
+index 8134e6b771ca07448ffa525ff0e098fa721108d7..fa4e7972dfeac2225b02f75d4dda3bd529185d0f 100644
+--- a/src/Ryujinx.Audio/Renderer/Dsp/PcmHelper.cs
++++ b/src/Ryujinx.Audio/Renderer/Dsp/PcmHelper.cs
+@@ -1,5 +1,7 @@
++using Ryujinx.Audio.Common;
+ using System;
+ using System.Runtime.CompilerServices;
++using System.Runtime.InteropServices;
+ 
+ namespace Ryujinx.Audio.Renderer.Dsp
+ {
+@@ -79,6 +81,43 @@ namespace Ryujinx.Audio.Renderer.Dsp
+             }
+         }
+ 
++        // S2Arm: guest samples → PCM16, the inverse of ConvertSampleToPcm8 / 32 / Float (the most significant 16 bits; float × 32767,
++        //   saturated). PcmInt24 has no guest source here (audsmx streams store it in 4 bytes with an unknown layout; refused there)
++        public static ReadOnlySpan<short> DecodeToPcm16(SampleFormat format, ReadOnlySpan<byte> input, Span<short> output)
++        {
++            switch (format)
++            {
++                case SampleFormat.PcmInt8:
++                    ReadOnlySpan<sbyte> s8 = MemoryMarshal.Cast<byte, sbyte>(input);
++                    output = output[..s8.Length];
++                    for (int i = 0; i < s8.Length; i++)
++                    {
++                        output[i] = (short)(s8[i] << 8);
++                    }
++                    break;
++                case SampleFormat.PcmInt32:
++                    ReadOnlySpan<int> s32 = MemoryMarshal.Cast<byte, int>(input);
++                    output = output[..s32.Length];
++                    for (int i = 0; i < s32.Length; i++)
++                    {
++                        output[i] = (short)(s32[i] >> 16);
++                    }
++                    break;
++                case SampleFormat.PcmFloat:
++                    ReadOnlySpan<float> f32 = MemoryMarshal.Cast<byte, float>(input);
++                    output = output[..f32.Length];
++                    for (int i = 0; i < f32.Length; i++)
++                    {
++                        output[i] = ConvertSampleToPcmInt16(f32[i]);
++                    }
++                    break;
++                default:
++                    throw new NotImplementedException($"Decoding {format} guest samples to PCM16 not implemented.");
++            }
++
++            return output;
++        }
++
+         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+         public static int Decode(Span<short> output, ReadOnlySpan<short> input, int startSampleOffset, int endSampleOffset, int channelIndex, int channelCount)
+         {
+diff --git a/src/Ryujinx.Horizon/Sdk/Audio/Detail/AudioDeviceManager.cs b/src/Ryujinx.Horizon/Sdk/Audio/Detail/AudioDeviceManager.cs
+index 93d761ea02f6bfbc171d4a3ee39d47bd8c4ef868..d850133ff18257a938c3276cbd4ae1a19913088e 100644
+--- a/src/Ryujinx.Horizon/Sdk/Audio/Detail/AudioDeviceManager.cs
++++ b/src/Ryujinx.Horizon/Sdk/Audio/Detail/AudioDeviceManager.cs
+@@ -127,7 +127,7 @@ namespace Ryujinx.Horizon.Sdk.Audio.Detail
+         }
+ 
+         // 300 IsVirtualDeviceStreamFormatSupported：A 缓冲（设备名）；in StreamFormat @0（12 字节）、u32 功能 @0xc；只回结果码（成功 = 支持）。
+-        //   宿主能直接播的格式回成功；不支持时真机回哪个结果码不知道 → 报红（游戏的 Open 随之失败，红行带着格式）
++        //   宿主能播的格式（ExternalOutputStream.IsHostSupported）回成功；不支持时真机回哪个结果码不知道 → 报红（游戏的 Open 随之失败，红行带着格式）
+         [CmifCommand(300)]
+         public Result IsVirtualDeviceStreamFormatSupported([Buffer(HipcBufferFlags.In | HipcBufferFlags.MapAlias)] ReadOnlySpan<byte> name, StreamFormat format, uint functionality)
+         {
+@@ -135,7 +135,7 @@ namespace Ryujinx.Horizon.Sdk.Audio.Detail
+ 
+             if (!ExternalOutputStream.IsHostSupported(format))
+             {
+-                throw new NotImplementedException($"auddmg:u IUserSession 300：{format} 宿主不能直接播，不知道真机回哪个结果码");
++                throw new NotImplementedException($"auddmg:u IUserSession 300：{format} 宿主不能播，不知道真机回哪个结果码");
+             }
+ 
+             return Result.Success;
+diff --git a/src/Ryujinx.Horizon/Sdk/Audio/Detail/AudioSystemMixer.cs b/src/Ryujinx.Horizon/Sdk/Audio/Detail/AudioSystemMixer.cs
+index 65953b6dc5c0b8bd40ba5c36ed8e728ab35ae092..1317ab89c957300528b4ebad36825f9d715271e3 100644
+--- a/src/Ryujinx.Horizon/Sdk/Audio/Detail/AudioSystemMixer.cs
++++ b/src/Ryujinx.Horizon/Sdk/Audio/Detail/AudioSystemMixer.cs
+@@ -133,20 +133,34 @@ namespace Ryujinx.Horizon.Sdk.Audio.Detail
+             Name = name;
+         }
+ 
+-        // 宿主声音输出能直接播的格式：PcmInt16、48000 Hz、立体声或 5.1（AudioOutputSystem 只收这些；单声道会被它当立体声，不收）
++        // 宿主声音输出能播的格式：48000 Hz、立体声或 5.1（AudioOutputSystem 只收这些；单声道会被它当立体声，不收），
++        //   采样格式 PcmInt8 / PcmInt16 / PcmInt32 / PcmFloat：设备不收的格式由兼容层先解成 PcmInt16 再转（CompatLayerHardwareDeviceSession、
++        //   PcmHelper.DecodeToPcm16）。PcmInt24 不收：sysmix 每样本按 4 字节存它（OpenStreamImpl 的字节表 {1,2,4,4,4}），24 位放在哪 3 字节不知道
+         public static bool IsHostSupported(StreamFormat format)
+         {
+-            return format.SampleFormat == (uint)SampleFormat.PcmInt16 && format.SampleRate == Constants.TargetSampleRate && format.ChannelCount is 2 or 6;
++            return GuestSampleBytes(format.SampleFormat) > 0 && format.SampleRate == Constants.TargetSampleRate && format.ChannelCount is 2 or 6;
++        }
++
++        // 环里每样本字节数（与宿主 BackendHelper.GetSampleSize 一致的那几种）；不支持的格式回 0
++        private static int GuestSampleBytes(uint sampleFormat)
++        {
++            return (SampleFormat)sampleFormat switch
++            {
++                SampleFormat.PcmInt8 => 1,
++                SampleFormat.PcmInt16 => 2,
++                SampleFormat.PcmInt32 or SampleFormat.PcmFloat => 4,
++                _ => 0,
++            };
+         }
+ 
+         public void Open(StreamFormat format, int frameCount)
+         {
+             if (!IsHostSupported(format))
+             {
+-                throw new NotImplementedException($"audsmx:u IExternalStreamSession 0：{format}（宿主声音输出只播 PcmInt16 / 48000 Hz / 2 或 6 声道）");
++                throw new NotImplementedException($"audsmx:u IExternalStreamSession 0：{format}（宿主声音输出只播 PcmInt8 / 16 / 32 / Float、48000 Hz、2 或 6 声道）");
+             }
+ 
+-            int frameBytes = 2 * format.ChannelCount;
++            int frameBytes = GuestSampleBytes(format.SampleFormat) * format.ChannelCount;
+             ulong ringEnd = RingOffset + (ulong)(frameCount + 1) * (ulong)frameBytes;
+ 
+             if (frameCount < 1 || (Buffer & 0xFFF) != 0 || ringEnd > Size)
+@@ -156,7 +170,7 @@ namespace Ryujinx.Horizon.Sdk.Audio.Detail
+ 
+             AudioInputConfiguration configuration = new() { SampleRate = (uint)format.SampleRate, ChannelCount = (ushort)format.ChannelCount };
+ 
+-            ResultCode rc = _outputManager.OpenAudioOut(out _, out _, out AudioOutputSystem output, _memory, string.Empty, SampleFormat.PcmInt16, ref configuration);
++            ResultCode rc = _outputManager.OpenAudioOut(out _, out _, out AudioOutputSystem output, _memory, string.Empty, (SampleFormat)format.SampleFormat, ref configuration);
+ 
+             if (rc != ResultCode.Success)
+             {

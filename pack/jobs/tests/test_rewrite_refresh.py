@@ -3,6 +3,7 @@
 """只重跑改写阶段（pack/jobs/rewrite_refresh.py）的接线：改写器换成按模块打统计行的假程序，游戏库换成内存里的 game.json。
 真改写器上的读数（11-11）：路易吉洋馆 3 命中 main、换进的产物等于改写器直接输出；两款反例 kit 一个字节不动；改写器崩的款抛错、kit 不动。"""
 import os
+import shutil
 import stat
 import tempfile
 import types
@@ -15,12 +16,12 @@ import rewrite_refresh as rr
 from core import Failure
 
 
-def fake_rewriter(d, hits):
+def fake_rewriter(d, hits, key="x18_spdyn"):
     """假改写器：<NSO> <输出目录> <模块> [宽屏表] → 写 <模块>.patched.bin（内容 = 模块名 + new），统计行里 x18_spdyn 按 hits 给"""
     p = Path(d) / "fake-rewrite"
     p.write_text("#!/bin/sh\nprintf 'new-%s' \"$3\" > \"$2/$3.patched.bin\"\nprintf 'fx' > \"$2/$3.fixups.tsv\"\n"
                  "case \" " + " ".join(hits) + " \" in *\" $3 \"*) n=38;; *) n=0;; esac\n"
-                 "echo \"$3 {'plain': 1, 'x18_spdyn': $n}\"\n")
+                 "echo \"$3 {'plain': 1, '" + key + "': $n}\"\n")
     p.chmod(p.stat().st_mode | stat.S_IEXEC)
     return str(p)
 
@@ -34,7 +35,7 @@ class RewriteRefreshTests(unittest.TestCase):
         self.info = {}
         self.events = []
         self.sg_calls = []
-        self.c = types.SimpleNamespace(private=self.tmp, emit=lambda kind, text, **_: self.events.append(text),
+        self.c = jobcase.fake_context(self.tmp, private=self.tmp, emit=lambda kind, text, **_: self.events.append(text), library=self.tmp / "library", work_root=self.tmp / "work",
                                        catalog=lambda: {"games": [{"id": g} for g in ("0100A", "0100B")]})
 
     def kit(self, gid):
@@ -56,9 +57,9 @@ class RewriteRefreshTests(unittest.TestCase):
             return root, list(mods), [root / "cpatch.tsv", root / "cheat-src.a.txt"]
         return run
 
-    def run_refresh(self, games, hits, fail=(), sgrade=None):
+    def run_refresh(self, games, hits, fail=(), sgrade=None, key="x18_spdyn"):
         """sgrade = None：这些款出包时取消了 S 级优化（只按改写器核，原有用例的口径）；给记号串 = 要补 S 级优化、这次的补丁记号"""
-        binary = fake_rewriter(self.tmp, hits)
+        binary = fake_rewriter(self.tmp, hits, key)
         real = rr.rewrite_modules   # 真的那份：桩里只在「这款要失败」时拦，其余照真函数跑假改写器
         cur = {}
         def exefs_of(c, game, work):
@@ -89,6 +90,13 @@ class RewriteRefreshTests(unittest.TestCase):
         self.assertEqual((k / "main.fixups.tsv").read_bytes(), b"fx")
         self.assertEqual((k / "sdk.patched.bin").read_bytes(), b"old-sdk", "没命中的模块一个字节不动")
         self.assertEqual(self.info["0100A"]["ios"], {"shellId": "s1", "pack": "p1", "rewriterId": "rid-new", "mainBid": ""}, "记下改写器指纹，原有字段保留")
+
+    def test_pacga_module_counts_as_affected(self):
+        # 11-17：改写器把 pacga 换成确定性实现；只带 pacga 的模块（统计行 pacga > 0、x18_spdyn 没有）也要换新产物
+        updated, kits = self.run_refresh(["0100A"], hits=["sdk"], key="pacga")
+        self.assertEqual(updated, ["0100A"])
+        self.assertEqual((kits["0100A"] / "sdk.patched.bin").read_bytes(), b"new-sdk")
+        self.assertEqual((kits["0100A"] / "main.patched.bin").read_bytes(), b"old-main")
 
     def test_sgrade_rewrite_needs_no_symlink_privilege(self):
         # #1153：Windows 没开开发者模式建目录软链 WinError 1314，每款都「补丁打入失败」；改写根里的 exefs 要是真目录、内容同原件
@@ -269,7 +277,7 @@ class KeptNroRefreshTests(unittest.TestCase):
         import hashlib
         self.tmp = Path(tempfile.mkdtemp())
         self.events = []
-        self.c = types.SimpleNamespace(private=self.tmp, engine=Path(__file__).resolve().parents[3], env=lambda: dict(os.environ),
+        self.c = jobcase.fake_context(self.tmp, private=self.tmp, engine=Path(__file__).resolve().parents[3], env=lambda: dict(os.environ), library=self.tmp / "library", work_root=self.tmp / "work",
                                        emit=lambda kind, text, **_: self.events.append(text), catalog=lambda: {"games": [{"id": "0100A"}]})
         self.kept = self.tmp / "kept"; self.kept.mkdir()
         self.nro = synthetic_nro(7); self.sha = hashlib.sha256(self.nro).hexdigest()
@@ -383,7 +391,7 @@ class OriginalExefsFormatTests(unittest.TestCase):
             (out / "main.npdm").write_bytes(jobcase.synthetic_npdm(int(self.TID, 16)))
 
         self.c = types.SimpleNamespace(
-            private=self.tmp, library=self.tmp / "library", engine=self.engine,
+            private=self.tmp, library=self.tmp / "library", work_root=self.tmp / "work", engine=self.engine,
             keys=self.tmp / "prod.keys", env=lambda: dict(os.environ), run=run,
         )
         self.c.keys.write_text("synthetic")
@@ -400,12 +408,17 @@ class OriginalExefsFormatTests(unittest.TestCase):
              patch.object(rr.layout, "image_mac", return_value=self.tmp / "no-mac"), \
              patch.object(rr.layout, "path", return_value=self.saved), \
              patch.object(rr.layout, "program_exefs", return_value=self.saved), \
+             patch("programs.save_exefs", side_effect=self._save_exefs), \
              patch.object(library, "selected_packages", return_value=rows):
             return rr.original_exefs(self.c, self.game, self.tmp / "work")
 
     def package(self, source, fmt, kind="base", version=0):
         return {"type": kind, "version": version, "format": fmt, "path": str(source),
                 "titleId": self.TID if kind == "base" else f"{int(self.TID, 16) | 0x800:016X}"}
+
+    def _save_exefs(self, c, gid, src):   # 常驻归档（pack/jobs/programs.py）另有单测；这里只核原件格式解出的 exefs 存的是哪一份
+        shutil.rmtree(self.saved, ignore_errors=True); shutil.copytree(src, self.saved)
+        return self.saved
 
     def assert_saved(self, source_main):
         result = self.original()
@@ -526,3 +539,146 @@ class OriginalExefsFormatTests(unittest.TestCase):
              patch.object(library, "engine_tool", side_effect=lambda _c, name: ns2_dump):
             self.original()
         self.assertEqual(seen, [str(reader)])
+
+
+class NoBackgroundRewriteTests(unittest.TestCase):
+    """11-17 维护者定：改写器指纹变了不再在后台重改写全部游戏（准备更新 iPhone、打开启动器补 S 级都走 ignore_rewriter），
+    只在玩家对这一款出包 / 推送 / 装机 / 起局时前台做；补丁记号里改写器之后的部分（补丁库版本、金手指等）变了照旧补。
+    改写器本身换成计数的替身，期望按规则手写"""
+    G = "0100000000010000"
+
+    def run_ios(self, stored, now_key, ignore):
+        c = types.SimpleNamespace(emit=lambda *a, **k: None, catalog=lambda: {"games": [{"id": self.G, "name": "甲"}]})
+        calls, saved = [], {"ios": dict(stored)}
+        def check(cc, g, kit, target, rid, ignore_rewriter=False):
+            calls.append((g, rid)); return "unaffected"
+        with patch.object(rr, "rewriter_id", lambda cc: "NEWRID"), patch.object(rr, "ios_key", lambda cc, g, rid: now_key(rid)), \
+                patch.object(rr, "kept_todo", lambda *a: False), patch.object(rr, "check_and_update", check), \
+                patch.object(rr, "_refresh_bf_ios", lambda cc, games: []), \
+                patch.object(rr.layout, "game_info", lambda cc, g: saved), patch.object(rr.layout, "ios_kit", lambda cc, g: Path("/kit")), \
+                patch("core.trace", lambda *a, **k: None, create=True), patch("programs.save_recipe", lambda *a: None, create=True):
+            rr.refresh_ios(c, [self.G], ignore_rewriter=ignore)
+        return calls
+
+    def test_rewriter_change_alone_skipped_in_background(self):
+        # 改写器指纹从 OLDRID 换成 NEWRID、补丁记号其余部分不变：后台（ignore_rewriter）0 次改写；前台（玩家推这一款）改写 1 次
+        stored = dict(rewriterId="OLDRID", sgradeKey="OLDRID:plan:v1:-")
+        key = lambda rid: f"{rid}:plan:v1:-"
+        self.assertEqual(self.run_ios(stored, key, True), [])
+        self.assertEqual(self.run_ios(stored, key, False), [(self.G, "NEWRID")])
+
+    def test_patch_library_change_still_refreshed_in_background(self):
+        # 补丁库版本 v1 → v2（记号里改写器之后的部分变了）：后台照旧补（11-14 维护者：补丁库更新 / 导入金手指要补进程序）
+        stored = dict(rewriterId="OLDRID", sgradeKey="OLDRID:plan:v1:-")
+        self.assertEqual(self.run_ios(stored, lambda rid: f"{rid}:plan:v2:-", True), [(self.G, "NEWRID")])
+
+    def test_sgrade_off_game_never_rewritten_in_background(self):
+        # 出包时取消过 S 级优化（记号 None，只看改写器指纹）：后台 0 次；前台照旧按新改写器做
+        stored = dict(rewriterId="OLDRID")
+        self.assertEqual(self.run_ios(stored, lambda rid: None, True), [])
+        self.assertEqual(self.run_ios(stored, lambda rid: None, False), [(self.G, "NEWRID")])
+
+    def test_mac_background_skips_rewriter_change_alone(self):
+        # Mac 运行版本（打开启动器后台补 S 级用 ignore_rewriter）：改写器指纹单独变了直接返回，不跑改写器；前台起局（不带）要跑
+        with tempfile.TemporaryDirectory() as t:
+            rt = Path(t)
+            (rt / "exefs").mkdir()
+            (rt / "exefs/main").write_bytes(bytes(0x48))
+            import json as _json
+            (rt / "manifest.json").write_text(_json.dumps({"files": {}, "rewriterId": "OLDRID"}))
+            c = types.SimpleNamespace(emit=lambda *a, **k: None, catalog=lambda: {"games": []}, private=t)
+            ran = []
+            def boom(*a, **k):
+                ran.append(1); raise Failure("前台才该跑到这里")
+            with patch.object(rr, "rewriter_id", lambda cc: "NEWRID"), patch.object(rr, "sgrade_off", lambda cc, g: True), \
+                    patch.object(rr, "rewriter_bin", boom):
+                self.assertFalse(rr.refresh_mac(c, self.G, rt, ignore_rewriter=True))
+                self.assertEqual(ran, [])
+                self.assertFalse(rr.refresh_mac(c, self.G, rt))   # 前台：要按新改写器做（替身抛错 → 核不了不挡起局，返回 False）
+                self.assertEqual(ran, [1])
+
+
+class FpslKey(unittest.TestCase):
+    """D-7AQ2：FPSLocker 转换代码修了，已出过包的款要走 S 级补进重出表。补丁记号（sgrade_key）只在这款带 FPSLocker 配置时多一段 :fpsl<转换代码指纹>：
+    期望手写——带配置：记号以 :fpsl<指纹> 结尾、转换代码一变记号就变；不带：记号与没加这段时一字不差（不让别的款白白重补）；补丁库取不到：当没带"""
+    def key(self, items, fp="aaaaaaaaaaaa"):
+        c = types.SimpleNamespace(engine=Path(__file__).resolve().parents[3])
+        import patches
+        with patch.object(patches, "version_key", return_value="vk"), patch.object(rr, "plan_code_id", return_value="pc"), \
+             patch.object(rr, "cheats_digest", return_value="-"), patch("mods.code_digest", return_value="-"), \
+             patch.object(rr, "fpsl_code_id", return_value=fp), patch.object(patches, "items_for", side_effect=items if callable(items) else (lambda *a: items)):
+            return rr.sgrade_key(c, "0100AD80208A8000", "rid", "68E3A0EA176A79F4")
+
+    def test_key(self):
+        # 替身与真函数同形：patches.items_for 返回 [(条目字典, 内容字节)]（11-17 原先替身给字典，真函数给元组，单测绿、真游戏上 AttributeError）
+        base = "rid:pc:vk:-"
+        self.assertEqual(self.key([({"kind": "fpsl", "name": "68E3A0EA176A79F4.yaml"}, b"MASTER_WRITE:")]), base + ":fpslaaaaaaaaaaaa")
+        self.assertNotEqual(self.key([({"kind": "fpsl"}, b"")], fp="bbbbbbbbbbbb"), self.key([({"kind": "fpsl"}, b"")]), "转换代码变了记号跟着变")
+        self.assertEqual(self.key([({"kind": "pchtxt", "name": "x.pchtxt"}, b"")]), base, "不带 FPSLocker 配置：记号不变")
+        def gone(*a):
+            raise OSError("补丁库取不到")
+        self.assertEqual(self.key(gone), base, "补丁库取不到：当没带")
+
+    def test_code_id_tracks_converter_files(self):
+        c = types.SimpleNamespace(engine=Path(__file__).resolve().parents[3])
+        a = rr.fpsl_code_id(c)
+        self.assertRegex(a, r"^[0-9a-f]{12}$")
+
+
+class FpslKeyRealLibrary(unittest.TestCase):
+    """补丁记号拿真补丁库条目算（11-17 维护者：替身与真函数不同形，单测绿、真游戏上 AttributeError）：造一份与随启动器装的快照同格式的补丁库
+    （tools/patch_pack.py snapshot：index.json + 各款 g/<程序号>.json.gz），不替换 patches.items_for，走真函数读条目。期望手写——
+    带 FPSLocker 配置（kind fpsl、*.yaml）的款记号以 :fpsl<转换代码指纹> 结尾；只有别的补丁的款没有这段；补丁库里没有的款没有这段；都不抛异常"""
+    def test_key_from_real_items_for(self):
+        import base64, gzip, hashlib, io, json, tarfile, tempfile
+        import patches
+        def item(name, kind, data):
+            return dict(name=name, kind=kind, cat="fps", data=base64.b64encode(data).decode(), sha256=hashlib.sha256(data).hexdigest())
+        bundles = {"g/0100AAAA00000000": [item("68E3A0EA176A79F4.yaml", "fpsl", b"MASTER_WRITE:\n")],
+                   "g/0100BBBB00000000": [item("60fps.pchtxt", "pchtxt", b"@nsobid-0000\n")]}
+        with tempfile.TemporaryDirectory() as t:
+            snap = Path(t) / "patches-v2.tar"; man, blobs = {}, {}
+            for k, items in bundles.items():
+                blob = gzip.compress(json.dumps(dict(schema=2, key=k, items=items)).encode()); blobs[k] = blob
+                man[k] = dict(sha256=hashlib.sha256(blob).hexdigest(), size=len(blob), items=len(items))
+            with tarfile.open(snap, "w") as tf:
+                for n, data in [("index.json", json.dumps(dict(schema=2, generated=1, upstreams={}, bundles=man)).encode())] + [(k + ".json.gz", b) for k, b in blobs.items()]:
+                    ti = tarfile.TarInfo(n); ti.size = len(data); tf.addfile(ti, io.BytesIO(data))
+            c = types.SimpleNamespace(engine=Path(__file__).resolve().parents[3], private=Path(t) / "private", r={})
+            env = dict(os.environ, S2A_PATCH_SNAPSHOT=str(snap))
+            with patch.dict(os.environ, env), patch.object(patches, "cloud_manifest", return_value=None), patch.dict(patches._MANIFEST, clear=True), \
+                 patch.object(rr, "cheats_digest", return_value="-"), patch("mods.code_digest", return_value="-"):
+                self.assertEqual(len(patches.items_for(c, "0100AAAA00000000", "")), 1, "夹具自证：真 items_for 读得到快照里的条目")
+                fp = rr.fpsl_code_id(c)
+                a = rr.sgrade_key(c, "0100AAAA00000000", "rid", "")
+                b = rr.sgrade_key(c, "0100BBBB00000000", "rid", "")
+                n = rr.sgrade_key(c, "0100CCCC00000000", "rid", "")
+        self.assertTrue(a.endswith(":fpsl" + fp), a)
+        self.assertNotIn(":fpsl", b); self.assertNotIn(":fpsl", n)
+
+
+class OwnFrameTableTest(unittest.TestCase):
+    """11-18 #1607：旧包产物根里带改指令（c 行）的我方帧率表只在内部对照口径 S2A_CAPS_OWN=1 交改写器。期望手写——
+    缺省：rewrite_env 不设 S2A_FPS_TSV（不打改指令，60 帧关着游戏不再被解锁）；S2A_CAPS_OWN=1：设成 kit/fps.tsv；
+    own_table 只认带 c 行的 fps.tsv（只有 w 行的通用表、别的文件名都不算）"""
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, self.tmp, True)
+        (self.tmp / "fps.tsv").write_text("build 277178b7dba1b6d4\nc main 0x100 word 6b08015f 7100055f   # x\n", encoding="utf-8")
+
+    def env_of(self, extra):
+        c = types.SimpleNamespace(env=lambda: dict(extra), engine=str(self.tmp))
+        return rr.rewrite_env(c, self.tmp, None, "ios")
+
+    def test_default_does_not_bake_own_table(self):
+        self.assertNotIn("S2A_FPS_TSV", self.env_of({}))
+        self.assertNotIn("S2A_FPS_TSV", self.env_of({"S2A_FPS_TSV": "/leftover"}))
+
+    def test_internal_comparison_still_bakes(self):
+        self.assertEqual(self.env_of({"S2A_CAPS_OWN": "1"})["S2A_FPS_TSV"], str(self.tmp / "fps.tsv"))
+
+    def test_own_table_detection(self):
+        self.assertTrue(rr.own_table(self.tmp / "fps.tsv"))
+        w = self.tmp / "w" / "fps.tsv"; w.parent.mkdir(); w.write_text("present display\nw main 0x1000 f32 60\n# c main 不算\n", encoding="utf-8")
+        self.assertFalse(rr.own_table(w))
+        o = self.tmp / "widen_sites.tsv"; o.write_text("c main 0x100\n", encoding="utf-8")
+        self.assertFalse(rr.own_table(o))

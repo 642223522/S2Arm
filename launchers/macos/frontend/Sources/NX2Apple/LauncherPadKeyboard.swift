@@ -64,6 +64,7 @@ import LauncherPadBridge
         switch action {
         case .back: close(apply: false); return true
         case .submit: close(apply: true); return true
+        case .pageUp: value = ""; return true
         case .filter: if !value.isEmpty { value.removeLast() }; return true
         case .details: value.append(" "); return true
         default: return false
@@ -102,7 +103,7 @@ private struct LauncherPadKeyboardView: View {
                 Button(keyboard.uppercase ? "abc" : "ABC") { keyboard.uppercase.toggle() }
                 Button(keyboard.t("home.keyboard.space")) { keyboard.value.append(" ") }.controllerShortcut(.tertiary)
                 Button("⌫") { if !keyboard.value.isEmpty { keyboard.value.removeLast() } }.controllerShortcut(.secondary)
-                Button(keyboard.t("home.keyboard.clear")) { keyboard.value = "" }
+                Button(keyboard.t("home.keyboard.clear")) { keyboard.value = "" }.controllerShortcut(.leftTrigger)
                 Spacer(minLength: 4)
                 Button(keyboard.t("home.keyboard.cancel")) { keyboard.close(apply: false) }
                     .controllerShortcut(.back)

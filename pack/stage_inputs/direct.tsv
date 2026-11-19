@@ -134,6 +134,7 @@
 外	tools/machine.sh	本机标识 / 账本开关
 外	tools/nospace.sh	无空格路径别名
 外	tools/progress.py	进度打印
+外	tools/pool_workers.py	进程池路数（Windows 至多 61）
 外	tools/progress.sh	进度打印
 外	tools/toolchain.sh	编译器版本另由 MV（S2A_TC_METAL）进键；目标 iOS 大版本不进（产物按 iOS 18 下限编、与它无关）
 外	tests/dmsh_abi_test.sh	门禁单测（出库反射种类 ⊆ 宿主认的种类、链头 ABI 一致），只被 dmsh_build.py / dmsh_chain.py 的注释提到，不改直连产物

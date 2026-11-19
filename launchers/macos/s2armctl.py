@@ -47,7 +47,7 @@ USAGE = """s2armctl —— 让 AI 助手操作 S2Arm（每条命令 = 玩家点�
   customize <游戏号> [--name 名字] [--cover 图片] [--reset-name] [--reset-cover]   改显示名 / 封面（JPG、PNG），下次装到 iPhone 时带上
   delete <游戏号>                    删除这款游戏（IPA / 资源包 / 中间产物 / 缓存；存档与原始游戏文件保留），等删完再返回
   wait <游戏号> [--op build|ipa] [--timeout 秒]
-                                    等该游戏的任务结束：build = Mac 编译（缺省），ipa = iPhone 包；逐段打印进度，失败退出码 1
+                                    等该游戏的任务结束：build = Mac 编译（缺省），ipa = iPhone 包；逐段打印进度，失败退出码 1；接在 build 后面时只等这次 build 起的那个（不拿库里以前的结果）
   targets [--models|--json]         打 iPhone 包的目标设备：当前目标、连着的设备（含设备名）、可选系统；--models 列可选机型
   target probe | target <机型号> <系统大版本>   重新检测连着的设备 / 没连时选机型
   update [restart|retry]            新版后台下载的状态；restart = 重启并换上已下载好的新版，retry = 重试下载（出包中不能重启）
@@ -227,6 +227,8 @@ AI_NEXT = {
     'bundle_id_switched': ('auto', '（警告）原包名被别的签名占用，已自动换新包名装好；告诉玩家手机上可能有两个 S2Arm，旧的不需要可删（先导出存档）'),
     'signing_server_unreachable': ('human', '这台电脑连不上 Impactor 签名要用的服务器 mac-ani.jkcoxson.com（DNS / 连接失败，已自动重试一次）：请玩家检查网络、换 DNS 或开关代理（AI 不改玩家网络设置），然后 s2armctl install <游戏号>'),
     'apple_session_expired': ('human', 'Apple ID 登录过期（Apple 1100）：请玩家在 Impactor「设置」里移除账号、再添加账号重新登录（要输密码，AI 不代做），然后 s2armctl install <游戏号>'),
+    'apple_not_signed_in': ('human', 'S2Arm 里还没用 Apple ID 登录：请玩家在 S2Arm「用 Apple ID 签名」里填邮箱、密码和手机上的验证码登录（要输密码，AI 不代做），然后 s2armctl install <游戏号>'),
+    'apple_server_unreachable': ('human', '这台电脑连不上苹果服务器（*.apple.com，DNS / 连接失败）：不是 Apple ID 的问题；请玩家检查网络、换 DNS 或开关代理（AI 不改玩家网络设置），然后 s2armctl install <游戏号>'),
     'app_id_taken': ('human', '包名在苹果那边已被占用（Apple 错误 9401）：请玩家确认 Impactor / Xcode 里登录的是当初装 S2Arm 的 Apple ID（要输密码，AI 不代做），或付费账号到 developer.apple.com 删掉 io.s2arm.games 开头的旧包名，然后 s2armctl install <游戏号>'),
     'signing_failed': ('ai', 's2armctl logs <任务号> 看签名哪一步报错；偶发的 s2armctl retry <任务号> 一次，再不行请玩家改用 AltStore（装机步骤页第二部分）'),
     'stage_timeout': ('ai', 's2armctl logs <任务号> 看卡在哪；s2armctl retry <任务号> 重试一次，还超时就 s2armctl diag export <输出.zip> 交给玩家反馈'),
@@ -511,6 +513,25 @@ def wait(game, op, limit, before=None):   # before：发命令前已有的任务
         time.sleep(2)
     sys.exit(f'{limit} 秒内没结束（任务 {tid}）')
 
+# build → wait 是两条命令（两个进程）：build 发出前把这款已有的同类任务号记到数据目录，wait 读走后只等之后新起的那个。
+#   原先 wait 不知道发命令前有哪些任务，升级后库里留着老版已完成的出包任务，build 后 wait 立刻拿到它退 0、等于没等（11-16 合入运维 0.5.0 候选升级验收被骗出假绿）
+def build_op(target): return 'build' if target == 'mac' else 'ipa'
+def pending_path(game, op): return os.path.join(ROOT, 'ctl-pending', f'{game}.{op}.json')
+def remember_before(game, op):
+    before = [t['id'] for t in call('GET', '/state')['tasks'] if t.get('gameId') == game and t['operation'] == op]
+    p = pending_path(game, op); os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p + '.tmp', 'w', encoding='utf-8') as f: json.dump({'before': before, 'at': time.time()}, f)
+    os.replace(p + '.tmp', p)
+def take_before(game, op):
+    """build 记下的任务号（读一次就删：下一次 build 另记）；没有记录（如游戏里点的出包）→ None，照旧取最新一个"""
+    p = pending_path(game, op)
+    try:
+        with open(p, encoding='utf-8') as f: before = set(json.load(f)['before'])
+    except (OSError, ValueError, KeyError, TypeError): return None
+    try: os.remove(p)
+    except OSError: pass
+    return before
+
 def show_task(t, t0, last):
     """打一行进度（状态 / 里程碑 / 每 5% 变一次才打）；终态打各里程碑用时后按结果退出。返回新的 last"""
     cur = (t['state'], t.get('milestone'), int(t.get('done') or 0) // max(1, int((t.get('total') or 1) // 20)))
@@ -746,6 +767,7 @@ def main():
     if cmd == 'build':
         args = [a for a in rest if a != '--space-override']
         target = args[1] if len(args) > 1 else 'ios'
+        remember_before(args[0], build_op(target))
         print(json.dumps(call('POST', '/build', {'gameId': args[0], 'target': target, **space_flag(rest)}), ensure_ascii=False)); return
     if cmd == 'diag':
         body = diag_body(rest)
@@ -797,7 +819,7 @@ def main():
     if cmd == 'wait':
         op = rest[rest.index('--op') + 1] if '--op' in rest else 'build'
         lim = float(rest[rest.index('--timeout') + 1]) if '--timeout' in rest else 14400
-        wait(rest[0], op, lim); return
+        wait(rest[0], op, lim, take_before(rest[0], op)); return
     simple = {
               'fonts': ('/fonts', lambda r: {'path': os.path.abspath(r[0]) if r and r[0] else ''}),
               'prepare': ('/prepare', lambda r: {'gameId': r[0], **space_flag(r)}), 'ipa': ('/ipa', lambda r: {'gameId': r[0], **space_flag(r)}), 'install': ('/install', lambda r: simple_body('install', r)), 'uninstall': ('/uninstall', lambda r: {'gameId': r[0], **accept_flags(r)}), 'restore-iphone': ('/restore-iphone', lambda r: {'gameId': r[0]}), 'launch': ('/launch', lambda r: {'gameId': r[0]}),

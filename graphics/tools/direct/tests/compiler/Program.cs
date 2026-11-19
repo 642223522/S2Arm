@@ -56,6 +56,9 @@ internal static unsafe class Program
     // LOP.OR Rd, Ra, Rb: exact Maxwell opcode and fields from InstTable / InstLopR.
     private static ulong LopOr(int dest, int a, int b) =>
         0x5C40000000000000UL | (7UL << 48) | (1UL << 41) | ((ulong)b << 20) | (7UL << 16) | ((ulong)a << 8) | (uint)dest;
+    // LOP32I.OR Rd, Ra, imm32：顶层 opcode 000001（bit 58）、逻辑运算在 bit 53..54（1 = OR）、32 位立即数在 bit 20..51（InstTable / InstLop32i）。
+    private static ulong Lop32iOr(int dest, int a, uint imm) =>
+        0x0400000000000000UL | (1UL << 53) | ((ulong)imm << 20) | (7UL << 16) | ((ulong)a << 8) | (uint)dest;
     private static ulong Ald4(int location) =>
         0xEFD8000000000000UL | (0xFFUL << 39) | (3UL << 47) | ((ulong)(0x80 + location * 16) << 20) | (7UL << 16) | (0xFFUL << 8);
     // TEX R0, R2, texture0：2D、坐标 R2/R3、写 RGBA。
@@ -303,6 +306,48 @@ internal static unsafe class Program
         return MemoryMarshal.AsBytes(w.ToArray().AsSpan()).ToArray();
     }
 
+    // 计算模块里唯一一个存储图像（OpTypeImage Sampled = 2）的声明：(Image Format 操作数, Sampled Type 是否 uint)
+    private static (uint format, bool uintSampled, int images) StorageImageDecl(JsonElement stage)
+    {
+        uint[] words = MemoryMarshal.Cast<byte, uint>(stage.GetProperty("spirv").GetBytesFromBase64()).ToArray();
+        var ints = new Dictionary<uint, uint>(); uint format = 99, sampledType = 0; int images = 0;
+        for (int i = 5; i < words.Length;)
+        {
+            int count = (int)(words[i] >> 16); uint op = words[i] & 0xffff;
+            if (count == 0 || i + count > words.Length) throw new InvalidDataException("invalid SPIR-V instruction");
+            if (op == 21 && count >= 4) ints[words[i + 1]] = words[i + 3];
+            if (op == 25 && count >= 9 && words[i + 7] == 2) { images++; format = words[i + 8]; sampledType = words[i + 2]; }
+            i += count;
+        }
+        return (format, ints.TryGetValue(sampledType, out uint signed) && signed == 0, images);
+    }
+
+    private static bool SampledImageType(byte[] spv, int wantedOp, int wantedSigned)
+    {
+        var types = new Dictionary<uint, (int Op, int Signed)>(); int images = 0, match = 0;
+        for (int i = 5; i * 4 < spv.Length;)
+        {
+            uint w0 = BitConverter.ToUInt32(spv, i * 4); int op = (int)(w0 & 0xffff), n = (int)(w0 >> 16);
+            if (n == 0 || (i + n) * 4 > spv.Length) throw new InvalidDataException("invalid SPIR-V instruction");
+            if (op == 21) types[BitConverter.ToUInt32(spv, (i + 1) * 4)] = (21, (int)BitConverter.ToUInt32(spv, (i + 3) * 4));
+            if (op == 22) types[BitConverter.ToUInt32(spv, (i + 1) * 4)] = (22, -1);
+            if (op == 25) { images++; if (types.TryGetValue(BitConverter.ToUInt32(spv, (i + 2) * 4), out var t) && t.Op == wantedOp && t.Signed == wantedSigned) match++; }
+            i += n;
+        }
+        return images == 1 && match == 1;
+    }
+
+    // 原创合成 Maxwell CS：R0 = c0[0x310]（存储缓冲地址），R4 = R5 = 0，SULD.D.B32 R2, [R4]（二维、图像句柄 c2 字 74，按位读），STG [R0], R2。
+    //   SULD.D 的字段来自 InstSuldD（目的 0..7、坐标 8..15、谓词 16..18、大小 20..22 = B32、目的谓词 30..32、维度 33..35 = 2D、句柄 36..48）。
+    private static byte[] ComputeRawImageLoadGuest()
+    {
+        ulong[] ops = { 0xEF9500310007FF00UL, 0x1C0000000007FF04UL, 0x1C0000000007FF05UL, 0xEB1804A7C0470402UL, 0xEEDC200000070002UL, Exit };
+        byte[] code = new byte[((ops.Length + 2) / 3) * 32];
+        for (int i = 0; i < ops.Length; i++)
+            BinaryPrimitives.WriteUInt64LittleEndian(code.AsSpan((i / 3 * 4 + i % 3 + 1) * 8), ops[i]);
+        return code;
+    }
+
     private static byte[] ComputeTextureGuest()
     {
         ulong[] ops = { 0xEF9500310007FF00UL, Fadd32i(4, 0.5f), Fadd32i(5, 0.5f),
@@ -411,6 +456,47 @@ internal static unsafe class Program
 
     // 真机 Adreno 730 的实测形态用于合成测试（值是可解释的合成输入，不是从设备读的；真机同字节
     // 比对由 CLI profile 与设备日志的 caps 完成）。geometry/interlock 用来证明"硬件支持 ≠ enabled"。
+    // C1：在 CapsJson 的稳定输出里插 descriptorIndexing 对象（不改 CapsJson 签名，基线测试要能原样编译）。
+    // enabled=false 时全部七位为 false；enabled=true 时按 storage 参数造「四位齐」或「缺存储位」。
+    private static byte[] CapsJsonWithDescriptorIndexing(bool enabled, bool storage)
+    {
+        string text = Encoding.UTF8.GetString(CapsJson());
+        string objectText = "\"descriptorIndexing\":{\"enabled\":" + (enabled ? "true" : "false") +
+            ",\"runtimeArray\":" + (enabled ? "true" : "false") +
+            ",\"partiallyBound\":" + (enabled ? "true" : "false") +
+            ",\"sampledImageArrayNonUniformIndexing\":" + (enabled ? "true" : "false") +
+            ",\"storageImageArrayNonUniformIndexing\":" + (enabled && storage ? "true" : "false") +
+            ",\"variableDescriptorCount\":false,\"sampledImageUpdateAfterBind\":false},";
+        text = text.Replace("\"formats\":", objectText + "\"formats\":", StringComparison.Ordinal);
+        return Encoding.UTF8.GetBytes(text);
+    }
+
+    // C1：造一段最小 SPIR-V（头 + 能力 / 扩展前导段 + OpMemoryModel），只给能力核对用。
+    private static uint[] SpvDescriptorIndexing(bool ext, bool shaderNonUniform, bool sampled, bool storage)
+    {
+        var words = new List<uint> { 0x07230203, 0x00010300, 0, 1, 0 };
+        words.Add((2u << 16) | 17); words.Add(1);   // OpCapability Shader
+        if (ext)
+        {
+            const string name = "SPV_EXT_descriptor_indexing";
+            int count = (name.Length + 1 + 3) / 4;
+            words.Add(((uint)count + 1) << 16 | 10);   // OpExtension
+            uint word = 0;
+            for (int i = 0; i <= count * 4; i++)
+            {
+                byte b = i < name.Length ? (byte)name[i] : (byte)0;
+                word |= (uint)b << ((i % 4) * 8);
+                if (i % 4 == 3) { words.Add(word); word = 0; }
+            }
+        }
+        void Cap(uint cap) { words.Add((2u << 16) | 17); words.Add(cap); }
+        if (shaderNonUniform) Cap(5301);
+        if (sampled) Cap(5307);
+        if (storage) Cap(5309);
+        words.Add((3u << 16) | 14); words.Add(0); words.Add(1);   // OpMemoryModel Logical GLSL450
+        return words.ToArray();
+    }
+
     private static byte[] CapsJson(bool geometry = false, bool interlock = false, uint sampledImages = 64,
         string schema = null, string duplicateField = null, bool gsOccQuery = false)
     {
@@ -619,6 +705,8 @@ internal static unsafe class Program
 
     private static void Main(string[] args)
     {
+        string sampledSpvDir = args.Length == 2 && args[0] == "--emit-sampled" ? Path.GetFullPath(args[1]) : null;
+        if (sampledSpvDir != null) Directory.CreateDirectory(sampledSpvDir);
         byte[] profile = ProfileJson();
         byte[] vs = Guest(false, new[] { Ast(0) });
         byte[] fs = Guest(true, new[] { Ald(0) }, new[] { 0 });
@@ -692,6 +780,53 @@ internal static unsafe class Program
             return;
         }
 
+        // 计算共享内存（#1592）：48 KiB 内但超过设备上限（本测 profile 32768）是设备做不到 → UNSUPPORTED_PROGRAM 带实际值；
+        //   超过 Maxwell 48 KiB / 负数才是坏请求 → MISSING_FIELD；等于上限过上限检查
+        {
+            string csRaw = Encoding.UTF8.GetString(RequestJson(profile, "compute", 2, 1, "shared-limit", cs: cs));
+            Func<int, byte[]> withShared = n => Encoding.UTF8.GetBytes(csRaw.Replace("\"sharedMemoryBytes\":0", "\"sharedMemoryBytes\":" + n));
+            // 等于上限过得了上限检查（之后按控制块核对 1x1x1 shared 0 不符才拒，那是另一道检查）
+            try { DirectShaderCompiler.Compile(withShared(32768)); Check(true, "shared 32768 passes the device limit check"); }
+            catch (Exception error) { Check(!error.Message.Contains("exceeds"), "shared 32768 = device limit passes the limit check: " + error.Message); }
+            try { DirectShaderCompiler.Compile(withShared(40960)); Check(false, "shared 40960 above device limit must be rejected"); }
+            catch (DirectCompileException error)
+            {
+                Check(error.Code == "UNSUPPORTED_PROGRAM" && error.Message.Contains("sharedMemoryBytes 40960") && error.Message.Contains("limit 32768"),
+                    "shared 40960 > device 32768 → UNSUPPORTED_PROGRAM with value and limit: " + error.Code + " " + error.Message);
+            }
+            Throws("MISSING_FIELD", () => DirectShaderCompiler.Compile(withShared(49153)), "shared above Maxwell 48 KiB is a bad request");
+            Throws("MISSING_FIELD", () => DirectShaderCompiler.Compile(withShared(-1)), "negative shared is a bad request");
+        }
+
+        // 真实编译器输出：采样图像的 OpTypeImage Sampled Type 应与绑定视图数值类型一致。
+        foreach (var test in new[] { (Format: "R16G16Uint", Op: 21, Signed: 0), (Format: "R16G16Sint", Op: 21, Signed: 1),
+                                     (Format: "R16G16Float", Op: 22, Signed: -1), (Format: "R16G16Unorm", Op: 22, Signed: -1) })
+        {
+            string fact = "[{\"stage\":\"fs\",\"handle\":0,\"cbufSlot\":-1,\"samplerType\":\"2d\",\"format\":\"" + test.Format + "\",\"isBuffer\":false,\"normalized\":true,\"separate\":false,\"arrayLength\":1}]";
+            using JsonDocument doc = ParseResult(DirectShaderCompiler.Compile(RequestJson(profile, "graphics", 1, 1, "sampled-" + test.Format,
+                Guest(false, new[] { Ald4(0), Ast4Pos(0) }), Guest(true, new[] { Fadd32i(2, 0.5f), Fadd32i(3, 0.5f), Tex2D(0, 2) }), textureFacts: fact)));
+            byte[] spv = Convert.FromBase64String(doc.RootElement.GetProperty("content").GetProperty("stages")[1].GetProperty("spirv").GetString());
+            if (sampledSpvDir != null) File.WriteAllBytes(Path.Combine(sampledSpvDir, test.Format + ".spv"), spv);
+            Check(SampledImageType(spv, test.Op, test.Signed), "sampled texture " + test.Format + " declares its numeric type");
+            var formatQueries = doc.RootElement.GetProperty("content").GetProperty("dependencies").EnumerateArray()
+                .Where(d => d.GetProperty("method").GetString() == "QueryS2ASampledTextureFormat").ToArray();
+            Check(formatQueries.Length == 1 && formatQueries[0].GetProperty("value").GetString() == test.Format,
+                "sampled texture " + test.Format + " records its format dependency");
+        }
+        {
+            // 分离贴图表的 c2 字 0x5c：与日志里的 fp_t_tcb_5C 相同的句柄坐标。
+            const string fact = "[{\"stage\":\"fs\",\"handle\":92,\"cbufSlot\":2,\"samplerType\":\"2d\",\"format\":\"R16G16Uint\",\"isBuffer\":false,\"normalized\":true,\"separate\":true,\"arrayLength\":1}]";
+            using JsonDocument doc = ParseResult(DirectShaderCompiler.Compile(RequestJson(profile, "graphics", 1, 1, "sampled-separate-c2-5c",
+                Guest(false, new[] { Ald4(0), Ast4Pos(0) }), Guest(true, new[] { Fadd32i(2, 0.5f), Fadd32i(3, 0.5f), Tex2D(0, 2, 92) }), textureFacts: fact)));
+            var deps = doc.RootElement.GetProperty("content").GetProperty("dependencies").EnumerateArray()
+                .Where(d => d.GetProperty("method").GetString() == "QueryS2ASampledTextureFormat").ToArray();
+            Check(deps.Length == 1 && deps[0].GetProperty("value").GetString() == "R16G16Uint",
+                "sampled c2 separate word 0x5c uses its uint format fact");
+            byte[] spv = doc.RootElement.GetProperty("content").GetProperty("stages")[1].GetProperty("spirv").GetBytesFromBase64();
+            Check(SampledImageType(spv, 21, 0), "sampled c2 separate word 0x5c declares uint");
+            if (sampledSpvDir != null) File.WriteAllBytes(Path.Combine(sampledSpvDir, "c2-5c.spv"), spv);
+        }
+
         // A large pool must not prevent a program with constant texture handles from compiling.
         {
             byte[] fsConstant = Guest(true, new[] { Fadd32i(2, 0.5f), Fadd32i(3, 0.5f), Tex2D(0, 2) });
@@ -727,9 +862,41 @@ internal static unsafe class Program
                 Check(false, "runtime handle must not claim an unsupported cbuf layout is usable");
             }
             catch (DirectCompileException error) {
-                Check(error.Code == "UNSUPPORTED_PROGRAM" && error.Message.Contains("texture handle from cbuf slot 0"),
-                    "runtime handle reports its actual upstream cbuf limitation: " + error.Message);
+                string reqSha = Convert.ToHexStringLower(Sha256.HashData(Encoding.UTF8.GetBytes(dynamicRequest)));
+                Check(error.Code == "UNSUPPORTED_PROGRAM" && error.Message.Contains("texture handle from cbuf slot 0") &&
+                      error.Message.Contains("handle=") && error.Message.Contains("arrayLength=") &&
+                      error.Message.Contains("count=") && error.Message.Contains("request=" + reqSha),
+                    "runtime handle reports its actual upstream cbuf limitation with shape and request sha: " + error.Message);
+                // #999：请求的 requestId 经 Compile → 分配器 → 被拒消息，原样出现在末尾「[kind=… key=…]」里（真实翻译器、真实请求）；
+                //   #1488 的基础消息已带 handle= / arrayLength= / count= / request=<sha>，现场不再重复写这三项
+                Check(error.Message.Contains(" [kind=texture word=0 word2=0 type=4 key=runtime-pool]") && error.Message.EndsWith("]") &&
+                      !error.Message.Contains("] [") && error.Message.IndexOf(" [kind=", StringComparison.Ordinal) > error.Message.IndexOf("request=" + reqSha + ")", StringComparison.Ordinal),
+                    "the request's requestId reaches the reject message through the real compile path, after the shape facts: " + error.Message);
+                Check(error.Message.Length <= 245, "the real-path reject message stays inside the host's 245-char limit (" + error.Message.Length + ")");
             }
+        }
+
+        // 整池数组（追不到槽的句柄回退，安卓整池 N=0）：同一支「句柄来自属性」的片元，池长在 16 位布局能表达的范围内时编得出，
+        //   结果里是两条 pool 绑定（贴图池长 64、采样器池长 8），不带 slot / samp_slot；池长 524288 时（上面那例）照旧具名拒
+        {
+            byte[] fsPool = Guest(true, new[] { Ald(1, 0, 4), Fadd32i(2, 0.5f), Fadd32i(3, 0.5f), TexBindless2D(0, 2, 4) }, new[] { 1 });
+            const string poolFact = "[{\"stage\":\"fs\",\"handle\":0,\"cbufSlot\":-1,\"samplerType\":\"2d\",\"format\":\"R8G8B8A8Unorm\",\"isBuffer\":false,\"normalized\":true,\"separate\":false,\"arrayLength\":1}]";
+            byte[] poolReq = RequestJson(profile, "graphics", 1, 1, "pool-array", vs, fsPool, textureFacts: poolFact);
+            try
+            {
+                using JsonDocument doc = ParseResult(DirectShaderCompiler.Compile(poolReq));
+                JsonElement[] binds = doc.RootElement.GetProperty("content").GetProperty("bindings").EnumerateArray().ToArray();
+                JsonElement[] texPool = binds.Where(b => b.TryGetProperty("pool", out JsonElement p) && p.GetString() == "texture").ToArray();
+                JsonElement[] sampPool = binds.Where(b => b.TryGetProperty("pool", out JsonElement p) && p.GetString() == "sampler").ToArray();
+                Check(texPool.Length == 1 && texPool[0].GetProperty("count").GetInt32() == 64 && texPool[0].GetProperty("stage").GetString() == "fs" &&
+                      !texPool[0].TryGetProperty("slot", out _), "texture pool array: one fs binding, count = texture pool length 64, no slot");
+                Check(sampPool.Length == 1 && sampPool[0].GetProperty("count").GetInt32() == 8 && !sampPool[0].TryGetProperty("slot", out _) &&
+                      !sampPool[0].TryGetProperty("samp_slot", out _), "sampler pool array: one binding, count = sampler pool length 8, no slot");
+            }
+            catch (Exception error) { Check(false, "pool array compiles to two pool bindings: " + error.Message); }
+            // 负对照：池长到 16 位布局表达不了（65535）时不收成池绑定，照旧具名拒
+            string bigPool = Encoding.UTF8.GetString(poolReq).Replace("\"textureArrayLength\":64", "\"textureArrayLength\":65535");
+            Throws("UNSUPPORTED_PROGRAM", () => DirectShaderCompiler.Compile(Encoding.UTF8.GetBytes(bigPool)), "texture pool of 65535 entries is not taken as a pool binding");
         }
 
         // 句柄在游戏自己的 UBO 里（认领 #999）：LDC Rh, c[4][off]; TEX.B Rd, Rcoord, Rh。真实编译器、真实 BindlessElimination。
@@ -794,6 +961,24 @@ internal static unsafe class Program
                 UboFact(256, 5) + "]", 1u << 4);
             Check(got.StartsWith("MISSING_FACT ", StringComparison.Ordinal) && got.EndsWith("has no source (stage=fs,handle=256,cbufSlot=4)", StringComparison.Ordinal),
                 "a c4 handle without its exact fact is MISSING_FACT at (fs, 256, 4): " + got);
+        }
+
+        // C2 探针：c2 句柄表里的运行时句柄（先看现实现拒在哪一句）。
+        {
+            byte[] fsC2 = Guest(true, new[] { Ldc(4, 0x20, 2), Fadd32i(2, 0.5f), Fadd32i(3, 0.5f), TexBindless2D(0, 2, 4) });
+            const string c2Fact = "[{\"stage\":\"fs\",\"handle\":8,\"cbufSlot\":2,\"samplerType\":\"2d\",\"format\":\"R8G8B8A8Unorm\",\"isBuffer\":false,\"normalized\":true,\"separate\":false,\"arrayLength\":1}]";
+            try
+            {
+                using JsonDocument r = ParseResult(DirectShaderCompiler.Compile(RequestJson(profile, "graphics", 1, 1, "c2-runtime-handle", vs, fsC2, textureFacts: c2Fact)));
+                JsonElement c2Binding = r.RootElement.GetProperty("content").GetProperty("bindings").EnumerateArray()
+                    .First(b => b.GetProperty("kind").GetString() == "texture");
+                Check(c2Binding.GetProperty("slot").GetInt32() == 8 && c2Binding.GetProperty("count").GetInt32() == 1,
+                    "c2 handle-table single texture binds by handle value: " + c2Binding.GetRawText());
+            }
+            catch (DirectCompileException error)
+            {
+                Check(false, "c2 handle-table single texture binds by handle value: " + error.Code + " " + error.Message);
+            }
         }
 
         // 1) 接口全覆盖（接口新增方法时这里先红）。
@@ -870,6 +1055,48 @@ internal static unsafe class Program
             Throws("MISSING_FIELD", () => DirectProfileComposer.Compose(
                 Encoding.UTF8.GetBytes("{\"schema\":\"s2a-device-caps-v1\"}"), closure), "caps without fields rejected");
             Throws("UNSUPPORTED_PROFILE", () => DirectProfileComposer.Compose(caps, "bad closure"), "invalid closure rejected");
+
+            // C1：descriptorIndexing 关闭时 profile 必须与「caps 里没有这个对象」逐字节相同；
+            // 四位齐才开；缺存储位保持 false；SPIR-V 能力声明必须与 profile 一致。
+            byte[] capsOff = CapsJsonWithDescriptorIndexing(enabled: false, storage: true);
+            byte[] capsOn = CapsJsonWithDescriptorIndexing(enabled: true, storage: true);
+            byte[] capsNoStorage = CapsJsonWithDescriptorIndexing(enabled: true, storage: false);
+            byte[] profileOff = DirectProfileComposer.Compose(capsOff, closure);
+            Check(composed.SequenceEqual(profileOff),
+                "all-false descriptor-indexing bits compose the same profile as their absence");
+            Check(profileOff.SequenceEqual(DirectProfileComposer.Compose(capsOff, closure)),
+                "descriptor-indexing caps compose deterministically");
+            byte[] profileOn = DirectProfileComposer.Compose(capsOn, closure);
+            Check(!composed.SequenceEqual(profileOn), "enabling non-uniform indexing changes the profile");
+            using (JsonDocument onDoc = JsonDocument.Parse(profileOn))
+                Check(onDoc.RootElement.GetProperty("capabilities").GetProperty("supportsShaderNonUniformIndexing").GetBoolean(),
+                    "four descriptor-indexing bits enable non-uniform indexing");
+            using (JsonDocument noStoreDoc = JsonDocument.Parse(DirectProfileComposer.Compose(capsNoStorage, closure)))
+                Check(!noStoreDoc.RootElement.GetProperty("capabilities").GetProperty("supportsShaderNonUniformIndexing").GetBoolean(),
+                    "a missing storage non-uniform bit keeps non-uniform indexing disabled");
+            string buildClosure = DirectBuildIdentity.TranslatorClosure;
+            byte[] buildProfileAbsent = DirectProfileComposer.Compose(CapsJson(), buildClosure);
+            byte[] buildProfileOff = DirectProfileComposer.Compose(CapsJsonWithDescriptorIndexing(false, true), buildClosure);
+            Check(buildProfileAbsent.SequenceEqual(buildProfileOff),
+                "descriptor-indexing bits off compose the same build profile");
+            byte[] requestAbsent = RequestJson(buildProfileAbsent, "graphics", 1, 1, "dx-off", vs, fs);
+            byte[] requestOff = RequestJson(buildProfileOff, "graphics", 1, 1, "dx-off", vs, fs);
+            Check(DirectShaderCompiler.Compile(requestAbsent).SequenceEqual(DirectShaderCompiler.Compile(requestOff)),
+                "profile without descriptor indexing compiles byte-identical to the pre-C1 caps");
+            using (JsonDocument offDoc = JsonDocument.Parse(profileOff))
+            using (JsonDocument onDoc2 = JsonDocument.Parse(profileOn))
+            {
+                DirectProfile profOff = DirectProfile.Parse(offDoc.RootElement, "caps-off");
+                DirectProfile profOn = DirectProfile.Parse(onDoc2.RootElement, "caps-on");
+                Throws("SPIRV_INVALID", () => DirectShaderCompiler.ValidateDescriptorIndexing("fs", SpvDescriptorIndexing(true, true, true, true), profOff),
+                    "descriptor indexing with profile disabled is rejected");
+                DirectShaderCompiler.ValidateDescriptorIndexing("fs", SpvDescriptorIndexing(false, false, false, false), profOff);
+                DirectShaderCompiler.ValidateDescriptorIndexing("fs", SpvDescriptorIndexing(true, true, true, true), profOn);
+                Throws("SPIRV_INVALID", () => DirectShaderCompiler.ValidateDescriptorIndexing("fs", SpvDescriptorIndexing(true, true, false, true), profOn),
+                    "incomplete descriptor indexing declaration with profile enabled is rejected");
+                Throws("SPIRV_INVALID", () => DirectShaderCompiler.ValidateDescriptorIndexing("fs", SpvDescriptorIndexing(true, true, true, false), profOn),
+                    "missing storage capability with profile enabled is rejected");
+            }
         }
 
         // 1c) 翻译闭包身份（W2.1）：构建期嵌入的闭包是唯一来源，请求里的字符串必须等于它。
@@ -1209,6 +1436,21 @@ internal static unsafe class Program
             Check(content.GetProperty("kind").GetString() == "graphics", "vs-only kind is graphics");
             JsonElement stages = content.GetProperty("stages");
             Check(stages.GetArrayLength() == 1 && stages[0].GetProperty("stage").GetString() == "vs", "vs-only: exactly one stage, vs");
+        }
+        // 按位读（SULD.D）浮点贴图的存储图像：设备支持无格式读时声明 Unknown + uint（回放按贴图字节数绑 uint 视图），
+        //   不支持时保留按读大小的 R32ui（回放按声明格式能建就建、建不了报名跳过）。读的是 1x1 RG32F 曝光那一类（空轨 2nd update 核同形）。
+        {
+            const string rawFact = "[{\"stage\":\"cs\",\"handle\":74,\"cbufSlot\":-1,\"samplerType\":\"2d\",\"format\":\"R32G32Float\",\"isBuffer\":false,\"normalized\":false,\"separate\":false,\"arrayLength\":1}]";
+            string on = Encoding.UTF8.GetString(profile), off = on.Replace("\"supportsImageLoadFormatted\":true", "\"supportsImageLoadFormatted\":false");
+            Check(on != off, "profile carries supportsImageLoadFormatted");
+            foreach (bool formatless in new[] { true, false })
+            {
+                byte[] req = RequestJson(Encoding.UTF8.GetBytes(formatless ? on : off), "compute", 2, 1, "suld-raw", cs: ComputeRawImageLoadGuest(), csCbUse: 1, textureFacts: rawFact);
+                using JsonDocument doc = ParseResult(DirectShaderCompiler.Compile(req));
+                (uint format, bool uintSampled, int images) = StorageImageDecl(doc.RootElement.GetProperty("content").GetProperty("stages")[0]);
+                Check(images == 1 && uintSampled && format == (formatless ? 0u : 33u),
+                    $"raw SULD.D of an RG32F image: {(formatless ? "Unknown" : "R32ui")} with uint sampled type (got format {format}, uint {uintSampled}, images {images})");
+            }
         }
         byte[] computeRequest = RequestJson(profile, "compute", 2, 1, "req-compute", cs: cs);
         using (JsonDocument doc = ParseResult(DirectShaderCompiler.Compile(computeRequest)))
@@ -1607,6 +1849,7 @@ internal static unsafe class Program
 
             Check(matrixAccessor.QuerySamplerType(0, -1) == SamplerType.Texture2D, "2d sampler type");
             Check(matrixAccessor.QueryTextureFormat(0, -1) == TextureFormat.R8G8B8A8Unorm, "2d format");
+            Check(matrixAccessor.QueryS2ASampledTextureFormat(0, -1) == TextureFormat.R8G8B8A8Unorm, "sampled format uses exact fact");
             Check(matrixAccessor.QueryTextureCoordNormalized(0, -1) && !matrixAccessor.QueryTextureIsBuffer(0, -1),
                 "2d normalized non-buffer");
 
@@ -1617,6 +1860,7 @@ internal static unsafe class Program
             Check(matrixAccessor.QuerySamplerType(1, 4) == (SamplerType.TextureCube | SamplerType.Shadow),
                 "same handle keeps its own cbufSlot facts");
             Check(matrixAccessor.QueryTextureFormat(1, 4) == TextureFormat.R32Float, "per-slot format");
+            Check(matrixAccessor.QueryS2ASampledTextureFormat(1, 4) == TextureFormat.R32Float, "sampled format preserves cbuf slot");
 
             Check(matrixAccessor.QuerySamplerType(2, -1) == SamplerType.TextureBuffer && matrixAccessor.QueryTextureIsBuffer(2, -1),
                 "buffer texture");
@@ -1689,9 +1933,9 @@ internal static unsafe class Program
                   uboAllocator.Bindings.Last().UboOffset == 0,
                 "a c4 handle is not bound as the combined slot with the same handle index (it is uboSlot 1 / uboOffset 0)");
             // 游戏 UBO 句柄只接单个、非分离的采样贴图；其余形态如实报未接，不给 uboSlot
-            string UboShape(string kind, string source, int count, int cbufSlot, int handleIndex, int arrayLength, bool separate)
+            string UboShape(string kind, string source, int count, int cbufSlot, int handleIndex, int arrayLength, bool separate, string requestKey = null)
             {
-                var allocator = new DirectAllocator(matrixProfile);
+                var allocator = new DirectAllocator(matrixProfile) { RequestKey = requestKey };
                 var b = new DirectBinding("fs", kind, source, kind == "image" ? 3 : 2, 0, count);
                 allocator.Bindings.Add(b);
                 var descriptor = new TextureDescriptor(kind == "image" ? 3 : 2, 0, source == "buffer-texture" ? SamplerType.TextureBuffer : SamplerType.Texture2D,
@@ -1715,13 +1959,15 @@ internal static unsafe class Program
                 }
             }
             Check(UboShape("texture", "texture", 1, 18, 0x3FFF, 1, false) == "bound 15/65532/-1", "c18 last word of a 64 KiB UBO is bound");
-            foreach (var (what, shape, outcome) in new[] {
-                ("image", "image", UboShape("image", "image", 1, 4, 256, 1, false)),
-                ("buffer texture", "buffer texture", UboShape("texture", "buffer-texture", 1, 4, 256, 1, false)),
-                ("separate", "separate", UboShape("texture", "texture", 1, 4, 256, 1, true)),
-                ("array", "array", UboShape("texture", "texture", 4, 4, 0, 4, false)),
-                ("offset past 64 KiB", "offset outside 64 KiB", UboShape("texture", "texture", 1, 4, 0x4000, 1, false)) })
-                Check(outcome == "UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 4 is not implemented (" + shape + ")",
+            // 被拒消息尾巴（#999）：「 [kind=<绑定种类> handle=<HandleIndex 原值> word=<字偏移> count=<绑定个数> array=<数组长度> key=<程序键，没有写 ->]」；
+            //   用例不给程序键，所以是 key=-；期望值手算：普通句柄 word = handle；count / array 就是 UboShape 传进去的两个数
+            foreach (var (what, shape, tail, outcome) in new[] {
+                ("image", "image", "[kind=image handle=256 word=256 count=1 array=1 key=-]", UboShape("image", "image", 1, 4, 256, 1, false)),
+                ("buffer texture", "buffer texture", "[kind=texture handle=256 word=256 count=1 array=1 key=-]", UboShape("texture", "buffer-texture", 1, 4, 256, 1, false)),
+                ("separate", "separate", "[kind=texture handle=256 word=256 count=1 array=1 key=-]", UboShape("texture", "texture", 1, 4, 256, 1, true)),
+                ("array", "array", "[kind=texture handle=0 word=0 count=4 array=4 key=-]", UboShape("texture", "texture", 4, 4, 0, 4, false)),
+                ("offset past 64 KiB", "offset outside 64 KiB", "[kind=texture handle=16384 word=16384 count=1 array=1 key=-]", UboShape("texture", "texture", 1, 4, 0x4000, 1, false)) })
+                Check(outcome == "UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 4 is not implemented (" + shape + ") " + tail,
                     "user-UBO " + what + " handle stays unsupported: " + outcome);
             // 图像句柄从 c2 图像句柄表读（字 72 + 2k，空轨 2nd 9000 计算「cbuf slot 2」）：有同字直接事实（宿主按图像槽出）→ 绑同号图像槽；
             //   没有事实的槽、表外的字、数组照旧报未接
@@ -1730,10 +1976,63 @@ internal static unsafe class Program
             foreach (var (what, handle, count, len) in new[] { ("without a fact", 74, 1, 1), ("outside the image table", 88, 1, 1), ("as an array", 72, 4, 4) })
             {
                 string r = UboShape("image", "image", count, 2, handle, len, false);
-                Check(r == "UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 2 is not implemented", "c2 image word " + what + " stays unsupported: " + r);
+                // c2 / 打包槽那一处：#1488 的基础消息已带 handle= / arrayLength= / count= / request=<sha>（sha 是本进程里最后一次 Compile 的，这里不比），
+                //   现场只补 kind / word（没给程序键，所以 key 是 -）
+                Check(r.StartsWith("UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 2 is not implemented (handle=" + handle +
+                                   ", arrayLength=" + len + ", count=" + count + ", request=") &&
+                      r.EndsWith(") [kind=image word=" + handle + " key=-]"),
+                    "c2 image word " + what + " stays unsupported: " + r);
             }
             string c19 = UboShape("texture", "texture", 1, 19, 256, 1, false);
-            Check(c19 == "UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 19 is not implemented", "cbuf 19 is outside the user UBO range: " + c19);
+            Check(c19.StartsWith("UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 19 is not implemented (handle=256, arrayLength=1, count=1, request=") &&
+                  c19.EndsWith(") [kind=texture word=256 key=-]"),
+                "cbuf 19 is outside the user UBO range: " + c19);
+            // #999 被拒现场：字段按重要性排序（kind、handle、word…、cbuf、count、array、key），放不下从最后一项起整项丢；
+            //   程序键原样带出（≤ 48 个字符，超出的截掉）；分离 / 带类型的句柄按 UnpackOffsets 拆字偏移与类型，槽号带高 16 位时拆两个常量缓冲号；
+            //   宿主把整段错误 JSON 抄进 reason[320]（≤ 319 个字符）、截断了归成 unclassified；JSON 信封占 74 个字符，所以消息整条 ≤ 245。期望值手算：
+            //   809517146 = 0x3040405A → 低 14 位 0x5A = 90（贴图字）、14..27 位 0x101 = 257（采样器字）、高 4 位 3（SeparateConstantSamplerHandle）；
+            //   65538 = 0x10002 → 贴图在 c2、采样器在 c(高 16 位 1 − 1) = c0。
+            const string Hex48 = "0123456789abcdef0123456789abcdef0123456789abcdef";
+            //   用户 UBO 那一处（#1488 没有补过）：基础消息短，什么都放得下，键放最后
+            string withKey = UboShape("texture", "texture", 1, 4, 0x4000, 1, false, Hex48);
+            Check(withKey == "UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 4 is not implemented (offset outside 64 KiB) " +
+                             "[kind=texture handle=16384 word=16384 count=1 array=1 key=" + Hex48 + "]",
+                "user-UBO reject message carries the 48-char program key verbatim, last: " + withKey);
+            string longKey = UboShape("texture", "texture", 1, 4, 0x4000, 1, false, Hex48 + "ZZZZZZZZ" + new string('Y', 71));
+            Check(longKey == withKey && !longKey.Contains("Z"), "program key longer than 48 chars is cut to its first 48: " + longKey);
+            Check(UboShape("texture", "texture", 1, 4, 0x4000, 1, false, "") == UboShape("texture", "texture", 1, 4, 0x4000, 1, false),
+                "an empty program key is written as '-', same as no key");
+            //   c2 / 打包槽那一处：基础消息（#1488，含 64 个字符的请求 sha）典型已有 ~176 个字符，现场尽量放，放不下的丢
+            string packed = UboShape("texture", "texture", 1, 65538, 809517146, 1, false, Hex48);
+            int shaAt = packed.IndexOf("request=", StringComparison.Ordinal);
+            Check(shaAt > 0 && packed.IndexOf(')', shaAt) - (shaAt + "request=".Length) == 64,
+                "the base message carries a 64-char request sha (the budget below assumes it): " + packed);
+            Check(packed.StartsWith("UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 65538 is not implemented (handle=809517146, arrayLength=1, count=1, request=") &&
+                  packed.EndsWith(") [kind=texture word=90 word2=257 type=3 cbuf=2/0]"),
+                "packed separate-constant-sampler handle is decoded into words, type and both cbufs; the 48-char key no longer fits and is dropped whole: " + packed);
+            string packedShortKey = UboShape("texture", "texture", 1, 65538, 809517146, 1, false, "abc");
+            Check(packedShortKey.EndsWith(") [kind=texture word=90 word2=257 type=3 cbuf=2/0 key=abc]"),
+                "a key that fits is kept, after the decoded fields: " + packedShortKey);
+            //   边界：这条的基础消息 175 个字符 + 现场 " [kind=texture word=90 word2=257 type=3 cbuf=2/0" 48 个 + " key=" 5 个 + 键 + "]"，键 16 个字符时正好 245；17 个字符就是 246，整项丢
+            string packedEdge = UboShape("texture", "texture", 1, 65538, 809517146, 1, false, new string('e', 16));
+            Check(packedEdge.Length - "UNSUPPORTED_PROGRAM ".Length == 245 && packedEdge.EndsWith(" cbuf=2/0 key=" + new string('e', 16) + "]"),
+                "a tail that ends exactly at 245 characters is kept: " + packedEdge.Length + " " + packedEdge);
+            string packedOver = UboShape("texture", "texture", 1, 65538, 809517146, 1, false, new string('e', 17));
+            Check(packedOver.EndsWith(" cbuf=2/0]") && !packedOver.Contains("key="),
+                "one character more and the key is dropped whole, not cut: " + packedOver);
+            // 最坏情形：槽号 / 句柄取 int 极值、个数 / 数组长度取合同上限 1048576、键 127 个字符（两处消息出口都有）。
+            //   整条 ≤ 245、前缀不动；有 key 就是完整的 48 个字符收尾（不截半项），一项都放不下就没有尾巴
+            string[] worst = {
+                UboShape("texture", "texture", 1048576, int.MaxValue, int.MinValue, 1048576, false, new string('K', 127)),
+                UboShape("texture", "texture", 1048576, 18, int.MinValue, 1048576, false, new string('K', 127)),
+                UboShape("texture", "texture", 1, 18, int.MinValue, 1, false, new string('K', 127)),
+                UboShape("texture", "texture", 1, 4, int.MinValue, 1, true, new string('K', 127)),
+                UboShape("image", "image", 1048576, 4, int.MaxValue, 1048576, false, new string('K', 127)),
+                UboShape("texture", "texture", 1048576, 0x7FFF0002, 0x3040405A, 1048576, false, new string('K', 127)) };
+            foreach (string w in worst)
+                Check(w.StartsWith("UNSUPPORTED_PROGRAM ") && w.Length - "UNSUPPORTED_PROGRAM ".Length <= 245 && w.Contains(" is not implemented (") &&
+                      (w.Contains(" key=") ? w.EndsWith(" key=" + new string('K', 48) + "]") : (w.EndsWith(")") || w.EndsWith("]"))),
+                    "worst-case reject message stays inside the host's 245-char limit (" + (w.Length - "UNSUPPORTED_PROGRAM ".Length) + "): " + w);
             // Facts alone do not implement separate binding; the production resolver must still refuse it.
             var separateAllocator = new DirectAllocator(matrixProfile);
             separateAllocator.Bindings.Add(new DirectBinding("fs", "texture", "test", 2, 0, 1));
@@ -1872,6 +2171,409 @@ internal static unsafe class Program
                       "phi-merged c2 separate handle resolves to texture word 90 and sampler slot 0");
             } catch (DirectCompileException error) {
                 Check(false, "phi-merged c2 separate handle must compile: " + error.Code + " " + error.Message);
+            }
+        }
+
+        // 7b3) 类型 3 句柄（#1594）：TEX.B 的句柄 = c2 贴图字 | 采样器号 << 20，OR 的另一边是低 20 位为 0 的常量（Ryujinx TextureHandleType.SeparateConstantSamplerHandle）。
+        //      翻译器查事实时给 PackOffsets(贴图字, 采样器号, 3) 与 PackSlots(贴图所在 cbuf, 0)：第二个偏移是立即数采样器池下标，不是常量缓冲字，
+        //      所以不能按「两个字都在 c2 表里」配对（那是类型 1，TrySeparateC2）。期望值手算：PackOffsets(90, 257, 3) = 90 | 257 << 14 | 3 << 28 = 809517146；
+        //      PackSlots(2, 0) = 2 | 1 << 16 = 65538（与真机读到的那批 `MISSING_FACT … cbufSlot=65538` 同一对数）。
+        //      事实只取同一个贴图字的 c2 分离事实 (字, cbufSlot 2, separate=true)；同字事实是纹素缓冲（isBuffer）的不取（立即数采样器对纹素缓冲没意义，仍按缺事实拒）。
+        //      片 2：取到事实后 ResolvePoolSlots 编成 slot = 贴图字、constSampler = 采样器池下标（结果多一个可选字段，按 v2 写；没有 samp_slot / uboSlot），
+        //      宿主 / 回放按池下标直接取采样器（同 SAMPI）。数组、计算阶段仍具名报未接；下标 0 也是真下标（不能当「没有」省掉）。
+        {
+            DirectProfile p3;
+            using (JsonDocument profileDoc3 = JsonDocument.Parse(profile))
+                p3 = DirectProfile.Parse(profileDoc3.RootElement, "profile");
+            string Fact3(string stage, int handle, string samplerType, bool isBuffer, bool normalized, bool separate) =>
+                "{\"stage\":\"" + stage + "\",\"handle\":" + handle + ",\"cbufSlot\":2,\"samplerType\":\"" + samplerType + "\",\"format\":\"Unknown\",\"isBuffer\":" +
+                (isBuffer ? "true" : "false") + ",\"normalized\":" + (normalized ? "true" : "false") + ",\"separate\":" + (separate ? "true" : "false") + ",\"arrayLength\":1}";
+            string facts3 = "[" + string.Join(",", new[] {
+                Fact3("vs", 90, "cube", false, true, true),     // 字 90 在 vs 的事实（立方体、归一化）：不借给 fs
+                Fact3("fs", 90, "2d", false, false, true),      // 字 90 在 fs 的事实（2d、非归一化，用来和 vs 的区分）
+                Fact3("fs", 91, "2d", false, true, true),       // 奇数字：有事实也不是分离贴图表的项
+                Fact3("fs", 92, "buffer", true, false, true),   // 纹素缓冲：类型 3 不取
+                Fact3("fs", 94, "2d", false, true, false),      // 非分离事实：不取
+                Fact3("fs", 346, "2d", false, true, true),      // 字 346 是采样器表的起点，不是贴图字
+                Fact3("vs", 98, "2d", false, true, true) }) + "]"; // 只有 vs 有的字：fs 不借
+            using JsonDocument doc3 = JsonDocument.Parse(RequestJson(profile, "graphics", 1, 1, "const-sampler", vs, fs, textureFacts: facts3));
+            DirectProgram prog3 = DirectProgram.Parse(doc3.RootElement.GetProperty("program"), "program", p3);
+            var va3 = new DirectGpuAccessor(p3, prog3, prog3.StageOf("vs"), 1, new DirectAllocator(p3), new List<DirectQuery>());
+            var fa3 = new DirectGpuAccessor(p3, prog3, prog3.StageOf("fs"), 5, new DirectAllocator(p3), new List<DirectQuery>());
+            int slots3 = TextureHandle.PackSlots(2, 0);
+            int Const3(int word, int sampler = 257) => TextureHandle.PackOffsets(word, sampler, TextureHandleType.SeparateConstantSamplerHandle);
+            Check(Const3(90) == 809517146 && slots3 == 65538, "hand-computed type-3 handle and slots equal the numbers read on the device: " + Const3(90) + " / " + slots3);
+            try
+            {
+                Check(fa3.QuerySamplerType(Const3(90), slots3) == SamplerType.Texture2D && !fa3.QueryTextureCoordNormalized(Const3(90), slots3) &&
+                      !fa3.QueryTextureIsBuffer(Const3(90), slots3),
+                    "a type-3 handle takes its own stage's same-word c2 separate fact as is (type / buffer flag / normalized)");
+                Check(fa3.QuerySamplerType(Const3(90, 1), slots3) == SamplerType.Texture2D && fa3.QuerySamplerType(Const3(90, 4095), slots3) == SamplerType.Texture2D,
+                    "the immediate sampler index does not take part in the fact lookup");
+                Check(va3.QuerySamplerType(Const3(90), slots3) == SamplerType.TextureCube && va3.QueryTextureCoordNormalized(Const3(90), slots3),
+                    "the same handle in vs takes vs's own fact");
+            }
+            catch (DirectCompileException e) { Check(false, "type-3 fact queries should resolve: " + e.Code + " " + e.Message); }
+            // 负控：事实在却不能取的、和别的句柄类型串味的，一律仍是缺事实
+            Throws("MISSING_FACT", () => fa3.QueryTextureIsBuffer(Const3(92), slots3), "a type-3 handle on a texel-buffer fact stays a missing fact");
+            Throws("MISSING_FACT", () => fa3.QuerySamplerType(Const3(92), slots3), "a texel-buffer fact is not borrowed for the sampler type either");
+            Throws("MISSING_FACT", () => fa3.QuerySamplerType(Const3(94), slots3), "a non-separate fact is not borrowed");
+            Throws("MISSING_FACT", () => fa3.QuerySamplerType(Const3(96), slots3), "a word without any fact is a missing fact");
+            Throws("MISSING_FACT", () => fa3.QuerySamplerType(Const3(98), slots3), "another stage's fact is not borrowed");
+            Throws("MISSING_FACT", () => fa3.QuerySamplerType(Const3(91), slots3), "an odd word is not a separate texture slot");
+            Throws("MISSING_FACT", () => fa3.QuerySamplerType(Const3(346), slots3), "a sampler-table word is not a separate texture slot");
+            Throws("MISSING_FACT", () => fa3.QuerySamplerType(Const3(90), TextureHandle.PackSlots(3, 0)), "the texture word must be in c2, not another cbuf");
+            Throws("MISSING_FACT", () => fa3.QuerySamplerType(TextureHandle.PackOffsets(90, 257, TextureHandleType.SeparateSamplerHandle), slots3),
+                "the same numbers as a type-1 handle with a c0 sampler word do not take the type-3 rule");
+            Throws("MISSING_FACT", () => fa3.QuerySamplerType(TextureHandle.PackOffsets(90, 257, TextureHandleType.SeparateSamplerId), slots3),
+                "the same numbers as a type-2 handle do not take the type-3 rule");
+            Throws("MISSING_FACT", () => fa3.QuerySamplerType(TextureHandle.PackOffsets(90, 257, TextureHandleType.CombinedSampler), slots3),
+                "the same numbers as a combined handle do not take the type-3 rule");
+            // 解析口（片 2）：取到事实后，类型 3 句柄在 ResolvePoolSlots 里编成 slot = 贴图字、constSampler = 采样器池下标；不填 samp_slot / uboSlot
+            var resolver3 = typeof(DirectShaderCompiler).GetMethod("ResolvePoolSlots", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+            // arrayLength 缺省（0）= 与绑定个数相同；单独给是为了让「绑定个数」与「描述符数组长度」两个条件各自单独成立一次
+            string Resolve3(DirectGpuAccessor accessor, DirectStage stage3, string stageName, ShaderStage shaderStage, int handle, int cbufSlot, int count, out DirectBinding bound,
+                            int arrayLength = 0)
+            {
+                var allocator3 = new DirectAllocator(p3) { RequestKey = "const-sampler" };
+                bound = new DirectBinding(stageName, "texture", "texture", 2, 0, count);
+                allocator3.Bindings.Add(bound);
+                ShaderProgram shader3 = new(
+                    new ShaderProgramInfo(Array.Empty<BufferDescriptor>(), Array.Empty<BufferDescriptor>(),
+                        new[] { new TextureDescriptor(2, 0, SamplerType.Texture2D, TextureFormat.R8G8B8A8Unorm,
+                            cbufSlot: cbufSlot, handleIndex: handle, arrayLength: arrayLength > 0 ? arrayLength : count, separate: false, TextureUsageFlags.None) },
+                        Array.Empty<TextureDescriptor>(), shaderStage, 0, 0, 0,
+                        usesFragCoord: false, usesInstanceId: false, usesDrawParameters: false, usesRtLayer: false,
+                        clipDistancesWritten: 0, fragmentOutputMap: 0),
+                    Ryujinx.Graphics.Shader.Translation.TargetLanguage.Spirv, Array.Empty<byte>());
+                try
+                {
+                    resolver3.Invoke(null, new object[] { new List<(DirectStage stage, ShaderProgram shader, DirectGpuAccessor accessor)>
+                        { (stage3, shader3, accessor) }, allocator3 });
+                    return "bound";
+                }
+                catch (System.Reflection.TargetInvocationException error) when (error.InnerException is DirectCompileException compile)
+                {
+                    return compile.Code + " " + compile.Message;
+                }
+            }
+            DirectStage fsStage3 = prog3.StageOf("fs");
+            string Tail3(int word, int sampler, int count = 1, int array = 0) => " [kind=texture handle=" + Const3(word, sampler) + " word=" + word +
+                " word2=" + sampler + " type=3 cbuf=2/0 count=" + count + " array=" + (array > 0 ? array : count) + " key=const-sampler]";
+            string Bound3(int word, int sampler, out DirectBinding b) =>
+                Resolve3(fa3, fsStage3, "fs", ShaderStage.Fragment, Const3(word, sampler), slots3, 1, out b);
+            string resolved3 = Bound3(90, 257, out DirectBinding bound3);
+            Check(resolved3 == "bound", "a type-3 handle with its same-word fact resolves: " + resolved3);
+            Check(bound3.Slot == 90 && bound3.ConstSampler == 257 && bound3.SamplerSlot == -1 && bound3.UboSlot == -1,
+                "a type-3 handle binds texture word 90 with constant sampler 257, no samp_slot / uboSlot: slot=" + bound3.Slot + " const=" + bound3.ConstSampler +
+                " samp=" + bound3.SamplerSlot + " ubo=" + bound3.UboSlot);
+            foreach (var (what, word, sampler) in new[] { ("sampler index 0 is a real index, not 'none'", 90, 0), ("sampler index above 255", 90, 261), ("the largest sampler index", 90, 4095) })
+            {
+                string r3 = Bound3(word, sampler, out DirectBinding b3);
+                Check(r3 == "bound" && b3.Slot == word && b3.ConstSampler == sampler && b3.SamplerSlot == -1, "type-3 " + what + ": " + r3 + " slot=" + b3.Slot + " const=" + b3.ConstSampler);
+            }
+            // 负控：表达不了的、没有同字事实的、计算阶段 / 数组，都不填槽，具名报未接（前缀不变，宿主按前缀归类）
+            string over3 = Bound3(90, 4096, out DirectBinding boundOver3);
+            Check(over3 == "UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 65538 is not implemented (constant sampler index above 4095)" + Tail3(90, 4096) &&
+                  boundOver3.Slot == -1 && boundOver3.ConstSampler == -1,
+                "a sampler index the 12-bit handle field cannot hold is rejected by name and binds nothing: " + over3);
+            string array3 = Resolve3(fa3, fsStage3, "fs", ShaderStage.Fragment, Const3(90), slots3, 2, out DirectBinding boundArray3);
+            Check(array3 == "UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 65538 is not implemented (constant sampler array)" + Tail3(90, 257, 2) &&
+                  boundArray3.Slot == -1 && boundArray3.ConstSampler == -1,
+                "a constant-sampler handle array is rejected by name and binds nothing: " + array3);
+            // 数组的两个判据各自单独成立也要拒：只有绑定个数 > 1，或只有描述符数组长度 > 1
+            foreach (var (what, count, length) in new[] { ("binding count above 1 alone", 2, 1), ("descriptor array length above 1 alone", 1, 2) })
+            {
+                string a3 = Resolve3(fa3, fsStage3, "fs", ShaderStage.Fragment, Const3(90), slots3, count, out DirectBinding bArr3, length);
+                Check(a3 == "UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 65538 is not implemented (constant sampler array)" + Tail3(90, 257, count, length) &&
+                      bArr3.Slot == -1 && bArr3.ConstSampler == -1,
+                    "a constant-sampler handle with " + what + " is rejected by name and binds nothing: " + a3);
+            }
+            using JsonDocument docCs3 = JsonDocument.Parse(RequestJson(profile, "compute", 2, 1, "const-sampler-cs", cs: ComputeGuest(),
+                textureFacts: "[" + Fact3("cs", 90, "2d", false, true, true) + "]"));
+            DirectProgram progCs3 = DirectProgram.Parse(docCs3.RootElement.GetProperty("program"), "program", p3);
+            DirectStage csStage3 = progCs3.StageOf("cs");
+            var fcs3 = new DirectGpuAccessor(p3, progCs3, csStage3, 0, new DirectAllocator(p3), new List<DirectQuery>());
+            string compute3 = Resolve3(fcs3, csStage3, "cs", ShaderStage.Compute, Const3(90), slots3, 1, out DirectBinding boundCs3);
+            Check(compute3 == "UNSUPPORTED_PROGRAM cs: texture handle from cbuf slot 65538 is not implemented (constant sampler, compute)" + Tail3(90, 257) &&
+                  boundCs3.Slot == -1 && boundCs3.ConstSampler == -1,
+                "a compute-stage constant-sampler handle is rejected by name and binds nothing: " + compute3);
+            string noFact3 = Bound3(96, 257, out DirectBinding boundNo3);
+            //   没有同字事实：走 c2 通用拒绝（#1488 的基础消息：handle= / arrayLength= / count= / request=<sha>，#1601 的尾巴补 kind / word / word2 / type / cbuf / key）；
+            //   sha 随请求内容变，所以前后两段分开比，不写死 sha
+            Check(noFact3.StartsWith("UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 65538 is not implemented (handle=" + Const3(96, 257) +
+                                     ", arrayLength=1, count=1, request=", StringComparison.Ordinal) &&
+                  noFact3.EndsWith(") [kind=texture word=96 word2=257 type=3 cbuf=2/0 key=const-sampler]", StringComparison.Ordinal) &&
+                  !noFact3.Contains("constant sampler", StringComparison.Ordinal) &&
+                  boundNo3.Slot == -1 && boundNo3.ConstSampler == -1,
+                "a type-3 handle without a same-word fact keeps the generic rejection: " + noFact3);
+            // 真实翻译器：LDC c2[0x168] 取贴图字、LOP32I.OR 拼上立即数采样器号、TEX.B 取样；翻译器自己拼出 (809517146, 65538)
+            //   结果：贴图绑定 slot = 贴图字、constSampler = 采样器号、没有 samp_slot，schema 按 v2
+            string Real3(string facts, uint sampler = 257)
+            {
+                byte[] shader = Guest(true, new[] { Fadd32i(2, 0.5f), Fadd32i(3, 0.5f), Ldc(6, 0x168, 2), Lop32iOr(4, 6, sampler << 20), TexBindless2D(0, 2, 4) });
+                try
+                {
+                    using JsonDocument r = ParseResult(DirectShaderCompiler.Compile(RequestJson(profile, "graphics", 1, 1, "const-sampler", vs, shader, textureFacts: facts, fsCbUse: 4)));
+                    string Field(JsonElement b, string name) => b.TryGetProperty(name, out JsonElement f) ? f.GetInt32().ToString() : "-";
+                    return r.RootElement.GetProperty("schema").GetString() + " " + string.Join(";", r.RootElement.GetProperty("content").GetProperty("bindings").EnumerateArray()
+                        .Where(b => b.GetProperty("kind").GetString() == "texture").Select(b => Field(b, "slot") + "/" + Field(b, "constSampler") + "/" + Field(b, "samp_slot")));
+                }
+                catch (DirectCompileException error) { return error.Code + " " + error.Message; }
+            }
+            string real3 = Real3(facts3);
+            Check(real3 == "s2a-direct-program-v2 90/257/-", "real translator: a constant-sampler handle compiles to texture word 90 + constSampler 257 (v2, no samp_slot): " + real3);
+            string real3b = Real3(facts3, 4095);
+            Check(real3b == "s2a-direct-program-v2 90/4095/-", "real translator: another immediate sampler index only changes constSampler: " + real3b);
+            string real3c = Real3(facts3, 1);
+            Check(real3c == "s2a-direct-program-v2 90/1/-", "real translator: a small immediate sampler index is kept as is: " + real3c);
+            // 立即数 0：翻译器把 `c2 字 | 0` 折成 c2 字本身（组合句柄，不是类型 3），所以下标 0 走不到 constSampler 的写出；
+            //   上面逐项的 allocator 用例钉的是「0 是真下标」，这条钉的是这个折叠：不能被当成常量采样器收下。
+            //   折叠之后是一个普通的 c2 单值句柄：#1488 之前走「cbuf slot 2」未接拒绝，之后按 c2 单值句柄放行（v1，slot = 字号，没有 constSampler / samp_slot）
+            string real3z = Real3(facts3, 0);
+            Check(real3z == "s2a-direct-program-v1 90/-/-",
+                "real translator: an immediate sampler index 0 is folded away into a plain c2 word and never becomes a constSampler: " + real3z);
+            // 同一个着色器里两个类型 3 句柄（两个贴图字、两个采样器号）：两个贴图绑定各带各的 constSampler
+            {
+                string facts3Two = "[" + Fact3("fs", 90, "2d", false, true, true) + "," + Fact3("fs", 100, "2d", false, true, true) + "]";
+                byte[] shader = Guest(true, new[] {
+                    Ldc(6, 0x168, 2), Lop32iOr(8, 6, 257u << 20), Ldc(7, 0x190, 2), Lop32iOr(9, 7, 259u << 20),
+                    Fadd32i(2, 0.5f), Fadd32i(3, 0.5f), TexBindless2D(0, 2, 8),
+                    Fadd32i(2, 0.5f), Fadd32i(3, 0.5f), TexBindless2D(4, 2, 9),
+                    FaddR(0, 0, 4), FaddR(1, 1, 5), Fadd32i(2, 0.0f), Fadd32i(3, 1.0f) });
+                try
+                {
+                    using JsonDocument two = ParseResult(DirectShaderCompiler.Compile(RequestJson(profile, "graphics", 1, 1, "const-sampler-two", vs, shader, textureFacts: facts3Two, fsCbUse: 4)));
+                    string Field(JsonElement b, string name) => b.TryGetProperty(name, out JsonElement f) ? f.GetInt32().ToString() : "-";
+                    string pairs = string.Join(";", two.RootElement.GetProperty("content").GetProperty("bindings").EnumerateArray()
+                        .Where(b => b.GetProperty("kind").GetString() == "texture").Select(b => Field(b, "slot") + "/" + Field(b, "constSampler") + "/" + Field(b, "samp_slot"))
+                        .OrderBy(s => s, StringComparer.Ordinal));
+                    Check(pairs == "100/259/-;90/257/-", "real translator: two constant-sampler handles keep their own word and sampler: " + pairs);
+                }
+                catch (DirectCompileException error) { Check(false, "real translator: two constant-sampler handles must compile: " + error.Code + " " + error.Message); }
+            }
+            foreach (var (what, only) in new[] {
+                ("only another stage has the fact", "[" + Fact3("vs", 90, "cube", false, true, true) + "]"),
+                ("the same-word fact is a texel buffer", "[" + Fact3("fs", 90, "buffer", true, false, true) + "]"),
+                ("the same-word fact is not separate", "[" + Fact3("fs", 90, "2d", false, true, false) + "]") })
+            {
+                string r = Real3(only);
+                Check(r.StartsWith("MISSING_FACT", StringComparison.Ordinal), "real translator: type-3 handle stays MISSING_FACT when " + what + ": " + r);
+            }
+            // 别的绑定不受影响：类型 1（两个字都在 c2 表里）照旧 samp_slot、没有 constSampler
+            {
+                const string separateFact = "[{\"stage\":\"fs\",\"handle\":90,\"cbufSlot\":2,\"samplerType\":\"2d\",\"format\":\"Unknown\",\"isBuffer\":false,\"normalized\":true,\"separate\":true,\"arrayLength\":1}]";
+                byte[] shader = Guest(true, new[] { Fadd32i(2, 0.5f), Fadd32i(3, 0.5f), Ldc(6, 0x168, 2), Ldc(7, 0x568, 2), LopOr(4, 6, 7), TexBindless2D(0, 2, 4) });
+                try
+                {
+                    using JsonDocument one = ParseResult(DirectShaderCompiler.Compile(RequestJson(profile, "graphics", 1, 1, "const-sampler-type1", vs, shader, textureFacts: separateFact, fsCbUse: 4)));
+                    JsonElement binding = one.RootElement.GetProperty("content").GetProperty("bindings").EnumerateArray().Single(b => b.GetProperty("kind").GetString() == "texture");
+                    Check(binding.GetProperty("slot").GetInt32() == 90 && binding.GetProperty("samp_slot").GetInt32() == 0 && !binding.TryGetProperty("constSampler", out _),
+                        "a type-1 handle keeps samp_slot and gets no constSampler: " + binding.GetRawText());
+                }
+                catch (DirectCompileException error) { Check(false, "type-1 handle must still compile: " + error.Code + " " + error.Message); }
+            }
+
+            // ---- 片 3：类型 3 句柄的贴图字在游戏自己的 UBO（c3..c18）里，采样器仍是立即数采样器池下标 ----
+            //   真机读到的一对数（fs 的 MISSING_FACT）：handle = PackOffsets(40, 260, 3) = 809566248，cbufSlot = PackSlots(5, 0) = 65541（c5 字节偏移 160）。
+            //   取事实用拆开的 (字, 贴图所在 cbuf)，就是普通 UBO 句柄那一份精确事实；缺事实时 MISSING_FACT 也写拆开的坐标：
+            //   宿主（nvk_shader.c ubo_need_learn）只学「cbuf 3..18、字 < 0x4000」的坐标，打包坐标它一个也不认，写了就永远学不到。
+            //   取到事实后 ResolvePoolSlots 编成 uboSlot（cbuf − 3）/ uboOffset（字 × 4）+ constSampler，没有 slot / samp_slot（按 v2 写）。
+            {
+                string Fact4(string stage, int word, int cbuf, string samplerType, bool isBuffer, bool normalized, bool separate) =>
+                    "{\"stage\":\"" + stage + "\",\"handle\":" + word + ",\"cbufSlot\":" + cbuf + ",\"samplerType\":\"" + samplerType + "\",\"format\":\"Unknown\",\"isBuffer\":" +
+                    (isBuffer ? "true" : "false") + ",\"normalized\":" + (normalized ? "true" : "false") + ",\"separate\":" + (separate ? "true" : "false") + ",\"arrayLength\":1}";
+                string facts4 = "[" + string.Join(",", new[] {
+                    Fact4("fs", 40, 5, "2d", false, false, false),      // fs 的 c5 字 40（真机那一对）：2d、非归一化
+                    Fact4("fs", 40, 6, "cube", false, true, false),     // 同一个字在 c6：另一个缓冲的另一份事实，不互借
+                    Fact4("vs", 40, 5, "cube", false, true, false),     // vs 的 c5 字 40：和 fs 的区分
+                    Fact4("vs", 52, 5, "2d", false, true, false),       // 只有 vs 有的字：fs 不借
+                    Fact4("fs", 44, 5, "buffer", true, false, false),   // 纹素缓冲：类型 3 不取
+                    Fact4("fs", 48, 5, "2d", false, true, true),        // 分离事实：不取（宿主对 UBO 坐标从不给）
+                    Fact4("fs", 0, 3, "2d", false, true, false),        // c3 字 0（UBO 号 0）
+                    Fact4("fs", 16383, 18, "2d", false, true, false),   // c18 最后一个字（UBO 号 15、字节偏移 65532；类型 3 句柄的字只有 14 位）
+                    Fact4("fs", 8191, 18, "2d", false, true, false),    // c18 里 LDC 立即数能到的最后一个字（字节偏移 32764 = 0x7FFC，立即数是有符号 16 位）
+                    Fact3("fs", 90, "2d", false, true, true) }) + "]";  // c2 的分离事实（片 1 / 片 2 的来源）：不借给 UBO 句柄
+                using JsonDocument doc4 = JsonDocument.Parse(RequestJson(profile, "graphics", 1, 1, "const-sampler-ubo", vs, fs, textureFacts: facts4));
+                DirectProgram prog4 = DirectProgram.Parse(doc4.RootElement.GetProperty("program"), "program", p3);
+                var va4 = new DirectGpuAccessor(p3, prog4, prog4.StageOf("vs"), 1, new DirectAllocator(p3), new List<DirectQuery>());
+                var fa4 = new DirectGpuAccessor(p3, prog4, prog4.StageOf("fs"), 5, new DirectAllocator(p3), new List<DirectQuery>());
+                int Slots4(int cbuf) => TextureHandle.PackSlots(cbuf, 0);
+                Check(Const3(40, 260) == 809566248 && Slots4(5) == 65541, "hand-computed type-3 UBO handle and slots equal the numbers read on the device: " + Const3(40, 260) + " / " + Slots4(5));
+                try
+                {
+                    Check(fa4.QuerySamplerType(Const3(40, 260), Slots4(5)) == SamplerType.Texture2D && !fa4.QueryTextureCoordNormalized(Const3(40, 260), Slots4(5)) &&
+                          !fa4.QueryTextureIsBuffer(Const3(40, 260), Slots4(5)),
+                        "a type-3 handle whose texture word is in c5 takes its own stage's exact (word, cbuf) fact as is (type / buffer flag / normalized)");
+                    Check(fa4.QuerySamplerType(Const3(40, 0), Slots4(5)) == SamplerType.Texture2D && fa4.QuerySamplerType(Const3(40, 4095), Slots4(5)) == SamplerType.Texture2D,
+                        "the immediate sampler index does not take part in the fact lookup (UBO)");
+                    Check(va4.QuerySamplerType(Const3(40, 260), Slots4(5)) == SamplerType.TextureCube && va4.QueryTextureCoordNormalized(Const3(40, 260), Slots4(5)),
+                        "the same handle in vs takes vs's own fact (UBO)");
+                    Check(fa4.QuerySamplerType(Const3(40, 260), Slots4(6)) == SamplerType.TextureCube,
+                        "the same word in another cbuf takes that cbuf's own fact");
+                    Check(fa4.QuerySamplerType(40, 5) == fa4.QuerySamplerType(Const3(40, 260), Slots4(5)) &&
+                          fa4.QueryTextureCoordNormalized(40, 5) == fa4.QueryTextureCoordNormalized(Const3(40, 260), Slots4(5)),
+                        "a plain user-UBO handle and a type-3 handle at the same (word, cbuf) take the same fact");
+                    Check(fa4.QuerySamplerType(Const3(0, 7), Slots4(3)) == SamplerType.Texture2D && fa4.QuerySamplerType(Const3(16383, 7), Slots4(18)) == SamplerType.Texture2D,
+                        "both ends of the user cbuf range (c3 word 0, c18 word 16383) resolve");
+                }
+                catch (DirectCompileException e) { Check(false, "type-3 UBO fact queries should resolve: " + e.Code + " " + e.Message); }
+                string Miss4(Action query)
+                {
+                    try { query(); return "no exception"; }
+                    catch (DirectCompileException e) { return e.Code + " " + e.Message; }
+                }
+                // 缺精确事实：坐标是拆开后的 (字, 贴图所在 cbuf)，宿主按它读 UBO 补事实
+                foreach (var (what, query, want) in new (string, Action, string)[] {
+                    ("no fact for that cbuf", () => fa4.QuerySamplerType(Const3(40, 260), Slots4(7)), "stage=fs,handle=40,cbufSlot=7"),
+                    ("only another stage has the fact", () => fa4.QuerySamplerType(Const3(52, 260), Slots4(5)), "stage=fs,handle=52,cbufSlot=5"),
+                    ("a c2 separate fact with the same word number is not borrowed", () => fa4.QuerySamplerType(Const3(90, 260), Slots4(5)), "stage=fs,handle=90,cbufSlot=5"),
+                    ("a word without any fact", () => fa4.QueryTextureCoordNormalized(Const3(41, 260), Slots4(5)), "stage=fs,handle=41,cbufSlot=5") })
+                {
+                    string r = Miss4(query);
+                    Check(r.StartsWith("MISSING_FACT ", StringComparison.Ordinal) && r.EndsWith(" has no source (" + want + ")", StringComparison.Ordinal),
+                        "type-3 UBO handle, " + what + ": MISSING_FACT with the unpacked coordinates the host can learn: " + r);
+                }
+                // 事实在却不能取的、形态不是这一种的：坐标仍写打包的原样（宿主学不了，如实报缺，不会反复重编）
+                int Raw(int word, TextureHandleType type) => TextureHandle.PackOffsets(word, 260, type);
+                foreach (var (what, query, want) in new (string, Action, string)[] {
+                    ("a texel-buffer fact is not taken", () => fa4.QueryTextureIsBuffer(Const3(44, 260), Slots4(5)), "stage=fs,handle=" + Const3(44, 260) + ",cbufSlot=" + Slots4(5)),
+                    ("a separate fact is not taken", () => fa4.QuerySamplerType(Const3(48, 260), Slots4(5)), "stage=fs,handle=" + Const3(48, 260) + ",cbufSlot=" + Slots4(5)),
+                    ("cbuf 19 is not a user cbuf", () => fa4.QuerySamplerType(Const3(40, 260), Slots4(19)), "stage=fs,handle=" + Const3(40, 260) + ",cbufSlot=" + Slots4(19)),
+                    ("cbuf 1 is not a user cbuf", () => fa4.QuerySamplerType(Const3(40, 260), Slots4(1)), "stage=fs,handle=" + Const3(40, 260) + ",cbufSlot=" + Slots4(1)),
+                    ("cbuf 0 is not a user cbuf", () => fa4.QuerySamplerType(Const3(40, 260), Slots4(0)), "stage=fs,handle=" + Const3(40, 260) + ",cbufSlot=" + Slots4(0)),
+                    ("no cbuf at all", () => fa4.QuerySamplerType(Const3(40, 260), -1), "stage=fs,handle=" + Const3(40, 260) + ",cbufSlot=-1"),
+                    ("the same numbers as a type-1 handle", () => fa4.QuerySamplerType(Raw(40, TextureHandleType.SeparateSamplerHandle), Slots4(5)),
+                        "stage=fs,handle=" + Raw(40, TextureHandleType.SeparateSamplerHandle) + ",cbufSlot=" + Slots4(5)),
+                    ("the same numbers as a type-2 handle", () => fa4.QuerySamplerType(Raw(40, TextureHandleType.SeparateSamplerId), Slots4(5)),
+                        "stage=fs,handle=" + Raw(40, TextureHandleType.SeparateSamplerId) + ",cbufSlot=" + Slots4(5)),
+                    ("the same numbers as a combined handle", () => fa4.QuerySamplerType(Raw(40, TextureHandleType.CombinedSampler), Slots4(5)),
+                        "stage=fs,handle=" + Raw(40, TextureHandleType.CombinedSampler) + ",cbufSlot=" + Slots4(5)) })
+                {
+                    string r = Miss4(query);
+                    Check(r.StartsWith("MISSING_FACT ", StringComparison.Ordinal) && r.EndsWith(" has no source (" + want + ")", StringComparison.Ordinal),
+                        "type-3 UBO handle, " + what + ": MISSING_FACT with the packed coordinates as they came: " + r);
+                }
+                // 解析口：取到事实后编成 uboSlot / uboOffset + constSampler；不填 slot / samp_slot
+                DirectStage fsStage4 = prog4.StageOf("fs");
+                string Tail4(int word, int sampler, int cbuf, int count = 1, int array = 0) => " [kind=texture handle=" + Const3(word, sampler) + " word=" + word + " word2=" + sampler +
+                    " type=3 cbuf=" + cbuf + "/0 count=" + count + " array=" + (array > 0 ? array : count) + " key=const-sampler]";
+                string Bound4(int word, int sampler, int cbuf, out DirectBinding b) =>
+                    Resolve3(fa4, fsStage4, "fs", ShaderStage.Fragment, Const3(word, sampler), Slots4(cbuf), 1, out b);
+                foreach (var (what, word, sampler, cbuf, ubo, off) in new[] {
+                    ("the handle read on the device", 40, 260, 5, 2, 160),
+                    ("sampler index 0 is a real index, not 'none'", 0, 0, 3, 0, 0),
+                    ("the largest sampler index and the last word of c18", 16383, 4095, 18, 15, 65532) })
+                {
+                    string r4 = Bound4(word, sampler, cbuf, out DirectBinding b4);
+                    Check(r4 == "bound" && b4.Slot == -1 && b4.UboSlot == ubo && b4.UboOffset == off && b4.ConstSampler == sampler && b4.SamplerSlot == -1,
+                        "type-3 UBO " + what + ": " + r4 + " slot=" + b4.Slot + " ubo=" + b4.UboSlot + "/" + b4.UboOffset + " const=" + b4.ConstSampler + " samp=" + b4.SamplerSlot);
+                }
+                // 负控：表达不了的、没有同字事实的、计算阶段 / 数组，都不填任何来源，具名报未接（前缀不变，宿主按前缀归类）
+                string over4 = Bound4(40, 4096, 5, out DirectBinding boundOver4);
+                Check(over4 == "UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 65541 is not implemented (constant sampler index above 4095)" + Tail4(40, 4096, 5) &&
+                      boundOver4.Slot == -1 && boundOver4.UboSlot == -1 && boundOver4.ConstSampler == -1,
+                    "a sampler index the 12-bit handle field cannot hold is rejected by name and binds nothing (UBO): " + over4);
+                foreach (var (what, count, length) in new[] { ("binding count above 1", 2, 2), ("binding count above 1 alone", 2, 1), ("descriptor array length above 1 alone", 1, 2) })
+                {
+                    string a4 = Resolve3(fa4, fsStage4, "fs", ShaderStage.Fragment, Const3(40, 260), Slots4(5), count, out DirectBinding bArr4, length);
+                    Check(a4 == "UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 65541 is not implemented (constant sampler array)" + Tail4(40, 260, 5, count, length) &&
+                          bArr4.Slot == -1 && bArr4.UboSlot == -1 && bArr4.ConstSampler == -1,
+                        "a type-3 UBO handle with " + what + " is rejected by name and binds nothing: " + a4);
+                }
+                using JsonDocument docCs4 = JsonDocument.Parse(RequestJson(profile, "compute", 2, 1, "const-sampler-ubo-cs", cs: ComputeGuest(),
+                    textureFacts: "[" + Fact4("cs", 40, 5, "2d", false, true, false) + "]"));
+                DirectProgram progCs4 = DirectProgram.Parse(docCs4.RootElement.GetProperty("program"), "program", p3);
+                DirectStage csStage4 = progCs4.StageOf("cs");
+                var fcs4 = new DirectGpuAccessor(p3, progCs4, csStage4, 0, new DirectAllocator(p3), new List<DirectQuery>());
+                string compute4 = Resolve3(fcs4, csStage4, "cs", ShaderStage.Compute, Const3(40, 260), Slots4(5), 1, out DirectBinding boundCs4);
+                Check(compute4 == "UNSUPPORTED_PROGRAM cs: texture handle from cbuf slot 65541 is not implemented (constant sampler, compute)" + Tail4(40, 260, 5) &&
+                      boundCs4.Slot == -1 && boundCs4.UboSlot == -1 && boundCs4.ConstSampler == -1,
+                    "a compute-stage type-3 UBO handle is rejected by name and binds nothing: " + compute4);
+                foreach (var (what, word) in new[] { ("no same-word fact", 41), ("the same-word fact is a texel buffer", 44), ("the same-word fact is separate", 48) })
+                {
+                    string n4 = Bound4(word, 260, 5, out DirectBinding bNo4);
+                    Check(n4.StartsWith("UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 65541 is not implemented (handle=" + Const3(word, 260) +
+                                        ", arrayLength=1, count=1, request=", StringComparison.Ordinal) &&
+                          n4.EndsWith(") [kind=texture word=" + word + " word2=260 type=3 cbuf=5/0 key=const-sampler]", StringComparison.Ordinal) &&
+                          !n4.Contains("constant sampler", StringComparison.Ordinal) && bNo4.Slot == -1 && bNo4.UboSlot == -1 && bNo4.ConstSampler == -1,
+                        "a type-3 UBO handle with " + what + " keeps the generic rejection: " + n4);
+                }
+                // 真实翻译器：LDC c5[0xA0] 取贴图字、LOP32I.OR 拼上立即数采样器号、TEX.B 取样；翻译器自己拼出 (809566248, 65541)
+                string Real4(string facts, uint sampler = 260, int cbuf = 5, int byteOffset = 0xA0)
+                {
+                    byte[] shader = Guest(true, new[] { Fadd32i(2, 0.5f), Fadd32i(3, 0.5f), Ldc(6, byteOffset, cbuf), Lop32iOr(4, 6, sampler << 20), TexBindless2D(0, 2, 4) });
+                    try
+                    {
+                        using JsonDocument r = ParseResult(DirectShaderCompiler.Compile(RequestJson(profile, "graphics", 1, 1, "const-sampler-ubo", vs, shader, textureFacts: facts, fsCbUse: 1u << cbuf)));
+                        string Field(JsonElement b, string name) => b.TryGetProperty(name, out JsonElement f) ? f.GetInt32().ToString() : "-";
+                        return r.RootElement.GetProperty("schema").GetString() + " " + string.Join(";", r.RootElement.GetProperty("content").GetProperty("bindings").EnumerateArray()
+                            .Where(b => b.GetProperty("kind").GetString() == "texture")
+                            .Select(b => Field(b, "slot") + "/" + Field(b, "uboSlot") + "/" + Field(b, "uboOffset") + "/" + Field(b, "constSampler") + "/" + Field(b, "samp_slot")));
+                    }
+                    catch (DirectCompileException error) { return error.Code + " " + error.Message; }
+                }
+                string real4 = Real4(facts4);
+                Check(real4 == "s2a-direct-program-v2 -/2/160/260/-", "real translator: a type-3 handle in c5 compiles to uboSlot 2 / uboOffset 160 + constSampler 260 (v2, no slot / samp_slot): " + real4);
+                string real4b = Real4(facts4, 4095, 3, 0);
+                Check(real4b == "s2a-direct-program-v2 -/0/0/4095/-", "real translator: c3 word 0 with the largest sampler index: " + real4b);
+                string real4c = Real4(facts4, 260, 18, 0x7FFC);
+                Check(real4c == "s2a-direct-program-v2 -/15/32764/260/-", "real translator: c18 at the last offset an LDC immediate reaches (byte 0x7FFC): " + real4c);
+                // 立即数 0：翻译器把 `UBO 字 | 0` 折成 UBO 字本身（组合句柄，不是类型 3），所以下标 0 走不到 constSampler 的写出；
+                //   折叠之后是一个普通的游戏 UBO 句柄（v1，没有 constSampler / samp_slot）：采样器取同字高位，是现行口径
+                string real4z = Real4(facts4, 0);
+                Check(real4z == "s2a-direct-program-v1 -/2/160/-/-",
+                    "real translator: an immediate sampler index 0 is folded away into a plain user-UBO handle and never becomes a constSampler: " + real4z);
+                string real4Miss = Real4("[" + Fact3("fs", 90, "2d", false, true, true) + "]");
+                Check(real4Miss.StartsWith("MISSING_FACT ", StringComparison.Ordinal) && real4Miss.EndsWith(" has no source (stage=fs,handle=40,cbufSlot=5)", StringComparison.Ordinal),
+                    "real translator: no (word, cbuf) fact reports the unpacked coordinates the host learns from: " + real4Miss);
+                foreach (var (what, only) in new[] {
+                    ("only another stage has the fact", "[" + Fact4("vs", 40, 5, "cube", false, true, false) + "]"),
+                    ("the same-word fact is a texel buffer", "[" + Fact4("fs", 40, 5, "buffer", true, false, false) + "]"),
+                    ("the same-word fact is separate", "[" + Fact4("fs", 40, 5, "2d", false, true, true) + "]") })
+                {
+                    string r = Real4(only);
+                    Check(r.StartsWith("MISSING_FACT", StringComparison.Ordinal), "real translator: type-3 UBO handle stays MISSING_FACT when " + what + ": " + r);
+                }
+                // 同一个着色器里两个 UBO 里的类型 3 句柄：各带各的来源，不串
+                {
+                    string facts4Two = "[" + Fact4("fs", 40, 5, "2d", false, true, false) + "," + Fact4("fs", 40, 6, "2d", false, true, false) + "]";
+                    byte[] shader = Guest(true, new[] {
+                        Ldc(6, 0xA0, 5), Lop32iOr(8, 6, 260u << 20), Ldc(7, 0xA0, 6), Lop32iOr(9, 7, 262u << 20),
+                        Fadd32i(2, 0.5f), Fadd32i(3, 0.5f), TexBindless2D(0, 2, 8),
+                        Fadd32i(2, 0.5f), Fadd32i(3, 0.5f), TexBindless2D(4, 2, 9),
+                        FaddR(0, 0, 4), FaddR(1, 1, 5), Fadd32i(2, 0.0f), Fadd32i(3, 1.0f) });
+                    try
+                    {
+                        using JsonDocument two = ParseResult(DirectShaderCompiler.Compile(RequestJson(profile, "graphics", 1, 1, "const-sampler-ubo-two", vs, shader, textureFacts: facts4Two, fsCbUse: (1u << 5) | (1u << 6))));
+                        string Field(JsonElement b, string name) => b.TryGetProperty(name, out JsonElement f) ? f.GetInt32().ToString() : "-";
+                        string pairs = string.Join(";", two.RootElement.GetProperty("content").GetProperty("bindings").EnumerateArray()
+                            .Where(b => b.GetProperty("kind").GetString() == "texture").Select(b => Field(b, "uboSlot") + "/" + Field(b, "uboOffset") + "/" + Field(b, "constSampler"))
+                            .OrderBy(s => s, StringComparer.Ordinal));
+                        Check(pairs == "2/160/260;3/160/262", "real translator: two type-3 UBO handles keep their own cbuf and sampler: " + pairs);
+                    }
+                    catch (DirectCompileException error) { Check(false, "real translator: two type-3 UBO handles must compile: " + error.Code + " " + error.Message); }
+                }
+                // 同一个着色器里 c2 的类型 3（片 2）与 UBO 的类型 3（片 3）各走各的口：c2 给 slot + constSampler，UBO 给 uboSlot / uboOffset + constSampler
+                {
+                    string factsMixed = "[" + Fact3("fs", 90, "2d", false, true, true) + "," + Fact4("fs", 40, 5, "2d", false, true, false) + "]";
+                    byte[] shader = Guest(true, new[] {
+                        Ldc(6, 0x168, 2), Lop32iOr(8, 6, 257u << 20), Ldc(7, 0xA0, 5), Lop32iOr(9, 7, 260u << 20),
+                        Fadd32i(2, 0.5f), Fadd32i(3, 0.5f), TexBindless2D(0, 2, 8),
+                        Fadd32i(2, 0.5f), Fadd32i(3, 0.5f), TexBindless2D(4, 2, 9),
+                        FaddR(0, 0, 4), FaddR(1, 1, 5), Fadd32i(2, 0.0f), Fadd32i(3, 1.0f) });
+                    try
+                    {
+                        using JsonDocument mixed = ParseResult(DirectShaderCompiler.Compile(RequestJson(profile, "graphics", 1, 1, "const-sampler-mixed", vs, shader, textureFacts: factsMixed, fsCbUse: (1u << 2) | (1u << 5))));
+                        string Field(JsonElement b, string name) => b.TryGetProperty(name, out JsonElement f) ? f.GetInt32().ToString() : "-";
+                        string pairs = string.Join(";", mixed.RootElement.GetProperty("content").GetProperty("bindings").EnumerateArray()
+                            .Where(b => b.GetProperty("kind").GetString() == "texture")
+                            .Select(b => Field(b, "slot") + "/" + Field(b, "uboSlot") + "/" + Field(b, "uboOffset") + "/" + Field(b, "constSampler"))
+                            .OrderBy(s => s, StringComparer.Ordinal));
+                        Check(pairs == "-/2/160/260;90/-/-/257", "real translator: a c2 type-3 handle and a UBO type-3 handle in one shader keep their own sources: " + pairs);
+                    }
+                    catch (DirectCompileException error) { Check(false, "real translator: mixed type-3 handles must compile: " + error.Code + " " + error.Message); }
+                }
             }
         }
 

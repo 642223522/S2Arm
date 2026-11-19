@@ -35,7 +35,7 @@ namespace S2A.Services
             string own = Environment.GetEnvironmentVariable("S2A_MODS_DIR");   // 起局方直接给 mod 目录（Mac 作业层 = 这款游戏文件夹的 mods/，pack/jobs/build.py；启动器「游戏设置 → Mod」导入到那里）
             if (!string.IsNullOrEmpty(own)) return own;
             string docs = Environment.GetEnvironmentVariable("S2A_DOCS");
-            if (string.IsNullOrEmpty(docs) && OperatingSystem.IsIOS()) docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);   // 平台例外：没给 S2A_DOCS 时只有 iOS 的 App 容器 Documents 可当 mod 目录的根；Mac 上同一个调用是用户文稿夹，不许碰，所以只能按平台分
+            if (string.IsNullOrEmpty(docs) && (OperatingSystem.IsIOS() || OperatingSystem.IsTvOS())) docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);   // 平台例外：没给 S2A_DOCS 时只有 iOS 的 App 容器 Documents 可当 mod 目录的根；Mac 上同一个调用是用户文稿夹，不许碰，所以只能按平台分
             return string.IsNullOrEmpty(docs) ? null : Path.Combine(docs, DirName);
         }
 
@@ -439,7 +439,7 @@ namespace S2A.Services
         {
             bool ascii = true;
             foreach (char c in s) if (c > 0x7F) { ascii = false; break; }
-            if (ascii || !(OperatingSystem.IsIOS() || OperatingSystem.IsMacOS())) return s;   // 平台例外：下面直接调 CoreFoundation 做 NFC（服务层 string.Normalize 不干活），这个库只有苹果平台有；别的平台按原样比
+            if (ascii || !((OperatingSystem.IsIOS() || OperatingSystem.IsTvOS()) || OperatingSystem.IsMacOS())) return s;   // 平台例外：下面直接调 CoreFoundation 做 NFC（服务层 string.Normalize 不干活），这个库只有苹果平台有；别的平台按原样比
 
             try
             {

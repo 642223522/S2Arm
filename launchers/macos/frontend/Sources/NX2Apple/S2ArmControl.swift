@@ -204,7 +204,7 @@ import S2ArmAppleAdapter
             switch str("action") {
             case "restart":
                 guard model.updateState == .ready else { return .bad("新版还没下载好", code: 409) }
-                if let b = busy() { return b }
+                if model.updateBusy { return busy() ?? .bad("有作业在跑", code: 409) }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { model.restartToUpdate() }   // 先把回复发出去，再退出
                 return .ok()
             case "retry":

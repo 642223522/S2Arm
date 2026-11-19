@@ -68,6 +68,7 @@ struct gl_program {                                                // gl_prog.m
     struct { char name[64]; int slot, loc; char type[8]; } attr[16]; int nattr;   // 顶点输入：Metal 属性号 slot（库表 a:）、GL 属性号 loc（glGetAttribLocation 回它、绘制按它取数组）；type 是反射的 GLSL 类型名
     struct { char name[64]; GLuint idx; } bind[16]; int nbind;     // glBindAttribLocation 记下的「名字 → GL 属性号」，下一次链接生效（GL 语义）
     __strong NSMutableDictionary *pso;                              // gl_draw.m：按「顶点布局 + 目标格式 + 混合」取的管线
+    char lkey[2][17]; char *lsrc[2];                                // 链接时两阶段着色器的源码键、现编阶段的源码副本（即时存档按它重建函数：着色器链接后常被删掉）
 };
 typedef struct gl_texture gl_texture;    // gl_tex.m：__strong id<MTLTexture> tex; 目标、格式、各级尺寸；首次使用时按已给的级建
 typedef struct gl_sampler gl_sampler;    // gl_tex.m：__strong id<MTLSamplerState>
@@ -136,6 +137,7 @@ void gl_clear(GLbitfield mask);                           // 按当前清除值�
 void gl_wait(uint64_t v);                                 // 等本层共享事件到 v（glFinish、上屏前取回读）
 struct gl_vao *gl_vao_cur(void);                        // gl_buf.m：当前顶点数组；0 号是 GLES 的缺省顶点数组（不在名字表里）
 void gl_buffer_ref(struct gl_buffer *b);                   // 绑定当前存储进编码器时登记本次提交
+GLuint gl_pack_buffer_name(void); struct gl_buffer *gl_pack_buffer(void);   // gl_buf.m：当前绑的像素打包缓冲（名字 / 对象，没绑 0 / NULL）
 int gl_buffer_busy(const struct gl_buffer *b);             // 当前存储仍被未完成的提交引用
 extern id<MTLDevice> gl_dev; extern id<MTLSharedEvent> gl_ev;
 
@@ -188,3 +190,23 @@ void gl_fb_session_reset(void);
 void gl_wd_release_id(uint32_t id);
 extern _Atomic uint64_t gl_n_frames, gl_n_draws, gl_n_passes, gl_bad_feat, gl_bad_err;
 extern _Atomic uint64_t gl_wait_n, gl_wait_ns;   // 游戏线程等 GPU 的次数与累计纳秒（gl_wait；egl.m 每 300 帧打一行拆账）
+
+// ---------- 即时存档（缺省关：S2A_SNAP_MODE / S2A_SNAP_RESTORE 才走到；egl.m gl_snap_save / gl_snap_restore 按片调） ----------
+// 格式按 runtime/src/snapfmt.h 的字段号记录（新版 App 读旧快照：缺的字段取缺省、不认的跳过），Metal 贴图 / 缓冲内容跟在各片的段尾后面整块存。
+//   存在冻结之后（游戏线程全停在门里）、本层排空之后；取在新进程起好服务层、游戏线程还没起的时候（gl_snap_thread_bind 在各游戏线程就位时接回当前上下文）
+#include "../../../../runtime/src/snapfmt.h"
+#define GLSF_W(w, id, field) sfw_blob((w), (uint16_t)(id), &(field), (uint32_t)sizeof(field))
+#define GLSF_R(r, id, field) sfr_into((r), (uint16_t)(id), &(field), (uint32_t)sizeof(field))
+int gl_buf_snap_save(FILE *f); int gl_buf_snap_restore(FILE *f);
+int gl_tex_snap_save(FILE *f); int gl_tex_snap_restore(FILE *f);
+int gl_tex_snap_one_save(FILE *f, gl_texture *t);   // 一个纹理对象（上下文的默认纹理也用它；t 可为 NULL）
+gl_texture *gl_tex_snap_one_load(FILE *f);
+int gl_prog_snap_save(FILE *f); int gl_prog_snap_restore(FILE *f);
+int gl_fb_snap_save(FILE *f); int gl_fb_snap_restore(FILE *f);
+int gl_draw_snap_save(FILE *f); int gl_draw_snap_restore(FILE *f);
+int gl_snap_drain(void);
+typedef snap_fp_cb gl_fp_cb;   // 按整块存的小结构的布局指纹 + 完整布局（snapfmt.h SNAP_FP_*；快照引擎恢复前逐个比）
+void gl_tex_snap_fps(gl_fp_cb cb); void gl_fb_snap_fps(gl_fp_cb cb);
+void gl_buf_snap_handout(void); uint64_t gl_buf_snap_map(const char *id);   // gl_buf.m：映射着的缓冲指针按身份登记 / 恢复时按身份建存储回新地址                                  // gl_draw.m：提交本层在途命令、等 GPU 与完成回调都结束
+const char *gl_snap_str(const char *id);                  // gl_fb.m：glGetString / glGetStringi 交出的串按身份找回本进程的（"<名>:<es>" / "i:<号>"）
+int nvn_snap_tex_save(FILE *f, void *tex) __attribute__((weak)); void *nvn_snap_tex_load(FILE *f) __attribute__((weak));   // 直连层 nvn_snap.inc：整张贴图连描述存 / 取（取回的已 retain，用 __bridge_transfer 接）；GL 单测只链本层，没有时快照存取判失败

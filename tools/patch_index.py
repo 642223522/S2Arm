@@ -8,6 +8,8 @@
 每行：repo / commit / path / size / sha256 / kind（pchtxt | ips）/ cat（fps | widescreen | gfx）/ target_fps / aspect /
   gids（路径里出现的程序号）/ bids（pchtxt 的 @nsobid、ips 的文件名构建号）/ license（仓库 LICENSE 首行，没有写空）。
 romfs 下的文件（游戏数据）、大于 2 MB 的文件不收。
+配套里有显存 / 堆 / 内存配置的 mod（同一个 mod 根下既有 exefs 补丁又有 romfs/ 里的 HeapSize 一类，散文件或包内都算）连它的 exefs 补丁也不收（11-16 D-Q3QJ：王国之泪 1800p 只收了改分辨率的
+  exefs、漏了 romfs 里调大显存堆的 HeapDef，按 1800p 建缓冲分配失败崩溃）；同一份内容在别的库里单独出现也不收。要整份交付走 mod 通道（0.5.0 之后）。
 压缩包（.zip / .rar，11-13：超宽屏 / 老牌补丁库把每款打成一个包）：包里的 exefs 补丁与 cheats/<构建号>.txt 金手指逐个成行，path 是包本身，
   另记 member（包内路径）、archive_sha256 / archive_size（整包，下载时先核它）；sha256 / size 是包内这一份。rar 用系统 bsdtar（libarchive）读。
 金手指（kind=cheat，cat=cheat）：cheats/<构建号>.txt（散文件或包内）；出包时由 pack/jobs/cheats.py 收进金手指一栏，不进画面补丁。
@@ -139,6 +141,72 @@ def gfx_dir(path, text=''):
     return ''
 
 
+# 改内部渲染分辨率的满屏补丁（11-16 #b824d1：阿尔宙斯「3440x1440」变体把渲染分辨率提到 3440×1440，和 1800p（D-Q3QJ）同机制——渲染目标放大、
+#   游戏自己的堆放不下 → 空指针崩）。按内容判：补丁写进的 movz 立即数里同时有一个高（> 1080 的常见高度）和一个宽（≥ 1.3 倍高）。
+#   只看名字不算：名字里写 3440x1440 的多是目标显示器，正文只改画幅（11-16 普查 116 份名字带分辨率的，正文 0 份写分辨率常数）
+UPRES_HEIGHTS = frozenset((1152, 1200, 1440, 1536, 1600, 1620, 1800, 2160, 2880, 4320))
+
+
+def words_of(kind, data):
+    """补丁写进的 4 字节字（小端）：pchtxt 每行「偏移 十六进制」（// 注释掉的不算），IPS 按记录（偏移 3 字节 + 长度 2 字节 + 数据；长度 0 = RLE，不是指令）"""
+    out = []
+    if kind == 'ips':
+        i = 5 if data[:5] in (b'PATCH', b'IPS32') else 0
+        wide = data[:5] == b'IPS32'
+        while i + (4 if wide else 3) + 2 <= len(data):
+            n0 = 4 if wide else 3
+            if data[i:i + n0] in (b'EOF', b'EEOF'): break
+            size = int.from_bytes(data[i + n0:i + n0 + 2], 'big'); i += n0 + 2
+            if size == 0: i += 3; continue
+            out += [int.from_bytes(data[i + k:i + k + 4], 'little') for k in range(0, size - 3, 4)]; i += size
+        return out
+    for line in data.decode('utf-8', 'replace').splitlines():
+        m = re.match(r'\s*[0-9A-Fa-f]{8}\s+([0-9A-Fa-f]{8,})\b', line)
+        if m:
+            hx = m.group(1)
+            out += [int.from_bytes(bytes.fromhex(hx[k:k + 8]), 'little') for k in range(0, len(hx) - 7, 8)]
+    return out
+
+
+def upres(words):
+    """→ (宽, 高)：这些字里有 movz 写一对渲染分辨率（见 UPRES_HEIGHTS）；没有 → None"""
+    imms = {(w >> 5) & 0xFFFF for w in words if (w & 0x7F800000) == 0x52800000 and not (w >> 21) & 3}   # movz w/x，不移位
+    return next(((w, h) for h in sorted(imms & UPRES_HEIGHTS) for w in sorted(imms) if 1.3 * h <= w <= 8192), None)
+
+
+RES_FIX_H = 1080   # 改回的渲染高：发布前没有各款原件、不知道原生高，取 Switch 主机模式最常见的 1080（原生 720 的款高出一些，远低于会崩的 1440 / 2160）
+
+
+def res_fix(kind, data, wh):
+    """把补丁里写渲染分辨率的 movz（upres 认出的 宽 wh[0] / 高 wh[1]）就地改成 高 RES_FIX_H、宽 = 高 × 原宽高比（取偶），其余字节不动
+    （11-16 维护者：「提前把这类补丁中参数改对，这样用户用着的就是对的」，老客户端也受益）。补丁里高 > 1080 的常见高度只许 wh[1] 这一个
+    （另有一档 / 派生尺寸 → 认不全）→ None。→ (新字节, (新宽, 新高))"""
+    W, H = wh
+    if {(w >> 5) & 0xFFFF for w in words_of(kind, data) if (w & 0x7F800000) == 0x52800000 and not (w >> 21) & 3} & UPRES_HEIGHTS != {H}: return None
+    H2 = RES_FIX_H; W2 = max(2, int(round(H2 * W / H / 2)) * 2)
+    def fix(w):
+        if (w & 0x7F800000) != 0x52800000 or (w >> 21) & 3: return w
+        imm = (w >> 5) & 0xFFFF
+        return (w & ~(0xFFFF << 5)) | ((H2 if imm == H else W2 if imm == W else imm) << 5)
+    if kind == 'ips':
+        out = bytearray(data); i = 5 if data[:5] in (b'PATCH', b'IPS32') else 0; wide = data[:5] == b'IPS32'
+        while i + (4 if wide else 3) + 2 <= len(out):
+            n0 = 4 if wide else 3
+            if bytes(out[i:i + n0]) in (b'EOF', b'EEOF'): break
+            size = int.from_bytes(out[i + n0:i + n0 + 2], 'big'); i += n0 + 2
+            if size == 0: i += 3; continue
+            for k in range(0, size - 3, 4):
+                out[i + k:i + k + 4] = fix(int.from_bytes(out[i + k:i + k + 4], 'little')).to_bytes(4, 'little')
+            i += size
+        new = bytes(out)
+    else:
+        def line(m):
+            hx = m.group(2)
+            return m.group(1) + ''.join(fix(int.from_bytes(bytes.fromhex(hx[k:k + 8]), 'little')).to_bytes(4, 'little').hex().upper() for k in range(0, len(hx) - 7, 8)) + hx[len(hx) - len(hx) % 8:]
+        new = re.sub(r'(?m)^(\s*[0-9A-Fa-f]{8}\s+)([0-9A-Fa-f]{8,})\b', line, data.decode('utf-8', 'replace')).encode()
+    return (new, (W2, H2)) if new != data else None
+
+
 def bids_of(path, data):
     name = os.path.splitext(os.path.basename(path))[0]
     if path.lower().endswith('.ips'):
@@ -150,6 +218,41 @@ CHEAT_LIBS = {'bad1dea/NXCheats', 'HamletDuFromage/switch-cheats-db', 'ChanseyIs
 CHEAT = re.compile(r'(?:^|/)cheats/(?:[^/]+/)?([0-9A-Fa-f]{16})\.txt$', re.I)   # 也认多一层目录：cheats/<程序号或游戏名>/<构建号>.txt（tomvita/MyNXCheats 的写法，11-16）
 
 
+def mod_root(path):
+    """Atmosphere 结构 <mod 根>/exefs/… 或 <mod 根>/romfs/… 的 mod 根（小写比较，取最后一个 exefs / romfs 的上一级）；都不在里面 → None"""
+    low = [p.lower() for p in path.replace('\\', '/').split('/')]
+    for i in range(len(low) - 1, -1, -1):
+        if low[i] in ('exefs', 'romfs'):
+            return '/'.join(low[:i])
+    return None
+
+
+# 配套数据里会让「只打 exefs 半边」崩的：显存 / 堆 / 内存配置（11-16 D-Q3QJ：1800p 改分辨率要配 HeapSize/…HeapDef 调大显存堆，缺了按 1800p 建缓冲分配失败）。
+#   界面布局（LayoutArchive、Bootup pack 等）缺了只是界面没跟着拉宽、不崩，照收（维护者定：超宽屏是满屏重点功能，不一刀切）
+CRASH_COMPANION = re.compile(r'heap|memorysystem|memory(?:size|def|config)', re.I)
+
+
+def romfs_roots(names):
+    """配套里有显存 / 堆 / 内存配置（CRASH_COMPANION）的 mod 根（小写）"""
+    return {mod_root(n) for n in names if '/romfs/' in '/' + n.replace('\\', '/').lower() and CRASH_COMPANION.search(n.replace('\\', '/').split('/romfs/', 1)[-1])}
+
+
+def half(path, roots):
+    """exefs 补丁且它的 mod 配套里有显存 / 堆 / 内存配置（romfs_roots / companion 记下的根）：只收这半边会崩，整份不收"""
+    low = '/' + path.replace('\\', '/').lower()
+    return '/exefs/' in low and path.lower().endswith(('.pchtxt', '.ips')) and mod_root(path) in roots
+
+
+ADJUSTED = []   # 本次扫描改过分辨率的满屏补丁：(路径, 包内路径, (原宽, 原高), (新宽, 新高), 原 sha256)
+UPRES = []    # 本次扫描不收的改内部分辨率满屏补丁：(路径, 包内路径, (宽, 高), sha256)；同一份内容在别处（被分成别的类）也不收
+# 已定因会崩的单份补丁（按内容 sha256 前 16 位，同 pack/cpatch.py 编号）：不收。新客户端出包时 pack/cpatch.py nop_stale 已能按数据流挡下它们；
+#   这张表留给没有这条规则的老客户端（0.4.5 及以前，出包时照收）——老客户端淘汰后清空。cucholix 那份（7a1aa34f90ab0756）残值来自游戏自己的 ldr、真机一致，nop_stale 判安全，已移出
+KNOWN_BAD = {
+    'e8b51176ead1bcd3': '11-16 帖子 3 台 / 4 次 Mac 崩：nop 掉 main+0x5edb3c 取名字地址的 adrp/add，x8 是前面 bl 留下的值，被当名字指针，进拍照模式读 0x8',
+}
+HALVES = []   # 本次扫描不收的半边：(文件, 包内路径或空, sha256)；scan 收尾按 sha256 把别的库里同一份内容也去掉
+
+
 def members(full):
     """压缩包 → [(包内路径, 字节)]，只取补丁（.pchtxt / .ips，不在 romfs 下）与 cheats/<构建号>.txt；读不了 = []"""
     want = lambda n: not n.endswith('/') and '/romfs/' not in '/' + n.lower() and (n.lower().endswith(('.pchtxt', '.ips')) or CHEAT.search(n))
@@ -157,13 +260,19 @@ def members(full):
     try:
         if full.lower().endswith('.zip'):
             with zipfile.ZipFile(full) as z:
+                roots = romfs_roots(i.filename for i in z.infolist())
                 for i in z.infolist():
-                    if want(i.filename) and i.file_size <= MAX:
+                    if half(i.filename, roots):
+                        HALVES.append((full, i.filename, hashlib.sha256(z.read(i)).hexdigest()))
+                    elif want(i.filename) and i.file_size <= MAX:
                         out.append((i.filename, z.read(i)))
         else:
             names = subprocess.run(['bsdtar', '-tf', full], capture_output=True, text=True, timeout=60).stdout.splitlines()
+            roots = romfs_roots(names)
             for n in names:
-                if want(n):
+                if half(n, roots):
+                    HALVES.append((full, n, hashlib.sha256(subprocess.run(['bsdtar', '-xOf', full, n], capture_output=True, timeout=60).stdout).hexdigest()))
+                elif want(n):
                     data = subprocess.run(['bsdtar', '-xOf', full, n], capture_output=True, timeout=60).stdout
                     if len(data) <= MAX:
                         out.append((n, data))
@@ -202,6 +311,16 @@ def keep_dir(name):
     return name != '.git' and name.lower() != 'romfs'
 
 
+def companion(base, dirpath, dirs, roots):
+    """散文件：这一级带游戏数据目录（mod 的 romfs 配套，keep_dir 不进）且里面有显存 / 堆 / 内存配置（CRASH_COMPANION）→ 记下这个 mod 根，
+    它的 exefs 补丁不收（half）。只按文件名判，不读内容"""
+    for x in dirs:
+        if not keep_dir(x) and x != '.git':
+            names = [os.path.relpath(os.path.join(d, f), dirpath).replace(os.sep, '/') for d, _, fs in os.walk(os.path.join(dirpath, x)) for f in fs]
+            if romfs_roots(names):
+                roots.add(mod_root(os.path.relpath(os.path.join(dirpath, x, 'x'), base).replace(os.sep, '/')))
+
+
 HAMLET = re.compile(r'^cheats/(01[0-9A-Fa-f]{14})\.json$')   # 金手指汇总库：每款一份 JSON，键 = 构建号前 16 位，值 = {条目名: 整段代码}
 
 
@@ -209,6 +328,7 @@ def scan(mirror, keep_local=False, cheat_libs=False):
     """keep_local：每行另记 _local（镜像里的本地相对路径，tools/patch_pack.py 取字节用；不进索引）；汇总库 JSON 拆出的金手指另记 _data（内容是拼出来的，按路径取不回）。
     cheat_libs：金手指专门库（CHEAT_LIBS）的金手指也收（统一包用：11-13 起金手指也由我们的下载站分发，不再由出包端逐库去 GitHub 取）"""
     rows, pinned = [], {}
+    HALVES.clear(); UPRES.clear(); ADJUSTED.clear()
     src = os.path.join(mirror, 'SOURCES.tsv')
     if os.path.isfile(src):
         for line in open(src, encoding='utf-8'):
@@ -242,14 +362,24 @@ def scan(mirror, keep_local=False, cheat_libs=False):
                 cat, tfps, aspect = classify(rel + '/' + name if extra else rel, text, repo)
                 gdir = gfx_dir(rel + '/' + name if extra else rel, text) if cat == 'gfx' else ''
                 bids = bids_of(name, data)
+                if cat == 'widescreen' and (wh := upres(words_of(kind, data))):   # 改内部分辨率的满屏补丁（见 upres）：发布前就把分辨率改回原生（res_fix），玩家拿到的就是对的；认不全才不收
+                    fixed = res_fix(kind, data, wh) if keep_local else None   # 只有统一包（字节随包分发，tools/patch_pack.py）能发改过的内容；只给元数据、让客户端去上游下的老索引改不了，照旧不收
+                    if not fixed:
+                        UPRES.append((rel, name, wh, hashlib.sha256(data).hexdigest())); return
+                    old_sha, data = hashlib.sha256(data).hexdigest(), fixed[0]
+                    ADJUSTED.append((rel, name, wh, fixed[1], old_sha))
+                    extra = dict(extra or {}, adjusted=dict(res_from=list(wh), res_to=list(fixed[1]), orig_sha256=old_sha))
             rows.append(dict(repo=repo, commit=commit, path=rel, size=len(data), sha256=hashlib.sha256(data).hexdigest(), kind=kind, cat=cat,
                              target_fps=tfps, aspect=aspect, **({'dir': gdir} if gdir else {}), gids=sorted({g.upper() for g in GID.findall(rel + '/' + name)}), bids=bids, license=lic, **(extra or {})))
             if keep_local:
                 rows[-1]['_local'] = local
+                if rows[-1].get('adjusted'): rows[-1]['_data'] = data   # 改过分辨率的字节（tools/patch_pack.py content 取它，不再读镜像原件）
         tree = true_paths(repo, commit) if os.environ.get('S2A_PATCH_INDEX_NO_GH') != '1' else None
         if tree is None:
             print(f'{d}：取不到上游文件树，路径按本地（只差大小写的目录会 404）', file=sys.stderr)
+        loose_roots = set()
         for dirpath, dirs, files in os.walk(root):
+            companion(root, dirpath, dirs, loose_roots)
             dirs[:] = [x for x in dirs if keep_dir(x)]
             for f in files:
                 full = os.path.join(dirpath, f); rel = os.path.relpath(full, root).replace(os.sep, '/'); local = rel
@@ -284,6 +414,9 @@ def scan(mirror, keep_local=False, cheat_libs=False):
                 if not f.lower().endswith(('.pchtxt', '.ips')) and not fpsl and not CHEAT.search(rel):
                     continue
                 data = open(full, 'rb').read()
+                if half(local, loose_roots):
+                    HALVES.append((full, '', hashlib.sha256(data).hexdigest()))
+                    continue
                 if fpsl:
                     rows.append(dict(repo=repo, commit=commit, path=rel, size=len(data), sha256=hashlib.sha256(data).hexdigest(), kind='fpsl', cat='fps',
                                      target_fps='60', aspect='', gids=sorted({g.upper() for g in GID.findall(rel)}), bids=[os.path.splitext(f)[0].upper()], license=lic))
@@ -291,7 +424,12 @@ def scan(mirror, keep_local=False, cheat_libs=False):
                         rows[-1]['_local'] = local
                 else:
                     row(rel, rel, data)
-    return rows
+    gone = {h for _, _, h in HALVES} | {h for *_, h in UPRES} | {x[4] for x in ADJUSTED}   # 改过分辨率的：上游原内容在别处（被分成画面类等）原样出现也不收
+    kept = [r for r in rows if r['kind'] == 'cheat' or r.get('adjusted') or (r['sha256'] not in gone and r['sha256'][:16] not in KNOWN_BAD)]   # 改过分辨率的行本身留（内容已变），别处同原内容的照去
+    print(f'改内部渲染分辨率的满屏补丁：改回原生分辨率 {len(ADJUSTED)} 份，认不全不收 {len(UPRES)} 份', file=sys.stderr)
+    print(f'已定因会崩的补丁（KNOWN_BAD）不收：{sum(1 for r in rows if r["sha256"][:16] in KNOWN_BAD)} 行', file=sys.stderr)
+    print(f'配套是显存 / 堆配置、只能收到 exefs 半边的补丁不收：{len(HALVES)} 份（去掉 {len(rows) - len(kept)} 行，含别的库里同一份内容）', file=sys.stderr)
+    return kept
 
 
 # 转存合集 / 分叉（收别人的补丁再打包）：同一份内容（sha256 一样）在原作者库里也有时记原作者库，这几个排最后

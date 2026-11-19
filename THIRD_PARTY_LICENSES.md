@@ -15,6 +15,7 @@ S2Arm 本身以 Apache License 2.0 授权（仓库根目录 [LICENSE](LICENSE) �
 | SPIRV-Cross | vulkan-sdk-1.4.363.0 | Apache-2.0 | https://github.com/KhronosGroup/SPIRV-Cross ，源码在 `graphics/third_party/spirv_cross`（旧文档写「不进仓库」是错的）。命令行另从 Homebrew 打进 .app | 是（源码在引擎树；`spirv-cross` 在 Runtime/bin） | 是（`graphics/build.mk` 把源码编进 iOS 渲染器静态库 `libnxgal.a`，首遇着色器在机上现编用） |
 | SPIRV-Tools | Homebrew 构建时的版本，写入 Runtime `versions.json` | Apache-2.0 | https://github.com/KhronosGroup/SPIRV-Tools | 是（`spirv-as` / `spirv-val`） | 否 |
 | glslang | Homebrew 构建时的版本 | 以该包 `LICENSE.txt` 为准（BSD-3-Clause 等，与 Apache-2.0 兼容） | https://github.com/KhronosGroup/glslang | 是（`glslangValidator`） | 否 |
+| Arm ASTC Encoder | 5.7.0（库源码原样） | Apache-2.0 | https://github.com/ARM-software/astc-encoder ，`graphics/third_party/astc-encoder`（许可 `LICENSE.txt`）；出包时 `pack/astc_pack.py` 把 BC 贴图预转成 ASTC（Apple TV），机制参考 brad-n/TVPort（MIT） | 否（只在出包机上编成出包工具） | 否（运行时只读预转好的包） |
 | bcdec | 提交 80859ed（经 MacNativeGames） | MIT 或 Unlicense | https://github.com/iOrange/bcdec ，`graphics/nvn/third_party/bcdec` | 是（链进图形层） | 是 |
 | nvn_bcdec | MacNativeGames `84eebcd0985c` | MIT | https://github.com/ly05010419/MacNativeGames ，`graphics/nvn/gfx/tex/nvn_bcdec.c`；同源移植还有 `nvn_mtl.m` 几处；许可全文 `graphics/nvn/third_party/macnativegames/LICENSE` | 是 | 是 |
 | nvn.h | h1k421，自公开 DWARF 重建 | MIT | `graphics/nvn/gfx/nvn/include/nvn.h` | 是（当头文件编译） | 是 |

@@ -5,7 +5,7 @@
 //      本文件自己解析 SPIR-V，不用 BindToArgIds），//      组合纹理变量对的是 texture 成员，不是 …Smplr；
 //   ③ 每个 _b.spv 过 spirv-val --target-env vulkan1.1。
 //   反证：④ 翻译器原样的 .spv（未改写）在本夹具上至少一个资源对不上 arg_id，判据不会绿着失效；
-//   ⑤ json 里删掉一个 .spv 有的成员 → BindToArgIds 报红，不静默；⑥ json 里改一个 arg_id → 改写结果跟着变，对原 json 判不一致；
+//   ⑤ json 里删掉一个 .spv 有的成员 → BindToArgIds 报红，不静默（⑪ 字面量撞上变量 id 不算引用）；⑥ json 里改一个 arg_id → 改写结果跟着变，对原 json 判不一致；
 //   ⑦ 把 json 里没有的 support_buffer 经 OpCopyObject 在函数体里取用一次 → 判为「用到了却没有成员」报红，不挪到空号。
 //   ⑧ vs 与 ps 合在一个管线布局里不撞号：两阶段 arg_id 0 / 1 的绑定号手算为 vs 0 / 6、ps 4 / 10，两阶段全部绑定号互不相同（安卓 backend_vulkan.c 按 (set, binding) 合并）；
 //   ⑨ 出包模式（DshCompiler.PackOut）：输出目录不建、json 取自 PackFiles、_b.spv 进 DshVk.PackSpv，且与落盘那份逐字节相同；
@@ -129,6 +129,28 @@ static class Program
         return b;
     }
 
+    // ⑪ 用：往第一个函数体插一条 OpExtInst，它的指令号（字面量）恰好等于 varName 变量的 id——变量并没被引用，只是数值撞上
+    static byte[] InjectExtInstLiteral(byte[] spv, string varName)
+    {
+        var w = new uint[spv.Length / 4]; Buffer.BlockCopy(spv, 0, w, 0, w.Length * 4);
+        var names = new Dictionary<uint, string>(); var vars = new HashSet<uint>(); int label = -1; bool inFn = false; uint ext = 0;
+        for (int i = 5; i < w.Length;)
+        {
+            int n = (int)(w[i] >> 16), op = (int)(w[i] & 0xffff);
+            if (op == 5) { var bytes = new List<byte>(); for (int k = i + 2; k < i + n; k++) bytes.AddRange(BitConverter.GetBytes(w[k])); int z = bytes.IndexOf(0); names[w[i + 1]] = System.Text.Encoding.UTF8.GetString(bytes.Take(z < 0 ? bytes.Count : z).ToArray()); }
+            if (op == 11 && ext == 0) ext = w[i + 1];   // OpExtInstImport
+            if (op == 59 && n >= 4) vars.Add(w[i + 2]);
+            if (op == 54) inFn = true;
+            if (op == 248 && inFn && label < 0) label = i + n;
+            i += n;
+        }
+        uint vid = names.First(kv => kv.Value == varName && vars.Contains(kv.Key)).Key, id = w[3];
+        var list = w.ToList(); list[3] = id + 1;
+        list.InsertRange(label, new[] { (6u << 16) | 12, 1u, id, ext == 0 ? 1u : ext, vid, 1u });   // 类型 / 操作数随便给：这里只看 BindToArgIds 怎么解析
+        var b = new byte[list.Count * 4]; Buffer.BlockCopy(list.ToArray(), 0, b, 0, b.Length);
+        return b;
+    }
+
     static int bad;
     static void Check(string what, bool ok, string detail = "")
     {
@@ -199,6 +221,9 @@ static class Program
                 string why7 = null;
                 try { DshVk.BindToArgIds(InjectCopy(raw, "support_buffer"), bindings, "ps"); } catch (DshError e) { why7 = e.Detail; }
                 Check("⑦ json 里没有的 support_buffer 经 OpCopyObject 取用 → 报「用到了却没有成员」", why7 != null && why7.Contains("support_buffer") && why7.Contains("用到"), why7 ?? "没有报错（被挪到空号）");
+                string why11 = null;
+                try { DshVk.BindToArgIds(InjectExtInstLiteral(raw, "support_buffer"), bindings, "ps"); } catch (DshError e) { why11 = e.Detail; }
+                Check("⑪ 函数体里 OpExtInst 的指令号字面量恰好等于 support_buffer 的 id（没被引用）→ 不报红、照旧挪到空号", why11 == null, why11 ?? "");
             }
         }
         Check($"④ 翻译器原样的 .spv 对不上 arg_id 的资源数 > 0（{rawDiff} 个）", rawDiff > 0);

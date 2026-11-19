@@ -2,8 +2,10 @@
 // Copyright 2026 S2Arm contributors
 // The test exercises the production container reader, reflection and shader_build/ulibs cache.
 // It supplies only a real Metal device, not the native host or the NVN command-recording layer.
-// Unused host paths are dead-stripped or dynamically linked; the raster flag is never accessed here.
+// Unused host paths are dead-stripped or dynamically linked; the raster flag and the GOB-order flag
+// (defined by the deswizzler, read only on sparse-texture paths) are never accessed here.
 #pragma weak s2a_nvn_rast_flip
+#pragma weak nvn_gob_switch2
 #ifndef NVN_REPAIR_SOURCE
 #define NVN_REPAIR_SOURCE "../../../nvn/gfx/nvn/nvn_mtl.m"
 #endif

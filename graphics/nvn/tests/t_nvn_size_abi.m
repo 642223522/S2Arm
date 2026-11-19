@@ -187,7 +187,7 @@ static void wide_gpu(int base_l) {
     float f,legacy,fy; memcpy(&f,support+192,4); memcpy(&legacy,support+192+16,4); memcpy(&fy,support+1440,4);
     REQUIRE(f==(float)base_p/base_l&&legacy==-f&&fy==1);
     REQUIRE((f==(float)p/l)==(base_l==128));
-    pthread_mutex_lock(&g_rmu); id<MTLTexture> actual_view=tex_by_id(256); pthread_mutex_unlock(&g_rmu);
+    os_unfair_lock_lock(&g_rmu); id<MTLTexture> actual_view=tex_by_id(256); os_unfair_lock_unlock(&g_rmu);
     REQUIRE(actual_view&&actual_view.width==(NSUInteger)base_p&&actual_view.parentRelativeLevel==0&&actual_view.parentRelativeSlice==1&&actual_view.mipmapLevelCount==3);
     REQUIRE(tex_mtl((const tex_t *)&source.texture)==tex_mtl((const tex_t *)&source.alias));
     NSData *target_data=wide_read(&target_image,base_p,&target_pitch);
@@ -293,7 +293,7 @@ int main(int argc,char **argv) { @autoreleasepool {
     const float expected[]={10,6,0,1}; REQUIRE(!memcmp(memory+RESULT,expected,16));
     bound_table(fs,8,5,10,6); bound_table(cs,0,0,10,6);
     REQUIRE(tex_mtl((const tex_t *)&source_a.texture)==tex_mtl((const tex_t *)&source_a.alias));
-    pthread_mutex_lock(&g_rmu); id<MTLTexture> selected_a=tex_by_id(256); pthread_mutex_unlock(&g_rmu);
+    os_unfair_lock_lock(&g_rmu); id<MTLTexture> selected_a=tex_by_id(256); os_unfair_lock_unlock(&g_rmu);
     REQUIRE(selected_a&&selected_a.width==6&&selected_a.height==4&&selected_a.parentRelativeLevel==1&&selected_a.parentRelativeSlice==1);
     uint64_t previous_sub=fs->ab_size_sub;
     begin(); states(); target(&out_a); draw_record(render,b); submit(); pixels(&out_a,0,10,6,0,0);

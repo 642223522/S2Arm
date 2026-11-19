@@ -11,13 +11,20 @@ enum { RP_PROG_STAGES = 3, RP_PROG_ENT_MAX = 128 };   // 顶点、片元、几�
 struct rp_uword { uint8_t reg, sid, pair, pair_sid, pair_reg; uint16_t off, pair_off; };
 // 一项的完整来源：tex = 贴图句柄字；samp_kind = 组合采样的采样器来源（0 = 着色器没有采样器半边；NVN_RB_SAMPU = samp 处的字；
 //   NVN_RB_SAMPI = 常量采样器号 samp_reg；NVN_RB_SAMP = NVN 采样器槽 samp_reg 绑的句柄）。布局项的 src_reg2 = 本表下标。
-struct rp_usrc { struct rp_uword tex, samp; uint8_t samp_kind; uint16_t samp_reg; };
+//   SAMPI 有两种口径，用 samp_pool 分开（不挤进 samp_reg 的某一位：samp_reg 的 16 位全是号）：
+//     samp_pool = 0：宿主登记的采样器号原值（离线库 {"source":"id"}，iOS 口径），不加采样器池起点；
+//     samp_pool = 1：着色器里的立即数采样器池下标（#1594 片 3，类型 3 句柄，硬件的 12 位采样器号），采样器号 = 贴图字高 12 位 | samp_reg
+//                    （Ryujinx ReadPackedId；字高位为 0 时就是 samp_reg），登记号 = 采样器号 + 当前采样器池起点，
+//                    与 NVN_RB_SAMPU 读出的句柄高 12 位、c2 常量采样器（布局项 src_reg2 的 NVN_GPU_SAMP2_CONST）同口径。
+struct rp_usrc { struct rp_uword tex, samp; uint8_t samp_kind; uint16_t samp_reg; uint8_t samp_pool; };
 enum { RP_PROG_USRC_MAX = 64 };
 struct rp_prog {
     nvn_gpu_shader sh[RP_PROG_STAGES];                        // 0 顶点 1 片元 2 几何
     nvn_gpu_layout_ent ent[RP_PROG_STAGES][RP_PROG_ENT_MAX];  // 与交给后端装载的布局同一份：核心按 src_kind / src_reg 逐项绑定
     uint8_t dtt[RP_PROG_STAGES][RP_PROG_ENT_MAX];             // 声明目标 + 1；0 = 未知，沿用登记视图
     uint8_t dcls[RP_PROG_STAGES][RP_PROG_ENT_MAX];            // 0 float，1 uint，2 sint，3 depth 比较
+    uint8_t difmt[RP_PROG_STAGES][RP_PROG_ENT_MAX];           // 存储图像声明的 SPIR-V Image Format（0 = Unknown；只计算阶段填，见 nvk_shader.c sampled_decl）
+    uint8_t sampler_unused[RP_PROG_STAGES][RP_PROG_ENT_MAX];   // 已从 SPIR-V 证明该组合描述符不读取采样器
     uint32_t nent[RP_PROG_STAGES];
     uint32_t support_bytes;                                   // NVN_RB_SUPPORT 那一项的缓冲长度
     uint32_t attr_mask;                                       // 顶点着色器实际读的属性位

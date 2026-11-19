@@ -19,6 +19,38 @@ PLAT_ASM_SYM(xs_stubs):
     .set k, k + 1
     .endr
 
+// 叶子桩（xstack.c k_leaf：memcpy / memset / strlen / 基本数学等，不切栈、在客体栈上跑）：第 k 个 = movz x9,#k; b xs_leaf_entry，目标同在 g_xs_fn[k]。
+//   客体 sp 可以不是 16 字节对齐（Horizon 不查，苹果芯片以 sp 为基址的访存要求对齐：宿主函数开头一压栈就 SIGBUS，D-DVZZ 远端版 memmove）。
+//   sp 对齐：直接尾跳（同原来）；不对齐：在客体栈当前 sp 之下取对齐的 16 字节存原 sp 与 lr，调完恢复——AAPCS 没有红区，sp 之下本就可用；
+//   名单里的函数参数都在寄存器（≤ 8 个整型 / 浮点参数、无栈上传参），挪 sp 不影响参数。只动 x9..x17
+    .globl PLAT_ASM_SYM(xs_leaf_stubs)
+    .p2align 3
+PLAT_ASM_SYM(xs_leaf_stubs):
+    .set k, 0
+    .rept 8192                // = xstack.c XS_MAX（和 xs_stubs 共用 g_xs_fn 的编号）
+    movz x9, #k
+    b PLAT_ASM_SYM(xs_leaf_entry)
+    .set k, k + 1
+    .endr
+
+    .p2align 2
+PLAT_ASM_SYM(xs_leaf_entry):
+    PLAT_ASM_ADRP(x16, PLAT_ASM_SYM(g_xs_fn))
+    PLAT_ASM_ADD(x16, PLAT_ASM_SYM(g_xs_fn))
+    ldr x16, [x16, x9, lsl #3]           // 目标
+    mov x17, sp
+    tst x17, #15
+    b.ne 1f
+    br x16                               // 对齐：尾跳
+1:  and x10, x17, #~15
+    sub x10, x10, #16
+    mov sp, x10
+    stp x17, x30, [sp]                   // 原 sp、lr
+    blr x16
+    ldp x17, x30, [sp]
+    mov sp, x17
+    ret
+
     .p2align 2
 PLAT_ASM_SYM(xs_entry):
     PLAT_ASM_ADRP(x16, PLAT_ASM_SYM(g_xs_fn))
@@ -176,6 +208,8 @@ PLAT_ASM_SYM(sw_gate):
     mov x0, x30              // 返回点 = 门标识
     mov x1, sp               // regs
     bl PLAT_ASM_SYM(gate_dispatch)
+    .globl PLAT_ASM_SYM(sw_gate_ret)
+PLAT_ASM_SYM(sw_gate_ret):              // 即时存档续跑（sw_snap_resume）从这里接上门的返回段
     ldr x9, [sp, #784]
     msr fpcr, x9
     ldr x9, [sp, #776]
@@ -274,6 +308,13 @@ PLAT_ASM_SYM(sw_touch_tramp):
 PLAT_ASM_SYM(sw_touch_brk):
     brk #0x7a5
 #endif
+// 即时存档续跑：x0 = 本线程宿主栈上已填好的 832 字节门帧（同 sw_gate 的布局），切到它、走门的返回段回到游戏代码
+    .globl PLAT_ASM_SYM(sw_snap_resume)
+    .p2align 2
+PLAT_ASM_SYM(sw_snap_resume):
+    mov sp, x0
+    b PLAT_ASM_SYM(sw_gate_ret)
+
 #if defined(__ANDROID__)
     .section .note.GNU-stack,"",%progbits
 #endif

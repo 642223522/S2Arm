@@ -98,6 +98,9 @@ static uint64_t phys_mb(void) { uint64_t m = 0; size_t s = sizeof m; return sysc
 int s2a_selfcheck(void) {
     uint64_t wb, ws; s2a_window_get(&wb, &ws); int ok = 1;
     int ent = ent_state(k_key_iml); uint64_t top = s2a_va_top(), pm = phys_mb();
+#if TARGET_OS_TV
+    ent = -1;   // tvOS 没有「提高内存上限」这项权限（Xcode 能力表只列 iOS / visionOS）：不适用，按读不到处理，不拿它解释自检、不提示重签（#1456）
+#endif
     const char *es = ent == 1 ? "已签" : ent == 0 ? "未签" : "读不到";
 #if TARGET_OS_IPHONE
     uint64_t avail = os_proc_available_memory() >> 20;

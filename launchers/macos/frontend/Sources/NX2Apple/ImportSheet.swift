@@ -412,7 +412,7 @@ struct UploadDiagnosticsSheet: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(loc.t("s2arm.diagUpload.noteLabel")).font(LauncherTheme.TypeStyle.section)
                     TextField("", text: $note, prompt: Text(loc.t("s2arm.diagUpload.notePlaceholder")).foregroundColor(LauncherTheme.Colors.secondary), axis: .vertical)
-                        .lineLimit(3...6).textFieldStyle(LauncherTextFieldStyle()).font(LauncherTheme.TypeStyle.detail)
+                        .lineLimit(3...6).textFieldStyle(LauncherTextFieldStyle(topInset: LauncherTheme.Space.small)).font(LauncherTheme.TypeStyle.detail)
                         .accessibilityLabel(loc.t("s2arm.diagUpload.noteLabel"))
                         .accessibilityIdentifier("diag.upload.note")
                 }

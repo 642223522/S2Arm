@@ -59,7 +59,7 @@ for k, st, s, why in rows:
         open(os.path.join(o, k + '_b.spv'), 'wb').write(b'\x03\x02\x23\x07'); open(os.path.join(o, k + '_b.json'), 'w').write('{}')
 open(os.path.join(o, 'vk_build.tsv'), 'w').write(''.join('\t'.join(r) + '\n' for r in rows))
 if os.environ.get('FAKE_VK_FAILED'):
-    print('[RED] Vulkan 翻译失败 1 键', file=sys.stderr); sys.exit(1)
+    print('[RED] Vulkan 翻译失败 1 键（其余照常出库，这几键运行时现编）', file=sys.stderr)   # 真工具同口径：失败键不拒绝整库
 for n in ('lib.idx', 'lib.000.pak', 'run' + os.environ.get('FAKE_RUN', '1')): open(os.path.join(lib, n), 'w').write(n)
 print('dsh_vklib (vkfp 00000000000000aa): 4 keys, ok 2, skipped 2, failed 0')
 EOF
@@ -89,8 +89,9 @@ s0=$(snap); nv=$(n $T/calls.vk); mv $G/extract/ok $T/ok; o=$(D); r=$?; mv $T/ok 
 ck "③ 没有抽取阶段的 extract/（rc=${r}）：退 3、🟡 这里不另抽、不调抽取 / 出库、输出目录不动" '[ $r = 3 ] && [[ "$o" == *"🟡 直连缺口：产物根里没有抽取阶段的 extract/"* ]] && [[ "$o" == *"这里不另抽着色器"* ]] && [ ! -e $T/calls.extract ] && [ "$(n $T/calls.vk)" = "$nv" ] && [ "$(snap)" = "$s0" ]'
 for api in vulkan gl; do o=$(FAKE_API=$api D); r=$?
   ck "④ ${api} 款（rc=${r}）：退 0、不出库、不调出库工具" '[ $r = 0 ] && [[ "$o" == *"安卓运行时自己编，不出直连库"* ]] && [ "$(n $T/calls.vk)" = "$nv" ] && [ "$(snap)" = "$s0" ]'; done
-o=$(FAKE_VK_FAILED=1 D); r=$?
-ck "⑤ 逐键翻译失败（rc=${r}）：退 1、🔴、旧输出目录不动" '[ $r = 1 ] && [[ "$o" == *"🔴 安卓 Vulkan 库出库失败 rc=1"* ]] && [ "$(snap)" = "$s0" ] && [ -z "$(ls -d $O.stage.* 2> /dev/null)" ]'
+o=$(FAKE_VK_FAILED=1 FAKE_RUN=3 D); r=$?; l=$(echo "$o" | tail -1)
+ck "⑤ 个别键翻译失败（rc=${r}）：退 0、照常发布成功的键、末行 🟡 带 failed 1 支、keys.tsv 不列失败的键（${l:0:90}）" '[ $r = 0 ] && [ -f $V/run3 ] && [[ "$l" == *"🟡 直连缺口（部分出库）："* ]] && [[ "$l" == *"failed 1 支"* ]] && [ "$(tr "\n" " " < $O/keys.tsv)" = "aaaaaaaaaaaaaaaa cccccccccccccccc " ] && [ -z "$(ls -d $O.stage.* 2> /dev/null)" ]'
+s0=$(snap)
 o=$(FAKE_VK_RC=1 D); r=$?
 ck "⑤ 出库工具失败（rc=${r}）：退 1、🔴、输出目录不动" '[ $r = 1 ] && [[ "$o" == *"🔴 安卓 Vulkan 库出库失败 rc=1"* ]] && [ "$(snap)" = "$s0" ] && [ -z "$(ls -d $O.stage.* 2> /dev/null)" ]'
 nv=$(n $T/calls.vk); o=$(PUB=ios D); r=$?

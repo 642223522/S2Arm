@@ -1,6 +1,6 @@
 #!/bin/bash
 # 编 Mac 宿主 build/s2arm-host 的唯一入口（11-04 合入运维线，维护者令根修）：bash tools/host_build.sh [--tree <树>] [make 额外参数…]
-#   一棵树一把锁：lockf build/.make_host.lock（进程被杀锁随之释放，不像 mkdir 锁留残），最多等 S2A_HOST_LOCK_S 秒（缺省 600）；
+#   一棵树一把锁：build/.make_host.lock（tools/plock.sh 内核文件锁，进程被杀锁随之释放，不像 mkdir 锁留残），最多等 S2A_HOST_LOCK_S 秒（缺省 600）；
 #   先到的编完，后到的 make 是空操作。
 #   S2A_CS 缺省 1，且只升不降：这棵树的构建配置戳 build/.host_cfg 已是 S2A_CS=1 时，调用方给 0 也按 1 编。
 #   起因：Makefile 的构建配置戳含 S2A_CS，配置一变就整个重链同一个 build/s2arm-host。11-02 / 11-03 普查同一棵树里，
@@ -11,4 +11,9 @@ set -u
 T=$(cd "$(dirname "$0")/.." && pwd); [ "${1:-}" = --tree ] && { T=${2:?--tree 要给目录}; shift 2; }
 mkdir -p "$T/build" || exit 1
 CS=${S2A_CS-1}; grep -q 'S2A_CS=1 ' "$T/build/.host_cfg" 2> /dev/null && CS=1
-S2A_CS=$CS exec lockf -k -t "${S2A_HOST_LOCK_S:-600}" "$T/build/.make_host.lock" make -C "$T" -s "$@" host
+# 锁用仓库统一的 tools/plock.sh（内核 flock，macOS / Linux 都有）：原先 lockf 是 BSD 命令，Linux 主机上没有，宿主还没开编就失败
+. "$(dirname "$0")/plock.sh" || exit 1
+plock_take "$T/build/.make_host.lock" "${S2A_HOST_LOCK_S:-600}"; rc=$?
+# 等满没拿到退 75（同原先 lockf -t 超时的 EX_TEMPFAIL，调用方按它认「锁没等到」）；起不了持锁进程（plock 2）退 1
+[ $rc = 0 ] || { echo "【红】host_build：等编宿主锁 ${S2A_HOST_LOCK_S:-600} 秒没拿到（$T/build/.make_host.lock，持锁者 $(plock_holder "$T/build/.make_host.lock")）" >&2; [ $rc = 1 ] && exit 75; exit 1; }
+lk=$PLOCK_PID; S2A_CS=$CS make -C "$T" -s "$@" host; rc=$?; plock_release "$lk"; exit $rc

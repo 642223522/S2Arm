@@ -11,7 +11,7 @@ from pathlib import Path
 import sys
 import time
 
-from .roots import Conflict, Roots, UnsafeRoot, cleanup_after, copy_file, directory_link, is_link, plain_entries, remove_owned, remove_patterns, rename_dir, text
+from .roots import ROMFS_IMAGE, Conflict, Roots, UnsafeRoot, cleanup_after, copy_file, directory_link, is_link, plain_entries, remove_owned, remove_patterns, rename_dir, text
 from .stages import ENTRY, LIGHT_ORDER, REWRITE_OUTPUTS, StageError, Stages
 
 
@@ -37,6 +37,11 @@ def seed(roots, game, source, *, move_romfs=False):
         p = source / name
         if p.is_dir():
             files += sum(1 for e in plain_entries(p.resolve()) if not e.is_dir())
+    # RomFS 镜像（romfs.std，标准 RomFS，与 romfs/ 同级）：源只有镜像、没有 romfs/ 时播这一个文件（克隆 / NTFS 硬链接，不实拷）；RomFS 只留源的那一种形态
+    image = source / ROMFS_IMAGE if (source / ROMFS_IMAGE).is_file() and not (source / 'romfs').is_dir() else None
+    if image is not None and is_link(image):
+        raise UnsafeRoot('播种的 RomFS 镜像不能是链接')
+    files += image is not None
     # 播种的进度（#361：Switch 2 大款 20.6 万个文件逐个拷了约 30 分钟，进度条一直停在「解包 100%」像卡死）：每拷完一个文件计一次，
     #   按出包进度协议写「播种 已拷 / 总数」（tools/progress.py，每秒最多一行；没给 S2A_PROGRESS 不写）；整目录改名搬进来的 RomFS 一次计满
     tick = _ticker('播种', files)
@@ -58,6 +63,11 @@ def seed(roots, game, source, *, move_romfs=False):
                 else:
                     # RomFS 不可变：Windows NTFS 同卷建硬链接代替逐文件实拷（#291，copy_file link_ok）；别的目录（exefs 等产物要可写）照旧
                     roots._copy_tree(src.resolve(), w / name, tick=tick.step, link_ok=name == 'romfs')
+        if image is not None:
+            remove_owned(w / 'romfs'); remove_owned(w / ROMFS_IMAGE)
+            copy_file(image, w / ROMFS_IMAGE, link_ok=True); tick.step()
+        elif (source / 'romfs').is_dir():
+            remove_owned(w / ROMFS_IMAGE)   # 现行克隆来的旧镜像：这次播的是目录
         remove_patterns(w, (*REWRITE_OUTPUTS, '.stage_uilayout', '.stage_romfsidx', '.stage_romfsidx.deps',
                             '.stage_pkg', 'ui_overlay.tsv', 'romfs.s2aidx', 'unpack.tsv'))
         extras = ['unpack.tsv', 'icon.jpg', 'ctl/control.nacp']

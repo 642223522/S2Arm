@@ -28,7 +28,7 @@ ck "② 写满 300 MB 匿名内存：足迹 ${fb} KB ≥ 250 MB" '[ "${fb:-0}" -
 ck "取不到（进程不在）退出 1（rc=${r}）" '[ $r = 1 ]'
 kill $A $B 2>/dev/null; wait $A $B 2>/dev/null; A=; B=
 # ③ 真 run_mac.sh：依赖打桩
-R=$T/repo; mkdir -p $R/runtime $R/tools $R/build $T/in; cp "$H/runtime/run_mac.sh" $R/runtime/; cp "$H/tools/phys_footprint.py" "$H/tools/host_build.sh" $R/tools/; : > $T/in/main.patched.bin
+R=$T/repo; mkdir -p $R/runtime $R/tools $R/build $T/in; cp "$H/runtime/run_mac.sh" $R/runtime/; cp "$H/tools/phys_footprint.py" "$H/tools/host_build.sh" "$H/tools/plock.sh" "$H/tools/flock_hold.py" $R/tools/; : > $T/in/main.patched.bin
 printf 'import sys\nsys.exit(0)\n' > $R/tools/mac_chain_check.py
 echo 'mac_save_prep() { :; }' > $R/tools/mac_save.sh
 printf 'host:\n\t@true\n' > $R/Makefile

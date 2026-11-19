@@ -167,29 +167,47 @@ namespace Ryujinx.HLE.HOS.Services.Nfc.Nfp
                 }
             }
 
-            _cancelTokenSource = new CancellationTokenSource();
+            // S2Arm: the loop owns its token (a second StartDetection used to swap the field under a running loop, which then never stopped),
+            //   polls at frame rate instead of spinning a core while no tag is present, and skips a pass when the device list is being changed.
+            _cancelTokenSource?.Cancel();
+            CancellationTokenSource cancelTokenSource = new();
+            _cancelTokenSource = cancelTokenSource;
+            CancellationToken token = cancelTokenSource.Token;
             Task.Run(() =>
             {
-                while (true)
+                while (!token.IsCancellationRequested)
                 {
-                    if (_cancelTokenSource.Token.IsCancellationRequested)
+                    bool found = false;
+                    try
                     {
-                        break;
-                    }
+                        var devices = context.Device?.System?.NfpDevices;
 
-                    for (int i = 0; i < context.Device.System.NfpDevices.Count; i++)
-                    {
-                        if (context.Device.System.NfpDevices[i].State == NfpDeviceState.TagFound)
+                        for (int i = 0; devices != null && i < devices.Count; i++)
                         {
-                            context.Device.System.NfpDevices[i].SignalActivate();
-                            Thread.Sleep(125); // NOTE: Simulate amiibo scanning delay.
-                            context.Device.System.NfpDevices[i].SignalDeactivate();
+                            NfpDevice device = devices[i];
 
-                            break;
+                            if (device != null && device.State == NfpDeviceState.TagFound)
+                            {
+                                device.SignalActivate();
+                                Thread.Sleep(125); // NOTE: Simulate amiibo scanning delay.
+                                device.SignalDeactivate();
+                                found = true;
+
+                                break;
+                            }
                         }
                     }
+                    catch (ArgumentOutOfRangeException)
+                    {
+                        // The device list shrank under us: look again on the next pass.
+                    }
+
+                    if (!found)
+                    {
+                        Thread.Sleep(16);
+                    }
                 }
-            }, _cancelTokenSource.Token);
+            }, token);
 
             return ResultCode.Success;
         }

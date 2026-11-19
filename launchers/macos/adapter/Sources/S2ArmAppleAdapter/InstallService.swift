@@ -103,6 +103,8 @@ public struct InstallResult: Equatable {
     public var exportReused: Int = 0
     /// 只新写点的那款时，别的款里这次没写 .img 的（游戏名，作业结果 unwritten）：手机上已有照常能玩，没有要点那款再导出
     public var exportUnwritten: [String] = []
+    /// 签名证书名（作业结果 trustName，如「Apple Development: someone@example.com (ABCDE12345)」）：iPhone「VPN 与设备管理」里要点「信任」的那一项；读不到为空
+    public var trustName: String = ""
 }
 
 /// 从手机删一款的结果（installRemove 作业，pack/jobs/install.py remove_from_phone）。
@@ -145,9 +147,13 @@ public final class InstallService {
     /// device：要装的那台（UDID / 设备名），必须给：作业层不替玩家挑，不给即报 device_required（pack/jobs/install.py phone）
     /// acceptDropped：玩家已确认「手机上只在别的电脑装过的游戏这次带不上」（作业层 container_would_drop 之后再点）
     /// mode = "export"：游戏库「导出自签包」——不连手机、不签名，出未签名 S2Arm.ipa 和各款 .img 到文件夹（11-15 起导出只看这次请求）
+    /// widget = false：玩家在设置里关了「装到 iPhone 时带主屏小组件」，作业层不带小组件扩展（不传 = 带）
+    /// cloudSaves：玩家选的云存档文件夹（没开 = nil）。覆盖装前备份手机存档做不成时，作业层看这款在里面有没有快照：有就照装（覆盖装 App 不碰 iCloud 里那份）
     public func install(gameId: String, teamId: String? = nil, device: String? = nil, acceptDropped: Bool = false, accept: Set<String> = [], mode: String? = nil,
-                        events: EventSink = .discard) async throws -> InstallResult {
+                        widget: Bool = true, cloudSaves: String? = nil, events: EventSink = .discard) async throws -> InstallResult {
         var extra: [String: Any] = ["gameId": gameId]
+        if !widget { extra["widget"] = false }
+        if let cloudSaves, !cloudSaves.isEmpty { extra["cloudSavesFolder"] = cloudSaves }
         if let mode { extra["mode"] = mode }
         if acceptDropped { extra["acceptDropped"] = true }
         for key in accept { extra[key] = true }   // 玩家在结局页确认过的（acceptDropped / acceptNoBackup / acceptStale，作业层按码认）
@@ -161,7 +167,8 @@ public final class InstallService {
                              exportGames: (r["games"] as? [Any])?.count ?? 0, exportBytes: (r["exportBytes"] as? NSNumber)?.int64Value,
                              skipped: r["skipped"] as? [String] ?? [],
                              exportFresh: r["fresh"] as? [String] ?? [], exportReused: (r["reused"] as? NSNumber)?.intValue ?? 0,
-                             exportUnwritten: r["unwritten"] as? [String] ?? [])
+                             exportUnwritten: r["unwritten"] as? [String] ?? [],
+                             trustName: r["trustName"] as? String ?? "")
     }
 
     /// 推到手机（exportPush，pack/jobs/install.py push_export_job）：把「S2Arm 自签导出」里的完整 .img 推进手机上自签 S2Arm 的「放这里导入」。
@@ -214,8 +221,12 @@ public final class InstallService {
     ///   device：连着多台时装到哪台（同 install；不给 = 只连着一台）
     /// acceptDropped：同 install——玩家已确认手机上只在别的电脑装过的游戏这次带不上（作业层 container_would_drop）
     /// mode：这次按「一键装到 iPhone」（install）/「导出自己签名安装」（export）走，nil = 按设置里的装法；sgradeUpgrade：「S 级优化升级」页发起，壳已是本版也重组装上
-    public func updatePhone(acceptStale: Bool = false, acceptDropped: Bool = false, accept: Set<String> = [], mode: String? = nil, sgradeUpgrade: Bool = false, device: String? = nil, events: EventSink = .discard) async throws -> [String: Any] {
+    /// cloudSaves：同 install
+    public func updatePhone(acceptStale: Bool = false, acceptDropped: Bool = false, accept: Set<String> = [], mode: String? = nil, sgradeUpgrade: Bool = false, device: String? = nil,
+                            widget: Bool = true, cloudSaves: String? = nil, events: EventSink = .discard) async throws -> [String: Any] {
         var extra: [String: Any] = acceptStale ? ["acceptStale": true] : [:]
+        if !widget { extra["widget"] = false }
+        if let cloudSaves, !cloudSaves.isEmpty { extra["cloudSavesFolder"] = cloudSaves }
         if acceptDropped { extra["acceptDropped"] = true }
         for key in accept { extra[key] = true }
         if let device { extra["device"] = device }

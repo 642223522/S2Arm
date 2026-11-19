@@ -10,12 +10,12 @@ NUP 是公开的打包格式（https://github.com/a55uka/nup ，SPEC.md v1）：
     <输出>/updates/<版本号>/exefs|romfs/...         只写最新那一版更新（ns2_dump 只用最新更新 + 本体判全量 / 差量）
     <输出>/updates/<版本号>/control.nacp、icon_AmericanEnglish.dat   该包带了控制分区才写（ns2_dump 认作原件；没带就由它按目录名合成）
     <输出>/dlc/<DLC 标题号>/0/romfs/...             每个 DLC
-镜像形态（S2A_ROMFS_IMAGE=1）：本体 / 更新的 romfs 不展开成散文件，改写一份清单 <版本目录>/romfs.nupmap（每个文件在容器里的位置、编码、SHA-256，
+镜像形态（缺省，S2A_ROMFS_IMAGE=0 回散文件）：本体 / 更新的 romfs 不展开成散文件，改写一份清单 <版本目录>/romfs.nupmap（每个文件在容器里的位置、编码、SHA-256，
 格式即 nx_unpack --romfs-image 的清单），由 ns2_dump 选好全量 / 差量后交 nx_unpack 直接从容器建 romfs.std；DLC 照旧展开。
 后面的程序号判定、全量 / 差量、控制分区、unpack.tsv 都由 ns2_dump 照原样做，这里不重复。
 没有本体的容器（SPEC §3.1.2 的 standalone_update，或本体记录没有文件）：把最新更新同时写成 base/，即把更新当整款
 （容器里证明不了更新是全量，所以打黄字说明，同 the reference port）。
-每个文件读出时核大小与 SHA-256，对不上报红。<输出>/.ns2_nup_key = 目录表 SHA-256 + 本脚本内容的哈希，相同就复用不重做；
+每个文件读出时核大小与 SHA-256：大小不对报红，只是 SHA-256 不对打黄照常写出（维护者 11-17）。<输出>/.ns2_nup_key = 目录表 SHA-256 + 本脚本内容的哈希，相同就复用不重做；
 先写 <输出>.tmp，成功才改名。
 
 容器读取（超级块 / 目录表 / 包记录 / 文件记录的布局与校验、scan 的检查）借自 the reference port scripts/pack_nup.py
@@ -136,8 +136,9 @@ class Nup:
             raise Error(f'{self.path}：目录表与数据区重叠')
         toc = self.mm[toc_off:toc_off + toc_size]
         self.toc_sha = toc_sha
-        if hashlib.sha256(toc).digest() != toc_sha:
-            raise Error(f'{self.path}：目录表与它的 SHA-256 对不上（文件损坏）')
+        if hashlib.sha256(toc).digest() != toc_sha:   # 维护者 11-17：只打黄照常读；目录表真坏时下面的逐条边界检查会按原因报
+            print(f'🟡 {os.path.basename(self.path)}：目录表和它的 SHA-256 对不上（疑改版 / 整合版或损坏），照常读', flush=True)
+            print('【校验跳过】NUP 目录表\t\t', flush=True)  # 非玩家句
         tmagic, tpkg, self.ndirs, nfiles, pool_off, pool_size, _ = TOC.unpack_from(toc)
         need = TOC.size + tpkg * PKG.size + self.ndirs * DIR.size + nfiles * FILE.size
         if (tmagic != b'TOC\x01' or tpkg != npkg or not npkg or len(toc) < need or pool_off < need
@@ -243,8 +244,11 @@ class Nup:
                     n = -1
         finally:
             view.release()
-        if n != size or h.digest() != sha:
-            raise Error(f'{self.path}：{name.decode(errors="replace")} 大小或 SHA-256 对不上（文件损坏）')
+        if n != size:   # 大小不对：读出的东西放不进清单给的位置，物理上用不了，照旧报红
+            raise Error(f'{self.path}：{name.decode(errors="replace")} 大小对不上（文件损坏）')
+        if h.digest() != sha:   # 只是哈希不对（维护者 11-17：「校验不过就整个拒绝」一律撤掉）：打黄 + 【校验跳过】机读行，照常写出
+            print(f'🟡 {os.path.basename(self.path)}：{name.decode(errors="replace")} 的 SHA-256 和目录表对不上（疑改版 / 整合版或损坏），照常写出', flush=True)
+            print(f'【校验跳过】NUP 容器\t\t文件 {name.decode(errors="replace")}', flush=True)  # 非玩家句
         return n
 
     def read(self, i):
@@ -299,7 +303,7 @@ def scan(n):
     if len(ids) != 1:
         raise Error(f'{n.path}：本体与更新程序号不同：' + '、'.join(f'{x:016X}' for x in sorted(ids)))
     app = ids.pop()
-    if app & 0xFFF:
+    if app & 0xFF0:   # 末位是多程序应用里的程序序号：单独导出的程序 n（如 Switch 2 版程序 1，#1567）照收，DLC 按应用号（去掉末位）认
         raise Error(f'{n.path}：程序号 {app:016X} 不是本体标题号')
     vers, dlc = {}, {}
     for k in n.packages:
@@ -310,7 +314,7 @@ def scan(n):
                 raise Error(f'{n.path}：版本 0 的更新')
             vers[k.version] = k
         elif k.kind == ADDON:
-            if not 0 < k.title_id - app - 0x1000 <= 2000:
+            if not 0 < k.title_id - (app & ~0xF) - 0x1000 <= 2000:
                 raise Error(f'{n.path}：{k.title_id:016X} 不是 {app:016X} 的 DLC')
             if k.romfs == NO_DIR:
                 raise Error(f'{n.path}：DLC {k.title_id:016X} 没有 romfs/')
@@ -417,8 +421,8 @@ def write_control(n, k, base, dst):
     return False
 
 
-def image_mode():   # 镜像形态开关（同 nx_unpack / ns2_dump）：读取方全迁到 romfs.std 之前只给对照 / 测试开
-    return os.environ.get('S2A_ROMFS_IMAGE') == '1'
+def image_mode():   # 镜像形态开关（同 nx_unpack / ns2_dump）：缺省开，S2A_ROMFS_IMAGE=0 回旧路径（展开散文件）
+    return os.environ.get('S2A_ROMFS_IMAGE') != '0'
 
 
 def key_of(n):

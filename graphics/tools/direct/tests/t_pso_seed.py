@@ -52,5 +52,11 @@ with tempfile.TemporaryDirectory() as t:
     r = run(p('mesh.tsv'))
     ck(f'M 行：键都在库里的两行收、S a 不挪到末尾；任务键 / 网格键不在库里、长度不对的不收（得 {rows()}；{r.stdout.strip()[:80]}）',
        r.returncode == 0 and rows() == [f'S\t{A}_b\t0', f'M\t{MAB}\t-\t0', f'M\t{MDB}\t{F}_b\t0'] and '/ M 2' in r.stdout)
+    # 同一对既有补齐行又有不补齐行（D-75KF：网格没写片元读的 user(locn5)，不补齐那条被拒过）：期望（按规则手写）不补齐的 M(a,b,-,0) 丢掉、补齐的 M(a,b,-,20) 留；
+    #   另一对 M(d,b,f,0) 没有补齐行、照收；同网格同片元但任务键不同的 M(a,b,f,0) 不算同一对、照收
+    open(p('meshpad.tsv'), 'w').write(f'M\t{MAB}\t-\t0\nM\t{MAB}\t-\t20\nM\t{MDB}\t{F}_b\t0\nM\t{MAB}\t{F}_b\t0\n')
+    r = run(p('meshpad.tsv'))
+    ck(f'M 行：同对有补齐行时不补齐那行丢掉，别的对 / 任务键不同的照收（得 {rows()}）',
+       r.returncode == 0 and rows() == [f'M\t{MAB}\t-\t20', f'M\t{MDB}\t{F}_b\t0', f'M\t{MAB}\t{F}_b\t0'])
 print(f't_pso_seed：{n} 项，失败 {bad}')
 sys.exit(1 if bad else 0)

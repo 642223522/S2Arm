@@ -43,6 +43,7 @@ Java_org_s2arm_android_NativeBridge_configureDebugEnvironment(JNIEnv *env, jclas
 #include "guest_signal.h"
 #include "host_android.h"
 #include "input.h"
+#include "phone_feedback.h"
 #include "memory.h"
 #include "module.h"
 #include "selftest.h"
@@ -1343,6 +1344,7 @@ Java_org_s2arm_android_NativeBridge_setForeground(JNIEnv *, jclass, jlong handle
     s2a_capacity_foreground(foreground != JNI_FALSE);
     s2a_adpf_set_foreground(foreground != JNI_FALSE);
     s2a_cpu_floor_set_foreground(foreground != JNI_FALSE);
+    s2a_android_phone_feedback_foreground(foreground != JNI_FALSE);   // 退后台关手机传感器、停马达
     // 退后台停显示节拍源（直连 vsync 拍；前台回时由 acquire 路径按需懒重启）
     if (!foreground && s2a_android_link_stop) s2a_android_link_stop();
     host->window.set_foreground(foreground);
@@ -1430,6 +1432,29 @@ extern "C" void s2a_android_dguard_prompt(const char *diag) {
     if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
     if (attached) vm->DetachCurrentThread();
 }
+// 停帧看门的屏上提示（runtime/src/ap_host.c stall_watch 按名字 dlsym 这三个，取不到就只打日志）：安卓用和 iOS 同名的出口接上，
+//   共用看门不改。三个调用方各只有一种用途——横幅 = 停帧救场关了帧率补丁（定时收）、消息 = 「可能还在加载」（帧又走了用清除收），
+//   所以这里只把「哪一种」交给 Java，文案由 Java 按界面语言取 strings.xml（看门传来的是 s2a_ui_text.h 的中文缺省，提到 iOS 的设置入口）。
+//   在看门线程上被调：挂上 JVM、调 NativeBridge.stallNotice(种类, 秒)，Java 侧派回主线程，不阻塞。
+static void stall_notice(int kind, int seconds) {
+    JavaVM *vm = g_vm;
+    JNIEnv *env = nullptr;
+    bool attached = false;
+    if (!vm || !g_bridge) { __android_log_print(ANDROID_LOG_ERROR, "S2Arm", "stall notice %d dropped: no bridge", kind); return; }
+    if (vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        if (vm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
+        attached = true;
+    }
+    jmethodID method = env->GetStaticMethodID(g_bridge, "stallNotice", "(II)V");
+    if (method) env->CallStaticVoidMethod(g_bridge, method, static_cast<jint>(kind), static_cast<jint>(seconds));
+    else __android_log_print(ANDROID_LOG_ERROR, "S2Arm", "stall notice: NativeBridge.stallNotice missing");
+    if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
+    if (attached) vm->DetachCurrentThread();
+}
+// 种类与 StallNotice.java 同值。横幅的秒数是显示多久（看门给 8）；文案里的「约 30 秒」是看门判停帧的窗口（ap_host.c 的 30 秒环、s2a_ap_crawl_due）
+extern "C" void s2a_ios_banner(const char *text, double seconds) { (void)text; stall_notice(1, seconds > 0 ? static_cast<int>(seconds + 0.5) : 8); }
+extern "C" void s2a_ios_show_message(const char *text) { (void)text; stall_notice(2, 0); }
+extern "C" void s2a_ios_clear_message(const char *text) { (void)text; stall_notice(0, 0); }
 // 接口 v2.15（#1228）：运行中切掌机 / 主机走宿主 display->set_console_mode（其内部转
 //   s2a_console_mode_set，服务层再转 ChangeDockedModeState）。与 os.c 其它符号同一强引用
 //   （能链接通过就说明 os.c 在）；仅会话运行中由 Java 调来。

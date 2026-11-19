@@ -17,7 +17,10 @@ void *s2a_vk_entry(const char *name) { return !strcmp(name, "vkCreateDevice") ? 
 static int g_vk_lib;   // 假的 Vulkan 库就绪（graphics/nvn/gfx/vk/hle_vk.m s2a_vk_lib_ready 的替身；口径核对在那边）
 int s2a_vk_lib_ready(const char *game_data) { (void)game_data; return g_vk_lib; }
 static char g_gl_impl; static int g_gl_lib;   // 假的 OpenGL 层与 GL 库就绪（host_adapt.m s2a_gl_entry / gl_prog.m s2a_gl_lib_ready 的替身）：只认 eglGetProcAddress
-void *s2a_gl_entry(const char *name) { return !strcmp(name, "eglGetProcAddress") ? &g_gl_impl : NULL; }
+void *s2a_gl_entry(const char *name) { return !strcmp(name, "eglGetProcAddress") || !strcmp(name, "glBindBuffer") ? &g_gl_impl : NULL; }
+static char g_gl_stub_impl;   // 假的 GL 安全空实现（host_adapt.m s2a_gl_stub 的替身）：只认 glActiveTexture（层里没实现的核心名）
+void *s2a_gl_stub(const char *name) { return !strcmp(name, "glActiveTexture") ? &g_gl_stub_impl : NULL; }
+uint64_t s2a_direct_stub(const char *name);   // gfxmode.c（装载器找遍之后才问）
 int s2a_gl_lib_ready(const char *game_data) { (void)game_data; return g_gl_lib; }
 // 假的 Switch 2 视频接管层（graphics/nvn/gfx/nvn/nvn2_codec.c s2a_codec_entry 的替身）：记下问了几次；名字族的判定在入口里（这里只认 codec / syncpt / gs / 原生图像）——
 //   核的是 gfxmode 的分派条件：C++ 名与 Nv* C 名都问入口、入口回 NULL 的照原路径，别的名字不问
@@ -34,6 +37,10 @@ static void put(const char *path, const char *text) {
     fputs(text, f); fclose(f);
 }
 static int fails;
+
+// 电源档替身（gfxmode.c s2a_mac_on_battery 的弱缺省在这里被这份强定义盖掉）：1 = 电池（缺省，照旧 interactive），0 = 插电 / 无电池
+static int g_battery = 1;
+int s2a_mac_on_battery(void) { return g_battery; }
 
 #include "../../graphics/nvn/gfx/nvn/dmsh_chain.h"
 int main(void) {
@@ -87,6 +94,20 @@ int main(void) {
       }
       int st = 0; waitpid(c, &st, 0);
       if (!WIFEXITED(st) || WEXITSTATUS(st)) fails++; else printf("  ✓ S2A_GFX=generic 不认：打【红】、照包判\n"); }
+    // 直连音频调度缺省按电源档分（11-14 卡顿诊断）：插电 / 无电池（桌面）的 Mac 不再补 interactive——不设时 C# S2ARealtime 走 time-constraint 实时（老缺省），
+    //   且日志写明；电池 Mac 照旧补 interactive（下一例）。模式每进程只定一次：本进程留给下一例（电池档），这里 fork 子进程里判
+    { fflush(stdout); pid_t c = fork();
+      if (!c) {
+          char lf[600], buf[4096] = ""; snprintf(lf, sizeof lf, "%s/log_ac.txt", g_dir); int fd = open(lf, O_RDWR | O_CREAT | O_TRUNC, 0644); g_s2a_logfd = fd;
+          g_battery = 0; setenv("S2A_GFX", "direct", 1); unsetenv("S2A_AUDIO_SCHED");
+          int m = s2a_gfx_mode(); ssize_t n = pread(fd, buf, sizeof buf - 1, 0); if (n > 0) buf[n] = 0;
+          const char *as = getenv("S2A_AUDIO_SCHED");
+          int ok = m == S2A_GFX_DIRECT && !as && strstr(buf, "音频调度缺省：实时");
+          if (!ok) printf("✗ 插电 / 桌面 Mac：期望不补 S2A_AUDIO_SCHED（C# 走实时）且日志写明，实际模式 %d、AUDIO=%s；日志「%s」\n", m, as ? as : "(无)", buf);
+          fflush(stdout); _exit(ok ? 0 : 1);
+      }
+      int st = 0; waitpid(c, &st, 0);
+      if (!WIFEXITED(st) || WEXITSTATUS(st)) fails++; else printf("  ✓ 插电 / 无电池的 Mac 直连局：不补 S2A_AUDIO_SCHED（实时缺省），日志写明\n"); }
     // 直连缺省省电组合：没设的补 S2A_AUDIO_SCHED=interactive（10-30 起不再补 DM_RT=0：出图线程照常声明实时）；游戏线程 QoS 不再补（10-26 起主线程不设 = thread.c 缺省 interactive），显式给的（S2A_GUEST_QOS=interactive）照用。模式每进程只定一次，故放在最前
     setenv("S2A_GFX", "direct", 1); unsetenv("DM_RT"); unsetenv("S2A_GAME_MAIN_QOS"); unsetenv("S2A_AUDIO_SCHED"); setenv("S2A_GUEST_QOS", "interactive", 1);
     { int m = s2a_gfx_mode(); const char *rt = getenv("DM_RT"), *mq = getenv("S2A_GAME_MAIN_QOS"), *gq = getenv("S2A_GUEST_QOS"), *as = getenv("S2A_AUDIO_SCHED");
@@ -104,6 +125,14 @@ int main(void) {
       if (a != (uint64_t)&g_gl_impl || b != (uint64_t)&g_gl_impl || c || e || g) { fails++; printf("✗ 直连 egl* 解析：无 GL 库 %#llx / 有 GL 库 %#llx（都期望 %p）/ 没有的 %#llx / 非 egl %#llx / glslc %#llx\n",
           (unsigned long long)a, (unsigned long long)b, (void *)&g_gl_impl, (unsigned long long)c, (unsigned long long)e, (unsigned long long)g); }
       else printf("  ✓ 直连 egl* 不论带不带 GL 库都解析到 GL 层（NVN 款的 EGL 导入不再未解析；层里没有的 / glslc / 非 egl 回 0）\n"); }
+    // 找遍之后（s2a_direct_stub）：GL 驱动的带下划线名 _gl* / _egl* 去掉下划线交 GL 层，层里没有的 gl* 核心名给安全空实现（LIMBO 66 个 _gl* 未解析、模块初始化中止）；
+    //   不带下划线的 gl* 照旧只给空实现（实现过的已在 s2a_direct_lookup 分走）；egl 没有空实现；别的名字回 0
+    { uint64_t a = s2a_direct_stub("_glBindBuffer"), b = s2a_direct_stub("_eglGetProcAddress"), c = s2a_direct_stub("_glActiveTexture"), d = s2a_direct_stub("_eglNotThere"),
+               e = s2a_direct_stub("_nnFoo"), f = s2a_direct_stub("glActiveTexture"), g = s2a_direct_stub("_glNotACore");
+      uint64_t gl = (uint64_t)&g_gl_impl, st = (uint64_t)&g_gl_stub_impl;
+      if (a != gl || b != gl || c != st || d || e || f != st || g) { fails++; printf("✗ 下划线 GL 名：_glBindBuffer %d _eglGetProcAddress %d（期望 GL 层）_glActiveTexture %d（期望空实现）_eglNotThere %#llx _nnFoo %#llx glActiveTexture %d _glNotACore %#llx\n",
+          a == gl, b == gl, c == st, (unsigned long long)d, (unsigned long long)e, f == st, (unsigned long long)g); }
+      else printf("  ✓ 找遍之后：_gl* / _egl* 去掉下划线交 GL 层，层里没有的 gl* 核心名给空实现；_egl 没有的、别的名字回 0\n"); }
     // Switch 2 SDK 接管层：C++ 名（_Z…）与 NVIDIA 驱动 C 名（Nv*）都问入口（族的判定在入口里），入口回 NULL 的照原路径（movie::VideoFrame 问了、回 0）；
     //   别的名字（nn 开头的 C 名、vk / egl 已在前面分走）不问
     { g_cv_asked = 0;
@@ -145,6 +174,6 @@ int main(void) {
       put(sm, NULL); put(li, NULL); rmdir(d); rmdir(o); }
 
     if (fails) { printf("✗ t_gfxmode：%d 例不符\n", fails); return 1; }
-    printf("✓ t_gfxmode：18 例全符\n");
+    printf("✓ t_gfxmode：19 例全符\n");
     return 0;
 }

@@ -1,5 +1,5 @@
 // S2Arm（不是上游文件）：更新流程（11-13 维护者定稿草图）。打开时最多一个弹窗，只给最新一期：
-//   ① 有新版：版本 + 这版的更新说明（签名清单 notes 的 sections），「以后再说」/「现在更新并重启」；
+//   ① 有新版：版本 + 这版的更新说明（签名清单 notes 的 sections），在同一张弹窗查看更新状态与操作；
 //   ② 更新后第一次打开：「已更新到 vX」+ 这版的亮点（notes.highlights），「知道了」。
 // 「消息」面板：公告（最新在前）和更新说明都在这里，旧的只在这里看、不弹不算未读。判定全在 pack/jobs/updater.py inbox，这里只显示。
 import AppKit
@@ -20,93 +20,246 @@ struct UpdatePopupView: View {
     @ObservedObject var model: S2ArmLauncherModel
     let language: String
 
+    /// 关窗时 model.updatePopup 先清空、弹窗还在淡出：留住最后一份内容，免得淡出那一下闪成「有新版」的版面
+    @State private var shown: [String: Any] = [:]
+
     private func t(_ id: String) -> String { BackendText.launcherText(id, language: language) }
-    private var popup: [String: Any] { model.updatePopup ?? [:] }
+    private var popup: [String: Any] { model.updatePopup ?? shown }
     private var version: String { popup["version"] as? String ?? "" }
     private var notes: [String: Any] { popup["notes"] as? [String: Any] ?? [:] }
-    private var after: Bool { popup["kind"] as? String == "afterUpdate" }
+    private var kind: String? { popup["kind"] as? String }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            if after { afterBody } else { updateBody }
+        Group {
+            switch kind {
+            case "afterUpdate":
+                confirmationBody(title: t("update.after.title").replacingOccurrences(of: "{0}", with: version),
+                                 subtitle: t("update.after.lead"),
+                                 highlights: notes["highlights"] as? [[String: Any]] ?? [])
+                    .accessibilityIdentifier("update.after")
+            case "upToDate":
+                confirmationBody(title: t("update.upToDate.title"), subtitle: version.isEmpty ? "" : "v" + version)
+                    .accessibilityIdentifier("update.upToDate")
+            default:
+                updateBody.accessibilityIdentifier("update.popup")
+            }
         }
-        .padding(LauncherTheme.Space.page)
         .launcherSheet(.form, height: nil)
-        .accessibilityIdentifier(after ? "update.after" : "update.popup")
+        .onReceive(model.$updatePopup) { if let next = $0 { shown = next } }
     }
 
     private var updateBody: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            LauncherHeadingLine {
-                Text("S2Arm v" + version).font(LauncherTheme.TypeStyle.title)
-            } subtitle: {
-                HStack(alignment: .firstTextBaseline, spacing: LauncherTheme.Space.small) {
-                    Text(t("update.popup.kicker")).font(LauncherTheme.TypeStyle.section).foregroundStyle(LauncherPalette.cream.opacity(0.8))
-                        .help(t("update.popup.kicker"))
-                    Text(t("update.popup.meta")).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary).help(t("update.popup.meta"))
-                }
-            }
-            let sections = notes["sections"] as? [[String: Any]] ?? []
-            if sections.isEmpty {
-                Text(t("update.popup.noNotes")).font(LauncherTheme.TypeStyle.body).foregroundStyle(.secondary)
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
-                        ForEach(Array(sections.enumerated()), id: \.offset) { _, section in
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(section["title"] as? String ?? "").font(.manrope(14, .semibold)).foregroundStyle(LauncherPalette.cream)
-                                bullets(section["items"] as? [[String: Any]] ?? [])
-                            }
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 18) {
+                updateHeader
+                releaseNotes
+                updateStatus
+                if model.updateGate != nil {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(t("update.gate.confirm.title")).font(.manrope(14, .bold))
+                        Text(model.updateRestartImpactText(t)).font(LauncherTheme.TypeStyle.detail)
+                            .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        HStack(spacing: 10) {
+                            Spacer()
+                            Button(t("update.gate.confirm.cancel")) { model.updateGate = nil }
+                                .controllerButtonStyle(LauncherSecondaryButtonStyle())
+                                .keyboardShortcut(.defaultAction)
+                                .accessibilityIdentifier("update.gate.cancel").controllerID("update.gate.cancel")
+                            Button(t("update.gate.confirm.restart")) { model.restartToUpdate(confirmed: true) }
+                                .controllerButtonStyle(LauncherSecondaryButtonStyle())
+                                .accessibilityIdentifier("update.gate.restart").controllerID("update.gate.restart")
                         }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(LauncherPalette.building.opacity(0.14), in: RoundedRectangle(cornerRadius: 12))
+                    .accessibilityIdentifier("update.gate")
                 }
-                .frame(maxHeight: 340)
             }
-            if case .working = model.updateState {
-                Text(t("update.popup.downloading")).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary)
-            }
-            if let gate = model.updateGate {   // 草图④：点了「现在更新并重启」但有局 / 任务在跑，先拦下、说清，弹窗不关
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(t(gate)).font(.manrope(14, .bold))
-                    Text(t(gate + ".body")).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(14).frame(maxWidth: .infinity, alignment: .leading)
-                .background(LauncherPalette.building.opacity(0.14), in: RoundedRectangle(cornerRadius: 12))
-                .accessibilityIdentifier("update.gate")
-            }
-            HStack {
-                if let link = releasePage(version) {
-                    Button { NSWorkspace.shared.open(link) } label: { Text(t("update.popup.fullLog")).font(LauncherTheme.TypeStyle.detail).underline() }
-                        .controllerButtonStyle(.plain).foregroundStyle(LauncherPalette.cream).controllerShortcut(.secondary)
-                }
+            .padding(LauncherTheme.Space.page)
+            updateFooter
+        }
+    }
+
+    private var updateHeader: some View {
+        VStack(alignment: .leading, spacing: LauncherTheme.Space.small) {
+            HStack(spacing: LauncherTheme.Space.medium) {
+                Text("S2Arm v" + version).font(LauncherTheme.TypeStyle.title)
+                Text(t("update.popup.kicker"))
+                    .font(LauncherTheme.TypeStyle.detail)
+                    .foregroundStyle(LauncherPalette.cream)
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(Color.black.opacity(0.25), in: Capsule())
+                    .overlay(Capsule().strokeBorder(LauncherPalette.cream.opacity(0.4)))
                 Spacer()
-                Button(t("update.popup.later")) { model.closeUpdatePopup() }.controllerButtonStyle(LauncherSecondaryButtonStyle())
-                    .keyboardShortcut(.cancelAction).accessibilityIdentifier("update.popup.later").controllerShortcut(.back)
-                Button(t("update.popup.now")) { model.restartToUpdate() }   // 没下就先下、下好接着换（玩家点了才下，#1283）
-                    .controllerButtonStyle(LauncherPrimaryButtonStyle()).disabled({ if case .working = model.updateState { return true } else { return false } }())
+                Button { model.closeUpdatePopup() } label: {
+                    Label(t("update.popup.close"), systemImage: "xmark")
+                }
+                .controllerButtonStyle(ConsoleIconButtonStyle(size: 32))
+                .help(t("update.popup.close"))
+                .accessibilityIdentifier("update.popup.close")
+            }
+            Text(t("update.popup.meta")).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var releaseNotes: some View {
+        let sections = notes["sections"] as? [[String: Any]] ?? []
+        return LauncherReadingPane {
+            VStack(alignment: .leading, spacing: 14) {
+                if sections.isEmpty {
+                    Text(t("update.popup.noNotes")).font(LauncherTheme.TypeStyle.body).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    ForEach(Array(sections.enumerated()), id: \.offset) { _, section in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(section["title"] as? String ?? "").font(.manrope(14, .semibold)).foregroundStyle(LauncherPalette.cream)
+                            bullets(section["items"] as? [[String: Any]] ?? [])
+                        }
+                    }
+                }
+            }
+            .padding(LauncherTheme.Metrics.cardInset)
+        }
+        .launcherPanel()
+    }
+
+    @ViewBuilder private var updateStatus: some View {
+        switch model.updateState {
+        case .idle:
+            EmptyView()
+        case .working(let id, let percent):
+            let downloading = id == "update.downloading"
+            let title = t(downloading ? "update.menu.downloadingPlain" : id)
+            updateProgress(title, detail: progressDetail(downloading: downloading, percent: percent), percent: percent, tint: LauncherPalette.cream)
+        case .ready:
+            let title = t("update.settings.ready").replacingOccurrences(of: "{0}", with: version)
+            updateProgress(title, detail: "100%", percent: 100, tint: LauncherPalette.ready)
+        case .failed(let code):
+            downloadError(code)
+        }
+    }
+
+    private func progressDetail(downloading: Bool, percent: Int?) -> String {
+        var parts: [String] = []
+        if downloading {
+            let (received, expected) = model.updateDownloadBytes
+            if received > 0 || expected > 0 {
+                let formatter = ByteCountFormatter()
+                formatter.countStyle = .file
+                let receivedText = formatter.string(fromByteCount: Int64(clamping: received))
+                if expected > 0 {
+                    parts.append(receivedText + " / " + formatter.string(fromByteCount: Int64(clamping: expected)))
+                } else {
+                    parts.append(receivedText)
+                }
+            }
+        }
+        if let percent { parts.append("\(percent)%") }
+        return parts.joined(separator: " · ")
+    }
+
+    private func updateProgress(_ title: String, detail: String, percent: Int?, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: LauncherTheme.Space.small) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title).font(.manrope(13, .semibold)).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: LauncherTheme.Space.small)
+                if !detail.isEmpty {
+                    Text(detail).font(LauncherTheme.TypeStyle.detail).monospacedDigit().foregroundStyle(.secondary)
+                }
+            }
+            LauncherProgressBar(value: percent.map { Double($0) / 100 }, height: 8, tint: tint)
+                .accessibilityLabel(title)
+        }
+    }
+
+    private func downloadError(_ code: String) -> some View {
+        HStack(alignment: .top, spacing: LauncherTheme.Space.small) {
+            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(LauncherPalette.danger)
+                .padding(.top, 2).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: LauncherTheme.Space.xSmall) {
+                Text(t("update.error." + code)).font(.manrope(13, .semibold)).foregroundStyle(LauncherPalette.cream)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(alignment: .firstTextBaseline, spacing: LauncherTheme.Space.small) {
+                    Text(t("update.code").replacingOccurrences(of: "{0}", with: code))
+                    Button { NSWorkspace.shared.open(S2ArmLauncherModel.downloadPage) } label: {
+                        Text(t("update.download_page")).underline()
+                    }
+                    .controllerButtonStyle(.plain).foregroundStyle(LauncherPalette.cream)
+                }
+                .font(.manrope(12)).foregroundStyle(.secondary)
+            }
+        }
+        .padding(LauncherTheme.Space.medium)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(LauncherPalette.danger.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(LauncherPalette.danger.opacity(0.4)).allowsHitTesting(false))
+        .textSelection(.enabled)
+    }
+
+    private var updateFooter: some View {
+        let actions = model.updateState.popupActions
+        // 「完整更新说明」和按钮同一行、垂直居中；勾选框单独一行放在按钮下方右侧
+        return LauncherSheetFooter {
+            VStack(alignment: .trailing, spacing: LauncherTheme.Space.medium) {
+                HStack(spacing: LauncherTheme.Space.small) {
+                    if let link = releasePage(version) {
+                        Button { NSWorkspace.shared.open(link) } label: {
+                            Text(t("update.popup.fullLog")).font(LauncherTheme.TypeStyle.detail).underline()
+                        }
+                        .controllerButtonStyle(.plain).foregroundStyle(LauncherPalette.cream).controllerShortcut(.secondary)
+                    }
+                    Spacer(minLength: LauncherTheme.Space.medium)
+                    Button(t(actions.secondary)) { model.closeUpdatePopup() }
+                        .controllerButtonStyle(LauncherSecondaryButtonStyle())
+                        .clipShape(Capsule())
+                        .overlay(Capsule().strokeBorder(LauncherTheme.Colors.border).allowsHitTesting(false))
+                        .keyboardShortcut(.cancelAction).accessibilityIdentifier("update.popup.later").controllerShortcut(.back)
+                    Button {
+                        if model.updateState == .ready { model.restartToUpdate() }
+                        else { model.downloadUpdate() }
+                    } label: {
+                        HStack(spacing: LauncherTheme.Space.small) {
+                            if !actions.primaryEnabled {
+                                ProgressView().controlSize(.small).accessibilityHidden(true)
+                            }
+                            Text(t(actions.primary))
+                        }
+                    }
+                    .controllerButtonStyle(LauncherPrimaryButtonStyle()).disabled(!actions.primaryEnabled || model.updateGate != nil)
+                    .clipShape(Capsule())
                     .accessibilityIdentifier("update.popup.now").controllerShortcut(.rightTrigger)
+                }
+                if actions.showsAutoRestart {
+                    Toggle(t("update.popup.autoRestart"), isOn: $model.autoRestartWhenReady)
+                        .toggleStyle(.checkbox).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("update.popup.autoRestart")
+                }
             }
         }
     }
 
-    private var afterBody: some View {
+    private func confirmationBody(title: String, subtitle: String, highlights: [[String: Any]] = []) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 12) {
                 Image(systemName: "checkmark.circle").font(.system(size: 26)).foregroundStyle(LauncherPalette.ready)
-                LauncherSheetHeading(t("update.after.title").replacingOccurrences(of: "{0}", with: version), subtitle: t("update.after.lead"))
+                LauncherSheetHeading(title, subtitle: subtitle)
             }
-            bullets(notes["highlights"] as? [[String: Any]] ?? [])
+            if !highlights.isEmpty { bullets(highlights) }
             HStack {
-                if let link = releasePage(version) {
+                if !version.isEmpty, let link = releasePage(version) {
                     Button { NSWorkspace.shared.open(link) } label: { Text(t("update.popup.fullLog")).font(LauncherTheme.TypeStyle.detail).underline() }
                         .controllerButtonStyle(.plain).foregroundStyle(LauncherPalette.cream).controllerShortcut(.secondary)
                 }
                 Spacer()
                 Button(t("update.after.ok")) { model.closeUpdatePopup() }
-                    .controllerButtonStyle(LauncherPrimaryButtonStyle()).keyboardShortcut(.defaultAction).accessibilityIdentifier("update.after.ok").controllerShortcut(.rightTrigger, .back)
+                    .controllerButtonStyle(LauncherPrimaryButtonStyle())
+                    .clipShape(Capsule())
+                    .keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("update.after.ok").controllerShortcut(.rightTrigger, .back)
             }
         }
+        .padding(LauncherTheme.Space.page)
     }
 
     private func bullets(_ items: [[String: Any]]) -> some View {

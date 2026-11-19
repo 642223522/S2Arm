@@ -87,7 +87,7 @@
 {"fn": "fs_typed", "args": ["struct main0_out\n{\n    float4 m_0 [[color(0)]];\n    float m_1 [[color(1)]];\n    uint m_2 [[sample_mask]];\n};\n\nfragment main0_out main0(float4 gl_FragCoord [[position]])\n{\n    main0_out out = {};\n    out.m_0 = float4(0.0, 1.0, 0.0, 1.0);\n    out.m_1 = 0.0;\n    return out;\n}\n", 4, 0, "struct main0_out\n{\n    float4 m_0 [[color(0)]];\n    float m_1 [[color(1)]];\n    uint m_2 [[sample_mask]];\n};\n\nfragment main0_out main0(float4 gl_FragCoord [[position]])\n{\n    main0_out out = {};\n    out.m_0 = float4(0.0, 1.0, 0.0, 1.0);\n    out.m_1 = 0.0;\n    return out;\n}\n\nstruct main0_out_t\n{\n    float4 m_0 [[color(0)]];\n    float m_1 [[color(1)]];\n    uint m_2 [[sample_mask]];\n};\n\nfragment main0_out_t main0_t(float4 gl_FragCoord [[position]])\n{\n    main0_out out = {};\n    out.m_0 = float4(0.0, 1.0, 0.0, 1.0);\n    out.m_1 = 0.0;\n    return main0_out_t{out.m_0, out.m_1, out.m_2};\n}\n"], "want": {"ok": "struct main0_out\n{\n    float4 m_0 [[color(0)]];\n    float m_1 [[color(1)]];\n    uint m_2 [[sample_mask]];\n};\n\nfragment main0_out main0(float4 gl_FragCoord [[position]])\n{\n    main0_out out = {};\n    out.m_0 = float4(0.0, 1.0, 0.0, 1.0);\n    out.m_1 = 0.0;\n    return out;\n}\n\nstruct main0_out_t\n{\n    float4 m_0 [[color(0)]];\n    float m_1 [[color(1)]];\n    uint m_2 [[sample_mask]];\n};\n\nfragment main0_out_t main0_t(float4 gl_FragCoord [[position]])\n{\n    main0_out out = {};\n    out.m_0 = float4(0.0, 1.0, 0.0, 1.0);\n    out.m_1 = 0.0;\n    return main0_out_t{out.m_0, out.m_1, out.m_2};\n}\n"}}
 {"fn": "fs_typed", "args": ["struct main0_out\n{\n    float4 m_0 [[color(0)]];\n    float m_1 [[color(1)]];\n    uint m_2 [[sample_mask]];\n};\n\nfragment main0_out mainX(float4 gl_FragCoord [[position]])\n{\n    main0_out out = {};\n    out.m_0 = float4(0.0, 1.0, 0.0, 1.0);\n    out.m_1 = 0.0;\n    return out;\n}\n", 1, 0, null], "want": {"ok": null}}
 {"fn": "drv_reads", "args": ["x = (*spvDescriptorSet0.fp_c0)._m0[17u].x + (*spvDescriptorSet0.fp_c2)._m0[_123].y + (*spvDescriptorSet0.fp_c2)._m0[86].z + (*spvDescriptorSet0.fp_c2)._m0[3u].w + (*spvDescriptorSet0.fp_c0)._m0[200].x;"], "want": {"ok": {"0": {"vec4_offsets": [272, 3200], "dynamic": false}, "2": {"vec4_offsets": [48, 1376], "dynamic": true}}}}
-{"fn": "unfillable", "args": [{"0": {"vec4_offsets": [272, 512, 1792], "dynamic": false}, "2": {"vec4_offsets": [16, 352, 1376, 2400, 2560], "dynamic": true}}], "want": {"ok": ["c0+0x700", "c2 dynamic index", "c2+0x10", "c2+0xa00"]}}
+{"fn": "unfillable", "args": [{"0": {"vec4_offsets": [272, 512, 1792], "dynamic": false}, "2": {"vec4_offsets": [16, 352, 1376, 2400, 2560], "dynamic": true}}], "want": {"ok": ["c0+0x700", "c2+0x10", "c2+0xa00"]}}
 {"fn": "unfillable", "args": [{}], "want": {"ok": []}}
 {"fn": "decode_tex", "args": ["vp_i_cb17_30127FFF"], "want": {"ok": [null, null, 3]}}
 {"fn": "decode_ubo_tex", "args": ["vp_i_cb17_30127FFF"], "want": {"ok": null}}
@@ -3679,7 +3679,7 @@
 {"fn": "const_sampler", "args": ["fp_tbuf_cb983042_3016815B"], "want": {"ok": 90}}
 {"fn": "decode_ubo_tex", "args": ["fp_tbuf_cb983042_3016815B"], "want": {"ok": null}}
 {"fn": "ubo_sampler", "args": ["fp_tbuf_cb983042_3016815B"], "want": {"ok": null}}
-{"fn": "c2_array", "args": ["fp_t2d_cb2_20568049", "array<texture2d_array<float>, 32>"], "want": {"ok": null}}
+{"fn": "c2_array", "args": ["fp_t2d_cb2_20568049", "array<texture2d_array<float>, 32>"], "want": {"ok": 292}}
 {"fn": "decode_tex", "args": ["cp_tcube_cb262146_124009"], "want": {"ok": [null, null, 0]}}
 {"fn": "ubo_sampler", "args": ["cp_tcube_cb262146_124009"], "want": {"ok": null}}
 {"fn": "decode_ubo_tex", "args": ["gp_t_cb2_3000405A"], "want": {"ok": null}}
@@ -4312,3 +4312,7 @@
 {"fn": "decode_ubo_img", "args": ["cp_i_cb3_260__atomic"], "want": {"ok": null}}
 {"fn": "decode_ubo_img", "args": ["fp_t2d_cb3_12005A"], "want": {"ok": null}}
 {"fn": "decode_ubo_img", "args": ["cp_i_cb5_10"], "want": {"ok": [2, 64]}}
+{"fn": "c2_array", "args": ["fp_t2d_cb196610_10570000", "array<texture2d<float>, 32>"], "want": {"ok": 0}}
+{"fn": "c2_array", "args": ["fp_t2d_cb196610_10570000Smplr", "array<sampler, 32>"], "want": {"ok": null}}
+{"fn": "c2_array", "args": ["fp_t2d_cb196610_30570000", "array<texture2d<float>, 32>"], "want": {"ok": null}}
+{"fn": "c2_array", "args": ["fp_t2d_cb196610_10120000", "array<texture2d<float>, 32>"], "want": {"ok": null}}

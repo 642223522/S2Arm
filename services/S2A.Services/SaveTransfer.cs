@@ -81,25 +81,40 @@ public static partial class SaveTransfer
         Require(memory.Length <= MaxMetadata, T("存档元数据超过上限。", "Save metadata exceeds the limit."));
         return memory.ToArray();
     }
+    // 数据根 / 事务目录：按真实路径（逐级解开链接）用。玩家把游戏库挪到外置盘再用链接接回来、/tmp 与 /var 这类系统链接、iCloud 云盘路径，
+    //   链接本身照常能读能写——原先只要路径上有一级是链接就整单拒（D-R52E save_unsafe_path），堵门。解开后之后的读写都在真实路径上做
     private static string Absolute(string path)
     {
         Require(Path.IsPathFullyQualified(path) && Path.GetFullPath(path) == path.TrimEnd('/'), T("需要规范的绝对路径。", "A normalized absolute path is required."));
-        CheckLinks(path);
-        return path;
+        return Real(path);
     }
-    private static bool Within(string path, string root) => path == root || path.StartsWith(root + "/", StringComparison.Ordinal);
-    private static void CheckLinks(string path)
+    private static string Real(string path)
     {
         string current = Path.GetPathRoot(path);
-        foreach (string part in path.Substring(current.Length).Split('/', StringSplitOptions.RemoveEmptyEntries))
+        string[] parts = path.Substring(current.Length).Split('/', StringSplitOptions.RemoveEmptyEntries);
+        for (int i = 0; i < parts.Length; i++)
         {
-            current = Path.Combine(current, part);
-            FileAttributes attributes;
-            try { attributes = File.GetAttributes(current); }
-            catch (FileNotFoundException) { continue; }
-            catch (DirectoryNotFoundException) { continue; }
-            Require((attributes & FileAttributes.ReparsePoint) == 0, T("存档路径包含链接。", "The save path contains a link."), "save_unsafe_path");
+            string next = Path.Combine(current, parts[i]);
+            FileSystemInfo info = Directory.Exists(next) ? new DirectoryInfo(next) : new FileInfo(next);
+            if (!info.Exists && info.LinkTarget == null)   // 还不存在的部分（要新建的目录）：原样接上
+                return Path.Combine(new[] { next }.Concat(parts.Skip(i + 1)).ToArray());
+            if (info.LinkTarget == null) { current = next; continue; }
+            FileSystemInfo target;
+            try { target = info.ResolveLinkTarget(returnFinalTarget: true); }
+            catch (IOException) { throw new Failure("save_unsafe_path", T("存档路径里的链接解不开（循环或层数过多）。", "A link in the save path can’t be resolved (a loop or too many levels).")); }
+            current = target?.FullName ?? next;
         }
+        return current;
+    }
+    private static bool Within(string path, string root) => path == root || path.StartsWith(root + "/", StringComparison.Ordinal);
+    // 数据根、事务目录之下的路径：解开链接后必须还在同一个根里（链接本身不拒，跑出去才拒——那才是越界）。
+    //   根已按真实路径给，根和它的上级（建目录后同步上级目录）本身没有链接，不用核
+    private static readonly List<string> Roots = new();
+    private static void CheckLinks(string path)
+    {
+        string root = Roots.FirstOrDefault(r => Within(path, r));
+        if (root == null) return;
+        Require(Within(Real(path), root), T("存档路径经链接指到了存档目录以外。", "A link in the save path points outside the save folders."), "save_unsafe_path");
     }
     private static void Name(string name)
     {
@@ -111,6 +126,10 @@ public static partial class SaveTransfer
     }
     private static bool Allowed(string name, bool directory = false) =>
         (!directory && name == Profile) || Trees.Any(t => directory && name == t || name.StartsWith(t + "/", StringComparison.Ordinal));
+    // 进备份 / 算存档指纹的：在三处存档范围里，且不是存档事务自己的内部项（路径里有 .s2a_ 开头的一节：上一份 .s2a_prev、护栏标记 .s2a_guard、
+    //   提交中途的 .s2a_new 等，见 compat S2ASaveCommit.cs）。导入校验、恢复时跳过存档仍按 Allowed（旧备份里带着这些的照样能导入）
+    private static bool Exported(string name, bool directory = false) =>
+        Allowed(name, directory) && !name.Split('/').Any(p => p.StartsWith(".s2a_", StringComparison.Ordinal));
     private sealed record Snapshot(SortedDictionary<string, long> Files, List<string> Directories);
     private static Snapshot Scan(string root)
     {
@@ -159,9 +178,9 @@ public static partial class SaveTransfer
     {
         var scan = Scan(root);
         var value = new JsonArray(Directory.Exists(root));
-        value.Add((JsonNode)new JsonArray(scan.Directories.Where(d => Allowed(d, directory: true)).Select(d => (JsonNode)JsonValue.Create(d)).ToArray()));
+        value.Add((JsonNode)new JsonArray(scan.Directories.Where(d => Exported(d, directory: true)).Select(d => (JsonNode)JsonValue.Create(d)).ToArray()));
         var files = new JsonArray();
-        foreach (var file in scan.Files.Where(f => Allowed(f.Key))) files.Add((JsonNode)new JsonArray(file.Key, file.Value, HashFile(Path.Combine(root, file.Key))));
+        foreach (var file in scan.Files.Where(f => Exported(f.Key))) files.Add((JsonNode)new JsonArray(file.Key, file.Value, HashFile(Path.Combine(root, file.Key))));
         value.Add((JsonNode)files);
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value.ToJsonString())));
     }
@@ -240,6 +259,7 @@ public static partial class SaveTransfer
             _ = Str(Game, "name");
             Root = Absolute(Str(request, "dataRoot"));
             Work = Absolute(Str(request, "workRoot"));
+            Roots.Clear(); Roots.Add(Root); Roots.Add(Work);   // 只在 Execute 的 lock (Gate) 里建：同一时刻只有这一单
             Require(!Within(Root, Work) && !Within(Work, Root), T("数据根与事务目录必须独立。", "The data root and the transaction folder must be separate."));
             DurableDirectory(Work);
             Transactions = Path.Combine(Work, "save-transactions");
@@ -264,7 +284,7 @@ public static partial class SaveTransfer
                 using var execution = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
                 string operation = Str(c.Request, "operation");
                 // 游戏在跑：存档目录归游戏写，只许只读的 status / export / inspect（export 前后核指纹）；不跑 Recover（它会换存档），留着没收尾的事务也拒
-                Require(!hostRunning || operation is "status" or "export" or "inspect" && !File.Exists(c.Journal),
+                Require(!hostRunning || operation is "status" or "export" or "inspect" or "previous" && !File.Exists(c.Journal),
                     T("请在启动游戏前管理存档。", "Manage saves before starting the game."), "save_running");
                 bool recovered = !hostRunning && Recover(c);
                 JsonObject result = operation switch
@@ -274,6 +294,8 @@ public static partial class SaveTransfer
                     "export" => Export(c),
                     "inspect" => Inspect(c),
                     "restore" => Restore(c),
+                    "previous" => PreviousSaves(c),
+                    "restorePrevious" => RestorePreviousSaves(c),
                     _ => throw new Failure("save_invalid", T("未知存档操作。", "Unknown save operation."))
                 };
                 return new JsonObject { ["ok"] = true, ["result"] = result }.ToJsonString();

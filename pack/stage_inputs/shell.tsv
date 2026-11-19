@@ -12,6 +12,8 @@
 入	graphics/metal/fit_judge.h
 入	graphics/metal/gal_aa.m
 入	graphics/metal/gal_abi.h
+入	graphics/metal/gal_astc.h
+入	graphics/metal/gal_astc.m
 入	graphics/metal/gal_be.h
 入	graphics/metal/gal_border.m
 入	graphics/metal/gal_buf.m
@@ -77,6 +79,8 @@
 入	graphics/nvn/gfx/tex/nvn_deswizzle_gpu.m
 入	graphics/nvn/gfx/tex/nvn_fmt_mtl.c
 入	graphics/nvn/gfx/tex/nvn_fmt_mtl.h
+入	launchers/macos/Branding/AppIcon-iOS.png
+入	pack/tv_icon.py
 入	translator/dmsh_chain.py
 入	translator/dmsh_xlate/Program.cs
 入	graphics/nvn/gfx/vk
@@ -86,6 +90,7 @@
 入	graphics/nvn/host_adapt.m
 入	graphics/nvn/lib_pack.inc
 入	graphics/nvn/lib_pack_core.inc
+入	graphics/nvn/pgo/nvn.prof.txt
 入	graphics/nvn/texture_extent.inc
 入	graphics/nvn/third_party/bcdec/bcdec.h
 入	graphics/nvn/third_party/vulkan-headers
@@ -164,6 +169,8 @@
 入	pack/shell_build.sh
 入	pack/ship_ext.py
 入	pack/stage_inputs/shell.tsv
+入	pack/widget.entitlements
+入	pack/widget_ext.py
 入	android/tools/fetch_source.sh
 入	platform/apple/cs
 入	shell

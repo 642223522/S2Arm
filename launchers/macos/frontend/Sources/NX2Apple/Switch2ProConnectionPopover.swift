@@ -25,6 +25,11 @@ struct Switch2ProConnectionPopover: View {
     @ObservedObject var systems: SystemControllers
     let lang: String   // 界面语言代码（Lang.code）
     var onClose: () -> Void = {}   // 手柄 B 关面板（顶栏传进来）
+    /// 面板最高多高（#1400：接上 PS5 等蓝牙手柄后内容变多，面板比屏幕可用高度还高，顶部被裁、又滚不动）。
+    ///   缺省 = 当前屏幕可用高度减去顶栏与弹窗边距；内容超出就在面板里纵向滚动。单测可以传小值模拟矮屏
+    var maxHeight: CGFloat? = nil
+    @State private var contentHeight: CGFloat = 0
+    private var heightLimit: CGFloat { maxHeight ?? max(320, (NSScreen.main?.visibleFrame.height ?? 800) - 96) }
 
     private func t(_ key: String) -> String { NS2LauncherController.text("s2arm.controller." + key, lang) }
     @Environment(\.padControls) private var padControls   // 界面导航（分配中把手柄按键送进来）
@@ -70,6 +75,7 @@ struct Switch2ProConnectionPopover: View {
     // 照 #520 UI 稿：区块由上到下 Switch 2 → 蓝牙 → 玩家，每块一个小标头，细线分隔（间距一律 4 的倍数）
     var body: some View {
         let status = controller.status
+        ScrollView(.vertical, showsIndicators: contentHeight > heightLimit) {
         VStack(alignment: .leading, spacing: 16) {
             // 分配中只放分配块（#520 讨论：省面板高度）；Switch 2 手柄那块、蓝牙手柄那块完成 / 取消后再出来
             if !controller.assigning {
@@ -107,12 +113,12 @@ struct Switch2ProConnectionPopover: View {
             }
 
             // 蓝牙区块（#520 UI 稿 system.html）：系统蓝牙手柄——图、标题（一只写系统给的名字，太长一行截断、悬停看全名；多只写数量）、状态、「打开蓝牙设置」
-            //   HID 兜底手柄（#1151：GameController 认不出、游戏里按 HID 直读的「… Pro Controller」）一并列在这一块，按 Pro 样式手柄算
+            //   HID 兜底手柄（#1151：GameController 认不出、游戏里按 HID 直读的）一并列在这一块：「… Pro Controller」按 Pro 样式手柄算，别的通用手柄按其他手柄算
             //   没有任何蓝牙手柄时也显示（同 Switch 2 区块）：虚线图、「游戏手柄 / Game controller」（同 macOS 的叫法，不列品牌）、未连接，按钮照样能去系统蓝牙设置配对
             do {
                 let fallback = systems.fallback
                 let names = systems.pads.map(\.name) + fallback
-                let families = systems.pads.map(\.family) + fallback.map { _ in SystemControllers.Family.nintendoPro }
+                let families = systems.pads.map(\.family) + fallback.map { HIDFallbackPads.isPro($0) ? SystemControllers.Family.nintendoPro : .other }
                 let title = names.isEmpty ? t("gameController")
                     : names.count == 1 ? names[0] : t("bluetoothCount").replacingOccurrences(of: "{0}", with: "\(names.count)")
                 let glyph: ControllerIcon.Glyph = names.isEmpty ? .unknown
@@ -223,6 +229,11 @@ struct Switch2ProConnectionPopover: View {
             }
         }
         .padding(20)
+        .background(GeometryReader { g in Color.clear.preference(key: PanelContentHeightKey.self, value: g.size.height) })
+        }
+        // 内容多高面板就多高，封顶 heightLimit；超出部分在面板里滚动（量到之前先按内容自然高度排，不压成一条）
+        .frame(height: contentHeight > 0 ? min(contentHeight, heightLimit) : nil)
+        .onPreferenceChange(PanelContentHeightKey.self) { contentHeight = $0 }
         // 手柄 B：面板自己接住，不落到系统「取消」/ Esc（没人接时 macOS 会「叮」一声）。
         //   分配中 = 取消分配（同「取消」钮）；齿轮选单开着只关选单；其他时候关面板。一直挂着（用 if 切换会让整个面板换身份、状态重设）
         .controllerBackAction("controller.panel.back") {
@@ -342,6 +353,11 @@ extension Switch2ProConnectionPopover {
 }
 
 // 稿里的 .sec：上面一条细线、内容间距 12
+private struct PanelContentHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
 private struct PanelSection<Content: View>: View {
     @ViewBuilder let content: Content
     var body: some View {

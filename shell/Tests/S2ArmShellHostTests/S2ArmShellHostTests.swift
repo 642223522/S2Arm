@@ -309,6 +309,56 @@ nonisolated(unsafe) private var lastPlayed = ""
     _ = opts
 }
 
+// 输出设备类型 + 两个虚拟环绕开关（#189 后续，5.1 虚拟环绕第二片）：宿主按游戏给的 audio 块出三行，值 / 置灰照宿主给的
+//   （两个开关只在对应设备类型下可用；拨过的值照显示——切换类型各自恢复）；改动经宿主 setOption（audiodevice / audiovs）。
+//   期望值手算
+@MainActor @Test func gameAudioDeviceRows() throws {
+    let tag = UUID().uuidString
+    let app = try #require(UserDefaults(suiteName: "s2a.test.app." + tag))
+    var games: [String: UserDefaults] = [:]
+    typealias O = S2ArmGameSettings.Options
+    // 宿主桩：G1 没选设备类型（auto）、两个开关没拨过（按关显示、置灰）；G2 选了耳机、拨过耳机开关（开）、扬声器开关也拨过（开，置灰）；
+    //   G3 选了内置扬声器、拨过扬声器开关（开）；G4 选了外接、两个开关虽拨过开也不可用；G5 宿主没给 audio 块（老宿主）→ 不出三行
+    var opts: [String: O] = [
+        "G1": O(fps: .init(on: false), fullscreen: .init(on: false), audio: .init(device: "auto", vsSpeakers: false, vsHeadphones: false)),
+        "G2": O(fps: .init(on: false), fullscreen: .init(on: false), audio: .init(device: "headphones", vsSpeakers: true, vsHeadphones: true)),
+        "G3": O(fps: .init(on: false), fullscreen: .init(on: false), audio: .init(device: "builtin", vsSpeakers: true, vsHeadphones: false)),
+        "G4": O(fps: .init(on: false), fullscreen: .init(on: false), audio: .init(device: "external", vsSpeakers: true, vsHeadphones: true)),
+    ]
+    var sets: [String] = []
+    let stores = S2ArmGameSettings.Stores(game: { id in
+        if let d = games[id] { return d }
+        let d = UserDefaults(suiteName: "s2a.test.game.\(tag).\(id)"); games[id] = d; return d }, app: app,
+        options: { opts[$0] },
+        setOption: { id, kind, key, on in sets.append("\(id) \(kind) \(key) \(on)"); return true })
+    defer { app.removePersistentDomain(forName: "s2a.test.app." + tag); for (id, _) in games { UserDefaults().removePersistentDomain(forName: "s2a.test.game.\(tag).\(id)") } }
+    func row(_ s: [SettingSection], _ id: String) -> SettingRow? { s.flatMap(\.rows).first { $0.id == id } }
+    // G1：auto = 没选，两个开关置灰、按关显示；设备类型四选一，声音组三行照这个顺序
+    let s1 = S2ArmGameSettings.sections(for: "G1", stores: stores, state: .init(selected: "default", hasMine: false))
+    #expect(s1.first { $0.id == "s2a.sound" }?.rows.map(\.id) == [S2ArmGameSettings.audioDevice, S2ArmGameSettings.vsSpeakers, S2ArmGameSettings.vsHeadphones])
+    #expect(row(s1, "audioDevice")?.value == "auto" && row(s1, "vsSpeakers")?.value == "off" && row(s1, "vsSpeakers")?.enabled == false && row(s1, "vsHeadphones")?.enabled == false)
+    if case .choice(let o) = row(s1, "audioDevice")?.kind { #expect(o.map(\.id) == ["auto", "builtin", "headphones", "external"]) } else { Issue.record("设备类型行应是多选") }
+    // G2：耳机开关可用（开）、扬声器开关置灰但拨过的值照显示（切换类型各自恢复）；G3 反过来
+    let s2 = S2ArmGameSettings.sections(for: "G2", stores: stores, state: .init(selected: "default", hasMine: false))
+    #expect(row(s2, "vsHeadphones")?.enabled == true && row(s2, "vsHeadphones")?.value == "on" && row(s2, "vsSpeakers")?.enabled == false && row(s2, "vsSpeakers")?.value == "on")
+    let s3 = S2ArmGameSettings.sections(for: "G3", stores: stores, state: .init(selected: "default", hasMine: false))
+    #expect(row(s3, "vsSpeakers")?.enabled == true && row(s3, "vsSpeakers")?.value == "on" && row(s3, "vsHeadphones")?.enabled == false && row(s3, "vsHeadphones")?.value == "off")
+    // G4：external = 两个开关都置灰（≥6 声道直通、<6 普通下混、不用虚拟环绕），拨过的值照显示
+    let s4 = S2ArmGameSettings.sections(for: "G4", stores: stores, state: .init(selected: "default", hasMine: false))
+    #expect(row(s4, "vsSpeakers")?.enabled == false && row(s4, "vsHeadphones")?.enabled == false && row(s4, "vsSpeakers")?.value == "on")
+    // G5：宿主没给 audio 块（老宿主）→ 三行都不出、不出声音组
+    let s5 = S2ArmGameSettings.sections(for: "G5", stores: stores, state: .init(selected: "default", hasMine: false))
+    #expect(row(s5, "audioDevice") == nil && row(s5, "vsSpeakers") == nil && row(s5, "vsHeadphones") == nil && !s5.map(\.id).contains("s2a.sound"))
+    // 宿主 JSON 解析：device 不认识按 auto、开关缺字段按关
+    let parsed = S2ArmGameSettings.Options.parse(#"{"fps":{"on":false},"fullscreen":{"on":false},"audio":{"device":"bogus","vsSpeakers":true}}"#)
+    #expect(parsed?.audio == .init(device: "auto", vsSpeakers: true, vsHeadphones: false))
+    // 改：设备类型与两个开关都原样交宿主（类型给值、开关给 speakers / headphones + 开关值）
+    S2ArmGameSettings.apply(id: "G3", setting: "audioDevice", value: "external", stores: stores)
+    S2ArmGameSettings.apply(id: "G3", setting: "vsSpeakers", value: "off", stores: stores)
+    S2ArmGameSettings.apply(id: "G2", setting: "vsHeadphones", value: "on", stores: stores)
+    #expect(sets == ["G3 audiodevice external true", "G3 audiovs speakers false", "G2 audiovs headphones true"])
+}
+
 // 这台 iPhone 上的名字和封面：叠在清单上、可恢复默认，不影响别的款。期望值手写
 @MainActor @Test func gameIdentityOverridesCatalogue() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)

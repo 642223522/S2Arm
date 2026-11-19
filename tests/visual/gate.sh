@@ -8,11 +8,14 @@
 #   ① 宽屏单测（核心语义：命中 / 写回 / 直连出数 = 通用 GPU 缓冲）+ C 接口（直连调用的结构布局、零分配）：改 graphics/widen/ 或这两个测试目录才跑。
 #   ③ 宽屏门禁（九款金样：放宽后中间区逐像素、出图参数、两侧来历）：改 graphics/widen/ 或 tests/visual/widen_gate* 才跑。
 #   ④ 逐绘制对拍（动森一段录像逐渲染通道对参照渲染器：防渲染器 / GAL 翻译画错；10-25 录像库误删后只重录这段，暗黑3 / 马车8 两段只带已知差异、回归由 graphics/gate.sh 九款金样逐帧覆盖，摘掉）+ 回放器自检：改 graphics/metal/ compat/ tests/visual/galplay/ drawdiff / diff_list 才跑——改渲染器缺省只剩这一项，约 85 秒。
-#   ② 参考录像出图 / 双后端 5 帧 / 真值 2 帧：与 ③④ 重叠，只在改它自己的量具（widen_cmp.py / truth_cmp.py）时跑。
+#   ② 参考录像出图 / 参照真值 5 帧 / Windows 真值 2 帧：与 ③④ 重叠，只在改它自己的量具（widen_cmp.py / truth_cmp.py）时跑。
 # ①（原）graphics/widen 单测（tests/visual/widen_unit，失败项数即退出码）。
 # ②（原）参考录像回放出图——同一份 libnxgal 出基线（16:9）
 #    与加宽图（--widen 2.1727），tests/visual/widen_cmp.py 判「中间区 PSNR ≥30 dB、两侧有画面」，并要求回放错误 0、宽屏红计数（序章补内容除外）0；
-#    基线回放同时进参照渲染器（Ryujinx Vulkan 后端 @ MoltenVK，--ref）逐帧对拍：差异像素（通道差 >2）≤0.5%；
+#    基线出图逐帧比固定参照真值（tests/visual/ref_truth_cmp.py）：差异像素（通道差 >2）≤0.5%。真值 = 参照渲染器（Ryujinx Vulkan 后端 @ MoltenVK，galplay --ref）
+#    出过一次、核过与我方出图一致的那份上屏图，存 ${S2A_VISUAL_REFTRUTH:-<录像目录>/reftruth}/<录像去 .rec>_<帧>.png，内容哈希钉在 tests/visual/ref_truth.tsv（随代码走列车）。
+#    不再每次现跑参照渲染器：判的是「我方出图对不对」，参照渲染器在不同芯片 / 系统上的出图会变（11-18：同一录像同一 MoltenVK 文件，
+#    马车8 竞技场帧 60 参照端在 M4 Pro / macOS 27.0.1 上与 M5 Max / 27.2.1 差 24%，我方出图两台逐像素一致）。换真值：重出参照、核过后改 ref_truth.tsv 的哈希；
 #    录像在 Windows 真值检查点录的（list.tsv 第 3 列 <游戏>/<检查点>）：基线与加宽图中间 16:9 都要过 tests/visual/truth_cmp.py。
 # ③ 同触发条件：宽屏门禁 tests/visual/widen_gate.sh（九款 GAL 金样录像：中间区逐像素对登记值 + 噪声、出图参数变化次数、回放无错），在 ② 之后串行跑（10-21 与 ② 并行时、负载 100 下马车8 基线 --ref 回放超时 200 秒一次，串行免争抢）、共用本钩子编的回放器。
 # ④ 同一条件下（③ 之后串行）：双后端逐绘制对拍（画面·着色器线，tests/visual/galplay/DrawDiff.cs）——清单 tests/visual/diff_list.tsv（随代码走列车）每行一段录像：
@@ -28,14 +31,15 @@
 #    库放在 run/ 之外（10-25 清盘时 run/s2arm/diff* 通配把整个库删了、三段录像只能重录）：safe_rm.sh 只删 run/s2arm 等允许根，gc 只删自己建的目录，都碰不到这里
 # 产物全在私有临时目录（libnxgal 用 OUT= 编到私有目录，不碰 build/gal，免得和其他钩子并行时互相覆盖）；每次回放墙钟上限 120 秒。
 # 参考录像：${S2A_VISUAL_RECS:-~/.s2arm/run/s2arm/visual/recs}/list.tsv（列：录像文件、帧号逗号分隔、真值检查点或 -、说明）；录像与真值不进仓库。
-# 子项键（tools/gate.sh 分派 gate-host 用，见本文件头「# 门禁本机：」）：ref/<录像文件> = 该录像的双后端对拍（基线回放 --ref）；widen/<款> = 宽屏门禁里这一款。
-#   GATE_SKIP="<键…>"：ref 键的录像基线回放不带 --ref、不判双后端，widen 键的款宽屏门禁不跑（别处另跑），末行写明；
-#   GATE_ONLY="<键…>"：只编回放器，只跑这些键（ref 键：基线 --ref 回放 + 判双后端；widen 键：宽屏门禁只跑这几款），不跑单测 / 宽屏出图 / 真值。
+# 子项键（tools/gate.sh 分派 gate-host 用，见本文件头「# 门禁本机：」）：ref/<录像文件> = 该录像基线出图比固定参照真值；widen/<款> = 宽屏门禁里这一款。
+#   GATE_SKIP="<键…>"：ref 键的录像不比参照真值，widen 键的款宽屏门禁不跑（别处另跑），末行写明；
+#   GATE_ONLY="<键…>"：只编回放器，只跑这些键（ref 键：基线回放 + 比参照真值；widen 键：宽屏门禁只跑这几款），不跑单测 / 宽屏出图 / 真值。
 #   键不是 ref/ widen/ 开头、录像不在 list.tsv、款不在 tests/visual/widen_gate.tsv = 红。
 set -u
 [ "${NXGAL_BOUNDS_COUNT:-}" = 1 ] && { echo "画幅线 / 画面·着色器线：计数关（出货口径）下比像素 → 计数开着（NXGAL_BOUNDS_COUNT=1），本钩子全是比像素，红"; exit 1; }
 R=$(pwd); T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 RECS=${S2A_VISUAL_RECS:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/visual/recs}
+REFT=${S2A_VISUAL_REFTRUTH:-$RECS/reftruth}
 red=0; msg=(); ONLY=${GATE_ONLY:-}; SKIPK=${GATE_SKIP:-}; refskip=
 for k in $SKIPK $ONLY; do
   case $k in
@@ -55,7 +59,7 @@ if [ -n "${GATE_CHANGED:-}" ]; then
     graphics/widen/*|tests/visual/widen_unit/*|tests/visual/widen_capi/*) RU=1; RW=1;;
     tests/visual/widen_gate*|tests/visual/widen_lib_key*|graphics/tools/shbake/xc_key.sh|graphics/metal/tools/gal_offline.py) RW=1;;   # 离线库键脚本 / 键单测 / 离线编译器也算（11-01 审计 P1-40：只改它们时键单测没人跑）
     graphics/metal/*|graphics/loop/*|graphics/track/*|graphics/third_party/*|graphics/build.mk|compat/tree/src/Ryujinx.Graphics.*|compat/patches/*|tests/visual/galplay/*|tests/visual/drawdiff.py|tests/visual/diff_list.tsv) RG=1;;   # 回放器真正编进去的面（测试出包线 10-24 收窄）
-    tests/visual/widen_cmp.py|tests/visual/truth_cmp.py|tests/visual/gate.sh) RL=1;;
+    tests/visual/widen_cmp.py|tests/visual/truth_cmp.py|tests/visual/ref_truth_cmp.py|tests/visual/ref_truth.tsv|tests/visual/gate.sh) RL=1;;
   esac; done
 else RU=1; RW=1; RG=1; RL=1; fi
 if [ -z "$ONLY" ] && [ $RU = 1 ]; then
@@ -102,9 +106,9 @@ if [ $need = 1 ]; then
     while IFS=$'\t' read -r rec frames truth note; do
       [ -n "$rec" ] || continue
       if [ -n "$ONLY" ]; then case " $ONLY " in *" ref/$rec "*) ;; *) continue;; esac; fi
-      ref=--ref; case " $SKIPK " in *" ref/$rec "*) ref=; refskip="$refskip $rec";; esac
+      ref=1; case " $SKIPK " in *" ref/$rec "*) ref=; refskip="$refskip $rec";; esac
       base=$T/out/${rec%.rec}_base; wide=$T/out/${rec%.rec}_wide
-      s0=$SECONDS; timeout 200 "$T/play/galplay" "$RECS/$rec" "$base" $ref --frames "$frames" > "$T/${rec}_b.log" 2>&1; rb=$?; tm "${rec%.rec}基线" $s0; s0=$SECONDS
+      s0=$SECONDS; timeout 200 "$T/play/galplay" "$RECS/$rec" "$base" --frames "$frames" > "$T/${rec}_b.log" 2>&1; rb=$?; tm "${rec%.rec}基线" $s0; s0=$SECONDS
       rw=0; [ -z "$ONLY" ] && { timeout 120 "$T/play/galplay" "$RECS/$rec" "$wide" --widen 2.1727 --frames "$frames" > "$T/${rec}_w.log" 2>&1; rw=$?; tm "${rec%.rec}加宽" $s0; }
       for fr in ${frames//,/ }; do
         if [ -z "$ONLY" ]; then all=$((all + 1)); else rall=$((rall + 1)); fi
@@ -117,9 +121,9 @@ if [ $need = 1 ]; then
           else red=1; echo "🔴 $rec 帧 ${fr}：$line"; fi
         fi
         if [ -n "$ref" ]; then
-        rl=$(grep -E "^帧 ${fr}：差异像素" "$T/${rec}_b.log" | head -1); [ -z "$ONLY" ] && rall=$((rall + 1))
-        if [ -n "$rl" ] && python3 -c "import sys,re; v=float(re.search(r'差异像素 ([0-9.]+)%', sys.argv[1]).group(1)); sys.exit(0 if v <= 0.5 else 1)" "$rl"; then rpass=$((rpass + 1)); echo "🟢 $rec 帧 $fr 双后端：$rl"
-        else red=1; echo "🔴 $rec 帧 $fr 双后端：${rl:-没有对拍行}"; fi
+        [ -z "$ONLY" ] && rall=$((rall + 1))
+        if rl=$(python3 tests/visual/ref_truth_cmp.py "$base/present_$fr.png" "$REFT" tests/visual/ref_truth.tsv "$rec" "$fr" 2>&1); then rpass=$((rpass + 1)); echo "🟢 $rec 帧 $fr 比参照真值：$rl"
+        else red=1; echo "🔴 $rec 帧 $fr 比参照真值：$rl"; fi
         fi
         if [ -z "$ONLY" ] && [ "${truth:--}" != - ]; then
           for side in base wide; do
@@ -133,9 +137,9 @@ if [ $need = 1 ]; then
     # 清单在但一条都没跑（空清单 / 只有空行）= 这段没验证，记红（11-01 审计 P2-50：原先计数从 0 起、空循环不记红）
     if [ -z "$ONLY" ] && [ $all = 0 ]; then red=1; echo "🔴 参考录像清单 $RECS/list.tsv 在但一条录像都没跑"; msg+=("参考录像清单在但 0 条跑过")
     elif [ -n "$ONLY" ] && case " $ONLY " in *" ref/"*) true;; *) false;; esac && [ $rall = 0 ]; then red=1; echo "🔴 指定的 ref/ 键一帧都没跑（${ONLY}）"; msg+=("指定 ref/ 键 0 帧跑过"); fi
-    if [ -n "$ONLY" ]; then [ $rall -gt 0 ] && msg+=("双后端对拍 $rpass/$rall 帧过（只跑 ${ONLY}）")
-    else msg+=("宽屏出图 $pass/$all 帧过" "双后端对拍 $rpass/$rall 帧过${refskip:+（${refskip# } 另跑）}" "Windows 真值 $tpass/$tall 过"); fi
-    else msg+=("参考录像出图 / 双后端 / 真值跳过（没改它的量具）"); fi
+    if [ -n "$ONLY" ]; then [ $rall -gt 0 ] && msg+=("比参照真值 $rpass/$rall 帧过（只跑 ${ONLY}）")
+    else msg+=("宽屏出图 $pass/$all 帧过" "比参照真值 $rpass/$rall 帧过${refskip:+（${refskip# } 另跑）}" "Windows 真值 $tpass/$tall 过"); fi
+    else msg+=("参考录像出图 / 参照真值 / Windows 真值跳过（没改它的量具）"); fi
     if { [ -z "$ONLY" ] && [ $RW = 1 ]; } || [ -n "$WO" ]; then
     s0=$SECONDS; WIDEN_GATE_ONLY=${WO# } WIDEN_GATE_SKIP=${WS# } bash tests/visual/widen_gate.sh "$T/play" "$T/gal" > "$T/widen_gate.log" 2>&1 || red=1; tm 宽屏门禁 $s0
     grep -E '^🔴|^    \||^墙钟' "$T/widen_gate.log"

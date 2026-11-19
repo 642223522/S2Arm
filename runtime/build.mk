@@ -25,7 +25,8 @@ NATIVE_INC  := -Iruntime/include
 ifeq ($(S2A_UNAME),Darwin)
 S2A_HOST_WEAK := $(call S2A_WEAK_U,host)   # 立即求值一次：几十条链接行都引用它，别每次都起一次 python3
 # Mac 宿主热状态 / 低电量（runtime/src/host_main.c dm_thermal_now，经 objc 运行时读 NSProcessInfo，审计 P1-80）：原生层单独构建（runtime/gate.sh）不带 graphics/build.mk 的 Foundation，这里自己链
-HOST_LIBS += -framework Foundation
+HOST_LIBS += -framework Foundation -framework Security   # Security：手机端自签（runtime/src/selfsign.c）
+HOST_LIBS += -lcompression   # 即时存档压缩页内容（runtime/src/snapshot.c）；不链 C# 的构建（S2A_CS=0）没有 services/nxaot.sh 带进来的那份
 endif
 
 # 依赖（全部 HOST_SRCS、头文件、构建配置戳）由顶层 Makefile 在读完所有 build.mk 之后统一写，这里只写配方（配方延迟展开，链的是完整 HOST_SRCS）
@@ -90,7 +91,11 @@ endif
 #   按款的东西（游戏镜像包 Frameworks/S2AImages.dylib、随行表 .fixups/.gates/.widen.tsv、main.npdm、随包表）由 pack/ship_ext.py build 从产物根组装进壳的副本
 #   （纯 Python，Windows / Mac 同一份；镜像包 ios/embed.py，运行时 runtime/src/imgpack.c 映射，见 docs/接口_原生层.md「外置镜像包」）。
 #   出壳（含渲染器内部辅助库、主程序 ad-hoc 签名带内存权限、壳清单）走 pack/shell_build.sh。各目录在自己的 build.mk 里往 IOS_SRCS / IOS_LIBS 追加（C# 静态库、渲染器等）。
-IOS_SRCS   += $(HOST_SRCS) $(sort $(wildcard ios/*.m))
+# Apple TV（S2A_APPLE_OS=tvos，11-15）：电视上没有的 iPhone 界面整文件不编（触屏虚拟手柄与它的设置 / 金手指 / Mod 页、「文件」App 存档导入导出、
+#   外接屏、手机当手柄），它们被别处调到的入口由 ios/tv_host.m 给电视版；iOS 不编 tv_host.m
+TVOS_EXCLUDE := ios/vpad.m ios/vpad_settings.m ios/vpad_mods.m ios/vpad_cheats.m ios/vpad_shell.m ios/app_settings.m ios/cpatch_settings.m \
+  ios/touch_config.m ios/save_transfer.m ios/extdisplay.m ios/phone_motion.m
+IOS_SRCS   += $(HOST_SRCS) $(filter-out $(if $(filter tvos,$(S2A_APPLE_OS)),$(TVOS_EXCLUDE),ios/tv_host.m),$(sort $(wildcard ios/*.m)))
 # 桌面显示名（pack/ipa.sh 传「<游戏自带名> S2Arm[ 后缀]」，取名见 pack/display_name.py；注释单独成行：make 会把值后到 # 前的空格算进值）
 IOS_DISPLAY ?= S2Arm
 ifneq ($(origin IOS_VAMM_LAYOUT),undefined)
@@ -98,16 +103,19 @@ $(error IOS_VAMM_LAYOUT 已停用；请使用自动地址需求表重新出包)
 endif
 IOS_LIBS   += -framework GameController -framework UniformTypeIdentifiers
 # 手机自身当掌机（ios/phone_motion.m）：陀螺仪 / 加速度当六轴、Core Haptics 当震动马达
-IOS_LIBS   += -framework CoreMotion -framework CoreHaptics -framework ExternalAccessory   # ExternalAccessory：GameSir G8+ MFi 有线的马达走配件协议（ios/ea_rumble.m，#462）
+IOS_LIBS   += $(if $(filter tvos,$(S2A_APPLE_OS)),,-framework CoreMotion) -framework CoreHaptics -framework ExternalAccessory   # tvOS 没有 CoreMotion（手机当手柄那份不编）
+IOS_LIBS   +=   # ExternalAccessory：GameSir G8+ MFi 有线的马达走配件协议（ios/ea_rumble.m，#462）
 # 诊断包（ios/diag.m）：MetricKit 收崩溃 / 卡顿诊断
-IOS_LIBS   += -framework MetricKit -framework CoreTelephony   # CoreTelephony：上传断网时认「无线数据」授权被拒（CTCellularData）
+IOS_LIBS   += -framework MetricKit $(if $(filter tvos,$(S2A_APPLE_OS)),,-framework CoreTelephony)   # CoreTelephony：上传断网时认「无线数据」授权被拒（CTCellularData）
 # 静音键下照样出声（ios/app.m audio_category_apply，#789）：AVAudioSession
 IOS_LIBS   += -framework AVFAudio
+IOS_LIBS   += -framework Security   # 手机端自签（runtime/src/selfsign.c）
 # 诊断包自己写 zip（文件放根目录、文件名带 UTF-8 标记；系统「为上传而读」会多套一层文件夹、中文名按 cp437 解成乱码）：deflate 用系统 zlib
 IOS_LIBS   += -lz
 IOS_BUNDLE ?= local.s2arm.app
-IOS_SDK     = $(shell DEVELOPER_DIR=$(DEVELOPER_DIR) xcrun --sdk iphoneos --show-sdk-path)
-IOS_CC      = DEVELOPER_DIR=$(DEVELOPER_DIR) xcrun --sdk iphoneos clang -target arm64-apple-ios$(IPHONEOS_DEPLOYMENT_TARGET) -isysroot $(IOS_SDK)
+# SDK 与目标三元组按 S2A_APPLE_OS 取（顶层 Makefile：iphoneos / appletvos）
+IOS_SDK     = $(shell DEVELOPER_DIR=$(DEVELOPER_DIR) xcrun --sdk $(APPLE_SDK) --show-sdk-path)
+IOS_CC      = DEVELOPER_DIR=$(DEVELOPER_DIR) xcrun --sdk $(APPLE_SDK) clang -target $(APPLE_TRIPLE) -isysroot $(IOS_SDK)
 IOS_APP     = $(BUILD)/ios/S2Arm.app
 NS2_CODECS := $(sort $(wildcard runtime/ns2pro/*.c))
 NS2_SRCS := $(NS2_CODECS) $(sort $(wildcard runtime/ns2pro/*.m))
@@ -145,16 +153,33 @@ IOS_LD_DET = -Wl,-objc_stubs_small
 S2A_SHELLUI ?= 0
 ifeq ($(S2A_SHELLUI),1)
 SHELLUI_DD = $(abspath $(BUILD))/ios/shellui
-SHELLUI_PRODUCTS = $(SHELLUI_DD)/Build/Products/Release-iphoneos
+SHELLUI_PRODUCTS = $(SHELLUI_DD)/Build/Products/Release-$(APPLE_SDK)
 IOS_SHELLUI_LINK = $(addprefix $(SHELLUI_PRODUCTS)/,S2ArmShellHost.o S2ArmShellBridge.o ShellUI.o ShellControllers.o SaveSync.o) \
-  -L$(shell DEVELOPER_DIR=$(DEVELOPER_DIR) xcrun --sdk iphoneos --find swiftc | sed 's|/bin/swiftc$$||')/lib/swift/iphoneos -L$(IOS_SDK)/usr/lib/swift -framework SwiftUI
+  -L$(shell DEVELOPER_DIR=$(DEVELOPER_DIR) xcrun --sdk $(APPLE_SDK) --find swiftc | sed 's|/bin/swiftc$$||')/lib/swift/$(APPLE_SDK) -L$(IOS_SDK)/usr/lib/swift -framework SwiftUI
 .PHONY: ios-shellui
 ios-shellui:
 	@mkdir -p $(SHELLUI_DD)
-	cd shell && DEVELOPER_DIR=$(DEVELOPER_DIR) xcodebuild -quiet -scheme S2ArmShellHost -destination 'generic/platform=iOS' -configuration Release \
-	  -derivedDataPath $(SHELLUI_DD) IPHONEOS_DEPLOYMENT_TARGET=$(IPHONEOS_DEPLOYMENT_TARGET) build > $(SHELLUI_DD)/xcodebuild.log 2>&1 || { tail -30 $(SHELLUI_DD)/xcodebuild.log; echo "🔴 游戏库界面（S2A_SHELLUI=1）编不过，日志 $(SHELLUI_DD)/xcodebuild.log"; exit 1; }
+	cd shell && DEVELOPER_DIR=$(DEVELOPER_DIR) xcodebuild -quiet -scheme S2ArmShellHost -destination 'generic/platform=$(if $(filter tvos,$(S2A_APPLE_OS)),tvOS,iOS)' -configuration Release \
+	  -derivedDataPath $(SHELLUI_DD) IPHONEOS_DEPLOYMENT_TARGET=$(IPHONEOS_DEPLOYMENT_TARGET) TVOS_DEPLOYMENT_TARGET=$(TVOS_DEPLOYMENT_TARGET) build > $(SHELLUI_DD)/xcodebuild.log 2>&1 || { tail -30 $(SHELLUI_DD)/xcodebuild.log; echo "🔴 游戏库界面（S2A_SHELLUI=1）编不过，日志 $(SHELLUI_DD)/xcodebuild.log"; exit 1; }
 ios: ios-shellui
 endif
+# 主屏小组件（中号 4×2，11-16 维护者进 0.5.0）：ios/widget/S2ArmWidget.swift + 与游戏库共用的数据格式 shell/Sources/S2ArmShellHost/WidgetFeed.swift，
+#   swiftc 直接编成 PlugIns/S2ArmWidget.appex（同 Xcode 的扩展编法：-application-extension、入口 _NSExtensionMain；Swift 运行时取系统 /usr/lib/swift，不随包）。
+#   包名 = 主包名 + .widget：出包 / 装机改主包名时由 pack/widget_ext.py 一并改（或整个去掉：证书模式、签不上、额度满）。只在带游戏库界面的壳里编（S2A_SHELLUI=1）
+IOS_WIDGET = $(IOS_APP)/PlugIns/S2ArmWidget.appex
+IOS_WIDGET_SRCS = ios/widget/S2ArmWidget.swift shell/Sources/S2ArmShellHost/WidgetFeed.swift
+.PHONY: ios-widget
+ios-widget:
+	@mkdir -p $(IOS_WIDGET) $(BUILD)/ios/widget
+	DEVELOPER_DIR=$(DEVELOPER_DIR) xcrun --sdk iphoneos swiftc -target arm64-apple-ios$(IPHONEOS_DEPLOYMENT_TARGET) -sdk $(IOS_SDK) -O -wmo -parse-as-library \
+	  -application-extension -module-name S2ArmWidget -module-cache-path $(abspath $(BUILD))/ios/widget/mc $(IOS_WIDGET_SRCS) \
+	  -Xlinker -e -Xlinker _NSExtensionMain -Xlinker -S -o $(IOS_WIDGET)/S2ArmWidget
+	@/usr/bin/plutil -create xml1 $(IOS_WIDGET)/Info.plist && for kv in CFBundleIdentifier=$(IOS_BUNDLE).widget CFBundleExecutable=S2ArmWidget CFBundleName=S2ArmWidget \
+	  CFBundleDisplayName=S2Arm CFBundlePackageType=XPC! CFBundleShortVersionString=0.1 CFBundleVersion=1 MinimumOSVersion=$(IPHONEOS_DEPLOYMENT_TARGET) CFBundleDevelopmentRegion=en; do \
+	  /usr/bin/plutil -insert $${kv%%=*} -string "$${kv#*=}" $(IOS_WIDGET)/Info.plist; done; \
+	  /usr/bin/plutil -insert CFBundleSupportedPlatforms -xml '<array><string>iPhoneOS</string></array>' $(IOS_WIDGET)/Info.plist; \
+	  /usr/bin/plutil -insert UIDeviceFamily -xml '<array><integer>1</integer><integer>2</integer></array>' $(IOS_WIDGET)/Info.plist; \
+	  /usr/bin/plutil -insert NSExtension -json '{"NSExtensionPointIdentifier":"com.apple.widgetkit-extension"}' $(IOS_WIDGET)/Info.plist
 .PHONY: ios ios-ns2pro ns2pro-test native-test-ns2pro native-test-touch_compat
 ios-ns2pro:
 	@mkdir -p $(NS2_FRAMEWORK)
@@ -164,8 +189,8 @@ ios-ns2pro:
 	  -o $(NS2_FRAMEWORK)/NS2Pro $(call ios_objlist,$(BUILD)/ios/obj_ns2pro,$(NS2_SRCS)) -framework CoreBluetooth -framework Foundation
 	@rm -rf $(BUILD)/ios/NS2Pro.dSYM; DEVELOPER_DIR=$(DEVELOPER_DIR) xcrun dsymutil --oso-prepend-path=$(IOS_BUILD_ABS) $(NS2_FRAMEWORK)/NS2Pro -o $(BUILD)/ios/NS2Pro.dSYM   # 调试符号包（不进包）：分开编链后 clang 不再自动出，按相对对象路径补
 	@rm -f $(NS2_FRAMEWORK)/Info.plist.tmp
-	@/usr/bin/plutil -create xml1 $(NS2_FRAMEWORK)/Info.plist.tmp && for kv in CFBundleIdentifier=dev.s2arm.NS2Pro CFBundleExecutable=NS2Pro CFBundleName=NS2Pro CFBundlePackageType=FMWK CFBundleShortVersionString=1.0 CFBundleVersion=1 MinimumOSVersion=$(IPHONEOS_DEPLOYMENT_TARGET); do /usr/bin/plutil -insert $${kv%%=*} -string "$${kv#*=}" $(NS2_FRAMEWORK)/Info.plist.tmp; done
-	@/usr/bin/plutil -insert CFBundleSupportedPlatforms -xml '<array><string>iPhoneOS</string></array>' $(NS2_FRAMEWORK)/Info.plist.tmp
+	@/usr/bin/plutil -create xml1 $(NS2_FRAMEWORK)/Info.plist.tmp && for kv in CFBundleIdentifier=dev.s2arm.NS2Pro CFBundleExecutable=NS2Pro CFBundleName=NS2Pro CFBundlePackageType=FMWK CFBundleShortVersionString=1.0 CFBundleVersion=1 MinimumOSVersion=$(APPLE_MIN); do /usr/bin/plutil -insert $${kv%%=*} -string "$${kv#*=}" $(NS2_FRAMEWORK)/Info.plist.tmp; done
+	@/usr/bin/plutil -insert CFBundleSupportedPlatforms -xml '<array><string>$(APPLE_PLATFORM)</string></array>' $(NS2_FRAMEWORK)/Info.plist.tmp
 	@mv -f $(NS2_FRAMEWORK)/Info.plist.tmp $(NS2_FRAMEWORK)/Info.plist
 	@cp runtime/ns2pro/LICENSE $(NS2_FRAMEWORK)/LICENSE
 ns2pro-test: native-test-ns2pro
@@ -184,27 +209,36 @@ ios: ios-ns2pro
 # CADisableMinimumFrameDurationOnPhone（11-13）：iPhone 默认把显示链压在 60 Hz；社区帧率补丁目标高于 60 时出图链要 60–120 Hz（runtime/src/cpatch.c fps_link），
 #   没这一项系统不给。实际帧率仍由出图链按请求定（缺省 60），别的款不受影响
 	@/usr/bin/plutil -create xml1 $(IOS_APP)/Info.plist && for kv in CFBundleIdentifier=$(IOS_BUNDLE) CFBundleExecutable=S2Arm CFBundleName=S2Arm CFBundlePackageType=APPL \
-	  CFBundleShortVersionString=0.1 CFBundleVersion=1 MinimumOSVersion=$(IPHONEOS_DEPLOYMENT_TARGET) UILaunchStoryboardName=; do /usr/bin/plutil -insert $${kv%%=*} -string "$${kv#*=}" $(IOS_APP)/Info.plist; done; \
+	  CFBundleShortVersionString=0.1 CFBundleVersion=1 MinimumOSVersion=$(APPLE_MIN) UILaunchStoryboardName=; do /usr/bin/plutil -insert $${kv%%=*} -string "$${kv#*=}" $(IOS_APP)/Info.plist; done; \
 	  /usr/bin/plutil -insert UIRequiredDeviceCapabilities -xml '<array><string>arm64</string></array>' $(IOS_APP)/Info.plist; \
 	  /usr/bin/plutil -insert CFBundleDisplayName -string "$(IOS_DISPLAY)" $(IOS_APP)/Info.plist; \
 	  /usr/bin/plutil -insert S2ACommit -string "$(or $(S2A_COMMIT),$$(git rev-parse HEAD 2> /dev/null || echo unknown))" $(IOS_APP)/Info.plist; \
-	  /usr/bin/plutil -insert CFBundleSupportedPlatforms -xml '<array><string>iPhoneOS</string></array>' $(IOS_APP)/Info.plist; \
-	  /usr/bin/plutil -insert UIDeviceFamily -xml '<array><integer>1</integer><integer>2</integer></array>' $(IOS_APP)/Info.plist; \
+	  /usr/bin/plutil -insert CFBundleSupportedPlatforms -xml '<array><string>$(APPLE_PLATFORM)</string></array>' $(IOS_APP)/Info.plist; \
+	  /usr/bin/plutil -insert UIDeviceFamily -xml '$(APPLE_DEVICE_FAMILY)' $(IOS_APP)/Info.plist; \
+	  if [ $(S2A_APPLE_OS) = ios ]; then \
 	  /usr/bin/plutil -insert UIFileSharingEnabled -bool YES $(IOS_APP)/Info.plist; \
 	  /usr/bin/plutil -insert LSSupportsOpeningDocumentsInPlace -bool YES $(IOS_APP)/Info.plist; \
+	  /usr/bin/plutil -insert UTExportedTypeDeclarations -json '[{"UTTypeIdentifier":"com.s2arm.game","UTTypeDescription":"S2Arm game package","UTTypeConformsTo":["public.data"],"UTTypeTagSpecification":{"public.filename-extension":["s2arm"]}}]' $(IOS_APP)/Info.plist; \
+	  /usr/bin/plutil -insert CFBundleDocumentTypes -json '[{"CFBundleTypeName":"S2Arm game package","CFBundleTypeRole":"Viewer","LSHandlerRank":"Owner","LSItemContentTypes":["com.s2arm.game"]}]' $(IOS_APP)/Info.plist; \
 	  /usr/bin/plutil -insert CADisableMinimumFrameDurationOnPhone -bool YES $(IOS_APP)/Info.plist; \
 	  /usr/bin/plutil -insert UIApplicationShortcutItems -json "$$(cat ios/shortcuts.json)" $(IOS_APP)/Info.plist; \
+	  fi; \
 	  /usr/bin/plutil -insert CFBundleLocalizations -json '["en","en-GB","zh-Hans","zh-Hant","ja","ko","fr","fr-CA","de","it","es","es-419","pt","pt-BR","nl","ru","pl","th","sv"]' $(IOS_APP)/Info.plist; \
 	  /usr/bin/plutil -insert CFBundleDevelopmentRegion -string en $(IOS_APP)/Info.plist; \
-	  for k in UISupportedInterfaceOrientations UISupportedInterfaceOrientations~ipad; do /usr/bin/plutil -insert $$k -xml '<array><string>UIInterfaceOrientationLandscapeRight</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationPortrait</string></array>' $(IOS_APP)/Info.plist; done; \
-	  /usr/bin/plutil -insert UIRequiresFullScreen -bool YES $(IOS_APP)/Info.plist; /usr/bin/plutil -insert UIStatusBarHidden -bool YES $(IOS_APP)/Info.plist   # 只许横屏、全屏、无状态栏
+	  if [ $(S2A_APPLE_OS) = ios ]; then \
+	  for k in UISupportedInterfaceOrientations UISupportedInterfaceOrientations~ipad; do /usr/bin/plutil -insert $$k -xml '<array><string>UIInterfaceOrientationLandscapeRight</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationPortraitUpsideDown</string></array>' $(IOS_APP)/Info.plist; done; \
+	  /usr/bin/plutil -insert UIRequiresFullScreen -bool YES $(IOS_APP)/Info.plist; /usr/bin/plutil -insert UIStatusBarHidden -bool YES $(IOS_APP)/Info.plist; \
+	  fi   # 方向四个都声明（竖屏倒置：Duo 镜头一侧朝下握也能竖屏分屏，#1364 应用层放开全部方向，但系统按 Info.plist 取交集，原先没写倒置就转不过去）；全屏、无状态栏；以上文件共享 / 屏幕方向 / 主屏快捷项 / 高刷键只有 iPhone 有（Apple TV 不写，11-15）
+	@[ $(S2A_APPLE_OS) != tvos ] || /usr/bin/plutil -insert UIUserInterfaceStyle -string Dark $(IOS_APP)/Info.plist   # 电视：深色界面（同电视系统缺省）
 	@/usr/bin/plutil -insert LSSupportsGameMode -bool YES $(IOS_APP)/Info.plist   # 声明支持系统游戏模式（10-20 维护者二分：动森整机 5.88 → 3.37 W、30 帧不变，性能核 3.9 → 2.2 GHz；旧 S2A 包有此键、S2Arm 漏了）
 	@/usr/bin/plutil -insert LSApplicationCategoryType -string public.app-category.games $(IOS_APP)/Info.plist   # 系统靠类别认出是游戏才进游戏模式（11-01 调研：LSSupportsGameMode 之外还要类别键）
 	@/usr/bin/plutil -insert GCSupportsGameMode -bool YES $(IOS_APP)/Info.plist   # 部署目标 iOS 18.0 < 18.6：LSSupportsGameMode 18.6 起才认，18.0–18.5 靠旧键
 	@/usr/bin/plutil -insert NSLocalNetworkUsageDescription -string "Local multiplayer: find other devices on the same Wi-Fi and join the same room." $(IOS_APP)/Info.plist; /usr/bin/plutil -insert NSBonjourServices -json '["_s2arm-ldn._tcp"]' $(IOS_APP)/Info.plist   # ldn_lan.m；主值英文（开发区域 en），中文在 ios/l10n/zh-Hans.lproj/InfoPlist.strings（#316，上面 cp -R 一并拷进包）
-	@/usr/bin/plutil -insert UISupportedExternalAccessoryProtocols -json '["com.xiaoji.M2boot"]' $(IOS_APP)/Info.plist   # 配件协议白名单：没声明就开不了 EASession（ios/ea_rumble.h，#462）
+	@[ $(S2A_APPLE_OS) != ios ] || /usr/bin/plutil -insert UISupportedExternalAccessoryProtocols -json '["com.xiaoji.M2boot"]' $(IOS_APP)/Info.plist   # 配件协议白名单：没声明就开不了 EASession（ios/ea_rumble.h，#462）
 	@/usr/bin/plutil -insert NSBluetoothAlwaysUsageDescription -string "Connect a Switch 2 Pro Controller when enabled in Settings." $(IOS_APP)/Info.plist
 	@/usr/bin/plutil -insert UIApplicationSceneManifest -json '{"UIApplicationSupportsMultipleScenes":false,"UISceneConfigurations":{"UIWindowSceneSessionRoleApplication":[{"UISceneConfigurationName":"Default","UISceneDelegateClassName":"S2ASceneDelegate"}]}}' $(IOS_APP)/Info.plist   # iOS 27 场景生命周期（27.1 SDK 强制 UIScene adoption，否则启动即崩）：指向 app.m 的 S2ASceneDelegate
+	@[ "$(S2A_SHELLUI)" != 1 ] || /usr/bin/plutil -insert CFBundleURLTypes -json '[{"CFBundleURLName":"s2arm","CFBundleURLSchemes":["s2arm"]}]' $(IOS_APP)/Info.plist   # 主屏小组件点封面：s2arm://play/<游戏号>（app.m 场景代理交给游戏库「开始」）
+	@[ "$(S2A_SHELLUI)" != 1 ] || [ $(S2A_APPLE_OS) = tvos ] || $(MAKE) --no-print-directory ios-widget   # 主屏小组件只给 iPhone / iPad（tvOS 没有第三方主屏小组件；按 iOS 三元组编、tvOS SDK 下编不过）
 	@echo "iOS App：$(IOS_APP)（$$(du -sh $(IOS_APP) | cut -f1)，包名 $(IOS_BUNDLE)，未签名）"
 
 # NVN 查询测试共用完整生产 bootstrap / swnvn / NVN 跳板；保留签名检查，不提供测试替身。
@@ -225,7 +259,11 @@ NVN_TEST_WIDEN := $(NVN_TEST_DIR)/widen/S2Arm.Gfx.Widen.dylib
 $(BUILD)/tests/t_nvn_%: CFLAGS += -I$(abspath $(NVN_TEST_DIR)/nvn/gen)
 # NVN 单测不链原生层 / 渲染器：libnvn 里弱引用的宿主符号在链接行一律放行（新单测照用这个变量，别逐行抄标志——10-25 t_nvn_a / t_nvn_event 两次漏 _s2a_autoplay_on 链接失败）
 # Switch 2 视频解码接管（graphics/nvn/gfx/nvn/nvn2_codec.c，在 libnvn.a 里）用 VideoToolbox / CoreMedia / CoreVideo：系统框架，NVN 单测链 libnvn.a 时一起带上（同 graphics/build.mk HOST_LIBS）
-NVN_TEST_WEAK := $(call S2A_WEAK_U,nvntest) -framework VideoToolbox -framework CoreMedia -framework CoreVideo
+# 链宿主目标文件（NVN_TEST_HOST_OBJS）必带的系统框架：手机端自签（runtime/src/selfsign.c）要 Security 与 CoreFoundation（宿主本体的 HOST_LIBS 经 Foundation 转出 CoreFoundation，
+#   不带 Foundation 的单测也要链）；快照存档（runtime/src/snapshot.c）压缩内存块要 libcompression。没带上时这些单测全部链接失败
+#   （_SecPKCS12Import / _CFArrayGetCount / _compression_encode_buffer 等未定义）。宿主对象再加系统依赖就加在这里
+NVN_TEST_HOST_LIBS := -framework Security -framework CoreFoundation -lcompression
+NVN_TEST_WEAK := $(call S2A_WEAK_U,nvntest) -framework VideoToolbox -framework CoreMedia -framework CoreVideo $(NVN_TEST_HOST_LIBS)
 $(NVN_TEST_DIR)/host/%.o: % runtime/src/native.h $(wildcard runtime/include/*.h) platform/plat.h platform/plat_asm.h graphics/track/s2a_track.h $(BUILD)/.host_cfg
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(NATIVE_INC) -c $< -o $@

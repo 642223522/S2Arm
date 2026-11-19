@@ -13,6 +13,7 @@ mkdir -p $T/repo/pack $T/repo/tools $T/repo/graphics/nvn $T/repo/graphics/tools/
 cp "$H/pack/resource_input_key.py" $T/repo/pack/; cp "$H/pack/stage_keyfiles.sh" $T/repo/pack/; cp "$H/tools/stage_deps.py" $T/repo/tools/; cp -R "$H/tools/stage_deps_hook" $T/repo/tools/   # 各阶段实际读入进键（pack/stage_keyfiles.sh，10-30）
 # romfs_list.py：仓库里唯一的 RomFS 遍历（11-03），被测脚本经它列 RomFS
 mkdir -p $T/repo/graphics/nvn/tools; cp "$H/graphics/nvn/tools/romfs_list.py" $T/repo/graphics/nvn/tools/; cp "$H/graphics/nvn/tools/gfx_api.py" $T/repo/graphics/nvn/tools/   # 出包分流判法（假 main 不是 NSO → unknown，走 NVN 路径）
+mkdir -p "$T/repo/tools"; cp "$H/tools/pool_workers.py" "$T/repo/tools/"   # romfs_list / pak_crypto 经它取核数（#1332：核数唯一来源）
 cp "$H/pack/roots.sh" "$H/pack/stage_direct.sh" "$H/pack/ipa_key.sh" "$H/pack/pkg_srcs.py" "$H/pack/pkg_inputs_key.py" "$H/pack/ue_pak.py" $T/repo/pack/; cp "$H/tools/toolchain.sh" "$H/tools/toolchain.env" "$H/tools/machine.sh" "$H/tools/clonedir.py" "$H/tools/plock.sh" "$H/tools/flock_hold.py" $T/repo/tools/
 cp "$H/graphics/tools/shbake/pak_crypto.py" $T/repo/graphics/tools/shbake/
 for f in run_knowledge.py fout_want.py se_want.py run_pairs.py pso_layout.py pso_layout.json runtime_only_lib.sh runtime_only_lib.py; do cp "$H/graphics/tools/direct/$f" $T/repo/graphics/tools/direct/; done   # 跑局知识快照进键（审计 #1534 P1-54；来源 S2A_PSO_SOURCES 指空目录，键规则在 tests/stage_direct_knowledge_test.sh 核）
@@ -29,6 +30,8 @@ cat > $T/bin/xcrun <<'EOF'
 exit 1
 EOF
 chmod +x $T/bin/xcrun; export PATH=$T/bin:$PATH
+# 假 Xcode 目录（tools/toolchain.sh 先要选中一个存在的 Xcode 目录，再经上面的 xcrun 替身问 SDK / Metal 版本）：不依赖本机装没装 Xcode，Linux 门禁机同样走通
+mkdir -p $T/Xcode.app/Contents/Developer; export S2A_DEVELOPER_DIR=$T/Xcode.app/Contents/Developer
 cat > $T/repo/pack/stage_direct_profile.sh <<'EOF'
 [ "${FAKE_NOPROF:-0}" != 1 ] || { echo "【红】配置前置拒绝"; exit 3; }
 exit 0
@@ -173,8 +176,14 @@ ck "Vulkan 只出表头 → 退 0、现行 shaders/direct/vk/vk_shaders.tsv 在�
 
 # 启动器内置工具（S2A_PREBUILT_TOOLS，11-06）：调用方没给 DSX_LIB → 用内置的 dsx/libdsx.dylib、不现编（假仓库没有 graphics/dsx Makefile，现编必红）
 mkdir -p $T/pre/dsx && : > $T/pre/dsx/libdsx.dylib; rin 'echo pre > romfs/pre'
-o=$(env -u DSX_LIB S2A_PREBUILT_TOOLS=$T/pre bash $T/repo/pack/stage_direct.sh acnh 2>&1); r=$?
-ck "内置工具在 → DSX_LIB 取内置 libdsx、不现编（rc=${r}，实 $(tail -1 $T/calls.gal)）" '[ $r = 0 ] && [ "$(tail -1 $T/calls.gal)" = "$T/pre/dsx/libdsx.dylib" ]'
+#   内置的是 Mac 发版包里的 dsx/libdsx.dylib，只在 macOS 上用（stage_direct.sh 按 uname -s 分）；Linux 出包机（安卓目标）要 libdsx.so，照常现编——
+#   两种门禁机各测本平台那一支：macOS 取内置、不现编；Linux 不取内置、去现编（假仓库没有现编要的引擎目录 / graphics/dsx，现编第一步就红 → 退 1、不调出库）
+n0=$(calls); o=$(env -u DSX_LIB S2A_PREBUILT_TOOLS=$T/pre bash $T/repo/pack/stage_direct.sh acnh 2>&1); r=$?
+if [ "$(uname -s)" = Darwin ]; then
+  ck "内置工具在（macOS）→ DSX_LIB 取内置 libdsx、不现编（rc=${r}，实 $(tail -1 $T/calls.gal)；输出末尾 $(printf '%s' "$o" | tail -2 | tr '\n' ' ' | cut -c1-200)）" '[ $r = 0 ] && [ "$(tail -1 $T/calls.gal)" = "$T/pre/dsx/libdsx.dylib" ]'
+else
+  ck "内置工具在（Linux）→ 不取 Mac 的 libdsx.dylib、去现编 libdsx.so，假仓库现编红 → 退 1、【红】、不调出库（rc=${r}，出库 ${n0} → $(calls) 次；输出末尾 $(printf '%s' "$o" | tail -2 | tr '\n' ' ' | cut -c1-200)）" '[ $r = 1 ] && printf "%s" "$o" | grep -q "【红】" && [ "$(calls)" = "$n0" ]'
+fi
 
 _root_rm $T   # 现行 RomFS 存储整棵只读，裸 rm -rf 删不掉（pack/roots.sh）
 [ $bad = 0 ] && echo "直连库阶段单测：全通" || echo "直连库阶段单测：有不通"

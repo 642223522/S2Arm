@@ -37,10 +37,11 @@
 "cheats.status.execError" = "執行出錯";
 "cheats.status.gameNotLoaded" = "遊戲未載入";
 "cheats.status.modifiesCode" = "要修改遊戲程式碼，手機上匯入的用不了：在電腦上的 S2Arm 裡匯入這份 txt，再更新手機上的 S2Arm 就能用";
+"cheats.status.notPacked" = "要修改遊戲程式碼，這次出包沒編進去（同一模組的補丁太多等，原因見電腦上出包完成頁）";
 "cheats.status.off" = "關";
 "cheats.status.pending" = "等待生效…";
-"cheats.status.versionMismatch" = "版本不符";
-"cheats.status.versionMismatch.file" = "版本不符，不會生效";
+"cheats.status.versionMismatch" = "和當前遊戲版本不符，已停用";
+"cheats.status.versionMismatch.file" = "和當前遊戲版本不符，已停用（遊戲照常玩）";
 "cheats.title" = "金手指";
 "cheats.unnamed" = "未命名";
 "common.cancel" = "取消";
@@ -245,8 +246,8 @@
 "app.fpsCap.restored" = "60 幀已恢復。";
 "app.lowRam.title" = "這台裝置記憶體可能不夠";
 "app.lowRam.body" = "這款遊戲需要的記憶體比這台裝置多。照樣可以開始，但可能卡頓，或被系統關掉。";
-"app.gpuStop.body" = "請從背景滑掉本 App，再重新開啟遊戲。\nPlease reopen the game.";
-"app.gpuStop.title" = "畫面發生錯誤，已停止\nGraphics error — stopped";
+"app.gpuStop.body" = "從背景滑掉本 App 再開啟，一般能接著玩，存檔停在遊戲上次儲存的地方。想讓我們查原因，點「故障報修」把診斷傳給我們。";
+"app.gpuStop.title" = "遊戲卡住了，已經安全停下";
 "app.library.broken.title" = "遊戲資源不完整";
 "app.library.cantOpen" = "這款遊戲無法開啟";
 "app.library.cantOpen.message" = "啟動這款遊戲前的準備工作未完成。請從背景滑掉 App 後重新開啟再試；如果還是不行，請匯出診斷包傳給我們。";
@@ -304,6 +305,8 @@
 "img.scanFailed.title" = "無法匯入遊戲檔案";
 "img.noShaders.title" = "這個遊戲檔案不完整";
 "img.noShaders.body" = "「%@」不完整。請換成電腦上「S2Arm 自簽匯出」資料夾裡的「<遊戲名>.img」，或者在電腦的 S2Arm 裡連著手機點「推到手機」。";
+"img.updateSkipped.title" = "這份著色器更新已略過";
+"img.updateSkipped.body" = "「%@」和目前遊戲版本不配套，已略過、沒有套用。遊戲照常能玩；要用這份更新，請把電腦上同一次匯出的完整 .img 和它一起放進來。";
 "container.locked.title" = "S2Arm 的部分檔案被系統鎖住了";
 "container.locked.body" = "這台裝置上有 %@ GB 的 S2Arm 舊檔案被系統鎖住，S2Arm 改不了也刪不掉，只能刪除 App 時一起清掉。\n\n要騰出這些空間：\n1. 在每款遊戲裡打開選單 →「存檔管理」→「匯出目前存檔…」，存到「檔案」裡 S2Arm 資料夾以外（例如 iCloud 雲碟；刪除 App 時 S2Arm 資料夾會一起被刪）\n2. 刪除並重新安裝 S2Arm\n3. 用「存檔管理」→「選擇備份並檢查…」匯回存檔";
 "diag.fileWord" = "診斷";
@@ -313,7 +316,7 @@
 "diag.error.zip" = "打包失敗（寫入 zip 時出錯，可能是手機空間不足）";
 "diag.export" = "匯出診斷包";
 "diag.prompt.abnormalExit" = "上次 S2Arm 沒有正常結束（當機、卡住或被系統關閉）";
-"diag.prompt.imlLost" = "上次 S2Arm 沒有正常結束。這次安裝遺失了「提高記憶體上限」權限，玩大型遊戲時結束多半是記憶體不足：在電腦上的 S2Arm 點「裝到 iPhone」重新安裝（免費 Apple ID 也會帶上這項權限）；自己簽署的話用 Xcode 或 AltStore Classic v2.3，SideStore 0.7.0 重新簽署會遺失；已經裝好的也可以用 GetMoreRam 為 App ID 補上權限後重新安裝";
+"diag.prompt.imlLost" = "上次 S2Arm 沒有正常結束。這次安裝遺失了「提高記憶體上限」權限，玩大型遊戲時結束多半是記憶體不足。依你安裝 S2Arm 的方式補上：\n· 電腦上的 S2Arm（免費或付費 Apple ID）：對這款遊戲點「裝到 iPhone」重裝一次；重裝後還看到這則提示，就用下面的 GetMoreRam 補上，再點一次「裝到 iPhone」。\n· 自己的開發者憑證（.p12 + 描述檔）：在蘋果開發者網站替 S2Arm 的 App ID（蘋果替每個 App 登記的身分）開啟「Increased Memory Limit」，重新產生描述檔，用新描述檔重簽再裝。\n· AltStore：用 AltStore Classic 2.2 或更新版重新安裝（不是重新整理）。\n· SideStore 0.7.0：簽署會遺失這項權限，用下面的 GetMoreRam 補上後，在 SideStore 裡重新安裝。\n· Sideloadly：暫不支援，它沒說免費帳號會保留這項權限，自訂權限要付費開發者帳號。\n· GetMoreRam：用安裝 S2Arm 的同一個 Apple ID 把它自簽裝到手機（佔免費帳號一個 App 名額，用完可刪），登入後開啟 App IDs、點重新整理、選 S2Arm、點「Add Increased Memory Limit」，再用原來的方式重裝 S2Arm。";
 "diag.prompt.crash" = "系統回報上次 S2Arm 當機或卡住了";
 "diag.prompt.message" = "%@。會上傳執行紀錄、當機紀錄和遊戲用過的圖形管線清單（只有著色器編號），不會上傳存檔、金鑰和遊戲檔案；上傳完成後會給你一組短碼。";
 "diag.prompt.no" = "不用了";
@@ -341,6 +344,8 @@
 "dprompt.expiry.hours" = "約 %d 小時";
 "dprompt.expiry.lessThanHour" = "不到 1 小時";
 "dprompt.expiry.title" = "簽署即將到期";
+"dprompt.input.bad.body" = "這局先用預設按鍵照常開始（%@）。";
+"dprompt.input.bad.title" = "按鍵設定沒讀懂";
 "dprompt.ns2pro.body" = "四指長按螢幕 1.5 秒開啟設定，開啟「啟用 Switch 2 Pro 手把」，再按手把上的配對鍵。";
 "dprompt.ns2pro.title" = "要使用 Switch 2 Pro 手把嗎？";
 "dprompt.motion.title" = "體感操作";
@@ -360,7 +365,8 @@
 "gfx.fpsLimit" = "幀率上限";
 "gfx.fpsLimit.none" = "不限";
 "gfx.resolution" = "渲染解析度";
-"iml.lost.body" = "大型遊戲可能會記憶體不足而閃退或變慢。在電腦上的 S2Arm 點「裝到 iPhone」重新安裝（免費 Apple ID 也會帶上這項權限）；自己簽署的話用 Xcode 或 AltStore Classic v2.3，SideStore 0.7.0 重新簽署會遺失；已經裝好的也可以用 GetMoreRam 為 App ID 補上權限後重新安裝。";
+"iml.lost.body" = "大型遊戲可能會記憶體不足而閃退或變慢。依你安裝 S2Arm 的方式補上：\n· 電腦上的 S2Arm（免費或付費 Apple ID）：對這款遊戲點「裝到 iPhone」重裝一次；重裝後還看到這則提示，就用下面的 GetMoreRam 補上，再點一次「裝到 iPhone」。\n· 自己的開發者憑證（.p12 + 描述檔）：在蘋果開發者網站替 S2Arm 的 App ID（蘋果替每個 App 登記的身分）開啟「Increased Memory Limit」，重新產生描述檔，用新描述檔重簽再裝。\n· AltStore：用 AltStore Classic 2.2 或更新版重新安裝（不是重新整理）。\n· SideStore 0.7.0：簽署會遺失這項權限，用下面的 GetMoreRam 補上後，在 SideStore 裡重新安裝。\n· Sideloadly：暫不支援，它沒說免費帳號會保留這項權限，自訂權限要付費開發者帳號。\n· GetMoreRam：用安裝 S2Arm 的同一個 Apple ID 把它自簽裝到手機（佔免費帳號一個 App 名額，用完可刪），登入後開啟 App IDs、點重新整理、選 S2Arm、點「Add Increased Memory Limit」，再用原來的方式重裝 S2Arm。";
+"iml.lost.short" = "大型遊戲可能會記憶體不足而閃退。點「了解詳情」看怎麼重新簽署帶上這項權限。";
 "iml.lost.title" = "這次安裝遺失了「提高記憶體上限」權限";
 "lan.denied.later" = "以後再說";
 "lan.denied.message" = "系統沒有允許「%@」尋找區域網路中的裝置，連線遊玩時找不到其他玩家。\n\n請到「設定 › 隱私權與安全性 › 區域網路」，開啟「%@」，再回來重新進入連線遊玩。";
@@ -436,6 +442,16 @@
 "save.restoreCancelled" = "已取消回復。";
 "save.restored" = "存檔已回復。可開始遊戲檢查進度；回復前備份已保留（先前沒有存檔時不會產生備份）。";
 "save.serviceInvalid" = "存檔服務沒有傳回有效結果。請關閉後重新開啟 App，現有資料會保留。";
+"save.previous.ask.title" = "這款上次沒能正常讀取存檔，要回到上一份存檔嗎？";
+"save.previous.ask.crash" = "上一局一開始就退出了。回到上一份後也能隨時換回來。";
+"save.previous.ask.guard" = "上一局保存時有一次存檔沒核對上。回到上一份後也能隨時換回來。";
+"save.previous.ask.restore" = "回到上一份";
+"save.previous.ask.start" = "照常開始";
+"save.previous.done.title" = "已回到上一份存檔";
+"save.previous.done" = "可以隨時換回來：在齒輪選單的「存檔管理」裡點「換到上一份」。";
+"save.previous.done.ok" = "好";
+"save.previous.button" = "換到上一份";
+"save.previous.detail" = "和上一次保存前的那份互換，再點一次就換回來。";
 "save.start" = "開始遊戲";
 "save.leave" = "退出（下次開啟直接進遊戲）";
 "save.status.hasSave" = "目前的存檔可以匯出。匯入時會先檢查遊戲版本、帳號歸屬和檔案完整性，再由你確認回復。";
@@ -572,3 +588,15 @@
 "sgrade.cpatch.detail" = "社群修補檔明細";
 "sgrade.state.off_auto.widen_fit" = "已自動關：%1$@ 滿螢幕沒鋪滿或畫面被拉伸";
 "sgrade.notice.fullscreen_off" = "S2Arm 通用滿螢幕這局沒成功，已自動關掉，遊戲照常玩。想再試可以在齒輪選單裡重新打開。";
+
+/* 0.6.0 快照：游戏中菜单 */
+"vpad.snap.save" = "存下這一刻";
+"vpad.snap.restore" = "回到上次存下的這一刻";
+"vpad.snap.saving" = "正在存下這一刻…";
+"vpad.snap.saved" = "已存下這一刻";
+"vpad.snap.notSaved" = "這次沒存成，稍後再試一次";
+"vpad.snap.busy" = "還在存上一次，稍等";
+"vpad.snap.restoreFailed" = "這次回不去：%@";
+"vpad.snap.saveChanged.title" = "回到存下的那一刻？";
+"vpad.snap.saveChanged.body" = "存下那一刻之後遊戲又存過檔。回去會把遊戲存檔也退回那一刻；現在的存檔會先備份。";
+"vpad.snap.saveChanged.go" = "回去";

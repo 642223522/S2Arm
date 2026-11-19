@@ -1,5 +1,7 @@
+using Ryujinx.Audio.Common;
 using System;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace Ryujinx.Audio.Renderer.Dsp
 {
@@ -77,6 +79,43 @@ namespace Ryujinx.Audio.Renderer.Dsp
             {
                 output[i] = ConvertSampleToPcmFloat(input[i]);
             }
+        }
+
+        // S2Arm: guest samples → PCM16, the inverse of ConvertSampleToPcm8 / 32 / Float (the most significant 16 bits; float × 32767,
+        //   saturated). PcmInt24 has no guest source here (audsmx streams store it in 4 bytes with an unknown layout; refused there)
+        public static ReadOnlySpan<short> DecodeToPcm16(SampleFormat format, ReadOnlySpan<byte> input, Span<short> output)
+        {
+            switch (format)
+            {
+                case SampleFormat.PcmInt8:
+                    ReadOnlySpan<sbyte> s8 = MemoryMarshal.Cast<byte, sbyte>(input);
+                    output = output[..s8.Length];
+                    for (int i = 0; i < s8.Length; i++)
+                    {
+                        output[i] = (short)(s8[i] << 8);
+                    }
+                    break;
+                case SampleFormat.PcmInt32:
+                    ReadOnlySpan<int> s32 = MemoryMarshal.Cast<byte, int>(input);
+                    output = output[..s32.Length];
+                    for (int i = 0; i < s32.Length; i++)
+                    {
+                        output[i] = (short)(s32[i] >> 16);
+                    }
+                    break;
+                case SampleFormat.PcmFloat:
+                    ReadOnlySpan<float> f32 = MemoryMarshal.Cast<byte, float>(input);
+                    output = output[..f32.Length];
+                    for (int i = 0; i < f32.Length; i++)
+                    {
+                        output[i] = ConvertSampleToPcmInt16(f32[i]);
+                    }
+                    break;
+                default:
+                    throw new NotImplementedException($"Decoding {format} guest samples to PCM16 not implemented.");
+            }
+
+            return output;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

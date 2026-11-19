@@ -1,0 +1,48 @@
+diff --git a/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs b/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
+index 6612c020c0086dae7c9794bada1a6f96c5d0fd0c..c74b75b4de4f9880220bc48be4676db04681b4d5 100644
+--- a/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
++++ b/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
+@@ -39,13 +39,6 @@ namespace Ryujinx.Graphics.Shader
+         /// </summary>
+         bool QueryBindlessPhiSeeThrough() => false;
+ 
+-        /// <summary>
+-        /// S2A（直连）：追不到槽的句柄回退数组（BindlessElimination）里，贴图缓冲与图像的数组长度：直连宿主按槽绑它们（nvn_mtl.m TEXD，tex_dyn_slots），
+-        /// 采样贴图照池长（宿主按句柄的编号建池表，nvn_mtl.m pool_gpu）。上游参考实现（MIT）BindlessElimination NvnSlotArrayLength 同此分法。
+-        /// 0 = 与采样贴图一样按池长（上游 Ryujinx 原样）：只有直连翻译器答 32，通用模式缺省 0，输出不变。
+-        /// </summary>
+-        int QueryBindlessSlotArrayLength() => 0;
+-
+         /// <summary>
+         /// S2A：特化状态运行时化（点大小、DepthMode、alpha 测试、绘制参数来源、贴图坐标归一化改读支持缓冲 s2a_flags / s2a_point）。缺省 = 进程开关
+         /// TranslatorContext.S2ARuntimeState（通用模式，S2A_RUNTIME_STATE=0 关）；直连翻译器答假：直连宿主不填这几个字段，编成运行时判断只会多读多分支。
+diff --git a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/BindlessElimination.cs b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/BindlessElimination.cs
+index 0a53062237399eac128d1ce978507c1d7f1d2161..a585e2b4b0163360368dd498f96b7602fa392c91 100644
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/BindlessElimination.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/BindlessElimination.cs
+@@ -80,12 +80,10 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+             block.Operations.AddBefore(node, new Operation(Instruction.BitwiseAnd, textureHandle, bindlessHandle, OperandHelper.Const(0xfffff)));
+             block.Operations.AddBefore(node, new Operation(Instruction.ShiftRightU32, samplerHandle, bindlessHandle, OperandHelper.Const(20)));
+ 
+-            // S2A（直连）：采样贴图（非贴图缓冲）按整个池长、宿主按编号建池表；贴图缓冲与图像按槽绑，数组长 QueryBindlessSlotArrayLength（0 = 也按池长，上游原样）。
+-            //   上游参考实现（MIT）BindlessElimination pooled / NvnSlotArrayLength 同此分法
+-            int slotArrayLength = gpuAccessor.QueryBindlessSlotArrayLength();
+-            bool pooled = slotArrayLength <= 0 || (!texOp.Inst.IsImage() && (texOp.Type & SamplerType.Mask) != SamplerType.TextureBuffer);
+-
+-            int texturePoolLength = pooled ? Math.Max(BindlessToArray.MinimumArrayLength, gpuAccessor.QueryTextureArrayLengthFromPool()) : slotArrayLength;
++            // S2A（直连）：采样贴图、贴图缓冲、图像一律按整个池长，宿主按编号建池表（iOS nvn_mtl.m pool_gpu 按元素类型分表：采样 / 贴图缓冲 / 可写图像）。
++            //   原先贴图缓冲与图像按 32 槽绑（QueryBindlessSlotArrayLength，上游参考实现 pooled / NvnSlotArrayLength 的分法），宿主只能把 c2 里的句柄改成槽号；
++            //   句柄从存储缓冲 / 游戏 uniform 缓冲等别处读来时改不到，写进 / 读出的是槽里碰巧放着的那张（一款双人合作游戏 119 支计算着色器贴图缓冲写）
++            int texturePoolLength = Math.Max(BindlessToArray.MinimumArrayLength, gpuAccessor.QueryTextureArrayLengthFromPool());
+ 
+             block.Operations.AddBefore(node, new Operation(Instruction.MinimumU32, textureIndex, textureHandle, OperandHelper.Const(texturePoolLength - 1)));
+ 
+@@ -107,7 +105,7 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+             {
+                 Operand samplerIndex = OperandHelper.Local();
+ 
+-                int samplerPoolLength = pooled ? Math.Max(BindlessToArray.MinimumArrayLength, gpuAccessor.QuerySamplerArrayLengthFromPool()) : slotArrayLength;
++                int samplerPoolLength = Math.Max(BindlessToArray.MinimumArrayLength, gpuAccessor.QuerySamplerArrayLengthFromPool());
+ 
+                 block.Operations.AddBefore(node, new Operation(Instruction.MinimumU32, samplerIndex, samplerHandle, OperandHelper.Const(samplerPoolLength - 1)));
+ 

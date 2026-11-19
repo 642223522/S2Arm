@@ -212,6 +212,7 @@ final class EngineProviderSettingsAndRunTests: XCTestCase {
         XCTAssertNil(req["docked"])
         XCTAssertEqual(req["uiLanguage"] as? String, "en")
         XCTAssertNil(req["widescreen"])
+        XCTAssertNil(req["launchFullscreen"])   // #575：设置里没开「启动游戏时自动全屏」就不带
         testQueue.sync {}
         provider.control(RunningGame(gameId: "0100A", taskId: "not-this-one"), .stop)
         XCTAssertEqual(runner.handles[0].terminated, 0)
@@ -220,6 +221,20 @@ final class EngineProviderSettingsAndRunTests: XCTestCase {
         XCTAssertEqual(runner.handles[0].terminated, 1)
         XCTAssertEqual(log.kinds, ["stage", "result"])
         XCTAssertEqual(log.events.last?.fields["state"] as? String, "cancelled")
+    }
+
+    /// #575：设置里开了「启动游戏时自动全屏」，起局请求带 launchFullscreen: true（作业层据此给宿主全局缺省）
+    func testRunCarriesLaunchFullscreenWhenTheSettingIsOn() throws {
+        let box = try Sandbox(); defer { box.remove() }
+        let runner = FakeRunner()
+        runner.script = { _ in ([eventLine("stage", message: "游戏运行中")], 0, true) }
+        let provider = S2ArmEngineProvider(client: client(box, runner), xcodeLocator: { nil })
+        try provider.settings.setLaunchFullscreen(true)
+        let running = try provider.run(InstalledGame(gameId: "0100A", name: "Alpha"), settings: Settings(), events: .discard)
+        let req = try XCTUnwrap(runner.starts.first?.request)
+        XCTAssertEqual(req["launchFullscreen"] as? Bool, true)
+        testQueue.sync {}
+        provider.control(running, .stop)
     }
 
     func testCapabilitiesDeclareBothTargets() throws {
@@ -319,5 +334,15 @@ final class EnvironmentAndInstallTests: XCTestCase {
         _ = try await provider.install(gameId: "0100A", teamId: "ABCDE12345", device: "测试 iPhone")
         XCTAssertEqual(runner.starts[3].request["device"] as? String, "测试 iPhone")
         XCTAssertEqual(runner.starts[3].request["teamId"] as? String, "ABCDE12345")
+    }
+
+    func testLaunchArgumentsForwardsXboxGipRelaySocket() {
+        let withRelay = S2ArmEngineProvider.launchArguments(Settings(values: [
+            "switch2ProAutoConnect": "0",
+            "xboxGipRelaySocket": "/tmp/s2a-xbox-test.sock",
+        ]))
+        XCTAssertEqual(withRelay["xboxGipRelaySocket"] as? String, "/tmp/s2a-xbox-test.sock")
+        let withoutRelay = S2ArmEngineProvider.launchArguments(Settings(values: ["switch2ProAutoConnect": "0"]))
+        XCTAssertNil(withoutRelay["xboxGipRelaySocket"])
     }
 }

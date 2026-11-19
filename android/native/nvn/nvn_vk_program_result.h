@@ -56,8 +56,17 @@ struct fd_binding {
     // kind==2 且 tex_ubo = 1：贴图句柄不在槽里，在用户常量缓冲 tex_u 处（_b.json tex_ubo / tbuf_ubo）。此时 tex_slot = -1。
     //   samp_src = 组合采样的采样器从哪来：FD_SAMP_UBO = 常量缓冲 samp_u 处的字；FD_SAMP_ID = 常量采样器号 samp_val；
     //   FD_SAMP_SLOT = NVN 采样器槽 samp_val；FD_SAMP_NONE = 着色器没有采样器半边
+    // kind==2 且 tex_ubo = 0、tex_slot >= 128、samp_src = FD_SAMP_ID（#1594，v2 的 constSampler）：贴图字在 c2 分离贴图表，
+    //   采样器池下标 samp_val（0..4095）是着色器里的立即数；samp_slot 仍为 -1。回放的采样器号 = 贴图字高 12 位 | 池下标（Ryujinx ReadPackedId，字高位为 0 时就是池下标）。
+    // kind==2 且 pool != 0：整池数组（追不到槽的句柄回退，编译结果 "pool"）。1 = 贴图池（只是贴图半边）、2 = 采样器池（只是采样器半边），
+    //   count = 池长（2..65534，不受 FD_MAX_ARRAY_ELEMENTS 限制），slot / tex_slot / samp_slot 都没有。宿主映射到 NVN_RB_TEXP / NVN_RB_SAMPP
+    uint8_t pool;
+    // kind==2 且 tex_ubo = 1、samp_src = FD_SAMP_ID、samp_pool = 1（#1594 片 3，v2 的 constSampler 配平铺的 uboSlot / uboOffset）：贴图字在游戏 UBO 的 tex_u 处，
+    //   采样器池下标 samp_val（0..4095）同上是着色器里的立即数，回放按「（贴图字高 12 位 | 池下标）+ 当前采样器池起点」取采样器。
+    //   samp_pool = 0 的 FD_SAMP_ID（离线库 {"source":"id"}）是宿主登记的采样器号原值（iOS 口径），不加池起点——两种口径不混。
     uint8_t tex_ubo, samp_src;
     uint16_t samp_val;
+    uint8_t samp_pool;
     struct fd_ubo_word tex_u, samp_u;
     int16_t ubo_slot;         // kind==0 的 NVN 用户槽（cbuf - 3，clamp 到 0）
     uint8_t is_support;       // kind==0 且 stage=="program"（SupportBuffer）
