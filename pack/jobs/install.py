@@ -584,7 +584,10 @@ def usb_mbps(udid, env=None):
 SIGN_ERRORS = (
     (r"等钥匙串授权超时", "keychain_prompt"),   # pack/ensure_profile.sh：第一次签名的钥匙串框没人点（11-08 Spare-host 实测）  # 非玩家句
     (r"Xcode 看不到这台 iPhone，账号上也还没登记它|has no devices from which to generate", "device_not_visible"),   # pack/ensure_profile.sh 兜底后核出描述文件不含这台 / 账号一台设备都没有（11-16）  # 非玩家句
-    (r"needs to be unlocked|device is locked|Unlock the device", "device_locked"),   # 10-26 测试设备2 锁屏：xcodebuild 等不到目的设备超时
+    (r"needs to be unlocked|device is locked|Unlock the device", "device_locked"),
+    # 电脑连不上手机的开发者通道（CoreDevice 4016：要的「服务已加载 / 可信远程连接 / 电源断言」一项都给不了，CurrentlyAssertableStates 为空）：
+    #   开发者模式开着、也配过对，多见于手机走 Wi-Fi 连着时（#1578 D-43MF：transport=localNetwork、tunnel=disconnected、ddi=False，连续 3 次）。不是没解锁
+    (r"CoreDeviceError error 4016|usage assertion requirements", "device_tunnel_unavailable"),   # 10-26 测试设备2 锁屏：xcodebuild 等不到目的设备超时
     # 免费 Apple ID 有两个不同的上限，原文措辞能分开，办法也不同：
     #   ① 包名（App ID）额度：签名前向 Apple 注册包名时被拒，Apple 错误 9120，Xcode 原文
     #      「Your maximum App ID limit has been reached. You may create up to 10 App IDs every 7 days.」——
@@ -607,6 +610,9 @@ SIGN_ERRORS = (
     (r"No Account for Team|No accounts|not logged in|Your session has expired", "xcode_account_missing"),
     (r"No signing certificate|No certificate for team|Signing certificate is invalid|doesn't include signing certificate", "signing_certificate_missing"),
 )
+
+
+TUNNEL_RETRY_S = 10   # 开发者通道没连上（4016）时再装一次之前等的秒数
 
 
 def classify(text, default="signing_failed"):
@@ -1927,6 +1933,11 @@ def sign_and_install(c, ipa, team, dev, udid, bid, games, steps=True):
             pull_seen(c, dev["id"], bid, g, udid or dev["id"], docs=game_docs(g))
             backup_saves(c, dev["id"], bid, g, docs=game_docs(g))
         rc, _, err = devicectl(c, "device", "install", "app", "--device", dev["id"], str(app), timeout=1800)
+        if rc and classify(err, default="") == "device_tunnel_unavailable":
+            # 开发者通道这一下没建起来（Wi-Fi 连着时常见）：等 10 秒原样再装一次，两次都不行才报
+            note(c, "iPhone 的开发者通道没连上（CoreDevice 4016）：10 秒后再装一次")  # 非玩家句
+            time.sleep(TUNNEL_RETRY_S)
+            rc, _, err = devicectl(c, "device", "install", "app", "--device", dev["id"], str(app), timeout=1800)
         if rc and PROFILE_REJECTED in err and not devcert.active(c):
             # 11-17 #1447 / #1448：手机说这次签名用的描述文件不能用（0xe8008015）——本机核得出的几项都过了、手机仍不认（证书在别处被换掉 / 吊销、
             #   描述文件被别的工具改过等）：把这次用过的描述文件挪开（不删），按 0.5.1 的做法向 Xcode 申请一份新的、重签、再装一次；仍不认照常报
