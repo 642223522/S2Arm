@@ -330,7 +330,6 @@ void nvn_snap_fps(snap_fp_cb cb) {
     if (gl_snap_fps) gl_snap_fps(cb);   // GL 出图层（egl.m）
     if (vk_snap_fps) vk_snap_fps(cb);   // Vulkan 出图层（vk_snap.inc）
 }
-// 弱链接[nvntest]：s2a_snap_progress（runtime/src/snapshot.c 存档看门狗；GL / 图形单测不链运行时）
 void s2a_snap_progress(const char *layer) __attribute__((weak));
 #define SNAP_AT(s) do { if (s2a_snap_progress) s2a_snap_progress(s); } while (0)
 int nvn_snap_save(const char *dir) {
