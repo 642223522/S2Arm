@@ -216,10 +216,20 @@ namespace S2A.Services
 
         // ---------- 会话表（cookie = 下标 + 1） ----------
 
+        // 即时存档重放：这条请求建的会话按存档时的 cookie 放（SnapLog.SessionCookiesOf）；那格被占了就照常按先后分配（重放会点名对不上的会话）
+        internal Queue<ulong> SnapForceCookies;
+
         internal ulong AddSession(SessionTarget target)
         {
             lock (_sessionLock)
             {
+                if (SnapForceCookies is { Count: > 0 } fq)
+                {
+                    ulong want = fq.Dequeue();
+                    while (want > (ulong)_sessions.Length) Array.Resize(ref _sessions, _sessions.Length * 2);
+                    if (want > 0 && _sessions[want - 1] == null) { _sessions[want - 1] = target; _sessionCount++; return want; }
+                    Console.Error.WriteLine($"[s2a] 【黄】即时存档恢复：会话按原 cookie {want} 放，那格已被占，按先后分配");
+                }
                 for (int n = 0; n < _sessions.Length; n++)
                 {
                     int i = (_freeHint + n) % _sessions.Length;

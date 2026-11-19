@@ -562,7 +562,7 @@ namespace S2A.Services
                 Dispatcher d = Dispatcher.Instance;
                 byte[] all = ReqLog.Load(File.ReadAllBytes(Marshal.PtrToStringUTF8((IntPtr)path)));   // 分块压缩的解开；旧快照原样
                 Ryujinx.HLE.S2AHooks.SnapReplayUndo.Clear(); Ryujinx.HLE.S2AHooks.SnapReplaying = true;
-                Dictionary<int, int[]> outIds = OutIdsOf(all); int forcedLeft = 0; Ryujinx.HLE.S2AHooks.SnapForceDomainIdMiss = 0;
+                Dictionary<int, int[]> outIds = OutIdsOf(all); Dictionary<int, ulong[]> outCookies = SessionCookiesOf(all); int forcedLeft = 0; Ryujinx.HLE.S2AHooks.SnapForceDomainIdMiss = 0;
                 var r = new BinaryReader(new MemoryStream(all));
                 long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
                 while (r.BaseStream.Position < r.BaseStream.Length)
@@ -570,7 +570,8 @@ namespace S2A.Services
                     uint kind = r.ReadUInt32(); int seq = r.ReadInt32(); if (seq > _maxSeq) _maxSeq = seq;
                     if (kind == EntMeta) break;   // 末尾的元数据：不是请求
                     s2a_snap_replay_begin(seq);
-                    if (kind == EntConnect) { d.SnapConnect(); s2a_snap_replay_end(seq); n++; continue; }
+                    d.SnapForceCookies = outCookies.TryGetValue(seq, out ulong[] wantc) ? new Queue<ulong>(wantc) : null;
+                    if (kind == EntConnect) { d.SnapConnect(); d.SnapForceCookies = null; s2a_snap_replay_end(seq); n++; continue; }
                     if (kind == EntFailed) { s2a_snap_replay_end(seq); skipped++; continue; }   // 当时失败的：不重放，这条之后的关闭照常
                     if (kind == EntObjs) { int c = r.ReadInt32(); r.BaseStream.Seek(4L * c, SeekOrigin.Current); continue; }   // 已在预扫里取走
                     uint num = r.ReadUInt32(); ulong cookie = r.ReadUInt64(); long cmd = r.ReadInt64(); string name = r.ReadString();
@@ -611,6 +612,7 @@ namespace S2A.Services
                     bool tipc = (*(uint*)msgAddr & 0xFFFF) >= 0x10;   // 处理前看请求头的类型（处理完缓冲已是应答）
                     uint rc = d.SnapRequest(num, cookie, (byte*)msgAddr, size);
                     forcedLeft += Ryujinx.HLE.S2AHooks.SnapForceDomainIds?.Count ?? 0; Ryujinx.HLE.S2AHooks.SnapForceDomainIds = null;
+                    forcedLeft += d.SnapForceCookies?.Count ?? 0; d.SnapForceCookies = null;
                     if (rc != 0) { bad++; if (bad <= 20) Console.Error.WriteLine($"[s2a] 【黄】即时存档恢复：重放第 {seq} 条 {name}#{(uint)cmd} 回 0x{rc:X}"); }
                     else if (ReplyResult((byte*)msgAddr, size, tipc) is uint cr && cr != 0)
                     {   // 日志里的都是 A 当时成功的（失败的记成 EntFailed 不重放）：B 里回了错误码 = 两边状态分岔，点名这条（后面对象号可能跟着错位）
@@ -649,6 +651,31 @@ namespace S2A.Services
                 if (kind == EntMeta) break;
                 if (kind == EntReq) SkipEntryBody(r);
                 else if (kind == EntObjs) { int c = r.ReadInt32(); var ids = new int[c]; for (int i = 0; i < c; i++) ids[i] = r.ReadInt32(); m[seq] = ids; }
+            }
+            return m;
+        }
+        // 每条请求建出的会话在存档时的 cookie（元数据里「建出的对象」中对象号 0 的那些）。日志按活对象收过：中间开了又关的会话不在了，
+        //   重放时按先后分配的 cookie 会比存档时小，后面发给原 cookie 的请求就找不到会话——重放这条时让它建的会话用回原 cookie（Dispatcher.SnapForceCookies）。
+        //   旧快照没有元数据：日志是全的，按先后分配本来就对得上
+        private static Dictionary<int, ulong[]> SessionCookiesOf(byte[] all)
+        {
+            var m = new Dictionary<int, ulong[]>(); var r = new BinaryReader(new MemoryStream(all));
+            while (r.BaseStream.Position < r.BaseStream.Length)
+            {
+                uint kind = r.ReadUInt32(); int seq = r.ReadInt32();
+                if (kind == EntMeta)
+                {
+                    int ne = r.ReadInt32();
+                    for (int i = 0; i < ne; i++)
+                    {
+                        int s = r.ReadInt32(); r.ReadUInt64(); r.ReadInt32(); int nc = r.ReadInt32(); var cs = new List<ulong>();
+                        for (int j = 0; j < nc; j++) { ulong c = r.ReadUInt64(); int obj = r.ReadInt32(); if (obj == 0) cs.Add(c); }
+                        if (cs.Count > 0) m[s] = cs.ToArray();
+                    }
+                    break;
+                }
+                if (kind == EntReq) SkipEntryBody(r);
+                else if (kind == EntObjs) { int c = r.ReadInt32(); r.BaseStream.Seek(4L * c, SeekOrigin.Current); }
             }
             return m;
         }
