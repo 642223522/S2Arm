@@ -190,7 +190,7 @@ class Ed25519Tests(unittest.TestCase):
 class VersionTests(Base):
     def release(self, tag):
         names = (updater.ASSETS["mac"], updater.MANIFEST, updater.SIGNATURE)
-        version = tag[1:] if tag.count(".") == 2 and "-" not in tag else "0.0.0"
+        version = tag[1:] if updater.version_key(tag) else "0.0.0"   # 测试版 tag 的签名清单版本同 tag（11-19）
         raw, signature = signed(version, {updater.ASSETS["mac"]: {"sha256": "0" * 64, "size": 1}})
         release = {"tag_name": tag, "assets": [{"name": n, "size": 1, "browser_download_url": "https://github.com/" + n} for n in names]}
         answers = {updater.API: json.dumps(release).encode(), "https://github.com/" + updater.MANIFEST: raw, "https://github.com/" + updater.SIGNATURE: signature}
@@ -212,6 +212,39 @@ class VersionTests(Base):
         for tag, current, available in (("v0.1.2", "0.1.1", True), ("v0.10.0", "0.9.9", True), ("v0.1.1", "0.1.1", False), ("v0.1.0", "0.1.1", False), ("v0.2.0-beta", "0.1.1", False), ("v0.2.0", "", False)):
             with self.subTest(tag=tag, current=current), self.release(tag), patch.object(updater, "PUBLIC_KEY", key), patch.dict(os.environ, {"S2A_UPDATE_API": ""}):
                 self.assertEqual(updater.latest("mac", current)["available"], available)
+
+    def test_prerelease_install_gets_the_same_numbered_release(self):
+        """11-19：0.6.0 测试包装的是 0.6.0-test.N，正式 0.6.0 发布时要算更新（同号预发布 < 正式）；更高号的测试版不被旧正式版「更新」回去"""
+        key = ed25519.public_key(TEST_SECRET).hex()
+        for tag, current, available in (("v0.6.0", "0.6.0-test.1", True), ("v0.6.0", "0.6.0-test.12", True), ("v0.5.9", "0.6.0-test.1", False),
+                                         ("v0.6.0", "0.6.1-test.1", False), ("v0.6.1", "0.6.0-test.3", True), ("v0.6.0", "0.6.0", False)):
+            with self.subTest(tag=tag, current=current), self.release(tag), patch.object(updater, "PUBLIC_KEY", key), patch.dict(os.environ, {"S2A_UPDATE_API": ""}):
+                self.assertEqual(updater.latest("mac", current)["available"], available)
+
+    def test_release_players_never_get_prereleases(self):
+        """11-19 维护者：正式渠道永远不推预发布——本机是正式版时预发布一律不算更新（哪怕按语义版本更大）；本机是测试版时才看预发布。
+        GitHub 回退与官网清单两条路都核"""
+        key = ed25519.public_key(TEST_SECRET).hex()
+        cases = (("v0.6.0-test.1", "0.5.8", False), ("v0.6.0", "0.5.8", True), ("v0.6.0-test.2", "0.6.0-test.1", True),
+                 ("v0.6.0-test.1", "0.6.0-test.2", False), ("v0.6.1-test.1", "0.6.0", False))
+        for tag, current, available in cases:
+            with self.subTest(path="GitHub", tag=tag, current=current), self.release(tag), patch.object(updater, "PUBLIC_KEY", key), patch.dict(os.environ, {"S2A_UPDATE_API": ""}):
+                self.assertEqual(updater.latest("mac", current)["available"], available)
+            manifest = {"version": tag[1:], "files": {updater.ASSETS["mac"]: {"sha256": "0" * 64, "size": 1}}}
+            with self.subTest(path="官网", tag=tag, current=current), patch.object(updater, "mirror_manifest", return_value=manifest), patch.dict(os.environ, {"S2A_UPDATE_API": ""}):
+                info = updater.query_latest("mac", current)
+                self.assertEqual(info["available"], available)
+                if available:
+                    self.assertEqual(info["version"], tag[1:])
+
+    def test_version_key_orders_like_semver(self):
+        order = ["0.5.9", "0.6.0-test.1", "0.6.0-test.2", "0.6.0-test.10", "0.6.0-test.x", "0.6.0", "0.6.1-test.1", "0.6.1", "0.10.0"]
+        keys = [updater.version_key(v) for v in order]
+        self.assertTrue(all(keys), keys)
+        self.assertEqual(keys, sorted(keys))
+        self.assertEqual(updater.version_key("v0.6.0"), updater.version_key("0.6.0"))
+        for bad in ("", "0.6", "0.6.0-", "0.6.0-te st", "x0.6.0"):
+            self.assertIsNone(updater.version_key(bad), bad)
 
     def test_official_build_ignores_the_test_key(self):
         with patch.dict(os.environ, {"S2A_UPDATE_API": "", "S2A_UPDATE_PUBKEY": "00" * 32}):

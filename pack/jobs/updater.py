@@ -58,6 +58,31 @@ def version_tuple(text):
     return tuple(int(n) for n in match.groups()) if match else None
 
 
+_SEMVER = re.compile(r"v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*))?")
+
+
+def version_key(text):
+    """比新旧用的键（语义版本 2.0.0 的先后）：X.Y.Z 或 X.Y.Z-预发布段（如 0.6.0-test.1）；认不出 → None。
+    同号的预发布排在正式版之前（0.6.0-test.1 < 0.6.0）、预发布段逐段比（数字段按数、数字段先于字母段）：
+    装了测试版的人能收到同号正式版，正式版之间照旧；正式版玩家看不看预发布见 newer"""
+    m = _SEMVER.fullmatch((text or "").strip())
+    if not m:
+        return None
+    pre = m[4]
+    ids = tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in pre.split(".")) if pre else ()
+    return (int(m[1]), int(m[2]), int(m[3]), 0 if pre else 1, ids)
+
+
+def newer(candidate, current):
+    """更新源里的 candidate 要不要给本机 current：要比它新，且正式版玩家只收正式版——
+    本机是正式版（0.5.8）时预发布版（0.6.0-test.1）一律不算更新，哪怕按语义版本更大（正式渠道永远不推测试版，11-19 维护者）；
+    本机是测试版时正式版和更新的测试版都收（0.6.0-test.1 → 0.6.0-test.2 / 0.6.0）"""
+    c, m = version_key(candidate), version_key(current)
+    if not c or not m or c <= m:
+        return False
+    return c[3] == 1 or m[3] == 0
+
+
 def trusted(url):
     """正式版只从 GitHub 下载；S2A_UPDATE_API 是验收用的本机假 Release，设了才放开。"""
     import urllib.parse
@@ -150,7 +175,7 @@ def signed_manifest(assets, tag_version):
     if not ed25519.verify(public_key(), raw, signature):
         raise UpdateError("update_bad_signature", "新版的签名校验没通过，已停止，当前版本没有变化。")
     manifest = json.loads(raw)
-    if version_tuple(manifest.get("version")) != tag_version or not isinstance(manifest.get("files"), dict):
+    if version_key(manifest.get("version")) != version_key(tag_version) or not isinstance(manifest.get("files"), dict):
         raise UpdateError("update_bad_signature", "新版的清单和发布版本对不上，已停止，当前版本没有变化。")
     return manifest
 
@@ -214,7 +239,7 @@ def mirror_manifest():
         manifest = json.loads(raw)
     except (UpdateError, OSError, http.client.HTTPException, ValueError):
         return None
-    return manifest if isinstance(manifest, dict) and version_tuple(manifest.get("version")) and isinstance(manifest.get("files"), dict) else None
+    return manifest if isinstance(manifest, dict) and version_key(manifest.get("version")) and isinstance(manifest.get("files"), dict) else None
 
 
 def offer(platform, version, mine, files, url_of, notes=None):
@@ -223,15 +248,16 @@ def offer(platform, version, mine, files, url_of, notes=None):
     （11-11 维护者：原先按签名不对报 update_bad_signature，只发一个平台时另一平台的老用户每次启动都看到错误）。
     清单本身验签不过、清单与发布版本对不上、下载下来的包与清单校验值不符，仍各自报错（signed_manifest / prepare）"""
     name = ASSETS[platform]
+    version = version.removeprefix("v") if isinstance(version, str) else ".".join(map(str, version))   # 版本号字串（可带预发布段）或旧的数字三元组
     wanted = files.get(name)
     if not isinstance(wanted, dict):
-        print(f"更新：{'.'.join(map(str, version))} 的签名清单里没有 {name}（这一版没给本平台出包），按没有新版处理", file=sys.stderr)
+        print(f"更新：{version} 的签名清单里没有 {name}（这一版没给本平台出包），按没有新版处理", file=sys.stderr)
         return {"available": False}
-    info = {"available": True, "version": ".".join(map(str, version)), "size": wanted["size"], "sha256": wanted["sha256"],
+    info = {"available": True, "version": version, "size": wanted["size"], "sha256": wanted["sha256"],
             "asset": url_of(name), "assetName": name}
     if notes_valid(notes):   # 这版给玩家看的更新说明（签过名的清单里带的，见 notes_from_markdown）
         info["notes"] = notes_valid(notes)
-    delta = DELTAS[platform].format(".".join(map(str, mine)))
+    delta = DELTAS[platform].format(mine if isinstance(mine, str) else ".".join(map(str, mine)))   # mine：本机版本（字串原样，测试版 0.6.0-test.1 没有差分包、走整包）
     entry = files.get(delta)
     if isinstance(entry, dict) and url_of(delta):   # 差分包同样要在清单里，不在就只走整包
         info.update(delta=url_of(delta), deltaName=delta, deltaSize=entry["size"], deltaSha256=entry["sha256"])
@@ -242,28 +268,28 @@ def query_latest(platform, current):
     """→ {available, version, ...}。只提供严格更高的版本（防降级）；校验值和大小都取自签过名的清单，不信 Release 页面。
     先查官网（mirror_manifest）：验签通过就以它为准——不比当前新就是没有新版，不再去问 GitHub（省下的正是限流的那 60 次）；
     官网拿不到 / 验签不过才查 GitHub Release。"""
-    mine = version_tuple(current)
+    mine_name = (current or "").strip().removeprefix("v")   # 本机可以是测试版（0.6.0-test.1）：比新旧见 newer
     manifest = mirror_manifest()
     if manifest is not None:
-        version = version_tuple(manifest["version"])
-        if not mine or version <= mine:
+        version = str(manifest["version"]).strip().removeprefix("v")
+        if not newer(version, current):
             return {"available": False}
         template = os.environ.get("S2A_UPDATE_API") and os.environ.get("S2A_UPDATE_DOWNLOAD") or RELEASE_DOWNLOAD   # 假 Release 验收时下载也指到本机
-        v = ".".join(map(str, version))
-        info = offer(platform, version, mine, manifest["files"], lambda name: template.format(version=v, name=name), manifest.get("notes"))
+        v = version
+        info = offer(platform, version, mine_name, manifest["files"], lambda name: template.format(version=v, name=name), manifest.get("notes"))
         # 安装包先走官方域名（R2）、GitHub 当退路；假 Release 验收只认 S2A_UPDATE_R2，没设就不走（单测不连真网）
         r2 = os.environ.get("S2A_UPDATE_R2", "") if os.environ.get("S2A_UPDATE_API") else R2_DOWNLOAD
         if info.get("available") and r2:
             info.update(asset=r2.format(version=v, name=info["assetName"]), assetFallback=info["asset"])
         return info
     release = json.loads(fetch(os.environ.get("S2A_UPDATE_API") or API, 15, 8 << 20))
-    version = version_tuple(release.get("tag_name"))
+    version = str(release.get("tag_name") or "").strip().removeprefix("v")
     assets = {a.get("name"): a for a in release.get("assets") or [] if isinstance(a, dict)}
     package = assets.get(ASSETS[platform])
-    if not version or not mine or version <= mine or not package or MANIFEST not in assets or SIGNATURE not in assets:
+    if not newer(version, current) or not package or MANIFEST not in assets or SIGNATURE not in assets:
         return {"available": False}
     manifest = signed_manifest(assets, version)
-    return offer(platform, version, mine, manifest["files"], lambda name: assets[name]["browser_download_url"] if name in assets else None, manifest.get("notes"))
+    return offer(platform, version, mine_name, manifest["files"], lambda name: assets[name]["browser_download_url"] if name in assets else None, manifest.get("notes"))
 
 
 NOTICE_URL = "https://jhaizhou-ops.github.io/S2Arm/notice.json"   # docs/site/notice.json，Pages 发布（docs/site/README.md）

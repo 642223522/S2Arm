@@ -421,7 +421,7 @@ def _release_tag_numbers(engine):
     exact = numbers(git("describe", "--tags", "--exact-match", "HEAD"))
     if exact:
         return exact
-    found = [n for n in (numbers(t) for t in git("tag", "-l", "v[0-9]*").split()) if n]
+    found = [n for n in (numbers(t) for t in git("tag", "-l", "v[0-9]*").split() if "-test" not in t) if n]   # 测试版 tag（v0.6.0-test.1）不算发版号：正式 0.6.0 发布前开发版仍显示 0.5.x（11-19）
     return max(found, key=lambda n: tuple(int(x) for x in n.split(".")), default="")
 
 
@@ -455,6 +455,9 @@ def display_version(engine):
     tag = git("describe", "--tags", "--exact-match", "HEAD") or ""
     if not dirty and re.fullmatch(r"v?" + re.escape(short), tag):
         return f"v{short}"
+    pre = re.fullmatch(r"v?" + re.escape(short) + r"-([0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)", tag) if not dirty else None
+    if pre:   # 测试版 tag（11-19：0.6.0 测试包 v0.6.0-test.1）：界面显示带 test 的完整版本号，同 Mac build_app.py
+        return f"v{short}-{pre[1]}"   # 版本字里的 test 字样就是测试版标记（版本字中英文界面共用，不夹中文）
     return f"v{short}-dev+{commit[:7]}"
 
 

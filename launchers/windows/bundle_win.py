@@ -166,9 +166,9 @@ def bundle(target, shell, tzdata, fonts, tv_shell=None):
     say("[组装] 社区补丁快照：" + ("已放进 CommunityPatches" if not why else f"🟡 {why}，本版启动器不带本地补丁库"))
     # 覆盖更新读这个版本号：最近的发版 tag（同 Mac build_app 的 CFBundleShortVersionString）
     tag = subprocess.check_output(["git", "-C", str(ROOT), "describe", "--tags", "--abbrev=0"], text=True).strip()
-    match = re.fullmatch(r"v?(\d+\.\d+\.\d+)", tag)
+    match = re.fullmatch(r"v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?)", tag)   # 测试版 v0.6.0-test.1 原样写（更新器按语义版本比：测试版 < 同号正式版，11-19）
     if not match:
-        raise SystemExit(f"【红】最近的 tag {tag} 不是 vX.Y.Z，发版前要先打 tag")
+        raise SystemExit(f"【红】最近的 tag {tag} 不是 vX.Y.Z（或测试版 vX.Y.Z-test.N），发版前要先打 tag")
     (target / "version.txt").write_text(match[1] + "\n", encoding="ascii")
     # 给玩家的 AI 用：控制客户端、手册（同 Mac build_app）；用随包 Python 跑，玩家不用另装
     shutil.copy2(ROOT / "launchers/macos/s2armctl.py", target / "s2armctl.py")
