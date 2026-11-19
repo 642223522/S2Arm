@@ -253,7 +253,7 @@ fi
 
 # 临时目录：离线容器里（带 S2A_VULKAN_IMAGE_ID）放容器自己的 /tmp，不放宿主挂进来的 /src（macOS colima 的 virtiofs）。
 # 放 /src 时整套大编译（存储缓冲窗口等夹具十几个源文件、-g）的 cc 临时文件间歇报「cannot open /src/build/vk-tests/cc*.s for writing:
-# Permission denied」（11-19 Air 上三次，都在同一处），而且走 virtiofs 写也慢；各夹具的产出目录跑完即删，不需要留在仓库里。
+# Permission denied」（11-19 Mac 构建机上三次，都在同一处），而且走 virtiofs 写也慢；各夹具的产出目录跑完即删，不需要留在仓库里。
 if [ -n "${S2A_VULKAN_IMAGE_ID:-}" ]; then vk_tmp=/tmp/s2a-vk-tests; else vk_tmp="$repo/build/vk-tests"; fi
 mkdir -p "$vk_tmp"
 export TMPDIR="$vk_tmp"
