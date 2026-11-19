@@ -42,7 +42,7 @@ P=$W/shaders/direct/pipelines; rm -rf "$P"
 o=$("$PY" "$R/graphics/tools/direct/cs_pipelines.py" "$W/shaders/direct" "$P" --plat "$PLAT" --os "$OSV" $(printf -- '--arch %s ' $ARCHS) --cache "$C/store/cpso" -j "${J:-$(getconf _NPROCESSORS_ONLN)}" 2>&1); rc=$?
 if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then root_abort "$G" "$TAG"; soft "cs_pipelines.py 退出 ${rc}：$(tail -1 <<< "$o" | cut -c1-200)"; fi
 NOTE=; [ "$rc" = 3 ] && NOTE="；🟡 有支没编成，照旧首遇现编（$(grep -c '^【黄】计算管线' <<< "$o") 条示例见日志）"
-[ -z "$OTHER" ] || NOTE="$NOTE；🟡 目标对另有系统大版本 ${OTHER}：一个归档文件同一架构只装一个大版本，那些设备照旧首遇现编"
+[ -z "$OTHER" ] || NOTE="${NOTE}；🟡 目标对另有系统大版本 ${OTHER}：一个归档文件同一架构只装一个大版本，那些设备照旧首遇现编"
 stage_deps_save "$W" direct_cpso "$KB" "$SELF" > "$W/.stage_direct_cpso" || { root_abort "$G" "$TAG"; exit 1; }
 ROOT_REPLAY='shaders/direct/pipelines .stage_direct_cpso .stage_direct_cpso.deps' root_commit "$G" "$TAG" || exit 1
 grep '^【黄】' <<< "$o" | head -8
