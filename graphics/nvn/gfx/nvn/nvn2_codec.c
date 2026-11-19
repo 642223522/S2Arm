@@ -1561,7 +1561,7 @@ __attribute__((constructor)) static void snap_slot_range(void) { if (s2a_snap_ha
 
 // 即时存档：本文件按整块存的宿主结构的布局指纹（snapfmt.h；不同 = 布局变了，恢复拒绝）
 #include "../../../../runtime/src/snapfmt.h"
-void nvn2_codec_snap_fps(void (*cb)(const char *name, uint64_t fp)) {
+void nvn2_codec_snap_fps(snap_fp_cb cb) {
     cb("codec.ctr", SNAP_FP_OF(g_ctr[0])); cb("codec.slot", SNAP_FP_OF(g_slot[0])); cb("codec.img", SNAP_FP_OF(g_img[0])); cb("codec.cvp", SNAP_FP_OF(g_cvp[0]));
     cb("codec.cvdec", SNAP_FP_TYPE(cvdec));
 }

@@ -205,7 +205,7 @@ int gl_prog_snap_save(FILE *f); int gl_prog_snap_restore(FILE *f);
 int gl_fb_snap_save(FILE *f); int gl_fb_snap_restore(FILE *f);
 int gl_draw_snap_save(FILE *f); int gl_draw_snap_restore(FILE *f);
 int gl_snap_drain(void);
-typedef void (*gl_fp_cb)(const char *name, uint64_t fp);   // 按整块存的小结构的布局指纹（snapfmt.h SNAP_FP_*；快照引擎恢复前逐个比）
+typedef snap_fp_cb gl_fp_cb;   // 按整块存的小结构的布局指纹 + 完整布局（snapfmt.h SNAP_FP_*；快照引擎恢复前逐个比）
 void gl_tex_snap_fps(gl_fp_cb cb); void gl_fb_snap_fps(gl_fp_cb cb);
 void gl_buf_snap_handout(void); uint64_t gl_buf_snap_map(const char *id);   // gl_buf.m：映射着的缓冲指针按身份登记 / 恢复时按身份建存储回新地址                                  // gl_draw.m：提交本层在途命令、等 GPU 与完成回调都结束
 const char *gl_snap_str(const char *id);                  // gl_fb.m：glGetString / glGetStringi 交出的串按身份找回本进程的（"<名>:<es>" / "i:<号>"）

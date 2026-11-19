@@ -49,6 +49,7 @@ static int s2a_frames(uint64_t fp, uint64_t *lr, int max) {
     while (k < max && fp && !(fp & 7) && frame_read(fp, rec) && rec[1]) { lr[k++] = rec[1]; if (rec[0] <= fp) break; fp = rec[0]; }   // 返回地址 0 = 链尾（不可读页经内核读出全 0 也落在这里）
     return k;
 }
+int s2a_frames_of(uint64_t fp, uint64_t *lr, int max) { return s2a_frames(fp, lr, max); }   // 别处取帧链用（只读内存、不分配、不取锁：可在挂住别的线程时调）
 // 指令原文（#368：没有原件的款崩在游戏代码里，日志只有地址，定不了空指针是哪次调用的返回值、写的哪个字段）：
 //   a 前 before 条、后 after 条 32 位指令字（内存里的，即改写后真正跑的那份），a 那条用 [ ] 标出；经内核读（同 frame_read），不可读写「读不到」。
 //   离线用任意 AArch64 反汇编器就能读，不需要游戏原件；每处几十字节，不是游戏内容。信号里可调（不分配、不取锁）

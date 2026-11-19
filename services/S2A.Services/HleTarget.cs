@@ -229,6 +229,11 @@ namespace S2A.Services
                         Invoke(ctx, tipc);
                     }
                 }
+
+                if (domain && response.ObjectIds.Count > 0)
+                {
+                    SnapLog.OutObjects(response.ObjectIds);   // 即时存档：这条请求交出的域对象号（恢复重放时按原号分配）
+                }
             }
             catch (ServiceNotImplementedException e)
             {
