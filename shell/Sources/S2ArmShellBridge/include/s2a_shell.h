@@ -106,6 +106,10 @@ void s2a_shell_report_problem(void);
 int s2a_shell_snapshot_available(const char *game_id);
 /// Starts the game back at its saved moment (asks first when the game saved after that moment). The shell's weak stub does nothing.
 void s2a_shell_restore_snapshot(const char *game_id);
+/// The folder of the game's complete snapshot into `out` (0), or -1: no snapshot, snapshots off, or `out` too small. The shell's weak stub says -1.
+int s2a_shell_snapshot_dir(const char *game_id, char *out, unsigned long size);
+/// Deletes the game's snapshot with its picture and manifest, freeing the space: 0 done, -1 not (or nothing to delete). Weak stub -1.
+int s2a_shell_delete_snapshot(const char *game_id);
 
 #ifdef __cplusplus
 }

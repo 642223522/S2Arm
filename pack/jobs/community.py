@@ -637,6 +637,9 @@ def launch_env(c, gid):
         env["S2A_RES_SCALE"] = str(s["resolutionScale"])
     if str(s.get("fpsLimit") or "0") != "0":
         env["S2A_FPS"] = str(s["fpsLimit"])
+    # 即时快照（0.6.0，同 iPhone S2ASnapshot，ios/settings.m）：宿主苹果端缺省开（runtime/src/snapsw.c），只有玩家明确关才写 0；没选过不写
+    if s.get("snapshot") is False:
+        env["S2A_SNAP_MODE"] = "0"
     if "docked" in s:
         env["S2A_DOCKED"] = "1" if s["docked"] == "docked" else "0"
     if s.get("language", "system") != "system":

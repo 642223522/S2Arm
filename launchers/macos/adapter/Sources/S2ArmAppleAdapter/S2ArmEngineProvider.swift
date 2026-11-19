@@ -253,6 +253,11 @@ public final class S2ArmEngineProvider: EngineProvider {
     }
 
     /// 打 iPhone 包的目标设备探测（targetDevice 作业）：connected / models / osChoices；quick 只给静态机型表、不读设备。
+    /// 已连接的安卓手机（androidDevices 作业，adb devices -l）→ {enabled, adb, devices: [{serial, state, model}]}；enabled = 安卓出包开没开。
+    public func androidDevices() async throws -> [String: Any] {
+        try await client.perform("androidDevices").result
+    }
+
     public func targetDevices(quick: Bool = false) async throws -> [String: Any] {
         try await client.perform("targetDevice", extra: quick ? ["quick": true] : [:]).result
     }
@@ -312,9 +317,6 @@ public final class S2ArmEngineProvider: EngineProvider {
                                     widget: settings.homeWidget, cloudSaves: settings.cloudSavesFolder, events: events)
     }
 
-    public func exportPush(gameId: String?, device: String? = nil, events: EventSink = .discard) async throws -> [String] {
-        try await installer.exportPush(gameId: gameId, device: device, events: events)
-    }
     public func installMode() async throws -> InstallModeInfo { try await installer.installMode() }
     /// 0.6.0 通用壳（开关后面）的快速比对「建议更新」（作业 updateHints，pack/jobs/host_update.py）：每款只读 game.json。
     ///   开关关着 → nil（界面什么都不出）；开着 → 游戏号（大写）→ 原因（rewriter / hostAbi / shader），没对不上的款不在表里
@@ -331,7 +333,7 @@ public final class S2ArmEngineProvider: EngineProvider {
     }
     public func updateHints() async throws -> [String: [String]]? {
         let r = try await client.perform("updateHints").result
-        guard r["enabled"] as? Bool == true else { return nil }
+        guard r["games"] is [Any] else { return nil }
         var out: [String: [String]] = [:]
         for g in r["games"] as? [[String: Any]] ?? [] {
             if let id = g["gameId"] as? String, let why = g["reasons"] as? [String], !why.isEmpty { out[id.uppercased()] = why }

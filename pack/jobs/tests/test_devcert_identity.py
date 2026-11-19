@@ -100,7 +100,7 @@ class DevcertDelivery(unittest.TestCase):
         self.c = types.SimpleNamespace(r={}, logs=self.t, private=str(self.t), task="t1")
 
     def run_deliver(self, ph, active=True, ident=IDENT, **k):
-        with patch.object(program_pack, "enabled", lambda c: True), patch.object(install.layout, "load_device", lambda c, key: dict(self.store.get(key, {}))), \
+        with patch.object(install.layout, "load_device", lambda c, key: dict(self.store.get(key, {}))), \
                 patch.object(install.layout, "save_device", lambda c, key, rec: self.store.__setitem__(key, rec)), \
                 patch.object(install.devcert, "active", lambda c: active), patch.object(install.devcert, "team", lambda c: {"id": "TEAM-CERT"}), \
                 patch.object(install.devcert, "folder", lambda c: self.t), patch.object(install.devcert, "identity", lambda c: ident), \
@@ -147,7 +147,7 @@ class DevcertDelivery(unittest.TestCase):
         def bad(c):
             raise Failure("读不出", code="devcert_invalid")
         ph, _ = self.mac_phone()
-        with patch.object(program_pack, "enabled", lambda c: True), patch.object(install.layout, "load_device", lambda c, key: {}), \
+        with patch.object(install.layout, "load_device", lambda c, key: {}), \
                 patch.object(install.devcert, "active", lambda c: True), patch.object(install.devcert, "team", lambda c: {"id": "TEAM-CERT"}), \
                 patch.object(install.devcert, "folder", lambda c: self.t), patch.object(install.devcert, "identity", bad), \
                 patch.object(install, "trace", lambda *a, **kw: None):
@@ -169,11 +169,6 @@ class DevcertDelivery(unittest.TestCase):
                 with patch.object(install, "same_app", lambda *a, s=same: s):
                     install.install_shell(self.c, ph, steps=False)
         self.assertEqual(seen, ["install", "deliver", "deliver"])
-
-    def test_job_switch_off(self):
-        with patch.object(program_pack, "enabled", lambda c: False):
-            self.assertEqual(install.phone_identity(self.c), dict(enabled=False))
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Windows 一键出包（Windows 出包机道，11-05 维护者「大游戏在 windows 上编，不用在 Mac 上挤」）：原件 → 解包 → 八个轻阶段 → 抽取 + 直连库 → 产物，全在本机。
 
-  python -X utf8 -m pack.orch.oneclick_win <原件目录 | Switch 2 导出目录 | .nup> --out <工作目录> [--target ios|mac]
+  python -X utf8 -m pack.orch.oneclick_win <原件目录 | Switch 2 导出目录 | .nup> --out <工作目录> [--target ios|mac|android] [--install-serial <安卓序列号>]
          [--title-id <程序号>] [--bundle-id <包名>] [--shell <预编壳目录>] [--jobs N] [--install <手机 UDID> [--name <桌面显示名>]]
   python -X utf8 -m pack.orch.oneclick_win --check [--target ios|mac] [--shell <壳目录>]    只做环境自检（一行一项，缺件退 75）
     启动器客户端不读这里：读 pack/jobs/winenv.py --json（统一开始前检查，出包件这几项就取本文件 env_items）
@@ -730,6 +730,25 @@ def Early(run, a, cur, game):
     return early.Overlap(build, install)
 
 
+def android(run, cur, serial=None):
+    """--target android：同 Mac 一键出包的安卓段（pack/oneclick/oneclick.sh）——package.py 用预编引擎 APK 组装（S2A_ANDROID_ENGINE，
+    启动器随发版带的 Binaries/Android/engine；Windows 上没有 Gradle 路径），给了 --install-serial 就接着 deploy_game.py 装到那台手机（S2A_ADB）。
+    → (apk, 资源包, 账本)"""
+    run.step('安卓出包', lambda: run.sh([PY, '-X', 'utf8', str(R / 'pack/targets/android/package.py'), '--root', str(cur), '--out', str(run.out)], 'android.log'))
+    try:
+        delivery = json.loads((run.out / 'android.log').read_text(encoding='utf-8').strip().splitlines()[-1])
+        apk, res, art = Path(delivery['apk']), Path(delivery['resources']), Path(delivery['artifact'])
+    except (OSError, ValueError, KeyError, IndexError) as e:
+        raise Fail(f'安卓出包没报告交付物（android.log）：{e}') from None
+    if not (apk.is_file() and (res / 'manifest.json').is_file() and art.is_file()):
+        raise Fail('安卓交付不完整')
+    if serial:
+        run.say(f'装到手机 {serial}：手机上弹出安装确认（如「未经安全检测」）时，勾选并点「继续安装」；同款旧包签名不同时要先在手机上卸载')
+        run.step('安装与导入', lambda: run.sh([PY, '-X', 'utf8', str(R / 'android/tools/deploy_game.py'), '--apk', str(apk), '--resources', str(res),
+                                           '--serial', serial, '--no-start'], 'android-install.log', cwd=R / 'android/tools'))
+    return apk, res, art
+
+
 def install(run, a, ipa_path, pk):   # --install：签名装机 + 推资源包（pack/orch/install_win.py）
     from pack.orch import install_win
     ns = argparse.Namespace(ipa=str(ipa_path), pack=str(pk), udid=a.install, name=a.name, plumesign=a.plumesign, devpush=a.devpush, full=False,
@@ -811,13 +830,17 @@ def main(argv=None):
     for s in (sys.stdout, sys.stderr):
         if hasattr(s, 'reconfigure'): s.reconfigure(encoding='utf-8')
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('source', nargs='*'); ap.add_argument('--out'); ap.add_argument('--target', choices=('ios', 'mac'), default='ios')
+    ap.add_argument('source', nargs='*'); ap.add_argument('--out'); ap.add_argument('--target', choices=('ios', 'mac', 'android'), default='ios')
     ap.add_argument('--title-id'); ap.add_argument('--bundle-id'); ap.add_argument('--shell'); ap.add_argument('--jobs', type=int, default=cores())
     ap.add_argument('--check', action='store_true'); ap.add_argument('--from-extract'); ap.add_argument('--events')
     ap.add_argument('--rt-shaders', metavar='DIR')   # 内部验证包：真机转储的着色器并进解包目录（put_rt）；不给 = 不带（缺省行为不变）
     ap.add_argument('--install', metavar='UDID'); ap.add_argument('--name'); ap.add_argument('--suffix'); ap.add_argument('--plumesign'); ap.add_argument('--devpush')
+    ap.add_argument('--install-serial', metavar='SERIAL')   # 安卓：出好装到这台手机（adb 序列号）
     a = ap.parse_args(argv)
     if a.install and a.target != 'ios': ap.error('--install 只用于 --target ios')
+    if a.install_serial and a.target != 'android': ap.error('--install-serial 只用于 --target android')
+    if a.target == 'android':   # 同 pack/oneclick/oneclick.sh：各阶段按安卓出（改写目标、出库平台），宽屏不自动跑
+        os.environ.update(S2A_PACK_PLAT='android', S2A_TARGET='android', S2A_WIDEN_AUTO_RUN='0')
     items = env_items(a.target, a.shell)
     bad = [i for i in items if not i[1]]
     if a.check:
@@ -850,6 +873,11 @@ def main(argv=None):
         if WIN: host_decoder_gate(run, x); glslc_gate(run, x)
         game = 't' + tid.lower()
         cur = stages(run, game, x, src_dir, own=not a.from_extract)   # 本单自己解的包（下次解包整目录重建）：播种整目录搬 RomFS；--from-extract 是别人的目录，照旧克隆
+        if a.target == 'android':
+            apk, res, art = android(run, cur, a.install_serial)
+            run.say(f'🟢 {tid} 安卓包 → {apk} + 资源包 {res}；合计 {time.time() - t0:.0f} 秒')
+            run.ev('result', ok=True, apk=str(apk), pack=str(res), artifact=str(art), aoc_missing=aoc_missing(cur), elapsed=int(time.time() - t0))
+            return 0
         early = Early(run, a, cur, game).start() if a.install and a.target == 'ios' else None
         dlib = direct(run, cur, a.target, a.jobs, tid)
         w = run.step('组工作根', lambda: product(run, cur, dlib))

@@ -85,6 +85,7 @@ struct PortraitLibrary: View, Equatable {
                             }.padding(.top, 8)
                         }
                     }
+                    SavedMomentStrip(games: games, axis: .horizontal, short: short).padding(.top, short ? 6 : 14)
                     collection.padding(.top, short ? 6 : 14)
                     recent.padding(.top, 34)
                 }.padding(.bottom, 28 + (wide ? bottomInset : 0))
@@ -157,6 +158,13 @@ struct PortraitLibrary: View, Equatable {
         return Button { rowSelecting = !chosen; select(detail.id) } label: {
             VStack(alignment: .leading, spacing: 0) {
                 CoverView(game: detail.game, showsState: true)
+                    .overlay(alignment: .topTrailing) {   // 有存下的时刻：右上角一个小角标（入口在上面「从这一刻继续」那一条）
+                        if detail.game.moment != nil {
+                            Image(systemName: "record.circle").font(.system(size: 10, weight: .semibold)).foregroundStyle(.white)
+                                .frame(width: 20, height: 20).background(.black.opacity(0.55), in: Circle()).padding(6)
+                                .accessibilityLabel(ShellStrings.text("Continue from this moment"))
+                        }
+                    }
                     .shellTarget("lib.tile.\(detail.id)") { primary(detail) }
                 HStack(spacing: 6) {
                     if detail.game.showsNewNote { NewDot(size: 7) }
