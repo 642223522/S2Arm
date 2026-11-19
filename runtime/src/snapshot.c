@@ -608,7 +608,7 @@ uint64_t s2a_snap_scratch_map(uint64_t n); void s2a_snap_scratch_unmap(uint64_t 
 static uint64_t scratch_pick(uint64_t n) { return s2a_snap_scratch_map(n); }
 static void scratch_done(uint64_t a, uint64_t n) { s2a_snap_scratch_unmap(a, n); }
 static int load_mem(const char *dir, uint64_t *raw_out) {
-    char p[2048]; snprintf(p, sizeof p, "%s/mem.bin", dir); int fd = open(p, O_RDONLY); if (fd < 0) return -1;
+    double t_lm0 = now_s(); char p[2048]; snprintf(p, sizeof p, "%s/mem.bin", dir); int fd = open(p, O_RDONLY); if (fd < 0) return -1;
     struct stat st; fstat(fd, &st); uint8_t *m = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0); close(fd);
     if (m == MAP_FAILED) return -1;
     typedef struct { uint64_t a, n, cl; const uint8_t *d; } rec_t; rec_t *rv = NULL; int nr = 0, cap = 0; uint64_t off = 0, raw = 0;
@@ -618,25 +618,37 @@ static int load_mem(const char *dir, uint64_t *raw_out) {
         if (nr == cap) { cap = cap ? cap * 2 : 4096; rv = realloc(rv, sizeof *rv * (size_t)cap); }
         rv[nr++] = (rec_t){a, n, cl, m + off + 24}; off += 24 + cl; raw += n;
     }
-    // 不可写的页先放开写（模块只读段等），写完还原
-    int fixed = 0;
+    // 不可写的页先放开写（模块只读段等；经文件写的记录也照放，之后回填宿主地址槽等仍经映射写），权限账最后收回。顺带认出整段落在文件后备窗口里的记录（vawin.c：窗口整段 MAP_SHARED 映射在后备文件偏移 0）：
+    //   这些记录不经映射写，直接 pwrite 进后备文件——经映射写每个 16 KB 页都要走一次文件缺页（11-17 iPhone 大金刚强制文件后备：3115 MB 页内容 1.98 s，
+    //   同机大乱斗匿名内存 1040 MB 0.26 s）。页缓存与映射是同一份（统一缓冲区），写进文件后经映射读到的就是新内容
+    int gfd = s2a_guest_fd();
+    uint8_t *viaf = calloc((size_t)nr + 1, 1); uint64_t *foff = calloc((size_t)nr + 1, 8);
+    int fixed = 0, nviaf = 0; uint64_t bviaf = 0;
+    // 后备文件的 VM 对象号：另映射它一页取 VM_REGION_TOP_INFO 的 obj_id（同一文件的各处映射是同一个对象；匿名 / 挖回匿名的段是别的对象）。
+    //   不能看基本信息里的 shared：那只对别名（vm_remap）置位，普通 MAP_SHARED 文件映射是 0（Mac 实测）
+    unsigned fobj = 0;
+    if (gfd >= 0) { void *v = mmap(NULL, 0x4000, PROT_READ, MAP_SHARED, gfd, 0);
+        if (v != MAP_FAILED) { vm_address_t r = (vm_address_t)v; vm_size_t sz = 0; vm_region_top_info_data_t ti; mach_msg_type_number_t cnt = VM_REGION_TOP_INFO_COUNT; mach_port_t o;
+            if (vm_region_64(mach_task_self(), &r, &sz, VM_REGION_TOP_INFO, (vm_region_info_t)&ti, &cnt, &o) == KERN_SUCCESS && r == (vm_address_t)v) fobj = ti.obj_id;
+            munmap(v, 0x4000); } }
     for (int i = 0; i < nr; i++) {
         vm_address_t r = rv[i].a; vm_size_t sz = 0; vm_region_basic_info_data_64_t bi; mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t o;
-        if (vm_region_64(mach_task_self(), &r, &sz, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&bi, &cnt, &o) != KERN_SUCCESS || r > rv[i].a) { LOG("【红】即时存档恢复：页 %#llx 在 B 里没有映射", (unsigned long long)rv[i].a); munmap(m, (size_t)st.st_size); free(rv); return -1; }
-        if (!(bi.protection & VM_PROT_WRITE) || r + sz < rv[i].a + rv[i].n) { if (mprotect((void *)rv[i].a, rv[i].n, PROT_READ | PROT_WRITE)) { LOG("【红】即时存档恢复：页 %#llx 放不开写（errno %d）", (unsigned long long)rv[i].a, errno); munmap(m, (size_t)st.st_size); free(rv); return -1; } fixed++; }
+        if (vm_region_64(mach_task_self(), &r, &sz, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&bi, &cnt, &o) != KERN_SUCCESS || r > rv[i].a) { LOG("【红】即时存档恢复：页 %#llx 在 B 里没有映射", (unsigned long long)rv[i].a); munmap(m, (size_t)st.st_size); free(rv); free(viaf); free(foff); return -1; }
+        // 经文件写的条件：整条记录在同一段里、这段映射的 VM 对象就是后备文件；文件偏移 = 段偏移 + 段内位移（窗口里 = 地址 − 窗口基址，别名段是源页的偏移）
+        if (fobj && r + sz >= rv[i].a + rv[i].n) { vm_address_t r2 = rv[i].a; vm_size_t sz2 = 0; vm_region_top_info_data_t ti; mach_msg_type_number_t c2 = VM_REGION_TOP_INFO_COUNT; mach_port_t o2;
+            if (vm_region_64(mach_task_self(), &r2, &sz2, VM_REGION_TOP_INFO, (vm_region_info_t)&ti, &c2, &o2) == KERN_SUCCESS && r2 == r && ti.obj_id == fobj) {
+                viaf[i] = 1; foff[i] = bi.offset + (rv[i].a - r); nviaf++; bviaf += rv[i].n; } }
+        if (!(bi.protection & VM_PROT_WRITE) || r + sz < rv[i].a + rv[i].n) { if (mprotect((void *)rv[i].a, rv[i].n, PROT_READ | PROT_WRITE)) { LOG("【红】即时存档恢复：页 %#llx 放不开写（errno %d）", (unsigned long long)rv[i].a, errno); munmap(m, (size_t)st.st_size); free(rv); free(viaf); free(foff); return -1; } fixed++; }
     }
-    __block int bad = 0;
-    dispatch_apply((size_t)nr, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t i) {
-        if (rv[i].cl == rv[i].n) memcpy((void *)rv[i].a, rv[i].d, rv[i].n);
-        else if (compression_decode_buffer((uint8_t *)rv[i].a, rv[i].n, rv[i].d, rv[i].cl, NULL, COMPRESSION_LZ4) != rv[i].n) __atomic_add_fetch(&bad, 1, __ATOMIC_RELAXED);
-    });
-    // 游戏把宿主函数地址拷进了自己的数据（分配器函数表等）：按 A→B 宿主地址对照把写回的页整体扫一遍
+    double tp0 = now_s();
+    // 游戏把宿主函数地址拷进了自己的数据（分配器函数表等）：按 A→B 宿主地址对照换算。换算表先建好，写回时每段解压完（还在缓存里）当场换算，不再整片内存扫第二遍
     int hobad = 0;   // 交出指针 / 数据段换算失败（与解压失败分开计）
     g_blob_dir = dir;
-    { FILE *hf = open_in(dir, "handout.bin", "rb"); uint32_t mg = 0; uint64_t nm = 0, nunres = 0, nsame = 0; uint64_t *from = NULL, *to = NULL;
+    uint64_t nm = 0, nunres = 0, nsame = 0, *from = NULL, *to = NULL, *rg = calloc(128, 8), *rgto = calloc(64, 8), *hk = NULL, *hv = NULL; int nr2 = 0; size_t hcap = 1;
+    { FILE *hf = open_in(dir, "handout.bin", "rb"); uint32_t mg = 0;
       if (!hf || fread(&mg, 4, 1, hf) != 1 || mg != HO_MAGIC || fread(&nm, 8, 1, hf) != 1) { LOG("【红】即时存档恢复：快照缺交出指针表（或是旧格式）"); hobad++; nm = 0; }
       from = malloc(8 * (nm ? nm : 1)); to = malloc(8 * (nm ? nm : 1)); size_t k2 = 0;
-      for (uint64_t i = 0; i < nm; i++) { ho_ent he; if (fread(&he, sizeof he, 1, hf) != 1) { bad++; break; } he.id[sizeof he.id - 1] = 0;
+      for (uint64_t i = 0; i < nm; i++) { ho_ent he; if (fread(&he, sizeof he, 1, hf) != 1) { hobad++; break; } he.id[sizeof he.id - 1] = 0;
           uint64_t nv = handout_resolve(he.id);
           if (!nv) { if (nunres++ < 4) LOG("【红】即时存档恢复：交出的宿主指针 %#llx（%s）在本版解析不了", (unsigned long long)he.v, he.id); continue; }
           s2a_snap_handout_id(nv, he.id);   // 本进程的值按原身份登记：恢复局里再存时这些指针照样能换算
@@ -644,7 +656,7 @@ static int load_mem(const char *dir, uint64_t *raw_out) {
           from[k2] = he.v; to[k2++] = nv; }
       nm = k2;
       // 段：按名字找本进程的同名段；长度不同 = 布局变了，段内指针不能换算
-      int na = 0; struct { uint64_t lo, n; char name[32]; } ar[64]; uint64_t *rg = calloc(128, 8), *rgto = calloc(64, 8); int nr2 = 0;   // 堆上：下面的 block 不能抓数组
+      int na = 0; struct { uint64_t lo, n; char name[32]; } ar[64];
       if (hf && fread(&na, sizeof na, 1, hf) == 1 && na >= 0 && na <= 64 && fread(ar, sizeof ar[0], (size_t)na, hf) == (size_t)na) {
           pthread_mutex_lock(&g_ho_mu);
           for (int q = 0; q < na; q++) { ar[q].name[31] = 0; int hit = -1; for (int b = 0; b < g_nhor; b++) if (!strcmp(g_hor[b].name, ar[q].name)) hit = b;
@@ -655,20 +667,47 @@ static int load_mem(const char *dir, uint64_t *raw_out) {
       } else if (mg == HO_MAGIC) { LOG("【红】即时存档恢复：交出的宿主数据段表读不了"); hobad++; }
       if (hf) fclose(hf);
       if (nunres) hobad++;
-      size_t cap = 1; while (cap < nm * 4 + 4) cap <<= 1; uint64_t *hk = calloc(cap, 8), *hv = calloc(cap, 8);
-      for (size_t i = 0; i < nm; i++) { size_t j = (from[i] * 0x9E3779B97F4A7C15ull) >> 40 & (cap - 1); while (hk[j]) j = (j + 1) & (cap - 1); hk[j] = from[i]; hv[j] = to[i]; }
-      __block uint64_t nrep = 0; uint64_t lo = ~0ull, hi = 0; for (size_t i = 0; i < nm; i++) { if (from[i] < lo) lo = from[i]; if (from[i] > hi) hi = from[i]; }
-      if (!nm) { lo = 1; hi = 0; }
-      if (nm || nr2) dispatch_apply((size_t)nr, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t r) {
-          uint64_t *p = (uint64_t *)rv[r].a, k = 0; size_t nw = rv[r].n / 8;
-          for (size_t w = 0; w < nw; w++) { uint64_t x = p[w];
-              for (int q = 0; q < nr2; q++) if (x >= rg[2 * q] && x < rg[2 * q] + rg[2 * q + 1]) { p[w] = rgto[q] + (x - rg[2 * q]); k++; x = 0; break; }
-              if (!x || x < lo || x > hi) continue; size_t j = (x * 0x9E3779B97F4A7C15ull) >> 40 & (cap - 1);
-              while (hk[j]) { if (hk[j] == x) { p[w] = hv[j]; k++; break; } j = (j + 1) & (cap - 1); } }
-          if (k) __atomic_add_fetch(&nrep, k, __ATOMIC_RELAXED);
-      });
-      LOG("%s即时存档恢复：交出的宿主指针按身份换算 %llu 个（同址 %llu、解析不了 %llu），数据段 %d 段，游戏内存里替换 %llu 处", nunres ? "【红】" : "", (unsigned long long)nm, (unsigned long long)nsame, (unsigned long long)nunres, nr2, (unsigned long long)nrep);
-      free(hk); free(hv); free(from); free(to); free(rg); free(rgto); }
+      while (hcap < nm * 4 + 4) hcap <<= 1; hk = calloc(hcap, 8); hv = calloc(hcap, 8);
+      for (size_t i = 0; i < nm; i++) { size_t j = (from[i] * 0x9E3779B97F4A7C15ull) >> 40 & (hcap - 1); while (hk[j]) j = (j + 1) & (hcap - 1); hk[j] = from[i]; hv[j] = to[i]; } }
+    uint64_t lo = ~0ull, hi = 0; for (size_t i = 0; i < nm; i++) { if (from[i] < lo) lo = from[i]; if (from[i] > hi) hi = from[i]; }
+    if (!nm) { lo = 1; hi = 0; }
+    const int fix = nm || nr2;
+    // 一段内存里的宿主指针按对照表换算，回替换了几处（经文件写的段在缓冲里换算、原地写的段在目标地址换算，结果相同）
+    uint64_t (^ptrfix)(uint64_t *, size_t) = ^uint64_t(uint64_t *p, size_t nw) {
+        uint64_t k = 0;
+        for (size_t w = 0; w < nw; w++) { uint64_t x = p[w];
+            for (int q = 0; q < nr2; q++) if (x >= rg[2 * q] && x < rg[2 * q] + rg[2 * q + 1]) { p[w] = rgto[q] + (x - rg[2 * q]); k++; x = 0; break; }
+            if (!x || x < lo || x > hi) continue; size_t j = (x * 0x9E3779B97F4A7C15ull) >> 40 & (hcap - 1);
+            while (hk[j]) { if (hk[j] == x) { p[w] = hv[j]; k++; break; } j = (j + 1) & (hcap - 1); } }
+        return k;
+    };
+    // 写回：固定几个工作线程按序领记录，每个线程一块缓冲（记录最长 8 MB，见 dump_mem 的 CH）
+    __block int bad = 0, wbad = 0; __block uint64_t nrep = 0; __block int next = 0;
+    size_t nwk = (size_t)sysconf(_SC_NPROCESSORS_ONLN); if (nwk < 1) nwk = 1; if (nwk > 16) nwk = 16;
+    uint64_t bufn = 0; for (int i = 0; i < nr; i++) if (viaf[i] && rv[i].n > bufn) bufn = rv[i].n;
+    dispatch_apply(nwk, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t wk) {
+        (void)wk; uint8_t *buf = NULL; uint64_t k = 0;
+        for (;;) { int i = __atomic_fetch_add(&next, 1, __ATOMIC_RELAXED); if (i >= nr) break;
+            if (!viaf[i]) {
+                if (rv[i].cl == rv[i].n) memcpy((void *)rv[i].a, rv[i].d, rv[i].n);
+                else if (compression_decode_buffer((uint8_t *)rv[i].a, rv[i].n, rv[i].d, rv[i].cl, NULL, COMPRESSION_LZ4) != rv[i].n) { __atomic_add_fetch(&bad, 1, __ATOMIC_RELAXED); continue; }
+                if (fix) k += ptrfix((uint64_t *)rv[i].a, rv[i].n / 8);
+                continue; }
+            if (!buf && !(buf = malloc(bufn))) { __atomic_add_fetch(&wbad, 1, __ATOMIC_RELAXED); continue; }
+            const uint8_t *src = rv[i].d;
+            if (rv[i].cl != rv[i].n) { if (compression_decode_buffer(buf, rv[i].n, rv[i].d, rv[i].cl, NULL, COMPRESSION_LZ4) != rv[i].n) { __atomic_add_fetch(&bad, 1, __ATOMIC_RELAXED); continue; } src = buf; }
+            if (fix) { if (src != buf) { memcpy(buf, src, rv[i].n); src = buf; } k += ptrfix((uint64_t *)buf, rv[i].n / 8); }
+            off_t off = (off_t)foff[i]; uint64_t done = 0;
+            while (done < rv[i].n) { ssize_t w = pwrite(gfd, src + done, (size_t)(rv[i].n - done), off + (off_t)done); if (w <= 0) { if (w < 0 && errno == EINTR) continue; break; } done += (uint64_t)w; }
+            if (done != rv[i].n) __atomic_add_fetch(&wbad, 1, __ATOMIC_RELAXED);
+        }
+        free(buf); if (k) __atomic_add_fetch(&nrep, k, __ATOMIC_RELAXED);
+    });
+    double tp1 = now_s();
+    if (wbad) LOG("【红】即时存档恢复：页内容经后备文件写回失败 %d 段（errno %d）", wbad, errno);
+    LOG("%s即时存档恢复：交出的宿主指针按身份换算 %llu 个（同址 %llu、解析不了 %llu），数据段 %d 段，游戏内存里替换 %llu 处", nunres ? "【红】" : "", (unsigned long long)nm, (unsigned long long)nsame, (unsigned long long)nunres, nr2, (unsigned long long)nrep);
+    LOG("即时存档恢复：页内容拆账 映射核对 + 放开写 %.2f、写回 + 指针换算 %.2f（秒）；经后备文件写 %d 段 %.0f MB、经映射写 %d 段", tp0 - t_lm0, tp1 - tp0, nviaf, bviaf / 1048576.0, nr - nviaf);
+    free(hk); free(hv); free(from); free(to); free(rg); free(rgto); free(viaf); free(foff); bad += wbad;
     munmap(m, (size_t)st.st_size); free(rv); *raw_out = raw;
     LOG("%s即时存档恢复：页内容 %d 段 %.0f MB 写回（放开写 %d 段，解压失败 %d）", bad ? "【红】" : "", nr, raw / 1048576.0, fixed, bad);
     return bad || hobad ? -1 : 0;
@@ -717,8 +756,11 @@ int s2a_snap_restore(const char *dir) {
     double t4 = now_s();
     if (s2a_snap_defer_finish() || s2a_snap_kernel_post() || s2a_snap_svcmem_shared()) return -1;
     { char p[2048]; snprintf(p, sizeof p, "%s/audio.bin", dir); if (!S2A_SnapAudioRestore || S2A_SnapAudioRestore(p)) { LOG("【红】即时存档恢复：音频渲染器状态没拷回"); return -1; } }
+    double t4a = now_s();   // 「核对」拆账（11-17 iPhone 大金刚这一段 1.09 s，Mac 0.08 s）：服务收尾 + 音频 / 权限 / 图形 / 存档树各计各的
     s2a_snap_svcmem_perms();
+    double t4b = now_s();
     if (!nvn_snap_restore || nvn_snap_restore(dir)) { LOG("【红】即时存档恢复：图形状态没恢复"); return -1; }
+    double t4c = now_s();
     char st1[80]; int sn1; save_dir_hash(st1, &sn1);
     if (strcmp(st0, st1)) { LOG("【红】即时存档恢复：恢复过程中已提交的存档变了（%.12s… → %.12s…），停下不起游戏线程", st0, st1); return -1; }
     { char src[2048], want[256], full[80]; int fn; snprintf(src, sizeof src, "%s/save_tree", dir);
@@ -727,6 +769,7 @@ int s2a_snap_restore(const char *dir) {
       if (man_get(dir, "存档全量", want, sizeof want) || strcmp(want, full)) { LOG("【红】即时存档恢复：写回后存档树与快照时不一致（快照 %.12s…，当前 %.12s…），停下", want, full); return -1; }
       LOG("即时存档恢复：存档树与快照时一致（%d 个文件 %.12s…）", fn, full); }
     double t5 = now_s();
+    LOG("即时存档恢复：核对拆账 服务收尾 + 音频 %.2f、内存权限 %.2f、图形 %.2f、存档树 %.2f（秒）", t4a - t4, t4b - t4a, t4c - t4b, t5 - t4c);
     if (s2a_snap_threads_start()) return -1;
     double t6 = now_s();
     snap_live_after_restore();   // 游戏线程放开之前接上日志：放开后第一条新请求就记在快照日志之后

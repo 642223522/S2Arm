@@ -255,6 +255,22 @@ __attribute__((weak_import)) extern char sw_gate_end[];
 static _Atomic uint64_t g_esb_page;
 static _Atomic uint64_t g_sp_unaligned;   // 替游戏模拟的「栈指针未对齐」读写条数（收局汇总报，s2a_sp_unaligned_count）
 uint64_t s2a_sp_unaligned_count(void) { return atomic_load(&g_sp_unaligned); }
+// 过期权限缺页（SIGBUS 写权限族：D-EKTW / D-ATFZ / D-QM9S / D-2V3R，四款四台，现场都是写权限错 ESR DFSC 0x0F、出事那块记录时却已 rw-）：
+//   写跟踪类的钩子（nvn_dirty.c on_fault 只认还登记着的范围）没认领时，可能是这一页刚被别的线程合法放开——范围注销 / 内存池回收把页恢复可写、
+//   同时摘掉登记，缺页处理晚了一步就找不到主人，按崩溃收了。翻译 / 权限类缺页（DFSC 0x04–0x0F；页刚从不可访问放开时是翻译错）且内核里这页此刻已有要的权限 → 重执行；
+//   同一线程同一地址连续超过 8 次仍缺页就不再重试（不是过期，交回崩溃路径，免空转）
+static _Atomic uint64_t g_stale_perm;
+uint64_t s2a_stale_perm_count(void) { return atomic_load(&g_stale_perm); }
+static __thread uint64_t t_stale_addr; static __thread unsigned t_stale_n;
+static int stale_perm_retry(uint64_t fa, int w, uint32_t esr) {
+    unsigned dfsc = esr & 0x3f; if (dfsc < 0x04 || dfsc > 0x0f) return 0;   // 只认翻译 / 访问标志 / 权限三类缺页（0x04–0x0F）；外部中止、对齐、TLB 冲突等不归这里
+    vm_address_t a = (vm_address_t)(fa & ~(uint64_t)(vm_page_size - 1)); vm_size_t sz = 0; vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t c = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t o = MACH_PORT_NULL;
+    if (vm_region_64(mach_task_self(), &a, &sz, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &c, &o) != KERN_SUCCESS || a > (vm_address_t)fa) return 0;
+    if (!(info.protection & (w ? VM_PROT_WRITE : VM_PROT_READ))) return 0;
+    if (t_stale_addr == fa) { if (++t_stale_n > 8) { t_stale_n = 0; return 0; } } else { t_stale_addr = fa; t_stale_n = 1; }
+    atomic_fetch_add_explicit(&g_stale_perm, 1, memory_order_relaxed); return 1;
+}
 void s2a_emul_store_bench(void) {
     const char *e = getenv("S2A_TRACK_EMUL_STORE"); if (e && *e == '0') return;
     uint8_t *p = mmap(NULL, 0x4000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0); if (p == MAP_FAILED) return;
@@ -507,6 +523,7 @@ static void on_crash(int sig, siginfo_t *si, void *ctx) {
         }
         { int s2a_det_watch_fault(uint64_t, uint64_t, uint64_t, uint64_t); ucontext_t *u = ctx;   // 确定性诊断写监视（S2A_DET_WATCH）
           if ((esr >> 6 & 1) && s2a_det_watch_fault((uint64_t)si->si_addr, u->uc_mcontext->__ss.__pc, u->uc_mcontext->__ss.__lr, u->uc_mcontext->__ss.__fp)) return; }
+        if ((ec == 0x24 || ec == 0x25) && stale_perm_retry((uint64_t)si->si_addr, (int)(esr >> 6 & 1), esr)) return;   // 过期权限缺页：页已被别的线程放开，重执行（见 stale_perm_retry）
     }
     ucontext_t *uc = ctx; pthread_t self = pthread_self(), none = NULL;
     if (!atomic_compare_exchange_strong(&g_crash_owner, &none, self)) {

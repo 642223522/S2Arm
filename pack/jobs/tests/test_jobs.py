@@ -1694,6 +1694,16 @@ class JobsTests(unittest.TestCase):
         self.c.r["switch2ProRelaySocket"] = 1
         with self.assertRaises(Failure):
             build.runtime_env(self.c, self.game(), self.root)
+        self.c.r.pop("switch2ProRelaySocket")
+        self.c.r["xboxGipRelaySocket"] = "/tmp/s2a-xbox-gip.sock"
+        self.assertEqual(build.runtime_env(self.c, self.game(), self.root / "runtime")["S2A_XBOX_GIP_SOCKET"],
+                         "/tmp/s2a-xbox-gip.sock")
+        self.c.r.pop("xboxGipRelaySocket")
+        self.assertNotIn("S2A_XBOX_GIP_SOCKET", build.runtime_env(self.c, self.game(), self.root / "runtime"))
+        self.c.r["xboxGipRelaySocket"] = 1
+        with self.assertRaises(Failure):
+            build.runtime_env(self.c, self.game(), self.root)
+        self.c.r.pop("xboxGipRelaySocket")
 
     def test_metal_hud_switch_and_explicit_environment_reach_real_child(self):
         names = ("MTL_HUD_ENABLED", "MTL_HUD_LOG_ENABLED", "MTL_HUD_LOG_SHADER_ENABLED")

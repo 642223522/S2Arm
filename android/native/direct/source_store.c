@@ -3,6 +3,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
 
 #include "sha256.h"
 #include "source_store.h"
@@ -27,21 +30,38 @@ static uint32_t g_count, g_bytes, g_dropped;
 static uint64_t g_seq;
 static _Atomic uint64_t g_epoch;
 static _Atomic uint64_t g_rejected;
-static uint64_t g_pin_calls, g_pin_misses, g_unpins, g_evict_skipped, g_keep_fail_bytes, g_keep_fail_slots;
-static unsigned g_keep_fail_logged;
-// 失败原因出口（生产由 hle_nvn 接到 logcat；宿主测试不提供）
+static uint64_t g_pin_calls, g_pin_misses, g_unpins, g_evict_skipped, g_keep_fail_bytes, g_keep_fail_slots, g_keep_over_budget;
+static unsigned g_keep_fail_logged, g_over_budget_logged;
+// 失败原因出口：前端的 s2a_source_log_line（graphics/nvn/gfx/nvn/hle_nvn.c 的强定义，走 LOG 写宿主日志文件）。
 #ifdef __APPLE__   // macOS 宿主单测：ld64 不接受未定义的弱引用（GNU ld / Android 接受），给一个弱的空实现兜底；Android 构建不走这里
 __attribute__((weak)) void s2a_source_log_line(const char *line) { (void)line; }
 #else
 // 弱链接[androiddraw]：s2a_source_log_line（前端提供；宿主单测不链 source_store.c 时为空）
 extern void s2a_source_log_line(const char *line) __attribute__((weak));
 #endif
+// 红行：先交前端出口（宿主日志）。安卓上宿主日志文件在下一局启动时才以 prev| 进 logcat，当局的 logcat 里一行也没有
+// （#1622：keep 失败 3 万多次，当局 logcat 里 0 行红行），所以安卓上再直接写一份 logcat（tag 与其他 S2Arm 行一致）。
+static void source_red(const char *line) {
+    if (s2a_source_log_line) s2a_source_log_line(line);
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_ERROR, "S2Arm", "【红】%s", line);
+#endif
+}
 static void keep_fail_log(const char *why) {
-    if (!s2a_source_log_line || g_keep_fail_logged++ >= 8) return;
+    if (g_keep_fail_logged++ >= 8) return;
     char line[256];
     snprintf(line, sizeof line, "%s（entries=%u bytes=%u/%u slots=%u/%u）", why, g_count, g_bytes,
              (unsigned)S2A_SOURCE_MAX_BYTES, g_count, (unsigned)S2A_SOURCE_SLOTS);
-    s2a_source_log_line(line);
+    source_red(line);
+}
+// 总字节越过软预算（被活 program 占着、没有可淘汰的）：计数，只打一行（持 g_mu 调用）
+static void over_budget_note(void) {
+    g_keep_over_budget++;
+    if (g_over_budget_logged++) return;
+    char line[256];
+    snprintf(line, sizeof line, "源快照字节越过软预算：活 program 占着，没有可淘汰的，放宽到安全阀（entries=%u bytes=%u 软预算 %u 安全阀 %u）",
+             g_count, g_bytes, (unsigned)S2A_SOURCE_MAX_BYTES, (unsigned)S2A_SOURCE_HARD_BYTES);
+    source_red(line);
 }
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 
@@ -308,15 +328,20 @@ int s2a_source_keep(const uint8_t key[8], uint32_t array_index, const void *code
             return 0;
         }
     }
+    // 字节预算（S2A_SOURCE_MAX_BYTES）只约束可淘汰的条目：先淘汰最旧的未 pin 条目，把总量压回预算。
+    //   可淘汰的没有了，剩下的全是活 program / 编译在用的源：不能为了预算拒收它们（#1622：一款游戏进标题 3D 时
+    //   5,711 个活程序恰好占满 64 MiB，之后注册的 123 个程序永远存不进去，每笔用到它们的绘制都报 source_snapshot_missing）。
+    //   这时放宽到 S2A_SOURCE_HARD_BYTES（防泄漏的安全阀，正常到不了）；越过硬上限才准确失败并点名原因。
     while (g_bytes + need > S2A_SOURCE_MAX_BYTES) {
-        if (!evict_oldest_locked()) {
-            // 所有可淘汰条目都在被引用：不能为了新条目丢掉在用的源，准确失败并点名原因。
+        if (evict_oldest_locked()) continue;
+        if ((uint64_t)g_bytes + need > S2A_SOURCE_HARD_BYTES) {
             g_keep_fail_bytes++;
-            keep_fail_log("源快照 keep 失败：字节预算被 pin 条目占满");
+            keep_fail_log("源快照 keep 失败：字节安全阀被 pin 条目占满");
             pthread_mutex_unlock(&g_mu);
             free(c1);
             return -1;
         }
+        break;
     }
     struct entry *e = NULL;
     for (int32_t i = g_bucket[bucket_of(key)]; i >= 0 && !e; i = g_next[i]) {
@@ -370,6 +395,7 @@ int s2a_source_keep(const uint8_t key[8], uint32_t array_index, const void *code
     e->ambiguous = 0;
     index_insert_locked((int32_t)(e - g_entries));
     g_bytes += need;
+    if (g_bytes > S2A_SOURCE_MAX_BYTES) over_budget_note();   // 可淘汰的淘汰光了仍超预算：被活 program 占着，放宽到安全阀内收下的
     // 代际只表示“key→内容”的映射发生了变化：同 key 同内容的重登记（游戏每帧重复 SetShaders
     // 的常见形态）不推进，否则 P1 备忘会被无意义地作废；新 key、淘汰后重登记、冲突都推进。
     if (!same) atomic_fetch_add(&g_epoch, 1);
@@ -491,8 +517,7 @@ int s2a_source_hold_pending(uint64_t prog_serial, uint32_t stage, const void *co
                 for (struct pending_entry **q = &g_pending[b]; *q; q = &(*q)->next)
                     if (!old || (*q)->seq < (*old)->seq) old = q;
             if (old) pending_unlink_free_locked(old);
-            if (g_pending_evicted++ == 0 && s2a_source_log_line)
-                s2a_source_log_line("【红】源快照：自持控制段超过安全阀，开始挤掉最旧的（程序没走 Finalize？）");
+            if (g_pending_evicted++ == 0) source_red("源快照：自持控制段超过安全阀，开始挤掉最旧的（程序没走 Finalize？）");
             pp = pending_find_locked(prog_serial, stage);   // 摘链后重新定位插入点
         }
         e = (struct pending_entry *)calloc(1, sizeof *e);
@@ -522,6 +547,17 @@ int s2a_source_pending_control(uint64_t prog_serial, uint32_t stage, const uint8
     }
     pthread_mutex_unlock(&g_mu);
     return hit;
+}
+
+// 某（程序序号, 阶段）的源已存进源快照（keep 成功或已有完整条目）：自持控制段冗余，当场释放。
+//   同一程序对象重设着色器会换序号（hle_nvn.c SetShaders），旧序号只有 Finalize 才释放，反复重设会一直累积到安全阀
+//   （#1622 修后真机：进标题 3D 画面时过了 65536 条）。只留「键还没算出、源还没存」的阶段，表大小跟这类阶段数走。
+void s2a_source_drop_pending_stage(uint64_t prog_serial, uint32_t stage) {
+    if (stage >= 6) return;
+    pthread_mutex_lock(&g_mu);
+    struct pending_entry **pp = pending_find_locked(prog_serial, stage);
+    if (*pp) pending_unlink_free_locked(pp);
+    pthread_mutex_unlock(&g_mu);
 }
 
 void s2a_source_drop_pending(uint64_t prog_serial) {
@@ -594,6 +630,7 @@ void s2a_source_pin_stats(struct s2a_source_pin_stats *out) {
     out->evict_skipped = g_evict_skipped;
     out->keep_fail_bytes = g_keep_fail_bytes;
     out->keep_fail_slots = g_keep_fail_slots;
+    out->keep_over_budget = g_keep_over_budget;
     pthread_mutex_unlock(&g_mu);
 }
 

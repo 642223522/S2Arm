@@ -31,6 +31,12 @@ struct HomeBackdrop: View {
                 ], startPoint: .top, endPoint: .bottom)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
+            .overlay(alignment: .topTrailing) {
+                // 柔和暗角衬出无底色的标题栏图标，浅色海报也能看清。
+                RadialGradient(colors: [.black.opacity(0.38), .clear], center: .topTrailing,
+                               startRadius: 0, endRadius: 360)
+                    .frame(width: 360, height: 360)
+            }
             .clipped()
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.32), value: game?.id)
         }

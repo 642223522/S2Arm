@@ -3,6 +3,7 @@
 import AppKit
 import Foundation
 import Combine
+import LauncherPadBridge
 import NXModel
 import S2ArmAppleAdapter
 import SaveSync
@@ -281,6 +282,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     var autoDownloadPopupPending = false
     /// 应用内更新（Sparkle 2）：第一次用时起，起来后整个 App 生命周期只一份
     lazy var sparkleUpdate = SparkleUpdate(model: self)
+    /// 换版走的接口：平时就是 Sparkle；单测换成替身（不起真 Sparkle、不真退出）
+    lazy var updateDriver: UpdateInstalling = sparkleUpdate
     @Published var showAddGames = false
     @Published var showKeys = false
     /// 选好了但缺密钥（作业层 keys_missing）：等放入密钥后接着导入。解包好的游戏不要密钥，不经过这里。
@@ -293,7 +296,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published private(set) var lastPhoneSession: JobSession?
     /// 欢迎页上排着队的一键下载（作业同一时刻只有一个）。
     @Published private(set) var repairQueue: [ToolCheck] = []
-    /// 新手流程刚导入的那款：欢迎页留着，右下角「一键出包」（点了就回到正常的游戏库）。
+    /// 新手流程刚导入的那款：欢迎页留着，可进入游戏库或接着一键出包。
     @Published private(set) var welcomeGameID: String?
     /// 这份密钥读不了选的游戏：放密钥弹窗提示换一份。
     @Published private(set) var keysRejected = false
@@ -393,6 +396,8 @@ public final class S2ArmLauncherModel: ObservableObject {
 
     let provider: S2ArmEngineProvider
     let controller: NS2LauncherController
+    let xboxGipSocketURL: URL
+    private var xboxGipRelayStarted = false
     private var running: RunningGame?
     /// iCloud 存档同步进行中（开局前 / 退出后）：不重复开局
     @Published var cloudSyncing = false
@@ -414,6 +419,10 @@ public final class S2ArmLauncherModel: ObservableObject {
         provider = S2ArmEngineProvider(client: client)
         controller = NS2LauncherController(
             socketURL: provider.client.environment.privateRoot.appendingPathComponent("ns2-relay.sock"), watchGame: true)   // 游戏的手柄设置画面交给面板分配玩家（#520 E）
+        let preferredXboxSocket = provider.client.environment.privateRoot.appendingPathComponent("xbox-gip-relay.sock")
+        xboxGipSocketURL = preferredXboxSocket.path.utf8.count < 100
+            ? preferredXboxSocket
+            : URL(fileURLWithPath: "/tmp/s2arm-xbox-gip-\(getuid()).sock")
         exportChoice = provider.settings.exportTargets
         // 启动首帧即先载入上次列表快照，避免先闪出加载占位页再切换成首页卡片排
         if let known = provider.library.lastKnownGames(), !known.isEmpty {
@@ -1305,6 +1314,7 @@ public final class S2ArmLauncherModel: ObservableObject {
             "switch2ProAutoConnect": relaySocket == nil ? "0" : "1",   // 有通道就让游戏自己接（还没连上时游戏会重试）
         ]
         if let relaySocket { controllerArguments["switch2ProRelaySocket"] = relaySocket }
+        if xboxGipRelayStarted { controllerArguments["xboxGipRelaySocket"] = xboxGipSocketURL.path }
         // 本地玩家（#623）：顶栏选的玩家随 launch 请求给作业层（pack/jobs/build.py runtime_env → 服务层 S2A_PLAYER_USER / 这个玩家的 SaveData）；没建过玩家不带（旧行为）
         if let player = Self.launchPlayer() {
             controllerArguments["playerUser"] = player.serviceUser
@@ -1324,7 +1334,17 @@ public final class S2ArmLauncherModel: ObservableObject {
         }
     }
 
-    func startControllerConnection() { controller.startIfEnabled() }
+    func startControllerConnection() {
+        controller.startIfEnabled()
+        let env = ProcessInfo.processInfo.environment
+        // 单测里不起（会去独占真实 USB 手柄）：XCTestConfigurationFilePath 只有 Xcode 跑测试才设，swift test 不设，另按 XCTest 是否已加载判
+        guard !xboxGipRelayStarted,
+              env["XCTestConfigurationFilePath"] == nil, NSClassFromString("XCTestCase") == nil,
+              env["S2ARM_CONTROL"] != "1" else { return }
+        if s2a_xbox_gip_relay_start(xboxGipSocketURL.path, nil, nil) == 0 {
+            xboxGipRelayStarted = true
+        }
+    }
 
     // ---- 本地玩家（#623，规则在共享包 SaveSync LocalPlayers，同 iPhone / iPad）----
 
@@ -1340,7 +1360,13 @@ public final class S2ArmLauncherModel: ObservableObject {
     static func playerRequest(_ defaults: UserDefaults = .standard) -> [String: String]? {
         launchPlayer(defaults).map { ["user": $0.serviceUser, "name": $0.name, "folder": $0.folder] }
     }
-    func shutdownControllerConnection() { controller.shutdown() }
+    func shutdownControllerConnection() {
+        controller.shutdown()
+        if xboxGipRelayStarted {
+            s2a_xbox_gip_relay_stop()
+            xboxGipRelayStarted = false
+        }
+    }
 
     // ---- 放密钥 / 删除 / 诊断（本机控制口用；参数与作业同旧启动器）----
 
@@ -1787,9 +1813,9 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     /// 回库：只有作业结束了才能关掉作业页。
-    /// 顶栏「游戏库」：从任何页面回到游戏库；出包还在跑就留在后台，游戏库上的进度条可以回去。
+    /// 页面返回 / 欢迎页「进入游戏库」：出包还在跑就留在后台，游戏库上的进度条可以回去。
     func goToLibrary() {
-        exportFor = nil; viewingResult = nil; showEnvironment = false; welcomeHome = false
+        exportFor = nil; viewingResult = nil; showEnvironment = false; welcomeHome = false; welcomeGameID = nil
         if let phone = phoneSession, phone.kind == .installUpdate { if isFinished(phone) { phoneSession = nil } else { phoneHidden = true } }
         guard let current = session else { return }
         if isFinished(current) { session = nil } else { sessionHidden = true }

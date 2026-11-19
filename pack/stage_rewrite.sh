@@ -40,7 +40,9 @@ VT="${S2A_WIDEN_DIR:-$R/graphics/widen/tables}/verified.tsv"; VR=$([ -f "$VT" ] 
 [ -n "$VR" ] && [ ${#EN[@]} -eq 0 ] && { echo "【黄】$G 在宽屏已验证名单（${PID} ${BID}）但仓库没有它依赖的宽屏表（graphics/widen/tables/*_${BID}），不算已验证、按满屏关出包"; VR=; }
 # 同身份的仓库表和最近 30 局真实日志只提高已知下限（不读现行根上一次出的表：采集结果回灌自己会让旧值永不退场）。先采集再判缓存；坏表不可退成无表。
 # 帧率表（10-26，体系提升方案 D）：仓库 runtime/fps/<main 构建号前 16 位>.tsv 有就拷进产物根作 fps.tsv（runtime/src/fps.c 装载后读），按「文件名 + 内容」进键；没有 = 原生帧率
-FT="$R/runtime/fps/${BID:0:16}.tsv"; [ -f "${FT}" ] || FT=
+#   11-18：我方帧率表（改指令 c 行打进游戏代码，如去掉游戏自己的 30 帧下限）只在内部对照口径 S2A_CAPS_OWN=1 才进包。11-13 撤我方 60 帧后运行时只把槽写成关值，
+#   但 c 行照样打进程序：玩家 60 帧关着游戏也能跑到 60，按 30 帧口径写死的时钟（布料 / 头发）快一倍（#1607 过场加速）。不进包 = 程序与原版一致、社区帧率补丁照常收
+FT="$R/runtime/fps/${BID:0:16}.tsv"; { [ -f "${FT}" ] && [ "${S2A_CAPS_OWN:-}" = 1 ]; } || FT=
 # 游戏缺陷修补表（11-16，runtime/fix/README.md）：仓库 runtime/fix/<main 构建号前 16 位>.tsv 有就交改写器（S2A_FIX_TSV，fix_rows），按内容进键；不进产物根
 XT="$R/runtime/fix/${BID:0:16}.tsv"; [ -f "${XT}" ] || XT=
 # 社区画面补丁（pack/cpatch.py）：匹配上的补丁编成「双路 + 槽」进包，开关在运行时。

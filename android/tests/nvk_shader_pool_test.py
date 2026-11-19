@@ -351,6 +351,13 @@ def main():
     sys.stdout.write(decl.stdout); sys.stderr.write(decl.stderr)
     if decl.returncode:
         return decl.returncode
+    # #1594：类型 3 句柄（常量采样器）的布局映射：真实结果解析 + 生产 layout_ent（编码 / 下标 0 与 4095 / 其它来源不变）
+    exe = out/'const-sampler-layout'
+    host_link.run(base + [str(ROOT/'android/tests/const_sampler_layout_test.c'), *[str(p) for p in libs]] + [strip, '-lm', '-o', str(exe)], check=True, timeout=60)
+    csl = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30)
+    sys.stdout.write(csl.stdout); sys.stderr.write(csl.stderr)
+    if csl.returncode:
+        return csl.returncode
     diag = run('diag-compile', original, args=('--diag-compile',))
     sys.stdout.write(diag.stdout); sys.stderr.write(diag.stderr)
     if diag.returncode:

@@ -448,7 +448,9 @@ GL(glGetAttribLocation, GLint, GLuint name, const GLchar *nm) {
 enum { ELEM = 4096 };   // 位置编码：成员号 < 4096，数组元素号放高位
 GL(glGetUniformLocation, GLint, GLuint name, const GLchar *nm) {
     CTX(-1); struct gl_program *p = gl_name_get(&gl_programs, name); if (!p || !p->linked) { gl_set_error(GL_INVALID_OPERATION); return -1; }
-    char base[64]; strlcpy(base, nm, sizeof base); int elem = 0; char *br = strchr(base, '[');
+    // 结构体数组展开出的成员（「Lights[1].color」）按全名登记：先比全名；再按 GL 规则只认末尾的「[n]」是数组下标（「Lights[1].pos[2]」= 成员数组 Lights[1].pos 的第 2 项）
+    for (int i = 0; i < p->nu && i < ELEM; i++) if (!strcmp(p->u[i].name, nm)) return i;
+    char base[64]; strlcpy(base, nm, sizeof base); int elem = 0; char *br = strrchr(base, '[');
     if (br) { char *end; long e = strtol(br + 1, &end, 10); if (end == br + 1 || *end != ']' || end[1] || e < 0) return -1; elem = (int)e; *br = 0; }
     for (int i = 0; i < p->nu; i++) if (!strcmp(p->u[i].name, base)) return elem < (p->u[i].count ? p->u[i].count : 1) && i < ELEM ? i + elem * ELEM : -1;
     for (int i = 0; i < p->nsmp; i++) if (!strcmp(p->smp[i].name, base) && p->smp[i].elem == elem && (!br || p->smp[i].arr > 1)) return p->nu + i;   // 采样器数组：「tex」=「tex[0]」，「tex[i]」= 第 i 项
@@ -526,6 +528,10 @@ static void ivwrite(GLint loc, GLsizei count, const GLint *v, int comps) {
 GL(glUniform2iv, void, GLint loc, GLsizei n, const GLint *v) { CTX(); ivwrite(loc, n, v, 2); }
 GL(glUniform3iv, void, GLint loc, GLsizei n, const GLint *v) { CTX(); ivwrite(loc, n, v, 3); }
 GL(glUniform4iv, void, GLint loc, GLsizei n, const GLint *v) { CTX(); ivwrite(loc, n, v, 4); }
+// 标量版本（D-FTA8：游戏调 glUniform2i，原先只有 iv 版本、标量版交空实现，uniform 没写进去）：同 iv 版本写一个元素
+GL(glUniform2i, void, GLint loc, GLint a, GLint b) { CTX(); const GLint v[2] = {a, b}; ivwrite(loc, 1, v, 2); }
+GL(glUniform3i, void, GLint loc, GLint a, GLint b, GLint c) { CTX(); const GLint v[3] = {a, b, c}; ivwrite(loc, 1, v, 3); }
+GL(glUniform4i, void, GLint loc, GLint a, GLint b, GLint c, GLint d) { CTX(); const GLint v[4] = {a, b, c, d}; ivwrite(loc, 1, v, 4); }
 // mat2 / mat3：默认 uniform 块按 std140（glslang -R 的 gl_DefaultUniformBlock），每列占 16 字节（列内 2 / 3 个 float），数组元素步长取反射的 stride；
 //   transpose = 源按行主序给（GL ES 3.0 起允许），换成列主序写
 //   非方阵（GL 2.1 glUniformMatrixCxRfv：C 列 R 行）同样每列 16 字节、列内 R 个 float

@@ -38,6 +38,36 @@ BUNDLED_MAC = {PLUMESIGN_MAC: 'd3ca590e1e92a1e7416f1c27c1ec6749c4ad05389c9c8724f
 PLUME_HOME_ENV = 'S2A_PLUME_HOME'   # 设了就是 plumesign 的数据目录（XDG_CONFIG_HOME，下面 PlumeImpactor/）：Mac 通用壳放启动器私有目录，不碰玩家 ~/.config
 OWN_BUILD = 's2a1'   # 自编版号（补丁或 Rust 版本变了加一，产物缓存目录 v{TESTED}-{OWN_BUILD}）
 SOURCE_TREE = f'https://github.com/claration/impactor/tree/v{TESTED}'
+# 自编产物的固定来源：我们公开仓的一个 Release（标签 impactor-v{TESTED}-{OWN_BUILD}，预发布、不进「最新版」，附补丁原文与许可）。
+#   打包时本机缓存没有（或哈希不对）就从这里下，按 BUNDLED / BUNDLED_MAC 钉的 SHA-256 校验，不符直接失败；缓存只是加速，任何一台机器都能打包
+OWN_RELEASE_TAG = f'impactor-v{TESTED}-{OWN_BUILD}'
+OWN_RELEASE = f'https://github.com/jhaizhou-ops/S2Arm/releases/download/{OWN_RELEASE_TAG}/'
+
+
+class OwnBuildError(Exception):
+    pass
+
+
+def own_artifact(name, want, cache, fetch=None):
+    """自编产物 name（SHA-256 应为 want）→ 缓存里核过的那份路径。缓存有且哈希对 → 直接用；否则从 OWN_RELEASE 下到缓存（先写 .part，核对了再换上）。
+    下不来 / 下来的哈希不对 → OwnBuildError（说清哪个地址、拿到的哈希是多少），不退回别的来源"""
+    import hashlib
+    cache = os.path.abspath(cache); os.makedirs(cache, exist_ok=True)
+    src = os.path.join(cache, name)
+    digest = lambda f: hashlib.sha256(open(f, 'rb').read()).hexdigest()   # noqa: E731
+    if os.path.isfile(src) and digest(src) == want:
+        return src
+    url, part = OWN_RELEASE + name, src + '.part'
+    try:
+        (fetch or urllib.request.urlretrieve)(url, part)
+    except OSError as e:
+        raise OwnBuildError(f'本机缓存没有 {name}（{cache}），从固定来源 {url} 也下不来：{e}') from e   # 非玩家句（只在打包机上）
+    got = digest(part)
+    if got != want:
+        os.remove(part)
+        raise OwnBuildError(f'从 {url} 下到的 {name} SHA-256 是 {got}，钉的是 {want}：来源上的文件和代码钉的不是同一份，拒打')   # 非玩家句（只在打包机上）
+    os.replace(part, src)
+    return src
 
 
 def bundled(resources):
