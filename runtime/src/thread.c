@@ -268,6 +268,7 @@ static uint16_t g_gen_async __attribute__((unused));
 typedef struct { uint8_t op, cs; uint16_t _p; uint32_t h, kind; int32_t ctx, after; uint64_t a, b; uint32_t c, _q; } snap_hlog_t;
 static snap_hlog_t *g_hlog; static int g_nhlog, g_caphlog; static _Atomic int g_snap_lastseq = -1;
 static __thread int t_cs_h, t_snap_ctx = -2;
+static __thread int t_close_cs;   // 本线程这次关句柄是服务层（C#，s2a_handle_close）关的：关的那条日志记 cs = 1，恢复重放时留给服务自己关（snap_apply_closes）
 static __thread const uint32_t *t_force; static __thread int t_nforce, t_iforce;
 int s2a_snap_mode(void); int s2a_snap_logging(void);
 // 单独链本文件的线程单测（t_thread / t_thread_plat / t_thread_wait_diag，含安卓适配层那份）没有快照引擎：弱缺省 = 快照关、不记；
@@ -2549,6 +2550,9 @@ static int snap_apply_closes(int after) {
     int n = 0;
     for (int i = 0; i < g_nrhlog; i++) {
         snap_hlog_t *x = &g_rhlog[i]; if (!x->op || x->after != after) continue;
+        // 服务自己关的（Dispose / 关会话时级联释放的对象）：重放引发它的那件事（请求、或游戏关会话）时服务会再关一次，这里替它关就成了关两次
+        //   （一款大游戏：先按日志关掉 AudioDevice 的事件句柄，再关它的会话时 Dispose 又关一遍 → InvalidHandle，收局 Horizon 服务停止也报错）
+        if (x->cs) continue;
         // 这条关闭之前、同值最后一次建是不是服务层建的
         int cs = -1; for (int j = i - 1; j >= 0; j--) if (g_rhlog[j].op == 0 && g_rhlog[j].h == x->h) { cs = g_rhlog[j].cs; break; }
         if (cs != 1) continue;
@@ -2819,7 +2823,7 @@ static uint32_t close_handle(uint32_t h) {   // 不持 G 进来
     glock();
     int i = h_idx(h); uint32_t kind = i ? g_h[i].kind : 0; uint64_t cookie = i ? g_h[i].cookie : 0;
     if (!i) { pthread_mutex_unlock(&G); return R_BAD_HANDLE; }
-    void *o = g_h[i].obj, *cm = NULL; hlog_add(1, h, kind, 0, NULL); h_free(i);
+    void *o = g_h[i].obj, *cm = NULL; hlog_add(1, h, kind, t_close_cs, NULL); h_free(i);
     switch (kind) {
     case S2A_OBJ_EVENT_R: case S2A_OBJ_EVENT_W: if (--((event_t *)o)->refs == 0) { if (((event_t *)o)->did) evmap_del(o); free(o); } break;
     case S2A_OBJ_TMEM: break;   // 放锁后还回源再释放：还回取 svc_mem 的锁，那边持锁时会来取 G（s2a_tmem_get）
@@ -3352,7 +3356,8 @@ int s2a_handle_get(uint32_t h, uint32_t *kind, uint64_t *cookie) {
 // 1 = 关掉了，0 = 无此句柄（与 s2a_handle_get 同口径）。C# 关不存在的句柄多半是两边对句柄归属的理解不一致（已转给游戏 / 已被游戏关掉 / 从没建过），打一行红区分
 int s2a_handle_close(uint32_t h) {
     if (trace_on()) LOG("[句柄] C# 关 %#x", h);
-    if (close_handle(h) == 0) return 1;
+    int was = t_close_cs; t_close_cs = 1; uint32_t r = close_handle(h); t_close_cs = was;
+    if (r == 0) return 1;
     glock(); unsigned i = h & 0x7fff, gen = h >> 15; int used = i && i < MAX_H, live = used && g_h[i].kind; unsigned cur = used ? g_h[i].gen : 0; pthread_mutex_unlock(&G);
     LOG("【红】s2a_handle_close：C# 关不存在的句柄 %#x（%s）", h, !h ? "句柄 0：从没建过" : !used ? "格子越界：不是原生句柄" : live ? "格子已被别的对象复用（这个句柄早已被关）" : cur == gen ? "已被关掉（游戏或服务先关了）" : "已被关掉、格子空着");
     return 0;
