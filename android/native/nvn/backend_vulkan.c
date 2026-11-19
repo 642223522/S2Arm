@@ -5833,6 +5833,19 @@ static VkFormat srgb_twin(VkFormat f) {
     default: return VK_FORMAT_UNDEFINED;
     }
 }
+// RGBA8 ↔ BGRA8（UNORM / sRGB）：同一块存储按另一种通道顺序看。列表里不放 BGRA（不确定 Adreno 还保不保 UBWC，而 RGBA8 是最常见的渲染目标），
+//   用列表里 sRGB 属性相同的那个格式建视图、在通道映射里互换 R / B——采样结果与直接按 BGRA 看逐位相同。返回替代格式，不是这一对返回 UNDEFINED。
+static VkFormat rb_swap_stand_in(const struct nvn_gpu_tex_s *t, VkFormat want) {
+    const int want_bgra = want == VK_FORMAT_B8G8R8A8_UNORM || want == VK_FORMAT_B8G8R8A8_SRGB;
+    const int want_rgba = want == VK_FORMAT_R8G8B8A8_UNORM || want == VK_FORMAT_R8G8B8A8_SRGB;
+    if (!want_bgra && !want_rgba) return VK_FORMAT_UNDEFINED;
+    const int srgb = want == VK_FORMAT_B8G8R8A8_SRGB || want == VK_FORMAT_R8G8B8A8_SRGB;
+    const VkFormat use = want_bgra ? (srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM)
+                                   : (srgb ? VK_FORMAT_B8G8R8A8_SRGB : VK_FORMAT_B8G8R8A8_UNORM);
+    if (use == t->format || use == t->sample_format) return use;
+    for (unsigned i = 0; i < t->fmt_n; i++) if (t->fmt_list[i] == use) return use;
+    return VK_FORMAT_UNDEFINED;
+}
 static uint64_t g_tex_view_fallbacks;   // 列表模式下视图格式不在列表、退回本格式的次数（验证读数）
 uint64_t nvn_vk_tex_view_fallbacks(void) { return g_tex_view_fallbacks; }
 static int tex_fmt_allowed(const struct nvn_gpu_tex_s *t, VkFormat f) {
@@ -6145,7 +6158,11 @@ nvn_gpu_rc nvn_gpu_view_create(nvn_gpu_tex th, const view_t *v, nvn_gpu_view *ou
     if (!plan.ok) return fail(err, NVN_GPU_E_ARG, "%s", plan.why);
     base_level = plan.base_level; levels = plan.nlevels;
     base_layer = plan.base_layer; layers = plan.nlayers; type = plan.type;
-    int fmt_fell_back = 0;
+    int fmt_fell_back = 0, rb_swap = 0;
+    if (!tex_fmt_allowed(t, fmt)) {
+        VkFormat sub = rb_swap_stand_in(t, fmt);
+        if (sub != VK_FORMAT_UNDEFINED) { fmt = sub; rb_swap = 1; }
+    }
     if (!tex_fmt_allowed(t, fmt)) {
         if (!t->fmt_n && !(t->usage & (VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)) && !nvn_vk_format_is_depth(t->format))
             return fail(err, NVN_GPU_E_UNSUPPORTED, "不同格式的视图需要创建时声明 NVN_GPU_TEX_VIEW_FMT");
@@ -6182,6 +6199,7 @@ nvn_gpu_rc nvn_gpu_view_create(nvn_gpu_tex th, const view_t *v, nvn_gpu_view *ou
     {
         uint8_t fmap[4];
         o->p16_remap = nvn_vk_format_chanmap(o->nvn_format, fmap);
+        if (rb_swap) { uint8_t r = fmap[0]; fmap[0] = fmap[2]; fmap[2] = r; }   // RGBA ↔ BGRA 替代视图（rb_swap_stand_in）：NVN 的 R 取存储的 B
         uint8_t sw[4] = {2, 3, 4, 5};
         if (v && v->set_swizzle) memcpy(sw, v->swz, 4);
         else if (t->swz) for (int ch = 0; ch < 4; ch++) sw[ch] = (uint8_t)(t->swz >> (3 * ch) & 7);
