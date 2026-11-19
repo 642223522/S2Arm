@@ -90,7 +90,7 @@ static NvPresentAA *present_aa_prepare(int slot, id<MTLTexture> src, const int c
         MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget | MTLTextureUsagePixelFormatView);
     s->output = present_aa_texture(MTLPixelFormatBGRA8Unorm, w, h, MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite);
     s->size = [g_dev newBufferWithLength:2 * sizeof(float) options:MTLResourceStorageModeShared];
-    s->cropUV = [g_dev newBufferWithLength:8 * sizeof(float) options:MTLResourceStorageModeShared];
+    s->cropUV = [g_dev newBufferWithLength:16 * sizeof(float) options:MTLResourceStorageModeShared];   // PR3b：16 浮点（后 8 = present 模式参数——这份缓冲也喂过 present_blit_m4 的共享着色器，Crop 全量读）
     if (!s->input || !s->output || !s->size || !s->cropUV) { MLOG("【红】 direct AA texture/buffer allocation"); return nil; }
     float size[] = {(float)w, (float)h}; memcpy(s->size.contents, size, sizeof size);
     NSMutableArray *resources = [NSMutableArray arrayWithObjects:s->input, s->output, s->size, s->cropUV, nil];

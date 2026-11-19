@@ -256,7 +256,7 @@ static NvPresentFI *fi_get(CAMetalLayer *layer, NSUInteger cw, NSUInteger ch) {
             [[c renderCommandEncoderWithDescriptor:rp] endEncoding]; [c commit]; [c waitUntilCompleted];
         }
         NSError *te = nil;
-        for (int i = 0; i < 4; i++) { f->uv[i] = [g_dev newBufferWithLength:8 * sizeof(float) options:MTLResourceStorageModeShared]; res_add(f->uv[i]); f->tab[i] = tab_new(i == 2 ? 2 : 1, i == 2 ? 2 : 1, 1, &te); if (!f->uv[i] || !f->tab[i]) { fi_off("cannot create the blit tables"); return nil; } }
+        for (int i = 0; i < 4; i++) { f->uv[i] = [g_dev newBufferWithLength:16 * sizeof(float) options:MTLResourceStorageModeShared]; res_add(f->uv[i]); f->tab[i] = tab_new(i == 2 ? 2 : 1, i == 2 ? 2 : 1, 1, &te); if (!f->uv[i] || !f->tab[i]) { fi_off("cannot create the blit tables"); return nil; } }   // PR3b：16 浮点（uv[2]/uv[3] 也喂 present_blit_m4 的共享着色器，Crop 全量读；fi_pass 自家 fsCopy/fsMid 的 32 字节 Crop 不变）
         for (int i = 0; i < 3; i++) { f->alloc[i] = [g_dev newCommandAllocator]; f->cb[i] = [g_dev newCommandBuffer]; f->slot_free[i] = dispatch_semaphore_create(1); if (!f->alloc[i] || !f->cb[i]) { fi_off("cannot create the command buffers"); return nil; } }
         f->last_seq = f->last_pair_seq = UINT64_MAX; atomic_store(&f->cut_seq, UINT64_MAX);
         if (!fi_copy_setup(f)) { fi_off("cannot create the copy pipeline"); return nil; }
