@@ -4261,9 +4261,10 @@ static nvn_gpu_rc cpipe_build(const nvn_gpu_stage_desc *cs, int mode, nvn_gpu_pi
     cp.stage.pName = sh->entry;
     cp.layout = p->layout;
     const uint64_t pc_t0 = now_ns();   // 同图形管线：超过 3 毫秒打一行，用来对长帧
-    if (vkCreateComputePipelines(g.d, g_plc, 1, &cp, NULL, &p->pipe) != VK_SUCCESS) {
+    VkResult cpvr = vkCreateComputePipelines(g.d, g_plc, 1, &cp, NULL, &p->pipe);
+    if (cpvr != VK_SUCCESS) {
         destroy_pipe_objects(p);
-        return fail(err, NVN_GPU_E_COMPILE, "vkCreateComputePipelines 失败");
+        return fail(err, NVN_GPU_E_COMPILE, "vkCreateComputePipelines 失败（VkResult %d，%u 项资源）", (int)cpvr, sh->nent);
     }
     plc_created();
     { const uint64_t dt = now_ns() - pc_t0;
