@@ -3550,6 +3550,10 @@ static void power_line(uint64_t frame) {
     return;
 #else
 
+    void nvn_be_handle_wait_stats(uint64_t s[6]); static uint64_t phw[6]; uint64_t hw[6]; nvn_be_handle_wait_stats(hw);
+    LOG("[nvn] CPU uniform-handle waits up to frame %llu: waits %llu, total %.3f ms, conservative %llu (all %llu, collision %llu), cancelled %llu (since previous report)", frame,
+        (unsigned long long)(hw[0] - phw[0]), (hw[1] - phw[1]) / 1e6, (unsigned long long)(hw[2] - phw[2]),
+        (unsigned long long)(hw[3] - phw[3]), (unsigned long long)(hw[4] - phw[4]), (unsigned long long)(hw[5] - phw[5])); memcpy(phw, hw, sizeof phw);
     static uint64_t pt, pe, pcpu, pp, piw, ppw, pg, pf, pld, pst, pfu, pudc; static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb);
     task_power_info_v2_data_t pw; mach_msg_type_number_t n = TASK_POWER_INFO_V2_COUNT;
     if (task_info(mach_task_self(), TASK_POWER_INFO_V2, (task_info_t)&pw, &n) != KERN_SUCCESS) return;
@@ -3574,6 +3578,9 @@ static void power_line(uint64_t frame) {
             "attachments per frame load %.0f MB / store %.0f MB, load-all store-all passes %.0f, saved by not storing unwritten attachments %.1f MB", frame, rs, (unsigned long long)(bf - pbf), (unsigned long long)(bs - pbs),
             (unsigned long long)(cut - pcut), (unsigned long long)(ccut - pccut), (unsigned long long)(pcutn - ppcut), (unsigned long long)(bsp - pbsp), (unsigned long long)(ud - pud), (unsigned long long)(uc - puc), (unsigned long long)(pm - ppm), (unsigned long long)(pr - ppr), (unsigned long long)(pf_ - ppf), (unsigned long long)(w5[1] - pw5[1]), (unsigned long long)(w5[2] - pw5[2]), (unsigned long long)(w5[3] - pw5[3]), (unsigned long long)(w5[0] - pw5[0]), (unsigned long long)(w5[4] - pw5[4]), (unsigned long long)(lt - plt), (unsigned long long)(ll - pll),
             (ld - pld) / 1048576.0 / nf, (st - pst) / 1048576.0 / nf, (fu - pfu) / nf, (udc - pudc) / 1048576.0 / nf); pbs = bs; pbf = bf; pcut = cut; pccut = ccut; ppcut = pcutn; pbsp = bsp; pud = ud; puc = uc; ppm = pm; ppr = pr; ppf = pf_; memcpy(pw5, w5, sizeof pw5); plt = lt; pll = ll;
+            { void nvn_be_handle_wait_stats(uint64_t s[6]); static uint64_t phw[6]; uint64_t hw[6]; nvn_be_handle_wait_stats(hw);   // PR #324：CPU 解码句柄前等已提交写入者的次数 / 耗时 / 保守等（全部页 / 槽冲突）/ 被取消
+              LOG("[nvn] CPU uniform-handle waits up to frame %llu: %llu waits, %.1f ms total, conservative %llu (all-pages %llu, slot collision %llu), cancelled %llu", frame, (unsigned long long)(hw[0] - phw[0]), (hw[1] - phw[1]) / 1e6,
+                  (unsigned long long)(hw[2] - phw[2]), (unsigned long long)(hw[3] - phw[3]), (unsigned long long)(hw[4] - phw[4]), (unsigned long long)(hw[5] - phw[5])); memcpy(phw, hw, sizeof phw); }
         char tc[400]; dm_thread_cpu(tc, sizeof tc, s);
         LOG("[nvn] threads up to frame %llu: CPU %s", frame, tc); }
     else { char yt[192], rs[900], tc[400]; dm_yield_top(yt, sizeof yt); nvn_be_res_stats(rs, sizeof rs); dm_thread_cpu(tc, sizeof tc, 1); }   // the first call only takes the baselines
