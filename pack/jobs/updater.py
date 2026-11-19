@@ -75,7 +75,7 @@ def version_key(text):
 
 def newer(candidate, current):
     """更新源里的 candidate 要不要给本机 current：要比它新，且正式版玩家只收正式版——
-    本机是正式版（0.5.8）时预发布版（0.6.0-test.1）一律不算更新，哪怕按语义版本更大（正式渠道永远不推测试版，11-19 总指挥）；
+    本机是正式版（0.5.8）时预发布版（0.6.0-test.1）一律不算更新，哪怕按语义版本更大（正式渠道永远不推测试版，11-19 维护者）；
     本机是测试版时正式版和更新的测试版都收（0.6.0-test.1 → 0.6.0-test.2 / 0.6.0）"""
     c, m = version_key(candidate), version_key(current)
     if not c or not m or c <= m:

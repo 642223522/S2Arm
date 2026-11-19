@@ -222,7 +222,7 @@ class VersionTests(Base):
                 self.assertEqual(updater.latest("mac", current)["available"], available)
 
     def test_release_players_never_get_prereleases(self):
-        """11-19 总指挥：正式渠道永远不推预发布——本机是正式版时预发布一律不算更新（哪怕按语义版本更大）；本机是测试版时才看预发布。
+        """11-19 维护者：正式渠道永远不推预发布——本机是正式版时预发布一律不算更新（哪怕按语义版本更大）；本机是测试版时才看预发布。
         GitHub 回退与官网清单两条路都核"""
         key = ed25519.public_key(TEST_SECRET).hex()
         cases = (("v0.6.0-test.1", "0.5.8", False), ("v0.6.0", "0.5.8", True), ("v0.6.0-test.2", "0.6.0-test.1", True),
