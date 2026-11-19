@@ -30,7 +30,7 @@ $(VKC_DIR)/vkx.o: graphics/metal/gal_vkx.m
 	clang -std=gnu11 -fobjc-arc $(VKC_FLAGS) -Igraphics/third_party/spirv_cross -c $< -o $@
 $(VKC_DIR)/test: tests/vk_core/test.c tests/vk_core/Makefile $(VKC_DIR)/stubs.o $(VKC_DIR)/vkx.o $(VKC_LIB) $(SPVC_LIB)
 	clang -std=gnu11 $(VKC_FLAGS) -o $@ $< $(VKC_DIR)/stubs.o $(VKC_DIR)/vkx.o $(VKC_LIB) $(SPVC_LIB) \
-	  -framework Metal -framework Foundation -framework QuartzCore -framework CoreGraphics -framework ImageIO -framework UniformTypeIdentifiers -lc++ $(NVN_TEST_WEAK)
+	  -framework Metal -framework Foundation -framework QuartzCore -framework CoreGraphics -framework ImageIO -framework UniformTypeIdentifiers -lc++ -lcompression $(NVN_TEST_WEAK)
 $(VKC_DIR)/spv_rt/rt.frag.spv: tests/vk_core/rt.frag
 	@mkdir -p $(dir $@)
 	glslangValidator -V --target-env vulkan1.1 -o $@ $< > /dev/null
