@@ -1789,12 +1789,23 @@ namespace S2A.Dsh
             if ((slots >> 16) != 0 || !(3 <= tb && tb <= 16) || (h >> 28) != 0) return null;
             return (tb - 3, (h & 0x3fff) * 4);
         }
+        // 着色器按运行时下标取 c2 句柄表的数组（BindlessToArray）：返回贴图半边第 0 项的字节偏移（宿主 TEXA / SAMPA：第 k 项 = c2 字节 off + 8k 那一槽）。
+        //   组合句柄（类型 0）：贴图、采样器两个成员都按表取。分离句柄对（类型 ≠ 0，库号 PackSlots(2, 2) = cb196610 或 cb2）：一个字是运行时下标起点（贴图），
+        //   另一个是 c2 分离采样器表里的常量字（0x568 + 8r）：只贴图成员给 tex_c2a，采样器成员回落 DecodeTex 的单个 samp（宿主把数组每一项都填它）。
+        //   原先分离句柄对整组解不出槽（「fp_t2d_cb196610_… has no resolved slot number」，几款游戏各一支片元着色器整支不载）
         internal static long? C2Array(string name, string ty)
         {
-            var m = Full(@"[a-z]+_t\w*?_cb2_([0-9A-F]+)", name.EndsWith("Smplr", StringComparison.Ordinal) ? name[..^5] : name);
+            bool smp = name.EndsWith("Smplr", StringComparison.Ordinal);
+            var m = Full(@"[a-z]+_t\w*?_cb(\d+)_([0-9A-F]+)", smp ? name[..^5] : name);
             if (!m.Success || !ty.StartsWith("array<", StringComparison.Ordinal)) return null;
-            long h = Hex(m.Groups[1].Value);
-            return h >> 28 == 0 ? (h & 0x3fff) * 4 : null;
+            long slots = long.Parse(m.Groups[1].Value), h = Hex(m.Groups[2].Value);
+            long tb = slots & 0xffff, sb = (slots >> 16) != 0 ? (slots >> 16) - 1 : tb;
+            if (tb != 2 || sb != 2) return null;
+            if (h >> 28 == 0) return (h & 0x3fff) * 4;
+            if (smp || (h >> 28) is not (1 or 2)) return null;   // 类型 3（常量采样器）的采样器半边是 samp_id，宿主不给它填数组：照旧不接
+            long o0 = h & 0x3fff, o1 = (h >> 14) & 0x3fff;
+            static bool SampWord(long w) => w * 4 >= 0x568 && w * 4 < 0x568 + 8 * 128 && (w * 4 - 0x568) % 8 == 0;
+            return SampWord(o1) && !SampWord(o0) ? o0 * 4 : SampWord(o0) && !SampWord(o1) ? o1 * 4 : null;
         }
         static readonly Dictionary<string, long> HELPERS = new() { ["vertex_output"] = 0, ["geometry_vb_output"] = 1, ["geometry_ib_output"] = 2, ["vb_info"] = 3, ["trb_data"] = 4, ["vb_input"] = 1 };
 
@@ -1959,7 +1970,9 @@ namespace S2A.Dsh
             foreach (var kv in dr)
             {
                 var d = (PyDict)kv.Value;
-                if ((bool)d["dynamic"]) bad.Add($"c{kv.Key} dynamic index");
+                // c2 按运行时下标读：宿主 DRV2 每次把整段的四张句柄表（贴图 / 图像 / 分离贴图 / 分离采样器）全部填好、其余字节 0（nvn_mtl.m encode_args），
+                //   与静态读哪几格无关，下标落在表里就读到绑定的句柄。原先一律判填不了、整支拒载（几款游戏的片元着色器按同一下标既取 c2 贴图数组、又把句柄字当数据读）
+                if ((bool)d["dynamic"] && kv.Key != "2") bad.Add($"c{kv.Key} dynamic index");
                 foreach (long o in ((List<object>)d["vec4_offsets"]).Cast<long>())
                     if (!DRV_FILL[int.Parse(kv.Key)].Concat(kv.Key == "0" ? own : Array.Empty<(long, long)>()).Any(r => o < r.Item2 && r.Item1 < o + 16)) bad.Add($"c{kv.Key}+0x{o:x}");
             }

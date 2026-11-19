@@ -88,7 +88,8 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
                 r->kind = NVN_RB_IMGA; r->rw = 1; o->nb++; continue;
             }
             if ([k isEqualToString:@"cbuf"]) r->kind = NVN_RB_CBUF;
-            else if ([k isEqualToString:@"samp"]) r->kind = NVN_RB_SAMP;
+            else if ([k isEqualToString:@"samp"]) { r->kind = NVN_RB_SAMP;   // declared as an array (the sampler half of a separate handle pair whose texture half is a run-time c2 array, Dsh.cs C2Array): every element is this one sampler
+                if (n > 1) { if (n > 32) FAIL("B binding %s: array of %d", nm.UTF8String, n); r->n = (uint8_t)n; } }
             else if ([k isEqualToString:@"samp_tex"]) r->kind = NVN_RB_SAMPT;
             else if ([k isEqualToString:@"tex"]) { r->kind = NVN_RB_TEX; dummy_kind(b[@"msl_type"], &r->dtt, &r->dpf); r->f1d = [b[@"fetch1d"] boolValue] ? ([b[@"fetch1d_exact"] boolValue] ? 2 : 1) : 0;
                 // #968: the s2a_flags.yzw bit the translator reads for this binding's coordinate normalization (Dsh.cs Reflect); absent in an older library = no bit, as before

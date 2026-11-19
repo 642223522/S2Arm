@@ -53,6 +53,17 @@ int main(void) {
                    "③ 槽 8 / ④ 偏移越出 256 / ⑤ 没给槽 → 拒（%s | %s | %s）", qe[2], qe[3], qe[4]);
         }
 
+        // 分离句柄对的采样器半边声明成数组（Dsh.cs C2Array：贴图半边按运行时下标取 c2 表，采样器是一个常量分离采样器槽）：kind samp + array<sampler, 32> → SAMP、n 32（宿主每项填同一个）；
+        //   array<sampler, 33> → 拒。反证：同一单测编改前的 nvn_refl.m，n 是 0（宿主只填第 0 项，其余 31 项空）
+        {
+            NvShader *sa = [NvShader new]; err[0] = 0;
+            int r5 = nvn_refl_from_json(@{ @"route": @"B", @"bindings": @[ @{ @"kind": @"samp", @"reg": @1, @"arg_id": @39, @"msl_name": @"fp_t2d_cb196610_10570000Smplr", @"msl_type": @"array<sampler, 32>" } ] }, &sa->rf, err, sizeof err);
+            VERIFY(r5 == 0 && sa->rf.nb == 1 && sa->rf.b[0].kind == NVN_RB_SAMP && sa->rf.b[0].reg == 1 && sa->rf.b[0].n == 32, "采样器数组 → SAMP 槽 1、n 32（rc %d n %d %s）", r5, r5 == 0 ? sa->rf.b[0].n : -1, err);
+            NvShader *sb2 = [NvShader new]; err[0] = 0;
+            r5 = nvn_refl_from_json(@{ @"route": @"B", @"bindings": @[ @{ @"kind": @"samp", @"reg": @1, @"arg_id": @0, @"msl_name": @"fp_s", @"msl_type": @"array<sampler, 33>" } ] }, &sb2->rf, err, sizeof err);
+            VERIFY(r5 != 0 && strstr(err, "array of 33"), "采样器数组 33 项 → 拒（%s）", err);
+        }
+
         // #798 前导项配对（11-16 回归：几何变体的拓扑缓冲 trb_data 在反射里是几何辅助缓冲，原先整支判「no texel buffer of that name」、几何核编不出）。期望手写：
         //   ① 前导项指向几何辅助缓冲 → 解析成功、两边都不配对（tbl 0，has_tbl 0：前导数按 0 走）；② 指向纹素缓冲 → 照常互指（#798 原行为）；
         //   ③ 名字找不到 → 照旧报错；④ 指向别的种类（常量缓冲）→ 照旧报错。反证：同一单测编改前的 nvn_refl.m，① 红

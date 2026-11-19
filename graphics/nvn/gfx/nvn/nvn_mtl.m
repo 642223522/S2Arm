@@ -11890,6 +11890,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                 int tid = (int)(tex_slot_h(S.tex[1], S.img[1], reg) & 0xfffff); void *cv = NULL;
                 if (tid >= 0 && tid < g_ntreg && g_treg[tid].ok && wd_uvext_clamp(tid, g_sreg[sid].ws)) { uint64_t cr = samp_clamp_rid(sid, &cv); if (cr) { slots[aid] = cr; ss = (__bridge id<MTLSamplerState>)cv; } }
             }
+            if (b->kind == NVN_RB_SAMP) for (int k = 1; k < b->n; k++) slots[aid + k] = slots[aid];   // an array of it (nvn_refl.m): the same sampler in every element
             USE(ss ? ss : dummy_samp(), MTLResourceUsageRead);
             if (bl && sid > 0) { int ok = sid < g_nsreg && g_sreg_ok[sid]; samp_par sp = ok ? g_sreg[sid] : (samp_par){0};   // g_rmu is already held in this section
                 if (ok) PD("B %llu st%d samp reg%d sid=%d mag=%d min=%d (0 nearest / 1 linear; 2–5 with mips) wrap=%d,%d,%d border=%g,%g,%g,%g lod=%g..%g bias=%g aniso=%g cmp=%d/%d %s", g_stat_pass, nvn_stage, reg, sid, (int)sp.magf, (int)sp.minf,
