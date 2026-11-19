@@ -697,6 +697,18 @@ int main(void) {
         snprintf(c, sizeof c, "grep -q 'shaders/a.metallib' '%s/games/0100ABCD00000007/资源包/index.tsv'", D5);
         CHECK(sh(c) == 0, "⑭b 机上已有的着色器库行保留在 index.tsv");
         { const char *s2a_img_scan_noshaders(void); CHECK(!strcmp(s2a_img_scan_noshaders(), "game.img"), "⑭b 不带着色器的文件名给界面 = game.img（实际「%s」）", s2a_img_scan_noshaders()); } }
+      // ⑭s 同一个导入文件夹里有同款的 .s2arm（派生件 index.tsv 带着色器库行）和不带 shaders/ 的 .img（导出两件套）：先导 .s2arm、再认领 IMG，
+      //   着色器库行留在 index.tsv，不记「没有着色器库」。期望手写：认领 2 个、日志里 0 行「没有着色器库」、界面文件名为空、index.tsv 有 shaders/a 行。
+//   文件名取 Game.*：APFS 上 readdir 先列 Game.img（实测；Slay.* 先列 .s2arm），不按次序处理时这一例会红
+      if (zstd_pick()) { char Ds[1300], lg[1400]; snprintf(Ds, sizeof Ds, "%s/s2hs/Documents", T); snprintf(lg, sizeof lg, "%s/scans.log", T);
+        snprintf(c, sizeof c, "mkdir -p '%s/放这里导入' && python3 '%s/pack/img.py' build - '%s/src/others.tsv' '%s/放这里导入/Game.img' --gid 0100abcde0000000 --pack-id imgs01 > /dev/null", Ds, R, D, Ds);
+        CHECK(sh(c) == 0, "⑭s 造不带 shaders/ 的 IMG");
+        char sp2[1500]; snprintf(sp2, sizeof sp2, "%s/放这里导入/Game.s2arm", Ds); s2arm_pack(T, sp2, "s2arm.json", NULL);
+        int lfd = open(lg, O_WRONLY | O_CREAT | O_TRUNC, 0644), keep = g_s2a_logfd; g_s2a_logfd = lfd;
+        int placed = s2a_img_scan(Ds); g_s2a_logfd = keep; close(lfd);
+        snprintf(c, sizeof c, "test \"$(grep -c '没有着色器库' '%s')\" = 0 && grep -q '^shaders/a' '%s/../Library/Application Support/S2Arm/games/0100ABCDE0000000/资源包/index.tsv'", lg, Ds);
+        const char *s2a_img_scan_noshaders(void);
+        CHECK(placed == 2 && sh(c) == 0 && !*s2a_img_scan_noshaders(), "⑭s .s2arm + .img 同文件夹：认领 %d 个（期望 2）、不报没有着色器库、index.tsv 留着色器行（界面文件名「%s」）", placed, s2a_img_scan_noshaders()); }
       // ⑭i 0.6.0 截掉导入本体里重复的派生件：导出格式的 .img（pack/img.py export：电脑资源包的 game.img + 尾部追加 shaders/、game.imgmap 进目录表）导入并解开后，
       //   派生件解成文件、本体尾部那份截掉。期望手写：解开成功；本体比导入时小；本体目录表里没有 shaders/ 与 game.imgmap、其余条目与原资源包 game.img 的完全一样；
       //   头里整长 = 文件长；index.tsv 有 shaders/a.metallib 行、game.img 那行长度 = 文件长；解出的 game.imgmap 头里记的整长 = 本体文件长；再应用一次仍成功、本体不变

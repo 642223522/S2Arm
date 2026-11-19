@@ -1136,6 +1136,10 @@ static int img_scan_dir(const char *proc_docs, const char *dir, int depth, int p
     char *names[512]; int nn = 0; struct dirent *e;
     while ((e = readdir(d)) && nn < 512) { if (e->d_name[0] == '.') continue; if (depth == 0 && !strcmp(e->d_name, "games")) continue; names[nn++] = strdup(e->d_name); }
     closedir(d);
+    // 同一个文件夹里先导 .s2arm、再认领 IMG：.s2arm 带来的资源包派生件里有 index.tsv 的着色器库行，IMG 认领时照留（img_place）。readdir 的次序不定，
+    //   IMG 先认领时 index.tsv 还没到，报「没有着色器库、首次遇到时现编」，可接着导入的 .s2arm 已经带着着色器（11-18 两台 iPhone 实机：起局着色器表 11 行、现编 0）
+    { char *ord[512]; int m = 0; for (int k = 0; k < 2; k++) for (int j = 0; j < nn; j++) if ((ends_with(names[j], ".s2arm") != 0) == (k == 0)) ord[m++] = names[j];
+      memcpy(names, ord, (size_t)nn * sizeof *names); }   // 稳定分区：.s2arm 在前，其余保持原次序
     for (int i = 0; i < nn; i++) {
         char p[2400]; struct stat st; snprintf(p, sizeof p, "%s/%s", dir, names[i]);
         if (!lstat(p, &st)) {
