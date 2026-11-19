@@ -94,7 +94,8 @@ if(ANDROID)
         if(S2ARM_ANDROID_VK_BACKEND STREQUAL "nvk")
             # 新回放层直接实现 nvn_be_*：没有名字转接头，没有 shim。回放核心与后端源在 LinkSources.cmake 的 nvk 清单里。
             target_sources(s2arm_android PRIVATE ${s2a_frontend_c}
-                native/gfx_plat/provider_nvk.c native/direct/profile_compose.c)
+                native/gfx_plat/provider_nvk.c native/direct/profile_compose.c
+                native/nvn/guest_window_crop.c native/nvn/guest_window_crop.S)
             target_compile_definitions(s2arm_android PRIVATE S2A_ANDROID_VK_BACKEND_NVK=1)
         else()
             # 共享前端的后端入口名是 main 的 nvn_be_*；本线 Android 后端仍以 mtl_* 实现。
@@ -371,6 +372,12 @@ else()
     target_compile_options(input_test PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(input_test PRIVATE Threads::Threads)
     add_test(NAME android_input COMMAND input_test)
+    # 手机当掌机的六轴 / 震动（#528 第 10 项）：方向 → 坐标基、加速度口径、震动振幅与租约节奏，配共用 phone_axes.c 真跑
+    add_executable(phone_feedback_test tests/phone_feedback_test.c ../runtime/src/phone_axes.c ../runtime/src/motion_pick.c)
+    target_include_directories(phone_feedback_test PRIVATE native ../runtime/include)
+    target_compile_options(phone_feedback_test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(phone_feedback_test PRIVATE m)
+    add_test(NAME android_phone_feedback COMMAND phone_feedback_test)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_executable(tsd_test tests/tsd_test.c native/tsd.c)
         target_include_directories(tsd_test PRIVATE native)
@@ -651,8 +658,9 @@ else()
     add_executable(direct_source_store_test tests/direct_source_store_test.c
         native/direct/source_store.c native/direct/sha256.c)
     target_include_directories(direct_source_store_test PRIVATE native ../runtime/include)
-    # 宿主夹具用小的 pinned 额外槽位跑“全 pin 后 keep 失败”，生产默认 16384。
-    target_compile_definitions(direct_source_store_test PRIVATE S2A_SOURCE_MAX_PINNED=64)
+    # 宿主夹具用小的 pinned 额外槽位跑“全 pin 后 keep 失败”，生产默认 16384；
+    # 字节安全阀用 96 MiB 跑“活 program 占满软预算后仍收、到安全阀才失败”，生产默认 512 MiB（宿主夹具不必真填 512 MiB）。
+    target_compile_definitions(direct_source_store_test PRIVATE S2A_SOURCE_MAX_PINNED=64 S2A_SOURCE_HARD_BYTES=100663296u)
     target_compile_options(direct_source_store_test PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(direct_source_store_test PRIVATE Threads::Threads)
     add_test(NAME android_direct_source_store COMMAND direct_source_store_test)
@@ -767,6 +775,13 @@ else()
     target_link_libraries(direct_compile_worker_test PRIVATE Threads::Threads)
     target_link_options(direct_compile_worker_test PRIVATE ${s2a_weak_u})
     add_test(NAME android_direct_compile_worker COMMAND direct_compile_worker_test)
+    # 真实 worker + 受控线程调度：同 SHA 重新附着和旧等待者跨重启。
+    add_executable(direct_compile_worker_race_test tests/direct_compile_worker_race_test.c)
+    target_include_directories(direct_compile_worker_race_test PRIVATE native ../runtime/include)
+    target_compile_options(direct_compile_worker_race_test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(direct_compile_worker_race_test PRIVATE Threads::Threads)
+    target_link_options(direct_compile_worker_race_test PRIVATE ${s2a_weak_u})
+    add_test(NAME android_direct_compile_worker_race COMMAND direct_compile_worker_race_test)
     add_executable(nvn_first_use_test tests/nvn_first_use_test.c ../graphics/nvn/gfx/nvn/nvn_first_use.c)
     target_include_directories(nvn_first_use_test PRIVATE ../graphics/nvn/gfx/nvn)
     target_compile_options(nvn_first_use_test PRIVATE -Wall -Wextra -Werror)

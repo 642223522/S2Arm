@@ -66,6 +66,14 @@ namespace Ryujinx.Audio.Backends.CompatLayer
                 return targetSampleFormat;
             }
 
+            // S2Arm: the session decodes any guest format to PCM16 first (CompatLayerHardwareDeviceSession.ReadSamples), so a format
+            //   the device lacks goes through PCM16: straight to it when the device takes PCM16, else on to the chain below (was:
+            //   only PCM16 guests could be converted; audsmx external streams also send PcmInt8 / PcmInt32 / PcmFloat)
+            if (targetSampleFormat != SampleFormat.PcmInt16)
+            {
+                return SelectHardwareSampleFormat(SampleFormat.PcmInt16);
+            }
+
             // Attempt conversion from PCM16.
             if (targetSampleFormat == SampleFormat.PcmInt16)
             {

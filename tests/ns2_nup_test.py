@@ -348,8 +348,9 @@ else:
                     out[rel] = hashlib.sha256(rd(os.path.join(dp, f))).hexdigest()[:16]
         return out
 
-    def extract(src, out, image):   # image：True = S2A_ROMFS_IMAGE=1，False = 0（目录形态），None = 不设（缺省）
+    def extract(src, out, image, extra=None):   # image：True = S2A_ROMFS_IMAGE=1，False = 0（目录形态），None = 不设（缺省）
         env = {k: v for k, v in os.environ.items() if k != 'S2A_ROMFS_IMAGE'}
+        env.update(extra or {})
         env['S2A_NX_UNPACK'] = NXU
         if image is not None:
             env['S2A_ROMFS_IMAGE'] = '1' if image else '0'
@@ -379,6 +380,14 @@ else:
             c = os.path.join(t, name + '-default')   # 缺省（不设开关）= 镜像形态，与 =1 那份逐字节相同
             rc_ = extract(s, c, None)
             chk(f'⑪ {name}：缺省是镜像形态（romfs.std 同 =1、没有 romfs/）', (rc_.returncode, rd(os.path.join(c, 'romfs.std')) == rd(os.path.join(b, 'romfs.std')), os.path.exists(os.path.join(c, 'romfs'))), (0, True, False))
+        # #1612 建镜像报进度：给了 S2A_PROGRESS，nx_unpack 按出包进度协议写「时刻 解包·资源镜像（MB） 已写 总数」；夹具 romfs 不到 1 MB → 总数 1，
+        #   开头一行已写 0、收尾一行已写 = 总数；进度行（标准输出）透进日志、不再整段收住
+        pf = os.path.join(t, 'progress.tsv')
+        r = extract(src, os.path.join(t, 'prog-img'), True, {'S2A_PROGRESS': pf})
+        rows = [l.rstrip('\n').split('\t')[1:] for l in open(pf, encoding='utf-8')] if os.path.exists(pf) else []
+        rows = [x for x in rows if x and x[0] == '解包·资源镜像（MB）']
+        chk('⑪ 建镜像写进度：开头已写 0 / 1、收尾 1 / 1', (r.returncode, rows[:1], rows[-1:]),
+            (0, [['解包·资源镜像（MB）', '0', '1']], [['解包·资源镜像（MB）', '1', '1']]))
         # 展开这一步不写 romfs 散文件：只出清单（全量容器：本体 + 最新更新各一份 romfs.nupmap）
         dump = os.path.join(t, 'dump-img')
         env = dict(os.environ, S2A_ROMFS_IMAGE='1')
@@ -394,6 +403,19 @@ else:
         r = extract(bad_src, out_bad, True)
         # 维护者 11-17：「校验不过就整个拒绝」一律撤掉——镜像形态下坏的那份只在建镜像时核（nx_unpack --romfs-image 打黄 + 【校验跳过】），照常出产物
         chk('⑪ 容器里 romfs 数据坏（大小不变）：照常出产物、退出 0', (r.returncode, os.path.exists(out_bad)), (0, True))
+
+# ⑫ 单独导出的程序 1（#1567，Switch 2 版程序 0400…8001）：程序号末位是程序序号，照收；DLC 按应用号（去掉末位）+ 0x1000 + 序号认，序号 1 的 DLC 不被跳过
+with tempfile.TemporaryDirectory() as t:
+    P1 = APP | 1
+    s12 = os.path.join(t, 'prog1.nup')
+    build(s12, [(0, P1, 0, 0, {'main': MAIN_B, 'main.npdm': npdm(P1)}, {'a.bin': b'p1'}, {}), (2, APP + 0x1001, 0, 0, None, {'dlc.bin': b'DLC1'}, {})])
+    d12, x12 = os.path.join(t, 'dump'), os.path.join(t, 'extract')
+    r = run(NUP, s12, d12)
+    chk('⑫ 程序 1：展开退出 0、DLC 写出', (r.returncode, rd(os.path.join(d12, f'dlc/{APP + 0x1001:016X}/0/romfs/dlc.bin'))), (0, b'DLC1'))
+    r = run(DUMP, d12, x12) if os.path.isdir(d12) else None
+    tsv = (rd(os.path.join(x12, 'aoc.tsv')) or b'').decode()
+    chk('⑫ 程序 1：ns2_dump 退出 0、程序号、DLC 序号 1 / 标题号', (r.returncode if r else None, f'title_id\t{P1:016x}' in (rd(os.path.join(x12, 'unpack.tsv')) or b'').decode(),
+        [l.split('\t')[:2] for l in tsv.splitlines()[1:]]), (0, True, [['1', f'{APP + 0x1001:016x}']]))
 
 print(f'{"✓" if not bad else "✗"} ns2_nup：{ok} 过 / {bad} 不过')
 sys.exit(1 if bad else 0)

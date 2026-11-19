@@ -39,17 +39,27 @@ namespace S2A.Services
         internal static bool On => SnapSwitch.Save;
         private static int _maxSeq = -1;
 
-        private const uint EntReq = 1, EntConnect = 2;
+        // 日志按「完成」的先后写（请求开始时把消息记在本线程，处理完才追加）：几条线程的请求在服务层里交错，按开始先后重放，
+        //   域对象号、句柄的建与关先后都可能和存档那局不同（一款 Switch 2 游戏：后开始的 OpenFile 先拿到对象号 5、关掉后先开始的 OpenDirectory 才拿到 5）。
+        //   存档那一刻还没完成的请求不在日志里：恢复时游戏线程从入口重发它。
+        // EntFailed：当时服务回了错误码的请求，只记序号、不重放（没建任何服务状态；B 里文件系统已是快照那一刻的样子，A 当时「文件不存在」的打开在 B 里会成功，多出一个域对象）
+        // EntObjs：紧跟在它那条请求后面，这条请求交出的域对象号；重放时按这些号分配
+        private const uint EntReq = 1, EntConnect = 2, EntFailed = 4, EntObjs = 5;
+        [ThreadStatic] private static byte[] _pending;          // 本线程正在处理、要进日志的请求（开始时序列化，完成时追加）
+        [ThreadStatic] private static List<int> _pendingIds;    // 它交出的域对象号
         private static readonly object _lock = new();
         private static readonly MemoryStream _log = new();
         private static readonly BinaryWriter _w = new(_log);
-        private static int _seq, _dropped, _kept;
+        private static int _seq, _dropped, _kept, _bigLogged;
+        private static long _nextReport = 16L << 20;
+        private static readonly Dictionary<string, long> _bytesBy = new(); private static readonly Dictionary<string, int> _countBy = new();
         private static readonly Dictionary<string, int> _dropBy = new();
 
         [DllImport("s2a_native")] private static extern void s2a_snap_hctx(int seq);
         [DllImport("s2a_native")] private static extern int s2a_snap_replay_begin(int seq);
         [DllImport("s2a_native")] private static extern int s2a_snap_replay_end(int seq);
         [DllImport("s2a_native")] private static extern int s2a_snap_need_handle(uint h);
+        [DllImport("s2a_native")] private static extern void s2a_snap_hcommit(int seq);
 
         // ---------- HIPC 描述符 ----------
         internal struct Desc { public int Kind; public int Off; public ulong Addr; public ulong Size; }   // Kind：0 X、1 A、2 B、3 W、4 C
@@ -150,7 +160,14 @@ namespace S2A.Services
             if (n.EndsWith("ICommonStateGetter") && c == 50) return true;                                  // IsVrModeEnabled：纯查询
             if (n.EndsWith("DatabaseServiceImpl") && c == 0) return true;                                 // 头像库 IsUpdated：纯查询
             if (n.Contains("IHidServer") && (c == 201 || c == 206)) return true;                          // 发震动（单 / 多）：只输出
-            if (n.Contains("HardwareOpusDecoder") && c != 1 && c != 3 && c <= 9) return true;            // Opus 解码：只解这一段，留下的只有解码器内部预测（下一段自愈）；建 / 设上下文（1 / 3）照常
+            if (n.EndsWith("HardwareOpusDecoder") && c != 1 && c != 3 && c <= 9) return true;            // Opus 解码：只解这一段，留下的只有解码器内部预测（下一段自愈）；建 / 设上下文（1 / 3）照常
+            //   ↑ 只认解码器对象本身：原先按「名字含」判，把解码器管理器（HardwareOpusDecoderManager，4 / 8 号建解码器）也丢了，恢复后游戏解码时对象找不到、自己中止（一款 Switch 2 游戏）
+            // 网络套接字的等待 / 读取（Select 5、Poll 6、Recv 8、RecvFrom 9、Read 25）：不改服务状态，网络连接也没法跨进程接上；进了日志，恢复时在全新的
+            //   套接字上重放会一条条等到超时（一款 Switch 2 游戏：网络线程的 Poll 重放 310 条用了 642 秒）。建套接字 / 连接 / 接受（分配编号）照常记、照常重放
+            if (n.EndsWith(".Bsd.IClient") && (c == 5 || c == 6 || c == 8 || c == 9 || c == 25)) return true;
+            // 套接字的纯查询（GetPeerName 15、GetSockName 16、GetSockOpt 17）：不改服务状态。一款 Switch 2 游戏恢复后网络线程轮询 GetSockOpt（非阻塞连接的结果），
+            //   十几秒 33 万条、日志涨到 128 MB 把低区占满、托管堆分配失败
+            if (n.EndsWith(".Bsd.IClient") && (c == 15 || c == 16 || c == 17)) return true;
             return false;
         }
 
@@ -169,7 +186,16 @@ namespace S2A.Services
             lock (_lock)
             {
                 int seq = _seq++; _kept++;
-                _w.Write(Serialize(seq, num, cookie, cmd, n, msg, size));
+                _pending = Serialize(seq, num, cookie, cmd, n, msg, size); _pendingIds?.Clear();
+                { string k = n + "#" + (uint)cmd; _bytesBy[k] = _bytesBy.GetValueOrDefault(k) + _pending.Length; _countBy[k] = _countBy.GetValueOrDefault(k) + 1; }
+                if (_log.Length >= _nextReport)
+                {   // 日志每翻一倍（16 MB 起）点名占地最多的 5 类：恢复后日志暴涨要知道是谁
+                    _nextReport = Math.Max(_nextReport * 2, 16L << 20);
+                    var top = new List<KeyValuePair<string, long>>(_bytesBy); top.Sort((x, y) => y.Value.CompareTo(x.Value));
+                    var sb = new StringBuilder(); for (int i = 0; i < Math.Min(5, top.Count); i++) sb.Append($"{top[i].Key} {top[i].Value >> 10} KB×{_countBy[top[i].Key]}；");
+                    Console.Error.WriteLine($"[s2a] 【黄】即时存档：服务请求日志已 {_log.Length >> 20} MB，占地最多：{sb}");
+                }
+                if (_pending.Length > (4 << 20) && _bigLogged++ < 8) Console.Error.WriteLine($"[s2a] 【黄】即时存档：请求日志一条就 {_pending.Length >> 20} MB（{n}#{(uint)cmd}，第 {seq} 条；日志共 {_log.Length >> 20} MB）");
                 s2a_snap_hctx(seq);
                 return seq;
             }
@@ -193,9 +219,39 @@ namespace S2A.Services
             w.Flush(); return ms.ToArray();
         }
         internal static void End() => s2a_snap_hctx(-2);
+        internal static void OutObjects(List<int> ids)
+        {
+            if (_pending != null) (_pendingIds ??= new()).AddRange(ids);
+        }
+        // 处理完（消息缓冲已是应答）：按完成先后追加；失败的只记序号
+        internal static void End(int seq, byte* msg, int size)
+        {
+            s2a_snap_hctx(-2);
+            byte[] e = _pending; _pending = null;
+            if (seq < 0 || e == null) return;
+            bool ok = CmifResult(msg, size) == 0;
+            lock (_lock)
+            {
+                if (ok)
+                {
+                    _w.Write(e);
+                    if (_pendingIds is { Count: > 0 } ids) { _w.Write(EntObjs); _w.Write(seq); _w.Write(ids.Count); foreach (int id in ids) _w.Write(id); }
+                }
+                else { _w.Write(EntFailed); _w.Write(seq); }
+                s2a_snap_hcommit(seq);   // 原生层句柄日志：此后的关闭记在这条之后（与重放先后一致）
+            }
+            _pendingIds?.Clear();
+        }
+        // CMIF 应答的结果码（"SFCO" 后第 8 字节）；没有 CMIF 应答头的（关对象 / TIPC）按成功算
+        private static uint CmifResult(byte* msg, int size)
+        {
+            for (int i = 0; i + 12 <= Math.Min(size, 0x100); i += 4)
+                if (*(uint*)(msg + i) == 0x4F434653u) return *(uint*)(msg + i + 8);
+            return 0;
+        }
         internal static int Connect()
         {
-            lock (_lock) { int seq = _seq++; _kept++; _w.Write(EntConnect); _w.Write(seq); s2a_snap_hctx(seq); return seq; }
+            lock (_lock) { int seq = _seq++; _kept++; _w.Write(EntConnect); _w.Write(seq); s2a_snap_hctx(seq); s2a_snap_hcommit(seq); return seq; }
         }
 
         // 服务层实际用的 Ryujinx 数据根（Exports.cs 起服务层时定：配置里的状态目录 / S2A_RYU_DATA / 缺省），快照按它找玩家存档树
@@ -241,11 +297,13 @@ namespace S2A.Services
         [UnmanagedCallersOnly(EntryPoint = "S2A_SnapReplay")]
         private static int Replay(byte* path, ulong scratch, ulong scratchSize)
         {
-            int n = 0, bad = 0; string cur_ = "";   // 正在重放的那条（服务名#命令号），出错时说清是哪条
+            int n = 0, bad = 0, skipped = 0, diverged = 0; string cur_ = "";   // 正在重放的那条（服务名#命令号），出错时说清是哪条
             try
             {
                 Dispatcher d = Dispatcher.Instance;
                 byte[] all = File.ReadAllBytes(Marshal.PtrToStringUTF8((IntPtr)path));
+                Ryujinx.HLE.S2AHooks.SnapReplayUndo.Clear(); Ryujinx.HLE.S2AHooks.SnapReplaying = true;
+                Dictionary<int, int[]> outIds = OutIdsOf(all); int forcedLeft = 0; Ryujinx.HLE.S2AHooks.SnapForceDomainIdMiss = 0;
                 var r = new BinaryReader(new MemoryStream(all));
                 long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
                 while (r.BaseStream.Position < r.BaseStream.Length)
@@ -253,6 +311,8 @@ namespace S2A.Services
                     uint kind = r.ReadUInt32(); int seq = r.ReadInt32(); if (seq > _maxSeq) _maxSeq = seq;
                     s2a_snap_replay_begin(seq);
                     if (kind == EntConnect) { d.SnapConnect(); s2a_snap_replay_end(seq); n++; continue; }
+                    if (kind == EntFailed) { s2a_snap_replay_end(seq); skipped++; continue; }   // 当时失败的：不重放，这条之后的关闭照常
+                    if (kind == EntObjs) { int c = r.ReadInt32(); r.BaseStream.Seek(4L * c, SeekOrigin.Current); continue; }   // 已在预扫里取走
                     uint num = r.ReadUInt32(); ulong cookie = r.ReadUInt64(); long cmd = r.ReadInt64(); string name = r.ReadString();
                     int size = r.ReadInt32(); byte[] msgb = r.ReadBytes(size);
                     int nd = r.ReadInt32();
@@ -282,13 +342,27 @@ namespace S2A.Services
                             for (int i = 0; i < nh; i++) { uint h = *(uint*)(msgAddr + 12 + (ulong)pid * 8 + (ulong)i * 4); if (h != 0 && h < 0xFFFF8000u) s2a_snap_need_handle(h); }
                         }
                     }
+                    Ryujinx.HLE.S2AHooks.SnapForceDomainIds = outIds.TryGetValue(seq, out int[] want) ? new Queue<int>(want) : null;
                     uint rc = d.SnapRequest(num, cookie, (byte*)msgAddr, size);
+                    forcedLeft += Ryujinx.HLE.S2AHooks.SnapForceDomainIds?.Count ?? 0; Ryujinx.HLE.S2AHooks.SnapForceDomainIds = null;
                     if (rc != 0) { bad++; if (bad <= 20) Console.Error.WriteLine($"[s2a] 【黄】即时存档恢复：重放第 {seq} 条 {name}#{(uint)cmd} 回 0x{rc:X}"); }
+                    else if (CmifResult((byte*)msgAddr, size) is uint cr && cr != 0)
+                    {   // 日志里的都是 A 当时成功的（失败的记成 EntFailed 不重放）：B 里回了错误码 = 两边状态分岔，点名这条（后面对象号可能跟着错位）
+                        diverged++; if (diverged <= 20) Console.Error.WriteLine($"[s2a] 【黄】即时存档恢复：重放第 {seq} 条 {name}#{(uint)cmd} A 当时成功、这里回 0x{cr:X}");
+                    }
                     if (s2a_snap_replay_end(seq) != 0) bad++;
                     n++;
                 }
+                Ryujinx.HLE.S2AHooks.SnapReplaying = false;
+                if (forcedLeft > 0 || Ryujinx.HLE.S2AHooks.SnapForceDomainIdMiss > 0)
+                    Console.Error.WriteLine($"[s2a] 【黄】即时存档恢复：域对象按原号分配 没用上 {forcedLeft} 个、原号被占 {Ryujinx.HLE.S2AHooks.SnapForceDomainIdMiss} 个（对象号可能和存档时不同）");
+                // 重放里为「当时打开成功、快照前已删」的路径建的空占位：按建的反序删掉，文件系统回到快照那一刻（删不掉的 = 游戏此刻还开着它，留着）
+                int ph = Ryujinx.HLE.S2AHooks.SnapReplayUndo.Count, kept = 0;
+                for (int i = ph - 1; i >= 0; i--) if (!Ryujinx.HLE.S2AHooks.SnapReplayUndo[i]()) kept++;
+                Ryujinx.HLE.S2AHooks.SnapReplayUndo.Clear();
+                if (ph > 0) Console.Error.WriteLine($"[s2a] 即时存档恢复：重放时为已删路径建空占位 {ph} 个，重放完删掉 {ph - kept} 个（还开着、留下 {kept} 个）");
                 double ms = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
-                Console.Error.WriteLine($"[s2a] 即时存档恢复：服务请求重放 {n} 条，{ms:F1} ms，异常 {bad} 条");
+                Console.Error.WriteLine($"[s2a] 即时存档恢复：服务请求重放 {n} 条，{ms:F1} ms，异常 {bad} 条（当时失败、不重放 {skipped} 条；A 成功这里失败 {diverged} 条）");
                 if (bad == 0 && SnapSwitch.CanSave)
                 {   // 恢复局接着记：快照里的日志整份当开头，序号接着编（同原生层的句柄日志接续，thread.c s2a_snap_hlog_continue）
                     lock (_lock) { _w.Write(all); _seq = _maxSeq + 1; _kept = n; }
@@ -296,7 +370,28 @@ namespace S2A.Services
                 }
                 return bad;
             }
-            catch (Exception e) { Console.Error.WriteLine($"[s2a] 【红】即时存档恢复：重放第 {n} 条后出错（正在重放 {cur_}）{e}"); return -1; }
+            catch (Exception e) { Ryujinx.HLE.S2AHooks.SnapReplaying = false; Console.Error.WriteLine($"[s2a] 【红】即时存档恢复：重放第 {n} 条后出错（正在重放 {cur_}）{e}"); return -1; }
+        }
+
+        // 预扫：序号 → 存档那局这条请求交出的域对象号
+        private static Dictionary<int, int[]> OutIdsOf(byte[] all)
+        {
+            var m = new Dictionary<int, int[]>(); var r = new BinaryReader(new MemoryStream(all));
+            while (r.BaseStream.Position < r.BaseStream.Length)
+            {
+                uint kind = r.ReadUInt32(); int seq = r.ReadInt32();
+                if (kind == EntReq) SkipEntryBody(r);
+                else if (kind == EntObjs) { int c = r.ReadInt32(); var ids = new int[c]; for (int i = 0; i < c; i++) ids[i] = r.ReadInt32(); m[seq] = ids; }
+            }
+            return m;
+        }
+
+        private static void SkipEntryBody(BinaryReader r)
+        {
+            r.ReadUInt32(); r.ReadUInt64(); r.ReadInt64(); r.ReadString();
+            int size = r.ReadInt32(); r.BaseStream.Seek(size, SeekOrigin.Current);
+            int nd = r.ReadInt32();
+            for (int i = 0; i < nd; i++) { r.ReadInt32(); r.ReadInt32(); r.ReadUInt64(); r.ReadUInt64(); int len = r.ReadInt32(); r.BaseStream.Seek(len, SeekOrigin.Current); }
         }
 
         // ---------- 音频渲染器：整块存 / 拷回 + 块内指针平移 ----------

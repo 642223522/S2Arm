@@ -518,6 +518,14 @@ uint64_t s2a_npdm_pid(const char *npdm) {
     uint32_t t, ms; uint64_t sr, pid;
     return npdm_read(npdm, &t, &sr, &ms, &pid, 0) ? 0 : pid;
 }
+// 装模块前认出本款是不是 Switch 2：1 = 是、0 = 不是、−1 = 读不到 NPDM。装载器重定位时 s2a_direct_lookup 逐个导入问直连图形层（nvn2.c nvn2_on = s2a_platform_ounce），
+//   Switch 2 的 SDK 接管要靠这个标志。苹果侧 load_modules 经 s2a_mem_mod_base → layout_prepare 在重定位前读过 NPDM；安卓 APK 装载（load_modules_from_source）
+//   不经那条路，标志要等装完模块的 s2a_mem_init 才有，重定位时恒为 0——runtime.c 在装模块前调一次。
+//   同 s2a_npdm_pid 的 apply = 0 读法：npdm_read 里 Switch 2 标志与应用池两样都设（见上），其余 NPDM 状态（优先级 / 核 / 系统调用许可）留给 s2a_mem_init。
+int s2a_npdm_ounce(const char *npdm) {
+    uint32_t t, ms; uint64_t sr, pid;
+    return npdm_read(npdm, &t, &sr, &ms, &pid, 0) ? -1 : g_npdm_ounce;
+}
 void s2a_thread_set_caps(uint64_t core_mask, uint64_t prio_mask);   // thread.c：CreateThread 按 NPDM 核 / 优先级掩码校验
 void s2a_thread_set_npdm(int def_core, int main_prio);              // thread.c：NPDM 缺省核 / 主线程优先级（S2A_SCHED_HZ 用）
 // 返回主线程栈顶。主线程栈放栈区最高处、登记成 Stack（SDK 对自己的 sp 做 QueryMemory 求主线程栈区间）
@@ -1201,6 +1209,7 @@ static void punch_reset_locked(void) {
     g_punch_inline_n = g_punch_forget_n = 0; g_unmap_n = g_unmap_ns = g_unmap_max_ns = 0;
 }
 #ifdef S2A_UNIT_TEST
+int s2a_mem_test_alias_eacces;   // 单测：对齐 MapMemory 的共享映射按「最大权限不含写」处理（真机 iPad 上源在私有文件映射里的情形，Mac 上造不出来）
 uint64_t s2a_mem_test_punch_pending(void) { return g_punch_pending_n; }
 void s2a_mem_test_punch_stats(uint64_t *inline_zero, uint64_t *forget) { *inline_zero = g_punch_inline_n; *forget = g_punch_forget_n; }
 #endif
@@ -1693,13 +1702,26 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
         if (!((dst | src | size) & (HPG - 1))) {
             if (backing_begin_locked(dst, size, src)) { GMU_UNLOCK(); regs[0] = 0xD401; return 1; }
             uint64_t ae = alias_map(dst, src, size, VM_PROT_READ | VM_PROT_WRITE);
-            if (!ae && mprotect((void *)dst, size, PROT_READ | PROT_WRITE)) die("MapMemory 共享映射 mprotect errno=%d", errno);   // 源被设过只读时 vm_remap 随源保护，栈要读写
-            if (ae) { backing_end_locked(dst, size, 0, 0); GMU_UNLOCK(); regs[0] = ae; return 1; }
-            punch_forget_locked(dst, dst + size);   // #258：目标原映射被盖掉，这段若是上次 UnmapMemory 释放的待清零页，只撤销标记
-            map_add(dst, size, src, ST_STACK, MAP_ALIAS);
-            backing_end_locked(dst, size, 1, 1);
-            GMU_UNLOCK();
-            regs[0] = 0; return 1;
+            int mpe = ae ? 0 : mprotect((void *)dst, size, PROT_READ | PROT_WRITE) ? errno : 0;   // 源被设过只读时 vm_remap 随源保护，栈要读写
+#ifdef S2A_UNIT_TEST
+            if (!ae && !mpe && s2a_mem_test_alias_eacces) mpe = EACCES;
+#endif
+            if (mpe == EACCES) {
+                // 共享映射的最大权限没有「写」（#4c853c：iPad 上游戏把线程栈放在主程序数据段、堆用 0 字节，数据段是从签名镜像文件私有映射来的，
+                //   vm_remap 共享过去最大权限只剩读，mprotect 读写 EACCES，原先 die 闪退；Mac 上同样的映射最大权限照旧可写）。
+                //   撤回这次共享映射，改走下面的拷贝路径（不对齐时本来就走它；解除时把内容搬回源）
+                alias_unmap(dst, size, src, PROT_READ | PROT_WRITE);
+                backing_end_locked(dst, size, 0, 1);
+                static _Atomic int said; if (!atomic_exchange(&said, 1)) LOG("MapMemory：%#llx 共享映射的最大权限不含写（源 %#llx 在只能私有映射的区域），改用拷贝", (unsigned long long)dst, (unsigned long long)src);
+            } else {
+                if (mpe) die("MapMemory 共享映射 mprotect errno=%d", mpe);
+                if (ae) { backing_end_locked(dst, size, 0, 0); GMU_UNLOCK(); regs[0] = ae; return 1; }
+                punch_forget_locked(dst, dst + size);   // #258：目标原映射被盖掉，这段若是上次 UnmapMemory 释放的待清零页，只撤销标记
+                map_add(dst, size, src, ST_STACK, MAP_ALIAS);
+                backing_end_locked(dst, size, 1, 1);
+                GMU_UNLOCK();
+                regs[0] = 0; return 1;
+            }
         }
         // 拷贝前同步源侧（审计 P1-48，同安卓同一协议）：GPU 改过的子页先回写到 CPU、跟踪中的页先解开，再 memcpy，否则拷进栈的是回写前的旧字节。
         //   换页事务 begin 不算：track.c 的 s2a_track_backing_begin 只等排空期结束、挡新排空期，不看 source、不回写不解开。
@@ -2490,6 +2512,9 @@ int svc_mem(int num, uint64_t *regs, uint64_t orig) {
 static int snap_w(FILE *f, const void *p, size_t n) { return fwrite(p, 1, n, f) == n ? 0 : -1; }
 #include "snapfmt.h"
 void s2a_snap_mark_old(void);   // snapshot.c：记「旧版快照接不上」（给玩家的提示分类）
+// 单独链本文件的单测（t_svc_mem）没有快照引擎：弱缺省 = 快照关、不记；宿主 / iOS 壳链进 snapshot.c / snapsw.c 的真定义
+__attribute__((weak)) void s2a_snap_mark_old(void) {}
+__attribute__((weak)) int s2a_snap_restoring(void) { return 0; }
 // 内存账（带版本字段格式，snapfmt.h 段 "svcmem" 版本 1）：头记录 = 布局各字段 + 堆 / TLR / 熵；其余每条记录字段 50 标种类：1 映射 2 跨度 3 权限 4 属性 5 物理映射掩码页
 #define SVCMEM_LAYOUT(X) X(1, win_base) X(2, win_size) X(3, alias_base) X(4, alias_size) X(5, heap_base) X(6, heap_size) X(7, stack_base) X(8, stack_size) \
     X(9, tlsio_base) X(10, tlsio_size) X(11, aslr_base) X(12, aslr_size) X(13, sys_resource_size) X(14, as_type)

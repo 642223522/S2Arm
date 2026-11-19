@@ -8,6 +8,9 @@
 #   bash android/tests/vk/run.sh --asan       # 追加 ASan/UBSan
 #   bash android/tests/vk/run.sh --fsr        # FSR1 EASU 专项（算法对照，不接上屏）
 #   bash android/tests/vk/run.sh --present-upscale  # 上屏 EASU 开/关夹具（独立进程）
+#   bash android/tests/vk/run.sh --clear-capacity  # 48/60 个清除管线键、段完成/放弃与后续绘制
+#   bash android/tests/vk/run.sh --feedback-core    # 附件反馈快照、VVL 与同包负控（独立夹具，见 standalone/）
+#   bash android/tests/vk/run.sh --<名>            # android/tests/vk/standalone/<名>.sh 里的任一独立夹具
 # 环境：
 #   S2A_LAVAPIPE_ICD   指定 lavapipe ICD json（默认找 ~/.local / /usr/share/vulkan/icd.d）
 #   S2A_VK_LAYER_DIR   指定 validation 层目录（默认找 ~/.local / /usr/share/vulkan/explicit_layer.d）
@@ -20,6 +23,9 @@ set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/../../.." && pwd)
 mode=${1:-}
+# 独立夹具：android/tests/vk/standalone/<模式名>.sh（模式名不带前导 --），单独 `--<模式名>` 只跑它，默认档逐个跑。
+#   新夹具只加一个文件，不改本脚本：原先每支 PR 都往下面的模式名单和分派段里加一行，同一天十几支在这几行上互相冲突。
+standalone_mode() { [ -n "$mode" ] && [ -f "$repo/android/tests/vk/standalone/${mode#--}.sh" ]; }
 # 窄 shim 的 wrap 直通用例（#1091 复审）：不设驱动时 5 个入口必须逐条落 __real_*。
 # 只依赖编译器与仓内 Vulkan 头，不需要 lavapipe / validation，放在容器分流之前无条件跑。
 if [ "$(uname -s)" = Linux ]; then
@@ -53,7 +59,7 @@ if { [ "$mode" = "--tbuf-compiler-core" ] || [ -z "$mode" ]; } && [ -z "${S2A_VU
      [ ! -f "$repo/build/tbuf-real-red/profile.json" ] || [ ! -f "$tbuf_cli" ]; }; then
     python3 "$repo/android/tests/tbuf_compiler_chain_test.py"
 fi
-if { [ "$mode" = "--shown-only" ] || [ "$mode" = "--descriptor-indexing" ] || [[ "$mode" == --pool-table* ]] || [ -z "$mode" ] || [[ "$mode" == --tbuf-* ]]; } && [ -z "${S2A_VULKAN_IMAGE_ID:-}" ]; then
+if { [ "$mode" = "--shown-only" ] || [ "$mode" = "--descriptor-indexing" ] || standalone_mode || [ "$mode" = "--compute-read-core" ] || [[ "$mode" == --feedback-read* ]] || [ "$mode" = "--compute-workgroup" ] || [[ "$mode" == --pool-table* ]] || [ -z "$mode" ] || [[ "$mode" == --tbuf-* ]]; } && [ -z "${S2A_VULKAN_IMAGE_ID:-}" ]; then
     . "$repo/android/tools/ndk_toolchain.sh"
     ndk=$(s2a_ndk_resolve) || { echo 'NDK 29 missing' >&2; exit 2; }
     grep -q '^Pkg.Revision = 29\.0\.14206865$' "$ndk/source.properties" || { echo 'NDK 29.0.14206865 required' >&2; exit 2; }
@@ -94,6 +100,9 @@ if [ "$mode" = "--indirect-core" ] || [ "$mode" = "--zero-attr-core" ]; then
         exit 1
     fi
     exit 0
+fi
+if [ "$mode" = "--compute-read-core" ] && [ "$(uname -s)" = Linux ]; then
+    exec bash "$repo/android/tests/vk/run_compute_read.sh"
 fi
 if [ "$(uname -s)" = Darwin ]; then
     export S2A_VULKAN_CACHE="$repo/build/vulkan-cache"
@@ -164,6 +173,11 @@ if [ -z "$glslc" ]; then
 fi
 
 
+if [ "$mode" = "--compute-workgroup" ] || [ -z "$mode" ]; then
+    S2A_LAVAPIPE_ICD="$icd" S2A_VK_LAYER_DIR="$layer" GLSLC="$glslc" bash "$repo/android/tests/vk/workgroup.sh"
+    [ -z "$mode" ] || exit 0
+fi
+
 # Descriptor indexing capability handshake: use real NDK 29 Vulkan core types,
 # a real device and validation; test wrappers only remove advertised capabilities.
 if [ "$mode" = "--descriptor-indexing" ]; then
@@ -191,6 +205,15 @@ fi
 # 上面 find_icd / find_layer 已按通配找到 lavapipe 与 validation 层（各发行版 ICD 文件名不一，如 lvp_icd.json / lvp_icd.x86_64.json），
 #   原样传给池表用例，只留这一处负责找（11-17：池表用例自己只认 lvp_icd.x86_64.json，CI 上找不到、退 2，contract-sim 四片全红）
 export S2A_LAVAPIPE_ICD="$icd" S2A_VK_LAYER_DIR="$layer"
+if [ "$mode" = --feedback-read-mask-repro ]; then   # 独立夹具 feedback-read 的诊断变体（带参数，不在默认档）
+    exec bash "$repo/android/tests/vk/standalone/feedback-read.sh" --mask-repro
+fi
+if standalone_mode; then
+    exec bash "$repo/android/tests/vk/standalone/${mode#--}.sh"
+fi
+if [ -z "$mode" ]; then
+    for f in "$repo"/android/tests/vk/standalone/*.sh; do bash "$f"; done
+fi
 if [[ "$mode" == --pool-table* ]]; then
     exec bash "$repo/android/tests/vk/pool_table.sh" "${mode#--pool-table}"
 fi
@@ -261,29 +284,42 @@ if [ "$mode" = "--dispatch-barrier" ] || [ "$mode" = "--dispatch-barrier-neg" ] 
     mkdir -p "$repo/build/978-tests"
     db_red=0
     db_arm() {   # $1 臂；$2 期望的写后读冒险：0 或 hit（≥1）；$3 额外的屏障数判据（awk 表达式，变量 before / between），可空
-        local arm=$1 want=$2 cond=${3:-} rc raw other line before between
+        local arm=$1 want=$2 cond=${3:-} rc raw other line before between tag=$1 reads
+        [ -n "${db_log_off:-}" ] && tag="$1-dirtylog-off"   # db_log_off=1：开关 nvk_buf_dirtylog 关那一档（逐页退回路径）
+        tag="dq$db_dq-$tag"   # 两级录制 nvk_dq 关 / 开两档都跑（夹具在 fence 之后按真实 vkCmd 快照数屏障，不靠关 DQ）
         set +e
         VK_DRIVER_FILES="$icd" VK_LAYER_PATH="$layer" VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation VK_LAYER_VALIDATE_SYNC=1 \
-            timeout 120 "$out/dispatch-barrier" "$out/shaders" "$arm" > "$out/db-$arm.log" 2>&1
+            env S2A_REPLAY_DB_DQ=$db_dq ${db_log_off:+S2A_REPLAY_DIRTYLOG_OFF=1} timeout 120 "$out/dispatch-barrier" "$out/shaders" "$arm" > "$out/db-$tag.log" 2>&1
         rc=$?
         set -e
-        cp "$out/db-$arm.log" "$repo/build/978-tests/$arm.log"
-        raw=$(grep -c 'SYNC-HAZARD-READ-AFTER-WRITE' "$out/db-$arm.log" || true)
-        other=$(grep -E 'Validation Error|VUID-|SYNC-HAZARD-' "$out/db-$arm.log" | grep -vc 'SYNC-HAZARD-READ-AFTER-WRITE' || true)
-        line=$(grep '^dispatch-barrier ' "$out/db-$arm.log" || true)
+        cp "$out/db-$tag.log" "$repo/build/978-tests/$tag.log"
+        # 传输写 → 派发缺屏障这一对：开了 syncval_shader_accesses_heuristic 后校验层把派发对存储缓冲的访问按整段写算，同一对报成
+        # WRITE-AFTER-WRITE（「先前由 vkCmdCopyBuffer 写」）而不是 READ-AFTER-WRITE；两种都记作这一对冒险，其余报错照旧单独数
+        raw=$(grep -cE 'SYNC-HAZARD-(READ|WRITE)-AFTER-WRITE' "$out/db-$tag.log" || true)
+        other=$(grep -E 'Validation Error|VUID-|SYNC-HAZARD-' "$out/db-$tag.log" | grep -vcE 'SYNC-HAZARD-(READ|WRITE)-AFTER-WRITE' || true)
+        line=$(grep '^dispatch-barrier ' "$out/db-$tag.log" || true)
+        reads=$(printf '%s\n' "$line" | sed -n 's/.*dirtylog_reads=\([0-9]*\).*/\1/p')
+        echo "臂 ${tag}：写后读 / 写后写冒险 $raw 条、其余报错 $other 条、rc=${rc}；${line#dispatch-barrier }"
+        # 受跟踪的臂（resync 以外）：缺省开那一档必须真读了日志，关那一档一次都没读
+        if [ "$arm" != resync ] && [ -n "$line" ]; then
+            if [ -n "${db_log_off:-}" ]; then [ "${reads:-x}" = 0 ] || { echo "  【红】臂 ${tag}：开关关了还在读脏页日志（$reads 次）" >&2; db_red=1; return; }
+            else [ "${reads:-0}" -ge 1 ] 2>/dev/null || { echo "  【红】臂 ${tag}：缺省开却没走脏页日志（${reads:-?} 次）" >&2; db_red=1; return; }; fi
+        fi
         before=$(printf '%s\n' "$line" | sed -n 's/.*barriers_before_dispatch=\([0-9]*\).*/\1/p'); between=$(printf '%s\n' "$line" | sed -n 's/.*barriers_between_dispatches=\([0-9]*\).*/\1/p')
-        echo "臂 ${arm}：写后读冒险 $raw 条、其余报错 $other 条、rc=${rc}；${line#dispatch-barrier }"
-        grep -q '^device: llvmpipe' "$out/db-$arm.log" || { echo "  【红】臂 $arm 不是 lavapipe 设备" >&2; db_red=1; return; }
-        if [ "$other" -ne 0 ] || [ -z "$line" ]; then echo "  【红】臂 ${arm}：其余报错或没跑完" >&2; db_red=1; return; fi
-        if [ "$want" = hit ]; then [ "$raw" -ge 1 ] || { echo "  【红】臂 ${arm}：负控未击中（同步校验没报写后读冒险）" >&2; db_red=1; }; return; fi
-        if [ "$rc" -ne 0 ] || [ "$raw" -ne 0 ]; then echo "  【红】臂 ${arm}：读回或同步校验不对" >&2; db_red=1; return; fi
-        if [ -n "$cond" ] && ! awk -v before="${before:-x}" -v between="${between:-x}" "BEGIN{exit !($cond)}"; then echo "  【红】臂 ${arm}：屏障数不符（要 ${cond}）" >&2; db_red=1; fi
+        grep -q '^device: llvmpipe' "$out/db-$tag.log" || { echo "  【红】臂 $tag 不是 lavapipe 设备" >&2; db_red=1; return; }
+        if [ "$other" -ne 0 ] || [ -z "$line" ]; then echo "  【红】臂 ${tag}：其余报错或没跑完" >&2; db_red=1; return; fi
+        if [ "$want" = hit ]; then [ "$raw" -ge 1 ] || { echo "  【红】臂 ${tag}：负控未击中（同步校验没报写后读 / 写后写冒险）" >&2; db_red=1; }; return; fi
+        if [ "$rc" -ne 0 ] || [ "$raw" -ne 0 ]; then echo "  【红】臂 ${tag}：读回或同步校验不对" >&2; db_red=1; return; fi
+        if [ -n "$cond" ] && ! awk -v before="${before:-x}" -v between="${between:-x}" "BEGIN{exit !($cond)}"; then echo "  【红】臂 ${tag}：屏障数不符（要 ${cond}）" >&2; db_red=1; fi
     }
+    for db_dq in 0 1; do
     case "$mode" in
         --dispatch-barrier) db_arm barrier 0 ;;
         --dispatch-barrier-neg) db_arm none-nobar hit 'before == 0' ;;
-        --xfer-dispatch) db_arm none 0 'before == 1'; db_arm resync 0 'before >= 2'; db_arm xseg 0 'before == 1'; db_arm dd 0 'before == 1 && between == 0' ;;
+        --xfer-dispatch) db_arm none 0 'before == 1'; db_arm resync 0 'before >= 2'; db_arm xseg 0 'before == 1'; db_arm dd 0 'before == 1 && between == 0'
+                         db_log_off=1; db_arm none 0 'before == 1'; db_arm xseg 0 'before == 1'; db_arm dd 0 'before == 1 && between == 0'; db_log_off= ;;   # 关那一档：受跟踪的三臂走逐页路径再跑一遍
     esac
+    done
     if [ "$db_red" -ne 0 ]; then echo "【红】$mode" >&2; exit 1; fi
     echo "【绿】$mode"; exit 0
 fi
@@ -313,10 +349,28 @@ case "$mode" in
     --tsan) cflags+=(-fsanitize=thread) ;;
     --asan) cflags+=(-fsanitize=address,undefined -fno-omit-frame-pointer) ;;
     --shown-only) cflags+=(-DS2A_C883_TEST=1) ;;
-    ""|--sampler-minmax-only|--c63-same-view|--msaa-only|--msaa-neg-pick|--msaa-neg-pipe|--msaa-neg-sampled|--msaa-neg-attachment|--present-only|--present-upscale|--separate-core|--separate-neg-sampler|--tbuf-core|--tbuf-compiler-core|--tbuf-neg-resolve|--tbuf-neg-format|--tbuf-neg-elements|--gs-only|--gs-compiler|--gs-core|--gs-no-cap|--gs-neg-stage|--gs-neg-flags|--gs-neg-cap) ;;
+    ""|--sampler-minmax-only|--c63-same-view|--stencil8-only|--ds-upload-only|--msaa-only|--msaa-neg-pick|--msaa-neg-pipe|--msaa-neg-sampled|--msaa-neg-attachment|--present-only|--present-upscale|--separate-core|--separate-neg-sampler|--tbuf-core|--tbuf-compiler-core|--tbuf-neg-resolve|--tbuf-neg-format|--tbuf-neg-elements|--gs-only|--gs-compiler|--gs-core|--gs-no-cap|--gs-neg-stage|--gs-neg-flags|--gs-neg-cap|--clear-capacity|--clear-capacity-neg|--cmdpool-only|--cmdpool-neg) ;;
     *) echo "未知参数：${mode}（可用 --tsan / --asan）" >&2; exit 64 ;;
 esac
 # 撤改只写入临时源码副本；逐项必须红在指定行为断言。
+if [ "$mode" = --clear-capacity-neg ]; then
+    python3 - "${src[1]}" "$out" <<'PYCLEAR'
+import pathlib, sys
+source, out = map(pathlib.Path, sys.argv[1:])
+inc = (source.parent / 'backend_vulkan_clear.inc').read_text()
+anchor = '    for (struct clr_pipe_temp *p = c->clear_pipes;'
+if inc.count(anchor) != 1:
+    raise SystemExit('clear capacity mutation anchor changed')
+mutant = out / 'clear-capacity-mutant.inc'
+mutant.write_text(inc.replace(anchor, '    if (g_clr.n == CLR_MAX) return VK_NULL_HANDLE;\n' + anchor))
+backend = source.read_text()
+anchor = '#include "backend_vulkan_clear.inc"'
+if backend.count(anchor) != 1:
+    raise SystemExit('clear include anchor changed')
+(out / 'clear-capacity-mutant.c').write_text(backend.replace(anchor, '#include "' + str(mutant) + '"'))
+PYCLEAR
+    src[1]="$out/clear-capacity-mutant.c"
+fi
 if [[ "$mode" == --msaa-neg-* ]]; then
     python3 - "$mode" "${src[1]}" "$out/msaa_mutant.c" <<'PYMSAA'
 import pathlib, sys
@@ -420,12 +474,27 @@ pathlib.Path(target).write_text(s.replace(a, b))
 PYMUT
         src[1]="$out/backend_mutant.c" ;;
 esac
+# 负控只改源码副本：撤销前置缓冲复用，池会再次累积分配。
+if [ "$mode" = "--cmdpool-neg" ]; then
+    python3 - "${src[1]}" "$out/cmdpool_mutant.c" <<'PYNEG'
+import pathlib, sys
+s = pathlib.Path(sys.argv[1]).read_text()
+a = 'if (!c->init_cb && vkAllocateCommandBuffers(g.d, &ai, &c->init_cb) != VK_SUCCESS)'
+b = 'if (vkAllocateCommandBuffers(g.d, &ai, &c->init_cb) != VK_SUCCESS)'
+if s.count(a) != 1: raise SystemExit('C1581 negative control anchor changed')
+pathlib.Path(sys.argv[2]).write_text(s.replace(a, b))
+PYNEG
+    src[1]="$out/cmdpool_mutant.c"
+fi
 # 管线缓存四个入口的 --wrap 只给默认档：--gs-core 档的测试源（t_replay_gs.c）没有对应的 __wrap 定义，带上会链接失败。
 pc_wrap=(-Wl,--wrap=vkCreatePipelineCache -Wl,--wrap=vkGetPipelineCacheData
          -Wl,--wrap=vkCreateGraphicsPipelines -Wl,--wrap=vkCreateComputePipelines)
 # --gs-core / --separate-* 档的测试源没有这四个 __wrap 定义（只有默认档的 t_backend_vk.c 有），带上会链接失败
 case "$mode" in --gs-core|--separate-core|--separate-neg-sampler|--tbuf-*) pc_wrap=() ;; esac
 if [ "$mode" = "--shown-only" ]; then pc_wrap+=(-Wl,--wrap=vkGetDeviceProcAddr); fi
+case "$mode" in --gs-core|--separate-core|--separate-neg-sampler|--tbuf-*) ;;
+    *) cflags+=(-DS2A_CMDPOOL_TEST=1); pc_wrap+=(-Wl,--wrap=vkBeginCommandBuffer -Wl,--wrap=vkAllocateCommandBuffers -Wl,--wrap=vkFreeCommandBuffers -Wl,--wrap=vkDestroyCommandPool -Wl,--wrap=vkResetCommandPool) ;;
+esac
 cc "${cflags[@]}" "${inc[@]}" "${src[@]}" -Wl,--wrap=vkAllocateDescriptorSets -Wl,--wrap=vkGetPhysicalDeviceFormatProperties \
     ${pc_wrap[@]+"${pc_wrap[@]}"} -Wl,--gc-sections -lvulkan -lpthread -lm -o "$out/t_backend_vk"
 
@@ -438,6 +507,28 @@ if [ "$mode" != "--tsan" ]; then
     export VK_LAYER_PATH=$layer
     export VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
     export VK_LAYER_VALIDATE_SYNC=1   # 同步校验：缺屏障会报 SYNC-HAZARD-*
+
+if [ "$mode" = "--cmdpool-only" ] || [ "$mode" = "--cmdpool-neg" ]; then
+    bad=0
+    for dq in 0 1; do
+        if [ "$dq" = 1 ]; then export S2A_TEST_NVK_DQ=1; else unset S2A_TEST_NVK_DQ; fi
+        set +e
+        timeout 120 "$out/t_backend_vk" "$out/shaders" --cmdpool-only 2>&1 | tee "$out/cmdpool-$dq.log"
+        rc=${PIPESTATUS[0]}
+        set -e
+        if ! grep -q '^device: llvmpipe' "$out/cmdpool-$dq.log" || grep -qE 'Validation Error|VUID-|SYNC-HAZARD-' "$out/cmdpool-$dq.log"; then
+            echo "【红】C1581 DQ=$dq 非 lavapipe 或校验错误" >&2; bad=1
+        elif [ "$mode" = "--cmdpool-neg" ]; then
+            if [ "$rc" -ne 1 ] || ! grep -q 'FAIL .*C1581 池内最高命令缓冲数期望 2' "$out/cmdpool-$dq.log"; then
+                echo "【红】C1581 负控 DQ=$dq 没有在预期断言处失败 rc=$rc" >&2; bad=1
+            fi
+        elif [ "$rc" -ne 0 ] || ! grep -q 'C1581 isolated failures=0' "$out/cmdpool-$dq.log"; then
+            echo "【红】C1581 DQ=$dq rc=$rc" >&2; bad=1
+        fi
+    done
+    [ "$bad" -eq 0 ] || exit 1
+    echo "【绿】C1581 $mode DQ 开/关，validation 0 条"; exit 0
+fi
 
 # 上屏 EASU 开/关夹具（--present-upscale）：独立进程跑一次，避开 surface 单例与 C71 的提交信号序列。
 if [ "$mode" = "--present-upscale" ]; then
@@ -534,6 +625,32 @@ if [ -z "$mode" ]; then
 fi
 
 
+if [[ "$mode" == --clear-capacity* ]]; then
+    failed=0
+    for dq in 0 1; do
+        if [ "$dq" = 1 ]; then export S2A_TEST_NVK_DQ=1; else unset S2A_TEST_NVK_DQ; fi
+        set +e
+        timeout 120 "$out/t_backend_vk" "$out/shaders" --clear-capacity 2>&1 | tee "$out/clear-capacity-dq${dq}.log"
+        rc=${PIPESTATUS[0]}
+        set -e
+        log="$out/clear-capacity-dq${dq}.log"
+        expected_rc=0; expected_failures=0
+        if [ "$mode" = --clear-capacity-neg ]; then expected_rc=1; expected_failures=4; fi
+        if [ "$rc" -ne "$expected_rc" ] || ! grep -q "C1501 clear capacity failures=${expected_failures}" "$log" ||
+           ! grep -q 'C1501 keys=48 failures=0' "$log" ||
+           ! grep -q "C1501 keys=60 failures=${expected_failures}" "$log" ||
+           grep -qE 'Validation Error|VUID-|SYNC-HAZARD-' "$log"; then
+            echo "【红】清除缓存容量（DQ=${dq}）：rc=${rc}，未命中预期断言或 validation 失败" >&2
+            failed=1
+        fi
+        if [ "$mode" = --clear-capacity-neg ] && ! grep -q '建不出清除管线（槽 3 颜色掩码 0x4' "$log"; then
+            echo '【红】清除缓存负控没有红在第49个键' >&2; failed=1
+        fi
+    done
+    unset S2A_TEST_NVK_DQ
+    exit "$failed"
+fi
+
 if [ "$mode" = "--sampler-minmax-only" ]; then
     set +e
     timeout 120 "$out/t_backend_vk" "$out/shaders" --sampler-minmax-only 2>&1 | tee "$out/sampler-minmax-log"
@@ -562,6 +679,31 @@ if [ "$mode" = "--c63-same-view" ]; then
     done
     unset S2A_TEST_DESC_MEMO
     echo '【绿】C63 同 view 双元素：两遍（备忘开/关）都读回 128，validation 0 条'; exit 0
+fi
+
+# C1581K：D24S8 的 CPU 上传拆成深度面、模板面两个区域（一个区域只能有一个面，VUID-VkBufferImageCopy-aspectMask-09103），
+#   深度面回读低 24 位一致、上传的模板经模板测试看得见。validation 0 条才绿。
+if [ "$mode" = "--ds-upload-only" ]; then
+    set +e
+    timeout 120 "$out/t_backend_vk" "$out/shaders" --ds-upload-only 2>&1 | tee "$out/ds-upload.log"
+    rc=${PIPESTATUS[0]}
+    set -e
+    if [ "$rc" -ne 0 ] || ! grep -q 'C1581K failures=0' "$out/ds-upload.log" || grep -qE 'Validation Error|VUID-|SYNC-HAZARD-' "$out/ds-upload.log"; then
+        echo "【红】C1581K 深度模板上传：rc=${rc}，没有 failures=0 或有 validation 报错" >&2; exit 1
+    fi
+    echo '【绿】C1581K 深度模板上传：深度面回读一致、模板面生效，validation 0 条'; exit 0
+fi
+
+# C1581O：纯模板格式 STENCIL8 当模板附件：图像 / 视图的面只有模板面，管线的兼容通道按 sfmt 挂上这个附件。左绿右蓝、validation 0 条才绿。
+if [ "$mode" = "--stencil8-only" ]; then
+    set +e
+    timeout 120 "$out/t_backend_vk" "$out/shaders" --stencil8-only 2>&1 | tee "$out/stencil8.log"
+    rc=${PIPESTATUS[0]}
+    set -e
+    if [ "$rc" -ne 0 ] || ! grep -q 'C1581O failures=0' "$out/stencil8.log" || grep -qE 'Validation Error|VUID-|SYNC-HAZARD-' "$out/stencil8.log"; then
+        echo "【红】C1581O 纯 STENCIL8 模板附件：rc=${rc}，没有 failures=0 或有 validation 报错" >&2; exit 1
+    fi
+    echo '【绿】C1581O 纯 STENCIL8 模板附件：左绿右蓝，validation 0 条'; exit 0
 fi
 
 if [ "$mode" = "--present-only" ]; then
@@ -695,6 +837,7 @@ if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run.sh" --tbuf-compiler-c
 if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run_replay_copy_t2b.sh"; fi
 if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run_replay_clear_tex.sh"; fi
 if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run_replay_ssbo_window.sh"; fi
+if [ "$mode" = "" ]; then bash "$repo/android/tests/vk/run_compute_read.sh"; fi
 
 set +e
 # 整套三遍的超时只用来发现卡死，不量性能：负载高的机器（列车机同时跑多份同类用例，软件渲染）上单遍已接近原先的 180 / 240 秒，

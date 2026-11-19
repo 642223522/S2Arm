@@ -40,6 +40,11 @@ s2a_avail_mb() {   # 此刻可用内存（MB）：macOS vm_stat 的空闲 + 非�
   k=$(awk '/^MemAvailable:/ { print $2; exit }' "${S2A_PROC_MEMINFO:-/proc/meminfo}" 2> /dev/null)
   [ "$k" -gt 0 ] 2> /dev/null && echo $(( k >> 10 ))
 }
+s2a_direct_mb() {   # 直连库编译 J 路的内存（MB）= dsh 主进程 + 1 个 metal 最大峰值 + (J − 1) × metal p90（11-04 实测，见文件头 S2A_DIRECT_J）。
+  #   s2a_cores 按它反推 S2A_DIRECT_J；内存准入（tools/mem_admit.sh）给没实测过的直连库按它预留，两边同一组数
+  local j=${1:-1}; [ "$j" -ge 1 ] 2> /dev/null || j=1
+  echo $(( ${S2A_DIRECT_MAIN_MB:-1740} + ${S2A_DIRECT_METAL_PEAK_MB:-1065} + (j - 1) * ${S2A_DIRECT_METAL_P90_MB:-420} ))
+}
 s2a_cores() {
   local nc gb ln mj live
   # 出包整条链降优先级（子进程继承）：只往低调、不往高调（已更低的不动；调高要 root）。S2A_NICE 改档，0 = 不调
@@ -71,7 +76,7 @@ s2a_cores() {
   fi
   if [ -z "${S2A_DIRECT_J:-}" ]; then
     local dj
-    dj=$(( 1 + (am - ${S2A_DIRECT_MAIN_MB:-1740} - ${S2A_DIRECT_METAL_PEAK_MB:-1065}) / ${S2A_DIRECT_METAL_P90_MB:-420} ))
+    dj=$(( 1 + (am - $(s2a_direct_mb 1)) / ${S2A_DIRECT_METAL_P90_MB:-420} ))
     [ "$dj" -gt "$S2A_JOBS" ] && dj=$S2A_JOBS; [ "$dj" -ge 1 ] || dj=1
     export S2A_DIRECT_J=$dj
   fi

@@ -202,7 +202,9 @@ namespace S2A.Dsh
                 var j = new JsonObject { ["key"] = Key, ["stage"] = stage, ["code"] = cp, ["arch"] = "sm86", ["tex"] = new JsonObject(), ["img"] = new JsonObject(), ["attr"] = new JsonObject(), ["fout"] = new JsonObject(), ["c1"] = Convert.ToHexStringLower(c1) };
                 if (stage == "cs") j["tensor_mma_count"] = DshTensor.Count(code);
                 // 计算阶段的驱动常量在 c[0] 里按程序排（推送常量字数 +0xa9，uniform / storage / 纹理项数 +0xb1..+0xb3，分离纹理 / 分离采样器项数 +0xb4 / +0xb5（图像在它们之后，上游参考实现（MIT）67f1d0055），大小 +0xba），翻译器按它映射（InstEmitAmpere.cs AMapC0）
-                if (stage == "cs") j["nvn2_cs"] = new JsonArray(ctl[0xb1], ctl[0xb2], ctl[0xb3], BitConverter.ToUInt16(ctl, 0xba), ctl[0xa9] * 4, ctl[0xb4], ctl[0xb5]);
+                //   推常量块 1（+0xaa 字数，排在推常量块 0 之后、uniform 项之前）：游戏推进来的 {地址, 大小} 存储缓冲项或 8 字节句柄，翻译器映射到推常量槽 1 = c[25]（上游参考实现（MIT）nvn2_cs[7]）。
+                //   不给它时，一款 Switch 2 游戏的计算着色器（+0xb2 = 0、+0xaa = 4 × 1..7）把这些项读进了 uniform / 句柄表的位置，存储缓冲解不出槽、整支不载
+                if (stage == "cs") j["nvn2_cs"] = new JsonArray(ctl[0xb1], ctl[0xb2], ctl[0xb3], BitConverter.ToUInt16(ctl, 0xba), ctl[0xa9] * 4, ctl[0xb4], ctl[0xb5], ctl[0xaa] * 4);
                 // 早期深度（NVN2）：像素着色器控制段 +0x5b（NVN1 在 +0x718，见上）。原先 NVN2 不读，Switch 2 款里该先测深度再着色的像素着色器（先写内存、后测深度）全部晚测，
                 //   被遮挡的像素也整片着色。搬 nxnative a888e668（MIT）：NVN2 驱动按单字节读 +0x58..+0x62 的片元标志，+0x5b 即早测；对方读数（一款第三方 Switch 2 游戏，M4 Pro）GPU 19.0 → 16.6 ms、
                 //   p95 64 → 26 ms；040074A01BF12000 的 13546 支像素着色器里 2855 支、0400486024DEC000 的 22352 支里 746 支带它。自己写深度的（SPH 字 19 位 1，OmapDepth）不提前：先测的深度不是它算出的那个
@@ -1787,12 +1789,23 @@ namespace S2A.Dsh
             if ((slots >> 16) != 0 || !(3 <= tb && tb <= 16) || (h >> 28) != 0) return null;
             return (tb - 3, (h & 0x3fff) * 4);
         }
+        // 着色器按运行时下标取 c2 句柄表的数组（BindlessToArray）：返回贴图半边第 0 项的字节偏移（宿主 TEXA / SAMPA：第 k 项 = c2 字节 off + 8k 那一槽）。
+        //   组合句柄（类型 0）：贴图、采样器两个成员都按表取。分离句柄对（类型 ≠ 0，库号 PackSlots(2, 2) = cb196610 或 cb2）：一个字是运行时下标起点（贴图），
+        //   另一个是 c2 分离采样器表里的常量字（0x568 + 8r）：只贴图成员给 tex_c2a，采样器成员回落 DecodeTex 的单个 samp（宿主把数组每一项都填它）。
+        //   原先分离句柄对整组解不出槽（「fp_t2d_cb196610_… has no resolved slot number」，几款游戏各一支片元着色器整支不载）
         internal static long? C2Array(string name, string ty)
         {
-            var m = Full(@"[a-z]+_t\w*?_cb2_([0-9A-F]+)", name.EndsWith("Smplr", StringComparison.Ordinal) ? name[..^5] : name);
+            bool smp = name.EndsWith("Smplr", StringComparison.Ordinal);
+            var m = Full(@"[a-z]+_t\w*?_cb(\d+)_([0-9A-F]+)", smp ? name[..^5] : name);
             if (!m.Success || !ty.StartsWith("array<", StringComparison.Ordinal)) return null;
-            long h = Hex(m.Groups[1].Value);
-            return h >> 28 == 0 ? (h & 0x3fff) * 4 : null;
+            long slots = long.Parse(m.Groups[1].Value), h = Hex(m.Groups[2].Value);
+            long tb = slots & 0xffff, sb = (slots >> 16) != 0 ? (slots >> 16) - 1 : tb;
+            if (tb != 2 || sb != 2) return null;
+            if (h >> 28 == 0) return (h & 0x3fff) * 4;
+            if (smp || (h >> 28) is not (1 or 2)) return null;   // 类型 3（常量采样器）的采样器半边是 samp_id，宿主不给它填数组：照旧不接
+            long o0 = h & 0x3fff, o1 = (h >> 14) & 0x3fff;
+            static bool SampWord(long w) => w * 4 >= 0x568 && w * 4 < 0x568 + 8 * 128 && (w * 4 - 0x568) % 8 == 0;
+            return SampWord(o1) && !SampWord(o0) ? o0 * 4 : SampWord(o0) && !SampWord(o1) ? o1 * 4 : null;
         }
         static readonly Dictionary<string, long> HELPERS = new() { ["vertex_output"] = 0, ["geometry_vb_output"] = 1, ["geometry_ib_output"] = 2, ["vb_info"] = 3, ["trb_data"] = 4, ["vb_input"] = 1 };
 
@@ -1919,6 +1932,9 @@ namespace S2A.Dsh
                     continue;
                 }
                 if (stage == "cs" && off != null && 0x210 <= off && off < 0x310 && (off - 0x210) % 16 == 0) e.Set("kind", "ubo_ptr").Set("reg", (off - 0x210) / 16);
+                // 地址在 NVN2 推常量槽里（c[24 + k]：计算阶段推常量块 1 映射到 c[25]，图形阶段 i 自己的缓冲库 c[25 + i]）：宿主从推常量槽读地址（nvn_refl.h SBUFQ）。
+                //   原先落进下一支成 sbuf_ubo reg 21..28，宿主按 uniform 槽读不到 → 哑缓冲
+                else if (b != null && b.Count > 0 && (long)b["cb_slot"] >= 24 && (long)b["cb_slot"] < 32) e.Set("kind", "sbuf_push").Set("reg", (long)b["cb_slot"] - 24).Set("off", (long)b["cb_offset"] * 4);
                 else if (b != null && b.Count > 0 && (long)b["cb_slot"] >= 3) e.Set("kind", "sbuf_ubo").Set("reg", (long)b["cb_slot"] - 3).Set("off", (long)b["cb_offset"] * 4);
                 else e["reg"] = off != null && bs != null && 0 <= off - bs && off - bs < 0x100 && (off - bs) % 16 == 0 ? (off - bs) / 16 : null;
                 e["rw"] = b != null && b.Count > 0 && ((long)b["flags"] & 1) != 0;   // BufferUsageFlags.Write = bit 0（同 dmsh_build.py）
@@ -1954,7 +1970,9 @@ namespace S2A.Dsh
             foreach (var kv in dr)
             {
                 var d = (PyDict)kv.Value;
-                if ((bool)d["dynamic"]) bad.Add($"c{kv.Key} dynamic index");
+                // c2 按运行时下标读：宿主 DRV2 每次把整段的四张句柄表（贴图 / 图像 / 分离贴图 / 分离采样器）全部填好、其余字节 0（nvn_mtl.m encode_args），
+                //   与静态读哪几格无关，下标落在表里就读到绑定的句柄。原先一律判填不了、整支拒载（几款游戏的片元着色器按同一下标既取 c2 贴图数组、又把句柄字当数据读）
+                if ((bool)d["dynamic"] && kv.Key != "2") bad.Add($"c{kv.Key} dynamic index");
                 foreach (long o in ((List<object>)d["vec4_offsets"]).Cast<long>())
                     if (!DRV_FILL[int.Parse(kv.Key)].Concat(kv.Key == "0" ? own : Array.Empty<(long, long)>()).Any(r => o < r.Item2 && r.Item1 < o + 16)) bad.Add($"c{kv.Key}+0x{o:x}");
             }

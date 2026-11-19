@@ -349,6 +349,41 @@ int main(void) {
     CHECK(tm && tm(ly, 1) == 0 && nvn2_vi_entry("_ZN2nn2vi41ClearLayerNextHdrToSdrToneMappingMetadataEPNS0_5LayerE"));
     // 显示 vsync 事件的实现在 nvn2_codec.c（弱引用）：本单测不链 codec → 这个名字回落（宿主没接管，红行），实现与触发在 t_nvn2_codec 里测
     CHECK(!nvn2_vi_entry("_ZN2nn2vi20GetDisplayVsyncEventEPNS_2os15SystemEventTypeEPNS0_7DisplayE"));
+    // ---------- V3 PR1 探针（HDR 元数据接收即存储；查询回答不变）：Set* 已知值 → 探针读数逐项相等 → Clear 恢复默认 ----------
+    //   读数接口 nvn2_vi_hdr_probe 在 nvn2.c（声明不放 nvn2.h，同 nvn2_chat_video_register）：main 上没有实现（链接红），PR1 上绿
+    {
+        void nvn2_vi_hdr_probe(unsigned *cap, unsigned *lo, unsigned *hi, int *gamut, int *tonemap, float bez[3]);
+        uint32_t (*cap1)(void *, unsigned) = (uint32_t (*)(void *, unsigned))nvn2_vi_entry("_ZN2nn2vi23SetDisplayHdrCapabilityEPNS0_7DisplayEb");
+        uint32_t (*lumx)(void *, unsigned, unsigned) = (uint32_t (*)(void *, unsigned, unsigned))nvn2_vi_entry("_ZN2nn2vi52SetLayerNextHdrExtendedContentLuminanceRangeMetadataEPNS0_5LayerEtt");
+        uint32_t (*lums)(void *, unsigned, unsigned) = (uint32_t (*)(void *, unsigned, unsigned))nvn2_vi_entry("_ZN2nn2vi52SetLayerNextHdrStandardContentLuminanceRangeMetadataEPNS0_5LayerEtt");
+        uint32_t (*gam)(void *, int) = (uint32_t (*)(void *, int))nvn2_vi_entry("_ZN2nn2vi35SetLayerNextHdrContentGamutMetadataEPNS0_5LayerENS0_15HdrContentGamutE");
+        uint32_t (*tms)(void *, int) = (uint32_t (*)(void *, int))nvn2_vi_entry("_ZN2nn2vi39SetLayerNextHdrToSdrToneMappingMetadataEPNS0_5LayerENS0_14HdrToneMappingE");
+        uint32_t (*bez)(void *, float, float, float) = (uint32_t (*)(void *, float, float, float))nvn2_vi_entry("_ZN2nn2vi39SetLayerNextHdrAdjustableBezierMetadataEPNS0_5LayerEfff");
+        uint32_t (*clr)(void *) = (uint32_t (*)(void *))nvn2_vi_entry("_ZN2nn2vi37ClearLayerNextHdrContentGamutMetadataEPNS0_5LayerE");
+        CHECK(cap1 && lumx && lums && gam && tms && bez && clr);
+        unsigned pr1_cap = 9, pr1_lo = 9, pr1_hi = 9; int pr1_g = 9, pr1_m = 9; float pr1_bez[3] = {9, 9, 9};
+        // V2 段的泛型循环 / tonemap 试调已把探针写脏（bezier 那条经整型实参调，浮点寄存器是垃圾值）：先整组清回默认，从这里开始断言
+        CHECK(clr(ly) == 0);
+        nvn2_vi_hdr_probe(&pr1_cap, &pr1_lo, &pr1_hi, &pr1_g, &pr1_m, pr1_bez);
+        CHECK(pr1_cap == 0 && pr1_lo == 0 && pr1_hi == 0 && pr1_g == 0 && pr1_m == 0 && pr1_bez[0] == 0 && pr1_bez[1] == 0 && pr1_bez[2] == 0);   // PR1 探针：清过之后缺省全 0
+        CHECK(cap1(dp, 1) == 0 && lumx(ly, 1000, 400) == 0);
+        pr1_lo = 9; pr1_hi = 9; nvn2_vi_hdr_probe(&pr1_cap, &pr1_lo, &pr1_hi, &pr1_g, &pr1_m, pr1_bez);
+        CHECK(pr1_cap == 1 && pr1_lo == 1000 && pr1_hi == 400);   // PR1 探针：SetDisplayHdrCapability(1) 与 Extended 亮度范围存进
+        CHECK(lums(ly, 100, 320) == 0);
+        pr1_lo = 9; pr1_hi = 9; nvn2_vi_hdr_probe(&pr1_cap, &pr1_lo, &pr1_hi, &pr1_g, &pr1_m, pr1_bez);
+        CHECK(pr1_lo == 100 && pr1_hi == 320);                    // PR1 探针：Standard 亮度范围盖写同一对（两个注册名一个存储槽）
+        CHECK(gam(ly, 2) == 0 && tms(ly, 3) == 0 && bez(ly, 0.25f, 0.5f, 0.75f) == 0);
+        pr1_cap = 9; pr1_lo = 9; pr1_hi = 9; pr1_g = 9; pr1_m = 9; pr1_bez[0] = pr1_bez[1] = pr1_bez[2] = 9;
+        nvn2_vi_hdr_probe(&pr1_cap, &pr1_lo, &pr1_hi, &pr1_g, &pr1_m, pr1_bez);
+        CHECK(pr1_g == 2 && pr1_m == 3 && pr1_bez[0] == 0.25f && pr1_bez[1] == 0.5f && pr1_bez[2] == 0.75f);   // PR1 探针：色域 / tonemap / bezier 逐项相等
+        uint8_t on2 = 1; uint32_t fmt2 = 9; uint16_t peak2 = 9; CHECK(hs(&on2, &fmt2, &peak2, dp) == 0 && on2 == 0 && fmt2 == 0 && peak2 == 0);   // PR1 探针只存不改答：Set* 过后 HDR 状态查询仍 on=0 / fmt=0 / peak=0
+        CHECK(clr(ly) == 0);
+        pr1_cap = 9; pr1_lo = 9; pr1_hi = 9; pr1_g = 9; pr1_m = 9; pr1_bez[0] = pr1_bez[1] = pr1_bez[2] = 9;
+        nvn2_vi_hdr_probe(&pr1_cap, &pr1_lo, &pr1_hi, &pr1_g, &pr1_m, pr1_bez);
+        CHECK(pr1_lo == 0 && pr1_hi == 0 && pr1_g == 0 && pr1_m == 0 && pr1_bez[0] == 0 && pr1_bez[1] == 0 && pr1_bez[2] == 0);   // PR1 探针：Clear 后层级元数据整组回缺省
+        CHECK(pr1_cap == 1);   // 显示级能力开关不随层 Clear（sdk 没有对应 Clear*）
+        on2 = 1; CHECK(hs(&on2, &fmt2, &peak2, dp) == 0 && on2 == 0 && fmt2 == 0 && peak2 == 0);   // Clear 后查询回答仍不变
+    }
 
     // ---------- P 推常量的参数规整（nvn2_cmd.h nvn2_push_range）：槽取低 3 位、偏移取低 8 位、字节数夹到 256 且不越过槽尾、不足 4 字节不发 ----------
     unsigned ps, po, pn;

@@ -18,8 +18,13 @@ namespace Ryujinx.Audio.Renderer.Utils
         /// <param name="size">The size of the CPU memory region to map.</param>
         /// <returns>The address on the <see cref="Dsp.AudioProcessor"/> address space.</returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static DspAddress Map(uint processHandle, CpuAddress cpuAddress, ulong size)
+        public static unsafe DspAddress Map(uint processHandle, CpuAddress cpuAddress, ulong size)
         {
+            if (Server.S2AAudioPoolResident.Hook != null && size != 0)
+            {
+                Server.S2AAudioPoolResident.Hook(cpuAddress, size, true);
+            }
+
             return cpuAddress;
         }
 
@@ -30,8 +35,12 @@ namespace Ryujinx.Audio.Renderer.Utils
         /// <param name="cpuAddress">The <see cref="CpuAddress"/> to unmap.</param>
         /// <param name="size">The size of the CPU memory region to unmap.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void Unmap(uint processHandle, CpuAddress cpuAddress, ulong size)
+        public static unsafe void Unmap(uint processHandle, CpuAddress cpuAddress, ulong size)
         {
+            if (Server.S2AAudioPoolResident.Hook != null && size != 0)
+            {
+                Server.S2AAudioPoolResident.Hook(cpuAddress, size, false);
+            }
         }
 
         /// <summary>

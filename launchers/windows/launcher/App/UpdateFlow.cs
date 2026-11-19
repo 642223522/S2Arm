@@ -195,9 +195,18 @@ public sealed partial class EnvironmentWindow
             if (updateProgress.Length > 0) panel.Children.Add(Muted(T("update.popup.downloading"), 12.5));
             if (updateGate.Length > 0)
             {
-                var gate = new StackPanel { Spacing = 4 };
-                gate.Children.Add(Label(T(updateGate), 14));
-                gate.Children.Add(Muted(T(updateGate + ".body"), 13));
+                // 点了「现在更新并重启」但有任务在跑：说清会打断什么，玩家选「仍然重启」照样换（11-18 维护者：认得出的风险让玩家确认后继续），默认焦点在「取消」
+                var gate = new StackPanel { Spacing = 8 };
+                gate.Children.Add(Label(T("update.gate.confirm.title"), 14));
+                gate.Children.Add(Muted(RestartImpactText(), 13));
+                var choose = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 10, HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right };
+                var cancel = Action("update.gate.confirm.cancel", () => { updateGate = ""; Render(); });
+                AutomationId(cancel, "update.gate.cancel"); cancel.IsDefault = true;
+                var restart = Action("update.gate.confirm.restart", () => RestartToUpdate(confirmed: true));
+                AutomationId(restart, "update.gate.restart");
+                choose.Children.Add(cancel); choose.Children.Add(restart);
+                gate.Children.Add(choose);
+                cancel.AttachedToVisualTree += (_, _) => cancel.Focus();
                 var box = new Border { Child = gate, Padding = new Thickness(14), CornerRadius = new CornerRadius(12), Background = new SolidColorBrush(Color.Parse("#FFC857"), 0.14) };
                 AutomationId(box, "update.gate");
                 panel.Children.Add(box);
@@ -210,7 +219,7 @@ public sealed partial class EnvironmentWindow
         {
             buttons.Children.Add(Action("update.popup.later", CloseUpdatePopup));
             // 装过 iPhone、自动更新开着：写「更新启动器和 iPhone App」，新版启动后自动把 iPhone App 也更新（PhoneAutoUpdate.cs）；自动化 id 照旧
-            var now = Action("update.popup.now", RestartToUpdate, updateReady is not null || availableUpdate is not null);   // 没下也能点：点了才下、下完接着装；手动更新（11-16）：启动器升级不再顺带装手机，按钮不再写「和 iPhone App」
+            var now = Action("update.popup.now", () => RestartToUpdate(), updateReady is not null || availableUpdate is not null);   // 没下也能点：点了才下、下完接着装；手动更新（11-16）：启动器升级不再顺带装手机，按钮不再写「和 iPhone App」
             Avalonia.Automation.AutomationProperties.SetAutomationId(now, "update.popup.now");
             buttons.Children.Add(now);
         }
@@ -340,10 +349,22 @@ public sealed partial class EnvironmentWindow
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
     }
 
-    private void RestartToUpdate()
+    /// <summary>重启以更新会中断哪些任务、重启后能不能接着做（出包被打断可以接着做：已做完的阶段与缓存保留；同 Mac updateRestartImpactText）</summary>
+    private string RestartImpactText() =>
+        string.Join("\n", jobs.Select(j => (j.Kind, j.GameId)).Distinct().Select(j =>
+        {
+            var name = T("update.gate.task." + j.Kind.ToString().ToLowerInvariant());
+            var game = j.GameId is { } id ? catalog?.Games.FirstOrDefault(g => g.Id == id)?.Name : null;
+            if (!string.IsNullOrEmpty(game)) name += " · " + game;
+            return T(j.Kind == JobKind.Pack ? "update.gate.confirm.taskResume" : "update.gate.confirm.taskRestart").Replace("{0}", name);
+        }));
+
+    private void RestartToUpdate(bool confirmed = false)
     {
-        // 草图④：有任务在跑先拦下说明，弹窗不关
-        if (UpdateBlocked) { updateGate = "update.gate.busy"; if (updatePopup is null) ShowUpdatePopup(); Render(); return; }
+        // 有任务在跑：先说清会打断什么，玩家点「仍然重启」照样换（不再只能等）；确认后先取消在跑的任务再换版
+        if (UpdateBlocked && !confirmed) { updateGate = "update.gate.confirm"; if (updatePopup is null) ShowUpdatePopup(); Render(); return; }
+        updateGate = "";
+        if (UpdateBlocked) foreach (var job in jobs.ToList()) job.Cancellation.Cancel();
         if (updateReady is null && availableUpdate is not null) { installWhenReady = true; _ = DownloadUpdateAsync(); return; }   // 玩家点了才下：下完在 DownloadFinished 里接着装
         if (updateReady is not { } ready || sparkle is null) return;
         installWhenReady = false;

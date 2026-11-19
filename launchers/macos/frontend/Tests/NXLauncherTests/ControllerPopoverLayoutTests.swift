@@ -51,6 +51,46 @@ import NXLauncher
         }
     }
 
+    /// #1400：接上蓝牙手柄后面板内容变多，矮屏 / 大字体下面板不能超过屏幕可用高度（顶部被裁、滚不动）：
+    ///   封顶后面板高度不超过上限、内容可滚动、各控件仍都在；不封顶（上限够高）时照旧按内容自然高度
+    func testPanelCapsHeightAndScrollsWhenTallerThanScreen() async throws {
+        _ = NSApplication.shared
+        let pad = PopoverLayoutController("DualSense Wireless Controller")
+        let suite = "s2arm-popover-cap-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let order = FileManager.default.temporaryDirectory.appendingPathComponent(suite + ".json")
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: order) }
+        let controller = NS2LauncherController(socketURL: URL(fileURLWithPath: "/tmp/" + suite + ".sock"), store: defaults,
+            orderFile: order, systemControllers: { [pad] }, notifications: NotificationCenter())
+        let systems = SystemControllers(pads: [.init(id: ObjectIdentifier(pad), name: "DualSense Wireless Controller", family: .playstation)])
+        controller.updateSystem(systems.presentKeys)
+        func render(_ cap: CGFloat?) async throws -> (CGFloat, Set<String>) {
+            let navigation = LauncherPadNavigation()
+            let host = NSHostingView(rootView: Switch2ProConnectionPopover(controller: controller, systems: systems, lang: "zh", maxHeight: cap)
+                .environment(\.padControls, navigation))
+            let window = NSWindow(contentRect: CGRect(x: 100, y: 100, width: 380, height: 900), styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; window.contentView = host; window.orderBack(nil)
+            defer { window.close() }
+            for _ in 0..<3 { host.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(60)) }
+            window.setContentSize(host.fittingSize); host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(60))
+            if let output = ProcessInfo.processInfo.environment["S2A_SNAPSHOT_OUT"], let cap {
+                let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+                host.cacheDisplay(in: host.bounds, to: bitmap)
+                try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                    .write(to: URL(fileURLWithPath: output).appendingPathComponent("controller-popover-capped-\(Int(cap)).png"))
+            }
+            return (host.fittingSize.height, Set(navigation.controlTargets(in: window).map(\.id)))
+        }
+        let (natural, allIDs) = try await render(4000)
+        XCTAssertGreaterThan(natural, 260, "夹具内容要比 260 高，才能测到封顶")
+        let (capped, cappedIDs) = try await render(260)
+        XCTAssertLessThanOrEqual(capped, 260.5, "面板高度不超过给定上限")
+        XCTAssertTrue(cappedIDs.contains("controller.settings"), "封顶后面板顶部的齿轮仍在（不被裁掉）")
+        XCTAssertTrue(allIDs.isSuperset(of: ["controller.settings", "controller.assign"]))
+        print("popover-cap natural=\(natural) capped=\(capped)")
+    }
+
     func testLongControllerNamesPreservePanelInsets() async throws {
         _ = NSApplication.shared
         for name in ["DualSense Wireless Controller", "DualSense Edge Wireless Controller — A deliberately long device name"] {

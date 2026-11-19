@@ -133,20 +133,34 @@ namespace Ryujinx.Horizon.Sdk.Audio.Detail
             Name = name;
         }
 
-        // 宿主声音输出能直接播的格式：PcmInt16、48000 Hz、立体声或 5.1（AudioOutputSystem 只收这些；单声道会被它当立体声，不收）
+        // 宿主声音输出能播的格式：48000 Hz、立体声或 5.1（AudioOutputSystem 只收这些；单声道会被它当立体声，不收），
+        //   采样格式 PcmInt8 / PcmInt16 / PcmInt32 / PcmFloat：设备不收的格式由兼容层先解成 PcmInt16 再转（CompatLayerHardwareDeviceSession、
+        //   PcmHelper.DecodeToPcm16）。PcmInt24 不收：sysmix 每样本按 4 字节存它（OpenStreamImpl 的字节表 {1,2,4,4,4}），24 位放在哪 3 字节不知道
         public static bool IsHostSupported(StreamFormat format)
         {
-            return format.SampleFormat == (uint)SampleFormat.PcmInt16 && format.SampleRate == Constants.TargetSampleRate && format.ChannelCount is 2 or 6;
+            return GuestSampleBytes(format.SampleFormat) > 0 && format.SampleRate == Constants.TargetSampleRate && format.ChannelCount is 2 or 6;
+        }
+
+        // 环里每样本字节数（与宿主 BackendHelper.GetSampleSize 一致的那几种）；不支持的格式回 0
+        private static int GuestSampleBytes(uint sampleFormat)
+        {
+            return (SampleFormat)sampleFormat switch
+            {
+                SampleFormat.PcmInt8 => 1,
+                SampleFormat.PcmInt16 => 2,
+                SampleFormat.PcmInt32 or SampleFormat.PcmFloat => 4,
+                _ => 0,
+            };
         }
 
         public void Open(StreamFormat format, int frameCount)
         {
             if (!IsHostSupported(format))
             {
-                throw new NotImplementedException($"audsmx:u IExternalStreamSession 0：{format}（宿主声音输出只播 PcmInt16 / 48000 Hz / 2 或 6 声道）");
+                throw new NotImplementedException($"audsmx:u IExternalStreamSession 0：{format}（宿主声音输出只播 PcmInt8 / 16 / 32 / Float、48000 Hz、2 或 6 声道）");
             }
 
-            int frameBytes = 2 * format.ChannelCount;
+            int frameBytes = GuestSampleBytes(format.SampleFormat) * format.ChannelCount;
             ulong ringEnd = RingOffset + (ulong)(frameCount + 1) * (ulong)frameBytes;
 
             if (frameCount < 1 || (Buffer & 0xFFF) != 0 || ringEnd > Size)
@@ -156,7 +170,7 @@ namespace Ryujinx.Horizon.Sdk.Audio.Detail
 
             AudioInputConfiguration configuration = new() { SampleRate = (uint)format.SampleRate, ChannelCount = (ushort)format.ChannelCount };
 
-            ResultCode rc = _outputManager.OpenAudioOut(out _, out _, out AudioOutputSystem output, _memory, string.Empty, SampleFormat.PcmInt16, ref configuration);
+            ResultCode rc = _outputManager.OpenAudioOut(out _, out _, out AudioOutputSystem output, _memory, string.Empty, (SampleFormat)format.SampleFormat, ref configuration);
 
             if (rc != ResultCode.Success)
             {

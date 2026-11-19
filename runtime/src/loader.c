@@ -15,6 +15,8 @@
 #endif
 #include <fcntl.h>
 #include <errno.h>
+#include "s2a_init_fail.h"
+void s2a_init_failed(int code);   // host_main.c：初启失败出口（iOS 人手局停在提示页、不返回）
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -574,14 +576,20 @@ static void relocate(module_t *m) {
                 if (!v) v = resolve_global(nm);
                 if (!v) { void *f = s2a_libc_lookup(nm); if (f) { v = (uint64_t)sw_xstack_wrap(nm, f); nlibc++; } }
 #if !defined(__ANDROID__)   // 安卓没有直连 GL 层（s2a_direct_lookup 在 android/native 自给）
-                if (!v && !s2a_nro_defer_lookup(nm)) v = s2a_direct_stub(nm);   // 都没定义（romfs NRO 也没有）的 gl* 核心名：安全空实现，放最后免得顶掉游戏模块自己的定义（#601）
+                if (!v && !s2a_nro_defer_lookup(nm)) v = s2a_direct_stub(nm);   // 都没定义（romfs NRO 也没有）的 gl* 核心名：安全空实现；GL 驱动的带下划线名 _gl* / _egl* 去掉下划线交 GL 层。放最后免得顶掉游戏模块自己的定义（#601）
 #endif
-                if (!v && (s->st_info >> 4) == 2) {   // D-WSFE：按名记下来（含槽位偏移），崩在「往全局指针写」时能对上是哪个；游戏自带 NRO 定义的另报红（起局置 0、nn::ro 装进来后不补）
+                if (!v && (s->st_info >> 4) == 2) {   // 无定义弱符号 = 0（ELF / rtld 语义）；D-WSFE：按名记下来（含槽位偏移），崩在「往全局指针写」时能对上是哪个
                     const char *wnro = s2a_nro_defer_lookup(nm);
-                    if (wnro) LOG("【红】%s: 无定义弱符号 %s 置 0（槽 %s+%#llx、%s），但 romfs/nro/%s 定义了它：装进来后这里仍是 0", m->name, nm, m->name, (unsigned long long)((uint8_t *)where - (uint8_t *)m->base), type == R_AARCH64_JUMP_SLOT ? "函数" : "数据", wnro);
-                    else LOG("%s: 无定义弱符号 %s 置 0（槽 %s+%#llx、%s）", m->name, nm, m->name, (unsigned long long)((uint8_t *)where - (uint8_t *)m->base), type == R_AARCH64_JUMP_SLOT ? "函数" : "数据");
+                    nweak0++; *where = type == R_AARCH64_JUMP_SLOT ? 0 : (uint64_t)r->r_addend; cnt[type == R_AARCH64_JUMP_SLOT ? 2 : 1]++;
+                    if (wnro) {   // 游戏自带 NRO 定义了它：同普通导入进待绑表，nn::ro 装进来时补绑（装载前仍是 0，弱符号语义不变）。原先只置 0、不补：0100FE500D0CA000
+                        //   装进 ffx_GameLauncher.nro 后调 LauncherMain 跳到 0（D-TZ2T；同族 D-WSFE 俄罗斯方块效应）
+                        g_deferred++; LOG("%s: 无定义弱符号 %s 先置 0（槽 %s+%#llx、%s），romfs/nro/%s 定义了它：nn::ro 装进来时补绑", m->name, nm, m->name,
+                                          (unsigned long long)((uint8_t *)where - (uint8_t *)m->base), type == R_AARCH64_JUMP_SLOT ? "函数" : "数据", wnro);
+                        if (g_npend == g_cpend) { size_t c = g_cpend ? g_cpend * 2 : 256; pend_t *n = realloc(g_pend, c * sizeof *n); if (!n) die("未解析导入表扩到 %zu 项时内存不足", c); g_pend = n; g_cpend = c; }
+                        g_pend[g_npend++] = (pend_t){where, nm, r->r_addend, type == R_AARCH64_JUMP_SLOT};
+                    } else LOG("%s: 无定义弱符号 %s 置 0（槽 %s+%#llx、%s）", m->name, nm, m->name, (unsigned long long)((uint8_t *)where - (uint8_t *)m->base), type == R_AARCH64_JUMP_SLOT ? "函数" : "数据");
+                    continue;
                 }
-                if (!v && (s->st_info >> 4) == 2) { nweak0++; *where = type == R_AARCH64_JUMP_SLOT ? 0 : (uint64_t)r->r_addend; cnt[type == R_AARCH64_JUMP_SLOT ? 2 : 1]++; continue; }   // 无定义弱符号 = 0（ELF / rtld 语义）
                 if (!v) {   // 游戏自带 NRO（romfs/nro）的导出：Horizon 上要等 nn::ro 装进来才解析，记普通日志不计红；桩不变，真被调到照旧报红中止
                     const char *nro = s2a_nro_defer_lookup(nm);
                     if (nro) { g_deferred++; LOG("%s: 导入 %s 延迟到 nn::ro 装载（romfs/nro/%s 定义）", m->name, nm, nro); }
@@ -736,7 +744,7 @@ uint64_t s2a_module_span(const char *dir) {   // 模块目录里全部 <名>.fix
     uint64_t t = 0; struct dirent *e;
     while ((e = readdir(d))) {
         size_t l = strlen(e->d_name); const char *suf = ".fixups.tsv"; size_t sl = strlen(suf);
-        if (l <= sl || strcmp(e->d_name + l - sl, suf)) continue;
+        if (l <= sl || strcmp(e->d_name + l - sl, suf) || !strncmp(e->d_name, "._", 2)) continue;   // ._：exFAT 上 macOS 配的 AppleDouble 附属文件
         char nm[64]; if (l - sl >= sizeof nm) continue; memcpy(nm, e->d_name, l - sl); nm[l - sl] = 0;
         t += mod_footprint(dir, nm);
     }
@@ -794,6 +802,10 @@ static void map_image(module_t *m, const char *dir) {
 //   文件 mmap 回去（MAP_FIXED | MAP_PRIVATE：代码 R|X 且最大权限压到 R|X，W 写时复制）；主程序不含游戏镜像，不占宿主低区
 static void map_blk(module_t *m, vm_address_t to, const blk_t *b, unsigned long skip, int code) {   // 块 b 从第 skip 字节起映射到 to
     int e = 0, rc = s2a_imgpack_map(b->pk, (void *)to, b->off + skip, b->len - skip, code, &e);
+    if (rc && code && e == EPERM) {   // 签名已注册、系统却不许把这段代码映成可执行（#63639b：所见 4 张卡都是 LiveContainer 装法）：停在说真原因的提示页，不按崩溃闪退
+        LOG("【红】%s 外置镜像映射 %#lx（文件偏移 %#llx，%#lx 字节，代码）被系统拒：返回 %d errno=%d（EPERM：不许可执行映射）", m->name, (unsigned long)to, (unsigned long long)(b->off + skip), b->len - skip, rc, e);
+        s2a_init_failed(S2A_INIT_FAIL_E_IMAGE_EXEC);   // 宿主里不返回
+    }
     if (rc) die("%s 外置镜像映射 %#lx（文件偏移 %#llx，%#lx 字节，%s）失败：返回 %d errno=%d", m->name, (unsigned long)to, (unsigned long long)(b->off + skip), b->len - skip, code ? "代码" : "可写", rc, e);
 }
 // 进程内重启（11-02 测试设备2 塞尔达切 60 帧「立刻重启」：重建窗口 EACCES）：上一局映射进窗口的代码页系统不许覆盖或解除（外置的文件代码页

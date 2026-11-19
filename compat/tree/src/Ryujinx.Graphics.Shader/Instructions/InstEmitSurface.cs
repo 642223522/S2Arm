@@ -189,7 +189,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
             int dest,
             bool byteAddress,
             bool isBindless,
-            bool compareAndSwap)
+            bool compareAndSwap,
+            int cbufSlot = TextureOperation.DefaultCbufSlot)
         {
             SamplerType type = ConvertSamplerType(dimensions);
 
@@ -283,7 +284,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 type,
                 format,
                 flags,
-                TextureOperation.DefaultCbufSlot,
+                cbufSlot,
                 imm);
 
             Operand res = context.ImageAtomic(type, format, flags, setAndBinding, sources);
@@ -471,7 +472,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
             int srcB,
             int srcC,
             bool byteAddress,
-            bool isBindless)
+            bool isBindless,
+            int cbufSlot = TextureOperation.DefaultCbufSlot)
         {
             SamplerType type = ConvertSamplerType(dimensions);
 
@@ -558,7 +560,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 type,
                 format,
                 flags,
-                TextureOperation.DefaultCbufSlot,
+                cbufSlot,
                 imm);
 
             context.ImageAtomic(type, format, flags, setAndBinding, sources);

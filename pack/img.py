@@ -369,13 +369,13 @@ def free_clones(root, keep, pack_dir, work=None):
 def write(root, pack_dir, out_path, progress=None, romfs_index=None, gid=None, consume=False, work=None):
     """产物根 root 的完整原始 romfs/ 建标准 RomFS 段（库里的 romfs.files 缺被覆盖层替换的原文件，不能用它建；产物根只有 romfs.std 时原样拷这段），
     资源包 pack_dir 清单（index.tsv）里的其余原始资源进其余文件段；游戏号 gid（没给取 root/unpack.tsv），资源包号 = image_id。
-    多程序合集（programs/）这一版不出 IMG（报红，调用方照旧出旧形态）。原子写（先 .part 再改名）"""
+    多程序合集序号 1.. 的 programs/<n>/…（#1545）同其余资源一样进其余文件段：手机解包（pack_apply.c img_extract）按原路径解回 资源包/programs/<n>/，
+    宿主照旧按文件读。原先报红不出 IMG，资源包永远是旧形态，「导出自签包」永远判旧格式、重出包也一样。原子写（先 .part 再改名）"""
     say = progress or (lambda *_: None)
     gid = gid or next((l.rstrip('\n').split('\t', 1)[1] for l in open(os.path.join(root, 'unpack.tsv'), encoding='utf-8') if l.startswith('title_id\t')), '')
     others = []
     for rel, _ in pack_rows(pack_dir):
         if rel.startswith(SKIP): continue
-        if rel.startswith('programs/'): raise Red('多程序合集（programs/）这一版不出 IMG')
         src = os.path.join(pack_dir, rel)
         if not os.path.isfile(src): raise Red(f'资源包清单里的 {rel} 不在 {pack_dir}')
         others.append((rel, src))
@@ -391,10 +391,9 @@ def write(root, pack_dir, out_path, progress=None, romfs_index=None, gid=None, c
 def convert(root, pack_dir, progress=None, romfs_index=None, gid=None, consume=False, work=None):
     """出包交付（pack/jobs/ipa.py deliver）：资源包目录就地转成 IMG 形态——game.img（游戏原始资源）+ 照旧按文件的着色器库 / 覆盖层 +
     新 index.tsv（game.img 一行，第三列 = 资源包号；其余行原样）+ manifest.json v3（format img、imgFile、index_sha256 = 新 index.tsv 的 SHA-256）。
-    进了 IMG 的旧形态文件删掉。多程序合集 → 返回 None、目录不动（照旧旧形态）。→ game.img 路径"""
+    进了 IMG 的旧形态文件删掉（多程序合集的 programs/ 同样进 IMG，见 write）。→ game.img 路径"""
     import hashlib, json
     rows = pack_rows(pack_dir)
-    if any(r.startswith('programs/') for r, _ in rows): return None
     out = os.path.join(pack_dir, 'game.img')
     write(root, pack_dir, out, progress, romfs_index, gid, consume, work)
     h = header(out)
@@ -469,6 +468,12 @@ def export(pack_dir, out_path):
 
 
 UPDATE_FORMAT = 2   # 着色器更新包（只含派生件）：手机按格式号 2 走「套到本机已有本体」（runtime/src/pack_apply.c img_update）；只认 1 的旧版 S2Arm 会说「请更新 S2Arm」
+
+
+def update_worth(pack_dir):
+    """这款值不值得出着色器更新包：资源包里有着色器库（shaders/）或界面覆盖层（romfs_overlay/）才出。只剩索引 / 偏移表的包
+    （没有直连着色器库的款）一百多 KB、什么都不换，导出了玩家以为坏了（诊断 #0c0f75）"""
+    return any(rel.startswith(('shaders/', 'romfs_overlay/')) for rel, _ in pack_rows(pack_dir))
 
 
 def update_pack(pack_dir, out_path):
@@ -546,7 +551,7 @@ def main(argv=None):
         elif a.cmd == 'update':
             print(update_pack(a.pack_dir, a.out))
         elif a.cmd == 'convert':
-            print(convert(a.root, a.pack_dir, gid=a.gid, consume=a.consume, work=a.work) or '多程序合集：照旧旧形态')
+            print(convert(a.root, a.pack_dir, gid=a.gid, consume=a.consume, work=a.work))
         else:
             print(header(a.img))
             for e in entries(a.img): print(*e, sep='\t')

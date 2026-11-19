@@ -6,6 +6,7 @@
 #include "rp_state.h"
 #include "rp_res.h"
 #include "rp_exec.h"
+#include "replay_pass_barrier_fixture.h"
 #include "nvn_unimpl.h"
 static p_set_rt target; static tex_t target_tex; static nvn_gpu_view target_view;
 int g_s2a_logfd = 2; int s2a_nvn_rast_flip;
@@ -29,6 +30,7 @@ int rp_pool_find(uint64_t a, uint64_t n, const uint8_t **m, uint64_t *s) { (void
 // 本夹具没有存储缓冲声明；空存储语义由真实 rp_buf GPU 用例验证。
 nvn_gpu_buf rp_buf_for_null_storage(void) { return NULL; }
 int rp_buf_resolve(nvn_gpu_cmd c, uint64_t a, uint64_t n, nvn_gpu_buf *b, uint64_t *o) { (void)c; (void)a; (void)n; (void)b; (void)o; return 0; }
+int rp_buf_gpu_pending(uint64_t a, uint64_t n) { (void)a; (void)n; return 0; }   // 本夹具没有 GPU 写回：恒无还没落地的写
 // #958 批量解析：逐段转给上面的单段替身（口径一致）
 int rp_buf_resolve_multi(int n, const uint64_t *a, const uint64_t *l, nvn_gpu_buf *b, uint64_t *o, unsigned char *ok) {
     for (int i = 0; i < n; i++) ok[i] = l[i] && rp_buf_resolve(NULL, a[i], l[i], &b[i], &o[i]);
@@ -36,8 +38,11 @@ int rp_buf_resolve_multi(int n, const uint64_t *a, const uint64_t *l, nvn_gpu_bu
 }
 void rp_view_pin_begin(void) {}
 void rp_view_pin_end(void) {}
-nvn_gpu_view rp_view_by_id(int id, nvn_gpu_cmd c, const tex_t **t) { (void)id; (void)c; (void)t; return NULL; }
-nvn_gpu_view rp_view_by_id_decl(int id, uint8_t tt, uint8_t cls, int elem, nvn_gpu_cmd c, const tex_t **t) { (void)tt; (void)cls; (void)elem; (void)c; (void)t; return id == 7 ? sample_view : NULL; }
+nvn_gpu_view rp_view_by_id(int id, nvn_gpu_cmd c, tex_t *t) { (void)id; (void)c; if (t) memset(t, 0, sizeof *t); return NULL; }
+nvn_gpu_view rp_view_by_id_decl(int id, uint8_t tt, uint8_t cls, int elem, nvn_gpu_cmd c, tex_t *t) { (void)tt; (void)cls; (void)elem; (void)c; if (t) memset(t, 0, sizeof *t); return id == 7 ? sample_view : NULL; }
+nvn_gpu_pool_table rp_pool_table(nvn_gpu_cmd c,int samp,int base,uint32_t n,uint8_t dtt,uint8_t dcls,const char **why){(void)c;(void)samp;(void)base;(void)n;(void)dtt;(void)dcls;if(why)*why="pool_table_unresolved";return NULL;}   // 本夹具不出整池数组
+// 此夹具未提供查询采样器证明，不使用内部查询对象。
+nvn_gpu_samp rp_sampler_for_query(void) { return NULL; }
 nvn_gpu_samp rp_samp_by_id(int id) { return id == 3 ? sample_sampler : id == 0 ? decoy_sampler : NULL; }
 nvn_gpu_samp rp_samp_for_tex(int sid, int tid) { (void)tid; return rp_samp_by_id(sid); }   // #1072：替身不判过滤能力
 uint32_t rp_fmt_caps(uint32_t f) { return nvn_gpu_format_caps(f); }
@@ -55,7 +60,7 @@ void rp_pass_note_draw(int d) { (void)d; }
 // #950 新增的回放核心依赖：替身取保守中性值（写日志恒报「写过」= 不让暂存命中；没有待折清除、不缩渲染区域）
 uint64_t rp_write_mark(void) { return 0; }
 int rp_write_touched(uint64_t mark, uint64_t addr, uint64_t len) { (void)mark; (void)addr; (void)len; return 1; }
-void rp_pass_prepare_draw(nvn_gpu_cmd c) { (void)c; }
+void rp_pass_prepare_draw(nvn_gpu_cmd c, uint32_t color_write_mask) { (void)c; (void)color_write_mask; }
 void rp_pass_land_reads(nvn_gpu_cmd c, const tex_t *const *ts, int n) { (void)c; (void)ts; (void)n; }
 int rp_pass_parked(void) { return 0; }
 int rp_pass_begin(nvn_gpu_cmd c) {

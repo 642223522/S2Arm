@@ -152,6 +152,8 @@ namespace Ryujinx.Audio.Backends.Apple
         private long _maxStarveTicks;
         private long _minInFlight = long.MaxValue;
         private long _maxGapTicks;
+        // S2Arm (#1598): 这 10 秒里最长的一次交设备（AudioQueueEnqueueBuffer）耗时；正常微秒级，几百毫秒以上 = 输出队列卡死（会话看门狗据此重启队列）
+        private long _maxEnqTicks;
         // S2Arm (11-03 太鼓 iPhone 断续): 交还迟到 = 两次交还相隔超过一拉（放回提前量）+ 5 ms：设备照网格拉，回调却晚送到。真缺口按「已交 vs 墙钟」
         //   只数超过开局最大落后量的增长，开局 300 ms 落后之后每秒一次 40–55 ms 的断口一次都不数（11-03 测试设备1 太鼓：真缺口 0、录屏每秒断 55 ms），
         //   这里直接数回调晚到；次数和最晚超出一拉多少 ms 进 10 秒行
@@ -357,6 +359,14 @@ namespace Ryujinx.Audio.Backends.Apple
         /// <summary>
         /// The device handed back a buffer of <paramref name="bytes"/>; <paramref name="inFlightAfter"/> bytes are still in flight.
         /// </summary>
+        public void OnEnqueue(long ticks)
+        {
+            if (ticks > Volatile.Read(ref _maxEnqTicks))
+            {
+                Volatile.Write(ref _maxEnqTicks, ticks);
+            }
+        }
+
         public void OnReturned(int bytes, long inFlightAfter)
         {
             long now = Stopwatch.GetTimestamp();
@@ -626,6 +636,7 @@ namespace Ryujinx.Audio.Backends.Apple
                     long minInFlight = d._minInFlight;
                     double maxStarveMs = d._maxStarveTicks * 1000.0 / Stopwatch.Frequency;
                     double maxGapMs = d._maxGapTicks * 1000.0 / Stopwatch.Frequency;
+                    double maxEnqMs = Interlocked.Exchange(ref d._maxEnqTicks, 0) * 1000.0 / Stopwatch.Frequency;
 
                     d._maxStarveTicks = 0;
                     d._minInFlight = long.MaxValue;
@@ -640,7 +651,7 @@ namespace Ryujinx.Audio.Backends.Apple
                     Console.Error.WriteLine(
                         $"[声] 输出 #{d.Index} 10 秒：回调 {cb - d._repCallbacks} 次，交设备 {sub - d._repSubmitted} 帧、播完 {pl - d._repPlayed} 帧，" +
                         $"账上在途归零 {und - d._repUnderruns} 次（最长 {maxStarveMs:F1} ms；设备交还早于播完，归零时设备内部仍有缓冲，断音看真缺口与交还迟到）、停流 {pau - d._repPauses} 次，回调后最少在途 {(minInFlight == long.MaxValue ? -1 : minInFlight)} 帧，" +
-                        $"回调最长间隔 {maxGapMs:F1} ms；渲染丢周期 {skipped}、周期最晚 {lateNs / 1e6:F1} ms；真缺口 {gap - d._repGapFrames} 帧（{(gap - d._repGapFrames) * 1000.0 / d._rate:F1} ms）；放回提前量 {Volatile.Read(ref d._leadFrames)} 帧；交还迟到 {lb - d._repLateBursts} 次（最多比一拉晚 {lateOverMs:F1} ms）{lat}{level}{(d._ring != null ? $"；wav 丢 {d._ringDropped} B" : "")}");
+                        $"回调最长间隔 {maxGapMs:F1} ms、交设备入队最长 {maxEnqMs:F1} ms；渲染丢周期 {skipped}、周期最晚 {lateNs / 1e6:F1} ms；真缺口 {gap - d._repGapFrames} 帧（{(gap - d._repGapFrames) * 1000.0 / d._rate:F1} ms）；放回提前量 {Volatile.Read(ref d._leadFrames)} 帧；交还迟到 {lb - d._repLateBursts} 次（最多比一拉晚 {lateOverMs:F1} ms）{lat}{level}{(d._ring != null ? $"；wav 丢 {d._ringDropped} B" : "")}");
 
                     HudAudio(d.Index, gap * 1000 / d._rate, 0);
 

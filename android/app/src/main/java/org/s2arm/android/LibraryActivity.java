@@ -169,9 +169,9 @@ public final class LibraryActivity extends Activity {
         setContentView(root);
         library = new GameLibrary(getApplicationContext(), new GameLibrary.Listener() {
             @Override public void onStatus(String text) { runOnUiThread(() -> {
-                if (isDestroyed()) return;
+                if (isDestroyed()) return;   // 库清单只进日志（GameLibrary.logLibrary），这里收到的都是给玩家看的状态
                 status.setText(text);
-                status.setVisibility(text.startsWith("Games:") ? android.view.View.GONE : android.view.View.VISIBLE);
+                status.setVisibility(android.view.View.VISIBLE);
             }); }
             @Override public void onGameAvailable(String titleId, String name, java.io.File art) { runOnUiThread(() -> {
                 if (isDestroyed() || !listed.add(titleId)) return;
@@ -501,6 +501,8 @@ public final class LibraryActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         fpsOverlay.setChecked(getSharedPreferences("display", MODE_PRIVATE).getBoolean("fps", false));
+        // 回到页面先收起上一轮的状态行（启动中、切换等待、诊断已导出、导入结果…），再重新扫描。
+        status.setVisibility(android.view.View.GONE);
         if (shelf != null) shelf.refreshPlaytime();   // 刚玩完回来：重读游玩时间
         if (library != null) {
             boolean receive = getIntent().hasExtra(EXTRA_IMPORT_RECEIVE);

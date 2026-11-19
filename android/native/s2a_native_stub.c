@@ -35,6 +35,7 @@ int s2a_gate_inflight(void) { session_unbacked(); return -1; }
 #undef session_unbacked
 // 即时存档：服务层 SnapLog.cs 每条请求前后设当前请求序号（游戏目标由 runtime/src/thread.c 提供）；诊断目标没有线程核心、快照恒关，不做事
 void s2a_snap_hctx(int seq) { (void)seq; }
+void s2a_snap_hcommit(int seq) { (void)seq; }   // 同上：请求完成、追加进请求日志时设（日志按完成先后）
 
 void s2a_android_set_screen_w(int width) { atomic_store(&g_screen_w, width); }
 const char *s2a_android_last_boot_mark(void) { return g_boot_mark; }

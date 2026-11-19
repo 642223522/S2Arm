@@ -11,6 +11,9 @@
 #include <stdlib.h>
 // 弱缺省定义：真定义在 crash.c（同一个程序里强定义盖过它）；只链 gate.c 的单测没有 crash.c，用这份返回 0
 __attribute__((weak)) uint64_t s2a_sp_unaligned_count(void) { return 0; }
+__attribute__((weak)) uint64_t s2a_stale_perm_count(void) { return 0; }
+// 同理：真定义在 thread.c（即时存档记「C# 回复已写好」）；只链 gate.c 的单测用这份空实现
+__attribute__((weak)) void s2a_svc_cs_returned(void) {}
 
 enum { G_SVC, G_CNTPCT, G_CNTVCT, G_WIDE, G_SPIN, G_AREGION };
 typedef struct { uint64_t ret; int kind, arg; uint64_t orig; } gate_t;
@@ -120,6 +123,9 @@ void s2a_svc_red_summary(void) {   // 退出时一行，健康表读：空 = 报
     // 栈指针未对齐的读写替游戏做了几条（crash.c / emul_sp.c s2a_emul_sp_unaligned；Switch 不查 SP 对齐、苹果查）：有才报
     { uint64_t n = s2a_sp_unaligned_count();
       if (n) LOG("栈指针未对齐：替游戏模拟了 %llu 条读写（Switch 不查栈对齐，苹果查）", (unsigned long long)n); }
+    // 过期权限缺页重执行了几次（crash.c stale_perm_retry：缺页时页还不可写、处理时已被别的线程放开）：有才报
+    { uint64_t n = s2a_stale_perm_count();
+      if (n) LOG("过期权限缺页：重执行 %llu 次（缺页没人认领、内核里这页已有要的权限）", (unsigned long long)n); }
 }
 
 int svc_thread(int num, uint64_t *regs);                    // thread.c：线程 / 同步，1 = 已处理
@@ -276,6 +282,7 @@ static uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig) {
         void s2a_core_leave(void), s2a_core_enter(void); int ipc = num == 0x21 || num == 0x22 || num == 0x23;
         if (ipc) s2a_core_leave();   // IPC 阻塞在服务线程上：放开虚拟核（S2A_CORES，thread.c）
         t_in_cs = 1; int done = g_cs.svc(&c) == S2A_SVC_HANDLED;
+        { void s2a_svc_cs_returned(void); s2a_svc_cs_returned(); }   // 回复已写好：先记一笔（即时存档核对「判齐后完成了没有」，thread.c）
         t_in_cs = 0; atomic_fetch_sub(&g_cs_inflight, 1);   // 进 / 出配对：与上面的 fetch_add 一一对应（10-20 曾被下一行注释吞掉，收局在途计数只增不减）
         // 重取核放在出账之后：在途只记「人在 C# 里」，等核不算；已在收局就不再取核、直接停住（取核可能永远等不到）
         if (ipc) { if (atomic_load(&g_park)) park_forever(); s2a_core_enter(); }

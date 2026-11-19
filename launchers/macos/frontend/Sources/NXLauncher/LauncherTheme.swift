@@ -246,9 +246,10 @@ package struct LauncherPrimaryButtonStyle: ButtonStyle {
 }
 
 package struct LauncherTextFieldStyle: TextFieldStyle {
-    package init() {}
+    private let topInset: CGFloat
+    package init(topInset: CGFloat = 0) { self.topInset = topInset }
     package func _body(configuration: TextField<Self._Label>) -> some View {
-        configuration.textFieldStyle(.plain).modifier(LauncherFocusableField())
+        configuration.textFieldStyle(.plain).padding(.top, topInset).modifier(LauncherFocusableField())
     }
 }
 

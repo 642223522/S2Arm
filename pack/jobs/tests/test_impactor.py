@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Windows 签装交给玩家自装的 Impactor（pack/jobs/impactor.py + impactor_guide.json）单测。
-期望按规则写：报错原文取自 11-04 Windows 出包机实测与上游报告的原句；实测版本 2.7.2；引导两种语言齐全、引用的码全在共用表。"""
+期望按规则写：报错原文取自 11-04 Windows 出包机实测与上游报告的原句；实测版本 2.7.3；引导两种语言齐全、引用的码全在共用表。"""
 import json, os, sys, tempfile, unittest
 from pathlib import Path
 from unittest import mock
@@ -45,26 +45,26 @@ class Status(unittest.TestCase):
             return impactor.status()
 
     def test_tested_version_ok(self):
-        r = self.run_with(('plumeimpactor', '2.7.2'))
-        self.assertEqual((r['verdict'], r['code'], r['version']), ('ok', None, '2.7.2'))
+        r = self.run_with(('plumeimpactor', '2.7.3'))
+        self.assertEqual((r['verdict'], r['code'], r['version']), ('ok', None, '2.7.3'))
 
     def test_other_version_untested(self):
         r = self.run_with(('plumeimpactor', '2.8.0'))
         self.assertEqual((r['verdict'], r['code']), ('untested', 'impactor_version_untested'))
-        self.assertIn('2.7.2', r['next'])
+        self.assertIn('2.7.3', r['next'])
 
     def test_missing_and_wrong_product(self):
-        for found in ((None, None), ('someotherapp', '2.7.2')):
+        for found in ((None, None), ('someotherapp', '2.7.3')):
             with self.subTest(found=found):
                 r = self.run_with(found)
                 self.assertEqual((r['verdict'], r['code']), ('missing', 'impactor_missing'))
-                self.assertTrue(r['download'].startswith('https://github.com/claration/impactor/releases/tag/v2.7.2'))
+                self.assertTrue(r['download'].startswith('https://github.com/claration/impactor/releases/tag/v2.7.3'))
 
 
 class StatusContract(unittest.TestCase):   # 启动器（两个前端）靠这一行 JSON 判：字段名与 verdict 取值钉死，改了要同笔改前端（满屏补丁线 11-04）
     def test_fields_and_verdicts(self):
         seen = set()
-        for found in (('plumeimpactor', '2.7.2'), ('plumeimpactor', '9.9.9'), (None, None)):
+        for found in (('plumeimpactor', '2.7.3'), ('plumeimpactor', '9.9.9'), (None, None)):
             with mock.patch.object(impactor, 'candidates', return_value=['x.exe']), mock.patch.object(impactor, 'exe_version', return_value=found):
                 r = json.loads(json.dumps(impactor.status()))
             base = {'tested', 'download', 'path', 'version', 'verdict', 'code'}
@@ -128,7 +128,7 @@ class SelectedTeamTests(unittest.TestCase):
 
 
 class UnselectedAccountTests(unittest.TestCase):
-    """D-ZM37：账号存档存了 Apple ID 却没选中（同版 v2.7.2 plume_store：删掉选中的那个只把 selected_account 置空），plumesign 报
+    """D-ZM37：账号存档存了 Apple ID 却没选中（同版 v2.7.3 plume_store：删掉选中的那个只把 selected_account 置空），plumesign 报
     「No account selected」。只存一个 → 用官方 plumesign account switch 选上；存多个 → 不替玩家挑"""
     def setUp(self):
         self.d = tempfile.mkdtemp(); self.addCleanup(lambda: __import__("shutil").rmtree(self.d, ignore_errors=True))

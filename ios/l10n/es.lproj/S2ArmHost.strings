@@ -467,6 +467,16 @@
 "save.restoreCancelled" = "Restauración cancelada.";
 "save.restored" = "Partida guardada restaurada. Puedes iniciar el juego para comprobar tu progreso. Se conservó una copia previa a la restauración (no se crea si no había partida guardada antes).";
 "save.serviceInvalid" = "El servicio de partidas guardadas no devolvió un resultado válido. Cierra y vuelve a abrir la app; se conservan los datos existentes.";
+"save.previous.ask.title" = "Este juego no pudo cargar su partida la última vez. ¿Volver a la partida guardada anterior?";
+"save.previous.ask.crash" = "La última sesión se cerró justo al empezar. Puedes volver a cambiar en cualquier momento.";
+"save.previous.ask.guard" = "Una comprobación de la partida no coincidió en la última sesión. Puedes volver a cambiar en cualquier momento.";
+"save.previous.ask.restore" = "Volver a la anterior";
+"save.previous.ask.start" = "Empezar igualmente";
+"save.previous.done.title" = "Has vuelto a la partida anterior";
+"save.previous.done" = "Puedes volver a cambiar cuando quieras: en el menú del engranaje, abre Gestionar partidas y elige «Cambiar a la anterior».";
+"save.previous.done.ok" = "Aceptar";
+"save.previous.button" = "Cambiar a la anterior";
+"save.previous.detail" = "Intercambia con la versión anterior al último guardado. Elígelo otra vez para volver.";
 "save.start" = "Iniciar juego";
 "save.leave" = "Salir (la próxima vez se abre directamente el juego)";
 "save.status.hasSave" = "Tu partida guardada actual se puede exportar. Al importar, primero se comprueban la versión del juego, la propiedad de la cuenta y la integridad del archivo, y luego se solicita confirmación para restaurar.";

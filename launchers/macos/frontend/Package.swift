@@ -21,7 +21,7 @@ let package = Package(
     targets: [
         .target(name: "LauncherPadBridge", path: "Sources/LauncherPadBridge", publicHeadersPath: "include",
                 cSettings: [.headerSearchPath(".")],
-                linkerSettings: [.linkedFramework("AppKit")]),
+                linkerSettings: [.linkedFramework("AppKit"), .linkedFramework("IOKit"), .linkedFramework("GameController")]),
         .target(name: "NXCore", path: "Sources/NXCore"),
         .target(name: "NXModel", dependencies: ["NXCore"], path: "Sources/NXModel"),
         .target(name: "NXLauncher", dependencies: ["NXModel", "NXCore"], path: "Sources/NXLauncher"),

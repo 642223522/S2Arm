@@ -90,6 +90,14 @@ public struct GameSummary: Identifiable, Equatable {
     public var onPhone: Bool = false
     /// 游戏库封面左上角的金色 S（v0.4.0，pack/jobs/library.py sgrade_badge）：这款有 S 级优化（已打进补丁，或补丁库里有、下次起局 / 更新 iPhone 补上）
     public var sgrade: Bool = false
+    /// S 级优化升级没做完（catalog sgradeIncomplete：上次单款升级中途退出了启动器、标记还在）：这款显示「升级未完成，点 S 级优化继续」
+    public var sgradeIncomplete: Bool = false
+    /// S 级优化升级正在跑（catalog sgradeUpgrading：标记在且起升级的进程还活着，比如另一个启动器窗口起的）：同样画升级中、开始按钮不可点
+    public var sgradeUpgrading: Bool = false
+    /// S 级优化升级队列里这款的状态（catalog sgradeState：queued / running / done / skipped / incomplete，不在队里为 nil；作业层一份队列两端共用）
+    public var sgradeState: String? = nil
+    /// 在升的进度 0–1（catalog sgradeProgress；不在升为 nil）
+    public var sgradeProgress: Double? = nil
     /// 在这台 Mac 上的游玩时间（catalog 的 playtime）；没玩过为 nil
     public var playtime: GamePlaytime? = nil
     /// 下游深度方案（pack/jobs/downstream.py describe）：这款有下游项目的专门移植时，导出 iPhone 前问玩家一次用哪套
@@ -131,6 +139,10 @@ public struct GameSummary: Identifiable, Equatable {
         self.appleTvReady = g["appleTvReady"] as? Bool ?? false
         self.onPhone = g["onPhone"] as? Bool ?? false
         self.sgrade = g["sgrade"] as? Bool ?? false
+        self.sgradeIncomplete = g["sgradeIncomplete"] as? Bool ?? false
+        self.sgradeUpgrading = g["sgradeUpgrading"] as? Bool ?? false
+        self.sgradeState = g["sgradeState"] as? String
+        self.sgradeProgress = (g["sgradeProgress"] as? NSNumber)?.doubleValue
         self.playtime = GamePlaytime(catalog: g["playtime"] as? [String: Any])
         self.banner = (g["banner"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         self.downstream = (g["downstream"] as? [String: Any]).flatMap(DownstreamOffer.init(catalog:))
@@ -174,12 +186,15 @@ public final class LibraryProvider {
     private var keys: Bool?
     private var updates: [PhoneUpdate] = []
     private var devices = 0
+    private var sgradeBatchValue: SGradeBatch?
     /// 上次读游戏库时 prod.keys 齐没齐（catalog 的 keys.ready）；还没读过为 nil。
     public var keysReady: Bool? { lock.withLock { keys } }
     /// 上次读游戏库时，壳比本版旧的手机（catalog 的 phoneUpdates，只按本机设备记录判）：游戏库右上角「更新 iPhone 上的 S2Arm」
     public var phoneUpdates: [PhoneUpdate] { lock.withLock { updates } }
     /// 上次读游戏库时，这台电脑往几台手机装过游戏（catalog 的 phoneDevices）：启动器更新弹窗据此写「更新启动器和 iPhone App」
     public var phoneDevices: Int { lock.withLock { devices } }
+    /// 上次读游戏库时 S 级优化升级队列的批次（catalog 顶层 sgradeBatch）；没有为 nil
+    public var sgradeBatch: SGradeBatch? { lock.withLock { sgradeBatchValue } }
 
     public init(client: JobClient) { self.client = client }
 
@@ -187,7 +202,8 @@ public final class LibraryProvider {
         let ready = (result["keys"] as? [String: Any])?["ready"] as? Bool
         let phones = (result["phoneUpdates"] as? [[String: Any]] ?? []).map(PhoneUpdate.init(catalog:))
         let count = (result["phoneDevices"] as? NSNumber)?.intValue ?? 0
-        lock.withLock { keys = ready; updates = phones; devices = count }
+        let batch = (result["sgradeBatch"] as? [String: Any]).map(SGradeBatch.init(catalog:))
+        lock.withLock { keys = ready; updates = phones; devices = count; sgradeBatchValue = batch }
     }
 
     private var snapshotFile: URL { client.environment.privateRoot.appendingPathComponent("library-snapshot.json") }
@@ -392,5 +408,18 @@ public struct PhoneUpdate: Equatable, Sendable {
             (u[k] as? [[String: Any]] ?? []).compactMap { g in (g["gameId"] as? String).map { GameRef(id: $0, name: g["name"] as? String ?? $0) } }
         }
         device = u["device"] as? String ?? ""; name = u["name"] as? String ?? ""; games = refs("games"); stale = refs("stale")
+    }
+}
+
+/// S 级优化升级队列的批次（catalog 顶层 sgradeBatch / 作业 sgradeUpgradeStatus）：running 在跑、index 第几款（没在升时 = 已结束的款数）、count 共几款
+public struct SGradeBatch: Equatable, Sendable {
+    public var running: Bool
+    public var index: Int
+    public var count: Int
+    public init(running: Bool, index: Int, count: Int) { self.running = running; self.index = index; self.count = count }
+    public init(catalog d: [String: Any]) {
+        running = d["running"] as? Bool ?? false
+        index = (d["index"] as? NSNumber)?.intValue ?? 0
+        count = (d["count"] as? NSNumber)?.intValue ?? 0
     }
 }

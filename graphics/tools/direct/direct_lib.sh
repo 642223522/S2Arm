@@ -42,9 +42,9 @@ esac
 #   refresh 走通用、285 款普查按它归类派单；能部分出库的照常出（退 0，末行黄、列没出成的类别与计数）。其余非 0 = 基础设施出错（缺文件、工具 / 编译器起不来、
 #   脚本异常、超时、写盘失败）与判不清的，报红退 1；本机这台出包机做不了的退 75（环境缺件）。gap <日志> <步骤> 只认确定的内容缺口形状，认出就打黄退 3，认不出就返回（调用方照旧报红）：
 #   · 有 Python 异常栈 → 判不清（脚本异常）
-#   · NVN 出库（dmsh_build.py）一支着色器结构不支持就整份停住（在链版本清单里、改了九款整份重出，所以在这里认）：「[RED] <16 位键>: vertex shader of shader type 0 without a VertexB part」
-#     「[RED] <16 位键>: compute code area」「[RED] vertex shader without a main0 main function」
-#   · Vulkan 离线翻译（vk_shaders.py / graphics/tools/spirv_msl.py 的 red）一支翻不了就整份停住，消息带那支的路径：「[RED] /<路径>: <原因>」（没有部分出库的设计，整款走通用）
+#   · NVN 出库（dsh_batch build）是部分出库：单支翻不了 / 编不过记进 _b_build.json 与 direct_fail.log，库照出（Build.cs 收尾「成 N，败 M」）；只有三种本链不支持的 NVN 结构
+#     整份停住（Build.cs 收尾那三行）：「[RED] <16 位键>: vertex shader of shader type 0 without a VertexB part」「[RED] <16 位键>: compute code area」「[RED] vertex shader without a main0 main function」
+#   · Vulkan 离线翻译（vk_shaders.py）v0.3.1 起也逐支剔除、照出其余；仍整份停的只剩带那支路径的红行「[RED] /<路径>: <原因>」（gap 认它，本款走通用）
 gap() {
   local l k why
   grep -aq '^Traceback ' "$1" && return 0
@@ -159,7 +159,9 @@ PUB=${S2A_DIRECT_PUBLISH:-ios}
 case "$PUB" in ios) [ "$NOIOS" = 0 ] || { say "🔴 发布 iOS 库却没出 iOS 那份（S2A_DIRECT_TARGETS=${S2A_DIRECT_TARGETS}）"; exit 1; };; mac) [ "$NOMAC" = 0 ] || { say "🔴 发布 Mac 库却没出 Mac 那份（S2A_DIRECT_TARGETS=${S2A_DIRECT_TARGETS}）"; exit 1; };;
   android) [ "$VK" = 1 ] || { say "🔴 发布安卓库却没出安卓那份（S2A_DIRECT_TARGETS=${S2A_DIRECT_TARGETS:-}）"; exit 1; };; *) say "🔴 S2A_DIRECT_PUBLISH=${PUB} 不认识（ios / mac / android）"; exit 1;; esac
 [ "$VK" = 0 ] || [ "$PUB" = android ] || { say "🔴 只出安卓 Vulkan 库（S2A_DIRECT_TARGETS=android）却要发布 ${PUB}"; exit 1; }
-C=${S2A_DIRECT_CACHE:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/cache/direct/$TID}; OUT=$(mkdir -p "$OUT" && cd "$OUT" && pwd -P) || exit 1
+C=${S2A_DIRECT_CACHE:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/cache/direct/$TID}; OUT=$(mkdir -p "$OUT" && cd "$OUT" && pwd $PD) || exit 1
+# Windows：pwd 又给回 /d/... 写法，路径里有 [ ] * ? ; ' 时 MSYS 不替原生程序转成 D:/...（#1633：重名游戏文件夹「<名> [号后 4 位]」，clonedir.py 拿到 /d/... 报源目录不存在）。同上面产物根，换成 D:/... 混合写法
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) OUT=$(cygpath -m "$OUT");; esac
 V=$(cd "$NX/../../translator" && "$PY" -c 'import dmsh_chain; print(dmsh_chain.version())') || { say "🔴 取不到链版本"; exit 1; }
 # 缓存只剩内容寻址仓 $C/store（dmsh_store.py 分片文件，10-31 出包线深修：按键小文件马车8 一款 66 万个）与上次的日志 $C/logs/；
 #   旧布局（$C/mac/b-<链>/、$C/mac/cas/{shader,index,variant,unity,metallib}/、$C/ios/b-<链>/、$C/work/）第一次碰到整个删掉（旧链号整代不留）
@@ -318,7 +320,7 @@ say "$(tail -1 "$W/se_want.log")"
 fi
 tm=$((SECONDS - s)); s=$SECONDS
 # ④⑤ 安卓（VK=1，#783）：graphics/tools/direct/vklib/dsh_vklib.py 按需编 dsh_vklib 再调：逐键出 Vulkan 产物进工作目录 $W/vk/keys（键按 shader_map.tsv 排序，
-#   gs / hs / ds 记 skipped、翻不了的记 failed，逐键状态 vk_build.tsv；有 failed 就报红停止，不发布部分库，再把成功批次打成 LibPack 容器 <临时输出>/b-<链>-vk/（lib.idx + lib.NNN.pak，头部记完整 Vulkan 侧指纹）；
+#   gs / hs / ds 记 skipped、翻不了的记 failed，逐键状态 vk_build.tsv；有 failed 也照常发布成功的那些（🟡 部分出库，缺的键运行时现编），把成功批次打成 LibPack 容器 <临时输出>/b-<链>-vk/（lib.idx + lib.NNN.pak，头部记完整 Vulkan 侧指纹）；
 #   收表、出 keys.tsv（只列出成的键）、vk_build.tsv 副本与 direct_lib.json，换进位。不编 Metal，不出 ps_inputs / c1_full / cb_extent / 管线种子表（都是 Metal 侧的）
 if [ "$VK" = 1 ]; then
   prog "翻译成 Vulkan"

@@ -23,6 +23,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // 强引用：游戏目标必须链接真实共享 core 对象，诊断 s2a_native_stub.c 不能提供这些入口。
@@ -40,6 +41,7 @@ void s2a_fps_start(const char *);    // runtime/src/fps.c
 void s2a_ql_boot_mode(int docked);   // runtime/src/qladder_host.c
 unsigned s2a_unresolved_count(void);
 uint64_t s2a_mem_init(const char *);
+int s2a_npdm_ounce(const char *);   // runtime/src/svc_mem.c：装模块前认 Switch 2（1 / 0，读不到 −1）
 void *guest_sym(const char *);
 #if defined(__ANDROID__)
 // 同一 DSO 的私有 os.c 接缝，不扩展对外 native ABI。
@@ -48,6 +50,8 @@ __attribute__((visibility("hidden"))) int s2a_android_session_log_start(const ch
 // 可选：UI broker 只存在于 Android 外壳；宿主 runtime 单测没有它。调用是无条件的，
 // 所以弱声明也必须在 Android 条件之外，否则 host 单测在 -Werror 下编不过。
 __attribute__((weak)) int s2a_android_ui_bind_session(uint64_t);
+// 弱链接[runtime]：s2a_direct_diag_start
+__attribute__((weak)) int s2a_direct_diag_start(const char *, uint64_t);
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct s2a_android_runtime_status g_status;
@@ -213,6 +217,8 @@ static int run_common(const struct s2a_android_runtime_request *r,
             services_v2->graphics = &frozen->table;
             services_v2->graphics_mode = 1;
             frozen_direct = 1;
+            if (s2a_direct_diag_start && s2a_direct_diag_start(getenv("S2A_FRAME_LOG_DIR"), r->services.session_id))
+                fprintf(stderr, "[s2a] 【红】direct trace 初始化失败，采集不可用\n");
             // 直连安全网（共用 dguard.c，接口 dguard_android.h）：NVN 直连已提交、客体代码
             // 还没跑——武装点与 iOS host_main 的 begin/arm 时机一致。满限 + 无人值守收局，
             // 有人局提示后照常武装继续；debug.s2a.dguard=0 整局不武装（launch 里判）。
@@ -246,6 +252,13 @@ static int run_common(const struct s2a_android_runtime_request *r,
         else if (stall < 0) fprintf(stderr, "[s2a] 【红】停帧救场标记在，写 S2A_FPS60=0 失败（errno=%d），本局帧率补丁照清单\n", -stall);
     }
     s2a_caps_apply(r->services.game_data_dir);
+    char npdm[1100];
+    int n = r->npdm_path ? snprintf(npdm, sizeof npdm, "%s", r->npdm_path) :
+        snprintf(npdm, sizeof npdm, "%s/main.npdm", r->module_dir);
+    if (n < 0 || (size_t)n >= sizeof npdm) return failed(S2A_RUNTIME_ARGUMENT, 0, "module path too long");
+    // 重定位前先认出 Switch 2：直连的 Switch 2 SDK 接管（direct_session.c s2a_direct_lookup → nvn2.c nvn2_on）在重定位时问这个标志；
+    //   苹果侧模块装载经 s2a_mem_mod_base 读过 NPDM，APK 装载不经那条路。读不到（−1）不拦：照 Switch 1 往下走，s2a_mem_init 读 NPDM 失败会自己报。
+    if (s2a_npdm_ounce(npdm) < 0) fprintf(stderr, "[s2a] 装模块前读不到 NPDM（%s），Switch 2 SDK 接管本局不启用，由 s2a_mem_init 再读\n", npdm);
     if (r->module_source) {
         s2a_nro_table_load(r->services.game_data_dir);
         load_modules_from_source(r->module_source, names, (int)count);
@@ -268,10 +281,6 @@ static int run_common(const struct s2a_android_runtime_request *r,
             frozen && frozen->reason[0] ? frozen->reason : "unrecorded");
         return failed(S2A_RUNTIME_DIRECT, S2A_DIRECT_RES_UNSUPPORTED, detail);
     }
-    char npdm[1100];
-    int n = r->npdm_path ? snprintf(npdm, sizeof npdm, "%s", r->npdm_path) :
-        snprintf(npdm, sizeof npdm, "%s/main.npdm", r->module_dir);
-    if (n < 0 || (size_t)n >= sizeof npdm) return failed(S2A_RUNTIME_ARGUMENT, 0, "module path too long");
     uint64_t stack = s2a_mem_init(npdm);
     if (!stack || (stack & 15) || s2a_program_id() != r->program_id)
         return failed(S2A_RUNTIME_MEMORY, 0, "native layout or program identity mismatch");

@@ -113,6 +113,15 @@ namespace Ryujinx.Audio.Backends.Apple
         //   S2A_AUDIO_HEAL=0 关（同包 A/B）；S2A_AUDIO_TEST_STALL_AT=<秒>：开播后到点暂停一次队列（模拟系统停播，测试用）
         private const int StallMs = 1000;
         private const int HealBackoffMs = 2000;
+        // S2Arm (#1598 Mac 无声)：一次交设备（AudioQueueEnqueueBuffer，问音频服务进程）卡这么久 = 输出队列卡死，看门狗重启它。
+        //   正常是微秒级；iPhone 上问音频服务的调用偶发最长约 50 ms（见 Pump 头注释）。玩家 M2 局：渲染一拍里「DSP」从 10 ms 级跳到 340 ms → 2.3 / 4.9 / 6.7 s、
+        //   随后停流全无声，切窗口走解冻路径重启输出队列后立刻回到 10 ms 级——慢的是交设备这一步而不是混音计算（快路径是进程级静态开关，重启队列碰不到它）。
+        //   原兜底只看「设备多久没回调、在途有数据」，交设备本身卡住时生产方被拖住、在途见底，兜底不触发；iOS 有回调静默兜底，Mac 这条从来接不住
+        private const int EnqueueStuckMs = 250;
+        private long _enqStuckTicks;   // 上次看门狗以来最长的一次交设备（Submit 写，看门狗取走清零）
+        // 测试钩子：S2A_AUDIO_TEST_ENQ_STALL_AT=<秒>:<毫秒> —— 开播后到点，一次交设备在计时窗口里睡这么久，模拟输出队列卡死（服务层单测 --apple-audio-enqueue-stuck）
+        private static readonly (int AtS, int Ms) _testEnqStall = ParseProdStall(Environment.GetEnvironmentVariable("S2A_AUDIO_TEST_ENQ_STALL_AT"));
+        private bool _testEnqStallDone;
         private static readonly bool _healOn = Environment.GetEnvironmentVariable("S2A_AUDIO_HEAL") != "0";
         private static readonly int _testStallAtS = int.TryParse(Environment.GetEnvironmentVariable("S2A_AUDIO_TEST_STALL_AT"), out int s) ? s : 0;
         private static readonly AppleHardwareDeviceSession[] _watched = new AppleHardwareDeviceSession[8];
@@ -318,12 +327,22 @@ namespace Ryujinx.Audio.Backends.Apple
         {
             int zero = Interlocked.Exchange(ref _zeroReturns, 0);
             long returned = Interlocked.Exchange(ref _returnedBytes, 0), elapsed = now - _timelineTicks;
+            long enq = Interlocked.Exchange(ref _enqStuckTicks, 0);
 
             _timelineTicks = now;
 
             if (!_started || !_queueRunning)
             {
                 _timeline.Reset();
+
+                return;
+            }
+
+            // #1598：交设备卡死（见 EnqueueStuckMs）→ 与解冻路径同一个动作：停队列、收回在途、重新开播。各平台都接，退避同下面的兜底
+            if (enq * 1000 >= (long)EnqueueStuckMs * Stopwatch.Frequency && _healOn && now - _lastHealTicks >= (long)HealBackoffMs * Stopwatch.Frequency / 1000)
+            {
+                _timeline.Reset();
+                S2ARecover($"兜底：一次交设备（AudioQueueEnqueueBuffer）卡了 {enq * 1000 / Stopwatch.Frequency} ms，输出队列卡死", false, now, true);
 
                 return;
             }
@@ -730,7 +749,22 @@ namespace Ryujinx.Audio.Backends.Apple
                 buffer->AudioDataByteSize = (uint)bytes;
                 _s._diag.OnSubmit(new ReadOnlySpan<byte>((void*)buffer->AudioData, bytes), InFlightBytes - bytes);
 
+                long t0 = Stopwatch.GetTimestamp();
+                if (_testEnqStall.AtS > 0 && !_s._testEnqStallDone && _s._started && t0 - _s._startTicks >= (long)_testEnqStall.AtS * Stopwatch.Frequency)
+                {
+                    _s._testEnqStallDone = true;
+                    Console.Error.WriteLine($"[声] 测试钩子：输出 #{_s._diag.Index} 开播后第 {_testEnqStall.AtS} 秒一次交设备卡 {_testEnqStall.Ms} ms（模拟输出队列卡死）");
+                    Thread.Sleep(_testEnqStall.Ms);
+                }
                 AudioQueueEnqueueBuffer(_s._audioQueue, bufferPtr, 0, nint.Zero);
+                long dt = Stopwatch.GetTimestamp() - t0;
+
+                // 泵锁内调用，同一时刻只有一个写方；看门狗用 Interlocked.Exchange 取走
+                _s._diag.OnEnqueue(dt);
+                if (dt > Volatile.Read(ref _s._enqStuckTicks))
+                {
+                    Volatile.Write(ref _s._enqStuckTicks, dt);
+                }
             }
 
             protected override void OnReturned(int bytes, long inFlightAfter)

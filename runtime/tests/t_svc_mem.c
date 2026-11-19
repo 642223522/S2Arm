@@ -447,6 +447,20 @@ int main(void) {
             CHECK(success == 0 && memcmp((void *)b, (void *)(b + 0x18000), 0x4000) == 0 &&
                   lseek(g_s2a_logfd, 0, SEEK_END) == 0, "MapMemory 成功复制且不记录失败日志");
             CHECK(SV(0x05, b + 0x18000, b, 0x4000, 0) == 0, "MapMemory 成功用例解除：还回源（映射期间源是借出的，不能作下面用例的源）");
+            // #4c853c：对齐的共享映射最大权限不含写（iPad 上源在主程序数据段的私有文件映射里）→ 撤回共享映射、改走拷贝：
+            //   期望按语义写死：返回 0、目标内容 = 源、目标可写且写目标不改源（拷贝，不是共享）、解除后源拿回目标里写的内容（拷回）
+            {
+                extern int s2a_mem_test_alias_eacces; s2a_mem_test_alias_eacces = 1;
+                s2a_mem_test_stack(b + 0x30000, 0x4000);
+                memset((void *)b, 0x3c, 0x4000);
+                uint64_t fb = SV(0x04, b + 0x30000, b, 0x4000, 0);
+                int same = fb == 0 && memcmp((void *)b, (void *)(b + 0x30000), 0x4000) == 0;
+                if (fb == 0) ((volatile uint8_t *)(b + 0x30000))[0x10] = 0x77;
+                int copy = fb == 0 && ((volatile uint8_t *)b)[0x10] == 0x3c;
+                CHECK(same && copy, "MapMemory 共享映射最大权限不含写：改走拷贝，返回 0、内容一致、写目标不改源（实得 %#llx / %d / %d）", (unsigned long long)fb, same, copy);
+                CHECK(SV(0x05, b + 0x30000, b, 0x4000, 0) == 0 && ((volatile uint8_t *)b)[0x10] == 0x77, "拷贝改道的解除：内容拷回源");
+                s2a_mem_test_alias_eacces = 0;
+            }
             // 子进程解除目标宿主页映射，让生产 mprotect 真正失败；父进程的窗口保持完整。源取 b+4K（不按宿主页对齐）走拷贝路径——对齐的走共享映射、不 mprotect（族 26）
             ftruncate(g_s2a_logfd, 0); lseek(g_s2a_logfd, 0, SEEK_SET); s2a_mem_test_map_diag_reset();
             s2a_mem_test_stack(b + 0x20000, 0x4000);

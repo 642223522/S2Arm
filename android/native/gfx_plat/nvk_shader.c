@@ -19,6 +19,7 @@
 #include "direct/input_identity.h"
 #include "direct/source_store.h"
 #include "direct/texture_facts.h"
+#include "spirv_sampler_use.h"
 #include "direct/offline_library.h"
 #include "direct/libpack_vk.h"
 #include "../../../graphics/nvn/gfx/nvn/dmsh_chain.h"   // b-<DMSH_CHAIN>-vk：出包预编库目录名（同 nvn_vk_draw.c）
@@ -331,14 +332,11 @@ static int await_inflight(const uint8_t identity[32], struct entry **out) {
         (void)pthread_cond_timedwait(&g_progs_cv, &g_progs_mu, &dl);
     }
 }
-static void pool_stats(const char *phase) {
-    if (!g_texpool_diag) return;
+// 拒绝原因（兜底直连编译器 ResolvePoolSlots 拒绝的按原因计数）在玩家包里也数、也打：拒绝只在编译时偶发，不在每帧热路径上；
+// 全库普查按款汇总这几行（定「贴图句柄从常量缓冲取」这类还剩多少）。整份程序统计与借用读数仍只在诊断开关（nvk_texpool_log）下打。
+static uint64_t g_pool_log_ms; static int g_pool_log_dirty;   // 上次打拒绝原因的时刻；之后又有新拒绝还没打
+static void pool_reject_lines(void) {
     char line[320];
-    snprintf(line, sizeof line, "texture_pool_program_stats phase=%s programs=%llu compile_attempts=%llu compile_successes=%llu compile_rejected=%llu array_unsupported=%llu request_rejected=%llu",
-        phase, (unsigned long long)g_pool_programs, (unsigned long long)g_pool_attempts,
-        (unsigned long long)g_pool_compiled, (unsigned long long)g_pool_rejected,
-        (unsigned long long)g_pool_unsupported, (unsigned long long)g_pool_request_rejected);
-    nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", line);
     for (unsigned i = 0; i < g_pool_reason_count; i++) {
         snprintf(line, sizeof line, "texture_pool_compile_reject reason=%.79s count=%llu", g_pool_reasons[i].name,
                  (unsigned long long)g_pool_reasons[i].count);
@@ -352,18 +350,36 @@ static void pool_stats(const char *phase) {
         snprintf(line, sizeof line, "texture_pool_request_reject reason=other count=%llu", (unsigned long long)g_pool_request_other);
         nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", line);
     }
+    g_pool_log_ms = mono_ms(); g_pool_log_dirty = 0;
+}
+static void pool_stats(const char *phase) {
+    if (!g_texpool_diag) { if (g_pool_reason_count || g_pool_request_facts || g_pool_request_other) pool_reject_lines(); return; }
+    char line[320];
+    snprintf(line, sizeof line, "texture_pool_program_stats phase=%s programs=%llu compile_attempts=%llu compile_successes=%llu compile_rejected=%llu array_unsupported=%llu request_rejected=%llu",
+        phase, (unsigned long long)g_pool_programs, (unsigned long long)g_pool_attempts,
+        (unsigned long long)g_pool_compiled, (unsigned long long)g_pool_rejected,
+        (unsigned long long)g_pool_unsupported, (unsigned long long)g_pool_request_rejected);
+    nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", line);
+    pool_reject_lines();
     // 借用读数跟着同一份诊断走：管线预热在用程序时，「借用」非 0 就是收尾必须等的那部分。
     { struct borrow_snap bs; borrow_snap_take(&bs); borrow_log(NVN_PLAT_LOG_INFO, phase, &bs); }
 }
 /* The normal Android process exit calls this after services/GPU stop. It does
  * not pass through rp_shader_reset, which belongs to session retirement. */
 static void pool_final_summary(int normal) {
-    if (normal && (g_pool_programs || g_pool_request_rejected)) pool_stats("final");
+    if (normal && (g_pool_programs || g_pool_request_rejected || g_pool_reason_count)) pool_stats("final");
+}
+// 新拒绝：第一次立刻打，之后最多每 5 秒打一次（普查局是强停收局，等不到 final）；没打的由 pool_log_flush 在后续取程序时补
+static void pool_reject_tick(void) {
+    if (!g_pool_log_ms || mono_ms() - g_pool_log_ms >= 5000) pool_stats("progress"); else g_pool_log_dirty = 1;
+}
+static void pool_log_flush(void) {   // 取程序路径上调，每 1024 次才看一次时钟
+    static unsigned k;
+    if (g_pool_log_dirty && !(++k & 1023) && mono_ms() - g_pool_log_ms >= 5000) pool_stats("progress");
 }
 /* The producer's failure summary embeds its s2a-direct-error-v1 JSON. Missing,
  * truncated or malformed errors stay explicitly unclassified. */
 static void compiler_rejected(const char *summary) {
-    if (!g_texpool_diag) return;
     char code[64] = "", message[256] = "", schema[48] = "", reason[80] = "unclassified";
     const char *p = strstr(summary, " 原因=");
     if (p) {
@@ -403,7 +419,7 @@ static void compiler_rejected(const char *summary) {
         else { snprintf(g_pool_reasons[i].name, sizeof g_pool_reasons[i].name, "%s", reason); g_pool_reason_count++; }
     }
     g_pool_reasons[i].count++; g_pool_rejected++;
-    if (g_pool_rejected == 1 || !(g_pool_rejected % 50)) pool_stats("progress");
+    pool_reject_tick();
 }
 static void array_unsupported(const char *why) {
     nvn_unimpl("shader", "texture_pool_array_unsupported", NULL);
@@ -672,8 +688,27 @@ static int layout_ent(const struct fd_binding *b, nvn_gpu_layout_ent *e) {
     if (b->kind == 2 && b->texel_buffer && b->count == 1 && b->tex_slot >= 0) {
         e->cls = NVN_GPU_RES_TBUF; e->src_kind = NVN_RB_TBUF; e->src_reg = (uint16_t)b->tex_slot; return 1;
     }
+    // 整池数组（解析器 pool = 1 贴图池 / 2 采样器池）：布局来源 NVN_RB_TEXP / NVN_RB_SAMPP，整表一个绑定，count = 池长 + 1（表尾 dummy，
+    //   nvn_backend.h nvn_gpu_pool_*）；资源半边分开（贴图池只是贴图、采样器池只是采样器），回放按池建快照绑（rp_draw.c）
+    if (b->kind == 2 && b->pool) {
+        if (b->count >= 0xffff) return 0;
+        e->cls = b->pool == 1 ? NVN_GPU_RES_TEX : NVN_GPU_RES_SAMP;
+        e->src_kind = b->pool == 1 ? NVN_RB_TEXP : NVN_RB_SAMPP;
+        e->src_reg = 0; e->count = (uint16_t)(b->count + 1);
+        return 1;
+    }
     if (b->kind == 2 && !b->texel_buffer && b->count > 1 && b->slot == 0) { e->cls = NVN_GPU_RES_TEX_SAMP; e->src_kind = NVN_RB_TEX; e->src_reg = 0; e->count = b->count; return 1; }
-    if (b->kind == 2 && !b->texel_buffer && b->tex_slot >= 0) { e->cls = NVN_GPU_RES_TEX_SAMP; e->src_kind = NVN_RB_TEX; e->src_reg = (uint16_t)b->tex_slot; e->src_reg2 = b->samp_slot >= 0 ? (uint16_t)b->samp_slot : UINT16_MAX; return 1; }
+    if (b->kind == 2 && !b->texel_buffer && b->tex_slot >= 0) {
+        e->cls = NVN_GPU_RES_TEX_SAMP; e->src_kind = NVN_RB_TEX; e->src_reg = (uint16_t)b->tex_slot;
+        // 分离采样器来源：c2 采样器表的槽（samp_slot）/ 着色器里的立即数采样器池下标（#1594，解析器把它放在 samp_src = FD_SAMP_ID，
+        // tex_ubo = 0 只有这一种）/ 没有（采样器取贴图字高位）。常量采样器编成标记位 + 池下标，旧回放读到会具名跳过。
+        if (b->samp_slot >= 0) e->src_reg2 = (uint16_t)b->samp_slot;
+        else if (b->samp_src == FD_SAMP_ID) {
+            if (b->samp_val > NVN_GPU_SAMP2_ID_MASK) return 0;   // 解析器已限 0..4095；越界不截断成别的下标，当作不支持的项
+            e->src_reg2 = (uint16_t)(NVN_GPU_SAMP2_CONST | b->samp_val);
+        }
+        return 1;
+    }
     // 存储缓冲：只认「NVN 存储槽」这一种来源（反射里的 nvnSlot）。地址来自 UBO 内 SbDescriptor / c1 段的要逐笔读
     // 常量缓冲内容，首版还没接，准确报红而不是猜槽位。
     if (b->kind == 1 && b->storage_kind == 1 && b->storage_slot >= 0 && b->storage_slot < 16) {
@@ -864,6 +899,17 @@ static int libpack_state_ok(const struct s2a_compile_graphics_src *g) {
     return (!g->depth_mode || depth_clip_cap()) && !g->y_negate && (!g->alpha_test_compare || !strcmp(g->alpha_test_compare, "Always")) &&
            !g->alpha_to_coverage_enable && !g->dual_source_blend &&
            !(g->has_unaligned_ssbo && g->unaligned_ssbo);   // 预编库按 Metal 翻译、存储缓冲一律当对齐：Vulkan 绑定要往下对齐到 minStorageBufferOffsetAlignment，偏差只有现编（读 c0 的偏移）会补
+}
+// 可选的直连诊断在调试包显式启用时记录每次现场编译。
+__attribute__((weak)) int s2a_direct_diag_enabled(void);
+__attribute__((weak)) uint64_t s2a_direct_diag_compile_begin(const uint8_t *, unsigned, int, int);
+__attribute__((weak)) void s2a_direct_diag_compile_end(uint64_t, int);
+static uint64_t diag_begin(const uint8_t *id, unsigned stages, int submit) {
+    return s2a_direct_diag_enabled && s2a_direct_diag_compile_begin && s2a_direct_diag_compile_end && s2a_direct_diag_enabled()
+        ? s2a_direct_diag_compile_begin(id, stages, submit, 0) : 0;
+}
+static void diag_end(uint64_t token, int success) {
+    if (token && s2a_direct_diag_compile_end) s2a_direct_diag_compile_end(token, success);
 }
 struct work_snap {
     uint64_t epoch;
@@ -1061,7 +1107,9 @@ static struct entry *work_run(const struct work_snap *s, int background) {
         struct s2a_compile_outcome oc; memset(&oc, 0, sizeof oc);
         if (g_texpool_diag) g_pool_attempts++;
         if (!shader_compile_admit()) { free(json); nvn_unimpl("shader", "compile_stopped", NULL); return NULL; }
+        uint64_t trace = diag_begin(s->identity, s->stages, !background);
         int ran = s2a_compile_request_execute(in.session, in.generation, json, jl, &oc);
+        diag_end(trace, !ran && oc.bytes && oc.bytes_len);
         free(json);
         if (ran || !oc.bytes || !oc.bytes_len) {
             atomic_fetch_add_explicit(&g_n_failed, 1, memory_order_relaxed);
@@ -1653,6 +1701,10 @@ static struct entry *build_compute(const uint8_t *bytes, size_t len, const struc
         if (le->cls == NVN_GPU_RES_TBUF && e->prog.dtt[0][e->prog.nent[0]] != NVN_TEXTURE_TARGET_BUFFER + 1) {
             red1("tbuf_shader_type_unproven", "cs"); e->failed = 1; break;
         }
+        if (le->src_kind == NVN_RB_TEX && le->src_reg >= 32 && le->src_reg < 40 &&
+            le->src_reg2 == UINT16_MAX && le->cls == NVN_GPU_RES_TEX_SAMP && le->count == 1)
+            e->prog.sampler_unused[0][e->prog.nent[0]] = (uint8_t)s2a_spirv_sampler_unused(
+                (const uint32_t *)cp.stage.spirv, cp.stage.spirv_bytes, (unsigned)b->set, (unsigned)b->binding);
         e->prog.nent[0]++;
     }
     if (!e->failed && !cp.stage.present) { red1("stage_missing_in_result", "cs"); e->failed = 1; }
@@ -1785,12 +1837,10 @@ static int resolve_compute_slow(const struct rp_prog **out, const struct s2a_dir
     static struct nvk_compute_request rq; memset(&rq, 0, sizeof rq); char why[256] = "";
     if (nvk_compute_request_prepare(&st, &pc, &tf, 1, unaligned, ident, &rq, why, sizeof why)) {
         red1("compute_request_failed", why);
-        if (g_texpool_diag) {
-            g_pool_request_rejected++;
-            if (!strcmp(why, "missing or out-of-range descriptor-pool facts")) g_pool_request_facts++;
-            else g_pool_request_other++;
-            if (g_pool_request_rejected == 1 || !(g_pool_request_rejected % 50)) pool_stats("progress");
-        }
+        g_pool_request_rejected++;
+        if (!strcmp(why, "missing or out-of-range descriptor-pool facts")) g_pool_request_facts++;
+        else g_pool_request_other++;
+        pool_reject_tick();
         return -1;
     }
     pthread_mutex_lock(&g_progs_mu);
@@ -1818,7 +1868,9 @@ static int resolve_compute_slow(const struct rp_prog **out, const struct s2a_dir
             struct s2a_compile_outcome oc; memset(&oc, 0, sizeof oc);
             if (g_texpool_diag) g_pool_attempts++;
             if (!shader_compile_admit()) { nvk_compute_request_release(&rq); nvn_unimpl("shader", "compile_stopped", NULL); return -1; }
+            uint64_t trace = diag_begin(rq.identity, 32u, 1);
             int ran = s2a_compile_request_execute(rq.session, rq.generation, rq.json, rq.json_bytes, &oc);
+            diag_end(trace, !ran && oc.bytes && oc.bytes_len);
             if (ran || !oc.bytes || !oc.bytes_len) {
                 atomic_fetch_add_explicit(&g_n_failed, 1, memory_order_relaxed);
                 red1("compute_compile_failed", oc.summary); compiler_rejected(oc.summary);
@@ -1856,6 +1908,7 @@ static int resolve_compute_slow(const struct rp_prog **out, const struct s2a_dir
 }
 
 int rp_shader_resolve(const struct rp_shader_req *q, const struct rp_prog **out) {
+    pool_log_flush();
     if (shader_enter()) { *out = NULL; nvn_unimpl("shader", "compile_stopped", NULL); return -1; }
     int rc = shader_resolve_graphics(q, out); shader_leave(); return rc;
 }
@@ -1917,7 +1970,7 @@ void rp_shader_reset(void) {
     g_cs_hits = g_cs_misses = g_cs_hit_ns = g_cs_miss_ns = 0; g_mark_cs_hits = g_mark_cs_misses = g_mark_cs_hit_ns = g_mark_cs_miss_ns = 0;
     g_cache_calls = g_cache_hits = g_cache_misses = g_cache_hit_ns = g_cache_miss_ns = 0; g_sig_recomp = 0;
     g_mark_calls = g_mark_hits = g_mark_misses = g_mark_hit_ns = g_mark_miss_ns = g_mark_sig = 0;
-    g_texpool_logged = g_texpool_last_over_limit = g_texpool_diag = 0;
+    g_texpool_logged = g_texpool_last_over_limit = g_texpool_diag = 0; g_pool_log_ms = 0; g_pool_log_dirty = 0;
     g_pool_programs = g_pool_attempts = g_pool_compiled = g_pool_rejected = g_pool_unsupported = 0;
     g_pool_request_rejected = g_pool_request_facts = g_pool_request_other = 0;
     g_pool_reason_count = 0; memset(g_pool_reasons, 0, sizeof g_pool_reasons);

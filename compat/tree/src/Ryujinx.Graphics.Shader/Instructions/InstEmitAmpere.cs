@@ -266,6 +266,10 @@ namespace Ryujinx.Graphics.Shader.Instructions
         // They are mapped to the places the build's reflection and the host know: the push constants to c[24] (where the graphics stages read theirs), uniform slot r to
         // c[0] + 0x210 + 0x10 r and storage slot s to c[0] + 0x310 + 0x10 s (NVN's compute tables), texture slot t to c[2] + 0x20 + 8 t, separate texture r to
         // c[2] + 0x168 + 8 r, separate sampler r to c[2] + 0x568 + 8 r and image slot i to c[2] + 0x120 + 8 i (NVN's handle tables). Other offsets stay.
+        // S2Arm: layout[7] = the bytes of push block 1 (control +0xaa words x 4), laid out right after push block 0 and before the uniform entries: what the game pushes
+        // there ({address, size} storage buffer entries, or 8-byte handles), mapped to push slot 1 = c[25] (the host's push constant slots, c[24 + k]). A Switch 2 game's
+        // compute shaders (+0xb2 = 0, +0xaa = 4 x 1..7) read their storage buffers there; left out, the entries landed in the uniform and handle tables and the
+        // storage buffers had no slot (reflection "has no resolved slot number", the shader not loaded). Same layout as the MIT reference (dmsh_build.py nvn2_cs[7])
         private static (int Bank, int Offset) AMapC0(EmitterContext context, int bank, int offset)
         {
             int[] layout = bank == 0 ? context.TranslatorContext.GpuAccessor.QueryAmpereComputeC0Layout() : null;
@@ -276,7 +280,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
             }
 
             int ubos = layout[0], ssbos = layout[1], textures = layout[2], size = layout[3], push = (layout[4] + 0xf) & ~0xf;
-            int ub = 0x10 + push;
+            int pb1 = 0x10 + push, pb1Size = layout.Length > 7 ? layout[7] : 0;
+            int ub = pb1 + pb1Size;
             int sb = ub + 0x10 * ubos;
             int hb = sb + 0x10 * ssbos;
             int sepTextures = hb + 8 * textures;
@@ -291,9 +296,14 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 return (0, 0x200 + (offset - 0x4));
             }
 
-            if (offset >= 0x10 && offset < ub)
+            if (offset >= 0x10 && offset < pb1)
             {
                 return (24, offset - 0x10);
+            }
+
+            if (offset >= pb1 && offset < ub)
+            {
+                return (25, offset - pb1);
             }
 
             if (offset >= ub && offset < sb)

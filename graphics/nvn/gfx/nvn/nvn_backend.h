@@ -39,7 +39,7 @@
 extern "C" {
 #endif
 
-#define NVN_GPU_CONTRACT_VERSION 11   // 改任何签名或语义 +1；两个后端与核心同批改，t_nvn_backend.c 的签名表同批改
+#define NVN_GPU_CONTRACT_VERSION 14   // 改任何签名或语义 +1；两个后端与核心同批改，t_nvn_backend.c 的签名表同批改
 /* 定稿 #1（调用形式）：链接期直接调用 nvn_gpu_*。每个平台构建只链一个后端，Metal 3 / 4 的选择留在 Metal 后端内部。
    理由：零间接、可内联；同进程 A/B 对照没有真实消费者，不为它新增注册实体（vickwv 同意）。 */
 
@@ -189,6 +189,12 @@ void nvn_gpu_buf_use(nvn_gpu_cmd c, nvn_gpu_buf b);
 void nvn_gpu_buf_write(nvn_gpu_cmd c, nvn_gpu_buf dst, uint64_t off, const void *src, uint64_t bytes);
 // 本 cmd 的临时上传区（参数块、内嵌常量、宽屏改写副本、support 缓冲大块）：内容有效到该 cmd 完成。线程：[提交]。出错：NVN_GPU_E_OOM，*out 清零。
 nvn_gpu_rc nvn_gpu_arena_alloc(nvn_gpu_cmd c, uint64_t bytes, uint32_t align, nvn_gpu_slice *out, nvn_gpu_err *err);
+// 把 src 的 bytes 字节填进本 cmd 的临时上传片 sl（sl->cpu 起，bytes ≤ 申请时的长度）。后端可以把这次拷贝交给别的线程做（Vulkan：两级回放的录制线程，
+// 按记录顺序），但保证：① c 提交（commit）或放弃（abort）之前做完；② nvn_gpu_arena_fill_wait(返回值) 返回时做完。src 在做完之前必须保持可读、内容不变
+// ——核心改 src 所在的内存之前先等（rp_ub_fill_fence）。返回 0 = 已经在本线程拷完；否则是递增的票号。线程：[提交]。
+uint64_t nvn_gpu_arena_fill(nvn_gpu_cmd c, const nvn_gpu_slice *sl, const void *src, uint64_t bytes);
+// 等票号 ≤ ticket 的填充全部做完，返回已做完的最大票号；ticket = 0 只查不等。线程：[提交]。
+uint64_t nvn_gpu_arena_fill_wait(uint64_t ticket);
 
 // ---------- 贴图、视图、采样器 ----------
 enum {   // 用途创建时给全（Vulkan 的 usage 与可变格式事后补不了）
@@ -247,8 +253,13 @@ typedef struct {
     uint16_t count;       // 数组长度（非数组为 1）
     uint16_t aid;         // Metal 参数号（Vulkan 忽略）
     uint32_t stages;      // 可见阶段位（1 << nvn_gpu_stage）
-    uint16_t src_reg2;    // 分离采样器来源槽；UINT16_MAX = 无第二来源
+    uint16_t src_reg2;    // 分离采样器来源（NVN_RB_TEX 项）：UINT16_MAX = 无第二来源；0..127 = NVN 采样器槽；
+                          //   NVN_GPU_SAMP2_CONST | 池下标 = 着色器里的立即数采样器池下标（类型 3 句柄，不经采样器槽，见下）
 } nvn_gpu_layout_ent;
+// src_reg2 的「常量采样器」编码（#1594）：高位标记 + 低 12 位采样器池下标（0..NVN_GPU_SAMP2_ID_MASK，句柄高 12 位的范围；0 是真下标）。
+// 标记位在采样器槽范围（0..127）之外：不认这种编码的旧消费方会落进「src_reg2 >= 128」的形状检查具名跳过，不会把它当槽号静默绑错。
+#define NVN_GPU_SAMP2_CONST   0x8000u
+#define NVN_GPU_SAMP2_ID_MASK 0x0FFFu
 typedef struct {
     const nvn_gpu_layout_ent *ent; uint32_t nent;
     uint32_t push_off, push_bytes;   // 本阶段 push 常量范围（0 字节 = 不用）；nvn_gpu_push 只许写进这个范围
@@ -448,6 +459,19 @@ void nvn_gpu_clear_rect(nvn_gpu_cmd c, const nvn_gpu_clear *d);
 /* 定稿 #7：核心只表达 NVN 的顺序与访问语义（这个位、这次拷贝、这次附件写）；Vulkan 后端自己跟踪每个子资源的 layout / stage / access 并据此发屏障，
    VkImageLayout 不进核心；Metal 4 后端同理自己补编码器间屏障，Metal 3 交给自动冒险追踪。经裸 GPU 地址的写后读只有 NVN 位能表达，核心照游戏原样传。 */
 void nvn_gpu_barrier(nvn_gpu_cmd c, uint32_t nvn_barrier_bits);
+// 核心记计算写后的读依赖：身份是后端存储的生命周期代号（同存储的不同视图相同，销毁重建不复用）。
+// 缓冲按字节；图像按面 / mip / 层的矩形（3D 层表示深度切片）。只查询元数据，不提交、不等待、不改变布局。失败返回 0。
+// 面位是契约值（COLOR=1 / DEPTH=2 / STENCIL=4），不携带平台 API 位。
+typedef struct {
+    uint64_t storage, off, bytes;
+    uint32_t level, levels, layer, layers, aspects;   // aspects=0 表示缓冲
+} nvn_gpu_access_span;
+int nvn_gpu_buf_access_span(nvn_gpu_buf b, uint64_t off, uint64_t bytes, nvn_gpu_access_span *out);
+int nvn_gpu_view_access_span(nvn_gpu_view v, nvn_gpu_access_span *out);
+// 通道外：此前计算写入对后续间接参数 / 索引 / 顶点 / 图形着色器读取可见；不包含附件载入、计算或传输，不分段、不等待。
+// 由核心仅在图形实际读到计算写过的范围时调用；全体计算写对这些读阶段发布，所以核心可一起撤掉待发布表。
+void nvn_gpu_compute_to_graphics(nvn_gpu_cmd c);
+
 void nvn_gpu_occlusion(nvn_gpu_cmd c, int32_t slot);   // 之后的绘制计入 slot，-1 停止。通道内且 pass_desc.occlusion = 1
 void nvn_gpu_label(nvn_gpu_cmd c, const char *text);   // 调试标签压栈，NULL 出栈
 

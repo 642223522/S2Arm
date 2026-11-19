@@ -72,7 +72,7 @@ STUBS = {
  public static Uri buildDocumentUriUsingTree(Uri u,String s){return u;}
  public static final String EXTRA_INITIAL_URI="android.provider.extra.INITIAL_URI";
  public static class Document { public static final String COLUMN_DOCUMENT_ID="id", COLUMN_DISPLAY_NAME="name", COLUMN_MIME_TYPE="type", MIME_TYPE_DIR="dir"; } }''',
-'android/util/Log.java': '''package android.util; public class Log { public static final int DEBUG=3; public static int d(String a,String b){return 0;} public static boolean isLoggable(String a,int b){return false;} public static final java.util.List<String> messages=new java.util.concurrent.CopyOnWriteArrayList<>(); public static int i(String a,String b){messages.add(b);return 0;} public static int w(String a,String b,Throwable t){return 0;} public static int e(String a,String b){messages.add(b);return 0;} }''',
+'android/util/Log.java': '''package android.util; public class Log { public static final int DEBUG=3; public static int d(String a,String b){return 0;} public static boolean isLoggable(String a,int b){return false;} public static final java.util.List<String> messages=new java.util.concurrent.CopyOnWriteArrayList<>(); public static final java.util.concurrent.BlockingQueue<String> queue=new java.util.concurrent.LinkedBlockingQueue<>(); public static int i(String a,String b){messages.add(b);queue.add(b);return 0;} public static int w(String a,String b,Throwable t){return 0;} public static int e(String a,String b){messages.add(b);queue.add(b);return 0;} }''',
 'android/util/DisplayMetrics.java': '''package android.util; public class DisplayMetrics { public float density=1; }''',
 'android/content/res/Resources.java': '''package android.content.res; public class Resources { public android.util.DisplayMetrics getDisplayMetrics(){return new android.util.DisplayMetrics();} }''',
 'android/os/Bundle.java': '''package android.os; public class Bundle { public String getString(String k){return null;} public void putString(String k,String v){} }''',
@@ -94,7 +94,7 @@ STUBS = {
  public Object layoutParams; public void setLayoutParams(Object p){layoutParams=p;} }''',
 'android/widget/TextView.java': '''package android.widget; import android.view.View; import android.content.Context; import java.util.concurrent.*;
  public class TextView extends View { public static final BlockingQueue<String> messages=new LinkedBlockingQueue<>();
- public TextView(Context c){} public void setText(String s){messages.add(s);} public void setText(int i){} public void setTextSize(float f){} public void setTextColor(int c){} }''',
+ public volatile String text; public int textId; public TextView(Context c){} public void setText(String s){text=s;messages.add(s);} public void setText(int i){textId=i;} public void setTextSize(float f){} public void setTextColor(int c){} }''',
 'android/widget/Button.java': '''package android.widget; import android.content.Context; import android.view.View;
  public class Button extends TextView { public Button(Context c){super(c);} public void setOnClickListener(View.OnClickListener l){} }''',
 'android/widget/CompoundButton.java': '''package android.widget; import android.content.Context;
@@ -179,8 +179,11 @@ import java.io.*; import java.nio.file.*; import java.lang.reflect.*; import jav
 public class ImportProbe {
  static int checks; static boolean refused; static String refusal;
  static void done(BlockingQueue<String> q) throws Exception { refused=false; refusal=null; long end=System.nanoTime()+TimeUnit.SECONDS.toNanos(4);
-  while(System.nanoTime()<end){String s=q.poll(1,TimeUnit.SECONDS); if(s!=null && s.startsWith("PLAYER_ERR [E101")){refused=true;refusal=s;} if(s!=null && s.startsWith("Games:"))return;}
+  // 收尾信号是库清单那行「Games: …」，它只进日志（不当状态发给界面）；界面队列只看拒绝原因，它先于收尾发出，收尾后再排空一遍
+  while(System.nanoTime()<end){String s=q.poll(50,TimeUnit.MILLISECONDS); note(s); if(s!=null && s.startsWith("Games:") && q==android.util.Log.queue)return;
+   String l=q==android.util.Log.queue?null:android.util.Log.queue.poll(); if(l!=null && l.startsWith("Games:")){for(String r;(r=q.poll())!=null;)note(r);return;}}
   throw new AssertionError("import did not finish"); }
+ static void note(String s){if(s!=null && s.startsWith("PLAYER_ERR [E101")){refused=true;refusal=s;}}
  static void demand(boolean yes,String message){checks++;if(!yes)throw new AssertionError(message);}
  static void stage(Path p) throws Exception {Files.createDirectories(p.getParent()); Method m=GameInstallTest.class.getDeclaredMethod("pack",String.class);m.setAccessible(true);Files.move(((File)m.invoke(null,p.toString())).toPath(),p);}
  static boolean retained(Path p){return Files.exists(p.resolve("manifest.json"));}
@@ -250,11 +253,21 @@ public class ImportProbe {
    android.widget.CheckBox fps=(android.widget.CheckBox)fpsField.get(activity);
    demand(fps.isChecked(),"saved FPS preference did not populate checkbox");
    fps.setChecked(false); demand(!prefs.getBoolean("fps",true),"checkbox change did not publish FPS preference");
-   prefs.edit().putBoolean("fps",true).apply(); activity.onResume();done(android.widget.TextView.messages);
+   prefs.edit().putBoolean("fps",true).apply(); android.util.Log.queue.clear(); activity.onResume();done(android.util.Log.queue);
    demand(fps.isChecked(),"activity resume did not reread FPS preference");
    demand(!Files.exists(target),"activity did not import absolute target");demand(retained(pending),"activity consumed unrelated input");
    demand(intent.getStringExtra(LibraryActivity.EXTRA_IMPORT_STAGING)==null,"activity did not consume intent extra");
-   activity.onResume();done(android.widget.TextView.messages);demand(retained(pending),"repeated activity resume consumed input");
+   android.util.Log.queue.clear(); activity.onResume();done(android.util.Log.queue);demand(retained(pending),"repeated activity resume consumed input");
+   // 被拒的导入：拒绝原因留在状态行上，随后的「Games: …」库清单不能把它盖掉藏起；下次回到页面再收起。
+   java.lang.reflect.Field statusField=LibraryActivity.class.getDeclaredField("status");statusField.setAccessible(true);
+   android.widget.TextView status=(android.widget.TextView)statusField.get(activity);
+   Path refusedTarget=activityRoot.resolve("external/import/nest/target");stage(refusedTarget);   // 不是导入目录的直接子项：拒绝
+   activity.setIntent(new android.content.Intent().putExtra(LibraryActivity.EXTRA_IMPORT_STAGING,refusedTarget.toString()));
+   android.util.Log.queue.clear(); activity.onResume();done(android.util.Log.queue);
+   demand(status.text!=null&&status.text.startsWith("PLAYER_ERR"),"import refusal replaced on the status line: "+status.text);
+   demand(status.getVisibility()==android.view.View.VISIBLE,"import refusal hidden on the status line");
+   android.util.Log.queue.clear(); activity.onResume();done(android.util.Log.queue);
+   demand(status.getVisibility()==android.view.View.GONE,"stale status line not cleared on the next resume");
    } finally {activity.onDestroy();}
    Path failedReceiptRoot=root.resolve("receipt-failure"),receiptTarget=failedReceiptRoot.resolve("external/import/selected");stage(receiptTarget);
    BlockingQueue<String> receiptQueue=new LinkedBlockingQueue<>();
@@ -375,7 +388,7 @@ public class W2ImportProbe {
 '''
 
 class GameLibraryImportTest(unittest.TestCase):
-    def run_contract(self, automatic_scan=False, missing_receipt=False, missing_fingerprint=False, w2=False, bypass_admission=False, preferences_not_published=False):
+    def run_contract(self, automatic_scan=False, missing_receipt=False, missing_fingerprint=False, w2=False, bypass_admission=False, preferences_not_published=False, library_as_status=False):
         with tempfile.TemporaryDirectory(prefix='s2a-library-import-') as temporary:
             base = Path(temporary)
             sources = []
@@ -406,6 +419,13 @@ class GameLibraryImportTest(unittest.TestCase):
                 end = text.index('                        }\n                        @Override public void refused', start)
                 library = base / 'GameLibrary.java'
                 library.write_text(text[:start] + text[end:], encoding='utf-8')
+            if library_as_status:
+                # Effective negative control: send the library listing to the screen again (pre-fix behaviour).
+                text = GAME_LIBRARY.read_text(encoding='utf-8')
+                original = 'Log.i("S2Arm", describe());'
+                self.assertEqual(text.count(original), 1)
+                library = base / 'GameLibrary.java'
+                library.write_text(text.replace(original, 'status(describe());'), encoding='utf-8')
             if missing_fingerprint:
                 install = JAVA / 'org/s2arm/android/GameInstall.java'
                 text = install.read_text(encoding='utf-8')
@@ -450,7 +470,12 @@ class GameLibraryImportTest(unittest.TestCase):
     def test_only_explicit_absolute_target_is_consumed(self):
         result = self.run_contract()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn('PASS actual GameLibrary, LibraryActivity and GameInstall: 46 checks', result.stdout)
+        self.assertIn('PASS actual GameLibrary, LibraryActivity and GameInstall: 49 checks', result.stdout)
+
+    def test_library_listing_as_status_negative_control(self):
+        result = self.run_contract(library_as_status=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('import refusal replaced on the status line', result.stderr)
 
     def test_missing_fingerprint_negative_control(self):
         result = self.run_contract(missing_fingerprint=True)

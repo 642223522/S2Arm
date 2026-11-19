@@ -1024,7 +1024,12 @@ void s2a_window_reserve(void) {
 #define VP_ARENA (64ull << 30)
 static uint64_t g_ca_base, g_ca_used, g_va_used, g_va_cap = VP_ARENA; static int g_ca_cut;
 static pthread_mutex_t g_ca_mu = PTHREAD_MUTEX_INITIALIZER;
-int s2a_snap_manifest_u64(const char *key, uint64_t *a, uint64_t *b);   // snapshot.c：读恢复目标快照清单里的两个数（没有 = -1）
+// 即时存档开关与快照清单读取的弱缺省（快照关、没有清单）：宿主与 iOS 壳链着 snapsw.c / snapshot.c，用它们的正式定义；
+//   只编 vawin.c 的地址窗口单测（runtime/tests/mk/vawin*.mk、guest_file*.mk、ios_prewarm.mk 共 18 份）不链快照模块，取这里的缺省（同 egl.m s2a_gl_first_use 的写法）
+__attribute__((weak)) int s2a_snap_mode(void) { return 0; }
+__attribute__((weak)) int s2a_snap_restoring(void) { return 0; }
+__attribute__((weak)) int s2a_snap_manifest_win(uint64_t *base, uint64_t *size) { (void)base; (void)size; return -1; }
+__attribute__((weak)) int s2a_snap_manifest_u64(const char *key, uint64_t *a, uint64_t *b) { (void)key; (void)a; (void)b; return -1; }
 // 即时存档恢复：命令记录区 / 虚拟池区的地址写在游戏内存里（命令句柄、贴图 / 缓冲地址），必须与存档时同址。按快照清单里记的基址与长度直接占，
 //   不靠两次进程「最高空洞」碰巧相同（跨版本时宿主的库与堆布局会变）。占到返回 1；清单里没有 / 占不到返回 0（走原来的选址，图形恢复核基址时会拒绝）
 static int cmd_arena_at_snapshot(void) {

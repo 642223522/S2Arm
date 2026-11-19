@@ -158,7 +158,8 @@ int s2a_ios_save_management_requested(void) {
 @property(copy) void (^startGame)(void);
 @property(strong) NSDictionary *game;
 @property(strong) UILabel *status;
-@property(strong) UIButton *importButton, *exportButton, *backupButton, *startButton, *overrideButton, *quitButton;
+@property(strong) UIButton *importButton, *exportButton, *backupButton, *startButton, *overrideButton, *quitButton, *previousButton;
+@property BOOL hasPrevious;   // 有上一份存档（<存档>/.s2a_prev，服务层 previous）才显示「换到上一份」
 @property(strong) UIActivityIndicatorView *spinner;
 @property(strong) NSDictionary *preview;
 @property(copy) NSString *importPath, *backupPath, *temporaryExportPath;
@@ -170,7 +171,10 @@ int s2a_ios_save_management_requested(void) {
 @end
 
 @implementation S2ASaveManager
-- (UIInterfaceOrientationMask)supportedInterfaceOrientations { return s2a_ios_play_orientations(); }
+S2A_VERTICAL_BAR_OFF
+// 存档页不跟游戏的横 / 竖屏设置走（#1576）：页上有导出命名、文件选择这类要打字的系统窗口，锁横屏时键盘一弹就只剩一条缝；
+//   普通 iPhone 横竖随手机转（不含倒置），可自由缩放的窗口（Duo 内屏 / iPad）照旧全部方向。点「开始游戏」后游戏页按自己的设置再转
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations { return s2a_ios_play_resizable() ? UIInterfaceOrientationMaskAll : UIInterfaceOrientationMaskAllButUpsideDown; }
 - (UILabel *)label:(NSString *)text style:(UIFontTextStyle)style {
     UILabel *label = [UILabel new]; label.text = text; label.numberOfLines = 0;
     label.font = [UIFont preferredFontForTextStyle:style]; label.adjustsFontForContentSizeCategory = YES;
@@ -221,7 +225,9 @@ int s2a_ios_save_management_requested(void) {
     self.overrideButton = [self button:S2AL(@"save.override") action:@selector(confirmOverride)];
     // #1206「退出」：清掉「下次先进存档管理」直接退出，下次打开照常进游戏（多款容器进游戏库）；有待恢复事务时不出
     self.quitButton = [self button:S2AL(@"save.leave") action:@selector(quitManagement)];
-    for (UIButton *button in @[self.exportButton, self.importButton, self.backupButton, self.startButton, self.overrideButton, self.quitButton]) [stack addArrangedSubview:button];
+    self.previousButton = [self button:S2AL(@"save.previous.button") action:@selector(switchPrevious)];   // 回到上一份存档：可逆，再点一次换回来
+    self.previousButton.accessibilityHint = S2AL(@"save.previous.detail"); self.previousButton.hidden = YES;
+    for (UIButton *button in @[self.exportButton, self.importButton, self.backupButton, self.previousButton, self.startButton, self.overrideButton, self.quitButton]) [stack addArrangedSubview:button];
     [stack addArrangedSubview:where];
     self.dataRoot = data_root();
     where.text = save_location(self.dataRoot);
@@ -246,6 +252,7 @@ int s2a_ios_save_management_requested(void) {
     struct s2a_save_buttons b = s2a_save_buttons(self.phase, self.recoveryOverridden, self.game != nil, self.hasSave, self.busy);
     self.importButton.enabled = b.import; self.exportButton.enabled = b.export_;
     self.backupButton.enabled = !self.busy && self.backupPath.length;
+    self.previousButton.hidden = !self.hasPrevious; self.previousButton.enabled = !self.busy && b.import;   // 能导入（没在恢复失败的状态里）才能换
     self.startButton.enabled = b.start; self.overrideButton.hidden = !b.override; self.quitButton.hidden = !b.quit;
     if (self.busy) [self.spinner startAnimating]; else [self.spinner stopAnimating];
 }
@@ -341,7 +348,12 @@ int s2a_ios_save_management_requested(void) {
         self.hasSave = [result[@"hasSave"] boolValue];
         self.backupPath = [result[@"previousBackup"] isKindOfClass:NSString.class] ? result[@"previousBackup"] : nil;
         self.status.text = self.hasSave ? S2AL(@"save.status.hasSave") : S2AL(@"save.status.noSave");
+        [self request:@{ @"operation": @"previous" } completion:^(NSDictionary *prev) { self.hasPrevious = [prev[@"hasPrevious"] boolValue]; }];
     }];
+}
+// 回到上一份存档：已提交版本与上一份互换（服务层 restorePrevious，可逆），换完告诉玩家可以随时换回来
+- (void)switchPrevious {
+    [self request:@{ @"operation": @"restorePrevious" } completion:^(__unused NSDictionary *result) { self.status.text = S2AL(@"save.previous.done"); }];
 }
 - (void)start {
     if (!s2a_save_buttons(self.phase, self.recoveryOverridden, self.game != nil, self.hasSave, self.busy).start) return;
@@ -486,4 +498,82 @@ void s2a_ios_save_present(UIViewController *presenter) {
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ s2a_host_shutdown("打开存档管理"); });
     }]];
     [presenter presentViewController:alert animated:YES completion:nil];
+}
+// ---------- 回到上一份存档：开始前问（不拦、不自动覆盖） ----------
+// 只在两种情况问（同 Mac pack/jobs/save_previous.py 口径；只是闪退过一次不问，免得玩家误点白丢最近的进度）：
+//   开局就崩：上一局死在前台、死的就是这一款（会话标记 runtime/src/sesdiag.c，同 app.m crash_auto_off），且那局活了不到 EARLY_SECONDS
+//     ——那局 host.log 的创建时刻（起局时轮换新建，runtime/src/os.c log_archive 同样按它认会话开始）到最后一次写入；
+//   存档护栏拦下过：服务层 previous 的 guardRed（<存档>/.s2a_guard）。
+//   且这款有上一份存档：
+//   问「这款上次没能正常读存档，要回到上一份存档吗？」——「回到上一份」走 restorePrevious（换完再告诉玩家可以随时换回来）/「照常开始」。
+//   要问就返回 1，玩家选完调 go；不用问返回 0，调用方自己接着起局。起宿主之前调（存档还没挂载）
+#include "s2a_sesdiag.h"
+#include "s2a_docs.h"
+#include <sys/stat.h>
+#include <sys/sysctl.h>
+#include <unistd.h>
+static const double EARLY_SECONDS = 60;   // 同 pack/jobs/save_previous.py EARLY_SECONDS
+static NSDictionary *previous_call(NSString *op) {
+    char *ctx = s2a_shell_save_context();
+    if (!ctx) return nil;
+    NSMutableDictionary *req = [[NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:ctx length:strlen(ctx)] options:NSJSONReadingMutableContainers error:nil] mutableCopy]; free(ctx);
+    if (![req isKindOfClass:NSMutableDictionary.class]) return nil;
+    req[@"operation"] = op;
+    NSData *json = [NSJSONSerialization dataWithJSONObject:req options:0 error:nil];
+    char *raw = json ? s2a_shell_save_request([[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding].UTF8String) : NULL;
+    NSDictionary *r = raw ? [NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:raw length:strlen(raw)] options:0 error:nil] : nil; free(raw);
+    return [r isKindOfClass:NSDictionary.class] ? r : nil;
+}
+NSString *g_s2a_prev_last_game;   // 多款容器点开始前的上一款（app.m library_play_go 覆盖 S2ALastGameId 前记下；此时那个键已是这一款）；单款 App 一直 nil
+static BOOL previous_died_here(void) {
+    char d[1024]; if (s2a_container_docs(d, sizeof d) <= 0 || s2a_sesmark_prev(d) != S2A_SESMARK_FG) return NO;
+    NSString *last = g_s2a_prev_last_game ?: [NSUserDefaults.standardUserDefaults stringForKey:@"S2ALastGameId"];
+    NSString *gid = game_identity()[@"id"];
+    return !last.length || !gid.length || [last caseInsensitiveCompare:gid] == NSOrderedSame;   // 单款 App 没记过 = 就是这一款
+}
+static double ts_of(struct timespec t) { return (double)t.tv_sec + t.tv_nsec / 1e9; }
+static double process_start(void) {
+    struct kinfo_proc kp; size_t n = sizeof kp; int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid() };
+    if (sysctl(mib, 4, &kp, &n, NULL, 0) || !n) return 0;
+    return (double)kp.kp_proc.p_starttime.tv_sec + kp.kp_proc.p_starttime.tv_usec / 1e6;
+}
+// 上一局活了多少秒：上一局的 host.log——这个进程起来之前建的 Documents/host.log（预热进程还没轮换），否则 logs/ 里最新的 host-*.log
+//   （普通启动构造函数里已轮换）；创建时刻到最后写入。取不到回 -1（按「不算开局就崩」）
+double s2a_ios_previous_session_seconds(void) {
+    char d[1024]; if (s2a_container_docs(d, sizeof d) <= 0) return -1;
+    NSString *docs = @(d), *pick = nil, *dir = [docs stringByAppendingPathComponent:@"logs"]; struct stat st;
+    NSString *host = [docs stringByAppendingPathComponent:@"host.log"];
+    if (!stat(host.fileSystemRepresentation, &st) && ts_of(st.st_birthtimespec) < process_start()) pick = host;
+    else {
+        NSArray *names = [[NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil]
+                          filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"SELF BEGINSWITH 'host-' AND SELF ENDSWITH '.log'"]];
+        NSString *last = [[names sortedArrayUsingSelector:@selector(compare:)] lastObject];   // host-年月日-时分秒[_序号].log：字典序即时间序
+        if (last) pick = [dir stringByAppendingPathComponent:last];
+    }
+    if (!pick || stat(pick.fileSystemRepresentation, &st)) return -1;
+    return ts_of(st.st_mtimespec) - ts_of(st.st_birthtimespec);
+}
+int s2a_ios_previous_save_prompt(UIViewController *presenter, void (^go)(void)) {
+    if (!presenter || !go) return 0;
+    NSDictionary *p = previous_call(@"previous");
+    if (![p[@"ok"] boolValue] || ![p[@"result"][@"hasPrevious"] boolValue]) return 0;
+    BOOL guard = [p[@"result"][@"guardRed"] boolValue];
+    double lived = previous_died_here() ? s2a_ios_previous_session_seconds() : -1;
+    BOOL early = lived >= 0 && lived < EARLY_SECONDS;
+    if (!guard && !early) return 0;
+    fprintf(stderr, "[S2A 存档] 有上一份存档且%s，开始前问要不要回到上一份\n", guard ? "存档护栏拦下过" : [NSString stringWithFormat:@"上一局开局 %.0f 秒就死在前台", lived].UTF8String);
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:S2AL(@"save.previous.ask.title") message:guard ? S2AL(@"save.previous.ask.guard") : S2AL(@"save.previous.ask.crash") preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"save.previous.ask.start") style:UIAlertActionStyleCancel handler:^(__unused UIAlertAction *x) { go(); }]];
+    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"save.previous.ask.restore") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *x) {
+        NSDictionary *r = previous_call(@"restorePrevious");
+        BOOL ok = [r[@"ok"] boolValue];
+        NSString *why = [r[@"error"] isKindOfClass:NSDictionary.class] ? r[@"error"][@"message"] : nil;
+        fprintf(stderr, "[S2A 存档] 回到上一份%s%s\n", ok ? "成功" : "失败：", ok ? "" : (why ?: @"服务层没回应").UTF8String);
+        UIAlertController *done = [UIAlertController alertControllerWithTitle:ok ? S2AL(@"save.previous.done.title") : S2AL(@"save.errorPrefix")
+                                                                      message:ok ? S2AL(@"save.previous.done") : (why ?: S2AL(@"save.serviceInvalid")) preferredStyle:UIAlertControllerStyleAlert];
+        [done addAction:[UIAlertAction actionWithTitle:S2AL(@"save.previous.done.ok") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *y) { go(); }]];
+        [presenter presentViewController:done animated:YES completion:nil];
+    }]];
+    [presenter presentViewController:a animated:YES completion:nil];
+    return 1;
 }

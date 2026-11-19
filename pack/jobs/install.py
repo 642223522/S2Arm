@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import json
 import datetime
@@ -46,7 +47,7 @@ def profile_teams(env=None):
     out, seen = [], set()
     now = datetime.datetime.now(datetime.timezone.utc)
     for folder in folders:
-        for path in sorted(folder.glob("*.mobileprovision")):
+        for path in sorted(p for p in folder.glob("*.mobileprovision") if not layout.os_junk(p.name)):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return out
@@ -583,7 +584,10 @@ def usb_mbps(udid, env=None):
 SIGN_ERRORS = (
     (r"等钥匙串授权超时", "keychain_prompt"),   # pack/ensure_profile.sh：第一次签名的钥匙串框没人点（11-08 Spare-host 实测）  # 非玩家句
     (r"Xcode 看不到这台 iPhone，账号上也还没登记它|has no devices from which to generate", "device_not_visible"),   # pack/ensure_profile.sh 兜底后核出描述文件不含这台 / 账号一台设备都没有（11-16）  # 非玩家句
-    (r"needs to be unlocked|device is locked|Unlock the device", "device_locked"),   # 10-26 测试设备2 锁屏：xcodebuild 等不到目的设备超时
+    (r"needs to be unlocked|device is locked|Unlock the device", "device_locked"),
+    # 电脑连不上手机的开发者通道（CoreDevice 4016：要的「服务已加载 / 可信远程连接 / 电源断言」一项都给不了，CurrentlyAssertableStates 为空）：
+    #   开发者模式开着、也配过对，多见于手机走 Wi-Fi 连着时（#1578 D-43MF：transport=localNetwork、tunnel=disconnected、ddi=False，连续 3 次）。不是没解锁
+    (r"CoreDeviceError error 4016|usage assertion requirements", "device_tunnel_unavailable"),   # 10-26 测试设备2 锁屏：xcodebuild 等不到目的设备超时
     # 免费 Apple ID 有两个不同的上限，原文措辞能分开，办法也不同：
     #   ① 包名（App ID）额度：签名前向 Apple 注册包名时被拒，Apple 错误 9120，Xcode 原文
     #      「Your maximum App ID limit has been reached. You may create up to 10 App IDs every 7 days.」——
@@ -606,6 +610,9 @@ SIGN_ERRORS = (
     (r"No Account for Team|No accounts|not logged in|Your session has expired", "xcode_account_missing"),
     (r"No signing certificate|No certificate for team|Signing certificate is invalid|doesn't include signing certificate", "signing_certificate_missing"),
 )
+
+
+TUNNEL_RETRY_S = 10   # 开发者通道没连上（4016）时再装一次之前等的秒数
 
 
 def classify(text, default="signing_failed"):
@@ -1107,16 +1114,21 @@ def export_signer(c, mode):
         devcert.stored(c)   # 证书缺件 → devcert_missing
         t = devcert.team(c) or dict(id=devcert.state(c).get("teamId"), name=devcert.state(c).get("teamName") or "")
         return t["id"], devcert.state(c)["bundleId"], program_pack.devcert_signer(c), t.get("name") or t["id"]
-    if os.name == "nt":
+    if os.name == "nt" or mac_plume(c):   # Mac 通用壳 Apple ID 同 Windows：装 App / 推游戏用的那个 plumesign 账号与签法（phone_signing），不看 Xcode 里的团队
         W = win_install_mod(c)
         team = W.impactor.selected_team() if hasattr(W.impactor, "selected_team") else None
         if not team:
+            if os.name != "nt":
+                raise Failure(APPLE_SIGN_IN, code="apple_not_signed_in")
             raise Failure("读不到 Impactor 里登录的 Apple ID：在 Impactor 里登录后再导出，或者这次改成「自己用别的工具签」。", code="xcode_account_missing")
         import ipa as packer
         exe = W.plumesign_path((W.impactor.bundled(c.r.get("resources")) or {}).get("plumesign"))
         win_cert_gate(c, W, exe)
-        shell = Path(packer.container_shell(c, packer.current_shell_id(c))) / "root"
-        return team, container_bundle_id(team), program_pack.win_signer(c, exe, shell), team
+        signer = win_selfsign_signer(c, W, exe, team)
+        if signer is None:   # 同 phone_signing：没编 s2a-selfsign / 本机还没有这个团队的私钥，照旧 plumesign 签
+            shell = Path(packer.container_shell(c, packer.current_shell_id(c))) / "root"
+            signer = program_pack.win_signer(c, exe, shell)
+        return team, container_bundle_id(team) if os.name == "nt" else container_bundle_id(team, c), signer, team
     t = pick_team(xcode_teams(c.env()), c.r.get("teamId"))
     return t["id"], container_bundle_id(t["id"], c), program_pack.mac_signer(c), t.get("name") or t["id"]
 
@@ -1219,12 +1231,34 @@ def s2arm_name(c, gid):
     return (f"{base} [{gid[-4:]}]" if clash else base) + S2ARM_SUFFIX
 
 
+def link_resource(src, dst):
+    """两件套的资源本体（《文件与程序管理体系》B / L 项：资源本体不再写新文件）：游戏库里的 game.img 硬链接进「S2Arm 游戏包」，
+    文件名同这款的 .s2arm（<名>.img，手机按文件头认游戏）——同一块盘上一个文件起两个名字，不占新空间、秒过，和 .s2arm 放在一起拿。
+    已是同一个文件 → 不动；同名的是别的文件（上次链的那份 game.img 后来换过）→ 换成现在这份。建不了硬链接（exFAT / FAT 等）→ None，
+    调用方照旧给游戏库里原文件的位置（界面「显示资源文件」）。→ 链接路径 | None"""
+    try:
+        if dst.exists() and os.path.samefile(src, dst):
+            return dst
+    except OSError:
+        pass
+    tmp = dst.with_name(f".{dst.name}.{os.getpid()}.link")
+    try:
+        tmp.unlink(missing_ok=True)
+        os.link(src, tmp)
+        os.replace(tmp, dst)
+    except OSError as e:
+        tmp.unlink(missing_ok=True)
+        print(f"[s2a] 资源文件没能硬链接进游戏包文件夹（{type(e).__name__} {e.errno}），给游戏库里的原位置", file=sys.stderr, flush=True)  # 非玩家句
+        return None
+    return dst
+
+
 def export_s2arm(c, gid):
     """0.6.0 通用壳（开关后面）两件套导出里的小游戏包 .s2arm（《文件与程序管理体系》B 项、⑦ ①，11-17 维护者定）：
     tar（只用 ustar、只有普通文件条目；路径放不进 ustar 就报错）整体压一个带内容校验的 zstd 帧；
     第一个条目 s2arm.json（格式、程序号、名字版本、约定号、改写器指纹、程序 sha、资源包号、bytes = 其余条目内容字节合计、signer），
     program/（同推送的程序包：dylib、Games/<号>/、catalogue.json，未签名，留给手机签），pack/（资源包目录里除 game.img 以外的派生件）。
-    资源本体 game.img 不拷：结果给出它在游戏库里的原位置（界面「显示资源文件」）。放游戏库根的固定文件夹（s2arm_dir），
+    资源本体 game.img 不拷：同盘硬链接进同一文件夹（link_resource），建不了硬链接就给出它在游戏库里的原位置（界面「显示资源文件」）。放游戏库根的固定文件夹（s2arm_dir），
     不加锁不加权限，玩家删了下次导出重新生成；只换这一款自己的 .s2arm，同文件夹里别的东西不动。这一款的改写、出程序包都在这里前台按需做"""
     import hashlib, io as _io, tarfile
     import program_pack
@@ -1290,8 +1324,9 @@ def export_s2arm(c, gid):
     lang = ui_lang(c)   # 这份文件夹的说明（玩家删了下次导出照样写回）
     write_s2arm_readme(folder, lang)
     game_img = Path(pack) / "game.img"
+    linked = link_resource(game_img, out.with_suffix(".img")) if game_img.is_file() else None
     return dict(gameId=gid, s2armPath=str(out), s2armBytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
-                resourcePath=str(game_img) if game_img.is_file() else "", exported=True,
+                resourcePath=str(linked or game_img) if game_img.is_file() else "", resourceLinked=bool(linked), exported=True,
                 signedWith=signed_with or dict(mode="none", name="", team=None))   # 完成页：「已用 Apple ID {name} 签好」/「未签名，导入后由手机签」
 
 
@@ -1352,6 +1387,16 @@ UPDATE_SUFFIX = {"zh": " 着色器更新包.img", "en": " shader update.img"}  #
 def _update_name(img_file, lang):
     """<游戏名>.img → <游戏名> 着色器更新包.img（英文界面「… shader update.img」）：文件名一眼看得出是更新包，和完整包分开"""
     return img_file[:-4] + UPDATE_SUFFIX.get(lang, UPDATE_SUFFIX["en"])
+
+
+def _update_worth(c, pack):
+    # pack/img.py 按文件加载：原先把 pack/ 插进 sys.path 再 import img，pack/pack.py 从此盖住 pack 包，
+    #   同一进程随后 from pack import widget_ext（_widget_ext，小组件签名）报 ImportError（test_install 整组跑 6 个用例红）
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("s2a_pack_img", c.engine / "pack" / "img.py")
+    img = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(img)
+    return img.update_worth(str(pack))
 
 
 def _export_update(c, pack, dst):
@@ -1502,7 +1547,7 @@ def _readme_zh(games):
   可以用隔空投送、数据线（Mac 访达 / Windows 爱思助手等的文件共享）或网盘拷到手机，再在「文件」App 里挪进这个文件夹。
   文件名随便改，S2Arm 按文件内容认游戏。手机上已经有、也没重新打过 iPhone 包的游戏，不用再放。
 
-  只更新着色器：每款旁边还有一个「<游戏名> 着色器更新包.img」，只有几百 MB。手机上已经放过这款的完整 .img（游戏本身没换版本）、
+  只更新着色器：有着色器库的款旁边还有一个「<游戏名> 着色器更新包.img」，只有几百 MB（没有着色器库的款不出这个文件）。手机上已经放过这款的完整 .img（游戏本身没换版本）、
   后来只是着色器变了（升级 S2Arm 后重新导出），只放这个更新包就行，不用重拷几 GB 的完整 .img。
   手机上还没有这款的，先放完整的 .img（不带「着色器更新包」字样的那个）。
 
@@ -1532,7 +1577,7 @@ This folder contains:
   You can get them onto the phone with AirDrop, a cable (file sharing in the Mac Finder or a Windows tool) or a cloud drive, then move them into this folder in the Files app.
   The file names do not matter: S2Arm recognises each game by its contents. Games already on the phone that you have not rebuilt for iPhone do not need to be added again.
 
-  Shader-only updates: next to each game there is also a "<game name> shader update.img" of only a few hundred MB. If the phone already has this
+  Shader-only updates: next to each game that has a shader library there is also a "<game name> shader update.img" of only a few hundred MB (games without one do not get this file). If the phone already has this
   game's full .img (same game version) and only the shaders changed (you updated S2Arm and exported again), add just this update file instead of
   copying the multi-GB .img again. If the game is not on the phone yet, add the full .img first (the one without "shader update" in its name).
 
@@ -1656,8 +1701,9 @@ def export_phone(c, gid=None):
     import contextlib
     held = contextlib.ExitStack()   # 导出读各款程序件与资源包（写 .img）：整段持有这几款的程序锁，出包交付换件时等它写完
     held.enter_context(packer.program_locks(c, ([gid] if gid else []) + others))
-    refresh_ios(c, [gid] if gid else [])   # 导出：这一款按本引擎核；别款改写器指纹单独变了不批量重改写（11-17 维护者定）
-    refresh_ios(c, [g for g in others if g != gid], ignore_rewriter=c.r.get("sgradeUpgrade") is not True)
+    # 导出：只补点的这一款（11-17 维护者「玩家点了才做、只做这一款」）；同容器别款不顺带补 S 级 / 重改写——跑得了照旧带，
+    #   和新壳不配套的由组装按 usable_kit 判（容器里带不进就照常报 / 标建议更新），玩家点到那款时再补
+    refresh_ios(c, [gid] if gid else [])
     c.begin("组装 S2Arm.ipa（未签名）", 2, 4)
     work = Path(tempfile.mkdtemp(prefix=".export-", dir=c.library))
     try:
@@ -1686,10 +1732,13 @@ def export_phone(c, gid=None):
                 _export_img(c, layout.ios_pack(c, g), out / f)
                 fresh.append(f)   # 这次新写的（#1132 完成页点名「.img 只要拷这几个」；沿用的和上次导出逐字节相同，手机上已有就不用再拷）
             # 着色器更新包（维护者 11-13）：只含派生件，几百 MB；手机上已有这款同一版本体时只放它就能换着色器，不用重拷几 GB 的 .img
-            u = _update_name(f, ui_lang(c))
-            if not _reuse_export(prev / u, out / u, old_stamps.get(u), stamp):
+            #   没有着色器库 / 覆盖层的款不出（只剩索引的空包，pack/img.py update_worth）
+            u = _update_name(f, ui_lang(c)) if _update_worth(c, layout.ios_pack(c, g)) else None
+            if u and not _reuse_export(prev / u, out / u, old_stamps.get(u), stamp):
                 _export_update(c, layout.ios_pack(c, g), out / u)
-            stamps[f] = stamps[u] = stamp
+            stamps[f] = stamp
+            if u:
+                stamps[u] = stamp
             listed.append(dict(gameId=g, name=names.get(g, g), file=f, update=u))
         c.begin("写安装说明", 4, 4)
         lang = ui_lang(c); readme = EXPORT_READMES[lang]
@@ -1865,7 +1914,7 @@ def sign_and_install(c, ipa, team, dev, udid, bid, games, steps=True):
     try:
         # ditto 解：保留可执行位与符号链接（zipfile 会丢，codesign / 安装都要）
         r = subprocess.run(["/usr/bin/ditto", "-x", "-k", str(ipa), str(stage)], capture_output=True, text=True)
-        app = next((stage / "Payload").glob("*.app"), None)
+        app = next((p for p in (stage / "Payload").glob("*.app") if p.is_dir()), None)
         if r.returncode or not app:
             raise Failure("解不开 iPhone 包：" + (r.stderr.strip()[-200:] or str(ipa)), code="job_failed")  # 非玩家句
         info = app / "Info.plist"
@@ -1893,6 +1942,11 @@ def sign_and_install(c, ipa, team, dev, udid, bid, games, steps=True):
             pull_seen(c, dev["id"], bid, g, udid or dev["id"], docs=game_docs(g))
             backup_saves(c, dev["id"], bid, g, docs=game_docs(g))
         rc, _, err = devicectl(c, "device", "install", "app", "--device", dev["id"], str(app), timeout=1800)
+        if rc and classify(err, default="") == "device_tunnel_unavailable":
+            # 开发者通道这一下没建起来（Wi-Fi 连着时常见）：等 10 秒原样再装一次，两次都不行才报
+            note(c, "iPhone 的开发者通道没连上（CoreDevice 4016）：10 秒后再装一次")  # 非玩家句
+            time.sleep(TUNNEL_RETRY_S)
+            rc, _, err = devicectl(c, "device", "install", "app", "--device", dev["id"], str(app), timeout=1800)
         if rc and PROFILE_REJECTED in err and not devcert.active(c):
             # 11-17 #1447 / #1448：手机说这次签名用的描述文件不能用（0xe8008015）——本机核得出的几项都过了、手机仍不认（证书在别处被换掉 / 吊销、
             #   描述文件被别的工具改过等）：把这次用过的描述文件挪开（不删），按 0.5.1 的做法向 Xcode 申请一份新的、重签、再装一次；仍不认照常报
@@ -2266,6 +2320,15 @@ def win_install_failure(e):
     return Failure(str(e), code=code)
 
 
+def win_say(c, m):
+    """install_win.install_app 的进度回调（容器与下游单款 App 共用）：进度行照常发出；签好的包丢了「提高内存上限」（install_win.iml_line 以「【IML 丢了】」开头）
+    不当进度显示，记一条黄字 iml_missing（办法见 errors.RECOVERY），原句进 internal——不挡装机"""
+    if not m.startswith("【IML 丢了】"):  # 非玩家句
+        c.emit("message", m)
+    else:
+        c.diagnostic("这次签好的 S2Arm 没带「提高内存上限」权限：装上后能玩，但大游戏可能内存不够、开局中止。", code="iml_missing", severity="warning", internal=m)
+
+
 class WinPhone:
     """Windows：Impactor 同版 plumesign 签名装机（包名由它按账号定、装完才知道，记在这台的设备记录 devices/<设备>.json 的 bundleId，供下次覆盖前备份）+ s2a-devpush 备份 / 推 / 删"""
 
@@ -2352,7 +2415,7 @@ class WinPhone:
                 ipa, had = plain, False
             ns = argparse.Namespace(ipa=str(ipa), udid=self.udid, name=None, plumesign=b.get("plumesign"), log=str(log), bundle=self.bundle_for_signing())
             try:
-                self.bid = self.W.install_app(ns, say=lambda m: self.c.emit("message", m))
+                self.bid = self.W.install_app(ns, say=self.say)
             except self.W.Fail as e:
                 if not had:
                     raise win_install_failure(e) from e
@@ -2360,7 +2423,7 @@ class WinPhone:
                 print(f"[装机] 带小组件签名装机没成（{e.err or ''}：{e}），去掉小组件重来", file=sys.stderr, flush=True)  # 非玩家句
                 ns.ipa = str(plain)
                 try:
-                    self.bid = self.W.install_app(ns, say=lambda m: self.c.emit("message", m))
+                    self.bid = self.W.install_app(ns, say=self.say)
                 except self.W.Fail as e2:
                     raise win_install_failure(e2) from e2
                 why = WIDGET_QUOTA if e.err == "free_appid_limit" else str(first)
@@ -2378,7 +2441,7 @@ class WinPhone:
             import zipfile
             with zipfile.ZipFile(ipa) as z:
                 z.extractall(stage)
-            app = next((stage / "Payload").glob("*.app"), None)
+            app = next((p for p in (stage / "Payload").glob("*.app") if p.is_dir()), None)
             if not app:
                 raise Failure("解不开 iPhone 包：" + str(ipa), code="job_failed")  # 非玩家句
             widget_prepare(c, app, devcert.state(c)["bundleId"], devcert=True)   # 自己的证书只有主程序一份描述文件：去掉小组件扩展（玩家关了不提示）
@@ -2396,6 +2459,9 @@ class WinPhone:
         self.bid = bid
         rec = layout.load_device(c, self.key)
         layout.save_device(c, self.key, dict(rec, bundleId=bid))
+
+    def say(self, m):
+        win_say(self.c, m)
 
     def bundle_for_signing(self):
         """交给 plumesign 的包名：和 Mac 同一个（container_bundle_id(团队号)，团队号取 Impactor 当前账号）。这台记录过只差大小写的包名
@@ -2436,8 +2502,68 @@ def sign_mode(c):
     return "devCert" if devcert.active(c) else "appleId"
 
 
+def mac_plume(c):
+    """0.6.0 通用壳 Mac 的 Apple ID（11-17 方案 A）：改用随包 plumesign 登录、签名、自管私钥——系统 codesign 不给程序库 dylib 带权限，
+    免费团队签的程序库手机不认；plumesign 的私钥在自己手里，程序库就能用 s2a-selfsign 按免费团队认的签法签，私钥也能交给手机自签。
+    Mac、通用壳开着、没在用自己的开发者证书 → True，并把 plumesign 数据目录（账号存档 + keys/<团队>/key.pem）定在私有目录 plumesign/；
+    开关关着照旧 Xcode 钥匙串（0.5.x 行为不变）"""
+    import program_pack
+    if os.name == "nt" or devcert.active(c) or not program_pack.enabled(c):
+        return False
+    home = Path(c.private) / "plumesign"
+    home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.environ[win_install_mod(c).impactor.PLUME_HOME_ENV] = str(home)   # 作业进程内有效：impactor.data_base / plume_env 都认它
+    return True
+
+
+def plumesign_exe(c, W):
+    """随包 plumesign（启动器 Resources/ThirdParty/Impactor）> S2A_PLUMESIGN / PATH（源码树开发）；都没有 → None"""
+    return W.plumesign_path((W.impactor.bundled(c.r.get("resources")) or {}).get("plumesign"))
+
+
+APPLE_SIGN_IN = "还没用 Apple ID 登录：在 S2Arm 里用你的 Apple ID 登录一次（邮箱、密码、手机上的验证码），再装到 iPhone。"
+
+
+def plume_account(c, W):
+    """plumesign 账号存档里选中的账号 → {account, team, teamName}；没登录 / 没选中 → None。teamName：plumesign 命令行给不出团队名，
+    用账号存档里的名字（first_name；个人团队的团队名就是本人姓名）"""
+    try:
+        with open(Path(W.impactor.data_base()) / "PlumeImpactor" / "accounts.json", encoding="utf-8") as f:
+            store = json.load(f)
+        acct = store.get("selected_account")
+        got = (store.get("accounts") or {}).get(acct or "") or {}
+    except (OSError, ValueError, AttributeError):
+        return None
+    team = W.impactor.selected_team()
+    return dict(account=acct, team=team, teamName=got.get("first_name") or "") if acct and team else None
+
+
+class PlumeMacPhone(MacPhone):
+    """Mac 通用壳 Apple ID（mac_plume）：账号是随包 plumesign 自己登录的那个（作业 appleLogin），签名装机同 Windows
+    （plumesign sign --register-and-install，install_win.install_app），包名同 Mac 容器包名；备份 / 推 / 删 / 查进程照旧 Mac（devicectl + s2a-devpush）"""
+
+    def __init__(self, c, dev=None, udid=None):
+        self.W = win_install_mod(c)
+        acct = plume_account(c, self.W)
+        if not acct:
+            raise Failure(APPLE_SIGN_IN, code="apple_not_signed_in")
+        # free：plumesign 判不了付费 / 免费，一律按免费记（same_app 签名新鲜度走 3 天：当成付费 30 天，免费账号 7 天到期前就不会顺手续签）
+        super().__init__(c, team=dict(id=acct["team"], name=acct["teamName"] or acct["account"], free=True), dev=dev, udid=udid)
+
+    install = WinPhone.install                       # plumesign 签名装机（含 9401 旧写法、设备已登记、小组件去掉重来）
+    say = WinPhone.say                               # install 里交给 plumesign 的进度回调（没借它：Mac 免费账号装机一调就 AttributeError）
+    bundle_for_signing = WinPhone.bundle_for_signing
+
+    def install_devcert(self, ipa, steps):   # 证书签名用户不走这个类（mac_plume 已排除）
+        raise AssertionError("PlumeMacPhone 不处理证书签名")  # 非玩家句
+
+
+def mac_phone(c, team=None, dev=None, udid=None):
+    return PlumeMacPhone(c, dev, udid) if mac_plume(c) else MacPhone(c, team, dev, udid)
+
+
 def phone_for(c):
-    return WinPhone(c) if os.name == "nt" else MacPhone(c)
+    return WinPhone(c) if os.name == "nt" else mac_phone(c)
 
 
 GID_RE = re.compile(r"[0-9A-F]{16}")
@@ -2454,7 +2580,7 @@ def dir_missing(out):
     return bool(re.search(r"no such file|object\s*not\s*found", out or "", re.I))
 
 
-PREEMPT_OPERATIONS = ("installUpdatePrepare", "sgradeMac")   # 前台装机让它们先停的后台自动作业：同 main.AUTO_HEAVY（单测锁住两处一致；main 是入口脚本，这里不 import 它）
+PREEMPT_OPERATIONS = ("installUpdatePrepare",)   # 前台装机让它们先停的后台自动作业：同 main.AUTO_HEAVY（单测锁住两处一致；main 是入口脚本，这里不 import 它）
 
 
 @contextlib.contextmanager
@@ -2648,10 +2774,9 @@ def put_game(c, gid, ph, steps=True, others=None, skipped=()):
     from rewrite_refresh import refresh_ios
     ph.pull_kept([g for g in ([gid] if gid else []) + list(others) if g])   # 先收回机上留下的 NRO，refresh_ios 才补得进（#8be819）
     with packer.program_locks(c, ([gid] if gid else []) + list(others)):   # 各款程序件这段不让出包交付换（ipa.program_locks）
-        # 玩家点的这一款按本引擎改写器核；同容器的别款只在补丁记号变了时补，改写器指纹单独变了不批量重改写（11-17 维护者定），
-        #   玩家在「S 级优化升级」页显式点了（sgradeUpgrade）照旧全核
+        # 只补玩家点的这一款（11-17 维护者「玩家点了才做、只做这一款」）：同容器别款不顺带补 S 级 / 重改写，跑得了照旧带，
+        #   和新壳不配套的由组装按 usable_kit 判（带不进的照常问 / 标建议更新），玩家点到那款时再补
         refresh_ios(c, [gid] if gid else [])
-        refresh_ios(c, [g for g in others if g and g != gid], ignore_rewriter=c.r.get("sgradeUpgrade") is not True)
         # 已同意过「这次不带」的款（#479）：按壳号记在设备记录 staleAgreed，同一版壳不再每次问；换了壳号重新问。重新打过 iPhone 包的款组装时带得进，自然不在名单里
         ipa, games, sid = packer.assemble(c, gid, others, failed=rec.get("failedShells", []), agreed=rec.get("staleAgreed") or {})
     left_out = sorted({g.upper() for g in list(others) + list(skipped) if g} - set(games))   # 这次没带进去的（玩家已同意；游戏库删掉的也在里面，不碍事：它们组装时本来就不带、不问）
@@ -2701,7 +2826,7 @@ def put_game(c, gid, ph, steps=True, others=None, skipped=()):
     extra = dict(unpackPending=ph.pending) if ph.pending else {}
     if img: extra["openToFinish"] = True   # 两端成功页写「已传到 iPhone，打开 S2Arm 会自动完成安装」（机上解开由 App 打开时游戏库完成）
     return dict(outputPath=str(layout.phone_ipa(c)), bundleId=ph.bid, games=games, packFiles=files, packBytes=size, **ph.info, **extra,
-                sgrade=patches_results(c))   # 这次补进 S 级优化的各款：打上 / 没打上（升级结果页列，11-14）
+                shellId=sid, sgrade=patches_results(c))   # 这次补进 S 级优化的各款：打上 / 没打上（升级结果页列，11-14）
 
 
 def program_root(pack_root):
@@ -2802,21 +2927,49 @@ SHELL_INSTALL_FIRST = "手机上还没装 S2Arm：先点「安装 S2Arm」，装
 SHELL_UPDATE_FIRST = "手机上的 S2Arm 不是这一版：先点「更新 S2Arm」，再把这款推到 iPhone。"
 
 
+def win_selfsign_signer(c, W, exe, team):
+    """Windows Apple ID：plumesign 存的私钥文件（keys/<团队>/key.pem）+ 苹果列表里它对应的那张证书 → s2a-selfsign 签程序库（免费团队也认）。
+    证书按私钥指纹缓存在私有目录（plume_cert.json），私钥没换就不再联网列证书。缺工具 / 缺私钥 / 列不出证书 → None"""
+    import program_pack
+    tool = program_pack.selfsign_path(c)
+    key = W.plume_key_path(team) if hasattr(W, "plume_key_path") else None
+    if not tool or not key or not Path(key).is_file():
+        return None
+    fp = W.key_fingerprint(team)
+    cache = c.private / "plume_cert.json"
+    got = (read(cache, {}) or {}).get(team) or {}
+    if got.get("key_fp") == fp and got.get("cert"):
+        cert = base64.b64decode(got["cert"])
+    else:
+        ident = W.plume_identity(exe, team, log=c.logs / (c.task + "-identity.log")) if exe else None
+        if not ident:
+            trace(c, f"列不出团队 {team} 私钥对应的证书，这次程序照旧用 plumesign 签")  # 非玩家句
+            return None
+        cert = ident["cert"]
+        atomic(cache, dict(read(cache, {}) or {}, **{team: dict(key_fp=fp, cert=base64.b64encode(cert).decode("ascii"))}))
+    return program_pack.selfsign_signer(c, tool, key, cert)
+
+
 def phone_signing(c, ph):
     """通用壳：这台手机上程序包按什么签 → (团队号, 包名, 签名器)。同装机签 App 的那一处：开发者证书 → 证书的团队与描述文件的包名；
-    Windows Apple ID → Impactor 当前账号的团队、plumesign 定的包名；Mac Apple ID → 钥匙串账号的团队、容器包名"""
+    Windows Apple ID / Mac 通用壳 Apple ID（PlumeMacPhone）→ plumesign 当前账号的团队、容器包名；开关关着的 Mac Apple ID → 钥匙串账号的团队、容器包名"""
     import program_pack
     if devcert.active(c):
         return devcert.team(c)["id"], devcert.state(c)["bundleId"], program_pack.devcert_signer(c)
-    if os.name == "nt":
+    if os.name == "nt" or isinstance(ph, PlumeMacPhone):   # Mac 通用壳 Apple ID 同 Windows：plumesign 的账号与私钥（mac_plume）
         team = ph.W.impactor.selected_team() if hasattr(ph.W.impactor, "selected_team") else None
         if not team:
+            if os.name != "nt":
+                raise Failure(APPLE_SIGN_IN, code="apple_not_signed_in")
             raise Failure("读不到 Impactor 里登录的 Apple ID：在 Impactor 里登录后再推到 iPhone。", code="xcode_account_missing")
         import ipa as packer
         exe = ph.W.plumesign_path((ph.W.impactor.bundled(c.r.get("resources")) or {}).get("plumesign"))
         win_cert_gate(c, ph.W, exe)
-        shell = Path(packer.container_shell(c, packer.current_shell_id(c))) / "root"
-        return team, ph.bundle_for_signing() or ph.bid, program_pack.win_signer(c, exe, shell)
+        signer = win_selfsign_signer(c, ph.W, exe, team)
+        if signer is None:   # 源码树没编 s2a-selfsign / 本机还没有这个团队的私钥：照旧 plumesign 签（付费团队能用，免费团队要手机重签）
+            shell = Path(packer.container_shell(c, packer.current_shell_id(c))) / "root"
+            signer = program_pack.win_signer(c, exe, shell)
+        return team, ph.bundle_for_signing() or ph.bid, signer
     return ph.team["id"], ph.bid, program_pack.mac_signer(c)
 
 
@@ -2963,12 +3116,13 @@ def _identity_on_phone(c, ph, sha1):
 
 def _identity_source(c, ph):
     """这次交给 App 的身份从哪来 → (团队号, 私钥指纹, 取身份的函数, source)；交不了 → None。
-    证书签名用户（devcert.active，两端都行）：导入时存的 p12；Windows Apple ID：Impactor / plumesign 的 keys/<团队>/key.pem。Mac Apple ID 借 Xcode 钥匙串，交不了"""
+    证书签名用户（devcert.active，两端都行）：导入时存的 p12；Windows Apple ID 与 Mac 通用壳 Apple ID（PlumeMacPhone）：plumesign 的 keys/<团队>/key.pem。
+    开关关着的 Mac Apple ID 借 Xcode 钥匙串，交不了"""
     if devcert.active(c):
         team = devcert.team(c)["id"]
         fp = hashlib.sha256((devcert.folder(c) / "cert.p12").read_bytes()).hexdigest()[:16]   # 同 devcert.identity 的 key_fp
         return team, fp, lambda: devcert.identity(c), "devCert"
-    if not hasattr(ph, "W"):   # 只有 Windows 的手机对象（WinPhone）带 W
+    if not hasattr(ph, "W"):   # 带 W 的只有 plumesign 签的手机对象（WinPhone、PlumeMacPhone）
         return None
     team = ph.W.impactor.selected_team()
     fp = ph.W.key_fingerprint(team) if team else None
@@ -3083,10 +3237,11 @@ def push_game(c, gid, ph, steps=True):
     files = size = 0
     pushed, mods = old.get("pack", ""), old.get("mods") or {}
     try:
-        if pack_id(pack) != pushed:
-            ph.before_push({gid: pack})
-            files, size = ph.push(gid, pack)
-            pushed = pack_id(pack)
+        # 这一款照推，不按电脑上的记录跳过（同 put_game「这款照推」）：push_pack 按 sha256 核手机上的实况，只推缺的 / 变了的。
+        #   记录说推过、手机上却没有（玩家在手机上删过这款、删 App 重装清了数据、别处装过同包名）时，原先推 0 个文件、起局卡「资源包不完整」（11-18 真机查出）
+        ph.before_push({gid: pack})
+        files, size = ph.push(gid, pack)
+        pushed = pack_id(pack)
         mods = push_mods(c, ph, gid, mods)
     finally:
         rec = layout.load_device(c, ph.key)
@@ -3162,6 +3317,7 @@ def install_shell(c, ph, steps=True):
     手机上已是这一版壳、签名离到期还早（same_app）→ 不装，updated = False。装上后记壳号、包名、签名时刻；各款记录原样留着（程序包在手机上不受装壳影响）"""
     import ipa as packer
     rec = layout.load_device(c, ph.key)
+    before = last_signer(rec)   # 装之前取（换包名时 forget_other_app 会清记录）
     snapshot_phone_saves(c, ph, list(rec.get("games") or {}))   # 0.6.0：装壳前把手机上各款的存档拉回电脑（同 push_game）
     if steps: c.begin("组 S2Arm（不带游戏）", 2, 3)
     ipa, _, sid = packer.assemble_shell(c)
@@ -3174,10 +3330,27 @@ def install_shell(c, ph, steps=True):
     forget_other_app(c, ph)
     rec = layout.load_device(c, ph.key)
     signed = dict(signed=dict(at=time.time(), free=bool(ph.info["free"]), device=ph.info["device"], mode=sign_mode(c))) if "free" in ph.info else {}
-    layout.save_device(c, ph.key, dict(rec, shellId=sid, bundleId=ph.bid or rec.get("bundleId", ""), at=time.time(), **signed))
+    # 换了签名方式后第一次装（Mac 从 Xcode 钥匙串换到 plumesign、证书 ↔ Apple ID）：结果带 signerSwitched，完成页写「这一次要重新装一下」，只这一次
+    now = signer_kind(c, ph)
+    layout.save_device(c, ph.key, dict(rec, shellId=sid, bundleId=ph.bid or rec.get("bundleId", ""), at=time.time(), signer=now, **signed))
     packer.commit_phone_ipa(c, ipa, sid)
     deliver_identity(c, ph)   # 证书签名用户：装 App 时同时把证书交给 App，以后手机上自己签游戏（交过了跳过、交不出不挡）
-    return dict(updated=True, outputPath=str(layout.phone_ipa(c)), bundleId=ph.bid, games=[], toShell=sid, **ph.info)
+    return dict(updated=True, outputPath=str(layout.phone_ipa(c)), bundleId=ph.bid, games=[], toShell=sid,
+                **(dict(signerSwitched=True) if before and before != now else {}), **ph.info)
+
+
+def last_signer(rec):
+    """设备记录里上次装 App 的签名方式；记 signer 之前装的（0.5.x）按当时只有的签法推：证书模式 → devCert，Windows → plumesign，Mac → xcode；没装过 → None"""
+    if rec.get("signer"):
+        return rec["signer"]
+    if not rec.get("bundleId"):
+        return None
+    return "devCert" if (rec.get("signed") or {}).get("mode") == "devCert" else "plumesign" if os.name == "nt" else "xcode"
+
+
+def signer_kind(c, ph):
+    """这次 App 用什么签的（设备记录 signer，判「换了签名方式」）：devCert / plumesign（Windows、Mac 通用壳 Apple ID）/ xcode（Mac 钥匙串）"""
+    return "devCert" if devcert.active(c) else "plumesign" if hasattr(ph, "W") else "xcode"
 
 
 SAME_APP_FRESH = (3 * 86400, 30 * 86400)   # 跳过重签的签名新鲜度：免费账号描述文件 7 天到期，签了不到 3 天才跳过（照常装机就顺手续签）；付费 / 证书 30 天
@@ -3463,33 +3636,10 @@ def other_device_current(c, want):
 
 
 def update_prepare(c):
-    """「更新 iPhone 上的 S2Arm」的电脑侧准备，不连手机（新版启动器首次启动时后台调，接着手机连上再走 installUpdate 装机）：
-    各台手机记录里、游戏库里还在的款，按本引擎核一遍 iPhone 程序（改写产物）、补可读瓦片版着色器（rewrite_refresh.refresh_ios，结果记进各款 game.json）。
-    之后装机时 refresh_ios 认出已是本版、直接跳过，装机只剩组容器、签名、装。
-    和出包并发安全：每款单独拿这款的程序件锁（ipa.program_locks），做完就放，不长时间挡住那款的出包交付；本进程降优先级（子进程跟着），让出包和游戏先跑。
-    → {prepared: 准备了哪几款, updated: 其中实际改了的}"""
-    import ipa as packer
-    from rewrite_refresh import refresh_ios
-    try:
-        os.nice(10)   # Windows 没有 os.nice：照常优先级
-    except (AttributeError, OSError):
-        pass
-    have = {g["id"].upper() for g in c.catalog()["games"]}
-    games = sorted({str(g).upper() for _, rec in layout.devices(c) if isinstance(rec, dict) for g in (rec.get("games") or {}) if str(g).upper() in have})
-    c.begin("准备更新 iPhone 上的 S2Arm", 1, 1)
-    updated = []
-    done = []
-    for g in games:
-        # 前台装机类作业在跑（拿着手机锁）：不再拿程序锁跟它抢（11-17 #1450：后台降到最低优先级，前台排在它后面就是倒置）——停下，剩下的前台自己做
-        with c.idle("phone") as free:
-            pass
-        if not free:
-            trace(c, "前台装机作业在跑：准备更新先停，剩下的由它按正常优先级做")
-            break
-        with packer.program_locks(c, [g]):
-            updated += refresh_ios(c, [g], ignore_rewriter=True)   # 后台：改写器指纹单独变了不重改写（11-17 维护者定），留到玩家对这一款操作时前台做
-        done.append(g)
-    return dict(prepared=done, updated=sorted(set(updated)))
+    """「更新 iPhone 上的 S2Arm」的电脑侧准备（新版启动器首次启动时后台调）。原先在这里按各台手机记录逐款 refresh_ios——改写器指纹单独变了本来就跳过，
+    做的全是 S 级补丁与可读瓦片版着色器（_bf）；11-17 维护者定 S 级优化不再自动运行（「改成不自动运行，玩家手动点击 S 级优化再升级」），
+    所以不做任何事：玩家对一款点 S 级优化（sgrade.upgrade_game）或装机 / 推送时前台做。→ {prepared: [], updated: []}"""
+    return dict(prepared=[], updated=[], manual=True)
 
 
 def update_phone(c):
@@ -3540,7 +3690,7 @@ def _update_phone(c):
         raise Failure("手机上的游戏都要按新版重新出包，这次没法只更新 S2Arm（更新后一款都打不开）。可以先给它们各「打 iPhone 包」，再点「装到 iPhone」，"
                       "游戏和 S2Arm 会一起换成新版；存档和资源都留在手机上。「只更新 S2Arm、暂不带游戏」下一版开放。", code="container_stale", internal=" ".join(stale))
     r = put_game(c, None, ph, others=keep, skipped=stale)
-    return dict(r, updated=True, fromShell=st["fromShell"], toShell=sid, skipped=stale)
+    return dict(r, updated=True, fromShell=st["fromShell"], toShell=r.get("shellId") or sid, skipped=stale)   # 实际组进 ipa 的壳号（ipa.built_shell），不是树的
 
 
 def install(c):

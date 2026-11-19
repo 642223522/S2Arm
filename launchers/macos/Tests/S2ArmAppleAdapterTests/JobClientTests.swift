@@ -218,6 +218,7 @@ final class JobClientTests: XCTestCase {
             }
             func start(executable: URL, arguments: [String], environment: [String: String], automatic: Bool,
                        onLine: @escaping (Data) -> Void, onStderr: @escaping (Data) -> Void, onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle {
+                objc_sync_enter(self); defer { objc_sync_exit(self) }   // 作业客户端在并发线程池里同时调 start：替身状态串行改（无锁并发追加数组会 SIGSEGV 带崩整个测试进程）
                 seen.append(automatic); return H()
             }
         }
@@ -225,8 +226,8 @@ final class JobClientTests: XCTestCase {
         let spy = Spy()
         let client = JobClient(environment: box.environment(), runner: spy)
         for op in ["installUpdatePrepare", "sgradeMac", "install", "build"] { _ = try client.start(operation: op) }
-        XCTAssertEqual(spy.seen, [true, true, false, false])
-        XCTAssertEqual(JobTrigger.automaticOperations, ["installUpdatePrepare", "sgradeMac"])
+        XCTAssertEqual(spy.seen, [true, false, false, false])   // sgradeMac 11-17 起玩家点了才做（S 级优化改手动），不算自动作业
+        XCTAssertEqual(JobTrigger.automaticOperations, ["installUpdatePrepare"])
     }
 
     /// 真进程：行都到了才报退出（快结束的作业最后一条结果不能被退出抢先）。

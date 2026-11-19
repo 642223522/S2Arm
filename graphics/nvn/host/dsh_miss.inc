@@ -111,7 +111,9 @@ static int dsh_stage_raw(const uint8_t *cd, const uint8_t *ctl, uint32_t *ncode,
     uint32_t w; memcpy(ncode, ctl + 0x704, 4); memcpy(nctl, ctl + 0x20, 4); memcpy(&w, cd + 0x30, 4);
     static const uint8_t gfx_magic[4] = {0x78, 0x56, 0x34, 0x12}; int t = (w >> 10) & 0xf; if (t == 0 && (w & 0x1f) == 1) t = 1;
     int st = memcmp(cd, gfx_magic, 4) ? 2 : t == 1 ? 0 : t == 5 ? 1 : t == 4 ? 3 : -1;
-    return !*ncode || *ncode >= (1u << 24) || *nctl < 0x100 || *nctl >= (1u << 20) ? -1 : st;
+    // 代码长字段在控制段 +0x704：自报长度装不下这个字段（< 0x708）的不是 Switch 1 控制段（#fb7116：Switch 2 游戏认不出的控制段按 Switch 1 读出 0x302 字节，
+    //   +0x704 读的是段外的数，登记拷下的 0x302 字节里没有它），按认不出；翻译器本身也要读到 +0x700 以后
+    return !*ncode || *ncode >= (1u << 24) || *nctl < 0x708 || *nctl >= (1u << 20) ? -1 : st;
 }
 // [p, p + n) 逐页都能读（诊断#354a81：Switch 2 控制段 +0x30 自报 25116 字节，游戏放在内存里的那段排在一块映射末尾，
 //   memcpy(e->ctl, ctl, nctl) 读到 0x7522000000 SIGBUS——调用方只核过控制段前 0x880）。vm_read_overwrite 读不到只回错，不让进程崩
@@ -147,7 +149,9 @@ void dm_shader_salvage(const char *k16, int kind, uint64_t code, const void *con
 // 缺库的键先登记、到第一次真正用到才现编（10-27 交付线两段式出包）：ProgramSetShaders 时游戏会把它所有的程序一口气建出来（斯普拉遁3 开机 10 秒 1.26 万个），
 //   多数一局里根本不画；在那里同步现编，热键版包开机要卡上万次。所以这里只拷下控制段（只在这次调用里有效）记进待编表，
 //   等提交线程第一次用这个程序建管线（nvn_mtl.m prog_get）再调 dm_shader_miss_late 现编——那时程序在用，代码区一定有效
-typedef struct dsh_pend { struct dsh_pend *next; uint8_t key[8]; int st; uint32_t nctl; uint8_t ctl[]; } dsh_pend;
+// ncode：登记时按在用控制段认出的代码区长度（dsh_stage 核过整段可读）。现编时不再从拷贝的控制段里重读——拷贝只有 nctl 字节，
+//   旧做法读拷贝 +0x704 / +0x44，控制段短于字段位置时读到 malloc 块外的数、按上亿字节去拷代码区（#fb7116 宿主 SIGBUS）
+typedef struct dsh_pend { struct dsh_pend *next; uint8_t key[8]; int st; uint32_t nctl, ncode; uint8_t ctl[]; } dsh_pend;
 enum { DSH_PEND_BUCKETS = 4096 };
 static dsh_pend *g_dsh_pend[DSH_PEND_BUCKETS]; static pthread_mutex_t g_dsh_pend_mu = PTHREAD_MUTEX_INITIALIZER; static _Atomic uint64_t g_dsh_pend_n;
 static unsigned dsh_bucket(const uint8_t key[8]) { uint32_t h; memcpy(&h, key, 4); return h % DSH_PEND_BUCKETS; }
@@ -297,7 +301,7 @@ void dm_shader_miss(const uint8_t key[8], uint64_t code, const void *control) {
     pthread_mutex_lock(&g_dsh_pend_mu);
     dsh_pend *e = g_dsh_pend[b]; while (e && memcmp(e->key, key, 8)) e = e->next;
     int fresh = 0;
-    if (!e && (e = malloc(sizeof *e + nctl))) { memcpy(e->key, key, 8); e->st = st; e->nctl = nctl; memcpy(e->ctl, ctl, nctl); e->next = g_dsh_pend[b]; g_dsh_pend[b] = e; atomic_fetch_add_explicit(&g_dsh_pend_n, 1, memory_order_relaxed); fresh = 1; }
+    if (!e && (e = malloc(sizeof *e + nctl))) { memcpy(e->key, key, 8); e->st = st; e->nctl = nctl; e->ncode = ncode; memcpy(e->ctl, ctl, nctl); e->next = g_dsh_pend[b]; g_dsh_pend[b] = e; atomic_fetch_add_explicit(&g_dsh_pend_n, 1, memory_order_relaxed); fresh = 1; }
     pthread_mutex_unlock(&g_dsh_pend_mu);
     if (fresh) dsh_eager_start(key, st, cd, ncode, ctl, nctl, out);   // 登记即后台开编（有上限，见 dsh_eager_start）
 }
@@ -327,7 +331,7 @@ static int dsh_nvn2_pend(const uint8_t key[8], const char *k, uint64_t code, con
     mkdir(out, 0755);
     if (dsh_have(out, k)) { mtl_shmap_rt_add(k, dsh_nm[st]); atomic_fetch_add_explicit(&g_dsh_reused, 1, memory_order_relaxed); return 1; }
     dsh_pend *e = malloc(sizeof *e + nctl); if (!e) return -1;
-    memcpy(e->key, key, 8); e->st = st; e->nctl = nctl; memcpy(e->ctl, control, nctl); e->next = NULL; *pe = e;
+    memcpy(e->key, key, 8); e->st = st; e->nctl = nctl; e->ncode = ncode; memcpy(e->ctl, control, nctl); e->next = NULL; *pe = e;
     return 0;
 }
 // 同一 NVN2 键只试一次（成功后映射已加、失败照旧报红，都不再进这里）
@@ -375,8 +379,13 @@ int dm_shader_miss_late(const char *k16, uint64_t code, const void *control) {
         }
         dsh_job_put(j);   // 取消 / 后台失败：照旧同步编
     }
-    if (nvn2_on() && nvn2_ctl(e->ctl)) memcpy(&ncode, e->ctl + 0x44, 4); else memcpy(&ncode, e->ctl + 0x704, 4);
+    ncode = e->ncode;
     const uint8_t *cd = (const uint8_t *)(uintptr_t)code; dsh_comp_fn comp = dsh_comp();
+    // 代码区此刻要整段可读：登记到第一次用到之间游戏可能已解除这段映射（懒清零改成不可访问），翻译器读到就是宿主崩。读不到放弃这一份、计跳过
+    if (code && !dsh_bytes_ok(cd, ncode)) {
+        static _Atomic int said; if (atomic_fetch_add(&said, 1) < 4) LOG("【红】直连：着色器 %s 首遇现编时代码区 %u 字节不是整段可读（登记后被解除映射？），这一份放弃", k, ncode);
+        free(e); atomic_fetch_add_explicit(&g_dsh_skipped, 1, memory_order_relaxed); return 0;
+    }
     int rc = !code || !out || !*out || !comp ? -1 : 0;
     uint64_t t0 = now_ns(); if (!rc) rc = dsh_comp_locked(comp, k, e->st, cd, ncode, e->ctl, e->nctl, out);
     // 翻译器报错（rc > 0：编了、没编出来）：不管开没开 DM_NVN_SHDUMP，都把这支的控制段 / 代码区存进兜底目录 <键>.fail.ctl / .fail.code。翻译器的确定性 bug 修前要能在本机复现，
@@ -386,6 +395,16 @@ int dm_shader_miss_late(const char *k16, uint64_t code, const void *control) {
         snprintf(fp, sizeof fp, "%s/%s.fail.ctl", out, k); if ((f = fopen(fp, "wb"))) { fwrite(e->ctl, 1, e->nctl, f); fclose(f); }
         snprintf(fp, sizeof fp, "%s/%s.fail.code", out, k); if ((f = fopen(fp, "wb"))) { fwrite(cd, 1, ncode, f); fclose(f); }
         LOG("直连着色器现编失败的输入已存：%s/%s.fail.ctl / .fail.code（控制段 %u 字节、代码区 %u 字节；反馈问题时请附上）", out, k, e->nctl, ncode);
+    }
+    // #1520（诊断）：一款 Switch 2 游戏的片元着色器控制段正常、长度自洽（+0x38 = 0x80 字节 SPH + 指令），代码区开头却直接是指令、整段找不到 SPH，翻译器把指令当 SPH 读出阶段 14。
+    //   没有原件，分不清是「SPH 在代码地址前 0x80 字节」还是新布局：图形阶段失败时记下开头一个字与代码地址前 0x80 字节（只在与代码区同一页时读，不碰别的页），前 8 次
+    if (rc > 0 && code && ncode >= 4 && (e->st == 0 || e->st == 1 || e->st == 3) && nvn2_on() && nvn2_ctl(e->ctl)) {
+        static _Atomic int said;
+        if (atomic_fetch_add(&said, 1) < 8) {
+            uint32_t w0; memcpy(&w0, cd, 4); char hx[0x80 * 2 + 1] = "";
+            if ((code & 0xfff) >= 0x80) for (int i = 0; i < 0x80; i++) snprintf(hx + 2 * i, 3, "%02x", cd[i - 0x80]);
+            LOG("【红】直连：Switch 2 %s（%s）现编失败，代码区开头 %08x；代码地址前 0x80 字节：%s", k, dsh_nm[e->st], w0, hx[0] ? hx : "跨页，不读");
+        }
     }
     int st = e->st; uint32_t enctl = e->nctl; uint8_t *ectl = rc > 0 ? malloc(enctl) : NULL; if (ectl) memcpy(ectl, e->ctl, enctl); free(e);
     if (rc) { atomic_fetch_add_explicit(&g_dsh_failed, 1, memory_order_relaxed); atomic_fetch_add(&g_dsh_bad, 1); LOG("【红】直连着色器现编失败：%s（%s）rc=%d", k, dsh_nm[st], rc);
