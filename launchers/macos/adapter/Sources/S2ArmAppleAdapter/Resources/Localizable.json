@@ -10430,5 +10430,9 @@
  {
   "source": "等 iPhone 上的 S2Arm 装好这款的程序",
   "en": "Waiting for S2Arm on the iPhone to install this game's program"
+ },
+ {
+  "source": "Intel Mac：给 iPhone 出包可用；在 Mac 上起游戏仍要 Apple 芯片。",
+  "en": "Intel Mac: building for iPhone works; playing games on this Mac still needs Apple silicon."
  }
 ]

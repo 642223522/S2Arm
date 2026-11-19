@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import shutil
 import signal
@@ -1147,7 +1148,8 @@ class Context:
             from embedded import artifact
             # 只有源码树（没有 engine.json，artifact 回 None）才没有内置宿主、按需现编；发版清单里缺它或校验不符，artifact 抛「请重新安装完整应用」照常抛出
             #   （审计 P2-196：原先 except Exception 一律吞掉、改去现场编，红字指向「编译 Mac 宿主失败」，玩家按缺 SDK 去排查）
-            bundled_host = artifact(self, "S2ArmGame.app")
+            # Intel 出包 App 按设计不带 Mac 宿主（游戏是 AArch64 原生执行）：清单没列这项是合法出包形态，optional 返回 None；列了但缺文件照旧报错。
+            bundled_host = artifact(self, "S2ArmGame.app", optional=platform.machine() == "x86_64")
             if bundled_host:
                 if not ((bundled_host / "Contents/MacOS/s2arm-host").is_file() and (bundled_host / "Contents/MacOS/libs2a_vaguard.dylib").is_file()):
                     raise Failure("应用内置引擎产物缺失，请重新安装完整应用。")

@@ -447,6 +447,7 @@ static void guest_file_map(void) {
 //   只在窗口还原封不动（整段一块 PROT_NONE 的匿名保留）时才换：换成文件是整段 MAP_FIXED，窗口里已经有东西就会被抹掉，那种情形不换、照旧匿名。
 //   还是不够：报红，并在屏幕上告诉玩家差多少空间（不然这款几分钟后涨到单进程上限被系统收掉，没有崩溃报告，玩家只看到闪退）
 #ifdef S2A_UNIT_TEST
+// 快照相关的弱缺省已由本文件后部的通用定义提供（合并 upstream 后统一，勿在此重复定义）
 void s2a_guest_file_test_pending(void) { g_gfile_pending = 1; }
 void s2a_guest_file_test_late(void) { g_gfile_late = 1; }   // 单测（t_guest_file_retry ④）：造「多款容器、已选定游戏、要按本款再判」的状态   // 单测（t_guest_file_retry）：造「装游戏前要换成文件」的状态（真机只由多款容器按本款再判置位，Mac 上 room 0 走不到）
 #endif
@@ -705,6 +706,23 @@ uint64_t s2a_window_host_below(uint64_t fit, uint64_t learned) {
     uint64_t host = fit > win ? (fit - win) & ~(G - 1) : 0;
     return host > HOST_BELOW ? host : HOST_BELOW;
 }
+// 小内存 iPad（4 GB 机，2^39 以下只有 6 GB 空洞）上 HOST_BELOW 固定 3 GiB 把窗口压到 3 GiB；
+//   Switch 1 的 SDK 开局按应用池 3285 MB 调 SetHeapSize（不是按游戏文件大小，Ryujinx KSystemControl.GetApplicationPoolSize），
+//   紧凑布局的堆起点在窗口 +约 380 MB，3 GiB 窗口放不下 3234 MB 堆 → 0xD001 → nninitStartup Break。
+//   池是 NPDM 可认定的真值（Switch 1 3285 MiB / Switch 2 9 GiB），按它给窗口；下方宿主至少 2 GiB
+//   （旧版 1 GiB 在时之笛 Switch 2 上低区碰底崩，3 GiB 是为大款留的，小款不该按大款扣）。
+//   已学到更大跨度（#783）时不能反向压小：宿主按更大的那个值留。
+#define HOST_BELOW_MIN (2ull << 30)
+#define HEAP_FRONT (512ull << 20)   // 紧凑布局堆起点上界（模块段 + TLS/IO + 栈；实测 378 MB，留余量）
+uint64_t s2a_window_host_below_for_pool(uint64_t fit, uint64_t learned, uint64_t pool) {
+    uint64_t base = s2a_window_host_below(fit, learned);
+    if (!pool) return base;
+    uint64_t G = 1ull << 30;
+    uint64_t want = (pool + HEAP_FRONT + G - 1) & ~(G - 1);
+    uint64_t host = fit > want ? (fit - want) & ~(G - 1) : 0;
+    if (host < HOST_BELOW_MIN) host = HOST_BELOW_MIN;
+    return host < base ? host : base;
+}
 // 起局当场自愈（v0.3.4）：窗口按学到的跨度收窄后布局放不下（svc_mem.c layout_prepare 判 -2 那一刻）——删掉记录，窗口往下放宽回缺省给法（下方只留 HOST_BELOW 给宿主），
 //   布局重算、本局照常起。原先只删记录、本局照样失败，玩家第二次打开才好（v0.3.3 已记下坏记录的玩家装新版后头一次仍失败）。
 //   放宽的那段 [新起点, 窗口底) 起局后可能已被宿主映射占了一部分（lp_map 带提示往这里放直连库段等）：新起点取「已占映射末端（1 GiB 向上取整）」与「留宿主底 + HOST_BELOW」的大者，
@@ -895,8 +913,11 @@ static uint64_t need_from_npdm(void) {
 #else
     { int ac = *_NSGetArgc(); char **av = *_NSGetArgv(); if (ac < 2) return 0; strlcpy(dir, av[1], sizeof dir); }   // Mac：s2arm-host <模块目录>
 #endif
-    { uint64_t (*pf)(const char *) = (uint64_t (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_npdm_pid"); char np[1100]; snprintf(np, sizeof np, "%s/main.npdm", dir);
-      g_ctor_pid = pf ? pf(np) : 0; }   // 单款：文件后备按它找本款实测峰值 / 死亡标记（mem_peak_path）
+    { uint64_t (*pf)(const char *) = (uint64_t (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_npdm_pid");
+      uint64_t (*pl)(const char *) = (uint64_t (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_npdm_app_pool");
+      char np[1100]; snprintf(np, sizeof np, "%s/main.npdm", dir);
+      g_ctor_pid = pf ? pf(np) : 0;
+      g_ctr_pool = pl ? pl(np) : 0; }   // 单款也按本款 NPDM 认应用池（小内存 iPad 按池给窗口）；多款在容器循环里取最大
     g_span_learned = s2a_window_span_seen(g_ctor_pid);
     return need_dir(dir);
 }
@@ -991,7 +1012,11 @@ static void vawin_reserve(void) {
     if (g_span_learned && !s2a_window_span_rec_ok(g_span_learned, g_fit)) {
         LOG("【黄】地址窗口：本机学到的跨度 %llu MB 不小于这块空洞 %llu MB（旧版把窗口外的远端映射也算进去了），当作没学到、这一局重新学", (unsigned long long)(g_span_learned >> 20), (unsigned long long)(g_fit >> 20));
         g_span_learned = 0; }
-    if (!sz && g_fit >= MIN_WIN + HOST_BELOW) { uint64_t below = s2a_window_host_below(g_fit, g_span_learned);
+    if (!sz && g_fit >= MIN_WIN + HOST_BELOW) {
+        uint64_t pool = s2a_window_container_pool();   // 多款容器在构造期逐款读过 NPDM；单款 0 = 不知道，照旧 3 GiB
+        uint64_t below = s2a_window_host_below_for_pool(g_fit, g_span_learned, pool);
+        if (pool && below != HOST_BELOW) LOG("地址窗口：按本款应用池 %llu MB 定宿主保留 %llu MB（固定 %llu MB 时窗口放不下 SDK 开局要的堆）",
+            (unsigned long long)(pool >> 20), (unsigned long long)(below >> 20), (unsigned long long)(HOST_BELOW >> 20));
 #if !TARGET_OS_OSX
         { const char *rec = getenv("S2A_FRAME_REC"); uint64_t A = (1ull << 30) + (2ull << 30);   // 即时存档（1 GB 同下文 CMD_ARENA）：命令记录区 1 GB + 虚拟池区 2 GB 从窗口里让出来，放宿主段最底部（cmd_arena_reserve）
           if (!(rec && *rec) && s2a_snap_mode() && g_fit >= below + A + MIN_WIN) { below += A; g_snap_below = A; } }
