@@ -226,7 +226,7 @@ static partial class LibPack
     static readonly Regex NAME = new(@"\A([0-9a-f]{16})_(b\.metallib|b\.json|b\.spv|bf\.metallib|bv\.metallib|ft\.metallib|se\.metallib|vp\.metallib|b_t([0-2])\.metallib|bg(\d+)\.(metallib|json)|bgv\.(metallib|json)|bgs(\d+)\.(metallib|json)|bgc\.(metallib|json)|vg([0-4])\.(json|spv))$", RegexOptions.CultureInvariant);
     static readonly Regex VKFP = new(@"\A[0-9a-f]{16}\z", RegexOptions.CultureInvariant);
     const int K_SPV = 52;   // Vulkan 库的 _b.spv（#783）；0–51 是 Metal 的种类
-    const int K_VGJSON = 112, K_VGSPV = 120;   // Vulkan 库的原生几何阶段：_vg<t>.json 112+t / _vg<t>.spv 120+t（t = 输入图元 InputTopology 编号 0–4，DshVk.CompileGeometry）
+    const int K_VGJSON = 112, K_VGSPV = 120;   // Vulkan 库的原生几何阶段：_vg<t>.json 112+t / _vg<t>.spv 120+t（t = 输入图元 InputTopology 编号 0–4，安卓 Vulkan 导出的原生几何阶段）
     static bool VkKind(int k) => k == 1 || k == K_SPV || (k >= K_VGJSON && k < K_VGJSON + 5) || (k >= K_VGSPV && k < K_VGSPV + 5);
     static readonly Regex CHAIN = new(@"\A[0-9a-z]{1,12}\z", RegexOptions.CultureInvariant);
     static readonly Regex KEYFILE = new(@"\A[0-9a-f]{16}_", RegexOptions.CultureInvariant);
