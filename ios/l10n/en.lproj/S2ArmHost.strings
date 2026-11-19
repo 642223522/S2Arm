@@ -600,3 +600,6 @@
 "vpad.snap.saveChanged.title" = "Go back to the saved moment?";
 "vpad.snap.saveChanged.body" = "The game saved after that moment. Going back also takes the game’s save back to that moment; your current save is backed up first.";
 "vpad.snap.saveChanged.go" = "Go back";
+"vpad.snap.button.hint" = "Tap to save this moment; press and hold to go back to it";
+"vpad.snap.none" = "No saved moment yet. Tap the button to save one";
+"vpad.snap.savedHint" = "%@ · Press and hold the button to come back here";

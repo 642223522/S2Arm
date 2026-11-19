@@ -297,6 +297,7 @@ void s2a_dprompt_ask(NSString *title, NSString *body, NSString *accept, NSString
     S2AScreenLockView *_screenLock;
     _Atomic int _screenLocked;   // HID 线程也读，遮罩本身只在主线程操作
     UIButton *_gear; NSTimer *_gearFade;    // 游戏内设置入口：屏幕左上角常驻，闲置时淡到看得见但不抢画面
+    UIButton *_snapBtn; NSString *_snapDir; // 0.6.0 快照：右上角和齿轮对称的存档按钮（同样式、同淡出）；单击存、长按出「回到这一刻」。起局没开快照就不建
     BOOL _touchWanted;                      // 游戏启用过触屏（s2a_vpad_touch_wanted）
     int _autoTouch;                         // 自动切（游戏声明触屏配置，manual=0）的本次运行覆盖：1 = 本次按仅触屏跑、不改持久化选择；0 = 没有覆盖
     // 拖动编辑按键位置（11-07 维护者）：编辑期间不向游戏发输入，手指拖哪个键挪哪个键；完成存成本款游戏的「我的布局」并选中
@@ -382,7 +383,9 @@ static NSString *button_label(NSString *identifier) {
     // 齿轮 = 系统菜单（11-09 维护者 定 B 方案）：点开弹 UIMenu，只盖左侧一条、游戏画面看得见；开关类直接打勾，不进新页面。条目每次打开现算（uncached）
     _gear.showsMenuAsPrimaryAction = YES; _gear.menu = [self gearMenu];
     [_gear addTarget:self action:@selector(wakeGear) forControlEvents:UIControlEventMenuActionTriggered];
-    [self addSubview:_gear]; [self wakeGear];
+    [self addSubview:_gear];
+    [self buildSnapButton];
+    [self wakeGear];
     for (int i = 0; i < 2; i++) {
         _ring[i] = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 124, 124)]; _ring[i].layer.cornerRadius = 62;
         // 摇杆区用方案二「石墨」（11-07 维护者：B 方案的两个摇杆区替换 C 方案的）：深灰半透明实底、无描边，摇杆头浅灰
@@ -399,9 +402,9 @@ static NSString *button_label(NSString *identifier) {
     return self;
 }
 - (void)wakeGear {   // 刚显示时看得清，3 秒后淡到 0.35：玩家找得到，又不挡画面
-    [_gearFade invalidate]; _gear.alpha = 0.9;
+    [_gearFade invalidate]; _gear.alpha = _snapBtn.alpha = 0.9;
     _gearFade = [NSTimer scheduledTimerWithTimeInterval:3 repeats:NO block:^(NSTimer *t) { (void)t;
-        [UIView animateWithDuration:0.4 animations:^{ self->_gear.alpha = 0.35; }]; }];
+        [UIView animateWithDuration:0.4 animations:^{ self->_gear.alpha = self->_snapBtn.alpha = 0.35; }]; }];
 }
 // ---------- 齿轮菜单（B 方案：一级 → 二级，见 docs 设计稿「游戏内手柄设置 B 方案稿」）----------
 // 四指长按 / 手柄长按「+」照旧开整页设置（系统菜单不能由代码弹出）；菜单最下「更多设置」也到整页
@@ -662,6 +665,80 @@ static NSString *vp_running_gid(void) { const char *g = getenv("S2A_LAUNCH_GAME_
     return items;
 }
 // ---------- 0.6.0 快照：存下这一刻 / 回到上次存下的这一刻 ----------
+// 右上角存档按钮（11-19 维护者定稿：和齿轮对称、同风格半透明、每款只留一份）。单击 = 存下这一刻（游戏不停）；
+//   长按 = 系统菜单，只有一项「回到这一刻」（缩略图 + 存下的时间），要再点一次才回去——这一下就是防误触，不另弹说明框
+// 弱链接[lab]：s2a_snap_logging（即时快照：runtime/src/snapsw.c、snapshot.c 提供；输入工作台不链原生核，取不到就不建按钮）
+// 弱链接[lab]：s2a_snap_dir_for（同上）
+// 弱链接[lab]：s2a_snap_exists（同上）
+- (void)buildSnapButton {
+    int s2a_snap_logging(void) __attribute__((weak)); int s2a_snap_dir_for(const char *, char *, size_t) __attribute__((weak));
+    char sd[2048];
+    if (!(s2a_snap_logging && s2a_snap_logging() && s2a_snap_dir_for && !s2a_snap_dir_for(NULL, sd, sizeof sd))) return;
+    _snapDir = @(sd);
+    _snapBtn = [UIButton buttonWithType:UIButtonTypeSystem]; _snapBtn.accessibilityIdentifier = @"vpad.snap"; _snapBtn.accessibilityLabel = S2AL(@"vpad.snap.save");
+    _snapBtn.accessibilityHint = S2AL(@"vpad.snap.button.hint");
+    [_snapBtn setImage:[UIImage systemImageNamed:@"camera.viewfinder"] forState:UIControlStateNormal]; _snapBtn.tintColor = UIColor.whiteColor;
+    _snapBtn.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45]; _snapBtn.layer.cornerRadius = 18;   // 与齿轮同一套
+    [_snapBtn addTarget:self action:@selector(snapTapped) forControlEvents:UIControlEventTouchUpInside];
+    __weak S2AVPadView *ws = self;
+    _snapBtn.showsMenuAsPrimaryAction = NO;   // 有 menu、但不是主动作 = 长按才弹
+    _snapBtn.menu = [UIMenu menuWithTitle:@"" children:@[[UIDeferredMenuElement elementWithUncachedProvider:^(void (^done)(NSArray<UIMenuElement *> *)) {
+        S2AVPadView *v = ws; [v wakeGear]; done(v ? [v snapRestoreItems] : @[]); }]]];
+    [self addSubview:_snapBtn];
+}
+- (void)snapTapped { [self wakeGear]; [self snapSave:_snapDir]; }
+// 快照的缩略图与存下的时间：先用快照里的小图 thumb.png，没有就用存档那一刻的整帧 a_last.png；时间取图的修改时间（存下那一刻写的）
+static UIImage *snap_thumb(NSString *dir, CGFloat w, NSDate **when) {
+    for (NSString *n in @[@"thumb.png", @"a_last.png"]) {
+        NSString *p = [dir stringByAppendingPathComponent:n];
+        NSDictionary *at = [NSFileManager.defaultManager attributesOfItemAtPath:p error:nil]; if (!at) continue;
+        if (when) *when = at.fileModificationDate;
+        UIImage *im = [UIImage imageWithContentsOfFile:p]; if (!im || im.size.width <= 0) return nil;
+        CGSize sz = CGSizeMake(w, round(w * im.size.height / im.size.width));
+        UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:sz];
+        return [r imageWithActions:^(__unused UIGraphicsImageRendererContext *c) { [im drawInRect:(CGRect){CGPointZero, sz}]; }];
+    }
+    return nil;
+}
+static NSString *snap_when_text(NSDate *d) {
+    if (!d) return @"";
+    NSDateFormatter *f = [NSDateFormatter new]; f.doesRelativeDateFormatting = YES; f.dateStyle = NSDateFormatterShortStyle; f.timeStyle = NSDateFormatterShortStyle;
+    return [f stringFromDate:d];
+}
+- (NSArray<UIMenuElement *> *)snapRestoreItems {
+    int s2a_snap_exists(const char *) __attribute__((weak));
+    __weak S2AVPadView *ws = self; NSString *dir = _snapDir;
+    if (!(dir && s2a_snap_exists && s2a_snap_exists(dir.fileSystemRepresentation))) {
+        UIAction *none = vp_act(S2AL(@"vpad.snap.none"), @"camera.viewfinder", NO, ^{});
+        none.attributes = UIMenuElementAttributesDisabled; return @[none];
+    }
+    NSDate *when = nil; UIImage *th = snap_thumb(dir, 96, &when);
+    UIAction *go = [UIAction actionWithTitle:S2AL(@"vpad.snap.restore") image:th ?: [UIImage systemImageNamed:@"clock.arrow.circlepath"] identifier:nil
+                                     handler:^(__unused UIAction *x) { [ws afterMenu:^{ [ws snapRestore:dir]; }]; }];
+    go.subtitle = snap_when_text(when);
+    return @[go];
+}
+// 存好后的轻提示：缩略图 + 时间（前两次再带一句「长按可回到这里」——玩家靠这句发现回去的入口），在存档按钮左边，2 秒淡出、不挡操作
+- (void)snapSavedToast {
+    UIWindow *w = self.window; if (!w || !_snapDir) { [self snapToast:S2AL(@"vpad.snap.saved")]; return; }
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults; NSInteger shown = [d integerForKey:@"vpad.snap.hintShown"];
+    NSDate *when = nil; UIImage *th = snap_thumb(_snapDir, 64, &when);
+    NSString *line = snap_when_text(when ?: [NSDate date]);
+    if (shown < 2) { line = [NSString stringWithFormat:S2AL(@"vpad.snap.savedHint"), line]; [d setInteger:shown + 1 forKey:@"vpad.snap.hintShown"]; }
+    UIView *box = [UIView new]; box.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.88]; box.layer.cornerRadius = 12; box.userInteractionEnabled = NO; box.layer.zPosition = 20001;
+    UIImageView *iv = [[UIImageView alloc] initWithImage:th]; iv.layer.cornerRadius = 5; iv.clipsToBounds = YES; iv.contentMode = UIViewContentModeScaleAspectFill;
+    UILabel *t = [UILabel new]; t.numberOfLines = 2; t.textColor = UIColor.whiteColor;
+    NSMutableAttributedString *as = [[NSMutableAttributedString alloc] initWithString:S2AL(@"vpad.snap.saved") attributes:@{NSFontAttributeName: [UIFont boldSystemFontOfSize:14]}];
+    [as appendAttributedString:[[NSAttributedString alloc] initWithString:[@"\n" stringByAppendingString:line] attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:12], NSForegroundColorAttributeName: [UIColor colorWithWhite:1 alpha:0.8]}]];
+    t.attributedText = as; [t sizeToFit];
+    CGFloat pad = 6, tw = th ? 64 : 0, thh = th ? round(64 * th.size.height / th.size.width) : 0, h = MAX(thh, t.bounds.size.height) + pad * 2;
+    iv.frame = CGRectMake(pad, (h - thh) / 2, tw, thh); t.frame = CGRectMake(pad + tw + (th ? 8 : 4), (h - t.bounds.size.height) / 2, t.bounds.size.width, t.bounds.size.height);
+    CGFloat bw = CGRectGetMaxX(t.frame) + 10;
+    CGRect b = [self convertRect:_snapBtn.frame toView:w];
+    box.frame = CGRectMake(MAX(8, CGRectGetMinX(b) - 8 - bw), CGRectGetMinY(b), bw, h);
+    if (th) [box addSubview:iv]; [box addSubview:t]; [w addSubview:box];
+    [UIView animateWithDuration:0.4 delay:2.0 options:0 animations:^{ box.alpha = 0; } completion:^(__unused BOOL done) { [box removeFromSuperview]; }];
+}
 - (void)snapToast:(NSString *)text {   // 轻提示：屏幕上方一行字，2 秒淡出，不挡操作
     UIWindow *w = self.window; if (!w) return;
     UILabel *l = [UILabel new]; l.text = [@"  " stringByAppendingString:[text stringByAppendingString:@"  "]]; l.textColor = UIColor.whiteColor; l.font = [UIFont boldSystemFontOfSize:15];
@@ -670,7 +747,7 @@ static NSString *vp_running_gid(void) { const char *g = getenv("S2A_LAUNCH_GAME_
     [w addSubview:l]; [UIView animateWithDuration:0.4 delay:2.0 options:0 animations:^{ l.alpha = 0; } completion:^(__unused BOOL done) { [l removeFromSuperview]; }];
 }
 static __weak S2AVPadView *g_snap_view;
-static void snap_done(int ok, const char *dir) { (void)dir; dispatch_async(dispatch_get_main_queue(), ^{ [g_snap_view snapToast:ok ? S2AL(@"vpad.snap.saved") : S2AL(@"vpad.snap.notSaved")]; }); }
+static void snap_done(int ok, const char *dir) { (void)dir; dispatch_async(dispatch_get_main_queue(), ^{ if (ok) [g_snap_view snapSavedToast]; else [g_snap_view snapToast:S2AL(@"vpad.snap.notSaved")]; }); }
 - (void)snapSave:(NSString *)dir {
     void s2a_snap_on_done(void (*)(int, const char *)) __attribute__((weak)); int s2a_snap_request_save(const char *) __attribute__((weak));
     if (!s2a_snap_request_save) return;
@@ -1182,7 +1259,8 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
     } else _controls.layer.mask=nil;
     {   // 设置入口放安全区左上角；折叠屏内屏圆角比安全区报的大、又有开孔，四周再让 20 点（短边 ≥ 500 点才算大屏）
         CGRect g = self.safeAreaLayoutGuide.layoutFrame; CGFloat inset = MIN(self.bounds.size.width, self.bounds.size.height) >= 500 ? 20 : 4;
-        _gear.frame = CGRectMake(CGRectGetMinX(g) + inset, CGRectGetMinY(g) + inset, 36, 36); _gear.hidden = _editing; [self bringSubviewToFront:_gear]; }
+        _gear.frame = CGRectMake(CGRectGetMinX(g) + inset, CGRectGetMinY(g) + inset, 36, 36); _gear.hidden = _editing; [self bringSubviewToFront:_gear];
+        if (_snapBtn) { _snapBtn.frame = CGRectMake(CGRectGetMaxX(g) - inset - 36, CGRectGetMinY(g) + inset, 36, 36); _snapBtn.hidden = _editing; [self bringSubviewToFront:_snapBtn]; } }
     if (!CGRectEqualToRect(_safeRect, safe) || !CGRectEqualToRect(_lastBounds, self.bounds) || !CGRectEqualToRect(_division,l.division)) {
         if (_editing) [self endEditing];   // 转屏 / 安全区变了：拖到一半的位置按旧几何算，放弃
         [self clearTouches]; _safeRect = safe; _lastBounds = self.bounds; _division=l.division;

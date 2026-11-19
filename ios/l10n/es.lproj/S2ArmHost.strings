@@ -594,3 +594,6 @@
 "vpad.snap.saveChanged.title" = "¿Volver al momento guardado?";
 "vpad.snap.saveChanged.body" = "El juego guardó después de ese momento. Volver también devuelve su partida a ese momento; la partida actual se copia antes.";
 "vpad.snap.saveChanged.go" = "Volver";
+"vpad.snap.button.hint" = "Toca para guardar este momento; mantén pulsado para volver a él";
+"vpad.snap.none" = "Aún no hay ningún momento guardado. Toca el botón para guardar uno";
+"vpad.snap.savedHint" = "%@ · Mantén pulsado el botón para volver aquí";
