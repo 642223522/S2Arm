@@ -41,13 +41,14 @@ set +e
 timeout 120 "$binary" > "$log" 2>&1
 rc=$?
 set -e
-cat "$log"
 if [ "$mode" = --negative-timeline ]; then
     if [ "$rc" != 1 ] || ! grep -q 'FAIL timeline-hidden: timeline create chain/extension mismatch' "$log" ||
-       ! grep -q 'device-features cases=8 failures=4 validation-errors=0' "$log"; then exit 1; fi
-    echo 'device-features negative: PASS (timeline-hidden rejected)'
+       ! grep -q 'device-features cases=8 failures=4 validation-errors=0' "$log"; then cat "$log"; exit 1; fi
+    # 预期红只留在独立日志；模拟档失败诊断会扫描整套输出中的 ^FAIL，不能把负控冒充正向失败。
+    echo "device-features negative: PASS (timeline-hidden rejected; 4 expected failures; log=$log)"
     exit 0
 fi
+cat "$log"
 [ "$rc" = 0 ] || exit "$rc"
 ! grep -qE 'Validation Error|VUID-|SYNC-HAZARD-' "$log"
 grep -q 'device-features cases=8 failures=0 validation-errors=0' "$log"
