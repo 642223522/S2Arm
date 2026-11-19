@@ -1,43 +1,201 @@
 {
-  "schema": 1,
-  "id": "v0.4.0-sgrade",
-  "minVersion": "0.4.0",
-  "platforms": ["mac", "windows"],
-  "url": "https://jhaizhou-ops.github.io/S2Arm/s-grade.html",
-  "badge": {"zh-Hans": "v0.4.0 新功能", "en": "New in v0.4.0"},
-  "pages": [
-    {"image": {"zh-Hans": "feature/sgrade-0.jpg", "en": "feature/sgrade-0-en.jpg"}},
-    {
-      "image": {"zh-Hans": "feature/sgrade-1.jpg", "en": "feature/sgrade-1-en.jpg"},
-      "kicker": {"zh-Hans": "S 级优化 · 自动配好", "en": "S-grade · Set up for you"},
-      "title": {"zh-Hans": "出包时，自动带上社区补丁和金手指", "en": "Community patches and cheats, built in automatically"},
-      "what": {"zh-Hans": "S2Arm 按你的游戏版本，从社区补丁库里找能用的**满屏补丁、帧率补丁和金手指**，出包时一起打进去。", "en": "S2Arm looks up **full-screen patches, frame-rate patches and cheats** that match your game's version and builds them in when you export."},
-      "how": {"zh-Hans": "不用自己找、自己装。照常点「开始出包」就行，命中的会自动打进包。", "en": "Nothing to find or install. Just click Start export as usual; matches are built in for you."},
-      "where": {"zh-Hans": "选一款去出包：出包页上金色的「**S 级优化**」卡片列出命中的每一项和作者，右边的「**出包时打入**」默认勾着，不要可以取消。", "en": "Pick a game and go to export: the gold **S-grade** card lists every match and its author; **Build in when exporting** on its right is checked by default, and you can uncheck it."}
-    },
-    {
-      "image": {"zh-Hans": "feature/sgrade-4.jpg", "en": "feature/sgrade-4-en.jpg"},
-      "kicker": {"zh-Hans": "S 级优化 · 老游戏也能用", "en": "S-grade · Games you already have"},
-      "title": {"zh-Hans": "已经导出的游戏，不用重新出包", "en": "No need to export your games again"},
-      "what": {"zh-Hans": "已经导出到 Mac 和 iPhone 上的游戏，**更新 S2Arm 后自动补上** S 级优化：满屏、帧率、金手指。", "en": "Games already on your Mac or iPhone **pick up S-grade after you update S2Arm**: full screen, frame rate and cheats."},
-      "how": {"zh-Hans": "Mac / Windows：游戏库顶部点**S 级优化升级**，电脑和 iPhone 上的老游戏都在这升级。只换程序，存档不动。", "en": "Mac / Windows: click **S-grade upgrade** at the top of the library to upgrade games on the computer and on iPhone. Only the app is replaced; saves stay."},
-      "where": {"zh-Hans": "Mac、Windows 和 iPhone 的游戏库里，封面左上角**亮起金色 S** 的就是已带上的；出包时取消了「出包时打入」的不亮。", "en": "In the Mac, Windows and iPhone libraries, a **gold S** at the top left of a cover means it has S-grade. Games exported with \"Build in when exporting\" unchecked don't light up."}
-    },
-    {
-      "image": {"zh-Hans": "feature/sgrade-2.jpg", "en": "feature/sgrade-2-en.jpg"},
-      "kicker": {"zh-Hans": "S 级优化 · 满屏与帧率", "en": "S-grade · Full screen and frame rate"},
-      "title": {"zh-Hans": "画面铺满，帧率翻倍", "en": "Fill the screen, double the frame rate"},
-      "what": {"zh-Hans": "**满屏补丁**按你的屏幕比例铺满，不留黑边、人物不变形；**帧率补丁**让 30 帧的游戏跑 60，高刷屏能到 120。", "en": "**Full-screen patches** fill any screen at its own aspect ratio on iPhone, iPad and Mac, without stretching; **frame-rate patches** take 30 fps games to 60, and up to 120 on high-refresh screens."},
-      "how": {"zh-Hans": "命中的满屏、帧率补丁默认开着（没有同版本满屏补丁会从别的版本移植），帧率自动挑最高一档。闪退了，下次启动先关掉当时开着的补丁和金手指，并告诉你关了哪些。", "en": "Matched patches are **on by default**, at the highest frame rate your screen supports. After a crash, the next launch turns off the patches and cheats that were on and tells you."},
-      "where": {"zh-Hans": "想关掉：iPhone / iPad 在游戏里点**左上角齿轮 → S 级优化 → 社区补丁**；调帧率档位在**齿轮 → 设置… → 画面**。Mac 在游戏库选中这款，点齿轮「**启动设置**」。", "en": "To turn one off on iPhone / iPad: **top-left gear → S-grade enhancements → Community patches**; frame rate level is under **gear → Settings… → Graphics**. On Mac: select the game and click the gear, **Launch settings**."}
-    },
-    {
-      "image": {"zh-Hans": "feature/sgrade-3.jpg", "en": "feature/sgrade-3-en.jpg"},
-      "kicker": {"zh-Hans": "S 级优化 · 金手指", "en": "S-grade · Cheats"},
-      "title": {"zh-Hans": "金手指，进游戏逐条打开", "en": "Cheats, one switch at a time"},
-      "what": {"zh-Hans": "社区整理好的**金手指**，按你的游戏版本自动配好，出包时一起打进去。", "en": "Community **cheats** matched to your game's version are built in when you export."},
-      "how": {"zh-Hans": "打进去后**默认关**。想用哪条就打开哪条，约 1 秒生效，不用重启游戏。", "en": "They start **off**. Turn on the ones you want; each takes effect in about a second, no restart."},
-      "where": {"zh-Hans": "iPhone / iPad：游戏里点**左上角齿轮 → S 级优化 → 金手指**。Mac：游戏库选中这款，点齿轮「**启动设置**」。Windows：这款游戏菜单里的「**金手指…**」。", "en": "iPhone / iPad: in the game, **top-left gear → S-grade enhancements → Cheats**. Mac: select the game in the library and click the gear, **Launch settings**. Windows: **Cheats…** in the game's menu."}
+ "schema": 1,
+ "id": "v0.6.0",
+ "minVersion": "0.6.0",
+ "platforms": [
+  "mac",
+  "windows"
+ ],
+ "url": "https://jhaizhou-ops.github.io/S2Arm/",
+ "badge": {
+  "zh-Hans": "v0.6.0 新功能",
+  "en": "New in v0.6.0"
+ },
+ "pages": [
+  {
+   "image": {
+    "zh-Hans": "feature/v060-cover.jpg",
+    "en": "feature/v060-cover-en.jpg"
+   }
+  },
+  {
+   "platforms": [
+    "mac",
+    "windows",
+    "ios"
+   ],
+   "image": {
+    "zh-Hans": "feature/v060-oneapp.jpg",
+    "en": "feature/v060-oneapp-en.jpg"
+   },
+   "kicker": {
+    "zh-Hans": "一个 App · 装所有游戏",
+    "en": "One app · All your games"
+   },
+   "title": {
+    "zh-Hans": "装一次 S2Arm，游戏一款一款加进去",
+    "en": "Install S2Arm once, then add games one by one"
+   },
+   "what": {
+    "zh-Hans": "以前每款游戏是一个单独的 App；现在手机上**只有一个 S2Arm**，所有游戏都在它的游戏库里。",
+    "en": "Games used to be separate apps; now there is **one S2Arm** on your phone and every game is in its library."
+   },
+   "how": {
+    "zh-Hans": "先在电脑上把 S2Arm 装到手机，以后哪款想玩就把哪款「**推到 iPhone**」。S2Arm 更新时**不用重新推游戏**，存档也都在。",
+    "en": "Install S2Arm on your phone from the computer, then **Send to iPhone** whichever game you want to play. Updating S2Arm **doesn't mean sending games again**, and your saves stay."
+   },
+   "where": {
+    "zh-Hans": "iPhone 主屏上的 S2Arm 图标，打开就是游戏库。",
+    "en": "The S2Arm icon on your iPhone Home Screen opens the library."
+   }
+  },
+  {
+   "image": {
+    "zh-Hans": "feature/v060-send.jpg",
+    "en": "feature/v060-send-en.jpg"
+   },
+   "kicker": {
+    "zh-Hans": "新的出包方式 · 两个按钮各管一件事",
+    "en": "A new way to add games · One button for each job"
+   },
+   "title": {
+    "zh-Hans": "「一键出包」拆成了两步：装 App、推游戏",
+    "en": "One-click export is now two steps: install the app, send the game"
+   },
+   "what": {
+    "zh-Hans": "以前一键出包会把游戏和 App 打成一个包；现在拆开了：**手机条只管 S2Arm 这个 App**（安装、续签、更新），每款游戏的「**推到 iPhone**」**只管这一款**。",
+    "en": "Export used to build the game and the app into one package. Now **the phone bar handles the S2Arm app** (install, renew, update) and each game's **Send to iPhone handles just that game**."
+   },
+   "how": {
+    "zh-Hans": "第一次：连上手机，点手机条上的「安装 S2Arm」。之后：选一款游戏，点「推到 iPhone」。快到 7 天时，手机条会提示「续签」，点一下就行，游戏不用重推。",
+    "en": "The first time, connect your phone and click Install S2Arm on the phone bar. After that, pick a game and click Send to iPhone. When the 7 days are nearly up, the phone bar asks you to renew; one click, no games to send again."
+   },
+   "where": {
+    "zh-Hans": "原来的「一键出包」按钮，现在就是**游戏页上的「推到 iPhone」**；装 App、续签都在**启动器上方的手机条**里。",
+    "en": "The old one-click export button is now **Send to iPhone on the game's page**; installing and renewing the app are on **the phone bar at the top of the launcher**."
+   }
+  },
+  {
+   "audience": "upgrade",
+   "image": {
+    "zh-Hans": "feature/v060-upgrade.jpg",
+    "en": "feature/v060-upgrade-en.jpg"
+   },
+   "labels": {
+    "where": {
+     "zh-Hans": "要知道",
+     "en": "Good to know"
     }
-  ]
+   },
+   "kicker": {
+    "zh-Hans": "从 0.5 升级 · 两步换到新 App",
+    "en": "Upgrading from 0.5 · Two steps to the new app"
+   },
+   "title": {
+    "zh-Hans": "老游戏和存档都在，点两下就接上",
+    "en": "Your games and saves stay. Two clicks and you're back"
+   },
+   "what": {
+    "zh-Hans": "0.6.0 起手机上统一用一个 S2Arm 装所有游戏。你手机上原来的游戏、存档、游戏数据**都会留着**，不用重新出包，也不用重传游戏数据。",
+    "en": "From 0.6.0 there is one S2Arm app for all your games. The games, saves and game data already on your phone **all stay**; no exporting again, no sending game data again."
+   },
+   "how": {
+    "zh-Hans": "① Mac 玩家先在 S2Arm 里**用 Apple ID 登录一次**。② 连上手机，点手机条上的「**更新 S2Arm**」：先把各款存档备份到电脑，再换成新 App。③ 装完同一页列出这台手机上要更新的旧游戏，默认全勾，点「**更新这 N 款**」，每款约 1–2 分钟；旧版做的着色器库电脑会顺带重做，第一次要几分钟到几十分钟。**不用点 S 级优化**。",
+    "en": "① On a Mac, **sign in with your Apple ID once** in S2Arm. ② Connect your phone and click **Update S2Arm** on the phone bar: your saves are backed up to the computer first, then the new app goes on. ③ Right after, the same page lists the old games on this phone, all checked: click **Update these N games**, about 1–2 minutes each. Shader libraries built by the old version are rebuilt by the computer too; the first time takes from a few minutes to a few tens of minutes. **No need for S-grade optimization.**"
+   },
+   "where": {
+    "zh-Hans": "第 ③ 步做完之前，这些游戏在手机上显示「**在电脑上更新一次**」，点不进去，但没丢。别的电脑装的另起一行列出，到那台电脑上更新。用 AltStore 等自己签名的：装新 S2Arm 覆盖旧的，再把每款 .s2arm 导入一次。",
+    "en": "Until step ③ is done, those games show **Update once on your computer** on the phone and won't open, but they aren't gone. Games installed from another computer are listed on a separate line; update them on that computer. If you sign the app yourself with AltStore or similar: install the new S2Arm over the old one, then import each game's .s2arm once."
+   }
+  },
+  {
+   "platforms": [
+    "mac",
+    "windows",
+    "ios"
+   ],
+   "image": {
+    "zh-Hans": "feature/v060-snapshot.jpg",
+    "en": "feature/v060-snapshot-en.jpg"
+   },
+   "labels": {
+    "where": {
+     "zh-Hans": "要知道",
+     "en": "Good to know"
+    }
+   },
+   "kicker": {
+    "zh-Hans": "快照 · 存下这一刻",
+    "en": "Snapshots · Save this moment"
+   },
+   "title": {
+    "zh-Hans": "随时存下当前这一刻，下次从这里接着玩",
+    "en": "Save the moment you're in and pick up right there next time"
+   },
+   "what": {
+    "zh-Hans": "不用等游戏自己的存档点，点一下就把此刻的游戏状态整个存下来，之后能回到这一刻。",
+    "en": "No need to wait for the game's own save point; one tap saves the whole game as it is right now, and you can come back to it."
+   },
+   "how": {
+    "zh-Hans": "游戏里点右上角的半透明按钮就存；长按它选「**回到上次存下的这一刻**」。下次打开游戏库，最上面的「**从这一刻继续**」点一下直接进。",
+    "en": "In a game, tap the translucent button in the top-right corner to save; press and hold it and choose **Go back to the saved moment**. Next time, **Continue from this moment** at the top of the library takes you straight there."
+   },
+   "where": {
+    "zh-Hans": "每款只留最新一份，新存的会盖掉旧的。每份约 0.4～1 GB，占手机空间：长按可以删除，腾出空间；不想用可以在设置里关掉。快照只在存下它的那台设备上可用。",
+    "en": "Each game keeps only the latest one, and a new save replaces the old. Each takes about 0.4–1 GB of your phone's storage: press and hold to delete it and free the space, or turn snapshots off in Settings. A snapshot only works on the device that saved it."
+   }
+  },
+  {
+   "image": {
+    "zh-Hans": "feature/v060-files.jpg",
+    "en": "feature/v060-files-en.jpg"
+   },
+   "kicker": {
+    "zh-Hans": "文件更好管",
+    "en": "Easier file management"
+   },
+   "title": {
+    "zh-Hans": "每款游戏一份文件，占多少一眼看清",
+    "en": "One copy per game, and you can see what takes the space"
+   },
+   "what": {
+    "zh-Hans": "每款游戏只占一份资源，不再重复存好几份；游戏、存档、快照各占多少空间，都列在一页里。",
+    "en": "Each game keeps one copy of its files instead of several; games, saves and snapshots are listed on one page with their sizes."
+   },
+   "how": {
+    "zh-Hans": "空间不够时打开「释放空间」，挑不玩的删掉。想把游戏带到另一台设备，点「导出 .s2arm」，把文件发过去导入就行。",
+    "en": "When space runs low, open Free up space and remove what you no longer play. To take a game to another device, click Export .s2arm and import the file there."
+   },
+   "where": {
+    "zh-Hans": "启动器游戏库里的「释放空间」；导出在每款游戏页的更多操作里。",
+    "en": "Free up space in the launcher's library; Export is in each game's More menu."
+   }
+  },
+  {
+   "image": {
+    "zh-Hans": "feature/v060-shaders.jpg",
+    "en": "feature/v060-shaders-en.jpg"
+   },
+   "kicker": {
+    "zh-Hans": "第一次玩也顺",
+    "en": "Smooth from the first play"
+   },
+   "title": {
+    "zh-Hans": "进新场景不再卡一下",
+    "en": "No more hitch when you enter a new area"
+   },
+   "what": {
+    "zh-Hans": "以前第一次走进一个新场景，画面常会顿一下；那是在临时准备画面要用的东西。现在推游戏的时候就准备好了。",
+    "en": "The first time you walked into a new area, the picture often stuttered while the game got its graphics ready. Now that's done when you send the game."
+   },
+   "how": {
+    "zh-Hans": "什么都不用做。照常推游戏，会多花一点时间准备，之后第一次玩也顺。",
+    "en": "Nothing to do. Send games as usual; it takes a little longer, and the first play is smooth."
+   },
+   "where": {
+    "zh-Hans": "所有新推的游戏都自动带上。之前推过的游戏，重新推一次就有了。",
+    "en": "Every game you send from now on. For games sent before, send them again."
+   }
+  }
+ ]
 }
