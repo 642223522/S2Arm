@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 from jobcase import JobCase, ROOT
@@ -240,6 +241,60 @@ def unpack_s2arm(data):
     import tarfile
     with tarfile.open(fileobj=io.BytesIO(programs._decompress(data)), mode="r:") as t:
         return [(m.name, t.extractfile(m).read()) for m in t.getmembers()]
+
+
+class ImportClient:
+    """手机侧替身：ls(导入文件夹) 按轮给结果；get 清单写出这一轮的 dir"""
+    def __init__(self, rounds):
+        self.rounds, self.n = rounds, 0   # [(导入文件夹里的名字, 清单 dir | None)]
+    def ls(self, rel):
+        if rel == "Documents":
+            return ["Import Here"]
+        self.n += 1   # 每看一次导入文件夹算一轮
+        names, _ = self.rounds[min(self.n - 1, len(self.rounds) - 1)]
+        return list(names)
+    def get(self, rel, dst):
+        _, d = self.rounds[min(self.n - 1, len(self.rounds) - 1)]
+        if d is None:
+            return False
+        Path(dst).write_text(json.dumps({"dir": d})); return True
+
+
+class FakePhone:
+    def __init__(self, running, cl):
+        self.running, self.cl, self.made = running, cl, 0
+    def app_running(self):
+        return self.running
+    def client(self, w):
+        self.made += 1; return self.cl
+
+
+class AwaitImportTests(JobCase):
+    """11-19 推完程序包照实报：App 开着等它导入换上清单才算装好；没开 / 等不到 → 「已送到手机，打开 S2Arm 时自动装好。」。期望手写"""
+    def setUp(self):
+        super().setUp()
+        import install
+        self.install = install
+        self.sleep = mock.patch.object(install.time, "sleep", lambda s: None); self.sleep.start(); self.addCleanup(self.sleep.stop)
+
+    def test_app_closed_says_sent_without_waiting(self):
+        ph = FakePhone(False, None)
+        self.assertEqual(self.install.await_import(self.c, ph, GID, "v-a-s2arm"), "已送到手机，打开 S2Arm 时自动装好。")
+        self.assertEqual(ph.made, 0)
+
+    def test_app_open_waits_until_catalogue_switched(self):
+        cl = ImportClient([([f"{GID}.s2arm"], "v-old-pc"), ([], "v-old-pc"), ([], "v-a-s2arm")])   # 还在导 → 导走了清单还没换 → 换上
+        self.assertIsNone(self.install.await_import(self.c, FakePhone(True, cl), GID, "v-a-s2arm"))
+
+    def test_open_but_never_imported_says_sent(self):
+        cl = ImportClient([([f"{GID}.s2arm"], "v-old-pc")])
+        with mock.patch.object(self.install, "IMPORT_WAIT_S", (0, 0)):
+            self.assertEqual(self.install.await_import(self.c, FakePhone(True, cl), GID, "v-a-s2arm"), "已送到手机，打开 S2Arm 时自动装好。")
+
+    def test_unknown_running_uses_short_window(self):
+        cl = ImportClient([([f"{GID}.s2arm"], None)])
+        with mock.patch.object(self.install, "IMPORT_WAIT_S", (999, 0)):
+            self.assertEqual(self.install.await_import(self.c, FakePhone(None, cl), GID, "v-a-s2arm"), "已送到手机，打开 S2Arm 时自动装好。")
 
 
 class PushProgramTests(JobCase):

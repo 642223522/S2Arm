@@ -2415,6 +2415,46 @@ def push_programs(c, cl, games, rec, team, bundle, signer, docs="Documents"):
     return out
 
 
+PROGRAM_SENT = "已送到手机，打开 S2Arm 时自动装好。"   # 推完程序包、手机还没导入（App 没开 / 等不到）时完成页的那句（结果 unpackPending）
+PROGRAM_WAIT = "等 iPhone 上的 S2Arm 装好这款的程序"
+IMPORT_WAIT_S = (300, 20)   # App 开着：等它导入的上限（大游戏 1.6 GB 程序包在手机上解开、校验）；查不清开没开（Windows 没有 devicectl）：只看这么久
+
+
+def program_imported(cl, gid, inbox, want, work):
+    """手机上这款的程序包换上了没有：导入文件夹里的 <号>.s2arm 已被 App 导走（导好才删，失败原样留着），且清单 dir 是这次推的那版"""
+    left = cl.ls(inbox)
+    if left is None or f"{gid}.s2arm" in [x.strip() for x in left]:
+        return False
+    dst = Path(work) / "catalogue.json"
+    if not cl.get(f"{PACK_GAMES}/{gid}/program/catalogue.json", dst):
+        return False
+    try:
+        return json.loads(dst.read_text(encoding="utf-8")).get("dir") == want
+    except ValueError:
+        return False
+
+
+def await_import(c, ph, gid, want):
+    """推完程序包后照实报（11-19 维护者定）：App 开着就等它用导入那条代码解开、清单换上再报完成；App 没开、查不清又没等到、等到上限还没换上
+    → PROGRAM_SENT（作业结果 unpackPending，两端完成页显示这句、不说「已推到 iPhone」）。→ None（已装好）/ 那句话"""
+    running = ph.app_running()
+    if running is False:
+        return PROGRAM_SENT
+    with tempfile.TemporaryDirectory(dir=c.private) as w:
+        try:
+            cl = ph.client(w)
+        except Failure:
+            return PROGRAM_SENT
+        inbox = import_inbox(cl)
+        end = time.monotonic() + IMPORT_WAIT_S[0 if running else 1]
+        while not program_imported(cl, gid, inbox, want, w):
+            if time.monotonic() >= end:
+                return PROGRAM_SENT
+            c.check()
+            time.sleep(2)
+    return None
+
+
 SHELL_INSTALL_FIRST = "手机上还没装 S2Arm：先点「安装 S2Arm」，装好后再把这款推到 iPhone。"
 SHELL_UPDATE_FIRST = "手机上的 S2Arm 不是这一版：先点「更新 S2Arm」，再把这款推到 iPhone。"
 
@@ -2717,6 +2757,9 @@ def push_game(c, gid, ph, steps=True):
         layout.save_device(c, ph.key, dict(rec, games=dict(rec.get("games") or {}, **{gid: dict(program=progs[gid], pack=pushed, **({"mods": mods} if mods else {}))}),
                                            at=time.time()))
     pull_shader_counts(c, ph, [gid])
+    if progs[gid] != old.get("program") and not ph.pending:   # 这次推了程序包（没推的原样带回）：App 导入换上了才算装好
+        if steps: c.begin(PROGRAM_WAIT, 3, 3)
+        ph.pending = await_import(c, ph, gid, progs[gid]["dir"])
     extra = dict(unpackPending=ph.pending) if ph.pending else {}
     return dict(bundleId=ph.bid, games=[gid], packFiles=files, packBytes=size, **ph.info, **extra, openToFinish=True)
 
