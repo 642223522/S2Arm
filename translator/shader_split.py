@@ -27,6 +27,7 @@
 #   · BEA (NintendoWare Bezel Engine archives, Big Brain Academy: Brain vs. Brain): BNSH in the .bfsha entries of the archives (zstd entries), see bea_members
 #   · MGFX (MonoGame effects, Celeste): the effects in its XNB files and SpriteBatch's in main, each shader a control section and a code area, see mgfx_effect
 #   · dvdbnd (FromSoftware, Dark Souls Remastered): GLSLC outputs in the BND3 archives (DCX zlib entries) of the .bdt files, indexed by the .bhd5 beside each, see bhd5_entries and bdt_shaders
+#   · Falcom packages (The Legend of Heroes: Hajimari no Kiseki): one BNSH per LZ4 entry of the .pkg files under shaders/, see falcom_pkg and falcom_pkg_shaders
 # Code area: 0x30 header + (graphics) 0x50 SPH + instructions; header magic 0x12345678 for graphics, 0x12345679 for compute. The control section starts with 0x98761234, +0x704 = code area length,
 #   +0x700 = start of the c1 constant segment within the code area; for compute +0x748 thread group xyz (u32 ×3), +0x754 shared memory bytes (checked one by one against PC reflection on D2R's 22 compute shaders).
 # Stage: BNSH uses the stage slot; BAHS uses bits 10..13 of SPH word 0 (1 vertex 2 hull 3 domain 4 geometry 5 pixel), and a compute header means compute.
@@ -574,6 +575,41 @@ def bea_members(d, label):
             data = zstd_lib.decompress(data)
         if len(data) != usz: red(f'{label}/{path}: {len(data):#x} bytes, the entry says {usz:#x}')
         yield path, data
+
+def falcom_pkg(d):
+    """Nihon Falcom's package ('.pkg', no magic). The Legend of Heroes: Hajimari no Kiseki (010053D014C44000, 11-19) keeps its RomFS in 16,884 of them and every shader it draws
+    with in 16 under shaders/, one BNSH per entry, 148,359 in all; read as plain files they gave none, the offline library held the 4 shaders of main and each of the others was
+    compiled on the device at its first use. Layout: u32 0, u32 entry count n, n × 0x50-byte entries {+0 name, 64 bytes padded with zeros, +0x40 u32 length, u32 stored length,
+    u32 offset from the file start, u32 flags}, then the data, the first entry's right after the table (true of all 16,884). Flags seen: 1 = an LZ4 block (295,041 entries, each
+    decompresses to its exact length); 9 with stored length 0 = data kept outside the package (59,669 textures).
+    → [(name, length, stored length, offset, flags)] when d is such a package (the table decides: the first data offset is the table's end and every entry lies inside the file), else None"""
+    if len(d) < 8 + 0x50: return None
+    zero, n = struct.unpack_from('<II', d, 0)
+    if zero or not n or 8 + 0x50 * n > len(d): return None
+    if struct.unpack_from('<I', d, 8 + 0x48)[0] != 8 + 0x50 * n: return None   # before the table is read: a plain file that starts with a zero word answers here, whatever its n
+    es = []
+    for o in range(8, 8 + 0x50 * n, 0x50):
+        usz, csz, off, fl = struct.unpack_from('<4I', d, o + 0x40)
+        if off + csz > len(d): return None
+        es.append((bytes(d[o:o + 0x40]).split(b'\0')[0].decode('utf-8', 'replace'), usz, csz, off, fl))
+    return es
+
+def falcom_pkg_shaders(d, entries, label, out):
+    """Each entry of a Falcom package (falcom_pkg) scanned as a file of its own. Flags 1 = LZ4 block; 0 with equal lengths = stored as it is (not seen in the game above, the sizes say so);
+    an entry with nothing stored is not here to read. Any other flags with data: that entry is left out and the package gets one [WARN] line (never silently)"""
+    import lz4.block
+    other = collections.Counter()
+    for name, usz, csz, off, fl in entries:
+        if not csz: continue
+        if fl == 1:
+            if usz > 255 * csz: red(f'{label}/{name}: {usz:#x} bytes from {csz:#x} stored is more than an LZ4 block can hold (255 to 1)')   # checked first: the decoder allocates the stated length before it reads the block
+            try: m = lz4.block.decompress(d[off:off + csz], uncompressed_size=usz)
+            except lz4.block.LZ4BlockError as e: red(f'{label}/{name}: its {csz:#x} stored bytes are not an LZ4 block ({e})')
+            if len(m) != usz: red(f'{label}/{name}: {len(m):#x} bytes, the entry says {usz:#x}')
+        elif fl == 0 and csz == usz: m = d[off:off + csz]
+        else: other[fl] += 1; continue
+        scan_blob(m, f'{label}/{name}', out)
+    if other: print(f'[WARN] {label}: {sum(other.values())} entries not read, their storage flags (' + ', '.join(f'{f:#x} × {n}' for f, n in sorted(other.items())) + ') are not ones this reader knows (1 = LZ4, 0 = stored)', flush=True)
 
 NLG_DICT = bytes.fromhex('5824f3a9')
 def nlg_dict(d):
@@ -1493,6 +1529,15 @@ def scan_file(args):
     if head[:4] == SCNE:   # a Bezel Engine archive (bea_members): each entry scanned as a file of its own (the shaders are BNSH in its .bfsha entries)
         for nm, m in bea_members(romfs_list.open_file(path).read(), '/' + rel): scan_blob(m, f'/{rel}/{nm}', found)
         return rel, uniq_keys(found), var_pairs(found), trees
+    if len(head) >= 8 and head[:4] == b'\0\0\0\0' and 0 < 8 + 0x50 * struct.unpack_from('<I', head, 4)[0] <= (size := romfs_list.file_size(path)):   # maybe a Falcom package: no magic, its entry table decides (falcom_pkg)
+        mm = d = map_big(path) if size > BIG else romfs_list.open_file(path).read()
+        try:
+            entries = falcom_pkg(d)
+            if entries is None: return scan_plain(path, rel, d, found, trees)
+            falcom_pkg_shaders(d, entries, '/' + rel, found)
+            return rel, uniq_keys(found), var_pairs(found), trees
+        finally:
+            if size > BIG: mm.close()
     if head[:4] == ZSTD_MAGIC: d = unzs(path)   # by the magic: Paper Mario: The Thousand-Year Door names its zstd files .zst (8,726, its shaders among them)
     elif romfs_list.file_size(path) > BIG:   # a big plain file is mapped, not copied into this process (Persona 5 Royal's ALL_ASIA.CPK, 12.7 GB: one worker held 13 GB on a 16 GB Windows PC)
         mm = d = map_big(path)
