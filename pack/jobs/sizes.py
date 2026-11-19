@@ -169,7 +169,8 @@ def _shared_paths(c):
         "ipa": [layout.phone_ipa(c), layout.phone_ipa(c, previous=True)],
         # tool-cache 就是现在的工作目录（core.Context.work_root），旧位置（私有目录 / 库内 .s2arm-work 的 cache、run）没迁完时也算；
         #   去掉落在别项里面的，免得同一份量两遍（Windows 实跑：W = L/tool-cache 时总览报成两倍）
-        "toolCache": _outermost([L / "tool-cache", W / "cache", W / "run", P / "cache", P / "run", L / ".s2arm-work" / "cache", L / ".s2arm-work" / "run"]),
+        #   <私有目录>/tools 是「准备引擎工具」按源码身份编出的读取工具（toolchain.reader），同属跨游戏工具缓存；漏算时外接盘 3 款实测总览少 7.9%
+        "toolCache": _outermost([L / "tool-cache", W / "cache", W / "run", P / "cache", P / "run", P / "tools", L / ".s2arm-work" / "cache", L / ".s2arm-work" / "run"]),
         "temp": temps,
         "logs": [L / "logs", P / "logs", P / "jobs"],
     }
