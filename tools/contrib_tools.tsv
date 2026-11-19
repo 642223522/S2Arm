@@ -10,7 +10,7 @@
 单测 vulkan_reserved_bindings_test	.NET 10 SDK
 单测 nxaot_key_test	.NET 10 SDK
 单测 host_boot_failure_test	.NET 10 SDK
-单测 services_provider_test	.NET 10 SDK
+单测 apple_audio_lifecycle_test	.NET 10 SDK
 单测 sysdata_synth_test	.NET 10 SDK
 单测 save_transfer_interop_test	.NET 10 SDK,Xcode
 单测 vpx_patch_identity_test	Xcode
