@@ -385,7 +385,7 @@ static void hdr_tick_ios(void) {
     UIView *v = g_layer ? present_view() : nil;
     UIScreen *sc = v.window.screen ?: UIScreen.mainScreen;
     double pe = 0, ce = 0;
-    if (sc && @available(iOS 16.0, *)) { pe = sc.potentialEDRHeadroom; ce = sc.currentEDRHeadroom; }
+    if (@available(iOS 16.0, *)) { if (sc) { pe = sc.potentialEDRHeadroom; ce = sc.currentEDRHeadroom; } }
     s2a_hdr_tick_host(pe, ce);
 }
 #else
@@ -415,7 +415,7 @@ void *front_metal_layer(void) {
 //   调用方口径：iOS mk() 主线程、Mac 取用首帧可能 present 线程（先于任何 drawable 的属性直设，同块内 l.device / pixelFormat 先例）；
 //   applied 态原子持有，跨线程并发 apply 最坏重复一次幂等赋值。色彩空间对象进程内各建一次常驻（层属性 retain，量级 = 转换次数）。
 static void s2a_hdr_layer_apply_to(CAMetalLayer *l) {
-    if (!l) return;
+    if (!l || nvn2_hdr_switch() == HDR_OFF) return;   // off 缺省不碰出图层（不设色彩空间标签）：层属性与改前逐项相同
     hdr_snapshot s; nvn2_hdr_snapshot_probe(&s);
     hdr_layer_cfg c = hdr_layer_config(s.layer_pq);
     static _Atomic int applied = -1;
@@ -430,16 +430,24 @@ static void s2a_hdr_layer_apply_to(CAMetalLayer *l) {
     if (c.pf == HDR_LPF_PQ10) {
         l.pixelFormat = MTLPixelFormatRGB10A2Unorm;
         l.colorspace = cs_pq;
-        l.wantsExtendedDynamicRangeContent = YES;
+#if !TARGET_OS_TV
+        l.wantsExtendedDynamicRangeContent = YES;   // tvOS SDK 没有这个属性
+#endif
         LOG("直连：出图层切 PQ（RGB10A2Unorm + kCGColorSpaceITUR_2100_PQ + wantsExtendedDynamicRangeContent；CAEDRMetadata 默认不挂，PR8+ 实验项）");
     } else {
         l.pixelFormat = MTLPixelFormatBGRA8Unorm;
         l.colorspace = cs_srgb;
+#if !TARGET_OS_TV
         l.wantsExtendedDynamicRangeContent = NO;
+#endif
         if (was >= 0) LOG("直连：出图层切回 SDR（BGRA8Unorm + 显式 sRGB tag——从 PQ 层切回的层保留 PQ 色彩空间，必须显式重设，评审稿 §2.3 注意事项①）");
     }
 }
+#if TARGET_OS_IPHONE
+static void s2a_hdr_layer_apply(void) { s2a_hdr_layer_apply_to(g_layer); }   // 直接用已建的层：不经 front_metal_layer（它带换局重摆检查 layer_session_check，归渲染线程取层时做）
+#else
 static void s2a_hdr_layer_apply(void) { s2a_hdr_layer_apply_to((__bridge CAMetalLayer *)front_metal_layer()); }
+#endif
 // PR4 开机预挂（评审稿 §4 PR4 ③）：识别 Switch 2 游戏即进层（赶在首查询前——Bananza 首查询即定窗口，nxnative dm_hdr_boot 形态）。
 //   识别接缝按 s2a_platform_ounce 弱符号方向（nvn2.c 同款：原生层 svc_mem.c 强定义、单测缺省 0）；进层簿记在 nvn2_hdr_preattach（存储侧，
 //   SDR 屏 / s1_ready 未过 / off / 已在层内各自让位）。层配置的应用由调用方做（iOS mk 直调 apply_to；Mac 首个 tick 的 apply / 直连取用补）。
@@ -458,6 +466,7 @@ void s2a_hdr_tick_host(double potential_edr, double current_headroom) {
         p_last = potential_edr; c_last = current_headroom;
         s2a_hdr_screen_publish(potential_edr, current_headroom);
     }
+    if (nvn2_hdr_switch() == HDR_OFF) return;   // off 缺省：层状态机不动、不取层（Mac 通用模式的窗口层也不碰）
     static _Atomic int pre;
     if (!atomic_exchange(&pre, 1)) s2a_hdr_preattach(potential_edr);   // 首探即预挂（赶在首查询前）；非 Switch 2 / off / SDR 屏在预挂链路里各自让位
     nvn2_hdr_tick(nvn2_hdr_switch(), potential_edr > 1.0, hdr_now_ms());   // raw can = potentialEDR>1.0（调用方口径）
