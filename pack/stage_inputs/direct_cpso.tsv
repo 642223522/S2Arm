@@ -14,3 +14,4 @@
 外	tools/clonedir.py	roots.sh 用的 APFS 克隆工具，只搬文件
 外	tools/direct_shards.py	roots.sh 提交后记直连库分片清点日志，不改产物
 外	tools/plock.sh	roots.sh 的提交锁
+外	tools/safe_killpg.sh	metal-tt 超时整组杀的唯一入口，只发信号，不改产物
