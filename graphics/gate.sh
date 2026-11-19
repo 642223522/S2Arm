@@ -429,6 +429,7 @@ py_items() {
   if has "$RUNG" direct_link; then
     job alpha_ms timeout 300 python3 graphics/tools/direct/tests/t_alpha_ms.py
     job vs_pull timeout 300 python3 graphics/tools/direct/tests/t_vs_pull.py   # 拉取式顶点输入变体 _bp：形状 + GPU 逐格式与 Metal 顶点抓取逐位同
+    job fout_fc timeout 300 python3 graphics/tools/direct/tests/t_fout_fc.py
     job se_want timeout 60 python3 tests/se_want_test.py
   fi
   need_compute_outline && job compute_outline timeout 180 python3 graphics/tools/direct/tests/t_compute_outline.py
@@ -481,12 +482,14 @@ py_items() {
   HOOK_REST=1 job lib_pack timeout 120 "$PYV" graphics/tools/direct/tests/t_lib_pack.py
   HOOK_REST=1 job lib_pack_vk timeout 120 "$PYV" graphics/tools/direct/tests/t_lib_pack_vk.py
   HOOK_REST=1 job lib_pack_ident timeout 120 "$PYV" graphics/tools/direct/tests/t_lib_pack_ident.py   # 发布打包按存储身份同一份只读一次（#1331）
+  HOOK_REST=1 job lib_guest timeout 120 "$PYV" graphics/tools/direct/tests/t_lib_guest.py   # 客体输入随库带（种类 56，LibPack.GuestBlocks；读端在 t_lib_pack.m）
   HOOK_REST=1 job lib_overlay timeout 120 "$PYV" graphics/tools/direct/tests/t_lib_overlay.py   # S 级升级补可读瓦片版的覆盖层（LibPack.Overlay）
   HOOK_REST=1 job merge_extract timeout 30 python3 graphics/tools/direct/tests/t_merge_extract.py
   HOOK_REST=1 job unity_kernels timeout 30 python3 graphics/tools/direct/tests/t_unity_kernels.py
   HOOK_REST=1 job unity55_layout timeout 30 "$PYV" graphics/tools/direct/tests/t_unity55_layout.py
   HOOK_REST=1 job bnsh_bounds timeout 30 "$PYV" graphics/tools/direct/tests/t_bnsh_bounds.py
   HOOK_REST=1 job ndsr_bare timeout 30 "$PYV" graphics/tools/direct/tests/t_ndsr_bare.py
+  HOOK_REST=1 job unity_kw_pairs timeout 30 "$PYV" graphics/tools/direct/tests/t_unity_kw_pairs.py
   HOOK_REST=1 job mtarc_width timeout 30 "$PYV" graphics/tools/direct/tests/t_mtarc_width.py
   HOOK_REST=1 job nlg4 timeout 60 "$PYV" graphics/tools/direct/tests/t_nlg4.py
   HOOK_REST=1 job source_path timeout 60 "$PYV" graphics/tools/direct/tests/t_source_path_posix.py
@@ -742,6 +745,7 @@ rcof unity_kernels; r=$?; reg $r "Unity 计算着色器布局：$(tail -1 "$LOG/
 rcof unity55_layout; r=$?; reg $r "Unity 5.5 精确布局：$(tail -1 "$LOG/unity55_layout.log")（退出 ${r}）" "$LOG/unity55_layout.log"
 rcof bnsh_bounds; r=$?; reg $r "BNSH 指针越界跳过：$(tail -1 "$LOG/bnsh_bounds.log")（退出 ${r}）" "$LOG/bnsh_bounds.log"   # shader_split.py bnsh_shaders（10-30 超级机器人大战 X）
 rcof ndsr_bare; r=$?; reg $r "NDSR 条目流 + 裸 NVN2 程序：$(tail -1 "$LOG/ndsr_bare.log")（退出 ${r}）" "$LOG/ndsr_bare.log"   # shader_split.py ndsr_shaders / ns2_shaders.py bare_programs（11-06 时之笛开局 12 支计算着色器）
+rcof unity_kw_pairs; r=$?; reg $r "Unity 按 Pass + 关键字配对：$(tail -1 "$LOG/unity_kw_pairs.log")（退出 ${r}）" "$LOG/unity_kw_pairs.log"   # shader_split.py unity_kw_pairs / unity_pass_index
 rcof mtarc_width; r=$?; reg $r "MT ARC 条目宽度：$(tail -1 "$LOG/mtarc_width.log")（退出 ${r}）" "$LOG/mtarc_width.log"   # shader_split.py mtarc_members（11-02 生化危机6：路径 64 字节）
 rcof nlg4; r=$?; reg $r "NLG 新版档案：$(tail -1 "$LOG/nlg4.log")（退出 ${r}）" "$LOG/nlg4.log"   # shader_split.py nlg4_shaders（11-02 马力欧激战前锋 1.3.2）
 rcof source_path; r=$?; reg $r "来源列路径一律 /：$(tail -1 "$LOG/source_path.log")（退出 ${r}）" "$LOG/source_path.log"   # shader_split.py / nxsh_extract.py 来源串（11-05 Windows 出包机勇者斗恶龙 XI S 来源列反斜杠、分组全落 *_other）
@@ -772,6 +776,7 @@ rcof dmsh_tess; dt_=$?; reg $dt_ "直连曲面阶段翻译：$(tail -1 "$LOG/dms
 rcof dmsh_spill; ds_=$?; reg $ds_ "直连共享内存溢出：$(tail -1 "$LOG/dmsh_spill.log")（退出 ${ds_}）" "$LOG/dmsh_spill.log"
 rcof alpha_ms; am_=$?; reg $am_ "直连片元 Alpha 测试 / 多重采样关常量：$(tail -1 "$LOG/alpha_ms.log")（退出 ${am_}）" "$LOG/alpha_ms.log"
 rcof vs_pull; vp_=$?; reg $vp_ "直连拉取式顶点输入变体：$(tail -1 "$LOG/vs_pull.log")（退出 ${vp_}）" "$LOG/vs_pull.log"
+rcof fout_fc; ff_=$?; reg $ff_ "直连片元输出类型常量（#427）：$(tail -1 "$LOG/fout_fc.log")（退出 ${ff_}）" "$LOG/fout_fc.log"
 # 整份直连出库（C# dsh_batch build）缓存复用 / 只出一侧 / 发布形态：真跑翻译器与 metal，计算着色器共享内存改写要 build/dsx/libdsx.dylib，放在上面预编之后（10-30 原先排在预编前，新工作树的 gate-host 上 3 支全失败、出库 0 个库）
 rcof dmsh_reuse; r=$?; reg $r "整份直连出库缓存复用与出库形态：$(tail -1 "$LOG/dmsh_reuse.log")（退出 ${r}）" "$LOG/dmsh_reuse.log"
 rcof se_want; r=$?; reg $r "采样模拟变体请求表：$(tail -1 "$LOG/se_want.log")（退出 ${r}）" "$LOG/se_want.log"   # se_want.py 挑键（缺口族 31）；整份出库按表出 <键>_se 由 t_dmsh_reuse 守

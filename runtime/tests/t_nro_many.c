@@ -3,11 +3,15 @@
 // 生产 load_modules 装 main，再按表逐个 s2a_nro_map。期望（按语义手算，不读实现）：
 //   ① N 个都返回 0、基址两两不同、module_of(基址) 落在名字 nro<k> 的模块上；② 模块数 = 1 + N = 301；
 //   ③ 已装的再装返回 3；不在表里的哈希返回 1；④ 卸最后一个再装：返回 0、映回原基址。
+//   ⑤ 模块跨度 = (1 + N) × 2 MB（夹具每个模块映像 64 KB，各按 2 MB 对齐）：随行表在逐模块文件或合并表 nro_tables.tsv 里都一样。
+//   ⑥ 合并表档（目录里有 nro_tables.tsv，夹具 --merged）：nro1 的门（返回点 +0x10010、原址 +0x100）登记上了。
 // 旧实现：nro_table 读到 256 行就停（nro256… 返回 1），且模块数到 256 后返回 4 → ① 红。
 #include "../src/native.h"
 #include <string.h>
+#include <unistd.h>
 
 int s2a_nro_map(const uint8_t sha[32], uint64_t size, uint64_t bss, uint64_t *base);
+int s2a_gate_identity(uint64_t ret, uint64_t *orig, int *kind);
 int s2a_nro_unmap(uint64_t base);
 static int bad;
 #define CHECK(c, ...) do { if (!(c)) { bad++; printf("✗ "); printf(__VA_ARGS__); putchar('\n'); } } while (0)
@@ -32,6 +36,13 @@ int main(int argc, char **argv) {
     int dup = 0; for (int i = 0; i < n; i++) for (int j = i + 1; j < n; j++) if (bases[i] && bases[i] == bases[j]) dup++;
     CHECK(!dup, "① 基址重复 %d 对", dup);
     CHECK(g_nmod == 1 + n, "② 模块数 %d，期望 %d", g_nmod, 1 + n);
+    uint64_t span = s2a_module_span(argv[1]), want = (uint64_t)(1 + n) << 21;
+    CHECK(span == want, "⑤ 模块跨度 %#llx，期望 %#llx", (unsigned long long)span, (unsigned long long)want);
+    char tp[1100]; snprintf(tp, sizeof tp, "%s/nro_tables.tsv", argv[1]);
+    if (!access(tp, F_OK) && n > 1 && bases[1]) {
+        uint64_t orig = 0; int kind = -1;
+        CHECK(!s2a_gate_identity(bases[1] + 0x10010, &orig, &kind) && orig == bases[1] + 0x100, "⑥ nro1 的门没从合并表登记上（原址 %#llx）", (unsigned long long)orig);
+    }
     uint8_t s[32]; uint64_t b = 0; sha_of(0, s);
     CHECK(s2a_nro_map(s, 0x10000, 0, &b) == 3, "③ 已装的 nro0 再装期望 3");
     memset(s, 0xee, 32); CHECK(s2a_nro_map(s, 0x10000, 0, &b) == 1, "③ 不在表里的哈希期望 1");

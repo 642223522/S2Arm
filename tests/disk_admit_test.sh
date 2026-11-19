@@ -9,6 +9,7 @@
 #   ⑤ 两单同时来、各 40（剩 100）→ 一个跑完另一个才开（不同时挤进去）
 #   ⑦ 入口闸经 disk_admit.py 重起入口脚本；⑧ 入口闸写的不在本机工作盘（本机没有工作盘）→ 不排队直接跑
 #   ⑥ S2A_DISK_ADMIT=off → 没余量也直接跑、打【黄】
+#   ⑳ 别的卷是纯数据盘（不是系统所在卷）→ 保底 S2A_DISK_MIN_FREE_DATA_GB（5），不套系统保底
 #   ⑲ --measure 实占按 APFS 独占字节：克隆进来的输入（cp -c）不计，新写的照计
 #   ⑩ 账内只算还没写的：剩 50.03、持有者预留 0.02 且实测目录已写 25 MB → 再来 0.02 放行（50.03 − 0 − 0.02 ≥ 50）；负对照：目录空 → 50.03 − 0.02 − 0.02 < 50 排不上
 #   ⑪ 嵌套不叠加：外层 run 预留 40（剩 100）里再 run 40 → 组内 max(40, 40) = 40，放行；里层要 60 → 组内 60、100 − 60 < 50 排不上
@@ -122,6 +123,15 @@ if [ -n "$WV" ]; then
   kill $HW 2> /dev/null; pkill -P $HW 2> /dev/null; wait $HW 2> /dev/null
   ck "⑯ 别的卷上的单只看那一卷：要 30 放行（rc ${r16}）、要 50 排不上（rc ${r16n}）；工作盘那本照旧满（要 1 排不上 rc ${r16w}）" '[ $r16 = 0 ] && [ $r16n = 75 ] && [ $r16w = 75 ]'
 else echo "通 ⑯ 跳过：本机 / 与临时目录同一卷，造不出第二卷"; fi
+# ⑳ 纯数据盘保底小（11-19 外置数据盘回传两单被系统保底挡 4.8 小时）：把「系统所在卷」指到 ${WV}（S2A_DISK_SYS），临时目录那一卷就成了纯数据盘，
+#   剩 30、保底 5：要 21 → 30 − 21 = 9 ≥ 5 放行；要 26 → 4 < 5 排不上；负对照（临时目录就是系统卷，保底 S2A_DISK_MIN_FREE_SYS_GB=25）要 21 → 9 < 25 排不上
+if [ -n "$WV" ]; then
+  rm -f $T/acct/use.* $T/acct/wait.*; mkdir -p $T/v20
+  S2A_DISK_SYS=$WV S2A_DISK_WORK=$WV S2A_DISK_FREE_OTHER_GB=30 S2A_DISK_MIN_FREE_SYS_GB=25 $DA run --cat c --name d20 --gb 21 --measure $T/v20 --max-wait 1 --poll 1 -- true 2> /dev/null; r20=$?
+  S2A_DISK_SYS=$WV S2A_DISK_WORK=$WV S2A_DISK_FREE_OTHER_GB=30 S2A_DISK_MIN_FREE_SYS_GB=25 $DA run --cat c --name d20n --gb 26 --measure $T/v20 --max-wait 1 --poll 1 -- true 2> /dev/null; r20n=$?
+  S2A_DISK_WORK=$WV S2A_DISK_FREE_OTHER_GB=30 S2A_DISK_MIN_FREE_SYS_GB=25 $DA run --cat c --name s20 --gb 21 --measure $T/v20 --max-wait 1 --poll 1 -- true 2> /dev/null; r20s=$?
+  ck "⑳ 纯数据盘保底 5：要 21 放行（rc ${r20}）、要 26 排不上（rc ${r20n}）；负对照系统卷保底 25 要 21 排不上（rc ${r20s}）" '[ $r20 = 0 ] && [ $r20n = 75 ] && [ $r20s = 75 ]'
+else echo "通 ⑳ 跳过：造不出第二卷"; fi
 # ⑰ 有界回填（11-07 维护者拍板）：剩 100、最低 50，A 占 40，大单 B 要 40 排队（100 − 40 − 40 < 50）。
 #   ① 小单 2G、2G、1G 依次来：不算 B 时 100 − 40 − 小单 ≥ 50 → 回填放行（status 标「回填」）；② 回填合计已 5G，第 4 张 1G 要排队（5 + 1 > 5，退 75）；
 #   ③ A 结束、空间够 → B 照常放行（不是回填）；负对照：没有排队者时 1G 单走正常放行、不标回填

@@ -150,6 +150,7 @@ void s2a_fd_usage(int *open_n, uint64_t *soft, uint64_t *hard);   // 已开文�
 int s2a_gc_limit_pick(uint64_t largest); void s2a_gc_limit_apply(void);   // GC 上限自适应三档（gclimit.c）：0 不设 / 1 总 2 GB / 2 分堆
 uint64_t s2a_window_for_span(uint64_t learned);                     // vawin.c：按学到的跨度该给多大窗口（learned × 1.25 + 2 GiB，1 GiB 取整；0 = 没学到、不限）
 uint64_t s2a_window_host_below(uint64_t fit, uint64_t learned);   // vawin.c：放不下标准布局时窗口下方留给宿主多少（按学到的跨度，#783）
+uint64_t s2a_window_host_below_for_pool(uint64_t fit, uint64_t learned, uint64_t pool);  // vawin.c：按本款应用池给窗口（小内存 iPad 的 3234 MB 堆，宿主至少 2 GiB）
 uint64_t s2a_window_span_seen(uint64_t pid);                        // vawin.c：本款本机学到的地址跨度（wire/<程序号>/span_peak；没有 = 0）
 uint64_t s2a_mem_span_now(void);                                     // svc_mem.c：本局已碰到的地址跨度（碰到的最高地址 − 窗口基址）
 void s2a_low_holes(uint64_t *total, uint64_t *largest);   // 4 GB 到窗口底之间的空洞合计 / 最大块           // 布局只用前 size 字节时把尾部还给系统        // 打一行窗口探测：窗口内除自己的占位外还有没有别人的映射

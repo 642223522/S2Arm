@@ -11,7 +11,7 @@
 外层预留里提的 packq 单（11-06 手测外壳预留 40G 后提单，packq 单又按 40G 排、被外壳自己挡住；执行器不是外层的子孙，S2A_DISK_HELD 管不到）：
   run 把本单预留路径经 S2A_DISK_HOLD 交给子孙，packq 提单记进单子（hold），执行器排队 / 开工时以 parent 带上 → 记为子单；一组只算 max(外层剩余, 子单剩余之和)，不叠加。
 --work-only（入口闸用）：--measure 目录不在本机工作盘（S2A_DISK_WORK，缺省运行区 roots 所在卷）上、或本机没有工作盘 → 直接跑、不记账。
-按卷记账（11-06）：实测目录在别的卷上（内置盘溢出）就记在那一卷的账上，保底 S2A_DISK_MIN_FREE_SYS_GB（缺省 60）；两本账互不相挤。
+按卷记账（11-06）：实测目录在别的卷上就记在那一卷的账上：系统所在卷（内置盘溢出）保底 S2A_DISK_MIN_FREE_SYS_GB（缺省 60），纯数据盘保底 S2A_DISK_MIN_FREE_DATA_GB（缺省 5）；各本账互不相挤。
 最低余量 S2A_DISK_MIN_FREE_GB、缺省预计 S2A_DISK_EST_GB：环境变量优先，再读上限表 env/layout.env，再退回 packq 同名旧键（S2A_PACKQ_*），缺省 50 / 40。
 工作盘 = 运行区 roots 软链指向的卷；单测用 S2A_DISK_FREE_GB 给剩余。S2A_DISK_ADMIT=off 整个跳过（应急总开关，打一行【黄】）。
 嵌套：run 给子进程设 S2A_DISK_HELD=1；环境里已有它时 reserve / hold / run 不再排队记账（外层那一笔就是本单的预留）。"""
@@ -31,8 +31,16 @@ def lay(k, d):
     return d
 
 
-def min_free(vol='work'):   # 工作盘保底 S2A_DISK_MIN_FREE_GB（缺省 50）；别的卷（内置盘溢出）保底 S2A_DISK_MIN_FREE_SYS_GB（缺省 60，留给系统）
-    if vol != 'work': return float(lay('S2A_DISK_MIN_FREE_SYS_GB', '60'))
+def sys_dev(): return _dev(os.environ.get('S2A_DISK_SYS') or os.path.expanduser('~'))   # 系统所在卷（家目录那一卷；单测用 S2A_DISK_SYS 指别处）
+
+
+def min_free(vol='work'):   # 工作盘保底 S2A_DISK_MIN_FREE_GB（缺省 50）；别的卷：系统所在卷（内置盘溢出）保底 S2A_DISK_MIN_FREE_SYS_GB（缺省 60，留给系统），
+    #   其余纯数据盘保底 S2A_DISK_MIN_FREE_DATA_GB（缺省 5）。11-19：外置数据盘上的回传两单（21 + 7 GB，盘剩 42 GB）被当成「内置盘溢出」按系统保底 25 GB 挡了 4.8 小时——
+    #   那 25 GB 保护的是系统卷（巡检红线 20 GB + 余量），数据盘上没有系统和门禁库要写，只留预计误差的余量
+    if vol != 'work':
+        sd = sys_dev()
+        if vol == 'other' or sd is None or vol == str(sd): return float(lay('S2A_DISK_MIN_FREE_SYS_GB', '60'))
+        return float(lay('S2A_DISK_MIN_FREE_DATA_GB', '5'))
     return float(lay('S2A_DISK_MIN_FREE_GB', lay('S2A_PACKQ_MIN_FREE_GB', '50')))
 def def_est(): return float(lay('S2A_DISK_EST_GB', lay('S2A_PACKQ_EST_GB', '40')))
 

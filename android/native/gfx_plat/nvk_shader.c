@@ -146,6 +146,10 @@ static uint64_t g_pool_programs, g_pool_attempts, g_pool_compiled, g_pool_reject
 static uint64_t g_pool_request_rejected, g_pool_request_facts, g_pool_request_other;
 static struct { char name[80]; uint64_t count; } g_pool_reasons[64];
 static unsigned g_pool_reason_count;
+// 编译被拒时的上下文日志（#999，只加日志）的行数预算：每个会话两类各最多 REJECT_LINES_MAX 行（拒收只在编译时偶发，不在热路径上；预算只防失控）。
+// 超出预算的只计数不打行；g_*_total 是两类各自被拒的总条数（含没打出来的），截断时在拒绝原因读数里补一行「已截断，共 N 条」（pool_reject_lines）。
+enum { REJECT_LINES_MAX = 128 };
+static unsigned g_reject_lines, g_img_reject_lines, g_reject_total, g_img_reject_total;
 
 static void sha256(const void *p, size_t n, uint8_t out[32]) { s2a_sha256 c; s2a_sha256_init(&c); s2a_sha256_update(&c, p, n); s2a_sha256_final(&c, out); }
 static void red1(const char *name, const char *why) { if (nvn_unimpl("shader", name, NULL) == 1) nvn_plat_log(NVN_PLAT_LOG_RED, "shader", why); }
@@ -350,6 +354,11 @@ static void pool_reject_lines(void) {
         snprintf(line, sizeof line, "texture_pool_request_reject reason=other count=%llu", (unsigned long long)g_pool_request_other);
         nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", line);
     }
+    if (g_reject_total > g_reject_lines || g_img_reject_total > g_img_reject_lines) {   // 被拒上下文日志（reject_context）超出行数预算：读日志的人要知道少了多少
+        snprintf(line, sizeof line, "texture_pool_reject_lines_truncated 已截断，共 程序行 %u 条（只打了前 %u 条）、image 行 %u 条（只打了前 %u 条）；具名计数不受截断影响",
+                 g_reject_total, g_reject_lines, g_img_reject_total, g_img_reject_lines);
+        nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", line);
+    }
     g_pool_log_ms = mono_ms(); g_pool_log_dirty = 0;
 }
 static void pool_stats(const char *phase) {
@@ -377,9 +386,12 @@ static void pool_log_flush(void) {   // 取程序路径上调，每 1024 次才�
     static unsigned k;
     if (g_pool_log_dirty && !(++k & 1023) && mono_ms() - g_pool_log_ms >= 5000) pool_stats("progress");
 }
+struct work_snap;
+static void reject_context(const struct work_snap *s, const char *reason, const char *message);
 /* The producer's failure summary embeds its s2a-direct-error-v1 JSON. Missing,
- * truncated or malformed errors stay explicitly unclassified. */
-static void compiler_rejected(const char *summary) {
+ * truncated or malformed errors stay explicitly unclassified.
+ * snap 非空时（图形阶段现场编译被拒）另打一行程序键与图像槽的上下文，见 reject_context。 */
+static void compiler_rejected(const char *summary, const struct work_snap *snap) {
     char code[64] = "", message[256] = "", schema[48] = "", reason[80] = "unclassified";
     const char *p = strstr(summary, " 原因=");
     if (p) {
@@ -419,6 +431,7 @@ static void compiler_rejected(const char *summary) {
         else { snprintf(g_pool_reasons[i].name, sizeof g_pool_reasons[i].name, "%s", reason); g_pool_reason_count++; }
     }
     g_pool_reasons[i].count++; g_pool_rejected++;
+    if (snap) reject_context(snap, reason, message);
     pool_reject_tick();
 }
 static void array_unsupported(const char *why) {
@@ -491,11 +504,16 @@ static int request_texture_fact(uint32_t fmt, uint32_t target, uint32_t layers,
         s2a_nvn_texture_fact(fmt, target, layers, out, why, why_size);
 }
 
+// 图像高槽（c2 字 72 + 2×槽）没出编译事实的原因（#999；只记录，不改行为）。fill_facts 的高槽循环对下面三种情形静默跳过；
+// 编译器随后若按「image 句柄没有同字直接事实」拒绝这份程序，拒收时按这份请求当时记下的原因说清是哪一种（reject_context）。
+enum { IMGF_GIVEN = 0, IMGF_UNBOUND, IMGF_NO_TEXTURE, IMGF_NO_FACT };
+struct img_miss { uint8_t why; int32_t id; uint32_t handle, fmt, target, layers; };
 struct facts {
     struct s2a_compile_graphics_src gfx;
     struct s2a_compile_texture_src tex[S2A_COMPILE_TEXTURE_MAX]; int ntex;
     char tfmt[S2A_COMPILE_TEXTURE_MAX][S2A_TEX_FORMAT_MAX], tsmp[S2A_COMPILE_TEXTURE_MAX][S2A_TEX_SAMPLER_MAX];
     uint32_t ubo_use[6];
+    struct img_miss img[3][8];   // [阶段][高槽]：why = IMGF_*（0 = 事实给了）
 };
 
 // c2 字 72..86（组合槽 32..39）与图像表重叠，来源同 iOS tex_slot_h。
@@ -661,9 +679,12 @@ static void fill_facts(const struct rp_shader_req *q, const struct s2a_direct_co
         for (int slot = 0; slot < 8; slot++) {
             long id = handles[slot] ? (long)(handles[slot] & 0xFFFFF) : (long)rp_S.tex_base;
             tex_t t; view_t tv; int has_tv = 0; struct s2a_nvn_texture_fact nf; char why[96];
-            if (!rp_tex_snap_by_id((int)id, &t, &tv, &has_tv)) continue;
-            if (request_texture_fact((uint32_t)(has_tv && tv.set_format ? tv.format : t.d.format),
-                    (uint32_t)(has_tv && tv.set_target ? tv.target : t.d.target), t.d.depth, &nf, why, sizeof why)) continue;
+            struct img_miss *miss = &f->img[st][slot];
+            miss->why = IMGF_GIVEN; miss->id = (int32_t)id; miss->handle = (uint32_t)handles[slot];
+            if (!rp_tex_snap_by_id((int)id, &t, &tv, &has_tv)) { miss->why = handles[slot] ? IMGF_NO_TEXTURE : IMGF_UNBOUND; continue; }
+            miss->fmt = (uint32_t)(has_tv && tv.set_format ? tv.format : t.d.format);
+            miss->target = (uint32_t)(has_tv && tv.set_target ? tv.target : t.d.target); miss->layers = (uint32_t)t.d.depth;
+            if (request_texture_fact(miss->fmt, miss->target, miss->layers, &nf, why, sizeof why)) { miss->why = IMGF_NO_FACT; continue; }
             int n = f->ntex++;
             memcpy(f->tfmt[n], nf.format, sizeof f->tfmt[n]); memcpy(f->tsmp[n], nf.sampler_type, sizeof f->tsmp[n]);
             f->tex[n] = (struct s2a_compile_texture_src){st == 0 ? "vs" : st == 1 ? "fs" : "gs",
@@ -746,6 +767,8 @@ static int layout_ent(const struct fd_binding *b, nvn_gpu_layout_ent *e) {
         if (b->storage_writable) e->access = NVN_GPU_ACC_R | NVN_GPU_ACC_W;
         return 1;
     }
+    // 共享内存溢出缓冲（计算）：没有客体来源，回放按派发组数 × 程序的 spill_bytes 从暂存区分配（rp_draw.c rp_dispatch）
+    if (b->kind == 4 && b->count == 1) { e->cls = NVN_GPU_RES_SSBO; e->src_kind = NVN_RB_SPILL; e->access = NVN_GPU_ACC_R | NVN_GPU_ACC_W; return 1; }
     // 图像：单个存储图像（解析器给出 NVN 图像槽 0..7，放在 tex_slot），计算与图形阶段同一形态；回放按槽取这一阶段 BindImage 的句柄
     //   建存储视图（rp_draw.c image_resolve：计算派发与绘制共用）。
     if (b->kind == 3 && b->count == 1 && b->tex_slot >= 0 && b->tex_slot < 8) {
@@ -1073,6 +1096,60 @@ static void prog_tally_log(void) {
     nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", b);
 }
 
+// ---- 编译被拒时的上下文日志（#999；只加日志、不改任何行为）----
+// 1) 每次被拒（图形阶段现场编译）打一行「拒绝原因 + 程序键」，会话内最多 REJECT_LINES_MAX 行：TRANSLATION_DIAGNOSTIC 这类拒收消息里没有程序键，
+//    靠这一行对到具体程序。程序键 = 各阶段键的十六进制按阶段顺序连起来，与发给编译器的 requestId 是同一个字符串。
+// 2) 拒收是「image 句柄没有同字直接事实」（消息里带 [kind=image word=N …]）时，各记一个具名计数并打一行 image_fact_reject。
+//    消息里的常量缓冲槽号（「texture handle from cbuf slot N is not implemented」的 N）是 2（c2 驱动句柄表）时，
+//    按这份请求当时记下的原因分类：
+//    image_fact_unbound         图像槽没绑句柄（池第 0 项也没登记快照）
+//    image_fact_no_texture      槽里有句柄，但这个贴图号没登记快照
+//    image_fact_no_fact         登记了，但格式 / 目标出不了编译事实
+//    image_fact_given           事实给了、编译器仍然拒（说明「缺这个事实」的读法不对，要换方向查）
+//    image_fact_word_unexpected 字不在 72..86 的偶数里，或消息里的阶段不在这份程序里
+//    槽号不是 2 时，word 是那一槽自己的字偏移，与 c2 图像句柄表的字 72 + 2×槽不是同一个坐标系，不拿它去查上面的记录，单独一类：
+//    image_fact_cbuf_other      其它常量缓冲槽的 image 句柄；行里 cbuf=<槽号>、slot=-1
+// 所有 image_fact_reject 行都带 cbuf=<槽号>。计数的含义是「被拒的编译次数」：同一份程序身份被拒后按身份缓存（fe->failed），只记第一次的原因，
+// 不是逐绘制的分布。
+static void reject_context(const struct work_snap *s, const char *reason, const char *message) {
+    char key[3 * 16 + 1] = "", line[400];
+    int o = 0;
+    for (int st = 0; st < s->nst && st < 3; st++)
+        for (int b = 0; b < 8; b++) o += snprintf(key + o, sizeof key - (size_t)o, "%02x", s->keys[st][b]);
+    g_reject_total++;
+    if (g_reject_lines < REJECT_LINES_MAX) {
+        g_reject_lines++;
+        snprintf(line, sizeof line, "texture_pool_reject_program reason=%.79s stages=%d key=%s", reason, s->nst, key);
+        nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", line);
+    }
+    const char *img = strstr(message, "[kind=image ");
+    if (!img || strcmp(reason, "cbuf_handle_unsupported")) return;
+    const int st = !strncmp(message, "vs:", 3) ? 0 : !strncmp(message, "fs:", 3) ? 1 : !strncmp(message, "gs:", 3) ? 2 : -1;   // 消息以阶段名开头
+    // 常量缓冲槽号：只有 2 才是 c2 图像句柄表；槽号带高 16 位的打包值照原样记，不是 2 就不是 c2（没解出数字得 0，也不是 c2）。
+    static const char slot_text[] = "texture handle from cbuf slot ";
+    const char *cs = strstr(message, slot_text);
+    const unsigned long cbuf = cs ? strtoul(cs + sizeof slot_text - 1, NULL, 10) : 0;
+    const int c2 = cbuf == 2;
+    const char *w = strstr(img, " word=");
+    const unsigned long word = w ? strtoul(w + 6, NULL, 10) : 0;
+    const int slot = c2 && w && word >= 72 && word <= 86 && !(word & 1) ? (int)((word - 72) / 2) : -1;   // 字 72 + 2×槽（仅 c2）
+    const struct img_miss *m = st >= 0 && st < s->nst && slot >= 0 ? &s->f.img[st][slot] : NULL;
+    const char *name = !c2 ? "image_fact_cbuf_other" : !m ? "image_fact_word_unexpected" : m->why == IMGF_UNBOUND ? "image_fact_unbound" :
+                       m->why == IMGF_NO_TEXTURE ? "image_fact_no_texture" : m->why == IMGF_NO_FACT ? "image_fact_no_fact" : "image_fact_given";
+    nvn_unimpl("shader", name, NULL);
+    g_img_reject_total++;
+    if (g_img_reject_lines >= REJECT_LINES_MAX) return;
+    g_img_reject_lines++;
+    int n = snprintf(line, sizeof line, "image_fact_reject reason=%s stage=%s cbuf=%lu slot=%d word=%lu key=%s", name + strlen("image_fact_"),
+                     st == 0 ? "vs" : st == 1 ? "fs" : st == 2 ? "gs" : "?", cbuf, slot, word, key);
+    if (m && n > 0 && (size_t)n < sizeof line) {
+        n += snprintf(line + n, sizeof line - (size_t)n, " handle=0x%x texture=%d", (unsigned)m->handle, (int)m->id);
+        if ((m->why == IMGF_NO_FACT || m->why == IMGF_GIVEN) && (size_t)n < sizeof line)
+            snprintf(line + n, sizeof line - (size_t)n, " format=0x%x target=%u layers=%u", (unsigned)m->fmt, (unsigned)m->target, (unsigned)m->layers);
+    }
+    nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", line);
+}
+
 // [提交 / 后台] 只吃快照：离线库 → 跨局缓存 →（仅提交线程）现场编译 → parse + 建后端着色器。
 // background 时没有结果字节就返回 NULL（清单里没有编译事实，编译请求只能由提交线程的那一份快照建；
 // 也不去启动编译 worker：nvk 层没有需求编译 worker，启动它会改变会话编译拓扑）。
@@ -1146,9 +1223,10 @@ static struct entry *work_run(const struct work_snap *s, int background) {
             atomic_fetch_add_explicit(&g_n_failed, 1, memory_order_relaxed);
             // 编译器报缺的是用户常量缓冲里的句柄事实、且学到了新坐标：resolve_slow 会带上它当场重编，这次拒绝是学习的一步，
             // 不记成「未接 compile_failed」（不然每份着色器第一次见这类句柄都多几条假红）。学不到 / 重编到上限仍失败的，下一次照常报红。
-            if (ubo_need_learn(oc.summary, (const uint8_t (*)[8])s->keys, s->nst)) g_ubo_learned = 1;
+            const int learned = ubo_need_learn(oc.summary, (const uint8_t (*)[8])s->keys, s->nst);
+            if (learned) g_ubo_learned = 1;
             else red1("compile_failed", oc.summary);
-            compiler_rejected(oc.summary);
+            compiler_rejected(oc.summary, learned ? NULL : s);   // 学坐标的那一步马上重编，不打上下文；其余被拒打程序键与图像槽原因（只加日志）
             s2a_compile_outcome_free(&oc);
             struct entry *fe = (struct entry *)calloc(1, sizeof *fe);
             if (fe) { fe->failed = 1; memcpy(fe->prog.identity, s->identity, 32); }
@@ -1719,7 +1797,7 @@ static struct entry *build_compute(const uint8_t *bytes, size_t len, const struc
         if (parsed == NVK_PROGRAM_ARRAY_UNSUPPORTED) array_unsupported(why); else red1("compute_program_parse_failed", why);
         e->failed = 1; return e;
     }
-    e->prog.support_bytes = cp.support_bytes;
+    e->prog.support_bytes = cp.support_bytes; e->prog.spill_bytes = cp.spill_bytes;
     for (int i = 0; i < cp.binding_count && !e->failed; i++) {
         const struct fd_binding *b = &cp.bindings[i];
         if (e->prog.nent[0] == RP_PROG_ENT_MAX) { red1("too_many_bindings", "cs"); e->failed = 1; break; }
@@ -1917,7 +1995,7 @@ static int resolve_compute_slow(const struct rp_prog **out, const struct s2a_dir
             diag_end(trace, !ran && oc.bytes && oc.bytes_len);
             if (ran || !oc.bytes || !oc.bytes_len) {
                 atomic_fetch_add_explicit(&g_n_failed, 1, memory_order_relaxed);
-                red1("compute_compile_failed", oc.summary); compiler_rejected(oc.summary);
+                red1("compute_compile_failed", oc.summary); compiler_rejected(oc.summary, NULL);
                 s2a_compile_outcome_free(&oc);
                 e = calloc(1, sizeof *e);
                 if (e) {
@@ -2019,6 +2097,7 @@ void rp_shader_reset(void) {
     g_pool_programs = g_pool_attempts = g_pool_compiled = g_pool_rejected = g_pool_unsupported = 0;
     g_pool_request_rejected = g_pool_request_facts = g_pool_request_other = 0;
     g_pool_reason_count = 0; memset(g_pool_reasons, 0, sizeof g_pool_reasons);
+    g_reject_lines = g_img_reject_lines = g_reject_total = g_img_reject_total = 0;
     // 收尾读数：被拒绝时 RED（未静默状态留在读数里），正常收尾 INFO（借用 0 也打，证明判据看过借用）。
     borrow_log(bs.borrowed ? NVN_PLAT_LOG_RED : NVN_PLAT_LOG_INFO, "reset", &bs);
 }

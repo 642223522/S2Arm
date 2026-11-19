@@ -153,6 +153,18 @@ IOS_LD_DET = -Wl,-objc_stubs_small
 S2A_SHELLUI ?= 0
 ifeq ($(S2A_SHELLUI),1)
 SHELLUI_DD = $(abspath $(BUILD))/ios/shellui
+ifeq ($(shell uname -m),x86_64)
+# Intel Mac：xcodebuild 经 SwiftPM 解析本地包会在临时出壳镜像里调 sandbox-exec，沙箱不允许（sandbox_apply: Operation not permitted）。
+# 同一份 SwiftPM 包直接用 swift build --disable-sandbox 编出静态库 + 资源包；-force_load 把五个目标的符号都链进壳（app.m 只弱引用 C 入口）。
+SHELLUI_SWIFT = $(SHELLUI_DD)/swift
+SHELLUI_PRODUCTS = $(SHELLUI_SWIFT)/arm64-apple-ios/release
+IOS_SHELLUI_LINK = -Wl,-force_load,$(SHELLUI_PRODUCTS)/libS2ArmShellHost.a \
+  -L$(shell DEVELOPER_DIR=$(DEVELOPER_DIR) xcrun --sdk $(APPLE_SDK) --find swiftc | sed 's|/bin/swiftc$$||')/lib/swift/$(APPLE_SDK) -L$(IOS_SDK)/usr/lib/swift -framework SwiftUI
+.PHONY: ios-shellui
+ios-shellui:
+	@mkdir -p $(SHELLUI_SWIFT)
+	cd shell && DEVELOPER_DIR=$(DEVELOPER_DIR) swift build --disable-sandbox -Xswiftc -DS2A_UIKIT_VERSION_UNKNOWN --triple arm64-apple-ios$(IPHONEOS_DEPLOYMENT_TARGET) --sdk $(IOS_SDK) -c release --scratch-path $(SHELLUI_SWIFT) > $(SHELLUI_DD)/swift-build.log 2>&1 || { tail -30 $(SHELLUI_DD)/swift-build.log; echo "🔴 游戏库界面（S2A_SHELLUI=1）编不过，日志 $(SHELLUI_DD)/swift-build.log"; exit 1; }
+else
 SHELLUI_PRODUCTS = $(SHELLUI_DD)/Build/Products/Release-$(APPLE_SDK)
 IOS_SHELLUI_LINK = $(addprefix $(SHELLUI_PRODUCTS)/,S2ArmShellHost.o S2ArmShellBridge.o ShellUI.o ShellControllers.o SaveSync.o) \
   -L$(shell DEVELOPER_DIR=$(DEVELOPER_DIR) xcrun --sdk $(APPLE_SDK) --find swiftc | sed 's|/bin/swiftc$$||')/lib/swift/$(APPLE_SDK) -L$(IOS_SDK)/usr/lib/swift -framework SwiftUI
@@ -161,6 +173,7 @@ ios-shellui:
 	@mkdir -p $(SHELLUI_DD)
 	cd shell && DEVELOPER_DIR=$(DEVELOPER_DIR) xcodebuild -quiet -scheme S2ArmShellHost -destination 'generic/platform=$(if $(filter tvos,$(S2A_APPLE_OS)),tvOS,iOS)' -configuration Release \
 	  -derivedDataPath $(SHELLUI_DD) IPHONEOS_DEPLOYMENT_TARGET=$(IPHONEOS_DEPLOYMENT_TARGET) TVOS_DEPLOYMENT_TARGET=$(TVOS_DEPLOYMENT_TARGET) build > $(SHELLUI_DD)/xcodebuild.log 2>&1 || { tail -30 $(SHELLUI_DD)/xcodebuild.log; echo "🔴 游戏库界面（S2A_SHELLUI=1）编不过，日志 $(SHELLUI_DD)/xcodebuild.log"; exit 1; }
+endif
 ios: ios-shellui
 endif
 # 主屏小组件（中号 4×2，11-16 维护者进 0.5.0）：ios/widget/S2ArmWidget.swift + 与游戏库共用的数据格式 shell/Sources/S2ArmShellHost/WidgetFeed.swift，

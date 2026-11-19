@@ -42,4 +42,9 @@ static inline int s2a_gc_motion_sample(GCMotion *m, s2a_pad_motion *out) {
     *out = (s2a_pad_motion){clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000, acceleration[0], acceleration[1], acceleration[2], gyro[0], gyro[1], gyro[2]};
     return calibrated ? 2 : 1;
 }
+// 给服务层的反馈会话号（front_mac.m s2a_pad_rumble_session）：服务层只在会话号非 0 时建反馈对象（services/S2A.Services/InputPump.cs RefreshFeedback），
+//   体感也挂在这个对象上。rumble = 能震的那一路会话号；0（玩家关了「手柄震动」/ 没有能震的手柄）时回只给体感的会话号，体感照开（#1671），
+//   震动按会话号对不上丢掉（front_mac.m rumble_submit，同 iOS ios/controller.m MOTION_ONLY_SESSION）
+#define S2A_MAC_MOTION_ONLY_SESSION 0x534d0000fffffffeull   // MAC_RUMBLE_BASE | 0xfffffffe：不是任何震动代次，也不是 GEN1_P1_SESSION
+static inline uint64_t s2a_mac_feedback_session(uint64_t rumble) { return rumble ? rumble : S2A_MAC_MOTION_ONLY_SESSION; }
 #endif

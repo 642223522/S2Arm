@@ -1,5 +1,6 @@
 using Ryujinx.Audio;
 using Ryujinx.Audio.Common;
+using Ryujinx.Audio.Input;
 using Ryujinx.Audio.Integration;
 using Ryujinx.Audio.Output;
 using System;
@@ -94,7 +95,24 @@ namespace S2A.Services.Tests
             Check("B 局放完 4 后取到 4", rb2.Count == 1 && rb2[0] == 4, string.Join(",", rb2));
             Check("B 局对已有队列的会话不再恢复（回 -1）", b.S2ARestore(snap.Released, snap.Pending, snap.Played) == -1, "没拒");
 
-            Console.WriteLine(bad == 0 ? "audout 快照队列单测全过" : $"audout 快照队列单测 {bad} 项不通");
+            // AudioIn（麦克风）同一套：A 局追加 3 个、录满 1 个且游戏没取 → 快照 已交还 [11]、在途 [12, 13]；B 局恢复后取到 11、硬件收到 12、13
+            var hwI = new FakeHw(); var ia = new AudioInputSystem(null, new Lock(), hwI, new FakeEvent());
+            var icfg = new AudioInputConfiguration { SampleRate = 48000, ChannelCount = 2 };
+            if (ia.Initialize("", SampleFormat.PcmInt16, ref icfg, 0) != ResultCode.Success) throw new InvalidOperationException("audin 初始化失败");
+            ia.Start();
+            for (ulong t = 11; t <= 13; t++) { var ub = new AudioUserBuffer { Data = 0x1000 * t, DataSize = 0x100 }; ia.AppendBuffer(t, ref ub); }
+            hwI.Consumed.Add(11); ia.Update();
+            var isnap = ia.S2ASnapshot();
+            Check("audin 快照：已交还 [11]、在途 [12, 13]", isnap.Released.Length == 1 && isnap.Released[0].Item1 == 11 && isnap.Pending.Length == 2 && isnap.Pending[0].Item1 == 12,
+                $"{string.Join(",", Array.ConvertAll(isnap.Released, x => x.Item1))} / {string.Join(",", Array.ConvertAll(isnap.Pending, x => x.Item1))}");
+            var hwIB = new FakeHw(); var ib = new AudioInputSystem(null, new Lock(), hwIB, new FakeEvent());
+            ib.Initialize("", SampleFormat.PcmInt16, ref icfg, 0); ib.Start();
+            int ire = ib.S2ARestore(isnap.Released, isnap.Pending, isnap.Played);
+            Span<ulong> itags = stackalloc ulong[4]; ib.GetReleasedBuffers(itags, out uint ign);
+            Check("audin B 局：取到 11、硬件按顺序收到 12、13", ire == 2 && ign == 1 && itags[0] == 11 && hwIB.Queued.Count == 2 && hwIB.Queued[0] == 12 && hwIB.Queued[1] == 13,
+                $"追加 {ire}、取到 {ign} 个 {itags[0]}、硬件 {string.Join(",", hwIB.Queued)}");
+
+            Console.WriteLine(bad == 0 ? "audout / audin 快照队列单测全过" : $"audout / audin 快照队列单测 {bad} 项不通");
             return bad == 0 ? 0 : 1;
         }
     }

@@ -15,6 +15,7 @@ static NSString *const keys[] = {@"S2AResolutionScale", @"S2AAntiAliasing", @"S2
 static void clear_environment(void) {
     for (size_t i = 0; i < 4; i++) unsetenv(variables[i]);
     unsetenv("S2A_WIDESCREEN"); unsetenv("S2A_FPS60"); unsetenv("S2A_CPATCH_ON"); unsetenv("S2A_DOCKED"); unsetenv("MTL_HUD_ENABLED");
+    unsetenv("S2A_AUDIO_DEVICE"); unsetenv("S2A_AUDIO_VS_SPEAKERS"); unsetenv("S2A_AUDIO_VS_HEADPHONES");   // 输出设备类型 + 两个虚拟环绕开关（#189 后续，5.1 虚拟环绕第二片）
 }
 
 static int reload_checks(BOOL explicit) {
@@ -282,6 +283,43 @@ int main(int argc, char **argv) {
             setenv("S2A_HUD", "0", 1); clear_environment();
             s2a_ios_apply_graphics_settings(a); check(!strcmp(getenv("S2A_HUD"), "0"), @"显式 S2A_HUD=0 优先于开关");
             unsetenv("S2A_HUD"); [a removeObjectForKey:@"S2ADevHUD"];
+        }
+
+        // 输出设备类型 + 两个虚拟环绕开关（#189 后续，5.1 虚拟环绕第二片）：按游戏存的 S2AAudioDevice / S2AAudioVsSpeakers /
+        //   S2AAudioVsHeadphones（游戏库每款设置页经 ios/game_options.m 写）→ S2A_AUDIO_*（compat/tree 的 Apple 后端读）。
+        //   没选过不设（= auto 按设备真实声道判，5.1 直通缺省不变）；开关只转拨过的（开 1 / 关 0，各存各的、只在对应显式
+        //   类型下生效——驱动侧判）；启动环境显式给的优先；非法值不转。起局语义按新进程走，每步先清环境
+        {
+            [a removeObjectForKey:@"S2AAudioDevice"]; [a removeObjectForKey:@"S2AAudioVsSpeakers"]; [a removeObjectForKey:@"S2AAudioVsHeadphones"];
+            clear_environment();
+            s2a_ios_apply_graphics_settings(a);
+            check(getenv("S2A_AUDIO_DEVICE") == NULL && getenv("S2A_AUDIO_VS_SPEAKERS") == NULL && getenv("S2A_AUDIO_VS_HEADPHONES") == NULL,
+                  @"没选过、没拨过：不设任何 S2A_AUDIO_*（= auto 按设备真实声道判，5.1 直通缺省不变）");
+            [a setObject:@"builtin" forKey:@"S2AAudioDevice"];
+            clear_environment();
+            s2a_ios_apply_graphics_settings(a);
+            check(getenv("S2A_AUDIO_DEVICE") && !strcmp(getenv("S2A_AUDIO_DEVICE"), "builtin"), @"选了内置扬声器：S2A_AUDIO_DEVICE=builtin");
+            [a setObject:@"bogus" forKey:@"S2AAudioDevice"];
+            clear_environment();
+            s2a_ios_apply_graphics_settings(a);
+            check(getenv("S2A_AUDIO_DEVICE") == NULL, @"非法值不转（游戏库侧已拒收，这里再拦一道）");
+            [a setObject:@"headphones" forKey:@"S2AAudioDevice"];
+            clear_environment();
+            s2a_ios_apply_graphics_settings(a);
+            check(getenv("S2A_AUDIO_DEVICE") && !strcmp(getenv("S2A_AUDIO_DEVICE"), "headphones"), @"选了耳机：S2A_AUDIO_DEVICE=headphones");
+            setenv("S2A_AUDIO_DEVICE", "external", 1);
+            s2a_ios_apply_graphics_settings(a);
+            check(!strcmp(getenv("S2A_AUDIO_DEVICE"), "external"), @"启动环境显式给的优先于按游戏存的值");
+            [a setBool:YES forKey:@"S2AAudioVsSpeakers"]; [a setBool:NO forKey:@"S2AAudioVsHeadphones"];
+            clear_environment();
+            s2a_ios_apply_graphics_settings(a);
+            check(getenv("S2A_AUDIO_VS_SPEAKERS") && !strcmp(getenv("S2A_AUDIO_VS_SPEAKERS"), "1") &&
+                  getenv("S2A_AUDIO_VS_HEADPHONES") && !strcmp(getenv("S2A_AUDIO_VS_HEADPHONES"), "0"),
+                  @"拨过的开关照拨的值转（开 1 / 关 0，各存各的）");
+            setenv("S2A_AUDIO_VS_HEADPHONES", "1", 1);
+            s2a_ios_apply_graphics_settings(a);
+            check(!strcmp(getenv("S2A_AUDIO_VS_HEADPHONES"), "1"), @"显式 S2A_AUDIO_VS_HEADPHONES=1 优先于按游戏存的值");
+            [a removeObjectForKey:@"S2AAudioDevice"]; [a removeObjectForKey:@"S2AAudioVsSpeakers"]; [a removeObjectForKey:@"S2AAudioVsHeadphones"];
         }
 
         // 缺口扫描族 2：设置页「完成」时掌机 / 主机运行中直接切（返回要切的值，交 s2a_console_mode_set），不算重启项；别的画面设置变了照旧要重启

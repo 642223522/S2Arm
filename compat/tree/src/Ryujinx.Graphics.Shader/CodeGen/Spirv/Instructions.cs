@@ -346,7 +346,9 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
 
         private static OperationResult GenerateClamp(CodeGenContext context, AstOperation operation)
         {
-            return GenerateTernary(context, operation, context.Delegates.GlslFClamp, context.Delegates.GlslSClamp);
+            // Maxwell FMNMX returns the operand that is a number when the other is NaN, and saturate turns NaN into 0 (IEEE minNum / maxNum).
+            // GLSL.std.450 FMin / FMax / FClamp leave a NaN operand undefined and Adreno passes the NaN on; the N forms give Maxwell's results.
+            return GenerateTernary(context, operation, context.Delegates.GlslNClamp, context.Delegates.GlslSClamp);
         }
 
         private static OperationResult GenerateClampU32(CodeGenContext context, AstOperation operation)
@@ -992,7 +994,9 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
 
         private static OperationResult GenerateMaximum(CodeGenContext context, AstOperation operation)
         {
-            return GenerateBinary(context, operation, context.Delegates.GlslFMax, context.Delegates.GlslSMax);
+            // Maxwell FMNMX returns the operand that is a number when the other is NaN, and saturate turns NaN into 0 (IEEE minNum / maxNum).
+            // GLSL.std.450 FMin / FMax / FClamp leave a NaN operand undefined and Adreno passes the NaN on; the N forms give Maxwell's results.
+            return GenerateBinary(context, operation, context.Delegates.GlslNMax, context.Delegates.GlslSMax);
         }
 
         private static OperationResult GenerateMaximumU32(CodeGenContext context, AstOperation operation)
@@ -1008,7 +1012,9 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
 
         private static OperationResult GenerateMinimum(CodeGenContext context, AstOperation operation)
         {
-            return GenerateBinary(context, operation, context.Delegates.GlslFMin, context.Delegates.GlslSMin);
+            // Maxwell FMNMX returns the operand that is a number when the other is NaN, and saturate turns NaN into 0 (IEEE minNum / maxNum).
+            // GLSL.std.450 FMin / FMax / FClamp leave a NaN operand undefined and Adreno passes the NaN on; the N forms give Maxwell's results.
+            return GenerateBinary(context, operation, context.Delegates.GlslNMin, context.Delegates.GlslSMin);
         }
 
         private static OperationResult GenerateMinimumU32(CodeGenContext context, AstOperation operation)

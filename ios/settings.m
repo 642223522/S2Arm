@@ -62,7 +62,8 @@ void s2a_ios_apply_overlay_settings(NSUserDefaults *defaults) {
 //   以及撑不住就问玩家的「问过」与「本款原生 60 帧」记号——原先全在 App 级，一款游戏自动退回 16:9、关 60 帧会串到所有游戏
 NSArray *s2a_ios_per_game_keys(void) {
     return @[@"S2AResolutionScale", @"S2AAntiAliasing", @"S2AScalingFilter", @"S2AFrameRateLimit", @"S2AWidescreen", @"S2AFps60",
-             @"S2AFps60Manual", @"S2ADockedMode", @"S2ACommunityPatches", @"S2AWidescreenAsked", @"S2AFps60Asked", @"S2AFpsNative60", @"S2AFpsPick", S2AGameLanguageKey, @"S2AFrameInterp", @"S2AGameVolume"];
+             @"S2AFps60Manual", @"S2ADockedMode", @"S2ACommunityPatches", @"S2AWidescreenAsked", @"S2AFps60Asked", @"S2AFpsNative60", @"S2AFpsPick", S2AGameLanguageKey, @"S2AFrameInterp", @"S2AGameVolume",
+             @"S2AAudioDevice", @"S2AAudioVsSpeakers", @"S2AAudioVsHeadphones"];   // 输出设备类型 + 两个虚拟环绕开关（#189 后续，5.1 虚拟环绕第二片，按游戏存）
 }
 NSArray<NSString *> *s2a_ios_game_languages(void) {
     return @[@"system", @"SimplifiedChinese", @"TraditionalChinese", @"AmericanEnglish", @"BritishEnglish", @"Japanese", @"Korean", @"French", @"CanadianFrench", @"German",
@@ -447,6 +448,26 @@ void s2a_ios_apply_graphics_settings(NSUserDefaults *defaults) {
             NSInteger p = MAX(0, [v integerValue]);
             apply_environment("S2A_AUDIO_VOLUME", [NSString stringWithFormat:@"%ld", (long)p]); fprintf(stderr, "[S2A 声音设置] S2A_AUDIO_VOLUME=%ld（本 App 设置：游戏音量）\n", (long)p);
         }
+    }
+    // 输出设备类型（#189 后续，5.1 虚拟环绕第二片，定义表 game_settings.v1.json 的 audioDevice）：按游戏存的 S2AAudioDevice
+    //   （游戏库每款设置页写，ios/game_options.m）→ S2A_AUDIO_DEVICE（compat/tree/src/Ryujinx.Audio.Backends.Apple/AppleAudioDeviceType.cs）。
+    //   只转玩家显式选过的 builtin / headphones / external；没选过不设 = Auto（按设备真实声道判，5.1 直通缺省不变）。启动环境显式给的优先
+    if (!getenv("S2A_AUDIO_DEVICE")) {
+        id ad = [defaults objectForKey:@"S2AAudioDevice"];
+        if ([ad isKindOfClass:NSString.class] && [@[@"builtin", @"headphones", @"external"] containsObject:ad]) {
+            apply_environment("S2A_AUDIO_DEVICE", ad); fprintf(stderr, "[S2A 声音设置] S2A_AUDIO_DEVICE=%s（本款设置：输出设备类型）\n", [ad UTF8String]);
+        }
+    }
+    // 两个虚拟环绕开关（同表 vsSpeakers / vsHeadphones）：各存各的（切换设备类型各自恢复），只在对应显式类型下生效（驱动侧判，这里照转
+    //   玩家拨过的值）；只转拨过的（开 1 / 关 0，没拨过不设）。启动环境显式给的优先
+    id vsSpeakers = [defaults objectForKey:@"S2AAudioVsSpeakers"], vsHeadphones = [defaults objectForKey:@"S2AAudioVsHeadphones"];
+    if (!getenv("S2A_AUDIO_VS_SPEAKERS") && vsSpeakers != nil) {
+        apply_environment("S2A_AUDIO_VS_SPEAKERS", [vsSpeakers boolValue] ? @"1" : @"0");
+        fprintf(stderr, "[S2A 声音设置] S2A_AUDIO_VS_SPEAKERS=%d（本款设置：扬声器虚拟环绕）\n", [vsSpeakers boolValue]);
+    }
+    if (!getenv("S2A_AUDIO_VS_HEADPHONES") && vsHeadphones != nil) {
+        apply_environment("S2A_AUDIO_VS_HEADPHONES", [vsHeadphones boolValue] ? @"1" : @"0");
+        fprintf(stderr, "[S2A 声音设置] S2A_AUDIO_VS_HEADPHONES=%d（本款设置：耳机虚拟环绕）\n", [vsHeadphones boolValue]);
     }
     // 开着社区宽屏 / 自适应满屏补丁（编号 widescreen: / wsauto:）：游戏自己按屏幕比例画宽画面，S2Arm 的满屏让开、不拉宽两次（同 Mac pack/jobs/community.py launch_env）；
     //   启动环境显式给了 S2A_WIDESCREEN 的照它

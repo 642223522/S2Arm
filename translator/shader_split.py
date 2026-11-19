@@ -1180,6 +1180,35 @@ def unity_stages(o):
                 for sp in (p.get(field) or {}).get('m_SubPrograms', []): m.setdefault(sp.get('m_BlobIndex'), st)
     return m
 
+def unity_pass_index(o):
+    """Shader object → {subprogram index: [(SubShader number, Pass number, stage, hardware tier)…]} from m_ParsedForm: the Pass a subprogram belongs to, for pairing (unity_kw_pairs)"""
+    m = collections.defaultdict(list)
+    for si, sub in enumerate((o.get('m_ParsedForm') or {}).get('m_SubShaders', [])):
+        for pi, p in enumerate(sub.get('m_Passes', [])):
+            for field, st in (('progVertex', 'vs'), ('progFragment', 'ps')):
+                for sp in (p.get(field) or {}).get('m_SubPrograms', []): m[sp.get('m_BlobIndex')].append((si, pi, st, sp.get('m_ShaderHardwareTier', 0)))
+    return m
+
+# Unity before 2019.3 (Ori and the Will of the Wisps, Unity 2018.4) stores each subprogram with one stage: the vertex and pixel programs of a Pass are separate blob entries, numbered apart,
+#   so var_pairs (vs + ps of one entry) pairs none of them (01008DD013200000: 34 pairs in all, from main's GLSLC; none of the 51 pairs its prologue draws with). Unity picks a Pass's programs
+#   by the keyword set of the draw, each stage from its own list: the vertex and pixel subprograms of one Pass, platform and hardware tier with the same keywords are a pair. A vertex
+#   subprogram with no pixel subprogram of the same keywords (keywords one stage strips) takes the pixel subprograms whose keyword set differs least. Pairs of the file being scanned,
+#   taken by var_pairs in the same worker
+UNITY_PAIRS = set()
+def unity_kw_pairs(progs):
+    """progs: [(group (platform, SubShader, Pass, tier), stage, frozenset keywords, key)] → {(vertex key, pixel key)}"""
+    by = collections.defaultdict(lambda: ([], []))
+    for g, st, kw, key in progs: by[g][0 if st == 'vs' else 1].append((kw, key))
+    pairs = set()
+    for vss, pss in by.values():
+        if not pss: continue
+        for kw, vk in vss:
+            same = [pk for pkw, pk in pss if pkw == kw]
+            if not same:
+                d = min(len(kw ^ pkw) for pkw, _ in pss); same = [pk for pkw, pk in pss if len(kw ^ pkw) == d]
+            pairs.update((vk, pk) for pk in same)
+    return pairs
+
 def unity_code_blobs(o):
     """Shader object → the subprogram indices that hold program code, or None when every entry does (before Unity 2022). Unity 2022 also keeps the parameters of each program in the blob
     as entries of their own (m_ParameterBlobIndices of each program), and the player's programs are m_PlayerSubPrograms[tier][].m_BlobIndex (Ace Attorney Investigations Collection, Unity 2022.3).
@@ -1233,11 +1262,16 @@ def unity_shaders(d, label, out, trees):
         try:
             for cid, pid, o in unityfs.serialized_objects(x, COMMON, {unityfs.CLASS_SHADER}, trees, layouts=SECOND, engine=engine):
                 name = o['m_ParsedForm']['m_Name'] if 'm_ParsedForm' in o else o.get('m_Name', '?')
-                stages = unity_stages(o)
+                stages = unity_stages(o); passes = unity_pass_index(o); progs = []
                 for plat, k, sp in unityfs.shader_programs(o, unity_code_blobs(o)):
                     where = f'{label}{":" + node if node else ""}#{name}#var{plat}.{k}'
-                    code = unityfs.subprogram(sp)[4]
-                    out.extend((where, st, ctl, cd) for st, ctl, cd in unity_program(code, where, stages.get(k)))
+                    sub = unityfs.subprogram(sp); kw = frozenset(sub[2]) | frozenset(sub[3])
+                    got = unity_program(sub[4], where, stages.get(k))
+                    out.extend((where, st, ctl, cd) for st, ctl, cd in got)
+                    if len(got) == 1 and got[0][0] in ('vs', 'ps'):   # one stage per entry (before 2019.3): pair by Pass and keywords
+                        for si, pi, st, tier in passes.get(k, []):
+                            if st == got[0][0]: progs.append(((plat, si, pi, tier), st, kw, skey(got[0][1], got[0][2])))
+                UNITY_PAIRS.update(unity_kw_pairs(progs))
         except unityfs.LayoutMismatch as e: red(f'{label}{":" + node if node else ""}: {e}')
         out.extend(unity_compute(x, f'{label}{":" + node if node else ""}', trees))
 
@@ -1315,11 +1349,13 @@ def ue_shaders(d, label):
     return out
 
 def var_pairs(found):
-    """(vertex key, pixel key) within the same BNSH variation"""
+    """(vertex key, pixel key) within the same BNSH variation, and the Unity Pass / keyword pairs of the file (UNITY_PAIRS, taken and cleared here)"""
     var = collections.defaultdict(dict)
     for where, st, ctl, code in found:
         if '#var' in where: var[where][st] = skey(ctl, code)
-    return {(v['vs'], v['ps']) for v in var.values() if 'vs' in v and 'ps' in v}
+    out = {(v['vs'], v['ps']) for v in var.values() if 'vs' in v and 'ps' in v} | UNITY_PAIRS
+    UNITY_PAIRS.clear()
+    return out
 
 FILE_RED = '\0file_red'   # marks a file left out whole in the SKIPPED channel (v0.3.1)
 

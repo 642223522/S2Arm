@@ -18,6 +18,8 @@ public enum S2ArmGameSettings {
     /// 布局多选里打开二级编辑页的那一项（不是一个方案）
     public static let editLayout = "edit"
     public static let splitScreen = "splitScreen", screenOrientation = "screenOrientation"
+    /// 输出设备类型 + 两个虚拟环绕开关（#189 后续，5.1 虚拟环绕第二片；定义表 game_settings.v1.json 的同 id 项，本文件不另写文案与缺省）
+    public static let audioDevice = "audioDevice", vsSpeakers = "vsSpeakers", vsHeadphones = "vsHeadphones"
 
     /// 宿主给的这款画面与金手指选项（ios/game_options.m 的 JSON）
     public struct Options: Equatable, Sendable {
@@ -33,7 +35,12 @@ public enum S2ArmGameSettings {
         /// 游戏语言（#1252，同游戏内设置页「游戏语言」）：levels 第一项跟随系统（"system"），只列这款支持的；note = 选的这款不支持时起局用哪种。宿主没给 = nil，不出这一行
         public struct Language: Equatable, Sendable { public var pick: String; public var levels: [Level]; public var note = "" }
         public var language: Language? = nil
-        public init(fps: Switch, fullscreen: Switch, patches: [Item] = [], cheats: [Item] = []) { self.fps = fps; self.fullscreen = fullscreen; self.patches = patches; self.cheats = cheats }
+        /// 输出设备类型 + 两个虚拟环绕开关（#189 后续，5.1 虚拟环绕第二片；按游戏存，ios/game_options.m 读写）：
+        ///   device = "auto"（没选 = 按设备真实声道判，5.1 直通缺省不变）/ "builtin" / "headphones" / "external"；
+        ///   两个开关各存各的、只在对应类型下生效（驱动侧判），没拨过按关。宿主没给 = nil，这三行不出
+        public struct Audio: Equatable, Sendable { public var device: String; public var vsSpeakers: Bool; public var vsHeadphones: Bool }
+        public var audio: Audio? = nil
+        public init(fps: Switch, fullscreen: Switch, patches: [Item] = [], cheats: [Item] = [], audio: Audio? = nil) { self.fps = fps; self.fullscreen = fullscreen; self.patches = patches; self.cheats = cheats; self.audio = audio }
         static func parse(_ json: String) -> Options? {
             guard let o = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] else { return nil }
             func sw(_ v: Any?) -> Switch {
@@ -50,6 +57,10 @@ public enum S2ArmGameSettings {
             if let l = o["language"] as? [String: Any] {
                 let lv = (l["levels"] as? [[String: Any]] ?? []).compactMap { e in (e["value"] as? String).map { Level(value: $0, label: e["label"] as? String ?? $0) } }
                 if !lv.isEmpty { out.language = Language(pick: l["pick"] as? String ?? "system", levels: lv, note: l["note"] as? String ?? "") }
+            }
+            if let a = o["audio"] as? [String: Any] {
+                let device = (a["device"] as? String).flatMap { ["auto", "builtin", "headphones", "external"].contains($0) ? $0 : nil } ?? "auto"
+                out.audio = Audio(device: device, vsSpeakers: (a["vsSpeakers"] as? Bool) ?? false, vsHeadphones: (a["vsHeadphones"] as? Bool) ?? false)
             }
             return out
         }
@@ -146,13 +157,34 @@ public enum S2ArmGameSettings {
             }
         }
         // 声音（#1186）：游戏音量五档，同齿轮菜单；静音就是 0 那一档，不另设开关
+        var sound: [SettingRow] = []
         if let v = o?.volume {
             let levels = [0, 25, 50, 75, 100]
-            out.append(SettingSection(id: "s2a.sound", title: "Sound", rows: [
-                SettingRow(id: volume, label: "Game volume", note: "This game only; doesn't change the system volume or other apps",
+            sound.append(SettingRow(id: volume, label: "Game volume", note: "This game only; doesn't change the system volume or other apps",
                            kind: .choice(levels.map { SettingOption(String($0), $0 == 0 ? "Mute" : "\($0)%") }),
-                           value: String(levels.min { abs($0 - v) < abs($1 - v) } ?? 100))]))
+                           value: String(levels.min { abs($0 - v) < abs($1 - v) } ?? 100)))
         }
+        // 输出设备类型 + 两个虚拟环绕开关（#189 后续，5.1 虚拟环绕第二片，定义表 game_settings.v1.json 同一份定义）：按游戏存（经宿主），
+        //   device "auto" = 没选 = 按设备真实声道判（5.1 直通缺省不变）；两个开关只在对应类型下可用（external / 没选时置灰，
+        //   external 的说明 = ≥6 声道直通、<6 普通下混、不使用虚拟环绕）。起局 ios/settings.m 落成 S2A_AUDIO_*，下次启动生效
+        if let a = o?.audio {
+            sound.append(SettingRow(id: audioDevice, label: "Output device",
+                                     note: "Pick what the sound plays on; Automatic follows the output device's channels (6 or more passes 5.1 through). Takes effect the next time this game starts.",
+                                     kind: .choice([SettingOption("auto", "Automatic"), SettingOption("builtin", "Built-in speakers"),
+                                                    SettingOption("headphones", "Headphones"), SettingOption("external", "External / TV speakers")]),
+                                     value: a.device))
+            let offNote = a.device == "external"
+                ? "6-channel devices pass 5.1 through; fewer channels fold down to stereo. No virtual surround."
+                : "Only while the device type is Built-in speakers."
+            sound.append(SettingRow(id: vsSpeakers, label: "Speaker virtual surround",
+                                    note: a.device == "builtin" ? "The game outputs 5.1; S2Arm folds it back to the speakers with spatial audio." : offNote,
+                                    kind: .toggle(on: "on", off: "off"), value: a.vsSpeakers ? "on" : "off", enabled: a.device == "builtin"))
+            sound.append(SettingRow(id: vsHeadphones, label: "Headphone virtual surround",
+                                    note: a.device == "headphones" ? "The game outputs 5.1; S2Arm folds it back to the headphones with binaural rendering."
+                                        : a.device == "external" ? offNote : "Only while the device type is Headphones.",
+                                    kind: .toggle(on: "on", off: "off"), value: a.vsHeadphones ? "on" : "off", enabled: a.device == "headphones"))
+        }
+        if !sound.isEmpty { out.append(SettingSection(id: "s2a.sound", title: "Sound", rows: sound)) }
         // 游戏语言（#1252）：开局前在这里选好，进游戏直接生效，不用先进游戏再重开
         if let l = o?.language {
             var row = SettingRow(id: gameLanguage, label: "Game language", note: "This game only; takes effect when the game starts", kind: .choice(l.levels.map { SettingOption($0.value, $0.label) }),
@@ -181,6 +213,9 @@ public enum S2ArmGameSettings {
         case fps60: _ = stores.setOption(id, "fps", "", value == "on")
         case fpsPick: _ = stores.setOption(id, "fpspick", value, true)
         case volume: if Int(value) != nil { _ = stores.setOption(id, "volume", value, true) }
+        case audioDevice: _ = stores.setOption(id, "audiodevice", value, true)   // "auto" = 未选择（宿主删掉这款的值）
+        case vsSpeakers: _ = stores.setOption(id, "audiovs", "speakers", value == "on")
+        case vsHeadphones: _ = stores.setOption(id, "audiovs", "headphones", value == "on")
         case gameLanguage: _ = stores.setOption(id, "language", value, true)
         case fullscreen: _ = stores.setOption(id, "fullscreen", "", value == "on")
         case _ where setting.hasPrefix(patchPrefix): _ = stores.setOption(id, "patch", String(setting.dropFirst(patchPrefix.count)), value == "on")
