@@ -123,6 +123,11 @@ static void *sp_thread(void *x) { (void)x; uint64_t r[8] = {g_sp_addr, 0x4000, 3
 static int sp_begin(uint64_t a, uint64_t n, uint64_t src) { (void)a; (void)n; (void)src; pthread_create(&g_sp_t, NULL, sp_thread, NULL); usleep(100000); g_sp_during = atomic_load(&g_sp_done); return 0; }
 
 int s2a_va_short_last(uint64_t fa, int *num, uint64_t *a, uint64_t *n, uint64_t *count);
+// #947 替身：进程内重开请求（真的在 runtime/src/session.c）。svc_mem 经 dlsym(RTLD_DEFAULT) 找它：记调用次数、按用例回受理 / 拒绝
+static int g_restart_calls, g_restart_rc;
+int s2a_host_restart(void (*cb)(int, const char *, void *), void *ctx) { (void)cb; (void)ctx; g_restart_calls++; return g_restart_rc; }
+int s2a_mem_heap_learned_restart(void);
+void s2a_mem_test_heap_floor(uint64_t v);
 int main(void) {
     const uint64_t W = 0x7000000000ull, AB = W + 0x200000, AS = 64ull << 20, HEAP = W + 0x10000000, HCUR = 4ull << 20, MAPB = W + 0x20000000, MAPN = 0x8000;
     // 复用宿主地址护栏，先给末尾大堆测试留出真地址，再放行 xzm；不带 MAP_FIXED，不覆盖已有映射。
@@ -159,6 +164,15 @@ int main(void) {
             memset(r, 0, sizeof r); r[1] = 8 * MB; svc_mem(0x01, r, 0);
             hf = fopen(hn, "r"); if (hf) { if (fscanf(hf, "%llu", &v[2]) != 1) v[2] = 0; fclose(hf); }
             CHECK(v[0] == 6291456 && v[1] == 6291456 && v[2] == 8388608, "超堆区记下要的堆：期望 6291456 / 6291456 / 8388608 → 实 %llu / %llu / %llu", v[0], v[1], v[2]);
+            // #947：堆不够已记下 8 MB、本局布局没按任何记录给（单测没走 layout_prepare，按 0）→ 自动进程内重开：请求受理（替身回 0）→ 回 1、请求 1 次；
+            //   被拒（替身回 -2，如安卓不支持重建）→ 回 0（调用方改报「再点一次开始」）、请求 2 次。期望手写
+            g_restart_calls = 0; g_restart_rc = 0; int ok1 = s2a_mem_heap_learned_restart();
+            g_restart_rc = -2; int ok2 = s2a_mem_heap_learned_restart();
+            CHECK(ok1 == 1 && ok2 == 0 && g_restart_calls == 2, "堆不够自动重开：受理 / 被拒 期望 回 1 / 0、请求 2 次 → 实 %d / %d、%d 次", ok1, ok2, g_restart_calls);
+            // 防循环：本局布局已按 8 MB 给过（= 记下的）仍不够 → 不是堆区给小，不重开、不发请求；按 4 MB 给过（< 记下的 8 MB）→ 重开。期望手写 0 / 1、请求 0 / 1 次
+            g_restart_rc = 0; g_restart_calls = 0; s2a_mem_test_heap_floor(8ull << 20); int ok3 = s2a_mem_heap_learned_restart(); int c3 = g_restart_calls;
+            s2a_mem_test_heap_floor(4ull << 20); int ok4 = s2a_mem_heap_learned_restart(); s2a_mem_test_heap_floor(0);
+            CHECK(ok3 == 0 && c3 == 0 && ok4 == 1 && g_restart_calls == 1, "堆不够自动重开防循环：本局已按 8 / 4 MB 给 期望 回 0 / 1、请求 0 / 1 次 → 实 %d / %d、%d / %d 次", ok3, ok4, c3, g_restart_calls);
         }
         unsetenv("S2A_HEAP_NEED"); unlink(hn);
         munmap(R, RS + 2 * MB);
