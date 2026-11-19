@@ -1714,11 +1714,18 @@ void s2a_core_enter(void) { thr_t *t = thread_current_or_null(); if (t) { core_a
 #else
 #define S2A_ASM_INTERNAL
 #endif
+// 11-19 苹果平台缺省开：虚拟核缺省改按需（cores_mode）后，block_end 当场取核的旧行为在按需档复现了同一类锁环（一款赛车游戏 Mac 6 局 1 局：
+//   nx-82 持 g_rmu 在 up_wait_zero 的 DM_BLOCK_END 里等核 1、nx-86 持核 1 在 nvn_be_reg_tex 里等 g_rmu）。惰性取核是这类环的结构性解，随按需一起成缺省
+#if defined(__APPLE__)
+enum { LAZY_DEFAULT = 1 };
+#else
+enum { LAZY_DEFAULT = 0 };
+#endif
 S2A_ASM_INTERNAL int g_lazy_core = -1;   // -1 未读、0 关（缺省旧行为）、1 开。非 static：entry.S 的钩子先读它，读到 0 就一条 cbz 走开
 static int lazy_core(void) {
     int v = g_lazy_core;
     if (v < 0) { const char *e = getenv("S2A_LAZY_CORE");
-                 v = (e && *e && strcmp(e, "0")) ? 1 : 0;
+                 v = e && *e ? strcmp(e, "0") != 0 : LAZY_DEFAULT;   // 不设取缺省（苹果开，见 LAZY_DEFAULT）
                  g_lazy_core = v; LOG("虚拟核：惰性取核 %s（S2A_LAZY_CORE）", v ? "开" : "关"); }
     return v;
 }
