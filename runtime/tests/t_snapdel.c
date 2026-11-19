@@ -48,6 +48,9 @@ int main(void) {
     CHECK(exists(p), "删后同一目录应能重新写入快照");
     CHECK(s2a_snap_delete(snap) == 0 && !exists(snap), "重新存的那份也能删掉");
     CHECK(s2a_snap_delete("") == -1 && s2a_snap_delete(NULL) == -1, "空路径应回 -1、什么都不删");
+    make_snapshot(snap);
+    CHECK(s2a_snap_delete("snapshot") == -1 && exists(snap), "相对路径应回 -1、不按当前目录去删");
+    CHECK(s2a_snap_delete(snap) == 0, "收尾删掉");
 
     s2a_snap_rmtree(base);
     printf("%s t_snapdel：%d 项通过，%d 项不符\n", g_fail ? "✗" : "✓", g_ok, g_fail);

@@ -361,6 +361,7 @@ static int g_lay_n, g_lay_fields, g_lay_bad; static char g_lay_badnames[1024];
 const char *s2a_snap_path(const char *v);
 static void (*g_snap_done_cb)(int ok, const char *dir);
 static _Atomic int g_snap_busy;
+int s2a_snap_busy(void) { return atomic_load(&g_snap_busy); }   // 正在存档（删除快照前查：snapdel.c；游戏内菜单置灰：ios/vpad.m）
 void s2a_snap_thaw(void);   // thread.c
 static void snap_finish(int ok, const char *dir, int exit_after) {
     if (exit_after) { LOG("即时存档：存完退出进程（快照%s）", ok ? "完整" : "不完整，恢复时会拒绝"); s2a_logcon_flush(); _exit(ok ? 0 : 5); }

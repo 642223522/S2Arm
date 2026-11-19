@@ -671,6 +671,7 @@ static NSString *vp_running_gid(void) { const char *g = getenv("S2A_LAUNCH_GAME_
 // 弱链接[lab]：s2a_snap_dir_for（同上）
 // 弱链接[lab]：s2a_snap_exists（同上）
 // 弱链接[lab]：s2a_snap_delete（同上：runtime/src/snapdel.c）
+// 弱链接[lab]：s2a_snap_busy（同上：runtime/src/snapshot.c，正在存档时置灰「删除这一刻」）
 static unsigned long long s2a_snap_bytes(NSString *dir);
 - (void)buildSnapButton {
     int s2a_snap_logging(void) __attribute__((weak)); int s2a_snap_dir_for(const char *, char *, size_t) __attribute__((weak));
@@ -722,7 +723,8 @@ static NSString *snap_when_text(NSDate *d) {
     unsigned long long bytes = s2a_snap_bytes(dir);
     UIAction *del = [UIAction actionWithTitle:S2AL(@"vpad.snap.delete") image:[UIImage systemImageNamed:@"trash"] identifier:nil
                                       handler:^(__unused UIAction *x) { [ws afterMenu:^{ [ws snapDeleteAsk:dir bytes:bytes]; }]; }];
-    del.attributes = UIMenuElementAttributesDestructive;
+    int s2a_snap_busy(void) __attribute__((weak));
+    del.attributes = UIMenuElementAttributesDestructive | (s2a_snap_busy && s2a_snap_busy() ? UIMenuElementAttributesDisabled : 0);   // 正在存时不能删
     del.subtitle = [NSString stringWithFormat:S2AL(@"vpad.snap.size"), [NSByteCountFormatter stringFromByteCount:(long long)bytes countStyle:NSByteCountFormatterCountStyleFile]];
     return @[go, del];
 }
@@ -744,8 +746,8 @@ static unsigned long long s2a_snap_bytes(NSString *dir) {
     [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.cancel") style:UIAlertActionStyleCancel handler:nil]];
     [a addAction:[UIAlertAction actionWithTitle:S2AL(@"vpad.snap.delete") style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *x) {
         int rc = s2a_snap_delete(dir.fileSystemRepresentation);
-        LOG("即时快照：玩家在游戏里删掉这一刻（约 %s）→ %s", size.UTF8String, rc ? "没删干净" : "已删");
-        [ws snapToast:rc ? S2AL(@"vpad.snap.deleteFailed") : S2AL(@"vpad.snap.deleted")]; }]];
+        LOG("即时快照：玩家在游戏里删掉这一刻（约 %s）→ %s", size.UTF8String, rc == -2 ? "正在存，没删" : rc ? "没删干净" : "已删");
+        [ws snapToast:rc == -2 ? S2AL(@"vpad.snap.busy") : rc ? S2AL(@"vpad.snap.deleteFailed") : S2AL(@"vpad.snap.deleted")]; }]];
     UIViewController *p = self.window.rootViewController; while (p.presentedViewController) p = p.presentedViewController; [p presentViewController:a animated:YES completion:nil];
 }
 // 存好后的轻提示：缩略图 + 时间（前两次再带一句「长按可回到这里」——玩家靠这句发现回去的入口），在存档按钮左边，2 秒淡出、不挡操作
