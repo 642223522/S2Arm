@@ -938,7 +938,70 @@ nvn_gpu_samp rp_sampler_for_query(void) {
     pthread_mutex_unlock(&g_rmu); return result;
 }
 
+// 整池数组（布局来源 NVN_RB_TEXP / NVN_RB_SAMPP，编译器给追不到槽的句柄的回退）：按池编号建一张不可变的池快照（nvn_backend.h nvn_gpu_pool_*）。
+//   键 = (贴图 / 采样器, 池起点, 池长, 声明目标, 数值类)；登记表纪元或序号纪元变了才重建（快照不可原地改，换表 = 新建 + 放旧，
+//   已绑的旧表由后端引用到命令段完成）。贴图项一律走 rp_view_by_id_decl：池内没登记的号 / 类型不符给声明类型的零贴图（#1147，同 Ryujinx），
+//   取不到（已登记但建不出）记 UNAVAILABLE —— 后端按合同拒绑，这一笔具名跳过，不拿零贴图冒充。采样器项取不到记 EMPTY（表尾 dummy）。
+//   线程：[提交]（开通道前，和贴图数组取视图同一处）。
+enum { POOL_CACHE_N = 8 };
+static struct { int used, samp, base; uint32_t n; uint8_t dtt, dcls; uint64_t treg_gen, ser_gen; nvn_gpu_pool_table t; } g_pcache[POOL_CACHE_N];
+static uint32_t g_pcache_next; static uint64_t g_pool_builds, g_pool_items;
+nvn_gpu_pool_table rp_pool_table(nvn_gpu_cmd c, int samp, int base, uint32_t n, uint8_t dtt, uint8_t dcls, const char **why) {
+    *why = NULL;
+    if (!n || n >= 0xffff) { *why = "pool_length_unsupported"; return NULL; }
+    const uint64_t tg = rp_tex_reg_gen(); uint64_t sg; pthread_mutex_lock(&g_rmu); sg = g_ser_gen; pthread_mutex_unlock(&g_rmu);
+    int slot = -1;
+    for (int k = 0; k < POOL_CACHE_N; k++) {
+        if (!g_pcache[k].used || g_pcache[k].samp != samp || g_pcache[k].base != base || g_pcache[k].n != n ||
+            (!samp && (g_pcache[k].dtt != dtt || g_pcache[k].dcls != dcls))) continue;
+        if (g_pcache[k].treg_gen == tg && g_pcache[k].ser_gen == sg) return g_pcache[k].t;
+        slot = k; break;   // 同键旧表：重建后替换
+    }
+    nvn_gpu_pool_item *items = calloc(n, sizeof *items);
+    if (!items) { *why = "pool_table_alloc_failed"; return NULL; }
+    nvn_gpu_pool_desc d; memset(&d, 0, sizeof d);
+    d.kind = samp ? NVN_GPU_POOL_SAMPLER : NVN_GPU_POOL_IMAGE; d.count = n; d.items = items;
+    if (samp) {
+        d.dummy.samp = rp_sampler_for_query();
+        if (!d.dummy.samp) { free(items); *why = "pool_dummy_sampler_failed"; return NULL; }
+        for (uint32_t i = 0; i < n; i++) { nvn_gpu_samp sp = rp_samp_by_id(base + (int)i);
+            if (sp) { items[i].state = NVN_GPU_POOL_READY; items[i].resource.samp = sp; } else items[i].state = NVN_GPU_POOL_EMPTY; }
+    } else {
+        d.dummy.view = decl_zero(dtt, dcls, c);
+        if (!d.dummy.view) { free(items); *why = "pool_dummy_texture_failed"; return NULL; }
+        for (uint32_t i = 0; i < n; i++) { nvn_gpu_view v = rp_view_by_id_decl(base + (int)i, dtt, dcls, 0, c, NULL);
+            if (v) { items[i].state = NVN_GPU_POOL_READY; items[i].resource.view = v; } else items[i].state = NVN_GPU_POOL_UNAVAILABLE; }
+    }
+    nvn_gpu_pool_table t = NULL; nvn_gpu_err err = {0};
+    nvn_gpu_rc rc = nvn_gpu_pool_create(&d, &t, &err);
+    free(items);
+    if (!nvn_gpu_ok(rc)) {
+        *why = rc.code == NVN_GPU_E_UNSUPPORTED ? "pool_table_unsupported" : "pool_table_create_failed";
+        if (nvn_unimpl("tex", *why, NULL) == 1 && err.why[0]) nvn_plat_log(NVN_PLAT_LOG_RED, "tex", err.why);
+        return NULL;
+    }
+    // 序号纪元取建完之后的：本次建表自己取视图会建存储、让序号纪元前进（不是别人改了映射）；登记纪元用建表前读的，建表期间有新登记就下一笔再建
+    pthread_mutex_lock(&g_rmu); sg = g_ser_gen; pthread_mutex_unlock(&g_rmu);
+    g_pool_builds++; g_pool_items += n;
+    if (slot < 0) { for (int k = 0; k < POOL_CACHE_N && slot < 0; k++) if (!g_pcache[k].used) slot = k;
+                    if (slot < 0) slot = (int)(g_pcache_next++ % POOL_CACHE_N); }
+    if (g_pcache[slot].used) nvn_gpu_pool_release(g_pcache[slot].t);
+    g_pcache[slot].used = 1; g_pcache[slot].samp = samp; g_pcache[slot].base = base; g_pcache[slot].n = n;
+    g_pcache[slot].dtt = dtt; g_pcache[slot].dcls = dcls; g_pcache[slot].treg_gen = tg; g_pcache[slot].ser_gen = sg; g_pcache[slot].t = t;
+    if (!(g_pool_builds & (g_pool_builds - 1))) {   // 到 2 的幂打一行：重建频率与项数（流式加载时若每帧重建，这里看得出）
+        char m[160]; snprintf(m, sizeof m, "整池数组快照：第 %llu 次建表，累计 %llu 项（本次 %s 池 %u 项，起点 %d）",
+                              (unsigned long long)g_pool_builds, (unsigned long long)g_pool_items, samp ? "采样器" : "贴图", n, base);
+        nvn_plat_log(NVN_PLAT_LOG_INFO, "tex", m);
+    }
+    return t;
+}
+static void pool_cache_reset(void) {
+    for (int k = 0; k < POOL_CACHE_N; k++) if (g_pcache[k].used) nvn_gpu_pool_release(g_pcache[k].t);
+    memset(g_pcache, 0, sizeof g_pcache);
+}
+
 void rp_res_reset(void) {
+    pool_cache_reset();   // 池快照先放（引用着零贴图 / 视图 / 采样器）
     pthread_mutex_lock(&g_rmu);
     for (int i = 0; i < g_ntreg; i++) treg_drop_view(&g_treg[i]);
     vf_drop_serial(0);

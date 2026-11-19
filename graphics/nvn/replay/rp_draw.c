@@ -610,6 +610,7 @@ static int fast_items_ok(const struct rp_prog *pg, int pi, int st, const nvn_gpu
             break;
         case NVN_RB_UBOA: return 0;
         case NVN_RB_TBUF: return 0;  // 临时缓冲视图每笔重新建并绑定
+        case NVN_RB_TEXP: case NVN_RB_SAMPP: return 0;   // 池快照不在 b[] 里，每笔在普通绑定之后重发 pool_bind
         case NVN_RB_TEX: case NVN_RB_TEXU: {
             // 这一笔刚解析出来的视图 / 采样器必须与上一组里的逐项相同：视图被轮转重建过就交给完整构造重发。
             const uint32_t cnt = e->count > 1 ? e->count : 1;
@@ -641,11 +642,13 @@ static int prog_layout_same(const struct rp_prog *a, const struct rp_prog *b, in
     }
     return 1;
 }
+// 整池数组：开通道前取好的池快照（rp_pool_table），bind_stage_at 在普通绑定之后逐项 nvn_gpu_pool_bind
+static nvn_gpu_pool_table g_ptd[RP_PROG_STAGES][RP_PROG_ENT_MAX];
 static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st, uint32_t base_instance, const nvn_gpu_view *tv, const nvn_gpu_samp *ts, const void *rec);
 static int bind_stage(nvn_gpu_cmd c, const struct rp_prog *pg, int st, uint32_t base_instance, const nvn_gpu_view *tv, const nvn_gpu_samp *ts, const void *rec) { return bind_stage_at(c, pg, st, st, base_instance, tv, ts, rec); }
 static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st, uint32_t base_instance, const nvn_gpu_view *tv, const nvn_gpu_samp *ts, const void *rec) {
     nvn_gpu_binding b[RP_PROG_ENT_MAX]; uint32_t n = 0;
-    int has_tbuf = 0;
+    int has_tbuf = 0, npool = 0;
     // 沿用上一笔：只限图形两个阶段；存储缓冲（要同步镜像、登记 GPU 写）和贴图（视图会轮转）每笔照取
     int keep = 0;
     {   // 逐条判「整组沿用」能不能成立，并记下失败原因（读数：真机上这一条几乎从不成立，要先看清是被哪一项否掉的）
@@ -678,6 +681,10 @@ static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st
     for (uint32_t i = 0; i < pg->nent[pi]; i++) {
         const nvn_gpu_layout_ent *e = &pg->ent[pi][i];
         if (st < RP_PROG_STAGES) g_lb[pi].bof[i] = (uint16_t)n;   // 上一组的布局项 → b[] 起始下标（B1 快路逐项比对贴图视图用）
+        if (e->src_kind == NVN_RB_TEXP || e->src_kind == NVN_RB_SAMPP) {   // 池快照不占 b[]：普通绑定发完再 pool_bind（见函数末尾）
+            if (st >= RP_PROG_STAGES || i >= RP_PROG_ENT_MAX || !g_ptd[st][i]) return skip("pool_table_unresolved", rec);
+            npool++; continue;
+        }
         nvn_gpu_binding *o = &b[n]; memset(o, 0, sizeof *o); o->ent = (uint16_t)i; o->cls = e->cls;
         nvn_gpu_slice sl;
         if (keep && e->src_kind != NVN_RB_SBUFP && e->src_kind != NVN_RB_TEX && e->src_kind != NVN_RB_TEXU && e->src_kind != NVN_RB_IMG && e->src_kind != NVN_RB_TBUF) { *o = g_lb[pi].b[n]; n++; continue; }
@@ -865,7 +872,7 @@ static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st
     }
     if (st < RP_PROG_STAGES) {
         // 和上一笔逐项相同、管线也没重设：后端手里的就是这一组，不用再发
-        const int same = keep && !has_tbuf && g_lb[pi].n == n && !memcmp(g_lb[pi].b, b, (size_t)n * sizeof *b);
+        const int same = keep && !has_tbuf && !npool && g_lb[pi].n == n && !memcmp(g_lb[pi].b, b, (size_t)n * sizeof *b);
         g_lb[pi].c = c; g_lb[pi].seg = rp_seg_serial(); g_lb[pi].gen = rp_cpu_write_gen; g_lb[pi].reg_gen = rp_tex_reg_gen(); g_lb[pi].pg = pg; g_lb[pi].base_instance = base_instance; g_lb[pi].n = n; g_lb[pi].ok = !has_tbuf && !g_ind_drv_ok[st];   // #941：用 GPU 写出 DRV0 的这一组不留作下一笔沿用；纹素缓冲视图是本笔临时建的，也不留
         if (same) { rp_perf_add(RP_PERF_BIND_SKIP, 1); return 1; }
         memcpy(g_lb[pi].b, b, (size_t)n * sizeof *b);
@@ -873,6 +880,18 @@ static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st
     { const uint64_t bb = btm ? dt_now() : 0;
       nvn_gpu_bind(c, st == 5 ? NVN_GPU_SH_CS : (nvn_gpu_stage)st, b, n);
       if (btm) { const uint64_t be = dt_now(); g_bt[1] += be - bb; g_bt[2]++; g_bt[0] += be - btm0; } }
+    if (npool) {   // 整池数组：后端按布局项把整张池表绑上（快照由后端引用到命令段完成）
+        for (uint32_t i = 0; i < pg->nent[pi]; i++) {
+            const nvn_gpu_layout_ent *e = &pg->ent[pi][i];
+            if (e->src_kind != NVN_RB_TEXP && e->src_kind != NVN_RB_SAMPP) continue;
+            nvn_gpu_err err = {0};
+            if (!nvn_gpu_ok(nvn_gpu_pool_bind(c, st == 5 ? NVN_GPU_SH_CS : (nvn_gpu_stage)st, i, g_ptd[st][i], &err))) {
+                if (nvn_unimpl("draw", "pool_bind_failed", rec) == 1 && err.why[0]) nvn_plat_log(NVN_PLAT_LOG_RED, "draw", err.why);
+                return 0;
+            }
+        }
+        if (st < RP_PROG_STAGES) g_lb[pi].ok = 0;   // 有池表的这组不留作下一笔整组沿用
+    }
     return 1;
 }
 
@@ -1186,6 +1205,15 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
             tv[st][i] = rp_view_by_id_decl(tid, g_prog->dtt[st][i], g_prog->dcls[st][i], 0, c, NULL);
             ts[st][i] = rp_samp_for_tex(sid, tid);
             if (g_log_left && tn < sizeof tl - 40) tn += (size_t)snprintf(tl + tn, sizeof tl - tn, " u%d.%u+%#x=#%d/s%d", st, (unsigned)e->src_reg, (unsigned)e->src_off, tid, sid);
+            continue;
+        }
+        if (e->src_kind == NVN_RB_TEXP || e->src_kind == NVN_RB_SAMPP) {   // 整池数组：池快照（count = 池长 + 1 表尾 dummy；池长须与编译时一致）
+            const int sp = e->src_kind == NVN_RB_SAMPP;
+            const uint32_t pn = e->count ? (uint32_t)e->count - 1 : 0;
+            if (pn != (uint32_t)(sp ? rp_S.samp_pool_n : rp_S.tex_pool_n)) { skip("pool_length_mismatch", rec); goto draw_done; }
+            const char *why = NULL;
+            g_ptd[st][i] = rp_pool_table(c, sp, sp ? rp_S.samp_base : rp_S.tex_base, pn, g_prog->dtt[st][i], g_prog->dcls[st][i], &why);
+            if (!g_ptd[st][i]) { skip(why ? why : "pool_table_unresolved", rec); goto draw_done; }
             continue;
         }
         if (e->src_kind != NVN_RB_TEX) continue;
