@@ -31,7 +31,8 @@ static int g_red_lines; static char g_last_red[200];
 static int g_arena_truncated_lines;
 static int g_arena_detail_lines; static char g_arena_detail[256]; static char g_arena697_lines[32][256];
 static char g_ps_lines[8][320]; static int g_ps_n;   // 池统计行（cls "poolstats"）收下来给 t_pool_stats 核
-void nvn_plat_log(int level, const char *cls, const char *text) { if (cls && !strcmp(cls, "poolstats")) { if (g_ps_n < 8) snprintf(g_ps_lines[g_ps_n], 320, "%s", text); g_ps_n++; return; } if(level == NVN_PLAT_LOG_RED && strstr(text,"后续不同原因详情省略（最多8）"))g_arena_truncated_lines++; if (level == NVN_PLAT_LOG_RED && strstr(text,"arena_alloc_failed rc=")) { if(g_arena_detail_lines<32)snprintf(g_arena697_lines[g_arena_detail_lines],256,"%s",text); g_arena_detail_lines++; snprintf(g_arena_detail,sizeof g_arena_detail,"%s",text); } if (level == NVN_PLAT_LOG_RED) { g_red_lines++; snprintf(g_last_red, sizeof g_last_red, "%s", text); } }
+static int g_ubo_zero_lines; static char g_ubo_zero_line[256];   // 常量缓冲句柄指向没登记的号、绑零贴图：每局首次的那一行（#1594 片 4）
+void nvn_plat_log(int level, const char *cls, const char *text) { if (level == NVN_PLAT_LOG_INFO && text && strstr(text, "常量缓冲句柄指向没登记的贴图号")) { g_ubo_zero_lines++; snprintf(g_ubo_zero_line, sizeof g_ubo_zero_line, "%s", text); } if (cls && !strcmp(cls, "poolstats")) { if (g_ps_n < 8) snprintf(g_ps_lines[g_ps_n], 320, "%s", text); g_ps_n++; return; } if(level == NVN_PLAT_LOG_RED && strstr(text,"后续不同原因详情省略（最多8）"))g_arena_truncated_lines++; if (level == NVN_PLAT_LOG_RED && strstr(text,"arena_alloc_failed rc=")) { if(g_arena_detail_lines<32)snprintf(g_arena697_lines[g_arena_detail_lines],256,"%s",text); g_arena_detail_lines++; snprintf(g_arena_detail,sizeof g_arena_detail,"%s",text); } if (level == NVN_PLAT_LOG_RED) { g_red_lines++; snprintf(g_last_red, sizeof g_last_red, "%s", text); } }
 static int g_flag_finish_lag;   // 用例设：开关 nvk_finish_lag 的值
 static int g_flag_sync_lag;     // 用例设：开关 nvk_sync_lag 的值（产品缺省 1＝允许一格在飞；用例固定 0，测的是「真等」这条契约）
 static int g_flag_state_keep = 1, g_flag_rt_cont = 1, g_flag_clear_park = 1, g_flag_pass_area = 1;   // 用例设：开关 nvk_state_keep / nvk_rt_cont / nvk_clear_park / nvk_pass_area 的值（缺省同产品：都开）
@@ -5124,6 +5125,69 @@ static void t_ubo_const_sampler(void) {
     nvn_be_tex_release(&t7); nvn_be_tex_release(&t8); pass_fresh();
 }
 
+// #1594 片 4：TEXU（句柄在游戏常量缓冲里）的贴图号没登记 = Ryujinx TexturePool.GetForBinding 的 null 贴图（(uint)id >= Items.Length 时
+//   texture = null，draw 照常提交）：绑声明类型的零贴图、整笔照画，不再 texture_slot_unresolved 跳笔、不报红；信息计数 rp_ubo_zero_count，
+//   每局首次一行（带贴图号和池容量）。池内没登记的号走既有的空槽路径（#1147，计数在 rp_empty_slot_zero_count，不进 rp_ubo_zero_count）；
+//   已登记的号不受影响；范围只在 TEXU：同一个号经组合槽的取法（rp_view_by_id_decl）越池仍取不到、照旧跳笔。
+static void t_ubo_texture_unregistered(void) {
+    pass_fresh(); res_fresh(); g_resolve_rc = 0; g_gdraws = 0; nvn_unimpl_reset(); g_ubo_zero_lines = 0; g_ubo_zero_line[0] = 0;
+    memset(g_pmem, 0, sizeof g_pmem); nvn_be_pool_add(g_pmem, sizeof g_pmem);
+    const uint64_t base = (uint64_t)(uintptr_t)g_pmem;
+    stream s = {0}; q_env(&s);
+    tex_t t7 = mk_tex(7046, 0x4000, NVN_FORMAT_RGBA8, 4, 4, 1, 0);
+    samp_par sp = {0}; sp.ws = 1; nvn_be_reg_tex(7, &t7, NULL); nvn_be_reg_samp(3, &sp);
+    nvn_be_set_tex_pool_n(64);   // 池容量 64：号 7 已登记，号 40 池内没登记，号 0xFFFFF（1048575）越池
+    uint32_t tw = 0xFFFFF; memcpy(g_pmem + PG + 0x10, &tw, 4);   // 贴图字：20 位全 1（游戏常拿它当「这一路不用贴图」的哨兵）
+    g_fprog.nent[1] = 1; nvn_gpu_layout_ent *e = &g_fprog.ent[1][0];
+    e->cls = NVN_GPU_RES_TEX_SAMP; e->src_kind = NVN_RB_TEXU; e->src_reg = 2; e->src_off = 0x10; e->src_reg2 = 0; e->count = 1;
+    g_fprog.dtt[1][0] = NVN_TEXTURE_TARGET_2D + 1; g_fprog.dcls[1][0] = 0;   // 着色器声明二维浮点：零贴图建得出
+    g_fprog.nusrc = 1;
+    g_fprog.usrc[0] = (struct rp_usrc){ .tex = { .reg = 2, .off = 0x10 }, .samp_kind = NVN_RB_SAMPI, .samp_reg = 3, .samp_pool = 1 };
+    p_bind_buf *ub = put(&s, OP_BIND_UBO, sizeof *ub); ub->stage = 1; ub->index = 2; ub->addr = base + PG; ub->size = 64;
+    uint64_t ez0 = rp_empty_slot_zero_count(); int red0 = g_red_lines;
+    q_draw(&s); end(&s); submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 1 && g_fb[1][0].u.ts.view && g_fb[1][0].u.ts.view->of->d.d.width == 1 && g_fb[1][0].u.ts.view->of->d.d.format == NVN_FORMAT_RGBA8);   // 越池号：声明类型的零贴图，整笔照画
+    CHECK(g_fb[1][0].u.ts.samp && g_fb[1][0].u.ts.samp->x == 1);   // 采样器照常按池下标 3 取
+    CHECK(nvn_unimpl_count("draw", "texture_slot_unresolved") == 0 && nvn_unimpl_kinds() == 0 && g_red_lines == red0);
+    CHECK(rp_ubo_zero_count() == 1 && rp_empty_slot_zero_count() == ez0);
+    CHECK(g_ubo_zero_lines == 1 && strstr(g_ubo_zero_line, "贴图号 1048575") && strstr(g_ubo_zero_line, "容量 64"));
+    nvn_gpu_view zero = g_fb[1][0].u.ts.view;
+    // 第二笔同一个号：计数 +1，首行不再打，同一张零贴图
+    stream again = {0}; q_draw(&again); end(&again); submit1(&again); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 2 && g_fb[1][0].u.ts.view == zero && rp_ubo_zero_count() == 2 && g_ubo_zero_lines == 1);
+    // 池内没登记的号 40：既有的空槽路径（#1147），同一张零贴图，计数进 rp_empty_slot_zero_count，不进 rp_ubo_zero_count
+    tw = 40; memcpy(g_pmem + PG + 0x10, &tw, 4);
+    stream inpool = {0}; q_draw(&inpool); end(&inpool); submit1(&inpool); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 3 && g_fb[1][0].u.ts.view == zero && rp_empty_slot_zero_count() == ez0 + 1 && rp_ubo_zero_count() == 2 && g_ubo_zero_lines == 1);
+    // 反例：已登记的号 7 不受影响，不记任何一种零贴图
+    tw = 7; memcpy(g_pmem + PG + 0x10, &tw, 4);
+    stream reg = {0}; q_draw(&reg); end(&reg); submit1(&reg); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 4 && g_fb[1][0].u.ts.view && g_fb[1][0].u.ts.view->of->d.d.width == 4 && rp_ubo_zero_count() == 2 && rp_empty_slot_zero_count() == ez0 + 1);
+    // 池容量未知（没登记池，Items.Length = 0，任何号都越界）：同样是 null 贴图
+    nvn_be_set_tex_pool_n(0); tw = 40; memcpy(g_pmem + PG + 0x10, &tw, 4);
+    stream nocap = {0}; q_draw(&nocap); end(&nocap); submit1(&nocap); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 5 && g_fb[1][0].u.ts.view == zero && rp_ubo_zero_count() == 3);
+    nvn_be_set_tex_pool_n(64);
+    // 反例：着色器声明的类型认不出（dtt = 0）造不出声明类型的零贴图：照旧具名跳笔，不乱绑别的贴图
+    g_fprog.dtt[1][0] = 0; tw = 0xFFFFF; memcpy(g_pmem + PG + 0x10, &tw, 4); rp_dirty_all();
+    stream untyped = {0}; q_draw(&untyped); end(&untyped); submit1(&untyped); fake_complete(NVN_GPU_DONE_OK);
+    CHECK(g_gdraws == 5 && nvn_unimpl_count("draw", "texture_slot_unresolved") == 1 && rp_ubo_zero_count() == 3);
+    g_fprog.dtt[1][0] = NVN_TEXTURE_TARGET_2D + 1;
+    // 范围对照：同一个号经组合槽的取法（rp_view_by_id_decl，elem = 0）越池仍取不到，照旧由调用方报 texture_slot_unresolved 跳笔；TEXU 的取法拿得到零贴图
+    CHECK(rp_view_by_id_decl(1048575, NVN_TEXTURE_TARGET_2D + 1, 0, 0, &g_fake_cmd, NULL) == NULL && rp_ubo_zero_count() == 3);
+    CHECK(rp_view_by_id_decl(-1, NVN_TEXTURE_TARGET_2D + 1, 0, 0, &g_fake_cmd, NULL) == NULL);
+    CHECK(rp_view_by_ubo_handle_decl(1048575, NVN_TEXTURE_TARGET_2D + 1, 0, &g_fake_cmd, NULL) == zero && rp_ubo_zero_count() == 4);
+    CHECK(rp_view_by_ubo_handle_decl(-1, NVN_TEXTURE_TARGET_2D + 1, 0, &g_fake_cmd, NULL) == zero && rp_ubo_zero_count() == 5);   // 负号同样是没登记
+    // 换局：计数清零，首行重来（零贴图要在一次提交里建，同 t_decl_view）
+    nvn_be_tex_release(&t7);
+    nvn_be_sub_begin(); res_fresh();
+    CHECK(rp_ubo_zero_count() == 0);
+    nvn_be_set_tex_pool_n(64); g_ubo_zero_lines = 0;
+    CHECK(rp_view_by_ubo_handle_decl(1048575, NVN_TEXTURE_TARGET_2D + 1, 0, &g_fake_cmd, NULL) != NULL && rp_ubo_zero_count() == 1 && g_ubo_zero_lines == 1);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    nvn_be_set_tex_pool_n(0); res_fresh(); pass_fresh();
+}
+
 // Registered views must obey the same encode-window lifetime as cached attachment
 // views and samplers, including re-registration and nested windows.
 static void t_registered_view_pin(void) {
@@ -5412,6 +5476,7 @@ int main(int argc, char **argv) {
     t_const_sampler();
     t_ubo_texture();
     t_ubo_const_sampler();
+    t_ubo_texture_unregistered();
     t_present(); t_present_adpf();
     t_framelog_fence();
     t_view_pin();

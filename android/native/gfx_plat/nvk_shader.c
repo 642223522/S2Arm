@@ -569,6 +569,16 @@ static long ubo_tex_id(int st, unsigned cbuf, unsigned word) {
     return (long)(h & 0xFFFFF) + rp_S.tex_base;
 }
 static int request_texture_fact(uint32_t fmt, uint32_t target, uint32_t layers, struct s2a_nvn_texture_fact *out, char *why, size_t why_size);
+// 常量缓冲句柄指向没登记的贴图号、按默认描述符给了事实的次数（信息计数，不是未接；换局清零）。每局首次打一行，带贴图号和池容量。
+static _Atomic uint64_t g_ubo_default_fact;
+uint64_t rp_shader_ubo_default_fact_count(void) { return atomic_load(&g_ubo_default_fact); }
+static void ubo_default_fact_note(int st, unsigned cbuf, unsigned word, long id) {
+    if (atomic_fetch_add(&g_ubo_default_fact, 1) != 0) return;
+    char b[240];
+    snprintf(b, sizeof b, "常量缓冲句柄指向没登记的贴图：%s c%u 第 %u 字 → 贴图号 %ld（贴图池基址 %d、容量 %d）：同 Ryujinx，按默认描述符给事实，整笔照常编译",
+             st == 0 ? "vs" : st == 1 ? "fs" : "gs", cbuf, word, id, (int)rp_S.tex_base, (int)rp_S.tex_pool_n);
+    nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", b);
+}
 static void ubo_facts_add(struct facts *f, int st) {
     const struct ubo_need *e = ubo_need_find(st);
     for (unsigned i = 0; e && i < e->n && f->ntex < S2A_COMPILE_TEXTURE_MAX; i++) {
@@ -576,10 +586,11 @@ static void ubo_facts_add(struct facts *f, int st) {
         tex_t t; view_t tv; int has_tv = 0; struct s2a_nvn_texture_fact nf; char why[96];
         if (id < 0) continue;   // ubo_tex_id 已具名报过
         if (!rp_tex_snap_by_id((int)id, &t, &tv, &has_tv)) {
-            char b[160]; snprintf(b, sizeof b, "常量缓冲句柄指向的贴图取不到：c%u 第 %u 字 → 贴图号 %ld（贴图池基址 %d）", e->c[i].cbuf, e->c[i].word, id, (int)rp_S.tex_base);
-            red1("ubo_handle_no_texture", b); continue;
-        }
-        if (request_texture_fact((uint32_t)(has_tv && tv.set_format ? tv.format : t.d.format), (uint32_t)(has_tv && tv.set_target ? tv.target : t.d.target), t.d.depth, &nf, why, sizeof why)) {
+            // 号没登记（越过池容量 / 池里没登记；0xFFFFF 常是游戏的「这一路不用贴图」哨兵）：Ryujinx 取到默认描述符、整笔照画。
+            //   事实同组合槽（默认事实只此一份）。不是红行：计数 + 每局首次一行，号越界在读数里仍看得见
+            s2a_nvn_default_texture_fact(id, rp_S.tex_base, (uint32_t)rp_S.tex_pool_n, &nf);
+            ubo_default_fact_note(st, e->c[i].cbuf, e->c[i].word, id);
+        } else if (request_texture_fact((uint32_t)(has_tv && tv.set_format ? tv.format : t.d.format), (uint32_t)(has_tv && tv.set_target ? tv.target : t.d.target), t.d.depth, &nf, why, sizeof why)) {
             char b[240]; snprintf(b, sizeof b, "常量缓冲句柄的贴图出不了编译事实：贴图号 %ld 格式 0x%x 目标 %u：%s", id, (unsigned)(has_tv && tv.set_format ? tv.format : t.d.format), (unsigned)(has_tv && tv.set_target ? tv.target : t.d.target), why);
             red1("ubo_handle_no_fact", b); continue;
         }
@@ -599,7 +610,7 @@ static uint64_t ubo_fact_sig(int st) {
         tex_t t; view_t tv; int has_tv = 0;
         if (id >= 0 && rp_tex_snap_by_id((int)id, &t, &tv, &has_tv)) {
             UMIX(1); UMIX(has_tv && tv.set_format ? tv.format : t.d.format); UMIX(has_tv && tv.set_target ? tv.target : t.d.target); UMIX(t.d.depth);
-        } else UMIX(2);
+        } else UMIX(id < 0 ? 2 : 3 + !s2a_nvn_default_texture_fact(id, rp_S.tex_base, (uint32_t)rp_S.tex_pool_n, NULL));   // 读不到 / 没登记（池内、池外两种默认事实）各是一个值
     }
     #undef UMIX
     return h;
@@ -639,11 +650,7 @@ static void fill_facts(const struct rp_shader_req *q, const struct s2a_direct_co
         if (rp_tex_snap_by_id((int)id, &t, &tv, &has_tv)) {
             // 格式、目标都取绑定视图的（视图自己设了就用它的）：声明的采样数值型要和绑上去的视图一致，坐标归一与否只看有效目标
             if (request_texture_fact((uint32_t)(has_tv && tv.set_format ? tv.format : t.d.format), (uint32_t)(has_tv && tv.set_target ? tv.target : t.d.target), t.d.depth, &nf, why, sizeof why)) continue;   // 表达不了的格式 / 目标：不出事实，编译器按缺项准确失败
-        } else {
-            int in_pool = id >= rp_S.tex_base && (uint64_t)(id - rp_S.tex_base) < (uint64_t)rp_S.tex_pool_n;
-            memset(&nf, 0, sizeof nf); snprintf(nf.format, sizeof nf.format, "Unknown");
-            snprintf(nf.sampler_type, sizeof nf.sampler_type, "%s", in_pool ? "1d" : "2d"); nf.normalized = !in_pool; nf.array_length = 1;
-        }
+        } else s2a_nvn_default_texture_fact(id, rp_S.tex_base, (uint32_t)rp_S.tex_pool_n, &nf);   // 没登记：Ryujinx GetTextureDescriptor 的默认描述符（默认事实只此一份，texture_facts.c）
         int n = f->ntex++;
         memcpy(f->tfmt[n], nf.format, sizeof f->tfmt[n]); memcpy(f->tsmp[n], nf.sampler_type, sizeof f->tsmp[n]);
         f->tex[n] = (struct s2a_compile_texture_src){(const char *const[]){"vs", "fs", "gs"}[st], (uint32_t)(8 + 2 * slot), -1, f->tsmp[n], f->tfmt[n], nf.is_buffer, nf.normalized, 0, nf.array_length};
@@ -1835,11 +1842,7 @@ static int resolve_compute_slow(const struct rp_prog **out, const struct s2a_dir
         tex_t t; view_t tv; int has_tv = 0; struct s2a_nvn_texture_fact nf; char why[96];
         if (rp_tex_snap_by_id((int)id, &t, &tv, &has_tv)) {
             if (request_texture_fact((uint32_t)(has_tv && tv.set_format ? tv.format : t.d.format), (uint32_t)(has_tv && tv.set_target ? tv.target : t.d.target), t.d.depth, &nf, why, sizeof why)) continue;
-        } else {
-            int in_pool = id >= rp_S.tex_base && (uint64_t)(id - rp_S.tex_base) < (uint64_t)rp_S.tex_pool_n;
-            memset(&nf, 0, sizeof nf); snprintf(nf.format, sizeof nf.format, "Unknown");
-            snprintf(nf.sampler_type, sizeof nf.sampler_type, "%s", in_pool ? "1d" : "2d"); nf.normalized = !in_pool; nf.array_length = 1;
-        }
+        } else s2a_nvn_default_texture_fact(id, rp_S.tex_base, (uint32_t)rp_S.tex_pool_n, &nf);
         memcpy(tfmt[ntex], nf.format, sizeof tfmt[ntex]); memcpy(tsmp[ntex], nf.sampler_type, sizeof tsmp[ntex]);
         tex[ntex] = (struct s2a_compile_texture_src){"cs", (uint32_t)(8 + 2 * slot), -1, tsmp[ntex], tfmt[ntex], nf.is_buffer, nf.normalized, 0, nf.array_length};
         ntex++;
@@ -2002,7 +2005,7 @@ void rp_shader_reset(void) {
     free(g_last_tab); g_last_tab = NULL;
     memset(g_comb_sig, 0, sizeof g_comb_sig);
     memset(g_high_sig, 0, sizeof g_high_sig);
-    memset(g_ubo_need, 0, sizeof g_ubo_need); g_ubo_need_n = 0; g_ubo_learned = 0;
+    memset(g_ubo_need, 0, sizeof g_ubo_need); g_ubo_need_n = 0; g_ubo_learned = 0; atomic_store(&g_ubo_default_fact, 0);
     memset(g_idg, 0, sizeof g_idg); memset(g_idg_set, 0, sizeof g_idg_set);
     g_idg_groups = g_idg_idents = g_idg_resolves = g_idg_compiles = g_idg_loads = g_idg_multi = 0; g_idg_last_ns = 0;
     g_cs_hits = g_cs_misses = g_cs_hit_ns = g_cs_miss_ns = 0; g_mark_cs_hits = g_mark_cs_misses = g_mark_cs_hit_ns = g_mark_cs_miss_ns = 0;

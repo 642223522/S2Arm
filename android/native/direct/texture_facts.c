@@ -177,6 +177,19 @@ static int s2a_nvn_texture_fact_compute(uint32_t nvn_format, uint32_t nvn_target
     return 0;
 }
 
+int s2a_nvn_default_texture_fact(int64_t id, int32_t pool_base, uint32_t pool_n, struct s2a_nvn_texture_fact *out) {
+    // Ryujinx 的 IsValidId：id <= 池 MaximumId，即 0 <= id - pool_base < pool_n；池基址未知（< 0）一律按池外
+    const int in_pool = pool_base >= 0 && id >= pool_base && (uint64_t)(id - pool_base) < pool_n;
+    if (!out) return in_pool;
+    memset(out, 0, sizeof *out);
+    snprintf(out->format, sizeof out->format, "Unknown");
+    snprintf(out->sampler_type, sizeof out->sampler_type, "%s", in_pool ? "1d" : "2d");
+    out->is_buffer = 0;
+    out->normalized = in_pool ? 0 : 1;
+    out->array_length = 1;
+    return in_pool;
+}
+
 int s2a_nvn_texture_buffer_fact(uint32_t nvn_format, struct s2a_nvn_texture_fact *out,
                                 char *why, size_t why_size) {
     // Producers may supply this fact; replay must still reject a BUFFER

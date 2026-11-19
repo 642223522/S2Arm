@@ -770,6 +770,28 @@ nvn_gpu_view rp_view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, int elem, nvn
     }
     return out;
 }
+// 句柄在游戏常量缓冲里（NVN_RB_TEXU）的槽：号没登记（越过池容量 / 负号 / 池里没登记）= Ryujinx TexturePool.GetForBinding 的 null 贴图
+//   （(uint)id >= Items.Length 时 texture = null，draw 照常提交），绑声明类型的零贴图、不跳整笔。0xFFFFF 常是游戏的「这一路不用贴图」
+//   哨兵，整笔跳掉反而是错画面。不是红行：计数 + 每局首次一行（带贴图号和池容量），号越界在读数里仍看得见。
+//   范围只在 TEXU 这一条：已登记却取不到视图的（类型对不上等）照旧由调用方具名跳过；池内没登记的号走上面 rp_view_by_id_decl 既有的空槽路径（#1147）；
+//   组合槽 / 贴图数组 / c2 分离表不走这里，号越过池容量仍按 #1147 报红跳笔（口径等这条的真机读数再统一评估）。
+static _Atomic uint64_t g_ubo_zero;   // 常量缓冲句柄指向没登记的号、绑了零贴图的次数（信息计数；换局清零）
+uint64_t rp_ubo_zero_count(void) { return atomic_load(&g_ubo_zero); }
+nvn_gpu_view rp_view_by_ubo_handle_decl(int id, uint8_t dtt, uint8_t dcls, nvn_gpu_cmd c, tex_t *t_out) {
+    nvn_gpu_view out = rp_view_by_id_decl(id, dtt, dcls, 0, c, t_out);
+    if (out || !dtt) return out;
+    pthread_mutex_lock(&g_rmu);
+    const int unregistered = id < 0 || id >= g_ntreg || !g_treg[id].ok;
+    const int cap = g_tpool_n;
+    pthread_mutex_unlock(&g_rmu);
+    if (!unregistered || !(out = decl_zero(dtt, dcls, c))) return NULL;
+    if (atomic_fetch_add(&g_ubo_zero, 1) == 0) {
+        char b[200];
+        snprintf(b, sizeof b, "常量缓冲句柄指向没登记的贴图号 %d（贴图池容量 %d）：同 Ryujinx，绑声明类型的零贴图，不跳整笔", id, cap);
+        nvn_plat_log(NVN_PLAT_LOG_INFO, "tex", b);
+    }
+    return out;
+}
 static nvn_gpu_view view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, nvn_gpu_cmd c, tex_t *t_out) {
     if (t_out) memset(t_out, 0, sizeof *t_out);
     pthread_mutex_lock(&g_rmu);
@@ -1009,7 +1031,7 @@ void rp_res_reset(void) {
         if (g_zero[target][cls].view) nvn_gpu_view_release(g_zero[target][cls].view);
         if (g_zero[target][cls].tex) nvn_gpu_tex_release(g_zero[target][cls].tex);
     }
-    memset(g_zero, 0, sizeof g_zero); g_zero_cube_logged = 0;
+    memset(g_zero, 0, sizeof g_zero); g_zero_cube_logged = 0; atomic_store(&g_ubo_zero, 0);
     for (int i = 0; i < g_nsreg; i++) { if (g_sreg[i].s) nvn_gpu_samp_release(g_sreg[i].s); if (g_sreg[i].sn) nvn_gpu_samp_release(g_sreg[i].sn); }
     memset(g_fmt_caps, 0, sizeof g_fmt_caps);
     if (g_query_sampler) nvn_gpu_samp_release(g_query_sampler);
