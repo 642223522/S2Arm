@@ -18868,6 +18868,12 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     if (!layer.displaySyncEnabled) layer.displaySyncEnabled = YES;   // Windowed mode follows the display's vsync to prevent tearing
 #endif
     present_pipeline(layer.pixelFormat);   // Same as the original path: the first frame compiles the pipeline before taking the drawable
+    // PR4 排空喂入（评审稿 v3 §4 PR4 ②「nvn_mtl.m 每帧喂计数」）：层持 PQ 才可能要排空——门在层格式上，SDR 层（off / S0 缺省路径）喂计数是空转
+    //   （hdr_layer_tick_frame !layer_pq 直返），缺省路径零新增开销；层持 PQ 的帧才进（getenv + 锁，PQ 新路径，nvn2.c:653 事件档口径的例外已注明）。
+    //   PQ 窗口 = 游戏出图源是 RGB10A2（HDR10 窗）：排空途中又见 PQ 窗口清零重等——无 HDR 帧落进 SDR 层；want 期间（can 持稳 ∧ s1_ready）非 PQ 帧也不排空。
+    //   层格式切换帧不崩：present_blit(_m4) 对真实 drawable 的格式再查一次 present_pipeline（下方 blit 自己调），本帧 PSO 与 drawable 恒同格式。
+    if (layer.pixelFormat == MTLPixelFormatRGB10A2Unorm)
+        nvn2_hdr_tick_frame(nvn2_hdr_switch(), src.pixelFormat == MTLPixelFormatRGB10A2Unorm);
     fit_geom(layer.drawableSize.width, layer.drawableSize.height, pcw, pch);   // game units (was the crop / source size read here)
     if (g_grab_cb) grab_present(src, crop, layer.drawableSize, ticket);   // Game picture needed by the whole-window screenshot (peek without the lock first; the real take locks inside the function)
     if (fi_wanted() && !supplied) { if (@available(macOS 26.0, iOS 26.0, *)) { int fr = fi_frame(src, crop, layer, period, ticket); if (fr >= 0) return fr; } }   // 实验：出图补帧接手这一帧
