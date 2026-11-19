@@ -159,6 +159,14 @@ int main(void) {
             memset(r, 0, sizeof r); r[1] = 8 * MB; svc_mem(0x01, r, 0);
             hf = fopen(hn, "r"); if (hf) { if (fscanf(hf, "%llu", &v[2]) != 1) v[2] = 0; fclose(hf); }
             CHECK(v[0] == 6291456 && v[1] == 6291456 && v[2] == 8388608, "超堆区记下要的堆：期望 6291456 / 6291456 / 8388608 → 实 %llu / %llu / %llu", v[0], v[1], v[2]);
+            // 小内存 iPad：堆区声明 64 MB 装得下 8 MB，但窗口只剩 16 MB、堆起点 +4 MB → 8 MB 请求越过窗口尾。
+            //   期望手写：回 0xD001、把 8388608 记进 heap_need（下一局按它给窗口），不是静默 Break。
+            unlink(hn);
+            s2a_mem_test_setup(b + 4 * MB, 4 * MB, b, RS, (void *)(b + 10 * MB), 0); s2a_mem_test_sysres(0x2000000, 64 * MB);
+            memset(r, 0, sizeof r); r[1] = 8 * MB; svc_mem(0x01, r, 0);
+            unsigned long long vw = 0; hf = fopen(hn, "r"); if (hf) { if (fscanf(hf, "%llu", &vw) != 1) vw = 0; fclose(hf); }
+            CHECK(r[0] == 0xD001 && vw == 8388608, "窗口越界的堆请求：期望 回 0xd001 且记下 8388608 → 实 %#llx / %llu",
+                  (unsigned long long)r[0], vw);
         }
         unsetenv("S2A_HEAP_NEED"); unlink(hn);
         munmap(R, RS + 2 * MB);
