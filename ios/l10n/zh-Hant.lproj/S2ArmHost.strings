@@ -603,3 +603,9 @@
 "vpad.snap.button.hint" = "點一下存下這一刻，長按回到存下的那一刻";
 "vpad.snap.none" = "還沒有存下的時刻，單擊右上角按鈕就能存";
 "vpad.snap.savedHint" = "%@ · 長按按鈕可回到這裡";
+"vpad.snap.delete" = "刪除這一刻";
+"vpad.snap.size" = "約 %@";
+"vpad.snap.delete.title" = "刪除存下的這一刻？";
+"vpad.snap.delete.body" = "這份快照約佔 %@。刪掉後就回不到那一刻了，遊戲存檔不受影響。";
+"vpad.snap.deleted" = "已刪除，空間已騰出";
+"vpad.snap.deleteFailed" = "這次沒刪乾淨，稍後再試一次";

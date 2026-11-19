@@ -339,9 +339,9 @@ public struct LibraryView: View {
         .environment(\.shellShowHelp, { game in openHelp(game.id) })
         .environment(\.shellAskDelete, actions.onDeleteGame == nil ? nil : { game in openDelete(game.id) })
         .environment(\.shellManageSaves, guardedActions.onManageSaves)
-        .environment(\.shellSnapshot, { () -> (available: (String) -> Bool, restore: (String) -> Void)? in
+        .environment(\.shellSnapshot, { () -> (available: (String) -> Bool, restore: (String) -> Void, delete: ((String) -> Void)?)? in
             guard let has = actions.snapshotAvailable, let go = guardedActions.onRestoreSnapshot else { return nil }
-            return (available: has, restore: go) }())
+            return (available: has, restore: go, delete: guardedActions.onDeleteSnapshot) }())
         .environment(\.shellOpenGameOrder, actions.onReorderGames == nil ? nil : {
             guard libraryPressAllowed, noteTouch() else { return }
             gameOrderOpen = true
@@ -411,12 +411,22 @@ public struct LibraryView: View {
     @ViewBuilder private func library(_ selected: GameDetail, layout: ShellLayout, size: CGSize, insets: EdgeInsets,
                                       chipsInSideBar: Bool, settingsInSideBar: Bool) -> some View {
         if layout.isCoverFlow {
-            CoverFlowView(games: games, selected: selected, controllers: controllers.count, showsHints: !touchMode, screenInsets: insets,
-                          chipsInSideBar: chipsInSideBar, settingsInSideBar: settingsInSideBar,
-                          select: select, primary: primary, openSettings: openSettings, openControllers: openControllers,
-                          openShellSettings: openShellSettings)
-                .equatable()
-                .transition(.opacity)
+            // 0.6.0 快照：有存下的时刻时，左侧一栏「从这一刻继续」（横屏缺的是高度，不在顶上加横条压缩大卡），封面墙在剩下的宽度里居中；没有就和原来一样整屏
+            HStack(spacing: 0) {
+                if !SavedMomentStrip.saved(games).isEmpty, case .coverFlow(let regular) = layout {
+                    SavedMomentStrip(games: games, axis: .vertical)
+                        .frame(width: SavedMomentStrip.columnWidth(size.width, regular: regular))
+                        .padding(.top, insets.top + 14).padding(.bottom, 8).padding(.leading, max(16, insets.leading))
+                        .frame(maxHeight: .infinity, alignment: .top)
+                        .overlay(alignment: .trailing) { Rectangle().fill(ShellPalette.hairline).frame(width: 1).padding(.vertical, 18) }
+                }
+                CoverFlowView(games: games, selected: selected, controllers: controllers.count, showsHints: !touchMode, screenInsets: insets,
+                              chipsInSideBar: chipsInSideBar, settingsInSideBar: settingsInSideBar,
+                              select: select, primary: primary, openSettings: openSettings, openControllers: openControllers,
+                              openShellSettings: openShellSettings)
+                    .equatable()
+            }
+            .transition(.opacity)
         } else {
             PortraitLibrary(games: games, selected: selected, wide: layout == .grid, size: size, topInset: insets.top, bottomInset: insets.bottom,
                             chipsInSideBar: chipsInSideBar, settingsInSideBar: settingsInSideBar,
@@ -519,6 +529,7 @@ public struct LibraryView: View {
         a.onDeleteGame = o.onDeleteGame.map { act in { if !echo() { act($0, $1) } } }
         a.onManageSaves = o.onManageSaves.map { act in { if !echo() { act($0) } } }
         a.onRestoreSnapshot = o.onRestoreSnapshot.map { act in { if !echo() { act($0) } } }
+        a.onDeleteSnapshot = o.onDeleteSnapshot.map { act in { if !echo() { act($0) } } }
         return a
     }
     /// An action that did not come from a controller or key came from touch: hints and focus ring step back. False when

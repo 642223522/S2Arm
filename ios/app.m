@@ -910,6 +910,21 @@ int s2a_shell_snapshot_available(const char *gid) {
     int s2a_snap_saving(void), s2a_snap_dir_for(const char *, char *, size_t), s2a_snap_exists(const char *);
     char d[2048]; return gid && *gid && s2a_snap_saving() && !s2a_snap_dir_for(gid, d, sizeof d) && s2a_snap_exists(d);
 }
+// 游戏库「从这一刻继续」：有完整快照的那款给出快照目录（宿主模型每秒重判时读里面的缩略图和保存时刻）；开关关着 / 没有完整快照回 -1
+int s2a_shell_snapshot_dir(const char *gid, char *out, unsigned long size) {
+    int s2a_snap_saving(void), s2a_snap_dir_for(const char *, char *, size_t), s2a_snap_exists(const char *);
+    char d[2048];
+    if (!gid || !*gid || !out || !s2a_snap_saving() || s2a_snap_dir_for(gid, d, sizeof d) || !s2a_snap_exists(d)) return -1;
+    return snprintf(out, size, "%s", d) < (int)size ? 0 : -1;
+}
+// 游戏库长按「删除这一刻」（玩家已确认）：连同缩略图、清单一起删，空间腾出来（runtime/src/snapdel.c）
+int s2a_shell_delete_snapshot(const char *gid) {
+    int s2a_snap_dir_for(const char *, char *, size_t), s2a_snap_delete(const char *);
+    char d[2048]; if (!gid || !*gid || s2a_snap_dir_for(gid, d, sizeof d)) return -1;
+    int rc = s2a_snap_delete(d);
+    LOG("游戏库：%s 删除存下的这一刻 → %s", gid, rc ? "没删干净" : "已删");
+    return rc;
+}
 static void library_play(const char *gid, void *ctx);
 static void snap_library_go(NSString *gid, NSString *dir, BOOL rollback) {
     setenv("S2A_SNAP_RESTORE", dir.fileSystemRepresentation, 1);   // 起局（host_run）时读：核对 → 起服务层 → 按快照恢复，不从头起游戏

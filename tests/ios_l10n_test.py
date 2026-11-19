@@ -86,7 +86,8 @@ SHELL_LOG_CALLS = {'NSLog', 'print'}
 SHELL_IDENT = {   # 文件 → {中文字面量开头: 不改的理由}
     'Catalogue.swift': {s: 'Catalogue.problems：清单读不了 / 坏了的原因，只进 NSLog（S2ArmShellHostModel 打日志，shell/UPSTREAM.md「问题只进日志」）'
                         for s in ('清单读不了：', '清单 JSON 坏了：', '清单 schema ', '重复的 title_id ', 'title_id \\"', '程序包清单 ')} | {'资源包': '机上目录名 <资源根>/<游戏号>/资源包（runtime/src/pack_apply.c 同名，0.5.x 老款认它），不是显示文字'},
-    'S2ArmShellHostModel.swift': {'资源包': '机上目录名 Documents/games/<游戏号>/资源包（runtime/src/pack_apply.c 同名），不是显示文字'},
+    'S2ArmShellHostModel.swift': {'资源包': '机上目录名 Documents/games/<游戏号>/资源包（runtime/src/pack_apply.c 同名），不是显示文字',
+                                  '保存时刻': '快照清单 manifest.tsv 的键名（runtime/src/snapshot.c 写、宿主模型按它找行），不是显示文字'},
 }
 SAVESYNC_DIR = 'launchers/shared/SaveSync/Sources/SaveSync'
 MAC_L10N = {'zh': 'launchers/macos/frontend/l10n/zh.json', 'en': 'launchers/macos/frontend/l10n/en.json'}

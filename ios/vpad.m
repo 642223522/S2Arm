@@ -560,7 +560,7 @@ static NSString *vp_running_gid(void) { const char *g = getenv("S2A_LAUNCH_GAME_
       if (s2a_snap_logging && s2a_snap_logging() && s2a_snap_dir_for && !s2a_snap_dir_for(NULL, sd, sizeof sd)) {
           NSString *dir = @(sd);
           NSMutableArray<UIMenuElement *> *snap = [NSMutableArray array];
-          [snap addObject:vp_act(S2AL(@"vpad.snap.save"), @"camera.viewfinder", NO, ^{ [ws afterMenu:^{ [ws snapSave:dir]; }]; })];
+          [snap addObject:vp_act(S2AL(@"vpad.snap.save"), @"record.circle", NO, ^{ [ws afterMenu:^{ [ws snapSave:dir]; }]; })];
           if (s2a_snap_exists && s2a_snap_exists(sd)) [snap addObject:vp_act(S2AL(@"vpad.snap.restore"), @"clock.arrow.circlepath", NO, ^{ [ws afterMenu:^{ [ws snapRestore:dir]; }]; })];
           [items addObject:vp_inline(snap)];
       } }
@@ -670,6 +670,9 @@ static NSString *vp_running_gid(void) { const char *g = getenv("S2A_LAUNCH_GAME_
 // 弱链接[lab]：s2a_snap_logging（即时快照：runtime/src/snapsw.c、snapshot.c 提供；输入工作台不链原生核，取不到就不建按钮）
 // 弱链接[lab]：s2a_snap_dir_for（同上）
 // 弱链接[lab]：s2a_snap_exists（同上）
+// 弱链接[lab]：s2a_snap_delete（同上：runtime/src/snapdel.c）
+// 弱链接[lab]：s2a_snap_busy（同上：runtime/src/snapshot.c，正在存档时置灰「删除这一刻」）
+static unsigned long long s2a_snap_bytes(NSString *dir);
 - (void)buildSnapButton {
     int s2a_snap_logging(void) __attribute__((weak)); int s2a_snap_dir_for(const char *, char *, size_t) __attribute__((weak));
     char sd[2048];
@@ -677,7 +680,7 @@ static NSString *vp_running_gid(void) { const char *g = getenv("S2A_LAUNCH_GAME_
     _snapDir = @(sd);
     _snapBtn = [UIButton buttonWithType:UIButtonTypeSystem]; _snapBtn.accessibilityIdentifier = @"vpad.snap"; _snapBtn.accessibilityLabel = S2AL(@"vpad.snap.save");
     _snapBtn.accessibilityHint = S2AL(@"vpad.snap.button.hint");
-    [_snapBtn setImage:[UIImage systemImageNamed:@"camera.viewfinder"] forState:UIControlStateNormal]; _snapBtn.tintColor = UIColor.whiteColor;
+    [_snapBtn setImage:[UIImage systemImageNamed:@"record.circle"] forState:UIControlStateNormal]; _snapBtn.tintColor = UIColor.whiteColor;
     _snapBtn.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45]; _snapBtn.layer.cornerRadius = 18;   // 与齿轮同一套
     [_snapBtn addTarget:self action:@selector(snapTapped) forControlEvents:UIControlEventTouchUpInside];
     __weak S2AVPadView *ws = self;
@@ -709,14 +712,43 @@ static NSString *snap_when_text(NSDate *d) {
     int s2a_snap_exists(const char *) __attribute__((weak));
     __weak S2AVPadView *ws = self; NSString *dir = _snapDir;
     if (!(dir && s2a_snap_exists && s2a_snap_exists(dir.fileSystemRepresentation))) {
-        UIAction *none = vp_act(S2AL(@"vpad.snap.none"), @"camera.viewfinder", NO, ^{});
+        UIAction *none = vp_act(S2AL(@"vpad.snap.none"), @"record.circle", NO, ^{});
         none.attributes = UIMenuElementAttributesDisabled; return @[none];
     }
     NSDate *when = nil; UIImage *th = snap_thumb(dir, 96, &when);
     UIAction *go = [UIAction actionWithTitle:S2AL(@"vpad.snap.restore") image:th ?: [UIImage systemImageNamed:@"clock.arrow.circlepath"] identifier:nil
                                      handler:^(__unused UIAction *x) { [ws afterMenu:^{ [ws snapRestore:dir]; }]; }];
     go.subtitle = snap_when_text(when);
-    return @[go];
+    // 删除这一刻（11-19 维护者定）：显示这份占多少空间；删了回不来，点了再确认一次，确认就删
+    unsigned long long bytes = s2a_snap_bytes(dir);
+    UIAction *del = [UIAction actionWithTitle:S2AL(@"vpad.snap.delete") image:[UIImage systemImageNamed:@"trash"] identifier:nil
+                                      handler:^(__unused UIAction *x) { [ws afterMenu:^{ [ws snapDeleteAsk:dir bytes:bytes]; }]; }];
+    int s2a_snap_busy(void) __attribute__((weak));
+    del.attributes = UIMenuElementAttributesDestructive | (s2a_snap_busy && s2a_snap_busy() ? UIMenuElementAttributesDisabled : 0);   // 正在存时不能删
+    del.subtitle = [NSString stringWithFormat:S2AL(@"vpad.snap.size"), [NSByteCountFormatter stringFromByteCount:(long long)bytes countStyle:NSByteCountFormatterCountStyleFile]];
+    return @[go, del];
+}
+// 快照占的空间：目录下所有文件实际占的字节（按分配块算，删掉就腾出这么多）
+static unsigned long long s2a_snap_bytes(NSString *dir) {
+    unsigned long long n = 0;
+    NSDirectoryEnumerator<NSURL *> *it = [NSFileManager.defaultManager enumeratorAtURL:[NSURL fileURLWithPath:dir isDirectory:YES]
+        includingPropertiesForKeys:@[NSURLTotalFileAllocatedSizeKey] options:0 errorHandler:nil];
+    for (NSURL *u in it) { NSNumber *v = nil; [u getResourceValue:&v forKey:NSURLTotalFileAllocatedSizeKey error:nil]; n += v.unsignedLongLongValue; }
+    return n;
+}
+- (void)snapDeleteAsk:(NSString *)dir bytes:(unsigned long long)bytes {
+    int s2a_snap_delete(const char *) __attribute__((weak));
+    if (!s2a_snap_delete) return;
+    NSString *size = [NSByteCountFormatter stringFromByteCount:(long long)bytes countStyle:NSByteCountFormatterCountStyleFile];
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:S2AL(@"vpad.snap.delete.title")
+                                                               message:[NSString stringWithFormat:S2AL(@"vpad.snap.delete.body"), size] preferredStyle:UIAlertControllerStyleAlert];
+    __weak S2AVPadView *ws = self;
+    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.cancel") style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"vpad.snap.delete") style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *x) {
+        int rc = s2a_snap_delete(dir.fileSystemRepresentation);
+        LOG("即时快照：玩家在游戏里删掉这一刻（约 %s）→ %s", size.UTF8String, rc == -2 ? "正在存，没删" : rc ? "没删干净" : "已删");
+        [ws snapToast:rc == -2 ? S2AL(@"vpad.snap.busy") : rc ? S2AL(@"vpad.snap.deleteFailed") : S2AL(@"vpad.snap.deleted")]; }]];
+    UIViewController *p = self.window.rootViewController; while (p.presentedViewController) p = p.presentedViewController; [p presentViewController:a animated:YES completion:nil];
 }
 // 存好后的轻提示：缩略图 + 时间（前两次再带一句「长按可回到这里」——玩家靠这句发现回去的入口），在存档按钮左边，2 秒淡出、不挡操作
 - (void)snapSavedToast {

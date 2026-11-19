@@ -597,3 +597,9 @@
 "vpad.snap.button.hint" = "タップでこの瞬間を保存、長押しで保存した瞬間に戻る";
 "vpad.snap.none" = "保存した瞬間はまだありません。ボタンをタップすると保存できます";
 "vpad.snap.savedHint" = "%@ · ボタンを長押しするとここに戻れます";
+"vpad.snap.delete" = "この瞬間を削除";
+"vpad.snap.size" = "約 %@";
+"vpad.snap.delete.title" = "保存した瞬間を削除しますか？";
+"vpad.snap.delete.body" = "このスナップショットは約 %@ を使っています。削除するとその瞬間には戻れません。ゲームのセーブデータには影響しません。";
+"vpad.snap.deleted" = "削除しました。空き容量が増えました";
+"vpad.snap.deleteFailed" = "削除しきれませんでした。少し待ってからもう一度お試しください";
