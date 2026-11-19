@@ -1,0 +1,1 @@
+{"name":"entry","version":"1.0.0","description":"probe","dependencies":{"libs2aprobehost.so":"file:./src/main/cpp/types/libs2aprobehost"}}
