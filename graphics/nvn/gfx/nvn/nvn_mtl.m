@@ -12064,7 +12064,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
         uint64_t *p = (uint64_t *)(void *)(g_cur_arena->cpu + off); const uint64_t agpu = g_cur_arena->gpu + off;
         memcpy(p, (const uint8_t *)sh->ab_buf.contents + sh->ab_off, len);
         uint64_t ubcap[NVN_UBOLEN_N]; for (int r = 0; r < NVN_UBOLEN_N; r++) ubcap[r] = UINT64_MAX; int ul_aid = -1;
-        pthread_mutex_lock(&g_rmu);   // as the full encode (the pool lookups of gpu_addr_want)
+        os_unfair_lock_lock(&g_rmu);   // as the full encode (the pool lookups of gpu_addr_want)
         for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *b = &sh->rf.b[i];
             if (b->kind == NVN_RB_UBOLEN) { ul_aid = b->aid; continue; }
             if (b->kind != NVN_RB_CBUF) continue;
@@ -12073,7 +12073,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             if (b->reg < NVN_UBOLEN_N) ubcap[b->reg] = pk ? pav : ul;
             p[b->aid] = gpu;
         }
-        pthread_mutex_unlock(&g_rmu);
+        os_unfair_lock_unlock(&g_rmu);
         if (ul_aid >= 0) p[ul_aid] = len_fill(sh, nvn_stage, NVN_RB_UBOLEN, ubcap);
         bind_args(en, nvn_stage, metal_vertex, ab, agpu, off, sh->rf.abi);
         sh->ab_buf = ab; sh->ab_gpu = agpu; sh->ab_off = off; g_args_ubo[nvn_stage] = 0;   // pass, base instance, pool generation and support copy are the copied block's
