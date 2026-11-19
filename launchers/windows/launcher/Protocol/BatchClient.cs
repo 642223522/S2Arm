@@ -173,6 +173,18 @@ public static class ImportOutcome
         return ids;
     }
 
+    /// <summary>单款导入成功后选中哪一款、欢迎页带哪一款（同 Mac selectImportedGame）：选中这次导入、且在库里可见的第一款；
+    /// 只有导入前是空库（第一次用）才进欢迎页，否则欢迎页不带任何一款。导入结果里没有库里可见的款 → (null, null)，调用方原样不动。
+    /// 玩家反馈：原先欢迎页取目录里排第一的可见游戏、记过一款就不再换，再添加游戏时「一键出包」带去的是上一款。</summary>
+    public static (string? Selected, string? Welcome) AfterImport(JsonElement result, IEnumerable<LibraryGame> listed, bool wasEmpty)
+    {
+        var visible = listed.Where(g => !g.Hidden).Select(g => g.Id).ToList();
+        var pick = GameIds(result).FirstOrDefault(id => visible.Contains(id, StringComparer.OrdinalIgnoreCase));
+        if (pick is null) return (null, null);
+        var id = visible.First(v => string.Equals(v, pick, StringComparison.OrdinalIgnoreCase));
+        return (id, wasEmpty ? id : null);
+    }
+
     public static IReadOnlyList<Unrecognized> Failed(JsonElement result)
     {
         var rows = new List<Unrecognized>();

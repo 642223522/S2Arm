@@ -3,7 +3,7 @@
   ② 「装到 iPhone」只走 push_game、「更新 S2Arm」只走 install_shell
   ③ push_game：手机上没装壳记录 → shell_install_required；壳号不是本版 → shell_update_required；都不推、不装
   ④ push_game 正常：推这一款的程序包（push_programs 收到这一款与这台的团队 / 包名）与资源包，绝不调 ph.install；设备记录这款带 program 与 pack
-  ⑤ install_shell：组只有壳的容器、ph.install 收到空游戏表，绝不推程序包 / 资源包；记壳号；手机上已是同一个（same_app）→ 不装、updated False
+  ⑤ install_shell：组只有壳的容器、ph.install 收到空游戏表，绝不推程序包 / 资源包；记壳号；手机上已是同一个也照样签名安装（续签要的就是重签）
 """
 import json
 from pathlib import Path
@@ -108,7 +108,7 @@ class PushGameTests(JobCase):
         layout.save_device(self.c, self.ph.key, dict(shellId="S1", bundleId=self.ph.bid, games={}))
         for result in ("updated", "unavailable"):
             order = []
-            with mock.patch.object(sgrade_bf, "SUPPORTED", True), mock.patch.object(sgrade_bf, "rechain_ios", lambda c, g, r=result: order.append(("rechain", g)) or r), \
+            with mock.patch.object(sgrade_bf, "rechain_ios", lambda c, g, r=result: order.append(("rechain", g)) or r), \
                     mock.patch("rewrite_refresh.refresh_ios", lambda c, gs: order.append(("refresh", list(gs)))), \
                     mock.patch.object(install, "push_programs", lambda *a, **k: order.append(("programs",)) or {GID: self.prog}):
                 r = install.push_game(self.c, GID, self.ph, steps=False)
@@ -120,15 +120,13 @@ class InstallShellTests(JobCase):
         super().setUp()
         self.ph = FakePhone()
         self.ipa = self.root / "S2Arm.ipa"; self.ipa.write_bytes(b"ipa")
-        for p in (mock.patch.object(packer, "assemble_shell", lambda c: (self.ipa, [], "S2")), mock.patch.object(packer, "ipa_digest", lambda ipa: "D"),
-                  mock.patch.object(packer, "commit_phone_ipa", lambda c, ipa, sid: None),
+        for p in (mock.patch.object(packer, "assemble_shell", lambda c: (self.ipa, [], "S2")), mock.patch.object(packer, "commit_phone_ipa", lambda c, ipa, sid: None),
                   mock.patch.object(install, "push_programs", lambda *a, **k: self.fail("装壳不推程序包"))):
             p.start(); self.addCleanup(p.stop)
 
     def test_installs_shell_only(self):
         layout.save_device(self.c, self.ph.key, dict(shellId="S1", games={GID: dict(pack="P", program=dict(sha="s"))}))
-        with mock.patch.object(install, "same_app", lambda c, ph, rec, d: False):
-            r = install.install_shell(self.c, self.ph, steps=False)
+        r = install.install_shell(self.c, self.ph, steps=False)
         self.assertEqual(self.ph.calls, [("install", [])])
         rec = layout.load_device(self.c, self.ph.key)
         self.assertEqual(rec["shellId"], "S2"); self.assertEqual(rec["games"][GID], dict(pack="P", program=dict(sha="s")), "各款记录原样")
@@ -139,16 +137,37 @@ class InstallShellTests(JobCase):
         for old_bid, kept in (("io.example.other", False), (self.ph.bid, True)):
             layout.save_device(self.c, self.ph.key, dict(shellId="S1", bundleId=old_bid, games={GID: dict(pack="P", program=dict(sha="s"))},
                                                          identity=dict(cert_sha1="x"), usage=dict(at=1)))
-            with mock.patch.object(install, "same_app", lambda c, ph, rec, d: False):
-                install.install_shell(self.c, self.ph, steps=False)
+            install.install_shell(self.c, self.ph, steps=False)
             rec = layout.load_device(self.c, self.ph.key)
             self.assertEqual((GID in (rec.get("games") or {}), "identity" in rec, "usage" in rec), (kept, kept, kept), old_bid)
             self.assertEqual(rec["bundleId"], self.ph.bid)
 
-    def test_same_app_skips(self):
-        with mock.patch.object(install, "same_app", lambda c, ph, rec, d: True):
+    def test_same_app_still_resigns(self):
+        # 期望手写：手机上已是这一版壳、刚签过（同一个 App）照样签名安装——玩家点「续签 S2Arm」要的就是重签（补回丢了的权限也靠它）
+        layout.save_device(self.c, self.ph.key, dict(shellId="S2", bundleId=self.ph.bid, signed=dict(at=__import__("time").time(), free=False)))
+        r = install.install_shell(self.c, self.ph, steps=False)
+        self.assertEqual((self.ph.calls, r["updated"]), ([("install", [])], True))
+
+    def test_legacy_games_listed_after_install(self):
+        # 期望手写：装完 App 后，这台记录里「资源推过、没有程序包」的老款（0.5.x 整包装的）列进结果——游戏库里有这款 iPhone 包的进 legacy（这台电脑能更新），
+        #   没有的进 legacyElsewhere（要回装它的电脑更新）；程序包已推过的、资源没推过的都不列
+        G2, G3, G4 = "0100000000020000", "0100000000030000", "0100000000040000"
+        layout.save_device(self.c, self.ph.key, dict(shellId="S1", bundleId=self.ph.bid, games={
+            GID: dict(pack="P"), G2: dict(pack="P"), G3: dict(pack="P", program=dict(sha="s")), G4: dict(program=dict(sha="s"))}))
+        here = {GID}
+        cat = {"games": [dict(id=GID, name="甲"), dict(id=G3, name="丙")]}
+        with mock.patch.object(self.c, "catalog", lambda: cat, create=True), \
+                mock.patch.object(layout, "has_ios_kit", lambda c, g: g in here), mock.patch.object(layout, "ios_pack", lambda c, g: self.root / "pk" / g):
+            (self.root / "pk" / GID).mkdir(parents=True); (self.root / "pk" / GID / "manifest.json").write_text("{}")
             r = install.install_shell(self.c, self.ph, steps=False)
-        self.assertEqual((self.ph.calls, r["updated"]), ([], False))
+        self.assertEqual(r["legacy"], [dict(gameId=GID, name="甲")])
+        self.assertEqual(r["legacyDevice"], self.ph.key, "「更新这 N 款」推到刚装好 App 的这台")
+        self.assertEqual(r["legacyElsewhere"], [dict(gameId=G2, name=G2)])
+
+    def test_no_legacy_keys_when_none(self):
+        layout.save_device(self.c, self.ph.key, dict(shellId="S1", bundleId=self.ph.bid, games={GID: dict(pack="P", program=dict(sha="s"))}))
+        r = install.install_shell(self.c, self.ph, steps=False)
+        self.assertNotIn("legacy", r); self.assertNotIn("legacyElsewhere", r)
 
 
 if __name__ == "__main__":

@@ -113,7 +113,7 @@ void nvk_env_fill(const struct s2a_direct_compile_context *pc, struct nvk_env *o
 
 // NVN 绘制图元 → 翻译器输入拓扑。QUADS/POLYGON 没有对应拓扑，按 Triangles 记（真实 quad→triangle
 // 的 primitive-id 修正属于 halvePrimitiveId，本笔没有该事实来源，请求里不填）。
-static const char *nvk_input_topology(uint32_t prim) {
+const char *nvk_input_topology(uint32_t prim) {
     switch (prim) {
         case 0x0: return "Points";
         case 0x1: case 0x2: case 0x3: return "Lines";
@@ -256,14 +256,8 @@ static void nvk_texture_slot_fact(int bound, uint64_t handle, int32_t pool_base,
     } else {
         // 无注册描述符：与 Ryujinx TextureBindingsManager.GetTextureDescriptor 对齐。
         // IsValidId = id <= 池 MaximumId，即 0 <= (id - tex_pool_base) < tex_pool_n。
-        int in_pool = pool_base >= 0 && id >= pool_base &&
-                      (uint64_t)(id - pool_base) < pool_n;
-        memset(&nf, 0, sizeof nf);
-        snprintf(nf.format, sizeof nf.format, "Unknown");
-        snprintf(nf.sampler_type, sizeof nf.sampler_type, "%s", in_pool ? "1d" : "2d");
-        nf.is_buffer = 0;
-        nf.normalized = in_pool ? 0 : 1;
-        nf.array_length = 1;
+        // 默认事实只此一份（texture_facts.c），常量缓冲里的贴图句柄（nvk_shader.c ubo_facts_add）与这里同口径。
+        (void)s2a_nvn_default_texture_fact(id, pool_base, pool_n, &nf);
     }
     int n = set->count;
     memcpy(set->fmt[n], nf.format, sizeof set->fmt[n]);

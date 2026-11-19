@@ -324,7 +324,9 @@ def feature_spotlight(platform, current, path=None, withdrawn=()):
     """docs/site/feature.json → 这一期新功能大窗 {id, badge, url?, pages:[…]}，每页 image = {zh-Hans, en} 绝对路径；不弹 → None。每页两种版式（通用多页轮播，两端照 layout 画）：
       poster = 只写 image：一张图铺满大窗（首页海报）；detail = image + kicker / title / what / how / where（各中英两份）：上大图、下说明。
     不弹的情形：文件没有 / 格式不对 / 不给本平台 / 本机版本低于 minVersion（功能还没进这一版，热修不能先把大窗带出去）/ 官网 notice.json 的 featureWithdrawn 列了这一期。
-    图不在、或说明页的文字缺一项 / 中英缺一，这一页不要；一页都不剩就不弹。"""
+    图不在、或说明页的文字缺一项 / 中英缺一，这一页不要；一页都不剩就不弹。
+    每页还可以写（0.6.0 起，11-19 维护者定）：platforms = 只给这几个平台看（不写 = 文件里列的平台都看；iPhone App 读同一份文件、只取标了 ios 的页）；
+      audience = "upgrade"：只给从旧版升上来的玩家看（inbox 判，新装的跳过）；labels = 三栏标题换字（如 where 写「要知道」），各中英两份。"""
     import urllib.parse
     path = Path(path) if path else feature_file()
     try:
@@ -352,6 +354,9 @@ def feature_spotlight(platform, current, path=None, withdrawn=()):
     for row in data.get("pages") or []:
         if not isinstance(row, dict):
             continue
+        only = row.get("platforms")
+        if isinstance(only, list) and platform not in only:
+            continue
         # 图跟界面语言走（11-14 维护者：海报和启动器语言要一致）：image 写一个路径 = 两种语言同图；写 {zh-Hans, en} = 各用各的，英文缺了用中文
         raw = row.get("image")
         raw = raw if isinstance(raw, dict) else {"zh-Hans": raw}
@@ -364,7 +369,14 @@ def feature_spotlight(platform, current, path=None, withdrawn=()):
             continue
         texts = {key: _bilingual(row.get(key)) for key in FEATURE_TEXTS}
         if None not in texts.values():   # 说明页：大图 + 标题 + 是什么 / 怎么用 / 在哪用
-            pages.append(dict(texts, layout="detail", image=image))
+            page = dict(texts, layout="detail", image=image)
+            labels = {k: v for k, v in ((k, _bilingual(v)) for k, v in (row.get("labels") or {}).items() if k in ("what", "how", "where")) if v} \
+                if isinstance(row.get("labels"), dict) else {}
+            if labels:
+                page["labels"] = labels
+            if row.get("audience") == "upgrade":
+                page["audience"] = "upgrade"
+            pages.append(page)
     if not pages:
         return None
     out = {"kind": "feature", "id": ident, "badge": _bilingual(data.get("badge")) or {"zh-Hans": "新功能", "en": "New"}, "pages": pages}  # 非玩家句
@@ -538,6 +550,10 @@ def inbox(platform, current, private_root, check=None, notices=None, feature=Non
     popup = None
     # 这版的说明只在「从旧版里点更新、换上这一版」时记在本机（启动器开始下载新版时写 updates/notes/<版本>.json），有它就说明是刚更新上来的；手动装的新版没有，不弹
     mine = None if notices_only else installed_notes(private_root, current)
+    # 只给升级上来的玩家看的页（audience=upgrade）：本机记过「看过什么」（seen.json）或有从旧版点更新留下的这版说明 = 升级上来的；新装的去掉这几页
+    if feature and not (seen or mine) and any(p.get("audience") == "upgrade" for p in feature.get("pages") or []):
+        pages = [p for p in feature["pages"] if p.get("audience") != "upgrade"]
+        feature = dict(feature, pages=pages) if pages else None
     if feature and seen.get("featureSeen") != feature["id"]:
         popup = feature
     elif mine and mine.get("highlights") and seen.get("afterShown") != current:
@@ -547,6 +563,8 @@ def inbox(platform, current, private_root, check=None, notices=None, feature=Non
     important = next(((i, n) for i, n in enumerate(notices) if n.get("level") == "important"), None)
     banner = important[1] if important and not is_seen(important[0]) else None
     messages = [dict(n, kind="notice") for n in notices]
+    if feature:   # 新功能大窗看过之后在「消息」里留一条，点开再看一遍（11-19 维护者定）
+        messages.append(dict(feature, kind="feature"))
     if check.get("available") and check.get("version"):
         messages.append({"kind": "update", "version": check["version"], "notes": check.get("notes"), "installed": False})
     if mine:

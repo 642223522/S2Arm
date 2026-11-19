@@ -23,6 +23,8 @@
 #include "direct/jv.h"
 #include "direct/program_cache.h"
 #include "nvn/nvn_vk_prog_warm.h"
+#include "dmsh_chain.h"   // DMSH_CHAIN：出包预编库目录 b-<链>-vk 与容器头的链号
+#include <sys/stat.h>
 #include "tbuf_spirv_fixtures.h"
 #include "gfx_plat/spirv_sampler_use.h"
 #include "sampler_use_fixtures.h"
@@ -45,6 +47,7 @@ void s2a_direct_diag_compile_end(uint64_t token, int success) { if (token) trace
 static unsigned fake_array_count;
 static int separate_fixture;
 static int fake_gs_success, fake_gs_result_mode, gs_loads[6], fake_geometry_enabled = 1, fake_depth_clip;
+static size_t gs_blob_bytes[6];   // 每个阶段最后一次装载的 SPIR-V 字节数（出包预编库命中时认出是哪一份）
 static int fake_gs_fact_deps;
 static int fixture_alias_flag = -1;   // 结果合并开关（debug.s2a.nvk_alias）：-1 = 取生产缺省，0 = 关
 static int fake_gs_result_tag;        // 非 0：结果里多带一个无关字段，同一份输入的结果字节（摘要）就不同
@@ -54,6 +57,7 @@ int g_s2a_logfd = 2;
 static const char *fake_compile_error;
 static const char *fake_compile_file;
 static char captured[262144], last_red[512], last_diag[512], last_stats[512], last_reason[512], last_request_reason[512];
+static int ubo_default_lines; static char last_ubo_default_line[512];   // 常量缓冲句柄指向没登记的贴图：每局首次的那一行（片 4）
 static char reason_history[8192];
 static const char profile[] = "{\"schema\":\"s2a-direct-profile-v1\",\"profileHash\":\"sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"capabilities\":{\"storageBufferOffsetAlignment\":16}}";
 static char external_profile[65536], external_closure[128];
@@ -87,6 +91,9 @@ void nvn_plat_log(int level, const char *cls, const char *text) {
     }
     if (level == NVN_PLAT_LOG_INFO && !strcmp(cls, "shader") && strstr(text, "texture_pool_request_reject"))
         snprintf(last_request_reason, sizeof last_request_reason, "%s", text);
+    if (level == NVN_PLAT_LOG_INFO && !strcmp(cls, "shader") && strstr(text, "常量缓冲句柄指向没登记的贴图")) {
+        ubo_default_lines++; snprintf(last_ubo_default_line, sizeof last_ubo_default_line, "%s", text);
+    }
 }
 int rp_depth_zero(void) { return fixture_depth_zero; }
 int rp_origin_lower_left(void) { return fixture_origin_lower_left; }
@@ -221,7 +228,7 @@ s2a_direct_compile_fn s2a_direct_bound_compile_any(void) { return fake_compile; 
 nvn_gpu_rc nvn_gpu_shader_load(const nvn_gpu_shader_src *s, nvn_gpu_shader *o, nvn_gpu_err *e) {
     (void)e;
     if (fake_gs_success && (unsigned)s->stage < 6) {
-        shader_load_count++; gs_loads[s->stage]++; *o = (nvn_gpu_shader)(uintptr_t)(s->stage + 1); return (nvn_gpu_rc){NVN_GPU_OK};
+        shader_load_count++; gs_loads[s->stage]++; gs_blob_bytes[s->stage] = s->bytes; *o = (nvn_gpu_shader)(uintptr_t)(s->stage + 1); return (nvn_gpu_rc){NVN_GPU_OK};
     }
     if (fake_array_count) { *o = (nvn_gpu_shader)(uintptr_t)1; return (nvn_gpu_rc){NVN_GPU_OK}; }
     if (fake_cs_success && s->stage == NVN_GPU_SH_CS) { cs_loads++; *o = (nvn_gpu_shader)(uintptr_t)7; return (nvn_gpu_rc){NVN_GPU_OK}; }
@@ -492,6 +499,28 @@ static void compute_fast_path_test(void) {
     }
     fake_cs_success = 0; separate_fixture = 0; fake_reg_changes = 1;
     bind_separate(5, 100, 1, 0); memset(rp_S.img[5], 0, sizeof rp_S.img[5]); memset(rp_S.ubo[5], 0, sizeof rp_S.ubo[5]); memset(rp_S.ssbo[5], 0, sizeof rp_S.ssbo[5]); memset(rp_S.tex[5], 0, sizeof rp_S.tex[5]);
+    rp_shader_reset();
+}
+// 计算阶段组合槽里没登记的号 → 默认事实（#1594 片 4 把三处各写一遍的默认事实收成 texture_facts.c 的一个函数，这里钉住计算这一处）：
+//   池容量 100，号 50 池内没登记 = {1d, 不归一化}，号 0xFFFFF 池外 = {2d, 归一化}；已登记的 78（2D RGBA8）照旧取登记。
+//   槽 3 的事实句柄 = 8 + 2 × 3 = 14（cbufSlot −1，同图形组合槽）。
+static void compute_default_fact_test(void) {
+    const struct rp_prog *a = NULL; uint8_t dig2[32];
+    rp_shader_reset(); s2a_source_clear(); rp_state_reset(); nvn_unimpl_reset(); source(); cs_variant_source(1, dig2);
+    fake_cs_success = 1; separate_fixture = 1; fake_reg_changes = 1; compiler_calls = cs_loads = 0; captured[0] = last_red[0] = 0;
+    bind_pools(100);
+    rp_S.ubo[5][0].addr = 0x1000; rp_S.ubo[5][0].size = 64; rp_S.ssbo[5][0].addr = 0x10000; rp_S.ssbo[5][0].size = 256;
+    rp_S.tex[5][3] = 50;
+    CHECK(rp_shader_resolve_compute(&a) == 0 && a && compiler_calls == 1 && fact_matches_at("cs", 14, -1, "1d", 0),
+          "CS slot naming an in-pool unregistered id carries the default {1d, unnormalized} (calls=%d)", compiler_calls);
+    rp_S.tex[5][3] = 0xFFFFF;
+    CHECK(rp_shader_resolve_compute(&a) == 0 && a && compiler_calls == 2 && fact_matches_at("cs", 14, -1, "2d", 1),
+          "CS slot naming an out-of-pool id carries the default {2d, normalized} (calls=%d)", compiler_calls);
+    rp_S.tex[5][3] = 78;
+    CHECK(rp_shader_resolve_compute(&a) == 0 && a && compiler_calls == 3 && fact_matches_at("cs", 14, -1, "2d", 1) && !fact_matches_at("cs", 14, -1, "1d", 0),
+          "CS slot naming a registered 2D texture takes the registered fact, not the default (calls=%d)", compiler_calls);
+    fake_cs_success = 0; separate_fixture = 0; fake_reg_changes = 1;
+    memset(rp_S.ubo[5], 0, sizeof rp_S.ubo[5]); memset(rp_S.ssbo[5], 0, sizeof rp_S.ssbo[5]); memset(rp_S.tex[5], 0, sizeof rp_S.tex[5]);
     rp_shader_reset();
 }
 // 图形与计算共用的快表（#1146）：一帧里依次访问落在同一个旧桶（桶号低 9 位相同）的 5 个键。
@@ -952,6 +981,50 @@ static void graphics_ubo_handle_fact_test(void) {
     // 换局清表：同样的输入要重新学（两次编译）
     rp_shader_reset(); rp_S.ubo[1][0].size = sizeof ubo_mem; ubo_mem[92] = 78; compiler_calls = 0;
     CHECK(!rp_shader_resolve(&q, &p) && p && compiler_calls == 2, "session reset forgets learned coordinates (calls=%d)", compiler_calls);
+    // 片 4（#1594）：句柄字指向没登记的贴图号。Ryujinx GetForBinding / GetTextureDescriptor 取到默认描述符、整笔照画，事实同组合槽
+    //   （默认事实只此一份，texture_facts.c），不再是 ubo_handle_no_texture 红行、不再整笔 program_unresolved。
+    //   池夹具：起点 0、容量 100；夹具只登记 77 / 78 / 79，其余号都是「没登记」。
+    {
+        const struct rp_prog *reg = p;   // 上一步用已登记的 78 编出的那份
+        uint64_t cnt0 = rp_shader_ubo_default_fact_count();
+        nvn_unimpl_reset(); ubo_default_lines = 0; last_ubo_default_line[0] = 0; last_red[0] = 0;
+        CHECK(cnt0 == 0, "换局后默认事实计数清零 (count=%llu)", (unsigned long long)cnt0);
+        ubo_mem[92] = 0xFFFFF;   // 20 位全 1：游戏常拿它当「这一路不用贴图」的哨兵；池容量 100 → 池外
+        int calls0 = compiler_calls;
+        CHECK(!rp_shader_resolve(&q, &p) && p && p != reg && compiler_calls == calls0 + 1, "out-of-pool handle word (0xFFFFF) compiles with the default fact, draw is not left unresolved (calls=%d)", compiler_calls - calls0);
+        CHECK(ubo_fact_in_request("2d", 1), "out-of-pool id carries the combined-slot default {2d, normalized}");
+        CHECK(strstr(captured, "\"format\":\"Unknown\"") != NULL, "default fact format is Unknown");
+        CHECK(nvn_unimpl_count("shader", "ubo_handle_no_texture") == 0 && nvn_unimpl_count("shader", "compile_failed") == 0 && last_red[0] == 0,
+              "out-of-pool handle is not a red line any more (compile_failed=%llu)", (unsigned long long)nvn_unimpl_count("shader", "compile_failed"));
+        CHECK(rp_shader_ubo_default_fact_count() >= 1, "default-fact counter counts it (count=%llu)", (unsigned long long)rp_shader_ubo_default_fact_count());
+        CHECK(ubo_default_lines == 1 && strstr(last_ubo_default_line, "贴图号 1048575") && strstr(last_ubo_default_line, "容量 100") && strstr(last_ubo_default_line, "fs c3 第 92 字"),
+              "first line per session names the id, the pool capacity and the coordinate: %s", last_ubo_default_line);
+        const struct rp_prog *beyond = p;
+        calls0 = compiler_calls;
+        CHECK(!rp_shader_resolve(&q, &p) && p == beyond && compiler_calls == calls0, "same out-of-pool id takes the fast path");
+        ubo_mem[92] = 0xFFFFE;   // 另一个池外号：同一份默认事实 → 同一份程序，不重编
+        CHECK(!rp_shader_resolve(&q, &p) && p == beyond && compiler_calls == calls0, "another out-of-pool id has identical facts: no recompile (calls=%d)", compiler_calls - calls0);
+        ubo_mem[92] = 50;        // 池内、没登记：{1d, 不归一化}，与池外事实不同 → 重编（快路摘要把两种默认事实分开）
+        CHECK(!rp_shader_resolve(&q, &p) && p && p != beyond && p != reg && compiler_calls == calls0 + 1, "in-pool unregistered id has other facts: recompiles (calls=%d)", compiler_calls - calls0);
+        CHECK(ubo_fact_in_request("1d", 0), "in-pool unregistered id carries the combined-slot default {1d, unnormalized}");
+        CHECK(ubo_default_lines == 1, "only the first default fact of the session prints a line (lines=%d)", ubo_default_lines);
+        uint64_t cnt1 = rp_shader_ubo_default_fact_count();
+        ubo_mem[92] = 78;        // 反例：已登记的号不受影响，不记默认事实
+        CHECK(!rp_shader_resolve(&q, &p) && p == reg && compiler_calls == calls0 + 1 && rp_shader_ubo_default_fact_count() == cnt1,
+              "registered id is untouched and not counted (calls=%d)", compiler_calls - calls0);
+        // 反例：读不到句柄字仍是「没有事实」（物理上读不到），不当成默认事实去猜；读得到的池外号之后仍编得出，不被那份失败项挡住
+        rp_S.ubo[1][0].size = 92 * 4; ubo_mem[92] = 0xFFFFF;
+        nvn_unimpl_reset();
+        CHECK(rp_shader_resolve(&q, &p) == -1 && nvn_unimpl_count("shader", "ubo_handle_unreadable") >= 1 && rp_shader_ubo_default_fact_count() == cnt1,
+              "unreadable word is still fact-less and not counted as a default fact");
+        rp_S.ubo[1][0].size = sizeof ubo_mem;
+        CHECK(!rp_shader_resolve(&q, &p) && p == beyond, "readable again with an out-of-pool id: back to the default-fact program, not the stale fact-less failure");
+        // 换局：计数与首行重来
+        rp_shader_reset(); ubo_default_lines = 0; ubo_mem[92] = 0xFFFFF;
+        CHECK(rp_shader_ubo_default_fact_count() == 0, "session reset clears the default-fact counter");
+        CHECK(!rp_shader_resolve(&q, &p) && p && ubo_default_lines == 1 && rp_shader_ubo_default_fact_count() >= 1, "next session prints its own first line (lines=%d)", ubo_default_lines);
+        ubo_mem[92] = 78; rp_shader_reset(); rp_S.ubo[1][0].size = sizeof ubo_mem; compiler_calls = 0;
+    }
     // 反例：c2 / 组合槽坐标的缺事实不进这张表（不当成用户常量缓冲去读）
     rp_shader_reset(); fake_ubo_missing = 0; fake_gs_success = 0; compiler_calls = 0;
     fake_compile_error = "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"MISSING_FACT\",\"message\":\"QuerySamplerType has no source (stage=fs,handle=92,cbufSlot=2)\"}";
@@ -1058,6 +1131,100 @@ static void query_sampler_test(void) {
     fake_cs_success = 0;
 }
 
+// ---- 新层查出包预编库（LibPack，shaders/direct/b-<DMSH_CHAIN>-vk）的三段程序：vs + fs + gs ----
+// 容器在临时目录里现写（格式同 libpack_vk_test.c / LibPack.cs：头 48 字节 + 分片表 + (键, 种类) 升序记录），走真实 libpack_vk.c。
+// 期望手算：键按 NVN 位序紧排 vs / fs / gs；几何段按输入图元取 _vg<t>（种类 112+t / 120+t）——_vg0 是 24 字节（头 + 1 条 OpNop）、
+// _vg3 是 28 字节（头 + 2 条 OpNop），装载到 GS 的字节数就认出是哪一份；_vg1 不放，线输入必 miss。编译器替身此时会成功（fake_gs_success），
+// 所以「命中」的证据是编译器调用数不变，miss 的证据是编译器被调用一次。
+static void lp_put32(uint8_t *p, uint32_t v) { memcpy(p, &v, 4); }
+static void lp_put64(uint8_t *p, uint64_t v) { memcpy(p, &v, 8); }
+static int lp_write(const char *dir, uint64_t key[], const uint8_t kind[], const uint8_t *data[], const size_t len[], int n) {
+    char path[600]; snprintf(path, sizeof path, "%s/lib.000.pak", dir);
+    FILE *f = fopen(path, "wb"); if (!f) return -1;
+    uint64_t off[16], at = 0;
+    for (int i = 0; i < n; i++) { off[i] = at; fwrite(data[i], 1, len[i], f); at += len[i]; }
+    fclose(f);
+    uint8_t idx[48 + 16 + 24 * 16]; memset(idx, 0, sizeof idx);
+    memcpy(idx, "S2ALIB\0\0", 8); lp_put32(idx + 8, 1); lp_put32(idx + 12, (uint32_t)n); lp_put32(idx + 16, 1);
+    memcpy(idx + 24, DMSH_CHAIN, 12); lp_put64(idx + 48, at);
+    for (int i = 0; i < n; i++) {   // 调用方已按 (键, 种类) 升序给
+        uint8_t *r = idx + 64 + 24 * i;
+        lp_put64(r, key[i]); r[8] = kind[i]; r[9] = 0; lp_put32(r + 12, (uint32_t)len[i]); lp_put64(r + 16, off[i]);
+    }
+    snprintf(path, sizeof path, "%s/lib.idx", dir);
+    f = fopen(path, "wb"); if (!f) return -1;
+    fwrite(idx, 1, 64 + 24 * (size_t)n, f); fclose(f);
+    return 0;
+}
+static uint64_t lp_key(const uint8_t k[8]) { uint64_t v = 0; for (int i = 0; i < 8; i++) v = v << 8 | k[i]; return v; }
+static int gs_libpack_test(void) {
+    fake_depth_clip = 1;   // 深度 near=-w 也能用预编库（libpack_state_ok），夹具不带深度零
+    rp_shader_reset(); s2a_source_clear(); rp_state_reset(); nvn_unimpl_reset();
+    uint8_t k[3][8]; for (unsigned st = 0; st < 3; st++) gs_source(st, 0, k[st]);
+    memset(&gs_program, 0, sizeof gs_program); gs_program.magic = MAGIC('P','R','O','G'); gs_program.serial = 101; gs_program.nstage = 3;
+    memset(gs_stages, 0xff, sizeof gs_stages); memset(gs_keys, 0, sizeof gs_keys);
+    for (unsigned i = 0; i < 3; i++) { gs_stages[i] = (uint8_t)i; memcpy(gs_keys[i], k[i], 8); }
+    gs_keys_ok = 7; p_bind_program_id bind = {&gs_program, gs_program.serial, 0x1f, 0};
+    CHECK(rp_state_op(OP_BIND_PROGRAM, &bind, sizeof bind + 8), "libpack GS fixture binds program");
+    CHECK(rp_shader_graphics_stages() == 7, "libpack GS fixture stage mask is 0x7");
+    bind_pools(7);
+    // 容器：<根>/shaders/direct/b-<链>-vk
+    char root[256], dir[600];
+    snprintf(root, sizeof root, "%s/nvk_gs_libpack.XXXXXX", getenv("TMPDIR") && *getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
+    if (!mkdtemp(root)) { CHECK(0, "libpack temp root"); return 1; }
+    snprintf(dir, sizeof dir, "%s/shaders", root); mkdir(dir, 0700);
+    snprintf(dir, sizeof dir, "%s/shaders/direct", root); mkdir(dir, 0700);
+    snprintf(dir, sizeof dir, "%s/shaders/direct/b-%s-vk", root, DMSH_CHAIN); mkdir(dir, 0700);
+    static const uint32_t spv0[5] = {0x07230203u, 0x00010300u, 0, 1, 0};
+    static const uint32_t spv_vg0[6] = {0x07230203u, 0x00010300u, 0, 1, 0, 0x00010000u};
+    static const uint32_t spv_vg3[7] = {0x07230203u, 0x00010300u, 0, 1, 0, 0x00010000u, 0x00010000u};
+    char hx[3][17]; for (int st = 0; st < 3; st++) for (int b = 0; b < 8; b++) snprintf(hx[st] + 2 * b, 3, "%02x", k[st][b]);
+    char jvs[160], jfs[160], jg0[200], jg3[200];
+    snprintf(jvs, sizeof jvs, "{\"stage\":\"vs\",\"dm_ctl\":\"%s\",\"bindings\":[]}", hx[0]);
+    snprintf(jfs, sizeof jfs, "{\"stage\":\"ps\",\"dm_ctl\":\"%s\",\"bindings\":[]}", hx[1]);
+    snprintf(jg0, sizeof jg0, "{\"stage\":\"gs\",\"dm_ctl\":\"%s\",\"gs_input_topology\":0,\"bindings\":[]}", hx[2]);
+    snprintf(jg3, sizeof jg3, "{\"stage\":\"gs\",\"dm_ctl\":\"%s\",\"gs_input_topology\":3,\"bindings\":[]}", hx[2]);
+    struct { uint64_t key; uint8_t kind; const uint8_t *d; size_t n; } rec[8] = {
+        {lp_key(k[0]), 1, (const uint8_t *)jvs, strlen(jvs)}, {lp_key(k[0]), 52, (const uint8_t *)spv0, sizeof spv0},
+        {lp_key(k[1]), 1, (const uint8_t *)jfs, strlen(jfs)}, {lp_key(k[1]), 52, (const uint8_t *)spv0, sizeof spv0},
+        {lp_key(k[2]), 112, (const uint8_t *)jg0, strlen(jg0)}, {lp_key(k[2]), 115, (const uint8_t *)jg3, strlen(jg3)},
+        {lp_key(k[2]), 120, (const uint8_t *)spv_vg0, sizeof spv_vg0}, {lp_key(k[2]), 123, (const uint8_t *)spv_vg3, sizeof spv_vg3},
+    };
+    for (int i = 0; i < 8; i++) for (int j = i + 1; j < 8; j++)   // (键, 种类) 升序
+        if (rec[j].key < rec[i].key || (rec[j].key == rec[i].key && rec[j].kind < rec[i].kind)) { __typeof__(rec[0]) t = rec[i]; rec[i] = rec[j]; rec[j] = t; }
+    uint64_t keys[8]; uint8_t kinds[8]; const uint8_t *data[8]; size_t lens[8];
+    for (int i = 0; i < 8; i++) { keys[i] = rec[i].key; kinds[i] = rec[i].kind; data[i] = rec[i].d; lens[i] = rec[i].n; }
+    CHECK(lp_write(dir, keys, kinds, data, lens, 8) == 0, "libpack GS container written");
+    setenv("S2A_SHADER_REVISION_ROOT", root, 1); unsetenv("S2A_DIRECT_CACHE_DIR");
+    static const char prof_on[] = "{\"schema\":\"s2a-direct-profile-v1\",\"profileHash\":\"sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"capabilities\":{\"storageBufferOffsetAlignment\":16,\"supportsGeometryShader\":true}}";
+    static const char prof_off[] = "{\"schema\":\"s2a-direct-profile-v1\",\"profileHash\":\"sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"capabilities\":{\"storageBufferOffsetAlignment\":16,\"supportsGeometryShader\":false}}";
+    snprintf(external_profile, sizeof external_profile, "%s", prof_on);
+    fake_gs_success = 1;
+    const uint32_t prims[4] = {4, 0, 1, 4};   // 三角列表 / 点 / 线 / 三角列表但 profile 没开几何
+    const char *what[4] = {"triangles", "points", "lines", "triangles, geometryShader off"};
+    for (int c = 0; c < 4; c++) {
+        if (c == 3) snprintf(external_profile, sizeof external_profile, "%s", prof_off);
+        rp_shader_reset(); nvn_unimpl_reset(); compiler_calls = 0; memset(gs_loads, 0, sizeof gs_loads); memset(gs_blob_bytes, 0, sizeof gs_blob_bytes);
+        struct rp_shader_req q = {0}; q.prim = prims[c]; const struct rp_prog *p = NULL;
+        int rc = rp_shader_resolve(&q, &p);
+        CHECK(rc == 0 && p, "libpack GS %s: program resolves", what[c]);
+        CHECK(gs_loads[NVN_GPU_SH_VS] == 1 && gs_loads[NVN_GPU_SH_FS] == 1 && gs_loads[NVN_GPU_SH_GS] == 1, "libpack GS %s: three stages load", what[c]);
+        if (c < 2) {
+            CHECK(compiler_calls == 0, "libpack GS %s: hit from the library, compiler not called (calls=%d)", what[c], compiler_calls);
+            CHECK(gs_blob_bytes[NVN_GPU_SH_VS] == sizeof spv0 && gs_blob_bytes[NVN_GPU_SH_FS] == sizeof spv0, "libpack GS %s: vs / fs are the library's", what[c]);
+            CHECK(gs_blob_bytes[NVN_GPU_SH_GS] == (c == 0 ? sizeof spv_vg3 : sizeof spv_vg0),
+                  "libpack GS %s: GS stage is the _vg%d variant (%zu bytes)", what[c], c == 0 ? 3 : 0, gs_blob_bytes[NVN_GPU_SH_GS]);
+        } else {
+            CHECK(compiler_calls == 1, "libpack GS %s: library misses, live compile runs (calls=%d)", what[c], compiler_calls);
+        }
+    }
+    fake_gs_success = 0; external_profile[0] = 0; unsetenv("S2A_SHADER_REVISION_ROOT");
+    char path[700];
+    snprintf(path, sizeof path, "%s/lib.idx", dir); unlink(path); snprintf(path, sizeof path, "%s/lib.000.pak", dir); unlink(path);
+    rmdir(dir); snprintf(dir, sizeof dir, "%s/shaders/direct", root); rmdir(dir); snprintf(dir, sizeof dir, "%s/shaders", root); rmdir(dir); rmdir(root);
+    printf("nvk shader pool (libpack GS): %d checks, %d failures\n", checks, failures);
+    return failures ? 1 : 0;
+}
 static int diag_compile_test(void) {
     trace_on = 1; trace_begin_count = trace_end_count = 0; fake_gs_success = 0;
     gs_request_test();
@@ -1073,6 +1240,7 @@ static int diag_compile_test(void) {
 
 int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "--diag-compile")) return diag_compile_test();
+    if (argc == 2 && !strcmp(argv[1], "--gs-libpack")) return gs_libpack_test();
     if (argc == 2 && !strcmp(argv[1], "--compute-warm")) return compute_warm_test();
     if (argc == 2 && !strcmp(argv[1], "--compute-warm-off")) return compute_warm_off_test();
     if (argc == 2 && !strcmp(argv[1], "--legacy-bytes")) {
@@ -1292,6 +1460,7 @@ int main(int argc, char **argv) {
     }
     fake_array_count = 0; fake_compile_error = NULL;
     compute_fast_path_test();
+    compute_default_fact_test();
     last_table_test();
     gs_request_test();
     rp_shader_reset(); s2a_source_clear();

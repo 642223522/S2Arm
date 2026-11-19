@@ -23,9 +23,7 @@ import layout
 from core import Failure
 
 BF_GEN = 1   # 1：#1152（d34f14298）片元自算 NDC→uv、_bf 输出上限 8、容样本掩码成员、认单行块 return
-# Windows 出包走另一套编排（pack/orch/oneclick_win.py direct()），本模块调的 bash 阶段脚本链在 Windows 上没接：先不判「要补」、不尝试（不然每次「更新 iPhone」都报红）。
-#   Windows 支线接上后去掉这一条
-SUPPORTED = os.name != "nt"
+WIN = os.name == "nt"   # Windows 重出走 Windows 出包的直连库那一步（_rebuild_win），Mac 走 bash 阶段脚本链（STAGES）
 STAGES = (("direct_profile", ["--require-consumer"]), ("extract", []), ("direct", []), ("direct_seed", []))
 
 
@@ -50,7 +48,9 @@ def _clone(c, src, dst):
 
 def rebuild(c, gid, src_root, plat, work):
     """src_root（产物根形态的目录）克隆进临时产物根，按出包同一套阶段重出直连库 → 新的 shaders/direct 目录（在 work 里）。
-    plat：macos / ios（S2A_PACK_PLAT：Mac 版只出 Mac 库、iPhone 只出 iOS 库）"""
+    plat：macos / ios（S2A_PACK_PLAT：Mac 版只出 Mac 库、iPhone 只出 iOS 库）。Windows：_rebuild_win（这台电脑没装 Metal 开发工具 → None）"""
+    if WIN:
+        return _rebuild_win(c, gid, src_root, work)
     work = Path(work); roots = work / "roots"; roots.mkdir(parents=True)
     tag = f"{gid}@sgbf"
     _clone(c, src_root, roots / tag)
@@ -68,6 +68,63 @@ def rebuild(c, gid, src_root, plat, work):
     if not (new / "keys.tsv").is_file() or lib_dir(new) is None:
         raise Failure("重出的直连着色器库不完整")  # 非玩家句
     return new
+
+
+def _win_profile(c, root):
+    """Windows 重出前的配置档，同 pack/stage_direct_profile.sh（Mac 每次重出也重跑这一段）：Vulkan / OpenGL 款不用 NVN 配置档；
+    零配置推导的款写进产物根 direct-profile/<键>/ 与 direct_profile.json（direct() 按它取 DM_GAMES_DIR），手写档的款不写；最后 --selected 核一遍"""
+    eng, root = Path(c.engine), Path(root)
+    def py(*args):
+        r = subprocess.run([sys.executable, "-X", "utf8", *map(str, args)], cwd=eng, env=c.env(), capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if r.returncode:
+            raise Failure(f"着色器配置档没准备好（{Path(str(args[0])).name} 退出 {r.returncode}）：" + ((r.stderr or r.stdout).strip().splitlines() or ["无输出"])[-1][:200])  # 非玩家句
+        return r.stdout
+    api = py(eng / "graphics/nvn/tools/gfx_api.py", root / "exefs").split("\t", 1)[0].strip()
+    if api in ("vulkan", "gl"):
+        return
+    meta = json.loads(py(eng / "pack/direct_profile_stage.py", root, "--key"))
+    if meta.get("source") == "generated":
+        d = json.loads(py(eng / "pack/direct_profile_stage.py", root, "--out", root / "direct-profile" / meta["key"]))
+        d["profile"] = Path(d["profile"]).resolve().relative_to(root.resolve()).as_posix()
+        d["DM_GAMES_DIR"] = Path(d["profile"]).parent.as_posix()
+        (root / "direct_profile.json").write_text(json.dumps(d, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+    py(eng / "pack/direct_profile_stage.py", root, "--selected")
+
+
+WIN_DIRECT = """import os, sys
+from pathlib import Path
+from pack.orch import oneclick_win as ow
+root, work, tid = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+out = ow.direct(ow.Run(work), root, "ios", os.cpu_count() or 4, tid)
+(work / "direct_result.txt").write_text(str(out) if out else "", encoding="utf-8")
+"""
+
+
+def _rebuild_win(c, gid, src_root, work):
+    """Windows 重出直连库：同 Windows 出 iOS 包的直连库那一步（oneclick_win.direct：Git Bash 跑 graphics/tools/direct/direct_lib.sh，没有现成抽取就当场抽，
+    Metal for Windows 编）。照出包作业那样另起进程、用作业层的环境（c.env：随包预编件 S2A_PREBUILT_TOOLS 等；作业进程自己的环境里没有）＋ iOS 平台。
+    输入是 ios_inputs 建的产物根形态目录（临时目录，就地补配置档）。直连缓存用这款出包时那份（library.direct_cache_dir：Metal 编译结果按内容寻址，
+    没变的着色器多数命中）。→ 新的 shaders/direct 目录；这台电脑没装 Metal 开发工具 → None（同 Windows 出包：不带着色器库）"""
+    import library
+    root, work = Path(src_root), Path(work) / "win"
+    for stale_out in ("shaders/direct", "extract"):   # 旧库 / 旧抽取不带进来：按本引擎重抽重翻
+        p = root / stale_out
+        shutil.rmtree(p) if p.is_dir() else p.unlink(missing_ok=True)
+    _win_profile(c, root)
+    work.mkdir(parents=True, exist_ok=True)
+    env = c.env()
+    env.update(S2A_PACK_PLAT="ios", S2A_TARGET="ios", S2A_PY=sys.executable, S2A_DIRECT_CACHE=str(library.direct_cache_dir(c, gid)))
+    logs = Path(c.logs) / c.task; logs.mkdir(parents=True, exist_ok=True)
+    c.run([sys.executable, "-X", "utf8", "-c", WIN_DIRECT, str(root), str(work), gid.upper()], logs / "sgbf_win_direct.log", env, cwd=c.engine)
+    got = (work / "direct_result.txt").read_text(encoding="utf-8").strip() if (work / "direct_result.txt").is_file() else None
+    if got is None:
+        raise Failure("重出直连着色器库的进程没交回结果")  # 非玩家句
+    if not got:
+        return None
+    out = Path(got)
+    if not (out / "keys.tsv").is_file() or lib_dir(out) is None:
+        raise Failure("重出的直连着色器库不完整")  # 非玩家句
+    return out
 
 
 # ---- Mac ----
@@ -256,6 +313,8 @@ def upgrade_ios(c, gid):
             return "unavailable"
         c.emit("message", f"{gid}：正在重出着色器库补上片上读取用的着色器（原料取自 {where}；首次要几分钟到几十分钟，资源只推新增的）")  # 非玩家句
         new = rebuild(c, gid, src, "ios", Path(tmp) / "w")
+        if new is None:   # Windows 没装 Metal 开发工具：这次不补、不记代数，装好后下次再补（调用方接住 Failure 照常装机）
+            raise Failure("这台电脑没装 Metal 开发工具，片上读取用的着色器这次没补上")  # 非玩家句
         nl = lib_dir(new)
         if nl is None:
             raise Failure(f"重出着色器库没产出库目录（资源包里是 {old.name}）")  # 非玩家句
@@ -293,9 +352,13 @@ def rechain_ios(c, gid):
     with tempfile.TemporaryDirectory(dir=c.private) as tmp:
         src, where = ios_inputs(c, gid, Path(tmp))
         if src is None:
+            c.emit("message", f"{gid}：着色器链更新了，但游戏库里没有 game.img、也没有 Mac 版可借：这次没重编着色器库")  # 非玩家句
             return "unavailable"
         c.emit("message", f"{gid}：着色器链更新了，正在用{where}重编这款的着色器库（不重出整款；首次要几分钟到几十分钟）")  # 非玩家句
         new = rebuild(c, gid, src, "ios", Path(tmp) / "w")
+        if new is None:   # Windows 没装 Metal 开发工具（同 Windows 出包不带着色器库）：照推旧库，游戏里首次遇到的画面现编
+            c.emit("message", f"{gid}：着色器链更新了，但这台电脑没装 Metal 开发工具：这次没重编着色器库（在「准备这台电脑」装好后再推一次就换上新库）")  # 非玩家句
+            return "unavailable"
         if lib_dir(new) is None:
             raise Failure("重编的直连着色器库不完整")  # 非玩家句
         staged, old = pack / "shaders/.direct-new", pack / "shaders/.direct-old"
@@ -314,7 +377,7 @@ def rechain_ios(c, gid):
 def due(c, gid):
     """iPhone 款要不要补 _bf（install.sgrade_pending 用）：代数低于本引擎、这一代没因缺原料试过、资源包是直连包"""
     side = layout.game_info(c, gid).get("ios") or {}
-    if not SUPPORTED or not stale(side.get("bfGen")) or side.get("bfMissing") == BF_GEN:
+    if not stale(side.get("bfGen")) or side.get("bfMissing") == BF_GEN:
         return False
     try:
         return lib_dir(layout.ios_pack(c, gid) / "shaders/direct") is not None

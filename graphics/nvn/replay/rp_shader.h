@@ -30,6 +30,7 @@ struct rp_prog {
     uint32_t attr_mask;                                       // 顶点着色器实际读的属性位
     uint32_t color_out_mask;                                  // 片元着色器写了哪些输出分量：每个颜色目标 4 位（RGBA）。没有片元阶段 / 不知道 = 全 1
     uint8_t c1[RP_PROG_STAGES][0x100]; uint8_t c1_ok;         // NVN_RB_C1：着色器自带的常量段（位 i = 阶段 i 有）
+    uint32_t spill_bytes;                                     // 计算：共享内存溢出缓冲每个线程组的字节数（NVN_RB_SPILL 项）；0 = 没有
     uint8_t is_compute;                                       // 计算程序：只有 sh[0] / ent[0]，绑定取 NVN 阶段 5 的状态
     uint8_t binst_unread;                                     // 位 i = 阶段 i 已证不读 c0 + 0x644（编译器 c0Reads）：间接绘制不用把 GPU 侧的 base instance 拷进它的驱动段。0 = 读或未知（照旧拷）
     uint8_t z_raw;                                            // 顶点出口 z 原样（不随深度模式改写，出包预编库的程序）：near = -w 时管线设裁剪深度 [-1, 1]
@@ -67,3 +68,5 @@ int rp_shader_prog_borrow(const uint8_t identity[32], const struct rp_prog **out
 void rp_shader_prog_return(const uint8_t identity[32]);
 int  rp_shader_prog_borrowed(void);   // 当前未归还的借用数（静默 / 收尾判据）
 void rp_shader_reset(void);     // 会话收尾：放掉全部着色器
+// 游戏常量缓冲里的贴图句柄指向没登记的号、按默认描述符给了编译事实的次数（信息计数，不是未接；会话收尾清零）。#1594 片 4
+uint64_t rp_shader_ubo_default_fact_count(void);

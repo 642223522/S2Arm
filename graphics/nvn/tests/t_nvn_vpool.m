@@ -211,9 +211,36 @@ static void no_host_va(void) {
     for (int i=0; i<N; i++) API(nvnMemoryPoolFinalize)(&v[i]);
     cases++;
 }
+// 映射变更日志（马车世界缺口 ①，hle_nvn.c nvn_sparse_log_seq / log_hit / runs）：期望按映射语义手写。
+//   ① 建日志后映射虚拟 0 块 ← 物理块 3：问 [0, 1 块) 命中（重叠）；② 再映射虚拟 2 块：问 [0, 1 块) 不命中、序号推进到当前，问 [2 块, 3 块) 命中；
+//   ③ 映射虚拟 1 块（与 [0, 1 块) 相邻、不重叠）：问 [0, 1 块) 不命中；④ 远处来回映射 4097 次（日志 4096 条转过一圈）：问 [0, 1 块) 命中（保守）；
+//   ⑤ 虚拟 0、1 块都挂物理块 3：[0, 2 块) 背后 2 段、各 (物理块 3 地址, 1 块)；上限给 1 → -1。反证：去掉 vpt_set 里记日志那一行 → ① 红
+extern uint64_t nvn_sparse_log_seq(const void *pool); extern int nvn_sparse_log_hit(const void *pool, uint64_t *seq, uint64_t a, uint64_t n);
+extern int nvn_sparse_runs(const void *pool, uint64_t a, uint64_t n, uint64_t (*out)[2], int max);
+static void change_log(void) {
+    phase="映射变更日志"; static NVNmemoryPool v; vpool_init(&v,8*BLOCK);
+    uint64_t base=(uint64_t)(uintptr_t)((const pool_t *)&v)->mem;
+    uint64_t s0=nvn_sparse_log_seq(&v); REQUIRE(map(&v,0,3,BLOCK));
+    uint64_t q=s0; CHECK(nvn_sparse_log_hit(&v,&q,base,BLOCK)==1,"① 映射虚拟 0 块后问 [0, 1 块)：命中（期望 1）");
+    uint64_t s1=nvn_sparse_log_seq(&v); REQUIRE(map(&v,2*BLOCK,4,BLOCK));
+    q=s1; int h0=nvn_sparse_log_hit(&v,&q,base,BLOCK); uint64_t s2=nvn_sparse_log_seq(&v);
+    uint64_t q2=s1; int h2=nvn_sparse_log_hit(&v,&q2,base+2*BLOCK,BLOCK);
+    CHECK(h0==0 && q==s2 && h2==1,"② 映射虚拟 2 块后：问 [0, 1 块) %d（期望 0）、序号 %llu（期望推进到 %llu）、问 [2 块, 3 块) %d（期望 1）",h0,(unsigned long long)q,(unsigned long long)s2,h2);
+    uint64_t s3=nvn_sparse_log_seq(&v); REQUIRE(map(&v,BLOCK,5,BLOCK));
+    q=s3; CHECK(nvn_sparse_log_hit(&v,&q,base,BLOCK)==0,"③ 映射相邻的虚拟 1 块后问 [0, 1 块)：不命中（期望 0）");
+    uint64_t s4=nvn_sparse_log_seq(&v); int ok=1;
+    for (int i=0; i<4097 && ok; i++) ok=map(&v,6*BLOCK,6+(i&1),BLOCK);
+    REQUIRE(ok); q=s4; CHECK(nvn_sparse_log_hit(&v,&q,base,BLOCK)==1,"④ 远处映射 4097 次（日志转过一圈）后问 [0, 1 块)：命中（期望 1，保守）");
+    REQUIRE(map(&v,BLOCK,3,BLOCK));   // 虚拟 0、1 块都挂物理块 3
+    uint64_t r[4][2]={{0}}; int n=nvn_sparse_runs(&v,base,2*BLOCK,r,4), n1=nvn_sparse_runs(&v,base,2*BLOCK,r+2,1);
+    uint64_t p3=(uint64_t)(uintptr_t)phys_storage+3*BLOCK;
+    CHECK(n==2 && r[0][0]==p3 && r[0][1]==BLOCK && r[1][0]==p3 && r[1][1]==BLOCK && n1==-1,"⑤ [0, 2 块) 背后 %d 段（期望 2）：(%#llx, %#llx) (%#llx, %#llx)，期望各 (%#llx, %#x)；上限 1 → %d（期望 -1）",
+          n,(unsigned long long)r[0][0],(unsigned long long)r[0][1],(unsigned long long)r[1][0],(unsigned long long)r[1][1],(unsigned long long)p3,BLOCK,n1);
+    API(nvnMemoryPoolFinalize)(&v); cases++;
+}
 int main(int argc, char **argv) { @autoreleasepool {
     setvbuf(stdout,NULL,_IOLBF,0);   // 逐行出：旧实现上某例崩了，前面各例的结论仍在
-    static const struct { const char *name; void (*fn)(void); } all[]={{"two_runs",two_runs},{"negative_base",negative_base},{"remap",remap},{"buffer_before_map",buffer_before_map},{"beyond_reservation",beyond_reservation},{"many_pools",many_pools},{"no_host_va",no_host_va},{"frame_rec",frame_rec},{"zero_size",zero_size}};
+    static const struct { const char *name; void (*fn)(void); } all[]={{"change_log",change_log},{"two_runs",two_runs},{"negative_base",negative_base},{"remap",remap},{"buffer_before_map",buffer_before_map},{"beyond_reservation",beyond_reservation},{"many_pools",many_pools},{"no_host_va",no_host_va},{"frame_rec",frame_rec},{"zero_size",zero_size}};
     if (argc>2) { fprintf(stderr,"用法：%s [例名]\n",argv[0]); return 2; }
     setup();
     int ran=0; for (size_t i=0; i<sizeof all/sizeof *all; i++) if (argc==1 || !strcmp(argv[1],all[i].name)) { all[i].fn(); ran++; }

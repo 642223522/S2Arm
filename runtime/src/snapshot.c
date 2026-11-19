@@ -61,6 +61,7 @@ int s2a_snap_hostslots_reapply(void);
 // 弱链接[host,ios,touchtest]：nvn_snap_restore（直连图形层 graphics/nvn/gfx/nvn 提供；不链图形库的宿主构建没有，没有就不存 / 不恢复图形状态）
 // 弱链接[host,ios,touchtest]：nvn_be_drain（直连图形层 graphics/nvn/gfx/nvn 提供；不链图形库的宿主构建没有，没有就不存 / 不恢复图形状态）
 // 弱链接[host,ios,touchtest]：nvn_snap_grab（直连图形层 graphics/nvn/gfx/nvn 提供；不链图形库的宿主构建没有，没有就不存 / 不恢复图形状态）
+// 弱链接[host,ios,touchtest]：nvn_snap_thumb（直连图形层 graphics/nvn/gfx/nvn 提供；同上，没有就不出缩略图）
 // 弱链接[host,ios,touchtest]：nvn_snap_proc（直连图形层 graphics/nvn/gfx/nvn 提供；不链图形库的宿主构建没有，没有就不存 / 不恢复图形状态）
 // 弱链接[host,ios,touchtest]：hle_snap_fps（直连图形层 graphics/nvn/gfx/nvn 提供；不链图形库的宿主构建没有，没有就不存 / 不恢复图形状态）
 // 弱链接[host,ios,touchtest]：nvn_snap_fps（直连图形层 graphics/nvn/gfx/nvn 提供；不链图形库的宿主构建没有，没有就不存 / 不恢复图形状态）
@@ -75,6 +76,7 @@ int s2a_snap_threads_start(void);
 void s2a_snap_unfreeze(void);
 void nvn_be_drain(void) __attribute__((weak_import));
 int nvn_snap_grab(const char *path) __attribute__((weak_import));
+int nvn_snap_thumb(const char *src, const char *dst, int w, int h) __attribute__((weak_import));
 
 static double now_s(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9; }
 void s2a_snap_progress(const char *layer);   // 存档看门狗（下面「存档看门狗」一节）
@@ -462,7 +464,9 @@ static void snap_take_(const char *final_dir, int exit_after) {
     snap_dog_start(final_dir, exit_after);
     s2a_snap_progress("存档目录哈希"); snap_id id; current_id(&id);   // 冻结前算存档目录哈希（冻结后游戏不再写）
     s2a_snap_progress("验证截图");
-    { char g[2048]; snprintf(g, sizeof g, "%s/a_last.png", dir); if (nvn_snap_grab) nvn_snap_grab(g); }   // 验证用：存档时刻的画面
+    {   // 存档时刻的画面：整帧 a_last.png（验证用）+ 320×180 缩略图 thumb.png（游戏库卡片 / 提示 / 启动器 / 备份清单读它）
+        char g[2048], t[2048]; snprintf(g, sizeof g, "%s/a_last.png", dir); snprintf(t, sizeof t, "%s/thumb.png", dir);
+        if (nvn_snap_grab && !nvn_snap_grab(g) && nvn_snap_thumb) nvn_snap_thumb(g, t, 320, 180); }
     double t1 = now_s();
     int nthr = 0, nst[8], us = -1;
     for (int k = 0; k < 5 && us < 0; k++) { s2a_snap_progress("冻结游戏线程"); us = s2a_snap_freeze(2000, &nthr, nst); if (us < 0) LOG("【黄】即时存档：第 %d 次冻结 2 秒没到齐，重试", k + 1); }
@@ -501,6 +505,7 @@ static void snap_take_(const char *final_dir, int exit_after) {
         fprintf(f, "版本\t1\n构建号\t%s\n宿主二进制\t%s\n程序号\t%s\n窗口\t%s\n布局\t%s\n存档目录\t%s\n存档文件数\t%d\n", id.build, id.exe, id.prog, id.win, id.layout, id.save, id.save_n);
         fprintf(f, "存档全量\t%s\n存档全量文件数\t%d\n", sfull, sfn);
         fprintf(f, "游戏时间_ns\t%llu\n", (unsigned long long)gns);
+        fprintf(f, "保存时刻\t%lld\n", (long long)time(NULL));   // 墙钟 UTC 秒：游戏库 / 启动器显示「几点存的」
         { char d[2048] = "", pv[2048] = ""; if (S2A_SnapDataRoot && S2A_SnapDataRoot(d, sizeof d) > 0) root_portable(d, pv, sizeof pv); fprintf(f, "数据根\t%s\n", pv); }
         g_fp_f = f; g_lay_f = open_in(dir, "layouts.bin", "wb"); g_lay_n = g_lay_fields = g_lay_bad = 0; g_lay_badnames[0] = 0;
         fps_all(fp_write);
@@ -886,8 +891,8 @@ static int load_mem(const char *dir, uint64_t *raw_out) {
 // 起好服务层之后、本该起游戏主线程的位置调：成功回 0（游戏线程已按快照续跑）；失败回 -1（调用方当场退出：此时还没有游戏线程在跑、没写过存档目录）
 int nvn_snap_redump(const char *dir) __attribute__((weak_import));   // 诊断：恢复后 5 秒重存一遍显卡内容，和快照逐张对比（S2A_SNAP_REDUMP=1）
 static void *grab_thread(void *arg) {
-    const char *d = arg; static const int at[3] = {1, 5, 20}; int prev = 0;
-    for (int i = 0; i < 3; i++) { sleep((unsigned)(at[i] - prev)); prev = at[i]; char g[2200]; snprintf(g, sizeof g, "%s/b_after_%02ds.png", d, at[i]); if (nvn_snap_grab) nvn_snap_grab(g);
+    const char *d = arg; static const int at[4] = {1, 5, 20, 60}; int prev = 0;   // 60：「恢复后一分钟画面正常」的验收看这张
+    for (int i = 0; i < 4; i++) { sleep((unsigned)(at[i] - prev)); prev = at[i]; char g[2200]; snprintf(g, sizeof g, "%s/b_after_%02ds.png", d, at[i]); if (nvn_snap_grab) nvn_snap_grab(g);
         if (at[i] == 5 && getenv("S2A_SNAP_REDUMP") && nvn_snap_redump) nvn_snap_redump(d); }
     LOG("即时存档恢复：验证截图已存（%s/b_after_*.png）", d); return NULL;
 }

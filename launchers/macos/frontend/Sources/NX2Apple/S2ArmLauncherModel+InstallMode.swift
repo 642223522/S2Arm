@@ -1,5 +1,5 @@
 // S2Arm（不是上游文件）：签名身份（一键装用 Xcode 账号 / 我的开发者证书，installMode 作业只读）+ 游戏库「导出自签包」+ 更新 iPhone 上的 S2Arm。
-//   11-15 维护者：导出不再是一种「装法」，设置里没有切换；「装到 iPhone」「导出自签包」两个按钮并排，导不导出只看这次请求。
+//   11-15 维护者：导出不再是一种「装法」，设置里没有切换；「推到 iPhone」「导出自签包」两个按钮并排，导不导出只看这次请求。
 //   更新：库页右上角按钮（catalog phoneUpdates：设备记录的壳号比本版旧）→ 有要重新出包的款先三选一 → installUpdate 作业只换壳、不重推资源。
 import AppKit
 import Foundation
@@ -88,7 +88,10 @@ extension S2ArmLauncherModel {
                                                   exportFresh: r["fresh"] as? [String] ?? [], exportReused: (r["reused"] as? NSNumber)?.intValue ?? 0,
                                                   exportUnwritten: r["unwritten"] as? [String] ?? [],
                                                   sgrade: (r["sgrade"] as? [String: Any] ?? [:]).sorted { $0.key < $1.key }
-                                                      .map { SGradeGameResult(name: names[$0.key.uppercased()] ?? $0.key, outcome: SGradeOutcome($0.value as? [String: Any] ?? [:])) })
+                                                      .map { SGradeGameResult(name: names[$0.key.uppercased()] ?? $0.key, outcome: SGradeOutcome($0.value as? [String: Any] ?? [:])) },
+                                                  legacy: (r["legacy"] as? [[String: Any]] ?? []).compactMap { g in (g["gameId"] as? String).map { LegacyGame(id: $0.uppercased(), name: g["name"] as? String ?? $0) } },
+                                                  legacyElsewhere: (r["legacyElsewhere"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String ?? $0["gameId"] as? String },
+                                                  legacyDevice: r["legacyDevice"] as? String ?? "")
                 if r["exported"] as? Bool == true, let folder = r["outputPath"] as? String { NSWorkspace.shared.open(URL(fileURLWithPath: folder)) }
             }
             catch let f as JobFailure where ask && Self.confirmCodes[f.code ?? ""] != nil {

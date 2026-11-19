@@ -14,7 +14,9 @@
 单测头部可加「# 门禁覆盖：<通配…>」补推不出的面（例：shell_lint 覆盖 *.sh），「# 门禁：每次」= 每次都跑，
 「# 门禁只看：<通配…>」= 覆盖面只有单测自己 + 这些（不推闭包：文本推导把提示字符串里的文件名、被单测换成桩的下游脚本都算进去，
   10-28 出包槽 / sched / remote 三支各被推到 124–128 个文件、几乎每批都跑；清单按执行追踪写，被测脚本新调用了别的脚本同笔补进来），
-「# 门禁闭包：[--table <表>] <入口…>」= 改动落在这些入口经 tools/stage_inputs.py 算出的依赖闭包里就跑（阶段键单测：新文件进了阶段闭包要核登记）。
+「# 门禁闭包：[--table <表>] <入口…>」= 改动落在这些入口经 tools/stage_inputs.py 算出的依赖闭包里就跑（阶段键单测：新文件进了阶段闭包要核登记），
+「# 门禁清单：<清单文件…>」= 清单文件本身 + 它非注释行里带 / 的词（仓库路径）都进覆盖面：构建也读这份清单时，路由与构建同一来源
+  （例：graphics/nvn/tests/t_present_settings.link.txt，上屏设置矩阵只编只链它列的宿主源文件）。
 钩子与 iOS 编译按各钩子文件头「# 门禁路由：<前缀…>」（tools/gate_decl.py route）；哪个钩子都没声明到的代码目录 = 全跑（宁多勿漏）。"""
 import fnmatch, json, os, re, subprocess, sys, tempfile
 
@@ -236,6 +238,7 @@ def test_cover(test, files, by_name, full=False):
     full=True（缓存键用）：「门禁只看」不截断闭包，只并进去——路由可以窄，缓存输入只能宽（10-30：train_test「门禁只看」漏 known_red.py，
     缓存一直沿用改判定前的绿，核干净 main 给了假绿）"""
     seen, todo, always, globs, closures, only = {test}, [test], False, list(DECLARED_TEST_COVERAGE.get(test, ())), [], None
+    listed = set()   # 「门禁清单」点到的确切路径（不当通配：几百条通配逐文件 fnmatch 太慢）
     first, txt = refs(test, by_name, direct=True)
     for l in txt.split('\n')[:15]:
         m = re.match(r'#\s*门禁覆盖：(.*)', l)
@@ -245,11 +248,13 @@ def test_cover(test, files, by_name, full=False):
         if re.match(r'#\s*门禁：每次', l): always = True
         m = re.match(r'#\s*门禁闭包：(.*)', l)   # 「门禁闭包：[--table <表>] <入口…>」：改动落在入口经 tools/stage_inputs.py 算出的依赖闭包里就跑（含新增文件）
         if m: closures.append(m.group(1).split())
+        m = re.match(r'#\s*门禁清单：(.*)', l)
+        if m: listed |= set(list_cover(test, m.group(1).split()))
     if precheck_test(test): always = True
     if only is not None:
         gone = [g for g in only if not re.search(r'[*?\[]', g) and g not in FILESET]   # 写错 / 改名的路径永远对不上 = 这支单测再也不跑，报红
         if gone: sys.exit(f'【红】gate_route：{test} 的「门禁只看」里 {" ".join(gone)} 不在仓库里（改名了要同笔改这行）')
-        if not full: return {test} | build_cover([txt] + [read_text(f) for f in FILESET if f.endswith(('.sh', '.py')) and any(fnmatch.fnmatch(f, g) for g in only)]), globs + only, always
+        if not full: return {test} | listed | build_cover([txt] + [read_text(f) for f in FILESET if f.endswith(('.sh', '.py')) and any(fnmatch.fnmatch(f, g) for g in only)]), globs + only, always
         globs = globs + only
     stub, cpdirs = copied_only(test, txt); globs += cpdirs
     while todo:
@@ -260,7 +265,19 @@ def test_cover(test, files, by_name, full=False):
     for a in closures:   # 10-27 维护者：#550 改 runtime/run_mac.sh、新增 tools/mac_chain_check.py，落进直连阶段闭包，门禁没选 stage_keys_test，main 红
         seen |= stage_closure(tuple(a))
     seen |= build_cover([read_text(f) for f in seen if f.endswith(('.sh', '.py')) or f == test])
-    return seen, globs, always
+    return seen | listed, globs, always
+
+
+def list_cover(test, lists):
+    """「门禁清单」：清单文件 + 非注释行里带 / 的词。清单或其中路径不在仓库里 = 清单过期、覆盖面推不出，报红（不静默放过）"""
+    out = []
+    for lf in lists:
+        if lf not in FILESET: sys.exit(f'【红】gate_route：{test} 的「门禁清单」{lf} 不在仓库里')
+        ps = [w for l in read_text(lf).split('\n') if not l.lstrip().startswith('#') for w in l.split() if '/' in w]
+        gone = [p for p in ps if p not in FILESET]
+        if gone: sys.exit(f'【红】gate_route：{lf} 里 {" ".join(gone[:5])} 不在仓库里（清单过期，按清单头的说明重生成）')
+        out += [lf] + ps
+    return out
 
 
 # 构建清单（11-09 维护方：feat/launch-settings 改 macos/front_mac.m，present_settings_test 现算 HOST_SRCS 把它编进来，

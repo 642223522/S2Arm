@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 S2Arm contributors
-// R-06 v1.3：首页（Hero + 最近）/ 游戏库 / 设置；沉浸光感悬浮底栏；详情走 Navigation。
-import { SymbolGlyphModifier } from '@kit.ArkUI';
+// 游戏库即首页（对齐 iOS ShellUI）：竖屏单列卡片 / 宽竖屏网格 / 横屏封面横排；
+// 设置在顶栏齿轮，详情与设置走 Navigation。
 import { C, R, L, M, Glass, IMMERSIVE } from './Theme';
 import { Game, filterGames, sortGames } from './LibraryModel';
 import { str } from './Strings';
@@ -34,16 +34,19 @@ export struct LauncherShell {
   @State sortIndex: number = 0;
   @State query: string = '';
   @State pageWidth: number = 360;
-  @State tab: number = 0;
-  @State pressedKey: string = '';
+  @State pageHeight: number = 720;
   private paths: NavPathStack = new NavPathStack();
 
   private current(): Game | undefined { return this.games[this.selected]; }
   private inset(): number { return this.pageWidth >= 600 ? 24 : 16; }
   private cover(game: Game): string { return 'file://' + this.filesDir + '/games/' + game.key + '/game/icon.jpg'; }
-  private select(game: Game): void {
-    this.getUIContext().animateTo({ duration: M.base, curve: Curve.Friction }, () => this.onSelect(game.key));
+  // 横屏封面横排；竖屏够宽（平板、折叠屏展开）用网格；其余单列卡片。
+  private layout(): string {
+    if (this.pageWidth > this.pageHeight * 1.2) return 'covers';
+    return this.pageWidth >= 600 ? 'grid' : 'column';
   }
+  private coverWidth(): number { return Math.max(140, Math.min(280, this.pageHeight - 200)); }
+  private shown(): Game[] { return sortGames(filterGames(this.games, this.query), SORTS[this.sortIndex]); }
   private open(game: Game): void {
     this.onSelect(game.key);
     this.paths.pushPath({ name: 'GameDetail' });
@@ -105,7 +108,7 @@ export struct LauncherShell {
   @Builder ambient() {
     // 只模糊静态封面；游戏画面上不叠材质（§1.3.6-2）。
     Stack({ alignContent: Alignment.Top }) {
-      if (this.current() !== undefined && this.tab === 0) {
+      if (this.current() !== undefined) {
         ForEach([this.current()!.key], (key: string) => {
           Image('file://' + this.filesDir + '/games/' + key + '/game/icon.jpg').width('100%').height('62%')
             .objectFit(ImageFit.Cover).blur(64).opacity(0.5)
@@ -117,12 +120,21 @@ export struct LauncherShell {
     }.width('100%').height('100%').backgroundColor(C.base).hitTestBehavior(HitTestMode.None)
   }
 
-  @Builder header(title: ResourceStr, importable: boolean = true) {
-    Row() {
-      Text(title).fontSize(28).fontWeight(FontWeight.Bold).fontColor(C.primary)
+  @Builder header() {
+    Row({ space: 8 }) {
+      Text($r('app.string.library')).fontSize(28).fontWeight(FontWeight.Bold).fontColor(C.primary)
       Blank()
-      if (importable) this.iconButton($r('sys.symbol.folder_badge_plus'), $r('app.string.import_game'), 's2arm-import', this.onImport)
+      this.iconButton($r('sys.symbol.folder_badge_plus'), $r('app.string.import_game'), 's2arm-import', this.onImport)
+      this.iconButton($r('sys.symbol.gearshape'), $r('app.string.settings'), 's2arm-settings',
+        () => { this.paths.pushPath({ name: 'Settings' }); })
     }.height(L.header).width('100%').padding({ left: this.inset(), right: this.inset() })
+  }
+
+  @Builder backBar(title: ResourceStr, id: string) {
+    Row({ space: 8 }) {
+      this.iconButton($r('sys.symbol.chevron_left'), $r('app.string.back'), id, () => { this.paths.pop(); })
+      Text(title).fontSize(22).fontWeight(FontWeight.Bold).fontColor(C.primary)
+    }.width('100%').height(L.header).padding({ left: this.inset() - 4 })
   }
 
   @Builder emptyState(title: ResourceStr, importable: boolean) {
@@ -141,93 +153,48 @@ export struct LauncherShell {
   }
 
   @Builder skeleton() {
-    Column({ space: 24 }) {
-      Column().width('100%').aspectRatio(16 / 9).borderRadius(R.xl).backgroundColor(C.elevated)
-      Row({ space: 12 }) {
-        ForEach([0, 1, 2], (i: number) => {
-          Column().width(L.recent).height(L.recent).borderRadius(R.md).backgroundColor(C.elevated)
-        }, (i: number) => i.toString())
-      }.width('100%')
+    Column({ space: 12 }) {
+      ForEach([0, 1, 2], (i: number) => {
+        Column().width('100%').height(L.card).borderRadius(R.lg).backgroundColor(C.elevated)
+      }, (i: number) => i.toString())
     }.padding({ left: this.inset(), right: this.inset(), top: 8 })
   }
 
-  @Builder hero(game: Game) {
-    Stack({ alignContent: Alignment.BottomStart }) {
-      this.artwork(game)
-      Column().width('100%').height('100%')
-        .linearGradient({ angle: 180, colors: [['#000B0B0F', 0.35], ['#E60B0B0F', 1]] })
-        .hitTestBehavior(HitTestMode.None)
-      Row({ space: 12 }) {
-        Text(game.title).fontSize(24).lineHeight(30).fontWeight(FontWeight.Bold).fontColor(C.primary)
-          .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+  // 竖屏单列：封面、名称、版本；当前选中的游戏右侧给开始/继续（其余游戏的设置要先读完才能启动），点卡片进详情。
+  @Builder columnCard(game: Game) {
+    Row({ space: 14 }) {
+      Stack() { this.artwork(game) }.width(L.card - 24).height(L.card - 24).borderRadius(R.md).clip(true)
+      Column({ space: 4 }) {
+        Text(game.title).fontSize(17).fontWeight(FontWeight.Medium).fontColor(C.primary)
+          .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+        if (game.version.length > 0) Text(game.version).fontSize(13).fontColor(C.secondary).maxLines(1)
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      if (this.current()?.key === game.key) {
         this.playPill(game, 's2arm-start')
-      }.width('100%').padding(20).alignItems(VerticalAlign.Bottom)
-    }.width('100%').aspectRatio(16 / 9).constraintSize({ minHeight: 200, maxHeight: 380 })
-      .borderRadius(R.xl).clip(true)
-      .shadow({ radius: 32, color: '#66000000', offsetY: 12 })
-      .geometryTransition('hero-' + game.key)
-      .onClick(() => this.open(game)).accessibilityText(str($r('app.string.game_details_a11y'), game.title))
-      .bindContextMenu(this.cardMenu(game), ResponseType.LongPress)
+      } else {
+        SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([C.tertiary])
+      }
+    }.width('100%').height(L.card).padding({ left: 12, right: 12 }).borderRadius(R.lg)
+      .backgroundColor(this.current()?.key === game.key ? C.elevated2 : C.elevated)
+      .onClick(() => this.open(game)).bindContextMenu(this.cardMenu(game), ResponseType.LongPress)
+      .focusable(true).accessibilityText(str($r('app.string.game_details_a11y'), game.title))
   }
 
-  @Builder recentCard(game: Game) {
-    Column({ space: 8 }) {
-      Stack() { this.artwork(game) }
-        .width(L.recent).height(L.recent).borderRadius(R.md).clip(true)
-        .border({ width: 2, color: this.current()?.key === game.key ? C.primary : Color.Transparent })
-      Text(game.title).fontSize(14).fontColor(this.current()?.key === game.key ? C.primary : C.secondary)
-        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width(L.recent)
-    }.width(L.recent)
-      .scale(this.pressedKey === game.key ? { x: 0.96, y: 0.96 } : { x: 1, y: 1 })
-      .animation({ duration: M.fast, curve: Curve.Friction })
-      .onTouch((e: TouchEvent) => {
-        if (e.type === TouchType.Down) this.pressedKey = game.key;
-        else if (e.type === TouchType.Up || e.type === TouchType.Cancel) this.pressedKey = '';
-      })
-      .onClick(() => { if (this.current()?.key === game.key) this.open(game); else this.select(game); })
-      .bindContextMenu(this.cardMenu(game), ResponseType.LongPress)
-      .focusable(true).accessibilityText(game.title)
-  }
-
-  @Builder home() {
-    Scroll() {
-      Column({ space: 24 }) {
-        this.header('S2Arm')
-        if (this.loading) this.skeleton()
-        else if (this.games.length === 0) this.emptyState($r('app.string.no_games'), true)
-        else {
-          Column({ space: 12 }) {
-            if (this.crashTitle.length > 0) {
-              Row({ space: 8 }) {
-                SymbolGlyph($r('sys.symbol.xmark')).fontSize(14).fontColor([C.error])
-                Text($r('app.string.last_run_interrupted')).fontSize(14).fontColor(C.error)
-                Blank()
-                SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([C.tertiary])
-              }.width('100%').height(L.target).padding({ left: 16, right: 12 }).borderRadius(R.lg)
-                .backgroundColor('#1AFF453A').onClick(this.onDiagnostics)
-            }
-            if (this.current() !== undefined) {
-              ForEach([this.current()!], (game: Game) => {
-                Column() { this.hero(game) }.width('100%')
-                  .transition(TransitionEffect.OPACITY.animation({ duration: M.base, curve: Curve.Friction }))
-              }, (game: Game) => game.key + (game.favorite ? '*' : ''))
-            }
-            if (this.message.length > 0) Text(this.message).fontColor(C.error).fontSize(14).maxLines(3)
-          }.padding({ left: this.inset(), right: this.inset() })
-          Column({ space: 12 }) {
-            Text($r('app.string.recent')).fontSize(20).fontWeight(FontWeight.Bold).fontColor(C.primary)
-              .padding({ left: this.inset() })
-            List({ space: 12 }) {
-              ForEach(sortGames(this.games, 'recent'), (game: Game) => {
-                ListItem() { this.recentCard(game) }
-              }, (game: Game) => game.key)
-            }.listDirection(Axis.Horizontal).height(L.recent + 34).scrollBar(BarState.Off)
-              .contentStartOffset(this.inset()).contentEndOffset(this.inset())
-              .edgeEffect(EdgeEffect.Spring)
-          }.alignItems(HorizontalAlign.Start).width('100%')
+  // 横屏封面横排（无 iOS 的 3D 扇形）。
+  @Builder coverCard(game: Game) {
+    Column({ space: 10 }) {
+      Stack({ alignContent: Alignment.TopEnd }) {
+        this.artwork(game)
+        if (game.favorite) {
+          SymbolGlyph($r('sys.symbol.star_fill')).fontSize(16).fontColor([C.primary]).margin(10)
         }
-      }.width('100%').padding({ bottom: 120 })
-    }.width('100%').height('100%').align(Alignment.TopStart).scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
+      }.width('100%').aspectRatio(1).borderRadius(R.xl).clip(true)
+        .border({ width: 2, color: this.current()?.key === game.key ? C.primary : Color.Transparent })
+      Text(game.title).fontSize(17).fontWeight(FontWeight.Medium).fontColor(C.primary)
+        .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
+    }.width(this.coverWidth())
+      .onClick(() => this.open(game)).bindContextMenu(this.cardMenu(game), ResponseType.LongPress)
+      .focusable(true).accessibilityText(str($r('app.string.game_details_a11y'), game.title))
   }
 
   @Builder gridCard(game: Game) {
@@ -246,8 +213,18 @@ export struct LauncherShell {
 
   @Builder library() {
     Column({ space: 12 }) {
-      this.header($r('app.string.library'))
+      this.header()
       Column({ space: 12 }) {
+        if (this.crashTitle.length > 0 && this.games.length > 0) {
+          Row({ space: 8 }) {
+            SymbolGlyph($r('sys.symbol.xmark')).fontSize(14).fontColor([C.error])
+            Text($r('app.string.last_run_interrupted')).fontSize(14).fontColor(C.error)
+            Blank()
+            SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([C.tertiary])
+          }.width('100%').height(L.target).padding({ left: 16, right: 12 }).borderRadius(R.lg)
+            .backgroundColor('#1AFF453A').onClick(this.onDiagnostics)
+        }
+        if (this.message.length > 0) Text(this.message).fontColor(C.error).fontSize(14).maxLines(3)
         Row({ space: 12 }) {
           Search({ value: this.query, placeholder: $r('app.string.search') }).height(44).layoutWeight(1)
             .backgroundColor(C.elevated).fontColor(C.primary).placeholderColor(C.tertiary)
@@ -264,14 +241,29 @@ export struct LauncherShell {
       if (this.loading) this.skeleton()
       else if (filterGames(this.games, this.query).length === 0) {
         this.emptyState(this.games.length === 0 ? $r('app.string.no_games') : $r('app.string.no_matches'), this.games.length === 0)
-      } else {
+      } else if (this.layout() === 'covers') {
+        List({ space: 24 }) {
+          ForEach(this.shown(), (game: Game) => {
+            ListItem() { this.coverCard(game) }
+          }, (game: Game) => game.key + (game.favorite ? '*' : ''))
+        }.listDirection(Axis.Horizontal).alignListItem(ListItemAlign.Center).layoutWeight(1).width('100%')
+          .contentStartOffset(this.inset()).contentEndOffset(this.inset()).scrollBar(BarState.Off)
+          .edgeEffect(EdgeEffect.Spring)
+      } else if (this.layout() === 'grid') {
         Grid() {
-          ForEach(sortGames(filterGames(this.games, this.query), SORTS[this.sortIndex]), (game: Game) => {
+          ForEach(this.shown(), (game: Game) => {
             GridItem() { this.gridCard(game) }
           }, (game: Game) => game.key)
         }.columnsTemplate(this.columns()).columnsGap(12).rowsGap(20).layoutWeight(1)
-          .padding({ left: this.inset(), right: this.inset(), bottom: 120 }).scrollBar(BarState.Off)
+          .padding({ left: this.inset(), right: this.inset(), bottom: 40 }).scrollBar(BarState.Off)
           .edgeEffect(EdgeEffect.Spring)
+      } else {
+        List({ space: 12 }) {
+          ForEach(this.shown(), (game: Game) => {
+            ListItem() { this.columnCard(game) }
+          }, (game: Game) => game.key + (game.favorite ? '*' : ''))
+        }.layoutWeight(1).width('100%').padding({ left: this.inset(), right: this.inset() })
+          .contentEndOffset(40).scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
       }
     }.width('100%').height('100%')
   }
@@ -289,7 +281,7 @@ export struct LauncherShell {
   @Builder settings() {
     Scroll() {
       Column({ space: 16 }) {
-        this.header($r('app.string.settings'), false)
+        this.backBar($r('app.string.settings'), 's2arm-settings-back')
         Column() {
           this.settingsRow($r('sys.symbol.gamecontroller'), $r('app.string.controls_feedback'),
             this.controller.length > 0 ? this.controller : str($r('app.string.touchscreen')), 's2arm-settings-input', this.onSettings)
@@ -305,12 +297,14 @@ export struct LauncherShell {
           Text(this.version).fontSize(12).fontColor(C.tertiary).width('100%').textAlign(TextAlign.Center)
             .margin({ top: 8 })
         }
-      }.width('100%').padding({ bottom: 120 })
+      }.width('100%').padding({ bottom: 40 })
     }.height('100%').width('100%').align(Alignment.TopStart).scrollBar(BarState.Off)
   }
 
   @Builder destination(name: string) {
-    if (name === 'GameDetail' && this.current() !== undefined) {
+    if (name === 'Settings') {
+      NavDestination() { this.settings() }.hideTitleBar(true).backgroundColor(C.base)
+    } else if (name === 'GameDetail' && this.current() !== undefined) {
       NavDestination() {
         Stack({ alignContent: Alignment.Top }) {
           Image(this.cover(this.current()!)).width('100%').height('70%').objectFit(ImageFit.Cover)
@@ -359,29 +353,13 @@ export struct LauncherShell {
     Navigation(this.paths) {
       Stack() {
         this.ambient()
-        Tabs({ barPosition: BarPosition.End, index: this.tab }) {
-          TabContent() { this.home() }
-            .tabBar(BottomTabBarStyle.of({ normal: new SymbolGlyphModifier($r('sys.symbol.house')).fontColor([C.secondary]),
-              selected: new SymbolGlyphModifier($r('sys.symbol.house_fill')).fontColor([C.primary]) }, $r('app.string.home'))
-              .labelStyle({ unselectedColor: C.secondary, selectedColor: C.primary })
-              .iconStyle({ unselectedColor: C.secondary, selectedColor: C.primary }))
-          TabContent() { this.library() }
-            .tabBar(BottomTabBarStyle.of({ normal: new SymbolGlyphModifier($r('sys.symbol.square_grid_2x2')).fontColor([C.secondary]),
-              selected: new SymbolGlyphModifier($r('sys.symbol.square_grid_2x2')).fontColor([C.primary]) }, $r('app.string.library'))
-              .labelStyle({ unselectedColor: C.secondary, selectedColor: C.primary })
-              .iconStyle({ unselectedColor: C.secondary, selectedColor: C.primary }))
-          TabContent() { this.settings() }
-            .tabBar(BottomTabBarStyle.of({ normal: new SymbolGlyphModifier($r('sys.symbol.gearshape')).fontColor([C.secondary]),
-              selected: new SymbolGlyphModifier($r('sys.symbol.gearshape_fill')).fontColor([C.primary]) }, $r('app.string.settings'))
-              .labelStyle({ unselectedColor: C.secondary, selectedColor: C.primary })
-              .iconStyle({ unselectedColor: C.secondary, selectedColor: C.primary }))
-        }.barHeight(L.tab).scrollable(false).animationDuration(0)
-          .barOverlap(true)
-          .barFloatingStyle({ systemMaterial: Glass.bar, barBottomMargin: 12, barSideMargin: 48 })
-          .onChange((index: number) => this.tab = index)
+        this.library()
       }.width('100%').height('100%')
     }.mode(NavigationMode.Stack).hideTitleBar(true).navDestination(this.destination)
       .width('100%').height('100%').backgroundColor(C.base)
-      .onAreaChange((_old: Area, area: Area) => this.pageWidth = Number(area.width))
+      .onAreaChange((_old: Area, area: Area) => {
+        this.pageWidth = Number(area.width);
+        this.pageHeight = Number(area.height);
+      })
   }
 }

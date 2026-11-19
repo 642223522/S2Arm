@@ -86,7 +86,7 @@ import XCTest
         try snapshot("phone_failed")
 
         // 会挤掉别处装的游戏：就在更新页里问（不弹框）；「仍然继续」按同样的参数带 acceptDropped 再来
-        let drop = "这次会让手机上的 1 款游戏暂时不能玩：示例游戏。它们不是在这台电脑上装的，存档和资源包都还在手机上，到原来那台电脑上再点一次「装到 iPhone」就能回来。"
+        let drop = "这次会让手机上的 1 款游戏暂时不能玩：示例游戏。它们不是在这台电脑上装的，存档和资源包都还在手机上，到原来那台电脑上再点一次「推到 iPhone」就能回来。"
         model.dropConfirm = S2ArmLauncherModel.DropConfirm(kind: .installUpdate, message: drop,
                                                          update: S2ArmLauncherModel.UpdateArgs(acceptStale: true, repack: [], language: "zh-Hans", device: "D1"))
         model.start(session()) { _ in

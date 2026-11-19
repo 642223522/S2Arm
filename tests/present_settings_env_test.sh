@@ -1,5 +1,6 @@
 #!/bin/bash
-# 门禁只看：graphics/nvn/tests/t_present_settings.m graphics/nvn/tests/t_present_settings.sh tests/present_settings_test.sh tests/present_settings_env_test.sh
+# 门禁只看：graphics/nvn/tests/t_present_settings.m graphics/nvn/tests/t_present_settings.sh graphics/nvn/tests/t_present_settings.py graphics/widen/publish_native.sh tools/weak_link_decl.py tests/present_settings_test.sh tests/present_settings_env_test.sh
+# 门禁清单：graphics/nvn/tests/t_present_settings.link.txt
 # 门禁预算：600
 # 门禁显卡：独占
 # t_present_settings 的宿主显示环境探针（屏睡/无活动屏 → WindowServer 撤 NSWindowOcclusionStateVisible

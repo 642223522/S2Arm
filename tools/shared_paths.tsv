@@ -73,6 +73,9 @@ run	测试出包	记分板 / 全绿 / 里程碑 tsv	只追加单行（< 4 KB 原
 ~/.s2arm/run/s2arm/cache/widen_gate	画幅线	宽屏门禁缓存（tests/visual/widen_gate.sh）：rec/ 金样录像解压、spv/ 回放见过的 SPIR-V、sh/ MSL 缓存、lib/<键>/ 离线着色器库（键 = graphics/metal + graphics/third_party 内容哈希）	解压与建库写 .tmp.<pid> 再 mv，SPIR-V / MSL 由 libnxgal 先写临时名再改名；只影响速度不影响判据；库留最新 3 份
 ~/.s2arm/run/s2arm/cache/opus	服务接入线（脚本）/ 测试出包（gc）	libopus 静态库整机缓存（键 = build.sh 内容 + 平台）	services/opus/build.sh：mkdir 锁 + pid 存活检查，.tmp 再 mv；gc 每平台留 2 份
 ~/.s2arm/run/s2arm/cache/dav1d	服务接入线（脚本）/ 测试出包（gc）	dav1d 静态库整机缓存（键 = build.sh 内容 + 平台）	services/dav1d/build.sh：mkdir 锁 + pid 存活检查，.tmp 再 mv；gc 每平台留 2 份
+~/.s2arm/run/s2arm/cache/av1hw	服务接入线（脚本）	AV1 硬解探测结果缓存（键 = tools/av1hw.sh 内容哈希；机器硬件不变，终身有效，改脚本 = 换键重探）	tools/av1hw.sh：mkdir 锁 + pid 存活检查；探测失败不写（装好 Xcode 后下次重探）；就一个 result 文件，无 .tmp
+~/.s2arm/run/s2arm/cache/vp9hw	服务接入线（脚本）	系统 VP9 探测结果缓存（键 = tools/vp9hw.sh 内容哈希；判据同 #348，改脚本 = 换键重探）	tools/vp9hw.sh：mkdir 锁 + pid 存活检查；探测失败不写（装好 Xcode 后下次重探）；就一个 result 文件，无 .tmp
+~/.s2arm/run/s2arm/cache/vpx-stub	服务接入线（脚本）/ 测试出包（gc）	libvpx 空垫片整机缓存（键 = build_stub.sh + stub.c 内容 + 平台；垫 DirectPInvoke 静态强引用用）	services/vpx/build_stub.sh：mkdir 锁 + pid 存活检查，.tmp 再 mv；gc 每平台留 2 份
 ~/.s2arm/run/s2arm/cache/aoc	测试出包	追加内容（DLC）解包缓存 <款>-<键>/（aoc/ + aoc.tsv + aoc.log），各产物根从这里克隆，全机只解一次	pack/stage_aoc.sh：解到 .tmp.<pid> 再 mv，并发后到的丢弃；只读使用；gc 每款留 2 份
 ~/.s2arm/run/s2arm/cache/unpack	测试出包	本体解包缓存 <程序号>-<键>/（+ 旁边 .size），pack/stages/unpack.sh 命中就克隆、没命中解完存一份；普查 / 出包队列 / 一键出包全机只解一次（11-02 维护者）	pack/stages/unpack.sh：解到 .tmp.<pid> 再改名，并发后到的丢弃；只读使用；gc 每程序号留 1 份、总量 ≤ S2A_UNPACK_CACHE_GB（缺省 150）
 ~/.s2arm/run/s2arm/cache/srcver	测试出包	原件版本核对结果 <款>-<键>（键 = 候选原件 + nx_unpack 哈希 + 现行 main 构建号；内容一行 0 / 1 + 不符原话），refresh 开头读，原件 / 工具 / 现行没变不再解	pack/srcver.sh：写 .tmp.<pid> 再 mv；每份几十字节，不清

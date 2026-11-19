@@ -33,11 +33,10 @@ export class R {
 
 export class L {
   static readonly header: number = 56;
-  static readonly tab: number = 56;
   static readonly row: number = 56;
   static readonly cta: number = 48;
   static readonly target: number = 44;
-  static readonly recent: number = 148;
+  static readonly card: number = 96;
   static readonly peek: number = 16;
   static readonly gridMin: number = 152;
 }

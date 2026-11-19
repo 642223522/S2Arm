@@ -104,7 +104,7 @@ UIView *s2a_notice_help_page(CGRect f, NSString *title, NSString *detail, NSStri
     UIView *content, *page = backdrop(f, &content);
     UIStackView *pic = [[UIStackView alloc] initWithArrangedSubviews:@[glyph(@"laptopcomputer", @"Mac"), arrow(), glyph(@"cable.connector", S2AL(@"notice.cable")), arrow(), glyph(@"iphone.gen3", app)]];
     pic.spacing = 10; pic.alignment = UIStackViewAlignmentCenter;
-    // 两条路（11-11 维护者拍板，v0.3.0 起单一 IMG 交付）：电脑上点「装到 iPhone」；或把「S2Arm 自签导出」里这款的 .img 放进「文件」App（游戏库启动 / 回前台 / 重新检查时认领，ios/app.m img_scan）。
+    // 两条路（11-11 维护者拍板，v0.3.0 起单一 IMG 交付）：电脑上点「推到 iPhone」；或把「S2Arm 自签导出」里这款的 .img 放进「文件」App（游戏库启动 / 回前台 / 重新检查时认领，ios/app.m img_scan）。
     //   原先的第三条「用访达把『<游戏名>资源包』文件夹拷进来」连同宿主里认这种文件夹的改名 / 等拷完逻辑一起删了（iOS 装机剃刀 #28 / #20 / #33）
     UIImageView *folder = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"doc.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:24 weight:UIImageSymbolWeightRegular]]];
     folder.tintColor = s2a_notice_accent();

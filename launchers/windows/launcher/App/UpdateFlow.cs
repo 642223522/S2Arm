@@ -236,7 +236,14 @@ public sealed partial class EnvironmentWindow
         foreach (var m in messages)
         {
             var row = new StackPanel { Spacing = 6 };
-            if (m.TryGetProperty("kind", out var kind) && kind.GetString() == "update")
+            if (m.TryGetProperty("kind", out var fk) && fk.GetString() == "feature")   // 新功能大窗看过后留在这里：点了再看一遍（11-19 维护者定）
+            {
+                var feature = m.Clone();
+                row.Children.Add(Muted(T("messages.kind.feature"), 12));
+                row.Children.Add(new TextBlock { Text = FeatureText(feature, "badge"), FontSize = 13.5, Foreground = Ink, TextWrapping = TextWrapping.Wrap });
+                row.Children.Add(Action("feature.reopen", () => { messagesOpen = false; updatePopup = feature; featureIndex = 0; Render(); }));
+            }
+            else if (m.TryGetProperty("kind", out var kind) && kind.GetString() == "update")
             {
                 var version = m.GetProperty("version").GetString() ?? "";
                 var installed = m.TryGetProperty("installed", out var i) && i.ValueKind == JsonValueKind.True;

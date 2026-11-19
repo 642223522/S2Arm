@@ -62,6 +62,14 @@ def gz(obj):
     return buf.getvalue()
 
 
+def seed_source(data):
+    """种子文件首行「# source: repo=<库> commit=<提交> license=<许可> author=<作者> path=<上游路径>」→ 字典；没有这行 → {}（我方种子）"""
+    first = data.split(b'\n', 1)[0].decode('utf-8', 'replace').strip()
+    if not first.startswith('# source:'):
+        return {}
+    return dict(kv.split('=', 1) for kv in first[len('# source:'):].split() if '=' in kv)
+
+
 def seed_rows(seeds):
     """管线种子（<目录>/<程序号>/*.tsv）→ 与上游条目同形的行（_data 带内容）；程序号按 16 位十六进制认，别的目录 / 非 .tsv 不收"""
     rows = []
@@ -72,8 +80,10 @@ def seed_rows(seeds):
         for f in sorted(os.listdir(d)):
             if f.endswith('.tsv') and os.path.isfile(os.path.join(d, f)):
                 data = open(os.path.join(d, f), 'rb').read()
-                rows.append(dict(_data=data, sha256=hashlib.sha256(data).hexdigest(), kind='pso', cat='pso', path=f'{g.upper()}/{f}', bids=[], gids=[g.upper()],
-                                 target_fps='', aspect='', repo='S2Arm/pso-seeds', commit='', license='', author='S2Arm'))
+                src = seed_source(data)   # 外部公开清单（tools/ext_pso_collect.py 写的 ext_*.tsv）首行带来源：致谢与追溯用；我方真跑 / 众包种子没有这行
+                rows.append(dict(_data=data, sha256=hashlib.sha256(data).hexdigest(), kind='pso', cat='pso', path=src.get('path') or f'{g.upper()}/{f}', bids=[], gids=[g.upper()],
+                                 target_fps='', aspect='', repo=src.get('repo', 'S2Arm/pso-seeds'), commit=src.get('commit', ''), license=src.get('license', ''),
+                                 author=src.get('author', 'S2Arm')))
     return rows
 
 
@@ -81,7 +91,7 @@ def build(mirror, out, seeds=None):
     rows = patch_index.dedupe(patch_index.scan(mirror, keep_local=True, cheat_libs=True)) + seed_rows(seeds)
     groups, upstreams, bad = {}, {}, 0
     for r in rows:
-        if r['kind'] != 'pso':   # 我方种子不算上游
+        if r['kind'] != 'pso' or r['repo'] != 'S2Arm/pso-seeds':   # 我方种子不算上游；外部公开清单（ext_*.tsv）算，清单里列它的库与提交
             upstreams[r['repo']] = r['commit']
         try:
             data = content(mirror, r)
