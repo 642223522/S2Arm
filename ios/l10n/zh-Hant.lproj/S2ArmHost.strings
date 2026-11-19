@@ -600,3 +600,6 @@
 "vpad.snap.saveChanged.title" = "回到存下的那一刻？";
 "vpad.snap.saveChanged.body" = "存下那一刻之後遊戲又存過檔。回去會把遊戲存檔也退回那一刻；現在的存檔會先備份。";
 "vpad.snap.saveChanged.go" = "回去";
+"vpad.snap.button.hint" = "點一下存下這一刻，長按回到存下的那一刻";
+"vpad.snap.none" = "還沒有存下的時刻，單擊右上角按鈕就能存";
+"vpad.snap.savedHint" = "%@ · 長按按鈕可回到這裡";

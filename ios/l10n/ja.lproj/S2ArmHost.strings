@@ -594,3 +594,6 @@
 "vpad.snap.saveChanged.title" = "保存した瞬間に戻りますか？";
 "vpad.snap.saveChanged.body" = "その後ゲームがセーブしています。戻るとゲームのセーブもその時点に戻ります。今のセーブは先にバックアップします。";
 "vpad.snap.saveChanged.go" = "戻る";
+"vpad.snap.button.hint" = "タップでこの瞬間を保存、長押しで保存した瞬間に戻る";
+"vpad.snap.none" = "保存した瞬間はまだありません。ボタンをタップすると保存できます";
+"vpad.snap.savedHint" = "%@ · ボタンを長押しするとここに戻れます";

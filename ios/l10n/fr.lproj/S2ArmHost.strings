@@ -594,3 +594,6 @@
 "vpad.snap.saveChanged.title" = "Revenir à l’instant sauvegardé ?";
 "vpad.snap.saveChanged.body" = "Le jeu a sauvegardé depuis. Revenir ramène aussi sa sauvegarde à cet instant ; la sauvegarde actuelle est d’abord copiée.";
 "vpad.snap.saveChanged.go" = "Revenir";
+"vpad.snap.button.hint" = "Touchez pour enregistrer ce moment ; maintenez pour y revenir";
+"vpad.snap.none" = "Aucun moment enregistré. Touchez le bouton pour en enregistrer un";
+"vpad.snap.savedHint" = "%@ · Maintenez le bouton pour revenir ici";
