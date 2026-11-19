@@ -627,6 +627,7 @@ static int man_get(const char *dir, const char *key, char *out, size_t n) {
 // 回 0 = 全部一致可以恢复；否则打红、说清哪一项不符，调用方立刻退出（此刻还没起服务层、没碰存档目录）
 // 恢复不成时给玩家的说法（0.6.0 做界面入口时读这个文件；不靠日志）：文档根下 snap_result.tsv，「结果 / 分类 / 给玩家的话」三行
 static int g_snap_old, g_snap_save_moved;
+static int g_snap_save_rollback;   // 玩家已确认退回存档（当前存档已备份或本来没有）：恢复时重放之前先把存档树写回快照那一刻
 void s2a_snap_mark_old(void) { g_snap_old = 1; }
 void s2a_snap_result_note(int ok) {
     char p[2048]; s2a_docs_path(p, sizeof p, "snap_result.tsv"); FILE *f = fopen(p, "w"); if (!f) return;
@@ -739,9 +740,9 @@ int s2a_snap_restore_check(const char *dir) {
                 char root[2048], bk[2048], nm[64]; save_root(root, sizeof root); snprintf(nm, sizeof nm, "snap_save_backup/%lld", (long long)time(NULL)); s2a_docs_path(bk, sizeof bk, "%s", nm);
                 { char par[2048]; s2a_docs_path(par, sizeof par, "%s", "snap_save_backup"); mkdir(par, 0755); }
                 struct stat rs;   // 当前没有存档目录（快照之后存档被删 / 换了数据根）：没有可备份的，直接按快照写回
-                if (lstat(root, &rs) && errno == ENOENT) { LOG("即时存档恢复：存快照之后存档变过，玩家已确认退回；当前没有存档目录（%s），不用备份", root); continue; }
+                if (lstat(root, &rs) && errno == ENOENT) { LOG("即时存档恢复：存快照之后存档变过，玩家已确认退回；当前没有存档目录（%s），不用备份", root); g_snap_save_rollback = 1; continue; }
                 if (clonefile(root, bk, 0)) { LOG("【红】即时存档恢复：玩家确认退回存档，但备份当前存档失败（errno %d，%s），不恢复", errno, bk); bad++; continue; }
-                LOG("即时存档恢复：存快照之后存档变过，玩家已确认退回；当前存档已备份到 %s", bk); continue; }
+                LOG("即时存档恢复：存快照之后存档变过，玩家已确认退回；当前存档已备份到 %s", bk); g_snap_save_rollback = 1; continue; }
             LOG("【红】即时存档恢复：%s不符（快照 %s，当前 %s），拒绝恢复", it[i].key, v, it[i].cur); bad++; }
     }
     if (!bad) {   // 游戏时间接着快照那一刻走（同 Switch 挂起 / 唤醒，#495）：在服务层起来之前就接上，之后谁也看不到时间倒退；恢复期间照常往前走几秒
@@ -900,6 +901,8 @@ int s2a_snap_restore(const char *dir) {
     {   // 服务层已起：它实际用的数据根必须就是快照时的那个（校验阶段按清单里记的算了存档目录哈希），不同就停下、什么都不写
         char d[2048] = "", pv[2048] = ""; if (S2A_SnapDataRoot && S2A_SnapDataRoot(d, sizeof d) > 0) root_portable(d, pv, sizeof pv);
         if (g_root_hint_v[0] && strcmp(pv, g_root_hint_v)) { LOG("【红】即时存档恢复：服务层数据根与快照时不同（快照 %s，当前 %s），停下", g_root_hint_v, pv); return -1; } }
+    // 玩家已确认退回：重放之前先写回存档树。重放会按快照那一刻重开存档里的文件，快照里有、当前没有的（存档目录整个没了 / 之后被删的文件）会开不了、重放失败
+    if (g_snap_save_rollback) { char src[2048]; snprintf(src, sizeof src, "%s/save_tree", dir); if (save_tree_put(src)) return -1; LOG("即时存档恢复：玩家已确认退回，重放前先把存档树写回快照那一刻"); }
     double t0 = now_s(); char st0[80]; int sn0; save_dir_hash(st0, &sn0);
     FILE *f = open_in(dir, "svcmem.bin", "rb"); if (!f || s2a_snap_svcmem_load(f)) { if (f) fclose(f); return -1; } fclose(f);
     { int s2a_snap_far_load(FILE *); f = open_in(dir, "far.bin", "rb"); if (!f || s2a_snap_far_load(f)) { if (f) fclose(f); return -1; } fclose(f); }
