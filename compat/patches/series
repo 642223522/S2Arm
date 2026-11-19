@@ -631,3 +631,4 @@
 20261118-1303-fs-stream-pace.patch
 20261118-0245-f16x2-atomic-add.patch
 20261118-1854-save-commit-no-reject.patch
+20261118-1950-gai-null-host-offline.patch
