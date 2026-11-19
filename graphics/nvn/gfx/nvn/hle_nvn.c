@@ -3811,6 +3811,8 @@ __attribute__((weak)) void dm_fps_lock_tick(void) {}   // hle_fpslock.c: engine 
 static nvn_vpace g_vid; static pthread_mutex_t g_vid_mu = PTHREAD_MUTEX_INITIALIZER; static int g_vid_off = -1; static int g_vid_cap;
 static uint64_t g_vid_t, g_vid_f, g_vid_d; static double g_vid_dpf = -1; static int g_vid_busy_said;   // 每帧绘制数（每 ≥ 0.25 秒按绘制数 ÷ 出图数重算一次，g_vid_mu 下）
 void s2a_video_frame(void) { uint64_t t = now_ns(); pthread_mutex_lock(&g_vid_mu); nvn_vpace_frame(&g_vid, t); pthread_mutex_unlock(&g_vid_mu); }
+// 带片源时间戳的一帧（Switch 2 解码器，nvn2_codec.c cv_emit）：片源帧率按时间戳判，见 nvn_vpace.h
+void s2a_video_frame_pts(int64_t pts_ns) { uint64_t t = now_ns(); pthread_mutex_lock(&g_vid_mu); nvn_vpace_frame_pts(&g_vid, t, pts_ns); pthread_mutex_unlock(&g_vid_mu); }
 static int video_cap(void) {
     if (g_vid_off < 0) { const char *e = getenv("S2A_VIDEO_PACE"); g_vid_off = e && !strcmp(e, "0"); }
     if (g_vid_off) return 0;
