@@ -43,9 +43,9 @@
 | 能力 | 安卓（AAudio） | 鸿蒙（OHAudio） |
 |---|---|---|
 | 打开流 | LOW_LATENCY + EXCLUSIVE（退回 shared），USAGE_GAME；格式/采样率/声道不符即失败；设备缓冲设为 2 个 burst；经 `s2a_capacity_call_wide`（线程亲和辅助）打开 | FAST 延迟模式，USAGE_GAME；格式/采样率/声道/回调帧数不符即失败；FAST 能建但 Start 报 `ILLEGAL_STATE` 时同格式重建一次 NORMAL |
-| 焦点来源 | 全进程开关：Java `AudioFocusPolicy` → `s2a_aaudio_set_output_allowed`，前后台 → `s2a_aaudio_set_foreground` | 每条流的 interrupt 回调：PAUSE/RESUME/STOP/DUCK/UNDUCK/MUTE/UNMUTE |
-| **失焦时环是否继续消耗** | 前台失焦：照常读环、输出置零，`frames_out` 前进，缓冲按时归还（`android/tests/audio-focus-managed` 守这条）；后台：不读环 | PAUSE/STOP：回调只填静音不读环，控制线程随后 Pause/Stop 渲染器；`frames_out` 停住，缓冲在恢复前不归还 |
-| 闪避 / 静音 | 无（系统处理） | 共享型 DUCK ×0.2、MUTE 置 0；强制型由系统完成，不重复 |
+| 焦点来源 | 全进程开关：Java `AudioFocusPolicy` → `s2a_aaudio_set_output_allowed`，前后台 → `s2a_aaudio_set_foreground` | 每条流的 interrupt 回调：PAUSE/RESUME/STOP/DUCK/UNDUCK/MUTE/UNMUTE；PAUSE/STOP 对应安卓 `output_allowed = 0`，RESUME 对应恢复 |
+| **失焦时环是否继续消耗**（以安卓为准，已对齐） | 前台失焦：照常读环、输出置零，`frames_out` 前进，缓冲按时归还（`aaudio_sink.c` `on_data`；`android/tests/aaudio_format_test.c`、`android/tests/audio-focus-managed` 守这条）；流只随 running && 前台启停，不随焦点；后台：不读环 | 同安卓：PAUSE/STOP 不再 Pause/Stop 渲染器，回调照常读环后置零。强制型（系统已暂停/停止渲染器、没有回调）时，控制线程 `service()` 按流采样率从环里取走样本，`wait` 最长 10 ms，缓冲照常归还；RESUME（STOP 后为显式 start）再 Start。游戏主动 pause 时不读环（对应安卓未运行）。宿主用例 `ohos/audio/test_focus.py` |
+| 闪避 / 静音 | 应用不处理：`CAN_DUCK` 不改 `output_allowed`，`setWillPauseWhenDucked(false)` 由系统闪避；环照常消耗 | 共享型 DUCK ×0.2、MUTE 置 0；强制型由系统完成，不重复；两者环都照常消耗 |
 | 路由变化 | 不单独处理；断开走 `DISCONNECTED` | `OutputDeviceChange` 回调：重置预缓冲 + 在控制线程刷新状态与 burst |
 | 断流重建 | error 回调仅认 `DISCONNECTED` → service 里 close + 重开，后台时延后 | 任何 error 回调 → `reopen_pending` → service 里 Release + 重建，失败留待下次 |
 | 错误回报 | 打 logcat，托管侧看不到 | `last_error` 原子量，托管 feeder 读到即失败上报 |
@@ -68,11 +68,14 @@
   - `bool Consume(ulong samples)`：按队首扣减，返回是否有缓冲播完（调用方据此 `Set` 更新事件）；内部累计已播样本。
   - `ulong HeadRemaining(out bool any)`：给 `Arm` 计算唤醒点。
   - `bool IsConsumed(ulong id)`、`ulong PlayedSampleCount`。
-  三端 Session 改为持有它。安卓顺序随之改为先登记，属行为修正，需在 Linux 上跑 `tests/android_audio_focus_test.sh` 和安卓自测入口 `s2a_android_audio_selftest` 后再合。
-- **第二步（可选）：feeder 骨架**。`FeedLoop`/`Arm`/`FeedLocked`/`Start`/`Stop`/`Dispose` 两端只差错误处理，可做成 `RingFedOutputSession<TSink> where TSink : struct, IRingSink`（`Wait/Service/Space/Write/NotifyAt/Wake/FramesOut/SetVolume/Start/Pause/Close/LastError`），用 struct 泛型避免接口派发；苹果不走环，不参与。此步之前先定第 3 节「失焦时是否继续消耗」的统一口径。
+  三端 Session 改为持有它。维护方 11-19 已同意作为单独一片（不在本 PR）；安卓登记顺序由维护方在安卓车道先改，安卓回归由维护方在 Linux / macOS 上跑。
+- **第二步（可选）：feeder 骨架**。`FeedLoop`/`Arm`/`FeedLocked`/`Start`/`Stop`/`Dispose` 两端只差错误处理，可做成 `RingFedOutputSession<TSink> where TSink : struct, IRingSink`（`Wait/Service/Space/Write/NotifyAt/Wake/FramesOut/SetVolume/Start/Pause/Close/LastError`），用 struct 泛型避免接口派发；苹果不走环，不参与。失焦口径已统一为「照常消耗、输出静音」（第 3 节）。
 - 留在平台侧：第 3 节全部（打开参数、焦点、路由、重建、预缓冲、统计、close 语义）。
 
-## 5. 需要维护方定的差异
+## 5. 维护方的决定（11-19）
 
-- 失焦时鸿蒙不消耗环、缓冲不归还，与安卓「前台失焦照常消耗、静音输出」不同。是否对齐安卓，需要在设备上确认 OHAudio 在 PAUSE 提示下是否仍回调后再改，本 PR 未改。
-- 安卓 `QueueBuffer` 的发布顺序竞态：建议随第一步一起修，不放在本 PR。
+- 失焦时是否消耗环：**以安卓为准**，照常消耗、输出静音，本 PR 已改（第 3 节）。真实设备上 OHAudio 强制型 PAUSE 后是否仍回调未验证；不论是否回调，环都会被消耗。
+- 安卓 `QueueBuffer` 先 Enqueue 后登记的竞态：维护方确认是安卓的错，由维护方在安卓车道单独修正，不在本 PR。
+- `QueuedBufferLedger` 抽取：同意，作为单独一片后续提交。
+
+目前没有待定项。

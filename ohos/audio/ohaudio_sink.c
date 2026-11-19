@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/eventfd.h>
+#include <time.h>
 #include <unistd.h>
 
 _Static_assert(sizeof(struct s2a_ohaudio_stats) == 40, "OHAudioSink.Stats ABI");
@@ -23,7 +24,10 @@ struct s2a_ohaudio {
     int32_t burst_frames;
     uint32_t reopens;
     int normal_latency;               // control thread only: FAST stream refused to start, use NORMAL
-    _Atomic int wants_running, focus_paused, stop_hint, closing;
+    int64_t drain_ns;                 // control thread only: clock of the suspended-renderer drain, 0 = idle
+    // focus_lost mirrors Android output_allowed == 0: the ring is still consumed, output is silent.
+    // reading makes the callback and the control-thread drain mutually exclusive ring consumers.
+    _Atomic int wants_running, focus_lost, closing, reading, draining;
     _Atomic int reopen_pending, control_pending, last_error;
     _Atomic int shared_duck, shared_mute;
     _Atomic uint32_t volume_bits;
@@ -53,8 +57,8 @@ static OH_AudioData_Callback_Result on_data(OH_AudioRenderer *renderer, void *us
         wake(a);
         return AUDIO_DATA_CALLBACK_RESULT_INVALID;
     }
-    if (atomic_load(&a->closing) || !atomic_load(&a->wants_running)
-        || atomic_load(&a->focus_paused) || atomic_load(&a->reopen_pending)) {
+    if (atomic_load(&a->closing) || !atomic_load(&a->wants_running) || atomic_load(&a->reopen_pending)
+        || atomic_exchange_explicit(&a->reading, 1, memory_order_acquire)) {
         memset(data, 0, (size_t)size);
         return AUDIO_DATA_CALLBACK_RESULT_VALID;
     }
@@ -65,6 +69,10 @@ static OH_AudioData_Callback_Result on_data(OH_AudioRenderer *renderer, void *us
     else if (atomic_load(&a->shared_duck)) volume *= 0.2f;
     s2a_pcm_ring_set_volume(&a->pcm.ring, volume);
     s2a_ohos_pcm_read(&a->pcm, data, (uint32_t)size / a->pcm.ring.frame_bytes);
+    atomic_store_explicit(&a->reading, 0, memory_order_release);
+    // As Android (aaudio_sink.c on_data): without focus keep consuming so queued buffers
+    // return to the game on time, and output silence.
+    if (atomic_load(&a->focus_lost)) memset(data, 0, (size_t)size);
     notify_if_due(a);
     return AUDIO_DATA_CALLBACK_RESULT_VALID;
 }
@@ -82,13 +90,12 @@ static void on_interrupt(OH_AudioRenderer *renderer, void *user,
     (void)renderer;
     struct s2a_ohaudio *a = user;
     switch (hint) {
-    case AUDIOSTREAM_INTERRUPT_HINT_PAUSE: atomic_store(&a->focus_paused, 1); break;
-    case AUDIOSTREAM_INTERRUPT_HINT_RESUME: atomic_store(&a->focus_paused, 0); break;
-    case AUDIOSTREAM_INTERRUPT_HINT_STOP:
-        atomic_store(&a->wants_running, 0);
-        atomic_store(&a->stop_hint, 1);
-        atomic_store(&a->focus_paused, 1);
-        break;
+    // PAUSE and STOP both only silence output, like Android's transient and permanent focus loss.
+    // A shared-type hint leaves the renderer running; after a forced one the system has paused or
+    // stopped it, and service() consumes the ring at the stream rate until RESUME.
+    case AUDIOSTREAM_INTERRUPT_HINT_PAUSE:
+    case AUDIOSTREAM_INTERRUPT_HINT_STOP: atomic_store(&a->focus_lost, 1); break;
+    case AUDIOSTREAM_INTERRUPT_HINT_RESUME: atomic_store(&a->focus_lost, 0); break;
     // Forced volume changes were already applied by the system. Do not duck twice.
     case AUDIOSTREAM_INTERRUPT_HINT_DUCK: atomic_store(&a->shared_duck, type == AUDIOSTREAM_INTERRUPT_SHARE); break;
     case AUDIOSTREAM_INTERRUPT_HINT_UNDUCK: atomic_store(&a->shared_duck, 0); break;
@@ -150,7 +157,8 @@ static int apply_control(struct s2a_ohaudio *a) {
     OH_AudioStream_State state;
     int e = OH_AudioRenderer_GetCurrentState(a->renderer, &state);
     if (e) return record_error(a, -e);
-    int run = atomic_load(&a->wants_running) && !atomic_load(&a->focus_paused);
+    // Lost focus never pauses the renderer here; it is only not restarted until RESUME.
+    int wants = atomic_load(&a->wants_running), run = wants && !atomic_load(&a->focus_lost);
     if (run && state != AUDIOSTREAM_STATE_RUNNING) {
         e = OH_AudioRenderer_Start(a->renderer);
         // A FAST stream can be created but refuse to start where the output has no low-latency path
@@ -164,8 +172,7 @@ static int apply_control(struct s2a_ohaudio *a) {
             e = OH_AudioRenderer_Start(a->renderer);
         }
     }
-    else if (!run && state == AUDIOSTREAM_STATE_RUNNING)
-        e = atomic_load(&a->stop_hint) ? OH_AudioRenderer_Stop(a->renderer) : OH_AudioRenderer_Pause(a->renderer);
+    else if (!wants && state == AUDIOSTREAM_STATE_RUNNING) e = OH_AudioRenderer_Pause(a->renderer);
     else if (state == AUDIOSTREAM_STATE_INVALID || state == AUDIOSTREAM_STATE_RELEASED) e = EIO;
     if (e) return record_error(a, -e);
     return 0;
@@ -195,7 +202,7 @@ int s2a_ohaudio_start(s2a_ohaudio *a) {
     if (!a || atomic_load(&a->closing)) return -EINVAL;
     atomic_store(&a->wants_running, 1);
     // An explicit user start is allowed to request focus again after STOP.
-    atomic_store(&a->focus_paused, 0); atomic_store(&a->stop_hint, 0);
+    atomic_store(&a->focus_lost, 0);
     s2a_ohos_pcm_reset(&a->pcm);
     if (atomic_load(&a->reopen_pending)) return record_error(a, -EAGAIN);
     int e = apply_control(a);
@@ -208,6 +215,34 @@ int s2a_ohaudio_pause(s2a_ohaudio *a) {
     atomic_store(&a->wants_running, 0);
     s2a_ohos_pcm_reset(&a->pcm);
     return apply_control(a);
+}
+static int64_t now_ns(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec;
+}
+// Focus lost and the renderer not running (forced PAUSE/STOP): no callback consumes the ring,
+// so the control thread does, at the stream rate. Android keeps consuming in the same state.
+static void drain_suspended(struct s2a_ohaudio *a) {
+    OH_AudioStream_State state;
+    int idle = 0;
+    if (!a->renderer || !atomic_load(&a->wants_running) || !atomic_load(&a->focus_lost)
+        || atomic_load(&a->reopen_pending) || OH_AudioRenderer_GetCurrentState(a->renderer, &state)
+        || state == AUDIOSTREAM_STATE_RUNNING
+        || !atomic_compare_exchange_strong_explicit(&a->reading, &idle, 1, memory_order_acquire, memory_order_relaxed)) {
+        a->drain_ns = 0;
+        atomic_store(&a->draining, 0);
+        return;
+    }
+    int64_t now = now_ns();
+    if (a->drain_ns) {
+        uint64_t frames = (uint64_t)(now - a->drain_ns) * (uint64_t)a->rate / 1000000000u;
+        a->drain_ns += (int64_t)(frames * 1000000000u / (uint64_t)a->rate);
+        s2a_ohos_pcm_discard(&a->pcm, frames > UINT32_MAX ? UINT32_MAX : (uint32_t)frames);
+    } else a->drain_ns = now;
+    atomic_store_explicit(&a->reading, 0, memory_order_release);
+    atomic_store(&a->draining, 1);
+    notify_if_due(a);
 }
 void s2a_ohaudio_service(s2a_ohaudio *a) {
     if (!a || atomic_load(&a->closing)) return;
@@ -232,6 +267,7 @@ void s2a_ohaudio_service(s2a_ohaudio *a) {
             else atomic_store(&a->last_error, 0);
         }
     }
+    drain_suspended(a);
 }
 int s2a_ohaudio_last_error(s2a_ohaudio *a) { return a ? atomic_load(&a->last_error) : -EINVAL; }
 void s2a_ohaudio_notify_at(s2a_ohaudio *a, uint64_t frames) {
@@ -242,6 +278,8 @@ void s2a_ohaudio_notify_at(s2a_ohaudio *a, uint64_t frames) {
 void s2a_ohaudio_wake(s2a_ohaudio *a) { if (a) wake(a); }
 int s2a_ohaudio_wait(s2a_ohaudio *a, int timeout_ms) {
     if (!a || timeout_ms < -1) return -EINVAL;
+    // While service() drains for a suspended renderer, return buffers at least every 10 ms.
+    if (atomic_load(&a->draining) && (timeout_ms < 0 || timeout_ms > 10)) timeout_ms = 10;
     struct pollfd p = {.fd = a->wake_fd, .events = POLLIN};
     int n = poll(&p, 1, timeout_ms);
     if (n < 0) return errno == EINTR ? 0 : record_error(a, -errno);

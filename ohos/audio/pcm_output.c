@@ -56,3 +56,12 @@ void s2a_ohos_pcm_read(struct s2a_ohos_pcm_output *out, void *data, uint32_t fra
     s2a_pcm_ring_read(&out->ring, data, frames);
     if (available < frames) out->buffering = 1;
 }
+uint32_t s2a_ohos_pcm_discard(struct s2a_ohos_pcm_output *out, uint32_t frames) {
+    uint64_t read = atomic_load_explicit(&out->ring.read, memory_order_relaxed);
+    uint64_t available = (atomic_load_explicit(&out->ring.written, memory_order_acquire) - read) / out->ring.frame_bytes;
+    uint32_t n = available < frames ? (uint32_t)available : frames;
+    atomic_store_explicit(&out->ring.read, read + (uint64_t)n * out->ring.frame_bytes, memory_order_release);
+    atomic_fetch_add_explicit(&out->ring.frames_out, n, memory_order_relaxed);
+    atomic_store(&out->reset, 1);
+    return n;
+}

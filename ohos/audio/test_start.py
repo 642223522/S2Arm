@@ -15,7 +15,7 @@ harness = r'''
 enum { AUDIOSTREAM_STATE_RUNNING=2,AUDIOSTREAM_STATE_INVALID=3,AUDIOSTREAM_STATE_RELEASED=4,
        AUDIOSTREAM_ERROR_ILLEGAL_STATE=7 };
 typedef int OH_AudioStream_State;
-struct s2a_ohaudio { void *renderer; int normal_latency; _Atomic int wants_running,focus_paused,stop_hint; };
+struct s2a_ohaudio { void *renderer; int normal_latency; _Atomic int wants_running,focus_lost; };
 static int test,starts,releases,opens,errors;
 static int record_error(struct s2a_ohaudio *a,int e) { (void)a;errors++;return e; }
 static int OH_AudioRenderer_GetCurrentState(void *r,int *s) { (void)r;*s=0;return 0; }
@@ -26,7 +26,6 @@ static int OH_AudioRenderer_Start(void *r) {
     if(test==6||starts==2)return test==5||test==6?66:0;
     return AUDIOSTREAM_ERROR_ILLEGAL_STATE;
 }
-static int OH_AudioRenderer_Stop(void *r) { (void)r;return 0; }
 static int OH_AudioRenderer_Pause(void *r) { (void)r;return 0; }
 static int release_stream(struct s2a_ohaudio *a) { releases++;if(test==3)return -44;a->renderer=0;return 0; }
 static int open_stream(struct s2a_ohaudio *a) { opens++;if(test==4)return -45;a->renderer=(void*)1;return 0; }

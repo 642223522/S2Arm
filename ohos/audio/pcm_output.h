@@ -17,3 +17,6 @@ void s2a_ohos_pcm_reset(struct s2a_ohos_pcm_output *);
 uint32_t s2a_ohos_pcm_space(const struct s2a_ohos_pcm_output *);
 uint32_t s2a_ohos_pcm_write(struct s2a_ohos_pcm_output *, const void *, uint32_t bytes);
 void s2a_ohos_pcm_read(struct s2a_ohos_pcm_output *, void *, uint32_t frames);
+// Consumer side without an output buffer: drop up to `frames` queued frames as played
+// (frames_out advances, nothing is padded) and rebuffer on the next read. Returns frames dropped.
+uint32_t s2a_ohos_pcm_discard(struct s2a_ohos_pcm_output *, uint32_t frames);
