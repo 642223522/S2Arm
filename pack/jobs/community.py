@@ -234,7 +234,7 @@ def mac_settings(c, gid):
             out[key].update(language_state(c, gid, item, out[key]["value"]))
     # 画质提升：标准 / 2D 游戏专用哪款都能用；锐利放大（MetalFX）要走直连。清单明说没走直连的，锐利放大置灰（blocked）、写一句为什么（这一行照样能选另两档）
     if caps and caps.get("direct") != "1" and "quality" in out:
-        out["quality"]["blocked"] = ["MetalFX"]
+        out["quality"]["blocked"] = ["MetalFX", "Fsr"]   # Fsr（FSR 1）同样只直连上屏有
         out["quality"]["reason"] = NO_DIRECT
     # 只用社区补丁（11-13 维护者撤掉我方 60 帧与通用满屏，tools/caps_policy.py patch_only）：没有帧率补丁的款不出「60 帧」，没有宽屏补丁的款不出「满屏」
     #   （读到了能力清单才判：还没出 Mac 版时照旧都列、先存偏好）
@@ -629,7 +629,7 @@ def launch_env(c, gid):
         if any(k.startswith(("widescreen:", "wsauto:")) for k in on):
             env["S2A_WIDESCREEN"] = "0"   # 开着社区宽屏 / 画幅补丁：游戏自己画宽画面，S2Arm 的满屏（图形层加宽渲染目标）让开，不拉宽两次；关掉补丁恢复
     # 画质提升（11-15，同 iPhone S2AScalingFilter）：2D 游戏专用 = 最近邻；锐利放大 = 直连上屏 MetalFX 空间放大（graphics/nvn/gfx/nvn/nvn_present_fx.inc），没走直连不设
-    if s.get("quality") == "Nearest" or (s.get("quality") == "MetalFX" and caps.get("direct") == "1"):
+    if s.get("quality") == "Nearest" or (s.get("quality") in ("MetalFX", "Fsr") and caps.get("direct") == "1"):
         env["S2A_SCALING_FILTER"] = s["quality"]
     # 渲染分辨率 / 帧率上限（11-17，同 iPhone S2AResolutionScale / S2AFrameRateLimit，ios/settings.m）：缺省 1× / 不限不写，宿主照旧；
     #   其余照选的值设 S2A_RES_SCALE（graphics/nvn/gfx/nvn/nvn_rscale.inc）、S2A_FPS（graphics/loop/RenderLoop.cs、nvn_fps.c）
