@@ -67,6 +67,11 @@ uint32_t rp_storage_srgb_alias(uint32_t f);
 nvn_gpu_samp rp_samp_by_id(int id);
 // #1072：同上，但贴图 tid 的有效格式不能线性过滤时给同参数的最近点采样器（具名记账）。
 nvn_gpu_samp rp_samp_for_tex(int sid, int tid);
+// 类型 3 句柄（常量采样器；c2 分离表 / 游戏常量缓冲两种形态）的采样器：登记号 sid 没登记 → 同 Ryujinx 的空采样器，绑最近点 / Repeat 的
+// 默认采样器（rp_sampler_for_query）、不跳整笔；其余同 rp_samp_for_tex。登记了但后端建不出 / 默认采样器也建不出 → NULL（调用方具名跳过）。
+// pool_base / pool_n（采样器池起点、容量）只给每局首行日志用。信息计数 rp_const_samp_default_count（换局清零）。线程：[提交]。
+nvn_gpu_samp rp_samp_for_const_handle(int sid, int tid, int pool_base, int pool_n);
+uint64_t rp_const_samp_default_count(void);   // 类型 3 句柄的采样器号没登记、绑默认采样器的次数（#1594 片 6；信息计数，换局清零）
 // 格式能力（nvn_gpu_format_caps）按格式缓存，会话重开时清。
 uint32_t rp_fmt_caps(uint32_t f);
 // 仅供已证明不读取采样器的组合描述符；Vulkan 仍要求描述符里的对象有效。
