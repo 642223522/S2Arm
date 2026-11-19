@@ -68,8 +68,20 @@ with tempfile.TemporaryDirectory(prefix='romfsidx key ') as t:
     if not dotnet:
         print('跳过 镜像形态：没有 dotnet')
     else:
-        out = T / 'ri'
-        b = subprocess.run([dotnet, 'build', str(R / 'services/romfs_index'), '-c', 'Release', '-o', str(out)], capture_output=True, text=True)
+        # 编好的 romfs_index 按「RomFS 索引写法 4 个文件的对象号」缓存（同产品判 RomFS 索引要不要重建的键，stages.romfs_writer_oids）：
+        #   它引用整个 S2A.Services，现编一次 Mac 约 100 秒、Linux 主机约 6 分钟，原先每跑一次都现编；写法没变就复用。编到旁边再整体改名进缓存，并发不读半截
+        ck_key = stages.digest('\n'.join(stages.romfs_writer_oids()) + '\n')[:16]
+        out = Path(os.environ.get('S2A_TEST_CACHE') or Path.home() / '.cache/s2a-test') / 'romfs_index' / ck_key
+        b = subprocess.CompletedProcess([], 0, '', '')
+        if not (out / 'romfs_index.dll').is_file():
+            tmp = out.parent / f'.{ck_key}.{os.getpid()}'
+            shutil.rmtree(tmp, ignore_errors=True); tmp.parent.mkdir(parents=True, exist_ok=True)
+            b = subprocess.run([dotnet, 'build', str(R / 'services/romfs_index'), '-c', 'Release', '-o', str(tmp)], capture_output=True, text=True)
+            if not b.returncode:
+                try:
+                    os.replace(tmp, out)
+                except OSError:   # 别的进程先放进去了：用它的
+                    shutil.rmtree(tmp, ignore_errors=True)
         I = T / 'i'; I.mkdir(); (I / 'romfs.std').write_bytes(b'')
         r = subprocess.run([dotnet, str(out / 'romfs_index.dll'), '--std', str(rf), '-', str(I / 'romfs.std'), '0'], capture_output=True, text=True) if not b.returncode else b
         ck(r.returncode == 0 and romfs_list.image_of(I / 'romfs') is not None, '夹具建成镜像')

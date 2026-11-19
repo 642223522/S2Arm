@@ -14,8 +14,17 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO))
 from pack.orch import roots, stages, refresh
+
+
+def outside_repo_tempdir(prefix):
+    """临时根放在仓库检出目录之外：调用方把 TMPDIR 设在检出目录里时，直连配置阶段按产品规则拒绝输出落在仓库里
+    （graphics/nvn/tools/direct_profile.py validate_output：output must be outside source/input root），这时挪到检出目录旁边建"""
+    base = Path(tempfile.gettempdir()).resolve()
+    inside = base == REPO or REPO in base.parents
+    return tempfile.TemporaryDirectory(prefix=prefix, dir=str(REPO.parent) if inside else None)
 
 
 class RunFailTail(unittest.TestCase):
@@ -30,7 +39,7 @@ class RunFailTail(unittest.TestCase):
 
 class StageTest(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix='s2a-orch-stage-')
+        self.temp = outside_repo_tempdir('s2a-orch-stage-')
         self.home = Path(self.temp.name)
         self.store = roots.Roots(self.home / 'roots', shared=False)
         self.source = self.home / 'input'
@@ -659,7 +668,10 @@ class StageTest(unittest.TestCase):
     def test_real_index_core_structure_and_repeat_cache(self):
         initial = refresh.seed(self.store, '原创', self.source)
         tool = os.environ.get('S2A_ORCH_TEST_DOTNET') or shutil.which('dotnet')
-        with patch.dict(os.environ, {'DOTNET': tool, 'S2A_PREBUILT_TOOLS': '', 'S2A_RUN_ROOT': str(self.home / 'run')}):
+        # 运行根放常驻缓存：产品按身份把 romfs_index 编一次存在 <运行根>/s2arm/bin/romfs_index_<身份>（_index_tool，首次编 / 再次复用由
+        #   test_index_tool_* 用替身单独测），运行根在临时目录里就每跑一次都现编（Mac 约 20 秒、Linux 主机更久）
+        run_root = Path(os.environ.get('S2A_TEST_CACHE') or Path.home() / '.cache/s2a-test') / 'orch-stages-run'
+        with patch.dict(os.environ, {'DOTNET': tool, 'S2A_PREBUILT_TOOLS': '', 'S2A_RUN_ROOT': str(run_root)}):
             engine = stages.Stages(self.store)
             try:
                 result = engine.execute('原创', 'romfsidx')
