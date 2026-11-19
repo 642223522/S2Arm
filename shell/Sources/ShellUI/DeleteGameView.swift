@@ -103,6 +103,8 @@ extension EnvironmentValues {
 public extension Notification.Name {
     /// The host asks the library to open its own settings (the Home Screen quick action Settings).
     static let shellOpenSettings = Notification.Name("S2AShellOpenSettings")
+    /// The library's settings ask to show "What's new" again.
+    static let shellOpenFeatureIntro = Notification.Name("S2AShellOpenFeatureIntro")
 }
 
 /// Long press on a library card: a menu with the game's settings and, where the library allows it, Delete game…

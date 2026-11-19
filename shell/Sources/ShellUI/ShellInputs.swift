@@ -43,6 +43,24 @@ public struct InstallStage: Equatable, Sendable {
     }
 }
 
+/// The version's "What's new" (0.6.0 on, decided 11-19): the pages docs/site/feature.json marks for iPhone, in the player's
+/// language, the same words and pictures as the computer's. The host reads it from the app (Feature/feature.json).
+public struct FeatureIntro: Equatable, Sendable {
+    public struct Page: Equatable, Sendable {
+        public var picture: Artwork?
+        public var kicker: String, title: String, what: String, how: String, whereText: String
+        /// Column headings this page renames (what / how / where → its own words, such as "Good to know").
+        public var labels: [String: String]
+        public init(picture: Artwork?, kicker: String, title: String, what: String, how: String, whereText: String, labels: [String: String] = [:]) {
+            self.picture = picture; self.kicker = kicker; self.title = title; self.what = what; self.how = how; self.whereText = whereText; self.labels = labels
+        }
+    }
+    public var id: String
+    public var badge: String
+    public var pages: [Page]
+    public init(id: String, badge: String, pages: [Page]) { self.id = id; self.badge = badge; self.pages = pages }
+}
+
 public struct GameTile: Identifiable, Equatable, Sendable {
     public var id: String
     public var title: String
@@ -287,6 +305,11 @@ public struct ShellActions {
     /// game restored to that moment). Both nil: no snapshot item anywhere in the library.
     public var snapshotAvailable: ((_ gameID: String) -> Bool)? = nil
     public var onRestoreSnapshot: ((_ gameID: String) -> Void)? = nil
+    /// The version's "What's new": shown once over the library when `featureIntroUnseen`, and again from the library's
+    /// settings. Closing it calls `onFeatureIntroSeen` with its id. Nil: this version has none for iPhone.
+    public var featureIntro: FeatureIntro? = nil
+    public var featureIntroUnseen = false
+    public var onFeatureIntroSeen: ((_ id: String) -> Void)? = nil
     public init(onSelect: @escaping (String) -> Void = { _ in }, onPlay: @escaping (String) -> Void = { _ in },
                 onChange: @escaping (String, String, String) -> Void = { _, _, _ in },
                 onPickGameData: @escaping (String) -> Void = { _ in }, onUseAppData: ((String) -> Void)? = nil,

@@ -46,6 +46,8 @@ public final class S2ArmShellHostModel {
     ///   没显示的款一开始传就出现（真机实测：App 先被拉起、推包随后才写传输清单），已经能玩的款重推 / 装更新时也立刻画上蒙版
     ///   （#399 真机验收：原先「全都能玩了就停」，开着库重推一款已装好的游戏，整个推送过程库里一直显示可玩、没有进度）。App 退到后台时计时器随之暂停
     @ObservationIgnored private var ticker: Timer?
+    /// 这一版的新功能介绍（App 包里 Feature/feature.json，出壳时 pack/feature_bundle.py 从 docs/site 取标了 ios 的页）；读一次留着
+    @ObservationIgnored private lazy var featureIntro: FeatureIntro? = Self.loadFeatureIntro(Bundle.main.bundleURL.appendingPathComponent("Feature"))
     var watching: Bool { ticker != nil }
     /// 传输清单和它列的文件这么久都没动 = 传断了（拔线、电脑那边停了）。90 秒：电脑经 devicectl 写 ≤1 GB 的一批要写完才落盘，实测约 33 秒，留余量
     static let transferStall: TimeInterval = 90
@@ -239,6 +241,24 @@ public final class S2ArmShellHostModel {
         }
     }
 
+    static let featureSeenKey = "S2AFeatureSeen"
+
+    /// 读新功能介绍：文字按界面语言取中文或英文（文件只有这两种），图解一次。文件没有 / 不对 / 一页不剩 → nil（不弹、设置里也没有那一行）
+    static func loadFeatureIntro(_ dir: URL, language: String = Locale.preferredLanguages.first ?? "en") -> FeatureIntro? {
+        guard let data = try? Data(contentsOf: dir.appendingPathComponent("feature.json")),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let id = root["id"] as? String else { return nil }
+        let lang = language.hasPrefix("zh") ? "zh-Hans" : "en"
+        func pick(_ v: Any?) -> String? { (v as? [String: Any])?[lang] as? String }
+        let pages: [FeatureIntro.Page] = (root["pages"] as? [[String: Any]] ?? []).compactMap { p in
+            guard let kicker = pick(p["kicker"]), let title = pick(p["title"]), let what = pick(p["what"]), let how = pick(p["how"]), let whereText = pick(p["where"]) else { return nil }
+            let file = pick(p["image"]).map { dir.appendingPathComponent($0) }
+            let picture = file.flatMap { try? Data(contentsOf: $0) }.flatMap { Artwork(id: "feature.\(id).\($0.count)", data: $0) }
+            let labels = (p["labels"] as? [String: Any] ?? [:]).compactMapValues { pick($0) }
+            return FeatureIntro.Page(picture: picture, kicker: kicker, title: title, what: what, how: how, whereText: whereText, labels: labels)
+        }
+        return pages.isEmpty ? nil : FeatureIntro(id: id, badge: pick(root["badge"]) ?? "", pages: pages)
+    }
+
     /// 这款在这台设备上的游玩时间：运行时 runtime/src/playtime.c 写 <游戏根>/<游戏号>/playtime.json（{"seconds":N,"lastPlayed":<Unix 秒>}），
     ///   这里只读；文件没有 / 读不出 / 0 秒都按没玩过
     func playtimeLine(_ id: String, now: Date = Date()) -> String? {
@@ -385,6 +405,10 @@ public final class S2ArmShellHostModel {
                      onManageSaves: { [weak self] id in self?.manageSaves(id) })
         actions.onReorderGames = { [weak self] sources, before in self?.reorderGames(sources, before: before) ?? false }
         actions.onReportProblem = { s2a_shell_report_problem() }
+        // 新功能介绍（0.6.0 起 iPhone 两页）：本机没看过这一期就在游戏库上弹一次，关掉记下；设置里能再看
+        actions.featureIntro = featureIntro
+        actions.featureIntroUnseen = featureIntro.map { stores.app.string(forKey: Self.featureSeenKey) != $0.id } ?? false
+        actions.onFeatureIntroSeen = { [stores] id in stores.app.set(id, forKey: Self.featureSeenKey) }
         // 快照（0.6.0）：有完整快照的那款，长按卡片多一项「回到上次存下的这一刻」（宿主 ios/app.m；开关关着时宿主回 0，菜单里没有这一项）
         actions.snapshotAvailable = { id in s2a_shell_snapshot_available(id) != 0 }
         actions.onRestoreSnapshot = { [weak self] id in

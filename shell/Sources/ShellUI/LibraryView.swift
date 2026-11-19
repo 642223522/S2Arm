@@ -76,6 +76,7 @@ public struct LibraryView: View {
     @State private var edgeDrag: CGFloat = 0
     @State private var libraryPosition = ScrollPosition()
     @State private var gameOrderOpen = false
+    @State private var featureIntroOpen = false
     @State private var layout: ShellLayout = .column
     @State private var returnFocus: String?
     /// The device that sent the last input, for the glyphs.
@@ -347,6 +348,11 @@ public struct LibraryView: View {
             gameOrderOpen = true
         })
         #if os(iOS)
+        .fullScreenCover(isPresented: $featureIntroOpen) {   // 这一版的新功能介绍（iPhone 两页）：第一次进游戏库弹一次，设置里能再看
+            if let intro = actions.featureIntro {
+                FeatureIntroView(intro: intro) { featureIntroOpen = false; actions.onFeatureIntroSeen?(intro.id) }.preferredColorScheme(.dark)
+            }
+        }
         .fullScreenCover(isPresented: $gameOrderOpen) {
             GameOrderView(games: games, reorder: actions.onReorderGames)
                 .preferredColorScheme(.dark)
@@ -373,7 +379,11 @@ public struct LibraryView: View {
         // A hardware keyboard, as on the Mac: arrows move, Return activates, Escape goes back, O opens game settings,
         // Y opens controllers.
         .focusable().focused($keyboardFocus).focusEffectDisabled()
-        .onAppear { keyboardFocus = true }
+        .onAppear {
+            keyboardFocus = true
+            if actions.featureIntroUnseen, actions.featureIntro != nil { featureIntroOpen = true }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .shellOpenFeatureIntro)) { _ in if actions.featureIntro != nil { featureIntroOpen = true } }
         // The host's Home Screen quick action Settings: the library's own settings, the same as its gear button
         .onReceive(NotificationCenter.default.publisher(for: .shellOpenSettings)) { _ in openShellSettings() }
         .onAnyTouch { gate.touch() }
