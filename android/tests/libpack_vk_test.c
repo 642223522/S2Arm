@@ -27,7 +27,7 @@ static int fails;
 
 #define TMPL_CAP 320   // main() 里临时目录模板 tmpl 的容量（拼出来超长时 main 直接退出）
 // g_dir 依次放 tmpl、tmpl/bad、tmpl/buffer：按最长的「tmpl + "/buffer"」给够，snprintf 不会截断。
-static char g_dir[TMPL_CAP + sizeof "/buffer" - 1];
+static char g_dir[TMPL_CAP + 32];   // the template plus the longest per-case suffix ("/sepsamp<int>", "/sup<int>"): gcc -Wformat-truncation checks it
 
 static void wr(void *dst, const void *src, size_t n, size_t *at) { memcpy((uint8_t *)dst + *at, src, n); *at += n; }
 static void wr32(void *dst, uint32_t v, size_t *at) { wr(dst, &v, 4, at); }
