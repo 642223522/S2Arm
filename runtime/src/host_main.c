@@ -305,6 +305,9 @@ static int host_run(int argc, char **argv) {
           _exit(s2a_pack_apply(docs));
 #endif
       } }
+#if TARGET_OS_IPHONE
+    { int s2a_window_reserve_late(void); s2a_window_reserve_late(); }   // 构造期容器里还没有游戏、启动后才导入的：自检前补占窗口（vawin.c）
+#endif
     { int s2a_selfcheck(void); void s2a_ios_show_notice(const char *, const char *, const char *, int, int, int); void s2a_selfcheck_page(const char **, const char **);
       if (!s2a_selfcheck()) {
 #if TARGET_OS_IPHONE
