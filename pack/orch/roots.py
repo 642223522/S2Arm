@@ -121,6 +121,27 @@ def cleanup_after(error, fn, *args):
         error.add_note(f'（随后的清理 {getattr(fn, "__name__", fn)}({", ".join(map(str, args))}) 也失败：{e!r}；以上面的原错误为准）')
 
 
+def _entry(path):
+    """这个名字在父目录里有没有一项 → 该项的说明（属性 / 重解析标记），没有 → None。按名列父目录（Windows 上 scandir 底层是 FindFirstFileW），
+    不经 lstat。#0fd185：os.path.lexists 遇到任何 OSError（不只是「不存在」）都答「不在」；0.5.8 上软链报 WinError 2 之后 #1431 的
+    「失败后多出来的先删」没删成，junction 退路 mkdir 照样撞 WinError 183 = 那一项占着名字、lexists 却没认出它"""
+    path = Path(path)
+    want = path.name.casefold() if os.name == 'nt' else path.name
+    try:
+        with os.scandir(path.parent) as it:
+            for e in it:
+                if (e.name.casefold() if os.name == 'nt' else e.name) != want:
+                    continue
+                try:
+                    st = e.stat(follow_symlinks=False)
+                except OSError as x:
+                    return f'在（读属性失败：{x!r}）'
+                return f'属性 {getattr(st, "st_file_attributes", 0):#x}、重解析标记 {getattr(st, "st_reparse_tag", 0):#x}'
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    return None
+
+
 def directory_link(target, link, *, relative=None):
     target, link = Path(target), Path(link)
     if os.name == 'nt':
@@ -128,7 +149,7 @@ def directory_link(target, link, *, relative=None):
         #   有的 Windows（玩家实测 26320）stat / listdir / realpath 一律 WinError 3，同一链接走长路径或改写绝对目标都正常；没开开发者模式时走的
         #   junction 退路本来就只能写绝对目标。写长路径不写短路径：短根入口任务结束就拆，链接不能指向它
         target, relative = Path(to_long(str(target.absolute()), table_now())), None
-    existed = os.path.lexists(link)
+    existed = _entry(link) is not None
     try:
         # Windows stores the substitute name verbatim; '/' in a relative
         # reparse target can be created successfully but fails kernel traversal.
@@ -138,8 +159,12 @@ def directory_link(target, link, *, relative=None):
         if os.name != 'nt':
             raise
         # #1431：有的 Windows（玩家 26300、库在 ReFS 开发驱动器、没开开发者模式）软链报失败时 link 处已经留下了东西，紧跟着的 junction 退路
-        #   mkdir 撞 WinError 183，播种 / 提交每次都在这里红，撤回再被它卡住。软链之前没有、失败之后有的，只能是这次失败留下的：删掉再走退路
-        if not existed and os.path.lexists(link):
+        #   mkdir 撞 WinError 183，播种 / 提交每次都在这里红，撤回再被它卡住。软链之前没有、失败之后有的，只能是这次失败留下的：删掉再走退路。
+        #   #0fd185（0.5.8 照中：库在 NTFS、目标在 D: 链接在 C:，软链报 WinError 2）：在不在按名列父目录判（_entry），不再用 os.path.lexists
+        #   （它遇到任何 OSError 都答「不在」，这一项没认出、没删）。留下的是什么（属性 / 重解析标记）打进日志，下一份诊断包里看得到
+        left = None if existed else _entry(link)
+        if left is not None:
+            print(f'【黄】目录软链失败（{error!r}）后 {link.name} 处留下了一项（{left}），先删再走 junction 退路', file=sys.stderr)
             try:
                 os.rmdir(link)
             except OSError:
@@ -347,7 +372,11 @@ def seal(path, readonly=True):
 def remove_owned(path):
     """Caller passes an exact owned path; unlink reparse objects without walking."""
     path = Path(path)
-    if is_link(path):
+    try:
+        link = is_link(path)
+    except OSError:   # #0fd185：lstat 读不了的残留（is_link 只接「不存在」），按下面最后一支按名删
+        link = False
+    if link:
         path.rmdir() if os.name == 'nt' and path.is_dir() else path.unlink()
     elif path.is_dir():
         if os.name == 'nt':
@@ -375,7 +404,8 @@ def remove_owned(path):
             _win_acl(path, False)
         path.chmod(stat.S_IMODE(path.stat().st_mode) | stat.S_IWUSR)
         path.unlink()
-    elif os.path.lexists(path):   # 在、但既不是链接也读不出是文件 / 目录（#1431：软链失败留下的残留）：原先一支都不认、什么都不删，上一级 rmdir 报「目录不是空的」
+    elif _entry(path) is not None:   # 在、但既不是链接也读不出是文件 / 目录（#1431：软链失败留下的残留）：原先一支都不认、什么都不删，上一级 rmdir 报「目录不是空的」。
+        #   按名列父目录判在不在（#0fd185：os.path.lexists 遇到任何 OSError 都答「不在」）
         try:
             os.rmdir(path)
         except OSError:
