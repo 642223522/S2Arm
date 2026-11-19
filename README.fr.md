@@ -69,9 +69,13 @@ Les jeux, sauvegardes et données de jeu déjà présents sur votre téléphone 
 
 1. Sur Mac, connectez-vous une fois avec votre identifiant Apple dans S2Arm (la 0.5 utilisait le compte connecté dans Xcode ; la 0.6.0 se connecte directement dans S2Arm. Les joueurs Windows n'ont pas cette étape à faire).
 2. Branchez le téléphone et cliquez sur « Mettre à jour S2Arm » dans la barre du téléphone : les sauvegardes de chaque jeu sont d'abord copiées sur l'ordinateur, puis la nouvelle App remplace l'ancienne. Avec le même identifiant Apple, elle s'installe par-dessus.
-3. Dans le tableau de bord, cochez les jeux marqués « Mise à jour conseillée » et cliquez sur « Mettre à jour la sélection » : chaque jeu ne reçoit qu'un petit complément de programme, c'est rapide.
+3. Dans le tableau de bord, cochez les jeux marqués « Mise à jour conseillée » et cliquez sur « Mettre à jour la sélection ». Jeu par jeu, les sauvegardes reviennent sur l'ordinateur, le nouveau programme est envoyé et seules les ressources modifiées sont transférées ; dans notre essai, un jeu a pris environ une minute et demie. Pour les jeux dont la bibliothèque de shaders a été faite par l'ancienne version, le Mac la refait avec la nouvelle à cette étape (les fichiers du jeu ou sa version Mac doivent encore être dans votre bibliothèque) ; la première fois prend de quelques minutes à quelques dizaines de minutes. Inutile de lancer l'optimisation de rang S.
 
-Tant que l'étape 3 n'est pas faite, ces jeux s'affichent sur le téléphone avec « À mettre à jour sur l'ordinateur » ; ils ne sont pas perdus. Si vous signez vous-même avec AltStore ou un outil semblable : installez le nouveau S2Arm par-dessus l'ancien, puis importez une fois le .s2arm de chaque jeu.
+Tant que l'étape 3 n'est pas faite, ces jeux s'affichent sur le téléphone avec « À mettre à jour sur l'ordinateur » et ne s'ouvrent pas, mais ils ne sont pas perdus. Si vous avez supprimé le pack de ressources iPhone d'un jeu avec « Libérer de l'espace », refaites le paquet iPhone de ce jeu.
+
+Joueurs Windows : « Mettre à jour la sélection » permet aussi de rouvrir les jeux, mais Windows ne peut pas refaire la bibliothèque de shaders : c'est l'ancienne qui part sur le téléphone. Le jeu fonctionne quand même ; la première fois que vous arrivez dans une nouvelle scène, il peut y avoir un bref à-coup, et plus jamais au même endroit. Pour avoir la nouvelle bibliothèque, mettez ce jeu à jour sur un Mac ou refaites son paquet iPhone.
+
+Si vous signez vous-même avec AltStore ou un outil semblable : installez le nouveau S2Arm par-dessus l'ancien, puis importez une fois le .s2arm de chaque jeu.
 
 ## Une IA peut piloter
 

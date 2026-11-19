@@ -69,9 +69,13 @@ Los juegos, las partidas guardadas y los datos de juego que ya tienes en el tel�
 
 1. En Mac, inicia sesión una vez con tu Apple ID en S2Arm (la 0.5 usaba la cuenta de Xcode; la 0.6.0 inicia sesión directamente en S2Arm. Los jugadores de Windows no necesitan este paso).
 2. Conecta el teléfono y pulsa «Actualizar S2Arm» en la barra del teléfono: primero se hace una copia de las partidas guardadas de cada juego en el ordenador y luego se cambia a la nueva App. Con el mismo Apple ID se instala encima de la anterior.
-3. En el panel de control, marca los juegos con «Actualización recomendada» y pulsa «Actualizar selección»: cada juego solo recibe un pequeño programa, así que es rápido.
+3. En el panel de control, marca los juegos con «Actualización recomendada» y pulsa «Actualizar selección». Va juego a juego: devuelve las partidas guardadas al ordenador, envía el programa nuevo y solo manda los recursos que han cambiado; en nuestra prueba, un juego tardó un minuto y medio. En los juegos cuya biblioteca de shaders se hizo con la versión antigua, el Mac la rehace con la nueva en este paso (los archivos del juego o su versión de Mac tienen que seguir en tu biblioteca); la primera vez tarda de unos minutos a unas decenas de minutos. No hace falta pulsar la optimización de grado S.
 
-Hasta que termines el paso 3, esos juegos aparecen en el teléfono como «Actualízalo en tu ordenador»; no se han perdido. Si firmas la App tú mismo con AltStore u otra herramienta similar: instala el nuevo S2Arm encima del anterior y vuelve a importar una vez el .s2arm de cada juego.
+Hasta que termines el paso 3, esos juegos aparecen en el teléfono como «Actualízalo en tu ordenador» y no se abren, pero no se han perdido. Si borraste el paquete de recursos de iPhone de un juego con «Liberar espacio», vuelve a generar el paquete de iPhone de ese juego.
+
+Jugadores de Windows: «Actualizar selección» también hace que los juegos vuelvan a abrirse, pero Windows no puede rehacer la biblioteca de shaders, así que al teléfono va la antigua. El juego funciona igual; la primera vez que llegues a una escena nueva puede dar un tirón, y en ese mismo punto no volverá a pasar. Para tener la biblioteca nueva, actualiza ese juego en un Mac o vuelve a generar su paquete de iPhone.
+
+Si firmas la App tú mismo con AltStore u otra herramienta similar: instala el nuevo S2Arm encima del anterior y vuelve a importar una vez el .s2arm de cada juego.
 
 ## Una IA puede manejarlo
 
