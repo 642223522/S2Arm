@@ -80,11 +80,12 @@ struct LauncherView: View {
                 BatchExportView(model: model, covers: covers, install: { installFor = $0 }, freeSpace: { spaceFor = $0 }, uiLanguage: uiLanguage)
             } else if let result = model.viewingResult, let run = result.export {
                 ExportSessionView(model: model, covers: covers, session: result, run: run, install: { installFor = $0 }, freeSpace: { spaceFor = $0 }, uiLanguage: uiLanguage)
+            } else if let play = model.playSession, !model.playHidden {   // 一局（游戏槽）：盖在出包等主槽作业页上面，收起或关掉后露出下面那页
+                PlaySessionView(model: model, covers: covers, session: play, uiLanguage: uiLanguage)
             } else if let session = model.session, let run = session.export, !model.sessionHidden {
                 ExportSessionView(model: model, covers: covers, session: session, run: run, install: { installFor = $0 }, freeSpace: { spaceFor = $0 }, uiLanguage: uiLanguage)
             } else if let session = model.session, session.export == nil, !model.sessionHidden, !model.isInline(session) {
-                if session.kind == .play { PlaySessionView(model: model, covers: covers, session: session, uiLanguage: uiLanguage) }
-                else { JobSessionView(model: model, session: session) }
+                JobSessionView(model: model, session: session)
             } else if let phone = model.phoneSession, phone.kind == .installUpdate, !model.phoneHidden {   // 更新 iPhone 上的 S2Arm（手机槽）：主槽没占着整页时整页显示
                 JobSessionView(model: model, session: phone)
             } else if let id = model.exportFor, let game = model.games.first(where: { $0.id == id }) {
@@ -628,19 +629,27 @@ struct LauncherView: View {
         .popover(isPresented: $showMessages, arrowEdge: .bottom) { MessagesPanel(model: model, language: uiLanguage) }
     }
 
-    /// 非出包任务收起后，也保留一条可用手柄返回进度页的入口。
+    /// 非出包任务收起后，也保留一条可用手柄返回进度页的入口。主槽的任务和一局各一颗（两样可以同时在跑）
     @ViewBuilder private var backgroundTaskPill: some View {
-        if let session = model.session, session.export == nil, !session.isPhoneJob, !model.isInline(session), model.sessionHidden {
-            Button { model.sessionHidden = false } label: {
-                Label(loc.t("home.currentTask"), systemImage: session.kind == .play ? "gamecontroller" : "list.bullet.rectangle")
+        // 主槽的任务收起了、或被一局的页面压着：回到它的进度页（一局收起，顶栏留它自己那颗）
+        if let session = model.session, session.export == nil, !session.isPhoneJob, !model.isInline(session), model.sessionHidden || model.playVisible {
+            Button { model.sessionHidden = false; model.playHidden = true } label: {
+                Label(loc.t("home.currentTask"), systemImage: "list.bullet.rectangle")
                     .font(.manrope(12.5, .semibold))
             }.controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("top.currentTask")
                 .accessibilityLabel(loc.t("home.currentTask") + " · " + session.name)
         }
-        // 收起的、或被主槽整页（出包进度等）压着的「更新 iPhone 上的 S2Arm」：回到它的进度页
+        // 收起的一局：回到它的页面（写游戏名，和主槽那颗「当前任务」分得清）
+        if let play = model.playSession, model.playHidden {
+            Button { model.playHidden = false } label: {
+                Label(play.name, systemImage: "gamecontroller").font(.manrope(12.5, .semibold)).lineLimit(1)
+            }.controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("top.playTask")
+                .accessibilityLabel(loc.t("home.currentTask") + " · " + play.name)
+        }
+        // 收起的、或被主槽整页（出包进度等）/ 一局的页面压着的「更新 iPhone 上的 S2Arm」：回到它的进度页
         if let phone = model.phoneSession, phone.kind == .installUpdate,
-           model.phoneHidden || (model.session.map { !model.sessionHidden && ($0.export != nil || !model.isInline($0)) } ?? false) {
-            Button { model.phoneHidden = false; model.sessionHidden = true } label: {
+           model.phoneHidden || model.playVisible || (model.session.map { !model.sessionHidden && ($0.export != nil || !model.isInline($0)) } ?? false) {
+            Button { model.phoneHidden = false; model.sessionHidden = true; model.playHidden = true } label: {
                 Label(phone.name, systemImage: "iphone").font(.manrope(12.5, .semibold)).lineLimit(1)
             }.controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("top.phoneTask")
         }
@@ -663,8 +672,8 @@ struct LauncherView: View {
 
     /// 收起运行页、或还有排队时：顶部这颗胶囊回到出包页。
     @ViewBuilder private var exportPill: some View {
-        if let session = model.session, session.export != nil, model.sessionHidden {
-            Button { model.sessionHidden = false } label: {
+        if let session = model.session, session.export != nil, model.sessionHidden || model.playVisible {   // 被一局的页面压着也给入口
+            Button { model.sessionHidden = false; model.playHidden = true } label: {
                 HStack(spacing: 7) {
                     if model.mainBusy { ProgressView().controlSize(.mini) } else { Image(systemName: "checkmark.circle.fill").foregroundStyle(LauncherPalette.ready) }
                     Text(txt(model.mainBusy ? "export.pill.running" : "export.pill.done").replacingOccurrences(of: "{0}", with: session.name)).font(.manrope(12.5, .semibold)).lineLimit(1)

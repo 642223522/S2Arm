@@ -192,14 +192,16 @@ struct BatchExportView: View {
                 if results.values.contains(where: { $0["code"] as? String == "disk_full" }) {
                     Button(t("free")) { freeSpace(gid) }.controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy).busyHint(model)
                 }
-                Button(t("retry")) { model.retryBatch(gid) }.controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.mainBusy).busyHint(model).controllerShortcut(.rightTrigger, focused: true)
+                let held = model.mainBusy || model.batchHoldsPlay([gid])   // 正在玩这款：退出这局再重出
+                Button(t("retry")) { model.retryBatch(gid) }.controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(held).busyHint(model, disabled: held).controllerShortcut(.rightTrigger, focused: true)
                     .accessibilityIdentifier("batch.retry." + gid)
             }
             if state("iphone") == "completed" {
                 Button(t("install")) { install(gid) }.controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.phoneQueued(gid))   // 别的作业在跑也能装：装机窗里排队.controllerShortcut(.rightTrigger, focused: true)
             }
             if state("mac") == "completed", let game = model.games.first(where: { $0.id == gid }) {
-                Button(t("play")) { model.play(game, uiLanguage: uiLanguage) }.controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.mainBusy).busyHint(model).controllerShortcut(.rightTrigger, focused: true)
+                let blocked = !model.canPlay(gid)   // 这批还在出别的款也能玩（游戏槽）；在玩别的 / 全库动作在跑时置灰
+                Button(t("play")) { model.play(game, uiLanguage: uiLanguage) }.controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(blocked).busyHint(model, disabled: blocked).controllerShortcut(.rightTrigger, focused: true)
             }
         }
     }
@@ -215,11 +217,12 @@ struct BatchExportView: View {
         HStack(spacing: 12) {
             if model.batchState == nil {
                 let count = model.batchDraft.filter { !$0.platforms.isEmpty }.count
+                let held = model.mainBusy || model.batchHoldsPlay(model.batchDraft.filter { !$0.platforms.isEmpty }.map(\.id))   // 玩别的款不挡，玩着清单里的一款挡
                 Spacer()
                 Button { model.startBatch() } label: {
                     Label(t("start").replacingOccurrences(of: "{0}", with: "\(count)"), systemImage: "shippingbox.fill")
                 }
-                .controllerButtonStyle(LauncherPrimaryButtonStyle(prominent: true)).disabled(count == 0 || model.mainBusy).busyHint(model)
+                .controllerButtonStyle(LauncherPrimaryButtonStyle(prominent: true)).disabled(count == 0 || held).busyHint(model, disabled: held)
                 .keyboardShortcut(.defaultAction).controllerID("batch.start").controllerShortcut(.rightTrigger)
             } else {
                 let s = model.batchSummary
@@ -229,10 +232,12 @@ struct BatchExportView: View {
                 } else {
                     // 暂停着（磁盘满）只给「重试」：它解除暂停、重出失败的那个平台；「继续」不解除暂停（审计 P1-164）
                     if (s["failed"] as? Int ?? 0) > 0 || model.batchPaused != nil {
-                        Button(t("retry_failed")) { model.retryBatch() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.mainBusy).busyHint(model).controllerShortcut(.rightTrigger, focused: true)
+                        let held = model.mainBusy || model.batchHoldsPlay()
+                        Button(t("retry_failed")) { model.retryBatch() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(held).busyHint(model, disabled: held).controllerShortcut(.rightTrigger, focused: true)
                     }
                     if model.batchPaused == nil, (s["cancelled"] as? Int ?? 0) > 0 || (s["pending"] as? Int ?? 0) > 0 {
-                        Button(t("resume")) { model.resumeBatch() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.mainBusy).busyHint(model)
+                        let held = model.mainBusy || model.batchHoldsPlay()
+                        Button(t("resume")) { model.resumeBatch() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(held).busyHint(model, disabled: held)
                             .controllerID("batch.resume").controllerShortcut(.rightTrigger, focused: true)
                     }
                     Spacer()
