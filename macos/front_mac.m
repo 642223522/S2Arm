@@ -1638,6 +1638,13 @@ static void screen_edr_note(NSWindow *w) {
             strstr(rawname, "P3") ? "是" : "否", rawname, sc.backingScaleFactor, cs.localizedName.UTF8String ?: "-");
     if (potential <= 1.0)   // 评审稿 §2.5：判成 SDR 但屏其实支持 HDR 的错配，日志一行人话指引、给下一步
         fprintf(stderr, "[s2a] 当前屏按 SDR 处理（potentialEDR ≤ 1.0）。若该屏支持 HDR：查①系统设置→显示器→HDR 开关（常见成因）②显示器 OSD 的 HDR/色域档 ③线缆/扩展坞（直连 USB-C DP Alt、HBR2+）④EDID 是否宣告 HDR（本机实测先例：宣告 PQ 而非 HLG）\n");
+    // PR3a 策略抽象（评审稿 v3 §2.2 / §4 PR3a）：同一屏读数发布进 HDR 策略快照——Mac 侧发布点在此（host_adapt.m 的 Mac 分支没有 AppKit：
+    //   无头宿主不链 AppKit），经 dlsym 调直连层 host_adapt.m 的 s2a_hdr_screen_publish（同 s2a_gpu_stuck_resume 先例：按名取，
+    //   不链直连层的构建 / 输入单测里没有它，缺了就不发布、行为照旧；平台壳不直接含图形内部头——分层 R-05）。
+    //   发布只刷环境读数（potential_edr / current_headroom / s1_ready / paper_white），层簿记不回卷；S2ARM_HDR=off（缺省）时
+    //   无视快照恒 S0 直通 ∧ vi 恒 on=0，行为零变化
+    { void (*pub)(double, double) = (void (*)(double, double))dlsym(RTLD_DEFAULT, "s2a_hdr_screen_publish");
+      if (pub) pub(potential, sc.maximumExtendedDynamicRangeColorComponentValue); }
 }
 @implementation S2AMetalView
 - (BOOL)acceptsFirstResponder { return YES; }
@@ -2135,8 +2142,11 @@ void s2a_front_run(void (*guest_main)(void)) {
             tick(); [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) { (void)t; tick(); }];
         }
         [view setNeedsLayout:YES]; [window center]; [window makeKeyAndOrderFront:nil]; [window makeFirstResponder:view];
-        // 启动即全屏（#575，S2A_FULLSCREEN=1）：窗口出来后走系统原生全屏，同菜单「进入全屏幕」，退出后回到窗口
-        { const char *fs = getenv("S2A_FULLSCREEN"); if (fs && !strcmp(fs, "1")) { fprintf(stderr, "[s2a] 启动即全屏（S2A_FULLSCREEN=1）\n"); dispatch_async(dispatch_get_main_queue(), ^{ if (!window_fullscreen(window)) window_fullscreen_toggle(window); }); } }
+        // 启动即全屏（#575，S2A_FULLSCREEN=1）：窗口出来后走系统原生全屏，同菜单「进入全屏幕」，退出后回到窗口。
+        //   S2A_FULLSCREEN_DEFAULT 是启动器设置里「启动游戏时自动全屏」的全局缺省：这款显式给了 S2A_FULLSCREEN（含 =0）就照这款的，没给才用全局的
+        { const char *fs = getenv("S2A_FULLSCREEN"); const char *from = "S2A_FULLSCREEN";
+          if (!fs) { fs = getenv("S2A_FULLSCREEN_DEFAULT"); from = "启动器设置"; }
+          if (fs && !strcmp(fs, "1")) { fprintf(stderr, "[s2a] 启动即全屏（来源 %s）\n", from); dispatch_async(dispatch_get_main_queue(), ^{ if (!window_fullscreen(window)) window_fullscreen_toggle(window); }); } }
         [app activateIgnoringOtherApps:YES]; focused = YES; input_mute_refresh();
         s2a_pad_set_active(1);
         install_pad_handlers();

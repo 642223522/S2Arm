@@ -10,6 +10,10 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
+#include "../include/s2a_init_fail.h"
+// 初启失败出口（宿主里 host_main.c 的强定义走提示页、不返回）：单测里记下码就返回，svc_mem.c 的弱定义被它顶替
+static int g_if_code;
+void s2a_init_failed(int code) { g_if_code = code; }
 #include <stdatomic.h>
 #include <mach/mach.h>
 #include <stdlib.h>
@@ -589,6 +593,24 @@ int main(void) {
         if (!rc) { ((volatile uint8_t *)hb)[0]=1; ((volatile uint8_t *)hb)[0x83a00000-1]=2; }
         s2a_mem_test_peaks(&pk,&ap); CHECK(pk==0x83a00000, "成功请求继续提高需求峰值");
         SVH(0x01, 0, 0, 0, 0);
+        {   // #01b36b：窗口只有本机给得出的 3 GiB（小地址设备），游戏要的堆在堆区以内、却伸出窗口末端：物理上放不下 → 回 0xD001、出参 0，
+            //   并按「设备地址空间不够」停局（s2a_init_failed(S2A_INIT_FAIL_E_DEVICE_ADDRESS)）。原先只回 0xD001，不看结果码的游戏照样往下写进宿主映像 SIGBUS。
+            //   期望手写：堆从堆区基址起，请求 = 到窗口末端的长度 + 64 MiB（2 MiB 对齐、不超过堆区）
+            s2a_layout l3; uint64_t mb3, sb3;
+            CHECK(s2a_layout_compute(3,0,0,0,W,3*G,&l3,&mb3,&sb3)==0, "3 GiB 窗口按需布局应成功（SystemResourceSize 0，同 #01b36b 那款）");
+            s2a_mem_test_setup(l3.alias_base,l3.alias_size,W,l3.win_size,(void *)l3.heap_base,0);
+            s2a_mem_test_vamm(0x1000000,l3.heap_base,l3.heap_size);
+            uint64_t big = ((W + l3.win_size - l3.heap_base) + 64 * MB_ + 2 * MB_ - 1) & ~(2 * MB_ - 1);
+            CHECK(l3.heap_base >= W && l3.heap_base < W + l3.win_size && big <= l3.heap_size, "夹具：堆区起点在窗口内、请求 %#llx 不超过堆区 %#llx", (unsigned long long)big, (unsigned long long)l3.heap_size);
+            g_if_code = 0; uint64_t r3 = SVH(0x01, 0, big, 0, 0);
+            CHECK(r3 == 0xD001 && r[1] == 0 && g_if_code == S2A_INIT_FAIL_E_DEVICE_ADDRESS, "堆伸出本机窗口：回 %#llx、出参 %#llx、停局码 %d（期望 0xD001、0、%d）",
+                  (unsigned long long)r3, (unsigned long long)r[1], g_if_code, S2A_INIT_FAIL_E_DEVICE_ADDRESS);
+            g_if_code = 0; SVH(0x01, 0, 64 * MB_, 0, 0);
+            CHECK(r[0] == 0 && g_if_code == 0, "对照：窗口内放得下的堆照常成功、不停局（回 %#llx、码 %d）", (unsigned long long)r[0], g_if_code);
+            SVH(0x01, 0, 0, 0, 0);
+            s2a_mem_test_setup(layout.alias_base,layout.alias_size,W,layout.win_size,(void *)layout.heap_base,0);   // 还原 16 GiB 窗口，后面的用例照旧
+            s2a_mem_test_vamm(0x1000000,layout.heap_base,layout.heap_size);
+        }
         uint64_t a=layout.alias_base+2*G;
         {   // #1143 续：学跨度只认空洞以内的地址。界设在这段映射中间（a − 窗口基址 + 0x2000）：别名区跨度截到界上 = 别名区内偏移 2 GiB + 0x2000，
             //   完整高水位照记 2 GiB + 0x4000（地址需求表用）；界 0 = 不限

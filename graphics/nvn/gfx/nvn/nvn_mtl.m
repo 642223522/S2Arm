@@ -2941,7 +2941,10 @@ typedef struct { uint64_t pool; int64_t off; nvn_texdesc d; } alias_key;
 // texture lacks is added in place (tex_mtl → tex_upgrade)
 enum { ALIAS_USE_FLAGS = NVN_TEXTURE_FLAGS_IMAGE | NVN_TEXTURE_FLAGS_COMPRESSIBLE | NVN_TEXTURE_FLAGS_ADAPTIVE_ZCULL | NVN_TEXTURE_FLAGS_DEPTH16_PREFER_FAST_CLEAR | NVN_TEXTURE_FLAGS_ZCULL_SUPPORT_STENCIL };
 static int mtl_fmt_depth(MTLPixelFormat f);
-static void alias_key_of(alias_key *k, const tex_t *t) { memset(k, 0, sizeof *k); k->pool = (uint64_t)(uintptr_t)t->pool; k->off = t->off; k->d = t->d; k->d.flags &= ~(uint32_t)ALIAS_USE_FLAGS; }
+// Sample count 0 and 1 both mean single-sampled (nvn_tex.h) and lay the storage out the same: the key takes 1 for both. 01001E9023920000 builds, over one storage, the object its
+//   compute pass writes as an image and the object its render pass samples, the two differing only so: keyed apart they were two Metal textures, the reads saw a texture nothing
+//   wrote (exposure 1x1, two 8x8x64 volumes, two 32^3 sky tables) and its 3D scene came out black on iOS (#427, cause found by an outside contributor)
+static void alias_key_of(alias_key *k, const tex_t *t) { memset(k, 0, sizeof *k); k->pool = (uint64_t)(uintptr_t)t->pool; k->off = t->off; k->d = t->d; k->d.flags &= ~(uint32_t)ALIAS_USE_FLAGS; if (k->d.samples == 0) k->d.samples = 1; }
 static nvn_hmap g_alias = {.klen = sizeof(alias_key)};
 static nvn_hmap g_alias_seen = {.klen = sizeof(alias_key)};   // key → g_fence + 1 at its last lookup or creation (alias_take_over spares entries looked up lately)
 static nvn_hmap g_alias_wrote = {.klen = sizeof(alias_key)};   // key → g_fence + 1 at its last GPU write (gpw_mark), under g_smu
@@ -3025,6 +3028,15 @@ static void alias_take_over(const alias_key *nk) {
     for (uint32_t i = 0; i < g_alias.cap && n < 16; i++) {
         if (!g_alias.vals[i]) continue;
         alias_key k; memcpy(&k, g_alias.keys + (size_t)i * g_alias.klen, sizeof k);
+        if (k.pool == nk->pool && k.off == nk->off && memcmp(&k, nk, sizeof k)) {   // same storage start, another key: name the fields that keep them two textures (#427: what the key should leave out)
+            static _Atomic int nm; if (atomic_fetch_add(&nm, 1) < 32) { const nvn_texdesc *a = &k.d, *b = &nk->d;
+                MLOG("[alias] near-miss pool=%#llx off=%#llx a=[t%d f%d %ux%ux%u lv%u s%d stride%u pkg%d flags%#x] b=[t%d f%d %ux%ux%u lv%u s%d stride%u pkg%d flags%#x] differ=%s%s%s%s%s%s%s%s%s",
+                     (unsigned long long)k.pool, (unsigned long long)k.off, a->target, a->format, a->width, a->height, a->depth, a->levels, a->samples, a->stride, a->pkg_layout, a->flags,
+                     b->target, b->format, b->width, b->height, b->depth, b->levels, b->samples, b->stride, b->pkg_layout, b->flags,
+                     a->target != b->target ? "target " : "", a->format != b->format ? "format " : "", a->width != b->width || a->height != b->height || a->depth != b->depth ? "size " : "",
+                     a->levels != b->levels ? "levels " : "", a->samples != b->samples ? "samples " : "", a->stride != b->stride ? "stride " : "", a->pkg_layout != b->pkg_layout ? "pkg " : "",
+                     a->flags != b->flags ? "flags " : "", "");
+            } }
         if (k.pool != nk->pool || !memcmp(&k, nk, sizeof k) || k.off >= hi) continue;
         nvn_texlayout kl; nvn_tex_layout(&k.d, &kl);
         uint64_t seen = (uint64_t)(uintptr_t)nvn_hm_get(&g_alias_seen, &k);
@@ -5782,12 +5794,14 @@ void nvn_be_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
     pthread_mutex_lock(&g_smu); unsigned ns = g_by_serial.n, ashared = g_alias.n, nghost = g_ghost.n; uint64_t ghost_puts = g_ghost_puts, ghost_kept = g_ghost_kept, ghost_shared = g_ghost_shared;
     unsigned aorph = 0;   // shared textures no live texture object or finalized serial resolves to: kept only until their storage is taken over or their pool goes (alias_take_over)
     // #357: their Metal allocation sizes too (iPad 7.5 GB: the low address region Metal allocates in ran out with 339 of 399 shared textures unreferenced, sizes unknown)
-    uint64_t ser_b = 0, ash_b = 0, aorph_b = 0, aorph_w = 0;
+    uint64_t ser_b = 0, ash_b = 0, aorph_b = 0, aorph_w = 0, aorph_recent = 0, aorph_dv = 0;   // 留着的原因（#1634：一局 2270 MB 无引用，判不了是缓存还是每帧在用）：最近 ALIAS_IDLE 次提交里查到过 / 显示或视频解码
     { CFMutableSetRef held = CFSetCreateMutable(NULL, 0, NULL);
       for (uint32_t i = 0; i < g_by_serial.cap; i++) if (g_by_serial.vals[i] && !CFSetContainsValue(held, g_by_serial.vals[i])) { CFSetAddValue(held, g_by_serial.vals[i]); ser_b += res_bytes((__bridge id)g_by_serial.vals[i]); }
       for (uint32_t i = 0; i < g_ghost.cap; i++) if (g_ghost.vals[i]) CFSetAddValue(held, g_ghost.vals[i]);
       for (uint32_t i = 0; i < g_alias.cap; i++) if (g_alias.vals[i]) { uint64_t b = res_bytes((__bridge id)g_alias.vals[i]); ash_b += b;
-          if (!CFSetContainsValue(held, g_alias.vals[i])) { aorph++; aorph_b += b; if (nvn_hm_get(&g_alias_wrote, g_alias.keys + (size_t)i * g_alias.klen)) aorph_w += b; } }   // GPU-written: holds content the pool memory lacks
+          if (!CFSetContainsValue(held, g_alias.vals[i])) { aorph++; aorph_b += b; if (nvn_hm_get(&g_alias_wrote, g_alias.keys + (size_t)i * g_alias.klen)) aorph_w += b;   // GPU-written: holds content the pool memory lacks
+              alias_key ak; memcpy(&ak, g_alias.keys + (size_t)i * g_alias.klen, sizeof ak); uint64_t seen = (uint64_t)(uintptr_t)nvn_hm_get(&g_alias_seen, &ak);
+              if (seen && g_fence + 1 - seen < ALIAS_IDLE) aorph_recent += b; if (ak.d.flags & (NVN_TEXTURE_FLAGS_DISPLAY | NVN_TEXTURE_FLAGS_VIDEO_DECODE)) aorph_dv += b; } }
       CFRelease(held); }
     pthread_mutex_unlock(&g_smu);
     unsigned long dead_n = 0; unsigned long long dead_mb = 0;
@@ -5798,7 +5812,7 @@ void nvn_be_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
 #if TARGET_OS_IPHONE
     snprintf(avail, sizeof avail, "%llu MB", (unsigned long long)(os_proc_available_memory() >> 20));
 #endif
-    MLOG("memory up to frame %llu: resident %llu MB, GPU allocated %llu MB (counts zero-copy pool buffers at full length), deferred-release queue %lu, residency set %lu, serial objects %u, memory pools %d (resident %d, %llu MB pinned whole by the residency set; peak %d / tracking table capacity %d; freed but alive %lu, %llu MB), shared textures %u, %llu MB (%u of them unreferenced, %llu MB, GPU-written %llu MB; textures by serial %llu MB; evicted with pools %llu, on storage takeover %llu, unreferenced released %llu, %llu MB (never GPU-written %llu, storage rewritten since %llu, for the low-region ledger %llu) in total), texture re-uploads %llu in total, per-frame arena blocks created %llu in total (%llu MB; segments cut for scratch %llu, waits for a block %llu), finalized textures still referenced %u (small table, %llu put in total, %llu held to the end of their submission past it, %llu resolved to shared textures without it); headroom to the system memory limit %s", frame, rss_mb, gpu, nd, nr, ns, live, pres, (unsigned long long)(pres_b >> 20), peak, cap, dead_n, dead_mb, ashared, (unsigned long long)(ash_b >> 20), aorph, (unsigned long long)(aorph_b >> 20), (unsigned long long)(aorph_w >> 20), (unsigned long long)(ser_b >> 20), (unsigned long long)g_alias_evicted, (unsigned long long)g_alias_taken, (unsigned long long)(g_alias_orph_cache + g_alias_orph_rw + g_alias_orph_valve), (unsigned long long)((g_alias_orph_cache_b + g_alias_orph_rw_b + g_alias_orph_valve_b) >> 20), (unsigned long long)g_alias_orph_cache, (unsigned long long)g_alias_orph_rw, (unsigned long long)g_alias_orph_valve, (unsigned long long)g_pkg_reuploads, (unsigned long long)g_arena_made, (unsigned long long)(arena_bytes() >> 20), (unsigned long long)g_arena_cuts, (unsigned long long)arena_waits(), nghost, (unsigned long long)ghost_puts, (unsigned long long)ghost_kept, (unsigned long long)ghost_shared, avail);
+    MLOG("memory up to frame %llu: resident %llu MB, GPU allocated %llu MB (counts zero-copy pool buffers at full length), deferred-release queue %lu, residency set %lu, serial objects %u, memory pools %d (resident %d, %llu MB pinned whole by the residency set; peak %d / tracking table capacity %d; freed but alive %lu, %llu MB), shared textures %u, %llu MB (%u of them unreferenced, %llu MB, GPU-written %llu MB, looked up in the last %d submissions %llu MB, display / video %llu MB; textures by serial %llu MB; evicted with pools %llu, on storage takeover %llu, unreferenced released %llu, %llu MB (never GPU-written %llu, storage rewritten since %llu, for the low-region ledger %llu) in total), texture re-uploads %llu in total, per-frame arena blocks created %llu in total (%llu MB; segments cut for scratch %llu, waits for a block %llu), finalized textures still referenced %u (small table, %llu put in total, %llu held to the end of their submission past it, %llu resolved to shared textures without it); headroom to the system memory limit %s", frame, rss_mb, gpu, nd, nr, ns, live, pres, (unsigned long long)(pres_b >> 20), peak, cap, dead_n, dead_mb, ashared, (unsigned long long)(ash_b >> 20), aorph, (unsigned long long)(aorph_b >> 20), (unsigned long long)(aorph_w >> 20), (int)ALIAS_IDLE, (unsigned long long)(aorph_recent >> 20), (unsigned long long)(aorph_dv >> 20), (unsigned long long)(ser_b >> 20), (unsigned long long)g_alias_evicted, (unsigned long long)g_alias_taken, (unsigned long long)(g_alias_orph_cache + g_alias_orph_rw + g_alias_orph_valve), (unsigned long long)((g_alias_orph_cache_b + g_alias_orph_rw_b + g_alias_orph_valve_b) >> 20), (unsigned long long)g_alias_orph_cache, (unsigned long long)g_alias_orph_rw, (unsigned long long)g_alias_orph_valve, (unsigned long long)g_pkg_reuploads, (unsigned long long)g_arena_made, (unsigned long long)(arena_bytes() >> 20), (unsigned long long)g_arena_cuts, (unsigned long long)arena_waits(), nghost, (unsigned long long)ghost_puts, (unsigned long long)ghost_kept, (unsigned long long)ghost_shared, avail);
     {   uint64_t k[8]; nvn_res_by_kind(k);
         MLOG("residency set by kind up to frame %llu: textures %llu, %llu MB; GPU-private buffers %llu, %llu MB; shared buffers (mostly zero-copy memory pools: the game's own memory) %llu, %llu MB; other %llu, %llu MB",
              frame, (unsigned long long)k[0], (unsigned long long)(k[1] >> 20), (unsigned long long)k[2], (unsigned long long)(k[3] >> 20),
@@ -6416,6 +6430,10 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only);
 // only the draw path opens such a pass; a draw whose scissor leaves the area, and anything else that needs the pass (rp_begin, DrawTexture), ends it first. A 6400x6400 ink map stamped one
 // scissored draw a pass: upstream measured about 0.95 → 0.32 ms a pass. DM_NVN_RP_AREA=0 turns it off
 static NSUInteger g_rp_aw, g_rp_ah; static int g_rp_whole;   // g_rp_whole: the pass about to open must cover the whole target
+// S2Arm: g_rp_aw / g_rp_ah are in storage pixels, so the area is the far corner of the scissor the draw actually sets: widen first, then the internal resolution
+//   (draw_state: s2a_widen_map_scissor*, rs_rect). The game's own scissor against a storage the internal resolution enlarged opened a quarter-size pass at S2A_RES_SCALE=2
+//   (04007EF01F8AE000, 3840x2160 target stored 7680x5288: pass 1920x1080, everything right / below it dropped, #1548). Defined after the widen glue
+static void rpa_far(double rs, long *x1, long *y1);
 static int rpa_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_RP_AREA"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("DM_NVN_RP_AREA=0: passes on very large targets cover the whole target"); } return v; }
 static void rt_dims(NSUInteger *tw, NSUInteger *th);
 static id<MTL4RenderCommandEncoder> rp_begin(void) { if (g_enc && g_rp_aw) rp_end(); g_rp_whole = 1; id<MTL4RenderCommandEncoder> e = rp_begin_ex(0); g_rp_whole = 0; return e; }   // the callers draw anywhere in the target
@@ -6638,7 +6656,11 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
     if (rpa_on() && !g_rp_whole && !clear_only && R.has_sc && !g_rp_layered && !tbdr_on() && !R.clear_d && !R.clear_s) {
         int cl = 0; for (int i = 0; i < 8; i++) cl |= R.clear_c[i];
         NSUInteger tw = 0, th = 0; if (!cl) rt_dims(&tw, &th);
-        if (tw * th >= (1u << 24)) { NSUInteger w = MIN(tw, (NSUInteger)MAX((long)R.sc.x + R.sc.w, 1)), h = MIN(th, (NSUInteger)MAX((long)R.sc.y + R.sc.h, 1));
+        double prs = 1.0;   // this pass's internal resolution scale (rs_rts gave every attachment the same one; g_pass.rs is only set below)
+        if (rs_on()) { id<MTLTexture> a = nil; for (int i = 0; !a && i < R.rt.n && i < 8; i++) if (R.rt.color[i]) a = pd.colorAttachments[i].texture;
+            if (!a && R.rt.depth) a = pd.depthAttachment.texture ? pd.depthAttachment.texture : pd.stencilAttachment.texture; prs = rs_of(a); }
+        long fx = 0, fy = 0; rpa_far(prs, &fx, &fy);
+        if (tw * th >= (1u << 24)) { NSUInteger w = MIN(tw, (NSUInteger)MAX(fx, 1L)), h = MIN(th, (NSUInteger)MAX(fy, 1L));
             if (w * h * 2 <= tw * th) { pd.renderTargetWidth = w; pd.renderTargetHeight = h; g_rp_aw = w; g_rp_ah = h;
                 static int once; if (!once++) MLOG("render area: a pass on a %lux%lu target opened at %lux%lu, its scissor's far corner (first case pass %llu; DM_NVN_RP_AREA=0 turns it off)",
                                                    (unsigned long)tw, (unsigned long)th, (unsigned long)w, (unsigned long)h, g_stat_pass + 1);
@@ -11545,6 +11567,10 @@ static uint64_t g_geo_bind[5], g_geo_size[5];   // 几何着色器模拟辅助�
 static int wd_geom_cb(void);   // S2Arm widen geometry (defined after attr_read)
 #include "../../widen_glue.inc"   // S2Arm widen core glue
 #include "nvn_rscale_ops.inc"   // S2Arm internal resolution: rescaling, pass scale, support buffer scales (S2A_RES_SCALE)
+static void rpa_far(double rs, long *x1, long *y1) {   // see g_rp_aw: the scissor's far corner in storage pixels, mapped as draw_state maps it
+    p_scissor sc = R.sc; if (g_wd > 0) { s2a_widen_map_scissor(g_wd_mode, &sc.x, &sc.w); s2a_widen_map_scissor_y(g_wd_mode, &sc.y, &sc.h); }
+    long x = sc.x, y = sc.y, w = sc.w, h = sc.h; rs_rect(rs, &x, &y, &w, &h); *x1 = x + w; *y1 = y + h;
+}
 #include "nvn_size_abi.inc"   // ABI2 table comes from the actual attachment and final argument bindings
 #include "nvn_unnorm.inc"   // #968 step 1: per-draw s2a_flags.yzw coordinate normalization bits
 // The sampler ID a SAMP / SAMPT / SAMPU (single) / SAMPI binding takes this draw (0 = none). Caller holds g_rmu (ubo_read)
@@ -15673,7 +15699,8 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
         static int once3; if (!once3++) MLOG("readable-tile pass merge: a draw of the later pass is not provable; back to separate passes (first case pass %llu)", g_stat_pass);
         g_fz_fallback++; rp_end(); }
 
-    if (g_enc && g_rp_aw && (!R.has_sc || (long)R.sc.x + R.sc.w > (long)g_rp_aw || (long)R.sc.y + R.sc.h > (long)g_rp_ah)) rp_end();   // leaves the pass's render area (see g_rp_aw)
+    if (g_enc && g_rp_aw) { long fx = 0, fy = 0; if (R.has_sc) rpa_far(g_pass.rs, &fx, &fy);
+        if (!R.has_sc || fx > (long)g_rp_aw || fy > (long)g_rp_ah) rp_end(); }   // leaves the pass's render area (see g_rp_aw; storage pixels)
 
     fb_prepare(pr);   // same-pass feedback sampling: copy the snapshot first (see fb_prepare)
     if (R.has_sc && !g_enc) {

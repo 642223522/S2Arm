@@ -171,7 +171,7 @@ extension LauncherView {
             }
             Button { model.sgradeUpgradeOpen = true } label: {
                 Image(nsImage: SGradeCardView.sGold).resizable().interpolation(.high).aspectRatio(contentMode: .fit).frame(width: 18, height: 18)
-            }.controllerButtonStyle(ConsoleIconButtonStyle()).disabled(model.busy || model.games.isEmpty)
+            }.controllerButtonStyle(ConsoleIconButtonStyle()).disabled(model.games.isEmpty)   // 有局 / 装机在跑也能打开：升级在作业层排队、玩游戏时降到 1 路，按款锁兜底（11-18 维护者「不阻断玩家干别的」）
                 .controllerID("library.sgradeUpgrade")
                 .launcherTooltip(txt("sgrade.upgrade.button"), placement: .below).accessibilityLabel(txt("sgrade.upgrade.button"))
             Button { model.showAddGames = true } label: {

@@ -93,3 +93,28 @@ class SavePreviousTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SavePreviousWindowsImportTest(unittest.TestCase):
+    """Windows 上作业层一启动就导入 save_previous（main.py）：导入时不能碰 macOS 专有的 libc。
+    合成 Windows：sys.platform = win32，ctypes.CDLL(None) 照 Windows 的行为抛 TypeError；重新导入 save_previous 与 main 不报错，
+    真要交换时报 ENOTSUP（restore 据此按「没能回到上一份存档，存档保持原样」报）"""
+    def test_import_on_windows_does_not_load_libc(self):
+        import ctypes
+        import importlib
+        from unittest import mock
+        real_cdll = ctypes.CDLL
+        def windows_cdll(name, *a, **k):
+            if name is None:
+                raise TypeError("argument of type 'NoneType' is not iterable")
+            return real_cdll(name, *a, **k)
+        try:
+            with mock.patch.object(sys, "platform", "win32"), mock.patch.object(ctypes, "CDLL", windows_cdll):
+                mod = importlib.reload(save_previous)
+                import main  # noqa: F401
+                importlib.reload(main)
+                with self.assertRaises(OSError) as e:
+                    mod._exchange("a", "b")
+                self.assertEqual(e.exception.errno, __import__("errno").ENOTSUP)
+        finally:
+            importlib.reload(save_previous)

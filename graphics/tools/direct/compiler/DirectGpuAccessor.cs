@@ -304,8 +304,17 @@ namespace S2A.DirectCompiler
                     fact = FindTexture(texWord, 2);
                 else if (TrySeparateConstC2(handle, cbufSlot, out int constTexWord, out _))
                     fact = FindTexture(constTexWord, HandleTableCbuf);
+                else if (TrySeparateConstUbo(handle, cbufSlot, out int uboWord, out int uboCbuf, out _))
+                    fact = FindTexture(uboWord, uboCbuf);
             }
-            return fact ?? throw Missing(method, $"stage={_stage.Stage},handle={handle},cbufSlot={cbufSlot}");
+            if (fact != null) return fact;
+            // #1594 片 3：类型 3 句柄、贴图字在游戏 UBO 里，缺的是拆开后的精确事实（字, 贴图所在 cbuf）时，MISSING_FACT 里写拆开的坐标，
+            //   不写打包坐标：宿主（nvk_shader.c ubo_need_learn）只学「cbuf 3..18、字 < 0x4000」的坐标，打包过的（字高位带类型、cbuf 带高 16 位）它一个也不认，
+            //   写了就永远学不到、这份着色器每次现编都 MISSING_FACT。拆开后和普通 UBO 句柄（类型 0）是同一种坐标、同一条学习路径。
+            //   事实在却不能取（纹素缓冲 / 分离事实）、或形态不是这一种：仍写打包坐标，宿主不学，原样如实报缺。
+            if (TryUnpackConstUbo(handle, cbufSlot, out int missWord, out int missCbuf, out _) && FindTexture(missWord, missCbuf) == null)
+                throw Missing(method, $"stage={_stage.Stage},handle={missWord},cbufSlot={missCbuf}");
+            throw Missing(method, $"stage={_stage.Stage},handle={handle},cbufSlot={cbufSlot}");
         }
 
         // #1594：类型 3 句柄（TextureHandleType.SeparateConstantSamplerHandle）= c2 分离贴图表里的贴图字 | 立即数采样器号 << 20。
@@ -322,6 +331,34 @@ namespace S2A.DirectCompiler
             DirectTextureFact fact = FindTexture(word, HandleTableCbuf);
             if (fact == null || !fact.Separate || fact.IsBuffer) return false;
             texWord = word; samplerIndex = sampler;
+            return true;
+        }
+
+        // #1594 片 3：类型 3 句柄的贴图字在游戏自己的 UBO（c3..c18）里。翻译器同样给 PackOffsets(贴图字, 采样器号, 3)、PackSlots(贴图所在 cbuf, 0)；
+        //   拆出 (字, 贴图所在 cbuf, 立即数采样器池下标)。只看形态：类型 3、贴图 cbuf 在 3..18；不看事实。
+        //   字只有 14 位（0..16383 = 字节 0..65532），不会超出宿主学得到的 64 KiB 范围，所以不另查。贴图 cbuf 是 c2 的另一种（片 1 / 片 2），不在这里。
+        private static bool TryUnpackConstUbo(int handle, int cbufSlot, out int word, out int texCbuf, out int samplerIndex)
+        {
+            word = texCbuf = samplerIndex = -1;
+            if (cbufSlot < 0) return false;
+            (int w, int sampler, TextureHandleType type) = TextureHandle.UnpackOffsets(handle);
+            if (type != TextureHandleType.SeparateConstantSamplerHandle) return false;
+            int cbuf = TextureHandle.UnpackSlots(cbufSlot, -1).Item1;
+            if (cbuf < DirectShaderCompiler.UserUboFirstCbuf || cbuf > DirectShaderCompiler.UserUboLastCbuf) return false;
+            word = w; texCbuf = cbuf; samplerIndex = sampler;
+            return true;
+        }
+
+        // 取这个句柄的事实：就是宿主按坐标 (字, 贴图所在 cbuf) 给的精确事实（和普通 UBO 句柄同一份：贴图是谁只看那个字的低 20 位，
+        //   立即数采样器不改变它）。不借 c2 的分离事实、不借组合槽事实、不借别的 cbuf 的事实；采样器号只交给调用方，不参与取事实。
+        //   事实是纹素缓冲（立即数采样器对纹素缓冲没意义）或分离事实（宿主对 UBO 坐标从不给）的不取，仍按缺事实拒。
+        public bool TrySeparateConstUbo(int handle, int cbufSlot, out int texWord, out int texCbuf, out int samplerIndex)
+        {
+            texWord = texCbuf = samplerIndex = -1;
+            if (!TryUnpackConstUbo(handle, cbufSlot, out int word, out int cbuf, out int sampler)) return false;
+            DirectTextureFact fact = FindTexture(word, cbuf);
+            if (fact == null || fact.Separate || fact.IsBuffer) return false;
+            texWord = word; texCbuf = cbuf; samplerIndex = sampler;
             return true;
         }
 

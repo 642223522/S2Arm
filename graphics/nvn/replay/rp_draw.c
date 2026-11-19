@@ -72,12 +72,18 @@ static uint32_t ubo_packed(int st, const struct rp_uword *w) {
 }
 // 这一项这一笔的纹理号 / 采样器号（宿主登记表里的号）。NULL = 取到；否则是跳过这笔的原因。
 //   纹理号 = 打包句柄低 20 位 + 当前贴图池起点（ID 0 是池的第 0 项，同硬件）。
-//   采样器：SAMPU = 打包句柄高 12 位 + 采样器池起点；SAMPI = 着色器里的常量号原值；SAMP = NVN 采样器槽的句柄高 12 位（没绑过照 NVN_RB_TEX 分离采样器口径跳过）。
+//   采样器：SAMPU = 打包句柄高 12 位 + 采样器池起点；SAMPI = 着色器里的常量号：samp_pool = 0 取原值（离线库的登记号），
+//   samp_pool = 1 是立即数采样器池下标（#1594 片 3）、采样器号 = 贴图字高 12 位 | 下标（const_samp_id，同 Ryujinx ReadPackedId），登记号 = 采样器号 + 采样器池起点（同 SAMPU，号 0 取池第 0 项）；
+//   SAMP = NVN 采样器槽的句柄高 12 位（没绑过照 NVN_RB_TEX 分离采样器口径跳过）。
 //   iOS 把采样器号 0 与「没有采样器半边」绑成假采样器；这里没有假采样器，取采样器池第 0 项（= 号 0 在硬件上的意思）
+// 类型 3 句柄（SeparateConstantSamplerHandle）的采样器号：Ryujinx TextureBindingsManager.ReadPackedId 对它 samplerHandle = 立即数、<<= 20、handle |= samplerHandle，
+//   采样器号取 handle >> 20，即 贴图字高 12 位 | 立即数池下标。贴图字高 12 位为 0 时就是立即数；c2 分离贴图表的槽与游戏 UBO 里的字两种来源共用这一处。
+//   imm 不再掩：合同内 ≤ 4095（解析与库校验都拒更大的），越界的值落到没登记的号、走具名跳过，不折回低位去绑别的采样器。
+static inline int const_samp_id(uint32_t tex_word, unsigned imm) { return (int)(((tex_word >> 20) & NVN_GPU_SAMP2_ID_MASK) | imm); }
 static const char *usrc_ids(int st, const struct rp_usrc *u, int *tid, int *sid) {
     *tid = (int)(ubo_packed(st, &u->tex) & 0xFFFFF) + rp_S.tex_base;
     if (u->samp_kind == NVN_RB_SAMPU) *sid = (int)(ubo_packed(st, &u->samp) >> 20) + rp_S.samp_base;
-    else if (u->samp_kind == NVN_RB_SAMPI) *sid = u->samp_reg;
+    else if (u->samp_kind == NVN_RB_SAMPI) *sid = u->samp_pool ? const_samp_id(ubo_packed(st, &u->tex), u->samp_reg) + rp_S.samp_base : u->samp_reg;
     else if (u->samp_kind == NVN_RB_SAMP) {
         if (u->samp_reg >= 128 || !rp_S.samp_bound[st][u->samp_reg]) return "separate_sampler_unbound";
         *sid = (int)(rp_S.samp[st][u->samp_reg] >> 20);
@@ -507,6 +513,13 @@ static int skip(const char *why, const void *rec) {
 }
 void rp_draw_log_arm(int lines) { g_log_left = lines; }
 
+// 图形高槽与驱动图像表重叠：与 DRV2 的写入顺序、iOS tex_slot_h 同一来源。
+static uint64_t graphics_tex_handle(int st, unsigned reg) {
+    if (st < RP_PROG_STAGES && reg >= 32 && reg < 40 && rp_S.img[st][reg - 32])
+        return rp_S.img[st][reg - 32];
+    return rp_S.tex[st][reg];
+}
+
 // Resolve the exact backing bytes before the pass. The view is temporary: the
 // backend retains it at bind, and the caller releases it after encoding.
 static int tbuf_prepare(nvn_gpu_cmd c, const nvn_gpu_layout_ent *e, int st,
@@ -515,7 +528,7 @@ static int tbuf_prepare(nvn_gpu_cmd c, const nvn_gpu_layout_ent *e, int st,
     if (e->cls != NVN_GPU_RES_TBUF || e->count != 1 || e->src_reg >= RP_NTEX ||
         e->src_reg2 != UINT16_MAX || e->access != NVN_GPU_ACC_R)
         return skip("tbuf_binding_shape", rec);
-    uint64_t h = rp_S.tex[st][e->src_reg];
+    uint64_t h = graphics_tex_handle(st, e->src_reg);
     int id = h ? (int)(h & 0xfffff) : rp_S.tex_base;
     tex_t t; view_t v; int hv = 0;
     if (!rp_tex_snap_by_id(id, &t, &v, &hv)) return skip("tbuf_texture_unresolved", rec);
@@ -1194,6 +1207,8 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
             if (bad) { skip(bad, rec); goto draw_done; }
             tv[st][i] = rp_view_by_id_decl(tid, g_prog->dtt[st][i], g_prog->dcls[st][i], 0, c, NULL);
             ts[st][i] = rp_samp_for_tex(sid, tid);
+            // 立即数采样器池下标（#1594 片 3）没登记：具名跳过，不拿别的采样器顶替（同 c2 常量采样器）
+            if (!ts[st][i] && g_prog->usrc[e->src_reg2].samp_pool) { skip("const_sampler_unresolved", rec); goto draw_done; }
             if (g_log_left && tn < sizeof tl - 40) tn += (size_t)snprintf(tl + tn, sizeof tl - tn, " u%d.%u+%#x=#%d/s%d", st, (unsigned)e->src_reg, (unsigned)e->src_off, tid, sid);
             continue;
         }
@@ -1225,7 +1240,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
               for (uint32_t k = 0; k < e->count; k++) { if (!g_av[st][k] && !g_prog->dtt[st][i]) g_av[st][k] = fv; if (!g_as[st][k]) g_as[st][k] = fs; } }
             continue;
         }
-        uint64_t h = rp_S.tex[st][e->src_reg];
+        uint64_t h = graphics_tex_handle(st, e->src_reg);
         tex_t tsnap, *tt = g_log_left ? &tsnap : NULL;   // 登记快照只给逐笔日志用：日志关时不拷
         tv[st][i] = rp_view_by_id_decl(h ? (int)(h & 0xFFFFF) : rp_S.tex_base, g_prog->dtt[st][i], g_prog->dcls[st][i], 0, c, tt);
         if (tt && tn < sizeof tl - 56) {
@@ -1235,10 +1250,10 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
             else tn += (size_t)snprintf(tl + tn, sizeof tl - tn, " t%d.%u=#%d(无)", st, (unsigned)e->src_reg, id);
         }
         if (e->src_reg2 != UINT16_MAX && (e->src_reg2 & NVN_GPU_SAMP2_CONST)) {
-            // 类型 3 句柄（#1594）：采样器池下标是着色器里的立即数，硬件按当前绑定的采样器池取——登记号 = 池下标 + 池起点
-            //   （同 usrc_ids 读出的句柄高 12 位；号 0 取池第 0 项）。不经 NVN 采样器槽，也不看贴图字高位（那里是别的数）。
+            // 类型 3 句柄（#1594）：采样器号 = 贴图字高 12 位 | 着色器里的立即数池下标（const_samp_id，同 Ryujinx ReadPackedId），
+            //   硬件按当前绑定的采样器池取——登记号 = 采样器号 + 池起点（号 0 取池第 0 项）。不经 NVN 采样器槽。
             //   没登记的号具名跳过，不拿别的采样器顶替。
-            ts[st][i] = rp_samp_for_tex((int)(e->src_reg2 & NVN_GPU_SAMP2_ID_MASK) + rp_S.samp_base, h ? (int)(h & 0xFFFFF) : rp_S.tex_base);
+            ts[st][i] = rp_samp_for_tex(const_samp_id((uint32_t)h, e->src_reg2 & NVN_GPU_SAMP2_ID_MASK) + rp_S.samp_base, h ? (int)(h & 0xFFFFF) : rp_S.tex_base);
             if (!ts[st][i]) { skip("const_sampler_unresolved", rec); goto draw_done; }
         } else if (e->src_reg2 != UINT16_MAX) {
             if (!rp_S.samp_bound[st][e->src_reg2]) { skip("separate_sampler_unbound", rec); goto draw_done; }
@@ -1265,8 +1280,8 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
                 uint32_t cnt = e->count > 1 ? e->count : 1;
                 for (uint32_t k = 0; k < cnt && nr < (int)(sizeof rd / sizeof rd[0]); k++) {
                     int slot = (int)e->src_reg + (e->count > 1 ? (int)k - RP_HANDLE_TABLE_FIRST_SLOT : 0);
-                    if (slot < 0 || slot >= 32) continue;
-                    uint64_t h = rp_S.tex[st][slot];
+                    if (slot < 0 || slot >= (e->count > 1 ? 32 : 40)) continue;
+                    uint64_t h = graphics_tex_handle(st, (unsigned)slot);
                     if (!rp_tex_snap_by_id(h ? (int)(h & 0xFFFFF) : rp_S.tex_base, &rdsnap[nr], NULL, NULL)) continue;
                     rd[nr] = &rdsnap[nr]; nr++;
                 }
@@ -1452,7 +1467,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
     { uint64_t ts4[HIST_TEX]; int nt = 0;
       for (int st = 0; st < RP_PROG_STAGES; st++) for (uint32_t i = 0; i < g_prog->nent[st] && nt < HIST_TEX; i++) { const nvn_gpu_layout_ent *e = &g_prog->ent[st][i];
           if (e->src_kind != NVN_RB_TEX || e->count > 1) continue;
-          uint64_t h = rp_S.tex[st][e->src_reg]; tex_t snap; view_t sv; int hv;
+          uint64_t h = graphics_tex_handle(st, e->src_reg); tex_t snap; view_t sv; int hv;
           if (rp_tex_snap_by_id(h ? (int)(h & 0xFFFFF) : rp_S.tex_base, &snap, &sv, &hv)) ts4[nt++] = snap.serial; }
       int noted = 0;
       for (int k = 0; k < rt->n; k++) if (rt->color[k]) { hist_note(rt->color[k]->serial, ts4, nt); noted = 1; }   // 每个颜色目标各记一条：多目标的绘制，第二个以后的目标也要能往上追

@@ -1220,12 +1220,14 @@ import S2ArmAppleAdapter
         return navigation.activeWindow === k.panel && navigation.controlTargets(in: k.panel).contains { $0.id == "pad.key.q" }
     }
 
+    /// 按条件等：满足立刻返回，上限 10 秒。原先 2 秒，门禁机整套并发跑、负载高时搜索胶囊展开 + 拿焦点会超时偶发红
+    ///   （11-18 合入后步红在首页搜索用例，单跑必过），条件判定不变，快的时候不多等
     private func waitUntil(_ ready: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
-        for _ in 0..<100 {
+        for _ in 0..<500 {
             if ready() { return }
             try await Task.sleep(for: .milliseconds(20))
         }
-        XCTAssertTrue(ready(), "界面未在 2 秒内完成状态切换", file: file, line: line)
+        XCTAssertTrue(ready(), "界面未在 10 秒内完成状态切换", file: file, line: line)
     }
 
     func testHomeSearchExpandsInsideTheHomeWindowAndKeepsItsQuery() async throws {

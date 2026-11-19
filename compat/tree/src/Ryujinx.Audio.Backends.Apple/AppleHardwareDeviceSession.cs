@@ -175,10 +175,22 @@ namespace Ryujinx.Audio.Backends.Apple
             //   折到 1.536（2632/4800 采样削波）、六路全 0.9 折到 2.399（3484/4800 削波）；系统的显式下混归一化
             //   （前 0.4142、中置 / 同侧环绕 0.2929、LFE 丢弃，最坏 0.4142+2×0.2929=1.0）不削波。帧数不变，
             //   泵 / 播放信用 / 缓冲释放节奏不变，换档不改延迟；缺省 native 不走这里，行为同现状（渲染器自己下混）
+            // S2Arm（#189 后续，5.1 虚拟环绕）：产品路径——用户选的设备类型 + 对应 VS 开（S2A_AUDIO_DEVICE=builtin /
+            //   headphones + S2A_AUDIO_VS_SPEAKERS / S2A_AUDIO_VS_HEADPHONES）走 AUSM 虚拟环绕档（显式输出类型；
+            //   .auto 在 5.1 路径上三路由实测全退化为 ExternalSpeakers，见 docs/坑记录.md）。external 永不虚拟环绕：
+            //   驱动 ≥6 才报 5.1，这里走现有 6ch 直通队列 + 5.1 布局（无处理器）。优先级：CH2 / STEREO >
+            //   S2A_AUDIO_OUT=sys / matrix（内部 A/B）> 设备类型 + VS > 缺省 builtin + VS 关（2ch，不套 AUSM）
             if (requestedChannelCount == 6)
             {
                 string configuredMode = Environment.GetEnvironmentVariable("S2A_AUDIO_OUT");
                 AppleOutputMode mode = AppleOutputModeSelector.FromEnvironment();
+                AppleAudioDeviceType deviceType = AppleAudioDeviceTypeSelector.FromEnvironment();
+                AppleOutputMode? spatialMode = deviceType switch
+                {
+                    AppleAudioDeviceType.BuiltInSpeakers when AppleAudioDeviceTypeSelector.VirtualSurround(deviceType) => AppleOutputMode.SpatialSpeakers,
+                    AppleAudioDeviceType.Headphones when AppleAudioDeviceTypeSelector.VirtualSurround(deviceType) => AppleOutputMode.SpatialHeadphones,
+                    _ => null,
+                };
 
                 if (mode != AppleOutputMode.Native)
                 {
@@ -191,6 +203,20 @@ namespace Ryujinx.Audio.Backends.Apple
                         _deviceChannelCount = 2;
                         _processor = AppleOutputProcessor.Create(mode, (int)requestedSampleRate, MaxFrames);
                         Console.Error.WriteLine($"[声] 5.1→2.0 档「{AppleOutputModeSelector.ModeName(_processor.EffectiveMode)}」：6 声道 FL FR FC LFE BL BR → 2 声道（S2A_AUDIO_OUT；一片最多 {MaxFrames} 帧）" +
+                            (_processor.InitError != null ? $"；【红】器件没建起来，这一路按矩阵下混：{_processor.InitError}" : ""));
+                    }
+                }
+                else if (spatialMode != null)
+                {
+                    if (requestedSampleFormat != SampleFormat.PcmInt16)
+                    {
+                        Console.Error.WriteLine($"[声] 【红】设备类型 {AppleAudioDeviceTypeSelector.DeviceName(deviceType)} + VS 开只支持 PCM16 的 5.1（本次 {requestedSampleFormat}）：按 native 直交 AudioQueue");
+                    }
+                    else
+                    {
+                        _deviceChannelCount = 2;
+                        _processor = AppleOutputProcessor.Create(spatialMode.Value, (int)requestedSampleRate, MaxFrames);
+                        Console.Error.WriteLine($"[声] 5.1→2.0 虚拟环绕档「{AppleOutputModeSelector.ModeName(_processor.EffectiveMode)}」（设备类型 {AppleAudioDeviceTypeSelector.DeviceName(deviceType)}、VS 开、{requestedSampleFormat}）：6 声道 FL FR FC LFE BL BR → AUSM → 2 声道（一片最多 {MaxFrames} 帧）" +
                             (_processor.InitError != null ? $"；【红】器件没建起来，这一路按矩阵下混：{_processor.InitError}" : ""));
                     }
                 }
@@ -1189,6 +1215,13 @@ namespace Ryujinx.Audio.Backends.Apple
 
                     if (!leaked)
                     {
+                        // S2Arm（#189 后续，评审 11-16）：VS / 下混档收局统计——渲染失败片数与截幅采样累计，
+                        //   判断「VS 开了声音发破 / 偶尔没声」是不是 AUSM 档的原因（只在有记录时打一行）
+                        if (_processor != null && (_processor.FailureCount > 0 || _processor.ClippedSampleCount > 0))
+                        {
+                            Console.Error.WriteLine($"[声] 输出 #{_diag.Index} 收局：5.1→2.0 档「{AppleOutputModeSelector.ModeName(_processor.EffectiveMode)}」渲染失败 {_processor.FailureCount} 片、截幅 {_processor.ClippedSampleCount} 采样（int16 满幅计）");
+                        }
+
                         _processor?.Dispose();   // S2Arm (#189): the explicit downmix stage (AudioConverter) goes with the queue
                     }
 

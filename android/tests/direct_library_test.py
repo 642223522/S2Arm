@@ -464,16 +464,20 @@ class LibraryTest(unittest.TestCase):
         with self.assertRaises(direct_library.LibraryError): direct_library.validate_result(raw(), 'v1 extra source')
 
     def test_v2_const_sampler_contract(self):
-        # #1594：类型 3 句柄的 constSampler（采样器池下标 0..4095）：与宿主解析同一份合同——v2、单个贴图、slot 90..345 偶数、
-        #   不能同时有 samp_slot / uboHandle / uboSlot；计算结果不收（宿主计算侧没接）。下标 0 与 4095 都是真下标。
-        def build(kind='graphics', **fields):
-            request = make_request(kind=kind)
+        # #1594：类型 3 句柄的 constSampler（采样器池下标 0..4095）：与宿主解析同一份合同——v2、单个贴图；贴图字来源二选一：
+        #   c2 分离贴图表（slot 90..345 偶数）或游戏 UBO（平铺 uboSlot 0..15 + uboOffset 4 的倍数，没有 slot）；
+        #   不能同时有 samp_slot / uboHandle / sampler 对象；计算结果不收（宿主计算侧没接）。下标 0 与 4095 都是真下标。
+        #   build 的 program_kind 是程序类型（graphics / compute）；fields 里的 kind 是绑定自己的种类（texture / uniform ...）。
+        def build(program_kind='graphics', drop=(), **fields):
+            request = make_request(kind=program_kind)
             result = json.loads(make_result(request))
             result['schema'] = 's2a-direct-program-v2'
             result['content']['contract'] = 's2a-direct-program-content-v2'
-            binding = {'stage': 'fs' if kind == 'graphics' else 'cs', 'kind': 'texture', 'set': 2, 'binding': 0,
+            binding = {'stage': 'fs' if program_kind == 'graphics' else 'cs', 'kind': 'texture', 'set': 2, 'binding': 0,
                        'slot': 90, 'constSampler': 257, 'count': 1}
             binding.update(fields)
+            for key in drop:
+                binding.pop(key, None)
             result['content']['bindings'] = [binding]
             def raw():
                 body = json.dumps(result['content'], separators=(',', ':')).encode()
@@ -500,7 +504,8 @@ class LibraryTest(unittest.TestCase):
             'array': dict(count=2),
             'with samp_slot': dict(samp_slot=3),
             'with uboHandle': dict(uboHandle={'slot': 1, 'offset': 16}),
-            'with uboSlot': dict(uboSlot=1, uboOffset=16),
+            'with sampler object': dict(sampler={'source': 'id', 'id': 3}),
+            'c2 slot together with uboSlot': dict(uboSlot=1, uboOffset=16),
             'not a texture': dict(kind='uniform'),
         }
         for name, change in bad.items():
@@ -515,12 +520,44 @@ class LibraryTest(unittest.TestCase):
         result['content']['contract'] = 's2a-direct-program-content-v1'
         with self.assertRaises(direct_library.LibraryError, msg='v1'): direct_library.validate_result(raw(), 'v1 const sampler')
         # 计算结果不收
-        _, raw = build(kind='compute')
+        _, raw = build(program_kind='compute')
         with self.assertRaises(direct_library.LibraryError, msg='compute'): direct_library.validate_result(raw(), 'compute const sampler')
         # 没有 constSampler 的同槽条目照旧接受（只改了带这个字段的）
         result, raw = build()
         del result['content']['bindings'][0]['constSampler']
         direct_library.validate_result(raw(), 'plain separate texture word')
+        # 片 3：贴图字在游戏 UBO 里（平铺 uboSlot / uboOffset，没有 slot）。接受：典型值、两端
+        for ubo, offset, sampler in ((2, 160, 260), (0, 0, 0), (15, 65532, 4095)):
+            _, raw = build(drop=('slot',), uboSlot=ubo, uboOffset=offset, constSampler=sampler)
+            direct_library.validate_result(raw(), f'UBO const sampler {ubo}/{offset}/{sampler}')
+        # 拒绝：每一条都是宿主解析会拒的形态
+        bad_ubo = {
+            'uboSlot after the last UBO': dict(uboSlot=16),
+            'negative uboSlot': dict(uboSlot=-1),
+            'fractional uboSlot': dict(uboSlot=1.5),
+            'uboOffset not a word offset': dict(uboOffset=6),
+            'uboOffset above 64 KiB': dict(uboOffset=65536),
+            'negative uboOffset': dict(uboOffset=-4),
+            'sampler above 12 bits': dict(constSampler=4096),
+            'array': dict(count=2),
+            'with samp_slot': dict(samp_slot=3),
+            'with uboHandle': dict(uboHandle={'slot': 1, 'offset': 16}),
+            'with sampler object': dict(sampler={'source': 'id', 'id': 3}),
+            'with c2 slot': dict(slot=90),
+            'not a texture': dict(kind='uniform'),
+        }
+        for name, change in bad_ubo.items():
+            _, raw = build(drop=() if 'slot' in change else ('slot',), **{'uboSlot': 2, 'uboOffset': 160, **change})
+            with self.assertRaises(direct_library.LibraryError, msg=f'UBO form: {name}'):
+                direct_library.validate_result(raw(), f'UBO form: {name}')
+        _, raw = build(drop=('slot', 'uboOffset'), uboSlot=2)
+        with self.assertRaises(direct_library.LibraryError, msg='UBO form: no uboOffset'): direct_library.validate_result(raw(), 'UBO form: no uboOffset')
+        _, raw = build(program_kind='compute', drop=('slot',), uboSlot=2, uboOffset=160)
+        with self.assertRaises(direct_library.LibraryError, msg='UBO form: compute'): direct_library.validate_result(raw(), 'UBO form: compute')
+        result, raw = build(drop=('slot',), uboSlot=2, uboOffset=160)
+        result['schema'] = 's2a-direct-program-v1'
+        result['content']['contract'] = 's2a-direct-program-content-v1'
+        with self.assertRaises(direct_library.LibraryError, msg='UBO form: v1'): direct_library.validate_result(raw(), 'UBO form: v1')
 
     # -- build / layout -------------------------------------------------------------
     def test_descriptor_never_omits_a_scanned_vertex_write(self):

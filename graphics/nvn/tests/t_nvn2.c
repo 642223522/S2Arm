@@ -9,6 +9,7 @@
 #include <sys/wait.h>
 #include "nvn2.h"
 #include "nvn2_cmd.h"
+#include "nvn_hdr_policy.h"   // PR3a 策略抽象（评审稿 v3 §2.3 / §4 PR3a）：hdr_snapshot + choose_mode + 层 tick / peak 纯函数 + nvn2_hdr_* 入口声明（实现随后一个提交给）
 #include "../gfx/tex/nvn_deswizzle.h"
 static unsigned checks;
 #define CHECK(c) do { checks++; if (!(c)) { fprintf(stderr, "t_nvn2:%d 失败：%s\n", __LINE__, #c); exit(1); } } while (0)
@@ -383,6 +384,177 @@ int main(void) {
         CHECK(pr1_lo == 0 && pr1_hi == 0 && pr1_g == 0 && pr1_m == 0 && pr1_bez[0] == 0 && pr1_bez[1] == 0 && pr1_bez[2] == 0);   // PR1 探针：Clear 后层级元数据整组回缺省
         CHECK(pr1_cap == 1);   // 显示级能力开关不随层 Clear（sdk 没有对应 Clear*）
         on2 = 1; CHECK(hs(&on2, &fmt2, &peak2, dp) == 0 && on2 == 0 && fmt2 == 0 && peak2 == 0);   // Clear 后查询回答仍不变
+    }
+
+    // ---------- V4 PR3a 策略抽象重写（评审稿 v3 §2.3 判定次序 / §2.5 开关 / §4 PR3a）：choose_mode 全分支（合成快照）+ 层 tick 滞回 / 排空（合成时钟）+ peak 步进 / 带内 / 地板 / 顶帽 + nvn2_hdr_* 存储与入口 ----------
+    //   声明在 nvn_hdr_policy.h（v3 重写：模式枚举 HDR_S0 / HDR_S1（PQ 层）/ HDR_S3——16F 移出枚举），实现分两处：纯函数在头（static inline），
+    //   存储与入口在 nvn2.c 随后一个提交给——基线（hdr-pr1-final）上头文件不存在，编译必红；实现提交上绿。负对照另行撤掉新判定次序再红。
+    //   期望值全部手算、不跑被测实现得出（同 K 段口径）：peak 格点 40 步/十倍频锚在纸白（10^(s/40)）——
+    //   v(12)=100×10^0.3=199.53→量化 200、v(16)=251.19→250、v(19)=298.54→300、v(22)=354.81→350、v(4)=125.89→130、v(7)=149.56→150、v(80)=10000、v(24)=398.11→400；
+    //   步号 = lround(40×log10(值/纸白))，量化值反推步号有 ±1 步漂（130→5），带宽容 ±2 步吸收。
+    {
+        hdr_decision dec;
+        // off 不变量（§2.3 第 1 条，必含）：off ⇒ 恒 S0 ∧ vi 恒 on=0 / fmt=0 / peak=0——无视源与快照（出图 S0 直通 + 游戏回 SDR 分支，两处同时回退）
+        hdr_snapshot hs0 = {0};   // 缺省全 0 = 「无 HDR」= 现状：can 未持稳 / 层未持 PQ / G1 未跑 / 纸白未发布（peak 按 PQ 锚 100）
+        dec = hdr_choose_mode(HDR_OFF, 0, &hs0, NULL, 0);
+        CHECK(dec.mode == HDR_S0 && dec.vi_on == 0 && dec.vi_fmt == 0 && dec.vi_peak == 0);
+        {   hdr_snapshot big = { .potential_edr = 4.555, .current_headroom = 2.0, .can_settled = 1, .layer_pq = 1, .s1_ready = 1, .paper_white = 100 };   // U2720QM 开态全就绪形状
+            dec = hdr_choose_mode(HDR_OFF, 1, &big, NULL, 0);
+            CHECK(dec.mode == HDR_S0 && dec.vi_on == 0 && dec.vi_fmt == 0 && dec.vi_peak == 0); }   // off：已持 PQ 层 + HDR 屏快照也判 S0 / on=0
+        // 源非 HDR（8 位窗 / color_space=0 / 未知枚举一律按非 HDR——Q1 口径）：SDR 语义，vi 不答 on=1；层不因源切回（层在 PQ 态仍 S1：逐帧 mode 2 转换上屏，PR3b）
+        dec = hdr_choose_mode(HDR_AUTO, 0, &hs0, NULL, 0);
+        CHECK(dec.mode == HDR_S0 && dec.vi_on == 0 && dec.vi_fmt == 0 && dec.vi_peak == 0);
+        {   hdr_snapshot lpq = { .layer_pq = 1 };
+            dec = hdr_choose_mode(HDR_ON, 0, &lpq, NULL, 0);
+            CHECK(dec.mode == HDR_S1 && dec.vi_on == 0 && dec.vi_fmt == 0 && dec.vi_peak == 0);   // on + 源非 HDR：层持 PQ 不切回，vi 仍不答
+            dec = hdr_choose_mode(HDR_ON, 0, &hs0, NULL, 0);
+            CHECK(dec.mode == HDR_S0 && dec.vi_on == 0); }   // 层也不在：S0
+        // can=false（500ms 滞回后 can_settled=0）：auto → vi on=0 游戏自降（§2.3 注意②：SDR 屏上游戏自画比宿主映射少饱和 / 更准）；on → S3 强制（vi 仍答 on=1，宿主 mode 1 映射上屏）
+        {   hdr_snapshot can0 = { .potential_edr = 1.0, .current_headroom = 1.0, .paper_white = 100 };   // SDR 屏形状：potentialEDR 恰 1.0
+            dec = hdr_choose_mode(HDR_AUTO, 1, &can0, NULL, 0);
+            CHECK(dec.mode == HDR_S0 && dec.vi_on == 0 && dec.vi_fmt == 0 && dec.vi_peak == 0);
+            hdr_peak_state pk = {0};
+            dec = hdr_choose_mode(HDR_ON, 1, &can0, &pk, 0);
+            CHECK(dec.mode == HDR_S3 && dec.vi_on == 1 && dec.vi_fmt == 1 && dec.vi_peak == 130);   // on：S3 强制 + peak 地板（headroom 1.0 → 100 < 1.25×100=125 夹地板 → 步 4 → 125.89 → 量化 130，绝不答 0）
+            hdr_snapshot drain = { .layer_pq = 1 };   // can 已塌、层还没排完（过渡）：按层现态答 S1（present 逐帧按实际格式选转换），vi 不答
+            dec = hdr_choose_mode(HDR_AUTO, 1, &drain, NULL, 0);
+            CHECK(dec.mode == HDR_S1 && dec.vi_on == 0); }
+        // can=true 但 s1_ready=0（G1 大面积烟囱未过——S1 硬门槛，不虚假宣传）：auto → 游戏自降；on → 宿主按屏选 S1/S3 的 S3 档
+        {   hdr_snapshot nos1 = { .potential_edr = 4.555, .current_headroom = 2.0, .can_settled = 1, .paper_white = 100 };
+            dec = hdr_choose_mode(HDR_AUTO, 1, &nos1, NULL, 0);
+            CHECK(dec.mode == HDR_S0 && dec.vi_on == 0);
+            hdr_peak_state pk = {0};
+            dec = hdr_choose_mode(HDR_ON, 1, &nos1, &pk, 0);
+            CHECK(dec.mode == HDR_S3 && dec.vi_on == 1 && dec.vi_fmt == 1 && dec.vi_peak == 200); }   // on：S3 + peak=纸白 100 × headroom 2.0 → 步 12 → 199.53 → 量化 200
+        // can=true ∧ s1_ready=1：「先持层再答」——layer_pq 入参不 =1 不放行（次序以断言入参表达）；=1 才答 on=1 / fmt=1 / peak（Bananza 首查询即定窗口）
+        {   hdr_snapshot ready = { .potential_edr = 4.555, .current_headroom = 2.5, .can_settled = 1, .s1_ready = 1, .paper_white = 100 };
+            hdr_peak_state pk = {0};
+            dec = hdr_choose_mode(HDR_AUTO, 1, &ready, &pk, 0);
+            CHECK(dec.mode == HDR_S1 && dec.vi_on == 0 && dec.vi_fmt == 0 && dec.vi_peak == 0);   // 层未持 PQ：只答 mode=S1，本问不放行
+            ready.layer_pq = 1;
+            dec = hdr_choose_mode(HDR_AUTO, 1, &ready, &pk, 500);
+            CHECK(dec.mode == HDR_S1 && dec.vi_on == 1 && dec.vi_fmt == 1 && dec.vi_peak == 250);   // 首答直接采纳：headroom 2.5 → 步 16 → 251.19 → 量化 250
+            dec = hdr_choose_mode(HDR_ON, 1, &ready, &pk, 600);
+            CHECK(dec.mode == HDR_S1 && dec.vi_on == 1 && dec.vi_peak == 250); }   // 同值带内：答案不动（headroom 波动不切层、peak 吸收——§2.3 第 5 条）
+        // 没发布过快照（空指针）= 全 0「无 HDR」：auto 判 S0；on 强制 S3，vi on=1 / fmt=1 / 无前端 peak 1000（绝不答 0）
+        dec = hdr_choose_mode(HDR_AUTO, 1, NULL, NULL, 0);
+        CHECK(dec.mode == HDR_S0 && dec.vi_on == 0);
+        dec = hdr_choose_mode(HDR_ON, 1, NULL, NULL, 0);
+        CHECK(dec.mode == HDR_S3 && dec.vi_on == 1 && dec.vi_fmt == 1 && dec.vi_peak == 1000);
+
+        // 层 tick——can 滞回 500ms + 进层（合成时钟进参，纯逻辑）：raw can 持稳 500ms 才写 can_settled（拖窗沿两屏边缘 flap 永不持稳、不来回切层）；
+        //   持稳 ∧ s1_ready ∧ 三态非 off → 进层（即时——排空只在退出时等，进入不等：开机预挂赶首查询前）
+        {   hdr_snapshot tst = { .s1_ready = 1 };
+            hdr_layer_tick_can(&tst, HDR_AUTO, 1, 1000); CHECK(tst.can_settled == 0 && tst.layer_pq == 0);   // 变化只记时刻，未满 500ms
+            hdr_layer_tick_can(&tst, HDR_AUTO, 1, 1499); CHECK(tst.can_settled == 0 && tst.layer_pq == 0);   // 499ms：差 1ms 不算
+            hdr_layer_tick_can(&tst, HDR_AUTO, 1, 1500); CHECK(tst.can_settled == 1 && tst.layer_pq == 1 && tst.sdr_run == 0);   // 满 500ms：持稳 + 即进层
+            hdr_layer_tick_can(&tst, HDR_AUTO, 0, 1600); CHECK(tst.can_settled == 1 && tst.layer_pq == 1);   // 掉侧只记变化：滞回期内层不动
+            hdr_layer_tick_can(&tst, HDR_AUTO, 0, 2100); CHECK(tst.can_settled == 0 && tst.layer_pq == 1);   // 掉侧持稳：can 落；层等排空（tick_frame），不在这里切
+            hdr_snapshot flp = { .s1_ready = 1 };
+            hdr_layer_tick_can(&flp, HDR_AUTO, 1, 0);    CHECK(flp.can_settled == 0);
+            hdr_layer_tick_can(&flp, HDR_AUTO, 0, 100);  CHECK(flp.can_settled == 0);
+            hdr_layer_tick_can(&flp, HDR_AUTO, 1, 200);  CHECK(flp.can_settled == 0);
+            hdr_layer_tick_can(&flp, HDR_AUTO, 0, 300);  CHECK(flp.can_settled == 0);
+            hdr_layer_tick_can(&flp, HDR_AUTO, 1, 400);  CHECK(flp.can_settled == 0);   // 500ms 内来回翻：flap 永不持稳
+            hdr_layer_tick_can(&flp, HDR_AUTO, 1, 899);  CHECK(flp.can_settled == 0);   // 400 起持稳到 899 = 499ms
+            hdr_layer_tick_can(&flp, HDR_AUTO, 1, 900);  CHECK(flp.can_settled == 1 && flp.layer_pq == 1);   // 满 500ms：持稳 + 进层
+            hdr_snapshot offst = { .s1_ready = 1 };
+            hdr_layer_tick_can(&offst, HDR_OFF, 1, 1000); CHECK(offst.can_settled == 0);
+            hdr_layer_tick_can(&offst, HDR_OFF, 1, 2000); CHECK(offst.can_settled == 1 && offst.layer_pq == 0); }   // off：can 持稳但三态关 → 不进层
+        // 层 tick——排空喂入（每帧，nvn_mtl.m 每帧喂计数——PR4 接线）：不再 want（can 塌 / 三态 off / s1_ready 掉）时连续两帧非 PQ 窗口才切回 SDR——无 HDR 帧落进 SDR 层
+        {   hdr_snapshot drn = { .can_settled = 0, .layer_pq = 1, .s1_ready = 1 };   // can 塌了、层还持 PQ：排空计数中
+            hdr_layer_tick_frame(&drn, HDR_AUTO, 1); CHECK(drn.sdr_run == 0 && drn.layer_pq == 1);   // 还有 PQ 窗口在出（游戏未降）：清零重等
+            hdr_layer_tick_frame(&drn, HDR_AUTO, 0); CHECK(drn.sdr_run == 1 && drn.layer_pq == 1);   // 第 1 帧非 PQ：计数，层不动
+            hdr_layer_tick_frame(&drn, HDR_AUTO, 1); CHECK(drn.sdr_run == 0 && drn.layer_pq == 1);   // 又来 PQ 帧：清零重等
+            hdr_layer_tick_frame(&drn, HDR_AUTO, 0); CHECK(drn.sdr_run == 1 && drn.layer_pq == 1);
+            hdr_layer_tick_frame(&drn, HDR_AUTO, 0); CHECK(drn.sdr_run == 0 && drn.layer_pq == 0);   // 连续两帧非 PQ：排空 → 切回 SDR
+            hdr_layer_tick_frame(&drn, HDR_AUTO, 0); CHECK(drn.sdr_run == 0 && drn.layer_pq == 0);   // 已在 SDR：计数不涨
+            hdr_snapshot wnt = { .can_settled = 1, .layer_pq = 1, .s1_ready = 1 };
+            hdr_layer_tick_frame(&wnt, HDR_AUTO, 0); CHECK(wnt.sdr_run == 0 && wnt.layer_pq == 1);   // 还要 PQ（层不因源切回）：非 PQ 帧也不排空
+            hdr_layer_tick_frame(&wnt, HDR_OFF, 0);  CHECK(wnt.sdr_run == 1 && wnt.layer_pq == 1);   // 三态拨 off：不再 want → 开始排空
+            hdr_layer_tick_frame(&wnt, HDR_OFF, 0);  CHECK(wnt.sdr_run == 0 && wnt.layer_pq == 0); } // 两帧 → 切回 SDR
+        // peak 步进（vi_screen_peak 收编为纯函数，合成时钟）：目标=纸白×headroom 夹 [1.25×纸白, 10000]；40 步/十倍频（约 6%）+ 量化 10 nit；
+        //   与当前答案差 ≤2 步（带内）答案不动（带内保持、候选撤销）；出带候选持稳 1s 才采纳（防闪烁）；无前端恒 1000；绝不答 0
+        {   hdr_snapshot pqs = { .paper_white = 100, .current_headroom = 2.0 };
+            hdr_peak_state pk = {0};
+            CHECK(hdr_vi_peak_nits(&pqs, &pk, 0) == 200);          // 首答直接采纳：200 → 步 12 → 199.53 → 量化 200
+            CHECK(pk.answered_nits == 200);
+            pqs.current_headroom = 2.2;
+            CHECK(hdr_vi_peak_nits(&pqs, &pk, 100000) == 200);     // 220 → 步 14，与当前差 +2（带缘）：持稳再久也不动
+            pqs.current_headroom = 1.8;
+            CHECK(hdr_vi_peak_nits(&pqs, &pk, 200000) == 200);     // 180 → 步 10，差 -2：带内另一侧同样不动
+            pqs.current_headroom = 2.5;
+            CHECK(hdr_vi_peak_nits(&pqs, &pk, 300000) == 200);     // 250 → 步 16，差 +4 出带：候选开始计时，未满 1s 不动
+            CHECK(hdr_vi_peak_nits(&pqs, &pk, 300999) == 200);     // 999ms：还差 1ms
+            CHECK(hdr_vi_peak_nits(&pqs, &pk, 301000) == 250);     // 满 1s：采纳 250（瞬时尖峰被 1s 持稳滤掉）
+            CHECK(pk.answered_nits == 250);
+            pqs.current_headroom = 3.0;
+            CHECK(hdr_vi_peak_nits(&pqs, &pk, 400000) == 250);     // 300 → 步 19：新候选开始计时
+            pqs.current_headroom = 3.5;
+            CHECK(hdr_vi_peak_nits(&pqs, &pk, 401000) == 250);     // 候选变 350（步 22）：计时重起，仍答旧值
+            pqs.current_headroom = 2.2;
+            CHECK(hdr_vi_peak_nits(&pqs, &pk, 500000) == 250);     // 回带内（步 14，差 -2）：候选撤销
+            pqs.current_headroom = 3.0;
+            CHECK(hdr_vi_peak_nits(&pqs, &pk, 600000) == 250);     // 重出带：从 600000 重计（带内那 500ms 不折抵）
+            CHECK(hdr_vi_peak_nits(&pqs, &pk, 701000) == 300);     // 满 1s：采纳 300
+            hdr_snapshot dnp = { .paper_white = 100, .current_headroom = 3.0 };
+            hdr_peak_state dk = {0};
+            CHECK(hdr_vi_peak_nits(&dnp, &dk, 0) == 300);          // 首答 300（步 19 → 298.54 → 300）
+            dnp.current_headroom = 1.5;
+            CHECK(hdr_vi_peak_nits(&dnp, &dk, 1000) == 300);       // 150 → 步 7：向下出带，计时未满不动
+            CHECK(hdr_vi_peak_nits(&dnp, &dk, 2000) == 150);       // 满 1s：向下采纳（headroom 掉了答案跟着掉，层不动）
+            hdr_snapshot flr = { .paper_white = 100, .current_headroom = 0.5 };
+            hdr_peak_state fk = {0};
+            CHECK(hdr_vi_peak_nits(&flr, &fk, 0) == 130);          // 50 < 地板 125：夹地板 → 步 4 → 125.89 → 量化 130（≥125）
+            flr.current_headroom = 0.1;
+            CHECK(hdr_vi_peak_nits(&flr, &fk, 1000) == 130);       // 更低同样夹地板：同步号带内不动
+            flr.current_headroom = 200;
+            CHECK(hdr_vi_peak_nits(&flr, &fk, 2000) == 130);       // 20000 > 顶帽 10000：夹帽出带候选开始计时，仍答地板
+            CHECK(hdr_vi_peak_nits(&flr, &fk, 3000) == 10000);     // 满 1s：顶帽采纳
+            {   hdr_snapshot nfe = { .paper_white = 100 };
+                hdr_peak_state nk = {0};
+                CHECK(hdr_vi_peak_nits(&nfe, &nk, 0) == 1000); }   // 无前端（headroom ≤ 0 未发布）：恒 1000（nxnative DM 缺省同值）
+            {   hdr_snapshot npw = { .current_headroom = 2.0 };    // 纸白未发布（0）：按 PQ 锚 100
+                hdr_peak_state nk = {0};
+                CHECK(hdr_vi_peak_nits(&npw, &nk, 0) == 200); } }
+
+        // nvn2.c 存储与入口（同 PR1 nvn2_vi_hdr_probe 的直调口径）：S2ARM_HDR 三态解析、发布 / 读回、层 tick 接入与同源答案入口
+        {   hdr_snapshot rb, pub = { .potential_edr = 4.555, .current_headroom = 2.0, .s1_ready = 1, .paper_white = 100 };
+            unsetenv("S2ARM_HDR");
+            CHECK(nvn2_hdr_switch() == HDR_OFF);                        // 不设 = off 缺省（字节级回现状）
+            setenv("S2ARM_HDR", "off", 1);  CHECK(nvn2_hdr_switch() == HDR_OFF);
+            setenv("S2ARM_HDR", "auto", 1); CHECK(nvn2_hdr_switch() == HDR_AUTO);
+            setenv("S2ARM_HDR", "on", 1);   CHECK(nvn2_hdr_switch() == HDR_ON);
+            setenv("S2ARM_HDR", "1", 1);    CHECK(nvn2_hdr_switch() == HDR_OFF);   // 看不懂按 off（打一次红行，断言只认值）
+            nvn2_hdr_snapshot_publish(&pub);
+            rb = (hdr_snapshot){0};
+            nvn2_hdr_snapshot_probe(&rb);
+            CHECK(rb.potential_edr == 4.555 && rb.current_headroom == 2.0 && rb.s1_ready == 1 && rb.paper_white == 100);   // 发布 / 读回：环境读数逐项相等
+            CHECK(rb.can_settled == 0 && rb.layer_pq == 0 && rb.sdr_run == 0);   // 层簿记缺省 0（tick 还没跑）
+            setenv("S2ARM_HDR", "auto", 1);
+            nvn2_hdr_tick(HDR_AUTO, 1, 1000);   // 记变化
+            nvn2_hdr_tick(HDR_AUTO, 1, 1500);   // 持稳 500ms → can_settled=1 ∧ s1_ready=1 → 进层
+            nvn2_hdr_snapshot_probe(&rb);
+            CHECK(rb.can_settled == 1 && rb.layer_pq == 1 && rb.sdr_run == 0);
+            pub.current_headroom = 2.5;
+            nvn2_hdr_snapshot_publish(&pub);    // 重探发布（换屏 / 拨 HDR 开关后的重探是 PR4 的活，这里只验发布语义）
+            nvn2_hdr_snapshot_probe(&rb);
+            CHECK(rb.layer_pq == 1 && rb.current_headroom == 2.5);   // 发布只刷环境读数，层状态不回卷（PR4 排空语义的前提）
+            hdr_decision ad = nvn2_hdr_answer(1, 1500);
+            CHECK(ad.mode == HDR_S1 && ad.vi_on == 1 && ad.vi_fmt == 1 && ad.vi_peak == 250);   // 同源答案入口：三态 + 快照 + tick 状态进 choose_mode；headroom 2.5 首答 250
+            ad = nvn2_hdr_answer(1, 1600);
+            CHECK(ad.mode == HDR_S1 && ad.vi_on == 1 && ad.vi_peak == 250);   // 同值带内：答案与层都不动
+            setenv("S2ARM_HDR", "off", 1);
+            ad = nvn2_hdr_answer(1, 1700);
+            CHECK(ad.mode == HDR_S0 && ad.vi_on == 0 && ad.vi_fmt == 0 && ad.vi_peak == 0);   // off 不变量经存储入口同成立
+            nvn2_hdr_tick_frame(HDR_OFF, 0);
+            nvn2_hdr_tick_frame(HDR_OFF, 0);
+            nvn2_hdr_snapshot_probe(&rb);
+            CHECK(rb.layer_pq == 0 && rb.sdr_run == 0);   // off：不再 want，两帧非 PQ 排空切回 SDR
+            unsetenv("S2ARM_HDR");
+            memset(&pub, 0, sizeof pub);
+            nvn2_hdr_snapshot_publish(&pub);   // 段末清回缺省（照 V3 段 Clear 恢复默认收尾；层已排空、簿记本就 0）
+        }
     }
 
     // ---------- P 推常量的参数规整（nvn2_cmd.h nvn2_push_range）：槽取低 3 位、偏移取低 8 位、字节数夹到 256 且不越过槽尾、不足 4 字节不发 ----------

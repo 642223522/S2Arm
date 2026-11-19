@@ -493,7 +493,8 @@ int main(void) {
     // #1594：类型 3 句柄（常量采样器）计算侧没接。带 constSampler 的 cs 贴图绑定必须具名拒绝——不能被当成「没有 samp_slot = 采样器取同字高位」
     //   而绑成错的采样器（宿主的计算回放不认这个来源）。v1 / v2 结果都一样；没有这个字段的同槽绑定照旧接受（见上面直接读 c2 分离贴图表的字）。
     for (int v = 1; v <= 2; ++v) {
-        static const char *const fields[] = {"\"slot\":90,\"constSampler\":257", "\"slot\":344,\"constSampler\":0", "\"slot\":90,\"constSampler\":4096", "\"constSampler\":3"};
+        static const char *const fields[] = {"\"slot\":90,\"constSampler\":257", "\"slot\":344,\"constSampler\":0", "\"slot\":90,\"constSampler\":4096", "\"constSampler\":3",
+                                             "\"uboSlot\":2,\"uboOffset\":160,\"constSampler\":260"};   // 片 3：游戏 UBO 里的贴图字（图形侧接了，计算侧不接）
         for (unsigned k = 0; k < sizeof fields / sizeof fields[0]; k++) {
             char json[4096], why[192] = ""; struct nvn_vk_compute_program p;
             int n = snprintf(json, sizeof json,

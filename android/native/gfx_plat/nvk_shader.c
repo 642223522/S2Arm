@@ -498,6 +498,12 @@ struct facts {
     uint32_t ubo_use[6];
 };
 
+// c2 字 72..86（组合槽 32..39）与图像表重叠，来源同 iOS tex_slot_h。
+static void graphics_high_handles(int st, uint64_t handles[8]) {
+    for (int slot = 0; slot < 8; slot++)
+        handles[slot] = rp_S.img[st][slot] ? rp_S.img[st][slot] : rp_S.tex[st][32 + slot];
+}
+
 // ---- 句柄在游戏用户常量缓冲里的贴图事实（#999 第 4 片；编译器侧契约见 DirectGpuAccessor.NeedTexture）----
 // 编译器对 c3..c18 里的句柄字只认精确事实 (阶段, 字下标, cbufSlot)，缺了按这个坐标报 MISSING_FACT。宿主事先不知道一份着色器
 // 读哪些常量缓冲字，所以按编译器报的坐标学：记在「阶段 + 阶段键」名下（ubo_need_learn），之后这份着色器每次建请求都读那个字
@@ -642,6 +648,21 @@ static void fill_facts(const struct rp_shader_req *q, const struct s2a_direct_co
         memcpy(f->tfmt[n], nf.format, sizeof f->tfmt[n]); memcpy(f->tsmp[n], nf.sampler_type, sizeof f->tsmp[n]);
         f->tex[n] = (struct s2a_compile_texture_src){(const char *const[]){"vs", "fs", "gs"}[st], (uint32_t)(8 + 2 * slot), -1, f->tsmp[n], f->tfmt[n], nf.is_buffer, nf.normalized, 0, nf.array_length};
     }
+    // 高槽只给实际登记且能表达的描述符出事实；不沿用低槽的 Unknown 占位。
+    for (int st = 0; st < nst; st++) {
+        uint64_t handles[8]; graphics_high_handles(st, handles);
+        for (int slot = 0; slot < 8; slot++) {
+            long id = handles[slot] ? (long)(handles[slot] & 0xFFFFF) : (long)rp_S.tex_base;
+            tex_t t; view_t tv; int has_tv = 0; struct s2a_nvn_texture_fact nf; char why[96];
+            if (!rp_tex_snap_by_id((int)id, &t, &tv, &has_tv)) continue;
+            if (request_texture_fact((uint32_t)(has_tv && tv.set_format ? tv.format : t.d.format),
+                    (uint32_t)(has_tv && tv.set_target ? tv.target : t.d.target), t.d.depth, &nf, why, sizeof why)) continue;
+            int n = f->ntex++;
+            memcpy(f->tfmt[n], nf.format, sizeof f->tfmt[n]); memcpy(f->tsmp[n], nf.sampler_type, sizeof f->tsmp[n]);
+            f->tex[n] = (struct s2a_compile_texture_src){st == 0 ? "vs" : st == 1 ? "fs" : "gs",
+                (uint32_t)(72 + 2 * slot), -1, f->tsmp[n], f->tfmt[n], nf.is_buffer, nf.normalized, 0, nf.array_length};
+        }
+    }
     // Separate texture table c2: 0x168 + 8*slot, mapped to replay slot 128+slot.
     // Only registered descriptors are facts. A zero handle names pool entry zero,
     // just like the existing combined-table producer; no descriptor means no fact.
@@ -738,7 +759,7 @@ static int usrc_put(struct rp_prog *pg, const struct fd_binding *b, nvn_gpu_layo
     memset(u, 0, sizeof *u);
     u->tex = uword_of(&b->tex_u);
     if (b->samp_src == FD_SAMP_UBO) { u->samp_kind = NVN_RB_SAMPU; u->samp = uword_of(&b->samp_u); }
-    else if (b->samp_src == FD_SAMP_ID) { u->samp_kind = NVN_RB_SAMPI; u->samp_reg = b->samp_val; }
+    else if (b->samp_src == FD_SAMP_ID) { u->samp_kind = NVN_RB_SAMPI; u->samp_reg = b->samp_val; u->samp_pool = b->samp_pool; }   // samp_pool：立即数采样器池下标（#1594 片 3）
     else if (b->samp_src == FD_SAMP_SLOT) { u->samp_kind = NVN_RB_SAMP; u->samp_reg = b->samp_val; }
     e->src_reg2 = (uint16_t)pg->nusrc++;
     return 1;
@@ -1325,6 +1346,21 @@ static uint64_t combined_fact_sig(int st) {
     c->rg = rg; c->base = (int)rp_S.tex_base; c->pn = (int)rp_S.tex_pool_n; c->ok = 1;
     return c->sig;
 }
+// 缓存有效高槽的事实摘要；被 image 遮住的 tex 变化不改变编译输入。
+static struct { uint64_t handles[8], rg, sig; int base, pn; uint8_t ok; } g_high_sig[3];
+static uint64_t graphics_high_fact_sig(int st) {
+    uint64_t handles[8]; graphics_high_handles(st, handles);
+    uint64_t rg = rp_tex_reg_gen();
+    if (!g_high_sig[st].ok || g_high_sig[st].rg != rg || g_high_sig[st].base != (int)rp_S.tex_base ||
+        g_high_sig[st].pn != (int)rp_S.tex_pool_n || memcmp(g_high_sig[st].handles, handles, sizeof handles)) {
+        g_sig_recomp++;
+        g_high_sig[st].sig = rp_tex_fact_sig(handles, 8, rp_S.tex_base, rp_S.tex_pool_n);
+        memcpy(g_high_sig[st].handles, handles, sizeof handles);
+        g_high_sig[st].rg = rg; g_high_sig[st].base = (int)rp_S.tex_base;
+        g_high_sig[st].pn = (int)rp_S.tex_pool_n; g_high_sig[st].ok = 1;
+    }
+    return g_high_sig[st].sig;
+}
 // with_tex_facts=0：不混入贴图槽事实——只给「身份粒度」诊断当分组键用（同一份着色器 = 同一组）。
 static uint64_t input_sig(const struct rp_shader_req *q, const struct s2a_direct_compile_context *pc, uint32_t stages, int with_tex_facts) {
     uint64_t h = 1469598103934665603ull;
@@ -1347,6 +1383,7 @@ static uint64_t input_sig(const struct rp_shader_req *q, const struct s2a_direct
         // 几何阶段（VS|FS|GS）在重场景里极少出现，不进上面那张小表：直接算这 32 格的摘要（省下每次比 32 个句柄）。
         if (stages & 4u) MIX(rp_tex_fact_sig(rp_S.tex[2], 32, rp_S.tex_base, rp_S.tex_pool_n));
         if (stages & 4u) MIX(sep_fact_sig(2));
+        for (int st = 0; st < 3; st++) if (stages & (1u << st)) MIX(graphics_high_fact_sig(st));
         if (g_ubo_need_n) for (int st = 0; st < 3; st++) if (st < 2 || (stages & 4u)) MIX(ubo_fact_sig(st));
     }
     #undef MIX
@@ -1964,6 +2001,7 @@ void rp_shader_reset(void) {
     // （摘要首项是计算专用的域标记），这一次释放一并带走；下一次存项时再按需分配。
     free(g_last_tab); g_last_tab = NULL;
     memset(g_comb_sig, 0, sizeof g_comb_sig);
+    memset(g_high_sig, 0, sizeof g_high_sig);
     memset(g_ubo_need, 0, sizeof g_ubo_need); g_ubo_need_n = 0; g_ubo_learned = 0;
     memset(g_idg, 0, sizeof g_idg); memset(g_idg_set, 0, sizeof g_idg_set);
     g_idg_groups = g_idg_idents = g_idg_resolves = g_idg_compiles = g_idg_loads = g_idg_multi = 0; g_idg_last_ns = 0;

@@ -7,6 +7,8 @@
 //   ② A 写过、Finalize、闲 → 两遍都留着（存储没被改）；CPU 只改其中一小段 → 仍留着（其余 GPU 写过的块还在）；CPU 改写整段存储 → 放（rewritten +1）
 //   ③ C 写过、Finalize、闲，存储没动 → 低区账本要地址（腾退回调）→ 放（for the low-region ledger +1），原 Metal 贴图 GPU 做完后释放
 //   ④ E 写过、对象一直活着 → CPU 改写整段存储、账本要地址 → 都留着（活对象由覆写规则管，不归这里）
+//   ⑤ #427：同一存储上两个对象，一个采样数 0 + IMAGE（计算阶段写）、一个采样数 1（渲染采样读），其余描述相同 → 同一张 Metal 贴图（0 / 1 都是单采样）；
+//      反证：同存储、格式不同的第三个对象 → 另一张贴图（键照旧分开真不同的描述）。修前采样数在键里原样比，两个对象是两张贴图
 #include "../gfx/nvn/nvn_mtl.m"
 
 static unsigned checks, failures;
@@ -63,6 +65,13 @@ int main(void) {
         static tex_t E; make(&E, 16 << 20, 512); id<MTLTexture> e0 = tex_mtl(&E); gpw_mark(&E, 0, 0, 1, 0, 0, 0, 0); submit(); idle();
         memset(E.mem, 5, E.L.size); alias_orphan_pass(); alias_orph_evict(NULL, UINT64_MAX); settle();
         CHECK(tex_get(E.serial) == e0, "④ 活对象：存储被改写、账本要地址都留着");
+        // ⑤
+        static tex_t W, Rd, F; make(&W, 24 << 20, 64); make(&Rd, 24 << 20, 64); make(&F, 24 << 20, 64);
+        W.d.samples = 0; W.d.flags |= NVN_TEXTURE_FLAGS_IMAGE; Rd.d.samples = 1; F.d.samples = 1; F.d.format = NVN_FORMAT_RGBA16F;
+        nvn_tex_layout(&F.d, &F.L);
+        id<MTLTexture> mw = tex_mtl(&W), mr = tex_mtl(&Rd), mf = tex_mtl(&F);
+        CHECK(mw && mw == mr, "⑤ 采样数 0 + IMAGE 与采样数 1、同存储同描述：同一张 Metal 贴图（%p / %p）", (__bridge void *)mw, (__bridge void *)mr);
+        CHECK(mf && mf != mw, "⑤ 反证：同存储、格式不同 → 另一张贴图");
         printf("%s t_nvn_alias_orphan: %u checks %u failures; backend Metal%d\n", failures ? "✗" : "✓", checks, failures, g_m3 ? 3 : 4);
         return failures != 0;
     }
