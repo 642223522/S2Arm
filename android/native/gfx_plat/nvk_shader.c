@@ -739,14 +739,14 @@ static int layout_ent(const struct fd_binding *b, nvn_gpu_layout_ent *e) {
         if (b->storage_writable) e->access = NVN_GPU_ACC_R | NVN_GPU_ACC_W;
         return 1;
     }
-    // 图像：只接计算阶段的单个存储图像（解析器给出 NVN 图像槽 0..7，放在 tex_slot）；回放按槽取 BindImage 的句柄建存储视图
-    //   （rp_draw.c rp_dispatch NVN_RB_IMG）。图形阶段的图像回放还没接，绘制时按名跳过（compute_image_shape）。
+    // 图像：单个存储图像（解析器给出 NVN 图像槽 0..7，放在 tex_slot），计算与图形阶段同一形态；回放按槽取这一阶段 BindImage 的句柄
+    //   建存储视图（rp_draw.c image_resolve：计算派发与绘制共用）。
     if (b->kind == 3 && b->count == 1 && b->tex_slot >= 0 && b->tex_slot < 8) {
         e->cls = NVN_GPU_RES_IMAGE; e->src_kind = NVN_RB_IMG; e->src_reg = (uint16_t)b->tex_slot;
         e->access = NVN_GPU_ACC_R | NVN_GPU_ACC_W;
         return 1;
     }
-    return 0;   // 图形阶段的图像、存储缓冲的其它地址来源：随对应命令接
+    return 0;   // 图像数组、存储缓冲的其它地址来源：随对应命令接
 }
 
 // TEXU / TBUFU 项的句柄来源进程序的 usrc 表（rp_shader.h rp_usrc），布局项 src_reg2 = 下标。0 = 表满
