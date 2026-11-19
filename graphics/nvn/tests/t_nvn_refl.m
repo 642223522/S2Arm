@@ -69,6 +69,17 @@ int main(void) {
             VERIFY(r3 != 0 && strstr(err, "no texel buffer of that name"), "④ 前导项指向常量缓冲：照旧报错（%s）", err);
         }
 
+        {   // #bbd549：反射写了回放层填不了的驱动段位置（drv_unfillable）：不再整支判失败（原先程序不可用、用它的绘制全被跳过），照常解析、记 drv_unfilled、err 里是原样清单
+            NvShader *u = [NvShader new]; err[0] = 'x'; err[1] = 0;
+            int ru = nvn_refl_from_json(@{ @"route": @"B", @"drv_unfillable": @[ @"c0 dynamic index", @"c0+0x630" ],
+                @"bindings": @[ @{ @"kind": @"cbuf", @"reg": @3, @"arg_id": @0, @"msl_name": @"fp_c3" } ] }, &u->rf, err, sizeof err);
+            VERIFY(ru == 0 && u->rf.drv_unfilled == 1 && u->rf.nb == 1 && strstr(err, "c0 dynamic index c0+0x630"),
+                   "⑥ 填不了的驱动段位置：解析成功、drv_unfilled=1、绑定 1 个、清单「c0 dynamic index c0+0x630」（rc %d，drv_unfilled %d，%s）", ru, u->rf.drv_unfilled, err);
+            NvShader *v = [NvShader new]; err[0] = 'x'; err[1] = 0;
+            int rv = nvn_refl_from_json(@{ @"route": @"B", @"drv_unfillable": @[], @"bindings": @[] }, &v->rf, err, sizeof err);
+            VERIFY(rv == 0 && v->rf.drv_unfilled == 0 && err[0] == 0, "⑦ 清单为空：drv_unfilled=0、err 清空（rc %d，drv_unfilled %d，err「%s」）", rv, v->rf.drv_unfilled, err);
+        }
+
         // #1106: NVN order differs from Maxwell's; expectations are literal ABI offsets.
         const int bases[6] = {0x110, 0x510, 0x410, 0x210, 0x310, 0x310};
         for (int stage = 0; stage < 6; stage++)

@@ -55,7 +55,7 @@ static void pair_from_name(NSString *nm, nvn_rbind *r) {
     r->pair = 1;
 }
 int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
-    memset(o, 0, sizeof *o);
+    memset(o, 0, sizeof *o); if (errlen > 0) err[0] = 0;   // success leaves err empty, or a note (drv_unfilled)
     #define FAIL(...) do { free(o->c1); o->c1 = NULL; free(o->b); o->b = NULL; snprintf(err, errlen, __VA_ARGS__); return 1; } while (0)
     if (![j[@"route"] isEqual:@"B"]) FAIL("not a B reflection (route ≠ B; route A / PC-chain reflection is retired)");
     {   // Translated original Switch shaders: kind and NVN slot number are already parsed from the MSL member names by dmsh_build.py
@@ -170,7 +170,10 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
         // shaders reading c0 got an all-zero segment (Link's Awakening's light culling multiplied the tile row by a zero workgroup count: every row's lights landed in row 0)
         for (int i = 0; i < o->nb; i++) { if (o->b[i].kind == NVN_RB_DRV0) o->drv_read[0] = 1; else if (o->b[i].kind == NVN_RB_DRV2) o->drv_read[2] = 1; }
         NSArray *uf = j[@"drv_unfillable"];
-        if ([uf isKindOfClass:[NSArray class]] && uf.count) FAIL("reads driver-bank locations at run time that the replay layer cannot fill: %s", [[uf componentsJoinedByString:@" "] UTF8String]);
+        // Locations the replay layer does not fill (a dynamic index, a word outside its tables) read 0, as every location of a vertex / compute shader the build does not scan does:
+        //   the shader is used, with a note (S2Arm, no refusal on a check that only says "not filled": 0100853015E86000's pixel shaders read c0 by a dynamic index and c0+0x630,
+        //   and the whole program was refused, so every draw with it was skipped, #bbd549). The dynamic index lands in the tables the layer fills when it indexes them
+        if ([uf isKindOfClass:[NSArray class]] && uf.count) { o->drv_unfilled = 1; if (errlen > 0) snprintf(err, errlen, "reads driver-bank locations the replay layer does not fill (they read 0): %s", [[uf componentsJoinedByString:@" "] UTF8String]); }
         NSString *c1 = j[@"c1"];
         if (c1.length % 2 || c1.length / 2 > 0xffff) FAIL("c1 is %lu bytes: over the limit or an odd hex length", (unsigned long)c1.length / 2);
         if (c1.length && !(o->c1 = malloc(c1.length / 2))) FAIL("c1 allocation of %lu bytes failed", (unsigned long)c1.length / 2);
