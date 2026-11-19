@@ -92,10 +92,10 @@ extension EnvironmentValues {
 }
 /// Goes back to the game's saved moment (instant snapshot). Nil, or no snapshot for the game: no item in the card's menu.
 private struct ShellSnapshotKey: EnvironmentKey {
-    nonisolated(unsafe) static let defaultValue: (available: (String) -> Bool, restore: (String) -> Void)? = nil
+    nonisolated(unsafe) static let defaultValue: (available: (String) -> Bool, restore: (String) -> Void, delete: ((String) -> Void)?)? = nil
 }
 extension EnvironmentValues {
-    var shellSnapshot: (available: (String) -> Bool, restore: (String) -> Void)? {
+    var shellSnapshot: (available: (String) -> Bool, restore: (String) -> Void, delete: ((String) -> Void)?)? {
         get { self[ShellSnapshotKey.self] }
         set { self[ShellSnapshotKey.self] = newValue }
     }

@@ -346,9 +346,6 @@ class WinInstall(unittest.TestCase):
         self.m = install
         self.t = Path(tempfile.mkdtemp()); self.addCleanup(lambda: __import__("shutil").rmtree(self.t, ignore_errors=True))
         p = patch.object(install, "phone_games", lambda c, ph: set()); p.start(); self.addCleanup(p.stop)   # 读手机游戏清单另有用例
-        # 读手机账本另有用例（test_install）：不打桩时它走 devpush_client 调 c.env()，本替身没有 env——单跑时推送工具导入失败被当「读不到账本」，
-        #   全量跑时前面的用例已导入过 push_pack（模块缓存），这里就撞上 AttributeError（11 个 WinInstall 用例只在全量 discover 时红）
-        p = patch.object(install, "phone_removed", lambda c, ph: None); p.start(); self.addCleanup(p.stop)
         p = patch.object(install, "pick_pack_root", lambda c, ph, g: f"Library/Application Support/S2Arm/games/{g}/资源包"); p.start(); self.addCleanup(p.stop)   # 选哪处另有用例（test_install）
         (self.t / "lib").mkdir(); (self.t / "logs").mkdir()
         self.gid = "0100000000000047"
@@ -360,25 +357,25 @@ class WinInstall(unittest.TestCase):
         ios_fixture(self.c, self.gid)   # 出好的 iPhone 版：image/ios/kit + image/ios/pack
 
     def go(self, w, **r):
-        """走新 install.install 的 Windows 分支（phone_for → WinPhone + assemble + put_game）"""
+        """「安装 S2Arm」的 Windows 分支（update_phone → phone_for → WinPhone + assemble_shell + install_shell：plumesign 签名装壳）"""
         import ipa as packer
         r = {"device": "U1", **r}   # 装机一律带玩家选的那台；device=None 测「没带设备号」
         self.c.r.update({k: v for k, v in r.items() if v is not None})
         if r["device"] is None: self.c.r.pop("device", None)
         gid = self.c.r["gameId"].upper()
-        # assemble 替身：在游戏库临时目录出一个真 zip ipa（WinPhone.install 不解包，但 put_game 要把它放到默认位置根 S2Arm.ipa）
-        def fake_assemble(c, g, others=(), failed=(), root=None, dest=None, agreed=()):
+        # assemble_shell 替身：在游戏库临时目录出一个真 zip ipa（WinPhone.install 不解包，但 install_shell 要把它放到默认位置根 S2Arm.ipa）
+        def fake_assemble(c, *, dest=None):
             self.assembled = self.t / "lib" / ".container-t" / "S2Arm.ipa"; self.assembled.parent.mkdir(exist_ok=True)
             with __import__("zipfile").ZipFile(self.assembled, "w") as z:
                 z.writestr("Payload/S2Arm.app/Info.plist", __import__("plistlib").dumps({"CFBundleIdentifier": "dev.s2arm.games", "CFBundleExecutable": "S2Arm"}))
-            return self.assembled, [gid, *others], "SID1"
+            return self.assembled, [], "SID1"
         import rewrite_refresh   # 改写产物核对另有单测（test_rewrite_refresh）；这里只测 Windows 装机
         with patch.object(self.m, "win_install_mod", return_value=w), \
              patch.object(rewrite_refresh, "refresh_ios", return_value=[]), \
-             patch.object(packer, "assemble", side_effect=fake_assemble), \
+             patch.object(packer, "assemble_shell", side_effect=fake_assemble), patch.object(packer, "current_shell_id", return_value="SID1"), \
              patch.object(self.m.WinPhone, "backup", lambda ph, g: None), \
              as_windows(self.m):   # 覆盖装前的存档备份另有用例（test_overwrite_backup_* / test_no_record_and_no_team_*）
-            return self.m.install(self.c)
+            return self.m.update_phone(self.c)
 
     def test_one_phone_two_links(self):
         w = FakeW([("U1", "USB", 3), ("U1", "Network", 9)])
@@ -388,9 +385,8 @@ class WinInstall(unittest.TestCase):
         self.assertEqual(Path(w.calls[0].ipa).suffix, ".ipa")
         # plumesign 定的包名记在这台的设备记录里（不再有 bundle.txt），下次 WinPhone 起来就认得、覆盖装前能备份
         rec = layout.load_device(self.c, "U1")
-        self.assertEqual((rec["bundleId"], rec["games"], rec["shellId"]), ("s2arm.T.0100", {self.gid: dict(pack="cafe01")}, "SID1"))
+        self.assertEqual((rec["bundleId"], rec.get("games", {}), rec["shellId"]), ("s2arm.T.0100", {}, "SID1"))   # 只装壳、不推任何一款
         self.assertTrue((self.t / "lib" / "S2Arm.ipa").is_file())
-        self.assertEqual(w.pack_root, f"Library/Application Support/S2Arm/games/{self.gid.upper()}/资源包")   # 资源包根单独交给推包（pick_pack_root 选的那处）
         with patch.object(self.m, "win_install_mod", return_value=w), as_windows(self.m):
             self.assertEqual(self.m.WinPhone(self.c).bid, "s2arm.T.0100")
 
@@ -457,14 +453,6 @@ class WinInstall(unittest.TestCase):
             with patch.object(self.m, "devpush_client", side_effect=AssertionError("不该去手机上查")):
                 self.assertIsNone(ph.backup(self.gid))
 
-    def test_cant_open_app_is_warning_not_failure(self):   # #192：Windows 同 Mac，传输数从异常带回（替身 787 个文件）
-        w = FakeW([("U1", "USB", 3)]); w.needs_player = "资源包已传完，还差最后一步：打开 App"
-        seen = []; self.c.diagnostic = lambda m, **k: seen.append((m, k))
-        res = self.go(w)
-        self.assertEqual(seen, [("资源包已传完，还差最后一步：打开 App", {"code": "manual_unpack_required", "severity": "warning"})])
-        self.assertEqual(res["packFiles"], 787)
-        self.assertEqual(res["unpackPending"], "资源包已传完，还差最后一步：打开 App")   # 结果带还差的一步（11-09 #336）
-
     def test_device_choice_errors(self):
         """装到哪台（11-13 维护者：插着一台手机就别说识别不了）。期望手写：设备服务里只有一台 → 装它（没带设备号、或带的那台这次没列出都一样）；
         选的那台列着 → 装它（同网也算，不换插线的另一台）；多台对不上 → 没带号报 device_required、带了号报 device_not_connected 并说连着几台；
@@ -478,6 +466,7 @@ class WinInstall(unittest.TestCase):
             with self.assertRaises(core.Failure) as e:
                 self.go(FakeW([("U1", "USB", 3), ("U2", "USB", 4)]), device=None)
             self.assertEqual(e.exception.code, "device_required")
+            __import__("shutil").rmtree(self.c.library / "devices", ignore_errors=True)   # 前面装过壳的设备记录会让它改说「连着的这台已是新版」（other_device_current，另有用例）
             with self.assertRaises(core.Failure) as e:
                 self.go(FakeW([("U2", "USB", 3), ("U3", "Network", 4)]), device="U1")
             self.assertEqual(e.exception.code, "device_not_connected"); self.assertIn("连着 2 台", str(e.exception))
@@ -525,7 +514,7 @@ class WinInstall(unittest.TestCase):
         # 11-07 闸门接线核对：启动器「开始装机」发 install 作业 → install_windows → 真的 pack/orch/install_win.py（不用 FakeW），
         #   外部只换掉 plumesign / 设备服务 / 推包。期望照 11-06 金刚真机通过那次手写（状态文件里程碑节、evidence/winline_e2e_1106/kong_c3.log）：
         #   plumesign sign --package <ipa> --apple-id --register-and-install --udid <设备服务里 USB 那条的设备编号> -o <签好的 ipa>；
-        #   再按签好的 ipa 里的实际包名用 s2a-devpush 推本款资源包
+        #   0.6.0 起「安装 S2Arm」只装壳：不推任何一款的资源包（推游戏是另一个作业）
         import io, plistlib, subprocess, zipfile
         self.c.engine = Path(__file__).resolve().parents[3]
         W = self.m.win_install_mod(self.c)
@@ -552,9 +541,8 @@ class WinInstall(unittest.TestCase):
         self.assertEqual(cmd[:-1], ["C:/Impactor/plumesign.exe", "sign", "--package", str(self.assembled),
                                     "--apple-id", "--register-and-install", "--udid", "7", "-o"])
         self.assertIn("signed.ipa", cmd[-1])   # 签名输出文件名含 signed.ipa
-        self.assertEqual(seen["push"][1:3], ("s2arm.t.0100.ABCDE12345", ".pack"))   # 包名和资源包目录（这款的 image/ios/pack）
+        self.assertNotIn("push", seen, "安装 S2Arm 只装壳，不推资源包")
         self.assertEqual((res["bundleId"], res["device"]), ("s2arm.t.0100.ABCDE12345", "U1"))
-        self.assertEqual([(e[0], e[1], e[2]) for e in self.progress_events if e[2] == "B"], [(4 << 30, 8 << 30, "B")])
 
     def test_bundled_impactor_zero_jump(self):
         # 11-07 维护者：Impactor 随启动器下发、玩家零跳转。期望手写：

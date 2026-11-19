@@ -1,4 +1,4 @@
-// 即时存档：Vulkan 出图层的存 / 取（hle_vk.m 末尾包含）。缺省关：S2A_SNAP_MODE / S2A_SNAP_RESTORE 不开时这里的入口都不会被调到，分配器也不进区。
+// 即时存档：Vulkan 出图层的存 / 取（hle_vk.m 末尾包含）。S2A_SNAP_MODE=0 且不是恢复局时（开关见 runtime/src/snapsw.c，苹果端缺省开）这里的入口都不会被调到，分配器也不进区。
 //
 // 为什么是「固定地址区」而不是像 GL 那样按名字重建：Vulkan 的每个句柄就是这一层对象的宿主地址（游戏把它们存进自己的内存），对象之间互相指
 //   （视图 → 图像、缓冲 → 内存、描述符集 → 布局 / 池……），命令缓冲是嵌着句柄的字节流，vkMapMemory 交出持久映射指针。所以快照开时对象、对象自有的数组、
@@ -125,6 +125,62 @@ int vk_snap_save(const char *path) {
 
 // ---------- 取 ----------
 #define VS_ZERO(field) memset((void *)&(field), 0, sizeof(field))   // 清掉旧进程的 Metal 指针（不 release）
+// ---------- 布局转换：换版本后宿主结构布局变了 ----------
+// 区按原址放回，句柄（= 对象地址）、对象互指、命令流里嵌的句柄都只认地址：对象就地按新布局转，地址不变，什么指针都不用改。
+//   块能用的字节：尺寸档块 16 << cls；整段切的大块按记下的 size 向上取 16 KB。对象分配时另留 VS_ROOM（hle_vk.m），长一点也放得下；
+//   新布局放不下原块的（长得太多）不转、黄字点名，照常继续（校验不过不拒绝）
+static uint64_t vs_cap(const void *p) {
+    const vs_blk *b = (const vs_blk *)p - 1;
+    return b->magic != VS_MAGIC ? 0 : b->cls < VS_NCLS ? 16ull << b->cls : (b->size + 16383) & ~16383ull;
+}
+typedef struct { snap_conv *e; uint8_t *tmp; uint32_t ok, room; } vs_cv;
+static vs_cv vs_cv_get(const char *name) { vs_cv c = {snap_conv_get(name), NULL, 0, 0}; if (c.e) c.tmp = malloc(c.e->o->size ? c.e->o->size : 1); return c; }
+static void vs_cv_one(vs_cv *c, void *p, uint64_t count) {   // p 起 count 个（对象 count = 1；对象自有数组按块里记的长度算个数）
+    if (!c->e || !c->tmp || !p || !vs_has(p) || !count) return;
+    vs_blk *b = (vs_blk *)p - 1;
+    if (count > 1) { uint8_t *t = realloc(c->tmp, (size_t)(count * c->e->o->size)); if (!t) { c->room++; return; } c->tmp = t; }
+    if (snap_conv_inplace(c->e, p, count, vs_cap(p), c->tmp)) { b->size = count * c->e->c->size; c->ok++; } else c->room++;
+}
+static void vs_cv_done(vs_cv *c, const char *name) {
+    if (!c->e) return;
+    LOG("[vk] %s即时存档恢复：「%s」布局变了，区里就地按新布局转 %u 个%s", c->room ? "【黄】" : "", name, c->ok, c->room ? "；原块放不下新布局、没转的见下一行" : "");
+    if (c->room) LOG("[vk] 【黄】 即时存档恢复：「%s」%u 个原块放不下新布局（新 %u 字节），没转，照常继续", name, c->room, c->e->c->size);
+    free(c->tmp);
+}
+static const char *vs_kind_name(object_kind k) {
+    switch (k) {
+        case O_MEMORY: return "vk.memory"; case O_BUFFER_VIEW: return "vk.bview"; case O_IMAGE: return "vk.image"; case O_IMAGE_VIEW: return "vk.view";
+        case O_SAMPLER: return "vk.sampler"; case O_SHADER: return "vk.module"; case O_PIPELINE: return "vk.pipeline"; case O_LAYOUT: return "vk.layout";
+        case O_SET: return "vk.set"; case O_COMMAND: return "vk.cmd"; case O_QUERY: return "vk.query"; case O_SWAPCHAIN: return "vk.swap";
+        case O_BUFFER: return "vk.buffer"; case O_RENDERPASS: return "vk.rpass"; case O_FRAMEBUFFER: return "vk.fb";
+        default: return NULL;   // O_PLAIN（信号量、池、模板等没登记布局指纹的）/ O_FENCE
+    }
+}
+static void vs_conv_objects(void) {
+    static const char *const others[] = {"vk.vs_meta", "vk.vs_blk", "vk.instance"};   // 分配器自己的账 / 实例链：不在对象表里，这一版不转
+    for (size_t i = 0; i < sizeof others / sizeof *others; i++) if (snap_conv_get(others[i])) LOG("[vk] 【黄】 即时存档恢复：「%s」布局变了，这一版不转，照常继续", others[i]);
+    // ① 对象表节点本身：布局变了先按旧布局的 next 走完整条链记下节点，再逐个就地转（转完才能按新布局走）
+    vs_cv cn = vs_cv_get("vk.object");
+    if (cn.e) { const snap_fld *nx = sl_find(cn.e->o, "next");
+        if (!nx || nx->size != 8) LOG("[vk] 【黄】 即时存档恢复：「vk.object」旧布局里找不到 next，对象表没转");
+        else { size_t cap = 0, n = 0; void **v = NULL;
+            for (uint8_t *o = (uint8_t *)g_objects; o; ) { if (n == cap && !(v = realloc(v, (cap = cap ? cap * 2 : 1024) * sizeof *v))) break; v[n++] = o; uint64_t q; memcpy(&q, o + nx->off, 8); o = (uint8_t *)(uintptr_t)q; }
+            for (size_t i = 0; i < n; i++) vs_cv_one(&cn, v[i], 1);
+            free(v); } }
+    vs_cv_done(&cn, "vk.object");
+    // ② 各种对象：按种类认布局；③ 对象自有的数组 / 建法：描述符集的描述符数组、管线的建法
+    vs_cv cv[O_FRAMEBUFFER + 1]; int any = 0;
+    for (int k = 0; k <= O_FRAMEBUFFER; k++) { const char *nm = vs_kind_name((object_kind)k); cv[k] = nm ? vs_cv_get(nm) : (vs_cv){0}; any |= cv[k].e != NULL; }
+    vs_cv cd = vs_cv_get("vk.desc"), cr = vs_cv_get("vk.recipe");
+    if (!any && !cd.e && !cr.e) return;
+    for (vk_object *o = g_objects; o; o = o->next) {
+        if (o->kind <= O_FRAMEBUFFER) vs_cv_one(&cv[o->kind], o->ptr, 1);
+        if (o->kind == O_SET && cd.e) { VkDescriptorSet st = o->ptr; if (st->d && vs_has(st->d)) vs_cv_one(&cd, st->d, ((vs_blk *)st->d - 1)->size / cd.e->o->size); }
+        if (o->kind == O_PIPELINE && cr.e) vs_cv_one(&cr, ((VkPipeline)o->ptr)->recipe, 1);
+    }
+    for (int k = 0; k <= O_FRAMEBUFFER; k++) vs_cv_done(&cv[k], vs_kind_name((object_kind)k));
+    vs_cv_done(&cd, "vk.desc"); vs_cv_done(&cr, "vk.recipe");
+}
 static vk_object *vs_node(const void *ptr, uint64_t seq) { for (vk_object *o = g_objects; o; o = o->next) if (o->ptr == ptr) return o->seq == seq ? o : NULL; return NULL; }
 int vk_snap_restore(const char *path) {
     FILE *f = fopen(path, "rb"); if (!f) return -1;
@@ -139,6 +195,7 @@ int vk_snap_restore(const char *path) {
     }
     if (!ok) { fclose(f); return -1; }
     g_vs = (vs_meta *)(uintptr_t)h.vs; g_vs_on = 1; g_objects = (vk_object *)(uintptr_t)h.objects; g_instances = (VkInstance)(uintptr_t)h.instances; g_vs_spv = (vs_spv *)(uintptr_t)h.spv;
+    vs_conv_objects();   // ⓪ 布局变了的对象先就地按新布局转（下面全按新布局读写）
     intptr_t fdelta = (intptr_t)(uintptr_t)g_fmts - (intptr_t)h.fmts;
     // ① 清掉全部对象里的 Metal 指针、平移格式表指针、实例的锁重建
     for (VkInstance i = g_instances; i; i = i->session_next) { pthread_mutex_init(&i->debug_mu, NULL); pthread_cond_init(&i->debug_cv, NULL); }

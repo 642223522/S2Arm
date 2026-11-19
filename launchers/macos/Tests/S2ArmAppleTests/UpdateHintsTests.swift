@@ -20,8 +20,8 @@ import S2ArmAppleAdapter
         return (m, root)
     }
 
-    func testReasonsPerGameWhenSwitchOn() async throws {
-        let (m, root) = try model(["enabled": true, "games": [["gameId": "0100abc", "reasons": ["shader", "hostAbi"]], ["gameId": "0100DEF", "reasons": [String]()]]])
+    func testReasonsPerGame() async throws {
+        let (m, root) = try model(["games": [["gameId": "0100abc", "reasons": ["shader", "hostAbi"]], ["gameId": "0100DEF", "reasons": [String]()]]])
         defer { try? FileManager.default.removeItem(at: root) }
         m.refreshUpdateHints()
         for _ in 0..<300 where m.updateHints.isEmpty { try? await Task.sleep(for: .milliseconds(10)) }
@@ -30,13 +30,13 @@ import S2ArmAppleAdapter
         XCTAssertEqual(m.updateReasons(GameSummary(id: "0100XYZ", name: "C")), [], "不在表里的款没有提示")
     }
 
-    func testNothingWhenSwitchOff() async throws {
-        let (m, root) = try model(["enabled": false, "games": [["gameId": "0100ABC", "reasons": ["shader"]]]])
+    func testNothingWhenResultHasNoGames() async throws {
+        let (m, root) = try model([:])
         defer { try? FileManager.default.removeItem(at: root) }
-        m.updateHints = ["0100ABC": ["rewriter"]]   // 上一次的值：关着读一次要清掉
+        m.updateHints = ["0100ABC": ["rewriter"]]   // 上一次的值：读到不带 games 的结果要清掉
         m.refreshUpdateHints()
         for _ in 0..<300 where !m.updateHints.isEmpty { try? await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertEqual(m.updateHints, [:], "开关关着什么都不出")
+        XCTAssertEqual(m.updateHints, [:], "结果里没有 games 什么都不出")
     }
 
     func testReasonKeysHaveSharedText() {

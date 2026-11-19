@@ -1504,16 +1504,34 @@ static void segment_done(struct vk_segment *s, int status, int code, const char 
     if (status != NVN_GPU_DONE_FAILED && s->cmd && s->cmd->report_ts) {
         struct nvn_gpu_cmd_s *c = s->cmd;
         uint64_t calibration[2], deviation;
+        // 换算拿不到的原因读数（报告时间戳 → 回放的 timestamp result_unavailable）：首次与 2 的幂次各打一行，带全部输入
+        static _Atomic uint64_t ts_fail_n;
         if (report_calibration(calibration, &deviation)) {
             uint64_t end = now_ns();
             for (uint32_t i = 0; i < c->report_count; i++) {
                 uint64_t result[2] = {0, 0};
                 if (!(c->report_used & (UINT64_C(1) << i))) continue;
-                if (vkGetQueryPoolResults(g.d, c->report_ts, i, 1, sizeof result, result,
-                        sizeof result, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) == VK_SUCCESS && result[1])
-                    timestamps[i].valid = s2a_report_ts_convert(result[0], calibration[0], calibration[1],
-                        g.report_bits, g.report_period, c->report_begin_ns, end, deviation, &timestamps[i].host_ns);
+                VkResult qr = vkGetQueryPoolResults(g.d, c->report_ts, i, 1, sizeof result, result,
+                        sizeof result, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+                int why = qr != VK_SUCCESS ? 10 : !result[1] ? 11 :
+                          s2a_report_ts_convert_why(result[0], calibration[0], calibration[1],
+                              g.report_bits, g.report_period, c->report_begin_ns, end, deviation, &timestamps[i].host_ns);
+                timestamps[i].valid = why == 0;
+                if (why) {
+                    const uint64_t n = atomic_fetch_add(&ts_fail_n, 1) + 1;
+                    if (!(n & (n - 1))) {
+                        char line[360];
+                        snprintf(line, sizeof line, "report_ts 换算拿不到（第 %llu 次）why=%d（10 查询失败 / 11 不可用 / 1 参数时序 / 2 窗口过半周期 / 3 越界 / 4 早于窗口 / 5 晚于窗口）"
+                                 " raw=%llu gpu=%llu host=%llu begin=%llu end=%llu dev=%llu bits=%u period=%.4f qr=%d",
+                                 (unsigned long long)n, why, (unsigned long long)result[0], (unsigned long long)calibration[0], (unsigned long long)calibration[1],
+                                 (unsigned long long)c->report_begin_ns, (unsigned long long)end, (unsigned long long)deviation, g.report_bits, g.report_period, (int)qr);
+                        nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", line);
+                    }
+                }
             }
+        } else {
+            const uint64_t n = atomic_fetch_add(&ts_fail_n, 1) + 1;
+            if (!(n & (n - 1))) { char line[120]; snprintf(line, sizeof line, "report_ts 换算拿不到（第 %llu 次）：校准时间戳调用失败", (unsigned long long)n); nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", line); }
         }
         d.timestamps = timestamps;
         d.ntimestamps = c->report_count;
@@ -2625,7 +2643,11 @@ static VkPrimitiveTopology vk_topology(uint32_t prim) {
     case 0x4: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     case 0x5: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
     case 0x6: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;
-    default: return VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;   // 2 线环 / 7+：未实现
+    case 0xA: return VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY;        // NVN 邻接图元直接映射（回放核心已按设备开了 geometryShader 才放行）
+    case 0xB: return VK_PRIMITIVE_TOPOLOGY_LINE_STRIP_WITH_ADJACENCY;
+    case 0xC: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY;
+    case 0xD: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP_WITH_ADJACENCY;
+    default: return VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;   // 2 线环 / 7–9（回放核心已展开 / 换成扇）/ 14 补丁：未实现
     }
 }
 
@@ -3165,7 +3187,8 @@ static int same_spec(const nvn_gpu_stage_desc *a, const nvn_gpu_stage_desc *b) {
 static int eff_restart(const nvn_gpu_pipe_desc *d) {
     VkPrimitiveTopology t = vk_topology(d->prim);
     return d->prim_restart && (t == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP || t == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN ||
-                               t == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP);
+                               t == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP || t == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP_WITH_ADJACENCY ||
+                               t == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP_WITH_ADJACENCY);
 }
 
 // 散列把 same_pipe_desc 比的全部字段都算进来：着色器句柄、特化常量（只比到 nspec 条）、图元 / 格式 / 采样数 / patch_size、光栅丢弃 / 负一裁剪 /

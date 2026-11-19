@@ -12,6 +12,7 @@ void rp_pool_memo_stats(uint64_t *hits, uint64_t *lookups);   // 池查找的线
 int rp_tex_live_n(void);                // 活贴图对象个数（只是登记数，不等于已建图的个数）
 int rp_depth_zero(void);                // NVN 深度模式：1 = 近平面为 0
 int rp_origin_lower_left(void);         // NVN 窗口原点：1 = 左下
+int rp_present_lower_left(void);        // 上屏翻转：被上屏窗口建时的原点（没有窗口说过 = 当前原点）
 uint64_t rp_frame(void);                // 前端给的当前帧号
 
 // ---------- 内存池镜像（rp_buf.c）----------

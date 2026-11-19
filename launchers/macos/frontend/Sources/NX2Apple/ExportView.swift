@@ -83,6 +83,7 @@ struct ExportView: View {
                 ForEach(ExportPlatform.allCases) { platform in tile(platform) }
             }
             .fixedSize(horizontal: false, vertical: true)
+            .onAppear { model.loadAndroidPhones() }   // 安卓卡开不开由作业层回报（开关缺省关：关着照旧「即将推出」）
         }
     }
 
@@ -91,6 +92,7 @@ struct ExportView: View {
             locationRow
             if model.exportTargets.contains(.ios) { IosAfterPackPicker(model: model) }   // 出完之后：装到 iPhone / 导出自签 IPA（11-16 维护者：一个入口、两条分叉各走到底）
             if model.exportTargets.contains(.tvos) || game.appleTvReady { appleTVRow }   // 签名 / 安装方式收进环境检查（v0.3.0），这里只读 + 更改
+            if model.exportTargets.contains(.android) { androidRow }   // 出好装到哪台安卓手机（adb 列出的）；不选 / 没连 = 只出 APK
             if let error = model.choiceError {
                 Text(loc.backend(error)).font(.manrope(12)).foregroundStyle(LauncherPalette.danger).fixedSize(horizontal: false, vertical: true)
             }
@@ -98,6 +100,28 @@ struct ExportView: View {
     }
 
     private func x(_ id: String) -> String { BackendText.launcherText("export." + id, language: loc.lang.sharedCode) }
+
+    /// 装到哪台安卓手机：adb 列出的手机成下拉（androidDevices 作业），加一项「不装，只出 APK」；没连时说怎么连，装的那一步再报真原因
+    private var androidRow: some View {
+        let phones = model.androidPhones.compactMap { d -> (value: String, label: String)? in
+            guard let serial = d["serial"] as? String else { return nil }
+            let name = (d["model"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? serial
+            return (serial, d["state"] as? String == "device" ? name : x("android.unauthorized").replacingOccurrences(of: "{0}", with: name))
+        }
+        return HStack(spacing: 12) {
+            LauncherRowIcon("iphone")
+            Text(x("android.device")).font(.manrope(13)).foregroundStyle(.secondary)
+            Spacer(minLength: 12)
+            if phones.isEmpty {
+                Text(x("android.none")).font(.manrope(12.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } else {
+                LauncherDropdown(options: phones + [("", x("android.skip"))], selection: model.androidPhone ?? "", label: x("android.device")) { model.androidPhoneChoice = $0 }
+                    .controllerID("export.android")
+            }
+            Button(x("android.refresh")) { model.loadAndroidPhones() }.controllerButtonStyle(.plain).font(.manrope(12.5, .semibold))
+        }
+        .onAppear { model.loadAndroidPhones() }
+    }
 
     /// 装到哪台 Apple TV：配对过的电视列成下拉（tvDevices 作业）；一台都没有时说怎么配对，装的那一步再报真原因
     private var appleTVRow: some View {
@@ -183,7 +207,8 @@ struct ExportView: View {
         case .ios: return loc.t("s2arm.export.note.ios")
         case .tvos: return x("note.tvos")
         case .mac: return loc.t(game.playable ? "s2arm.export.note.macReady" : "s2arm.export.note.mac")
-        case .android, .ohos: return loc.t("s2arm.export.soon")
+        case .android: return platform.released ? x("note.android") : loc.t("s2arm.export.soon")   // 开关后（作业层 androidDevices 回报）
+        case .ohos: return loc.t("s2arm.export.soon")
         }
     }
 

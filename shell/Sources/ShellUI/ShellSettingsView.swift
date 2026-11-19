@@ -172,7 +172,7 @@ struct ShellSettingsView: View {
                         if let report = actions.onReportProblem {
                             SettingsGroup(title: ShellStrings.text("Report a problem")) {
                                 SourceRow(symbol: "exclamationmark.bubble", title: ShellStrings.text("Report a problem"),
-                                          note: ShellStrings.text("Sends this device's logs to the developers and gives you a short code. You can add a sentence about what happened.")) {
+                                          note: ShellStrings.text("Sends this device's logs to the developers and gives you a short code. Tell us which game, what you did and what you saw.")) {
                                     Button(ShellStrings.text("Report…")) { report() }
                                         .buttonStyle(ShellButtonStyle(fills: true)).accessibilityIdentifier("shellSettings.report")
                                         .shellTarget("shs.report") { report() }

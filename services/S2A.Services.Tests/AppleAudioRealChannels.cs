@@ -72,25 +72,42 @@ namespace S2A.Services.Tests
 
             if (readOk)
             {
-                // ③ 后端上报 6 声道 ⇔ 设备真实声道数 ≥ 6：2 声道设备上报立体声（隐式 6→2 丢中置 / 环绕整段修掉），
-                //   真 5.1 设备照报 6（不降混）。换算不依赖本机设备，两声道数同源同断言
+                // ③ external 设备类型的上报：上报 6 声道 ⇔ 设备真实声道数 ≥ 6（2 声道设备上报立体声——隐式 6→2 丢中置 /
+                //   环绕整段修掉；真 5.1 设备照报 6 不降混）。换算不依赖本机设备，两声道数同源同断言。
+                //   builtin / headphones 的上报改看用户 VS 开关（设备类型 + 虚拟环绕单测 --apple-audio-device-types）：
+                //   缺省（builtin + VS 关）即使设备 ≥6 声道也按用户选择报 2（5.1 外接要显式选 external）
                 string oldCh2 = Environment.GetEnvironmentVariable("S2A_AUDIO_CH2");
                 string oldStereo = Environment.GetEnvironmentVariable("S2A_AUDIO_STEREO");
                 // S2A_AUDIO_OUT=sys 显式下混会照报 5.1（#189 后续）：这里测的是缺省上报，先隔离它
                 string oldOut = Environment.GetEnvironmentVariable("S2A_AUDIO_OUT");
+                string oldDevice = Environment.GetEnvironmentVariable("S2A_AUDIO_DEVICE");
+                string oldVsSpeakers = Environment.GetEnvironmentVariable("S2A_AUDIO_VS_SPEAKERS");
+                string oldVsHeadphones = Environment.GetEnvironmentVariable("S2A_AUDIO_VS_HEADPHONES");
                 try
                 {
                     Environment.SetEnvironmentVariable("S2A_AUDIO_CH2", null);
                     Environment.SetEnvironmentVariable("S2A_AUDIO_STEREO", null);
                     Environment.SetEnvironmentVariable("S2A_AUDIO_OUT", null);
+                    Environment.SetEnvironmentVariable("S2A_AUDIO_DEVICE", "external");
+                    Environment.SetEnvironmentVariable("S2A_AUDIO_VS_SPEAKERS", null);
+                    Environment.SetEnvironmentVariable("S2A_AUDIO_VS_HEADPHONES", null);
 
                     using AppleHardwareDeviceDriver driver = new();   // 平台例外：本用例只测 Apple 音频后端（#189），只在 macOS 上跑
                     bool supports6 = driver.SupportsChannelCount(6);
-                    Check("上报 6 声道 ⇔ 设备 ≥ 6 声道", supports6 == (deviceChannels >= 6),
+                    Check("external：上报 6 声道 ⇔ 设备 ≥ 6 声道", supports6 == (deviceChannels >= 6),
                         $"设备 {deviceChannels} 声道、SupportsChannelCount(6)={supports6}（期望 {deviceChannels >= 6}）");
                     Check("2 声道始终上报", driver.SupportsChannelCount(2));
 
-                    // ④ S2A_AUDIO_CH2=1 仍强制立体声（既有减法开关不受影响；显式下混也让位于它）
+                    // ④ 缺省（未显式选择）= 按设备真实声道自动判，与 external 同一支判据（评审 11-16 改缺省：
+                    //   保住 5.1 设备玩家的缺省直通）；本机默认输出 2 声道 → 不报 6
+                    Environment.SetEnvironmentVariable("S2A_AUDIO_DEVICE", null);
+                    using AppleHardwareDeviceDriver autoDriver = new();   // 平台例外：本用例只测 Apple 音频后端（#189），只在 macOS 上跑
+                    Check("缺省（未显式选择）按设备判：上报 6 ⇔ 设备 ≥ 6 声道",
+                        autoDriver.SupportsChannelCount(6) == (deviceChannels >= 6),
+                        $"设备 {deviceChannels} 声道（与 external 同一支判据，保住 5.1 缺省直通）");
+
+                    // ⑤ S2A_AUDIO_CH2=1 仍强制立体声（既有减法开关不受影响；显式下混也让位于它）
+                    Environment.SetEnvironmentVariable("S2A_AUDIO_DEVICE", "external");
                     Environment.SetEnvironmentVariable("S2A_AUDIO_CH2", "1");
                     Environment.SetEnvironmentVariable("S2A_AUDIO_OUT", "sys");
                     using AppleHardwareDeviceDriver forced = new();   // 平台例外：本用例只测 Apple 音频后端（#189），只在 macOS 上跑
@@ -102,6 +119,9 @@ namespace S2A.Services.Tests
                     Environment.SetEnvironmentVariable("S2A_AUDIO_CH2", oldCh2);
                     Environment.SetEnvironmentVariable("S2A_AUDIO_STEREO", oldStereo);
                     Environment.SetEnvironmentVariable("S2A_AUDIO_OUT", oldOut);
+                    Environment.SetEnvironmentVariable("S2A_AUDIO_DEVICE", oldDevice);
+                    Environment.SetEnvironmentVariable("S2A_AUDIO_VS_SPEAKERS", oldVsSpeakers);
+                    Environment.SetEnvironmentVariable("S2A_AUDIO_VS_HEADPHONES", oldVsHeadphones);
                 }
             }
 

@@ -61,6 +61,16 @@ public struct FeatureIntro: Equatable, Sendable {
     public init(id: String, badge: String, pages: [Page]) { self.id = id; self.badge = badge; self.pages = pages }
 }
 
+/// The game's saved moment (instant snapshot, 0.6.0): when it was saved and the picture of that moment. One per game.
+public struct SavedMoment: Equatable, Sendable {
+    public var savedAt: Date
+    /// The frame at the saved moment (thumb.png, else the full frame). Nil when the snapshot has no picture.
+    public var picture: Artwork?
+    /// The space it takes on this device, in bytes (what deleting it frees).
+    public var bytes: Int64
+    public init(savedAt: Date, picture: Artwork? = nil, bytes: Int64 = 0) { self.savedAt = savedAt; self.picture = picture; self.bytes = bytes }
+}
+
 public struct GameTile: Identifiable, Equatable, Sendable {
     public var id: String
     public var title: String
@@ -77,8 +87,10 @@ public struct GameTile: Identifiable, Equatable, Sendable {
     public var isNew: Bool
     /// S-grade enhancements are built into this game (community patches / cheats in its cpatch.tsv): the cover lights a gold S (v0.4.0).
     public var sgrade: Bool
+    /// A complete instant snapshot to go back to: the library lists it under "Continue from this moment". Nil: none.
+    public var moment: SavedMoment?
     public init(id: String, title: String, subtitle: String = "", banner: Artwork? = nil, icon: Artwork? = nil,
-                state: GameState = .playable, recentlyPlayed: String? = nil, isNew: Bool = false, sgrade: Bool = false) {
+                state: GameState = .playable, recentlyPlayed: String? = nil, isNew: Bool = false, sgrade: Bool = false, moment: SavedMoment? = nil) {
         self.id = id
         self.title = title
         self.subtitle = subtitle
@@ -88,6 +100,7 @@ public struct GameTile: Identifiable, Equatable, Sendable {
         self.recentlyPlayed = recentlyPlayed
         self.isNew = isNew
         self.sgrade = sgrade
+        self.moment = moment
     }
 }
 
@@ -308,6 +321,8 @@ public struct ShellActions {
     /// The version's "What's new" for iPhone. The host shows it once over the library (after the first-run guide) and
     /// the library's settings offer it again; nil: this version has none, so no settings row either.
     public var featureIntro: FeatureIntro? = nil
+    /// Deletes the game's saved moment and frees its space (the library asks the player first). Nil: no Delete item.
+    public var onDeleteSnapshot: ((_ gameID: String) -> Void)? = nil
     public init(onSelect: @escaping (String) -> Void = { _ in }, onPlay: @escaping (String) -> Void = { _ in },
                 onChange: @escaping (String, String, String) -> Void = { _, _, _ in },
                 onPickGameData: @escaping (String) -> Void = { _ in }, onUseAppData: ((String) -> Void)? = nil,
