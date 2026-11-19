@@ -3375,7 +3375,10 @@ static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
     { NSUInteger mx = MAX(d.width, d.textureType == MTLTextureType3D ? MAX(d.height, d.depth) : d.height), ml = 1; while (mx >>= 1) ml++;
       if (d.mipmapLevelCount > ml) d.mipmapLevelCount = ml; }
     d.storageMode = MTLStorageModePrivate;   // Render targets and assets both go in GPU private storage (lossless compression available)
-    d.usage = MTLTextureUsageShaderRead | (fmt_compressed(t->d.format) || packaged ? 0 : MTLTextureUsageRenderTarget)
+    // Render-target usage on every uncompressed texture, packaged ones too: a game may draw into storage it first filled from the CPU, and adding the usage later is a whole-texture
+    //   copy (tex_upgrade). Made without it, one Switch 2 session upgraded 30k-55k packaged textures, mostly R8 / R16F (#1634). On Apple GPUs the usage costs no memory
+    //   (allocatedSize and heap size equal with and without it across R8 / R16 / RG8 / RGBA8 / RGBA16F, 64x64 to 1920x1080, with and without mips, M5 Max)
+    d.usage = MTLTextureUsageShaderRead | (fmt_compressed(t->d.format) ? 0 : MTLTextureUsageRenderTarget)
             | (t->d.flags & NVN_TEXTURE_FLAGS_IMAGE ? MTLTextureUsageShaderWrite : 0)   // Image usage: shader-writable (compute kernels generating the 3D color lookup table, etc.
             | (bc_gpu_dec(t) ? MTLTextureUsageShaderWrite | MTLTextureUsagePixelFormatView : 0)   // no BC, decoded on the GPU: the kernel bcd writes it (an sRGB one through an RGBA8Unorm view)
             | (pf == MTLPixelFormatRGB9E5Float && !packaged ? MTLTextureUsagePixelFormatView : 0)   // RGB9E5 render targets written through R32UI views (04008E001F098000 packs its HDR color itself):
@@ -6315,7 +6318,7 @@ static int tex_widen(const tex_t *t, NSUInteger r, NSUInteger rh) {   // 1 = the
     d.arrayLength = base.arrayLength; d.mipmapLevelCount = base.mipmapLevelCount; d.sampleCount = base.sampleCount;
     d.storageMode = base.storageMode; d.cpuCacheMode = base.cpuCacheMode; d.hazardTrackingMode = base.hazardTrackingMode; d.resourceOptions = base.resourceOptions; d.usage = base.usage;
     __unsafe_unretained id po = tex_get(t->serial); NvPkg *pk = [po isKindOfClass:[NvPkg class]] ? po : nil;
-    if (pk) d.usage |= MTLTextureUsageRenderTarget;   // 打包贴图建时不带渲染目标用途（当附件时才补）：放宽的存储就是附件
+    if (pk) d.usage |= MTLTextureUsageRenderTarget;   // 放宽的存储就是附件（打包贴图建时已带，旧存储若是压缩格式以外缺它的也补上）
     id<MTLTexture> w = [g_dev newTextureWithDescriptor:d];
     if (!w) { RED_ONCE(112, "widen: render target ser=%llu %lu → %lu wide could not be created", (unsigned long long)t->serial, (unsigned long)base.width, (unsigned long)r); return 0; }
     res_add(w); tex_fill(w, wd_poison() != 0);
@@ -6524,7 +6527,7 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
     wd_widen_rts();   // S2Arm widen: this pass's targets the widen core widens get widened storage before they are attached (same reason: the copy may run here)
     rs_rts();   // S2Arm internal resolution: this pass's targets take their scale (all the same) before they are attached (nvn_rscale_ops.inc; the rescaling copies may run here)
     // The version of the attachment-range candidate is taken before capturing any attachment; if it changes during setup, there is no continuation.
-    // 颜色附件必须带渲染目标用途：打包贴图（NvPkg）建时不带（tex_new：只有放宽存储时才补），游戏却可能把同一存储当渲染目标画（11-09 #296 超级马力欧兄弟 惊奇：
+    // 颜色附件必须带渲染目标用途：打包贴图（NvPkg）原先建时不带（11-18 起 tex_desc 建时就带，这里只兜底别处建出的缺它的存储），游戏却可能把同一存储当渲染目标画（11-09 #296 超级马力欧兄弟 惊奇：
     //   1920x1080 主画面与 960x540 中间目标都登记成打包贴图，usage 只有 ShaderRead）。往没有 RenderTarget 用途的贴图里渲染是 Metal 的未定义行为（调试层报
     //   「colorAttachment has usage which doesn't specify MTLTextureUsageRenderTarget」），Apple GPU 上存下的是分块级的不确定内容：画面散落 16×16 黑块、每次不同。
     //   开遍前就地升级（tex_upgrade 保留全部像素、换掉持有者的贴图）；在关掉 blit 编码器与取附件版本之前做，升级的拷贝排在这一遍之前
@@ -8353,8 +8356,8 @@ static id<MTLTexture> tex_alpha_red(int tid, id<MTLTexture> t, uint64_t *rid) {
     if (pf != MTLPixelFormatR8Unorm && pf != MTLPixelFormatR16Unorm && pf != MTLPixelFormatR16Float && pf != MTLPixelFormatR32Float) return nil;
     if (sw.red != MTLTextureSwizzleRed || sw.green != MTLTextureSwizzleZero || sw.blue != MTLTextureSwizzleZero || sw.alpha != MTLTextureSwizzleOne || tid < 0 || tid >= g_ntreg) return nil;
     id<MTLTexture> base = t.parentTexture ? t.parentTexture : t;
-    if (!(base.usage & MTLTextureUsageRenderTarget)) return nil;   // packaged and CPU-written textures are built without render-target usage
     treg_t *r = &g_treg[tid];
+    if ([tex_get(r->t.serial) isKindOfClass:[NvPkg class]] || !(base.usage & MTLTextureUsageRenderTarget)) return nil;   // packaged (CPU-written) textures are not render targets here, though they carry the usage (tex_desc)
     if (r->ar && r->ar_of == (__bridge void *)t) { *rid = r->ar_rid; return (__bridge id<MTLTexture>)r->ar; }
     treg_drop_ar(r);
     NSUInteger l0 = t.parentTexture ? t.parentRelativeLevel : 0, s0 = t.parentTexture ? t.parentRelativeSlice : 0;
