@@ -1174,6 +1174,12 @@ uint64_t mtl_host_latch(void) { return 0; }
 void mtl_host_apply(uint64_t value) { (void)value; }
 void mtl_set_depth_zero(int on) { g_depth_zero = on; }
 void mtl_set_origin_lower_left(int on) { g_origin_lower_left = on; }
+// 上屏翻转按窗口建时的原点（hle_nvn.c QueuePresentTexture → nvn_be_set_present_lower_left；-1 = 没有窗口说过）。旧层每笔绘制按当前原点定朝向、上屏不翻；
+//   窗口建时的原点与画这帧时的当前原点不同（先建窗口、后改原点的游戏，土豆兄弟整幅上下颠倒）时，上屏要上下翻一次（nvn_vk_swapchain.c 问 mtl_vk_present_flip）。
+//   两者相同（常规情况）照旧不翻。新回放层 nvk 在 graphics/nvn/replay/rp_entry.c 里有同名入口，不走这里
+static int g_present_lower_left = -1;
+void mtl_set_present_lower_left(int on) { g_present_lower_left = on; }
+int mtl_vk_present_flip(void) { return g_present_lower_left >= 0 && (g_present_lower_left != 0) != (g_origin_lower_left != 0); }
 void mtl_xv_window_tex(uint64_t serial) { (void)serial; }
 void mtl_set_frame(uint64_t f) { g_frame = f; g_frame_set = 1; }
 void mtl_ub_present(double iv_ms) { (void)iv_ms; }
