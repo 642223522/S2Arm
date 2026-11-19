@@ -2542,6 +2542,7 @@ class PlumeMacPhone(MacPhone):
         super().__init__(c, team=dict(id=acct["team"], name=acct["teamName"] or acct["account"], free=True), dev=dev, udid=udid)
 
     install = WinPhone.install                       # plumesign 签名装机（含 9401 旧写法、设备已登记、小组件去掉重来）
+    say = WinPhone.say                               # install 里交给 plumesign 的进度回调（没借它：Mac 免费账号装机一调就 AttributeError）
     bundle_for_signing = WinPhone.bundle_for_signing
 
     def install_devcert(self, ipa, steps):   # 证书签名用户不走这个类（mac_plume 已排除）
