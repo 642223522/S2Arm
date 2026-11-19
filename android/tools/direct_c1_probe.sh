@@ -32,7 +32,7 @@ direct="$repo/android/native/direct"
     "$repo/android/tests/direct_texture_facts_test.c" "$direct/texture_facts.c"
 "$cc" -std=c11 -O2 -Wall -Wextra -Werror -pthread -I "$repo/android/native" \
     -o "$out/worker" "$repo/android/tests/direct_compile_worker_test.c" "$direct/compile_worker.c"
-"$cc" -std=c11 -O2 -Wall -Wextra -Werror -pthread -I "$repo/android/native" \
+"$cc" -std=c11 -O2 -Wall -Wextra -Werror -pthread -DS2A_SOURCE_HARD_BYTES=100663296u -I "$repo/android/native" \
     -o "$out/sources" "$repo/android/tests/direct_source_store_test.c" \
     "$direct/source_store.c" "$direct/sha256.c"
 # F4.3/P1 生产接缝：Draw 快照 → 编译事实/规范身份/P1 备忘键（与宿主同一份实现）

@@ -217,6 +217,11 @@ def runtime_env(c, game, runtime, input_ok=True):
         if not isinstance(controller_relay, str) or not controller_relay or "\0" in controller_relay:
             raise Failure("Switch 2 Pro 本机通道设置无效。")
         env["S2A_NS2_SOCKET"] = controller_relay
+    xbox_relay = c.r.get("xboxGipRelaySocket")
+    if xbox_relay is not None:
+        if not isinstance(xbox_relay, str) or not xbox_relay or "\0" in xbox_relay:
+            raise Failure("Xbox GIP 本机通道设置无效。")
+        env["S2A_XBOX_GIP_SOCKET"] = xbox_relay
     # Freeze exactly what the pre-launch card showed. Never rewrite another run's snapshot.
     # input_ok = False：宿主不认键位映射（launch 判的）→ 这局不带映射、用默认键位（v0.3.1：认不出照常玩，不让玩家先去重新打包）
     config = c.r.get("launchInputConfig") if input_ok else None

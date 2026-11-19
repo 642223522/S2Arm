@@ -1,7 +1,9 @@
 import XCTest
 import AppKit
+import Darwin
 import GameController
 import CoreBluetooth
+import LauncherPadBridge
 @testable import NX2AppleUI
 
 // 手柄弹窗标题照连接程序报的型号写（#520）。期望按 ns2_kind 数值手写：1 Pro、2 Joy-Con 左、3 右、4 左右一对；
@@ -341,6 +343,90 @@ final class NS2LauncherControllerTests: XCTestCase {
         XCTAssertTrue(systems.pads.contains { $0.name == "Bare pad (refresh)" })
         systems.refresh(connected: nil)
         XCTAssertFalse(systems.pads.contains { $0.name == "Bare pad (refresh)" }, "通知没带上它时照枚举快照，不残留")
+    }
+
+    func testXboxGipRelaySurvivesSequentialGameHandoff() throws {
+        // 启动器常驻独占 Xbox GIP：不碰真实 USB，用 server-only 模式验证切游戏（客户端 A 断开 → 客户端 B 连入）
+        // 不会丢在线快照，第二局一连上立刻收到在线状态与新按键。
+        let sockPath = "/tmp/s2arm-xbox-relay-test-\(getpid()).sock"
+        s2a_xbox_gip_relay_stop()   // 同进程里别处起过的中继先停掉（只能有一个），否则这里的路径不会被监听
+        XCTAssertEqual(s2a_xbox_gip_relay_start_ex(sockPath, 0, nil, nil), 0)
+        defer { s2a_xbox_gip_relay_stop() }
+
+        func makePacket(flags: UInt16, buttons: UInt32, lx: Int16) -> Data {
+            var d = Data(count: 128)
+            d.withUnsafeMutableBytes { raw in
+                let p = raw.baseAddress!
+                p.storeBytes(of: UInt32(0x53584258), toByteOffset: 0, as: UInt32.self)
+                p.storeBytes(of: UInt16(1), toByteOffset: 4, as: UInt16.self)
+                p.storeBytes(of: flags, toByteOffset: 6, as: UInt16.self)
+                p.storeBytes(of: UInt8(0), toByteOffset: 8, as: UInt8.self)
+                p.storeBytes(of: UInt32(0x045E), toByteOffset: 12, as: UInt32.self)
+                p.storeBytes(of: UInt32(0x02D1), toByteOffset: 16, as: UInt32.self)
+                p.storeBytes(of: buttons, toByteOffset: 20, as: UInt32.self)
+                p.storeBytes(of: lx, toByteOffset: 24, as: Int16.self)
+                let name = Array("Xbox Test".utf8)
+                for (i, b) in name.enumerated() { p.storeBytes(of: b, toByteOffset: 32 + i, as: UInt8.self) }
+            }
+            return d
+        }
+        func connectClient(_ path: String) -> Int32 {
+            let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+            XCTAssertGreaterThanOrEqual(fd, 0)
+            var addr = sockaddr_un()
+            addr.sun_family = sa_family_t(AF_UNIX)
+            withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+                ptr.withMemoryRebound(to: CChar.self, capacity: 104) { dst in
+                    _ = path.withCString { strncpy(dst, $0, 103) }
+                }
+            }
+            var tv = timeval(tv_sec: 2, tv_usec: 0)
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+            let rc = withUnsafePointer(to: &addr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                }
+            }
+            XCTAssertEqual(rc, 0)
+            return fd
+        }
+        func readPacket(_ fd: Int32) -> Data {
+            var buf = [UInt8](repeating: 0, count: 128)
+            var got = 0
+            while got < 128 {
+                let n = Darwin.read(fd, &buf[got], 128 - got)
+                XCTAssertGreaterThan(n, 0, "expected 128-byte relay packet")
+                if n <= 0 { break }
+                got += n
+            }
+            return Data(buf)
+        }
+
+        // 先在线挂一只手柄（模拟启动器已独占接管）
+        let initial = makePacket(flags: 1, buttons: 0, lx: 0)
+        XCTAssertEqual(initial.withUnsafeBytes { s2a_xbox_gip_relay_publish_for_test($0.baseAddress, $0.count) }, 1)
+
+        // 第一局游戏连入：立刻收到在线快照 + 实时按键
+        let gameA = connectClient(sockPath)
+        let snapA = readPacket(gameA)
+        XCTAssertEqual(snapA.withUnsafeBytes { $0.load(fromByteOffset: 6, as: UInt16.self) }, 1)
+        let pressA = makePacket(flags: 1, buttons: 0x1, lx: 16000)
+        XCTAssertEqual(pressA.withUnsafeBytes { s2a_xbox_gip_relay_publish_for_test($0.baseAddress, $0.count) }, 1)
+        let recvA = readPacket(gameA)
+        XCTAssertEqual(recvA.withUnsafeBytes { $0.load(fromByteOffset: 20, as: UInt32.self) }, 0x1)
+        XCTAssertEqual(recvA.withUnsafeBytes { $0.load(fromByteOffset: 24, as: Int16.self) }, 16000)
+        close(gameA)   // 第一局退出
+
+        // 第二局游戏连入：中继未释放手柄，立刻收到在线快照 + 新的按键
+        let gameB = connectClient(sockPath)
+        let snapB = readPacket(gameB)
+        XCTAssertEqual(snapB.withUnsafeBytes { $0.load(fromByteOffset: 6, as: UInt16.self) }, 1)
+        let pressB = makePacket(flags: 1, buttons: 0x2, lx: -16000)
+        XCTAssertEqual(pressB.withUnsafeBytes { s2a_xbox_gip_relay_publish_for_test($0.baseAddress, $0.count) }, 1)
+        let recvB = readPacket(gameB)
+        XCTAssertEqual(recvB.withUnsafeBytes { $0.load(fromByteOffset: 20, as: UInt32.self) }, 0x2)
+        XCTAssertEqual(recvB.withUnsafeBytes { $0.load(fromByteOffset: 24, as: Int16.self) }, -16000)
+        close(gameB)
     }
 }
 

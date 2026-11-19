@@ -44,6 +44,11 @@ int main(void) {
             expect("缺省口径：只有被禁用的我方 present display 表，不强制退回游戏 interval", 0, s2a_fps_present_at(1000000000ull));
             float f2; memcpy(&f2, img + 0x4000 + 2041 * 8, 4); expect("缺省口径：slot 2041 写关时值 100（×1000）", 100000, (long)(f2 * 1000));
             memcpy(&f2, img + 0x4000 + 2040 * 8, 4); expect("缺省口径：速度槽 1.0（×100）", 100, lroundf(f2 * 100));
+            // 11-18 #1607：关着时速度槽按真实帧间隔写（旧包改指令已去掉游戏的 30 帧下限、关着也能跑 60）。期望手算：16.7 ms → 0.5、33.3 ms → 1.0；
+            //   钩子返回值不变（0）。旧实现关时写死 1.0 → 16.7 ms 那项红
+            expect("缺省口径：16.7 ms 一帧时钩子仍返回 0", 0, s2a_fps_present_at(1000000000ull + 16666667));
+            memcpy(&f2, img + 0x4000 + 2040 * 8, 4); expect("缺省口径：游戏跑到 60（16.7 ms）→ 速度槽 0.5（×100）", 50, lroundf(f2 * 100));
+            s2a_fps_present_at(1000000000ull + 50000000); memcpy(&f2, img + 0x4000 + 2040 * 8, 4); expect("缺省口径：游戏自己限 30（33.3 ms）→ 速度槽 1.0（×100）", 100, lroundf(f2 * 100));
             { int s2a_fps_real_source(void); expect("缺省口径：我方帧率表不算真帧率来源", 0, s2a_fps_real_source()); }
             _exit(fails);
         }
@@ -192,7 +197,7 @@ int main(void) {
     memcpy(&fv, img + 0x4000 + 2041 * 8, 4); expect("关：slot 2041 写关时值 100（×1000）", 100000, (long)(fv * 1000));
     memcpy(&fv, img + 0x4000 + 2040 * 8, 4); expect("关：速度槽固定 1.0（×100）", 100, lroundf(fv * 100));
     expect("关：钩子返回 1（退回游戏间隔）", 1, s2a_fps_present_at(t += 16666667));
-    s2a_fps_present_at(t += 16666667); memcpy(&fv, img + 0x4000 + 2040 * 8, 4); expect("关：钩子不改速度槽，仍 1.0（×100）", 100, lroundf(fv * 100));
+    s2a_fps_present_at(t += 16666667); memcpy(&fv, img + 0x4000 + 2040 * 8, 4); expect("关：速度槽跟真实帧间隔（16.7 ms → 0.5，×100；11-18 #1607 起关时也按实测写，原先写死 1.0）", 50, lroundf(fv * 100));
     s2a_fps_set_enabled(1); usleep(250000);
     expect("再开：通知 cpatch 跟随（第 3 次）、值 1", 31, g_follow_n * 10 + g_follow_last);
     memcpy(&v, img + 0x1000, 4); expect("再开：main+0x1000 回 60", 60, v);

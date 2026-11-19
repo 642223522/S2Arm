@@ -76,10 +76,17 @@ struct UpdatePopupView: View {
                 Text(t("update.error." + code)).font(LauncherTheme.TypeStyle.detail).foregroundStyle(LauncherPalette.danger)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if let gate = model.updateGate {   // 草图④：点了「现在更新并重启」但有局 / 任务在跑，先拦下、说清，弹窗不关
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(t(gate)).font(.manrope(14, .bold))
-                    Text(t(gate + ".body")).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if model.updateGate != nil {   // 点了「现在更新并重启」但有局 / 任务在跑：说清会打断什么，玩家选「仍然重启」照样换（11-18 维护者），默认焦点在「取消」
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(t("update.gate.confirm.title")).font(.manrope(14, .bold))
+                    Text(model.updateRestartImpactText(t)).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 10) {
+                        Spacer()
+                        Button(t("update.gate.confirm.cancel")) { model.updateGate = nil }.controllerButtonStyle(LauncherSecondaryButtonStyle())
+                            .keyboardShortcut(.defaultAction).accessibilityIdentifier("update.gate.cancel").controllerID("update.gate.cancel")
+                        Button(t("update.gate.confirm.restart")) { model.restartToUpdate(confirmed: true) }.controllerButtonStyle(LauncherSecondaryButtonStyle())
+                            .accessibilityIdentifier("update.gate.restart").controllerID("update.gate.restart")
+                    }
                 }
                 .padding(14).frame(maxWidth: .infinity, alignment: .leading)
                 .background(LauncherPalette.building.opacity(0.14), in: RoundedRectangle(cornerRadius: 12))

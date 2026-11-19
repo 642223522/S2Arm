@@ -7,6 +7,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 #include "../../../macos/ns2_relay.h"
+#include "../../../macos/xbox_gip_relay.h"
 #include "../../../ios/input_config.h"
 #import "../../../macos/front_mac.m"
 #import "../../../macos/input_guide.m"
@@ -1342,6 +1343,66 @@ int main(int argc, const char **argv) {
         expect(gip_ax[0] == 16384 && gip_ax[1] == -16384 && gip_ax[2] == 0 && gip_ax[3] == 0, "Xbox GIP parse axes: lx, ly, rx, ry");
         uint8_t invalid_gip[18]; memcpy(invalid_gip, gip_rep, sizeof invalid_gip); invalid_gip[0] = 0x07;
         expect(s2a_gip_parse(invalid_gip, sizeof invalid_gip, &gip_bt, gip_ax) == 0, "Xbox GIP parse: non-0x20 report returns 0");
+
+        // Xbox GIP 启动器中继协议与宿主接收端验证（不碰物理 USB）
+        s2a_mac_hid_pad_clear_xbox_relay();
+        s2a_xbox_gip_relay_packet rp;
+        memset(&rp, 0, sizeof rp);
+        rp.magic = S2A_XBOX_GIP_RELAY_MAGIC;
+        rp.version = S2A_XBOX_GIP_RELAY_VERSION;
+        rp.flags = S2A_XBOX_GIP_FLAG_CONNECTED;
+        rp.slot = 0;
+        rp.vid = 0x045E;
+        rp.pid = 0x02D1;
+        strlcpy(rp.name, "Xbox Relay Test", sizeof rp.name);
+        expect(s2a_xbox_gip_relay_packet_valid(&rp) == 1, "Xbox GIP relay: valid packet");
+        rp.magic = 0;
+        expect(s2a_xbox_gip_relay_packet_valid(&rp) == 0 && s2a_mac_hid_pad_apply_xbox_relay(&rp, sizeof rp) == 0, "Xbox GIP relay: bad magic rejected");
+        rp.magic = S2A_XBOX_GIP_RELAY_MAGIC;
+        rp.slot = S2A_XBOX_GIP_RELAY_MAX;
+        expect(s2a_xbox_gip_relay_packet_valid(&rp) == 0 && s2a_mac_hid_pad_apply_xbox_relay(&rp, sizeof rp) == 0, "Xbox GIP relay: out-of-range slot rejected");
+        rp.slot = 0;
+
+        // 刚连上未按键（buttons == 0）保持 joined=0，不占玩家位
+        expect(s2a_mac_hid_pad_apply_xbox_relay(&rp, sizeof rp) == 1, "Xbox GIP relay: apply idle connected packet");
+        s2a_hid_pad hp_out[S2A_HID_PAD_MAX];
+        int hp_n = s2a_mac_hid_pad_read(hp_out);
+        int found_relay = 0;
+        for (int i = 0; i < hp_n; i++) if (!strcmp(hp_out[i].name, "Xbox Relay Test")) found_relay = 1;
+        expect(!found_relay, "Xbox GIP relay: idle controller does not join before first button press");
+
+        // 按下 A 键并推摇杆 → 立即加入玩家位并读到按键 / 摇杆
+        rp.buttons = (1u << 0) | (1u << 6);
+        rp.ax[0] = 12345; rp.ax[1] = -23456; rp.ax[2] = 1000; rp.ax[3] = -1000;
+        expect(s2a_mac_hid_pad_apply_xbox_relay(&rp, sizeof rp) == 1, "Xbox GIP relay: apply active button packet");
+        hp_n = s2a_mac_hid_pad_read(hp_out);
+        found_relay = 0;
+        for (int i = 0; i < hp_n; i++) {
+            if (!strcmp(hp_out[i].name, "Xbox Relay Test")) {
+                found_relay = 1;
+                expect(hp_out[i].buttons == ((1u << 0) | (1u << 6)) && hp_out[i].lx == 12345 && hp_out[i].ly == -23456 && hp_out[i].vid == 0x045E,
+                       "Xbox GIP relay: read returns relayed buttons, sticks and vid");
+            }
+        }
+        expect(found_relay == 1, "Xbox GIP relay: joined controller listed in hid_pad_read");
+
+        // 模拟两局游戏依次通过 socketpair 读取并在断开时自动清槽
+        s2a_mac_hid_pad_clear_xbox_relay();
+        for (int session = 0; session < 2; session++) {
+            int sp[2] = {-1, -1};
+            expect(socketpair(AF_UNIX, SOCK_STREAM, 0, sp) == 0, "Xbox GIP relay: socketpair");
+            rp.flags = S2A_XBOX_GIP_FLAG_CONNECTED;
+            rp.buttons = (session == 0) ? (1u << 0) : (1u << 1);
+            rp.ax[0] = (int16_t)(session == 0 ? 5000 : -5000);
+            expect(s2a_xbox_gip_write_all(sp[0], &rp, sizeof rp) == 0, "Xbox GIP relay: write packet to game fd");
+            close(sp[0]);
+            expect(s2a_mac_hid_pad_read_xbox_relay_fd(sp[1]) == 0, "Xbox GIP relay: read_fd drains and clears on EOF");
+            close(sp[1]);
+            hp_n = s2a_mac_hid_pad_read(hp_out);
+            found_relay = 0;
+            for (int i = 0; i < hp_n; i++) if (!strcmp(hp_out[i].name, "Xbox Relay Test")) found_relay = 1;
+            expect(!found_relay, "Xbox GIP relay: EOF clears relay slot cleanly");
+        }
     }
     char relayPath[96];
     snprintf(relayPath, sizeof relayPath, "/tmp/s2arm-motion-%d.sock", getpid());
