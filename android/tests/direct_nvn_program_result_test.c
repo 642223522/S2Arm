@@ -195,6 +195,41 @@ int main(void) {
         nvn_vk_program_free(&p);
     }
 
+    // 整池数组（安卓整池 N=0）：v2 结果的 pool = "texture" / "sampler"，count = 池长，没有任何槽位来源。
+    //   期望（手算）：贴图池 count 64 → pool 1、count 64、tex_slot −1；采样器池 count 8 → pool 2、count 8；池长可以超 FD_MAX_ARRAY_ELEMENTS（4096）
+    {
+        CHECK(parse_v2("{\"stage\":\"fs\",\"kind\":\"texture\",\"source\":\"texture\",\"set\":2,\"binding\":0,\"count\":64,\"pool\":\"texture\"},"
+                       "{\"stage\":\"fs\",\"kind\":\"texture\",\"source\":\"texture\",\"set\":2,\"binding\":64,\"count\":8,\"pool\":\"sampler\"},"
+                       "{\"stage\":\"vs\",\"kind\":\"texture\",\"source\":\"texture\",\"set\":2,\"binding\":72,\"count\":4096,\"pool\":\"texture\"}", &p, why, sizeof why) == 0 &&
+              p.binding_count == 3 && p.bindings[0].pool == 1 && p.bindings[0].count == 64 && p.bindings[0].tex_slot == -1 && p.bindings[0].stage_idx == 1 &&
+              p.bindings[1].pool == 2 && p.bindings[1].count == 8 && p.bindings[1].samp_slot == -1 &&
+              p.bindings[2].pool == 1 && p.bindings[2].count == 4096 && p.bindings[2].stage_idx == 0, "v2 pool arrays parse: texture 64 / sampler 8 / texture 4096");
+        nvn_vk_program_free(&p);
+        static const char *const pool_bad[] = {
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":64,\"pool\":\"image\"}",                      // 不认识的池
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":64,\"pool\":1}",                                // 不是字符串
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":0,\"count\":64,\"pool\":\"texture\"}",          // 同时带 slot
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"samp_slot\":3,\"count\":64,\"pool\":\"texture\"}",     // 同时带 samp_slot
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"constSampler\":3,\"count\":64,\"pool\":\"sampler\"}",  // 同时带 constSampler
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":64,\"pool\":\"texture\",\"uboSlot\":1,\"uboOffset\":0}", // 同时带 UBO 句柄
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":1,\"pool\":\"texture\"}",                       // 池长 < 2
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":65535,\"pool\":\"texture\"}",                   // 池长 ≥ 0xffff
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"pool\":\"texture\"}",                                    // 没有 count
+            "{\"stage\":\"fs\",\"kind\":\"image\",\"set\":3,\"binding\":0,\"count\":64,\"pool\":\"texture\"}",                        // 不是贴图
+            "{\"stage\":\"cs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":64,\"pool\":\"texture\"}",                      // 不是图形阶段
+        };
+        for (unsigned i = 0; i < sizeof pool_bad / sizeof pool_bad[0]; ++i) {
+            why[0] = 0;
+            char what[80]; snprintf(what, sizeof what, "pool array negative %u rejected by v2", i);
+            CHECK(parse_v2(pool_bad[i], &p, why, sizeof why) != 0, what);
+            nvn_vk_program_free(&p);
+        }
+        why[0] = 0;
+        CHECK(parse_json("{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":64,\"pool\":\"texture\"}", &p, why, sizeof why) != 0,
+              "pool array in a v1 result is rejected");
+        nvn_vk_program_free(&p);
+    }
+
     // #999 / #1189：现编结果的平铺写法 uboSlot（cbuf − 3）+ uboOffset（句柄字字节偏移），没有 slot。
     //   组合句柄一个字：贴图号低 20 位、采样器号高 12 位 → 贴图与采样器都取同一个字（FD_SAMP_UBO，采样器字 sid=0）。
     for (int v = 1; v <= 2; ++v) {
