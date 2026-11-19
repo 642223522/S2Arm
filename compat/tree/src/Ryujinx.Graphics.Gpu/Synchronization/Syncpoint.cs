@@ -107,6 +107,16 @@ namespace Ryujinx.Graphics.Gpu.Synchronization
         }
 
         /// <summary>
+        /// S2A：即时存档恢复把值直接设到 value（只往上抬）：先设到 value - 1 再走一次 Increment，到值的等待照常回调
+        /// </summary>
+        public void S2ARaiseTo(uint value)
+        {
+            if (value == 0 || Value >= value) return;
+            Interlocked.Exchange(ref _storedValue, (int)(value - 1));
+            Increment();
+        }
+
+        /// <summary>
         /// Increment the syncpoint
         /// </summary>
         /// <returns>The incremented value of the syncpoint</returns>

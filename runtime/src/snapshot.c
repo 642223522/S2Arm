@@ -886,8 +886,8 @@ static int load_mem(const char *dir, uint64_t *raw_out) {
 // 起好服务层之后、本该起游戏主线程的位置调：成功回 0（游戏线程已按快照续跑）；失败回 -1（调用方当场退出：此时还没有游戏线程在跑、没写过存档目录）
 int nvn_snap_redump(const char *dir) __attribute__((weak_import));   // 诊断：恢复后 5 秒重存一遍显卡内容，和快照逐张对比（S2A_SNAP_REDUMP=1）
 static void *grab_thread(void *arg) {
-    const char *d = arg; static const int at[3] = {1, 5, 20}; int prev = 0;
-    for (int i = 0; i < 3; i++) { sleep((unsigned)(at[i] - prev)); prev = at[i]; char g[2200]; snprintf(g, sizeof g, "%s/b_after_%02ds.png", d, at[i]); if (nvn_snap_grab) nvn_snap_grab(g);
+    const char *d = arg; static const int at[4] = {1, 5, 20, 60}; int prev = 0;   // 60：「恢复后一分钟画面正常」的验收看这张
+    for (int i = 0; i < 4; i++) { sleep((unsigned)(at[i] - prev)); prev = at[i]; char g[2200]; snprintf(g, sizeof g, "%s/b_after_%02ds.png", d, at[i]); if (nvn_snap_grab) nvn_snap_grab(g);
         if (at[i] == 5 && getenv("S2A_SNAP_REDUMP") && nvn_snap_redump) nvn_snap_redump(d); }
     LOG("即时存档恢复：验证截图已存（%s/b_after_*.png）", d); return NULL;
 }
