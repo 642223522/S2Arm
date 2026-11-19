@@ -5,22 +5,12 @@ import AppKit
 import Foundation
 import Sparkle
 
-/// 模型换版用到的那几样（SparkleUpdate 实现；单测替身记下「真的装了」）
-@MainActor protocol UpdateInstalling: AnyObject {
-    var readyToInstall: Bool { get }
-    var foundVersion: String? { get }
-    func checkAndDownload()
-    func installNow()
-    func cancelOrSkipReadyUpdate()
-}
-
-@MainActor final class SparkleUpdate: NSObject, SPUUserDriver, SPUUpdaterDelegate, UpdateInstalling {
+@MainActor final class SparkleUpdate: NSObject, SPUUserDriver, SPUUpdaterDelegate, LauncherUpdateDriver {
     weak var model: S2ArmLauncherModel?
     private(set) var updater: SPUUpdater!
     private var expected: UInt64 = 0, received: UInt64 = 0
     /// 下载解开好、等玩家点「现在更新并重启」时 Sparkle 给的回复
     private var installReply: ((SPUUserUpdateChoice) -> Void)?
-    private var downloadCancel: (() -> Void)?
     private(set) var foundVersion: String?
 
     init(model: S2ArmLauncherModel) {
@@ -35,9 +25,21 @@ import Sparkle
         ProcessInfo.processInfo.environment["S2A_UPDATE_FEED"].flatMap { $0.isEmpty ? nil : $0 }
     }
 
-    /// 玩家点了「现在更新」才下载（S2ArmLauncherModel.restartToUpdate）：Sparkle 下好解开的新版在 App 退出时一定会装上，不能先下
-    func checkAndDownload() {
-        guard updater.canCheckForUpdates else { return }
+    func check(current: String, fresh: Bool) async -> [String: Any]? {
+        await model?.provider.client.check(current: current, fresh: fresh)
+    }
+
+    var downloadBytes: (received: UInt64, expected: UInt64) { (received, expected) }
+
+    func startDownload() {
+        guard updater.canCheckForUpdates else {
+            log("Sparkle 当前无法启动下载")
+            model?.updateState = .failed("update_failed")
+            return
+        }
+        received = 0
+        expected = 0
+        foundVersion = nil
         updater.checkForUpdates()
     }
 
@@ -51,18 +53,6 @@ import Sparkle
         QuitAfterSheets.run(terminate: { reply(.install) })
     }
 
-    /// 跳过此版本时取消挂起的下载或已就绪的安装回复，防止 App 退出时自动安装已跳过的版本
-    func cancelOrSkipReadyUpdate() {
-        if let cancel = downloadCancel {
-            downloadCancel = nil
-            cancel()
-        }
-        if let reply = installReply {
-            installReply = nil
-            reply(.skip)
-        }
-    }
-
     // MARK: SPUUserDriver
 
     func show(_ request: SPUUpdatePermissionRequest, reply: @escaping (SUUpdatePermissionResponse) -> Void) {
@@ -73,7 +63,11 @@ import Sparkle
     func showUpdateFound(with appcastItem: SUAppcastItem, state: SPUUserUpdateState, reply: @escaping (SPUUserUpdateChoice) -> Void) {
         foundVersion = appcastItem.displayVersionString
         log("发现新版 \(appcastItem.displayVersionString)（构建号 \(appcastItem.versionString)），开始下载")
-        if state.stage == .installing { model?.updateState = .ready; installReply = reply; return }
+        model?.updateDownloadFound(version: appcastItem.displayVersionString)
+        if state.stage == .installing {
+            showReady(toInstallAndRelaunch: reply)
+            return
+        }
         reply(.install)   // 下载：真正换版仍等玩家点
     }
     func showUpdateReleaseNotes(with downloadData: SPUDownloadData) {}
@@ -93,25 +87,23 @@ import Sparkle
         }
         log("更新失败（Sparkle \(ns.domain) \(ns.code)）：\(ns.localizedDescription)\(ns.localizedFailureReason.map { "；" + $0 } ?? "")\(chain)")
         model?.updateFailure = ns.localizedDescription
-        model?.updateState = .failed("update_failed")
+        model?.updateRestarting = false
+        model?.updateState = .failed(Self.updateErrorCode(ns, fetchingAppcast: foundVersion == nil))
         installReply = nil
         acknowledgement()
     }
-    func showDownloadInitiated(cancellation: @escaping () -> Void) { expected = 0; received = 0; downloadCancel = cancellation; model?.updateState = .working("update.downloading", 0) }
+    func showDownloadInitiated(cancellation: @escaping () -> Void) { expected = 0; received = 0; model?.updateState = .working("update.downloading", nil) }
     func showDownloadDidReceiveExpectedContentLength(_ expectedContentLength: UInt64) { expected = expectedContentLength }
     func showDownloadDidReceiveData(ofLength length: UInt64) {
         received += length
         model?.updateState = .working("update.downloading", expected > 0 ? Int(min(received, expected) * 100 / expected) : nil)
     }
-    func showDownloadDidStartExtractingUpdate() { downloadCancel = nil; model?.updateState = .working("update.verifying", nil) }
-    func showExtractionReceivedProgress(_ progress: Double) { model?.updateState = .working("update.unpacking", Int(progress * 100)) }
+    func showDownloadDidStartExtractingUpdate() { model?.updateState = .working("update.verifying", nil) }
+    func showExtractionReceivedProgress(_ progress: Double) { model?.updateState = .working("update.unpacking", Int(min(max(progress, 0), 1) * 100)) }
     func showReady(toInstallAndRelaunch reply: @escaping (SPUUserUpdateChoice) -> Void) {
         log("新版 \(foundVersion ?? "?") 已下载并验签")
-        downloadCancel = nil
         installReply = reply
-        model?.updateState = .ready
-        if model?.installWhenReady == true { model?.restartToUpdate() }   // 玩家点「现在更新」时还没下：下好接着换
-        else { model?.onAutoDownloadReady() }
+        model?.updateDidBecomeReady()
     }
     func showInstallingUpdate(withApplicationTerminated applicationTerminated: Bool, retryTerminatingApplication: @escaping () -> Void) {
         log("Sparkle 正在替换（App 已退出：\(applicationTerminated)）")
@@ -126,14 +118,63 @@ import Sparkle
         if case .working = model?.updateState { model?.updateState = .idle }
     }
 
-    /// 每一步记进 <私有目录>/logs/update.log（诊断包会收）：玩家反馈「更新没反应」时靠它定位
+    nonisolated static func updateErrorCode(_ error: NSError, fetchingAppcast: Bool = false) -> String {
+        var chain = [error]
+        for _ in 0..<4 {
+            guard let underlying = chain.last?.userInfo[NSUnderlyingErrorKey] as? NSError else { break }
+            chain.append(underlying)
+        }
+        if chain.contains(where: {
+            ($0.domain == NSPOSIXErrorDomain && $0.code == Int(ENOSPC))
+                || ($0.domain == NSCocoaErrorDomain && $0.code == NSFileWriteOutOfSpaceError)
+        }) { return "update_disk_full" }
+        if chain.contains(where: {
+            ($0.domain == NSPOSIXErrorDomain && [EACCES, EPERM, EROFS].map(Int.init).contains($0.code))
+                || ($0.domain == NSCocoaErrorDomain && $0.code == NSFileWriteNoPermissionError)
+        }) { return "update_no_permission" }
+
+        let isSparkle = error.domain == SUSparkleErrorDomain
+        let sparkle = isSparkle ? OSStatus(exactly: error.code).flatMap(SUError.init(rawValue:)) : nil
+        let isAppcast = fetchingAppcast || sparkle == .appcastError || sparkle == .appcastParseError
+        for cause in chain {
+            let statuses = cause.userInfo.values.compactMap { ($0 as? HTTPURLResponse)?.statusCode }
+            let status = httpStatusFromSparkle(cause)
+            if (statuses + [status].compactMap { $0 }).contains(where: { $0 == 404 || (500...599).contains($0) }) {
+                return isAppcast ? "update_network" : "update_server"
+            }
+        }
+        let networkErrors = [
+            NSURLErrorTimedOut, NSURLErrorNotConnectedToInternet, NSURLErrorNetworkConnectionLost,
+            NSURLErrorCannotFindHost, NSURLErrorCannotConnectToHost, NSURLErrorDNSLookupFailed,
+            NSURLErrorSecureConnectionFailed, NSURLErrorServerCertificateHasBadDate,
+            NSURLErrorServerCertificateUntrusted, NSURLErrorServerCertificateHasUnknownRoot,
+            NSURLErrorServerCertificateNotYetValid, NSURLErrorClientCertificateRejected,
+            NSURLErrorClientCertificateRequired, NSURLErrorDataNotAllowed,
+        ]
+        if chain.contains(where: { $0.domain == NSURLErrorDomain && networkErrors.contains($0.code) }) {
+            return isAppcast ? "update_network" : "update_download_failed"
+        }
+        switch sparkle {
+        case .appcastError, .appcastParseError: return "update_network"
+        case .downloadError: return isAppcast ? "update_network" : "update_download_failed"
+        case .signatureError, .validationError: return "update_bad_signature"
+        case .unarchivingError: return "update_unpack_failed"
+        case .installationWriteNoPermissionError, .authenticationFailure: return "update_no_permission"
+        case .fileCopyFailure, .relaunchError, .installationError: return "update_swap_failed"
+        default: return "update_failed"
+        }
+    }
+
+    private nonisolated static func httpStatusFromSparkle(_ error: NSError) -> Int? {
+        // Sparkle 2.10.1 SPUDownloader.m puts the HTTP status in this fixed suffix, without a response object.
+        guard error.domain == SUSparkleErrorDomain, error.code == Int(SUError.downloadError.rawValue),
+              let description = error.userInfo[NSLocalizedDescriptionKey] as? String,
+              description.hasPrefix("A network error occurred while downloading "),
+              let range = description.range(of: #" \([0-9]{3}\)$"#, options: .regularExpression) else { return nil }
+        return Int(description[range].dropFirst(2).dropLast())
+    }
+
     func log(_ text: String) {
-        guard let root = model?.provider.client.environment.privateRoot else { return }
-        let dir = root.appendingPathComponent("logs"), file = dir.appendingPathComponent("update.log")
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let stamp = ISO8601DateFormatter().string(from: Date())
-        let line = Data("\(stamp) [Sparkle] \(text)\n".utf8)
-        if let h = try? FileHandle(forWritingTo: file) { h.seekToEndOfFile(); h.write(line); try? h.close() }
-        else { try? line.write(to: file) }
+        model?.logUpdate("[Sparkle] " + text)
     }
 }
