@@ -40,6 +40,8 @@ static const struct { int code; const char *id, *summary, *msg; } k_want[] = {
      "这台设备的图形芯片跑不了 S2Arm（需要 A13 / M1 或更新的芯片）：换一台更新的 iPhone / iPad 再试。"},
     {S2A_INIT_FAIL_E_HEAP_LEARNED, "heap_learned", "普通堆超出堆区、游戏随后中止：已记下本款要的堆（wire/<程序号>/heap_need），下一局堆区按它给（D-NGH9）",
      "这款需要更多内存，已经记下，再点一次开始就能进。"},
+    {S2A_INIT_FAIL_E_IMAGE_EXEC, "image_exec_denied", "外置镜像代码段映射被系统拒（errno=EPERM）：签名已注册但不许可执行映射，所见 4 张卡都是 LiveContainer 装法（#63639b）",
+     "系统不允许运行这款游戏的代码：用 LiveContainer 之类的工具装的 S2Arm 会这样。请改用电脑上的 S2Arm，对这款游戏点「装到 iPhone」安装后再打开。"},
     {S2A_INIT_FAIL_E_UNKNOWN, "unknown", "未登记的初启失败", "启动过程中出了问题。"},
     {999, "unknown", "未登记的初启失败", "启动过程中出了问题。"},
     {-1, "unknown", "未登记的初启失败", "启动过程中出了问题。"},
