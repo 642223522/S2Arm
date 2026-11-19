@@ -269,6 +269,7 @@ namespace S2A.Services
         internal uint NewSessionHandle(SessionTarget target)
         {
             ulong cookie = AddSession(target);
+            if (SnapSwitch.Save) SnapLog.SessionCreated(cookie);   // 即时存档：新会话挂到建它的那条请求名下（请求日志按活对象收，SnapLog.cs ReqTable）
             uint h = Native.HandleNew((uint)ObjKind.Session, cookie);
 
             if (h == 0)
@@ -638,6 +639,7 @@ namespace S2A.Services
             if ((ObjKind)kind == ObjKind.Session)
             {
                 RemoveSession(cookie);
+                if (SnapSwitch.Save) SnapLog.SessionClosed(cookie);   // 即时存档：会话关了，它和它的域对象的请求、建它的那条从请求日志收掉
             }
         }
 
