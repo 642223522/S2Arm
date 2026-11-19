@@ -53,9 +53,10 @@ def sdk_pin():
     return int(m.group(1)) if m else None
 
 
-def source_build_checks(run_path):
+def source_build_checks(run_path, dev=None):
     """源码树一键出包开跑后才现编的东西（#449：applenv 全绿、一键出包却在改写 / 出壳时红）：改写器固定依赖、cmake / ninja / meson、GNU Make。
-    命令按一键出包的 PATH 查（run_path：选定 Python 所在目录在最前）"""
+    命令按一键出包的 PATH 查（run_path：选定 Python 所在目录在最前）。meson 只为 dav1d（AV1 软解兜底）：
+    S2A_DAV1D=1 / 0 直说，缺省 1；显式 auto 探测本机 AV1 硬解（tools/av1hw.sh --want，dev 是出包用的 Xcode；有硬解 = 软解整条不要，ninja 的「谁要」也不带 dav1d）"""
     import importlib.util
     out = []
     spec = importlib.util.spec_from_file_location("s2a_pack_rewriter", ROOT / "pack/rewriter.py")
@@ -71,9 +72,21 @@ def source_build_checks(run_path):
         out.append(dict(name="改写器固定依赖", ok=False, requiredFor=["prepare"], group="system",
                         message=f"{e}（缺了出包「改写」一步必红，不是游戏问题）"))  # 非玩家句
     pipdo = "，或 pip 装进一键出包用的那个 Python 的虚拟环境（它的 bin 目录会放到 PATH 最前）"  # 非玩家句
+    # dav1d（AV1 软解兜底）要不要编：探测见 docstring；没答上来保守按要编（= 原默认行为）
+    dav1d = True
+    if os.environ.get("S2A_DAV1D") == "0":
+        dav1d = False
+    elif os.environ.get("S2A_DAV1D") == "auto":   # 缺省（没设）= 编：出的包要跑在玩家设备上，探测出包机判不了；auto 只显式设
+        try:
+            p = subprocess.run(["bash", str(ROOT / "tools/av1hw.sh"), "--want"], capture_output=True, text=True,
+                                env=dict(os.environ, DEVELOPER_DIR=dev) if dev else None)
+            lines = p.stdout.split()
+            dav1d = lines[-1] != "0" if lines else True
+        except OSError:
+            dav1d = True
     tools = [("cmake", ["prepare", "ipa"], "编 C 改写器、glslang 要用：brew install cmake" + pipdo),  # 非玩家句
-             ("ninja", ["ipa"], "编 glslang、dav1d 要用：brew install ninja" + pipdo)]  # 非玩家句
-    if os.environ.get("S2A_DAV1D", "1") != "0":
+             ("ninja", ["ipa"], "编 glslang" + ("、dav1d" if dav1d else "") + " 要用：brew install ninja" + pipdo)]  # 非玩家句
+    if dav1d:
         tools.append(("meson", ["ipa"], "编 dav1d（AV1 软件解码）要用：brew install meson" + pipdo))  # 非玩家句
     for name, need, why in tools:
         found = shutil.which(name, path=run_path)
@@ -162,7 +175,7 @@ def main(argv):
             x["ok"] = toolchain.probe(c, [py, "-c", "import " + x["name"][9:]])[0]
             x["message"] = f"用 {py}" if x["ok"] else f"{py} 缺 {x['name'][9:]}：{py} -m pip install -r launchers/macos/requirements-runtime.txt（与 App 内置 Python 同一份钉版清单；换解释器用 S2A_PYTHON=<路径>）。{VENV}"  # 非玩家句
     if (ROOT / "tools/toolchain.env").is_file():   # 下面几项只有源码树（命令行一键出包）现编才要；App 的 Resources/Jobs 里没有 tools/
-        checks.extend(source_build_checks(run_path))
+        checks.extend(source_build_checks(run_path, dev))
     env = c.env()
     sdk = None
     try:
