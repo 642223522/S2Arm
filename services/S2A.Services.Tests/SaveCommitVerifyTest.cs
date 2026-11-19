@@ -27,6 +27,7 @@ namespace S2A.Services.Tests
         //   ⑧ 只有第一次克隆被换成零字节（偶发）→ 内部重做一次就对了：提交成功、已提交 = "{}"、不报红（只记黄行）；克隆了 2 次
         //   （②⑥ 每次克隆都被换：重做一次仍不对才补）
         //   ⑩ 写盘之后、调用返回之前游戏把缓冲清零（真机那次）→ 写下去的和记录的是同一份：提交成功、已提交 = "{}"、报红 +0
+        //   ⑪ 空存档首次起局（已提交版本是空目录）：普通写 {} 提交 → 成功、已提交 = "{}"；另一棵空存档写盘后缓冲被清零 → 同样成功、已提交 = "{}"、报红 +0
         //   ⑨ 留上一份：提交 "{}"、再写 "[1]" 提交 → 已提交 "[1]"、上一份 "{}"；回到上一份 → 已提交 "{}"、上一份 "[1]"；再调一次 → 换回 "[1]"；
         //      回到上一份后护栏标记删掉；没有上一份的目录 → 回原因「没有上一份存档」
         //   护栏标记 .s2a_guard：不再写（提交不再被拦）；旧版本留下的在正常提交 / 回到上一份时清掉（⑨）
@@ -176,6 +177,42 @@ namespace S2A.Services.Tests
                 rows.Add(("⑩ 写盘后游戏缓冲被清零：结果 / 已提交 / 报红 / 护栏标记", "True / 7B7D / +0 / 无",
                     $"{ok} / {Txt(System.IO.Path.Combine(d, "0", "x.bin"))} / +{reds - before} / {(File.Exists(System.IO.Path.Combine(d, Ryujinx.HLE.FileSystem.S2ASaveTransaction.GuardFile)) ? "有" : "无")}"));
                 tx.Dispose();
+            }
+
+            {   // ⑪ 空存档：已提交 0/ 是空目录（新导入、第一次起局）
+                (string, Ryujinx.HLE.FileSystem.S2ASaveTransaction) OpenEmpty(string name)
+                {
+                    string d = System.IO.Path.Combine(root, name);
+                    Directory.CreateDirectory(System.IO.Path.Combine(d, "0"));
+                    string why = Ryujinx.HLE.FileSystem.S2ASaveTransaction.Mount(d);
+                    if (why != null) throw new InvalidOperationException(why);
+                    using SharedRef<ISaveDataFileSystem> baseFs = new(new LocalSaveFs(System.IO.Path.Combine(d, "1")));
+                    var copy = SharedRef<ISaveDataFileSystem>.CreateCopy(in baseFs);
+                    return (d, new Ryujinx.HLE.FileSystem.S2ASaveTransaction(ref copy, d));
+                }
+                var (d1, t1) = OpenEmpty("empty");
+                using (Path dir = P("/preferences")) t1.CreateDirectory(in dir).ThrowIfFailure();
+                Write(t1, "/preferences/STSInputSettings", "{}");
+                int before = reds;
+                bool ok1 = t1.Commit().IsSuccess();
+                string a1 = $"{ok1} / {Txt(System.IO.Path.Combine(d1, "0", "preferences", "STSInputSettings"))}";
+                t1.Dispose();
+                var (d2, t2) = OpenEmpty("empty_racy");
+                byte[] game = Encoding.ASCII.GetBytes("{}");
+                LocalSaveFs.AfterInnerWrite = () => Array.Clear(game);
+                using (Path p = P("/preferences/STSInputSettings"))
+                using (UniqueRef<IFile> f = new())
+                {
+                    using (Path dir = P("/preferences")) t2.CreateDirectory(in dir).ThrowIfFailure();
+                    t2.OpenFile(ref f.Ref, in p, OpenMode.ReadWrite | OpenMode.AllowAppend).ThrowIfFailure();
+                    f.Get.SetSize(2).ThrowIfFailure();
+                    f.Get.Write(0, game, WriteOption.None).ThrowIfFailure();
+                }
+                LocalSaveFs.AfterInnerWrite = null;
+                bool ok2 = t2.Commit().IsSuccess();
+                string a2 = $"{ok2} / {Txt(System.IO.Path.Combine(d2, "0", "preferences", "STSInputSettings"))} / +{reds - before}";
+                t2.Dispose();
+                rows.Add(("⑪ 空存档首次提交：结果 / 已提交 ‖ 空存档 + 写盘后缓冲清零：结果 / 已提交 / 报红", "True / 7B7D ‖ True / 7B7D / +0", $"{a1} ‖ {a2}"));
             }
 
             {   // ⑨
