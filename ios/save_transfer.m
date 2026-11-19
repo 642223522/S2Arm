@@ -525,11 +525,13 @@ static NSDictionary *previous_call(NSString *op) {
     return [r isKindOfClass:NSDictionary.class] ? r : nil;
 }
 NSString *g_s2a_prev_last_game;   // 多款容器点开始前的上一款（app.m library_play_go 覆盖 S2ALastGameId 前记下；此时那个键已是这一款）；单款 App 一直 nil
+static BOOL previous_started_host(NSString *gid);
 static BOOL previous_died_here(void) {
     char d[1024]; if (s2a_container_docs(d, sizeof d) <= 0 || s2a_sesmark_prev(d) != S2A_SESMARK_FG) return NO;
     NSString *last = g_s2a_prev_last_game ?: [NSUserDefaults.standardUserDefaults stringForKey:@"S2ALastGameId"];
     NSString *gid = game_identity()[@"id"];
-    return !last.length || !gid.length || [last caseInsensitiveCompare:gid] == NSOrderedSame;   // 单款 App 没记过 = 就是这一款
+    if (last.length && gid.length && [last caseInsensitiveCompare:gid] != NSOrderedSame) return NO;   // 单款 App 没记过 = 就是这一款
+    return previous_started_host(gid);
 }
 static double ts_of(struct timespec t) { return (double)t.tv_sec + t.tv_nsec / 1e9; }
 static double process_start(void) {
@@ -537,21 +539,33 @@ static double process_start(void) {
     if (sysctl(mib, 4, &kp, &n, NULL, 0) || !n) return 0;
     return (double)kp.kp_proc.p_starttime.tv_sec + kp.kp_proc.p_starttime.tv_usec / 1e6;
 }
-// 上一局活了多少秒：上一局的 host.log——这个进程起来之前建的 Documents/host.log（预热进程还没轮换），否则 logs/ 里最新的 host-*.log
-//   （普通启动构造函数里已轮换）；创建时刻到最后写入。取不到回 -1（按「不算开局就崩」）
-double s2a_ios_previous_session_seconds(void) {
-    char d[1024]; if (s2a_container_docs(d, sizeof d) <= 0) return -1;
-    NSString *docs = @(d), *pick = nil, *dir = [docs stringByAppendingPathComponent:@"logs"]; struct stat st;
+// 上一局的 host.log：这个进程起来之前建的 Documents/host.log（预热进程还没轮换），否则 logs/ 里最新的 host-*.log（普通启动构造函数里已轮换）
+static NSString *previous_host_log(void) {
+    char d[1024]; if (s2a_container_docs(d, sizeof d) <= 0) return nil;
+    NSString *docs = @(d), *dir = [docs stringByAppendingPathComponent:@"logs"]; struct stat st;
     NSString *host = [docs stringByAppendingPathComponent:@"host.log"];
-    if (!stat(host.fileSystemRepresentation, &st) && ts_of(st.st_birthtimespec) < process_start()) pick = host;
-    else {
-        NSArray *names = [[NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil]
-                          filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"SELF BEGINSWITH 'host-' AND SELF ENDSWITH '.log'"]];
-        NSString *last = [[names sortedArrayUsingSelector:@selector(compare:)] lastObject];   // host-年月日-时分秒[_序号].log：字典序即时间序
-        if (last) pick = [dir stringByAppendingPathComponent:last];
-    }
+    if (!stat(host.fileSystemRepresentation, &st) && ts_of(st.st_birthtimespec) < process_start()) return host;
+    NSArray *names = [[NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil]
+                      filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"SELF BEGINSWITH 'host-' AND SELF ENDSWITH '.log'"]];
+    NSString *last = [[names sortedArrayUsingSelector:@selector(compare:)] lastObject];   // host-年月日-时分秒[_序号].log：字典序即时间序
+    return last ? [dir stringByAppendingPathComponent:last] : nil;
+}
+// 上一局活了多少秒：上一局 host.log 创建时刻到最后写入。取不到回 -1（按「不算开局就崩」）
+double s2a_ios_previous_session_seconds(void) {
+    NSString *pick = previous_host_log(); struct stat st;
     if (!pick || stat(pick.fileSystemRepresentation, &st)) return -1;
     return ts_of(st.st_mtimespec) - ts_of(st.st_birthtimespec);
+}
+// 上一局真的为这一款起过宿主：host.log 开头有这一款的「S2A 应用登记：程序号 <号>」（起宿主才打，登记行在前几百行）。
+//   进程起来就写 fg 标记（sesdiag.c），停在游戏库没点开始、在前台被关掉的那次也是 fg，没有这一行就不算「这一款开局就崩」
+static BOOL previous_started_host(NSString *gid) {
+    NSString *pick = previous_host_log();
+    NSFileHandle *f = pick ? [NSFileHandle fileHandleForReadingAtPath:pick] : nil;
+    NSData *head = [f readDataOfLength:512 * 1024]; [f closeFile];
+    NSString *text = head.length ? [[NSString alloc] initWithData:head encoding:NSUTF8StringEncoding] ?: [[NSString alloc] initWithData:head encoding:NSISOLatin1StringEncoding] : nil;
+    if (!text.length) return NO;
+    NSString *needle = gid.length ? [@"S2A 应用登记：程序号 " stringByAppendingString:gid] : @"S2A 应用登记：程序号 ";
+    return [text rangeOfString:needle options:NSCaseInsensitiveSearch].location != NSNotFound;
 }
 int s2a_ios_previous_save_prompt(UIViewController *presenter, void (^go)(void)) {
     if (!presenter || !go) return 0;
