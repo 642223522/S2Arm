@@ -503,6 +503,8 @@
 "settings.toggle.devHud" = "Afficher l'overlay de diagnostic S2Arm";
 "settings.toggle.diagOnOpen" = "Exporter le diagnostic à la prochaine ouverture";
 "settings.toggle.docked" = "Mode TV";
+"settings.toggle.snapshot" = "Instantanés de sauvegarde rapide";
+"settings.snapshot.note" = "Pour tous les jeux : enregistrez le moment présent et revenez-y plus tard. S’applique au prochain lancement d’un jeu.";
 "settings.toggle.diagRun" = "Session de diagnostic (prochaine session)";
 "settings.diagRun.note" = "Activez, fermez l'app depuis le sélecteur d'apps et relancez ce jeu. Restez à l'endroit où le problème apparaît pendant au moins 3 minutes, puis exportez le diagnostic. S'applique uniquement à la prochaine session ; cette session sera plus lente.";
 "settings.docked.note" = "Image plus nette, mais consommation et température plus élevées ; déconseillé sur un téléphone";

@@ -384,7 +384,7 @@ GL(eglGetProcAddress, void *, const char *name) { void *p = gl_entry_or_stub(nam
 // 松开本线程的当前上下文与表面（EGL 1.5 §3.11：同 eglMakeCurrent 全空），错误码 / API 回初值；已删的此时才放
 GLB(eglReleaseThread, EGLBoolean, void) { @autoreleasepool { bind_current(NULL, NULL); g_api = EGL_OPENGL_ES_API; g_err = EGL_SUCCESS; return 1; }}
 
-// ---------- 即时存档（缺省关；S2A_SNAP_MODE / S2A_SNAP_RESTORE 才走到） ----------
+// ---------- 即时存档（苹果端缺省开、S2A_SNAP_MODE=0 关，见 runtime/src/snapsw.c；恢复局 S2A_SNAP_RESTORE） ----------
 // 交给游戏的宿主指针：表面 / 上下文句柄（calloc 的地址）、eglGetProcAddress 交出的函数、glGetString 的串。游戏把它们拷进自己的内存，新进程里地址全变：
 //   建 / 交出时按身份登记（gl:surf:<序号>、gl:ctx:<序号>、gl:proc:<名字>、gl:str:…），恢复时快照引擎按身份问 gl_snap_resolve 要本进程的值、扫写回的页换掉。
 //   表面 / 上下文在那时先建空壳（序号同快照），gl_snap_restore 再按快照填内容、建贴图

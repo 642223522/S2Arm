@@ -478,6 +478,8 @@
 "settings.toggle.devHud" = "顯示 S2Arm 診斷浮層";
 "settings.toggle.diagOnOpen" = "下次開啟時匯出診斷包";
 "settings.toggle.docked" = "TV 模式";
+"settings.toggle.snapshot" = "即時快照";
+"settings.snapshot.note" = "所有遊戲共用：可在遊戲中存下這一刻、之後回到這裡。下次啟動遊戲時生效。";
 "settings.toggle.diagRun" = "診斷局（下一局）";
 "settings.diagRun.note" = "開啟後從背景滑掉、重新進入這款遊戲，到出問題的地方停留 3 分鐘以上，再匯出診斷包。只影響下一局，那一局的畫面會變慢。";
 "settings.docked.note" = "畫質更高，但更耗電、更容易發燙；不建議在手機上開啟";

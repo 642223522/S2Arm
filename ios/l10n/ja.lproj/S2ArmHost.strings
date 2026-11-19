@@ -503,6 +503,8 @@
 "settings.toggle.devHud" = "S2Arm 診断浮層を表示";
 "settings.toggle.diagOnOpen" = "次回起動時に診断パッケージをエクスポート";
 "settings.toggle.docked" = "TV モード";
+"settings.toggle.snapshot" = "クイックセーブ（スナップショット）";
+"settings.snapshot.note" = "すべてのゲーム共通：今の瞬間を保存して、あとでここに戻れます。次にゲームを起動したときから有効です。";
 "settings.toggle.diagRun" = "診断セッション(次回)";
 "settings.diagRun.note" = "オンにしてから App スイッチャーで App を終了し、このゲームを再度起動してください。問題が発生する場所で少なくとも 3 分間待機してから、診断パッケージをエクスポートしてください。次回セッションのみに適用され、そのセッションは動作が遅くなります。";
 "settings.docked.note" = "より鮮明な画質ですが、消費電力が増え発熱も大きくなります。iPhone では推奨されません";
