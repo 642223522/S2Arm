@@ -79,6 +79,26 @@ class ProgramPackTests(JobCase):
         b.write_bytes(b"JPGbanner2"); self.build(banner=b)
         self.assertNotEqual((pkg / "meta.json").stat().st_mtime_ns, t0, "横图换了要重出")
 
+    def test_tvos_package_marked_tvos_and_cached_apart(self):
+        # Apple TV 也走通用壳（11-19）。期望（手写，不跑被测的判法）：同一份程序件，iPhone 版镜像包 LC_BUILD_VERSION 平台 2（iOS）、
+        #   Apple TV 版平台 3（tvOS，tvOS 的 dyld 不加载标 iOS 的库）；两份放不同目录（package / package-tvos、signed / signed-tvos），互不覆盖
+        def platform(dylib):
+            d = Path(dylib).read_bytes(); n = struct.unpack_from("<I", d, 16)[0]; at = 32
+            for _ in range(n):
+                cmd, size = struct.unpack_from("<II", d, at)
+                if cmd == 0x32:
+                    return struct.unpack_from("<I", d, at + 8)[0]
+                at += size
+            return None
+        ios = self.build()
+        tv = program_pack.build(self.c, GID, kit=self.kit, shell=self.shell, info=INFO, banner="", platform="tvos")
+        self.assertEqual((ios.name, tv.name), ("package", "package-tvos"))
+        self.assertEqual((platform(ios / program_pack.image_name(GID)), platform(tv / program_pack.image_name(GID))), (2, 3))
+        s_ios = program_pack.sign(self.c, GID, "T", "io.b", lambda d, t, bd: None, pkg=ios)
+        s_tv = program_pack.sign(self.c, GID, "T", "io.b", lambda d, t, bd: None, pkg=tv, platform="tvos")
+        self.assertEqual((s_ios.parent.name, s_tv.parent.name), ("signed", "signed-tvos"))
+        self.assertEqual(platform(s_tv / program_pack.image_name(GID)), 3)
+
     def test_build_matches_ship_ext_and_caches(self):
         pkg = self.build()
         ref = self.root / "ref/program"
