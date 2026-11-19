@@ -1,6 +1,8 @@
 """装到 Apple TV / 电视存档自动备份 / 从电视拉诊断（pack/jobs/tvos.py、diag.py，11-15 tvOS 版）。devicectl 全部打桩（组里没有 Apple TV），
 期望值按 TVPort 的规则与本文件里写明的输入手算，不跑被测实现推。"""
 import json
+import os
+import sys
 import os, plistlib, shutil, sys, unittest
 import unittest.mock as um
 from pathlib import Path
@@ -157,6 +159,26 @@ class InstallTest(TvCase):
         self.assertIn("game.img", str(e.exception))
         self.assertEqual(tvos.load_rec(self.c, "TV-UDID")["games"], {G: dict(pack="")})
 
+    def test_zst_chunks_verified_not_final_size(self):
+        # #1460：game.img 走压缩分块推（电视上旧 game.img 先截空，App 打开才拼回）：推完照最终大小核必报 0 字节。期望（手写）：
+        #   块都在且字节对 → 过；缺一块 → resource_transfer_failed；App 已在解（game.img 有内容、已解完的块删了）→ 过
+        pack = layout.path(self.c, G, "image", "tvos", ".pack")
+        sha = "ab" * 32
+        (pack / "index.tsv").write_text(f"game.img\t7\t{sha}\n")
+        man = len((pack / "manifest.json").read_bytes())
+        names = [f".incoming/game.img.{sha[:16]}.{k:04d}.zst" for k in range(2)]
+        base = {"index.tsv": len((pack / "index.tsv").read_bytes()), "manifest.json": man}
+        sys.path.insert(0, str(tvos.Path(tvos.__file__).resolve().parents[2] / "tools"))
+        import push_pack as P
+        with um.patch.object(P, "zstd_plan", lambda pk, row, say=None, env=None, **k: [3, 2] if row[0] == "game.img" else None):
+            self.run_install([(0, "")], pack_sizes=dict(base, **{"game.img": 0, names[0]: 3, names[1]: 2}))
+            with self.assertRaises(Failure) as e:
+                self.run_install([(0, "")], pack_sizes=dict(base, **{"game.img": 0, names[0]: 3}))
+            self.assertEqual(e.exception.code, "resource_transfer_failed")
+            self.run_install([(0, "")], pack_sizes=dict(base, **{"game.img": 4, names[1]: 2}))
+            with self.assertRaises(Failure):
+                self.run_install([(0, "")], pack_sizes=dict(base, **{"game.img": 0, names[0]: 1, names[1]: 2}))   # 块字节不对
+
     def test_not_built_for_tv(self):
         shutil.rmtree(layout.path(self.c, G, "image", "tvos"))
         self.c.r["gameId"] = G
@@ -165,6 +187,26 @@ class InstallTest(TvCase):
         self.assertEqual(e.exception.code, "job_failed")
         self.assertFalse(tvos.tv_ready(self.c, G))
         self.assertTrue(tvos.tv_ready(self.c, H))
+
+
+class TvOnlyDropsIphoneTest(TvCase):
+    def test_drop_iphone_delivery_keeps_tv_and_data(self):
+        # #1459（期望手写）：只出 Apple TV、出包前没有 iPhone 包 → 派生完撤掉 image/ios 与 game.json 的 ios，游戏库不再判 iPhone 就绪；
+        #   电视资源包的 game.img（硬链接）内容还在，game.json 里别的字段（tvos 记录）不动
+        import ipa as packer
+        import library
+        ios = layout.image_ios(self.c, G) / layout.IOS_PACK; ios.mkdir(parents=True)
+        (ios / "manifest.json").write_text("{}"); (ios / "game.img").write_bytes(b"IMG-BYTES")
+        tv = layout.path(self.c, G, "image", "tvos") / ".pack"; tv.mkdir(parents=True)
+        os.link(ios / "game.img", tv / "game.img")
+        layout.update_info(self.c, G, ios=dict(pack="p1"), tvos=dict(pack="p1"))
+        with um.patch.object(layout, "has_ios_kit", return_value=True):
+            self.assertTrue(library.iphone_ready(self.c, G))
+            packer.drop_iphone_delivery(self.c, G)
+            self.assertFalse(library.iphone_ready(self.c, G))
+        info = layout.game_info(self.c, G)
+        self.assertNotIn("ios", info); self.assertEqual(info.get("tvos"), dict(pack="p1"))
+        self.assertEqual((tv / "game.img").read_bytes(), b"IMG-BYTES")
 
 
 class ProvProjectTest(unittest.TestCase):
