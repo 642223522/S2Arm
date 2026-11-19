@@ -2711,7 +2711,7 @@
   "准备产物缺失或大小不符，请重新准备：{0}": "Faltan archivos preparados o tienen el tamaño incorrecto, prepara de nuevo: {0}",
   "{0}，先照常启动；起不来的话重新出一次 Mac 版。": "{0}. Se inicia igualmente; si el juego no arranca, compila de nuevo la versión de Mac.",
   "请求里带着已停用的旧内存布局设置（vammLayout）": "La solicitud incluye el antiguo ajuste de distribución de memoria ya retirado (vammLayout)",
-  "起局前这里校验就没过：{0}": "Antes de iniciar, esta comprobación ya había fallado: {0}",
+  "起局前已知：{0}": "Ya se sabía antes de iniciar: {0}",
   "运行文件 {0} 缺失或大小不符": "Falta el archivo de ejecución {0} o tiene un tamaño incorrecto",
   "运行版本清单对不上（{0}）": "El manifiesto de ejecución no coincide ({0})",
   "准备产物校验失败，请重新准备：{0}": "La verificación de los archivos preparados falló, prepara de nuevo: {0}",

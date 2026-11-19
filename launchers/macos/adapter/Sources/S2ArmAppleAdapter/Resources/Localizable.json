@@ -6084,10 +6084,6 @@
   "en": "The request carries the retired old memory layout setting (vammLayout)"
  },
  {
-  "source": "起局前这里校验就没过：{0}",
-  "en": "Before launch, this check had already failed: {0}"
- },
- {
   "source": "运行文件 {0} 缺失或大小不符",
   "en": "Runtime file {0} is missing or the wrong size"
  },
@@ -10394,5 +10390,9 @@
  {
   "source": "下载安卓调试工具（adb）失败：{0}。检查网络后重试；也可以自己装 Android SDK Platform-Tools。",
   "en": "Downloading the Android debugging tool (adb) failed: {0}. Check your network and try again, or install Android SDK Platform-Tools yourself."
+ },
+ {
+  "source": "起局前已知：{0}",
+  "en": "Known before launch: {0}"
  }
 ]
