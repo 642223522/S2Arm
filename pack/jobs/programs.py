@@ -86,6 +86,23 @@ def _compress(data, checksum=False):
         return zstandard.ZstdCompressor(level=LEVEL, threads=-1, write_checksum=checksum).compress(data)
 
 
+@contextlib.contextmanager
+def zstd_writer(path, checksum=False):
+    """流式写一个 zstd 帧到 path（同 _compress 的级别、线程与内容校验；大文件不整份进内存，如推送用的 .s2arm）→ 可写的文件对象"""
+    try:
+        from compression import zstd   # Python 3.14
+    except ImportError:
+        zstd = None
+    if zstd is not None:
+        with zstd.ZstdFile(path, "w", options={zstd.CompressionParameter.compression_level: LEVEL, zstd.CompressionParameter.nb_workers: os.cpu_count() or 1,
+                                               zstd.CompressionParameter.checksum_flag: 1 if checksum else 0}) as f:
+            yield f
+        return
+    import zstandard   # 随包 Python 3.12（pack/jobs/toolchain.py 核过有它）
+    with open(path, "wb") as raw, zstandard.ZstdCompressor(level=LEVEL, threads=-1, write_checksum=checksum).stream_writer(raw, closefd=False) as f:
+        yield f
+
+
 def _decompress(data):
     try:
         from compression import zstd

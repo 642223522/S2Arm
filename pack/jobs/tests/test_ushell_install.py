@@ -68,8 +68,8 @@ class PushGameTests(JobCase):
                   mock.patch.object(install, "phone_signing", lambda c, ph: ("TEAM1", ph.bid, "signer")),
                   mock.patch("rewrite_refresh.refresh_ios", lambda c, gs: None), mock.patch.object(packer, "program_locks", lambda c, gs: mock.MagicMock()),
                   mock.patch.object(install, "push_mods", lambda c, ph, g, had: {}),
-                  mock.patch.object(install, "push_programs", lambda c, cl, games, rec, team, bundle, signer, roots, keep_old=False:
-                                    self.pushed.append((list(games), team, bundle, keep_old)) or {g: prog for g in games})):
+                  mock.patch.object(install, "push_programs", lambda c, cl, games, rec, team, bundle, signer, docs="Documents":
+                                    self.pushed.append((list(games), team, bundle)) or {g: prog for g in games})):
             p.start(); self.addCleanup(p.stop)
         self.prog = prog
 
@@ -86,7 +86,7 @@ class PushGameTests(JobCase):
     def test_pushes_this_game_only_never_installs(self):
         layout.save_device(self.c, self.ph.key, dict(shellId="S1", bundleId=self.ph.bid, games={"0100000000020000": dict(pack="Q")}))
         r = install.push_game(self.c, GID.lower(), self.ph, steps=False)
-        self.assertEqual(self.pushed, [([GID], "TEAM1", "io.s2arm.games.t1", False)])
+        self.assertEqual(self.pushed, [([GID], "TEAM1", "io.s2arm.games.t1")])
         self.assertEqual(self.ph.calls, [("push", GID)])
         rec = layout.load_device(self.c, self.ph.key)
         self.assertEqual(rec["games"][GID], dict(program=self.prog, pack="P2"))

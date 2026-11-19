@@ -3,8 +3,8 @@
 装机（作业 tvInstall）：
   ① 设备：devicectl 设备表里 deviceType / platform 是 Apple TV 的（diag.is_tv，不写死型号）；配对靠 Xcode 自己完成（Apple TV 没有数据线，同网配对一次）
   ② 通用壳（0.6.0 起，同 iPhone）：电视上的 S2Arm 只有壳（本版 tvOS 预编壳，pack/ship_ext.py container --shell-only），本版、同包名、签名还新鲜就不重装；
-     各款程序包（image/tvos/kit 出的 tvOS 版，program_pack.sign(platform="tvos")）推进 Library/Caches/S2Arm/games/<号>/program/（install.push_program 的写入规则，
-     走 devicectl：TvClient），宿主按清单加载（runtime/src/launchctx.c program_paths）
+     各款程序包（image/tvos/kit 出的 tvOS 版，program_pack.sign(platform="tvos")）打成一个 .s2arm，经 devicectl 写进电视上 App 的导入文件夹
+     （install.push_program，同 iPhone；TvClient），App 用导入同一条代码解开到 Library/Caches/S2Arm/games/<号>/program/、换上清单，宿主按清单加载（runtime/src/launchctx.c program_paths）
   ③ 签名：pack/prov 的申请工程改成 tvOS 目标，xcodebuild -allowProvisioningUpdates 让 Xcode 申请 tvOS 开发描述文件（同 TVPort backend.py:1081 自动签名），
      再用 pack/dev_sign.py 签；权限按款（entitlements_for）：「提高内存上限」照带（免费账号在 tvOS 上被系统丢掉，不挡），「扩展虚拟寻址」只给 Switch 2 款（只有付费账号签得了）。包名 io.s2arm.tv.<团队号小写>：和 iPhone 的容器分开（开发描述文件按平台出，同一包名 dev_sign 会挑到 iOS 的那份）
   ④ 覆盖装之前把电视上各款的存档备份到 Mac（同下面的自动备份）；devicectl device install app（TVPort :1368）
@@ -827,9 +827,7 @@ def tv_signer(c):
 
 
 class TvClient:
-    """install.push_program 要的设备客户端（head / put / get / mv / rm），走 devicectl（电视没有数据线、没有 AFC）。
-    devicectl 没有改名和删除：mv = 拉回来再写到目标名（只用在 catalogue.json 这一个小文件上；写的那一下不是原子的，
-    宿主读到半截清单会当这款没装好、下次装机重写）；rm 做不了 → (False, …)，旧版本目录由 App 启动时按「没被清单指着、1 小时没写入」清"""
+    """install.push_program 要的设备客户端，走 devicectl（电视没有数据线、没有 AFC）：只用 put（一个 .s2arm 写进电视上 App 的导入文件夹，App 自己导入）"""
 
     def __init__(self, c, dev_id, bid, work, udid=""):
         sys.path.insert(0, str(Path(c.engine) / "tools"))
@@ -843,26 +841,10 @@ class TvClient:
         except self.P.Fail as e:
             raise Failure(str(e).replace("iPhone", KIND).replace("手机", "电视"), code="resource_transfer_failed") from e  # 非玩家句（换字；原句是 push_pack 的玩家句）
 
-    def get(self, rel, dst):
-        return self.dc.get(rel, dst)
-
-    def mv(self, src, dst):
-        tmp = self.work / "mv.tmp"
-        if not self.get(src, tmp):
-            return False, f"拉不回 {src}"  # 非玩家句
-        try:
-            self.put(tmp, dst)
-        except Failure as e:
-            return False, str(e)
-        return True, ""
-
-    def rm(self, rel):
-        return False, "devicectl 不能删文件"  # 非玩家句
-
 
 def push_programs(c, dev_id, bid, games, rec, team, udid, work, sid):
-    """各款程序包（tvOS 版，program_pack.sign(platform="tvos")，程序件取 image/tvos/kit）按设备记录判要不要推、要推的推进电视 program/
-    （install.push_program 同一套写入规则）。→ {游戏号: program 记录}。这款（games[0]）的程序件放不进本版壳 / 出不成照抛；
+    """各款程序包（tvOS 版，program_pack.sign(platform="tvos")，程序件取 image/tvos/kit）按设备记录判要不要推、要推的打成 .s2arm 推进电视上 App 的导入文件夹
+    （install.push_program，同 iPhone）。→ {游戏号: program 记录}。这款（games[0]）的程序件放不进本版壳 / 出不成照抛；
     别的款放不进（旧版出的）/ 出不成记黄字、这次不带（它们的资源包与存档还在电视上，重新出 Apple TV 包再装就回来）"""
     import program_pack
     import ipa as packer
@@ -889,7 +871,7 @@ def push_programs(c, dev_id, bid, games, rec, team, udid, work, sid):
         if not program_pack.need(c, g, old, team, want=want):
             out[g] = old
             continue
-        out[g] = install.push_program(cl, g, pkg, tv_pack_root(g), keep_old=True, custom=custom)
+        out[g] = install.push_program(cl, g, pkg, install.import_inbox(cl, TV_DOCS), custom=custom)   # 一个 .s2arm 进电视上 App 的导入文件夹，App 自己导入（同 iPhone）
     if dropped:
         c.diagnostic(S_DROPPED.replace("{0}", "「" + "」「".join(dropped) + "」"), code="container_stale", severity="warning")
     return out
