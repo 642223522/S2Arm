@@ -56,7 +56,7 @@ def sdk_pin():
 def source_build_checks(run_path, dev=None):
     """源码树一键出包开跑后才现编的东西（#449：applenv 全绿、一键出包却在改写 / 出壳时红）：改写器固定依赖、cmake / ninja / meson、GNU Make。
     命令按一键出包的 PATH 查（run_path：选定 Python 所在目录在最前）。meson 只为 dav1d（AV1 软解兜底）：
-    S2A_DAV1D=1 / 0 直说，缺省 auto 探测本机 AV1 硬解（tools/av1hw.sh --want，dev 是出包用的 Xcode；有硬解 = 软解整条不要，ninja 的「谁要」也不带 dav1d）"""
+    S2A_DAV1D=1 / 0 直说，缺省 1；显式 auto 探测本机 AV1 硬解（tools/av1hw.sh --want，dev 是出包用的 Xcode；有硬解 = 软解整条不要，ninja 的「谁要」也不带 dav1d）"""
     import importlib.util
     out = []
     spec = importlib.util.spec_from_file_location("s2a_pack_rewriter", ROOT / "pack/rewriter.py")
@@ -76,7 +76,7 @@ def source_build_checks(run_path, dev=None):
     dav1d = True
     if os.environ.get("S2A_DAV1D") == "0":
         dav1d = False
-    elif os.environ.get("S2A_DAV1D") != "1":
+    elif os.environ.get("S2A_DAV1D") == "auto":   # 缺省（没设）= 编：出的包要跑在玩家设备上，探测出包机判不了；auto 只显式设
         try:
             p = subprocess.run(["bash", str(ROOT / "tools/av1hw.sh"), "--want"], capture_output=True, text=True,
                                 env=dict(os.environ, DEVELOPER_DIR=dev) if dev else None)

@@ -44,10 +44,10 @@ def run(args, **kw):
 
 
 def dav1d_wanted(dev):
-    """dav1d 软解兜底（AV1）要不要进本机构建——meson / ninja 只为它：S2A_DAV1D=1 / 0 直说；缺省 auto = 探测本机
+    """dav1d 软解兜底（AV1）要不要进本机构建——meson / ninja 只为它：S2A_DAV1D=1 / 0 直说，缺省 1；显式 auto = 探测本机
     （tools/av1hw.sh --want：VideoToolbox 建得出 AV1 解码会话 = 有硬解，AV1 走 VideoToolbox，软解整条不要）。
     回 (要不要, 说明)；探测没答上来时保守按要算（= 原默认行为）。"""
-    v = os.environ.get("S2A_DAV1D", "auto")
+    v = os.environ.get("S2A_DAV1D", "1")   # 缺省链（见 Makefile S2A_DAV1D）；auto 只显式设
     if v in ("0", "1"):
         return v == "1", "S2A_DAV1D=%s" % v
     env = dict(os.environ)
@@ -63,10 +63,10 @@ def dav1d_wanted(dev):
 
 
 def vpx_wanted(dev):
-    """真 libvpx（VP8 / VP9 软解）要不要进本机构建：S2A_VPX=1 / 0 直说；缺省 auto = 探测本机可走
+    """真 libvpx（VP8 / VP9 软解）要不要进本机构建：S2A_VPX=1 / 0 直说，缺省 1；显式 auto = 探测本机可走
     系统 VP9（tools/vp9hw.sh --want：注册 supplemental 后建得出 VP9 会话 = VP9 走 VideoToolbox）。
     回 (要不要, 说明)；探测没答上来时保守按要算（= 原默认行为）。"""
-    v = os.environ.get("S2A_VPX", "auto")
+    v = os.environ.get("S2A_VPX", "1")   # 同上
     if v in ("0", "1"):
         return v == "1", "S2A_VPX=%s" % v
     env = dict(os.environ)

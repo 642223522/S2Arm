@@ -136,24 +136,24 @@ def _probe_wanted(script, extra_env):
 
 
 def dav1d_wanted(extra_env=None):
-    """dav1d 软解兜底（AV1）要不要进本机构建 / 随包：S2A_DAV1D=1 / 0 直说；缺省 auto = 探测本机
+    """dav1d 软解兜底（AV1）要不要进本机构建 / 随包：S2A_DAV1D=1 / 0 直说，缺省 1；显式 auto = 探测本机
     AV1 硬解（tools/av1hw.sh --want：VideoToolbox 建得出 AV1 会话 = 有硬解，软解整条不要）。"""
     env = dict(os.environ)
     if extra_env:
         env.update(extra_env)
-    v = env.get("S2A_DAV1D", "auto")
+    v = env.get("S2A_DAV1D", "1")   # 缺省链：随包的宿主要跑在玩家机上，探测构建机判不了（auto 只显式设）
     if v in ("0", "1"):
         return v == "1"
     return _probe_wanted("tools/av1hw.sh", extra_env)
 
 
 def vpx_wanted(extra_env=None):
-    """真 libvpx（VP8 / VP9 软解）要不要进本机构建 / 随包：S2A_VPX=1 / 0 直说；缺省 auto = 探测本机可走
+    """真 libvpx（VP8 / VP9 软解）要不要进本机构建 / 随包：S2A_VPX=1 / 0 直说，缺省 1；显式 auto = 探测本机可走
     系统 VP9（tools/vp9hw.sh --want：注册 supplemental 后建得出 VP9 会话，VP9 走 VideoToolbox、VP8 如实报红）。"""
     env = dict(os.environ)
     if extra_env:
         env.update(extra_env)
-    v = env.get("S2A_VPX", "auto")
+    v = env.get("S2A_VPX", "1")   # 同上
     if v in ("0", "1"):
         return v == "1"
     return _probe_wanted("tools/vp9hw.sh", extra_env)

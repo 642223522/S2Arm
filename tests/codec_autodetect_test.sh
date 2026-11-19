@@ -76,7 +76,7 @@ print:
 	@printf 'IOS=%s\n' '$(IOS_LIBS)'
 EOF
 mkprint() { make -s -C "$D" -f Makefile -f extra.mk S2A_DEVELOPER_DIR=/usr/bin S2A_CS=1 "$@" print; }
-# $1=说明 $2=S2A_DAV1D 传参（空=auto） $3=S2A_VPX 传参 $4=hw1 $5=hw9 $6=期望 dav1d EFF $7=期望 vpx EFF
+# $1=说明 $2=S2A_DAV1D 传参（空=不设，缺省链） $3=S2A_VPX 传参 $4=hw1 $5=hw9 $6=期望 dav1d EFF $7=期望 vpx EFF
 case_check() {
   local out d="$6" x="$7"
   echo "$4" > "$D/tools/hw1"; echo "$5" > "$D/tools/hw9"
@@ -92,12 +92,14 @@ case_check() {
     grep -q "$lib" <<<"$out" || fail "$1：丢了 ${lib}：$out"
   done
 }
-case_check "auto 都探测不过"     ""  "" 0 0 1 1
-case_check "auto 都探测过"       ""  "" 1 1 0 0
-case_check "dav1d 显式 1 盖过探测" 1  "" 1 1 1 0
-case_check "vpx 显式 1 盖过探测"  ""  1 1 1 0 1
+# 缺省（不设）= 链：构建机出的二进制会分发到别的机器，探测构建机判不了玩家设备；auto 只在显式设时探测
+case_check "缺省：探测过也照链"    ""  "" 1 1 1 1
+case_check "auto 都探测不过"     auto auto 0 0 1 1
+case_check "auto 都探测过"       auto auto 1 1 0 0
+case_check "dav1d 显式 1 盖过探测" 1  auto 1 1 1 0
+case_check "vpx 显式 1 盖过探测"  auto  1 1 1 0 1
 case_check "都显式 0"            0   0 0 0 0 0
-n=$(grep -o 'libs2a_dav1d.a' <<<"$(echo 0 > "$D/tools/hw1"; echo 0 > "$D/tools/hw9"; : > "$D/tools/hw1.calls"; : > "$D/tools/hw9.calls"; mkprint)" | wc -l | tr -d ' ')
+n=$(grep -o 'libs2a_dav1d.a' <<<"$(echo 0 > "$D/tools/hw1"; echo 0 > "$D/tools/hw9"; : > "$D/tools/hw1.calls"; : > "$D/tools/hw9.calls"; mkprint S2A_DAV1D=auto S2A_VPX=auto)" | wc -l | tr -d ' ')
 [ "$n" = 2 ] || fail "auto 探测不过时 dav1d 应同时链 host / iOS（2 处），实际 $n"
 # 空跑（make -n）：不出编译器真探测（两个探测脚本都零调用）、按要链算、链接命令带占位库
 echo 1 > "$D/tools/hw1"; echo 1 > "$D/tools/hw9"; : > "$D/tools/hw1.calls"; : > "$D/tools/hw9.calls"
@@ -109,6 +111,18 @@ grep -q "dry-run-dav1d.a" <<<"$out" || fail "空跑的链接命令应带 dav1d �
 grep -q "dry-run-vpx.a" <<<"$out" || fail "空跑的链接命令应带 vpx 占位库：$out"
 
 # 2) prepare_build.py：两个 wanted 随开关直说 / auto 探测（桩缓存，不出编译器）
+# 缺省（不设）= 要链，不探测（构建机判不了玩家设备）：探测缓存说「有硬解」也照要
+for fn in dav1d_wanted vpx_wanted; do
+  C="$T/pb-default"; for s in tools/av1hw.sh tools/vp9hw.sh; do K=$(shasum -a 256 < "$H/$s" | cut -c1-12); mkdir -p "$C/$K"; printf 1 > "$C/$K/result"; done
+  env -u S2A_DAV1D -u S2A_VPX "S2A_AV1HW_CACHE=$C" "S2A_VPXHW_CACHE=$C" python3 - "$H" "$fn" <<'PY' || fail "prepare_build 缺省应要链"
+import importlib.util, os, sys
+h, fn = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("prepare_build", os.path.join(h, "launchers/macos/prepare_build.py"))
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+want, _ = getattr(m, fn)(None)
+if not want: raise SystemExit("缺省（不设）时 %s 应为 True" % fn)
+PY
+done
 for pair in "dav1d_wanted S2A_DAV1D tools/av1hw.sh" "vpx_wanted S2A_VPX tools/vp9hw.sh"; do
   set -- $pair; fn=$1; sw=$2; s=$3
   for v in 0 1; do
@@ -127,7 +141,7 @@ PY
   done
   for hw in 0 1; do
     C="$T/pb-$(basename "$s" .sh)$hw"; K=$(shasum -a 256 < "$H/$s" | cut -c1-12); mkdir -p "$C/$K"; printf %s "$hw" > "$C/$K/result"
-    env "S2A_AV1HW_CACHE=$C" "S2A_VPXHW_CACHE=$C" python3 - "$H" "$fn" "$hw" <<'PY'
+    env "S2A_DAV1D=auto" "S2A_VPX=auto" "S2A_AV1HW_CACHE=$C" "S2A_VPXHW_CACHE=$C" python3 - "$H" "$fn" "$hw" <<'PY'
 import importlib.util
 import os
 import sys
@@ -173,7 +187,7 @@ if getattr(bundle_engine, fn)({"S2A_DAV1D": v, "S2A_VPX": v}) != (v == "1"):
 PY
   done
   K=$(shasum -a 256 < "$H/$s" | cut -c1-12); C="$T/be-$(basename "$s" .sh)"; mkdir -p "$C/$K"; printf 1 > "$C/$K/result"
-  env "S2A_AV1HW_CACHE=$C" "S2A_VPXHW_CACHE=$C" python3 - "$H" "$fn" <<'PY'
+  env "S2A_DAV1D=auto" "S2A_VPX=auto" "S2A_AV1HW_CACHE=$C" "S2A_VPXHW_CACHE=$C" python3 - "$H" "$fn" <<'PY'
 import os
 import sys
 import types
