@@ -467,7 +467,7 @@ def push(c, dev_id, bid, gid, pack, udid):
     got = []
     def attempt():
         try:
-            got.append(install.push_pack(c, dev_id, bid, pack, udid=udid, docs=tv_docs(gid), pack_root=tv_pack_root(gid)))
+            got.append(install.push_pack(c, dev_id, bid, pack, docs=tv_docs(gid), pack_root=tv_pack_root(gid), tv=True))
             return None
         except Failure as e:
             if e.code in NO_RETRY:   # 空间不够 / 写满：再试也一样，原样报
@@ -835,7 +835,7 @@ class TvClient:
         sys.path.insert(0, str(Path(c.engine) / "tools"))
         import push_pack as P
         self.P, self.work = P, Path(work)
-        self.dc = P.Devicectl(dev_id, bid, work, udid=udid or None, env=c.env())
+        self.dc = P.Devicectl(dev_id, bid, work, udid=udid or None, env=dict(c.env(), S2A_PUSH_TV="1"))   # 中断提示按电视说（#1696）
 
     def put(self, src, rel):
         try:

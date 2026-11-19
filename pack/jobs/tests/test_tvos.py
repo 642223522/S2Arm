@@ -115,8 +115,8 @@ class InstallTest(TvCase):
         def usable_kit(c, gid, sid):
             k = layout.path(self.c, gid, "image", "tvos", "kit", create=False)
             return k if (k / "main.npdm").is_file() else None
-        def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None, pack_root=None):
-            self.calls.append(("push", ident, bid, docs, pack_root, udid))
+        def push_pack(c, ident, bid, pack, udid=None, docs=None, ctx=None, pack_root=None, tv=False):
+            self.calls.append(("push", ident, bid, docs, pack_root, udid, tv))
             return 1, 7
         if rec:
             tvos.save_rec(self.c, "TV-UDID", rec)
@@ -130,11 +130,11 @@ class InstallTest(TvCase):
 
     def test_command_sequence_with_transient_retry(self):
         # 期望（手写）：组只有壳的 App → 签名用包名 io.s2arm.tv.abcde12345 + 电视 UDID → 装 App 第一次 3002（临时）再试成 → 推这款程序包 →
-        #   推本款资源包到 Library/Caches/S2Arm/games/<款>/资源包（文档根 …/games/<款>）→ 列电视上的资源包根核大小；电视记录记下壳号、包名、这款的程序与资源包号
+        #   推本款资源包（不带 UDID、标电视：#1696 不走数据线流式）到 Library/Caches/S2Arm/games/<款>/资源包（文档根 …/games/<款>）→ 列电视上的资源包根核大小；电视记录记下壳号、包名、这款的程序与资源包号
         r = self.run_install([(1, "ERROR: The operation couldn't be completed. (com.apple.dt.CoreDeviceError error 3002.)"), (0, "")])
         docs = f"Library/Caches/S2Arm/games/{G}"
         self.assertEqual(self.calls, [("assemble",), ("sign", "io.s2arm.tv.abcde12345", "TV-UDID"), ("install", "TV-ID"), ("install", "TV-ID"), ("program", (G,)),
-                                      ("push", "TV-ID", "io.s2arm.tv.abcde12345", docs, docs + "/资源包", "TV-UDID"), ("list", docs + "/资源包")])
+                                      ("push", "TV-ID", "io.s2arm.tv.abcde12345", docs, docs + "/资源包", None, True), ("list", docs + "/资源包")])
         self.assertEqual((r["deviceKind"], r["deviceName"], r["games"], r["packFiles"], r["installed"]), ("Apple TV", "客厅", [G], 1, True))
         rec = tvos.load_rec(self.c, "TV-UDID")
         self.assertEqual((rec["bundleId"], rec["games"], rec["shellId"], rec["eva"]),
@@ -271,6 +271,18 @@ class TvProgramPushTest(TvCase):
             with self.assertRaises(Failure) as e:
                 tvos.push_programs(self.c, "TV-ID", "io.b", [H], {}, "T", "U", self.root, "SID")
             self.assertEqual(e.exception.code, "container_stale")
+
+
+class TvPushEnvTest(TvCase):
+    def test_tv_push_no_udid_and_tv_flag(self):
+        # #1696 期望（手写）：tv=True → 推包工具环境带 S2A_PUSH_TV=1、不带 S2A_PUSH_UDID（不走数据线流式）；iPhone（给 udid）照旧带 UDID、不带电视标记
+        seen = []
+        def run(args, log, env=None, on_line=None, **k):
+            seen.append({k2: env.get(k2) for k2 in ("S2A_PUSH_TV", "S2A_PUSH_UDID")})
+        with um.patch.object(self.c, "run", run):
+            install.push_pack(self.c, "TV-ID", "io.b", self.root, udid="TV-UDID", tv=True)
+            install.push_pack(self.c, "PH", "io.b", self.root, udid="PH-UDID")
+        self.assertEqual(seen, [{"S2A_PUSH_TV": "1", "S2A_PUSH_UDID": None}, {"S2A_PUSH_TV": None, "S2A_PUSH_UDID": "PH-UDID"}])
 
 
 class TvOnlyDropsIphoneTest(TvCase):
