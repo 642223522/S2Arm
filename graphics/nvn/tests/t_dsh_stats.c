@@ -82,7 +82,9 @@ static void check(int ok) { if (!ok) _exit(40); }
 static void crash_handler44(int sig) { (void)sig; s2a_dsh_crash_dump(); _exit(0); }   // 照 crash.c：原始现场后调 s2a_dsh_crash_dump
 static void scenario(int n) {
     alarm(10); setvbuf(stdout, NULL, _IONBF, 0);
-    setenv("S2A_DSH_EAGER_MAX", n >= 39 ? "8" : "0", 1);   // 0–38 是登记时不编的旧语义（后台预编关）；39–41 测后台预编
+    // 后台预编只给测它的 39–41 开；其余场景是登记时不编的语义（后台预编关）。原为 n >= 39，之后新加的 42–53 都被顺带打开：
+    //   场景 51 断言「首遇时代码区不可读 → 不调编译器」，后台预编用登记时拷的代码区抢先编完时编译器替身被调，60 次红 7 次（11-19）
+    setenv("S2A_DSH_EAGER_MAX", n >= 39 && n <= 41 ? "8" : "0", 1);
     uint32_t size = sizeof code, csize = sizeof ctl;
     memcpy(ctl + 0x704, &size, 4); memcpy(ctl + 0x20, &csize, 4);
     setenv("DM_MSL_FALLBACK", "/dev/null", 1); // 编译器桩不写文件。
