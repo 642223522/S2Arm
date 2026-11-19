@@ -5,8 +5,7 @@
   ③ need：六种原因各一例 + 都对得上 = 空集
   ④ sign_dylibs：假 plumesign 收到 --custom-identifier <包名>、没有 --register-and-install；小 IPA 里没有 PlugIns/；签好的 dylib 原地换回
   ⑤ Devpush.mv：假工具收到「mv <源> <目标>」
-  ⑥ 开关（第 2 段）：缺省关；S2A_UNIVERSAL_SHELL=1 开、=0 关、别的值按缺省
-  ⑦ 签名器按模式选：开发者证书 → rcodesign 读 p12 只签这个 dylib（不带 -e 权限、不嵌描述文件）；否则 Mac → dev_sign --dylib
+  ⑦（已删：签名器按模式选的 signer_for 随旧 Mac Xcode 路径一起撤了）
   ⑧ install.push_program（写入规则 11-17 定稿）：手写的调用顺序（版本目录 v-<sha16>-pc/ 下 dylib → Games 各文件 → catalogue.json.pc.tmp → 改名覆盖 catalogue.json），
      清单带 dir；换上后只删换上前清单指着的旧版本目录（没有旧清单 / 指的就是这次的 → 不删）；续推时机上已完整（长度 + 开头一页对）的文件跳过；改名失败报红
   ⑨ install.push_programs：设备记录与要推的包对得上 → 不推、记录原样；没推过 → 推、记录换成这次的
@@ -200,38 +199,6 @@ class DevpushMvTests(unittest.TestCase):
             ok, _ = dp.mv("Library/x/catalogue.json.tmp", "Library/x/catalogue.json")
             self.assertTrue(ok)
             self.assertEqual(json.loads(rec.read_text())[-3:], ["mv", "Library/x/catalogue.json.tmp", "Library/x/catalogue.json"])
-
-
-class SwitchAndSignerTests(JobCase):
-    def test_switch_default_off(self):
-        self.assertFalse(program_pack.ON_BY_DEFAULT, "0.6.0 之前缺省关（维护者 11-17 定）")
-        from unittest import mock
-        # 读作业进程自己的环境：给子工具的 c.env() 会清掉 S2A_*（core.Context.env），替身照样清，开关不能靠它
-        self.c.env = lambda: {k: v for k, v in os.environ.items() if not k.startswith("S2A_")}
-        for v, want in (("", False), ("1", True), ("0", False), ("yes", False)):
-            with mock.patch.dict(os.environ, {"S2A_UNIVERSAL_SHELL": v}):
-                self.assertEqual(program_pack.enabled(self.c), want, repr(v))
-        with mock.patch.dict(os.environ, clear=False):
-            os.environ.pop("S2A_UNIVERSAL_SHELL", None)
-            self.assertFalse(program_pack.enabled(self.c))
-
-    def test_signer_by_mode(self):
-        import devcert
-        from unittest import mock
-        dylib = self.root / "a.dylib"; dylib.write_bytes(b"x")
-        runs = []
-        self.c.run = lambda args, log=None, env=None, **k: runs.append([str(a) for a in args])
-        with mock.patch.object(devcert, "active", lambda c: True), mock.patch.object(devcert, "stored", lambda c: (Path("/p/cert.p12"), b"prof", "pw")), \
-             mock.patch.object(devcert, "rcodesign_path", lambda c: "/bin/rcodesign"), mock.patch.object(devcert, "folder", lambda c: self.root):
-            program_pack.signer_for(self.c)(dylib, "TEAMA", "io.example.games")
-        a = runs[-1]
-        self.assertEqual(a[:4], ["/bin/rcodesign", "sign", "--p12-file", "/p/cert.p12"])
-        self.assertEqual(a[a.index("--team-name") + 1], "TEAMA"); self.assertEqual(a[a.index("--timestamp-url") + 1], "none")
-        self.assertEqual(a[-1], str(dylib)); self.assertNotIn("-e", a, "只签 dylib：不带权限")
-        if os.name != "nt":
-            with mock.patch.object(devcert, "active", lambda c: False):
-                program_pack.signer_for(self.c)(dylib, "TEAMA", "io.example.games")
-            self.assertEqual(runs[-1][1:], [str(Path(self.c.engine) / "pack/dev_sign.py"), "--dylib", str(dylib), "io.example.games", "TEAMA"])
 
 
 class FakeClient:

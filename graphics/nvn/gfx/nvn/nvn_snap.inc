@@ -1,5 +1,5 @@
 #include "../../../../runtime/src/snapfmt.h"
-// 即时存档（缺省关，S2A_SNAP_MODE / S2A_SNAP_RESTORE 才开）：直连图形层的实时状态存 / 取。nvn_mtl.m 末尾包含（读回放层的静态表），复用帧录的存取函数（nvn_frame_rec.inc）。
+// 即时存档（苹果端缺省开、S2A_SNAP_MODE=0 关，见 runtime/src/snapsw.c；恢复局 S2A_SNAP_RESTORE）：直连图形层的实时状态存 / 取。nvn_mtl.m 末尾包含（读回放层的静态表），复用帧录的存取函数（nvn_frame_rec.inc）。
 //   存：冻结后（游戏线程全停在门里）排空 GPU，存回放层表（state / 程序键 / 虚拟池）、命令记录宿主块（命令记录区固定地址，S2A_CMD_ARENA=1）、栅栏与出图序号计数器。
 //   取：新进程正常起好图形层（游戏线程未起）、游戏内存已写回之后调；首版不写回 GPU 私有贴图（渲染目标靠游戏下一帧重画，开头几帧时间累积效果会有瑕疵）
 uint64_t nvn_serial_now(void);   // hle_nvn.c

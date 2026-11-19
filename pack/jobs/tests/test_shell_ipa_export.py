@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 S2Arm contributors
-"""0.6.0 通用壳「导出通用 S2Arm.ipa」（pack/jobs/install.py export_shell_ipa，经 export_phone(c, None)）：只有壳、不带游戏，
+"""0.6.0 通用壳「导出通用 S2Arm.ipa」（pack/jobs/install.py export_shell_ipa，「导出新版 S2Arm」= installUpdate mode=export）：只有壳、不带游戏，
 写进「S2Arm 游戏包」文件夹。游戏库是真的（library.setup），组壳用替身（写一个带小组件扩展的假 ipa），期望按替身写的内容手写。"""
 import sys
 import unittest
@@ -36,9 +36,9 @@ class ShellIpaExport(unittest.TestCase):
             raise AssertionError("导出通用 ipa 不读游戏库")
         self.c.catalog = no_catalog
         self.c.r.update(mode="export")
-        with patch.object(program_pack, "enabled", lambda c: on), patch.object(packer, "assemble_shell", shell or self.fake_shell), \
+        with patch.object(packer, "assemble_shell", shell or self.fake_shell), \
                 patch.object(install, "patches_results", lambda c: []):
-            return install.export_phone(self.c)
+            return install.export_shell_ipa(self.c)
 
     def names(self, p):
         with zipfile.ZipFile(p) as z:
@@ -101,22 +101,12 @@ class ShellIpaExport(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in folder.iterdir()), ["S2Arm.ipa"])
         self.assertEqual((folder / "S2Arm.ipa").read_bytes(), b"previous")
 
-    def test_switch_off_keeps_old_export(self):
-        class Old(Exception):
-            pass
-        def old_path(c):
-            raise Old
-        with patch.object(packer, "current_shell_id", old_path):
-            with self.assertRaises(Old):
-                self.export(on=False)
-        self.assertEqual(self.assembled, 0)
-
     def test_update_phone_export_routes_here(self):
         # 「导出新版 S2Arm」（更新作业带 mode=export）开关开着也出通用 ipa
         self.assembled = 0
         self.c.catalog = lambda: {"games": []}
         self.c.r.update(mode="export")
-        with patch.object(program_pack, "enabled", lambda c: True), patch.object(packer, "assemble_shell", self.fake_shell), \
+        with patch.object(packer, "assemble_shell", self.fake_shell), \
                 patch.object(install, "patches_results", lambda c: []):
             r = install._update_phone(self.c)
         self.assertTrue(r["updated"])

@@ -393,14 +393,22 @@ void s2a_diag_report(void) {
     UIViewController *host = diag_host();
     if (g_exporting || !host) return;
     UIAlertController *a = [UIAlertController alertControllerWithTitle:S2AL(@"diag.report.title") message:S2AL(@"diag.report.message") preferredStyle:UIAlertControllerStyleAlert];
+    // 故障描述必填（11-19 维护者定：写清哪款游戏、做了什么、看到了什么，才能快速定位）：空着时「上传」点不了，输入一个字就亮
+    __block id watch = nil;
     [a addTextFieldWithConfigurationHandler:^(UITextField *f) { f.placeholder = S2AL(@"diag.report.placeholder"); f.clearButtonMode = UITextFieldViewModeWhileEditing; f.accessibilityIdentifier = @"diag.report.note"; }];
     __weak UIAlertController *wa = a;
-    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.cancel") style:UIAlertActionStyleCancel handler:nil]];
-    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"diag.upload.go") style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x;
+    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.cancel") style:UIAlertActionStyleCancel handler:^(__unused UIAlertAction *x) { [NSNotificationCenter.defaultCenter removeObserver:watch]; }]];
+    UIAlertAction *go = [UIAlertAction actionWithTitle:S2AL(@"diag.upload.go") style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x;
+        [NSNotificationCenter.defaultCenter removeObserver:watch];
         NSString *t = [wa.textFields.firstObject.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
         g_report_note = t.length ? t : nil;
-        LOG("诊断包：故障报修（玩家%s写说明，%lu 字）", g_report_note ? "" : "没", (unsigned long)t.length);
-        upload_now(); }]];
+        LOG("诊断包：故障报修（玩家写了说明，%lu 字）", (unsigned long)t.length);
+        upload_now(); }];
+    go.enabled = NO;
+    [a addAction:go];
+    __weak UIAlertAction *wg = go;
+    watch = [NSNotificationCenter.defaultCenter addObserverForName:UITextFieldTextDidChangeNotification object:a.textFields.firstObject queue:NSOperationQueue.mainQueue
+        usingBlock:^(NSNotification *n) { wg.enabled = [((UITextField *)n.object).text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length > 0; }];
     present_over(host, a);
 }
 void s2a_shell_report_problem(void) { s2a_diag_report(); }   // 游戏库设置页「故障报修」（shell/Sources/S2ArmShellBridge/include/s2a_shell.h，壳里有空的弱定义）

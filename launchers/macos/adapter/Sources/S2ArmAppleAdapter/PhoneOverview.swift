@@ -43,9 +43,9 @@ public struct PhoneOverview: Equatable {
 
     public init(phones: [Phone]) { self.phones = phones }
 
-    /// 作业结果 → 总览；开关关着（enabled 不是 true）→ nil
+    /// 作业结果 → 总览；结果里没有 phones（作业层太旧）→ nil
     public init?(result r: [String: Any]) {
-        guard r["enabled"] as? Bool == true else { return nil }
+        guard r["phones"] is [Any] else { return nil }
         func date(_ v: Any?) -> Date? { (v as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) } }
         phones = (r["phones"] as? [[String: Any]] ?? []).compactMap { p in
             guard let device = p["device"] as? String, !device.isEmpty else { return nil }

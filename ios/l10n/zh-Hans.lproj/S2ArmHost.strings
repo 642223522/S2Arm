@@ -366,8 +366,8 @@
 "diag.upload.fail.title" = "上传没成功";
 "diag.upload.go" = "上传";
 "diag.report.title" = "故障报修";
-"diag.report.message" = "会上传这台设备的日志、设备信息和游戏用过的图形管线清单（只有着色器编号），帮我们找原因，然后给你一个短码。可以写一句发生了什么（可不填）。";
-"diag.report.placeholder" = "发生了什么（可不填）";
+"diag.report.message" = "会上传这台设备的日志、设备信息和游戏用过的图形管线清单（只有着色器编号），帮我们找原因，然后给你一个短码。请写清哪款游戏、做了什么、看到了什么。";
+"diag.report.placeholder" = "必填：哪款游戏、做了什么、看到了什么";
 "diag.upload.post" = "去 GitHub 发帖";
 "diag.upload.retry" = "再试一次";
 "dprompt.expiry.body" = "还剩%@。到期后游戏打不开，存档不会丢：连上手机再点一次「装到 iPhone」，或在 AltStore 里刷新。";
@@ -508,6 +508,8 @@
 "settings.toggle.devHud" = "显示 S2Arm 诊断浮层";
 "settings.toggle.diagOnOpen" = "下次打开时导出诊断包";
 "settings.toggle.docked" = "主机模式";
+"settings.toggle.snapshot" = "即时快照";
+"settings.snapshot.note" = "全部游戏共用：游戏里能存下这一刻、之后回到这里。下次起局生效。";
 "settings.toggle.diagRun" = "诊断局（下一局）";
 "settings.diagRun.note" = "打开后从后台划掉、重新进这款游戏，到出问题的地方待 3 分钟以上，再导出诊断包。只管下一局，这一局画面会变慢。";
 "settings.docked.note" = "画质更高，但更耗电、更容易发热；手机上不建议开";
@@ -600,3 +602,14 @@
 "vpad.snap.saveChanged.title" = "回到存下的那一刻？";
 "vpad.snap.saveChanged.body" = "存下那一刻之后游戏又存过档。回去会把游戏存档也退回那一刻；现在的存档会先备份。";
 "vpad.snap.saveChanged.go" = "回去";
+"vpad.snap.button.hint" = "点一下存下这一刻，长按回到存下的那一刻";
+"vpad.snap.none" = "还没有存下的时刻，单击右上角按钮就能存";
+"vpad.snap.savedHint" = "%@ · 长按按钮可回到这里";
+"vpad.snap.delete" = "删除这一刻";
+"vpad.snap.size" = "约 %@";
+"vpad.snap.delete.title" = "删除存下的这一刻？";
+"vpad.snap.delete.body" = "这份快照约占 %@。删掉后就回不到那一刻了，游戏存档不受影响。";
+"vpad.snap.deleted" = "已删除，空间已腾出";
+"vpad.snap.deleteFailed" = "这次没删干净，稍后再试一次";
+"snap.result.title" = "没能回到那一刻";
+"snap.result.generic" = "回到那一刻没成功，已重新开始游戏，游戏存档没受影响。";

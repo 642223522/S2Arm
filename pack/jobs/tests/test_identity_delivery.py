@@ -103,7 +103,7 @@ class DeliverIdentity(unittest.TestCase):
 
     def deliver(self, ph, devcert=False, shell=True):
         import program_pack
-        with patch.object(program_pack, "enabled", lambda c: shell), patch.object(install.layout, "load_device", lambda c, k: dict(self.store.get(k, {}))), \
+        with patch.object(install.layout, "load_device", lambda c, k: dict(self.store.get(k, {}))), \
                 patch.object(install.layout, "save_device", lambda c, k, rec: self.store.__setitem__(k, rec)), \
                 patch.object(install.devcert, "active", lambda c: devcert), patch.object(install, "trace", lambda *a, **k: None):
             return install.deliver_identity(self.c, ph)
@@ -154,13 +154,6 @@ class DeliverIdentity(unittest.TestCase):
         self.assertIsNotNone(self.deliver(ph2))
         self.assertEqual(calls2, [("C:/plumesign.exe", TEAM)])
         self.assertEqual([op[0] for op in cl.ops[n:]].count("put"), 3)
-
-    def test_switch_off_writes_nothing(self):
-        # 通用壳开关关着（0.6.0 前缺省）：手机上一个字节都不写，也不读、不联网
-        ph, calls, cl = self.phone()
-        self.assertIsNone(self.deliver(ph, shell=False))
-        self.assertEqual((calls, cl.ops), ([], []))
-        self.assertNotIn("UDID1", self.store)
 
     def test_new_key_delivered_again(self):
         self.deliver(self.phone()[0])
