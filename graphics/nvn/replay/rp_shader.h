@@ -13,7 +13,8 @@ struct rp_uword { uint8_t reg, sid, pair, pair_sid, pair_reg; uint16_t off, pair
 //   NVN_RB_SAMPI = 常量采样器号 samp_reg；NVN_RB_SAMP = NVN 采样器槽 samp_reg 绑的句柄）。布局项的 src_reg2 = 本表下标。
 //   SAMPI 有两种口径，用 samp_pool 分开（不挤进 samp_reg 的某一位：samp_reg 的 16 位全是号）：
 //     samp_pool = 0：宿主登记的采样器号原值（离线库 {"source":"id"}，iOS 口径），不加采样器池起点；
-//     samp_pool = 1：着色器里的立即数采样器池下标（#1594 片 3，类型 3 句柄，硬件的 12 位采样器号），登记号 = samp_reg + 当前采样器池起点，
+//     samp_pool = 1：着色器里的立即数采样器池下标（#1594 片 3，类型 3 句柄，硬件的 12 位采样器号），采样器号 = 贴图字高 12 位 | samp_reg
+//                    （Ryujinx ReadPackedId；字高位为 0 时就是 samp_reg），登记号 = 采样器号 + 当前采样器池起点，
 //                    与 NVN_RB_SAMPU 读出的句柄高 12 位、c2 常量采样器（布局项 src_reg2 的 NVN_GPU_SAMP2_CONST）同口径。
 struct rp_usrc { struct rp_uword tex, samp; uint8_t samp_kind; uint16_t samp_reg; uint8_t samp_pool; };
 enum { RP_PROG_USRC_MAX = 64 };
