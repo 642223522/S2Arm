@@ -1591,7 +1591,9 @@ static struct nvk_cached_program *nvk_program_for_draw(struct s2a_vk_device *dev
                     uint8_t *lbytes = NULL;
                     size_t llen = 0;
                     char lwhy[192] = "";
-                    int lrc = s2a_libpack_program_v1(lp_pack, state->keys, state->stages,
+                    // 几何程序（vs+fs+gs）要绘制图元与本局 profile 的 geometryShader（与现编请求同源）
+                    const struct s2a_libpack_gfx lgfx = { nvk_input_topology(state->prim), pc.profile_json, pc.profile_bytes };
+                    int lrc = s2a_libpack_program_v1(lp_pack, state->keys, state->stages, &lgfx,
                                                      pc.direct_abi, pc.profile_hash, pc.translator_closure,
                                                      &lbytes, &llen, lwhy, sizeof lwhy);
                     if (lrc == S2A_LIBPACK_HIT) {

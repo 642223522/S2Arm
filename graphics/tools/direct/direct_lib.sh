@@ -16,7 +16,7 @@
 #   Mac 那份只是出库中间产物；pack/stage_direct.sh 出 iOS 包缺省设 ios，出 Mac 版 App（S2A_PACK_PLAT=macos，含普查 / 快测的 Mac 局）缺省设 mac（10-31：只出 Mac 库、发布它，
 #   原先两份都出、iOS 那份没有读者，Metal 编译白做一倍：怪猎崛起 4921 秒里 2490 秒是 iOS）
 # S2A_DIRECT_TARGETS=android（#783，出安卓包：pack/stage_direct.sh 在 S2A_PACK_PLAT=android 时缺省设它，发布目标 S2A_DIRECT_PUBLISH=android）：只出离线 Vulkan 库
-#   <输出目录>/b-<链>-vk/lib.idx + lib.NNN.pak（与苹果的 b-<链>/ 同层、同一种 LibPack 容器；键与 Metal 相同，每键 _b.json 种类 1 + _b.spv 种类 52，头部记 Vulkan 侧指纹；
+#   <输出目录>/b-<链>-vk/lib.idx + lib.NNN.pak（与苹果的 b-<链>/ 同层、同一种 LibPack 容器；键与 Metal 相同，每键 _b.json 种类 1 + _b.spv 种类 52（几何键按输入图元 _vg<t>.json 112+t + _vg<t>.spv 120+t），头部记 Vulkan 侧指纹；
 #   graphics/tools/direct/vklib 的 dsh_vklib 出），不编 Metal、不出 Metal 专用的变体请求表 / 管线种子表。
 #   抽取只用产物根里抽取阶段的 extract/（pack/refresh.sh 安卓分支在直连库之前跑 pack/stage_extract.sh：兄弟平台根克隆来的键相同就跳过，没有才抽），这里不另抽，没有就按内容缺口退 3；Vulkan / OpenGL 款安卓运行时自己编，退 0 不出库
 # 配置由 game.py dir 选择，支持既有 DM_GAMES_DIR/DM_GAMES_FIRST；缺档明确失败。

@@ -1020,7 +1020,7 @@ static int libpack_fetch(const uint8_t identity[32], const uint8_t (*gkeys)[8], 
         else {
             uint8_t keys[6][8]; memset(keys, 0, sizeof keys);
             memcpy(keys[0], gkeys[0], 8); memcpy(keys[1], gkeys[1], 8);
-            lrc = s2a_libpack_program_v1(lp, keys, 0x3, (uint32_t)pc->direct_abi, pc->profile_hash, pc->translator_closure, bytes, len, lw, sizeof lw);
+            lrc = s2a_libpack_program_v1(lp, keys, 0x3, NULL, (uint32_t)pc->direct_abi, pc->profile_hash, pc->translator_closure, bytes, len, lw, sizeof lw);
         }
     }
     pthread_mutex_unlock(&g_lp_mu);

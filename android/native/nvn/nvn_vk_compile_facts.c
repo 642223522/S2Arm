@@ -113,7 +113,7 @@ void nvk_env_fill(const struct s2a_direct_compile_context *pc, struct nvk_env *o
 
 // NVN 绘制图元 → 翻译器输入拓扑。QUADS/POLYGON 没有对应拓扑，按 Triangles 记（真实 quad→triangle
 // 的 primitive-id 修正属于 halvePrimitiveId，本笔没有该事实来源，请求里不填）。
-static const char *nvk_input_topology(uint32_t prim) {
+const char *nvk_input_topology(uint32_t prim) {
     switch (prim) {
         case 0x0: return "Points";
         case 0x1: case 0x2: case 0x3: return "Lines";
