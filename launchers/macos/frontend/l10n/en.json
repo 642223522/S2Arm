@@ -1311,8 +1311,8 @@
   "s2arm.diagUpload.github": "Post on GitHub",
   "s2arm.diagUpload.repo": "Repository: {0}",
   "s2arm.diagUpload.not": "Excludes saves, keys and game files, kept for up to 7 days and deleted after review",
-  "s2arm.diagUpload.noteLabel": "What happened? (optional)",
-  "s2arm.diagUpload.notePlaceholder": "Briefly describe the issue, for example “black screen after the intro” (optional)",
+  "s2arm.diagUpload.noteLabel": "What happened? (required)",
+  "s2arm.diagUpload.notePlaceholder": "Which game, what you did and what you saw, for example “opened the game, black screen after the intro”",
   "s2arm.diagUpload.cancel": "Cancel",
   "s2arm.diagUpload.send": "Upload",
   "s2arm.diagUpload.sending": "Uploading…",
@@ -1777,5 +1777,13 @@
   "s2arm.env.fullscreen.title": "Start games in full screen",
   "s2arm.env.fullscreen.detail": "When on, every game (including ones you add later) opens in full screen; a game with its own full-screen setting keeps that setting.",
   "home.card.daysLeft": "%d days left",
-  "home.card.expired": "Expired"
+  "home.card.expired": "Expired",
+  "s2arm.env.xcode.group": "Xcode",
+  "s2arm.env.xcode.title": "Xcode in use",
+  "s2arm.env.xcode.found": "Found automatically: %@",
+  "s2arm.env.xcode.chosen": "Your choice: %@",
+  "s2arm.env.xcode.none": "No Xcode found yet",
+  "s2arm.env.xcode.choose": "Choose Xcode…",
+  "s2arm.env.xcode.auto": "Find automatically",
+  "s2arm.env.xcode.invalid": "That isn't a complete Xcode (it needs Contents/Developer/usr/bin/xcodebuild). Nothing was changed."
 }

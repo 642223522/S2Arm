@@ -54,4 +54,6 @@ __attribute__((weak)) char *s2a_shell_save_context(void) { return NULL; }
 __attribute__((weak)) void s2a_shell_report_problem(void) {}
 __attribute__((weak)) int s2a_shell_snapshot_available(const char *game_id) { (void)game_id; return 0; }
 __attribute__((weak)) void s2a_shell_restore_snapshot(const char *game_id) { (void)game_id; }
+__attribute__((weak)) int s2a_shell_snapshot_dir(const char *game_id, char *out, unsigned long size) { (void)game_id; (void)out; (void)size; return -1; }
+__attribute__((weak)) int s2a_shell_delete_snapshot(const char *game_id) { (void)game_id; return -1; }
 __attribute__((weak)) char *s2a_shell_save_request(const char *json) { (void)json; return NULL; }

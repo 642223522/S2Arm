@@ -14,6 +14,7 @@
 #include "../include/s2a_selfcheck_page.h"   // 说明页标题「游戏资源不完整」与自检提示页同一句
 __attribute__((weak)) int s2a_ui_zh(void) { return 1; }   // 界面语言（s2a_ui_text.h）：iOS ios/app.m、Mac macos/front_mac.m 强定义；别的平台 / 只链本文件的单测按中文
 #include <dirent.h>
+#include <pthread.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -472,7 +473,33 @@ unsigned s2a_pack_repair_tree(const char *dir) {
     return g_repair_n;
 }
 static void img_shed(const char *root, const char *logp);   // 截掉导入本体里重复的派生件（定义在着色器更新包那段之后）
+// 同一进程里一次只有一路在解包（11-19 Duo：游戏库 s2a_shell_install_game 与资源导入闸门 gate_thread 各自对同一款起了解包。游戏库那路解完、删了 .incoming，
+//   闸门那路随后打开 1795095613_002.tar 回 errno 2、按失败收场，起局 60 秒没就绪；重跑没撞上就正常）。两路读同一个 .incoming、写同一棵资源包，
+//   还共用本文件的失败现场（g_apply_fail / g_untar_err），并发本身就不对：整段串行。后到的一路等前一路做完再看——待解包、压缩块都没了，
+//   .applied 也已是本份清单的号 → 前一路已经解开，不再重解，直接算成功；否则（前一路失败 / 又推来了新包）照常再解一遍
+static pthread_mutex_t g_apply_mu = PTHREAD_MUTEX_INITIALIZER;
+static int pack_apply_locked(const char *docs);
+static int applied_by_other(const char *docs) {   // 待解包已空、.applied = 清单号 → 1
+    char root[2048], p[2200], want[200], got[200] = ""; s2a_pack_root(root, sizeof root, docs);
+    snprintf(p, sizeof p, "%s/.incoming", root);
+    if (has_zchunks(p)) return 0;
+    DIR *d = opendir(p); if (d) { struct dirent *e; int tar = 0; while (!tar && (e = readdir(d))) { size_t l = strlen(e->d_name); tar = l > 4 && !strcmp(e->d_name + l - 4, ".tar") && strncmp(e->d_name, "._", 2); } closedir(d); if (tar) return 0; }
+    snprintf(p, sizeof p, "%s/manifest.json", root); if (manifest_sha(p, want, sizeof want)) return 0;
+    snprintf(p, sizeof p, "%s/.applied", root); FILE *f = fopen(p, "r"); if (!f) return 0;
+    size_t k = fread(got, 1, sizeof got - 1, f); got[k] = 0; got[strcspn(got, "\r\n")] = 0; fclose(f);
+    return !strcmp(got, want);
+}
 int s2a_pack_apply(const char *docs) {
+    if (pthread_mutex_trylock(&g_apply_mu)) {   // 另一路正在解：等它做完
+        LOG("资源包收推送：另一路正在解开，等它做完");
+        pthread_mutex_lock(&g_apply_mu);
+        if (applied_by_other(docs)) { g_apply_fail[0] = 0; g_apply_code[0] = 0; pthread_mutex_unlock(&g_apply_mu); LOG("资源包收推送：完成（另一路刚解开，不再重解）"); return 0; }
+    }
+    int rc = pack_apply_locked(docs);
+    pthread_mutex_unlock(&g_apply_mu);
+    return rc;
+}
+static int pack_apply_locked(const char *docs) {
     char root[2048], inc[2100], logp[2100]; s2a_pack_root(root, sizeof root, docs); snprintf(inc, sizeof inc, "%s/.incoming", root); snprintf(logp, sizeof logp, "%s/unpack.log", docs);
     if (pack_in_bundle(root, "解开资源包")) return -12;   // 同「目录写不进」的码
     // 多款容器第一次装一款时本款文档根 Documents/games/<游戏号>/ 还不在（资源包在 Library 下）：先建出来，解包日志才写得下。
@@ -806,13 +833,8 @@ static uint64_t index_img_len(const char *root) {   // index.tsv 里 game.img �
     while (fgets(line, sizeof line, f)) if (!strncmp(line, "game.img\t", 9)) { v = strtoull(line + 9, NULL, 10); break; }
     fclose(f); return v;
 }
-// 0.6.0 行为开关（同电脑侧 pack/jobs/program_pack.py ON_BY_DEFAULT）：0.6.0 之前缺省关、玩家手机上行为一字不变；切 0.6.0 时把缺省翻成 1。单测按两种状态各核一遍
-#ifndef S2A_V060_DEFAULT
-#define S2A_V060_DEFAULT 0
-#endif
-int g_s2a_v060 = S2A_V060_DEFAULT;
-static void img_shed(const char *root, const char *logp) {
-    if (!g_s2a_v060 || !came_from_import(root)) return;
+static void img_shed(const char *root, const char *logp) {   // 导入来的本体截掉已解成文件的派生件（0.6.0 起通用壳是唯一装法，不再有开关）
+    if (!came_from_import(root)) return;
     char ip[2400]; snprintf(ip, sizeof ip, "%s/game.img", root);
     int fd = open(ip, O_RDONLY); if (fd < 0) return;
     uint8_t h[136]; upd_ent *e = NULL; size_t n = 0; uint64_t to, tl, total0;
@@ -1004,7 +1026,7 @@ static int img_place(const char *proc_docs, const char *path, int pass) {   // 0
     if (in) { char line[4600]; while (fgets(line, sizeof line, in)) if (!strncmp(line, "shaders/", 8) || !strncmp(line, "romfs_overlay/", 14)) { fputs(line, o); shaders |= !strncmp(line, "shaders/", 8); } fclose(in); }
     if (!shaders) { img_ent *te; size_t tn; if (!img_toc(root, &te, &tn)) { for (size_t i = 0; i < tn && !shaders; i++) shaders = !strncmp(te[i].rel, "shaders/", 8); img_free(te, tn); } }
     // 两处都没有：多半是把资源包文件夹里的 game.img 直接放了进来（它按设计不带 shaders/），起局时着色器全靠现编（11-13 起不再收局；诊断 D-9864 / D-F6W7）
-    if (!shaders) { LOG("【黄】资源导入：%s 里没有着色器库（shaders/）：照样能玩，着色器首次遇到时现编、前几分钟会卡；要不卡就放「S2Arm 自签导出」文件夹里这款的 .img",
+    if (!shaders) { LOG("【黄】资源导入：%s 里没有着色器库（shaders/）：照样能玩，着色器首次遇到时现编、前几分钟会卡；要不卡就把电脑「S2Arm 游戏包」文件夹里这款的 .s2arm 一起放进来（它带着着色器库）",
                         strrchr(path, '/') ? strrchr(path, '/') + 1 : path);
                     snprintf(g_img_noshaders, sizeof g_img_noshaders, "%s", strrchr(path, '/') ? strrchr(path, '/') + 1 : path); }
     if (fclose(o) || tx_swap(tx, tp, ip, NULL)) { snprintf(g_img_err, sizeof g_img_err, "写 index.tsv 失败：%s", strerror(errno)); unlink(tp); IMG_PLACE_FAIL(); }
@@ -1136,6 +1158,10 @@ static int img_scan_dir(const char *proc_docs, const char *dir, int depth, int p
     char *names[512]; int nn = 0; struct dirent *e;
     while ((e = readdir(d)) && nn < 512) { if (e->d_name[0] == '.') continue; if (depth == 0 && !strcmp(e->d_name, "games")) continue; names[nn++] = strdup(e->d_name); }
     closedir(d);
+    // 同一个文件夹里先导 .s2arm、再认领 IMG：.s2arm 带来的资源包派生件里有 index.tsv 的着色器库行，IMG 认领时照留（img_place）。readdir 的次序不定，
+    //   IMG 先认领时 index.tsv 还没到，报「没有着色器库、首次遇到时现编」，可接着导入的 .s2arm 已经带着着色器（11-18 两台 iPhone 实机：起局着色器表 11 行、现编 0）
+    { char *ord[512]; int m = 0; for (int k = 0; k < 2; k++) for (int j = 0; j < nn; j++) if ((ends_with(names[j], ".s2arm") != 0) == (k == 0)) ord[m++] = names[j];
+      memcpy(names, ord, (size_t)nn * sizeof *names); }   // 稳定分区：.s2arm 在前，其余保持原次序
     for (int i = 0; i < nn; i++) {
         char p[2400]; struct stat st; snprintf(p, sizeof p, "%s/%s", dir, names[i]);
         if (!lstat(p, &st)) {

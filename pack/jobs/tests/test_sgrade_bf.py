@@ -5,6 +5,7 @@
 import contextlib
 import hashlib
 import json
+import os
 import tempfile
 import types
 import unittest
@@ -158,8 +159,6 @@ class IosInputsImage(unittest.TestCase):
             self.assertTrue(sgrade_bf._has_romfs(root))
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class RechainIos(unittest.TestCase):
@@ -219,8 +218,60 @@ class RechainIos(unittest.TestCase):
         self.assertEqual((self.pack / "index.tsv").read_text(encoding="utf-8"), before)
         self.assertEqual(self.info["ios"]["dmshChain"], "old", "没重编就不记新链号（「建议更新」照旧提示）")
 
+    def test_windows_without_metal_unavailable_and_untouched(self):
+        # 期望手写：Windows 没装 Metal 开发工具时重出给 None（同 Windows 出包不带着色器库）→ 'unavailable'、资源包与链号都不动，推送照常（调用方记一行）
+        before = (self.pack / "index.tsv").read_text(encoding="utf-8")
+        with patch.object(sgrade_bf, "rebuild", lambda *a: None), patch("host_update.engine_compat", lambda c: dict(hostAbi=1, dmshChain="new")), \
+                patch.object(sgrade_bf.layout, "game_info", lambda c, g: self.info), patch.object(sgrade_bf.layout, "ios_pack", lambda c, g: self.pack), \
+                patch.object(sgrade_bf, "ios_inputs", lambda c, g, w: (Path(w) / "root", "game.img")):
+            r = sgrade_bf.rechain_ios(self.c, "0100AAAA00000000")
+        self.assertEqual(r, "unavailable")
+        self.assertEqual((self.pack / "index.tsv").read_text(encoding="utf-8"), before)
+        self.assertEqual(self.info["ios"]["dmshChain"], "old")
+
     def test_incomplete_rebuild_raises_and_keeps_old(self):
         bad = Path(self.tmp.name) / "bad/shaders/direct"; bad.mkdir(parents=True)
         with self.assertRaises(Failure):
             self.run_rechain(rebuilt=bad)
         self.assertTrue((self.pack / "shaders/direct/b-old/lib.idx").is_file(), "重编不完整不动旧库")
+
+
+class WindowsRebuildTests(unittest.TestCase):
+    """Windows 重出直连库（_rebuild_win）：另起进程跑 Windows 出包的直连库那一步（oneclick_win.direct），环境用作业层的（c.env）＋ iOS 平台 ＋ 这款的直连缓存。期望按方案手写"""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        t = Path(self.tmp.name)
+        self.root = t / "src"; (self.root / "exefs").mkdir(parents=True)
+        (self.root / "shaders/direct/b-old").mkdir(parents=True); (self.root / "extract").mkdir()   # 旧库与旧抽取：重出前要清掉
+        self.seen = {}; self.metal = True
+        def run(args, log, env, cwd=None, **k):
+            root, work, tid = Path(args[-3]), Path(args[-2]), args[-1]
+            self.seen.update(code=args[4], root=root, tid=tid, env=env, cwd=cwd, stale=[p for p in ("shaders/direct", "extract") if (root / p).exists()])
+            out = work / "direct"
+            if self.metal:
+                (out / "b-new").mkdir(parents=True); (out / "b-new/lib.idx").write_bytes(b"L"); (out / "keys.tsv").write_text("k\n")
+            (work / "direct_result.txt").write_text(str(out) if self.metal else "", encoding="utf-8")
+        self.c = types.SimpleNamespace(engine=str(t / "eng"), logs=str(t / "logs"), task="t", env=lambda: {"S2A_PREBUILT_TOOLS": "pre"}, run=run)
+
+    def rebuild(self):
+        with patch.object(sgrade_bf, "WIN", True), patch.object(sgrade_bf, "_win_profile", lambda c, root: self.seen.setdefault("profile", Path(root))), \
+                patch("library.direct_cache_dir", lambda c, g: Path(self.tmp.name) / "dcache" / g):
+            return sgrade_bf.rebuild(self.c, "0100aaaa00000000", self.root, "ios", Path(self.tmp.name) / "w")
+
+    def test_runs_windows_direct_step_in_job_env(self):
+        out = self.rebuild()
+        self.assertEqual(sgrade_bf.lib_dir(out).name, "b-new")
+        self.assertIn("ow.direct(", self.seen["code"])
+        self.assertEqual((self.seen["root"], self.seen["tid"], self.seen["cwd"]), (self.root, "0100AAAA00000000", self.c.engine))
+        self.assertEqual(self.seen["profile"], self.root, "先补配置档")
+        self.assertEqual(self.seen["stale"], [], "旧库 / 旧抽取不带进重出")
+        env = self.seen["env"]
+        self.assertEqual((env["S2A_PREBUILT_TOOLS"], env["S2A_PACK_PLAT"], env["S2A_DIRECT_CACHE"]),
+                         ("pre", "ios", str(Path(self.tmp.name) / "dcache" / "0100aaaa00000000")), "作业层环境（随包预编件）＋ iOS ＋ 这款出包时的直连缓存")
+
+    def test_no_metal_gives_none(self):
+        self.metal = False
+        self.assertIsNone(self.rebuild())
+
+if __name__ == "__main__":
+    unittest.main()

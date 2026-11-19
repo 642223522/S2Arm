@@ -3,12 +3,21 @@
 #include <stdint.h>
 #include <stdlib.h>
 // 即时存档开关的唯一定义处：图形层（弱引用）、服务层（P/Invoke，再在启动时转给音频两处）都读这里，不各自读环境变量。
-//   能存 = 起局带了 S2A_SNAP_MODE=1（恢复局也可以带：回到那一刻之后还能再存）；恢复中 = 设了 S2A_SNAP_RESTORE；s2a_snap_mode = 两者之一。
+//   能存 = 苹果端缺省开、S2A_SNAP_MODE=0 关（恢复局也能存：回到那一刻之后还能再存）；恢复中 = 设了 S2A_SNAP_RESTORE；s2a_snap_mode = 两者之一。
 //   记日志（请求日志 / 句柄日志）= 能存且（不是恢复局，或恢复已完成）：恢复局里重放不记，恢复完成时把快照里的两份日志整份接过来当开头、序号接着编，之后照常记
 static int g_snap_sw = -1;   // 位 0 能存、位 1 恢复中
 static _Atomic int g_snap_live = -1;
+// 能存：苹果端缺省开（0.6.0：玩家要真能用快照，设置里能关），S2A_SNAP_MODE=0 关（iPhone App / Mac 启动器作业层按玩家设置写）；
+//   安卓不编快照引擎，恒关（设了 1 也不开）
+static int snap_save_on(const char *m) {
+#if defined(__APPLE__)
+    return !(m && *m == '0');
+#else
+    (void)m; return 0;
+#endif
+}
 static int snap_sw(void) {
-    if (g_snap_sw < 0) { const char *m = getenv("S2A_SNAP_MODE"), *r = getenv("S2A_SNAP_RESTORE"); g_snap_sw = (m && *m == '1') | (r && *r) << 1; }
+    if (g_snap_sw < 0) { const char *m = getenv("S2A_SNAP_MODE"), *r = getenv("S2A_SNAP_RESTORE"); g_snap_sw = snap_save_on(m) | (r && *r) << 1; }
     return g_snap_sw;
 }
 int s2a_snap_saving(void) { return snap_sw() & 1; }
@@ -22,4 +31,8 @@ void s2a_snap_live_set(int on) { atomic_store(&g_snap_live, on ? 1 : 0); }
 int s2a_snap_need_handle(uint32_t h) { (void)h; return 0; }
 int s2a_snap_replay_begin(int seq) { (void)seq; return 0; }
 int s2a_snap_replay_end(int seq) { (void)seq; return 0; }
+int s2a_snap_seq_live(int seq) { (void)seq; return 0; }
+void s2a_snap_hlog_forget(int seq) { (void)seq; }
+int s2a_snap_handle_use(uint32_t h, uint32_t *uid) { (void)h; *uid = 0; return -1; }
+void s2a_snap_handle_unuse(uint32_t uid) { (void)uid; }
 #endif

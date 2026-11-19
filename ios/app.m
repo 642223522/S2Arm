@@ -1,4 +1,5 @@
 // iOS App 壳：UIKit 占主线程（s2a_front_run 覆盖 host_main.c 的弱缺省）。窗口与根视图在这里建；Metal 层与触屏 / 手柄由帧率能耗线、服务接入线挂到 s2a_ios_root_view()。
+#include "s2a_loadprog.h"   // 前台激活门
 #include <dlfcn.h>
 #import "s2a_l10n.h"
 #import <UIKit/UIKit.h>
@@ -66,11 +67,36 @@ static void s2a_ios_suspend_enqueue(int on, const char *why);
 // 重启完成（runtime/src/session.c s2a_session_on_restart_done，启动时登记一次）：不管设置页 / 游戏 ExecuteProgram / 测试开关谁发起，
 //   新局起来后都在这里放「重启首帧屏障」（s2a_session_guest_start_prepare 立的客体冻结 + GPU hold）。屏障防的是重建期间 App 进了后台、
 //   新局在后台提交 GPU：所以只在 UIKit 确认前台活跃时放；不活跃就留给「回前台 / 获得焦点」那次 s2a_ios_suspend(0) 放
+static void snap_result_check(void);
 static void restart_done(unsigned generation) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ snap_result_check(); });   // 快照恢复中途失败后重新开局：告诉玩家
     dispatch_async(dispatch_get_main_queue(), ^{
         if (UIApplication.sharedApplication.applicationState == UIApplicationStateActive) s2a_ios_suspend_enqueue(0, "重启完成");
         else LOG("iOS 壳：会话 %u 重启完成，App 不在前台活跃，屏障留到回前台放", generation);
     });
+}
+// 快照恢复的结果（引擎每次恢复尝试都重写文档根下 snap_result.tsv：结果 / 分类 / 给玩家 / 时刻，runtime/src/snapshot.c s2a_snap_result_note）：
+//   结果不是「恢复成功」也不是「需要确认」（那一类 vpad / 游戏库已当场问过）就把「给玩家」那句弹出来，弹完删文件不重复弹。
+//   本局文档根找不到（游戏库里，还没起局）就看上一局那款的文档根（S2ALastGameId → <容器>/games/<号>/）
+static void snap_result_check(void) {
+    NSMutableArray<NSString *> *paths = [NSMutableArray array];
+    char p[2048]; if (s2a_docs_path(p, sizeof p, "snap_result.tsv") > 0) [paths addObject:@(p)];
+    NSString *last = [NSUserDefaults.standardUserDefaults stringForKey:@"S2ALastGameId"]; char d[1024];
+    if (last.length && ![last containsString:@"/"] && s2a_container_docs(d, sizeof d) > 0) [paths addObject:[NSString stringWithFormat:@"%s/games/%@/snap_result.tsv", d, last]];
+    for (NSString *f in paths) {
+        NSString *text = [NSString stringWithContentsOfFile:f encoding:NSUTF8StringEncoding error:nil]; if (!text) continue;
+        NSMutableDictionary<NSString *, NSString *> *kv = [NSMutableDictionary dictionary];
+        for (NSString *line in [text componentsSeparatedByString:@"\n"]) { NSArray *c = [line componentsSeparatedByString:@"\t"]; if (c.count >= 2) kv[c[0]] = c[1]; }
+        [NSFileManager.defaultManager removeItemAtPath:f error:nil];
+        NSString *result = kv[@"结果"], *say = kv[@"给玩家"];
+        if (!result.length || [result isEqualToString:@"恢复成功"] || [result isEqualToString:@"需要确认"]) return;
+        LOG("快照：恢复结果「%s」（%s），告诉玩家", result.UTF8String, kv[@"分类"].UTF8String ?: "");
+        UIAlertController *a = [UIAlertController alertControllerWithTitle:S2AL(@"snap.result.title") message:say.length && s2a_l10n_zh() ? say : S2AL(@"snap.result.generic") preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.ok") style:UIAlertActionStyleDefault handler:nil]];
+        UIView *s2a_ios_root_view(void); UIViewController *top = s2a_ios_root_view().window.rootViewController; while (top.presentedViewController) top = top.presentedViewController;
+        [top presentViewController:a animated:YES completion:nil];
+        return;
+    }
 }
 // 设置页「立刻重启」的请求回调：只回设置页结果；屏障由 restart_done 放（控制线程先调它，两者都派主线程，先放屏障后回设置页）
 static void settings_restart_result(int result, const char *detail, void *context) {
@@ -718,6 +744,7 @@ static void audio_category_apply(void) {
     // 同一浮层下随后起的暗黑3 从没「回前台」过、一直出帧——失焦期间画面照常可提交，冻结只该跟后台走
     // 用通知不用委托方法：场景式 / 旧式生命周期都发这几条
     s2a_session_on_restart_done(restart_done);   // 任何发起方的进程内重启完成都由壳放重启首帧屏障（见 restart_done）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ snap_result_check(); });   // 兜住「恢复失败、进程直接退出」：下次打开时说
     NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
     [nc addObserverForName:UIApplicationWillResignActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; display_focus_publish(NO); LOG("iOS 壳：失去焦点（仍在前台，游戏照跑）"); }];
     [nc addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; display_focus_publish(NO); s2a_dguard_background(1, now_ns()); { int s2a_playtime_flush(void); s2a_playtime_flush(); } { void s2a_diag_session_fg(int); s2a_diag_session_fg(0); } s2a_ios_suspend_enqueue(1, "进后台"); s2a_guest_run_mark(0); }];   // 直连安全网：后台被杀 / 玩家划掉不算崩
@@ -772,7 +799,7 @@ static void audio_category_apply(void) {
         LOG("[心跳] 帧 %llu，热状态 %ld（0 正常 1 一般 2 严重 3 危急），进程实占 %llu MB，%s，持续执行档 %d（1 = 系统按稳态功率限制本进程，要权限 sustained-execution），低电量模式 %d，低区空洞合计 %llu MB、最大一块 %llu MB，文件句柄 %d / 软上限 %llu%s", (unsigned long long)s2a_ap_frames(), (long)NSProcessInfo.processInfo.thermalState,
             s2a_footprint_mb(), (const char *[]){"前台", "前台失焦", "后台"}[app_state],
             (int)[NSProcessInfo.processInfo hasPerformanceProfile:NSProcessPerformanceProfileSustained], (int)NSProcessInfo.processInfo.lowPowerModeEnabled, (unsigned long long)(lt >> 20), (unsigned long long)(ll >> 20), fn, (unsigned long long)fs, wins);
-        // 本款本机实测峰值（vawin.c s2a_guest_mem_note：只记没开文件后备那几局的进程实占，#783）：下一局起局按它判文件后备开不开
+        // 本局需求（vawin.c s2a_guest_mem_note：匿名局记实占、文件后备局记实占 + 窗口里在内存的客体页）：下一局起局结算进实测记录，按它判文件后备开不开（#1634）
         { void s2a_guest_mem_note(uint64_t footprint); s2a_guest_mem_note((uint64_t)s2a_footprint_mb() << 20); }
         int s2a_disk_io(uint64_t *rd, uint64_t *wr, uint64_t *pageins);   // energy.c（只此一处用，不进 native.h：那是出包抽取阶段的键）
         // 写盘量（11-05 能耗线，客体内存文件后备的代价）：本进程累计与近 10 秒，内存紧张时内核把文件脏页写回闪存的量在这里看
@@ -877,6 +904,8 @@ static void top_alert(UIWindow *w, NSString *title, NSString *body) {
 }
 @interface S2ASceneDelegate ()
 - (void)enterGame;
+- (void)bootFromScene;
+- (void)bootFromSceneState;
 @end
 static void library_play_go(const char *gid, S2ASceneDelegate *sd);
 // 崩了能恢复（11-13 维护者改定：补丁 / 金手指是玩家主动开的，开局前不再问；崩了下次进来自动关掉、告诉玩家关了什么，想用去设置里再开）：
@@ -909,6 +938,21 @@ static void *g_snap_play_ctx;
 int s2a_shell_snapshot_available(const char *gid) {
     int s2a_snap_saving(void), s2a_snap_dir_for(const char *, char *, size_t), s2a_snap_exists(const char *);
     char d[2048]; return gid && *gid && s2a_snap_saving() && !s2a_snap_dir_for(gid, d, sizeof d) && s2a_snap_exists(d);
+}
+// 游戏库「从这一刻继续」：有完整快照的那款给出快照目录（宿主模型每秒重判时读里面的缩略图和保存时刻）；开关关着 / 没有完整快照回 -1
+int s2a_shell_snapshot_dir(const char *gid, char *out, unsigned long size) {
+    int s2a_snap_saving(void), s2a_snap_dir_for(const char *, char *, size_t), s2a_snap_exists(const char *);
+    char d[2048];
+    if (!gid || !*gid || !out || !s2a_snap_saving() || s2a_snap_dir_for(gid, d, sizeof d) || !s2a_snap_exists(d)) return -1;
+    return snprintf(out, size, "%s", d) < (int)size ? 0 : -1;
+}
+// 游戏库长按「删除这一刻」（玩家已确认）：连同缩略图、清单一起删，空间腾出来（runtime/src/snapdel.c）
+int s2a_shell_delete_snapshot(const char *gid) {
+    int s2a_snap_dir_for(const char *, char *, size_t), s2a_snap_delete(const char *);
+    char d[2048]; if (!gid || !*gid || s2a_snap_dir_for(gid, d, sizeof d)) return -1;
+    int rc = s2a_snap_delete(d);
+    LOG("游戏库：%s 删除存下的这一刻 → %s", gid, rc ? "没删干净" : "已删");
+    return rc;
 }
 static void library_play(const char *gid, void *ctx);
 static void snap_library_go(NSString *gid, NSString *dir, BOOL rollback) {
@@ -1304,8 +1348,9 @@ static void cloud_sync_done(void *ctx) {
     S2ASceneDelegate *sd = (__bridge S2ASceneDelegate *)ctx;
     sd.cloudSyncing = NO;
     if (sd.previousRoot) { sd.window.rootViewController = sd.previousRoot; sd.previousRoot = nil; }
-    // App 正在后台：不起宿主，等系统下次真激活时调 sceneDidBecomeActive
-    if (sd.window.windowScene.activationState == UISceneActivationStateForegroundActive) [sd sceneDidBecomeActive:sd.window.windowScene];
+    // App 正在后台：不起宿主，等系统下次进前台时再起；前台（激活或弹框盖着未激活）就接着起，开跑前由前台激活门等激活
+    UISceneActivationState a = sd.window.windowScene.activationState;
+    if (a == UISceneActivationStateForegroundActive || a == UISceneActivationStateForegroundInactive) [sd bootFromSceneState];
 }
 // 主屏小组件点封面（s2arm://play/<游戏号>，11-16 维护者：小组件进 0.5.0；Info.plist 的 CFBundleURLTypes 见 runtime/build.mk）：
 //   游戏库还开着 → 同玩家点「开始」（library_play：崩溃恢复 → 起局前检查 → 起宿主；资源不在手机上的款照常说明为什么开不了）；
@@ -1376,7 +1421,7 @@ static void widget_open(NSURL *url, void *ctx) {
     note_build();
     if (g_help_args) help_build(g_help_args[0], g_help_args[1], g_help_args[2]);
     dguard_show_pending();
-    [self sceneDidBecomeActive:self.window.windowScene];
+    [self bootFromSceneState];
 }
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options {
     (void)session;
@@ -1451,8 +1496,24 @@ static void widget_open(NSURL *url, void *ctx) {
     const s2a_launch_ctx *lc = s2a_launch_ctx_get();
     s2a_shell_cloud_upload_background(lc && lc->game_id[0] ? lc->game_id : "");
 }
+// 场景进前台（还没激活：系统弹框可能盖着）就开始起宿主：加载照做，起游戏主线程前由前台激活门（loadprog.c s2a_load_front_wait）等激活
+- (void)sceneWillEnterForeground:(UIScene *)scene {
+    s2a_load_front_state(((UIWindowScene *)scene).activationState == UISceneActivationStateForegroundActive ? 2 : 1);
+    [self bootFromScene];
+}
 - (void)sceneDidBecomeActive:(UIScene *)scene {
     (void)scene;
+    s2a_load_front_state(2);
+    [self bootFromScene];
+}
+// 起宿主的那条路（游戏库 Play、云同步完、进前台、激活都走这里；领取续体只一次，重复进来是空操作）：门的状态按场景此刻实况设
+- (void)bootFromSceneState {
+    UISceneActivationState a = self.window.windowScene.activationState;
+    if (a == UISceneActivationStateForegroundActive) s2a_load_front_state(2);
+    else if (a == UISceneActivationStateForegroundInactive) s2a_load_front_state(1);
+    [self bootFromScene];
+}
+- (void)bootFromScene {
     if (!s2a_host_boot_pending()) return;
     if (s2a_launch_ctx_container() && !atomic_load(&g_game_picked)) return;   // 多款容器：等游戏库 Play（预热进程同样只显示库）
     if (self.managingSaves || self.cloudSyncing) return;

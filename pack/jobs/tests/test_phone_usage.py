@@ -61,7 +61,7 @@ class PhoneUsage(unittest.TestCase):
             if not connected:
                 raise install.Failure("没连", code="device_not_connected")
             return ph
-        with patch.object(program_pack, "enabled", lambda c: on), patch.object(install, "phone_for", pf), \
+        with patch.object(install, "phone_for", pf), \
                 patch.object(install, "devpush_client", lambda c, u, b, w: fs), patch.object(install, "phone_bid", lambda p: p.bid), \
                 patch.object(install, "trace", lambda *a, **k: None), patch.object(install.time, "time", lambda: 1_800_000_000.0):
             return install.phone_usage(self.c)
@@ -85,12 +85,6 @@ class PhoneUsage(unittest.TestCase):
         fs = self.files(); fs[f"{P}/{A}/pack/game.img"] = 9
         r = self.usage(FakePhoneFs(fs, du_ok=False))
         self.assertEqual((r["phones"][0]["live"], r["phones"][0]["games"][0]["resources"]), (False, 4002), "量不了：给上次的、不清零")
-
-    def test_switch_off(self):
-        fs = FakePhoneFs(self.files())
-        self.assertEqual(self.usage(fs, on=False), dict(enabled=False, phones=[]))
-        self.assertEqual(fs.calls, [])
-
 
 if __name__ == "__main__":
     unittest.main()

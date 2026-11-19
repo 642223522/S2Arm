@@ -1,0 +1,804 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "S2Arm 鸿蒙开发外壳"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "S2Arm 开发版"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "S2Arm"
+    },
+    {
+      "name": "cancel",
+      "value": "取消"
+    },
+    {
+      "name": "ok",
+      "value": "确定"
+    },
+    {
+      "name": "close",
+      "value": "关闭"
+    },
+    {
+      "name": "done",
+      "value": "完成"
+    },
+    {
+      "name": "settings",
+      "value": "设置"
+    },
+    {
+      "name": "touch_layout",
+      "value": "触控布局"
+    },
+    {
+      "name": "controller_hint",
+      "value": "连接蓝牙或 USB 手柄后，在这里查看状态。"
+    },
+    {
+      "name": "gfx_direct",
+      "value": "直连"
+    },
+    {
+      "name": "gfx_generic",
+      "value": "兼容"
+    },
+    {
+      "name": "title_with_mode",
+      "value": "%s · %s"
+    },
+    {
+      "name": "state_preparing_runtime",
+      "value": "准备运行库"
+    },
+    {
+      "name": "state_loading_modules",
+      "value": "加载模块"
+    },
+    {
+      "name": "state_memory_ready",
+      "value": "内存已就绪"
+    },
+    {
+      "name": "state_services_ready",
+      "value": "图形与服务已就绪"
+    },
+    {
+      "name": "state_running",
+      "value": "游戏运行中"
+    },
+    {
+      "name": "state_start_failed",
+      "value": "启动失败"
+    },
+    {
+      "name": "state_stopping",
+      "value": "正在停止"
+    },
+    {
+      "name": "state_reading",
+      "value": "读取运行状态"
+    },
+    {
+      "name": "settings_read_failed",
+      "value": "无法读取设置，请重新打开应用"
+    },
+    {
+      "name": "game_settings_read_failed",
+      "value": "无法读取游戏设置"
+    },
+    {
+      "name": "save_failed_retry",
+      "value": "未保存，请重试"
+    },
+    {
+      "name": "index_save_failed",
+      "value": "游戏索引未保存，请重新扫描"
+    },
+    {
+      "name": "favorite_save_failed",
+      "value": "收藏未保存，请重试"
+    },
+    {
+      "name": "settings_save_failed",
+      "value": "设置未保存，请重试"
+    },
+    {
+      "name": "return_library_failed",
+      "value": "未能返回游戏库。请重试，或先回到游戏。"
+    },
+    {
+      "name": "keyboard_request_read_failed",
+      "value": "无法读取游戏输入请求：%d"
+    },
+    {
+      "name": "keyboard_request_unsupported",
+      "value": "游戏输入请求格式或模式尚不受支持"
+    },
+    {
+      "name": "keyboard_request_parse_failed",
+      "value": "无法解析游戏输入请求"
+    },
+    {
+      "name": "keyboard_length_hint",
+      "value": "请输入 %d 至 %d 个字符，并符合输入类型。"
+    },
+    {
+      "name": "keyboard_request_ended",
+      "value": "输入请求已结束，未提交内容：%d"
+    },
+    {
+      "name": "keyboard_default_header",
+      "value": "输入文字"
+    },
+    {
+      "name": "launch_request_failed",
+      "value": "启动请求处理失败；请求记录已保留。"
+    },
+    {
+      "name": "import_pending_kept",
+      "value": "有一项导入尚未完成，资源已保留。"
+    },
+    {
+      "name": "imported_game",
+      "value": "已导入游戏"
+    },
+    {
+      "name": "invalid_imports",
+      "value": "有 %d 项导入记录无效，已阻止加载。"
+    },
+    {
+      "name": "library_read_failed",
+      "value": "暂时无法读取游戏库。"
+    },
+    {
+      "name": "package_no_direct_graphics",
+      "value": "这个游戏包没有直连图形库，请用新版打包工具重新出包。"
+    },
+    {
+      "name": "game_files_incomplete",
+      "value": "游戏文件不完整，请重新导入游戏包。"
+    },
+    {
+      "name": "badge_widescreen",
+      "value": "宽屏 %s"
+    },
+    {
+      "name": "badge_resolution",
+      "value": "%s× 分辨率"
+    },
+    {
+      "name": "gfx_mode_not_saved",
+      "value": "图形模式没有保存"
+    },
+    {
+      "name": "file_picker_failed",
+      "value": "无法打开文件选择"
+    },
+    {
+      "name": "import_reading",
+      "value": "正在读取游戏包…"
+    },
+    {
+      "name": "import_progress",
+      "value": "正在导入 %s / %s GB"
+    },
+    {
+      "name": "import_done",
+      "value": "已导入 · %d 个文件"
+    },
+    {
+      "name": "import_failed",
+      "value": "导入失败：%s"
+    },
+    {
+      "name": "save_dir_not_directory",
+      "value": "游戏存档路径不是目录"
+    },
+    {
+      "name": "save_dir_open_failed",
+      "value": "无法打开游戏存档目录"
+    },
+    {
+      "name": "gfx_mode_write_failed",
+      "value": "无法写入图形模式"
+    },
+    {
+      "name": "filter_smooth",
+      "value": "平滑"
+    },
+    {
+      "name": "filter_sharp",
+      "value": "锐利"
+    },
+    {
+      "name": "diagnostics_collecting",
+      "value": "正在整理日志…"
+    },
+    {
+      "name": "diagnostics_saved",
+      "value": "已保存：%s。把这个文件发给开发者即可。"
+    },
+    {
+      "name": "diagnostics_save_failed",
+      "value": "没能保存：%s"
+    },
+    {
+      "name": "display_title",
+      "value": "画面"
+    },
+    {
+      "name": "resolution",
+      "value": "分辨率"
+    },
+    {
+      "name": "next_launch_applies",
+      "value": "下次启动生效"
+    },
+    {
+      "name": "scaling",
+      "value": "缩放"
+    },
+    {
+      "name": "aspect",
+      "value": "画幅"
+    },
+    {
+      "name": "aspect_original",
+      "value": "原始"
+    },
+    {
+      "name": "aspect_extended",
+      "value": "扩展"
+    },
+    {
+      "name": "graphics",
+      "value": "图形"
+    },
+    {
+      "name": "show_fps",
+      "value": "显示帧率"
+    },
+    {
+      "name": "import_game",
+      "value": "导入游戏"
+    },
+    {
+      "name": "import_all_parts",
+      "value": "分卷请一次选全"
+    },
+    {
+      "name": "rescan",
+      "value": "重新扫描"
+    },
+    {
+      "name": "importing",
+      "value": "导入中…"
+    },
+    {
+      "name": "choose_package",
+      "value": "选择游戏包"
+    },
+    {
+      "name": "diagnostics_title",
+      "value": "运行诊断"
+    },
+    {
+      "name": "crash_last_session",
+      "value": "上次 %s 没有正常结束。"
+    },
+    {
+      "name": "diagnostics_no_errors",
+      "value": "日志里没有找到明确的错误行；导出完整日志更有帮助。"
+    },
+    {
+      "name": "export_logs",
+      "value": "导出日志"
+    },
+    {
+      "name": "controller_connected",
+      "value": "手柄已连接"
+    },
+    {
+      "name": "controller_none",
+      "value": "未连接手柄"
+    },
+    {
+      "name": "hide_touch_with_controller",
+      "value": "连接手柄时隐藏触控"
+    },
+    {
+      "name": "touch_feedback",
+      "value": "按键触感"
+    },
+    {
+      "name": "device_unsupported",
+      "value": "这台设备不支持"
+    },
+    {
+      "name": "game_rumble",
+      "value": "游戏震动"
+    },
+    {
+      "name": "power_save",
+      "value": "省电 30 帧"
+    },
+    {
+      "name": "resume_game",
+      "value": "继续游戏"
+    },
+    {
+      "name": "hide_touch",
+      "value": "隐藏触控"
+    },
+    {
+      "name": "show_touch",
+      "value": "显示触控"
+    },
+    {
+      "name": "exit_to_library",
+      "value": "退出到游戏库"
+    },
+    {
+      "name": "returning_to_library",
+      "value": "正在返回游戏库"
+    },
+    {
+      "name": "exit_saved_question",
+      "value": "已经在游戏里存档了吗？"
+    },
+    {
+      "name": "exit_warning",
+      "value": "退出会结束这次游戏，应用不会替游戏保存进度。"
+    },
+    {
+      "name": "exit_go_save",
+      "value": "回去存档"
+    },
+    {
+      "name": "exiting",
+      "value": "正在退出…"
+    },
+    {
+      "name": "exit_confirm",
+      "value": "已存档，退出"
+    },
+    {
+      "name": "welcome_title_1",
+      "value": "你的游戏，随身带"
+    },
+    {
+      "name": "welcome_title_2",
+      "value": "导入游戏包"
+    },
+    {
+      "name": "welcome_title_3",
+      "value": "选好操作，开玩"
+    },
+    {
+      "name": "welcome_body_1",
+      "value": "准备已生成的 S2Arm 游戏包"
+    },
+    {
+      "name": "welcome_body_3",
+      "value": "触控与手柄都可用"
+    },
+    {
+      "name": "continue",
+      "value": "继续"
+    },
+    {
+      "name": "enter_library",
+      "value": "进入游戏库"
+    },
+    {
+      "name": "skip",
+      "value": "跳过"
+    },
+    {
+      "name": "loading_library",
+      "value": "正在读取游戏库"
+    },
+    {
+      "name": "retry",
+      "value": "重试"
+    },
+    {
+      "name": "open_game_menu",
+      "value": "打开游戏菜单"
+    },
+    {
+      "name": "launch_incomplete",
+      "value": "启动未完成"
+    },
+    {
+      "name": "launching",
+      "value": "正在启动"
+    },
+    {
+      "name": "back_to_library",
+      "value": "返回游戏库"
+    },
+    {
+      "name": "recent",
+      "value": "最近"
+    },
+    {
+      "name": "sort_title",
+      "value": "名称"
+    },
+    {
+      "name": "favorites",
+      "value": "收藏"
+    },
+    {
+      "name": "start",
+      "value": "开始"
+    },
+    {
+      "name": "start_game",
+      "value": "开始游戏"
+    },
+    {
+      "name": "favorite",
+      "value": "收藏"
+    },
+    {
+      "name": "unfavorite",
+      "value": "取消收藏"
+    },
+    {
+      "name": "clear_search",
+      "value": "清除搜索"
+    },
+    {
+      "name": "game_details_a11y",
+      "value": "%s，详情"
+    },
+    {
+      "name": "no_games",
+      "value": "还没有游戏"
+    },
+    {
+      "name": "last_run_interrupted",
+      "value": "上次运行中断"
+    },
+    {
+      "name": "library",
+      "value": "游戏库"
+    },
+    {
+      "name": "search",
+      "value": "搜索"
+    },
+    {
+      "name": "search_results",
+      "value": "%d 个结果"
+    },
+    {
+      "name": "no_matches",
+      "value": "没有匹配的游戏"
+    },
+    {
+      "name": "controls_feedback",
+      "value": "控制与反馈"
+    },
+    {
+      "name": "touchscreen",
+      "value": "触屏"
+    },
+    {
+      "name": "runtime_logs",
+      "value": "运行日志"
+    },
+    {
+      "name": "back",
+      "value": "返回"
+    },
+    {
+      "name": "home",
+      "value": "首页"
+    },
+    {
+      "name": "preset_handheld",
+      "value": "掌机 · 通用"
+    },
+    {
+      "name": "icon_letter",
+      "value": "字母"
+    },
+    {
+      "name": "icon_attack",
+      "value": "攻击"
+    },
+    {
+      "name": "icon_jump",
+      "value": "跳跃"
+    },
+    {
+      "name": "icon_dash",
+      "value": "冲刺"
+    },
+    {
+      "name": "icon_skill",
+      "value": "技能"
+    },
+    {
+      "name": "icon_bag",
+      "value": "背包"
+    },
+    {
+      "name": "preset_explore",
+      "value": "动作布局 · 探索"
+    },
+    {
+      "name": "preset_combat",
+      "value": "动作布局 · 战斗"
+    },
+    {
+      "name": "preset_menu",
+      "value": "动作布局 · 菜单"
+    },
+    {
+      "name": "action_interact",
+      "value": "互动"
+    },
+    {
+      "name": "action_dash",
+      "value": "冲刺"
+    },
+    {
+      "name": "action_jump",
+      "value": "跳跃"
+    },
+    {
+      "name": "action_attack",
+      "value": "攻击"
+    },
+    {
+      "name": "action_ability",
+      "value": "能力"
+    },
+    {
+      "name": "action_lock",
+      "value": "锁定"
+    },
+    {
+      "name": "action_throw",
+      "value": "投掷"
+    },
+    {
+      "name": "action_aim",
+      "value": "瞄准"
+    },
+    {
+      "name": "action_bag",
+      "value": "背包"
+    },
+    {
+      "name": "action_map",
+      "value": "地图"
+    },
+    {
+      "name": "action_crouch",
+      "value": "蹲伏"
+    },
+    {
+      "name": "action_scope",
+      "value": "望远镜"
+    },
+    {
+      "name": "layout_too_large",
+      "value": "布局文件过大"
+    },
+    {
+      "name": "layout_format_invalid",
+      "value": "需要 F01 v1 布局或 S2Arm 触控方案"
+    },
+    {
+      "name": "layout_theme_invalid",
+      "value": "触控主题或摇杆死区无效"
+    },
+    {
+      "name": "layout_button_invalid",
+      "value": "按键位置或尺寸无效"
+    },
+    {
+      "name": "layout_buttons_missing",
+      "value": "缺少基本按键"
+    },
+    {
+      "name": "layout_stick_invalid",
+      "value": "摇杆区域无效"
+    },
+    {
+      "name": "layout_sticks_overlap",
+      "value": "两个摇杆区域不能重叠"
+    },
+    {
+      "name": "layout_look_invalid",
+      "value": "按键外观无效"
+    },
+    {
+      "name": "layout_read_failed",
+      "value": "旧布局暂时无法读取，使用默认布局"
+    },
+    {
+      "name": "left_stick",
+      "value": "左摇杆"
+    },
+    {
+      "name": "right_stick",
+      "value": "右摇杆"
+    },
+    {
+      "name": "layout_saved",
+      "value": "已保存到这款游戏"
+    },
+    {
+      "name": "layout_save_failed",
+      "value": "保存未完成：%s"
+    },
+    {
+      "name": "layout_edit_hint",
+      "value": "拖动位置，打开外观调整尺寸和名称"
+    },
+    {
+      "name": "layout_drag_hint",
+      "value": "拖动按键调整位置"
+    },
+    {
+      "name": "layout_preset_preview",
+      "value": "预览方案；点击保存才会替换当前布局。旧布局会保留副本。"
+    },
+    {
+      "name": "layout_loaded",
+      "value": "已读入方案，点击保存后生效。"
+    },
+    {
+      "name": "layout_file_too_large",
+      "value": "请选择 64 KiB 以内的 JSON 文件"
+    },
+    {
+      "name": "file_read_incomplete",
+      "value": "文件读取不完整"
+    },
+    {
+      "name": "layout_not_imported",
+      "value": "未导入：%s"
+    },
+    {
+      "name": "layout_exported",
+      "value": "方案已导出到你选择的位置。"
+    },
+    {
+      "name": "layout_not_exported",
+      "value": "未导出：%s"
+    },
+    {
+      "name": "appearance",
+      "value": "外观"
+    },
+    {
+      "name": "import_export",
+      "value": "导入 / 导出"
+    },
+    {
+      "name": "save_layout",
+      "value": "保存布局"
+    },
+    {
+      "name": "aux_hide",
+      "value": "收起辅助"
+    },
+    {
+      "name": "aux_show",
+      "value": "辅助键"
+    },
+    {
+      "name": "layout",
+      "value": "布局"
+    },
+    {
+      "name": "hide",
+      "value": "隐藏"
+    },
+    {
+      "name": "button_named",
+      "value": "按键 %s"
+    },
+    {
+      "name": "button_name",
+      "value": "按键名称"
+    },
+    {
+      "name": "size_value",
+      "value": "尺寸 %d"
+    },
+    {
+      "name": "opacity_value",
+      "value": "不透明度 %s"
+    },
+    {
+      "name": "deadzone_value",
+      "value": "摇杆死区 %s"
+    },
+    {
+      "name": "layout_inspector_hint",
+      "value": "点选控件后拖动；摇杆虚线框是可触发区域。"
+    },
+    {
+      "name": "collapse",
+      "value": "收起"
+    },
+    {
+      "name": "share_layout",
+      "value": "分享你的触控方案"
+    },
+    {
+      "name": "import_from_file",
+      "value": "从文件导入"
+    },
+    {
+      "name": "export_to_file",
+      "value": "导出到文件"
+    },
+    {
+      "name": "layout_formats",
+      "value": "兼容 F01 / S2Arm JSON"
+    },
+    {
+      "name": "paste_layout",
+      "value": "也可粘贴布局文本"
+    },
+    {
+      "name": "copy",
+      "value": "复制"
+    },
+    {
+      "name": "layout_copied",
+      "value": "已复制方案"
+    },
+    {
+      "name": "apply_text",
+      "value": "应用文本"
+    },
+    {
+      "name": "package_truncated",
+      "value": "游戏包提前结束（文件可能没有下载完整）"
+    },
+    {
+      "name": "package_unsafe_path",
+      "value": "游戏包含有不安全的路径：%s"
+    },
+    {
+      "name": "package_no_space",
+      "value": "手机剩余空间不足：需要约 %s GB，当前可用 %s GB"
+    },
+    {
+      "name": "package_unsupported_entry",
+      "value": "游戏包含有不支持的条目类型 %s：%s"
+    },
+    {
+      "name": "package_not_s2arm",
+      "value": "这不是 S2Arm 游戏包：缺少 ready.json"
+    },
+    {
+      "name": "package_missing_key",
+      "value": "游戏包缺少有效的游戏代号"
+    },
+    {
+      "name": "package_exists",
+      "value": "手机上已有「%s」，为保护资源和存档未覆盖；如需重装请先在游戏库删除"
+    },
+    {
+      "name": "diagnostics_file_name",
+      "value": "S2Arm-诊断-%s.txt"
+    }
+  ]
+}

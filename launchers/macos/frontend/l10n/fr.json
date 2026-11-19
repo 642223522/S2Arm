@@ -1311,8 +1311,8 @@
   "s2arm.diagUpload.github": "Publier sur GitHub",
   "s2arm.diagUpload.repo": "Dépôt : {0}",
   "s2arm.diagUpload.not": "Ce qui ne sera jamais envoyé : sauvegardes, clés, fichiers de jeu. Les données sont conservées au plus 7 jours et supprimées dès que les développeurs les ont consultées.",
-  "s2arm.diagUpload.noteLabel": "Que s'est-il passé ? (facultatif)",
-  "s2arm.diagUpload.notePlaceholder": "Une phrase suffit, par ex. « Écran noir après la première cinématique » ou « Plantage à l'ouverture de la carte ». Vous pouvez laisser ce champ vide.",
+  "s2arm.diagUpload.noteLabel": "Que s’est-il passé ? (obligatoire)",
+  "s2arm.diagUpload.notePlaceholder": "Quel jeu, ce que vous avez fait et ce que vous avez vu, par ex. « jeu ouvert, écran noir après l’introduction »",
   "s2arm.diagUpload.cancel": "Annuler",
   "s2arm.diagUpload.send": "Envoyer",
   "s2arm.diagUpload.sending": "Envoi en cours…",
@@ -1744,5 +1744,13 @@
   "s2arm.env.fullscreen.title": "Lancer les jeux en plein écran",
   "s2arm.env.fullscreen.detail": "Activé : tous les jeux (y compris ceux ajoutés plus tard) s’ouvrent en plein écran ; un jeu doté de son propre réglage plein écran garde ce réglage.",
   "home.card.daysLeft": "Encore %d jours",
-  "home.card.expired": "Expiré"
+  "home.card.expired": "Expiré",
+  "s2arm.env.xcode.group": "Xcode",
+  "s2arm.env.xcode.title": "Xcode utilisé",
+  "s2arm.env.xcode.found": "Trouvé automatiquement : %@",
+  "s2arm.env.xcode.chosen": "Votre choix : %@",
+  "s2arm.env.xcode.none": "Aucun Xcode trouvé pour l’instant",
+  "s2arm.env.xcode.choose": "Choisir Xcode…",
+  "s2arm.env.xcode.auto": "Rechercher automatiquement",
+  "s2arm.env.xcode.invalid": "Ce n’est pas un Xcode complet (Contents/Developer/usr/bin/xcodebuild est requis). Rien n’a été modifié."
 }

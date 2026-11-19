@@ -116,8 +116,6 @@ struct PhoneOutcome: Equatable {
     /// 只新写点的那款时，这次没写 .img 的别的款（游戏名）：完成页点名、说怎么办
     var exportUnwritten: [String] = []
     /// 完成页「推到手机」（11-13）：推进手机上自签 S2Arm 的 .img 文件名（空 = 还没推）；推不成时作业给的一句「缺什么、怎么做」
-    var pushed: [String] = []
-    var pushNote = ""
     /// 这次补进 S 级优化的各款：打上 / 没打上（作业层结果 sgrade，pack/jobs/install.py；升级 / 装机 / 导出完成页列，11-14）
     var sgrade: [SGradeGameResult] = []
 }
@@ -132,6 +130,8 @@ struct QueuedExport {
     var location: String? = nil
     /// "export" = 这次出包是为了导出自签包（作业层步骤名照自签路写）
     var mode: String? = nil
+    /// 安卓出好装到哪台（adb 序列号）：控制口显式给的；"" = 不装（控制口没给 serial）；nil = 界面上选的那台（androidPhone）
+    var androidSerial: String? = nil
 }
 
 /// 这次出包要占多少、盘上还有多少（只取游戏库所在的卷）。
@@ -860,7 +860,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     /// platforms 不给 = 出包页勾的；本机控制口（AI 操作）按命令给一个平台，deviceTarget 只用于 iPhone 出包（提示地址窗口）。
     @discardableResult
     func export(_ game: GameSummary, platforms chosen: [ExportPlatform]? = nil, deviceTarget: [String: Any]? = nil, spaceOverride: Bool = false, location: String? = nil,
-                mode: String? = nil) -> ExportBlocker? {
+                mode: String? = nil, androidSerial: String? = nil) -> ExportBlocker? {
         if let blocker = exportBlocker(game, platforms: chosen), blocker.stopsStart { return blocker }
         // 这款有下游深度方案、玩家还没选过、这次要出 iPhone：先问一次（选完 chooseDownstream 接着导出）。选过就照选的走，作业层按记下的选择分流
         if game.downstream != nil, game.downstream?.choice == nil, (chosen ?? exportTargets).contains(.ios) {
@@ -868,7 +868,8 @@ public final class S2ArmLauncherModel: ObservableObject {
             downstreamPromptFor = game.id
             return nil
         }
-        let item = QueuedExport(game: game, platforms: chosen ?? exportTargets, target: deviceTarget ?? currentDeviceTarget, spaceOverride: spaceOverride, location: location, mode: mode)
+        let item = QueuedExport(game: game, platforms: chosen ?? exportTargets, target: deviceTarget ?? currentDeviceTarget, spaceOverride: spaceOverride, location: location, mode: mode,
+                                androidSerial: androidSerial)
         exportFor = nil
         welcomeGameID = nil
         if mainBusy || batchRunning || phoneHolds(game.id) {   // 正在出别的 / 一批正在出 / 这款正在装到手机（装机读它的程序件）：排队，出完 / 装完接着出（11-08 维护者：出好一个接着出下一个）
@@ -922,6 +923,8 @@ public final class S2ArmLauncherModel: ObservableObject {
         if let target = item.target { plan["deviceTarget"] = target }
         if item.spaceOverride { plan["spaceOverride"] = true }
         if !sgradeOn(game.id) { plan["sgrade"] = false }   // 出包页取消「S 级优化（Beta）」：这次不带社区补丁与金手指（pack/jobs/patches.py prepare）
+        // 出好接着装到这台安卓手机（export_plan → installSerial）：控制口给的 > 界面选的；"" = 明确不装
+        if platforms.contains(.android), let serial = item.androidSerial ?? androidPhone, !serial.isEmpty { plan["androidSerial"] = serial }
         start(session) { [weak self] sink in
             guard let self else { return nil }
             do { _ = try await self.provider.export(plan: plan, hasIPhone: platforms.contains(.ios), mode: item.mode, events: self.exportSink(sink)) }
@@ -1099,21 +1102,6 @@ public final class S2ArmLauncherModel: ObservableObject {
         return DiagUploadReceipt(code: code, issueURL: (outcome.result["issueUrl"] as? String).flatMap(URL.init(string:)),
                                  repo: outcome.result["repo"] as? String ?? "github.com/jhaizhou-ops/S2Arm")
     }
-    /// 导出完成页「推到手机」：把「S2Arm 自签导出」里的完整 .img 推进手机上自签装好的 S2Arm（exportPush 作业）；结果写回 phoneOutcome
-    @Published var exportPushing = false
-    func pushExportToPhone(gameID: String?) {
-        guard !exportPushing else { return }
-        exportPushing = true
-        Task {
-            do {
-                let names = try await provider.exportPush(gameId: gameID, device: installDeviceID)
-                phoneOutcome?.pushed = names; phoneOutcome?.pushNote = ""
-            } catch {
-                phoneOutcome?.pushNote = error.localizedDescription
-            }
-            exportPushing = false
-        }
-    }
     struct UploadNoCode: LocalizedError { var errorDescription: String? { Localizer().t("s2arm.diagUpload.noCode") } }
     /// 界面语言写进作业环境：之后每个作业请求都带 uiLanguage（zh-Hans / en），作业层按它出玩家看得到的文件名与说明
     public func setUILanguage(_ code: String) { provider.client.environment.uiLanguage = code }
@@ -1181,6 +1169,10 @@ public final class S2ArmLauncherModel: ObservableObject {
     var phoneAutoFails: [String: Int] = [:]   // 自动更新后台作业连续失败次数（notePhoneAuto，+PhoneBanner.swift）
     var phonePrepareStarted = false   // 首启在电脑侧准备 iPhone 更新只做一次（准备期间不出横幅，不能再靠横幅状态挡重复）
     /// Apple TV（tvOS 版，S2ArmLauncherModel+AppleTV）：配对过的电视、出包页选的那台、存档自动备份循环起没起
+    /// 安卓（开关后，S2ArmLauncherModel+Android.swift）：androidDevices 作业回报的开关与已连接手机、玩家选的那台（nil = 只连一台就用它）
+    @Published var androidEnabled = false
+    @Published var androidPhones: [[String: Any]] = []
+    @Published var androidPhoneChoice: String?
     @Published var appleTVs: [[String: Any]] = []
     @Published var appleTVChoice: String?
     var tvBackupStarted = false
@@ -1601,6 +1593,22 @@ public final class S2ArmLauncherModel: ObservableObject {
         homeWidgetError = nil
         objectWillChange.send()
         do { try provider.settings.setHomeWidget(on) } catch { homeWidgetError = error.localizedDescription }
+    }
+
+    // ---- 自己选择 Xcode（D-9WFW：装在扩展硬盘等自动找不到的位置；设置写 launch-settings.json 的 xcodeApp，选过就优先用）----
+
+    @Published private(set) var xcodeChooseError: String?
+    var chosenXcode: String? { provider.settings.xcodeApp }
+    /// 现在作业用的 Xcode（Contents/Developer）；还没找到为空串
+    var activeDeveloperDir: String { provider.client.environment.developerDir }
+
+    /// 选一份 Xcode.app（nil = 改回自动查找）；不是完整的 Xcode 不记、就近说原因。记下后重查环境，作业立刻改用它
+    func setXcode(_ app: URL?) {
+        xcodeChooseError = nil
+        if let app, XcodeLocator.developerDir(app: app.path) == nil { xcodeChooseError = "s2arm.env.xcode.invalid"; objectWillChange.send(); return }
+        objectWillChange.send()
+        do { try provider.settings.setXcodeApp(app?.path) } catch { xcodeChooseError = error.localizedDescription; return }
+        checkEnvironment()
     }
 
     // ---- 启动游戏时自动全屏（#575，缺省关；设置写 launch-settings.json 的 launchFullscreen，单款显式设过的照单款）----

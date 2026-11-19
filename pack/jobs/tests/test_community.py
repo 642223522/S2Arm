@@ -46,6 +46,13 @@ class CommunityTests(unittest.TestCase):
         write(cd / "uw/full/y/INDEX.tsv", "game\ttitle_id\tversion\tbuild_id\taspect\tkind\tui_fix\tsource\tin_pack\tsha256\n"
               f"Spl\t{GID}\t4.1.0\t\t21:9\tpchtxt\tyes\tuwrepo\tyes\t111\n")
 
+    def test_snapshot_switch_env(self):
+        # 即时快照（0.6.0，全部游戏共用，宿主苹果端缺省开）：没选过 / 选开 → 不写（宿主缺省开）；选关 → S2A_SNAP_MODE=0。存数据目录 game-settings.json
+        self.assertNotIn("S2A_SNAP_MODE", community.launch_env(self.c, GID))
+        for on, want in ((True, None), (False, "0")):
+            write(self.c.private / "game-settings.json", json.dumps({"schema": 1, "settings": {"snapshot": on}}))
+            self.assertEqual(community.launch_env(self.c, GID).get("S2A_SNAP_MODE"), want, f"snapshot={on}")
+
     def test_defaults_and_sources(self):
         r = community.listing(self.c)
         ws, fps = r["widescreen"], r["fps60"]
@@ -278,7 +285,7 @@ class MacDisplayTests(unittest.TestCase):
     def test_every_mac_item_of_the_table_is_on_the_page(self):
         # 定义表里 platforms 含 mac 的 bool / choice 项 = quality（11-15 取代 enhance）fps60 widescreen docked rumble rumbleLevel motion hud（11-13 widenForce 并进 widescreen）
         self.caps()
-        self.assertEqual(sorted(self.mac()), sorted(["quality", "fps60", "fpsPick", "resolutionScale", "fpsLimit", "widescreen", "docked", "language", "rumble", "rumbleLevel", "motion", "motionInvertY", "motionInvertX", "padFace", "hud", "pauseUnfocused", "audioLatency", "diagRun"]))
+        self.assertEqual(sorted(self.mac()), sorted(["quality", "fps60", "fpsPick", "resolutionScale", "fpsLimit", "widescreen", "docked", "language", "rumble", "rumbleLevel", "motion", "motionInvertY", "motionInvertX", "padFace", "hud", "snapshot", "pauseUnfocused", "audioLatency", "diagRun"]))
 
     def test_fps_pick_level(self):
         # 帧率档位（11-13）：包里帧率补丁（编号 fps:）目标帧率两档以上才出；选具体档 → S2A_FPS_PICK=档，选自动（"0"）不写；表外取值拒收
@@ -307,7 +314,7 @@ class MacDisplayTests(unittest.TestCase):
         m = self.mac()
         self.assertEqual(m["fps60"]["reason"], community.NO_FPS60)
         # 画质提升：没走直连只是锐利放大用不了——这一行照样能选标准 / 2D，锐利放大置灰、写原因
-        self.assertEqual((m["quality"]["available"], m["quality"]["blocked"], m["quality"]["reason"]), (True, ["MetalFX"], community.NO_DIRECT))
+        self.assertEqual((m["quality"]["available"], m["quality"]["blocked"], m["quality"]["reason"]), (True, ["MetalFX", "Fsr"], community.NO_DIRECT))
         self.assertTrue(m["widescreen"]["available"])   # 「缺省关」不是强信号：照样能开
         self.caps("widen\t0\t# 强信号：宽屏画面坏\ndirect\t1\n")
         self.assertEqual((self.mac()["widescreen"]["available"], self.mac()["widescreen"]["reason"]), (False, community.NO_WIDEN))
@@ -329,7 +336,12 @@ class MacDisplayTests(unittest.TestCase):
         self.assertEqual(community.launch_env(self.c, GID), {})   # 没走直连：锐利放大不生效
         self.save(quality="Nearest")
         self.assertEqual(community.launch_env(self.c, GID), {"S2A_SCALING_FILTER": "Nearest"})   # 2D 不要直连
-        self.c.r = {"gameId": GID, "settings": {"quality": "Fsr"}}
+        # Fsr（FSR 1）是表里的第四档：走直连才设，没走直连不设（同锐利放大）
+        self.save(quality="Fsr")
+        self.assertEqual(community.launch_env(self.c, GID), {})
+        self.caps("fps60\t1\ndirect\t1\n")
+        self.assertEqual(community.launch_env(self.c, GID), {"S2A_SCALING_FILTER": "Fsr"})
+        self.c.r = {"gameId": GID, "settings": {"quality": "Lanczos"}}   # 表外值
         with self.assertRaises(Failure): community.save(self.c)
 
     def test_old_enhance_switch_becomes_sharp_upscaling(self):

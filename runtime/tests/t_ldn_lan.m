@@ -16,7 +16,8 @@ static void check(int ok, const char *what) {
 
 // 被测文件引用的外部符号：权限说明（lan_permission.m）与共享层的改指入口
 void s2a_lan_permission_then(int dev_mode, void (^go)(void)) { (void)dev_mode; (void)go; }
-void s2a_lan_permission_failed(const char *what, NSDictionary *err) { (void)what; (void)err; }
+static int g_perm_failed;
+void s2a_lan_permission_failed(const char *what, NSDictionary *err) { (void)what; (void)err; g_perm_failed++; }
 static char g_server[64];
 static int g_set_calls;
 void S2A_LdnSetServer(const char *ipv4) { snprintf(g_server, sizeof g_server, "%s", ipv4); g_set_calls++; }
@@ -40,6 +41,18 @@ int s2a_lan_is_self(const char *prefix, const char *dev, const char *name) {
     (void)prefix; (void)dev;
     g_self_calls++;
     return strstr(name, "zzzz") != NULL;
+}
+
+// 前后台用：重开 Bonjour 只计数（不碰网络）
+@interface TLan : S2ALdnLan
+@property int restarts;
+@end
+@implementation TLan
+- (void)restartBonjour { self.restarts++; }
+@end
+static void post(NSString *name) {
+    [NSNotificationCenter.defaultCenter postNotificationName:name object:nil];
+    [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];   // 观察者挂在主队列上
 }
 
 int main(void) {
@@ -67,8 +80,32 @@ int main(void) {
               "isSelf 没走 s2a_lan_is_self（生产仍自写判定）");
 
         pthread_mutex_lock(&g_lan_gate); g_lan = nil; pthread_mutex_unlock(&g_lan_gate);
+
+        // 4. 进后台：系统停掉 Bonjour，两个失败回调回 -72000→ 不当「权限被拒」弹框；回前台 → 重开一次。前台的失败照旧引导去设置
+        TLan *t = [TLan new];
+        t.prefix = @"0100000000000001-"; t.dev = @"bbbb"; t.ownName = @"0100000000000001-bbbb";
+        t.own = [[NSNetService alloc] initWithDomain:@"local." type:@"_s2arm-ldn._tcp." name:t.ownName port:1]; t.browser = [NSNetServiceBrowser new];
+        pthread_mutex_lock(&g_lan_gate); g_lan = t; pthread_mutex_unlock(&g_lan_gate);
+        [t watchLife];
+        NSDictionary *e72000 = @{NSNetServicesErrorCode: @(-72000), NSNetServicesErrorDomain: @10};
+        post(@"UIApplicationDidEnterBackgroundNotification");
+        [t netServiceBrowser:t.browser didNotSearch:e72000]; [t netService:t.own didNotPublish:e72000];
+        check(g_perm_failed == 0, "进后台时 Bonjour 被系统停掉（-72000）却当成本地网络权限被拒（应只记日志）");
+        check(t.restarts == 0, "还在后台就重开了 Bonjour");
+        post(@"UIApplicationWillEnterForegroundNotification");
+        check(t.restarts == 1, "回前台没重新发布 / 查找（之后一直找不到别的设备）");
+        post(@"UIApplicationWillEnterForegroundNotification");
+        check(t.restarts == 1, "没进过后台的回前台通知也重开了");
+        [t netServiceBrowser:t.browser didNotSearch:e72000];
+        check(g_perm_failed == 1, "前台的浏览失败没交给权限引导");
+        [t netServiceBrowser:[NSNetServiceBrowser new] didNotSearch:e72000];
+        check(g_perm_failed == 1, "已换掉的旧浏览器的失败也弹了引导");
+        [t stop];
+        post(@"UIApplicationDidEnterBackgroundNotification"); post(@"UIApplicationWillEnterForegroundNotification");
+        check(t.restarts == 1, "停掉之后前后台通知还在重开");
+        pthread_mutex_lock(&g_lan_gate); g_lan = nil; pthread_mutex_unlock(&g_lan_gate);
     }
     if (failures) return 1;
-    puts("✓ t_ldn_lan: 苹果联机的选举 / 本机判定委托共用 s2a_lan_elect / s2a_lan_is_self，选中本机走回环");
+    puts("✓ t_ldn_lan: 苹果联机的选举 / 本机判定委托共用 s2a_lan_elect / s2a_lan_is_self，选中本机走回环；进后台的 Bonjour 失败不当权限被拒、回前台重开");
     return 0;
 }

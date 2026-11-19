@@ -26,11 +26,10 @@ class ExportSignerMacPlume(unittest.TestCase):
 
     def run_signer(self, plume, team="TEAMPLUME"):
         self.W.impactor.selected_team = lambda: team
-        with patch.object(install.os, "name", "posix"), patch.object(install, "mac_plume", lambda c: plume), \
+        with patch.object(install.os, "name", "posix"), patch.object(install, "mac_plume", lambda c: plume), patch.object(install, "plume_home", lambda c: None), \
                 patch.object(install, "win_install_mod", lambda c: self.W), patch.object(install, "win_cert_gate", lambda c, W, exe: None), \
                 patch.object(install, "win_selfsign_signer", lambda c, W, exe, t: self.selfsign), \
-                patch.object(install, "xcode_teams", lambda env: [dict(id="TEAMXCODE", name="Xcode 付费", free=False)]), \
-                patch.object(program_pack, "mac_signer", lambda c: "mac_signer"):
+                patch.object(install, "xcode_teams", lambda env: [dict(id="TEAMXCODE", name="Xcode 付费", free=False)]):
             return install.export_signer(self.c, "appleId")
 
     def test_mac_plume_uses_plumesign_account(self):
@@ -42,11 +41,6 @@ class ExportSignerMacPlume(unittest.TestCase):
         with self.assertRaises(Failure) as e:
             self.run_signer(True, team=None)
         self.assertEqual(e.exception.code, "apple_not_signed_in")
-
-    def test_switch_off_keeps_xcode_team(self):
-        team, bundle, signer, _ = self.run_signer(False)
-        self.assertEqual((team, bundle, signer), ("TEAMXCODE", "io.s2arm.games.teamxcode", "mac_signer"))
-
 
 if __name__ == "__main__":
     unittest.main()

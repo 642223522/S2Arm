@@ -1311,8 +1311,8 @@
   "s2arm.diagUpload.github": "GitHub に投稿",
   "s2arm.diagUpload.repo": "リポジトリ：{0}",
   "s2arm.diagUpload.not": "アップロードされない内容：セーブデータ、キー、ゲームファイル。アップロード後は最大 7 日間保存され、開発者が確認次第削除されます。",
-  "s2arm.diagUpload.noteLabel": "何が起きましたか？（任意）",
-  "s2arm.diagUpload.notePlaceholder": "「最初のカットシーン後に黒画面になる」「マップを開くとクラッシュする」など一文で構いません。空欄でも送信できます。",
+  "s2arm.diagUpload.noteLabel": "何が起きましたか？（必須）",
+  "s2arm.diagUpload.notePlaceholder": "どのゲームで、何をして、何が起きたか。例：「ゲームを開いたら、オープニングの後に画面が真っ暗になった」",
   "s2arm.diagUpload.cancel": "キャンセル",
   "s2arm.diagUpload.send": "アップロード",
   "s2arm.diagUpload.sending": "アップロードしています…",
@@ -1744,5 +1744,13 @@
   "s2arm.env.fullscreen.title": "ゲーム起動時にフルスクリーンにする",
   "s2arm.env.fullscreen.detail": "オンにすると、すべてのゲーム（今後追加するものを含む）がフルスクリーンで起動します。ゲームごとにフルスクリーンを設定している場合はその設定に従います。",
   "home.card.daysLeft": "残り %d 日",
-  "home.card.expired": "期限切れ"
+  "home.card.expired": "期限切れ",
+  "s2arm.env.xcode.group": "Xcode",
+  "s2arm.env.xcode.title": "使用中の Xcode",
+  "s2arm.env.xcode.found": "自動で見つけたもの：%@",
+  "s2arm.env.xcode.chosen": "選んだもの：%@",
+  "s2arm.env.xcode.none": "Xcode がまだ見つかりません",
+  "s2arm.env.xcode.choose": "Xcode を選択…",
+  "s2arm.env.xcode.auto": "自動で探すに戻す",
+  "s2arm.env.xcode.invalid": "完全な Xcode ではありません（Contents/Developer/usr/bin/xcodebuild が必要です）。変更していません。"
 }

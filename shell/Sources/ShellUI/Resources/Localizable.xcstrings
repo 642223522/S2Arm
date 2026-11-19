@@ -19285,46 +19285,6 @@
         }
       }
     },
-    "Sends this device's logs to the developers and gives you a short code. You can add a sentence about what happened.": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sends this device's logs to the developers and gives you a short code. You can add a sentence about what happened."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Envía los registros de este dispositivo a los desarrolladores y te proporciona un código corto. Puedes añadir una frase sobre lo que ocurrió."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Envoie les journaux de cet appareil aux développeurs et vous fournit un code court. Vous pouvez ajouter une phrase décrivant ce qui s'est passé."
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "このデバイスのログを開発者に送信し、短いコードを発行します。何が起きたかを一文追加できます。"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "把这台设备的日志发给开发者，并给你一个短码。可以写一句发生了什么。"
-          }
-        },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "把這臺裝置的日誌發給開發者，並給你一個短碼。可以寫一句發生了什麼。"
-          }
-        }
-      }
-    },
     "Report…": {
       "localizations": {
         "en": {
@@ -21901,6 +21861,286 @@
           "stringUnit": {
             "state": "translated",
             "value": "手機上這款和這台手機上的 S2Arm 對不上，打不開：可能是按別的版本出的、用別的電腦或別的 Apple ID 裝的，或者沒裝完整。連接電腦，在 S2Arm 裡對這款點「裝到 iPhone」。"
+          }
+        }
+      }
+    },
+    "Continue from this moment": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continue from this moment"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continuar desde este momento"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reprendre à cet instant"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この瞬間から続ける"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "从这一刻继续"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "從這一刻繼續"
+          }
+        }
+      }
+    },
+    "Delete this moment": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete this moment"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Eliminar este momento"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Supprimer cet instant"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この瞬間を削除"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除这一刻"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "刪除這一刻"
+          }
+        }
+      }
+    },
+    "About %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "About %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unos %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Environ %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "約 %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "约 %@"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "約 %@"
+          }
+        }
+      }
+    },
+    "Delete the saved moment?": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete the saved moment?"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Eliminar el momento guardado?"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Supprimer l’instant enregistré ?"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存した瞬間を削除しますか？"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除存下的这一刻？"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "刪除存下的這一刻？"
+          }
+        }
+      }
+    },
+    "It takes about %@. Once deleted you can’t go back to that moment. Your game saves are not affected.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "It takes about %@. Once deleted you can’t go back to that moment. Your game saves are not affected."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ocupa unos %@. Una vez eliminado, no podrás volver a ese momento. Tus partidas guardadas no se ven afectadas."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Il occupe environ %@. Une fois supprimé, vous ne pourrez plus revenir à cet instant. Vos sauvegardes de jeu ne sont pas touchées."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "約 %@ を使っています。削除するとその瞬間には戻れません。ゲームのセーブデータには影響しません。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这份快照约占 %@。删掉后就回不到那一刻了，游戏存档不受影响。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "這份快照約佔 %@。刪掉後就回不到那一刻了，遊戲存檔不受影響。"
+          }
+        }
+      }
+    },
+    "Sends this device's logs to the developers and gives you a short code. Tell us which game, what you did and what you saw.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sends this device's logs to the developers and gives you a short code. Tell us which game, what you did and what you saw."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Envía los registros de este dispositivo a los desarrolladores y te da un código corto. Indica qué juego, qué hiciste y qué viste."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Envoie les journaux de cet appareil aux développeurs et vous donne un code court. Indiquez quel jeu, ce que vous avez fait et ce que vous avez vu."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このデバイスのログを開発者に送り、短いコードをお渡しします。どのゲームで、何をして、何が起きたかを書いてください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "把这台设备的日志发给开发者，给你一个短码。请写清哪款游戏、做了什么、看到了什么。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "把這台裝置的日誌發給開發者，給你一個短碼。請寫清哪款遊戲、做了什麼、看到了什麼。"
+          }
+        }
+      }
+    },
+    "Moment saved %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Moment saved %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Momento guardado %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Instant enregistré %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ に保存した瞬間"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 存下的这一刻"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 存下的這一刻"
           }
         }
       }

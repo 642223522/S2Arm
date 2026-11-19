@@ -689,7 +689,7 @@ int gl_prog_snap_restore(FILE *f) {
         GLSF_R(&r, GG_SH, p->sh); GLSF_R(&r, GG_LINKED, p->linked); GLSF_R(&r, GG_VALID, p->validated); GLSF_R(&r, GG_UBSLOT, p->ub_slot); GLSF_R(&r, GG_UBSIZE, p->ub_size);
         for (int st = 0; st < 2; st++) if (p->ub_size[st] > 0) { p->ub[st] = calloc(1, (size_t)p->ub_size[st]); sfr_into(&r, st ? GG_UB1 : GG_UB0, p->ub[st], (uint32_t)p->ub_size[st]); }
         GLSF_R(&r, GG_SMP, p->smp); GLSF_R(&r, GG_NSMP, p->nsmp); GLSF_R(&r, GG_NU, p->nu);
-        if (p->nu > 0) { p->u = calloc((size_t)p->nu, sizeof *p->u); sfr_into(&r, GG_U, p->u, (uint32_t)(p->nu * sizeof *p->u)); }
+        if (p->nu > 0) { p->u = calloc((size_t)p->nu, sizeof *p->u); sfr_into_conv(&r, GG_U, p->u, (uint32_t)(p->nu * sizeof *p->u), "gl.uniform", (uint32_t)sizeof *p->u); }
         GLSF_R(&r, GG_WDEPTH, p->writes_depth); GLSF_R(&r, GG_BLK, p->blk); GLSF_R(&r, GG_NBLK, p->nblk); GLSF_R(&r, GG_ATTR, p->attr); GLSF_R(&r, GG_NATTR, p->nattr);
         GLSF_R(&r, GG_BIND, p->bind); GLSF_R(&r, GG_NBIND, p->nbind); GLSF_R(&r, GG_LKEY, p->lkey); p->lsrc[0] = blob_str(&r, GG_LSRC0, NULL); p->lsrc[1] = blob_str(&r, GG_LSRC1, NULL);
         if (p->linked) {

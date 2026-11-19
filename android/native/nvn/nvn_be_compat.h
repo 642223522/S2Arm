@@ -43,6 +43,7 @@
 #define mtl_set_depth_zero nvn_be_set_depth_zero
 #define mtl_set_frame nvn_be_set_frame
 #define mtl_set_origin_lower_left nvn_be_set_origin_lower_left
+#define mtl_set_present_lower_left nvn_be_set_present_lower_left
 #define mtl_set_tex_pool_n nvn_be_set_tex_pool_n
 #define mtl_stats nvn_be_stats
 #define mtl_sub_begin nvn_be_sub_begin

@@ -102,6 +102,10 @@ static int dsh_stage_raw(const uint8_t *cd, const uint8_t *ctl, uint32_t *ncode,
     if (nvn2_on() && nvn2_ctl(ctl)) {
         uint32_t own; memcpy(ncode, ctl + 0x44, 4); memcpy(&own, ctl + 0x30, 4); *nctl = own >= 0xd8 && own <= NVN2_CTL_COPY ? own : 0xd8;
         int st = ctl[0x56] == 0 ? 0 : ctl[0x56] == 1 ? 1 : ctl[0x56] == 5 ? 2 : ctl[0x56] == 2 ? 3 : ctl[0x56] == 6 ? 4 : ctl[0x56] == 7 ? 5 : -1;   // 4 / 5 = S2A.Dsh 的 ts / ms（11-05 时之笛 11aa3147be208368 阶段字节 6 不能现编）
+        // 图形阶段（顶点 / 像素 / 几何）的代码一定以 SPH 起头（类型 1 / 2、阶段字段 1–5），计算着色器没有 SPH。有的游戏的计算着色器控制段阶段字节是 1：
+        //   一款 Switch 2 游戏 14 支按像素现编全报「Invalid shader stage 14」、游戏却在派发它（日志紧跟「dispatched program has no compute shader」），控制段 +0x40 / +0x44 代码长与自身代码区相符（不是复用内存）。
+        //   离线抽取的另一款 4.2 万支、诊断里 800 多份 NVN2 控制段，「没有 SPH」与阶段字节 5 逐支一致，只有这一族例外 → 代码没有 SPH 的按计算
+        if (st == 0 || st == 1 || st == 3) { uint32_t w0; memcpy(&w0, cd, 4); uint32_t ty = w0 & 0x1f, sg = (w0 >> 10) & 0xf; if ((ty != 1 && ty != 2) || sg < 1 || sg > 5) st = 2; }
         return !*ncode || *ncode >= (1u << 24) ? -1 : st;
     }
     if (nvn2_on()) {   // Switch 2 进程里控制段不是认得的 NVN2 格式（#1520：全按 Switch 1 读出「控制段 0 / 0x2fa 字节」）：头 8 字节（魔数、版本）记几行，定是不是新版 GLSLC
@@ -209,7 +213,7 @@ static int dsh_comp_src_locked(dsh_comp_fn comp, const char *k, int st, const vo
 //   translated here keeps only its entry (payload 0), and the table stops growing at DSH_SRC_SNAP_CAP
 typedef struct dsh_src_snap { struct dsh_src_snap *next; uint8_t key[8]; int st; uint32_t ncode, nctl; uint8_t bytes[]; } dsh_src_snap;
 enum { DSH_SRC_SNAP_BUCKETS = 1024, DSH_SRC_SNAP_CAP = 32 * 1024 * 1024 };
-static dsh_src_snap *g_src_snap[DSH_SRC_SNAP_BUCKETS]; static size_t g_src_snap_bytes; static pthread_mutex_t g_src_snap_mu = PTHREAD_MUTEX_INITIALIZER;
+static dsh_src_snap *g_src_snap[DSH_SRC_SNAP_BUCKETS]; static size_t g_src_snap_bytes[2]; static pthread_mutex_t g_src_snap_mu = PTHREAD_MUTEX_INITIALIZER;   // [0] 顶点 / 网格 / 任务（补齐），[1] 片元 / 计算（采样器模拟）：各自一份上限，后加的片元不挤掉顶点的
 static unsigned dsh_src_bucket(const uint8_t key[8]) { uint32_t h; memcpy(&h, key, 4); return h % DSH_SRC_SNAP_BUCKETS; }
 static void dsh_src_hold(const uint8_t key[8], int st, const uint8_t *ctl, uint32_t nctl, uint64_t code, uint32_t ncode) {
     size_t total = (size_t)nctl + ncode; unsigned b = dsh_src_bucket(key);
@@ -226,8 +230,9 @@ static void dsh_src_hold(const uint8_t key[8], int st, const uint8_t *ctl, uint3
     pthread_mutex_lock(&g_src_snap_mu);
     for (dsh_src_snap *old = g_src_snap[b]; old; old = old->next) if (!memcmp(old->key, key, 8)) { pthread_mutex_unlock(&g_src_snap_mu); free(e); return; }
     size_t saved = sizeof *e + payload;
-    if (saved > DSH_SRC_SNAP_CAP - g_src_snap_bytes) { pthread_mutex_unlock(&g_src_snap_mu); free(e); static _Atomic int warned; if (!atomic_exchange(&warned, 1)) LOG("【红】直连着色器源快照达到 %u MiB 上限，后续未缓存键的补齐变体在控制段过期后做不了", DSH_SRC_SNAP_CAP >> 20); return; }
-    e->next = g_src_snap[b]; g_src_snap[b] = e; g_src_snap_bytes += saved;
+    size_t *used = &g_src_snap_bytes[st == 1 || st == 2];
+    if (saved > DSH_SRC_SNAP_CAP - *used) { pthread_mutex_unlock(&g_src_snap_mu); free(e); static _Atomic int warned; if (!atomic_exchange(&warned, 1)) LOG("【红】直连着色器源快照达到 %u MiB 上限，后续未缓存键的补齐变体在控制段过期后做不了", DSH_SRC_SNAP_CAP >> 20); return; }
+    e->next = g_src_snap[b]; g_src_snap[b] = e; *used += saved;
     pthread_mutex_unlock(&g_src_snap_mu);
 }
 void dm_shader_mesh_hold_key(const uint8_t key[8], uint64_t code, const void *control) {
@@ -243,12 +248,15 @@ void dm_shader_mesh_hold(uint64_t code, const void *control) {
     const uint8_t *ctl = control; if (!nvn2_ctl(ctl) || (ctl[0x56] != 7 && ctl[0x56] != 6)) return;
     uint8_t key[8]; if (nvn2_key(ctl, (const void *)(uintptr_t)code, key)) dm_shader_mesh_hold_key(key, code, control);
 }
-// Switch 1 vertex shader at SetShaders, under the key keys_hash gave it (its final key: Switch 1 keys are not deferred). NVN2 stages are keyed at first use: not here
+// Switch 1 vertex / fragment / compute shader at SetShaders, under the key keys_hash gave it (its final key: Switch 1 keys are not deferred). NVN2 stages are keyed at first use: not here.
+//   Vertex: the padded variant (dm_shader_vpad_cached). Fragment / compute: the sampler-emulation variant (dm_shader_se_cached) — asked for at the first draw that binds a min / max
+//   or custom-border sampler, often after the game reused the control section (diagnoses: 46 of 55 failed variants were "the game no longer holds its control section")
 void dm_shader_vs_hold_key(const uint8_t key[8], uint64_t code, const void *control) {
     if (!code || !control || (uintptr_t)control >= (1ull << 47) || (nvn2_on() && nvn2_ctl(control))) return;
     uint32_t ncode = 0, nctl = 0;
-    if (dsh_stage((const uint8_t *)(uintptr_t)code, control, &ncode, &nctl) != 0) return;
-    dsh_src_hold(key, 0, control, nctl, code, ncode);
+    int st = dsh_stage((const uint8_t *)(uintptr_t)code, control, &ncode, &nctl);
+    if (st != 0 && st != 1 && st != 2) return;
+    dsh_src_hold(key, st, control, nctl, code, ncode);
 }
 static dsh_src_snap *dsh_src_snap_get(const uint8_t key[8], int st) {
     unsigned b = dsh_src_bucket(key); pthread_mutex_lock(&g_src_snap_mu);
@@ -539,6 +547,36 @@ int dm_shader_vpad_cached(const uint8_t key[8], int st, uint32_t mask, char *pat
     if (rc == 3) return 3;
     if (rc) { atomic_fetch_add_explicit(&g_dsh_failed, 1, memory_order_relaxed); return 1; }
     LOG("直连%s补齐变体：%s 从本机同链同指纹源码补 user(locn) 掩码 %#x（控制段已过期）", st == 5 ? "网格" : "顶点", k, mask);
+    return 0;
+}
+// 采样器模拟变体的过期回退（nvn_mtl.m se_build，code = 0）：片元（st 1）/ 计算（st 2）着色器的控制段游戏已收回时，用本机同链源码出变体；
+//   本机没有源码就按 SetShaders 时的源快照（dm_shader_vs_hold_key → dsh_src_hold）现翻一份。0 = path 是变体，3 = 没有能归约的采样，1 = 做不了（没有快照也没有源码）
+int dm_shader_se_cached(const uint8_t key[8], int st, char *path, size_t n) {
+    static const char *const js[6] = {"vs", "ps", "cs", "gs", "ts", "ms"};
+    if (st != 1 && st != 2) return 1;
+    char k[17], base[1200], meta[1200], b[8192]; for (int i = 0; i < 8; i++) snprintf(k + 2 * i, 3, "%02x", key[i]);
+    const char *out = getenv("DM_MSL_FALLBACK"); if (!out || !*out) return 1;
+    static int (*fv)(const char *, const char *); static dispatch_once_t once;
+    dispatch_once(&once, ^{ fv = (int (*)(const char *, const char *))dlsym(RTLD_DEFAULT, "s2a_dsh_samp_emu"); });
+    if (!fv) return 1;
+    mkdir(out, 0755);
+    if (!dsh_have(out, k)) {
+        dsh_src_snap *src = dsh_src_snap_get(key, st); dsh_comp_fn comp = dsh_comp();
+        if (!src || !comp) { static _Atomic int missing; if (!atomic_exchange(&missing, 1)) LOG("【红】直连采样器模拟：%s 没有 SetShaders 时的同键源快照，做不了（只报第一例）", k); return 1; }
+        if (dsh_comp_src_locked(comp, k, st, src->bytes + src->nctl, src->ncode, src->bytes, src->nctl, out)) return 1;
+        LOG("直连%s基础源码：%s 要采样器模拟变体时按源快照翻译", dsh_nm[st], k);
+    }
+    if (!dsh_have(out, k)) return 1;
+    snprintf(base, sizeof base, "%s/%s_b.metal", out, k); snprintf(meta, sizeof meta, "%s/%s_b.json", out, k);
+    FILE *f = fopen(meta, "r"); if (!f) return 1;
+    size_t z = fread(b, 1, sizeof b - 1, f); fclose(f); b[z] = 0;
+    if (!dsh_json_eq(b, "stage", js[st])) return 1;
+    snprintf(path, n, "%s/%s_se.metal", out, k);
+    if (dsh_variant_newer(path, base)) return 0;
+    int rc = fv(base, path);
+    if (rc == 3) return 3;
+    if (rc) { atomic_fetch_add_explicit(&g_dsh_failed, 1, memory_order_relaxed); return 1; }
+    LOG("直连采样器模拟变体：%s（%s）从本机同链同指纹源码出（控制段已过期）", k, dsh_nm[st]);
     return 0;
 }
 // #770 宿主自跑任务阶段（nvn_geometry.inc mtk_emu_fn）：任务（st 4）/ 网格（st 5）着色器在本机的基础源码 <键>_b.metal（带 S2A_MESH_EMU 入口），没有就按 SetShaders / Bind 时的源快照现翻一份。

@@ -100,7 +100,7 @@ class DevcertDelivery(unittest.TestCase):
         self.c = types.SimpleNamespace(r={}, logs=self.t, private=str(self.t), task="t1")
 
     def run_deliver(self, ph, active=True, ident=IDENT, **k):
-        with patch.object(program_pack, "enabled", lambda c: True), patch.object(install.layout, "load_device", lambda c, key: dict(self.store.get(key, {}))), \
+        with patch.object(install.layout, "load_device", lambda c, key: dict(self.store.get(key, {}))), \
                 patch.object(install.layout, "save_device", lambda c, key, rec: self.store.__setitem__(key, rec)), \
                 patch.object(install.devcert, "active", lambda c: active), patch.object(install.devcert, "team", lambda c: {"id": "TEAM-CERT"}), \
                 patch.object(install.devcert, "folder", lambda c: self.t), patch.object(install.devcert, "identity", lambda c: ident), \
@@ -147,7 +147,7 @@ class DevcertDelivery(unittest.TestCase):
         def bad(c):
             raise Failure("读不出", code="devcert_invalid")
         ph, _ = self.mac_phone()
-        with patch.object(program_pack, "enabled", lambda c: True), patch.object(install.layout, "load_device", lambda c, key: {}), \
+        with patch.object(install.layout, "load_device", lambda c, key: {}), \
                 patch.object(install.devcert, "active", lambda c: True), patch.object(install.devcert, "team", lambda c: {"id": "TEAM-CERT"}), \
                 patch.object(install.devcert, "folder", lambda c: self.t), patch.object(install.devcert, "identity", bad), \
                 patch.object(install, "trace", lambda *a, **kw: None):
@@ -156,24 +156,17 @@ class DevcertDelivery(unittest.TestCase):
             self.assertEqual(e.exception.code, "devcert_invalid", "证书读不出：单独作业原样报这个原因")
             self.assertIsNone(install.deliver_identity(self.c, ph), "顺带交：读不出不挡装机")
 
-    def test_install_shell_delivers_both_ways(self):
+    def test_install_shell_delivers_identity(self):
         import ipa as packer
         seen = []
         ph = types.SimpleNamespace(key="UDID1", bid="io.example.app", info={"device": "d"}, install=lambda ipa, g, steps=False: seen.append("install"))
         with patch.object(install, "deliver_identity", lambda c, p: seen.append("deliver")), patch.object(packer, "assemble_shell", lambda c: ("x.ipa", [], "S1")), \
-                patch.object(packer, "ipa_digest", lambda i: "dg"), patch.object(packer, "commit_phone_ipa", lambda *a: None), \
+                patch.object(packer, "commit_phone_ipa", lambda *a: None), \
                 patch.object(install.layout, "load_device", lambda c, k: {}), patch.object(install.layout, "save_device", lambda *a: None), \
                 patch.object(install.layout, "phone_ipa", lambda c: self.t / "S2Arm.ipa"), patch.object(install, "note", lambda *a: None), \
                 patch.object(install, "signer_kind", lambda c, p: "devCert"):
-            for same in (False, True):
-                with patch.object(install, "same_app", lambda *a, s=same: s):
-                    install.install_shell(self.c, ph, steps=False)
-        self.assertEqual(seen, ["install", "deliver", "deliver"])
-
-    def test_job_switch_off(self):
-        with patch.object(program_pack, "enabled", lambda c: False):
-            self.assertEqual(install.phone_identity(self.c), dict(enabled=False))
-
+            install.install_shell(self.c, ph, steps=False)
+        self.assertEqual(seen, ["install", "deliver"])
 
 if __name__ == "__main__":
     unittest.main()

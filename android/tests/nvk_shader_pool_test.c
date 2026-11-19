@@ -54,6 +54,7 @@ int g_s2a_logfd = 2;
 static const char *fake_compile_error;
 static const char *fake_compile_file;
 static char captured[262144], last_red[512], last_diag[512], last_stats[512], last_reason[512], last_request_reason[512];
+static int ubo_default_lines; static char last_ubo_default_line[512];   // 常量缓冲句柄指向没登记的贴图：每局首次的那一行（片 4）
 static char reason_history[8192];
 static const char profile[] = "{\"schema\":\"s2a-direct-profile-v1\",\"profileHash\":\"sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"capabilities\":{\"storageBufferOffsetAlignment\":16}}";
 static char external_profile[65536], external_closure[128];
@@ -87,6 +88,9 @@ void nvn_plat_log(int level, const char *cls, const char *text) {
     }
     if (level == NVN_PLAT_LOG_INFO && !strcmp(cls, "shader") && strstr(text, "texture_pool_request_reject"))
         snprintf(last_request_reason, sizeof last_request_reason, "%s", text);
+    if (level == NVN_PLAT_LOG_INFO && !strcmp(cls, "shader") && strstr(text, "常量缓冲句柄指向没登记的贴图")) {
+        ubo_default_lines++; snprintf(last_ubo_default_line, sizeof last_ubo_default_line, "%s", text);
+    }
 }
 int rp_depth_zero(void) { return fixture_depth_zero; }
 int rp_origin_lower_left(void) { return fixture_origin_lower_left; }
@@ -492,6 +496,28 @@ static void compute_fast_path_test(void) {
     }
     fake_cs_success = 0; separate_fixture = 0; fake_reg_changes = 1;
     bind_separate(5, 100, 1, 0); memset(rp_S.img[5], 0, sizeof rp_S.img[5]); memset(rp_S.ubo[5], 0, sizeof rp_S.ubo[5]); memset(rp_S.ssbo[5], 0, sizeof rp_S.ssbo[5]); memset(rp_S.tex[5], 0, sizeof rp_S.tex[5]);
+    rp_shader_reset();
+}
+// 计算阶段组合槽里没登记的号 → 默认事实（#1594 片 4 把三处各写一遍的默认事实收成 texture_facts.c 的一个函数，这里钉住计算这一处）：
+//   池容量 100，号 50 池内没登记 = {1d, 不归一化}，号 0xFFFFF 池外 = {2d, 归一化}；已登记的 78（2D RGBA8）照旧取登记。
+//   槽 3 的事实句柄 = 8 + 2 × 3 = 14（cbufSlot −1，同图形组合槽）。
+static void compute_default_fact_test(void) {
+    const struct rp_prog *a = NULL; uint8_t dig2[32];
+    rp_shader_reset(); s2a_source_clear(); rp_state_reset(); nvn_unimpl_reset(); source(); cs_variant_source(1, dig2);
+    fake_cs_success = 1; separate_fixture = 1; fake_reg_changes = 1; compiler_calls = cs_loads = 0; captured[0] = last_red[0] = 0;
+    bind_pools(100);
+    rp_S.ubo[5][0].addr = 0x1000; rp_S.ubo[5][0].size = 64; rp_S.ssbo[5][0].addr = 0x10000; rp_S.ssbo[5][0].size = 256;
+    rp_S.tex[5][3] = 50;
+    CHECK(rp_shader_resolve_compute(&a) == 0 && a && compiler_calls == 1 && fact_matches_at("cs", 14, -1, "1d", 0),
+          "CS slot naming an in-pool unregistered id carries the default {1d, unnormalized} (calls=%d)", compiler_calls);
+    rp_S.tex[5][3] = 0xFFFFF;
+    CHECK(rp_shader_resolve_compute(&a) == 0 && a && compiler_calls == 2 && fact_matches_at("cs", 14, -1, "2d", 1),
+          "CS slot naming an out-of-pool id carries the default {2d, normalized} (calls=%d)", compiler_calls);
+    rp_S.tex[5][3] = 78;
+    CHECK(rp_shader_resolve_compute(&a) == 0 && a && compiler_calls == 3 && fact_matches_at("cs", 14, -1, "2d", 1) && !fact_matches_at("cs", 14, -1, "1d", 0),
+          "CS slot naming a registered 2D texture takes the registered fact, not the default (calls=%d)", compiler_calls);
+    fake_cs_success = 0; separate_fixture = 0; fake_reg_changes = 1;
+    memset(rp_S.ubo[5], 0, sizeof rp_S.ubo[5]); memset(rp_S.ssbo[5], 0, sizeof rp_S.ssbo[5]); memset(rp_S.tex[5], 0, sizeof rp_S.tex[5]);
     rp_shader_reset();
 }
 // 图形与计算共用的快表（#1146）：一帧里依次访问落在同一个旧桶（桶号低 9 位相同）的 5 个键。
@@ -952,6 +978,50 @@ static void graphics_ubo_handle_fact_test(void) {
     // 换局清表：同样的输入要重新学（两次编译）
     rp_shader_reset(); rp_S.ubo[1][0].size = sizeof ubo_mem; ubo_mem[92] = 78; compiler_calls = 0;
     CHECK(!rp_shader_resolve(&q, &p) && p && compiler_calls == 2, "session reset forgets learned coordinates (calls=%d)", compiler_calls);
+    // 片 4（#1594）：句柄字指向没登记的贴图号。Ryujinx GetForBinding / GetTextureDescriptor 取到默认描述符、整笔照画，事实同组合槽
+    //   （默认事实只此一份，texture_facts.c），不再是 ubo_handle_no_texture 红行、不再整笔 program_unresolved。
+    //   池夹具：起点 0、容量 100；夹具只登记 77 / 78 / 79，其余号都是「没登记」。
+    {
+        const struct rp_prog *reg = p;   // 上一步用已登记的 78 编出的那份
+        uint64_t cnt0 = rp_shader_ubo_default_fact_count();
+        nvn_unimpl_reset(); ubo_default_lines = 0; last_ubo_default_line[0] = 0; last_red[0] = 0;
+        CHECK(cnt0 == 0, "换局后默认事实计数清零 (count=%llu)", (unsigned long long)cnt0);
+        ubo_mem[92] = 0xFFFFF;   // 20 位全 1：游戏常拿它当「这一路不用贴图」的哨兵；池容量 100 → 池外
+        int calls0 = compiler_calls;
+        CHECK(!rp_shader_resolve(&q, &p) && p && p != reg && compiler_calls == calls0 + 1, "out-of-pool handle word (0xFFFFF) compiles with the default fact, draw is not left unresolved (calls=%d)", compiler_calls - calls0);
+        CHECK(ubo_fact_in_request("2d", 1), "out-of-pool id carries the combined-slot default {2d, normalized}");
+        CHECK(strstr(captured, "\"format\":\"Unknown\"") != NULL, "default fact format is Unknown");
+        CHECK(nvn_unimpl_count("shader", "ubo_handle_no_texture") == 0 && nvn_unimpl_count("shader", "compile_failed") == 0 && last_red[0] == 0,
+              "out-of-pool handle is not a red line any more (compile_failed=%llu)", (unsigned long long)nvn_unimpl_count("shader", "compile_failed"));
+        CHECK(rp_shader_ubo_default_fact_count() >= 1, "default-fact counter counts it (count=%llu)", (unsigned long long)rp_shader_ubo_default_fact_count());
+        CHECK(ubo_default_lines == 1 && strstr(last_ubo_default_line, "贴图号 1048575") && strstr(last_ubo_default_line, "容量 100") && strstr(last_ubo_default_line, "fs c3 第 92 字"),
+              "first line per session names the id, the pool capacity and the coordinate: %s", last_ubo_default_line);
+        const struct rp_prog *beyond = p;
+        calls0 = compiler_calls;
+        CHECK(!rp_shader_resolve(&q, &p) && p == beyond && compiler_calls == calls0, "same out-of-pool id takes the fast path");
+        ubo_mem[92] = 0xFFFFE;   // 另一个池外号：同一份默认事实 → 同一份程序，不重编
+        CHECK(!rp_shader_resolve(&q, &p) && p == beyond && compiler_calls == calls0, "another out-of-pool id has identical facts: no recompile (calls=%d)", compiler_calls - calls0);
+        ubo_mem[92] = 50;        // 池内、没登记：{1d, 不归一化}，与池外事实不同 → 重编（快路摘要把两种默认事实分开）
+        CHECK(!rp_shader_resolve(&q, &p) && p && p != beyond && p != reg && compiler_calls == calls0 + 1, "in-pool unregistered id has other facts: recompiles (calls=%d)", compiler_calls - calls0);
+        CHECK(ubo_fact_in_request("1d", 0), "in-pool unregistered id carries the combined-slot default {1d, unnormalized}");
+        CHECK(ubo_default_lines == 1, "only the first default fact of the session prints a line (lines=%d)", ubo_default_lines);
+        uint64_t cnt1 = rp_shader_ubo_default_fact_count();
+        ubo_mem[92] = 78;        // 反例：已登记的号不受影响，不记默认事实
+        CHECK(!rp_shader_resolve(&q, &p) && p == reg && compiler_calls == calls0 + 1 && rp_shader_ubo_default_fact_count() == cnt1,
+              "registered id is untouched and not counted (calls=%d)", compiler_calls - calls0);
+        // 反例：读不到句柄字仍是「没有事实」（物理上读不到），不当成默认事实去猜；读得到的池外号之后仍编得出，不被那份失败项挡住
+        rp_S.ubo[1][0].size = 92 * 4; ubo_mem[92] = 0xFFFFF;
+        nvn_unimpl_reset();
+        CHECK(rp_shader_resolve(&q, &p) == -1 && nvn_unimpl_count("shader", "ubo_handle_unreadable") >= 1 && rp_shader_ubo_default_fact_count() == cnt1,
+              "unreadable word is still fact-less and not counted as a default fact");
+        rp_S.ubo[1][0].size = sizeof ubo_mem;
+        CHECK(!rp_shader_resolve(&q, &p) && p == beyond, "readable again with an out-of-pool id: back to the default-fact program, not the stale fact-less failure");
+        // 换局：计数与首行重来
+        rp_shader_reset(); ubo_default_lines = 0; ubo_mem[92] = 0xFFFFF;
+        CHECK(rp_shader_ubo_default_fact_count() == 0, "session reset clears the default-fact counter");
+        CHECK(!rp_shader_resolve(&q, &p) && p && ubo_default_lines == 1 && rp_shader_ubo_default_fact_count() >= 1, "next session prints its own first line (lines=%d)", ubo_default_lines);
+        ubo_mem[92] = 78; rp_shader_reset(); rp_S.ubo[1][0].size = sizeof ubo_mem; compiler_calls = 0;
+    }
     // 反例：c2 / 组合槽坐标的缺事实不进这张表（不当成用户常量缓冲去读）
     rp_shader_reset(); fake_ubo_missing = 0; fake_gs_success = 0; compiler_calls = 0;
     fake_compile_error = "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"MISSING_FACT\",\"message\":\"QuerySamplerType has no source (stage=fs,handle=92,cbufSlot=2)\"}";
@@ -1292,6 +1362,7 @@ int main(int argc, char **argv) {
     }
     fake_array_count = 0; fake_compile_error = NULL;
     compute_fast_path_test();
+    compute_default_fact_test();
     last_table_test();
     gs_request_test();
     rp_shader_reset(); s2a_source_clear();

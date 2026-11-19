@@ -4,6 +4,8 @@
 # 改动 = base...HEAD + 暂存/未暂存/未跟踪；临时 index 让新单测参与原路由器，
 # 不改真实 index。空改动不回退全跑；dry-run 只输出清单，不执行测试。
 # 退出 0 全绿 / 1 有红或少跑 / 2 参数、环境或清理失败；INT/TERM/HUP 为 130/143/129。
+# 本机自测排在门禁后面：不在门禁里跑（没有 GATE2_PAR）就把自己降到 nice 15，子进程继承；门禁步的优先级由门禁自己定
+[ -n "${GATE2_PAR:-}" ] || renice 15 -p $$ > /dev/null 2>&1 || true
 set -u
 usage() { sed -n '2,7p' "$0"; }
 error() { echo "route_tests：$*" >&2; exit 2; }

@@ -565,19 +565,33 @@ namespace S2A.Dsh
             //   json 的 tess 写各域的库名、记录标志（gal_internal.h GAL_REC_*）与输出控制点数
             static readonly Dictionary<int, string> TESS_DOM = new() { [0] = "isolines", [1] = "triangles", [2] = "quads" };
             const uint TESS_BASE = 20;   // 曲面接口缓冲的第一个 Metal 槽（同 dmsh_build.py TESS_BASE）
+            // 外壳要出的各域 →（域, 模式字, 是否本款扫到）。本款域着色器扫到的域按扫到的模式字在前（第一种进 <键>_b，同原先）；没扫到的域也补上：运行时才配上的域着色器
+            //   （romfs 晚装、设备上现编）用到它时包里就有核（诊断 18 款「hull shader … has no isolines-domain kernel (variants: triangles)」，那组曲面绘制整笔跳过）。
+            //   补的域取外壳自己的模式字、换掉低 2 位的域（外壳翻译里只有域改变曲面因子的布局，分区 / 绕序 / 点模式运行时由域着色器交给固定核）。域着色器只出它自己那一个域
+            internal static List<(int Dom, uint Mode, bool Seen)> TessDomains(string stage, long mode, IReadOnlyDictionary<int, uint> seen)
+            {
+                var r = new List<(int, uint, bool)>();
+                if (stage != "hs") { r.Add(((int)(mode & 3), (uint)mode, true)); return r; }
+                if (seen.Count > 0) foreach (var kv in seen) r.Add((kv.Key, kv.Value, true));
+                else r.Add(((int)(mode & 3), (uint)mode, true));
+                for (int d = 0; d < 3; d++) if (!r.Any(x => x.Item1 == d)) r.Add((d, (uint)((mode & ~3L) | (long)d), false));
+                return r;
+            }
             void TessFinish(JsonObject j, byte[] c1)
             {
                 string stage = (string)j["stage"]; long mode = (long)j["tess_mode"];
-                var doms = stage == "hs" && T.TessModes.Count > 0 ? T.TessModes.Keys.ToList() : new List<int> { (int)(mode & 3) };
                 var variants = new PyDict(); string first = null;
-                foreach (int d in doms)
+                foreach (var (d, dmode, seen) in TessDomains(stage, mode, T.TessModes))
                 {
                     string lk = Key + (first == null ? "_b" : "_b_t" + d), spv = Spv;
                     if (stage == "hs" && first != null)   // 同一外壳按这一域的模式再翻一次
                     {
-                        var jj = (JsonObject)j.DeepClone(); jj["key"] = Key + "_t" + d; jj["tess_mode"] = (long)T.TessModes[d];
+                        var jj = (JsonObject)j.DeepClone(); jj["key"] = Key + "_t" + d; jj["tess_mode"] = (long)dmode;
                         var (rc, err) = RunXlate(WriteJobs(new[] { jj }, "job_t_" + Key + "_" + d + ".json"), W); spv = Path.Combine(W, Key + "_t" + d + ".spv");
-                        if (rc != 0 || !XIo.Exists(spv)) throw new DshError("translation failed", Sl($"hull shader for {TESS_DOM.GetValueOrDefault(d, d.ToString())}: " + err.Trim(), 0, 160));
+                        if (rc != 0 || !XIo.Exists(spv)) {
+                            if (!seen) continue;   // 补出的域翻不出来：只是少这一域，本款扫到的域照旧（原先没有它）
+                            throw new DshError("translation failed", Sl($"hull shader for {TESS_DOM.GetValueOrDefault(d, d.ToString())}: " + err.Trim(), 0, 160));
+                        }
                     }
                     var (src, flags, ocp) = NxgalSpvCross.TessMsl(NxgalSpvCross.Harden(XIo.ReadAllBytes(spv)), 0, TESS_BASE);
                     src = Precise(WideLoads(MulExtended(PoolArrays(GatherOffsets(src))))); Save(lk + ".metal", src);
