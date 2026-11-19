@@ -849,6 +849,17 @@ def validate_result(raw, what, request=None, descriptor=None, expected_profile=N
             texword = _integer(binding.get('slot'), f'{where}.slot', 90, 345)
             if texword % 2 or binding.get('count') != 1:
                 _fail(f'{where}: invalid separate texture slot or array')
+        if 'constSampler' in binding:
+            # #1594：类型 3 句柄——贴图字在 c2 分离贴图表，采样器池下标（0..4095，0 是真下标）是着色器里的立即数。
+            #   与宿主解析（nvn_vk_program_result.c）同一份合同：v2、单个贴图、槽 90..345 偶数；与 samp_slot / uboHandle / uboSlot 互斥；
+            #   计算阶段宿主没接，计算结果也不收。
+            if (schema == RESULT_SCHEMA or kind == 'compute' or binding.get('kind') != 'texture'
+                    or 'samp_slot' in binding or 'uboHandle' in binding or 'uboSlot' in binding):
+                _fail(f'{where}: constant sampler source requires a v2 graphics texture without samp_slot / uboHandle / uboSlot')
+            _integer(binding['constSampler'], f'{where}.constSampler', 0, 4095)
+            texword = _integer(binding.get('slot'), f'{where}.slot', 90, 345)
+            if texword % 2 or binding.get('count') != 1:
+                _fail(f'{where}: invalid constant sampler texture slot or array')
     _array(content.get('dependencies'), f'{what}.content.dependencies')
 
     if descriptor is not None:

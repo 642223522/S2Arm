@@ -135,7 +135,7 @@ namespace S2A.DirectCompiler
             ResolvePoolSlots(translated, allocator);
             ResolveStorageSlots(translated, allocator);
 
-            bool v2 = allocator.Bindings.Any(b => b.SamplerSlot >= 0);
+            bool v2 = allocator.Bindings.Any(b => b.SamplerSlot >= 0 || b.ConstSampler >= 0);
             byte[] content = WriteContent(program, profile, translated, allocator, queries, v2);
             string contentHash = "sha256-" + Convert.ToHexStringLower(Sha256.HashData(content));
             return WriteEnvelope(session, generation, requestId, content, contentHash, v2);
@@ -306,6 +306,8 @@ namespace S2A.DirectCompiler
         // 的单个组合句柄给出 uboSlot / uboOffset（见下）；其余 cbuf 路径和 separate 采样器
         // 仍未实现，明确报红，不写死 0 让运行时绑错。
         private const int UserUboFirstCbuf = 3, UserUboLastCbuf = 18, UserUboMaxBytes = 0x10000;
+        // 类型 3 句柄的采样器号是立即数 << 20，只占句柄高 12 位：采样器池下标 0..4095。
+        private const int MaxConstSampler = 4095;
         private static void ResolvePoolSlots(List<(DirectStage stage, ShaderProgram shader, DirectGpuAccessor accessor)> translated,
             DirectAllocator allocator)
         {
@@ -335,13 +337,22 @@ namespace S2A.DirectCompiler
                     continue;
                 }
                 if (binding.Kind == "texture" && !resolved.Separate &&
-                    entry.accessor.TrySeparateConstC2(resolved.HandleIndex, resolved.CbufSlot, out _, out _))
+                    entry.accessor.TrySeparateConstC2(resolved.HandleIndex, resolved.CbufSlot, out int constTexWord, out int constSampler))
                 {
-                    // #1594 片 1：贴图字在 c2 分离贴图表、采样器是立即数采样器池下标（类型 3）。同字事实有了，译得下去；
-                    //   但结果里还没有立即数采样器的表达，不能只填 slot（宿主会把采样器绑成池里第 0 项，静默错绑），所以如实报未接，slot / samp_slot 一律不填。
-                    throw new DirectCompileException("UNSUPPORTED_PROGRAM",
-                        WithHandleDetail(binding.Stage + ": texture handle from cbuf slot " + resolved.CbufSlot + " is not implemented (constant sampler)",
-                            HandleDetailFields(allocator, binding, resolved, messageHasShape: false)));
+                    // #1594：贴图字在 c2 分离贴图表、采样器是着色器里的立即数采样器池下标（类型 3）。结果给 slot = 贴图字、constSampler = 池下标
+                    //   （可选字段，按 v2 写）；宿主 / 回放按池下标直接取采样器（同 NVN_RB_SAMPI），不经 c2 采样器表。
+                    //   绝不只填 slot：宿主会把「没有 samp_slot」读成采样器取同字高位（= 池里第 0 项），静默错绑。
+                    //   所以表达不了的形态——数组、计算阶段（宿主计算侧没接）、池下标超出句柄里 12 位的范围——具名报未接，什么都不填。
+                    string shape = binding.Count != 1 || resolved.ArrayLength > 1 ? "constant sampler array" :
+                                   binding.Stage == "cs" ? "constant sampler, compute" :
+                                   constSampler > MaxConstSampler ? "constant sampler index above 4095" : null;
+                    if (shape != null)
+                        throw new DirectCompileException("UNSUPPORTED_PROGRAM",
+                            WithHandleDetail(binding.Stage + ": texture handle from cbuf slot " + resolved.CbufSlot + " is not implemented (" + shape + ")",
+                                HandleDetailFields(allocator, binding, resolved, messageHasShape: false)));
+                    binding.Slot = constTexWord;
+                    binding.ConstSampler = constSampler;
+                    continue;
                 }
                 if (resolved.CbufSlot >= UserUboFirstCbuf && resolved.CbufSlot <= UserUboLastCbuf)
                 {
@@ -656,6 +667,7 @@ namespace S2A.DirectCompiler
                     writer.WriteNumber("count", binding.Count);
                     if (binding.Slot >= 0) writer.WriteNumber("slot", binding.Slot);
                     if (binding.SamplerSlot >= 0) writer.WriteNumber("samp_slot", binding.SamplerSlot);
+                    if (binding.ConstSampler >= 0) writer.WriteNumber("constSampler", binding.ConstSampler);
                     if (binding.Kind == "texture" && binding.UboSlot >= 0)
                     {
                         // 句柄在游戏 UBO 里（ResolvePoolSlots）：没有 slot，只有这两个来源字段

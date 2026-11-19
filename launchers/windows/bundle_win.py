@@ -81,20 +81,17 @@ def impactor_cache():
 IMPACTOR_PATCHES = IMPACTOR_LICENSES / "patches"
 
 
-def bundle_impactor(dest, cache=None):
+def bundle_impactor(dest, cache=None, fetch=None):
     """自编的 Impactor + plumesign 随启动器下发（11-07 维护者：玩家不再跳转下载；11-18 起自编，见 pack/jobs/impactor.py OWN_BUILD）：
-    从自编产物缓存取（tools/plumesign_build.py 编出的 dist/ 放进 impactor_cache()），逐个核 SHA-256 = impactor.BUNDLED，不符报红拒打；
-    缓存里没有就报红说清怎么编，不去官方发布页下（官方原版没有补丁）。附许可原文、补丁与来源说明"""
+    缓存（impactor_cache()）有就用，没有从固定来源 impactor.OWN_RELEASE（我们公开仓的 Release）下到缓存；逐个核 SHA-256 = impactor.BUNDLED，
+    不符报红拒打（impactor.own_artifact）。不去官方发布页下（官方原版没有补丁）。附许可原文、补丁与来源说明"""
     cache = Path(cache or impactor_cache()); dest = Path(dest); dest.mkdir(parents=True)
     lines = []
     for name, want in impactor.BUNDLED.items():
-        src = cache / name
-        if not src.is_file():
-            raise SystemExit(f"【红】自编产物缓存里没有 {name}（{cache}）：在 Windows 实机跑 python tools/plumesign_build.py <工作目录>，"
-                             f"把 <工作目录>/dist/ 下的文件放进 {cache}（或用 S2A_IMPACTOR_CACHE 指过去）再打")
-        got = sha256(src)
-        if got != want:
-            raise SystemExit(f"【红】{src} 的 SHA-256 是 {got}，钉的是 {want}：不是 tools/plumesign_build.py 自编的 v{impactor.TESTED}-{impactor.OWN_BUILD}，拒打")
+        try:
+            src = Path(impactor.own_artifact(name, want, cache, fetch))
+        except impactor.OwnBuildError as e:
+            raise SystemExit(f"【红】{e}")
         shutil.copy2(src, dest / name); lines.append(f"{name}\t{src.stat().st_size} 字节\tSHA-256 {want}")
     for f in sorted(IMPACTOR_LICENSES.glob("LICENSE-*.txt")): shutil.copy2(f, dest / f.name)
     patches = sorted(IMPACTOR_PATCHES.glob("*.patch"))

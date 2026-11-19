@@ -546,6 +546,22 @@ int main(void) {
     s2a_source_drop_pending(4242);
     CHECK(s2a_source_pending_count() == n0, "all pending released after finalize");
 
+    // 源已存进源快照的阶段：释放它的自持控制段，同程序的其他阶段不受影响（反复重设同一程序对象不再累积到安全阀）
+    {
+        uint32_t m0 = s2a_source_pending_count();
+        CHECK(s2a_source_hold_pending(7777, 0, ctl_a, S2A_SOURCE_CONTROL_BYTES) == 0 &&
+              s2a_source_hold_pending(7777, 4, ctl_b, S2A_SOURCE_CONTROL_BYTES) == 0, "hold two stages");
+        s2a_source_drop_pending_stage(7777, 0);
+        CHECK(s2a_source_pending_control(7777, 0, &pc, &pn) == 0, "kept stage control released");
+        CHECK(s2a_source_pending_control(7777, 4, &pc, &pn) == 1 && !memcmp(pc, ctl_b, pn), "other stage of the same program stays");
+        CHECK(s2a_source_pending_count() == m0 + 1, "count drops by one");
+        s2a_source_drop_pending_stage(7777, 0);   // 重复释放无副作用
+        s2a_source_drop_pending_stage(7777, 9);   // 越界阶段忽略
+        CHECK(s2a_source_pending_count() == m0 + 1, "repeat / out-of-range drop is a no-op");
+        s2a_source_drop_pending(7777);
+        CHECK(s2a_source_pending_count() == m0, "finalize releases the rest");
+    }
+
     if (fails) { printf("direct source store test: %d FAILED\n", fails); return 1; }
     printf("direct source store test: ok\n");
     return 0;

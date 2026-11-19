@@ -604,7 +604,8 @@ def zstd_head(b, n=4):   # 不带字典号的 zstd 帧（b 为文件开头，至
     z = _zstd_lib(); ds = z.ZSTD_createDStream(); z.ZSTD_initDStream(ds)
     try:
         src, dst = ctypes.create_string_buffer(b, len(b)), ctypes.create_string_buffer(n)
-        i, o = _ZBuf(ctypes.cast(src, ctypes.c_void_p), len(b), 0), _ZBuf(ctypes.cast(dst, ctypes.c_void_p), n, 0)
+        # addressof 不用 ctypes.cast：cast 成引用环，缓冲区等循环垃圾回收才放（同 graphics/tools/nxfmt.py yaz0_decompress）
+        i, o = _ZBuf(ctypes.c_void_p(ctypes.addressof(src)), len(b), 0), _ZBuf(ctypes.c_void_p(ctypes.addressof(dst)), n, 0)
         while o.pos < n and i.pos < i.size:
             r = z.ZSTD_decompressStream(ds, ctypes.byref(o), ctypes.byref(i))
             if z.ZSTD_isError(r) or r == 0: break

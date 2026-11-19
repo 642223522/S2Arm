@@ -39,7 +39,7 @@
 extern "C" {
 #endif
 
-#define NVN_GPU_CONTRACT_VERSION 13   // 改任何签名或语义 +1；两个后端与核心同批改，t_nvn_backend.c 的签名表同批改
+#define NVN_GPU_CONTRACT_VERSION 14   // 改任何签名或语义 +1；两个后端与核心同批改，t_nvn_backend.c 的签名表同批改
 /* 定稿 #1（调用形式）：链接期直接调用 nvn_gpu_*。每个平台构建只链一个后端，Metal 3 / 4 的选择留在 Metal 后端内部。
    理由：零间接、可内联；同进程 A/B 对照没有真实消费者，不为它新增注册实体（vickwv 同意）。 */
 
@@ -253,8 +253,13 @@ typedef struct {
     uint16_t count;       // 数组长度（非数组为 1）
     uint16_t aid;         // Metal 参数号（Vulkan 忽略）
     uint32_t stages;      // 可见阶段位（1 << nvn_gpu_stage）
-    uint16_t src_reg2;    // 分离采样器来源槽；UINT16_MAX = 无第二来源
+    uint16_t src_reg2;    // 分离采样器来源（NVN_RB_TEX 项）：UINT16_MAX = 无第二来源；0..127 = NVN 采样器槽；
+                          //   NVN_GPU_SAMP2_CONST | 池下标 = 着色器里的立即数采样器池下标（类型 3 句柄，不经采样器槽，见下）
 } nvn_gpu_layout_ent;
+// src_reg2 的「常量采样器」编码（#1594）：高位标记 + 低 12 位采样器池下标（0..NVN_GPU_SAMP2_ID_MASK，句柄高 12 位的范围；0 是真下标）。
+// 标记位在采样器槽范围（0..127）之外：不认这种编码的旧消费方会落进「src_reg2 >= 128」的形状检查具名跳过，不会把它当槽号静默绑错。
+#define NVN_GPU_SAMP2_CONST   0x8000u
+#define NVN_GPU_SAMP2_ID_MASK 0x0FFFu
 typedef struct {
     const nvn_gpu_layout_ent *ent; uint32_t nent;
     uint32_t push_off, push_bytes;   // 本阶段 push 常量范围（0 字节 = 不用）；nvn_gpu_push 只许写进这个范围
