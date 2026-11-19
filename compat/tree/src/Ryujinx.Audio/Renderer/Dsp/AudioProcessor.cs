@@ -146,11 +146,17 @@ namespace Ryujinx.Audio.Renderer.Dsp
             return _sessionCommandList[sessionId] != null;
         }
 
+        // S2Arm (#1598): ticks the last inline Signal spent waiting on the pause event (guest frozen / app unfocused) before rendering.
+        //   The manager's slow-period line subtracts it: a 7 s freeze used to be logged as one 7 s DSP period
+        public long S2ALastPauseWaitTicks;
+
         public void Signal()
         {
             if (S2AInline)
             {
+                long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
                 _pauseEvent?.WaitOne();
+                S2ALastPauseWaitTicks = System.Diagnostics.Stopwatch.GetTimestamp() - t0;
                 Render();
                 return;
             }
