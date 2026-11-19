@@ -36,7 +36,7 @@ USAGE = """s2armctl —— 让 AI 助手操作 S2Arm（每条命令 = 玩家点�
   ipa <游戏号> [--space-override]    打 iPhone 包（出 IPA + 资源包）；--space-override 同界面「仍然继续」，磁盘预检不够也照出（先征得玩家同意）
   selfsign <游戏号>                  导出自签包（同游戏库按钮）：能直接导出的直接导出；没出过 / 旧格式的先打 iPhone 包再导出
   build <游戏号> [ios|mac|android|harmony] [--space-override] [--serial <安卓序列号>]   出包，按目标：ios = iPhone / iPad（缺省）、mac = Mac；
-      android 在开关后（S2A_ANDROID_EXPORT=1，缺省关回「即将上线」），--serial 出好接着装到那台手机；鸿蒙即将上线
+      android 在开关后（S2A_ANDROID_EXPORT=1，缺省关回「即将上线」），--serial 出好接着装到那台手机，不给就只出 APK 不装；鸿蒙即将上线
   batch <游戏号>[:mac,iphone] … [--location 文件夹]
                                     批量出包：几款一起，每款可指定平台（缺省 iphone；同一款先 Mac 后 iPhone，解包只做一次）、一批共用一个存放位置；
                                     一款接一款地出，失败不挡后面、磁盘满暂停；等到出完，打印每款结果和汇总，有失败退出码 1

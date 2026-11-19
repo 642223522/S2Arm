@@ -130,7 +130,7 @@ struct QueuedExport {
     var location: String? = nil
     /// "export" = 这次出包是为了导出自签包（作业层步骤名照自签路写）
     var mode: String? = nil
-    /// 安卓出好装到哪台（adb 序列号）：控制口显式给的；nil = 界面上选的那台（androidPhone）
+    /// 安卓出好装到哪台（adb 序列号）：控制口显式给的；"" = 不装（控制口没给 serial）；nil = 界面上选的那台（androidPhone）
     var androidSerial: String? = nil
 }
 
@@ -923,7 +923,8 @@ public final class S2ArmLauncherModel: ObservableObject {
         if let target = item.target { plan["deviceTarget"] = target }
         if item.spaceOverride { plan["spaceOverride"] = true }
         if !sgradeOn(game.id) { plan["sgrade"] = false }   // 出包页取消「S 级优化（Beta）」：这次不带社区补丁与金手指（pack/jobs/patches.py prepare）
-        if platforms.contains(.android), let serial = item.androidSerial ?? androidPhone { plan["androidSerial"] = serial }   // 出好接着装到这台安卓手机（export_plan → installSerial）
+        // 出好接着装到这台安卓手机（export_plan → installSerial）：控制口给的 > 界面选的；"" = 明确不装
+        if platforms.contains(.android), let serial = item.androidSerial ?? androidPhone, !serial.isEmpty { plan["androidSerial"] = serial }
         start(session) { [weak self] sink in
             guard let self else { return nil }
             do { _ = try await self.provider.export(plan: plan, hasIPhone: platforms.contains(.ios), mode: item.mode, events: self.exportSink(sink)) }
