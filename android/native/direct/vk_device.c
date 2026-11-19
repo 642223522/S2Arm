@@ -135,6 +135,11 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
             if (!dup && has_instance_extension(pe[i])) enabled[enabled_count++] = pe[i];
         }
     }
+    int instance_surface_maintenance1 = 0, instance_surface_capabilities2 = 0;
+    for (uint32_t i = 0; i < enabled_count; i++) {
+        if (!strcmp(enabled[i], "VK_EXT_surface_maintenance1")) instance_surface_maintenance1 = 1;
+        if (!strcmp(enabled[i], "VK_KHR_get_surface_capabilities2")) instance_surface_capabilities2 = 1;
+    }
     out->has_android_surface = has_instance_extension("VK_KHR_android_surface");
 
     VkApplicationInfo app = {0};
@@ -238,8 +243,37 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
             return fail(why, why_size, text);
         }
     }
-    VkPhysicalDeviceFeatures enabled_features = features;
-    // 不启用声明外的能力：只开首版执行层实际需要的字段。
+    VkPhysicalDeviceFeatures enabled_features = {0};
+    // #1581 P OOB 审计：顶点窗口和动态 SSBO/UBO 访问尚未证明自限，保留核心 robustness。
+    // 见 rp_draw.c 的顶点绑定、DirectGpuAccessor.QueryHostStorageWindowClamp 和 InstEmitMemory.Ldc。
+    enabled_features.robustBufferAccess = features.robustBufferAccess;
+    enabled_features.fullDrawIndexUint32 = features.fullDrawIndexUint32;
+    enabled_features.imageCubeArray = features.imageCubeArray;
+    enabled_features.independentBlend = features.independentBlend;
+    enabled_features.dualSrcBlend = features.dualSrcBlend;
+    enabled_features.logicOp = features.logicOp;
+    enabled_features.multiDrawIndirect = features.multiDrawIndirect;
+    enabled_features.drawIndirectFirstInstance = features.drawIndirectFirstInstance;
+    enabled_features.depthClamp = features.depthClamp;
+    enabled_features.depthBiasClamp = features.depthBiasClamp;
+    enabled_features.fillModeNonSolid = features.fillModeNonSolid;
+    enabled_features.largePoints = features.largePoints;
+    enabled_features.multiViewport = features.multiViewport;
+    enabled_features.samplerAnisotropy = features.samplerAnisotropy;
+    enabled_features.textureCompressionETC2 = features.textureCompressionETC2;
+    enabled_features.textureCompressionASTC_LDR = features.textureCompressionASTC_LDR;
+    enabled_features.textureCompressionBC = features.textureCompressionBC;
+    enabled_features.occlusionQueryPrecise = features.occlusionQueryPrecise;
+    enabled_features.vertexPipelineStoresAndAtomics = features.vertexPipelineStoresAndAtomics;
+    enabled_features.fragmentStoresAndAtomics = features.fragmentStoresAndAtomics;
+    enabled_features.shaderTessellationAndGeometryPointSize = features.shaderTessellationAndGeometryPointSize;
+    enabled_features.shaderStorageImageMultisample = features.shaderStorageImageMultisample;
+    enabled_features.shaderUniformBufferArrayDynamicIndexing = features.shaderUniformBufferArrayDynamicIndexing;
+    enabled_features.shaderSampledImageArrayDynamicIndexing = features.shaderSampledImageArrayDynamicIndexing;
+    enabled_features.shaderStorageBufferArrayDynamicIndexing = features.shaderStorageBufferArrayDynamicIndexing;
+    enabled_features.shaderStorageImageArrayDynamicIndexing = features.shaderStorageImageArrayDynamicIndexing;
+    enabled_features.shaderResourceMinLod = features.shaderResourceMinLod;
+    enabled_features.variableMultisampleRate = features.variableMultisampleRate;
     enabled_features.shaderFloat64 = VK_FALSE;
     enabled_features.shaderInt64 = VK_FALSE;
     enabled_features.sparseBinding = VK_FALSE;
@@ -319,6 +353,7 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
 
     out->has_swapchain = has_device_extension(out->physical, "VK_KHR_swapchain");
     out->has_swapchain_maintenance1 = has_device_extension(out->physical, "VK_EXT_swapchain_maintenance1");
+    const int has_timeline = has_device_extension(out->physical, "VK_KHR_timeline_semaphore");
     VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT maintenance = {0};
     maintenance.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT;
     VkPhysicalDeviceTimelineSemaphoreFeatures timeline = {0};
@@ -367,7 +402,7 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
     {
         VkPhysicalDeviceFeatures2 query = {0};
         query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-        draw_parameters.pNext = &timeline;
+        draw_parameters.pNext = has_timeline ? (void *)&timeline : (void *)&index_u8;
         timeline.pNext = &index_u8;
         index_u8.pNext = has_4444 ? &f4444 : NULL;
         if (has_dcc) { dcc.pNext = index_u8.pNext; index_u8.pNext = &dcc; }
@@ -391,8 +426,9 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
             out->descriptor_indexing_variable_count = descriptor_supported.descriptorBindingVariableDescriptorCount == VK_TRUE;
             out->descriptor_indexing_sampled_update_after_bind = descriptor_supported.descriptorBindingSampledImageUpdateAfterBind == VK_TRUE;
         }
-        out->swapchain_maintenance1_enabled = out->has_swapchain_maintenance1 && maintenance.swapchainMaintenance1 == VK_TRUE;
-        out->timeline_semaphore_enabled = timeline.timelineSemaphore == VK_TRUE;
+        out->swapchain_maintenance1_enabled = out->has_swapchain_maintenance1 &&
+            instance_surface_maintenance1 && instance_surface_capabilities2 && maintenance.swapchainMaintenance1 == VK_TRUE;
+        out->timeline_semaphore_enabled = has_timeline && timeline.timelineSemaphore == VK_TRUE;
         out->shader_draw_parameters_enabled = draw_parameters.shaderDrawParameters == VK_TRUE;
         out->formats_4444_enabled = has_4444 && f4444.formatA4B4G4R4 == VK_TRUE;
         out->depth_clip_control_enabled = has_dcc && dcc.depthClipControl == VK_TRUE;
@@ -406,7 +442,7 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
         return fail(why, why_size, "required feature missing: shaderDrawParameters");
 
     // 容量 = 所有可选扩展同时启用时的项数（swapchain / maintenance1 / 校准 / index_type_uint8 / display_timing / host import /
-    // AHB + queue_family_foreign / indirect count / 4444 / 实例除数 / 镜像夹取 / 自定义边框色 / 深度裁剪控制 / min-max 归约，校准 KHR / EXT 二选一 = 15；加 descriptor indexing / load_store_op_none 共 17），留余量。
+    // AHB + queue_family_foreign / indirect count / 4444 / 实例除数 / 镜像夹取 / 自定义边框色 / 深度裁剪控制 / min-max 归约，校准 KHR / EXT 二选一 = 15；加 descriptor indexing / load_store_op_none / timeline 共 18），留余量。
     // 整组齐全才启用：缺任一项时可继续启动，但不承诺 pool/non-uniform 能力。
     // 存储图像非一致索引也必须一起启用：生成器（MarkNonUniform）一开就同时声明采样 + 存储两种能力，
     // 只启用采样会让 SPIR-V 的能力声明与设备不符（C1 的 profile 一致性核对按这条走）。
@@ -422,6 +458,7 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
     S2A_DLOG("[s2a] vk read-only attachment: load_store_op_none=%d\n", out->load_store_op_none_enabled);
     if (out->has_swapchain) device_ext[device_ext_count++] = "VK_KHR_swapchain";
     if (out->swapchain_maintenance1_enabled) device_ext[device_ext_count++] = "VK_EXT_swapchain_maintenance1";
+    if (has_timeline) device_ext[device_ext_count++] = "VK_KHR_timeline_semaphore";
     // 时间戳换算成游戏时钟要用校准扩展求 GPU 域与 CLOCK_MONOTONIC 的偏移。两种扩展同名同签名，
     // 优先 KHR；都没有时时间戳走“完成点取 guest_tick”的兜底（不是伪造 GPU 时刻）。
     out->calibrated_timestamps = 0;
@@ -587,7 +624,7 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
     device_info.enabledExtensionCount = device_ext_count;
     device_info.ppEnabledExtensionNames = device_ext;
     draw_parameters.shaderDrawParameters = VK_TRUE;
-    draw_parameters.pNext = out->timeline_semaphore_enabled ? (VkBaseInStructure *)&timeline
+    draw_parameters.pNext = has_timeline ? (VkBaseInStructure *)&timeline
                           : out->index_type_uint8_enabled ? (VkBaseInStructure *)&index_u8 : NULL;
     timeline.timelineSemaphore = out->timeline_semaphore_enabled ? VK_TRUE : VK_FALSE;
     timeline.pNext = out->index_type_uint8_enabled ? (VkBaseInStructure *)&index_u8 : NULL;
