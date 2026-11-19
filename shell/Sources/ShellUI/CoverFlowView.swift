@@ -1,3 +1,4 @@
+#if !os(tvOS)   // tvOS 不编本文件：触屏横滑封面墙（电视版库界面见 TVLibraryView.swift，UPSTREAM.md「我方改动」）
 // S2Arm modification: add the sorting entry, keep transformed neighbours mounted and align the title during scrolling.
 import SwiftUI
 #if canImport(QuartzCore)
@@ -909,3 +910,4 @@ struct ShellSettingsChip: View {
             .shellTarget("lib.shellSettings", radius: 22, action: action)
     }
 }
+#endif   // !os(tvOS)

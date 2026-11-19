@@ -215,6 +215,7 @@ package struct LauncherSwitchStyle: ToggleStyle {
             .contentShape(Capsule())
         }
         .controllerButtonStyle(.plain)
+        .controllerRingRadius(.infinity, outset: 3)   // 胶囊开关：焦点框也是胶囊，画在外侧 3 pt（开着时整条奶油色，贴边的框看不见）
         .opacity(enabled ? 1 : 0.45)
         .accessibilityAddTraits(configuration.isOn ? .isSelected : [])
         .accessibilityRepresentation { Toggle(isOn: configuration.$isOn) { configuration.label }.toggleStyle(.switch) }
@@ -355,3 +356,5 @@ package struct LauncherSlider: View {
         change(min(max(value + Double(direction) * increment, range.lowerBound), range.upperBound))
     }
 }
+
+extension LauncherSecondaryButtonStyle: PadRingShaped { package var padRingRadius: CGFloat { LauncherTheme.Metrics.controlRadius } }

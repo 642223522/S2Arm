@@ -14,6 +14,7 @@ import zipfile
 from pathlib import Path
 
 from core import Failure
+import layout
 
 DIR = "mods"
 OFF = ".off-"   # 关掉的 mod：文件夹改名为 mods/.off-<名字>（11-15 v0.5.0 收口「导入、关掉、删掉」）。服务层 RomFsMods.cs 跳过 . 开头的文件夹、
@@ -71,7 +72,8 @@ CODE_EXT = (".pchtxt", ".ips")   # exefs 里的代码补丁（11-15 维护者：
 
 
 def _code_files(d):
-    return sorted(f for f in Path(d).iterdir() if f.is_file() and not f.is_symlink() and f.suffix.lower() in CODE_EXT) if Path(d).is_dir() else []
+    # ._<名>.pchtxt / .ips（mod 放在 exFAT 上时的附属文件）不是补丁：当补丁编进程序会让出包解析失败
+    return [f for f in layout.entries(d) if f.is_file() and not f.is_symlink() and f.suffix.lower() in CODE_EXT]
 
 
 def _child(d, name):
@@ -84,6 +86,16 @@ def _parts(d):
     code = _child(d, "exefs")
     code = code if code and _code_files(code) else d if d.parent.name.lower() == "exefs_patches" and _code_files(d) else None
     return _child(d, "romfs"), code
+
+
+PROGRAM_FILES = ("main", "main.npdm", "rtld", "sdk") + tuple("subsdk%d" % i for i in range(10))   # exefs 里的游戏程序件（不是补丁）
+
+
+def _whole_program(root):
+    """root 下（含 root 本身）有名为 exefs 的文件夹、里面有游戏程序件而没有 pchtxt / IPS：整份替换游戏程序的 mod"""
+    root = Path(root)
+    dirs = ([root] if root.name.lower() == "exefs" else []) + [p for p in root.rglob("*") if p.is_dir() and not p.is_symlink() and p.name.lower() == "exefs"]
+    return any(not _code_files(d) and any(f.is_file() and f.name.lower() in PROGRAM_FILES for f in d.iterdir()) for d in dirs)
 
 
 def _find(root, gid):
@@ -126,11 +138,13 @@ def import_paths(c, game, paths):
             found, why = _find(root, gid)
             notes += why
             if not found:
+                if _whole_program(root):   # exefs/ 里只有整份游戏程序（main / subsdk / main.npdm 等）、没有补丁：直说不支持（D-P4F5）
+                    raise Failure("「%s」是整份替换游戏程序的 mod，S2Arm 不支持：S2Arm 出包时要改写游戏程序，只能把 exefs/ 里的 pchtxt / IPS 补丁编进去；资源替换类（romfs/）照常能用。" % src.name, code="job_failed")
                 raise Failure("「%s」里没找到 mod：资源替换要带 romfs/（如 atmosphere/contents/%s/romfs），代码补丁要带 exefs/ 里的 pchtxt / IPS（或 atmosphere/exefs_patches/<名字>/）。" % (src.name, gid), code="job_failed")
             for label, rd, cd in found:
                 name = _safe_name(base if len(found) == 1 or not label else "%s - %s" % (base, label.replace("/", " - ")))
                 code = _code_files(cd) if cd else []
-                files = [f for f in rd.rglob("*") if f.is_file() and not f.is_symlink()] if rd else []
+                files = [f for f in layout.entries(rd, recursive=True) if f.is_file() and not f.is_symlink()] if rd else []
                 if not files and not code:
                     notes.append("「%s」是空的，没收" % name)
                     continue
@@ -170,7 +184,7 @@ def listing(c, game):
     """→ [{name, enabled, files, bytes}]（按叠加顺序：名字升序；关着的照列，enabled 为假）"""
     out = []
     for name, (d, on) in sorted(_folders(mods_dir(c, game["id"].upper(), create=False)).items()):
-        files = [f for f in (d / "romfs").rglob("*") if f.is_file()] if (d / "romfs").is_dir() else []
+        files = [f for f in layout.entries(d / "romfs", recursive=True) if f.is_file()]
         out.append(dict(name=name, enabled=on, files=len(files), bytes=sum(f.stat().st_size for f in files), code=len(_code_files(d / "exefs"))))
     return out
 
@@ -201,7 +215,7 @@ def fingerprint(d):
     """一份 mod 的内容记号（相对路径 + 大小 + 改动时间）：装机时只推变了的（install.push_mods）"""
     import hashlib
     h = hashlib.sha256()
-    for f in sorted(p for p in Path(d).rglob("*") if p.is_file()):
+    for f in (p for p in layout.entries(d, recursive=True) if p.is_file()):   # 附属文件随访达 / 系统生灭，不该让记号变、触发整份重推
         st = f.stat()
         h.update(f"{f.relative_to(d).as_posix()}\t{st.st_size}\t{int(st.st_mtime)}\n".encode())
     return h.hexdigest()[:16]

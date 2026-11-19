@@ -30,7 +30,7 @@ import json, os, pathlib, plistlib, re, shutil, subprocess, sys
 H = pathlib.Path(__file__).resolve().parents[1]
 SRCS = ['ios/diagzip.m', 'ios/ea_rumble.m', 'ios/extdisplay.m', 'ios/input_config.m', 'ios/play_layout.m', 'ios/prov_expiry.m', 'ios/root_ready.m',   # 11-13 补登：原先没扫，扫过无中文显示串
         'ios/vpad.m', 'ios/vpad_settings.m', 'ios/vpad_layout.m', 'ios/vpad_cheats.m', 'ios/vpad_mods.m', 'ios/cheats_parse.m', 'ios/vpad_shell.m', 'ios/cpatch_settings.m', 'ios/cpatch_model.m',
-        'ios/app.m', 'ios/app_settings.m', 'ios/controller.m', 'ios/diag.m', 'ios/diagredact.m', 'ios/dprompt.m', 'ios/hud.m', 'ios/iml_probe.m',
+        'ios/app.m', 'ios/app_settings.m', 'ios/controller.m', 'ios/diag.m', 'ios/diagcollect.m', 'ios/diagredact.m', 'ios/dprompt.m', 'ios/hud.m', 'ios/iml_probe.m',
         'ios/lan_permission.m', 'ios/ldn_lan.m', 'ios/loadpage.m', 'ios/notice.m', 'ios/phone_motion.m', 'ios/save_transfer.m', 'ios/settings.m',
         'ios/textinput.m', 'ios/touch_config.m', 'ios/game_options.m', 'ios/sgrade_style.m', 'ios/sgrade_line.m']
 # 语言按目录自己找（11-13 加繁中 zh-Hant，维护者「任何一种语言缺键就报红」）：ios/l10n/<语言>.lproj 每一种都要有两张表；en 是基准（开发区域），别的语言逐项与 en 比
@@ -49,9 +49,10 @@ REDACT = '诊断包脱敏（diag.m redact / diagredact.m）的匹配式与替换
 IDENT = {   # 文件 → {字面量（源码里的原样，含转义）: 不改的理由}
     'ios/vpad.m': {'提示条': 'setTouchOnly:why: 的原因串，只进日志「触屏布局：切到…」', '未注明': 's2a_vpad_set_touch_only 的原因缺省值，只进日志'},
     'ios/cheats_parse.m': {s: CHEATS_CS for s in ('未命名', '主代码')},
-    'ios/vpad_cheats.m': {s: CHEATS_CS for s in ('未命名', '生效中', '生效中（编进游戏）', '地址未就绪', '执行出错', '改代码，不支持', '格式不对', '版本不符', '关', '游戏未装载', '指令有误')},
+    'ios/vpad_cheats.m': {s: CHEATS_CS for s in ('未命名', '生效中', '生效中（编进游戏）', '地址未就绪', '执行出错', '改代码，不支持', '改代码，没编进包', '格式不对', '版本不符', '关', '游戏未装载', '指令有误')},
     'ios/diag.m': {'资源包': '单款包资源目录的真实文件夹名 Documents/资源包（pack_root 拼路径，launchctx / pack_apply 同一个名字）',
-                   '<设备名>': REDACT, '\\n…截掉 %lu 字节…\\n': '诊断包里大日志截断处的标记行，只进诊断包'},
+                   '<设备名>': REDACT},
+    'ios/diagcollect.m': {'\\n…截掉 %lu 字节…\\n': '诊断包里大日志截断处的标记行，只进诊断包'},
     'ios/diagredact.m': {'/Users/<用户>': REDACT, r'[^\\s\"' + "'" + r'<>:=,;{}\\[\\]，。]+的(iPhone|iPad)': REDACT, '[DEVICE_NAME]的$1': REDACT},
     'ios/loadpage.m': {'Documents/资源包': '单款包资源目录的真实路径（读 ctl/control.nacp 取游戏名）'},
     'ios/settings.m': {'Documents/资源包': '单款包资源目录的真实路径（读 ctl/control.nacp 的支持语言标志，同 loadpage.m）', **{s: 'NSException 原因串（启动环境写不进去即抛，进崩溃报告 / 日志），不是界面文字' for s in ('读取画面设置 %s 失败：%s', '重读画面设置 %@ 失败：%s')},
@@ -83,7 +84,7 @@ SHELL_XCSTRINGS = 'shell/Sources/ShellUI/Resources/Localizable.xcstrings'
 SHELL_LOG_CALLS = {'NSLog', 'print'}
 SHELL_IDENT = {   # 文件 → {中文字面量开头: 不改的理由}
     'Catalogue.swift': {s: 'Catalogue.problems：清单读不了 / 坏了的原因，只进 NSLog（S2ArmShellHostModel 打日志，shell/UPSTREAM.md「问题只进日志」）'
-                        for s in ('清单读不了：', '清单 JSON 坏了：', '清单 schema ', '重复的 title_id ', 'title_id \\"')},
+                        for s in ('清单读不了：', '清单 JSON 坏了：', '清单 schema ', '重复的 title_id ', 'title_id \\"', '程序包清单 ')} | {'资源包': '机上目录名 <资源根>/<游戏号>/资源包（runtime/src/pack_apply.c 同名，0.5.x 老款认它），不是显示文字'},
     'S2ArmShellHostModel.swift': {'资源包': '机上目录名 Documents/games/<游戏号>/资源包（runtime/src/pack_apply.c 同名），不是显示文字'},
 }
 SAVESYNC_DIR = 'launchers/shared/SaveSync/Sources/SaveSync'

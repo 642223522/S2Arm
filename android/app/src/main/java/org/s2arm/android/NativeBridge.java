@@ -212,6 +212,23 @@ final class NativeBridge {
     /** Debug: the render thread waits this long before its teardown (destroy). */
     static native void setStopStall(long host, int ms);
     static native void input(int buttons, int lx, int ly, int rx, int ry);
+    /**
+     * Phone six-axis / rumble settings (native/phone_feedback.c, PhoneFeedback): package for the sensor
+     * manager, the two in-game menu switches, whether the device has a vibrator, and whether a physical
+     * gamepad is attached (the phone motor stays quiet then, as on iOS). Main thread; repeatable.
+     */
+    static native void configurePhoneFeedback(String packageName, boolean gyro, boolean rumble, boolean hasVibrator,
+                                              boolean gamepad);
+    /** Display.getRotation() of the default display, for the phone six-axis axes. Any thread. */
+    static native void setDisplayRotation(int rotation);
+    /**
+     * Player 1's physical controller (native/phone_feedback.c, PadFeedback): whether its motor rumbles (it has one
+     * and controller rumble is on), its USB vendor id (picks the sensor axis convention), whether it has six-axis
+     * sensors, and whether this is a different controller than last time. Main thread; repeatable.
+     */
+    static native void configurePadFeedback(boolean rumble, int vendorId, boolean motion, boolean changed);
+    /** One controller sensor event as Android reports it (gyro: rad/s, else accelerometer m/s²). Sensor thread. */
+    static native void padSensor(boolean gyro, float x, float y, float z);
     /** Maps each rewritten module in an installed game's modules/ (load check; nothing runs). Any thread. */
     /** Native -> Java: the guest's software keyboard request (blocked guest thread). */
     static String requestText(String title, String initial, int maxChars) {
@@ -221,6 +238,8 @@ final class NativeBridge {
     static void dguardPrompt(byte[] diag) {
         MainActivity.dguardPrompt(diag == null ? "" : new String(diag, java.nio.charset.StandardCharsets.UTF_8));
     }
+    /** 停帧看门的屏上提示（native bridge.cpp stall_notice 在看门线程上调）：种类见 StallNotice，seconds 是横幅显示秒数。 */
+    static void stallNotice(int kind, int seconds) { MainActivity.stallNotice(kind, seconds); }
     /** 直连安全网：onTrimMemory/onLowMemory 前台内存告警，记一次失败证据（未武装时空转）。 */
     static native void memoryWarning();
     /** #48 P8：热状态（PowerManager.THERMAL_STATUS_*，读不到 -1）与省电模式，进共用 dm_thermal_now / dm_low_power_now。 */
@@ -229,6 +248,8 @@ final class NativeBridge {
     static native void setHostBuild(String build);
     /** 存档原子提交判定（共用 direct_prompt.c）：每秒轮询，正数 = 服务层报出原因位（只报一次），负数 = 状态未知（服务层缺导出，不提示）。 */
     static native int pollSaveAtomic();
+    /** 游玩时间落盘（共用 runtime/src/playtime.c）：游戏在前台时每 10 秒、onPause 与收局前各一次；没攒够 1 秒不写。 */
+    static native void flushPlaytime();
 
     static native String checkModules(String modulesDir);
     /** Maps exactly these rewritten module images (load check; nothing runs). Any thread. */

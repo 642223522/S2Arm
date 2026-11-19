@@ -203,10 +203,12 @@ static void *writer(void *a) { s2a_thread_name("s2a-fps-writer");
 int s2a_fps_present_at(uint64_t now);   // 核心按传入的时间算（单测传精确时间戳）
 int s2a_fps_present_hook(void) { return s2a_fps_present_at(plat_now_ns()); }
 int s2a_fps_present_at(uint64_t now) {
-    // 关着时也记，再开的第一帧按真实帧间隔算；换局时清零。
-    if (!eff_table()) { g_present_last = now; return g_own && atomic_load(&g_have); }
+    // 关着时速度槽也按真实帧间隔写（11-18，#1607）：旧包的改指令（c 行，如去掉游戏自己的 30 帧下限）出包时已打进程序、不跟开关走，
+    //   60 帧关着游戏照样能跑到 60；原先关时槽写死 1.0（30 帧口径），读槽的时钟（王国之泪布料 / 头发）在 60 帧下快一倍。
+    //   按实测间隔写：游戏自己限 30 时仍是 1.0，跑到 60 时 0.5，游戏时间 = 真实时间。帧步只在开着时跑（fs_target），关时不看它
+    int on = eff_table();
     if (g_spd_slot >= 0) {
-        int st = fs_step();
+        int st = on ? fs_step() : 0;
         if (st > 0) {   // 帧步在跑：步长是宿主定的整数 vsync，出图也按它保持
             float v = st * 0.5f; if (v < g_spd_lo) v = g_spd_lo; if (v > g_spd_hi) v = g_spd_hi;
             spd_store(v);
@@ -215,6 +217,7 @@ int s2a_fps_present_at(uint64_t now) {
             spd_store(v); }
     }
     g_present_last = now;
+    if (!on) return g_own && atomic_load(&g_have);
     if (g_p30_slot >= 0) {
         int32_t cv = (int32_t)plat_guest_load32((uintptr_t)key_slot(g_p30_slot)); int p30 = (cv == g_p30_val) == g_p30_eq;
         if (dm_fps_state) host_store32(dm_fps_state + 4, (uint32_t)p30);   // 帧步在跑时过场靠这一位稳定按 30（出图间隔跟帧步，不看钩子返回值）

@@ -20,6 +20,37 @@ import frontend_layout
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def bundle_plumesign(resources, cache=None, fetch=None):
+    """Impactor 同版 plumesign 的 macOS 版随启动器（0.6.0 通用壳：Mac 的 Apple ID 用它登录、签名，pack/jobs/install.py mac_plume）：
+    放 Resources/<impactor.BUNDLE_DIR>/。用的是我们自编的修改版（上游 v{TESTED} + launchers/windows/third_party/impactor/patches/，
+    tools/plumesign_build.py 编，同 Windows 打包 launchers/windows/bundle_win.py impactor_cache 同一个缓存目录）。缓存有就用，没有从固定来源
+    impactor.OWN_RELEASE（我们公开仓的 Release）下到缓存；SHA-256 不等于 impactor.BUNDLED_MAC 拒打（impactor.own_artifact）。发版时 sign_release.sh 按文件头认 Mach-O、用我们的 Developer ID 重签外层签名（公证要求），内容不改"""
+    sys.path.insert(0, str(ROOT / "pack/jobs")); import impactor
+    cache = Path(cache or os.environ.get("S2A_IMPACTOR_CACHE") or Path(os.environ.get("S2A_RUN_ROOT") or Path.home() / ".s2arm/run")
+                 / "s2arm/cache/impactor" / f"v{impactor.TESTED}-{impactor.OWN_BUILD}")
+    dest = Path(resources) / impactor.BUNDLE_DIR
+    dest.mkdir(parents=True, exist_ok=True)
+    for name, want in impactor.BUNDLED_MAC.items():
+        try:
+            src = Path(impactor.own_artifact(name, want, cache, fetch))
+        except impactor.OwnBuildError as e:
+            raise SystemExit(f"【红】{e}")
+        shutil.copy2(src, dest / name); (dest / name).chmod(0o755)
+    lic = ROOT / "launchers/windows/third_party/impactor"
+    for f in sorted(lic.glob("LICENSE-*.txt")):
+        shutil.copy2(f, dest / f.name)
+    patches = sorted((lic / "patches").glob("*.patch"))
+    for f in patches:
+        shutil.copy2(f, dest / f.name)
+    (dest / "README-来源与许可.txt").write_text("\n".join([
+        f"plumesign v{impactor.TESTED}（Impactor 的命令行，第三方开源工具，作者 Samara M / claration，MIT 许可：LICENSE-Impactor-MIT.txt）的修改版，"
+        "用于以你的 Apple ID 登录苹果开发者服务、签名并把 S2Arm 装到你的 iPhone；密码只交给它向 Apple 登录，S2Arm 不保存。",
+        f"S2Arm 基于上游 v{impactor.TESTED} 源码打上以下补丁后自行编译（随附补丁原文）：" + "、".join(f.name for f in patches),
+        f"上游源码：{impactor.SOURCE_TREE}",
+        "其中内嵌的 apple-codesign 0.29.0（未修改）以 MPL-2.0 发布（LICENSE-apple-codesign-MPL-2.0.txt），源码：",
+        f"  {impactor.SOURCE_TREE}/3rdparty/apple-codesign-0.29.0", ""]), encoding="utf-8")
+
+
 def copy_launcher_resources(bindir, resources):
     """Copy SwiftPM resources and verify the shipped document is the shared original.
     两个前端都要：作业层文字的翻译（Localizable.json + 共享体验规格）在适配层资源包里（BackendText，.app 里只认 Resources 下这份）。"""
@@ -67,25 +98,31 @@ def release_identity(engine_json):
                 S2ABuildID=f"{commit}{dirty}-{source[:8]}", S2ADisplayVersion=display)
 
 
-def bundle_shell(engine_json, dest, env):
+def bundle_shell(engine_json, dest, env, apple_os="ios"):
     """iOS 预编壳随应用分发（11-07 启动器线：玩家打 iPhone 包不再现出壳 → 不要 .NET SDK；壳里的 NativeAOT C# 库只能用 SDK 编，与游戏无关、按提交编一次）。
     壳编号取引擎清单 shellId；出包机壳缓存（同 pack/ipa.sh：S2A_SHELL_CACHE 或 <运行区>/s2arm/cache/shell/<壳编号>）有就核清单后用，没有就 pack/shell_build.sh 现出进缓存。
     布局同 Windows 发版（launchers/windows/bundle_win.py）：Resources/Shell/{manifest.json, root/}；作业层 ipa.bundled_shell 交给 S2A_SHELL"""
-    sid = json.loads(Path(engine_json).read_text())["shellId"]
-    cache = Path(os.environ.get("S2A_SHELL_CACHE") or Path(os.environ.get("S2A_RUN_ROOT") or Path.home() / ".s2arm/run") / "s2arm/cache/shell") / sid
+    # Apple TV（0.5.2）：同一套出壳 / 核对，换 tvOS——壳号取 engine.json 的 shellIdTvos，缓存 <运行区>/s2arm/cache/shell-tvos/<壳号>（同 pack/jobs/tvos.py 开发树取法），
+    #   SDK 换 appletvos，出壳带 S2A_APPLE_OS=tvos；放 Resources/Shell-tvOS（作业层 tvos.tv_shell 发版时读这里）
+    tv = apple_os == "tvos"
+    sid = json.loads(Path(engine_json).read_text())["shellIdTvos" if tv else "shellId"]
+    run = Path(os.environ.get("S2A_RUN_ROOT") or Path.home() / ".s2arm/run")
+    cache = (run / "s2arm/cache/shell-tvos" if tv else Path(os.environ.get("S2A_SHELL_CACHE") or run / "s2arm/cache/shell")) / sid
+    sdk_name, label = ("appletvos", "tvOS") if tv else ("iphoneos", "iOS")
+    env = dict(env, S2A_APPLE_OS="tvos") if tv else env
     # 玩家拿到的壳必须用本机装着的最新 iOS SDK 链接（11-07 Duo 定因：26.5 SDK 链接的壳在 iOS 27 新机型 iPhone Duo 上整个 App 按旧 iPhone 尺寸缩小居中）。
     #   壳编号不含编译器（跨平台要算得出），缓存里旧 SDK 出的同号壳当没命中、重出；出完再核一遍，不符报红不出 App
     sys.path.insert(0, str(ROOT / "pack/jobs")); from install import linked_sdk; from toolchain import detect_xcode
     newest = detect_xcode()
-    want = subprocess.run(["xcrun", "--sdk", "iphoneos", "--show-sdk-version"], env=dict(env, DEVELOPER_DIR=newest or env["DEVELOPER_DIR"]),
+    want = subprocess.run(["xcrun", "--sdk", sdk_name, "--show-sdk-version"], env=dict(env, DEVELOPER_DIR=newest or env["DEVELOPER_DIR"]),
                           capture_output=True, text=True).stdout.strip()
     want = tuple(int(x) for x in (want.split(".") + ["0", "0"])[:3]) if want else None
     if not want:
-        raise SystemExit(f"【红】读不到最新 Xcode（{newest}）的 iOS SDK 版本，发版壳无从核对")
+        raise SystemExit(f"【红】读不到最新 Xcode（{newest}）的 {label} SDK 版本，发版壳无从核对")
     if env["DEVELOPER_DIR"] != newest:
         raise SystemExit(f"【红】发版要用装着的最新 Xcode（{newest}）出，这次选的是 {env['DEVELOPER_DIR']}：去掉 --developer-dir / S2A_DEVELOPER_DIR 重来")
     if (cache / "manifest.json").is_file() and linked_sdk(cache / "root/S2Arm") != want:
-        print(f"壳缓存 {cache} 是 iOS SDK {linked_sdk(cache / 'root/S2Arm')} 出的，发版要 {want}：挪开重出")
+        print(f"壳缓存 {cache} 是 {label} SDK {linked_sdk(cache / 'root/S2Arm')} 出的，发版要 {want}：挪开重出")
         cache.rename(cache.parent / f".tmp.stale.{sid}.{os.getpid()}")   # 同 pack/ipa.sh：挪开不删（别的出包单可能正读它），.tmp.* 由维护方内部清扫器清
     if not (cache / "manifest.json").is_file():
         cache.parent.mkdir(parents=True, exist_ok=True)
@@ -95,11 +132,11 @@ def bundle_shell(engine_json, dest, env):
     if doc["details"]["shellId"] != sid:
         raise SystemExit(f"【红】壳缓存 {cache} 的壳编号 {doc['details']['shellId']} 与引擎 {sid} 不符")
     if linked_sdk(cache / "root/S2Arm") != want:
-        raise SystemExit(f"【红】发版壳 {cache} 链接的 iOS SDK 是 {linked_sdk(cache / 'root/S2Arm')}，不是本机最新 Xcode 的 {want}")
-    print(f"发版壳：{sid}，iOS SDK {'.'.join(map(str, want))}（{newest}）")
+        raise SystemExit(f"【红】发版壳 {cache} 链接的 {label} SDK 是 {linked_sdk(cache / 'root/S2Arm')}，不是本机最新 Xcode 的 {want}")
+    print(f"发版{label}壳：{sid}，{label} SDK {'.'.join(map(str, want))}（{newest}）")
     shutil.copytree(cache, dest, symlinks=True)
     if os.environ.get("S2A_SYMBOLS_OUT") and (cache.parent / (cache.name + ".symbols")).is_dir():   # 壳的未去符号原件（pack/shell_build.sh 放在壳目录旁）随发版存档
-        shutil.copytree(cache.parent / (cache.name + ".symbols"), Path(os.environ["S2A_SYMBOLS_OUT"]) / "Shell", dirs_exist_ok=True)
+        shutil.copytree(cache.parent / (cache.name + ".symbols"), Path(os.environ["S2A_SYMBOLS_OUT"]) / ("Shell-tvOS" if tv else "Shell"), dirs_exist_ok=True)
 
 
 SPARKLE_FEED = "https://dl.s2arm.com/appcast/mac.xml"
@@ -164,7 +201,9 @@ def main():
     copy_launcher_resources(Path(bindir), resources)
     if front["nx2apple_resources"]:
         print("前端资源：" + " ".join(frontend_layout.stage_apple_resources(ROOT, resources)))
-    shutil.copytree(ROOT / "pack/jobs", resources / "Jobs", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    import jobs_bundle   # 作业层布局只此一份（门禁 tools/app_layout_check.py 用同一个函数搭布局）
+    jobs_bundle.stage_jobs(ROOT, resources)
+    bundle_plumesign(resources)
     # 补丁库随发版（补丁包部署方案 v2，满屏补丁线 11-04）：S2A_RELEASE_PATCHES 指本机补丁库（不进仓库），只收真机验过的（tools/patch_bundle.py）；
     #   启动器出包时 pack/jobs/core.py 见 Resources/Patches/INDEX.tsv 就把它交给 pack/stage_rewrite.sh。没给就不带、响亮说一行
     lib = os.environ.get("S2A_RELEASE_PATCHES")
@@ -174,15 +213,11 @@ def main():
         print(f"补丁库：收 {len(took)} 款（{' '.join(took) or '无'}），跳过 {len(skipped)} 款（没验过）")
     else:
         print("🟡 没设 S2A_RELEASE_PATCHES：本版启动器不带补丁库")
-    # 社区补丁与金手指本地库（11-13 维护者：随启动器装在本地、云端兜底）：完整快照放 Resources/CommunityPatches/patches-v2.tar，
+    # 社区补丁与金手指本地库（11-13 维护者：随启动器装在本地、云端兜底）：完整快照放 Resources/CommunityPatches/patches-v3.tar（v2 发版时转成分块 xz，11-16 瘦身），
     #   出包时 pack/jobs/patches.py 本地优先、按云端清单增量。来源 S2A_PATCH_SNAPSHOT（本机文件）> 下载站；取不到不挡打包（出包时照样向云端要）
     sys.path.insert(0, str(ROOT / "tools")); import patch_pack
     why = patch_pack.stage_snapshot(str(resources / "CommunityPatches"))
     print("社区补丁快照：" + ("已放进 Resources/CommunityPatches" if not why else f"🟡 {why}，本版启动器不带本地补丁库"))
-    # 脱敏规则只有一份（tools/redact.py，诊断报告与任务日志共用）：任务代码在引擎准备好之前也要脱敏，随 Jobs 一起带
-    shutil.copy2(ROOT / "tools/redact.py", resources / "Jobs" / "redact.py")
-    shutil.copy2(ROOT / "tools/sha256_fast.py", resources / "Jobs" / "sha256_fast.py")   # 导入算原件 SHA（pack/jobs/core.py digest，Windows 走 CNG）
-    shutil.copy2(ROOT / "graphics/nvn/tools/romfs_list.py", resources / "Jobs" / "romfs_list.py")   # clone_tree 统一盘点用：出包后 Jobs 的 parents[2] 是 Contents（没有 gfx），随 Jobs 带（pack/jobs/build.py romfs_list_path 先取同目录）
     shutil.copytree(ROOT / "launchers/macos/gui_jobs", resources / "GUIJobs", ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "tests"))
     shutil.copy2(ROOT / "launchers/macos/README.md", resources / "README.md")
     # 给玩家的 AI 用（维护者 10-23）：控制客户端 + 说明；s2armctl 用 App 自带 Python 跑，玩家不用另装 Python
@@ -238,16 +273,23 @@ def main():
     seal_runtime(resources)   # 预编 .pyc 签进包 + 内置 Python 关写字节码：运行时谁调都写不进包（Engine 在 bundle 里写清单前预编）
     bundle(resources / "Engine", args.developer_dir)
     bundle_shell(resources / "Engine/engine.json", resources / "Shell", env)
+    bundle_shell(resources / "Engine/engine.json", resources / "Shell-tvOS", env, "tvos")   # Apple TV 预编壳（0.5.2：0.5.0 发版没带，出 Apple TV 包必败）
     info = dict(**frontend_layout.info_identity(front), CFBundlePackageType="APPL",
                 CFBundleIconFile="S2Arm", LSMinimumSystemVersion=runtime_sources.deployment_target(),
-                NSHighResolutionCapable=True, CFBundleDevelopmentRegion="en", CFBundleLocalizations=["en", "zh-Hans"],
-                NSBluetoothAlwaysUsageDescription="连接 Switch 2 Pro 手柄，接收按键与体感并发送游戏震动。",
+                NSHighResolutionCapable=True, CFBundleDevelopmentRegion="en", CFBundleLocalizations=["en", "zh-Hans", "zh-Hant", "ja", "es", "fr"],   # 同界面语言（frontend/l10n）；系统语言不在其中时照 CFBundleDevelopmentRegion 用英文
+                NSBluetoothAlwaysUsageDescription=json.loads((ROOT / "launchers/macos/frontend/l10n/en.json").read_text())["bluetooth.usage"],
                 **release_identity(resources / "Engine/engine.json"))
     # Sparkle：appcast 地址、验签公钥（Ed25519，私钥只在发版机 ~/.s2arm/.secrets/sparkle_ed25519）；不开定时检查（查新版走启动时的公告 / 消息）
     info.update(SUFeedURL=SPARKLE_FEED, SUPublicEDKey=SPARKLE_PUBLIC_KEY, SUEnableAutomaticChecks=False, SUAutomaticallyUpdate=False)
     info["UTExportedTypeDeclarations"] = [dict(UTTypeIdentifier="org.s2arm.save-backup", UTTypeDescription="S2Arm Save Backup",
         UTTypeConformsTo=["public.zip-archive"], UTTypeTagSpecification={"public.filename-extension": ["s2asave"]})]
     (app / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
+    # 蓝牙授权框的说明文字：每种界面语言一份 <lproj>/InfoPlist.strings（文字取 frontend/l10n 的 bluetooth.usage）。
+    #   授权框由系统画、整个框跟系统语言走（11-15 实机：App 设中文、系统英文 → 整框英文），App 改不了；说明文字随系统挑同一种语言
+    for lproj, l10n in (("en", "en"), ("zh-Hans", "zh"), ("zh-Hant", "zh-Hant"), ("es", "es"), ("fr", "fr"), ("ja", "ja")):
+        text = json.loads((ROOT / f"launchers/macos/frontend/l10n/{l10n}.json").read_text())["bluetooth.usage"]
+        (resources / f"{lproj}.lproj").mkdir(exist_ok=True)
+        (resources / f"{lproj}.lproj/InfoPlist.strings").write_text(f"NSBluetoothAlwaysUsageDescription = {json.dumps(text, ensure_ascii=False)};\n", encoding="utf-8")
     # 启动器本体同样去掉调试映射（见 bundle_engine.strip_debug_maps），再签整个 App
     exe = app / "Contents/MacOS" / front["executable"]
     if os.environ.get("S2A_SYMBOLS_OUT"):   # 未去符号原件随发版存档（同 bundle_engine.strip_debug_maps）

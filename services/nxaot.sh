@@ -1,12 +1,12 @@
 #!/bin/bash
 # S2Arm 的 NativeAOT 静态库：services/aot/S2A.Aot.csproj（服务层 + Ryujinx + NxGal）→ <整机缓存>/<平台>-<键>/libs2a_cs.a，最后一行输出链接参数（build.mk 把本脚本 stderr 记在各树 build/cs/*.err）。
-# 用法：bash services/nxaot.sh [osx-arm64|ios-arm64] [--key|--files]（缺省 osx-arm64；--key 只打出缓存键、--files 列出进键的文件，都不编）。失败退出码非 0。
+# 用法：bash services/nxaot.sh [osx-arm64|ios-arm64|tvos-arm64] [--key|--files]（缺省 osx-arm64；--key 只打出缓存键、--files 列出进键的文件，都不编）。失败退出码非 0。
 # 缓存：键 = 编译会读的全部输入（C# 源、工程文件、嵌入资源、ABI 头，不含说明 / 脚本 / 表格，见下面 keyfiles）+ dotnet 版本 + 平台的内容哈希，命中秒过；放整机级 ~/.s2arm/run/s2arm/cache/nxaot（S2A_CS_CACHE 可改）。
 # 合成：S2A.Aot.o 与运行时的 libbootstrapperdll.o 用 ld -r 合成一个成员（-keep_private_externs）——
 #   bootstrapperdll.o 只有加载时初始化函数，单独链会把整个运行时无条件拖进来；合进同一成员后宿主调 S2A_Init 才整块进来（旧库出包线 10-18 实测）。
 set -euo pipefail
 _s2a_d=$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd) || _s2a_d=; while [ -n "$_s2a_d" ] && [ ! -f "$_s2a_d/tools/_timeout.sh" ] && [ "$_s2a_d" != / ]; do _s2a_d=${_s2a_d%/*}; done; { [ -n "$_s2a_d" ] && [ -f "$_s2a_d/tools/_timeout.sh" ] && . "$_s2a_d/tools/_timeout.sh"; } || :   # 下面 dotnet publish 套 timeout：Mac 没有 GNU timeout，用仓库的（#384）
-RID=${1:-osx-arm64}; case $RID in ios-arm64|osx-arm64) ;; *) echo "🔴 nxaot：不认识的平台 $RID" >&2; exit 1;; esac
+RID=${1:-osx-arm64}; case $RID in ios-arm64|tvos-arm64|osx-arm64) ;; *) echo "🔴 nxaot：不认识的平台 $RID" >&2; exit 1;; esac
 ROOT=$(cd "$(dirname "$0")/.." && pwd); B=${S2A_CS_CACHE:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/cache/nxaot}; mkdir -p "$B"   # 整机级缓存（10-20 出包提速）：键 = 源码内容哈希，各工作树 / 门禁镜像共用一份，原来每树 build/cs 各冷编一遍（冷 124 秒）
 DN=${DOTNET:-$HOME/.dotnet/dotnet}; [ -x "$DN" ] || DN=$(command -v dotnet)
 say() { echo "$*" >&2; }
@@ -72,17 +72,19 @@ print(next((d['version'].strip('[]').split(',')[0] for fw in j['project']['frame
         [ -f "$RP/lib$l.a" ] && L="$L $RPN/lib$l.a"
     done
     FW="-lc++ -lz -lcompression -framework Security -framework AudioToolbox -framework Network -framework Foundation -framework CoreFoundation -lobjc"
-    FW="$FW -framework GSS"; case $RID in osx-arm64) FW="$FW -framework CryptoKit";; esac   # Net.Security.Native 两个平台都引 GSS
+    case $RID in tvos-arm64) ;; *) FW="$FW -framework GSS";; esac; case $RID in osx-arm64) FW="$FW -framework CryptoKit";; esac   # Net.Security.Native 在 Mac / iOS 引 GSS；tvOS 没有 GSS 框架（tvOS 运行时包也不带 Net.Security.Native）
     echo "$L $FW" > "$O.tmp/ldflags.txt"
     echo "运行时包 ${RV}；用时 $(( $(date +%s) - t0 )) 秒" > "$O.tmp/info.txt"
     rm -rf "$O"; mv "$O.tmp" "$O"
-    # 新写了一份：按出包可重建缓存同一口径回收（pack/jobs/cache_retention.py trim：总量上限 = 0.25 ×（盘剩余 + 缓存总量），最久没用的先删）。
-    #   1 小时内用过的一律不删（下面每次取用都刷新目录时间）：10-21 原生层线实证「每平台只留最新 2 份」删掉了别的树刚拿到路径、还没链接完的那份，
-    #   ld 报 libs2a_cs.a not found，按用过的时间保护就不会。缓存在缺省位置时连同运行区里别的可重建缓存一起算总量，另指的（门禁共用）只算它自己
-    RR=${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm
-    if [ "$B" = "$RR/cache/nxaot" ]; then python3 "$ROOT/pack/jobs/cache_retention.py" trim "$RR" > /dev/null 2>&1; else python3 "$ROOT/pack/jobs/cache_retention.py" trim "$RR" "$B" > /dev/null 2>&1; fi
 fi
 touch "$O"   # 取用即续租：gc 按目录时间判「30 分钟内用过」不删，链接方拿到路径后不会被清掉
+# 按出包可重建缓存同一口径回收（pack/jobs/cache_retention.py trim：总量上限 = 0.25 ×（盘剩余 + 缓存总量），最久没用的先删）。
+#   1 小时内用过的一律不删（上面刚续租本份）：10-21 原生层线实证「每平台只留最新 2 份」删掉了别的树刚拿到路径、还没链接完的那份，
+#   ld 报 libs2a_cs.a not found，按用过的时间保护就不会。缓存在缺省位置时连同运行区里别的可重建缓存一起算总量，另指的（门禁共用）只算它自己。
+#   每次调用都回收、不只在现编之后（11-15 合入运维）：原先只在现编分支里调，读不读 cache_retention.py 取决于缓存命没命中——
+#   门禁 iOS 编译的出壳闭包核对第一次现编读到、同键重跑命中没读到，「先红后绿」被分诊判成不稳定放进 main（8dcd7da87）。回收一次实测 < 0.1 秒
+RR=${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm
+if [ "$B" = "$RR/cache/nxaot" ]; then python3 "$ROOT/pack/jobs/cache_retention.py" trim "$RR" > /dev/null 2>&1; else python3 "$ROOT/pack/jobs/cache_retention.py" trim "$RR" "$B" > /dev/null 2>&1; fi
 say "🟢 nxaot（${RID}）：$(cat "$O/info.txt")，libs2a_cs.a $(( $(stat -f %z "$O/libs2a_cs.a") >> 20 )) MB（键 ${K}）"
 IFS= read -r LN < "$O/ldflags.txt"; REST=${LN#*/libs2a_cs.a }; echo "$O/libs2a_cs.a $REST"   # 库路径按缓存当前位置拼：ldflags.txt 里写的是编译时的绝对路径，缓存挪过位置（10-20 从各树 build/cs 迁到整机缓存）就指错
 #   去掉第一项按「…/libs2a_cs.a 」切，不按空白切（11-01：缓存在「Application Support」下且编译时没换别名，记下的库路径带空格，按空白切只去掉半截，make 链接报 no such file 'Support/…/libs2a_cs.a'）

@@ -67,7 +67,7 @@ NSArray<S2ACPatchGroup *> *S2ACPatchGroupsFromTSV(NSString *text) {
         if (c.count < 9 || !c[0].length) continue;
         if ([c[0] hasPrefix:@"cheat:"]) continue;
         if ([c[0] hasPrefix:@"mod:"]) continue;   // 玩家导入的 mod 带的代码补丁：跟资源 Mod 页的开关走（runtime/src/cpatch.c cp_mod_on），不进画面补丁页
-        if ([c[0] hasPrefix:@"gfx:"]) continue;   // 画面类（提分辨率 / 画质）iOS 上不打不列（11-13 维护者；运行时 runtime/src/cpatch.c 同样一律不开）   // 编进包的金手指（pack/cpatch.py scan_cheats）在金手指页开关（ios/vpad_cheats.m → Cheats.cs → s2a_cpatch_cheat），不进画面补丁页
+        if ([c[0] hasPrefix:@"gfx:"] && !(c.count > 13 && [c[13] isEqual:@"load"])) continue;   // 画面类只列降负载的（表第 14 列方向 load，11-16 维护者）；提画质 / 认不出的 iOS 上不打不列（运行时 runtime/src/cpatch.c 同口径）   // 编进包的金手指（pack/cpatch.py scan_cheats）在金手指页开关（ios/vpad_cheats.m → Cheats.cs → s2a_cpatch_cheat），不进画面补丁页
         // 自适应画幅一族（pack/cpatch.py adapt_families）的宽 / 窄两份只列一项，开关按族编号（runtime/src/cpatch.c 按当前画幅开其一）
         BOOL adapt = [c[0] hasPrefix:@"wsauto:"];
         // 定画幅的几份宽屏变体（表第 11 列画幅 > 0，pack/cpatch.py）也只列一项，开关写总编号 widescreen:auto（runtime/src/cpatch.c 按当前屏幕比例开最近的一份）
@@ -83,6 +83,7 @@ NSArray<S2ACPatchGroup *> *S2ACPatchGroupsFromTSV(NSString *text) {
         it = [S2ACPatchItem new];
         it.ident = ident; it.name = ratio ?: c[4].length ? c[4] : c[0]; it.license = c[5]; it.defaultOn = [c[8] isEqual:@"1"];
         if (c.count > 9) it.targetFps = c[9].integerValue;
+        it.loadDir = [c[0] hasPrefix:@"gfx:"] && c.count > 13 && [c[13] isEqual:@"load"];
         it.group = adapt || ratio ? @"widescreen" : S2ACPatchClassify(it.name, c[3], c[0]);
         it.title = adapt ? S2AL(@"cpatch.title.adaptive") : ratio ? S2AL(@"cpatch.title.autoRatio") : S2ACPatchTitle(it.name, it.group);
         seen[ident] = it;
@@ -107,7 +108,7 @@ NSSet<NSString *> *S2ACPatchEnabled(NSArray<S2ACPatchGroup *> *groups, NSUserDef
     NSMutableSet<NSString *> *on = [NSMutableSet new];
     for (S2ACPatchGroup *g in groups)
         for (S2ACPatchItem *it in g.items)
-            if (!it.followsFps60 && (listed ? [listed containsObject:it.ident] : YES)) [on addObject:it.ident];   // 没设过 = 全开（11-13，同 runtime/src/cpatch.c；defaultOn 只作「我方已验」标签）
+            if (!it.followsFps60 && (listed ? [listed containsObject:it.ident] : !it.loadDir)) [on addObject:it.ident];   // 没设过 = 开（11-13，同 runtime/src/cpatch.c；defaultOn 只作「我方已验」标签），降负载的画面补丁除外（11-16 缺省关）
     return on;
 }
 

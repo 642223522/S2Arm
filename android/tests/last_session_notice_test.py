@@ -9,7 +9,9 @@ DiagnosticExport) and drives onCreate / onResume over the session marker the :ga
 (LastSession, files/s2a_session.mark). Expectations are written by hand from the maintainer's terms on #528:
 fg and no game process -> one non-blocking notice, marker cleared; bg / none / game still running -> nothing;
 the notice's buttons reuse the More panel's export path. Three negative controls mutate a copy of the source.
-Real crashes, ApplicationExitInfo and the on-screen layout need a device (left to the maintainers' test phone).
+Also the notice's place in the layout (#1230 device notes, maintainer's choice B): the notice sits below the shelf in
+one column instead of floating over the current card's title, the status line keeps floating over the cards, the More
+panel draws above both, and while the panel is open the notice leaves the panel's width free. Real crashes, ApplicationExitInfo and the pixels on screen need a device.
 """
 from pathlib import Path
 import importlib.util
@@ -59,7 +61,10 @@ def stubs():
  public static Path run(Context context) throws IOException {calls++;throw new IOException("fixture: no export here");} }'''
     # The export path's own status lines (export_diagnostics_* 3-6, save_diagnostics_* 116-118) may be asked here.
     out['android/content/Context.java'] = _replace(out['android/content/Context.java'],
-        'if(id>=7&&id<=15||', 'if(id>=3&&id<=6||id>=116&&id<=119||id>=7&&id<=15||')
+        'if(id>=7&&id<=15||', 'if(id>=3&&id<=6||id>=116&&id<=119||id>=142&&id<=153||id>=7&&id<=15||')
+    # 布局检查要拿到根视图（面板与状态区的上下层）
+    out['android/app/Activity.java'] = _replace(out['android/app/Activity.java'],
+        'public void setContentView(View v){}', 'public View contentView; public void setContentView(View v){contentView=v;}')
     out['org/s2arm/android/LastSessionProbe.java'] = PROBE
     return out
 
@@ -117,6 +122,29 @@ public class LastSessionProbe {
    for(Object[] e:android.view.View.enabledLog){if(e[0]==panelExport&&Boolean.FALSE.equals(e[1]))panelBusy=true;if(e[0]==noticeExport)noticeBusy=true;}
    demand(panelBusy&&!noticeBusy,"the More panel's export button must carry the busy state, not a second path");
   } finally {a.onDestroy();}
+  // 布局（#1230 真机观察两处，维护者选 B）：提示和封面流同在一列、排在它下面（不再盖住卡片的游戏名）；状态行照旧浮在封面流底部；
+  //   「更多」面板盖在提示和状态行上面，开着时提示右边让出面板宽度
+  Path layout=base.resolve("layout");a=open(layout);
+  try {
+   android.widget.FrameLayout root=(android.widget.FrameLayout)a.contentView;
+   android.widget.LinearLayout notice=(android.widget.LinearLayout)field(a,"notice");
+   android.widget.LinearLayout.LayoutParams np=(android.widget.LinearLayout.LayoutParams)field(a,"noticeParams");
+   Object panel=field(a,"moreScroll"),shelfView=field(a,"shelf"),statusView=field(a,"status");int panelWidth=(Integer)field(a,"panelWidth");
+   android.widget.LinearLayout column=null;
+   for(android.view.View v:root.children) if(v instanceof android.widget.LinearLayout&&((android.widget.LinearLayout)v).children.contains(notice)) column=(android.widget.LinearLayout)v;
+   demand(column!=null&&column.children.indexOf(notice)==1,"the notice must sit below the shelf in the same column, not float over the cards");
+   android.view.View stageView=column.children.get(0);
+   demand(stageView instanceof android.widget.FrameLayout&&((android.widget.FrameLayout)stageView).children.equals(java.util.List.of(shelfView,statusView)),"the status line must keep floating over the cards (maintainer's choice B on #1230)");
+   demand(root.children.indexOf(column)<root.children.indexOf(panel),"the More panel must be added after the column so it draws above the notice");
+   android.widget.LinearLayout.LayoutParams sp=(android.widget.LinearLayout.LayoutParams)stageView.layoutParams;
+   demand(sp!=null&&sp.height==0&&sp.weight==1f,"the shelf must take the remaining height above the notice");
+   demand(notice.layoutParams==np&&np.marginEnd==0,"with the panel closed the notice spans the full width");
+   Method toggle=LibraryActivity.class.getDeclaredMethod("toggleMore");toggle.setAccessible(true);
+   toggle.invoke(a);
+   demand(((android.view.View)panel).getVisibility()==android.view.View.VISIBLE&&np.marginEnd==panelWidth&&notice.layoutParams==np,"with the panel open the notice must leave the panel's width free");
+   toggle.invoke(a);
+   demand(((android.view.View)panel).getVisibility()==android.view.View.GONE&&np.marginEnd==0,"closing the panel must give the notice its full width back");
+  } finally {a.onDestroy();}
   demand(android.app.AlertDialog.Builder.shown==0,"the notice must never block the library with a dialog");
   System.out.println("PASS last-session notice on actual LibraryActivity: "+checks+" checks");
  }
@@ -124,6 +152,10 @@ public class LastSessionProbe {
 '''
 
 CHECK_CALL = '        checkLastSession();\n'
+NOTICE_IN_COLUMN = '        column.addView(notice, noticeParams);\n'
+NOTICE_OVERLAY = '        root.addView(notice, new android.widget.FrameLayout.LayoutParams(-1, -2, android.view.Gravity.BOTTOM));\n'
+PANEL_MARGIN = '        noticeParams.setMarginEnd(open ? panelWidth : 0);\n'
+STATUS_FLOATING = '        stage.addView(status, new android.widget.FrameLayout.LayoutParams(-1, -2, android.view.Gravity.BOTTOM));\n'
 RUNNING_GUARD = ' || GameActivity.runningPid(this) != 0'
 CLEAR = 'try { LastSession.mark(dir, LastSession.NONE); }'
 
@@ -155,7 +187,7 @@ class LastSessionNoticeTest(unittest.TestCase):
     def test_notice_contract(self):
         result = self.run_probe()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn('PASS last-session notice on actual LibraryActivity: 16 checks', result.stdout)
+        self.assertIn('PASS last-session notice on actual LibraryActivity: 23 checks', result.stdout)
 
     def test_no_check_on_resume_negative_control(self):
         result = self.run_probe((CHECK_CALL, ''))
@@ -171,6 +203,22 @@ class LastSessionNoticeTest(unittest.TestCase):
         result = self.run_probe((CLEAR, 'try { if (dir == null) LastSession.mark(dir, LastSession.NONE); }'))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('the marker must be cleared once the notice is shown', result.stderr)
+
+
+    def test_notice_overlay_negative_control(self):
+        result = self.run_probe((NOTICE_IN_COLUMN, NOTICE_OVERLAY))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('the notice must sit below the shelf in the same column', result.stderr)
+
+    def test_notice_ignores_panel_negative_control(self):
+        result = self.run_probe((PANEL_MARGIN, ''))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("the notice must leave the panel's width free", result.stderr)
+
+    def test_status_in_column_negative_control(self):
+        result = self.run_probe((STATUS_FLOATING, '        column.addView(status);\n'))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('the status line must keep floating over the cards', result.stderr)
 
 
 if __name__ == '__main__':

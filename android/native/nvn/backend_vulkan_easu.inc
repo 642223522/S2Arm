@@ -272,7 +272,7 @@ static int easu_compose(struct nvn_gpu_cmd_s *c, VkImage dstImg, VkExtent2D dstE
     if (!fb) return 0;
 
     VkDescriptorSet set;
-    if (!alloc_sets(c, &g_easu.dsl, 1, &set)) return 0;
+    if (!alloc_sets(c, &g_easu.dsl, 1, &set, NULL, 0, 0)) return 0;   // 超分自己的描述符组不属于任何管线，不进回收（#1096）
     VkDescriptorImageInfo img; memset(&img, 0, sizeof img);
     img.sampler = g_easu.sampler; img.imageView = sv->view; img.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     VkWriteDescriptorSet wr; memset(&wr, 0, sizeof wr);

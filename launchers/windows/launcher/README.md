@@ -97,7 +97,7 @@ Windows 将预编件路径撤回 exe 同级，必须红在 `selected Engine snap
 
 `LibraryJobResult` 消费的是 `pack/jobs/main.py run --request` 的 jobs NDJSON，不是旧 oneclick 的 ev/t 流。按请求的 jobId / operation、递增 seq 与 schema=1 核对；缺终态、终态后仍来事件、退出码与 succeeded/failed/cancelled 不符均拒绝。`LibraryCatalog` 仅保留后端名称、版本、封面路径、隐藏标记、缺件文字与密钥状态，不推导出包就绪。
 
-Windows 请求在受保护的当前用户目录内创建，写入之前已具备私有 DACL；现有目录若属主不符、为 reparse point、继承权限或给其他身份读取/写入（含仅对子文件继承）则拒绝。SYSTEM / Administrators 属后端允许的身份。请求结束删除临时文件；不改既有宽权限目录来强行通过。Windows 单测实际调用后端 `winproc.request_is_private` 核实，不以 chmod(0600) 代替。
+Windows 请求文件建在启动器自己的数据目录（%LOCALAPPDATA%\S2Arm\…，系统缺省就只归当前用户）里，普通建目录、写文件，不再自设权限（11-16 维护者）；旧版收紧过、写不进去的老目录第一次用时给本人补回完全控制。请求结束删除临时文件。
 
 `Protocol.Tests/Fixtures/library-catalog.ndjson` 录自 Windows 独立空库的真实 setup → catalog 后者输出（基点 fd5ee4862）。只把 jobId/taskId 换成固定值，并移除 result.jobs 内先前 setup 的进程记录；未改 games/keys/engineInfo 或终态。另有手写单游戏样本作为名称/版本/缺件与失败判据；没有游戏原件、密钥、存档或游戏封面资源。真实空库互操作不代表真实游戏/密钥导入已验收；界面与合成后端交互另列凭据。
 

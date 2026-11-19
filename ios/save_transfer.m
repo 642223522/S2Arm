@@ -170,7 +170,10 @@ int s2a_ios_save_management_requested(void) {
 @end
 
 @implementation S2ASaveManager
-- (UIInterfaceOrientationMask)supportedInterfaceOrientations { return s2a_ios_play_orientations(); }
+S2A_VERTICAL_BAR_OFF
+// 存档页不跟游戏的横 / 竖屏设置走（#1576）：页上有导出命名、文件选择这类要打字的系统窗口，锁横屏时键盘一弹就只剩一条缝；
+//   普通 iPhone 横竖随手机转（不含倒置），可自由缩放的窗口（Duo 内屏 / iPad）照旧全部方向。点「开始游戏」后游戏页按自己的设置再转
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations { return s2a_ios_play_resizable() ? UIInterfaceOrientationMaskAll : UIInterfaceOrientationMaskAllButUpsideDown; }
 - (UILabel *)label:(NSString *)text style:(UIFontTextStyle)style {
     UILabel *label = [UILabel new]; label.text = text; label.numberOfLines = 0;
     label.font = [UIFont preferredFontForTextStyle:style]; label.adjustsFontForContentSizeCategory = YES;
@@ -441,6 +444,9 @@ int s2a_ios_save_management_requested(void) {
     NSString *users = [manifest[@"users"][@"ids"] componentsJoinedByString:@"\n"];
     NSString *size = [NSByteCountFormatter stringFromByteCount:[self.preview[@"totalBytes"] longLongValue] countStyle:NSByteCountFormatterCountStyleFile];
     NSString *message = [NSString stringWithFormat:S2AL(@"save.restore.message"), manifest[@"game"][@"name"], manifest[@"game"][@"version"], manifest[@"createdAt"], users.length ? users : S2AL(@"save.deviceSave"), self.preview[@"fileCount"], size];
+    // 版本 / DLC 组合、账号归属对不上：服务层不再拒绝，给出提示句（已按界面语言），确认前放在说明最前面
+    NSArray *warnings = [self.preview[@"warnings"] isKindOfClass:NSArray.class] ? self.preview[@"warnings"] : @[];
+    if (warnings.count) message = [NSString stringWithFormat:@"⚠️ %@\n\n%@", [warnings componentsJoinedByString:@"\n⚠️ "], message];
     self.status.text = S2AL(@"save.inspected");
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:S2AL(@"save.restore.title") message:message preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:S2AL(@"common.cancel") style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {

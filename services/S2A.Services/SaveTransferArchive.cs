@@ -127,11 +127,22 @@ public static partial class SaveTransfer
         }
         Require(expected.SetEquals(archive.Zip.Entries.Select(e => e.FullName)) && fileNames.Contains(Profile) &&
             fileNames.Any(n => n.StartsWith("bis/user/save/", StringComparison.Ordinal)), T("备份缺少必要文件或含额外条目。", "The backup is missing required files or has extra entries."));
+        // 维护者 11-17：个别文件 CRC / SHA 对不上不再整份拒绝——记进 damaged，恢复时不写它们、保留目标原来的那份，其余照常恢复。
+        //   用户表与账号索引坏了没法知道哪份存档归谁，照旧拒绝
+        var damaged = new JsonArray();
         foreach (var item in files)
         {
-            var entry = archive.Zip.GetEntry("payload/" + Str(item, "path"));
-            using var stream = entry.Open();
-            CopyEntry(stream, Stream.Null, entry.Length, Str(item, "sha256"), entry.Crc32);
+            string name = Str(item, "path");
+            var entry = archive.Zip.GetEntry("payload/" + name);
+            try
+            {
+                using var stream = entry.Open();
+                CopyEntry(stream, Stream.Null, entry.Length, Str(item, "sha256"), entry.Crc32);
+            }
+            catch (Exception e) when ((e is Failure || e is InvalidDataException) && name != Profile && name != Index)
+            {
+                damaged.Add(name);
+            }
         }
         Profiles(EntryBytes(archive, "payload/" + Profile));
         var entries = Entries(name => EntryBytes(archive, "payload/" + name), files.Select(f => Str(f, "path")), dirs.Select(d => d.GetValue<string>()));
@@ -141,20 +152,40 @@ public static partial class SaveTransfer
         node["users"] = Users(entries);
         if (node.AsObject().ContainsKey("deviceSettings")) Require(node["deviceSettings"] is JsonObject, T("设备设置元信息无效。", "Invalid device settings metadata."));
         node["deviceSettings"] = Settings(node["deviceSettings"]);
+        if (damaged.Count > 0) node["damaged"] = damaged;
         return (JsonObject)node;
     }
-    private static void Identity(Context c, JsonNode manifest)
+    // → 对不上但照常可恢复的几句提示（检查结果 warnings，确认框里给玩家看）。维护者 11-17：版本 / DLC 组合、账号归属对不上不再拒绝——
+    //   玩家手动恢复（检查 → 看提示 → 确认）照常恢复，恢复前副本照留；请求带 sync（iCloud 自动同步：没人看提示、不经玩家确认）照旧拒绝，免得悄悄换掉进度。
+    //   另一款游戏的备份照旧拒绝
+    private static JsonArray Identity(Context c, JsonNode manifest)
     {
+        bool sync = c.Request["sync"]?.GetValue<bool>() == true;
+        var warnings = new JsonArray();
         Require(string.Equals(Str(manifest["game"], "id"), Str(c.Game, "id"), StringComparison.OrdinalIgnoreCase), T("备份属于另一款游戏。", "The backup belongs to a different game."), "save_wrong_game");
-        Require(manifest["game"]["version"].GetValue<long>() == c.Game["version"].GetValue<long>() &&
-            Str(manifest["game"], "contentIdentity") == Str(c.Game, "contentIdentity"), T("备份的游戏版本或 DLC 组合不符。", "The backup’s game version or DLC combination doesn’t match."), "save_version");
+        if (manifest["game"]["version"].GetValue<long>() != c.Game["version"].GetValue<long>() ||
+            Str(manifest["game"], "contentIdentity") != Str(c.Game, "contentIdentity"))
+        {
+            Require(!sync, T("备份的游戏版本或 DLC 组合不符。", "The backup’s game version or DLC combination doesn’t match."), "save_version");
+            warnings.Add(T("备份的游戏版本或 DLC 组合不符，仍可恢复；游戏可能读不到这份进度，恢复前的存档会自动保留一份副本。", "The backup’s game version or DLC combination doesn’t match. You can still restore it; the game may not be able to read this progress. The save from before the restore is kept automatically."));
+        }
+        if (manifest["damaged"] is JsonArray damaged && damaged.Count > 0)
+        {
+            Require(!sync, T("备份文件 CRC 或 SHA-256 校验失败。", "The backup file failed the CRC or SHA-256 check."), "save_damaged");
+            string names = string.Join(", ", damaged.Take(5).Select(d => d.GetValue<string>())) + (damaged.Count > 5 ? " …" : "");
+            warnings.Add(string.Format(T("备份里有 {0} 个文件校验对不上（{1}），这几个不恢复、保留当前存档里原来的，其余照常恢复。", "{0} files in the backup failed the integrity check ({1}). Those files are not restored and the current save’s originals are kept; everything else is restored."), damaged.Count, names));
+        }
         var owners = OwnerSets(c, manifest);
-        if (owners == null) return;
+        if (owners == null) return warnings;
         var (a, b) = owners.Value;
         // 本地玩家（#623）：一台设备上加了 / 删了玩家，两边的账号集合是包含关系（另一台设备还没建这个玩家、恢复建玩家之前的备份），照常恢复；
-        //   两边各有对方没有的账号 = 不是同一套账号，照旧拒绝（原先要求完全相同，加了第二个玩家后 iCloud 另一端、旧备份都恢复不了）
-        foreach (string group in a.Keys.Intersect(b.Keys))
-            Require(a[group].IsSubsetOf(b[group]) || b[group].IsSubsetOf(a[group]), T("备份与目标存档账号归属不同。", "The backup and the target save belong to different accounts."), "save_wrong_user");
+        //   两边各有对方没有的账号 = 不是同一套账号（原先要求完全相同，加了第二个玩家后 iCloud 另一端、旧备份都恢复不了）
+        if (a.Keys.Intersect(b.Keys).Any(group => !(a[group].IsSubsetOf(b[group]) || b[group].IsSubsetOf(a[group]))))
+        {
+            Require(!sync, T("备份与目标存档账号归属不同。", "The backup and the target save belong to different accounts."), "save_wrong_user");
+            warnings.Add(T("备份与目标存档账号归属不同，仍可恢复；恢复后当前账号的进度会换成备份里的，恢复前的存档会自动保留一份副本。", "The backup and the target save belong to different accounts. You can still restore it; the current account’s progress will be replaced with the backup’s. The save from before the restore is kept automatically."));
+        }
+        return warnings;
     }
     // 目标（数据根现有）与备份两边的账号存档归属：组 = 程序号/类型，值 = 用户号集合。目标里没有存档 → null
     private static (Dictionary<string, HashSet<string>> target, Dictionary<string, HashSet<string>> backup)? OwnerSets(Context c, JsonNode manifest)
@@ -192,8 +223,8 @@ public static partial class SaveTransfer
     private static JsonObject Inspect(Context c)
     {
         using var archive = new Archive(Source(c));
-        Identity(c, archive.Manifest);
-        return new() { ["manifest"] = Copy(archive.Manifest), ["archiveSha256"] = archive.Sha,
+        var warnings = Identity(c, archive.Manifest);
+        return new() { ["manifest"] = Copy(archive.Manifest), ["archiveSha256"] = archive.Sha, ["warnings"] = warnings,
             ["targetFingerprint"] = Fingerprint(c.Root), ["fileCount"] = archive.Manifest["files"].AsArray().Count,
             ["totalBytes"] = archive.Manifest["files"].AsArray().Sum(f => f["size"].GetValue<long>()) };
     }
@@ -206,14 +237,14 @@ public static partial class SaveTransfer
         return new() { ["format"] = "S2ArmSave", ["schema"] = 1, ["layout"] = "ryujinx-data-v1", ["platform"] = "ios",
             ["createdAt"] = DateTimeOffset.UtcNow.ToString("O"), ["game"] = Copy(c.Game), ["saveEntries"] = entries,
             ["users"] = Users(entries), ["deviceSettings"] = Settings(c.Request["deviceSettings"]),
-            ["directories"] = new JsonArray(scan.Directories.Where(n => Allowed(n, true)).Select(n => (JsonNode)JsonValue.Create(n)).ToArray()), ["files"] = new JsonArray() };
+            ["directories"] = new JsonArray(scan.Directories.Where(n => Exported(n, true)).Select(n => (JsonNode)JsonValue.Create(n)).ToArray()), ["files"] = new JsonArray() };
     }
     private static JsonObject WriteArchive(Context c, string root, string path)
     {
         CheckLinks(path);
         Require(!File.Exists(path) && !Directory.Exists(path), T("同名备份已存在。", "A backup with the same name already exists."), "save_exists");
         var manifest = MakeManifest(c, root, out var scan);
-        long total = scan.Files.Where(p => Allowed(p.Key)).Sum(p => p.Value);
+        long total = scan.Files.Where(p => Exported(p.Key)).Sum(p => p.Value);
         Space(Path.GetDirectoryName(path), total + (64 << 20));
         string before = Fingerprint(root);
         string temporary = path + "." + Guid.NewGuid().ToString("N") + ".partial";
@@ -223,7 +254,7 @@ public static partial class SaveTransfer
             {
                 using (var zip = new ZipArchive(output, ZipArchiveMode.Create, leaveOpen: true))
                 {
-                    foreach (var file in scan.Files.Where(p => Allowed(p.Key)))
+                    foreach (var file in scan.Files.Where(p => Exported(p.Key)))
                     {
                         var entry = zip.CreateEntry("payload/" + file.Key, CompressionLevel.Fastest);
                         entry.ExternalAttributes = 0x180 << 16;

@@ -39,7 +39,7 @@ import NXLauncher
         for (shortcut, button) in buttons(in: window) {
             let key = ObjectIdentifier(button)
             if hints[key] == nil { hints[key] = Hint(button: button, image: button.image, position: button.imagePosition) }
-            let symbol = presentation.symbols[shortcut] ?? shortcut.symbol
+            let symbol = presentation.symbols[shortcut.displayed] ?? shortcut.displayed.symbol   // 确认键一律显示 A（单只 Joy-Con 没有 ZR）
             if button.image?.name() != symbol {
                 let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
                 image?.setName(symbol)

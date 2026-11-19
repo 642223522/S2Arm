@@ -4,5 +4,5 @@ ifeq ($(S2A_UNAME),Darwin)
 .PHONY: native-test-home_shortcuts
 native-test-home_shortcuts:
 	@bash runtime/tests/t_home_shortcuts.sh
-	@$(IOS_CC) -fsyntax-only -fobjc-arc $(NATIVE_INC) -Iruntime/src -Iruntime/ns2pro/include ios/app.m ios/diag.m
+	@$(IOS_CC) -fsyntax-only -fobjc-arc $(NATIVE_INC) -Iruntime/src -Iruntime/ns2pro/include ios/app.m ios/diag.m ios/diagcollect.m
 endif

@@ -12,6 +12,7 @@ struct SGradeCategoryState: Equatable {
     var autoOffCause = "", autoOffAt: Date? = nil
     var mine = "", available: [String] = [], port = ""
     var fiSupported: Bool? = nil   // 帧率：设备能不能补帧（作业层 fiSupported，Mac 按 macOS 26 起；没给 = nil，按能补帧算）
+    var failedWhy = ""             // 没能打入（state = failed）的第一条原因：文案键 result.why.*（作业层 sgrade.fps_failed）
 
     init(_ raw: [String: Any]) {
         state = raw["state"] as? String ?? ""; source = raw["source"] as? String ?? ""
@@ -28,6 +29,7 @@ struct SGradeCategoryState: Equatable {
         let v = raw["versions"] as? [String: Any] ?? [:]
         mine = v["mine"] as? String ?? ""; available = v["available"] as? [String] ?? []; port = v["port"] as? String ?? ""
         fiSupported = raw["fiSupported"] as? Bool
+        failedWhy = (raw["failed"] as? [[String: Any]])?.first?["why"] as? String ?? ""
     }
 }
 
@@ -76,6 +78,8 @@ enum SGradeStateText {
             var text = p.newer ? f("sgrade.state.version.newer", p.version, s.mine) : f("sgrade.state.version.older", p.version)
             if cat == "widescreen", s.port == "failed" { text += t("sgrade.state.version.port_failed") }
             return (text, nil)
+        case "failed":   // 补丁库有、一份没打进去（11-15 #934）：如实写原因，不说成开着生效
+            return (f("sgrade.state.failed", catName, s.failedWhy.isEmpty ? t("sgrade.result.why.mismatch") : t("sgrade." + s.failedWhy)), nil)
         case "none": return (f("sgrade.state.none", catName), nil)
         case "opted_out": return (t("sgrade.state.opted_out"), nil)
         case "mac_only": return (t("sgrade.state.mac_only"), nil)
@@ -96,6 +100,9 @@ enum SGradeStateText {
         }
         guard cat == "fps" else { return nil }
         if st.state == "unsupported" { return (t("sgrade.unavail.fi"), true) }   // 没补丁又不能补帧（作业层定）
+        if st.state == "failed", let l = line(cat: cat, catName: t("export.sgrade.cat.fps"), st, t: t, date: date, backend: backend) {
+            return (l.text, !(st.fiSupported ?? true))   // 帧率补丁没打进去：写原因；还能补帧就不置灰（开关管补帧）
+        }
         let fi = st.fiSupported ?? true
         var src = st.source
         if src.isEmpty { src = hasFpsPatch && fpsOn ? "patch" : fi ? "fi" : "none" }

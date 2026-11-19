@@ -43,6 +43,7 @@ public struct GameStateView: View {
         case .playable: actions.onPlay(game.id)
         case .needsGameData: actions.onPickGameData(game.id)
         case .needsAppUpdate: actions.onAppUpdate?()
+        case .needsGameUpdate: break   // needsHelp：上面已展开说明
         case .broken: actions.onShowLog?(game.id)
         case .installing(let stage): if stage.phase == .failed { actions.onPlay(game.id) }   // 重试解开；传着 / 解着按钮按不动
         }
@@ -70,9 +71,15 @@ public struct StateHelpView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(ShellStrings.text("Details")).shellText(11.5, .semibold).foregroundStyle(.white.opacity(0.5))
                     Text(verbatim: ShellStrings.text("Title ID \(game.id)")).font(.system(size: 12, design: .monospaced)).foregroundStyle(.white.opacity(0.5))
-                        .textSelection(.enabled).accessibilityIdentifier("help.titleid")
+                        #if !os(tvOS)   // tvOS 没有文字选取
+                        .textSelection(.enabled)
+                        #endif
+                        .accessibilityIdentifier("help.titleid")
                     Text(verbatim: technical).font(.system(size: 12, design: .monospaced)).foregroundStyle(.white.opacity(0.5))
-                        .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        #if !os(tvOS)
+                        .textSelection(.enabled)
+                        #endif
+                        .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("help.details")
                 }
             }
@@ -111,6 +118,7 @@ public struct StateHelpView: View {
         case .broken(_, let detail, _) where !detail.isEmpty: detail
         case .broken: ShellStrings.text("Build this game again on your Mac and install it on this device. The Mac app checks every file while it builds, so the new copy is complete.")
         case .needsAppUpdate: ShellStrings.text("This game needs a newer version of this app. Update it with the Mac app on your Mac, then install it on this device again.")
+        case .needsGameUpdate: ShellStrings.text("This game on your phone doesn't match S2Arm on this phone, so it can't open: it was built for another version, installed from another computer or Apple ID, or didn't finish installing. Connect your phone to your computer and click \"Install on iPhone\" for this game in S2Arm.")
         default: ""
         }
     }

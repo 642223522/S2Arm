@@ -4,7 +4,7 @@
 //   ① 池表里恰好 4 条、同一个 key、起点如上、终点 = min(起点 + 64, 160) MB
 //   ② 1 MB 网格上每个起点、长度 1 / 32 / 40 / 64 / 65 MB 的区间：「有某块 [32k, 32k + 64) 整个装下它」⇔ nvn_be_addr 查得到；
 //      查得到时 buffer 内容 + 偏移 = 原地址（读到预先写下的标记字节）
-//   ③ 注销后池表空；④ 16 MB 的池（< 上限）只登记 1 条
+//   ③ 注销后池表空；④ 16 MB 的池（< 上限）只登记 1 条；⑤ 直接建零拷贝失败 → 重映射视图上建、同一份内存；⑥ 视图也失败 → 不登记、不中止（诊断#36fc20）
 #include "../gfx/nvn/nvn_mtl.m"
 static unsigned checks, failures;
 #define REQUIRE(c) do { if (!(c)) { fprintf(stderr, "SETUP FAIL %s:%d %s\n", __FILE__, __LINE__, #c); exit(2); } } while (0)
@@ -45,6 +45,22 @@ int main(void) { @autoreleasepool {
     pthread_mutex_lock(&g_mu); n = g_npool; int whole = n == 1 && g_pools[0].lo == (uintptr_t)small && g_pools[0].hi == (uintptr_t)small + 16ull * MB; pthread_mutex_unlock(&g_mu);
     CHECK(whole, "④ 16 MB 池（< 上限）只登记 1 条、覆盖整池（实 %d 条）", n);
     nvn_be_pool_del(small);
+    // ⑤ 直接建零拷贝失败（诊断#36fc20）：改在重映射视图上建，仍是同一份内存——池里写、buffer 读到；buffer 里写、池里读到
+    g_pool_refuse = 1; memset(small, 0x11, 16ull * MB);
+    nvn_be_pool_add(small, 16ull * MB);
+    pthread_mutex_lock(&g_mu); n = g_npool; id<MTLBuffer> vb = n == 1 ? g_pools[0].buf : nil; pthread_mutex_unlock(&g_mu);
+    int same = 0, view = 0;
+    if (vb) { uint8_t *c = (uint8_t *)vb.contents; view = c != small; small[12345] = 0x5a; c[777] = 0xa5; same = c[12345] == 0x5a && small[777] == 0xa5 && vb.length == 16ull * MB; }
+    void *b5 = NULL; uint64_t o5 = 0; int got5 = nvn_be_addr((uint64_t)(uintptr_t)(small + MB), 4096, &b5, &o5);
+    CHECK(n == 1 && view && same && got5 && o5 == MB, "⑤ 直接建失败 → 视图上建：登记 %d 条、buffer 在另一地址 %d、两边互见写入 %d、按池地址查到偏移 %llu（应 1 MB）", n, view, same, (unsigned long long)o5);
+    nvn_be_pool_del(small);
+    // ⑥ 视图也失败：不登记、不中止（走到这里本身就是没中止）
+    g_pool_refuse = 2;
+    nvn_be_pool_add(small, 16ull * MB);
+    pthread_mutex_lock(&g_mu); n = g_npool; pthread_mutex_unlock(&g_mu);
+    int got6 = nvn_be_addr((uint64_t)(uintptr_t)small, 4096, &b5, &o5);
+    CHECK(n == 0 && !got6, "⑥ 视图也建不出：不登记（%d 条）、查不到（%d）、进程照跑", n, got6);
+    nvn_be_pool_del(small); g_pool_refuse = 0;
     printf("%s t_nvn_pool_chunk：%u 项，%u 项不符\n", failures ? "✗" : "✓", checks, failures);
     return failures != 0;
 } }

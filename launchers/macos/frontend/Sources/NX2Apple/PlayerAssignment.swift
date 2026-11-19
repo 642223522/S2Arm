@@ -40,9 +40,12 @@ struct PlayerAssignment: Equatable, Codable {
     private var recentCombined: (key: SystemKey, at: TimeInterval)?
     /// 第几次「分配玩家」完成：只有它变了游戏才整个重排；新手柄自动排进来不改它，已在玩的人留在原位、新来的接在后面（第二只 PS5 接上把原来那只挤到 P3）
     private(set) var generation = 0
+    /// 用 SL + SR 登记成单只（横握一位）的 Joy-Con 2（设备 id）：同组另一侧之后接上时不自动跟它拼成一对，新来的自己排一位
+    ///   （玩家已经明确要单只横握，不用再按一次 SL + SR 拆开）。没按过 SL + SR、只是先接上自动排进来的单只，照旧自动拼成一对
+    private(set) var sideways: [String] = []
     private var pendingHalf: (id: String, kind: Int, at: TimeInterval)?
 
-    enum CodingKeys: String, CodingKey { case units, dropped, droppedDevices, droppedGen1, splitCombined, generation }
+    enum CodingKeys: String, CodingKey { case units, dropped, droppedDevices, droppedGen1, splitCombined, generation, sideways }
     init() {}
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -52,9 +55,10 @@ struct PlayerAssignment: Equatable, Codable {
         droppedGen1 = try c.decodeIfPresent([String].self, forKey: .droppedGen1) ?? []
         splitCombined = try c.decodeIfPresent([SystemKey].self, forKey: .splitCombined) ?? []
         generation = try c.decodeIfPresent(Int.self, forKey: .generation) ?? 0
+        sideways = try c.decodeIfPresent([String].self, forKey: .sideways) ?? []
     }
     static func == (a: PlayerAssignment, b: PlayerAssignment) -> Bool {
-        a.units == b.units && a.dropped == b.dropped && a.droppedDevices == b.droppedDevices && a.droppedGen1 == b.droppedGen1 && a.splitCombined == b.splitCombined && a.generation == b.generation
+        a.units == b.units && a.dropped == b.dropped && a.droppedDevices == b.droppedDevices && a.droppedGen1 == b.droppedGen1 && a.splitCombined == b.splitCombined && a.generation == b.generation && a.sideways == b.sideways
     }
 
     /// 两只 Joy-Con 要不要拆开：没登记成一对、又连着两只 Joy-Con（各一位，或一只没分配）
@@ -100,12 +104,14 @@ struct PlayerAssignment: Equatable, Codable {
         combinedHalves = combinedHalves.filter { keys.contains($0.key) }
         dropped.removeAll { !keys.contains($0) }
         droppedDevices.removeAll { !ids.contains($0) }
+        sideways.removeAll { !ids.contains($0) }   // 断开了：下次连上照常（没按 SL + SR 就会自动拼）
         var fresh = devices.filter { !registeredIDs.contains($0.id) && !droppedDevices.contains($0.id) }
         for group in mergedGroups.sorted() {
             let inGroup = devices.filter { $0.group == group }
-            // 一对连着、合成一位：登记过单只的那只配上同组新来的另一只，原位并成一对
+            // 一对连着、合成一位：登记过单只的那只配上同组新来的另一只，原位并成一对——
+            //   那只若是按 SL + SR 登记的横握单只（sideways）就不拼：新来的自己排一位，传输层照分配拆开（wantsSplit → sendPlan）
             if let other = fresh.first(where: { $0.group == group && ($0.kind == 2 || $0.kind == 3) }),
-               let at = units.firstIndex(where: { if case let .single(id, k) = $0 { return k != other.kind && (k == 2 || k == 3) && inGroup.contains { $0.id == id } }; return false }),
+               let at = units.firstIndex(where: { if case let .single(id, k) = $0 { return k != other.kind && (k == 2 || k == 3) && inGroup.contains { $0.id == id } && !sideways.contains(id) }; return false }),
                case let .single(id, _) = units[at] {
                 units[at] = other.kind == 2 ? .pair(left: other.id, right: id) : .pair(left: id, right: other.id)
                 fresh.removeAll { $0.id == other.id }
@@ -146,6 +152,7 @@ struct PlayerAssignment: Equatable, Codable {
         }
     }
     private mutating func register(_ unit: Unit) { undrop(unit); units.append(unit) }
+    private mutating func markSideways(_ id: String) { if !sideways.contains(id) { sideways.append(id) } }
     private mutating func append(_ unit: Unit) { if units.count < Self.maxPlayers { units.append(unit) } }
 
     /// 分配完成：在线却没登记的记成 dropped（保持连接、没有玩家位）
@@ -184,7 +191,7 @@ struct PlayerAssignment: Equatable, Codable {
         guard units.count < Self.maxPlayers else { return }
         switch gesture {
         case 1: register(.whole(id: id, kind: kind))
-        case 2: register(.single(id: id, kind: kind))
+        case 2: register(.single(id: id, kind: kind)); markSideways(id)
         case 3:
             if let half = pendingHalf, half.id != id, half.kind != kind, time - half.at <= Self.pairWindow, !registeredIDs.contains(half.id) {
                 let (left, right) = kind == 2 ? (id, half.id) : (half.id, id)
@@ -202,10 +209,12 @@ struct PlayerAssignment: Equatable, Codable {
     private mutating func regroup(id: String, kind: Int, gesture: Int, at time: TimeInterval) {
         switch gesture {
         case 2:
+            // 已经是单只的再按 SL + SR：位置不动，记成横握（之后另一侧接上不自动拼）
+            if units.contains(where: { if case let .single(sid, _) = $0 { return sid == id }; return false }) { markSideways(id); return }
             guard let i = units.firstIndex(where: { if case let .pair(l, r) = $0 { return l == id || r == id }; return false }),
                   case let .pair(l, r) = units[i] else { return }
             let other = l == id ? r : l
-            units[i] = .single(id: id, kind: kind)
+            units[i] = .single(id: id, kind: kind); markSideways(id)
             if units.count < Self.maxPlayers { units.insert(.single(id: other, kind: l == id ? 3 : 2), at: i + 1) }
             else { droppedDevices.append(other) }   // 满 8 位：另一只连着、没有玩家位
         case 3:
@@ -215,6 +224,7 @@ struct PlayerAssignment: Equatable, Codable {
                 let (left, right) = kind == 2 ? (id, half.id) : (half.id, id)
                 units[min(a, b)] = .pair(left: left, right: right)
                 units.remove(at: max(a, b))
+                sideways.removeAll { $0 == left || $0 == right }   // 又按 L + R 拼回一对
                 pendingHalf = nil
             } else if singleAt(id) != nil {
                 pendingHalf = (id, kind, time)

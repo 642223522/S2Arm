@@ -208,6 +208,30 @@ namespace Ryujinx.Audio.Renderer.Dsp
             float b1 = denominatorSpan[0];
             float b2 = denominatorSpan[1];
 
+            // S2Arm: 快路径（S2A_AUDIO_DSP_FAST=1）同 ProcessBiquadFilter：状态放局部变量逐样本推进、末尾写回，
+            //   运算与顺序同下方原循环，输出一致
+            if (S2ADspFast.On)
+            {
+                float s0 = state.State0, s1 = state.State1, s2 = state.State2, s3 = state.State3;
+
+                for (int i = 0; i < sampleCount; i++)
+                {
+                    float input = inputBuffer[i];
+                    float output = input * a0 + s0 * a1 + s1 * a2 + s2 * b1 + s3 * b2;
+
+                    s1 = s0;
+                    s0 = input;
+                    s3 = s2;
+                    s2 = output;
+
+                    outputBuffer[i] += FloatingPointHelper.MultiplyRoundUp(output, volume);
+                }
+
+                state.State0 = s0; state.State1 = s1; state.State2 = s2; state.State3 = s3;
+                S2ADspBiquadHelper.ClearIfNotFinite(ref state);
+                return;
+            }
+
             for (int i = 0; i < sampleCount; i++)
             {
                 float input = inputBuffer[i];
@@ -257,6 +281,32 @@ namespace Ryujinx.Audio.Renderer.Dsp
             float b2 = denominatorSpan[1];
 
             float mixState = 0f;
+
+            // S2Arm: 快路径（S2A_AUDIO_DSP_FAST=1）同上，状态放局部变量逐样本推进、末尾写回
+            if (S2ADspFast.On)
+            {
+                float s0 = state.State0, s1 = state.State1, s2 = state.State2, s3 = state.State3;
+
+                for (int i = 0; i < sampleCount; i++)
+                {
+                    float input = inputBuffer[i];
+                    float output = input * a0 + s0 * a1 + s1 * a2 + s2 * b1 + s3 * b2;
+
+                    s1 = s0;
+                    s0 = input;
+                    s3 = s2;
+                    s2 = output;
+
+                    mixState = FloatingPointHelper.MultiplyRoundUp(output, volume);
+
+                    outputBuffer[i] += mixState;
+                    volume += ramp;
+                }
+
+                state.State0 = s0; state.State1 = s1; state.State2 = s2; state.State3 = s3;
+                S2ADspBiquadHelper.ClearIfNotFinite(ref state);
+                return mixState;
+            }
 
             for (int i = 0; i < sampleCount; i++)
             {
@@ -395,6 +445,40 @@ namespace Ryujinx.Audio.Renderer.Dsp
             float b11 = denominator1Span[0];
             float b21 = denominator1Span[1];
 
+            // S2Arm: 快路径（S2A_AUDIO_DSP_FAST=1）同上：两级状态都放局部变量逐样本推进、末尾写回
+            if (S2ADspFast.On)
+            {
+                float s00 = state0.State0, s01 = state0.State1, s02 = state0.State2, s03 = state0.State3;
+                float s10 = state1.State0, s11 = state1.State1, s12 = state1.State2, s13 = state1.State3;
+
+                for (int i = 0; i < sampleCount; i++)
+                {
+                    float input = inputBuffer[i];
+                    float output = input * a00 + s00 * a10 + s01 * a20 + s02 * b10 + s03 * b20;
+
+                    s01 = s00;
+                    s00 = input;
+                    s03 = s02;
+                    s02 = output;
+
+                    input = output;
+                    output = input * a01 + s10 * a11 + s11 * a21 + s12 * b11 + s13 * b21;
+
+                    s11 = s10;
+                    s10 = input;
+                    s13 = s12;
+                    s12 = output;
+
+                    outputBuffer[i] += FloatingPointHelper.MultiplyRoundUp(output, volume);
+                }
+
+                state0.State0 = s00; state0.State1 = s01; state0.State2 = s02; state0.State3 = s03;
+                state1.State0 = s10; state1.State1 = s11; state1.State2 = s12; state1.State3 = s13;
+                S2ADspBiquadHelper.ClearIfNotFinite(ref state0);
+                S2ADspBiquadHelper.ClearIfNotFinite(ref state1);
+                return;
+            }
+
             for (int i = 0; i < sampleCount; i++)
             {
                 float input = inputBuffer[i];
@@ -464,6 +548,43 @@ namespace Ryujinx.Audio.Renderer.Dsp
             float b21 = denominator1Span[1];
 
             float mixState = 0f;
+
+            // S2Arm: 快路径（S2A_AUDIO_DSP_FAST=1）同上：两级状态都放局部变量逐样本推进、末尾写回
+            if (S2ADspFast.On)
+            {
+                float s00 = state0.State0, s01 = state0.State1, s02 = state0.State2, s03 = state0.State3;
+                float s10 = state1.State0, s11 = state1.State1, s12 = state1.State2, s13 = state1.State3;
+
+                for (int i = 0; i < sampleCount; i++)
+                {
+                    float input = inputBuffer[i];
+                    float output = input * a00 + s00 * a10 + s01 * a20 + s02 * b10 + s03 * b20;
+
+                    s01 = s00;
+                    s00 = input;
+                    s03 = s02;
+                    s02 = output;
+
+                    input = output;
+                    output = input * a01 + s10 * a11 + s11 * a21 + s12 * b11 + s13 * b21;
+
+                    s11 = s10;
+                    s10 = input;
+                    s13 = s12;
+                    s12 = output;
+
+                    mixState = FloatingPointHelper.MultiplyRoundUp(output, volume);
+
+                    outputBuffer[i] += mixState;
+                    volume += ramp;
+                }
+
+                state0.State0 = s00; state0.State1 = s01; state0.State2 = s02; state0.State3 = s03;
+                state1.State0 = s10; state1.State1 = s11; state1.State2 = s12; state1.State3 = s13;
+                S2ADspBiquadHelper.ClearIfNotFinite(ref state0);
+                S2ADspBiquadHelper.ClearIfNotFinite(ref state1);
+                return mixState;
+            }
 
             for (int i = 0; i < sampleCount; i++)
             {

@@ -104,6 +104,7 @@ namespace S2A.Services
         private sealed class Item
         {
             public Entry Entry; public ITamperProgram Code; public string Status; public bool Off;
+            public bool Shipped;   // 文件是电脑出包时随包带来的（文档根 cheats/.packed 记着，runtime/src/cpatch.c seed_cheats）：改代码的条目没编进包 ≠ 手机上导入的
         }
 
         private static void Run(string dir, CancellationToken stop)
@@ -150,7 +151,8 @@ namespace S2A.Services
                     }
                     if (p.Code.Process.TamperedCodeMemory)
                     {
-                        p.Off = true; p.Status = "改代码，不支持"; changed = true;
+                        // #1321：随包带来、却没编进包的（槽 2046 位用尽 / 同点变体超 8 路等，原因在电脑出包完成页）与手机上自己导入的分开说
+                        p.Off = true; p.Status = p.Shipped ? "改代码，没编进包" : "改代码，不支持"; changed = true;
                         Console.Error.WriteLine($"金手指：{p.Entry.Key} 要改代码页（苹果上是签名只读页），已停用");
                     }
                     else if (p.Status == "地址未就绪") { p.Status = "生效中"; changed = true; }
@@ -170,7 +172,7 @@ namespace S2A.Services
             foreach (string f in Directory.EnumerateFiles(dir, "*.txt"))
             {
                 string n = Path.GetFileName(f);
-                if (n == "status.txt") continue;
+                if (n == "status.txt" || n.StartsWith("._", StringComparison.Ordinal)) continue;   // ._：exFAT 上 macOS 配的 AppleDouble 附属文件，不是金手指
                 parts.Add(n + "@" + File.GetLastWriteTimeUtc(f).Ticks);
             }
             parts.Sort(StringComparer.Ordinal);
@@ -188,10 +190,12 @@ namespace S2A.Services
             Layout* l = Imports.s2a_layout_get();
             ulong exe = Imports.s2a_main_base();
             var process = new GameProcess();
-            var files = new List<string>(Directory.EnumerateFiles(dir, "*.txt"));
+            var files = new List<string>(Directory.EnumerateFiles(dir, "*.txt").Where(f => !Path.GetFileName(f).StartsWith("._", StringComparison.Ordinal)));   // ._：exFAT 上的 AppleDouble 附属文件
             files.Sort(StringComparer.Ordinal);
             int nfiles = 0;
             seenNative = new HashSet<string>(StringComparer.Ordinal);
+            string packedList = Path.Combine(dir, ".packed");   // 随包放进文档根的文件名，一行一个（runtime/src/cpatch.c seed_cheats 写）
+            var shipped = new HashSet<string>(File.Exists(packedList) ? File.ReadAllLines(packedList) : Array.Empty<string>(), StringComparer.Ordinal);
             foreach (string path in files)
             {
                 string name = Path.GetFileName(path);
@@ -206,7 +210,7 @@ namespace S2A.Services
                 entries = entries.FindAll(x => x.Master).Concat(entries.FindAll(x => !x.Master)).ToList();   // 主代码排在同文件普通条目之前执行（Atmosphere 约定），其余保持文件顺序
                 foreach (Entry e in entries)
                 {
-                    var p = new Item { Entry = e };
+                    var p = new Item { Entry = e, Shipped = shipped.Contains(name) };
                     bool on = e.Master ? fileOn : enabled.Contains(e.Key);
                     bool packed = match && exe != 0 && l != null && ToNative(e, on);
                     if (!match) { p.Status = "版本不符"; p.Off = true; }
@@ -259,7 +263,7 @@ namespace S2A.Services
             foreach (Item p in programs) sb.Append(p.Entry.Key).Append('\t').Append(p.Status).Append('\n');
             string path = Path.Combine(dir, "status.txt"), tmp = path + ".tmp";
             // 目录写不进（D-QCTB：iPhone 上 cheats/ 归 root，UnauthorizedAccessException 没接住 → 整局 FailFast）：只记一行红、金手指照常执行，
-            //   状态显示缺了而已；目录归属由宿主起库时的游戏目录修复（runtime/src/pack_apply.c games_unwritable）迁走
+            //   状态显示缺了而已；App 改不了这个目录的属主，只有删除重装能清（宿主不迁移、不改名）
             try { File.WriteAllText(tmp, sb.ToString()); File.Move(tmp, path, true); }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {

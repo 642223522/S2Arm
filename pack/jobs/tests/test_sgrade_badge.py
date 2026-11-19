@@ -22,7 +22,8 @@ class SGradeBadgeTests(unittest.TestCase):
         self.t = Path(tempfile.mkdtemp()); self.c = types.SimpleNamespace(private=self.t, r={})
         self.img = self.t / "img"; self.img.mkdir(); self.kit = self.t / "kit"; self.kit.mkdir()
         self.info = {}
-        for p in (patch.object(layout, "game_info", side_effect=lambda c, g: self.info), patch.object(layout, "ios_kit", return_value=self.kit)):
+        for p in (patch.object(layout, "game_info", side_effect=lambda c, g: self.info), patch.object(layout, "ios_kit", return_value=self.kit),
+                  patch.object(layout, "ios_kit_present", return_value=self.kit)):   # 金色 S 只读已有的程序件（清单里不迁移）
             p.start(); self.addCleanup(p.stop)
 
     def test_badge_only_when_applied(self):
@@ -42,7 +43,8 @@ class SGradeBadgeTests(unittest.TestCase):
         b = bytearray(0x100); b[0x40:0x48] = bytes.fromhex("1122334455667788"); (mac / "exefs/main").write_bytes(bytes(b))
         def no_extract(c, g): raise Failure("没解过包")
         with patch.object(build, "shared_dir", side_effect=no_extract), patch.object(layout, "image_mac", return_value=mac), \
-             patch.object(layout, "path", side_effect=lambda c, g, *p, create=True: self.t / "nogame" / "/".join(p)):
+             patch.object(layout, "path", side_effect=lambda c, g, *p, create=True: self.t / "nogame" / "/".join(p)), \
+             patch.object(layout, "program_exefs", side_effect=lambda c, g: self.t / "nogame" / "original-exefs"):
             self.assertEqual(cheats.main_build(self.c, {"id": "0100AAAA00000000"}), "1122334455667788")
             (mac / "exefs/main").unlink(); self.info["ios"] = {"mainBid": "99aabbccddeeff00"}
             self.assertEqual(cheats.main_build(self.c, {"id": "0100AAAA00000000"}), "99AABBCCDDEEFF00")

@@ -74,11 +74,27 @@ CGRect s2a_direct_out_rect(void) __attribute__((weak_import));
 static pthread_mutex_t g_rmu = PTHREAD_MUTEX_INITIALIZER; static FILE *g_rec; static char g_rpath[1024]; static int g_roff;
 static uint32_t g_rb = ~0u; static uint64_t g_rs, g_rflush, g_rt0; static int g_nsave; static char g_rsave[1100];
 static uint64_t rec_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000 + (uint64_t)t.tv_nsec / 1000000; }
-int s2a_dev_on(void) __attribute__((weak_import));   // runtime/src/os.c：开发设施总开关，玩家包 = 0
+int s2a_dev_on(void) __attribute__((weak_import));   // runtime/src/os.c：开发设施总开关，缺省 0
+// 开发设施关着时，把以前积下的 Documents/padrec 整个删掉（11-17：玩家手机一小时长近 3 GB，「文件」App 里越积越多；只给自动玩家 / 回放用，
+//   删了对玩家零影响）。每个进程只做一次、放后台线程删，不挡起局
+static void padrec_purge(void) {
+    static atomic_int done; if (atomic_exchange(&done, 1)) return;
+#if TARGET_OS_IPHONE
+    char dir[900]; s2a_container_docs(dir, sizeof dir); strlcat(dir, "/padrec", sizeof dir);
+#else
+    char dir[900]; s2a_docs_root(dir, sizeof dir); strlcat(dir, "/padrec", sizeof dir);
+#endif
+    struct stat st; if (stat(dir, &st) || !S_ISDIR(st.st_mode)) return;
+    NSString *p = @(dir);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSError *err = nil; BOOL ok = [NSFileManager.defaultManager removeItemAtPath:p error:&err];
+        LOG("录手柄：开发设施关着，清掉以前积下的 %s：%s", p.UTF8String, ok ? "已删" : err.localizedDescription.UTF8String);
+    });
+}
 static int rec_open(void) {   // 持 g_rmu
     if (g_rec || g_roff) return g_rec != NULL;
     if (s2a_autoplay_on && s2a_autoplay_on()) { g_roff = 1; return 0; }
-    if (s2a_dev_on && !s2a_dev_on()) { g_roff = 1; return 0; }   // 玩家包不录（#845）：录手柄与存档点副本是给自动玩家 / 回放用的开发设施
+    if (!s2a_dev_on || !s2a_dev_on()) { g_roff = 1; padrec_purge(); return 0; }   // 不录（#845，11-17 缺省关）：拿不到开关也当关；关着时把以前积下的 padrec 清掉
     NSString *bid = NSBundle.mainBundle.bundleIdentifier ?: @"s2arm"; NSString *g = [bid componentsSeparatedByString:@"."].lastObject;
 #if TARGET_OS_IPHONE
     char dir[900]; s2a_container_docs(dir, sizeof dir); strlcat(dir, "/padrec", sizeof dir); mkdir(dir, 0755);
@@ -528,6 +544,23 @@ static NSString *vp_running_gid(void) { const char *g = getenv("S2A_LAUNCH_GAME_
     __weak S2AVPadView *ws = self; S2AVPadLayoutStore *st = _layoutStore; NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
     _menuLive = [NSMutableDictionary dictionary];
     NSMutableArray<UIMenuElement *> *items = [NSMutableArray array];
+    // 0.6.0 快照（起局带了存档开关才有）：「存下这一刻」一点就存、游戏不停；有完整快照时多「回到上次存下的这一刻」
+    // 弱链接[lab]：s2a_snap_logging（即时快照：runtime/src/snapsw.c、snapshot.c、session.c 提供；输入工作台不链原生核，取不到菜单就不出这两项）
+    // 弱链接[lab]：s2a_snap_dir_for（即时快照：runtime/src/snapsw.c、snapshot.c、session.c 提供；输入工作台不链原生核，取不到菜单就不出这两项）
+    // 弱链接[lab]：s2a_snap_exists（即时快照：runtime/src/snapsw.c、snapshot.c、session.c 提供；输入工作台不链原生核，取不到菜单就不出这两项）
+    // 弱链接[lab]：s2a_snap_on_done（即时快照：runtime/src/snapsw.c、snapshot.c、session.c 提供；输入工作台不链原生核，取不到菜单就不出这两项）
+    // 弱链接[lab]：s2a_snap_request_save（即时快照：runtime/src/snapsw.c、snapshot.c、session.c 提供；输入工作台不链原生核，取不到菜单就不出这两项）
+    // 弱链接[lab]：s2a_snap_save_changed（即时快照：runtime/src/snapsw.c、snapshot.c、session.c 提供；输入工作台不链原生核，取不到菜单就不出这两项）
+    // 弱链接[lab]：s2a_host_restart（即时快照：runtime/src/snapsw.c、snapshot.c、session.c 提供；输入工作台不链原生核，取不到菜单就不出这两项）
+    { int s2a_snap_logging(void) __attribute__((weak)); int s2a_snap_dir_for(const char *, char *, size_t) __attribute__((weak)); int s2a_snap_exists(const char *) __attribute__((weak));
+      char sd[2048];
+      if (s2a_snap_logging && s2a_snap_logging() && s2a_snap_dir_for && !s2a_snap_dir_for(NULL, sd, sizeof sd)) {
+          NSString *dir = @(sd);
+          NSMutableArray<UIMenuElement *> *snap = [NSMutableArray array];
+          [snap addObject:vp_act(S2AL(@"vpad.snap.save"), @"camera.viewfinder", NO, ^{ [ws afterMenu:^{ [ws snapSave:dir]; }]; })];
+          if (s2a_snap_exists && s2a_snap_exists(sd)) [snap addObject:vp_act(S2AL(@"vpad.snap.restore"), @"clock.arrow.circlepath", NO, ^{ [ws afterMenu:^{ [ws snapRestore:dir]; }]; })];
+          [items addObject:vp_inline(snap)];
+      } }
     [items addObject:[self sgradeSection]];
     UIAction *edit = vp_act(S2AL(@"vpad.edit.title"), @"gamecontroller", NO, ^{ [ws afterMenu:^{ [ws beginEditing]; }]; });
     if (_touchOnly) { edit.attributes = UIMenuElementAttributesDisabled; edit.subtitle = S2AL(@"vpad.menu.editDisabled"); }
@@ -590,7 +623,8 @@ static NSString *vp_running_gid(void) { const char *g = getenv("S2A_LAUNCH_GAME_
     [items addObject:vp_sub(S2AL(@"vpad.menu.pad"), @"scope", @[
         [self live:@"vp.pad.ns2pro" title:S2AL(@"vpad.menu.ns2pro") note:nil on:^BOOL{ return [d boolForKey:@"S2ANS2ProAdapterEnabled"]; } disabled:nil
                run:^{ [d setBool:![d boolForKey:@"S2ANS2ProAdapterEnabled"] forKey:@"S2ANS2ProAdapterEnabled"]; }],
-        [self live:@"vp.pad.gyro" title:S2AL(@"vpad.menu.gyro") note:nil on:gyro disabled:nil run:^{ [d setBool:!gyro() forKey:@"S2APhoneGyro"]; }],
+        // 说明一句第三方手柄（八位堂、盖世小鸡等 Xbox 外形）切到 Switch 模式才有体感（11-16，手柄左右马达 + 第三方体感同版）
+        [self live:@"vp.pad.gyro" title:S2AL(@"vpad.menu.gyro") note:S2AL(@"vpad.menu.gyro.note") on:gyro disabled:nil run:^{ [d setBool:!gyro() forKey:@"S2APhoneGyro"]; }],
         // 手柄按键布局（定义表 game_settings.v1.json 的 padFace，所有游戏共用）：controller.m 监听偏好变化转给 pad.c，下一次按键即按新布局；
         //   勾选看 pad.c 解析后的值（旧值 letter / position 也落到对应一项）
         vp_inline(@[[self live:@"vp.pad.face.auto" title:S2AL(@"vpad.menu.face.auto") note:S2AL(@"vpad.menu.face.auto.note")
@@ -626,6 +660,46 @@ static NSString *vp_running_gid(void) { const char *g = getenv("S2A_LAUNCH_GAME_
     // 故障报修（11-13 维护者定：各页面齿轮菜单最下面）：写一句发生了什么（可不填）→ 打包上传、给短码（diag.m s2a_diag_report）
     [items addObject:vp_act(S2AL(@"diag.report.title"), @"exclamationmark.bubble", NO, ^{ [ws afterMenu:^{ void s2a_diag_report(void); s2a_diag_report(); }]; })];
     return items;
+}
+// ---------- 0.6.0 快照：存下这一刻 / 回到上次存下的这一刻 ----------
+- (void)snapToast:(NSString *)text {   // 轻提示：屏幕上方一行字，2 秒淡出，不挡操作
+    UIWindow *w = self.window; if (!w) return;
+    UILabel *l = [UILabel new]; l.text = [@"  " stringByAppendingString:[text stringByAppendingString:@"  "]]; l.textColor = UIColor.whiteColor; l.font = [UIFont boldSystemFontOfSize:15];
+    l.backgroundColor = [UIColor colorWithWhite:0 alpha:0.7]; l.layer.cornerRadius = 10; l.clipsToBounds = YES; l.userInteractionEnabled = NO; l.layer.zPosition = 20001;
+    [l sizeToFit]; CGRect f = l.frame; f.size.height += 12; f.origin.x = (w.bounds.size.width - f.size.width) / 2; f.origin.y = w.safeAreaInsets.top + 16; l.frame = f;
+    [w addSubview:l]; [UIView animateWithDuration:0.4 delay:2.0 options:0 animations:^{ l.alpha = 0; } completion:^(__unused BOOL done) { [l removeFromSuperview]; }];
+}
+static __weak S2AVPadView *g_snap_view;
+static void snap_done(int ok, const char *dir) { (void)dir; dispatch_async(dispatch_get_main_queue(), ^{ [g_snap_view snapToast:ok ? S2AL(@"vpad.snap.saved") : S2AL(@"vpad.snap.notSaved")]; }); }
+- (void)snapSave:(NSString *)dir {
+    void s2a_snap_on_done(void (*)(int, const char *)) __attribute__((weak)); int s2a_snap_request_save(const char *) __attribute__((weak));
+    if (!s2a_snap_request_save) return;
+    g_snap_view = self; if (s2a_snap_on_done) s2a_snap_on_done(snap_done);
+    int rc = s2a_snap_request_save(dir.fileSystemRepresentation);
+    [self snapToast:rc == 0 ? S2AL(@"vpad.snap.saving") : rc == -2 ? S2AL(@"vpad.snap.busy") : S2AL(@"vpad.snap.notSaved")];
+}
+static void snap_restart_result(int result, const char *detail, void *context) {
+    (void)context; if (!result) return;
+    NSString *why = detail ? @(detail) : @""; dispatch_async(dispatch_get_main_queue(), ^{ [g_snap_view snapToast:[NSString stringWithFormat:S2AL(@"vpad.snap.restoreFailed"), why]]; });
+}
+- (void)snapRestoreNow:(NSString *)dir rollback:(BOOL)rollback {
+    int s2a_host_restart(void (*)(int, const char *, void *), void *) __attribute__((weak));
+    if (!s2a_host_restart) return;
+    setenv("S2A_SNAP_RESTORE", dir.fileSystemRepresentation, 1);
+    if (rollback) setenv("S2A_SNAP_SAVE_ROLLBACK", "1", 1); else unsetenv("S2A_SNAP_SAVE_ROLLBACK");
+    g_snap_view = self;
+    int rc = s2a_host_restart(snap_restart_result, NULL);
+    if (rc) { unsetenv("S2A_SNAP_RESTORE"); unsetenv("S2A_SNAP_SAVE_ROLLBACK"); [self snapToast:[NSString stringWithFormat:S2AL(@"vpad.snap.restoreFailed"), @""]]; }
+}
+- (void)snapRestore:(NSString *)dir {
+    int s2a_snap_save_changed(const char *) __attribute__((weak));
+    // 存快照之后游戏又存过档：回去会把游戏存档退回那一刻——先问玩家（当前存档会先整棵备份）；没变过就直接回
+    if (!(s2a_snap_save_changed && s2a_snap_save_changed(dir.fileSystemRepresentation) == 1)) { [self snapRestoreNow:dir rollback:NO]; return; }
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:S2AL(@"vpad.snap.saveChanged.title") message:S2AL(@"vpad.snap.saveChanged.body") preferredStyle:UIAlertControllerStyleAlert];
+    __weak S2AVPadView *ws = self;
+    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.cancel") style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"vpad.snap.saveChanged.go") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *x) { [ws snapRestoreNow:dir rollback:YES]; }]];
+    UIViewController *p = self.window.rootViewController; while (p.presentedViewController) p = p.presentedViewController; [p presentViewController:a animated:YES completion:nil];
 }
 - (void)showScreenLock {
     UIWindow *window = self.window; if (_screenLock || !window) return;

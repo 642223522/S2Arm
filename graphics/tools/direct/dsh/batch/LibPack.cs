@@ -19,7 +19,11 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
-static class LibPack
+/// <summary>按名取字节的表里，哪些名字其实是同一份字节（同一存储位置）：PackFiles 同一份只读一次、只算一次摘要。
+/// 出库侧（Side）的影子输入库 _bv 是整批共用一份批库字节、按键各挂一个名字；不认的话每个键都把整批读一遍、算一遍 SHA-256（#1331）</summary>
+interface ISharedBytes { string Ident(string name); }
+
+static partial class LibPack
 {
     /// <summary>Python 那边 sys.exit(文本) 的情形（ps_inputs.write 报红）</summary>
     public sealed class Exit : Exception { public Exit(string m) : base(m) { } }
@@ -111,7 +115,7 @@ static class LibPack
     // ---------------- lib_swap.py ----------------
     static readonly Regex KEY = new(@"\A([0-9a-f]{16})_b\.(metal|metallib|json)$", RegexOptions.CultureInvariant);
     /// <summary>lib_swap.LIBFILE：发布那一侧里属于库容器的文件（键文件 + 批库 u&lt;16 位&gt;.metallib）；含直通几何快路的 _bgs&lt;i&gt; / _bgc（11-06 漏收：Build.cs 编了、PackFiles 认了，发布这道过滤没收，金刚 kong_pt 包种类 64–97 为 0）</summary>
-    static readonly Regex LIBFILE = new(@"\A(?:[0-9a-f]{16}_(?:b\.metallib|b\.json|bf\.metallib|bv\.metallib|ft\.metallib|se\.metallib|b_t[0-2]\.metallib|bg\d+\.(?:metallib|json)|bgv\.(?:metallib|json)|bgs\d+\.(?:metallib|json)|bgc\.(?:metallib|json))|u[0-9a-f]{16}\.metallib)$", RegexOptions.CultureInvariant);
+    static readonly Regex LIBFILE = new(@"\A(?:[0-9a-f]{16}_(?:b\.metallib|b\.json|bf\.metallib|bv\.metallib|ft\.metallib|se\.metallib|vp\.metallib|b_t[0-2]\.metallib|bg\d+\.(?:metallib|json)|bgv\.(?:metallib|json)|bgs\d+\.(?:metallib|json)|bgc\.(?:metallib|json))|u[0-9a-f]{16}\.metallib)$", RegexOptions.CultureInvariant);
     public static bool IsLibFile(string name) => LIBFILE.IsMatch(name);
     public static readonly IReadOnlyDictionary<string, string> Sdk = new Dictionary<string, string> { ["ios"] = "iphoneos", ["mac"] = "macosx" };
 
@@ -219,19 +223,19 @@ static class LibPack
     // ---------------- lib_pack.py ----------------
     const int VER = 1, ALIGN = 16; const long SHARD_MAX = 64L << 20;   // 分片上限 64 MB（运行时按需映射，iOS 虚拟地址紧）
     static readonly byte[] MAGIC = Encoding.ASCII.GetBytes("S2ALIB\0\0");
-    static readonly Regex NAME = new(@"\A([0-9a-f]{16})_(b\.metallib|b\.json|b\.spv|bf\.metallib|bv\.metallib|ft\.metallib|se\.metallib|b_t([0-2])\.metallib|bg(\d+)\.(metallib|json)|bgv\.(metallib|json)|bgs(\d+)\.(metallib|json)|bgc\.(metallib|json))$", RegexOptions.CultureInvariant);
+    static readonly Regex NAME = new(@"\A([0-9a-f]{16})_(b\.metallib|b\.json|b\.spv|bf\.metallib|bv\.metallib|ft\.metallib|se\.metallib|vp\.metallib|b_t([0-2])\.metallib|bg(\d+)\.(metallib|json)|bgv\.(metallib|json)|bgs(\d+)\.(metallib|json)|bgc\.(metallib|json))$", RegexOptions.CultureInvariant);
     static readonly Regex VKFP = new(@"\A[0-9a-f]{16}\z", RegexOptions.CultureInvariant);
     const int K_SPV = 52;   // Vulkan 库的 _b.spv（#783）；0–51 是 Metal 的种类
     static readonly Regex CHAIN = new(@"\A[0-9a-z]{1,12}\z", RegexOptions.CultureInvariant);
     static readonly Regex KEYFILE = new(@"\A[0-9a-f]{16}_", RegexOptions.CultureInvariant);
     static readonly Regex BATCH = new(@"\Au[0-9a-f]{16}\z", RegexOptions.CultureInvariant);
 
-    /// <summary>种类号（lib_pack.kind）：0 _b.metallib 1 _b.json 2 _bf 3 _bv 4+d _b_t&lt;d&gt; 16+i _bg&lt;i&gt;.metallib 32+i _bg&lt;i&gt;.json 48/49 _bgv 50 _ft 51 _se 52 _b.spv（Vulkan 库）
+    /// <summary>种类号（lib_pack.kind）：0 _b.metallib 1 _b.json 2 _bf 3 _bv 4+d _b_t&lt;d&gt; 16+i _bg&lt;i&gt;.metallib 32+i _bg&lt;i&gt;.json 48/49 _bgv 50 _ft 51 _se 52 _b.spv（Vulkan 库）54 _vp（顶点着色器的并集补齐变体）
     /// 64+i _bgs&lt;i&gt;.metallib 80+i _bgs&lt;i&gt;.json 96/97 _bgc（直通几何快路：只算副作用的几何核、读抓顶点的主遍顶点变体）；i &gt; 15 → null</summary>
     static int? Kind(Match m)
     {
         string s = m.Groups[2].Value;
-        switch (s) { case "b.metallib": return 0; case "b.json": return 1; case "bf.metallib": return 2; case "bv.metallib": return 3; case "ft.metallib": return 50; case "se.metallib": return 51; case "b.spv": return K_SPV; }
+        switch (s) { case "b.metallib": return 0; case "b.json": return 1; case "bf.metallib": return 2; case "bv.metallib": return 3; case "ft.metallib": return 50; case "se.metallib": return 51; case "vp.metallib": return 54; case "b.spv": return K_SPV; }
         if (m.Groups[3].Success) return 4 + (m.Groups[3].Value[0] - '0');
         if (m.Groups[4].Success)
         {
@@ -253,7 +257,9 @@ static class LibPack
     /// vkfp（#783 合入线 11-03 答 ①）：给了 = Vulkan 库，16 位小写十六进制的 Vulkan 侧指纹按 u64 写进头部 36–43（44–47 仍为 0），只收 _b.json / _b.spv；
     ///   不给 = Metal 库，头部 36–47 全 0、不收 _b.spv（与改前逐字节相同）
     /// </summary>
-    public static (List<string> Bad, string Line) PackFiles(IEnumerable<string> names, Func<string, byte[]> get, string d, string chain, string vkfp = null)
+    /// ident（可无）：名字 → 它那份字节的存储身份（同身份 = 同一份字节，见 ISharedBytes）；同身份的第二个起不再读、不再算摘要，直接指向第一个落的段。
+    ///   产物与不给 ident 逐字节相同（原先同字节的段也只存一次，只是每个都读一遍、算一遍才认出来）
+    public static (List<string> Bad, string Line) PackFiles(IEnumerable<string> names, Func<string, byte[]> get, string d, string chain, string vkfp = null, Func<string, string> ident = null)
     {
         if (!CHAIN.IsMatch(chain)) return (new() { $"链版本 {chain} 不对（至多 12 位）" }, "");
         if (vkfp != null && !VKFP.IsMatch(vkfp)) return (new() { $"Vulkan 侧指纹 {vkfp} 不对（16 位小写十六进制）" }, "");
@@ -326,6 +332,7 @@ static class LibPack
         var recs = new List<(ulong Key, int K, int S, uint Len, ulong Off)>(); var shards = new List<string>();
         var digest = new Dictionary<(ulong, int), string>(); var libDigest = new Dictionary<string, string>();
         var same = new Dictionary<string, (int S, long Off, long Len)>(); var put = new Dictionary<string, (int S, long Off, long Len)>();
+        var byId = new Dictionary<string, (int S, long Off, long Len, string H)>(StringComparer.Ordinal);   // 存储身份 → 已落的段与摘要（ident）
         FileStream cur = null; int sh = -1, dup = 0; bool ok = false; string idxTmp = Path.Combine(d, "lib.idx.tmp");
         var sizes = new List<long>(); byte[] idx = null;
         try
@@ -335,6 +342,9 @@ static class LibPack
                 src.TryGetValue(n, out var sn);
                 if (sn != null && put.TryGetValue(sn, out var p0))   // 同一批库已写过：指向那一段
                 { recs.Add((key, k, p0.S, (uint)p0.Len, (ulong)p0.Off)); digest[(key, k)] = libDigest[sn]; continue; }
+                var id = sn == null ? ident?.Invoke(n) : null;
+                if (id != null && byId.TryGetValue(id, out var i0))   // 同一份字节已落过（批共用的 _bv）：不读、不算，指向那一段；同下面字节相同的段，计进「只存一次」
+                { recs.Add((key, k, i0.S, (uint)i0.Len, (ulong)i0.Off)); digest[(key, k)] = i0.H; dup++; continue; }
                 var b = get(sn ?? n);
                 if (b == null) return (new() { $"取不到 {sn ?? n}" }, "");
                 string h = Convert.ToHexString(SHA256.HashData(b));
@@ -342,6 +352,7 @@ static class LibPack
                 {
                     recs.Add((key, k, s0.S, (uint)s0.Len, (ulong)s0.Off)); digest[(key, k)] = h; dup++;
                     if (sn != null) { put[sn] = s0; libDigest[sn] = h; }
+                    if (id != null) byId[id] = (s0.S, s0.Off, s0.Len, h);
                     continue;
                 }
                 if (cur == null || (cur.Position != 0 && cur.Position + b.Length > SHARD_MAX))
@@ -353,6 +364,7 @@ static class LibPack
                 long off = cur.Position;
                 recs.Add((key, k, sh, (uint)b.Length, (ulong)off)); digest[(key, k)] = h; same[h] = (sh, off, b.Length);
                 if (sn != null) { put[sn] = (sh, off, b.Length); libDigest[sn] = h; }
+                if (id != null) byId[id] = (sh, off, b.Length, h);
                 cur.Write(b);
             }
             sizes.Add(cur.Position); cur.Dispose(); cur = null;
@@ -449,7 +461,7 @@ static class LibPack
         try { nps = PsInputsWrite(items, Path.Combine(top, "ps_inputs.tsv")); } catch (Exit e) { return e.Message; }
         sourcesDone?.Invoke();
         string line;
-        (bad, line) = PackFiles(pub.Keys.Where(IsLibFile).ToList(), n => pub.TryGetValue(n, out var b) ? b : null, iosOut, chain);
+        (bad, line) = PackFiles(pub.Keys.Where(IsLibFile).ToList(), n => pub.TryGetValue(n, out var b) ? b : null, iosOut, chain, ident: pub is ISharedBytes sb ? sb.Ident : null);
         if (bad.Count > 0) return string.Join("\n", bad.Take(20).Select(b => $"[RED] {b}"));
         log.WriteLine(line);
         log.WriteLine($"ps_inputs.tsv: {nps} pixel shaders");
@@ -558,6 +570,7 @@ static class LibPack
             var so2 = Console.OpenStandardOutput(); var sb2 = Utf8Out.GetBytes(ol + "\n"); so2.Write(sb2); so2.Flush();
             return 0;
         }
+        if (argv.Length == 2 && argv[0] == "ident-test") return IdentTest(argv[1]);   // 单测：PackFiles 的 ident 分支（#1331，t_lib_pack_ident.py）
         if ((argv.Length == 4 || argv.Length == 5) && argv[0] == "pack")
         {
             var names = Directory.EnumerateFiles(argv[1]).Select(Path.GetFileName).ToList();
@@ -583,4 +596,55 @@ static class LibPack
         var e = Console.OpenStandardError(); var eb = Utf8Out.GetBytes(err + "\n"); e.Write(eb); e.Flush();
         return 1;
     }
+
+    /// <summary>单测（#1331）：PackFiles 给 ident 时，同身份的第二个起不读、不算摘要，产物与 ident=null 逐字节相同。
+    /// 两组输入：① 手给 ident（三名同身份 A、一名字节相同但身份 B、一名别的字节 C）；② 真 Side（同一数组 Put 两名 + Alias 一名、等值新数组一名、别的字节一名），身份来自 Side.Ident。
+    /// 每组各打两次（ident=null / 给 ident）进 &lt;tmp&gt; 下的两个目录，期望（不调被测实现就能算出）：
+    ///   两目录文件清单与每个文件字节相同、汇总行相同；给 ident 时同身份那份 get 合计 1 次，其余每名 1 次；ident=null 时每名各 1 次（判据有分辨力）</summary>
+    static int IdentTest(string tmp)
+    {
+        int fails = 0;
+        void Check(bool ok, string msg) { Console.Out.WriteLine((ok ? "  ✓ " : "  ✗ ") + msg); Console.Out.Flush(); if (!ok) fails++; }
+        string[] keys = { "0000000000000001", "0000000000000002", "0000000000000003", "0000000000000004", "0000000000000005" };
+        string[] names = keys.Select(k => k + "_bv.metallib").ToArray();
+        var x = new byte[200_000]; new Random(1331).NextBytes(x);
+        var y = new byte[70_000]; new Random(1332).NextBytes(y);
+
+        (Dictionary<string, byte[]> Files, string Line, Dictionary<string, int> Gets) Run(string dir, Func<string, byte[]> get, Func<string, string> ident)
+        {
+            Directory.CreateDirectory(dir);
+            var gets = new Dictionary<string, int>();
+            var (bad, line) = PackFiles(names, n => { gets[n] = gets.GetValueOrDefault(n) + 1; return get(n); }, dir, "0a7dae3c1e7b", null, ident);
+            if (bad.Count > 0) Console.Out.WriteLine("  [RED] " + string.Join(" / ", bad));
+            var files = Directory.EnumerateFiles(dir).ToDictionary(Path.GetFileName, File.ReadAllBytes);
+            return (files, line, gets);
+        }
+        bool SameFiles(Dictionary<string, byte[]> a, Dictionary<string, byte[]> b) =>
+            a.Count > 0 && a.Keys.OrderBy(k => k, StringComparer.Ordinal).SequenceEqual(b.Keys.OrderBy(k => k, StringComparer.Ordinal)) && a.All(kv => b[kv.Key].AsSpan().SequenceEqual(kv.Value));
+        string Counts(Dictionary<string, int> g) => string.Join(" ", names.Select(n => $"{n[15]}:{g.GetValueOrDefault(n)}"));
+        void Case(string label, Func<string, byte[]> get, Func<string, string> ident, string[] groupA)
+        {
+            var plain = Run(Path.Combine(tmp, label + "-null"), get, null);
+            var withId = Run(Path.Combine(tmp, label + "-ident"), get, ident);
+            Check(SameFiles(plain.Files, withId.Files), $"{label}：给 ident 与 ident=null 的产物逐字节相同（{string.Join(",", plain.Files.Keys.OrderBy(k => k, StringComparer.Ordinal))}）");
+            Check(plain.Line == withId.Line && plain.Line.Length > 0, $"{label}：汇总行相同（{withId.Line}）");
+            Check(names.All(n => plain.Gets.GetValueOrDefault(n) == 1), $"{label}：ident=null 每名各读 1 次（{Counts(plain.Gets)}）");
+            Check(groupA.Sum(n => withId.Gets.GetValueOrDefault(n)) == 1, $"{label}：同身份 {groupA.Length} 名合计读 1 次（{Counts(withId.Gets)}）");
+            Check(names.Except(groupA).All(n => withId.Gets.GetValueOrDefault(n) == 1), $"{label}：其余每名各读 1 次（字节相同但身份不同的照旧读、靠摘要只存一次）");
+        }
+
+        // ① 手给 ident
+        var bytes = new Dictionary<string, byte[]> { [names[0]] = x, [names[1]] = x, [names[2]] = x, [names[3]] = x.ToArray(), [names[4]] = y };
+        var ids = new Dictionary<string, string> { [names[0]] = "A", [names[1]] = "A", [names[2]] = "A", [names[3]] = "B", [names[4]] = "C" };
+        Case("stub", n => bytes.TryGetValue(n, out var b) ? b.ToArray() : null, n => ids.GetValueOrDefault(n), names[..3]);
+
+        // ② 真 Side：在 Build.cs（SideIdentCases）。出包 Vulkan 独立入口工程只编本文件、不编 Build.cs，那边这一段由编译器略去（分部方法没有实现）
+        SideIdentCases(tmp, names, x, y, Check, Case);
+
+        Console.Out.WriteLine(fails == 0 ? "ident-test: ok" : $"ident-test: {fails} 处不符");
+        return fails == 0 ? 0 : 1;
+    }
+
+    /// <summary>IdentTest 第 ② 组（真 Side 的 Ident），实现在 Build.cs（Side 定义在那里）；只编 LibPack.cs 的工程里没有实现，调用整句略去</summary>
+    static partial void SideIdentCases(string tmp, string[] names, byte[] x, byte[] y, Action<bool, string> check, Action<string, Func<string, byte[]>, Func<string, string>, string[]> @case);
 }

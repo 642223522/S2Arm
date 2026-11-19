@@ -68,6 +68,7 @@ int dm_shader_fout_fresh(const char *key16, uint32_t umask, uint32_t smask);   /
 int dm_shader_se(const uint8_t key[8], uint64_t code, const void *control, char *path, size_t n);
 int dm_shader_vpad(const uint8_t key[8], uint64_t code, const void *control, uint32_t mask, char *path, size_t n);   // 顶点补齐变体（dsh_miss.inc）
 int dm_shader_vpad_cached(const uint8_t key[8], int st, uint32_t mask, char *path, size_t n);   // 顶点（st 0）/ 网格（st 5）着色器控制段过期时，用本机同链源码或 SetShaders / Bind 时的源快照出补齐变体（dsh_miss.inc）
+int dm_shader_base_cached(const uint8_t key[8], int st, char *path, size_t n);   // #770 任务 / 网格着色器本机基础源码（dsh_miss.inc）
 void dm_shader_mesh_hold(uint64_t code, const void *control);   // SetShaders 时保存 NVN2 mesh 输入，按当时键索引
 void dm_shader_mesh_hold_key(const uint8_t key[8], uint64_t code, const void *control);   // Bind 时按已算出的最终键保存
 void dm_shader_vs_hold_key(const uint8_t key[8], uint64_t code, const void *control);   // SetShaders 时按键保存 Switch 1 顶点着色器输入（补齐变体用）

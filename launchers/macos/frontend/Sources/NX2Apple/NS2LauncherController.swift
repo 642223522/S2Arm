@@ -5,6 +5,7 @@ import AppKit
 import Combine
 import Foundation
 import GameController
+import CoreBluetooth
 import NXCore
 
 @MainActor
@@ -61,14 +62,14 @@ final class NS2LauncherController: ObservableObject {
     var allDevices: [PlayerAssignment.Device] { devices + extras.flatMap(\.devices) }
     private var playerOf: [String: Int] { Dictionary(allDevices.map { ($0.id, $0.player) }, uniquingKeysWith: { a, _ in a }) }
 
-    /// 弹窗标题：照连着的型号写；没连 / 还不知道型号时写通用的「Switch 手柄」（不分代：一代 Joy-Con 以后也在这里）（#520）
-    /// 标题：一只写型号；一对 Joy-Con 2 合成一位写「Joy-Con 2 (L + R)」；其余两只以上写「N 个 NS2 手柄」（同蓝牙手柄那块写数量，玩家在玩家列表）
+    /// 顶栏提示 / 读屏用的手柄名（#901）：两条通道合并看——Switch 2 连着（hasSystemController 这时为假）写 Switch 2 的标题，否则系统手柄连着写它的名字
     func title(lang: String) -> String {
         if hasSystemController, let systemControllerName { return systemControllerName }   // #901：只有系统手柄连着时写它的真实名字（顶栏按钮用）
         return switch2Title(lang: lang)
     }
     /// 面板顶部那一块只讲 Switch 2 手柄（#1151）：状态点是 Switch 2 连接的状态，标题不能借系统手柄的名字——
     ///   系统手柄在下面自己那一块写「已连接」，原先顶部同时写它的名字 +「未连接」，同一只两种状态
+    ///   一只写型号；一对 Joy-Con 2 合成一位写「Joy-Con 2 (L + R)」；其余两只以上写「N 个 Switch 2 手柄」；没连 / 不知道型号写「Joy-Con 2 · Pro 2」
     func switch2Title(lang: String) -> String {
         let mergedPair = kind == 4 && players == 1
         let count = max(deviceCount, 0) + extras.reduce(0) { $0 + $1.devices.count }
@@ -93,12 +94,13 @@ final class NS2LauncherController: ObservableObject {
         case 2: return "Joy-Con 2 (L)"
         case 3: return "Joy-Con 2 (R)"
         case 4: return "Joy-Con 2 (L + R)"
-        default: return Self.text("s2arm.controller.generic", lang)
+        default: return Self.text("s2arm.controller.generic", lang)   // 型号名不翻：各语言都是「Joy-Con 2 · Pro 2」
         }
     }
 
     private let defaults: UserDefaults
     private let systemControllers: () -> [GCController]
+    private let bluetoothAuthorization: () -> CBManagerAuthorization
     private let notifications: NotificationCenter
     private var observers: [NSObjectProtocol] = []
     let socketURL: URL
@@ -112,7 +114,9 @@ final class NS2LauncherController: ObservableObject {
     private let orderFileURL: URL
     /// defaults / orderFile 单测换成临时的（不碰本机真的分配与顺序表）
     init(socketURL: URL, store: UserDefaults? = nil, orderFile: URL = PlayerAssignment.orderFileURL, watchGame: Bool = false,
-         systemControllers: @escaping () -> [GCController] = { GCController.controllers() }, notifications: NotificationCenter = .default) {
+         systemControllers: @escaping () -> [GCController] = { GCController.controllers() }, notifications: NotificationCenter = .default,
+         bluetoothAuthorization: @escaping () -> CBManagerAuthorization = { CBManager.authorization }) {
+        self.bluetoothAuthorization = bluetoothAuthorization
         self.socketURL = socketURL
         faceMaps = ControllerFaceMapStore(fileURL: orderFile.deletingPathExtension().appendingPathExtension("face.json"))
         self.systemControllers = systemControllers
@@ -133,10 +137,15 @@ final class NS2LauncherController: ObservableObject {
             observers.append(notifications.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
                 let connected = note.name == .GCControllerDidConnect ? note.object as? GCController : nil
                 let disconnected = note.name == .GCControllerDidDisconnect ? note.object as? GCController : nil
-                Task { @MainActor [weak self] in self?.refreshSystemControllers(connected: connected, disconnected: disconnected) }
+                let becameActive = note.name == NSApplication.didBecomeActiveNotification
+                Task { @MainActor [weak self] in
+                    self?.refreshSystemControllers(connected: connected, disconnected: disconnected)
+                    if becameActive { self?.retryAfterPermissionChange(); self?.checkPermissionDismissed() }
+                }
             })
         }
         refreshSystemControllers()
+        // 键盘登记过的玩家位跨次保留（玩家自己排的优先，同其他玩家位）：要换顺序 / 撤掉在「分配玩家」里改；没登记时照旧并进 P1
     }
     deinit {
         for observer in observers { notifications.removeObserver(observer) }
@@ -144,10 +153,7 @@ final class NS2LauncherController: ObservableObject {
 
     // #901：游戏在 Switch 专用通道就绪时优先用它（front_mac.m sample_input）；其余时候顶栏照系统手柄显示「已连接」
     var hasSystemController: Bool { systemControllerName != nil && phase != .ready && phase != .handedOff }
-    var detail: String {
-        if hasSystemController, let systemControllerName { return "\(systemControllerName) 已通过 macOS 连接。开始游戏后会自动接收手柄输入。" }
-        return helperDetail
-    }
+    var detail: String { helperDetail }   // 只写 Switch 2 通道；系统手柄不覆盖
     private func refreshSystemControllers(connected: GCController? = nil, disconnected: GCController? = nil) {
         systemControllerName = SystemControllers.snapshot(systemControllers(), connected: connected, disconnected: disconnected).first?.name
     }
@@ -156,6 +162,7 @@ final class NS2LauncherController: ObservableObject {
     enum Status: Equatable { case notConnected, searching, connecting, connected, inUse, failed, bluetoothUnavailable }
     var status: Status {
         if assigning { return .searching }
+        if idleAfterScan { return .notConnected }   // 扫完没找到 / 只剩等记住的手柄：灰点「未连接」，不是错误（红点只给真的出错）
         switch phase {
         case .off: return .notConnected
         case .starting, .scanning: return .searching
@@ -167,8 +174,56 @@ final class NS2LauncherController: ObservableObject {
     }
     /// 连接程序报过蓝牙不可用（状态 6：关着 / 没给权限）；下次启动连接程序清掉
     @Published private(set) var bluetoothUnavailable = false
+    /// 扫描窗口过了还没连上（扫完没找到，或只剩直连等记住的手柄）：显示灰点「未连接」。下一行状态 / 重起连接程序清掉
+    @Published private(set) var idleAfterScan = false
+    private var connectingTimer: Timer?
+    /// 搜索 / 连接中显示橙点多久：照连接程序实际扫描的秒数（状态行 scanSeconds = 编进去的 NS2_SCAN_SECONDS，
+    ///   Mac 是 launchers/macos/build.mk 的 60 秒），过了还没连上才显示灰点「未连接」（使用者 11-16：原先 10 秒太短，扫描还在跑就说没找到）。
+    ///   旧连接程序没报这个字段时用 defaultScanSeconds。有记住的手柄时之后还会一直直连等它，按 SYNC / 按手柄任一键仍会连上
+    static let defaultScanSeconds: TimeInterval = 60
+    private(set) var scanSeconds: TimeInterval = NS2LauncherController.defaultScanSeconds
+    private func startScanWindow() {
+        guard connectingTimer == nil else { return }
+        connectingTimer = Timer.scheduledTimer(withTimeInterval: scanSeconds, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.connectingWindowEnded() }
+        }
+    }
+    func connectingWindowEnded() {
+        connectingTimer = nil
+        guard phase == .connecting || phase == .scanning else { return }
+        idleAfterScan = true
+        helperDetail = "没找到手柄。按手柄任一键即可连上；没反应时长按 SYNC，再点「连接」搜一次。"
+    }
 
-    nonisolated static func statusText(_ status: Status, lang: String) -> String {
+    /// 玩家在系统弹窗选过「不允许」：macOS 之后不会再弹，App 也没法再要一次——只能去「隐私与安全性 › 蓝牙」打开。
+    ///   这时主按钮改成「允许蓝牙」、点了直接开那一页；回到 S2Arm 时权限已打开就自动重新连接
+    ///   两个来源取「或」：连接程序自己报的蓝牙状态（state 3 = unauthorized，它才是真的去用蓝牙的那个），和本进程读到的授权
+    var bluetoothDenied: Bool {
+        helperReportedUnauthorized || systemDeniedBluetooth || (bluetoothAuthorization() == .notDetermined && permissionDismissedThisSession)
+    }
+    /// 系统记的授权是「不允许」（或被管理限制）：系统不会再弹授权框
+    private var systemDeniedBluetooth: Bool { let a = bluetoothAuthorization(); return a == .denied || a == .restricted }
+    /// 单测 / 面板截图跑在 xctest 里：一问授权，TCC 会直接终止 xctest
+    private static var runningUnderXCTest: Bool { NSClassFromString("XCTestCase") != nil }
+    /// 连接程序报的「Bluetooth unavailable (state N)」里 N 是 CBManagerState；3 = unauthorized（这句不翻译，格式固定）
+    @Published private(set) var helperReportedUnauthorized = false
+    nonisolated static func reportedUnauthorized(_ message: String?) -> Bool {
+        guard let message, let r = message.range(of: #"\(state (\d+)\)"#, options: .regularExpression) else { return false }
+        return Int(message[r].filter(\.isNumber)) == CBManagerState.unauthorized.rawValue
+    }
+    private var awaitingBluetoothPermission = false
+    nonisolated static func openBluetoothPrivacy() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Bluetooth") { NSWorkspace.shared.open(url) }
+    }
+    private func retryAfterPermissionChange() {
+        // 连接程序报的旧状态要等重连后才更新：回到前台只看本进程的授权（权限一开就重连，连接程序会重报）
+        guard awaitingBluetoothPermission, !systemDeniedBluetooth else { return }
+        awaitingBluetoothPermission = false
+        retry()
+    }
+
+    nonisolated static func statusText(_ status: Status, lang: String, bluetoothDenied: Bool = false) -> String {
+        if status == .bluetoothUnavailable && bluetoothDenied { return Self.text("s2arm.controller.status.bluetoothDenied", lang) }
         switch status {
         case .notConnected: return Self.text("s2arm.controller.status.notConnected", lang)
         case .searching: return Self.text("s2arm.controller.status.searching", lang)
@@ -180,7 +235,8 @@ final class NS2LauncherController: ObservableObject {
         }
     }
     /// 连接 / 断开合并成一个主按钮（稿）：未连接「连接」、搜索 / 连接中「停止」、连着「断开」、失败「重新连接」
-    nonisolated static func mainButton(_ status: Status, lang: String) -> String {
+    nonisolated static func mainButton(_ status: Status, lang: String, bluetoothDenied: Bool = false) -> String {
+        if status == .bluetoothUnavailable && bluetoothDenied { return Self.text("s2arm.controller.button.allowBluetooth", lang) }
         switch status {
         case .notConnected: return Self.text("s2arm.controller.button.connect", lang)
         case .searching, .connecting: return Self.text("s2arm.controller.button.stop", lang)
@@ -190,13 +246,18 @@ final class NS2LauncherController: ObservableObject {
     }
     func mainAction() {
         switch status {
-        case .notConnected: connectManually()
-        case .searching, .connecting, .connected, .inUse: disconnectManually()
-        case .failed, .bluetoothUnavailable: retry()
+        case .notConnected: stoppedWhilePanelOpen = false; if process != nil { retry() } else { connectManually() }   // 连接程序还在（等记住的手柄）：重起再扫一轮
+        case .searching, .connecting, .connected, .inUse: stoppedWhilePanelOpen = panelScanTimer != nil; disconnectManually()
+        case .failed: retry()
+        case .bluetoothUnavailable:
+            let a = bluetoothAuthorization()
+            if a == .notDetermined { askBluetoothPermission() }   // 上次没选就关了：再弹一次授权框
+            else if bluetoothDenied { awaitingBluetoothPermission = true; Self.openBluetoothPrivacy() }   // 选过不允许：系统不再弹，去设置页打开，回来自动重连
+            else { retry() }   // 蓝牙关着：照常重连
         }
     }
 
-    /// 顶栏（#901）：只有系统手柄连着时写「已连接」、绿点；面板里 Switch 2 手柄那块仍照它自己的状态（status），连接按钮照常可用
+    /// 顶栏（#901）：两条通道合并——任一通道有手柄连着就「已连接」、绿点；面板里 Switch 2 区块仍照它自己的状态（status）
     var buttonStatus: String { hasSystemController ? "已连接" : Self.statusText(status, lang: "zh") }
     /// 状态点颜色（稿：灰 #8a857e 未连接、橙 #f0a43a 搜索 / 连接中、绿 #5fd068 已连接 / 游戏使用中、红 #e5534b 失败 / 蓝牙不可用）
     var buttonColor: NSColor { hasSystemController ? .systemGreen : Self.dotColor(status) }
@@ -218,7 +279,95 @@ final class NS2LauncherController: ObservableObject {
             helperDetail = "手柄未连接。需要时可在上方手动连接。"
             return
         }
+        // 还没问过蓝牙权限：一打开 S2Arm 不弹系统授权框，等玩家打开手柄面板时再问（panelDidOpen），允许后照常连接
+        if bluetoothAuthorization() == .notDetermined {
+            phase = .off
+            return
+        }
         connectManually()
+    }
+
+    private var permissionRequest: BluetoothPermissionRequest?
+    private var permissionDone: (@MainActor () -> Void)?
+    /// 系统蓝牙授权框开着
+    @Published private(set) var requestingBluetoothPermission = false
+    /// 这次开着 S2Arm 时，授权框没选「允许 / 不允许」就关了：本次当「不允许」显示（按「允许蓝牙」再问一次）；
+    ///   只记在内存，下次打开 S2Arm 照样先问（不当成拒绝存下来）
+    @Published private(set) var permissionDismissedThisSession = false
+
+    /// 点顶栏「手柄」：还没问过蓝牙权限就先弹系统授权框、不开面板（授权框会抢焦点把面板关掉，开开合合）；选完再开面板
+    var shouldAskBluetoothFirst: Bool {
+        bluetoothAuthorization() == .notDetermined && !permissionDismissedThisSession && permissionRequest == nil && !Self.runningUnderXCTest
+    }
+    /// 弹系统蓝牙授权框；选了允许 / 不允许就更新面板状态再调 done（顶栏用它打开面板）；没选就关掉不调 done（不开面板）
+    func askBluetoothPermission(then done: (@MainActor () -> Void)? = nil) {
+        guard permissionRequest == nil else { return }
+        guard !Self.runningUnderXCTest else { done?(); return }
+        requestingBluetoothPermission = true
+        permissionDone = done
+        permissionRequest = BluetoothPermissionRequest { [weak self] in self?.bluetoothPermissionAnswered() }
+    }
+    /// 授权框有了结果：允许 → 直接开始连接（面板「搜索中 / 连接中」）；不允许、或没选就关掉 → 「蓝牙权限未允许 / 允许蓝牙」
+    func bluetoothPermissionAnswered() {
+        permissionRequest = nil
+        requestingBluetoothPermission = false
+        let a = bluetoothAuthorization()
+        let done = permissionDone
+        permissionDone = nil
+        NSLog("S2Arm 蓝牙授权结果：%ld", a.rawValue)
+        if a == .notDetermined {
+            // 没选就关了：不开面板；本次当不允许，下次点「手柄」开面板时显示「允许蓝牙」（点了再问）
+            permissionDismissedThisSession = true
+            showBluetoothDenied()
+            return
+        }
+        if systemDeniedBluetooth { showBluetoothDenied() }
+        else { permissionDismissedThisSession = false; connectManually() }
+        // 授权框刚关，S2Arm 可能还不在前台：这时开面板（popover）会被系统马上收掉——先把 S2Arm 拉回前台，再开
+        guard let done else { return }
+        if NSApp?.isActive ?? true { done(); return }
+        NSApp?.activate(ignoringOtherApps: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { done() }
+    }
+    /// 回到 S2Arm 时授权框已经不在：等 1 秒还没收到 CoreBluetooth 回调就自己收尾——
+    ///   权限仍没问过 = 没选就关了（当这次不允许）；已有结果（回调没来）照结果走
+    private func checkPermissionDismissed() {
+        guard requestingBluetoothPermission else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self, self.requestingBluetoothPermission else { return }
+            self.bluetoothPermissionAnswered()
+        }
+    }
+    /// 手柄面板打开：已经被拒（或这次没选就关了）、又没在连，面板直接显示「允许蓝牙」
+    /// 手柄面板开着时一直搜：蓝牙已允许、「自动连接」开着就自动开始连接（关着时按「连接」才连）；已连着手柄（按钮是「断开」）也照样搜，好让别的手柄接上（使用者 11-16）。
+    ///   连着手柄的连接程序不重扫（NS2Transport rescan 会略过），新手柄由空着的那个连接程序（syncSecond 总留一个）接。每轮扫完再搜，关面板就停
+    private var panelScanTimer: Timer?
+    private var stoppedWhilePanelOpen = false   // 面板开着时玩家自己按了「停止 / 断开」：这次不再自动连回去，关面板后重置
+    func panelDidOpen() {
+        if bluetoothDenied && process == nil && status == .notConnected { showBluetoothDenied(); return }
+        guard bluetoothAuthorization() == .allowedAlways else { return }
+        scanWhilePanelOpen()
+        panelScanTimer?.invalidate()
+        panelScanTimer = Timer.scheduledTimer(withTimeInterval: scanSeconds, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.scanWhilePanelOpen() }
+        }
+    }
+    func panelDidClose() {
+        panelScanTimer?.invalidate(); panelScanTimer = nil
+        stoppedWhilePanelOpen = false
+    }
+    private func scanWhilePanelOpen() {
+        guard !assigning, phase != .handedOff, !stoppedWhilePanelOpen else { return }   // 分配中自己会搜；游戏用着手柄时不动；玩家刚自己断开的不连回去
+        // 「自动连接」关着、又还没连手柄：打开面板不主动连（按「连接」才连）。已连着就照样搜，好让别的手柄接上
+        guard autoConnectOnOpen || !allDevices.isEmpty else { return }
+        if process == nil { connectManually(); return }
+        send("scan\n")
+        extras.forEach { $0.send("scan\n") }
+    }
+    private func showBluetoothDenied() {
+        phase = .failed
+        bluetoothUnavailable = true
+        helperDetail = "蓝牙权限未允许。请在「隐私与安全性 › 蓝牙」打开 S2Arm。"
     }
 
     func setAutoConnectOnOpen(_ value: Bool) {
@@ -319,6 +468,8 @@ final class NS2LauncherController: ObservableObject {
         playerKinds = []
         deviceCount = 0
         bluetoothUnavailable = false
+        idleAfterScan = false
+        connectingTimer?.invalidate(); connectingTimer = nil
         buffer.removeAll(keepingCapacity: true)
         intentionalStop = false
 
@@ -414,6 +565,7 @@ final class NS2LauncherController: ObservableObject {
             buffer.removeSubrange(...newline)
             guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
             if let event = object["assign"] as? [String: Any] { receiveAssign(event); continue }
+            if let event = object["press"] as? [String: Any] { receivePress(event); continue }
             guard let code = (object["status"] as? NSNumber)?.intValue else { continue }
             apply(status: code, object)
         }
@@ -489,9 +641,11 @@ final class NS2LauncherController: ObservableObject {
             let extra = NS2SecondHelper(executable: helper, upstream: sideSocketURL, rememberDevice: rememberDevice, group: group)
             extra.onChange = { [weak self] in self?.reconcile() }
             extra.onAssign = { [weak self] event in self?.receiveAssign(event) }
+            extra.onPress = { [weak self] event in self?.receivePress(event) }
             extras.append(extra)
             extra.start()
             if assigning { extra.send("assign start\n") }
+            if pressWatching { extra.send("press start\n") }
         }
         // 别抢同一台：每个连接程序都排除别人已占的；有谁只连着单只 Joy-Con，另一侧留给组号最小的那个（别人不收那一侧）
         let groups: [(send: (String) -> Void, group: Int, devices: [PlayerAssignment.Device])] =
@@ -544,6 +698,108 @@ final class NS2LauncherController: ObservableObject {
     }
 
     /// 分配玩家：已分配的留着，新按的补进空位；取消回到按之前
+    // 认手柄（玩家列表）：面板开着时，哪只手柄按了键，那位玩家那一行的名字亮一下
+    /// 正在亮的玩家位（units 的 index）
+    @Published private(set) var flashingPlayers: Set<Int> = []
+    /// 亮着的那一位按的是哪个键（玩家列表右边的小框显示，宽度跟字走）
+    @Published private(set) var flashingKeys: [Int: String] = [:]
+    private var flashTokens: [Int: UUID] = [:]
+    private(set) var pressWatching = false
+    /// 面板打开 / 关上：叫连接程序开始 / 停止报按键（Switch 2 手柄的按键只有连接程序读得到）
+    func setPressWatch(_ on: Bool) {
+        guard on != pressWatching else { return }
+        pressWatching = on
+        if !on { flashingPlayers = []; flashingKeys = [:]; flashTokens = [:] }
+        let line = on ? "press start\n" : "press stop\n"
+        send(line)
+        extras.forEach { $0.send(line) }
+    }
+    /// 这一位按了键：亮 0.6 秒（连按就从最后一下再算），key = 按的哪个键
+    func flashPlayer(key: String? = nil, where match: (PlayerAssignment.Unit) -> Bool) {
+        guard let index = assignment.units.firstIndex(where: match) else { return }
+        let token = UUID()
+        flashTokens[index] = token
+        flashingPlayers.insert(index)
+        flashingKeys[index] = key
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self, self.flashTokens[index] == token else { return }
+            self.flashTokens[index] = nil
+            self.flashingPlayers.remove(index)
+        }
+    }
+    /// 按键小框里的方向：用长宽一致的 SF Symbol（「sf:」开头的会画成图示，见 Switch2ProConnectionPopover KeyChip）
+    nonisolated static let keyUp = "sf:arrowtriangle.up.fill", keyDown = "sf:arrowtriangle.down.fill"
+    nonisolated static let keyLeft = "sf:arrowtriangle.left.fill", keyRight = "sf:arrowtriangle.right.fill"
+    /// Switch 2 手柄按键位 → 显示的字（ns2_state.buttons 位序，NS2Transport.h：A B X Y LS RS L R ZL ZR + − ← ↑ → ↓ Home Capture C GL GR）
+    nonisolated static let ns2KeyNames = ["A", "B", "X", "Y", "LS", "RS", "L", "R", "ZL", "ZR", "+", "−", keyLeft, keyUp, keyRight, keyDown, "Home", "Capture", "C", "GL", "GR"]
+    /// 连接程序另报的摇杆方向（第 32–35 位：上 / 下 / 左 / 右）
+    nonisolated static let ns2StickNames = [keyUp, keyDown, keyLeft, keyRight]
+    /// 一下新按下的键（按键位 + NS2_SIDE_* 位）里取第一个当显示的字；按键优先，其次 SL / SR，最后摇杆方向
+    nonisolated static func ns2Key(buttons: UInt64, side: Int) -> String? {
+        if let bit = ns2KeyNames.indices.first(where: { buttons & (1 << UInt64($0)) != 0 }) { return ns2KeyNames[bit] }
+        if side & 0b0101 != 0 { return "SL" }   // NS2_SIDE_SL_L / SL_R
+        if side & 0b1010 != 0 { return "SR" }   // NS2_SIDE_SR_L / SR_R
+        if let i = ns2StickNames.indices.first(where: { buttons & (1 << UInt64(32 + $0)) != 0 }) { return ns2StickNames[i] }
+        return nil
+    }
+    /// 分配玩家中，手柄按键转成界面导航（面板设）：分配中 Switch 2 不走中继（relayAllowed = !assigning），
+    ///   要靠认手柄的按键回报让 Joy-Con 2 也能按「完成」(A) / 「取消」(B)、移焦点
+    var onAssignNavigate: ((LauncherPadAction) -> Void)?
+    /// Switch 2 原始按键（连接程序报的、未转横握）→ 导航动作（纯函数）。sideways = 单只横握：面键与摇杆照 NS2JoyCon.c 的横握转法
+    nonisolated static func padAction(ns2Buttons b: UInt64, kind: Int, sideways: Bool) -> LauncherPadAction? {
+        func has(_ bit: Int) -> Bool { b & (1 << UInt64(bit)) != 0 }
+        let (a, bb, x, left, up, right, down) = (0, 1, 2, 12, 13, 14, 15)
+        let (sUp, sDown, sLeft, sRight) = (32, 33, 34, 35)
+        if sideways && kind == 2 {   // 左只横握：下 → A、左 → B；摇杆 (x, y) → (−y, x)
+            if has(down) { return .confirm }
+            if has(left) { return .back }
+            if has(sUp) { return .left }; if has(sDown) { return .right }; if has(sLeft) { return .down }; if has(sRight) { return .up }
+            return nil
+        }
+        if sideways && kind == 3 {   // 右只横握：X → A、A → B；摇杆 (x, y) → (y, −x)
+            if has(x) { return .confirm }
+            if has(a) { return .back }
+            if has(sUp) { return .right }; if has(sDown) { return .left }; if has(sLeft) { return .up }; if has(sRight) { return .down }
+            return nil
+        }
+        if has(a) { return .confirm }
+        if has(bb) { return .back }
+        if has(up) || has(sUp) { return .up }; if has(down) || has(sDown) { return .down }
+        if has(left) || has(sLeft) { return .left }; if has(right) || has(sRight) { return .right }
+        return nil
+    }
+    /// 一代 Joy-Con 按键字（Gen1HIDWatcher.keyName，原始、未转横握）→ 导航动作；单只横握同上面的转法，只取确认 / 返回
+    nonisolated static func padAction(gen1Key key: String, side: Int, sideways: Bool) -> LauncherPadAction? {
+        if sideways { return side == 0 ? (key == keyDown ? .confirm : key == keyLeft ? .back : nil) : (key == "X" ? .confirm : key == "A" ? .back : nil) }
+        return key == "A" ? .confirm : key == "B" ? .back : nil
+    }
+    /// 连接程序报的一下按键（{"press": {"link", "id", "buttons", "side"}}）：按 id 找是哪一位
+    func receivePress(_ event: [String: Any]) {
+        guard let id = event["id"] as? String, !id.isEmpty else { return }
+        let buttons = (event["buttons"] as? NSNumber)?.uint64Value ?? 0
+        if assigning, let onAssignNavigate {
+            // 已登记的照登记方式（单只 = 横握、一对 / Pro = 竖握）；还没登记的单只 Joy-Con 当横握
+            var kind = allDevices.first { $0.id == id }?.kind ?? 1, sideways = kind == 2 || kind == 3
+            for unit in assignment.units {
+                switch unit {
+                case let .single(unitID, k) where unitID == id: kind = k; sideways = true
+                case let .whole(unitID, k) where unitID == id: kind = k; sideways = false
+                case let .pair(l, r) where l == id || r == id: sideways = false
+                default: break
+                }
+            }
+            if let action = Self.padAction(ns2Buttons: buttons, kind: kind, sideways: sideways) { onAssignNavigate(action) }
+        }
+        let key = Self.ns2Key(buttons: buttons, side: (event["side"] as? NSNumber)?.intValue ?? 0)
+        flashPlayer(key: key) { unit in
+            switch unit {
+            case let .pair(left, right): return left == id || right == id
+            case let .single(unitID, _), let .whole(unitID, _): return unitID == id
+            default: return false
+            }
+        }
+    }
+
     func startAssign() {
         beforeAssign = assignment
         assigning = true
@@ -603,6 +859,7 @@ final class NS2LauncherController: ObservableObject {
     }
 
     func apply(status code: Int, _ object: [String: Any]) {   // 单测（@testable）直接喂连接程序的状态行
+        if let seconds = (object["scanSeconds"] as? NSNumber)?.doubleValue, seconds > 0 { scanSeconds = seconds }
         if let name = object["name"] as? String, !name.isEmpty { deviceName = name }
         kind = Self.kind(from: object)
         players = Self.players(from: object)
@@ -611,16 +868,21 @@ final class NS2LauncherController: ObservableObject {
         devices = code == 4 ? Self.devices(from: object) : []
         reconcile()   // 每次状态都对一次：没连着的不留玩家位
         bluetoothUnavailable = code == 6
+        if code != 9 { idleAfterScan = false }
+        if code != 1 && code != 2 { connectingTimer?.invalidate(); connectingTimer = nil }
+        helperReportedUnauthorized = code == 6 && Self.reportedUnauthorized(object["message"] as? String)
         switch code {
         case 0:
             phase = .starting
             helperDetail = "正在启动蓝牙连接。"
         case 1:
             phase = .scanning
+            startScanWindow()
             helperDetail = "正在搜索手柄。请按一下手柄；未出现时长按顶部 SYNC。"
         case 2:
             phase = .connecting
             helperDetail = Self.connectingDetail(rememberDevice: rememberDevice)
+            startScanWindow()
         case 3:
             phase = .initializing
             helperDetail = "已连接，正在读取校准资料。"
@@ -631,7 +893,10 @@ final class NS2LauncherController: ObservableObject {
             } else {
                 helperDetail = "\(deviceName) 已连接。关闭游戏后仍会保持连接。"
             }
-        case 5, 9:
+        case 9:   // 扫描时间（scanSeconds）结束、没找到：不是错误
+            idleAfterScan = true
+            helperDetail = "没找到手柄。按手柄任一键或长按 SYNC，再点「连接」搜一次。"
+        case 5:
             phase = .failed
             helperDetail = "手柄未连接。请唤醒手柄后按 SYNC，再点「重新连接」。"
         case 6:
@@ -672,6 +937,7 @@ final class NS2SecondHelper {
     private(set) var players = 1
     var onChange: (() -> Void)?
     var onAssign: (([String: Any]) -> Void)?
+    var onPress: (([String: Any]) -> Void)?
     private let executable: URL, upstream: URL, rememberDevice: Bool
     let group: Int   // 第几组（1–7）：玩家号 2·group、2·group+1
     private var task: Process?
@@ -721,6 +987,7 @@ final class NS2SecondHelper {
             let line = buffer[..<nl]; buffer.removeSubrange(...nl)
             guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
             if let event = object["assign"] as? [String: Any] { onAssign?(event); continue }
+            if let event = object["press"] as? [String: Any] { onPress?(event); continue }
             guard let code = (object["status"] as? NSNumber)?.intValue else { continue }
             kind = code == 4 ? NS2LauncherController.kind(from: object) : 0
             players = NS2LauncherController.players(from: object)
@@ -730,3 +997,21 @@ final class NS2SecondHelper {
     }
 }
 
+
+/// 只为触发系统的蓝牙授权框：建一个 CBCentralManager，授权有结果（不再是 notDetermined）就回调并放掉。
+///   授权记在 S2Arm 名下，连接程序（S2Arm 启动的子进程）用的是同一份
+final class BluetoothPermissionRequest: NSObject, CBCentralManagerDelegate {
+    private var manager: CBCentralManager?
+    private let done: @MainActor () -> Void
+    init(done: @escaping @MainActor () -> Void) {
+        self.done = done
+        super.init()
+        manager = CBCentralManager(delegate: self, queue: .main)
+    }
+    func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        guard CBManager.authorization != .notDetermined else { return }
+        central.delegate = nil
+        manager = nil
+        MainActor.assumeIsolated { done() }
+    }
+}

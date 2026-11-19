@@ -100,14 +100,24 @@ class EngineHealTests(JobCase):
         self.assertIsNotNone(got)
         self.assertTrue((got / "Contents/Info.plist").is_file())
 
-    def test_broken_app_bundle_asks_for_reinstall(self):
+    def test_broken_app_bundle_warns_and_continues(self):
+        """App 包本身和清单对不上（11-17 维护者：校验不过不整个拒绝）：黄字提示是哪个文件、建议重装，照样装上用；
+        对不上的记进安装标记，下次用不再判「被改过」重解（标记的 inode 不变），用到这件产物也不报"""
         c = self.installed()
         (c.engine / PLIST).write_bytes(b"x")
-        (self.bundle / PLIST).write_bytes(b"also broken")   # App 包本身也坏了：重解没用
-        with self.assertRaises(Failure) as e:
-            self.installed()
-        self.assertEqual(e.exception.code, "engine_incomplete")
-        self.assertIn("重新安装完整的 S2Arm", str(e.exception))
+        (self.bundle / PLIST).write_bytes(b"also broken")   # App 包本身也坏了
+        c2 = self.installed()   # 不抛
+        warned = [d for d in c2.job["diagnostics"] if d.get("code") == "engine_incomplete"]
+        self.assertEqual(len(warned), 1)
+        self.assertEqual(warned[0].get("severity"), "warning")
+        self.assertIn(PLIST, warned[0].get("message") or warned[0].get("summary") or "")
+        mark = json.loads((c2.engine / ".installed.json").read_text())
+        self.assertEqual(mark.get("bundleMismatch"), [PLIST])
+        self.assertEqual((c2.engine / PLIST).read_bytes(), b"also broken")   # 照 App 包原样解出
+        stamp = (c2.engine / ".installed.json").stat().st_ino
+        c3 = self.installed()
+        self.assertEqual((c3.engine / ".installed.json").stat().st_ino, stamp)   # 不反复重解
+        self.assertEqual(embedded.artifact(c3, "S2ArmGame.app"), c3.engine / "Binaries/S2ArmGame.app")
 
 
 class SharedHostHealTests(JobCase):

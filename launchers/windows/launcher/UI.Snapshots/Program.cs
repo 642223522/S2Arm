@@ -8,10 +8,12 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Headless;
+using Avalonia.Media.Imaging;
 using Avalonia.Skia;
 using Avalonia.Themes.Fluent;
 using Avalonia.Styling;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using S2Arm.Launcher;
 using S2Arm.Launcher.Protocol;
 
@@ -31,6 +33,9 @@ var outDir = args.Length > 0 ? args[0] : Path.Combine(
     Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
     ".s2arm/run/s2arm/cmdr/evidence/launcher/win");
 Directory.CreateDirectory(outDir);
+
+// 顶部选中游戏三按钮断言（v0.4.5 修）：有横图 / 无横图两个分支里都要找得到「装到 iPhone」与「导出自签包」；不通过时末尾退出 1
+var heroActionFailures = new List<string>();
 
 AppBuilder.Configure<SnapshotApp>()
     .UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false })
@@ -127,6 +132,17 @@ for (var i = 0; i < featureNode["pages"]!.AsArray().Count; i++)
     SaveW($"08_feature_zh_{at + 1}", w => { SetW(w, "updatePopup", (JsonElement?)featurePopup); SetW(w, "featureIndex", at); });
 }
 SaveW("09_feature_en_1", w => { SetW(w, "language", "en"); SetW(w, "featureIndex", 0); });
+// 「现在更新并重启」时有任务在跑（11-18 维护者：认得出的风险说清后让玩家选「仍然重启 / 取消」，不再只能等）：出包在跑 → 确认块写清会中断哪个任务、重启后能接着做
+var gateUpdate = JsonDocument.Parse("{\"version\":\"9.9.9\",\"notes\":null}").RootElement.Clone();
+var gateJob = welcome.GetType().GetMethod("BeginJob", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(welcome, [Enum.Parse(welcome.GetType().GetNestedType("JobKind", BindingFlags.NonPublic)!, "Pack"), MockGame().Id]);
+SaveW("09b_update_restart_confirm_zh", w => {
+    SetW(w, "catalog", MockCatalog()); SetW(w, "availableUpdate", (JsonElement?)gateUpdate); SetW(w, "featureIndex", 0);
+    SetW(w, "updatePopup", (JsonElement?)JsonDocument.Parse("{\"kind\":\"update\",\"version\":\"9.9.9\",\"notes\":null}").RootElement.Clone());
+    SetW(w, "updateGate", "update.gate.confirm"); SetW(w, "language", "zh-Hans");
+});
+SaveW("09c_update_restart_confirm_en", w => { SetW(w, "language", "en"); });
+welcome.GetType().GetMethod("EndJob", BindingFlags.Instance | BindingFlags.NonPublic)?.Invoke(welcome, [gateJob]);
+SetW(welcome, "updateGate", ""); SetW(welcome, "availableUpdate", null);
 SetW(welcome, "updatePopup", null); SetW(welcome, "language", "zh-Hans");
 
 welcome.Close();
@@ -202,6 +218,36 @@ SaveP("win_05_export_failed", () => Navigate(pack, "progress"));
 
 InjectMockGame(pack, ready: true);
 SaveP("win_06_library_iphone_ready", () => Navigate(pack, "library"));   // 大卡：装到 iPhone + 导出自签包 + 出包
+CheckHeroActions(pack, "无横图的选中游戏", heroActionFailures);
+// 顶部大图带操作按钮（v0.4.5 修）：有横图的选中游戏顶部也常驻「装到 iPhone / 导出自签包 / 出包」三个按钮。
+//   横图是代码里合成的纯色渐变图（仓库里不放商店图）；夹具游戏名用通用占位，不用真游戏名
+{
+    const string syntheticBannerPngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAUAAAAC0CAIAAABqhmJGAAAC0ElEQVR42u3TWU4UAQAA0T6CO4ODgIDIIruKqIiKuCtu9z+Lc4X+mlTykneCSmrYfPoPiBokAAMDcxn45C8QZWAoD/zo5C8QZWBoD/wHiDIwpAc+/gNEGRjaA/8GogwM5YE3jn8DUQaG9MBHv4AoA4OBAQMDYwe+BqIMDOWB1w+vgSgDQ3vgn0CUgcHAgIGBkQMf/ACiDAzlgdcOfgBRBob2wN+BKANDeuD970CUgaE98DcgysBQHvjh/jcgysCQHnjvKxBlYDAwYGBg7MBfgCgDQ3ng1SdfgCgDQ3vgz0CUgcHAgIGBkQPvfgKiDAzlgVd2PwFRBob2wB+BKANDeuCdj0CUgaE98BUQZWAwMDCXgZd3roCoYXn7CoiaDfwBiDIwGBgwMDB24EsgaljeugSihgdbl0CUgaE98HsgysBgYGA+Az9+D0TNBn4HRBkYygMvPX4HRBkY2gO/BaKGpc23QJSBwcDAnAa+AKIMDOWBp5sXQNQwfXQBRM0GfgNEGRgMDBgYGDvwORA1TDfOgajh/sY5EGVgaA/8GogyMBgYmM/A66+BqNnAr4AoA0N54MX1V0CUgaE98EsgalhcewlEGRgMDMxp4DMgysBQHniydgZEDZOHZ0DUbOAXQJSBwcCAgYGxA58CUcNk9RSIGhZWT4EoA4OBgTkN/ByIMjCkB155DkQZGNoDPwOiDAzlge+tPAOiDAzpgZefAlEGBgMDBgbGDnwCRBkYygPffXACRBkY2gMfA1EGBgMDBgZGDrx0BEQZGMoD31k6AqIMDO2BD4EoA0N64OkhEGVgaA98AEQZGMoD354eAFEGhvTA9/eBKAODgQEDA2MH3gOiDAzlgW8t7gFRBob2wE+AKAODgQEDAyMHnuwCUQaG8sA3J7tAlIGhPfAOEGVgSA+8sANEGRjaA28DUQaG8sA3FraBKANDeuB7W0CUgcHAwDz8B+xdxHNM+cLrAAAAAElFTkSuQmCC";
+    var bannerLib = Path.Combine(Path.GetTempPath(), "s2a-snap-" + Guid.NewGuid().ToString("N"), "S2Arm");
+    var bannerFolder = Path.Combine(bannerLib, "games", "Sample Game");
+    Directory.CreateDirectory(bannerFolder);
+    File.WriteAllBytes(Path.Combine(bannerFolder, "banner.jpg"), Convert.FromBase64String(syntheticBannerPngBase64));
+    var bannerGame = MockGame(true) with { Id = "0100F00100000000", Name = "示例游戏", Banner = Path.Combine(bannerFolder, "banner.jpg"),
+        Location = new GameLocation("ok", bannerLib, bannerFolder, "", true) };
+    SetW(pack, "catalog", new LibraryCatalog([bannerGame], true, "密钥已就绪"));
+    SetW(pack, "selectedGame", bannerGame.Id);
+    SetW(pack, "connectedFolder", bannerLib);
+    SetW(pack, "libraryId", "mock-lib-id");
+    SetW(pack, "librarySummary", "library.completed");
+    SaveP("win_06d_library_hero_banner_actions", () => Navigate(pack, "library"));
+    CheckHeroActions(pack, "有横图的选中游戏", heroActionFailures, expectBanner: true);
+    InjectMockGame(pack, ready: true);   // 恢复后续场景用的无横图夹具
+}
+// 导入时数据校验不过、照常导入的款（11-17）：封面右下角黄色「!」，悬停 / 选中时说明；夹具用通用占位名
+{
+    var plain = MockGame(true) with { Id = "0100F00200000000", Name = "示例游戏 A" };
+    var skipped = MockGame(true) with { Id = "0100F00300000000", Name = "示例游戏 B",
+        Packages = [new("base", "0100F00300000000", 0, "v1.0.0", 1L, "", IntegritySkipped: true)] };
+    SetW(pack, "catalog", new LibraryCatalog([plain, skipped], true, "密钥已就绪"));
+    SetW(pack, "selectedGame", skipped.Id);
+    SaveP("win_06e_library_integrity_skipped", () => Navigate(pack, "library"));
+    InjectMockGame(pack, ready: true);
+}
 // 导出自签包的进度 / 完成（11-15：装机页只画结局卡，不画装机说明、清单、开始装机 / 删除）
 {
     var g = MockGame(true);
@@ -254,7 +300,10 @@ SaveP("win_21_phone_update_done", () => Navigate(pack, "phoneupdate"));
 TrackField("ExportFolder", @"D:\S2Arm Games\S2Arm 自签导出"); TrackField("ExportGames", 3); TrackField("ExportBytes", (long?)9_800_000_000L);
 TrackField("ExportFresh", new List<string> { "丙.img" }); TrackField("ExportReused", 2);
 SaveP("win_21b_export_done_copy_only_new", () => Navigate(pack, "phoneupdate"));
-TrackField("ExportFolder", ""); TrackField("ExportGames", 0); TrackField("ExportBytes", (long?)null); TrackField("ExportFresh", new List<string>()); TrackField("ExportReused", 0);
+// 只新写点的那款：丁的 .img 这次没写 → 再点名「丁 的 .img 没写：手机上已有照常能玩，没有就点那款再导出」
+TrackField("ExportUnwritten", new List<string> { "丁" });
+SaveP("win_21c_export_done_unwritten", () => Navigate(pack, "phoneupdate"));
+TrackField("ExportFolder", ""); TrackField("ExportGames", 0); TrackField("ExportBytes", (long?)null); TrackField("ExportFresh", new List<string>()); TrackField("ExportReused", 0); TrackField("ExportUnwritten", new List<string>());
 // 失败示例用真正做不下去的情况（签名失败）；认得出的风险走 drop 态让玩家确认，不当失败（维护者 11-11）
 TrackField("Suggestion", "在 Impactor 里重新登录你的 Apple ID，再点一次。");
 SetW(pack, "updateMessage", "签名没成功：Impactor 里的 Apple ID 登录已过期。");
@@ -277,6 +326,17 @@ if (File.Exists(bannerSrc))
     SetW(pack, "catalog", new LibraryCatalog([withBanner, noCover, MockGame(true)], true, "密钥已就绪"));
     SetW(pack, "connectedFolder", Path.GetDirectoryName(Path.GetDirectoryName(folder))!);
     SaveP("win_09_library_banner_fallback", () => Navigate(pack, "library"));
+}
+
+// 出包页「移植方案」（#1272）：选过「仍用原版方案」后看得到、能更改（同 Mac ExportView downstream）
+{
+    var copy = new Dictionary<string, DownstreamOffer.Copy> {
+        ["zh"] = new("选择运行方案", "示例说明", ["示例要点"], "使用推荐方案", "使用原版方案"),
+        ["en"] = new("Choose a configuration", "Example", ["Example point"], "Use recommended", "Use original") };
+    var dsGame = MockGame(false) with { Downstream = new DownstreamOffer("demo", "Demo Port", true, new Dictionary<string, string>(), copy, "") };
+    SetW(pack, "catalog", new LibraryCatalog([dsGame], false, ""));
+    SaveP("win_01f_export_downstream_change", () => Navigate(pack, "build"));
+    InjectMockGame(pack, ready: false);
 }
 
 // 出包页「签名方式」（v0.2.3 开发者证书签名，DevCertPage.cs）：Apple ID 模式；证书模式（团队、到期、包名、设备核对、缺权限黄字）。
@@ -360,6 +420,21 @@ SetW(pack, "drivesOverride", (object?)new List<(string Root, string Format, long
 SetW(pack, "importDialog", new ImportDialogState(ImportKind.Games));   // 连不上库时游戏库页是欢迎页，原因显示在「添加游戏」弹窗里
 SetW(pack, "importError", "游戏库没连上（E:\\S2Arm Library）：这个盘是 EXFAT，可以用，但按现有 2 款游戏算，出包会多占约 61 GB；放在 NTFS 格式的盘上更省空间。");
 SaveP("win_24_library_bad_format_drives", () => Navigate(pack, "library"));
+// 数据目录写不进去、本人权限也补不回（11-16 拆自设权限之后的兜底）：不再甩英文异常原文，说哪个文件夹写不进去、可能原因、怎么办；
+//   走真代码路径（WelcomePage.NoWrite + LibraryFailed）。Windows 实机异常原文带文件名（request-….json），NoWrite 取它的上级目录；
+//   快照在非 Windows 上渲染时 Path.GetDirectoryName 不认反斜杠，所以这里直接给目录形式的原文，画面与 Windows 上取完上级目录一致
+SetW(pack, "libraryFailCode", null); SetW(pack, "drivesOverride", null);
+foreach (var (lang, name) in new[] { ("zh-Hans", "win_25_library_no_write"), ("en", "win_25b_library_no_write_en") })
+{
+    var bf = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+    SetW(pack, "language", lang);
+    var denied = new UnauthorizedAccessException(@"Access to the path 'D:\S2Arm Data\S2Arm\WindowsLauncher' is denied.");
+    var reason = (string)pack.GetType().GetMethod("NoWrite", bf)!.Invoke(pack, [denied, @"D:\S2Arm Data\S2Arm\WindowsLauncher"])!;
+    SetW(pack, "importDialog", new ImportDialogState(ImportKind.Games));
+    SetW(pack, "importError", (string)pack.GetType().GetMethod("LibraryFailed", bf)!.Invoke(pack, [@"D:\S2Arm Data\DefaultLibrary", reason])!);
+    SaveP(name, () => Navigate(pack, "library"));
+}
+SetW(pack, "language", "zh-Hans");
 SetW(pack, "importDialog", null); SetW(pack, "importError", "");
 SetW(pack, "libraryFailCode", null); SetW(pack, "drivesOverride", null);
 SetW(pack, "catalog", new LibraryCatalog([atDefault, elsewhere], true, "密钥已就绪")); SetW(pack, "connectedFolder", tidyLib); SetW(pack, "libraryId", "mock-lib-id");
@@ -400,10 +475,21 @@ SetW(pack, "cheatsList", (JsonElement?)SG("""
 """));
 SaveP("sgrade_05_cheats_page", () => { SetW(pack, "page", "library"); InvokeW(pack, "Render"); });
 SetW(pack, "cheatsFor", null); SetW(pack, "cheatsList", null);
+// #1430：出包页 S 级卡「导入 Mod…」进 Mod 页（原先只在游戏库页画、从出包页点没反应）；「返回」回出包页
+InjectMockGame(pack, ready: true);
+SaveP("win_26_export_mods_page", () => { Navigate(pack, "build"); SetW(pack, "modsFor", MockGame(true));
+    SetW(pack, "modsList", (JsonElement?)SG("""[{"name":"高清材质包","bytes":1073741824,"files":120,"enabled":true}]""")); InvokeW(pack, "Render"); });
+SaveP("win_26b_export_mods_back", () => { SetW(pack, "modsFor", null); SetW(pack, "modsList", null); InvokeW(pack, "Render"); });
 pack.Height = 900;
 
 pack.Close();
 Dispatcher.UIThread.RunJobs();
+if (heroActionFailures.Count > 0)
+{
+    foreach (var failure in heroActionFailures) Console.Error.WriteLine("  FAIL hero actions: " + failure);
+    Console.WriteLine("✗ 顶部选中游戏三按钮断言：不通过 " + heroActionFailures.Count);
+    Environment.Exit(1);
+}
 Console.WriteLine("done.");
 
 // ── 辅助函数 ─────────────────────────────────────────────────────────────
@@ -431,6 +517,26 @@ static void CallW(object target, string method, params object?[] methodArgs)
 
 static void Navigate(EnvironmentWindow w, string pg)
     => w.GetType().GetMethod("Navigate", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(w, [pg]);
+
+// 顶部选中游戏三按钮断言：当前渲染的游戏库页里，顶部「装到 iPhone」与「导出自签包」都要找得到；
+//   夹具只有一款游戏：列表行自带一个「装到 iPhone」（Action 共用 library.hero.install 键），所以顶部按钮在时装到 iPhone 应出现 2 次、导出自签包 1 次（只数出现次数会把行按钮也算进来，数 1 次不够）。
+//   有横图时还要确认真画了横图（而不是横图解码失败悄悄退回封面卡片）——HeroBanner 用 DecodeToWidth(…, 1600)，横图宽应为 1600
+static void CheckHeroActions(EnvironmentWindow window, string label, List<string> failures, bool expectBanner = false)
+{
+    var images = window.GetVisualDescendants().OfType<Image>().ToList();
+    var ids = window.GetVisualDescendants().OfType<Button>()
+        .Select(b => Avalonia.Automation.AutomationProperties.GetAutomationId(b)).ToList();
+    var installCount = ids.Count(id => id == "library.hero.install");
+    var selfSignCount = ids.Count(id => id == "library.hero.selfSign");
+    if (installCount < 2) failures.Add($"{label}：顶部「装到 iPhone」缺失（library.hero.install 出现 {installCount} 次，含列表行应为 2 次）");
+    if (selfSignCount < 1) failures.Add($"{label}：找不到 library.hero.selfSign");
+    if (expectBanner)
+    {
+        var widths = images.Select(i => i.Source is Bitmap b ? b.PixelSize.Width : -1).ToList();
+        if (!widths.Contains(1600))
+            failures.Add($"{label}：没画出横图（当前图宽：{string.Join(",", widths)}；横图 DecodeToWidth(…, 1600) 应为 1600）");
+    }
+}
 
 static void InjectMockGame(EnvironmentWindow w, bool ready)
 {

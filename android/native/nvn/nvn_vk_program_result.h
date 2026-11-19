@@ -56,6 +56,8 @@ struct fd_binding {
     // kind==2 且 tex_ubo = 1：贴图句柄不在槽里，在用户常量缓冲 tex_u 处（_b.json tex_ubo / tbuf_ubo）。此时 tex_slot = -1。
     //   samp_src = 组合采样的采样器从哪来：FD_SAMP_UBO = 常量缓冲 samp_u 处的字；FD_SAMP_ID = 常量采样器号 samp_val；
     //   FD_SAMP_SLOT = NVN 采样器槽 samp_val；FD_SAMP_NONE = 着色器没有采样器半边
+    // kind==2 且 tex_ubo = 0、tex_slot >= 128、samp_src = FD_SAMP_ID（#1594，v2 的 constSampler）：贴图字在 c2 分离贴图表，
+    //   采样器池下标 samp_val（0..4095）是着色器里的立即数；samp_slot 仍为 -1。回放按池下标取采样器，不看贴图字高位。
     uint8_t tex_ubo, samp_src;
     uint16_t samp_val;
     struct fd_ubo_word tex_u, samp_u;
@@ -98,6 +100,7 @@ struct nvn_vk_compute_storage {
     uint32_t index, offset; /* proven NVN slot / UBO slot and optional byte offset */
 };
 #define NVK_COMPUTE_C0_MAX_READS 256
+#define NVK_PROGRAM_RESULT_MAX_BYTES (64u * 1024u * 1024u)   // 编译结果文档上限：同跨局程序缓存单条（program_cache.c PCACHE_MAX_PAYLOAD）
 #define NVK_COMPUTE_C0_BYTES 0x410u
 struct nvn_vk_c0_read { uint32_t offset, size; };
 struct nvn_vk_support_scale { uint32_t offset, stride, count, element_bytes; };

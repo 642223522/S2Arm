@@ -48,6 +48,16 @@ NSString *s2a_sgrade_line(NSString *cat, NSDictionary *s, NSString *catName, NSI
         if ([cat isEqual:@"widescreen"] && [str(v[@"port"]) isEqual:@"failed"]) text = [text stringByAppendingString:S2AL(@"sgrade.state.version.port_failed")];
         return text;
     }
+    if ([state isEqual:@"failed"]) {   // 补丁库有、出包时一份没打进去（11-15 #934）：如实写原因（作业层 sgrade.write_kit_state 的 fps.failed）
+        NSArray *fl = [s[@"failed"] isKindOfClass:NSArray.class] ? s[@"failed"] : @[];
+        NSString *why = fl.count && [fl[0] isKindOfClass:NSDictionary.class] ? str(fl[0][@"why"]) : @"";
+        // 原因键逐个写字面量（文案检查只认字面量键，tests/ios_l10n_test.sh ②）；同作业层 pack/jobs/patches.py _WHY
+        NSString *reason = [why isEqual:@"result.why.conflict"] ? S2AL(@"sgrade.result.why.conflict") : [why isEqual:@"result.why.translate"] ? S2AL(@"sgrade.result.why.translate")
+            : [why isEqual:@"result.why.full"] ? S2AL(@"sgrade.result.why.full") : [why isEqual:@"result.why.port"] ? S2AL(@"sgrade.result.why.port")
+            : [why isEqual:@"result.why.version"] ? S2AL(@"sgrade.result.why.version") : [why isEqual:@"result.why.unsupported"] ? S2AL(@"sgrade.result.why.unsupported")
+            : S2AL(@"sgrade.result.why.mismatch");
+        return [NSString stringWithFormat:S2AL(@"sgrade.state.failed"), catName, reason];
+    }
     if ([state isEqual:@"none"]) return [NSString stringWithFormat:S2AL(@"sgrade.state.none"), catName];
     if ([state isEqual:@"opted_out"]) return S2AL(@"sgrade.state.opted_out");
     if ([state isEqual:@"pending"]) return S2AL(@"sgrade.state.pending.ios");   // iPhone 补不上：要回电脑点「S 级优化升级」（Mac 下次起局自动补，不说）
@@ -75,6 +85,10 @@ NSString *s2a_sgrade_row_note(NSString *cat, NSDictionary *s, NSInteger fpsTarge
         NSString *src = str(st[@"source"]);
         id fs = st[@"fiSupported"]; BOOL fi = [fs isKindOfClass:NSNumber.class] ? [fs boolValue] : fiSupported;
         if ([state isEqual:@"unsupported"]) { if (disabled) *disabled = YES; return S2AL(@"sgrade.unavail.fi"); }   // 没补丁又不能补帧（作业层定）
+        if ([state isEqual:@"failed"]) {   // 帧率补丁没打进去：写原因；还能补帧就不置灰（开关管补帧）
+            NSString *line = s2a_sgrade_line(cat, st, S2AL(@"cpatch.group.fps"), fpsTarget, date);
+            if (line) { if (disabled) *disabled = !fi; return line; }
+        }
         if (!src.length) src = hasFpsPatch && fpsPatchOn ? @"patch" : fi ? @"fi" : @"none";
         NSString *patchLine = fpsTarget > 0 ? [NSString stringWithFormat:S2AL(@"sgrade.src.fps.patch"), [@(fpsTarget) stringValue]] : nil;
         NSString *fiLine = hasFpsPatch ? S2AL(@"sgrade.src.fps.fi") : S2AL(@"sgrade.src.fps.fi.nopatch");

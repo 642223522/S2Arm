@@ -38,6 +38,8 @@ static const struct { int code; const char *id, *summary, *msg; } k_want[] = {
      "游戏文件缺失，请重新导入：在 电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」。"},
     {S2A_INIT_FAIL_E_DIRECT_LIB, "direct_lib_missing", "设备跑不了直连（无 Metal 4 / Metal 3 路径）；包里没带直连库不再停在这里（11-13 起现编）",
      "这台设备的图形芯片跑不了 S2Arm（需要 A13 / M1 或更新的芯片）：换一台更新的 iPhone / iPad 再试。"},
+    {S2A_INIT_FAIL_E_HEAP_LEARNED, "heap_learned", "普通堆超出堆区、游戏随后中止：已记下本款要的堆（wire/<程序号>/heap_need），下一局堆区按它给（D-NGH9）",
+     "这款需要更多内存，已经记下，再点一次开始就能进。"},
     {S2A_INIT_FAIL_E_UNKNOWN, "unknown", "未登记的初启失败", "启动过程中出了问题。"},
     {999, "unknown", "未登记的初启失败", "启动过程中出了问题。"},
     {-1, "unknown", "未登记的初启失败", "启动过程中出了问题。"},

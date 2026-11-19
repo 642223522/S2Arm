@@ -463,6 +463,65 @@ class LibraryTest(unittest.TestCase):
         result['content']['contract'] = 's2a-direct-program-content-v1'
         with self.assertRaises(direct_library.LibraryError): direct_library.validate_result(raw(), 'v1 extra source')
 
+    def test_v2_const_sampler_contract(self):
+        # #1594：类型 3 句柄的 constSampler（采样器池下标 0..4095）：与宿主解析同一份合同——v2、单个贴图、slot 90..345 偶数、
+        #   不能同时有 samp_slot / uboHandle / uboSlot；计算结果不收（宿主计算侧没接）。下标 0 与 4095 都是真下标。
+        def build(kind='graphics', **fields):
+            request = make_request(kind=kind)
+            result = json.loads(make_result(request))
+            result['schema'] = 's2a-direct-program-v2'
+            result['content']['contract'] = 's2a-direct-program-content-v2'
+            binding = {'stage': 'fs' if kind == 'graphics' else 'cs', 'kind': 'texture', 'set': 2, 'binding': 0,
+                       'slot': 90, 'constSampler': 257, 'count': 1}
+            binding.update(fields)
+            result['content']['bindings'] = [binding]
+            def raw():
+                body = json.dumps(result['content'], separators=(',', ':')).encode()
+                result['contentHash'] = 'sha256-' + sha256(body)
+                return json.dumps(result, separators=(',', ':')).encode()
+            return result, raw
+        # 接受：典型值、两端、最大贴图字
+        for sampler in (257, 0, 4095):
+            _, raw = build(constSampler=sampler)
+            direct_library.validate_result(raw(), f'const sampler {sampler}')
+        _, raw = build(slot=344)
+        direct_library.validate_result(raw(), 'last separate texture word')
+        # 拒绝：每一条都是宿主解析会拒的形态，库校验要在入库前同样拒掉
+        bad = {
+            'sampler above 12 bits': dict(constSampler=4096),
+            'negative sampler': dict(constSampler=-1),
+            'fractional sampler': dict(constSampler=1.5),
+            'string sampler': dict(constSampler='7'),
+            'boolean sampler': dict(constSampler=True),
+            'odd texture word': dict(slot=91),
+            'texture word before the table': dict(slot=88),
+            'texture word after the table': dict(slot=346),
+            'no texture word': dict(slot=None),
+            'array': dict(count=2),
+            'with samp_slot': dict(samp_slot=3),
+            'with uboHandle': dict(uboHandle={'slot': 1, 'offset': 16}),
+            'with uboSlot': dict(uboSlot=1, uboOffset=16),
+            'not a texture': dict(kind='uniform'),
+        }
+        for name, change in bad.items():
+            result, raw = build(**{k: v for k, v in change.items() if v is not None})
+            if 'slot' in change and change['slot'] is None:
+                del result['content']['bindings'][0]['slot']
+            with self.assertRaises(direct_library.LibraryError, msg=name):
+                direct_library.validate_result(raw(), name)
+        # v1 结果没有这个字段的合同
+        result, raw = build()
+        result['schema'] = 's2a-direct-program-v1'
+        result['content']['contract'] = 's2a-direct-program-content-v1'
+        with self.assertRaises(direct_library.LibraryError, msg='v1'): direct_library.validate_result(raw(), 'v1 const sampler')
+        # 计算结果不收
+        _, raw = build(kind='compute')
+        with self.assertRaises(direct_library.LibraryError, msg='compute'): direct_library.validate_result(raw(), 'compute const sampler')
+        # 没有 constSampler 的同槽条目照旧接受（只改了带这个字段的）
+        result, raw = build()
+        del result['content']['bindings'][0]['constSampler']
+        direct_library.validate_result(raw(), 'plain separate texture word')
+
     # -- build / layout -------------------------------------------------------------
     def test_descriptor_never_omits_a_scanned_vertex_write(self):
         request = make_request()

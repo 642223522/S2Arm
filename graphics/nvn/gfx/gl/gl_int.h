@@ -119,6 +119,7 @@ typedef struct { __strong id<MTLTexture> col[GL_COLOR_TARGETS], dep, sten; NSUIn
 int gl_draw_target(gl_target *t);        // 0 = 无目标 / 不完整 / 不支持（已报红）；附件纹理按本次提交登记使用
 void gl_dev_init(void);                  // gl_draw.m：取共用设备、建本层队列与共享事件（一次）
 void *gl_lookup(const char *name);       // gl_core.m：函数表查找（eglGetProcAddress、装载器），只回真实现
+int gl_core_alias(const char *name, char *core, size_t cap);   // gl_core.m：扩展别名（ARB / EXT / OES / KHR）去后缀得核心名，语义不同的除外；是核心名回 1
 void *gl_entry(const char *name);        // gl_core.m：交给游戏的入口 = 查表 + 重活（swglb）套 S2Arm 切栈桩；只给真实现（装载器 host_adapt.m s2a_gl_entry）
 void *gl_stub(const char *name);         // gl_core.m：没实现的核心名的安全空实现（非核心名回空）；调用方找遍真实现之后才要
 void *gl_entry_or_stub(const char *name); // gl_core.m：eglGetProcAddress 交出的 = gl_entry，没有时 gl_stub
@@ -135,6 +136,7 @@ void gl_clear(GLbitfield mask);                           // 按当前清除值�
 void gl_wait(uint64_t v);                                 // 等本层共享事件到 v（glFinish、上屏前取回读）
 struct gl_vao *gl_vao_cur(void);                        // gl_buf.m：当前顶点数组；0 号是 GLES 的缺省顶点数组（不在名字表里）
 void gl_buffer_ref(struct gl_buffer *b);                   // 绑定当前存储进编码器时登记本次提交
+GLuint gl_pack_buffer_name(void); struct gl_buffer *gl_pack_buffer(void);   // gl_buf.m：当前绑的像素打包缓冲（名字 / 对象，没绑 0 / NULL）
 int gl_buffer_busy(const struct gl_buffer *b);             // 当前存储仍被未完成的提交引用
 extern id<MTLDevice> gl_dev; extern id<MTLSharedEvent> gl_ev;
 

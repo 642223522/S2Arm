@@ -7,6 +7,7 @@
 #   ④ 纯链接（输入只有 .o）、xcrun 查询类调用原样直通：能链出可执行文件、不进命中记录；xcrun --show-sdk-path 与系统 xcrun 一致
 #   ⑦ 一步编链（源文件直接 -o 出可执行文件，11-14 起拆成逐源 -c 走缓存 + 一次链接）：能跑；第一次 0/2、换目录再编 2/2 命中；
 #      带 -g 照 clang 一步编链的样出 <输出>.dSYM；编译出错 / 链接出错退出码非 0、报错原样打出；-x 改语言、-E 只预处理的原样直通（不进命中记录）
+#   ⑧ 在树下的随机子目录里带 -g 编（Makefile 进 mktemp 目录编）：第二棵也 1/1 命中、.o 逐字节相同
 #   ⑤ S2A_CCACHE=0 → 不改 PATH、不设 S2A_CCACHE_BIN
 #   没装 ccache 的机器：只验 ④⑤（入口照样能编能链），①②③ 记「没装 ccache，跳过」
 set -u; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); trap 'rm -rf "$T"' EXIT; bad=0
@@ -24,6 +25,12 @@ if [ -n "$HAVE" ]; then
   ck "① 第二棵 1/1 命中（$(s2a_ccache_sum "$T/b.log")）" '[ "$(s2a_ccache_sum "$T/b.log")" = "命中 1 / 共 1" ]'
   ck "① 两份 .o 逐字节相同" 'cmp -s "$T/a/x.o" "$T/b/x.o"'
   ck "① .o 里没有树的绝对路径" '! strings -a "$T/b/x.o" | grep -q "$T"'
+  # ⑧ 在树下的随机子目录里带 -g 编（graphics/nvn、dsx、metal 的 Makefile 进 mktemp 目录编、命令行最前自带 -ffile-prefix-map=<树根>=）：
+  #   第二棵也命中、两份 .o 逐字节相同（11-16：原先编译目录的随机后缀进键，这几份核心库在门禁里永远不命中）
+  cc8() { (on "$1"; cd "$T/$1" && s=$(mktemp -d "$T/$1/lib.o.XXXXXX") && cd "$s" && clang -ffile-prefix-map="$T/$1/"= -g -O1 -c "$T/$1/src/x.c" -o x8.o && cp x8.o "$T/$1/x8.o") 2>&1; }
+  : > "$T/a.log"; : > "$T/b.log"; cc8 a > /dev/null; cc8 b > /dev/null
+  ck "⑧ 随机子目录里编：第一棵 0/1、第二棵 1/1 命中（$(s2a_ccache_sum "$T/a.log")；$(s2a_ccache_sum "$T/b.log")）" '[ "$(s2a_ccache_sum "$T/a.log")" = "命中 0 / 共 1" ] && [ "$(s2a_ccache_sum "$T/b.log")" = "命中 1 / 共 1" ]'
+  ck "⑧ 随机子目录里编：两份 .o 逐字节相同、不含随机目录名" 'cmp -s "$T/a/x8.o" "$T/b/x8.o" && ! strings -a "$T/b/x8.o" | grep -q "lib.o."'
   echo '#define K 4' > "$T/b/src/h.h"; : > "$T/b.log"; cc1 b x2.o > /dev/null
   ck "② 改头文件内容 → 不命中（$(s2a_ccache_sum "$T/b.log")）" '[ "$(s2a_ccache_sum "$T/b.log")" = "命中 0 / 共 1" ]'
   IS=$(/usr/bin/xcrun --sdk iphoneos --show-sdk-path 2> /dev/null)

@@ -12,6 +12,7 @@ HEAD = "编号\t模块\t位\t类别\t段名\t许可\t来源\t数据写入\t缺�
 class Ctx:
     def __init__(self, root):
         self.library, self.engine, self.private, self.r = root / "lib", root / "engine", root / "priv", {"gameId": GID}
+        self.work_root = root / "work"   # 程序缓存 cache/programs（pack/jobs/programs.py）
         table = self.engine / community.SETTINGS_TABLE
         table.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(REPO / community.SETTINGS_TABLE, table)
     def begin(self, *a): pass
@@ -148,6 +149,19 @@ class SgradeStateTests(unittest.TestCase):
             self.assertEqual((got["widescreen"], got["fps"], sorted(oth["fps"])), (1, 0, ["1.2.0", "1.3.0"]))
         finally:
             patches._snapshot, patches.bundle = real_s, real_b
+
+
+    def test_fps_patch_failed_shows_reason(self):
+        # 11-15 #934：补丁库有这一版的帧率补丁、出包时一份都没打进去（FPSLocker 配置不支持）→ fps 状态 failed、带原因键，
+        #   不说成开着生效（也不说成「不能补帧」）；包里有帧率补丁时照旧按补丁走（failed 只在一份没进时出）。期望手写
+        self.tsv("gfx:G1\tmain\t1\tgfx\t画面\tMIT\to/r\t\t1\t\t\t")
+        layout.update_info(self.c, GID, sgradeResult={"mac": {"applied": [], "failed": [
+            {"id": "fps:ab", "cat": "fps", "name": "FPSLocker", "why": "result.why.unsupported", "detail": "FPSLocker 配置不支持：…"}]}})
+        f = self.st()["fps"]
+        self.assertEqual((f["state"], f["failed"]), ("failed", [{"name": "FPSLocker", "why": "result.why.unsupported"}]))
+        self.tsv("fps:F1\tmain\t2\tfps\t60 帧\tMIT\to/r\t\t1\t60\t\t")
+        f = self.st()["fps"]
+        self.assertEqual((f["state"], "failed" in f), ("on", False))
 
 
 if __name__ == "__main__":

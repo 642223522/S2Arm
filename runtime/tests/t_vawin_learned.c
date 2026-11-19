@@ -24,6 +24,11 @@ int main(void) {
     CHECK(h == 41 * GB && h + 16395 * MB <= 64 * GB, "② 学到 16395 MB、空洞 64 GiB：宿主 41 GiB（实得 %llu MB），宿主 + 跨度不超空洞", (unsigned long long)(h / MB));
     CHECK(s2a_window_host_below(64 * GB, 70 * GB) == 3 * GB, "③ 学到的跨度比空洞还大：宿主至少 3 GiB");
     CHECK(s2a_window_host_below(64 * GB, 100 * MB) == 61 * GB, "④ 学到 100 MB：窗口 3 GiB、宿主 61 GiB");
+    // 按学到的跨度该给的窗口（s2a_window_for_span，多款容器选定游戏后收窗口用，#55248c）。期望手算：跨度 × 1.25 + 2 GiB、1 GiB 向上取整、至少 2 GiB
+    CHECK(s2a_window_for_span(0) == 0, "④b 没学到：0 = 不限");
+    CHECK(s2a_window_for_span(13670 * MB) == 19 * GB, "④c 马车世界学到 13670 MB：13670×1.25+2048 = 19135.5 MB → 19 GiB");
+    CHECK(s2a_window_for_span(100 * MB) == 3 * GB, "④d 学到 100 MB：125+2048 = 2173 MB → 3 GiB（同 ④ 的窗口）");
+    CHECK(s2a_window_for_span(1) == 3 * GB, "④e 学到 1 字节：2 GiB 多一点 → 3 GiB（取整后不低于 2 GiB）");
     char p[] = "/tmp/s2a_span_peak_XXXXXX"; int fd = mkstemp(p); dprintf(fd, "17191403520\n"); close(fd);
     setenv("S2A_WIN_SPAN_PEAK", p, 1);
     CHECK(s2a_window_span_seen(0x0400486024DEC000ull) == 17191403520ull, "⑤ 记录文件有值：读出 17191403520");

@@ -4,8 +4,9 @@ Extracts the actual production stop/intent/callback methods unchanged.
 The controlled task queue records the 10-second fallback; native stop only records admission.
 Expected ordering follows ae9a79bb5 (merged by #907): keep Surface alive for native teardown.
 Normal-stop expectations follow a9de257f1: normal completion may clear attempt state, destruction must not.
-Session marker (#528 item 15, LastSession): a clean end deletes it before native teardown (native _exit may end the
-process); runtime error stops, destruction and host-zero stops keep it; only a live game session writes fg / bg.
+Session marker (#528 item 15, LastSession): a clean end writes "end" before native teardown (the native graceful
+shutdown deletes it at its last step); runtime error stops, destruction and host-zero stops leave it alone; only a
+live game session writes fg / bg. MainActivity must keep handing native its files dir (configureGpuDriver).
 Only stop/finish control intents are in scope; launch selection is deliberately rejected by the fixture.
 Android task scheduling, WSI revoke and real native shutdown require device validation.
 """
@@ -100,6 +101,7 @@ public class ExitOrderFixture extends ParentActivity {
     Object gameBackCallback;
     Surface surface=new Surface(), panel=new Surface();
     Probe lifecycleProbe=new Probe(); Runnable lifecycleSample=() -> {};
+    Runnable playtimeTick=() -> {};   // 游玩时间 10 秒落盘（stopGame 先停它再落盘）
     FrameRate frameRate=new FrameRate(); Keyboard hostKeyboard=new Keyboard(); Keyboard legacyTextInput=new Keyboard();   // #1611 onPause 新加 legacyTextInput.pause()（11-06 main 安卓钩子红，合入运维线补桩）
     GameAudioFocus gameAudioFocus=null;   // #1658 onPause/onResume 新加 gameAudioFocus.pause()/resume()（11-07 main 安卓钩子红，合入运维线补桩）
     android.os.Handler saveAtomicProbe=new android.os.Handler(android.os.Looper.getMainLooper());
@@ -159,6 +161,7 @@ public class ExitOrderFixture extends ParentActivity {
             check(!current.finishing, "native teardown must start before task finish");
             ++stops; events.add("native_stop_admitted");
         }
+        static void flushPlaytime() { check(stops==0, "playtime must flush before native teardown starts"); }   // 游玩时间收局前落盘：原生收尾以 _exit 结束进程
         static void destroy(long host) { ++destroys; }
         static void clearStopListener(Object listener) { }
         static void setReleaseStall(long host,int ms) { }
@@ -168,7 +171,7 @@ public class ExitOrderFixture extends ParentActivity {
     }
     void updateTouchPad() { }
     static class LastSession {
-        static final int NONE=0, FOREGROUND=1, BACKGROUND=2;
+        static final int NONE=0, FOREGROUND=1, BACKGROUND=2, ENDING=3;
         static boolean cleanStop(int reason) { return reason == 0; }   // as LastSession.cleanStop (LastSessionTest)
     }
     void sessionMark(int state) { events.add("mark_"+state); }
@@ -186,16 +189,16 @@ public class ExitOrderFixture extends ParentActivity {
         cold.baseIntent.put("s2arm.finish",true);
         // Actual onCreate calls this same method after host creation, before queued game admission.
         cold.requestDebugLifecycle(cold.getIntent());
-        check(events.equals(List.of("mark_0","native_stop_admitted","fallback_queued")),
-            "cold finish must clear the session marker, then admit native exit before scheduling fallback");
+        check(events.equals(List.of("mark_3","native_stop_admitted","fallback_queued")),
+            "cold finish must mark the session end, then admit native exit before scheduling fallback");
         check(!cold.getIntent().hasExtra("s2arm.finish"),"cold finish extra must be consumed");
         check(cold.gameStopping && cold.host==7 && NativeBridge.lastNormal,"stop must latch admission without freeing host");
 
         ExitOrderFixture live=fresh(); live.gameSession=new Session();
         android.content.Intent command=new android.content.Intent().put("s2arm.finish",true);
         live.onNewIntent(command);
-        check(events.equals(List.of("mark_0","session_stop","native_stop_admitted","fallback_queued")),
-            "live intent must clear the marker, fence session then admit native exit without detaching");
+        check(events.equals(List.of("mark_3","session_stop","native_stop_admitted","fallback_queued")),
+            "live intent must mark the session end, fence session then admit native exit without detaching");
         check(!command.hasExtra("s2arm.finish"),"incoming terminal extra must be consumed");
         live.onNewIntent(new android.content.Intent().put("s2arm.finish",true));
         check(NativeBridge.stops==1 && deferred.size()==1 && NativeBridge.lastNormal, "duplicate command must not re-admit or schedule twice");
@@ -220,13 +223,16 @@ public class ExitOrderFixture extends ParentActivity {
         check(NativeBridge.lastNormal, "game stop callback is a normal session end");
         ExitOrderFixture hostExit=fresh(); hostExit.gameSession=new Session();
         hostExit.onSessionStop(0,"");
-        check(events.equals(List.of("mark_0","session_stop","native_stop_admitted","fallback_queued")) && NativeBridge.lastNormal,
-            "the game asking to exit is a clean end: marker cleared before native teardown");
+        check(events.equals(List.of("mark_3","session_stop","native_stop_admitted","fallback_queued")) && NativeBridge.lastNormal,
+            "the game asking to exit is a clean end: marker set to end before native teardown");
         for (int reason : new int[]{1,2}) {
             ExitOrderFixture errorStop=fresh(); errorStop.gameSession=new Session();
             errorStop.onSessionStop(reason,"");
-            check(!events.contains("mark_0"), "runtime error stop "+reason+" must keep the session marker");
+            check(events.stream().noneMatch(e -> e.startsWith("mark_")), "runtime error stop "+reason+" must keep the session marker");
         }
+        ExitOrderFixture noHostClean=fresh(); noHostClean.host=0;
+        noHostClean.stopGame("no host", true);
+        check(events.stream().noneMatch(e -> e.startsWith("mark_")), "without a native host there is no marker and no native shutdown to confirm end");
 
         ExitOrderFixture absentHost=fresh(); absentHost.host=0;
         absentHost.stopGame("no host", false);
@@ -262,7 +268,7 @@ public class ExitOrderFixture extends ParentActivity {
         check(events.isEmpty(), "a rejected runtime has no session to mark");
         ExitOrderFixture diagnosticMark=fresh(); diagnosticMark.gameMode=false; diagnosticMark.markSession(true);
         check(events.isEmpty(), "the diagnostic app never marks a game session");
-        System.out.println("PASS: session marker: clean ends clear it before native teardown, error/destroy/host-zero stops keep it, only live sessions write fg/bg");
+        System.out.println("PASS: session marker: clean ends write end before native teardown, error/destroy/host-zero stops leave it, only live sessions write fg/bg");
         System.out.println("PASS: cold/live/callback native-first ordering and ten-second fallback, consumed control, deferred destroy idempotence, host-zero and diagnostic paths");
         System.out.println("BOUNDARY: actual source methods, fake Android task/native boundaries; no Android scheduling or GPU/cleanup proof");
     }
@@ -286,6 +292,9 @@ def main():
         'public void onSessionStop(int reason, String detail)',
         'protected void onDestroy()']
     actual=a.source.read_text()
+    # 会话标记（#528 第 15 项）：原生收尾删 end 用的 files 目录只从这次调用来（lifecycle_android.c）；删掉或换参数，每次正常退局库页都会误报
+    if actual.count('NativeBridge.configureGpuDriver(getFilesDir().getAbsolutePath(),') != 1:
+        raise SystemExit('MainActivity must hand native its files dir via configureGpuDriver(getFilesDir()...) exactly once (session marker end cleanup)')
     methods='\n'.join(method(actual,s) for s in signatures)
     with tempfile.TemporaryDirectory(prefix='s2a-exit-order-') as temp:
         return run(a, methods, a.out or Path(temp))

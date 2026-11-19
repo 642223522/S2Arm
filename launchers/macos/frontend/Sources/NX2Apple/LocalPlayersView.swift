@@ -28,8 +28,8 @@ struct PlayerToolbarButton: View {
             Label(currentPlayer.map(name) ?? loc.t("s2arm.players.first"), systemImage: "person.crop.circle")
                 .lineLimit(1).frame(maxWidth: 140)
         }
-        .controllerButtonStyle(ConsoleIconButtonStyle())
-        .help((currentPlayer.map(name) ?? loc.t("s2arm.players.first")) + " · " + loc.t("s2arm.players.help"))
+        .controllerButtonStyle(ConsoleIconButtonStyle(backgroundless: true))
+        .launcherTooltip((currentPlayer.map(name) ?? loc.t("s2arm.players.first")) + " · " + loc.t("s2arm.players.help"), placement: .below)
         .accessibilityLabel(loc.t("s2arm.players.player") + "：" + (currentPlayer.map(name) ?? ""))
         .controllerID("top.player")
         .onAppear(perform: reload)
@@ -41,10 +41,11 @@ struct PlayerToolbarButton: View {
 
     private var popover: some View {
         VStack(alignment: .leading, spacing: 12) {
-            LauncherHeadingLine {
+            // 说明放标题下、整句换行，不截断（面板只有 340 宽，并排会被「…」吃掉）
+            VStack(alignment: .leading, spacing: 4) {
                 Text(loc.t("s2arm.players.title")).font(LauncherTheme.TypeStyle.panelTitle)
-            } subtitle: {
-                Text(loc.t("s2arm.players.intro")).font(.manrope(12)).foregroundStyle(.secondary).help(loc.t("s2arm.players.intro"))
+                Text(loc.t("s2arm.players.intro")).font(.manrope(12)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             ForEach(players) { row($0) }
             if editing == .adding { field(loc.t("s2arm.players.add.confirm")) { commit { try store.add(text) } } }

@@ -12,7 +12,7 @@ SDK = "A226048605D3597F90CB1067D141CD36647B90CD"
 
 
 class Ctx:
-    def __init__(self, root): self.private = root / "priv"; self.library = root / "lib"   # 游戏库：玩家导入的 mod 在 <库>/<款>/mods（fetch 带上 mod 代码补丁）
+    def __init__(self, root): self.private = root / "priv"; self.library = root / "lib"; self.work_root = root / "work"   # 游戏库：玩家导入的 mod 在 <库>/<款>/mods（fetch 带上 mod 代码补丁）
 
 
 def nso(path, bid_hex):
@@ -23,7 +23,7 @@ def nso(path, bid_hex):
 def it(data, kind, cat, name, gids, bids, repo="o/r", path="x", member="", **kw):
     return dict(id=hashlib.sha256(data).hexdigest()[:16], kind=kind, cat=cat, name=name, gids=gids, bids=bids, target_fps=kw.get("fps", ""), aspect=kw.get("aspect", ""),
                 source=dict(repo=repo, commit="a" * 40, path=path, member=member), license=kw.get("lic", ""), author=kw.get("author", ""),
-                sha256=kw.get("sha", hashlib.sha256(data).hexdigest()), data=base64.b64encode(data).decode())
+                sha256=kw.get("sha", hashlib.sha256(data).hexdigest()), data=base64.b64encode(data).decode(), **({"dir": kw["dir"]} if kw.get("dir") else {}))
 
 
 class PatchesTests(unittest.TestCase):
@@ -57,11 +57,26 @@ class PatchesTests(unittest.TestCase):
         shutil.rmtree(self.t, ignore_errors=True)
 
     def test_ios_package_leaves_out_graphics_patches(self):
-        # 期望手写：同一份统一包，Mac 收 fps / widescreen / gfx 三类，iPhone（target="ios"）不收 gfx（11-13 维护者「画面补丁 iOS 不进包」）
+        # 期望手写：同一份统一包，Mac 收 fps / widescreen / gfx 三类，iPhone（target="ios"）不收没写方向的 gfx（11-13「画面补丁 iOS 不进包」，旧包条目都没有 dir）
         self.bundles[f"g/{GID}"].append(it(b"lod", "pchtxt", "gfx", "lod.pchtxt", [GID], []))
         self.publish()
         self.assertEqual([Path(d).name for d in patches.fetch(self.c, dict(id=GID), str(self.exefs))], ["fps", "gfx", "widescreen"])
         self.assertEqual([Path(d).name for d in patches.fetch(self.c, dict(id=GID), str(self.exefs), "ios")], ["fps", "widescreen"])
+
+    def test_ios_package_takes_only_load_reducing_graphics(self):
+        # 期望手写（11-16 维护者：iOS 收降负载画面补丁）：三份画面补丁 dir = load / quality / 不写；Mac 三份都收，iPhone 只收 load 那一份；
+        #   INDEX.tsv 带 dir 列（pack/cpatch.py 读进第 14 列方向）
+        self.bundles[f"g/{GID}"] += [it(b"nodof", "pchtxt", "gfx", "nodof.pchtxt", [GID], [], dir="load"),
+                                     it(b"4k", "pchtxt", "gfx", "4k.pchtxt", [GID], [], dir="quality"),
+                                     it(b"lod", "pchtxt", "gfx", "lod.pchtxt", [GID], [])]
+        self.publish()
+        def gfx_rows(target):
+            d = next(Path(x) for x in patches.fetch(self.c, dict(id=GID), str(self.exefs), target) if Path(x).name == "gfx")
+            rows = (d / "INDEX.tsv").read_text().splitlines()
+            col = rows[0].split("\t").index("dir")
+            return sorted((r.split("\t")[2].split("/")[-1], r.split("\t")[col]) for r in rows[1:])
+        self.assertEqual(gfx_rows("mac"), [("4k.pchtxt", "quality"), ("lod.pchtxt", ""), ("nodof.pchtxt", "load")])
+        self.assertEqual(gfx_rows("ios"), [("nodof.pchtxt", "load")])
 
     def test_fetch_by_gid_and_main_build_and_index(self):
         dirs = patches.fetch(self.c, dict(id=GID), str(self.exefs))
@@ -131,6 +146,39 @@ class PatchesTests(unittest.TestCase):
                 ti = tarfile.TarInfo(n); ti.size = len(data); t.addfile(ti, io.BytesIO(data))
         self.c.r = {"resources": str(self.t / "res")}
         return blobs
+
+    def snapshot_v3(self, bundles):
+        """同一份快照转成随包的 v3（tools/patch_pack.py to_v3：原文分块 xz），v2 删掉"""
+        self.snapshot(bundles)
+        sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tools")); import patch_pack
+        d = self.t / "res" / "CommunityPatches"
+        patch_pack.to_v3(str(d / "patches-v2.tar"), str(d / "patches-v3.tar")); (d / "patches-v2.tar").unlink()
+        return d / "patches-v3.tar"
+
+    def test_v3_snapshot_offline_and_corruption(self):
+        # 随包 v3（11-16）：云端不通、没增量缓存 → 用 v3 快照，条目同 v2；改坏一块的一个字节 → 那个包核不过、不用（不打错补丁）
+        old_g = [dict(self.bundles[f"g/{GID}"][0], name="old.pchtxt")]
+        p = self.snapshot_v3({"b/FF1D1C05670DB602": self.bundles["b/FF1D1C05670DB602"], f"g/{GID}": old_g})
+        self.assertEqual(patches._snapshot_path(self.c).name, "patches-v3.tar")
+        shutil.rmtree(self.base)
+        dirs = patches.fetch(self.c, dict(id=GID), str(self.exefs))
+        self.assertEqual(sorted(Path(d).name for d in dirs), ["fps", "widescreen"])
+        ws = (Path(dirs[1]) / "INDEX.tsv").read_text().splitlines()
+        self.assertEqual(Path(dict(zip(ws[0].split("\t"), ws[1].split("\t")))["path"]).name, "old.pchtxt")
+        import io, lzma, tarfile
+        with tarfile.open(p) as t:
+            members = [(m, t.extractfile(m).read()) for m in t.getmembers()]
+            index = json.loads(t.extractfile("index.json").read())
+        with tarfile.open(p, "w") as t:
+            for m, data in members:
+                if m.name.startswith("blk/"):   # 每个包在本块里的那一段各改一个字节（按清单的 off / len）
+                    raw = bytearray(lzma.decompress(data))
+                    for v in index["bundles"].values():
+                        if f"blk/{v['block']:04d}.xz" == m.name: raw[v["off"] + v["len"] // 2] ^= 0x20
+                    data = lzma.compress(bytes(raw))
+                ti = tarfile.TarInfo(m.name); ti.size = len(data); t.addfile(ti, io.BytesIO(data))
+        shutil.rmtree(self.c.private, ignore_errors=True)
+        self.assertEqual(patches.fetch(self.c, dict(id=GID), str(self.exefs)), [])
 
     def test_local_snapshot_first_cloud_increments(self):
         # 本地优先、云端兜底（11-13）：快照与云端同 sha 的包不下载；云端更新了的这一个增量下；云端不通只用快照

@@ -51,7 +51,20 @@ enum { BLK_SHIFT = 10, BLK = 1 << BLK_SHIFT, NBLK = 256, MAX_RANGE = BLK * NBLK 
 // Ranges are rounded to host pages (16 KB) but guest memory pools are only 4 KB aligned: adjacent pools share their first / last pages, so one address can fall in several registered ranges.
 // So: "is this texture tracked" looks for a range that holds its whole span; a fault / host pre-write unprotects and stamps every range covering that page; pool destruction identifies its range by the pool's exact start mem.
 // (Previously the first range containing the address was always taken: two SMBW ASTC 6x5 textures whose pool's first page is shared with a small preceding pool were judged untracked and re-uploaded on every use, about 6 MB per frame)
-typedef struct { uintptr_t base, end, mem; _Atomic uint8_t *state; _Atomic uint64_t *gen; size_t cap; _Atomic int live; } range_t;
+// 脏页追加日志（#1501 A②）：本模块里不配置就不记（g_log_enabled 初值 0），须在任何池登记前 nvn_dirty_log_configure。
+// 安卓 nvk_session 按开关 debug.s2a.nvk_buf_dirtylog 配置，缺省开、设 0 关；苹果侧不调 configure，日志不启用。
+// 一页从只读变可写（缺页 / 宿主写前解除）就追加一条 [a, b)（宿主页对齐的地址），在 mprotect 之前发布——写入必然晚于这条事件。
+// 两次加保护之间一页最多产生一次事件，所以「镜像上次同步后被写过的页」= 它的游标之后的事件，消费方按事件数付钱，不按范围页数。
+// 缺页路径里只有原子操作：条目预分配（总量有上限 g_log_bytes），写者 fetch_add 取槽、先清 seq 再写区间、最后发布 seq = 下标 + 1。
+// 读者按 seqlock 读（见 nvn_dirty_log_read）；环绕（游标落后超过容量）、跟踪不可靠、换底、与别的池重叠、池销毁时判不可用，调用方退回逐页核对。
+typedef struct dirty_log {
+    uint64_t ident; uint32_t cap; _Atomic int bad;
+    _Atomic uint64_t head;
+    struct dirty_log *next;
+    struct { _Atomic uint64_t seq; _Atomic uintptr_t a, b; } ev[];
+} dirty_log;
+typedef struct { uintptr_t base, end, mem; _Atomic uint8_t *state; _Atomic uint64_t *gen; size_t cap; _Atomic int live;
+                 _Atomic(dirty_log *) log; } range_t;
 static _Atomic(range_t *) g_blk[NBLK];
 static inline range_t *rg(int i) { return &atomic_load_explicit(&g_blk[i >> BLK_SHIFT], memory_order_acquire)[i & (BLK - 1)]; }
 static _Atomic int g_nr;
@@ -82,6 +95,11 @@ typedef struct retired_arrays {
     struct retired_arrays *next;
 } retired_arrays;
 static retired_arrays *g_retired_arrays;   // g_slot_mu; never read by the signal path
+// 追加日志：即使槽位复用，缺页线程仍可能握着旧日志，和旧页数组一样留到所有读者退出的会话重置再放；保留量有上限，耗尽则后续池没有日志（消费方退回逐页）。
+static dirty_log *g_all_logs;            // g_slot_mu
+static size_t g_log_bytes;               // g_slot_mu
+static uint64_t g_log_ident;             // g_slot_mu；每次登记一条新日志加一（槽位复用后旧游标对不上）
+enum { LOG_BYTES_LIMIT = 64 * 1024 * 1024, LOG_CAP_MIN = 64, LOG_CAP_MAX = 16384 };
 
 // ---- find_span 的有序索引（#1133；取代 #974 的线程内备忘）----
 // 线性扫槽位表是 O(池数)：世界场景里池有上千个，回放线程每个走慢路的缓冲解析、每次贴图内容检查都问一次「哪个范围装得下 [a, a+len)」
@@ -175,10 +193,20 @@ static _Atomic uint32_t g_chunk_pages = 0;
 // 跟踪不可靠：任何一次 mprotect 失败都会置位。置位后所有查询走保守路径（整张视为脏 /
 // 代际返回 -1），不再只靠“旧代际比较”判断——否则失败后仍会认为内容没变而漏传。
 static _Atomic int g_track_unreliable;
+static int g_log_enabled;      // g_slot_mu；只能在没有活池时设置（追加日志），缺页路径不读取此变量。
 // 映射代际：换底/重建后自增，供纹理缓存判定“旧句柄/旧保护状态已失效，必须重新验证并重新加保护”。
 static _Atomic uint64_t g_mapping_gen = 1;
 void nvn_dirty_set_chunk_pages(uint32_t pages) { atomic_store(&g_chunk_pages, pages); }
 uint32_t nvn_dirty_chunk_pages(void) { return atomic_load(&g_chunk_pages); }
+int nvn_dirty_log_configure(int enabled) {
+    pthread_mutex_lock(&g_slot_mu);
+    int ok = atomic_load(&g_live) == 0;
+    if (enabled && (ATOMIC_LLONG_LOCK_FREE != 2 || ATOMIC_LONG_LOCK_FREE != 2 ||
+                    ATOMIC_INT_LOCK_FREE != 2 || ATOMIC_POINTER_LOCK_FREE != 2)) ok = 0;
+    if (ok) g_log_enabled = !!enabled;
+    pthread_mutex_unlock(&g_slot_mu);
+    return ok;
+}
 int nvn_dirty_tracking_unreliable(void) { return atomic_load(&g_track_unreliable); }   // This module's mprotect: call count, pages covered, time spent (clock ticks, safe in the page-fault path too)
 static _Atomic uint64_t g_mp_fails;
 static _Atomic int g_mp_fail_logged;
@@ -226,6 +254,8 @@ void nvn_dirty_reset_session(void) {
         retired_arrays *r = g_retired_arrays; g_retired_arrays = r->next;
         free(r->state); free(r->gen); free(r);
     }
+    while (g_all_logs) { dirty_log *l = g_all_logs; g_all_logs = l->next; free(l); }
+    g_log_bytes = 0; g_log_enabled = 0;
     atomic_store(&g_nr, 0); atomic_store(&g_live, 0); atomic_store(&g_live_peak, 0);
     atomic_store(&g_now, 1); atomic_store(&g_overflow_logged, 0); atomic_store(&g_busy_red, 0); atomic_store(&g_hooks_on, 0);
     table_write_end();
@@ -315,6 +345,16 @@ static uintptr_t chunk_last_page(range_t *r, uintptr_t p) {
     uintptr_t last = first + cp - 1;
     return last < npg - 1 ? last : npg - 1;
 }
+// 追加一条事件（缺页路径可调：只有原子操作）。先把槽的 seq 清 0（读者见 0 = 正在写），写区间，最后发布 seq = 下标 + 1。
+static void log_append(dirty_log *lg, uintptr_t a, uintptr_t b) {
+    const uint64_t i = atomic_fetch_add_explicit(&lg->head, 1, memory_order_acq_rel);
+    __typeof__(&lg->ev[0]) e = &lg->ev[i % lg->cap];
+    atomic_store_explicit(&e->seq, 0, memory_order_relaxed);
+    atomic_thread_fence(memory_order_release);
+    atomic_store_explicit(&e->a, a, memory_order_relaxed);
+    atomic_store_explicit(&e->b, b, memory_order_relaxed);
+    atomic_store_explicit(&e->seq, i + 1, memory_order_release);
+}
 // 整段解除 first..last（含）：成功则整段记脏（代际推进）——共享块的另一半也必须看到写入，
 // 否则只更新发起方会让同块内另一张纹理读到旧内容（维护者指出的“两张纹理共块”反例）。
 // 先逐页认领（PROT→BUSY、NONE→BUSY_WRITABLE），挡住并发的加保护，再整段 mprotect：
@@ -335,7 +375,12 @@ static int unprotect_span_pages(range_t *r, uintptr_t first, uintptr_t last) {
         }
         k++;
     }
-    if (mp(r->base + (first << g_shift), (last - first + 1) << g_shift, PROT_READ | PROT_WRITE) != 0) {
+    uintptr_t begin = r->base + (first << g_shift), end = r->base + ((last + 1) << g_shift);
+    {   // 追加日志：在页变可写之前发布（mprotect 失败时这条是多余的，只会让消费方多同步一次；失败本身会置「跟踪不可靠」）
+        dirty_log *lg = atomic_load_explicit(&r->log, memory_order_acquire);
+        if (lg) log_append(lg, begin, end);
+    }
+    if (mp(begin, end - begin, PROT_READ | PROT_WRITE) != 0) {
         // 失败：不推进代际，按认领前状态回退，并标记跟踪不可靠（跨 VMA 的 mprotect 可能部分成功，不能假定整段未变）
         for (uintptr_t k = first; k <= last; k++) {
             uint8_t st = atomic_load(&r->state[k]);
@@ -454,6 +499,7 @@ int nvn_dirty_replace_range(const void *mem, size_t size) {
     // 换底后内容可能整体变了：把整段标记为“在新代际上写过”，这样任何换底前取的 stamp
     // 比较都会得到“脏”，缓存必须重新上传。归零会让人误判成“从没写过”（测试抓到的正是这点）。
     const uint64_t newg = atomic_fetch_add(&g_now, 1) + 1;
+    { dirty_log *lg = atomic_load_explicit(&r->log, memory_order_acquire); if (lg) atomic_store(&lg->bad, 1); }   // 换底不走解保护，日志里没有这次「整段变了」：作废
     for (uintptr_t k = 0; k < np; k++) { atomic_store(&r->state[k], PG_NONE); atomic_store(&r->gen[k], newg); }
     atomic_fetch_add(&g_mapping_gen, 1);
     for (uintptr_t k = 0; k < np; ) {
@@ -535,7 +581,33 @@ void nvn_dirty_add_range(const void *mem, size_t size) {
     } else {
         memset((void *)state, 0, np); memset((void *)gen, 0, np * sizeof *gen);
     }
+    dirty_log *lg = NULL;
+    if (g_log_enabled && end > base) {
+        size_t cap = np / 16; if (cap < LOG_CAP_MIN) cap = LOG_CAP_MIN; if (cap > LOG_CAP_MAX) cap = LOG_CAP_MAX;
+        const size_t bytes = sizeof *lg + cap * sizeof lg->ev[0];
+        if (bytes <= LOG_BYTES_LIMIT - g_log_bytes) lg = calloc(1, bytes);
+        if (lg) {
+            lg->ident = ++g_log_ident; lg->cap = (uint32_t)cap; atomic_init(&lg->bad, 0); atomic_init(&lg->head, 0);
+            lg->next = g_all_logs; g_all_logs = lg; g_log_bytes += bytes;
+            // 相邻 / 嵌套的池共用宿主页：缺页回调逐个范围解除，加保护只按找到的那一个范围记状态，日志证明不了这类页的事件完整，双方都作废
+            for (int i = 0; i < n; i++) if (i != slot && live_at(i)) {
+                range_t *other = rg(i);
+                if (base < other->end && other->base < end) {
+                    dirty_log *ol = atomic_load_explicit(&other->log, memory_order_acquire);
+                    if (ol) atomic_store(&ol->bad, 1);
+                    atomic_store(&lg->bad, 1);
+                }
+            }
+        } else LOG("【黄】 dirty-page tracking: 追加日志不可用（保留量用尽），这个池保守使用逐页核对");
+    } else if (g_log_enabled) {   // 日志开着时，一个没有日志的新池若与已有日志的池重叠，对方同样证明不了
+        for (int i = 0; i < n; i++) if (i != slot && live_at(i)) {
+            range_t *other = rg(i);
+            dirty_log *ol = atomic_load_explicit(&other->log, memory_order_acquire);
+            if (ol && base < other->end && other->base < end) atomic_store(&ol->bad, 1);
+        }
+    }
     r->base = base; r->end = end; r->mem = (uintptr_t)mem; r->state = state; r->gen = gen;
+    atomic_store_explicit(&r->log, lg, memory_order_release);
     if (slot == n) atomic_store(&g_nr, n + 1);
     atomic_store_explicit(&r->live, 1, memory_order_release);
     span_insert(base, end, (uint32_t)slot);
@@ -621,6 +693,44 @@ long nvn_dirty_written_pages(const void *span, const void *addr, size_t len, uin
     memset(bits, 0, (n + 63) / 64 * sizeof *bits);
     for (uintptr_t i = p; i <= q; i++) if (atomic_load(&r->gen[i]) > stamp) bits[(i - p) >> 6] |= 1ull << ((i - p) & 63);
     return (long)n;
+}
+// ---- 追加日志的读面（调用方：回放核心 rp_buf.c 的池镜像，持自己的锁；不进信号路径）----
+static dirty_log *log_usable(const void *span) {
+    range_t *r = (range_t *)span;
+    if (!r || !atomic_load_explicit(&r->live, memory_order_acquire) || atomic_load(&g_track_unreliable)) return NULL;
+    dirty_log *lg = atomic_load_explicit(&r->log, memory_order_acquire);
+    return lg && !atomic_load(&lg->bad) ? lg : NULL;
+}
+int nvn_dirty_log_open(const void *span, uint64_t *ident, uint64_t *cursor) {
+    dirty_log *lg = log_usable(span);
+    if (!lg || !ident || !cursor) return 0;
+    *ident = lg->ident; *cursor = atomic_load_explicit(&lg->head, memory_order_acquire);
+    return 1;
+}
+int nvn_dirty_log_read(const void *span, uint64_t ident, uint64_t *cursor, void (*fn)(void *user, uintptr_t a, uintptr_t b), void *user) {
+    dirty_log *lg = log_usable(span);
+    if (!lg || lg->ident != ident || !cursor) return 0;
+    const uint64_t head = atomic_load_explicit(&lg->head, memory_order_acquire), from = *cursor;
+    if (head < from || head - from > lg->cap) return 0;   // 环绕：游标之后有事件已被覆盖
+    uint64_t next = head;   // 读完后游标停在哪：第一条还没发布完的事件（它的页还没变可写，写入不可能发生，下次重读）
+    for (uint64_t i = from; i < head; i++) {
+        __typeof__(&lg->ev[0]) e = &lg->ev[i % lg->cap];
+        const uint64_t s1 = atomic_load_explicit(&e->seq, memory_order_acquire);
+        const uintptr_t a = atomic_load_explicit(&e->a, memory_order_relaxed), b = atomic_load_explicit(&e->b, memory_order_relaxed);
+        atomic_thread_fence(memory_order_acquire);
+        const uint64_t s2 = atomic_load_explicit(&e->seq, memory_order_relaxed);
+        if (s1 == i + 1 && s2 == i + 1) { fn(user, a, b); continue; }
+        if (s1 > i + 1 || s2 > i + 1 || atomic_load_explicit(&lg->head, memory_order_acquire) - i > lg->cap) return 0;   // 已被下一圈覆盖
+        if (next == head) next = i;   // 写者取了槽还没发布：后面已发布的照读（重复读无害），游标不越过它
+    }
+    if (atomic_load(&lg->bad) || atomic_load(&g_track_unreliable)) return 0;   // 读的过程中作废了：这一轮读到的不算
+    *cursor = next;
+    return 1;
+}
+int nvn_dirty_page_armed(const void *span, const void *addr) {
+    range_t *r = (range_t *)span; uintptr_t a = (uintptr_t)addr;
+    if (!r || !atomic_load_explicit(&r->live, memory_order_acquire) || a < r->base || a >= r->end || atomic_load(&g_track_unreliable)) return 0;
+    return atomic_load(&r->state[(a - r->base) >> g_shift]) == PG_PROT;
 }
 void nvn_dirty_slot_stats(int *live, int *used_slots, uint64_t *adds_total) {
     int n = atomic_load(&g_nr), active = 0;

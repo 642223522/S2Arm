@@ -208,6 +208,15 @@ for mem, cmp, new, old, after, why in [(5, 5, 9, 5, 9, '相等：写入新值'),
     case(f'ATOMG.CAS 内存 {mem} 比较 {cmp} 新值 {new}', True, [mem, cmp, new],
          [LDC64(8, 0x510), MOVC(4, 1), MOVC(5, 2), CAS(6, 8, 4, 5), LDG(7, 8), MOVR(0, 6), MOVR(1, 7), MOVI(2, 0), MOVI(3, 0)], [old, after, 0, 0], why)
 
+# ---- ATOMG.ADD.F16x2.FTZ.RN（0x3a8，同 ATOMG 字段：.E 72、类型 73..76 = 4（NAK sm70 AtomType：U32 0 / S32 1 / U64 2 / F32 3 / F16x2 4 / S64 5）、操作 87..91 = 0 ADD）：
+#   内存字的低 / 高半各加值的低 / 高半，就近取偶；Rd = 旧值（PTX atom.global.add.noftz.f16x2）。原先「Invalid reduction type」整条丢掉：Rd 读 0、内存不变
+ATOMG_F16X2_ADD = lambda rd, ra, rb: inst(0x3a8, rd=(16, rd), ra=(24, ra), rb=(32, rb), e=(72, 1), t=(73, 4), p=(81, PT))
+h2 = lambda lo, hi: f16(lo) | f16(hi) << 16
+for mem, val, after, why in [(h2(1.5, -2.0), h2(0.25, 3.0), h2(1.75, 1.0), '两半各加'),
+                             (h2(2048.0, -0.0), h2(1.0, 0.0), h2(2048.0, 0.0), '2048 + 1 半精度表示不了：就近取偶回 2048；-0 + 0 = +0')]:
+    case(f'ATOMG.ADD.F16x2 {why}', True, [mem, val],
+         [LDC64(8, 0x510), MOVC(4, 1), ATOMG_F16X2_ADD(6, 8, 4), LDG(7, 8), MOVR(0, 6), MOVR(1, 7), MOVI(2, 0), MOVI(3, 0)], [mem, after, 0, 0], why)
+
 # ---- F2IP.U8.F32.NTZ（0x243，PTX cvt.rni.s32.f32 两次 + cvt.pack.sat.u8.s32.b32 融成一条：NVIDIA 论坛 255571 的 sm_89 编译读数）：
 #   d = { c[15:0] → 高 16 位，sat_u8(rni(a)) → 字节 1，sat_u8(rni(b)) → 字节 0 }（PTX cvt.pack 的位次）；NaN 读 0（NTZ），就近取偶；修饰位只认塞尔达 10 条里那一种（72..92 = 只有位 74）
 F2IP = lambda rd, ra, rb, rc: alu(0x043, 1, rd, ra, rb=(32, rb), rc=(64, rc), u8=(74, 1))
@@ -440,6 +449,23 @@ SURED = lambda op: inst(0x59f, ra=(24, 4), rb=(32, 6), h=(40, 0x48), bank=(54, 2
 refl('SURED.MAX / SURED.OR（9507c221c）', True,
      [MOVC(4, 0), MOVC(5, 0), MOVC(6, 0), SURED(2), SURED(6), MOVI(0, 0), MOVI(1, 0), MOVI(2, 0), MOVI(3, 0)],
      lambda msl, j: None if 'atomic_fetch_max' in msl and 'atomic_fetch_or' in msl else 'MSL 里没有图像原子 max / or', '修前只认 ADD，别的操作拒翻')
+
+# 句柄在游戏自己的 uniform 缓冲（库 3，字偏移 0x10 = 字节 0x40，避开输入用的 c[3] 前几个字）：原先 SUATOM / SURED 见非 c[2] 库就拒翻（「SUATOM handle in bank 3」，
+# 一款 Switch 2 游戏 7 支计算着色器）；SULD / SUST 早已带库号下去、宿主按 uniform 字绑图像（img_ubo / NVN_RB_IMGU，可做原子）。期望：反射有 img_ubo 槽 0（c3）字节 0x40、
+# MSL 有图像原子。SUATOM 字 2 = 0x001ee000 | 操作 << 23（= SURED 的 0x0010e000 加 Pu 81..83 = PT，同玩家那支原指令字 001ea400001ee000_20c0000100017593）
+SUATOM = lambda op, bank, h: inst(0x593, rd=(16, 7), ra=(24, 4), rb=(32, 6), h=(40, h), bank=(54, bank), dim=(61, 3), w2=(64, 0x001ee000 | op << 23))
+def img_ubo_atomic(fn):
+    def f(msl, j):
+        b = [(x.get('kind'), x.get('reg'), x.get('off')) for x in json.loads(j).get('bindings', [])]
+        return None if ('img_ubo', 0, 0x40) in b and fn in msl else f'绑定 {b}，MSL 里 {fn}：{fn in msl}'
+    return f
+refl('SUATOM.ADD 句柄在 c[3]（带库号，同 SULD / SUST）', True,
+     [MOVC(4, 0), MOVC(5, 0), MOVC(6, 0), SUATOM(0, 3, 0x10), MOVI(0, 0), MOVI(1, 0), MOVI(2, 0), MOVI(3, 0)],
+     img_ubo_atomic('atomic_fetch_add'), '修前 ASuatom 见库 3 抛「SUATOM handle in bank 3」')
+refl('SURED.OR 句柄在 c[3]（带库号，同 SULD / SUST）', True,
+     [MOVC(4, 0), MOVC(5, 0), MOVC(6, 0), inst(0x59f, ra=(24, 4), rb=(32, 6), h=(40, 0x10), bank=(54, 3), dim=(61, 3), w2=(64, 0x0010e000 | 6 << 23)),
+      MOVI(0, 0), MOVI(1, 0), MOVI(2, 0), MOVI(3, 0)],
+     img_ubo_atomic('atomic_fetch_or'), '修前 ASured 见库 3 抛「SURED handle in bank 3」')
 
 # 时之笛 d17eefaff4f0bc23（计算，真机现编报 SURED form 0310e000）那条原样：0001e2000310e000600084000400159f = SURED [R0], R4，二维（61..64 = 3），句柄 c[0] 字 0x84（0x210），
 # 字 2 = 0x0010e000 | 6 << 23（OR）。c[0] 布局按控制段：推送 0、uniform 0、storage 0、纹理 64 项（0x10..0x210）、图像 1 项 → 0x210 是图像槽 0（AMapC0 → c[2] 0x120）

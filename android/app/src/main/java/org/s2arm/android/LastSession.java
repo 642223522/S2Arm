@@ -12,14 +12,17 @@ import java.nio.file.StandardOpenOption;
 
 /**
  * #528 item 15: did the last game session end abnormally? The Android side of iOS runtime/src/sesdiag.c.
- * The :game process marks files/s2a_session.mark "fg" while the game is in front and "bg" in the background,
- * and deletes it when the player or the game ends the session. The library reads it: "fg" means the process
- * died in the foreground (crash, killed while hung, out of memory, runtime error stop). "bg" means it was
- * closed or reclaimed in the background, which is not abnormal. Pure Java so the host tests run it.
+ * The :game process marks files/s2a_session.mark "fg" while the game is in front and "bg" in the background.
+ * When the player or the game ends the session it writes "end", and the native graceful shutdown deletes exactly
+ * "end\n" at its last step (s2a_sesmark_clear_home in android/native/runtime/platform/lifecycle_android.c), so a
+ * shutdown that fails or hangs still leaves a marker. The library reads it: "fg" or "end" means the session did not
+ * finish (crash, killed while hung, out of memory, runtime error stop, failed shutdown). "bg" means it was closed or
+ * reclaimed in the background, which is not abnormal. Pure Java so the host tests run it.
  */
 final class LastSession {
     static final String FILE = "s2a_session.mark";
-    static final int NONE = 0, FOREGROUND = 1, BACKGROUND = 2;
+    /** ENDING ("end\n") is only ever written; read() reports it as FOREGROUND. The native side deletes exactly these bytes. */
+    static final int NONE = 0, FOREGROUND = 1, BACKGROUND = 2, ENDING = 3;
 
     /** What a player-facing notice can say about an ApplicationExitInfo reason; NO_REASON says nothing. */
     static final int NO_REASON = -1, CRASH = 0, NATIVE_CRASH = 1, NOT_RESPONDING = 2, LOW_MEMORY = 3, SIGNALED = 4,
@@ -41,14 +44,15 @@ final class LastSession {
         return n == 2 && head[0] == 'b' && head[1] == 'g' ? BACKGROUND : FOREGROUND;
     }
 
-    /** NONE deletes the marker; FOREGROUND / BACKGROUND rewrite it. */
+    /** NONE deletes the marker; FOREGROUND / BACKGROUND / ENDING rewrite it. */
     static void mark(File dir, int state) throws IOException {
         File file = new File(dir, FILE);
         if (state == NONE) {
             Files.deleteIfExists(file.toPath());
             return;
         }
-        Files.write(file.toPath(), (state == BACKGROUND ? "bg\n" : "fg\n").getBytes(StandardCharsets.US_ASCII),
+        String text = state == BACKGROUND ? "bg\n" : state == ENDING ? "end\n" : "fg\n";
+        Files.write(file.toPath(), text.getBytes(StandardCharsets.US_ASCII),
             StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
     }
 

@@ -36,6 +36,8 @@ void s2a_shell_refresh(void) { if (g_refresh) g_refresh(g_refresh_ctx); }
 
 // 本款资源包：宿主（ios/app.m）有强定义时用它；本包单独编时按就绪、点了只记日志
 __attribute__((weak)) int s2a_shell_game_install_state(const char *game_id) { (void)game_id; return 1; }
+__attribute__((weak)) int s2a_shell_game_needs_host_update(const char *game_id) { (void)game_id; return 0; }
+__attribute__((weak)) int s2a_shell_game_needs_reinstall(const char *game_id) { (void)game_id; return 0; }
 __attribute__((weak)) int s2a_shell_install_game(const char *game_id) { (void)game_id; return 0; }
 __attribute__((weak)) int s2a_shell_install_progress(const char *game_id, int *done, int *total) { (void)game_id; (void)done; (void)total; return 0; }
 __attribute__((weak)) int s2a_shell_install_wait(void) { return 0; }
@@ -43,9 +45,13 @@ __attribute__((weak)) void s2a_shell_library_appeared(void) {}
 __attribute__((weak)) int s2a_shell_install_phase(const char *game_id, int *phase, double *fraction) { (void)game_id; (void)phase; (void)fraction; return 0; }
 __attribute__((weak)) const char *s2a_shell_install_failure(const char *game_id) { (void)game_id; return NULL; }
 __attribute__((weak)) int s2a_shell_take_open_settings(void) { return 0; }
+__attribute__((weak)) char *s2a_shell_iml_notice(void) { return NULL; }
+__attribute__((weak)) void s2a_shell_iml_notice_seen(void) {}
 __attribute__((weak)) void s2a_shell_pick_game_data(const char *game_id) { fprintf(stderr, "S2Arm 游戏库：要导入 %s 的游戏数据（宿主没接说明页，只记日志）\n", game_id ? game_id : ""); }
 
 // iCloud 存档同步：宿主（ios/save_transfer.m）有强定义时用它；本包单独编时不同步
 __attribute__((weak)) char *s2a_shell_save_context(void) { return NULL; }
 __attribute__((weak)) void s2a_shell_report_problem(void) {}
+__attribute__((weak)) int s2a_shell_snapshot_available(const char *game_id) { (void)game_id; return 0; }
+__attribute__((weak)) void s2a_shell_restore_snapshot(const char *game_id) { (void)game_id; }
 __attribute__((weak)) char *s2a_shell_save_request(const char *json) { (void)json; return NULL; }

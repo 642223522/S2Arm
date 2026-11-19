@@ -104,7 +104,14 @@ extern void (*gal_on_enc_end)(void);                  // 渲染编码器结束�
 typedef struct { id<MTLTexture> tex; nxgal_tex_info info; uint32_t parent; int live; id<MTLTexture> smp; uint32_t gen; nxgal_buf_range storage;
                  id<MTLTexture> root; int32_t base_layer, base_level; uint8_t uw_written, uw_rep;
                  // （10-23 原生层线）tex / smp 的 gpuResourceID 缓存：绑定热路径直接读，不取强引用、不发消息；tex / smp 一改就调 gal_tex_rid 刷新（0 = 没有 / 没刷，用的地方退回现取）
-                 uint64_t rid_tex, rid_smp; } gal_tex;
+                 uint64_t rid_tex, rid_smp;
+                 // BC 经 ASTC 预转包（gal_tex.m「BC → ASTC」一节，设备不支持 BC 且设了 NXGAL_ASTC_PACK 才有）：bce = GAL_BCE_*，bc_fmt = 这张（或这个视图）原本的 BC 格式；
+                 //   bce 非 0 时 info 是宿主侧实际格式（ASTC 4x4 或解压格式），不是 BC
+                 uint8_t bce; int32_t bc_fmt; } gal_tex;
+enum { GAL_BCE_NONE, GAL_BCE_PEND, GAL_BCE_ASTC, GAL_BCE_DEC };   // 待定（还没底层存储，首次整张上传时定）/ ASTC 4x4（包里命中）/ 解压格式（没命中：C# 端用 Ryujinx 原解码器解压后上传，同旧路的宿主格式）
+int gal_bce_on(void);        // 本进程 BC 贴图走 ASTC 包没有（设了 NXGAL_ASTC_PACK、包可用、设备不支持 BC 而支持 ASTC）；能力表据此报 BC
+void gal_bce_reset(void);    // 下次 gal_bce_on 重新判（换局 / 单测）
+extern int gal_bce_test_nobc;   // 把本机当成不支持 BC（Mac 都支持 BC）：单测直接置位；NXGAL_ASTC_FORCE=1 在 Mac 上复现 Apple TV 的贴图路径
 void gal_tex_rid(gal_tex *t);
 // 绘制固定开销四处削减（临时内存地址缓存 / 管线表 8 字节哈希 / 贴图资源号缓存 / 已用区间整段覆盖快路径）的总开关：NXGAL_DRAW_FIXED=0 退回旧路径（同包真机 A/B 用），缺省开
 static inline int gal_draw_fixed(void) { static int v = -1; if (v < 0) { const char *e = getenv("NXGAL_DRAW_FIXED"); v = !(e && *e == '0'); } return v; }

@@ -433,6 +433,24 @@ def ratio_text(a):
     return f"{a:.2f}:1"
 
 
+def choice(chosen, uid):
+    """玩家对这条补丁的明确选择（启动设置只存玩家点过的那一项：没有记录 = 没选过，按缺省）。11-15 分类改正后，原先误判成画面的补丁编号
+    从 gfx:<哈希> 变成 other:<哈希>（哈希不变）：玩家在旧编号上手动开 / 关过的照旧算数（玩家自己的选择优先），只有没选过的按新缺省（other 默认关）"""
+    v = chosen.get(uid)
+    if v is None and uid.startswith("other:"):
+        v = chosen.get("gfx:" + uid[len("other:"):])
+    return v
+
+
+def patch_on(chosen, it):
+    """这条补丁这一局开不开：玩家明确选过的照选的（玩家选择优先）；没选过按缺省——
+    other（认不出是画面的，11-15）关；降负载的画面补丁（表第 14 列方向 load）关（11-16 维护者：降负载会直接降画质，缺省关、玩家可手动开）；其余开（11-13）"""
+    v = choice(chosen, it["id"])
+    if v is not None:
+        return v
+    return not (it["id"].startswith("other:") or it.get("direction") == "load")
+
+
 def packed_patches(c, gid):
     """这款 Mac 包里编进去的社区补丁（产物 cpatch.tsv；11-12 出包时自动查库，pack/jobs/patches.py）：全部列出、11-13 起缺省开、玩家可逐条关（下次启动生效，
     launch_env 转 S2A_CPATCH_ON）。帧率类（编号 fps:）跟「60 帧」开关走、金手指（cheat:）在金手指一栏，都不在这里列。每条带来源库与许可"""
@@ -454,7 +472,8 @@ def packed_patches(c, gid):
             continue
         seen.add(uid)
         out.append(dict(id=uid, label=label, exclusive="", source=r.get("来源") or "", license=r.get("许可") or "",  # 非玩家句
-                        kind="widescreen" if uid.startswith(("widescreen:", "wsauto:")) else "gfx", state="community", relocate=False,
+                        kind="widescreen" if uid.startswith(("widescreen:", "wsauto:")) else "other" if uid.startswith("other:") else "gfx", state="community", relocate=False,
+                        direction=(r.get("方向") or "") if uid.startswith("gfx:") else "",  # 非玩家句 —— 画面类方向 load / quality（pack/cpatch.py 第 14 列，旧表没有）
                         result=patch_result(st.get(uid))))
     return out
 
@@ -478,7 +497,7 @@ def describe_game(c, game):
         a[key]["available"] = a[key]["verified"] or bool(a[key]["sources"])
         a[key]["enabled"] = a[key]["available"] and s[key]
     for it in a["graphics"]:
-        it["enabled"] = s["enabled"].get(it["id"]) is not False   # 11-13：没选过 = 默认开（S 级优化命中的打入并默认开）
+        it["enabled"] = patch_on(s["enabled"], it)   # 没选过：other 与降负载画面补丁关，其余开
     import cheats   # 金手指（11-12）：同一页「游戏设置 → 金手指」列出与开关
     import sgrade   # S 级按类状态（满屏来源 / 是否生效 / 自动关 / 版本，pack/jobs/sgrade.py state）
     import mods     # 资源替换类 mod（11-15）：同一页「游戏设置 → Mod」列出、导入、删除
@@ -601,16 +620,23 @@ def launch_env(c, gid):
     elif s.get("widescreen") is False:
         env["S2A_WIDESCREEN"] = "0"       # 满屏关：宿主满屏开关（不用判定局专用的 S2A_WIDEN_VERIFIED，它会盖掉名单门）
     # 社区补丁（11-12，全部缺省关）：包里有才设；只开玩家开着的（自适应满屏一族跟满屏开关），一条都没开写 none，盖掉表里的「缺省开」列（runtime/src/cpatch.c；帧率类另跟 60 帧开关）
-    packed = {it["id"] for it in packed_patches(c, gid)}
+    packed = packed_patches(c, gid)
     if packed or fams:
         chosen_p = load_launch(c, gid)["patches"]
-        on = sorted([k for k in packed if chosen_p.get(k) is not False] + (fams if full else []))   # 没选过 = 开（11-13）；玩家关过的不开
+        # 玩家选过的照选的；没选过按 patch_on 缺省（other 与降负载画面补丁关，其余开）
+        on = sorted([it["id"] for it in packed if patch_on(chosen_p, it)] + (fams if full else []))
         env["S2A_CPATCH_ON"] = ",".join(on) or "none"
         if any(k.startswith(("widescreen:", "wsauto:")) for k in on):
             env["S2A_WIDESCREEN"] = "0"   # 开着社区宽屏 / 画幅补丁：游戏自己画宽画面，S2Arm 的满屏（图形层加宽渲染目标）让开，不拉宽两次；关掉补丁恢复
     # 画质提升（11-15，同 iPhone S2AScalingFilter）：2D 游戏专用 = 最近邻；锐利放大 = 直连上屏 MetalFX 空间放大（graphics/nvn/gfx/nvn/nvn_present_fx.inc），没走直连不设
     if s.get("quality") == "Nearest" or (s.get("quality") == "MetalFX" and caps.get("direct") == "1"):
         env["S2A_SCALING_FILTER"] = s["quality"]
+    # 渲染分辨率 / 帧率上限（11-17，同 iPhone S2AResolutionScale / S2AFrameRateLimit，ios/settings.m）：缺省 1× / 不限不写，宿主照旧；
+    #   其余照选的值设 S2A_RES_SCALE（graphics/nvn/gfx/nvn/nvn_rscale.inc）、S2A_FPS（graphics/loop/RenderLoop.cs、nvn_fps.c）
+    if str(s.get("resolutionScale") or "1") != "1":
+        env["S2A_RES_SCALE"] = str(s["resolutionScale"])
+    if str(s.get("fpsLimit") or "0") != "0":
+        env["S2A_FPS"] = str(s["fpsLimit"])
     if "docked" in s:
         env["S2A_DOCKED"] = "1" if s["docked"] == "docked" else "0"
     if s.get("language", "system") != "system":

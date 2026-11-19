@@ -13,6 +13,8 @@ struct LauncherPadTarget {
     let element: Any
     var unclippedFrame: CGRect? = nil
     var clippingFrame: CGRect? = nil
+    var ringRadius: CGFloat? = nil
+    var ringOutset: CGFloat = 0
 }
 
 enum LauncherPadSpatial {
@@ -100,14 +102,14 @@ enum LauncherPadSpatial {
     private func registeredControls(in window: NSWindow) -> [PadControl] {
         let registered = controls.values.filter { $0.view.window === window && !$0.view.isHiddenOrHasHiddenAncestor }
         let modal = registered.filter { $0.scope == "dropdown" && controlTarget($0) != nil }
-        return (modal.isEmpty ? Array(registered) : modal).filter(\.enabled)
+        return (modal.isEmpty ? Array(registered) : modal).filter { $0.enabled && !$0.shortcutOnly }
     }
     private func controlTarget(_ control: PadControl, includeOffscreen: Bool = false) -> LauncherPadTarget? {
         let full = Self.screenFrame(control.view), clip = Self.clippingFrame(control.view)
         let visible = full.intersection(clip)
         let frame = includeOffscreen ? full : visible
         guard frame.width > 2, frame.height > 2 else { return nil }
-        return LauncherPadTarget(id: control.id, frame: frame, role: "AXButton", element: control.view, unclippedFrame: full, clippingFrame: clip)
+        return LauncherPadTarget(id: control.id, frame: frame, role: "AXButton", element: control.view, unclippedFrame: full, clippingFrame: clip, ringRadius: control.ringRadius, ringOutset: control.ringOutset)
     }
     func controlTargets(in window: NSWindow) -> [LauncherPadTarget] {
         registeredControls(in: window).compactMap { controlTarget($0) }.sorted(by: Self.order)
@@ -142,8 +144,10 @@ enum LauncherPadSpatial {
         if previousScope == scope, let id = previousID, !id.hasPrefix("card.") {
             let selected = all.first { $0.id == id }
             let complete = selected.map { ($0.clippingFrame ?? window.frame).insetBy(dx: -1, dy: -1).contains($0.unclippedFrame ?? $0.frame) } ?? false
-            if !complete {
-                let scroll = controls.values.first { $0.id == id && $0.view.window === window }?.view.enclosingScrollView
+            let scroll = controls.values.first { $0.id == id && $0.view.window === window }?.view.enclosingScrollView
+            // 只有滚动区里的控件被滚出视野才换到附近的完整控件。不在滚动区里的控件（顶栏搜索框）被裁只是展开 / 收起动画的一瞬，
+            // 这时换走焦点就再也回不来：手柄关屏幕键盘后焦点跳到「刷新」「清空」
+            if !complete, scroll != nil {
                 let completeTargets = all.filter { ($0.clippingFrame ?? window.frame).insetBy(dx: -1, dy: -1).contains($0.unclippedFrame ?? $0.frame) }
                 let nearby = completeTargets.filter { ($0.element as? NSView)?.enclosingScrollView === scroll }
                 let candidates = nearby.isEmpty ? completeTargets : nearby
@@ -230,10 +234,13 @@ enum LauncherPadSpatial {
             })
         }
     }
-    func detach() {
+    /// teardown：SwiftUI 正在拆这棵视图（dismantleNSView，NSHostingView.deinit 里）。这时不写 presentation 的发布属性——
+    ///   拆图期间发布变更会撞上 SwiftUI 自己的独占访问，fatalError 关窗闪退（#1516，0.5.3–0.5.5）。拆完 presentation 随视图释放，
+    ///   重新接上窗口时 source.updatePresentation 照实写；窗口关闭通知那条路（图还在）照旧清
+    func detach(teardown: Bool = false) {
         source.stop(); clearRings(); keyboard?.close(apply: false); keyboard = nil
         nativeButtons.restore(); source.refresh = {}; source.updatePresentation = { _, _ in }
-        presentation.connected = false; presentation.symbols = [:]
+        if !teardown { presentation.connected = false; presentation.symbols = [:] }
         for monitor in monitors { NSEvent.removeMonitor(monitor) }; monitors.removeAll()
         for observer in notifications { NotificationCenter.default.removeObserver(observer) }; notifications.removeAll()
         for overlay in overlays.values { overlay.removeFromSuperview() }; overlays.removeAll()
@@ -245,15 +252,25 @@ enum LauncherPadSpatial {
     func releaseRelay() { source.releaseRelay() }
 
     var activeWindow: NSWindow? {
+        // 弹窗里再开的弹窗（手柄面板 → 齿轮选单）：一路往下找到最上层看得见的那个，焦点与按键才进得去
+        guard let base = baseActiveWindow else { return nil }
+        var top = base
+        while let child = top.childWindows?.last(where: isOperableChild) { top = child }
+        return top
+    }
+    /// 能操作的子窗口：看得见、里面有控件（注册的或原生的）。macOS 27 挂在提示框 / 面板下的玻璃背景窗口（_NSGlassEffectWindow）没有控件，不算——
+    ///   否则手柄按键都送到它身上，提示框的确认 / 取消没反应
+    private func isOperableChild(_ child: NSWindow) -> Bool {
+        child.isVisible && (controls.values.contains { $0.view.window === child } || child.contentView.map(Self.holdsControl) == true)
+    }
+    private var baseActiveWindow: NSWindow? {
         guard let window else { return nil }
         if let keyboard, keyboard.panel.isVisible { return keyboard.panel }
         if let modal = NSApp.modalWindow { return modal }
         if let sheet = window.attachedSheet { return sheet.attachedSheet ?? sheet }
         if let key = NSApp.keyWindow, key !== window, key.isVisible { return key }
         // macOS 27 hangs a decorative glass backdrop window under alerts and panels: visible, but it holds nothing to operate.
-        if let child = window.childWindows?.last(where: { child in
-            child.isVisible && (controls.values.contains { $0.view.window === child } || child.contentView.map(Self.holdsControl) == true)
-        }) { return child }
+        if let child = window.childWindows?.last(where: isOperableChild) { return child }
         if let popup = NSApp.orderedWindows.first(where: { candidate in
             candidate !== window && candidate.isVisible && !candidate.canBecomeMain && controls.values.contains { $0.view.window === candidate }
         }) { return popup }
@@ -296,14 +313,14 @@ enum LauncherPadSpatial {
             if role == "AXButton", frame.width <= 18, frame.height <= 18 { return nil }
             // Also exclude clipped/disabled registered controls from the native
             // fallback; otherwise AX would reintroduce their unbounded frames.
-            if controls.values.contains(where: { $0.view.window === window && Self.screenFrame($0.view).insetBy(dx: -2, dy: -2).contains(CGPoint(x: frame.midX, y: frame.midY)) }) { return nil }
+            if controls.values.contains(where: { !$0.shortcutOnly && $0.view.window === window && Self.screenFrame($0.view).insetBy(dx: -2, dy: -2).contains(CGPoint(x: frame.midX, y: frame.midY)) }) { return nil }
             let view = (element as? NSView) ?? (element as? NSCell)?.controlView
             if let view, view.isHiddenOrHasHiddenAncestor { return nil }
             let clip = view.map(Self.clippingFrame) ?? window.frame
             let visibleFrame = frame.intersection(clip)
             guard visibleFrame.width > 2, visibleFrame.height > 2 else { return nil }
             let explicit = S2ALauncherAX.identifier(element) ?? ""
-            if ["AXCloseButton", "AXMinimizeButton", "AXZoomButton"].contains(explicit) { return nil }
+            if ["AXCloseButton", "AXMinimizeButton", "AXZoomButton"].contains(explicit) || PadExclusion.ids.contains(explicit) { return nil }
             let id = explicit.isEmpty ? "ax.\(role).\(S2ALauncherAX.label(element) ?? "").\(index)" : explicit
             return LauncherPadTarget(id: id, frame: visibleFrame, role: role, element: element, unclippedFrame: frame, clippingFrame: clip)
         }
@@ -328,7 +345,14 @@ enum LauncherPadSpatial {
         }
         if !targets.contains(where: { $0.id == focusedID }) && !(window === self.window && focusedID?.hasPrefix("card.") == true) {
             let registeredDefault = controls.values.first { $0.preferred && $0.enabled && $0.view.window === window && !$0.view.visibleRect.isEmpty }?.id
-            let preferred = registeredDefault ?? (window === self.window ? defaultFocus() : nil)
+            // 没指定时，焦点先落在这页的确认钮（ZR 那颗，界面显示 A）：进页面直接按 A 就是确认（单只 Joy-Con 没有 ZR）
+            let submit = controls.values.first { $0.shortcuts.contains(.rightTrigger) && !$0.shortcutsRequireFocus && $0.enabled
+                && $0.view.window === window && !$0.view.visibleRect.isEmpty }?.id
+            // 原生提示框（没注册的控件）：焦点先落在它的确认钮，按 A 就是确认
+            let nativeSubmit = controls.values.contains(where: { $0.view.window === window }) ? nil
+                : nativeButtons.buttons(in: window).first(where: { $0.0 == .rightTrigger }).flatMap { pair in
+                    targets.first { ($0.element as? NSView) === pair.1 || ($0.element as? NSCell)?.controlView === pair.1 }?.id }
+            let preferred = registeredDefault ?? (window === self.window ? defaultFocus() : nil) ?? submit ?? nativeSubmit
             let content = window === self.window ? targets.filter { $0.frame.maxY < window.frame.maxY - 64 } : targets
             focusedID = preferred.flatMap { id in targets.first(where: { $0.id == id })?.id } ?? content.first?.id ?? targets.first?.id
         }
@@ -480,6 +504,8 @@ enum LauncherPadSpatial {
         }
         overlay.screenTarget = target.frame
         overlay.clip = target.clippingFrame.map { overlay.convert(window.convertFromScreen($0), from: nil) }
+        overlay.radius = target.ringRadius
+        overlay.outset = target.ringOutset
         overlay.target = overlay.convert(window.convertFromScreen(target.unclippedFrame ?? target.frame), from: nil)
     }
 }
@@ -488,6 +514,8 @@ private final class LauncherPadRing: NSView {
     var screenTarget: CGRect?
     var clip: CGRect?
     var target: CGRect? { didSet { needsDisplay = true } }
+    var outset: CGFloat = 0   // 奶油底控件：框在外面、同心
+    var radius: CGFloat?   // 控件自报的圆角：有就贴边画；没有（无边框的文字钮、系统控件）照旧往外 3 pt
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func isAccessibilityElement() -> Bool { false }
     override func draw(_ dirtyRect: NSRect) {
@@ -495,9 +523,17 @@ private final class LauncherPadRing: NSView {
         NSGraphicsContext.saveGraphicsState()
         defer { NSGraphicsContext.restoreGraphicsState() }
         if let clip { NSBezierPath(rect: clip).addClip() }
-        let ring = NSBezierPath(roundedRect: target.insetBy(dx: -3, dy: -3), xRadius: 10, yRadius: 10)
         NSColor(srgbRed: 1, green: 0.94, blue: 0.84, alpha: 1).setStroke()
-        ring.lineWidth = 3; ring.stroke()
+        guard let radius else {
+            let ring = NSBezierPath(roundedRect: target.insetBy(dx: -3, dy: -3), xRadius: 10, yRadius: 10)
+            ring.lineWidth = 3; ring.stroke(); return
+        }
+        // 有边框的控件：焦点框画在它自己的边框上（同一外缘、同一圆角），与按钮边框对齐
+        let width: CGFloat = 2
+        let edge = target.insetBy(dx: -outset, dy: -outset)
+        let r = max(0, min(radius, target.height / 2, target.width / 2) + outset - width / 2)
+        let ring = NSBezierPath(roundedRect: edge.insetBy(dx: width / 2, dy: width / 2), xRadius: r, yRadius: r)
+        ring.lineWidth = width; ring.stroke()
     }
 }
 
@@ -511,5 +547,5 @@ struct LauncherPadHost: NSViewRepresentable {
     }
     func makeNSView(context: Context) -> Host { let host = Host(); host.navigation = navigation; return host }
     func updateNSView(_ view: Host, context: Context) { update(); if let window = view.window { navigation.attach(window) } }
-    static func dismantleNSView(_ view: Host, coordinator: ()) { if view.navigation?.window === view.lastWindow { view.navigation?.detach() } }
+    static func dismantleNSView(_ view: Host, coordinator: ()) { if view.navigation?.window === view.lastWindow { view.navigation?.detach(teardown: true) } }
 }

@@ -77,12 +77,16 @@ FORCE:
 # iOS 版：全部 gal_*.m 编成静态库（出包线链进 NativeAOT 主程序；iOS 首遇现编要的 SPIRV-Cross 与翻译段在 build/dsx/ios/libdsx.a，链接方另链）
 IOS_SDK := $(shell DEVELOPER_DIR=$(DEVELOPER_DIR) xcrun --sdk iphoneos --show-sdk-path 2>/dev/null)
 IOS_FLAGS := -arch arm64 -isysroot $(IOS_SDK) -mios-version-min=$(IPHONEOS_DEPLOYMENT_TARGET)
+# 离线辅助库的 Metal 编译 SDK 与系统下限（Apple TV 由顶层 graphics/build.mk 从命令行换成 appletvos / -mtvos-version-min；Metal 3 那份 iOS 固定 18.0）
+METAL_SDK ?= iphoneos
+METAL_MIN ?= -mios-version-min=$(IPHONEOS_DEPLOYMENT_TARGET)
+METAL_MIN3 = $(if $(filter iphoneos,$(METAL_SDK)),-mios-version-min=18.0,$(METAL_MIN))
 ios: $(OUT)/ios/libnxgal.a $(OUT)/ios/gal_helpers/.stamp
 # iOS 版离线辅助库（10-23）：源码与平台无关（Mac 版 gal_xc 导出，源码哈希两边相同），用 iOS SDK 编；pack/ipa.sh 签名前拷进 App 的 gal_helpers/
 $(OUT)/ios/gal_helpers/.stamp: $(OUT)/gal_xc
 	rm -rf $(OUT)/ios/gal_helpers && mkdir -p $(OUT)/ios/gal_helpers/src && $(OUT)/gal_xc --helpers $(OUT)/ios/gal_helpers/src
-	for f in $(OUT)/ios/gal_helpers/src/*.metal; do xcrun -sdk iphoneos metal -std=metal4.0 -mios-version-min=$(IPHONEOS_DEPLOYMENT_TARGET) -o $(OUT)/ios/gal_helpers/$$(basename $$f .metal).metallib $$f || exit 1; done
-	mkdir -p $(OUT)/ios/gal_helpers/m3 && for f in $(OUT)/ios/gal_helpers/src/*.metal; do xcrun -sdk iphoneos metal -std=metal3.2 -mios-version-min=18.0 -o $(OUT)/ios/gal_helpers/m3/$$(basename $$f .metal).metallib $$f || exit 1; done
+	for f in $(OUT)/ios/gal_helpers/src/*.metal; do xcrun -sdk $(METAL_SDK) metal -std=metal4.0 $(METAL_MIN) -o $(OUT)/ios/gal_helpers/$$(basename $$f .metal).metallib $$f || exit 1; done
+	mkdir -p $(OUT)/ios/gal_helpers/m3 && for f in $(OUT)/ios/gal_helpers/src/*.metal; do xcrun -sdk $(METAL_SDK) metal -std=metal3.2 $(METAL_MIN3) -o $(OUT)/ios/gal_helpers/m3/$$(basename $$f .metal).metallib $$f || exit 1; done
 	touch $@
 $(OUT)/ios/libnxgal.a: $(SRCS) $(HDRS) $(GENH)
 	@mkdir -p $(OUT)/ios

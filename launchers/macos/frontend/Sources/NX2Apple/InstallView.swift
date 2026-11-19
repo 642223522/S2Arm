@@ -13,6 +13,7 @@ struct InstallView: View {
     @EnvironmentObject var loc: Localizer
     @Environment(\.dismiss) private var dismiss
     let gameID: String
+    var onOpenSettings: (() -> Void)? = nil
     @State private var showRemoveConfirm = false
     @State private var showRestoreConfirm = false
 
@@ -35,7 +36,7 @@ struct InstallView: View {
             if let job = exportJob {
                 // 导出自签包（11-15 维护者：1 下开始导出，进度 / 完成 / 失败都只在这一张卡上，不出现装机清单、Apple ID、数据线、装回、删除）
                 VStack(alignment: .leading, spacing: 10) {
-                    ScrollView { PhoneJobPanel(model: model, session: job).frame(maxWidth: .infinity, alignment: .leading) }
+                    ScrollView { PhoneJobPanel(model: model, session: job, showsOperation: false).frame(maxWidth: .infinity, alignment: .leading) }
                     if case .finished = job.phase {} else {   // 跑着才给「放到后台继续」，跑完底栏「完成」
                         HStack { Spacer(); Button(text("install.background")) { dismiss() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("install.background").controllerShortcut(.back) }
                     }
@@ -65,13 +66,15 @@ struct InstallView: View {
                                 CardRow(loc.backend(item.title), detail: loc.backend(item.detail), dot: dot(item)) {
                                     if !item.ok, item.id == "package", let game {
                                         Button(loc.t("s2arm.action.ipa")) { dismiss(); model.exportFor = game.id }
-                                            .controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy).busyHint(model)
+                                            .controllerButtonStyle(LauncherSecondaryButtonStyle())   // 只是去出包页：出包在跑那边会排队，不置灰
                                     }
                                     if !item.ok, item.id == "appleId" {
                                         // 团队号手填 / 引导项目收进环境检查「装到 iPhone 的方式」（v0.3.0）：这里只给一个去设置
                                         LauncherRowActions {
                                             Button(BackendText.launcherText("install.mode.go_settings", language: loc.lang.sharedCode)) {
-                                                dismiss(); DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { model.showEnvironment = true }
+                                                onOpenSettings?()
+                                                dismiss()
+                                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { model.showEnvironment = true }
                                             }
                                             .controllerButtonStyle(LauncherSecondaryButtonStyle()).controllerID("install.goSettings")
                                             Button(text("install.apple.open")) {
@@ -93,7 +96,7 @@ struct InstallView: View {
                         // 只换宿主后（手机上的 S2Arm 换了新版运行层）新版不好用：装回上一版
                         Button(text("install.restore")) { showRestoreConfirm = true }
                             .controllerButtonStyle(LauncherSecondaryButtonStyle())
-                            .disabled(model.busy).busyHint(model)
+                            .disabled(queued)
                             .confirmationDialog(text("install.restore_title"), isPresented: $showRestoreConfirm, titleVisibility: .visible) {
                                 Button(text("install.restore_confirm")) { model.restorePhone(game) }
                                 Button(loc.t("launch.done"), role: .cancel) {}
@@ -104,7 +107,7 @@ struct InstallView: View {
                     if let game {
                         Button(text("install.remove")) { showRemoveConfirm = true }
                             .controllerButtonStyle(LauncherSecondaryButtonStyle())
-                            .disabled(model.busy).busyHint(model)
+                            .disabled(queued)
                             .confirmationDialog(text("install.remove_title"), isPresented: $showRemoveConfirm, titleVisibility: .visible) {
                                 Button(text("install.remove_confirm"), role: .destructive) { model.removeFromPhone(game) }
                                 Button(loc.t("launch.done"), role: .cancel) {}
@@ -124,7 +127,7 @@ struct InstallView: View {
                     if case .finished = job.phase {
                         Button(loc.t("launch.done")) { dismiss() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).keyboardShortcut(.defaultAction).controllerShortcut(.rightTrigger, .back)
                     } else {
-                        Button(loc.t("s2arm.job.cancel")) { model.stop() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(job.phase == .stopping).controllerShortcut(.back)
+                        Button(loc.t("s2arm.job.cancel")) { model.stopPhone() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(job.phase == .stopping).controllerShortcut(.back)
                     }
                 }
                 .padding(.horizontal, LauncherTheme.Space.page).padding(.vertical, LauncherTheme.Space.large)
@@ -132,11 +135,13 @@ struct InstallView: View {
                 HStack { Spacer(); Button(text("install.close")) { model.installDone = nil; dismiss() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).keyboardShortcut(.defaultAction).controllerShortcut(.rightTrigger, .back) }
                     .padding(.horizontal, LauncherTheme.Space.page).padding(.vertical, LauncherTheme.Space.large)
             } else if let job = installJob {
-                HStack { Spacer(); Button(loc.t("s2arm.job.cancel")) { model.stop() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(job.phase == .stopping).controllerShortcut(.back) }
+                HStack { Spacer(); Button(loc.t("s2arm.job.cancel")) { model.stopPhone() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(job.phase == .stopping).controllerShortcut(.back) }
                     .padding(.horizontal, LauncherTheme.Space.page).padding(.vertical, LauncherTheme.Space.large)
             } else {
             HStack(spacing: 14) {
-                Text(loc.t("s2arm.install.note")).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary).lineLimit(3)
+                // 已排队（手机上一个作业没完 / 这款正在出包）：说一句，出完 / 前一个装完自动接着装
+                Text(queued ? text("install.queued") : loc.t("s2arm.install.note")).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary).lineLimit(3)
+                    .accessibilityIdentifier(queued ? "install.queued" : "install.note")
                 Spacer(minLength: 8)
                 if let ipa = model.installReadiness?.ipaPath, !ipa.isEmpty {
                     Button(loc.t("s2arm.export.revealIpa")) { model.revealIpa(ipa) }
@@ -148,10 +153,10 @@ struct InstallView: View {
                 }
                 .controllerButtonStyle(LauncherPrimaryButtonStyle()).keyboardShortcut(.defaultAction).controllerShortcut(.rightTrigger)
                 // 不按清单置灰（维护者 11-11：玩家主动点装机不许前端挡）：清单可能是旧的（在外面登录好、插好线回来仍灰），
-                // 真做不下去的（没出 iPhone 版、没连设备、签名失败）作业层开头自己判、回真实原因；只在有作业在跑时置灰
-                .disabled(model.busy)
-                .opacity(model.busy ? 0.45 : 1)
-                .busyHint(model)
+                // 真做不下去的（没出 iPhone 版、没连设备、签名失败）作业层开头自己判、回真实原因。
+                // 别的作业在跑不挡（11-16 维护者「出包时也能装别的游戏」）：手机上一个作业没完 / 这款正在出包就排队，只有这款已排上时置灰
+                .disabled(queued)
+                .opacity(queued ? 0.45 : 1)
             }
             .padding(.horizontal, LauncherTheme.Space.page).padding(.vertical, LauncherTheme.Space.large)
             }
@@ -178,11 +183,16 @@ struct InstallView: View {
     /// 这一款的「导出自签包」会话：在跑的那个，或刚结束的那个（结局卡按它画）
     private var exportJob: JobSession? {
         guard model.selfSigning else { return nil }
-        if let s = model.session, s.kind == .install, s.gameID == gameID { return s }
+        if let s = model.phoneSession, s.kind == .install, s.gameID == gameID { return s }
         if let s = model.lastPhoneSession, s.kind == .install, s.gameID == gameID { return s }
         return nil
     }
-    private var installJob: JobSession? { (model.session?.kind == .install || model.session?.kind == .installRemove || model.session?.kind == .installRestore) ? model.session : nil }
+    /// 这一款在手机槽里跑着的装机 / 删除 / 装回（别款的手机作业不画进这款的窗）
+    private var installJob: JobSession? {
+        guard let s = model.phoneSession, [.install, .installRemove, .installRestore].contains(s.kind), s.gameID == gameID else { return nil }
+        return s
+    }
+    private var queued: Bool { model.phoneQueued(gameID) }
     private func text(_ id: String) -> String { BackendText.launcherText(id, language: loc.lang.sharedCode) }
 
     @ViewBuilder private var doneContent: some View {
@@ -195,11 +205,18 @@ struct InstallView: View {
     }
 
     /// 装好以后的附加提示：只传到手机、要打开 S2Arm 才装完 / 第一次打开前信任开发者 / 免费 Apple ID 7 天到期
+    /// 信任开发者那一步：读到证书名就写「点「<名字>」→ 信任」，读不到退回原来不带名字的说法
+    private var trustNote: String {
+        model.installTrustName.isEmpty ? text("install.done.trust") : text("install.done.trustNamed").replacingOccurrences(of: "{0}", with: model.installTrustName)
+    }
+
     private var doneNotes: [String] {
+        // 更新 / 续签 S2Arm 重装了 App：只补信任那一句（换了团队要重新信任）
+        if model.lastPhoneSession?.kind == .installUpdate, (model.phoneOutcome?.exportFolder ?? "").isEmpty, !model.installTrustName.isEmpty { return [trustNote] }
         guard model.lastPhoneSession?.kind == .install, (model.phoneOutcome?.exportFolder ?? "").isEmpty else { return [] }   // 导出的说明在成功页自己那几行
         var n: [String] = []
         if model.installOpenToFinish { n.append(text("install.done.open")) }
-        n.append(text("install.done.trust"))
+        n.append(trustNote)
         if game?.iphoneFree == true { n.append(text("install.done.free")) }
         return n
     }
@@ -213,7 +230,7 @@ struct InstallView: View {
             if model.installOpenToFinish {
                 Text(text("install.done.open")).font(.manrope(15, .semibold)).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
             }
-            Text(text("install.done.trust")).font(LauncherTheme.TypeStyle.body).foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+            Text(trustNote).font(LauncherTheme.TypeStyle.body).foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
             if game?.iphoneFree == true {
                 Text(text("install.done.free")).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
             }

@@ -25,6 +25,9 @@ struct UpdatePopupView: View {
     private var version: String { popup["version"] as? String ?? "" }
     private var notes: [String: Any] { popup["notes"] as? [String: Any] ?? [:] }
     private var after: Bool { popup["kind"] as? String == "afterUpdate" }
+    private var isEnglish: Bool { language == "en" }
+    private var isWorking: Bool { if case .working = model.updateState { return true }; return false }
+    private var isReady: Bool { model.updateState == .ready }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -63,31 +66,60 @@ struct UpdatePopupView: View {
                 }
                 .frame(maxHeight: 340)
             }
-            if case .working = model.updateState {
-                Text(t("update.popup.downloading")).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary)
+            if case .working(let id, let percent) = model.updateState {
+                VStack(alignment: .leading, spacing: 6) {
+                    LauncherProgressBar(value: percent.map { Double($0) / 100.0 }, height: 6)
+                    Text(t(id).replacingOccurrences(of: "{0}", with: "\(percent ?? 0)"))
+                        .font(LauncherTheme.TypeStyle.detail).monospacedDigit().foregroundStyle(.secondary)
+                }
+            } else if case .failed(let code) = model.updateState {
+                Text(t("update.error." + code)).font(LauncherTheme.TypeStyle.detail).foregroundStyle(LauncherPalette.danger)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            if let gate = model.updateGate {   // 草图④：点了「现在更新并重启」但有局 / 任务在跑，先拦下、说清，弹窗不关
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(t(gate)).font(.manrope(14, .bold))
-                    Text(t(gate + ".body")).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if model.updateGate != nil {   // 点了「现在更新并重启」但有局 / 任务在跑：说清会打断什么，玩家选「仍然重启」照样换（11-18 维护者），默认焦点在「取消」
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(t("update.gate.confirm.title")).font(.manrope(14, .bold))
+                    Text(model.updateRestartImpactText(t)).font(LauncherTheme.TypeStyle.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 10) {
+                        Spacer()
+                        Button(t("update.gate.confirm.cancel")) { model.updateGate = nil }.controllerButtonStyle(LauncherSecondaryButtonStyle())
+                            .keyboardShortcut(.defaultAction).accessibilityIdentifier("update.gate.cancel").controllerID("update.gate.cancel")
+                        Button(t("update.gate.confirm.restart")) { model.restartToUpdate(confirmed: true) }.controllerButtonStyle(LauncherSecondaryButtonStyle())
+                            .accessibilityIdentifier("update.gate.restart").controllerID("update.gate.restart")
+                    }
                 }
                 .padding(14).frame(maxWidth: .infinity, alignment: .leading)
                 .background(LauncherPalette.building.opacity(0.14), in: RoundedRectangle(cornerRadius: 12))
                 .accessibilityIdentifier("update.gate")
             }
-            HStack {
+            HStack(spacing: 10) {
                 if let link = releasePage(version) {
                     Button { NSWorkspace.shared.open(link) } label: { Text(t("update.popup.fullLog")).font(LauncherTheme.TypeStyle.detail).underline() }
                         .controllerButtonStyle(.plain).foregroundStyle(LauncherPalette.cream).controllerShortcut(.secondary)
                 }
                 Spacer()
+                if !isWorking {
+                    Button(t("update.popup.skip")) { model.skipUpdateVersion() }
+                        .controllerButtonStyle(LauncherSecondaryButtonStyle())
+                        .accessibilityIdentifier("update.popup.skip")
+                }
                 Button(t("update.popup.later")) { model.closeUpdatePopup() }.controllerButtonStyle(LauncherSecondaryButtonStyle())
                     .keyboardShortcut(.cancelAction).accessibilityIdentifier("update.popup.later").controllerShortcut(.back)
-                Button(t("update.popup.now")) { model.restartToUpdate() }
-                    .controllerButtonStyle(LauncherPrimaryButtonStyle()).disabled(model.updateState != .ready)
-                    .accessibilityIdentifier("update.popup.now").controllerShortcut(.rightTrigger)
+                Button(primaryActionTitle) {
+                    if isReady { model.restartToUpdate() }
+                    else { model.downloadUpdate() }
+                }
+                .controllerButtonStyle(LauncherPrimaryButtonStyle()).disabled(isWorking)
+                .accessibilityIdentifier("update.popup.now").controllerShortcut(.rightTrigger)
             }
         }
+    }
+
+    private var primaryActionTitle: String {
+        if isReady { return t("update.popup.now") }
+        if isWorking { return t("update.settings.btn.downloading") }
+        if case .failed = model.updateState { return t("update.popup.retryDownload") }
+        return t("update.popup.download")
     }
 
     private var afterBody: some View {

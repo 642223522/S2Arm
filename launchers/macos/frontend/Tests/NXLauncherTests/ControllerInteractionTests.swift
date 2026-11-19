@@ -299,7 +299,7 @@ import XCTest
         navigation.source.stop(); navigation.source.controllers = { [snapshot] }; navigation.source.isActive = { true }
         navigation.source.tick(now: 0)
         _ = navigation.targets(in: window)
-        XCTAssertEqual(primary.image?.name(), "rt.rectangle.roundedtop", "原生确认框应显示右扳机提示")
+        XCTAssertEqual(primary.image?.name(), "a.circle", "原生确认框的确认钮一律显示 A（单只 Joy-Con 没有 ZR）；按 R2 照样确认")
         XCTAssertNotNil(cancel.image)
         let sink = NativeButtonSink()
         primary.target = sink; primary.action = #selector(NativeButtonSink.submit)
@@ -308,6 +308,8 @@ import XCTest
         XCTAssertEqual(sink.submits, 1)
         navigation.handle(.back)
         XCTAssertEqual(sink.cancels, 1)
+        navigation.handle(.confirm)
+        XCTAssertEqual(sink.submits, 2, "焦点先落在确认钮：按 A 就是确认")
         navigation.source.controllers = { [] }; navigation.source.tick(now: 0.1)
         _ = navigation.targets(in: window)
         XCTAssertNil(primary.image, "断开后立即恢复原生按钮图标")

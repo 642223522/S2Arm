@@ -568,6 +568,9 @@ class AndroidDeliveryTest(unittest.TestCase):
         shutil.copytree(ROOT / 'pack/contracts', isolated / 'contracts', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
         (isolated / 'targets').mkdir()
         shutil.copytree(ROOT / 'pack/targets/ios', isolated / 'targets/ios', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+        # 宿主约定号头文件是苹果引擎的一部分（pack/jobs/host_update.py 导入时读它；Mac 应用随作业层放进 Jobs，引擎快照在 runtime/include）
+        (self.base / 'apple-engine/runtime/include').mkdir(parents=True)
+        shutil.copy2(ROOT / 'runtime/include/s2a_host_abi.h', self.base / 'apple-engine/runtime/include/s2a_host_abi.h')
         result = subprocess.run([sys.executable, '-I', '-S', str(isolated / 'jobs/target_main.py'), '--help'],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -599,8 +602,9 @@ class AndroidDeliveryTest(unittest.TestCase):
                 adapter.check_request(request)
 
     def test_bundled_engine_includes_android_runtime_and_tools(self):
+        # 11-16 安装包瘦身：安卓导出未对玩家开放（启动器回「即将上线」），发版引擎快照不收 android/；开放时加回 INPUTS 并把这里改回 assertIn
         from launchers.macos.bundle_engine import INPUTS
-        self.assertIn('android', INPUTS)
+        self.assertNotIn('android', INPUTS)
         self.assertIn('graphics', INPUTS)
         for relative in ('android/docker/build.sh', 'android/docker/Dockerfile',
                          'android/app/build.gradle', 'android/tools/make_pack.py',
@@ -616,9 +620,11 @@ class AndroidDeliveryTest(unittest.TestCase):
                     'android/core-link/runtime-tests/foo.c',
                     'graphics/vulkan/wsi/tests/run.py',
                     'graphics/vulkan/core/cache-tests/fixture.cs')
+        # 11-16 起全快照都不收测试树（pack/tests 等，出包流程不跑测试）；根 tests/visual/galrec 出包要读，照收
+        excluded += ('pack/tests/fixture.dat', 'pack/jobs/tests/test_x.py', 'graphics/nvn/tests/t_x.c')
         included = ('android/native/selftest.c', 'android/test.sh',
                     'android/codecs/LICENSE', 'graphics/vulkan/core/DeviceFeatureSnapshot.cs',
-                    'pack/tests/fixture.dat', 'tests/visual/galrec/fixture.dat')
+                    'pack/jobs/core.py', 'tests/visual/galrec/fixture.dat')
         for path in excluded: self.assertFalse(bundle_engine.include_source(Path(path)), path)
         for path in included: self.assertTrue(bundle_engine.include_source(Path(path)), path)
 

@@ -443,6 +443,14 @@ final class GameSession implements AutoCloseable {
         return prepareState(privateRoot, userRoot(privateRoot), saveRoot(privateRoot, titleId));
     }
 
+    /** state 目录在存档根下的名字（prepareState 建的就是它）。 */
+    static final String STATE_DIR = "ryujinx-android";
+
+    /** 同一个 state 目录，只算路径：不建目录、不查链接（库页读游玩时间这类只读展示用，起局与导入 mod 仍走 stateDir）。 */
+    static File statePath(File privateRoot, String titleId) {
+        return new File(saveRoot(privateRoot, titleId), STATE_DIR);
+    }
+
     /** Ryujinx 使用自己的持久目录；不把用户 saveRoot 当作导入种子，也不迁移或覆盖旧布局。 */
     static File prepareState(File privateRoot, File userRoot, File saveRoot) throws IOException {
         Path app = privateRoot.toPath().toAbsolutePath().normalize();
@@ -465,9 +473,9 @@ final class GameSession implements AutoCloseable {
         if (old == null) throw new IOException("cannot inspect save root");
         // 存档根目录里的其他东西（玩家放进来的原生格式存档、旧版布局）不挡起局：原样留着、不迁移不覆盖，只记日志（不堵门）
         for (File entry : old)
-            if (!entry.getName().equals("ryujinx-android"))
+            if (!entry.getName().equals(STATE_DIR))
                 System.err.println("S2Arm: save root keeps an existing entry untouched (no migration): " + entry.getName());
-        Path state = save.resolve("ryujinx-android");
+        Path state = save.resolve(STATE_DIR);
         if (Files.isSymbolicLink(state) || (Files.exists(state, LinkOption.NOFOLLOW_LINKS)
                 && !Files.isDirectory(state, LinkOption.NOFOLLOW_LINKS)))
             throw new IOException("Ryujinx state path conflicts with an existing file or link");

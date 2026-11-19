@@ -18,6 +18,13 @@ def _strip_comment(line):
     return ''.join(out).rstrip()
 
 
+class Signed(int):
+    """显式带 + / - 号写的整数（如 +160、-24）：值照常是整数，只多记一件事——写的人标了符号。
+    FPSLocker 的跳转目标靠它分「相对当前指令」（+160）与「主程序里的绝对偏移」（0x580B064）（pack/fpslocker.py _target；
+    D-7AQ2：原先 +160 读成 160、按绝对偏移跳到 main+0xa0，打补丁的局一开 60 帧就崩）"""
+    __slots__ = ()
+
+
 def _scalar(s):
     s = s.strip()
     if not s: return None
@@ -26,7 +33,9 @@ def _scalar(s):
     if low in ('true', 'false'): return low == 'true'
     if low in ('null', '~'): return None
     try:
-        return int(s, 0) if re.fullmatch(r'[-+]?(0x[0-9a-fA-F]+|\d+)', s) else float(s) if re.fullmatch(r'[-+]?(\d+\.\d*|\.\d+|\d+)([eE][-+]?\d+)?', s) else s
+        if re.fullmatch(r'[-+]?(0x[0-9a-fA-F]+|\d+)', s):
+            return Signed(int(s, 0)) if s[0] in '+-' else int(s, 0)
+        return float(s) if re.fullmatch(r'[-+]?(\d+\.\d*|\.\d+|\d+)([eE][-+]?\d+)?', s) else s
     except ValueError:
         return s
 

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import time
@@ -46,7 +47,7 @@ def main_build(c, game):
         return head(shared_dir(c, game) / "extract/exefs/main")
     except (OSError, ImportError, Failure):
         pass
-    for p in (layout.image_mac(c, gid, create=False) / "exefs/main", layout.path(c, gid, "original-exefs", create=False) / "main"):
+    for p in (layout.image_mac(c, gid, create=False) / "exefs/main", layout.program_exefs(c, gid) / "main"):   # 原始程序在游戏程序专用文件夹（layout.program_store）
         try:
             if p.is_file():
                 return head(p)
@@ -90,6 +91,7 @@ def parse(text):
 
 
 SHORT = {"bad1dea/NXCheats": "nxcheats", "HamletDuFromage/switch-cheats-db": "cheatsdb", "ChanseyIsTheBest/NX-60FPS-RES-GFX-Cheats": "gfx",
+         "tomvita/MyNXCheats": "tomvita", "WerWolv/EdiZon_CheatsConfigsAndScripts": "edizon",   # 11-16 加（社区补丁候选第一轮）：补丁库只取它们的 cheats/<构建号>.txt
          "s2arm/player-cheats": "player"}   # 玩家分享：<构建号>.player.txt，iPhone 金手指面板按文件名认「玩家分享、未验证」（ios/vpad_cheats.m）   # 文件名里的库简名（同 11-12 起的文件名，玩家已开的开关键不变）
 
 
@@ -211,13 +213,17 @@ def listing(c, game):
             k, _, v = line.partition("\t")
             status[k] = v
     items = []
-    for f in sorted(d.glob("*.txt")):
+    import layout
+    for f in layout.entries(d, "*.txt"):   # exFAT 上的 ._<名>.txt 不是金手指（#911 同类）
         if f.name in SKIP:
             continue
         fbid, entries = parse(f.read_text(encoding="utf-8", errors="replace"))
         stem_bid = f.name.split(".")[0].upper()
         want = fbid or (stem_bid if re.fullmatch(r"[0-9A-F]{16}", stem_bid) else "")
-        ok = not want or not bid or want == bid
+        # 没写构建号（#1321）：Mac 本机运行时照常认（services/S2A.Services/Cheats.cs BuildMatches 不核），出 iPhone 包时核不了版本、整份不收（pack/cpatch.py scan_cheats）。
+        #   Windows 上只能出 iPhone 包：列成用不了并写原因，不让玩家以为开了能用；Mac 照常可开，导出 iPhone 时结果页另列「没写构建号」
+        nobid = not want and os.name == "nt"
+        ok = (not want or not bid or want == bid) and not nobid
         s = src.get(f.name) or {"from": "player"}
         if not ok and s.get("from") == "library":
             continue   # 公开库里别的版本（没解过包时各版本都取了）：不列；玩家导入的版本不对照列、写原因
@@ -228,7 +234,8 @@ def listing(c, game):
             items.append(dict(key=key, file=f.name, name=name, enabled=key in enabled, status=STATUS.get(status.get(key, ""), status.get(key, "")),
                               **{"from": s.get("from", "player")}, repo=s.get("repo", ""), author=s.get("author", ""), license=s.get("license", ""),
                               shared=s.get("repo", "") == PLAYER_REPO or f.name.endswith(".player.txt"),   # 玩家分享、未验证：开之前提示一句可能坏存档（不拦）
-                              ok=ok, fixed=fixed, reason="" if ok else f"版本不对：金手指是 {want}，这份游戏是 {bid}。"))
+                              ok=ok, fixed=fixed, reason="" if ok else "没写构建号：文件名改成「<16 位构建号>.txt」或首行加 BID=<构建号> 才能编进 iPhone 包。" if nobid
+                              else f"版本不对：金手指是 {want}，这份游戏是 {bid}。"))
     return dict(items=items, reason="" if items else "这个版本没有现成的金手指。")
 
 
@@ -260,8 +267,8 @@ def _on_now(c, game):
     keys = sorted(set((d / "enabled.txt").read_text(encoding="utf-8").splitlines()) - {""}) if (d / "enabled.txt").is_file() else []
     import community
     data = community.load_launch(c, gid)
-    # 开着的补丁：11-13 起没选过 = 默认开，所以按包里编进去的、玩家没关过的算（不只是 launch.json 里写了 True 的）
-    patches = sorted(it["id"] for it in community.packed_patches(c, gid) if data["patches"].get(it["id"]) is not False)
+    # 开着的补丁：按包里编进去的、这一局实际开着的算（同 launch_env 的 community.patch_on：玩家选过的照选的，没选过 other 与降负载画面补丁关、其余开）
+    patches = sorted(it["id"] for it in community.packed_patches(c, gid) if community.patch_on(data["patches"], it))
     # 帧率补丁（编号 fps:）跟「60 帧」开关走、不在 packed_patches 里：包里有帧率补丁且开关没关 → 算一条（iOS 同口径，ios/game_options.m s2a_ios_crash_suspects_for）
     fps = bool(community.fps_levels(c, gid)) and data["settings"].get("fps60", True) is not False
     # 自适应满屏一族（编号 wsauto:）跟「满屏」开关走、也不在 packed_patches 里（11-15 候选自测：崩了没关它）：有这一族且开关没关 → 算一条，关 = 关满屏开关（iOS 同口径）
@@ -379,7 +386,7 @@ def forget_auto_off(c, gid, items):
 
 
 def restore_after_update(c, game):
-    """起局前（build.py launch）调：上次崩溃自动关掉的，换了启动器版本就重开一次（只开当时关的、现在仍关着的），记录删掉。→ 重开的 [(类, 键)]"""
+    """起局前（build.py launch）调：上次崩溃自动关掉的，换了启动器版本就重开一次（只开当时关的、现在仍关着的；社区补丁不重开、记录留着），其余记录删掉。→ 重开的 [(类, 键)]"""
     gid = game["id"].upper()
     d = cheats_dir(c, gid, create=False)
     ao = read(d / "auto_off.json", None)
@@ -388,12 +395,14 @@ def restore_after_update(c, game):
         return []
     import community
     data = community.load_launch(c, gid)
-    back, keys = [], []
+    back, keys, kept = [], [], []
     for t, k in (tuple(x) for x in ao.get("off", [])):
         if t == "cheat":
             keys.append(k); back.append((t, k))
-        elif t == "patch" and data["patches"].get(k) is False:
-            data["patches"].pop(k); back.append((t, k))
+        elif t == "patch":
+            # 社区补丁按内容编号（gfx:<内容哈希> 等）、字节编在包里：换启动器版本改不了它，重开只会让它再崩（#1257：已撤下的坏补丁被带回来）。
+            #   不重开，记录留着（S 级状态照旧显示「崩溃自动关」）；玩家自己打开或重新出包换掉它才算数
+            kept.append([t, k])
         elif t == "fps" and data["settings"].get("fps60") is False:
             data["settings"].pop("fps60"); back.append((t, k))
         elif t == "fs" and data["settings"].get("widescreen") is False:
@@ -402,7 +411,10 @@ def restore_after_update(c, game):
         known = {it["key"] for it in listing(c, game)["items"]}
         save(c, game, {k: True for k in keys if k in known})
     atomic(community.launch_path(c, gid), data)
-    (d / "auto_off.json").unlink(missing_ok=True)
+    if kept:
+        atomic(d / "auto_off.json", dict(ao, off=kept, meta={m: v for m, v in (ao.get("meta") or {}).items() if m.split("\t", 1)[0] == "patch"}))
+    else:
+        (d / "auto_off.json").unlink(missing_ok=True)
     return back
 
 

@@ -14,6 +14,8 @@ function(s2a_android_host_sources output)
     set(sources
         native/s2a_savecommit.c native/system_tuning.c native/capacity_affinity.cpp native/adpf_hint.c native/cpu_floor.c
         native/bridge.cpp native/lan_discovery.cpp ../runtime/src/lan_elect.c native/capture_jpeg.cpp native/touch_jni.cpp native/game_touch.c native/window.cpp native/presenter.cpp
+        # 手机当掌机的六轴 / 震动（#528 第 10 项）：坐标换算、震动信箱、六轴来源仲裁用共用的 runtime/src 实现
+        native/phone_feedback.c ../runtime/src/phone_axes.c ../runtime/src/phone_rumble_mailbox.c ../runtime/src/motion_pick.c
         native/wsi_lease.c native/input.c native/tsd.c native/module.c native/selftest.c native/selftest_gate.S
         native/guest_signal.c native/redlog.c native/redzone.S native/pcm_ring.c native/aaudio_sink.c native/hostapi.c native/screen_metrics.c
         # #48 P8：dm_thermal_now / dm_low_power_now 的安卓强定义（盖过 fps.c / hle_nvn.c 的弱缺省）
@@ -52,6 +54,8 @@ function(s2a_android_diagnostic_sources output)
         # dguard_android.c / bridge.cpp 引用的共用出口：诊断目标编入同一实现（无武装点，
         # 只靠弱回退的日志与 stub 的 s2a_host_session_state 空转），行为与游戏目标一致。
         ../runtime/src/dguard.c ../runtime/src/direct_prompt.c
+        # 即时存档开关（snapsw.c，安卓恒关）：服务层 SnapLog.cs 与 hle_nvn.c 引用，诊断目标同编（游戏目标由 Runtime.cmake 的 core 列表提供）
+        ../runtime/src/snapsw.c
         # 诊断目标没有原生会话核心：direct_prompt.c 要的 s2a_host_session_state 等会话入口由 stub 给
         # （恒报 FAILED）。不论服务层是否静态链入都要它，否则缺省 assembleDebug（S2A_CS_SERVICES=0）
         # 在 -z defs 下报 undefined symbol: s2a_host_session_state。
@@ -86,7 +90,7 @@ function(s2a_android_nvk_sources output)
         native/direct/compile_worker.c native/direct/program_cache.c native/direct/offline_library.c
         native/direct/libpack_vk.c   # 出包预编库读取（nvk_shader.c 按每阶段键取，同 iOS lib_pack）
         native/direct/compile_request.c native/direct/input_identity.c native/direct/texture_facts.c
-        native/nvn/nvn_vk_program_result.c native/nvn/nvn_vk_compute_request.c native/gfx_plat/nvk_shader.c
+        native/nvn/nvn_vk_program_result.c native/nvn/nvn_vk_compute_request.c native/gfx_plat/nvk_shader.c native/gfx_plat/direct_diag.c
         # 首次使用的准备工作下沉（iOS 蓝本 nvn_mtl.m warm_start/pso_pend 的 Vulkan 版）：
         #   nvn_vk_prog_warm  程序预热清单（跨会话程序内容身份 → 读盘/解析/建设备对象 → 发布到 g_progs）
         #   nvn_vk_pipe_warm  管线预热清单（完整 nvn_gpu_pipe_desc 配方 → 后台 nvn_gpu_pipe_get）

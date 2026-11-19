@@ -1,6 +1,7 @@
 // 游戏内提示条（iOS；文案在 s2a_direct_prompt.h，Mac 同款在 macos/front_mac.m）：存档不能原子提交、签名快到期（prov_expiry.m，描述文件剩不到 48 小时）等。
 //   贴画面顶部居中（两侧肩键之间），只占自己那一块，别处的触摸照常给游戏和虚拟手柄；带两个按钮的 seconds 秒没理会按「否」收起。
 #import <UIKit/UIKit.h>
+#import "tv_compat.h"
 #import "s2a_l10n.h"
 #import <GameController/GameController.h>
 #include "s2a_direct_prompt.h"
@@ -54,7 +55,7 @@ static UIButton *button(SEL action, BOOL primary) {
 }
 // 游戏画面建好后调（app.m 场景代理，提示页不调）
 void s2a_dprompt_attach(UIView *root) {
-    g_banner = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterialDark]];
+    g_banner = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:S2A_BLUR_MATERIAL_DARK]];
     g_banner.layer.cornerRadius = 16; g_banner.clipsToBounds = YES; g_banner.hidden = YES; g_banner.translatesAutoresizingMaskIntoConstraints = NO;
     g_title = [UILabel new]; g_title.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold]; g_title.textColor = UIColor.whiteColor;
     g_body = [UILabel new]; g_body.font = [UIFont systemFontOfSize:14]; g_body.textColor = [UIColor colorWithWhite:1 alpha:0.75]; g_body.numberOfLines = 0;

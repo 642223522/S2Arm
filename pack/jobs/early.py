@@ -87,13 +87,16 @@ class EarlyInstall:
         root = layout.ios_work(self.c, self.gid) / "roots" / (kuan + "@现行")  # 非玩家句
         rec = layout.load_device(self.c, self.udid or self.dev["id"])   # 这台手机上已有的各款一起带上（早装覆盖装也不能把它们装没）
         others = [g for g in rec.get("games", {}) if g != self.gid.upper()]
-        return packer.assemble(self.c, self.gid, others, failed=rec.get("failedShells", []), root=root.resolve(), dest=self.dir / "container")
+        with packer.program_locks(self.c, others):   # 别款程序件这段不让它们的出包交付换（这款用的是旁路产物根，不读 kit）
+            return packer.assemble(self.c, self.gid, others, failed=rec.get("failedShells", []), root=root.resolve(), dest=self.dir / "container")
 
     def _install(self, built):
+        import ipa as packer
         ipa, games, _ = built
-        ph = self.inst.MacPhone(self.c, self.team, self.dev, self.udid)
-        ph.install(ipa, games, steps=False)
-        files, size = ph.push(self.gid.upper(), self.dir / "pack")
+        with packer.phone_lock(self.c):   # 早装也是装机：和别的装机类作业一次一个（ipa.phone_lock）
+            ph = self.inst.MacPhone(self.c, self.team, self.dev, self.udid)
+            ph.install(ipa, games, steps=False)
+            files, size = ph.push(self.gid.upper(), self.dir / "pack")
         return dict(files=files, bytes=size)
 
     def finish(self):

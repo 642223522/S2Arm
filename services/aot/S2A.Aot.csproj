@@ -13,7 +13,7 @@
     <PublishAot>true</PublishAot>
     <NativeLib>Static</NativeLib>
     <!-- iOS 的 NativeAOT 运行时只以运行时包形式提供（旧库出包线 nxaot.sh 同此） -->
-    <PublishAotUsingRuntimePack Condition="'$(RuntimeIdentifier)' == 'ios-arm64'">true</PublishAotUsingRuntimePack>
+    <PublishAotUsingRuntimePack Condition="'$(RuntimeIdentifier)' == 'ios-arm64' Or '$(RuntimeIdentifier)' == 'tvos-arm64'">true</PublishAotUsingRuntimePack>
     <NoWarn>$(NoWarn);CA1416;IL2026;IL2072;IL2075;IL2080;IL3050</NoWarn>
     <RepoRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../../'))</RepoRoot>
   </PropertyGroup>

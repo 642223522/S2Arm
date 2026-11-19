@@ -90,8 +90,16 @@ import XCTest
             XCTAssertEqual(c.status, status, name)
             try snapshot(name + "_zh", Self.panel(c, SystemControllers(pads: []), true))
         }
+        // 连着：主按钮「断开」+ 齿轮；开关收进齿轮选单（选单另存一张）
+        let connected = make(4, kind: 2)
+        try snapshot("status_connected_zh", Self.panel(connected, SystemControllers(pads: []), true))
+        try snapshot("status_connected_en", Self.panel(connected, SystemControllers(pads: []), false))
+        try snapshot("settings_menu_zh", Switch2SettingsMenu(controller: connected, lang: "zh", close: {}))
+        try snapshot("settings_menu_en", Switch2SettingsMenu(controller: connected, lang: "en", close: {}))
+        try snapshot("bluetooth_empty_en", Self.panel(make(nil), SystemControllers(pads: []), false))   // 没蓝牙手柄也有蓝牙区块
+        try snapshot("status_searching_en", Self.panel(make(1), SystemControllers(pads: []), false))
         XCTAssertNil(ControllerIcon.header(kind: make(5).kind, players: 1), "失败：型号未知 → 虚线图")
-        XCTAssertEqual(make(5).title(lang: "zh"), "Switch 手柄")
+        XCTAssertEqual(make(5).switch2Title(lang: "zh"), "Joy-Con 2 · Pro 2", "看面板标题（switch2Title）：title() 在本机连着蓝牙手柄时会写它的名字（#901）")
     }
 
     // 系统手柄（#520 F，UI 稿 system.html）：分类、去重、混用时的玩家顺序；图示全套另存一张（含稿里没有、待定的 Xbox / 一代右只 / 其他）
@@ -132,12 +140,16 @@ import XCTest
             let dualsense = S.Pad(id: ObjectIdentifier(NSObject()), name: "DualSense Wireless Controller", family: .playstation)
             try snapshot(zh ? "system_real_zh" : "system_real_en", Self.panel(real, S(pads: [dualsense]), zh))
             XCTAssertEqual(real.title(lang: zh ? "zh" : "en"), "DualSense Wireless Controller", "顶栏按钮照旧写系统手柄的真名（#901）")
-            XCTAssertEqual(real.switch2Title(lang: zh ? "zh" : "en"), zh ? "Switch 手柄" : "Switch Controller", "面板顶部只讲 Switch 2 手柄")
+            XCTAssertEqual(real.switch2Title(lang: zh ? "zh" : "en"), "Joy-Con 2 · Pro 2", "面板顶部只讲 Switch 2 手柄（型号未知：Joy-Con 2 · Pro 2）")
         }
-        // #1151 ①：HID 兜底手柄（GameController 认不出，宿主 hid_pad.m 按 HID 读）面板也列。认法同宿主：名字带「Pro Controller」、大小写不敏感，
-        //   GameController 已列出的同名不重复，别的 HID 手柄（键号各家不同、宿主不接）不列
-        XCTAssertEqual(HIDFallbackPads.listed(hid: ["Lic Pro Controller", "Generic USB Joystick", "PRO CONTROLLER", "Pro Controller"], system: ["Pro Controller"]),
-                       ["Lic Pro Controller"], "Generic 不带 Pro Controller 不列；PRO CONTROLLER / Pro Controller 与系统已列的同名（不分大小写）不重复")
+        // #1151 ①：HID 兜底手柄（GameController 认不出，宿主 hid_pad.m 按 HID 读）面板也列。认法同宿主（hid_generic.h）：名字带「Pro Controller」的都列，
+        //   别的通用手柄（Stadia、八位堂 D-input 等）除微软 / 索尼 / 任天堂外也列；GameController 已列出的同名不重复
+        XCTAssertEqual(HIDFallbackPads.listed(hid: ["Lic Pro Controller", "Stadia Controller", "PRO CONTROLLER", "Pro Controller"], system: ["Pro Controller"]),
+                       ["Lic Pro Controller", "Stadia Controller"], "通用手柄也列；PRO CONTROLLER / Pro Controller 与系统已列的同名（不分大小写）不重复")
+        XCTAssertTrue(HIDFallbackPads.hostReads(name: "Stadia Controller", vendor: 0x18d1) && HIDFallbackPads.hostReads(name: "", vendor: 0x2dc8), "非原生厂商的通用手柄宿主读")
+        XCTAssertTrue(HIDFallbackPads.hostReads(name: "Pro Controller", vendor: 0x057e) && HIDFallbackPads.hostReads(name: "Lic Pro Controller", vendor: 0), "Pro 那一支不看厂商号")
+        XCTAssertFalse(HIDFallbackPads.hostReads(name: "Xbox Wireless Controller", vendor: 0x045e) || HIDFallbackPads.hostReads(name: "Wireless Controller", vendor: 0x054c)
+                       || HIDFallbackPads.hostReads(name: "Joy-Con (L)", vendor: 0x057e), "微软 / 索尼 / 任天堂通用手柄交给 GameController，面板不另列")
         XCTAssertEqual(HIDFallbackPads.listed(hid: ["Lic Pro Controller", "Lic Pro Controller"], system: []), ["Lic Pro Controller", "Lic Pro Controller"], "两只同名各算一只")
         XCTAssertEqual(HIDFallbackPads.listed(hid: [], system: ["DualSense Wireless Controller"]), [])
         try snapshot("system_hid_only_zh", Self.panel(Self.isolated(), S(pads: [], hidNames: ["Lic Pro Controller"]), true))
@@ -147,7 +159,7 @@ import XCTest
         try snapshot("system_two_zh", Self.panel(c, S(pads: [ps, xb]), true))
         let all: [(ControllerIcon.Glyph, String)] = [(.left, "Joy-Con 2 (L)"), (.right, "Joy-Con 2 (R)"), (.leftSideways, "Joy-Con 2 (L) 单只玩家"), (.rightSideways, "Joy-Con 2 (R) 单只玩家"), (.pairHead, "Joy-Con 2 (L + R)"), (.pro, "Switch 2 Pro / Pro"),
             (.gen1Left, "Joy-Con (L)"), (.gen1Right, "Joy-Con (R) *"), (.gen1LeftSideways, "Joy-Con (L) 单只玩家"), (.gen1RightSideways, "Joy-Con (R) 单只玩家"), (.gen1Pair, "Joy-Con (L/R) *"), (.playstation, "PlayStation"),
-            (.xbox, "Xbox *"), (.otherPad, "其他（同 Pro）"), (.unknown, "未知型号"), (.keyboard, "键盘 *")]
+            (.xbox, "Xbox *"), (.otherPad, "其他（同 Pro）"), (.unknown, "未知型号"), (.keyboard, "键盘 *"), (.mobile, "手机（预留，面板不显示）")]
         try snapshot("icons", VStack(alignment: .leading, spacing: 10) {
             ForEach(Array(all.enumerated()), id: \.offset) { _, item in
                 HStack(spacing: 14) { ControllerIcon(glyph: item.0).frame(width: 72, height: 54); Text(item.1).font(.system(size: 15, weight: .semibold)) }
@@ -201,6 +213,36 @@ import XCTest
         XCTAssertEqual(auto.units, [.pair(left: "L1", right: "R1"), .system(name: "DualSense", index: 0)], "另一只接回来：原位并成一对")
         auto.reconcile(devices: devs, mergedPair: true, system: [])
         XCTAssertEqual(auto.units, [.pair(left: "L1", right: "R1")], "蓝牙手柄断开：让出玩家位")
+        // 已按 SL + SR 登记成横握单只：同组另一侧之后接上不自动拼成一对，新来的自己一位、两只拆开（不用再按一次 SL + SR）
+        var side = PlayerAssignment()
+        side.reconcile(devices: [devs[0]], mergedPair: false, system: [])
+        side.ns2(id: "L1", kind: 2, gesture: 2, at: 0)   // 已有位的那只按 SL + SR（不重复登记，但记成横握）
+        XCTAssertEqual(side.units, [.single(id: "L1", kind: 2)])
+        XCTAssertEqual(side.sideways, ["L1"])
+        side.reconcile(devices: devs, mergedPair: true, system: [])
+        XCTAssertEqual(side.units, [.single(id: "L1", kind: 2), .single(id: "R1", kind: 3)], "先自动排进来、之后按了 SL + SR 的单只也算横握")
+        var sideFresh = PlayerAssignment()
+        sideFresh.ns2(id: "L1", kind: 2, gesture: 2, at: 0)   // 分配中按 SL + SR 登记
+        sideFresh.reconcile(devices: devs, mergedPair: true, system: [])
+        XCTAssertEqual(sideFresh.units, [.single(id: "L1", kind: 2), .single(id: "R1", kind: 3)], "SL + SR 登记过的单只：另一侧接上自己一位，不并成一对")
+        XCTAssertTrue(sideFresh.wantsSplit(devices: devs), "传输层缺省拼成一对时要照分配拆开")
+        XCTAssertEqual(sideFresh.helperPlan(devices: devs)["split"] as? Bool, true)
+        // 拔掉再接：横握标记跟着清掉，没再按 SL + SR 就照旧自动拼
+        sideFresh.reconcile(devices: [], mergedPair: false, system: [])
+        sideFresh.reconcile(devices: [devs[0]], mergedPair: false, system: [])
+        sideFresh.reconcile(devices: devs, mergedPair: true, system: [])
+        XCTAssertEqual(sideFresh.units, [.pair(left: "L1", right: "R1")], "没按 SL + SR 的单只：另一侧接上照旧自动拼成一对")
+        // 同侧两只（L + L / R + R）永远不拼：第二只左只自己一位
+        var sameSide = PlayerAssignment()
+        sameSide.reconcile(devices: [devs[0]], mergedPair: false, system: [])
+        let twoLeft = [devs[0], PlayerAssignment.Device(id: "L2", kind: 2)]
+        sameSide.reconcile(devices: twoLeft, mergedPair: true, system: [])
+        XCTAssertEqual(sameSide.units, [.single(id: "L1", kind: 2), .single(id: "L2", kind: 2)], "两只左只不会拼成一对")
+        // 横握标记存进偏好
+        var savedSide = PlayerAssignment()
+        savedSide.ns2(id: "R1", kind: 3, gesture: 2, at: 0)
+        let decoded = try JSONDecoder().decode(PlayerAssignment.self, from: JSONEncoder().encode(savedSide))
+        XCTAssertEqual(decoded.sideways, ["R1"])
         // ×：平时清掉一位 = 连着但没有玩家位、不自动排回来；分配中再按键登记就回来
         var x = PlayerAssignment()
         x.reconcile(devices: devs, mergedPair: true, system: [.init(name: "DualSense", index: 0)])

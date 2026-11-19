@@ -173,7 +173,7 @@ public sealed partial class EnvironmentWindow
                 actions.Children.Add(retry);
             }
             if (item.Platforms.Contains("iphone") && item.Result("iphone").State == "completed" && BatchGame(item.GameId) is { } game)
-                actions.Children.Add(Action("batch.install", () => { selectedGame = game.Id; readinessFor = null; Navigate("install"); }, !PackBusy));
+                actions.Children.Add(Action("batch.install", () => { selectedGame = game.Id; readinessFor = null; Navigate("install"); }, !PhoneQueued(game.Id)));   // 只是去装机页：出包在跑那边排队
             Grid.SetColumn(actions, 2); line.Children.Add(actions);
             content.Children.Add(Card(line, 12));
         }
