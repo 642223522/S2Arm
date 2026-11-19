@@ -325,8 +325,15 @@ class StageTest(unittest.TestCase):
         if os.name == 'nt':
             env['PATH'] = str(Path(bash).parent.parent / 'usr/bin/core_perl') + os.pathsep + env['PATH']
         keys = []
-        for present in (False, True):
-            with self.subTest(kind=kind, present=present):
+        # 我方帧率表只在内部对照口径 S2A_CAPS_OWN=1 进包（11-18 #1607）：fps 这一组先按该口径测转发与键，
+        #   再测缺省口径——表在仓库里也不进包，键与没有表时相同（第三轮，own=False）
+        states = ((False, True), (True, True), (True, False)) if kind == 'fps' else ((False, False), (True, False))
+        for present, own in states:
+            if own:
+                env['S2A_CAPS_OWN'] = '1'
+            else:
+                env.pop('S2A_CAPS_OWN', None)
+            with self.subTest(kind=kind, present=present, own=own):
                 if present:
                     rows = {'code': [(patchfile, code_bytes)], 'fps': [(fps, fps_bytes)],
                             'widen': [(table, table_bytes), (verified, verified_bytes)],
@@ -337,7 +344,7 @@ class StageTest(unittest.TestCase):
                         p.write_bytes(data)
                     if kind == 'community':
                         env.update(S2A_COMMUNITY_PATCHES='1', S2A_CPATCH_DIRS=str(index.parent))
-                keyfile = self.home / ('oracle-' + str(present))
+                keyfile = self.home / ('oracle-' + str(present) + '-' + str(own))
                 oracle = dict(env, S2A_STAGE_KEYS=keyfile.as_posix())
                 if os.name == 'nt' and oracle['S2A_CPATCH_DIRS']:
                     # bash uses POSIX colon-separated paths, Python uses os.pathsep.
@@ -354,22 +361,24 @@ class StageTest(unittest.TestCase):
                         self.assertEqual(keyfile.read_bytes(), ('rewrite\t' + plan['key'] + '~d\n').encode())
                         keys.append(plan['key'])
                         self.assertEqual(bool(plan['patch']), present and kind == 'code')
-                        self.assertEqual(bool(plan['fps']), present and kind == 'fps')
+                        self.assertEqual(bool(plan['fps']), present and kind == 'fps' and own)
                         self.assertEqual(bool(plan['tables']), present and kind == 'widen')
                         self.assertEqual(bool(plan['community']), present and kind == 'community')
                         if present and kind == 'community':
                             self.assertEqual(plan['selection'], 'gfx:verified,gfx:explicit')
-                        self._check_rewrite_forwarding(deps, plan, kind, present, table_bytes,
+                        self._check_rewrite_forwarding(deps, plan, kind, present and (own or kind != 'fps'), table_bytes,
                                                        verified_bytes, fps_bytes, verified_platform)
-                        if present:
+                        if present and len(keys) == 2:
                             self.assertNotEqual(keys[0], keys[1], kind + ' must invalidate the stage key')
+                        if len(keys) == 3:
+                            self.assertEqual(keys[2], keys[0], 'own frame table must stay out of the default pack')
                     finally:
                         deps.close()
 
     def _check_rewrite_forwarding(self, deps, plan, kind, present, table_bytes, verified_bytes, fps_bytes, verified_platform):
         # Protocol-only C boundary: assertions inspect the environment and the
         # copied inputs. It does not prove patched machine-code output bytes.
-        output = self.home / ('forward-' + kind + '-' + str(present))
+        output = Path(tempfile.mkdtemp(prefix='forward-' + kind + '-' + str(present) + '-', dir=self.home))   # fps 组同 present 跑两轮（缺省 / 内部口径）
         (output / 'exefs').mkdir(parents=True)
         (output / 'romfs').mkdir()
         (output / 'exefs/main').write_bytes(b'original boundary')

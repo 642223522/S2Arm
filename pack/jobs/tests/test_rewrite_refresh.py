@@ -655,3 +655,30 @@ class FpslKeyRealLibrary(unittest.TestCase):
                 n = rr.sgrade_key(c, "0100CCCC00000000", "rid", "")
         self.assertTrue(a.endswith(":fpsl" + fp), a)
         self.assertNotIn(":fpsl", b); self.assertNotIn(":fpsl", n)
+
+
+class OwnFrameTableTest(unittest.TestCase):
+    """11-18 #1607：旧包产物根里带改指令（c 行）的我方帧率表只在内部对照口径 S2A_CAPS_OWN=1 交改写器。期望手写——
+    缺省：rewrite_env 不设 S2A_FPS_TSV（不打改指令，60 帧关着游戏不再被解锁）；S2A_CAPS_OWN=1：设成 kit/fps.tsv；
+    own_table 只认带 c 行的 fps.tsv（只有 w 行的通用表、别的文件名都不算）"""
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, self.tmp, True)
+        (self.tmp / "fps.tsv").write_text("build 277178b7dba1b6d4\nc main 0x100 word 6b08015f 7100055f   # x\n", encoding="utf-8")
+
+    def env_of(self, extra):
+        c = types.SimpleNamespace(env=lambda: dict(extra), engine=str(self.tmp))
+        return rr.rewrite_env(c, self.tmp, None, "ios")
+
+    def test_default_does_not_bake_own_table(self):
+        self.assertNotIn("S2A_FPS_TSV", self.env_of({}))
+        self.assertNotIn("S2A_FPS_TSV", self.env_of({"S2A_FPS_TSV": "/leftover"}))
+
+    def test_internal_comparison_still_bakes(self):
+        self.assertEqual(self.env_of({"S2A_CAPS_OWN": "1"})["S2A_FPS_TSV"], str(self.tmp / "fps.tsv"))
+
+    def test_own_table_detection(self):
+        self.assertTrue(rr.own_table(self.tmp / "fps.tsv"))
+        w = self.tmp / "w" / "fps.tsv"; w.parent.mkdir(); w.write_text("present display\nw main 0x1000 f32 60\n# c main 不算\n", encoding="utf-8")
+        self.assertFalse(rr.own_table(w))
+        o = self.tmp / "widen_sites.tsv"; o.write_text("c main 0x100\n", encoding="utf-8")
+        self.assertFalse(rr.own_table(o))
