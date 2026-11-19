@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Device-free CPU tests: C/C++, CMake 3.18+, JDK 17, Android NDK 29.0.14206865,
 # pinned offline rewriter sources and Python Capstone 5.0.7 / LZ4 4.4.5.
+# 本机自测排在门禁后面：不在门禁里跑（没有 GATE2_PAR）就把自己降到 nice 15，子进程继承；门禁步的优先级由门禁自己定
+[ -n "${GATE2_PAR:-}" ] || renice 15 -p $$ > /dev/null 2>&1 || true
 set -euo pipefail
 android_dir=$(cd "$(dirname "$0")" && pwd)
 repo_dir=$(cd "$android_dir/.." && pwd)
