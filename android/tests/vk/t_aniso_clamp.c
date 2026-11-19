@@ -71,7 +71,7 @@ int main(void) {
     // Vulkan VUID-VkSamplerCreateInfo-anisotropyEnable-01071: [1, device limit].
     const float requests[] = {0, 1, 2, limit, limit * 2};
     const float expected[] = {1, 1, 2, limit, limit};
-    unsigned bad = 0;
+    unsigned bad = 0, cases = 0;
     for (unsigned i = 0; i < sizeof requests / sizeof requests[0]; i++) {
         samp_par p = {0}; p.aniso = requests[i];
         nvn_gpu_samp sampler = NULL;
@@ -83,6 +83,7 @@ int main(void) {
         printf("aniso request=%g expected=%g effective=%g calls=%u %s\n",
                requests[i], expected[i], effective, calls, ok ? "PASS" : "FAIL");
         bad += !ok;
+        cases++;
         nvn_gpu_samp_release(sampler);
     }
     samp_par p = {0}; p.aniso = limit * 2;
@@ -93,6 +94,7 @@ int main(void) {
     int errors_ok = nvn_gpu_samp_create(&p, &sampler, &err).code == NVN_GPU_E_UNSUPPORTED && !sampler;
     errors_ok &= nvn_gpu_samp_create(NULL, &sampler, &err).code == NVN_GPU_E_ARG && !sampler;
     errors_ok &= nvn_gpu_samp_create(&p, NULL, &err).code == NVN_GPU_E_ARG;
+    cases += 3;
     errors_ok &= calls == 0;
     bad += !errors_ok;
     printf("aniso unsupported/null-params/null-out calls=%u %s\n", calls, errors_ok ? "PASS" : "FAIL");
@@ -100,6 +102,6 @@ int main(void) {
     vkDestroyDevice(dev.device, NULL);
     destroy_debug(dev.instance, messenger, NULL);
     vkDestroyInstance(dev.instance, NULL);
-    printf("aniso-clamp cases=8 failures=%u validation-messages=%u\n", bad, messages);
+    printf("aniso-clamp cases=%u failures=%u validation-messages=%u\n", cases, bad, messages);
     return bad || messages ? 1 : 0;
 }
