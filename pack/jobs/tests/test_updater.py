@@ -213,6 +213,23 @@ class VersionTests(Base):
             with self.subTest(tag=tag, current=current), self.release(tag), patch.object(updater, "PUBLIC_KEY", key), patch.dict(os.environ, {"S2A_UPDATE_API": ""}):
                 self.assertEqual(updater.latest("mac", current)["available"], available)
 
+    def test_prerelease_install_gets_the_same_numbered_release(self):
+        """11-19：0.6.0 测试包装的是 0.6.0-test.N，正式 0.6.0 发布时要算更新（同号预发布 < 正式）；更高号的测试版不被旧正式版「更新」回去"""
+        key = ed25519.public_key(TEST_SECRET).hex()
+        for tag, current, available in (("v0.6.0", "0.6.0-test.1", True), ("v0.6.0", "0.6.0-test.12", True), ("v0.5.9", "0.6.0-test.1", False),
+                                         ("v0.6.0", "0.6.1-test.1", False), ("v0.6.1", "0.6.0-test.3", True), ("v0.6.0", "0.6.0", False)):
+            with self.subTest(tag=tag, current=current), self.release(tag), patch.object(updater, "PUBLIC_KEY", key), patch.dict(os.environ, {"S2A_UPDATE_API": ""}):
+                self.assertEqual(updater.latest("mac", current)["available"], available)
+
+    def test_version_key_orders_like_semver(self):
+        order = ["0.5.9", "0.6.0-test.1", "0.6.0-test.2", "0.6.0-test.10", "0.6.0-test.x", "0.6.0", "0.6.1-test.1", "0.6.1", "0.10.0"]
+        keys = [updater.version_key(v) for v in order]
+        self.assertTrue(all(keys), keys)
+        self.assertEqual(keys, sorted(keys))
+        self.assertEqual(updater.version_key("v0.6.0"), updater.version_key("0.6.0"))
+        for bad in ("", "0.6", "0.6.0-", "0.6.0-te st", "x0.6.0"):
+            self.assertIsNone(updater.version_key(bad), bad)
+
     def test_official_build_ignores_the_test_key(self):
         with patch.dict(os.environ, {"S2A_UPDATE_API": "", "S2A_UPDATE_PUBKEY": "00" * 32}):
             self.assertEqual(updater.public_key().hex(), updater.PUBLIC_KEY)
