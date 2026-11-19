@@ -4,13 +4,15 @@ import SwiftUI
 /// "What's new" on iPhone: one page per feature, the picture on top, then the kicker, the title and the three short columns
 /// (what it is / how to use it / where, or the page's own headings such as "Good to know"). Swipe or Next to turn the page;
 /// the last page's button and the close button both end it (it counts as seen). The same pages as the computer's window.
-struct FeatureIntroView: View {
+public struct FeatureIntroView: View {
     let intro: FeatureIntro
+    /// The page shown; the host binds it so a controller turns the pages too (left / right, A next, B close).
+    @Binding var index: Int
     let close: () -> Void
-    @State private var index = 0
+    public init(intro: FeatureIntro, index: Binding<Int>, close: @escaping () -> Void) { self.intro = intro; _index = index; self.close = close }
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    var body: some View {
+    public var body: some View {
         VStack(spacing: 0) {
             TabView(selection: $index) {
                 ForEach(intro.pages.indices, id: \.self) { i in

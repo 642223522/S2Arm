@@ -47,7 +47,7 @@ public final class S2ArmShellHostModel {
     ///   （#399 真机验收：原先「全都能玩了就停」，开着库重推一款已装好的游戏，整个推送过程库里一直显示可玩、没有进度）。App 退到后台时计时器随之暂停
     @ObservationIgnored private var ticker: Timer?
     /// 这一版的新功能介绍（App 包里 Feature/feature.json，出壳时 pack/feature_bundle.py 从 docs/site 取标了 ios 的页）；读一次留着
-    @ObservationIgnored private lazy var featureIntro: FeatureIntro? = Self.loadFeatureIntro(Bundle.main.bundleURL.appendingPathComponent("Feature"))
+    @ObservationIgnored private let featureIntro: FeatureIntro?
     var watching: Bool { ticker != nil }
     /// 传输清单和它列的文件这么久都没动 = 传断了（拔线、电脑那边停了）。90 秒：电脑经 devicectl 写 ≤1 GB 的一批要写完才落盘，实测约 33 秒，留余量
     static let transferStall: TimeInterval = 90
@@ -82,6 +82,10 @@ public final class S2ArmShellHostModel {
     public static let guideSeenKey = "S2AGuideSeen.v1"
     public private(set) var guideOpen = false
     public var guidePage = 0
+    /// 这一版的新功能介绍（iPhone 两页）盖在库界面上：排在首次引导之后，只给升级上来的玩家（看过引导、没看过这一期）；新装的关引导时一并记看过
+    public private(set) var featureOpen = false
+    public var featurePage = 0
+    public var featureIntroContent: FeatureIntro? { featureIntro }
 
     /// play 缺省走 C 出口；单测可换
     public init(catalogue: Catalogue, play: ((String) -> Void)? = nil, stores: S2ArmGameSettings.Stores = .live,
@@ -91,8 +95,9 @@ public final class S2ArmShellHostModel {
                 now: @escaping () -> Date = Date.init, pickGameData: ((String) -> Void)? = nil, identityStore: GameIdentityStore = .live,
                 gamesRoot: URL = S2ArmContainer.gamesRoot(), packGamesRoot: URL? = nil,
                 imlNotice: (() -> String?)? = nil, needsHostUpdate: ((String) -> Bool)? = nil, needsReinstall: ((String) -> Bool)? = nil,
-                reloadCatalogue: (() -> Catalogue)? = nil) {
+                reloadCatalogue: (() -> Catalogue)? = nil, featureDir: URL? = nil) {
         self.reloadCatalogue = reloadCatalogue
+        featureIntro = Self.loadFeatureIntro(featureDir ?? Bundle.main.bundleURL.appendingPathComponent("Feature"))
         self.gamesRoot = gamesRoot
         self.packGamesRoot = packGamesRoot ?? Self.packGamesRoot(for: gamesRoot)
         self.stores = stores; self.layoutState = layoutState; bannerURLs = catalogue.bannerURLs
@@ -145,6 +150,12 @@ public final class S2ArmShellHostModel {
         #else
         guideOpen = !stores.app.bool(forKey: Self.guideSeenKey) && env["S2A_SHELL_PLAY"] == nil && env["S2A_SHELL_OPEN_LAYOUT_EDITOR"] == nil
         if env["S2A_SHELL_GUIDE"] == "1" { guideOpen = true }   // 测试开关：看过也强制弹一次（真机截图验证排版用；同上，只有 devicectl / Xcode 起 App 能给）
+        // 新功能介绍：首次引导没开（看过了）、这一期没看过、不是测试链直接开局 / 开编辑页才弹；S2A_SHELL_FEATURE=1 强制弹（截图验排版）
+        if let intro = featureIntro {
+            featureOpen = !guideOpen && stores.app.bool(forKey: Self.guideSeenKey) && stores.app.string(forKey: Self.featureSeenKey) != intro.id
+                && env["S2A_SHELL_PLAY"] == nil && env["S2A_SHELL_OPEN_LAYOUT_EDITOR"] == nil
+            if env["S2A_SHELL_FEATURE"] == "1" { guideOpen = false; featureOpen = true }
+        }
         #endif
         if let id = env["S2A_SHELL_OPEN_LAYOUT_EDITOR"], allGames.contains(where: { $0.id == id }) {
             editingLayout = id; NSLog("S2Arm 游戏库：S2A_SHELL_OPEN_LAYOUT_EDITOR 直接开 %@ 的调整位置页", id)
@@ -405,10 +416,7 @@ public final class S2ArmShellHostModel {
                      onManageSaves: { [weak self] id in self?.manageSaves(id) })
         actions.onReorderGames = { [weak self] sources, before in self?.reorderGames(sources, before: before) ?? false }
         actions.onReportProblem = { s2a_shell_report_problem() }
-        // 新功能介绍（0.6.0 起 iPhone 两页）：本机没看过这一期就在游戏库上弹一次，关掉记下；设置里能再看
-        actions.featureIntro = featureIntro
-        actions.featureIntroUnseen = featureIntro.map { stores.app.string(forKey: Self.featureSeenKey) != $0.id } ?? false
-        actions.onFeatureIntroSeen = { [stores] id in stores.app.set(id, forKey: Self.featureSeenKey) }
+        actions.featureIntro = featureIntro   // 新功能介绍（0.6.0 起 iPhone 两页）：有才在游戏库设置里出「再看一遍」那一行
         // 快照（0.6.0）：有完整快照的那款，长按卡片多一项「回到上次存下的这一刻」（宿主 ios/app.m；开关关着时宿主回 0，菜单里没有这一项）
         actions.snapshotAvailable = { id in s2a_shell_snapshot_available(id) != 0 }
         actions.onRestoreSnapshot = { [weak self] id in
@@ -701,7 +709,31 @@ public final class S2ArmShellHostModel {
     public func closeGuide() {
         guard guideOpen else { return }
         guideOpen = false; stores.app.set(true, forKey: Self.guideSeenKey)
+        if let id = featureIntro?.id { stores.app.set(id, forKey: Self.featureSeenKey) }   // 新装的：引导讲过入口，这一期新功能不再连弹一套
         NSLog("S2Arm 游戏库：首次引导看过（停在第 %d 页关）", guidePage + 1)
+    }
+    /// 关掉新功能介绍（×、开始游戏、手柄 B）：记这一期看过
+    public func closeFeature() {
+        guard featureOpen else { return }
+        featureOpen = false
+        if let id = featureIntro?.id { stores.app.set(id, forKey: Self.featureSeenKey) }
+        NSLog("S2Arm 游戏库：新功能介绍看过（停在第 %d 页关）", featurePage + 1)
+    }
+    /// 游戏库设置里「再看一遍」
+    public func openFeature() {
+        guard featureIntro != nil, !guideOpen else { return }
+        featurePage = 0; featureOpen = true
+    }
+    /// 新功能介绍开着时手柄输入走这里：左右翻页，A 下一页 / 最后一页完成，B 关
+    func featureInput(_ action: ShellInput.Action) {
+        let last = max((featureIntro?.pages.count ?? 1) - 1, 0)
+        switch action {
+        case .right: featurePage = min(featurePage + 1, last)
+        case .left: featurePage = max(featurePage - 1, 0)
+        case .activate: if featurePage >= last { closeFeature() } else { featurePage += 1 }
+        case .back: closeFeature()
+        default: break
+        }
     }
     /// 引导开着时手柄输入走这里：左右翻页，A 下一页 / 最后一页完成，B 关
     func guideInput(_ action: ShellInput.Action) {
@@ -747,10 +779,11 @@ public final class S2ArmShellHostModel {
         adapter.onInput = { [weak self] action, device in
             guard let self else { return }
             if self.guideOpen { self.guideInput(action); return }   // 引导盖着库界面：手柄只管引导
+            if self.featureOpen { self.featureInput(action); return }   // 新功能介绍同理
             self.input.append(action, device: device)
         }
         adapter.onRelease = { [weak self] action, device in
-            guard let self, !self.guideOpen else { return }
+            guard let self, !self.guideOpen, !self.featureOpen else { return }
             self.input.append(action, device: device, released: true)
         }
         adapter.onControllersChange = { [weak self] connected in

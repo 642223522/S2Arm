@@ -305,11 +305,9 @@ public struct ShellActions {
     /// game restored to that moment). Both nil: no snapshot item anywhere in the library.
     public var snapshotAvailable: ((_ gameID: String) -> Bool)? = nil
     public var onRestoreSnapshot: ((_ gameID: String) -> Void)? = nil
-    /// The version's "What's new": shown once over the library when `featureIntroUnseen`, and again from the library's
-    /// settings. Closing it calls `onFeatureIntroSeen` with its id. Nil: this version has none for iPhone.
+    /// The version's "What's new" for iPhone. The host shows it once over the library (after the first-run guide) and
+    /// the library's settings offer it again; nil: this version has none, so no settings row either.
     public var featureIntro: FeatureIntro? = nil
-    public var featureIntroUnseen = false
-    public var onFeatureIntroSeen: ((_ id: String) -> Void)? = nil
     public init(onSelect: @escaping (String) -> Void = { _ in }, onPlay: @escaping (String) -> Void = { _ in },
                 onChange: @escaping (String, String, String) -> Void = { _, _, _ in },
                 onPickGameData: @escaping (String) -> Void = { _ in }, onUseAppData: ((String) -> Void)? = nil,
