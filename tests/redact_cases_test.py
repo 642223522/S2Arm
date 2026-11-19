@@ -53,14 +53,14 @@ class PathReasonTests(unittest.TestCase):
         cases = [
             (f"00:00:00.110 |I| ServiceFs CommitLocked: 存档提交 #1：{ios} 克隆 + 原子交换 25.5 ms",
              "00:00:00.110 |I| ServiceFs CommitLocked: 存档提交 #1：[PRIVATE_PATH] 克隆 + 原子交换 25.5 ms"),
-            ("存档提交 #12：/Volumes/Game Disk/S2Arm/games/0100A/SaveData 克隆 + 原子交换 3.0 ms",
+            ("存档提交 #12：/private/var/Game Disk/S2Arm/games/0100A/SaveData 克隆 + 原子交换 3.0 ms",
              "存档提交 #12：[PRIVATE_PATH] 克隆 + 原子交换 3.0 ms"),
-            ("写盘 /Volumes/Game Disk/S2Arm 库/x.img 1,024 MB", "写盘 [PRIVATE_PATH] 1,024 MB"),
+            ("写盘 /private/var/Game Disk/S2Arm 库/x.img 1,024 MB", "写盘 [PRIVATE_PATH] 1,024 MB"),
             ("/private/var/joe/My Game 2/a.xci", "[PRIVATE_PATH]"),
             ("/private/var/joe smith/Movie Night 12 ms", "[PRIVATE_PATH] 12 ms"),   # 只有数字 + 单位能留在外面：英文单词「Night」照旧在占位里
             ("/private/var/joe/a.img 用时 1.5 秒", "[PRIVATE_PATH] 用时 1.5 秒"),
             ("pipeline prewarm list /var/mobile/x/pso.tsv: 1834 lines", "pipeline prewarm list [PRIVATE_PATH] 1834 lines"),   # nvn_mtl.m 的形态
-            ("写入 /Volumes/X/S2Arm/a.img（12.5 MB）", "写入 [PRIVATE_PATH]（12.5 MB）"),
+            ("写入 /private/var/X/S2Arm/a.img（12.5 MB）", "写入 [PRIVATE_PATH]（12.5 MB）"),
         ]
         for original, expected in cases:
             with self.subTest(original=original):
