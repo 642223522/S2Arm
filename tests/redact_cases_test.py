@@ -91,6 +91,8 @@ class ExactNameAllowTests(unittest.TestCase):
             (f"0100a1b2c3d4e5f60000000000000003 = {hex32}", "0100a1b2c3d4e5f60000000000000003 = [REDACTED]"),   # title.keys：权利号 = 标题密钥
             ("writer_key=1cdff916cd3c5dab", "writer_key=[REDACTED]"),
             (f"titlekey={hex32}", "titlekey=[REDACTED]"),   # 标题密钥是 32 位十六进制
+            ("titlekey=1cdff916cd3c5dab", "titlekey=[REDACTED]"),   # 截断显示的半个标题密钥也算泄漏：不管多长都抹
+            ("titleKey: 1cdff916", "titleKey: [REDACTED]"),
             ('"uuid":"6C1E8F2A-1B3C-4D5E-8F9A-0B1C2D3E4F5A"', '"uuid":"[REDACTED]"'),
             ("deviceUUID=6C1E8F2A-1B3C-4D5E-8F9A-0B1C2D3E4F5A", "deviceUUID=[REDACTED]"),
         ]

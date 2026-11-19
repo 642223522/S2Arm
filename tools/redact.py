@@ -4,7 +4,7 @@ import re
 
 KEY_LINE = re.compile(r'(?im)^(?P<prefix>[ \t]*[A-Za-z0-9_.-]+[ \t]*=[ \t]*)(?P<value>[0-9a-f]{32,})[^\r\n]*(?=\r?$)')
 
-SECRET = re.compile(r'(?i)(?:password|passwd|secret|token|api[_-]?key|authorization|cookie|serial(?:number)?|udid|uuid|imei|device[_-]?id|android[_-]?id|idfa|idfv|mac[_-]?address|uniqueidentifier|identifierforvendor|tester|(?:^|[_-])keys?(?:[_-]|$)|(?:^|[_-])(?:kek|bek|seed|keyblob)(?:[_-]|$)|titlekek|masterkey|headerkey)')
+SECRET = re.compile(r'(?i)(?:password|passwd|secret|token|api[_-]?key|authorization|cookie|serial(?:number)?|udid|uuid|imei|device[_-]?id|android[_-]?id|idfa|idfv|mac[_-]?address|uniqueidentifier|identifierforvendor|tester|(?:^|[_-])keys?(?:[_-]|$)|(?:^|[_-])(?:kek|bek|seed|keyblob)(?:[_-]|$)|titlekek|titlekeys?|masterkey|headerkey)')   # titlekey：截断显示的半个标题密钥也算泄漏，不看值多长（维护者 11-19）
 
 # Scan keys separately so an innocent outer field cannot hide a nested secret assignment.
 # 名字只从一串 [A-Za-z0-9_.-] 的开头试（前面的数字 / 点 / 横线由 [0-9.-]* 吃掉，名字仍从串里第一个字母或下划线起）：原写法从串里每个位置起
