@@ -3,7 +3,7 @@
 set -u
 R=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d "${TMPDIR:-/tmp}/extpso.XXXXXX"); trap 'rm -rf "$T"' EXIT
 python3 - "$R" "$T" <<'PY'
-import gzip, json, os, subprocess, sys
+import gzip, json, os, re, subprocess, sys
 from pathlib import Path
 R, T = Path(sys.argv[1]), Path(sys.argv[2]); fails = 0
 def ck(ok, what):
@@ -40,5 +40,24 @@ ck((e.get('repo'), e.get('commit'), e.get('license'), e.get('author'), e.get('gi
 ck((m.get('repo'), m.get('commit'), m.get('author')) == ('S2Arm/pso-seeds', '', 'S2Arm'), '⑧ 我方种子署名不变')
 (T / 'm/nx/dm/games/0100AAAA00000000/pso_manifest.tsv').unlink(); subprocess.run(['git', '-C', str(T / 'm/nx'), '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qam', 'rm'], check=True)
 o = run(); ck(not (seeds / '0100AAAA00000000/ext_nx.tsv').exists() and (seeds / '0100CCCC00000000/zc_crowd.tsv').exists() and '撤 1 份' in o.stdout, '⑨ 上游删了的款撤掉本工具写的文件、别的不动')
-print(f'ext_pso_collect：{9 - fails}/9 通过'); sys.exit(1 if fails else 0)
+# ---- R 行转换（期望手算：按 nvn_pso_skey.h 偏移拼一条我方键，再按对方结构摆字节）----
+import struct, importlib.util
+spec = importlib.util.spec_from_file_location('epc', R / 'tools/ext_pso_collect.py'); epc = importlib.util.module_from_spec(spec); spec.loader.exec_module(epc)
+ours = bytearray(432); ours[0:18] = b'1111222233334444_b'; ours[24:42] = b'5555666677778888_b'
+struct.pack_into('<I', ours, 104, 70); struct.pack_into('<I', ours, 148, 1); struct.pack_into('<I', ours, 152, 0xf)   # cfmt[0] = 70（非整数格式）、blend_en 位 0、chmask
+blend = (0x5 << 3) | (1 << 40) | 0x3                                                         # 因子位 + 高级混合位 40 + target 位
+struct.pack_into('<Q', ours, 160, blend); want = bytearray(ours); struct.pack_into('<Q', want, 160, 0x5 << 3); want = bytes(want).hex()
+h880 = bytes(ours) + struct.pack('<II', 0, 7)                                                # atest 0、logic 7（丢）
+ck(epc.conv_nx(h880.hex()) == (want, None), '⑩ nxnative 880：取前 432 字节、清高级混合位与 target 位、logic 丢')
+ck(epc.conv_nx((bytes(ours) + struct.pack('<II', 1, 0)).hex())[0] is None, '⑪ nxnative 880 alpha 测试开 → 不收')
+ck(epc.conv_nx((bytes(ours) + bytes(8) + bytes(64) + struct.pack('<II', 1, 0)).hex()) == (want, None), '⑫ nxnative 1024：border 丢、其余同 880')
+vs, fs = 'e4b5b0967a3cd0b3' + 'a' * 48 + '-b7530f698e76_b', '0123456789abcdef' + 'b' * 48 + '_b'
+m = bytearray(544); m[0:len(vs)] = vs.encode(); m[80:80 + len(fs)] = fs.encode(); m[200:544] = ours[88:432]
+w2 = bytearray(bytes.fromhex(want)); w2[0:24] = b'e4b5b0967a3cd0b3_b'.ljust(24, b'\0'); w2[24:48] = b'0123456789abcdef_b'.ljust(24, b'\0')
+ck(epc.conv_mng(bytes(m).hex()) == (bytes(w2).hex(), None), '⑬ MacNativeGames 明文 1088：着色器名取 sha256 前 16 位 + _b、pso_key 照搬后规范化')
+packed = vs + ':' + fs + ':' + re.sub('(00)+', lambda z: f'z{len(z.group(0)) // 2:x}.', bytes(m[160:544]).hex())
+ck(epc.conv_mng(packed) == (bytes(w2).hex(), None), '⑭ MacNativeGames 压缩写法展开后同明文')
+m2 = bytearray(m); struct.pack_into('<I', m2, 200 + 68, 0x4)
+ck(epc.conv_mng(bytes(m2).hex())[0] is None, '⑮ MacNativeGames a2c MetalFX 位 → 不收')
+print(f'ext_pso_collect：{15 - fails}/15 通过'); sys.exit(1 if fails else 0)
 PY
