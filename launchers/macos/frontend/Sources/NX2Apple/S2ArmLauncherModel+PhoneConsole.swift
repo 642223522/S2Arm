@@ -84,12 +84,13 @@ extension S2ArmLauncherModel {
         return (max(i - 1, 0), n)
     }
 
-    /// 「更新所选」：一单作业 pushSelected 按游戏库顺序推总控台这台（作业层一款失败接着推下一款，做不下去的才整轮停）
-    func updateSelected(resume: Bool = false) {
-        guard !consoleUpdating, let device = consolePhone?.device else { return }
-        let order = games.filter { consoleSelection.contains($0.id.uppercased()) }.map { $0.id.uppercased() }
+    /// 「更新所选」：一单作业 pushSelected 按游戏库顺序推总控台这台（作业层一款失败接着推下一款，做不下去的才整轮停）。
+    /// ids / device 给了就推这几款到那台（「更新 S2Arm」成功页「更新这 N 款」：刚装好 App 的那台上的 0.5.x 老款）
+    func updateSelected(resume: Bool = false, ids: [String]? = nil, device: String? = nil) {
+        guard !consoleUpdating, let device = device ?? consolePhone?.device else { return }
+        let order = ids ?? games.filter { consoleSelection.contains($0.id.uppercased()) }.map { $0.id.uppercased() }
         guard resume || !order.isEmpty else { return }
-        guard !phoneBusy else { phoneQueue.append((nil, { [weak self] in self?.updateSelected(resume: resume) })); return }
+        guard !phoneBusy else { phoneQueue.append((nil, { [weak self] in self?.updateSelected(resume: resume, ids: ids, device: device) })); return }
         consolePushing = nil
         start(JobSession(kind: .pushSelected, gameID: nil, name: BackendText.launcherText("console.updateSelected", language: dynamicLanguage)
             .replacingOccurrences(of: "{0}", with: "\(order.count)"))) { [weak self] sink in

@@ -2794,7 +2794,28 @@ def install_shell(c, ph, steps=True):
     packer.commit_phone_ipa(c, ipa, sid)
     deliver_identity(c, ph)   # 证书签名用户：装 App 时同时把证书交给 App，以后手机上自己签游戏（交过了跳过、交不出不挡）
     return dict(updated=True, outputPath=str(layout.phone_ipa(c)), bundleId=ph.bid, games=[], toShell=sid,
-                **(dict(signerSwitched=True) if before and before != now else {}), **ph.info)
+                **(dict(signerSwitched=True) if before and before != now else {}), **legacy_result(c, ph), **ph.info)
+
+
+def legacy_games(c, rec):
+    """0.5.x 整包装上的老款（这台的设备记录：资源推过、没有程序包——同总控台 suggested / missing，host_update.phone_overview）：
+    装上 0.6.0 通用 App 后程序不在手机上了，要电脑推一次程序包才能玩（资源不重推）。→ (这台电脑能更新的 [{gameId, name}], 要回别的电脑更新的 [同])：
+    能更新 = 这台电脑的游戏库里有这款的 iPhone 程序件与资源包清单（push_game 开头 ios_pack 的条件）"""
+    todo = sorted(str(g).upper() for g, v in (rec.get("games") or {}).items() if isinstance(v, dict) and v.get("pack") and not v.get("program"))
+    if not todo:   # 绝大多数装 App 都没有老款：不读游戏库目录
+        return [], []
+    names = {str(g.get("id", "")).upper(): g.get("name") or g.get("id") for g in c.catalog()["games"]}
+    here, elsewhere = [], []
+    for g in todo:
+        ok = g in names and layout.has_ios_kit(c, g) and (layout.ios_pack(c, g) / "manifest.json").is_file()
+        (here if ok else elsewhere).append(dict(gameId=g, name=names.get(g) or g))
+    return here, elsewhere
+
+
+def legacy_result(c, ph):
+    """装完 App 的结果里带上老款（界面在同一页接着列出、默认全勾，点「更新这 N 款」走 pushSelected，设备给 legacyDevice = 这台的设备记录键；空的不带）"""
+    here, elsewhere = legacy_games(c, layout.load_device(c, ph.key))
+    return dict(**({"legacy": here, "legacyDevice": ph.key} if here else {}), **({"legacyElsewhere": elsewhere} if elsewhere else {}))
 
 
 def last_signer(rec):

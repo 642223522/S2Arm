@@ -148,5 +148,27 @@ class InstallShellTests(JobCase):
         r = install.install_shell(self.c, self.ph, steps=False)
         self.assertEqual((self.ph.calls, r["updated"]), ([("install", [])], True))
 
+    def test_legacy_games_listed_after_install(self):
+        # 期望手写：装完 App 后，这台记录里「资源推过、没有程序包」的老款（0.5.x 整包装的）列进结果——游戏库里有这款 iPhone 包的进 legacy（这台电脑能更新），
+        #   没有的进 legacyElsewhere（要回装它的电脑更新）；程序包已推过的、资源没推过的都不列
+        G2, G3, G4 = "0100000000020000", "0100000000030000", "0100000000040000"
+        layout.save_device(self.c, self.ph.key, dict(shellId="S1", bundleId=self.ph.bid, games={
+            GID: dict(pack="P"), G2: dict(pack="P"), G3: dict(pack="P", program=dict(sha="s")), G4: dict(program=dict(sha="s"))}))
+        here = {GID}
+        cat = {"games": [dict(id=GID, name="甲"), dict(id=G3, name="丙")]}
+        with mock.patch.object(self.c, "catalog", lambda: cat, create=True), \
+                mock.patch.object(layout, "has_ios_kit", lambda c, g: g in here), mock.patch.object(layout, "ios_pack", lambda c, g: self.root / "pk" / g):
+            (self.root / "pk" / GID).mkdir(parents=True); (self.root / "pk" / GID / "manifest.json").write_text("{}")
+            r = install.install_shell(self.c, self.ph, steps=False)
+        self.assertEqual(r["legacy"], [dict(gameId=GID, name="甲")])
+        self.assertEqual(r["legacyDevice"], self.ph.key, "「更新这 N 款」推到刚装好 App 的这台")
+        self.assertEqual(r["legacyElsewhere"], [dict(gameId=G2, name=G2)])
+
+    def test_no_legacy_keys_when_none(self):
+        layout.save_device(self.c, self.ph.key, dict(shellId="S1", bundleId=self.ph.bid, games={GID: dict(pack="P", program=dict(sha="s"))}))
+        r = install.install_shell(self.c, self.ph, steps=False)
+        self.assertNotIn("legacy", r); self.assertNotIn("legacyElsewhere", r)
+
+
 if __name__ == "__main__":
     unittest.main()
