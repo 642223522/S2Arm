@@ -2153,6 +2153,10 @@ static void blit_note(void);   // Per-pass dump: a copy / buffer update ended th
 // allocator gave out overlapping blocks, see hle_nvn.c zcull_size; NVN runs copies in order for any game)
 enum { BW_MAX = 64 };
 static uint64_t g_bw_lo[BW_MAX], g_bw_hi[BW_MAX], g_br_lo[BW_MAX], g_br_hi[BW_MAX]; static int g_bw_n, g_br_n, g_blit_ops; static uint64_t g_blit_barriers;
+// 按游戏屏障排序的派发上次屏障以来写过 / 读过的范围（disp_note），与拷贝的表分开：之后的拷贝要排在它们后面，之后的派发只在游戏要求时（g_dsp_game_bar）排。
+//   每次屏障、每个新拷贝编码器清空；DM_NVN_DISPATCH_RANGE=0 / range 时不用（马车世界缺口 ⑥，照上游参考实现（MIT）547c5db6）
+enum { DW_MAX = 256 };
+static uint64_t g_dw_lo[DW_MAX], g_dw_hi[DW_MAX], g_dr_lo[DW_MAX], g_dr_hi[DW_MAX]; static int g_dw_n, g_dr_n, g_dsp_game_bar;
 static uint64_t g_blit_splits;   // copies / buffer updates / fills that ended an open draw pass (the residency set line; a pass ended this way stores and the next one reloads its attachments)
 uint64_t nvn_be_blit_splits(void) { return g_blit_splits; }
 static int enc_open(void);
@@ -2173,7 +2177,7 @@ static id<MTL4ComputeCommandEncoder> blit_open_k(int cmp) {
             g_blit_cmp = cmp; m3_wait(g_blit, 0, 0);
         }
         else { g_blit = enc_b_begin(g_cb); main_barrier_begin(g_blit, 0); }
-        gp_begin(g_blit, 'C', nil); g_bw_n = g_br_n = 0; g_blit_ops = 0; g_blit_ct = 0; }
+        gp_begin(g_blit, 'C', nil); g_bw_n = g_br_n = g_dw_n = g_dr_n = 0; g_blit_ops = 0; g_blit_ct = 0; }
     return g_blit;
 }
 static id<MTL4ComputeCommandEncoder> blit_open(void) { return blit_open_k(0); }
@@ -2199,18 +2203,24 @@ static void blit_barrier(void) {
     // Metal 3: compute encoders have a barrier inside them (memoryBarrierWithScope, iOS 12 on); copy encoders have none, so the copy encoder ends and a new one begins after the fence.
     // Callers take g_blit again after this
     else if (!off) { enc_b_end(g_blit); g_blit = nil; blit_open_k(0); g_blit_splits3++; }
-    g_bw_n = g_br_n = 0; g_blit_ops = 0; g_blit_barriers++;
+    g_bw_n = g_br_n = g_dw_n = g_dr_n = 0; g_blit_ops = 0; g_blit_barriers++;
 }
 uint64_t mtl_blit_barriers(void) { return g_blit_barriers; }
 static int bw_hit(uint64_t lo, uint64_t hi) { for (int i = 0; i < g_bw_n; i++) if (lo < g_bw_hi[i] && g_bw_lo[i] < hi) return 1; return 0; }
 static int br_hit(uint64_t lo, uint64_t hi) { for (int i = 0; i < g_br_n; i++) if (lo < g_br_hi[i] && g_br_lo[i] < hi) return 1; return 0; }
+static int dw_hit(uint64_t lo, uint64_t hi) { for (int i = 0; i < g_dw_n; i++) if (lo < g_dw_hi[i] && g_dw_lo[i] < hi) return 1; return 0; }
+static int dr_hit(uint64_t lo, uint64_t hi) { for (int i = 0; i < g_dr_n; i++) if (lo < g_dr_hi[i] && g_dr_lo[i] < hi) return 1; return 0; }
+// 拷贝 / 更新 / 填充读 [rlo, rhi)、写 [wlo, whi) 与上次屏障以来的操作有没有先后依赖（或表放不下）：拷贝之间、拷贝与按游戏屏障排序的派发之间都看（blit_buf）
+static int blit_conflict(uint64_t rlo, uint64_t rhi, uint64_t wlo, uint64_t whi) {
+    return g_bw_n == BW_MAX || g_br_n == BW_MAX || (rhi > rlo && (bw_hit(rlo, rhi) || dw_hit(rlo, rhi))) || bw_hit(wlo, whi) || br_hit(wlo, whi) || dw_hit(wlo, whi) || dr_hit(wlo, whi);
+}
 // buffer → buffer / fill: reads [rlo, rhi) (0, 0 when nothing is read), writes [wlo, whi)
 static uint64_t g_wr_epoch;   // Bumped by every buffer write outside a render pass (copy / update / fill, texture → buffer, dispatch): indirect-draw conversions made before it are stale (ixc_run)
 static uint64_t g_mdx_epoch;  // Bumped by GPU writes that can change an indirect-count multi-draw's records or count (copy, fill, texture → buffer, dispatch; see mdx_run)
 static id<MTL4ComputeCommandEncoder> blit_buf(uint64_t rlo, uint64_t rhi, uint64_t wlo, uint64_t whi) {
     g_wr_epoch++;
     id<MTL4ComputeCommandEncoder> e = blit_raw();
-    if (g_blit_ops && (g_bw_n == BW_MAX || g_br_n == BW_MAX || (rhi > rlo && bw_hit(rlo, rhi)) || bw_hit(wlo, whi) || br_hit(wlo, whi))) blit_barrier();
+    if (g_blit_ops && blit_conflict(rlo, rhi, wlo, whi)) blit_barrier();
     g_bw_lo[g_bw_n] = wlo; g_bw_hi[g_bw_n++] = whi; g_blit_ops++; g_gp_copies++;
     if (rhi > rlo) { g_br_lo[g_br_n] = rlo; g_br_hi[g_br_n++] = rhi; }
     (void)e; return g_blit;   // see blit_raw
@@ -16347,10 +16357,16 @@ typedef struct { int nw, nr; uint64_t wlo[DR_MAX], whi[DR_MAX], rlo[DR_MAX], rhi
 uint64_t mtl_present_count(void);
 static uint64_t g_disp_ranged, g_disp_full, g_disp_nobar;   // 算得出范围的派发 / 算不出的 / 算得出且没放屏障的
 uint64_t mtl_dispatch_range_stats(int k) { return k == 0 ? g_disp_ranged : k == 1 ? g_disp_full : g_disp_nobar; }
-static int disp_range_on(void) {
-    static int mode = -1, alt; if (mode < 0) { const char *e = getenv("DM_NVN_DISPATCH_RANGE"); mode = !(e && !strcmp(e, "0")); if (e && !strncmp(e, "alt:", 4)) alt = atoi(e + 4); }
-    return alt > 0 ? (int)((mtl_present_count() / (uint64_t)alt) & 1) : mode;
+// 派发之间按游戏自己的屏障排（缺省，马车世界缺口 ⑥，照上游参考实现（MIT）547c5db6）：NVN 只在游戏调 nvnCommandBufferBarrier 时让派发的写对之后的工作可见。
+//   按范围也替不了游戏屏障：按帧推进的粒子系统共用它们写的缓冲（上游读数：一款游戏一帧约 230 次派发，91 % 碰到前面某次的范围；按游戏屏障排后编码 6.6–9.8 → 0.4–1.2 ms、
+//   GPU p50 9.0 → 5.3 ms）。所以算得出范围的派发：游戏从上一次派发以来发过屏障、或碰到拷贝的范围（统一缓冲更新、上传是宿主自己的先后）、或表放不下才放屏障；
+//   它的读写记进 g_dw / g_dr（不进拷贝的表），之后的拷贝排在它后面，之后的派发不排。算不出范围的派发、宿主自己的派发两边照旧全排。
+//   DM_NVN_DISPATCH_RANGE=0 每次都放；range = 派发之间也按范围（上一版）；alt:<N> = 每 N 次出图在每次都放 / 按游戏屏障之间换一次
+static int disp_mode(void) {   // 0 每次都放、1 派发之间按范围、2 按游戏屏障
+    static int mode = -1, alt; if (mode < 0) { const char *e = getenv("DM_NVN_DISPATCH_RANGE"); mode = e && !strcmp(e, "0") ? 0 : e && !strcmp(e, "range") ? 1 : 2; if (e && !strncmp(e, "alt:", 4)) alt = atoi(e + 4); }
+    return alt > 0 ? ((mtl_present_count() / (uint64_t)alt) & 1 ? 2 : 0) : mode;
 }
+static int disp_range_on(void) { return disp_mode() != 0; }
 static int disp_ranges(NvShader *cs, int indirect, disp_rng *o) {
     o->nw = o->nr = 0;
     if (!cs || indirect || !disp_range_on()) return 0;
@@ -16371,20 +16387,34 @@ static int disp_ranges(NvShader *cs, int indirect, disp_rng *o) {
     return 1;
 }
 // 这次派发与「上次屏障以来的操作」有没有先后依赖（或记录表放不下）：有就要先放屏障
+static uint64_t g_disp_gbar;   // 按游戏屏障放的派发前屏障（dispatch_enc 读数行）
 static int disp_hits(const disp_rng *rg) {
+    if (disp_mode() == 2) {   // 派发之间只看游戏屏障；与拷贝之间照范围
+        if (g_dsp_game_bar) { g_disp_gbar++; return 1; }
+        if (g_dw_n + rg->nw > DW_MAX || g_dr_n + rg->nr > DW_MAX) return 1;
+        for (int i = 0; i < rg->nr; i++) if (bw_hit(rg->rlo[i], rg->rhi[i])) return 1;
+        for (int i = 0; i < rg->nw; i++) if (bw_hit(rg->wlo[i], rg->whi[i]) || br_hit(rg->wlo[i], rg->whi[i])) return 1;
+        return 0;
+    }
     if (g_bw_n + rg->nw > BW_MAX || g_br_n + rg->nr > BW_MAX) return 1;
     for (int i = 0; i < rg->nr; i++) if (bw_hit(rg->rlo[i], rg->rhi[i])) return 1;
     for (int i = 0; i < rg->nw; i++) if (bw_hit(rg->wlo[i], rg->whi[i]) || br_hit(rg->wlo[i], rg->whi[i])) return 1;
     return 0;
 }
+static void dw_put(uint64_t *lo, uint64_t *hi, int *n, uint64_t a, uint64_t b) { for (int k = 0; k < *n; k++) if (lo[k] == a && hi[k] == b) return; lo[*n] = a; hi[(*n)++] = b; }   // 同一段不重记：粒子系统共用它们的表
 static void disp_note(const disp_rng *rg) {   // 记下这次派发的读写范围（屏障之后表是空的，放得下）
+    if (disp_mode() == 2) {
+        for (int i = 0; i < rg->nw; i++) dw_put(g_dw_lo, g_dw_hi, &g_dw_n, rg->wlo[i], rg->whi[i]);
+        for (int i = 0; i < rg->nr; i++) dw_put(g_dr_lo, g_dr_hi, &g_dr_n, rg->rlo[i], rg->rhi[i]);
+        g_blit_ops++; return;
+    }
     for (int i = 0; i < rg->nw; i++) { g_bw_lo[g_bw_n] = rg->wlo[i]; g_bw_hi[g_bw_n++] = rg->whi[i]; }
     for (int i = 0; i < rg->nr; i++) { g_br_lo[g_br_n] = rg->rlo[i]; g_br_hi[g_br_n++] = rg->rhi[i]; }
     g_blit_ops++;
 }
 static id<MTL4ComputeCommandEncoder> dispatch_enc(const disp_rng *rg) {
     blit_open_k(1);   // Metal 3: a compute encoder (blit_open_k)
-    if ((g_disp_ranged + g_disp_full) && !((g_disp_ranged + g_disp_full) % 20000)) MLOG("compute dispatches: read / write ranges known for %llu (no barrier before %llu of them), not known for %llu (barrier before each)", (unsigned long long)g_disp_ranged, (unsigned long long)g_disp_nobar, (unsigned long long)g_disp_full);
+    if ((g_disp_ranged + g_disp_full) && !((g_disp_ranged + g_disp_full) % 20000)) MLOG("compute dispatches: read / write ranges known for %llu (no barrier before %llu of them, a barrier of the game's before %llu), not known for %llu (barrier before each)", (unsigned long long)g_disp_ranged, (unsigned long long)g_disp_nobar, (unsigned long long)g_disp_gbar, (unsigned long long)g_disp_full);
     if (rg) {
         g_disp_ranged++;
         if (g_blit_ops && disp_hits(rg)) blit_barrier(); else if (g_blit_ops) g_disp_nobar++;
@@ -16394,6 +16424,7 @@ static id<MTL4ComputeCommandEncoder> dispatch_enc(const disp_rng *rg) {
     if (g_blit_ops) blit_barrier();
     g_bw_lo[0] = 0; g_bw_hi[0] = ~0ull; g_bw_n = 1; g_br_n = 0; g_blit_ops = 1;   // recorded as "everything written": the next copy or dispatch gets a barrier
     }
+    g_dsp_game_bar = 0;   // 游戏屏障只管到下一次派发
     if (!g_blit_ct) { enc_c_table(g_blit, g_ct); g_blit_ct = 1; }
     args_dirty_all();
     return g_blit;
@@ -17748,7 +17779,7 @@ void nvn_be_exec(const uint8_t *p) {
                 int split = g_enc && g_pass_swrite && (bits & (NVN_BARRIER_ORDER_FRAGMENTS_BIT | NVN_BARRIER_ORDER_FRAGMENTS_TILED_BIT));
                 PD("I %llu barrier bits %#x%s", g_stat_pass, bits, split ? ": ends the pass (shader writes)" : g_enc ? " (render pass open)" : "");
                 if (split) { rp_end(); static int once; if (!once++) MLOG("a game barrier (bits %#x) after shader writes in a draw pass: the pass ends there (first case pass %llu)", bits, (unsigned long long)g_stat_pass); }
-                if (bits) g_game_barrier = 1; break; }
+                if (bits) { g_game_barrier = 1; g_dsp_game_bar = 1; } break; }   // g_dsp_game_bar：下一次派发要排在之前的派发后面（disp_hits）
             case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL: state_op(h.op, a, h.size); break;
             default: break;
         }
