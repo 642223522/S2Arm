@@ -57,6 +57,9 @@ int s2a_libpack_spv_frag_outputs(const uint8_t *spv, size_t n, uint32_t *map);
 //   与现编 profile.Caps.SupportsGeometryShader 同一判据：没开 = miss。
 struct s2a_libpack_gfx { const char *topology; const char *profile_json; size_t profile_bytes; };
 int s2a_libpack_profile_geometry_shader(const char *profile_json, size_t profile_bytes);
+/* 能力核（见 .c）：删掉模块用不上的 Float64 / Int64 能力声明（本后端设备从不启用 shaderFloat64 / shaderInt64），
+ * 真用到 64 位浮点 / 整型或声明 Int64Atomics 就拒。0 = 可用（*n 可能变小）；-1 = 拒。 */
+int s2a_libpack_spv_admit_caps(uint8_t *spv, size_t *n, char *why, size_t why_size);
 int s2a_libpack_program_v1(const struct s2a_libpack *lp, const uint8_t keys[6][8], uint32_t stages,
                            const struct s2a_libpack_gfx *gfx,
                            uint32_t direct_abi, const char *profile_hash, const char *translator_closure,

@@ -450,6 +450,44 @@ out:
     free(dec); free(ncomp); free(ptr_to);
     return rc;
 }
+// 能力核：离线库的 .spv 是批翻链（translator/dmsh_xlate）按它自己的宿主口径翻的，不是按本机 profile——那边
+//   QueryHostSupportsShaderFloat64 缺省答「有」（Metal 只在模块真用到 double 时重翻），所以几乎每个模块都带 OpCapability Float64。
+//   本后端建设备时从不启用 shaderFloat64 / shaderInt64（direct/vk_device.c enabled_features），模块声明这两项能力就违反
+//   VUID-VkShaderModuleCreateInfo-pCode-08740；Maleoon 920 的转换器直接拒（「SPV01: Unsupported capability (10)」，
+//   vkCreateComputePipelines 回 VK_ERROR_OUT_OF_HOST_MEMORY，11-20 真机 13 个计算程序全是出包预编命中的那 13 个）。
+//   模块里没有对应宽度的类型（OpTypeFloat 64 / OpTypeInt 64）时这条能力声明用不上，原地删掉（只删那一条 OpCapability，
+//   id 上界不变，语义不变）；真用到了就拒收，由调用方退回现编（现编按本机 profile 翻，Float64 关时 double 降成 float）。
+//   Int64Atomics 必带 64 位整型，一律拒收。返回 0 = 可用（*n 可能变小）；-1 = 拒收（why 写原因）。
+int s2a_libpack_spv_admit_caps(uint8_t *spv, size_t *n, char *why, size_t why_size) {
+    uint32_t *w = (uint32_t *)spv; size_t nw = *n / 4;
+    int f64 = 0, i64 = 0;
+    if (nw < 5 || w[0] != 0x07230203u) { lp_fail(why, why_size, "not a SPIR-V module"); return -1; }
+    for (size_t i = 5; i < nw; ) {
+        uint32_t op = w[i] & 0xffff, wc = w[i] >> 16;
+        if (!wc || i + wc > nw) { lp_fail(why, why_size, "truncated instruction at word %zu", i); return -1; }
+        if (op == 22 && wc >= 3 && w[i + 2] == 64) f64 = 1;          // OpTypeFloat 64
+        if (op == 21 && wc >= 4 && w[i + 2] == 64) i64 = 1;          // OpTypeInt 64
+        i += wc;
+    }
+    for (size_t i = 5; i < nw; ) {
+        uint32_t op = w[i] & 0xffff, wc = w[i] >> 16;
+        if (op == 17 && wc == 2) {                                    // OpCapability
+            const uint32_t cap = w[i + 1];
+            if (cap == 12 || (cap == 10 && f64) || (cap == 11 && i64)) {
+                lp_fail(why, why_size, "uses %s, which the Vulkan device does not enable", cap == 10 ? "Float64" : cap == 11 ? "Int64" : "Int64Atomics");
+                return -1;
+            }
+            if (cap == 10 || cap == 11) {
+                memmove(&w[i], &w[i + 2], (nw - i - 2) * sizeof *w);
+                nw -= 2;
+                continue;
+            }
+        }
+        i += wc;
+    }
+    *n = nw * 4;
+    return 0;
+}
 // _b.json 里某个参数号的绑定是不是 v1 有意不出行的种类（Metal 专用宿主表 / 采样器半边）
 static int lp_json_has_binding(struct s2a_jv top, int stage_no, uint32_t binding, int *skipped_kind) {
     struct s2a_jv arr; *skipped_kind = 0;
@@ -524,6 +562,8 @@ static int lp_stage_emit(struct s2a_libpack *lp, const uint8_t key[8], unsigned 
             { lp_fail(why, why_size, "%s %s gs_input_topology is not %d", khex, jname, gs_topology); goto done; }
         if (sn < 20 || (sn & 3) || *(const uint32_t *)spv != 0x07230203u)
             { lp_fail(why, why_size, "%s %s is not a SPIR-V module", khex, sname); goto done; }
+        {   char cw[128] = "";
+            if (s2a_libpack_spv_admit_caps(spv, &sn, cw, sizeof cw)) { lp_fail(why, why_size, "%s %s %s", khex, sname, cw); goto done; } }
         // 带几何的程序：每一段都不许写视口号 / 视口掩码（lp_spv_viewport_builtin，同现编具名拒）
         if (gs_topology >= 0) {
             int vp = lp_spv_viewport_builtin(spv, sn);
