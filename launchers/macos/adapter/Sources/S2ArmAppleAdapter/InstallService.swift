@@ -163,21 +163,13 @@ public final class InstallService {
         return InstallResult(device: r["device"] as? String ?? "", deviceKind: r["deviceKind"] as? String ?? "", deviceName: r["deviceName"] as? String ?? "",
                              packFiles: (r["packFiles"] as? NSNumber)?.intValue, outputPath: r["outputPath"] as? String, packBytes: (r["packBytes"] as? NSNumber)?.int64Value,
                              openToFinish: r["openToFinish"] as? Bool ?? false,
-                             exportFolder: r["exported"] as? Bool == true ? r["outputPath"] as? String ?? "" : "",
-                             exportGames: (r["games"] as? [Any])?.count ?? 0, exportBytes: (r["exportBytes"] as? NSNumber)?.int64Value,
+                             exportFolder: r["exported"] as? Bool == true ? ((r["s2armPath"] as? String).map { ($0 as NSString).deletingLastPathComponent } ?? r["outputPath"] as? String ?? "") : "",
+                             exportGames: r["s2armPath"] is String ? 1 : (r["games"] as? [Any])?.count ?? 0,
+                             exportBytes: (r["s2armBytes"] as? NSNumber)?.int64Value ?? (r["exportBytes"] as? NSNumber)?.int64Value,
                              skipped: r["skipped"] as? [String] ?? [],
                              exportFresh: r["fresh"] as? [String] ?? [], exportReused: (r["reused"] as? NSNumber)?.intValue ?? 0,
                              exportUnwritten: r["unwritten"] as? [String] ?? [],
                              trustName: r["trustName"] as? String ?? "")
-    }
-
-    /// 推到手机（exportPush，pack/jobs/install.py push_export_job）：把「S2Arm 自签导出」里的完整 .img 推进手机上自签 S2Arm 的「放这里导入」。
-    ///   gameId 为 nil = 文件夹里全部；→ 推进去的文件名。推不了抛 JobFailure（原因 + 下一步：连线 / 信任 / 先装 S2Arm.ipa）
-    public func exportPush(gameId: String?, device: String? = nil, events: EventSink = .discard) async throws -> [String] {
-        var extra: [String: Any] = [:]
-        if let gameId, !gameId.isEmpty { extra["gameId"] = gameId }
-        if let device, !device.isEmpty { extra["device"] = device }
-        return try await client.perform("exportPush", extra: extra, events: events).result["pushed"] as? [String] ?? []
     }
 
     // ---- 开发者证书（v0.2.4，pack/jobs/devcert.py）----

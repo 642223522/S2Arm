@@ -8160,24 +8160,12 @@
   "en": "devicectl exited with {0} (no error details)"
  },
  {
-  "source": "「导出，自己签名安装」下一版提供。",
-  "en": "\"Export and sign it yourself\" comes in the next version."
- },
- {
   "source": "写导出用的游戏文件失败：{0}",
   "en": "Couldn't write the game files for export: {0}"
  },
  {
   "source": "写着色器更新包失败：{0}",
   "en": "Couldn't write the shader update pack: {0}"
- },
- {
-  "source": "导出文件夹里还没有 .img：先点「导出，自己签名安装」，导出完再推到手机。",
-  "en": "There's no .img in the export folder yet. Click \"Export and sign it yourself\" first, then push to the phone when it's done."
- },
- {
-  "source": "导出文件夹里还没有这款游戏的 .img：先点「导出，自己签名安装」，导出完再推到手机。",
-  "en": "There's no .img for this game in the export folder yet. Click \"Export and sign it yourself\" first, then push to the phone when it's done."
  },
  {
   "source": "找连着的 iPhone",
@@ -10354,5 +10342,25 @@
  {
   "source": "没能回到上一份存档，而且有存档没能换回原样，请导出诊断包。",
   "en": "Couldn’t go back to the previous save, and some saves couldn’t be switched back. Please export a diagnostic report."
+ },
+ {
+  "source": "找 iPhone",
+  "en": "Finding the iPhone"
+ },
+ {
+  "source": "删除手机上这款",
+  "en": "Deleting this game from the iPhone"
+ },
+ {
+  "source": "定不出手机上 S2Arm 的包名（这台电脑没装过、也读不到当前签名账号）：先在这台电脑上「安装 S2Arm」一次再删。",
+  "en": "Can't tell the bundle ID of S2Arm on the iPhone (it was never installed from this computer and the current signing account can't be read). Click \"Install S2Arm\" once on this computer, then delete again."
+ },
+ {
+  "source": "先在 iPhone 上退出 S2Arm，再删这款。",
+  "en": "Quit S2Arm on the iPhone first, then delete this game."
+ },
+ {
+  "source": "没能删掉手机上这款的数据：确认 iPhone 连着、已解锁，再试一次。",
+  "en": "Couldn't delete this game's data on the iPhone. Make sure the iPhone is connected and unlocked, then try again."
  }
 ]
