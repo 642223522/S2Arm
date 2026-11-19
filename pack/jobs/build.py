@@ -18,7 +18,7 @@ import community
 import host_update
 import layout
 from core import Cancelled, Failure, atomic, clone, contained, digest, read, resolve_path, tree_hash
-from library import input_identity, require_game, selected_packages, source_path, stage_sources, validate_input
+from library import input_identity, require_game, selected_packages, source_file_bytes, source_path, stage_sources, validate_input
 import milestones as ms
 import toolchain
 
@@ -958,7 +958,8 @@ def prepare(c):
         src = root / "src"; shutil.rmtree(src, ignore_errors=True)
         stage_sources(c, packages, src)
         env.update(
-            S2A_GAME_SRC=str(src), S2A_KEYS=str(c.keys), S2A_NX_UNPACK=str(toolchain.reader(c))
+            S2A_GAME_SRC=str(src), S2A_KEYS=str(c.keys), S2A_NX_UNPACK=str(toolchain.reader(c)),
+            S2A_SOURCE_BYTES=str(source_file_bytes(packages)),   # 原件文件总字节：随包基础管线上限 = 它的 10%（pack/stage_direct_cpso.sh）
         )
         try:
             with ms.DirectWatcher(c, root / "roots", game["id"]):
