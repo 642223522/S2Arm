@@ -48,6 +48,9 @@ class OwnBuildError(Exception):
     pass
 
 
+FETCH_TRIES = 3   # 固定来源下载的次数：11-18 出 Mac 候选时 GitHub 下到 20181775 / 21075552 字节断开，一次失败整次出包就红
+
+
 def own_artifact(name, want, cache, fetch=None):
     """自编产物 name（SHA-256 应为 want）→ 缓存里核过的那份路径。缓存有且哈希对 → 直接用；否则从 OWN_RELEASE 下到缓存（先写 .part，核对了再换上）。
     下不来 / 下来的哈希不对 → OwnBuildError（说清哪个地址、拿到的哈希是多少），不退回别的来源"""
@@ -58,10 +61,15 @@ def own_artifact(name, want, cache, fetch=None):
     if os.path.isfile(src) and digest(src) == want:
         return src
     url, part = OWN_RELEASE + name, src + '.part'
-    try:
-        (fetch or urllib.request.urlretrieve)(url, part)
-    except OSError as e:
-        raise OwnBuildError(f'本机缓存没有 {name}（{cache}），从固定来源 {url} 也下不来：{e}') from e   # 非玩家句（只在打包机上）
+    for attempt in range(1, FETCH_TRIES + 1):   # 网络中途断开（urlretrieve 报 retrieval incomplete）重下；每次都从头写 .part
+        try:
+            (fetch or urllib.request.urlretrieve)(url, part)
+            break
+        except OSError as e:
+            if os.path.exists(part):
+                os.remove(part)   # 断在半路的半截文件不留
+            if attempt == FETCH_TRIES:
+                raise OwnBuildError(f'本机缓存没有 {name}（{cache}），从固定来源 {url} 下了 {FETCH_TRIES} 次都没下全：{e}') from e   # 非玩家句（只在打包机上）
     got = digest(part)
     if got != want:
         os.remove(part)
