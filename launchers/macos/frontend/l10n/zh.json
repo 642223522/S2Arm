@@ -1783,5 +1783,8 @@
   "s2arm.env.xcode.auto": "改回自动查找",
   "s2arm.env.xcode.invalid": "选的不是完整的 Xcode（要有 Contents/Developer/usr/bin/xcodebuild），没有改动。",
   "home.card.daysLeft": "还剩 %d 天",
-  "home.card.expired": "签名已过期"
+  "home.card.expired": "签名已过期",
+  "s2arm.env.fullscreen.group": "游戏窗口",
+  "s2arm.env.fullscreen.title": "启动游戏时自动全屏",
+  "s2arm.env.fullscreen.detail": "打开后，所有游戏（包括以后添加的）启动时都直接进入全屏；单独给某款设过全屏开关的，照那款的。"
 }

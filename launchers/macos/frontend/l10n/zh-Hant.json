@@ -1785,5 +1785,8 @@
   "s2arm.env.xcode.auto": "改回自動尋找",
   "s2arm.env.xcode.invalid": "選的不是完整的 Xcode（要有 Contents/Developer/usr/bin/xcodebuild），沒有變更。",
   "home.card.daysLeft": "還剩 %d 天",
-  "home.card.expired": "簽名已過期"
+  "home.card.expired": "簽名已過期",
+  "s2arm.env.fullscreen.group": "遊戲視窗",
+  "s2arm.env.fullscreen.title": "啟動遊戲時自動全螢幕",
+  "s2arm.env.fullscreen.detail": "開啟後，所有遊戲（包括之後新增的）啟動時都直接進入全螢幕；單獨為某款設定過全螢幕開關的，依照那款的設定。"
 }

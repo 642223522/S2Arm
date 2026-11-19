@@ -30,6 +30,8 @@ cat > $T/bin/xcrun <<'EOF'
 exit 1
 EOF
 chmod +x $T/bin/xcrun; export PATH=$T/bin:$PATH
+# 假 Xcode 目录（tools/toolchain.sh 先要选中一个存在的 Xcode 目录，再经上面的 xcrun 替身问 SDK / Metal 版本）：不依赖本机装没装 Xcode，Linux 门禁机同样走通
+mkdir -p $T/Xcode.app/Contents/Developer; export S2A_DEVELOPER_DIR=$T/Xcode.app/Contents/Developer
 cat > $T/repo/pack/stage_direct_profile.sh <<'EOF'
 [ "${FAKE_NOPROF:-0}" != 1 ] || { echo "【红】配置前置拒绝"; exit 3; }
 exit 0
@@ -174,8 +176,14 @@ ck "Vulkan 只出表头 → 退 0、现行 shaders/direct/vk/vk_shaders.tsv 在�
 
 # 启动器内置工具（S2A_PREBUILT_TOOLS，11-06）：调用方没给 DSX_LIB → 用内置的 dsx/libdsx.dylib、不现编（假仓库没有 graphics/dsx Makefile，现编必红）
 mkdir -p $T/pre/dsx && : > $T/pre/dsx/libdsx.dylib; rin 'echo pre > romfs/pre'
-o=$(env -u DSX_LIB S2A_PREBUILT_TOOLS=$T/pre bash $T/repo/pack/stage_direct.sh acnh 2>&1); r=$?
-ck "内置工具在 → DSX_LIB 取内置 libdsx、不现编（rc=${r}，实 $(tail -1 $T/calls.gal)）" '[ $r = 0 ] && [ "$(tail -1 $T/calls.gal)" = "$T/pre/dsx/libdsx.dylib" ]'
+#   内置的是 Mac 发版包里的 dsx/libdsx.dylib，只在 macOS 上用（stage_direct.sh 按 uname -s 分）；Linux 出包机（安卓目标）要 libdsx.so，照常现编——
+#   两种门禁机各测本平台那一支：macOS 取内置、不现编；Linux 不取内置、去现编（假仓库没有现编要的引擎目录 / graphics/dsx，现编第一步就红 → 退 1、不调出库）
+n0=$(calls); o=$(env -u DSX_LIB S2A_PREBUILT_TOOLS=$T/pre bash $T/repo/pack/stage_direct.sh acnh 2>&1); r=$?
+if [ "$(uname -s)" = Darwin ]; then
+  ck "内置工具在（macOS）→ DSX_LIB 取内置 libdsx、不现编（rc=${r}，实 $(tail -1 $T/calls.gal)；输出末尾 $(printf '%s' "$o" | tail -2 | tr '\n' ' ' | cut -c1-200)）" '[ $r = 0 ] && [ "$(tail -1 $T/calls.gal)" = "$T/pre/dsx/libdsx.dylib" ]'
+else
+  ck "内置工具在（Linux）→ 不取 Mac 的 libdsx.dylib、去现编 libdsx.so，假仓库现编红 → 退 1、【红】、不调出库（rc=${r}，出库 ${n0} → $(calls) 次；输出末尾 $(printf '%s' "$o" | tail -2 | tr '\n' ' ' | cut -c1-200)）" '[ $r = 1 ] && printf "%s" "$o" | grep -q "【红】" && [ "$(calls)" = "$n0" ]'
+fi
 
 _root_rm $T   # 现行 RomFS 存储整棵只读，裸 rm -rf 删不掉（pack/roots.sh）
 [ $bad = 0 ] && echo "直连库阶段单测：全通" || echo "直连库阶段单测：有不通"

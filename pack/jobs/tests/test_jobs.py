@@ -1724,6 +1724,18 @@ class JobsTests(unittest.TestCase):
             build.runtime_env(self.c, self.game(), self.root)
         self.c.r.pop("xboxGipRelaySocket")
 
+    def test_launch_fullscreen_setting_gives_host_a_default_only(self):
+        # #575：启动器「启动游戏时自动全屏」只给宿主全局缺省 S2A_FULLSCREEN_DEFAULT，不写 S2A_FULLSCREEN（那是单款显式设置，宿主优先认它）
+        self.c.r["launchFullscreen"] = True
+        env = build.runtime_env(self.c, self.game(), self.root / "runtime")
+        self.assertEqual(env.get("S2A_FULLSCREEN_DEFAULT"), "1")
+        self.assertNotIn("S2A_FULLSCREEN", env)
+        for off in (False, None, "1"):
+            self.c.r["launchFullscreen"] = off
+            self.assertNotIn("S2A_FULLSCREEN_DEFAULT", build.runtime_env(self.c, self.game(), self.root / "runtime"))
+        self.c.r.pop("launchFullscreen")
+        self.assertNotIn("S2A_FULLSCREEN_DEFAULT", build.runtime_env(self.c, self.game(), self.root / "runtime"))
+
     def test_metal_hud_switch_and_explicit_environment_reach_real_child(self):
         names = ("MTL_HUD_ENABLED", "MTL_HUD_LOG_ENABLED", "MTL_HUD_LOG_SHADER_ENABLED")
         previous = {name: os.environ.get(name) for name in names}

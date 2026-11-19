@@ -10,6 +10,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -375,6 +376,24 @@ namespace Ryujinx.HLE.HOS.Services.Sockets.Sfdnsres
         // "localhost" from its hosts table (127.0.0.1) and numeric address literals, which gethostbyname (inet_aton) and
         // getaddrinfo (numeric host) parse before any query — a game binding its own local server to "0.0.0.0" resolves it offline.
         // Null: the name needs a DNS query, which fails offline.
+        // S2Arm: getaddrinfo with no host (node NULL or "") names no host and needs no DNS: AI_PASSIVE (1) in the hints → the wildcard address, to bind a local
+        // server, otherwise the loopback (POSIX getaddrinfo; the console's resolver is the BSD one). Offline it was blocked as a DNS query and failed: 0100D58012E12000
+        // then unmounted a name it never mounted (nn::fs::Unmount(nullptr) → 2002-6063 → Abort, 0.1 s after "DNS Blocked: " with the empty name). The hints are read
+        // here from their header: DeserializeAddrInfos drops an entry with no address, which hints always are
+        private static IPHostEntry NoHostEntry(ServiceCtx context)
+        {
+            bool passive = false;
+
+            if (context.Request.SendBuff.Count > 2 && context.Request.SendBuff[2].Size >= (ulong)Unsafe.SizeOf<AddrInfoSerializedHeader>())
+            {
+                AddrInfoSerializedHeader hints = context.Memory.Read<AddrInfoSerializedHeader>(context.Request.SendBuff[2].Position);
+                hints.ToHostOrder();
+                passive = hints.Magic == SfdnsresContants.AddrInfoMagic && (hints.Flags & 1) != 0;
+            }
+
+            return new IPHostEntry { HostName = "", AddressList = [passive ? IPAddress.Any : IPAddress.Loopback], Aliases = [] };
+        }
+
         private static IPHostEntry OfflineHostEntry(string host)
         {
             if (host == "localhost")
@@ -628,8 +647,9 @@ namespace Ryujinx.HLE.HOS.Services.Sockets.Sfdnsres
             string service = MemoryHelper.ReadAsciiString(context.Memory, context.Request.SendBuff[1].Position, (long)context.Request.SendBuff[1].Size);
 
             bool offline = !context.Device.Configuration.EnableInternetAccess;
+            IPHostEntry offlineEntry = offline ? (host.Length == 0 ? NoHostEntry(context) : OfflineHostEntry(host)) : null;
 
-            if (offline && OfflineHostEntry(host) == null)
+            if (offline && offlineEntry == null)
             {
                 Logger.Info?.Print(LogClass.ServiceSfdnsres, $"Guest network access disabled, DNS Blocked: {host}");
 
@@ -688,7 +708,7 @@ namespace Ryujinx.HLE.HOS.Services.Sockets.Sfdnsres
                     {
                         // S2Arm: offline, names that need no DNS server are answered here, not by the host's resolver (OfflineHostEntry)
                         hostEntry = offline
-                            ? OfflineHostEntry(targetHost) ?? throw new SocketException((int)SocketError.HostNotFound)
+                            ? offlineEntry ?? throw new SocketException((int)SocketError.HostNotFound)
                             : DnsMitmResolver.Instance.ResolveAddress(targetHost);
                     }
                     catch (SocketException exception)

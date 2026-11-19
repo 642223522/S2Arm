@@ -1749,5 +1749,8 @@
   "s2arm.env.xcode.auto": "自動で探すに戻す",
   "s2arm.env.xcode.invalid": "完全な Xcode ではありません（Contents/Developer/usr/bin/xcodebuild が必要です）。変更していません。",
   "home.card.daysLeft": "残り %d 日",
-  "home.card.expired": "期限切れ"
+  "home.card.expired": "期限切れ",
+  "s2arm.env.fullscreen.group": "ゲームウインドウ",
+  "s2arm.env.fullscreen.title": "ゲーム起動時にフルスクリーンにする",
+  "s2arm.env.fullscreen.detail": "オンにすると、すべてのゲーム（今後追加するものを含む）がフルスクリーンで起動します。ゲームごとにフルスクリーンを設定している場合はその設定に従います。"
 }

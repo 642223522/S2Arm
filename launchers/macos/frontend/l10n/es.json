@@ -1749,5 +1749,8 @@
   "s2arm.env.xcode.auto": "Buscar automáticamente",
   "s2arm.env.xcode.invalid": "No es un Xcode completo (necesita Contents/Developer/usr/bin/xcodebuild). No se cambió nada.",
   "home.card.daysLeft": "Quedan %d días",
-  "home.card.expired": "Caducado"
+  "home.card.expired": "Caducado",
+  "s2arm.env.fullscreen.group": "Ventana de juego",
+  "s2arm.env.fullscreen.title": "Iniciar los juegos en pantalla completa",
+  "s2arm.env.fullscreen.detail": "Si está activado, todos los juegos (incluidos los que añadas después) se abren en pantalla completa; un juego con su propio ajuste de pantalla completa lo conserva."
 }
