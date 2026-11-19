@@ -2625,7 +2625,11 @@ static VkPrimitiveTopology vk_topology(uint32_t prim) {
     case 0x4: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     case 0x5: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
     case 0x6: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;
-    default: return VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;   // 2 线环 / 7+：未实现
+    case 0xA: return VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY;        // NVN 邻接图元直接映射（回放核心已按设备开了 geometryShader 才放行）
+    case 0xB: return VK_PRIMITIVE_TOPOLOGY_LINE_STRIP_WITH_ADJACENCY;
+    case 0xC: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY;
+    case 0xD: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP_WITH_ADJACENCY;
+    default: return VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;   // 2 线环 / 7–9（回放核心已展开 / 换成扇）/ 14 补丁：未实现
     }
 }
 
@@ -3165,7 +3169,8 @@ static int same_spec(const nvn_gpu_stage_desc *a, const nvn_gpu_stage_desc *b) {
 static int eff_restart(const nvn_gpu_pipe_desc *d) {
     VkPrimitiveTopology t = vk_topology(d->prim);
     return d->prim_restart && (t == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP || t == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN ||
-                               t == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP);
+                               t == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP || t == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP_WITH_ADJACENCY ||
+                               t == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP_WITH_ADJACENCY);
 }
 
 // 散列把 same_pipe_desc 比的全部字段都算进来：着色器句柄、特化常量（只比到 nspec 条）、图元 / 格式 / 采样数 / patch_size、光栅丢弃 / 负一裁剪 /
