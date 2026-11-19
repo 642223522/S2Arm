@@ -4970,10 +4970,21 @@ static void occl_spare_reset(struct nvn_gpu_cmd_s *c, const struct occl_cont *k)
     if (k->fresh) vkCmdResetQueryPool(c->cb, k->pool, 0, OCC_CHUNK);
 }
 // 新通道里：在预留好的续段槽上接着数，活动查询改指它（之后 end / pass_end 结束的就是这个槽）。
+// 续段真正开出的次数（进程累计，nvn_gpu_stats 的 occl_cont_used）：没出错不等于续段走到了，真机读数要能直接看到它被用过。
+//   第 1、10、100…… 次各打一行信息（带累计数），日志量有上限。
+static uint64_t g_occl_cont_used;
+static void occl_cont_note(void) {
+    const uint64_t n = __atomic_add_fetch(&g_occl_cont_used, 1, __ATOMIC_RELAXED);
+    uint64_t p = 1; while (p < n && p <= UINT64_MAX / 10) p *= 10;
+    if (p != n) return;
+    char b[160]; snprintf(b, sizeof b, "遮挡查询续段：反馈拆通道时活动查询换续段槽接着数，累计 %llu 次", (unsigned long long)n);
+    nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", b);
+}
 static void occl_spare_begin(struct nvn_gpu_cmd_s *c, int32_t slot, const struct occl_cont *k) {
     if (g_occl_skip_begin && c->qspare_used == g_occl_skip_begin) { c->q_active = -1; return; }   // 宿主用例：这个续段槽不开
     occl_begin(c, k->pool, k->idx);
     c->q_active = slot; c->q_active_pool = k->pool; c->q_active_idx = k->idx;
+    occl_cont_note();
 }
 
 static int ensure_push_capacity(struct nvn_gpu_cmd_s *c, int st, uint32_t required) {
@@ -7980,7 +7991,8 @@ void nvn_gpu_stats(nvn_gpu_stat_fn fn, void *user, int take) {
     fn(user, "pipe_cache_save_trigger_ns", __atomic_load_n(&g_plcw_get_ns, __ATOMIC_RELAXED));
     fn(user, "pipe_warm_created", __atomic_load_n(&g_warm_created, __ATOMIC_RELAXED));   // 预建出来的管线对象数
     fn(user, "pipe_warm_hits", __atomic_load_n(&g_warm_hits, __ATOMIC_RELAXED));         // 真实 draw 第一次拿到预建对象的次数
-    fn(user, "pipe_install_dup", __atomic_load_n(&g_pipe_dup, __ATOMIC_RELAXED));        // 双检抓到「别人已经装过同配方」的次数（新建那份已销毁）
+    fn(user, "pipe_install_dup", __atomic_load_n(&g_pipe_dup, __ATOMIC_RELAXED));
+    fn(user, "occl_cont_used", __atomic_load_n(&g_occl_cont_used, __ATOMIC_RELAXED));   // 遮挡查询续段开出次数（进程累计，不随会话清零）        // 双检抓到「别人已经装过同配方」的次数（新建那份已销毁）
     {   // 在途表读数来自 nvn_pipe_flight（模块内计数）：合并等待 / 表满自己建 / 认领后复检命中 / 已发布 / 失败
         uint64_t pw = 0, pf = 0, pl = 0, pp = 0, pfail = 0;
         nvk_pf_stats(&g_pi, &pw, &pf, &pl, &pp, &pfail);

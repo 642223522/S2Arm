@@ -67,6 +67,16 @@ static nvn_gpu_shader shader(const char *dir, const char *name, nvn_gpu_stage st
 // query_max：这个用例里一个声明槽名下最多几个续段槽（0 = 缺省）；skip_begin：每段第 N 个续段槽不开（0 = 不干预）；declared_miss：声明槽那一段读回时当作没回来。
 // zero_slot：期望读 0 的槽（续不下去 / 有一段没读到的那个），-1 = 没有；want_lost / want_miss：nvn_unimpl 两项计数这个用例里应增加几次。
 struct occ_case { const char *name; unsigned declared, plain, nslot, draws[4], query_max, skip_begin; int zero_slot; unsigned want_lost, want_miss, declared_miss; };
+// 续段真正开出的次数（后端 occl_cont_used 的增量）应为多少：查询里每笔一个续段槽，保险丝封顶的按上限计，查询外的反馈不计。
+//   用例故意让某个续段不开（skip_begin）的，开出数取决于逐段计法，不在这里推，返回 -1 = 不查。
+static long want_used(const struct occ_case *k) {
+    if (k->skip_begin) return -1;
+    long n = 0;
+    for (unsigned s = 0; s < k->nslot; s++) n += k->query_max && k->draws[s] > k->query_max ? k->query_max : k->draws[s];
+    return n;
+}
+static void used_cb(void *user, const char *name, uint64_t v) { if (!strcmp(name, "occl_cont_used")) *(uint64_t *)user = v; }
+static uint64_t used_now(void) { uint64_t v = 0; nvn_gpu_stats(used_cb, &v, 0); return v; }
 
 static unsigned expected_red(unsigned draws) {   // 每笔：读快照 + 0.25 红，UNORM8 往返；清屏色 0.25 = 64
     unsigned v = 64;
@@ -113,7 +123,7 @@ static void run_case(struct s2a_vk_device *device, const char *dir, const struct
     (void)nvn_gpu_vk_test_occl_query_max(k->query_max);   // 录这一段的时候生效；提交完立刻恢复缺省
     (void)nvn_gpu_vk_test_occl_skip_begin(k->skip_begin);
     (void)nvn_gpu_vk_test_occl_declared_miss(k->declared_miss);   // 读回在完成回调之前，回调之后才恢复
-    const uint64_t lost0 = nvn_unimpl_count("gpu", "occlusion_continuation_lost"), miss0 = nvn_unimpl_count("gpu", "occlusion_continuation_part_missing");
+    const uint64_t lost0 = nvn_unimpl_count("gpu", "occlusion_continuation_lost"), miss0 = nvn_unimpl_count("gpu", "occlusion_continuation_part_missing"), used0 = used_now();
     GPU(nvn_gpu_cmd_begin(&cd, &cmd, &err));
     for (unsigned i = 0; i < 2; i++) {   // 两张都清成 0.25 红（通道不声明遮挡）
         nvn_gpu_pass_desc p = {0};
@@ -172,6 +182,8 @@ static void run_case(struct s2a_vk_device *device, const char *dir, const struct
     const unsigned lost = (unsigned)(nvn_unimpl_count("gpu", "occlusion_continuation_lost") - lost0), miss = (unsigned)(nvn_unimpl_count("gpu", "occlusion_continuation_part_missing") - miss0);
     if (lost != k->want_lost) { bad++; EXPECT(0, "「续不下去」计数应增加 %u，实为 %u", k->want_lost, lost); }
     if (miss != k->want_miss) { bad++; EXPECT(0, "「有一段没读到」计数应增加 %u，实为 %u", k->want_miss, miss); }
+    const long wu = want_used(k), used = (long)(used_now() - used0);
+    if (wu >= 0 && used != wu) { bad++; EXPECT(0, "续段开出次数应增加 %ld，实为 %ld", wu, used); }
     const unsigned char *bytes = nvn_gpu_buf_cpu(rb);
     const unsigned red = expected_red(total);
     unsigned pixels_bad = 0;
