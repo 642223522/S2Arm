@@ -1005,7 +1005,7 @@ static void library_play_go(const char *gid, S2ASceneDelegate *sd) {
     // why 是 launchctx.c 的内部原因（路径 / errno，已进 host.log「选游戏…被拒」）：屏上按类别说人话 + 下一步，原文只进日志 / 诊断（v0.3.1）
     if (why) {
         int kind = s2a_launch_ctx_select_kind();
-        if (kind == S2A_SELECT_NEEDS_RESIGN) {   // 程序包对不上本机这份 App（通用壳 11-16）：不弹窗，回游戏库标「需要在电脑上重装」（电脑端对这款点「装到 iPhone」重推）
+        if (kind == S2A_SELECT_NEEDS_RESIGN) {   // 程序包对不上本机这份 App（通用壳 11-16）：不弹窗，回游戏库标「需要在电脑上重装」（电脑端对这款点「推到 iPhone」重推）
             if (!g_reinstall) g_reinstall = [NSMutableDictionary dictionary];
             g_reinstall[@(gid)] = @(program_cat_mtime(gid));
             LOG("游戏库：%s 的程序包对不上本机这份 App，卡片标「需要在电脑上重装」", gid);

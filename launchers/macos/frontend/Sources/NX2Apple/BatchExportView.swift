@@ -1,5 +1,5 @@
 // S2Arm（不是上游文件）：批量出包清单页（v0.2.4，维护者批）。出包前：一批游戏、每款勾 iPhone / Mac（可同时勾，表头全选）、一批共用的存放位置；
-// 出包中 / 出完：每款的进度与成败、汇总、失败的重试、磁盘满暂停给「释放空间」、出好的直接「装到 iPhone」「在 Mac 上玩」。规则在 pack/jobs/batch.py。
+// 出包中 / 出完：每款的进度与成败、汇总、失败的重试、磁盘满暂停给「释放空间」、出好的直接「推到 iPhone」「在 Mac 上玩」。规则在 pack/jobs/batch.py。
 import AppKit
 import SwiftUI
 import NXCore

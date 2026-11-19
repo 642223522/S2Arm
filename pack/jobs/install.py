@@ -778,7 +778,7 @@ def push_mods(c, ph, gid, had):
                     cl.put(str(f), f"{base}/{n}/{f.relative_to(home / n).as_posix()}")
                 now[n] = fp
     except Exception as e:   # 推不进：已推好的记下，其余下次装机再推
-        c.diagnostic(f"mod 没全推进 iPhone，这次游戏里会缺几份，下次「装到 iPhone」会补推：{str(e)[:200]}", code="resource_transfer_failed", severity="warning")  # 非玩家句
+        c.diagnostic(f"mod 没全推进 iPhone，这次游戏里会缺几份，下次「推到 iPhone」会补推：{str(e)[:200]}", code="resource_transfer_failed", severity="warning")  # 非玩家句
     return now
 
 
@@ -1077,7 +1077,7 @@ def devcert_items(c, item, udid):
     return got
 
 
-# 导出自签包不再是一种「装法」（11-15 维护者：让玩家先去设置里切模式本身就是多出来的一道）：游戏库「装到 iPhone」与「导出自签包」两个按钮并排，
+# 导出自签包不再是一种「装法」（11-15 维护者：让玩家先去设置里切模式本身就是多出来的一道）：游戏库「推到 iPhone」与「导出自签包」两个按钮并排，
 #   导不导出只看这次请求带的 mode = export（wants_export）。原先存在私有目录 install.json 的装法设置作废：installMode 作业（两端启动时读签名身份）顺手删掉它，迁移一次
 SIGN_CHOICE = "sign_mode.json"   # 玩家选的签名方式里「自己用别的工具签」（私有目录）；Apple ID / 自己的证书沿用开发者证书的「在用」开关（devcert state.json active）
 SIGN_MODES = ("appleId", "devCert", "external")
@@ -3100,7 +3100,7 @@ def _update_phone(c):
 
 
 def install(c):
-    """默认「装到 iPhone」：这款进容器（一个 App 装下整个游戏库，免费账号也只占 1 个 App 额度）。加款 = 同一个包名覆盖安装，Documents 保留"""
+    """默认「推到 iPhone」：这款进容器（一个 App 装下整个游戏库，免费账号也只占 1 个 App 额度）。加款 = 同一个包名覆盖安装，Documents 保留"""
     with packer_phone_lock(c):   # 装机类作业一次一个（ipa.phone_lock）
         return _install(c)
 
@@ -3111,7 +3111,7 @@ def _install(c):
     scheme = downstream.requested(c, dict(id=gid))   # 下游深度方案出的是独立 App：自己的包名，不进容器（pack/jobs/downstream.py）
     if scheme:
         if wants_export(c):   # 导出自签包只组 S2Arm 容器；独立 App 的资源靠推送进去，玩家自签装上也拿不到资源——说清楚，不悄悄改成连手机装机
-            raise Failure(f"这款用的是 {scheme['name']} 方案（独立 App），现在只能「装到 iPhone」，还不能导出自签包。", code="downstream_export_unsupported")
+            raise Failure(f"这款用的是 {scheme['name']} 方案（独立 App），现在只能「推到 iPhone」，还不能导出自签包。", code="downstream_export_unsupported")
         return downstream.install_ios(c, next((g for g in c.catalog()["games"] if g["id"].upper() == gid.upper()), dict(id=gid)), scheme)
     ios_pack(c, gid)
     if wants_export(c):   # 一款导出成小游戏包 .s2arm + 资源本体原位（两件套）

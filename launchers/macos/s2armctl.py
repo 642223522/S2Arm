@@ -351,13 +351,13 @@ def next_step(s, gid=None, target='ios'):
         return dict(step='出包', who='ai', do=f's2armctl build {g["id"]} ios，然后 s2armctl wait {g["id"]} --op ipa --timeout 7200', why='还没出 iPhone 版（大游戏第一次要几十分钟到一个多小时，请玩家插上电源、别让%s睡眠）' % ('电脑' if s.get('platform') == 'windows' else ' Mac '), **extra)
     if s.get('platform') == 'windows':
         if [t for t in mine if t['operation'] == 'install' and t['state'] == 'completed']:
-            return dict(step='打开游戏', who='human', do='已装到 iPhone：请玩家打开这款游戏，第一次会先导入游戏资源（几分钟），保持前台别锁屏', why='装机完成，剩下只有玩家本人在手机上打开', ipa=ipa, **extra)
+            return dict(step='打开游戏', who='human', do='已推到 iPhone：请玩家打开这款游戏，第一次会先导入游戏资源（几分钟），保持前台别锁屏', why='装机完成，剩下只有玩家本人在手机上打开', ipa=ipa, **extra)
         return dict(step='装机', who='ai', do=f's2armctl install-check {g["id"]}，没打勾的项按它说的请玩家做（Apple ID 只能玩家本人在 Impactor 里登录）；然后 s2armctl install {g["id"]}（等到装完；失败会打错误码和建议、退 1）',
                     why='iPhone 包已出好：用玩家在 Impactor 登录的 Apple ID 签名，数据线装上并拷资源包', ipa=ipa, **extra)
     # 装机主路（10-26 维护者 定）：用玩家在 Xcode 登录的 Apple ID 签名、数据线装、自动拷资源包；Xcode 没登录 / 没连设备由 install 报错码，再按 AI_NEXT 处理
     done = [t for t in mine if t['operation'] == 'install' and t['state'] == 'completed' and (t.get('ended') or 0) >= max((x.get('ended') or 0) for x in mine if x['operation'] == 'ipa' and x['state'] == 'completed')]
     if done:
-        return dict(step='打开游戏', who='human', do=f'已装到 iPhone{("「" + done[-1]["device"] + "」") if done[-1].get("device") else ""}、资源包已拷好并核对：请玩家打开这款游戏，第一次会先导入游戏资源（几分钟），保持前台别锁屏，导入完会自动进入游戏。免费 Apple ID 签的 App 7 天过期，到时连上再 s2armctl install {g["id"]}',
+        return dict(step='打开游戏', who='human', do=f'已推到 iPhone{("「" + done[-1]["device"] + "」") if done[-1].get("device") else ""}、资源包已拷好并核对：请玩家打开这款游戏，第一次会先导入游戏资源（几分钟），保持前台别锁屏，导入完会自动进入游戏。免费 Apple ID 签的 App 7 天过期，到时连上再 s2armctl install {g["id"]}',
                     why='装机完成，剩下只有玩家本人在手机上打开', ipa=ipa, **extra)
     return dict(step='装机', who='ai', do=f's2armctl install-check {g["id"]}，没打勾的项按它说的请玩家做；然后 s2armctl install {g["id"]}（等到装完；失败会打错误码和建议、退 1）',
                 why='iPhone 包已出好：用玩家在 Xcode 登录的 Apple ID 签名，数据线装上并拷资源包。玩家不想登录 Xcode 就改用 AltStore（装机步骤页第二部分）', ipa=ipa, **extra)

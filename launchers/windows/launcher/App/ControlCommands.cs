@@ -128,7 +128,7 @@ public sealed partial class EnvironmentWindow
     /// <param name="export">mode = export（同游戏库「导出自签包」）：不连手机、出到文件夹</param>
     private ControlReply ControlInstall(LibraryGame game, IReadOnlySet<string> accept, bool export = false)
     {
-        // 同游戏库「装到 iPhone」按钮（PhoneBlockedFor）：出包在跑照样能装，手机上装机在跑 / 这款正在出包由 InstallAsync 排队（11-16 维护者）
+        // 同游戏库「推到 iPhone」按钮（PhoneBlockedFor）：出包在跑照样能装，手机上装机在跑 / 这款正在出包由 InstallAsync 排队（11-16 维护者）
         if (PhoneBlockedFor(game)) return Busy();
         selectedGame = game.Id;
         _ = InstallAsync(game, accept, ask: false, export: export);
