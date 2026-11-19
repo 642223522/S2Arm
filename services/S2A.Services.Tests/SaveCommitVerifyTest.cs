@@ -14,20 +14,23 @@ namespace S2A.Services.Tests
     public static partial class Program
     {
         // 存档提交核对游戏写入（S2ASaveTransaction.SyncWrittenLocked / VerifyWrittenLocked）：游戏经事务写进去的字节，提交出来的新版本里必须一字不差；
-        //   对不上就不提交、已提交版本不动、报红。一款游戏（iPhone）写成功的 2 字节 "{}" 被提交成 2 个零字节，下次起局读它中止。
+        //   对不上不拒绝（游戏收到提交错误码多半当场中止）：按写入记录 / 已提交版本把新版本补对再提交，补不了也照常提交、记黄行。
+        //   一款游戏（iPhone）写成功的 2 字节 "{}" 被提交成 2 个零字节，下次起局读它中止；之后又反过来：记录成 0000、盘上是 "{}"，提交被拒、游戏中止。
         //   期望值按规则写死，不跑实现推：
         //   ① 正常写 "{}" 关掉提交 → 成功，已提交 = "{}"
-        //   ② 克隆出来的新版本被换成两个零字节（模拟那次事故）→ 提交失败、已提交仍是旧内容 OLD、不留 .s2a_new、报红 +1；去掉故障再提交 → 成功、已提交 = "{}"
+        //   ② 克隆出来的新版本每次都被换成两个零字节（模拟那次事故）→ 按记录补回：提交成功、已提交 = "{}"、不留 .s2a_new、报红 +0、不留护栏标记（提交成立了）；去掉故障再提交 → 成功、标记无
         //   ③ 写完又把文件截短到写入之前（SetSize 0）→ 提交成功，不误报（已提交是空文件）
         //   ④ 写完删掉 / 改名 → 提交成功：删掉的不在已提交里，改名的按新名字核对、内容是写的那份
         //   ⑤ 回滚后提交 → 成功、已提交仍是 OLD（回滚前的写入记录作废，不误报）
-        //   ⑥ 游戏没动过的文件在克隆里变空 → 不提交、已提交仍是 OLD、报红 +1
+        //   ⑥ 游戏没动过的文件在克隆里变空 → 按已提交版本拷回：提交成功、已提交仍是 OLD、报红 +0
         //   ⑦ 游戏自己 SetSize(0) 清空已有文件 → 照常提交（按实际调用是有意的）
         //   ⑧ 只有第一次克隆被换成零字节（偶发）→ 内部重做一次就对了：提交成功、已提交 = "{}"、不报红（只记黄行）；克隆了 2 次
-        //   （②⑥ 每次克隆都被换：重做一次仍不对才不提交，报红仍是 +1）
+        //   （②⑥ 每次克隆都被换：重做一次仍不对才补）
+        //   ⑩ 写盘之后、调用返回之前游戏把缓冲清零（真机那次）→ 写下去的和记录的是同一份：提交成功、已提交 = "{}"、报红 +0
+        //   ⑪ 空存档首次起局（已提交版本是空目录）：普通写 {} 提交 → 成功、已提交 = "{}"；另一棵空存档写盘后缓冲被清零 → 同样成功、已提交 = "{}"、报红 +0
         //   ⑨ 留上一份：提交 "{}"、再写 "[1]" 提交 → 已提交 "[1]"、上一份 "{}"；回到上一份 → 已提交 "{}"、上一份 "[1]"；再调一次 → 换回 "[1]"；
         //      回到上一份后护栏标记删掉；没有上一份的目录 → 回原因「没有上一份存档」
-        //   护栏标记 .s2a_guard：②拦下后有、内容带「次提交」，之后正常提交就没了；⑧重做后通过不写
+        //   护栏标记 .s2a_guard：不再写（提交不再被拦）；旧版本留下的在正常提交 / 回到上一份时清掉（⑨）
         [SoloTest("--save-commit-verify")]
         private static int SaveCommitVerify()
         {
@@ -88,7 +91,7 @@ namespace S2A.Services.Tests
                 hook.AfterClone = null;
                 bool ok2 = tx.Commit().IsSuccess();
                 string s2 = $"{ok2} / {Txt(System.IO.Path.Combine(d, "0", "x.bin"))} / 标记{(File.Exists(guard) ? "有" : "无")}";
-                rows.Add(("② 克隆成零字节：结果 / 已提交 / .s2a_new 在 / 报红 / 护栏标记 ‖ 去掉故障再提交：结果 / 已提交 / 护栏标记", "False / 4F4C44 / False / +1 / 标记有 ‖ True / 7B7D / 标记无", $"{s1} ‖ {s2}"));
+                rows.Add(("② 克隆成零字节：结果 / 已提交 / .s2a_new 在 / 报红 / 护栏标记 ‖ 去掉故障再提交：结果 / 已提交 / 护栏标记", "True / 7B7D / False / +0 / 标记无 ‖ True / 7B7D / 标记无", $"{s1} ‖ {s2}"));
                 tx.Dispose();
             }
             {   // ③
@@ -128,7 +131,7 @@ namespace S2A.Services.Tests
                 int before = reds;
                 bool ok = tx.Commit().IsSuccess();
                 hook.AfterClone = null;
-                rows.Add(("⑥ 没动过的文件克隆成空：结果 / 已提交 / 报红", "False / 4F4C44 / +1", $"{ok} / {Txt(System.IO.Path.Combine(d, "0", "x.bin"))} / +{reds - before}"));
+                rows.Add(("⑥ 没动过的文件克隆成空：结果 / 已提交 / 报红", "True / 4F4C44 / +0", $"{ok} / {Txt(System.IO.Path.Combine(d, "0", "x.bin"))} / +{reds - before}"));
                 tx.Dispose();
             }
             {   // ⑦ 游戏自己把已有的 x.bin 截成 0（只调 SetSize(0)，没写）：按实际调用是有意清空，照常提交
@@ -155,6 +158,61 @@ namespace S2A.Services.Tests
                 hook.AfterClone = null;
                 rows.Add(("⑧ 只有第一次克隆成零字节：结果 / 已提交 / 报红 / 克隆次数 / 护栏标记", "True / 7B7D / +0 / 2 / 无", $"{ok} / {Txt(System.IO.Path.Combine(d, "0", "x.bin"))} / +{reds - before} / {clones} / {(File.Exists(System.IO.Path.Combine(d, Ryujinx.HLE.FileSystem.S2ASaveTransaction.GuardFile)) ? "有" : "无")}"));
                 tx.Dispose();
+            }
+
+            {   // ⑩ 游戏缓冲在写盘之后、调用返回之前被清零
+                var (d, tx) = Open("racy");
+                byte[] game = Encoding.ASCII.GetBytes("{}");
+                LocalSaveFs.AfterInnerWrite = () => Array.Clear(game);
+                using (Path p = P("/x.bin"))
+                using (UniqueRef<IFile> f = new())
+                {
+                    tx.OpenFile(ref f.Ref, in p, OpenMode.ReadWrite | OpenMode.AllowAppend).ThrowIfFailure();
+                    f.Get.SetSize(2).ThrowIfFailure();
+                    f.Get.Write(0, game, WriteOption.None).ThrowIfFailure();
+                }
+                LocalSaveFs.AfterInnerWrite = null;
+                int before = reds;
+                bool ok = tx.Commit().IsSuccess();
+                rows.Add(("⑩ 写盘后游戏缓冲被清零：结果 / 已提交 / 报红 / 护栏标记", "True / 7B7D / +0 / 无",
+                    $"{ok} / {Txt(System.IO.Path.Combine(d, "0", "x.bin"))} / +{reds - before} / {(File.Exists(System.IO.Path.Combine(d, Ryujinx.HLE.FileSystem.S2ASaveTransaction.GuardFile)) ? "有" : "无")}"));
+                tx.Dispose();
+            }
+
+            {   // ⑪ 空存档：已提交 0/ 是空目录（新导入、第一次起局）
+                (string, Ryujinx.HLE.FileSystem.S2ASaveTransaction) OpenEmpty(string name)
+                {
+                    string d = System.IO.Path.Combine(root, name);
+                    Directory.CreateDirectory(System.IO.Path.Combine(d, "0"));
+                    string why = Ryujinx.HLE.FileSystem.S2ASaveTransaction.Mount(d);
+                    if (why != null) throw new InvalidOperationException(why);
+                    using SharedRef<ISaveDataFileSystem> baseFs = new(new LocalSaveFs(System.IO.Path.Combine(d, "1")));
+                    var copy = SharedRef<ISaveDataFileSystem>.CreateCopy(in baseFs);
+                    return (d, new Ryujinx.HLE.FileSystem.S2ASaveTransaction(ref copy, d));
+                }
+                var (d1, t1) = OpenEmpty("empty");
+                using (Path dir = P("/preferences")) t1.CreateDirectory(in dir).ThrowIfFailure();
+                Write(t1, "/preferences/STSInputSettings", "{}");
+                int before = reds;
+                bool ok1 = t1.Commit().IsSuccess();
+                string a1 = $"{ok1} / {Txt(System.IO.Path.Combine(d1, "0", "preferences", "STSInputSettings"))}";
+                t1.Dispose();
+                var (d2, t2) = OpenEmpty("empty_racy");
+                byte[] game = Encoding.ASCII.GetBytes("{}");
+                LocalSaveFs.AfterInnerWrite = () => Array.Clear(game);
+                using (Path p = P("/preferences/STSInputSettings"))
+                using (UniqueRef<IFile> f = new())
+                {
+                    using (Path dir = P("/preferences")) t2.CreateDirectory(in dir).ThrowIfFailure();
+                    t2.OpenFile(ref f.Ref, in p, OpenMode.ReadWrite | OpenMode.AllowAppend).ThrowIfFailure();
+                    f.Get.SetSize(2).ThrowIfFailure();
+                    f.Get.Write(0, game, WriteOption.None).ThrowIfFailure();
+                }
+                LocalSaveFs.AfterInnerWrite = null;
+                bool ok2 = t2.Commit().IsSuccess();
+                string a2 = $"{ok2} / {Txt(System.IO.Path.Combine(d2, "0", "preferences", "STSInputSettings"))} / +{reds - before}";
+                t2.Dispose();
+                rows.Add(("⑪ 空存档首次提交：结果 / 已提交 ‖ 空存档 + 写盘后缓冲清零：结果 / 已提交 / 报红", "True / 7B7D ‖ True / 7B7D / +0", $"{a1} ‖ {a2}"));
             }
 
             {   // ⑨
@@ -208,10 +266,25 @@ namespace S2A.Services.Tests
             public int OpenRead(string path, out Microsoft.Win32.SafeHandles.SafeFileHandle handle) => inner.OpenRead(path, out handle);
         }
 
+        // 底层文件外包一层：写完调 LocalSaveFs.AfterInnerWrite
+        private sealed class HookFile : IFile
+        {
+            private UniqueRef<IFile> _f;
+            public HookFile(ref UniqueRef<IFile> f) => _f = new UniqueRef<IFile>(ref f);
+            protected override Result DoRead(out long bytesRead, long offset, Span<byte> destination, in ReadOption option) => _f.Get.Read(out bytesRead, offset, destination, in option);
+            protected override Result DoWrite(long offset, ReadOnlySpan<byte> source, in WriteOption option) { Result r = _f.Get.Write(offset, source, in option); LocalSaveFs.AfterInnerWrite?.Invoke(); return r; }
+            protected override Result DoFlush() => _f.Get.Flush();
+            protected override Result DoSetSize(long size) => _f.Get.SetSize(size);
+            protected override Result DoGetSize(out long size) => _f.Get.GetSize(out size);
+            protected override Result DoOperateRange(Span<byte> outBuffer, OperationId operationId, long offset, long size, ReadOnlySpan<byte> inBuffer) => _f.Get.OperateRange(outBuffer, operationId, offset, size, inBuffer);
+            public override void Dispose() { _f.Destroy(); base.Dispose(); }
+        }
+
         // 工作目录上的真文件：LibHac 的本地文件系统（生产里存档文件也经它读写），附加数据只给默认值
         private sealed class LocalSaveFs : ISaveDataFileSystem
         {
             private readonly LocalFileSystem _fs = new(useUnixTimeStamps: true);
+            public static Action AfterInnerWrite;   // ⑩：底层文件写完之后调（模拟游戏别的线程在这次调用期间改缓冲）
             public LocalSaveFs(string root) => _fs.Initialize(root, LocalFileSystem.PathMode.DefaultCaseSensitivity, ensurePathExists: true).ThrowIfFailure();
             protected override Result DoCreateFile(ref readonly Path path, long size, CreateFileOptions option) => _fs.CreateFile(in path, size, option);
             protected override Result DoDeleteFile(ref readonly Path path) => _fs.DeleteFile(in path);
@@ -226,7 +299,11 @@ namespace S2A.Services.Tests
             {
                 // 文件不在先建（同游戏「建文件再写」）
                 if (_fs.GetEntryType(out _, in path).IsFailure()) { Result c = _fs.CreateFile(in path, 0, CreateFileOptions.None); if (c.IsFailure()) return c; }
-                return _fs.OpenFile(ref outFile, in path, mode);
+                using UniqueRef<IFile> inner = new();
+                Result r = _fs.OpenFile(ref inner.Ref, in path, mode);
+                if (r.IsFailure()) return r;
+                outFile.Reset(new HookFile(ref inner.Ref));
+                return Result.Success;
             }
             protected override Result DoOpenDirectory(ref UniqueRef<IDirectory> outDirectory, ref readonly Path path, OpenDirectoryMode mode) => _fs.OpenDirectory(ref outDirectory, in path, mode);
             protected override Result DoCommit() => Result.Success;
