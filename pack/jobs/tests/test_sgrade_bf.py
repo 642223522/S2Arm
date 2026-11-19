@@ -176,7 +176,8 @@ class RechainIos(unittest.TestCase):
         (self.pack / "manifest.json").write_text(json.dumps({"version": 2, "files": 3, "total": 10, "index_sha256": "pid0"}), encoding="utf-8")
         self.new = t / "built/shaders/direct"
         (self.new / "b-new").mkdir(parents=True); (self.new / "b-new/lib.idx").write_bytes(b"NEWLIB"); (self.new / "keys.tsv").write_text("k2\n")
-        self.info = {"ios": {"dmshChain": "old", "pack": "pid0", "bfGen": 0, "shellId": "S"}}
+        import host_update
+        self.info = {"ios": {"dmshChain": "old", "pack": "pid0", "bfGen": 0, "shellId": "S", "libGen": host_update.LIB_GEN}}
         self.c = types.SimpleNamespace(emit=lambda *a, **k: None, private=str(t), logs=str(t), task="t")
 
     def run_rechain(self, chain="new", src=True, rebuilt=None):
@@ -208,8 +209,17 @@ class RechainIos(unittest.TestCase):
         self.assertEqual(ix, "".join(r + "\n" for r in want_rows))
         pid = hashlib.sha256(ix.encode()).hexdigest()
         self.assertEqual(json.loads((self.pack / "manifest.json").read_text(encoding="utf-8"))["index_sha256"], pid)
-        self.assertEqual(self.info["ios"], {"dmshChain": "new", "pack": pid, "bfGen": sgrade_bf.BF_GEN, "shellId": "S"})
+        import host_update
+        self.assertEqual(self.info["ios"], {"dmshChain": "new", "pack": pid, "bfGen": sgrade_bf.BF_GEN, "shellId": "S", "libGen": host_update.LIB_GEN})
         self.assertFalse((self.pack / "shaders/.direct-old").exists() or (self.pack / "shaders/.direct-new").exists(), "不留临时目录")
+
+    def test_same_chain_old_lib_generation_rebuilds(self):
+        # 期望（手写）：链号相同但记录里没有 libGen（0.5.x 出的库，不带客体输入）→ 照样只重编着色器库、记上当前代数；代数已是当前的 → 跳过（上面那条）
+        import host_update
+        del self.info["ios"]["libGen"]
+        r, calls = self.run_rechain(chain="old")
+        self.assertEqual((r, calls), ("updated", ["ios"]))
+        self.assertEqual((self.info["ios"]["dmshChain"], self.info["ios"]["libGen"]), ("old", host_update.LIB_GEN))
 
     def test_no_material_unavailable_and_untouched(self):
         before = (self.pack / "index.tsv").read_text(encoding="utf-8")
