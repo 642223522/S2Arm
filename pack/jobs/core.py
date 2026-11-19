@@ -693,10 +693,11 @@ class Context:
                     host=socket.gethostname(), startedAt=round(time.time(), 3))
 
     @contextlib.contextmanager
-    def lock(self, name="catalog", wait=None, root=None):
+    def lock(self, name="catalog", wait=None, root=None, shared=False):
         """游戏库锁（启动器剃刀 H1 / H2：库内只有这一种等待语义）：拿不到就排队，最多等 wait 秒（缺省 lock_wait / LOCK_WAIT_S），期间发进度「在等『X』结束」
         （phase=waiting_lock、holder=占锁任务）；到上限报 code=library_busy、原句「另一个任务正在使用游戏库」，失败事件带 holder，占锁者也进 internal。
-        root 给了是另一个库（整库搬家的旧位置），不核本任务的库标识。拿到后在旁挂文件记下本任务。报错原句不改：旧前端按它做本地化匹配"""
+        root 给了是另一个库（整库搬家的旧位置），不核本任务的库标识。拿到后在旁挂文件记下本任务。报错原句不改：旧前端按它做本地化匹配。
+        shared = True：共享模式（filelock 读写锁的「读」）——执行锁上起局与出包拿共享（各自再拿这一款的锁），清理 / 删除 / 搬家等全库动作拿独占"""
         self.check()
         if root is None:
             self.require_library()
@@ -707,7 +708,7 @@ class Context:
             except Exception:   # 进度发不出去（作业已在收尾 / 测试里的裸上下文）不影响排队
                 pass
         try:
-            with filelock.held(Path(root or self.library) / ("." + name + ".lock"), wait_s=wait, holder=self.lock_holder(), on_wait=waiting):
+            with filelock.held(Path(root or self.library) / ("." + name + ".lock"), wait_s=wait, holder=self.lock_holder(), on_wait=waiting, shared=shared):
                 yield
         except filelock.Busy as busy:
             detail = f"等了 {wait:g} 秒，游戏库{name}锁仍被占：{describe_holder(busy.holder)}（{json.dumps(busy.holder, ensure_ascii=False)}）"  # 非玩家句
