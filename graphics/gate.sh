@@ -481,6 +481,7 @@ py_items() {
   HOOK_REST=1 job lib_pack timeout 120 "$PYV" graphics/tools/direct/tests/t_lib_pack.py
   HOOK_REST=1 job lib_pack_vk timeout 120 "$PYV" graphics/tools/direct/tests/t_lib_pack_vk.py
   HOOK_REST=1 job lib_pack_ident timeout 120 "$PYV" graphics/tools/direct/tests/t_lib_pack_ident.py   # 发布打包按存储身份同一份只读一次（#1331）
+  HOOK_REST=1 job lib_guest timeout 120 "$PYV" graphics/tools/direct/tests/t_lib_guest.py   # 客体输入随库带（种类 56，LibPack.GuestBlocks；读端在 t_lib_pack.m）
   HOOK_REST=1 job lib_overlay timeout 120 "$PYV" graphics/tools/direct/tests/t_lib_overlay.py   # S 级升级补可读瓦片版的覆盖层（LibPack.Overlay）
   HOOK_REST=1 job merge_extract timeout 30 python3 graphics/tools/direct/tests/t_merge_extract.py
   HOOK_REST=1 job unity_kernels timeout 30 python3 graphics/tools/direct/tests/t_unity_kernels.py
