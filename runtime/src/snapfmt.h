@@ -322,6 +322,26 @@ static inline void snap_conv_scan(snap_conv *const *ev, int ne, uint8_t *lo, uin
             a += ((e->c->size + 7u) & ~7u) - 8; break; } }
 }
 
+// 原地转一段：p 起 count 个旧布局对象（紧挨着），转成 count 个新布局对象写回 p。cap = p 处能用的字节数；放不下（count × 新长 > cap）回 0、不动 p。
+//   tmp 至少 count × 旧长。用于按原址放回的区里的对象 / 对象自有数组（Vulkan 对象区：句柄与互指都是地址，原地转就不用改任何指针）
+static inline int snap_conv_inplace(snap_conv *e, void *p, uint64_t count, uint64_t cap, uint8_t *tmp) {
+    if (!count || count * e->c->size > cap) return 0;
+    memcpy(tmp, p, (size_t)(count * e->o->size));
+    for (uint64_t i = 0; i < count; i++) snap_conv_one(e, tmp + i * e->o->size, (uint8_t *)p + i * e->c->size);
+    return 1;
+}
+// 布局转换表查询：恢复局里这个结构要转回表项，不用转回 NULL。真定义在 runtime/src/snapshot.c；调用的源文件各自登记「弱链接[<场合>]：s2a_snap_conv_get」
+snap_conv *s2a_snap_conv_get(const char *name) __attribute__((weak_import));
+static inline snap_conv *snap_conv_get(const char *name) { return s2a_snap_conv_get ? s2a_snap_conv_get(name) : NULL; }
+// 字段号记录里整块存的结构（或结构数组）：快照里是旧布局就逐个按字段转进 out（cap 字节，元素新长 elem）；布局相同或没有转换表项同 sfr_into
+static inline int sfr_into_conv(const sfr *r, uint16_t id, void *out, uint32_t cap, const char *name, uint32_t elem) {
+    uint32_t n; const uint8_t *p = (const uint8_t *)sfr_get(r, id, &n); snap_conv *e = p ? snap_conv_get(name) : NULL;
+    if (!e || e->c->size != elem || !e->o->size || n % e->o->size) return sfr_into(r, id, out, cap);
+    memset(out, 0, cap);
+    for (uint32_t i = 0; i < n / e->o->size && (i + 1) * elem <= cap; i++) snap_conv_one(e, p + i * e->o->size, (uint8_t *)out + i * elem);
+    return 1;
+}
+
 // 指纹 + 完整布局：存档记两样，恢复时指纹相同直接用，不同按布局转（见上）。布局每处只取一次
 #define SNAP_FP_TYPE(T) ({ static T sfp_z_; static snap_lay sfp_l_; static int sfp_d_; if (!sfp_d_) { SNAP_LAY_TYPE_(T, &sfp_l_); sfp_d_ = 1; } \
         (snap_fp){ SNAP_FP_DUMP_(&sfp_z_), &sfp_l_, 0 }; })

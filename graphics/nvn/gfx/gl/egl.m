@@ -388,6 +388,7 @@ GLB(eglReleaseThread, EGLBoolean, void) { @autoreleasepool { bind_current(NULL, 
 // 交给游戏的宿主指针：表面 / 上下文句柄（calloc 的地址）、eglGetProcAddress 交出的函数、glGetString 的串。游戏把它们拷进自己的内存，新进程里地址全变：
 //   建 / 交出时按身份登记（gl:surf:<序号>、gl:ctx:<序号>、gl:proc:<名字>、gl:str:…），恢复时快照引擎按身份问 gl_snap_resolve 要本进程的值、扫写回的页换掉。
 //   表面 / 上下文在那时先建空壳（序号同快照），gl_snap_restore 再按快照填内容、建贴图
+// 弱链接[nvntest]：s2a_snap_conv_get（runtime/src/snapshot.c 提供；GL 各片读整块存的结构时按布局转换表转，经 snapfmt.h snap_conv_get；同下）
 // 弱链接[nvntest]：s2a_snap_thread_self（runtime/src/thread.c 提供；图形单测不链宿主，链接行按这行放行未定义）
 void s2a_snap_handout_id(uint64_t v, const char *id) __attribute__((weak));
 int s2a_snap_mode(void) __attribute__((weak));
@@ -516,6 +517,7 @@ int gl_snap_restore(const char *path) {
         #define X(id, fld) GLSF_R(&r, id, c->st.fld);
         GL_STATE_FIELDS(X)
         #undef X
+        GLSF_RC(&r, GC_COLOR, c->st.color, "gl.color_state", gl_color_state);   // 带布局指纹的结构数组：旧布局按字段转（上面那遍原样读的盖掉）
         memset(c->st.default_tex, 0, sizeof c->st.default_tex); c->st.dirty = ~0u; c->bound = 0;
         nc++;
     }

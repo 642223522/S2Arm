@@ -197,6 +197,8 @@ extern _Atomic uint64_t gl_wait_n, gl_wait_ns;   // 游戏线程等 GPU 的次�
 #include "../../../../runtime/src/snapfmt.h"
 #define GLSF_W(w, id, field) sfw_blob((w), (uint16_t)(id), &(field), (uint32_t)sizeof(field))
 #define GLSF_R(r, id, field) sfr_into((r), (uint16_t)(id), &(field), (uint32_t)sizeof(field))
+// 带布局指纹的结构（或结构数组）整块存的字段：快照里是旧布局时按字段转（snapfmt.h sfr_into_conv；name = 登记指纹的名字，T = 元素类型）
+#define GLSF_RC(r, id, field, name, T) sfr_into_conv((r), (uint16_t)(id), &(field), (uint32_t)sizeof(field), (name), (uint32_t)sizeof(T))
 int gl_buf_snap_save(FILE *f); int gl_buf_snap_restore(FILE *f);
 int gl_tex_snap_save(FILE *f); int gl_tex_snap_restore(FILE *f);
 int gl_tex_snap_one_save(FILE *f, gl_texture *t);   // 一个纹理对象（上下文的默认纹理也用它；t 可为 NULL）
