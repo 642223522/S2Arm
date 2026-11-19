@@ -909,7 +909,7 @@ int gl_fb_snap_restore(FILE *f) {
     if (!nvn_snap_tex_load) return -1;
     sfr r; int bad = sfr_sec(&r, f, "gl.fbo", 1) != 0;
     while (!bad && sfr_rec(&r) == 1) { GLuint nm = 0; GLSF_R(&r, GF_NAME, nm); struct gl_framebuffer *b = calloc(1, sizeof *b); if (!nm || !b) { free(b); continue; }
-        GLSF_R(&r, GF_ATT, b->att); GLSF_R(&r, GF_DRAW, b->draw); GLSF_R(&r, GF_READ, b->read); GLSF_R(&r, GF_USED, b->used);
+        GLSF_RC(&r, GF_ATT, b->att, "gl.att", gl_att); GLSF_R(&r, GF_DRAW, b->draw); GLSF_R(&r, GF_READ, b->read); GLSF_R(&r, GF_USED, b->used);
         if (!gl_name_put(&framebuffers, nm, b)) { free(b); bad = 1; } }
     sfr_done(&r);
     if (bad || sfr_sec(&r, f, "gl.rbo", 1)) return -1;

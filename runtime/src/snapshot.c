@@ -579,6 +579,7 @@ static const char *g_fp_dir; static int g_fp_bad, g_fp_n, g_fp_conv;
 //   带 magic 的（住在游戏内存里的对象）在页内容写回后整片找一遍、原地转（conv_guest_objs）
 static snap_conv g_conv[128]; static int g_nconv;
 static snap_conv *conv_find(const char *name) { for (int i = 0; i < g_nconv; i++) if (!strcmp(g_conv[i].name, name)) return &g_conv[i]; return NULL; }
+snap_conv *s2a_snap_conv_get(const char *name) { return conv_find(name); }   // 别的模块（Vulkan 对象区原地转、GL 字段号记录）按名字取转换表项
 size_t s2a_snap_conv_fread(void *dst, size_t size, size_t n, FILE *f, const char *name) {
     snap_conv *e = conv_find(name);
     if (!e || e->c->size != size) return fread(dst, size, n, f);   // 布局相同（或调用方读的不是登记的那个结构）：原样读
@@ -833,6 +834,9 @@ int s2a_snap_restore(const char *dir) {
     double t4b = now_s();
     if (!nvn_snap_restore || nvn_snap_restore(dir)) { LOG("【红】即时存档恢复：图形状态没恢复"); return -1; }
     double t4c = now_s();
+    for (int i = 0; i < g_nconv; i++) if (!g_conv[i].magic || g_conv[i].nobj)   // 布局转换收账：每个要转的结构实际转了几个（0 = 这版恢复路径没碰到它）
+        LOG("%s即时存档恢复：宿主结构「%s」按新布局转了 %llu 个（整数放不下 %llu 处、丢掉的旧字段有值 %llu 处）", g_conv[i].nobj ? (g_conv[i].nlossy || g_conv[i].ndrop ? "【黄】" : "") : "【黄】",
+            g_conv[i].name, (unsigned long long)g_conv[i].nobj, (unsigned long long)g_conv[i].nlossy, (unsigned long long)g_conv[i].ndrop);
     char st1[80]; int sn1; save_dir_hash(st1, &sn1);
     if (strcmp(st0, st1)) { LOG("【红】即时存档恢复：恢复过程中已提交的存档变了（%.12s… → %.12s…），停下不起游戏线程", st0, st1); return -1; }
     { char src[2048], want[256], full[80]; int fn; snprintf(src, sizeof src, "%s/save_tree", dir);

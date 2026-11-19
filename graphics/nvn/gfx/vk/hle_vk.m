@@ -335,6 +335,7 @@ static void *zalloc(size_t n) { void *p = calloc(1, n); if (!p) die("[vk] out of
 // 快照开（S2A_SNAP_MODE / S2A_SNAP_RESTORE）时，交给游戏的对象（句柄就是它们的地址）和对象自有的数组从命令记录区（runtime/src/vawin.c s2a_cmd_arena_map，
 //   固定地址、快照按原址存回）里切；快照关时一律 calloc / free，与原来逐字节相同。分配器自己的账（块链、空闲链）也放在区里，随区一起存回
 // 弱链接[nvntest]：s2a_cmd_arena_map（runtime/src/vawin.c 提供；图形单测不链宿主，没有就不进区）
+// 弱链接[nvntest]：s2a_snap_conv_get（runtime/src/snapshot.c 提供；vk_snap.inc 恢复时取布局转换表项，图形单测不链宿主）
 // 弱链接[nvntest]：s2a_vk_entry（graphics/nvn/host_adapt.m 提供；vk_snap.inc 恢复时按「vk:export:<名>」换算交给游戏的 vk* 地址，图形单测不链它）
 void *s2a_cmd_arena_map(uint64_t len) __attribute__((weak)); int s2a_cmd_arena_has(const void *p, uint64_t n) __attribute__((weak));
 int s2a_snap_mode(void) __attribute__((weak));
@@ -362,12 +363,14 @@ static int vs_on(void) {
     return g_vs_on;
 }
 static int vs_has(const void *p) { return p && g_vs && s2a_cmd_arena_has && s2a_cmd_arena_has(p, 1); }
-static void *vs_alloc(size_t n) {   // 清零的块；区切满时退回 calloc（记红一次）
-    uint32_t c = 0; while (c < VS_NCLS && (16ull << c) < n) c++;
+// room：块里另留的余量（不计进 size）。对象按 VS_ROOM 留：换版本后结构长了，只要还放得下原块，恢复时就地按新布局转，句柄与互指一个都不用改
+enum { VS_ROOM = 64 };
+static void *vs_alloc_room(size_t n, size_t room) {   // 清零的块；区切满时退回 calloc（记红一次）
+    uint32_t c = 0; while (c < VS_NCLS && (16ull << c) < n + room) c++;
     pthread_mutex_lock(&g_vs_mu); vs_blk *b = NULL;
     if (c < VS_NCLS && g_vs->free_[c]) { b = g_vs->free_[c]; g_vs->free_[c] = *(void **)(b + 1); }
     else {
-        uint64_t need = sizeof(vs_blk) + (c < VS_NCLS ? (16ull << c) : (n + 16383) & ~16383ull);
+        uint64_t need = sizeof(vs_blk) + (c < VS_NCLS ? (16ull << c) : (n + room + 16383) & ~16383ull);
         if (c == VS_NCLS || g_vs->cur + need > g_vs->end) {
             if (c == VS_NCLS) b = vs_seg((need + 16383) & ~16383ull);
             else { uint8_t *p = vs_seg(VS_CHUNK); if (p) { g_vs->cur = p; g_vs->end = p + VS_CHUNK; } }
@@ -378,6 +381,7 @@ static void *vs_alloc(size_t n) {   // 清零的块；区切满时退回 calloc�
     if (!b) { static int once; if (!once++) LOG("[vk] 【红】 即时存档：Vulkan 对象区切满，之后的对象不在区里（快照恢复后会缺）"); return zalloc(n); }
     b->magic = VS_MAGIC; b->cls = c; b->size = n; b->seq = 0; memset(b + 1, 0, n); return b + 1;
 }
+static void *vs_alloc(size_t n) { return vs_alloc_room(n, 0); }
 static void vs_free(void *p) {
     vs_blk *b = (vs_blk *)p - 1; if (b->magic != VS_MAGIC) die("[vk] 即时存档对象区：释放的块头不对 %p", p);
     if (b->cls >= VS_NCLS) return;   // 整段切的大块：区地址不回收（同命令记录区），只少一块
@@ -407,12 +411,14 @@ static void *vk_mrealloc(void *p, size_t n) {
     void *q = vs_alloc(n); if (p) { size_t o = ((vs_blk *)p - 1)->size; memcpy(q, p, o < n ? o : n); vs_free(p); } return q;
 }
 typedef enum { O_PLAIN, O_MEMORY, O_BUFFER_VIEW, O_IMAGE, O_IMAGE_VIEW, O_SAMPLER, O_SHADER,
-    O_PIPELINE, O_LAYOUT, O_SET, O_COMMAND, O_QUERY, O_FENCE, O_SWAPCHAIN } object_kind;   // O_FENCE / O_SWAPCHAIN：即时存档恢复要改它们（vk_snap.inc）
+    O_PIPELINE, O_LAYOUT, O_SET, O_COMMAND, O_QUERY, O_FENCE, O_SWAPCHAIN,
+    O_BUFFER, O_RENDERPASS, O_FRAMEBUFFER } object_kind;   // O_FENCE / O_SWAPCHAIN：即时存档恢复要改它们（vk_snap.inc）；O_BUFFER 起（只加在末尾，旧快照里的值不变）：
+                                                           //   带布局指纹的类型各有自己的种类，换版本布局变了按种类认出该按哪个布局原地转（vk_snap.inc vs_conv_objects）
 typedef struct vk_object { struct vk_object *next; void *ptr; object_kind kind; uint64_t seq; } vk_object;   // seq：建立序号（描述符记来源时连序号一起记，恢复时认得出来源是不是原来那个）
 static vk_object *g_objects;
 static pthread_mutex_t g_object_mu = PTHREAD_MUTEX_INITIALIZER;
 static void *obj_alloc(size_t size, object_kind kind) {
-    static _Atomic uint64_t seq; void *ptr = vk_mem(size); vk_object *node = vk_mem(sizeof *node); node->ptr = ptr; node->kind = kind; node->seq = atomic_fetch_add(&seq, 1) + 1;
+    static _Atomic uint64_t seq; void *ptr = vs_on() ? vs_alloc_room(size, VS_ROOM) : zalloc(size); vk_object *node = vk_mem(sizeof *node); node->ptr = ptr; node->kind = kind; node->seq = atomic_fetch_add(&seq, 1) + 1;
     if (vs_has(ptr)) ((vs_blk *)ptr - 1)->seq = node->seq;
     pthread_mutex_lock(&g_object_mu); node->next = g_objects; g_objects = node; pthread_mutex_unlock(&g_object_mu);
     return ptr;
@@ -713,7 +719,7 @@ VK(vkFlushMappedMemoryRanges, VkResult, VkDevice d, uint32_t n, const VkMappedMe
 VK(vkInvalidateMappedMemoryRanges, VkResult, VkDevice d, uint32_t n, const VkMappedMemoryRange *r) { (void)d; (void)n; (void)r; return VK_SUCCESS; }
 
 VK(vkCreateBuffer, VkResult, VkDevice d, const VkBufferCreateInfo *ci, const VkAllocationCallbacks *a, VkBuffer *out) {
-    (void)d; (void)a; VkBuffer b = obj_alloc(sizeof *b, O_PLAIN); b->size = ci->size; b->usage = ci->usage; *out = b; return VK_SUCCESS;
+    (void)d; (void)a; VkBuffer b = obj_alloc(sizeof *b, O_BUFFER); b->size = ci->size; b->usage = ci->usage; *out = b; return VK_SUCCESS;
 }
 VK(vkDestroyBuffer, void, VkDevice d, VkBuffer b, const VkAllocationCallbacks *a) { (void)d; (void)a; obj_free(b); }
 VK(vkGetBufferMemoryRequirements, void, VkDevice d, VkBuffer b, VkMemoryRequirements *r) {
@@ -1147,7 +1153,7 @@ VK(vkDestroyPipelineLayout, void, VkDevice d, VkPipelineLayout l, const VkAlloca
 VK(vkCreateRenderPass, VkResult, VkDevice d, const VkRenderPassCreateInfo *ci, const VkAllocationCallbacks *a, VkRenderPass *out) {
     (void)d; (void)a;
     if (ci->attachmentCount > 16 || !ci->subpassCount || ci->subpassCount > 8) { LOG("[vk] 【红】 render pass: %u attachments, %u subpasses", ci->attachmentCount, ci->subpassCount); return VK_ERROR_OUT_OF_HOST_MEMORY; }
-    VkRenderPass rp = obj_alloc(sizeof *rp, O_PLAIN); rp->natt = ci->attachmentCount; rp->nsub = ci->subpassCount;
+    VkRenderPass rp = obj_alloc(sizeof *rp, O_RENDERPASS); rp->natt = ci->attachmentCount; rp->nsub = ci->subpassCount;
     memset(rp->first, -1, sizeof rp->first); memset(rp->last, -1, sizeof rp->last);
     for (uint32_t i = 0; i < rp->natt; i++) {
         const VkAttachmentDescription *at = &ci->pAttachments[i];
@@ -1174,7 +1180,7 @@ VK(vkDestroyRenderPass, void, VkDevice d, VkRenderPass rp, const VkAllocationCal
 VK(vkCreateFramebuffer, VkResult, VkDevice d, const VkFramebufferCreateInfo *ci, const VkAllocationCallbacks *a, VkFramebuffer *out) {
     (void)d; (void)a;
     if (ci->attachmentCount > 16) { LOG("[vk] 【红】 framebuffer with %u attachments", ci->attachmentCount); return VK_ERROR_OUT_OF_HOST_MEMORY; }
-    VkFramebuffer fb = obj_alloc(sizeof *fb, O_PLAIN); fb->n = ci->attachmentCount; fb->w = ci->width; fb->h = ci->height; fb->layers = ci->layers;
+    VkFramebuffer fb = obj_alloc(sizeof *fb, O_FRAMEBUFFER); fb->n = ci->attachmentCount; fb->w = ci->width; fb->h = ci->height; fb->layers = ci->layers;
     memcpy(fb->v, ci->pAttachments, fb->n * sizeof *fb->v);
     *out = fb; return VK_SUCCESS;
 }
