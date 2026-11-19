@@ -1114,16 +1114,21 @@ def export_signer(c, mode):
         devcert.stored(c)   # 证书缺件 → devcert_missing
         t = devcert.team(c) or dict(id=devcert.state(c).get("teamId"), name=devcert.state(c).get("teamName") or "")
         return t["id"], devcert.state(c)["bundleId"], program_pack.devcert_signer(c), t.get("name") or t["id"]
-    if os.name == "nt":
+    if os.name == "nt" or mac_plume(c):   # Mac 通用壳 Apple ID 同 Windows：装 App / 推游戏用的那个 plumesign 账号与签法（phone_signing），不看 Xcode 里的团队
         W = win_install_mod(c)
         team = W.impactor.selected_team() if hasattr(W.impactor, "selected_team") else None
         if not team:
+            if os.name != "nt":
+                raise Failure(APPLE_SIGN_IN, code="apple_not_signed_in")
             raise Failure("读不到 Impactor 里登录的 Apple ID：在 Impactor 里登录后再导出，或者这次改成「自己用别的工具签」。", code="xcode_account_missing")
         import ipa as packer
         exe = W.plumesign_path((W.impactor.bundled(c.r.get("resources")) or {}).get("plumesign"))
         win_cert_gate(c, W, exe)
-        shell = Path(packer.container_shell(c, packer.current_shell_id(c))) / "root"
-        return team, container_bundle_id(team), program_pack.win_signer(c, exe, shell), team
+        signer = win_selfsign_signer(c, W, exe, team)
+        if signer is None:   # 同 phone_signing：没编 s2a-selfsign / 本机还没有这个团队的私钥，照旧 plumesign 签
+            shell = Path(packer.container_shell(c, packer.current_shell_id(c))) / "root"
+            signer = program_pack.win_signer(c, exe, shell)
+        return team, container_bundle_id(team) if os.name == "nt" else container_bundle_id(team, c), signer, team
     t = pick_team(xcode_teams(c.env()), c.r.get("teamId"))
     return t["id"], container_bundle_id(t["id"], c), program_pack.mac_signer(c), t.get("name") or t["id"]
 
