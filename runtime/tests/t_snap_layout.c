@@ -2,6 +2,8 @@
 #include "../src/snapfmt.h"
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdatomic.h>
+#include <simd/simd.h>
 
 static int g_fail, g_ok;
 #define CHECK(c, ...) do { if (c) g_ok++; else { g_fail++; printf("  不符："); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -80,6 +82,25 @@ int main(void) {
     printf("⑥ 指纹宏同时给布局，且不改指纹（同一类型两次相同）\n");
     { snap_fp p1 = SNAP_FP_TYPE(v1_t), p2 = SNAP_FP_TYPE(v1_t), p3 = SNAP_FP_TYPE(v2_t);
       CHECK(p1.fp == p2.fp && p1.fp != p3.fp && p1.lay && !p1.lay->bad && p1.lay->n == a.n, "指纹稳定、新旧不同、布局随带（%u 个字段）", p1.lay ? p1.lay->n : 0); }
+
+    printf("⑧ 浮点 typedef（看不出 float / double）按值判长度\n");
+    { typedef float myf; typedef double myd; typedef struct { myf a; myd b; myf c[2]; myf d; uint32_t e; } ft_t; snap_lay x; SNAP_LAY_TYPE_(ft_t, &x);
+      CHECK(!x.bad, "布局可用（%s）", x.why);
+      expect_field(&x, "a", offsetof(ft_t, a), 4); expect_field(&x, "b", offsetof(ft_t, b), 8); expect_field(&x, "d", offsetof(ft_t, d), 4); expect_field(&x, "e", offsetof(ft_t, e), 4);
+      snap_lay_free(&x); }
+
+    printf("⑦ 值读不了 / 只给地址的类型：按锚点补偏移，后面字段照样对得上\n");
+    { typedef struct { uint8_t k; simd_float4 v; _Atomic int at; long double ld; inner_t arr[3]; bool flag; uint32_t tail; _Atomic(uint64_t) a64; uint16_t end; } sp_t;
+      snap_lay x; SNAP_LAY_TYPE_(sp_t, &x);
+      CHECK(!x.bad, "布局可用（bad=%d）", x.bad);
+      expect_field(&x, "k", offsetof(sp_t, k), 1); expect_field(&x, "at", offsetof(sp_t, at), 4); expect_field(&x, "tail", offsetof(sp_t, tail), 4);
+      expect_field(&x, "a64", offsetof(sp_t, a64), 8); expect_field(&x, "end", offsetof(sp_t, end), 2);
+      { const snap_fld *f = fld(&x, "v"); CHECK(f && f->off == offsetof(sp_t, k) + 1 && f->off + f->size == offsetof(sp_t, v) + sizeof(simd_float4), "向量 v 成段并含到 %zu", offsetof(sp_t, v) + sizeof(simd_float4)); }
+      { const snap_fld *f = fld(&x, "arr"); CHECK(f && f->off == offsetof(sp_t, arr) && f->off + f->size == offsetof(sp_t, tail) && !fld(&x, "flag"), "不明长度数组 arr 连同后面的布尔并成一段、止于 tail %zu", offsetof(sp_t, tail)); }
+      sp_t s1; memset(&s1, 0, sizeof s1); s1.k = 7; s1.v = (simd_float4){1, 2, 3, 4}; s1.at = 5; s1.ld = 1.5L; s1.arr[2].x = 9; s1.flag = true; s1.tail = 11; s1.a64 = 12; s1.end = 13;
+      sp_t s2; memset(&s2, 0, sizeof s2); uint32_t st2[4]; char w2[128] = "";
+      CHECK(!snap_lay_plan(&x, &x, st2, w2, sizeof w2) && st2[0] == x.n && !snap_lay_apply(&x, &s1, &x, &s2) && !memcmp(&s1, &s2, sizeof s1), "同布局逐字段搬回来逐字节相同（%u 个字段）", x.n);
+      snap_lay_free(&x); }
 
     snap_lay_free(&a); snap_lay_free(&b); snap_lay_free(&r);
     if (g_fail) printf("✗ t_snap_layout：%d 项不符（共 %d 项）\n", g_fail, g_ok + g_fail);

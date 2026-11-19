@@ -80,16 +80,17 @@ static int sfp_printf(const char *fmt, ...) {
 //   成员偏移重叠的嵌套记录是联合，整段按原样字节处理。提取完自检（按偏移有序、不重叠、不出界），不过就标「布局不明」，这个结构只能照旧拒绝
 enum { SL_REC = 0, SL_SINT, SL_UINT, SL_FLT, SL_PTR, SL_RAW };
 typedef struct { char path[128]; char type[64]; uint32_t off, size, end; uint16_t width; uint8_t kind, known, bits, approx; } snap_fld;
-typedef struct snap_lay { uint32_t size, n, cap; int bad; snap_fld *f; } snap_lay;
+typedef struct snap_lay { uint32_t size, n, cap; int bad; snap_fld *f; char why[96]; } snap_lay;   // why：布局不明的原因（第一处）
 typedef struct { uint64_t fp; const snap_lay *lay; } snap_fp;
 typedef void (*snap_fp_cb)(const char *name, snap_fp fp);
 
 static __attribute__((unused)) struct { snap_lay *L; uintptr_t base; int pass, depth; uint32_t idx; uint32_t open[8]; char pre[8][128]; } g_sl;
+#define SL_BAD(L, ...) do { if (!(L)->bad) snprintf((L)->why, sizeof (L)->why, __VA_ARGS__); (L)->bad = 1; } while (0)
 static __attribute__((unused)) snap_fld *sl_next(void) {
     snap_lay *L = g_sl.L;
     if (g_sl.idx == L->n) {
-        if (g_sl.pass) { L->bad = 1; return NULL; }
-        if (L->n == L->cap) { uint32_t c = L->cap ? L->cap * 2 : 64; snap_fld *f = (snap_fld *)realloc(L->f, sizeof *f * c); if (!f) { L->bad = 1; return NULL; } L->f = f; L->cap = c; }
+        if (g_sl.pass) { SL_BAD(L, "第 %d 遍字段比第一遍多", g_sl.pass + 1); return NULL; }
+        if (L->n == L->cap) { uint32_t c = L->cap ? L->cap * 2 : 64; snap_fld *f = (snap_fld *)realloc(L->f, sizeof *f * c); if (!f) { SL_BAD(L, "内存不够"); return NULL; } L->f = f; L->cap = c; }
         memset(&L->f[L->n], 0, sizeof L->f[0]); L->n++;
     }
     return &L->f[g_sl.idx++];
@@ -112,7 +113,7 @@ static __attribute__((unused)) int sl_printf(const char *fmt, ...) {
     if (!strncmp(fmt, "%s}", 3)) {   // 嵌套记录收尾
         if (g_sl.depth > 0) { g_sl.depth--; if (!g_sl.pass) L->f[g_sl.open[g_sl.depth]].end = g_sl.idx; }
         va_end(ap); return 0; }
-    if (strncmp(fmt, "%s%s %s ", 8)) { va_end(ap); L->bad = 1; return 0; }
+    if (strncmp(fmt, "%s%s %s ", 8)) { va_end(ap); SL_BAD(L, "认不出的格式串 %.40s", fmt); return 0; }
     (void)va_arg(ap, const char *); const char *type = va_arg(ap, const char *), *name = va_arg(ap, const char *);
     snap_fld *f = sl_next(); if (!f) { va_end(ap); return 0; }
     if (!g_sl.pass) {
@@ -120,64 +121,80 @@ static __attribute__((unused)) int sl_printf(const char *fmt, ...) {
         for (int d = 0; d < g_sl.depth; d++) k += snprintf(f->path + k, sizeof f->path - (size_t)k > 0 ? sizeof f->path - (size_t)k : 0, "%s.", g_sl.pre[d]);
         snprintf(f->path + (k < (int)sizeof f->path ? k : (int)sizeof f->path - 1), sizeof f->path - (size_t)(k < (int)sizeof f->path ? k : (int)sizeof f->path - 1), "%s", name);
         snprintf(f->type, sizeof f->type, "%s", !strcmp(type, "_Bool") ? "bool" : type);   // 同一个布尔字段编译器有时打 _Bool 有时打 bool
-        if (strlen(type) >= sizeof f->type || k >= (int)sizeof f->path - 1) L->bad = 1;   // 截断了的名字不能拿来对字段
+        if (strlen(type) >= sizeof f->type || k >= (int)sizeof f->path - 1) SL_BAD(L, "名字太长：%.40s %.40s", type, name);   // 截断了的名字不能拿来对字段
     }
     const char *rest = fmt + 8;
     if (!strcmp(rest, "=")) {   // 嵌套记录开头（格式串不带换行，后面紧跟一行 " {"）：子字段带上这一级的名字
-        if (g_sl.depth >= 8) { L->bad = 1; va_end(ap); return 0; }
+        if (g_sl.depth >= 8) { SL_BAD(L, "嵌套超过 8 层：%.40s", name); va_end(ap); return 0; }
         if (!g_sl.pass) { f->kind = SL_REC; g_sl.open[g_sl.depth] = g_sl.idx - 1; }
         snprintf(g_sl.pre[g_sl.depth], sizeof g_sl.pre[0], "%s", name); g_sl.depth++;
         va_end(ap); return 0; }
-    if (!strcmp(rest, "= *%p\n")) {   // 数组：给的是字段地址
+    if (!strcmp(rest, "= *%p\n")) {   // 给的是字段地址：数组、ObjC 对象引用（id / Class / NSFoo *）、_Atomic(T)、__fp16、__int128
         uintptr_t p = (uintptr_t)va_arg(ap, void *);
         if (!g_sl.pass) { f->kind = SL_RAW; f->known = 1; f->off = (uint32_t)(p - g_sl.base);
             char base[64]; snprintf(base, sizeof base, "%s", type); char *b = strchr(base, '['); uint64_t cnt = 1; const char *q = strchr(type, '[');
             if (b) { *b = 0; while (b > base && b[-1] == ' ') *--b = 0; }
             while (q && *q == '[') { cnt *= strtoull(q + 1, NULL, 10); q = strchr(q, ']'); q = q ? q + 1 : NULL; }
-            uint32_t es = sl_scalar_size(base); if (es) f->size = (uint32_t)(es * cnt); else f->approx = 1; }
+            uint32_t es = sl_scalar_size(base);
+            if (!es && (!strncmp(base, "id", 2) && (base[2] == 0 || base[2] == '<' || base[2] == ' ')) ) es = sizeof(void *);
+            if (!es && !strncmp(base, "Class", 5)) es = sizeof(void *);
+            if (!es && !strncmp(base, "_Atomic(", 8)) { char in[64]; snprintf(in, sizeof in, "%s", base + 8); char *e = strrchr(in, ')'); if (e) *e = 0; es = sl_scalar_size(in); }
+            if (!es && !strcmp(base, "__fp16")) es = 2;
+            if (!es && strstr(base, "__int128")) es = 16;
+            if (es) { f->size = (uint32_t)(es * cnt); if (!b && (base[strlen(base) - 1] == '*' || !strncmp(base, "id", 2) || !strncmp(base, "Class", 5))) f->kind = SL_PTR; } else f->approx = 1; }
         va_end(ap); return 0; }
     if (!strncmp(rest, ": %zu = ", 8)) {   // 位域
         size_t w = va_arg(ap, size_t); if (!g_sl.pass) { f->bits = 1; f->width = (uint16_t)w; f->kind = SL_RAW; }
         va_end(ap); return 0; }
-    if (strncmp(rest, "= ", 2)) { L->bad = 1; va_end(ap); return 0; }
-    const char *c = strchr(rest, '%'); if (!c) { L->bad = 1; va_end(ap); return 0; }
+    if (strncmp(rest, "= ", 2)) { SL_BAD(L, "认不出的格式串 %.40s", fmt); va_end(ap); return 0; }
+    const char *c = strchr(rest, '%'); if (!c) { SL_BAD(L, "认不出的格式串 %.40s", fmt); va_end(ap); return 0; }
     c++; int lm = 0; while (*c == 'l' || *c == 'h' || *c == 'z' || *c == 'j' || *c == 't' || *c == '.' || (*c >= '0' && *c <= '9')) { if (*c == 'h') lm -= 1; else if (*c == 'l' || *c == 'z' || *c == 'j' || *c == 't') lm = 2; c++; }
+    if (!strchr("spfgeadiuxXoc", *c) || !*c) { va_end(ap); if (!g_sl.pass) { f->kind = SL_RAW; f->known = 0; } return 0; }   // 向量（%v4hlf）、long double（%Lf）等：值读不了，偏移按前后锚点补
     uint64_t v = 0; uint32_t sz = 0; uint8_t kind = 0;
     if (*c == 's') { v = (uintptr_t)va_arg(ap, const char *); sz = sizeof(void *); kind = SL_PTR; }   // 字符串指针：只要指针值，不读内容
     else if (*c == 'p') { v = (uintptr_t)va_arg(ap, void *); sz = sizeof(void *); kind = SL_PTR; }
     else if (*c == 'f' || *c == 'g' || *c == 'e' || *c == 'a') { double d = va_arg(ap, double); kind = SL_FLT;
-        if (!strcmp(type, "float")) { float x = (float)d; uint32_t u; memcpy(&u, &x, 4); v = u; sz = 4; } else { memcpy(&v, &d, 8); sz = 8; } }
+        // float 还是 double：都打 %f。typedef（GLfloat 等）看不出，第一遍按值判——float 字段提升成 double 是精确的，转回 float 再提升按位不变；
+        //   double 字段装着花纹（逐字节递增）尾数低位非零，过不了这一来回。之后几遍用第一遍定下的长度
+        int is4 = !strcmp(type, "float") ? 1 : !strcmp(type, "double") ? 0 : -1;
+        if (is4 < 0) { if (g_sl.pass) is4 = f->size == 4; else { float x = (float)d; double back = x; is4 = !memcmp(&back, &d, 8); } }
+        if (is4) { float x = (float)d; uint32_t u; memcpy(&u, &x, 4); v = u; sz = 4; } else { memcpy(&v, &d, 8); sz = 8; } }
     else { v = (uint64_t)va_arg(ap, long long); kind = (*c == 'd' || *c == 'i') ? SL_SINT : SL_UINT; sz = lm == -2 ? 1 : lm == -1 ? 2 : lm == 2 ? 8 : *c == 'c' ? 1 : 4; }
     va_end(ap);
     int boolean = !strcmp(type, "_Bool") || !strcmp(type, "bool");
-    if (!g_sl.pass) { f->kind = kind; f->size = boolean ? 1 : sz; f->known = !boolean; }
+    if (!g_sl.pass) { f->kind = boolean ? SL_RAW : kind; f->size = boolean ? 1 : sz; f->known = !boolean; }
     if (!boolean) f->off |= (uint32_t)(v & 0xff) << (8 * g_sl.pass);
     return 0;
 }
 static __attribute__((unused)) int sl_off_cmp(const void *a, const void *b) { const snap_fld *x = (const snap_fld *)a, *y = (const snap_fld *)b; return x->off < y->off ? -1 : x->off > y->off; }
-// 三遍取完后整理：补布尔偏移、位域并段、联合并段、去掉记录标记、补数组长度、自检
+// 三遍取完后整理：偏移不明的字段并段、联合并段、去掉记录标记、补数组长度、自检
+//   锚点 = 偏移已知的字段（标量按花纹、数组 / 对象引用按地址）。连着的一串偏移不明的字段（布尔只给 0 / 1、位域、向量、long double 等）并成一段原样字节：
+//   从前一锚点末尾到下一锚点开头（含填充）；前一锚点是长度不明的数组时连它一起并（分不出界）。段的类型名带这串字段的名字 / 类型 / 位宽哈希
 static __attribute__((unused)) void sl_finish(snap_lay *L, uint32_t size) {
     L->size = size; if (L->bad) return;
-    for (uint32_t i = 0; i < L->n; i++) {   // 布尔：紧跟前一个叶字段
-        snap_fld *f = &L->f[i]; if (f->kind == SL_REC || f->known || f->bits) continue;
-        int j = (int)i - 1; while (j >= 0 && L->f[j].kind == SL_REC) j--;
-        if (j < 0) f->off = 0; else if (L->f[j].known && !L->f[j].approx && !L->f[j].bits) f->off = L->f[j].off + L->f[j].size; else { L->bad = 1; return; }
-        f->known = 1; }
-    for (uint32_t i = 0; i < L->n; i++) {   // 位域：连着的一串并成一段原样字节，从前一叶字段末尾到下一叶字段开头
-        if (!L->f[i].bits) continue;
-        uint32_t j = i; uint64_t h = 1469598103934665603ull; char nm[128]; snprintf(nm, sizeof nm, "%s", L->f[i].path);
-        while (j < L->n && L->f[j].bits) { for (const char *s = L->f[j].path; *s; s++) h = (h ^ (uint8_t)*s) * 0x100000001b3ull; h = (h ^ L->f[j].width) * 0x100000001b3ull; j++; }
-        int p = (int)i - 1; while (p >= 0 && L->f[p].kind == SL_REC) p--;
-        uint32_t lo = p < 0 ? 0 : L->f[p].off + L->f[p].size; uint32_t q = j; while (q < L->n && L->f[q].kind == SL_REC) q++;
-        uint32_t hi = q < L->n ? L->f[q].off : size;
-        for (uint32_t k = i + 1; k < j; k++) { L->f[k].kind = 0xff; L->f[k].bits = 0; }   // 标删
-        if (p >= 0 && L->f[p].approx) {   // 前面是元素类型不明的数组（长度不知）：分不出界，数组连同这串位域并成一段
-            snap_fld *a = &L->f[p]; char t[64]; for (const char *s2 = a->type; *s2; s2++) h = (h ^ (uint8_t)*s2) * 0x100000001b3ull;
-            snprintf(t, sizeof t, "%.30s+bits#%016llx", a->type, (unsigned long long)h); snprintf(a->type, sizeof a->type, "%s", t);
-            a->approx = 0; a->size = hi > a->off ? hi - a->off : 0; L->f[i].kind = 0xff; L->f[i].bits = 0; continue; }
-        snap_fld *f = &L->f[i]; snprintf(f->path, sizeof f->path, "%s", nm); snprintf(f->type, sizeof f->type, "bits#%016llx", (unsigned long long)h);
-        f->bits = 0; f->kind = SL_RAW; f->known = 1; f->off = lo; f->size = hi > lo ? hi - lo : 0;
+#define SL_LEAF(k) (L->f[k].kind != SL_REC && L->f[k].kind != 0xff)
+    for (uint32_t i = 0; i < L->n; i++) {
+        if (!SL_LEAF(i) || L->f[i].known) continue;
+        uint32_t j = i, cnt = 0; uint64_t h = 1469598103934665603ull;
+        for (; j < L->n; j++) { if (!SL_LEAF(j)) continue; if (L->f[j].known) break; cnt++;
+            for (const char *t = L->f[j].path; *t; t++) h = (h ^ (uint8_t)*t) * 0x100000001b3ull;
+            for (const char *t = L->f[j].type; *t; t++) h = (h ^ (uint8_t)*t) * 0x100000001b3ull; h = (h ^ L->f[j].width) * 0x100000001b3ull; }
+        int p = (int)i - 1; while (p >= 0 && !SL_LEAF(p)) p--;
+        uint32_t hi = j < L->n ? L->f[j].off : size;
+        snap_fld *keep = &L->f[i]; uint32_t lo;
+        if (p >= 0 && L->f[p].approx) {   // 前一锚点长度不明：连它一起并
+            snap_fld *a = &L->f[p]; for (const char *t = a->type; *t; t++) h = (h ^ (uint8_t)*t) * 0x100000001b3ull;
+            char t2[64]; snprintf(t2, sizeof t2, "%.30s+seg#%016llx", a->type, (unsigned long long)h); snprintf(a->type, sizeof a->type, "%s", t2);
+            a->approx = 0; a->size = hi > a->off ? hi - a->off : 0; a->kind = SL_RAW;
+            for (uint32_t k = i; k < j; k++) if (SL_LEAF(k)) { L->f[k].kind = 0xff; L->f[k].bits = 0; }
+            i = j ? j - 1 : 0; continue; }
+        lo = p < 0 ? 0 : L->f[p].off + L->f[p].size;
+        if (cnt > 1 || keep->bits) { char t2[64]; snprintf(t2, sizeof t2, "seg#%016llx", (unsigned long long)h); snprintf(keep->type, sizeof keep->type, "%s", t2); }
+        keep->kind = SL_RAW; keep->known = 1; keep->bits = 0; keep->off = lo; keep->size = hi > lo ? hi - lo : 0;
+        for (uint32_t k = i + 1; k < j; k++) if (SL_LEAF(k)) { L->f[k].kind = 0xff; L->f[k].bits = 0; }
+        i = j ? j - 1 : 0;
     }
+#undef SL_LEAF
     for (uint32_t i = 0; i < L->n; i++) {   // 联合：子字段偏移重叠的记录整段并成原样字节（内容描述哈希进类型名）
         snap_fld *r = &L->f[i]; if (r->kind != SL_REC) continue;
         uint32_t lo = UINT32_MAX, hi = 0, prev_end = 0; int over = 0, first = 1; uint64_t h = 1469598103934665603ull;
@@ -195,18 +212,20 @@ static __attribute__((unused)) void sl_finish(snap_lay *L, uint32_t size) {
     for (uint32_t i = 0; i < L->n; i++) {   // 元素类型不明的数组：长度到下一字段（含尾部填充）
         snap_fld *f = &L->f[i]; if (!f->approx) continue; uint32_t nx = i + 1 < L->n ? L->f[i + 1].off : size; f->size = nx > f->off ? nx - f->off : 0; }
     for (uint32_t i = 0; i < L->n; i++) { snap_fld *f = &L->f[i];   // 自检
-        if (f->off + f->size > size || (i && f->off < L->f[i - 1].off + L->f[i - 1].size) || (!f->size && f->kind != SL_RAW)) { L->bad = 1; return; } }
+        if (f->off + f->size > size) { SL_BAD(L, "字段 %.40s 出界（%u+%u > %u）", f->path, f->off, f->size, size); return; }
+        if (i && f->off < L->f[i - 1].off + L->f[i - 1].size) { SL_BAD(L, "字段 %.30s 与 %.30s 重叠（%u < %u+%u）", f->path, L->f[i - 1].path, f->off, L->f[i - 1].off, L->f[i - 1].size); return; }
+        if (!f->size && f->kind != SL_RAW) { SL_BAD(L, "字段 %.40s 长度为 0", f->path); return; } }
 }
 static inline void sl_begin(snap_lay *L, void *obj) { memset(L, 0, sizeof *L); g_sl.L = L; g_sl.base = (uintptr_t)obj; }
 static inline void sl_pass(snap_lay *L, void *obj, uint32_t size, int pass) {
-    if (pass && g_sl.idx != L->n) L->bad = 1;   // 每遍字段序列必须一样
+    if (pass && g_sl.idx != L->n) SL_BAD(L, "第 %d 遍字段数 %u 与第一遍 %u 不同", pass, g_sl.idx, L->n);   // 每遍字段序列必须一样
     uint8_t *b = (uint8_t *)obj; for (uint32_t i = 0; i < size; i++) b[i] = (uint8_t)(i >> (8 * pass));
     g_sl.pass = pass; g_sl.idx = 0; g_sl.depth = 0;
 }
 // 取类型 T 的布局进 *Lp（对一个专用静态对象填花纹，不碰真对象；取完清零）
 #define SNAP_LAY_TYPE_(T, Lp) do { static T sl_o_; sl_begin((Lp), &sl_o_); \
         for (int sl_p_ = 0; sl_p_ < 3 && !(Lp)->bad; sl_p_++) { sl_pass((Lp), &sl_o_, (uint32_t)sizeof sl_o_, sl_p_); __builtin_dump_struct(&sl_o_, sl_printf); } \
-        if (g_sl.idx != (Lp)->n) (Lp)->bad = 1; sl_finish((Lp), (uint32_t)sizeof sl_o_); memset(&sl_o_, 0, sizeof sl_o_); } while (0)
+        if (g_sl.idx != (Lp)->n) SL_BAD((Lp), "末遍字段数 %u 与第一遍 %u 不同", g_sl.idx, (Lp)->n); sl_finish((Lp), (uint32_t)sizeof sl_o_); memset(&sl_o_, 0, sizeof sl_o_); } while (0)
 
 // 存：每个结构一条 [名长 u16][名][结构长 u32][不明 u8][字段数 u32]{种类 u8 偏移 u32 长度 u32 路径长 u8 路径 类型长 u8 类型}
 static inline int snap_lay_write(FILE *f, const char *name, const snap_lay *L) {

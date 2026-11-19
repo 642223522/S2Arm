@@ -360,7 +360,7 @@ static void rmtree(const char *path) {   // 删整棵目录（快照的临时 / 
 // 新快照先写进 <目录>.new，全部写完、清单标「完整」后才原子换上；中途失败旧快照原样留着（存一次失败不能把玩家上一份好快照弄坏）
 typedef snap_fp_cb fp_cb;
 static void fps_all(fp_cb cb); static FILE *g_fp_f, *g_lay_f; static void fp_write(const char *name, snap_fp fp);
-static int g_lay_n, g_lay_fields, g_lay_bad; static char g_lay_badnames[512];
+static int g_lay_n, g_lay_fields, g_lay_bad; static char g_lay_badnames[1024];
 const char *s2a_snap_path(const char *v);
 static void (*g_snap_done_cb)(int ok, const char *dir);
 static _Atomic int g_snap_busy;
@@ -560,7 +560,7 @@ static void fp_write(const char *name, snap_fp fp) {
     if (!g_lay_f) return;
     if (snap_lay_write(g_lay_f, name, fp.lay)) { fclose(g_lay_f); g_lay_f = NULL; return; }
     g_lay_n++; if (fp.lay && !fp.lay->bad) g_lay_fields += (int)fp.lay->n;
-    else { g_lay_bad++; size_t k = strlen(g_lay_badnames); snprintf(g_lay_badnames + k, sizeof g_lay_badnames - k, "%s%s", k ? "、" : "", name); }
+    else { g_lay_bad++; size_t k = strlen(g_lay_badnames); snprintf(g_lay_badnames + k, sizeof g_lay_badnames - k, "%s%s（%s）", k ? "、" : "", name, fp.lay ? fp.lay->why : "没有 C 布局"); }
 }
 // 恢复：读快照的 layouts.bin（第一次用时整份读进来）
 typedef struct { char name[96]; snap_lay lay; } lay_ent; static lay_ent *g_old_lay; static int g_old_lay_n, g_old_lay_loaded;
