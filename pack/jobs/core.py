@@ -456,8 +456,8 @@ def display_version(engine):
     if not dirty and re.fullmatch(r"v?" + re.escape(short), tag):
         return f"v{short}"
     pre = re.fullmatch(r"v?" + re.escape(short) + r"-([0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)", tag) if not dirty else None
-    if pre:   # 测试版 tag（11-19：0.6.0 测试包 v0.6.0-test.1）：界面标明测试版，同 Mac build_app.py
-        return f"v{short}-{pre[1]}（测试版）"
+    if pre:   # 测试版 tag（11-19：0.6.0 测试包 v0.6.0-test.1）：界面显示带 test 的完整版本号，同 Mac build_app.py
+        return f"v{short}-{pre[1]}"   # 版本字里的 test 字样就是测试版标记（版本字中英文界面共用，不夹中文）
     return f"v{short}-dev+{commit[:7]}"
 
 

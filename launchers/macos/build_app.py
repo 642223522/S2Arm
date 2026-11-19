@@ -92,14 +92,14 @@ def release_identity(engine_json):
         source = ""
     # 顶栏版本号（11-11 维护者：玩家截图里要看得出是哪一版）：HEAD 正好是发版 tag 且没改动 = 正式版「v0.3.0」；
     #   否则是开发版「v<最近 tag>-dev+<短提交号>」。发版流程先在构建树上打 tag 再构建（release.sh），所以正式包落在 tag 上。同 Windows S2Arm.csproj
-    #   测试版（11-19：0.6.0 测试包）：HEAD 落在预发布 tag（v0.6.0-test.1）上 → 顶栏「v0.6.0-test.1（测试版）」；
+    #   测试版（11-19：0.6.0 测试包）：HEAD 落在预发布 tag（v0.6.0-test.1）上 → 顶栏「v0.6.0-test.1」（test 字样即测试版标记，中英文界面共用）；
     #   S2AVersion 记完整版本号（含预发布段）交给更新器比新旧（pack/jobs/updater.py version_key：测试版 < 同号正式版），
     #   CFBundleShortVersionString 只收数字段，测试版也是 0.6.0（系统看的仍是 CFBundleVersion 提交数）
     exact = git("describe", "--tags", "--exact-match", "HEAD")
     pre = re.fullmatch(r"v?" + re.escape(short_version) + r"-([0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)", exact) if not dirty else None
     release = not dirty and re.fullmatch(r"v?" + re.escape(short_version), exact)
     full = f"{short_version}-{pre[1]}" if pre else short_version
-    display = f"v{short_version}" if release else f"v{full}（测试版）" if pre else f"v{short_version}-dev+{commit[:7]}"
+    display = f"v{short_version}" if release else f"v{full}" if pre else f"v{short_version}-dev+{commit[:7]}"
     return dict(CFBundleShortVersionString=short_version, CFBundleVersion=build, S2AVersion=full,
                 S2ABuildID=f"{commit}{dirty}-{source[:8]}", S2ADisplayVersion=display)
 
