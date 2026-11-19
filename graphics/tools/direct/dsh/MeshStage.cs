@@ -171,7 +171,6 @@ namespace S2A.Dsh
         /// <summary>翻好的计算核包成对象函数 main0（ts），或网格函数 main0 与 main0_z（ms：两种深度约定，同顶点着色器 VsDepth：main0 近平面 -w、main0_z 近平面 0）</summary>
         public static string ToStage(string msl, MeshInfo i)
         {
-            msl = GuardLoops(msl);
             string kind = i.Kind;
             var m = s_kernel.Match(msl);
             if (!m.Success) throw new DshError("mesh stage failed", kind + ": 没有以阶段内存开头的 kernel main0");
@@ -181,6 +180,8 @@ namespace S2A.Dsh
             // 计算核本体改成内联函数，阶段内存由包装持有：本体里的提前返回（没东西可写的线程）回到包装，照样交输出。线程变量留在本体里：每线程调一次，同计算核
             string src = msl[..m.Index] + "static inline __attribute__((always_inline)) void dm_stage_body(" + string.Join(", ", plain.Append($"threadgroup spvUnsafeArray<uint, {words}>& {mem}")) + ")\n{\n"
                 + (local.Length > 0 ? "    " + local + "\n" : "") + msl[(m.Index + m.Length)..];
+            // 先提取阶段内存，再在本体插入护栏声明，保留原始计算核开头供匹配。
+            src = GuardLoops(src);
             string call = "dm_stage_body(" + string.Join(", ", names.Append(mem)) + ");";
             // 线程号 / 线程组号：计算核参数里有就用它的（一个属性在函数里只能出现一次），没有就包装自己加参数
             var own = new Dictionary<string, string>();
