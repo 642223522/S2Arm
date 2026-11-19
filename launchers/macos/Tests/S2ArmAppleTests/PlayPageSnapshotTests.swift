@@ -39,9 +39,9 @@ import XCTest
             self.stage(sink, "验证运行文件"); self.stage(sink, "游戏运行中")
             try await Task.sleep(for: .seconds(30)); return nil
         }
-        for _ in 0..<100 where model.session?.stage != "游戏运行中" { try? await Task.sleep(for: .milliseconds(10)) }
+        for _ in 0..<100 where model.playSession?.stage != "游戏运行中" { try? await Task.sleep(for: .milliseconds(10)) }
         try snapshot("play_running")
-        model.stop()
+        model.stopPlay()
         for _ in 0..<300 where model.busy { try? await Task.sleep(for: .milliseconds(10)) }
 
         let recovery = "再启动一次试试；还是这样，就在「环境检查」导出诊断包，到 GitHub 发帖附上，我们按崩溃现场修。"
@@ -51,8 +51,8 @@ import XCTest
                                         diagnostics: [["code": "game_crashed", "suggestion": recovery, "summary": Self.rawLog]], stderr: ""))
         }
         for _ in 0..<300 where model.busy { try? await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertEqual(model.session?.failureCode, "game_crashed", "失败码落到会话上，启动页按码说人话")
-        XCTAssertEqual(model.session?.suggestion, recovery, "下一步落到会话上")
+        XCTAssertEqual(model.playSession?.failureCode, "game_crashed", "失败码落到会话上，启动页按码说人话")
+        XCTAssertEqual(model.playSession?.suggestion, recovery, "下一步落到会话上")
         try snapshot("play_failed")
     }
 

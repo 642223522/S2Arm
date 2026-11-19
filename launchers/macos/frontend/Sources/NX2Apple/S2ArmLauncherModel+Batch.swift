@@ -23,6 +23,17 @@ extension S2ArmLauncherModel {
     var batchItems: [[String: Any]] { (batchState?["batch"] as? [String: Any])?["items"] as? [[String: Any]] ?? [] }
     var batchSummary: [String: Any] { batchState?["summary"] as? [String: Any] ?? [:] }
     var batchPaused: String? { (batchState?["batch"] as? [String: Any])?["paused"] as? String }
+    /// 这批里还有平台排着 / 正在出的款：一局不开这几款（出到它时作业层要等这款的按款锁）
+    var batchPendingIDs: Set<String> {
+        Set(batchItems.filter { item in (item["results"] as? [String: [String: Any]] ?? [:]).values.contains { ["pending", "running"].contains($0["state"] as? String ?? "") } }
+            .compactMap { $0["gameId"] as? String })
+    }
+    /// 这几款里有正在玩的那款：先不开始批量出 / 继续 / 重试（同一款不边玩边出包）。gid 不给 = 这批里还没出完的各款
+    func batchHoldsPlay(_ ids: [String]? = nil) -> Bool {
+        let unfinished = { self.batchItems.filter { item in (item["results"] as? [String: [String: Any]] ?? [:]).values.contains { $0["state"] as? String != "completed" } }
+            .compactMap { $0["gameId"] as? String } }
+        return (ids ?? unfinished()).contains { playHolds($0) }
+    }
     /// 有批次、还有没出完的（还有平台没出的、取消的；暂停着时失败的也算，等「重试」）：库页顶部提示「上次还有 N 款没出完」（审计 P1-168）
     var batchUnfinished: Int {
         guard batchState != nil else { return 0 }
@@ -77,6 +88,7 @@ extension S2ArmLauncherModel {
             return item }
         guard !items.isEmpty else { return "没有能出的游戏" }
         guard !mainBusy, !batchRunning else { return "正在出包" }   // 手机槽（装机等）在跑不挡批量出包
+        guard !batchHoldsPlay(items.compactMap { $0["gameId"] as? String }) else { return "正在玩这批里的一款：退出这局再出" }   // 玩别的款不挡
         guard let data = try? JSONSerialization.data(withJSONObject: ["items": items, "location": batchLocation.isEmpty ? NSNull() : batchLocation] as [String: Any]),
               let json = String(data: data, encoding: .utf8) else { return "批次清单组不出来" }
         guard let state = await provider.client.batch("create", ["--json", json]) else { return "批次脚本起不来" }
@@ -142,11 +154,11 @@ extension S2ArmLauncherModel {
 
     /// 继续出剩下的（取消后 / 启动器退出后重开）；重试失败的（给游戏号只重试这一款，磁盘满那款释放空间后也走这里）：
     /// 后端改好批次再起编排作业，只出还没出的
-    func resumeBatch() { batchCommand("resume") }
-    func retryBatch(_ gid: String? = nil) { batchCommand("retry", gid.map { ["--game", $0] } ?? []) }
+    func resumeBatch() { batchCommand("resume", games: nil) }
+    func retryBatch(_ gid: String? = nil) { batchCommand("retry", gid.map { ["--game", $0] } ?? [], games: gid.map { [$0] }) }
 
-    private func batchCommand(_ command: String, _ args: [String] = []) {
-        guard !mainBusy, !batchRunning else { return }
+    private func batchCommand(_ command: String, _ args: [String] = [], games: [String]?) {
+        guard !mainBusy, !batchRunning, !batchHoldsPlay(games) else { return }
         Task {
             guard accept(await provider.client.batch(command, args)) else { batchShown = true; return }   // 「重试 / 继续」没成：批量页说清原因
             runBatchExport()
