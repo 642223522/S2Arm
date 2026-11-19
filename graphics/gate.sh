@@ -486,6 +486,7 @@ py_items() {
   HOOK_REST=1 job unity55_layout timeout 30 "$PYV" graphics/tools/direct/tests/t_unity55_layout.py
   HOOK_REST=1 job bnsh_bounds timeout 30 "$PYV" graphics/tools/direct/tests/t_bnsh_bounds.py
   HOOK_REST=1 job ndsr_bare timeout 30 "$PYV" graphics/tools/direct/tests/t_ndsr_bare.py
+  HOOK_REST=1 job unity_kw_pairs timeout 30 "$PYV" graphics/tools/direct/tests/t_unity_kw_pairs.py
   HOOK_REST=1 job mtarc_width timeout 30 "$PYV" graphics/tools/direct/tests/t_mtarc_width.py
   HOOK_REST=1 job nlg4 timeout 60 "$PYV" graphics/tools/direct/tests/t_nlg4.py
   HOOK_REST=1 job source_path timeout 60 "$PYV" graphics/tools/direct/tests/t_source_path_posix.py
@@ -741,6 +742,7 @@ rcof unity_kernels; r=$?; reg $r "Unity 计算着色器布局：$(tail -1 "$LOG/
 rcof unity55_layout; r=$?; reg $r "Unity 5.5 精确布局：$(tail -1 "$LOG/unity55_layout.log")（退出 ${r}）" "$LOG/unity55_layout.log"
 rcof bnsh_bounds; r=$?; reg $r "BNSH 指针越界跳过：$(tail -1 "$LOG/bnsh_bounds.log")（退出 ${r}）" "$LOG/bnsh_bounds.log"   # shader_split.py bnsh_shaders（10-30 超级机器人大战 X）
 rcof ndsr_bare; r=$?; reg $r "NDSR 条目流 + 裸 NVN2 程序：$(tail -1 "$LOG/ndsr_bare.log")（退出 ${r}）" "$LOG/ndsr_bare.log"   # shader_split.py ndsr_shaders / ns2_shaders.py bare_programs（11-06 时之笛开局 12 支计算着色器）
+rcof unity_kw_pairs; r=$?; reg $r "Unity 按 Pass + 关键字配对：$(tail -1 "$LOG/unity_kw_pairs.log")（退出 ${r}）" "$LOG/unity_kw_pairs.log"   # shader_split.py unity_kw_pairs / unity_pass_index
 rcof mtarc_width; r=$?; reg $r "MT ARC 条目宽度：$(tail -1 "$LOG/mtarc_width.log")（退出 ${r}）" "$LOG/mtarc_width.log"   # shader_split.py mtarc_members（11-02 生化危机6：路径 64 字节）
 rcof nlg4; r=$?; reg $r "NLG 新版档案：$(tail -1 "$LOG/nlg4.log")（退出 ${r}）" "$LOG/nlg4.log"   # shader_split.py nlg4_shaders（11-02 马力欧激战前锋 1.3.2）
 rcof source_path; r=$?; reg $r "来源列路径一律 /：$(tail -1 "$LOG/source_path.log")（退出 ${r}）" "$LOG/source_path.log"   # shader_split.py / nxsh_extract.py 来源串（11-05 Windows 出包机勇者斗恶龙 XI S 来源列反斜杠、分组全落 *_other）
