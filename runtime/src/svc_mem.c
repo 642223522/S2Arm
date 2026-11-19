@@ -317,6 +317,29 @@ static uint64_t code_bytes(void) {
     for (int i = 0; i < g_nmod; i++) { const module_t *m = &g_mod[i]; n += ((m->patch_off >= 0 ? (uint64_t)m->patch_off : m->image_size) + 0xfff) & ~0xfffull; }
     return n;
 }
+// 物理映射的来往（超池那一刻打出来定因用：游戏按什么在规划、超在哪次调用）：次数 / 累计字节 + 最近 16 次（号、地址、大小、调用方）
+static uint64_t g_pm_n[2], g_pm_bytes[2];
+static struct { int num; uint64_t a, size, lr; } g_pm_ring[16]; static unsigned g_pm_next;
+static void pm_note(int num, uint64_t a, uint64_t size, uint64_t lr) {
+    int k = num == 0x2C ? 0 : 1; g_pm_n[k]++; g_pm_bytes[k] += size;
+    g_pm_ring[g_pm_next % 16].num = num; g_pm_ring[g_pm_next % 16].a = a; g_pm_ring[g_pm_next % 16].size = size; g_pm_ring[g_pm_next % 16].lr = lr; g_pm_next++;
+}
+#ifdef S2A_UNIT_TEST   // 单测不链 crash.c：调用方只打地址
+static void s2a_where(uint64_t a, char *b, size_t n) { snprintf(b, n, "%#llx", (unsigned long long)a); }
+#else
+void s2a_where(uint64_t a, char *b, size_t n);   // crash.c
+#endif
+static void pm_overrun_dump(uint64_t lr) {
+    char w[160]; s2a_where(lr, w, sizeof w);
+    LOG("物理映射超池现场：本次调用方 %s；此前映射 %llu 次共 %llu MB、解除 %llu 次共 %llu MB（报给游戏的总量 %llu MB、已用 %llu MB）",
+        w, (unsigned long long)g_pm_n[0], (unsigned long long)(g_pm_bytes[0] >> 20), (unsigned long long)g_pm_n[1], (unsigned long long)(g_pm_bytes[1] >> 20),
+        (unsigned long long)((APP_POOL - L.sys_resource_size) >> 20), (unsigned long long)((g_heap_cur + code_bytes() + g_mstack + g_phys) >> 20));
+    for (unsigned i = g_pm_next > 16 ? g_pm_next - 16 : 0; i < g_pm_next; i++) {
+        s2a_where(g_pm_ring[i % 16].lr, w, sizeof w);
+        LOG("物理映射超池现场：  第 %u 次 %s %#llx +%llu KB 调用方 %s", i + 1, g_pm_ring[i % 16].num == 0x2C ? "映射" : "解除",
+            (unsigned long long)g_pm_ring[i % 16].a, (unsigned long long)(g_pm_ring[i % 16].size >> 10), w);
+    }
+}
 static uint64_t pool_fixed(void) { return phys_limit_on() ? code_bytes() + g_mstack + L.sys_resource_size + g_phys : image_bytes(); }
 static uint64_t mask_minmax(uint32_t lo, uint32_t hi) { uint32_t r = hi - lo + 1; return r >= 64 ? ~0ull : ((1ull << r) - 1) << lo; }
 // apply = 0（s2a_npdm_window_need 量窗口跨度）：不写本局专属的 NPDM 状态（优先级 / 缺省核 / 核与优先级掩码 / 系统调用许可）——
@@ -1925,12 +1948,14 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
                 uint64_t add = 0;
                 for (uint64_t p = a; p < a + size; p += 0x1000) if (!(*amask_at(p) & (uint8_t)(1u << ((p & (HPG - 1)) >> 12)))) add += 0x1000;
                 if (g_heap_cur + pool_fixed() + add > APP_POOL) {
+                    static int dumped; if (!dumped++) pm_overrun_dump(regs[30]);
                     static int said; if (!said++) LOG("物理映射到应用池上限：堆 %llu MB + 代码 %llu MB + 主线程栈 %llu KB + SystemResourceSize %llu MB + 已物理映射 %llu MB，本次再要 %llu KB > 池 %llu MB，回 ResLimitExceeded（同 Switch；只打第一次）",
                         (unsigned long long)(g_heap_cur >> 20), (unsigned long long)(code_bytes() >> 20), (unsigned long long)(g_mstack >> 10), (unsigned long long)(L.sys_resource_size >> 20), (unsigned long long)(g_phys >> 20), (unsigned long long)(add >> 10), (unsigned long long)(APP_POOL >> 20));
                     GMU_UNLOCK(); regs[0] = 0x10801; return 1;
                 }
             }
         }
+        pm_note(num, a, size, regs[30]);   // 只记真要做的（超池拒掉的不记，它在超池现场里单独打）
         // 解除的段里有借出中的源（传输内存 / 代码内存 / MapMemory 源）→ InvalidMemState，什么都不改（同 Ryujinx UnmapPhysicalMemory：堆块属性须为 None）
         if (num == 0x2D && attr_any(a, a + size)) {
             GMU_UNLOCK();
