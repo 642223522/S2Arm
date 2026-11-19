@@ -302,9 +302,8 @@ def _build(c):
                 PATH=os.pathsep.join(dict.fromkeys([str(exe.parent), str(home), env["PATH"]])),
             )
         state = {}
-        # 出包与装机重叠（installAfter，pack/jobs/early.py）：开工前认账号与设备，旁路完成就先装 App、先推大头资源，与直连库编译并行
-        # Windows：出完再装（install.install 的 Windows 分支），不做出包期间早装；Mac 通用壳 Apple ID（plumesign 签，install.mac_plume）同样出完再装：
-        #   早装开工前要认 Xcode 账号，plumesign 玩家没有它
+        # 出包与装机重叠（installAfter，pack/jobs/early.py）：开工前认账号与设备，旁路完成且手机上已是本版通用壳就先推大头资源，与直连库编译并行
+        # Windows：出完再推，不做出包期间早推；Mac Apple ID（plumesign，install.mac_plume）目前同样出完再推（早推只在证书用户上真机验过）
         import install as _inst
         if c.r.get("installAfter") and os.name != "nt" and not _inst.mac_plume(c):
             from early import EarlyInstall
@@ -415,14 +414,10 @@ def _build(c):
     if early:   # 打完放进容器装到这台：早装推过的不再推，push_pack 按机上已解开的清单只补差量（着色器库 + 变了的小文件）
         import install as inst
         c.begin("装到 iPhone 并补推资源包（出包期间已先推 %d 个文件）" % pre.get("files", 0))
-        import program_pack
-        ph = inst.MacPhone(c, early.team, early.dev, early.udid)
-        done = (inst.push_game if program_pack.enabled(c) else inst.put_game)(c, gid, ph, steps=False)   # 通用壳（缺省关）：只推这一款，不装壳
+        ph = inst.mac_phone(c, early.team, early.dev, early.udid)
+        done = inst.push_game(c, gid, ph, steps=False)   # 只推这一款，不装壳
         shutil.rmtree(early.dir, ignore_errors=True)
         result.update(done, outputPath=str(image), packFiles=done["packFiles"] + pre.get("files", 0), packBytes=done["packBytes"] + pre.get("bytes", 0), earlyPack=pre)
-    lib_ipa = refresh_library_ipa(c)
-    if lib_ipa:   # 完成页的「显示 .ipa」（两端都读结果里的 ipa）：指向刚组好的库根 S2Arm.ipa
-        result.update(ipa=str(lib_ipa), ipaBytes=lib_ipa.stat().st_size)
     import sizes
     sizes.refresh(c, gid)   # 每款各部分大小写回 game.json（游戏库只读不量）
     return result
@@ -441,25 +436,6 @@ def prune_unless_follow_up(c, gid):
         c.diagnostic("清理中间产物没有完成，下次空闲时会再清：" + c.redact(str(error)), code="job_failed", severity="warning")  # 非玩家句
         return False
     return True
-
-
-def refresh_library_ipa(c):
-    """出 iPhone 包成功就把默认位置根 S2Arm.ipa 换成含游戏库里本版能用的全部各款的容器（#360）：原先它只在「装到 iPhone」成功后才更新，
-    只出包、自己用 SideStore / LiveContainer 侧载的玩家拿到的是旧包（或 0.1.x 迁移留下的单款包），出包完成页的「显示 .ipa」也不出现。
-    组装同装机（assemble，Mac ad-hoc / Windows 不签，侧载工具重签）、放置同装机（commit_phone_ipa：换了壳把旧的留作上一版）。
-    组装失败只警告：这款的 iPhone 版已经出好，不因为别的款连带判出包失败。→ 库根 S2Arm.ipa 路径 | None（没组）"""
-    sid = current_shell_id(c)
-    ready = [g["id"].upper() for g in c.catalog()["games"] if usable_kit(c, g["id"].upper(), sid)]
-    if not ready:
-        return None
-    c.begin("组装可直接侧载的 S2Arm.ipa（含 %d 款）" % len(ready))
-    try:
-        ipa, _, _ = assemble(c, None, ready)
-        commit_phone_ipa(c, ipa, sid)
-    except (Failure, OSError) as e:   # 组装出错（盘满、权限、容器件坏）都只警告
-        c.diagnostic("游戏库根目录的 S2Arm.ipa 这次没更新（" + str(e) + "）：这款的 iPhone 版已出好，「装到 iPhone」时会照常组装。", code="job_failed", severity="warning")  # 非玩家句
-        return None
-    return layout.phone_ipa(c)
 
 
 # 出包与装机并行（11-16 维护者「出包时也能装别的游戏到 iPhone」）：两把库锁，全局取锁顺序 = 手机锁 → 各款程序锁（按游戏号排序），不会成环。
@@ -709,15 +685,6 @@ def container_custom(c):
     return out
 
 
-def kit_astype(c, gid):
-    """这款 iPhone 版 kit 的 main.npdm 地址空间类型（头 +0x0C 位 1–3，同 pack/ship_ext.py npdm_ident / runtime/src/vawin.c astype_of）；读不到回 None"""
-    try:
-        b = (layout.ios_kit(c, gid) / "main.npdm").read_bytes()
-    except OSError:
-        return None
-    return (b[0x0C] >> 1) & 7 if len(b) > 0x0C and b[:4] == b"META" else None
-
-
 def incompatible_message(text, gid, names):
     """各款地址空间类型不一致（pack/ship_ext.py container 的红行「…装不进同一个窗口：<游戏号> 类型 <t>、…」）→ 点名手机上和这款类型不同的那几款（#1132：原先只说「删掉不兼容的那款」，玩家不知道是哪款）。
     读不出红行就退回原句。gid 为 None（只组手机上已有的几款）时按游戏库名字列出各类型分组"""
@@ -843,7 +810,7 @@ def library_id(c, g):
 
 
 def assemble_shell(c, *, dest=None):
-    """通用壳（pack/jobs/program_pack.enabled，0.6.0）：只有壳的容器——本版 iPhone 壳，s2a_catalogue.json 的 games 为空，不带任何一款（各款程序包由
+    """通用壳：只有壳的容器——本版 iPhone 壳，s2a_catalogue.json 的 games 为空，不带任何一款（各款程序包由
     「推到 iPhone」另推进手机 program/，install.push_game）。出 S2Arm.app + S2Arm.ipa 到 dest（缺省游戏库同盘临时目录）。→ (ipa, [], 壳号)；签名同 assemble"""
     import host_update
     shell, sid = built_shell(c)

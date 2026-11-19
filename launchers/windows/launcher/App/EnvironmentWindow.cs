@@ -449,7 +449,7 @@ public sealed partial class EnvironmentWindow : Window
         if (libraryFailure.Length > 0)
             locations.Children.Add(new Border { Background = Brush.Parse("#2A1F14"), CornerRadius = new CornerRadius(12), Padding = new Thickness(16, 12),
                 Child = new TextBlock { Text = libraryFailure, FontSize = 13, Foreground = Ink, TextWrapping = TextWrapping.Wrap } });
-        // 出 iPhone 包成功后组在游戏库根（pack/jobs/ipa.py refresh_library_ipa）
+        // 「安装 S2Arm」装壳后放在游戏库根的通用 S2Arm.ipa（pack/jobs/install.py install_shell → ipa.commit_phone_ipa）
         var ipa = connectedFolder is null ? null : Path.Combine(connectedFolder, "S2Arm.ipa");
         var ipaReady = ipa is not null && File.Exists(ipa);
         locations.Children.Add(SettingRow(T("settings.locations.ipa"), ipaReady ? null : T("settings.locations.ipa_none"),

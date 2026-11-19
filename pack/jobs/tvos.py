@@ -220,12 +220,11 @@ def _clone_file(src, dst):
 
 
 def clone_pack(c, src, dst):
-    """iPhone 资源包派生给 Apple TV：0.6.0（通用壳开关开，体系文档 L）game.img 用硬链接引用 iPhone 那份（同一个文件，Windows NTFS 也不再实拷几 GB），
+    """iPhone 资源包派生给 Apple TV（体系文档 L）：game.img 用硬链接引用 iPhone 那份（同一个文件，Windows NTFS 也不再实拷几 GB），
     其余小件照拷（电视这份要改清单、加 astc.pack，都是写新文件替换，不动 game.img）。建不了硬链接（跨盘 / exFAT）→ game.img 照旧拷。
-    开关关：整棵照旧（clone_tree）"""
-    import program_pack
+    game.img 不在或是链接：整棵照旧（clone_tree）"""
     img = Path(src) / "game.img"
-    if not program_pack.enabled(c) or not img.is_file() or img.is_symlink():
+    if not img.is_file() or img.is_symlink():
         return clone_tree(src, dst)
     shutil.copytree(src, dst, ignore=lambda d, names: ["game.img"] if Path(d) == Path(src) else [], copy_function=_clone_file)
     try:
