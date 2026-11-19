@@ -6418,6 +6418,10 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only);
 // only the draw path opens such a pass; a draw whose scissor leaves the area, and anything else that needs the pass (rp_begin, DrawTexture), ends it first. A 6400x6400 ink map stamped one
 // scissored draw a pass: upstream measured about 0.95 → 0.32 ms a pass. DM_NVN_RP_AREA=0 turns it off
 static NSUInteger g_rp_aw, g_rp_ah; static int g_rp_whole;   // g_rp_whole: the pass about to open must cover the whole target
+// S2Arm: g_rp_aw / g_rp_ah are in storage pixels, so the area is the far corner of the scissor the draw actually sets: widen first, then the internal resolution
+//   (draw_state: s2a_widen_map_scissor*, rs_rect). The game's own scissor against a storage the internal resolution enlarged opened a quarter-size pass at S2A_RES_SCALE=2
+//   (04007EF01F8AE000, 3840x2160 target stored 7680x5288: pass 1920x1080, everything right / below it dropped, #1548). Defined after the widen glue
+static void rpa_far(double rs, long *x1, long *y1);
 static int rpa_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_RP_AREA"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("DM_NVN_RP_AREA=0: passes on very large targets cover the whole target"); } return v; }
 static void rt_dims(NSUInteger *tw, NSUInteger *th);
 static id<MTL4RenderCommandEncoder> rp_begin(void) { if (g_enc && g_rp_aw) rp_end(); g_rp_whole = 1; id<MTL4RenderCommandEncoder> e = rp_begin_ex(0); g_rp_whole = 0; return e; }   // the callers draw anywhere in the target
@@ -6640,7 +6644,11 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
     if (rpa_on() && !g_rp_whole && !clear_only && R.has_sc && !g_rp_layered && !tbdr_on() && !R.clear_d && !R.clear_s) {
         int cl = 0; for (int i = 0; i < 8; i++) cl |= R.clear_c[i];
         NSUInteger tw = 0, th = 0; if (!cl) rt_dims(&tw, &th);
-        if (tw * th >= (1u << 24)) { NSUInteger w = MIN(tw, (NSUInteger)MAX((long)R.sc.x + R.sc.w, 1)), h = MIN(th, (NSUInteger)MAX((long)R.sc.y + R.sc.h, 1));
+        double prs = 1.0;   // this pass's internal resolution scale (rs_rts gave every attachment the same one; g_pass.rs is only set below)
+        if (rs_on()) { id<MTLTexture> a = nil; for (int i = 0; !a && i < R.rt.n && i < 8; i++) if (R.rt.color[i]) a = pd.colorAttachments[i].texture;
+            if (!a && R.rt.depth) a = pd.depthAttachment.texture ? pd.depthAttachment.texture : pd.stencilAttachment.texture; prs = rs_of(a); }
+        long fx = 0, fy = 0; rpa_far(prs, &fx, &fy);
+        if (tw * th >= (1u << 24)) { NSUInteger w = MIN(tw, (NSUInteger)MAX(fx, 1L)), h = MIN(th, (NSUInteger)MAX(fy, 1L));
             if (w * h * 2 <= tw * th) { pd.renderTargetWidth = w; pd.renderTargetHeight = h; g_rp_aw = w; g_rp_ah = h;
                 static int once; if (!once++) MLOG("render area: a pass on a %lux%lu target opened at %lux%lu, its scissor's far corner (first case pass %llu; DM_NVN_RP_AREA=0 turns it off)",
                                                    (unsigned long)tw, (unsigned long)th, (unsigned long)w, (unsigned long)h, g_stat_pass + 1);
@@ -11547,6 +11555,10 @@ static uint64_t g_geo_bind[5], g_geo_size[5];   // 几何着色器模拟辅助�
 static int wd_geom_cb(void);   // S2Arm widen geometry (defined after attr_read)
 #include "../../widen_glue.inc"   // S2Arm widen core glue
 #include "nvn_rscale_ops.inc"   // S2Arm internal resolution: rescaling, pass scale, support buffer scales (S2A_RES_SCALE)
+static void rpa_far(double rs, long *x1, long *y1) {   // see g_rp_aw: the scissor's far corner in storage pixels, mapped as draw_state maps it
+    p_scissor sc = R.sc; if (g_wd > 0) { s2a_widen_map_scissor(g_wd_mode, &sc.x, &sc.w); s2a_widen_map_scissor_y(g_wd_mode, &sc.y, &sc.h); }
+    long x = sc.x, y = sc.y, w = sc.w, h = sc.h; rs_rect(rs, &x, &y, &w, &h); *x1 = x + w; *y1 = y + h;
+}
 #include "nvn_size_abi.inc"   // ABI2 table comes from the actual attachment and final argument bindings
 #include "nvn_unnorm.inc"   // #968 step 1: per-draw s2a_flags.yzw coordinate normalization bits
 // The sampler ID a SAMP / SAMPT / SAMPU (single) / SAMPI binding takes this draw (0 = none). Caller holds g_rmu (ubo_read)
@@ -15675,7 +15687,8 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
         static int once3; if (!once3++) MLOG("readable-tile pass merge: a draw of the later pass is not provable; back to separate passes (first case pass %llu)", g_stat_pass);
         g_fz_fallback++; rp_end(); }
 
-    if (g_enc && g_rp_aw && (!R.has_sc || (long)R.sc.x + R.sc.w > (long)g_rp_aw || (long)R.sc.y + R.sc.h > (long)g_rp_ah)) rp_end();   // leaves the pass's render area (see g_rp_aw)
+    if (g_enc && g_rp_aw) { long fx = 0, fy = 0; if (R.has_sc) rpa_far(g_pass.rs, &fx, &fy);
+        if (!R.has_sc || fx > (long)g_rp_aw || fy > (long)g_rp_ah) rp_end(); }   // leaves the pass's render area (see g_rp_aw; storage pixels)
 
     fb_prepare(pr);   // same-pass feedback sampling: copy the snapshot first (see fb_prepare)
     if (R.has_sc && !g_enc) {
