@@ -19,8 +19,6 @@ namespace Ryujinx.Audio.Renderer.Server
         [DllImport("libc", SetLastError = true)]
         private static extern int munlock(void* addr, nuint len);
 
-        private static bool CanWire => OperatingSystem.IsMacOS() || OperatingSystem.IsIOS() || OperatingSystem.IsTvOS() || OperatingSystem.IsLinux() || OperatingSystem.IsAndroid();
-
         public static nuint Round(int size) => ((nuint)Math.Max(size, 1) + Page - 1) & ~(Page - 1);
 
         public static byte* Alloc(int size, out bool wired)
@@ -29,14 +27,22 @@ namespace Ryujinx.Audio.Renderer.Server
             byte* p = (byte*)NativeMemory.AlignedAlloc(n, Page);
             NativeMemory.Clear(p, n);
             wired = false;
+            string why;
 
-            if (CanWire)
+            // No platform check: try mlock and report what really happened (a platform without libc mlock lands in the catch)
+            try
             {
                 wired = mlock(p, n) == 0;
-                Console.Error.WriteLine(wired
-                    ? $"[声] 渲染器工作缓冲 {n / 1024} KB 已锁进物理内存（实时音频线程不会因内存吃紧缺页）"
-                    : $"[声] 【黄】渲染器工作缓冲 {n / 1024} KB 锁不进物理内存（errno {Marshal.GetLastPInvokeError()}），照常用；内存吃紧时音频可能断续");
+                why = wired ? null : $"errno {Marshal.GetLastPInvokeError()}";
             }
+            catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException)
+            {
+                why = $"系统没有 mlock：{e.GetType().Name}";
+            }
+
+            Console.Error.WriteLine(wired
+                ? $"[声] 渲染器工作缓冲 {n / 1024} KB 已锁进物理内存（实时音频线程不会因内存吃紧缺页）"
+                : $"[声] 【黄】渲染器工作缓冲 {n / 1024} KB 锁不进物理内存（{why}），照常用；内存吃紧时音频可能断续");
 
             return p;
         }
