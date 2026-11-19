@@ -7244,6 +7244,7 @@ static os_unfair_lock g_rmu = OS_UNFAIR_LOCK_INIT;
 // ---------- Shader mapping table: Switch control section hash → PC metallib (produced by dm/gfx/tools/shader_map.py) ----------
 static NSMutableDictionary<NSString *, NSString *> *g_shmap;   // S2Arm: key -> stage name (shader_map.tsv column 3); was declared NSArray *, clang 21 rejects the NSString reads
 static NSString *g_shmap_path, *g_msl_dir;
+static NSDictionary<NSString *, NSString *> *g_shalias;   // 包内键别名表 key_alias.tsv（映射表同处，graphics/tools/direct/merge_extract.py alias）：第 1 代键 → 第 2 代键；随映射表一起加载、之后只读
 static NSString *exe_rel(const char *rel) {
     char buf[4096]; uint32_t n = sizeof buf;
     if (_NSGetExecutablePath(buf, &n)) return nil;
@@ -7267,6 +7268,17 @@ static void shmap_load_once(void) {
         if (!ln.length || [ln hasPrefix:@"#"] || [ln hasPrefix:@"package"]) continue;
         NSArray *c = [ln componentsSeparatedByString:@"\t"];
         if (c.count > 3) g_shmap[c[3]] = c[2];
+    }
+    {   // 键别名表：没有（旧包、零配置）= 空表
+        NSMutableDictionary<NSString *, NSString *> *al = [NSMutableDictionary dictionary];
+        NSString *at = [NSString stringWithContentsOfFile:[path.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"key_alias.tsv"] encoding:NSUTF8StringEncoding error:nil];
+        for (NSString *ln in [at componentsSeparatedByString:@"\n"]) {
+            if (!ln.length || [ln hasPrefix:@"#"]) continue;
+            NSArray<NSString *> *c = [ln componentsSeparatedByString:@"\t"];
+            if (c.count >= 2 && c[0].length == 16 && c[1].length == 16) al[c[0]] = c[1];
+        }
+        g_shalias = al;
+        if (al.count) MLOG("shader key aliases: %lu generation-1 keys map to generation-2 keys (key_alias.tsv)", (unsigned long)al.count);
     }
     g_shmap_path = path;
     const char *m = getenv("DM_MSL_DIR");
@@ -7618,7 +7630,7 @@ int nvn_be_reload_direct_library(void) {
     lp_pack_get();   // 同理：让库容器的 once 先走过（旧目录），下面按新目录重开
     if (g_libpack.idx) munmap((void *)g_libpack.idx, g_libpack.idx_len);
     memset(&g_libpack, 0, sizeof g_libpack); g_libpack_ok = 0;
-    g_shmap = nil; g_c1_full = nil; g_c1_full_valid = 0; g_cb_ext = nil;
+    g_shmap = nil; g_shalias = nil; g_c1_full = nil; g_c1_full_valid = 0; g_cb_ext = nil;
     g_warm_started = 1;   // 先挡住 shmap_load_once 里的预热：预热要用库容器，等新目录的库容器开好再起
     shmap_load_once();
     if (g_lpover.idx) munmap((void *)g_lpover.idx, g_lpover.idx_len);
@@ -8100,6 +8112,31 @@ int nvn_be_shader_key_pick(const uint8_t v2[8], const uint8_t v1[8]) {
     if (g_shmap[@(a)] != nil || builtin_known(a)) return 0;
     if (g_shmap[@(b)] != nil || builtin_known(b)) return 1;
     return shmap_rt_get(@(b)) != nil || dm_shader_reuse(b);
+}
+// 读档 / 读本机管线记录时的键规范化：k = 16 位十六进制键（就地改）。包表（映射表 + 内嵌计算核）没有它、别名表里它的第 2 代在包表里 → 换成第 2 代，回 1；否则不动、回 0。
+//   用处：存档 / 管线记录是更新前按第 1 代键记的，包更新成第 2 代后照原键查不到（hle_nvn.c s2a_hle_pk_load、warm_parse）。调用前映射表须已加载（不在这里 shmap_load：
+//   warm_parse 在 shmap_load_once 里经 warm_start 同步调到，再进 dispatch_once 会死锁）
+static int key_canon16(char k[17]) {
+    if (!g_shalias.count || strlen(k) != 16) return 0;
+    NSString *s = @(k);
+    if (g_shmap[s] != nil || builtin_known(k)) return 0;
+    NSString *v2 = g_shalias[s];
+    if (!v2 || g_shmap[v2] == nil) return 0;
+    memcpy(k, v2.UTF8String, 16); return 1;
+}
+// 库名（<16 位键>_b / _bgv / …，见 warm_stale）的键部分规范化
+static NSString *lib_name_canon(NSString *name) {
+    if (name.length < 16) return name;
+    char k[17]; memcpy(k, name.UTF8String, 16); k[16] = 0;
+    return key_canon16(k) ? [@(k) stringByAppendingString:[name substringFromIndex:16]] : name;
+}
+// hle_nvn.c s2a_hle_pk_load（弱链接）：8 字节键版本，回 1 = 换了
+int nvn_be_shader_key_canon(uint8_t key[8]) {
+    char k[17]; for (int i = 0; i < 8; i++) snprintf(k + 2 * i, 3, "%02x", key[i]);
+    shmap_load();
+    if (!key_canon16(k)) return 0;
+    for (int i = 0; i < 8; i++) { unsigned v; sscanf(k + 2 * i, "%2x", &v); key[i] = (uint8_t)v; }
+    return 1;
 }
 // S2Arm 两段式出包（10-27）：映射表有键不等于库里有这支——热键版包的映射表是全键、库只带热键，缺的那支要照样走首遇现编（dsh_miss.inc），不能让 shader_load 失败去触发直连失败判据。
 // 只查索引不读数据（每次 ProgramSetShaders 都会问）：现编过的 / 内置的 → 有；有库容器 → 容器索引里有没有 <键>_b 的反射；没容器（Mac 开发树）→ <键>_b.json 文件在不在
@@ -10858,6 +10895,14 @@ void nvn_be_shader_prefetch(const uint8_t md[8]) {
     } });
     os_unfair_lock_unlock(&g_shpre_mu);
 }
+// 管线行里顶点 / 片元库名的键部分规范化（key_canon16）
+static void skey_canon(pso_skey *sk) {
+    char *f[2] = { sk->vs, sk->fs }; size_t n[2] = { sizeof sk->vs, sizeof sk->fs };
+    for (int i = 0; i < 2; i++) {
+        NSString *a = warm_key(f[i], n[i]), *b = lib_name_canon(a);
+        if (b != a && b.length < n[i]) { memset(f[i], 0, n[i]); memcpy(f[i], b.UTF8String, b.length); }
+    }
+}
 // The lists' lines as tasks; *lines: the lines they hold
 static NSArray<WarmTask *> *warm_parse(NSArray<NSString *> *paths, long *lines) {
     NSMutableArray<WarmTask *> *tasks = [NSMutableArray array];
@@ -10881,10 +10926,12 @@ static NSArray<WarmTask *> *warm_parse(NSArray<NSString *> *paths, long *lines) 
                 if (![ml isEqualToString:line]) { if ([seen containsObject:ml]) continue; [seen addObject:ml]; }
             }
             if (([c[0] isEqualToString:@"S"] && c.count >= 3) || ([c[0] isEqualToString:@"C"] && c.count >= 2)) {
-                if (!c[1].length || warm_stale(c[1], stale)) continue;
-                t = [WarmTask new]; t->kind = [c[0] isEqualToString:@"S"] ? 0 : 2; t->key = c[1]; t->stage = t->kind ? 5 : c[2].intValue; t->fc = t->kind ? fc : 0; [tasks addObject:t];
+                NSString *ck = lib_name_canon(c[1]);   // 更新前按第 1 代键记的行（key_alias.tsv）
+                if (!ck.length || warm_stale(ck, stale)) continue;
+                t = [WarmTask new]; t->kind = [c[0] isEqualToString:@"S"] ? 0 : 2; t->key = ck; t->stage = t->kind ? 5 : c[2].intValue; t->fc = t->kind ? fc : 0; [tasks addObject:t];
             } else if ([c[0] isEqualToString:@"R"] && c.count >= 2) {
                 pso_skey sk; if (pso_skey_parse(c[1].UTF8String, &sk)) continue;
+                skey_canon(&sk);
                 if (sk.k.fc & ~se_mask()) {
                     sk.k.fc &= (uint8_t)se_mask(); char hx[sizeof sk * 2 + 1]; pso_skey_hex(&sk, hx);
                     NSString *ml = [@"R\t" stringByAppendingString:@(hx)]; if ([seen containsObject:ml]) continue; [seen addObject:ml];
@@ -10897,6 +10944,7 @@ static NSArray<WarmTask *> *warm_parse(NSArray<NSString *> *paths, long *lines) 
                 t = [WarmTask new]; t->kind = 1; t->vkey = vkey; t->fkey = fkey; t->rs = [NSMutableArray arrayWithObject:[NSData dataWithBytes:&sk length:sizeof sk]]; [tasks addObject:t];
             } else if ([c[0] isEqualToString:@"M"] && c.count >= 4) {   // a task / mesh pipeline (nvn_geometry.inc mtk_record): the mesh shader in the vertex place, then the task shader key ("-": none) and the padded variant's mask
                 pso_skey sk; if (pso_skey_parse(c[1].UTF8String, &sk)) continue;
+                skey_canon(&sk);
                 NSString *mkey = warm_key(sk.vs, sizeof sk.vs), *fkey = warm_key(sk.fs, sizeof sk.fs), *tkey = [c[2] isEqualToString:@"-"] ? @"" : c[2];
                 if (!mkey.length || warm_stale(mkey, stale) || (fkey.length && warm_stale(fkey, stale)) || (tkey.length && warm_stale(tkey, stale))) continue;
                 t = [WarmTask new]; t->kind = 4; t->vkey = mkey; t->fkey = fkey; t->tkey = tkey; t->pad = (uint32_t)strtoul(c[3].UTF8String, NULL, 16);

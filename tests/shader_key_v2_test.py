@@ -7,7 +7,8 @@
 ③ nxsh_extract.key_of 对整段控制段（含自报 0x88c、长于 0x880 的）：sha256(整段、两段置零 ‖ code)（S2Arm 抽取口径，整段）
 ④ Switch 2 控制段（魔数 98761234、版本 c9）键不变：= d84a694ffca1c9c9（ns2_shaders 规则，与第 2 代无关）
 ⑤ rt_dump_merge：按第 1 代键命名的 Switch 1 顶点转储照收，按第 2 代键进库；同内容第 1、2 代各一份只进一次
-反证：nvn_key.key_bytes 不置零 → ①② A/D 红、⑤ 键不符跳过；rt_dump_merge 不认第 1 代文件名 → ⑤ 跳过 1 支"""
+⑥ merge_extract.py --alias 出包内键别名表：两段非零的着色器进表（第 1 代 → 第 2 代），两段全零的不进表
+反证：nvn_key.key_bytes 不置零 → ①② A/D 红、⑤ 键不符跳过、⑥ 表为空；rt_dump_merge 不认第 1 代文件名 → ⑤ 跳过 1 支"""
 import hashlib, os, shutil, struct, subprocess, sys, tempfile
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
@@ -67,6 +68,18 @@ with tempfile.TemporaryDirectory(prefix='s2a-keyv2-') as d:
         r = subprocess.run([sys.executable, str(ROOT / 'translator/rt_dump_merge.py'), str(w / 'dump'), str(w / 'pkg'), str(w / 'map.tsv'), str(w / 'facts.tsv')], capture_output=True, text=True)
         rows = [l.split('\t')[3] for l in (w / 'map.tsv').read_text().splitlines()[1:]]
         ck(f"⑤ rt_dump_merge {case}：退出码、表里的键", (0, [k2]), (r.returncode, rows))
+
+    # ⑥ 包内键别名表（merge_extract.py --alias）：顶点转储同一份控制段 vt（两段非零）→ 一行 k1 → k2（上面手算）；两段全零的另一支（vz）两代同键，不进表
+    w = Path(d) / 'alias'; (w / 'pkg').mkdir(parents=True)
+    vz = bytearray(vt); vz[0x790:0x798] = bytes(8); vz[0x7d0:0x7e8] = bytes(24); vz[0x100] = 0x5a; vz = bytes(vz)
+    kz = hashlib.sha256(vz + vc).hexdigest()[:16]
+    def rec(code, ctl):
+        r = bytearray(b'BTCDBTCD' + bytes(0x30)); struct.pack_into('<2I', r, 0x28, len(ctl), len(code)); return bytes(r) + code + ctl
+    (w / 'pkg' / 'vs_t.bin').write_bytes(rec(vc, vt) + rec(vc, vz))
+    (w / 'map.tsv').write_text(f'package\tindex\tstage\tdm_ctl_sha16\tsource\nvs_t.bin\t0\tvertex\t{k2}\tx\nvs_t.bin\t1\tvertex\t{kz}\tx\n')
+    r = subprocess.run([sys.executable, str(ROOT / 'graphics/tools/direct/merge_extract.py'), '--alias', str(w / 'pkg'), str(w / 'map.tsv'), str(w / 'key_alias.tsv')], capture_output=True, text=True)
+    rows = [l.split('\t') for l in (w / 'key_alias.tsv').read_text().splitlines() if l and not l.startswith('#')] if r.returncode == 0 else r.stderr[-300:]
+    ck("⑥ 键别名表：两段非零的进表 k1 → k2，全零的不进表", [[k1, k2]], rows)
 
 print('shader_key_v2 单测全过' if not bad else f'shader_key_v2 单测有 {bad} 项不通')
 sys.exit(1 if bad else 0)

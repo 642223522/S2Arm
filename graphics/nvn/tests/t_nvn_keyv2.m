@@ -15,9 +15,11 @@
 //   ① 包表只有 A 的 v1 → prog_key 取 v1；prog_key_live 同取 v1（首用复核同一规则）
 //   ② 只有 v2 → v2   ③ 都没有 → v2   ④ 都有 → v2
 //   ⑤ 包表都没有、兜底目录有旧版本按 v1 现编的产物（链号、翻译器指纹与本机相同）→ v1
+// 读档换键 R1–R3 的期望与反证见用例处。
 // 反证：keys_hash 不置零 → A / B 的 v2 期望红；去掉兜底（不调 nvn_be_shader_key_pick）→ ①⑤ 红；兜底先查 v1 → ④ 红
 #include "../gfx/nvn/nvn_mtl.m"
 
+int s2a_hle_pk_load(FILE *f);   // hle_nvn.c：读档放回程序键表
 static unsigned checks, failures;
 #define REQUIRE(c) do { if (!(c)) { fprintf(stderr,"SETUP FAIL %s:%d %s\n",__FILE__,__LINE__,#c); exit(2); } } while (0)
 #define CHECK(c, ...) do { checks++; int ok=!!(c); failures+=!ok; printf("%s ",ok?"PASS":"FAIL"); printf(__VA_ARGS__); putchar('\n'); fflush(stdout); } while (0)
@@ -42,14 +44,31 @@ static void put_text(NSString *path, NSString *t) {
     REQUIRE([t writeToFile:path atomically:NO encoding:NSUTF8StringEncoding error:nil]);
 }
 // 换包表：目录 d 下的 shader_map.tsv 只列 keys（第 3 列阶段、第 4 列键，shmap_load_once 读 c[2] / c[3]）
-static void use_map(NSString *root, NSString *name, NSArray<NSString *> *keys) {
+static void use_map_alias(NSString *root, NSString *name, NSArray<NSString *> *keys, NSString *alias) {
     NSString *d = [root stringByAppendingPathComponent:name]; NSMutableString *t = [NSMutableString string];
     for (NSString *k in keys) [t appendFormat:@"x\tx\tvertex\t%@\n", k];
     put_text([d stringByAppendingPathComponent:@"shader_map.tsv"], t);
+    if (alias) put_text([d stringByAppendingPathComponent:@"key_alias.tsv"], alias);
     setenv("DM_MSL_DIR", d.UTF8String, 1); setenv("DM_NVN_SHMAP", [d stringByAppendingPathComponent:@"shader_map.tsv"].UTF8String, 1);
     (void)nvn_be_reload_direct_library();   // 第一次：shmap_load 首读就按新路径（回 0）；之后回 1、换表
     REQUIRE([g_shmap_path isEqualToString:[d stringByAppendingPathComponent:@"shader_map.tsv"]] && g_shmap.count == keys.count);
 }
+static void use_map(NSString *root, NSString *name, NSArray<NSString *> *keys) { use_map_alias(root, name, keys, nil); }
+// 读档（hle_nvn.c s2a_hle_pk_load）：手写一份 gfx_progkeys.bin（格式照 s2a_hle_pk_save：n、{程序地址, 键表} × n、ns、{prog_t, 键表} × ns；键表 = 6×8 键 + 6 阶段 + ok 位，不改格式），
+//   阶段 0 记 key、ok = 1；读回后看键表（prog_key）与按序号的程序快照表（nvn_prog_snap_get）两处
+typedef struct { uint8_t key[6][8]; uint8_t stage[6]; uint8_t ok; } pk_mirror;
+typedef struct { uint64_t p; pk_mirror k; } pk_rec_mirror;
+static void restore(NSString *path, prog_t *p, uint64_t serial, const uint8_t key[8], uint8_t got_pk[8], uint8_t got_snap[8]) {
+    p->nstage = 1;   // prog_key 只认程序里有的阶段
+    FILE *f = fopen(path.fileSystemRepresentation, "wb"); REQUIRE(f);
+    pk_rec_mirror r; memset(&r, 0, sizeof r); r.p = (uint64_t)(uintptr_t)p; memcpy(r.k.key[0], key, 8); memset(r.k.stage, 0xff, 6); r.k.ok = 1;
+    uint64_t one = 1; prog_t snap; memset(&snap, 0, sizeof snap); snap.nstage = 1; snap.serial = serial;
+    fwrite(&one, 8, 1, f); fwrite(&r, sizeof r, 1, f); fwrite(&one, 8, 1, f); fwrite(&snap, sizeof snap, 1, f); fwrite(&r.k, sizeof r.k, 1, f); fclose(f);
+    f = fopen(path.fileSystemRepresentation, "rb"); REQUIRE(f && s2a_hle_pk_load(f) >= 0); fclose(f);
+    REQUIRE(prog_key(p, 0, got_pk));
+    uint8_t ks[6][8], ok = 0; REQUIRE(nvn_prog_snap_get(serial, ks, &ok, NULL) && (ok & 1)); memcpy(got_snap, ks[0], 8);
+}
+static void hex2(const char *h, uint8_t k[8]) { for (int i = 0; i < 8; i++) { unsigned v; sscanf(h + 2 * i, "%2x", &v); k[i] = (uint8_t)v; } }
 
 int main(void) {
     @autoreleasepool {
@@ -93,6 +112,21 @@ int main(void) {
         use_map(root, @"none2", @[@"0123456789abcdef"]);
         CHECK([key_of(A) isEqual:@"404d87c7549fd09c"], "⑤ 包表都没有、兜底目录有第 1 代现编产物 → 第 1 代（实得 %s）", key_of(A).UTF8String);
         unsetenv("DM_MSL_FALLBACK");
+
+        // 读档换键（存档里是 A 的第 1 代键 404d87c7549fd09c；别名表 404d87c7549fd09c → e0d0ef6990987e99 由出包按同一份字节算，这里照规则手写）
+        //   R1 包表只有第 2 代、别名表有 → 两处都换成 e0d0ef6990987e99；库名换键同口径（预热行）
+        //   R2 包表本身有第 1 代（旧包，别名表也在）→ 保持 404d…    R3 包表只有第 2 代、没有别名表 → 保持 404d…
+        //   反证：s2a_hle_pk_load 不规范化 → R1 两项红
+        { NSString *al = @"# 第 1 代键\t第 2 代键\n404d87c7549fd09c\te0d0ef6990987e99\n", *pk = [root stringByAppendingPathComponent:@"gfx_progkeys.bin"];
+          uint8_t v1[8], a[8], b[8]; hex2("404d87c7549fd09c", v1);
+          use_map_alias(root, @"r1", @[@"e0d0ef6990987e99"], al); restore(pk, calloc(1, sizeof(prog_t)), 0x7e5701, v1, a, b);
+          CHECK([hex8(a) isEqual:@"e0d0ef6990987e99"] && [hex8(b) isEqual:@"e0d0ef6990987e99"], "R1 读档：包只有第 2 代、别名表有 → 键表 / 快照表都换成第 2 代（实得 %s / %s）", hex8(a).UTF8String, hex8(b).UTF8String);
+          CHECK([lib_name_canon(@"404d87c7549fd09c_bgv") isEqual:@"e0d0ef6990987e99_bgv"] && [lib_name_canon(@"0123456789abcdef_b") isEqual:@"0123456789abcdef_b"],
+                "R1 预热行库名换键：404d…_bgv → e0d0…_bgv，别名表外的不动（实得 %s）", lib_name_canon(@"404d87c7549fd09c_bgv").UTF8String);
+          use_map_alias(root, @"r2", @[@"404d87c7549fd09c", @"e0d0ef6990987e99"], al); restore(pk, calloc(1, sizeof(prog_t)), 0x7e5702, v1, a, b);
+          CHECK([hex8(a) isEqual:@"404d87c7549fd09c"] && [hex8(b) isEqual:@"404d87c7549fd09c"], "R2 读档：包表本身有第 1 代 → 保持（实得 %s / %s）", hex8(a).UTF8String, hex8(b).UTF8String);
+          use_map_alias(root, @"r3", @[@"e0d0ef6990987e99"], nil); restore(pk, calloc(1, sizeof(prog_t)), 0x7e5703, v1, a, b);
+          CHECK([hex8(a) isEqual:@"404d87c7549fd09c"] && [hex8(b) isEqual:@"404d87c7549fd09c"], "R3 读档：没有别名表 → 保持原样（实得 %s / %s）", hex8(a).UTF8String, hex8(b).UTF8String); }
 
         // Switch 2 键规则不变（nvn2.h nvn2_key，本次未改）
         { static uint8_t n2[0xe0]; for (unsigned i = 0; i < sizeof n2; i++) n2[i] = (uint8_t)(i * 5 + 1);
