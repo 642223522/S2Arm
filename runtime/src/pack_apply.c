@@ -14,6 +14,7 @@
 #include "../include/s2a_selfcheck_page.h"   // 说明页标题「游戏资源不完整」与自检提示页同一句
 __attribute__((weak)) int s2a_ui_zh(void) { return 1; }   // 界面语言（s2a_ui_text.h）：iOS ios/app.m、Mac macos/front_mac.m 强定义；别的平台 / 只链本文件的单测按中文
 #include <dirent.h>
+#include <pthread.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -472,7 +473,33 @@ unsigned s2a_pack_repair_tree(const char *dir) {
     return g_repair_n;
 }
 static void img_shed(const char *root, const char *logp);   // 截掉导入本体里重复的派生件（定义在着色器更新包那段之后）
+// 同一进程里一次只有一路在解包（11-19 Duo：游戏库 s2a_shell_install_game 与资源导入闸门 gate_thread 各自对同一款起了解包。游戏库那路解完、删了 .incoming，
+//   闸门那路随后打开 1795095613_002.tar 回 errno 2、按失败收场，起局 60 秒没就绪；重跑没撞上就正常）。两路读同一个 .incoming、写同一棵资源包，
+//   还共用本文件的失败现场（g_apply_fail / g_untar_err），并发本身就不对：整段串行。后到的一路等前一路做完再看——待解包、压缩块都没了，
+//   .applied 也已是本份清单的号 → 前一路已经解开，不再重解，直接算成功；否则（前一路失败 / 又推来了新包）照常再解一遍
+static pthread_mutex_t g_apply_mu = PTHREAD_MUTEX_INITIALIZER;
+static int pack_apply_locked(const char *docs);
+static int applied_by_other(const char *docs) {   // 待解包已空、.applied = 清单号 → 1
+    char root[2048], p[2200], want[200], got[200] = ""; s2a_pack_root(root, sizeof root, docs);
+    snprintf(p, sizeof p, "%s/.incoming", root);
+    if (has_zchunks(p)) return 0;
+    DIR *d = opendir(p); if (d) { struct dirent *e; int tar = 0; while (!tar && (e = readdir(d))) { size_t l = strlen(e->d_name); tar = l > 4 && !strcmp(e->d_name + l - 4, ".tar") && strncmp(e->d_name, "._", 2); } closedir(d); if (tar) return 0; }
+    snprintf(p, sizeof p, "%s/manifest.json", root); if (manifest_sha(p, want, sizeof want)) return 0;
+    snprintf(p, sizeof p, "%s/.applied", root); FILE *f = fopen(p, "r"); if (!f) return 0;
+    size_t k = fread(got, 1, sizeof got - 1, f); got[k] = 0; got[strcspn(got, "\r\n")] = 0; fclose(f);
+    return !strcmp(got, want);
+}
 int s2a_pack_apply(const char *docs) {
+    if (pthread_mutex_trylock(&g_apply_mu)) {   // 另一路正在解：等它做完
+        LOG("资源包收推送：另一路正在解开，等它做完");
+        pthread_mutex_lock(&g_apply_mu);
+        if (applied_by_other(docs)) { g_apply_fail[0] = 0; g_apply_code[0] = 0; pthread_mutex_unlock(&g_apply_mu); LOG("资源包收推送：完成（另一路刚解开，不再重解）"); return 0; }
+    }
+    int rc = pack_apply_locked(docs);
+    pthread_mutex_unlock(&g_apply_mu);
+    return rc;
+}
+static int pack_apply_locked(const char *docs) {
     char root[2048], inc[2100], logp[2100]; s2a_pack_root(root, sizeof root, docs); snprintf(inc, sizeof inc, "%s/.incoming", root); snprintf(logp, sizeof logp, "%s/unpack.log", docs);
     if (pack_in_bundle(root, "解开资源包")) return -12;   // 同「目录写不进」的码
     // 多款容器第一次装一款时本款文档根 Documents/games/<游戏号>/ 还不在（资源包在 Library 下）：先建出来，解包日志才写得下。
