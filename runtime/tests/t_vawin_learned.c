@@ -69,6 +69,15 @@ int main(void) {
         extern int s2a_window_span_rec_ok(uint64_t, uint64_t);
         CHECK(!s2a_window_span_rec_ok(73086 * MB, 49152 * MB) && !s2a_window_span_rec_ok(76030 * MB, 65536 * MB), "⑩ 记录 ≥ 空洞：不算数");
         CHECK(s2a_window_span_rec_ok(16408 * MB, 49152 * MB) && !s2a_window_span_rec_ok(0, 49152 * MB) && s2a_window_span_rec_ok(73086 * MB, 0), "⑩ 空洞内的算数、0 不算、空洞未知不判"); }
+    {   // ⑪ 小内存 iPad（4 GB 机，2^39 以下 6 GB 空洞）：按游戏应用池给窗口，宿主至少 2 GiB。期望手算，不拿实现输出当期望：
+        //    Switch 1 池 3285 MB + 堆起点约 380 MB → 窗口 4 GiB、宿主 2 GiB；64 GB 空洞仍留 3 GiB；已学到更大跨度不被池压小
+        extern uint64_t s2a_window_host_below_for_pool(uint64_t, uint64_t, uint64_t);
+        CHECK(s2a_window_host_below_for_pool(6 * GB, 0, 3285 * MB) == 2 * GB, "⑪ 6 GB 空洞 + 3285 MB 池：宿主 2 GiB（窗口 4 GiB）");
+        CHECK(s2a_window_host_below_for_pool(64 * GB, 0, 3285 * MB) == 3 * GB, "⑫ 64 GB 空洞：宿主照旧 3 GiB");
+        CHECK(s2a_window_host_below_for_pool(4 * GB, 0, 3285 * MB) == 2 * GB, "⑬ 4 GB 空洞：宿主不低于 2 GiB，放不下如实失败");
+        CHECK(s2a_window_host_below_for_pool(6 * GB, 0, 9 * GB) == 2 * GB, "⑭ Switch 2 池 9 GiB 也压到下限，仍放不下由失败页说清");
+        CHECK(s2a_window_host_below_for_pool(64 * GB, 16395 * MB, 3285 * MB) == 41 * GB, "⑮ 学到更大跨度时不被池需求反向压小");
+        CHECK(s2a_window_host_below_for_pool(6 * GB, 0, 0) == 3 * GB, "⑯ 不知道池时照旧 3 GiB"); }
     printf("%s t_vawin_learned：%d 处不符\n", bad ? "✗" : "✓", bad);
     return bad ? 1 : 0;
 }

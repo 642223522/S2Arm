@@ -42,7 +42,8 @@ extension S2ArmLauncherModel {
         }
     }
 
-    private var currentVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "" }
+    // 交给更新器的本机版本：S2AVersion（build_app.py 写，含预发布段，测试版 0.6.0-test.1 才收得到同号正式版）；老包没有它就退回短版本号
+    private var currentVersion: String { (Bundle.main.object(forInfoDictionaryKey: "S2AVersion") as? String).flatMap { $0.isEmpty ? nil : $0 } ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "" }
     var updateVersion: String { availableUpdate?["version"] as? String ?? "" }
     var updateDownloadBytes: (received: UInt64, expected: UInt64) { updateDriver.downloadBytes }
     var showRestartUpdateButton: Bool { updateState == .ready && !updateRestarting }

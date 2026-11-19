@@ -2,6 +2,7 @@ using Ryujinx.Audio;
 using Ryujinx.Audio.Backends.Apple;   // 平台例外：本用例只测 Apple 音频后端（#189 后续，设备类型 + 虚拟环绕），只在 macOS 上跑
 using Ryujinx.Audio.Backends.Apple.Native;   // 平台例外：本用例只测 Apple 音频后端（#189 后续），只在 macOS 上跑
 using Ryujinx.Audio.Common;
+using Ryujinx.Audio.Renderer.Device;   // 平台例外：本用例只测 Apple 音频后端（#189 后续，active device 名字映射），只在 macOS 上跑
 using Ryujinx.Audio.Integration;
 using Ryujinx.Memory;
 using System;
@@ -15,8 +16,8 @@ namespace S2A.Services.Tests
 {
     public static unsafe partial class Program
     {
-        // Pre-boot solo test（#189 后续）：设备类型选择器、驱动上报矩阵、会话路径接线（不出声：会话只建不播）、
-        //   AUSM 5.1 判据（处理器级手动拉取，纯 CPU 不出声）。读数基准 = 评估的裸 AUSM 手动渲染表
+        // Pre-boot solo test（#189 后续）：设备类型选择器、驱动上报矩阵、active device 名字/声道映射（第二片，§4.5）、
+        //   会话路径接线（不出声：会话只建不播）、AUSM 5.1 判据（处理器级手动拉取，纯 CPU 不出声）。读数基准 = 评估的裸 AUSM 手动渲染表
         //   （48 kHz / 997 Hz / 4800 帧跳过前 1200 帧）：显式 BuiltInSpeakers——FL +7.1 dB、C 等幅、LFE 0.000（移除）、
         //   BL 近等幅（-0.5 dB）；显式 Headphones——FL +8.0 dB、延迟约 0.4–1.4 ms（19–67 样本）、C 等幅、
         //   LFE 受衰减（约 7% 输入）；ExternalSpeakers / .auto——FL 仅左、BL +12.8 dB、0 延迟（普通平移，负对照见坑记录）。
@@ -28,6 +29,10 @@ namespace S2A.Services.Tests
 
         [DynamicDependency(DynamicallyAccessedMemberTypes.NonPublicFields,
             "Ryujinx.Audio.Backends.Apple.AppleHardwareDeviceSession", "Ryujinx.Audio.Backends.Apple")]   // 平台例外：本用例只测 Apple 音频后端的会话接线（#189 后续），只在 macOS 上跑
+        // 读回我方设给 AUSM 的属性（只读；判据只核我方输入，见 ⑥）
+        [DllImport("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox", EntryPoint = "AudioUnitGetProperty")]   // 平台例外：本用例只测 Apple 音频后端（读回我方设给 AUSM 的属性），只在 macOS 上跑
+        private static extern int AudioUnitGetPropertyRaw(nint unit, uint id, uint scope, uint element, nint data, ref uint size);
+
         [SoloTest("--apple-audio-device-types")]
         internal static int AppleAudioDeviceTypes()
         {
@@ -184,7 +189,46 @@ namespace S2A.Services.Tests
                         $"设备 {deviceChannels} 声道（external 不虚拟环绕）");
                 }
 
-                // ③ S2A_AUDIO_CH2 仍最高优先级；S2A_AUDIO_OUT=sys 显式下混优先于设备类型
+                // ③ active device（第二片，计划 §4.5；游戏经 HLE AudioDevice 看到的名字 / 声道数，直接构造 VirtualDeviceSessionRegistry）：
+                //   名字按玩家显式选择的设备类型定（builtin → AudioBuiltInSpeakerOutput、headphones → AudioStereoJackOutput，
+                //   USB 等真实接口名不另报——设备类型语义的简化），声道数照旧只看 SupportsChannelCount(6)；
+                //   未显式选择（Auto）与 external 不给名字 → 缺省 AudioTvOutput，缺省路径逐字节不变
+                (uint Channels, string Name) ActiveDevice()
+                {
+                    using AppleHardwareDeviceDriver driver = new();   // 平台例外：本用例只测 Apple 音频后端（#189 后续），只在 macOS 上跑
+                    VirtualDevice device = new VirtualDeviceSessionRegistry(driver).ActiveDevice;   // 平台例外：同上
+                    return (device.ChannelCount, device.Name);
+                }
+
+                Set(null, null, null);
+                AppleHardwareDeviceDriver.S2ATestProbe = (0, 6, 0, 0);   // 平台例外：注入试建读数，模拟 6 声道设备
+                (uint ch, string name) = ActiveDevice();
+                Check("未显式选择 + 6 声道 → active device 照旧 AudioTvOutput 6 声道（缺省不变）", ch == 6 && name == "AudioTvOutput", $"{name} {ch}");
+                AppleHardwareDeviceDriver.S2ATestProbe = (0, 2, 0, 0);   // 平台例外：模拟 2 声道设备
+                (ch, name) = ActiveDevice();
+                Check("未显式选择 + 2 声道 → AudioTvOutput 2 声道（缺省不变）", ch == 2 && name == "AudioTvOutput", $"{name} {ch}");
+                Set("builtin", "1", null);
+                (ch, name) = ActiveDevice();
+                Check("builtin + VS 开 → AudioBuiltInSpeakerOutput 6 声道", ch == 6 && name == "AudioBuiltInSpeakerOutput", $"{name} {ch}");
+                Set("builtin", null, null);
+                (ch, name) = ActiveDevice();
+                Check("builtin + VS 关 → AudioBuiltInSpeakerOutput 2 声道", ch == 2 && name == "AudioBuiltInSpeakerOutput", $"{name} {ch}");
+                Set("headphones", null, "1");
+                (ch, name) = ActiveDevice();
+                Check("headphones + VS 开 → AudioStereoJackOutput 6 声道", ch == 6 && name == "AudioStereoJackOutput", $"{name} {ch}");
+                Set("headphones", null, null);
+                (ch, name) = ActiveDevice();
+                Check("headphones + VS 关 → AudioStereoJackOutput 2 声道", ch == 2 && name == "AudioStereoJackOutput", $"{name} {ch}");
+                Set("external", "1", "1");
+                AppleHardwareDeviceDriver.S2ATestProbe = (0, 6, 0, 0);   // 平台例外：模拟 6 声道设备
+                (ch, name) = ActiveDevice();
+                Check("external + 6 声道 → AudioTvOutput 6 声道（直通，VS 开关不改变名字）", ch == 6 && name == "AudioTvOutput", $"{name} {ch}");
+                AppleHardwareDeviceDriver.S2ATestProbe = (0, 2, 0, 0);   // 平台例外：模拟 2 声道设备
+                (ch, name) = ActiveDevice();
+                Check("external + 2 声道 → AudioTvOutput 2 声道（下混）", ch == 2 && name == "AudioTvOutput", $"{name} {ch}");
+                AppleHardwareDeviceDriver.S2ATestProbe = null;   // 平台例外：清注入，后面的用例走真探测
+
+                // ④ S2A_AUDIO_CH2 仍最高优先级；S2A_AUDIO_OUT=sys 显式下混优先于设备类型
                 Set("builtin", "1", null);
                 Environment.SetEnvironmentVariable("S2A_AUDIO_CH2", "1");
                 Check("builtin + VS 开 + S2A_AUDIO_CH2=1 仍强制立体声", !Reports6());
@@ -193,7 +237,7 @@ namespace S2A.Services.Tests
                 Check("builtin + VS 关 + S2A_AUDIO_OUT=sys 照报 5.1（显式下混优先）", Reports6());
                 Environment.SetEnvironmentVariable("S2A_AUDIO_OUT", null);
 
-                // ④ 会话路径接线（反射 _processor / _deviceChannelCount；会话只建不播，不出声）
+                // ⑤ 会话路径接线（反射 _processor / _deviceChannelCount；会话只建不播，不出声）
                 FieldInfo processorField = typeof(AppleHardwareDeviceSession).GetField("_processor", BindingFlags.NonPublic | BindingFlags.Instance)   // 平台例外：本用例只测 Apple 音频后端的会话接线（#189 后续），只在 macOS 上跑
                     ?? throw new InvalidOperationException("找不到 AppleHardwareDeviceSession._processor");   // 平台例外：同上，只在 macOS 上跑
                 FieldInfo deviceChannelsField = typeof(AppleHardwareDeviceSession).GetField("_deviceChannelCount", BindingFlags.NonPublic | BindingFlags.Instance)   // 平台例外：同上，只在 macOS 上跑
@@ -248,10 +292,9 @@ namespace S2A.Services.Tests
                 Check("未显式选择 + 只设 VS 开 + 6ch → 无处理器（VS 只在显式类型生效，走原 6ch 路径）",
                     mode == null && sessionChannels == 6, $"档 {mode?.ToString() ?? "无"}、设备声道 {sessionChannels}");
 
-                // ⑤ AUSM 5.1 判据（处理器级，无声）：裸 AUSM 手动拉取，读数基准见方法头注释
+                // ⑥ AUSM 5.1 判据（处理器级，无声）：裸 AUSM 手动拉取，读数基准见方法头注释
                 const int rate = 48000;
                 const int frames = 4800;
-                const int skip = 1200;
                 const float amplitude = 16000.0f;
                 double inputRms = amplitude / Math.Sqrt(2.0);
 
@@ -268,70 +311,76 @@ namespace S2A.Services.Tests
                     return data;
                 }
 
-                (double Left, double Right) Rms(byte[] stereo)
+                // 判据只问我方送给 AUSM 的东西（11-19 维护者规矩「判据只问我方输出」）：AUSM 渲染出的声音形状（左右比、等幅、LFE 去除、双耳延迟）
+                //   是苹果混音器的行为，随 macOS 版本漂移——同一树 27.0.1 上 BL 两路差 12.8 dB、27.2.1 近等幅，原判据在门禁机红、本机绿。
+                //   改核三件我方负责的：① 我方设给 AUSM 的属性读回（输出类型 / 算法 / 源模式 / 输入 MPEG_5_1_A、输出 Stereo / 输入 6 声道）；
+                //   ② 每路测试音落在我方填给 AUSM 的对应输入平面（Switch 5.1 与 MPEG_5_1_A 同为 L R C LFE Ls Rs，恒等映射），别的平面静音；
+                //   ③ AudioUnitRender 成功（处理器失败计数不涨），即确实出了数。期望值都由我方配置与测试音手算，不读混音器输出
+                FieldInfo unitField = typeof(AppleOutputProcessor).GetField("_unit", BindingFlags.NonPublic | BindingFlags.Instance);
+                FieldInfo planesField = typeof(AppleOutputProcessor).GetField("_spatialInPlanes", BindingFlags.NonPublic | BindingFlags.Instance);
+                Check("测试观测口：处理器字段 _unit / _spatialInPlanes 在", unitField != null && planesField != null, "");
+
+                uint ReadU32(AppleOutputProcessor p, uint id, uint scope, int offset, int bytes)
                 {
-                    ReadOnlySpan<short> samples = MemoryMarshal.Cast<byte, short>(stereo.AsSpan());
-                    double left = 0, right = 0;
-                    int count = 0;
+                    nint unit = (nint)unitField.GetValue(p);
+                    nint buf = Marshal.AllocHGlobal(bytes);
 
-                    for (int frame = skip; frame < frames; frame++)
+                    try
                     {
-                        left += (double)samples[frame * 2] * samples[frame * 2];
-                        right += (double)samples[frame * 2 + 1] * samples[frame * 2 + 1];
-                        count++;
-                    }
+                        uint size = (uint)bytes;
+                        int rc = AudioUnitGetPropertyRaw(unit, id, scope, 0, buf, ref size);
 
-                    return count > 0 ? (Math.Sqrt(left / count), Math.Sqrt(right / count)) : (0, 0);
+                        return rc == 0 ? (uint)Marshal.ReadInt32(buf, offset) : uint.MaxValue;
+                    }
+                    finally
+                    {
+                        Marshal.FreeHGlobal(buf);
+                    }
                 }
 
-                double RatioDb(double left, double right) => 20 * Math.Log10((left + 1e-9) / (right + 1e-9));
-
-                // 左右互相关最佳延迟（样本）：虚拟化（Headphones）非 0，普通平移（.auto / External）为 0
-                (double Corr, int Lag) BestLag(byte[] stereo)
+                void CheckOwnInput(string tag, AppleOutputProcessor p, uint wantOutputType)
                 {
-                    ReadOnlySpan<short> samples = MemoryMarshal.Cast<byte, short>(stereo.AsSpan());
-                    double best = -2.0;
-                    int bestLag = 0;
+                    Check($"{tag}：AUSM 输出类型 = {wantOutputType}（我方设的）", ReadU32(p, AudioUnitInterop.kAudioUnitProperty_SpatialMixerOutputType, AudioUnitInterop.kAudioUnitScope_Global, 0, 4) == wantOutputType, "");
+                    Check($"{tag}：算法 = UseOutputType", ReadU32(p, AudioUnitInterop.kAudioUnitProperty_SpatializationAlgorithm, AudioUnitInterop.kAudioUnitScope_Input, 0, 4) == AudioUnitInterop.kSpatializationAlgorithm_UseOutputType, "");
+                    Check($"{tag}：源模式 = AmbienceBed", ReadU32(p, AudioUnitInterop.kAudioUnitProperty_SpatialMixerSourceMode, AudioUnitInterop.kAudioUnitScope_Input, 0, 4) == AudioUnitInterop.kSpatialMixerSourceMode_AmbienceBed, "");
+                    Check($"{tag}：输入布局 = MPEG_5_1_A", ReadU32(p, AudioUnitInterop.kAudioUnitProperty_AudioChannelLayout, AudioUnitInterop.kAudioUnitScope_Input, 0, 64) == kAudioChannelLayoutTag_MPEG_5_1_A, "");
+                    Check($"{tag}：输入 6 声道", ReadU32(p, AudioUnitInterop.kAudioUnitProperty_StreamFormat, AudioUnitInterop.kAudioUnitScope_Input, 28, 40) == 6, "");
+                    Check($"{tag}：输出 2 声道", ReadU32(p, AudioUnitInterop.kAudioUnitProperty_StreamFormat, AudioUnitInterop.kAudioUnitScope_Output, 28, 40) == 2, "");
 
-                    for (int d = -80; d <= 80; d++)
+                    float[][] planes = (float[][])planesField.GetValue(p);
+                    double want = amplitude / 32768.0 / Math.Sqrt(2.0);
+
+                    for (int channel = 0; channel < 6; channel++)
                     {
-                        double sum = 0, energyLeft = 0, energyRight = 0;
-                        int count = 0;
+                        byte[] output = new byte[frames * 2 * sizeof(short)];
+                        int failures = p.FailureCount;
+                        bool rendered = p.Process(Tone(channel), output) && p.FailureCount == failures;
+                        double[] rms = new double[6];
 
-                        for (int i = skip; i < frames - skip; i++)
+                        for (int plane = 0; plane < 6; plane++)
                         {
-                            int j = i + d;
+                            float[] data = planes[plane];
+                            double sum = 0;
 
-                            if (j < 0 || j >= frames)
+                            for (int i = 0; i < data.Length; i++)
                             {
-                                continue;
+                                sum += (double)data[i] * data[i];
                             }
 
-                            double x = samples[i * 2], y = samples[j * 2 + 1];
-                            sum += x * y;
-                            energyLeft += x * x;
-                            energyRight += y * y;
-                            count++;
+                            rms[plane] = Math.Sqrt(sum / Math.Max(1, data.Length));
                         }
 
-                        if (count == 0)
+                        bool onlyThis = Math.Abs(rms[channel] - want) < 0.02 * want;
+
+                        for (int plane = 0; plane < 6; plane++)
                         {
-                            continue;
+                            onlyThis &= plane == channel || rms[plane] == 0;
                         }
 
-                        double correlation = sum / (Math.Sqrt(energyLeft * energyRight) + 1e-12);
-
-                        if (correlation > best)
-                        {
-                            best = correlation;
-                            bestLag = d;
-                        }
+                        Check($"{tag}：第 {channel} 路测试音只进我方第 {channel} 个输入平面、AudioUnitRender 成功", rendered && onlyThis,
+                            $"平面 RMS {string.Join(" / ", Array.ConvertAll(rms, v => v.ToString("F3")))}（期望第 {channel} 个 {want:F3}、其余 0）、出数 {rendered}");
                     }
-
-                    return (best, bestLag);
                 }
-
-                double RmsRatio(double rms) => rms / inputRms;
 
                 // 内置扬声器档（显式 BuiltInSpeakers 输出类型）
                 using (AppleOutputProcessor speakers = AppleOutputProcessor.Create(AppleOutputMode.SpatialSpeakers, rate, 2400))
@@ -341,27 +390,7 @@ namespace S2A.Services.Tests
 
                     if (speakers.EffectiveMode == AppleOutputMode.SpatialSpeakers)
                     {
-                        byte[] output = new byte[frames * 2 * sizeof(short)];
-
-                        speakers.Process(Tone(0), output);
-                        (double left, double right) = Rms(output);
-                        Check("内置扬声器档 FL 左右比 > 4 dB（虚拟化非仅左）", RatioDb(left, right) > 4,
-                            $"L/R {RatioDb(left, right):F1} dB、L {RmsRatio(left):F3} R {RmsRatio(right):F3}×输入");
-
-                        speakers.Process(Tone(2), output);
-                        (left, right) = Rms(output);
-                        Check("内置扬声器档 中置两路等幅", Math.Abs(RatioDb(left, right)) < 1 && left > 0.5 * inputRms && right > 0.5 * inputRms,
-                            $"L/R {RatioDb(left, right):F2} dB、L {RmsRatio(left):F3} R {RmsRatio(right):F3}×输入");
-
-                        speakers.Process(Tone(3), output);
-                        (left, right) = Rms(output);
-                        Check("内置扬声器档 LFE 被移除（实测 0.000×输入）", left < 0.01 * inputRms && right < 0.01 * inputRms,
-                            $"L {RmsRatio(left):F4} R {RmsRatio(right):F4}×输入");
-
-                        speakers.Process(Tone(4), output);
-                        (left, right) = Rms(output);
-                        Check("内置扬声器档 BL 两路近等幅（普通平移是 +12.8 dB）", Math.Abs(RatioDb(left, right)) < 2 && left > 0.5 * inputRms,
-                            $"L/R {RatioDb(left, right):F2} dB、L {RmsRatio(left):F3} R {RmsRatio(right):F3}×输入");
+                        CheckOwnInput("内置扬声器档", speakers, AudioUnitInterop.kSpatialMixerOutputType_BuiltInSpeakers);
                     }
                 }
 
@@ -374,30 +403,9 @@ namespace S2A.Services.Tests
                     if (headphones.EffectiveMode == AppleOutputMode.SpatialHeadphones)
                     {
                         byte[] output = new byte[frames * 2 * sizeof(short)];
+                        CheckOwnInput("耳机档", headphones, AudioUnitInterop.kSpatialMixerOutputType_Headphones);
 
-                        headphones.Process(Tone(0), output);
-                        (double left, double right) = Rms(output);
-                        (double corr, int lagFl) = BestLag(output);
-                        Check("耳机档 FL 左右比 > 4 dB", RatioDb(left, right) > 4,
-                            $"L/R {RatioDb(left, right):F1} dB、L {RmsRatio(left):F3} R {RmsRatio(right):F3}×输入");
-
-                        headphones.Process(Tone(4), output);
-                        (left, right) = Rms(output);
-                        (corr, int lagBl) = BestLag(output);
-                        Check("耳机档 有双耳延迟（FL/BL 之一 |延迟| ≥ 15 样本，普通平移是 0）",
-                            Math.Abs(lagFl) >= 15 || Math.Abs(lagBl) >= 15, $"FL {lagFl:+#;-#;0}、BL {lagBl:+#;-#;0} 样本（相关 {corr:F3}）");
-
-                        headphones.Process(Tone(2), output);
-                        (left, right) = Rms(output);
-                        Check("耳机档 中置两路等幅", Math.Abs(RatioDb(left, right)) < 1 && left > 0.4 * inputRms && right > 0.4 * inputRms,
-                            $"L/R {RatioDb(left, right):F2} dB、L {RmsRatio(left):F3} R {RmsRatio(right):F3}×输入");
-
-                        headphones.Process(Tone(3), output);
-                        (left, right) = Rms(output);
-                        Check("耳机档 LFE 受衰减（非移除）", left > 0.003 * inputRms && left < 0.15 * inputRms && Math.Abs(RatioDb(left, right)) < 1,
-                            $"L {RmsRatio(left):F4} R {RmsRatio(right):F4}×输入");
-
-                        // ⑥ 性能读数：ConvertSpatial 在交缓冲的生产方线程上同步跑（评审 11-16），典型片长给
+                        // ⑦ 性能读数：ConvertSpatial 在交缓冲的生产方线程上同步跑（评审 11-16），典型片长给
                         //   中位 / 最大；4800 帧一片（50 ms 设备缓冲，两片 2400）有门限 150 µs
                         byte[] bigSlice = new byte[frames * 6 * sizeof(short)];
                         long start = Stopwatch.GetTimestamp();

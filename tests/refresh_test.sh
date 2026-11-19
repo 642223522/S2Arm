@@ -22,7 +22,7 @@ for s in rewrite sysdata uilayout aoc caps romfsidx direct_profile extract direc
   cat > $T/repo/pack/stage_$s.sh <<EOF
 #!/bin/bash
 echo "$s 起 \$(python3 -c 'import time;print(time.time())') \${S2A_SHADER_NO_PSO:-0}\${S2A_SHADER_NO_DL:-0} J=\${J:-无} DD=\${DEVELOPER_DIR:-无} LZ=\${S2A_SHADER_LAZY:-0} BK=\${S2A_CPU_BAKE:-无}" >> $T/log
-[ "$s" = direct ] && sleep \${FAKE_DIRECT_SLEEP:-1}
+[ "$s" = direct ] && sleep \${FAKE_DIRECT_SLEEP:-0}   # 缺省不睡：二十多次编排每次睡 1 秒是本单测的大头；要量用时的那一次显式给（①）
 [ "$s" = rewrite ] && sleep \${FAKE_RW_SLEEP:-0}
 # FAKE_RW_UNTIL=<阶段>：改写等那个阶段在日志里记下「起」才结束（最多 30 秒）——按事件判并行，不靠墙钟窗口（⑬a：满载时直连库可能晚于固定的 2 秒才起）
 if [ "$s" = rewrite ] && [ -n "\${FAKE_RW_UNTIL:-}" ]; then for i in \$(seq 600); do grep -q "^\$FAKE_RW_UNTIL 起 " $T/log && break; sleep 0.05; done; fi
@@ -37,7 +37,7 @@ done
 R() { rm -f $T/log; S2A_REFRESH_LOCKS=$T/locks S2A_ROOTS=$T/roots S2A_ROOTS_SHARED=$T/roots bash $T/repo/pack/refresh.sh acnh 2>&1; }
 # macOS 自带 awk（version 20200816，UTF-8 locale）字符串比较有坑：$2 == "起" 连 "止" 都判相等——起 / 止一律先按字节 grep 出再交 awk
 t() { grep " $2 " $T/log | awk -v s="$1" '$1 == s { print $3; exit }'; }
-o=$(R); r=$?
+o=$(FAKE_DIRECT_SLEEP=1 R); r=$?   # ① 要判「直连 ≥1 秒」：只这一次让直连库桩睡 1 秒
 ck "① 只有直连：rc=${r}；不跑通用着色器阶段 / 客体代码表" '[ $r = 0 ] && ! grep -q "^shaders \|^direct_gk " $T/log && grep -q "^direct 起" $T/log'
 tl=$(grep '^⏱' <<< "$o"); miss=$(for s in rewrite sysdata uilayout aoc direct_profile romfsidx extract direct direct_seed; do [[ "$tl" == *"$s "[0-9]* ]] || printf '%s ' $s; done)
 # 直连段只判「≥1 秒」（桩睡 1 秒 = 计时确实记上了）：不卡上界——10-26 #477 自检 gate-host 并行负载高时 direct 量到 3 秒判红，那是机器忙，不是计时错

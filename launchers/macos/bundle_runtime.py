@@ -65,6 +65,12 @@ def output(args):
     return subprocess.check_output([str(a) for a in args], text=True).strip()
 
 
+def installed_versions_probe(names):
+    """随包 Python 里跑的一段只读代码：把钉版清单的每一行都记进 versions.json。"""
+    return ("import json,sys,importlib.metadata as m; names=" + json.dumps(list(names)) +
+            "; print(json.dumps(dict(python=sys.version.split()[0], **{p:m.version(p) for p in names})))")
+
+
 def cp(src, dst):
     src, dst = pathlib.Path(src), pathlib.Path(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -90,15 +96,25 @@ def macho(p):
 
 
 def build(out):
-    brew = shutil.which('brew')
-    if not brew:
-        raise RuntimeError('Release builder requires Homebrew.')
-    prefixes = {name:pathlib.Path(output([brew, '--prefix', name])).resolve() for name in ('bash',)}
     python = runtime_sources.python()
     python_bin = python/'bin/python3.12'
     tool_prefix, tool_sources = runtime_sources.tools()
-    for name in ('spirv-tools', 'spirv-cross', 'glslang', 'zstd'):
-        prefixes[name] = tool_prefix
+    brew = shutil.which('brew')
+    # 解析 @rpath 时按插入顺序找 prefix：钉版工具必须排在 bash（Homebrew / MacPorts）前面，
+    # 否则 zstd 会链到系统那套 libzstd，跑起来报 `_POOL_add` 找不到。
+    prefixes = {name: tool_prefix for name in ('spirv-tools', 'spirv-cross', 'glslang', 'zstd')}
+    if brew:
+        prefixes['bash'] = pathlib.Path(output([brew, '--prefix', 'bash'])).resolve()
+        bash_bin = prefixes['bash']/'bin/bash'
+    else:
+        # Intel Mac 本机没有 Homebrew 时按 PATH 上已装的 bash 5 收包（MacPorts / mise 等都可以），不为了出包强装 Homebrew
+        found = shutil.which('bash')
+        if not found:
+            raise RuntimeError('Release builder needs bash 5 on PATH (or Homebrew).')
+        bash_bin = pathlib.Path(found).resolve()
+        if int(output([bash_bin, '-c', 'echo ${BASH_VERSINFO[0]}']) or 0) < 5:
+            raise RuntimeError(f'bash 5 required, got {output([bash_bin, "--version"])}')
+        prefixes['bash'] = bash_bin.parent.parent if bash_bin.parent.name == 'bin' else bash_bin.parent
     venv = ROOT/'build/macos/python'
     if (venv/'pyvenv.cfg').is_file() and str(python) not in (venv/'pyvenv.cfg').read_text():
         shutil.rmtree(venv)   # 旧的 venv 是 Homebrew Python 建的，原生扩展要按新解释器重装
@@ -106,7 +122,7 @@ def build(out):
         run([python_bin, '-m', 'venv', venv])
     # 轮子先进缓存核哈希，再离线装（launchers/shared/runtime_cache.py）
     pins = [l.strip() for l in (ROOT/'launchers/macos/requirements-runtime.txt').read_text().splitlines() if '==' in l and not l.startswith('#')]
-    wheels = runtime_cache.wheelhouse(pins, 'macos_arm64', lambda folder, missing: run(
+    wheels = runtime_cache.wheelhouse(pins, runtime_sources.wheel_platform(), lambda folder, missing: run(
         [venv/'bin/python', '-m', 'pip', 'download', '--disable-pip-version-check', '--no-deps', '--only-binary=:all:', '-d', folder, *missing]))
     run([venv/'bin/python', '-m', 'pip', 'install', '--disable-pip-version-check', '--no-index', '--find-links', wheels, '--no-deps', *pins])
     installed = venv/'lib/python3.12/site-packages'
@@ -153,13 +169,14 @@ def build(out):
         if p in seen:
             continue
         seen.add(p)
-        # The product targets Apple Silicon only. Remove Intel slices from the
-        # compiler/framework closure before relocation and signing.
+        # Keep only the architecture of the build machine: Apple Silicon keeps arm64,
+        # an Intel release builder keeps x86_64. Both ship as single-slice tools.
         with p.open('rb') as header:
             fat = header.read(4) in (b'\xca\xfe\xba\xbe', b'\xca\xfe\xba\xbf')
         if fat:
             archs = output(['lipo','-archs',p]).split()
-            selected = 'arm64' if 'arm64' in archs else 'arm64e' if 'arm64e' in archs else None
+            want = runtime_sources.host_arch()
+            selected = want if want in archs else ('arm64e' if want == 'arm64' and 'arm64e' in archs else None)
             if selected and len(archs) > 1:
                 temporary = p.with_name(p.name+'.thin')
                 run(['lipo',p,'-thin',selected,'-output',temporary],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
@@ -167,7 +184,7 @@ def build(out):
         for line in output(['otool', '-L', p]).splitlines()[1:]:
             dep = line.strip().split(' (')[0]
             target = None
-            if dep.startswith(('/opt/homebrew/', '/usr/local/')):
+            if dep.startswith(('/opt/homebrew/', '/usr/local/', '/opt/local/')):
                 if dep.endswith('/Python'):
                     target = out/'python/Python'
                 else:
@@ -206,24 +223,32 @@ def build(out):
     run([out/'python/bin/python3', '-B', '-I', '-c', f'import ctypes; ctypes.CDLL({str(out / "lib/libzstd.1.dylib")!r}).ZSTD_versionNumber; print("Runtime libzstd OK")'], env=env)
     licenses = out/'licenses'
     licenses.mkdir()
-    for src, name in [
+    bash_license = next((p for p in (prefixes["bash"]/"COPYING", prefixes["bash"]/"share/doc/bash/COPYING",
+                                     prefixes["bash"]/"share/licenses/bash/COPYING", prefixes["bash"]/"share/doc/bash/LICENSE")
+                         if p.is_file()), None)
+    copies = [
         (python / "lib/python3.12/LICENSE.txt", "Python-LICENSE.txt"),
         (tool_sources["spirv-tools"] / "LICENSE", "SPIRV-Tools-LICENSE.txt"),
         (tool_sources["zstd"] / "LICENSE", "Zstandard-LICENSE.txt"),
-        (prefixes["bash"] / "COPYING", "bash-COPYING.txt"),
+        (bash_license or runtime_cache.fetch_file("GPL-3.0.txt"), "bash-COPYING.txt"),
         (ROOT / "launchers/macos/runtime_source_offer.txt", "S2Arm-runtime-source-offer.txt"),
         (tool_sources["spirv-cross"] / "LICENSE", "SPIRV-Cross-LICENSE.txt"),
         (tool_sources["glslang"] / "LICENSE.txt", "glslang-LICENSE.txt"),
         (ROOT / "runtime/rewriter/LICENSES/capstone.txt", "capstone-LICENSE.txt"),
         (ROOT / "runtime/rewriter/LICENSES/lz4.txt", "lz4-LICENSE.txt"),
-    ]:
+    ]
+    for src, name in copies:
         shutil.copy2(src, licenses / name)
-    dependencies = output([brew, "deps", "--installed", "bash"]).splitlines()
-    for name in set(dependencies):
-        prefix = pathlib.Path(output([brew, "--prefix", name]))
-        for p in prefix.glob("*"):
-            if p.is_file() and any(x in p.name.upper() for x in ("LICENSE", "COPYING", "NOTICE")):
-                shutil.copy2(p, licenses / (name + "-" + p.name))
+    if brew:
+        dependencies = output([brew, "deps", "--installed", "bash"]).splitlines()
+        for name in set(dependencies):
+            prefix = pathlib.Path(output([brew, "--prefix", name]))
+            for p in prefix.glob("*"):
+                if p.is_file() and any(x in p.name.upper() for x in ("LICENSE", "COPYING", "NOTICE")):
+                    shutil.copy2(p, licenses / (name + "-" + p.name))
+    # 版本记录要覆盖 requirements-runtime.txt 的每一行：漏记 Pillow / zstandard 会让 build_app 每次都判 Runtime 过期重收。
+    names = [pin.split('==')[0] for pin in pins]
+    probe = installed_versions_probe(names)
     versions = json.loads(
         output(
             [
@@ -231,7 +256,7 @@ def build(out):
                 "-B",
                 "-I",
                 "-c",
-                'import json,sys,importlib.metadata as m; print(json.dumps(dict(python=sys.version.split()[0], **{p:m.version(p) for p in ["capstone","lz4","numpy"]})))',
+                probe,
             ]
         )
     )
@@ -241,7 +266,7 @@ def build(out):
         timeout="tools/bin/timeout",
         spirvTools="spirv-tools " + runtime_sources.SPIRV_TOOLS_VERSION,
         zstd="zstd " + runtime_sources.ZSTD_VERSION,
-        bash=output([brew, "list", "--versions", "bash"]),
+        bash=output([brew, "list", "--versions", "bash"]) if brew else output([bash_bin, "-c", 'echo "bash ${BASH_VERSION}"']),
         spirvCross="spirv-cross " + runtime_sources.SPIRV_CROSS_VERSION,
         glslang="glslang " + runtime_sources.GLSLANG_VERSION,
         rewriter=rewriter.source_digest(),
@@ -265,8 +290,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output', type=pathlib.Path, default=ROOT/'build/macos/Runtime')
     args = parser.parse_args()
-    if platform.system() != 'Darwin' or platform.machine() != 'arm64':
-        raise RuntimeError('An Apple Silicon Mac is required for the release runtime.')
+    if platform.system() != 'Darwin' or platform.machine() not in ('arm64', 'x86_64'):
+        raise RuntimeError('A macOS release builder (arm64 or x86_64) is required for the packaging runtime.')
     destination = args.output.resolve()
     if not destination.is_relative_to(ROOT/'build/macos'):
         raise RuntimeError('Runtime output must be inside the ignored build/macos directory.')

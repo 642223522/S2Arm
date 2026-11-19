@@ -431,7 +431,10 @@ static int present_fsr_encode(id cb, id<MTLTexture> src, id<MTLTexture> dst, con
       if (changed) { MLOG("present crop: source texture %lux%lu, valid %lu,%lu %lux%lu → target %lux%lu", (unsigned long)src.width, (unsigned long)src.height,
                           (unsigned long)cx, (unsigned long)cy, (unsigned long)cw, (unsigned long)ch, (unsigned long)dst.width, (unsigned long)dst.height);
                      MLOG("present viewport %.0f,%.0f %.0fx%.0f / canvas %.0fx%.0f (game image %lux%lu)", pv.x, pv.y, pv.w, pv.h, (double)dst.width, (double)dst.height, (unsigned long)src.width, (unsigned long)src.height); } }
-    float uv[8] = {0, 0, 1, 1, 0.5f / (float)ow, 0.5f / (float)oh, ((float)ow - 0.5f) / (float)ow, ((float)oh - 0.5f) / (float)oh};
+    // 末段走上屏拷贝的着色器（Crop：rect / edge / mode / xf 共 16 浮点）：后 8 个是 HDR 上屏模式参数，与 present_blit 同一份填法；
+    //   只给前 8 个时 Metal 3 校验断言（片元参数 64 字节、只绑了 32），Metal 4 槽缓冲后半留着上一次上屏的旧参数
+    float uv[16] = {0, 0, 1, 1, 0.5f / (float)ow, 0.5f / (float)oh, ((float)ow - 0.5f) / (float)ow, ((float)oh - 0.5f) / (float)oh};
+    present_hdr_uv(uv + 8, src, dst, YES);
     if (m4) { int r_ = 0; if (@available(macOS 26.0, iOS 26.0, *)) r_ = present_fsr_pass4(cb, g_blit_pso, f->output, dst, uv, sizeof uv, uvb, table, &pv); return r_; }
     return present_fsr_pass3(cb, g_blit_pso, f->output, dst, uv, sizeof uv, &pv);
 }

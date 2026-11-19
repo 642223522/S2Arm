@@ -20,7 +20,7 @@ import tests.test_jobs as tj  # noqa: E402
 from tests.jobcase import ios_fixture  # noqa: E402
 
 A, B = "0100000000010000", "0100000000020000"
-OK = dict(rewriterId="RID", hostAbi=2, dmshChain="chain1")
+OK = dict(rewriterId="RID", hostAbi=2, dmshChain="chain1", libGen=host_update.LIB_GEN)
 
 
 class ShaderMissHint(unittest.TestCase):
@@ -51,7 +51,7 @@ class ShaderMissHint(unittest.TestCase):
     def test_mac_counter_from_library_temp(self):
         self.fixture()
         mac = layout.image_mac(self.c, B); mac.mkdir(parents=True, exist_ok=True)
-        (mac / "manifest.json").write_text(json.dumps(dict(builtBy=dict(version="0.5.0"))))
+        (mac / "manifest.json").write_text(json.dumps(dict(builtBy=dict(version="0.5.0"), libGen=host_update.LIB_GEN)))
         t = Path(self.c.library) / "temp" / B; t.mkdir(parents=True)
         (t / host_update.SHADER_FALLBACK).write_text(json.dumps(dict(count=5, at=1, app="0.5.0")))
         self.assertEqual(self.run_hints(), {B: ["shaderMiss"]}, "Mac 局现场翻译过、Mac 运行版本是旧版打的 → 标")

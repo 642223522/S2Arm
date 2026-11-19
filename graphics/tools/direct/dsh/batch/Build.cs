@@ -253,7 +253,7 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
 
         if (Metal.Init(NoMac ? null : (MacMetal, MacRecord, "macosx"), IosLib ? (IosMetal, IosRecord, "iphoneos") : null, Work, NJ) is { } broken) { Say(broken); return 1; }
         Phase("读表 / 键摘要");
-        Translate(); Packs.Clear(); var res = Finish(); Phase("翻译与逐键收尾");   // 着色器包记录只在键摘要与翻译里读：翻完即放（审计 #1417 P1-77：原先留到进程结束）
+        Translate(); GuestBuild(); Packs.Clear(); var res = Finish(); Phase("翻译与逐键收尾");   // 着色器包记录只在键摘要与翻译里读：翻完即放（审计 #1417 P1-77：原先留到进程结束）
         bool flushed = Defer.Count > 0;
         var c1cb = Task.Run(C1CbFill);   // 两张表：编批库期间并发算（批库只往反射写库名，不动两张表读的 MSL / c1 / 绑定）
         if (flushed)
@@ -734,12 +734,26 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
         if (IosOut != null && Publish != null)
         {
             var w = new StringWriter();
-            var err = LibPack.Publish(MAC.All, IOS?.All, NoMac, Publish, IosOut, Chain, w, sourcesDone);
+            var err = LibPack.Publish(MAC.All, IOS?.All, NoMac, Publish, IosOut, Chain, w, sourcesDone, GuestIn);
             foreach (var l in w.ToString().Split('\n').Where(l => l.Length > 0)) Say(l);
             if (err != null) { Say(err); return 1; }
         }
         else { MAC.Export(Out); if (IOS != null) IOS.Export(IosOut); }
         return 0;
+    }
+
+    // ---------------- 客体输入（种类 56，LibPack.GuestBlocks） ----------------
+    //   翻成了的键里，阶段在 LibPack.GuestStage（顶点 / 片元 / 计算 / 任务 / 网格）的，把交给翻译器的那份输入（包记录切出的控制段 + 代码区，同 XlateOne）压进库：
+    //   设备上要给库里的着色器现做补齐 / 采样模拟变体时按键取它翻基础源码（graphics/nvn/host/dsh_miss.inc），不再靠 SetShaders 时的快照。
+    //   要在 Packs.Clear 之前做（包记录还在内存里）；翻译失败的键库里没有、设备照旧首遇现编（那时游戏的控制段在用），不带
+    static LibPack.Guest GuestIn;
+    static void GuestBuild()
+    {
+        var items = Keys.Where(k => XlSt.TryGetValue(k, out var x) && x.St == "ok" && Loc.TryGetValue(k, out var l) && l.Pkg.Length >= 2 && LibPack.GuestStage.ContainsKey(l.Pkg[..2]))
+            .Select(k => (Convert.ToUInt64(k, 16), LibPack.GuestStage[Loc[k].Pkg[..2]], (Func<(byte[], byte[])>)(() => { var (pk, idx) = Loc[k]; var (code, ctl) = PkgRead.Split(Records(pk)[idx]); return (ctl, code); })));
+        GuestIn = LibPack.GuestBlocks(items);
+        Say($"guest inputs (kind 56, <key> control + code for device-side variants): {GuestIn.Keys.Count} keys in {GuestIn.Blocks.Count} blocks, {GuestIn.Raw / 1048576.0:F1} MB raw -> {GuestIn.Packed / 1048576.0:F1} MB zlib");
+        Phase("客体输入");
     }
 
     // ---------------- 采样模拟变体（缺口族 31，种类 51） ----------------

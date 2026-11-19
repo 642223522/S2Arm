@@ -237,5 +237,8 @@ int main(void) { @autoreleasepool {
           "separated gravity plus user acceleration wins over total acceleration");
     TestSensor *none = [TestSensor new]; none.hasGravityAndUserAcceleration = YES;
     CHECK(s2a_gc_motion_sample((GCMotion *)none, &sample) == 0 && s2a_gc_motion_sample(nil, &sample) == 0, "no rotation rate, no sample");
+    // #1671：服务层只在会话号非 0 时建反馈对象、开六轴；关了震动 / 没有能震的手柄也要非 0，且不是 P1 一代 Joy-Con 的 HID 震动会话（MAC_RUMBLE_BASE | 0xffffffff）
+    CHECK(s2a_mac_feedback_session(0) != 0 && s2a_mac_feedback_session(0) != 0x534d0000ffffffffull, "rumble off / no rumble device still gives a motion-only feedback session");
+    CHECK(s2a_mac_feedback_session(0x534d000000000003ull) == 0x534d000000000003ull, "a live rumble session passes through unchanged");
     printf("pro_motion: %u checks, %u failures\n",checks,failed); return failed ? 1 : 0;
 } }

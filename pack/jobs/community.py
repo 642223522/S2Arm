@@ -197,6 +197,8 @@ def fps60_default(rows):
 NO_FPS60 = "这款游戏没有可用的 60 帧方案。"
 NO_DIRECT = "这款游戏没有走直连渲染，用不了锐利放大（MetalFX）。"
 NO_WIDEN = "本款满屏有已知问题，暂不可开。"
+NO_VS_SPEAKERS = "仅设备类型为「内置扬声器」时可用。"   # 虚拟环绕开关只在对应设备类型下生效（#189 后续，5.1 虚拟环绕第二片）
+NO_VS_HEADPHONES = "仅设备类型为「耳机」时可用。"
 
 
 def _default(item, caps, platform="mac", rows=None):
@@ -244,6 +246,13 @@ def mac_settings(c, gid):
         for key, has in (("fps60", fps_p), ("widescreen", ws_p), ("fpsPick", len(fps_levels(c, gid)) > 1)):
             if key in out and not has:
                 out[key]["hidden"] = True
+    # 两个虚拟环绕开关只在对应设备类型下生效（#189 后续，5.1 虚拟环绕第二片）：设备类型 = builtin / headphones 时各自的开关才
+    #   可用，external / 没选（auto）置灰（原因写明只认哪种类型）；值照旧显示（玩家拨过的各存各的，驱动侧也只在对应类型下认）
+    device = picked.get("audioDevice", _default(table["audioDevice"], caps, rows=rows)) if "audioDevice" in table else "auto"
+    if device != "builtin" and "vsSpeakers" in out:
+        out["vsSpeakers"].update(available=False, reason=NO_VS_SPEAKERS)
+    if device != "headphones" and "vsHeadphones" in out:
+        out["vsHeadphones"].update(available=False, reason=NO_VS_HEADPHONES)
     return out
 
 
@@ -663,6 +672,15 @@ def launch_env(c, gid):
     frames = next((o.get("frames", 0) for o in table["audioLatency"]["options"] if o["value"] == s.get("audioLatency")), 0) if "audioLatency" in table else 0
     if frames:
         env["S2A_AUDIO_BUFFER_FRAMES"] = str(frames)
+    # 输出设备类型 + 两个虚拟环绕开关（#189 后续，5.1 虚拟环绕第二片，与 iPhone ios/settings.m 同口径）：设备类型只转玩家显式选过的
+    #   builtin / headphones / external，没选过不写（= auto：按设备真实声道判，5.1 直通缺省不变）；两个开关各存各的、只在对应
+    #   显式类型下生效（驱动侧判，这里照转玩家拨过的值：开 1 / 关 0，没拨过不写）
+    if s.get("audioDevice") in ("builtin", "headphones", "external"):
+        env["S2A_AUDIO_DEVICE"] = s["audioDevice"]
+    if isinstance(s.get("vsSpeakers"), bool):
+        env["S2A_AUDIO_VS_SPEAKERS"] = "1" if s["vsSpeakers"] else "0"
+    if isinstance(s.get("vsHeadphones"), bool):
+        env["S2A_AUDIO_VS_HEADPHONES"] = "1" if s["vsHeadphones"] else "0"
     if s.get("pauseUnfocused") is False:
         env["S2A_FOCUS_PAUSE"] = "0"      # 切到别的窗口不暂停：游戏要求失焦暂停时也照常跑（macos/front_mac.m，#989）
     if s.get("diagRun") is True:
