@@ -365,12 +365,23 @@ int nvn_snap_save(const char *dir) {
     { snprintf(p, sizeof p, "%s/gfx_gs.bin", dir); FILE *f = fopen(p, "wb"); ok &= f && nvn2_snap_gs_save && nvn2_snap_gs_save(f) == 0; if (f) ok &= fclose(f) == 0; }
     // 对象序号 → 游戏里贴图对象地址（只留对象里序号仍是它的，即还活着的）
     SNAP_AT("图形 gfx_texaddr");
-    { snprintf(p, sizeof p, "%s/gfx_texaddr.bin", dir); FILE *f = fopen(p, "wb"); uint32_t n = 0, nfree = 0; ok &= f != NULL;
+    //   g_smu 下只拷出（序号, 地址）；查可读（每项一次 vm_region 系统调用）、读对象、写文件都在锁外（游戏线程已冻结，对象不会变）——持 g_smu 不做系统调用和 IO。
+    //   不在了的（内存已还 / 序号已换：没 Finalize 就释放）最后持锁从表里删，表只剩活对象
+    { snprintf(p, sizeof p, "%s/gfx_texaddr.bin", dir); FILE *f = fopen(p, "wb"); uint32_t n = 0, nfree = 0, nstale = 0, tot = 0; ok &= f != NULL;
       pthread_mutex_lock(&g_smu);
-      for (uint32_t i = 0; f && i < g_snap_texaddr.cap; i++) if (g_snap_texaddr.vals[i]) { uint64_t ser; memcpy(&ser, g_snap_texaddr.keys + (size_t)i * 8, 8); const tex_t *t = g_snap_texaddr.vals[i];
-          if (!span_readable(t, sizeof *t)) { nfree++; continue; }   // 游戏已把放对象的内存还掉 / 收成不可访问（没 Finalize 就释放：一款大游戏）：对象已不在，不存
-          if (t->serial != ser) continue; uint64_t r[2] = {ser, (uint64_t)(uintptr_t)t}; ok &= fr_w(f, r, sizeof r); n++; }
-      pthread_mutex_unlock(&g_smu); if (f) ok &= fclose(f) == 0; MLOG("即时存档：活着的贴图对象 %u 个（对象内存已不可读、按已释放算 %u 个）", n, nfree); }
+      uint64_t (*ta)[2] = g_snap_texaddr.n ? malloc((size_t)g_snap_texaddr.n * sizeof *ta) : NULL;
+      for (uint32_t i = 0; ta && i < g_snap_texaddr.cap; i++) if (g_snap_texaddr.vals[i]) { memcpy(&ta[tot][0], g_snap_texaddr.keys + (size_t)i * 8, 8); ta[tot][1] = (uint64_t)(uintptr_t)g_snap_texaddr.vals[i]; tot++; }
+      pthread_mutex_unlock(&g_smu);
+      ok &= !g_snap_texaddr.n || ta != NULL;
+      uint32_t ndead = 0;
+      for (uint32_t i = 0; i < tot; i++) {
+          const tex_t *t = (const tex_t *)(uintptr_t)ta[i][1]; int live = span_readable(t, sizeof *t) && t->serial == ta[i][0];
+          if (!live) { if (span_readable(t, sizeof *t)) nstale++; else nfree++; ta[ndead++][0] = ta[i][0]; continue; }   // 游戏已把放对象的内存还掉 / 收成不可访问，或那块已是别的对象：不存
+          uint64_t r[2] = {ta[i][0], ta[i][1]}; if (f) ok &= fr_w(f, r, sizeof r); n++;
+      }
+      if (ndead) { pthread_mutex_lock(&g_smu); for (uint32_t i = 0; i < ndead; i++) nvn_hm_del(&g_snap_texaddr, &ta[i][0]); pthread_mutex_unlock(&g_smu); }
+      free(ta); if (f) ok &= fclose(f) == 0;
+      MLOG("即时存档：活着的贴图对象 %u 个（表里 %u 项；对象内存已不可读 %u 个、已换成别的对象 %u 个，已从表里删）", n, tot, nfree, nstale); }
     SNAP_AT("图形 gfx_gpu");
     { uint64_t gb = 0; int skipped = 0; snprintf(p, sizeof p, "%s/gfx_gpu.bin", dir); int ng = fr_dump_gpu(p, &gb, &skipped); ok &= ng >= 0; MLOG("即时存档：GPU 私有贴图 %d 张 %.0f MB（不存 %d 张）", ng, gb / 1048576.0, skipped); }
     SNAP_AT("图形 gfx_plain");
