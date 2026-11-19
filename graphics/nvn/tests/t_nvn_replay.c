@@ -182,8 +182,8 @@ void nvn_gpu_tex_upload(nvn_gpu_cmd c, nvn_gpu_tex t, uint32_t level, uint32_t l
     g_up[g_nup].pre = c->is_pre; g_up[g_nup].level = level; g_up[g_nup].layer = layer; g_up[g_nup].pitch = row_bytes; g_up[g_nup].img = image_bytes; g_up[g_nup].y = r->yoffset; g_up[g_nup].w = r->width; g_up[g_nup].h = r->height;
     memcpy(g_up[g_nup].first, src, image_bytes < 64 ? image_bytes : 64); g_nup++; }
 // 脏页替身：代号由用例推进
-static uint64_t g_dirty_now = 100, g_dirty_written; static int g_protects;
-void nvn_dirty_protect(const void *addr, size_t len) { (void)addr; (void)len; g_protects++; }
+static uint64_t g_dirty_now = 100, g_dirty_written; static int g_protects; static const void *g_prot_addr; static size_t g_prot_len;   // 最近一次保护的范围
+void nvn_dirty_protect(const void *addr, size_t len) { g_prot_addr = addr; g_prot_len = len; g_protects++; }
 void nvn_dirty_stats(uint64_t *f, uint64_t *p) { *f = 0; *p = 0; }
 static uint64_t g_dirty_map = 1; uint64_t nvn_dirty_mapping_generation(void) { return g_dirty_map; }
 static int g_block_unreliable;
