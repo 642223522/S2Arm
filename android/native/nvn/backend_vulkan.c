@@ -6592,7 +6592,8 @@ nvn_gpu_rc nvn_gpu_samp_create(const samp_par *p, nvn_gpu_samp *out, nvn_gpu_err
             return fail(err, NVN_GPU_E_UNSUPPORTED, "请求各向异性 %.2f，但设备未启用 samplerAnisotropy", p->aniso);
         }
         ci.anisotropyEnable = VK_TRUE;
-        ci.maxAnisotropy = p->aniso;
+        const float limit = g.dev->properties.limits.maxSamplerAnisotropy;
+        ci.maxAnisotropy = p->aniso > limit ? limit : p->aniso;
     } else ci.maxAnisotropy = 1.0f;
     if (p->cmp_mode != NVN_COMPARE_MODE_NONE) {
         ci.compareEnable = VK_TRUE;
