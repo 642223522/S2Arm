@@ -7,7 +7,7 @@
 #include <string.h>
 #include "nvn_hdr_policy.h"
 static unsigned checks;
-#define CHECK(c) do { checks++; if (!(c)) { fprintf(stderr, "t_hdr_layer:%d 失败：%s\n", __LINE__, #c); exit(1); } } while (0)
+#define CHECK(c) do { checks++; if (!(c)) { printf("✗ t_hdr_layer：第 %d 行不通：%s\n", __LINE__, #c); exit(1); } } while (0)
 
 // 本测试给 nvn2.c 的接口（nvn2.c 里是弱定义，缺省 0）：装作 Switch 2 游戏，预挂段才走得进
 int s2a_platform_ounce(void) { return 1; }
@@ -142,6 +142,6 @@ int main(void) {
         nvn2_hdr_snapshot_publish(&pub);   // 段末清回缺省（t_nvn2 V4 段收尾同款）
     }
 
-    printf("t_hdr_layer：全部通过（%u 项）\n", checks);
+    printf("✓ t_hdr_layer：全部通过（%u 项）\n", checks);
     return 0;
 }
