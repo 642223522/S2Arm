@@ -34,6 +34,56 @@ namespace S2A.Services
         }
     }
 
+    // 服务请求日志（内存里）：新写的进尾巴，尾巴满 1 MB 压成一块（Deflate 最快档；三款实测请求日志压到 1/4 左右）。存盘 = 「SLZ1」+ 各块（原长、压后长、数据）；
+    //   读回认头，没有头的是旧快照的原样日志
+    internal sealed class ReqLog
+    {
+        private const int ChunkRaw = 1 << 20;
+        private static readonly byte[] Magic = "SLZ1"u8.ToArray();
+        private readonly MemoryStream _tail = new();
+        private readonly List<(int Raw, byte[] Z)> _chunks = new();
+        private long _raw, _z;
+        public readonly BinaryWriter W;
+        public ReqLog() { W = new BinaryWriter(_tail); }
+        public long Length => _raw + _tail.Length;    // 原始字节
+        public long Stored => _z + _tail.Length;      // 内存里实际占的
+        public void Seal(bool force = false)
+        {
+            W.Flush();
+            if (_tail.Length == 0 || (!force && _tail.Length < ChunkRaw)) return;
+            byte[] z = Deflate(_tail.GetBuffer(), (int)_tail.Length);
+            _chunks.Add(((int)_tail.Length, z)); _raw += _tail.Length; _z += z.Length; _tail.SetLength(0);
+        }
+        public void Reset() { W.Flush(); _tail.SetLength(0); _chunks.Clear(); _raw = _z = 0; }
+        public void SaveTo(string path)
+        {
+            Seal(force: true);
+            using var f = File.Create(path); var w = new BinaryWriter(f);
+            w.Write(Magic);
+            foreach (var (raw, z) in _chunks) { w.Write(raw); w.Write(z.Length); w.Write(z); }
+            w.Flush();
+        }
+        public static byte[] Load(byte[] file)
+        {
+            if (file.Length < 4 || !file.AsSpan(0, 4).SequenceEqual(Magic)) return file;
+            var r = new BinaryReader(new MemoryStream(file, 4, file.Length - 4)); var o = new MemoryStream();
+            while (r.BaseStream.Position < r.BaseStream.Length)
+            {
+                int raw = r.ReadInt32(), zl = r.ReadInt32(); byte[] z = r.ReadBytes(zl);
+                using var ds = new System.IO.Compression.DeflateStream(new MemoryStream(z), System.IO.Compression.CompressionMode.Decompress);
+                long before = o.Length; ds.CopyTo(o);
+                if (o.Length - before != raw) throw new InvalidDataException($"请求日志块解开长度不对（期望 {raw}，实得 {o.Length - before}）");
+            }
+            return o.ToArray();
+        }
+        private static byte[] Deflate(byte[] b, int n)
+        {
+            var o = new MemoryStream(n / 3 + 64);
+            using (var ds = new System.IO.Compression.DeflateStream(o, System.IO.Compression.CompressionLevel.Fastest, leaveOpen: true)) ds.Write(b, 0, n);
+            return o.ToArray();
+        }
+    }
+
     internal static unsafe class SnapLog
     {
         internal static bool On => SnapSwitch.Save;
@@ -49,8 +99,9 @@ namespace S2A.Services
         [ThreadStatic] private static List<int> _pendingIds;    // 它交出的域对象号
         [ThreadStatic] private static bool _pendingTipc;        // 它是 TIPC 请求（应答的结果码是原始数据第 1 个字，没有 CMIF 应答头）
         private static readonly object _lock = new();
-        private static readonly MemoryStream _log = new();
-        private static readonly BinaryWriter _w = new(_log);
+        // 请求日志在内存里分块压缩（ReqLog）：快照开着时每条服务请求都记，原样存一小时上 GB（真机大乱斗 8 分钟 128 MB），iPhone 会被系统杀
+        private static readonly ReqLog _log = new();
+        private static BinaryWriter _w => _log.W;
         private static int _seq, _dropped, _kept, _bigLogged;
         private static long _nextReport = 16L << 20;
         private static readonly Dictionary<string, long> _bytesBy = new(); private static readonly Dictionary<string, int> _countBy = new();
@@ -189,12 +240,12 @@ namespace S2A.Services
                 int seq = _seq++; _kept++;
                 _pending = Serialize(seq, num, cookie, cmd, n, msg, size); _pendingIds?.Clear(); _pendingTipc = size >= 4 && (*(uint*)msg & 0xFFFF) >= 0x10;
                 { string k = n + "#" + (uint)cmd; _bytesBy[k] = _bytesBy.GetValueOrDefault(k) + _pending.Length; _countBy[k] = _countBy.GetValueOrDefault(k) + 1; }
-                if (_log.Length >= _nextReport)
+                if (_log.Stored >= _nextReport)
                 {   // 日志每翻一倍（16 MB 起）点名占地最多的 5 类：恢复后日志暴涨要知道是谁
                     _nextReport = Math.Max(_nextReport * 2, 16L << 20);
                     var top = new List<KeyValuePair<string, long>>(_bytesBy); top.Sort((x, y) => y.Value.CompareTo(x.Value));
                     var sb = new StringBuilder(); for (int i = 0; i < Math.Min(5, top.Count); i++) sb.Append($"{top[i].Key} {top[i].Value >> 10} KB×{_countBy[top[i].Key]}；");
-                    Console.Error.WriteLine($"[s2a] 【黄】即时存档：服务请求日志已 {_log.Length >> 20} MB，占地最多：{sb}");
+                    Console.Error.WriteLine($"[s2a] 【黄】即时存档：服务请求日志已占内存 {_log.Stored >> 20} MB（原始 {_log.Length >> 20} MB），占地最多（原始）：{sb}");
                 }
                 if (_pending.Length > (4 << 20) && _bigLogged++ < 8) Console.Error.WriteLine($"[s2a] 【黄】即时存档：请求日志一条就 {_pending.Length >> 20} MB（{n}#{(uint)cmd}，第 {seq} 条；日志共 {_log.Length >> 20} MB）");
                 s2a_snap_hctx(seq);
@@ -239,6 +290,7 @@ namespace S2A.Services
                     if (_pendingIds is { Count: > 0 } ids) { _w.Write(EntObjs); _w.Write(seq); _w.Write(ids.Count); foreach (int id in ids) _w.Write(id); }
                 }
                 else { _w.Write(EntFailed); _w.Write(seq); }
+                _log.Seal();
                 s2a_snap_hcommit(seq);   // 原生层句柄日志：此后的关闭记在这条之后（与重放先后一致）
             }
             _pendingIds?.Clear();
@@ -268,7 +320,7 @@ namespace S2A.Services
         }
         internal static int Connect()
         {
-            lock (_lock) { int seq = _seq++; _kept++; _w.Write(EntConnect); _w.Write(seq); s2a_snap_hctx(seq); s2a_snap_hcommit(seq); return seq; }
+            lock (_lock) { int seq = _seq++; _kept++; _w.Write(EntConnect); _w.Write(seq); _log.Seal(); s2a_snap_hctx(seq); s2a_snap_hcommit(seq); return seq; }
         }
 
         // 服务层实际用的 Ryujinx 数据根（Exports.cs 起服务层时定：配置里的状态目录 / S2A_RYU_DATA / 缺省），快照按它找玩家存档树
@@ -291,11 +343,11 @@ namespace S2A.Services
                 lock (_lock)
                 {
                     foreach (var kv in _lastUpdate) { byte[] e = (byte[])kv.Value.Clone(); BitConverter.TryWriteBytes(new Span<byte>(e, 4, 4), _seq++); _w.Write(e); _kept++; }
-                    _w.Flush(); File.WriteAllBytes(p, _log.ToArray());
+                    _log.SaveTo(p);
                 }
                 var sb = new StringBuilder();
                 foreach (var kv in _dropBy) sb.Append(kv.Key).Append('×').Append(kv.Value).Append(' ');
-                Console.Error.WriteLine($"[s2a] 即时存档：服务请求日志 记 {_kept} 条、{_log.Length / 1024} KB；丢掉 {_dropped} 条（{sb}）");
+                Console.Error.WriteLine($"[s2a] 即时存档：服务请求日志 记 {_kept} 条、原始 {_log.Length / 1024} KB、压后 {_log.Stored / 1024} KB；丢掉 {_dropped} 条（{sb}）");
                 return 0;
             }
             catch (Exception e) { Console.Error.WriteLine($"[s2a] 【红】即时存档：写服务请求日志失败 {e.Message}"); return -1; }
@@ -305,7 +357,7 @@ namespace S2A.Services
         [UnmanagedCallersOnly(EntryPoint = "S2A_SnapSessionReset")]
         private static int SessionReset(int restoring)
         {
-            lock (_lock) { _log.SetLength(0); _seq = 0; _kept = 0; _dropped = 0; _maxSeq = -1; _dropBy.Clear(); _lastUpdate.Clear(); }
+            lock (_lock) { _log.Reset(); _seq = 0; _kept = 0; _dropped = 0; _maxSeq = -1; _dropBy.Clear(); _lastUpdate.Clear(); }
             SnapSwitch.Save = SnapSwitch.CanSave && restoring == 0;
             return 0;
         }
@@ -318,7 +370,7 @@ namespace S2A.Services
             try
             {
                 Dispatcher d = Dispatcher.Instance;
-                byte[] all = File.ReadAllBytes(Marshal.PtrToStringUTF8((IntPtr)path));
+                byte[] all = ReqLog.Load(File.ReadAllBytes(Marshal.PtrToStringUTF8((IntPtr)path)));   // 分块压缩的解开；旧快照原样
                 Ryujinx.HLE.S2AHooks.SnapReplayUndo.Clear(); Ryujinx.HLE.S2AHooks.SnapReplaying = true;
                 Dictionary<int, int[]> outIds = OutIdsOf(all); int forcedLeft = 0; Ryujinx.HLE.S2AHooks.SnapForceDomainIdMiss = 0;
                 var r = new BinaryReader(new MemoryStream(all));
@@ -383,7 +435,7 @@ namespace S2A.Services
                 Console.Error.WriteLine($"[s2a] 即时存档恢复：服务请求重放 {n} 条，{ms:F1} ms，异常 {bad} 条（当时失败、不重放 {skipped} 条；A 成功这里失败 {diverged} 条）");
                 if (bad == 0 && SnapSwitch.CanSave)
                 {   // 恢复局接着记：快照里的日志整份当开头，序号接着编（同原生层的句柄日志接续，thread.c s2a_snap_hlog_continue）
-                    lock (_lock) { _w.Write(all); _seq = _maxSeq + 1; _kept = n; }
+                    lock (_lock) { _w.Write(all); _log.Seal(); _seq = _maxSeq + 1; _kept = n; }
                     SnapSwitch.Save = true;
                 }
                 return bad;
