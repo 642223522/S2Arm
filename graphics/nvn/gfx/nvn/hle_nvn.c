@@ -4982,7 +4982,11 @@ static void nvn2_win_init(NVNwindow *w, const NVNwindowBuilder *b) {
     const win_builder2 *s = (const win_builder2 *)b;
     W2(w)->acquire_timeout = s->acquire_timeout; W2(w)->color_space = s->color_space;
     memcpy(W2(w)->hdr_display, s->hdr_display, sizeof s->hdr_display); memcpy(W2(w)->hdr_content, s->hdr_content, sizeof s->hdr_content);
-    if (s->color_space) { static int once; if (!once++) LOG("【红】 WindowInitialize：色彩空间 %d（非缺省），宿主按 SDR（sRGB）上屏，宽色域 / HDR 的颜色会偏", s->color_space); }
+    if (s->color_space) {   // PR1 探针：红日志扩为结构化一行（M0 判读字段：color_space + hdr_display[10] + hdr_content[2]），触发条件与节流不变
+        static int once; if (!once++)
+            LOG("【红】 WindowInitialize：色彩空间 %d（非缺省），宿主按 SDR（sRGB）上屏，宽色域 / HDR 的颜色会偏；HDR 元数据 display=[%g %g %g %g %g %g %g %g %g %g] content=[%g %g]",
+                s->color_space, s->hdr_display[0], s->hdr_display[1], s->hdr_display[2], s->hdr_display[3], s->hdr_display[4], s->hdr_display[5], s->hdr_display[6], s->hdr_display[7], s->hdr_display[8], s->hdr_display[9], s->hdr_content[0], s->hdr_content[1]);
+    }
 }
 NVN_NOPROTO(nvnWindowBuilderSetAcquireTimeout, void, NVNwindowBuilder *b, int64_t ns) { WB2(b)->acquire_timeout = ns; }
 NVN_NOPROTO(nvnWindowBuilderGetAcquireTimeout, int64_t, const NVNwindowBuilder *b) { return ((const win_builder2 *)b)->acquire_timeout; }
