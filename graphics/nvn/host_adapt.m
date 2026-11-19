@@ -12,6 +12,7 @@
 #include "gfx/nvn/nvn_count.h"
 #include "gfx/nvn/nvn_drvscan.h"      // dm_nvn_driver_api：游戏自带驱动报的 NVN API 版本；dm_nvn_driver_nvrm_rgba8：驱动的 NvColorFormat 编码
 #include "gfx/nvn/nvn2.h"            // Switch 2：NVN2 控制段（dsh_miss.inc 不现编）、dm_nvn2_driver_item
+#include "gfx/nvn/nvn_hdr_policy.h"  // HDR 上屏策略（PR3a）：挂层块查屏、发布 hdr_snapshot 环境读数（nvn2_hdr_* 入口实现在 nvn2.c）
 #include "gfx/nvn/dmsh_chain.h"      // DMSH_CHAIN：外置着色器包要带本链号的库目录才用
 #include "gfx/nvn/shader_overlay.h"  // 着色器包外置：文档目录 gal/<程序号>/shaders
 #include "gfx/nvn/nvn_present_fit.h"   // pf_viewport：出图层在视图里的摆放与出图层内画面的摆放同一条规则（差 < 1% 铺满）
@@ -180,6 +181,18 @@ void s2a_direct_out_size(int *w, int *h) { *w = g_out_w; *h = g_out_h; }
 // 截图走游戏自己的源图（grab_present），都不读图层贴图；只当帧缓冲时驱动可以用更省的存储与压缩，少一次整屏读写（10-26 暗黑2 能耗对照小菠萝）。
 // 要回读图层贴图的诊断才设 DM_NVN_FB_READBACK=1（关掉这项优化）
 static int fb_readback(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_FB_READBACK"); v = e && !strcmp(e, "1"); } return v; }
+// PR3a 策略抽象（评审稿 v3 §2.2 / §4 PR3a）：屏幕读数发布进 HDR 策略快照——iOS 挂层块（下面直连）与 Mac screen_edr_note（front_mac.m）共用这一个入口。
+//   发布只刷环境读数（potential_edr / current_headroom / s1_ready / paper_white）——层状态机簿记归 hdr_layer_tick_* 所有，发布不回卷（nvn2.c 侧合并）；
+//   s1_ready（G1 烟囱）缺省 0——choose_mode 由此恒判 S0 / S3，S1 要等 G1 + PR4；paper_white 按 v3 定稿填 100（vi_paper_white 改答是 PR5 的活）；
+//   S2ARM_HDR=off（缺省）时无视快照恒 S0 直通 ∧ vi 恒 on=0，行为零变化。Mac 侧经 dlsym 按名取本函数（同 s2a_gpu_stuck_resume 先例：
+//   不链直连层的构建 / 输入单测里没有它；平台壳不直接含图形内部头——分层 R-05）
+void s2a_hdr_screen_publish(double potential_edr, double current_headroom) {
+    hdr_snapshot hs = { .potential_edr = potential_edr, .current_headroom = current_headroom, .s1_ready = 0, .paper_white = 100 };
+    nvn2_hdr_snapshot_publish(&hs);
+    int sw = nvn2_hdr_switch();
+    LOG("直连：HDR 策略快照发布：potentialEDR %.3f / currentEDR %.3f / s1_ready 0 / 纸白 100（S2ARM_HDR=%d：%s）", potential_edr, current_headroom, sw,
+        sw == HDR_OFF ? "off，恒 S0 直通" : sw == HDR_AUTO ? "auto，按快照" : "on，强制 HDR 管线（G1 / PR4 未落，S1 要等烟囱）");
+}
 #if TARGET_OS_IPHONE
 UIView *s2a_ios_root_view(void) __attribute__((weak_import));
 // 出图层该挂的视图（ios/extdisplay.m，主线程）：外接显示器接着 = 外接屏窗口的视图，否则根视图。没有这个符号的壳一律根视图
@@ -311,7 +324,10 @@ void *front_metal_layer(void) {
             { UIScreen *sc = v.window.screen ?: UIScreen.mainScreen;
               float pe = 0, ce = 0;
               if (@available(iOS 16.0, *)) { pe = sc.potentialEDRHeadroom; ce = sc.currentEDRHeadroom; }
-              LOG("直连：出图层所在屏 EDR 探针：potentialEDR %.3f / currentEDR %.3f（倍数），色域 %s", pe, ce, sc.traitCollection.displayGamut == UIDisplayGamutP3 ? "P3" : "sRGB"); }
+              LOG("直连：出图层所在屏 EDR 探针：potentialEDR %.3f / currentEDR %.3f（倍数），色域 %s", pe, ce, sc.traitCollection.displayGamut == UIDisplayGamutP3 ? "P3" : "sRGB");
+              // PR3a 策略抽象（评审稿 v3 §2.2 / §4 PR3a）：同一屏读数发布进 HDR 策略快照（事件档；换屏 / 拨 HDR 开关后的重探重发布是 PR4 的活）——
+              //   iOS 在此直连发布，Mac 侧同一发布在 front_mac.m screen_edr_note 经 dlsym 调本文件 s2a_hdr_screen_publish（host_adapt.m 的 Mac 分支无 AppKit）
+              s2a_hdr_screen_publish(pe, ce); }
             if (v != s2a_ios_root_view()) LOG("直连：出图层挂在外接屏（下一行的「根视图」尺寸是外接屏窗口的视图）");
             [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue
                 usingBlock:^(NSNotification *n) { (void)n; if (g_relayout_due) { g_relayout_due = 0; s2a_direct_relayout(); } }];   // 补后台期间欠的重摆

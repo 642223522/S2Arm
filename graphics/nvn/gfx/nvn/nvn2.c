@@ -2,6 +2,7 @@
 // 设备值表与驱动常量的读法移植自 参考实现（MIT）hle_nvn.c g_devinfo2 / loader.c dm_sdk_nvn2_item（c4b0618c、163a9905）
 #include <dlfcn.h>
 #include "nvn2.h"
+#include "nvn_hdr_policy.h"   // HDR 上屏策略（评审稿 v3 §2.2 / §4 PR3a）：hdr_snapshot + choose_mode + 层 tick / peak 纯函数 + nvn2_hdr_* 入口
 #include "../../host/dm.h"
 #include "../tex/nvn_deswizzle.h"
 #include <CommonCrypto/CommonDigest.h>
@@ -614,6 +615,66 @@ void *nvn2_vi_entry(const char *name) {
     if (vi_internal(name)) { LOG("【红】直连：Switch 2 游戏导入 nn::vi 内部实现 %s：收 sdk 自己的显示 / 图层对象，直连档的是宿主静态句柄；照原路径", name); return NULL; }
     LOG("【红】直连：Switch 2 游戏导入 %s，宿主没接管：照原路径进 sdk（要 nn::gs 已启动，会中止）", name);
     return NULL;
+}
+
+// ---------- HDR 上屏策略（评审稿 v3 §2.2 / §2.3 / §4 PR3a）：屏幕能力快照存储 + 层 tick / peak 状态 + S2ARM_HDR 三态 + 同源答案入口 ----------
+//   纯策略在 nvn_hdr_policy.h（hdr_snapshot + choose_mode + hdr_layer_tick_* + hdr_vi_peak_nits 纯函数；合成快照 + 合成时钟全分支单测在 t_nvn2 V4 段），
+//   这里只做存取与接线（同 PR1 g_hdr 探针存储的口径）：host_adapt.m（iOS 挂层块）/ front_mac.m（screen_edr_note）查屏经
+//   nvn2_hdr_snapshot_publish 发布环境读数，层 tick 状态机与 peak 步进的状态也收在本文件的同一把锁后（nxnative dm_hdr_layer_tick /
+//   vi_screen_peak 的散布式全局态收进策略层单点——评审稿 §2.7，不引其形态）；vi 门控（PR5）与出图（PR4）经 nvn2_hdr_answer 只读
+//   同一份——事件档读策略、出图热路径只读已算好的结果。缺省全 0 = 「无 HDR」：不发布（单测 / 安卓 / 无头局）——现状行为分毫不差
+static pthread_mutex_t g_hdr_snap_mu = PTHREAD_MUTEX_INITIALIZER;
+static hdr_snapshot g_hdr_snap;
+static hdr_peak_state g_hdr_peak;
+
+void nvn2_hdr_snapshot_publish(const hdr_snapshot *s) {
+    if (!s) return;
+    pthread_mutex_lock(&g_hdr_snap_mu);
+    hdr_snapshot kept = g_hdr_snap;   // 发布 = 环境读数刷新（potential_edr / current_headroom / s1_ready / paper_white）：层状态机簿记
+    kept.potential_edr = s->potential_edr;   // （can_settled / layer_pq / sdr_run / 滞回时间戳）归 hdr_layer_tick_* 所有，发布不回卷——
+    kept.current_headroom = s->current_headroom;   // 换屏 / 拨 HDR 开关后的重探不把层状态打回 SDR（PR4 排空语义的前提）
+    kept.s1_ready = s->s1_ready;
+    kept.paper_white = s->paper_white;
+    g_hdr_snap = kept;
+    pthread_mutex_unlock(&g_hdr_snap_mu);
+}
+void nvn2_hdr_snapshot_probe(hdr_snapshot *out) {
+    if (!out) return;
+    pthread_mutex_lock(&g_hdr_snap_mu);
+    *out = g_hdr_snap;
+    pthread_mutex_unlock(&g_hdr_snap_mu);
+}
+int nvn2_hdr_switch(void) {   // S2ARM_HDR 三态（§2.5）：不设 / off / 看不懂 = off 缺省（缺省关，字节级回现状）。逐次读环境：
+    const char *v = getenv("S2ARM_HDR");   // dm_opmode 读 S2A_DOCKED 同款；事件档频率（发布 / tick / 答案入口），热路径（dm.h g_flag 那类）不这么读
+    if (v) {
+        if (!strcmp(v, "off")) return HDR_OFF;
+        if (!strcmp(v, "auto")) return HDR_AUTO;
+        if (!strcmp(v, "on")) return HDR_ON;
+        static _Atomic int said;
+        if (*v && !atomic_exchange(&said, 1)) LOG("【红】S2ARM_HDR=%s 看不懂（要 off / auto / on），按 off（缺省关，字节级回现状）", v);   // 不静默吞玩家的拼写错误
+    }
+    return HDR_OFF;
+}
+void nvn2_hdr_tick(int sw, int raw_can, unsigned long long now_ms) {   // 层 tick——can 滞回 + 进层（事件档，PR4 接线）
+    pthread_mutex_lock(&g_hdr_snap_mu);
+    hdr_layer_tick_can(&g_hdr_snap, sw, raw_can, now_ms);
+    pthread_mutex_unlock(&g_hdr_snap_mu);
+}
+void nvn2_hdr_tick_frame(int sw, int frame_is_pq) {   // 层 tick——排空喂入（每帧，PR4 接线）
+    pthread_mutex_lock(&g_hdr_snap_mu);
+    hdr_layer_tick_frame(&g_hdr_snap, sw, frame_is_pq);
+    pthread_mutex_unlock(&g_hdr_snap_mu);
+}
+hdr_decision nvn2_hdr_answer(int src_hdr, unsigned long long now_ms) {   // 同源答案入口：三态开关 + 已发布快照 + 存储的 peak 状态进 choose_mode
+    hdr_snapshot s; hdr_peak_state pk;
+    pthread_mutex_lock(&g_hdr_snap_mu);
+    s = g_hdr_snap; pk = g_hdr_peak;
+    pthread_mutex_unlock(&g_hdr_snap_mu);
+    hdr_decision d = hdr_choose_mode(nvn2_hdr_switch(), src_hdr, &s, &pk, now_ms);
+    pthread_mutex_lock(&g_hdr_snap_mu);
+    g_hdr_peak = pk;
+    pthread_mutex_unlock(&g_hdr_snap_mu);
+    return d;
 }
 
 void nvn2_device_init(void) {
