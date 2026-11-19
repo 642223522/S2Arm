@@ -297,6 +297,7 @@ void s2a_dprompt_ask(NSString *title, NSString *body, NSString *accept, NSString
     S2AScreenLockView *_screenLock;
     _Atomic int _screenLocked;   // HID 线程也读，遮罩本身只在主线程操作
     UIButton *_gear; NSTimer *_gearFade;    // 游戏内设置入口：屏幕左上角常驻，闲置时淡到看得见但不抢画面
+    UIButton *_reportBtn;                   // 故障报修：左上角齿轮右边一颗（11-19 维护者定：从齿轮菜单里拿出来，玩家更容易提交），同样式、同淡出
     UIButton *_snapBtn; NSString *_snapDir; // 0.6.0 快照：右上角和齿轮对称的存档按钮（同样式、同淡出）；单击存、长按出「回到这一刻」。起局没开快照就不建
     BOOL _touchWanted;                      // 游戏启用过触屏（s2a_vpad_touch_wanted）
     int _autoTouch;                         // 自动切（游戏声明触屏配置，manual=0）的本次运行覆盖：1 = 本次按仅触屏跑、不改持久化选择；0 = 没有覆盖
@@ -384,6 +385,11 @@ static NSString *button_label(NSString *identifier) {
     _gear.showsMenuAsPrimaryAction = YES; _gear.menu = [self gearMenu];
     [_gear addTarget:self action:@selector(wakeGear) forControlEvents:UIControlEventMenuActionTriggered];
     [self addSubview:_gear];
+    _reportBtn = [UIButton buttonWithType:UIButtonTypeSystem]; _reportBtn.accessibilityIdentifier = @"vpad.report"; _reportBtn.accessibilityLabel = S2AL(@"diag.report.title");
+    [_reportBtn setImage:[UIImage systemImageNamed:@"exclamationmark.bubble.fill"] forState:UIControlStateNormal]; _reportBtn.tintColor = UIColor.whiteColor;
+    _reportBtn.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45]; _reportBtn.layer.cornerRadius = 18;   // 与齿轮同一套
+    [_reportBtn addTarget:self action:@selector(reportTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self addSubview:_reportBtn];
     [self buildSnapButton];
     [self wakeGear];
     for (int i = 0; i < 2; i++) {
@@ -402,9 +408,9 @@ static NSString *button_label(NSString *identifier) {
     return self;
 }
 - (void)wakeGear {   // 刚显示时看得清，3 秒后淡到 0.35：玩家找得到，又不挡画面
-    [_gearFade invalidate]; _gear.alpha = _snapBtn.alpha = 0.9;
+    [_gearFade invalidate]; _gear.alpha = _snapBtn.alpha = _reportBtn.alpha = 0.9;
     _gearFade = [NSTimer scheduledTimerWithTimeInterval:3 repeats:NO block:^(NSTimer *t) { (void)t;
-        [UIView animateWithDuration:0.4 animations:^{ self->_gear.alpha = self->_snapBtn.alpha = 0.35; }]; }];
+        [UIView animateWithDuration:0.4 animations:^{ self->_gear.alpha = self->_snapBtn.alpha = self->_reportBtn.alpha = 0.35; }]; }];
 }
 // ---------- 齿轮菜单（B 方案：一级 → 二级，见 docs 设计稿「游戏内手柄设置 B 方案稿」）----------
 // 四指长按 / 手柄长按「+」照旧开整页设置（系统菜单不能由代码弹出）；菜单最下「更多设置」也到整页
@@ -660,8 +666,6 @@ static NSString *vp_running_gid(void) { const char *g = getenv("S2A_LAUNCH_GAME_
     //   原先「画面…」与「更多设置」两项打开的是同一页，11-13 合成一项
     UIAction *full = vp_act(S2AL(@"vpad.menu.settings"), @"gearshape", NO, ^{ [ws afterMenu:^{ [ws openFullSettings]; }]; }); full.subtitle = S2AL(@"vpad.menu.settings.note");
     [items addObject:full];
-    // 故障报修（11-13 维护者定：各页面齿轮菜单最下面）：写一句发生了什么（可不填）→ 打包上传、给短码（diag.m s2a_diag_report）
-    [items addObject:vp_act(S2AL(@"diag.report.title"), @"exclamationmark.bubble", NO, ^{ [ws afterMenu:^{ void s2a_diag_report(void); s2a_diag_report(); }]; })];
     return items;
 }
 // ---------- 0.6.0 快照：存下这一刻 / 回到上次存下的这一刻 ----------
@@ -690,6 +694,8 @@ static unsigned long long s2a_snap_bytes(NSString *dir);
     [self addSubview:_snapBtn];
 }
 - (void)snapTapped { [self wakeGear]; [self snapSave:_snapDir]; }
+// 故障报修（11-19 维护者定：从齿轮菜单拿出来放齿轮右边）：写清哪款游戏、做了什么、看到了什么（必填）→ 打包上传、给短码（diag.m s2a_diag_report）
+- (void)reportTapped { [self wakeGear]; void s2a_diag_report(void); s2a_diag_report(); }
 // 快照的缩略图与存下的时间：先用快照里的小图 thumb.png，没有就用存档那一刻的整帧 a_last.png；时间取图的修改时间（存下那一刻写的）
 static UIImage *snap_thumb(NSString *dir, CGFloat w, NSDate **when) {
     for (NSString *n in @[@"thumb.png", @"a_last.png"]) {
@@ -1292,6 +1298,7 @@ static NSString *const kSlideSwitchKey = @"S2AVPadSlideSwitch";   // 滑动切�
     {   // 设置入口放安全区左上角；折叠屏内屏圆角比安全区报的大、又有开孔，四周再让 20 点（短边 ≥ 500 点才算大屏）
         CGRect g = self.safeAreaLayoutGuide.layoutFrame; CGFloat inset = MIN(self.bounds.size.width, self.bounds.size.height) >= 500 ? 20 : 4;
         _gear.frame = CGRectMake(CGRectGetMinX(g) + inset, CGRectGetMinY(g) + inset, 36, 36); _gear.hidden = _editing; [self bringSubviewToFront:_gear];
+        _reportBtn.frame = CGRectOffset(_gear.frame, 36 + 8, 0); _reportBtn.hidden = _editing; [self bringSubviewToFront:_reportBtn];   // 齿轮右边 8 点
         if (_snapBtn) { _snapBtn.frame = CGRectMake(CGRectGetMaxX(g) - inset - 36, CGRectGetMinY(g) + inset, 36, 36); _snapBtn.hidden = _editing; [self bringSubviewToFront:_snapBtn]; } }
     if (!CGRectEqualToRect(_safeRect, safe) || !CGRectEqualToRect(_lastBounds, self.bounds) || !CGRectEqualToRect(_division,l.division)) {
         if (_editing) [self endEditing];   // 转屏 / 安全区变了：拖到一半的位置按旧几何算，放弃

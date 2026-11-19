@@ -414,9 +414,10 @@ public struct LibraryView: View {
             // 0.6.0 快照：有存下的时刻时，左侧一栏「从这一刻继续」（横屏缺的是高度，不在顶上加横条压缩大卡），封面墙在剩下的宽度里居中；没有就和原来一样整屏
             HStack(spacing: 0) {
                 if !SavedMomentStrip.saved(games).isEmpty, case .coverFlow(let regular) = layout {
-                    SavedMomentStrip(games: games, axis: .vertical)
+                    // 竖栏标题和封面墙顶栏「你的游戏」同一条线：同样从顶栏的上边距起、标题行和顶栏一样高、竖直居中（CoverFlowView.barTop / barHeight）
+                    SavedMomentStrip(games: games, axis: .vertical, short: size.height < 520)
                         .frame(width: SavedMomentStrip.columnWidth(size.width, regular: regular))
-                        .padding(.top, insets.top + 14).padding(.bottom, 8).padding(.leading, max(16, insets.leading))
+                        .padding(.top, CoverFlowView.barTop(short: size.height < 520)).padding(.bottom, 8).padding(.leading, max(16, insets.leading))
                         .frame(maxHeight: .infinity, alignment: .top)
                         .overlay(alignment: .trailing) { Rectangle().fill(ShellPalette.hairline).frame(width: 1).padding(.vertical, 18) }
                 }

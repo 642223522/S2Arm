@@ -25,7 +25,12 @@ struct SavedMomentStrip: View {
         let saved = Self.saved(games)
         if let snapshot, !saved.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
-                SectionHeading(title: ShellStrings.text("Continue from this moment")).padding(.horizontal, axis == .horizontal ? 24 : 0)
+                if axis == .horizontal {
+                    SectionHeading(title: ShellStrings.text("Continue from this moment")).padding(.horizontal, 24)
+                } else {   // 横屏竖栏：标题行和封面墙顶栏一样高、竖直居中，和「你的游戏」对齐成一条线；一行放不下就略缩，不折成两行
+                    SectionHeading(title: ShellStrings.text("Continue from this moment")).lineLimit(1).minimumScaleFactor(0.7)
+                        .frame(height: CoverFlowView.barHeight, alignment: .leading)
+                }
                 ScrollView(axis == .horizontal ? .horizontal : .vertical) {
                     let cards = ForEach(saved) { detail in card(detail, restore: snapshot.restore) }
                     if axis == .horizontal { HStack(alignment: .top, spacing: 14) { cards }.padding(.vertical, 4) }

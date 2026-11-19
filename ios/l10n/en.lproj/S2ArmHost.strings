@@ -366,8 +366,8 @@
 "diag.upload.fail.title" = "Upload didn’t work";
 "diag.upload.go" = "Upload";
 "diag.report.title" = "Report a Problem";
-"diag.report.message" = "We’ll upload this device’s logs, device info and the list of graphics pipelines the games used (shader IDs only) to help find the cause, then give you a short code. You can write a sentence about what happened (optional).";
-"diag.report.placeholder" = "What happened? (optional)";
+"diag.report.message" = "We’ll upload this device’s logs, device info and the list of graphics pipelines the games used (shader IDs only) to help find the cause, then give you a short code. Please tell us which game, what you did and what you saw.";
+"diag.report.placeholder" = "Required: which game, what you did, what you saw";
 "diag.upload.post" = "Post on GitHub";
 "diag.upload.retry" = "Try again";
 "dprompt.expiry.body" = "Time left: %@. After it expires the game won’t open, but your saves are safe: connect the phone and click “Install on iPhone” again, or refresh in AltStore.";
@@ -609,3 +609,5 @@
 "vpad.snap.delete.body" = "This snapshot takes about %@. Once deleted you can’t go back to that moment. Your game saves are not affected.";
 "vpad.snap.deleted" = "Deleted. The space is free again";
 "vpad.snap.deleteFailed" = "Couldn’t delete it completely. Try again in a moment";
+"snap.result.title" = "Couldn’t go back to that moment";
+"snap.result.generic" = "Going back to that moment didn’t work, so the game started again. Your game saves are not affected.";
