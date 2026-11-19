@@ -1,0 +1,132 @@
+diff --git a/src/Ryujinx.Audio/Renderer/Server/AudioRenderSystem.cs b/src/Ryujinx.Audio/Renderer/Server/AudioRenderSystem.cs
+index b0f7887e364b40723c0251acc64ad8d95a61ec5b..c4eb7203422044a77189e4af648046f5c80b71c6 100644
+--- a/src/Ryujinx.Audio/Renderer/Server/AudioRenderSystem.cs
++++ b/src/Ryujinx.Audio/Renderer/Server/AudioRenderSystem.cs
+@@ -61,6 +61,8 @@ namespace Ryujinx.Audio.Renderer.Server
+ 
+         // S2Arm: work buffer in native memory owned by this renderer (see AudioRendererManager.OpenAudioRenderer)
+         private unsafe byte* _ownedWorkBuffer;
++        private int _ownedWorkBufferSize;
++        private bool _ownedWorkBufferWired;
+ 
+         // S2Arm: voice slot diagnostics (S2A_AUDIO_VOICE_DIAG=1), read-only; null when off
+         private S2AVoiceSlotDiag _s2aVoiceDiag;
+@@ -86,7 +88,8 @@ namespace Ryujinx.Audio.Renderer.Server
+ 
+         public unsafe Memory<byte> AllocateOwnedWorkBuffer(int size)
+         {
+-            _ownedWorkBuffer = (byte*)System.Runtime.InteropServices.NativeMemory.AllocZeroed((nuint)Math.Max(size, 1));
++            _ownedWorkBuffer = S2AWiredBuffer.Alloc(size, out _ownedWorkBufferWired);
++            _ownedWorkBufferSize = size;
+             if (S2ASnapOn) (s_s2aOwnedSize ??= new()).AddOrUpdate(this, new System.Runtime.CompilerServices.StrongBox<int>(size));
+ 
+             return new Ryujinx.Memory.NativeMemoryManager<byte>(_ownedWorkBuffer, size).Memory;
+@@ -96,7 +99,7 @@ namespace Ryujinx.Audio.Renderer.Server
+         {
+             if (_ownedWorkBuffer != null)
+             {
+-                System.Runtime.InteropServices.NativeMemory.Free(_ownedWorkBuffer);
++                S2AWiredBuffer.Free(_ownedWorkBuffer, _ownedWorkBufferSize, _ownedWorkBufferWired);
+                 _ownedWorkBuffer = null;
+             }
+         }
+diff --git a/src/Ryujinx.Audio/Renderer/Server/S2AWiredBuffer.cs b/src/Ryujinx.Audio/Renderer/Server/S2AWiredBuffer.cs
+new file mode 100644
+index 0000000000000000000000000000000000000000..7a19727bde80e57f021277bc7219106623c234e2
+--- /dev/null
++++ b/src/Ryujinx.Audio/Renderer/Server/S2AWiredBuffer.cs
+@@ -0,0 +1,61 @@
++using System;
++using System.Runtime.InteropServices;
++
++namespace Ryujinx.Audio.Renderer.Server
++{
++    // S2Arm: the DSP reads and writes the renderer work buffer (mix buffers, voice / effect state are all carved from it) on the
++    // realtime audio thread. Under memory pressure the system compresses or swaps this anonymous memory out; the DSP then faults
++    // it back in from disk on the realtime thread and a single 5 ms period takes hundreds of milliseconds (Mac with 8 GB: no sound
++    // in game, only the DSP part of the period is slow). Realtime threads must not touch pageable memory, so the buffer is page
++    // aligned and wired (mlock), and unwired before it is freed. If wiring fails (system wired limit etc.) the buffer is used as is
++    // and one line is logged.
++    static unsafe class S2AWiredBuffer
++    {
++        private const nuint Page = 16384;
++
++        [DllImport("libc", SetLastError = true)]
++        private static extern int mlock(void* addr, nuint len);
++
++        [DllImport("libc", SetLastError = true)]
++        private static extern int munlock(void* addr, nuint len);
++
++        private static bool CanWire => OperatingSystem.IsMacOS() || OperatingSystem.IsIOS() || OperatingSystem.IsTvOS() || OperatingSystem.IsLinux() || OperatingSystem.IsAndroid();
++
++        public static nuint Round(int size) => ((nuint)Math.Max(size, 1) + Page - 1) & ~(Page - 1);
++
++        public static byte* Alloc(int size, out bool wired)
++        {
++            nuint n = Round(size);
++            byte* p = (byte*)NativeMemory.AlignedAlloc(n, Page);
++            NativeMemory.Clear(p, n);
++            wired = false;
++
++            if (CanWire)
++            {
++                wired = mlock(p, n) == 0;
++                Console.Error.WriteLine(wired
++                    ? $"[声] 渲染器工作缓冲 {n / 1024} KB 已锁进物理内存（实时音频线程不会因内存吃紧缺页）"
++                    : $"[声] 【黄】渲染器工作缓冲 {n / 1024} KB 锁不进物理内存（errno {Marshal.GetLastPInvokeError()}），照常用；内存吃紧时音频可能断续");
++            }
++
++            return p;
++        }
++
++        public static void Free(byte* p, int size, bool wired)
++        {
++            if (wired)
++            {
++                munlock(p, Round(size));
++            }
++
++            NativeMemory.AlignedFree(p);
++        }
++    }
++
++    // S2Arm: the DSP reads the memory pools the game attaches to the renderer (sample data) on the realtime audio thread. The host
++    // sets this hook to keep a pool resident while it is attached (on = true at map, false at unmap); null = nothing to do.
++    public static unsafe class S2AAudioPoolResident
++    {
++        public static delegate*<ulong, ulong, bool, void> Hook;
++    }
++}
+diff --git a/src/Ryujinx.Audio/Renderer/Utils/AudioProcessorMemoryManager.cs b/src/Ryujinx.Audio/Renderer/Utils/AudioProcessorMemoryManager.cs
+index 8ebf203405f49b819ae24ff49467f6504b7a5135..b6fdd6ef976d92591c462cd37301354fea679bb7 100644
+--- a/src/Ryujinx.Audio/Renderer/Utils/AudioProcessorMemoryManager.cs
++++ b/src/Ryujinx.Audio/Renderer/Utils/AudioProcessorMemoryManager.cs
+@@ -18,8 +18,13 @@ namespace Ryujinx.Audio.Renderer.Utils
+         /// <param name="size">The size of the CPU memory region to map.</param>
+         /// <returns>The address on the <see cref="Dsp.AudioProcessor"/> address space.</returns>
+         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+-        public static DspAddress Map(uint processHandle, CpuAddress cpuAddress, ulong size)
++        public static unsafe DspAddress Map(uint processHandle, CpuAddress cpuAddress, ulong size)
+         {
++            if (Server.S2AAudioPoolResident.Hook != null && size != 0)
++            {
++                Server.S2AAudioPoolResident.Hook(cpuAddress, size, true);
++            }
++
+             return cpuAddress;
+         }
+ 
+@@ -30,8 +35,12 @@ namespace Ryujinx.Audio.Renderer.Utils
+         /// <param name="cpuAddress">The <see cref="CpuAddress"/> to unmap.</param>
+         /// <param name="size">The size of the CPU memory region to unmap.</param>
+         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+-        public static void Unmap(uint processHandle, CpuAddress cpuAddress, ulong size)
++        public static unsafe void Unmap(uint processHandle, CpuAddress cpuAddress, ulong size)
+         {
++            if (Server.S2AAudioPoolResident.Hook != null && size != 0)
++            {
++                Server.S2AAudioPoolResident.Hook(cpuAddress, size, false);
++            }
+         }
+ 
+         /// <summary>
