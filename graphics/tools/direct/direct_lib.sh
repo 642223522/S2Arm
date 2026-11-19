@@ -159,7 +159,9 @@ PUB=${S2A_DIRECT_PUBLISH:-ios}
 case "$PUB" in ios) [ "$NOIOS" = 0 ] || { say "🔴 发布 iOS 库却没出 iOS 那份（S2A_DIRECT_TARGETS=${S2A_DIRECT_TARGETS}）"; exit 1; };; mac) [ "$NOMAC" = 0 ] || { say "🔴 发布 Mac 库却没出 Mac 那份（S2A_DIRECT_TARGETS=${S2A_DIRECT_TARGETS}）"; exit 1; };;
   android) [ "$VK" = 1 ] || { say "🔴 发布安卓库却没出安卓那份（S2A_DIRECT_TARGETS=${S2A_DIRECT_TARGETS:-}）"; exit 1; };; *) say "🔴 S2A_DIRECT_PUBLISH=${PUB} 不认识（ios / mac / android）"; exit 1;; esac
 [ "$VK" = 0 ] || [ "$PUB" = android ] || { say "🔴 只出安卓 Vulkan 库（S2A_DIRECT_TARGETS=android）却要发布 ${PUB}"; exit 1; }
-C=${S2A_DIRECT_CACHE:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/cache/direct/$TID}; OUT=$(mkdir -p "$OUT" && cd "$OUT" && pwd -P) || exit 1
+C=${S2A_DIRECT_CACHE:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/cache/direct/$TID}; OUT=$(mkdir -p "$OUT" && cd "$OUT" && pwd $PD) || exit 1
+# Windows：pwd 又给回 /d/... 写法，路径里有 [ ] * ? ; ' 时 MSYS 不替原生程序转成 D:/...（#1633：重名游戏文件夹「<名> [号后 4 位]」，clonedir.py 拿到 /d/... 报源目录不存在）。同上面产物根，换成 D:/... 混合写法
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) OUT=$(cygpath -m "$OUT");; esac
 V=$(cd "$NX/../../translator" && "$PY" -c 'import dmsh_chain; print(dmsh_chain.version())') || { say "🔴 取不到链版本"; exit 1; }
 # 缓存只剩内容寻址仓 $C/store（dmsh_store.py 分片文件，10-31 出包线深修：按键小文件马车8 一款 66 万个）与上次的日志 $C/logs/；
 #   旧布局（$C/mac/b-<链>/、$C/mac/cas/{shader,index,variant,unity,metallib}/、$C/ios/b-<链>/、$C/work/）第一次碰到整个删掉（旧链号整代不留）
