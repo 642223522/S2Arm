@@ -108,6 +108,7 @@ namespace S2A.Services
         private static readonly Dictionary<string, int> _dropBy = new();
 
         [DllImport("s2a_native")] private static extern void s2a_snap_hctx(int seq);
+        [DllImport("s2a_native")] private static extern void s2a_snap_live_set(int on);   // runtime/src/snapsw.c：句柄日志跟着停
         [DllImport("s2a_native")] private static extern int s2a_snap_replay_begin(int seq);
         [DllImport("s2a_native")] private static extern int s2a_snap_replay_end(int seq);
         [DllImport("s2a_native")] private static extern int s2a_snap_need_handle(uint h);
@@ -220,6 +221,8 @@ namespace S2A.Services
             // 套接字的纯查询（GetPeerName 15、GetSockName 16、GetSockOpt 17）：不改服务状态。一款 Switch 2 游戏恢复后网络线程轮询 GetSockOpt（非阻塞连接的结果），
             //   十几秒 33 万条、日志涨到 128 MB 把低区占满、托管堆分配失败
             if (n.EndsWith(".Bsd.IClient") && (c == 15 || c == 16 || c == 17)) return true;
+            // 时钟请求 mm:u 的取值（GetOld 3、Get 7）：纯查询，游戏每帧都发（真机大乱斗每帧一对，和 SetAndWait 一起占日志一成）
+            if (n.StartsWith("mm:") && (c == 3 || c == 7)) return true;
             return false;
         }
 
@@ -232,6 +235,21 @@ namespace S2A.Services
                 // 渲染器 RequestUpdate：每会话只留最后一条（恢复时先重放它把效果 / 混音的托管对象建出来，再整块拷回渲染器缓冲）
                 byte[] e = Serialize(-1, num, cookie, cmd, n, msg, size);
                 lock (_lock) { _lastUpdate[cookie] = e; _dropped++; }
+                s2a_snap_hctx(-3); return -1;
+            }
+            if (n.StartsWith("mm:") && ((uint)cmd == 2 || (uint)cmd == 6) && MmRequestId(msg, size) is uint rid)
+            {
+                // 时钟请求 SetAndWait（旧版 2、新版 6）：同一会话同一请求号只有最后一次设的值有效，每会话每请求号只留最后一条（同上面渲染器的做法，存档时接在日志末尾）
+                byte[] e = Serialize(-1, num, cookie, cmd, n, msg, size);
+                lock (_lock) { _lastMm[(cookie, (uint)cmd, rid)] = e; _dropped++; }
+                s2a_snap_hctx(-3); return -1;
+            }
+            if (n.StartsWith("mm:") && ((uint)cmd == 1 || (uint)cmd == 5) && MmRequestId(msg, size) is uint fid)
+                lock (_lock) { _lastMm.Remove((cookie, 2u, fid)); _lastMm.Remove((cookie, 6u, fid)); }   // Finalize 了这个请求号：之前留的最后一次设值作废（Finalize 本身照常进日志）
+            if (_log.Stored > LogCap)
+            {
+                // 安全阀：请求日志（压后）超上限就停记——这局之后存不了快照（存档那一步报原因），但不会把内存吃满让系统杀掉 App
+                lock (_lock) { if (SnapSwitch.Save) { SnapSwitch.Save = false; _overCap = true; s2a_snap_live_set(0); Console.Error.WriteLine($"[s2a] 【黄】即时存档：服务请求日志压后已 {_log.Stored >> 20} MB（原始 {_log.Length >> 20} MB），超过上限 {LogCap >> 20} MB，这局停记、之后存不了快照（游戏照常）"); } }
                 s2a_snap_hctx(-3); return -1;
             }
             if (Drop(n, cmd) || DropNvSubmit(n, cmd, msg, size)) { lock (_lock) { _dropped++; _dropBy[n + "#" + (uint)cmd] = _dropBy.GetValueOrDefault(n + "#" + (uint)cmd) + 1; } s2a_snap_hctx(-3); return -1; }
@@ -253,6 +271,15 @@ namespace S2A.Services
             }
         }
         private static readonly Dictionary<ulong, byte[]> _lastUpdate = new();
+        private static readonly Dictionary<(ulong, uint, uint), byte[]> _lastMm = new();
+        private const long LogCap = 256L << 20;   // 请求日志压后上限（压比约 4：原始约 1 GB）
+        private static bool _overCap;
+        // mm:u SetAndWait 的请求号：CMIF 头「SFCI」后 16 字节起的第 1 个 u32
+        private static uint? MmRequestId(byte* msg, int size)
+        {
+            for (int o = 8; o + 16 + 4 <= size; o += 4) if (*(uint*)(msg + o) == 0x49434653u) return *(uint*)(msg + o + 16);
+            return null;
+        }
         private static byte[] Serialize(int seq, uint num, ulong cookie, long cmd, string n, byte* msg, int size)
         {
             List<Desc> ds = ParseDescs(msg, size);
@@ -342,7 +369,9 @@ namespace S2A.Services
                 string p = Marshal.PtrToStringUTF8((IntPtr)path);
                 lock (_lock)
                 {
+                    if (_overCap) { Console.Error.WriteLine($"[s2a] 【红】即时存档：这局服务请求日志超过上限已停记，快照存不了（游戏照常；重开游戏后能再存）"); return -1; }
                     foreach (var kv in _lastUpdate) { byte[] e = (byte[])kv.Value.Clone(); BitConverter.TryWriteBytes(new Span<byte>(e, 4, 4), _seq++); _w.Write(e); _kept++; }
+                    foreach (var kv in _lastMm) { byte[] e = (byte[])kv.Value.Clone(); BitConverter.TryWriteBytes(new Span<byte>(e, 4, 4), _seq++); _w.Write(e); _kept++; }
                     _log.SaveTo(p);
                 }
                 var sb = new StringBuilder();
@@ -357,7 +386,7 @@ namespace S2A.Services
         [UnmanagedCallersOnly(EntryPoint = "S2A_SnapSessionReset")]
         private static int SessionReset(int restoring)
         {
-            lock (_lock) { _log.Reset(); _seq = 0; _kept = 0; _dropped = 0; _maxSeq = -1; _dropBy.Clear(); _lastUpdate.Clear(); }
+            lock (_lock) { _log.Reset(); _seq = 0; _kept = 0; _dropped = 0; _maxSeq = -1; _dropBy.Clear(); _lastUpdate.Clear(); _lastMm.Clear(); _overCap = false; }
             SnapSwitch.Save = SnapSwitch.CanSave && restoring == 0;
             return 0;
         }
