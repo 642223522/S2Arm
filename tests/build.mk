@@ -5,11 +5,12 @@
 services-build-ios-test:
 	bash tests/services_build_ios_test.sh
 TEST_TARGETS += services-build-ios-test
-# S2A_DAV1D=0（仅适合所有目标机都有 AV1 硬件解码的本地构建）：host/iOS 不链 dav1d，启动器不再要求 meson/ninja，预编库清单不含 dav1d
-.PHONY: dav1d-optional-test
-dav1d-optional-test:
-	bash tests/dav1d_optional_test.sh
-TEST_TARGETS += dav1d-optional-test
+# 解码软兜底自动探测（缺省 auto）：S2A_DAV1D（tools/av1hw.sh：VideoToolbox 建得出 AV1 会话 = 有硬解，dav1d / meson / ninja 整条不进）
+#   与 S2A_VPX（tools/vp9hw.sh：建得出 VP9 会话 = 可走系统，libvpx 换全失败空垫片）两个开关的接缝单测
+.PHONY: codec-autodetect-test
+codec-autodetect-test:
+	bash tests/codec_autodetect_test.sh
+TEST_TARGETS += codec-autodetect-test
 .PHONY: ios-layer-test
 ios-layer-test:
 	bash tests/ios_layer_test.sh

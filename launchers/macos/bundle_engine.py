@@ -86,21 +86,68 @@ def bundle_tzdata(c, destination, source_root=ROOT):
 # 随 App 分发的预编静态库（11-03 维护者：编解码库等与游戏无关，不在玩家机器上编）：发版机按 services/<库>/build.sh 照常构建（整机缓存命中秒过），
 #   静态库 + 头文件 + 许可原文 + build.txt（构建键、版本、源码与库的 sha256）放进 Binaries/Prepare/libs/<库>/<平台>/；玩家出包时 build.sh 见 S2A_PREBUILT_TOOLS
 #   就核键与 sha256、直接回这份库（services/prebuilt_lib.sh），不构建。opus、C# 库（nxaot）还在玩家机器上现编，另作一单。
-# 追加一个库：在下面的表里加一项（库名 = services/<库名>/build.sh；静态库文件名），它的 build.sh 照 vpx / dav1d 开头那三行接 services/prebuilt_lib.sh
-# S2A_DAV1D=0：本地构建不链 dav1d 软件兜底，出包时也不放预编库（仅适合所有目标机都有 AV1 硬件解码）
-PREBUILT_LIBS = [
-    ("vpx", "libs2a_vpx.a"),
-]
-if os.environ.get("S2A_DAV1D", "1") != "0":
-    PREBUILT_LIBS.append(("dav1d", "libs2a_dav1d.a"))
+# 追加一个库：在 prebuilt_libs 里加一项（库名 = services/<库名>/build.sh；静态库文件名），它的 build.sh 照 vpx / dav1d 开头那三行接 services/prebuilt_lib.sh
+# 两个解码库都按本机探测放行（缺省 auto）：dav1d（AV1 软解兜底）按 dav1d_wanted（tools/av1hw.sh：VideoToolbox 建得出 AV1 会话 = 有硬解）、
+#   vpx（VP8 / VP9 软解）按 vpx_wanted（tools/vp9hw.sh：注册 supplemental 后建得出 VP9 会话 = 可走系统）——探测过时整条不放：
+#   本机构建不链真身（services/build.mk 同一判据，链的是全失败空垫片 services/vpx/stub.c），出包也不放预编库。出的 App 会装到
+#   没有 AV1 硬解 / 不可走系统 VP9 的机器上时（发版机：M1 / M2、A16 及更早）必设 S2A_DAV1D=1 S2A_VPX=1 再出，
+#   否则那些机器上的内建宿主链接要真身、App 里却没有
+PREBUILT_LIBS = []
 PREBUILT_RIDS = ("ios-arm64", "osx-arm64")
 
 
-def bundle_prebuilt_libs(tools, source_root=ROOT, env=None):
+def _probe_wanted(script, extra_env):
+    env = dict(os.environ)
+    if extra_env:
+        env.update(extra_env)
+    try:
+        p = subprocess.run(["bash", str(ROOT / script), "--want"], capture_output=True, text=True, env=env)
+    except OSError:
+        return True   # 探测失败保守按要算（= 原默认行为）
+    lines = p.stdout.split()
+    return lines[-1] != "0" if lines else True
+
+
+def dav1d_wanted(extra_env=None):
+    """dav1d 软解兜底（AV1）要不要进本机构建 / 随包：S2A_DAV1D=1 / 0 直说；缺省 auto = 探测本机
+    AV1 硬解（tools/av1hw.sh --want：VideoToolbox 建得出 AV1 会话 = 有硬解，软解整条不要）。"""
+    env = dict(os.environ)
+    if extra_env:
+        env.update(extra_env)
+    v = env.get("S2A_DAV1D", "auto")
+    if v in ("0", "1"):
+        return v == "1"
+    return _probe_wanted("tools/av1hw.sh", extra_env)
+
+
+def vpx_wanted(extra_env=None):
+    """真 libvpx（VP8 / VP9 软解）要不要进本机构建 / 随包：S2A_VPX=1 / 0 直说；缺省 auto = 探测本机可走
+    系统 VP9（tools/vp9hw.sh --want：注册 supplemental 后建得出 VP9 会话，VP9 走 VideoToolbox、VP8 如实报红）。"""
+    env = dict(os.environ)
+    if extra_env:
+        env.update(extra_env)
+    v = env.get("S2A_VPX", "auto")
+    if v in ("0", "1"):
+        return v == "1"
+    return _probe_wanted("tools/vp9hw.sh", extra_env)
+
+
+def prebuilt_libs(want_dav1d, want_vpx):
+    """随包预编库清单：dav1d / vpx 各按本机探测 / S2A_DAV1D / S2A_VPX（见 dav1d_wanted / vpx_wanted）"""
+    libs = []
+    if want_vpx:
+        libs.append(("vpx", "libs2a_vpx.a"))
+    if want_dav1d:
+        libs.append(("dav1d", "libs2a_dav1d.a"))
+    return libs
+
+
+def bundle_prebuilt_libs(tools, source_root=ROOT, env=None, developer_dir=None):
     import re
     env = dict(env if env is not None else os.environ)
     env.pop("S2A_PREBUILT_TOOLS", None)
-    for name, lib in PREBUILT_LIBS:
+    extra = {"DEVELOPER_DIR": developer_dir} if developer_dir else None
+    for name, lib in prebuilt_libs(dav1d_wanted(extra), vpx_wanted(extra)):
         script = source_root / "services" / name / "build.sh"
         pin = re.search(r"^VER=([0-9.]+); SHA=([0-9a-f]{64})$", script.read_text(), re.M)
         if not pin:
@@ -253,7 +300,7 @@ def bundle(destination, developer_dir):
     shutil.copy2(prepare / "gpu_arch", tools / "shbake/gpu_arch")
     (tools / "romfs").mkdir(parents=True)
     shutil.copy2(prepare / "romfs/romfs_index", tools / "romfs/romfs_index")
-    bundle_prebuilt_libs(tools, env=c.env())
+    bundle_prebuilt_libs(tools, env=c.env(), developer_dir=developer_dir)
     (tools / "dsh_batch").mkdir(parents=True)
     shutil.copy2(prepare / "dsh_batch/dsh_batch", tools / "dsh_batch/dsh_batch")
     # 摘要按 App 里这份源码算（dsh_batch.py 同一函数）：玩家那边摘要相同才用内置件，不同（App 装坏了）报重装、不现编

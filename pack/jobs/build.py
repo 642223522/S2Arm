@@ -462,9 +462,11 @@ def compile_host(c, fingerprint, env, log_root):
         return app
     args = ["make", "-C", c.engine, "host", "S2A_CS=1", "S2A_MAC_FRONTEND=1",
             "BUILD=" + str(host_root / "build"), "DEVELOPER_DIR=" + env["DEVELOPER_DIR"]]
-    dav1d = os.environ.get("S2A_DAV1D")   # c.env() 会清掉 S2A_*；构建开关显式带给 make（缺省 1 不用带）
-    if dav1d in ("0", "1"):
-        args.append("S2A_DAV1D=" + dav1d)
+    # c.env() 会清掉 S2A_*；构建开关显式带给 make（缺省 auto = 引擎快照里的 make 按本机探测，tools/av1hw.sh / tools/vp9hw.sh）
+    for k in ("S2A_DAV1D", "S2A_VPX"):
+        v = os.environ.get(k)
+        if v in ("0", "1"):
+            args.append(k + "=" + v)
     c.run(args, log_root / "host.log", env)
     binary = host_root / "build/s2arm-host"
     if not binary.is_file():
