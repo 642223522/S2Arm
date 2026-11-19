@@ -72,6 +72,33 @@ public final class DiagnosticRedactorTest {
         };
         for (String[] c : reasons) expect("系统错误原文保留：" + c[0], c[1], plain.redact(c[0]));
 
+        // 2b. A reading our logs write right after a path keeps only the path redacted (cases copied from tests/redact_cases_test.py
+        //     test_keeps_measurement_tail; expected values hand-written there): Chinese words, symbols, numbers and a unit may stay,
+        //     an English word or a slash keeps the rest inside the placeholder.
+        String ios = "/var/mobile/Containers/Data/Application/0F4E7C1A-2B3D-4E5F-8A9B-C0D1E2F3A4B5/Documents/S2A/ryujinx/bis/system/save/8000000000000000";
+        String[][] readings = {
+            {"00:00:00.110 |I| ServiceFs CommitLocked: 存档提交 #1：" + ios + " 克隆 + 原子交换 25.5 ms",
+             "00:00:00.110 |I| ServiceFs CommitLocked: 存档提交 #1：[PRIVATE_PATH] 克隆 + 原子交换 25.5 ms"},
+            {"存档提交 #12：/private/var/Game Disk/S2Arm/games/0100A/SaveData 克隆 + 原子交换 3.0 ms",
+             "存档提交 #12：[PRIVATE_PATH] 克隆 + 原子交换 3.0 ms"},
+            {"写盘 /private/var/Game Disk/S2Arm 库/x.img 1,024 MB", "写盘 [PRIVATE_PATH] 1,024 MB"},
+            {"/private/var/joe/My Game 2/a.xci", "[PRIVATE_PATH]"},
+            {"/private/var/joe smith/Movie Night 12 ms", "[PRIVATE_PATH] 12 ms"},
+            {"/private/var/joe/a.img 用时 1.5 秒", "[PRIVATE_PATH] 用时 1.5 秒"},
+            {"pipeline prewarm list /var/mobile/x/pso.tsv: 1834 lines", "pipeline prewarm list [PRIVATE_PATH] 1834 lines"},
+            {"写入 /private/var/X/S2Arm/a.img（12.5 MB）", "写入 [PRIVATE_PATH]（12.5 MB）"},
+        };
+        for (String[] c : readings) expect("路径后读数保留：" + c[0], c[1], plain.redact(c[0]));
+        {   // linear: a 100k-char path line full of spaces must not make the tail walk or the end pattern backtrack quadratically
+            StringBuilder big = new StringBuilder("/private/var/joe/");
+            while (big.length() < 100000) big.append("原 子 ");
+            big.append("12 ms");
+            long t0 = System.nanoTime();
+            String got = plain.redact(big.toString());
+            long ms = (System.nanoTime() - t0) / 1000000;
+            expect("十万字路径行 2 秒内（实际 " + ms + " ms）", "true", String.valueOf(ms < 2000 && got.endsWith(" 12 ms")));
+        }
+
         // 3. Differential corpus from tools/redact.py with the same synthetic key values.
         DiagnosticRedactor oracleSide = new DiagnosticRedactor(Collections.emptyList(), ORACLE_KEYS);
         int corpus = 0;
