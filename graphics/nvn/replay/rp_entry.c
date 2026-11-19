@@ -282,6 +282,10 @@ int nvn_be_buf_extent_consumer(void) { return 1; }             // Vulkan 上 siz
 static int g_depth_zero, g_origin_ll = 1; static uint64_t g_frame;
 void nvn_be_set_depth_zero(int on) { g_depth_zero = on; }
 void nvn_be_set_origin_lower_left(int on) { g_origin_ll = on; }
+// 上屏翻转按被上屏窗口建时的原点（hle_nvn.c win_t.present_ll，同 nvn_mtl.m g_present_ll）；-1 = 没有窗口说过，跟当前原点
+static int g_present_ll = -1;
+void nvn_be_set_present_lower_left(int on) { g_present_ll = on; }
+int rp_present_lower_left(void) { return g_present_ll >= 0 ? g_present_ll : g_origin_ll; }
 void nvn_be_set_frame(uint64_t f) { g_frame = f; }
 int rp_depth_zero(void) { return g_depth_zero; }
 int rp_origin_lower_left(void) { return g_origin_ll; }
