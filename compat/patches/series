@@ -641,3 +641,4 @@
 20261118-1915-audio-slow-period-exclude-pause.patch
 20261118-1950-gai-null-host-offline.patch
 20261116-2320-apple-audio-device-types.patch
+20261118-1759-apple-audio-recover-verify.patch

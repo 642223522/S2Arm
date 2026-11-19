@@ -123,6 +123,16 @@ namespace Ryujinx.Audio.Backends.Apple
         private static readonly (int AtS, int Ms) _testEnqStall = ParseProdStall(Environment.GetEnvironmentVariable("S2A_AUDIO_TEST_ENQ_STALL_AT"));
         private bool _testEnqStallDone;
         private static readonly bool _healOn = Environment.GetEnvironmentVariable("S2A_AUDIO_HEAL") != "0";
+        // S2Arm (#1632 / #1598)：重启输出队列只看返回码，不知道设备有没有真的重新播。重启后按退避窗口核一次：窗口里设备交还的帧数不到墙钟应播的一半、
+        //   而在途还有数据（不缺声音）、期间没有失焦冻结 = 没恢复 → 再重启，窗口翻倍（2、4、8… 秒，封顶 30 秒）；够一半 = 恢复，打一行。
+        //   玩家 M2 局：重启后 10 秒回调 994 / 653 次（正常约 2000）、真缺口 5.0 / 6.7 秒，回调没断，「设备 1 秒没回调」那条兜底接不住
+        private const int VerifyMaxMs = 30000;
+        private long _verifyTicks, _verifyPlayed0, _verifySeq;
+        private int _verifyFails;
+        // 测试钩子：S2A_AUDIO_TEST_SLOW_AFTER_HEAL=<n> —— 第 n 次重启之后、下一次重启之前，看门狗每拍轮流「播 1 拍、停 3 拍」（AudioQueuePause / Start），
+        //   设备有回调但只播约四分之一（恢复时会先补播一段，实测 2 秒窗口约 48% → 原「停 2 拍」离一半太近），最长停 750 ms（< StallMs，没回调兜底不触发）；服务层单测 --apple-audio-recover-verify
+        private static readonly int _testSlowAfterHeal = int.TryParse(Environment.GetEnvironmentVariable("S2A_AUDIO_TEST_SLOW_AFTER_HEAL"), out int sh) ? sh : 0;
+        private int _testSlowTick;
         private static readonly int _testStallAtS = int.TryParse(Environment.GetEnvironmentVariable("S2A_AUDIO_TEST_STALL_AT"), out int s) ? s : 0;
         private static readonly AppleHardwareDeviceSession[] _watched = new AppleHardwareDeviceSession[8];
         private static int _watchdogStarted;
@@ -324,6 +334,14 @@ namespace Ryujinx.Audio.Backends.Apple
                 S2AAudioNotes.PostForTest("AVAudioSessionInterruptionNotification", 0);
             }
 
+            if (_testSlowAfterHeal > 0 && _heals == _testSlowAfterHeal)
+            {
+                int phase = _testSlowTick++ % 4;
+                if (phase == 0) AudioQueueStart(_audioQueue, nint.Zero);
+                else if (phase == 1) AudioQueuePause(_audioQueue);
+                if (_testSlowTick == 1) Console.Error.WriteLine($"[声] 测试钩子：输出 #{_diag.Index} 第 {_testSlowAfterHeal} 次重启后轮流播 1 拍、停 3 拍（设备有回调但只播约四分之一）");
+            }
+
             if (_testResetAtS > 0 && !_testResetDone && since >= (long)_testResetAtS * Stopwatch.Frequency)
             {
                 _testResetDone = true;
@@ -360,6 +378,7 @@ namespace Ryujinx.Audio.Backends.Apple
             if (!_started || !_queueRunning)
             {
                 _timeline.Reset();
+                _verifyTicks = 0;   // 游戏停播 / 没开播：这次重启不下结论
 
                 return;
             }
@@ -388,6 +407,11 @@ namespace Ryujinx.Audio.Backends.Apple
 
                     return;
                 }
+            }
+
+            if (S2AVerifyRecover(now, freezeSeq))
+            {
+                return;
             }
 
             // S2Arm (11-13 断音): iOS only. A macOS queue recovers by itself (QueueTimelineWatch), and its criterion cannot tell a timeline
@@ -463,6 +487,45 @@ namespace Ryujinx.Audio.Backends.Apple
             catch (Exception e) when (e is DllNotFoundException || e is EntryPointNotFoundException) { s_gameVolumeGone = true; return 100; }
         }   // runtime/src/tdump.c：全线程宿主栈（自动玩家卡住、崩溃时同一份）
 
+        // 重启后核对（见 VerifyMaxMs）：窗口到点才下结论；返回 true = 这一拍又重启了
+        private bool S2AVerifyRecover(long now, long freezeSeq)
+        {
+            int windowMs = (int)Math.Min((long)HealBackoffMs << Math.Min(_verifyFails, 8), VerifyMaxMs);
+            if (_verifyTicks == 0 || now - _verifyTicks < (long)windowMs * Stopwatch.Frequency / 1000)
+            {
+                return false;
+            }
+
+            long elapsed = now - _verifyTicks;
+            long played = _diag.FramesPlayed - _verifyPlayed0, want = elapsed * RequestedSampleRate / Stopwatch.Frequency;
+            _verifyTicks = 0;
+
+            if (freezeSeq != _verifySeq || Ryujinx.Audio.Integration.S2AGuestFreeze.Frozen != 0)
+            {
+                return false;   // 期间失焦冻结过：交还少是因为游戏停了，解冻那条路径会重启，这里不下结论
+            }
+
+            long ms = elapsed * 1000 / Stopwatch.Frequency;
+            if (played * 2 >= want)
+            {
+                Console.Error.WriteLine($"[声] 输出 #{_diag.Index}：重启后设备恢复播放（{ms} ms 交还 {played} 帧，应约 {want} 帧）{(_verifyFails > 0 ? $"，此前连续 {_verifyFails} 次没恢复" : "")}");
+                _verifyFails = 0;
+
+                return false;
+            }
+
+            if (_pump.InFlightBytes == 0)
+            {
+                return false;   // 设备手上没声音可播：交还少是游戏没送，不是设备没播
+            }
+
+            _verifyFails++;
+            S2ARecover($"重启后设备没恢复播放：{ms} ms 交还 {played} 帧（应约 {want} 帧，不到一半），再重启（连续第 {_verifyFails} 次没恢复，" +
+                       $"下次 {Math.Min((long)HealBackoffMs << Math.Min(_verifyFails, 8), VerifyMaxMs) / 1000} 秒后再核）", false, now, true);
+
+            return true;
+        }
+
         // 恢复输出流：iOS 重新激活会话 → 同步停队列（重置时重建）→ 收回在途 → 重新排进去 → 开播
         private void S2ARecover(string why, bool rebuild, long now, bool red)
         {
@@ -530,6 +593,11 @@ namespace Ryujinx.Audio.Backends.Apple
                 {
                     _queueRunning = false;
                 }
+
+                // 重启后核对（S2AVerifyRecover）：开播成功才核，从此刻起算
+                _verifyTicks = startRc == 0 ? Stopwatch.GetTimestamp() : 0;
+                _verifyPlayed0 = _diag.FramesPlayed;
+                _verifySeq = Interlocked.Read(ref Ryujinx.Audio.Integration.S2AGuestFreeze.Seq);
 
                 Volatile.Write(ref _lastCallbackTicks, Stopwatch.GetTimestamp());
 

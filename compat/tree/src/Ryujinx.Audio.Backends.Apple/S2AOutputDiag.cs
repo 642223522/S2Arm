@@ -147,6 +147,8 @@ namespace Ryujinx.Audio.Backends.Apple
         private short[] _prev;
         private long _framesSubmitted;
         private long _framesPlayed;
+        // 已交还（播完）帧数，回调线程写；看门狗重启后核对读（AppleHardwareDeviceSession.S2AVerifyRecover）
+        public long FramesPlayed => Volatile.Read(ref _framesPlayed);
         private long _underruns;
         private long _pauses;
         private long _maxStarveTicks;
