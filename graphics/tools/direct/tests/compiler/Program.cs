@@ -876,6 +876,29 @@ internal static unsafe class Program
             }
         }
 
+        // 整池数组（追不到槽的句柄回退，安卓整池 N=0）：同一支「句柄来自属性」的片元，池长在 16 位布局能表达的范围内时编得出，
+        //   结果里是两条 pool 绑定（贴图池长 64、采样器池长 8），不带 slot / samp_slot；池长 524288 时（上面那例）照旧具名拒
+        {
+            byte[] fsPool = Guest(true, new[] { Ald(1, 0, 4), Fadd32i(2, 0.5f), Fadd32i(3, 0.5f), TexBindless2D(0, 2, 4) }, new[] { 1 });
+            const string poolFact = "[{\"stage\":\"fs\",\"handle\":0,\"cbufSlot\":-1,\"samplerType\":\"2d\",\"format\":\"R8G8B8A8Unorm\",\"isBuffer\":false,\"normalized\":true,\"separate\":false,\"arrayLength\":1}]";
+            byte[] poolReq = RequestJson(profile, "graphics", 1, 1, "pool-array", vs, fsPool, textureFacts: poolFact);
+            try
+            {
+                using JsonDocument doc = ParseResult(DirectShaderCompiler.Compile(poolReq));
+                JsonElement[] binds = doc.RootElement.GetProperty("content").GetProperty("bindings").EnumerateArray().ToArray();
+                JsonElement[] texPool = binds.Where(b => b.TryGetProperty("pool", out JsonElement p) && p.GetString() == "texture").ToArray();
+                JsonElement[] sampPool = binds.Where(b => b.TryGetProperty("pool", out JsonElement p) && p.GetString() == "sampler").ToArray();
+                Check(texPool.Length == 1 && texPool[0].GetProperty("count").GetInt32() == 64 && texPool[0].GetProperty("stage").GetString() == "fs" &&
+                      !texPool[0].TryGetProperty("slot", out _), "texture pool array: one fs binding, count = texture pool length 64, no slot");
+                Check(sampPool.Length == 1 && sampPool[0].GetProperty("count").GetInt32() == 8 && !sampPool[0].TryGetProperty("slot", out _) &&
+                      !sampPool[0].TryGetProperty("samp_slot", out _), "sampler pool array: one binding, count = sampler pool length 8, no slot");
+            }
+            catch (Exception error) { Check(false, "pool array compiles to two pool bindings: " + error.Message); }
+            // 负对照：池长到 16 位布局表达不了（65535）时不收成池绑定，照旧具名拒
+            string bigPool = Encoding.UTF8.GetString(poolReq).Replace("\"textureArrayLength\":64", "\"textureArrayLength\":65535");
+            Throws("UNSUPPORTED_PROGRAM", () => DirectShaderCompiler.Compile(Encoding.UTF8.GetBytes(bigPool)), "texture pool of 65535 entries is not taken as a pool binding");
+        }
+
         // 句柄在游戏自己的 UBO 里（认领 #999）：LDC Rh, c[4][off]; TEX.B Rd, Rcoord, Rh。真实编译器、真实 BindlessElimination。
         //   A：字偏移 8（字节 0x20）正好等于组合槽 0 的句柄位置（8 + 2 × 槽）。请求只带运行时照常给的组合槽事实（handle 8 / cbufSlot −1）。
         //      这个句柄来自 c4、不是 c2 句柄表，不许当成组合槽 0 绑——修前「同 handle 事实回退」放行，绑到组合槽 0，读错图还不报。

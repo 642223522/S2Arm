@@ -31,6 +31,9 @@ namespace S2A.DirectCompiler
         // #1594：类型 3 句柄（贴图字在 c2 分离贴图表，采样器号是着色器里的立即数）的采样器池下标 0..4095，-1 = 没有。
         // 下标 0 是真下标，所以「有没有」只看 >= 0；与 SamplerSlot（采样器也在 c2 表里）互斥。
         public int ConstSampler = -1;
+        // 整池数组（追不到槽的句柄，翻译器 BindlessElimination 回退：贴图按整个贴图池、采样器按整个采样器池建数组，下标是句柄的 20 / 12 位编号）：
+        //   "texture" / "sampler"，null = 不是。宿主按 NVN 池建快照、布局来源 NVN_RB_TEXP / NVN_RB_SAMPP 绑整表（nvn_backend.h nvn_gpu_pool_*），此时 Slot = -1
+        public string Pool;
         // Storage address provenance, resolved from ShaderProgram.Info.SBuffers.
         // Translator guestIndex is deliberately NOT a runtime NVN slot.
         // 贴图也用 UboSlot / UboOffset：句柄在游戏 UBO 里时的来源（NVN UBO 号、句柄字的字节偏移），此时 Slot = -1。
@@ -411,6 +414,9 @@ namespace S2A.DirectCompiler
             Record("QueryS2ASampledTextureFormat", $"handle={handle},cbufSlot={cbufSlot}",
                 NeedTexture("QueryS2ASampledTextureFormat", handle, cbufSlot).Format,
                 "texture-fact:" + _stage.Stage + ":" + handle + ":" + cbufSlot);
+        // 请求里的池长（整池数组的长度据此判定，见 DirectShaderCompiler.ResolvePoolSlots）
+        public int TexturePoolLength => _program.TextureArrayLength;
+        public int SamplerPoolLength => _program.SamplerArrayLength;
         public int QueryTextureArrayLengthFromPool() =>
             Record("QueryTextureArrayLengthFromPool", "stage=" + _stage.Stage, _program.TextureArrayLength, "texture-pool-capacity");
         public int QuerySamplerArrayLengthFromPool() =>

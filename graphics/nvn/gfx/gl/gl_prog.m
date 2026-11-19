@@ -256,7 +256,7 @@ GL(glGetShaderInfoLog, void, GLuint name, GLsizei cap, GLsizei *len, GLchar *log
 GL(glCreateProgram, GLuint, void) { CTX(0); struct gl_program *p = calloc(1, sizeof *p); return gl_name_new(&gl_programs, p); }
 static void program_destroy(void *object) {
     struct gl_program *p = object;
-    p->fn[0] = p->fn[1] = nil; p->pso = nil; free(p->ub[0]); free(p->ub[1]); free(p->u); free(p);
+    p->fn[0] = p->fn[1] = nil; p->pso = nil; free(p->ub[0]); free(p->ub[1]); free(p->u); free(p->lsrc[0]); free(p->lsrc[1]); free(p);
 }
 GL(glDeleteProgram, void, GLuint name) {
     CTX(); struct gl_program *p = gl_name_del(&gl_programs, name); if (!p) return;
@@ -306,6 +306,7 @@ GLB(glLinkProgram, void, GLuint name) { @autoreleasepool {
         gl_shader *s = gl_name_get(&gl_shaders, p->sh[st]); const librow *r = s && !s->rt && s->compiled ? lib_find(s->key, st) : NULL;
         struct gl_rt *rt = s && s->rt && shader_ok(s) ? s->rt : NULL;
         if (!r && !rt) { GLOG("【红】 链接程序 %u：%s着色器没有、不在库里也没现编成", name, st ? "片元" : "顶点"); return; }
+        memcpy(p->lkey[st], s->key, sizeof p->lkey[st]); free(p->lsrc[st]); p->lsrc[st] = rt ? strdup(s->src) : NULL;
         if (r) {
             p->fn[st] = [g_lib newFunctionWithName:[NSString stringWithFormat:@"gl_%s_%c", r->key, st ? 'f' : 'v']];
             if (!p->fn[st]) { GLOG("【红】 链接程序 %u：库里没有函数 gl_%s_%c", name, r->key, st ? 'f' : 'v'); return; }
@@ -644,4 +645,66 @@ int s2a_gl_lib_ready(const char *game_data) {
     fclose(f);
     if (ok && rows) { snprintf(p, sizeof p, "%s/shaders/direct/gl/gl_shaders.metallib", game_data); if (stat(p, &st) || !st.st_size) { GLOG("【红】 直连 OpenGL 表有 %d 行却没有库 %s：不算就绪", rows, p); return 0; } }
     return ok;
+}
+
+// ---------- 即时存档：着色器与程序 ----------
+// 着色器：类型、源码、编译 / 挂接 / 删除标记；现编的按源码重新交兜底（同键读上次缓存，不再翻译）。程序：链接结果整份存（反射出的槽、uniform 表与 CPU 影子、
+//   采样器单元、块绑定、属性号），函数按链接时记下的键重取（库里的 newFunctionWithName，现编的交兜底、第一次画时等），不重新链接（游戏链接后常删掉着色器）
+enum { GH_NAME = 1, GH_TYPE, GH_SRC, GH_COMPILED, GH_ATTACHED, GH_DELETED,
+       GG_NAME = 1, GG_SH, GG_LINKED, GG_VALID, GG_UBSLOT, GG_UBSIZE, GG_UB0, GG_UB1, GG_SMP, GG_NSMP, GG_U, GG_NU, GG_WDEPTH, GG_BLK, GG_NBLK, GG_ATTR, GG_NATTR, GG_BIND, GG_NBIND, GG_LKEY, GG_LSRC0, GG_LSRC1 };
+static void sh_key(gl_shader *s) { uint8_t md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256(s->src, (CC_LONG)s->len, md); for (int i = 0; i < 8; i++) snprintf(s->key + 2 * i, 3, "%02x", md[i]); }
+int gl_prog_snap_save(FILE *f) {
+    sfw w; sfw_sec(&w, f, "gl.shader", 1);
+    for (GLuint i = 1; i < gl_shaders.n; i++) { gl_shader *s = gl_shaders.v[i]; if (!s) continue;
+        sfw_rec(&w); GLSF_W(&w, GH_NAME, i); GLSF_W(&w, GH_TYPE, s->type); if (s->src) sfw_blob(&w, GH_SRC, s->src, (uint32_t)s->len);
+        GLSF_W(&w, GH_COMPILED, s->compiled); GLSF_W(&w, GH_ATTACHED, s->attached); GLSF_W(&w, GH_DELETED, s->deleted); sfw_end_rec(&w); }
+    if (sfw_end(&w)) return -1;
+    sfw_sec(&w, f, "gl.program", 1); uint32_t np = 0;
+    for (GLuint i = 1; i < gl_programs.n; i++) { struct gl_program *p = gl_programs.v[i]; if (!p) continue;
+        sfw_rec(&w); GLSF_W(&w, GG_NAME, i); GLSF_W(&w, GG_SH, p->sh); GLSF_W(&w, GG_LINKED, p->linked); GLSF_W(&w, GG_VALID, p->validated); GLSF_W(&w, GG_UBSLOT, p->ub_slot); GLSF_W(&w, GG_UBSIZE, p->ub_size);
+        if (p->ub[0]) sfw_blob(&w, GG_UB0, p->ub[0], (uint32_t)p->ub_size[0]); if (p->ub[1]) sfw_blob(&w, GG_UB1, p->ub[1], (uint32_t)p->ub_size[1]);
+        GLSF_W(&w, GG_SMP, p->smp); GLSF_W(&w, GG_NSMP, p->nsmp); if (p->nu) sfw_blob(&w, GG_U, p->u, (uint32_t)(p->nu * sizeof *p->u)); GLSF_W(&w, GG_NU, p->nu);
+        GLSF_W(&w, GG_WDEPTH, p->writes_depth); GLSF_W(&w, GG_BLK, p->blk); GLSF_W(&w, GG_NBLK, p->nblk); GLSF_W(&w, GG_ATTR, p->attr); GLSF_W(&w, GG_NATTR, p->nattr);
+        GLSF_W(&w, GG_BIND, p->bind); GLSF_W(&w, GG_NBIND, p->nbind); GLSF_W(&w, GG_LKEY, p->lkey);
+        if (p->lsrc[0]) sfw_blob(&w, GG_LSRC0, p->lsrc[0], (uint32_t)strlen(p->lsrc[0])); if (p->lsrc[1]) sfw_blob(&w, GG_LSRC1, p->lsrc[1], (uint32_t)strlen(p->lsrc[1]));
+        sfw_end_rec(&w); np++; }
+    GLOG("即时存档：GL 程序 %u 个", np);
+    return sfw_end(&w);
+}
+static char *blob_str(const sfr *r, uint16_t id, size_t *len) { uint32_t n; const char *p = sfr_get(r, id, &n); if (!p) return NULL; char *s = malloc(n + 1); memcpy(s, p, n); s[n] = 0; if (len) *len = n; return s; }
+int gl_prog_snap_restore(FILE *f) {
+    lib_load();
+    sfr r; if (sfr_sec(&r, f, "gl.shader", 1)) return -1; int bad = 0, nfn = 0, nrt = 0, nmiss = 0;
+    while (sfr_rec(&r) == 1) {
+        GLuint nm = 0; GLSF_R(&r, GH_NAME, nm); gl_shader *s = calloc(1, sizeof *s); if (!nm || !s) { free(s); continue; }
+        GLSF_R(&r, GH_TYPE, s->type); s->src = blob_str(&r, GH_SRC, &s->len); GLSF_R(&r, GH_COMPILED, s->compiled); GLSF_R(&r, GH_ATTACHED, s->attached); GLSF_R(&r, GH_DELETED, s->deleted);
+        if (s->src) { s->len = strlen(s->src); sh_key(s); }
+        if (s->compiled && s->src && !lib_find(s->key, s->type == GL_FRAGMENT_SHADER)) s->rt = rt_get(s);
+        if (!gl_name_put(&gl_shaders, nm, s)) { shader_destroy(s); bad = 1; }
+    }
+    sfr_done(&r);
+    if (bad || sfr_sec(&r, f, "gl.program", 1)) return -1;
+    while (sfr_rec(&r) == 1) {
+        GLuint nm = 0; GLSF_R(&r, GG_NAME, nm); struct gl_program *p = calloc(1, sizeof *p); if (!nm || !p) { free(p); continue; }
+        GLSF_R(&r, GG_SH, p->sh); GLSF_R(&r, GG_LINKED, p->linked); GLSF_R(&r, GG_VALID, p->validated); GLSF_R(&r, GG_UBSLOT, p->ub_slot); GLSF_R(&r, GG_UBSIZE, p->ub_size);
+        for (int st = 0; st < 2; st++) if (p->ub_size[st] > 0) { p->ub[st] = calloc(1, (size_t)p->ub_size[st]); sfr_into(&r, st ? GG_UB1 : GG_UB0, p->ub[st], (uint32_t)p->ub_size[st]); }
+        GLSF_R(&r, GG_SMP, p->smp); GLSF_R(&r, GG_NSMP, p->nsmp); GLSF_R(&r, GG_NU, p->nu);
+        if (p->nu > 0) { p->u = calloc((size_t)p->nu, sizeof *p->u); sfr_into(&r, GG_U, p->u, (uint32_t)(p->nu * sizeof *p->u)); }
+        GLSF_R(&r, GG_WDEPTH, p->writes_depth); GLSF_R(&r, GG_BLK, p->blk); GLSF_R(&r, GG_NBLK, p->nblk); GLSF_R(&r, GG_ATTR, p->attr); GLSF_R(&r, GG_NATTR, p->nattr);
+        GLSF_R(&r, GG_BIND, p->bind); GLSF_R(&r, GG_NBIND, p->nbind); GLSF_R(&r, GG_LKEY, p->lkey); p->lsrc[0] = blob_str(&r, GG_LSRC0, NULL); p->lsrc[1] = blob_str(&r, GG_LSRC1, NULL);
+        if (p->linked) {
+            for (int st = 0; st < 2; st++) {
+                const librow *lr = lib_find(p->lkey[st], st);
+                if (lr) { p->fn[st] = [g_lib newFunctionWithName:[NSString stringWithFormat:@"gl_%s_%c", lr->key, st ? 'f' : 'v']]; nfn += p->fn[st] != nil; if (!p->fn[st]) nmiss++; }
+                else if (p->lsrc[st]) { gl_shader tmp = {0}; memcpy(tmp.key, p->lkey[st], sizeof tmp.key); tmp.type = st ? GL_FRAGMENT_SHADER : GL_VERTEX_SHADER; tmp.src = p->lsrc[st]; tmp.len = strlen(p->lsrc[st]);
+                    p->rt[st] = rt_get(&tmp); nrt++; }
+                else nmiss++;
+            }
+            p->pso = [NSMutableDictionary new];
+        }
+        if (!gl_name_put(&gl_programs, nm, p)) { program_destroy(p); bad = 1; }
+    }
+    sfr_done(&r);
+    GLOG("%s即时存档恢复：GL 程序函数 库里取 %d 支、交现编 %d 支、取不到 %d 支", nmiss ? "【红】 " : "", nfn, nrt, nmiss);
+    return bad ? -1 : 0;
 }

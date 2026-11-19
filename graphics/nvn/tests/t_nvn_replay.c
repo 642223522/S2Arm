@@ -1673,6 +1673,42 @@ static void t_samp_mirror_clamp(void) {
     res_fresh(); nvn_unimpl_reset();
 }
 
+// 整池数组的后端替身：记最近一次建表的项（状态与资源）、建表 / 放表 / 绑表次数
+struct nvn_gpu_pool_table_s { uint32_t kind, count; };
+static int g_pool_creates, g_pool_releases, g_pool_binds; static nvn_gpu_pool_item g_pool_last[16]; static uint32_t g_pool_last_n, g_pool_last_kind;
+nvn_gpu_rc nvn_gpu_pool_create(const nvn_gpu_pool_desc *d, nvn_gpu_pool_table *out, nvn_gpu_err *err) {
+    (void)err; g_pool_creates++; g_pool_last_n = d->count; g_pool_last_kind = d->kind;
+    for (uint32_t i = 0; i < d->count && i < 16; i++) g_pool_last[i] = d->items[i];
+    *out = calloc(1, sizeof **out); (*out)->kind = d->kind; (*out)->count = d->count; return (nvn_gpu_rc){NVN_GPU_OK};
+}
+nvn_gpu_rc nvn_gpu_pool_bind(nvn_gpu_cmd c, nvn_gpu_stage st, uint32_t ent, nvn_gpu_pool_table t, nvn_gpu_err *err) { (void)c; (void)st; (void)ent; (void)t; (void)err; g_pool_binds++; return (nvn_gpu_rc){NVN_GPU_OK}; }
+void nvn_gpu_pool_release(nvn_gpu_pool_table t) { g_pool_releases++; free(t); }
+
+// 整池数组的池快照（rp_pool_table）：
+//   期望（手算）：贴图池起点 0、池长 8，号 2 登记了一张 2D 贴图、其余没登记 → 8 项全 READY（没登记的给声明类型零贴图），号 2 是它自己的视图；
+//   同键同纪元再取：不重建（建表次数不变）；登记表一变（重登记号 5）：重建一次、旧表放掉；采样器池：登记了的 READY、没登记的 EMPTY
+static void t_pool_table(void) {
+    nvn_be_sub_begin(); res_fresh(); nvn_unimpl_reset();
+    int c0 = g_pool_creates, r0 = g_pool_releases;
+    tex_t a = mk_tex(41, 0, NVN_FORMAT_RGBA8, 16, 16, 1, 0), b = mk_tex(42, 0x4000, NVN_FORMAT_RGBA8, 16, 16, 1, 0);
+    nvn_be_set_tex_pool_n(8); nvn_be_reg_tex(2, &a, NULL);
+    const char *why = NULL;
+    nvn_gpu_pool_table t1 = rp_pool_table(&g_fake_cmd, 0, 0, 8, NVN_TEXTURE_TARGET_2D + 1, 0, &why);
+    CHECK(t1 && !why && g_pool_creates - c0 == 1 && g_pool_last_kind == NVN_GPU_POOL_IMAGE && g_pool_last_n == 8);
+    int ready = 0; for (int i = 0; i < 8; i++) ready += g_pool_last[i].state == NVN_GPU_POOL_READY;
+    CHECK(ready == 8 && g_pool_last[2].resource.view && g_pool_last[2].resource.view->of && g_pool_last[2].resource.view != g_pool_last[3].resource.view);
+    CHECK(rp_pool_table(&g_fake_cmd, 0, 0, 8, NVN_TEXTURE_TARGET_2D + 1, 0, &why) == t1 && g_pool_creates - c0 == 1);   // 同键同纪元：沿用
+    nvn_be_reg_tex(5, &b, NULL);
+    nvn_gpu_pool_table t2 = rp_pool_table(&g_fake_cmd, 0, 0, 8, NVN_TEXTURE_TARGET_2D + 1, 0, &why);
+    CHECK(t2 && t2 != t1 && g_pool_creates - c0 == 2 && g_pool_releases - r0 == 1);   // 登记变了：重建、旧表放掉
+    samp_par sp; memset(&sp, 0, sizeof sp); nvn_be_reg_samp(1, &sp);
+    nvn_gpu_pool_table ts1 = rp_pool_table(&g_fake_cmd, 1, 0, 4, 0, 0, &why);
+    CHECK(ts1 && g_pool_last_kind == NVN_GPU_POOL_SAMPLER && g_pool_last_n == 4 && g_pool_last[1].state == NVN_GPU_POOL_READY &&
+          g_pool_last[0].state == NVN_GPU_POOL_EMPTY && g_pool_last[3].state == NVN_GPU_POOL_EMPTY);
+    CHECK(!rp_pool_table(&g_fake_cmd, 0, 0, 0xffff, NVN_TEXTURE_TARGET_2D + 1, 0, &why) && why);   // 池长表达不了：具名原因
+    nvn_be_unreg_tex_range(0, 8);
+}
+
 static void t_registry(void) {
     nvn_be_sub_begin();
     res_fresh(); nvn_unimpl_reset(); int v0 = g_view_creates, vr0 = g_view_releases, s0 = g_samp_creates, sr0 = g_samp_releases;
@@ -5183,6 +5219,7 @@ int main(int argc, char **argv) {
     t_linear_upload();
     t_linear_reject();
     t_registry();
+    t_pool_table();
 #ifdef S2A_TEST_TREG_SCRUB
     t_view_snap_grow();
 #endif

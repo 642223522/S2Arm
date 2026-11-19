@@ -135,7 +135,7 @@ namespace S2A.DirectCompiler
             ResolvePoolSlots(translated, allocator);
             ResolveStorageSlots(translated, allocator);
 
-            bool v2 = allocator.Bindings.Any(b => b.SamplerSlot >= 0 || b.ConstSampler >= 0);
+            bool v2 = allocator.Bindings.Any(b => b.SamplerSlot >= 0 || b.ConstSampler >= 0 || b.Pool != null);   // 新字段（samp_slot / constSampler / pool）都按 v2 写：v1 宿主不认就整份拒
             byte[] content = WriteContent(program, profile, translated, allocator, queries, v2);
             string contentHash = "sha256-" + Convert.ToHexStringLower(Sha256.HashData(content));
             return WriteEnvelope(session, generation, requestId, content, contentHash, v2);
@@ -327,6 +327,24 @@ namespace S2A.DirectCompiler
                     throw new DirectCompileException("SPIRV_INVALID",
                         binding.Stage + ": " + binding.Kind + " binding " + binding.Set + ":" + binding.Binding + " has no reflected descriptor");
                 TextureDescriptor resolved = found.Value;
+                // 整池数组：翻译器对追不到槽的句柄（算术 / 共享内存 / 全局内存 / phi 汇合拼出的）回退成按池编号读的两个数组
+                //   （compat BindlessElimination：贴图数组长 = max(2, 贴图池长)、采样器数组（类型 None）长 = max(2, 采样器池长)，
+                //   句柄 PackOffsets(0, 0, Direct) = 0x40000000、cbuf 0）。这不是从 c0 / c2 读句柄，不需要逐句柄事实；宿主按 NVN 池建快照绑整表。
+                //   只认长度恰好等于请求里的池长的那一对（别的 cbuf 0 数组照旧走下面的拒绝），贴图缓冲不在池里（按槽绑）
+                if (binding.Kind == "texture" && binding.Source == "texture" && resolved.CbufSlot == 0 &&
+                    resolved.HandleIndex == TextureHandle.PackOffsets(0, 0, TextureHandleType.Direct) &&
+                    resolved.ArrayLength > 1 && binding.Count == resolved.ArrayLength)
+                {
+                    bool sampPool = (resolved.Type & SamplerType.Mask) == SamplerType.None;
+                    int poolLength = Math.Max(2, sampPool ? entry.accessor.SamplerPoolLength : entry.accessor.TexturePoolLength);
+                    // 布局项的 count 是 16 位，且要多一项表尾 dummy（nvn_backend.h nvn_gpu_pool_*）：池长到 0xffff 及以上表达不了，落到下面照旧具名拒
+                    if (resolved.ArrayLength == poolLength && poolLength < 0xffff)
+                    {
+                        binding.Pool = sampPool ? "sampler" : "texture";
+                        binding.Slot = -1;
+                        continue;
+                    }
+                }
                 if (binding.Kind == "texture" && !resolved.Separate &&
                     entry.accessor.TrySeparateC2(resolved.HandleIndex, resolved.CbufSlot, out int texWord, out int samplerSlot))
                 {
@@ -689,6 +707,7 @@ namespace S2A.DirectCompiler
                     if (binding.Slot >= 0) writer.WriteNumber("slot", binding.Slot);
                     if (binding.SamplerSlot >= 0) writer.WriteNumber("samp_slot", binding.SamplerSlot);
                     if (binding.ConstSampler >= 0) writer.WriteNumber("constSampler", binding.ConstSampler);
+                    if (binding.Pool != null) writer.WriteString("pool", binding.Pool);   // 整池数组（ResolvePoolSlots）：没有 slot，宿主按池建快照
                     if (binding.Kind == "texture" && binding.UboSlot >= 0)
                     {
                         // 句柄在游戏 UBO 里（ResolvePoolSlots）：没有 slot，只有这两个来源字段
