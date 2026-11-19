@@ -9490,6 +9490,26 @@ static void vp_done(NvShader *vs, id<MTLFunction> f, uint32_t mask, const char *
     fprintf(stderr, "[s2a] 顶点补齐变体：程序号 %s 顶点 %.16s 补 user(locn) 掩码 %#x %s%s %.1f ms%s%s\n", s2a_nvn_game_id(), vs->key, mask, how, f ? "完成" : "失败", (bp_now() - t0) / 1e6, f ? "" : "：", f ? "" : why);
     if (!f) MLOG("【红】 vertex shader %s has no padded variant for user(locn) mask %#x: %s; draws pairing it with such a fragment shader stay skipped", vs->key, mask, why);
 }
+// Prewarm (background thread): a recorded padded mesh row (pso_user.tsv M row, pad mask) whose variant this run has not made yet. It is made here from this device's own
+//   variant on disk (code 0: dm_shader_vpad_cached; an earlier run wrote it when the draw first asked), so the pipeline the prewarm builds is the padded one and the draw finds it.
+//   Before (#1269, D-FVDM 0400486024DEC000): mtk_warm skipped the row because the variant was not ready, so every run the first draw built the unpadded pipeline, Metal refused it
+//   (user(locn5) not written), and the pair's draws were skipped until vp_ask had made the variant in the background. Nothing on disk to make it from: the state goes back to SE_NONE
+//   (not SE_FAIL, which would stop the draw's own vp_ask from trying with the guest's code) and the row is skipped as before. → the variant covering mask, or nil
+static id<MTLFunction> vp_warm(NvShader *vs, uint32_t mask) {
+    pthread_mutex_lock(&g_vp_mu);
+    if (vs->vp_st == SE_READY && (vs->vp_mask & mask) == mask) { id<MTLFunction> f = vs->vp_main; pthread_mutex_unlock(&g_vp_mu); return f; }
+    if (vs->vp_st != SE_NONE) { pthread_mutex_unlock(&g_vp_mu); return nil; }   // being made by the draw's vp_ask, failed, or a narrower variant is ready: leave it to the draw
+    // only a variant an earlier run already wrote (<key>_vp<mask>.metal; dm_shader_vpad_cached still checks it is this chain's and not older than its source): the prewarm
+    //   does not translate, and with no translation on disk the cached path would report the missing snapshot that only the draw can supply
+    const char *fb = getenv("DM_MSL_FALLBACK"); char vp[1200];
+    if (!fb || !*fb || snprintf(vp, sizeof vp, "%s/%.16s_vp%x.metal", fb, vs->key, mask) >= (int)sizeof vp || access(vp, R_OK)) { pthread_mutex_unlock(&g_vp_mu); return nil; }
+    vs->vp_st = SE_BUSY; pthread_mutex_unlock(&g_vp_mu);
+    uint8_t md[8] = {0}; for (int i = 0; i < 8; i++) { unsigned b = 0; if (sscanf(vs->key + 2 * i, "%2x", &b) != 1) break; md[i] = (uint8_t)b; }
+    char why[300] = ""; uint64_t t0 = bp_now(); id<MTLFunction> f = vp_build(vs, md, 0, NULL, mask, why, sizeof why);
+    if (f) { vp_done(vs, f, mask, why, t0, "预热按本机译文"); return f; }
+    pthread_mutex_lock(&g_vp_mu); vs->vp_st = SE_NONE; pthread_mutex_unlock(&g_vp_mu);
+    return nil;
+}
 // #674 (11-12): the program a draw passes to vp_ask is not always the one the shader to pad was bound from.
 //   bind_stages makes a host stand-in carrying only a serial (no stages); a mesh draw's S.prog is the fragment
 //   stage's program while its mesh shader was bound at stage 4. prog_stage_of then found nothing, vp_build saw
