@@ -625,3 +625,5 @@
 20261118-0559-save-guard-mark.patch
 20261118-0011-standalone-program-data-alias.patch
 20261118-1549-sampled-view-numeric.patch
+20261116-1626-audio-dsp-datasource-drop-redundant-tofloat.patch
+20261116-1627-audio-dsp-device-sink-conditional-clear.patch
