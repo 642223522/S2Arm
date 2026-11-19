@@ -282,7 +282,11 @@ int s2a_snap_force_left(void) { return t_nforce - t_iforce; }
 static void hlog_add(int op, uint32_t h, uint32_t kind, int cs, void *obj) {   // 持 G
     if (!s2a_snap_logging()) return;
     if (g_nhlog == g_caphlog) { g_caphlog = g_caphlog ? g_caphlog * 2 : 4096; g_hlog = realloc(g_hlog, sizeof *g_hlog * (size_t)g_caphlog); }
-    snap_hlog_t x = {(uint8_t)op, (uint8_t)cs, 0, h, kind, op == 0 ? (cs ? t_snap_ctx : -1) : 0, atomic_load(&g_snap_lastseq), 0, 0, 0, 0};
+    // 关：记在哪条之后。服务层在处理第 N 条请求的过程中关的（本线程 t_snap_ctx = N）记在 N 之后：恢复重放 N 时它自己会再关一次，
+    //   重放完按「还在才关」就跳过；N 当时失败没重放的，这里照样关。原先一律记「此前最后完成的那条」（N−1）：重放 N−1 后先关一次、
+    //   重放 N 时服务又关同一个句柄，回 InvalidHandle、恢复中止（大乱斗第 187 条关 AudioDevice 会话）
+    int after = op == 1 && t_snap_ctx >= 0 ? t_snap_ctx : atomic_load(&g_snap_lastseq);   // 关调用不带 cs（是不是服务层建的由重放时查建的那条）
+    snap_hlog_t x = {(uint8_t)op, (uint8_t)cs, 0, h, kind, op == 0 ? (cs ? t_snap_ctx : -1) : 0, after, 0, 0, 0, 0};
     if (op == 0 && (kind & 15) == S2A_OBJ_TMEM && obj) { tmem_t *tm = obj; x.a = tm->addr; x.b = tm->size; x.c = tm->perm; }
     if (op == 0 && ((kind & 15) == S2A_OBJ_EVENT_R || (kind & 15) == S2A_OBJ_EVENT_W)) x.a = (uint64_t)(uintptr_t)obj;   // 事件：A 里的事件对象身份
     g_hlog[g_nhlog++] = x;
@@ -2134,7 +2138,7 @@ int s2a_guest_pause_all(void) {
     for (int i = 0; i < n; i++) { if (thr_pause(v[i]) == 0) ok++; thr_unpin(v[i]); }
     return ok;
 }
-// 即时存档可行性：冻结不退出探针（缺省关，S2A_SNAP_MODE / S2A_SNAP_RESTORE 才开）。置全局冻结，轮询直到每条游戏线程都到安全点：
+// 即时存档可行性：冻结不退出探针（快照开时才开：苹果端缺省开、S2A_SNAP_MODE=0 关，或恢复局 S2A_SNAP_RESTORE）。置全局冻结，轮询直到每条游戏线程都到安全点：
 //   ① 自己停进 pause_park（系统调用出入口 / 回客体）；② 阻塞在内核等待里（in_svc 且 wkind≠0、未被唤醒）；③ 在游戏代码里被 Mach 挂住。
 //   在系统调用里正在处理（in_svc、无等待）或在宿主函数里的算「未到」，继续等；超时不致命，记下未到的线程。返回到齐用时（微秒，-1 = 超时）
 // ---------- 即时存档：冻结到「门里」安全点并抓线程现场 / 句柄表 ----------

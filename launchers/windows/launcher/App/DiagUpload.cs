@@ -71,7 +71,7 @@ public sealed partial class EnvironmentWindow
                 return row;
             }
             var exported = false;
-            // 玩家写的一句「发生了什么」（选填，11-13 维护者，同 Mac UploadDiagnosticsSheet）：作业层写进 manifest.json 的 note，取件放在定位卡最上面；不填照样能传
+            // 玩家写的「发生了什么」（11-19 维护者定改必填：哪款游戏、做了什么、看到了什么，同 Mac UploadDiagnosticsSheet）：作业层写进 manifest.json 的 note，取件放在定位卡最上面；空着「上传」点不了
             var note = new TextBox { PlaceholderText = T("diag.upload.notePlaceholder"), AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 64, MaxHeight = 140 };
             AutomationId(note, "diag.upload.note");
             void Confirm()
@@ -84,6 +84,8 @@ public sealed partial class EnvironmentWindow
                 body.Children.Add(note);
                 var cancel = Action("diag.upload.cancel", "diag.upload.cancel"); cancel.Click += (_, _) => dialog.Close();
                 var send = Action("diag.upload.send", "diag.upload.send", true); send.Click += async (_, _) => await Send();
+                send.IsEnabled = !string.IsNullOrWhiteSpace(note.Text);
+                note.TextChanged += (_, _) => send.IsEnabled = !string.IsNullOrWhiteSpace(note.Text);
                 body.Children.Add(Row(cancel, send));
             }
             async Task Send()

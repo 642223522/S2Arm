@@ -1,7 +1,7 @@
-// 即时存档（缺省关，S2A_SNAP_MODE / S2A_SNAP_RESTORE 才开）：游玩中把游戏冻结在「门里」安全点，存下游戏内存 + 内存账 + 内核账（+ 后续阶段的服务 / 音频 / 图形），退出进程；
+// 即时存档（苹果端缺省开、S2A_SNAP_MODE=0 关，见 snapsw.c；恢复局 S2A_SNAP_RESTORE）：游玩中把游戏冻结在「门里」安全点，存下游戏内存 + 内存账 + 内核账（+ 后续阶段的服务 / 音频 / 图形），退出进程；
 //   新进程按快照恢复。设计见 ~/.../side-session-notes/即时存档_实现设计_1116.md。
 // 开关（缺省全关，不影响现有路径）：
-//   S2A_SNAP_MODE=1      存档模式起局：游戏线程 TLS / 线程对象落进窗口 arena（地址随快照走）
+//   存档模式（缺省；S2A_SNAP_MODE=0 关）起局：游戏线程 TLS / 线程对象落进窗口 arena（地址随快照走）
 //   S2A_SNAP_AT=<秒>     起局后到点存一次快照并退出进程；S2A_SNAP_DIR=<目录> 快照写到这里（必须是空目录或不存在）
 //   S2A_SNAP_RESTORE=<目录>  从快照恢复：先核清单（构建号 / 宿主二进制 / 程序号 / 窗口 / 布局 / 存档目录），任何一项不符打红拒绝、不碰存档直接退出
 #include "native.h"
@@ -352,11 +352,8 @@ static int dump_mem(FILE *f, uint64_t *raw_out, uint64_t *comp_out, int *nreg) {
 static FILE *open_in(const char *dir, const char *name, const char *mode) { char p[2048]; snprintf(p, sizeof p, "%s/%s", dir, name); return fopen(p, mode); }
 static int close_sync(FILE *f) { int e = fflush(f) || fsync(fileno(f)); return fclose(f) || e ? -1 : 0; }
 #include <fts.h>
-static void rmtree(const char *path) {   // 删整棵目录（快照的临时 / 旧目录）；不存在不算错
-    char *av[] = {(char *)path, NULL}; FTS *fs = fts_open(av, FTS_PHYSICAL | FTS_NOCHDIR, NULL); if (!fs) return;
-    for (FTSENT *e; (e = fts_read(fs));) { if (e->fts_info == FTS_DP) rmdir(e->fts_path); else if (e->fts_info == FTS_F || e->fts_info == FTS_SL || e->fts_info == FTS_SLNONE || e->fts_info == FTS_DEFAULT) unlink(e->fts_path); }
-    fts_close(fs);
-}
+void s2a_snap_rmtree(const char *path);   // snapdel.c：删整棵目录（快照的临时 / 旧目录）；不存在不算错
+static void rmtree(const char *path) { s2a_snap_rmtree(path); }
 // 新快照先写进 <目录>.new，全部写完、清单标「完整」后才原子换上；中途失败旧快照原样留着（存一次失败不能把玩家上一份好快照弄坏）
 typedef snap_fp_cb fp_cb;
 static void fps_all(fp_cb cb); static FILE *g_fp_f, *g_lay_f; static void fp_write(const char *name, snap_fp fp);
@@ -364,6 +361,7 @@ static int g_lay_n, g_lay_fields, g_lay_bad; static char g_lay_badnames[1024];
 const char *s2a_snap_path(const char *v);
 static void (*g_snap_done_cb)(int ok, const char *dir);
 static _Atomic int g_snap_busy;
+int s2a_snap_busy(void) { return atomic_load(&g_snap_busy); }   // 正在存档（删除快照前查：snapdel.c；游戏内菜单置灰：ios/vpad.m）
 void s2a_snap_thaw(void);   // thread.c
 static void snap_finish(int ok, const char *dir, int exit_after) {
     if (exit_after) { LOG("即时存档：存完退出进程（快照%s）", ok ? "完整" : "不完整，恢复时会拒绝"); s2a_logcon_flush(); _exit(ok ? 0 : 5); }

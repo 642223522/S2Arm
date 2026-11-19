@@ -806,13 +806,8 @@ static uint64_t index_img_len(const char *root) {   // index.tsv 里 game.img �
     while (fgets(line, sizeof line, f)) if (!strncmp(line, "game.img\t", 9)) { v = strtoull(line + 9, NULL, 10); break; }
     fclose(f); return v;
 }
-// 0.6.0 行为开关（同电脑侧 pack/jobs/program_pack.py ON_BY_DEFAULT）：0.6.0 之前缺省关、玩家手机上行为一字不变；切 0.6.0 时把缺省翻成 1。单测按两种状态各核一遍
-#ifndef S2A_V060_DEFAULT
-#define S2A_V060_DEFAULT 0
-#endif
-int g_s2a_v060 = S2A_V060_DEFAULT;
-static void img_shed(const char *root, const char *logp) {
-    if (!g_s2a_v060 || !came_from_import(root)) return;
+static void img_shed(const char *root, const char *logp) {   // 导入来的本体截掉已解成文件的派生件（0.6.0 起通用壳是唯一装法，不再有开关）
+    if (!came_from_import(root)) return;
     char ip[2400]; snprintf(ip, sizeof ip, "%s/game.img", root);
     int fd = open(ip, O_RDONLY); if (fd < 0) return;
     uint8_t h[136]; upd_ent *e = NULL; size_t n = 0; uint64_t to, tl, total0;
@@ -1004,7 +999,7 @@ static int img_place(const char *proc_docs, const char *path, int pass) {   // 0
     if (in) { char line[4600]; while (fgets(line, sizeof line, in)) if (!strncmp(line, "shaders/", 8) || !strncmp(line, "romfs_overlay/", 14)) { fputs(line, o); shaders |= !strncmp(line, "shaders/", 8); } fclose(in); }
     if (!shaders) { img_ent *te; size_t tn; if (!img_toc(root, &te, &tn)) { for (size_t i = 0; i < tn && !shaders; i++) shaders = !strncmp(te[i].rel, "shaders/", 8); img_free(te, tn); } }
     // 两处都没有：多半是把资源包文件夹里的 game.img 直接放了进来（它按设计不带 shaders/），起局时着色器全靠现编（11-13 起不再收局；诊断 D-9864 / D-F6W7）
-    if (!shaders) { LOG("【黄】资源导入：%s 里没有着色器库（shaders/）：照样能玩，着色器首次遇到时现编、前几分钟会卡；要不卡就放「S2Arm 自签导出」文件夹里这款的 .img",
+    if (!shaders) { LOG("【黄】资源导入：%s 里没有着色器库（shaders/）：照样能玩，着色器首次遇到时现编、前几分钟会卡；要不卡就把电脑「S2Arm 游戏包」文件夹里这款的 .s2arm 一起放进来（它带着着色器库）",
                         strrchr(path, '/') ? strrchr(path, '/') + 1 : path);
                     snprintf(g_img_noshaders, sizeof g_img_noshaders, "%s", strrchr(path, '/') ? strrchr(path, '/') + 1 : path); }
     if (fclose(o) || tx_swap(tx, tp, ip, NULL)) { snprintf(g_img_err, sizeof g_img_err, "写 index.tsv 失败：%s", strerror(errno)); unlink(tp); IMG_PLACE_FAIL(); }

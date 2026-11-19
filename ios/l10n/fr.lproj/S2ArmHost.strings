@@ -361,8 +361,8 @@
 "diag.upload.fail.title" = "Échec de l'envoi";
 "diag.upload.go" = "Envoyer";
 "diag.report.title" = "Signaler un problème";
-"diag.report.message" = "Nous enverrons les journaux de cet appareil, ses informations système et la liste des pipelines graphiques utilisés par les jeux (identifiants de shaders uniquement) pour aider à identifier la cause, puis vous donnerons un code court. Vous pouvez écrire une phrase sur ce qui s'est passé (facultatif).";
-"diag.report.placeholder" = "Que s'est-il passé ? (facultatif)";
+"diag.report.message" = "Nous enverrons les journaux de cet appareil, ses informations et la liste des pipelines graphiques utilisés par les jeux (identifiants de shaders uniquement) pour trouver la cause, puis vous donnerons un code court. Indiquez quel jeu, ce que vous avez fait et ce que vous avez vu.";
+"diag.report.placeholder" = "Obligatoire : quel jeu, ce que vous avez fait, ce que vous avez vu";
 "diag.upload.post" = "Publier sur GitHub";
 "diag.upload.retry" = "Réessayer";
 "dprompt.expiry.body" = "Temps restant : %@. Après expiration, le jeu ne s'ouvrira plus, mais vos sauvegardes sont en sécurité : connectez l'iPhone et cliquez à nouveau sur « Installer sur l'iPhone », ou actualisez dans AltStore.";
@@ -503,6 +503,8 @@
 "settings.toggle.devHud" = "Afficher l'overlay de diagnostic S2Arm";
 "settings.toggle.diagOnOpen" = "Exporter le diagnostic à la prochaine ouverture";
 "settings.toggle.docked" = "Mode TV";
+"settings.toggle.snapshot" = "Instantanés de sauvegarde rapide";
+"settings.snapshot.note" = "Pour tous les jeux : enregistrez le moment présent et revenez-y plus tard. S’applique au prochain lancement d’un jeu.";
 "settings.toggle.diagRun" = "Session de diagnostic (prochaine session)";
 "settings.diagRun.note" = "Activez, fermez l'app depuis le sélecteur d'apps et relancez ce jeu. Restez à l'endroit où le problème apparaît pendant au moins 3 minutes, puis exportez le diagnostic. S'applique uniquement à la prochaine session ; cette session sera plus lente.";
 "settings.docked.note" = "Image plus nette, mais consommation et température plus élevées ; déconseillé sur un téléphone";
@@ -594,3 +596,14 @@
 "vpad.snap.saveChanged.title" = "Revenir à l’instant sauvegardé ?";
 "vpad.snap.saveChanged.body" = "Le jeu a sauvegardé depuis. Revenir ramène aussi sa sauvegarde à cet instant ; la sauvegarde actuelle est d’abord copiée.";
 "vpad.snap.saveChanged.go" = "Revenir";
+"vpad.snap.button.hint" = "Touchez pour enregistrer ce moment ; maintenez pour y revenir";
+"vpad.snap.none" = "Aucun moment enregistré. Touchez le bouton pour en enregistrer un";
+"vpad.snap.savedHint" = "%@ · Maintenez le bouton pour revenir ici";
+"vpad.snap.delete" = "Supprimer cet instant";
+"vpad.snap.size" = "Environ %@";
+"vpad.snap.delete.title" = "Supprimer l’instant enregistré ?";
+"vpad.snap.delete.body" = "Cet instantané occupe environ %@. Une fois supprimé, vous ne pourrez plus revenir à cet instant. Vos sauvegardes de jeu ne sont pas touchées.";
+"vpad.snap.deleted" = "Supprimé. L’espace est libéré";
+"vpad.snap.deleteFailed" = "Suppression incomplète. Réessayez dans un instant";
+"snap.result.title" = "Impossible de revenir à cet instant";
+"snap.result.generic" = "Le retour à cet instant n’a pas fonctionné, le jeu a donc redémarré. Vos sauvegardes de jeu ne sont pas touchées.";

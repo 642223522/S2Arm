@@ -1,7 +1,6 @@
-"""通用壳第 2 段：装机两个作业按开关分流（pack/jobs/install.py push_game / install_shell，program_pack.enabled）。
+"""通用壳装机的两个作业（pack/jobs/install.py push_game / install_shell；0.6.0 起是唯一的装机方式）。
 期望值按维护者 11-17 定的规则手写，不靠被测代码算：
-  ① 开关关（缺省）：「装到 iPhone」走原来的 put_game、「更新 S2Arm」走原来的容器路径；一次都不碰 push_game / install_shell
-  ② 开关开：「装到 iPhone」只走 push_game、「更新 S2Arm」只走 install_shell
+  ② 「装到 iPhone」只走 push_game、「更新 S2Arm」只走 install_shell
   ③ push_game：手机上没装壳记录 → shell_install_required；壳号不是本版 → shell_update_required；都不推、不装
   ④ push_game 正常：推这一款的程序包（push_programs 收到这一款与这台的团队 / 包名）与资源包，绝不调 ph.install；设备记录这款带 program 与 pack
   ⑤ install_shell：组只有壳的容器、ph.install 收到空游戏表，绝不推程序包 / 资源包；记壳号；手机上已是同一个（same_app）→ 不装、updated False
@@ -33,6 +32,7 @@ class FakePhone:
     def pull_kept(self, games): return 0
     def app_running(self): return False
     def client(self, work): return SimpleNamespace()
+    def backup(self, g): return None   # 装壳 / 推前先拉存档（snapshot_phone_saves）：本替身手机上没存档
 
 
 class RouteTests(JobCase):
@@ -41,39 +41,21 @@ class RouteTests(JobCase):
         self.ph = FakePhone()
         self.c.r = dict(self.c.r, gameId=GID)
         self.hits = []
-        for name in ("put_game", "push_game"):
+        for name in ("push_game",):
             p = mock.patch.object(install, name, lambda c, gid, ph, *a, n=name, **k: self.hits.append(n) or {})
             p.start(); self.addCleanup(p.stop)
         for p in (mock.patch.object(install, "phone_for", lambda c: self.ph), mock.patch.object(install, "ios_pack", lambda c, g: Path("/p")),
                   mock.patch.object(install, "wants_export", lambda c: False)):
             p.start(); self.addCleanup(p.stop)
 
-    def switch(self, on):
-        p = mock.patch.object(program_pack, "enabled", lambda c: on); p.start(); self.addCleanup(p.stop)
-
-    def test_install_off_uses_put_game(self):
-        self.switch(False)
-        install._install(self.c)
-        self.assertEqual(self.hits, ["put_game"])
-
-    def test_install_on_uses_push_game(self):
-        self.switch(True)
+    def test_install_uses_push_game(self):
         install._install(self.c)
         self.assertEqual(self.hits, ["push_game"])
 
-    def test_update_on_uses_install_shell_only(self):
-        self.switch(True)
+    def test_update_uses_install_shell_only(self):
         with mock.patch.object(install, "install_shell", lambda c, ph: self.hits.append("install_shell") or dict(updated=True)):
             install._update_phone(self.c)
         self.assertEqual(self.hits, ["install_shell"])
-
-    def test_update_off_never_calls_install_shell(self):
-        self.switch(False)
-        with mock.patch.object(install, "install_shell", lambda c, ph: self.hits.append("install_shell")), \
-             mock.patch.object(install, "container_others", lambda c, ph, rec: []), mock.patch.object(packer, "current_shell_id", lambda c: "S1"):
-            install._update_phone(self.c)   # 手机上没有别的款、壳已是本版：原路径 → 不装（updated False）
-        self.assertNotIn("install_shell", self.hits)
-
 
 class PushGameTests(JobCase):
     def setUp(self):

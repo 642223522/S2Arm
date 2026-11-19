@@ -30,8 +30,8 @@ STUB = textwrap.dedent('''
     req_path = Path(sys.argv[sys.argv.index("--request") + 1])
     r = json.loads(req_path.read_text())
     (here / "seen").mkdir(exist_ok=True)
-    (here / "seen" / (r["taskId"] + ".json")).write_text(json.dumps(r))
-    platform = {"build": "mac", "ipa": "iphone"}[r["operation"]]
+    (here / "seen" / (r["taskId"] + ".json")).write_text(json.dumps(dict(r, _switch=os.environ.get("S2A_ANDROID_EXPORT"))))
+    platform = {"build": "mac", "ipa": "iphone", "android": "android"}[r["operation"]]
     what = json.loads((here / "scenario.json").read_text()).get(r["gameId"] + "/" + platform, "ok")
     def out(**e):
         print(json.dumps(dict(schema=1, taskId=r["taskId"], operation=r["operation"], gameId=r["gameId"], **e)), flush=True)
@@ -101,6 +101,23 @@ class ExportPlanTests(JobCase):
 
     def two(self, location=None):
         return [{"gameId": A, "name": "甲", "platforms": ["iphone", "mac"]}, {"gameId": B, "name": "乙", "platforms": ["mac", "iphone"]}]
+
+    # 安卓（开关后）：子作业请求带 installSerial、子进程读得到开关（c.env() 清 S2A_*，编排要原样传；11-18 启动器端到端撞到过）
+    def test_android_step_gets_serial_and_switch(self):
+        task, path = self.new_request({"source": "inline", "items": [{"gameId": A, "name": "甲", "platforms": ["android"]}],
+                                       "androidSerial": "10AF4N00TA002NC"}, installSerial="不该漏给别的子作业")
+        with mock.patch.dict(os.environ, {"S2A_ANDROID_EXPORT": "1"}):
+            self.assertEqual(self.run_inline(path), 0)
+        child = self.seen(f"{task}-1")
+        self.assertEqual((child["operation"], child["installSerial"], child["_switch"]), ("android", "10AF4N00TA002NC", "1"))
+
+    def test_android_step_unsupported_when_switch_off(self):
+        task, path = self.new_request({"source": "inline", "items": [{"gameId": A, "name": "甲", "platforms": ["android"]}]})
+        with mock.patch.dict(os.environ, {"S2A_ANDROID_EXPORT": "0"}):
+            self.run_inline(path)
+        ended = [e for e in read_events(self.c.private, task) if e["type"] == "stepEnded"]
+        self.assertEqual(ended[0]["outcome"]["message"], export_plan.UNSUPPORTED_MESSAGE)
+        self.assertFalse((self.stubdir / "seen" / f"{task}-1.json").exists(), "开关关着不起子作业")
 
     # ① 单款就地出、全成功
     def test_inline_runs_mac_then_iphone_per_game_and_passes_request_fields(self):

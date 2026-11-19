@@ -66,11 +66,36 @@ static void s2a_ios_suspend_enqueue(int on, const char *why);
 // 重启完成（runtime/src/session.c s2a_session_on_restart_done，启动时登记一次）：不管设置页 / 游戏 ExecuteProgram / 测试开关谁发起，
 //   新局起来后都在这里放「重启首帧屏障」（s2a_session_guest_start_prepare 立的客体冻结 + GPU hold）。屏障防的是重建期间 App 进了后台、
 //   新局在后台提交 GPU：所以只在 UIKit 确认前台活跃时放；不活跃就留给「回前台 / 获得焦点」那次 s2a_ios_suspend(0) 放
+static void snap_result_check(void);
 static void restart_done(unsigned generation) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ snap_result_check(); });   // 快照恢复中途失败后重新开局：告诉玩家
     dispatch_async(dispatch_get_main_queue(), ^{
         if (UIApplication.sharedApplication.applicationState == UIApplicationStateActive) s2a_ios_suspend_enqueue(0, "重启完成");
         else LOG("iOS 壳：会话 %u 重启完成，App 不在前台活跃，屏障留到回前台放", generation);
     });
+}
+// 快照恢复的结果（引擎每次恢复尝试都重写文档根下 snap_result.tsv：结果 / 分类 / 给玩家 / 时刻，runtime/src/snapshot.c s2a_snap_result_note）：
+//   结果不是「恢复成功」也不是「需要确认」（那一类 vpad / 游戏库已当场问过）就把「给玩家」那句弹出来，弹完删文件不重复弹。
+//   本局文档根找不到（游戏库里，还没起局）就看上一局那款的文档根（S2ALastGameId → <容器>/games/<号>/）
+static void snap_result_check(void) {
+    NSMutableArray<NSString *> *paths = [NSMutableArray array];
+    char p[2048]; if (s2a_docs_path(p, sizeof p, "snap_result.tsv") > 0) [paths addObject:@(p)];
+    NSString *last = [NSUserDefaults.standardUserDefaults stringForKey:@"S2ALastGameId"]; char d[1024];
+    if (last.length && ![last containsString:@"/"] && s2a_container_docs(d, sizeof d) > 0) [paths addObject:[NSString stringWithFormat:@"%s/games/%@/snap_result.tsv", d, last]];
+    for (NSString *f in paths) {
+        NSString *text = [NSString stringWithContentsOfFile:f encoding:NSUTF8StringEncoding error:nil]; if (!text) continue;
+        NSMutableDictionary<NSString *, NSString *> *kv = [NSMutableDictionary dictionary];
+        for (NSString *line in [text componentsSeparatedByString:@"\n"]) { NSArray *c = [line componentsSeparatedByString:@"\t"]; if (c.count >= 2) kv[c[0]] = c[1]; }
+        [NSFileManager.defaultManager removeItemAtPath:f error:nil];
+        NSString *result = kv[@"结果"], *say = kv[@"给玩家"];
+        if (!result.length || [result isEqualToString:@"恢复成功"] || [result isEqualToString:@"需要确认"]) return;
+        LOG("快照：恢复结果「%s」（%s），告诉玩家", result.UTF8String, kv[@"分类"].UTF8String ?: "");
+        UIAlertController *a = [UIAlertController alertControllerWithTitle:S2AL(@"snap.result.title") message:say.length && s2a_l10n_zh() ? say : S2AL(@"snap.result.generic") preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.ok") style:UIAlertActionStyleDefault handler:nil]];
+        UIView *s2a_ios_root_view(void); UIViewController *top = s2a_ios_root_view().window.rootViewController; while (top.presentedViewController) top = top.presentedViewController;
+        [top presentViewController:a animated:YES completion:nil];
+        return;
+    }
 }
 // 设置页「立刻重启」的请求回调：只回设置页结果；屏障由 restart_done 放（控制线程先调它，两者都派主线程，先放屏障后回设置页）
 static void settings_restart_result(int result, const char *detail, void *context) {
@@ -718,6 +743,7 @@ static void audio_category_apply(void) {
     // 同一浮层下随后起的暗黑3 从没「回前台」过、一直出帧——失焦期间画面照常可提交，冻结只该跟后台走
     // 用通知不用委托方法：场景式 / 旧式生命周期都发这几条
     s2a_session_on_restart_done(restart_done);   // 任何发起方的进程内重启完成都由壳放重启首帧屏障（见 restart_done）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ snap_result_check(); });   // 兜住「恢复失败、进程直接退出」：下次打开时说
     NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
     [nc addObserverForName:UIApplicationWillResignActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; display_focus_publish(NO); LOG("iOS 壳：失去焦点（仍在前台，游戏照跑）"); }];
     [nc addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; display_focus_publish(NO); s2a_dguard_background(1, now_ns()); { int s2a_playtime_flush(void); s2a_playtime_flush(); } { void s2a_diag_session_fg(int); s2a_diag_session_fg(0); } s2a_ios_suspend_enqueue(1, "进后台"); s2a_guest_run_mark(0); }];   // 直连安全网：后台被杀 / 玩家划掉不算崩
@@ -909,6 +935,21 @@ static void *g_snap_play_ctx;
 int s2a_shell_snapshot_available(const char *gid) {
     int s2a_snap_saving(void), s2a_snap_dir_for(const char *, char *, size_t), s2a_snap_exists(const char *);
     char d[2048]; return gid && *gid && s2a_snap_saving() && !s2a_snap_dir_for(gid, d, sizeof d) && s2a_snap_exists(d);
+}
+// 游戏库「从这一刻继续」：有完整快照的那款给出快照目录（宿主模型每秒重判时读里面的缩略图和保存时刻）；开关关着 / 没有完整快照回 -1
+int s2a_shell_snapshot_dir(const char *gid, char *out, unsigned long size) {
+    int s2a_snap_saving(void), s2a_snap_dir_for(const char *, char *, size_t), s2a_snap_exists(const char *);
+    char d[2048];
+    if (!gid || !*gid || !out || !s2a_snap_saving() || s2a_snap_dir_for(gid, d, sizeof d) || !s2a_snap_exists(d)) return -1;
+    return snprintf(out, size, "%s", d) < (int)size ? 0 : -1;
+}
+// 游戏库长按「删除这一刻」（玩家已确认）：连同缩略图、清单一起删，空间腾出来（runtime/src/snapdel.c）
+int s2a_shell_delete_snapshot(const char *gid) {
+    int s2a_snap_dir_for(const char *, char *, size_t), s2a_snap_delete(const char *);
+    char d[2048]; if (!gid || !*gid || s2a_snap_dir_for(gid, d, sizeof d)) return -1;
+    int rc = s2a_snap_delete(d);
+    LOG("游戏库：%s 删除存下的这一刻 → %s", gid, rc ? "没删干净" : "已删");
+    return rc;
 }
 static void library_play(const char *gid, void *ctx);
 static void snap_library_go(NSString *gid, NSString *dir, BOOL rollback) {
