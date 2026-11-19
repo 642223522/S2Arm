@@ -723,12 +723,6 @@ int main(void) {
         struct stat ei; char ef[1500]; snprintf(ef, sizeof ef, "%s/放这里导入/导出.img", Di); long long big = stat(ef, &ei) ? -1 : (long long)ei.st_size;
         CHECK(s2a_img_scan(Di) == 1, "⑭i 认领");
         char gi[1500]; snprintf(gi, sizeof gi, "%s/games/0100ABCD0000000C", Di);
-        extern int g_s2a_v060;
-        g_s2a_v060 = 0;   // 开关关着（0.6.0 之前的缺省）：解开照旧，本体一个字节不动
-        CHECK(s2a_pack_apply(gi) == 0, "⑭i 开关关：解开（%s）", s2a_pack_apply_failure());
-        { struct stat s0; char gimg[1600]; snprintf(gimg, sizeof gimg, "%s/资源包/game.img", gi);
-          CHECK(!stat(gimg, &s0) && (long long)s0.st_size == big, "⑭i 开关关：本体长度不变（%lld，导入时 %lld）", (long long)s0.st_size, big); }
-        g_s2a_v060 = 1;   // 开关开（0.6.0）：下面核截掉
         CHECK(s2a_pack_apply(gi) == 0, "⑭i 解开（%s）", s2a_pack_apply_failure());
         snprintf(c, sizeof c, "set -e; g='%s/资源包'; s=$(stat -f %%z \"$g/game.img\"); test \"$s\" -lt %lld"
                  " && python3 '%s/pack/img.py' ls \"$g/game.img\" | sort | cmp -s - '%s/orig.ls'"
@@ -741,8 +735,7 @@ int main(void) {
         snprintf(c, sizeof c, "shasum '%s/资源包/game.img' > '%s/after1.sha'", gi, Di); sh(c);
         CHECK(s2a_pack_apply(gi) == 0, "⑭i 再应用一次仍成功");
         snprintf(c, sizeof c, "shasum '%s/资源包/game.img' | cmp -s - '%s/after1.sha'", gi, Di);
-        CHECK(sh(c) == 0, "⑭i 再应用一次本体不变");
-        g_s2a_v060 = 0; }
+        CHECK(sh(c) == 0, "⑭i 再应用一次本体不变"); }
       // 格式号 9（更新版 S2Arm 做的；2 是着色器更新包，见 ⑭c）：不认、原样留着，给码 ios_install_img_format
       char D4[1300], f4[1400]; snprintf(D4, sizeof D4, "%s/img_docs4", T); mkdir(D4, 0755); snprintf(f4, sizeof f4, "%s/Import Here", D4); mkdir(f4, 0755);
       snprintf(f4, sizeof f4, "%s/Import Here/新格式.img", D4);   // 英文界面建的导入文件夹名也认
