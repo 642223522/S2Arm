@@ -330,39 +330,58 @@ void nvn_snap_fps(snap_fp_cb cb) {
     if (gl_snap_fps) gl_snap_fps(cb);   // GL 出图层（egl.m）
     if (vk_snap_fps) vk_snap_fps(cb);   // Vulkan 出图层（vk_snap.inc）
 }
+// 弱链接[nvntest]：s2a_snap_progress（runtime/src/snapshot.c 存档看门狗；GL / 图形单测不链运行时）
+void s2a_snap_progress(const char *layer) __attribute__((weak));
+#define SNAP_AT(s) do { if (s2a_snap_progress) s2a_snap_progress(s); } while (0)
 int nvn_snap_save(const char *dir) {
     if (!s2a_snap_arena_get) { MLOG("【红】 即时存档：宿主没有命令记录区接口"); return -1; }
     // GL 出图层（外部生产者）：先排空那一层、存它的对象与上下文（gfx/gl egl.m gl_snap_save）；Vulkan 层另做
+    SNAP_AT("图形 GL 出图层");
     if (gl_snap_save && gl_snap_used && gl_snap_used()) { char gp[1200]; snprintf(gp, sizeof gp, "%s/gfx_gl.bin", dir); if (gl_snap_save(gp)) { MLOG("【红】 即时存档：GL 出图层状态没存成"); return -1; } }
+    SNAP_AT("图形 Vulkan 出图层");
     if (vk_snap_save && vk_snap_used && vk_snap_used()) { char vp[1200]; snprintf(vp, sizeof vp, "%s/gfx_vk.bin", dir); if (vk_snap_save(vp)) { MLOG("【红】 即时存档：Vulkan 出图层状态没存成"); return -1; } }
     uint64_t ca = 0, cu = 0, vu = 0; s2a_snap_arena_get(&ca, &cu, &vu);
     if (!ca) { MLOG("【红】 即时存档：命令记录区没开（存档模式要 S2A_CMD_ARENA=1），命令句柄落点不固定，存不了"); return -1; }
-    mtl_present_flush(); mtl_finish_gpu();
+    SNAP_AT("图形 等 GPU 做完"); mtl_present_flush(); mtl_finish_gpu();
     char p[1200]; int ok = 1;
+    SNAP_AT("图形 gfx_state");
     snprintf(p, sizeof p, "%s/gfx_state.bin", dir); ok &= fr_dump_state(p);
+    SNAP_AT("图形 gfx_progkeys");
     { snprintf(p, sizeof p, "%s/gfx_progkeys.bin", dir); FILE *f = fopen(p, "wb"); ok &= f && s2a_hle_pk_save(f) >= 0; if (f) ok &= fclose(f) == 0; }
+    SNAP_AT("图形 gfx_vpool");
     { snprintf(p, sizeof p, "%s/gfx_vpool.bin", dir); FILE *f = fopen(p, "wb"); ok &= f && s2a_hle_vpool_save(f) >= 0; if (f) ok &= fclose(f) == 0; }
     int nseg = 0;
+    SNAP_AT("图形 gfx_shadow");
     { snprintf(p, sizeof p, "%s/gfx_shadow.bin", dir); FILE *f = fopen(p, "wb"); ok &= f != NULL;
       if (f) { nseg = s2a_hle_cmdshadow_list ? s2a_hle_cmdshadow_list(fr_seg_cb, f) : 0; uint32_t e = FR_REC_END; fr_w(f, &e, 4); ok &= fclose(f) == 0; } }
     nvn_snap_live lv = {0x31534E4Eu, 1, 0, 0, 0, 0, 0, nvn_serial_now(), atomic_load(&g_cur_frame), ca, cu, vu};
     pthread_mutex_lock(&g_mu); lv.fence = g_fence; lv.done = g_done; pthread_mutex_unlock(&g_mu);
     pthread_mutex_lock(&g_pq_mu); lv.pq_in = g_pq_in; lv.pq_done = g_pq_done; lv.pq_read = g_pq_read; pthread_mutex_unlock(&g_pq_mu);
+    SNAP_AT("图形 gfx_live");
     { snprintf(p, sizeof p, "%s/gfx_live.bin", dir); FILE *f = fopen(p, "wb"); ok &= f && fr_w(f, &lv, sizeof lv); if (f) ok &= fclose(f) == 0; }
+    SNAP_AT("图形 gfx_hle");
     { snprintf(p, sizeof p, "%s/gfx_hle.bin", dir); FILE *f = fopen(p, "wb"); ok &= f && hle_snap_save(f) == 0; if (f) ok &= fclose(f) == 0; }
+    SNAP_AT("图形 gfx_gs");
     { snprintf(p, sizeof p, "%s/gfx_gs.bin", dir); FILE *f = fopen(p, "wb"); ok &= f && nvn2_snap_gs_save && nvn2_snap_gs_save(f) == 0; if (f) ok &= fclose(f) == 0; }
     // 对象序号 → 游戏里贴图对象地址（只留对象里序号仍是它的，即还活着的）
+    SNAP_AT("图形 gfx_texaddr");
     { snprintf(p, sizeof p, "%s/gfx_texaddr.bin", dir); FILE *f = fopen(p, "wb"); uint32_t n = 0, nfree = 0; ok &= f != NULL;
       pthread_mutex_lock(&g_smu);
       for (uint32_t i = 0; f && i < g_snap_texaddr.cap; i++) if (g_snap_texaddr.vals[i]) { uint64_t ser; memcpy(&ser, g_snap_texaddr.keys + (size_t)i * 8, 8); const tex_t *t = g_snap_texaddr.vals[i];
           if (!span_readable(t, sizeof *t)) { nfree++; continue; }   // 游戏已把放对象的内存还掉 / 收成不可访问（没 Finalize 就释放：一款大游戏）：对象已不在，不存
           if (t->serial != ser) continue; uint64_t r[2] = {ser, (uint64_t)(uintptr_t)t}; ok &= fr_w(f, r, sizeof r); n++; }
       pthread_mutex_unlock(&g_smu); if (f) ok &= fclose(f) == 0; MLOG("即时存档：活着的贴图对象 %u 个（对象内存已不可读、按已释放算 %u 个）", n, nfree); }
+    SNAP_AT("图形 gfx_gpu");
     { uint64_t gb = 0; int skipped = 0; snprintf(p, sizeof p, "%s/gfx_gpu.bin", dir); int ng = fr_dump_gpu(p, &gb, &skipped); ok &= ng >= 0; MLOG("即时存档：GPU 私有贴图 %d 张 %.0f MB（不存 %d 张）", ng, gb / 1048576.0, skipped); }
+    SNAP_AT("图形 gfx_plain");
     { uint64_t pb = 0; int sk = 0; snprintf(p, sizeof p, "%s/gfx_plain.bin", dir); int np = snap_dump_plain(p, &pb, &sk); ok &= np >= 0; MLOG("即时存档：只读的显卡私有普通贴图 %d 张 %.0f MB（不存 %d 张）", np, pb / 1048576.0, sk); }
+    SNAP_AT("图形 gfx_pkg");
     { uint64_t pb = 0; snprintf(p, sizeof p, "%s/gfx_pkg.bin", dir); int np = snap_dump_pkg(p, &pb); ok &= np >= 0; MLOG("即时存档：GPU 写过的预排布贴图 %d 张 %.0f MB", np, pb / 1048576.0); }
+    SNAP_AT("图形 gfx_alias");
     { snprintf(p, sizeof p, "%s/gfx_alias.bin", dir); ok &= snap_alias_save(p) == 0; }
+    SNAP_AT("图形 gfx_mtl");
     { snprintf(p, sizeof p, "%s/gfx_mtl.bin", dir); FILE *f = fopen(p, "wb"); ok &= f && snap_mtl_save(f) == 0; if (f) ok &= fclose(f) == 0; }
+    SNAP_AT("图形 gfx_codec");
     { snprintf(p, sizeof p, "%s/gfx_codec.bin", dir); FILE *f = fopen(p, "wb"); int nc = f && nvn2_snap_codec_save ? nvn2_snap_codec_save(f) : 0; ok &= f && nc >= 0; if (f) ok &= fclose(f) == 0; if (nc > 0) MLOG("即时存档：视频解码器 %d 个", nc); }
     MLOG("%s即时存档：图形 栅栏 %llu/%llu、出图序号 %llu、对象序号 %llu、帧 %llu、命令记录宿主块 %d 段（区已用 %llu MB）", ok ? "" : "【红】", (unsigned long long)lv.fence, (unsigned long long)lv.done,
          (unsigned long long)lv.pq_in, (unsigned long long)lv.serial, (unsigned long long)lv.frame, nseg, (unsigned long long)(cu >> 20));

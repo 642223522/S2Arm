@@ -77,6 +77,7 @@ void nvn_be_drain(void) __attribute__((weak_import));
 int nvn_snap_grab(const char *path) __attribute__((weak_import));
 
 static double now_s(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9; }
+void s2a_snap_progress(const char *layer);   // 存档看门狗（下面「存档看门狗」一节）
 void s2a_snap_live_set(int on);   // snapsw.c：恢复完成 / 进程内重建时改「正在记日志」
 void s2a_snap_hlog_continue(void);   // thread.c：快照里的句柄日志接过来当开头
 // 进程内重建开新一局（开着快照才有效）：日志从头记；要恢复时先不记，恢复完成接上快照日志后再记（同冷启动的恢复局）
@@ -329,6 +330,7 @@ static int dump_mem(FILE *f, uint64_t *raw_out, uint64_t *comp_out, int *nreg) {
     uint64_t raw = 0, comp = 0; int e = 0;
     for (int b0 = 0; b0 < nsp && !e; b0 += 64) {
         int bn = nsp - b0 < 64 ? nsp - b0 : 64; uint8_t **out = calloc(64, sizeof *out); size_t *ol = calloc(64, sizeof *ol);
+        s2a_snap_progress(NULL);   // 看门狗：层内每批报一次时刻
         dispatch_apply((size_t)bn, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t k) {
             span_t s = sp[b0 + (int)k]; out[k] = malloc(s.n + 4096);
             ol[k] = out[k] ? compression_encode_buffer(out[k], s.n, (const uint8_t *)s.a, s.n, NULL, COMPRESSION_LZ4) : 0;
@@ -365,6 +367,87 @@ const char *s2a_snap_path(const char *v);
 static void (*g_snap_done_cb)(int ok, const char *dir);
 static _Atomic int g_snap_busy;
 void s2a_snap_thaw(void);   // thread.c
+// ---------- 存档看门狗 ----------
+// 存档每走一层报一次（s2a_snap_progress：层名 + 时刻；层内长循环只报时刻）。看门狗线程每 0.2 秒看一次：同一层 10 秒没前进 = 卡住——
+//   把当前层和全部线程的栈写进日志（报修有现场），放弃这次存档，游戏解冻照常跑。卡住的存档线程不能强杀（可能持着锁），留着：
+//   它以后若自己走完，不换快照、不再回调（snap_finish_once），只把「正在存」放开；在那之前再点存档回「正在存」
+#define SNAP_DOG_NS (10ull * 1000000000ull)
+static _Atomic(const char *) g_snap_layer;
+static _Atomic uint64_t g_snap_tick;
+static _Atomic int g_snap_done_once, g_snap_abandoned, g_snap_dog_on;
+void s2a_snap_progress(const char *layer) {
+    if (layer) atomic_store(&g_snap_layer, layer);
+    atomic_store(&g_snap_tick, clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
+    const char *st = layer ? getenv("S2A_SNAP_TEST_STALL") : NULL;   // 看门狗实测用：存档走到这一层时停 20 秒（模拟卡住）
+    if (st && !strcmp(st, layer)) { LOG("即时存档：测试，在「%s」停 20 秒", layer); sleep(20); }
+}
+static void snap_finish(int ok, const char *dir, int exit_after);
+// 这次存档只收尾一次：看门狗放弃了的，存档线程后来走到收尾时只放开「正在存」
+static void snap_finish_once(int ok, const char *dir, int exit_after) {
+    atomic_store(&g_snap_dog_on, 0);
+    if (atomic_exchange(&g_snap_done_once, 1)) { atomic_store(&g_snap_busy, 0); LOG("即时存档：看门狗放弃过的那次存档线程现在才走完（结果作废），之后可以再存"); return; }
+    snap_finish(ok, dir, exit_after);
+}
+#if defined(__APPLE__)
+void s2a_where(uint64_t a, char *b, size_t n); int s2a_frames_of(uint64_t fp, uint64_t *lr, int max);   // crash.c
+// 全部线程的现场：逐条挂住只取 pc 与帧链（只读内存、不分配、不取锁），放开后再符号化写日志（挂着时写日志会和被挂线程手里的锁互等）
+static void snap_dump_threads(void) {
+    enum { MAXT = 256, MAXF = 24 };
+    static uint64_t pcs[MAXT], fr[MAXT][MAXF], tids[MAXT]; static int nf[MAXT]; static char nm[MAXT][64];
+    thread_act_array_t th; mach_msg_type_number_t n = 0; if (task_threads(mach_task_self(), &th, &n) != KERN_SUCCESS) return;
+    thread_t me = mach_thread_self(); int m = 0;
+    for (mach_msg_type_number_t i = 0; i < n; i++) {
+        if (th[i] != me && m < MAXT) {
+            pthread_t pt = pthread_from_mach_thread_np(th[i]); nm[m][0] = 0; tids[m] = 0;
+            if (pt) { pthread_getname_np(pt, nm[m], sizeof nm[m]); pthread_threadid_np(pt, &tids[m]); }
+            if (thread_suspend(th[i]) == KERN_SUCCESS) {
+                arm_thread_state64_t st; mach_msg_type_number_t cnt = ARM_THREAD_STATE64_COUNT; pcs[m] = 0; nf[m] = 0;
+                if (thread_get_state(th[i], ARM_THREAD_STATE64, (thread_state_t)&st, &cnt) == KERN_SUCCESS) {
+                    pcs[m] = (uint64_t)__darwin_arm_thread_state64_get_pc(st); nf[m] = s2a_frames_of((uint64_t)__darwin_arm_thread_state64_get_fp(st), fr[m], MAXF); }
+                thread_resume(th[i]); m++;
+            }
+        }
+        mach_port_deallocate(mach_task_self(), th[i]);
+    }
+    mach_port_deallocate(mach_task_self(), me); vm_deallocate(mach_task_self(), (vm_address_t)th, n * sizeof *th);
+    char w[160];
+    for (int k = 0; k < m; k++) {
+        s2a_where(pcs[k], w, sizeof w); LOG("即时存档看门狗：线程 %llu「%s」pc %s", (unsigned long long)tids[k], nm[k], w);
+        for (int f = 0; f < nf[k]; f++) { s2a_where(fr[k][f], w, sizeof w); LOG("即时存档看门狗：  #%d %s", f, w); }
+    }
+}
+#else
+static void snap_dump_threads(void) { LOG("即时存档看门狗：本平台不取线程栈"); }
+#endif
+typedef struct { char dir[2048]; int exit_after; } snap_dog_arg;
+static void *snap_dog(void *arg) {
+    snap_dog_arg *a = arg; pthread_setname_np("s2a-存档看门狗");
+    while (atomic_load(&g_snap_dog_on)) {
+        usleep(200000);
+        uint64_t idle = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - atomic_load(&g_snap_tick);
+        if (!atomic_load(&g_snap_dog_on) || idle < SNAP_DOG_NS) continue;
+        const char *ly = atomic_load(&g_snap_layer);
+        LOG("【红】即时存档：存档卡在「%s」%.1f 秒没前进，放弃这次存档、游戏照常跑；下面是各线程现场（报修用）", ly ? ly : "?", idle / 1e9);
+        snap_dump_threads();
+        atomic_store(&g_snap_abandoned, 1);
+        if (!atomic_exchange(&g_snap_done_once, 1)) {
+            if (a->exit_after) { LOG("即时存档：存完退出进程（快照不完整，恢复时会拒绝）"); s2a_logcon_flush(); _exit(5); }
+            s2a_snap_thaw();   // 「正在存」不放开：卡住的存档线程还在、还用着临时目录，等它走完（snap_finish_once）再放
+            LOG("即时存档：这次没存成（看门狗放弃），游戏接着跑");
+            if (g_snap_done_cb) g_snap_done_cb(0, a->dir);
+        }
+        break;
+    }
+    free(a); return NULL;
+}
+static void snap_dog_start(const char *final_dir, int exit_after) {
+    atomic_store(&g_snap_done_once, 0); atomic_store(&g_snap_abandoned, 0); atomic_store(&g_snap_dog_on, 1); s2a_snap_progress("开始");
+    snap_dog_arg *a = calloc(1, sizeof *a); pthread_t t;
+    if (!a) return;
+    snprintf(a->dir, sizeof a->dir, "%s", final_dir); a->exit_after = exit_after;
+    if (pthread_create(&t, NULL, snap_dog, a)) { free(a); LOG("【黄】即时存档：看门狗线程起不来，这次存档没有看门狗"); return; }
+    pthread_detach(t);
+}
 static void snap_finish(int ok, const char *dir, int exit_after) {
     if (exit_after) { LOG("即时存档：存完退出进程（快照%s）", ok ? "完整" : "不完整，恢复时会拒绝"); s2a_logcon_flush(); _exit(ok ? 0 : 5); }
     s2a_snap_thaw(); atomic_store(&g_snap_busy, 0);
@@ -377,40 +460,44 @@ static void snap_take_(const char *final_dir, int exit_after) {
     double t0 = now_s();
     static char tmpd[2048]; snprintf(tmpd, sizeof tmpd, "%s.new", final_dir); rmtree(tmpd);
     const char *dir = tmpd;
-    if (mkdir(dir, 0755)) { LOG("【红】即时存档：建不了快照临时目录 %s（errno %d），不存", dir, errno); snap_finish(0, final_dir, 0); return; }
-    snap_id id; current_id(&id);   // 冻结前算存档目录哈希（冻结后游戏不再写）
+    if (mkdir(dir, 0755)) { LOG("【红】即时存档：建不了快照临时目录 %s（errno %d），不存", dir, errno); snap_finish_once(0, final_dir, 0); return; }
+    snap_dog_start(final_dir, exit_after);
+    s2a_snap_progress("存档目录哈希"); snap_id id; current_id(&id);   // 冻结前算存档目录哈希（冻结后游戏不再写）
+    s2a_snap_progress("验证截图");
     { char g[2048]; snprintf(g, sizeof g, "%s/a_last.png", dir); if (nvn_snap_grab) nvn_snap_grab(g); }   // 验证用：存档时刻的画面
     double t1 = now_s();
     int nthr = 0, nst[8], us = -1;
-    for (int k = 0; k < 5 && us < 0; k++) { us = s2a_snap_freeze(2000, &nthr, nst); if (us < 0) LOG("【黄】即时存档：第 %d 次冻结 2 秒没到齐，重试", k + 1); }
-    if (us < 0) { rmtree(dir); LOG("【红】即时存档：5 次冻结都没到齐，放弃这次存档（游戏照常跑；临时目录已删，旧快照如有原样保留）"); snap_finish(0, final_dir, 0); return; }
-    if (nvn_be_drain) nvn_be_drain();   // 已提交的命令做完、出图队列清空（GPU 不再写游戏内存）
+    for (int k = 0; k < 5 && us < 0; k++) { s2a_snap_progress("冻结游戏线程"); us = s2a_snap_freeze(2000, &nthr, nst); if (us < 0) LOG("【黄】即时存档：第 %d 次冻结 2 秒没到齐，重试", k + 1); }
+    if (us < 0) { rmtree(dir); LOG("【红】即时存档：5 次冻结都没到齐，放弃这次存档（游戏照常跑；临时目录已删，旧快照如有原样保留）"); snap_finish_once(0, final_dir, 0); return; }
+    s2a_snap_progress("排空图形命令"); if (nvn_be_drain) nvn_be_drain();   // 已提交的命令做完、出图队列清空（GPU 不再写游戏内存）
     uint64_t gns = guest_ns();   // 游戏时间（冻结那一刻）：恢复后从这里接着走（同 Switch 挂起 / 唤醒，#495）
     double t2 = now_s();
     // 冻结后再算一次存档目录哈希：两次不一致 = 冻结前一刻游戏在写存档，这份快照不可信（拒绝写出）
-    char save2[80]; int n2; save_dir_hash(save2, &n2);
-    if (strcmp(save2, id.save)) { LOG("【黄】即时存档：冻结前后存档目录哈希不同（游戏正在写存档），这次不存；游戏照常跑，旧快照（如有）原样保留"); rmtree(dir); snap_finish(0, final_dir, exit_after); return; }
+    s2a_snap_progress("存档目录复核"); char save2[80]; int n2; save_dir_hash(save2, &n2);
+    if (strcmp(save2, id.save)) { LOG("【黄】即时存档：冻结前后存档目录哈希不同（游戏正在写存档），这次不存；游戏照常跑，旧快照（如有）原样保留"); rmtree(dir); snap_finish_once(0, final_dir, exit_after); return; }
     int e = 0; uint64_t raw = 0, comp = 0; int nreg = 0;
     char sfull[80]; int sfn = 0; save_full_hash(sfull, &sfn);
     { char root[2048], dst[2048]; save_root(root, sizeof root); snprintf(dst, sizeof dst, "%s/save_tree", dir);
       if (clonefile(root, dst, 0)) { LOG("【红】即时存档：克隆存档树失败（errno %d）", errno); e = 1; } }
-    FILE *f = open_in(dir, "svcmem.bin", "wb"); e |= !f || s2a_snap_svcmem_save(f) || close_sync(f);
-    f = open_in(dir, "kernel.bin", "wb"); e |= !f || s2a_snap_kernel_save(f) || close_sync(f);
+    s2a_snap_progress("服务层共享内存"); FILE *f = open_in(dir, "svcmem.bin", "wb"); e |= !f || s2a_snap_svcmem_save(f) || close_sync(f);
+    s2a_snap_progress("内核账"); f = open_in(dir, "kernel.bin", "wb"); e |= !f || s2a_snap_kernel_save(f) || close_sync(f);
     { int s2a_snap_nro_save(FILE *); f = open_in(dir, "nro.bin", "wb"); e |= !f || s2a_snap_nro_save(f) || close_sync(f); }
     { int s2a_snap_far_save(FILE *); f = open_in(dir, "far.bin", "wb"); e |= !f || s2a_snap_far_save(f) || close_sync(f); }
-    f = open_in(dir, "hlog.bin", "wb"); e |= !f || s2a_snap_hlog_save(f) || close_sync(f);
+    s2a_snap_progress("句柄日志"); f = open_in(dir, "hlog.bin", "wb"); e |= !f || s2a_snap_hlog_save(f) || close_sync(f);
     f = open_in(dir, "hslot.bin", "wb"); e |= !f || s2a_snap_hostslots_save(f) || close_sync(f);
     f = open_in(dir, "handout.bin", "wb"); e |= !f || handout_save(f) || close_sync(f);
     f = open_in(dir, "blob.bin", "wb"); e |= !f || blob_save(f) || close_sync(f);
-    e |= !nvn_snap_save || nvn_snap_save(dir) != 0;   // 直连图形层实时状态
+    s2a_snap_progress("图形层"); e |= !nvn_snap_save || nvn_snap_save(dir) != 0;   // 直连图形层实时状态
+    s2a_snap_progress("服务请求日志");
     { char p[2048]; snprintf(p, sizeof p, "%s/ipc.bin", dir); if (!S2A_SnapLogSave) { LOG("【红】即时存档：宿主没链服务层，无请求日志"); e = 1; } else e |= S2A_SnapLogSave(p) != 0; }
+    s2a_snap_progress("音频渲染器");
     { char p[2048]; snprintf(p, sizeof p, "%s/audio.bin", dir); e |= !S2A_SnapAudioSave || S2A_SnapAudioSave(p) != 0; }
     double t3 = now_s();
-    f = open_in(dir, "mem.bin", "wb"); e |= !f || dump_mem(f, &raw, &comp, &nreg) || close_sync(f);
+    s2a_snap_progress("游戏内存"); f = open_in(dir, "mem.bin", "wb"); e |= !f || dump_mem(f, &raw, &comp, &nreg) || close_sync(f);
     double t4 = now_s();
     { int s2a_snap_cs_moved(void); int mv = s2a_snap_cs_moved();   // 在服务请求里阻塞、按入口记、进了请求日志的线程：存档途中它的请求完成了，可能已建句柄、改了正在写的内核账——这次不算（不进日志的照存，见 thread.c）
       if (mv) { LOG("【黄】即时存档：%d 条进了请求日志的阻塞请求在存档途中等到了回复，这次不存（游戏照常跑；换个时机再存）", mv); e = 1; } }
-    f = open_in(dir, "manifest.tsv", "w");
+    s2a_snap_progress("清单"); f = open_in(dir, "manifest.tsv", "w");
     if (f) {
         fprintf(f, "版本\t1\n构建号\t%s\n宿主二进制\t%s\n程序号\t%s\n窗口\t%s\n布局\t%s\n存档目录\t%s\n存档文件数\t%d\n", id.build, id.exe, id.prog, id.win, id.layout, id.save, id.save_n);
         fprintf(f, "存档全量\t%s\n存档全量文件数\t%d\n", sfull, sfn);
@@ -433,13 +520,15 @@ static void snap_take_(const char *final_dir, int exit_after) {
     } else e = 1;
     LOG("%s即时存档：写到 %s；冻结 %d us（线程 %d：入口 %d 出口 %d 等待 %d 睡眠 %d 已退出 %d 未启动 %d）；内存 %.0f MB → %.0f MB；哈希 %.2f s、冻结 %.2f s、账 %.2f s、内存 %.2f s；存档目录 %d 个文件 %.12s…",
         e ? "【红】" : "", dir, us, nthr, nst[1], nst[2], nst[3], nst[4], nst[5], nst[6], raw / 1048576.0, comp / 1048576.0, t1 - t0, t2 - t1, t3 - t2, t4 - t3, id.save_n, id.save);
+    if (!e && atomic_load(&g_snap_abandoned)) { e = 1; LOG("【红】即时存档：看门狗已放弃这次存档，写完的不换上"); }
+    s2a_snap_progress("换上新快照");
     if (!e) {   // 换上：旧的挪开 → 新的改名到位 → 删旧的（改名在同一目录下，原子）
         char old[2100]; snprintf(old, sizeof old, "%s.old", final_dir); rmtree(old);
         if (rename(final_dir, old) && errno != ENOENT) { LOG("【红】即时存档：旧快照挪不开（errno %d），新快照留在 %s", errno, dir); e = 1; }
         else if (rename(dir, final_dir)) { LOG("【红】即时存档：新快照换不上（errno %d），旧快照放回", errno); rename(old, final_dir); e = 1; }
         else { rmtree(old); LOG("即时存档：新快照已换上 %s", final_dir); }
     } else { rmtree(dir); LOG("【红】即时存档：这次没存成，临时目录已删，旧快照（如有）原样保留"); }
-    snap_finish(!e, final_dir, exit_after);
+    snap_finish_once(!e, final_dir, exit_after);
 }
 // 给界面的入口（游戏里菜单「存下这一刻」）：后台存，存完解冻接着玩、调完成回调（ok、快照目录）。只在起局时开了存档模式（S2A_SNAP_MODE=1，请求日志从开局记起）时可用；
 //   正在存回 -2；没开回 -1。快照目录由调用方给（0.6.0 落点见 s2a_snap_dir_for），每款只留一份：新的存好后原子换掉旧的
