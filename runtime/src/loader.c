@@ -407,7 +407,7 @@ static unsigned g_unresolved, g_deferred;
 // 起局没解析的导入位置（绑在 unresolved_called 桩上）：nn::ro 装进 NRO 时，新模块定义了的名字改指到 NRO 里（s2a_nro_map → nro_rebind）。
 //   真机 rtld 把这类导入留给延迟绑定，首次调用时再查（含手动装载模块）；我方起局就绑死报错桩，NRO 装上后不补绑就照旧中止
 //   （10-29 忍者龟：main 的 EOS_* 导入由 romfs/nro/EOSSDK-Switch-Shipping.nro 定义，装上 NRO 后 main+0x689e1c 仍进报错桩）
-typedef struct { uint64_t *where; const char *name; int64_t addend; uint8_t slot; } pend_t;
+typedef struct { uint64_t *where; const char *name; int64_t addend; uint8_t slot, bound; uint64_t to; } pend_t;   // bound / to：已被哪个 NRO 补绑、绑到的值（留着槽与名字，报错时能说清）
 static pend_t *g_pend; static size_t g_npend, g_cpend;
 // AAELF64 动态表：R_AARCH64_JUMP_SLOT 的运算是 S + A。同函数里 ABS64 / GLOB_DAT / RELATIVE 都加了 r_addend，
 // 这里原先只存 S。AAELF64 又写明：RELA 的 JUMP_SLOT 加数由平台 ABI 决定要不要认（可以出于安全不认）。
@@ -490,10 +490,26 @@ static uint64_t ro_lookup_bind(const char *who) {   // 直连模式下 LookupSym
 }
 #endif
 // 未解析的强导入：装载期报红记名；运行时若真被调到，进这里再报一次（调用点 = lr）
-__attribute__((noreturn)) static void unresolved_called(void) {
+//   叫的是哪个导入：PLT 桩进来时 x16 = 导入槽地址（AArch64 PLT：adrp x16 / ldr x17,[x16] / br x17）。汇编入口先存下 x16 再进 C（C 序言可能动 x16），
+//   报错时按槽地址在待绑表里找名字；不是经 PLT 进来的（直接 ldr + blr）槽地址对不上，写「未知」
+__attribute__((visibility("hidden"))) uint64_t s2a_unres_slot;
+__attribute__((noreturn, used)) static void unresolved_called(void) {
     uint64_t lr = (uint64_t)__builtin_return_address(0); module_t *m = module_of((void *)lr);
-    die("【红】游戏调用了装载期未解析的导入（调用点 %s+%#llx，名字见装载期【红】行或「延迟到 nn::ro 装载」行：游戏调 nn::ro 装 NRO 还没实现）", m ? m->name : "?", (unsigned long long)(m ? lr - (uint64_t)m->base : lr));
+    const pend_t *pe = NULL; for (size_t i = 0; i < g_npend; i++) if ((uint64_t)(uintptr_t)g_pend[i].where == s2a_unres_slot) { pe = &g_pend[i]; break; }
+    char st[160] = "";
+    if (pe && pe->bound) snprintf(st, sizeof st, "；这个槽装 NRO 时已补绑到 %#llx、现在却是 %#llx（补绑后被改回了报错桩）", (unsigned long long)pe->to, (unsigned long long)*pe->where);
+    else if (pe) snprintf(st, sizeof st, "；还没有装进来的 NRO 定义它");
+    die("【红】游戏调用了装载期未解析的导入 %s（槽 %#llx；调用点 %s+%#llx%s）", pe ? pe->name : "（未知：不是经 PLT 进来的）",
+        (unsigned long long)s2a_unres_slot, m ? m->name : "?", (unsigned long long)(m ? lr - (uint64_t)m->base : lr), st);
 }
+#if defined(__aarch64__)
+void s2a_unres_entry(void);
+__asm__(".text\n.p2align 2\n" RO_VIS " " RO_S(s2a_unres_entry) "\n" RO_S(s2a_unres_entry) ":\n"
+        "    adrp x9, " RO_PG(s2a_unres_slot) "\n    str x16, [x9, " RO_LO(s2a_unres_slot) "]\n    b " RO_S(unresolved_called) "\n");
+#define UNRES_FN ((uint64_t)s2a_unres_entry)
+#else
+#define UNRES_FN ((uint64_t)unresolved_called)
+#endif
 // 调试门（S2A_RELOC_DEBUG=1）：本模块有定义的符号却绑到先装的模块 = 装载顺序错的指纹，打条数与前几个样例名
 static int reloc_foreign_debug(void) {
     static int v = -1;
@@ -509,6 +525,9 @@ static void s2a_snap_hostslot_add(uint64_t where, uint64_t v) {
     g_hslot[g_nhslot].where = where; g_hslot[g_nhslot++].v = v;
 }
 // 第 i 个槽（快照存档时逐个按「slot:<槽址>」登记交出指针的身份，snapshot.c handout_save）：回 0 有、-1 越界
+// 槽不再放宿主地址（nn::ro 装 NRO 把起局绑在报错桩上的导入补绑到 NRO 里）：作废这一项（值置 0、位置不动——A、B 两张表按下标配对）。
+//   原先不作废：恢复时游戏内存写回（里面是补绑好的 NRO 地址）之后，宿主槽重写又把报错桩写回去，游戏一调这个导入就中止（一款格斗大作恢复后约 2 分钟）
+__attribute__((unused)) static void s2a_snap_hostslot_drop(uint64_t where) { for (size_t i = 0; i < g_nhslot; i++) if (g_hslot[i].where == where) g_hslot[i].v = 0; }
 int s2a_snap_hostslot_at(size_t i, uint64_t *where, uint64_t *v) { if (i >= g_nhslot) return -1; *where = g_hslot[i].where; *v = g_hslot[i].v; return 0; }
 // 恢复：本进程装载器在这个槽写的值（跨版本换算「游戏拷走的宿主地址」用；没这个槽 = 0）
 uint64_t s2a_snap_hostslot_value(uint64_t where) { for (size_t i = 0; i < g_nhslot; i++) if (g_hslot[i].where == where) return g_hslot[i].v; return 0; }
@@ -518,7 +537,7 @@ size_t s2a_snap_hostmap(FILE *f, uint64_t **from, uint64_t **to) {
     uint64_t n = 0; if (fread(&n, 8, 1, f) != 1) return 0;
     struct { uint64_t where, v; } *a = malloc(sizeof *a * (n ? n : 1)); if (n && fread(a, sizeof *a, n, f) != n) { free(a); return 0; }
     *from = malloc(8 * (n ? n : 1)); *to = malloc(8 * (n ? n : 1)); size_t k = 0;
-    for (uint64_t i = 0; i < n && i < g_nhslot; i++) if (a[i].where == g_hslot[i].where && a[i].v != g_hslot[i].v) {
+    for (uint64_t i = 0; i < n && i < g_nhslot; i++) if (a[i].where == g_hslot[i].where && a[i].v && g_hslot[i].v && a[i].v != g_hslot[i].v) {
         int dup = 0; for (size_t j = 0; j < k && !dup; j++) dup = (*from)[j] == a[i].v; if (dup) continue;
         (*from)[k] = a[i].v; (*to)[k++] = g_hslot[i].v; }
     free(a); return k;
@@ -526,6 +545,7 @@ size_t s2a_snap_hostmap(FILE *f, uint64_t **from, uint64_t **to) {
 int s2a_snap_hostslots_reapply(void) {
     size_t changed = 0, fail = 0;
     for (size_t i = 0; i < g_nhslot; i++) {
+        if (!g_hslot[i].v) continue;   // 作废的（已补绑到 NRO）
         uint64_t *w = (uint64_t *)(uintptr_t)g_hslot[i].where; if (*w == g_hslot[i].v) continue;
         uint64_t pg = (uint64_t)(uintptr_t)w & ~0x3fffull;
         if (mprotect((void *)(uintptr_t)pg, 0x4000, PROT_READ | PROT_WRITE)) { fail++; continue; }
@@ -586,7 +606,7 @@ static void relocate(module_t *m) {
                         g_deferred++; LOG("%s: 无定义弱符号 %s 先置 0（槽 %s+%#llx、%s），romfs/nro/%s 定义了它：nn::ro 装进来时补绑", m->name, nm, m->name,
                                           (unsigned long long)((uint8_t *)where - (uint8_t *)m->base), type == R_AARCH64_JUMP_SLOT ? "函数" : "数据", wnro);
                         if (g_npend == g_cpend) { size_t c = g_cpend ? g_cpend * 2 : 256; pend_t *n = realloc(g_pend, c * sizeof *n); if (!n) die("未解析导入表扩到 %zu 项时内存不足", c); g_pend = n; g_cpend = c; }
-                        g_pend[g_npend++] = (pend_t){where, nm, r->r_addend, type == R_AARCH64_JUMP_SLOT};
+                        g_pend[g_npend++] = (pend_t){where, nm, r->r_addend, type == R_AARCH64_JUMP_SLOT, 0, 0};
                     } else LOG("%s: 无定义弱符号 %s 置 0（槽 %s+%#llx、%s）", m->name, nm, m->name, (unsigned long long)((uint8_t *)where - (uint8_t *)m->base), type == R_AARCH64_JUMP_SLOT ? "函数" : "数据");
                     continue;
                 }
@@ -594,9 +614,9 @@ static void relocate(module_t *m) {
                     const char *nro = s2a_nro_defer_lookup(nm);
                     if (nro) { g_deferred++; LOG("%s: 导入 %s 延迟到 nn::ro 装载（romfs/nro/%s 定义）", m->name, nm, nro); }
                     else { g_unresolved++; LOG("【红】%s: 导入 %s 没有任何模块定义", m->name, nm); }
-                    v = (uint64_t)unresolved_called;
+                    v = UNRES_FN;
                     if (g_npend == g_cpend) { size_t c = g_cpend ? g_cpend * 2 : 256; pend_t *n = realloc(g_pend, c * sizeof *n); if (!n) die("未解析导入表扩到 %zu 项时内存不足", c); g_pend = n; g_cpend = c; }
-                    g_pend[g_npend++] = (pend_t){where, nm, r->r_addend, type == R_AARCH64_JUMP_SLOT}; }
+                    g_pend[g_npend++] = (pend_t){where, nm, r->r_addend, type == R_AARCH64_JUMP_SLOT, 0, 0}; }
             }
 #ifdef __ANDROID__
             uint64_t fb = v;   // Android does not provide the far-window binding.
@@ -983,6 +1003,7 @@ static void map_image(module_t *m, const char *dir) {
 typedef struct ro_node { struct ro_node *prev, *next; } ro_node;
 static ro_node g_ro_auto = {&g_ro_auto, &g_ro_auto}, g_ro_manual = {&g_ro_manual, &g_ro_manual};
 static uint8_t g_ro_debug;
+static uint64_t g_ro_look;   // 交接给游戏的 LookupGlobalAuto 包装（即时存档按身份换算要同一个地址，别再包一次）
 static int g_nauto;   // 自动装载模块数（起局装的 exefs 模块；之后 nn::ro 装的 NRO 接在 g_mod 后面，不在自动装载表里）
 // rtld 的 LookupGlobalAuto：nn::ro 解析 NRO 导入时先调它（RoModule::ResolveSym），查不到再查手动装载表。与起局重定位同一查法（relocate 未定义导入那支）
 static uint64_t ro_lookup_auto(const char *name) {
@@ -1072,6 +1093,7 @@ static void ro_handoff(void) {
     }
     if (n && (stub_off < 0 || !bind)) LOG("【红】nn::ro 交接：游戏 SDK 里认不出懒绑定交接（RestoreFunctions 偏移 %ld、BindEntry %s）：卸 NRO 后主程序调它的函数会跳 0", stub_off, bind ? "有" : "没有");
     void *look = sw_xstack_wrap("nn::ro LookupGlobalAuto", (void *)ro_lookup_auto);
+    g_ro_look = (uint64_t)(uintptr_t)look;
     static const char *const k[4] = {"_ZN2nn2ro6detail15g_pAutoLoadListE", "_ZN2nn2ro6detail17g_pManualLoadListE",
                                      "_ZN2nn2ro6detail14g_pRoDebugFlagE", "_ZN2nn2ro6detail34g_pLookupGlobalAutoFunctionPointerE"};
     const uint64_t v[4] = {(uint64_t)&g_ro_auto, (uint64_t)&g_ro_manual, (uint64_t)&g_ro_debug, (uint64_t)look};
@@ -1303,12 +1325,12 @@ __attribute__((visibility("default"), used)) int s2a_nro_map(const uint8_t sha[3
         size_t nb = 0, left = 0, nfail = 0;   // 起局没解析、这个 NRO 定义了的导入：改指过来（符号地址 = 基址 + 值，与 NRO 自己的重定位无关，映射完就定）
         //   槽可能已被游戏设成只读（DT_INIT 后 SetMemoryPermission 把 RELRO 收紧）：经 svc_mem.c s2a_loader_store64 写（只读数据页临时加写再恢复），写不进就留着报错桩、打红，不崩整个进程
         int s2a_loader_store64(uint64_t *where, uint64_t v);
-        for (size_t i = 0; i < g_npend; i++) if (g_pend[i].where) {
+        for (size_t i = 0; i < g_npend; i++) if (g_pend[i].where && !g_pend[i].bound) {
             void *p = module_sym(m, g_pend[i].name); if (!p) { left++; continue; }
             if (s2a_loader_store64(g_pend[i].where, (uint64_t)p + (g_pend[i].slot && !jump_slot_addend() ? 0 : (uint64_t)g_pend[i].addend))) {
                 if (!nfail++) LOG("【红】nn::ro 装 NRO %s：导入 %s 的槽 %p 写不进（页不可写且不是可放开的数据页），留着报错桩", e->name, g_pend[i].name, (void *)g_pend[i].where);
                 left++; continue; }
-            g_pend[i].where = NULL; nb++;
+            g_pend[i].bound = 1; g_pend[i].to = (uint64_t)p; s2a_snap_hostslot_drop((uint64_t)(uintptr_t)g_pend[i].where); nb++;
         }
         LOG("nn::ro 装 NRO %s：基址 %p 大小 %#zx；起局没解析的导入补绑 %zu 个（还剩 %zu 个待绑，其中写不进 %zu 个）", e->name, m->base, m->size, nb, left, nfail);
     } else {   // 卸了再装：映回原地址（数据段、bss 重新是包里的干净副本；代码页、符号表、门不变；iOS 只换可写部分，见 remap_writable）
@@ -1330,12 +1352,26 @@ __attribute__((visibility("default"), used)) int s2a_nro_map(const uint8_t sha[3
 // 即时存档：动态装载的 NRO（nn::ro）。存：按装载先后（模块表序）记每个装过的 NRO 的哈希 / 大小 / bss / 此刻装着没有；
 //   取：在写回游戏内存之前按原顺序重新装（游标顺次前进，落点与存档时相同；门、符号表、导入补绑都由本版装载器重做），
 //   存档时已卸下的随后标卸下；装着的标「等服务层认领」——服务层重放 LoadNro 时回成功 + 同址，它的账本照原样重建
+// 即时存档：nn::ro 手动装载表的表头（g_ro_manual，宿主静态内存）。游戏的 nn::ro 装 NRO 时把模块对象挂到这条链上：节点在游戏内存（随快照存），
+//   表头在宿主（原先不存）。恢复后表头是空的（进程内重启时清空、冷恢复是新进程），延迟绑定按名字找 NRO 里的符号找不到、槽写 0、一调就跳 0
+//   （一款格斗大作恢复后进对战约 2 分钟：pc 0，lr 在 NRO 里调另一个 NRO 定义的构造函数）。存表头的前后指针（游戏地址），恢复时设回；
+//   节点里指向表头的宿主地址按「ro:manual」身份换算（snapshot.c handout_save 存档时按 ro:* 身份登记这 4 个地址）
+#define RO_HEAD_MAGIC 0x31444852u   // "RHD1"
+uint64_t s2a_snap_ro_resolve(const char *id) {
+    if (!strcmp(id, "ro:auto")) return (uint64_t)(uintptr_t)&g_ro_auto;
+    if (!strcmp(id, "ro:manual")) return (uint64_t)(uintptr_t)&g_ro_manual;
+    if (!strcmp(id, "ro:debug")) return (uint64_t)(uintptr_t)&g_ro_debug;
+    if (!strcmp(id, "ro:look")) return g_ro_look;
+    return 0;
+}
 int s2a_snap_nro_save(FILE *f) {
     pthread_mutex_lock(&g_nro_mu); nro_table(); int n = 0, e = 0;
     for (int m = 0; m < g_nmod; m++) for (int i = 0; i < g_nnro; i++) if (g_nro[i].mod == m) n++;
     e |= fwrite(&n, 4, 1, f) != 1;
     for (int m = 0; m < g_nmod; m++) for (int i = 0; i < g_nnro; i++) if (g_nro[i].mod == m) {
         e |= fwrite(g_nro[i].sha, 32, 1, f) != 1 || fwrite(&g_nro[i].size, 8, 1, f) != 1 || fwrite(&g_nro[i].bss, 8, 1, f) != 1 || fwrite(&g_nro[i].loaded, 4, 1, f) != 1; }
+    { uint32_t mg = RO_HEAD_MAGIC; uint64_t h[3] = {(uint64_t)(uintptr_t)g_ro_manual.prev, (uint64_t)(uintptr_t)g_ro_manual.next, (uint64_t)(uintptr_t)&g_ro_manual};   // 尾、首、表头自己（空链时首尾 = 表头）
+      e |= fwrite(&mg, 4, 1, f) != 1 || fwrite(h, 8, 3, f) != 3; }
     pthread_mutex_unlock(&g_nro_mu);
     LOG("即时存档：动态装载的 NRO %d 个", n); return e ? -1 : 0;
 }
@@ -1350,6 +1386,14 @@ int s2a_snap_nro_preload(FILE *f) {
         pthread_mutex_lock(&g_nro_mu); for (int i = 0; i < g_nnro; i++) if (!memcmp(g_nro[i].sha, sha, 32)) { if (loaded && g_nro[i].loaded) g_nro[i].loaded = 2; } pthread_mutex_unlock(&g_nro_mu);
         if (!loaded) { s2a_nro_unmap(base); un++; }
     }
+    { uint32_t mg = 0; uint64_t h[3];   // 手动装载表表头（旧快照没有：照旧，表头空）
+      if (fread(&mg, 4, 1, f) == 1 && mg == RO_HEAD_MAGIC && fread(h, 8, 3, f) == 3) {
+          int empty = h[0] == h[2] || h[1] == h[2];   // 空链：首尾指向 A 的表头自己（宿主地址，冷恢复后不能用）——B 的表头保持空
+          pthread_mutex_lock(&g_nro_mu);
+          if (!empty) { g_ro_manual.prev = (ro_node *)(uintptr_t)h[0]; g_ro_manual.next = (ro_node *)(uintptr_t)h[1]; }
+          pthread_mutex_unlock(&g_nro_mu);
+          LOG("即时存档恢复：nn::ro 手动装载表表头接回快照时的链（首 %#llx 尾 %#llx）", (unsigned long long)h[1], (unsigned long long)h[0]); }
+      else LOG("【黄】即时存档恢复：快照没有 nn::ro 手动装载表表头（旧快照），延迟绑定找 NRO 符号会找不到"); }
     LOG("%s即时存档恢复：动态模块按快照顺序预装 %d 个（其中存档时已卸下 %d 个）", bad ? "【红】" : "", n, un);
     return bad ? -1 : 0;
 }
