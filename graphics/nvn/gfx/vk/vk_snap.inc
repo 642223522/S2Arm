@@ -191,7 +191,7 @@ int vk_snap_restore(const char *path) {
     return 0;
 }
 // 本层按整块存的结构的布局指纹（区原址放回 = 整块按旧布局用：布局变了恢复拒绝，见 snapfmt.h）
-void vk_snap_fps(void (*cb)(const char *name, uint64_t fp)) {
+void vk_snap_fps(snap_fp_cb cb) {
     cb("vk.image", SNAP_FP_TYPE(struct VkImage_T)); cb("vk.view", SNAP_FP_TYPE(struct VkImageView_T)); cb("vk.memory", SNAP_FP_TYPE(struct VkDeviceMemory_T));
     cb("vk.buffer", SNAP_FP_TYPE(struct VkBuffer_T)); cb("vk.bview", SNAP_FP_TYPE(struct VkBufferView_T)); cb("vk.sampler", SNAP_FP_TYPE(struct VkSampler_T));
     cb("vk.module", SNAP_FP_TYPE(struct VkShaderModule_T)); cb("vk.pipeline", SNAP_FP_TYPE(struct VkPipeline_T)); cb("vk.set", SNAP_FP_TYPE(struct VkDescriptorSet_T));

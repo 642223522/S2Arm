@@ -297,11 +297,11 @@ static int snap_alias_restore(const char *path) {
     return ok ? 0 : -1;
 }
 // GL 出图层（graphics/nvn/gfx/gl/egl.m）；图形单测不链 GL 片时为空
-int gl_snap_used(void) __attribute__((weak)); void gl_snap_fps(void (*cb)(const char *name, uint64_t fp)) __attribute__((weak)); int gl_snap_save(const char *path) __attribute__((weak)); int gl_snap_restore(const char *path) __attribute__((weak));
+int gl_snap_used(void) __attribute__((weak)); void gl_snap_fps(snap_fp_cb cb) __attribute__((weak)); int gl_snap_save(const char *path) __attribute__((weak)); int gl_snap_restore(const char *path) __attribute__((weak));
 // Vulkan 出图层（graphics/nvn/gfx/vk/vk_snap.inc）；图形单测不链 Vulkan 片时为空
-int vk_snap_used(void) __attribute__((weak)); void vk_snap_fps(void (*cb)(const char *name, uint64_t fp)) __attribute__((weak)); int vk_snap_save(const char *path) __attribute__((weak)); int vk_snap_restore(const char *path) __attribute__((weak));
+int vk_snap_used(void) __attribute__((weak)); void vk_snap_fps(snap_fp_cb cb) __attribute__((weak)); int vk_snap_save(const char *path) __attribute__((weak)); int vk_snap_restore(const char *path) __attribute__((weak));
 // 本文件按整块存的后端结构的布局指纹（不同 = 布局变了，恢复拒绝；见 snapfmt.h）
-void nvn_snap_fps(void (*cb)(const char *name, uint64_t fp)) {
+void nvn_snap_fps(snap_fp_cb cb) {
     cb("mtl.S", SNAP_FP_OF(S)); cb("mtl.R", SNAP_FP_OF(R)); cb("mtl.bind_cache", SNAP_FP_OF(g_bind_cache)); cb("mtl.live", SNAP_FP_TYPE(nvn_snap_live));
     cb("mtl.gpw_blk", SNAP_FP_TYPE(gpw_blk)); cb("mtl.gpw_own", SNAP_FP_TYPE(gpw_own)); cb("mtl.tex_hd", SNAP_FP_TYPE(fr_tex_hd)); cb("mtl.alias_key", SNAP_FP_TYPE(alias_key));
     cb("mtl.tfs", SNAP_FP_OF(g_tfs[0]));

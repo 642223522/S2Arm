@@ -555,4 +555,4 @@ int nvn2_snap_gs_restore(FILE *f) { int in; uint64_t m, s;
     g_nv_pool.mem = (void *)(uintptr_t)m; g_nv_pool.size = (size_t)s; atomic_store(&g_nv_pool.inited, in); return in; }
 
 #include "../../../../runtime/src/snapfmt.h"
-void nvn2_snap_fps(void (*cb)(const char *name, uint64_t fp)) { cb("nvn2.alloc", SNAP_FP_OF(g_nv_alloc)); cb("nvn2.pool", SNAP_FP_OF(g_nv_pool)); }
+void nvn2_snap_fps(snap_fp_cb cb) { cb("nvn2.alloc", SNAP_FP_OF(g_nv_alloc)); cb("nvn2.pool", SNAP_FP_OF(g_nv_pool)); }

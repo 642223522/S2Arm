@@ -7,6 +7,7 @@
 #include "native.h"
 #include "imgpack.h"
 #include "s2a_docs.h"
+#include "snapfmt.h"
 #include <limits.h>
 #include <compression.h>
 #include <CommonCrypto/CommonDigest.h>
@@ -357,8 +358,9 @@ static void rmtree(const char *path) {   // 删整棵目录（快照的临时 / 
     fts_close(fs);
 }
 // 新快照先写进 <目录>.new，全部写完、清单标「完整」后才原子换上；中途失败旧快照原样留着（存一次失败不能把玩家上一份好快照弄坏）
-typedef void (*fp_cb)(const char *name, uint64_t fp);
-static void fps_all(fp_cb cb); static FILE *g_fp_f; static void fp_write(const char *name, uint64_t fp);
+typedef snap_fp_cb fp_cb;
+static void fps_all(fp_cb cb); static FILE *g_fp_f, *g_lay_f; static void fp_write(const char *name, snap_fp fp);
+static int g_lay_n, g_lay_fields, g_lay_bad; static char g_lay_badnames[512];
 const char *s2a_snap_path(const char *v);
 static void (*g_snap_done_cb)(int ok, const char *dir);
 static _Atomic int g_snap_busy;
@@ -414,7 +416,11 @@ static void snap_take_(const char *final_dir, int exit_after) {
         fprintf(f, "存档全量\t%s\n存档全量文件数\t%d\n", sfull, sfn);
         fprintf(f, "游戏时间_ns\t%llu\n", (unsigned long long)gns);
         { char d[2048] = "", pv[2048] = ""; if (S2A_SnapDataRoot && S2A_SnapDataRoot(d, sizeof d) > 0) root_portable(d, pv, sizeof pv); fprintf(f, "数据根\t%s\n", pv); }
-        g_fp_f = f; fps_all(fp_write);
+        g_fp_f = f; g_lay_f = open_in(dir, "layouts.bin", "wb"); g_lay_n = g_lay_fields = g_lay_bad = 0; g_lay_badnames[0] = 0;
+        fps_all(fp_write);
+        if (!g_lay_f || close_sync(g_lay_f)) { LOG("【黄】即时存档：宿主结构完整布局（layouts.bin）没写成；这个快照将来换版本时只能按指纹比、不能按字段转"); }
+        else LOG("即时存档：宿主结构完整布局 %d 个（字段 %d 个）记进 layouts.bin%s%s", g_lay_n, g_lay_fields, g_lay_bad ? "；布局不明（换版本只能拒绝）：" : "", g_lay_badnames);
+        g_lay_f = NULL;
         {   // 模块落点（游戏看得见的地址）：恢复时逐个比（名字、基址、映像长度），任何一项不等 = 布局变了（C 档），接不上
             extern module_t *g_mod; extern int g_nmod; fprintf(f, "模块数\t%d\n", g_nmod);
             for (int i = 0; i < g_nmod; i++) fprintf(f, "模块%d\t%s\t%llu\t%llu\n", i, g_mod[i].name, (unsigned long long)(uintptr_t)g_mod[i].base, (unsigned long long)g_mod[i].size); }
@@ -547,14 +553,41 @@ static int man_get(const char *dir, const char *key, char *out, size_t n);
 // 按整块存的宿主结构（游戏内存里的 NVN 对象、图形回放状态、视频表等）的布局指纹：存档时全部记进清单，恢复前逐个比，不同即拒绝（C 档）
 void hle_snap_fps(fp_cb) __attribute__((weak_import)); void nvn_snap_fps(fp_cb) __attribute__((weak_import)); void nvn2_codec_snap_fps(fp_cb) __attribute__((weak_import)); void nvn2_snap_fps(fp_cb) __attribute__((weak_import));
 uint64_t S2A_SnapAudioFp(void) __attribute__((weak_import));   // SnapLog.cs：音频渲染器工作缓冲的布局指纹
-static void fps_all(fp_cb cb) { if (S2A_SnapAudioFp) cb("audio.renderer", S2A_SnapAudioFp()); if (hle_snap_fps) hle_snap_fps(cb); if (nvn_snap_fps) nvn_snap_fps(cb); if (nvn2_codec_snap_fps) nvn2_codec_snap_fps(cb); if (nvn2_snap_fps) nvn2_snap_fps(cb); }
-static void fp_write(const char *name, uint64_t fp) { fprintf(g_fp_f, "布局指纹\t%s\t%016llx\n", name, (unsigned long long)fp); }
+static void fps_all(fp_cb cb) { if (S2A_SnapAudioFp) cb("audio.renderer", (snap_fp){S2A_SnapAudioFp(), NULL}); if (hle_snap_fps) hle_snap_fps(cb); if (nvn_snap_fps) nvn_snap_fps(cb); if (nvn2_codec_snap_fps) nvn2_codec_snap_fps(cb); if (nvn2_snap_fps) nvn2_snap_fps(cb); }
+// 存：指纹进清单；完整布局进 layouts.bin（换版本时按字段转用，见 snapfmt.h）。托管侧（音频）没有 C 布局，记「不明」
+static void fp_write(const char *name, snap_fp fp) {
+    fprintf(g_fp_f, "布局指纹\t%s\t%016llx\n", name, (unsigned long long)fp.fp);
+    if (!g_lay_f) return;
+    if (snap_lay_write(g_lay_f, name, fp.lay)) { fclose(g_lay_f); g_lay_f = NULL; return; }
+    g_lay_n++; if (fp.lay && !fp.lay->bad) g_lay_fields += (int)fp.lay->n;
+    else { g_lay_bad++; size_t k = strlen(g_lay_badnames); snprintf(g_lay_badnames + k, sizeof g_lay_badnames - k, "%s%s", k ? "、" : "", name); }
+}
+// 恢复：读快照的 layouts.bin（第一次用时整份读进来）
+typedef struct { char name[96]; snap_lay lay; } lay_ent; static lay_ent *g_old_lay; static int g_old_lay_n, g_old_lay_loaded;
+static const snap_lay *old_lay(const char *dir, const char *name) {
+    if (!g_old_lay_loaded) { g_old_lay_loaded = 1; FILE *f = open_in(dir, "layouts.bin", "rb");
+        if (f) { lay_ent e; int r, cap = 0; while ((r = snap_lay_read(f, e.name, sizeof e.name, &e.lay)) == 1) {
+                if (g_old_lay_n == cap) { cap = cap ? cap * 2 : 64; lay_ent *n = realloc(g_old_lay, sizeof *n * (size_t)cap); if (!n) { snap_lay_free(&e.lay); break; } g_old_lay = n; }
+                g_old_lay[g_old_lay_n++] = e; }
+            if (r < 0) { snap_lay_free(&e.lay); LOG("【黄】即时存档恢复：layouts.bin 读到第 %d 条坏了，后面的结构不能按字段转", g_old_lay_n); }
+            fclose(f); } }
+    for (int i = 0; i < g_old_lay_n; i++) if (!strcmp(g_old_lay[i].name, name)) return &g_old_lay[i].lay;
+    return NULL;
+}
 static const char *g_fp_dir; static int g_fp_bad, g_fp_n;
-static void fp_check(const char *name, uint64_t fp) {
+static void fp_check(const char *name, snap_fp sfp) {
+    uint64_t fp = sfp.fp;
     FILE *f = open_in(g_fp_dir, "manifest.tsv", "r"); if (!f) { g_fp_bad++; return; }
     char line[512], want[160]; snprintf(want, sizeof want, "布局指纹\t%s\t", name); size_t wl = strlen(want); int found = 0;
     while (fgets(line, sizeof line, f)) if (!strncmp(line, want, wl)) { found = 1; uint64_t v = strtoull(line + wl, NULL, 16); g_fp_n++;
-        if (v != fp) { LOG("【红】即时存档恢复：宿主结构「%s」布局与快照时不同（快照 %016llx，本版 %016llx），没有转换", name, (unsigned long long)v, (unsigned long long)fp); g_fp_bad++; } break; }
+        if (v != fp) {   // 布局变了：按两版完整布局给出逐字段转换计划。各结构的恢复处接上转换之前照旧拒绝，计划写进日志供看能不能转、卡在哪个字段
+            const snap_lay *o = old_lay(g_fp_dir, name); uint32_t st[4]; char why[256] = "";
+            if (!o) snprintf(why, sizeof why, "快照里没有完整布局（旧版快照）");
+            int ok = o && !snap_lay_plan(o, sfp.lay, st, why, sizeof why);
+            if (ok) LOG("【红】即时存档恢复：宿主结构「%s」布局与快照时不同（快照 %016llx，本版 %016llx）；按字段能转（原样 %u、换宽 / 精度 %u、新加取缺省 %u、丢掉 %u），这个结构的恢复还没接转换",
+                        name, (unsigned long long)v, (unsigned long long)fp, st[0], st[1], st[2], st[3]);
+            else LOG("【红】即时存档恢复：宿主结构「%s」布局与快照时不同（快照 %016llx，本版 %016llx），不能按字段转：%s", name, (unsigned long long)v, (unsigned long long)fp, why);
+            g_fp_bad++; } break; }
     fclose(f);
     if (!found) LOG("即时存档恢复：宿主结构「%s」是本版新加的，快照里没有（按缺省）", name);
 }
