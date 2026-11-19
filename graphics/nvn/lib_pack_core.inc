@@ -13,7 +13,7 @@
 #include <unistd.h>
 
 enum { LP_K_B = 0, LP_K_BJSON = 1, LP_K_BF = 2, LP_K_BV = 3, LP_K_BT = 4, LP_K_BG = 16, LP_K_BGJSON = 32, LP_K_BGV = 48, LP_K_BGVJSON = 49, LP_K_FT = 50, LP_K_SE = 51,
-       LP_K_BSPV = 52, LP_K_VP = 54,   // 54 _vp.metallib：顶点着色器的并集补齐变体（0.6.0 出包着色器全覆盖，Build.cs VpFinish；53 留给 _bme）
+       LP_K_BSPV = 52, LP_K_VP = 54, LP_K_BP = 55,   // 54 _vp.metallib：顶点着色器的并集补齐变体（0.6.0 出包着色器全覆盖，Build.cs VpFinish；53 留给 _bme）；55 _bp.metallib：拉取式顶点输入变体（Build.cs PullBuild，入口与槽见 _b.json 的 pull）
        LP_K_BGS = 64, LP_K_BGSJSON = 80, LP_K_BGC = 96, LP_K_BGCJSON = 97, LP_K_VGJSON = 112, LP_K_VGSPV = 120, LP_SHARD_MAX = 256 };   // 64+i / 80+i / 96 / 97: the passthrough-geometry fast path's <key>_bgs<i> (side-effect-only kernel) and <key>_bgc (capture reader)   // 51: a shader's sampler-emulation variant <key>_se, precompiled by the package (nvn_mtl.m se_packed)   // 52: per-key Vulkan SPIR-V beside _b.json (graphics/tools/direct/vklib)
 typedef struct { uint64_t key; uint8_t kind, shard; uint16_t z; uint32_t len; uint64_t off; } lp_rec;
 _Static_assert(sizeof(lp_rec) == 24, "lib.idx record is 24 bytes");

@@ -334,7 +334,7 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
     }
 
     // ---------------- 逐键收尾 ----------------
-    static readonly string[] VAR = { "_bv.metal", "_bv.json", "_bf.metal", "_bf.json", "_ft.metal", "_ft.json" };
+    static readonly string[] VAR = { "_bv.metal", "_bv.json", "_bp.metal", "_bp.json", "_bf.metal", "_bf.json", "_ft.metal", "_ft.json" };
     static PyDict Json(string text) => (PyDict)Py.FromJson(JsonNode.Parse(text));
     static PyDict BoJson(string key, string sfx) { var v = Json(BOM[key][sfx]); v.Remove("xfp"); return v; }
     internal static void PutJson(Side sd, string name, PyDict v) => sd.Put(name, U8.GetBytes(Py.Dumps(v)));
@@ -431,10 +431,10 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
     static PyDict Variants(string key, PyDict refl)
     {
         var v = VarSrc.GetValueOrDefault(key) ?? new();
-        foreach (var sfx in new[] { "_bv", "_ft", "_bf" }) { MAC.Drop(key + sfx + ".metallib"); IOS?.Drop(key + sfx + ".metallib"); }
-        refl.Remove("vin"); refl.Remove("fetch");
+        foreach (var sfx in new[] { "_bv", "_bp", "_ft", "_bf" }) { MAC.Drop(key + sfx + ".metallib"); IOS?.Drop(key + sfx + ".metallib"); }
+        refl.Remove("vin"); refl.Remove("pull"); refl.Remove("fetch");
         var st = (string)refl["stage"];
-        if (st == "vs") VinBuild(key, refl, v);
+        if (st == "vs") { VinBuild(key, refl, v); PullBuild(key, refl, v); }
         if (st == "ps") { FtBuild(key, v); BfBuild(key, refl, v); }
         WriteRefl(key, refl);
         return refl;
@@ -452,6 +452,22 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
         VinSrc[key] = text;   // 随编批库同池按批编（UnityFlush），函数挂在它那一批的前缀下
         refl["vin"] = new PyDict { ["entry"] = "main0", ["entry_z"] = "main0_z", ["shadow"] = shadows };
         Count("vin inputs", shadows.Count); Count("vin float only", shadows.Cast<object>().Count(s => !PyIn("sint", s) && !PyIn("uint", s)));
+    }
+    // 拉取式顶点输入库 <键>_bp（S2A.Dsh DshPull，照上游参考实现（MIT）dmsh_pull 的 pull_finish）：逐键编、与 _b 同编译参数；编过才写 refl["pull"]（宿主有它才建无顶点描述的管线）。
+    //   不读顶点属性的（"no stage input"）本来就没有顶点描述可变，不计；认不出形状的打 [RED]、照常出包（这支的管线一直按本笔顶点布局建）
+    static void PullBuild(string key, PyDict refl, Dictionary<string, string> v)
+    {
+        if (!v.ContainsKey("_bp.metal"))
+        {
+            var why = v.TryGetValue("_bp.json", out var pj) && Json(pj).TryGetValue("pull_fail", out var pf) ? pf as string : null;
+            if (!string.IsNullOrEmpty(why)) { Count("pull not generated"); Say($"[RED] {key}: no pulling library ({why}): its pipelines are always built for the draw's vertex layout"); }
+            return;
+        }
+        var e = VarLib(key, "_bp", v["_bp.metal"]);
+        if (e != null) { Count("pull failed"); Say($"[RED] {key}: the pulling library does not compile ({Trunc(e, 120)}): its pipelines are always built for the draw's vertex layout"); return; }
+        var info = (PyDict)Json(v["_bp.json"])["pull"];
+        refl["pull"] = info;
+        Count("pull generated"); Count("pull inputs", ((System.Collections.IList)info["inputs"]).Count);
     }
     static void FtBuild(string key, Dictionary<string, string> v)
     {
@@ -793,6 +809,7 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
         Say($"typed-output variants (ft_finish, fout_want.tsv {FoutWant.Values.Sum(s => s.Count)} requests): {N("ft entries")} entry points in {N("ft libs")} libraries, {N("ft covered")} covered by main0_u or nothing integer after the colour filter, {N("ft failed")} libraries failed");
         Say($"sampler-emulation variants (<key>_se, every key tried {N("se tried")}): built {N("se built")} (of se_want.tsv's {N("se wanted")} keys {N("se wanted built")}), nothing to emulate {N("se nothing to emulate")}, failed {N("se failed")}");
         Say($"padded vertex variants (<key>_vp, union of every pixel shader's user(locn) inputs): {N("vp vertex shaders")} vertex shaders, built {N("vp built")} ({N("vp padded outputs")} outputs added), nothing to pad {N("vp nothing to pad")}, failed {N("vp failed")}");
+        Say($"pulling libraries (<key>_bp, S2A.Dsh DshPull): {N("pull generated")} generated ({N("pull inputs")} inputs pulled), {N("pull failed")} failed to compile, {N("pull not generated")} not generated");
         Say($"shadow-input libraries (<key>_bv, S2A.Dsh DshVin): {N("vin generated")} generated ({N("vin batches")} batches), {N("vin failed")} failed to compile, {N("vin not generated")} not generated; {N("vin inputs")} integer inputs shadowed, {N("vin float only")} of them with no other-sign shadow (attribute indices ran out)");
         Say(Metal.Summary());
         var ok = res.Where(r => r.St == "ok" && FinFlags.ContainsKey(r.Key)).Select(r => FinFlags[r.Key]).ToList();
