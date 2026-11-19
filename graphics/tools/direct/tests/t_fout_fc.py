@@ -63,14 +63,15 @@ with tempfile.TemporaryDirectory(prefix='t_fout_fc_') as t:
     files = []
     for nm, txt in (('a.metal', a), ('b.metal', b), ('u.metal', u)):
         p = os.path.join(t, nm); open(p, 'w').write(txt); files.append(p)
-    out = subprocess.run([exe, *files], capture_output=True, text=True).stdout
+    slot = re.search(r's2a_aref \[\[buffer\((\d+)\)\]\]', a).group(1)
+    out = subprocess.run([exe, slot, *files], capture_output=True, text=True).stdout
     got = {}
     for m in re.finditer(r'^CASE (\d) (\S+) (\S+) (OK (.*)|FAIL.*)$', out, re.M): got[(int(m.group(1)), m.group(2), m.group(3))] = m.group(5).strip() if m.group(5) is not None else 'FAIL'
     if 'LIB FAIL' in out or not got: print(out[-800:])
     entries = sorted({(f, e) for f, e, _ in got})
     ck(f'③ 入口：单支 2 + 批 2 = 4 个（{entries}）', len(entries) == 4)
     for (f, e) in entries:
-        w = want2 if (f == 1 or (f == 3 and 'aaaa' in e)) else want1
+        w = want2 if (f == 2 or (f == 4 and 'aaaa' in e)) else want1   # argv[1] 是槽号，文件从 2 起：2 = a（两路输出）、3 = b、4 = 批
         bad = {k: got.get((f, e, k)) for k in w if got.get((f, e, k)) != w[k]}
         ck(f'③ 文件 {f} {e}：{len(w)} 例对手写期望' + (f'，不符 {bad}' if bad else ''), not bad)
 print(('✓ t_fout_fc：全过' if not fails else f'✗ t_fout_fc：{len(fails)} 项不符'))

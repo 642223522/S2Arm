@@ -428,6 +428,7 @@ py_items() {
   need_dmsh_giant && job dmsh_giant timeout 300 python3 graphics/tools/direct/tests/t_dmsh_giant.py
   if has "$RUNG" direct_link; then
     job alpha_ms timeout 300 python3 graphics/tools/direct/tests/t_alpha_ms.py
+    job fout_fc timeout 300 python3 graphics/tools/direct/tests/t_fout_fc.py
     job se_want timeout 60 python3 tests/se_want_test.py
   fi
   need_compute_outline && job compute_outline timeout 180 python3 graphics/tools/direct/tests/t_compute_outline.py
@@ -769,6 +770,7 @@ rcof dmsh_tess; dt_=$?; reg $dt_ "直连曲面阶段翻译：$(tail -1 "$LOG/dms
 # 直连计算着色器共享内存溢出（libdsx nxgal_dmsh_spill + S2A.Dsh NxgalSpvCross.SpillFix，10-26 怪猎脸黑）：超限改写、Metal 编过、不超限原样、认不出报错（编 dsh_cmp 冷编约 1 分钟）
 rcof dmsh_spill; ds_=$?; reg $ds_ "直连共享内存溢出：$(tail -1 "$LOG/dmsh_spill.log")（退出 ${ds_}）" "$LOG/dmsh_spill.log"
 rcof alpha_ms; am_=$?; reg $am_ "直连片元 Alpha 测试 / 多重采样关常量：$(tail -1 "$LOG/alpha_ms.log")（退出 ${am_}）" "$LOG/alpha_ms.log"
+rcof fout_fc; ff_=$?; reg $ff_ "直连片元输出类型常量（#427）：$(tail -1 "$LOG/fout_fc.log")（退出 ${ff_}）" "$LOG/fout_fc.log"
 # 整份直连出库（C# dsh_batch build）缓存复用 / 只出一侧 / 发布形态：真跑翻译器与 metal，计算着色器共享内存改写要 build/dsx/libdsx.dylib，放在上面预编之后（10-30 原先排在预编前，新工作树的 gate-host 上 3 支全失败、出库 0 个库）
 rcof dmsh_reuse; r=$?; reg $r "整份直连出库缓存复用与出库形态：$(tail -1 "$LOG/dmsh_reuse.log")（退出 ${r}）" "$LOG/dmsh_reuse.log"
 rcof se_want; r=$?; reg $r "采样模拟变体请求表：$(tail -1 "$LOG/se_want.log")（退出 ${r}）" "$LOG/se_want.log"   # se_want.py 挑键（缺口族 31）；整份出库按表出 <键>_se 由 t_dmsh_reuse 守

@@ -1,6 +1,6 @@
 // t_fout_fc.py 的 GPU 一侧：每个 .metal 编库，名字以 main0 结尾的片元入口按一组函数常量特化、建管线、画满 4×4、读回 (1,1) 像素按字打印，由 t_fout_fc.py 对手写期望。
 // 顶点固定输出 user(locn0) = (1.5, 2, 3, 0.25)。每行：CASE <文件序号> <入口> <例名> OK <附件 0 的字…> | <附件 1 的字…>，建不出打 CASE … FAIL <原因>
-// 用法：t_fout_fc_run <.metal>…
+// 用法：t_fout_fc_run <透明测试参考值的片元槽（t_fout_fc.py 从改写结果的 s2a_aref [[buffer(N)]] 读出）> <.metal>…
 #import <Metal/Metal.h>
 #include <stdio.h>
 typedef struct { const char *nm; uint32_t fu, fs; int at; bool ms, setfu, setfs; MTLPixelFormat f0, f1; int dual; } cs_t;
@@ -13,7 +13,8 @@ int main(int argc, char **argv) { @autoreleasepool {
     cs_t cs[] = {
         {"none", 0, 0, 0, 0, 0, 0, F, F, 0}, {"u1", 1, 0, 0, 0, 1, 0, U, F, 0}, {"s2", 0, 2, 0, 0, 0, 1, F, S, 0}, {"u1s2", 1, 2, 0, 0, 1, 1, U, S, 0},
         {"dual", 0, 0x100, 0, 0, 0, 1, H, N, 1}, {"u1_never", 1, 0, 1, 0, 1, 0, U, F, 0}, {"u1_always_msoff", 1, 0, 8, 1, 1, 0, U, F, 0}, {"none_on_uint", 0, 0, 0, 0, 0, 0, U, F, 0} };
-    for (int a = 1; a < argc; a++) {
+    if (argc < 2) return 2; NSUInteger aref_slot = (NSUInteger)atoi(argv[1]);
+    for (int a = 2; a < argc; a++) {
         id<MTLLibrary> L = [d newLibraryWithSource:[NSString stringWithContentsOfFile:@(argv[a]) encoding:NSUTF8StringEncoding error:nil] options:o error:&e];
         if (!L) { printf("LIB FAIL %d: %s\n", a, e.localizedDescription.UTF8String); continue; }
         for (NSString *fn in [L.functionNames sortedArrayUsingSelector:@selector(compare:)]) { if (![fn hasSuffix:@"main0"]) continue;
@@ -37,7 +38,7 @@ int main(int argc, char **argv) { @autoreleasepool {
                     t[i] = [d newTextureWithDescriptor:td]; rp.colorAttachments[i].texture = t[i]; rp.colorAttachments[i].loadAction = MTLLoadActionClear; rp.colorAttachments[i].storeAction = MTLStoreActionStore;
                     rp.colorAttachments[i].clearColor = MTLClearColorMake(0, 0, 0, 0); }
                 id<MTLCommandBuffer> cb = [[d newCommandQueue] commandBuffer]; id<MTLRenderCommandEncoder> en = [cb renderCommandEncoderWithDescriptor:rp];
-                float aref = 0.5f; [en setFragmentBytes:&aref length:sizeof aref atIndex:30];
+                float aref = 0.5f; [en setFragmentBytes:&aref length:sizeof aref atIndex:aref_slot];
                 [en setRenderPipelineState:ps]; [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; [en endEncoding]; [cb commit]; [cb waitUntilCompleted];
                 printf("CASE %d %s %s OK", a, fn.UTF8String, k.nm);
                 for (int i = 0; i < 2; i++) { if (!t[i]) continue; if (i) printf(" |");
