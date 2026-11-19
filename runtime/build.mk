@@ -163,7 +163,7 @@ IOS_SHELLUI_LINK = -Wl,-force_load,$(SHELLUI_PRODUCTS)/libS2ArmShellHost.a \
 .PHONY: ios-shellui
 ios-shellui:
 	@mkdir -p $(SHELLUI_SWIFT)
-	cd shell && DEVELOPER_DIR=$(DEVELOPER_DIR) swift build --disable-sandbox --triple arm64-apple-ios$(IPHONEOS_DEPLOYMENT_TARGET) --sdk $(IOS_SDK) -c release --scratch-path $(SHELLUI_SWIFT) > $(SHELLUI_DD)/swift-build.log 2>&1 || { tail -30 $(SHELLUI_DD)/swift-build.log; echo "🔴 游戏库界面（S2A_SHELLUI=1）编不过，日志 $(SHELLUI_DD)/swift-build.log"; exit 1; }
+	cd shell && DEVELOPER_DIR=$(DEVELOPER_DIR) swift build --disable-sandbox -Xswiftc -DS2A_UIKIT_VERSION_UNKNOWN --triple arm64-apple-ios$(IPHONEOS_DEPLOYMENT_TARGET) --sdk $(IOS_SDK) -c release --scratch-path $(SHELLUI_SWIFT) > $(SHELLUI_DD)/swift-build.log 2>&1 || { tail -30 $(SHELLUI_DD)/swift-build.log; echo "🔴 游戏库界面（S2A_SHELLUI=1）编不过，日志 $(SHELLUI_DD)/swift-build.log"; exit 1; }
 else
 SHELLUI_PRODUCTS = $(SHELLUI_DD)/Build/Products/Release-$(APPLE_SDK)
 IOS_SHELLUI_LINK = $(addprefix $(SHELLUI_PRODUCTS)/,S2ArmShellHost.o S2ArmShellBridge.o ShellUI.o ShellControllers.o SaveSync.o) \

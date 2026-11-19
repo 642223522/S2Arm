@@ -164,7 +164,9 @@ import UIKit
 final class LibraryHostingController<Content: View>: UIHostingController<Content> {
     // 按 SDK 判、不按编译器判：Xcode 27.0 与 27.1 都是 Swift 6.4，但只有 27.1 的 iOS SDK 有 UIVerticalBarBehavior（UIKit 9127.0.85 起）——
     //   原先 compiler(>=6.4) 在 27.0 上也成立，门禁机每个 Xcode 各编一遍时 27.0 报找不到类型（同 ios/play_layout.h 按 __IPHONE_27_1 判）
-    #if os(iOS) && canImport(UIKit, _underlyingVersion: 9127.0.85)
+    //   Intel 出壳走 swift build --sdk，UIKit 没有 user version number（Swift 警告 #ModuleVersionMissing），
+    //     canImport(..., _underlyingVersion:) 里的版本会被忽略、在 26.5 SDK 上误成立；那条路径打 -DS2A_UIKIT_VERSION_UNKNOWN 关掉这段覆盖。
+    #if os(iOS) && canImport(UIKit, _underlyingVersion: 9127.0.85) && !S2A_UIKIT_VERSION_UNKNOWN
     @available(iOS 27.1, *)
     override var preferredVerticalBarBehavior: UIVerticalBarBehavior { .disabled }
     #endif

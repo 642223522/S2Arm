@@ -91,6 +91,14 @@ class IntelPackagingConfigTest(unittest.TestCase):
         self.assertIn('-force_load,$(SHELLUI_PRODUCTS)/libS2ArmShellHost.a', text)
         self.assertIn('xcodebuild -quiet -scheme S2ArmShellHost', text)   # arm64 仍走原路径
 
+    def test_intel_swift_build_marks_uikit_version_unknown(self):
+        """swift build --sdk 下 UIKit 的 _underlyingVersion 被忽略（警告 #ModuleVersionMissing），
+        上游按 9127.0.85 判 iOS 27.1 的条件会误成立；Intel 路径必须显式打标记关掉那段覆盖。"""
+        mk = (ROOT / "runtime/build.mk").read_text()
+        swift = (ROOT / "shell/Sources/S2ArmShellHost/S2ArmShellHostView.swift").read_text()
+        self.assertIn('-DS2A_UIKIT_VERSION_UNKNOWN', mk)
+        self.assertIn('!S2A_UIKIT_VERSION_UNKNOWN', swift)
+
     def test_runtime_versions_probe_covers_every_pin(self):
         pins = [line.split('==')[0] for line in (ROOT / "launchers/macos/requirements-runtime.txt").read_text().splitlines()
                 if '==' in line and not line.startswith('#')]
