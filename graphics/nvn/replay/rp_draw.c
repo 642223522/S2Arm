@@ -877,15 +877,16 @@ static int bind_stage_at(nvn_gpu_cmd c, const struct rp_prog *pg, int pi, int st
         if (same) { rp_perf_add(RP_PERF_BIND_SKIP, 1); return 1; }
         memcpy(g_lb[pi].b, b, (size_t)n * sizeof *b);
     }
+    const nvn_gpu_stage gst = st == 5 ? NVN_GPU_SH_CS : (nvn_gpu_stage)st;   // 普通绑定与池表绑定同一阶段
     { const uint64_t bb = btm ? dt_now() : 0;
-      nvn_gpu_bind(c, st == 5 ? NVN_GPU_SH_CS : (nvn_gpu_stage)st, b, n);
+      nvn_gpu_bind(c, gst, b, n);
       if (btm) { const uint64_t be = dt_now(); g_bt[1] += be - bb; g_bt[2]++; g_bt[0] += be - btm0; } }
     if (npool) {   // 整池数组：后端按布局项把整张池表绑上（快照由后端引用到命令段完成）
         for (uint32_t i = 0; i < pg->nent[pi]; i++) {
             const nvn_gpu_layout_ent *e = &pg->ent[pi][i];
             if (e->src_kind != NVN_RB_TEXP && e->src_kind != NVN_RB_SAMPP) continue;
             nvn_gpu_err err = {0};
-            if (!nvn_gpu_ok(nvn_gpu_pool_bind(c, st == 5 ? NVN_GPU_SH_CS : (nvn_gpu_stage)st, i, g_ptd[st][i], &err))) {
+            if (!nvn_gpu_ok(nvn_gpu_pool_bind(c, gst, i, g_ptd[st][i], &err))) {
                 if (nvn_unimpl("draw", "pool_bind_failed", rec) == 1 && err.why[0]) nvn_plat_log(NVN_PLAT_LOG_RED, "draw", err.why);
                 return 0;
             }
