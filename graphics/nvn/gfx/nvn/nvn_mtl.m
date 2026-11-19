@@ -7311,7 +7311,7 @@ static void shmap_load_once(void) {
     uint8_t tensor, tensor_log;   // HMMA: 1 = spatial stand-in, 2 = none, 3 = native SIMD-group matrix ABI 1; 0 = not checked
     uint16_t tensor_sq;   // S2Arm 11-05: such a shader's HMUL2 Rd, Ra, |Ra| (nvn2_hsq_count): its output is the signed square of what it reads plus the network's residual, the stand-in squares its input (nvn_tensor.inc)
     uint16_t tensor_srgb;   // HSETP2 Rd, Ra, 0.04045 (nvn2_srgb_count): its output is the sRGB decode (to linear) of what it reads plus the network's residual, the stand-in decodes its input (nvn_tensor.inc)
-    id<MTLLibrary> at_lib; NSString *at_main, *at_u; NSMutableDictionary<NSNumber *, id<MTLFunction>> *at_fns; uint8_t has_atms;   // gap families 34 / 37: a fragment main0 declaring S2A_AT / S2A_MSOFF (Dsh.cs FsAlphaMs): its library and entry names, specialized per (u, at, msoff) on demand (fs_atms_fn)
+    id<MTLLibrary> at_lib; NSString *at_main, *at_u; NSMutableDictionary<NSNumber *, id<MTLFunction>> *at_fns; uint8_t has_atms, fout_fc;   // gap families 34 / 37: a fragment main0 declaring S2A_AT / S2A_MSOFF (Dsh.cs FsAlphaMs): its library and entry names, specialized per (u, at, msoff, output types) on demand (fs_atms_fn); fout_fc: main0 also declares S2A_FU / S2A_FS (Dsh.cs FsFout), its output types are constants too
     int load_depth_zero;   // captured with the identity, also used by its layer variant
     uint8_t u_mask;   // S2Arm gap 2 A: the colour outputs fn_u returns as uint, bit n = color(n) (json u_mask; dmsh_build.py fs_uint turns only the integer-bit writers)
     uint16_t tf_stride[4]; uint32_t cb_ext[16], sb_ro; nvn_refl rf; id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, afr, layer_out; const char *builtin; uint64_t logged; char key[24]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off;
@@ -7894,7 +7894,7 @@ static NvShader *shader_build(NSString *pc, int stage, int layer, int depth_zero
         else o->tess_ocp = 0;   // domain: ocp无意义
     }
     if (o->fn.functionConstantsDictionary.count) {
-        if (stage == 1 && o->fn.functionConstantsDictionary[@"S2A_AT"]) { o->has_atms = 1; o->at_lib = lib; o->at_main = fnn(o, entry); o->at_u = o->fn_u ? fnn(o, j[@"entry_u"]) : nil; }   // gap families 34 / 37 (fs_atms_fn)
+        if (stage == 1 && o->fn.functionConstantsDictionary[@"S2A_AT"]) { o->has_atms = 1; o->at_lib = lib; o->at_main = fnn(o, entry); o->at_u = o->fn_u ? fnn(o, j[@"entry_u"]) : nil; o->fout_fc = o->fn.functionConstantsDictionary[@"S2A_FU"] != nil; }   // gap families 34 / 37 (fs_atms_fn)
         NSError *fe = nil; id<MTLFunction> f = [lib newFunctionWithName:fnn(o, entry) constantValues:[MTLFunctionConstantValues new] error:&fe];
         if (f) o->fn = f; else { MLOG("【红】 shader %s: specializing its function constants failed: %s", pc.UTF8String, fe.localizedDescription.UTF8String); return nil; }
         if (o->fn_u) { f = [lib newFunctionWithName:fnn(o, j[@"entry_u"]) constantValues:[MTLFunctionConstantValues new] error:&fe]; o->fn_u = f; }
@@ -9865,7 +9865,10 @@ static uint8_t pso_color_round_mask(const pso_key *k, NvShader *fs, int merged) 
 // S2Arm: the fragment shader's typed-output entry point for this need mask: cached, else loaded from the fallback directory's <key>_t<u>_<s>.metal that an earlier pso_fout_variant wrote (this run or
 // an earlier one: the background prewarm of a recorded pipeline has no guest program to translate from, but the variant is on disk). nil when there is none. Pipelines are built on several threads
 static pthread_mutex_t g_fnt_mu = PTHREAD_MUTEX_INITIALIZER;
+static id<MTLFunction> fs_atms_fn(NvShader *fs, int u, int at, int msoff, uint32_t need);
 static id<MTLFunction> fs_typed_fn(NvShader *fs, uint32_t need) {
+    // #427: a library whose main0 takes its output types as function constants (Dsh.cs FsFout) is only specialized: no entry from the package's _ft, no source compile on the device
+    if (fs->fout_fc) return fs_atms_fn(fs, 0, 0, 0, need);
     pthread_mutex_lock(&g_fnt_mu);
     id f = fs->fn_t[@(need)];
     if (!f) {   // the library first: the package compiles the variants its pipeline seeds need into <key>_ft (dmsh_build.py ft_finish), so a new chain does not turn them into first-use builds
@@ -10135,18 +10138,21 @@ static int vp_ask(const prog_t *p, NvShader *vs, uint32_t miss) {
     return 1;
 }
 // Gap families 34 / 37 (contract: state/直连缺陷线.md, Dsh.cs FsAlphaMs): the fragment entry (main0, or main0_u when u) specialized with S2A_AT = the NVN alpha function
-//   (1 NEVER … 7 GEQUAL; not given when 0, the test compiled out) and S2A_MSOFF = sample mask written full. Built once per (u, at, msoff) and kept; nil when the shader declares none
+//   (1 NEVER … 7 GEQUAL; not given when 0, the test compiled out) and S2A_MSOFF = sample mask written full. Built once per (u, at, msoff, need) and kept; nil when the shader declares none.
+//   need (#427, pso_fout_need): the output types, given as S2A_FU = bits 0–7 (unsigned integer targets) and S2A_FS = bits 8–16 (signed, bit 8 there = dual-source blending) when main0
+//   declares them (fout_fc, Dsh.cs FsFout); nil for a need on a shader without them (the caller goes the old way: main0_u / _ft / a variant compiled on the device)
 static os_unfair_lock g_atfn_lock = OS_UNFAIR_LOCK_INIT;
-static id<MTLFunction> fs_atms_fn(NvShader *fs, int u, int at, int msoff) {
-    if (!fs || !fs->has_atms || (u && !fs->at_u)) return nil;
-    NSNumber *key = @(u << 9 | at << 1 | (msoff != 0));
+static id<MTLFunction> fs_atms_fn(NvShader *fs, int u, int at, int msoff, uint32_t need) {
+    if (!fs || !fs->has_atms || (u && !fs->at_u) || (need && !fs->fout_fc)) return nil;
+    NSNumber *key = @((uint64_t)need << 16 | (uint64_t)(u << 9 | at << 1 | (msoff != 0)));
     os_unfair_lock_lock(&g_atfn_lock); id<MTLFunction> f = fs->at_fns[key]; os_unfair_lock_unlock(&g_atfn_lock);
     if (f) return f;
     MTLFunctionConstantValues *cv = [MTLFunctionConstantValues new];
     if (at) { int32_t a = at; [cv setConstantValue:&a type:MTLDataTypeInt withName:@"S2A_AT"]; }
     if (msoff) { bool b = true; [cv setConstantValue:&b type:MTLDataTypeBool withName:@"S2A_MSOFF"]; }
+    if (need) { uint32_t fu = need & 0xff, fsg = need >> 8; [cv setConstantValue:&fu type:MTLDataTypeUInt withName:@"S2A_FU"]; [cv setConstantValue:&fsg type:MTLDataTypeUInt withName:@"S2A_FS"]; }
     NSError *e = nil; f = [fs->at_lib newFunctionWithName:u ? fs->at_u : fs->at_main constantValues:cv error:&e];
-    if (!f) { MLOG("【红】 fragment shader %s: specializing alpha test %d / multisampling off %d failed: %s", fs->key, at, msoff, e.localizedDescription.UTF8String); return nil; }
+    if (!f) { MLOG("【红】 fragment shader %s: specializing alpha test %d / multisampling off %d / output types %#x failed: %s", fs->key, at, msoff, need, e.localizedDescription.UTF8String); return nil; }
     os_unfair_lock_lock(&g_atfn_lock); if (!fs->at_fns) fs->at_fns = [NSMutableDictionary dictionary]; fs->at_fns[key] = f; os_unfair_lock_unlock(&g_atfn_lock);
     return f;
 }
@@ -10171,13 +10177,15 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
             if (hl) d.fragmentFunction = [hl newFunctionWithName:[NSString stringWithFormat:@"hl%d", i]];
             break; } }
     uint32_t need = fs && !fsfn && d.fragmentFunction == fs->fn ? pso_fout_need(k, fs, merged) : 0;
-    if (need && fs->fn_u && need == fs->u_mask) d.fragmentFunction = fs->fn_u;   // the integer attachments are exactly the outputs main0_u turns (dmsh_build.py fs_uint u_mask)
+    id<MTLFunction> fcf = need && fs->fout_fc ? fs_atms_fn(fs, 0, k->at, k->msoff, need) : nil;   // #427: output types, alpha test and sample mask in one specialization of main0
+    if (fcf) d.fragmentFunction = fcf;
+    else if (need && fs->fn_u && need == fs->u_mask) d.fragmentFunction = fs->fn_u;   // the integer attachments are exactly the outputs main0_u turns (dmsh_build.py fs_uint u_mask)
     else if (need) { id<MTLFunction> t = fs_typed_fn(fs, need); if (t) d.fragmentFunction = t; }   // S2Arm: mixed float / integer targets, dual-source blending (pso_fout_variant)
     else if (k->fc && fs && d.fragmentFunction == fs->fn) {   // S2Arm #800: the sampler-emulation variant (se_want: never with integer outputs)
         id<MTLFunction> f = se_fn(fs, k->fc); if (f) d.fragmentFunction = f; else MLOG("【红】 fragment shader %s: pipeline keyed for its sampler-emulation variant (bits %d), which is not there: main0", fs->key, k->fc); }
     if (fs && (k->at || k->msoff) && (d.fragmentFunction == fs->fn || (fs->fn_u && d.fragmentFunction == fs->fn_u))) {   // gap families 34 / 37: main0 / main0_u with the alpha test / full sample mask
-        id<MTLFunction> f = fs_atms_fn(fs, d.fragmentFunction == fs->fn_u, k->at, k->msoff); if (f) d.fragmentFunction = f; }
-    else if (fs && (k->at || k->msoff)) RED_ONCE(135, "fragment shader %s: alpha test %d / multisampling off %d on a variant entry point without the constants (typed / sampler-emulation / merged): drawn without them", fs->key, k->at, k->msoff);
+        id<MTLFunction> f = fs_atms_fn(fs, d.fragmentFunction == fs->fn_u, k->at, k->msoff, 0); if (f) d.fragmentFunction = f; }
+    else if (fs && (k->at || k->msoff) && !fcf) RED_ONCE(135, "fragment shader %s: alpha test %d / multisampling off %d on a variant entry point without the constants (typed / sampler-emulation / merged): drawn without them", fs->key, k->at, k->msoff);
     if (vs && vs->layer_out && k->fsfn != GEO_MARK) d.inputPrimitiveTopology = vs->geo_output == 1 ? MTLPrimitiveTopologyClassPoint : vs->geo_output == 6 ? MTLPrimitiveTopologyClassLine : MTLPrimitiveTopologyClassTriangle;
     if (vs && (k->fsfn == TF_MARK || k->fsfn == GEO_MARK)) { d.vertexFunction = k->fsfn == GEO_MARK ? vs->geo_fn : vs->tf_fn; d.fragmentFunction = nil; d.rasterizationEnabled = NO; }   // transform feedback capture (tf_draw)
     d.rasterSampleCount = k->samples ? k->samples : 1;
@@ -10362,8 +10370,11 @@ static void pso_pend_kick(const pso_key *k, NvShader *vs, NvShader *fs) {   // C
     if (at < 0 && slot >= 0) { g_pp[slot].k = *k; g_pp[slot].ps = nil; g_pp[slot].done = 0; g_pp[slot].late = 0; g_pp[slot].stuck = 0; g_pp[slot].used = 1; }
     pthread_mutex_unlock(&g_pp_mu);
     if (at >= 0 || slot < 0) return;
-    MTLRenderPipelineDescriptor *d = pso_desc(k, vs, fs, nil, 0); g_pp_kicked++; NSString *pkey = par_rkey(k, vs, fs, 0, nil);
+    g_pp_kicked++; NSString *pkey = par_rkey(k, vs, fs, 0, nil); pso_key kc = *k;
+    // The descriptor is made in the block, off the submit thread: picking the fragment entry can specialize it (fs_atms_fn: output types, alpha test; #427), and the draw's wait
+    //   (pso_pend_take, fu_take) then counts that time instead of the submit thread spending it before the wait starts (the first-use split showed "built here 0.6 ms" for 90–157 ms)
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        MTLRenderPipelineDescriptor *d = pso_desc(&kc, vs, fs, nil, 0);
         if (spec_probe_on()) spec_probe(d, vs, fs);   // #1001 diagnostic, off by default
         NSError *e = nil; id<MTLRenderPipelineState> ps = par_render(d, pkey, &e);
         pthread_mutex_lock(&g_pp_mu); g_pp[slot].ps = ps; g_pp[slot].done = 1; pthread_cond_broadcast(&g_pp_cv); pthread_mutex_unlock(&g_pp_mu);

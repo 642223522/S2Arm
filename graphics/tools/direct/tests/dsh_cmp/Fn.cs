@@ -62,6 +62,7 @@ static class Fn
                     "vs_layer_entry" => DshCompiler.VsLayerEntry(S(0)) is var (f, l) ? new List<object> { f, l } : null,
                     "vs_push" => DshCompiler.VsPush(S(0)),
                     "fs_alpha_ms" => DshCompiler.FsAlphaMs(S(0)),
+                    "fs_fout" => DshCompiler.FsFout(S(0)),
                     "fs_uvx" => DshCompiler.FsUvx(S(0)),
                     "fs_lb" => DshCompiler.FsLb(S(0)),
                     "fs_rd" => DshCompiler.FsRd(S(0)),
