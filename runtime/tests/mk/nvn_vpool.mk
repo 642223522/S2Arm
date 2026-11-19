@@ -9,9 +9,10 @@ $(BUILD)/tests/t_nvn_vpool: graphics/nvn/tests/t_nvn_vpool.m graphics/nvn/gfx/nv
 	  -framework Metal -framework Foundation -framework QuartzCore -framework CoreGraphics \
 	  -framework ImageIO -framework UniformTypeIdentifiers -lc++
 .PHONY: native-test-nvn_vpool
+# 低区账（#1143）核的是快照关时的虚拟池（快照开时池放进快照的虚拟池区，不进低区）：快照苹果端缺省开（runtime/src/snapsw.c）之后显式关掉跑
 native-test-nvn_vpool: $(BUILD)/tests/t_nvn_vpool
-	DM_NVN_ENC_THREAD=0 $(BUILD)/tests/t_nvn_vpool
-	DM_NVN_ENC_THREAD=1 $(BUILD)/tests/t_nvn_vpool
+	S2A_SNAP_MODE=0 DM_NVN_ENC_THREAD=0 $(BUILD)/tests/t_nvn_vpool
+	S2A_SNAP_MODE=0 DM_NVN_ENC_THREAD=1 $(BUILD)/tests/t_nvn_vpool
 	@echo '✓ t_nvn_vpool：编码线程 0 / 1 两种模式均通过'
 TEST_TARGETS += native-test-nvn_vpool
 endif
