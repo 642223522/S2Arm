@@ -326,7 +326,25 @@ namespace Ryujinx.HLE.HOS
             return ProcessLoaderHelper.LoadKip(KernelContext, new KipExecutable(in kipFile));
         }
 
-        internal bool DockedOperationMode => Device.Configuration.ForceDockedOperationMode || State.DockedMode;
+        // S2Arm：游戏看到的运行模式（AM GetOperationMode）与性能档 / 显示参数分开。本地多人（宿主实接 ≥ 2 只手柄）时回主机：
+        //   有的游戏两人模式要求「接上底座 / TV 模式」才让进；单人仍按玩家选的档位（掌机档不让游戏按主机选更高的内部分辨率）
+        private bool _s2aLocalMultiplayer;
+        internal bool DockedOperationMode => _s2aLocalMultiplayer || State.DockedMode;
+
+        /// <summary>S2Arm：宿主实接手柄数跨过 2 时调（输入泵每拍报）。游戏看到的运行模式真的变了才发 OperationModeChanged、点亮刷新事件（同真机插拔底座）</summary>
+        public void S2ASetLocalMultiplayer(bool on)
+        {
+            if (on == _s2aLocalMultiplayer) return;
+            bool was = DockedOperationMode;
+            _s2aLocalMultiplayer = on;
+            if (was == DockedOperationMode) return;
+            if (AppletState.OperationModeChangedNotification)
+            {
+                AppletState.Messages.Enqueue(AppletMessage.OperationModeChanged);
+                AppletState.MessageEvent.ReadableEvent.Signal();
+            }
+            AppletState.OperationModeRefreshEvent.ReadableEvent.Signal();
+        }
 
         public void ChangeDockedModeState(bool newState)
         {

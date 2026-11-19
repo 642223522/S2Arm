@@ -23,7 +23,7 @@ namespace S2A.Services
     // 起 Ryujinx 的 Switch 侧（HLE / Horizon / 声音 / 显卡逻辑），不建 Ryujinx 的游戏进程：游戏由原生层原生执行。
     public static class Host
     {
-        // 主机 / 掌机档影响性能、显示参数与手柄样式。苹果宿主的 AM 运行模式独立于这个档位。
+        // 主机 / 掌机档影响性能、显示参数与手柄样式；游戏看到的运行模式另外在本地多人时回主机（Horizon.S2ASetLocalMultiplayer，输入泵按实接手柄数报）。
         private static Lazy<bool> LegacyDocked = new(() => Environment.GetEnvironmentVariable("S2A_DOCKED") == "1");
         private static Lazy<SystemLanguage> LegacyLanguage = new(PickLanguage);
         internal static void ResumeAudioForShutdown()
@@ -774,9 +774,7 @@ namespace S2A.Services
                 gdbStubPort: 0,
                 debuggerSuspendOnStart: false,
                 customVSyncInterval: 60)
-            {
-                ForceDockedOperationMode = OperatingSystem.IsMacOS() || OperatingSystem.IsIOS() || OperatingSystem.IsTvOS(), // 平台例外：苹果宿主的两种性能档均支持本地多人，AM 始终回主机模式。
-            }.Configure(vfs, libHac, content, account, channel, renderer, audio, configuration?.UserInterface ?? new HostUi());
+                .Configure(vfs, libHac, content, account, channel, renderer, audio, configuration?.UserInterface ?? new HostUi());
 
             // Horizon 新框架服务在 Switch 构造时启动：挂钩要先装（服务改由我方线程以原生系统调用启动）
             GuestMemory memory = new();
