@@ -984,6 +984,15 @@ void s2a_window_reserve(void) {
     static pthread_once_t once = PTHREAD_ONCE_INIT;
     pthread_once(&once, vawin_reserve);
 }
+// 多款容器构造期一款可算的游戏都没有（全新安装后才用 .s2arm 导入、或删光了再导入）：构造期跨度 0、不占窗口，玩家「导入 → 点开始」同一进程起局，
+//   自检报「读不到本款的 main.npdm」，要重开 App 才能玩（11-18 iPhone 实机回归）。起宿主之前补一次：这时 s2a_window_container_need 扫得到刚导入的款，
+//   按同一套取法占。构造期算出过跨度的（不论占没占成）不重来，已有游戏的进程照旧只在构造期占
+int s2a_window_reserve_late(void) {
+    if (g_ok || g_noreserve || g_need) return g_ok;
+    LOG("地址窗口：构造期容器里没有可算的游戏（启动后才导入），起宿主前按现在的游戏补占");
+    vawin_reserve();
+    return g_ok;
+}
 // ---------- 命令记录区（帧录放专用，Mac）----------
 // 帧录（S2A_FRAME_REC）把 NVN 命令记录宿主块（graphics/nvn hle_nvn.c 影子块）按原地址存进录像，帧回放（S2A_FRAME_REPLAY）是另一个进程、要在原地址放回。
 //   块原先 mmap(NULL) 落在内核挑的低区，回放进程同址常被它自己的库 / 堆 / Metal 占着（7df29fdfc 后回放全红）；放窗口尾部也不够：窗口放不下标准布局的款没有尾部（11-05 哆啦A梦 1350 高，尾部 0 MB）。
