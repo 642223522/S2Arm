@@ -386,6 +386,8 @@
 "gfx.filter.metalfx" = "シャープ拡大（MetalFX）";
 "gfx.filter.metalfx.noDirect" = "このゲームは直接レンダリングを使用していないため、シャープ拡大（MetalFX）は利用できません。";
 "gfx.filter.metalfx.note" = "シャープ拡大（MetalFX）は毎フレーム GPU の処理が少し増えるため、フレームレートと消費電力にわずかに影響します。";
+"gfx.filter.fsr" = "FSR";
+"gfx.filter.fsr.noDirect" = "FSR も利用できません。";
 "gfx.filter.nearest" = "2D ゲーム向け";
 "gfx.fpsLimit" = "フレームレート上限";
 "gfx.fpsLimit.none" = "無制限";

@@ -386,6 +386,8 @@
 "gfx.filter.metalfx" = "Agrandissement net (MetalFX)";
 "gfx.filter.metalfx.noDirect" = "Ce jeu n'utilise pas le rendu direct, donc l'agrandissement net (MetalFX) n'est pas disponible.";
 "gfx.filter.metalfx.note" = "L'agrandissement net (MetalFX) ajoute un peu de travail GPU à chaque image : la fréquence d'images et l'autonomie peuvent en être légèrement affectées.";
+"gfx.filter.fsr" = "FSR";
+"gfx.filter.fsr.noDirect" = "FSR n'est pas disponible non plus.";
 "gfx.filter.nearest" = "Pour les jeux 2D";
 "gfx.fpsLimit" = "Limite de fréquence d'images";
 "gfx.fpsLimit.none" = "Illimitée";

@@ -6,6 +6,8 @@
 #include "nvn_aa_lut.h"
 
 static int g_present_aa, g_present_nearest, g_present_fx;   // g_present_fx：S2A_SCALING_FILTER=MetalFX（nvn_present_fx.inc）
+static int g_present_fsr;     // S2A_SCALING_FILTER=Fsr，AMD FSR 1（EASU + RCAS，nvn_present_fsr.inc；取样器与着色器同 Bilinear）
+static void present_fsr_options(void);   // nvn_present_fsr.inc，读锐化级别并记一行
 static void present_options(void) {
     static int initialized;
     if (initialized) return;
@@ -17,9 +19,11 @@ static void present_options(void) {
     if (!filter || !strcmp(filter, "Bilinear")) g_present_nearest = 0;
     else if (!strcmp(filter, "Nearest")) g_present_nearest = 1;
     else if (!strcmp(filter, "MetalFX")) g_present_fx = 1;   // 放大时 MetalFX 空间放大；不是放大的帧仍按双线性
+    else if (!strcmp(filter, "Fsr")) g_present_fsr = 1;   // FSR 1
     else MDIE("【红】 invalid S2A_SCALING_FILTER=%s", filter);
     initialized = 1;
     MLOG("直连画面设置：抗锯齿 %s，缩放滤镜 %s", aa ?: "None", filter ?: "Bilinear");
+    if (g_present_fsr) present_fsr_options();   // 锐化级别（非法值在这里报红退出）
 }
 
 @interface NvPresentAA : NSObject {

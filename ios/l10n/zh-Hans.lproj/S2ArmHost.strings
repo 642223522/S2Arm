@@ -391,6 +391,8 @@
 "gfx.filter.metalfx" = "锐利放大（MetalFX）";
 "gfx.filter.metalfx.noDirect" = "这款游戏没有走直连渲染，用不了锐利放大（MetalFX）。";
 "gfx.filter.metalfx.note" = "锐利放大（MetalFX）会每帧多花一点显卡时间，帧率和能耗会略有影响。";
+"gfx.filter.fsr" = "FSR 锐化放大";
+"gfx.filter.fsr.noDirect" = "FSR 锐化放大也用不了。";
 "gfx.filter.nearest" = "2D 游戏专用";
 "gfx.fpsLimit" = "帧率上限";
 "gfx.fpsLimit.none" = "不限";
