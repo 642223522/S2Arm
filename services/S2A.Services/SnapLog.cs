@@ -108,7 +108,9 @@ namespace S2A.Services
         private static readonly Dictionary<string, int> _dropBy = new();
 
         [DllImport("s2a_native")] private static extern void s2a_snap_hctx(int seq);
-        [DllImport("s2a_native")] private static extern void s2a_snap_live_set(int on);   // runtime/src/snapsw.c：句柄日志跟着停
+        [DllImport("s2a_native")] private static extern void s2a_snap_live_set(int on);
+        [DllImport("s2a_native")] private static extern int s2a_nro_known(byte* sha);    // runtime/src/loader.c：这个 NRO 在不在包里
+        private const int NroHead = 0x1000;   // 种类 6 记的 NRO 头长（NRO 头 + MOD0 偏移在头 0x10 字节里，段表在 0x20 起）   // runtime/src/snapsw.c：句柄日志跟着停
         [DllImport("s2a_native")] private static extern int s2a_snap_replay_begin(int seq);
         [DllImport("s2a_native")] private static extern int s2a_snap_replay_end(int seq);
         [DllImport("s2a_native")] private static extern int s2a_snap_need_handle(uint h);
@@ -158,14 +160,22 @@ namespace S2A.Services
             {
                 if (*(uint*)(msg + o) != 0x49434653u) continue;   // CMIF 头 "SFCI"，参数在头后 16 字节
                 int arg = o + 16; ulong addr = *(ulong*)(msg + arg + 8), len = *(ulong*)(msg + arg + 16);
-                if (addr != 0 && len != 0 && len <= (1ul << 24)) ds.Add(new Desc { Kind = 5, Off = arg + 8, Addr = addr, Size = len });
+                // 包里有的 NRO（按 SHA-256 认，nro_modules.tsv）：恢复时按哈希映射改写映像、不读原文件内容，只记头（段长等）+ 哈希（种类 6），
+                //   不抄整个模块——真机大乱斗一条 4–12 MB、8 分钟 63 MB；只有包里没有的（游戏现拼的）照旧整份记
+                int kind = 5;
+                if (c == 0 && addr != 0 && len != 0 && len <= (1ul << 24))
+                {
+                    byte[] sha = System.Security.Cryptography.SHA256.HashData(new ReadOnlySpan<byte>((void*)addr, (int)len));
+                    fixed (byte* h = sha) if (s2a_nro_known(h) == 1) kind = 6;
+                }
+                if (addr != 0 && len != 0 && len <= (1ul << 24)) ds.Add(new Desc { Kind = kind, Off = arg + 8, Addr = addr, Size = len });
                 return;
             }
         }
         private static void SetAddr(byte* msg, Desc x, ulong a)
         {
             uint* p = (uint*)(msg + x.Off);
-            if (x.Kind == 5) { *(ulong*)(msg + x.Off) = a; return; }
+            if (x.Kind == 5 || x.Kind == 6) { *(ulong*)(msg + x.Off) = a; return; }
             switch (x.Kind)
             {
                 case 0: p[0] = (p[0] & ~((0xFu << 12) | (0x7u << 6))) | (uint)(((a >> 32) & 0xF) << 12) | (uint)(((a >> 36) & 0x7) << 6); p[1] = (uint)a; break;
@@ -290,6 +300,13 @@ namespace S2A.Services
             w.Write(ds.Count);
             foreach (Desc x in ds)
             {
+                if (x.Kind == 6)
+                {   // 头 NroHead 字节 + SHA-256（32 字节）
+                    int head = (int)Math.Min(x.Size, NroHead);
+                    w.Write(x.Kind); w.Write(x.Off); w.Write(x.Addr); w.Write(x.Size); w.Write(head + 32);
+                    w.Write(new ReadOnlySpan<byte>((void*)x.Addr, head)); w.Write(System.Security.Cryptography.SHA256.HashData(new ReadOnlySpan<byte>((void*)x.Addr, (int)x.Size)));
+                    continue;
+                }
                 bool input = x.Kind == 0 || x.Kind == 1 || x.Kind == 3 || x.Kind == 5;
                 int len = input ? (int)Math.Min(x.Size, 1u << 24) : 0;
                 w.Write(x.Kind); w.Write(x.Off); w.Write(x.Addr); w.Write(x.Size); w.Write(len);
@@ -428,7 +445,12 @@ namespace S2A.Services
                         ulong need = (x.Size + 0xFFF) & ~0xFFFul;
                         if (cur + need > scratch + scratchSize) { Console.Error.WriteLine($"[s2a] 【红】即时存档恢复：重放第 {seq} 条 {name}#{(uint)cmd} 缓冲 {x.Size} 字节放不下暂存区"); bad++; continue; }
                         new Span<byte>((void*)cur, (int)Math.Min(x.Size, int.MaxValue)).Clear();
-                        if (data != null) new ReadOnlySpan<byte>(data).CopyTo(new Span<byte>((void*)cur, data.Length));
+                        if (data != null && x.Kind == 6)
+                        {   // 包里有的 NRO：放头、其余留零，哈希交给 LoadNro（S2AHooks.SnapNroHash，它按哈希映射改写映像）
+                            new ReadOnlySpan<byte>(data, 0, data.Length - 32).CopyTo(new Span<byte>((void*)cur, data.Length - 32));
+                            Ryujinx.HLE.S2AHooks.SnapNroHash = data[^32..];
+                        }
+                        else if (data != null) new ReadOnlySpan<byte>(data).CopyTo(new Span<byte>((void*)cur, data.Length));
                         SetAddr((byte*)msgAddr, x, cur); cur += need;
                     }
                     // 请求里拷贝 / 移交的游戏句柄：没放进表的先放（游戏建的句柄延后放，见 thread.c g_defer）
