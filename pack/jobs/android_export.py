@@ -11,7 +11,7 @@
 Gradle / NDK / JDK，只把这款的数据组装进引擎 APK、本机钥重签（android/tools/apk_assemble.py）。引擎里没带就交给
 package.py 本机全量构建（开发树），缺工具链时它报真原因。
 
-adb：Android SDK 里有就用它，没有就从 Google 官方地址下载 platform-tools 放进 ~/.s2arm/toolchain/platform-tools（只下一次）。
+adb：Android SDK 里有就用它，没有就从 Google 官方地址下载 platform-tools 放进 ~/.s2arm/android/platform-tools（只下一次；同目录还有出包签名钥，tools/shared_paths.tsv 登记）。
 """
 from __future__ import annotations
 import os
@@ -38,7 +38,8 @@ def enabled():
 
 
 def toolchain_dir():
-    return Path.home() / ".s2arm" / "toolchain"
+    """玩家机上安卓出包自己的目录（签名钥 android/tools/apk_sign.py 也在这）。不放开发机人手预装的只读工具链目录（tools/shared_paths.tsv 里登记为脚本不写）"""
+    return Path.home() / ".s2arm" / "android"
 
 
 def engine_dir(c):
@@ -74,7 +75,7 @@ def find_adb():
 
 
 def fetch_adb(c=None):
-    """下载 Google 官方 platform-tools（约 10 MB）解进 ~/.s2arm/toolchain/platform-tools；已有就直接用。"""
+    """下载 Google 官方 platform-tools（约 10 MB）解进 ~/.s2arm/android/platform-tools；已有就直接用。"""
     adb = find_adb()
     if adb:
         return adb
