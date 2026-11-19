@@ -243,7 +243,7 @@ static uint64_t present_impl(const tex_t *t, double period_s, const int crop[4])
                 uint64_t pf[RP_PERF_N], nd = 0, nsk = 0; rp_perf_take(pf); rp_draw_stats(&nd, &nsk);
                 uint64_t fr = g_n_shown + 1 - n_last; double sec = (double)(now - t_last) / 1e9, f = fr ? (double)fr : 1.0;
                 const double fs = pf[RP_PERF_TM_FRAMES] ? (double)pf[RP_PERF_TM_FRAMES] : 1.0;   // 逐步计时那几项只在采样帧里计：按计时过的帧数求每帧值（#1103）
-                char b[640]; snprintf(b, sizeof b, "分时：%.1f 秒上屏 %llu 帧（每秒 %.1f）；每帧：绘制 %.0f 笔、队列提交 %.1f 次共 %.1f 毫秒（其中交后端 %.1f）、等围栏 %.1f 次共 %.1f 毫秒（其中等同步 %.1f 次 %.1f 毫秒、Finish %.1f 次 %.1f 毫秒）；段从提交到完成平均 %.1f 毫秒；回放分三段：开段 %.1f / 回放 %.1f / 收尾 %.1f 毫秒、等已完成 %.1f 次、没真等 %.1f 次；GPU 忙 %.1f 毫秒；通道 %.1f 个、交上屏 %.1f 毫秒",
+                char b[768]; snprintf(b, sizeof b, "分时：%.1f 秒上屏 %llu 帧（每秒 %.1f）；每帧：绘制 %.0f 笔、队列提交 %.1f 次共 %.1f 毫秒（其中交后端 %.1f）、等围栏 %.1f 次共 %.1f 毫秒（其中等同步 %.1f 次 %.1f 毫秒、Finish %.1f 次 %.1f 毫秒）；段从提交到完成平均 %.1f 毫秒；回放分三段：开段 %.1f / 回放 %.1f / 收尾 %.1f 毫秒、等已完成 %.1f 次、没真等 %.1f 次；GPU 忙 %.1f 毫秒；通道 %.1f 个、交上屏 %.1f 毫秒",
                                       sec, (unsigned long long)fr, (double)fr / sec, (double)(nd - d_last) / f, (double)pf[RP_PERF_SUBS] / f, (double)pf[RP_PERF_SUBMIT_NS] / 1e6 / f, (double)pf[RP_PERF_COMMIT_NS] / 1e6 / f,
                                       (double)(pf[RP_PERF_WAIT_N] + pf[RP_PERF_WAIT_FIN_N]) / f, (double)(pf[RP_PERF_WAIT_NS] + pf[RP_PERF_WAIT_FIN_NS]) / 1e6 / f,
                                       (double)pf[RP_PERF_WAIT_N] / f, (double)pf[RP_PERF_WAIT_NS] / 1e6 / f,
@@ -307,8 +307,8 @@ static uint64_t present_impl(const tex_t *t, double period_s, const int crop[4])
                     snprintf(b, sizeof b, "分时（帧间隔）：p50 %.1f 毫秒、p99 %.1f 毫秒、最长 %.1f 毫秒、超过 33 毫秒 %.0f 帧（占 %.0f%%）",
                              p50, p99, mx, (double)ov, 100.0 * (double)ov / (double)f);
                     nvn_plat_log(NVN_PLAT_LOG_INFO, "present", b); }
-                snprintf(b, sizeof b, "分时（上传，每帧）：贴图整张上传 %.1f 次共 %.0f KB；池镜像同步 %.0f KB（其中直接写 %.0f KB）；缓冲解析：快路 %.0f 次、逐页慢路 %.0f 次（共查 %.0f 页）、不受写跟踪 %.0f 次", (double)pf[RP_PERF_TEX_UP_N] / f, (double)pf[RP_PERF_TEX_UP_KB] / f, (double)pf[RP_PERF_BUF_SYNC_KB] / f, (double)pf[RP_PERF_BUF_SYNC_DIRECT_KB] / f,
-                         (double)pf[RP_PERF_BUF_FAST_N] / f, (double)pf[RP_PERF_BUF_SLOW_N] / f, (double)pf[RP_PERF_BUF_PAGES_N] / f, (double)pf[RP_PERF_BUF_NOSPAN_N] / f);
+                snprintf(b, sizeof b, "分时（上传，每帧）：贴图整张上传 %.1f 次共 %.0f KB；池镜像同步 %.0f KB（其中直接写 %.0f KB）；缓冲解析：快路 %.0f 次、逐页慢路 %.0f 次（共查 %.0f 页）、不受写跟踪 %.0f 次（其中本次提交已同步免传 %.0f 次）", (double)pf[RP_PERF_TEX_UP_N] / f, (double)pf[RP_PERF_TEX_UP_KB] / f, (double)pf[RP_PERF_BUF_SYNC_KB] / f, (double)pf[RP_PERF_BUF_SYNC_DIRECT_KB] / f,
+                         (double)pf[RP_PERF_BUF_FAST_N] / f, (double)pf[RP_PERF_BUF_SLOW_N] / f, (double)pf[RP_PERF_BUF_PAGES_N] / f, (double)pf[RP_PERF_BUF_NOSPAN_N] / f, (double)pf[RP_PERF_BUF_NOSPAN_FRESH_N] / f);
                 if (pf[RP_PERF_BUF_LOG_EV] || pf[RP_PERF_BUF_LOG_WORDS] || pf[RP_PERF_BUF_LOG_REBUILD])   // 脏页追加日志（nvk_buf_dirtylog）开着才有
                     snprintf(b + strlen(b), sizeof b - strlen(b), "；脏页日志：事件 %.0f 条、求交看位图 %.0f 字、重建 %.2f 次", (double)pf[RP_PERF_BUF_LOG_EV] / f, (double)pf[RP_PERF_BUF_LOG_WORDS] / f, (double)pf[RP_PERF_BUF_LOG_REBUILD] / f);
                 if (pf[RP_PERF_TEX_UP_PART])   // 线性 CPU 贴图只传脏行（upload_linear_dirty）

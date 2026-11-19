@@ -2082,6 +2082,79 @@ static void t_buf_dirtylog(void) {
     g_block_mem = NULL; g_buf_cpu_auto = 0; g_flag_buf_dirtylog = g_dirtylog_dflt; g_log_fake_on = 0;
 }
 
+// 不受写跟踪的池（安卓虚拟池的映射段）：同一次提交里同步过的页不再重传；回放自己按序改了页、显卡写回落地才让它作废。
+// 修前：不受跟踪的池每次使用都整段重传，每次再因「同一次提交里的第二次同步」把当前通道切开
+// （真机重场景一帧 1678 次这类解析、池镜像同步 3.09 GB、约 936 次切通道）。
+static void t_buf_untracked_once(void) {
+    extern uint64_t rp_buf_gpu_write_note(uint64_t, uint64_t, uint64_t *);
+    extern void rp_buf_gpu_write_land(uint64_t, uint64_t, int);
+    extern void rp_buf_frame_flip(void);
+    nvn_be_shutdown_session(); nvn_unimpl_reset(); memset(g_pg_gen, 0, sizeof g_pg_gen); g_nbw = 0; g_dirty_now = 100; g_buf_cpu_auto = 0;
+    for (unsigned i = 0; i < sizeof g_pmem; i++) g_pmem[i] = (uint8_t)(i / PG + 1);   // 第 k 页全是 k+1
+    const uint64_t base = (uint64_t)(uintptr_t)g_pmem;
+    const int tracked = g_pg_tracked; g_pg_tracked = 0; g_dirty_map++;               // 池登记、建镜像时就不在写跟踪里
+    nvn_be_pool_add(g_pmem, sizeof g_pmem);
+    nvn_be_sub_begin();
+    uint64_t sb0 = sync_bytes_now();
+    CHECK(rp_buf_resolve(&g_fake_cmd, base + 100, 200, NULL, NULL) == 1 && g_nbw == 1 && g_bw[0].off == 0 && g_bw[0].len == PG && g_bw[0].head[0] == 1 && g_bw[0].pre == 1);   // 第一次：同步第 0 页，录前置段
+    CHECK(rp_buf_resolve(&g_fake_cmd, base + 300, 50, NULL, NULL) == 1 && g_nbw == 1);                     // 同页再用：免传（修前再录一笔主段传输、切通道）
+    CHECK(rp_buf_resolve(&g_fake_cmd, base, 3 * PG, NULL, NULL) == 1 && g_nbw == 2 && g_bw[1].off == PG && g_bw[1].len == 2 * PG && g_bw[1].pre == 1);   // 跨 0–2 页：只补第 1、2 页，仍在前置段
+    CHECK(rp_buf_resolve(&g_fake_cmd, base, 3 * PG, NULL, NULL) == 1 && g_nbw == 2);                       // 再用：全是新的
+    CHECK(sync_bytes_now() - sb0 == 3 * PG);                                                               // 一次提交里这三页一共只传一遍
+    g_pmem[3] = 0x77;                                                                                      // 游戏之后改了第 0 页（回放不知道）：这次提交里的命令按提交时的内容读，不重传
+    CHECK(rp_buf_resolve(&g_fake_cmd, base, 100, NULL, NULL) == 1 && g_nbw == 2);
+    CHECK(rp_buf_mirrors() == 1 && nvn_unimpl_kinds() == 0);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    // 下一次提交：每页重新同步一次，拿到游戏改过的内容；这次提交里再用不重传
+    nvn_be_sub_begin(); g_nbw = 0; sb0 = sync_bytes_now();
+    CHECK(rp_buf_resolve(&g_fake_cmd, base, 100, NULL, NULL) == 1 && g_nbw == 1 && g_bw[0].len == PG && g_bw[0].head[3] == 0x77 && g_bw[0].pre == 1);
+    CHECK(rp_buf_resolve(&g_fake_cmd, base, 3 * PG, NULL, NULL) == 1 && g_nbw == 2 && g_bw[1].off == PG && g_bw[1].len == 2 * PG);   // 第 1、2 页本次提交里第一次同步
+    CHECK(sync_bytes_now() - sb0 == 3 * PG);
+    // 回放自己按序改了第 0 页（OP_UPDATE_UB 的 CPU 路径）：命令之后的使用点必须看到新内容，只重传被写的页，本次提交里的第二次同步 → 主段
+    { uint8_t rec[16 + 4]; const uint64_t d = base + 2, n = 4; memcpy(rec, &d, 8); memcpy(rec + 8, &n, 8); memset(rec + 16, 0x5a, 4); rp_op_update_ub(rec, NULL); }
+    CHECK(rp_buf_resolve(&g_fake_cmd, base, 3 * PG, NULL, NULL) == 1 && g_nbw == 3 && g_bw[2].off == 0 && g_bw[2].len == PG && g_bw[2].head[2] == 0x5a && g_bw[2].pre == 0);
+    CHECK(rp_buf_resolve(&g_fake_cmd, base, 3 * PG, NULL, NULL) == 1 && g_nbw == 3);                       // 再用：干净
+    // 写跨两页：两页都作废（相邻的两页合成一串传）
+    { uint8_t rec[16 + 4]; const uint64_t d = base + PG - 2, n = 4; memcpy(rec, &d, 8); memcpy(rec + 8, &n, 8); memset(rec + 16, 0x6b, 4); rp_op_update_ub(rec, NULL); }
+    CHECK(rp_buf_resolve(&g_fake_cmd, base, 3 * PG, NULL, NULL) == 1 && g_nbw == 4 && g_bw[3].off == 0 && g_bw[3].len == 2 * PG && g_bw[3].pre == 0);
+    // 写落在这个池里没被用到的页（第 5 页）：用第 0–2 页的不受连累
+    { uint8_t rec[16 + 4]; const uint64_t d = base + 5 * PG, n = 4; memcpy(rec, &d, 8); memcpy(rec + 8, &n, 8); memset(rec + 16, 0x6c, 4); rp_op_update_ub(rec, NULL); }
+    CHECK(rp_buf_resolve(&g_fake_cmd, base, 3 * PG, NULL, NULL) == 1 && g_nbw == 4);                       // 写的是第 5 页，用的是第 0–2 页：不重传
+    CHECK(rp_buf_resolve(&g_fake_cmd, base + 5 * PG, 8, NULL, NULL) == 1 && g_nbw == 5 && g_bw[4].off == 5 * PG && g_bw[4].len == PG && g_bw[4].head[0] == 0x6c);   // 第 5 页：本提交没同步过，第一次就是新内容
+    CHECK(nvn_unimpl_kinds() == 0);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    nvn_be_pool_del(g_pmem);
+#ifdef S2A_GPU_LAND_TEST
+    // 显卡写回落地：另一份镜像此前在本次提交里同步这页时，按登记跳过了写回区间，它没有落地的内容——落地之后这几页必须重新同步（受跟踪的池靠落地那次 memcpy 自己变脏）
+    g_buf_cpu_auto = 1; memset(g_pmem, 0x11, sizeof g_pmem);
+    nvn_be_pool_add(g_pmem, sizeof g_pmem);
+    uint64_t key = 0; nvn_gpu_buf wr = NULL, other = NULL, again = NULL;
+    nvn_be_sub_begin();
+    CHECK(rp_buf_resolve(&g_fake_cmd, base, PG, &wr, NULL) == 1 && wr && wr->cpu);                         // 当前这一份（写它的那份）：同步第 0 页
+    const uint64_t id = rp_buf_gpu_write_note(base + 128, 16, &key); CHECK(id && key == base);              // 显卡写这 16 字节（登记在这一份上）
+    if (wr && wr->cpu) memset(wr->cpu + 128, 0xee, 16);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    rp_buf_frame_flip();                                                                                   // 下一帧：换成另一份
+    nvn_be_sub_begin();
+    CHECK(rp_buf_resolve(&g_fake_cmd, base, 64, &other, NULL) == 1 && other && other != wr);               // 与登记不相交的一段 → 另一份：整页同步，按登记跳过 128..143
+    rp_buf_gpu_write_land(key, id, 1);                                                                     // 落地：16 字节拷回游戏内存、撤登记
+    CHECK(g_pmem[128] == 0xee && g_pmem[143] == 0xee);
+    memset(g_land_mask, 0, sizeof g_land_mask); g_land_capture = 1; g_nbw = 0;
+    CHECK(rp_buf_resolve(&g_fake_cmd, base + 128, 16, &again, NULL) == 1 && again == other);
+    g_land_capture = 0;
+    CHECK(g_land_mask[128] && g_land_mask[143] && g_land_staged[128] == 0xee && g_land_staged[143] == 0xee);   // 另一份里这页作废、重新同步，落地的内容进来了
+    // 落地发生在写入那一份自己同步过这页的同一次提交里：那一份里本来就是落地的内容（与落地后的游戏内存一致），不作废、不重传
+    uint64_t key2 = 0; const uint64_t id2 = rp_buf_gpu_write_note(base + 256, 16, &key2); CHECK(id2 && key2 == base);   // 显卡写当前这一份（other）里这页的 16 字节
+    if (other && other->cpu) memset(other->cpu + 256, 0xdd, 16);
+    rp_buf_gpu_write_land(key2, id2, 1);
+    g_nbw = 0;
+    CHECK(rp_buf_resolve(&g_fake_cmd, base + 256, 16, NULL, NULL) == 1 && g_nbw == 0);                       // 写入那一份：免传（另一份 wr 才要补）
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    nvn_be_pool_del(g_pmem); rp_buf_frame_flip();
+#endif
+    nvn_be_shutdown_session(); g_pg_tracked = tracked; g_dirty_map++; g_buf_cpu_auto = 0;
+}
+
 static void t_buf_ops(void) {   // 缓冲类命令只改游戏内存；GPU 顺序由使用点同步保证：先用的看到旧内容，后用的看到新内容
     nvn_be_shutdown_session(); nvn_unimpl_reset(); memset(g_pg_gen, 0, sizeof g_pg_gen); g_nbw = 0; g_dirty_now = 100; memset(g_pmem, 0, sizeof g_pmem);
     uint64_t base = (uint64_t)(uintptr_t)g_pmem; nvn_be_pool_add(g_pmem, sizeof g_pmem);
@@ -2879,7 +2952,10 @@ static void t_storage_sync_before_pass(void) {
     g_fprog.nent[1] = 1; g_fprog.ent[1][0].cls = NVN_GPU_RES_SSBO; g_fprog.ent[1][0].src_kind = NVN_RB_SBUFP;
     g_fprog.ent[1][0].src_reg = 0; g_fprog.ent[1][0].access = NVN_GPU_ACC_R;
     { p_bind_buf *sb = put(&s, OP_BIND_SSBO, sizeof *sb); sb->stage = 1; sb->index = 0; sb->addr = base + 2 * PG; sb->size = 64; }
-    q_draw(&s); q_draw(&s);
+    q_draw(&s);
+    // 两笔之间回放自己按序改了 SSBO 所在的页：不受写跟踪的池只靠这个知道页变了（不再「每次使用都重传」，见 t_buf_untracked_once）
+    { uint8_t *r = put(&s, OP_UPDATE_UB, 16 + 8); uint64_t d = base + 2 * PG + 8, n = 8; memcpy(r, &d, 8); memcpy(r + 8, &n, 8); memset(r + 16, 0xB2, 8); }
+    q_draw(&s);
     end(&s); submit1(&s); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_gdraws == 2);
     CHECK(g_nbw == 2 && g_bw[0].pre == 1 && g_bw[1].pre == 0);  // 第二次同步确实录成了主段里的传输
@@ -2929,7 +3005,10 @@ static void t_tbuf_replay(void) {
     e->cls = NVN_GPU_RES_TBUF; e->src_kind = NVN_RB_TBUF; e->src_reg = 130; e->src_reg2 = UINT16_MAX; e->count = 1; e->access = NVN_GPU_ACC_R;
     g_fprog.dtt[1][0] = NVN_TEXTURE_TARGET_BUFFER + 1; g_fprog.dcls[1][0] = 1;
     p_bind_handles *b = put(&s, OP_BIND_TEX, sizeof *b); b->stage = 1; b->first = 130; b->n = 1; b->h[0] = 3;
-    q_draw(&s); q_draw(&s); end(&s); submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+    q_draw(&s);
+    // 两笔之间回放自己按序改了缓冲贴图的那 16 字节（内容同原值）：不受写跟踪的池由此知道页变了，第二笔要先重传再开通道
+    { uint8_t *r = put(&s, OP_UPDATE_UB, 16 + sizeof values); uint64_t d = (uint64_t)(uintptr_t)g_pmem + 2 * PG + 256, n = sizeof values; memcpy(r, &d, 8); memcpy(r + 8, &n, 8); memcpy(r + 16, values, sizeof values); }
+    q_draw(&s); end(&s); submit1(&s); fake_complete(NVN_GPU_DONE_OK);
     CHECK(g_gdraws == 2 && g_tbuf_binds[NVN_GPU_SH_FS] == 2);
     CHECK(g_tbuf_bound[NVN_GPU_SH_FS].buf && g_tbuf_bound[NVN_GPU_SH_FS].off == 2 * PG + 256 &&
           g_tbuf_bound[NVN_GPU_SH_FS].bytes == 16 && g_tbuf_bound[NVN_GPU_SH_FS].format == NVN_FORMAT_R32UI);
@@ -3653,6 +3732,7 @@ static void t_gpu_land_concurrent(void) {
     pthread_mutex_lock(&g_land_mu); while (!g_land_half) pthread_cond_wait(&g_land_cv, &g_land_mu); pthread_mutex_unlock(&g_land_mu);
     CHECK(rp_buf_gpu_pending(base + 128, 16));    // 锁外拷贝时仍是 GPU 待落地，bufops 不得走 CPU
     CHECK(!rp_buf_gpu_pending(base + 144, 16));   // 不相交的区间不被扩大成待落地
+    rp_write_note(base + 200, 4);   // 回放自己按序改了这一页别处的字节：不受写跟踪的池由此知道页要重同步（同步照样不许覆盖落地区间）
     memset(g_land_mask, 0, sizeof g_land_mask); g_land_capture = 1; g_nbw = 0;
     nvn_gpu_buf again = NULL; CHECK(rp_buf_resolve(&g_fake_cmd, base, PG, &again, NULL) == 1 && again == b);
     g_land_capture = 0;
@@ -5680,6 +5760,7 @@ int main(int argc, char **argv) {
 #endif
     t_buf_mirror();
     t_buf_dirtylog();
+    t_buf_untracked_once();
     t_buf_mirror_fail_once();
     t_buf_multi_tail();
     t_buf_ops();
