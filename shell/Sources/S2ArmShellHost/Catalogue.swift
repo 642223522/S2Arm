@@ -55,11 +55,16 @@ public struct Catalogue: Equatable, Sendable {
     }
 
     /// 各款程序包 / 资源包所在的根（同 runtime/include/s2a_docs.h s2a_pack_base_rel：备用位置 Library/S2Arm/games 在就取它，否则 Library/Application Support/S2Arm/games）
+    /// Apple TV：资源包与程序包都在文档根 Library/Caches/S2Arm/games 下（s2a_docs.h：tvOS 的资源包根是 <文档根>/games/<号>/资源包，同 C 侧 s2a_program_games_root）
     public static func defaultProgramRoot() -> URL? {
+        #if os(tvOS)
+        return S2ArmContainer.gamesRoot()
+        #else
         let home = URL(fileURLWithPath: NSHomeDirectory())
         let alt = home.appendingPathComponent("Library/S2Arm/games"), main = home.appendingPathComponent("Library/Application Support/S2Arm/games")
         var isDir: ObjCBool = false
         return FileManager.default.fileExists(atPath: alt.path, isDirectory: &isDir) && isDir.boolValue ? alt : main
+        #endif
     }
 
     /// 0.6.0 通用壳：「推到 iPhone」只推这一款、不重装 App，新推进来的款在 App 包清单里没有条目——按每款程序包清单 <根>/<号>/program/catalogue.json

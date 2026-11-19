@@ -142,7 +142,7 @@ public sealed partial class EnvironmentWindow
         selectedGame = installGameId; readinessFor = null; Navigate("install");
     }
 
-    /// 顶栏胶囊（#308，Mac 同款）：装机在跑 → 「正在装到 iPhone：X · 查看进度」；跑完没回去看 → 「已装到 / 没装完 · 查看」。正看着这款的安装页时不显示
+    /// 顶栏胶囊（#308，Mac 同款）：装机在跑 → 「正在推到 iPhone：X · 查看进度」；跑完没回去看 → 「已装到 / 没装完 · 查看」。正看着这款的安装页时不显示
     private Button? PhonePill()
     {
         if (installGameId is null || (!installBusy && installSeen) || (page == "install" && SelectedGame?.Id == installGameId)) return null;
@@ -286,11 +286,12 @@ public sealed partial class EnvironmentWindow
         Closed += (_, _) => ticker.Stop();
     }
 
-    /// <summary>The build tab opens the progress page while a pack is running or its result is on screen.</summary>
+    /// <summary>打开选中这款的出包页：正在出的 / 刚出完的就是这款 → 进度页；别的款在出时打开这款自己的出包页（点开始会排在后面），
+    ///   不带到正在出的那款的进度页（玩家反馈：A 在出包时点 B 的出包，进的是 A 的页面）</summary>
     private void OpenBuild()
     {
         locationsFor = null;   // 出包页每次打开都重读存放位置（剩余空间是当时的）
-        if (packRunning || (packState == "succeeded" && packGame?.Id == selectedGame)) { Navigate("progress"); return; }
+        if (packGame?.Id == selectedGame && (packRunning || packState == "succeeded")) { Navigate("progress"); return; }
         Navigate("build");
     }
 
@@ -401,10 +402,12 @@ public sealed partial class EnvironmentWindow
         var bar = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 16 };
         var blocker = ExportBlocker(game);
         var reason = new StackPanel { Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
-        reason.Children.Add(Muted(blocker ?? T("export.hint"), 14));
+        // 别的款正在出：说清点开始会排在它后面、它出完自动开始（同一时刻作业层只出一款：出包占整库的执行锁、吃满内存与 CPU）
+        var behind = blocker is null && (packRunning || batchRunning) && packGame is { } running && running.Id != game.Id ? running : null;
+        reason.Children.Add(Muted(blocker ?? (behind is not null ? T("export.queue.behind").Replace("{0}", behind.Name) : T("export.hint")), 14));
         if (ExportBlockerKind(game) == "keys") reason.Children.Add(Action("nav.library", () => Navigate("library")));
         bar.Children.Add(reason);
-        var start = Primary(T(!exportIos ? "export.start" : IosAfterPack == "export" ? "export.start.selfsign" : "export.start.install"), () => StartPackBranch(game), !ExportStops(game));   // 缺文件 / 缺 keys 只在左边提示，不置灰（作业层核实）
+        var start = Primary(T(behind is not null ? "export.action.queue" : !exportIos ? "export.start" : IosAfterPack == "export" ? "export.start.selfsign" : "export.start.install"), () => StartPackBranch(game), !ExportStops(game));   // 缺文件 / 缺 keys 只在左边提示，不置灰（作业层核实）
         AutomationId(start, "export.start");
         Grid.SetColumn(start, 1); bar.Children.Add(start);
         body.Children.Add(Card(bar, 18));
@@ -713,7 +716,7 @@ public sealed partial class EnvironmentWindow
         "files" => T("library.requirements") + " · " + string.Join(" / ", game.Missing),
         "keys" => T("export.block.keys"),
         "busy" => T("export.block.busy"),
-        "queued" => T("export.status.queued"),
+        "queued" => T("export.queue.waiting").Replace("{0}", packGame?.Name ?? ""),
         _ => null,
     };
 
@@ -1752,7 +1755,7 @@ public sealed partial class EnvironmentWindow
             switchExport: installState is "failed" or "interrupted" && !installExport && installTrack.Kind == "install" ? () => { IosAfterPack = "export"; ExportSelfSign(game); } : null));
         if (installState is "failed" && installCode is "apple_session_expired" or "apple_not_signed_in")
         {
-            // Apple ID 登录过期（Apple 1100）/ 还没登录：打开 Impactor 让玩家自己重新登录（密码不经手），登录好再点一次「装到 iPhone」
+            // Apple ID 登录过期（Apple 1100）/ 还没登录：打开 Impactor 让玩家自己重新登录（密码不经手），登录好再点一次「推到 iPhone」
             var relogin = Action("install.relogin", OpenBundledImpactor, File.Exists(BundledImpactor) && !installBusy);
             AutomationId(relogin, "install.relogin");
             state.Children.Add(relogin);
@@ -1825,7 +1828,7 @@ public sealed partial class EnvironmentWindow
             installState = job.Report.State;
             installMessage = job.Report.Succeeded && job.Report.Result.TryGetProperty("device", out var device) && device.ValueKind == JsonValueKind.String
                 ? T("install.device") + " · " + device.GetString() : job.Report.Message;
-            // 资源传完但电脑没拉起 App 解开（作业结果 unpackPending，11-09 #336）：不显示「已装到 iPhone」，显示还差的一步和原因 / 办法
+            // 资源传完但电脑没拉起 App 解开（作业结果 unpackPending，11-09 #336）：不显示「已推到 iPhone」，显示还差的一步和原因 / 办法
             if (job.Report.Succeeded && job.Report.Result.TryGetProperty("unpackPending", out var pending) && pending.ValueKind == JsonValueKind.String)
             { installState = "needsPlayer"; installMessage = pending.GetString() ?? ""; }
             installOpenToFinish = job.Report.Succeeded && job.Report.Result.TryGetProperty("openToFinish", out var open) && open.ValueKind == JsonValueKind.True;

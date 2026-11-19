@@ -49,6 +49,9 @@ void nvk_sha256_bytes(const uint8_t *buf, size_t len, uint8_t sha[32]);
 void nvk_compile_facts_set_frag_out_specialization(int on);
 int nvk_compile_facts_frag_out_specialization(void);
 
+// NVN 绘制图元 → 翻译器 InputTopology 名（graphicsState.topology；离线 Vulkan 库的几何段也按它挑输入图元那份）。NULL = 没有来源
+const char *nvk_input_topology(uint32_t prim);
+
 // Draw 快照 → graphicsState 事实。*complete 为 0 表示附件事实缺项（颜色槽没有可信格式），
 // 调用方据此输出事实行并让编译器报 MISSING_FIELD；这里不补默认格式。
 void nvk_compile_facts_fill(struct s2a_compile_graphics_src *gfx,

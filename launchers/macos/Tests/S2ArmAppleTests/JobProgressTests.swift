@@ -19,7 +19,7 @@ final class JobProgressTests: XCTestCase {
         var p = JobProgress()
         p.ingest(try stage(0, #"{"stage":"用你的 Apple ID 签名","stageIndex":4,"stageCount":6,"keychainPrompt":true,"stageKey":null}"#))
         XCTAssertTrue(p.keychainPrompt)
-        p.ingest(try stage(1, #"{"stage":"装到 iPhone","stageIndex":5,"stageCount":6,"keychainPrompt":false,"stageKey":null}"#))
+        p.ingest(try stage(1, #"{"stage":"推到 iPhone","stageIndex":5,"stageCount":6,"keychainPrompt":false,"stageKey":null}"#))
         XCTAssertFalse(p.keychainPrompt)
         p.ingest(try stage(2, #"{"stage":"用你的开发者证书签名","stageIndex":4,"stageCount":6}"#))   // 没带字段的阶段：不沿用上一阶段
         XCTAssertFalse(p.keychainPrompt)

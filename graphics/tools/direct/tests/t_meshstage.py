@@ -149,10 +149,19 @@ F_EMU = F0.split('#ifdef S2A_MESH_EMU')[-1] if 'kernel void main0_mc(' in F0 els
 ck('⑦ 无任务、无逐图元属性的网格（F）：S2A_MESH_EMU 下有 main0_mc / main0_mc_z / main0_mv',
    all(k in F_EMU for k in ('kernel void main0_mc(', 'kernel void main0_mc_z(', 'vertex dm_vertex_t main0_mv(', 'device uint* dm_xo [[buffer(28)]], constant uint* dm_first [[buffer(29)]]')), F0[-1500:])
 ck('⑦ F：组号取派发线程组号、工作组字 = 起始组号 + 组号，不读排表 / 载荷', 'uint dm_j = dm_tg;' in F_EMU and '_35[0] = dm_first[0] + dm_tg;' in F_EMU and 'dm_xo[dm_xo[2]' not in F_EMU and 'dm_xo[dm_xo[1]' not in F_EMU, F_EMU[:1200])
+loop_kernel = kernel(1444, True).replace('    if (', '''    for (uint i = 0; i < 2u; i++)
+    {
+        _35[i] = i;
+    }
+    if (''', 1)
+guarded_mesh = dshfn.batch([('mesh_to_stage', [loop_kernel, A_CTL.hex(), A_AREA.hex()])])[0]
+G0 = guarded_mesh.get('ok', '')
+ck('⑦ 核入口有循环：仍能提取阶段内存并保留循环护栏',
+   all(s in G0 for s in ('    DM_LG_DECL()\n', '        DM_LG()\n', 'kernel void main0_mc_z(')), guarded_mesh.get('err'))
 with tempfile.TemporaryDirectory() as t:
-    for nm, src in (('A', A0), ('C', C0), ('F', F0)):
+    for nm, src in (('A', A0), ('C', C0), ('F', F0), ('G', G0)):
         f = os.path.join(t, nm + '.metal'); open(f, 'w').write(src)
         p = subprocess.run(['xcrun', '-sdk', 'macosx', 'metal', '-c', '-w', '-DS2A_MESH_EMU=1', '-fmetal-math-mode=relaxed', '-fpreserve-invariance', f, '-o', f + '.air'], capture_output=True, text=True)
-        ck(f'⑦ {nm} 定义 S2A_MESH_EMU 交 xcrun metal（macosx）编过', p.returncode == 0, p.stderr.strip()[-300:])
+        ck(f'⑦ {nm} 定义 S2A_MESH_EMU 交 xcrun metal（macosx）编过', bool(src) and p.returncode == 0, p.stderr.strip()[-300:])
 print(f"{'✗' if bad else '✓'} meshstage：{n} 项，{bad} 项不符（手排 5 种控制段 / SPH、2 种拒绝、载荷中转、5 份 MSL 编 iOS）")
 sys.exit(bool(bad))

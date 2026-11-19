@@ -23,7 +23,7 @@ struct InstallView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
-                // 导出自签包时标题照导出写，不写「装到 iPhone」。
+                // 导出自签包时标题照导出写，不写「推到 iPhone」。
                 LauncherSheetHeading(exportJob != nil ? text("library.hero.selfSign") : loc.t(model.installKey("s2arm.install.title")), subtitle: game?.name ?? "")
                 if model.installChecking { ProgressView().controlSize(.small) }
             }
@@ -46,7 +46,7 @@ struct InstallView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     // 手机作业三态统一（PhoneJobPanel）：钥匙串提示只在后端标了 keychainPrompt 的阶段挂（#266），在组件里
                     ScrollView { PhoneJobPanel(model: model, session: job).frame(maxWidth: .infinity, alignment: .leading) }
-                    // 装机在后台照跑：关掉弹层回游戏库，顶部胶囊「正在装到 iPhone · 查看进度」能回来（#308，Mac 与 Windows 同一套）
+                    // 装机在后台照跑：关掉弹层回游戏库，顶部胶囊「正在推到 iPhone · 查看进度」能回来（#308，Mac 与 Windows 同一套）
                     HStack { Spacer(); Button(text("install.background")) { dismiss() }.controllerButtonStyle(LauncherSecondaryButtonStyle()).accessibilityIdentifier("install.background").controllerShortcut(.back) }
                 }
                 .padding(.horizontal, LauncherTheme.Space.page).frame(maxWidth: .infinity, maxHeight: .infinity)

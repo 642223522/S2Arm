@@ -13,3 +13,6 @@ for source in plat_nvn.c plat_nvn_vk.c vsync.c; do
     "$here/$source"
 done
 echo 'PASS: OHOS platform syntax, 3 translation units (host stubs; not a device/link test)'
+# 托管音频 Session 宿主用例：只需 Python 3 与 .NET 10 SDK，不需要鸿蒙 SDK（实际 Session/队列源码 + 设备 API 替身）
+python3 "$repo/ohos/tests/audio-session/run.py"
+

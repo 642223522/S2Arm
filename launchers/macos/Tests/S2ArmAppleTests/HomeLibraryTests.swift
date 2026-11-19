@@ -160,17 +160,17 @@ import LauncherPadBridge
         for _ in 0..<50 where runner.lastLaunch == nil { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual(runner.lastLaunch, String(format: "%016X", 19), "R2 必须启动当前选中的游戏")
         try await Task.sleep(for: .milliseconds(80))
-        model.session = JobSession(kind: .play, gameID: firstID, name: "Fixture")
+        model.playSession = JobSession(kind: .play, gameID: firstID, name: "Fixture")   // 一局在游戏槽
         model.gamepad.handle(.back)
         try await Task.sleep(for: .milliseconds(100))
-        XCTAssertTrue(model.sessionHidden, "B 返回 Home 时运行中的任务留在后台")
-        XCTAssertTrue(model.gamepad.controlTargets(in: window).contains { $0.id == "top.currentTask" }, "后台任务必须有重新进入的入口：\(model.gamepad.controlTargets(in: window).map(\.id))")
-        model.gamepad.focus("top.currentTask"); model.gamepad.handle(.confirm)
-        XCTAssertFalse(model.sessionHidden)
+        XCTAssertTrue(model.playHidden, "B 返回 Home 时运行中的一局留在后台")
+        XCTAssertTrue(model.gamepad.controlTargets(in: window).contains { $0.id == "top.playTask" }, "后台的一局必须有重新进入的入口：\(model.gamepad.controlTargets(in: window).map(\.id))")
+        model.gamepad.focus("top.playTask"); model.gamepad.handle(.confirm)
+        XCTAssertFalse(model.playHidden)
         model.goToLibrary()
-        XCTAssertTrue(model.sessionHidden)
-        model.session = JobSession(kind: .play, gameID: firstID, name: "Next fixture")
-        XCTAssertFalse(model.sessionHidden, "开始新任务时不能继承上一个任务的隐藏状态")
+        XCTAssertTrue(model.playHidden)
+        model.playSession = JobSession(kind: .play, gameID: firstID, name: "Next fixture")
+        XCTAssertFalse(model.playHidden, "开始新的一局时不能继承上一局的隐藏状态")
         window.close()
     }
 

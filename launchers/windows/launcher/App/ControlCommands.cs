@@ -101,6 +101,12 @@ public sealed partial class EnvironmentWindow
         r.Text("gameId") is { } id ? catalog?.Games.FirstOrDefault(g => !g.Hidden && g.Id.Equals(id, StringComparison.OrdinalIgnoreCase)) : null;
     private static readonly ControlReply NoGame = ControlReply.Bad("没有这个 gameId");
 
+    /// <summary>游戏库没连上时回给 AI 的话：第一次建库在等玩家选盘（LibraryDrivePicker 选盘模式）就说清楚，让 AI 先问玩家放哪块盘再 POST /library</summary>
+    private string LibraryNotReady() =>
+        importError.Length > 0 ? importError
+        : libraryFailCode == LibraryChooseDrive ? "游戏库还没建：第一次建库要先选放哪块盘（界面上列出了各盘剩余空间）。先问玩家放哪块盘，再 POST /library {path}"
+        : "游戏库没建好";
+
     private async Task<bool> ControlConnected()
     {
         if (connectedFolder is null || libraryId is null)
@@ -122,7 +128,7 @@ public sealed partial class EnvironmentWindow
     /// <param name="export">mode = export（同游戏库「导出自签包」）：不连手机、出到文件夹</param>
     private ControlReply ControlInstall(LibraryGame game, IReadOnlySet<string> accept, bool export = false)
     {
-        // 同游戏库「装到 iPhone」按钮（PhoneBlockedFor）：出包在跑照样能装，手机上装机在跑 / 这款正在出包由 InstallAsync 排队（11-16 维护者）
+        // 同游戏库「推到 iPhone」按钮（PhoneBlockedFor）：出包在跑照样能装，手机上装机在跑 / 这款正在出包由 InstallAsync 排队（11-16 维护者）
         if (PhoneBlockedFor(game)) return Busy();
         selectedGame = game.Id;
         _ = InstallAsync(game, accept, ask: false, export: export);
@@ -155,7 +161,7 @@ public sealed partial class EnvironmentWindow
             {
                 if (r.Text("path") is not { Length: > 0 } path) return ControlReply.Bad("缺 path");
                 if (ControlBusy) return Busy();
-                if (!await ControlConnected()) return ControlReply.Bad(importError.Length > 0 ? importError : "游戏库没建好", 409);
+                if (!await ControlConnected()) return ControlReply.Bad(LibraryNotReady(), 409);
                 importDialog = new ImportDialogState(ImportKind.Keys);
                 _ = RunImportKeysAsync(path);
                 return ControlReply.Ok();
@@ -164,7 +170,7 @@ public sealed partial class EnvironmentWindow
             {
                 if (r.Strings("paths") is not { Length: > 0 } selected) return ControlReply.Bad("缺 paths");
                 if (ControlBusy) return Busy();
-                if (!await ControlConnected()) return ControlReply.Bad(importError.Length > 0 ? importError : "游戏库没建好", 409);
+                if (!await ControlConnected()) return ControlReply.Bad(LibraryNotReady(), 409);
                 importDialog = new ImportDialogState(ImportKind.Games);
                 _ = RunImportGamesAsync(selected);
                 return ControlReply.Ok();
@@ -256,7 +262,7 @@ public sealed partial class EnvironmentWindow
                 if (r.Text("action") == "pull") return ControlReply.Bad("Windows 版不能拉回 iPhone 诊断：装机日志用 s2armctl logs 读", 409);
                 if (r.Text("action") != "export" || r.Text("path") is not { Length: > 0 } output) return ControlReply.Bad("action 要 export，并带 path");
                 if (ControlBusy) return Busy();
-                if (!await ControlConnected()) return ControlReply.Bad(importError.Length > 0 ? importError : "游戏库没建好", 409);
+                if (!await ControlConnected()) return ControlReply.Bad(LibraryNotReady(), 409);
                 var job = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder!, libraryId, "diagnostics", [output], CancellationToken.None);
                 return job.Report.Succeeded ? ControlReply.Ok() : ControlReply.Bad(job.Report.Message, 500);
             }

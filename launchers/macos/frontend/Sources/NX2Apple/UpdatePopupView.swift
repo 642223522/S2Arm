@@ -278,6 +278,7 @@ struct UpdatePopupView: View {
 struct MessagesPanel: View {
     @ObservedObject var model: S2ArmLauncherModel
     let language: String
+    @Environment(\.dismiss) private var dismiss
 
     private func t(_ id: String) -> String { BackendText.launcherText(id, language: language) }
 
@@ -303,7 +304,13 @@ struct MessagesPanel: View {
     @ViewBuilder private func row(_ m: [String: Any]) -> some View {
         let unread = m["unread"] as? Bool == true
         VStack(alignment: .leading, spacing: 6) {
-            if m["kind"] as? String == "update" {
+            if m["kind"] as? String == "feature" {   // 新功能大窗看过后留在这里：点了再看一遍（11-19 维护者定）
+                Text(t("messages.kind.feature")).font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary)
+                let badge = m["badge"] as? [String: Any] ?? [:]
+                Text((language == "en" ? badge["en"] as? String : nil) ?? badge["zh-Hans"] as? String ?? "").font(LauncherTheme.TypeStyle.body)
+                Button { dismiss(); model.reopenFeature(m) } label: { Text(t("feature.reopen")).font(LauncherTheme.TypeStyle.detail).underline() }
+                    .controllerButtonStyle(.plain).foregroundStyle(LauncherPalette.cream).accessibilityIdentifier("messages.feature.reopen")
+            } else if m["kind"] as? String == "update" {
                 let version = m["version"] as? String ?? ""
                 Text(t("messages.kind.update").replacingOccurrences(of: "{0}", with: version) + " · " + t(m["installed"] as? Bool == true ? "messages.installed" : "messages.available"))
                     .font(LauncherTheme.TypeStyle.caption).foregroundStyle(.secondary)

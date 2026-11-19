@@ -157,13 +157,21 @@ class SGradeTests(unittest.TestCase):
 
     def test_launch_refused_while_this_game_upgrading(self):
         # 开始游戏：这款的 S 级锁拿不到（正在升级）→ sgrade_upgrading，起局前什么都不做；锁名按款，别的款拿的是自己的锁
-        c = types.SimpleNamespace(r={"gameId": "0100A"}, lock=lambda name: contextlib.nullcontext(),
+        c = types.SimpleNamespace(r={"gameId": "0100A"}, lock=lambda name, **k: contextlib.nullcontext(), library=self.t,
                                   idle=lambda name: contextlib.nullcontext(name != sgrade.game_lock("0100A")),
                                   game=lambda: (_ for _ in ()).throw(AssertionError("被拒前不该往下走")))
+        holder = self.t / ("." + sgrade.game_lock("0100A") + ".lock.holder")
+        holder.write_text(json.dumps(dict(taskId="u", operation="sgradeUpgradeGame")))
         with self.assertRaises(Failure) as e:
             build.launch(c)
         self.assertEqual(e.exception.code, "sgrade_upgrading")
         self.assertNotEqual(sgrade.game_lock("0100A"), sgrade.game_lock("0100B"))
+        # 执行锁读写化（11-19）：拿着这款锁的是另一局 / 出包（执行锁只拿共享，不再在执行锁上排队）→ 同原先的「游戏库忙」，带占锁者
+        for op in ("launch", "build", "ipa"):
+            holder.write_text(json.dumps(dict(taskId="p", operation=op)))
+            with self.assertRaises(Failure) as e:
+                build.launch(c)
+            self.assertEqual((e.exception.code, e.exception.holder["operation"]), ("library_busy", op))
 
 if __name__ == "__main__":
     unittest.main()

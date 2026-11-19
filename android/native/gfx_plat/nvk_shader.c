@@ -569,6 +569,16 @@ static long ubo_tex_id(int st, unsigned cbuf, unsigned word) {
     return (long)(h & 0xFFFFF) + rp_S.tex_base;
 }
 static int request_texture_fact(uint32_t fmt, uint32_t target, uint32_t layers, struct s2a_nvn_texture_fact *out, char *why, size_t why_size);
+// 常量缓冲句柄指向没登记的贴图号、按默认描述符给了事实的次数（信息计数，不是未接；换局清零）。每局首次打一行，带贴图号和池容量。
+static _Atomic uint64_t g_ubo_default_fact;
+uint64_t rp_shader_ubo_default_fact_count(void) { return atomic_load(&g_ubo_default_fact); }
+static void ubo_default_fact_note(int st, unsigned cbuf, unsigned word, long id) {
+    if (atomic_fetch_add(&g_ubo_default_fact, 1) != 0) return;
+    char b[240];
+    snprintf(b, sizeof b, "常量缓冲句柄指向没登记的贴图：%s c%u 第 %u 字 → 贴图号 %ld（贴图池基址 %d、容量 %d）：同 Ryujinx，按默认描述符给事实，整笔照常编译",
+             st == 0 ? "vs" : st == 1 ? "fs" : "gs", cbuf, word, id, (int)rp_S.tex_base, (int)rp_S.tex_pool_n);
+    nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", b);
+}
 static void ubo_facts_add(struct facts *f, int st) {
     const struct ubo_need *e = ubo_need_find(st);
     for (unsigned i = 0; e && i < e->n && f->ntex < S2A_COMPILE_TEXTURE_MAX; i++) {
@@ -576,10 +586,11 @@ static void ubo_facts_add(struct facts *f, int st) {
         tex_t t; view_t tv; int has_tv = 0; struct s2a_nvn_texture_fact nf; char why[96];
         if (id < 0) continue;   // ubo_tex_id 已具名报过
         if (!rp_tex_snap_by_id((int)id, &t, &tv, &has_tv)) {
-            char b[160]; snprintf(b, sizeof b, "常量缓冲句柄指向的贴图取不到：c%u 第 %u 字 → 贴图号 %ld（贴图池基址 %d）", e->c[i].cbuf, e->c[i].word, id, (int)rp_S.tex_base);
-            red1("ubo_handle_no_texture", b); continue;
-        }
-        if (request_texture_fact((uint32_t)(has_tv && tv.set_format ? tv.format : t.d.format), (uint32_t)(has_tv && tv.set_target ? tv.target : t.d.target), t.d.depth, &nf, why, sizeof why)) {
+            // 号没登记（越过池容量 / 池里没登记；0xFFFFF 常是游戏的「这一路不用贴图」哨兵）：Ryujinx 取到默认描述符、整笔照画。
+            //   事实同组合槽（默认事实只此一份）。不是红行：计数 + 每局首次一行，号越界在读数里仍看得见
+            s2a_nvn_default_texture_fact(id, rp_S.tex_base, (uint32_t)rp_S.tex_pool_n, &nf);
+            ubo_default_fact_note(st, e->c[i].cbuf, e->c[i].word, id);
+        } else if (request_texture_fact((uint32_t)(has_tv && tv.set_format ? tv.format : t.d.format), (uint32_t)(has_tv && tv.set_target ? tv.target : t.d.target), t.d.depth, &nf, why, sizeof why)) {
             char b[240]; snprintf(b, sizeof b, "常量缓冲句柄的贴图出不了编译事实：贴图号 %ld 格式 0x%x 目标 %u：%s", id, (unsigned)(has_tv && tv.set_format ? tv.format : t.d.format), (unsigned)(has_tv && tv.set_target ? tv.target : t.d.target), why);
             red1("ubo_handle_no_fact", b); continue;
         }
@@ -599,7 +610,7 @@ static uint64_t ubo_fact_sig(int st) {
         tex_t t; view_t tv; int has_tv = 0;
         if (id >= 0 && rp_tex_snap_by_id((int)id, &t, &tv, &has_tv)) {
             UMIX(1); UMIX(has_tv && tv.set_format ? tv.format : t.d.format); UMIX(has_tv && tv.set_target ? tv.target : t.d.target); UMIX(t.d.depth);
-        } else UMIX(2);
+        } else UMIX(id < 0 ? 2 : 3 + !s2a_nvn_default_texture_fact(id, rp_S.tex_base, (uint32_t)rp_S.tex_pool_n, NULL));   // 读不到 / 没登记（池内、池外两种默认事实）各是一个值
     }
     #undef UMIX
     return h;
@@ -639,11 +650,7 @@ static void fill_facts(const struct rp_shader_req *q, const struct s2a_direct_co
         if (rp_tex_snap_by_id((int)id, &t, &tv, &has_tv)) {
             // 格式、目标都取绑定视图的（视图自己设了就用它的）：声明的采样数值型要和绑上去的视图一致，坐标归一与否只看有效目标
             if (request_texture_fact((uint32_t)(has_tv && tv.set_format ? tv.format : t.d.format), (uint32_t)(has_tv && tv.set_target ? tv.target : t.d.target), t.d.depth, &nf, why, sizeof why)) continue;   // 表达不了的格式 / 目标：不出事实，编译器按缺项准确失败
-        } else {
-            int in_pool = id >= rp_S.tex_base && (uint64_t)(id - rp_S.tex_base) < (uint64_t)rp_S.tex_pool_n;
-            memset(&nf, 0, sizeof nf); snprintf(nf.format, sizeof nf.format, "Unknown");
-            snprintf(nf.sampler_type, sizeof nf.sampler_type, "%s", in_pool ? "1d" : "2d"); nf.normalized = !in_pool; nf.array_length = 1;
-        }
+        } else s2a_nvn_default_texture_fact(id, rp_S.tex_base, (uint32_t)rp_S.tex_pool_n, &nf);   // 没登记：Ryujinx GetTextureDescriptor 的默认描述符（默认事实只此一份，texture_facts.c）
         int n = f->ntex++;
         memcpy(f->tfmt[n], nf.format, sizeof f->tfmt[n]); memcpy(f->tsmp[n], nf.sampler_type, sizeof f->tsmp[n]);
         f->tex[n] = (struct s2a_compile_texture_src){(const char *const[]){"vs", "fs", "gs"}[st], (uint32_t)(8 + 2 * slot), -1, f->tsmp[n], f->tfmt[n], nf.is_buffer, nf.normalized, 0, nf.array_length};
@@ -739,14 +746,16 @@ static int layout_ent(const struct fd_binding *b, nvn_gpu_layout_ent *e) {
         if (b->storage_writable) e->access = NVN_GPU_ACC_R | NVN_GPU_ACC_W;
         return 1;
     }
-    // 图像：只接计算阶段的单个存储图像（解析器给出 NVN 图像槽 0..7，放在 tex_slot）；回放按槽取 BindImage 的句柄建存储视图
-    //   （rp_draw.c rp_dispatch NVN_RB_IMG）。图形阶段的图像回放还没接，绘制时按名跳过（compute_image_shape）。
+    // 共享内存溢出缓冲（计算）：没有客体来源，回放按派发组数 × 程序的 spill_bytes 从暂存区分配（rp_draw.c rp_dispatch）
+    if (b->kind == 4 && b->count == 1) { e->cls = NVN_GPU_RES_SSBO; e->src_kind = NVN_RB_SPILL; e->access = NVN_GPU_ACC_R | NVN_GPU_ACC_W; return 1; }
+    // 图像：单个存储图像（解析器给出 NVN 图像槽 0..7，放在 tex_slot），计算与图形阶段同一形态；回放按槽取这一阶段 BindImage 的句柄
+    //   建存储视图（rp_draw.c image_resolve：计算派发与绘制共用）。
     if (b->kind == 3 && b->count == 1 && b->tex_slot >= 0 && b->tex_slot < 8) {
         e->cls = NVN_GPU_RES_IMAGE; e->src_kind = NVN_RB_IMG; e->src_reg = (uint16_t)b->tex_slot;
         e->access = NVN_GPU_ACC_R | NVN_GPU_ACC_W;
         return 1;
     }
-    return 0;   // 图形阶段的图像、存储缓冲的其它地址来源：随对应命令接
+    return 0;   // 图像数组、存储缓冲的其它地址来源：随对应命令接
 }
 
 // TEXU / TBUFU 项的句柄来源进程序的 usrc 表（rp_shader.h rp_usrc），布局项 src_reg2 = 下标。0 = 表满
@@ -1006,11 +1015,13 @@ static struct s2a_libpack *libpack_for_locked(const char *root) {
     }
     return lp;
 }
-// 取一份（图形：keys 是 vs / fs 两阶段键；计算：ckey 非空）。1 = 取到（*bytes 归调用方 free）
-static int libpack_fetch(const uint8_t identity[32], const uint8_t (*gkeys)[8], int nst, const uint8_t *ckey, int state_ok,
-                         const struct s2a_direct_compile_context *pc, uint8_t **bytes, size_t *len) {
+// 取一份（图形：stages 是 vs+fs 0x3 或 vs+fs+gs 0x7，keys 按 NVN 位序紧排 vs / fs / gs；计算：ckey 非空）。1 = 取到（*bytes 归调用方 free）
+//   topology：本笔绘制的输入图元名（fill_facts 的 topology()，快照里已算好——工作线程不碰 rp_S）；几何程序按它挑离线库里同图元那份，
+//   没有来源（NULL）几何程序 miss。本局 profile 的 geometryShader 没开时 libpack 照旧 miss（与现编同一字段）
+static int libpack_fetch(const uint8_t identity[32], const uint8_t (*gkeys)[8], uint32_t stages, const uint8_t *ckey, int state_ok,
+                         const char *topology, const struct s2a_direct_compile_context *pc, uint8_t **bytes, size_t *len) {
     const char *root = getenv("S2A_SHADER_REVISION_ROOT");
-    if (!root || (!ckey && (nst != 2 || !state_ok)) || nvn_plat_flag("no_libpack", 0)) return 0;
+    if (!root || (!ckey && ((stages != 0x3u && stages != 0x7u) || !state_ok)) || nvn_plat_flag("no_libpack", 0)) return 0;
     char lw[192] = ""; int lrc = S2A_LIBPACK_MISS;
     pthread_mutex_lock(&g_lp_mu);
     if (!g_lp_bad_init) { nvn_hm_init(&g_lp_bad, 32); g_lp_bad_init = 1; }
@@ -1019,8 +1030,9 @@ static int libpack_fetch(const uint8_t identity[32], const uint8_t (*gkeys)[8], 
         if (ckey) lrc = s2a_libpack_compute_v1(lp, ckey, (uint32_t)pc->direct_abi, pc->profile_hash, pc->translator_closure, bytes, len, lw, sizeof lw);
         else {
             uint8_t keys[6][8]; memset(keys, 0, sizeof keys);
-            memcpy(keys[0], gkeys[0], 8); memcpy(keys[1], gkeys[1], 8);
-            lrc = s2a_libpack_program_v1(lp, keys, 0x3, (uint32_t)pc->direct_abi, pc->profile_hash, pc->translator_closure, bytes, len, lw, sizeof lw);
+            for (int st = 0; st < (stages == 0x7u ? 3 : 2); st++) memcpy(keys[st], gkeys[st], 8);
+            const struct s2a_libpack_gfx g = { topology, pc->profile_json, pc->profile_bytes };
+            lrc = s2a_libpack_program_v1(lp, keys, stages, &g, (uint32_t)pc->direct_abi, pc->profile_hash, pc->translator_closure, bytes, len, lw, sizeof lw);
         }
     }
     pthread_mutex_unlock(&g_lp_mu);
@@ -1088,7 +1100,7 @@ static struct entry *work_run(const struct work_snap *s, int background) {
         atomic_fetch_add_explicit(&g_n_cache, 1, memory_order_relaxed);
         have_res = 1;
     }
-    if (!bytes && libpack_fetch(s->identity, (const uint8_t (*)[8])s->keys, s->nst, NULL, s->lp_ok, &s->pc, &bytes, &len)) {
+    if (!bytes && libpack_fetch(s->identity, (const uint8_t (*)[8])s->keys, s->stages, NULL, s->lp_ok, s->f.gfx.topology, &s->pc, &bytes, &len)) {
         struct entry *le = build(bytes, len, s->views, s->nst, s->identity);
         if (le) le->prog.z_raw = 1;
         free(bytes); bytes = NULL; len = 0;
@@ -1210,8 +1222,9 @@ static struct entry *warm_work_run(const struct nvk_prog_rec *rec, int nst) {
     memset(views, 0, sizeof views);
     for (int st = 0; st < nst && st < 3; st++)
         if (rec->c1_ok & (1u << st)) { views[st].c1 = rec->c1[st]; views[st].c1_bytes = NVK_PROG_REC_C1_BYTES; }
+    // 预热清单不记绘制图元：几何程序这里取不到（topology 传 NULL → miss），等提交线程按本笔图元取
     if (!bytes && libpack_fetch(rec->identity, compute ? NULL : (const uint8_t (*)[8])rec->keys,
-                                compute ? 0 : nst, compute ? rec->keys[0] : NULL, rec->lp_ok == 2, &pc, &bytes, &len)) {
+                                compute ? 0 : rec->stage_mask, compute ? rec->keys[0] : NULL, rec->lp_ok == 2, NULL, &pc, &bytes, &len)) {
         struct entry *le = compute ? build_compute(bytes, len, &views[0], rec->identity) : build(bytes, len, views, nst, rec->identity);
         if (le && !compute) le->prog.z_raw = 1;
         free(bytes); bytes = NULL; len = 0;
@@ -1708,7 +1721,7 @@ static struct entry *build_compute(const uint8_t *bytes, size_t len, const struc
         if (parsed == NVK_PROGRAM_ARRAY_UNSUPPORTED) array_unsupported(why); else red1("compute_program_parse_failed", why);
         e->failed = 1; return e;
     }
-    e->prog.support_bytes = cp.support_bytes;
+    e->prog.support_bytes = cp.support_bytes; e->prog.spill_bytes = cp.spill_bytes;
     for (int i = 0; i < cp.binding_count && !e->failed; i++) {
         const struct fd_binding *b = &cp.bindings[i];
         if (e->prog.nent[0] == RP_PROG_ENT_MAX) { red1("too_many_bindings", "cs"); e->failed = 1; break; }
@@ -1835,11 +1848,7 @@ static int resolve_compute_slow(const struct rp_prog **out, const struct s2a_dir
         tex_t t; view_t tv; int has_tv = 0; struct s2a_nvn_texture_fact nf; char why[96];
         if (rp_tex_snap_by_id((int)id, &t, &tv, &has_tv)) {
             if (request_texture_fact((uint32_t)(has_tv && tv.set_format ? tv.format : t.d.format), (uint32_t)(has_tv && tv.set_target ? tv.target : t.d.target), t.d.depth, &nf, why, sizeof why)) continue;
-        } else {
-            int in_pool = id >= rp_S.tex_base && (uint64_t)(id - rp_S.tex_base) < (uint64_t)rp_S.tex_pool_n;
-            memset(&nf, 0, sizeof nf); snprintf(nf.format, sizeof nf.format, "Unknown");
-            snprintf(nf.sampler_type, sizeof nf.sampler_type, "%s", in_pool ? "1d" : "2d"); nf.normalized = !in_pool; nf.array_length = 1;
-        }
+        } else s2a_nvn_default_texture_fact(id, rp_S.tex_base, (uint32_t)rp_S.tex_pool_n, &nf);
         memcpy(tfmt[ntex], nf.format, sizeof tfmt[ntex]); memcpy(tsmp[ntex], nf.sampler_type, sizeof tsmp[ntex]);
         tex[ntex] = (struct s2a_compile_texture_src){"cs", (uint32_t)(8 + 2 * slot), -1, tsmp[ntex], tfmt[ntex], nf.is_buffer, nf.normalized, 0, nf.array_length};
         ntex++;
@@ -1895,7 +1904,7 @@ static int resolve_compute_slow(const struct rp_prog **out, const struct s2a_dir
         if (!bytes && cdir && !nvn_plat_flag("no_disk_cache", 0) && s2a_program_cache_load(cdir, rq.identity, &bytes, &len, NULL, why, sizeof why) == 0) atomic_fetch_add_explicit(&g_n_cache, 1, memory_order_relaxed);
         // 出包预编库：口径同图形那条（跨局缓存之后、现编之前；同一句柄、同一张不可用表）。键 = 计算阶段 8 字节控制键 rp_S.skey[5]
         struct entry *lpe = NULL;
-        if (!bytes && libpack_fetch(rq.identity, NULL, 0, rp_S.skey[5], !unaligned, &pc, &bytes, &len)) {
+        if (!bytes && libpack_fetch(rq.identity, NULL, 0, rp_S.skey[5], !unaligned, NULL, &pc, &bytes, &len)) {
             lpe = build_compute(bytes, len, &rq.source, rq.identity);
             free(bytes); bytes = NULL; len = 0;
             if (lpe && !lpe->failed) libpack_note_hit();
@@ -2002,7 +2011,7 @@ void rp_shader_reset(void) {
     free(g_last_tab); g_last_tab = NULL;
     memset(g_comb_sig, 0, sizeof g_comb_sig);
     memset(g_high_sig, 0, sizeof g_high_sig);
-    memset(g_ubo_need, 0, sizeof g_ubo_need); g_ubo_need_n = 0; g_ubo_learned = 0;
+    memset(g_ubo_need, 0, sizeof g_ubo_need); g_ubo_need_n = 0; g_ubo_learned = 0; atomic_store(&g_ubo_default_fact, 0);
     memset(g_idg, 0, sizeof g_idg); memset(g_idg_set, 0, sizeof g_idg_set);
     g_idg_groups = g_idg_idents = g_idg_resolves = g_idg_compiles = g_idg_loads = g_idg_multi = 0; g_idg_last_ns = 0;
     g_cs_hits = g_cs_misses = g_cs_hit_ns = g_cs_miss_ns = 0; g_mark_cs_hits = g_mark_cs_misses = g_mark_cs_hit_ns = g_mark_cs_miss_ns = 0;
