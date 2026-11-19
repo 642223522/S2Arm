@@ -1191,19 +1191,50 @@ internal static unsafe class Program
                 missingFs["program"]["stages"][1] = null;
                 Throws("UNSUPPORTED_PROGRAM", () => DirectShaderCompiler.Compile(Encoding.UTF8.GetBytes(missingFs.ToJsonString())),
                     "v2 rejects VS+GS without FS");
+                // 几何阶段 SPIR-V 的执行模式与发顶点数（OpExecutionMode = 16、OpEmitVertex = 218）
+                static (HashSet<uint> modes, int emits) GsSpirv(byte[] result)
+                {
+                    using JsonDocument doc = JsonDocument.Parse(result);
+                    JsonElement st = doc.RootElement.GetProperty("content").GetProperty("stages");
+                    var modes = new HashSet<uint>(); int emits = 0;
+                    foreach (JsonElement s in st.EnumerateArray())
+                    {
+                        if (s.GetProperty("stage").GetString() != "gs") continue;
+                        uint[] w = MemoryMarshal.Cast<byte, uint>(s.GetProperty("spirv").GetBytesFromBase64()).ToArray();
+                        for (int i = 5; i < w.Length;)
+                        {
+                            int n = (int)(w[i] >> 16); if (n == 0 || i + n > w.Length) throw new InvalidDataException("invalid SPIR-V instruction");
+                            if ((w[i] & 0xffff) == 16 && n >= 3) modes.Add(w[i + 2]);
+                            if ((w[i] & 0xffff) == 218) emits++;
+                            i += n;
+                        }
+                    }
+                    return (modes, emits);
+                }
+                // 邻接三角形：编得出，GS 的输入执行模式是 InputTrianglesAdjacency（23），不是普通三角形（22）
                 var adjacent = requestNode.DeepClone();
                 adjacent["program"]["graphicsState"]["topology"] = "TrianglesAdjacency";
-                Throws("UNSUPPORTED_PROGRAM", () => DirectShaderCompiler.Compile(Encoding.UTF8.GetBytes(adjacent.ToJsonString())),
-                    "GS adjacency remains unsupported");
+                try
+                {
+                    var (am, _) = GsSpirv(DirectShaderCompiler.Compile(Encoding.UTF8.GetBytes(adjacent.ToJsonString())));
+                    Check(am.Contains(23) && !am.Contains(22), "GS adjacency compiles with the InputTrianglesAdjacency execution mode");
+                }
+                catch (DirectCompileException ex) { Console.Error.WriteLine("GS adjacency rejected: " + ex.Code + " " + ex.Message); Check(false, "GS adjacency compiles with the InputTrianglesAdjacency execution mode"); }
                 var oldVersion = requestNode.DeepClone();
                 oldVersion["schema"] = DirectShaderCompiler.RequestSchema;
                 Throws("UNSUPPORTED_PROGRAM", () => DirectShaderCompiler.Compile(Encoding.UTF8.GetBytes(oldVersion.ToJsonString())),
                     "v1 does not silently accept geometry");
+                // 直通型几何头：profile 不支持 NV passthrough（同安卓设备），翻译器生成等价的普通 GS——编得出、三段齐、GS 里有发顶点
                 var passthrough = requestNode.DeepClone();
                 byte[] pt = GeometryGuest(); pt[3] |= 1;
                 passthrough["program"]["stages"][2]["code"] = Convert.ToBase64String(pt);
-                Throws("UNSUPPORTED_PROGRAM", () => DirectShaderCompiler.Compile(Encoding.UTF8.GetBytes(passthrough.ToJsonString())),
-                    "GS passthrough remains unsupported");
+                try
+                {
+                    byte[] pr = DirectShaderCompiler.Compile(Encoding.UTF8.GetBytes(passthrough.ToJsonString()));
+                    var (_, pe) = GsSpirv(pr);
+                    Check(pe >= 1, "GS passthrough header compiles to an emulated GS that emits vertices");
+                }
+                catch (DirectCompileException ex) { Console.Error.WriteLine("GS passthrough rejected: " + ex.Code + " " + ex.Message); Check(false, "GS passthrough header compiles to an emulated GS that emits vertices"); }
                 var viewport = requestNode.DeepClone();
                 viewport["program"]["stages"][2]["code"] = Convert.ToBase64String(GeometryGuest(viewportIndex: true));
                 Throws("UNSUPPORTED_PROGRAM", () => DirectShaderCompiler.Compile(Encoding.UTF8.GetBytes(viewport.ToJsonString())),

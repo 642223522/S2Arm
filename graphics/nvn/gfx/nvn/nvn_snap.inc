@@ -116,7 +116,7 @@ static int snap_mtl_save(FILE *f) {
     pthread_mutex_lock(&g_pool_gpuw_mu); n = g_pool_gpuw.n; ok &= ms_w(f, &n, 4);
     for (uint32_t i = 0; i < g_pool_gpuw.cap; i++) if (g_pool_gpuw.vals[i]) ok &= ms_w(f, g_pool_gpuw.keys + (size_t)i * 8, 8);
     pthread_mutex_unlock(&g_pool_gpuw_mu);
-    pthread_mutex_lock(&g_rmu); ok &= ms_w(f, g_seen_done, sizeof g_seen_done); pthread_mutex_unlock(&g_rmu);
+    os_unfair_lock_lock(&g_rmu); ok &= ms_w(f, g_seen_done, sizeof g_seen_done); os_unfair_lock_unlock(&g_rmu);
     pthread_mutex_lock(&g_mu); n = 0; for (int i = 0; i < g_npool; i++) n += g_pools[i].reg != 0; ok &= ms_w(f, &n, 4);
     for (int i = 0; i < g_npool; i++) if (g_pools[i].reg) { uint64_t lo = g_pools[i].lo; ok &= ms_w(f, &lo, 8); }
     pthread_mutex_unlock(&g_mu);
@@ -156,7 +156,7 @@ static int snap_mtl_restore(FILE *f) {
     pthread_mutex_unlock(&g_pool_gpuw_mu); if (np) atomic_store(&g_pool_gpuw_new, 1);
     if (!ok) return -1;
     // 着色器读过的贴图编号：标成待处理，首次提交（pool_seen_scan）按预算把它们建出来、放进表
-    pthread_mutex_lock(&g_rmu); ok = ms_r(f, g_seen_done, sizeof g_seen_done); memcpy(g_seen_todo, g_seen_done, sizeof g_seen_todo); g_seen_sub = ~0ull; g_seen_dirty = ~0ull; pthread_mutex_unlock(&g_rmu);
+    os_unfair_lock_lock(&g_rmu); ok = ms_r(f, g_seen_done, sizeof g_seen_done); memcpy(g_seen_todo, g_seen_done, sizeof g_seen_todo); g_seen_sub = ~0ull; g_seen_dirty = ~0ull; os_unfair_lock_unlock(&g_rmu);
     uint32_t nseen = 0; for (unsigned i = 0; i < POOL_SEEN_WORDS; i++) nseen += (uint32_t)__builtin_popcount(g_seen_done[i]);
     uint32_t nreg = 0, hit = 0; ok = ok && ms_r(f, &nreg, 4);
     pthread_mutex_lock(&g_mu);
@@ -276,7 +276,7 @@ static void snap_ghost_apply(uint64_t ser, id o) {
 }
 static int snap_ghost_pkg(uint64_t ser, id<MTLTexture> src) {
     tex_t t; int found = 0;
-    pthread_mutex_lock(&g_rmu); for (int i = 0; i < g_ntreg; i++) if (g_treg[i].ok && g_treg[i].t.serial == ser) { t = g_treg[i].t; found = 1; break; } pthread_mutex_unlock(&g_rmu);
+    os_unfair_lock_lock(&g_rmu); for (int i = 0; i < g_ntreg; i++) if (g_treg[i].ok && g_treg[i].t.serial == ser) { t = g_treg[i].t; found = 1; break; } os_unfair_lock_unlock(&g_rmu);
     if (!found) { nvn_hm_put(&g_snap_ghost_pend, &ser, (void *)CFBridgingRetain(src)); return 2; }
     if (!tex_mtl(&t)) return 0;
     __unsafe_unretained id o = tex_get(ser); return snap_ghost_put([o isKindOfClass:[NvPkg class]] ? (NvPkg *)o : nil, src);

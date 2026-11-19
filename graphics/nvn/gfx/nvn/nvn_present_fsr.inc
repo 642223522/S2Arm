@@ -252,7 +252,7 @@ static int present_fsr_pipelines(void) {
         NSError *e = nil; id<MTLLibrary> lib = present_fsr_library(k_present_fsr_msl, &e);
         NSString *names[3] = {@"fsr_down", @"fsr_easu", @"fsr_rcas"}; int ok = lib != nil;
         for (int i = 0; ok && i < 3; i++) { g_fsr_pso[i] = present_fsr_pso(lib, names[i], &e); ok = g_fsr_pso[i] != nil; }
-        if (!ok) RED_ONCE(206, "FSR：着色器 / 管线建不出（%s），上屏照旧双线性", e ? e.localizedDescription.UTF8String : "函数缺失");
+        if (!ok) RED_ONCE(207, "FSR：着色器 / 管线建不出（%s），上屏照旧双线性", e ? e.localizedDescription.UTF8String : "函数缺失");
         g_fsr_state = ok ? 1 : -1;
     }
     int r = g_fsr_state > 0;
@@ -303,7 +303,7 @@ static NvPresentFSR *present_fsr_prepare(int slot, id owner, NSUInteger ow, NSUI
         if (f->con[i]) [res addObject:f->con[i]];
         if (!f->con[i] || !f->tab[i]) ok = 0;
     }
-    if (!ok) { RED_ONCE(207, "FSR：图 / 缓冲 / 参数表分配失败（视口 %lux%lu%s%s），上屏照旧双线性", (unsigned long)ow, (unsigned long)oh, error ? "：" : "", error ? error.localizedDescription.UTF8String : ""); fail_w[slot] = ow; fail_h[slot] = oh; return nil; }
+    if (!ok) { RED_ONCE(208, "FSR：图 / 缓冲 / 参数表分配失败（视口 %lux%lu%s%s），上屏照旧双线性", (unsigned long)ow, (unsigned long)oh, error ? "：" : "", error ? error.localizedDescription.UTF8String : ""); fail_w[slot] = ow; fail_h[slot] = oh; return nil; }
     if (old) { for (id<MTLResource> r in old->resources) res_remove(r); old->resources = nil; }   // 本槽空闲（见上）：当场摘
     f->resources = res;
     for (id<MTLResource> r in res) res_add(r);

@@ -9,6 +9,7 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shlex
@@ -31,7 +32,8 @@ class Adb:
         if not re.fullmatch(r'[A-Za-z0-9_.:-]+', serial):
             raise ValueError('设备序列号无效。')
         self.serial = serial
-        self.argv = [*shlex.split(adb), '-s', serial]
+        # 是现成文件就整条当路径（Windows 路径的反斜杠不能过 shlex）；否则按命令行拆（测试的「python 桩脚本」）
+        self.argv = [adb, '-s', serial] if Path(adb).is_file() else [*shlex.split(adb), '-s', serial]
 
     def call(self, *args, timeout=600):
         result = subprocess.run([*self.argv, *map(str, args)],
@@ -291,8 +293,16 @@ def deploy_resources(apk, resources, adb, work, mode='auto', timeout=180, push_t
         same = False
     if same:
         log('APK 与机上已装的相同，跳过安装')
-    elif 'Success' not in adb.call('install', '-r', apk):
-        raise RuntimeError('设备未确认 APK 安装成功。')
+    else:
+        try:
+            installed = adb.call('install', '-r', apk)
+        except RuntimeError as error:
+            if 'INSTALL_FAILED_UPDATE_INCOMPATIBLE' in str(error):   # 签名钥不同（别的电脑 / 旧版本出的同款）：安卓不许覆盖装
+                raise RuntimeError(f'手机上已装的 {package} 是另一把签名钥签的（别的电脑或旧版本出的包），安卓不允许直接覆盖。'
+                                   '先在手机上卸载它再装；卸载会删掉这款在手机上的存档，需要的话先备份。') from None
+            raise
+        if 'Success' not in installed:
+            raise RuntimeError('设备未确认 APK 安装成功。')
     if adb.installed_hash(package) != artifact['apk']['sha256']:
         raise RuntimeError('安装后的 APK 哈希与冻结 APK 不符，停止部署')
     name = 'deploy-' + work.name
@@ -413,7 +423,7 @@ def main():
     signal.signal(signal.SIGTERM, interrupt)
     signal.signal(signal.SIGINT, interrupt)
     try:
-        adb = Adb(args.serial)
+        adb = Adb(args.serial, os.environ.get('S2A_ADB') or 'adb')   # 启动器给的 adb（android_export.fetch_adb）；命令行缺省 PATH 上的
         if args.pack:
             work = deploy(args.pack, args.apk, adb, REPO / 'build/android-deploy', args.mode,
                           args.refresh_existing, args.timeout, args.push_timeout, args.start, args.in_place)

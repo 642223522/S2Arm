@@ -39,7 +39,7 @@ with the rewritten modules inside the APK.
 Only modules go into the APK; the resource package is deployed separately. The output is
 derived from the player's own game: it stays under build/ and never goes into the repository or
 a PR."""
-import hashlib, io, json, os, re, shutil, stat, struct, subprocess, sys, warnings, zipfile, zlib
+import hashlib, io, json, os, re, shutil, stat, struct, sys, warnings, zipfile, zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, '..', '..'))
@@ -223,20 +223,14 @@ def apk_signer_sha256(apk):
 
 
 def apk_identity(apk):
-    """Read the final manifest using the SDK tool, never infer it from title metadata."""
-    sdk = os.environ.get('ANDROID_HOME') or os.environ.get('ANDROID_SDK_ROOT')
-    tool = os.path.join(sdk, 'build-tools', '36.0.0', 'aapt2') if sdk else shutil.which('aapt2')
-    if not tool or not os.path.isfile(tool):
-        raise ValueError('APK identity requires SDK build-tools 36.0.0 aapt2 (ANDROID_HOME / ANDROID_SDK_ROOT or PATH)')
-    result = subprocess.run([tool, 'dump', 'badging', os.fspath(apk)],
-                            capture_output=True, text=True, timeout=60)
-    if result.returncode:
-        raise ValueError('Cannot read APK manifest: ' + result.stderr.strip())
-    matches = re.findall(r"^package: name='([^']+)' versionCode='([0-9]+)'", result.stdout, re.MULTILINE)
-    if len(matches) != 1:
-        raise ValueError('APK manifest must have exactly one package identity')
-    package, version = matches[0]
-    return package, int(version), 'application-debuggable' in result.stdout.splitlines()
+    """Read the final manifest itself (axml.py), never infer it from title metadata; no SDK tool needed."""
+    import axml
+    try:
+        with zipfile.ZipFile(apk) as z:
+            package, version, _, debuggable = axml.identity(z.read('AndroidManifest.xml'))
+    except (OSError, KeyError, zipfile.BadZipFile, axml.AxmlError, struct.error, IndexError) as error:
+        raise ValueError(f'Cannot read APK manifest: {error}') from error
+    return package, version, debuggable
 
 
 def validate_apk_package(title, package, debug):

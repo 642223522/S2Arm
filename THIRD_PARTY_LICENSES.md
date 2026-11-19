@@ -10,6 +10,7 @@ S2Arm 本身以 Apache License 2.0 授权（仓库根目录 [LICENSE](LICENSE) �
 | Ryujinx WSI | 派生自 Ryujinx | MIT | `graphics/vulkan/wsi`，`LICENSE.Ryujinx.txt` | 安卓/Vulkan 构建用 | 否（不进 iOS IPA） |
 | 直连图形层部分代码 | 提交 `86d9ba12` | MIT | 许可全文 `graphics/nvn/LICENSE`，版权 © 2026 seedds | 是 | 是 |
 | 放置式稀疏贴图块管理（`graphics/nvn/gfx/nvn/nvn_stex.inc`、单测 `runtime/tests/t_nvn_stex.m`） | kartnative 提交 `47f2d1d5` | MIT | https://github.com/pahorema/kartnative （nxnative 的分支）`dm/gfx/tex/nvn_sparse_tex.m`，版权 © 2026 seedds，许可全文同 `graphics/nvn/LICENSE` | 是 | 是 |
+| APK v2 签名 / RSA / 自签证书（`android/tools/apk_sign.py`） | nx2android 仓库 `nxnative/dm/android/apk/apksign.py` | MIT | 版权 © 2026 seedds，许可全文同 `graphics/nvn/LICENSE`；改动：签名钥按机器存 `~/.s2arm/android/signing-key.json`、签磁盘上的 ZIP（文件头写明出处与改动）。启动器出安卓包时给组装好的 APK 签名 | 发版带安卓预编引擎时是（引擎树） | 否 |
 | ns2pro-bridge | 基线 `4d7ce092` | MIT | https://github.com/DanielZhangyc/ns2pro-bridge ，`runtime/ns2pro/LICENSE` | 按需编进 framework 时是 | 按需编进 framework 时是 |
 | Vulkan-Headers | 1.4.363 | Apache-2.0 OR MIT | https://github.com/KhronosGroup/Vulkan-Headers ，`graphics/nvn/third_party/vulkan-headers` | 否（只是编译用头） | 否 |
 | SPIRV-Cross | vulkan-sdk-1.4.363.0 | Apache-2.0 | https://github.com/KhronosGroup/SPIRV-Cross ，源码在 `graphics/third_party/spirv_cross`（旧文档写「不进仓库」是错的）。命令行另从 Homebrew 打进 .app | 是（源码在引擎树；`spirv-cross` 在 Runtime/bin） | 是（`graphics/build.mk` 把源码编进 iOS 渲染器静态库 `libnxgal.a`，首遇着色器在机上现编用） |
