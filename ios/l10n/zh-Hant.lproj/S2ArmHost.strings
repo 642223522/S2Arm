@@ -336,8 +336,8 @@
 "diag.upload.fail.title" = "上傳失敗";
 "diag.upload.go" = "上傳";
 "diag.report.title" = "故障報修";
-"diag.report.message" = "會上傳這台裝置的日誌、裝置資訊和遊戲用過的圖形管線清單（只有著色器編號），幫我們找原因，然後給你一個短碼。可以寫一句發生了什麼（可不填）。";
-"diag.report.placeholder" = "發生了什麼（可不填）";
+"diag.report.message" = "會上傳這台裝置的日誌、裝置資訊和遊戲用過的圖形管線清單（只有著色器編號），幫我們找原因，然後給你一個短碼。請寫清哪款遊戲、做了什麼、看到了什麼。";
+"diag.report.placeholder" = "必填：哪款遊戲、做了什麼、看到了什麼";
 "diag.upload.post" = "前往 GitHub 發文";
 "diag.upload.retry" = "再試一次";
 "dprompt.expiry.body" = "還剩%@。到期後遊戲將無法開啟，存檔不會遺失：連接手機後再點一次「裝到 iPhone」，或在 AltStore 裡重新整理。";

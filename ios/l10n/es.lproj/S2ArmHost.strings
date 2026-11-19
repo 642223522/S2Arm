@@ -361,8 +361,8 @@
 "diag.upload.fail.title" = "La subida no funcionó";
 "diag.upload.go" = "Subir";
 "diag.report.title" = "Informar de un problema";
-"diag.report.message" = "Se subirán los registros de este dispositivo, la información del dispositivo y la lista de canalizaciones gráficas usadas por los juegos (solo identificadores de sombreadores) para ayudarnos a encontrar la causa; después recibirás un código corto. Puedes añadir una frase sobre lo que ocurrió (opcional).";
-"diag.report.placeholder" = "¿Qué pasó? (opcional)";
+"diag.report.message" = "Subiremos los registros de este dispositivo, la información del dispositivo y la lista de canalizaciones gráficas que usaron los juegos (solo ID de sombreadores) para encontrar la causa, y te daremos un código corto. Indica qué juego, qué hiciste y qué viste.";
+"diag.report.placeholder" = "Obligatorio: qué juego, qué hiciste, qué viste";
 "diag.upload.post" = "Publicar en GitHub";
 "diag.upload.retry" = "Reintentar";
 "dprompt.expiry.body" = "Tiempo restante: %@. Al expirar el juego no se abrirá, pero tus partidas guardadas estarán a salvo: conecta el teléfono y vuelve a pulsar «Instalar en el iPhone», o actualiza en AltStore.";
