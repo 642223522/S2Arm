@@ -102,6 +102,10 @@ static int dsh_stage_raw(const uint8_t *cd, const uint8_t *ctl, uint32_t *ncode,
     if (nvn2_on() && nvn2_ctl(ctl)) {
         uint32_t own; memcpy(ncode, ctl + 0x44, 4); memcpy(&own, ctl + 0x30, 4); *nctl = own >= 0xd8 && own <= NVN2_CTL_COPY ? own : 0xd8;
         int st = ctl[0x56] == 0 ? 0 : ctl[0x56] == 1 ? 1 : ctl[0x56] == 5 ? 2 : ctl[0x56] == 2 ? 3 : ctl[0x56] == 6 ? 4 : ctl[0x56] == 7 ? 5 : -1;   // 4 / 5 = S2A.Dsh 的 ts / ms（11-05 时之笛 11aa3147be208368 阶段字节 6 不能现编）
+        // 图形阶段（顶点 / 像素 / 几何）的代码一定以 SPH 起头（类型 1 / 2、阶段字段 1–5），计算着色器没有 SPH。有的游戏的计算着色器控制段阶段字节是 1：
+        //   一款 Switch 2 游戏 14 支按像素现编全报「Invalid shader stage 14」、游戏却在派发它（日志紧跟「dispatched program has no compute shader」），控制段 +0x40 / +0x44 代码长与自身代码区相符（不是复用内存）。
+        //   离线抽取的另一款 4.2 万支、诊断里 800 多份 NVN2 控制段，「没有 SPH」与阶段字节 5 逐支一致，只有这一族例外 → 代码没有 SPH 的按计算
+        if (st == 0 || st == 1 || st == 3) { uint32_t w0; memcpy(&w0, cd, 4); uint32_t ty = w0 & 0x1f, sg = (w0 >> 10) & 0xf; if ((ty != 1 && ty != 2) || sg < 1 || sg > 5) st = 2; }
         return !*ncode || *ncode >= (1u << 24) ? -1 : st;
     }
     if (nvn2_on()) {   // Switch 2 进程里控制段不是认得的 NVN2 格式（#1520：全按 Switch 1 读出「控制段 0 / 0x2fa 字节」）：头 8 字节（魔数、版本）记几行，定是不是新版 GLSLC
