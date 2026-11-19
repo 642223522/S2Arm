@@ -263,7 +263,7 @@ $(BUILD)/tests/t_nvn_%: CFLAGS += -I$(abspath $(NVN_TEST_DIR)/nvn/gen)
 #   不带 Foundation 的单测也要链）；快照存档（runtime/src/snapshot.c）压缩内存块要 libcompression。没带上时这些单测全部链接失败
 #   （_SecPKCS12Import / _CFArrayGetCount / _compression_encode_buffer 等未定义）。宿主对象再加系统依赖就加在这里
 NVN_TEST_HOST_LIBS := -framework Security -framework CoreFoundation -lcompression
-NVN_TEST_WEAK := $(call S2A_WEAK_U,nvntest) -framework VideoToolbox -framework CoreMedia -framework CoreVideo $(NVN_TEST_HOST_LIBS)
+NVN_TEST_WEAK := $(call S2A_WEAK_U,nvntest) -framework VideoToolbox -framework CoreMedia -framework CoreVideo -lcompression $(NVN_TEST_HOST_LIBS)
 $(NVN_TEST_DIR)/host/%.o: % runtime/src/native.h $(wildcard runtime/include/*.h) platform/plat.h platform/plat_asm.h graphics/track/s2a_track.h $(BUILD)/.host_cfg
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(NATIVE_INC) -c $< -o $@

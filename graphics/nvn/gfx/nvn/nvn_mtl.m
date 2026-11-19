@@ -613,7 +613,7 @@ void bf_want_note(const char *key) {
 
 // ---------- Memory pools ----------
 typedef struct { uintptr_t lo, hi; uintptr_t base; __unsafe_unretained id<MTLBuffer> buf; uint64_t gpu; const void *key; int res; uintptr_t host;
-    int reg, gm, gslot, gout; uint64_t gseen, gfence; } pool_ent;   // res: already in the residency set (on demand, see pool_res); host: the CPU bytes of the pool (pool_host). The raw pool table's on-demand residency (gmem_scan):
+    int reg, gm, gslot, gout; uint64_t gseen, gfence; uint8_t alias, vpf; } pool_ent;   // res: already in the residency set (on demand, see pool_res); host: the CPU bytes of the pool (pool_host). The raw pool table's on-demand residency (gmem_scan):
     // reg: an address of it went to the GPU through a binding (pool_res): resident for good; gm: resident because a raw access reached it (1; 2 = for good, no access bit was free);
     // gslot: its bit in the access bitmap + 1 (0: none); gout: times it was taken out for not being reached; gseen: the frame its bit was last seen; gfence: the submission after which the last taking out lets it go
 static pool_ent *g_pools; static int g_npool, g_cap;
@@ -884,7 +884,7 @@ static NSHashTable *g_dead_pools;
 // took the lock), and its uniform rings move to a new page every few draws (the table alone missed as often)
 enum { PC_BITS = 10, PC_RECENT = 8 };
 static _Atomic uint64_t g_pool_gen = 1;
-typedef struct { uintptr_t lo, hi, base; __unsafe_unretained id<MTLBuffer> buf; uint64_t gpu; uintptr_t host; } pc_ent;   // host: buf.contents (the pool's pages, or their far shadow), kept so a CPU read sends no message
+typedef struct { uintptr_t lo, hi, base; __unsafe_unretained id<MTLBuffer> buf; uint64_t gpu; uintptr_t host, end; } pc_ent;   // end: what the buffer holds for this entry (pool_end)   // host: buf.contents (the pool's pages, or their far shadow), kept so a CPU read sends no message
 static __thread struct { uint64_t gen; unsigned next; pc_ent r[PC_RECENT], e[1u << PC_BITS]; } t_pc;   // an empty entry has hi 0
 static inline unsigned pc_slot(uint64_t addr) { return (unsigned)(((addr >> 12) * 0x9E3779B97F4A7C15ull) >> (64 - PC_BITS)); }
 static inline const pc_ent *pc_get(uint64_t addr, uint64_t len) {
@@ -894,10 +894,11 @@ static inline const pc_ent *pc_get(uint64_t addr, uint64_t len) {
     for (unsigned k = 0; k < PC_RECENT; k++) { const pc_ent *x = &t_pc.r[k]; if (addr >= x->lo && addr + len <= x->hi) { *c = *x; return c; } }
     return NULL;
 }
+static uintptr_t pool_end(int i);   // below (pool_buf_end)
 static void pc_put(int i, uint64_t addr) {   // caller holds g_mu, pool i is resident and holds addr
     uint64_t gen = atomic_load_explicit(&g_pool_gen, memory_order_relaxed);
     if (t_pc.gen != gen) { memset(t_pc.r, 0, sizeof t_pc.r); memset(t_pc.e, 0, sizeof t_pc.e); t_pc.gen = gen; }
-    pc_ent c = {g_pools[i].lo, g_pools[i].hi, g_pools[i].base, g_pools[i].buf, g_pools[i].gpu, g_pools[i].host};
+    pc_ent c = {g_pools[i].lo, g_pools[i].hi, g_pools[i].base, g_pools[i].buf, g_pools[i].gpu, g_pools[i].host, pool_end(i)};
     t_pc.e[pc_slot(addr)] = c; t_pc.r[t_pc.next++ % PC_RECENT] = c;
 }
 static _Atomic uint64_t g_reg_gen = 1;   // Change generation of memory pool / texture / sampler registration: one of the invalidation conditions for argument buffer reuse
@@ -1059,10 +1060,48 @@ static void nvn_be_pool_add_body(const void *mem, uint64_t size) {
     }
 }
 
+// 虚拟池的地址（hle_nvn.c 苹果宿主：虚拟池只是 GPU 地址，不占宿主地址，#1143）。alias：一段物理内存连续的虚拟页登记成物理池那条的别名——同一个 Metal 缓冲、同一份宿主字节，
+//   基址按偏移换（at 处的字节 = phys 处的字节），不拥有缓冲（注销只删这条；物理池注销时它的别名一并删，免得留下指向已放缓冲的条目）。vpf：条目在虚拟池地址上（帧录不存它，回放由 vpool.bin 重建）
+static int pool_find(uint64_t addr, uint64_t len);   // below
+int nvn_be_pool_alias(uint64_t at, uint64_t len, uint64_t phys) {
+    mtl_init(); g_reg_gen++;
+    pthread_mutex_lock(&g_mu);
+    int i = pool_find(phys, len), ok = 0;
+    if (i >= 0 && !g_pools[i].vpf && g_npool == g_cap) { int c = g_cap ? g_cap * 2 : 64; if (GROW(g_pools, (size_t)c * sizeof *g_pools, "memory pool table")) g_cap = c; else i = -1; }
+    if (i >= 0 && !g_pools[i].vpf) {
+        pool_ent e = g_pools[i];
+        g_plast = -1; atomic_fetch_add(&g_pool_gen, 1);
+        g_pools[g_npool++] = (pool_ent){(uintptr_t)at, (uintptr_t)(at + len), (uintptr_t)at - ((uintptr_t)phys - e.base), e.buf, e.gpu, (const void *)(uintptr_t)at, 0, e.host, .alias = 1, .vpf = 1};
+        pidx_added(); g_pool_adds++; ok = 1;
+    }
+    pthread_mutex_unlock(&g_mu);
+    return ok;
+}
+// 虚拟池里跨不同物理内存的一段的副本（hle_nvn.c vsh_*）：宿主内存 host 上的零拷贝缓冲，登记在虚拟池地址 at；缓冲放掉时（延迟释放之后）才 munmap
+static int nvn_be_pool_add_at_body(uint64_t at, uint64_t len, void *host, uint64_t hlen, const void *key) {
+    mtl_init(); g_reg_gen++;
+    id<MTLBuffer> buf = [g_dev newBufferWithBytesNoCopy:host length:(NSUInteger)hlen options:MTLResourceStorageModeShared deallocator:^(void *q, NSUInteger n) { munmap(q, n); }];
+    if (!buf) { munmap(host, (size_t)hlen); return 0; }
+    pthread_mutex_lock(&g_mu);
+    if (g_npool == g_cap) { int c = g_cap ? g_cap * 2 : 64; if (!GROW(g_pools, (size_t)c * sizeof *g_pools, "memory pool table")) { pthread_mutex_unlock(&g_mu); return 0; } g_cap = c; }   // buf (unkept) goes now, and munmaps
+    g_plast = -1; atomic_fetch_add(&g_pool_gen, 1);
+    g_pools[g_npool++] = (pool_ent){(uintptr_t)at, (uintptr_t)(at + len), (uintptr_t)at, buf, buf.gpuAddress, key, 0, (uintptr_t)host, .vpf = 1}; pidx_added(); g_pool_adds++;
+    [g_keep addObject:buf];
+    pthread_mutex_unlock(&g_mu);
+    return 1;
+}
+int nvn_be_pool_add_at(uint64_t at, uint64_t len, void *host, uint64_t hlen, const void *key) { @autoreleasepool { return nvn_be_pool_add_at_body(at, len, host, hlen, key); } }
+
 static dispatch_queue_t ph_queue(void);   // first-upload page hashes (see NvPkg ph)
 // 最近注销的池（地址兜底 addr_adhoc 的取证：兜底的地址是不是落在一个已释放的池里）：环形 128 条，g_mu 下读写
 enum { FREED_RING = 128 };
 static struct { uintptr_t lo, hi; uint64_t seq; } g_freed[FREED_RING]; static uint64_t g_freed_seq; static __thread int t_freed_skip;   // t_freed_skip：注销兜底池时不记（adhoc_drop）
+static void pool_unlist(int i) {   // take entry i out of the table (its buffer is the caller's business). Caller holds g_mu
+    if (g_pools[i].res) g_pool_res_n--;
+    gslot_put(i);
+    pidx_removing(i); g_pools[i] = g_pools[--g_npool]; if (i < g_npool && g_pools[i].gslot) g_gslot_pool[g_pools[i].gslot - 1] = i;   // the moved pool's bit follows it
+    g_plast = -1; atomic_fetch_add(&g_pool_gen, 1);
+}
 static void nvn_be_pool_del_body(const void *mem);
 void nvn_be_pool_del(const void *mem) { @autoreleasepool { nvn_be_pool_del_body(mem); } }
 static void nvn_be_pool_del_body(const void *mem) {
@@ -1071,13 +1110,19 @@ static void nvn_be_pool_del_body(const void *mem) {
     pthread_mutex_lock(&g_mu);
     // The no-copy buffer goes through deferred release (out of the residency set and unreferenced after submitted commands complete). It used to be removed only from g_keep while the residency set still held a strong reference: after the pool was freed the buffer stayed alive wrapping that guest memory,
     // and a new pool at the same address wrapped it again. Engage's title demo cycles scenes; GPU allocated grew to 5.4 GB and resident memory to 3.6 GB in 850 s
+    __unsafe_unretained id<MTLBuffer> gone[16]; int ngone = 0, many = 0;   // buffers released here: their aliases go too (nvn_be_pool_alias)
     for (int i = 0; i < g_npool; i++)
-        if (g_pools[i].key == mem) { if (!t_freed_skip) { uint64_t q = g_freed_seq++; g_freed[q % FREED_RING].lo = g_pools[i].lo; g_freed[q % FREED_RING].hi = g_pools[i].hi; g_freed[q % FREED_RING].seq = q; }
-            id<MTLBuffer> b = g_pools[i].buf; [g_keep removeObject:b]; if (!xq_buf_hold_retire((__bridge void *)b)) defer_obj_release(b); if (g_pools[i].res) g_pool_res_n--;
-            if (!g_dead_pools) g_dead_pools = [NSHashTable weakObjectsHashTable];
-            gslot_put(i);
-            [g_dead_pools addObject:b]; pidx_removing(i); g_pools[i] = g_pools[--g_npool]; if (i < g_npool && g_pools[i].gslot) g_gslot_pool[g_pools[i].gslot - 1] = i;   // the moved pool's bit follows it
-            g_plast = -1; atomic_fetch_add(&g_pool_gen, 1); i--; }   // 不 break：一个池可能登记成几块（#1196，同 key），换到 i 的那条再看一遍
+        if (g_pools[i].key == mem) {
+            if (!g_pools[i].alias) { if (!t_freed_skip) { uint64_t q = g_freed_seq++; g_freed[q % FREED_RING].lo = g_pools[i].lo; g_freed[q % FREED_RING].hi = g_pools[i].hi; g_freed[q % FREED_RING].seq = q; }
+                id<MTLBuffer> b = g_pools[i].buf; [g_keep removeObject:b]; if (!xq_buf_hold_retire((__bridge void *)b)) defer_obj_release(b);
+                if (!g_dead_pools) g_dead_pools = [NSHashTable weakObjectsHashTable];
+                [g_dead_pools addObject:b]; if (ngone < 16) gone[ngone++] = b; else many = 1; }
+            pool_unlist(i); i--; }   // 不 break：一个池可能登记成几块（#1196，同 key），换到 i 的那条再看一遍
+    for (int i = 0; ngone && i < g_npool; i++) {
+        if (!g_pools[i].alias) continue;
+        int f = 0; for (int k = 0; k < ngone; k++) f |= g_pools[i].buf == gone[k];
+        if (!f && many) { f = 1; for (int k = 0; k < g_npool && f; k++) if (!g_pools[k].alias && g_pools[k].buf == g_pools[i].buf) f = 0; }   // more than 16 released: it goes when no pool owns its buffer
+        if (f) { pool_unlist(i); i--; } }
     pthread_mutex_unlock(&g_mu);
 }
 
@@ -1192,19 +1237,23 @@ static inline const uint8_t *addr_cpu(uint64_t addr, uint64_t len) {
 }
 // *avail: bytes the GPU pointer has behind it up to the end of the pool's zero-copy buffer (mtl_add_pool rounds the pool's end up to a page). Audit #1534 P1-65 probe (encode_args)
 static inline uint64_t pool_buf_end(uintptr_t hi) { static uintptr_t pg; if (!pg) pg = (uintptr_t)getpagesize(); return (hi + pg - 1) & ~(pg - 1); }
+// 一条池表项从地址往后能读到哪：自己的零拷贝缓冲到页尾；虚拟池地址上的（vpf：别名 / 副本）只到 hi——别名的缓冲是整个物理池，hi 之后是物理池里别的内存，不是这段虚拟页
+static uintptr_t pool_end(int i) { return g_pools[i].vpf ? g_pools[i].hi : (uintptr_t)pool_buf_end(g_pools[i].hi); }
 static int xq_addr_want(uint64_t addr, uint64_t len, void **buf, uint64_t *off, uint64_t *gpu, uint64_t *avail);   // nvn_xqueue.inc: only the state of the parked piece currently being replayed
 static inline int gpu_addr_want(uint64_t addr, uint64_t len, uint64_t want, void **buf, uint64_t *off, uint64_t *gpu, uint64_t *avail) {
     addr = nvn_ga2ca(addr);   // 同 nvn_be_addr
     const pc_ent *c = pc_get(addr, len);
-    if (c) { *buf = (__bridge void *)c->buf; *off = addr - c->base; *gpu = c->gpu + *off; *avail = pool_buf_end(c->hi) - addr; return 1; }
-    int ok = 0;
+    if (c && c->end - addr >= want) { *buf = (__bridge void *)c->buf; *off = addr - c->base; *gpu = c->gpu + *off; *avail = c->end - addr; return 1; }
+    int ok = 0, shortv = 0;
     pthread_mutex_lock(&g_mu);
     int i = pool_find(addr, len);
-    if (i >= 0) { pool_res(i); pc_put(i, addr); *buf = (__bridge void *)g_pools[i].buf; *off = addr - g_pools[i].base; *gpu = g_pools[i].gpu + *off; *avail = pool_buf_end(g_pools[i].hi) - addr; ok = 1; }
+    if (i >= 0) { pool_res(i); pc_put(i, addr); *buf = (__bridge void *)g_pools[i].buf; *off = addr - g_pools[i].base; *gpu = g_pools[i].gpu + *off; *avail = pool_end(i) - addr; ok = 1;
+        shortv = g_pools[i].vpf && *avail < want; }   // a virtual pool's run ends inside the binding: the pages after it may be other physical memory
     pthread_mutex_unlock(&g_mu);
-    if (!ok && addr_fallback(addr, len, want > len ? want : len)) {   // as nvn_be_addr
-        pthread_mutex_lock(&g_mu); i = pool_find(addr, len);
-        if (i >= 0) { pool_res(i); pc_put(i, addr); *buf = (__bridge void *)g_pools[i].buf; *off = addr - g_pools[i].base; *gpu = g_pools[i].gpu + *off; *avail = pool_buf_end(g_pools[i].hi) - addr; ok = 1; }
+    // not found, or a run of a virtual pool shorter than the binding: a copy of the virtual pages over the whole binding where they are mapped (nvn_sparse_shadow), found by the whole range
+    if ((!ok || shortv) && addr_fallback(addr, len, want > len ? want : len)) {   // as nvn_be_addr
+        pthread_mutex_lock(&g_mu); i = shortv ? pool_find(addr, want) : -1; if (i < 0 && !ok) i = pool_find(addr, len);
+        if (i >= 0) { pool_res(i); pc_put(i, addr); *buf = (__bridge void *)g_pools[i].buf; *off = addr - g_pools[i].base; *gpu = g_pools[i].gpu + *off; *avail = pool_end(i) - addr; ok = 1; }
         pthread_mutex_unlock(&g_mu); }
     if (!ok) ok = xq_addr_want(addr, len, buf, off, gpu, avail);
     return ok;
@@ -2305,7 +2354,7 @@ static int pend_since(uint64_t a, uint64_t b, int since, int *out) {
         n = m; }
     return n;
 }
-int nvn_host_readable(uint64_t a, uint64_t n);   // hle_nvn.c: guest memory and sparse pools
+const uint8_t *nvn_host_ptr(uint64_t a, uint64_t n);   // hle_nvn.c: the host bytes behind a buffer address (a virtual pool's: the physical memory behind it or a copy), NULL where unmapped
 // Shadows made from memory, per range. One is kept while no write is queued after it (the draws after an update bind the same block again and again); the next one for the same range starts
 // from it and lays over only the writes queued since (the game rewrites one block hundreds of times a submission). A range read whole from memory once is not read from memory again in the submission
 enum { UBP_CACHE = 16, UBP_MAX_BYTES = 65536 };
@@ -2359,7 +2408,7 @@ static int ubp_get(uint64_t lo, uint64_t hi, uint64_t *gpu, const uint8_t **cpu)
     if (c && c->npend == g_npend) { g_ubp_reused++; *gpu = c->gpu; *cpu = c->cpu; ubp_lineage(c); return 1; }
     int since = c ? c->npend : 0;
     if (!c && gw_live(lo, hi)) { g_ubp_why[2]++; return 0; }
-    if (!c && !nvn_host_readable(lo, hi - lo)) { g_ubp_why[4]++; return 0; }
+    const uint8_t *hl = NULL; if (!c && !(hl = nvn_host_ptr(lo, hi - lo))) { g_ubp_why[4]++; return 0; }
     int n = pend_since(lo, hi, since, g_ubp_idx); if (n < 0) { g_ubp_why[4]++; return 0; }
     // Nothing queued over the range since the kept shadow (the writes since went elsewhere): the next one would be a byte-for-byte copy of it, so it is the answer.
     //   The kept one is of this arena generation (the lookup above), so its scratch has not been handed back (cdad08ca9)
@@ -2379,7 +2428,7 @@ static int ubp_get(uint64_t lo, uint64_t hi, uint64_t *gpu, const uint8_t **cpu)
     __unsafe_unretained id<MTLBuffer> ab; size_t o = arena_alloc_u((size_t)len, &ab); uint8_t *d = (uint8_t *)ab.contents + o;
     int big = len >= UBQ_ASYNC;   // smaller ones are always copied here: handing a copy to the worker costs more than making it (see UBQ_ASYNC)
     if (UBQ_N - (g_ubq_tail - g_ubq_head) < (uint64_t)nk + (uint64_t)nif + 1) ubq_flush();   // a shadow's copies never straddle a forced flush
-    ubq_put(d, c ? c->cpu : (const uint8_t *)(uintptr_t)lo, (size_t)len, big, c != NULL);   // the previous shadow's own copies are queued before these
+    ubq_put(d, c ? c->cpu : hl, (size_t)len, big, c != NULL);   // the previous shadow's own copies are queued before these
     if (nif) { size_t tot = 0; for (int i = 0; i < nif; i++) tot += (size_t)(MIN(ifw[i]->hi, hi) - MAX(ifw[i]->lo, lo));   // the bytes copied out now into this frame's scratch:
         __unsafe_unretained id<MTLBuffer> ib; size_t io = arena_alloc_u(tot, &ib); uint8_t *ip = (uint8_t *)ib.contents + io;   //   entries are recycled once their submission completes
         for (int i = nif - 1; i >= 0; i--) { uint64_t x = MAX(ifw[i]->lo, lo), y = MIN(ifw[i]->hi, hi);   // oldest first
@@ -3232,6 +3281,7 @@ int s2a_snap_saving(void) __attribute__((weak));   // runtime/src/snapshot.c：�
 // 弱链接[nvntest]：s2a_snap_saving（runtime/src/snapsw.c 提供；图形单测不链宿主，链接行按这行放行未定义）
 // 弱链接[nvntest]：s2a_snap_arena_get（runtime/src/vawin.c 提供，nvn_snap.inc 用；同上）
 // 弱链接[nvntest]：s2a_snap_arena_set（同上）
+// 弱链接[nvntest]：s2a_snap_progress（runtime/src/snapshot.c 存档看门狗，nvn_snap.inc 用；同上）
 // 弱链接[nvntest]：s2a_snap_conv_fread（runtime/src/snapshot.c 提供，nvn_snap.inc 经 snapfmt.h snap_fread 用：快照布局变了按字段转；同上）
 static int snap_on(void) { if (g_snap_on < 0) g_snap_on = s2a_snap_saving ? s2a_snap_saving() : 0; return g_snap_on; }
 void nvn_be_tex_init(const tex_t *t) { if (!t->serial) return; atomic_fetch_add(&g_tex_init_n, 1); pthread_mutex_lock(&g_smu); nvn_hm_put(&g_tex_live, &t->serial, (void *)1);
@@ -4260,7 +4310,7 @@ static void gw_mark(void *u, uint64_t lo, uint64_t hi) {   // pages of storage [
 // A copy or clear wrote texel rectangle (x, y, w, h) of layers [layer0, layer0 + nlayers) of level `level` (w / h 0 = the whole level): note the generation on its pages (see NvPkg pgpu)
 static void pkg_gpu_wrote(const tex_t *t, unsigned level, unsigned layer0, unsigned nlayers, uint32_t x, uint32_t y, uint32_t w, uint32_t h);
 static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, uint64_t **ph, uint32_t *nph, int bg_hash);
-int nvn_host_readable(uint64_t a, uint64_t n);   // hle_nvn.c: guest memory and sparse pools
+const uint8_t *nvn_host_ptr(uint64_t a, uint64_t n);   // hle_nvn.c: the host bytes behind a buffer address (a virtual pool's: the physical memory behind it or a copy), NULL where unmapped
 int nvn_sparse_pool(const void *pool); uint64_t nvn_sparse_gen(void); uint64_t nvn_sparse_copy(const void *pool, void *dst, uint64_t a, uint64_t n);
 int nvn_sparse_since(const void *pool, uint64_t a, uint64_t n, uint64_t gen, uint64_t stamp); void nvn_sparse_protect(const void *pool, uint64_t a, uint64_t n); int nvn_sparse_mapped(const void *pool, uint64_t a, uint64_t n);
 static id<MTLTexture> pkg_upload(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, uint64_t **ph, uint32_t *nph, int bg_hash) {   // reuse: a texture of the same description, idle on the GPU, to upload into instead of a new one; ph / nph: per-page hashes (NvPkg), or NULL
@@ -5939,6 +5989,7 @@ void nvn_be_tex_release(tex_t *t) {
     atomic_fetch_add(&g_tex_rel_n, 1);
     pthread_mutex_lock(&g_smu);
     nvn_hm_del(&g_tex_live, &t->serial);
+    nvn_hm_del(&g_snap_texaddr, &t->serial);   // 即时存档的「序号 → 对象地址」表跟着删：原先只增不删，随游玩时长涨，存档时逐项查可读（每项一次系统调用）越来越慢
     id holder = hm_get_id(&g_by_serial, &t->serial);
     if ([holder isKindOfClass:[NvPkg class]]) {
         // #778 (reporter shengyifan's minimal repro): a texture the GPU wrote (NvPkg) is finalized while recorded commands still sample it by this serial
@@ -8742,14 +8793,14 @@ static id<MTLTexture> tbuf_expand(int tid, int rows2d, uint64_t *rid) {   // row
     static struct { uint64_t sub, ser; int rows2d; __strong id<MTLTexture> tx; } c[64]; static int next;
     for (int i = 0; i < 64; i++) if (c[i].tx && c[i].sub == g_arena_gen && c[i].ser == t->serial && c[i].rows2d == rows2d) { *rid = c[i].tx.gpuResourceID._impl; return c[i].tx; }
     uint64_t n = t->d.width, src = (uint64_t)t->mem;
-    if (!nvn_host_readable(src, n * sb)) { RED_ONCE(130, "buffer texture ser=%llu (format %#x, %llu elements) is not readable on the CPU: the dummy is bound", (unsigned long long)t->serial, f, (unsigned long long)n); return nil; }
+    const uint8_t *hs = nvn_host_ptr(src, n * sb); if (!hs) { RED_ONCE(130, "buffer texture ser=%llu (format %#x, %llu elements) is not readable on the CPU: the dummy is bound", (unsigned long long)t->serial, f, (unsigned long long)n); return nil; }
     if (pend_hits(src, n * sb)) RED_ONCE(131, "buffer texture ser=%llu (format %#x) has GPU writes queued in this submission: expanded from the bytes before them", (unsigned long long)t->serial, f);
     MTLPixelFormat pf = (MTLPixelFormat)upf;
     NSUInteger al = [g_dev minimumLinearTextureAlignmentForPixelFormat:pf]; uint32_t w = (uint32_t)n, h = 1, rw = 0; size_t row = ((size_t)n * db + al - 1) / al * al;
     // exact (rows2d 2): rows sized to the element count when they fit; otherwise the fixed rows, whose tail this copy zero-fills, so a read past the buffer still reads 0
     if (rows2d) { if (!(rows2d == 2 && nvn_tbuf_rows_exact(n, (uint32_t)db, (uint32_t)al, &w, &h, &rw)) && !nvn_tbuf_rows((uint32_t)n, (uint32_t)db, (uint32_t)al, &w, &h, &rw)) { RED_ONCE(133, "buffer texture ser=%llu (format %#x, %llu elements) has no 2D-row form for a wrapped 1D fetch: the slot reads 0", (unsigned long long)t->serial, f, (unsigned long long)n); return nil; } row = rw; }
     size_t total = row * h;
-    id<MTLBuffer> b; size_t off = arena_alloc(total, &b); uint8_t *d = (uint8_t *)b.contents + off; const uint8_t *s = (const uint8_t *)(uintptr_t)src;
+    id<MTLBuffer> b; size_t off = arena_alloc(total, &b); uint8_t *d = (uint8_t *)b.contents + off; const uint8_t *s = hs;
     memset(d, 0, total);
     for (uint32_t y = 0; y < h; y++) {   // one row of w elements at a time (a texture buffer is one row of n)
         uint64_t i0 = (uint64_t)y * w; if (i0 >= n) break;
@@ -15000,7 +15051,7 @@ static uint32_t mdi_count(uint64_t cnt) {
     if (cnt != g_mdi_addr || g_mdi_epoch != g_wr_epoch || g_mdi_sub != g_sub_serial) {
         if (g_mdi_epoch != g_wr_epoch || g_mdi_sub != g_sub_serial) { mdi_wait(); g_mdi_epoch = g_wr_epoch; g_mdi_sub = g_sub_serial; }
         uint32_t v = 0;
-        if (nvn_host_readable(cnt, 4)) memcpy(&v, (const void *)(uintptr_t)cnt, 4);
+        const uint8_t *hc = nvn_host_ptr(cnt, 4); if (hc) memcpy(&v, hc, 4);
         else RED_ONCE(98, "indirect-count multi-draw: the count at %#llx is in an unmapped page of a sparse pool, nothing drawn", (unsigned long long)cnt);
         g_mdi_addr = cnt; g_mdi_count = v;
     }
@@ -15167,10 +15218,11 @@ static void tf_draw(NvProg *pr, const p_draw *dw, const p_draw_idx *di) {
     uint32_t *order = NULL, lo = 0, hi = 0; int64_t first = dw ? dw->first : 0;
     if (di) {
         int isz = 1 << di->itype;
-        if (di->itype < 0 || di->itype > 2 || !nvn_host_readable(di->ibuf, (uint64_t)count * isz) || !(order = malloc((size_t)count * 4))) {
+        const uint8_t *hib = NULL;
+        if (di->itype < 0 || di->itype > 2 || !(hib = nvn_host_ptr(di->ibuf, (uint64_t)count * isz)) || !(order = malloc((size_t)count * 4))) {
             free(order); nvn_be_bad_draw_feat(); RED_ONCE(122, "transform feedback indexed draw (vertex %s): index buffer not readable, not captured", vs->key); return; }
         uint32_t ri = S.restart.index & (isz == 1 ? UINT8_MAX : isz == 2 ? UINT16_MAX : UINT32_MAX); lo = UINT32_MAX;
-        for (int i = 0; i < count; i++) { uint32_t v = 0; memcpy(&v, (const uint8_t *)(uintptr_t)di->ibuf + (size_t)i * isz, isz);
+        for (int i = 0; i < count; i++) { uint32_t v = 0; memcpy(&v, hib + (size_t)i * isz, isz);
             if (S.restart.on && v == ri) { free(order); nvn_be_bad_draw_feat(); RED_ONCE(123, "transform feedback indexed draw with primitive restart (vertex %s): not captured", vs->key); return; }
             order[i] = v; lo = MIN(lo, v); hi = MAX(hi, v); }
         first = (int64_t)lo + di->base_vertex;
@@ -15483,8 +15535,8 @@ static void tess_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) {
     if (wait) { mdi_wait(); if (g_mdi_ev.signaledValue < g_mdi_v) { TESS_SKIP("patch draw: the GPU did not finish before the CPU read; draw skipped"); return; } memset(g_vconv, 0, sizeof g_vconv); }
     if (ind) {   // 间接绘制：先读参数（照 geo_draw 121–129）
         uint32_t a[5] = {0}; size_t n = dw0 ? 16 : 20;
-        if (!nvn_host_readable(ind, n)) { TESS_SKIP("patch indirect arguments are not readable; draw skipped"); return; }
-        memcpy(a, (void *)(uintptr_t)ind, n);
+        const uint8_t *hi_ = nvn_host_ptr(ind, n); if (!hi_) { TESS_SKIP("patch indirect arguments are not readable; draw skipped"); return; }
+        memcpy(a, hi_, n);
         if (!a[0] || !a[1]) return;
         if (a[0] > INT32_MAX || a[1] > INT32_MAX) { TESS_SKIP("patch indirect draw exceeds the host count range; draw skipped"); return; }
         if (dw0) { dw.count = a[0]; dw.instances = a[1]; dw.first = a[2]; dw.base_instance = a[3]; dw.ind = dw.mdi_cnt = 0; }
@@ -15510,8 +15562,9 @@ static void tess_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) {
     if (!map) { TESS_SKIP("patch index allocation failed; draw skipped"); return; }
     if (di0) {
         int isz = 1 << di.itype;
-        if (!nvn_host_readable(di.ibuf, (uint64_t)Vp * isz) || !(unique = malloc((size_t)Vp * 4))) { free(map); TESS_SKIP("patch index buffer is not readable; draw skipped"); return; }
-        nvn_tess_index_plan((const uint8_t *)(uintptr_t)di.ibuf, isz, Vp, map, unique, &nu, &lo, &hi);
+        const uint8_t *hib = nvn_host_ptr(di.ibuf, (uint64_t)Vp * isz);
+        if (!hib || !(unique = malloc((size_t)Vp * 4))) { free(map); TESS_SKIP("patch index buffer is not readable; draw skipped"); return; }
+        nvn_tess_index_plan(hib, isz, Vp, map, unique, &nu, &lo, &hi);
         first = (int64_t)lo + di.base_vertex; span = (uint64_t)hi - lo + 1;
     } else for (uint32_t i = 0; i < Vp; i++) map[i] = i;
     uint64_t cap_bytes = span * (uint64_t)instances * NVN_TESS_CP_BYTES, in_bytes = (uint64_t)Vp * (uint64_t)instances * NVN_TESS_CP_BYTES;
@@ -16320,8 +16373,9 @@ static void dispatch(const p_dispatch *dp) {
         uint64_t n = (uint64_t)gx * gy * dp->z;
         if (dp->ind) {   // GPU-written group counts: read once they have landed (a rare correctness path, as nvn_geometry.inc does for its indirect records)
             uint32_t a[3] = {0}; mdi_wait();
-            if (g_mdi_ev.signaledValue < g_mdi_v || !nvn_host_readable(dp->ind, 12)) { RED_ONCE(117, "indirect dispatch of compute shader %s with spilled shared memory: group counts not readable, dispatch skipped", cs->key); if (own) enc_c_end(ce); return; }
-            memcpy(a, (const void *)(uintptr_t)dp->ind, 12); n = (uint64_t)a[0] * a[1] * a[2];
+            const uint8_t *hd = g_mdi_ev.signaledValue < g_mdi_v ? NULL : nvn_host_ptr(dp->ind, 12);
+            if (!hd) { RED_ONCE(117, "indirect dispatch of compute shader %s with spilled shared memory: group counts not readable, dispatch skipped", cs->key); if (own) enc_c_end(ce); return; }
+            memcpy(a, hd, 12); n = (uint64_t)a[0] * a[1] * a[2];
         }
         uint64_t bytes = n * cs->spill;
         if (!n) { if (own) enc_c_end(ce); return; }

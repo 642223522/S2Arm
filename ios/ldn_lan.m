@@ -30,6 +30,8 @@ void s2a_lan_permission_failed(const char *what, NSDictionary *err);   // lan_pe
 @property(strong) NSMutableDictionary<NSString *, NSString *> *ips;          // 名字 → 解析出的 IPv4
 @property(copy) NSString *prefix, *dev, *ownName, *chosen;
 @property BOOL hosting;
+@property BOOL inBackground;            // App 在后台：系统会停掉本 App 的 Bonjour（发布 / 浏览回 -72000），回前台要重开
+@property(strong) NSArray *lifeObservers;
 @property uint16_t port;
 @property uint64_t programId;
 @end
@@ -45,12 +47,37 @@ static int lan_is_current(S2ALdnLan *lan) {
     return current;
 }
 @implementation S2ALdnLan
-- (void)stop {
+// 前后台：iOS 在 App 进后台时停掉它的 Bonjour 发布与浏览（两个失败回调都回 NSNetServicesErrorCode -72000，玩家诊断里三次都在「进后台」那一刻），
+//   回前台后不会自己恢复——原先此后一直找不到别的设备、别人也找不到本机，还把这次失败当成「本地网络权限被拒」弹框。
+//   通知名用字符串（与 UIKit 常量同值）：本文件只依赖 Foundation，Mac 单测整份编进来
+- (void)watchLife {
+    if (self.lifeObservers) return;
+    NSNotificationCenter *nc = NSNotificationCenter.defaultCenter; __weak S2ALdnLan *w = self;
+    self.lifeObservers = @[
+        [nc addObserverForName:@"UIApplicationDidEnterBackgroundNotification" object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { (void)n; w.inBackground = YES; }],
+        [nc addObserverForName:@"UIApplicationWillEnterForegroundNotification" object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { (void)n;
+            S2ALdnLan *me = w; if (!me || !me.inBackground) return; me.inBackground = NO;
+            if (me.ownName && lan_is_current(me)) { LOG("[S2A 联机] 局域网：回前台，重新发布本机中继、重新找其他设备"); [me restartBonjour]; } }],
+    ];
+}
+- (void)unwatchLife { for (id o in self.lifeObservers) [NSNotificationCenter.defaultCenter removeObserver:o]; self.lifeObservers = nil; }
+- (void)stopBonjour {
     self.browser.delegate = nil; [self.browser stop]; self.browser = nil;
     self.own.delegate = nil; [self.own stop]; self.own = nil;
     for (NSNetService *service in self.found.allValues) { service.delegate = nil; [service stop]; }
     [self.found removeAllObjects]; [self.ips removeAllObjects];
     self.chosen = nil;
+}
+- (void)stop { [self unwatchLife]; [self stopBonjour]; }
+- (void)browse {
+    self.browser = [NSNetServiceBrowser new]; self.browser.delegate = self;
+    [self.browser searchForServicesOfType:@"_s2arm-ldn._tcp." inDomain:@"local."];
+}
+// 回前台：系统停掉的发布 / 浏览整个重来（已找到的设备清空，重新浏览会再报一遍；选举结果按新的候选重新算）
+- (void)restartBonjour {
+    [self stopBonjour];
+    [self publish]; [self browse];
+    [self elect];
 }
 - (void)start:(NSString *)programId {
     self.prefix = [programId stringByAppendingString:@"-"];
@@ -58,9 +85,8 @@ static int lan_is_current(S2ALdnLan *lan) {
     if (!dev.length) { dev = [NSUUID.UUID.UUIDString substringToIndex:8].lowercaseString; [NSUserDefaults.standardUserDefaults setObject:dev forKey:@"S2ALanDeviceId"]; }
     self.dev = dev;
     self.found = [NSMutableDictionary new]; self.ips = [NSMutableDictionary new];
-    [self publish];
-    self.browser = [NSNetServiceBrowser new]; self.browser.delegate = self;
-    [self.browser searchForServicesOfType:@"_s2arm-ldn._tcp." inDomain:@"local."];
+    [self watchLife];
+    [self publish]; [self browse];
     LOG("[S2A 联机] 局域网：发布本机中继 %s，开始找同一款游戏的其他设备", self.ownName.UTF8String);
     [self elect];
 }
@@ -106,8 +132,16 @@ static int lan_is_current(S2ALdnLan *lan) {
         LOG("[S2A 联机] 局域网：找到 %s（%s）", s.name.UTF8String, ip); [self elect]; return;
     }
 }
-- (void)netService:(NSNetService *)s didNotPublish:(NSDictionary *)e { (void)s; s2a_lan_permission_failed("发布本机中继", e); }
-- (void)netServiceBrowser:(NSNetServiceBrowser *)b didNotSearch:(NSDictionary *)e { (void)b; s2a_lan_permission_failed("查找其他设备", e); }
+// 失败：在后台时是系统停了本 App 的 Bonjour（回前台 restartBonjour 重开），只记一行；在前台才可能是本地网络权限被拒，交 lan_permission.m 引导去设置
+- (void)netServiceDidPublish:(NSNetService *)s { if (s == self.own && lan_is_current(self)) LOG("[S2A 联机] 局域网：本机中继 %s 已发布", s.name.UTF8String); }
+- (void)netService:(NSNetService *)s didNotPublish:(NSDictionary *)e {
+    if (s != self.own || !lan_is_current(self)) return;
+    if (self.inBackground) LOG("[S2A 联机] 局域网：发布本机中继停了（App 在后台，系统停掉 Bonjour：%s），回前台重开", [e[NSNetServicesErrorCode] description].UTF8String); else s2a_lan_permission_failed("发布本机中继", e);
+}
+- (void)netServiceBrowser:(NSNetServiceBrowser *)b didNotSearch:(NSDictionary *)e {
+    if (b != self.browser || !lan_is_current(self)) return;
+    if (self.inBackground) LOG("[S2A 联机] 局域网：查找其他设备停了（App 在后台，系统停掉 Bonjour：%s），回前台重开", [e[NSNetServicesErrorCode] description].UTF8String); else s2a_lan_permission_failed("查找其他设备", e);
+}
 - (void)netService:(NSNetService *)s didNotResolve:(NSDictionary *)e { (void)e; LOG("[S2A 联机] 局域网：解析 %s 失败", s.name.UTF8String); }
 // 选举：本机与已解析的同款设备里名字最小的那台（带「!」= 有房间的排最前）；是本机就用回环。
 //   比较规则与安卓共用 s2a_lan_elect（按字节比，单测 t_lan_elect）：两边各写一份，规则一漂移，同一 Wi-Fi 的苹果机和安卓机就选出不同的中继
