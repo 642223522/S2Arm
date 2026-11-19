@@ -322,13 +322,17 @@ static uint64_t code_bytes(void) {
 //   物理上不存在的限制让游戏自己中止（#1493 一款游戏开局要约 3340 MB；关掉记账就能玩，宿主撑得住）。改成：超过模拟的池时问宿主还剩多少
 //   （Mac：空闲 + 可回收页；iPhone：os_proc_available_memory，即离系统给本 App 的上限还剩多少；安卓：系统可用内存），留 512 MB 不动，
 //   给得了就把池扩到这次要用的总量；给不了才回 ResLimitExceeded 并说清是宿主余量不够。报给游戏的总量 / 资源上限跟着扩过的池走（总量 − 已用不为负）。
-//   扩只在真有人要时发生：一直映射到被拒为止的游戏（异度神剑 3 一族）会多拿到宿主余量那么多地址；映射不写的页不占物理内存（11-03 起映射不预先清零）
+//   最多扩到模拟的池再加 1/8（Switch 3285 MB → 3695 MB；9 GiB → 10.1 GiB）：按计划要的略超池的游戏放得下（#1493 多要约 55 MB），
+//   一直映射到被拒为止的游戏（一款 39 位大游戏每次 1 MB 往上探）到这里照样被拒、自己收手——不设上限时它在 Mac 上把池扩到了 61440 MB（地址窗口那么大），
+//   iPhone 上同样一路探下去会被系统杀
 #define POOL_HOST_RESERVE (512ull << 20)
+static uint64_t g_pool_headroom_div = 8;
 static uint64_t g_pool_grown;   // 扩过的池（0 = 没扩过）
 static uint64_t pool_eff(void) { return g_pool_grown > APP_POOL ? g_pool_grown : APP_POOL; }
 #ifdef S2A_UNIT_TEST
 static uint64_t g_test_host_avail;
 void s2a_mem_test_host_avail(uint64_t v) { g_test_host_avail = v; g_pool_grown = 0; }
+void s2a_mem_test_headroom_div(uint64_t d) { g_pool_headroom_div = d ? d : 8; }
 static uint64_t host_avail(void) { return g_test_host_avail; }
 #elif defined(__ANDROID__)
 static uint64_t host_avail(void) { long n = sysconf(_SC_AVPHYS_PAGES), pg = sysconf(_SC_PAGESIZE); return n > 0 && pg > 0 ? (uint64_t)n * (uint64_t)pg : 0; }
@@ -346,6 +350,7 @@ static uint64_t host_avail(void) {
 static int pool_fits(uint64_t need, uint64_t *avail_out) {
     if (avail_out) *avail_out = 0;
     if (need <= pool_eff()) return 1;
+    if (need > APP_POOL + APP_POOL / g_pool_headroom_div) return 0;   // 超出模拟的池 + 1/8：不扩（见上）
     uint64_t extra = need - pool_eff(), av = host_avail(); if (avail_out) *avail_out = av;
     if (av <= POOL_HOST_RESERVE || extra > av - POOL_HOST_RESERVE) return 0;
     uint64_t was = pool_eff(); g_pool_grown = need;
@@ -1987,7 +1992,7 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
                 uint64_t av = 0;
                 if (!pool_fits(g_heap_cur + pool_fixed() + add, &av)) {
                     static int dumped; if (!dumped++) pm_overrun_dump(regs[30]);
-                    static int said; if (!said++) LOG("物理映射到上限：堆 %llu MB + 代码 %llu MB + 主线程栈 %llu KB + SystemResourceSize %llu MB + 已物理映射 %llu MB，本次再要 %llu KB > 池 %llu MB，宿主余量 %llu MB（留 %llu MB）也给不了，回 ResLimitExceeded（只打第一次）",
+                    static int said; if (!said++) LOG("物理映射到上限：堆 %llu MB + 代码 %llu MB + 主线程栈 %llu KB + SystemResourceSize %llu MB + 已物理映射 %llu MB，本次再要 %llu KB > 池 %llu MB（最多扩到模拟的池 + 1/8；宿主余量 %llu MB、留 %llu MB），回 ResLimitExceeded（只打第一次）",
                         (unsigned long long)(g_heap_cur >> 20), (unsigned long long)(code_bytes() >> 20), (unsigned long long)(g_mstack >> 10), (unsigned long long)(L.sys_resource_size >> 20), (unsigned long long)(g_phys >> 20), (unsigned long long)(add >> 10), (unsigned long long)(pool_eff() >> 20),
                         (unsigned long long)(av >> 20), (unsigned long long)(POOL_HOST_RESERVE >> 20));
                     GMU_UNLOCK(); regs[0] = 0x10801; return 1;
