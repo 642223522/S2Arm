@@ -253,6 +253,11 @@ public final class S2ArmEngineProvider: EngineProvider {
     }
 
     /// 打 iPhone 包的目标设备探测（targetDevice 作业）：connected / models / osChoices；quick 只给静态机型表、不读设备。
+    /// 已连接的安卓手机（androidDevices 作业，adb devices -l）→ {enabled, adb, devices: [{serial, state, model}]}；enabled = 安卓出包开没开。
+    public func androidDevices() async throws -> [String: Any] {
+        try await client.perform("androidDevices").result
+    }
+
     public func targetDevices(quick: Bool = false) async throws -> [String: Any] {
         try await client.perform("targetDevice", extra: quick ? ["quick": true] : [:]).result
     }
