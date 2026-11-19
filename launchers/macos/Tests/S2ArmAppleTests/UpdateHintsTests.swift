@@ -43,6 +43,7 @@ import S2ArmAppleAdapter
         XCTAssertEqual(S2ArmLauncherModel.updateReasonKey("rewriter"), "update.hint.reason.rewriter")
         XCTAssertEqual(S2ArmLauncherModel.updateReasonKey("hostAbi"), "update.hint.reason.hostAbi")
         XCTAssertEqual(S2ArmLauncherModel.updateReasonKey("shader"), "update.hint.reason.shader")
+        XCTAssertEqual(S2ArmLauncherModel.updateReasonKey("libGen"), "update.hint.reason.shader", "库缺新代数内容（旧包不带客体输入）：用着色器那条文案")
         XCTAssertNil(S2ArmLauncherModel.updateReasonKey("other"), "不认识的原因不显示")
         for key in ["update.hint.badge", "update.hint.button", "update.hint.tail", "update.hint.reason.rewriter", "update.hint.reason.hostAbi", "update.hint.reason.shader"] {
             for lang in ["zh-Hans", "zh-Hant", "en", "ja", "es", "fr"] {

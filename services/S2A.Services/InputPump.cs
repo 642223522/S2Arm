@@ -820,6 +820,7 @@ namespace S2A.Services
                 // 本地多手柄：Mac 前端报告接了几只手柄就开到几格（最多 MaxPads），接上第二只手柄即成为玩家 2
                 int livePads = _vpadPadCount != null ? _vpadPadCount() : 0;
                 if (livePads > _pads && livePads <= MaxPads) SetPads(device, livePads);
+                device.System.S2ASetLocalMultiplayer(livePads >= 2);   // 实接 ≥ 2 只：游戏看到主机运行模式（两人模式要求 TV 模式的游戏）；变化时同真机插拔底座发通知
                 if (Environment.TickCount64 >= nextFollow) { FollowNow(device); nextFollow = Environment.TickCount64 + 250; }
 
                 GamepadInput input = new() { PlayerId = _player };

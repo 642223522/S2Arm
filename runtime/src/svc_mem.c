@@ -284,6 +284,7 @@ static int span_busy(uint64_t lo, uint64_t hi) { for (int i = 0; i < g_nspan; i+
 static uint8_t *g_amask;   // 每宿主页一字节，低 4 位 = 哪几个 4 KB 子页已映射；按别名区大小懒建（calloc 大块走零页，用到才占内存）
 #ifdef S2A_UNIT_TEST
 static uint64_t g_amask_probes;
+// 快照相关的弱缺省已由本文件后部的通用定义提供（合并 upstream 后统一，勿在此重复定义）
 #define AMASK_PROBE() (++g_amask_probes)
 #else
 #define AMASK_PROBE() ((void)0)
@@ -1594,7 +1595,13 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
         // 堆从窗口里长出窗口末尾（乙布局堆区伸出窗口时才会发生）：宿主没有这段地址
         if (size > g_heap_cur && (uint64_t)g_heap + size > s2a_far_floor()) { GMU_UNLOCK(); regs[0] = va_short(num, (uint64_t)g_heap + g_heap_cur, size - g_heap_cur, "堆区（与远端影子撞上）"); return 1; }
         if (size > g_heap_cur && (uint64_t)g_heap >= L.win_base && (uint64_t)g_heap + size > L.win_base + L.win_size) {
+            // 小内存 iPad：堆请求超出本机窗口（不是超出堆区，所以走不到上面的 heap_need_note）。记下本款要的堆，
+            //   下一局让 vawin 按它给窗口；这一局照上游口径停局报「本机地址空间装不下」，不再让不看结果码的游戏往下写宿主内存。
+            int noted = heap_need_note(g_lay_pid, size);
+            if (noted) atomic_store(&g_heap_noted, 1);
             GMU_UNLOCK(); regs[0] = va_short(num, (uint64_t)g_heap + g_heap_cur, size - g_heap_cur, "堆区");
+            if (noted) LOG("普通堆需要 %llu 字节，本机窗口只有 %llu MB：已记下本款要的堆，下一局按它给窗口",
+                (unsigned long long)size, (unsigned long long)(L.win_size >> 20));
             // 窗口是本机给得出的最大一块（按需档才会让堆区伸出窗口）：这么大的堆物理上放不下。停在这里报真实原因：真机上堆从不失败，不看结果码的游戏
             //   拿到 0xD001 照样往下写，写进地址更低处的宿主映像 SIGBUS（#01b36b D-SSBZ iPad14,1 动森：窗口 3072 MB，要 3198 MB 的堆，写到宿主代码段；
             //   同族 #1eefc4 小地址设备上的一款 Switch 2 游戏、D-ASK2）。看结果码的游戏原本也是拿到它就中止，结果一样，原因说清了

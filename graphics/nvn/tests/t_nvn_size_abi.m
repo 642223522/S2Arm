@@ -307,7 +307,13 @@ int main(int argc,char **argv) { @autoreleasepool {
       pixels(&out_a,0,6,4,0,0); }
     // 缺口族 37（多重采样关，白盒）：关多重采样、4 样本目标 → 管线键 msoff = 1；NVN 缺省（开）→ 0；带 S2A_MSOFF 的特化函数建得出
     { const uint32_t cf[8]={MTLPixelFormatRGBA32Float}; pso_key k; state_reset(); S.ms.enable=0; pso_key_fill(&k,vs,fs,cf,0,0,4,0); REQUIRE(fs->has_atms&&k.msoff==1&&k.at==0);   // 上一组的 GREATER 还在 S 里：先复位
-      state_reset(); pso_key_fill(&k,vs,fs,cf,0,0,4,0); REQUIRE(k.msoff==0); REQUIRE(fs_atms_fn(fs,0,0,1)&&fs_atms_fn(fs,0,5,1)); }
+      state_reset(); pso_key_fill(&k,vs,fs,cf,0,0,4,0); REQUIRE(k.msoff==0); REQUIRE(fs_atms_fn(fs,0,0,1,0)&&fs_atms_fn(fs,0,5,1,0)); }
+    // #427 输出类型由常量选（Dsh.cs FsFout，白盒）：size_lod0_ps 的 main0 带 S2A_FU / S2A_FS（fout_fc）；画布 0 是 RGBA32Uint 的管线描述选到特化入口（不是 main0 本身）、建得出；
+    //   同一份描述换回不特化的 main0 建不出（浮点输出配不上无符号画布 = 原先要从源码现编变体的情形）；同一组常量第二次取到同一个函数（按 (u, at, msoff, need) 缓存）
+    { const uint32_t cf[8]={MTLPixelFormatRGBA32Uint}; pso_key k; state_reset(); pso_key_fill(&k,vs,fs,cf,0,0,1,0); REQUIRE(fs->fout_fc&&pso_fout_need(&k,fs,0)==1);
+      MTLRenderPipelineDescriptor *d=pso_desc(&k,vs,fs,nil,0); REQUIRE(d.fragmentFunction&&d.fragmentFunction!=fs->fn&&d.fragmentFunction==fs_atms_fn(fs,0,0,0,1));
+      NSError *e=nil; REQUIRE([g_dev newRenderPipelineStateWithDescriptor:d error:&e]);
+      d.fragmentFunction=fs->fn; e=nil; REQUIRE(![g_dev newRenderPipelineStateWithDescriptor:d error:&e]); }
     // frag_coord_ps: exact, no texture entries → the pass copy. Two passes of different size in one submission, then a third pass in the next one
     NvShader *coord=load(@"frag_coord_ps"); NVNprogram *coordp=program(vs,coord,nil); image out_c,out_d; make_image(&out_c,13,9,NVN_FORMAT_RGBA32F); make_image(&out_d,17,11,NVN_FORMAT_RGBA32F);
     begin(); states(); target(&out_c); draw_record(coordp,a); draw_record(coordp,a); submit();

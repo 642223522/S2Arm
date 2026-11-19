@@ -616,6 +616,8 @@ void s2a_cpu_floor_stop(void) {
 #ifdef S2A_CPU_FLOOR_TEST
 uint64_t s2a_cpu_floor_test_ticks(void) { return atomic_load(&g_ticks); }
 uint64_t s2a_cpu_floor_test_last_tick_ns(void) { return atomic_load(&g_last_tick_ns); }
+// 测试推进了模拟时钟：叫醒在 wait_for 里等的托底线程，不用等真实的等待上限过去
+void s2a_cpu_floor_test_kick(void) { pthread_mutex_lock(&mu); pthread_cond_broadcast(&cv); pthread_mutex_unlock(&mu); }
 int s2a_cpu_floor_test_active(void) { return atomic_load(&g_active); }
 void s2a_cpu_floor_test_reset(void) {
     pthread_mutex_lock(&mu);

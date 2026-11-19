@@ -27,6 +27,12 @@ class MacOSCompatibilityTests(JobCase):
              patch.object(ipa, "dotnet_sdk", return_value=(developer, developer / "dotnet") if sdk else (None, None)):
             return {row["name"]: row for row in toolchain.preflight(self.c)["checks"]}
 
+    def test_intel_mac_is_packaging_only(self):
+        row = self.preflight(machine="x86_64")["Apple Silicon"]
+        self.assertTrue(row["ok"])
+        self.assertEqual(row["requiredFor"], ["ipa"])
+        self.assertIn("Intel Mac", row["message"])
+
     def test_macos15_prepare_launch_minimum_and_unsupported_hosts(self):
         for system, version, expected in [("Darwin", "14.7", False), ("Darwin", "15.0", True),
                                           ("Darwin", "15.7.7", True), ("Darwin", "25.0", True),

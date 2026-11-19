@@ -53,6 +53,11 @@ ck('①b offset_shift 0x80 与中途 -0x10 都按行生效', s4[0]['writes'] == 
 #   空行结束当前段：空行后的字节行没有段，不收
 _, s5 = cpatch.parse_pchtxt('@nsobid-AA\n@enabled\n00000204 00000000\n\n00000208 FFFFFFFF\n')
 ck('①b 空行结束段：只收空行前的 0x104', len(s5) == 1 and s5[0]['writes'] == [(0x104, bytes(4))])
+#   段名：段前紧挨着的几行注释连在一起；隔空行的旧注释不算（#1493）
+_, s6 = cpatch.parse_pchtxt('@nsobid-AA\n# 文件标题\n\n// 10320x4320 Docked\n// Use Extended Memory Layout\n\n@enabled\n00000204 00000000\n')
+ck(f'①b 连续两行注释合成段名：{s6[0]["name"]}', s6[0]['name'] == '10320x4320 Docked · Use Extended Memory Layout')
+_, s7 = cpatch.parse_pchtxt('@nsobid-AA\n// 60 FPS\n@enabled\n00000204 00000000\n\n// 30 FPS\n@enabled\n00000208 00000000\n')
+ck('①b 单行注释段名照旧、两段各自取名', [x['name'] for x in s7] == ['60 FPS', '30 FPS'])
 # ②
 ips = b'PATCH' + (0x204).to_bytes(3, 'big') + (4).to_bytes(2, 'big') + bytes.fromhex('1F2003D5') + (0x300).to_bytes(3, 'big') + (0).to_bytes(2, 'big') + (3).to_bytes(2, 'big') + b'\xaa' + b'EOF'
 ck('② IPS：0x204 → 0x104、行程 0x300 → 0x200 三个 AA', cpatch.parse_ips(ips) == [(0x104, bytes.fromhex('1F2003D5')), (0x200, b'\xaa\xaa\xaa')])

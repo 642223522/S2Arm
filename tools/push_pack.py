@@ -69,6 +69,10 @@ DENIED = "Permission denied"   # afc 打开写被拒的原文（s2a-devpush「�
 REINSTALL_STEP = "先试这两步：①在 iPhone 上打开一次 S2Arm，等游戏库界面出来；②回电脑对这款游戏再点一次「装到 iPhone」，会接着已传的部分继续，不用从头来。还是写不进，就要删掉 iPhone 上的 S2Arm App 再重装：先在游戏菜单「存档管理」里导出存档，存到 S2Arm 文件夹以外（比如 iCloud 云盘）；再在 iPhone 桌面长按 S2Arm，删除 App；然后在电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」；装好后在「存档管理」里导回存档。电脑上的游戏和 S2Arm 都不用删。"   # 机上目录 App 写不进时唯一走得通的下一步（同失败码 ios_install_dir_unwritable）
 
 
+def tv(env=None):   # 推进 Apple TV（S2A_PUSH_TV=1：pack/jobs/install.py push_pack tv=True，或 pack/jobs/tvos.py TvClient 建 Devicectl 时给的环境）：提示按电视说
+    return (env or os.environ).get("S2A_PUSH_TV") == "1"
+
+
 def push_reason(text):
     """推送失败的原文 → 玩家一眼看得懂的一类（摘要第一条要能看出是哪种，11-12 v0.3.1 Mac 玩家「romfs.img 没传完」看不出原因）：
     USB 看不到手机 / 手机锁屏 / 连接断了；认不出就空串（照原文报）。按 s2a-devpush 与 devicectl 的报错特征认，不看英文全文"""
@@ -353,6 +357,8 @@ class Devicectl:
             with open(self.work / "slow_devicectl.log", "a", encoding="utf-8") as f: f.write(f"[{time.strftime('%H:%M:%S')}] 挂：推 {rel} 超 {t} 秒（第 {i} 次）\n")
         self.slow(f"推 {rel}", s0, rc)
         if rc:
+            if tv(self.env):   # Apple TV（#1696）：没有数据线，同网经 devicectl 推
+                raise Fail("资源包写进 Apple TV 时中断（" + ("Apple TV 空间不够" if self.nospc() else f"devicectl 退出码 {rc}") + "）：确认 Apple TV 开着、没有休眠、和这台电脑在同一个网络、空间够后再点一次")
             raise Fail("资源包写进 iPhone 时中断（" + ("iPhone 空间不够" if self.nospc() else f"devicectl 退出码 {rc}") + "）：确认手机解锁、数据线插稳、空间够后再点一次")   # 哪个文件写进 cp.log
 
     def put_big(self, src, rel):   # 大文件优先走 s2a-devpush 流式（usbmuxd 能到时快且不落临时文件），不行退回 devicectl（大于上限的不退，见 DC_FALLBACK_MAX）
@@ -1085,7 +1091,8 @@ def run(dev, pack, work, full=False, say=print, env=None, on_plan=None, progress
         stage(STAGE_SPACE)
         fb, need, imp = space(dev, nbytes, work, env, say)
         accept = accept_low_space or (env or os.environ).get("S2A_PUSH_ACCEPT_LOW_SPACE") == "1"
-        if fb is None: say(f"🟡 读不到 iPhone 剩余空间，这次要传 {max(1, nbytes >> 30)} GB：空间不够时会中途停下，请确认手机上留有足够空间")
+        if fb is None: say(f"🟡 读不到 Apple TV 剩余空间，这次要传 {max(1, nbytes >> 30)} GB：空间不够时会中途停下，请确认 Apple TV 上留有足够空间" if tv() else
+                           f"🟡 读不到 iPhone 剩余空间，这次要传 {max(1, nbytes >> 30)} GB：空间不够时会中途停下，请确认手机上留有足够空间")
         elif fb < need:
             # 手机报的空闲（AFC）不含系统随时能清掉的空间，比「设置 → 储存空间」里的「可用」小，常差好几 GB：估算不够不等于放不下
             # 「估算」写进句子（11-17 维护者）：手机报的空闲偏小，能读到空间以后提示变多，玩家要知道这是估的、可以照传

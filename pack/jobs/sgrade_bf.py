@@ -338,7 +338,7 @@ def upgrade_ios(c, gid):
 
 
 def rechain_ios(c, gid):
-    """0.6.0 通用壳（11-17 维护者定）：着色器链（直连库链号，game.json ios.dmshChain）和本引擎不同 → 只重编这款的着色器库，不重出整款。
+    """0.6.0 通用壳（11-17 维护者定）：着色器链（直连库链号，game.json ios.dmshChain）和本引擎不同、或库内容代数（ios.libGen）旧了 → 只重编这款的着色器库，不重出整款。
     原料同 upgrade_ios（ios_inputs：游戏库里的 game.img；没有就借同款 Mac 运行版本；都没有才要原件），按出包同一套阶段重出（rebuild），
     新库（b-<新链>）整份换掉资源包里的 shaders/direct，改资源包清单（add_to_pack），记新链号与本代 _bf（整份重出已含）。
     资源包号随之变，推送按机上清单只推变了的文件。由玩家对这一款「推到 iPhone」时前台调（install.push_game），不进后台。
@@ -347,7 +347,8 @@ def rechain_ios(c, gid):
     import tempfile
     want = host_update.engine_compat(c)
     side = layout.game_info(c, gid).get("ios") or {}
-    if not want or side.get("dmshChain", host_update.LEGACY_CHAIN) == want["dmshChain"]:
+    # 库内容代数（host_update.LIB_GEN）旧了也重编：链号没变、库里却缺了设备要用的内容（0.5.x 出的库不带客体输入，同链号）
+    if not want or (side.get("dmshChain", host_update.LEGACY_CHAIN) == want["dmshChain"] and not host_update.lib_stale(side.get("libGen"))):
         return "skip"
     pack = Path(layout.ios_pack(c, gid))
     direct = pack / "shaders/direct"
@@ -374,7 +375,7 @@ def rechain_ios(c, gid):
         shutil.rmtree(old, ignore_errors=True)
         rels = [p.relative_to(pack).as_posix() for p in sorted(direct.rglob("*")) if p.is_file()]
         pid = add_to_pack(pack, "shaders/direct/", rels)
-    layout.update_info(c, gid, ios={**side, "dmshChain": want["dmshChain"], "bfGen": BF_GEN, "pack": pid})
+    layout.update_info(c, gid, ios={**side, "dmshChain": want["dmshChain"], "bfGen": BF_GEN, "libGen": host_update.LIB_GEN, "pack": pid})
     return "updated"
 
 

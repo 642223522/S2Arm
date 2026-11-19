@@ -9,9 +9,10 @@
 #include <math.h>
 
 // 上屏模式（§2.3 矩阵）：S0 = SDR 直通（BGRA8Unorm + 显式 sRGB tag——创建与从 PQ 层切回两处都设，PR4/PR7 落地）；S1 = PQ 直通层（主路径）；
-//   S3 = HDR→SDR（宿主 mode 1 映射兜底：S2ARM_HDR=on ∧ can 不行 / s1_ready 未过时强制，净空塌缩兜底）
+//   S3 = HDR→SDR（宿主 mode 1 映射兜底：S2A_HDR=on ∧ can 不行 / s1_ready 未过时强制，净空塌缩兜底）
 enum { HDR_S0 = 0, HDR_S1, HDR_S3 };
-// S2ARM_HDR 三态（§2.5）：off 缺省——字节级回现状（不变量：off ⇒ choose_mode 恒 HDR_S0 ∧ vi 恒 on=0，两处同时回退）；
+// S2A_HDR 三态（§2.5；PR4 起开关名按项目惯例 S2A_ 前缀——维护者 PR #1640 意见，覆盖 v3 文档口径的 S2ARM_HDR）：
+//   off 缺省——字节级回现状（不变量：off ⇒ choose_mode 恒 HDR_S0 ∧ vi 恒 on=0，两处同时回退）；
 //   auto 按快照自动；on 强制 HDR 管线（游戏 HDR 分支 + 宿主按屏选 S1/S3——can 不行 / s1_ready 未过走 S3）
 enum { HDR_OFF = 0, HDR_AUTO, HDR_ON };
 
@@ -100,6 +101,22 @@ static inline void hdr_layer_tick_frame(hdr_snapshot *s, int sw, int frame_is_pq
     if (sw != HDR_OFF && s->can_settled && s->s1_ready) { s->sdr_run = 0; return; }   // 还要 PQ：非 PQ 帧也不排空
     if (frame_is_pq) { s->sdr_run = 0; return; }   // 排空途中又有 PQ 窗口（游戏未降）：清零重等
     if (++s->sdr_run >= HDR_SDR_DRAIN_FRAMES) { s->layer_pq = 0; s->sdr_run = 0; }   // 连续两帧非 PQ：排空切回 SDR
+}
+
+// ---------- PR4：层配置解析（§2.3 S0/S1 行 + 注意事项①）----------
+//   出图层两个物理配置，宿主两平台（host_adapt.m iOS 挂层 / Mac 前端窗口层被直连取用）共用这一份——策略单源（§2.2 接缝）：
+//   S0 = 8 位 SDR（BGRA8Unorm）+ 显式 sRGB tag、无 EDR；S1 = 10 位 PQ（RGB10A2Unorm）+ ITU-R BT.2100 PQ 标签 + wantsExtendedDynamicRangeContent；
+//   CAEDRMetadata 两态都不挂（默认关——PR8+ 经 S2A_HDR_META 实验；「不挂」由 metadata 恒 0 表达，平台侧照它不写 CAEDRMetadata）。
+//   注意事项①：从 PQ 层切回的层保留 PQ 色彩空间——S0 的显式 sRGB tag 在创建点与切回点都要设（平台侧两处调 hdr_layer_config 同一份配置）；
+//   色彩标签种类由平台映射到 kCGColorSpaceSRGB / kCGColorSpaceITUR_2100_PQ（纯 C 不引平台头，同本头口径）。
+//   层持不持 PQ（快照 layer_pq）是唯一输入：off / can 不行 / 排空完成都落 S0 配置（off 不变量的层侧由 hdr_layer_tick_* 保证——off 不进层、喂入排空）。
+enum { HDR_LPF_SDR8 = 0, HDR_LPF_PQ10 };   // 像素格式种类：8 位 SDR 直通（BGRA8Unorm）/ 10 位 PQ 直通层（RGB10A2Unorm）
+enum { HDR_LCS_SRGB = 0, HDR_LCS_PQ };     // 色彩空间标签：显式 sRGB（S0）/ BT.2100 PQ（S1）
+typedef struct { int pf; int color; int wants_edr; int metadata; } hdr_layer_cfg;
+static inline hdr_layer_cfg hdr_layer_config(int layer_pq) {
+    hdr_layer_cfg c = { HDR_LPF_SDR8, HDR_LCS_SRGB, 0, 0 };   // S0（层不持 PQ 的唯一配置）
+    if (layer_pq) { c.pf = HDR_LPF_PQ10; c.color = HDR_LCS_PQ; c.wants_edr = 1; }   // S1（层已持 PQ——hdr_layer_tick_can 进层 / 开机预挂后）
+    return c;
 }
 
 // 判定次序（§2.3，纯函数；合成快照 + 合成时钟全分支单测，t_nvn2 V4 段）：
@@ -241,8 +258,9 @@ static inline int hdr_present_fill(float p[8], int src_pf, int dst_pt, int vi_an
 //   缺省全 0 = 「无 HDR」：不发布（单测 / 安卓 / 无头局）——现状行为分毫不差
 void nvn2_hdr_snapshot_publish(const hdr_snapshot *s);   // 平台侧（host_adapt.m 挂层块 / front_mac.m screen_edr_note）发布环境读数；只刷 potential_edr / current_headroom / s1_ready / paper_white，层簿记不回卷；空指针忽略
 void nvn2_hdr_snapshot_probe(hdr_snapshot *out);         // 读回整份（含层簿记；出图 / 门控 / 单测只读）；空指针忽略
-int  nvn2_hdr_switch(void);                              // S2ARM_HDR 三态解析：不设 / off / 看不懂 = off 缺省（缺省关，字节级回现状；看不懂打一次红行）
+int  nvn2_hdr_switch(void);                              // S2A_HDR 三态解析：不设 / off / 看不懂 = off 缺省（缺省关，字节级回现状；看不懂打一次红行）
 void nvn2_hdr_tick(int sw, int raw_can, unsigned long long now_ms);      // 层 tick——can 滞回 + 进层，对存储快照（事件档：250ms timer / 换屏通知，PR4 接线）
 void nvn2_hdr_tick_frame(int sw, int frame_is_pq);                       // 层 tick——排空喂入，对存储快照（每帧，PR4 接线）
+void nvn2_hdr_preattach(int raw_can, unsigned long long now_ms);         // PR4 开机预挂的存储侧：识别 Switch 2 游戏即进层——不滞回（开机无翻屏史），赶在首查询前（§4 PR4 ③）；SDR 屏 / off / 已在层内各自让位
 hdr_decision nvn2_hdr_answer(int src_hdr, unsigned long long now_ms);    // 同源答案入口：三态开关 + 已发布快照 + 存储的 peak 状态进 choose_mode——vi 门控 / 出图都从这读，不各自判
 int nvn2_hdr_present(float p[8], int src_pf, int dst_pt);   // PR3b 出图热路径读已算好的结果：返回六态模式（HDR_PV_*）并填 UV 常量缓冲 p[0..7]（hdr_present_fill 喂存储态：vi 答过 latch + 已告知 peak + PR1 声明的范围 hi + 快照净空）

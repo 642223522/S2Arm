@@ -116,6 +116,16 @@ def shader_hint(c, gid, ios_count=None):
     return ios_count is None and got["mac"] > 0 and built_older(c, _mac_built(c, gid))
 
 
+# 直连库内容代数（同 sgrade_bf.BF_GEN 的做法）：库里多出旧包没有、设备又要用的内容时 +1；出包时记进 game.json ios.libGen / Mac 运行版本 manifest.json libGen。
+#   1 = 库带客体输入（库容器种类 56）：设备上现做补齐 / 采样模拟 / 任务阶段变体从包里取（不再拷源快照）；旧包没有，游戏回收控制段后这些变体做不了（那一对绘制跳过、不崩），
+#   重出这一款就补齐，所以旧代数的款在「建议更新」里列出（原因 libGen，前端用着色器那条文案）
+LIB_GEN = 1
+
+
+def lib_stale(gen):
+    return int(gen or 0) < LIB_GEN
+
+
 def update_hints(c):
     """0.6.0 通用壳（开关后面）：启动器新版本打开时的快速比对（《文件与程序管理体系》⑦ ③，11-17 维护者定）。每款只读程序兼容记录
     （game.json 的 ios，没有读专用文件夹那份，layout.program_info，几 KB），比对改写器指纹 / 宿主约定号 / 着色器链与本版启动器的值；
@@ -132,6 +142,9 @@ def update_hints(c):
         why = _game_hint(c, g["id"], rid, want)
         if shader_hint(c, g["id"]):
             why.append("shaderMiss")
+        mac = layout.image_mac(c, g["id"], create=False) / "manifest.json"
+        if "libGen" not in why and mac.is_file() and lib_stale(read(mac, {}).get("libGen")):
+            why.append("libGen")   # Mac 运行版本的库是旧代数（iPhone 那份在 _game_hint 判）
         if why:
             games.append(dict(gameId=g["id"].upper(), reasons=why))
     return dict(games=games)
@@ -152,6 +165,8 @@ def _game_hint(c, gid, rid, want):
         why.append("hostAbi")
     if want and ios.get("dmshChain", LEGACY_CHAIN) != want["dmshChain"]:
         why.append("shader")
+    if lib_stale(ios.get("libGen")):
+        why.append("libGen")
     return why
 
 
