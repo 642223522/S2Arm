@@ -146,7 +146,7 @@ def scan(index_dirs, exefs, log=None):
     """→ [{module, cat, name, writes, license, path, base}]：程序号（前 13 位，含更新 / 追加内容的号）与模块构建号都对上的补丁段（只收开着的段、没有看不懂的行）。
     只比构建号会串款：sdk 等公共模块各游戏同一份二进制、构建号相同（10-27 暗黑3 的 sdk 匹配上古惑狼 / 奥日的帧率补丁）"""
     pid = program_id(os.path.join(exefs, 'main.npdm'))[:13]
-    mods = {f: module_bid(os.path.join(exefs, f)) for f in sorted(os.listdir(exefs)) if f not in ('rtld',) and not f.endswith('.npdm') and os.path.isfile(os.path.join(exefs, f))}
+    mods = {f: module_bid(os.path.join(exefs, f)) for f in sorted(os.listdir(exefs)) if f not in ('rtld',) and not f.endswith('.npdm') and not f.startswith('._') and os.path.isfile(os.path.join(exefs, f))}
     foreign = []   # 版本对不上的宽屏补丁段（跨版本移植的原料，见函数尾）
     out, skipped, taken = [], {}, {}   # taken：跨目录按编号去重（第二轮合集原样含第一轮文件，两轮同时在盘上时同一份补丁只收一次，否则写入翻倍）；编号 → 选份依据（重复出现时补全判不了的项）
     for base in index_dirs:
@@ -972,7 +972,10 @@ def module_layout(path):
     text_end, ro, data = segs[0][0] + len(segs[0][1]), segs[1][0], segs[2][0]
     ln = data + len(segs[2][1]) + struct.unpack_from('<I', hdr, 0x3c)[0]
     bias = (0x4000 - (data & 0x3fff)) & 0x3fff if data < ((text_end + 0x3fff) & ~0x3fff) else 0
-    return text_end, ro, ln, min((ln + 0x3fff) & ~0x3fff, ((ln + bias + 0x3fff) & ~0x3fff) - bias)
+    return text_end, ro, ln, min((ln + KEY_TAIL_MIN + 0x3fff) & ~0x3fff, ((ln + bias + KEY_TAIL_MIN + 0x3fff) & ~0x3fff) - bias)
+
+
+KEY_TAIL_MIN = 0x1000   # 映像结尾到键页至少留的可写空余（同 runtime/rewriter/rewriter.c KEY_TAIL_MIN；#1628 结尾压 16 KB 边界时原先为 0）
 
 
 MIRROR_FPSL = 0x400   # 映像结尾可写空余的分区：前 0x400 字节给金手指空洞开关表，之后给 FPSLocker 变量（各管各的，不重叠）

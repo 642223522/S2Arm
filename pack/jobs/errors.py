@@ -9,6 +9,7 @@ import stat
 
 
 RECOVERY = {
+    "sgrade_upgrading": "等这款的 S 级优化升级做完（游戏上有进度），再点开始游戏；别的游戏照常能玩。",   # 11-17 S 级优化改手动单款升级（sgrade.upgrade_game），升级中只挡这一款
     "ios_install_dir_unwritable": "先试这两步：①在 iPhone 上打开一次 S2Arm，等游戏库界面出来；②回电脑对这款游戏再点一次「装到 iPhone」，会接着已传的部分继续，不用从头来。还是写不进，就要删掉 iPhone 上的 S2Arm App 再重装：先在游戏菜单「存档管理」里导出存档，存到 S2Arm 文件夹以外（比如 iCloud 云盘）；再在 iPhone 桌面长按 S2Arm，删除 App；然后在电脑上的 S2Arm 里对这款游戏再点一次「装到 iPhone」；装好后在「存档管理」里导回存档。电脑上的游戏和 S2Arm 都不用删。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
     "ios_install_no_space": "清出空间后点「重试」。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
     "ios_install_img_format": "更新 iPhone 上的 S2Arm，再打开这款游戏。",   # iOS 端装机 / 导入失败：手机上的 S2Arm 报码、按码显示（11-11 维护者「补上说人话的原因」）
@@ -34,7 +35,7 @@ RECOVERY = {
     "win_disk_budget_unknown": "先在游戏库选择游戏并生成出包计划，再点「重新检查」。",
     "win_check_failed": "本次环境探测失败；按诊断检查工具安装和权限，处理后点「重新检查」。",
     "impactor_missing": "S2Arm Windows 版自带的签名工具 Impactor 不在了（安装包不完整）：重新下载并完整解压 S2Arm Windows 版，用里面的 S2Arm.exe 打开后再试。",   # 11-07 起发版随包带原版 Impactor（维护者：不让玩家跳转下载）；缺 = 安装包不完整。源码树的说法见 DEVELOPMENT_RECOVERY；引导 pack/jobs/impactor_guide.json
-    "impactor_version_untested": "换成实测过的 Impactor 2.7.2（官方发布页 https://github.com/claration/impactor/releases/tag/v2.7.2）；别的版本可能丢掉「提高内存上限」权限，大游戏会闪退。",   # Windows 签装交给玩家自装的 Impactor（11-04 维护者）；引导 pack/jobs/impactor_guide.json
+    "impactor_version_untested": "换成实测过的 Impactor 2.7.3（官方发布页 https://github.com/claration/impactor/releases/tag/v2.7.3）；别的版本可能丢掉「提高内存上限」权限，大游戏会闪退。",   # Windows 签装交给玩家自装的 Impactor（11-04 维护者）；引导 pack/jobs/impactor_guide.json
     "apple_id_wrong": "Apple ID 或密码不对：把输入法切到英文后重新登录（全角字符会被判错）；密码只发给 Apple。",   # Windows 签装交给玩家自装的 Impactor（11-04 维护者）；引导 pack/jobs/impactor_guide.json
     "two_factor_wrong": "两步验证码不对或已过期：重新获取验证码后输入；短信收码目前常失败，用受信任设备上弹出的验证码。",   # Windows 签装交给玩家自装的 Impactor（11-04 维护者）；引导 pack/jobs/impactor_guide.json
     "login_identity_rejected": "密码已通过，但苹果拒绝了这台电脑的登录身份：在 Impactor「设置」里点「Reset Anisette Data」后重新添加账号；仍不行就换一台电脑或稍后再试。",   # Windows 签装交给玩家自装的 Impactor（11-04 维护者）；引导 pack/jobs/impactor_guide.json
@@ -104,6 +105,7 @@ RECOVERY = {
     "device_not_connected": "让你选的那台 iPhone / iPad 连上这台电脑：插上数据线，或解锁后和电脑连同一个 Wi-Fi；第一次连要在设备上点「信任」，并在「设置 → 隐私与安全性 → 开发者模式」打开开发者模式，然后再试。",
     "device_required": "在装机页选好要装到哪台 iPhone / iPad，再点装机。",
     "signing_failed": "查看本任务日志里签名那一步的报错；确认 Xcode 能用你的账号给这台 iPhone 签名，或改用 AltStore 安装。",
+    "device_tunnel_unavailable": "电脑连不上这台 iPhone 的开发者通道（手机通过 Wi-Fi 连着时最常见，不是没解锁）：用数据线把手机直接插到这台电脑（别经过扩展坞或集线器），解锁停在主屏幕，再点一次；还不行就重启一次手机，插上后在手机上重新点「信任」。",
     "device_locked": "解锁这台 iPhone（保持亮屏、停在主屏幕），再点一次「装到 iPhone」；装机过程中别锁屏。",
     "shell_install_required": "在 S2Arm 里先点「安装 S2Arm」把 App 装到这台 iPhone，再对这款点「推到 iPhone」。",   # 通用壳「推到 iPhone」：手机上还没装壳（install.push_game）
     "shell_update_required": "在 S2Arm 里先点「更新 S2Arm」，把手机上的 App 换成这一版，再对这款点「推到 iPhone」。",   # 通用壳「推到 iPhone」：手机上的壳不是本版
@@ -113,9 +115,9 @@ RECOVERY = {
     "app_id_taken": "苹果拒绝注册这个包名（Apple 错误 9401：同一个包名在苹果那边已被占用）。请在 Impactor（Mac 上是 Xcode）里确认登录的是当初装 S2Arm 用的那个 Apple ID 再装；付费开发者账号也可以到 developer.apple.com 的「Certificates, Identifiers & Profiles → Identifiers」删掉 io.s2arm.games 开头的旧包名后重试。还不行请导出诊断包反馈。",   # Apple 错误 9401；Windows 装机先用大小写两种包名各试一次（install_win.install_app），都被拒才报这个码
     "app_other_signer": "手机上已经有一个用别的签名装的 S2Arm（包名相同、签名不同），系统不让覆盖。二选一：继续用你原来的签名工具更新它；或者在 iPhone 上长按 S2Arm 删掉它（里面的存档会一起删，先在 S2Arm 里导出存档），再点「装到 iPhone」。",   # 玩家先自签装过同包名的 S2Arm（11-11 反馈）：installation_proxy MismatchedApplicationIdentifierEntitlement
     "bundle_id_switched": "这个包名之前被别的签名用过（多半是你自己签名装 S2Arm 时用了同一个包名），这次已自动换成新包名装好。手机上可能有两个 S2Arm：新装的这个里有这台电脑装的游戏；旧的那个不再需要的话可以删掉（先导出存档）。",   # 包名被占（9401）时 Mac 自动换 <包名>.s2 装好（install.MacPhone.install），黄字说明
-    "signing_server_unreachable": "这台电脑连不上 Impactor 签名要用的登录辅助服务器（mac-ani.jkcoxson.com，Impactor 内置、改不了），已自动重试过一次。检查这台电脑的网络：浏览器能打开这个地址就再点一次「装到 iPhone」；打不开就换个 DNS（如 223.5.5.5 或 1.1.1.1）或开 / 关代理后再装。手机、已装的 App 和存档都不受影响。",   # #3fc02b：plumesign 取 anisette（mac-ani.jkcoxson.com，Impactor v2.7.2 omnisette 写死）时 DNS / 连接失败（impactor.explain）
+    "signing_server_unreachable": "这台电脑连不上 Impactor 签名要用的登录辅助服务器（mac-ani.jkcoxson.com，Impactor 内置、改不了），已自动重试过一次。检查这台电脑的网络：浏览器能打开这个地址就再点一次「装到 iPhone」；打不开就换个 DNS（如 223.5.5.5 或 1.1.1.1）或开 / 关代理后再装。手机、已装的 App 和存档都不受影响。",   # #3fc02b：plumesign 取 anisette（mac-ani.jkcoxson.com，Impactor v2.7.3 omnisette 写死）时 DNS / 连接失败（impactor.explain）
     "apple_session_expired": "Apple ID 登录已过期，请重新登录后再装：在装机页点「打开 Impactor」→「设置」，选中你的 Apple ID 点「移除账号」，再点「添加账号」用同一个 Apple ID 重新登录（邮箱、密码、手机上的验证码，输入前切到英文输入法），然后回来再点一次「装到 iPhone」。密码只在 Impactor 里输，S2Arm 不经手。",   # Windows plumesign 恢复保存的会话时 Apple 1100（impactor.explain）；Mac 同类原文归 xcode_account_missing（去 Xcode 重新登录）
-    "apple_not_signed_in": "Impactor 里还没登录 Apple ID：在装机页点「打开 Impactor」→「设置」→「添加账号」，用你的 Apple ID 登录（邮箱、密码、手机上的验证码，输入前切到英文输入法）；已经存了几个账号的，选中要用的那个（或移除后重新添加）。然后回来再点一次「装到 iPhone」。密码只在 Impactor 里输，S2Arm 不经手。",   # Impactor 里没有选中的 Apple ID（从没登录 / 存了几个没选中，#edc5f5 从登录过期拆出）
+    "apple_not_signed_in": "还没用 Apple ID 登录：在 S2Arm 的「用 Apple ID 签名」里填邮箱和密码登录（你的苹果设备上会弹出验证码），再点一次「装到 iPhone」。密码只用于这次向 Apple 登录，S2Arm 不保存。",   # Mac 通用壳：随包 plumesign 自己的登录框（Windows 的 Impactor 说法在 WINDOWS_RECOVERY）
     "apple_server_unreachable": "这台电脑连不上苹果的服务器（Impactor 登录和签名都要连），不是 Apple ID 或密码的问题。检查这台电脑的网络：浏览器能打开 appleid.apple.com 就再点一次「装到 iPhone」；打不开就换个 DNS（如 223.5.5.5 或 1.1.1.1）或开 / 关代理后再装。手机、已装的 App 和存档都没动。",   # 连不上 *.apple.com（#edc5f5 拆分：网络问题，不让玩家去重登 Apple ID）
     "crash_restored": "照常玩就行；如果又崩溃，会再自动关掉，也可以在启动设置里自己关。",
     "aoc_missing": "本体已出好，照常安装即可；没解出的追加内容不在包里，游戏里用不到那部分内容。请导出诊断反馈，解码支持后重新打包即可带上。",
@@ -186,11 +188,14 @@ RECOVERY = {
     'save_version': '备份与当前游戏版本或 DLC 不一致；使用匹配版本的游戏和备份后重试。',
     'save_wrong_game': '这份备份属于另一款游戏；回到对应游戏恢复，或选择当前游戏的备份。',
     'save_wrong_user': '这份备份属于另一用户；选择对应用户或该用户自己的备份后重试。',
+    "app_control_blocked": "在「Windows 安全中心 → 保护历史记录」看是谁拦的。杀毒软件拦的：把 S2Arm 安装文件夹加进信任再重试；"
+                           "「智能应用控制」拦的：它不能单独放行，只能在「应用和浏览器控制 → 智能应用控制」里关掉（关掉后要重装 Windows 才能再打开）；"
+                           "公司电脑请让管理员放行。",
 }
 
 
 DEVELOPMENT_RECOVERY = {
-    "impactor_missing": "先装 Impactor：在 S2Arm 里点「打开官方页面」打开官方发布页（https://github.com/claration/impactor/releases/tag/v2.7.2），下载免安装版放到桌面，再点「重新检查」。",   # 源码树 / 命令行：没有随包件，照旧让开发者自己放 Impactor（11-04 引导）
+    "impactor_missing": "先装 Impactor：在 S2Arm 里点「打开官方页面」打开官方发布页（https://github.com/claration/impactor/releases/tag/v2.7.3），下载免安装版放到桌面，再点「重新检查」。",   # 源码树 / 命令行：没有随包件，照旧让开发者自己放 Impactor（11-04 引导）
     "dotnet_unavailable": "安装 .NET 10 SDK，然后点「重新检查」。",
     "reader_unavailable": "在设置中重新准备引擎工具，然后重新导入游戏。",
     "engine_incomplete": "重新选择完整的 S2Arm 源码目录，然后点「重新检查」。",
@@ -202,6 +207,7 @@ DEVELOPMENT_RECOVERY = {
 #   Windows 上「拒绝访问」多半是文件 / 文件夹正被别的程序拿着（资源管理器开着、自签工具还拿着上次的 S2Arm.ipa、杀毒软件在扫），
 #   其次是「受控文件夹访问」（Windows 安全中心 → 病毒和威胁防护 → 勒索软件防护）拦了往文档 / 桌面写
 WINDOWS_RECOVERY = {
+    "apple_not_signed_in": "Impactor 里还没登录 Apple ID：在装机页点「打开 Impactor」→「设置」→「添加账号」，用你的 Apple ID 登录（邮箱、密码、手机上的验证码，输入前切到英文输入法）；已经存了几个账号的，选中要用的那个（或移除后重新添加）。然后回来再点一次「装到 iPhone」。密码只在 Impactor 里输，S2Arm 不经手。",   # Impactor 里没有选中的 Apple ID（从没登录 / 存了几个没选中，#edc5f5 从登录过期拆出）
     "permission_denied": "关掉打开着这个文件夹的资源管理器窗口和自签工具（如 Sideloadly），稍等杀毒软件扫完再重试；"
                          "若开了「受控文件夹访问」（Windows 安全中心 → 病毒和威胁防护 → 勒索软件防护），把 S2Arm 加进「允许的应用」。",
     "input_permission": "关掉正在使用这个游戏文件的程序再重试；若开了「受控文件夹访问」（Windows 安全中心 → 病毒和威胁防护 → 勒索软件防护），"
@@ -265,6 +271,9 @@ def _is_directory(path):
         return None
 
 
+APP_CONTROL_BLOCKED = (4551, 1260, 225, 226)   # 同 winproc.APP_CONTROL_BLOCKED：应用控制策略 / 组策略 / 杀毒软件拦下要起的程序（#0745b9）
+
+
 def explain(error, sources=(), library=None):
     """OSError 按 errno 归码，不猜原文；「原件不见了」「去系统设置授权」只给确知是玩家这边的路径（启动器剃刀 H8，11-11）：
     sources = 这次作业的原件（导入的路径、这款登记的原件），library = 游戏库根。
@@ -277,7 +286,12 @@ def explain(error, sources=(), library=None):
         if error.errno in (errno.ENOSPC, errno.EDQUOT):
             return Failure("任务所在磁盘空间不足。", code="disk_full")
         paths = [p for p in (error.filename, error.filename2) if p]
-        internal = f"{type(error).__name__} errno {error.errno}：{error.strerror or error}" + ("；路径 " + " → ".join(map(str, paths)) if paths else "")  # 非玩家句
+        winerror = getattr(error, "winerror", None)
+        internal = f"{type(error).__name__} errno {error.errno}" + (f" WinError {winerror}" if winerror else "") + f"：{error.strerror or error}" + ("；路径 " + " → ".join(map(str, paths)) if paths else "")  # 非玩家句
+        if winerror in APP_CONTROL_BLOCKED:   # 先于 EACCES：4551 / 1260 也会被映射成拒绝访问，原因不同、办法不同
+            tool = __import__("ntpath").basename(str(error.filename)) if error.filename else "S2Arm 自带的工具"   # ntpath：\\ 与 / 都认
+            who = {4551: "Windows 的「智能应用控制」", 1260: "这台电脑的组策略（公司 / 学校管理的电脑常见）"}.get(winerror, "杀毒软件")
+            return Failure(f"{who}拦下了 S2Arm 自带的工具「{tool}」，没让它运行。", code="app_control_blocked", internal=internal)
         if error.errno in (errno.EACCES, errno.EPERM, errno.EROFS):
             if any(_under(p, [*sources, *([library] if library else [])]) for p in paths):
                 return Failure("文件或目录不可访问或不可写。", code="permission_denied", internal=internal)
@@ -479,8 +493,13 @@ def _tool_present(name):
     return shutil.which(name) is not None
 
 
-def _confirm(code, line, log):
-    """候选码的事实核对 → (是否采信, 依据)。只核环境类的码，其余直接采信"""
+def _confirm(code, line, log, final=False):
+    """候选码的事实核对 → (是否采信, 依据)。只核环境类的码，其余直接采信。
+    final：命中行就是这段证据的最后一行（让这一步退出的那个异常，如回溯末行 OSError: [WinError 112]）——盘满就是真因，事后剩余空间不作数：
+      失败后临时文件已删、空间又回来了（诊断 #9ac7f7：写的时候满，事后量还剩 17 GB，原先不采信、落到「没归类」）"""
+    if code == "disk_full" and final:
+        free = _free_bytes(str(Path(log).parent)) if log else None
+        return True, "这一步写满了盘（失败后临时文件已删" + ("，现在剩 %.1f GB" % (free / (1 << 30)) if free is not None else "") + "）"  # 非玩家句
     if code == "disk_full":
         paths = [m.group(1) for m in _LOG_PATH_ANY.finditer(line)] + ([str(Path(log).parent)] if log else [])
         free = [(p, f) for p, f in ((p, _free_bytes(p)) for p in paths) if f is not None]
@@ -508,7 +527,8 @@ def log_cause(chunks, log=None):
                 start = text.rfind("\n", 0, m.start()) + 1
                 end = text.find("\n", m.end())
                 line = text[start:end if end >= 0 else None].strip()[:300]
-                ok, why = _confirm(code, line, log)
+                final = not text[end:].strip() if end >= 0 else True   # 命中行后面没有别的输出 = 让这一步退出的那个错误
+                ok, why = _confirm(code, line, log, final)
                 if ok:
                     return code, label, line, why
                 rejected.append("候选 %s 未采信：%s 里「%s」，%s" % (code, label, line, why))  # 非玩家句

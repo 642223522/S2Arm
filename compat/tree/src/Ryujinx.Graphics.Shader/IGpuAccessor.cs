@@ -40,13 +40,6 @@ namespace Ryujinx.Graphics.Shader
         bool QueryBindlessPhiSeeThrough() => false;
 
         /// <summary>
-        /// S2A（直连）：追不到槽的句柄回退数组（BindlessElimination）里，贴图缓冲与图像的数组长度：直连宿主按槽绑它们（nvn_mtl.m TEXD，tex_dyn_slots），
-        /// 采样贴图照池长（宿主按句柄的编号建池表，nvn_mtl.m pool_gpu）。上游参考实现（MIT）BindlessElimination NvnSlotArrayLength 同此分法。
-        /// 0 = 与采样贴图一样按池长（上游 Ryujinx 原样）：只有直连翻译器答 32，通用模式缺省 0，输出不变。
-        /// </summary>
-        int QueryBindlessSlotArrayLength() => 0;
-
-        /// <summary>
         /// S2A：特化状态运行时化（点大小、DepthMode、alpha 测试、绘制参数来源、贴图坐标归一化改读支持缓冲 s2a_flags / s2a_point）。缺省 = 进程开关
         /// TranslatorContext.S2ARuntimeState（通用模式，S2A_RUNTIME_STATE=0 关）；直连翻译器答假：直连宿主不填这几个字段，编成运行时判断只会多读多分支。
         /// 按次翻译问，不用进程静态量：玩家包里直连兜底现编（S2A.Dsh）与通用模式在同一进程
@@ -613,6 +606,12 @@ namespace Ryujinx.Graphics.Shader
         TextureFormat QueryTextureFormat(int handle, int cbufSlot = -1)
         {
             return TextureFormat.R8G8B8A8Unorm;
+        }
+
+        /// <summary>S2A: bound sampled-view format for numeric type selection; Unknown preserves the upstream float declaration.</summary>
+        TextureFormat QueryS2ASampledTextureFormat(int handle, int cbufSlot = -1)
+        {
+            return TextureFormat.Unknown;
         }
 
         /// <summary>

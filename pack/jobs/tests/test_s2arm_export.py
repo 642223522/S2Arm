@@ -5,6 +5,7 @@
 import hashlib
 import io
 import json
+import os
 import sys
 import tarfile
 import unittest
@@ -77,7 +78,26 @@ class S2armExport(unittest.TestCase):
         self.assertEqual(data[f"program/{program_pack.image_name(self.A)}"], DYLIB)
         self.assertNotIn("pack/game.img", names, "资源本体不进 .s2arm")
         self.assertEqual(json.loads(data["program/catalogue.json"])["team"], None, "程序未签名，留给手机签")
-        self.assertEqual(r["resourcePath"], str(self.pack / "game.img"), "资源本体给原位置，不拷")
+        link = out.with_suffix(".img")
+        self.assertEqual((r["resourcePath"], r["resourceLinked"]), (str(link), True), "资源本体硬链接进游戏包文件夹，和 .s2arm 放一起")
+        self.assertTrue(os.path.samefile(link, self.pack / "game.img"), "同一个文件（不占新空间）")
+        self.assertEqual(os.stat(self.pack / "game.img").st_nlink, 2)
+
+    def test_resource_link_refresh_and_fallback(self):
+        # 同名的是上次链的旧 game.img（后来换过）→ 换成现在这份；建不了硬链接（exFAT：os.link 报 EPERM / ENOTSUP）→ 给原位置、文件夹里不留东西
+        self.fixture()
+        link = Path(self.c.library) / "S2Arm 游戏包" / "测试游戏.img"
+        link.parent.mkdir(parents=True); link.write_bytes(b"old")
+        r = self.export()
+        self.assertTrue(os.path.samefile(link, self.pack / "game.img")); self.assertTrue(r["resourceLinked"])
+        link.unlink()
+        def no_link(a, b):
+            raise OSError(1, "Operation not permitted")
+        with patch.object(install.os, "link", no_link):
+            r = self.export()
+        self.assertEqual((r["resourcePath"], r["resourceLinked"]), (str(self.pack / "game.img"), False))
+        self.assertFalse(link.exists())
+        self.assertEqual([p.name for p in link.parent.iterdir() if p.name.endswith(".link")], [], "临时链接名不留")
 
     def signed_export(self, choice="appleId", once=None):
         # 玩家选了用 Apple ID 签（或这次换成…）：签名器替身在 dylib 尾部加一段（真签名同样只改头尾），期望按加的字节手算

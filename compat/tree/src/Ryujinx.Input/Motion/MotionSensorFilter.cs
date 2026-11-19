@@ -8,11 +8,6 @@ namespace Ryujinx.Input.Motion
     class MotionSensorFilter
     {
         /// <summary>
-        /// Sample rate coefficient.
-        /// </summary>
-        public const float SampleRateCoefficient = 0.45f;
-
-        /// <summary>
         /// Gets or sets the sample period.
         /// </summary>
         public float SamplePeriod { get; set; }
@@ -104,6 +99,7 @@ namespace Ryujinx.Input.Motion
             float q3 = Quaternion.Y;
             float q4 = Quaternion.Z;
             float q1 = Quaternion.W;
+            float oldQ1 = q1;
 
             // Estimated direction of gravity.
             Vector3 gravity = new()
@@ -135,11 +131,12 @@ namespace Ryujinx.Input.Motion
 
             // Integrate rate of change of quaternion.
             Vector3 delta = new(q2, q3, q4);
+            float halfSamplePeriod = 0.5f * SamplePeriod;
 
-            q1 += (-q2 * gyro.X - q3 * gyro.Y - q4 * gyro.Z) * (SampleRateCoefficient * SamplePeriod);
-            q2 += (q1 * gyro.X + delta.Y * gyro.Z - delta.Z * gyro.Y) * (SampleRateCoefficient * SamplePeriod);
-            q3 += (q1 * gyro.Y - delta.X * gyro.Z + delta.Z * gyro.X) * (SampleRateCoefficient * SamplePeriod);
-            q4 += (q1 * gyro.Z + delta.X * gyro.Y - delta.Y * gyro.X) * (SampleRateCoefficient * SamplePeriod);
+            q1 += (-q2 * gyro.X - q3 * gyro.Y - q4 * gyro.Z) * halfSamplePeriod;
+            q2 += (oldQ1 * gyro.X + delta.Y * gyro.Z - delta.Z * gyro.Y) * halfSamplePeriod;
+            q3 += (oldQ1 * gyro.Y - delta.X * gyro.Z + delta.Z * gyro.X) * halfSamplePeriod;
+            q4 += (oldQ1 * gyro.Z + delta.X * gyro.Y - delta.Y * gyro.X) * halfSamplePeriod;
 
             // Normalise quaternion.
             Quaternion quaternion = new(q2, q3, q4, q1);

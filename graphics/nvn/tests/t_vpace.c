@@ -5,6 +5,9 @@
 //   起播突发（100 ms 内 20 帧）超过 32 不进入，之后按 30 帧平稳，突发移出 1 秒窗口后进入；
 //   放完：最后一帧后 0.5 秒内仍在、超过 0.5 秒退出；在放时片源跳到 60 帧：1 秒内超过 40 帧退出。
 //   封顶（nvn_vpace_cap）另要每帧绘制数 ≤ 200：12 / 200 封顶，201 / 4000 / 未量出（−1）不封顶。
+//   带片源时间戳（#1571）：时间戳间隔 16.67 ms（60 帧片源）、交出却按 33.33 ms（游戏按封顶后的出图节拍取帧）：中位数 < 25 ms，从不进入（不带时间戳同样到达第 29 帧就进入）；
+//   时间戳 33.33 ms 照旧第 29 帧进入；已在放时改来带 16.67 ms 时间戳的帧：第 k 个带戳帧时有效间隔 k−1 个，≥ 4 个即判快 ⇒ 第 5 帧退出；
+//   30 帧片源中途时间戳回到 0（循环播放）：倒退那一个间隔不算，其余都是 33.33 ms，保持在放。
 #include "../gfx/nvn/nvn_vpace.h"
 #include <stdio.h>
 #include <string.h>
@@ -19,6 +22,18 @@ static int feed(nvn_vpace *v, uint64_t t0, uint64_t period_ns, int frames, uint6
     for (int k = 0; k < frames; k++) {
         uint64_t t = t0 + (uint64_t)k * period_ns;
         nvn_vpace_frame(v, t);
+        if (nvn_vpace_on(v, t) && !first) first = k + 1;
+        if (tend) *tend = t;
+    }
+    return first;
+}
+
+// 同 feed，每帧带片源时间戳 pts0 + k × pts_ns
+static int feed_pts(nvn_vpace *v, uint64_t t0, uint64_t period_ns, int64_t pts0, int64_t pts_ns, int frames, uint64_t *tend) {
+    int first = 0;
+    for (int k = 0; k < frames; k++) {
+        uint64_t t = t0 + (uint64_t)k * period_ns;
+        nvn_vpace_frame_pts(v, t, pts0 + (int64_t)k * pts_ns);
         if (nvn_vpace_on(v, t) && !first) first = k + 1;
         if (tend) *tend = t;
     }
@@ -85,6 +100,27 @@ int main(void) {
     CHECK(!nvn_vpace_cap(&v, end, 201) && !nvn_vpace_cap(&v, end, 4000), "在放 + 每帧 201 / 4000 个绘制（视频是画面里一块）：不封顶");
     CHECK(!nvn_vpace_cap(&v, end, -1), "在放 + 绘制数还没量出：不封顶");
     CHECK(!nvn_vpace_cap(&v, end + 501 * MS, 12), "放完 0.501 秒 + 绘制少：不封顶");
+
+    // 带片源时间戳（#1571）
+    memset(&v, 0, sizeof v);
+    CHECK(feed_pts(&v, 1000 * MS, 33333333ull, 0, 16666667, 90, &end) == 0, "60 帧片源按 30/秒交出：时间戳判快，从不进入");
+    memset(&v, 0, sizeof v);
+    CHECK(feed(&v, 1000 * MS, 33333333ull, 90, &end) == 29, "对照：同样 30/秒交出、不带时间戳：第 29 帧进入");
+    memset(&v, 0, sizeof v);
+    CHECK(feed_pts(&v, 1000 * MS, 33333333ull, 0, 33333333, 90, &end) == 29, "30 帧片源带时间戳：第 29 帧进入");
+    memset(&v, 0, sizeof v);
+    feed(&v, 1000 * MS, 33333333ull, 60, &end);
+    off = 0;
+    for (int k = 1; k <= 10 && !off; k++) {
+        uint64_t t = end + (uint64_t)k * 33333333ull;
+        nvn_vpace_frame_pts(&v, t, (int64_t)k * 16666667);
+        if (!nvn_vpace_on(&v, t)) off = k;
+    }
+    CHECK(off == 5, "在放时改来 60 帧时间戳的帧：第 5 帧退出（实得 %d）", off);
+    memset(&v, 0, sizeof v);
+    feed_pts(&v, 1000 * MS, 33333333ull, 0, 33333333, 60, &end);
+    feed_pts(&v, end + 33333333ull, 33333333ull, 0, 33333333, 10, &end);
+    CHECK(nvn_vpace_on(&v, end), "30 帧片源时间戳回到 0（循环）：保持在放");
 
     printf("t_vpace：%d 项，%d 项失败\n", g_n, g_bad);
     return g_bad != 0;

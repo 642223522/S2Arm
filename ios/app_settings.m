@@ -623,6 +623,7 @@ static UILabel *textLabel(UIFontTextStyle style) {
 @interface S2ASettingsNavigation : UINavigationController
 @end
 @implementation S2ASettingsNavigation
+S2A_VERTICAL_BAR_OFF
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations { return s2a_ios_play_orientations(); }
 - (BOOL)prefersStatusBarHidden { return YES; }
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }

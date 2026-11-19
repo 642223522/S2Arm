@@ -96,7 +96,9 @@ UIInterfaceOrientationMask s2a_ios_play_orientations(void) {
     if (atomic_load(&g_resizable)) return UIInterfaceOrientationMaskAll;
     NSUserDefaults *d=NSUserDefaults.standardUserDefaults;
     BOOL split=S2APlaySplitEnabled(S2APlayReadSplit(d),g_half);
-    return S2APlayPortrait(S2APlayReadOrientation(d),split) ? UIInterfaceOrientationMaskPortrait : UIInterfaceOrientationMaskLandscape;
+    // 竖屏含倒置（Duo 展开后摄像头朝下拿就是倒置竖屏，#1364 复发：可缩放窗口时全方向能转，一进分屏 / 尺寸类变了只剩正立竖屏就转不过去）；
+    //   不支持倒置的机型系统自己忽略这一位
+    return S2APlayPortrait(S2APlayReadOrientation(d),split) ? (UIInterfaceOrientationMaskPortrait|UIInterfaceOrientationMaskPortraitUpsideDown) : UIInterfaceOrientationMaskLandscape;
 }
 #endif
 // 玩家选的方向是竖屏吗（电视只有横屏，11-15 Apple TV 版）
@@ -104,7 +106,7 @@ static BOOL play_wants_portrait(void) {
 #if TARGET_OS_TV
     return NO;
 #else
-    return s2a_ios_play_orientations()==UIInterfaceOrientationMaskPortrait;
+    return (s2a_ios_play_orientations() & UIInterfaceOrientationMaskLandscape)==0;   // 只有竖向两位（含倒置）= 玩家选了竖屏；全方向（可缩放窗口）不算
 #endif
 }
 // 外接屏（ios/extdisplay.m）：画面出在外接屏上时比例按外接屏。这里给弱的缺省实现（没有外接屏 = 0）：
@@ -209,6 +211,7 @@ CGRect S2APlayDivision(UIView *view) {
     UITraitCollection *t=self.view.window.windowScene.traitCollection; return t.horizontalSizeClass==UIUserInterfaceSizeClassRegular && t.verticalSizeClass==UIUserInterfaceSizeClassRegular;
 #endif
 }
+S2A_VERTICAL_BAR_OFF
 #if !TARGET_OS_TV
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations { return self.resizable ? UIInterfaceOrientationMaskAll : s2a_ios_play_orientations(); }   // 自由窗口：全部方向、不申请
 #endif

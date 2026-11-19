@@ -45,7 +45,7 @@ extension S2ArmLauncherModel {
 
     func consoleStatus(now: Date = Date()) -> ConsoleStatus {
         guard let p = consolePhone else { return .introduce }
-        if !consoleBatch.isEmpty { return .updating(done: consoleBatchDone, total: consoleBatch.count) }
+        if consoleUpdating { let p = consoleProgress; return .updating(done: p.done, total: p.total) }
         if case .some(.none) = p.online { return .notConnected(lastSeen: p.lastSeen) }
         if !p.installed { return .notInstalled }
         if !p.shellCurrent { return .appOutdated }
@@ -76,33 +76,64 @@ extension S2ArmLauncherModel {
         consoleSeeded = suggested
     }
 
-    /// 「更新所选」：前台一款款推（就是 install 按顺序排进手机槽，装机作业本身已一次一款）；推哪台就是总控台这台
-    func updateSelected() {
-        guard consoleBatch.isEmpty, let device = consolePhone?.device else { return }
-        let order = games.filter { consoleSelection.contains($0.id.uppercased()) }
-        guard !order.isEmpty else { return }
-        consoleBatch = order.map { $0.id.uppercased() }
-        for game in order { install(game, device: device) }
+    /// 「更新所选」正在跑（作业 pushSelected 占着手机槽）
+    var consoleUpdating: Bool { phoneBusy && phoneSession?.kind == .pushSelected }
+    /// 这一轮推到第几款 / 共几款（作业每款 begin(i, n)）
+    var consoleProgress: (done: Int, total: Int) {
+        guard consoleUpdating, let p = phoneSession?.progress, let i = p.index, let n = p.count else { return (0, 0) }
+        return (max(i - 1, 0), n)
     }
 
-    /// 「停下」：停在当前这款（它推完照样算数；没推完的下次接着推），排着的不再推
-    func stopUpdateSelected() {
-        let batch = Set(consoleBatch)
-        phoneQueue.removeAll { batch.contains(($0.gameID ?? "").uppercased()) }
-        consoleBatch = consoleBatch.filter { id in phoneSession?.gameID?.uppercased() == id }
+    /// 「更新所选」：一单作业 pushSelected 按游戏库顺序推总控台这台（作业层一款失败接着推下一款，做不下去的才整轮停）
+    func updateSelected(resume: Bool = false) {
+        guard !consoleUpdating, let device = consolePhone?.device else { return }
+        let order = games.filter { consoleSelection.contains($0.id.uppercased()) }.map { $0.id.uppercased() }
+        guard resume || !order.isEmpty else { return }
+        guard !phoneBusy else { phoneQueue.append((nil, { [weak self] in self?.updateSelected(resume: resume) })); return }
+        consolePushing = nil
+        start(JobSession(kind: .pushSelected, gameID: nil, name: BackendText.launcherText("console.updateSelected", language: dynamicLanguage)
+            .replacingOccurrences(of: "{0}", with: "\(order.count)"))) { [weak self] sink in
+            let watch = EventSink { ev in
+                if let cur = ev.fields["current"] as? String { Task { @MainActor in self?.consolePushing = cur.uppercased() } }
+                sink.emit(ev)
+            }
+            defer { Task { @MainActor in self?.consolePushing = nil; self?.refreshPhoneOverview() } }
+            _ = try await self?.provider.pushSelected(gameIds: order, device: device, resume: resume, events: watch)
+            return nil
+        }
     }
 
-    /// 这一轮推完了几款：排着的和正在推的之外都算完
-    var consoleBatchDone: Int {
-        let queued = Set(phoneQueue.compactMap { $0.gameID?.uppercased() })
-        let running = phoneBusy ? phoneSession?.gameID?.uppercased() : nil
-        return consoleBatch.filter { !queued.contains($0) && $0 != running }.count
+    /// 「停下」：取消这一单（作业层推完的留着；没推完的那款下次续推）
+    func stopUpdateSelected() { if consoleUpdating { stopPhone() } }
+
+    // ---- 顶栏动态窗口（《0.6.0 极简流程》iPhone 总控台「五」）：正在做和 App 相关的作业时显示进度，做完闪 ✓，失败留橙色「!」 ----
+
+    /// 正在跑的手机作业：进度（拿不到为 nil）+ 一行小字；没有 = 普通图标
+    var dynamicJob: (fraction: Double?, label: String)? {
+        guard phoneOverview != nil, phoneBusy, let s = phoneSession else { return nil }
+        if s.kind == .pushSelected {   // 更新所选算一件：「推送 3/7」+ 总进度
+            let p = consoleProgress, total = max(p.total, 1)
+            let text = BackendText.launcherText("dynamic.batch", language: dynamicLanguage).replacingOccurrences(of: "{0}", with: "\(min(p.done + 1, total))").replacingOccurrences(of: "{1}", with: "\(total)")
+            return (s.progress.overall ?? Double(p.done) / Double(total), text)
+        }
+        return (s.progress.fraction, s.name)
     }
 
-    /// 手机槽一单结束时调（S2ArmLauncherModel.finish 后）：这一轮全推完就收尾、重读总览
-    func consoleBatchStep() {
-        guard !consoleBatch.isEmpty, consoleBatchDone >= consoleBatch.count else { return }
-        consoleBatch = []
-        refreshPhoneOverview()
+    /// 界面语言（setUILanguage 写进作业环境的那个，共享文案同一套语言码）
+    var dynamicLanguage: String { provider.client.environment.uiLanguage.flatMap { $0.isEmpty ? nil : $0 } ?? "zh-Hans" }
+
+    func dynamicFinished(_ state: JobOutcome.State) {
+        guard phoneOverview != nil else { return }
+        if state == .completed {
+            dynamicDone = true
+            Task { try? await Task.sleep(for: .seconds(2)); dynamicDone = false }
+        } else { dynamicAlert = true }
+    }
+
+    /// 点动态窗口：直接到总控台（选中首位卡），看过就收起橙色「!」
+    func openConsoleFromTopBar() {
+        dynamicAlert = false
+        goToLibrary()
+        selectedID = Self.consoleID
     }
 }

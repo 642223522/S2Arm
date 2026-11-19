@@ -90,6 +90,25 @@ def main():
         print(f'PASS: {len(mutants)} compute warm negative controls')
         return 0
 
+    if sys.argv[1:] == ['--diag-mutants']:
+        code = original.read_text()
+        for name, old, expected in (
+            ('graphics', 'uint64_t trace = diag_begin(s->identity, s->stages, !background);', 'graphics live compile emits paired event'),
+            ('compute', 'uint64_t trace = diag_begin(rq.identity, 32u, 1);', 'compute live compile emits paired event'),
+        ):
+            assert code.count(old) == 1
+            path = out / ('trace-mutant-' + name + '.c')
+            path.write_text(code.replace(old, 'uint64_t trace = 0;'))
+            result = run('trace-mutant-' + name, path, args=('--diag-compile',))
+            assert result.returncode and expected in result.stderr and 'error:' not in result.stderr, (result.stdout, result.stderr)
+            print(f'PASS: {name} event removal produces expected behavior failure')
+        return 0
+
+    if sys.argv[1:] == ['--diag-compile']:
+        result = run('diag-compile', original, args=('--diag-compile',))
+        sys.stdout.write(result.stdout); sys.stderr.write(result.stderr)
+        return result.returncode
+
     if sys.argv[1:] in (['--compute-warm'], ['--compute-warm-off']):
         result = run('compute-warm', original, args=(sys.argv[1],))
         sys.stdout.write(result.stdout); sys.stderr.write(result.stderr)
@@ -214,6 +233,12 @@ def main():
         text = original.read_text(encoding='utf-8')
         changes = [
             ('gs-source-epoch', 'MIX(s2a_source_epoch());\n    MIX(stages);', '(void)s2a_source_epoch();\n    MIX(stages);', 1, 'poisoned GS source cannot hit fast cache'),
+            ('cs-query-proof-omitted', 'e->prog.sampler_unused[0][e->prog.nent[0]] = (uint8_t)s2a_spirv_sampler_unused(',
+             'e->prog.sampler_unused[0][e->prog.nent[0]] = 0 && (uint8_t)s2a_spirv_sampler_unused(', 1,
+             'production compute builder retains sampler use proof: query=1'),
+            ('cs-query-proof-forced', 'e->prog.sampler_unused[0][e->prog.nent[0]] = (uint8_t)s2a_spirv_sampler_unused(',
+             'e->prog.sampler_unused[0][e->prog.nent[0]] = 1 || (uint8_t)s2a_spirv_sampler_unused(', 1,
+             'production compute builder retains sampler use proof: query=0'),
             ('gs-slot', '(const char *const[]){"vs", "fs", "gs"}[st]',
              '(const char *const[]){"vs", "fs", "fs"}[st]', 3, 'GS production request reaches compiler'),
             ('ubo-learn-reported-red', 'g_ubo_learned = 1;\n            else red1("compile_failed", oc.summary);',
@@ -247,8 +272,8 @@ def main():
              'reports the dedicated unimplemented'),
             ('drop-final-summary', 's2a_direct_summary_register(pool_final_summary);',
              '(void)pool_final_summary;', 1, 'normal process-exit callback emits final stats'),
-            ('timeout-is-not-final', 'if (normal && (g_pool_programs || g_pool_request_rejected)) pool_stats("final");',
-             'if (g_pool_programs || g_pool_request_rejected) pool_stats("final");', 1, 'timeout summary is never labelled final'),
+            ('timeout-is-not-final', 'if (normal && (g_pool_programs || g_pool_request_rejected || g_pool_reason_count)) pool_stats("final");',
+             'if (g_pool_programs || g_pool_request_rejected || g_pool_reason_count) pool_stats("final");', 1, 'timeout summary is never labelled final'),
             ('flatten-missing-fact', 'else if (!strcmp(code, "MISSING_FACT")) {',
              'else if (0 && !strcmp(code, "MISSING_FACT")) {', 1, 'compiler reason counted accurately'),
             ('drop-request-count', 'g_pool_request_rejected++;',
@@ -350,6 +375,17 @@ def main():
     sys.stdout.write(decl.stdout); sys.stderr.write(decl.stderr)
     if decl.returncode:
         return decl.returncode
+    # #1594：类型 3 句柄（常量采样器）的布局映射：真实结果解析 + 生产 layout_ent（编码 / 下标 0 与 4095 / 其它来源不变）
+    exe = out/'const-sampler-layout'
+    host_link.run(base + [str(ROOT/'android/tests/const_sampler_layout_test.c'), *[str(p) for p in libs]] + [strip, '-lm', '-o', str(exe)], check=True, timeout=60)
+    csl = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30)
+    sys.stdout.write(csl.stdout); sys.stderr.write(csl.stderr)
+    if csl.returncode:
+        return csl.returncode
+    diag = run('diag-compile', original, args=('--diag-compile',))
+    sys.stdout.write(diag.stdout); sys.stderr.write(diag.stderr)
+    if diag.returncode:
+        return diag.returncode
     result = run('test', original)
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)

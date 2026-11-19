@@ -161,6 +161,11 @@ static void big_wrap(void) {
 // ---------- 兜底现编（§12.3，着色器线 s2a_dsh_compile）----------
 // ProgramSetShaders 时（控制段只在这次调用里保证有效）键不在映射表、也不是内置核：按代码区头判阶段，同步调 s2a_dsh_compile 把 <键>_b.metal / .json 写进
 // DM_MSL_FALLBACK（Documents/wire/<程序号>/shaders），成功就把「键 → 阶段」补进直连层映射表旁表；建管线时 shader_load 从兜底目录现场建库。只当最后一层保险
+const char *s2a_app_version(void) {   // dsh_miss.inc 着色器覆盖计数的 "app"：iOS 是 App 版本；Mac 宿主是命令行程序，没有 → ""
+    static char v[32]; static dispatch_once_t once;
+    dispatch_once(&once, ^{ NSString *s = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]; snprintf(v, sizeof v, "%s", s ? s.UTF8String : ""); });
+    return v;
+}
 #include "host/dsh_miss.inc"
 #include "host/dsh_cold.inc"
 
@@ -265,9 +270,26 @@ void s2a_direct_relayout(void) {   // App 壳视图控制器 viewDidLayoutSubvie
         re ? "，宽屏核心下一个渲染遍按新比例出图" : "");
     if (!re && fabs(va / g_out_a - 1) > 0.01) LOG("【黄】直连：可用区域比例 %.3f 与出图比例 %.3f 不同，按实际出图比例居中；固定尺寸的路径须重新启动游戏后应用新比例", va, g_out_a);
 }
+unsigned s2a_session_generation(void) __attribute__((weak));   // runtime/src/session.c：会话代号（同进程「立刻重启」新一局加一）
+static _Atomic unsigned g_layer_gen;   // 出图比例按哪一局算的（会话代号）
+// 同进程新一局重算出图比例（#1169）：游戏内「立刻重启」重读设置后，满屏 / 补丁画幅可能变了，宽屏核心按新屏宽高出图；
+//   出图层却只在进程首次建层时算过一次比例，新画幅被装进上一局的层（iPad 横屏开满屏后重启：1.532 的画面塞进 16:9 层、四边留黑，冷启动才对）。
+//   渲染线程每次取层比一次代号，换局了交主线程重算比例并按同一条重摆路摆层（后台等回前台补，同布局回调）
+static void layer_session_check(void) {
+    if (!g_layer || !s2a_session_generation) return;
+    unsigned g = s2a_session_generation(), o = atomic_load(&g_layer_gen);
+    if (g == o || !atomic_compare_exchange_strong(&g_layer_gen, &o, g)) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        double a0 = g_out_a, a1 = out_aspect(); if (!(a1 > 0) || a1 == a0) return;
+        g_out_a = a1; CGSize d0 = g_layer.drawableSize; s2a_direct_relayout(); CGSize d1 = g_layer.drawableSize;
+        if (d0.width == d1.width && d0.height == d1.height) { g_relayout_due = 1; return; }   // 没摆（在后台）：回前台补（front_metal_layer 登记的通知）
+        LOG("直连：新一局出图比例 %.3f → %.3f，出图层重摆为 %.0fx%.0f 像素", a0, a1, g_layer.drawableSize.width, g_layer.drawableSize.height);
+    });
+}
 void *front_metal_layer(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+        if (s2a_session_generation) atomic_store(&g_layer_gen, s2a_session_generation());
         if (!s2a_ios_root_view) { LOG("【红】直连：没有 App 壳根视图（s2a_ios_root_view），无出图层"); return; }
         void (^mk)(void) = ^{
             UIView *v = present_view(); if (!v) return;
@@ -284,6 +306,12 @@ void *front_metal_layer(void) {
             //   已经晚了，只有启动前从外面传入才显示。iOS 16 起可按层在运行中打开：开关开着（环境变量来自设置或外面传入都算）就对出图层打开
             { const char *hud = getenv("MTL_HUD_ENABLED");
               if (hud && !strcmp(hud, "1")) { if (@available(iOS 16.0, *)) { l.developerHUDProperties = @{@"mode": @"default"}; LOG("直连：Metal 性能浮层按出图层打开（MTL_HUD_ENABLED=1）"); } } }
+            // PR1 探针（HDR 全链路评审稿 v2）：挂层屏幕 EDR 能力一次性读数（M0 跑局记录屏幕配置用；能力动态重探是 PR4 的活）。EDR headroom iOS 16 起；
+            //   排查指引只写在 Mac 侧（front_mac.m screen_edr_note）——iOS 的设置路径与那行文案不同，这里只报读数
+            { UIScreen *sc = v.window.screen ?: UIScreen.mainScreen;
+              float pe = 0, ce = 0;
+              if (@available(iOS 16.0, *)) { pe = sc.potentialEDRHeadroom; ce = sc.currentEDRHeadroom; }
+              LOG("直连：出图层所在屏 EDR 探针：potentialEDR %.3f / currentEDR %.3f（倍数），色域 %s", pe, ce, sc.traitCollection.displayGamut == UIDisplayGamutP3 ? "P3" : "sRGB"); }
             if (v != s2a_ios_root_view()) LOG("直连：出图层挂在外接屏（下一行的「根视图」尺寸是外接屏窗口的视图）");
             [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue
                 usingBlock:^(NSNotification *n) { (void)n; if (g_relayout_due) { g_relayout_due = 0; s2a_direct_relayout(); } }];   // 补后台期间欠的重摆
@@ -293,6 +321,7 @@ void *front_metal_layer(void) {
                          g_layer.drawableSize.width / g_layer.drawableSize.height, s2a_widen_game() ? "开" : out_wide() ? "关、直连第三层整套放宽" : out_tall() ? "关、直连第三层上下加高" : "关");
         else LOG("【红】直连：根视图还没建好，没挂上出图层");
     });
+    layer_session_check();
     return (__bridge void *)g_layer;
 }
 #else
@@ -425,12 +454,20 @@ static int32_t a_create_instance(const void *ci, const void *alloc, void *inst) 
     pthread_once(&watch, fail_watch_start);
     return ((create_instance_fn)dm_vk_lookup("vkCreateInstance"))(ci, alloc, inst);
 }
-static void *vk_export(const char *name) {
-    if (!name || strncmp(name, "vk", 2)) return NULL;
+void s2a_snap_handout_id(uint64_t v, const char *id) __attribute__((weak));   // runtime/src/snapshot.c（登记见 hle_nvn.c）
+static void *vk_export_raw(const char *name) {
     if (!strcmp(name, "vkGetInstanceProcAddr") || !strcmp(name, "vkGetDeviceProcAddr")) return sw_xstack_wrap(name, (void *)a_get_proc);
     if (!strcmp(name, "vkCreateInstance")) return sw_xstack_wrap(name, (void *)a_create_instance);
     void *fn = dm_vk_lookup(name);
     return fn && vk_big(name) ? sw_xstack_wrap(name, fn) : fn;
+}
+// 交给游戏的每个 vk* 地址（导入解析与运行中 vkGet*ProcAddr 都走这里）按「vk:export:<名>」登记身份：切栈桩按本进程第几个被套编号，
+//   另一个进程里同一个函数的桩号不同（或还没套过、那个桩号空着），恢复时游戏内存里拿着的旧地址按身份换成本进程的（vk_snap.inc vk_snap_resolve）
+static void *vk_export(const char *name) {
+    if (!name || strncmp(name, "vk", 2)) return NULL;
+    void *p = vk_export_raw(name);
+    if (p && s2a_snap_handout_id) { char id[128]; snprintf(id, sizeof id, "vk:export:%s", name); s2a_snap_handout_id((uint64_t)(uintptr_t)p, id); }
+    return p;
 }
 // 直连模式下装载器解析游戏的 vk* 导入（重定位期）：回实现地址，没有回 NULL（装载器照原路径找，找不到报红）
 void *s2a_vk_entry(const char *name) {

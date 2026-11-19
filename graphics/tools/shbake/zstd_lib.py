@@ -65,10 +65,11 @@ def decompress(data, dict_bytes=None, max_length=None):
                 _DD[dict_bytes] = dd
             r = L.ZSTD_DCtx_refDDict(dc, dd)
             if L.ZSTD_isError(r): raise ZstdError(L.ZSTD_getErrorName(r).decode())
-        src = ctypes.create_string_buffer(data, len(data)); inb = _Buf(ctypes.cast(src, ctypes.c_void_p), len(data), 0)
+        # 指针用 addressof 取、不用 ctypes.cast（cast 成引用环，整份压缩数据与输出缓冲要等循环垃圾回收才放，同 graphics/tools/nxfmt.py yaz0_decompress）
+        src = ctypes.create_string_buffer(data, len(data)); inb = _Buf(ctypes.c_void_p(ctypes.addressof(src)), len(data), 0)
         step = L.ZSTD_DStreamOutSize(); dst = ctypes.create_string_buffer(step); out = []; total = 0; r = 1
         while True:
-            outb = _Buf(ctypes.cast(dst, ctypes.c_void_p), step, 0)
+            outb = _Buf(ctypes.c_void_p(ctypes.addressof(dst)), step, 0)
             r = L.ZSTD_decompressStream(dc, ctypes.byref(outb), ctypes.byref(inb))
             if L.ZSTD_isError(r): raise ZstdError(L.ZSTD_getErrorName(r).decode())
             out.append(dst.raw[:outb.pos]); total += outb.pos

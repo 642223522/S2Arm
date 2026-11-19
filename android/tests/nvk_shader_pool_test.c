@@ -24,6 +24,8 @@
 #include "direct/program_cache.h"
 #include "nvn/nvn_vk_prog_warm.h"
 #include "tbuf_spirv_fixtures.h"
+#include "gfx_plat/spirv_sampler_use.h"
+#include "sampler_use_fixtures.h"
 
 // 实现在 nvk_shader.c，声明在 nvk_session.h。这里不包 nvk_session.h：nvk_compile_stop_test.py 拿本文件当夹具，
 // 会在同一个翻译单元里把 nvk_session_request_stop 等会话函数定义成 static，包了头就是「static 声明跟在非 static 声明后面」，编不过。
@@ -33,6 +35,13 @@ void nvk_shader_last_test_put(uint64_t key, const struct rp_prog *prog);
 const struct rp_prog *nvk_shader_last_test_find(uint64_t key);
 
 static int checks, failures, compiler_calls, diag_enabled, diag_lines, diag_queries;
+static int trace_on, trace_begin_count, trace_end_count;
+static uint32_t trace_stage; static int trace_submit, trace_warm, trace_success; static uint8_t trace_id[32];
+int s2a_direct_diag_enabled(void) { return trace_on; }
+uint64_t s2a_direct_diag_compile_begin(const uint8_t identity[32], unsigned stages, int submit, int warm) {
+    trace_begin_count++; memcpy(trace_id, identity, 32); trace_stage=stages; trace_submit=submit; trace_warm=warm; return 1;
+}
+void s2a_direct_diag_compile_end(uint64_t token, int success) { if (token) trace_end_count++; trace_success=success; }
 static unsigned fake_array_count;
 static int separate_fixture;
 static int fake_gs_success, fake_gs_result_mode, gs_loads[6], fake_geometry_enabled = 1, fake_depth_clip;
@@ -155,6 +164,16 @@ static int32_t fake_compile(uint64_t session, uint64_t gen, s2a_direct_bytes req
         s2a_direct_bytes payload = {bytes, (uint64_t)n};
         int32_t rc = emit(sink, payload); free(bytes); return rc;
     }
+    if (fake_cs_success > 1) {
+        const char *code = fake_cs_success == 2 ? S2A_SAMPLER_QUERY_SPV : S2A_SAMPLER_SAMPLE_SPV;
+        const char *bindings = "[{\"stage\":\"cs\",\"kind\":\"storage\",\"set\":1,\"binding\":0,\"count\":1,\"rw\":true,\"cbSlot\":0,\"cbOffset\":784,\"nvnSlot\":0},"
+            "{\"stage\":\"cs\",\"kind\":\"texture\",\"source\":\"texture\",\"set\":2,\"binding\":0,\"slot\":72,\"count\":1}]";
+        char result[8192];
+        int n = snprintf(result, sizeof result, "{\"schema\":\"s2a-direct-program-v1\",\"content\":{\"contract\":\"s2a-direct-program-content-v1\",\"kind\":\"compute\",\"hasUnalignedStorageBuffer\":false,\"c0Reads\":[],\"supportReads\":[],\"supportLayout\":{\"requiredSize\":16},\"stages\":[{\"stage\":\"cs\",\"spirv\":\"%s\"}],\"bindings\":%s}}", code, bindings);
+        CHECK(n > 0 && (size_t)n < sizeof result, "compute result fixture fits");
+        s2a_direct_bytes payload = {(const uint8_t *)result, (uint64_t)n};
+        return emit(sink, payload);
+    }
     if (fake_gs_success) {
         char result[1536];
         const char *extra = fake_gs_result_mode == 1 ? "" :
@@ -254,6 +273,7 @@ static void gs_request_test(void) {
     int rc = rp_shader_resolve(&q, &p);
     CHECK(rc == -1 && p == NULL, "GS compiler boundary deliberately fails closed");
     CHECK(compiler_calls == 1, "GS production request reaches compiler, not stages_0x7_not_vs_fs");
+    if (trace_on) CHECK(trace_begin_count == 1 && trace_end_count == 1 && trace_stage == 7 && trace_submit == 1 && trace_warm == 0 && trace_success == 0, "graphics live compile emits paired event including failure and stage");
     if (!compiler_calls) return;
     struct s2a_jv root = {captured, strlen(captured)}, program, stages, textures, v;
     char schema[48] = {0};
@@ -285,7 +305,9 @@ static void gs_request_test(void) {
     CHECK(gs_loads[NVN_GPU_SH_VS] == 1 && gs_loads[NVN_GPU_SH_FS] == 1 && gs_loads[NVN_GPU_SH_GS] == 1,
           "result loads VS FS and GS with their actual stage IDs");
     int calls = compiler_calls;
+    int trace_before_hit = trace_begin_count;
     CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == calls, "identical GS request hits cache");
+    if (trace_on) CHECK(trace_begin_count == trace_before_hit, "cached graphics resolve does not create compile event");
     memcpy(gs_keys[0], changed, 8);
     CHECK(rp_state_op(OP_BIND_PROGRAM, &bind, sizeof bind + 8), "rebind changed GS source");
     CHECK(!rp_shader_resolve(&q, &p) && compiler_calls == ++calls, "changed GS key recompiles");
@@ -1017,7 +1039,40 @@ static int compute_warm_off_test(void) {
     return failures ? 1 : 0;
 }
 
+static void query_sampler_test(void) {
+    CHECK(s2a_spirv_sampler_unused(sampler_query_spv, sizeof sampler_query_spv, 2, 0), "query descriptor does not use sampler");
+    CHECK(!s2a_spirv_sampler_unused(sampler_sample_spv, sizeof sampler_sample_spv, 2, 0), "actual sampling still needs sampler");
+    CHECK(s2a_spirv_sampler_unused(sampler_mixed_spv, sizeof sampler_mixed_spv, 2, 0) &&
+          !s2a_spirv_sampler_unused(sampler_mixed_spv, sizeof sampler_mixed_spv, 2, 1), "sampler use proof is per binding");
+    CHECK(!s2a_spirv_sampler_unused(sampler_query_spv, sizeof sampler_query_spv, 0, 0) &&
+          !s2a_spirv_sampler_unused(sampler_query_spv, sizeof sampler_query_spv - 1, 2, 0), "unknown descriptor and malformed word stream do not prove sampler unused");
+    for (int query = 0; query < 2; ++query) {
+        rp_state_reset(); rp_shader_reset(); source(); bind_pools(100); separate_fixture = 1;
+        fake_cs_success = query ? 2 : 3;
+        p_bind_handles b = {0}; b.stage = 5; b.n = 1; b.first = 0; b.h[0] = 77;
+        CHECK(rp_state_op(OP_BIND_IMG, &b, sizeof b), "query image handle binding");
+        const struct rp_prog *p = NULL;
+        CHECK(!rp_shader_resolve_compute(&p) && p && p->nent[0] == 2, "sampler proof fixture loads: %s", last_red);
+        if (p) CHECK(p->sampler_unused[0][1] == query, "production compute builder retains sampler use proof: query=%d", query);
+    }
+    fake_cs_success = 0;
+}
+
+static int diag_compile_test(void) {
+    trace_on = 1; trace_begin_count = trace_end_count = 0; fake_gs_success = 0;
+    gs_request_test();
+    rp_shader_reset(); s2a_source_clear(); rp_state_reset(); nvn_unimpl_reset(); source(); bind_pools(7);
+    trace_begin_count = trace_end_count = 0; fake_cs_success = 1;
+    const struct rp_prog *p = NULL; CHECK(!rp_shader_resolve_compute(&p) && p, "compute diagnostic fixture compiles");
+    uint8_t zero[32] = {0};
+    CHECK(trace_begin_count == 1 && trace_end_count == 1 && trace_stage == 32 && trace_submit == 1 && trace_warm == 0 && trace_success == 1 && memcmp(trace_id, zero, 32),
+          "compute live compile emits paired event with identity and stage");
+    trace_on = 0; rp_shader_reset();
+    printf("compile diagnostic: %d checks, %d failures\n", checks, failures); return failures ? 1 : 0;
+}
+
 int main(int argc, char **argv) {
+    if (argc == 2 && !strcmp(argv[1], "--diag-compile")) return diag_compile_test();
     if (argc == 2 && !strcmp(argv[1], "--compute-warm")) return compute_warm_test();
     if (argc == 2 && !strcmp(argv[1], "--compute-warm-off")) return compute_warm_off_test();
     if (argc == 2 && !strcmp(argv[1], "--legacy-bytes")) {
@@ -1069,6 +1124,7 @@ int main(int argc, char **argv) {
     graphics_alias_fact_test(1);
     graphics_alias_fact_bg_test(1);
     graphics_ubo_handle_fact_test();
+    query_sampler_test();
     unsetenv("S2A_SHADER_REVISION_ROOT"); unsetenv("S2A_DIRECT_CACHE_DIR"); rp_state_reset(); source();
     for (int cs = 0; cs < 2; cs++) {
         run_case(cs, 0, 0, "texture_pool_missing");
@@ -1128,6 +1184,19 @@ int main(int argc, char **argv) {
           "session stats count unique failed program once: %s", last_stats);
     fake_array_count = 0;
     {
+        // 编译器把被拒消息整条守在 245 个字符以内（DirectShaderCompiler.cs HostMessageMaxChars）：compile_request.c 把整段错误 JSON
+        // 抄进 reason[320]（≤ 319 个字符），信封 {"schema":…,"code":"UNSUPPORTED_PROGRAM","message":"…"} 占 74 个，245 + 74 = 319 正好装下；
+        // 再多一个字符 JSON 被截断、compiler_rejected 解析不出来，整条归成 unclassified。恰好 245 个字符的消息必须仍照常归类
+        char edge[640], edge_msg[300];
+        {
+            size_t n = (size_t)snprintf(edge_msg, sizeof edge_msg,
+                "fs: texture handle from cbuf slot 65538 is not implemented (handle=809517146, arrayLength=1, count=1, request=%064d)"
+                " [kind=texture word=90 word2=257 type=3 cbuf=2/0 key=", 0);
+            memset(edge_msg + n, 'k', 244 - n); edge_msg[244] = ']'; edge_msg[245] = 0;
+            CHECK(strlen(edge_msg) == 245, "boundary message is exactly 245 characters: %zu", strlen(edge_msg));
+            snprintf(edge, sizeof edge, "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"UNSUPPORTED_PROGRAM\",\"message\":\"%s\"}", edge_msg);
+            CHECK(strlen(edge) == 319, "boundary error JSON is exactly 319 characters: %zu", strlen(edge));
+        }
         const char *errors[] = {
             "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"UNSUPPORTED_PROGRAM\",\"message\":\"fs: texture handle from cbuf slot 0 is not implemented\"}",
             "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"UNSUPPORTED_PROGRAM\",\"message\":\"fs: separate sampler slot is not implemented\"}",
@@ -1135,10 +1204,18 @@ int main(int argc, char **argv) {
             "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"MISSING_FACT\",\"message\":\"QueryTextureFormat has no source (stage=fs,handle=3,cbufSlot=-1,format=Unknown)\"}",
             "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"MISSING_FACT\",\"message\":\"QueryTextureCoordNormalized has no source (stage=fs,handle=3,cbufSlot=-1)\"}",
             "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"MISSING_FACT\",\"message\":\"missing fact\"}",
+            // #999：编译器在「texture handle from cbuf slot N」后面补的现场（绑定种类 / 字偏移 / 类型 / 两个常量缓冲号；用户 UBO 那一处另有 handle / 个数 / 数组长度 / 程序键）：归类不变
+            "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"UNSUPPORTED_PROGRAM\",\"message\":\"fs: texture handle from cbuf slot 65538 is not implemented"
+                " (handle=809517146, arrayLength=1, count=1, request=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef)"
+                " [kind=texture word=90 word2=257 type=3 cbuf=2/0]\"}",
+            "{\"schema\":\"s2a-direct-error-v1\",\"code\":\"UNSUPPORTED_PROGRAM\",\"message\":\"fs: texture handle from cbuf slot 4 is not implemented (offset outside 64 KiB)"
+                " [kind=texture handle=-2147483648 word=0 word2=0 type=8 count=1 array=1 key=0123456789abcdef0123456789abcdef0123456789abcdef]\"}",
+            edge,
             "invalid error"};
         const char *reasons[] = {"cbuf_handle_unsupported", "separate_sampler_unsupported",
             "MISSING_FACT.QueryTextureArrayLengthFromBuffer", "MISSING_FACT.QueryTextureFormat",
-            "MISSING_FACT.QueryTextureCoordNormalized", "MISSING_FACT.unclassified", "unclassified"};
+            "MISSING_FACT.QueryTextureCoordNormalized", "MISSING_FACT.unclassified",
+            "cbuf_handle_unsupported", "cbuf_handle_unsupported", "cbuf_handle_unsupported", "unclassified"};
         for (unsigned i = 0; i < sizeof errors / sizeof errors[0]; i++) {
             rp_shader_reset(); nvn_unimpl_reset(); last_stats[0] = last_reason[0] = 0;
             fake_compile_error = errors[i]; bind_pools(524288); compiler_calls = 0;
@@ -1149,6 +1226,14 @@ int main(int argc, char **argv) {
                   "compiler error stays distinct from layout rejection: %s", last_stats);
             CHECK(strstr(last_reason, reasons[i]) && strstr(last_reason, "count=1"),
                   "compiler reason counted accurately: %s", last_reason);
+        }
+        {   // 诊断开关关着（玩家包口径）：拒绝原因照样数、第一次拒绝就打一行（全库普查按款汇总它）；整份程序统计不打
+            const int d0 = diag_enabled; diag_enabled = 0; rp_shader_reset(); nvn_unimpl_reset(); last_reason[0] = last_stats[0] = 0;
+            fake_compile_error = errors[3]; bind_pools(524288); compiler_calls = 0;
+            CHECK(rp_shader_resolve(&q, &p) != 0 && compiler_calls == 1, "player build: compiler rejection still happens once");
+            CHECK(strstr(last_reason, "reason=MISSING_FACT.QueryTextureFormat count=1") && !last_stats[0],
+                  "player build: reject reason counted and logged without the diagnostic switch, program stats stay off: reason=%s stats=%s", last_reason, last_stats);
+            rp_shader_reset(); diag_enabled = d0;
         }
         rp_shader_reset(); nvn_unimpl_reset(); fake_compile_error = errors[2]; bind_pools(101);
         CHECK(rp_shader_resolve(&q, &p) != 0, "first missing fact rejected");

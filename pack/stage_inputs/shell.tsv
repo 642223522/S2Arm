@@ -79,6 +79,8 @@
 入	graphics/nvn/gfx/tex/nvn_deswizzle_gpu.m
 入	graphics/nvn/gfx/tex/nvn_fmt_mtl.c
 入	graphics/nvn/gfx/tex/nvn_fmt_mtl.h
+入	launchers/macos/Branding/AppIcon-iOS.png
+入	pack/tv_icon.py
 入	translator/dmsh_chain.py
 入	translator/dmsh_xlate/Program.cs
 入	graphics/nvn/gfx/vk

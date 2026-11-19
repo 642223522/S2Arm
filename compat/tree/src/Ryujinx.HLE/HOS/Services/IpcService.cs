@@ -337,6 +337,21 @@ namespace Ryujinx.HLE.HOS.Services
 
         private int Add(IpcService obj)
         {
+            // S2Arm instant snapshot replay: take the id this object had when the request was logged (S2AHooks.SnapForceDomainIds)
+            var forced = S2AHooks.SnapForceDomainIds;
+
+            if (forced != null && forced.Count > 0)
+            {
+                int id = forced.Dequeue();
+
+                if (DomainObjects.Add(id, obj))
+                {
+                    return id;
+                }
+
+                S2AHooks.SnapForceDomainIdMiss++;
+            }
+
             return DomainObjects.Add(obj);
         }
 

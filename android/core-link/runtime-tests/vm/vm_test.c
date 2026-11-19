@@ -473,6 +473,32 @@ static int case_va_report_lock(void) {
     if (error) FAIL_CASE("query after va_report errno=%d",error);
     puts("PASS va-report-lock: va_report releases g_mu before VMA sampling; following query returns"); return 0;
 }
+// 装模块前认 Switch 2：runtime.c 在重定位前调 s2a_npdm_ounce，重定位时直连的 Switch 2 SDK 接管问 s2a_platform_ounce（nvn2_on）。
+// 合成 NPDM 只填 npdm_read 读的字段：META 魔数、ACID 偏移（+0x78）、ACID 魔数落在 ACID+0x300（Switch 2，RSA-3072 签名）/ ACID+0x200（Switch 1）。
+int s2a_npdm_ounce(const char *npdm);
+int s2a_platform_ounce(void);
+static int write_npdm(const char *path,size_t magic_off) {
+    uint8_t buf[0x500]; memset(buf,0,sizeof buf);
+    uint32_t acid=0x100; memcpy(buf,"META",4); memcpy(buf+0x78,&acid,4); memcpy(buf+acid+magic_off,"ACID",4);
+    FILE *f=fopen(path,"wb"); if (!f) return -1;
+    size_t n=fwrite(buf,1,sizeof buf,f); return fclose(f)||n!=sizeof buf ? -1 : 0;
+}
+static int case_npdm_ounce(void) {
+    char dir[]="/tmp/s2a-npdm-ounce-XXXXXX"; if (!mkdtemp(dir)) FAIL_CASE("mkdtemp errno=%d",errno);
+    char ns2[96],ns1[96],junk[96],none[96];
+    snprintf(ns2,sizeof ns2,"%s/ns2.npdm",dir); snprintf(ns1,sizeof ns1,"%s/ns1.npdm",dir);
+    snprintf(junk,sizeof junk,"%s/junk.npdm",dir); snprintf(none,sizeof none,"%s/none.npdm",dir);
+    assert(!write_npdm(ns2,0x300) && !write_npdm(ns1,0x200));
+    FILE *f=fopen(junk,"wb"); assert(f); fputs("not an npdm",f); fclose(f);
+    int r_none=s2a_npdm_ounce(none), r_junk=s2a_npdm_ounce(junk);
+    int r_ns2=s2a_npdm_ounce(ns2), f_ns2=s2a_platform_ounce();
+    int r_ns1=s2a_npdm_ounce(ns1), f_ns1=s2a_platform_ounce();
+    unlink(ns2); unlink(ns1); unlink(junk); rmdir(dir);
+    if (r_none!=-1 || r_junk!=-1) FAIL_CASE("unreadable npdm must report -1, got none=%d junk=%d",r_none,r_junk);
+    if (r_ns2!=1 || f_ns2!=1) FAIL_CASE("Switch 2 npdm: want probe=1 flag=1, got probe=%d flag=%d",r_ns2,f_ns2);
+    if (r_ns1!=0 || f_ns1!=0) FAIL_CASE("Switch 1 npdm: want probe=0 flag=0, got probe=%d flag=%d",r_ns1,f_ns1);
+    puts("PASS npdm-ounce: Switch 2 NPDM -> 1 and sets the platform flag; Switch 1 -> 0; unreadable -> -1"); return 0;
+}
 // Q6：打洞计数与累计耗时只在 Android 编译。三类的增量必须跟实际操作对上；deferred 不算打洞。
 static int case_punch_stats(void) {
     arena_prepare(2u<<20,4u<<20,0);
@@ -799,6 +825,7 @@ int main(int argc,char **argv) {
     assert(argc==2); const char *mode=argv[1];
     if (!strcmp(mode,"backing-api")) return backing_api();
     if (!strcmp(mode,"backing-api-16k")) { fake_page16=1; return backing_api(); }
+    if (!strcmp(mode,"npdm-ounce")) return case_npdm_ounce();   // 只读 NPDM，不碰 VM / 跟踪，排在它们的准备之前
     // 镜像用例显式打开（缺省关，owner r4 第 1 条）；非镜像用例不 configure，保持生产缺省关。
     int mirror_mode=strstr(mode,"mirror")!=NULL;
     if (mirror_mode) assert(!s2a_android_mirror_configure(1));

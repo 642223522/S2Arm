@@ -599,9 +599,9 @@ namespace S2A.Services
 
             if (SnapSwitch.Save)
             {
-                SnapLog.Begin(_snapNum, cookie, t, msg, size, CommandId(msg, size));
+                int seq = SnapLog.Begin(_snapNum, cookie, t, msg, size, CommandId(msg, size));
                 try { return RequestCoreTail(t, msg, size); }
-                finally { SnapLog.End(); }
+                finally { SnapLog.End(seq, msg, size); }   // 处理后消息缓冲已是应答：失败的这条记成「当时失败」，恢复时不重放
             }
 
             return RequestCoreTail(t, msg, size);

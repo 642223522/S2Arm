@@ -76,7 +76,8 @@ import LauncherPadBridge
         XCTAssertLessThan(cards.map(\.frame.maxY).max()! - cards.map(\.frame.maxY).min()!, 2, "全部封面必须在同一横排顶对齐")
         let secondCard = try XCTUnwrap(cards.first { $0.id == "card." + String(format: "%016X", 1) })
         XCTAssertGreaterThan(firstCard.frame.width, secondCard.frame.width * 1.2, "选中封面必须明显放大")
-        for id in ["top.library", "top.settings", "top.report", "top.controller", "top.messages", "top.player"] {
+        XCTAssertFalse(targets.contains { $0.id == "top.library" }, "回库由各页返回和欢迎页入口提供，标题栏不重复放置")
+        for id in ["top.settings", "top.report", "top.controller", "top.messages", "top.player"] {
             let target = try XCTUnwrap(targets.first { $0.id == id }, id)
             XCTAssertLessThanOrEqual(target.frame.width, 44, "顶栏操作尽量图标化：\(id)")
             XCTAssertGreaterThanOrEqual(target.frame.height, 32)
@@ -247,17 +248,30 @@ private final class HomeCatalogRunner: JobProcessRunner {
     final class Handle: JobProcessHandle { func terminate() {} }
     func start(executable: URL, arguments: [String], environment: [String: String], onLine: @escaping (Data) -> Void,
                onStderr: @escaping (Data) -> Void, onExit: @escaping (Int32) -> Void) throws -> JobProcessHandle {
+        objc_sync_enter(self); defer { objc_sync_exit(self) }   // 作业客户端在并发线程池里同时调 start：替身状态串行改（无锁并发追加数组会 SIGSEGV 带崩整个测试进程）
         let request = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: arguments.last!))) as! [String: Any]
         var result: [String: Any] = [:]
         if request["operation"] as? String == "launch" { lock.withLock { launch = request["gameId"] as? String } }
         if request["operation"] as? String == "catalog" {
-            result = ["games": (0..<21).map { ["id": String(format: "%016X", $0),
-                "name": $0 == 19 ? "Original Fixture 19 — A Very Long Adventure Across the Mountains and the Distant Sea" : "Original Fixture \($0)",
-                "ready": true, "missing": [],
-                "customCover": false, "cover": artwork.appendingPathComponent("cover.png").path,
-                "banner": artwork.appendingPathComponent($0 % 2 == 0 ? "banner-red.png" : "banner-blue.png").path,
-                "packages": skipped.contains($0) ? [["type": "base", "integritySkipped": [["stage": "import", "contents": ["x"], "place": "romfs"]]]] : [] as [[String: Any]],
-                "iphoneInstall": installs[$0].map { ["at": $0, "free": true] as Any } ?? NSNull()] as [String: Any] }, "keys": [:]]
+            // 分开异构 JSON 的类型推断，避免 CI 工具链在整条 map 表达式上耗尽求解预算。
+            let skippedContent: [String: Any] = ["stage": "import", "contents": ["x"], "place": "romfs"]
+            let skippedPackage: [String: Any] = ["type": "base", "integritySkipped": [skippedContent]]
+            let games = (0..<21).map { index -> [String: Any] in
+                let packages = skipped.contains(index) ? [skippedPackage] : []
+                var game: [String: Any] = ["id": String(format: "%016X", index),
+                    "name": index == 19 ? "Original Fixture 19 — A Very Long Adventure Across the Mountains and the Distant Sea" : "Original Fixture \(index)",
+                    "ready": true, "missing": [],
+                    "customCover": false, "cover": artwork.appendingPathComponent("cover.png").path,
+                    "banner": artwork.appendingPathComponent(index % 2 == 0 ? "banner-red.png" : "banner-blue.png").path,
+                    "packages": packages]
+                if let at = installs[index] {
+                    game["iphoneInstall"] = ["at": at, "free": true] as [String: Any]
+                } else {
+                    game["iphoneInstall"] = NSNull()
+                }
+                return game
+            }
+            result = ["games": games, "keys": [:]]
         }
         let event: [String: Any] = ["schema": 1, "taskId": request["taskId"] ?? "", "type": "result", "state": "succeeded", "result": result]
         DispatchQueue.main.async { onLine(try! JSONSerialization.data(withJSONObject: event)); onExit(0) }

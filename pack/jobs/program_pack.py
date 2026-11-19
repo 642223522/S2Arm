@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
 from pathlib import Path
 import shutil
 import sys
@@ -134,12 +135,12 @@ def sign(c, gid, team, bundle, signer, *, pkg=None):
     dest = programs.cache(c, gid) / SIGNED / team
     own = pkg is None   # 自己出的未签名包：签好后删掉它的 dylib（0.6.0 程序缓存瘦身：推送只用签好的那份；换团队时按键重出，build 自己会出）
     if own:   # 签好的那份键对得上就直接用，不必先把未签名包重出一遍
-        hit = _package_key(c, gid)[3] + f"\t{team}\t{bundle}"
+        hit = _package_key(c, gid)[3] + f"\t{team}\t{bundle}" + _signer_tag(signer)
         if (dest / KEY).is_file() and (dest / KEY).read_text(encoding="utf-8") == hit and (dest / CATALOGUE).is_file():
             return dest
     pkg = Path(pkg) if pkg else build(c, gid)
     meta = json.loads((pkg / META).read_text(encoding="utf-8"))
-    key = (pkg / KEY).read_text(encoding="utf-8") + f"\t{team}\t{bundle}"
+    key = (pkg / KEY).read_text(encoding="utf-8") + f"\t{team}\t{bundle}" + _signer_tag(signer)
     if (dest / KEY).is_file() and (dest / KEY).read_text(encoding="utf-8") == key and (dest / CATALOGUE).is_file():
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -161,6 +162,13 @@ def sign(c, gid, team, bundle, signer, *, pkg=None):
     if own:   # 签名整份重写 dylib（codesign 实测：克隆后签名独占全部字节），未签名那份留着就是每款多一份程序；只留键与元数据，下次要时 build 按键重出
         (pkg / image_name(gid)).unlink(missing_ok=True)
     return dest
+
+
+def _signer_tag(signer):
+    """签名器身份进签好那份的缓存键：同一团队换了签法（Mac 从 Xcode 钥匙串换到 plumesign + s2a-selfsign、换了证书）不能命中旧签法的缓存——
+    系统 codesign 签的程序库免费团队手机不认，换签法后还推旧的就一直起不了局。签名器没标身份（单测替身等）→ 空串，键同旧版"""
+    tag = getattr(signer, "kind", "")
+    return f"\t{tag}" if tag else ""
 
 
 def need(c, gid, phone, team, cert=None, *, want=None):
@@ -191,6 +199,7 @@ def mac_signer(c):
     def run(dylib, team, bundle):
         log = c.logs / (c.task + "-program-sign.log")
         c.run([os.sys.executable, Path(c.engine) / "pack/dev_sign.py", "--dylib", dylib, bundle, team], log)
+    run.kind = "xcode"
     return run
 
 
@@ -202,6 +211,32 @@ def win_signer(c, exe, shell_app):
     from pack.orch import install_win
     def run(dylib, team, bundle):
         install_win.sign_dylibs(exe, shell_app, [Path(dylib)], bundle, c.logs / (c.task + "-program-sign.log"))
+    run.kind = "plumesign"
+    return run
+
+
+def selfsign_path(c):
+    """电脑侧签程序库的 s2a-selfsign（pack/selfsign，0.6.0）：S2A_SELFSIGN（开发用）> 引擎随包 Binaries/Prepare/selfsign/ > 源码树编出的 build/selfsign/release/；
+    都没有 → None（源码树没编，调用方照旧用别的签法）"""
+    exe = "s2a-selfsign.exe" if os.name == "nt" else "s2a-selfsign"
+    for p in (os.environ.get("S2A_SELFSIGN"), Path(c.engine) / "Binaries/Prepare/selfsign" / exe, Path(c.engine) / "build/selfsign/release" / exe):
+        if p and Path(p).is_file():
+            return str(p)
+    return None
+
+
+def selfsign_signer(c, tool, key_pem, cert_der):
+    """用私钥文件签程序库（免费团队也认的签法：签名标识 = App 包名、XML + DER 两份权限，同手机端 selfsign.c，cmdr 免费团队手机自签定稿）：
+    key_pem = 私钥 PEM 文件，cert_der = 这把私钥对应的开发证书 DER（字节）。系统 codesign 不给 dylib 带权限，所以不用它"""
+    def run(dylib, team, bundle):
+        with tempfile.TemporaryDirectory(dir=c.private) as w:
+            cert = Path(w) / "cert.der"
+            cert.write_bytes(cert_der)
+            r = subprocess.run([tool, "--key", str(key_pem), "--cert", str(cert), "--bundle-id", bundle, "--team", team, str(dylib)],
+                               capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if r.returncode:
+            raise Failure("给这款的程序签名失败：" + ((r.stderr or r.stdout or "").strip().splitlines() or ["?"])[-1], code="job_failed")  # 非玩家句（工具原句只进日志 / 诊断）
+    run.kind = "selfsign:" + hashlib.sha256(cert_der).hexdigest()[:16]   # 换了证书（续期 / 换私钥）也重签
     return run
 
 
@@ -214,6 +249,7 @@ def devcert_signer(c):
         with devcert.pwfile(devcert.folder(c), pw) as pf:
             c.run([devcert.rcodesign_path(c), "sign", "--p12-file", p12, "--p12-password-file", pf, "--team-name", team,
                    "--timestamp-url", "none", Path(dylib)], c.logs / (c.task + "-program-sign.log"))
+    run.kind = "devcert"
     return run
 
 

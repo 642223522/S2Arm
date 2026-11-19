@@ -28,6 +28,7 @@
 #include "../../../../runtime/include/s2a_lowva.h"   // #1143：虚拟池预留记进低区账（vpool_lv）
 #include <mach/mach_time.h>
 #include <CommonCrypto/CommonDigest.h>
+#include "../../../../runtime/src/snapfmt.h"   // 即时存档：布局指纹登记（hle_snap_fps）与按字段转的读入（snap_fread）
 #include <CoreFoundation/CoreFoundation.h>
 #include <mach/mach.h>
 #include <TargetConditionals.h>
@@ -1013,9 +1014,13 @@ NVN(nvnProgramInitialize, NVNboolean, NVNprogram *p, NVNdevice *d) {
     memset(p, 0, sizeof(prog_t)); ((prog_t *)p)->magic = MAGIC('P', 'R', 'O', 'G'); return 1;
 }
 static void pk_drop(const void *p);
+#if defined(__ANDROID__)
+extern void s2a_source_drop_pending(uint64_t prog_serial) __attribute__((weak));   // android/native/direct/source_store.c
+#endif
 NVN(nvnProgramFinalize, void, NVNprogram *p) {
 #if defined(__ANDROID__)
     prog_pin_release(((prog_t *)p)->serial, p);
+    if (s2a_source_drop_pending) s2a_source_drop_pending(((prog_t *)p)->serial);   // SetShaders 自持的控制段随程序释放（#1622：原先 256 格环满了静默挤掉）
 #endif
     nvn_be_prog_release((prog_t *)p); ((prog_t *)p)->magic = 0; pk_drop(p);
 }
@@ -1244,7 +1249,7 @@ int s2a_hle_pk_load(FILE *f) {
     uint64_t n = 0, ns = 0; if (fread(&n, 8, 1, f) != 1) return -1;
     for (uint64_t i = 0; i < n; i++) { pk_rec r; if (fread(&r, sizeof r, 1, f) != 1) return -1; prog_keys_t *k = pk_get((const void *)(uintptr_t)r.p, 1); *k = r.k; }
     if (fread(&ns, 8, 1, f) != 1) return -1;   // 11-01 前的录像没有快照表（它的 OP_BIND_PROGRAM 也是旧格式）：重录
-    for (uint64_t i = 0; i < ns; i++) { prog_t snap; prog_keys_t k; if (fread(&snap, sizeof snap, 1, f) != 1 || fread(&k, sizeof k, 1, f) != 1) return -1; prog_snap_put(&snap, k.key, k.ok, k.stage); }
+    for (uint64_t i = 0; i < ns; i++) { prog_t snap; prog_keys_t k; if (snap_fread(&snap, sizeof snap, 1, f, "nvn.prog") != 1 || fread(&k, sizeof k, 1, f) != 1) return -1; prog_snap_put(&snap, k.key, k.ok, k.stage); }
     return (int)n;
 }
 static void pk_drop(const void *p) {
@@ -1266,6 +1271,7 @@ extern int s2a_source_hold_pending(uint64_t prog_serial, uint32_t stage, const v
 extern int s2a_source_pending_control(uint64_t prog_serial, uint32_t stage, const uint8_t **control,
                                       uint32_t *control_bytes) __attribute__((weak));
 extern int s2a_source_has(const uint8_t key[8]) __attribute__((weak));
+extern void s2a_source_drop_pending_stage(uint64_t prog_serial, uint32_t stage) __attribute__((weak));   // 源已存好：释放该阶段的自持控制段
 
 // Control +0x20 是该控制段的自描述长度：>=0x880 用 0x880；SDK 10 的 0x850 段只用它自己的长度。
 static uint32_t prog_control_len(const void *control) {
@@ -1372,11 +1378,20 @@ static int keys_hash_early(const NVNshaderData *sd, uint8_t out[8]) {
     if (!sd->data || !n2 || n2 >= (1u << 24) || !nvn_be_addr(sd->data, n2, &mb, &mo)) return 0;
     return nvn2_key(sd->control, (const void *)(uintptr_t)sd->data, out);
 }
+// 首用算键的读数（11-18：4ff1884da 的修复走没走到，原先没有一行能数）：Switch 2 游戏每个阶段都在首用才算键，读的是 SetShaders 时自持的控制段（ctl_intern）；
+//   魔数 / 版本不对 = 首用时读到的不是 NVN2 控制段（#1520 卡比修复前 98 支就是这样）。g_ctl_held / g_ctl_uniq：SetShaders 自持控制段的次数 / 去重后份数
+static _Atomic uint64_t g_ctl_held, g_ctl_uniq, g_n2_late, g_n2_late_bad;
 int prog_key(const prog_t *p, unsigned st, uint8_t key[8]) {
     if (st >= p->nstage) return 0;
     prog_keys_t *k = pk_get(p, 1);
     if (!(k->ok >> st & 1)) {
         int got = keys_hash(&p->sd[st], 0, k->key[st]); k->ok |= (uint8_t)(1u << st);
+        if (nvn2_on() && p->sd[st].control && (uint64_t)(uintptr_t)p->sd[st].control < (1ull << 47)) {
+            int ok = nvn2_ctl(p->sd[st].control); uint64_t c = atomic_fetch_add(&g_n2_late, 1) + 1, bad = ok ? atomic_load(&g_n2_late_bad) : atomic_fetch_add(&g_n2_late_bad, 1) + 1;
+            if (!(c & (c - 1)) || !ok) { static _Atomic int said_bad; if (ok || atomic_fetch_add(&said_bad, 1) < 4)
+                LOG("[nvn] Switch 2 着色器首用算键 %llu 次（控制段 NVN2 魔数 / 版本对 %llu、不对 %llu）；SetShaders 自持控制段 %llu 次（去重后 %llu 份）", (unsigned long long)c,
+                    (unsigned long long)(c - bad), (unsigned long long)bad, (unsigned long long)atomic_load(&g_ctl_held), (unsigned long long)atomic_load(&g_ctl_uniq)); }
+        }
         // S2Arm D-WQPH（11-15，Mac 奥日2 1.2.0：5 局每局 18–136 支「not in the shader map」，现编汇总成功 / 失败 / 跳过全 0）：SetShaders 时代码区还没进已登记的内存池
         //   （keys_hash mapped=1 不算键），那支没进首遇现编的待编表；到这里首用才算出键，dm_shader_miss_late 对 Switch 1 只认待编表里有的键，于是不在库里的整支丢、不现编。
         //   这里补登记（与 SetShaders 同一个入口：库里有就直接返回，没有就拷控制段进待编表 / 后台预编），控制段刚被 keys_hash 读过。NVN2 照旧走 dm_shader_miss_late 自己的首用登记
@@ -1414,6 +1429,41 @@ uint64_t nvn_prog_set_ns(uint64_t serial) {
     uint64_t ns = atomic_load_explicit(&e[1], memory_order_relaxed);
     return atomic_load_explicit(&e[0], memory_order_acquire) == serial ? ns : 0;
 }
+#if !defined(__ANDROID__)
+// 控制段只在 SetShaders 这次调用里保证有效（游戏之后可以复用那块内存），键却有留到首用（prog_key）才算的：Switch 2 阶段一律首用才算（代码区到首次绘制前还会变），
+//   Switch 1 阶段在代码区还不在已登记内存池时也是。原先首用时读游戏的控制段指针，读到的可能已是别的数据：
+//   0.5.7 iPhone 奥日2（Switch 1）+0x700 成了一个地址、+0x704 成了 0x76，键对不上库、代码长度取成 118 字节，现编越界；
+//   一款 Switch 2 游戏 108 支现编失败里 98 支的「控制段」连 NVN2 魔数都没有，宿主按 Switch 1 硬读（#1520 当成「新版控制段没认出」）。
+//   这里按内容去重拷一份自持，首用算键、首遇现编、补齐 / 输出类型变体都读它。同一份只存一份、不释放：总量以不同着色器数为界，程序快照也可能还引用着它。
+//   （DM_NVN_SHDUMP 诊断档一直整份拷控制段，所以开转存复现不出来；安卓走自己的自持控制段 s2a_source_hold_pending）
+// 弱链接[nvntest]：s2a_snap_conv_fread（runtime/src/snapshot.c 提供，经 snapfmt.h snap_fread 用：快照布局变了按字段转；图形单测不链宿主）
+// 弱链接[nvntest]：s2a_snap_handout_blob（runtime/src/snapshot.c 提供；图形单测不链宿主，链接行按这行放行未定义）
+void s2a_snap_handout_blob(const void *p, uint32_t n) __attribute__((weak));
+typedef struct ctl_own { struct ctl_own *next; uint32_t n; uint8_t md[CC_SHA256_DIGEST_LENGTH]; uint8_t bytes[0x880]; } ctl_own;
+static const void *ctl_intern(const void *ctl, uint32_t n) {
+    enum { B = 4096 }; static ctl_own *tab[B]; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    uint8_t md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256(ctl, n, md);
+    uint32_t h; memcpy(&h, md, 4); h %= B;
+    pthread_mutex_lock(&mu);
+    ctl_own *e = tab[h];
+    while (e && (e->n != n || memcmp(e->md, md, sizeof md))) e = e->next;
+    int fresh = 0;
+    if (!e && (e = calloc(1, sizeof *e))) { e->n = n; memcpy(e->md, md, sizeof md); memcpy(e->bytes, ctl, n); e->next = tab[h]; tab[h] = e; atomic_fetch_add(&g_ctl_uniq, 1); fresh = 1; }
+    atomic_fetch_add(&g_ctl_held, 1);   // 0x880 以内没拷的部分是 0
+    pthread_mutex_unlock(&mu);
+    // 这份拷贝的地址会写进游戏内存里的程序对象：即时存档按内容身份登记（整 0x880 字节，含补零），恢复时重建、游戏里的旧地址换成新的（runtime/src/snapshot.c）
+    if (fresh && s2a_snap_handout_blob) s2a_snap_handout_blob(e->bytes, (uint32_t)sizeof e->bytes);
+    return e ? e->bytes : ctl;
+}
+// 要首用才算键的这一阶段，控制段该自持多少字节（0 = 不自持：已在 SetShaders 算出键、控制段指针不是地址或读不了）
+static uint32_t ctl_hold_len(const NVNshaderData *sd, int keyed) {
+    if (!sd->control || (uint64_t)(uintptr_t)sd->control >= (1ull << 47)) return 0;
+    uint64_t a = (uint64_t)(uintptr_t)sd->control;
+    if (nvn2_on() && shader_bytes_readable(a, 8) && nvn2_ctl(sd->control))
+        return shader_bytes_readable(a, NVN2_CTL_COPY) ? NVN2_CTL_COPY : shader_bytes_readable(a, 0xd8) ? 0xd8 : 0;
+    return !keyed && shader_bytes_readable(a, 0x880) ? 0x880 : 0;
+}
+#endif
 NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData *sd) {
     prog_t *o = (prog_t *)p;
     if (n < 0 || n > 6) { LOG("【红】 ProgramSetShaders stage count %d", n); return 0; }
@@ -1436,6 +1486,10 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData 
         dm_shader_mesh_hold(sd[i].data, sd[i].control);   // NVN2 keys are deferred, but control + code are valid here; retain only mesh inputs
         if (keys_hash(&sd[i], 1, k->key[i])) { k->ok |= (uint8_t)(1u << i); dm_shader_miss(k->key[i], sd[i].data, sd[i].control); dm_shader_vs_hold_key(k->key[i], sd[i].data, sd[i].control); nvn_be_shader_prefetch(k->key[i]); }   // S2Arm: a key missing from the map is translated on the device now (graphics/nvn/host_adapt.m)
         else { uint8_t early[8]; if (keys_hash_early(&sd[i], early)) nvn_be_shader_prefetch(early); }   // S2Arm #674: Switch 2 stages, keyed at first use
+#if !defined(__ANDROID__)
+        // 首用才算键的阶段（Switch 2 一律；Switch 1 代码区还不在已登记内存池时），控制段先自持一份（ctl_intern）
+        { uint32_t hl = ctl_hold_len(&sd[i], k->ok >> i & 1); if (hl) o->sd[i].control = ctl_intern(sd[i].control, hl); }
+#endif
 #if defined(__ANDROID__)   // Android 直连的阶段 / 源快照 / 按 serial 记 key；Apple 回放不读这些，保持 main 原行为
         // 阶段只在 control 仍有效、code 已映射的本次调用内读定；code 未映射时留给 Bind
         // 用自持 control + 当时的 code 补算，Bind 不碰 guest control。
@@ -1467,8 +1521,9 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData 
             if (s2a_source_keep && sd[i].data && ((k->ok >> i) & 1)) {
                 uint32_t ncode = 0; memcpy(&ncode, (const uint8_t *)sd[i].control + 0x704, 4);
                 if (ncode && ncode < (1u << 24)) {
-                    (void)s2a_source_keep(k->key[i], (uint32_t)i, (const void *)(uintptr_t)sd[i].data, ncode,
-                                          sd[i].control, nctl);
+                    if (s2a_source_keep(k->key[i], (uint32_t)i, (const void *)(uintptr_t)sd[i].data, ncode,
+                                        sd[i].control, nctl) == 0 && k->stage[i] != 0xff && s2a_source_drop_pending_stage)
+                        s2a_source_drop_pending_stage(o->serial, (uint32_t)i);   // 源已存好、键与阶段都已算出：刚自持的控制段冗余（Bind 不会再要）
                     // 立刻 pin 住；先不挂到 psnap_ent（该条目还没建），循环后统一记账，避免 N5 的额外 prog_keys。
                     if (s2a_source_pin_key && npin < NVN_PROGRAM_PIN_MAX) {
                         int dup = 0;
@@ -2347,11 +2402,13 @@ NVN(nvnCommandBufferBindProgram, void, NVNcommandBuffer *c, const NVNprogram *p,
                         LOG("[nvn] bind: stage %u key completed from the control held at SetShaders (code was unmapped then)", i);
                 } else if (s2a_source_has && s2a_source_has(keys[i])) {
                     prog_source_pin(snap.serial, p, keys[i]);
+                    if (stage[i] != 0xff && s2a_source_drop_pending_stage) s2a_source_drop_pending_stage(snap.serial, i);   // 源已在、阶段已知：自持控制段冗余（阶段没认出时 Bind 还要靠它补）
                     continue;   // 已有完整快照：不重读 guest control
                 }
                 src_diag("bind", (int)i, (stage[i] == 0xff) ? -1 : stage[i], keys[i],
                          (const void *)(uintptr_t)sd->data, ncode, ctl, (int)((kok >> i) & 1));
-                (void)s2a_source_keep(keys[i], i, (const void *)(uintptr_t)sd->data, ncode, ctl, nctl);
+                if (s2a_source_keep(keys[i], i, (const void *)(uintptr_t)sd->data, ncode, ctl, nctl) == 0 && stage[i] != 0xff && s2a_source_drop_pending_stage)
+                    s2a_source_drop_pending_stage(snap.serial, i);   // 源已存好、阶段已知：自持控制段冗余
                 prog_source_pin(snap.serial, p, keys[i]);
             }
             if (completed) {
@@ -3181,7 +3238,17 @@ static void nvn2_win_builder_defaults(NVNwindowBuilder *b);   // 「NVN2 入口�
 NVN(nvnWindowBuilderSetDefaults, void, NVNwindowBuilder *b) { NVNdevice *dev = WB(b)->dev; memset(b, 0, sizeof(win_builder_t)); WB(b)->dev = dev; WB(b)->interval = 1;
     if (nvn2_on()) nvn2_win_builder_defaults(b); }   // NVN2 字段在 0x40 之后：只有 Switch 2 的构建器有那么大
 NVN(nvnWindowBuilderSetDevice, void, NVNwindowBuilder *b, NVNdevice *d) { WB(b)->dev = d; }
-NVN(nvnWindowBuilderSetNativeWindow, void, NVNwindowBuilder *b, NVNnativeWindow w) { WB(b)->native = w; }
+#if defined(__ANDROID__)
+// 安卓平台件 android/native/nvn/guest_window_crop.c 提供（原生窗口裁剪交直连上屏，#1335）。只有安卓有这个实现：
+//   苹果的 iOS / Mac 链接不放行弱未定义（iOS 全量编译链不过），所以整段只在安卓编
+extern void nvn_plat_guest_window_watch(void *) __attribute__((weak));
+#endif
+NVN(nvnWindowBuilderSetNativeWindow, void, NVNwindowBuilder *b, NVNnativeWindow w) {
+    WB(b)->native = w;
+#if defined(__ANDROID__)
+    if (nvn_plat_guest_window_watch) nvn_plat_guest_window_watch(w);
+#endif
+}
 NVN(nvnWindowBuilderSetTextures, void, NVNwindowBuilder *b, int n, NVNtexture *const *t) {
     if (n < 0 || n > 4) { LOG("【红】 WindowBuilderSetTextures count %d", n); n = n < 0 ? 0 : 4; }
     WB(b)->ntex = n; for (int i = 0; i < n; i++) WB(b)->tex[i] = t[i];
@@ -3485,6 +3552,10 @@ static void power_line(uint64_t frame) {
     return;
 #else
 
+    void nvn_be_handle_wait_stats(uint64_t s[6]); static uint64_t phw[6]; uint64_t hw[6]; nvn_be_handle_wait_stats(hw);
+    LOG("[nvn] CPU uniform-handle waits up to frame %llu: waits %llu, total %.3f ms, conservative %llu (all %llu, collision %llu), cancelled %llu (since previous report)", frame,
+        (unsigned long long)(hw[0] - phw[0]), (hw[1] - phw[1]) / 1e6, (unsigned long long)(hw[2] - phw[2]),
+        (unsigned long long)(hw[3] - phw[3]), (unsigned long long)(hw[4] - phw[4]), (unsigned long long)(hw[5] - phw[5])); memcpy(phw, hw, sizeof phw);
     static uint64_t pt, pe, pcpu, pp, piw, ppw, pg, pf, pld, pst, pfu, pudc; static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb);
     task_power_info_v2_data_t pw; mach_msg_type_number_t n = TASK_POWER_INFO_V2_COUNT;
     if (task_info(mach_task_self(), TASK_POWER_INFO_V2, (task_info_t)&pw, &n) != KERN_SUCCESS) return;
@@ -3509,6 +3580,9 @@ static void power_line(uint64_t frame) {
             "attachments per frame load %.0f MB / store %.0f MB, load-all store-all passes %.0f, saved by not storing unwritten attachments %.1f MB", frame, rs, (unsigned long long)(bf - pbf), (unsigned long long)(bs - pbs),
             (unsigned long long)(cut - pcut), (unsigned long long)(ccut - pccut), (unsigned long long)(pcutn - ppcut), (unsigned long long)(bsp - pbsp), (unsigned long long)(ud - pud), (unsigned long long)(uc - puc), (unsigned long long)(pm - ppm), (unsigned long long)(pr - ppr), (unsigned long long)(pf_ - ppf), (unsigned long long)(w5[1] - pw5[1]), (unsigned long long)(w5[2] - pw5[2]), (unsigned long long)(w5[3] - pw5[3]), (unsigned long long)(w5[0] - pw5[0]), (unsigned long long)(w5[4] - pw5[4]), (unsigned long long)(lt - plt), (unsigned long long)(ll - pll),
             (ld - pld) / 1048576.0 / nf, (st - pst) / 1048576.0 / nf, (fu - pfu) / nf, (udc - pudc) / 1048576.0 / nf); pbs = bs; pbf = bf; pcut = cut; pccut = ccut; ppcut = pcutn; pbsp = bsp; pud = ud; puc = uc; ppm = pm; ppr = pr; ppf = pf_; memcpy(pw5, w5, sizeof pw5); plt = lt; pll = ll;
+            { void nvn_be_handle_wait_stats(uint64_t s[6]); static uint64_t phw[6]; uint64_t hw[6]; nvn_be_handle_wait_stats(hw);   // PR #324：CPU 解码句柄前等已提交写入者的次数 / 耗时 / 保守等（全部页 / 槽冲突）/ 被取消
+              LOG("[nvn] CPU uniform-handle waits up to frame %llu: %llu waits, %.1f ms total, conservative %llu (all-pages %llu, slot collision %llu), cancelled %llu", frame, (unsigned long long)(hw[0] - phw[0]), (hw[1] - phw[1]) / 1e6,
+                  (unsigned long long)(hw[2] - phw[2]), (unsigned long long)(hw[3] - phw[3]), (unsigned long long)(hw[4] - phw[4]), (unsigned long long)(hw[5] - phw[5])); memcpy(phw, hw, sizeof phw); }
         char tc[400]; dm_thread_cpu(tc, sizeof tc, s);
         LOG("[nvn] threads up to frame %llu: CPU %s", frame, tc); }
     else { char yt[192], rs[900], tc[400]; dm_yield_top(yt, sizeof yt); nvn_be_res_stats(rs, sizeof rs); dm_thread_cpu(tc, sizeof tc, 1); }   // the first call only takes the baselines
@@ -3750,6 +3824,8 @@ __attribute__((weak)) void dm_fps_lock_tick(void) {}   // hle_fpslock.c: engine 
 static nvn_vpace g_vid; static pthread_mutex_t g_vid_mu = PTHREAD_MUTEX_INITIALIZER; static int g_vid_off = -1; static int g_vid_cap;
 static uint64_t g_vid_t, g_vid_f, g_vid_d; static double g_vid_dpf = -1; static int g_vid_busy_said;   // 每帧绘制数（每 ≥ 0.25 秒按绘制数 ÷ 出图数重算一次，g_vid_mu 下）
 void s2a_video_frame(void) { uint64_t t = now_ns(); pthread_mutex_lock(&g_vid_mu); nvn_vpace_frame(&g_vid, t); pthread_mutex_unlock(&g_vid_mu); }
+// 带片源时间戳的一帧（Switch 2 解码器，nvn2_codec.c cv_emit）：片源帧率按时间戳判，见 nvn_vpace.h
+void s2a_video_frame_pts(int64_t pts_ns) { uint64_t t = now_ns(); pthread_mutex_lock(&g_vid_mu); nvn_vpace_frame_pts(&g_vid, t, pts_ns); pthread_mutex_unlock(&g_vid_mu); }
 static int video_cap(void) {
     if (g_vid_off < 0) { const char *e = getenv("S2A_VIDEO_PACE"); g_vid_off = e && !strcmp(e, "0"); }
     if (g_vid_off) return 0;
@@ -3797,12 +3873,12 @@ __attribute__((weak)) int s2a_fps60_display_source(void) { return 0; }   // runt
 __attribute__((weak)) void s2a_qp_frame(uint32_t draws, int video, int cutscene, int game_itv) { (void)draws; (void)video; (void)cutscene; (void)game_itv; }   // runtime/src/qprompt_host.c；图形单测没有宿主
 static _Atomic int g_fps_game_itv;   // 这一帧按游戏自己设的间隔（不走 display 模式）
 // 社区帧率补丁改在 sdk 里 NVN 驱动的交换间隔（D-36F4：真机上游戏照旧调 nvnWindowSetPresentInterval(2)，被补丁改过的驱动按 1 交帧）：
-//   直连层接管了 NVN，sdk 里那段驱动代码不执行，游戏传的 2 原样进出图节拍、补丁开着仍 30 帧。补丁开着时 runtime/src/cpatch.c 经这里把间隔封到补丁意图（1），
+//   直连层接管了 NVN，sdk 里那段驱动代码不执行，游戏传的 2 原样进出图节拍、补丁开着仍 30 帧。补丁开着时 runtime/src/cpatch.c 经这里把间隔封到补丁意图（1；FPSLocker 配置同理，#1517：真机由 NX-FPS 插件锁游戏设的间隔），
 //   关掉 / 停帧救场时回 0（不封，跟游戏）。只封出图节拍用的间隔；游戏读回的 nvnWindowGetPresentInterval 仍是它自己设的（同真机：补丁改的是驱动交帧，不改游戏的变量）
 static _Atomic int g_itv_cap;
 void nvn_present_itv_cap(int cap) {
     if (cap < 0) cap = 0;
-    if (atomic_exchange(&g_itv_cap, cap) != cap) LOG("[nvn] 出图间隔上限 %d（%s）", cap, cap ? "社区帧率补丁改的是 sdk 里的驱动交帧，直连层按补丁意图交帧" : "不封，跟游戏设的间隔");
+    if (atomic_exchange(&g_itv_cap, cap) != cap) LOG("[nvn] 出图间隔上限 %d（%s）", cap, cap ? "社区帧率补丁开着（改 sdk 里驱动交帧的一类，或 FPSLocker 配置：真机 NX-FPS 插件锁游戏设的间隔），直连层按补丁意图交帧" : "不封，跟游戏设的间隔");
 }
 static int game_itv(const win_t *o) {
     int v = o->interval > 0 ? o->interval : 1, cap = atomic_load(&g_itv_cap);
@@ -4919,7 +4995,11 @@ static void nvn2_win_init(NVNwindow *w, const NVNwindowBuilder *b) {
     const win_builder2 *s = (const win_builder2 *)b;
     W2(w)->acquire_timeout = s->acquire_timeout; W2(w)->color_space = s->color_space;
     memcpy(W2(w)->hdr_display, s->hdr_display, sizeof s->hdr_display); memcpy(W2(w)->hdr_content, s->hdr_content, sizeof s->hdr_content);
-    if (s->color_space) { static int once; if (!once++) LOG("【红】 WindowInitialize：色彩空间 %d（非缺省），宿主按 SDR（sRGB）上屏，宽色域 / HDR 的颜色会偏", s->color_space); }
+    if (s->color_space) {   // PR1 探针：红日志扩为结构化一行（M0 判读字段：color_space + hdr_display[10] + hdr_content[2]），触发条件与节流不变
+        static int once; if (!once++)
+            LOG("【红】 WindowInitialize：色彩空间 %d（非缺省），宿主按 SDR（sRGB）上屏，宽色域 / HDR 的颜色会偏；HDR 元数据 display=[%g %g %g %g %g %g %g %g %g %g] content=[%g %g]",
+                s->color_space, s->hdr_display[0], s->hdr_display[1], s->hdr_display[2], s->hdr_display[3], s->hdr_display[4], s->hdr_display[5], s->hdr_display[6], s->hdr_display[7], s->hdr_display[8], s->hdr_display[9], s->hdr_content[0], s->hdr_content[1]);
+    }
 }
 NVN_NOPROTO(nvnWindowBuilderSetAcquireTimeout, void, NVNwindowBuilder *b, int64_t ns) { WB2(b)->acquire_timeout = ns; }
 NVN_NOPROTO(nvnWindowBuilderGetAcquireTimeout, int64_t, const NVNwindowBuilder *b) { return ((const win_builder2 *)b)->acquire_timeout; }
@@ -5620,11 +5700,11 @@ int hle_snap_ft_restore(const void *(*lookup)(uint64_t ser)) {
     LOG("%s即时存档恢复：CPU 后填贴图重新登记 %d 个（找不到 %d）", miss ? "【黄】" : "", n, miss); return n;
 }
 
-// 即时存档：游戏内存里放着宿主定义的 NVN 对象（nvn_obj.h，游戏分配的对象内存里直接是这些结构）+ 本文件按整块存的表：布局指纹
-#include "../../../../runtime/src/snapfmt.h"
-void hle_snap_fps(void (*cb)(const char *name, uint64_t fp)) {
-    cb("nvn.tex", SNAP_FP_TYPE(tex_t)); cb("nvn.cmd", SNAP_FP_TYPE(cmd_t)); cb("nvn.sync", SNAP_FP_TYPE(sync_t)); cb("nvn.pool", SNAP_FP_TYPE(pool_t));
-    cb("nvn.prog", SNAP_FP_TYPE(prog_t)); cb("nvn.samp", SNAP_FP_TYPE(samp_t)); cb("nvn.view", SNAP_FP_TYPE(view_t)); cb("nvn.win", SNAP_FP_TYPE(win_t));
-    cb("nvn.queue", SNAP_FP_TYPE(queue_t)); cb("nvn.dev", SNAP_FP_TYPE(dev_t_)); cb("nvn.ev", SNAP_FP_TYPE(ev_t)); cb("nvn.dpool", SNAP_FP_TYPE(dpool_t));
+// 即时存档：游戏内存里放着宿主定义的 NVN 对象（nvn_obj.h，游戏分配的对象内存里直接是这些结构）+ 本文件按整块存的表：布局指纹。
+//   首字段是 magic 的对象带上 magic 值：换版本布局变了时恢复处按它在游戏内存里找到对象原地转（runtime/src/snapshot.c conv_guest_objs）
+void hle_snap_fps(snap_fp_cb cb) {
+    cb("nvn.tex", SNAP_FP_OBJ(tex_t, MAGIC('T', 'E', 'X', 0))); cb("nvn.cmd", SNAP_FP_OBJ(cmd_t, MAGIC('C', 'M', 'D', 'B'))); cb("nvn.sync", SNAP_FP_OBJ(sync_t, MAGIC('S', 'Y', 'N', 'C'))); cb("nvn.pool", SNAP_FP_OBJ(pool_t, MAGIC('P', 'O', 'O', 'L')));
+    cb("nvn.prog", SNAP_FP_OBJ(prog_t, MAGIC('P', 'R', 'O', 'G'))); cb("nvn.samp", SNAP_FP_OBJ(samp_t, MAGIC('S', 'M', 'P', 0))); cb("nvn.view", SNAP_FP_TYPE(view_t)); cb("nvn.win", SNAP_FP_OBJ(win_t, MAGIC('W', 'I', 'N', 'D')));
+    cb("nvn.queue", SNAP_FP_OBJ(queue_t, MAGIC('Q', 'U', 'E', 'U'))); cb("nvn.dev", SNAP_FP_OBJ(dev_t_, MAGIC('D', 'E', 'V', 0))); cb("nvn.ev", SNAP_FP_OBJ(ev_t, MAGIC('E', 'V', 'N', 'T'))); cb("nvn.dpool", SNAP_FP_TYPE(dpool_t));
     cb("hle.dpool_base", SNAP_FP_TYPE(struct dpool_base)); cb("hle.schunk", SNAP_FP_TYPE(schunk)); cb("hle.sblk", SNAP_FP_TYPE(sblk));
 }

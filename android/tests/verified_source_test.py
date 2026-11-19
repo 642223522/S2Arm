@@ -20,7 +20,12 @@ def main():
     wrapper = (JAVA/'NativeBridge.java').read_text()
     method = next(x.strip() for x in wrapper.splitlines() if x.strip().startswith('static boolean verifyGameBytes('))
     admission = next(x.strip() for x in wrapper.splitlines() if x.strip().startswith('static int gameFileAdmission('))
-    home = Path(os.environ['JAVA_HOME'])
+    # JDK 与安卓整套其余步同一个查找口径（android/tools/jdk17.sh：S2A_JAVAC → JAVA_HOME → java_home -v 17 → Homebrew → 发行版 → 门禁主机副本）；
+    #   原先直接读 JAVA_HOME，没设时崩成 KeyError，看不出是缺 JDK（11-18 一台门禁主机缺 JDK 时连红）
+    found = subprocess.run(['bash', str(ANDROID/'tools/jdk17.sh')], capture_output=True, text=True)
+    if found.returncode != 0 or not found.stdout.strip():
+        sys.exit('【红】verified_source_test：找不到 JDK 17（android/tools/jdk17.sh 无结果），装好 JDK 17 或设 JAVA_HOME / S2A_JAVAC 后再跑')
+    home = Path(found.stdout.strip()).resolve().parent.parent
     with tempfile.TemporaryDirectory(prefix='s2a-verified-source-') as directory:
         out = Path(directory)
         (out / 'classes').mkdir()

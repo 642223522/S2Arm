@@ -68,6 +68,8 @@ HL=$S/build/gal$GX/ios/gal_helpers   # make ios 编渲染器库时一并出（gr
   || { echo "【红】渲染器内部辅助库拷不进壳（${HL}）"; exit 1; }
 # 壳本体去调试映射与本地符号（11-15 瘦身：125 → 50 MB；玩家机器上没有代码读本地符号）；未去符号原件放壳目录旁 <壳目录>.symbols/（不进壳、不进 App，发版存档用来离线还原崩溃报告）
 rm -rf "$OUT.symbols" && mkdir -p "$OUT.symbols" && cp "$APP/S2Arm" "$OUT.symbols/S2Arm" && xcrun strip -S -x "$APP/S2Arm" || { echo "【红】壳去符号失败"; exit 1; }
+# tvOS 主屏图标（#1457）：tvOS 只认 actool 编的 Assets.car（分层品牌图标），出壳时编一次放进壳，玩家机上组装沿用（pack/tv_icon.py）
+[ "$OS" = tvos ] && { "${S2A_PY:-python3}" "$H/tv_icon.py" "$R/launchers/macos/Branding/AppIcon-iOS.png" "$APP" || exit 1; }
 TABLES=$("$MK" -C "$SN" -s print-app-tables S2A_APPLE_OS=$OS) || { echo "【红】取不到随包表清单"; exit 1; }
 "${S2A_PY:-python3}" "$H/ship_ext.py" shell --app "$APP" --out "$OUT" --tables "$TABLES" --entitlements "$ENT" || exit 1
 if [ -n "${S2A_SHELL_CLOSURE_SUGGEST:-}" ]; then "${S2A_PY:-python3}" "$H/shell/closure.py" suggest "$S" > "$S2A_SHELL_CLOSURE_SUGGEST" || exit 1

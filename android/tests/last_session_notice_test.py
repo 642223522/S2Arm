@@ -40,10 +40,7 @@ def stubs():
         'public void setEnabled(boolean enabled){throw new AssertionError("diagnostic export unexpectedly called");}',
         'public static final java.util.List<Object[]> enabledLog=new java.util.concurrent.CopyOnWriteArrayList<>();'
         ' public void setEnabled(boolean enabled){enabledLog.add(new Object[]{this,enabled});}')
-    out['android/widget/TextView.java'] = _replace(out['android/widget/TextView.java'],
-        'public void setText(String s){messages.add(s);} public void setText(int i){}',
-        'public volatile String text; public int textId;'
-        ' public void setText(String s){text=s;messages.add(s);} public void setText(int i){textId=i;}')
+    # TextView 替身（text / textId）直接用 game_library_import_test 那一份
     out['android/widget/Button.java'] = '''package android.widget; import android.content.Context; import android.view.View;
  public class Button extends TextView { public static final java.util.List<Button> all=new java.util.ArrayList<>(); private View.OnClickListener listener;
  public Button(Context c){super(c);all.add(this);} public void setOnClickListener(View.OnClickListener l){listener=l;}

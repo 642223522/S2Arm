@@ -320,6 +320,9 @@ int nvn_vk_format_is_depth(VkFormat f) {
         default: return 0;
     }
 }
+int nvn_vk_format_has_depth(VkFormat f) {
+    return nvn_vk_format_is_depth(f) && f != VK_FORMAT_S8_UINT;
+}
 uint64_t nvn_vk_format_compressed_image_bytes(uint32_t nvn_format, uint32_t w, uint32_t h) {
     nvn_fmt_info info;
     if (!nvn_fmt_info_of(nvn_format, &info) || !info.bytes) return 0;

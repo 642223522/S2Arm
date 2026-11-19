@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Independent production rp_draw/rp_buf GPU test; never includes legacy tests.
 #include "rp_exec.h"
+#include "replay_pass_barrier_fixture.h"
 #include "rp_state.h"
 #include "rp_res.h"
 #include "rp_shader.h"
@@ -70,8 +71,11 @@ const void *nvn_dirty_span(const void *a,size_t n){(void)a;(void)n;return NULL;}
 long nvn_dirty_page_gens(const void *s,const void *a,size_t l,uint64_t *g,size_t n){(void)s;(void)a;(void)l;(void)g;(void)n;return -1;}
 void nvn_dirty_protect(const void *a,size_t n){(void)a;(void)n;}
 void rp_view_pin_begin(void){}void rp_view_pin_end(void){}
-nvn_gpu_view rp_view_by_id(int i,nvn_gpu_cmd c,const tex_t **t){(void)i;(void)c;(void)t;return NULL;}
-nvn_gpu_view rp_view_by_id_decl(int i,uint8_t t,uint8_t k,int e,nvn_gpu_cmd c,const tex_t **o){(void)i;(void)t;(void)k;(void)e;(void)c;(void)o;return NULL;}
+nvn_gpu_view rp_view_by_id(int i,nvn_gpu_cmd c,tex_t *t){(void)i;(void)c;if (t) memset(t, 0, sizeof *t);return NULL;}
+nvn_gpu_view rp_view_by_id_decl(int i,uint8_t t,uint8_t k,int e,nvn_gpu_cmd c,tex_t *o){(void)i;(void)t;(void)k;(void)e;(void)c;if (o) memset(o, 0, sizeof *o);return NULL;}
+nvn_gpu_pool_table rp_pool_table(nvn_gpu_cmd c,int samp,int base,uint32_t n,uint8_t dtt,uint8_t dcls,const char **why){(void)c;(void)samp;(void)base;(void)n;(void)dtt;(void)dcls;if(why)*why="pool_table_unresolved";return NULL;}   // 本夹具不出整池数组
+// 此夹具未提供查询采样器证明，不使用内部查询对象。
+nvn_gpu_samp rp_sampler_for_query(void) { return NULL; }
 nvn_gpu_samp rp_samp_by_id(int i){(void)i;return NULL;}
 nvn_gpu_samp rp_samp_for_tex(int sid, int tid) { (void)tid; return rp_samp_by_id(sid); }   // #1072：替身不判过滤能力
 uint32_t rp_fmt_caps(uint32_t f) { return nvn_gpu_format_caps(f); }
@@ -82,7 +86,7 @@ nvn_gpu_tex rp_tex_backend_by_serial(uint64_t s){(void)s;return NULL;}
 const p_set_rt *rp_pass_target(void){return &target;}int rp_pass_slot_attached(int i){return i==0;}
 void rp_pass_slot_size(int i,uint32_t *w,uint32_t *h){(void)i;*w=*h=64;}void rp_pass_noatt_size(uint32_t *w,uint32_t *h){(void)w;(void)h;}void rp_pass_note_draw(int d){(void)d;}
 // #950 给 rp_draw.c 新加的通道依赖：中性替身（没有待折清除、不缩渲染区域）
-int rp_pass_parked(void){return 0;}void rp_pass_prepare_draw(nvn_gpu_cmd c){(void)c;}void rp_pass_land_reads(nvn_gpu_cmd c,const tex_t *const *ts,int n){(void)c;(void)ts;(void)n;}
+int rp_pass_parked(void){return 0;}void rp_pass_prepare_draw(nvn_gpu_cmd c,uint32_t color_write_mask){(void)c;(void)color_write_mask;}void rp_pass_land_reads(nvn_gpu_cmd c,const tex_t *const *ts,int n){(void)c;(void)ts;(void)n;}
 static void pass(nvn_gpu_cmd c,int clear){nvn_gpu_pass_desc p={0};p.ncolor=1;p.color[0].view=target_view;p.color[0].load=clear?NVN_GPU_LOAD_CLEAR:NVN_GPU_LOAD_LOAD;p.color[0].store=NVN_GPU_STORE_STORE;p.color[0].clear.f[3]=1;p.w=p.h=64;p.layers=1;nvn_gpu_pass_begin(c,&p);pass_open=1;}
 int rp_pass_begin(nvn_gpu_cmd c){if(!pass_open)pass(c,0);return 1;}void rp_pass_flush(nvn_gpu_cmd c){if(pass_open){nvn_gpu_pass_end(c);pass_open=0;}}
 static void pixels(const uint8_t *p,int drew){for(unsigned y=2;y<62;y++)for(unsigned r=0;r<4;r++)for(unsigned x=2;x<14;x++){const uint8_t *v=p+(y*64+r*16+x)*4;int red=drew&&r==0;if(v[0]!=(red?255:0)||v[1]||v[2]||v[3]!=255)failures++;}}
@@ -254,6 +258,3 @@ int main(int argc,char **argv) {
 int nvn_dirty_log_open(const void *s, uint64_t *i, uint64_t *c) { (void)s; (void)i; (void)c; return 0; }   // 本夹具没有脏页追加日志：回放核心走原路径
 int nvn_dirty_log_read(const void *s, uint64_t i, uint64_t *c, void (*f)(void *, uintptr_t, uintptr_t), void *u) { (void)s; (void)i; (void)c; (void)f; (void)u; return 0; }
 int nvn_dirty_page_armed(const void *s, const void *a) { (void)s; (void)a; return 0; }
-int nvn_dirty_block_snapshot(const void *s, const void *a, size_t n, uint64_t *v, uint64_t *e) {
-    (void)s; (void)a; (void)n; (void)v; (void)e; return 0;
-}

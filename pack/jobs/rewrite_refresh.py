@@ -3,7 +3,7 @@
 """只重跑改写阶段（维护者 11-11：改写器修了，受影响的款不重出资源包，只换改写产物，随「更新 iPhone 上的 S2Arm」组进新壳）。
 
 为什么不靠缓存键：改写阶段的键含改写器源码指纹（pack/stage_rewrite.sh），改写器一改所有款的键都变；也不能比产物（游戏库里早些时候出的款，
-产物本来就跟今天的改写器对不上，比出差别不等于受这次修复影响）。判据由改写器自己报：统计行里 x18_spdyn > 0 的模块，产物会因这次修复而变
+产物本来就跟今天的改写器对不上，比出差别不等于受这次修复影响）。判据由改写器自己报：统计行里 x18_spdyn 或 pacga > 0 的模块，产物会因这次修复而变
 （开发丙 11-11 实测：九款金样全 0、产物逐字节同旧；路易吉洋馆 3 两个版本各 38）。
 
 做法（每款）：
@@ -11,7 +11,7 @@
   2. 取原始 exefs：共用解包目录还有效就用它，否则用读取器 --exefs-only 从原件只解 exefs（几秒）；原件不在（外接盘没插）→ 这次跳过、下次再核
   3. 对 main / sdk / subsdk0–9 跑改写器，输入与出包时相同：这款 kit 里的 widen_sites.tsv、fps.tsv，同一份随包代码补丁，S2A_TARGET / 自旋闸同出包
      （11-11 核过：旧改写器按这组输入重跑，产物与完整出包逐字节相同）
-  4. 任一模块 x18_spdyn > 0 → 这款受影响：该模块的改写产物（<模块>.patched.bin / .fixups.tsv / .gates.tsv / .sites.tsv / .gaps.tsv / .widen.tsv / .code_patch.tsv）
+  4. 任一模块 x18_spdyn / pacga > 0 → 这款受影响：该模块的改写产物（<模块>.patched.bin / .fixups.tsv / .gates.tsv / .sites.tsv / .gaps.tsv / .widen.tsv / .code_patch.tsv）
      换进 kit；资源包（game.img）、直连库不动不推
   5. 记下本引擎的改写器指纹
 romfs 里藏的 NRO 模块没有原件可取（资源在 game.img 里），不在这里重跑：保持 kit 原样。
@@ -36,7 +36,9 @@ from core import Failure
 MODULE = re.compile(r"(main|sdk|subsdk[0-9])")
 SGRADE_TABLES = ("cpatch.tsv", "cpatch_rows.tsv", "cpatch_excluded.tsv")   # 随包表（runtime/src/cpatch.c 读 cpatch.tsv）+ 改写用的补丁行表：一起换，kit 里的配方才与产物一致（按配方现建 kit 要用它，11-16）；另有 cheat-src.*（金手指原文随包）
 OUTPUTS = ("patched.bin", "fixups.tsv", "gates.tsv", "sites.tsv", "gaps.tsv", "widen.tsv", "code_patch.tsv")
-AFFECTED = re.compile(r"'x18_spdyn':\s*(\d+)")
+# 受这次（或往后）改写器修复影响的必改点类别：x18_spdyn（11-11 栈指针动态改写修复）、pacga（11-17 确定性指针认证：较新 Switch 2 SDK
+#   切纤程把 pacga 校验值存进内存，宿主密钥每进程不同，即时快照换进程恢复后校验不过；改写器把它换成固定密钥实现）
+AFFECTED = re.compile(r"'(?:x18_spdyn|pacga)':\s*(\d+)")
 
 
 def rewriter_id(c):
@@ -194,11 +196,22 @@ def _original_nup_exefs(c, game, packages, work):
             shutil.rmtree(scratch, ignore_errors=True)
 
 
+def own_table_ok(env):
+    """我方帧率表（fps.tsv 的 c 行改指令）只在内部对照口径 S2A_CAPS_OWN=1 打进程序，同 stage_rewrite.sh FT（11-18，#1607）：
+    11-13 撤我方 60 帧后运行时只把槽写成关值，c 行却照样改了游戏的限帧代码，60 帧关着也能跑到 60"""
+    return env.get("S2A_CAPS_OWN") == "1"
+
+
+def own_table(p):
+    """旧包产物根里带改指令（c 行）的我方帧率表"""
+    return p.name == "fps.tsv" and any(l.split("#", 1)[0].split()[:1] == ["c"] for l in p.read_text(encoding="utf-8", errors="replace").splitlines())
+
+
 def rewrite_env(c, kit, exefs, target):   # exefs None：不带随包代码补丁（补丁按主程序构建号认，只改 exefs 模块）
     env = dict(c.env(), S2A_TARGET=target, S2A_REWRITE_SPIN=os.environ.get("S2A_REWRITE_SPIN", "1"))
     for k in ("S2A_FPS_TSV", "S2A_CPATCH_TSV", "S2A_CODE_PATCH", "S2A_CODE_BUILD", "S2A_FIX_TSV"):
         env.pop(k, None)
-    if (kit / "fps.tsv").is_file():
+    if (kit / "fps.tsv").is_file() and own_table_ok(env):
         env["S2A_FPS_TSV"] = str(kit / "fps.tsv")
     # 游戏缺陷修补表：同 stage_rewrite.sh（引擎里的 runtime/fix/<main 构建号前 16 位>.tsv）
     if exefs is not None and (exefs / "main").is_file():
@@ -276,7 +289,7 @@ def cheats_digest(c, gid):
     """这款金手指文件夹里各 txt 的名字与内容摘要（开关状态 enabled.txt / status.txt 不算：开关不改要编进程序的东西）；没有 = '-'"""
     import cheats
     d = cheats.cheats_dir(c, gid.upper(), create=False)
-    files = sorted(p for p in d.glob("*.txt") if p.is_file() and p.name not in cheats.SKIP) if d.is_dir() else []
+    files = sorted(p for p in d.glob("*.txt") if p.is_file() and p.name not in cheats.SKIP and not layout.os_junk(p.name)) if d.is_dir() else []
     if not files:
         return "-"
     h = hashlib.sha256()
@@ -322,7 +335,8 @@ def sgrade_rewrite(c, game, base, exefs, target, work):
     shutil.copytree(Path(exefs).resolve(), root / "exefs")
     skip = tuple("." + e for e in OUTPUTS)
     for p in Path(base).iterdir():   # 逐款表照拷（出表读 fps.tsv 判「本款已有我方帧率表」、改写读 widen_sites.tsv）；改写产物与旧补丁表不拷
-        if p.is_file() and not p.name.endswith(skip) and not p.name.startswith(("cpatch", "cheat-src.")) and p.suffix != ".log":
+        if p.is_file() and not p.name.endswith(skip) and not p.name.startswith(("cpatch", "cheat-src.")) and p.suffix != ".log" \
+                and not (own_table(p) and not own_table_ok(c.env())):   # 旧包带的我方帧率表不再照拷：不打改指令，出表也不因它拒社区帧率补丁
             shutil.copyfile(p, root / p.name)
     dirs = patches.fetch(c, game, str(exefs), "ios" if target == "ios" else "mac")
     try:

@@ -146,6 +146,101 @@ int main(void) {
         }
     }
 
+    // #1594：类型 3 句柄（贴图字在 c2 分离贴图表、采样器池下标是着色器里的立即数）。v2 结果的 constSampler = 池下标 0..4095，
+    //   slot = 贴图字（90..344 偶）→ 分离贴图槽 128 + k；采样器来源 = 常量池下标（FD_SAMP_ID），不是 samp_slot，也不是「取同字高位」。
+    //   下标 0 是真下标（不能当「没有」）；没有这个字段的条目一律保持「没有常量采样器」。
+    {
+        static const struct { int slot, sampler, want; } cs_ok[] = {{90, 257, 128}, {92, 0, 129}, {124, 1, 145}, {344, 4095, 255}};
+        for (unsigned k = 0; k < sizeof cs_ok / sizeof cs_ok[0]; k++) {
+            char b[240]; why[0] = 0;
+            snprintf(b, sizeof b, "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":%d,\"constSampler\":%d,\"count\":1}", cs_ok[k].slot, cs_ok[k].sampler);
+            int rc = parse_v2(b, &p, why, sizeof why);
+            char what[160]; snprintf(what, sizeof what, "v2 constant sampler slot %d sampler %d parses", cs_ok[k].slot, cs_ok[k].sampler);
+            CHECK(rc == 0 && p.binding_count == 1, what);
+            if (rc == 0 && p.binding_count == 1) {
+                const struct fd_binding *cb = &p.bindings[0];
+                snprintf(what, sizeof what, "constant sampler slot %d sampler %d -> tex_slot %d + sampler id, no samp_slot / ubo", cs_ok[k].slot, cs_ok[k].sampler, cs_ok[k].want);
+                CHECK(cb->kind == 2 && cb->count == 1 && cb->tex_slot == cs_ok[k].want && cb->samp_slot == -1 && !cb->tex_ubo &&
+                      cb->samp_src == FD_SAMP_ID && cb->samp_val == cs_ok[k].sampler, what);
+            }
+            nvn_vk_program_free(&p);
+        }
+        // 没有 constSampler 的分离贴图 / 分离采样器条目：不带常量采样器（采样器来源保持 NONE）
+        why[0] = 0;
+        CHECK(parse_v2("{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":90,\"samp_slot\":3,\"count\":1}", &p, why, sizeof why) == 0 &&
+              p.binding_count == 1 && p.bindings[0].samp_slot == 3 && p.bindings[0].samp_src == FD_SAMP_NONE, "samp_slot form carries no constant sampler");
+        nvn_vk_program_free(&p);
+        // 两条常量采样器绑定：各取各的池下标
+        why[0] = 0;
+        CHECK(parse_v2("{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":90,\"constSampler\":257,\"count\":1},"
+                       "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":1,\"slot\":100,\"constSampler\":259,\"count\":1}", &p, why, sizeof why) == 0 &&
+              p.binding_count == 2 && p.bindings[0].tex_slot == 128 && p.bindings[0].samp_val == 257 && p.bindings[1].tex_slot == 133 && p.bindings[1].samp_val == 259 &&
+              p.bindings[0].samp_src == FD_SAMP_ID && p.bindings[1].samp_src == FD_SAMP_ID, "two constant samplers keep their own sampler ids");
+        nvn_vk_program_free(&p);
+        // 拒绝：任何一条都不能退化成「只填贴图槽、采样器取同字高位」
+        static const char *const cs_bad[] = {
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":90,\"constSampler\":4096,\"count\":1}",                         // 池下标超 12 位
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":90,\"constSampler\":-1,\"count\":1}",                           // 负数
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":90,\"constSampler\":1.5,\"count\":1}",                          // 非整数
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":90,\"constSampler\":\"7\",\"count\":1}",                        // 不是数字
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":91,\"constSampler\":7,\"count\":1}",                            // 奇字
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":88,\"constSampler\":7,\"count\":1}",                            // 分离贴图表之前
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":346,\"constSampler\":7,\"count\":1}",                           // 分离贴图表之后
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"constSampler\":7,\"count\":1}",                                        // 没有 slot
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":90,\"constSampler\":7,\"count\":2}",                            // 数组
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":90,\"samp_slot\":3,\"constSampler\":7,\"count\":1}",             // 同时给 samp_slot
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"constSampler\":7,\"count\":1,\"uboSlot\":1,\"uboOffset\":1024}",       // 同时给 UBO 句柄
+            "{\"stage\":\"fs\",\"kind\":\"uniform\",\"set\":2,\"binding\":0,\"slot\":90,\"constSampler\":7,\"count\":1}",                            // 不是贴图
+            "{\"stage\":\"fs\",\"kind\":\"storage\",\"set\":2,\"binding\":0,\"slot\":90,\"constSampler\":7,\"count\":1,\"rw\":false,\"nvnSlot\":0}",  // 不是贴图
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":90,\"constSampler\":7,\"constSampler\":8,\"count\":1}",         // 字段重复
+        };
+        for (unsigned i = 0; i < sizeof cs_bad / sizeof cs_bad[0]; ++i) {
+            why[0] = 0;
+            char what[96]; snprintf(what, sizeof what, "constant sampler negative %u rejected by v2", i);
+            CHECK(parse_v2(cs_bad[i], &p, why, sizeof why) != 0, what);
+            nvn_vk_program_free(&p);
+        }
+        // v1 结果没有这个字段的合同：带了就拒（不能被当成「多余字段」忽略掉后绑成错的采样器）
+        why[0] = 0;
+        CHECK(parse_json("{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":90,\"constSampler\":7,\"count\":1}", &p, why, sizeof why) != 0, "constant sampler in a v1 result is rejected");
+        nvn_vk_program_free(&p);
+    }
+
+    // 整池数组（安卓整池 N=0）：v2 结果的 pool = "texture" / "sampler"，count = 池长，没有任何槽位来源。
+    //   期望（手算）：贴图池 count 64 → pool 1、count 64、tex_slot −1；采样器池 count 8 → pool 2、count 8；池长可以超 FD_MAX_ARRAY_ELEMENTS（4096）
+    {
+        CHECK(parse_v2("{\"stage\":\"fs\",\"kind\":\"texture\",\"source\":\"texture\",\"set\":2,\"binding\":0,\"count\":64,\"pool\":\"texture\"},"
+                       "{\"stage\":\"fs\",\"kind\":\"texture\",\"source\":\"texture\",\"set\":2,\"binding\":64,\"count\":8,\"pool\":\"sampler\"},"
+                       "{\"stage\":\"vs\",\"kind\":\"texture\",\"source\":\"texture\",\"set\":2,\"binding\":72,\"count\":4096,\"pool\":\"texture\"}", &p, why, sizeof why) == 0 &&
+              p.binding_count == 3 && p.bindings[0].pool == 1 && p.bindings[0].count == 64 && p.bindings[0].tex_slot == -1 && p.bindings[0].stage_idx == 1 &&
+              p.bindings[1].pool == 2 && p.bindings[1].count == 8 && p.bindings[1].samp_slot == -1 &&
+              p.bindings[2].pool == 1 && p.bindings[2].count == 4096 && p.bindings[2].stage_idx == 0, "v2 pool arrays parse: texture 64 / sampler 8 / texture 4096");
+        nvn_vk_program_free(&p);
+        static const char *const pool_bad[] = {
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":64,\"pool\":\"image\"}",                      // 不认识的池
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":64,\"pool\":1}",                                // 不是字符串
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"slot\":0,\"count\":64,\"pool\":\"texture\"}",          // 同时带 slot
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"samp_slot\":3,\"count\":64,\"pool\":\"texture\"}",     // 同时带 samp_slot
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"constSampler\":3,\"count\":64,\"pool\":\"sampler\"}",  // 同时带 constSampler
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":64,\"pool\":\"texture\",\"uboSlot\":1,\"uboOffset\":0}", // 同时带 UBO 句柄
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":1,\"pool\":\"texture\"}",                       // 池长 < 2
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":65535,\"pool\":\"texture\"}",                   // 池长 ≥ 0xffff
+            "{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"pool\":\"texture\"}",                                    // 没有 count
+            "{\"stage\":\"fs\",\"kind\":\"image\",\"set\":3,\"binding\":0,\"count\":64,\"pool\":\"texture\"}",                        // 不是贴图
+            "{\"stage\":\"cs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":64,\"pool\":\"texture\"}",                      // 不是图形阶段
+        };
+        for (unsigned i = 0; i < sizeof pool_bad / sizeof pool_bad[0]; ++i) {
+            why[0] = 0;
+            char what[80]; snprintf(what, sizeof what, "pool array negative %u rejected by v2", i);
+            CHECK(parse_v2(pool_bad[i], &p, why, sizeof why) != 0, what);
+            nvn_vk_program_free(&p);
+        }
+        why[0] = 0;
+        CHECK(parse_json("{\"stage\":\"fs\",\"kind\":\"texture\",\"set\":2,\"binding\":0,\"count\":64,\"pool\":\"texture\"}", &p, why, sizeof why) != 0,
+              "pool array in a v1 result is rejected");
+        nvn_vk_program_free(&p);
+    }
+
     // #999 / #1189：现编结果的平铺写法 uboSlot（cbuf − 3）+ uboOffset（句柄字字节偏移），没有 slot。
     //   组合句柄一个字：贴图号低 20 位、采样器号高 12 位 → 贴图与采样器都取同一个字（FD_SAMP_UBO，采样器字 sid=0）。
     for (int v = 1; v <= 2; ++v) {

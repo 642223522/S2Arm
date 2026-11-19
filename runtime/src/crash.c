@@ -49,6 +49,7 @@ static int s2a_frames(uint64_t fp, uint64_t *lr, int max) {
     while (k < max && fp && !(fp & 7) && frame_read(fp, rec) && rec[1]) { lr[k++] = rec[1]; if (rec[0] <= fp) break; fp = rec[0]; }   // 返回地址 0 = 链尾（不可读页经内核读出全 0 也落在这里）
     return k;
 }
+int s2a_frames_of(uint64_t fp, uint64_t *lr, int max) { return s2a_frames(fp, lr, max); }   // 别处取帧链用（只读内存、不分配、不取锁：可在挂住别的线程时调）
 // 指令原文（#368：没有原件的款崩在游戏代码里，日志只有地址，定不了空指针是哪次调用的返回值、写的哪个字段）：
 //   a 前 before 条、后 after 条 32 位指令字（内存里的，即改写后真正跑的那份），a 那条用 [ ] 标出；经内核读（同 frame_read），不可读写「读不到」。
 //   离线用任意 AArch64 反汇编器就能读，不需要游戏原件；每处几十字节，不是游戏内容。信号里可调（不分配、不取锁）
@@ -175,8 +176,12 @@ static void android_sigabrt_ctx(const ucontext_t *context) {
     (void)context;
 #endif
 }
+// android/native/direct/compile_request.c：崩溃线程正在现编时把那份请求落盘（#1501 D②，同苹果侧 s2a_dsh_crash_dump）。
+//   链接期弱引用（安卓单库导出被 --exclude-libs 藏起，dlsym(RTLD_DEFAULT) 取不到）；只链运行时的单测没有它 = 空。
+extern void s2a_compile_inflight_dump(void) __attribute__((weak));
 static void android_crash_fatal(int sig, siginfo_t *si, const ucontext_t *context) {
     if (sig == SIGABRT) android_sigabrt_ctx(context);
+    if (s2a_compile_inflight_dump) s2a_compile_inflight_dump();   // 只 open / write / close；排在 fatal 行与链回之前（链回后可能不再回来）
     s2a_android_fatal(sig, si, context->uc_mcontext.pc, context->uc_mcontext.sp, (void *)context);
 }
 static _Atomic uint64_t g_sp_unaligned;   // 替游戏模拟的「栈指针未对齐」读写条数（收局汇总报，s2a_sp_unaligned_count；同苹果段）
@@ -251,6 +256,22 @@ __attribute__((weak_import)) extern char sw_gate_end[];
 static _Atomic uint64_t g_esb_page;
 static _Atomic uint64_t g_sp_unaligned;   // 替游戏模拟的「栈指针未对齐」读写条数（收局汇总报，s2a_sp_unaligned_count）
 uint64_t s2a_sp_unaligned_count(void) { return atomic_load(&g_sp_unaligned); }
+// 过期权限缺页（SIGBUS 写权限族：D-EKTW / D-ATFZ / D-QM9S / D-2V3R，四款四台，现场都是写权限错 ESR DFSC 0x0F、出事那块记录时却已 rw-）：
+//   写跟踪类的钩子（nvn_dirty.c on_fault 只认还登记着的范围）没认领时，可能是这一页刚被别的线程合法放开——范围注销 / 内存池回收把页恢复可写、
+//   同时摘掉登记，缺页处理晚了一步就找不到主人，按崩溃收了。翻译 / 权限类缺页（DFSC 0x04–0x0F；页刚从不可访问放开时是翻译错）且内核里这页此刻已有要的权限 → 重执行；
+//   同一线程同一地址连续超过 8 次仍缺页就不再重试（不是过期，交回崩溃路径，免空转）
+static _Atomic uint64_t g_stale_perm;
+uint64_t s2a_stale_perm_count(void) { return atomic_load(&g_stale_perm); }
+static __thread uint64_t t_stale_addr; static __thread unsigned t_stale_n;
+static int stale_perm_retry(uint64_t fa, int w, uint32_t esr) {
+    unsigned dfsc = esr & 0x3f; if (dfsc < 0x04 || dfsc > 0x0f) return 0;   // 只认翻译 / 访问标志 / 权限三类缺页（0x04–0x0F）；外部中止、对齐、TLB 冲突等不归这里
+    vm_address_t a = (vm_address_t)(fa & ~(uint64_t)(vm_page_size - 1)); vm_size_t sz = 0; vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t c = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t o = MACH_PORT_NULL;
+    if (vm_region_64(mach_task_self(), &a, &sz, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &c, &o) != KERN_SUCCESS || a > (vm_address_t)fa) return 0;
+    if (!(info.protection & (w ? VM_PROT_WRITE : VM_PROT_READ))) return 0;
+    if (t_stale_addr == fa) { if (++t_stale_n > 8) { t_stale_n = 0; return 0; } } else { t_stale_addr = fa; t_stale_n = 1; }
+    atomic_fetch_add_explicit(&g_stale_perm, 1, memory_order_relaxed); return 1;
+}
 void s2a_emul_store_bench(void) {
     const char *e = getenv("S2A_TRACK_EMUL_STORE"); if (e && *e == '0') return;
     uint8_t *p = mmap(NULL, 0x4000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0); if (p == MAP_FAILED) return;
@@ -503,6 +524,7 @@ static void on_crash(int sig, siginfo_t *si, void *ctx) {
         }
         { int s2a_det_watch_fault(uint64_t, uint64_t, uint64_t, uint64_t); ucontext_t *u = ctx;   // 确定性诊断写监视（S2A_DET_WATCH）
           if ((esr >> 6 & 1) && s2a_det_watch_fault((uint64_t)si->si_addr, u->uc_mcontext->__ss.__pc, u->uc_mcontext->__ss.__lr, u->uc_mcontext->__ss.__fp)) return; }
+        if ((ec == 0x24 || ec == 0x25) && stale_perm_retry((uint64_t)si->si_addr, (int)(esr >> 6 & 1), esr)) return;   // 过期权限缺页：页已被别的线程放开，重执行（见 stale_perm_retry）
     }
     ucontext_t *uc = ctx; pthread_t self = pthread_self(), none = NULL;
     if (!atomic_compare_exchange_strong(&g_crash_owner, &none, self)) {
@@ -514,7 +536,11 @@ static void on_crash(int sig, siginfo_t *si, void *ctx) {
     crash_raw(sig, si, uc, 0);
     // 崩在现编着色器里（graphics/nvn/host/dsh_miss.inc，#467）：把正在编的那支输入落盘成 <键>.inflight.*，诊断包带走。只用 open / write，排在原始现场之后、完整报告之前
     { if (g_dsh_crash_dump) g_dsh_crash_dump(); }
-    { void (*ev)(const char *, int) = (void (*)(const char *, int))dlsym(RTLD_DEFAULT, "s2a_dguard_evidence"); if (ev) ev("崩溃", 0); }   // 直连安全网：这局算失败（有证据）；动态取，单测没链 dguard.c
+    // 直连安全网：这局算失败（有证据）；动态取，单测没链 dguard.c。先按现场归因：出事地址落在游戏早先要、宿主给不出的那段地址里（超出地址窗口、svc 回了内存不足，
+    //   游戏没理会照样访问，同 fault_region_note）= 已知不是直连——不计连续失败，下次起局说「这台设备内存不够」，不叫玩家更新重出包（D-GYNE：3 次都这么崩，误弹「更新后重新出包」）
+    { int va = 0; if ((sig == SIGBUS || sig == SIGSEGV) && s2a_va_short_last) { int num; uint64_t a, n, k; va = s2a_va_short_last((uint64_t)(uintptr_t)si->si_addr, &num, &a, &n, &k); }
+      if (va) { void (*kn)(const char *) = (void (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_dguard_known"); if (kn) kn("地址超出窗口"); }
+      else { void (*ev)(const char *, int) = (void (*)(const char *, int))dlsym(RTLD_DEFAULT, "s2a_dguard_evidence"); if (ev) ev("崩溃", 0); } }
     char bp[160], bl[160]; where(pc, bp, sizeof bp); where(lr, bl, sizeof bl);
     LOG("【红】CRASH 信号 %d 地址 %p pc %s lr %s sp %#llx", sig, si->si_addr, bp, bl, (unsigned long long)uc->uc_mcontext->__ss.__sp);
     { const char *(*wn)(void) = (const char *(*)(void))dlsym(RTLD_DEFAULT, "s2a_waived_note"); const char *w = wn ? wn() : NULL;   // waived.c

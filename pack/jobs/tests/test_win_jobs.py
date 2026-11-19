@@ -142,6 +142,15 @@ class RuntimeEnv(unittest.TestCase):
             self.assertIn("启动器启动时的 PATH：里面没有 metal.exe", text)
             self.assertIn(str(Path(d, "没装", "ios", "bin", "metal.exe")) + " → 没有", text)
 
+    def test_env_cmd_is_pure_ascii(self):
+        # cmd 按玩家机代码页（中文系统 936）读 .cmd：不带 BOM 的 UTF-8 中文会按 GBK 拆字、吞掉行尾，下一行 set 失效
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("brw", ROOT / "launchers/windows/bundle_runtime_win.py")
+        brw = importlib.util.module_from_spec(spec); spec.loader.exec_module(brw)
+        with tempfile.TemporaryDirectory() as d:
+            brw.env_cmd(Path(d)); raw = Path(d, "s2arm_env.cmd").read_bytes()
+        self.assertEqual([b for b in raw if b > 0x7F], [])
+
     def test_same_path_as_bundled_env_cmd(self):
         # 作业环境与随包 s2arm_env.cmd（启动器 / 手工起出包用）同一份 PATH：两处各写一遍，这里核一致
         import importlib.util, ntpath
@@ -293,7 +302,7 @@ class FakeW:
         def status(resources=None):   # 随包判定走真实现（resources 下有没有两份二进制）；不随包时按用例给
             st = real.status(resources=resources) if resources else None
             return st if st else {"verdict": impactor, "code": None if impactor == "ok" else "impactor_missing",
-                                  "download": "https://github.com/claration/impactor/releases/tag/v2.7.2"}
+                                  "download": "https://github.com/claration/impactor/releases/tag/v2.7.3"}
         self.team = "ABCDE12345"   # 真实 accounts.json 每个账号都带十位团队号（审计 P2-253 Windows 实机核过）
         self.unselected, self.picks = [], []   # 账号存档里存着却没选中的 Apple ID（D-ZM37）；picks 记 select_only_account 收到的 plumesign
         def select_only(exe):
@@ -602,30 +611,41 @@ class WinInstall(unittest.TestCase):
         (base / "PlumeImpactor/accounts.json").write_text(_j.dumps({"selected_account": "a@b.c", "accounts": {"a@b.c": {}}}))
         self.assertTrue(impactor.logged_in(str(base)))
 
-    def test_bundle_pins_official_hashes(self):
-        # 打包：缓存缺就从官方发布页下（这里换成假下载），SHA-256 必须等于钉的值，不符拒打；带许可与来源说明
+    def test_bundle_pins_own_build_hashes(self):
+        # 打包（11-18 起自编版）：缓存有就用，没有 / 不对从固定来源（我们公开仓的 Release）下，SHA-256 必须等于钉的值，不符拒打；不去官方发布页下；
+        #   带许可、补丁原文与「基于上游 v2.7.3 的修改版」来源说明
         import hashlib, impactor
         sys.path.insert(0, str(ROOT / "launchers/windows")); import bundle_win
-        cache = self.t / "cache"; got = []
-        def fetch(url, to): got.append(url); Path(to).write_bytes(url.encode())
-        pins = {n: hashlib.sha256((impactor.DOWNLOAD + n).encode()).hexdigest() for n in impactor.BUNDLED}
+        cache = self.t / "cache"; cache.mkdir()
+        for n in impactor.BUNDLED: (cache / n).write_bytes(n.encode())
+        pins = {n: hashlib.sha256(n.encode()).hexdigest() for n in impactor.BUNDLED}
+        patches = sorted(p.name for p in bundle_win.IMPACTOR_PATCHES.glob("*.patch"))
+        self.assertTrue(patches, "仓库里有自编补丁")
         with patch.object(impactor, "BUNDLED", pins):
-            bundle_win.bundle_impactor(self.t / "out1", cache=cache, fetch=fetch)
-            self.assertEqual(got, [impactor.DOWNLOAD + n for n in pins])                  # 缺才下，下的是官方 v2.7.2 发布页
+            bundle_win.bundle_impactor(self.t / "out1", cache=cache)
             self.assertEqual(sorted(p.name for p in (self.t / "out1").iterdir()),
-                             sorted([*pins, "LICENSE-Impactor-MIT.txt", "LICENSE-apple-codesign-MPL-2.0.txt", "README-来源与许可.txt"]))
+                             sorted([*pins, *patches, "LICENSE-Impactor-MIT.txt", "LICENSE-apple-codesign-MPL-2.0.txt", "README-来源与许可.txt"]))
             readme = (self.t / "out1/README-来源与许可.txt").read_text(encoding="utf-8")
-            self.assertIn("3rdparty/apple-codesign-0.29.0", readme); self.assertIn(pins[impactor.PLUMESIGN_EXE], readme)
-            bundle_win.bundle_impactor(self.t / "out2", cache=cache, fetch=fetch); self.assertEqual(len(got), 2)   # 离线：缓存命中不再下
+            for want in ("修改版", patches[0], "3rdparty/apple-codesign-0.29.0", pins[impactor.PLUMESIGN_EXE], impactor.SOURCE_TREE):
+                self.assertIn(want, readme)
+            # 缓存里的被改过：从固定来源重下、核对了才换上（缓存只是加速）
             (cache / impactor.IMPACTOR_EXE).write_bytes(b"tampered")
-            with self.assertRaises(SystemExit) as e:
-                bundle_win.bundle_impactor(self.t / "out3", cache=cache, fetch=fetch)
-            self.assertIn("拒打", str(e.exception))
+            got = []
+            def fetch(url, to): got.append(url); Path(to).write_bytes(impactor.IMPACTOR_EXE.encode())
+            bundle_win.bundle_impactor(self.t / "out2", cache=cache, fetch=fetch)
+            self.assertEqual(got, [impactor.OWN_RELEASE + impactor.IMPACTOR_EXE])
+            self.assertEqual((cache / impactor.IMPACTOR_EXE).read_bytes(), impactor.IMPACTOR_EXE.encode())
+            # 缓存没有、来源上的也不对：拒打，说清地址与哈希，不留半截文件
             (cache / impactor.IMPACTOR_EXE).unlink()
-            def offline(url, to): raise ConnectionResetError(10054, "reset")
-            with self.assertRaises(SystemExit) as e:                                             # 构建机连不上 GitHub：说清去哪放缓存
-                bundle_win.bundle_impactor(self.t / "out4", cache=cache, fetch=offline)
-            self.assertIn(str(cache), str(e.exception))
+            with self.assertRaises(SystemExit) as e:
+                bundle_win.bundle_impactor(self.t / "out3", cache=cache, fetch=lambda url, to: Path(to).write_bytes(b"other"))
+            self.assertIn("拒打", str(e.exception)); self.assertIn(impactor.OWN_RELEASE, str(e.exception))
+            self.assertEqual(sorted(p.name for p in cache.iterdir()), [impactor.PLUMESIGN_EXE])
+            # 下不来：报真原因（地址 + 错误）
+            def down(url, to): raise OSError("连不上")
+            with self.assertRaises(SystemExit) as e:
+                bundle_win.bundle_impactor(self.t / "out4", cache=cache, fetch=down)
+            self.assertIn("连不上", str(e.exception)); self.assertIn(impactor.OWN_RELEASE + impactor.IMPACTOR_EXE, str(e.exception))
 
     def test_readiness(self):
         with patch.object(self.m, "win_install_mod", return_value=FakeW([("U1", "USB", 3)], impactor="missing")):
@@ -633,7 +653,7 @@ class WinInstall(unittest.TestCase):
         self.assertEqual([(i["id"], i["ok"]) for i in r["items"]], [("package", True), ("impactor", False), ("connected", True)])
         self.assertEqual((r["ready"], r["device"]), (True, "U1"))   # 缺 Impactor 只提示，直接去签名
         # 缺 Impactor 那一项带官方发布页（启动器按钮），其余项没有链接
-        self.assertEqual([i["url"] for i in r["items"]], [None, "https://github.com/claration/impactor/releases/tag/v2.7.2", None])
+        self.assertEqual([i["url"] for i in r["items"]], [None, "https://github.com/claration/impactor/releases/tag/v2.7.3", None])
         with patch.object(self.m, "win_install_mod", return_value=FakeW([("U1", "USB", 3)])):
             self.assertIsNone(self.m.readiness_windows(self.c, self.gid)["items"][1]["url"])
 

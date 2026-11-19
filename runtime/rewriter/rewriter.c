@@ -2344,6 +2344,12 @@ static void scan(void) {
     } else if ((w & 0xffffffe0) == 0xd53b0020) {
       k = "ctr";
       arg = w & 31;
+    } else if ((w & 0xffe0fc00) == 0x9ac03000) {
+      /* pacga Xd, Xn, Xm|SP：通用指针认证。宿主进程的 GA 密钥每个进程不同（实测同一输入三次运行三个结果），游戏把它算出的校验值存进内存
+         （较新 Switch 2 SDK 切纤程：nn::os DispatchFiberContext），换进程（即时快照恢复）后校验不过、游戏主动陷阱。换成固定密钥的确定性实现，
+         同一进程内语义等价（同输入同输出、只占高 32 位） */
+      k = "pacga";
+      arg = (int)(w & 0x001f03ff);
     } else if ((w & 0xffe0001f) == 0xd4200000 && ((w >> 5) & 65535) >= 0xb000 &&
                ((w >> 5) & 65535) <= 0xbfff) {
       gap(a, "brk", "brk #0x%x：macOS 内核截走 0xB000–0xBFFF，进程无声被杀", (w >> 5) & 65535);
@@ -3526,6 +3532,44 @@ static void gensite(Site* s) {
       emit(LDPOST(T, tmp, 31, 16));
     else {
       emit(LDUR(tmp, 31, -24));
+      emit(LDUR(T, 31, -16));
+    }
+    emit(branch(here(), s->at + 4));
+    bump(s->kind);
+  } else if (eq(s->kind, "pacga")) {
+    /* 确定性 pacga：h = (n ^ ror(m, 23)) * K；h ^= h >> 29；h *= K；h ^= h >> 32；Xd = h << 32（低 32 位为 0，同硬件结果的形状） */
+    const int d = s->arg & 31, n = (s->arg >> 5) & 31, m = (s->arg >> 16) & 31;
+    int T, U;
+    pick(BIT(d) | BIT(n) | BIT(m) | BIT(18), &T, &U);
+    if (noredzone())
+      emit(STPRE(T, U, 31, -16));
+    else {
+      emit(STUR(T, 31, -16));
+      emit(STUR(U, 31, -24));
+    }
+    if (n == 31)
+      emit(MOVZ(T, 0, 0));
+    else
+      emit(0xaa0003e0u | (n << 16) | T); /* mov T, Xn */
+    if (m == 31)
+      emit(ADDI(U, 31, noredzone() ? 16 : 0, 0)); /* mov U, sp（压栈过的要加回 16） */
+    else
+      emit(0xaa0003e0u | (m << 16) | U);           /* mov U, Xm */
+    emit(0xca000000u | (3u << 22) | (U << 16) | (23u << 10) | (T << 5) | T); /* eor T, T, U, ror #23 */
+    emit(MOVZ(U, 0x9e37, 3));
+    emit(MOVK(U, 0x79b9, 2));
+    emit(MOVK(U, 0x7f4a, 1));
+    emit(MOVK(U, 0x7c15, 0));
+    emit(0x9b007c00u | (U << 16) | (T << 5) | T);                             /* mul T, T, U */
+    emit(0xca000000u | (1u << 22) | (T << 16) | (29u << 10) | (T << 5) | T); /* eor T, T, T, lsr #29 */
+    emit(0x9b007c00u | (U << 16) | (T << 5) | T);                             /* mul T, T, U */
+    emit(0xca000000u | (1u << 22) | (T << 16) | (32u << 10) | (T << 5) | T); /* eor T, T, T, lsr #32 */
+    if (d != 31)
+      emit(0xd3400000u | (32u << 16) | (31u << 10) | (T << 5) | d);          /* lsl Xd, T, #32 */
+    if (noredzone())
+      emit(LDPOST(T, U, 31, 16));
+    else {
+      emit(LDUR(U, 31, -24));
       emit(LDUR(T, 31, -16));
     }
     emit(branch(here(), s->at + 4));
@@ -5304,6 +5348,11 @@ static int outputs(void) {
   msg(" slot_refs %zu gates %zu\n", g->fixrefs, g->gates.n);
   return g->gaps.n ? 3 : 0;   /* 有缺口：产物照出、退 3（pack/stage_rewrite.sh 记降级继续；社区补丁轮按 3 认领缺口） */
 }
+/* 映像结尾（含 bss）到键页之间至少留的可写空余（#1628）：金手指空洞开关表（前 0x400）与 FPSLocker 变量都放这里
+ * （pack/cpatch.py module_layout / MIRROR_FPSL）。原先键页只按 16 KB 取整，映像结尾正好压在 16 KB 边界上的模块（#1628 的主程序
+ * 结尾 0x1e98000）空余为 0，变量整份放不下。运行时照表头 KEY_PAGE_OFF 定位键页、数据写入允许到键页前（runtime/src/cpatch.c），不另改 */
+#define KEY_TAIL_MIN 0x1000
+
 static void load(void) {
   FILE* f = fopen(g->r.input, "rb");
   if (!f)
@@ -5327,7 +5376,7 @@ static void load(void) {
     REQUIRE(sz[i] <= INT_MAX && csz[i] <= INT_MAX);
   }
   uint32_t flags = u32(src + 12), bss = u32(src + 0x3c);
-  uint64_t end = (uint64_t)mo[2] + sz[2], near = ((end + bss + 0x3fff) & ~0x3fffULL) + 0x4000;
+  uint64_t end = (uint64_t)mo[2] + sz[2], near = ((end + bss + KEY_TAIL_MIN + 0x3fff) & ~0x3fffULL) + 0x4000;
   near = (near + 0xffff) & ~0xffffULL;
   g->far = near > 0x7000000;
   REQUIRE(end <= SIZE_MAX - 0x10000 && end + bss < UINT32_MAX);
@@ -5338,7 +5387,7 @@ static void load(void) {
   REQUIRE(g->len >= 8 && g->text % 4 == 0);
   for (int i = 0; i < 3; i++)
     REQUIRE((uint64_t)mo[i] + sz[i] <= g->len);
-  g->img = zalloc(g->len + 0x4000);
+  g->img = zalloc(g->len + 0x8000);
   for (int i = 0; i < 3; i++) {
     if ((flags >> i) & 1) {
       int got = LZ4_decompress_safe((const char*)src + fo[i], (char*)g->img + mo[i], csz[i], sz[i]);
@@ -5361,7 +5410,7 @@ static void load(void) {
     REQUIRE(g->front >= 0x100000);
     g->po = -(A)g->front;
     g->filelen = (g->len + 0x3fff) & ~0x3fffULL;
-    g->key = (g->len + bss + 0x3fff) & ~0x3fffULL;
+    g->key = (g->len + bss + KEY_TAIL_MIN + 0x3fff) & ~0x3fffULL;
     g->imagesize = g->key + 0x4000;
     g->po2 = (g->imagesize + 0xffff) & ~0xffffULL;   /* 后岛：键页后按 64 KB 对齐（只在双岛下用） */
     g->split = g->po2 / 2;
@@ -5369,8 +5418,9 @@ static void load(void) {
     /* 仅 Apple：data 起点落进 text 末尾所在的 16 KB 宿主页时，基址前移 bias 使「基址 + data」对齐宿主页；
      * 追加的键页、补丁区按同一网格对齐（同 patch_nso.py LOAD_BIAS / _al；不共页时 bias = 0，与原式相同） */
     g->bias = !noredzone() && g->data < ((g->text + 0x3fff) & ~(size_t)0x3fff) ? (0x4000 - (g->data & 0x3fff)) & 0x3fff : 0;
-    g->key = ((g->len + g->bias + 0x3fff) & ~0x3fffULL) - g->bias;
-    g->len += 0x4000;
+    size_t key0 = ((g->len + g->bias + 0x3fff) & ~0x3fffULL) - g->bias;   /* 不留空余时的键页：空余已够的模块布局与原先逐字节相同 */
+    g->key = ((g->len + g->bias + KEY_TAIL_MIN + 0x3fff) & ~0x3fffULL) - g->bias;
+    g->len += 0x4000 + (g->key - key0);   /* 键页后挪几页补丁区 po 跟着挪几页：po ≥ 键页末（key + 0x4000） */
     g->po = ((g->len + g->bias + 0xffff) & ~0xffffULL) - g->bias;
     /* 双岛的前岛：基址前 FRONT（映射从基址 − bias 起，前岛贴着它往前放，同一宿主页网格） */
     g->front = g->retry_front ? g->retry_front : 0x100000;

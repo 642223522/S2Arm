@@ -17,7 +17,10 @@ void *s2a_vk_entry(const char *name) { return !strcmp(name, "vkCreateDevice") ? 
 static int g_vk_lib;   // 假的 Vulkan 库就绪（graphics/nvn/gfx/vk/hle_vk.m s2a_vk_lib_ready 的替身；口径核对在那边）
 int s2a_vk_lib_ready(const char *game_data) { (void)game_data; return g_vk_lib; }
 static char g_gl_impl; static int g_gl_lib;   // 假的 OpenGL 层与 GL 库就绪（host_adapt.m s2a_gl_entry / gl_prog.m s2a_gl_lib_ready 的替身）：只认 eglGetProcAddress
-void *s2a_gl_entry(const char *name) { return !strcmp(name, "eglGetProcAddress") ? &g_gl_impl : NULL; }
+void *s2a_gl_entry(const char *name) { return !strcmp(name, "eglGetProcAddress") || !strcmp(name, "glBindBuffer") ? &g_gl_impl : NULL; }
+static char g_gl_stub_impl;   // 假的 GL 安全空实现（host_adapt.m s2a_gl_stub 的替身）：只认 glActiveTexture（层里没实现的核心名）
+void *s2a_gl_stub(const char *name) { return !strcmp(name, "glActiveTexture") ? &g_gl_stub_impl : NULL; }
+uint64_t s2a_direct_stub(const char *name);   // gfxmode.c（装载器找遍之后才问）
 int s2a_gl_lib_ready(const char *game_data) { (void)game_data; return g_gl_lib; }
 // 假的 Switch 2 视频接管层（graphics/nvn/gfx/nvn/nvn2_codec.c s2a_codec_entry 的替身）：记下问了几次；名字族的判定在入口里（这里只认 codec / syncpt / gs / 原生图像）——
 //   核的是 gfxmode 的分派条件：C++ 名与 Nv* C 名都问入口、入口回 NULL 的照原路径，别的名字不问
@@ -122,6 +125,14 @@ int main(void) {
       if (a != (uint64_t)&g_gl_impl || b != (uint64_t)&g_gl_impl || c || e || g) { fails++; printf("✗ 直连 egl* 解析：无 GL 库 %#llx / 有 GL 库 %#llx（都期望 %p）/ 没有的 %#llx / 非 egl %#llx / glslc %#llx\n",
           (unsigned long long)a, (unsigned long long)b, (void *)&g_gl_impl, (unsigned long long)c, (unsigned long long)e, (unsigned long long)g); }
       else printf("  ✓ 直连 egl* 不论带不带 GL 库都解析到 GL 层（NVN 款的 EGL 导入不再未解析；层里没有的 / glslc / 非 egl 回 0）\n"); }
+    // 找遍之后（s2a_direct_stub）：GL 驱动的带下划线名 _gl* / _egl* 去掉下划线交 GL 层，层里没有的 gl* 核心名给安全空实现（LIMBO 66 个 _gl* 未解析、模块初始化中止）；
+    //   不带下划线的 gl* 照旧只给空实现（实现过的已在 s2a_direct_lookup 分走）；egl 没有空实现；别的名字回 0
+    { uint64_t a = s2a_direct_stub("_glBindBuffer"), b = s2a_direct_stub("_eglGetProcAddress"), c = s2a_direct_stub("_glActiveTexture"), d = s2a_direct_stub("_eglNotThere"),
+               e = s2a_direct_stub("_nnFoo"), f = s2a_direct_stub("glActiveTexture"), g = s2a_direct_stub("_glNotACore");
+      uint64_t gl = (uint64_t)&g_gl_impl, st = (uint64_t)&g_gl_stub_impl;
+      if (a != gl || b != gl || c != st || d || e || f != st || g) { fails++; printf("✗ 下划线 GL 名：_glBindBuffer %d _eglGetProcAddress %d（期望 GL 层）_glActiveTexture %d（期望空实现）_eglNotThere %#llx _nnFoo %#llx glActiveTexture %d _glNotACore %#llx\n",
+          a == gl, b == gl, c == st, (unsigned long long)d, (unsigned long long)e, f == st, (unsigned long long)g); }
+      else printf("  ✓ 找遍之后：_gl* / _egl* 去掉下划线交 GL 层，层里没有的 gl* 核心名给空实现；_egl 没有的、别的名字回 0\n"); }
     // Switch 2 SDK 接管层：C++ 名（_Z…）与 NVIDIA 驱动 C 名（Nv*）都问入口（族的判定在入口里），入口回 NULL 的照原路径（movie::VideoFrame 问了、回 0）；
     //   别的名字（nn 开头的 C 名、vk / egl 已在前面分走）不问
     { g_cv_asked = 0;
