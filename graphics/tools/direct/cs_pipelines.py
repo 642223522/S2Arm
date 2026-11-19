@@ -37,6 +37,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repair_compute import Library   # 直连库容器（lib.idx + lib.NNN.pak）的读法，与运行时 lib_pack.inc 同一格式
+ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT / 'tools'))
+from pool_workers import cores   # 核数 / 进程池路数唯一来源（tools/pool_workers.py，#1332）
 
 FORMAT = 'cs-pipelines 1'   # 改了产物形状（描述、文件名、脚本格式）就加一，旧缓存全部不中
 REPO = Path(__file__).resolve().parents[3]
@@ -113,8 +116,9 @@ def run_tt(argv, env, log):
     try:
         out, _ = p.communicate(timeout=600)
     except subprocess.TimeoutExpired:
-        try: os.killpg(p.pid, signal.SIGKILL)
-        except OSError: pass
+        # 进程组信号唯一入口 tools/safe_killpg.sh（tests/killpg_lint_test.sh 守）；字样 = 本次 metal-tt 的脚本路径（组长命令行里必有，组号被复用时对不上、不杀）
+        subprocess.run(['bash', '-c', 'source "$1"; safe_killpg KILL "$2" "$3"', '_', str(ROOT / 'tools/safe_killpg.sh'), str(p.pid), str(argv[-3])],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         out, _ = p.communicate()
         out = (out or b'') + b'\ncs_pipelines: metal-tt ran past 600 s, process group killed'
         rc = 124
@@ -137,7 +141,7 @@ def main():
     ap.add_argument('direct', type=Path); ap.add_argument('out', type=Path)
     ap.add_argument('--plat', choices=('ios', 'macos'), required=True); ap.add_argument('--os', type=int, required=True)
     ap.add_argument('--arch', action='append', required=True); ap.add_argument('--cache', type=Path)
-    ap.add_argument('-j', type=int, default=os.cpu_count() or 4)
+    ap.add_argument('-j', type=int, default=cores())
     a = ap.parse_args()
     archs = sorted(set(a.arch))
     lib = container(a.direct)
