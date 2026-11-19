@@ -105,6 +105,7 @@ namespace S2A.Services
         {
             var t = new ReqTable();
             t.HasLiveHandles = s => s2a_snap_seq_live(s) != 0;
+            t.Unuse = u => s2a_snap_handle_unuse(u);
             t.Forget = s => s2a_snap_hlog_forget(s);
             t.Gone = k => { if (k.Obj != 0) return; _lastUpdate.Remove(k.Cookie); foreach (var key in new List<(ulong, uint, uint)>(_lastMm.Keys)) if (key.Item1 == k.Cookie) _lastMm.Remove(key);
                 foreach (var key in new List<(ulong, uint, uint)>(_lastNvWait.Keys)) if (key.Item1 == k.Cookie) _lastNvWait.Remove(key);
@@ -114,6 +115,7 @@ namespace S2A.Services
         [ThreadStatic] private static ReqTable.Key _pendingKey;
         [ThreadStatic] private static int _pendingClose;               // 1 = 关会话消息、2 = 关域对象
         [ThreadStatic] private static List<ulong> _pendingSessions;    // 这条请求建出的新会话
+        [ThreadStatic] private static List<(uint Uid, int Creator)> _pendingUses;   // 这条请求消息里递的句柄：原生层建它的那条日志编号、建它的请求序号（-1 = 不是请求建的）
         [ThreadStatic] private static int[] _pendingNvMap;             // 这条是通道 MapCommandBuffer、要映射的 nvmap 句柄（成功后记成已映射）
         [ThreadStatic] private static int _connectSeq;                 // sm 会话建立那一条的序号 + 1（Connect … End() 之间建的会话归它）；0 = 不在（线程静态没法给初值）
         private const uint EntMeta = 7;                                // 存盘末尾的元数据（ReqTable.WriteMeta）：重放跳过，恢复局读回来接着收
@@ -124,7 +126,9 @@ namespace S2A.Services
 
         [DllImport("s2a_native")] private static extern void s2a_snap_hctx(int seq);
         [DllImport("s2a_native")] private static extern int s2a_snap_seq_live(int seq);      // runtime/src/thread.c：第 seq 条建的句柄还有活着的吗
-        [DllImport("s2a_native")] private static extern void s2a_snap_hlog_forget(int seq);  // 第 seq 条从请求日志删了：它建 / 关句柄的两条一起删
+        [DllImport("s2a_native")] private static extern void s2a_snap_hlog_forget(int seq);
+        [DllImport("s2a_native")] private static extern int s2a_snap_handle_use(uint h, out uint uid);   // 钉住建句柄 h 的那条日志，回建它的请求序号
+        [DllImport("s2a_native")] private static extern void s2a_snap_handle_unuse(uint uid);  // 第 seq 条从请求日志删了：它建 / 关句柄的两条一起删
         [DllImport("s2a_native")] private static extern int s2a_nro_known(byte* sha);    // runtime/src/loader.c：这个 NRO 在不在包里
         private const int NroHead = 0x1000;   // 种类 6 记的 NRO 头长（NRO 头 + MOD0 偏移在头 0x10 字节里，段表在 0x20 起）   // runtime/src/snapsw.c：句柄日志跟着停
         [DllImport("s2a_native")] private static extern int s2a_snap_replay_begin(int seq);
@@ -291,6 +295,9 @@ namespace S2A.Services
                 int seq = _seq++; _kept++;
                 _pending = Serialize(seq, num, cookie, cmd, n, msg, size); _pendingIds?.Clear(); _pendingTipc = size >= 4 && (*(uint*)msg & 0xFFFF) >= 0x10;
                 _pendingKey = TargetKey(cookie, msg, size, out _pendingClose); _pendingSessions?.Clear();
+                // 消息里复制 / 移交的游戏句柄：这条要留着，重放它时句柄得建得出来——钉住建它的日志（移交的处理完就关了，所以在处理前钉）
+                _pendingUses?.Clear();
+                foreach (uint h in HandlesIn(msg, size)) { int cr = s2a_snap_handle_use(h, out uint uid); if (uid != 0 || cr >= 0) (_pendingUses ??= new()).Add((uid, cr)); }
                 { string k = n + "#" + (uint)cmd; _bytesBy[k] = _bytesBy.GetValueOrDefault(k) + _pending.Length; _countBy[k] = _countBy.GetValueOrDefault(k) + 1; }
                 if (_tab.Bytes >= _nextReport)
                 {   // 日志每翻一倍（16 MB 起）点名占地最多的 5 类：恢复后日志暴涨要知道是谁
@@ -384,6 +391,15 @@ namespace S2A.Services
         internal static int NvWaitsKept => _lastNvWait.Count;
         internal static void NvReset() { _lastNvWait.Clear(); _nvMapped.Clear(); _nvCookies.Clear(); }
         private static long _savedRaw, _savedZ;
+        // 消息特殊头里复制 / 移交的游戏句柄（同重放时 s2a_snap_need_handle 的取法；伪句柄不算）
+        private static List<uint> HandlesIn(byte* msg, int size)
+        {
+            var hs = new List<uint>(); if (size < 12) return hs;
+            uint w1 = *(uint*)(msg + 4); if ((w1 >> 31) == 0) return hs;
+            uint w2 = *(uint*)(msg + 8); int pid = (int)(w2 & 1), nh = (int)(((w2 >> 1) & 0xF) + ((w2 >> 5) & 0xF));
+            for (int i = 0; i < nh && 12 + pid * 8 + i * 4 + 4 <= size; i++) { uint h = *(uint*)(msg + 12 + pid * 8 + i * 4); if (h != 0 && h < 0xFFFF8000u) hs.Add(h); }
+            return hs;
+        }
         // mm:u SetAndWait 的请求号：CMIF 头「SFCI」后 16 字节起的第 1 个 u32
         private static uint? MmRequestId(byte* msg, int size)
         {
@@ -439,9 +455,15 @@ namespace S2A.Services
                     }
                     else _tab.Add(seq, e, key);
                     if (_pendingSessions != null) foreach (ulong c in _pendingSessions) _tab.Created(seq, new ReqTable.Key(c, 0));
+                    if (_pendingUses != null) foreach (var (uid, cr) in _pendingUses) _tab.Use(seq, uid, cr);
                     NvMapped(_pendingNvMap);
                 }
-                else { var ms = new MemoryStream(); var w = new BinaryWriter(ms); w.Write(EntFailed); w.Write(seq); w.Flush(); _tab.Add(seq, ms.ToArray(), key); }
+                else
+                {
+                    var ms = new MemoryStream(); var w = new BinaryWriter(ms); w.Write(EntFailed); w.Write(seq); w.Flush(); _tab.Add(seq, ms.ToArray(), key);
+                    if (_pendingUses != null) foreach (var (uid, _) in _pendingUses) s2a_snap_handle_unuse(uid);   // 当时失败的不重放：不用钉
+                }
+                _pendingUses?.Clear();
                 if (_pendingClose == 2) _tab.Close(key);   // 关域对象：它和发给它的、建它的一起收（关会话由句柄关闭那一刻收，SessionClosed）
                 s2a_snap_hcommit(seq);   // 原生层句柄日志：此后的关闭记在这条之后（与重放先后一致）
             }
@@ -670,6 +692,7 @@ namespace S2A.Services
                     {
                         int s = r.ReadInt32(); r.ReadUInt64(); r.ReadInt32(); int nc = r.ReadInt32(); var cs = new List<ulong>();
                         for (int j = 0; j < nc; j++) { ulong c = r.ReadUInt64(); int obj = r.ReadInt32(); if (obj == 0) cs.Add(c); }
+                        int nu = r.ReadInt32(); r.BaseStream.Seek(4L * nu, SeekOrigin.Current); int nd = r.ReadInt32(); r.BaseStream.Seek(4L * nd, SeekOrigin.Current);   // 句柄依赖（这里用不着）
                         if (cs.Count > 0) m[s] = cs.ToArray();
                     }
                     break;
@@ -703,6 +726,7 @@ namespace S2A.Services
                 else parts[seq] = (start, end, cmd, cookie, name);
             }
             var targets = new Dictionary<int, (ReqTable.Key T, List<ReqTable.Key> C)>(); var closed = new List<ReqTable.Key>();
+            var deps = new Dictionary<int, (List<uint> U, List<int> D)>();
             if (metaAt >= 0)
             {
                 r.BaseStream.Position = metaAt; int ne = r.ReadInt32();
@@ -711,6 +735,9 @@ namespace S2A.Services
                     int seq = r.ReadInt32(); var t = new ReqTable.Key(r.ReadUInt64(), r.ReadInt32()); int nc = r.ReadInt32(); var cs = new List<ReqTable.Key>();
                     for (int j = 0; j < nc; j++) cs.Add(new ReqTable.Key(r.ReadUInt64(), r.ReadInt32()));
                     targets[seq] = (t, cs);
+                    var us = new List<uint>(); int nu = r.ReadInt32(); for (int j = 0; j < nu; j++) us.Add(r.ReadUInt32());
+                    var ds = new List<int>(); int nd = r.ReadInt32(); for (int j = 0; j < nd; j++) ds.Add(r.ReadInt32());
+                    if (us.Count > 0 || ds.Count > 0) deps[seq] = (us, ds);
                 }
                 int ncl = r.ReadInt32(); for (int i = 0; i < ncl; i++) closed.Add(new ReqTable.Key(r.ReadUInt64(), r.ReadInt32()));
             }
@@ -731,6 +758,7 @@ namespace S2A.Services
                 _tab.Add(kv.Key, bytes, new ReqTable.Key(0, 0));   // 旧快照（没有元数据）：挂在根上，不收（大小定在快照那一刻）
             }
             foreach (var kv in targets) foreach (ReqTable.Key ck in kv.Value.C) _tab.Created(kv.Key, ck);
+            foreach (var kv in deps) _tab.Restore(kv.Key, kv.Value.U, kv.Value.D);
             foreach (ReqTable.Key k in closed) _tab.Close(k);
         }
         // 序列化好的一条（EntReq）里 mm:u SetAndWait 的请求号：消息原文里 CMIF 头后第 1 个 u32

@@ -49,6 +49,20 @@ namespace S2A.Services.Tests
                 t.CloseSession(7);
                 rows.Add(("⑤ 会话句柄关：会话与其域对象的请求、建会话那条全收（剩根 1 条）", "1", $"{t.Count}"));
             }
+            // ⑥ 句柄依赖：会话 1 上第 1 条建了句柄（日志编号 7），会话 2 上第 3 条递了它。关会话 1 → 第 1 条被钉住，4 条都在；
+            //   关会话 2 → 第 3 条删掉、解钉 → 第 1 条、会话 1、建会话 1 的第 0 条一起收，0 条；解钉调用 1 次、编号 7。负对照（不登记依赖）关会话 1 后剩 2 条
+            foreach (bool dep in new[] { true, false })
+            {
+                var unused = new List<uint>(); var t = new ReqTable { Unuse = u => unused.Add(u) }; var root = new ReqTable.Key(0, 0);
+                var s1 = new ReqTable.Key(1, 0); var s2 = new ReqTable.Key(2, 0);
+                t.Add(0, new byte[Bytes], root); t.Created(0, s1); t.Add(1, new byte[Bytes], s1);
+                t.Add(2, new byte[Bytes], root); t.Created(2, s2); t.Add(3, new byte[Bytes], s2);
+                if (dep) t.Use(3, 7, 1);
+                t.CloseSession(1); int afterS1 = t.Count;
+                t.CloseSession(2); int afterS2 = t.Count;
+                if (dep) rows.Add(("⑥ 句柄依赖：关会话 1 后 / 关会话 2 后条数、解钉调用", "4 / 0 / 7", $"{afterS1} / {afterS2} / {string.Join(",", unused)}"));
+                else rows.Add(("⑥ 负对照：不登记依赖，关会话 1 后条数", "2", $"{afterS1}"));
+            }
             int failures = 0;
             foreach ((string n, string e, string ac) in rows) { bool ok = e == ac; if (!ok) failures++; Console.WriteLine($"{(ok ? "✓" : "✗")} {n}：{e} → {ac}"); }
             return failures == 0 ? 0 : 1;

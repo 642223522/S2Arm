@@ -916,6 +916,7 @@ namespace S2A.Services
         {
             Dispatcher d = Instance;
             ulong cookie = d.AddSession(new HleTarget(obj));
+            if (SnapSwitch.Save) SnapLog.SessionCreated(cookie);   // HLE 服务交出的非域对象也是新会话：挂到正在处理的那条请求名下（请求日志按活对象收、重放按原 cookie 分配）
             d.ServerProcess.HandleTable.GenerateHandle(new S2ASessionObject(d.Kernel, cookie), out int sh);
             return sh;
         }
