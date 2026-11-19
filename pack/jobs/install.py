@@ -584,7 +584,10 @@ def usb_mbps(udid, env=None):
 SIGN_ERRORS = (
     (r"等钥匙串授权超时", "keychain_prompt"),   # pack/ensure_profile.sh：第一次签名的钥匙串框没人点（11-08 Spare-host 实测）  # 非玩家句
     (r"Xcode 看不到这台 iPhone，账号上也还没登记它|has no devices from which to generate", "device_not_visible"),   # pack/ensure_profile.sh 兜底后核出描述文件不含这台 / 账号一台设备都没有（11-16）  # 非玩家句
-    (r"needs to be unlocked|device is locked|Unlock the device", "device_locked"),   # 10-26 测试设备2 锁屏：xcodebuild 等不到目的设备超时
+    (r"needs to be unlocked|device is locked|Unlock the device", "device_locked"),
+    # 电脑连不上手机的开发者通道（CoreDevice 4016：要的「服务已加载 / 可信远程连接 / 电源断言」一项都给不了，CurrentlyAssertableStates 为空）：
+    #   开发者模式开着、也配过对，多见于手机走 Wi-Fi 连着时（#1578 D-43MF：transport=localNetwork、tunnel=disconnected、ddi=False，连续 3 次）。不是没解锁
+    (r"CoreDeviceError error 4016|usage assertion requirements", "device_tunnel_unavailable"),   # 10-26 测试设备2 锁屏：xcodebuild 等不到目的设备超时
     # 免费 Apple ID 有两个不同的上限，原文措辞能分开，办法也不同：
     #   ① 包名（App ID）额度：签名前向 Apple 注册包名时被拒，Apple 错误 9120，Xcode 原文
     #      「Your maximum App ID limit has been reached. You may create up to 10 App IDs every 7 days.」——
@@ -607,6 +610,9 @@ SIGN_ERRORS = (
     (r"No Account for Team|No accounts|not logged in|Your session has expired", "xcode_account_missing"),
     (r"No signing certificate|No certificate for team|Signing certificate is invalid|doesn't include signing certificate", "signing_certificate_missing"),
 )
+
+
+TUNNEL_RETRY_S = 10   # 开发者通道没连上（4016）时再装一次之前等的秒数
 
 
 def classify(text, default="signing_failed"):
@@ -1378,6 +1384,12 @@ def _update_name(img_file, lang):
     return img_file[:-4] + UPDATE_SUFFIX.get(lang, UPDATE_SUFFIX["en"])
 
 
+def _update_worth(c, pack):
+    sys.path.insert(0, str(c.engine / "pack"))
+    import img
+    return img.update_worth(str(pack))
+
+
 def _export_update(c, pack, dst):
     log = c.logs / (c.task + "-export.log")
     try:
@@ -1526,7 +1538,7 @@ def _readme_zh(games):
   可以用隔空投送、数据线（Mac 访达 / Windows 爱思助手等的文件共享）或网盘拷到手机，再在「文件」App 里挪进这个文件夹。
   文件名随便改，S2Arm 按文件内容认游戏。手机上已经有、也没重新打过 iPhone 包的游戏，不用再放。
 
-  只更新着色器：每款旁边还有一个「<游戏名> 着色器更新包.img」，只有几百 MB。手机上已经放过这款的完整 .img（游戏本身没换版本）、
+  只更新着色器：有着色器库的款旁边还有一个「<游戏名> 着色器更新包.img」，只有几百 MB（没有着色器库的款不出这个文件）。手机上已经放过这款的完整 .img（游戏本身没换版本）、
   后来只是着色器变了（升级 S2Arm 后重新导出），只放这个更新包就行，不用重拷几 GB 的完整 .img。
   手机上还没有这款的，先放完整的 .img（不带「着色器更新包」字样的那个）。
 
@@ -1556,7 +1568,7 @@ This folder contains:
   You can get them onto the phone with AirDrop, a cable (file sharing in the Mac Finder or a Windows tool) or a cloud drive, then move them into this folder in the Files app.
   The file names do not matter: S2Arm recognises each game by its contents. Games already on the phone that you have not rebuilt for iPhone do not need to be added again.
 
-  Shader-only updates: next to each game there is also a "<game name> shader update.img" of only a few hundred MB. If the phone already has this
+  Shader-only updates: next to each game that has a shader library there is also a "<game name> shader update.img" of only a few hundred MB (games without one do not get this file). If the phone already has this
   game's full .img (same game version) and only the shaders changed (you updated S2Arm and exported again), add just this update file instead of
   copying the multi-GB .img again. If the game is not on the phone yet, add the full .img first (the one without "shader update" in its name).
 
@@ -1711,10 +1723,13 @@ def export_phone(c, gid=None):
                 _export_img(c, layout.ios_pack(c, g), out / f)
                 fresh.append(f)   # 这次新写的（#1132 完成页点名「.img 只要拷这几个」；沿用的和上次导出逐字节相同，手机上已有就不用再拷）
             # 着色器更新包（维护者 11-13）：只含派生件，几百 MB；手机上已有这款同一版本体时只放它就能换着色器，不用重拷几 GB 的 .img
-            u = _update_name(f, ui_lang(c))
-            if not _reuse_export(prev / u, out / u, old_stamps.get(u), stamp):
+            #   没有着色器库 / 覆盖层的款不出（只剩索引的空包，pack/img.py update_worth）
+            u = _update_name(f, ui_lang(c)) if _update_worth(c, layout.ios_pack(c, g)) else None
+            if u and not _reuse_export(prev / u, out / u, old_stamps.get(u), stamp):
                 _export_update(c, layout.ios_pack(c, g), out / u)
-            stamps[f] = stamps[u] = stamp
+            stamps[f] = stamp
+            if u:
+                stamps[u] = stamp
             listed.append(dict(gameId=g, name=names.get(g, g), file=f, update=u))
         c.begin("写安装说明", 4, 4)
         lang = ui_lang(c); readme = EXPORT_READMES[lang]
@@ -1918,6 +1933,11 @@ def sign_and_install(c, ipa, team, dev, udid, bid, games, steps=True):
             pull_seen(c, dev["id"], bid, g, udid or dev["id"], docs=game_docs(g))
             backup_saves(c, dev["id"], bid, g, docs=game_docs(g))
         rc, _, err = devicectl(c, "device", "install", "app", "--device", dev["id"], str(app), timeout=1800)
+        if rc and classify(err, default="") == "device_tunnel_unavailable":
+            # 开发者通道这一下没建起来（Wi-Fi 连着时常见）：等 10 秒原样再装一次，两次都不行才报
+            note(c, "iPhone 的开发者通道没连上（CoreDevice 4016）：10 秒后再装一次")  # 非玩家句
+            time.sleep(TUNNEL_RETRY_S)
+            rc, _, err = devicectl(c, "device", "install", "app", "--device", dev["id"], str(app), timeout=1800)
         if rc and PROFILE_REJECTED in err and not devcert.active(c):
             # 11-17 #1447 / #1448：手机说这次签名用的描述文件不能用（0xe8008015）——本机核得出的几项都过了、手机仍不认（证书在别处被换掉 / 吊销、
             #   描述文件被别的工具改过等）：把这次用过的描述文件挪开（不删），按 0.5.1 的做法向 Xcode 申请一份新的、重签、再装一次；仍不认照常报

@@ -132,6 +132,17 @@ for (var i = 0; i < featureNode["pages"]!.AsArray().Count; i++)
     SaveW($"08_feature_zh_{at + 1}", w => { SetW(w, "updatePopup", (JsonElement?)featurePopup); SetW(w, "featureIndex", at); });
 }
 SaveW("09_feature_en_1", w => { SetW(w, "language", "en"); SetW(w, "featureIndex", 0); });
+// 「现在更新并重启」时有任务在跑（11-18 维护者：认得出的风险说清后让玩家选「仍然重启 / 取消」，不再只能等）：出包在跑 → 确认块写清会中断哪个任务、重启后能接着做
+var gateUpdate = JsonDocument.Parse("{\"version\":\"9.9.9\",\"notes\":null}").RootElement.Clone();
+var gateJob = welcome.GetType().GetMethod("BeginJob", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(welcome, [Enum.Parse(welcome.GetType().GetNestedType("JobKind", BindingFlags.NonPublic)!, "Pack"), MockGame().Id]);
+SaveW("09b_update_restart_confirm_zh", w => {
+    SetW(w, "catalog", MockCatalog()); SetW(w, "availableUpdate", (JsonElement?)gateUpdate); SetW(w, "featureIndex", 0);
+    SetW(w, "updatePopup", (JsonElement?)JsonDocument.Parse("{\"kind\":\"update\",\"version\":\"9.9.9\",\"notes\":null}").RootElement.Clone());
+    SetW(w, "updateGate", "update.gate.confirm"); SetW(w, "language", "zh-Hans");
+});
+SaveW("09c_update_restart_confirm_en", w => { SetW(w, "language", "en"); });
+welcome.GetType().GetMethod("EndJob", BindingFlags.Instance | BindingFlags.NonPublic)?.Invoke(welcome, [gateJob]);
+SetW(welcome, "updateGate", ""); SetW(welcome, "availableUpdate", null);
 SetW(welcome, "updatePopup", null); SetW(welcome, "language", "zh-Hans");
 
 welcome.Close();

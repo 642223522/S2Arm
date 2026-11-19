@@ -1618,6 +1618,20 @@ static void screen_fps_note(NSWindow *w) {
         s2a_cpatch_screen_changed();   // 帧率补丁自动档按新屏幕重挑（起局选档时还没窗口，按 60 算过）
     }
 }
+// PR1 探针（HDR 全链路评审稿 v2 §4 PR1 ③）：窗口所在屏 EDR 能力一次性读数（M0 跑局记录屏幕配置用）；potentialEDR≤1.0 时附 §2.5 能力错配的排查指引一行。
+//   一次性：换屏 / 拨 HDR 开关后的重探重发布是 PR4 的活，这里只记开局所在屏。窗口刚建还没上屏时 w.screen 可能为空，按主屏读
+static void screen_edr_note(NSWindow *w) {
+    static int noted; if (noted) return; noted = 1;
+    NSScreen *sc = w.screen ?: NSScreen.mainScreen; if (!sc) return;
+    NSColorSpace *cs = sc.colorSpace; CFStringRef raw = cs ? CGColorSpaceGetName(cs.CGColorSpace) : NULL;
+    char rawname[96] = "-"; if (raw) CFStringGetCString(raw, rawname, sizeof rawname, kCFStringEncodingUTF8);
+    double potential = sc.maximumPotentialExtendedDynamicRangeColorComponentValue;
+    fprintf(stderr, "[s2a] 窗口所在屏能力探针：potentialEDR %.3f / currentEDR %.3f / referenceEDR %.3f（倍数），P3 %s（%s），backing %.2f，色彩空间 %s\n",
+            potential, sc.maximumExtendedDynamicRangeColorComponentValue, sc.maximumReferenceExtendedDynamicRangeColorComponentValue,
+            strstr(rawname, "P3") ? "是" : "否", rawname, sc.backingScaleFactor, cs.localizedName.UTF8String ?: "-");
+    if (potential <= 1.0)   // 评审稿 §2.5：判成 SDR 但屏其实支持 HDR 的错配，日志一行人话指引、给下一步
+        fprintf(stderr, "[s2a] 当前屏按 SDR 处理（potentialEDR ≤ 1.0）。若该屏支持 HDR：查①系统设置→显示器→HDR 开关（常见成因）②显示器 OSD 的 HDR/色域档 ③线缆/扩展坞（直连 USB-C DP Alt、HBR2+）④EDID 是否宣告 HDR（本机实测先例：宣告 PQ 而非 HLG）\n");
+}
 @implementation S2AMetalView
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)acceptsFirstMouse:(NSEvent *)event { (void)event; return YES; }
@@ -2082,6 +2096,7 @@ void s2a_front_run(void (*guest_main)(void)) {
         }];
         delegate.window = window;
         screen_fps_note(window);
+        screen_edr_note(window);   // PR1 探针：窗口所在屏 EDR 能力一次性读数（评审稿 §4 PR1 ③）
         [NSNotificationCenter.defaultCenter addObserverForName:NSWindowDidChangeScreenNotification object:window queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { screen_fps_note(n.object); }];
         S2APromptBanner *banner = [S2APromptBanner new]; [view addSubview:banner]; delegate.banner = banner;
         [NSLayoutConstraint activateConstraints:@[[banner.topAnchor constraintEqualToAnchor:view.topAnchor constant:16], [banner.centerXAnchor constraintEqualToAnchor:view.centerXAnchor]]];

@@ -51,6 +51,12 @@ namespace Ryujinx.HLE.HOS.Services.Fs.FileSystemProxy
                 Logger.Warning?.Print(LogClass.ServiceFs, $"读文件静默短读：{_name ?? "?"} 偏移 0x{offset:X} 请求 0x{size:X} 实得 0x{bytesRead:X}（文件长 0x{fileSize:X}，没到末尾）");
             }
 
+            // S2Arm：流式读按真机存储速度限流（S2AFsStreamPace；只记账，锁外才睡）
+            if (result.IsSuccess())
+            {
+                S2AFsStreamPace.Note(this, offset, bytesRead);
+            }
+
             context.ResponseData.Write(bytesRead);
 
             return (ResultCode)result.Value;

@@ -138,24 +138,25 @@ class SignerSwitched(unittest.TestCase):
 @unittest.skipIf(os.name == "nt", "Mac 打包")
 class BundlePlumesign(unittest.TestCase):
     def test_hash_pinned(self):
-        # 随包的是自编修改版：只从缓存取（不再下载），缓存缺 / 哈希不符都拒打；补丁原文与「修改版」说明随包
+        # 随包的是自编修改版：缓存有就用，没有从固定来源下；下不来 / 哈希不符拒打并说清地址；补丁原文与「修改版」说明随包
         sys.path.insert(0, str(ROOT / "launchers/macos"))
         import build_app
         import impactor
         import hashlib
         t = Path(tempfile.mkdtemp()); self.addCleanup(__import__("shutil").rmtree, t, True)
+        def down(url, to): raise OSError("连不上")
         with self.assertRaises(SystemExit) as e:
-            build_app.bundle_plumesign(t / "res0", cache=t / "empty")
-        self.assertIn("plumesign_build.py", str(e.exception))
+            build_app.bundle_plumesign(t / "res0", cache=t / "empty", fetch=down)
+        self.assertIn(impactor.OWN_RELEASE + "plumesign-macos-universal", str(e.exception)); self.assertIn("连不上", str(e.exception))
         (t / "cache").mkdir(); (t / "cache/plumesign-macos-universal").write_bytes(b"not it")
         with patch.object(impactor, "BUNDLED_MAC", {"plumesign-macos-universal": "00" * 32}):
             with self.assertRaises(SystemExit) as e:
-                build_app.bundle_plumesign(t / "res", cache=t / "cache")
+                build_app.bundle_plumesign(t / "res", cache=t / "cache", fetch=lambda url, to: Path(to).write_bytes(b"still not"))
             self.assertIn("拒打", str(e.exception))
         body = b"fake plumesign"
         (t / "cache/plumesign-macos-universal").write_bytes(body)
         with patch.object(impactor, "BUNDLED_MAC", {"plumesign-macos-universal": hashlib.sha256(body).hexdigest()}):
-            build_app.bundle_plumesign(t / "res2", cache=t / "cache")
+            build_app.bundle_plumesign(t / "res2", cache=t / "cache", fetch=lambda url, to: self.fail("缓存里有且哈希对就不下"))
         d = t / "res2" / impactor.BUNDLE_DIR
         out = d / "plumesign-macos-universal"
         self.assertEqual(out.read_bytes(), body)

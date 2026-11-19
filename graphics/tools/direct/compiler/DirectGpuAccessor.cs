@@ -28,6 +28,9 @@ namespace S2A.DirectCompiler
         // 编译结束后按反射到的 TextureDescriptor.HandleIndex 回填；-1 表示还没定。
         public int Slot;
         public int SamplerSlot = -1;
+        // #1594：类型 3 句柄（贴图字在 c2 分离贴图表，采样器号是着色器里的立即数）的采样器池下标 0..4095，-1 = 没有。
+        // 下标 0 是真下标，所以「有没有」只看 >= 0；与 SamplerSlot（采样器也在 c2 表里）互斥。
+        public int ConstSampler = -1;
         // Storage address provenance, resolved from ShaderProgram.Info.SBuffers.
         // Translator guestIndex is deliberately NOT a runtime NVN slot.
         // 贴图也用 UboSlot / UboOffset：句柄在游戏 UBO 里时的来源（NVN UBO 号、句柄字的字节偏移），此时 Slot = -1。
@@ -297,8 +300,27 @@ namespace S2A.DirectCompiler
             {
                 if (TrySeparateC2(handle, cbufSlot, out int texWord, out _))
                     fact = FindTexture(texWord, 2);
+                else if (TrySeparateConstC2(handle, cbufSlot, out int constTexWord, out _))
+                    fact = FindTexture(constTexWord, HandleTableCbuf);
             }
             return fact ?? throw Missing(method, $"stage={_stage.Stage},handle={handle},cbufSlot={cbufSlot}");
+        }
+
+        // #1594：类型 3 句柄（TextureHandleType.SeparateConstantSamplerHandle）= c2 分离贴图表里的贴图字 | 立即数采样器号 << 20。
+        //   翻译器给 PackOffsets(贴图字, 采样器号, 3)、PackSlots(贴图所在 cbuf, 0)：第二个偏移是采样器池下标（立即数），不是常量缓冲字，
+        //   第二个 cbuf 号没有意义（真机读到的恒为 0），所以只看贴图那一半：贴图在 c2、字在分离贴图表（90..344 偶）、有同字的 c2 分离事实。
+        //   同字事实是纹素缓冲（isBuffer）的不取——立即数采样器对纹素缓冲没意义，仍按缺事实拒；采样器号只交给调用方，不参与取事实。
+        public bool TrySeparateConstC2(int handle, int cbufSlot, out int texWord, out int samplerIndex)
+        {
+            texWord = samplerIndex = -1;
+            (int word, int sampler, TextureHandleType type) = TextureHandle.UnpackOffsets(handle);
+            if (type != TextureHandleType.SeparateConstantSamplerHandle || cbufSlot < 0 ||
+                TextureHandle.UnpackSlots(cbufSlot, -1).Item1 != HandleTableCbuf || !IsSeparateTextureWord(word))
+                return false;
+            DirectTextureFact fact = FindTexture(word, HandleTableCbuf);
+            if (fact == null || !fact.Separate || fact.IsBuffer) return false;
+            texWord = word; samplerIndex = sampler;
+            return true;
         }
 
         // The packed operands can occur in either order; require one from each c2 table

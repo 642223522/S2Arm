@@ -15,7 +15,7 @@ extension LauncherView {
         VStack(alignment: .leading, spacing: 0) {
             staleBanner
             renewBanner
-            homeControls(size: size).padding(.leading, LauncherTheme.Metrics.libraryInset).padding(.trailing, LauncherTheme.Space.section).padding(.top, size.height < 740 ? 12 : 22).padding(.bottom, 18)
+            homeControls(size: size).padding(.horizontal, LauncherTheme.Metrics.libraryInset).padding(.top, size.height < 740 ? 12 : 22).padding(.bottom, 18)
             if homeGames.isEmpty {
                 homeEmptyPreview
             } else {
@@ -158,26 +158,53 @@ extension LauncherView {
 
     private func homeControls(size: CGSize) -> some View {
         HStack(spacing: 10) {
-            homeGroups(compact: size.width < 1000)
-            Spacer(minLength: 16)
+            homeGroups(compact: size.width < 1200)
             Text("\(homeGames.count) / \(model.games.count)").font(.manrope(11.5)).monospacedDigit()
                 .foregroundStyle(.white.opacity(0.78)).shadow(color: .black.opacity(0.35), radius: 4, y: 1)
-                .fixedSize().accessibilityIdentifier("home.count").padding(.trailing, 6)
+                .fixedSize().accessibilityIdentifier("home.count").padding(.leading, 24)
+            Spacer(minLength: 16)
+            HomeSearchControl(isExpanded: $showHomeSearch, text: $home.search,
+                              width: size.width < 1000 ? min(LauncherControl.width, max(140, size.width - 660))
+                                  : size.width < 1200 ? LauncherControl.width : LauncherTheme.Metrics.navigationWidth) { finished in
+                navigation.focus("home.search.field")
+                navigation.editText(value: home.search, label: loc.t("home.search"), onClose: finished) { home.search = $0 }
+            }
             Button { model.sgradeUpgradeOpen = true } label: {
                 Image(nsImage: SGradeCardView.sGold).resizable().interpolation(.high).aspectRatio(contentMode: .fit).frame(width: 18, height: 18)
             }.controllerButtonStyle(ConsoleIconButtonStyle()).disabled(model.busy || model.games.isEmpty)
                 .controllerID("library.sgradeUpgrade")
                 .launcherTooltip(txt("sgrade.upgrade.button"), placement: .below).accessibilityLabel(txt("sgrade.upgrade.button"))
-            HomeSearchControl(isExpanded: $showHomeSearch, text: $home.search,
-                              width: size.width < 1000 ? LauncherControl.width : LauncherTheme.Metrics.navigationWidth) { finished in
-                navigation.focus("home.search.field")
-                navigation.editText(value: home.search, label: loc.t("home.search"), onClose: finished) { home.search = $0 }
+            Button { model.showAddGames = true } label: {
+                Image(systemName: "plus")
             }
-            Button { model.refresh() } label: { Image(systemName: "arrow.clockwise") }
-                .controllerButtonStyle(ConsoleIconButtonStyle()).disabled(model.loading).controllerID("home.refresh")
-                .launcherTooltip(loc.t("s2arm.library.refresh"), placement: .below).accessibilityLabel(loc.t("s2arm.library.refresh"))
+            .controllerButtonStyle(ConsoleIconButtonStyle())
+            .disabled(model.busy)
+            .launcherTooltip(loc.t("s2arm.action.import"), placement: .below).accessibilityLabel(loc.t("s2arm.action.import")).controllerID("top.import")
+            Button { showHomeMore.toggle() } label: { Image(systemName: "ellipsis") }
+                .controllerButtonStyle(ConsoleIconButtonStyle()).controllerID("home.more")
+                .launcherTooltip(loc.t("home.details"), placement: .below).accessibilityLabel(loc.t("home.details"))
+                .popover(isPresented: $showHomeMore, arrowEdge: .bottom) { homeMoreMenu }
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: showHomeSearch)
+    }
+
+    private var homeMoreMenu: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            homeMoreRow(loc.t("s2arm.library.refresh"), "arrow.clockwise", id: "home.refresh") { model.refresh() }
+                .disabled(model.loading)
+        }
+        .padding(8).frame(width: 220).font(.manrope(13.5, .semibold)).preferredColorScheme(.dark)
+    }
+
+    private func homeMoreRow(_ title: String, _ symbol: String, id: String, action: @escaping () -> Void) -> some View {
+        Button { showHomeMore = false; action() } label: {
+            HStack(spacing: 10) {
+                Image(systemName: symbol).font(.system(size: 14, weight: .medium)).frame(width: 20, height: 20)
+                Text(title).lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 8).contentShape(Rectangle())
+        }
+        .controllerButtonStyle(.plain).controllerID(id)
     }
 
     private func homeCoverStrip(size: CGSize) -> some View {

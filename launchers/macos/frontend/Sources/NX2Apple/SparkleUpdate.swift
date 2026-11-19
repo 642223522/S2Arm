@@ -5,7 +5,16 @@ import AppKit
 import Foundation
 import Sparkle
 
-@MainActor final class SparkleUpdate: NSObject, SPUUserDriver, SPUUpdaterDelegate {
+/// 模型换版用到的那几样（SparkleUpdate 实现；单测替身记下「真的装了」）
+@MainActor protocol UpdateInstalling: AnyObject {
+    var readyToInstall: Bool { get }
+    var foundVersion: String? { get }
+    func checkAndDownload()
+    func installNow()
+    func cancelOrSkipReadyUpdate()
+}
+
+@MainActor final class SparkleUpdate: NSObject, SPUUserDriver, SPUUpdaterDelegate, UpdateInstalling {
     weak var model: S2ArmLauncherModel?
     private(set) var updater: SPUUpdater!
     private var expected: UInt64 = 0, received: UInt64 = 0

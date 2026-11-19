@@ -230,8 +230,9 @@ static int fr_ms_write(id<MTLTexture> t, id<MTLBuffer> b) {
     return cb_run(cb) && !cb.error;
 }
 // 单采样贴图各面各级各层 ↔ 缓冲（to_buf 1 = 存，0 = 放回）
-static int fr_blit_planes(id<MTLTexture> t, const fr_tex_hd *hd, id<MTLBuffer> b, int to_buf) {
-    id<MTLCommandBuffer> cb = [g_q commandBuffer]; id<MTLBlitCommandEncoder> be = [cb blitCommandEncoder]; uint64_t off = 0;
+// 一张贴图各平面 / 层级 / 层的拷贝编进给定的拷贝编码器（不提交）：恢复时成批写回共用一条命令缓冲（nvn_snap.inc snap_put_pkg）
+static void fr_blit_planes_enc(id<MTLBlitCommandEncoder> be, id<MTLTexture> t, const fr_tex_hd *hd, id<MTLBuffer> b, int to_buf) {
+    uint64_t off = 0;
     for (uint32_t k = 0; k < hd->nplane; k++) { const fr_plane *p = &hd->pl[k];
         for (uint32_t l = 0; l < hd->levels; l++) for (uint32_t s = 0; s < hd->layers; s++) {
             NSUInteger w = MAX(1, hd->w >> l), h = MAX(1, hd->h >> l), d = MAX(1, hd->depth >> l), bpr = (w + p->bw - 1) / p->bw * p->bb, bpi = bpr * ((h + p->bh - 1) / p->bh);
@@ -239,6 +240,10 @@ static int fr_blit_planes(id<MTLTexture> t, const fr_tex_hd *hd, id<MTLBuffer> b
             else [be copyFromBuffer:b sourceOffset:off sourceBytesPerRow:bpr sourceBytesPerImage:bpi sourceSize:MTLSizeMake(w, h, d) toTexture:t destinationSlice:s destinationLevel:l destinationOrigin:MTLOriginMake(0, 0, 0) options:(MTLBlitOption)p->opt];
             off += (uint64_t)bpi * d;
         } }
+}
+static int fr_blit_planes(id<MTLTexture> t, const fr_tex_hd *hd, id<MTLBuffer> b, int to_buf) {
+    id<MTLCommandBuffer> cb = [g_q commandBuffer]; id<MTLBlitCommandEncoder> be = [cb blitCommandEncoder];
+    fr_blit_planes_enc(be, t, hd, b, to_buf);
     [be endEncoding];
     return cb_run(cb) && !cb.error;
 }

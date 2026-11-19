@@ -21,7 +21,7 @@ extension S2ArmLauncherModel {
         switch updateState {
         case .idle: return ["state": "idle"]
         case .working(let id, let percent): return ["state": "working", "detail": id, "percent": percent ?? NSNull()]
-        case .ready: return ["state": "ready", "detail": sparkleUpdate.foundVersion ?? "", "via": "sparkle"]
+        case .ready: return ["state": "ready", "detail": updateDriver.foundVersion ?? "", "via": "sparkle"]
         case .failed(let code): return ["state": "failed", "detail": code, "reason": updateFailure ?? ""]
         }
     }
@@ -75,7 +75,7 @@ extension S2ArmLauncherModel {
             if skippedUpdateVersion == version { return }
 
             if autoDownloadUpdates {
-                if sparkleUpdate.readyToInstall {
+                if updateDriver.readyToInstall {
                     showUpdatePopup()
                 } else {
                     autoDownloadPopupPending = true
@@ -99,7 +99,7 @@ extension S2ArmLauncherModel {
         autoDownloadPopupPending = false
         installWhenReady = false
         updatePopup = nil
-        sparkleUpdate.cancelOrSkipReadyUpdate()
+        updateDriver.cancelOrSkipReadyUpdate()
         if case .working = updateState { updateState = .idle }
         if case .ready = updateState { updateState = .idle }
         if let version, !version.isEmpty {
@@ -164,7 +164,7 @@ extension S2ArmLauncherModel {
         updateFailure = nil
         updateState = .working("update.downloading", 0)
         saveUpdateNotes()
-        sparkleUpdate.checkAndDownload()
+        updateDriver.checkAndDownload()
     }
 
     /// 换上新版后第一次打开要弹「这版更新了什么」（updater.py inbox 读 updates/notes/<版本>.json）：说明随查到的新版记在本机，换完不再联网
@@ -176,18 +176,40 @@ extension S2ArmLauncherModel {
         try? data.write(to: folder.appendingPathComponent("\(version).json"))
     }
 
-    /// 只有玩家点了才换版。有局 / 任务在跑：先拦下说清（草图④：前置检查，不进换版）。还没下：先下，下好（SparkleUpdate.showReady）接着换。
-    ///   替换、回滚、重启都由 Sparkle 做
-    func restartToUpdate() {
-        if busy { updateGate = session?.kind == .play ? "update.gate.playing" : "update.gate.busy"; installWhenReady = false; return }
-        guard sparkleUpdate.readyToInstall else {
+    /// 重启以更新会打断什么：正在玩的那款、正在跑的任务（出包被打断可以接着做：已做完的阶段与缓存保留）
+    struct UpdateRestartImpact: Equatable { var game: String?; var task: String?; var taskResumes = false }
+    var updateRestartImpact: UpdateRestartImpact {
+        var r = UpdateRestartImpact()
+        if mainBusy, let s = session {
+            if s.kind == .play { r.game = s.name } else { r.task = s.name; r.taskResumes = s.kind == .export }
+        }
+        if r.task == nil, phoneBusy, let p = phoneSession { r.task = p.name }
+        return r
+    }
+
+    /// 确认框的说明：会关掉哪款、会中断哪个任务、重启后能不能接着做（t = 按界面语言取文案）
+    func updateRestartImpactText(_ t: (String) -> String) -> String {
+        let i = updateRestartImpact
+        var lines: [String] = []
+        if let g = i.game { lines.append(t("update.gate.confirm.game").replacingOccurrences(of: "{0}", with: g)) }
+        if let k = i.task { lines.append(t(i.taskResumes ? "update.gate.confirm.taskResume" : "update.gate.confirm.taskRestart").replacingOccurrences(of: "{0}", with: k)) }
+        return lines.joined(separator: "\n")
+    }
+
+    /// 只有玩家点了才换版。有局 / 任务在跑：先说清会打断什么、玩家点「仍然重启」照样换（11-18 维护者：认得出的风险让玩家确认后继续，
+    ///   不再只能等）。确认后先停掉在跑的局 / 任务再换版。还没下：先下，下好（SparkleUpdate.showReady）接着换。替换、回滚、重启都由 Sparkle 做
+    func restartToUpdate(confirmed: Bool = false) {
+        if busy && !confirmed { updateGate = "update.gate.confirm"; installWhenReady = false; return }
+        updateGate = nil
+        if busy { stop(); stopPhone() }
+        guard updateDriver.readyToInstall else {
             installWhenReady = true
             downloadUpdate()
             return
         }
         installWhenReady = false
         updatePopup = nil
-        sparkleUpdate.installNow()
+        updateDriver.installNow()
     }
 }
 

@@ -57,9 +57,9 @@ void s2a_vp8_close(void *h) __attribute__((weak));
 // services/dav1d 的垫片（libs2a_dav1d.a：同上一起链）
 void *s2a_av1_open(int threads) __attribute__((weak));
 int s2a_av1_decode(void *h, const uint8_t *data, uint32_t len, uint8_t **planes, int32_t *strides, int32_t *info) __attribute__((weak));
-// 视频按片源帧率出图（nvn_vpace.h，hle_nvn.c s2a_video_frame）：Switch 1 由 Ryujinx Nvdec 每解一帧报一次（services/aot/Compose.cs），Switch 2 由这里 cv_emit
+// 视频按片源帧率出图（nvn_vpace.h，hle_nvn.c s2a_video_frame / s2a_video_frame_pts）：Switch 1 由 Ryujinx Nvdec 每解一帧报一次（services/aot/Compose.cs），Switch 2 由这里 cv_emit
 //   每交出一帧新解码的画面报一次，同一口径；片源不超过 30 帧且这段主要在放视频时出图封顶 30。弱链接：单测不链 hle_nvn.c
-void s2a_video_frame(void) __attribute__((weak));
+void s2a_video_frame_pts(int64_t pts_ns) __attribute__((weak));   // 同上，带这一帧的片源时间戳（片源帧率按时间戳判，不被出图节拍反拖）
 void s2a_av1_close(void *h) __attribute__((weak));
 
 // SDK 的「环空 / 还没有帧」结果
@@ -679,7 +679,7 @@ static int cv_emit(cvdec *d, void (*wr)(const cv_img *, void *), void *arg, uint
     pthread_cond_broadcast(&d->cv);
     pthread_mutex_unlock(&d->mu);
     // 达到缓冲 i 的句柄（它的序号），唤醒游戏的同步点事件
-    if (wr && !eos && s2a_video_frame) s2a_video_frame();   // 新解码的一帧报给出图节奏（重复上一帧 / 结束标记不算）；在唤醒游戏之前报，游戏拿到帧时这一帧已经计上
+    if (wr && !eos && s2a_video_frame_pts) s2a_video_frame_pts(pts_ns);   // 新解码的一帧报给出图节奏（重复上一帧 / 结束标记不算）；在唤醒游戏之前报，游戏拿到帧时这一帧已经计上
     sp_incr(d->ctr);
     d->frames++;
     return 1;

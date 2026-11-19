@@ -28,7 +28,7 @@ void s2a_cpatch_abort_boot_inputs(void) {
 
 // 帧率补丁逐份（11-13 维护者：60 / 120 都带进去，玩家自己切档）：模块、掩码槽（模块装载完补上）、位、数据写入（可空）、目标帧率（表第 10 列，0 = 取不到）、
 //   allow = 这份能开（安卓只认开关列表里的；iOS 屏蔽的画面类不算）。跟随开关时只开选中档的那几份（fps_pick），其余关位、写回原值
-struct cp_fu { module_t *m; _Atomic uint64_t *slot; uint64_t bits; char *spec; int target, allow, def; char id[48], grp[16]; };   // grp：表第 13 列「组」（同一上游补丁的几份文件，pack/cpatch.py fps_group）；def：表「缺省开」（我方验过）
+struct cp_fu { module_t *m; _Atomic uint64_t *slot; uint64_t bits; char *spec; int target, allow, def, fl; char id[48], grp[16]; };   // fl：来源是 FPSLocker（表第 5 列，pack/cpatch.py）   // grp：表第 13 列「组」（同一上游补丁的几份文件，pack/cpatch.py fps_group）；def：表「缺省开」（我方验过）
 static struct cp_fu g_fu[256]; static int g_nfu, g_nfud;   // g_nfud：其中带数据写入的份数（上限 64，同原帧率跟随表口径；只改代码的不计）   // 有帧率类补丁的各模块：掩码槽、其中帧率类的位（按需增长，无上限；只在装载时追加）
 // 随包表：fpslocker.json
 // FPSLocker 帧率配置的运行时部分（pack/fpslocker.py 出、与 cpatch.tsv 同目录）：服务层 services/S2A.Services/FpsLocker.cs 经 s2a_cpatch_tables_dir 找到它
@@ -36,7 +36,7 @@ static char g_tables_dir[1024];
 const char *s2a_cpatch_tables_dir(void) { return g_tables_dir; }
 static _Atomic int g_nfps;   // 设置页可与会话装载 / 释放并发查询
 static int g_fps_target;   // 当前选中档的目标帧率（fps_pick 定；s2a_cpatch_fps_follow → fps_link 按它定出图上限与节拍）
-static int g_itv_cap;   // 交给直连层的出图间隔上限（0 = 不封；选中的帧率补丁改在 sdk 模块时 1，见 s2a_cpatch_fps_follow）
+static int g_itv_cap;   // 交给直连层的出图间隔上限（0 = 不封；选中的帧率补丁改在 sdk 模块时 1、是 FPSLocker 配置时按目标锁，见 s2a_cpatch_fps_follow）
 int s2a_cpatch_itv_cap(void) { return g_itv_cap; }
 static int g_fps_on = -1, g_fps_want;   // 跟随开关的最近状态（-1 = 还没跟随过）；玩家选的档（0 = 没选：默认取不超过屏幕最高刷新率的最高一档）
 // 金手指（编号 cheat:，pack/cpatch.py scan_cheats；11-12）：缺省全关、不看 S2A_CPATCH_ON，由服务层金手指线程（services/S2A.Services/Cheats.cs）按玩家开关逐条调 s2a_cpatch_cheat。
@@ -386,7 +386,7 @@ static void cpatch_load_stream(module_t *m, FILE *f) {
                 LOG("【红】社区补丁 %s %s：帧率跟随表容量已满，整份不开", m->name, c[0]); st_put(c[0], "表不认"); continue;
             }
             struct cp_fu *u = &g_fu[g_nfu++]; memset(u, 0, sizeof *u);
-            u->m = m; u->bits = 1ull << bit; u->target = c[9] ? atoi(c[9]) : 0; u->allow = !cp_ios_blocked(c[0], c[13]); u->def = c[8] && c[8][0] == '1';
+            u->m = m; u->bits = 1ull << bit; u->target = c[9] ? atoi(c[9]) : 0; u->allow = !cp_ios_blocked(c[0], c[13]); u->def = c[8] && c[8][0] == '1'; u->fl = c[4] && !strcmp(c[4], "FPSLocker");
             snprintf(u->id, sizeof u->id, "%s", c[0]); snprintf(u->grp, sizeof u->grp, "%s", c[12] ? c[12] : "");
             if (c[7][0] && !(u->spec = strdup(c[7]))) die("社区帧率补丁数据分配失败");
             if (c[7][0]) g_nfud++;
@@ -627,9 +627,15 @@ void s2a_cpatch_fps_follow(int on) {
     if (g_nfu) LOG("社区补丁：帧率类 %d 份，%s", g_nfps, on && pick ? "" : "全关");
     // 选中的帧率补丁里有改在 sdk 模块的（D-36F4：enabler_sdk 一类把驱动的交换间隔 2 → 1）：直连层接管了 NVN，sdk 里那段驱动不执行，
     //   改由直连层把出图间隔封到 1（graphics/nvn/gfx/nvn/hle_nvn.c nvn_present_itv_cap）；关 / 没选中回 0。不链直连层（通用图形）时 sdk 驱动照常跑，补丁本身生效，这里找不到符号即不做
-    int sdk = 0;
-    for (int i = 0; on && i < g_nfu && !sdk; i++) sdk = g_fu[i].slot && fps_chosen(&g_fu[i], on, pick, grp) && !strcmp(g_fu[i].m->name, "sdk");
-    g_itv_cap = sdk ? 1 : 0;
+    // 选中的是 FPSLocker 配置（#1517）：真机上 FPSLocker 是两半——仓库配置的内存写入（这里的静态部分 + 服务层 FpsLocker.cs 每秒写）和 SaltyNX 的 NX-FPS 插件，
+    //   后者拦游戏的交换间隔、按目标帧率锁住（目标 60 → 1）。直连层只搬了前一半：一款游戏每切场景就自己调 nvnWindowSetPresentInterval(2)、之后不再重算，
+    //   写入照做，交帧仍按 2，原生 30 帧（屏上 60 是补帧）。这里补上后一半：同 sdk 那类，把出图间隔封到目标对应的间隔（60 Hz 节拍下 60 / 目标，至少 1）
+    int sdk = 0, fl = 0;
+    for (int i = 0; on && i < g_nfu; i++) if (fps_chosen(&g_fu[i], on, pick, grp)) {
+        if (g_fu[i].slot && !strcmp(g_fu[i].m->name, "sdk")) sdk = 1;
+        if (g_fu[i].fl) fl = 1;
+    }
+    g_itv_cap = sdk ? 1 : fl && pick > 0 ? (pick >= 60 ? 1 : 60 / pick) : 0;
     void (*itv_cap)(int) = (void (*)(int))dlsym(RTLD_DEFAULT, "nvn_present_itv_cap");
     if (itv_cap) itv_cap(g_itv_cap);
     // 60 帧开关开着、包里却没有可用的帧率补丁（11-15 #934：日志「本局 60 帧开」只说明开关，玩家据此以为在 60 帧）：写明实际怎么跑

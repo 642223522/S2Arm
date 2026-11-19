@@ -306,6 +306,12 @@ void *front_metal_layer(void) {
             //   已经晚了，只有启动前从外面传入才显示。iOS 16 起可按层在运行中打开：开关开着（环境变量来自设置或外面传入都算）就对出图层打开
             { const char *hud = getenv("MTL_HUD_ENABLED");
               if (hud && !strcmp(hud, "1")) { if (@available(iOS 16.0, *)) { l.developerHUDProperties = @{@"mode": @"default"}; LOG("直连：Metal 性能浮层按出图层打开（MTL_HUD_ENABLED=1）"); } } }
+            // PR1 探针（HDR 全链路评审稿 v2）：挂层屏幕 EDR 能力一次性读数（M0 跑局记录屏幕配置用；能力动态重探是 PR4 的活）。EDR headroom iOS 16 起；
+            //   排查指引只写在 Mac 侧（front_mac.m screen_edr_note）——iOS 的设置路径与那行文案不同，这里只报读数
+            { UIScreen *sc = v.window.screen ?: UIScreen.mainScreen;
+              float pe = 0, ce = 0;
+              if (@available(iOS 16.0, *)) { pe = sc.potentialEDRHeadroom; ce = sc.currentEDRHeadroom; }
+              LOG("直连：出图层所在屏 EDR 探针：potentialEDR %.3f / currentEDR %.3f（倍数），色域 %s", pe, ce, sc.traitCollection.displayGamut == UIDisplayGamutP3 ? "P3" : "sRGB"); }
             if (v != s2a_ios_root_view()) LOG("直连：出图层挂在外接屏（下一行的「根视图」尺寸是外接屏窗口的视图）");
             [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue
                 usingBlock:^(NSNotification *n) { (void)n; if (g_relayout_due) { g_relayout_due = 0; s2a_direct_relayout(); } }];   // 补后台期间欠的重摆

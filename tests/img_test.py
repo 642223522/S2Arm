@@ -353,4 +353,15 @@ for keep_image in (True, False):
     finally:
         shutil.rmtree(T, ignore_errors=True)
 
+# ⑬ 值不值得出着色器更新包（诊断 #0c0f75：没有着色器库的款导出了一百多 KB、什么都不换的更新包）：
+#    清单里有 shaders/ 或 romfs_overlay/ → 出；只有 romfs.s2aidx / game.imgmap 这类索引 → 不出
+T13 = Path(tempfile.mkdtemp())
+try:
+    for rows, want in ((['game.img', 'romfs.s2aidx', 'shaders/direct/keys.tsv'], True), (['game.img', 'romfs.s2aidx', 'romfs_overlay/ui/a.bflyt'], True),
+                       (['game.img', 'romfs.s2aidx', 'game.imgmap'], False)):
+        (T13 / 'index.tsv').write_text(''.join(f'{r}\t1\tx\n' for r in rows + ['manifest.json']), encoding='utf-8')
+        ck(img.update_worth(str(T13)) == want, f'⑬ 清单 {rows} → 出更新包 {want}')
+finally:
+    shutil.rmtree(T13, ignore_errors=True)
+
 print(f'img 单测：{"全通" if not bad else f"{bad} 项不通"}'); sys.exit(1 if bad else 0)

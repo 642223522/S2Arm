@@ -277,6 +277,7 @@ public final class S2ArmEngineProvider: EngineProvider {
         var arguments: [String: Any] = [:]
         if let autoConnect = s.values["switch2ProAutoConnect"] { arguments["switch2ProAutoConnect"] = autoConnect == "1" }
         if let relaySocket = s.values["switch2ProRelaySocket"] { arguments["switch2ProRelaySocket"] = relaySocket }
+        if let xboxRelay = s.values["xboxGipRelaySocket"] { arguments["xboxGipRelaySocket"] = xboxRelay }
         // 本地玩家（#623）：player 字段 {user, name, folder}；没带 = 旧行为
         if let user = s.values["playerUser"] {
             arguments["player"] = ["user": user, "name": s.values["playerName"] ?? "", "folder": s.values["playerFolder"] ?? "SaveData"]

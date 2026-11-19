@@ -257,6 +257,11 @@ namespace S2A.Services
                 WriteError(response, s, tipc, domain, Red.ResultUnknownCommand);
                 return;
             }
+            finally
+            {
+                // fs 流式读限流：Read 里记下的待睡时长在放开会话锁之后才睡，不挡同会话别的线程；放 finally，异常返回的请求也当场睡掉（compat S2AFsStreamPace）
+                Ryujinx.HLE.HOS.Services.Fs.FileSystemProxy.S2AFsStreamPace.SleepPending();
+            }
         }
 
         // 报红用的目标名：域消息 = 「会话根（域内 子对象类型）」，否则会话根类型名

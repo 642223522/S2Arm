@@ -50,6 +50,10 @@ int s2a_gip_parse(const uint8_t *r, size_t n, uint32_t *buttons, int16_t ax[4]);
 int s2a_gip_ack(const uint8_t *r, size_t n, uint8_t ack[13]);
 // 纯函数（单测用）：判断 VID / PID 是否为已知的微软或兼容有线 Xbox GIP 手柄
 int s2a_is_xbox_gip(int vid, int pid);
+// 启动器中继（S2A_XBOX_GIP_SOCKET）：应用一条 128 字节中继报文（有效回 1，无效回 0）；清空中继槽位；从已连 fd 读到断开为止
+int s2a_mac_hid_pad_apply_xbox_relay(const void *packet, size_t len);
+void s2a_mac_hid_pad_clear_xbox_relay(void);
+int s2a_mac_hid_pad_read_xbox_relay_fd(int fd);
 #if defined(__APPLE__)
 #include <IOKit/IOTypes.h>
 // 检查 USB 设备树下是否已有系统加载的 HID 子节点（IOHIDInterface / IOHIDDevice），避免抢占已由系统 / GameController 认领的手柄

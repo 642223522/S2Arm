@@ -20,23 +20,21 @@ import frontend_layout
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def bundle_plumesign(resources, cache=None):
+def bundle_plumesign(resources, cache=None, fetch=None):
     """Impactor 同版 plumesign 的 macOS 版随启动器（0.6.0 通用壳：Mac 的 Apple ID 用它登录、签名，pack/jobs/install.py mac_plume）：
     放 Resources/<impactor.BUNDLE_DIR>/。用的是我们自编的修改版（上游 v{TESTED} + launchers/windows/third_party/impactor/patches/，
-    tools/plumesign_build.py 编出放进缓存，同 Windows 打包 launchers/windows/bundle_win.py impactor_cache 同一个目录）；不再从发布页下载。
-    缓存里没有或 SHA-256 不等于 impactor.BUNDLED_MAC 都拒打。发版时 sign_release.sh 按文件头认 Mach-O、用我们的 Developer ID 重签外层签名（公证要求），内容不改"""
+    tools/plumesign_build.py 编，同 Windows 打包 launchers/windows/bundle_win.py impactor_cache 同一个缓存目录）。缓存有就用，没有从固定来源
+    impactor.OWN_RELEASE（我们公开仓的 Release）下到缓存；SHA-256 不等于 impactor.BUNDLED_MAC 拒打（impactor.own_artifact）。发版时 sign_release.sh 按文件头认 Mach-O、用我们的 Developer ID 重签外层签名（公证要求），内容不改"""
     sys.path.insert(0, str(ROOT / "pack/jobs")); import impactor
     cache = Path(cache or os.environ.get("S2A_IMPACTOR_CACHE") or Path(os.environ.get("S2A_RUN_ROOT") or Path.home() / ".s2arm/run")
                  / "s2arm/cache/impactor" / f"v{impactor.TESTED}-{impactor.OWN_BUILD}")
     dest = Path(resources) / impactor.BUNDLE_DIR
     dest.mkdir(parents=True, exist_ok=True)
     for name, want in impactor.BUNDLED_MAC.items():
-        src = cache / name
-        if not src.is_file():
-            raise SystemExit(f"【红】缓存里没有 {src}：先跑 python3 tools/plumesign_build.py（Mac 上编自编版 v{impactor.TESTED}-{impactor.OWN_BUILD}）再打")
-        got = hashlib.sha256(src.read_bytes()).hexdigest()
-        if got != want:
-            raise SystemExit(f"【红】{src} 的 SHA-256 是 {got}，钉的是 {want}：不是自编 v{impactor.TESTED}-{impactor.OWN_BUILD}，拒打")
+        try:
+            src = Path(impactor.own_artifact(name, want, cache, fetch))
+        except impactor.OwnBuildError as e:
+            raise SystemExit(f"【红】{e}")
         shutil.copy2(src, dest / name); (dest / name).chmod(0o755)
     lic = ROOT / "launchers/windows/third_party/impactor"
     for f in sorted(lic.glob("LICENSE-*.txt")):
