@@ -3,4 +3,4 @@
 //   电脑侧（pack/jobs/host_update.py HOST_ABI）从本文件机械读出，写进每款产物（s2a_catalogue.json 的 host_abi、Mac 镜像 manifest.json 的 hostAbi）；
 //   宿主载入一款时拿产物上记的号和这里比，不等就不载入（产物没记 = 本字段之前出的包，按 1）。
 #pragma once
-#define S2A_HOST_ABI 1
+#define S2A_HOST_ABI 2
