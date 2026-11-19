@@ -74,13 +74,30 @@ def _wrap_scandir(module):
     module.scandir = scandir
 
 
+def _name_paths(error, paths):
+    """系统调用报错没带路径时，补上这次调用的路径参数（调用方给的写法，不是补了长路径前缀的那份）。
+    #df9fd6：_winapi.CopyFile2（shutil.copy2 的 Windows 路径）报 WinError 112「磁盘空间不足」不带文件名，失败归因只能去量日志所在的盘
+    （库盘还剩 226.7 GB）、不采信盘满，玩家看到「未归类」；补上源 / 目标之后，归因按点名的路径量到真正写满的那块盘"""
+    if error.filename is not None:
+        return
+    names = [os.fspath(p) for p in paths if isinstance(p, (str, bytes, os.PathLike))]
+    if names:
+        error.filename = names[0]
+        if len(names) > 1:
+            error.filename2 = names[1]
+
+
 def _wrap(module, name, count):
     original = getattr(module, name, None)
     if original is None:
         return
     def wrapper(*args, **kwargs):
         converted = [long_path(a) if i < count else a for i, a in enumerate(args)]
-        return original(*converted, **kwargs)
+        try:
+            return original(*converted, **kwargs)
+        except OSError as e:
+            _name_paths(e, args[:count])
+            raise
     wrapper.__name__ = name
     wrapper.__doc__ = original.__doc__
     setattr(module, name, wrapper)

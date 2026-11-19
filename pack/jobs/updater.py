@@ -4,11 +4,12 @@
 v0.3.10 起，下载、验签、替换、回滚、重启都交给业界标准组件：Mac 用 Sparkle 2，Windows 用 NetSparkle（appcast 在 dl.s2arm.com/appcast/，
 发版用 Ed25519 私钥签）。这里不再有任何换版代码，只剩：
 
-check       查最新版本（官网签名清单，取不到回退 GitHub Release），打印一行 JSON。
+check       查最新版本（官网签名清单，取不到回退 GitHub Release），打印一行 JSON。--fresh 跳过缓存，失败也返回 JSON。
 inbox       启动器打开时要给玩家看什么：查版本 + 取公告（notice.json，取不到用随包那份），按「永远只给最新一期」算出
             最多一个弹窗（这版更新了什么 / 有新版）、横幅（最新一条重要公告）、消息列表与未读数；打印一行 JSON。只读。
             顺带清掉旧自写换版在 updates/ 下留的残留（clear_stale_pending）。
             新功能大窗（docs/site/feature.json，随包）：本机没看过这一期就弹（新装、更新上来都弹一次），排在更新弹窗前面。
+            --notices-only 只取公告和新功能大窗，供更新模拟模式使用。
 inbox-seen  玩家关掉了：记进数据目录 updates/seen.json（--update 版本 / --after 版本 / --notice 最新看过的公告号 / --feature 新功能期号）。
 """
 import argparse
@@ -165,8 +166,7 @@ def latest_cache(platform, current):
 
 
 def latest(platform, current, fresh=False):
-    """→ {available, version, ...}，15 分钟内查过就用上次的结果（latest_cache）。fresh=True（真要下载时，prepare）不读缓存、现查，结果写回缓存：
-    启动时的「有没有新版」可以用缓存省限流额度，真下载必须是此刻的发布（剃刀 H18：热修发出后 15 分钟内查不到、查完到下载之间撤版会报 update_none）"""
+    """→ {available, version, ...}，启动检查可读 15 分钟缓存。玩家主动检查时 fresh=True，现查并写回缓存。"""
     cache = latest_cache(platform, current)
     try:
         if not fresh and time.time() - cache.stat().st_mtime < LATEST_TTL:
@@ -177,9 +177,15 @@ def latest(platform, current, fresh=False):
         pass
     info = query_latest(platform, current)
     try:
-        tmp = cache.with_suffix(".tmp")
-        tmp.write_text(json.dumps(info), encoding="utf-8")
-        tmp.replace(cache)
+        # 主动检查可以和启动检查并行，各自写自己的临时文件再替换缓存。
+        with tempfile.NamedTemporaryFile(dir=cache.parent, prefix=cache.name + ".", delete=False, mode="w", encoding="utf-8") as out:
+            tmp = Path(out.name)
+            try:
+                json.dump(info, out)
+                out.close()
+                tmp.replace(cache)
+            finally:
+                tmp.unlink(missing_ok=True)
     except OSError:
         pass
     return info
@@ -511,7 +517,7 @@ def installed_notes(private_root, version):
         return None
 
 
-def inbox(platform, current, private_root, check=None, notices=None, feature=None):
+def inbox(platform, current, private_root, check=None, notices=None, feature=None, *, notices_only=False):
     """启动器打开时要给玩家看什么（两端共用，11-13 维护者定：永远只给最新一期，不叠加、不补弹）→
       popup：最多一个。「这版更新了什么」（刚换上新版、这版说明里有「亮点」、没关过）优先，其次「有新版」（这一版没提示过）；
              跳过的版本不补弹——只看当前版本和最新那一版。
@@ -522,7 +528,7 @@ def inbox(platform, current, private_root, check=None, notices=None, feature=Non
     新功能大窗排在最前：本机没看过这一期（seen.json featureSeen）就弹，新装（没有 seen.json）和更新上来都算；更新弹窗留到下次打开。
     只读，不改 seen.json（玩家关掉时 inbox_seen 才记）"""
     seen = seen_state(private_root)
-    check = check if isinstance(check, dict) else {"available": False}
+    check = check if not notices_only and isinstance(check, dict) else {"available": False}
     notices = notices or []
     seen_at = next((i for i, n in enumerate(notices) if n["id"] == seen.get("noticeSeen")), None)
     def is_seen(i):
@@ -531,7 +537,7 @@ def inbox(platform, current, private_root, check=None, notices=None, feature=Non
         n["unread"] = not is_seen(i) and i == 0
     popup = None
     # 这版的说明只在「从旧版里点更新、换上这一版」时记在本机（启动器开始下载新版时写 updates/notes/<版本>.json），有它就说明是刚更新上来的；手动装的新版没有，不弹
-    mine = installed_notes(private_root, current)
+    mine = None if notices_only else installed_notes(private_root, current)
     if feature and seen.get("featureSeen") != feature["id"]:
         popup = feature
     elif mine and mine.get("highlights") and seen.get("afterShown") != current:
@@ -734,29 +740,34 @@ def main(argv=None):
     p = sub.add_parser("check")
     p.add_argument("--platform", required=True, choices=sorted(ASSETS))
     p.add_argument("--current", required=True)
+    p.add_argument("--fresh", action="store_true")
     p = sub.add_parser("inbox"); p.add_argument("--private-root", required=True); p.add_argument("--platform", required=True, choices=sorted(ASSETS))
     p.add_argument("--current", required=True)
+    p.add_argument("--notices-only", action="store_true")
     p = sub.add_parser("inbox-seen"); p.add_argument("--private-root", required=True)
     p.add_argument("--update"); p.add_argument("--after"); p.add_argument("--notice"); p.add_argument("--feature")
     a = ap.parse_args(argv)
     # 打开时要看什么（inbox）：查版本、取公告都可能失败，失败不走下面的更新失败记录（不写 update.log），查不到就当没有新版、没有公告，界面照常
     if a.command == "inbox":
-        try:
-            clear_stale_pending(a.private_root, a.current)
-        except OSError:
-            pass
-        try:
-            sweep_install_leftovers(a.private_root)
-        except OSError:
-            pass
-        try:
-            check = latest(a.platform, a.current)
-        except (UpdateError, OSError, ValueError, KeyError, __import__("http.client").client.HTTPException) as error:
-            check = {"available": False, "error": getattr(error, "code", type(error).__name__)}
+        check = None
+        if not a.notices_only:
+            try:
+                clear_stale_pending(a.private_root, a.current)
+            except OSError:
+                pass
+            try:
+                sweep_install_leftovers(a.private_root)
+            except OSError:
+                pass
+            try:
+                check = latest(a.platform, a.current)
+            except (UpdateError, OSError, ValueError, KeyError, __import__("http.client").client.HTTPException) as error:
+                check = {"available": False, "error": getattr(error, "code", type(error).__name__)}
         data = notice_data()
         withdrawn = [i for i in data.get("featureWithdrawn") or [] if isinstance(i, str)] if isinstance(data.get("featureWithdrawn"), list) else []
         feature = feature_spotlight(a.platform, a.current, withdrawn=withdrawn)
-        print(json.dumps(inbox(a.platform, a.current, a.private_root, check, notice_messages(data, a.platform, a.current), feature), ensure_ascii=False))
+        print(json.dumps(inbox(a.platform, a.current, a.private_root, check, notice_messages(data, a.platform, a.current),
+                               feature, notices_only=a.notices_only), ensure_ascii=False))
         return 0
     if a.command == "inbox-seen":
         try:
@@ -767,12 +778,19 @@ def main(argv=None):
         print(json.dumps({"ok": True}))
         return 0
     try:
-        print(json.dumps(latest(a.platform, a.current), ensure_ascii=False))   # check
+        print(json.dumps(latest(a.platform, a.current, fresh=a.fresh), ensure_ascii=False))   # check
         return 0
     except UpdateError as error:
+        if a.fresh:
+            emit(available=False, error=error.code)
+            return 0
         record_failure(a, error.code, str(error), error.detail)
         emit(state="failed", code=error.code, message=str(error))
-    except (OSError, ValueError, KeyError, ImportError, subprocess.SubprocessError, __import__("zipfile").BadZipFile, __import__("http.client").client.HTTPException) as error:
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, ImportError, subprocess.SubprocessError,
+            __import__("zipfile").BadZipFile, __import__("http.client").client.HTTPException) as error:
+        if a.fresh:
+            emit(available=False, error="update_failed")
+            return 0
         record_failure(a, "update_failed", type(error).__name__, f"{error}\n{getattr(error, 'stderr', '') or ''}")
         emit(state="failed", code="update_failed", message=f"更新没有完成，旧版没有变化（{type(error).__name__}）。请检查网络后重试。")
     return 1

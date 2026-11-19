@@ -467,6 +467,16 @@
 "save.restoreCancelled" = "復元をキャンセルしました。";
 "save.restored" = "セーブデータを復元しました。ゲームを開始して進行状況を確認できます。復元前のバックアップが保存されました(復元前にセーブデータがない場合は作成されません)。";
 "save.serviceInvalid" = "セーブデータサービスが有効な結果を返しませんでした。App を閉じて再度開いてください。既存のデータは保持されます。";
+"save.previous.ask.title" = "前回このゲームはセーブデータを正常に読み込めませんでした。ひとつ前のセーブデータに戻しますか？";
+"save.previous.ask.crash" = "前回は開始直後に終了しました。戻した後もいつでも元に戻せます。";
+"save.previous.ask.guard" = "前回の保存時にセーブデータの照合が一致しませんでした。戻した後もいつでも元に戻せます。";
+"save.previous.ask.restore" = "ひとつ前に戻す";
+"save.previous.ask.start" = "そのまま開始";
+"save.previous.done.title" = "ひとつ前のセーブデータに戻しました";
+"save.previous.done" = "いつでも元に戻せます。歯車メニューの「セーブデータ管理」で「ひとつ前に切り替え」を選んでください。";
+"save.previous.done.ok" = "OK";
+"save.previous.button" = "ひとつ前に切り替え";
+"save.previous.detail" = "前回の保存より前のデータと入れ替えます。もう一度選ぶと元に戻ります。";
 "save.start" = "ゲームを開始";
 "save.leave" = "終了（次回はそのままゲームを開く）";
 "save.status.hasSave" = "現在のセーブデータをエクスポートできます。インポート時はゲームバージョン、アカウント所有権、ファイル整合性を確認してから、復元の確認を求めます。";

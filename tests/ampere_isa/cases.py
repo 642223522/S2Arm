@@ -208,6 +208,15 @@ for mem, cmp, new, old, after, why in [(5, 5, 9, 5, 9, '相等：写入新值'),
     case(f'ATOMG.CAS 内存 {mem} 比较 {cmp} 新值 {new}', True, [mem, cmp, new],
          [LDC64(8, 0x510), MOVC(4, 1), MOVC(5, 2), CAS(6, 8, 4, 5), LDG(7, 8), MOVR(0, 6), MOVR(1, 7), MOVI(2, 0), MOVI(3, 0)], [old, after, 0, 0], why)
 
+# ---- ATOMG.ADD.F16x2.FTZ.RN（0x3a8，同 ATOMG 字段：.E 72、类型 73..76 = 4（NAK sm70 AtomType：U32 0 / S32 1 / U64 2 / F32 3 / F16x2 4 / S64 5）、操作 87..91 = 0 ADD）：
+#   内存字的低 / 高半各加值的低 / 高半，就近取偶；Rd = 旧值（PTX atom.global.add.noftz.f16x2）。原先「Invalid reduction type」整条丢掉：Rd 读 0、内存不变
+ATOMG_F16X2_ADD = lambda rd, ra, rb: inst(0x3a8, rd=(16, rd), ra=(24, ra), rb=(32, rb), e=(72, 1), t=(73, 4), p=(81, PT))
+h2 = lambda lo, hi: f16(lo) | f16(hi) << 16
+for mem, val, after, why in [(h2(1.5, -2.0), h2(0.25, 3.0), h2(1.75, 1.0), '两半各加'),
+                             (h2(2048.0, -0.0), h2(1.0, 0.0), h2(2048.0, 0.0), '2048 + 1 半精度表示不了：就近取偶回 2048；-0 + 0 = +0')]:
+    case(f'ATOMG.ADD.F16x2 {why}', True, [mem, val],
+         [LDC64(8, 0x510), MOVC(4, 1), ATOMG_F16X2_ADD(6, 8, 4), LDG(7, 8), MOVR(0, 6), MOVR(1, 7), MOVI(2, 0), MOVI(3, 0)], [mem, after, 0, 0], why)
+
 # ---- F2IP.U8.F32.NTZ（0x243，PTX cvt.rni.s32.f32 两次 + cvt.pack.sat.u8.s32.b32 融成一条：NVIDIA 论坛 255571 的 sm_89 编译读数）：
 #   d = { c[15:0] → 高 16 位，sat_u8(rni(a)) → 字节 1，sat_u8(rni(b)) → 字节 0 }（PTX cvt.pack 的位次）；NaN 读 0（NTZ），就近取偶；修饰位只认塞尔达 10 条里那一种（72..92 = 只有位 74）
 F2IP = lambda rd, ra, rb, rc: alu(0x043, 1, rd, ra, rb=(32, rb), rc=(64, rc), u8=(74, 1))
