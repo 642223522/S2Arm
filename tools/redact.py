@@ -13,10 +13,17 @@ SECRET = re.compile(r'(?i)(?:password|passwd|secret|token|api[_-]?key|authorizat
 ASSIGNMENT_KEY = re.compile(r"""["']?(?<![A-Za-z0-9_.-])[0-9.-]*(?P<name>[A-Za-z_][A-Za-z0-9_.-]*)["']?[^\S\r\n]*[:=][^\S\r\n]*""")
 
 
+# 按确切名字放行（维护者 11-19 定：不放宽上面的密钥名规则）：key=（着色器 / 管线缓存键，代码内容的哈希，nvn_mtl.m「K … key=%s」、
+#   selection.c「direct attempt … key=%.64s」；诊断里原先 17 万行全成 key=[REDACTED]）和 binaryUUID（我们自己二进制的构建号，崩溃符号化要用）。
+#   放行的是名字不是值：真密钥原值照样按值先抹（redact_text 开头），prod.keys / title.keys 整行照样按 KEY_LINE 抹，64 位以上十六进制照样当密钥材料
+ALLOWED_NAMES = frozenset({'key', 'binaryUUID'})
+_BINARY_UUID_BEFORE = re.compile(r'binaryUUID["\']?[^\S\r\n]*[:=][^\S\r\n]*["\']?\Z')
+
+
 def redact_assignments(text):
     pieces, cursor = [], 0
     for match in ASSIGNMENT_KEY.finditer(text):
-        if match.end() <= cursor or not SECRET.search(match['name']):
+        if match.end() <= cursor or match['name'] in ALLOWED_NAMES or not SECRET.search(match['name']):
             continue
         start = match.end()
         q = text[start] if start < len(text) and text[start] in ('"', "'") else ''
@@ -163,11 +170,12 @@ def redact_text(text, *, key_values=None, preserve_identity=False) -> str:
     s = re.sub(r'(?i)(https?://)[^/\s:@]+:[^/\s@]+@', r'\1[REDACTED]@', s)
     s = re.sub(r'(?i)([?&](?:token|key|api_key|secret|password|auth|signature|session|access_token)=)[^&#\s]+', r'\1[REDACTED]', s)
     # [a-z0-9_]*_key 只从一串 [a-z0-9_] 的开头试（同上 ASSIGNMENT_KEY：串中间起能成的，从串头起也成、且更靠左，原本就轮不到它；原写法长串上平方级）
-    s = re.sub(r'(?i)((?:password|passwd|secret|token|api[_-]?key|(?<![a-z0-9_])[a-z0-9_]*_key(?:_[a-z0-9]+)*|titlekek|masterkey|headerkey|cookie|serial(?:number)?|udid|uuid|imei|device[_-]?id|android[_-]?id|idfa|idfv|mac[_-]?address|uniqueidentifier|identifierforvendor)\s*["\x27]?\s*[:=]\s*["\x27]?)[^\s,"\x27;}]+', r'\1[REDACTED]', s)
+    s = re.sub(r'(?i)((?:password|passwd|secret|token|api[_-]?key|(?<![a-z0-9_])[a-z0-9_]*_key(?:_[a-z0-9]+)*|titlekek|masterkey|headerkey|cookie|serial(?:number)?|udid|(?<!(?-i:binary))uuid|imei|device[_-]?id|android[_-]?id|idfa|idfv|mac[_-]?address|uniqueidentifier|identifierforvendor)\s*["\x27]?\s*[:=]\s*["\x27]?)[^\s,"\x27;}]+', r'\1[REDACTED]', s)
     s = redact_identity(s)
     s = re.sub(r'(?:/Volumes/|/private/var/|/var/mobile/|/data/user/|/data/data/|\\\\)[^\r\n\"\x27<>]*', _private_path_keep_reason, s)
     s = re.sub(r'(?:/Users/|/home/|[A-Za-z]:[\\/](?:Users|Documents)[\\/])[^\r\n\"\x27<>]*', _private_path_keep_reason, s)
-    s = re.sub(r'\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b', '[DEVICE_ID]', s)
+    s = re.sub(r'\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b',
+               lambda m: m[0] if _BINARY_UUID_BEFORE.search(s, max(0, m.start() - 40), m.start()) else '[DEVICE_ID]', s)
     if not preserve_identity:
         s = re.sub(r'(?i)\b[0-9a-f]{64,}\b', '[KEY_MATERIAL]', s)
     return ''.join(c if c in '\n\t' or ord(c) >= 32 and ord(c) != 127 else '\ufffd' for c in s)
