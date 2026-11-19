@@ -1797,7 +1797,7 @@ class JobsTests(unittest.TestCase):
 
     def test_launch_rejects_another_games_runtime_before_starting_process(self):
         game = self.game(); self.catalogue([game]); self.c.r["gameId"] = game["id"]
-        with patch.object(build, "validate_runtime", return_value={"gameId": "0100000000000001"}), patch.object(self.c, "run") as run:
+        with patch.object(build, "runtime_manifest", return_value={"gameId": "0100000000000001"}), patch.object(self.c, "run") as run:
             with self.assertRaisesRegex(Failure, "不匹配"):
                 build.launch(self.c)
             run.assert_not_called()
@@ -1812,7 +1812,7 @@ class JobsTests(unittest.TestCase):
     def test_launch_confirms_mapping_support_on_this_games_host(self):
         game = self.game(); self.catalogue([game]); self.c.r.update(gameId=game["id"], launchInputConfig={"schema": 1})
         host = self.fake_host(game["id"])
-        with patch.object(build, "validate_runtime", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), patch.object(build.toolchain, "input_interface", return_value=(False, "legacy")) as probe, patch.object(self.c, "run") as run:
+        with patch.object(build, "runtime_manifest", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), patch.object(build.toolchain, "input_interface", return_value=(False, "legacy")) as probe, patch.object(self.c, "run") as run:
             build.launch(self.c)   # v0.3.1：宿主不认映射 → 用默认键位照常起局（不再报「重新打包」挡住）
             probe.assert_called_once_with(self.c, host)   # 照旧查的是这款在用的宿主
             run.assert_called_once()
@@ -1831,7 +1831,7 @@ class JobsTests(unittest.TestCase):
                 self.assertFalse(marker.exists())
                 if switch:
                     marker.write_text("")
-            with patch.object(build, "validate_runtime", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), \
+            with patch.object(build, "runtime_manifest", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), \
                  patch.object(self.c, "run", side_effect=run):
                 result = build.launch(self.c)
             self.assertEqual(result.get("returnToLibrary", False), switch)
@@ -1844,7 +1844,7 @@ class JobsTests(unittest.TestCase):
         game = self.game(); self.catalogue([game]); self.c.r["gameId"] = game["id"]
         host = self.fake_host(game["id"])
         for raised in (None, Failure("游戏运行中失败（退出码 139）：fixture", code="tool_exit")):
-            with patch.object(build, "validate_runtime", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), \
+            with patch.object(build, "runtime_manifest", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), \
                  patch.object(self.c, "run", side_effect=raised), patch.object(host_update, "forget_registrations") as forget:
                 if raised:
                     with self.assertRaises(Failure): build.launch(self.c)
@@ -1863,7 +1863,7 @@ class JobsTests(unittest.TestCase):
                 def run(command, log, env, **kwargs):
                     self.c.last_rc = 139
                     raise raised
-                with patch.object(build, "validate_runtime", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), \
+                with patch.object(build, "runtime_manifest", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), \
                      patch.object(self.c, "run", side_effect=run):
                     with self.assertRaises(Failure) as e:
                         build.launch(self.c)
@@ -1879,7 +1879,7 @@ class JobsTests(unittest.TestCase):
         def run(command, log, env, **kwargs):
             self.c.last_rc = 86
             raise Failure("游戏运行中失败（退出码 86）：fixture", code="tool_exit")
-        with patch.object(build, "validate_runtime", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), \
+        with patch.object(build, "runtime_manifest", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), \
              patch.object(self.c, "run", side_effect=run):
             with self.assertRaises(Failure) as e:
                 build.launch(self.c)
@@ -1887,51 +1887,51 @@ class JobsTests(unittest.TestCase):
         self.assertIn("安全停下", str(e.exception))
         self.assertIn("fixture", e.exception.internal)
 
-    def test_launch_quick_checks_then_explains_broken_files_after_crash(self):
-        # v0.3.1：起局前只核主程序 / 程序描述（validate_runtime files=False），不逐个核 6 万个文件；游戏非 0 退出后再完整核一遍：
-        #   有缺 / 坏的运行文件 → runtime_invalid、消息点名例子并说「重新出一次 Mac 版」；都好 → 照旧 game_crashed
+    def test_launch_checks_no_files_then_explains_broken_files_after_crash(self):
+        # 11-19 维护者：起局前不核任何运行文件（原先核主程序 / 程序描述大小、给内存表算摘要）。期望手写：主程序缺、内存表与清单对不上，
+        #   照样起到 c.run、不出黄字；游戏非 0 退出后再完整核一遍：有缺 / 坏的 → runtime_invalid、点名例子并说「重新出一次 Mac 版」；都好 → 照旧 game_crashed
         game = self.game(); self.catalogue([game]); self.c.r["gameId"] = game["id"]
         self.fake_host(game["id"])
         runtime = layout.image_mac(self.c, game["id"], create=False)
         runtime.mkdir(parents=True, exist_ok=True); (runtime / "ok.bin").write_bytes(b"12")
-        manifest = {"gameId": game["id"], "memoryRequirementsVersion": 2, "files": {"ok.bin": [2, ""], "romfs/gone.bin": [9, ""]}}
-        calls = []
-        def quick(c, rt, full=False, files=True, doubts=None):
-            calls.append(files); return manifest
+        (runtime / "addr_need.tsv").write_text("x\n")
+        atomic(runtime / "manifest.json", {"schema": 1, "engine": "S2Arm", "target": "macos-arm64", "gameId": game["id"], "memoryRequirementsVersion": 2,
+                                           "memoryRequirementsSha256": "0" * 64, "files": {"main": [5, ""], "ok.bin": [2, ""], "romfs/gone.bin": [9, ""]}})
+        ran = []
         def crash(command, log, env, **kwargs):
-            self.c.last_rc = 139; raise Failure("游戏运行中失败（退出码 139）：fixture", code="tool_exit")
-        with patch.object(build, "validate_runtime", side_effect=quick), patch.object(self.c, "run", side_effect=crash):
+            ran.append(command); self.c.last_rc = 139; raise Failure("游戏运行中失败（退出码 139）：fixture", code="tool_exit")
+        with patch.object(build, "validate_runtime", side_effect=AssertionError("起局去核运行文件了")), \
+             patch.object(build, "digest", side_effect=AssertionError("起局去算摘要了")), patch.object(self.c, "run", side_effect=crash):
             with self.assertRaises(Failure) as e:
                 build.launch(self.c)
-        self.assertEqual(calls, [False])   # 起局只做快核
+        self.assertEqual(len(ran), 1)   # 主程序缺也照常起了
+        self.assertEqual([d for d in self.c.job["diagnostics"] if d.get("code") == "runtime_invalid" and d.get("severity") == "warning"], [])
         self.assertEqual(e.exception.code, "runtime_invalid")
-        self.assertIn("romfs/gone.bin", str(e.exception)); self.assertIn("重新出一次 Mac 版", str(e.exception))
-        (runtime / "romfs").mkdir(exist_ok=True); (runtime / "romfs/gone.bin").write_bytes(b"123456789")
-        with patch.object(build, "validate_runtime", side_effect=quick), patch.object(self.c, "run", side_effect=crash):
+        self.assertIn("main", str(e.exception)); self.assertIn("重新出一次 Mac 版", str(e.exception))
+        (runtime / "main").write_bytes(b"12345"); (runtime / "romfs").mkdir(exist_ok=True); (runtime / "romfs/gone.bin").write_bytes(b"123456789")
+        with patch.object(self.c, "run", side_effect=crash):
             with self.assertRaises(Failure) as e:
                 build.launch(self.c)
         self.assertEqual(e.exception.code, "game_crashed")   # 文件都好：是真崩溃
 
-    def test_launch_warns_and_continues_when_checks_fail(self):
-        # 11-17 维护者：校验不过不再拒起局。期望手写：请求带旧字段 vammLayout + 快核记下一条「主程序大小不符」→ 不抛错、照常起到 c.run，
-        #   黄字两条（runtime_invalid / warning，原句 + 「先照常启动」）；这局崩了（139、文件都好）→ 仍是 game_crashed，消息末尾带「起局前这里校验就没过」两条原因
+    def test_launch_warns_and_continues_with_legacy_request(self):
+        # 请求带旧字段 vammLayout（旧启动器发的）→ 不抛错、照常起到 c.run，黄字一条（runtime_invalid / warning，「先照常启动」）；
+        #   这局崩了（139、文件都好）→ 仍是 game_crashed，消息末尾带「起局前已知」这条
         game = self.game(); self.catalogue([game]); self.c.r["gameId"] = game["id"]; self.c.r["vammLayout"] = "legacy"
         self.fake_host(game["id"])
         runtime = layout.image_mac(self.c, game["id"], create=False); runtime.mkdir(parents=True, exist_ok=True)
         manifest = {"gameId": game["id"], "memoryRequirementsVersion": 2, "files": {}}
-        def quick(c, rt, full=False, files=True, doubts=None):
-            doubts.append("运行文件 main 缺失或大小不符"); return manifest
         ran = []
         def crash(command, log, env, **kwargs):
             ran.append(command); self.c.last_rc = 139; raise Failure("游戏运行中失败（退出码 139）：fixture", code="tool_exit")
-        with patch.object(build, "validate_runtime", side_effect=quick), patch.object(self.c, "run", side_effect=crash):
+        with patch.object(build, "runtime_manifest", return_value=manifest), patch.object(self.c, "run", side_effect=crash):
             with self.assertRaises(Failure) as e:
                 build.launch(self.c)
         self.assertEqual(len(ran), 1)   # 照常起了
         warned = [(d["code"], d["severity"]) for d in self.c.job["diagnostics"] if "先照常启动" in str(d)]
-        self.assertEqual(warned, [("runtime_invalid", "warning")] * 2)
+        self.assertEqual(warned, [("runtime_invalid", "warning")])
         self.assertEqual(e.exception.code, "game_crashed")
-        self.assertTrue(str(e.exception).endswith("\n起局前这里校验就没过：请求里带着已停用的旧内存布局设置（vammLayout）；运行文件 main 缺失或大小不符"))
+        self.assertTrue(str(e.exception).endswith("\n起局前已知：请求里带着已停用的旧内存布局设置（vammLayout）"))
 
     def test_bad_or_unsupported_input_mapping_falls_back_to_default_keys(self):
         # v0.3.1（认不出的直接做）：键位映射不合规 / 宿主不认映射 → 这局用默认键位照常起，不让玩家先去重新打包
@@ -1946,7 +1946,7 @@ class JobsTests(unittest.TestCase):
         self.assertNotIn("S2A_INPUT_CONFIG", build.runtime_env(self.c, game, self.root / "runtime", input_ok=False))
         # 起局：宿主不认映射 → 黄字提醒、照常起局（原先报 runtime_invalid 不让玩）
         self.fake_host(game["id"]); notes, ran = [], []
-        with patch.object(build, "validate_runtime", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), \
+        with patch.object(build, "runtime_manifest", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), \
              patch.object(build.toolchain, "input_interface", return_value=(False, "fixture")), \
              patch.object(self.c, "run", side_effect=lambda command, log, env, **k: ran.append(env)), \
              patch.object(self.c, "diagnostic", lambda m, **k: notes.append((m, k.get("severity")))):
@@ -1963,7 +1963,7 @@ class JobsTests(unittest.TestCase):
             source = Path(env["S2A_DOCS"]) / "wire" / game["id"] / "pso_user.tsv"
             source.parent.mkdir(parents=True, exist_ok=True)
             source.write_text(sessions.pop(0))
-        with patch.object(build, "validate_runtime", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), \
+        with patch.object(build, "runtime_manifest", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), \
              patch.object(self.c, "run", side_effect=run):
             build.launch(self.c)
             build.launch(self.c)
@@ -1981,7 +1981,7 @@ class JobsTests(unittest.TestCase):
                 source = Path(env["S2A_DOCS"]) / "wire" / game["id"] / "pso_user.tsv"
                 source.parent.mkdir(parents=True, exist_ok=True); source.write_text(row)
                 raise failure
-            with patch.object(build, "validate_runtime", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), \
+            with patch.object(build, "runtime_manifest", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), \
                  patch.object(self.c, "run", side_effect=run):
                 with self.assertRaises(type(failure)):
                     build.launch(self.c)
@@ -2003,7 +2003,7 @@ class JobsTests(unittest.TestCase):
                 self.assertEqual(env["S2A_INPUT_GUIDE_SHOWN"], "1")
                 if failure is not None:
                     raise failure
-            with patch.object(build, "validate_runtime", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), \
+            with patch.object(build, "runtime_manifest", return_value={"gameId": game["id"], "memoryRequirementsVersion": 2}), \
                  patch.object(build.toolchain, "input_interface", return_value=(True, "fixture")), \
                  patch.object(self.c, "run", side_effect=run):
                 if failure is None:
