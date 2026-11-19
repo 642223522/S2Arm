@@ -547,6 +547,13 @@ void s2a_snap_result_note(int ok) {
     else fprintf(f, "结果\t失败\n分类\t快照不完整或损坏\n给玩家\t这个快照读不了（可能存的时候没存完）；游戏自己的存档不受影响\n");
     fclose(f);
 }
+// 校验已过、恢复做到一半失败（游戏内存已动过，这一局接不下去）：重新开局（restarting = 1，进程内重启）或只能退出（不支持进程内重建的平台）。
+//   界面在重启完成 / 下次打开时读这个文件给玩家说；这次的诊断就在本局日志里（重启不换日志），报修照常带上
+void s2a_snap_result_midway(int restarting) {
+    char p[2048]; s2a_docs_path(p, sizeof p, "snap_result.tsv"); FILE *f = fopen(p, "w"); if (!f) return;
+    fprintf(f, "结果\t失败\n分类\t恢复中途失败\n给玩家\t%s\n时刻\t%lld\n", restarting ? "回到这一刻没成功，已重新开始游戏，游戏存档没受影响" : "回到这一刻没成功，游戏存档没受影响，请重新打开游戏", (long long)time(NULL));
+    fclose(f);
+}
 static int man_get(const char *dir, const char *key, char *out, size_t n);
 // 按整块存的宿主结构（游戏内存里的 NVN 对象、图形回放状态、视频表等）的布局指纹：存档时全部记进清单，恢复前逐个比，不同即拒绝（C 档）
 void hle_snap_fps(fp_cb) __attribute__((weak_import)); void nvn_snap_fps(fp_cb) __attribute__((weak_import)); void nvn2_codec_snap_fps(fp_cb) __attribute__((weak_import)); void nvn2_snap_fps(fp_cb) __attribute__((weak_import));
