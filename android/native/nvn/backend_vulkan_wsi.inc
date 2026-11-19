@@ -400,9 +400,12 @@ static int wsi_compose_blit(struct nvn_gpu_cmd_s *c, struct nvn_gpu_surface_s *s
 }
 
 // 可选的上屏 EASU 放大：直接画进交换链图（它本来就带 COLOR_ATTACHMENT 用法）。
-// 返回 1 = 已录制；0 = 不适用（调用方回落 wsi_compose_blit；此处已下发的 UNDEFINED 屏障对后者无害）。
+// 返回 1 = 已录制；-1 = 自然跳过、未录制；0 = 尝试失败（沿用原诊断与 blit 回退）。
 static int wsi_compose_easu(struct nvn_gpu_cmd_s *c, struct nvn_gpu_surface_s *s, uint32_t idx,
                             const nvn_gpu_present_desc *d, int encode) {
+    struct easu_rects rect;
+    int fit = easu_rects_prepare(d->src, s->extent, d->crop, d->dst, &rect);
+    if (fit == EASU_RECT_SKIP) return -1;
     // 整张图先清黑：渲染通道的 CLEAR 只作用于渲染区，dst 之外的边框得自己清（与 blit 路径同一个黑）。
     wsi_swap_barrier(c->cb, s->images[idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                      VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
@@ -413,12 +416,24 @@ static int wsi_compose_easu(struct nvn_gpu_cmd_s *c, struct nvn_gpu_surface_s *s
     wsi_swap_barrier(c->cb, s->images[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                      VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                      VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-    if (!easu_compose(c, s->images[idx], s->extent, 0, s->format, d->src, d->crop, d->dst, d->flip_y, s->gen, encode))
+    if (fit != EASU_RECT_ATTEMPT ||
+        !easu_compose(c, s->images[idx], s->extent, 0, s->format, d->src, &rect, d->flip_y, s->gen, encode))
         return 0;
     wsi_swap_barrier(c->cb, s->images[idx], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, 0, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                      VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
     return 1;
+}
+
+// 保留真实尝试失败的诊断；自然跳过不刷日志，也不跳过 blit 自己的清场/颜色处理。
+static int wsi_compose_selected(struct nvn_gpu_cmd_s *c, struct nvn_gpu_surface_s *s, uint32_t idx,
+                                struct nvn_gpu_tex_s *st, const nvn_gpu_present_desc *d,
+                                const VkFormatProperties *fp, int encode, VkImage target,
+                                int elig, int *upscaled) {
+    int result = elig ? wsi_compose_easu(c, s, idx, d, encode) : -1;
+    if (result == 0) nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", "上屏放大：这次不适用，回落缩放拷贝");
+    *upscaled = result > 0;
+    return *upscaled ? 1 : wsi_compose_blit(c, s, idx, st, d, fp, encode, target);
 }
 
 nvn_gpu_rc nvn_gpu_present(nvn_gpu_surface s, const nvn_gpu_drawable *dr, const nvn_gpu_present_desc *d, uint64_t ticket,
@@ -536,17 +551,16 @@ nvn_gpu_rc nvn_gpu_present(nvn_gpu_surface s, const nvn_gpu_drawable *dr, const 
     struct nvn_gpu_cmd_s *c = ch;
     // 上屏 EASU 放大：玩家选「高画质」时开（S2A_HIGH_QUALITY=1，宿主创建前由外壳设，缺省更省电 = 关）；
     //   调试构建里 debug.s2a.nvk_upscale 设了就以它为准（A/B 用），发布包 nvn_plat_flag 恒取缺省 -1 → 按玩家选项
-    int upscaled = 0;
+    int upscaled = 0, elig = 0;
     { static int hq = -1; if (hq < 0) { const char *e = getenv("S2A_HIGH_QUALITY"); hq = e && e[0] == '1'; }
       int up = nvn_plat_flag("nvk_upscale", -1); if (up < 0) up = hq;
-      int elig = up ? easu_eligible(st, s->format) : 0;
+      elig = up ? easu_eligible(st, s->format) : 0;
       { static int seen = -1; int now = up * 2 + elig;   // 只在「开关 × 适用」变化时记一行
         if (now != seen) { seen = now; char b[160];
           snprintf(b, sizeof b, "上屏放大读数：开关=%d 适用=%d（源格式=%d 交换链=%d）", up, elig, (int)st->format, (int)s->format);
           nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", b); } }
-      if (elig) { upscaled = wsi_compose_easu(c, s, idx, d, encode);
-        if (!upscaled) nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", "上屏放大：这次不适用，回落缩放拷贝"); } }
-    int ok = upscaled ? 1 : wsi_compose_blit(c, s, idx, st, d, &fp, encode, target);
+    }
+    int ok = wsi_compose_selected(c, s, idx, st, d, &fp, encode, target, elig, &upscaled);
     // 内部段：摘出活动表，自己提交（等取图信号量、发呈现信号量），交给完成线程只做回收
     pthread_mutex_lock(&g_mu);
     { struct nvn_gpu_cmd_s **pp = &g.live; while (*pp && *pp != c) pp = &(*pp)->live_next; if (*pp) *pp = c->live_next; }
