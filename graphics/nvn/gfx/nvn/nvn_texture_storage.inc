@@ -61,40 +61,47 @@ static int storage_move(const tex_t *t, unsigned lv, unsigned layer, const NVNco
     }
     return 1;
 }
-static int texture_storage_upload(const p_copy_b2t *c, id<MTLBuffer> source, uint64_t so, size_t row, size_t image) {
+// Returns NULL when the pool storage now holds the upload (or needs nothing), else why it could not be updated (the caller's red line names it).
+// A SPARSE texture in a physical pool is laid out like any other one here (tex_init_fill reads its initial content from the same bytes,
+// nvn_mtl.m "treated as full-size Metal texture"): only a virtual pool's page-table storage is out of reach.
+static const char *texture_storage_upload(const p_copy_b2t *c, id<MTLBuffer> source, uint64_t so, size_t row, size_t image) {
     id<MTLBuffer> src = source;
     const tex_t *t = c->tex;
-    if (t->d.target == NVN_TEXTURE_TARGET_BUFFER || (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET))) return 1;
-    if (t->has_layout || t->d.samples > 1 || (t->d.flags & NVN_TEXTURE_FLAGS_SPARSE) || !t->pool || (t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL)) return 0;
+    if (t->d.target == NVN_TEXTURE_TARGET_BUFFER || (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET))) return NULL;
+    if (t->has_layout) return "packaged layout";
+    if (t->d.samples > 1) return "multisampled";
+    if (!t->pool) return "no pool";
+    if (t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) return "virtual pool";
     void *db; uint64_t doff;
-    if (!t->mem || !nvn_be_addr((uint64_t)t->mem, t->L.size, &db, &doff)) return 0;
+    if (!t->mem || !nvn_be_addr((uint64_t)t->mem, t->L.size, &db, &doff)) return "storage has no backing buffer";
     int is3d = t->d.target == 2, nz = MAX(c->r.depth, 1);
     unsigned lv = c->has_view && c->view.set_levels ? c->view.base_level : 0;
     unsigned layer = c->has_view && c->view.set_layers ? c->view.min_layer : 0;
     // Preserve the upload source when the linear input aliases its tiled destination.
     if (c->src < (uint64_t)t->mem + t->L.size && (uint64_t)t->mem < c->src + image * nz) {
         id<MTLBuffer> copy = [g_dev newBufferWithLength:image * nz options:MTLResourceStorageModePrivate];
-        if (!copy) return 0;
+        if (!copy) return "aliasing source copy allocation failed";
         res_add(copy); defer_obj_release(copy);
         enc_b_copy_buffer(blit(), src, so, copy, 0, image * nz); src = copy; so = 0;
     }
     NVNcopyRegion r = c->r;
     for (int z = 0; z < (is3d ? 1 : nz); z++) {
         if (!is3d) { r.zoffset = 0; r.depth = 1; }
-        if (!storage_move(t, lv, is3d ? 0 : layer + c->r.zoffset + z, &r, src, so + z * image, (__bridge id<MTLBuffer>)db, doff, row, image, 0)) return 0;
+        if (!storage_move(t, lv, is3d ? 0 : layer + c->r.zoffset + z, &r, src, so + z * image, (__bridge id<MTLBuffer>)db, doff, row, image, 0)) return "region outside the level's block-linear layout";
     }
     // Conservatively track dependencies over the storage, without declaring
     // untouched GOBs current in the GPU-texture write ledger.
     g_wr_epoch++; g_mdx_epoch++;
     vc_gpu_write((uint64_t)t->mem, t->L.size);
     sbw_note((uint64_t)t->mem, t->L.size, SBW_GPU);
-    return 1;
+    return NULL;
 }
 // A new descriptor can consume a just-copied buffer before the CPU sees its bytes.
 // Read that storage on the same GPU timeline, rather than uploading a CPU snapshot.
 static int texture_storage_load(const tex_t *t, id<MTLTexture> mt) {
     uint32_t pf; int expanded;
-    if (fmt_unpack(t->d.format, &pf, &expanded) || t->d.samples > 1 || (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_SPARSE))) return 0;
+    if (fmt_unpack(t->d.format, &pf, &expanded) || t->d.samples > 1 || (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET))) return 0;
+    if ((t->d.flags & NVN_TEXTURE_FLAGS_SPARSE) && (!t->pool || (t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL))) return 0;   // SPARSE in a physical pool: laid out like any other (texture_storage_upload)
     void *sb; uint64_t so;
     if (!nvn_be_addr((uint64_t)t->mem, t->L.size, &sb, &so)) return 0;
     id<MTLBuffer> tiled = (__bridge id<MTLBuffer>)sb;

@@ -80,9 +80,9 @@ def _signature(st):
     return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
 
 
-def _touch_title(private, gid, now):
+def _touch_title(private, gid, now, cache_roots=None):
     """本款直连缓存仓「最近用过」（同 trim 扫描里对 current_gid 的那一步：dmsh 命中不改修改时间，按整款记）；路径上有链接就不动"""
-    for root, suffix in roots(private):
+    for root, suffix in (roots(private) if cache_roots is None else tuple((Path(r), x) for r, x in cache_roots)):
         if suffix != 'direct':
             continue
         base = root / gid / 'store'
@@ -98,12 +98,14 @@ def _touch_title(private, gid, now):
 
 
 def trim(private, *, keep_titles=KEEP_TITLES, min_free_bytes=MIN_FREE_BYTES,
-         now=None, current_gid=None, free_bytes=None, skip_scan_when_free=False):
+         now=None, current_gid=None, free_bytes=None, skip_scan_when_free=False, cache_roots=None):
     """Trim completed cold entries, oldest first; report observed regular-file bytes.
 
     skip_scan_when_free（出包收尾用，11-16 极速出包定因）：盘余量已不低于底线时一条都不会删，原先照样全量扫一遍
     （Windows 上逐文件 lstat，缓存大时几十秒）——这时只刷新本款「最近用过」、不扫，返回 scanned=False、字节统计为 None。
     要统计数字的调用方（释放空间页）不传它。
+    cache_roots（维护方清理用）：直接给 ((缓存根, 后缀), …)，代替按 private 推出的固定布局——缓存根经软链放在另一块盘上时，
+    按 private 推的路径带链接、整根不扫；传真实路径（都在 private 之下）才扫得到。余量按 private 所在的盘算
 
     Only content-addressed compiler outputs are eligible. No directory, link,
     temporary file, unknown payload or recently used entry is removed. Concurrent
@@ -127,7 +129,7 @@ def trim(private, *, keep_titles=KEEP_TITLES, min_free_bytes=MIN_FREE_BYTES,
             free_now = None
         if isinstance(free_now, int) and not isinstance(free_now, bool) and free_now >= min_free_bytes:
             if current_gid is not None:
-                _touch_title(private, current_gid, now)
+                _touch_title(private, current_gid, now, cache_roots)
             return dict(keepTitles=keep_titles, protectedTitles=[], minFreeBytes=min_free_bytes, freeBytes=free_now,
                         pressureRemaining=False, diskErrors=0, observedBytes=None, retainedBytes=None,
                         removedBytes=0, removedEntries=0, changedEntries=0, unscannedRoots=0, protectedLinks=0,
@@ -139,7 +141,7 @@ def trim(private, *, keep_titles=KEEP_TITLES, min_free_bytes=MIN_FREE_BYTES,
         if len(errors) < 16:
             errors.append(dict(operation=operation, errno=error.errno,
                                path=os.path.relpath(path, private)))
-    for root, suffix in roots(private):
+    for root, suffix in (roots(private) if cache_roots is None else tuple((Path(r), x) for r, x in cache_roots)):
         root_incomplete = False
         def scan_error(error):
             nonlocal root_incomplete, scan_errors

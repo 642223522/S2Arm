@@ -15,7 +15,7 @@ extension LauncherView {
         VStack(alignment: .leading, spacing: 0) {
             staleBanner
             renewBanner
-            homeControls(size: size).padding(.leading, LauncherTheme.Metrics.libraryInset).padding(.trailing, LauncherTheme.Space.section).padding(.top, size.height < 740 ? 12 : 22).padding(.bottom, 18)
+            homeControls(size: size).padding(.horizontal, LauncherTheme.Metrics.libraryInset).padding(.top, size.height < 740 ? 12 : 22).padding(.bottom, 18)
             if homeGames.isEmpty {
                 homeEmptyPreview
             } else {
@@ -43,7 +43,7 @@ extension LauncherView {
                 .font(.manrope(20, .semibold)).multilineTextAlignment(.center)
             Button { home.group = .all; home.search = "" } label: { Image(systemName: "square.grid.2x2") }
                 .controllerButtonStyle(ConsoleIconButtonStyle(size: 48))
-                .help(loc.t("home.showAll")).accessibilityLabel(loc.t("home.showAll")).controllerID("home.showAll")
+                .launcherTooltip(loc.t("home.showAll"), placement: .above).accessibilityLabel(loc.t("home.showAll")).controllerID("home.showAll")
         }.frame(maxWidth: .infinity, maxHeight: .infinity).padding(24)
     }
 
@@ -104,7 +104,7 @@ extension LauncherView {
                     .controllerButtonStyle(ConsolePlayButtonStyle()).disabled(model.cloudSyncing || model.sgradeUpgrading(game.id))
                     .overlay(alignment: .bottom) { if model.sgradeUpgrading(game.id) { SGradeUpgradeBar(progress: model.sgradeProgress(game.id)).padding(.horizontal, 14).padding(.bottom, 5) } }
                     .keyboardShortcut(.return, modifiers: [])
-                    .help(homePrimaryTitle(game)).accessibilityLabel(homePrimaryTitle(game))
+                    .launcherTooltip(homePrimaryTitle(game), placement: .above).accessibilityLabel(homePrimaryTitle(game))
                     .controllerID(game.playable ? "hero.play" : game.iphoneReady ? "hero.install" : "hero.export").controllerShortcut(.rightTrigger)
                 Button {
                     model.exportSelfSign(game)
@@ -113,7 +113,7 @@ extension LauncherView {
                     fitLabel(txt("library.hero.selfSign"), "square.and.arrow.up")
                 }
                 .controllerButtonStyle(ConsolePillButtonStyle()).controllerID("hero.selfSign")
-                .help(txt("library.hero.selfSign")).accessibilityLabel(txt("library.hero.selfSign"))
+                .launcherTooltip(txt("library.hero.selfSign"), placement: .above).accessibilityLabel(txt("library.hero.selfSign"))
                 // 能直接导出的走手机槽（出包在跑也行，手机槽忙就排队）；要先出 iPhone 包的，主槽在跑非出包作业时等（出包在跑会排队）
                 .disabled(game.iphoneExportable ? model.phoneQueued(game.id) : model.mainBusy && model.session?.export == nil)
                 // 主按钮是「开始游戏」时，出过 iPhone 包的款照样要能一键装到 iPhone（主线游戏库两个都在）
@@ -122,24 +122,24 @@ extension LauncherView {
                         fitLabel(txt(game.iphoneInstalledAt != nil && game.iphoneFree ? "library.hero.renew" : "library.hero.install"), "iphone")
                     }
                     .controllerButtonStyle(ConsolePillButtonStyle()).controllerID("hero.install")   // 只开装机窗：别的作业在跑，窗里点装机会排队
-                    .help(txt(game.iphoneInstalledAt != nil && game.iphoneFree ? "library.hero.renew" : "library.hero.install"))
+                    .launcherTooltip(txt(game.iphoneInstalledAt != nil && game.iphoneFree ? "library.hero.renew" : "library.hero.install"), placement: .above)
                 }
                 if game.playable || game.iphoneReady {
                     Button { model.exportFor = game.id } label: {
                         fitLabel(loc.t("s2arm.export.action"), "shippingbox")
                     }
                     .controllerButtonStyle(ConsolePillButtonStyle()).controllerID("hero.export")
-                    .help(loc.t("s2arm.export.action")).accessibilityLabel(loc.t("s2arm.export.action"))
+                    .launcherTooltip(loc.t("s2arm.export.action"), placement: .above).accessibilityLabel(loc.t("s2arm.export.action"))
                 }
                 // 只留两个人人认得的圆钮（…、♡）；「查看出包结果」「启动设置」收进「…」菜单（11-16 维护者：三条横杠看不出是启动设置，一行三种形状不统一）
                 Button { moreFor = game.id } label: { Image(systemName: "ellipsis") }
                     .controllerButtonStyle(ConsoleIconButtonStyle(size: 52)).controllerID("hero.more")
-                    .help(loc.t("home.details")).accessibilityLabel(loc.t("home.details"))
+                    .launcherTooltip(loc.t("home.details"), placement: .above).accessibilityLabel(loc.t("home.details"))
                     .popover(isPresented: Binding(get: { moreFor == game.id }, set: { if !$0 { moreFor = nil } }), arrowEdge: .bottom) { moreMenu(game) }
                 Button { home.toggleFavorite(game.id) } label: {
                     Image(systemName: home.favorites.contains(game.id) ? "heart.fill" : "heart")
                 }.controllerButtonStyle(ConsoleIconButtonStyle(size: 52)).controllerID("hero.favorite")
-                    .help(loc.t(home.favorites.contains(game.id) ? "home.unfavorite" : "home.favorite"))
+                    .launcherTooltip(loc.t(home.favorites.contains(game.id) ? "home.unfavorite" : "home.favorite"), placement: .above)
                     .accessibilityLabel(loc.t(home.favorites.contains(game.id) ? "home.unfavorite" : "home.favorite"))
                     .accessibilityAddTraits(home.favorites.contains(game.id) ? .isSelected : [])
             }.padding(.top, compact ? 4 : 10)
@@ -158,26 +158,53 @@ extension LauncherView {
 
     private func homeControls(size: CGSize) -> some View {
         HStack(spacing: 10) {
-            homeGroups(compact: size.width < 1000)
-            Spacer(minLength: 16)
+            homeGroups(compact: size.width < 1200)
             Text("\(homeGames.count) / \(model.games.count)").font(.manrope(11.5)).monospacedDigit()
                 .foregroundStyle(.white.opacity(0.78)).shadow(color: .black.opacity(0.35), radius: 4, y: 1)
-                .fixedSize().accessibilityIdentifier("home.count").padding(.trailing, 6)
+                .fixedSize().accessibilityIdentifier("home.count").padding(.leading, 24)
+            Spacer(minLength: 16)
+            HomeSearchControl(isExpanded: $showHomeSearch, text: $home.search,
+                              width: size.width < 1000 ? min(LauncherControl.width, max(140, size.width - 660))
+                                  : size.width < 1200 ? LauncherControl.width : LauncherTheme.Metrics.navigationWidth) { finished in
+                navigation.focus("home.search.field")
+                navigation.editText(value: home.search, label: loc.t("home.search"), onClose: finished) { home.search = $0 }
+            }
             Button { model.sgradeUpgradeOpen = true } label: {
                 Image(nsImage: SGradeCardView.sGold).resizable().interpolation(.high).aspectRatio(contentMode: .fit).frame(width: 18, height: 18)
             }.controllerButtonStyle(ConsoleIconButtonStyle()).disabled(model.busy || model.games.isEmpty)
                 .controllerID("library.sgradeUpgrade")
-                .help(txt("sgrade.upgrade.button")).accessibilityLabel(txt("sgrade.upgrade.button"))
-            HomeSearchControl(isExpanded: $showHomeSearch, text: $home.search,
-                              width: size.width < 1000 ? LauncherControl.width : LauncherTheme.Metrics.navigationWidth) { finished in
-                navigation.focus("home.search.field")
-                navigation.editText(value: home.search, label: loc.t("home.search"), onClose: finished) { home.search = $0 }
+                .launcherTooltip(txt("sgrade.upgrade.button"), placement: .below).accessibilityLabel(txt("sgrade.upgrade.button"))
+            Button { model.showAddGames = true } label: {
+                Image(systemName: "plus")
             }
-            Button { model.refresh() } label: { Image(systemName: "arrow.clockwise") }
-                .controllerButtonStyle(ConsoleIconButtonStyle()).disabled(model.loading).controllerID("home.refresh")
-                .help(loc.t("s2arm.library.refresh")).accessibilityLabel(loc.t("s2arm.library.refresh"))
+            .controllerButtonStyle(ConsoleIconButtonStyle())
+            .disabled(model.busy)
+            .launcherTooltip(loc.t("s2arm.action.import"), placement: .below).accessibilityLabel(loc.t("s2arm.action.import")).controllerID("top.import")
+            Button { showHomeMore.toggle() } label: { Image(systemName: "ellipsis") }
+                .controllerButtonStyle(ConsoleIconButtonStyle()).controllerID("home.more")
+                .launcherTooltip(loc.t("home.details"), placement: .below).accessibilityLabel(loc.t("home.details"))
+                .popover(isPresented: $showHomeMore, arrowEdge: .bottom) { homeMoreMenu }
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: showHomeSearch)
+    }
+
+    private var homeMoreMenu: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            homeMoreRow(loc.t("s2arm.library.refresh"), "arrow.clockwise", id: "home.refresh") { model.refresh() }
+                .disabled(model.loading)
+        }
+        .padding(8).frame(width: 220).font(.manrope(13.5, .semibold)).preferredColorScheme(.dark)
+    }
+
+    private func homeMoreRow(_ title: String, _ symbol: String, id: String, action: @escaping () -> Void) -> some View {
+        Button { showHomeMore = false; action() } label: {
+            HStack(spacing: 10) {
+                Image(systemName: symbol).font(.system(size: 14, weight: .medium)).frame(width: 20, height: 20)
+                Text(title).lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 8).contentShape(Rectangle())
+        }
+        .controllerButtonStyle(.plain).controllerID(id)
     }
 
     private func homeCoverStrip(size: CGSize) -> some View {

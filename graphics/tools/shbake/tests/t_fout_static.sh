@@ -4,7 +4,7 @@
 set -u
 R=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd); H=$R/graphics/tools/shbake/tests/fout_static
 O=${T_VTG_OUT:-$R/build/t_vtg}; mkdir -p "$O"; T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
-dotnet build -c Release "$R/graphics/tools/shbake/S2A.ShBake.csproj" --artifacts-path "$O/art" -p:OutDir="$O/bin/" > "$O/build_fs.log" 2>&1 || { echo "编 S2A.ShBake 失败（$O/build_fs.log）"; exit 1; }
+bash "$R/tools/cs_cache.sh" "$O/art" "$O/bin" "$R/graphics/tools/shbake/S2A.ShBake.csproj" -- dotnet build -c Release "$R/graphics/tools/shbake/S2A.ShBake.csproj" --artifacts-path "$O/art" -p:OutDir="$O/bin/" > "$O/build_fs.log" 2>&1 || { echo "编 S2A.ShBake 失败（$O/build_fs.log）"; exit 1; }
 n=0; bad=0
 for c in int_fs:5 float_fs:0 uint_fs:0; do
   f=${c%%:*}; want=${c#*:}; n=$((n + 1))

@@ -415,11 +415,12 @@ static void nvk_source_pin_log(const char *why) {
     s2a_source_pin_stats(&ps);
     s2a_source_stats(&entries, &bytes, &dropped);
     draw_log("源快照 pin(%s)：pinned_entries=%u pins=%llu pin_calls=%llu pin_misses=%llu unpins=%llu "
-             "evict_skipped=%llu keep_fail_bytes=%llu keep_fail_slots=%llu | entries=%u bytes=%u dropped=%llu",
+             "evict_skipped=%llu keep_fail_bytes=%llu keep_fail_slots=%llu keep_over_budget=%llu | entries=%u bytes=%u dropped=%llu",
              why, ps.pinned_entries, (unsigned long long)ps.pins, (unsigned long long)ps.pin_calls,
              (unsigned long long)ps.pin_misses, (unsigned long long)ps.unpins,
              (unsigned long long)ps.evict_skipped, (unsigned long long)ps.keep_fail_bytes,
-             (unsigned long long)ps.keep_fail_slots, entries, bytes, (unsigned long long)dropped);
+             (unsigned long long)ps.keep_fail_slots, (unsigned long long)ps.keep_over_budget,
+             entries, bytes, (unsigned long long)dropped);
 }
 
 static void nvk_program_stats(void) {

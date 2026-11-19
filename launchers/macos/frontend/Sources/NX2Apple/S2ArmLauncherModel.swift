@@ -281,6 +281,8 @@ public final class S2ArmLauncherModel: ObservableObject {
     var autoDownloadPopupPending = false
     /// 应用内更新（Sparkle 2）：第一次用时起，起来后整个 App 生命周期只一份
     lazy var sparkleUpdate = SparkleUpdate(model: self)
+    /// 换版走的接口：平时就是 Sparkle；单测换成替身（不起真 Sparkle、不真退出）
+    lazy var updateDriver: UpdateInstalling = sparkleUpdate
     @Published var showAddGames = false
     @Published var showKeys = false
     /// 选好了但缺密钥（作业层 keys_missing）：等放入密钥后接着导入。解包好的游戏不要密钥，不经过这里。
@@ -293,7 +295,7 @@ public final class S2ArmLauncherModel: ObservableObject {
     @Published private(set) var lastPhoneSession: JobSession?
     /// 欢迎页上排着队的一键下载（作业同一时刻只有一个）。
     @Published private(set) var repairQueue: [ToolCheck] = []
-    /// 新手流程刚导入的那款：欢迎页留着，右下角「一键出包」（点了就回到正常的游戏库）。
+    /// 新手流程刚导入的那款：欢迎页留着，可进入游戏库或接着一键出包。
     @Published private(set) var welcomeGameID: String?
     /// 这份密钥读不了选的游戏：放密钥弹窗提示换一份。
     @Published private(set) var keysRejected = false
@@ -1787,9 +1789,9 @@ public final class S2ArmLauncherModel: ObservableObject {
     }
 
     /// 回库：只有作业结束了才能关掉作业页。
-    /// 顶栏「游戏库」：从任何页面回到游戏库；出包还在跑就留在后台，游戏库上的进度条可以回去。
+    /// 页面返回 / 欢迎页「进入游戏库」：出包还在跑就留在后台，游戏库上的进度条可以回去。
     func goToLibrary() {
-        exportFor = nil; viewingResult = nil; showEnvironment = false; welcomeHome = false
+        exportFor = nil; viewingResult = nil; showEnvironment = false; welcomeHome = false; welcomeGameID = nil
         if let phone = phoneSession, phone.kind == .installUpdate { if isFinished(phone) { phoneSession = nil } else { phoneHidden = true } }
         guard let current = session else { return }
         if isFinished(current) { session = nil } else { sessionHidden = true }

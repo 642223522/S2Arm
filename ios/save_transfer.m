@@ -171,7 +171,9 @@ int s2a_ios_save_management_requested(void) {
 
 @implementation S2ASaveManager
 S2A_VERTICAL_BAR_OFF
-- (UIInterfaceOrientationMask)supportedInterfaceOrientations { return s2a_ios_play_orientations(); }
+// 存档页不跟游戏的横 / 竖屏设置走（#1576）：页上有导出命名、文件选择这类要打字的系统窗口，锁横屏时键盘一弹就只剩一条缝；
+//   普通 iPhone 横竖随手机转（不含倒置），可自由缩放的窗口（Duo 内屏 / iPad）照旧全部方向。点「开始游戏」后游戏页按自己的设置再转
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations { return s2a_ios_play_resizable() ? UIInterfaceOrientationMaskAll : UIInterfaceOrientationMaskAllButUpsideDown; }
 - (UILabel *)label:(NSString *)text style:(UIFontTextStyle)style {
     UILabel *label = [UILabel new]; label.text = text; label.numberOfLines = 0;
     label.font = [UIFont preferredFontForTextStyle:style]; label.adjustsFontForContentSizeCategory = YES;

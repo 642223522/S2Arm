@@ -57,6 +57,23 @@ class LongPathTest(unittest.TestCase):
         fake.scandir(short)
         self.assertEqual(seen[-1], short)
 
+    def test_realpath_invalid_handle_falls_back(self):
+        # #1582 D-AHTT：有的盘取最终路径回 WinError 6（Python 不严格模式不吞这个码）→ 退回规整后的绝对路径；strict=True 照旧抛
+        from unittest import mock
+        def boom(path, **kw):
+            e = OSError(6, "控制代碼無效。"); e.winerror = 6
+            raise e
+        saved = ntpath.realpath
+        try:
+            with mock.patch.object(ntpath, "realpath", boom):
+                winlong._wrap_realpath()
+                wrapped = ntpath.realpath
+            self.assertEqual(wrapped(r"D:\lib\game\..\work\x.bin"), ntpath.abspath(r"D:\lib\work\x.bin"))
+            with self.assertRaises(OSError):
+                wrapped(r"D:\lib\x", strict=True)
+        finally:
+            ntpath.realpath = saved
+
     def test_short_entry_mapping(self):
         from pack.orch import shortroot as sr
         long = "R:\\" + "d" * 200 + "\\lib"

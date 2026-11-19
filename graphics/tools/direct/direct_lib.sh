@@ -318,7 +318,7 @@ say "$(tail -1 "$W/se_want.log")"
 fi
 tm=$((SECONDS - s)); s=$SECONDS
 # ④⑤ 安卓（VK=1，#783）：graphics/tools/direct/vklib/dsh_vklib.py 按需编 dsh_vklib 再调：逐键出 Vulkan 产物进工作目录 $W/vk/keys（键按 shader_map.tsv 排序，
-#   gs / hs / ds 记 skipped、翻不了的记 failed，逐键状态 vk_build.tsv；有 failed 就报红停止，不发布部分库，再把成功批次打成 LibPack 容器 <临时输出>/b-<链>-vk/（lib.idx + lib.NNN.pak，头部记完整 Vulkan 侧指纹）；
+#   gs / hs / ds 记 skipped、翻不了的记 failed，逐键状态 vk_build.tsv；有 failed 也照常发布成功的那些（🟡 部分出库，缺的键运行时现编），把成功批次打成 LibPack 容器 <临时输出>/b-<链>-vk/（lib.idx + lib.NNN.pak，头部记完整 Vulkan 侧指纹）；
 #   收表、出 keys.tsv（只列出成的键）、vk_build.tsv 副本与 direct_lib.json，换进位。不编 Metal，不出 ps_inputs / c1_full / cb_extent / 管线种子表（都是 Metal 侧的）
 if [ "$VK" = 1 ]; then
   prog "翻译成 Vulkan"

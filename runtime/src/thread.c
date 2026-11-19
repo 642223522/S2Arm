@@ -3198,14 +3198,24 @@ static int svc_thread_impl(thr_t *me, int num, uint64_t *regs) {
         int64_t deadline = ns > 0 ? now_mono_ns() + ns : 0, r; int idx = -1;
         if (n < 0 || n > 64) { regs[0] = 0xEE01; return 1; }   // OutOfRange（Horizon 上限 64）
         glock(); me->wh = hs; me->wn = n;
-        for (;;) {
+        // 句柄只在进入时校验并换成对象（同 Horizon / Ryujinx：等的是对象，不是句柄）：事件多持一份引用，等待中途游戏关掉句柄（#1520 D-BJZ6：视频解码线程收尾时
+        //   关了被等的事件句柄），对象照样活着、别处触发照样唤醒；原先每次醒来按句柄重查，查不到就回句柄无效（2001-0114），游戏随即中止。线程照旧按句柄查，
+        //   中途关掉的当作不会再触发
+        event_t *pin[64] = {0}; int bad = 0;
+        for (int i = 0; i < n && !bad; i++) { if (hs[i] == S2A_H_CUR_THREAD) continue; int ix = h_idx(hs[i]); uint32_t k = ix ? g_h[ix].kind : 0;
+            if (k == S2A_OBJ_EVENT_R) { pin[i] = g_h[ix].obj; pin[i]->refs++; } else if (k != S2A_OBJ_THREAD) bad = 1; }
+        if (bad) { r = R_BAD_HANDLE;
+            if (s2a_snap_restoring()) for (int i = 0; i < n; i++) { int b2 = 0; sig_obj(hs[i], &b2);   // 即时存档恢复局：说清是哪个句柄
+                if (b2) LOG("【红】即时存档恢复局：WaitSynchronization 第 %d 个句柄 %#x 无效（格 %u：种类 %u 代 %u）", i, hs[i], hs[i] & 0x7fff, g_h[hs[i] & 0x7fff].kind, g_h[hs[i] & 0x7fff].gen); } }
+        for (; !bad;) {
             if (me->cancel) { me->cancel = 0; r = R_CANCELLED; break; }
-            int bad = 0;
-            for (int i = 0; i < n && idx < 0; i++) if (sig_obj(hs[i], &bad)) idx = i;
-            if (bad) { r = R_BAD_HANDLE;
-                if (s2a_snap_restoring()) for (int i = 0; i < n; i++) { int b2 = 0; sig_obj(hs[i], &b2); int ix = h_idx(hs[i]);   // 即时存档恢复局：说清是哪个句柄
-                    if (b2) LOG("【红】即时存档恢复局：WaitSynchronization 第 %d 个句柄 %#x 无效（格 %u：种类 %u 代 %u）", i, hs[i], hs[i] & 0x7fff, g_h[hs[i] & 0x7fff].kind, g_h[hs[i] & 0x7fff].gen); (void)ix; }
-                break; }
+            for (int i = 0; i < n && idx < 0; i++) {
+                if (pin[i]) {
+#ifndef S2A_UNIT_TEST
+                    if (!pin[i]->did && s2a_det_in_turn()) ev_expose(pin[i]);   // 确定性档：同 sig_obj
+#endif
+                    if (pin[i]->signaled) idx = i; }
+                else { int gone = 0; if (sig_obj(hs[i], &gone)) idx = i; } }   // 线程（或当前线程伪句柄）；中途关掉的 gone，不当无效
             if (idx >= 0) { r = 0; break; }
             int64_t left = ns < 0 ? -1 : ns == 0 ? 0 : deadline - now_mono_ns();
             if (ns > 0 && left <= 0) { r = R_TIMEOUT; break; }
@@ -3215,6 +3225,7 @@ static int svc_thread_impl(thr_t *me, int num, uint64_t *regs) {
             // re-enqueueing it would keep this thread alive indefinitely.
             if (r == R_TIMEOUT || r == R_CANCELLED) break;
         }
+        for (int i = 0; i < n; i++) if (pin[i] && --pin[i]->refs == 0) { if (pin[i]->did) evmap_del(pin[i]); free(pin[i]); }   // 还回进入时多持的那份（同 close_handle）
         me->wn = 0; pthread_mutex_unlock(&G);
         regs[0] = (uint64_t)r; regs[1] = idx >= 0 ? (uint64_t)idx : 0; return 1;
     }
