@@ -24,6 +24,14 @@
   "en": "Ready iPhone builds"
  },
  {
+  "source": "自签导出的游戏文件",
+  "en": "Self-sign export game file"
+ },
+ {
+  "source": "「S2Arm 自签导出」文件夹里这款的 .img：手机上已导入的不受影响；要再装到手机时重新「导出自签包」",
+  "en": "This game's .img in the “S2Arm Self-Sign Export” folder: games already imported on your phone are not affected; export a self-sign package again when you want to install it on a phone."
+ },
+ {
   "source": "IPA 会移到废纸篓，可从废纸篓找回。删的是这款最后一个包时，资源包也一起移走。",
   "en": "The IPA goes to the Trash and can be recovered from there. If it is this game's last build, its resource pack is moved too."
  },
