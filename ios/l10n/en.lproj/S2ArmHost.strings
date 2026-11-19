@@ -609,3 +609,5 @@
 "vpad.snap.delete.body" = "This snapshot takes about %@. Once deleted you can’t go back to that moment. Your game saves are not affected.";
 "vpad.snap.deleted" = "Deleted. The space is free again";
 "vpad.snap.deleteFailed" = "Couldn’t delete it completely. Try again in a moment";
+"snap.result.title" = "Couldn’t go back to that moment";
+"snap.result.generic" = "Going back to that moment didn’t work, so the game started again. Your game saves are not affected.";

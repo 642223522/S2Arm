@@ -603,3 +603,5 @@
 "vpad.snap.delete.body" = "Cet instantané occupe environ %@. Une fois supprimé, vous ne pourrez plus revenir à cet instant. Vos sauvegardes de jeu ne sont pas touchées.";
 "vpad.snap.deleted" = "Supprimé. L’espace est libéré";
 "vpad.snap.deleteFailed" = "Suppression incomplète. Réessayez dans un instant";
+"snap.result.title" = "Impossible de revenir à cet instant";
+"snap.result.generic" = "Le retour à cet instant n’a pas fonctionné, le jeu a donc redémarré. Vos sauvegardes de jeu ne sont pas touchées.";

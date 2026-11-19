@@ -609,3 +609,5 @@
 "vpad.snap.delete.body" = "這份快照約佔 %@。刪掉後就回不到那一刻了，遊戲存檔不受影響。";
 "vpad.snap.deleted" = "已刪除，空間已騰出";
 "vpad.snap.deleteFailed" = "這次沒刪乾淨，稍後再試一次";
+"snap.result.title" = "沒能回到那一刻";
+"snap.result.generic" = "回到那一刻沒成功，已重新開始遊戲，遊戲存檔沒受影響。";
