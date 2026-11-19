@@ -613,9 +613,46 @@ int rp_hitch_line(char *b, size_t n, uint64_t gap_ns, uint64_t exec_ns, uint64_t
 // 线程：[提交]（回放线程）；OP_CALL 的递归也在同一条线程上，嵌套深度记在 g_ret_n。
 // 生命周期：无（只读命令流，写帧级账 / 逐命令账两个全局计数器）。
 // 出错：没有失败路径；坏记录与深度超限按未接登记后照常结束本列表（不返回假成功）。
+// #658：仅保存正式解码后的第一条及标量元数据，不读取 GPU 参数/count 内容。
+struct rp_count_group { p_draw dr; p_draw_idx di; const void *rec; uint32_t n; int indexed; uint64_t stride; };
+static void count_flush(struct rp_count_group *g, int tm) {
+    if (!g->n) return;
+    uint64_t t = tm ? now_ns() : 0;
+    rp_draw_count_batch(g_cmd, g->indexed ? NULL : &g->dr, g->indexed ? &g->di : NULL, g->rec, g->n, g->stride);
+    if (tm) pf_add(RP_PERF_EXEC_DRAW_NS, now_ns() - t);
+    g->n = 0;
+}
+static void count_feed(struct rp_count_group *g, const p_draw *dr, const p_draw_idx *di, const void *rec, int tm) {
+    (void)tm;
+    int ix = di != NULL;
+    uint64_t cnt = ix ? di->mdi_cnt : dr->mdi_cnt, ind = ix ? di->ind : dr->ind;
+    int32_t seq = ix ? di->mdi_i : dr->mdi_i;
+    uint64_t first = g->indexed ? g->di.ind : g->dr.ind;
+    uint64_t oldcnt = g->indexed ? g->di.mdi_cnt : g->dr.mdi_cnt;
+    int same = g->n && g->n < 1024 && ix == g->indexed && cnt == oldcnt && seq == (int32_t)g->n;
+    if (same) same = ix ? di->prim == g->di.prim && di->itype == g->di.itype && di->ibuf == g->di.ibuf : dr->prim == g->dr.prim && dr->tfc == g->dr.tfc;
+    uint64_t stride = g->stride;
+    if (same && g->n == 1) { if (ind <= first) same = 0; else stride = ind - first; }
+    if (same && (stride < (ix ? 20u : 16u) || (stride & 3) || stride > UINT32_MAX)) same = 0;
+    if (same && ((uint64_t)g->n > (UINT64_MAX - first) / stride || ind != first + g->n * stride)) same = 0;
+    if (same) { g->n++; g->stride = stride; if (g->n == 1024) count_flush(g, 0); return; }
+    count_flush(g, 0);   // 调用处 t_cmd 已覆盖本次绘制，避免重复计时。
+    if (!cnt || seq != 0) { rp_draw(g_cmd, dr, di, rec); return; }
+    g->indexed = ix; g->rec = rec; g->n = 1; g->stride = ix ? 20 : 16;
+    if (ix) g->di = *di; else g->dr = *dr;
+}
+#ifdef S2A_RP_EXEC_TEST_COUNT_EXIT
+void s2a_rp_test_count_exit(uint32_t pending);
+#endif
 static uint64_t exec_list(const uint8_t *p) {
     static int inited; if (!inited) { inited = 1; rp_state_reset(); }
-    if (!p) return 0;   // 没有列表：不取时刻、不计时（上沿允许 nvn_be_exec(NULL)）
+    struct rp_count_group count_group = {0};
+    if (!p) {
+#ifdef S2A_RP_EXEC_TEST_COUNT_EXIT
+        s2a_rp_test_count_exit(count_group.n);
+#endif
+        return 0;   // 没有列表：不取时刻、不计时（上沿允许 nvn_be_exec(NULL)）
+    }
     // 回放耗时按命令类别分（开关 debug.s2a.nvk_exec_tm，缺省 0）：绘制类 vs 其余（传输 / 整屏清除 / 派发 / 状态），
     // 用来判「回放总时长里有多少不在 rp_draw 的各步上」。取时刻本身有开销，只在量的时候开。
     static int tm = -1;
@@ -627,7 +664,8 @@ static uint64_t exec_list(const uint8_t *p) {
     for (;;) {
         nvn_plat_safepoint();   // 一次提交可连续回放数秒：让平台的停世界事务在命令之间越过本线程（nvn_plat.h）
         op_hdr h; memcpy(&h, p, sizeof h);
-        if (rec_bad(h)) { nvn_unimpl("rec", "bad_record", p); break; }   // 按这条列表的 END 处理：走下面唯一的出口
+        if (rec_bad(h)) { count_flush(&count_group, tm); nvn_unimpl("rec", "bad_record", p); break; }   // 按这条列表的 END 处理：走下面唯一的出口
+        if ((h.op != OP_DRAW && h.op != OP_DRAW_IDX && h.op != OP_JUMP) || g_rc_skip) count_flush(&count_group, tm);
         uint64_t t_cmd = tm ? now_ns() : 0;
         const void *a = p + 8;
         switch (h.op) {
@@ -659,8 +697,8 @@ static uint64_t exec_list(const uint8_t *p) {
                 break; }
             case OP_RESET_COUNTER: { uint64_t t; memcpy(&t, a, 8); if (t == NVN_COUNTER_TYPE_SAMPLES_PASSED) occ_reset(g_cmd); break; }   // 其余计数器的报告值本来就写 0，复位无事可做
             case OP_RENDER_COND: rc_cond(a); break;
-            case OP_DRAW: { if (g_rc_skip) break; p_draw t; rp_draw(g_cmd, draw_rec(a, h.size, &t), NULL, p); break; }
-            case OP_DRAW_IDX: { if (g_rc_skip) break; p_draw_idx t; rp_draw(g_cmd, NULL, draw_idx_rec(a, h.size, &t), p); break; }
+            case OP_DRAW: { if (g_rc_skip) break; p_draw t; count_feed(&count_group, draw_rec(a, h.size, &t), NULL, p, tm); break; }
+            case OP_DRAW_IDX: { if (g_rc_skip) break; p_draw_idx t; count_feed(&count_group, NULL, draw_idx_rec(a, h.size, &t), p, tm); break; }
             case OP_MULTI_DRAW: { if (g_rc_skip) break; p_multi_draw m; if (h.size - 8 < sizeof m) { nvn_unimpl("rec", "multi_draw_short", p); break; } memcpy(&m, a, sizeof m); rp_multi_draw(g_cmd, &m, p); break; }
             case OP_SET_RT: { p_set_rt t; rp_pass_set_rt(g_cmd, set_rt_rec(a, h.size, &t)); sub_split(); break; }
             case OP_CLEAR_COLOR: if (!g_rc_skip) rp_pass_clear_color(g_cmd, a, p); break;
@@ -706,6 +744,10 @@ static uint64_t exec_list(const uint8_t *p) {
         p += h.size;
     }
 out:
+#ifdef S2A_RP_EXEC_TEST_COUNT_EXIT
+    s2a_rp_test_count_exit(count_group.n);
+#endif
+    // 到这里组一定已 flush：空指针早返在建组前，bad_record / OP_END 已 flush。
     {
         const uint64_t t1 = timed ? now_ns() : 0;
         // 帧级账只由最外层累加一次：里层的时间已经包括在外层的墙钟里，再记一层就是重复统计。

@@ -64,6 +64,8 @@ void rp_present_stats(uint64_t *shown, uint64_t *dropped);
 void rp_present_reset(void);
 
 // ---------- 绘制（rp_draw.c）----------
+// 已正式解码的计数组：显式条数/参数步长，不前瞻命令流。
+void rp_draw_count_batch(nvn_gpu_cmd, const p_draw *, const p_draw_idx *, const void *, uint32_t, uint64_t);
 void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *rec);   // di 非空 = 带索引
 void rp_multi_draw(nvn_gpu_cmd c, const p_multi_draw *m, const void *rec);   // OP_MULTI_DRAW：整段间接计数多绘一次交后端
 void rp_draw_stats(uint64_t *draws, uint64_t *skips);

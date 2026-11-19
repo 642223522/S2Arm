@@ -922,11 +922,14 @@ static int fill_dyn(nvn_gpu_dyn *d, uint32_t tw, uint32_t th, const void *rec) {
     return 1;
 }
 
-// 间接计数多绘（MultiDraw*IndirectCount）：前端把一次调用录成 max 条间接绘制，每条带计数地址 mdi_cnt 和序号 mdi_i
-//   （hle_nvn.c；iOS 没有 GPU 读计数的绘制，回放时在 GPU 上把序号 ≥ 计数的记录清零，nvn_mtl.m mdx_run）。
-//   Vulkan 有 vkCmdDraw*IndirectCount：在第 0 条处顺着命令流往后数出同一组（同操作码、同计数地址、序号连续、记录地址等步长，
-//   跨块跟 OP_JUMP），整组一次交给后端由 GPU 读计数；后面同组的记录认出来直接跳过。数不出整组（中间夹了别的记录）的不画半组。
-static uint64_t g_mdi_cnt; static int32_t g_mdi_next, g_mdi_end;
+// #658：小组由回放器以已解码记录单遍积累，禁止前瞻读取命令流。
+static uint32_t g_decoded_count_n; static uint64_t g_decoded_count_stride;
+void rp_draw_count_batch(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di,
+                         const void *rec, uint32_t n, uint64_t stride) {
+    g_decoded_count_n = n; g_decoded_count_stride = stride;
+    rp_draw(c, dr, di, rec);
+    g_decoded_count_n = 0; g_decoded_count_stride = 0;
+}
 // OP_MULTI_DRAW（超过 1,024 条的一次调用，前端整段录一条）：组大小与步长由记录直接给，不往后数
 static uint32_t g_mdi_force_n; static uint64_t g_mdi_force_stride;
 void rp_multi_draw(nvn_gpu_cmd c, const p_multi_draw *m, const void *rec) {
@@ -943,25 +946,6 @@ void rp_multi_draw(nvn_gpu_cmd c, const p_multi_draw *m, const void *rec) {
     }
     g_mdi_force_n = 0;
 }
-static uint32_t mdi_group(const uint8_t *rec, uint64_t cnt, uint64_t ind0, uint64_t *stride) {
-    op_hdr h0; memcpy(&h0, rec, sizeof h0);
-    const uint8_t *p = rec + h0.size; uint32_t k = 1; *stride = 0;
-    for (int guard = 0; guard < 8192 && k < 4096; guard++) {
-        op_hdr h; memcpy(&h, p, sizeof h);
-        if (h.size < 8 || (h.size & 7)) break;
-        if (h.op == OP_JUMP) { const uint8_t *t; memcpy(&t, p + 8, 8); if (!t) break; p = t; continue; }
-        if (h.op != h0.op) break;
-        uint64_t c2, ind; int32_t i2;
-        if (h.op == OP_DRAW_IDX) { p_draw_idx t; const p_draw_idx *d = draw_idx_rec(p + 8, h.size, &t); c2 = d->mdi_cnt; i2 = d->mdi_i; ind = d->ind; }
-        else { p_draw t; const p_draw *d = draw_rec(p + 8, h.size, &t); c2 = d->mdi_cnt; i2 = d->mdi_i; ind = d->ind; }
-        if (c2 != cnt || i2 != (int32_t)k) break;
-        if (k == 1) { if (ind <= ind0) break; *stride = ind - ind0; }
-        else if (ind != ind0 + (uint64_t)k * *stride) break;
-        k++; p += h.size;
-    }
-    return k;
-}
-
 // OP_DRAW / OP_DRAW_IDX 共用。di 非空 = 带索引
 // 分时：一笔绘制里各步各花多久（累计到 rp_perf，上屏那边每 5 秒报一次）
 static uint64_t dt_now(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec; }
@@ -997,17 +981,14 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
     uint32_t mdi_n = 0; uint64_t mdi_stride = 0;
     if (mcnt) {
         const int32_t mi = di ? di->mdi_i : dr->mdi_i;
-        if (mi != 0) {   // 同组后面的记录：第 0 条已整组交出
-            if (mcnt == g_mdi_cnt && mi == g_mdi_next && mi < g_mdi_end) { g_mdi_next++; return; }
-            skip("indirect_count_group_unavailable", rec); return;
-        }
+        if (mi != 0) { skip("indirect_count_group_broken", rec); return; }
         if (g_mdi_force_n) { mdi_n = g_mdi_force_n; mdi_stride = g_mdi_force_stride; }
-        else mdi_n = mdi_group(rec, mcnt, ind, &mdi_stride);
-        g_mdi_cnt = mcnt; g_mdi_next = 1; g_mdi_end = (int32_t)mdi_n;
+        else if (g_decoded_count_n) { mdi_n = g_decoded_count_n; mdi_stride = g_decoded_count_stride; }
+        else { skip("indirect_count_group_unavailable", rec); return; }
         if (mdi_n == 1) mdi_stride = di ? 20 : 16;
         if (!ind || mdi_stride < (uint64_t)(di ? 20 : 16) || (mdi_stride & 3) || mdi_stride > 0xFFFFFFFFu) { skip("indirect_count_group_unavailable", rec); return; }
         nvn_gpu_caps caps; nvn_gpu_caps_get(&caps);   // 设备没开 drawIndirectCount 就不交（交了后端整段判失败），照旧报名跳过
-        if (!(caps.caps & NVN_GPU_CAP_INDIRECT_COUNT)) { skip("indirect_count_no_device_support", rec); return; }
+        if (!(caps.caps & NVN_GPU_CAP_INDIRECT_COUNT)) { skip(g_decoded_count_n ? "indirect_count_unsupported" : "indirect_count_no_device_support", rec); return; }
     }
     if (ind && (prim == 2 || prim == 7 || prim == 8 || prim == 9 || (di && di->itype == 0))) {
         skip("indirect_topology_or_index_conversion", rec); return;
@@ -1057,6 +1038,14 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
         int sr = rp_shader_resolve(&q, &np);
         if (sr) { skip(sr > 0 ? "program_not_ready" : "program_unresolved", rec); g_prog = NULL; return; }
         if (np != g_prog) { g_prog = np; rp_pso_dirty = 1; }
+    }
+    // 仅拒绝绑定 DRV0 且未证明不读 base instance 的已解码 count 组；单条间接/#941 和 OP_MULTI_DRAW 保持原路径。
+    if (g_decoded_count_n) {
+        for (int st = 0; st < RP_PROG_STAGES; st++)
+            for (uint32_t i = 0; i < g_prog->nent[st]; i++)
+                if (g_prog->ent[st][i].src_kind == NVN_RB_DRV0 && !(g_prog->binst_unread >> st & 1)) {
+                    skip("indirect_count_driver_base_instance", rec); return;
+                }
     }
     DT(RP_PERF_D_PROG);
     // 先把这笔要用的资源都取好：池镜像同步、贴图上传是传输，不能出现在通道里，必须在开通道之前做完
