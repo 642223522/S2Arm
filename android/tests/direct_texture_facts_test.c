@@ -105,6 +105,39 @@ int main(void) {
           "UI2F is not silently treated as Uint");
     CHECK(why[0] != 0, "rejections explain why");
 
+    // 没登记描述符的默认事实（Ryujinx GetTextureDescriptor，IsValidId = 0 <= id - pool_base < pool_n）：
+    //   池内 {1d, 不归一化}，池外 {2d, 归一化}；格式 Unknown、数组长度 1、非 buffer。组合槽与常量缓冲里的贴图句柄共用这一个函数。
+    {
+        const struct { int64_t id; int32_t base; uint32_t n; int in_pool; const char *what; } d[] = {
+            {100, 100, 50, 1, "first pool entry"},
+            {149, 100, 50, 1, "last pool entry"},
+            {150, 100, 50, 0, "one past the pool"},
+            {99, 100, 50, 0, "one before the pool base"},
+            {0xFFFFF, 0, 524288, 0, "0xFFFFF beyond a 524288-entry pool"},
+            {524287, 0, 524288, 1, "last entry of a 524288-entry pool"},
+            {0xFFFFF, 0, 1048576, 1, "0xFFFFF is the last entry of a pool that fills all 20 id bits"},
+            {-1, 0, 100, 0, "negative id"},
+            {5, -1, 100, 0, "unknown pool base (< 0) is always out of pool"},
+            {0, 0, 0, 0, "empty pool"},
+        };
+        for (unsigned i = 0; i < sizeof d / sizeof d[0]; i++) {
+            char what[160];
+            memset(&f, 0x5a, sizeof f);
+            int r = s2a_nvn_default_texture_fact(d[i].id, d[i].base, d[i].n, &f);
+            snprintf(what, sizeof what, "default fact classification: %s", d[i].what);
+            CHECK(r == d[i].in_pool, what);
+            snprintf(what, sizeof what, "default fact is {Unknown, 1 layer, not buffer}: %s", d[i].what);
+            CHECK(!strcmp(f.format, "Unknown") && f.array_length == 1 && !f.is_buffer, what);
+            snprintf(what, sizeof what, "default fact sampler / coordinates follow the pool class: %s", d[i].what);
+            CHECK(d[i].in_pool ? (!strcmp(f.sampler_type, "1d") && f.normalized == 0) : (!strcmp(f.sampler_type, "2d") && f.normalized == 1), what);
+        }
+        CHECK(s2a_nvn_default_texture_fact(150, 100, 50, NULL) == 0 && s2a_nvn_default_texture_fact(149, 100, 50, NULL) == 1, "out may be NULL: classification only");
+        // 两种默认事实都得进得了身份编码（编译请求的身份把格式 / 目标名映回小整数，认不出会明确失败）
+        { uint16_t fi = 0; uint8_t ti = 0;
+          CHECK(s2a_nvn_texture_format_index("Unknown", &fi) == 0 && s2a_nvn_texture_target_index("1d", &ti) == 0 && s2a_nvn_texture_target_index("2d", &ti) == 0,
+                "default fact names have identity indices"); }
+    }
+
     if (fails) { printf("direct texture facts: %d FAILURES\n", fails); return 1; }
     printf("direct texture facts: ok (%d mapped color formats)\n", n);
     return 0;

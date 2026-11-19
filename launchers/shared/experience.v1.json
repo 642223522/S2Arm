@@ -1447,6 +1447,8 @@
       {"id": "install.eta_minutes", "zh-Hans": "分钟", "en": "min"},
       {"id": "export.action.queue", "zh-Hans": "加入出包队列", "en": "Add to queue"},
       {"id": "export.status.queued", "zh-Hans": "排队中", "en": "Queued"},
+      {"id": "export.queue.behind", "zh-Hans": "「{0}」正在出包：现在点开始会排在它后面，它出完自动开始。", "en": "“{0}” is being built. Start now and this game waits its turn, then starts by itself when that one is done."},
+      {"id": "export.queue.waiting", "zh-Hans": "已排队：排在「{0}」后面，它出完自动开始。", "en": "Queued behind “{0}”. It starts by itself when that one is done."},
       {"id": "export.device.connected", "zh-Hans": "已连接 {0}，会按这台手机优化", "en": "The build will be optimized for the connected {0}"},
       {"id": "install.mode.title", "zh-Hans": "装到 iPhone 的方式", "en": "How to put S2Arm on your iPhone"},
       {"id": "install.mode.note", "zh-Hans": "应用于出包、批量出包和更新，完成页可临时更改", "en": "Used for exports, batches and updates, with a one-time override on the result page"},

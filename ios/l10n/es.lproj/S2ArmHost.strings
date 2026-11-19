@@ -280,7 +280,7 @@
 "app.library.cantOpen.storage" = "Este teléfono no pudo crear una carpeta para este juego, muy probablemente porque el almacenamiento está lleno. Libera espacio en Ajustes > General > Almacenamiento del iPhone, luego desliza la app y ábrela de nuevo.";
 "app.library.missing.title" = "Faltan recursos del juego";
 "app.library.packBroken" = "Solo se copió parte de los recursos de este juego — probablemente se interrumpió la copia. En S2Arm en tu ordenador, haz clic en \"Instalar en el iPhone\" para este juego de nuevo para añadir lo que falta. Cuando termine, toca \"Comprobar de nuevo\".";
-"app.library.packMissing" = "Los recursos de este juego aún no están en el teléfono. En S2Arm en tu ordenador, haz clic en \"Instalar en el iPhone\" para este juego y los recursos se copian automáticamente. También puedes hacer clic en \"Exportar y firmarlo tú mismo\" en S2Arm en tu ordenador y poner el archivo .img de este juego de la carpeta \"S2Arm Self-Sign Export\" en la carpeta \"Import Here\" de esta app en la app Archivos. Luego toca \"Comprobar de nuevo\".";
+"app.library.packMissing" = "Los recursos de este juego aún no están en el teléfono. En S2Arm en tu ordenador, haz clic en \"Push to iPhone\" para este juego y los recursos se copian automáticamente. También puedes exportar este juego en tu ordenador y poner sus dos archivos de la carpeta \"S2Arm Game Packs\", el .s2arm y el .img, en la carpeta \"Import Here\" de esta app en la app Archivos. Luego toca \"Comprobar de nuevo\".";
 "app.library.reopen.message" = "Solo puedes jugar un juego cada vez que se abre la app. Desliza la app en el selector de apps, ábrela de nuevo y elige este juego.";
 "app.library.reopen.title" = "Cierra y vuelve a abrir la app";
 "app.library.stillMissing" = "Comprobado ahora mismo — los recursos completos siguen sin estar.\n\n";
@@ -329,7 +329,7 @@
 "img.importFolder" = "Import Here";
 "img.scanFailed.title" = "No se pudo importar el archivo del juego";
 "img.noShaders.title" = "Este archivo del juego está incompleto";
-"img.noShaders.body" = "«%@» está incompleto. Reemplázalo con el «<nombre del juego>.img» de la carpeta «S2Arm Self-Sign Export» en tu ordenador, o conecta tu teléfono y haz clic en «Send to iPhone» en S2Arm en tu ordenador.";
+"img.noShaders.body" = "«%@» está incompleto. Pon también aquí el .s2arm de este juego de la carpeta «S2Arm Game Packs» de tu ordenador (lleva los sombreadores del juego), o conecta tu teléfono y haz clic en «Push to iPhone» en S2Arm en tu ordenador.";
 "img.updateSkipped.title" = "Actualización de shaders omitida";
 "img.updateSkipped.body" = "«%@» no corresponde a la versión actual de este juego, así que se omitió y no se aplicó. El juego funciona con normalidad. Para usar esta actualización, añade junto con ella el .img completo de la misma exportación de tu ordenador.";
 "container.locked.title" = "El sistema bloqueó algunos archivos de S2Arm";
@@ -422,7 +422,7 @@
 "notice.batch" = "Lote %d de %d";
 "notice.cable" = "Cable";
 "notice.imgFile" = "NombreDelJuego.img";
-"notice.step.img" = "O bien, en S2Arm en tu ordenador haz clic en «Exportar y firmar tú mismo», coloca el archivo .img de este juego desde la carpeta «S2Arm Self-Sign Export» en la carpeta «Import Here» de «%@» en la app Archivos y abre «%@» de nuevo. Se detectará automáticamente.";
+"notice.step.img" = "O bien exporta este juego en tu ordenador, coloca sus dos archivos de la carpeta «S2Arm Game Packs», el .s2arm y el .img, en la carpeta «Import Here» de «%@» en la app Archivos y abre «%@» de nuevo. Se detectará automáticamente.";
 "notice.step.auto" = "En S2Arm en tu ordenador, haz clic en «Instalar en el iPhone» para este juego y los recursos se copian automáticamente: la forma más fácil.";
 "save.blocked" = "%@\n\nCopia tus datos a un lugar seguro antes de decidir: abre la app Archivos → «En mi iPhone» («En mi iPad» en iPad) → «%@», y copia toda la carpeta «S2A» a otro lugar. Las operaciones sin terminar quedan registradas en S2A/save-transfer/save-transactions. También puedes seleccionar este dispositivo en el Finder de un Mac → «Archivos» y arrastrar la carpeta «S2A» de esta app hacia fuera.\n\nTras copiarla, puedes reempaquetar e instalar para intentarlo de nuevo, o tocar «Iniciar el juego de todas formas…».";
 "save.busy" = "La operación de guardado anterior sigue en curso. Vuelve a intentarlo cuando termine.";

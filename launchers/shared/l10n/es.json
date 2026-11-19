@@ -658,6 +658,8 @@
   "install.eta_minutes": " min",
   "export.action.queue": "Añadir a la cola",
   "export.status.queued": "En cola",
+  "export.queue.behind": "Se está generando «{0}». Si empiezas ahora, este juego espera su turno y empieza solo cuando termine ese.",
+  "export.queue.waiting": "En cola detrás de «{0}». Empieza solo cuando termine ese.",
   "export.device.connected": "{0} conectado. La compilación se optimizará para él.",
   "install.mode.title": "Cómo poner S2Arm en tu iPhone",
   "install.mode.note": "Las compilaciones, compilaciones por lotes, actualizaciones de S2Arm y exportaciones siguen esto. Aún puedes cambiar una vez en cada página final.",

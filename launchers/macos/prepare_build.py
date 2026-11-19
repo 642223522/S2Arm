@@ -6,7 +6,7 @@
 查（只读，不替你装系统级东西）：Apple 芯片 macOS；Xcode（同出包的 tools/toolchain.sh 解析：S2A_DEVELOPER_DIR / tools/machine.local → xcode-select）
   与 iOS SDK、Metal 编译器——编译器版本与 translator/dmsh_chain.lock 不同只出 note（出包时直连库按本机编译器重编，不报错）；
   .NET SDK——在 compat/tree 里跑 dotnet --version，由 dotnet 按 compat/tree/global.json（版本 + rollForward）判定，不另抄版本号；
-  Homebrew 公式（运行环境打包 bundle_runtime.py 收的工具 + C 改写器的 CMake + dav1d 的 meson / ninja；S2A_DAV1D=0 的本地构建不需要 meson / ninja）；Rust（pack/devpush）。
+  Homebrew 公式（运行环境打包 bundle_runtime.py 收的工具 + C 改写器的 CMake + dav1d 的 meson / ninja——本机探测有 AV1 硬件解码时 dav1d 整条不要，meson / ninja 不需要）；Rust（pack/devpush）。
 准备（可逆、只写在你给的目录或本树 build/ 下；--check 时跳过）：
   构建用 Python 虚拟环境（缺省本树 build/venv，Homebrew python@3.12 建）装齐三份钉版清单：tools/rewriter-requirements.txt、
   pack/fonts/requirements.txt（字体生成器 fonttools / skia-pathops）、launchers/macos/requirements-runtime.txt；
@@ -23,12 +23,11 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 REQS = ["tools/rewriter-requirements.txt", "pack/fonts/requirements.txt", "launchers/macos/requirements-runtime.txt"]
-# 公式 → 谁要：bundle_runtime.py 的 prefixes 全部 + C 改写器（runtime/rewriter，CMake 3.18+）+ services/dav1d/build.sh（meson + ninja）
-# S2A_DAV1D=0：不链 dav1d 软件兜底（仅适合所有目标机都有 AV1 硬件解码的本地构建），meson / ninja 不再是必需项
+# 公式 → 谁要：bundle_runtime.py 的 prefixes 全部 + C 改写器（runtime/rewriter，CMake 3.18+）+ dav1d 软解兜底（AV1；S2A_DAV1D 缺省 auto 探测本机，
+#   有 AV1 硬解时整条不进构建，见 dav1d_wanted；只有它要 meson / ninja）
 FORMULAS = {"python@3.12": "构建 venv",
             "bash": "运行环境（bash 5）", "cmake": "C 改写器"}
-if os.environ.get("S2A_DAV1D", "1") != "0":
-    FORMULAS.update({"meson": "dav1d 静态库", "ninja": "dav1d 静态库"})
+DAV1D_FORMULAS = {"meson": "dav1d 静态库（AV1 软解兜底）", "ninja": "dav1d 静态库（AV1 软解兜底）"}
 IMPORTS = "import capstone, lz4, numpy, PIL, fontTools, pathops"
 rows = []
 
@@ -42,6 +41,44 @@ def run(args, **kw):
         return subprocess.run([str(a) for a in args], capture_output=True, text=True, **kw)
     except OSError as e:
         return subprocess.CompletedProcess(args, 127, "", str(e))
+
+
+def dav1d_wanted(dev):
+    """dav1d 软解兜底（AV1）要不要进本机构建——meson / ninja 只为它：S2A_DAV1D=1 / 0 直说，缺省 1；显式 auto = 探测本机
+    （tools/av1hw.sh --want：VideoToolbox 建得出 AV1 解码会话 = 有硬解，AV1 走 VideoToolbox，软解整条不要）。
+    回 (要不要, 说明)；探测没答上来时保守按要算（= 原默认行为）。"""
+    v = os.environ.get("S2A_DAV1D", "1")   # 缺省链（见 Makefile S2A_DAV1D）；auto 只显式设
+    if v in ("0", "1"):
+        return v == "1", "S2A_DAV1D=%s" % v
+    env = dict(os.environ)
+    if dev:
+        env["DEVELOPER_DIR"] = dev
+    p = run(["bash", ROOT / "tools/av1hw.sh", "--want"], env=env)
+    lines = p.stdout.split()
+    if lines and lines[-1] == "0":
+        return False, "本机有 AV1 硬件解码（tools/av1hw.sh 探测：VideoToolbox 建得出 AV1 会话），AV1 走 VideoToolbox，dav1d 软解兜底与 meson / ninja 都不需要；要给无硬解的机器兜底就 export S2A_DAV1D=1 再跑"
+    if lines and lines[-1] == "1":
+        return True, "本机没有 AV1 硬件解码（tools/av1hw.sh 探测），dav1d 软解兜底要编（meson / ninja 要装）"
+    return True, "本机 AV1 硬解探测没答上来（tools/av1hw.sh），按要 dav1d 算（= 原默认行为）"
+
+
+def vpx_wanted(dev):
+    """真 libvpx（VP8 / VP9 软解）要不要进本机构建：S2A_VPX=1 / 0 直说，缺省 1；显式 auto = 探测本机可走
+    系统 VP9（tools/vp9hw.sh --want：注册 supplemental 后建得出 VP9 会话 = VP9 走 VideoToolbox）。
+    回 (要不要, 说明)；探测没答上来时保守按要算（= 原默认行为）。"""
+    v = os.environ.get("S2A_VPX", "1")   # 同上
+    if v in ("0", "1"):
+        return v == "1", "S2A_VPX=%s" % v
+    env = dict(os.environ)
+    if dev:
+        env["DEVELOPER_DIR"] = dev
+    p = run(["bash", ROOT / "tools/vp9hw.sh", "--want"], env=env)
+    lines = p.stdout.split()
+    if lines and lines[-1] == "0":
+        return False, "本机可走系统 VP9（tools/vp9hw.sh 探测：注册 supplemental 后建得出 VP9 会话），VP9 走 VideoToolbox、libvpx 整条不进构建（VP8 无任何系统替代，这些机器上如实报红）；要兜 VP8 / 不可走系统的机器就 export S2A_VPX=1 再跑"
+    if lines and lines[-1] == "1":
+        return True, "本机不可走系统 VP9（tools/vp9hw.sh 探测），VP8 / VP9 软解照编 libvpx"
+    return True, "本机系统 VP9 探测没答上来（tools/vp9hw.sh），按要 libvpx 算（= 原默认行为）"
 
 
 def check_xcode():
@@ -90,16 +127,19 @@ def check_dotnet():
     row(".NET SDK", True, f"{p.stdout.strip()}（{d}，按 compat/tree/global.json 选中）")
 
 
-def check_brew():
+def check_brew(dav1d):
     brew = shutil.which("brew")
     if not brew:
         row("Homebrew", False, "没有 brew", "按 https://brew.sh 安装 Homebrew")
         return None
-    missing = [f for f in FORMULAS if run([brew, "list", "--versions", f]).returncode != 0]
+    formulas = dict(FORMULAS)
+    if dav1d:
+        formulas.update(DAV1D_FORMULAS)
+    missing = [f for f in formulas if run([brew, "list", "--versions", f]).returncode != 0]
     if missing:
-        row("Homebrew 公式", False, "缺 " + "、".join(f"{f}（{FORMULAS[f]}）" for f in missing), "brew install " + " ".join(missing))
+        row("Homebrew 公式", False, "缺 " + "、".join(f"{f}（{formulas[f]}）" for f in missing), "brew install " + " ".join(missing))
     else:
-        row("Homebrew 公式", True, " ".join(FORMULAS))
+        row("Homebrew 公式", True, " ".join(formulas))
     return brew
 
 
@@ -168,9 +208,13 @@ def main():
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         print("🔴 从源码构建 Mac 启动器要 Apple 芯片的 macOS（运行环境只收 arm64）；Intel Mac 只能用 pack/oneclick/oneclick.sh 命令行出 iPhone 包")
         return 1
-    check_xcode()
+    dev = check_xcode()
+    dav1d, why = dav1d_wanted(dev)
+    row("AV1 解码路线", True, why)
+    vpx, whyv = vpx_wanted(dev)
+    row("VP9 解码路线", True, whyv)
     check_dotnet()
-    brew = check_brew()
+    brew = check_brew(dav1d)
     check_cargo()
     venv = a.venv.expanduser().resolve()
     py = prepare_venv(venv, brew, a.check)

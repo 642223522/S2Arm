@@ -15,6 +15,9 @@ nvn_gpu_view rp_view_by_id(int id, nvn_gpu_cmd c, tex_t *t_out);
 // 按着色器声明取兼容视图；dtt = NVN 目标 + 1，0 沿用原样。elem 表示句柄数组元素。
 // 返回视图由核心持有；调用方在 pin 窗口内取用并交给后端。t_out 同 rp_view_by_id（调用方持有的快照）。线程：[提交]。
 nvn_gpu_view rp_view_by_id_decl(int id, uint8_t dtt, uint8_t dcls, int elem, nvn_gpu_cmd c, tex_t *t_out);
+// 句柄在游戏常量缓冲里（NVN_RB_TEXU）：号没登记（越过池容量 / 负号 / 池里没登记）按 Ryujinx 的 null 贴图绑声明类型的零贴图，不跳整笔；
+// 其余同 rp_view_by_id_decl（elem = 0）。信息计数 rp_ubo_zero_count（换局清零）。
+nvn_gpu_view rp_view_by_ubo_handle_decl(int id, uint8_t dtt, uint8_t dcls, nvn_gpu_cmd c, tex_t *t_out);
 // 按声明规划同一存储的视图目标；0 原样、1 已改记录、-1 无法桥接。不会创建零贴图。
 static inline int rp_decl_view_target(const tex_t *t, view_t *v, int has_v, uint8_t dtt) {
     if (!dtt) return 0;
@@ -44,6 +47,7 @@ static inline int rp_decl_view_target(const tex_t *t, view_t *v, int has_v, uint
     return 1;
 }
 uint64_t rp_empty_slot_zero_count(void);   // 空贴图槽绑零贴图的次数（#1147；信息计数）
+uint64_t rp_ubo_zero_count(void);          // 常量缓冲句柄指向没登记的号、绑零贴图的次数（#1594 片 4；信息计数，换局清零）
 // 贴图对象 + 视图记录（NULL = 默认视图）→ 视图：渲染目标、拷贝端点用。线程：[提交]。
 nvn_gpu_view rp_view_for(const tex_t *t, const view_t *v, nvn_gpu_cmd c);
 // 当颜色附件取视图。刚建、初始内容该是全零的单级单层颜色图：不在 CPU 上填零，记成「待清零」，

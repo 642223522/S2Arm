@@ -658,6 +658,8 @@
   "install.eta_minutes": " 分",
   "export.action.queue": "キューに追加",
   "export.status.queued": "待機中",
+  "export.queue.behind": "「{0}」をエクスポート中です。今開始すると順番待ちになり、終わりしだい自動で始まります。",
+  "export.queue.waiting": "「{0}」の後に順番待ちしています。終わりしだい自動で始まります。",
   "export.device.connected": "{0} が接続されています。このデバイスに合わせてビルドを最適化します。",
   "install.mode.title": "S2Arm を iPhone に入れる方法",
   "install.mode.note": "ビルド、一括ビルド、S2Arm のアップデート、エクスポートすべてこの設定に従います。完了ページごとに一時的に切り替えることもできます。",
