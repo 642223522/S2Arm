@@ -68,8 +68,8 @@ class PushGameTests(JobCase):
                   mock.patch.object(install, "phone_signing", lambda c, ph: ("TEAM1", ph.bid, "signer")),
                   mock.patch("rewrite_refresh.refresh_ios", lambda c, gs: None), mock.patch.object(packer, "program_locks", lambda c, gs: mock.MagicMock()),
                   mock.patch.object(install, "push_mods", lambda c, ph, g, had: {}),
-                  mock.patch.object(install, "push_programs", lambda c, cl, games, rec, team, bundle, signer, roots, keep_old=False:
-                                    self.pushed.append((list(games), team, bundle, keep_old)) or {g: prog for g in games})):
+                  mock.patch.object(install, "push_programs", lambda c, cl, games, rec, team, bundle, signer, docs="Documents":
+                                    self.pushed.append((list(games), team, bundle)) or {g: prog for g in games})):
             p.start(); self.addCleanup(p.stop)
         self.prog = prog
 
@@ -86,21 +86,23 @@ class PushGameTests(JobCase):
     def test_pushes_this_game_only_never_installs(self):
         layout.save_device(self.c, self.ph.key, dict(shellId="S1", bundleId=self.ph.bid, games={"0100000000020000": dict(pack="Q")}))
         r = install.push_game(self.c, GID.lower(), self.ph, steps=False)
-        self.assertEqual(self.pushed, [([GID], "TEAM1", "io.s2arm.games.t1", False)])
+        self.assertEqual(self.pushed, [([GID], "TEAM1", "io.s2arm.games.t1")])
         self.assertEqual(self.ph.calls, [("push", GID)])
         rec = layout.load_device(self.c, self.ph.key)
         self.assertEqual(rec["games"][GID], dict(program=self.prog, pack="P2"))
         self.assertEqual(rec["games"]["0100000000020000"], dict(pack="Q"), "别的款记录不动")
         self.assertEqual(r["games"], [GID])
+        self.assertEqual(r["unpackPending"], "已送到手机，打开 S2Arm 时自动装好。", "推了程序包、App 没开：不说已装好")
 
 
     def test_pushes_even_when_record_says_same_pack(self):
         # 11-18 真机：记录里这款资源包号已是 P2（推过），手机上的 game.img 却不在（删 App 重装 / 手机上删过）→ 原先按记录跳过、推 0 个文件、起局卡「资源包不完整」。
         #   期望：照样交 push_pack（它按 sha256 核手机实况，只推缺的），记录仍是 P2
         layout.save_device(self.c, self.ph.key, dict(shellId="S1", bundleId=self.ph.bid, games={GID: dict(program=self.prog, pack="P2")}))
-        install.push_game(self.c, GID, self.ph, steps=False)
+        r = install.push_game(self.c, GID, self.ph, steps=False)
         self.assertEqual(self.ph.calls, [("push", GID)])
         self.assertEqual(layout.load_device(self.c, self.ph.key)["games"][GID]["pack"], "P2")
+        self.assertNotIn("unpackPending", r, "程序包没变、没推：不等导入")
 
     def test_shader_chain_rebuilt_on_push_before_programs(self):
         # 11-17 维护者定：着色器链变了在玩家推这一款时只重编着色器库（sgrade_bf.rechain_ios），在改写核对与推程序之前；没原料不挡推送

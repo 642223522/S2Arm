@@ -234,23 +234,8 @@ class InstallTest(TvCase):
 
 
 class TvProgramPushTest(TvCase):
-    def test_client_mv_is_pull_then_put_and_rm_declines(self):
-        # 期望（手写）：devicectl 没有改名 / 删除 → mv = 先 copy from 拉回源、再 copy to 写到目标名；rm 回 (False, …) 不调 devicectl
-        log = self.root / "dc.log"
-        fake = self.root / "devicectl"
-        fake.write_text("#!/bin/sh\necho \"$*\" >> '" + str(log) + "'\n"
-                        "case \"$*\" in *'copy from'*) while [ $# -gt 0 ]; do [ \"$1\" = --destination ] && echo '{}' > \"$2\"; shift; done;; esac\nexit 0\n")
-        fake.chmod(0o755)
-        with um.patch.object(self.c, "env", lambda: dict(os.environ, S2A_DEVICECTL=shlex.quote(str(fake)))):
-            cl = tvos.TvClient(self.c, "TV-ID", "io.s2arm.tv.x", self.root, "TV-UDID")
-            self.assertEqual(cl.mv("a/catalogue.json.pc.tmp", "a/catalogue.json"), (True, ""))
-            self.assertFalse(cl.rm("a/v-old")[0])
-        lines = log.read_text().splitlines()
-        self.assertEqual([("copy from" in l, "copy to" in l) for l in lines], [(True, False), (False, True)])
-        self.assertIn("--source a/catalogue.json.pc.tmp", lines[0]); self.assertIn("--destination a/catalogue.json", lines[1])
-
     def test_push_programs_drops_unusable_other_game(self):
-        # 期望（手写）：G 的程序件能用 → 签 tvOS 版、推进 Library/Caches/S2Arm/games/G/program（keep_old：电视上 App 开没开判不了）；
+        # 期望（手写）：G 的程序件能用 → 签 tvOS 版、打成 .s2arm 推进电视上 App 的导入文件夹 Library/Caches/S2Arm/Import Here；
         #   H 放不进本版壳 → 不推、记一条 container_stale 黄字点名「乙」；G 放不进 → 整个停
         import program_pack
         kit = layout.path(self.c, G, "image", "tvos", "kit"); kit.mkdir(parents=True); (kit / "main.npdm").write_bytes(b"META")
@@ -259,13 +244,13 @@ class TvProgramPushTest(TvCase):
             self.assertEqual((platform, signer.kind), ("tvos", "xcode-tvos"))
             d = self.root / ("pkg-" + g); d.mkdir(exist_ok=True); (d / "catalogue.json").write_text(json.dumps(dict(image_sha256="x", team=team, host_abi=1)))
             return d
-        def push_program(cl, g, pkg, pack_root, keep_old=False, custom=None):
-            pushed.append((g, pack_root, keep_old)); return dict(sha="x")
+        def push_program(cl, g, pkg, inbox, custom=None):
+            pushed.append((g, inbox)); return dict(sha="x")
         with um.patch.object(program_pack, "sign", sign), um.patch.object(install, "push_program", push_program), \
              um.patch.object(tvos, "usable_kit", lambda c, g, sid: kit if g == G else None), um.patch.object(tvos, "TvClient", lambda *a, **k: None):
             out = tvos.push_programs(self.c, "TV-ID", "io.b", [G, H], {}, "T", "U", self.root, "SID")
             self.assertEqual(out, {G: dict(sha="x")})
-            self.assertEqual(pushed, [(G, f"Library/Caches/S2Arm/games/{G}/资源包", True)])
+            self.assertEqual(pushed, [(G, "Library/Caches/S2Arm/Import Here")])
             said = [l for l in self.output.getvalue().splitlines() if l.startswith("{") and '"diagnostic"' in l]
             self.assertTrue(any("container_stale" in l and "「乙」" in json.loads(l).get("message", "") for l in said), said)
             with self.assertRaises(Failure) as e:

@@ -16,6 +16,7 @@ import json
 import datetime
 import errno
 import hashlib
+import io
 import os
 import plistlib
 import re
@@ -2306,12 +2307,7 @@ def phone_game_name(c, ph, gid, names):
     return gid
 
 
-def program_root(pack_root):
-    """这款程序包在手机上的目录：资源包根的同级 program/（宿主同口径：runtime/src/launchctx.c s2a_program_catalogue_path）"""
-    return pack_root.rstrip("/").rsplit("/", 1)[0] + "/program"
-
-
-PROGRAM_WRITER = "pc"   # 写入方名（版本目录 v-<sha16>-<写入方>/、临时清单 catalogue.json.<写入方>.tmp）；手机上的导入是 import
+IMPORT_DIRS = ("放这里导入", "Import Here")   # 非玩家句（App 的文件夹名）；手机 App 的导入文件夹（runtime/src/pack_apply.c s2a_img_import_dirs 认的两个名字，App 按界面语言只建一个）
 
 
 def look_of(custom):
@@ -2324,68 +2320,86 @@ def look_of(custom):
     return h.hexdigest()[:16]
 
 
-def push_program(cl, gid, pkg, pack_root, keep_old=False, custom=None):
-    """签好的程序包（program_pack.sign 的目录）推进手机。写入规则（通用壳方案「写入规则」，11-17 与 iOS 加载侧定稿；来源 D-YGEC：
-    电脑推送与手机导入同时写同一款，清单和本体成了两版）：同一款各写入方各写自己的版本目录，用一次原子改名换上，后换上的为准，不靠「看见谁在写就让路」：
-      ① 整份写进 <program>/v-<image_sha256 前 16 位>-pc/（dylib、Games/<号>/）——同一份续推时机上已完整的文件（长度与开头一页都对）跳过，只补没写完的；
-      ② 清单加 dir = 这个版本目录名，先写 catalogue.json.pc.tmp，再改名覆盖 catalogue.json：这一步是唯一的换上（AFC 单文件改名覆盖是原子的）；
-      ③ 换上后删**换上前清单指着的那个**旧版本目录——这款没在运行才删；keep_old（调用方判出手机上 App 开着 / 判不清）就留给 App 在这款退出或下次启动时清
-         （11-17 定：程序包、资源包同一条）。别的写入方正在写的目录没被指过、不删；没写完的半份由 App 启动时按「最新文件 1 小时没写入」清。
-         删不掉不算失败（App 会清）。
-    宿主只按清单的 dir 取文件、核 image_sha256（iOS 加载侧）。cl = s2a-devpush 客户端（AFC 自己建目录，#1391）。
-    → 设备记录里这款的 program 记录 {sha, team, host_abi, rewriter_id, dir}"""
+def import_inbox(cl, docs="Documents"):
+    """推 .s2arm 放哪：文档根下 App 已建的那个导入文件夹（按界面语言只建一个，写进另一个名字会在「文件」里多出一个文件夹）；
+    列不出 / 都还没建 → Import Here（App 两个名字都扫）"""
+    names = cl.ls(docs) if hasattr(cl, "ls") else None
+    have = next((n for n in IMPORT_DIRS if names and n in [x.strip() for x in names]), None)
+    return f"{docs}/{have or IMPORT_DIRS[1]}"
+
+
+def push_program(cl, gid, pkg, inbox, custom=None):
+    """签好的程序包（program_pack.sign 的目录）推进手机（11-19 维护者定：电脑推送与玩家分享同一个 .s2arm、同一条安装路径）：
+    打成一个 .s2arm（同电脑导出两件套的格式：zstd 一帧带内容校验、里面 ustar，第一个条目 s2arm.json；只放程序 program/，资源包照旧由 push_pack 按 sha256 推），
+    一次写进手机 App 的导入文件夹 inbox。App 用导入同一条代码解开、校验、写进自己的版本目录 program/v-<sha16>-s2arm/、最后改名换上清单
+    （runtime/src/pack_apply.c s2a_s2arm_import）：App 开着时盯着导入文件夹、静下来约 1 秒就导；没开就下次打开 / 回前台时导；还没传完的判「还在拷」留着下次看。
+    清单带着这台的团队号（程序已在电脑上签好），手机导入后不再签。原先逐个文件推（大游戏 1544 个文件、每个两个工具进程，约一小时）、电脑与 App 各有一套写入规则。
+    续推：机上导入文件夹里已有同一份（长度与开头一页都对，App 还没导走）就不重推；没推完的整份重推（一个文件，按数据线带宽走）。
+    custom = 启动器里改的游戏名 / 封面：名字写进清单，封面换掉程序包里的 Games/<号>/icon.jpg。
+    → 设备记录里这款的 program 记录 {sha, team, host_abi, rewriter_id, dir, look}"""
+    import programs
+    import program_pack
+    import tarfile
     gid, pkg = gid.upper(), Path(pkg)
-    root = program_root(pack_root)
-    cat = json.loads((pkg / "catalogue.json").read_text(encoding="utf-8"))
-    vdir = f"v-{cat['image_sha256'][:16]}-{PROGRAM_WRITER}"
-    files = [pkg / cat["image"]] + sorted(p for p in (pkg / "Games" / gid).rglob("*") if p.is_file())
-    try:
-        for f in files:
-            rel = f"{root}/{vdir}/{f.relative_to(pkg).as_posix()}"
-            size = f.stat().st_size
-            got = cl.head(rel, 4096) if hasattr(cl, "head") else None
-            if got and got[0] == size:
-                with open(f, "rb") as h:
-                    if got[1] == h.read(len(got[1])):
-                        continue   # 续推：机上这份已完整（同一份程序包、长度与开头一页都对；整份 sha 宿主加载时核）
-            cl.put(f, rel)
-        with tempfile.TemporaryDirectory() as w:
-            old = None   # 换上前清单指着的版本目录（换上后删它）
-            prev = Path(w) / "prev.json"
-            if cl.get(f"{root}/catalogue.json", prev):
-                try:
-                    old = json.loads(prev.read_text(encoding="utf-8")).get("dir")
-                except ValueError:
-                    old = None
-            # 启动器里改的名字 / 封面（只有壳的 App 不再带各款条目，游戏库从这份清单拼）：名字写进清单，封面盖到版本目录的 Games/<号>/icon.jpg
-            shown = dict(cat, dir=vdir)
-            if custom and custom.get("name"):
-                shown["name"] = custom["name"]
-            if custom and custom.get("cover") and Path(custom["cover"]).is_file():
-                cl.put(Path(custom["cover"]), f"{root}/{vdir}/Games/{gid}/icon.jpg")
-                shown["icon"] = f"Games/{gid}/icon.jpg"
-            tmp = Path(w) / "catalogue.json"
-            tmp.write_text(json.dumps(shown, ensure_ascii=False, indent=1), encoding="utf-8")
-            cl.put(tmp, f"{root}/catalogue.json.{PROGRAM_WRITER}.tmp")
-    except Exception as e:   # push_pack.Fail：已是给玩家的话
-        if isinstance(e, Failure):
-            raise
-        raise Failure(str(e), code=getattr(e, "err", None) or "resource_transfer_failed") from e
-    ok, out = cl.mv(f"{root}/catalogue.json.{PROGRAM_WRITER}.tmp", f"{root}/catalogue.json")
-    if not ok:
-        raise Failure(f"{gid} 的程序清单在手机上就不了位（{(out.splitlines() or [''])[-1]}）：再试一次；还不行请更新电脑上的 S2Arm。", code="resource_transfer_failed")
-    if not keep_old and isinstance(old, str) and old.startswith("v-") and "/" not in old and old != vdir:
-        cl.rm(f"{root}/{old}")   # 删不掉不算失败：没被指着，App 启动时清
+    cat = json.loads((pkg / program_pack.CATALOGUE).read_text(encoding="utf-8"))
+    vdir = f"v-{cat['image_sha256'][:16]}-s2arm"   # 手机导入写的版本目录（pack_apply.c s2a_s2arm_import）
+    shown = dict(cat)
+    files = [("program/" + p.relative_to(pkg).as_posix(), p) for p in sorted(pkg.rglob("*"))
+             if p.is_file() and p.name not in (program_pack.META, program_pack.KEY, program_pack.CATALOGUE)]
+    if custom and custom.get("name"):
+        shown["name"] = custom["name"]
+    if custom and custom.get("cover") and Path(custom["cover"]).is_file():
+        icon = f"program/Games/{gid}/icon.jpg"
+        files = [x for x in files if x[0] != icon] + [(icon, Path(custom["cover"]))]
+        shown["icon"] = f"Games/{gid}/icon.jpg"
+    cat_bytes = json.dumps(shown, ensure_ascii=False, indent=1).encode("utf-8")
+    head = dict(format=S2ARM_FORMAT, schema=1, title_id=gid, name=shown.get("name", ""), display_version=shown.get("display_version", ""),
+                host_abi=shown["host_abi"], chain=shown.get("chain", ""), rewriter_id=shown.get("rewriter_id", ""), image=shown["image"],
+                image_sha256=shown["image_sha256"], bytes=len(cat_bytes) + sum(p.stat().st_size for _, p in files),
+                signer=dict(mode="push", team=shown.get("team")))
+    dest = f"{inbox}/{gid}.s2arm"
+    with tempfile.TemporaryDirectory(prefix=".s2arm-push-", dir=pkg.parent) as w:
+        out = Path(w) / f"{gid}.s2arm"
+        try:
+            with programs.zstd_writer(out, checksum=True) as z, tarfile.open(fileobj=z, mode="w|", format=tarfile.USTAR_FORMAT) as t:
+                def add(name, data=None, path=None):
+                    info = tarfile.TarInfo(name)
+                    info.mode, info.mtime = 0o644, 0
+                    if path is None:
+                        info.size = len(data)
+                        t.addfile(info, io.BytesIO(data))
+                        return
+                    info.size = path.stat().st_size
+                    with open(path, "rb") as f:
+                        t.addfile(info, f)
+                add("s2arm.json", json.dumps(head, ensure_ascii=False, indent=1).encode("utf-8"))
+                add("program/catalogue.json", cat_bytes)
+                for name, path in files:
+                    add(name, path=path)
+        except ValueError as e:   # ustar 放不下的路径（手机只认 ustar）
+            raise Failure(f"{gid} 有文件路径太长，打不进 .s2arm：{e}", code="job_failed") from e  # 非玩家句
+        size = out.stat().st_size
+        got = cl.head(dest, 4096) if hasattr(cl, "head") else None
+        with open(out, "rb") as f:
+            first = f.read(4096)
+        if not (got and got[0] == size and got[1] == first[:len(got[1])]):
+            try:
+                cl.put(out, dest)
+            except Exception as e:   # push_pack.Fail：已是给玩家的话
+                if isinstance(e, Failure):
+                    raise
+                raise Failure(str(e), code=getattr(e, "err", None) or "resource_transfer_failed") from e
     return dict(sha=cat["image_sha256"], team=cat["team"], host_abi=cat["host_abi"], rewriter_id=cat.get("rewriter_id", ""), dir=vdir, look=look_of(custom))
 
 
-def push_programs(c, cl, games, rec, team, bundle, signer, pack_roots, keep_old=False):
-    """通用壳装机：每款按设备记录判要不要推（program_pack.need），要推的出包、按这台的团队签、推进 program/。
-    rec = 设备记录；pack_roots = {游戏号: 手机上资源包根}；keep_old = 手机上 App 开着 / 判不清（旧版本目录留给 App 清，见 push_program ③）。→ {游戏号: program 记录}（没推的照旧记录原样带回）；推到一半失败照抛，已推好的由调用方记下"""
+def push_programs(c, cl, games, rec, team, bundle, signer, docs="Documents"):
+    """通用壳装机：每款按设备记录判要不要推（program_pack.need），要推的出包、按这台的团队签、打成 .s2arm 推进 App 的导入文件夹（push_program）。
+    rec = 设备记录；docs = 手机上 App 的文档根（导入文件夹在它下面；电视是 Library/Caches/S2Arm）。→ {游戏号: program 记录}（没推的照旧记录原样带回）；推到一半失败照抛，已推好的由调用方记下"""
     import program_pack
     import ipa as packer
     looks = packer.container_custom(c)
     out = {}
+    inbox = None
     for g in games:
         old = (rec.get("games", {}).get(g) or {}).get("program")
         pkg = program_pack.sign(c, g, team, bundle, signer)
@@ -2396,8 +2410,49 @@ def push_programs(c, cl, games, rec, team, bundle, signer, pack_roots, keep_old=
             out[g] = old
             continue
         note(c, f"{g} 的程序推进手机（{'、'.join(sorted(why))}）")  # 非玩家句
-        out[g] = push_program(cl, g, pkg, pack_roots[g], keep_old=keep_old, custom=custom)
+        inbox = inbox or import_inbox(cl, docs)
+        out[g] = push_program(cl, g, pkg, inbox, custom=custom)
     return out
+
+
+PROGRAM_SENT = "已送到手机，打开 S2Arm 时自动装好。"   # 推完程序包、手机还没导入（App 没开 / 等不到）时完成页的那句（结果 unpackPending）
+PROGRAM_WAIT = "等 iPhone 上的 S2Arm 装好这款的程序"
+IMPORT_WAIT_S = (300, 20)   # App 开着：等它导入的上限（大游戏 1.6 GB 程序包在手机上解开、校验）；查不清开没开（Windows 没有 devicectl）：只看这么久
+
+
+def program_imported(cl, gid, inbox, want, work):
+    """手机上这款的程序包换上了没有：导入文件夹里的 <号>.s2arm 已被 App 导走（导好才删，失败原样留着），且清单 dir 是这次推的那版"""
+    left = cl.ls(inbox)
+    if left is None or f"{gid}.s2arm" in [x.strip() for x in left]:
+        return False
+    dst = Path(work) / "catalogue.json"
+    if not cl.get(f"{PACK_GAMES}/{gid}/program/catalogue.json", dst):
+        return False
+    try:
+        return json.loads(dst.read_text(encoding="utf-8")).get("dir") == want
+    except ValueError:
+        return False
+
+
+def await_import(c, ph, gid, want):
+    """推完程序包后照实报（11-19 维护者定）：App 开着就等它用导入那条代码解开、清单换上再报完成；App 没开、查不清又没等到、等到上限还没换上
+    → PROGRAM_SENT（作业结果 unpackPending，两端完成页显示这句、不说「已推到 iPhone」）。→ None（已装好）/ 那句话"""
+    running = ph.app_running()
+    if running is False:
+        return PROGRAM_SENT
+    with tempfile.TemporaryDirectory(dir=c.private) as w:
+        try:
+            cl = ph.client(w)
+        except Failure:
+            return PROGRAM_SENT
+        inbox = import_inbox(cl)
+        end = time.monotonic() + IMPORT_WAIT_S[0 if running else 1]
+        while not program_imported(cl, gid, inbox, want, w):
+            if time.monotonic() >= end:
+                return PROGRAM_SENT
+            c.check()
+            time.sleep(2)
+    return None
 
 
 SHELL_INSTALL_FIRST = "手机上还没装 S2Arm：先点「安装 S2Arm」，装好后再把这款推到 iPhone。"
@@ -2448,16 +2503,6 @@ def phone_signing(c, ph):
             signer = program_pack.win_signer(c, exe, shell)
         return team, ph.bundle_for_signing() or ph.bid, signer
     raise AssertionError("没有证书时手机对象只会是 WinPhone / PlumeMacPhone")  # 非玩家句
-
-
-def phone_busy(ph, games):
-    """这几款此刻可能在手机上运行吗（换上程序包后删不删旧版本目录，push_program keep_old）：Mac 只能看 App 开没开（devicectl），
-    Windows 按游玩时间心跳；判不清一律当在运行"""
-    try:
-        got = ph.playing(games) if hasattr(ph, "playing") else ph.app_running()
-    except Exception:   # noqa: BLE001 —— 判不清当在运行，最坏只是旧目录多留到下次启动
-        return True
-    return got is not False
 
 
 PHONE_SAVE_MARK = ".s2a-save-backup.json"   # 通用壳存档快照的记号（设备、内容摘要、时刻）：只有带它的备份参与「同内容不新建、每台每款留 10 份」
@@ -2686,14 +2731,13 @@ def push_game(c, gid, ph, steps=True):
     if steps: c.begin("把这款的程序推进 iPhone", 2, 3)
     from rewrite_refresh import refresh_ios
     ph.pull_kept([gid])   # 机上留下的 NRO 先收回（#8be819），refresh_ios 补进程序件
-    pr = pick_pack_root(c, ph, gid)
     with packer.program_locks(c, [gid]):
         import sgrade_bf   # 着色器链变了：只重编这款的着色器库（游戏库里的 game.img / 借 Mac 版），不重出整款；没原料不挡推送（11-17 维护者定）
         if sgrade_bf.rechain_ios(c, gid) == "unavailable":
             trace(c, f"{gid} 着色器链更新了，这次没重编着色器库（原因见上一行；「建议更新」照旧提示）")  # 非玩家句
         refresh_ios(c, [gid])
         with tempfile.TemporaryDirectory(dir=c.private) as w:
-            progs = push_programs(c, ph.client(w), [gid], rec, team, bid, signer, {gid: pr}, keep_old=phone_busy(ph, [gid]))
+            progs = push_programs(c, ph.client(w), [gid], rec, team, bid, signer)
     old = rec.get("games", {}).get(gid) or {}
     rec = layout.load_device(c, ph.key)
     layout.save_device(c, ph.key, dict(rec, games=dict(rec.get("games") or {}, **{gid: dict(old, program=progs[gid])}), at=time.time()))
@@ -2713,6 +2757,9 @@ def push_game(c, gid, ph, steps=True):
         layout.save_device(c, ph.key, dict(rec, games=dict(rec.get("games") or {}, **{gid: dict(program=progs[gid], pack=pushed, **({"mods": mods} if mods else {}))}),
                                            at=time.time()))
     pull_shader_counts(c, ph, [gid])
+    if progs[gid] != old.get("program") and not ph.pending:   # 这次推了程序包（没推的原样带回）：App 导入换上了才算装好
+        if steps: c.begin(PROGRAM_WAIT, 3, 3)
+        ph.pending = await_import(c, ph, gid, progs[gid]["dir"])
     extra = dict(unpackPending=ph.pending) if ph.pending else {}
     return dict(bundleId=ph.bid, games=[gid], packFiles=files, packBytes=size, **ph.info, **extra, openToFinish=True)
 
