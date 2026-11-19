@@ -413,7 +413,7 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
     const int descriptor_enable = descriptor_query && out->descriptor_indexing_runtime &&
                                   out->descriptor_indexing_partial && out->descriptor_indexing_sampled_nonuniform &&
                                   out->descriptor_indexing_storage_nonuniform;
-    const char *device_ext[20];
+    const char *device_ext[24];
     uint32_t device_ext_count = 0;
     // apiVersion=1.1，不能拿物理设备支持 1.3 当作应用已启用核心 NONE。
     // 此扩展没有额外 feature 位；缺失时仍走独立快照，不能用 DONT_CARE 假代 NONE。
@@ -421,6 +421,9 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
     if (out->load_store_op_none_enabled) device_ext[device_ext_count++] = VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME;
     S2A_DLOG("[s2a] vk read-only attachment: load_store_op_none=%d\n", out->load_store_op_none_enabled);
     if (out->has_swapchain) device_ext[device_ext_count++] = "VK_KHR_swapchain";
+    // 格式列表（VkImageFormatListCreateInfo）：可改格式的颜色图按列表建，Adreno 才保 UBWC 帧缓冲压缩（backend_vulkan.c tex_fmt_allowed 一节）
+    out->image_format_list_enabled = has_device_extension(out->physical, "VK_KHR_image_format_list");
+    if (out->image_format_list_enabled) device_ext[device_ext_count++] = "VK_KHR_image_format_list";
     if (out->swapchain_maintenance1_enabled) device_ext[device_ext_count++] = "VK_EXT_swapchain_maintenance1";
     // 时间戳换算成游戏时钟要用校准扩展求 GPU 域与 CLOCK_MONOTONIC 的偏移。两种扩展同名同签名，
     // 优先 KHR；都没有时时间戳走“完成点取 guest_tick”的兜底（不是伪造 GPU 时刻）。
