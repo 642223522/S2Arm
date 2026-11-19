@@ -30,8 +30,10 @@ set -u; unset J S2A_CPU_BAKE S2A_MEM_KEY; H=$(cd "$(dirname "$0")/.." && pwd); T
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
 # 固定等待的下限（11-18 单测 53 → 约 40 秒）：「确认仍在排队」0.5 秒 = 2.5 个轮询周期（S2A_MEM_POLL=0.2）；要采峰值的命令睡 0.5–0.8 秒 ≥ 2 个采样周期
 #   （S2A_MEM_SAMPLE_S=0.2）；防饿死用例的 sleep 1.5 不动（S2A_MEM_STARVE_S 按整秒比，最少 1 秒）
-waitf() { local i; for i in $(seq 1 "${3:-150}"); do [ -e "$1" ] && return 0; sleep 0.1; done; return 1; }
-waitg() { local i; for i in $(seq 1 "${3:-150}"); do grep -q "$2" "$1" 2> /dev/null && return 0; sleep 0.1; done; return 1; }
+# 等待上限只防卡死（条件到了立刻返回）：缺省 60 秒。11-18 Linux 主机影子跑负载 15–20 时 15 秒上限不够、mem_admit 还没写出排队行就超时，①⑫⑰㉑ 连红。
+#   waitf 的上限是第 2 个参数（原先取 $3，调用处写的上限从没生效）
+waitf() { local i; for i in $(seq 1 "${2:-600}"); do [ -e "$1" ] && return 0; sleep 0.1; done; return 1; }
+waitg() { local i; for i in $(seq 1 "${3:-600}"); do grep -q "$2" "$1" 2> /dev/null && return 0; sleep 0.1; done; return 1; }
 printf 'dsh\ta\t4\t估\ndsh\tb\t4\t估\ndsh\tc\t4\t估\nmem\tbig\t0.3\t估\nappbuild\tp\t4\t估\ndsh\td\t2\t估\n' > "$T/seed.tsv"
 export S2A_MEM_TOTAL_GB=10 S2A_MEM_SEED=$T/seed.tsv S2A_MEM_POLL=0.2 S2A_MEM_SAMPLE_S=0.2 S2A_MEM_SAY_S=1 S2A_MEM_AVAIL_GB=100   # 此刻可用内存固定 100 GB：只 ㉓ 测可用内存，其余用例不随本机负载变
 # 一道「占着内存直到放行文件出现」的命令：起了就写 <D>/<名>.in；目录没了（测试收尾删了 ${T}）或测试进程没了就退出（11-11：测试被 KILL 时收尾 trap 不跑、目录还在，
@@ -104,13 +106,13 @@ unset S2A_MEM_CORES_MAX
 Q=$T/fill; mkdir -p "$Q/mem"; export S2A_MEM_DIR=$Q/mem S2A_MEM_LOCK=$Q/mem.flock S2A_MEM_SEED=$Q/seed.tsv S2A_MEM_STARVE_S=600 S2A_MEM_AVAIL_GB=100
 printf 'dsh\th\t6\t估\ndsh\tbig\t8\t估\ndsh\tsmall\t1\t估\ndsh\tsmall2\t1\t估\n' > "$Q/seed.tsv"
 hold "$Q" h; waitf "$Q/h.in"; hold "$Q" big; waitg "$Q/mem/admit.log" '【排队】mem_admit dsh/big'
-hold "$Q" small; waitf "$Q/small.in" 100
+hold "$Q" small; waitf "$Q/small.in" 300
 ck "⑦ 插空：队首 big（8）放不下时，后到的 small（1，6 + 1 ≤ 10）先走" '[ -e "$Q/small.in" ] && [ ! -e "$Q/big.in" ]'
 touch "$Q/small.go"
 export S2A_MEM_STARVE_S=1; sleep 1.5
-hold "$Q" small2; waitg "$Q/mem/admit.log" '【排队】mem_admit dsh/small2'; sleep 0.5
+hold "$Q" small2; waitg "$Q/mem/admit.log" '【排队】mem_admit dsh/small2.*dsh/big.*给它预留' 300   # 按条件等「给 big 预留」那条排队行（上限 30 秒），不靠固定 0.5 秒：负载高时那行写得晚
 ck "⑧ 防饿死：big 已排满 1 秒，后到的 small2 放得下也不插空（没起，排队行写明给 big 预留）" '[ ! -e "$Q/small2.in" ] && grep "【排队】mem_admit dsh/small2" "$Q/mem/admit.log" | grep -q "dsh/big.*给它预留"'
-touch "$Q/h.go"; waitf "$Q/big.in" 100; waitf "$Q/small2.in" 100
+touch "$Q/h.go"; waitf "$Q/big.in" 300; waitf "$Q/small2.in" 300
 ck "⑧ h 结束后 big 先放行、small2 随后放行" '[ -e "$Q/big.in" ] && [ -e "$Q/small2.in" ]'
 touch "$Q/big.go" "$Q/small2.go"; wait
 
@@ -118,9 +120,9 @@ touch "$Q/big.go" "$Q/small2.go"; wait
 #   后到的 small2（1，6 + 1 ≤ 10；1 + h 没用到的约 5.9 ≤ 7.5）照样插空、几秒内起；big 仍没起（账 6 + 1 + 8 > 10）
 P=$T/fit; mkdir -p "$P/mem"; export S2A_MEM_DIR=$P/mem S2A_MEM_LOCK=$P/mem.flock S2A_MEM_SEED=$Q/seed.tsv S2A_MEM_STARVE_S=1 S2A_MEM_AVAIL_GB=7.5
 hold "$P" h; waitf "$P/h.in"; hold "$P" big; waitg "$P/mem/admit.log" '【排队】mem_admit dsh/big'; sleep 1.5
-hold "$P" small2; waitf "$P/small2.in" 50
+hold "$P" small2; waitf "$P/small2.in" 300
 ck "⑭ 排满的 big（8）在空闲 + 可回收 7.5 GB 下放不进：不占防饿死位，small2 5 秒内插空起、big 没起" '[ -e "$P/small2.in" ] && [ ! -e "$P/big.in" ] && ! grep "【排队】mem_admit dsh/small2" "$P/mem/admit.log" | grep -q "给它预留"'
-touch "$P/h.go" "$P/small2.go"; waitf "$P/big.in" 100
+touch "$P/h.go" "$P/small2.go"; waitf "$P/big.in" 300
 ck "⑭ h、small2 结束后 big 照常放行（降级只是不锁全机，不是丢票）" '[ -e "$P/big.in" ]'
 touch "$P/big.go"; wait
 # ㉒ #235：账本路径带空格（玩家 Mac 的账本在 ~/Library/Application Support 下）+ 一张发车时刻不是数字的坏票（别的版本写的 / 写了一半）：
@@ -132,9 +134,9 @@ S="$T/sp/Application Support"; mkdir -p "$S/mem"; export S2A_MEM_DIR=$S/mem S2A_
 printf '%s\t1\tdsh\tbad\ton\t0\n' $$ > "$S/mem/q.1000.$$"   # 本测试进程持有（不被当死票清掉），第 5 列是文字
 hold "$S" h; waitf "$S/h.in"; hold "$S" big; waitg "$S/mem/admit.log" '【排队】mem_admit dsh/big'
 export S2A_MEM_STARVE_S=1; sleep 1.5
-hold "$S" small2; waitg "$S/mem/admit.log" '【排队】mem_admit dsh/small2'; sleep 0.5
+hold "$S" small2; waitg "$S/mem/admit.log" '【排队】mem_admit dsh/small2.*dsh/big.*给它预留' 300   # 按条件等「给 big 预留」那条排队行（上限 30 秒），不靠固定 0.5 秒：负载高时那行写得晚
 ck "㉒ 路径带空格 + 坏票：big 排满 1 秒，small2 不插空（排队行写明给 big 预留）" '[ ! -e "$S/small2.in" ] && grep "【排队】mem_admit dsh/small2" "$S/mem/admit.log" | grep -q "dsh/big.*给它预留"'
-touch "$S/h.go"; waitf "$S/big.in" 100; waitf "$S/small2.in" 100
+touch "$S/h.go"; waitf "$S/big.in" 300; waitf "$S/small2.in" 300
 ck "㉒ h 结束后 big、small2 依次放行；全程没有 unbound variable" '[ -e "$S/big.in" ] && [ -e "$S/small2.in" ] && ! grep -q "unbound variable" "$S"/*.out'
 touch "$S/big.go" "$S/small2.go"; rm -f "$S/mem/q.1000.$$"; wait
 unset S2A_MEM_STARVE_S; export S2A_MEM_SEED=$T/seed.tsv S2A_MEM_AVAIL_GB=100
@@ -220,11 +222,11 @@ ck "⑬ 旧行没签名：值不降、记上本次签名：kd「$(row kd)」= 5.
 V=$T/avail; mkdir -p "$V"; export S2A_MEM_DIR=$V/mem S2A_MEM_LOCK=$V/mem.flock S2A_MEM_SEED=$T/seed.tsv
 ( unset S2A_MEM_AVAIL_GB; export S2A_MEM_AVAIL_MB=4096; hold "$V" a; waitf "$V/a.in"; hold "$V" d; waitg "$V/mem/admit.log" '【排队】mem_admit dsh/d'; sleep 0.5
   ck "㉓ 可用 4096 MB：a（4）放行，d（2）因没用到的预留 + 本单 > 可用排队、没起" '[ -e "$V/a.in" ] && [ ! -e "$V/d.in" ] && grep "【排队】mem_admit dsh/d" "$V/mem/admit.log" | grep -q "本机此刻可用 4.0 GB"'
-  touch "$V/a.go"; waitf "$V/d.in" 100
+  touch "$V/a.go"; waitf "$V/d.in" 300
   ck "㉓ a 结束后 d 放行" '[ -e "$V/d.in" ]'
   touch "$V/d.go"; wait; exit $bad ) || bad=1
 V=$T/avail_neg; mkdir -p "$V"; export S2A_MEM_DIR=$V/mem S2A_MEM_LOCK=$V/mem.flock
-( unset S2A_MEM_AVAIL_GB; export S2A_MEM_AVAIL_MB=100000; hold "$V" a; waitf "$V/a.in"; hold "$V" d; waitf "$V/d.in" 50
+( unset S2A_MEM_AVAIL_GB; export S2A_MEM_AVAIL_MB=100000; hold "$V" a; waitf "$V/a.in"; hold "$V" d; waitf "$V/d.in" 300
   ck "㉓ 负控：可用 100000 MB 时 d 不排队直接放行" '[ -e "$V/d.in" ]'
   touch "$V/a.go" "$V/d.go"; wait; exit $bad ) || bad=1
 
@@ -236,7 +238,7 @@ ck "⑪ dsh_batch.py build 直调进账：use 行 1 条、dsh/g1、3 核（实 $
 touch "$D/d.go"; wait
 # ④ 负控：去掉准入，第 3 个不排队
 N=$T/off; mkdir -p "$N"; export S2A_MEM_DIR=$N/mem S2A_MEM_LOCK=$N/mem.flock S2A_MEM_ADMIT=0
-hold "$N" a; waitf "$N/a.in"; hold "$N" b; waitf "$N/b.in"; hold "$N" c; waitf "$N/c.in" 30
+hold "$N" a; waitf "$N/a.in"; hold "$N" b; waitf "$N/b.in"; hold "$N" c; waitf "$N/c.in" 300
 ck "④ 负控（S2A_MEM_ADMIT=0）：第 3 个直接起 = 用例 ① 的「被挡」在无准入时红" '[ -e "$N/c.in" ] && [ ! -e "$N/mem/admit.log" ]'
 touch "$N/a.go" "$N/b.go" "$N/c.go"; wait
 # ⑩ 夹具随测试退出

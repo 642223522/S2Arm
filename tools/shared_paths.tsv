@@ -27,6 +27,7 @@
 ~/.s2arm/run/s2arm/ryu_ipcrec	服务接入线	真值 Ryujinx 私有构建（IPC 录制）	构建者独占写；跑局只读
 ~/.s2arm/run/s2arm/ryu_fps	帧率能耗线	帧率真值 Ryujinx 私有构建（TRUTH_FPS=1 build_truth.sh，compat/truth/run_fps.sh 读）	构建者独占写；跑局只读
 ~/.s2arm/run/s2arm/ryu_seam	服务接入线	真值 Ryujinx 私有构建（接缝全量对拍：IPC + SVC + 起局状态）	构建者独占写（build_truth.sh）；跑局只读
+~/.s2arm/android	安卓出包	玩家机上安卓出包的本机钥（signing-key.json，android/tools/apk_sign.py，按机器一份长期复用）与下载的 platform-tools（pack/jobs/android_export.py）	签名钥首次生成写 .tmp 再原子换名、以后只读；platform-tools 持 platform-tools.lock 解到临时目录再换名
 ~/.s2arm/toolchain	用户体验	开发机预装的工具链（jdk-17 等）：Android 门禁找 JDK 的最后一档（S2A_JAVAC / Homebrew / java_home 都没有时）；tools/remote.sh 的假 HOME 软链过去	只读；装 / 换版本由人手动做，脚本不写
 ~/.s2arm/data	服务接入线 / 测试出包	游戏原件解包（exefs / romfs，按款一目录；真值卡带软链到这里）	只读
 ~/.s2arm/run/ryu	服务接入线	真值 Ryujinx 的卡带 / 系统根	真值局串行（一台 Windows / 一份根）；只读挂载

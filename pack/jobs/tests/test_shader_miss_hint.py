@@ -32,7 +32,7 @@ class ShaderMissHint(unittest.TestCase):
         self.c.catalog = lambda: {"games": [{"id": A, "name": "甲"}, {"id": B, "name": "乙"}]}
 
     def run_hints(self):
-        with patch.object(program_pack, "enabled", lambda c: True), patch.object(core, "release_version", lambda e: "0.6.0"), \
+        with patch.object(core, "release_version", lambda e: "0.6.0"), \
                 patch.object(rewrite_refresh, "rewriter_id", lambda c: "RID"), patch.object(host_update, "engine_compat", lambda c: dict(hostAbi=2, dmshChain="chain1")):
             return {g["gameId"]: g["reasons"] for g in host_update.update_hints(self.c)["games"]}
 
@@ -61,7 +61,7 @@ class ShaderMissHint(unittest.TestCase):
         layout.save_device(self.c, "PHONE-1", dict(shellId="S", games={A: dict(program=dict(sha="s", host_abi=2, rewriter_id="RID"), pack="P")},
                                                    shaderFallback={A: dict(count=3)}))
         layout.save_device(self.c, "PHONE-2", dict(shellId="S", games={A: dict(program=dict(sha="s", host_abi=2, rewriter_id="RID"), pack="P")}))
-        with patch.object(program_pack, "enabled", lambda c: True), patch.object(core, "release_version", lambda e: "0.6.0"), \
+        with patch.object(core, "release_version", lambda e: "0.6.0"), \
                 patch.object(rewrite_refresh, "rewriter_id", lambda c: "RID"), patch.object(host_update, "engine_compat", lambda c: dict(hostAbi=2, dmshChain="chain1")):
             ph = {p["device"]: {g["gameId"]: g for g in p["games"]} for p in host_update.phone_overview(self.c)["phones"]}
         self.assertEqual(ph["PHONE-1"][A], dict(gameId=A, state="suggested", reasons=["shaderMiss"]))

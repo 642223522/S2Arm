@@ -16,13 +16,16 @@ mutations = [
      'for (int st = 0; st < 2; st++) pd.st[st].sh = g_prog->sh[st];', 'g_last_pdesc.st[NVN_GPU_SH_GS].sh'),
     ('gs-bind-omitted', 'for (int st = 0; st < RP_PROG_STAGES; st++) if (!bind_stage',
      'for (int st = 0; st < 2; st++) if (!bind_stage', 'g_bind_calls[NVN_GPU_SH_GS] == 2'),
-    ('gs-topology', 'if (gs && prim != 0 && prim != 1 && prim != 4 && !(prim == 5 && !di && !ind))',
-     'if (0 && gs && prim != 0 && prim != 1 && prim != 4 && !(prim == 5 && !di && !ind))', 'geometry_topology_unimplemented'),
+    # 带 GS 的三角带：带索引的也要按 GL 序展开；不展开（按原生三角带画）必须红在带索引用例上
+    ('gs-topology', 'else if (prim == 5 && gs && !ind) {', 'else if (prim == 5 && gs && !ind && !di) {', 'g_gdraws == 6 && g_last_da.prim == 4'),
     # #696：GS 的三角带按 GL 序展开；换成 Vulkan 原生序（奇三角形 (i, i+2, i+1)）必须红在展开序上
     ('gs-tstrip-order', 'd[o++] = i + (i & 1); d[o++] = i + 1 - (i & 1); d[o++] = i + 2;',
      'd[o++] = i; d[o++] = i + 1 + (i & 1); d[o++] = i + 2 - (i & 1);', 'g_last_da.count == 6 && !memcmp'),
-    # 带索引的三角带不在读数里：放行后必须红在「仍报未接」上
-    ('gs-tstrip-indexed', '!(prim == 5 && !di && !ind)', '!(prim == 5 && !ind)', 'geometry_topology_unimplemented") == 2'),
+    # 带索引的展开同样按 GL 序；换成原生序必须红在带索引的序列上
+    ('gs-tstrip-indexed', 'd[o++] = IXG(k + (i & 1)); d[o++] = IXG(k + 1 - (i & 1)); d[o++] = IXG(k + 2);',
+     'd[o++] = IXG(k); d[o++] = IXG(k + 1 + (i & 1)); d[o++] = IXG(k + 2 - (i & 1));', 'g_last_da.count == 9 && !memcmp'),
+    # 邻接图元（10..13）放行；退回只认 0..9 必须红在邻接用例上
+    ('gs-adjacency', 'if (!(prim <= 13))', 'if (!(prim <= 9))', 'adjacency_without_geometry_feature") == 1'),
 ]
 sources = ['graphics/nvn/tests/t_nvn_replay.c','graphics/nvn/tests/nvn_clear_view_unused.c',
            *('graphics/nvn/replay/'+x for x in ('rp_exec.c','rp_copy_t2b.c','rp_clear_tex.c','rp_state.c','rp_entry.c','rp_res.c','rp_buf.c','rp_pass.c','rp_present.c','nvn_unimpl.c')),

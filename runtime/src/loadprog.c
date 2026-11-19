@@ -148,3 +148,20 @@ void s2a_front_warm_released(void) {
     pthread_mutex_unlock(&g_mu);
     if (go) LOG("加载页：直连层已放行（清单全部领走只剩在编的几条，或到上限），已编 %ld / %ld，剩下的转后台", d, t);
 }
+
+// 前台激活门（见 s2a_loadprog.h）
+static pthread_mutex_t g_fmu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_fcv = PTHREAD_COND_INITIALIZER; static int g_front;
+void s2a_load_front_state(int st) {
+    pthread_mutex_lock(&g_fmu); g_front = st; pthread_cond_broadcast(&g_fcv); pthread_mutex_unlock(&g_fmu);
+}
+int s2a_load_front_wait(void) {
+    uint64_t t0 = now_ns(); int waited = 0;
+    pthread_mutex_lock(&g_fmu);
+    if (g_front == 1) { waited = 1; LOG("前台激活门：加载已做完，场景还没激活（系统弹框盖着？），等激活再起游戏主线程"); }
+    while (g_front == 1) pthread_cond_wait(&g_fcv, &g_fmu);
+    pthread_mutex_unlock(&g_fmu);
+    int ms = waited ? (int)((now_ns() - t0) / 1000000ull) : 0;
+    if (waited) LOG("前台激活门：场景已激活，起游戏主线程（等了 %d ms）", ms);
+    return ms;
+}
+

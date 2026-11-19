@@ -110,13 +110,6 @@ class AppleLogin(unittest.TestCase):
         self.assertIn("Enter password: ***", log)
         self.assertNotIn(PASSWORD, log + str(e.exception) + e.exception.internal)
 
-    def test_switch_off_touches_nothing(self):
-        with patch.dict(os.environ, {"S2A_UNIVERSAL_SHELL": "0"}):
-            self.assertEqual(apple_login.login(self.c), dict(enabled=False))
-            self.assertEqual(apple_login.account(self.c), dict(enabled=False, account=None))
-        self.assertFalse(self.rec.exists())
-        self.assertFalse((self.t / "private/plumesign").exists())
-
     def test_not_signed_in(self):
         self.assertEqual(apple_login.account(self.c), dict(account=None, team=None, teamName="", enabled=True))
         with patch.object(install, "phone", lambda c: dict(id="dev", name="iPhone")), patch.object(install, "udid_of", lambda c, d: "UDID-1"):

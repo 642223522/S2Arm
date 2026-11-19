@@ -391,8 +391,16 @@ namespace S2A.Services
             Pair = player <= PlayerIndex.Handheld && NpadDevices.Base(_npads.StyleOf(player)) == NpadStyleTag.JoyDual,   // 一对：游戏左右两侧都查
         };
 
+        // 体感上下 / 左右反过来（#1551，启动设置 motionInvertY / motionInvertX → S2A_MOTION_INVERT_Y / _X）：按 Switch 坐标，
+        //   上下（俯仰）是绕 X 轴的角速度、左右（偏航）是绕 Z 轴的，取反后再进姿态融合与游戏；加速度不动（重力方向不变）。
+        //   起局时读一次，所有玩家、左右两路同一口径
+        private static readonly bool s_invertPitch = Environment.GetEnvironmentVariable("S2A_MOTION_INVERT_Y") == "1";
+        private static readonly bool s_invertYaw = Environment.GetEnvironmentVariable("S2A_MOTION_INVERT_X") == "1";
+
         private void AddMotionState(PlayerIndex player, MotionSample sample, ref MotionInput motion, float[] orientation, int imuSensor)
         {
+            if (s_invertPitch) sample.GyroX = -sample.GyroX;
+            if (s_invertYaw) sample.GyroZ = -sample.GyroZ;
             Vector3 accel = new(SixAxisSensorIc.ClampAcceleration(sample.AccelerationX), SixAxisSensorIc.ClampAcceleration(sample.AccelerationY), SixAxisSensorIc.ClampAcceleration(sample.AccelerationZ));
             Vector3 gyro = new(SixAxisSensorIc.ClampAngularRate(sample.GyroX), SixAxisSensorIc.ClampAngularRate(sample.GyroY), SixAxisSensorIc.ClampAngularRate(sample.GyroZ));
             _npads.PushImu(player, accel, gyro, sample.TimestampUs, imuSensor);

@@ -48,7 +48,7 @@ class PhoneOverview(unittest.TestCase):
             self.c.r["probe"] = True
         def no_probe(c):
             raise AssertionError("没带 probe 不查连接")
-        with patch.object(program_pack, "enabled", lambda c: on), patch.object(rewrite_refresh, "rewriter_id", lambda c: "RIDNOW"), \
+        with patch.object(rewrite_refresh, "rewriter_id", lambda c: "RIDNOW"), \
                 patch.object(host_update, "engine_compat", lambda c: NOW), patch.object(packer, "current_shell_id", lambda c: "SNOW"), \
                 patch.object(host_update, "_online", (lambda c: online or {}) if probe else no_probe):
             return host_update.phone_overview(self.c)
@@ -56,7 +56,7 @@ class PhoneOverview(unittest.TestCase):
     def test_states_per_phone_and_game(self):
         self.fixture()
         r = self.overview()
-        self.assertTrue(r["enabled"])
+        self.assertNotIn("enabled", r, "0.6.0 起没有开关，结果不带 enabled")
         p1, p2 = sorted(r["phones"], key=lambda p: p["device"])
         self.assertEqual({k: p1[k] for k in ("device", "name", "installed", "bundleId", "shellCurrent", "signedAt", "free", "expiresAtEstimate")},
                          dict(device="PHONE-1", name="手机甲", installed=True, bundleId="io.example.one", shellCurrent=True, signedAt=T, free=False,
@@ -125,11 +125,6 @@ class PhoneOverview(unittest.TestCase):
         layout.save_device(self.c, "P-UNK", dict(games={self.A: dict(pack="P")}))
         got = {p["device"]: p["canSign"] for p in self.overview()["phones"]}
         self.assertEqual(got, {"P-ID": True, "P-NO": False, "P-UNK": None})
-
-    def test_switch_off(self):
-        self.fixture()
-        self.assertEqual(self.overview(on=False), dict(enabled=False, phones=[]))
-
 
 if __name__ == "__main__":
     unittest.main()

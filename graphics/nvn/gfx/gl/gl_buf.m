@@ -258,7 +258,7 @@ int gl_buf_snap_restore(FILE *f) {
     free(names); free(lens);
     if (bad || sfr_sec(&r, f, "gl.vao", 1)) return -1;
     while (sfr_rec(&r) == 1) { GLuint nm = 0; GLSF_R(&r, GV_NAME, nm); struct gl_vao *v = calloc(1, sizeof *v); if (!nm || !v) { free(v); continue; }
-        GLSF_R(&r, GV_ATTR, v->a); GLSF_R(&r, GV_EBO, v->ebo); if (!gl_name_put(&gl_vaos, nm, v)) { free(v); bad = 1; } }
+        GLSF_RC(&r, GV_ATTR, v->a, "gl.attrib", gl_attrib); GLSF_R(&r, GV_EBO, v->ebo); if (!gl_name_put(&gl_vaos, nm, v)) { free(v); bad = 1; } }
     sfr_done(&r);
     return bad ? -1 : 0;
 }

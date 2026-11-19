@@ -43,6 +43,12 @@ public sealed partial class EnvironmentWindow
     private bool exportIos = true;
     /// <summary>出包页勾了 Apple TV（11-16 维护者：Windows 出 Apple TV 包后导出安装包 .ipa，玩家自己签名装到电视）</summary>
     private bool exportTv;
+    // 安卓（开关后，缺省关：作业层 androidDevices 回报 enabled 才开卡，pack/jobs/android_export.py）：出 APK，选了手机就接着装（adb 序列号）
+    private bool exportAndroid;
+    private bool androidEnabled;
+    private bool androidProbed;
+    private List<(string Serial, string State, string Model)> androidPhones = [];
+    private string? androidPhoneChoice;   // null = 只连着一台可用的就装它；"" = 不装、只出 APK
     // 存放位置（游戏库结构 v3）：locations 作业读回的各位置、为哪款读的、出包页选中的文件夹（"" = 还没定，不传，后端按这款现在的位置）
     private StorageLocations? locations;
     private string? locationsFor;
@@ -357,11 +363,12 @@ public sealed partial class EnvironmentWindow
         var existing = Action(PadKey("export.install_existing"), () => { readinessFor = null; Navigate("install"); }, !PhoneBlockedFor(game));   // 装机中也能进装机页：看别的游戏时提示「另一款正在装 · 查看那一款」
         Grid.SetColumn(existing, 1); heading.Children.Add(existing);
         body.Children.Add(heading);
+        if (!androidProbed) { androidProbed = true; _ = LoadAndroidPhonesAsync(); }   // 安卓卡开不开由作业层回报（开关缺省关：关着照旧「即将推出」）
         var tiles = new UniformGrid { Columns = 5 };
         foreach (var platform in new[] { PlatformIos, PlatformTv, "mac", "android", "ohos" })
         {
-            var open = platform == PlatformIos || platform == PlatformTv;   // Apple TV 不藏不锁（维护者 11-16）：安装包没带 tvOS 预编壳时出包作业照实报
-            var on = open && (platform == PlatformTv ? exportTv : exportIos);
+            var open = platform == PlatformIos || platform == PlatformTv || (platform == "android" && androidEnabled);   // Apple TV 不藏不锁（维护者 11-16）：安装包没带 tvOS 预编壳时出包作业照实报
+            var on = open && (platform == PlatformTv ? exportTv : platform == "android" ? exportAndroid : exportIos);
             var tile = new StackPanel { Spacing = 10 };
             var top = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
             top.Children.Add(Label(T("export.platform." + platform), 16));
@@ -371,7 +378,7 @@ public sealed partial class EnvironmentWindow
             tile.Children.Add(Muted(T(platform switch
             {
                 PlatformIos => "export.note.ios", PlatformTv => "export.note.tvos_win",
-                "mac" => "export.note.mac_only", _ => "export.soon"
+                "mac" => "export.note.mac_only", "android" when androidEnabled => "export.note.android", _ => "export.soon"
             })));
             var card = new Button
             {
@@ -382,11 +389,12 @@ public sealed partial class EnvironmentWindow
                 BorderBrush = on ? Accent : Brush.Parse("#2A2A2E"), BorderThickness = new Thickness(on ? 1.5 : 1)
             };
             AutomationId(card, "export.platform." + platform);
-            card.Click += (_, _) => { if (platform == PlatformTv) exportTv = !exportTv; else exportIos = !exportIos; Render(); };
+            card.Click += (_, _) => { if (platform == PlatformTv) exportTv = !exportTv; else if (platform == "android") exportAndroid = !exportAndroid; else exportIos = !exportIos; Render(); };
             tiles.Children.Add(card);
         }
         body.Children.Add(tiles);
         body.Children.Add(LocationRow(game));
+        if (exportAndroid && androidEnabled) body.Children.Add(AndroidPhoneRow(game));   // 出好装到哪台安卓手机；不选 / 没连 = 只出 APK
         if (exportIos) body.Children.Add(IosAfterPackPicker());   // 出完之后：装到 iPhone（下面是签名身份）/ 导出自签 IPA（11-16 维护者：一个入口、两条分叉各走到底）
 
         // action bar
@@ -609,6 +617,58 @@ public sealed partial class EnvironmentWindow
         if (page is "build" or "batch") Render();
     }
 
+    /// <summary>问作业层：安卓出包开没开（开关只在后端读）、adb 列出哪些手机；选过的那台不在了就清掉选择</summary>
+    private async Task LoadAndroidPhonesAsync()
+    {
+        if (connectedFolder is null || libraryId is null) return;
+        try
+        {
+            var job = await LibraryJobClient.RunAsync(paths, privateRoot, connectedFolder, libraryId, "androidDevices", null, CancellationToken.None);
+            if (!job.Report.Succeeded || job.Report.Result.ValueKind != JsonValueKind.Object) return;
+            var res = job.Report.Result;
+            androidEnabled = res.TryGetProperty("enabled", out var en) && en.ValueKind == JsonValueKind.True;
+            var phones = new List<(string, string, string)>();
+            if (res.TryGetProperty("devices", out var list) && list.ValueKind == JsonValueKind.Array)
+                foreach (var d in list.EnumerateArray())
+                    if (d.TryGetProperty("serial", out var serial) && serial.GetString() is { Length: > 0 } sn)
+                        phones.Add((sn, d.TryGetProperty("state", out var st) ? st.GetString() ?? "" : "", d.TryGetProperty("model", out var m) ? m.GetString() ?? "" : ""));
+            androidPhones = phones;
+            if (androidPhoneChoice is { Length: > 0 } pick && !phones.Any(p => p.Item1 == pick)) androidPhoneChoice = null;
+        }
+        catch (Exception error) when (error is LibraryProtocolException or IOException or UnauthorizedAccessException or ArgumentException or
+            InvalidOperationException or System.ComponentModel.Win32Exception or KeyNotFoundException) { return; }
+        if (page is "build") Render();
+    }
+
+    /// <summary>出好装到哪台：玩家选的 &gt; 只连着一台可用的就是它 &gt; null（只出 APK）</summary>
+    private string? AndroidPhone =>
+        androidPhoneChoice is { } pick ? (pick.Length == 0 ? null : pick)
+        : androidPhones.Where(p => p.State == "device").ToList() is { Count: 1 } one ? one[0].Serial : null;
+
+    private Control AndroidPhoneRow(LibraryGame game)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
+        row.Children.Add(Muted(T("export.android.device"), 14));
+        if (androidPhones.Count == 0) row.Children.Add(Muted(T("export.android.none"), 13));
+        else
+        {
+            var box = new ComboBox { MinWidth = 300, IsEnabled = !BusyFor(game), VerticalAlignment = VerticalAlignment.Center };
+            foreach (var (serial, state, model) in androidPhones)
+            {
+                var name = model.Length > 0 ? model : serial;
+                box.Items.Add(new ComboBoxItem { Content = state == "device" ? name : T("export.android.unauthorized").Replace("{0}", name), Tag = serial });
+            }
+            box.Items.Add(new ComboBoxItem { Content = T("export.android.skip"), Tag = "" });
+            var current = AndroidPhone ?? "";
+            box.SelectedIndex = box.Items.Cast<ComboBoxItem>().ToList().FindIndex(i => (string?)i.Tag == current);
+            box.SelectionChanged += (_, _) => { if (box.SelectedItem is ComboBoxItem { Tag: string value }) androidPhoneChoice = value; };
+            AutomationId(box, "export.android");
+            row.Children.Add(box);
+        }
+        row.Children.Add(Action("export.android.refresh", () => _ = LoadAndroidPhonesAsync()));
+        return row;
+    }
+
     private async Task LoadLocationsAsync(LibraryGame game, string? probe = null)
     {
         if (connectedFolder is null || libraryId is null) return;
@@ -664,7 +724,7 @@ public sealed partial class EnvironmentWindow
 
     private string? ExportBlockerKind(LibraryGame game)
     {
-        if (!exportIos && !exportTv) return "platform";
+        if (!exportIos && !exportTv && !(exportAndroid && androidEnabled)) return "platform";
         if (game.Missing.Count > 0) return "files";
         if (game.NeedsKeys && catalog?.KeysReady != true) return "keys";
         if (exportQueue.Any(q => q.Game.Id == game.Id)) return "queued";
@@ -825,7 +885,9 @@ public sealed partial class EnvironmentWindow
         var platforms = new List<string>();
         if (exportIos) platforms.Add("iphone");
         if (exportTv) platforms.Add("appletv");
+        if (exportAndroid && androidEnabled) platforms.Add("android");
         var plan = ExportStream.InlinePlan(game.Id, game.Name, platforms, packLocation, spaceOverride);
+        if (platforms.Contains("android") && AndroidPhone is { } serial) plan["androidSerial"] = serial;   // 出好接着装到这台安卓手机（export_plan → installSerial）
         if (SGradeOff().Contains(game.Id)) plan["sgrade"] = false;   // 出包页取消「S 级优化（Beta）」：这次不带社区补丁与金手指（pack/jobs/patches.py prepare）
         return RunExportAsync(plan, batch: false, mode: selfSignAfterPack.Contains(game.Id) ? "export" : null);
     }

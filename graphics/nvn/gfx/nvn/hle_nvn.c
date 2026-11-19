@@ -3281,6 +3281,11 @@ NVN(nvnWindowInitialize, NVNboolean, NVNwindow *w, const NVNwindowBuilder *b) {
     // SDK initializes the crop to the full first window texture (see docs/window_queries.md).
     if (o->ntex > 0 && o->tex[0]) { o->crop[2] = (int)CTX(o->tex[0])->d.width; o->crop[3] = (int)CTX(o->tex[0])->d.height; }
     for (int i = 0; i < o->ntex; i++) if (o->tex[i]) nvn_be_xv_window_tex(CTX(o->tex[i])->serial);
+    // 上屏翻转按建窗口那一刻的原点定（真机驱动：SetWindowOriginMode 只存设备字段，绘制随它变；窗口图像的行序在建窗口时定下）。先建窗口、后设左上角的游戏
+    //   （01002EF01A316000：窗口建在缺省左下角之后才设左上）绘制按左上、上屏仍翻；原先上屏跟当前原点走，整幅画面上下颠倒（诊断里 342 款只有它先建窗口后改原点）
+    // 上屏翻转按窗口建时的原点（土豆兄弟：先建窗口、后改原点）：取当前设备的原点。不读构建器里的设备指针——SetDefaults 会留下构建器内存里原有的值，
+    //   没调过 SetDevice 的构建器那里可能是野指针（t_nvn2_procs 的窗口构建器，dev_ok 读它的魔数段错误，main 红 8dd24685f）；NVN 游戏只有一个设备
+    { const NVNdevice *wd = atomic_load(&g_cur_dev); o->present_ll = !dev_ok(wd) || ((const dev_t_ *)wd)->origin != NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT; }
     if (nvn2_on()) nvn2_win_init(w, b);   // NVN2：获取超时、色彩空间、HDR 元数据从构建器带过来（「NVN2 入口全量」段）
     // 先认对象头标记「dnw_」（系统原生窗口对象开头 4 字节，11-13 一款游戏实测），认得出再读 +0xF14：单测 / 别的写法给的原生窗口指针不碰
     int dnw = o->native && *(const volatile uint32_t *)o->native == NAT_MAGIC, nat0 = dnw ? *(volatile int32_t *)((char *)o->native + NAT_ITV_OFF) : -1;
@@ -4032,6 +4037,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     if (dm_gfx_session_stopping()) return;
     win_t *o = (win_t *)w; o->presents++; nat_itv_sync(o);
     if (q) { pthread_mutex_lock(&g_sub_mu); nvn_be_xq_flush(q, "a present on it"); pthread_mutex_unlock(&g_sub_mu); }   // 上屏排在这条队列的工作后面：停在跨队列等待上的部分先放行（nvn_xqueue.inc）
+    nvn_be_set_present_lower_left(o->present_ll);   // 这扇窗口建时的原点定上屏翻转（见 nvnWindowInitialize）
     if (q && dev_ok(((queue_t *)q)->dev) && atomic_load(&g_cur_dev) != ((queue_t *)q)->dev) { pthread_mutex_lock(&g_sub_mu); dev_follow(((queue_t *)q)->dev); pthread_mutex_unlock(&g_sub_mu); }   // 上屏翻转跟上屏队列的设备
     {   // 节拍主人：被上屏这张的取图线程（取图线程未知 = 上屏线程自己）；连续 PACE_SWITCH 次同一个才换
         uintptr_t by = idx >= 0 && idx < 4 ? atomic_load_explicit(&g_acq_thr[idx], memory_order_relaxed) : 0; if (!by) by = (uintptr_t)pthread_self();

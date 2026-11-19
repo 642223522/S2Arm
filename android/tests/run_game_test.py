@@ -955,15 +955,6 @@ class RunGameTest(unittest.TestCase):
             return base64.b64decode(
                 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
 
-    def _aapt2(self, version_code=200):
-        """aapt2 替身：apk_identity 只读 badging 的 package/versionCode 行。"""
-        tool = self.tmp / "sdk" / "build-tools" / "36.0.0" / "aapt2"
-        tool.parent.mkdir(parents=True, exist_ok=True)
-        tool.write_text("#!/bin/sh\necho \"package: name='" + PKG + "' versionCode='" +
-                        str(version_code) + "' versionName='1.0'\"\n")
-        tool.chmod(0o755)
-        return self.tmp / "sdk"
-
     def run_tool(self, state=None, argv=None, seconds=3, new_vc=200, out_name="out_1",
                  discharge_settle="0"):
         st_kw = {"test_apk_vc": new_vc}
@@ -972,8 +963,6 @@ class RunGameTest(unittest.TestCase):
         out = self.tmp / out_name
         fake = self.tmp / "fake_adb.py"
         fake.write_text(FAKE_ADB)
-        old_home = os.environ.get("ANDROID_HOME")
-        os.environ["ANDROID_HOME"] = str(self._aapt2(new_vc))
         args = ["--apk", str(self.apk), "--package", PKG, "--serial", SERIAL,
                 "--out", str(out), "--seconds", str(seconds),
                 "--adb", f"{sys.executable} {fake} {state}",
@@ -982,16 +971,12 @@ class RunGameTest(unittest.TestCase):
         if discharge_settle is not None:   # None = 命令行不带旗标（跑默认口径）
             args += ["--discharge-settle", str(discharge_settle)]
         args += argv or []
-        try:
-            clock = FixtureClock()
-            with mock.patch.object(run_game, "time", clock), \
-                    mock.patch.object(run_game.dev_runtime, "time", clock):
-                rc = run_game.main(args)
-        finally:
-            if old_home is None:
-                os.environ.pop("ANDROID_HOME", None)
-            else:
-                os.environ["ANDROID_HOME"] = old_home
+        clock = FixtureClock()
+        import game_apk   # apk_identity 读清单：这里的 APK 是假字节，直接给新包身份
+        with mock.patch.object(run_game, "time", clock), \
+                mock.patch.object(run_game.dev_runtime, "time", clock), \
+                mock.patch.object(game_apk, "apk_identity", return_value=(PKG, new_vc, False)):
+            rc = run_game.main(args)
         return rc, out, state
 
     def _qc(self, out):

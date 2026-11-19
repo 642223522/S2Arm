@@ -164,7 +164,32 @@ void rp_pool_stats_end(void) {
 //   弱引用：回放核心宿主单测与鸿蒙不链帧日志，地址为空就不调；开关关着时函数里只判一次缓存标志。
 // 弱链接[replay]：s2a_frame_log_present_timed
 void s2a_frame_log_present_timed(uint64_t acquire_ns, uint64_t present_ns) __attribute__((weak));
+// ADPF 帧负载上报（android/native/adpf_hint.c；原先只接在旧层 mtl_vk_shim.c，缺省的新回放层构建不编它，CPU 调度器一直拿不到帧负载）：
+//   一帧的工作 = 上一次出图返回 → 这一次取图之前（游戏逻辑 + 录命令 + 回放），取图 / 呈现的阻塞是节拍不是工作。
+//   每次出图前对本帧报 frame_end（目标 = 游戏登记的上屏周期），出图后对下一帧开 work_begin；没有显示面时关会话（invisible），不报。
+//   序号独立计（不借票号：票号在出图锁里发，ADPF 不该在出图锁里调）。弱引用：回放核心宿主单测与鸿蒙不链 ADPF，地址为空就不调。
+// 弱链接[replay]：s2a_adpf_work_begin
+void s2a_adpf_work_begin(uint64_t seq) __attribute__((weak));
+// 弱链接[replay]：s2a_adpf_frame_end
+void s2a_adpf_frame_end(int64_t target_ns, uint64_t seq) __attribute__((weak));
+// 弱链接[replay]：s2a_adpf_invisible
+void s2a_adpf_invisible(void) __attribute__((weak));
+static _Atomic uint64_t g_adpf_seq;
+static uint64_t present_impl(const tex_t *t, double period_s, const int crop[4]);
 uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]) {
+    pthread_mutex_lock(&g_pmu); const int surf = g_surf != NULL; pthread_mutex_unlock(&g_pmu);
+    const uint64_t seq = atomic_load_explicit(&g_adpf_seq, memory_order_relaxed);
+    if (!surf) { if (s2a_adpf_invisible) s2a_adpf_invisible(); }
+    else if (seq && s2a_adpf_frame_end) {
+        const double ns = period_s * 1e9;
+        s2a_adpf_frame_end(ns > 0 && ns < 9.0e18 ? (int64_t)ns : 0, seq);
+    }
+    const uint64_t ticket = present_impl(t, period_s, crop);
+    const uint64_t next = atomic_fetch_add_explicit(&g_adpf_seq, 1, memory_order_relaxed) + 1;
+    if (surf && s2a_adpf_work_begin) s2a_adpf_work_begin(next);
+    return ticket;
+}
+static uint64_t present_impl(const tex_t *t, double period_s, const int crop[4]) {
     (void)period_s;
     rp_pool_stats_frame();   // 池统计（开关 pool_stats；关着每帧只读一次开关，回放与池查找路径不动）
     rp_tm_frame_end();   // 一帧结束：刚结束的是采样帧就记一帧，再定下一帧要不要逐步计时（分时抽样，#1103）
@@ -194,7 +219,7 @@ uint64_t nvn_be_present(const tex_t *t, double period_s, const int crop[4]) {
     nvn_gpu_present_desc d; memset(&d, 0, sizeof d);
     d.src = v; d.filter = 1;
     // 窗口原点在左下（NVN 默认）时窗口图是自下而上存的：呈现时翻过来。裁剪按存储的行号给，不用换算
-    d.flip_y = (uint8_t)(rp_origin_lower_left() != 0);
+    d.flip_y = (uint8_t)(rp_present_lower_left() != 0);   // 被上屏窗口建时的原点（rp_entry.c）
     int c[4]; int fit = pf_crop_fit(crop, t->d.width, t->d.height, c);
     if (fit >= 0) memcpy(d.crop, c, sizeof c);   // 非法裁剪：按整张显示
     double cw = d.crop[2] > 0 ? (double)d.crop[2] : (double)t->d.width, ch = d.crop[3] > 0 ? (double)d.crop[3] : (double)t->d.height;
@@ -341,4 +366,4 @@ double nvn_be_presented_time(uint64_t n) {
     return at;
 }
 void rp_present_stats(uint64_t *shown, uint64_t *dropped) { pthread_mutex_lock(&g_pmu); if (shown) *shown = g_n_shown; if (dropped) *dropped = g_n_dropped; pthread_mutex_unlock(&g_pmu); }
-void rp_present_reset(void) { pthread_mutex_lock(&g_pmu); g_surf = NULL; g_hz = 0; g_ticket = 0; g_n_shown = g_n_dropped = 0; memset(g_shown, 0, sizeof g_shown); memset(&g_fseg, 0, sizeof g_fseg); pthread_mutex_unlock(&g_pmu); }
+void rp_present_reset(void) { atomic_store(&g_adpf_seq, 0); pthread_mutex_lock(&g_pmu); g_surf = NULL; g_hz = 0; g_ticket = 0; g_n_shown = g_n_dropped = 0; memset(g_shown, 0, sizeof g_shown); memset(&g_fseg, 0, sizeof g_fseg); pthread_mutex_unlock(&g_pmu); }
