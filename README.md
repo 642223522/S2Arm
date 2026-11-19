@@ -35,7 +35,7 @@ Export any game as a .s2arm file and import it on another of your devices to pla
 
 ### Every shader, ready from the first play
 
-Shaders the game needs are prepared when you send it, so new areas no longer stutter the first time. Of the **14,466** shaders that used to fail to compile, collected from player diagnostics, **14,368** now compile (**99.3%**).
+Shaders the game needs are prepared when you send it, so new areas no longer stutter the first time. Player diagnostics collected **26,809** shaders from 69 games that failed to compile on the device. Leaving out 278 damaged inputs that can't be read as shaders, **all 26,531** of the rest now compile.
 
 How it is counted: the rate covers only shaders that **had failed to compile** in player diagnostics; it is not a coverage rate for all shaders. Of the remaining 98, 91 were not shaders at all but memory read wrongly during capture (capture fixed), and the other 7 have been fixed at the root.
 

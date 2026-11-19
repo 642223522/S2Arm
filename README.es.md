@@ -35,7 +35,7 @@ Cada juego se puede exportar como archivo .s2arm; impórtalo en otro de tus disp
 
 ### Todos los sombreadores listos: fluido desde la primera partida
 
-Los sombreadores que necesita el juego se preparan al enviarlo, así que la primera vez que entras en una zona nueva ya no hay tirones. De los **14,466** sombreadores que antes fallaban al compilar, recogidos de los diagnósticos de jugadores, ahora compilan **14,368** (**99.3%**).
+Los sombreadores que necesita el juego se preparan al enviarlo, así que la primera vez que entras en una zona nueva ya no hay tirones. Los diagnósticos de los jugadores reunieron **26,809** sombreadores de 69 juegos que fallaban al compilar en el dispositivo. Sin contar 278 entradas dañadas que no se pueden leer como sombreadores, ahora compilan **los 26,531** restantes.
 
 Cómo se cuenta: el porcentaje solo incluye los sombreadores que **habían fallado al compilar** en los diagnósticos de jugadores; no es una tasa de cobertura de todos los sombreadores. De los 98 restantes, 91 no eran sombreadores, sino memoria leída mal durante la captura (captura corregida), y los otros 7 se han corregido de raíz.
 

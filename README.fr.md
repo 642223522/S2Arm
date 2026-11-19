@@ -35,7 +35,7 @@ Chaque jeu peut être exporté en fichier .s2arm ; importez-le sur un autre de v
 
 ### Tous les shaders prêts : fluide dès la première partie
 
-Les shaders dont le jeu a besoin sont préparés au moment de l'envoi, donc la première entrée dans une nouvelle zone ne saccade plus. Sur les **14,466** shaders qui échouaient auparavant à la compilation, collectés dans les diagnostics des joueurs, **14,368** compilent désormais (**99.3%**).
+Les shaders dont le jeu a besoin sont préparés au moment de l'envoi, donc la première entrée dans une nouvelle zone ne saccade plus. Les diagnostics des joueurs ont rassemblé **26 809** shaders de 69 jeux dont la compilation échouait sur l'appareil. Hors 278 entrées endommagées, illisibles en tant que shaders, **les 26 531** autres compilent désormais tous.
 
 Comment c’est compté : ce taux ne porte que sur les shaders qui **avaient échoué à la compilation** dans les diagnostics des joueurs ; ce n’est pas un taux de couverture de tous les shaders. Sur les 98 restants, 91 n’étaient pas des shaders mais de la mémoire mal lue lors de la capture (capture corrigée), et les 7 autres ont été corrigés à la racine.
 
