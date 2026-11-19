@@ -52,7 +52,7 @@ enum { S2A_INIT_FAIL_EXIT = 1, S2A_INIT_FAIL_PAGE = 2 };
     X(S2A_INIT_FAIL_E_DGUARD_LIMIT,  "dguard_limit",  "直连安全网：此前已连续失败满 3 次，自动化局不停在提示页，收局（重新出包后从 0 数）", S2A_INIT_FAIL_MSG_GENERIC) \
     X(S2A_INIT_FAIL_E_GAME_FILES,    "game_files_missing", "服务会话初始化失败：资源包里没有 exefs/main.npdm（游戏文件不在机上 / 没导完）", S2A_INIT_FAIL_MSG_FILES) \
     X(S2A_INIT_FAIL_E_DIRECT_LIB,    "direct_lib_missing", "设备跑不了直连（无 Metal 4 / Metal 3 路径）；包里没带直连库不再停在这里（11-13 起现编）", S2A_INIT_FAIL_MSG_SHADERS) \
-    X(S2A_INIT_FAIL_E_DEVICE_ADDRESS, "device_address_space", "地址窗口连模块段、栈、堆前段都放不下：设备地址空间 / App 内存上限不够跑这款（#446，原先 abort 静默闪退）", S2A_INIT_FAIL_MSG_DEVICE) \
+    X(S2A_INIT_FAIL_E_DEVICE_ADDRESS, "device_address_space", "设备地址空间不够跑这款：地址窗口连模块段、栈、堆前段都放不下（#446，原先 abort 静默闪退），或游戏要的堆超出本机给得出的窗口（#01b36b，原先写进宿主映像 SIGBUS）", S2A_INIT_FAIL_MSG_DEVICE) \
     X(S2A_INIT_FAIL_E_HEAP_LEARNED, "heap_learned", "普通堆超出堆区、游戏随后中止：已记下本款要的堆（wire/<程序号>/heap_need），下一局堆区按它给（D-NGH9）", S2A_INIT_FAIL_MSG_HEAP) \
     X(S2A_INIT_FAIL_E_IMAGE_EXEC,   "image_exec_denied", "外置镜像代码段映射被系统拒（errno=EPERM）：签名已注册但不许可执行映射，所见 4 张卡都是 LiveContainer 装法（#63639b）", S2A_INIT_FAIL_MSG_EXEC)
 #define S2A_INIT_FAIL_ENUM_(e, id, summary, msg) e,
