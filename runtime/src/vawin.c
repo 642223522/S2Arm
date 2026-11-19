@@ -987,10 +987,24 @@ void s2a_window_reserve(void) {
 // 多款容器构造期一款可算的游戏都没有（全新安装后才用 .s2arm 导入、或删光了再导入）：构造期跨度 0、不占窗口，玩家「导入 → 点开始」同一进程起局，
 //   自检报「读不到本款的 main.npdm」，要重开 App 才能玩（11-18 iPhone 实机回归）。起宿主之前补一次：这时 s2a_window_container_need 扫得到刚导入的款，
 //   按同一套取法占。构造期算出过跨度的（不论占没占成）不重来，已有游戏的进程照旧只在构造期占
+// 构造期占过、但只够当时那几款的（窗口按它们的最大跨度占）：启动后又导入了一款要得更多的，起宿主前放掉旧窗口、按现在的最大值重占。
+//   这时窗口里还什么都没放（布局、模块、尾部分配都在自检之后），放掉不碰任何东西。按需档（窗口已是本机最大一块、比要的小）重占也大不了，不动
 int s2a_window_reserve_late(void) {
-    if (g_ok || g_noreserve || g_need) return g_ok;
-    LOG("地址窗口：构造期容器里没有可算的游戏（启动后才导入），起宿主前按现在的游戏补占");
-    vawin_reserve();
+    if (g_noreserve) return g_ok;
+    if (!g_ok && !g_need) {
+        LOG("地址窗口：构造期容器里没有可算的游戏（启动后才导入），起宿主前按现在的游戏补占");
+        vawin_reserve();
+        return g_ok;
+    }
+    if (g_ok && g_ctr && g_size >= g_need) {
+        uint64_t was = g_need, now = need_from_npdm();
+        if (now > was) {
+            LOG("地址窗口：构造期按 %llu MB 占的窗口 %#llx +%llu MB，启动后导入的款要 %llu MB，起宿主前放掉重占",
+                (unsigned long long)(was >> 20), (unsigned long long)g_base, (unsigned long long)(g_res >> 20), (unsigned long long)(now >> 20));
+            munmap((void *)g_base, g_res); g_ok = 0; g_base = g_size = g_res = 0;
+            vawin_reserve();
+        }
+    }
     return g_ok;
 }
 // ---------- 命令记录区（帧录放专用，Mac）----------

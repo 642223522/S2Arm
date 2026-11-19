@@ -92,12 +92,6 @@ class OneRom(JobCase):
         self.assertTrue(build.has_runtime_romfs(self.mac))
         self.assertEqual(onerom.dedupe(self.c, GID)[0], "done")
 
-    def test_switch_off_touches_nothing(self):
-        with mock.patch.dict(os.environ, {"S2A_UNIVERSAL_SHELL": "0"}):
-            self.assertEqual(onerom.dedupe(self.c, GID)[0], "skip")
-        self.assertTrue((self.mac / "romfs.std").is_file()); self.assertFalse((self.mac / "game.img").exists())
-        self.assertEqual(self.manifest_files(), self.manifest["files"])
-
     def test_different_romfs_left_alone(self):
         changed = bytearray(self.romfs); changed[-1] ^= 1
         write_img(self.img, bytes(changed))

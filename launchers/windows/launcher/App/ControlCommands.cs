@@ -202,7 +202,13 @@ public sealed partial class EnvironmentWindow
                 {
                     case "ios" or "iphone" or "ipad": return ControlGame(r) is { } buildGame ? ControlExport(buildGame, r.Flag("spaceOverride")) : NoGame;
                     case "mac" or "macos": return MacOnly("Mac 版导出");
-                    case "android" or "harmony" or "ohos": return ControlReply.Json(new Dictionary<string, object?> { ["error"] = "即将上线，敬请期待", ["comingSoon"] = true }, 409);
+                    case "android":   // 开关后（作业层 androidDevices 回报，缺省关 → 照旧 409）：serial = 出好装到哪台（s2armctl build <gid> android --serial）
+                        if (!androidEnabled) await LoadAndroidPhonesAsync();
+                        if (!androidEnabled) return ControlReply.Json(new Dictionary<string, object?> { ["error"] = "即将上线，敬请期待", ["comingSoon"] = true }, 409);
+                        if (ControlGame(r) is not { } androidGame) return NoGame;
+                        exportIos = false; exportTv = false; exportAndroid = true; androidPhoneChoice = r.Text("serial") ?? "";
+                        return ControlExport(androidGame, r.Flag("spaceOverride"));
+                    case "harmony" or "ohos": return ControlReply.Json(new Dictionary<string, object?> { ["error"] = "即将上线，敬请期待", ["comingSoon"] = true }, 409);
                     default: return ControlReply.Bad("target 只认 ios / android / harmony");
                 }
             case ("POST", "/prepare"): return MacOnly("Mac 编译");
@@ -366,7 +372,7 @@ public sealed partial class EnvironmentWindow
         ("POST /mods {gameId, import?:[路径], enable?:{名字: 真/假}, remove?:[名字]}", "资源替换 mod（同游戏库「Mod…」页）：导入 zip / 文件夹、开关、删除；都不给只列；下次装到 iPhone 时推过去"),
         ("POST /keys {path}", "导入 prod.keys"),
         ("POST /games {paths:[…]}", "放入游戏（NSP / XCI 文件、游戏文件夹或解包好的游戏文件夹）"),
-        ("POST /build {gameId, target, spaceOverride?}", "出包：spaceOverride = true 同界面「仍然继续」；target = ios（iPhone / iPad，缺省）；android / harmony 回 409「即将上线」"),
+        ("POST /build {gameId, target, spaceOverride?, serial?}", "出包：spaceOverride = true 同界面「仍然继续」；target = ios（iPhone / iPad，缺省）；android 在开关后（S2A_ANDROID_EXPORT=1，缺省关回 409），serial = 出好装到那台手机；harmony 回 409「即将上线」"),
         ("POST /customize {gameId, name?, coverPath?}", "改游戏显示名 / 封面（JPG、PNG）；不传的不动，传空字符串恢复默认；下次装到 iPhone 时带上"),
         ("POST /ipa {gameId, spaceOverride?}", "打 iPhone 包（出 IPA + 资源包）；spaceOverride = true 同界面「仍然继续」"),
         ("POST /batch {games:[{gameId, platforms:[mac|iphone]}], location?}", "批量出包：一批几款、每款出哪些平台（Windows 只出 iPhone，要了 Mac 记失败「这台电脑出不了这个平台的包」），location = 一批共用的存放位置；一款接一款地出，失败不挡后面、磁盘满暂停；进度看 GET /state 的 batch（summary / items）"),

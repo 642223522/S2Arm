@@ -45,7 +45,7 @@ class S2armExport(unittest.TestCase):
 
     def export(self, on=True):
         self.c.r.update(gameId=self.A, mode="export")
-        with patch.object(program_pack, "enabled", lambda c: on), patch.object(program_pack, "build", lambda c, g, **k: self.pkg), \
+        with patch.object(program_pack, "build", lambda c, g, **k: self.pkg), \
                 patch.object(rewrite_refresh, "refresh_ios", lambda c, games, **k: []), patch.object(install, "export_sign_mode", lambda c: "external"):
             return install.export_s2arm(self.c, self.A)
 
@@ -106,7 +106,7 @@ class S2armExport(unittest.TestCase):
             (Path(self.c.private) / install.SIGN_CHOICE).write_text('{"mode": "external"}')
         def signer(dylib, team, bundle):
             Path(dylib).write_bytes(Path(dylib).read_bytes() + f"|signed {team} {bundle}".encode())
-        with patch.object(program_pack, "enabled", lambda c: True), patch.object(program_pack, "build", lambda c, g, **k: self.pkg), \
+        with patch.object(program_pack, "build", lambda c, g, **k: self.pkg), \
                 patch.object(rewrite_refresh, "refresh_ios", lambda c, games, **k: []), \
                 patch.object(install, "export_signer", lambda c, mode: ("TEAMX", "io.example.app", signer, "测试账号")):
             return install.export_s2arm(self.c, self.A)
@@ -199,18 +199,15 @@ class S2armExport(unittest.TestCase):
         with self.assertRaises(Failure):
             self.export()
 
-    def test_install_export_routes_by_switch(self):
-        # 导出一款：开关开 → .s2arm；开关关 → 照旧的自签导出（export_phone）
+    def test_install_export_goes_to_s2arm(self):
+        # 导出一款：只有 .s2arm 两件套（0.6.0 起没有旧的自签导出）
         self.fixture()
         self.c.r.update(gameId=self.A, mode="export")
         calls = []
         with patch.object(install, "export_s2arm", lambda c, g: calls.append(("s2arm", g)) or {}), \
-                patch.object(install, "export_phone", lambda c, g=None: calls.append(("phone", g)) or {}), \
                 patch.object(install, "ios_pack", lambda c, g: self.pack), patch("downstream.requested", lambda c, g: None, create=True):
-            for on in (True, False):
-                with patch.object(program_pack, "enabled", lambda c, on=on: on):
-                    install._install(self.c)
-        self.assertEqual(calls, [("s2arm", self.A), ("phone", self.A)])
+            install._install(self.c)
+        self.assertEqual(calls, [("s2arm", self.A)])
 
 
 if __name__ == "__main__":

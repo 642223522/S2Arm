@@ -1519,7 +1519,16 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
         if (size < g_heap_cur && attr_any((uint64_t)g_heap + size, (uint64_t)g_heap + g_heap_cur)) { GMU_UNLOCK(); regs[0] = 0xD401; return 1; }
         // 堆从窗口里长出窗口末尾（乙布局堆区伸出窗口时才会发生）：宿主没有这段地址
         if (size > g_heap_cur && (uint64_t)g_heap + size > s2a_far_floor()) { GMU_UNLOCK(); regs[0] = va_short(num, (uint64_t)g_heap + g_heap_cur, size - g_heap_cur, "堆区（与远端影子撞上）"); return 1; }
-        if (size > g_heap_cur && (uint64_t)g_heap >= L.win_base && (uint64_t)g_heap + size > L.win_base + L.win_size) { GMU_UNLOCK(); regs[0] = va_short(num, (uint64_t)g_heap + g_heap_cur, size - g_heap_cur, "堆区"); return 1; }
+        if (size > g_heap_cur && (uint64_t)g_heap >= L.win_base && (uint64_t)g_heap + size > L.win_base + L.win_size) {
+            GMU_UNLOCK(); regs[0] = va_short(num, (uint64_t)g_heap + g_heap_cur, size - g_heap_cur, "堆区");
+            // 窗口是本机给得出的最大一块（按需档才会让堆区伸出窗口）：这么大的堆物理上放不下。停在这里报真实原因：真机上堆从不失败，不看结果码的游戏
+            //   拿到 0xD001 照样往下写，写进地址更低处的宿主映像 SIGBUS（#01b36b D-SSBZ iPad14,1 动森：窗口 3072 MB，要 3198 MB 的堆，写到宿主代码段；
+            //   同族 #1eefc4 小地址设备上的一款 Switch 2 游戏、D-ASK2）。看结果码的游戏原本也是拿到它就中止，结果一样，原因说清了
+            LOG("【红】本机地址空间装不下：游戏要 %llu MB 的堆，堆区起点到地址窗口末端只有 %llu MB（窗口 %llu MB 已是本机给得出的最大一块）——物理上放不下，停局报原因",
+                (unsigned long long)(size >> 20), (unsigned long long)((L.win_base + L.win_size - (uint64_t)g_heap) >> 20), (unsigned long long)(L.win_size >> 20));
+            s2a_init_failed(S2A_INIT_FAIL_E_DEVICE_ADDRESS);   // 宿主里不返回；只链本文件的单测回到这里，照旧回 0xD001
+            return 1;
+        }
         uint64_t lo = (uint64_t)g_heap + (size < g_heap_cur ? size : g_heap_cur), n = size > g_heap_cur ? size - g_heap_cur : g_heap_cur - size;
 #ifdef __ANDROID__
         int growing = size > g_heap_cur;

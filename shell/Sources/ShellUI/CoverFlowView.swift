@@ -552,6 +552,9 @@ struct CoverFlowView: View, Equatable {
                 if game.showsNewNote {
                     Text(ShellStrings.text("Installed – have fun!")).shellType(ShellType.button).foregroundStyle(.white.opacity(0.7))
                         .frame(minHeight: 34).accessibilityIdentifier("hero.new")
+                } else if game.state == .playable, let moment = game.moment {   // 0.6.0 快照：滑到有存下时刻的游戏，状态行写它存在什么时候（入口在左侧竖栏）
+                    Label(String(format: ShellStrings.text("Moment saved %@"), SavedMomentStrip.time(moment.savedAt)), systemImage: "record.circle")
+                        .shellType(ShellType.button).foregroundStyle(.white.opacity(0.7)).frame(minHeight: 34).accessibilityIdentifier("hero.moment")
                 } else if game.state == .playable {
                     Color.clear.frame(height: 34).accessibilityHidden(true)
                 } else {

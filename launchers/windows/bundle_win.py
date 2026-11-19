@@ -145,6 +145,7 @@ def bundle(target, shell, tzdata, fonts, tv_shell=None):
     fingerprint = bundle_engine.source_fingerprint(ROOT)
     say(f"[组装] 引擎快照：{snapshot(engine)} 个文件")
     say("[组装] 预编件"); bundle_prepare_win.bundle(engine)
+    if bundle_engine.bundle_android_engine(engine): say("[组装] 安卓预编引擎 APK → Engine/Binaries/Android/engine（安卓出包在开关后）")
     shutil.copytree(tzdata, engine / "Binaries/Prepare/Tzdata")
     identity = bundle_engine.seal_snapshot(engine, fingerprint)
     say(f"[组装] engine.json：{identity[:16]}（壳 {want}）")

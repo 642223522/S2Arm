@@ -1011,7 +1011,7 @@ static gl_texture *tx_parse(const sfr *r, tx_pend *p) {
     GLenum fmt_[6][TEX_LEVELS] = {{0}}; int fmi[6][TEX_LEVELS] = {{0}};
     for (int f = 0; f < 6; f++) for (int l = 0; l < TEX_LEVELS; l++) p->lv[f][l].root = -1;
     p->sv.root = -1;
-    GLSF_R(r, GX_NAME, p->name); GLSF_R(r, GX_TARGET, t->target); GLSF_R(r, GX_FORMAT, fmt_); GLSF_R(r, GX_FMT, fmi); GLSF_R(r, GX_LVIEW, p->lv); GLSF_R(r, GX_SVIEW, p->sv);
+    GLSF_R(r, GX_NAME, p->name); GLSF_R(r, GX_TARGET, t->target); GLSF_R(r, GX_FORMAT, fmt_); GLSF_R(r, GX_FMT, fmi); GLSF_RC(r, GX_LVIEW, p->lv, "gl.tx_view", tx_view); GLSF_RC(r, GX_SVIEW, p->sv, "gl.tx_view", tx_view);
     GLSF_R(r, GX_SBASE, t->sample_base); GLSF_R(r, GX_SCOUNT, t->sample_count); GLSF_R(r, GX_BASE, t->base); GLSF_R(r, GX_MAX, t->max); GLSF_R(r, GX_IMM, t->immutable);
     GLSF_R(r, GX_GPUW, t->gpu_written); GLSF_R(r, GX_PARAMS, t->params); GLSF_R(r, GX_USWZ, t->uswz);
     for (int f = 0; f < 6; f++) for (int l = 0; l < TEX_LEVELS; l++) { t->level[f][l].format = fmt_[f][l]; t->level[f][l].fmt = fmi[f][l]; }

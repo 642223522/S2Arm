@@ -37,13 +37,13 @@ class UpdateHints(unittest.TestCase):
         self.c.catalog = lambda: {"games": [{"id": g, "name": g} for g in ids]}
 
     def hints(self, on=True):
-        with patch.object(program_pack, "enabled", lambda c: on), patch.object(rewrite_refresh, "rewriter_id", lambda c: "RIDNOW"), \
+        with patch.object(rewrite_refresh, "rewriter_id", lambda c: "RIDNOW"), \
                 patch.object(host_update, "engine_compat", lambda c: NOW):
             return host_update.update_hints(self.c)
 
     def test_three_reasons_and_matching_game_not_marked(self):
         self.fixture()
-        self.assertEqual(self.hints(), dict(enabled=True, games=[
+        self.assertEqual(self.hints(), dict(games=[
             dict(gameId=self.A, reasons=["rewriter"]), dict(gameId=self.B, reasons=["hostAbi"]), dict(gameId=self.C, reasons=["shader"])]))
 
     def test_does_not_read_game_files(self):
@@ -60,17 +60,13 @@ class UpdateHints(unittest.TestCase):
         self.assertEqual([p for p in opened if "game.img" in p or "/.pack/" in p], [])
         self.assertTrue(any(p.endswith("game.json") for p in opened), "读的是 game.json")
 
-    def test_switch_off_returns_nothing(self):
-        self.fixture()
-        self.assertEqual(self.hints(on=False), dict(enabled=False, games=[]))
-
     def test_rewriter_id_unavailable_is_not_a_reason(self):
         # 取不到改写器指纹：这一项不判（不因此给所有款标「建议更新」），约定号 / 着色器链照判
         self.fixture()
         from core import Failure
         def boom(c):
             raise Failure("取不到")
-        with patch.object(program_pack, "enabled", lambda c: True), patch.object(rewrite_refresh, "rewriter_id", boom), \
+        with patch.object(rewrite_refresh, "rewriter_id", boom), \
                 patch.object(host_update, "engine_compat", lambda c: NOW):
             r = host_update.update_hints(self.c)
         self.assertEqual(r["games"], [dict(gameId=self.B, reasons=["hostAbi"]), dict(gameId=self.C, reasons=["shader"])])

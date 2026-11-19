@@ -29,9 +29,7 @@ from core import Failure
 import programs
 
 SCHEMA = 1
-# 通用壳开关（0.6.0 核心功能，11-17 维护者定）：0.6.0 之前缺省关、玩家行为不变；开 = 装机时程序包推进 program/（install.push_programs）。
-#   S2A_UNIVERSAL_SHELL=1 / 0 覆盖缺省；0.6.0 切版本时把 ON_BY_DEFAULT 翻成 True
-ON_BY_DEFAULT = False
+# 0.6.0 起通用壳是唯一的装机方式（维护者 11-18 定）：装 App 只装壳，各款程序包推进手机 program/（install.push_programs）
 PACKAGE, SIGNED, CATALOGUE, KEY, META = "package", "signed", "catalogue.json", ".key", "meta.json"
 REASONS = ("missing", "abi", "rewriter", "sha", "team", "cert", "look")   # need() 可能给的原因；look = 玩家在启动器里改的游戏名 / 封面变了（只重推清单与图标）
 
@@ -194,15 +192,6 @@ def need(c, gid, phone, team, cert=None, *, want=None):
     return got
 
 
-def mac_signer(c):
-    """Mac：pack/dev_sign.py --dylib <文件> <包名> <团队>（钥匙串开发身份，按这个包名的开发描述文件挑，同装机签 App 的那一个）"""
-    def run(dylib, team, bundle):
-        log = c.logs / (c.task + "-program-sign.log")
-        c.run([os.sys.executable, Path(c.engine) / "pack/dev_sign.py", "--dylib", dylib, bundle, team], log)
-    run.kind = "xcode"
-    return run
-
-
 def win_signer(c, exe, shell_app):
     """Windows：pack/orch/install_win.py sign_dylibs（官方 plumesign 只签不装一个只含壳与这个 dylib 的小 IPA，取回签好的 dylib）"""
     root = str(c.engine)
@@ -252,19 +241,3 @@ def devcert_signer(c):
     run.kind = "devcert"
     return run
 
-
-def signer_for(c, *, win_exe=None, shell_app=None):
-    """按签名模式选签名器（同装机签 App 的那一处）：开发者证书 → devcert_signer；否则 Windows → win_signer（要 plumesign 与壳）、Mac → mac_signer"""
-    import devcert
-    if devcert.active(c):
-        return devcert_signer(c)
-    if os.name == "nt":
-        return win_signer(c, win_exe, shell_app)
-    return mac_signer(c)
-
-
-def enabled(c):
-    """通用壳装机开没开（见 ON_BY_DEFAULT）。读作业进程自己的环境：c.env() 是给子工具的环境，会清掉 S2A_*（core.Context.env），
-    从那里读这个开关永远读不到、只能是缺省（同 build.py 读 S2A_DAV1D）"""
-    v = os.environ.get("S2A_UNIVERSAL_SHELL", "")
-    return v == "1" if v in ("0", "1") else ON_BY_DEFAULT

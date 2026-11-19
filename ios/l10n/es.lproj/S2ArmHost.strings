@@ -361,8 +361,8 @@
 "diag.upload.fail.title" = "La subida no funcionó";
 "diag.upload.go" = "Subir";
 "diag.report.title" = "Informar de un problema";
-"diag.report.message" = "Se subirán los registros de este dispositivo, la información del dispositivo y la lista de canalizaciones gráficas usadas por los juegos (solo identificadores de sombreadores) para ayudarnos a encontrar la causa; después recibirás un código corto. Puedes añadir una frase sobre lo que ocurrió (opcional).";
-"diag.report.placeholder" = "¿Qué pasó? (opcional)";
+"diag.report.message" = "Subiremos los registros de este dispositivo, la información del dispositivo y la lista de canalizaciones gráficas que usaron los juegos (solo ID de sombreadores) para encontrar la causa, y te daremos un código corto. Indica qué juego, qué hiciste y qué viste.";
+"diag.report.placeholder" = "Obligatorio: qué juego, qué hiciste, qué viste";
 "diag.upload.post" = "Publicar en GitHub";
 "diag.upload.retry" = "Reintentar";
 "dprompt.expiry.body" = "Tiempo restante: %@. Al expirar el juego no se abrirá, pero tus partidas guardadas estarán a salvo: conecta el teléfono y vuelve a pulsar «Instalar en el iPhone», o actualiza en AltStore.";
@@ -503,6 +503,8 @@
 "settings.toggle.devHud" = "Mostrar capa de diagnóstico de S2Arm";
 "settings.toggle.diagOnOpen" = "Exportar diagnóstico en la próxima apertura";
 "settings.toggle.docked" = "Modo con base";
+"settings.toggle.snapshot" = "Instantáneas de guardado rápido";
+"settings.snapshot.note" = "Para todos los juegos: guarda el momento actual y vuelve a él más tarde. Se aplica la próxima vez que inicies un juego.";
 "settings.toggle.diagRun" = "Ejecución de diagnóstico (próxima sesión)";
 "settings.diagRun.note" = "Activa, cierra la app desde el selector de apps e inicia este juego de nuevo. Permanece donde aparece el problema durante al menos 3 minutos, luego exporta el diagnóstico. Se aplica solo a la próxima sesión; esa sesión se ejecutará más lento.";
 "settings.docked.note" = "Imagen más nítida, pero consume más energía y calienta más; no se recomienda en un teléfono";
@@ -594,3 +596,14 @@
 "vpad.snap.saveChanged.title" = "¿Volver al momento guardado?";
 "vpad.snap.saveChanged.body" = "El juego guardó después de ese momento. Volver también devuelve su partida a ese momento; la partida actual se copia antes.";
 "vpad.snap.saveChanged.go" = "Volver";
+"vpad.snap.button.hint" = "Toca para guardar este momento; mantén pulsado para volver a él";
+"vpad.snap.none" = "Aún no hay ningún momento guardado. Toca el botón para guardar uno";
+"vpad.snap.savedHint" = "%@ · Mantén pulsado el botón para volver aquí";
+"vpad.snap.delete" = "Eliminar este momento";
+"vpad.snap.size" = "Unos %@";
+"vpad.snap.delete.title" = "¿Eliminar el momento guardado?";
+"vpad.snap.delete.body" = "Esta instantánea ocupa unos %@. Una vez eliminada, no podrás volver a ese momento. Tus partidas guardadas no se ven afectadas.";
+"vpad.snap.deleted" = "Eliminado. El espacio vuelve a estar libre";
+"vpad.snap.deleteFailed" = "No se pudo eliminar del todo. Inténtalo de nuevo en un momento";
+"snap.result.title" = "No se pudo volver a ese momento";
+"snap.result.generic" = "No se pudo volver a ese momento, así que el juego empezó de nuevo. Tus partidas guardadas no se ven afectadas.";

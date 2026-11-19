@@ -607,7 +607,6 @@
 20261116-1551-audio-dsp-mix-volume-round-nearest.patch
 20261116-1552-audio-dsp-biquad-and-mix-local-state.patch
 20261116-1552-audio-dsp-command-fault-isolation.patch
-20261116-2320-apple-audio-device-types.patch
 20261116-0223-offline-socket-error-log.patch
 20261116-0353-audio-ac-level.patch
 20261116-0416-audio-device-line.patch
@@ -642,3 +641,5 @@
 20261118-0453-mac-audio-enqueue-stuck-heal.patch
 20261118-1915-audio-slow-period-exclude-pause.patch
 20261118-1950-gai-null-host-offline.patch
+20261116-2320-apple-audio-device-types.patch
+20261118-1759-apple-audio-recover-verify.patch

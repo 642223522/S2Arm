@@ -1,5 +1,6 @@
 // 外置镜像包（通用映射加载器）：接口与格式见 imgpack.h、docs/接口_原生层.md「外置镜像包」
 #if defined(__APPLE__)
+#include <sys/stat.h>
 #include "imgpack.h"
 #include <errno.h>
 #include <stdarg.h>
@@ -38,12 +39,13 @@ static int load(struct s2a_imgpack *p, int sign, char *why, size_t whyn) {   // 
     struct mach_header_64 h;
     if (rd(p->fd, &h, sizeof h, 0) || h.magic != MH_MAGIC_64) return fail(why, whyn, S2A_IMG_EFORMAT, "%s 不是 64 位 Mach-O（瘦文件）", p->path);
     uint8_t *lc = malloc(h.sizeofcmds); if (!lc || rd(p->fd, lc, h.sizeofcmds, sizeof h)) { free(lc); return fail(why, whyn, S2A_IMG_EFORMAT, "%s 读 load commands 失败", p->path); }
-    uint64_t io = 0, iz = 0; int have_c = 0, have_w = 0, have_i = 0; struct linkedit_data_command cs = {0};
+    uint64_t io = 0, iz = 0, fend = 0; int have_c = 0, have_w = 0, have_i = 0; struct linkedit_data_command cs = {0};   // fend：各段在文件里的终点（够不够长用）
     for (uint32_t i = 0, o = 0; i < h.ncmds && o + sizeof(struct load_command) <= h.sizeofcmds; i++) {
         struct load_command *l = (struct load_command *)(lc + o);
         if (l->cmdsize < sizeof *l || o + l->cmdsize > h.sizeofcmds) break;
         if (l->cmd == LC_SEGMENT_64) {
             struct segment_command_64 *sg = (struct segment_command_64 *)l; struct section_64 *s = (struct section_64 *)(sg + 1);
+            if (sg->fileoff + sg->filesize > fend) fend = sg->fileoff + sg->filesize;
             for (uint32_t k = 0; k < sg->nsects; k++, s++) {
                 if (!strncmp(s->segname, "__TEXT", 16) && !strncmp(s->sectname, "__swcode", 16)) { p->code_off = s->offset; p->code_len = s->size; have_c = 1; }
                 else if (!strncmp(s->segname, "__SWDATA", 16) && !strncmp(s->sectname, "__img", 16)) { p->w_off = s->offset; p->w_len = s->size; have_w = 1; }
@@ -53,6 +55,12 @@ static int load(struct s2a_imgpack *p, int sign, char *why, size_t whyn) {   // 
         o += l->cmdsize;
     }
     free(lc);
+    {   // 文件够不够长（fstat，不读内容）：推了一半 / 被截断的程序库在读偏移表之前就报清楚，不报成「偏移表魔数不符」「注册签名失败」，
+        //   也不被当成「签名不认」去重签一个残缺文件
+        struct stat st; if (cs.cmd && (uint64_t)cs.dataoff + cs.datasize > fend) fend = (uint64_t)cs.dataoff + cs.datasize;
+        if (!fstat(p->fd, &st) && (uint64_t)st.st_size < fend)
+            return fail(why, whyn, S2A_IMG_EFORMAT, "%s 不完整：文件 %lld 字节，按它自己的段表要到 %llu 字节（没推完或被截断）", p->path, (long long)st.st_size, (unsigned long long)fend);
+    }
     if (!have_i || iz < 16) return fail(why, whyn, S2A_IMG_EFORMAT, "%s 缺偏移表 __TEXT,__swidx", p->path);
     uint8_t hd[16]; if (rd(p->fd, hd, 16, io) || memcmp(hd, "S2AEMB01", 8)) return fail(why, whyn, S2A_IMG_EFORMAT, "%s 偏移表魔数不符（embed.py 与本程序不配套）", p->path);
     uint32_t n, es; memcpy(&n, hd + 8, 4); memcpy(&es, hd + 12, 4);
