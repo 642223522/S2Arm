@@ -315,8 +315,61 @@ static void read_layout_text(module_t *m, struct loader_text *text) {
     }
     for (unsigned i = 0; i < m->ntrap; i++) if (m->traps[i].off >= m->text_end) die("%s: TRAP 点 %#llx 不在代码段", path, (unsigned long long)m->traps[i].off);
 }
+// NRO 合并随行表 nro_tables.tsv（装到手机的程序包：pack/ship_ext.py place_game 把各 NRO 的 fixups / gates 合成这一份，空门表不写；
+//   一款用 nn::ro 的大作有上千个 NRO，逐模块两张小表让程序包多出上千个文件）。格式：第一个「@」行之前是说明；
+//   「@fixups<TAB><模块名>」「@gates<TAB><模块名>」各起一段，段内容 = 原 <模块名>.<种类>.tsv 逐行；表里有这个模块的 fixups 段而没有 gates 段 = 空门表。
+//   表不在、或表里没有这个模块 → 照旧读逐模块文件（Mac 产物根、本表之前出的程序包）。整表读进内存后不再变、不释放（每个模块目录一份）
+typedef struct { char name[16]; size_t off, len; int kind; } nrot_ent;   // kind：0 fixups、1 gates
+typedef struct nrot { struct nrot *next; char *dir, *buf; nrot_ent *e; int ne; } nrot_t;
+static nrot_t *g_nrot;
+static pthread_mutex_t g_nrot_mu = PTHREAD_MUTEX_INITIALIZER;
+static const nrot_t *nrot_get(const char *dir) {
+    pthread_mutex_lock(&g_nrot_mu);
+    nrot_t *t = g_nrot; while (t && strcmp(t->dir, dir)) t = t->next;
+    if (t) { pthread_mutex_unlock(&g_nrot_mu); return t; }
+    if (!(t = calloc(1, sizeof *t)) || !(t->dir = strdup(dir))) die("NRO 合并随行表：内存不足");
+    char path[1100]; snprintf(path, sizeof path, "%s/nro_tables.tsv", dir);
+    FILE *f = fopen(path, "rb");
+    if (!f && errno != ENOENT) die("打不开 %s：%s", path, strerror(errno));
+    if (f) {
+        struct stat st; if (fstat(fileno(f), &st) || st.st_size < 0) die("读 %s 失败", path);
+        size_t n = (size_t)st.st_size; if (!(t->buf = malloc(n + 1))) die("%s：内存不足", path);
+        if (fread(t->buf, 1, n, f) != n) die("读 %s 失败", path);
+        fclose(f); t->buf[n] = 0;
+        int cap = 0; nrot_ent *cur = NULL;
+        for (size_t at = 0; at < n;) {
+            size_t end = at; while (end < n && t->buf[end] != '\n') end++;
+            if (t->buf[at] == '@') {
+                if (cur) cur->len = at - cur->off;
+                char kind[16], name[32];
+                if (sscanf(t->buf + at, "@%15[a-z]\t%31[^\t\r\n]", kind, name) != 2 || strlen(name) >= sizeof cur->name || (strcmp(kind, "fixups") && strcmp(kind, "gates")))
+                    die("%s：段头格式错（第 %zu 字节）", path, at);
+                if (t->ne == cap) { cap = cap ? cap * 2 : 64; if (!(t->e = realloc(t->e, (size_t)cap * sizeof *t->e))) die("%s：内存不足", path); }
+                cur = &t->e[t->ne++]; strlcpy(cur->name, name, sizeof cur->name); cur->kind = strcmp(kind, "fixups") != 0;
+                cur->off = end < n ? end + 1 : end; cur->len = 0;
+            }
+            at = end < n ? end + 1 : end;
+        }
+        if (cur) cur->len = n - cur->off;
+        LOG("NRO 合并随行表 %s：%d 段", path, t->ne);
+    }
+    t->next = g_nrot; g_nrot = t;
+    pthread_mutex_unlock(&g_nrot_mu);
+    return t;
+}
+// 这个模块的 fixups（kind 0）/ gates（kind 1）在合并表里 → 回 1、text 指向表里那段（gates 没有段 = 空表）；不在合并表 → 回 0，调用方读逐模块文件
+static int nrot_text(const char *dir, const char *name, int kind, struct loader_text *text, char *what, size_t whatn) {
+    const nrot_t *t = nrot_get(dir); const nrot_ent *hit = NULL; int have = 0;
+    for (int i = 0; i < t->ne; i++) if (!strcmp(t->e[i].name, name)) { have |= !t->e[i].kind; if (t->e[i].kind == kind) hit = &t->e[i]; }
+    if (!have) return 0;
+    snprintf(what, whatn, "%s/nro_tables.tsv（%s 的 %s 段）", dir, name, kind ? "gates" : "fixups");
+    *text = (struct loader_text){.bytes = hit ? (const unsigned char *)t->buf + hit->off : (const unsigned char *)"", .length = hit ? hit->len : 0, .what = what};
+    return 1;
+}
 static void read_layout(module_t *m, const char *dir) {
-    char path[1024]; snprintf(path, sizeof path, "%s/%s.fixups.tsv", dir, m->name);
+    char path[1100]; struct loader_text tab;
+    if (nrot_text(dir, m->name, 0, &tab, path, sizeof path)) { read_layout_text(m, &tab); return; }
+    snprintf(path, sizeof path, "%s/%s.fixups.tsv", dir, m->name);
     FILE *f = fopen(path, "r"); if (!f) die("打不开 %s", path);
     g_boot_file = f;
     struct loader_text text = {.file = f, .what = path};
@@ -383,7 +436,9 @@ static void register_gates_text(module_t *m, struct loader_text *text) {
                            (unsigned long long)(m->patch2_off < 0 ? -m->patch2_off : m->patch2_off), (unsigned long long)m->patch2_len, m->ntrap);
 }
 static void register_gates(module_t *m, const char *dir) {
-    char path[1024]; snprintf(path, sizeof path, "%s/%s.gates.tsv", dir, m->name);
+    char path[1100]; struct loader_text tab;
+    if (nrot_text(dir, m->name, 1, &tab, path, sizeof path)) { register_gates_text(m, &tab); return; }
+    snprintf(path, sizeof path, "%s/%s.gates.tsv", dir, m->name);
     FILE *f = fopen(path, "r"); if (!f) die("打不开 %s", path);
     g_boot_file = f;
     struct loader_text text = {.file = f, .what = path};
@@ -730,10 +785,14 @@ int s2a_loader_span_images(const char *path, char *why, size_t whyn) {
 }
 #define MOD_ALIGN (2ull << 20)
 static uint64_t mod_footprint(const char *dir, const char *name) {
-    char path[1100]; snprintf(path, sizeof path, "%s/%s.fixups.tsv", dir, name);
-    FILE *f = fopen(path, "r"); if (!f) return 0;
+    char path[1100]; struct loader_text text; FILE *f = NULL;
+    if (!nrot_text(dir, name, 0, &text, path, sizeof path)) {
+        snprintf(path, sizeof path, "%s/%s.fixups.tsv", dir, name);
+        if (!(f = fopen(path, "r"))) return 0;
+        text = (struct loader_text){.file = f, .what = path};
+    }
     char line[256], key[32]; long long po = 0, po2 = 0; unsigned long img = 0, bias = 0, l2 = 0, v;
-    while (fgets(line, sizeof line, f)) {
+    while (text_line(&text, line, sizeof line)) {
         if (sscanf(line, "# %31s %lx", key, &v) != 2) continue;
         if (!strcmp(key, "PATCH_OFF")) po = strtoll(line + 2 + strlen(key), NULL, 16);
         else if (!strcmp(key, "PATCH2_OFF")) po2 = strtoll(line + 2 + strlen(key), NULL, 16);
@@ -741,7 +800,7 @@ static uint64_t mod_footprint(const char *dir, const char *name) {
         else if (!strcmp(key, "IMAGE_SIZE")) img = v;
         else if (!strcmp(key, "LOAD_BIAS")) bias = v;
     }
-    fclose(f);
+    if (f) fclose(f);
     uint64_t n, up2 = (l2 + 0x3FFF) & ~0x3FFFull;
     if (po < 0) n = (uint64_t)-po + (po2 > 0 ? (uint64_t)po2 + up2 : img);   // FAR：补丁区在基址前 + 映像（含 bss、键页）；双岛再到键页后的后岛末
     else {
@@ -759,7 +818,7 @@ static uint64_t mod_footprint(const char *dir, const char *name) {
     }
     return (n + MOD_ALIGN - 1) & ~(MOD_ALIGN - 1);
 }
-uint64_t s2a_module_span(const char *dir) {   // 模块目录里全部 <名>.fixups.tsv 对应模块的跨度和（vawin.c 构造期占窗、svc_mem.c 收窗都用它）
+uint64_t s2a_module_span(const char *dir) {   // 模块目录里全部 <名>.fixups.tsv 与 nro_tables.tsv 里各 fixups 段对应模块的跨度和（vawin.c 构造期占窗、svc_mem.c 收窗都用它）
     DIR *d = opendir(dir); if (!d) return 0;
     uint64_t t = 0; struct dirent *e;
     while ((e = readdir(d))) {
@@ -768,7 +827,14 @@ uint64_t s2a_module_span(const char *dir) {   // 模块目录里全部 <名>.fix
         char nm[64]; if (l - sl >= sizeof nm) continue; memcpy(nm, e->d_name, l - sl); nm[l - sl] = 0;
         t += mod_footprint(dir, nm);
     }
-    closedir(d); return t;
+    closedir(d);
+    const nrot_t *nt = nrot_get(dir);   // 合并表里的模块（同名逐模块文件也在的，上面已按它算过）
+    for (int i = 0; i < nt->ne; i++) {
+        if (nt->e[i].kind) continue;
+        char p[1100]; struct stat st; snprintf(p, sizeof p, "%s/%s.fixups.tsv", dir, nt->e[i].name);
+        if (stat(p, &st)) t += mod_footprint(dir, nt->e[i].name);
+    }
+    return t;
 }
 static uint64_t g_modcur;   // 下一个模块的落点（窗口里模块段的游标）；0 = 没有窗口（S2A_VAWIN_NORESERVE 诊断），照旧由系统挑地址
 static uint64_t g_slot_at;  // 非 0：下一次 mod_slot 原地复用这个落点（nn::ro 卸了再装同一个 NRO：映回上次的地址，不再从游标切）
