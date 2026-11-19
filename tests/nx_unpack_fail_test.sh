@@ -53,6 +53,11 @@ pfs0(os.path.join(T, "badblock.nsp"), [(HEX + ".ncz", bad)])
 # 5) NCZ 块数据超出文件末尾（声明 2 块、只给 1 块）
 short = ncz_head([(0x4000, 0x2000, 3)], b"NCZBLOCK" + bytes([2, 1, 0, 16]) + struct.pack("<Iq", 2, 0x2000) + struct.pack("<II", 0x40, 0x40) + b"\x00" * 0x40)
 pfs0(os.path.join(T, "cutblock.nsp"), [(HEX + ".ncz", short)])
+# 8) 随包票据（#1511）：两张通用票据同一 rights id（0102…10）+ 一张个人化票据（rights id ff…）；假标题密钥零值；没有内容文件
+def tik(rid, personal=False):
+    t = bytearray(0x2c0); t[0x281] = 1 if personal else 0; t[0x2a0:0x2b0] = rid; return bytes(t)
+RID = bytes(range(1, 17))
+pfs0(os.path.join(T, "tickets.nsp"), [("a.tik", tik(RID)), ("b.tik", tik(RID)), ("p.tik", tik(b"\xff" * 16, True))])
 # 6) 根本不是容器
 open(os.path.join(T, "junk.bin"), "wb").write(bytes(range(256)) * 16)
 # 7) title.keys：一条格式正确（假 rights id / 假 title key，零值）+ 一条坏行
@@ -249,6 +254,15 @@ ck "--inspect 的 stdout 只留给 JSON：标题密钥提示在 stderr、不在 
 
 run "$T/t2" "$K" --inspect "$T/junk.bin" --title-keys="$T/none/such/title.keys"
 ck "--title-keys 指的文件不在：rc=2（用法错，不冒作 3 = 容器读不出）且点名路径" '[ "$(cat "$T/t2.rc")" = 2 ] && grep -q "指的文件不在" "$T/t2"'
+
+# ---- 用例：随包票据每张一行（#1511：玩家看不出读取器有没有用上包里的 .tik）：期望手写——
+#   a.tik → rights id 0102…10、标题密钥已载入；b.tik 同 rights id → 已有（来自随包票据 a.tik）、不再用；p.tik 个人化 → 【红】跳过、点名 rights id ff…；不打密钥值
+run "$T/tk" "$K" "$T/otk" "$T/tickets.nsp"
+ck "随包票据 a.tik：rights id 0102…10 标题密钥已载入" 'grep -q "随包票据 a.tik：rights id 0102030405060708090A0B0C0D0E0F10，标题密钥已载入" "$T/tk"'
+ck "随包票据 b.tik：同 rights id 已有（来自随包票据 a.tik），不再用" 'grep -q "随包票据 b.tik：rights id 0102030405060708090A0B0C0D0E0F10，已有同 rights id 的标题密钥（随包票据 a.tik），这张不再用" "$T/tk"'
+ck "个人化票据 p.tik：跳过并点名 rights id" 'grep -q "p.tik 不是通用票据，跳过（rights id FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF）" "$T/tk"'
+timeout 180 dotnet "$B" "$K" --inspect "$T/tickets.nsp" > "$T/tko" 2> "$T/tke"
+ck "--inspect：票据行在 stderr、stdout 不混进票据行" 'grep -q "随包票据 a.tik" "$T/tke" && ! grep -q "随包票据" "$T/tko"'
 
 # ---- 用例：并行读包的 AggregateException，缺密钥排在第二条（#772 F-nxunpack-leaf-first：兜底分类只顺着第一条 inner 走，记成 internal）----
 S2A_NXUNPACK_TEST_THROW=agg-key run "$T/a1" "$K" "$T/oa" "$T/junk.bin"

@@ -472,6 +472,16 @@
 "save.restoreCancelled" = "已取消恢复。";
 "save.restored" = "存档已恢复。可开始游戏检查进度；恢复前备份已保留（此前无存档时不生成备份）。";
 "save.serviceInvalid" = "存档服务未返回有效结果。请关闭后重新打开 App，保留现有数据。";
+"save.previous.ask.title" = "这款上次没能正常读存档，要回到上一份存档吗？";
+"save.previous.ask.crash" = "上一局一开始就退出了。回到上一份后也能随时换回来。";
+"save.previous.ask.guard" = "上一局保存时有一次存档没核对上。回到上一份后也能随时换回来。";
+"save.previous.ask.restore" = "回到上一份";
+"save.previous.ask.start" = "照常开始";
+"save.previous.done.title" = "已回到上一份存档";
+"save.previous.done" = "可以随时换回来：在齿轮菜单的「存档管理」里点「换到上一份」。";
+"save.previous.done.ok" = "好";
+"save.previous.button" = "换到上一份";
+"save.previous.detail" = "和上一次保存前的那份互换，再点一次就换回来。";
 "save.start" = "开始游戏";
 "save.leave" = "退出（下次打开直接进游戏）";
 "save.status.hasSave" = "当前存档可以导出。导入会先检查游戏版本、账号归属和文件完整性，再由你确认恢复。";

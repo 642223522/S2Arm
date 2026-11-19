@@ -10334,5 +10334,25 @@
  {
   "source": "Xbox GIP 本机通道设置无效。",
   "en": "Invalid Xbox GIP native channel setting."
+ },
+ {
+  "source": "查上一份存档",
+  "en": "Checking for a previous save"
+ },
+ {
+  "source": "回到上一份存档",
+  "en": "Going back to the previous save"
+ },
+ {
+  "source": "这款游戏没有上一份存档。",
+  "en": "This game has no previous save."
+ },
+ {
+  "source": "没能回到上一份存档，存档保持原样。",
+  "en": "Couldn’t go back to the previous save. Your save is unchanged."
+ },
+ {
+  "source": "没能回到上一份存档，而且有存档没能换回原样，请导出诊断包。",
+  "en": "Couldn’t go back to the previous save, and some saves couldn’t be switched back. Please export a diagnostic report."
  }
 ]

@@ -337,7 +337,14 @@ static _Atomic int touch_declared = -1;   // 游戏声明的触屏模式（Touch
 // 单只 Joy-Con（#520 A）：InputPump 按符号查这两个（services/S2A.Services/InputPump.cs FollowJoyconStyle）——
 //   s2a_vpad_joycon_style：连着的单只 Joy-Con 对应的样式（Ryujinx ControllerType：JoyconLeft / JoyconRight；不是单只为 0），
 //     游戏收这个样式就改成它；s2a_vpad_set_style：每次改配告诉宿主这一格现在的样式，宿主据此定原始方向还是转横握
-__attribute__((visibility("default"), used)) int s2a_vpad_joycon_style(void) { return s2a_mac_ns2_single_style(s2a_mac_ns2_kind()); }
+//   一代单只 Joy-Con 按设备当玩家 1 时同样报它那一侧（改前只认 Joy-Con 2：一代左只一直扮横握 Pro，要 Joy-Con(L) 的画面按什么都没反应）
+int s2a_vpad_slot_style(int slot);
+__attribute__((visibility("default"), used)) int s2a_vpad_joycon_style(void) {
+    int s = s2a_mac_ns2_single_style(s2a_mac_ns2_kind());
+    if (s) return s;
+    s = s2a_vpad_slot_style(0);
+    return s == 1 << 3 || s == 1 << 4 ? s : 0;   // 只要单只左 / 右只；一对 / Pro 不在这里改
+}
 __attribute__((visibility("default"), used)) void s2a_vpad_set_style(int style) { s2a_mac_ns2_set_game_style(style); }
 // 每一格的样式（服务层 InputPump.ReportStyle，#520）：sample_input 照槽位转给占那一格的 NS2 玩家，玩家 2 起的单只 Joy-Con 也照它那一格定原始方向 / 横握（8 = S2A_MAX_PADS，那个宏在后面才定义）
 static _Atomic int g_slot_style[8];

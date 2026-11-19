@@ -28,6 +28,8 @@
 #   ④ 负控：S2A_MEM_ADMIT=0（去掉准入）同样三个申请，第 3 个不排队直接起 → 用例 ① 的「第 3 个被挡」在此红，证明用例 ① 测的是准入本身
 set -u; unset J S2A_CPU_BAKE S2A_MEM_KEY; H=$(cd "$(dirname "$0")/.." && pwd); T=$(mktemp -d); trap 'kill $(jobs -p) 2> /dev/null; rm -rf "$T"' EXIT; bad=0
 ck() { if eval "$2"; then echo "通 $1"; else echo "不通 $1"; bad=1; fi; }
+# 固定等待的下限（11-18 单测 53 → 约 40 秒）：「确认仍在排队」0.5 秒 = 2.5 个轮询周期（S2A_MEM_POLL=0.2）；要采峰值的命令睡 0.5–0.8 秒 ≥ 2 个采样周期
+#   （S2A_MEM_SAMPLE_S=0.2）；防饿死用例的 sleep 1.5 不动（S2A_MEM_STARVE_S 按整秒比，最少 1 秒）
 waitf() { local i; for i in $(seq 1 "${3:-150}"); do [ -e "$1" ] && return 0; sleep 0.1; done; return 1; }
 waitg() { local i; for i in $(seq 1 "${3:-150}"); do grep -q "$2" "$1" 2> /dev/null && return 0; sleep 0.1; done; return 1; }
 printf 'dsh\ta\t4\t估\ndsh\tb\t4\t估\ndsh\tc\t4\t估\nmem\tbig\t0.3\t估\nappbuild\tp\t4\t估\ndsh\td\t2\t估\n' > "$T/seed.tsv"
@@ -39,7 +41,7 @@ hold() { local D=$1 N=$2; bash "$H/tools/mem_admit.sh" dsh "$N" -- bash -c 'touc
 A=$T/on; mkdir -p "$A"; export S2A_MEM_DIR=$A/mem S2A_MEM_LOCK=$A/mem.flock
 hold "$A" a; waitf "$A/a.in"; hold "$A" b; waitf "$A/b.in"
 ck "① 前两个（4 + 4 ≤ 10）放行" '[ -e "$A/a.in" ] && [ -e "$A/b.in" ]'
-S2A_PROGRESS=$A/prog.tsv hold "$A" c; waitg "$A/mem/admit.log" '【排队】mem_admit dsh/c'; sleep 1
+S2A_PROGRESS=$A/prog.tsv hold "$A" c; waitg "$A/mem/admit.log" '【排队】mem_admit dsh/c'; sleep 0.5
 ck "① 第 3 个（8 + 4 > 10）被挡：命令没起" '[ ! -e "$A/c.in" ]'
 ck "① admit.log 有排队原因行：写明等谁（dsh/a）与差 2.0 GB" 'grep "【排队】mem_admit dsh/c" "$A/mem/admit.log" | grep -q "dsh/a" && grep "【排队】mem_admit dsh/c" "$A/mem/admit.log" | grep -q "差 2.0 GB"'
 ck "⑫ 排队行写明预留来源：「需 4.0 GB（估）」（11-04 Switch2 线：看不出等的是缺省估值）" 'grep "【排队】mem_admit dsh/c" "$A/mem/admit.log" | grep -q "需 4.0 GB（估）"'
@@ -54,7 +56,7 @@ touch "$A/b.go" "$A/c.go"; wait
 P=$T/prio; mkdir -p "$P"; export S2A_MEM_DIR=$P/mem S2A_MEM_LOCK=$P/mem.flock
 holdc() { local D=$1 C=$2 N=$3; bash "$H/tools/mem_admit.sh" "$C" "$N" -- bash -c 'touch "$1/$2.in"; while [ ! -e "$1/$2.go" ] && [ -d "$1" ] && kill -0 '"$$"' 2> /dev/null; do sleep 0.1; done' _ "$D" "$N" > "$D/$N.out" 2>&1 & }
 holdc "$P" dsh a; waitf "$P/a.in"; holdc "$P" dsh b; waitf "$P/b.in"
-holdc "$P" appbuild p; waitg "$P/mem/admit.log" '【排队】mem_admit appbuild/p'; holdc "$P" dsh d; waitg "$P/mem/admit.log" '【排队】mem_admit dsh/d'; sleep 1
+holdc "$P" appbuild p; waitg "$P/mem/admit.log" '【排队】mem_admit appbuild/p'; holdc "$P" dsh d; waitg "$P/mem/admit.log" '【排队】mem_admit dsh/d'; sleep 0.5
 ck "㉑ 优先类 appbuild/p 在等时，放得进的普通 dsh/d 不插空（d 没起）、排队行写明让优先类" '[ ! -e "$P/d.in" ] && grep "【排队】mem_admit dsh/d" "$P/mem/admit.log" | grep -q "优先类别 appbuild/p"'
 touch "$P/a.go"; waitf "$P/p.in" 300
 # p 放行后账内 4 + 4 = 8，d 要 2 → 8 + 2 ≤ 10 本来就放得进：d 可能紧跟着放行（原先断言「d 仍在等」靠 d 下一次轮询前抢先检查，负载高时偶发红）。
@@ -67,7 +69,7 @@ touch "$P/p.go" "$P/d.go"; wait
 export S2A_MEM_DIR=$A/mem S2A_MEM_LOCK=$A/mem.flock
 
 # ③ 实测峰值写回
-bash "$H/tools/mem_admit.sh" mem big -- python3 -c 'import time; b = bytearray(b"x") * (300 * 1024 * 1024); time.sleep(2.5)' > "$A/big.out" 2>&1; brc=$?
+bash "$H/tools/mem_admit.sh" mem big -- python3 -c 'import time; b = bytearray(b"x") * (300 * 1024 * 1024); time.sleep(0.8)' > "$A/big.out" 2>&1; brc=$?
 row=$(awk -F'\t' '$1=="mem" && $2=="big"{print $3, $4}' "$A/mem/peak.tsv" 2> /dev/null)
 ck "③ 命令成功（实 ${brc}），peak.tsv 记下 mem/big：「${row}」来源为实、值 ≥ 0.2 GB" '[ $brc = 0 ] && [ "${row#* }" = 实 ] && awk -v v="${row% *}" "BEGIN{exit !(v+0 >= 0.2)}"'
 ck "③ 下次按实测：再申请时放行行标「实」" 'bash "$H/tools/mem_admit.sh" mem big -- true > /dev/null 2> "$A/again.err"; grep -q "mem/big：预留.*（实）" "$A/mem/admit.log"'
@@ -106,7 +108,7 @@ hold "$Q" small; waitf "$Q/small.in" 100
 ck "⑦ 插空：队首 big（8）放不下时，后到的 small（1，6 + 1 ≤ 10）先走" '[ -e "$Q/small.in" ] && [ ! -e "$Q/big.in" ]'
 touch "$Q/small.go"
 export S2A_MEM_STARVE_S=1; sleep 1.5
-hold "$Q" small2; waitg "$Q/mem/admit.log" '【排队】mem_admit dsh/small2'; sleep 1
+hold "$Q" small2; waitg "$Q/mem/admit.log" '【排队】mem_admit dsh/small2'; sleep 0.5
 ck "⑧ 防饿死：big 已排满 1 秒，后到的 small2 放得下也不插空（没起，排队行写明给 big 预留）" '[ ! -e "$Q/small2.in" ] && grep "【排队】mem_admit dsh/small2" "$Q/mem/admit.log" | grep -q "dsh/big.*给它预留"'
 touch "$Q/h.go"; waitf "$Q/big.in" 100; waitf "$Q/small2.in" 100
 ck "⑧ h 结束后 big 先放行、small2 随后放行" '[ -e "$Q/big.in" ] && [ -e "$Q/small2.in" ]'
@@ -130,7 +132,7 @@ S="$T/sp/Application Support"; mkdir -p "$S/mem"; export S2A_MEM_DIR=$S/mem S2A_
 printf '%s\t1\tdsh\tbad\ton\t0\n' $$ > "$S/mem/q.1000.$$"   # 本测试进程持有（不被当死票清掉），第 5 列是文字
 hold "$S" h; waitf "$S/h.in"; hold "$S" big; waitg "$S/mem/admit.log" '【排队】mem_admit dsh/big'
 export S2A_MEM_STARVE_S=1; sleep 1.5
-hold "$S" small2; waitg "$S/mem/admit.log" '【排队】mem_admit dsh/small2'; sleep 1
+hold "$S" small2; waitg "$S/mem/admit.log" '【排队】mem_admit dsh/small2'; sleep 0.5
 ck "㉒ 路径带空格 + 坏票：big 排满 1 秒，small2 不插空（排队行写明给 big 预留）" '[ ! -e "$S/small2.in" ] && grep "【排队】mem_admit dsh/small2" "$S/mem/admit.log" | grep -q "dsh/big.*给它预留"'
 touch "$S/h.go"; waitf "$S/big.in" 100; waitf "$S/small2.in" 100
 ck "㉒ h 结束后 big、small2 依次放行；全程没有 unbound variable" '[ -e "$S/big.in" ] && [ -e "$S/small2.in" ] && ! grep -q "unbound variable" "$S"/*.out'
@@ -143,7 +145,7 @@ unset S2A_MEM_STARVE_S; export S2A_MEM_SEED=$T/seed.tsv S2A_MEM_AVAIL_GB=100
 X=$T/huge; mkdir -p "$X/mem"; printf 'dsh\thuge\t20\t估\ndsh\th\t2\t估\n' > "$X/seed.tsv"
 xenv() { env -u S2A_MEM_TOTAL_GB S2A_MEM_DIR=$X/mem S2A_MEM_LOCK=$X/mem.flock S2A_MEM_SEED=$X/seed.tsv S2A_MEM_PHYS_BYTES=8589934592 "$@"; }
 xenv bash "$H/tools/mem_admit.sh" dsh h -- bash -c 'touch "$1/h.in"; while [ ! -e "$1/h.go" ] && kill -0 '"$$"' 2> /dev/null; do sleep 0.1; done' _ "$X" > /dev/null 2>&1 & waitf "$X/h.in"
-xenv bash "$H/tools/mem_admit.sh" dsh huge -- python3 -c 'import os, sys, time; open(sys.argv[1], "w").close(); b = bytearray(b"x") * (200 * 1024 * 1024); time.sleep(1.5)' "$X/ran" > /dev/null 2>&1 & xp=$!
+xenv bash "$H/tools/mem_admit.sh" dsh huge -- python3 -c 'import os, sys, time; open(sys.argv[1], "w").close(); b = bytearray(b"x") * (200 * 1024 * 1024); time.sleep(0.8)' "$X/ran" > /dev/null 2>&1 & xp=$!
 waitg "$X/mem/admit.log" '【排队】mem_admit dsh/huge'; sleep 0.5
 ck "⑮ 估值 20 GB > 物理内存 8 GB、账里有 h：huge 排队等（命令没起、进程还在），不是退 125" '[ ! -e "$X/ran" ] && kill -0 "$xp" 2> /dev/null && grep "【排队】mem_admit dsh/huge" "$X/mem/admit.log" | grep -q "需 5.6 GB"'
 touch "$X/h.go"; wait "$xp"; xrc=$?
@@ -166,7 +168,7 @@ ck "⑮b 有效样本够 10 条：dsh/new2 预留 3.6 GB（= 2.4 × 1.5），来
 C=$T/selfbad; mkdir -p "$C/mem"; : > "$C/seed.tsv"
 printf 'dsh\trun\t143.2\t实\t2026-11-10\told.sh\t137\ndsh\tleg\t143.2\t实\t2026-11-10\told.sh\n' > "$C/mem/peak.tsv"
 for k in run leg; do env -u S2A_MEM_TOTAL_GB S2A_MEM_DIR=$C/mem S2A_MEM_LOCK=$C/mem.flock S2A_MEM_SEED=$C/seed.tsv S2A_MEM_PHYS_BYTES=25769803776 S2A_MEM_SAMPLE_S=0.2 \
-  bash "$H/tools/mem_admit.sh" dsh $k -- python3 -c 'import time; b = bytearray(b"x") * (200 * 1024 * 1024); time.sleep(1.5)' > /dev/null 2>&1; done
+  bash "$H/tools/mem_admit.sh" dsh $k -- python3 -c 'import time; b = bytearray(b"x") * (200 * 1024 * 1024); time.sleep(0.8)' > /dev/null 2>&1; done
 crow() { awk -F'\t' -v k="$1" '$2==k{print $3 "|" $7}' "$C/mem/peak.tsv"; }
 cok() { awk -v v="$(crow "$1")" 'BEGIN{split(v, a, "|"); exit !(a[1]+0 > 0 && a[1]+0 < 1 && a[2] == "0")}'; }
 ck "⑮c 本款跑飞行（退出码 137 / 超物理内存旧行）按估值封顶：run、leg 都预留 16.8 GB、有封顶【黄】" 'grep -q "放行 dsh/run：预留 16.8 GB（实测跑失败（退出码 137），封顶上限独占）" "$C/mem/admit.log" && grep -q "放行 dsh/leg：预留 16.8 GB（旧实测超过物理内存（跑飞），封顶上限独占）" "$C/mem/admit.log"'
@@ -195,22 +197,22 @@ K=$T/core; mkdir -p "$K/mem"; export S2A_MEM_DIR=$K/mem S2A_MEM_LOCK=$K/mem.floc
 printf 'dsh\th\t1\t估\ndsh\tx\t1\t估\n' > "$K/seed.tsv"
 bash "$H/tools/mem_admit.sh" dsh h --cores 3 -- bash -c 'touch "$1/h.in"; while [ ! -e "$1/h.go" ] && kill -0 '"$$"' 2> /dev/null; do sleep 0.1; done' _ "$K" > /dev/null 2>&1 & waitf "$K/h.in"
 bash "$H/tools/mem_admit.sh" dsh x --cores 2 -- bash -c 'touch "$1/x.in"; while [ ! -e "$1/x.go" ] && kill -0 '"$$"' 2> /dev/null; do sleep 0.1; done' _ "$K" > /dev/null 2>&1 &
-waitg "$K/mem/admit.log" '【排队】mem_admit dsh/x'; sleep 1
+waitg "$K/mem/admit.log" '【排队】mem_admit dsh/x'; sleep 0.5
 ck "⑨ 内存够（1 + 1 ≤ 10）但核不够（3 + 2 > 4）：x 没起，排队行写明差 1 核" '[ ! -e "$K/x.in" ] && grep "【排队】mem_admit dsh/x" "$K/mem/admit.log" | grep -q "差 1 核"'
 touch "$K/h.go"; waitf "$K/x.in" 300
 ck "⑨ h 结束后 x 放行（0 + 2 ≤ 4）" '[ -e "$K/x.in" ]'
 touch "$K/x.go"; wait; unset S2A_MEM_CORES_MAX
 
 # ⑬ 借键不污染实测（11-04 Switch2 线借 dsh/memrt_host0 跑别的命令，实测 0.4 覆盖了 5.7）：表里 kb 5.7、签名「bash own.sh」；
-#   本次命令「python3 -c import time; time.sleep(2)」（签名 = 前 3 参数去目录）实测约 0.1 → kb 不往低改、仍 5.7 签名不变，admit.log 有【黄】；
+#   本次命令「python3 -c import time; time.sleep(0.5)」（签名 = 前 3 参数去目录）实测约 0.1 → kb 不往低改、仍 5.7 签名不变，admit.log 有【黄】；
 #   kc 签名与本次相同 → 按实测往低改；kd 旧行没签名 → 值不降（5.7）、签名记成本次
 W=$T/sig; mkdir -p "$W/mem"; export S2A_MEM_DIR=$W/mem S2A_MEM_LOCK=$W/mem.flock
-printf 'dsh\tkb\t5.7\t实\t2026-11-04\tbash own.sh\ndsh\tkc\t5.7\t实\t2026-11-04\tpython3 -c import time; time.sleep(2)\ndsh\tkd\t5.7\t实\t2026-11-04\n' > "$W/mem/peak.tsv"
-for k in kb kc kd; do bash "$H/tools/mem_admit.sh" dsh $k -- python3 -c 'import time; time.sleep(2)' > /dev/null 2>&1; done
+printf 'dsh\tkb\t5.7\t实\t2026-11-04\tbash own.sh\ndsh\tkc\t5.7\t实\t2026-11-04\tpython3 -c import time; time.sleep(0.5)\ndsh\tkd\t5.7\t实\t2026-11-04\n' > "$W/mem/peak.tsv"
+for k in kb kc kd; do bash "$H/tools/mem_admit.sh" dsh $k -- python3 -c 'import time; time.sleep(0.5)' > /dev/null 2>&1; done
 row() { awk -F'\t' -v k="$1" '$2==k{print $3 "|" $6}' "$W/mem/peak.tsv"; }
-ck "⑬ 借键（签名不同）不往低改：kb「$(row kb)」= 5.7|bash own.sh，且有【黄】行" '[ "$(row kb)" = "5.7|bash own.sh" ] && grep -q "【黄】mem_admit dsh/kb：本次命令「python3 -c import time; time.sleep(2)」" "$W/mem/admit.log"'
-ck "⑬ 同一命令按实测往低改：kc「$(row kc)」< 5.7" 'awk -v v="$(row kc)" "BEGIN{split(v, a, \"|\"); exit !(a[1]+0 > 0 && a[1]+0 < 5.7 && a[2] == \"python3 -c import time; time.sleep(2)\")}"'
-ck "⑬ 旧行没签名：值不降、记上本次签名：kd「$(row kd)」= 5.7|python3 -c import time; time.sleep(2)" '[ "$(row kd)" = "5.7|python3 -c import time; time.sleep(2)" ]'
+ck "⑬ 借键（签名不同）不往低改：kb「$(row kb)」= 5.7|bash own.sh，且有【黄】行" '[ "$(row kb)" = "5.7|bash own.sh" ] && grep -q "【黄】mem_admit dsh/kb：本次命令「python3 -c import time; time.sleep(0.5)」" "$W/mem/admit.log"'
+ck "⑬ 同一命令按实测往低改：kc「$(row kc)」< 5.7" 'awk -v v="$(row kc)" "BEGIN{split(v, a, \"|\"); exit !(a[1]+0 > 0 && a[1]+0 < 5.7 && a[2] == \"python3 -c import time; time.sleep(0.5)\")}"'
+ck "⑬ 旧行没签名：值不降、记上本次签名：kd「$(row kd)」= 5.7|python3 -c import time; time.sleep(0.5)" '[ "$(row kd)" = "5.7|python3 -c import time; time.sleep(0.5)" ]'
 
 # ㉓ 按此刻可用内存放（S2A_MEM_AVAIL_MB，与 tools/cores.sh 同一个变量）：上限 10 GB，可用 4096 MB = 4.0 GB。
 #   a（估 4）账空放行；d（估 2）：账内预留 4 + 2 = 6 ≤ 10，但 a 至今只用了几 MB，没用到的预留约 3.9 GB，2 + 3.9 > 4.0 → 排队，排队行写明可用 4.0 GB；a 结束后 d 放行
