@@ -131,7 +131,7 @@ def verify_game_provider(build_source, start_ns, apk, containerized=True):
 
 def build_backend(env):
     """出包后端自动选（#1131，owner 定）：Docker 只留给 Linux 主机——Linux 走 docker，
-    缺 docker 或 daemon 起不来直接报红；Darwin 走 host 原生，不碰 docker；其它系统报红。
+    缺 docker 命令直接报红（daemon 不预检，真跑时失败报真原因）；Darwin 走 host 原生，不碰 docker；其它系统报红。
     Darwin x86_64 宿主路径未实机验证：按 owner 复审口径明确报红「未验证」，
     不放行半通状态（维护方复审 6546409619 第 6 条）。两个方向都不自动退，也没有手工开关。"""
     system = platform.system()
@@ -146,13 +146,9 @@ def build_backend(env):
         docker = shutil.which('docker', path=env.get('PATH', os.defpath))
         if not docker:
             raise ValueError('Linux 安卓出包需要 Docker：找不到 docker 命令，请先安装并启动 Docker。')
-        try:
-            healthy = subprocess.run([docker, 'info'], env=env, stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.DEVNULL, timeout=10).returncode == 0
-        except (OSError, subprocess.TimeoutExpired):
-            healthy = False
-        if not healthy:
-            raise ValueError('Linux 安卓出包需要 Docker：docker info 失败，请启动 Docker daemon。')
+        # 不先跑 docker info 判健康：那是一道 10 秒的预检，构建机负载高时 docker info 回得慢就把好好的 Docker 判成坏的，
+        #   整单出包被拦（11-19 一台 Windows 构建机的 WSL 里 Docker 一直 active，三单都在这里被挡）。Docker 真不可用时，
+        #   真正执行 docker 的那一步会报出真实原因。
         return 'docker'
     raise ValueError(f'安卓构建不支持该宿主：{system}-{platform.machine()}')
 

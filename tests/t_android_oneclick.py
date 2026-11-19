@@ -721,8 +721,7 @@ class AndroidDeliveryTest(unittest.TestCase):
                 mod.build_backend(env)
             with patch.object(mod.shutil, 'which', return_value='/bin/docker'), \
                  patch.object(mod.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1)):
-                with self.assertRaises(ValueError):
-                    mod.build_backend(env)
+                self.assertEqual(mod.build_backend(env), 'docker')   # 不预检 daemon：真跑 docker 时失败报真原因
             with patch.object(mod.shutil, 'which', return_value='/bin/docker'), \
                  patch.object(mod.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)):
                 self.assertEqual(mod.build_backend(env), 'docker')
