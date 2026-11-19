@@ -3504,7 +3504,7 @@ int nvn_be_tex_from_gl(tex_t *t, uint32_t gl_name) { @autoreleasepool {
 // spare: the texture the last re-upload replaced, kept resident and written by the next re-upload once the GPU has passed spare_fence (a texture the CPU rewrites every frame, a movie frame,
 // alternates between two textures instead of allocating one per frame: Link's Awakening's title movie made and freed an 8 MB texture a frame)
 static void ph_free(uint64_t *ph, uint32_t n);
-@interface NvPkg : NSObject { @public id<MTLTexture> tex, spare, view; uint64_t stamp, seen, hash, spare_fence, vgen, vseen, check_epoch; const void *span; int sparse, vbase; uint64_t *ph, *pgpu; uint32_t nph; int pre; uint64_t pre_fp; void *stex; } @end   // hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK; span: its tracked range (nvn_dirty_span, NULL = untracked);
+@interface NvPkg : NSObject { @public id<MTLTexture> tex, spare, view; uint64_t stamp, seen, hash, spare_fence, vgen, vseen, check_epoch; const void *span; int sparse, vbase; uint64_t *ph, *pgpu; uint32_t nph; int pre; uint64_t pre_fp; void *stex; uint64_t lseq; uint64_t (*runs)[2]; int nruns; } @end   // lseq / runs / nruns：稀疏贴图上次整段走页表时的映射日志序号与背后的物理段（nruns 0 = 没缓存，-1 = 段太多不缓存；马车世界缺口 ①，pkg_sparse_clean）   // hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK; span: its tracked range (nvn_dirty_span, NULL = untracked);
 static void evict_note(id obj) {
     id o = [obj isKindOfClass:[NvPkg class]] ? ((NvPkg *)obj)->tex : obj;
     id<MTLTexture> m = [o conformsToProtocol:@protocol(MTLTexture)] ? o : nil; while (m.parentTexture) m = m.parentTexture;
@@ -3515,7 +3515,7 @@ static void evict_note(id obj) {
 static void stex_pkg_free(void *s);   // nvn_stex.inc 胶水（pkg_upload_ 之前）：页还回堆
 // stex：放置式稀疏贴图（nvn_stex.inc）背着的大稀疏贴图：tex 就是它的贴图，原地增量同步、不换
 @implementation NvPkg
-- (void)dealloc { res_remove(tex); if (spare) res_remove(spare); ph_free(ph, nph); free(pgpu); if (stex) stex_pkg_free(stex); }
+- (void)dealloc { res_remove(tex); if (spare) res_remove(spare); ph_free(ph, nph); free(pgpu); free(runs); if (stex) stex_pkg_free(stex); }
 @end
 static uint64_t g_pkg_uploads, g_pkg_reuploads, g_pkg_miss, g_pkg_same, g_pkg_gpu_writes, g_pkg_gpu_kept, g_pkg_partial;
 // pgpu (S2Arm 10-25): per host page, the dirty-page generation when the GPU last wrote the texture's bytes there (a copy or clear into it; nvn_dirty_now at encoding, which is the game's submission).
@@ -5666,6 +5666,33 @@ static void sparse_view(NvPkg *pk, const tex_t *t) {
     if (r != (unsigned)pk->vbase) { static int nl; if (nl++ < 6) MLOG("sparse texture ser=%llu %ux%u: sampled from level %u of %u (finer levels not mapped)", (unsigned long long)t->serial, t->d.width, t->d.height, r, n); }
     pk->vbase = (int)r;
 }
+// 稀疏贴图上传以来干不干净（马车世界缺口 ①）：原先每次提交逐页走整段页表（nvn_sparse_since：映射变过 + 背后物理页写过），上游读数这一项占提交线程一半，
+//   一张 8192x8192x68 的地形数组一次约 140 万页。上次整段走得出「干净」时记下当时的映射日志序号与背后的物理段；之后日志里没有和本贴图重叠的映射请求，
+//   就只查这些物理段写没写过（nvn_dirty_since 先看整段范围的最大写代数）。有重叠请求 / 日志转过一圈 / 段太多 → 照旧整段走。
+//   不干净时清掉缓存：同步（stex_sync / 整张重传）之后第一次检查整段走，按新的 vgen / stamp 重建
+int nvn_sparse_since(const void *pool, uint64_t a, uint64_t n, uint64_t gen, uint64_t stamp);
+uint64_t nvn_sparse_log_seq(const void *pool); int nvn_sparse_log_hit(const void *pool, uint64_t *seq, uint64_t a, uint64_t n); int nvn_sparse_runs(const void *pool, uint64_t a, uint64_t n, uint64_t (*out)[2], int max);
+enum { PKG_RUNS_MAX = 16384 };
+static uint64_t g_spc_fast, g_spc_walk;   // 读数：走缓存的物理段 / 整段走页表的次数（提交线程）
+static int pkg_sparse_clean(NvPkg *pk, const tex_t *t) {
+    uint64_t a = (uint64_t)(uintptr_t)t->mem, n = t->L.size;
+    if (pk->nruns > 0 && !nvn_sparse_log_hit(t->pool, &pk->lseq, a, n)) {
+        g_spc_fast++;
+        for (int i = 0; i < pk->nruns; i++) if (nvn_dirty_since((const void *)(uintptr_t)pk->runs[i][0], (size_t)pk->runs[i][1], pk->stamp)) { pk->nruns = 0; return 0; }
+        return 1;
+    }
+    g_spc_walk++;
+    uint64_t sq = nvn_sparse_log_seq(t->pool);   // 先取序号再走：走的期间来的映射请求序号 ≥ sq，下次按重叠算
+    int clean = !nvn_sparse_since(t->pool, a, n, pk->vgen, pk->stamp);
+    if (!clean) { pk->nruns = 0; return 0; }
+    if (pk->nruns == 0) {
+        static uint64_t (*buf)[2]; if (!buf && !(buf = malloc(PKG_RUNS_MAX * sizeof *buf))) return 1;   // 提交线程专用的暂存
+        int k = nvn_sparse_runs(t->pool, a, n, buf, PKG_RUNS_MAX);
+        if (k > 0) { uint64_t (*r)[2] = realloc(pk->runs, (size_t)k * sizeof *r); if (r) { memcpy(r, buf, (size_t)k * sizeof *r); pk->runs = r; pk->nruns = k; pk->lseq = sq; } }
+        else if (k < 0) pk->nruns = -1;   // 段太多：本次同步之内不缓存（同步后重来）
+    }
+    return 1;
+}
 static uint64_t g_texinfo_ser[8]; static int g_texinfo_n;
 static id<MTLTexture> tex_mtl_(const tex_t *ct) {
     tex_t *t = (tex_t *)ct;
@@ -5733,7 +5760,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
             uint64_t now = nvn_dirty_now();
             int tracked = pk->span != NULL;   // kept from the upload: a texture's pool stays registered while the texture lives
             int clean = tracked && (now == pk->seen || !nvn_dirty_since_span(pk->span, t->mem, tex_rd_size(t), pk->stamp));
-            if (pk->sparse) { uint64_t g = nvn_sparse_gen(); clean = (now == pk->seen && g == pk->vseen) || !nvn_sparse_since(t->pool, (uint64_t)(uintptr_t)t->mem, t->L.size, pk->vgen, pk->stamp); pk->vseen = g; }
+            if (pk->sparse) { uint64_t g = nvn_sparse_gen(); clean = (now == pk->seen && g == pk->vseen) || pkg_sparse_clean(pk, t); pk->vseen = g; }
             pk->seen = now;
             if (!clean && tracked && !pk->sparse && ph_usable(pk->ph, pk->nph)) {   // pages written since the upload: the texture's own bytes in them decide (see NvPkg ph)
                 static uint64_t *bits; static size_t cap;   // submit thread only (up_owner_check)
