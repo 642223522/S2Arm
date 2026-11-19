@@ -10330,5 +10330,9 @@
  {
   "source": "电脑连不上这台 iPhone 的开发者通道（手机通过 Wi-Fi 连着时最常见，不是没解锁）：用数据线把手机直接插到这台电脑（别经过扩展坞或集线器），解锁停在主屏幕，再点一次；还不行就重启一次手机，插上后在手机上重新点「信任」。",
   "en": "This Mac can't reach the iPhone's developer connection (most common when the phone is connected over Wi-Fi; it isn't about being locked): plug the phone straight into this Mac with a cable (not through a dock or hub), unlock it to the Home Screen, and try again. If it still fails, restart the phone, plug it back in and tap \"Trust\" again on the phone."
+ },
+ {
+  "source": "Xbox GIP 本机通道设置无效。",
+  "en": "Invalid Xbox GIP native channel setting."
  }
 ]
