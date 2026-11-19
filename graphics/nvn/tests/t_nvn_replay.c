@@ -4069,6 +4069,34 @@ static void t_drv2_table(void) {
     pass_fresh();
 }
 
+// 图形阶段（片元）存储图像：与计算派发同一解析，句柄取片元阶段 BindImage 的槽（rp_S.img[1]），不读采样贴图槽。
+//   ① 只读：画成、片元绑一项存储图像视图、不登记 GPU 写；② 读写：画成后贴图归 GPU；③ 贴图没带图像标志：具名跳过（图形那组名字，计算计数不动）；
+//   ④ 槽里的号没登记：具名跳过。撤掉绘制路径的图像解析，① 会落到 graphics_image_unresolved / 不画。
+static void t_graphics_image(void) {
+    pass_fresh(); res_fresh(); g_arena_used = 0; g_resolve_rc = 0;
+    tex_t img = mk_tex(667, 0, NVN_FORMAT_RGBA8, 8, 8, 1, NVN_TEXTURE_FLAGS_IMAGE), noimg = mk_tex(668, 0x4000, NVN_FORMAT_RGBA8, 8, 8, 1, 0);
+    for (int k = 0; k < 4; k++) {
+        nvn_be_reg_tex(3, &img, NULL); nvn_be_reg_tex(4, &noimg, NULL); nvn_be_set_tex_pool_n(8);   // pass_fresh 会清登记：每轮重登
+        uint64_t un0 = nvn_unimpl_count("draw", "graphics_image_unresolved"), su0 = nvn_unimpl_count("draw", "graphics_image_storage_unsupported");
+        uint64_t csu0 = nvn_unimpl_count("draw", "compute_image_storage_unsupported"), csh0 = nvn_unimpl_count("draw", "compute_image_shape");
+        stream s = {0}; q_env(&s);
+        nvn_gpu_layout_ent *e = &g_fprog.ent[1][0]; g_fprog.nent[1] = 1;
+        e->cls = NVN_GPU_RES_IMAGE; e->src_kind = NVN_RB_IMG; e->src_reg = 2; e->count = 1; e->access = k == 1 ? NVN_GPU_ACC_RW : NVN_GPU_ACC_R;
+        q_draw(&s); end(&s);
+        memset(rp_S.img[1], 0, sizeof rp_S.img[1]); memset(rp_S.tex[1], 0, sizeof rp_S.tex[1]);
+        rp_S.img[1][2] = k == 2 ? 4 : k == 3 ? 7 : 3; rp_S.tex[1][2] = 4;   // 采样贴图槽 2 放一张不可写的图：误读它 ① 就画不成
+        int g0 = g_gdraws; memset(g_nfb, 0, sizeof g_nfb);
+        submit1(&s); fake_complete(NVN_GPU_DONE_OK);
+        if (k == 0) CHECK(g_gdraws == g0 + 1 && g_nfb[1] == 1 && g_fb[1][0].cls == NVN_GPU_RES_IMAGE && g_fb[1][0].u.view && !(rp_tex_debug_state(img.serial) & 4));
+        if (k == 1) CHECK(g_gdraws == g0 + 1 && (rp_tex_debug_state(img.serial) & 4));
+        if (k == 2) CHECK(g_gdraws == g0 && nvn_unimpl_count("draw", "graphics_image_storage_unsupported") == su0 + 1 && !(rp_tex_debug_state(noimg.serial) & 4));
+        if (k == 3) CHECK(g_gdraws == g0 && nvn_unimpl_count("draw", "graphics_image_unresolved") == un0 + 1);
+        CHECK(nvn_unimpl_count("draw", "compute_image_storage_unsupported") == csu0 && nvn_unimpl_count("draw", "compute_image_shape") == csh0);
+        pass_fresh();
+    }
+    memset(rp_S.img[1], 0, sizeof rp_S.img[1]); memset(rp_S.tex[1], 0, sizeof rp_S.tex[1]);
+}
+
 static void t_compute_query_sampler(void) {
     pass_fresh(); res_fresh(); g_arena_used = 0;
     tex_t image = mk_tex(665, 0, NVN_FORMAT_RGBA8, 8, 8, 1, NVN_TEXTURE_FLAGS_IMAGE);
@@ -5455,6 +5483,7 @@ int main(int argc, char **argv) {
     t_dispatch_ubop_ro_skip();
     t_compute_image();
     t_compute_image_class();
+    t_graphics_image();
     t_compute_tex_from_image();
     t_drv2_table();
     t_compute_query_sampler();
