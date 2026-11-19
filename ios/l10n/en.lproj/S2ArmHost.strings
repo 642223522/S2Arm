@@ -366,8 +366,8 @@
 "diag.upload.fail.title" = "Upload didn’t work";
 "diag.upload.go" = "Upload";
 "diag.report.title" = "Report a Problem";
-"diag.report.message" = "We’ll upload this device’s logs, device info and the list of graphics pipelines the games used (shader IDs only) to help find the cause, then give you a short code. You can write a sentence about what happened (optional).";
-"diag.report.placeholder" = "What happened? (optional)";
+"diag.report.message" = "We’ll upload this device’s logs, device info and the list of graphics pipelines the games used (shader IDs only) to help find the cause, then give you a short code. Please tell us which game, what you did and what you saw.";
+"diag.report.placeholder" = "Required: which game, what you did, what you saw";
 "diag.upload.post" = "Post on GitHub";
 "diag.upload.retry" = "Try again";
 "dprompt.expiry.body" = "Time left: %@. After it expires the game won’t open, but your saves are safe: connect the phone and click “Install on iPhone” again, or refresh in AltStore.";
@@ -508,6 +508,8 @@
 "settings.toggle.devHud" = "Show S2Arm diagnostics overlay";
 "settings.toggle.diagOnOpen" = "Export diagnostics on next open";
 "settings.toggle.docked" = "Docked mode";
+"settings.toggle.snapshot" = "Quick save snapshots";
+"settings.snapshot.note" = "Applies to every game: save the current moment in a game and come back to it later. Takes effect next time you start a game.";
 "settings.toggle.diagRun" = "Diagnostic run (next session)";
 "settings.diagRun.note" = "Turn on, close the app from the app switcher and start this game again. Stay where the problem shows for at least 3 minutes, then export diagnostics. Applies to the next session only; that session runs slower.";
 "settings.docked.note" = "Sharper picture, but uses more power and runs hotter; not recommended on a phone";
@@ -600,3 +602,14 @@
 "vpad.snap.saveChanged.title" = "Go back to the saved moment?";
 "vpad.snap.saveChanged.body" = "The game saved after that moment. Going back also takes the game’s save back to that moment; your current save is backed up first.";
 "vpad.snap.saveChanged.go" = "Go back";
+"vpad.snap.button.hint" = "Tap to save this moment; press and hold to go back to it";
+"vpad.snap.none" = "No saved moment yet. Tap the button to save one";
+"vpad.snap.savedHint" = "%@ · Press and hold the button to come back here";
+"vpad.snap.delete" = "Delete this moment";
+"vpad.snap.size" = "About %@";
+"vpad.snap.delete.title" = "Delete the saved moment?";
+"vpad.snap.delete.body" = "This snapshot takes about %@. Once deleted you can’t go back to that moment. Your game saves are not affected.";
+"vpad.snap.deleted" = "Deleted. The space is free again";
+"vpad.snap.deleteFailed" = "Couldn’t delete it completely. Try again in a moment";
+"snap.result.title" = "Couldn’t go back to that moment";
+"snap.result.generic" = "Going back to that moment didn’t work, so the game started again. Your game saves are not affected.";

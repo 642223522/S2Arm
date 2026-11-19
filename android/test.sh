@@ -487,6 +487,7 @@ s2a_gate_step javac -encoding UTF-8 -d "$out/java" -cp "$out/java" \
 s2a_gate_step java -cp "$out/java" org.s2arm.android.ImportReceiverTest
 s2a_gate_step "$PY" "$android_dir/tests/deploy_game_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/test_app_id_test.py"
+s2a_gate_step "$PY" "$android_dir/tests/apk_assemble_test.py"   # 预编引擎 APK 组装：aapt2 造引擎，aapt2 dump / apksigner 判包名 / 显示名 / 图标 / 对齐 / v2 签名
 s2a_gate_step "$PY" "$android_dir/tests/ns2_synth_nacp_test.py"   # Switch 2 合成控制数据：应用号非 0、显示版本「?」不让 aapt 停
 s2a_gate_step "$PY" "$android_dir/tests/game_icon_test.py"   # 合成控制分区图标、各密度资源、回退与链接拒绝
 s2a_gate_step "$PY" "$android_dir/tests/debug_app_admission_test.py"

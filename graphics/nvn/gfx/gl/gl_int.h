@@ -191,12 +191,14 @@ void gl_wd_release_id(uint32_t id);
 extern _Atomic uint64_t gl_n_frames, gl_n_draws, gl_n_passes, gl_bad_feat, gl_bad_err;
 extern _Atomic uint64_t gl_wait_n, gl_wait_ns;   // 游戏线程等 GPU 的次数与累计纳秒（gl_wait；egl.m 每 300 帧打一行拆账）
 
-// ---------- 即时存档（缺省关：S2A_SNAP_MODE / S2A_SNAP_RESTORE 才走到；egl.m gl_snap_save / gl_snap_restore 按片调） ----------
+// ---------- 即时存档（苹果端缺省开、S2A_SNAP_MODE=0 关，见 runtime/src/snapsw.c；egl.m gl_snap_save / gl_snap_restore 按片调） ----------
 // 格式按 runtime/src/snapfmt.h 的字段号记录（新版 App 读旧快照：缺的字段取缺省、不认的跳过），Metal 贴图 / 缓冲内容跟在各片的段尾后面整块存。
 //   存在冻结之后（游戏线程全停在门里）、本层排空之后；取在新进程起好服务层、游戏线程还没起的时候（gl_snap_thread_bind 在各游戏线程就位时接回当前上下文）
 #include "../../../../runtime/src/snapfmt.h"
 #define GLSF_W(w, id, field) sfw_blob((w), (uint16_t)(id), &(field), (uint32_t)sizeof(field))
 #define GLSF_R(r, id, field) sfr_into((r), (uint16_t)(id), &(field), (uint32_t)sizeof(field))
+// 带布局指纹的结构（或结构数组）整块存的字段：快照里是旧布局时按字段转（snapfmt.h sfr_into_conv；name = 登记指纹的名字，T = 元素类型）
+#define GLSF_RC(r, id, field, name, T) sfr_into_conv((r), (uint16_t)(id), &(field), (uint32_t)sizeof(field), (name), (uint32_t)sizeof(T))
 int gl_buf_snap_save(FILE *f); int gl_buf_snap_restore(FILE *f);
 int gl_tex_snap_save(FILE *f); int gl_tex_snap_restore(FILE *f);
 int gl_tex_snap_one_save(FILE *f, gl_texture *t);   // 一个纹理对象（上下文的默认纹理也用它；t 可为 NULL）

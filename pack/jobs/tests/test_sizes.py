@@ -137,7 +137,7 @@ class Sizes(JobCase):
         write(other / "temp" / "t2" / "t.bin", 1 * MIB)                # 别的位置的 temp 也算
         out = sizes.overview(self.context("storageOverview"))
         shared = {r["id"]: r["bytes"] for r in out["shared"]}
-        self.assertEqual(list(shared), ["hosts", "ipa", "toolCache", "temp", "logs"])
+        self.assertEqual(list(shared), ["hosts", "ipa", "toolCache", "temp", "logs", "exports", "other"])
         self.assert_mib(shared["hosts"], 3); self.assert_mib(shared["ipa"], 3); self.assert_mib(shared["temp"], 2)
         self.assert_mib(shared["toolCache"], 1)   # 工作目录就是 <库>/tool-cache 时只算一遍（Windows 实跑曾报成两倍）
         self.assertGreaterEqual(shared["logs"], 1 * MIB)                # 任务记录（jobs/）也在里面，只下限
@@ -154,7 +154,7 @@ class Sizes(JobCase):
         self.assertEqual(g[OTHER]["sizes"]["sources"], 5 * MIB)
 
     def test_060_four_categories_add_up_to_disk(self):
-        """0.6.0 空间页四类（体系文档 K，通用壳开关开着）：期望手写——
+        """0.6.0 空间页四类（体系文档 K）：期望手写——
         这款 resources = image/（mac 2 + kit 2 + pack 1 + .pack/game.img 3，Mac 的 game.img 是它的硬链接只算一次）+ 导出文件夹里这款的 .img 1；
         programs = 程序常驻 1 + 程序缓存 1；playerData = saves 1 + save-backups 1 + cheats 1 + 私有目录里玩家导入的着色器缓存 1（+ game.json 等小文件）；cache = 出包工作目录 + 着色器缓存（克隆块记在先量的资源上）。
         公共件多出 exports（导出文件夹里不归任何一款的：S2Arm.ipa 2）、other（默认位置根下其余：库清单等小文件 + 一个 1 MiB 的记录）。
@@ -174,8 +174,7 @@ class Sizes(JobCase):
         write(ex / "S2Arm.ipa", 2 * MIB)
         write(L / "迁移记录.json", 1 * MIB)
         write(L / "hosts" / "mac" / "h.bin", 1 * MIB)
-        with patch.dict(os.environ, {"S2A_UNIVERSAL_SHELL": "1"}):
-            out = sizes.overview(self.context("storageOverview"))
+        out = sizes.overview(self.context("storageOverview"))
         cat = {r["gameId"]: r for r in out["games"]}[GID]["sizes"]["categories"]
         imgs = 2 + 2 + 1 + 3 + 3   # mac 2 + kit 2 + pack 1 + game.img 3（硬链接只算一次）+ 镜像里的 romfs 3（它与解包是克隆：资源先量，共享块记在资源上）
         self.assert_mib(cat["resources"], imgs + 1, "resources")
@@ -198,10 +197,6 @@ class Sizes(JobCase):
         if self.cloned:   # 克隆共享的块独立走法按两份算、我们按一份：差的就是那 3 MiB
             total -= 3 * MIB
         self.assertLess(abs(listed - total), total * 0.01, f"四类 + 公共件 {listed} 与盘上 {total} 差 ≥ 1%")
-        with patch.dict(os.environ, {"S2A_UNIVERSAL_SHELL": "0"}):
-            off = sizes.overview(self.context("storageOverview"))
-        self.assertNotIn("categories", {r["gameId"]: r for r in off["games"]}[GID]["sizes"], "开关关着不带四类")
-        self.assertEqual([r["id"] for r in off["shared"]], ["hosts", "ipa", "toolCache", "temp", "logs"], "开关关着公共件照旧五项")
 
     def test_overview_offline_location(self):
         gone = self.root / "拔掉的盘"
@@ -255,14 +250,14 @@ class Sizes(JobCase):
         result, event = self.worker("catalog")
         self.assertEqual((result.returncode, event["state"]), (0, "succeeded"), result.stderr)
         g = {x["id"]: x for x in event["result"]["games"]}
-        self.assertEqual(set(g[GID]["sizes"]), set(sizes.PARTS) | {"measured"})
+        self.assertEqual(set(g[GID]["sizes"]), set(sizes.PARTS) | {"measured", "categories"})
         self.assert_mib(g[GID]["sizes"]["saves"], 2)
         self.assertFalse(g[OTHER]["sizes"]["measured"])
 
     def test_worker_overview(self):
         result, event = self.worker("storageOverview")
         self.assertEqual((result.returncode, event["state"]), (0, "succeeded"), result.stderr)
-        self.assertEqual([r["id"] for r in event["result"]["shared"]], list(sizes.SHARED))
+        self.assertEqual([r["id"] for r in event["result"]["shared"]], list(sizes.SHARED) + list(sizes.SHARED_060))
 
 
 if __name__ == "__main__":

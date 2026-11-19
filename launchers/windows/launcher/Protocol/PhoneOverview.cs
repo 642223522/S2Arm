@@ -20,7 +20,7 @@ public sealed record PhoneOverview(IReadOnlyList<PhoneOverview.Phone> Phones)
 
     public static PhoneOverview? Parse(JsonElement r)
     {
-        if (r.ValueKind != JsonValueKind.Object || !r.TryGetProperty("enabled", out var on) || on.ValueKind != JsonValueKind.True) return null;
+        if (r.ValueKind != JsonValueKind.Object || !r.TryGetProperty("phones", out var ps0) || ps0.ValueKind != JsonValueKind.Array) return null;
         static string? S(JsonElement o, string k) => o.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
         static bool B(JsonElement o, string k) => o.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.True;
         static DateTimeOffset? D(JsonElement o, string k) => o.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.Number ? DateTimeOffset.FromUnixTimeMilliseconds((long)(v.GetDouble() * 1000)) : null;

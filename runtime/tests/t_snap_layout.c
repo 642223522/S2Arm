@@ -5,6 +5,8 @@
 #include <stdatomic.h>
 #include <simd/simd.h>
 
+static snap_conv *g_test_conv; static const char *g_test_conv_name;   // ⑫：单测自己当「快照引擎」给转换表项
+snap_conv *s2a_snap_conv_get(const char *name) { return g_test_conv && g_test_conv_name && !strcmp(name, g_test_conv_name) ? g_test_conv : NULL; }
 static int g_fail, g_ok;
 #define CHECK(c, ...) do { if (c) g_ok++; else { g_fail++; printf("  不符："); printf(__VA_ARGS__); printf("\n"); } } while (0)
 
@@ -131,6 +133,32 @@ int main(void) {
       snap_conv e2; memset(&e2, 0, sizeof e2); e2.o = &lo; e2.c = &l2; e2.magic = M; n2_t r3; snap_conv_one(&e2, &a1, &r3);
       CHECK(e2.ndrop == 1 && r3.ntex == 3 && r3.native == a1.native, "删掉的 presents 旧值 77 非零计丢值 1 → %llu", (unsigned long long)e2.ndrop);
       snap_lay_free(&lo); snap_lay_free(&ln); snap_lay_free(&lp); snap_lay_free(&l2); }
+
+    printf("⑫ 区里原地转（Vulkan 对象区）与字段号记录里的结构数组（GL）：放得下转、放不下不动；没有表项原样读\n");
+    { typedef struct { uint32_t a; float b; } g1_t;
+      typedef struct { uint32_t a; uint32_t mid; double b; } g2_t;   // 中间插字段、float → double
+      snap_lay l1, l2; SNAP_LAY_TYPE_(g1_t, &l1); SNAP_LAY_TYPE_(g2_t, &l2);
+      snap_conv e; memset(&e, 0, sizeof e); e.o = &l1; e.c = &l2;
+      g1_t src[3] = {{1, 1.5f}, {2, 2.5f}, {3, 3.5f}};
+      union { g1_t o[6]; g2_t n[3]; } blk; uint8_t tmp[sizeof src];
+      memset(&blk, 0, sizeof blk); memcpy(blk.o, src, sizeof src);
+      int r1 = snap_conv_inplace(&e, &blk, 3, sizeof blk.n, tmp);
+      CHECK(r1 == 1 && blk.n[0].a == 1 && blk.n[0].mid == 0 && blk.n[0].b == 1.5 && blk.n[2].a == 3 && blk.n[2].b == 3.5,
+            "3 个原地转成新布局：a 1/3、mid 0、b 1.5/3.5 → 回 %d，a %u/%u mid %u b %.1f/%.1f", r1, blk.n[0].a, blk.n[2].a, blk.n[0].mid, blk.n[0].b, blk.n[2].b);
+      memset(&blk, 0, sizeof blk); memcpy(blk.o, src, sizeof src); uint8_t before[sizeof blk]; memcpy(before, &blk, sizeof blk);
+      int r2 = snap_conv_inplace(&e, &blk, 3, sizeof blk.n - 1, tmp);
+      CHECK(r2 == 0 && !memcmp(before, &blk, sizeof blk), "块小 1 字节放不下：回 0、逐字节不动 → 回 %d", r2);
+      // GL：字段号记录里整块存的 g1_t[2]，按表项转进 g2_t[2]；负对照：名字不在表里 → 原样读（值就错位）
+      FILE *t2 = tmpfile(); sfw w = {0}; sfw_sec(&w, t2, "t.sec", 1); sfw_rec(&w); sfw_blob(&w, 7, src, (uint32_t)(2 * sizeof(g1_t))); sfw_end_rec(&w); sfw_end(&w);
+      g2_t out[2], raw[2];
+      g_test_conv = &e; g_test_conv_name = "t.g";
+      rewind(t2); sfr rr = {0}; int okc = !sfr_sec(&rr, t2, "t.sec", 1) && sfr_rec(&rr) == 1 && sfr_into_conv(&rr, 7, out, sizeof out, "t.g", sizeof(g2_t)); sfr_done(&rr);
+      rewind(t2); sfr rn = {0}; int okr = !sfr_sec(&rn, t2, "t.sec", 1) && sfr_rec(&rn) == 1 && sfr_into_conv(&rn, 7, raw, sizeof raw, "t.none", sizeof(g2_t)); sfr_done(&rn);
+      fclose(t2);
+      CHECK(okc && out[0].a == 1 && out[0].b == 1.5 && out[1].a == 2 && out[1].b == 2.5, "按表项转：a 1/2、b 1.5/2.5 → a %u/%u b %.1f/%.1f", out[0].a, out[1].a, out[0].b, out[1].b);
+      CHECK(okr && !(raw[0].b == 1.5 && raw[1].a == 2), "负对照：不在表里原样读，值不对（证明上一条靠的是转换）→ b %.3g、第 2 个 a %u", raw[0].b, raw[1].a);
+      g_test_conv = NULL;
+      snap_lay_free(&l1); snap_lay_free(&l2); }
 
     snap_lay_free(&a); snap_lay_free(&b); snap_lay_free(&r);
     if (g_fail) printf("✗ t_snap_layout：%d 项不符（共 %d 项）\n", g_fail, g_ok + g_fail);

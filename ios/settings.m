@@ -591,6 +591,9 @@ void s2a_ios_load_graphics_settings(void) {
             fprintf(stderr, "[S2A 本地玩家] %s（%s），存档位置 %s\n", player[@"uid"].length ? player[@"uid"].UTF8String : "第一个玩家",
                     player[@"name"].length ? player[@"name"].UTF8String : "没改过名", getenv("S2A_SAVE_FOLDER"));
         }
+        // 即时快照（0.6.0，定义表 launchers/shared/game_settings.v1.json snapshot，全部游戏共用）：宿主苹果端缺省开（runtime/src/snapsw.c），
+        //   玩家在设置里关了才写 S2A_SNAP_MODE=0；启动环境显式给了就不动（同上面各项：启动环境 > 用户设置）
+        if ([NSUserDefaults.standardUserDefaults objectForKey:@"S2ASnapshot"] && ![NSUserDefaults.standardUserDefaults boolForKey:@"S2ASnapshot"]) setenv("S2A_SNAP_MODE", "0", 0);
         s2a_ios_apply_diag_run(NSUserDefaults.standardUserDefaults);
     }
 }
