@@ -1774,6 +1774,14 @@
   "s2arm.env.widget.group": "主屏小组件",
   "s2arm.env.widget.title": "装到 iPhone 时带主屏小组件",
   "s2arm.env.widget.detail": "iPhone 桌面上的游戏机样子小组件：显示最近玩的游戏和玩得最多的游戏，点封面直接开。用免费 Apple ID 时，每次新装会多用一个 App ID 名额（7 天 10 个）",
+  "s2arm.env.xcode.group": "Xcode",
+  "s2arm.env.xcode.title": "使用的 Xcode",
+  "s2arm.env.xcode.found": "自动找到：%@",
+  "s2arm.env.xcode.chosen": "你选的：%@",
+  "s2arm.env.xcode.none": "还没找到 Xcode",
+  "s2arm.env.xcode.choose": "选择 Xcode…",
+  "s2arm.env.xcode.auto": "改回自动查找",
+  "s2arm.env.xcode.invalid": "选的不是完整的 Xcode（要有 Contents/Developer/usr/bin/xcodebuild），没有改动。",
   "home.card.daysLeft": "还剩 %d 天",
   "home.card.expired": "签名已过期"
 }

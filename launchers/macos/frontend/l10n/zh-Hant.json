@@ -1776,6 +1776,14 @@
   "s2arm.env.widget.group": "主畫面小工具",
   "s2arm.env.widget.title": "裝到 iPhone 時附帶主畫面小工具",
   "s2arm.env.widget.detail": "iPhone 主畫面上的遊戲機造型小工具：顯示最近玩的遊戲和玩得最多的遊戲，點封面直接開。使用免費 Apple ID 時，每次新裝會多用一個 App ID 名額（7 天 10 個）",
+  "s2arm.env.xcode.group": "Xcode",
+  "s2arm.env.xcode.title": "使用的 Xcode",
+  "s2arm.env.xcode.found": "自動找到：%@",
+  "s2arm.env.xcode.chosen": "你選的：%@",
+  "s2arm.env.xcode.none": "還沒找到 Xcode",
+  "s2arm.env.xcode.choose": "選擇 Xcode…",
+  "s2arm.env.xcode.auto": "改回自動尋找",
+  "s2arm.env.xcode.invalid": "選的不是完整的 Xcode（要有 Contents/Developer/usr/bin/xcodebuild），沒有變更。",
   "home.card.daysLeft": "還剩 %d 天",
   "home.card.expired": "簽名已過期"
 }

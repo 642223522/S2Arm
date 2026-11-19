@@ -1740,6 +1740,14 @@
   "s2arm.env.widget.group": "ホーム画面ウィジェット",
   "s2arm.env.widget.title": "iPhone にホーム画面ウィジェットも入れる",
   "s2arm.env.widget.detail": "iPhone のホーム画面にゲーム機の形のウィジェットを置き、最近遊んだゲームとよく遊ぶゲームを表示します。カバーをタップすると起動します。無料の Apple ID では、新しくインストールするたびに App ID を 1 つ多く使います（7 日間で 10 個まで）",
+  "s2arm.env.xcode.group": "Xcode",
+  "s2arm.env.xcode.title": "使用中の Xcode",
+  "s2arm.env.xcode.found": "自動で見つけたもの：%@",
+  "s2arm.env.xcode.chosen": "選んだもの：%@",
+  "s2arm.env.xcode.none": "Xcode がまだ見つかりません",
+  "s2arm.env.xcode.choose": "Xcode を選択…",
+  "s2arm.env.xcode.auto": "自動で探すに戻す",
+  "s2arm.env.xcode.invalid": "完全な Xcode ではありません（Contents/Developer/usr/bin/xcodebuild が必要です）。変更していません。",
   "home.card.daysLeft": "残り %d 日",
   "home.card.expired": "期限切れ"
 }

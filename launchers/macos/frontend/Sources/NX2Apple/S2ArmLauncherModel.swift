@@ -1603,6 +1603,22 @@ public final class S2ArmLauncherModel: ObservableObject {
         do { try provider.settings.setHomeWidget(on) } catch { homeWidgetError = error.localizedDescription }
     }
 
+    // ---- 自己选择 Xcode（D-9WFW：装在扩展硬盘等自动找不到的位置；设置写 launch-settings.json 的 xcodeApp，选过就优先用）----
+
+    @Published private(set) var xcodeChooseError: String?
+    var chosenXcode: String? { provider.settings.xcodeApp }
+    /// 现在作业用的 Xcode（Contents/Developer）；还没找到为空串
+    var activeDeveloperDir: String { provider.client.environment.developerDir }
+
+    /// 选一份 Xcode.app（nil = 改回自动查找）；不是完整的 Xcode 不记、就近说原因。记下后重查环境，作业立刻改用它
+    func setXcode(_ app: URL?) {
+        xcodeChooseError = nil
+        if let app, XcodeLocator.developerDir(app: app.path) == nil { xcodeChooseError = "s2arm.env.xcode.invalid"; objectWillChange.send(); return }
+        objectWillChange.send()
+        do { try provider.settings.setXcodeApp(app?.path) } catch { xcodeChooseError = error.localizedDescription; return }
+        checkEnvironment()
+    }
+
     // ---- 允许 AI 操作 S2Arm（本机控制口，见 S2ArmControl）----
 
     /// 开关状态（--control / S2ARM_CONTROL=1 启动时恒为开）。

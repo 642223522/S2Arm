@@ -1740,6 +1740,14 @@
   "s2arm.env.widget.group": "Widget de l’écran d’accueil",
   "s2arm.env.widget.title": "Inclure le widget de l’écran d’accueil sur l’iPhone",
   "s2arm.env.widget.detail": "Un widget en forme de console pour l’écran d’accueil de l’iPhone, qui affiche vos jeux récents et les plus joués ; touchez une couverture pour jouer. Avec un identifiant Apple gratuit, chaque nouvelle installation utilise un App ID de plus (10 par 7 jours).",
+  "s2arm.env.xcode.group": "Xcode",
+  "s2arm.env.xcode.title": "Xcode utilisé",
+  "s2arm.env.xcode.found": "Trouvé automatiquement : %@",
+  "s2arm.env.xcode.chosen": "Votre choix : %@",
+  "s2arm.env.xcode.none": "Aucun Xcode trouvé pour l’instant",
+  "s2arm.env.xcode.choose": "Choisir Xcode…",
+  "s2arm.env.xcode.auto": "Rechercher automatiquement",
+  "s2arm.env.xcode.invalid": "Ce n’est pas un Xcode complet (Contents/Developer/usr/bin/xcodebuild est requis). Rien n’a été modifié.",
   "home.card.daysLeft": "Encore %d jours",
   "home.card.expired": "Expiré"
 }

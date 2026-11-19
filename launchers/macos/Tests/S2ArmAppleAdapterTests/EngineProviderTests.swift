@@ -222,6 +222,38 @@ final class EngineProviderSettingsAndRunTests: XCTestCase {
         XCTAssertEqual(log.events.last?.fields["state"] as? String, "cancelled")
     }
 
+    /// D-9WFW：玩家自己选的完整 Xcode 优先于自动找到的；选的不完整就照旧自动找；改回自动查找后不再带它
+    func testChosenXcodeWinsOverAutoDetectAndInvalidFallsBack() async throws {
+        let box = try Sandbox(); defer { box.remove() }
+        let runner = FakeRunner()
+        runner.script = { _ in ([result(#"{"checks":[]}"#)], 0, false) }
+        let fm = FileManager.default
+        func xcode(_ name: String, complete: Bool) throws -> String {
+            let app = box.privateRoot.appendingPathComponent(name)
+            try fm.createDirectory(at: app.appendingPathComponent("Contents/Developer/usr/bin"), withIntermediateDirectories: true)
+            try (["CFBundleIdentifier": "com.apple.dt.Xcode"] as NSDictionary).write(to: app.appendingPathComponent("Contents/Info.plist"))
+            if complete {
+                let tool = app.appendingPathComponent("Contents/Developer/usr/bin/xcodebuild")
+                try Data().write(to: tool); try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
+            }
+            return app.path
+        }
+        let external = try xcode("Ext Xcode.app", complete: true), broken = try xcode("Broken.app", complete: false)
+        let auto = "/Applications/Xcode-27.app/Contents/Developer"
+        let provider = S2ArmEngineProvider(client: client(box, runner), xcodeLocator: { auto })
+        try provider.settings.setXcodeApp(external)
+        _ = try await provider.environment.check()
+        XCTAssertEqual(runner.starts.last?.request["developerDir"] as? String, external + "/Contents/Developer")
+        XCTAssertEqual(S2ArmEngineProvider(client: client(box, runner), xcodeLocator: { auto }).settings.xcodeApp, external, "重开启动器仍记着")
+        try provider.settings.setXcodeApp(broken)
+        _ = try await provider.environment.check()
+        XCTAssertEqual(runner.starts.last?.request["developerDir"] as? String, auto, "选的不完整：照旧用自动找到的")
+        try provider.settings.setXcodeApp(nil)
+        XCTAssertNil(provider.settings.xcodeApp)
+        XCTAssertNil(XcodeLocator.developerDir(app: broken))
+        XCTAssertEqual(XcodeLocator.developerDir(app: external), external + "/Contents/Developer")
+    }
+
     func testCapabilitiesDeclareBothTargets() throws {
         let box = try Sandbox(); defer { box.remove() }
         let provider = S2ArmEngineProvider(client: client(box, FakeRunner()), xcodeLocator: { nil })

@@ -54,6 +54,8 @@ public final class SettingsProvider {
     private var cloud: String?
     /// 「装到 iPhone 时带主屏小组件」（11-16，缺省开；玩家关掉才记 homeWidget: false）：装机 / 更新 / 导出请求里关掉时带 widget: false
     private var widget: Bool
+    /// 玩家在环境页自己选的 Xcode.app（D-9WFW：装在扩展硬盘等自动找不到的位置）。没选 = 自动找（XcodeLocator.detect）
+    private var xcode: String?
 
     public init(client: JobClient, store: URL? = nil) {
         self.client = client
@@ -64,6 +66,7 @@ public final class SettingsProvider {
         ai = Self.object(self.store)?["aiControl"] as? Bool ?? false
         cloud = Self.object(self.store)?["cloudSavesFolder"] as? String
         widget = Self.object(self.store)?["homeWidget"] as? Bool ?? true
+        xcode = Self.object(self.store)?["xcodeApp"] as? String
     }
 
     private static func object(_ url: URL) -> [String: Any]? {
@@ -87,6 +90,13 @@ public final class SettingsProvider {
     public func setHomeWidget(_ on: Bool) throws {
         let before = lock.withLock { () -> Bool in let b = widget; widget = on; return b }
         do { try write() } catch { lock.withLock { widget = before }; throw JobClientError("「装到 iPhone 时带主屏小组件」的开关没能写进磁盘（\(error.localizedDescription)）。") }
+    }
+
+    public var xcodeApp: String? { lock.withLock { xcode } }
+
+    public func setXcodeApp(_ path: String?) throws {
+        let before = lock.withLock { () -> String? in let b = xcode; xcode = path; return b }
+        do { try write() } catch { lock.withLock { xcode = before }; throw JobClientError("选的 Xcode 没能写进磁盘（\(error.localizedDescription)）。") }
     }
 
     public var cloudSavesFolder: String? { lock.withLock { cloud } }
@@ -130,6 +140,7 @@ public final class SettingsProvider {
         if lock.withLock({ ai }) { file["aiControl"] = true }
         if let folder = lock.withLock({ cloud }) { file["cloudSavesFolder"] = folder }
         if !lock.withLock({ widget }) { file["homeWidget"] = false }
+        if let app = lock.withLock({ xcode }) { file["xcodeApp"] = app }
         let data = try JSONSerialization.data(withJSONObject: file, options: [.sortedKeys])
         try data.write(to: store, options: .atomic)
     }

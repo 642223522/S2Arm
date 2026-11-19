@@ -1773,6 +1773,14 @@
   "s2arm.env.widget.group": "Home Screen widget",
   "s2arm.env.widget.title": "Include the Home Screen widget on iPhone",
   "s2arm.env.widget.detail": "A console-style widget for your iPhone Home Screen that shows your latest and most-played games; tap a cover to play. With a free Apple ID, each new install uses one more App ID (10 per 7 days).",
+  "s2arm.env.xcode.group": "Xcode",
+  "s2arm.env.xcode.title": "Xcode in use",
+  "s2arm.env.xcode.found": "Found automatically: %@",
+  "s2arm.env.xcode.chosen": "Your choice: %@",
+  "s2arm.env.xcode.none": "No Xcode found yet",
+  "s2arm.env.xcode.choose": "Choose Xcode…",
+  "s2arm.env.xcode.auto": "Find automatically",
+  "s2arm.env.xcode.invalid": "That isn't a complete Xcode (it needs Contents/Developer/usr/bin/xcodebuild). Nothing was changed.",
   "home.card.daysLeft": "%d days left",
   "home.card.expired": "Expired"
 }

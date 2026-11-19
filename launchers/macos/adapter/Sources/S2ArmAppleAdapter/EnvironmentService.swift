@@ -110,9 +110,31 @@ public final class EnvironmentService {
     }
 }
 
-/// 找装着的 Xcode（旧启动器 Store.detectXcode 原样迁出）：xcode-select 指的那份与 /Applications、~/Applications 里的 Xcode*.app，取版本最高的完整一份。
+/// 找装着的 Xcode（旧启动器 Store.detectXcode 原样迁出）：xcode-select 指的那份与 /Applications、~/Applications、外接卷的 Applications 与卷根里的 Xcode*.app，
+/// 取版本最高的完整一份（玩家把 Xcode 装在扩展硬盘上原先找不到）。目录与作业层 pack/jobs/toolchain.py default_app_dirs 同一组。
 /// iPhone 包的着色器按目标设备系统大版本出，老 SDK 出不了新系统的，所以取最新。
 public enum XcodeLocator {
+    /// /Applications、~/Applications，加每块外接卷的 Applications 与卷根；/Volumes 里的软链（启动盘指回 /）跳过
+    static func searchDirs(volumes: String = "/Volumes") -> [String] {
+        var dirs = ["/Applications", NSHomeDirectory() + "/Applications"]
+        for name in ((try? FileManager.default.contentsOfDirectory(atPath: volumes)) ?? []).sorted() {
+            let v = volumes + "/" + name
+            var isDir: ObjCBool = false
+            guard (try? FileManager.default.destinationOfSymbolicLink(atPath: v)) == nil,
+                  FileManager.default.fileExists(atPath: v, isDirectory: &isDir), isDir.boolValue else { continue }
+            dirs += [v + "/Applications", v]
+        }
+        return dirs
+    }
+
+    /// 玩家选的这一份是不是完整的 Xcode（com.apple.dt.Xcode 且有 Contents/Developer/usr/bin/xcodebuild）：是就回它的 Contents/Developer，否则 nil
+    public static func developerDir(app: String) -> String? {
+        let dev = app + "/Contents/Developer"
+        guard let info = NSDictionary(contentsOfFile: app + "/Contents/Info.plist"), info["CFBundleIdentifier"] as? String == "com.apple.dt.Xcode",
+              FileManager.default.isExecutableFile(atPath: dev + "/usr/bin/xcodebuild") else { return nil }
+        return dev
+    }
+
     public static func detect() -> String? {
         func full(_ dev: String) -> Bool { FileManager.default.isExecutableFile(atPath: dev + "/usr/bin/xcodebuild") && dev.hasSuffix(".app/Contents/Developer") }
         var apps: [String] = []
@@ -124,7 +146,7 @@ public enum XcodeLocator {
             let sel = String(decoding: out, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             if p.terminationStatus == 0, full(sel) { apps.append(String(sel.dropLast("/Contents/Developer".count))) }
         }
-        for dir in ["/Applications", NSHomeDirectory() + "/Applications"] {
+        for dir in searchDirs() {
             for name in (try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? [] where name.hasPrefix("Xcode") && name.hasSuffix(".app") {
                 apps.append(dir + "/" + name)
             }

@@ -57,9 +57,11 @@ public final class S2ArmEngineProvider: EngineProvider {
     public init(client: JobClient, xcodeLocator: @escaping () -> String? = XcodeLocator.detect) {
         self.client = client
         library = LibraryProvider(client: client)
-        settings = SettingsProvider(client: client)
+        let settings = SettingsProvider(client: client)
+        self.settings = settings
         play = PlayService(client: client)
-        environment = EnvironmentService(client: client, xcodeLocator: xcodeLocator)
+        // 玩家在环境页自己选过、而且是完整的 Xcode 就用它（玩家自选优先）；没选或选的不可用照旧自动找
+        environment = EnvironmentService(client: client, xcodeLocator: { settings.xcodeApp.flatMap(XcodeLocator.developerDir(app:)) ?? xcodeLocator() })
         installer = InstallService(client: client)
         space = SpaceService(client: client)
     }
