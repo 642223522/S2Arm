@@ -1025,6 +1025,7 @@
   "library.folderUnset": "未設定",
   "library.gameCount": "%d 個のゲーム",
   "library.gameCountOne": "1 個のゲーム",
+  "library.enter": "ライブラリを開く",
   "library.localNote": "自分のゲームファイルからビルド",
   "library.manage": "管理",
   "library.newBuild": "ゲームを構築",

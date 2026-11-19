@@ -26,6 +26,16 @@ def clone(src, dst):   # macOS APFS 克隆（不占新空间）；跨卷 / 不�
     shutil.copy2(src, dst)
 
 
+def link_image(src, dst):   # 标准 RomFS 镜像 romfs.std：生成后不再改写（同 pack/romfs_image.py link 硬链进产物根）。macOS 照旧克隆；
+    #   别的系统先硬链（同卷不另占盘），不行再拷——原先 Windows 整份真拷，镜像在盘上占两份，大游戏交付时写满盘（诊断 #9ac7f7，WinError 112）
+    if sys.platform == 'darwin':
+        return clone(src, dst)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    if os.path.lexists(dst): os.remove(dst)
+    try: os.link(os.path.realpath(src), dst)
+    except OSError: shutil.copy2(src, dst)
+
+
 def image_files(d, prefix):
     """镜像里的文件（相对 romfs.files/）：<前缀>romfs.s2aidx 的文件表里，<前缀>romfs.imgmap 偏移 ≥ 0 的那些（-1 = 界面覆盖层，不在镜像里）。
     格式同 pack/romfs_image.py（本模块不 import 出包模块）"""
@@ -74,7 +84,7 @@ def main():
             if os.path.lexists(q): os.remove(q); removed += 1   # 旧格式交付的真镜像
             if os.path.lexists(qf): shutil.rmtree(qf)   # 上一次交付的逐文件形态：库里只留一份
             if old.get(p) == (size, sha) and os.path.isfile(qs): continue
-            clone(std, qs); cloned += 1
+            link_image(std, qs); cloned += 1
             continue
         if files and not os.path.lexists(os.path.join(src, p)) and os.path.isdir(files):
             qf = os.path.join(dst, p[:-len('romfs.img')] + 'romfs.files')

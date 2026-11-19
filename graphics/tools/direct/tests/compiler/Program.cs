@@ -56,6 +56,9 @@ internal static unsafe class Program
     // LOP.OR Rd, Ra, Rb: exact Maxwell opcode and fields from InstTable / InstLopR.
     private static ulong LopOr(int dest, int a, int b) =>
         0x5C40000000000000UL | (7UL << 48) | (1UL << 41) | ((ulong)b << 20) | (7UL << 16) | ((ulong)a << 8) | (uint)dest;
+    // LOP32I.OR Rd, Ra, imm32：顶层 opcode 000001（bit 58）、逻辑运算在 bit 53..54（1 = OR）、32 位立即数在 bit 20..51（InstTable / InstLop32i）。
+    private static ulong Lop32iOr(int dest, int a, uint imm) =>
+        0x0400000000000000UL | (1UL << 53) | ((ulong)imm << 20) | (7UL << 16) | ((ulong)a << 8) | (uint)dest;
     private static ulong Ald4(int location) =>
         0xEFD8000000000000UL | (0xFFUL << 39) | (3UL << 47) | ((ulong)(0x80 + location * 16) << 20) | (7UL << 16) | (0xFFUL << 8);
     // TEX R0, R2, texture0：2D、坐标 R2/R3、写 RGBA。
@@ -2145,6 +2148,127 @@ internal static unsafe class Program
                       "phi-merged c2 separate handle resolves to texture word 90 and sampler slot 0");
             } catch (DirectCompileException error) {
                 Check(false, "phi-merged c2 separate handle must compile: " + error.Code + " " + error.Message);
+            }
+        }
+
+        // 7b3) 类型 3 句柄（#1594）：TEX.B 的句柄 = c2 贴图字 | 采样器号 << 20，OR 的另一边是低 20 位为 0 的常量（Ryujinx TextureHandleType.SeparateConstantSamplerHandle）。
+        //      翻译器查事实时给 PackOffsets(贴图字, 采样器号, 3) 与 PackSlots(贴图所在 cbuf, 0)：第二个偏移是立即数采样器池下标，不是常量缓冲字，
+        //      所以不能按「两个字都在 c2 表里」配对（那是类型 1，TrySeparateC2）。期望值手算：PackOffsets(90, 257, 3) = 90 | 257 << 14 | 3 << 28 = 809517146；
+        //      PackSlots(2, 0) = 2 | 1 << 16 = 65538（与真机读到的那批 `MISSING_FACT … cbufSlot=65538` 同一对数）。
+        //      事实只取同一个贴图字的 c2 分离事实 (字, cbufSlot 2, separate=true)；同字事实是纹素缓冲（isBuffer）的不取（立即数采样器对纹素缓冲没意义，仍按缺事实拒）。
+        //      取到事实只说明「译得下去」：结果里还没有立即数采样器的表达，不能填 slot（只填 slot 宿主会绑成采样器池第 0 项，静默错绑），所以仍按未实现拒。
+        {
+            DirectProfile p3;
+            using (JsonDocument profileDoc3 = JsonDocument.Parse(profile))
+                p3 = DirectProfile.Parse(profileDoc3.RootElement, "profile");
+            string Fact3(string stage, int handle, string samplerType, bool isBuffer, bool normalized, bool separate) =>
+                "{\"stage\":\"" + stage + "\",\"handle\":" + handle + ",\"cbufSlot\":2,\"samplerType\":\"" + samplerType + "\",\"format\":\"Unknown\",\"isBuffer\":" +
+                (isBuffer ? "true" : "false") + ",\"normalized\":" + (normalized ? "true" : "false") + ",\"separate\":" + (separate ? "true" : "false") + ",\"arrayLength\":1}";
+            string facts3 = "[" + string.Join(",", new[] {
+                Fact3("vs", 90, "cube", false, true, true),     // 字 90 在 vs 的事实（立方体、归一化）：不借给 fs
+                Fact3("fs", 90, "2d", false, false, true),      // 字 90 在 fs 的事实（2d、非归一化，用来和 vs 的区分）
+                Fact3("fs", 91, "2d", false, true, true),       // 奇数字：有事实也不是分离贴图表的项
+                Fact3("fs", 92, "buffer", true, false, true),   // 纹素缓冲：类型 3 不取
+                Fact3("fs", 94, "2d", false, true, false),      // 非分离事实：不取
+                Fact3("fs", 346, "2d", false, true, true),      // 字 346 是采样器表的起点，不是贴图字
+                Fact3("vs", 98, "2d", false, true, true) }) + "]"; // 只有 vs 有的字：fs 不借
+            using JsonDocument doc3 = JsonDocument.Parse(RequestJson(profile, "graphics", 1, 1, "const-sampler", vs, fs, textureFacts: facts3));
+            DirectProgram prog3 = DirectProgram.Parse(doc3.RootElement.GetProperty("program"), "program", p3);
+            var va3 = new DirectGpuAccessor(p3, prog3, prog3.StageOf("vs"), 1, new DirectAllocator(p3), new List<DirectQuery>());
+            var fa3 = new DirectGpuAccessor(p3, prog3, prog3.StageOf("fs"), 5, new DirectAllocator(p3), new List<DirectQuery>());
+            int slots3 = TextureHandle.PackSlots(2, 0);
+            int Const3(int word, int sampler = 257) => TextureHandle.PackOffsets(word, sampler, TextureHandleType.SeparateConstantSamplerHandle);
+            Check(Const3(90) == 809517146 && slots3 == 65538, "hand-computed type-3 handle and slots equal the numbers read on the device: " + Const3(90) + " / " + slots3);
+            try
+            {
+                Check(fa3.QuerySamplerType(Const3(90), slots3) == SamplerType.Texture2D && !fa3.QueryTextureCoordNormalized(Const3(90), slots3) &&
+                      !fa3.QueryTextureIsBuffer(Const3(90), slots3),
+                    "a type-3 handle takes its own stage's same-word c2 separate fact as is (type / buffer flag / normalized)");
+                Check(fa3.QuerySamplerType(Const3(90, 1), slots3) == SamplerType.Texture2D && fa3.QuerySamplerType(Const3(90, 4095), slots3) == SamplerType.Texture2D,
+                    "the immediate sampler index does not take part in the fact lookup");
+                Check(va3.QuerySamplerType(Const3(90), slots3) == SamplerType.TextureCube && va3.QueryTextureCoordNormalized(Const3(90), slots3),
+                    "the same handle in vs takes vs's own fact");
+            }
+            catch (DirectCompileException e) { Check(false, "type-3 fact queries should resolve: " + e.Code + " " + e.Message); }
+            // 负控：事实在却不能取的、和别的句柄类型串味的，一律仍是缺事实
+            Throws("MISSING_FACT", () => fa3.QueryTextureIsBuffer(Const3(92), slots3), "a type-3 handle on a texel-buffer fact stays a missing fact");
+            Throws("MISSING_FACT", () => fa3.QuerySamplerType(Const3(92), slots3), "a texel-buffer fact is not borrowed for the sampler type either");
+            Throws("MISSING_FACT", () => fa3.QuerySamplerType(Const3(94), slots3), "a non-separate fact is not borrowed");
+            Throws("MISSING_FACT", () => fa3.QuerySamplerType(Const3(96), slots3), "a word without any fact is a missing fact");
+            Throws("MISSING_FACT", () => fa3.QuerySamplerType(Const3(98), slots3), "another stage's fact is not borrowed");
+            Throws("MISSING_FACT", () => fa3.QuerySamplerType(Const3(91), slots3), "an odd word is not a separate texture slot");
+            Throws("MISSING_FACT", () => fa3.QuerySamplerType(Const3(346), slots3), "a sampler-table word is not a separate texture slot");
+            Throws("MISSING_FACT", () => fa3.QuerySamplerType(Const3(90), TextureHandle.PackSlots(3, 0)), "the texture word must be in c2, not another cbuf");
+            Throws("MISSING_FACT", () => fa3.QuerySamplerType(TextureHandle.PackOffsets(90, 257, TextureHandleType.SeparateSamplerHandle), slots3),
+                "the same numbers as a type-1 handle with a c0 sampler word do not take the type-3 rule");
+            Throws("MISSING_FACT", () => fa3.QuerySamplerType(TextureHandle.PackOffsets(90, 257, TextureHandleType.SeparateSamplerId), slots3),
+                "the same numbers as a type-2 handle do not take the type-3 rule");
+            Throws("MISSING_FACT", () => fa3.QuerySamplerType(TextureHandle.PackOffsets(90, 257, TextureHandleType.CombinedSampler), slots3),
+                "the same numbers as a combined handle do not take the type-3 rule");
+            // 解析口：取到事实后，类型 3 句柄在 ResolvePoolSlots 里给专门的未接说明，不填 slot / samp_slot
+            var resolver3 = typeof(DirectShaderCompiler).GetMethod("ResolvePoolSlots", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+            string Resolve3(DirectGpuAccessor accessor, int handle, int cbufSlot, out DirectBinding bound)
+            {
+                var allocator3 = new DirectAllocator(p3) { RequestKey = "const-sampler" };
+                bound = new DirectBinding("fs", "texture", "texture", 2, 0, 1);
+                allocator3.Bindings.Add(bound);
+                ShaderProgram shader3 = new(
+                    new ShaderProgramInfo(Array.Empty<BufferDescriptor>(), Array.Empty<BufferDescriptor>(),
+                        new[] { new TextureDescriptor(2, 0, SamplerType.Texture2D, TextureFormat.R8G8B8A8Unorm,
+                            cbufSlot: cbufSlot, handleIndex: handle, arrayLength: 1, separate: false, TextureUsageFlags.None) },
+                        Array.Empty<TextureDescriptor>(), ShaderStage.Fragment, 0, 0, 0,
+                        usesFragCoord: false, usesInstanceId: false, usesDrawParameters: false, usesRtLayer: false,
+                        clipDistancesWritten: 0, fragmentOutputMap: 0),
+                    Ryujinx.Graphics.Shader.Translation.TargetLanguage.Spirv, Array.Empty<byte>());
+                try
+                {
+                    resolver3.Invoke(null, new object[] { new List<(DirectStage stage, ShaderProgram shader, DirectGpuAccessor accessor)>
+                        { (prog3.StageOf("fs"), shader3, accessor) }, allocator3 });
+                    return "bound";
+                }
+                catch (System.Reflection.TargetInvocationException error) when (error.InnerException is DirectCompileException compile)
+                {
+                    return compile.Code + " " + compile.Message;
+                }
+            }
+            const string Tail3 = " [kind=texture handle=809517146 word=90 word2=257 type=3 cbuf=2/0 count=1 array=1 key=const-sampler]";
+            string resolved3 = Resolve3(fa3, Const3(90), slots3, out DirectBinding bound3);
+            Check(resolved3 == "UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 65538 is not implemented (constant sampler)" + Tail3,
+                "a type-3 handle with its same-word fact is reported as a constant-sampler handle: " + resolved3);
+            Check(bound3.Slot == -1 && bound3.SamplerSlot == -1 && bound3.UboSlot == -1, "a rejected type-3 handle gets no slot / samp_slot / uboSlot (a lone slot would bind pool sampler 0)");
+            string noFact3 = Resolve3(fa3, Const3(96), slots3, out _);
+            //   没有同字事实：走 c2 通用拒绝（#1488 的基础消息：handle= / arrayLength= / count= / request=<sha>，#1601 的尾巴补 kind / word / word2 / type / cbuf / key）；
+            //   sha 随请求内容变，所以前后两段分开比，不写死 sha
+            Check(noFact3.StartsWith("UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 65538 is not implemented (handle=" + Const3(96) +
+                                     ", arrayLength=1, count=1, request=", StringComparison.Ordinal) &&
+                  noFact3.EndsWith(") [kind=texture word=96 word2=257 type=3 cbuf=2/0 key=const-sampler]", StringComparison.Ordinal) &&
+                  !noFact3.Contains("constant sampler", StringComparison.Ordinal),
+                "a type-3 handle without a same-word fact keeps the generic rejection: " + noFact3);
+            // 真实翻译器：LDC c2[0x168] 取贴图字、LOP32I.OR 拼上立即数采样器号、TEX.B 取样；翻译器自己拼出 (809517146, 65538)
+            string Real3(string facts, uint sampler = 257)
+            {
+                byte[] shader = Guest(true, new[] { Fadd32i(2, 0.5f), Fadd32i(3, 0.5f), Ldc(6, 0x168, 2), Lop32iOr(4, 6, sampler << 20), TexBindless2D(0, 2, 4) });
+                try
+                {
+                    DirectShaderCompiler.Compile(RequestJson(profile, "graphics", 1, 1, "const-sampler", vs, shader, textureFacts: facts, fsCbUse: 4));
+                    return "compiled";
+                }
+                catch (DirectCompileException error) { return error.Code + " " + error.Message; }
+            }
+            string real3 = Real3(facts3);
+            Check(real3 == "UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 65538 is not implemented (constant sampler)" + Tail3,
+                "real translator: a constant-sampler handle compiles up to the resolver and is rejected there, not as a missing fact: " + real3);
+            string real3b = Real3(facts3, 4095);
+            Check(real3b == "UNSUPPORTED_PROGRAM fs: texture handle from cbuf slot 65538 is not implemented (constant sampler) " +
+                            "[kind=texture handle=" + Const3(90, 4095) + " word=90 word2=4095 type=3 cbuf=2/0 count=1 array=1 key=const-sampler]",
+                "real translator: another immediate sampler index only changes the logged word2: " + real3b);
+            foreach (var (what, only) in new[] {
+                ("only another stage has the fact", "[" + Fact3("vs", 90, "cube", false, true, true) + "]"),
+                ("the same-word fact is a texel buffer", "[" + Fact3("fs", 90, "buffer", true, false, true) + "]"),
+                ("the same-word fact is not separate", "[" + Fact3("fs", 90, "2d", false, true, false) + "]") })
+            {
+                string r = Real3(only);
+                Check(r.StartsWith("MISSING_FACT", StringComparison.Ordinal), "real translator: type-3 handle stays MISSING_FACT when " + what + ": " + r);
             }
         }
 
