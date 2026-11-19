@@ -153,20 +153,6 @@ namespace Ryujinx.HLE.FileSystem
         //   拦下时写，之后一次正常提交或回到上一份时删
         public const string GuardFile = ".s2a_guard";
 
-        private void MarkGuardLocked(string what)
-        {
-            try
-            {
-                WriteFileDurable(System.IO.Path.Combine(_dir, GuardFile + ".tmp"), System.IO.Path.Combine(_dir, GuardFile),
-                    System.Text.Encoding.UTF8.GetBytes($"{DateTimeOffset.UtcNow:O}\t第 {Volatile.Read(ref _commits) + 1} 次提交\t{what}\n"));
-                Txn.SyncDirectory(_dir);
-            }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-            {
-                Red($"存档事务：{_dir} 护栏标记没写上（{e.Message}）");
-            }
-        }
-
         private static void ClearGuard(string dir)
         {
             string guard = System.IO.Path.Combine(dir, GuardFile);
@@ -460,9 +446,7 @@ namespace Ryujinx.HLE.FileSystem
 
                     if (unsynced != null)
                     {
-                        Red($"存档事务：提交 {_dir} 时{unsynced}，这次不提交（已提交版本不动）");
-
-                        return ResultFs.UnexpectedInLocalFileSystemE.Log();
+                        Logger.Warning?.Print(LogClass.ServiceFs, $"【黄】存档事务：提交 {_dir} 时{unsynced}（记录已丢掉），照常提交");
                     }
 
                     errno = Txn.CloneTree(working, fresh);
@@ -486,15 +470,18 @@ namespace Ryujinx.HLE.FileSystem
                         break;
                     }
 
-                    Directory.Delete(fresh, true);
-
                     if (attempt == 2)
                     {
-                        Red($"存档事务：第 {Volatile.Read(ref _commits) + 1} 次提交 {_dir} 时克隆出的新版本和游戏写的不一样（{mismatch}；重做一次仍不对），这次不提交（已提交版本不动）");
-                        MarkGuardLocked(mismatch);
+                        // 校验不过不拒绝（维护者 11-17）：游戏收到提交错误码多半当场中止。写入记录与写盘用的是同一份字节（WritableFile.DoWrite），
+                        //   记录覆盖得到的就按记录补进新版本（克隆是写时复制，不动工作目录）再核一遍；补不了的照常提交，黄字留给定因
+                        string left = RepairFromWritesLocked(fresh);
+                        Logger.Warning?.Print(LogClass.ServiceFs, $"【黄】存档事务：第 {Volatile.Read(ref _commits) + 1} 次提交 {_dir} 克隆出的新版本和游戏写的不一样（{mismatch}；重做一次仍不对），"
+                            + (left == null ? "已按游戏写的字节补进新版本，照常提交" : $"补不全（{left}），照常提交"));
 
-                        return ResultFs.UnexpectedInLocalFileSystemE.Log();
+                        break;
                     }
+
+                    Directory.Delete(fresh, true);
 
                     firstMismatch = mismatch;
                 }
@@ -680,6 +667,53 @@ namespace Ryujinx.HLE.FileSystem
             }
 
             return null;
+        }
+
+        // 重做后仍对不上：游戏这次没动过、大小却变了的文件按已提交版本拷回；每个写过的文件按记录（偏移 + 游戏写的头部字节）写进新版本 fresh，再核一遍。
+        //   回仍对不上的说明或 null
+        private string RepairFromWritesLocked(string fresh)
+        {
+            string committed = System.IO.Path.Combine(_dir, "0");
+
+            if (Directory.Exists(committed))
+            {
+                foreach (string src in Directory.EnumerateFiles(committed, "*", SearchOption.AllDirectories))
+                {
+                    string path = "/" + System.IO.Path.GetRelativePath(committed, src).Replace(System.IO.Path.DirectorySeparatorChar, '/');
+                    string dst = HostPath(fresh, path);
+                    if (TouchedLocked(path) || (File.Exists(dst) && new FileInfo(dst).Length == new FileInfo(src).Length)) continue;
+
+                    try
+                    {
+                        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(dst));
+                        File.Copy(src, dst, overwrite: true);
+                    }
+                    catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                    {
+                        return $"没动过的文件 {path} 拷不回去（{e.Message}）";
+                    }
+                }
+            }
+
+            foreach (var (path, w) in _lastWrites)
+            {
+                string host = HostPath(fresh, path);
+
+                try
+                {
+                    Directory.CreateDirectory(System.IO.Path.GetDirectoryName(host));
+                    using FileStream stream = new(host, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None);
+                    stream.Seek(w.Offset, SeekOrigin.Begin);
+                    stream.Write(w.Head);
+                    stream.Flush(flushToDisk: true);
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    return $"文件 {path} 补不进去（{e.Message}）";
+                }
+            }
+
+            return VerifyWrittenLocked(fresh, committed);
         }
 
         // 克隆之后：①游戏这次没动过的文件，新版本里大小和已提交版本一样（非空变零字节、凭空消失都算对不上）；②每个写过的文件，在游戏最后一次写的偏移处
@@ -880,11 +914,38 @@ namespace Ryujinx.HLE.FileSystem
             }
 
             protected override Result DoRead(out long bytesRead, long offset, Span<byte> destination, in ReadOption option) => _file.Get.Read(out bytesRead, offset, destination, in option);
+            // 游戏缓冲只读一次：source 直接指着客体内存（IFile.Write 不另拷），游戏别的线程可能在这次调用期间改它（回收 / 清零）。
+            //   原先写盘读一次、记录再读一次，两次读到的不一样：真机上记成「游戏写的是 0000」而盘上是 7B7D（"{}"），提交核对两头对不上。
+            //   这里先拷一份，写盘和记录都用这一份；超过 4 MB 的大写入不拷（iPhone 低区内存紧），记录在写盘之前取头部
+            private const int CopyMax = 4 << 20;
             protected override Result DoWrite(long offset, ReadOnlySpan<byte> source, in WriteOption option)
             {
-                Result result = _file.Get.Write(offset, source, in option);
-                if (result.IsSuccess()) _txn.NoteWrite(_path, offset, source);
-                return result;
+                if (source.Length > CopyMax)
+                {
+                    byte[] head = source[..WriteHead].ToArray();
+                    Result big = _file.Get.Write(offset, source, in option);
+                    if (big.IsSuccess()) _txn.NoteWrite(_path, offset, head);
+                    return big;
+                }
+
+                byte[] buf = System.Buffers.ArrayPool<byte>.Shared.Rent(Math.Max(source.Length, 1));
+                try
+                {
+                    ReadOnlySpan<byte> data = buf.AsSpan(0, source.Length);
+                    source.CopyTo(buf);
+                    Result result = _file.Get.Write(offset, data, in option);
+                    if (result.IsSuccess()) _txn.NoteWrite(_path, offset, data);
+                    int k = Math.Min(source.Length, WriteHead);
+                    if (!source[..k].SequenceEqual(data[..k]))
+                    {
+                        Logger.Warning?.Print(LogClass.ServiceFs, $"【黄】存档事务：{_path} 偏移 {offset} 写盘期间游戏缓冲被改了（写的是 {Convert.ToHexString(data[..Math.Min(k, 8)])}…，现在是 {Convert.ToHexString(source[..Math.Min(k, 8)])}…），按写下去的那份记");
+                    }
+                    return result;
+                }
+                finally
+                {
+                    System.Buffers.ArrayPool<byte>.Shared.Return(buf);
+                }
             }
             protected override Result DoFlush() => _file.Get.Flush();
             protected override Result DoSetSize(long size)
