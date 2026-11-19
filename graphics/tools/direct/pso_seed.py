@@ -10,6 +10,7 @@
 # 只收真跑见过的（11-02 起不再补库里的计算着色器）：库里绝大多数计算着色器根本用不到——怪猎库里 6232 个、9 份真跑记录只用 33–52 个；
 #   全补进来预热要编 6663 条（别款 250–970 条），测试设备1 冷首启首帧等了 64 秒、机子烤到热状态严重。玩家拿到的永远是冷包，我们没跑过的款在玩家手里
 #   正好没有来源，补全照样是几千条。所以没有来源时种子表是空的：首帧不等，用到再编（首遇现编），编过的记进本机 pso_user.tsv 与管线存档，下次起局取。
+#   计算管线的首遇现编另由出包时离线编进随包归档消掉（graphics/tools/direct/cs_pipelines.py、pack/stage_direct_cpso.sh）：那是出包机上编、设备只打开文件，不进本表的预热行。
 import os, sys
 
 HEAD = ('# Prewarm seed list (shipped in the app, next to shader_map.tsv). Rows: S<TAB>shader key<TAB>stage / R<TAB>render pipeline key (pso_skey hex) / C<TAB>compute shader key.\n'

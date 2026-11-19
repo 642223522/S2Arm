@@ -20,7 +20,7 @@ mkdir -p $T/repo/pack $T/roots/acnh@v1/ctl; cp "$H/pack/refresh.sh" "$H/pack/roo
 printf '#!/bin/bash\necho "原件核对桩 rc=${FAKE_SRCVER_RC:-0}"; exit ${FAKE_SRCVER_RC:-0}\n' > $T/repo/pack/srcver.sh   # 原件版本核对桩（pack/srcver.sh 自己的单测见 tests/srcver_test.sh）
 cp "$H/pack/decoder_need.sh" $T/repo/pack/; mkdir -p $T/repo/translator $T/repo/graphics/nvn/tools; printf 'print("no")\n' > $T/repo/translator/glslc_offline.py; cp "$H/graphics/nvn/tools/romfs_list.py" $T/repo/graphics/nvn/tools/   # 直连链要的判据（同 tests/refresh_test.sh）
 # 直连库桩出 shaders/direct/keys.tsv（refresh.sh 核「直连库阶段退 0 但产物根里没有 keys.tsv」）
-for s in rewrite sysdata uilayout aoc caps romfsidx direct_profile extract direct direct_seed; do
+for s in rewrite sysdata uilayout aoc caps romfsidx direct_profile extract direct direct_seed direct_cpso; do
   printf '#!/bin/bash\necho "$S2A_TAG %s 起 $(python3 -c "import time;print(time.time())")" >> %s/log\n[ -n "${S2A_STUB_HOLD:-}" ] && [ %s = direct ] && { n=0; while [ ! -e "$S2A_STUB_HOLD" ] && [ $n -lt 600 ]; do sleep 0.1; n=$((n + 1)); done; }\n[ %s = direct ] && { d=$(cd -P "$S2A_ROOTS/acnh@现行" && pwd)/shaders/direct; mkdir -p "$d" && echo k > "$d/keys.tsv"; }\necho "$S2A_TAG %s 止 $(python3 -c "import time;print(time.time())")" >> %s/log\necho "🟢 %s 桩"\n' $s $T $s $s $s $T $s > $T/repo/pack/stage_$s.sh
 done
 # 本单测测的是刷新锁的先后，不测并行度：跳过 tools/cores.sh 入口的忙核采样（11-04 起采 3 秒平均，B 在采样里等 3 秒时 A 的 2 秒桩已跑完，B 碰不到在跑的 A）

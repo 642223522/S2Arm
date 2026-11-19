@@ -3,7 +3,7 @@
 """S 级优化升级补「可读瓦片版」着色器（_bf，#1152）：老包的直连库出自旧翻译器，缺 _bf，片上读取走不了、每帧整张快照（010074F013262000 Mac ④ 70800 次 / GPU 10.37 → 7.70 ms）。
 
 可读瓦片版代数 BF_GEN：翻译器每扩一次 _bf 覆盖面（新包会多出旧包没有的 _bf）就 +1。出包时记进 game.json ios.bfGen / Mac 运行版本 manifest.json bfGen；
-低于本引擎的 = 要补。补法 = 按出包同一套阶段（pack/stage_direct_profile.sh → stage_extract.sh → stage_direct.sh → stage_direct_seed.sh）整份重出直连库，进临时目录：
+低于本引擎的 = 要补。补法 = 按出包同一套阶段（pack/stage_direct_profile.sh → stage_extract.sh → stage_direct.sh → stage_direct_seed.sh → stage_direct_cpso.sh）整份重出直连库，进临时目录：
   翻译缓存键含翻译器指纹，必全未命中、要重翻；Metal 编译缓存按 MSL 内容寻址，没变的着色器多数命中。
   Mac：Mac 运行版本本身就是一份产物根（romfs / exefs / extract / 改写产物都在），克隆成临时产物根重出，新库整份换进运行版本。
   iPhone：从游戏库取材建临时产物根——game.img 标准 RomFS 段（原样 RomFS）+ 追加内容条目 + original-exefs（没有就借同款 Mac 运行版本的 exefs）；
@@ -24,7 +24,7 @@ from core import Failure
 
 BF_GEN = 1   # 1：#1152（d34f14298）片元自算 NDC→uv、_bf 输出上限 8、容样本掩码成员、认单行块 return
 WIN = os.name == "nt"   # Windows 重出走 Windows 出包的直连库那一步（_rebuild_win），Mac 走 bash 阶段脚本链（STAGES）
-STAGES = (("direct_profile", ["--require-consumer"]), ("extract", []), ("direct", []), ("direct_seed", []))
+STAGES = (("direct_profile", ["--require-consumer"]), ("extract", []), ("direct", []), ("direct_seed", []), ("direct_cpso", []))
 
 
 def stale(gen):
@@ -54,7 +54,7 @@ def rebuild(c, gid, src_root, plat, work):
     work = Path(work); roots = work / "roots"; roots.mkdir(parents=True)
     tag = f"{gid}@sgbf"
     _clone(c, src_root, roots / tag)
-    for stale_out in ("shaders/direct", ".stage_direct", ".stage_direct_seed"):   # 旧库与它的阶段键不带进来：键对得上会被当成「已是本树」跳过
+    for stale_out in ("shaders/direct", ".stage_direct", ".stage_direct_seed", ".stage_direct_cpso"):   # 旧库与它的阶段键不带进来：键对得上会被当成「已是本树」跳过
         p = roots / tag / stale_out
         shutil.rmtree(p) if p.is_dir() else p.unlink(missing_ok=True)
     os.symlink(tag, roots / f"{gid}@现行")  # 非玩家句

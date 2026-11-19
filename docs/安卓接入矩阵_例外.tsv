@@ -14,6 +14,7 @@ pack/stage_extract.sh	抽取只喂直连 LibPack，direct.enabled=false 时随 d
 pack/stage_direct_gk.sh	直连出库辅助段，安卓 direct 未启用不适用	dev-dari	2026-11-06
 pack/stage_direct_profile.sh	同上	dev-dari	2026-11-06
 pack/stage_direct_seed.sh	同上	dev-dari	2026-11-06
+pack/stage_direct_cpso.sh	直连出库辅助段（计算管线归档，Metal 专用），安卓 direct 未启用不适用	维护者	2026-11-19
 graphics/tools/direct/compiler/cli/S2A.DirectCompiler.Cli.csproj	宿主 CLI 入口工程，不进平台 AOT 闭包	dev-dari	2026-11-06
 services/S2A.Services/AssemblyInfo.cs	程序集元数据文件，无对外入口	dev-dari	2026-11-06
 runtime/src/launchctx.c	苹果 iOS 多款容器的启动上下文（选哪款、镜像包 / 模块 / 数据根）；安卓走自己的 BootContract，host_main.c 不进安卓构建，loader.c 里引用只在 TARGET_OS_IPHONE 分支	启动器线	2026-11-07
