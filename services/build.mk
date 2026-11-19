@@ -1,11 +1,14 @@
 # 服务接入线（services/、compat/）构建片段：被顶层 Makefile 包含。
 # S2A_CS=1 时把 C# 侧（NativeAOT 静态库：服务层 + Ryujinx + NxGal）链进宿主；缺省不链（原生层单独构建时进 C# 的系统调用一律报红）。
 # 链 C# 还需要渲染器 libnxgal（帧率能耗线）与原生层的全部 s2a_* 导出。
+# 空跑（make -n，含递归子 make）不在解析时真建库：下面几处 $(shell …build.sh / nxaot.sh) 解析期就执行，-n 拦不住；
+#   门禁按 make -n 干跑推导各组输入时，graphics_session 组以 S2A_CS=1 递归调 make，每次都真跑 NativeAOT 发布。空跑只要命令行，库路径给占位
+S2A_MAKE_DRY := $(findstring n,$(firstword -$(MAKEFLAGS)))
 ifeq ($(S2A_CS),1)
 # 纯 iOS 目标用下面的 IOS_LIBS，不在解析 Makefile 时先构建 Mac 库。
 # 默认宿主目标与混合目标仍保留 Mac 依赖及失败检查。
 ifneq ($(strip $(if $(MAKECMDGOALS),$(filter-out ios ios-%,$(MAKECMDGOALS)),host)),)
-S2A_CS_LDFLAGS := $(shell mkdir -p build/cs && bash services/nxaot.sh osx-arm64 2>build/cs/nxaot_osx.err | tail -1)
+S2A_CS_LDFLAGS := $(if $(S2A_MAKE_DRY),build/cs/dry-run-nxaot.a,$(shell mkdir -p build/cs && bash services/nxaot.sh osx-arm64 2>build/cs/nxaot_osx.err | tail -1))
 ifeq ($(S2A_CS_LDFLAGS),)
 $(info $(shell tail -15 build/cs/nxaot_osx.err | tr '\n' '|'))
 $(error services/nxaot.sh 失败（上一行是它输出的末尾，| 分行；全文 build/cs/nxaot_osx.err）)
@@ -14,7 +17,7 @@ endif
 S2A_CS_LIB := $(firstword $(S2A_CS_LDFLAGS))
 HOST_LIBS += -Wl,-force_load,$(S2A_CS_LIB) $(wordlist 2,999,$(S2A_CS_LDFLAGS))
 # libvpx VP8 解码（Nvdec，DirectPInvoke s2a_vpx）：libvpx + 垫片合成的静态库
-S2A_VPX_LIB := $(shell bash services/vpx/build.sh osx-arm64 2>build/cs/vpx_osx.err | tail -1)
+S2A_VPX_LIB := $(if $(S2A_MAKE_DRY),build/cs/dry-run-vpx.a,$(shell bash services/vpx/build.sh osx-arm64 2>build/cs/vpx_osx.err | tail -1))
 ifeq ($(S2A_VPX_LIB),)
 $(info $(shell tail -8 build/cs/vpx_osx.err | tr '\n' '|'))
 $(error services/vpx/build.sh 失败（全文 build/cs/vpx_osx.err）)
@@ -23,7 +26,7 @@ HOST_LIBS += $(S2A_VPX_LIB)
 # dav1d AV1 软件解码（Switch 2 直连档 nn::codec AV1 解码器在 VideoToolbox 不支持 AV1 时用，graphics/nvn/gfx/nvn/nvn2_codec.c）：dav1d + 垫片合成的静态库
 # S2A_DAV1D=0：不链软件兜底（仅适合确认所有目标机都有 AV1 硬件解码的本地构建；默认 1）
 ifneq ($(S2A_DAV1D),0)
-S2A_DAV1D_LIB := $(shell bash services/dav1d/build.sh osx-arm64 2>build/cs/dav1d_osx.err | tail -1)
+S2A_DAV1D_LIB := $(if $(S2A_MAKE_DRY),build/cs/dry-run-dav1d.a,$(shell bash services/dav1d/build.sh osx-arm64 2>build/cs/dav1d_osx.err | tail -1))
 ifeq ($(S2A_DAV1D_LIB),)
 $(info $(shell tail -8 build/cs/dav1d_osx.err | tr '\n' '|'))
 $(error services/dav1d/build.sh 失败（全文 build/cs/dav1d_osx.err）)
@@ -31,7 +34,7 @@ endif
 HOST_LIBS += $(S2A_DAV1D_LIB)
 endif
 # libopus 解码（Horizon hwopus，DirectPInvoke s2a_opus）：libopus + 垫片合成的静态库
-S2A_OPUS_LIB := $(shell bash services/opus/build.sh osx-arm64 2>build/cs/opus_osx.err | tail -1)
+S2A_OPUS_LIB := $(if $(S2A_MAKE_DRY),build/cs/dry-run-opus.a,$(shell bash services/opus/build.sh osx-arm64 2>build/cs/opus_osx.err | tail -1))
 ifeq ($(S2A_OPUS_LIB),)
 $(info $(shell tail -8 build/cs/opus_osx.err | tr '\n' '|'))
 $(error services/opus/build.sh 失败（全文 build/cs/opus_osx.err）)

@@ -260,9 +260,17 @@ public final class JobClient {
 
     /// 打开时要给玩家看什么（pack/jobs/updater.py inbox，两端共用「永远只给最新一期」）：
     ///   {popup?: {kind: update|afterUpdate, version, notes?}, banner?: 公告, messages: [...], unread, update: 查版本结果}；起不来返回 nil，不打扰玩家
-    public func inbox(current: String) async -> [String: Any]? {
-        let result = await runUpdater(["inbox", "--private-root", environment.privateRoot.path, "--platform", "mac", "--current", current])
+    public func inbox(current: String, noticesOnly: Bool = false) async -> [String: Any]? {
+        var command = ["inbox", "--private-root", environment.privateRoot.path, "--platform", "mac", "--current", current]
+        if noticesOnly { command.append("--notices-only") }
+        let result = await runUpdater(command)
         return result?["messages"] is [Any] ? result : nil
+    }
+
+    public func check(current: String, fresh: Bool) async -> [String: Any]? {
+        var command = ["check", "--platform", "mac", "--current", current]
+        if fresh { command.append("--fresh") }
+        return await runUpdater(command)
     }
 
     /// 玩家关掉了：update = 「有新版」那版（以后再说），after = 「这版更新了什么」那版，notice = 看过的最新一条公告号，feature = 看过的新功能大窗期号

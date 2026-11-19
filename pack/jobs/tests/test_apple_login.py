@@ -125,6 +125,23 @@ class AppleLogin(unittest.TestCase):
         self.assertEqual(e.exception.code, "apple_not_signed_in")
 
 
+class PlumeMacPhoneBorrowsWinInstall(unittest.TestCase):
+    """PlumeMacPhone 借 WinPhone.install 签名装机：install 里用到的 self 成员它都得有（11-18 真机：没借 say，Mac 免费账号装 App 一调就 AttributeError）。
+    期望由源码直接得出：WinPhone.install 里出现的每个 self.<名字>，PlumeMacPhone 的类成员或两个 __init__ 里赋值的实例属性都有"""
+
+    def test_members_used_by_install_exist(self):
+        import ast
+        import inspect
+        def self_attrs(fn, assigned=False):
+            tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+            return {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id == "self"
+                    and (not assigned or isinstance(n.ctx, ast.Store))}
+        used = self_attrs(install.WinPhone.install)
+        have = set(dir(install.PlumeMacPhone)) | self_attrs(install.MacPhone.__init__, True) | self_attrs(install.PlumeMacPhone.__init__, True)
+        self.assertTrue(used, "WinPhone.install 里应当用到 self 成员")
+        self.assertEqual(sorted(used - have), [], "PlumeMacPhone 缺这些 WinPhone.install 用到的成员")
+
+
 class SignerSwitched(unittest.TestCase):
     """换签名方式后第一次装才带 signerSwitched：老记录没 signer 字段时按当时只有的签法推"""
 

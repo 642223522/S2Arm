@@ -1385,8 +1385,12 @@ def _update_name(img_file, lang):
 
 
 def _update_worth(c, pack):
-    sys.path.insert(0, str(c.engine / "pack"))
-    import img
+    # pack/img.py 按文件加载：原先把 pack/ 插进 sys.path 再 import img，pack/pack.py 从此盖住 pack 包，
+    #   同一进程随后 from pack import widget_ext（_widget_ext，小组件签名）报 ImportError（test_install 整组跑 6 个用例红）
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("s2a_pack_img", c.engine / "pack" / "img.py")
+    img = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(img)
     return img.update_worth(str(pack))
 
 
@@ -2542,6 +2546,7 @@ class PlumeMacPhone(MacPhone):
         super().__init__(c, team=dict(id=acct["team"], name=acct["teamName"] or acct["account"], free=True), dev=dev, udid=udid)
 
     install = WinPhone.install                       # plumesign 签名装机（含 9401 旧写法、设备已登记、小组件去掉重来）
+    say = WinPhone.say                               # install 里交给 plumesign 的进度回调（没借它：Mac 免费账号装机一调就 AttributeError）
     bundle_for_signing = WinPhone.bundle_for_signing
 
     def install_devcert(self, ipa, steps):   # 证书签名用户不走这个类（mac_plume 已排除）

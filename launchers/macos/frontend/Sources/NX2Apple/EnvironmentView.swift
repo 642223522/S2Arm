@@ -218,26 +218,21 @@ struct EnvironmentView: View {
                 return s("update.settings.ready").replacingOccurrences(of: "{0}", with: v)
             }
             if case .working(let id, let percent) = model.updateState {
-                return s(id).replacingOccurrences(of: "{0}", with: "\(percent ?? 0)")
+                if id == "update.downloading", percent == nil { return s("update.menu.downloadingPlain") }
+                return s(id).replacingOccurrences(of: "{0}", with: percent.map(String.init) ?? "")
             }
-            if model.updateCheckFeedback == "checking" {
+            if model.isCheckingForUpdates {
                 return s("update.settings.checking")
             }
             if let v = foundVersion {
                 return s("update.settings.found").replacingOccurrences(of: "{0}", with: v)
             }
-            if model.updateCheckFeedback == "upToDate" {
-                return s("update.settings.upToDate").replacingOccurrences(of: "{0}", with: current)
-            }
-            if model.updateCheckFeedback == "failed" {
-                return s("update.settings.failed")
-            }
             return s("update.settings.current").replacingOccurrences(of: "{0}", with: current)
         }()
         let manualButtonTitle: String = {
-            if model.updateState == .ready { return s("update.settings.btn.now") }
+            if model.updateState == .ready { return s("update.top.restart") }
             if isWorking { return s("update.settings.btn.downloading") }
-            if model.updateCheckFeedback == "checking" { return s("update.settings.btn.checking") }
+            if model.isCheckingForUpdates { return s("update.settings.btn.checking") }
             if foundVersion != nil { return s("update.settings.btn.view") }
             return s("update.settings.btn.check")
         }()
@@ -260,15 +255,18 @@ struct EnvironmentView: View {
             CardDivider()
             CardRow(s("update.settings.manual"), detail: manualDetail) {
                 Button(manualButtonTitle) {
-                    if model.updateState == .ready || model.availableUpdate != nil {
+                    if model.updateState == .ready {
+                        model.showEnvironment = false
+                        model.restartToUpdate()
+                    } else if model.availableUpdate != nil {
                         model.showUpdatePopup()
                         model.showEnvironment = false
                     } else {
-                        model.manualCheckForUpdates()
+                        model.checkForUpdatesManually()
                     }
                 }
                 .controllerButtonStyle(LauncherSecondaryButtonStyle())
-                .disabled(isWorking || model.updateCheckFeedback == "checking")
+                .disabled(isWorking || model.isCheckingForUpdates)
                 .accessibilityIdentifier("settings.updates.check")
             }
         }

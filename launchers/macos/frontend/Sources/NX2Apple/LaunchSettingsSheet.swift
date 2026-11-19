@@ -183,6 +183,7 @@ struct LaunchSettingsSheet: View {
                                 }
                             }
                         }
+                        PreviousSaveRow(model: model, gameID: gameID, t: t)   // 回到上一份存档（有上一份才显示）
                     }
                     .padding(.horizontal, LauncherTheme.Space.page).padding(.bottom, LauncherTheme.Space.section)
                 }

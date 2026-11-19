@@ -688,6 +688,15 @@ static int layout_ent(const struct fd_binding *b, nvn_gpu_layout_ent *e) {
     if (b->kind == 2 && b->texel_buffer && b->count == 1 && b->tex_slot >= 0) {
         e->cls = NVN_GPU_RES_TBUF; e->src_kind = NVN_RB_TBUF; e->src_reg = (uint16_t)b->tex_slot; return 1;
     }
+    // 整池数组（解析器 pool = 1 贴图池 / 2 采样器池）：布局来源 NVN_RB_TEXP / NVN_RB_SAMPP，整表一个绑定，count = 池长 + 1（表尾 dummy，
+    //   nvn_backend.h nvn_gpu_pool_*）；资源半边分开（贴图池只是贴图、采样器池只是采样器），回放按池建快照绑（rp_draw.c）
+    if (b->kind == 2 && b->pool) {
+        if (b->count >= 0xffff) return 0;
+        e->cls = b->pool == 1 ? NVN_GPU_RES_TEX : NVN_GPU_RES_SAMP;
+        e->src_kind = b->pool == 1 ? NVN_RB_TEXP : NVN_RB_SAMPP;
+        e->src_reg = 0; e->count = (uint16_t)(b->count + 1);
+        return 1;
+    }
     if (b->kind == 2 && !b->texel_buffer && b->count > 1 && b->slot == 0) { e->cls = NVN_GPU_RES_TEX_SAMP; e->src_kind = NVN_RB_TEX; e->src_reg = 0; e->count = b->count; return 1; }
     if (b->kind == 2 && !b->texel_buffer && b->tex_slot >= 0) {
         e->cls = NVN_GPU_RES_TEX_SAMP; e->src_kind = NVN_RB_TEX; e->src_reg = (uint16_t)b->tex_slot;

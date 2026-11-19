@@ -40,6 +40,7 @@ void rp_view_pin_begin(void) {}
 void rp_view_pin_end(void) {}
 nvn_gpu_view rp_view_by_id(int id, nvn_gpu_cmd c, tex_t *t) { (void)id; (void)c; if (t) memset(t, 0, sizeof *t); return NULL; }
 nvn_gpu_view rp_view_by_id_decl(int id, uint8_t tt, uint8_t cls, int elem, nvn_gpu_cmd c, tex_t *t) { (void)tt; (void)cls; (void)elem; (void)c; if (t) memset(t, 0, sizeof *t); return id == 7 ? sample_view : NULL; }
+nvn_gpu_pool_table rp_pool_table(nvn_gpu_cmd c,int samp,int base,uint32_t n,uint8_t dtt,uint8_t dcls,const char **why){(void)c;(void)samp;(void)base;(void)n;(void)dtt;(void)dcls;if(why)*why="pool_table_unresolved";return NULL;}   // 本夹具不出整池数组
 // 此夹具未提供查询采样器证明，不使用内部查询对象。
 nvn_gpu_samp rp_sampler_for_query(void) { return NULL; }
 nvn_gpu_samp rp_samp_by_id(int id) { return id == 3 ? sample_sampler : id == 0 ? decoy_sampler : NULL; }

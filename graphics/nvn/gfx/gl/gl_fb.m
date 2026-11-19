@@ -650,24 +650,40 @@ static const char *const k_exts[] = {"GL_ARB_ES3_2_compatibility", "GL_ARB_ES3_c
     "GL_EXT_texture_compression_s3tc", "GL_EXT_texture_filter_anisotropic", "GL_ARB_vertex_array_object", "GL_ARB_direct_state_access", "GL_ARB_half_float_vertex",
     "GL_ARB_framebuffer_object", "GL_ARB_texture_float", "GL_EXT_texture_sRGB", "GL_KHR_texture_compression_astc_ldr", "GL_NV_shadow_samplers_cube"};
 enum { NEXTS = sizeof k_exts / sizeof *k_exts };
-GL(glGetString, const GLchar *, GLenum name) {
-    CTX(NULL);
+// 交出的串（静态区地址，游戏可能拷走指针）：按「gl:str:<名>:<es>」/「gl:str:i:<号>」登记身份，恢复时 gl_snap_str 按身份找回本进程的串
+static const char *gl_str_of(GLenum name, int es) {
     switch (name) {
         case 0x1F00: return "NVIDIA Corporation";                              // VENDOR
         case 0x1F01: return "NVIDIA Tegra X1 (nvgpu)/integrated (Metal)";      // RENDERER
-        case 0x1F02: return gl_es() ? "OpenGL ES 3.2 NVIDIA 349.00" : "4.5.0 NVIDIA 349.00";      // VERSION
-        case 0x8B8C: return gl_es() ? "OpenGL ES GLSL ES 3.20" : "4.50 NVIDIA";                   // SHADING_LANGUAGE_VERSION
+        case 0x1F02: return es ? "OpenGL ES 3.2 NVIDIA 349.00" : "4.5.0 NVIDIA 349.00";      // VERSION
+        case 0x8B8C: return es ? "OpenGL ES GLSL ES 3.20" : "4.50 NVIDIA";                   // SHADING_LANGUAGE_VERSION
         case 0x1F03: {                                                          // EXTENSIONS：兼容配置的整串
             static char all[1024]; if (!all[0]) for (int i = 0; i < NEXTS; i++) { strlcat(all, k_exts[i], sizeof all); strlcat(all, " ", sizeof all); }
             return all;
         }
     }
+    return NULL;
+}
+void s2a_snap_handout_id(uint64_t v, const char *id) __attribute__((weak));
+int s2a_snap_mode(void) __attribute__((weak));
+static void str_ho(const char *p, const char *fmt, unsigned a, unsigned b) {
+    if (!p || !s2a_snap_handout_id || !s2a_snap_mode || !s2a_snap_mode()) return;
+    char id[48]; snprintf(id, sizeof id, fmt, a, b); s2a_snap_handout_id((uint64_t)(uintptr_t)p, id);
+}
+const char *gl_snap_str(const char *id) {
+    unsigned a = 0, b = 0;
+    if (sscanf(id, "i:%u", &a) == 1) return a < NEXTS ? k_exts[a] : NULL;
+    return sscanf(id, "%x:%u", &a, &b) == 2 ? gl_str_of((GLenum)a, (int)b) : NULL;
+}
+GL(glGetString, const GLchar *, GLenum name) {
+    CTX(NULL);
+    const char *r = gl_str_of(name, gl_es()); if (r) { str_ho(r, "gl:str:%x:%u", name, (unsigned)gl_es()); return r; }
     gl_set_error(GL_INVALID_ENUM); return NULL;
 }
 GL(glGetStringi, const GLchar *, GLenum name, GLuint i) {
     CTX(NULL); if (name != 0x1F03) { gl_set_error(GL_INVALID_ENUM); return NULL; }
     if (i >= NEXTS) { gl_set_error(GL_INVALID_VALUE); return NULL; }
-    return k_exts[i];
+    str_ho(k_exts[i], "gl:str:i:%u", i, 0); return k_exts[i];
 }
 // 每个 draw buffer 的颜色状态；普通查询取第 0 路，indexed 查询按 i 取。
 static int color_query(GLenum p, GLuint i, double v[4]) {
@@ -873,3 +889,38 @@ GL(glGetFramebufferAttachmentParameteriv, void, GLenum target, GLenum attachment
     }
     GLRED1("glGetFramebufferAttachmentParameteriv 参数 %#x 没实现", what); gl_set_error(GL_INVALID_ENUM);
 }
+
+// ---------- 即时存档：帧缓冲对象（附件按「对象名字 + 级 / 面」，不含 Metal 贴图）与渲染缓冲（存储整张存） ----------
+enum { GF_NAME = 1, GF_ATT, GF_DRAW, GF_READ, GF_USED, GR_NAME = 1, GR_FORMAT, GR_USED, GR_HAS };
+int gl_fb_snap_save(FILE *f) {
+    if (!nvn_snap_tex_save) return -1;
+    sfw w; sfw_sec(&w, f, "gl.fbo", 1);
+    for (GLuint i = 1; i < framebuffers.n; i++) { struct gl_framebuffer *b = framebuffers.v[i]; if (!b) continue;
+        sfw_rec(&w); GLSF_W(&w, GF_NAME, i); GLSF_W(&w, GF_ATT, b->att); GLSF_W(&w, GF_DRAW, b->draw); GLSF_W(&w, GF_READ, b->read); GLSF_W(&w, GF_USED, b->used); sfw_end_rec(&w); }
+    if (sfw_end(&w)) return -1;
+    sfw_sec(&w, f, "gl.rbo", 1);
+    for (GLuint i = 1; i < renderbuffers.n; i++) { gl_renderbuffer *b = renderbuffers.v[i]; if (!b) continue; int has = b->tex != nil;
+        sfw_rec(&w); GLSF_W(&w, GR_NAME, i); GLSF_W(&w, GR_FORMAT, b->format); GLSF_W(&w, GR_USED, b->used); GLSF_W(&w, GR_HAS, has); sfw_end_rec(&w); }
+    if (sfw_end(&w)) return -1;
+    for (GLuint i = 1; i < renderbuffers.n; i++) { gl_renderbuffer *b = renderbuffers.v[i]; if (b && b->tex && nvn_snap_tex_save(f, (__bridge void *)b->tex) < 0) return -1; }
+    return 0;
+}
+int gl_fb_snap_restore(FILE *f) {
+    if (!nvn_snap_tex_load) return -1;
+    sfr r; int bad = sfr_sec(&r, f, "gl.fbo", 1) != 0;
+    while (!bad && sfr_rec(&r) == 1) { GLuint nm = 0; GLSF_R(&r, GF_NAME, nm); struct gl_framebuffer *b = calloc(1, sizeof *b); if (!nm || !b) { free(b); continue; }
+        GLSF_R(&r, GF_ATT, b->att); GLSF_R(&r, GF_DRAW, b->draw); GLSF_R(&r, GF_READ, b->read); GLSF_R(&r, GF_USED, b->used);
+        if (!gl_name_put(&framebuffers, nm, b)) { free(b); bad = 1; } }
+    sfr_done(&r);
+    if (bad || sfr_sec(&r, f, "gl.rbo", 1)) return -1;
+    GLuint *has = NULL; uint32_t n = 0, cap = 0;
+    while (sfr_rec(&r) == 1) { GLuint nm = 0; int h = 0; GLSF_R(&r, GR_NAME, nm); gl_renderbuffer *b = calloc(1, sizeof *b); if (!nm || !b) { free(b); continue; }
+        GLSF_R(&r, GR_FORMAT, b->format); GLSF_R(&r, GR_USED, b->used); GLSF_R(&r, GR_HAS, h);
+        if (!gl_name_put(&renderbuffers, nm, b)) { free(b); bad = 1; break; }
+        if (h) { if (n == cap) { cap = cap ? cap * 2 : 64; has = realloc(has, cap * sizeof *has); } has[n++] = nm; } }
+    sfr_done(&r);
+    for (uint32_t i = 0; !bad && i < n; i++) { void *p = nvn_snap_tex_load(f); if (!p) { bad = 1; break; } gl_renderbuffer *b = gl_name_get(&renderbuffers, has[i]); b->tex = (__bridge_transfer id<MTLTexture>)p; }
+    free(has);
+    return bad ? -1 : 0;
+}
+void gl_fb_snap_fps(gl_fp_cb cb) { cb("gl.att", SNAP_FP_TYPE(gl_att)); }
