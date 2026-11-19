@@ -1603,6 +1603,17 @@ public final class S2ArmLauncherModel: ObservableObject {
         do { try provider.settings.setHomeWidget(on) } catch { homeWidgetError = error.localizedDescription }
     }
 
+    // ---- 启动游戏时自动全屏（#575，缺省关；设置写 launch-settings.json 的 launchFullscreen，单款显式设过的照单款）----
+
+    @Published private(set) var launchFullscreenError: String?
+    var launchFullscreen: Bool { provider.settings.launchFullscreen }
+
+    func setLaunchFullscreen(_ on: Bool) {
+        launchFullscreenError = nil
+        objectWillChange.send()
+        do { try provider.settings.setLaunchFullscreen(on) } catch { launchFullscreenError = error.localizedDescription }
+    }
+
     // ---- 允许 AI 操作 S2Arm（本机控制口，见 S2ArmControl）----
 
     /// 开关状态（--control / S2ARM_CONTROL=1 启动时恒为开）。

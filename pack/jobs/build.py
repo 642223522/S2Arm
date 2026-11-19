@@ -222,6 +222,9 @@ def runtime_env(c, game, runtime, input_ok=True):
         if not isinstance(xbox_relay, str) or not xbox_relay or "\0" in xbox_relay:
             raise Failure("Xbox GIP 本机通道设置无效。")
         env["S2A_XBOX_GIP_SOCKET"] = xbox_relay
+    # 启动器设置「启动游戏时自动全屏」（#575）：给全局缺省，宿主（macos/front_mac.m）只在这款没显式给 S2A_FULLSCREEN 时用它
+    if c.r.get("launchFullscreen") is True:
+        env["S2A_FULLSCREEN_DEFAULT"] = "1"
     # Freeze exactly what the pre-launch card showed. Never rewrite another run's snapshot.
     # input_ok = False：宿主不认键位映射（launch 判的）→ 这局不带映射、用默认键位（v0.3.1：认不出照常玩，不让玩家先去重新打包）
     config = c.r.get("launchInputConfig") if input_ok else None

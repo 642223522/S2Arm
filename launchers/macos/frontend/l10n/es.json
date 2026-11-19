@@ -1740,6 +1740,9 @@
   "s2arm.env.widget.group": "Widget de pantalla de inicio",
   "s2arm.env.widget.title": "Incluir el widget de pantalla de inicio en el iPhone",
   "s2arm.env.widget.detail": "Un widget con forma de consola para la pantalla de inicio del iPhone que muestra tus juegos más recientes y más jugados; toca una portada para jugar. Con un Apple ID gratuito, cada instalación nueva usa un App ID más (10 cada 7 días).",
+  "s2arm.env.fullscreen.group": "Ventana de juego",
+  "s2arm.env.fullscreen.title": "Iniciar los juegos en pantalla completa",
+  "s2arm.env.fullscreen.detail": "Si está activado, todos los juegos (incluidos los que añadas después) se abren en pantalla completa; un juego con su propio ajuste de pantalla completa lo conserva.",
   "home.card.daysLeft": "Quedan %d días",
   "home.card.expired": "Caducado"
 }
