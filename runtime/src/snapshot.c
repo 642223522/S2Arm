@@ -153,7 +153,7 @@ static int save_tree_put(const char *src) {
     static uint8_t buf[1 << 20];
     for (int i = 0; i < n; i++) {
         char a[4096], b[4096]; snprintf(a, sizeof a, "%s/%s", src, v[i]); snprintf(b, sizeof b, "%s/%s", root, v[i]);
-        for (char *q = b + strlen(root) + 1; (q = strchr(q, '/')); q++) { *q = 0; mkdir(b, 0755); *q = '/'; }
+        for (char *q = b + 1; (q = strchr(q, '/')); q++) { *q = 0; mkdir(b, 0755); *q = '/'; }   // 连存档根一起建（当前可能没有存档目录）
         int fi = open(a, O_RDONLY), fo = open(b, O_WRONLY | O_CREAT | O_TRUNC, 0644); ssize_t r;
         if (fi < 0 || fo < 0) e++; else while ((r = read(fi, buf, sizeof buf)) > 0) if (write(fo, buf, (size_t)r) != r) { e++; break; }
         if (fi >= 0) close(fi); if (fo >= 0) { fsync(fo); close(fo); } w++;
@@ -476,7 +476,8 @@ static void snap_take_(const char *final_dir, int exit_after) {
     int e = 0; uint64_t raw = 0, comp = 0; int nreg = 0;
     char sfull[80]; int sfn = 0; save_full_hash(sfull, &sfn);
     { char root[2048], dst[2048]; save_root(root, sizeof root); snprintf(dst, sizeof dst, "%s/save_tree", dir);
-      if (clonefile(root, dst, 0)) { LOG("【红】即时存档：克隆存档树失败（errno %d）", errno); e = 1; } }
+      struct stat rs; if (lstat(root, &rs) && errno == ENOENT) { if (mkdir(dst, 0755)) { LOG("【红】即时存档：建空存档树失败（errno %d）", errno); e = 1; } }   // 还没有存档目录：存一棵空树
+      else if (clonefile(root, dst, 0)) { LOG("【红】即时存档：克隆存档树失败（errno %d）", errno); e = 1; } }
     s2a_snap_progress("服务层共享内存"); FILE *f = open_in(dir, "svcmem.bin", "wb"); e |= !f || s2a_snap_svcmem_save(f) || close_sync(f);
     s2a_snap_progress("内核账"); f = open_in(dir, "kernel.bin", "wb"); e |= !f || s2a_snap_kernel_save(f) || close_sync(f);
     { int s2a_snap_nro_save(FILE *); f = open_in(dir, "nro.bin", "wb"); e |= !f || s2a_snap_nro_save(f) || close_sync(f); }
@@ -737,6 +738,8 @@ int s2a_snap_restore_check(const char *dir) {
                 if (!(ok && *ok == '1')) { LOG("【红】即时存档恢复：存这个快照之后游戏又存过档（快照 %.12s…，当前 %.12s…）；恢复会把存档退回快照那一刻，等玩家确认（S2A_SNAP_SAVE_ROLLBACK=1）", v, it[i].cur); g_snap_save_moved = 1; bad++; continue; }
                 char root[2048], bk[2048], nm[64]; save_root(root, sizeof root); snprintf(nm, sizeof nm, "snap_save_backup/%lld", (long long)time(NULL)); s2a_docs_path(bk, sizeof bk, "%s", nm);
                 { char par[2048]; s2a_docs_path(par, sizeof par, "%s", "snap_save_backup"); mkdir(par, 0755); }
+                struct stat rs;   // 当前没有存档目录（快照之后存档被删 / 换了数据根）：没有可备份的，直接按快照写回
+                if (lstat(root, &rs) && errno == ENOENT) { LOG("即时存档恢复：存快照之后存档变过，玩家已确认退回；当前没有存档目录（%s），不用备份", root); continue; }
                 if (clonefile(root, bk, 0)) { LOG("【红】即时存档恢复：玩家确认退回存档，但备份当前存档失败（errno %d，%s），不恢复", errno, bk); bad++; continue; }
                 LOG("即时存档恢复：存快照之后存档变过，玩家已确认退回；当前存档已备份到 %s", bk); continue; }
             LOG("【红】即时存档恢复：%s不符（快照 %s，当前 %s），拒绝恢复", it[i].key, v, it[i].cur); bad++; }
