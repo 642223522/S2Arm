@@ -195,7 +195,9 @@ static int snap_al_dump(FILE *f, id<MTLTexture> t, uint64_t *bytes) {   // 1 存
     hd.bytes = tot; if (!fr_w(f, &x, sizeof x) || !fr_w(f, &hd, sizeof hd) || !fr_w(f, b.contents, tot)) return -1;
     *bytes += tot; return 1;
 }
-static id<MTLTexture> snap_al_load(FILE *f) {   // 读一张：建同描述的贴图、写回内容；读坏返回 nil 且 errno = EIO
+static id<MTLTexture> snap_al_load_x(FILE *f, int res);
+static id<MTLTexture> snap_al_load(FILE *f) { return snap_al_load_x(f, 1); }
+static id<MTLTexture> snap_al_load_x(FILE *f, int res) {   // 读一张：建同描述的贴图、写回内容；读坏返回 nil 且 errno = EIO。res：登记进本层常驻集（GL 出图层的贴图不登记）
     snap_al_x x; fr_tex_hd hd; errno = 0;
     if (!fr_r(f, &x, sizeof x) || !fr_r(f, &hd, sizeof hd)) { errno = EIO; return nil; }
     MTLTextureDescriptor *d = [MTLTextureDescriptor new];
@@ -206,9 +208,30 @@ static id<MTLTexture> snap_al_load(FILE *f) {   // 读一张：建同描述的�
     id<MTLBuffer> b = [g_dev newBufferWithLength:MAX(hd.bytes, 1ull) options:MTLResourceStorageModeShared];
     if (!b || !fr_r(f, b.contents, hd.bytes)) { errno = EIO; return nil; }
     if (!t) return nil;
-    res_add(t);
+    if (res) res_add(t);
     if (!fr_blit_planes(t, &hd, b, 0)) return nil;
     return t;
+}
+// GL 出图层（gfx/gl 即时存档）用：整张贴图（不是视图）连描述一起存 / 取。内容存不了（多重采样 / 格式不认 / 超 256 MB）的只存描述，取时建同描述的空贴图（下一帧重画）
+//   记录：[u8 1][snap_al_dump 那一张] 或 [u8 0][snap_al_x][fr_tex_hd（bytes = 0）]；存回 1 存了内容 / 0 只存描述 / -1 写失败；取回贴图，读坏 nil
+int nvn_snap_tex_save(FILE *f, void *tex) {
+    id<MTLTexture> t = (__bridge id<MTLTexture>)tex; uint64_t bytes = 0; long pos = ftell(f); uint8_t k = 1;
+    if (!fr_w(f, &k, 1)) return -1;
+    int r = snap_al_dump(f, t, &bytes); if (r != 0) return r;
+    fseek(f, pos, SEEK_SET); k = 0;
+    snap_al_x x = {t.usage, t.storageMode, 0}; MTLTextureSwizzleChannels sw = t.swizzle; memcpy(&x.swz, &sw, sizeof sw);
+    fr_tex_hd hd = {0, (uint32_t)t.textureType, (uint32_t)t.pixelFormat, (uint32_t)t.width, (uint32_t)t.height, (uint32_t)t.depth, (uint32_t)fr_slices(t), (uint32_t)t.mipmapLevelCount, FR_TK_PLAIN, (uint32_t)t.sampleCount};
+    return fr_w(f, &k, 1) && fr_w(f, &x, sizeof x) && fr_w(f, &hd, sizeof hd) ? 0 : -1;
+}
+void *nvn_snap_tex_load(FILE *f) {
+    uint8_t k; if (!fr_r(f, &k, 1)) return NULL;
+    if (k == 1) { id<MTLTexture> t = snap_al_load_x(f, 0); return t ? (__bridge_retained void *)t : NULL; }
+    snap_al_x x; fr_tex_hd hd; if (!fr_r(f, &x, sizeof x) || !fr_r(f, &hd, sizeof hd)) return NULL;
+    MTLTextureDescriptor *d = [MTLTextureDescriptor new];
+    d.textureType = (MTLTextureType)hd.type; d.pixelFormat = (MTLPixelFormat)hd.fmt; d.width = MAX(1u, hd.w); d.height = MAX(1u, hd.h); d.depth = MAX(1u, hd.depth); d.mipmapLevelCount = MAX(1u, hd.levels); d.sampleCount = MAX(1u, hd.samples);
+    d.arrayLength = hd.type == MTLTextureTypeCube || hd.type == MTLTextureTypeCubeArray ? MAX(1u, hd.layers / 6) : hd.type == MTLTextureType3D ? 1 : MAX(1u, hd.layers);
+    d.usage = (MTLTextureUsage)x.usage; d.storageMode = (MTLStorageMode)x.smode; MTLTextureSwizzleChannels sw; memcpy(&sw, &x.swz, sizeof sw); d.swizzle = sw;
+    id<MTLTexture> t = [g_dev newTextureWithDescriptor:d]; return t ? (__bridge_retained void *)t : NULL;
 }
 static int snap_alias_save(const char *path) {
     FILE *f = fopen(path, "wb"); if (!f) return -1;
@@ -295,16 +318,20 @@ static int snap_alias_restore(const char *path) {
     MLOG("%s即时存档恢复：共享存储贴图放回 %u 张（没放回 %u），已销毁贴图环放回 %u 个（等重建时写回 %u、没放回 %u）", ok ? "" : "【红】", put, miss, gp, gw, gm);
     return ok ? 0 : -1;
 }
+// GL 出图层（graphics/nvn/gfx/gl/egl.m）；图形单测不链 GL 片时为空
+int gl_snap_used(void) __attribute__((weak)); void gl_snap_fps(void (*cb)(const char *name, uint64_t fp)) __attribute__((weak)); int gl_snap_save(const char *path) __attribute__((weak)); int gl_snap_restore(const char *path) __attribute__((weak));
 // 本文件按整块存的后端结构的布局指纹（不同 = 布局变了，恢复拒绝；见 snapfmt.h）
 void nvn_snap_fps(void (*cb)(const char *name, uint64_t fp)) {
     cb("mtl.S", SNAP_FP_OF(S)); cb("mtl.R", SNAP_FP_OF(R)); cb("mtl.bind_cache", SNAP_FP_OF(g_bind_cache)); cb("mtl.live", SNAP_FP_TYPE(nvn_snap_live));
     cb("mtl.gpw_blk", SNAP_FP_TYPE(gpw_blk)); cb("mtl.gpw_own", SNAP_FP_TYPE(gpw_own)); cb("mtl.tex_hd", SNAP_FP_TYPE(fr_tex_hd)); cb("mtl.alias_key", SNAP_FP_TYPE(alias_key));
     cb("mtl.tfs", SNAP_FP_OF(g_tfs[0]));
+    if (gl_snap_fps) gl_snap_fps(cb);   // GL 出图层（egl.m）
 }
 int nvn_snap_save(const char *dir) {
     if (!s2a_snap_arena_get) { MLOG("【红】 即时存档：宿主没有命令记录区接口"); return -1; }
-    // GL / Vulkan 出图层（外部生产者）开过：同步对象里存着那一层的共享事件（sync_t.ext_ev），那一层的状态快照首版不衔接——明确不存，不留恢复后会坏的快照
-    if (g_ext_ev) { MLOG("【红】 即时存档：本款经 GL / Vulkan 出图层出图（外部共享事件已建），这一层的状态快照首版不支持，不存"); return -1; }
+    // GL 出图层（外部生产者）：先排空那一层、存它的对象与上下文（gfx/gl egl.m gl_snap_save）；Vulkan 层另做
+    if (gl_snap_save && gl_snap_used && gl_snap_used()) { char gp[1200]; snprintf(gp, sizeof gp, "%s/gfx_gl.bin", dir); if (gl_snap_save(gp)) { MLOG("【红】 即时存档：GL 出图层状态没存成"); return -1; } }
+    else if (g_ext_ev) MLOG("【黄】 即时存档：外部出图层（Vulkan）开过，那一层的状态这一版还不存，恢复后由游戏下一帧重建");
     uint64_t ca = 0, cu = 0, vu = 0; s2a_snap_arena_get(&ca, &cu, &vu);
     if (!ca) { MLOG("【红】 即时存档：命令记录区没开（存档模式要 S2A_CMD_ARENA=1），命令句柄落点不固定，存不了"); return -1; }
     mtl_present_flush(); mtl_finish_gpu();
@@ -415,6 +442,7 @@ int nvn_snap_restore(const char *dir) {
       if (r) { MLOG("【红】 即时存档恢复：后端延续状态读不了"); return -1; } }
     { snprintf(p, sizeof p, "%s/gfx_codec.bin", dir); FILE *f = fopen(p, "rb"); int nc = f && nvn2_snap_codec_restore ? nvn2_snap_codec_restore(f) : -1; if (f) fclose(f);
       if (nc < 0) { MLOG("【红】 即时存档恢复：视频解码器表读不了"); return -1; } if (nc) MLOG("即时存档恢复：视频解码器 %d 个按原参数重建", nc); }
+    { snprintf(p, sizeof p, "%s/gfx_gl.bin", dir); if (!access(p, F_OK)) { if (!gl_snap_restore || gl_snap_restore(p)) { MLOG("【红】 即时存档恢复：GL 出图层状态没恢复"); return -1; } } }
     SNAP_TG();
     if (ng == 8) MLOG("即时存档恢复：图形拆账 命令块 %.2f、回放层表 %.2f、共享存储贴图 %.2f、GPU 私有贴图 %.2f、只读普通贴图 %.2f、预排布贴图 %.2f、后端状态 + 视频 %.2f（秒）",
                       tg[1] - tg[0], tg[2] - tg[1], tg[3] - tg[2], tg[4] - tg[3], tg[5] - tg[4], tg[6] - tg[5], tg[7] - tg[6]);

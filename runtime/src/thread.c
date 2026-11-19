@@ -2545,6 +2545,12 @@ __attribute__((weak)) void *sw_xstack_slot(void) { return 0; }
 __attribute__((weak, noreturn)) void sw_snap_resume(void *frame) { (void)frame; abort(); }
 static _Atomic int g_snap_settled;
 // 恢复的游戏线程：绑宿主、按快照装 TSD / TLR，宿主栈上做一个门帧，按停法续跑。全程 g_frz 开着：续跑出来的线程都停回门里，等全体就位后统一放开
+#if defined(__APPLE__)
+// 弱缺省定义：真定义在 GL 出图层 graphics/nvn/gfx/gl/egl.m（线程本地的当前上下文按快照接回，同一个程序里强定义盖过它）；不链图形库的宿主构建与只链 thread.c 的单测用这份空实现
+__attribute__((weak)) void gl_snap_thread_bind(uint64_t tid) { (void)tid; }
+#endif
+// 当前线程的客体线程号（不是游戏线程回 0）：GL 出图层按它记各线程的当前上下文（即时存档）
+uint64_t s2a_snap_thread_self(void) { thr_t *t = thread_current_or_null(); return t ? t->id : 0; }
 static void *snap_thread_main(void *arg) {
     snap_thr_rec *r = &g_snap_thr[(uintptr_t)arg]; thr_t *t = g_snap_t[(uintptr_t)arg];
 #if defined(__APPLE__)
@@ -2554,6 +2560,9 @@ static void *snap_thread_main(void *arg) {
     { char nm[24]; snprintf(nm, sizeof nm, "nx-%llu", (unsigned long long)t->id); pthread_setname_np(nm); }
     t->mport = pthread_mach_thread_np(pthread_self()); t->tsd = plat_tsd_base(); t->pt = pthread_self();
     s2a_crash_thread_init();
+#if defined(__APPLE__)
+    gl_snap_thread_bind(t->id);
+#endif
     pthread_setspecific(g_keygate, (void *)sw_gate);
     pthread_setspecific(g_key18, (void *)(uintptr_t)r->k18);
     pthread_setspecific(g_keytls, (void *)(uintptr_t)r->ktls);

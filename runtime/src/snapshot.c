@@ -250,7 +250,10 @@ static uint64_t blob_resolve(const char *id) {
 }
 #define HO_MAGIC 0x33304F48u   // "HO03"：值 + 身份；段 = 名字 + 起点 + 长度
 int s2a_snap_hostslot_at(size_t i, uint64_t *where, uint64_t *v);   // loader.c
+// 弱链接[host,ios,touchtest]：gl_snap_handout_now（GL 出图层 egl.m 提供：映射着的缓冲指针在存档这一刻登记；不链图形库的宿主构建没有）
+void gl_snap_handout_now(void) __attribute__((weak_import));
 static int handout_save(FILE *f) {
+    if (gl_snap_handout_now) gl_snap_handout_now();
     { uint64_t w, v; char id[40];   // 装载器写进游戏内存的宿主地址槽：按「slot:<槽址>」登记身份（恢复时按本进程同一个槽的值换算）
       for (size_t i = 0; !s2a_snap_hostslot_at(i, &w, &v); i++) { snprintf(id, sizeof id, "slot:%llx", (unsigned long long)w); s2a_snap_handout_id(v, id); } }
     pthread_mutex_lock(&g_ho_mu); uint32_t mg = HO_MAGIC; uint64_t n = g_nho; int e = fwrite(&mg, 4, 1, f) != 1 || fwrite(&n, 8, 1, f) != 1;
@@ -261,8 +264,11 @@ static int handout_save(FILE *f) {
 // 恢复：身份 → 本进程的值（0 = 解析不了）
 uint64_t s2a_snap_hostslot_value(uint64_t where);   // loader.c
 uint64_t nvn_snap_proc(const char *name, int counting) __attribute__((weak_import));   // hle_nvn.c
+// 弱链接[host,ios,touchtest]：gl_snap_resolve（GL 出图层 graphics/nvn/gfx/gl/egl.m 提供：表面 / 上下文句柄、取函数地址、字符串、映射指针按身份换算；不链图形库的宿主构建没有）
+uint64_t gl_snap_resolve(const char *id) __attribute__((weak_import));
 static uint64_t handout_resolve(const char *id) {
     if (!strncmp(id, "blob:", 5)) return blob_resolve(id);
+    if (!strncmp(id, "gl:", 3)) return gl_snap_resolve ? gl_snap_resolve(id) : 0;
     if (!strncmp(id, "slot:", 5)) return s2a_snap_hostslot_value(strtoull(id + 5, NULL, 16));
     if (!strncmp(id, "nvn:", 4) && nvn_snap_proc) { char nm[128]; snprintf(nm, sizeof nm, "%s", id + 4); char *c = strrchr(nm, ':'); if (!c) return 0; int cnt = c[1] == 'c'; *c = 0; return nvn_snap_proc(nm, cnt); }
     return 0;
