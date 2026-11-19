@@ -1385,8 +1385,12 @@ def _update_name(img_file, lang):
 
 
 def _update_worth(c, pack):
-    sys.path.insert(0, str(c.engine / "pack"))
-    import img
+    # pack/img.py 按文件加载：原先把 pack/ 插进 sys.path 再 import img，pack/pack.py 从此盖住 pack 包，
+    #   同一进程随后 from pack import widget_ext（_widget_ext，小组件签名）报 ImportError（test_install 整组跑 6 个用例红）
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("s2a_pack_img", c.engine / "pack" / "img.py")
+    img = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(img)
     return img.update_worth(str(pack))
 
 
