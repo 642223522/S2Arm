@@ -274,9 +274,7 @@ $(NVN_TEST_DIR)/host/%.o: % runtime/src/native.h $(wildcard runtime/include/*.h)
 $(NVN_TEST_LIB): $(if $(NVN_TEST_PREBUILT),,FORCE)
 	$(MAKE) -C graphics/nvn mac OUT=$(abspath $(NVN_TEST_DIR)/nvn)
 $(NVN_TEST_WIDEN): $(if $(NVN_TEST_PREBUILT),,FORCE)
-	$(DOTNET_CMD) publish graphics/widen/S2Arm.Gfx.Widen.csproj -c Release -r osx-arm64 -nodeReuse:false -p:UseSharedCompilation=false \
-	  --artifacts-path $(abspath $(NVN_TEST_DIR)/widen-artifacts) \
-	  -o $(abspath $(NVN_TEST_DIR)/widen) -p:PublishAot=true -p:NativeLib=Shared -p:InvariantGlobalization=true
+	DOTNET="$(DOTNET_CMD)" bash graphics/widen/publish_native.sh $(abspath $(NVN_TEST_DIR)/widen-artifacts) $(abspath $(NVN_TEST_DIR)/widen)
 # runtime/gate.sh 并行跑组前先建一次 NVN 组共用的前置（10-28 门禁提速）；之后各组带 NVN_TEST_PREBUILT=1，上面两个 FORCE 不再生效、不会多组同时重写同一个库
 .PHONY: native-test-prereq
 native-test-prereq: $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
