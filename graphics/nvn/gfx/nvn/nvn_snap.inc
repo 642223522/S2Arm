@@ -22,7 +22,7 @@ static int snap_dump_tex(FILE *f, uint64_t ser, id<MTLTexture> t, uint64_t *byte
     for (uint32_t q = 0; q < hd.nplane; q++) for (NSUInteger l = 0; l < t.mipmapLevelCount; l++) tot += fr_plane_bytes(&hd.pl[q], MAX(1, t.width >> l), MAX(1, t.height >> l), MAX(1, t.depth >> l)) * hd.layers;
     if (!tot || tot > (256ull << 20)) return 0;
     id<MTLBuffer> b = [g_dev newBufferWithLength:tot options:MTLResourceStorageModeShared]; if (!b || !fr_blit_planes(t, &hd, b, 1)) return 0;
-    hd.bytes = tot; if (!fr_w(f, &hd, sizeof hd) || !fr_w(f, b.contents, tot)) return -1;
+    if (!fr_w_tex(f, &hd, b.contents, tot)) return -1;
     *bytes += tot; return 1;
 }
 static int snap_dump_pkg(const char *path, uint64_t *bytes) {
@@ -62,11 +62,11 @@ static void snap_put_pkg(const char *path, nvn_hmap *addr, int *put, int *miss) 
     pend_t *pv = NULL; int np = 0, cap = 0;
     while (snap_fread(&hd, sizeof hd, 1, f, "mtl.tex_hd")) {
         const tex_t *t = nvn_hm_get(addr, &hd.ser);
-        if (!t || t->serial != hd.ser || !tex_mtl(t)) { fseeko(f, (off_t)hd.bytes, SEEK_CUR); (*miss)++; continue; }
+        if (!t || t->serial != hd.ser || !tex_mtl(t)) { fr_skip_tex(f, &hd); (*miss)++; continue; }
         __unsafe_unretained id o = tex_get(hd.ser); NvPkg *pk = [o isKindOfClass:[NvPkg class]] ? (NvPkg *)o : nil; id<MTLTexture> mt = pk ? pk->tex : nil;
-        if (!mt || mt.width != hd.w || mt.height != hd.h || (uint32_t)mt.pixelFormat != hd.fmt || mt.mipmapLevelCount != hd.levels) { fseeko(f, (off_t)hd.bytes, SEEK_CUR); (*miss)++; continue; }
+        if (!mt || mt.width != hd.w || mt.height != hd.h || (uint32_t)mt.pixelFormat != hd.fmt || mt.mipmapLevelCount != hd.levels) { fr_skip_tex(f, &hd); (*miss)++; continue; }
         id<MTLBuffer> b = [g_dev newBufferWithLength:hd.bytes options:MTLResourceStorageModeShared];
-        if (!b || !fr_r(f, b.contents, hd.bytes)) { (*miss)++; break; }
+        if (!b || !fr_r_tex(f, &hd, b.contents)) { (*miss)++; break; }
         if (np == cap) { cap = cap ? cap * 2 : 256; pv = realloc(pv, sizeof *pv * (size_t)cap); }
         memset(&pv[np], 0, sizeof pv[np]); pv[np].hd = hd; [keep addObject:pk]; [keep addObject:mt]; [keep addObject:b];
         pv[np].pk = pk; pv[np].mt = mt; pv[np].b = b; np++;
@@ -192,7 +192,7 @@ static int snap_al_dump(FILE *f, id<MTLTexture> t, uint64_t *bytes) {   // 1 存
     for (uint32_t q = 0; q < hd.nplane; q++) for (NSUInteger l = 0; l < t.mipmapLevelCount; l++) tot += fr_plane_bytes(&hd.pl[q], MAX(1, t.width >> l), MAX(1, t.height >> l), MAX(1, t.depth >> l)) * hd.layers;
     if (!tot || tot > (256ull << 20)) return 0;
     id<MTLBuffer> b = [g_dev newBufferWithLength:tot options:MTLResourceStorageModeShared]; if (!b || !fr_blit_planes(t, &hd, b, 1)) return 0;
-    hd.bytes = tot; if (!fr_w(f, &x, sizeof x) || !fr_w(f, &hd, sizeof hd) || !fr_w(f, b.contents, tot)) return -1;
+    if (!fr_w(f, &x, sizeof x) || !fr_w_tex(f, &hd, b.contents, tot)) return -1;
     *bytes += tot; return 1;
 }
 static id<MTLTexture> snap_al_load_x(FILE *f, int res);
@@ -206,7 +206,7 @@ static id<MTLTexture> snap_al_load_x(FILE *f, int res) {   // 读一张：建同
     d.usage = (MTLTextureUsage)x.usage; d.storageMode = (MTLStorageMode)x.smode; MTLTextureSwizzleChannels sw; memcpy(&sw, &x.swz, sizeof sw); d.swizzle = sw;
     id<MTLTexture> t = [g_dev newTextureWithDescriptor:d];
     id<MTLBuffer> b = [g_dev newBufferWithLength:MAX(hd.bytes, 1ull) options:MTLResourceStorageModeShared];
-    if (!b || !fr_r(f, b.contents, hd.bytes)) { errno = EIO; return nil; }
+    if (!b || !fr_r_tex(f, &hd, b.contents)) { errno = EIO; return nil; }
     if (!t) return nil;
     if (res) res_add(t);
     if (!fr_blit_planes(t, &hd, b, 0)) return nil;
@@ -447,7 +447,7 @@ int nvn_snap_restore(const char *dir) {
         if (f) fclose(f);
         snprintf(p, sizeof p, "%s/gfx_gpu.bin", dir); f = fopen(p, "rb"); uint32_t mg = 0;
         if (f && fr_r(f, &mg, 4) && mg == FR_GPU_MAGIC) { fr_tex_hd hd;
-            while (snap_fread(&hd, sizeof hd, 1, f, "mtl.tex_hd")) { const tex_t *t = nvn_hm_get(&addr, &hd.ser); if (t && t->serial == hd.ser && tex_mtl(t)) made++; fseeko(f, (off_t)hd.bytes, SEEK_CUR); } }
+            while (snap_fread(&hd, sizeof hd, 1, f, "mtl.tex_hd")) { const tex_t *t = nvn_hm_get(&addr, &hd.ser); if (t && t->serial == hd.ser && tex_mtl(t)) made++; fr_skip_tex(f, &hd); } }
         if (f) fclose(f);
         snap_up_sync();
         fr_restore_gpu(p, &put, &miss);
@@ -457,9 +457,9 @@ int nvn_snap_restore(const char *dir) {
             while (pf && snap_fread(&hd, sizeof hd, 1, pf, "mtl.tex_hd")) {
                 const tex_t *tt = nvn_hm_get(&addr, &hd.ser); if (tt && tt->serial == hd.ser && tex_mtl(tt)) qmade++;
                 id o = tex_get(hd.ser); id<MTLTexture> mt = [o conformsToProtocol:@protocol(MTLTexture)] ? o : nil;
-                if (!mt || mt.width != hd.w || mt.height != hd.h || (uint32_t)mt.pixelFormat != hd.fmt || mt.mipmapLevelCount != hd.levels) { fseeko(pf, (off_t)hd.bytes, SEEK_CUR); qm++; continue; }
+                if (!mt || mt.width != hd.w || mt.height != hd.h || (uint32_t)mt.pixelFormat != hd.fmt || mt.mipmapLevelCount != hd.levels) { fr_skip_tex(pf, &hd); qm++; continue; }
                 id<MTLBuffer> b = [g_dev newBufferWithLength:hd.bytes options:MTLResourceStorageModeShared];
-                if (!b || !fr_r(pf, b.contents, hd.bytes)) { qm++; break; }
+                if (!b || !fr_r_tex(pf, &hd, b.contents)) { qm++; break; }
                 snap_up_sync(); if (fr_blit_planes(mt, &hd, b, 0)) qp++; else qm++;
             }
             if (pf) fclose(pf);
