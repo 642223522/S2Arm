@@ -317,6 +317,42 @@ static uint64_t code_bytes(void) {
     for (int i = 0; i < g_nmod; i++) { const module_t *m = &g_mod[i]; n += ((m->patch_off >= 0 ? (uint64_t)m->patch_off : m->image_size) + 0xfff) & ~0xfffull; }
     return n;
 }
+// ---------- 应用池按宿主余量扩 ----------
+// 应用池（Switch 3285 MB / Switch 2 9 GiB）是在模拟主机的上限。游戏要的超过它、宿主却还有真实余量时，照 Switch 回 ResLimitExceeded 等于为一个
+//   物理上不存在的限制让游戏自己中止（#1493 一款游戏开局要约 3340 MB；关掉记账就能玩，宿主撑得住）。改成：超过模拟的池时问宿主还剩多少
+//   （Mac：空闲 + 可回收页；iPhone：os_proc_available_memory，即离系统给本 App 的上限还剩多少；安卓：系统可用内存），留 512 MB 不动，
+//   给得了就把池扩到这次要用的总量；给不了才回 ResLimitExceeded 并说清是宿主余量不够。报给游戏的总量 / 资源上限跟着扩过的池走（总量 − 已用不为负）。
+//   最多扩到模拟的池再加 1/8（Switch 3285 MB → 3695 MB；9 GiB → 10.1 GiB）：按计划要的略超池的游戏放得下（#1493 多要约 55 MB），
+//   一直映射到被拒为止的游戏（一款 39 位大游戏每次 1 MB 往上探）到这里照样被拒、自己收手——不设上限时它在 Mac 上把池扩到了 61440 MB（地址窗口那么大），
+//   iPhone 上同样一路探下去会被系统杀
+#define POOL_HOST_RESERVE (512ull << 20)
+static uint64_t g_pool_headroom_div = 8;
+static uint64_t g_pool_grown;   // 扩过的池（0 = 没扩过）
+static uint64_t pool_eff(void) { return g_pool_grown > APP_POOL ? g_pool_grown : APP_POOL; }
+#ifdef S2A_UNIT_TEST
+static uint64_t g_test_host_avail;
+void s2a_mem_test_host_avail(uint64_t v) { g_test_host_avail = v; g_pool_grown = 0; }
+void s2a_mem_test_headroom_div(uint64_t d) { g_pool_headroom_div = d ? d : 8; }
+static uint64_t host_avail(void) { return g_test_host_avail; }
+#elif defined(__ANDROID__)
+static uint64_t host_avail(void) { long n = sysconf(_SC_AVPHYS_PAGES), pg = sysconf(_SC_PAGESIZE); return n > 0 && pg > 0 ? (uint64_t)n * (uint64_t)pg : 0; }
+#else
+uint64_t s2a_host_mem_avail(void);   // 苹果平台实现 runtime/src/hostmem_apple.c（iPhone：离系统给本 App 的上限还剩多少；Mac：空闲 + 可回收页）
+static uint64_t host_avail(void) { return s2a_host_mem_avail(); }
+#endif
+// 这次之后要用到的总量 need 放得下就回 1（超过模拟的池、宿主给得了时扩池）
+static int pool_fits(uint64_t need, uint64_t *avail_out) {
+    if (avail_out) *avail_out = 0;
+    if (need <= pool_eff()) return 1;
+    if (need > APP_POOL + APP_POOL / g_pool_headroom_div) return 0;   // 超出模拟的池 + 1/8：不扩（见上）
+    uint64_t extra = need - pool_eff(), av = host_avail(); if (avail_out) *avail_out = av;
+    if (av <= POOL_HOST_RESERVE || extra > av - POOL_HOST_RESERVE) return 0;
+    uint64_t was = pool_eff(); g_pool_grown = need;
+    if (was == APP_POOL || (need >> 28) != (was >> 28))   // 第一次扩、之后每过 256 MB 打一行
+        LOG("应用池按宿主余量扩：%llu MB → %llu MB（模拟的池 %llu MB；宿主余量 %llu MB，留 %llu MB 不动）", (unsigned long long)(was >> 20), (unsigned long long)(need >> 20),
+            (unsigned long long)(APP_POOL >> 20), (unsigned long long)(av >> 20), (unsigned long long)(POOL_HOST_RESERVE >> 20));
+    return 1;
+}
 // 物理映射的来往（超池那一刻打出来定因用：游戏按什么在规划、超在哪次调用）：次数 / 累计字节 + 最近 16 次（号、地址、大小、调用方）
 static uint64_t g_pm_n[2], g_pm_bytes[2];
 static struct { int num; uint64_t a, size, lr; } g_pm_ring[16]; static unsigned g_pm_next;
@@ -333,7 +369,7 @@ static void pm_overrun_dump(uint64_t lr) {
     char w[160]; s2a_where(lr, w, sizeof w);
     LOG("物理映射超池现场：本次调用方 %s；此前映射 %llu 次共 %llu MB、解除 %llu 次共 %llu MB（报给游戏的总量 %llu MB、已用 %llu MB）",
         w, (unsigned long long)g_pm_n[0], (unsigned long long)(g_pm_bytes[0] >> 20), (unsigned long long)g_pm_n[1], (unsigned long long)(g_pm_bytes[1] >> 20),
-        (unsigned long long)((APP_POOL - L.sys_resource_size) >> 20), (unsigned long long)((g_heap_cur + code_bytes() + g_mstack + g_phys) >> 20));
+        (unsigned long long)((pool_eff() - L.sys_resource_size) >> 20), (unsigned long long)((g_heap_cur + code_bytes() + g_mstack + g_phys) >> 20));
     for (unsigned i = g_pm_next > 16 ? g_pm_next - 16 : 0; i < g_pm_next; i++) {
         s2a_where(g_pm_ring[i % 16].lr, w, sizeof w);
         LOG("物理映射超池现场：  第 %u 次 %s %#llx +%llu KB 调用方 %s", i + 1, g_pm_ring[i % 16].num == 0x2C ? "映射" : "解除",
@@ -1109,7 +1145,7 @@ static int rl_value(uint32_t h, uint32_t which, int what, int64_t *v) {   // wha
     if (which >= 5) return 0xF001;   // InvalidEnumValue
     reslimit_t *r = s2a_native_handle_obj(h, 1); if (!r) return 0xE401;
     if (!r->proc) { *v = what == 0 ? r->lim[which] : what == 1 ? r->cur[which] : r->peak[which]; return 0; }
-    if (which == 0) { *v = what == 0 ? (int64_t)APP_POOL : what == 1 ? (int64_t)mem_used() : (int64_t)(g_mem_peak > mem_used() ? g_mem_peak : mem_used()); return 0; }
+    if (which == 0) { *v = what == 0 ? (int64_t)pool_eff() : what == 1 ? (int64_t)mem_used() : (int64_t)(g_mem_peak > mem_used() ? g_mem_peak : mem_used()); return 0; }
     if (what == 0) { *v = r->lim[which]; return 0; }
     static const uint32_t kind[5] = {0, S2A_OBJ_THREAD, S2A_OBJ_EVENT_R, S2A_OBJ_TMEM, S2A_OBJ_SESSION};
     int c, pk; s2a_handle_kind_count(kind[which], &c, &pk); *v = what == 1 ? c : pk; return 0;
@@ -1540,7 +1576,7 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
         if (size & 0x1fffff) { regs[0] = 0xCA01; return 1; }   // InvalidSize：Horizon 要 2 MB 对齐
         GMU_LOCK();
         uint64_t fixed = pool_fixed();
-        if (fixed > APP_POOL || size > APP_POOL - fixed) { GMU_UNLOCK(); regs[0] = 0x10801; return 1; }
+        if (size > UINT64_MAX - fixed || !pool_fits(fixed + size, NULL)) { GMU_UNLOCK(); regs[0] = 0x10801; return 1; }   // 先防加法绕回
         if (size > g_pk_heap_request) { g_pk_heap_request = size; addr_need_report(); }
         if (size > heap_region()) {
             GMU_UNLOCK();
@@ -1962,10 +1998,12 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
             if (phys_limit_on()) {   // 先数这次真正新增的子页（已映射的不重复记账，同 Ryujinx「remainingSize = size − mappedSize」），超池即拒、什么都不改
                 uint64_t add = 0;
                 for (uint64_t p = a; p < a + size; p += 0x1000) if (!(*amask_at(p) & (uint8_t)(1u << ((p & (HPG - 1)) >> 12)))) add += 0x1000;
-                if (g_heap_cur + pool_fixed() + add > APP_POOL) {
+                uint64_t av = 0;
+                if (!pool_fits(g_heap_cur + pool_fixed() + add, &av)) {
                     static int dumped; if (!dumped++) pm_overrun_dump(regs[30]);
-                    static int said; if (!said++) LOG("物理映射到应用池上限：堆 %llu MB + 代码 %llu MB + 主线程栈 %llu KB + SystemResourceSize %llu MB + 已物理映射 %llu MB，本次再要 %llu KB > 池 %llu MB，回 ResLimitExceeded（同 Switch；只打第一次）",
-                        (unsigned long long)(g_heap_cur >> 20), (unsigned long long)(code_bytes() >> 20), (unsigned long long)(g_mstack >> 10), (unsigned long long)(L.sys_resource_size >> 20), (unsigned long long)(g_phys >> 20), (unsigned long long)(add >> 10), (unsigned long long)(APP_POOL >> 20));
+                    static int said; if (!said++) LOG("物理映射到上限：堆 %llu MB + 代码 %llu MB + 主线程栈 %llu KB + SystemResourceSize %llu MB + 已物理映射 %llu MB，本次再要 %llu KB > 池 %llu MB（最多扩到模拟的池 + 1/8；宿主余量 %llu MB、留 %llu MB），回 ResLimitExceeded（只打第一次）",
+                        (unsigned long long)(g_heap_cur >> 20), (unsigned long long)(code_bytes() >> 20), (unsigned long long)(g_mstack >> 10), (unsigned long long)(L.sys_resource_size >> 20), (unsigned long long)(g_phys >> 20), (unsigned long long)(add >> 10), (unsigned long long)(pool_eff() >> 20),
+                        (unsigned long long)(av >> 20), (unsigned long long)(POOL_HOST_RESERVE >> 20));
                     GMU_UNLOCK(); regs[0] = 0x10801; return 1;
                 }
             }
@@ -2305,7 +2343,7 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
             // 4 GB 机型的内存区（Ryujinx KSystemControl / KernelInit）：应用 3285 MiB、小程序 507 MiB、系统服务约 251 MiB（上游注释量级，取决于内核保留区，近似）、
             //   nv 服务 (0x2238 + 0x710 + 0x80) × 4 KB。只有应用区按实际记账算空闲；其余三区游戏碰不到，空闲按总量报
             static const uint64_t total[4] = {3285ull << 20, 507ull << 20, 251ull << 20, (0x2238ull + 0x710 + 0x80) << 12};
-            v = id == 0 ? total[sub] : sub == 0 ? (APP_POOL > mem_used() ? APP_POOL - mem_used() : 0) : total[sub];
+            v = id == 0 ? total[sub] : sub == 0 ? (pool_eff() > mem_used() ? pool_eff() - mem_used() : 0) : total[sub];
         } else {
             if ((uint64_t)sub > 1) { regs[0] = 0xE801; regs[1] = 0; return 1; }
             v = sub == 0 ? 1 : 8;   // 特权进程号范围：Ryujinx KernelContext.PrivilegedProcessLowestId / HighestId
@@ -2347,8 +2385,8 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
         case I_StackAddr: v = L.stack_base; break;  case I_StackSize: v = L.stack_size; break;
         // 总量 / 已用量照 Ryujinx GetMemoryCapacity / GetMemoryUsage（NonSys 变体减 SystemResourceSize），与 SetHeapSize / 物理映射的核对同口径；
         // 游戏按「总量 − 已用」设堆。S2A_PHYS_LIMIT=0 应急关回旧口径（已用 = 堆 + 映像 ≥ 64 MB）
-        case I_TotalMem: v = APP_POOL; break;
-        case I_TotalNonSys: v = APP_POOL - (phys_limit_on() ? L.sys_resource_size : 0); break;
+        case I_TotalMem: v = pool_eff(); break;
+        case I_TotalNonSys: v = pool_eff() - (phys_limit_on() ? L.sys_resource_size : 0); break;
         case I_UsedMem: case I_UsedNonSys:
             if (phys_limit_on()) { v = g_heap_cur + pool_fixed() - (id == I_UsedNonSys ? L.sys_resource_size : 0); break; }
             { size_t ib = image_bytes(); v = g_heap_cur + (ib > 0x4000000 ? ib : 0x4000000); break; }
@@ -2457,7 +2495,7 @@ void s2a_mem_session_reset(void) {
     L = (s2a_layout){0}; g_npdm_core = g_npdm_prio = 0;
     g_program_id = g_core_mask = g_prio_mask = 0;
     memset(g_svc_perm, 0, sizeof g_svc_perm);
-    g_heap = NULL; g_heap_cur = 0; g_phys = g_mstack = 0;
+    g_heap = NULL; g_heap_cur = 0; g_phys = g_mstack = 0; g_pool_grown = 0;
     g_hooks = (s2a_track_hooks){0};
     memset(g_map, 0, sizeof g_map); g_nmap = 0;
     free(g_perm); g_perm = NULL; g_nperm = 0; free(g_attr); g_attr = NULL; g_nattr = 0;
@@ -2618,7 +2656,7 @@ int s2a_snap_svcmem_load(FILE *f) {
     if (heap != (uint64_t)(uintptr_t)g_heap && g_heap) { LOG("【红】即时存档恢复：堆基址不同（快照 %#llx，当前 %p）", (unsigned long long)heap, (void *)g_heap); sfr_done(&r); return -1; }
     GMU_LOCK();
     int e = 0;
-    g_heap = (uint8_t *)(uintptr_t)heap; g_heap_cur = hc; g_phys = phys; g_mstack = mstack;
+    g_heap = (uint8_t *)(uintptr_t)heap; g_heap_cur = hc; g_phys = phys; g_mstack = mstack; g_pool_grown = 0; if (mem_used() > APP_POOL) g_pool_grown = mem_used();   // 快照时扩过的池：恢复后照已用量接上
     if (hc) e |= snap_rw(heap, heap + hc);
     // 映射表、跨度、权限 / 属性账、物理映射掩码：整表换成快照的
     g_nmap = 0; g_nspan = 0; free(g_perm); g_perm = NULL; g_nperm = 0; free(g_attr); g_attr = NULL; g_nattr = 0; int cperm = 0, cattr = 0, far_pages = 0;
