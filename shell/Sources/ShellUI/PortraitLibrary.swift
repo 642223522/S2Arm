@@ -39,6 +39,9 @@ struct PortraitLibrary: View, Equatable {
     @Environment(\.shellFocus) private var focus
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.shellSnapshot) private var snapshot
+    /// The saved moment the player chose to delete, waiting for the confirmation.
+    @State private var deletingMoment: GameDetail?
 
     /// A short screen (the folded foldable is about 1.4:1) gets a smaller hero and smaller covers, so the hero,
     /// the row and Play all fit without scrolling.
@@ -85,6 +88,7 @@ struct PortraitLibrary: View, Equatable {
                             }.padding(.top, 8)
                         }
                     }
+                    moments.padding(.top, short ? 6 : 14)
                     collection.padding(.top, short ? 6 : 14)
                     recent.padding(.top, 34)
                 }.padding(.bottom, 28 + (wide ? bottomInset : 0))
@@ -113,6 +117,82 @@ struct PortraitLibrary: View, Equatable {
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { proxy.scrollTo(target, anchor: .center) }
             }
         }
+    }
+
+    /// "Continue from this moment" (0.6.0, decided 11-19): the games with a saved moment, newest first, right under the hero
+    /// so the first screen shows them however many games there are. A tap goes straight back to that moment (asking
+    /// first when the game saved after it). No saved moment anywhere: the row is not there at all.
+    @ViewBuilder private var moments: some View {
+        let saved = games.filter { $0.game.moment != nil && $0.game.state == .playable }
+            .sorted { ($0.game.moment?.savedAt ?? .distantPast) > ($1.game.moment?.savedAt ?? .distantPast) }
+        if let snapshot, !saved.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                SectionHeading(title: ShellStrings.text("Continue from this moment")).padding(.horizontal, 24)
+                ScrollView(.horizontal) {
+                    HStack(alignment: .top, spacing: 14) {
+                        ForEach(saved) { detail in momentCard(detail, restore: snapshot.restore) }
+                    }.padding(.vertical, 4)
+                }
+                .contentMargins(.horizontal, 24, for: .scrollContent)
+                .scrollIndicators(.hidden)
+                .clipped()
+            }
+            // Deleting loses the moment for good: one confirmation, then it goes (decided 11-19). The size is what it frees.
+            .alert(ShellStrings.text("Delete the saved moment?"), isPresented: Binding(get: { deletingMoment != nil }, set: { if !$0 { deletingMoment = nil } }),
+                   presenting: deletingMoment) { detail in
+                Button(ShellStrings.text("Cancel"), role: .cancel) {}
+                Button(ShellStrings.text("Delete this moment"), role: .destructive) { snapshot.delete?(detail.id) }
+            } message: { detail in
+                Text(String(format: ShellStrings.text("It takes about %@. Once deleted you can’t go back to that moment. Your game saves are not affected."),
+                            Self.momentSize(detail.game.moment?.bytes ?? 0)))
+            }
+        }
+    }
+
+    /// "820 MB": the space a saved moment takes, as Files shows sizes.
+    static func momentSize(_ bytes: Int64) -> String { ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
+
+    private func momentCard(_ detail: GameDetail, restore: @escaping (String) -> Void) -> some View {
+        let width: CGFloat = short ? 128 : 150
+        let when = detail.game.moment.map { Self.momentTime($0.savedAt) } ?? ""
+        return Button { restore(detail.id) } label: {
+            VStack(alignment: .leading, spacing: 0) {
+                Group {
+                    if let picture = detail.game.moment?.picture {
+                        Image(decorative: picture.image, scale: 1).resizable().interpolation(.high).scaledToFill()
+                    } else {
+                        CoverView(game: detail.game, radius: 0)
+                    }
+                }
+                .frame(width: width, height: width * 9 / 16).clipped()
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(detail.game.title).shellText(13, .semibold).lineLimit(1)
+                    Text(when).shellText(11.5).foregroundStyle(.white.opacity(0.6)).lineLimit(1)
+                }.padding(.horizontal, 8).padding(.vertical, 6)
+            }
+            .frame(width: width, alignment: .leading)
+            .background(.white.opacity(0.07))
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(ShellStrings.text("Continue from this moment") + ", " + detail.game.title + ", " + when)
+        .accessibilityIdentifier("moment.\(detail.id)")
+        .shellTarget("lib.moment.\(detail.id)") { restore(detail.id) }
+        .contextMenu {   // 长按：删除这一刻，标出占多少空间
+            if snapshot?.delete != nil {
+                Button(role: .destructive) { deletingMoment = detail } label: {
+                    Label(ShellStrings.text("Delete this moment"), systemImage: "trash")
+                    Text(String(format: ShellStrings.text("About %@"), Self.momentSize(detail.game.moment?.bytes ?? 0)))
+                }
+            }
+        }
+    }
+
+    /// "Today 14:32", "Yesterday 22:10", or the date: the moment's wall-clock time in the player's locale.
+    static func momentTime(_ date: Date, locale: Locale = .current) -> String {
+        let f = DateFormatter(); f.locale = locale; f.doesRelativeDateFormatting = true; f.dateStyle = .short; f.timeStyle = .short
+        return f.string(from: date)
     }
 
     private var collection: some View {
@@ -157,6 +237,13 @@ struct PortraitLibrary: View, Equatable {
         return Button { rowSelecting = !chosen; select(detail.id) } label: {
             VStack(alignment: .leading, spacing: 0) {
                 CoverView(game: detail.game, showsState: true)
+                    .overlay(alignment: .topTrailing) {   // 有存下的时刻：右上角一个小角标（入口在上面「从这一刻继续」那一条）
+                        if detail.game.moment != nil {
+                            Image(systemName: "camera.viewfinder").font(.system(size: 10, weight: .semibold)).foregroundStyle(.white)
+                                .frame(width: 20, height: 20).background(.black.opacity(0.55), in: Circle()).padding(6)
+                                .accessibilityLabel(ShellStrings.text("Continue from this moment"))
+                        }
+                    }
                     .shellTarget("lib.tile.\(detail.id)") { primary(detail) }
                 HStack(spacing: 6) {
                     if detail.game.showsNewNote { NewDot(size: 7) }

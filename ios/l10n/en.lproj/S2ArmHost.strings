@@ -603,3 +603,9 @@
 "vpad.snap.button.hint" = "Tap to save this moment; press and hold to go back to it";
 "vpad.snap.none" = "No saved moment yet. Tap the button to save one";
 "vpad.snap.savedHint" = "%@ · Press and hold the button to come back here";
+"vpad.snap.delete" = "Delete this moment";
+"vpad.snap.size" = "About %@";
+"vpad.snap.delete.title" = "Delete the saved moment?";
+"vpad.snap.delete.body" = "This snapshot takes about %@. Once deleted you can’t go back to that moment. Your game saves are not affected.";
+"vpad.snap.deleted" = "Deleted. The space is free again";
+"vpad.snap.deleteFailed" = "Couldn’t delete it completely. Try again in a moment";

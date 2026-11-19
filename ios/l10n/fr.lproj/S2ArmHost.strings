@@ -597,3 +597,9 @@
 "vpad.snap.button.hint" = "Touchez pour enregistrer ce moment ; maintenez pour y revenir";
 "vpad.snap.none" = "Aucun moment enregistré. Touchez le bouton pour en enregistrer un";
 "vpad.snap.savedHint" = "%@ · Maintenez le bouton pour revenir ici";
+"vpad.snap.delete" = "Supprimer cet instant";
+"vpad.snap.size" = "Environ %@";
+"vpad.snap.delete.title" = "Supprimer l’instant enregistré ?";
+"vpad.snap.delete.body" = "Cet instantané occupe environ %@. Une fois supprimé, vous ne pourrez plus revenir à cet instant. Vos sauvegardes de jeu ne sont pas touchées.";
+"vpad.snap.deleted" = "Supprimé. L’espace est libéré";
+"vpad.snap.deleteFailed" = "Suppression incomplète. Réessayez dans un instant";

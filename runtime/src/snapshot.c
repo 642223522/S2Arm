@@ -352,11 +352,8 @@ static int dump_mem(FILE *f, uint64_t *raw_out, uint64_t *comp_out, int *nreg) {
 static FILE *open_in(const char *dir, const char *name, const char *mode) { char p[2048]; snprintf(p, sizeof p, "%s/%s", dir, name); return fopen(p, mode); }
 static int close_sync(FILE *f) { int e = fflush(f) || fsync(fileno(f)); return fclose(f) || e ? -1 : 0; }
 #include <fts.h>
-static void rmtree(const char *path) {   // 删整棵目录（快照的临时 / 旧目录）；不存在不算错
-    char *av[] = {(char *)path, NULL}; FTS *fs = fts_open(av, FTS_PHYSICAL | FTS_NOCHDIR, NULL); if (!fs) return;
-    for (FTSENT *e; (e = fts_read(fs));) { if (e->fts_info == FTS_DP) rmdir(e->fts_path); else if (e->fts_info == FTS_F || e->fts_info == FTS_SL || e->fts_info == FTS_SLNONE || e->fts_info == FTS_DEFAULT) unlink(e->fts_path); }
-    fts_close(fs);
-}
+void s2a_snap_rmtree(const char *path);   // snapdel.c：删整棵目录（快照的临时 / 旧目录）；不存在不算错
+static void rmtree(const char *path) { s2a_snap_rmtree(path); }
 // 新快照先写进 <目录>.new，全部写完、清单标「完整」后才原子换上；中途失败旧快照原样留着（存一次失败不能把玩家上一份好快照弄坏）
 typedef snap_fp_cb fp_cb;
 static void fps_all(fp_cb cb); static FILE *g_fp_f, *g_lay_f; static void fp_write(const char *name, snap_fp fp);

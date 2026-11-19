@@ -597,3 +597,9 @@
 "vpad.snap.button.hint" = "Toca para guardar este momento; mantén pulsado para volver a él";
 "vpad.snap.none" = "Aún no hay ningún momento guardado. Toca el botón para guardar uno";
 "vpad.snap.savedHint" = "%@ · Mantén pulsado el botón para volver aquí";
+"vpad.snap.delete" = "Eliminar este momento";
+"vpad.snap.size" = "Unos %@";
+"vpad.snap.delete.title" = "¿Eliminar el momento guardado?";
+"vpad.snap.delete.body" = "Esta instantánea ocupa unos %@. Una vez eliminada, no podrás volver a ese momento. Tus partidas guardadas no se ven afectadas.";
+"vpad.snap.deleted" = "Eliminado. El espacio vuelve a estar libre";
+"vpad.snap.deleteFailed" = "No se pudo eliminar del todo. Inténtalo de nuevo en un momento";
