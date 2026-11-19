@@ -1,3 +1,4 @@
+<!-- 门禁手动：由 ohos/tests/audio-session/run.py 调用 -->
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
