@@ -296,7 +296,7 @@ static int fr_dump_state(const char *path) {
     pthread_mutex_lock(&g_mu);
     pools = malloc((size_t)(g_npool + 1) * sizeof *pools);
     for (int i = 0; pools && i < g_npool; i++) {   // 虚拟池的段不进这张表：回放由 vpool.bin 重建时登记（s2a_hle_vpool_load）
-        if (s2a_vp_arena_has && s2a_vp_arena_has((const void *)(uintptr_t)g_pools[i].lo, g_pools[i].hi - g_pools[i].lo)) continue;
+        if (g_pools[i].vpf || (s2a_vp_arena_has && s2a_vp_arena_has((const void *)(uintptr_t)g_pools[i].lo, g_pools[i].hi - g_pools[i].lo))) continue;   // vpf：虚拟池地址上的别名 / 副本（苹果宿主）；区里的：安卓那支的宿主预留
         pools[hd.npool++] = (fr_pool){g_pools[i].lo, g_pools[i].hi - g_pools[i].lo}; }
     pthread_mutex_unlock(&g_mu);
     pthread_mutex_lock(&g_smu);

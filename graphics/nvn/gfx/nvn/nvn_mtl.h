@@ -15,6 +15,10 @@ void bf_want_note(const char *key);
 // Memory pool: [mem, mem+size) is expanded outward to page boundaries to build a zero-copy buffer; look up the buffer and offset by GPU address (= CPU address)
 void nvn_be_pool_add(const void *mem, uint64_t size);
 void nvn_be_pool_del(const void *mem);
+// 虚拟池（hle_nvn.c，苹果宿主）：[at, at+len) 是虚拟池地址（不是宿主内存）。alias：登记成物理内存 phys 所在那条池的别名（同一个 Metal 缓冲、同一批字节，不另占内存）；
+//   phys 不整段落在一条已登记的池里 → 0。add_at：一段宿主内存 host（页对齐，hlen 字节）登记在 at，缓冲释放时 munmap 它（失败时当场 munmap）；key 是注销用的键（nvn_be_pool_del）。都按 key 注销
+int nvn_be_pool_alias(uint64_t at, uint64_t len, uint64_t phys);
+int nvn_be_pool_add_at(uint64_t at, uint64_t len, void *host, uint64_t hlen, const void *key);
 void nvn_be_pool_addressed(const void *mem, uint64_t size);   // the game holds a GPU address in this pool range, so raw global memory may reach it (nvn_mtl.m gmem_map)
 // memory pool Finalize: evict the textures built on this pool (pool object address) from the storage-sharing table
 void nvn_be_alias_drop_pool(const void *pool);
