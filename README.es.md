@@ -37,6 +37,8 @@ Cada juego se puede exportar como archivo .s2arm; impórtalo en otro de tus disp
 
 Los sombreadores que necesita el juego se preparan al enviarlo, así que la primera vez que entras en una zona nueva ya no hay tirones. De los **14,466** sombreadores que antes fallaban al compilar, recogidos de los diagnósticos de jugadores, ahora compilan **14,368** (**99.3%**).
 
+Cómo se cuenta: el porcentaje solo incluye los sombreadores que **habían fallado al compilar** en los diagnósticos de jugadores; no es una tasa de cobertura de todos los sombreadores. De los 98 restantes, 91 no eran sombreadores, sino memoria leída mal durante la captura (captura corregida), y los otros 7 se han corregido de raíz.
+
 ### Correcciones, rendimiento y gráficos
 
 De la 0.5.0 a la 0.6.0 (cómo se cuenta cada cifra, en la tabla):
