@@ -8,7 +8,7 @@ namespace S2A.Apple.Video
     public static class AppleVideo
     {
         // 宿主链没链真 libvpx（services/vpx 真身回 1；S2A_VPX 探测到本机可走系统 VP9、不链真身时链的是全失败的空垫片
-        //   services/vpx/stub.c，回 0——nvn2_codec.c 按同一导出回，直连线同一条口径）。垫片下 VP8 没有任何后端
+        //   services/vpx/stub.c，回 0——nvn2_codec.c 按同一导出回，直连路径同一条口径）。垫片下 VP8 没有任何后端
         //   （VideoToolbox 不解 VP8、托管也没有 VP8 解码器）：工厂回 null 落 UnavailableVp8Decoder（如实报红不出假画面）；
         //   VP9 落 VideoToolbox 系统后端 → 托管的既有回退链，原生段跳过
         [DllImport("s2a_native")] private static extern int s2a_vpx_linked();
