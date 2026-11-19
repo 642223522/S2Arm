@@ -1189,6 +1189,8 @@
   "导入版本": "Versión importada",
   "诊断详情": "Detalles de diagnóstico",
   "已出好的 iPhone 包": "Paquetes de iPhone listos",
+  "自签导出的游戏文件": "Archivo de juego de la exportación autofirmada",
+  "「S2Arm 自签导出」文件夹里这款的 .img：手机上已导入的不受影响；要再装到手机时重新「导出自签包」": "El .img de este juego en la carpeta «S2Arm Self-Sign Export»: no afecta a los juegos ya importados en el teléfono; vuelve a exportar el paquete autofirmado cuando quieras instalarlo en un teléfono.",
   "IPA 会移到废纸篓，可从废纸篓找回。删的是这款最后一个包时，资源包也一起移走。": "El IPA va a la papelera y se puede recuperar desde ahí. Si es la última compilación de este juego, su paquete de recursos también se mueve.",
   "产物已清理": "Archivos de compilación eliminados",
   "删除失败：": "Error al eliminar: ",

@@ -10394,5 +10394,13 @@
  {
   "source": "起局前已知：{0}",
   "en": "Known before launch: {0}"
+ },
+ {
+  "source": "自签导出的游戏文件",
+  "en": "Self-sign export game file"
+ },
+ {
+  "source": "「S2Arm 自签导出」文件夹里这款的 .img：手机上已导入的不受影响；要再装到手机时重新「导出自签包」",
+  "en": "This game's .img in the “S2Arm Self-Sign Export” folder: games already imported on your phone are not affected; export a self-sign package again when you want to install it on a phone."
  }
 ]

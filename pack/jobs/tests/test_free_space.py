@@ -269,7 +269,7 @@ class FreeSpace(JobCase):
             "saves": [write(layout.path(self.c, GID, "saves") / "slot0.bin", 1 * MIB)],
             "logs": [write(ios / "logs" / "build.log", 1 * MIB)],   # 在 build/ 里，但不算「旧版残留」，只报不删
         }
-        self.mib = {"legacy": 4, "shaders": 3, "mac": 1, "ipa": 1, "saves": 1, "logs": 1}
+        self.mib = {"legacy": 4, "shaders": 3, "mac": 1, "ipa": 1, "saves": 1, "logs": 1, "selfsign": 0}   # 这套夹具没导出过自签包
         self.shared = [write(W / "cache" / "air" / "shared.bin", 1 * MIB)]   # 各款共用的编库缓存：不归任何一款
         self.other = [write(layout.build_dir(self.c, OTHER) / "x.bin", 1 * MIB), write(layout.image_ios(self.c, OTHER) / "pack" / "o.bin", 1 * MIB)]
 
@@ -300,6 +300,25 @@ class FreeSpace(JobCase):
         self.assert_mib(sum(p["bytes"] for p in other["parts"] if p["id"] == "ipa"), 1)
         with self.assertRaises(Failure):
             library.space_survey(self.context("spaceSurvey", gameId="0100000000000FFF"))
+
+    def test_selfsign_export_img_is_listed_and_freed_per_game(self):
+        # #1471：「S2Arm 自签导出」里每款一份完整 .img（不和 games/ 共用块），按文件头游戏号归到这款；只删这款的，别款的留着
+        def img(path, gid, size):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            head = b"S2AIMG01" + (1).to_bytes(4, "little") + b"\0" * 4 + gid.upper().encode("ascii")
+            with open(path, "wb") as f:
+                f.write(head + b"\1" * (size - len(head)))
+            return path
+        mine = img(self.c.library / "S2Arm 自签导出" / "游戏A.img", GID, 2 * MIB)
+        other = img(self.c.library / "S2Arm Self-Sign Export" / "Game B.img", OTHER, 1 * MIB)
+        g = library.space_survey(self.context("spaceSurvey", gameId=GID))["games"][0]
+        self.assertEqual([p["id"] for p in g["parts"]], ["legacy", "shaders", "mac", "ipa", "selfsign"])
+        self.assert_mib(next(p["bytes"] for p in g["parts"] if p["id"] == "selfsign"), 2)
+        out = library.space_free(self.context("spaceFree", gameId=GID, library=str(self.c.library), parts=["selfsign"]))
+        self.assertEqual([p["id"] for p in out["parts"]], ["selfsign"])
+        self.assertFalse(mine.exists())
+        self.assertTrue(other.exists())
+        self.assertNotIn("selfsign", [p["id"] for p in library.space_survey(self.context("spaceSurvey", gameId=GID))["games"][0]["parts"]])
 
     def test_free_deletes_only_chosen_parts(self):
         out = library.space_free(self.context("spaceFree", gameId=GID, library=str(self.c.library), parts=["ipa", "shaders"]))
