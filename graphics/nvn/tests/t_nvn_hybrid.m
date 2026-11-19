@@ -1,10 +1,16 @@
-// 混合管线（nvn_hybrid.inc）：首遇没有精确管线、又不能跳过的绘制，用这对着色器的拉取管线先画。直接包含生产 nvn_mtl.m 调 pso_get_，着色器是现编的真 Metal 函数（拉取版手写，
-//   读的就是 nvn_hybrid.inc 的布局块）。期望按规则手写，不由被测实现推出：
+// 混合管线（nvn_hybrid.inc）：首遇没有精确管线的绘制，用这对着色器的拉取管线先画。直接包含生产 nvn_mtl.m 调 pso_get_；精确版顶点着色器现编，
+//   拉取版是 mk 编好的 <key>_bp.metallib（t_nvn_hybrid_bp.metal：前导 dm_vlayout / dm_fetch 从翻译器 Pull.cs 原样摘出，入口照 Pull.cs 写出的形状），由宿主 pull_fn 从库目录载入。
+//   期望按规则手写，不由被测实现推出：
+//   ⓪ 两半接口：库容器名 <key>_bp → 种类 55（lib_pack_core.inc / LibPack.cs）、_bp.json 不是一种；反射 pull {entry main0, slot 16} 认、槽不是 16 / 入口不是 main0 / 没有 pull 不认；
+//      合批键（_b.json 带 fn_prefix）的拉取库照样载入（_bp 逐键编、入口不带前缀）
 //   ① 第一次首遇、这对的拉取基础管线还没有：照旧拿精确管线（不是拉取的，g_pso_pull 0），后台踢出 1 条基础管线
 //   ② 基础管线建好后，同一对换一种画布格式（新管线键）首遇：拿到拉取管线（g_pso_pull 1，不是精确那条），精确那条已在后台表里（状态 1 / 2）；特化计数 +1
 //   ③ 同一键再取：精确那条编好前给同一条拉取管线（不再特化），编好后给精确的（g_pso_pull 0）
 //   ④ 布局块：流 0 基址 0x...2（不按 4 对齐）→ 填的基址是它按 4 下取整、属性偏移 + 2；步长、除数原样；没登记的流（流 1 指向池外）不填、它的属性字 0
-//   ⑤ 拉取管线真能画：用 Metal 4 命令编码器、槽 16 绑布局块画一个三角形，读回像素 = 精确管线在同样顶点数据上画的（片元输出顶点属性）
+//   ⑤ 拉取管线真能画：先核测试自己的 Metal 4 编码能画（无顶点输入的常量色三角形读回 (0.5, 0.25, 0.25, 1)）；再用槽 16 绑布局块画同样 3 个顶点的 RGBA16F 版、
+//      流基址余 2（元素地址都是偶数：16 位分量的对齐，Pull.cs / t_vs_pull 的契约；32 位分量要 4 的倍数，Metal 顶点抓取同），一条拉取管线吃另一种顶点格式（基础管线不带顶点布局）；
+//      精确管线（建时 RGBA32F）画对齐的 RGBA32F 副本。片元输出插值后的顶点属性：4×4 目标的像素 (1, 1) 中心在 NDC (-0.25, 0.25)，
+//      读回 half 逐位 = b400 3400 3400 3c00（-0.25, 0.25, 0.25, 1），两条管线相同
 //   反证：DM_PSO_HYBRID=0（子进程）→ ② 拿到的是精确管线、g_pso_pull 0
 #include "../gfx/nvn/nvn_mtl.m"
 #include <sys/wait.h>
@@ -17,15 +23,11 @@ static NSString *const source = @"#include <metal_stdlib>\nusing namespace metal
 "struct VO { float4 p [[position]]; float4 a [[user(locn0)]]; };\n"
 "struct VI { float4 m_0 [[attribute(0)]]; };\n"
 "vertex VO main0(VI in [[stage_in]]) { VO o; o.p = float4(in.m_0.xy, 0, 1); o.a = in.m_0; return o; }\n"
-// 拉取版：布局块与 nvn_hybrid.inc pull_layout 同（属性字 = 格式 8 位、偏移 19 位、流 5 位）；这里只解 RGBA32F
-"struct dm_vstream { device const uchar *base; uint stride; uint divisor; };\n"
-"struct dm_vlayout { dm_vstream s[16]; uint attr[32]; };\n"
-"vertex VO main0_p(constant dm_vlayout& L [[buffer(16)]], uint vid [[vertex_id]]) {\n"
-"  uint w = L.attr[0], off = (w >> 8) & 0x7ffffu, st = w >> 27;\n"
-"  float4 m = *(device const packed_float4 *)(L.s[st].base + off + vid * L.s[st].stride);\n"
-"  VO o; o.p = float4(m.xy, 0, 1); o.a = m; return o; }\n"
 "struct F0 { float4 a [[user(locn0)]]; };\n"
-"fragment float4 fa(F0 i [[stage_in]]) { return i.a; }\n";
+"fragment float4 fa(F0 i [[stage_in]]) { return i.a; }\n"
+// ⑤ 的编码自检：无顶点输入、常量色
+"vertex float4 ck_v(uint v [[vertex_id]]) { float2 p[3] = {float2(-1, -1), float2(3, -1), float2(-1, 3)}; return float4(p[v], 0, 1); }\n"
+"fragment float4 ck_f() { return float4(0.5, 0.25, 0.25, 1); }\n";
 
 static NvShader *shader(id<MTLLibrary> lib, NSString *fn, const char *key, int stage) {
     NvShader *s = [NvShader new]; s->stage = stage; s->fn = [lib newFunctionWithName:fn]; REQUIRE(s->fn); s->plib = lib; strlcpy(s->key, key, sizeof s->key);
@@ -41,17 +43,30 @@ static int run(int hybrid) {
     char user[] = "/tmp/t_nvn_hybrid_XXXXXX"; int fd = mkstemp(user); REQUIRE(fd >= 0); close(fd); setenv("DM_PSO_USER", user, 1);
     char map[] = "/tmp/t_nvn_hybrid_map_XXXXXX"; fd = mkstemp(map); REQUIRE(fd >= 0); close(fd); setenv("DM_NVN_SHMAP", map, 1);
     setenv("DM_NVN_PSO_FRAME_MS", "0", 1);
-    mtl_init();
+    const char *libdir = getenv("T_HYBRID_LIB"); REQUIRE(libdir);   // mk 编好的 aaaaaaaaaaaaaaaa_bp.metallib 所在目录
+    mtl_init(); g_msl_dir = @(libdir);   // 没有容器（lib.idx）：lib_from_pack 读 <库目录>/<名>.metallib
     if (hybrid && !hybrid_on()) { printf("SKIP 本机不是 Metal 4 后端（macOS 26 以下或 NXGAL_BE=mtl3）：混合管线不适用\n"); return 0; }
     NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:source options:nil error:&e]; REQUIRE(lib);
     NvShader *vs = shader(lib, @"main0", "aaaaaaaaaaaaaaaa_b", 0), *fs = shader(lib, @"fa", "cccccccccccccccc_b", 1);
-    vs->has_pull = 1; vs->pfn = [lib newFunctionWithName:@"main0_p"]; vs->pull_lib = lib; vs->pfn_state = 1; REQUIRE(vs->pfn);
+    // ⓪ 两半接口
+    if (hybrid) {
+        VERIFY(lp_kind_of("aaaaaaaaaaaaaaaa_bp", 0) == 55 && LP_K_BP == 55 && lp_kind_of("aaaaaaaaaaaaaaaa_bp", 1) == -1, "⓪ 库容器：<key>_bp → 种类 %d（期望 55）、_bp.json → %d（期望 -1）",
+               lp_kind_of("aaaaaaaaaaaaaaaa_bp", 0), lp_kind_of("aaaaaaaaaaaaaaaa_bp", 1));
+        int r_ok = pull_refl_ok(@{@"pull": @{@"entry": @"main0", @"entry_z": @"main0_z", @"slot": @16, @"inputs": @[@0]}}), r_slot = pull_refl_ok(@{@"pull": @{@"entry": @"main0", @"slot": @17}}),
+            r_ent = pull_refl_ok(@{@"pull": @{@"entry": @"main1", @"slot": @16}}), r_none = pull_refl_ok(@{@"stage": @"vs"});
+        VERIFY(r_ok && !r_slot && !r_ent && !r_none, "⓪ 反射 pull：{main0, 16} %d（期望 1）、槽 17 %d、入口 main1 %d、没有 pull %d（期望都 0）", r_ok, r_slot, r_ent, r_none);
+    }
+    vs->has_pull = pull_refl_ok(@{@"pull": @{@"entry": @"main0", @"slot": @16, @"inputs": @[@0]}}); REQUIRE(vs->has_pull);
+    vs->fnpfx = @"s0123456789abcdef_";   // 当作合批键：_b 的函数带前缀（vs->fn 已直接给），_bp 逐键编不带
+    if (hybrid) { id<MTLFunction> pf = pull_fn(vs);
+        VERIFY(pf && [pf.name isEqual:@"main0"] && vs->pfn_state == 1, "⓪ 合批键的拉取库从库目录载入：入口 %s（期望 main0）、状态 %d（期望 1）", pf.name.UTF8String ?: "-", vs->pfn_state); REQUIRE(pf); }
     NvProg *pr = [NvProg new]; pr->sh[0] = vs; pr->sh[1] = fs;
     // 顶点数据：池里 3 个 RGBA32F 顶点，流 0 基址故意不按 4 对齐（+2）
     static uint8_t *pool; REQUIRE(!posix_memalign((void **)&pool, 16384, 65536)); memset(pool, 0, 65536); nvn_be_pool_add(pool, 65536);
     const float verts[3][4] = {{-1, -1, 0.25f, 1}, {3, -1, 0.25f, 1}, {-1, 3, 0.25f, 1}};
     uint8_t *vb = pool + 4096 + 2; memcpy(vb, verts, sizeof verts);
-    memset(&S, 0, sizeof S); S.nattr = 1; S.attr[0].fmt = 0x2E; S.attr[0].offset = 0; S.attr[0].stream = 0;
+    memset(&S, 0, sizeof S); S.chmask.mask = 0xffffffffu;   // 颜色写掩码全开（游戏由 ChannelMaskState 设缺省；S 全零 = 管线写掩码全零、什么都不写）
+    S.nattr = 1; S.attr[0].fmt = 0x2E; S.attr[0].offset = 0; S.attr[0].stream = 0;
     S.stream[0].stride = 16; S.vbuf[0].address = (uint64_t)(uintptr_t)vb; S.vbuf[0].size = sizeof verts;
     memset(&g_pass, 0, sizeof g_pass); g_pass.cfmt[0] = (uint32_t)MTLPixelFormatRGBA32Float; g_pass.samples = 1;
 
@@ -82,31 +97,39 @@ static int run(int hybrid) {
     S.vbuf[1].address = 0x1234560; S.vbuf[1].size = 64; S.nattr = 2; S.attr[1].fmt = 0x2E; S.attr[1].stream = 1; pull_layout_fill(&L, vs);
     VERIFY(L.s[1].base == 0 && L.attr[1] == 0, "④ 池外的流 1：基址 %#llx、属性 1 字 %#x（期望都 0：读 0）", (unsigned long long)L.s[1].base, L.attr[1]);
     S.nattr = 1; S.vbuf[1].address = 0;
-    // ⑤ 真画：拉取管线（Metal 4 编码器、槽 16 布局块）与精确管线（同一份顶点数据经顶点描述）画出的像素一致
+    // ⑤ 真画：编码自检、拉取管线（非对齐流、槽 16 布局块）、精确管线（对齐副本、顶点描述）
     if (@available(macOS 26.0, iOS 26.0, *)) {
+        uint8_t *va = pool + 8192; memcpy(va, verts, sizeof verts); void *mba; uint64_t moa, gpua; REQUIRE(mtl_gpu_addr((uint64_t)(uintptr_t)va, sizeof verts, &mba, &moa, &gpua)); REQUIRE(!(gpua & 3));
+        static const uint16_t vh[3][4] = {{0xbc00, 0xbc00, 0x3400, 0x3c00}, {0x4200, 0xbc00, 0x3400, 0x3c00}, {0xbc00, 0x4200, 0x3400, 0x3c00}};   // half (-1, -1) (3, -1) (-1, 3)，z 0.25、w 1
+        uint8_t *vhp = pool + 12288 + 2; memcpy(vhp, vh, sizeof vh); void *mbh; uint64_t moh, gpuh; REQUIRE(mtl_gpu_addr((uint64_t)(uintptr_t)vhp, sizeof vh, &mbh, &moh, &gpuh)); REQUIRE((gpuh & 3) == 2);
+        va_st a0 = S.attr[0]; NVNbufferRange b0 = S.vbuf[0]; uint32_t st0 = S.stream[0].stride;
+        S.attr[0].fmt = 0x29; S.vbuf[0].address = (uint64_t)(uintptr_t)vhp; S.vbuf[0].size = sizeof vh; S.stream[0].stride = 8;   // RGBA16F（t_vs_pull 格式表 0x29）
+        MTLRenderPipelineDescriptor *cd = [MTLRenderPipelineDescriptor new]; cd.vertexFunction = [lib newFunctionWithName:@"ck_v"]; cd.fragmentFunction = [lib newFunctionWithName:@"ck_f"];
+        cd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float; id<MTLRenderPipelineState> cps = [g_dev newRenderPipelineStateWithDescriptor:cd error:&e]; REQUIRE(cps);
         MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float width:4 height:4 mipmapped:NO];
         td.usage = MTLTextureUsageRenderTarget; td.storageMode = MTLStorageModeShared;
-        uint16_t px[2][4]; id<MTLRenderPipelineState> pss[2] = {ps2, ps4};
+        uint16_t px[3][4]; id<MTLRenderPipelineState> pss[3] = {cps, ps2, ps4};
         id<MTLBuffer> lb = [g_dev newBufferWithLength:sizeof L options:MTLResourceStorageModeShared]; pull_layout_fill(&L, vs); memcpy(lb.contents, &L, sizeof L);
-        id<MTLBuffer> poolb = [g_dev newBufferWithBytesNoCopy:pool length:65536 options:MTLResourceStorageModeShared deallocator:nil];
+        S.attr[0] = a0; S.vbuf[0] = b0; S.stream[0].stride = st0;
         id<MTL4CommandQueue> q = [g_dev newMTL4CommandQueue]; id<MTL4CommandAllocator> ca = [g_dev newCommandAllocator];
         id<MTLResidencySet> rs = [g_dev newResidencySetWithDescriptor:[MTLResidencySetDescriptor new] error:&e]; REQUIRE(rs);
-        for (int i = 0; i < 2; i++) {
-            id<MTLTexture> t = [g_dev newTextureWithDescriptor:td];
-            [rs addAllocation:t]; [rs addAllocation:lb]; [rs addAllocation:poolb]; [rs commit];
+        [rs addAllocation:lb]; [rs addAllocation:(__bridge id<MTLBuffer>)mb]; [rs addAllocation:(__bridge id<MTLBuffer>)mba]; [rs addAllocation:(__bridge id<MTLBuffer>)mbh];   // 顶点数据在后端登记池子的那个缓冲里（mtl_gpu_addr 给的），不在别处
+        for (int i = 0; i < 3; i++) {
+            id<MTLTexture> t = [g_dev newTextureWithDescriptor:td]; [rs addAllocation:t]; [rs commit];
             id<MTL4CommandBuffer> cb = [g_dev newCommandBuffer]; [cb beginCommandBufferWithAllocator:ca]; [cb useResidencySet:rs];
             MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new]; rp.colorAttachments[0].texture = t; rp.colorAttachments[0].loadAction = MTLLoadActionClear; rp.colorAttachments[0].storeAction = MTLStoreActionStore;
             id<MTL4RenderCommandEncoder> en = [cb renderCommandEncoderWithDescriptor:rp];
-            id<MTL4ArgumentTable> at; MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxBufferBindCount = 31; at = [g_dev newArgumentTableWithDescriptor:ad error:&e]; REQUIRE(at);
-            [at setAddress:(i == 0 ? lb.gpuAddress : gpu) atIndex:16];   // 拉取：布局块；精确：流 0 = VB_SLOT(0) = 16
+            MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxBufferBindCount = 31; id<MTL4ArgumentTable> at = [g_dev newArgumentTableWithDescriptor:ad error:&e]; REQUIRE(at);
+            if (i) [at setAddress:(i == 1 ? lb.gpuAddress : gpua) atIndex:16];   // 拉取：布局块；精确：流 0 = VB_SLOT(0) = 16
             [en setArgumentTable:at atStages:MTLRenderStageVertex]; [en setRenderPipelineState:pss[i]];
             [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; [en endEncoding]; [cb endCommandBuffer];
-            id<MTLSharedEvent> ev = [g_dev newSharedEvent]; [q commit:&cb count:1]; [q signalEvent:ev value:1]; [ev waitUntilSignaledValue:1 timeoutMS:5000];
+            id<MTLSharedEvent> ev = [g_dev newSharedEvent]; [q commit:&cb count:1]; [q signalEvent:ev value:1]; REQUIRE([ev waitUntilSignaledValue:1 timeoutMS:5000]);
             [t getBytes:px[i] bytesPerRow:32 fromRegion:MTLRegionMake2D(1, 1, 1, 1) mipmapLevel:0];
         }
-        // 片元输出顶点属性 (?, ?, 0.25, 1) 插值：z、w 恒定；两条管线逐位相同、且 z = 0.25（half 0x3400）、w = 1（0x3c00）
-        VERIFY(!memcmp(px[0], px[1], sizeof px[0]) && px[0][2] == 0x3400 && px[0][3] == 0x3c00, "⑤ 拉取管线与精确管线画出的像素：%04x %04x %04x %04x / %04x %04x %04x %04x（期望逐位相同、z 0x3400、w 0x3c00）",
-               px[0][0], px[0][1], px[0][2], px[0][3], px[1][0], px[1][1], px[1][2], px[1][3]);
+        VERIFY(px[0][0] == 0x3800 && px[0][1] == 0x3400 && px[0][2] == 0x3400 && px[0][3] == 0x3c00, "⑤ 编码自检（常量色三角形）：%04x %04x %04x %04x（期望 3800 3400 3400 3c00）", px[0][0], px[0][1], px[0][2], px[0][3]);
+        static const uint16_t want[4] = {0xb400, 0x3400, 0x3400, 0x3c00};
+        VERIFY(!memcmp(px[1], want, sizeof want) && !memcmp(px[2], want, sizeof want), "⑤ 拉取管线（RGBA16F、流基址余 2）/ 精确管线（RGBA32F）画出的像素：%04x %04x %04x %04x / %04x %04x %04x %04x（期望都 b400 3400 3400 3c00）",
+               px[1][0], px[1][1], px[1][2], px[1][3], px[2][0], px[2][1], px[2][2], px[2][3]);
     }
     return 0;
 }
@@ -120,6 +143,6 @@ int main(int argc, char **argv) { @autoreleasepool {
         int st = 0; pid_t w; do { w = waitpid(pid, &st, 0); } while (w < 0 && errno == EINTR); REQUIRE(w == pid);
         bad += !(WIFEXITED(st) && WEXITSTATUS(st) == 0);
     }
-    printf("%s t_nvn_hybrid：缺省 / DM_PSO_HYBRID=0 两个子进程，%u 个不过（混合管线：首遇不能跳的绘制用拉取管线先画）\n", bad ? "✗" : "✓", bad);
+    printf("%s t_nvn_hybrid：缺省 / DM_PSO_HYBRID=0 两个子进程，%u 个不过（混合管线：首遇没有精确管线的绘制用拉取管线先画）\n", bad ? "✗" : "✓", bad);
     return bad != 0;
 } }

@@ -1,11 +1,12 @@
 // 混合管线：首遇没有精确管线的绘制不等编译器（照上游参考实现（MIT）hybrid pipelines / dmsh_pull，S2Arm 改写；nvn_mtl.m 内含）。
 //   顶点着色器另有拉取式库 <key>_bp（Pull.cs）：入口不带 [[stage_in]]，从槽 16 的布局块（pull_layout，按笔填）自己读顶点流，位级等同 Metal 顶点抓取。
 //   用它的管线没有顶点描述，一对着色器的所有顶点布局共用一条「拉取基础管线」：颜色状态留空（Unspecialized），用 Metal 4 编译器后台建一次；
-//   之后每种颜色状态按本笔特化（newRenderPipelineStateBySpecializationWithDescriptor，不进着色器编译）。首遇当场要等的那笔（目标跨帧保留内容、
-//   不能跳）改用它先画，精确管线照旧后台编（pso_pend_kick），编好后下一笔起换回精确的。拉取基础管线还没建好就照旧等，并在后台建它，下一次首遇就用上。
+//   之后每种颜色状态按本笔特化（newRenderPipelineStateBySpecializationWithDescriptor，不进着色器编译）。精确管线不在的首遇（不论能不能跳）改用它先画，
+//   精确管线照旧后台编（pso_pend_kick），编好后下一笔起换回精确的。拉取基础管线还没建好就照旧走跳过 / 现编等待，并在后台建它，下一次首遇就用上。
 //   只在 Metal 4 后端（Metal 4 编译器的特化）；片元只用 main0 本身（带透明测试 / 输出类型 / 采样模拟常量的变体先不走）；合并遍、可读瓦片、顶点补齐变体、
 //   写层顶点、曲面细分、变换反馈不走。DM_PSO_HYBRID=0 关
 enum { PULL_SLOT = 16 };   // = Pull.cs SLOT：顶点缓冲槽 VB_SLOT(0)，没有顶点描述的管线不用它
+_Static_assert(PULL_SLOT == VB_SLOT(0), "Pull.cs SLOT is the first vertex buffer slot (pull_refl_ok)");
 typedef struct { uint64_t base; uint32_t stride, divisor; } pull_stream;
 typedef struct { pull_stream s[16]; uint32_t attr[32]; } pull_layout;   // = Pull.cs dm_vlayout（流基址 / 步长 / 实例除数；属性字 = va_st 位段：格式 8、偏移 19、流 5）
 _Static_assert(sizeof(pull_layout) == 384, "Pull.cs dm_vlayout");
@@ -26,8 +27,8 @@ static id<MTLFunction> pull_fn(NvShader *vs) {   // 拉取入口（与 vs->ventr
     if (!vs->pfn_state) {
         vs->pfn_state = 2;
         size_t kl = strlen(vs->key); NSString *path = [NSString stringWithFormat:@"%.*s_bp", (int)(kl > 2 ? kl - 2 : kl), vs->key];
-        NSError *e = nil; id<MTLLibrary> lib = lib_from_pack(path.UTF8String, &e); id<MTLFunction> f = lib && vs->ventry ? [lib newFunctionWithName:fnn(vs, vs->ventry)] : nil;
-        if (f && f.functionConstantsDictionary.count) f = [lib newFunctionWithName:fnn(vs, vs->ventry) constantValues:[MTLFunctionConstantValues new] error:&e];   // as shader_load
+        // _bp 逐键编（Build.cs PullBuild），不进合批库：入口就叫 main0 / main0_z，不带 _b 合批的 fn_prefix（fnn）
+        NSError *e = nil; id<MTLLibrary> lib = lib_from_pack(path.UTF8String, &e); id<MTLFunction> f = lib_entry(lib, vs->ventry);
         const char *why = !lib ? "no library" : !f ? "no entry point" : NULL;
         if (f && vs->rf.nb && argcheck_on() && [f newArgumentEncoderWithBufferIndex:vs->rf.abi].encodedLength != vs->arg_len) { why = "its argument buffer differs from the base library's"; f = nil; }
         if (f) { vs->pfn = f; vs->pull_lib = lib; vs->pfn_state = 1; g_pull_loaded++; }
