@@ -274,7 +274,10 @@ def main():
     bundle(resources / "Engine", args.developer_dir)
     bundle_shell(resources / "Engine/engine.json", resources / "Shell", env)
     bundle_shell(resources / "Engine/engine.json", resources / "Shell-tvOS", env, "tvos")   # Apple TV 预编壳（0.5.2：0.5.0 发版没带，出 Apple TV 包必败）
-    declared_min = declared_minimum_macos(app, runtime_sources.deployment_target())   # 随包程序（Intel 的 MacPorts bash）要求高于编译下限时照实声明，不谎报最低系统
+    # 随包程序（Intel 的 MacPorts bash）要求高于编译下限时照实声明，不谎报最低系统。只在 Intel 出包机上抬：Apple 芯片正式包照旧按部署下限声明、
+    #   包内有程序要求更高系统由下面的最低系统检查报红（不悄悄把 macOS 15 的玩家挡在外面）
+    import platform
+    declared_min = declared_minimum_macos(app, runtime_sources.deployment_target()) if platform.machine() == "x86_64" else runtime_sources.deployment_target()
     info = dict(**frontend_layout.info_identity(front), CFBundlePackageType="APPL",
                 CFBundleIconFile="S2Arm", LSMinimumSystemVersion=declared_min,
                 NSHighResolutionCapable=True, CFBundleDevelopmentRegion="en", CFBundleLocalizations=["en", "zh-Hans", "zh-Hant", "ja", "es", "fr"],   # 同界面语言（frontend/l10n）；系统语言不在其中时照 CFBundleDevelopmentRegion 用英文
