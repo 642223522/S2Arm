@@ -136,7 +136,7 @@ ck "⑦ --plat ios：退出 ${r}、恰好 4 个对 + 预热对的 .mtl4archive.l
 unz_ok() {   # 每份解开 = metal-tt 写出的原样（包装另存的 <名>.bin），且压过的比原样小
   local f n=0 b
   for f in "$T"/o5/*.lzfse; do b=$(basename "$f" .mtl4archive.lzfse); [ -s "$T/raw/$b.bin" ] || return 1
-    compression_tool -decode -a lzfse -i "$f" -o "$T/unz.$b" 2> /dev/null && cmp -s "$T/unz.$b" "$T/raw/$b.bin" && [ "$(stat -f%z "$f")" -lt "$(stat -f%z "$T/raw/$b.bin")" ] || return 1; n=$((n + 1)); done
+    compression_tool -decode -a lzfse -i "$f" -o "$T/unz.$b" 2> /dev/null && cmp -s "$T/unz.$b" "$T/raw/$b.bin" && [ "$(wc -c < "$f")" -lt "$(wc -c < "$T/raw/$b.bin")" ] || return 1; n=$((n + 1)); done
   [ $n = 5 ]; }
 ck "⑦ 5 份 .lzfse 用 compression_tool 解开都与 metal-tt 写出的原样逐字节相同、且比原样小（$(du -k "$T/raw" | tail -1 | cut -f1) KB 原样 → $(cat "$T"/o5/*.lzfse | wc -c | tr -d ' ') 字节）；读数「逐对 lzfse 压缩」" \
    'unz_ok && [[ "$(tail -1 <<< "$o")" == *"逐对 lzfse 压缩"* ]]'
