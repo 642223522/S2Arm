@@ -116,7 +116,7 @@ typedef struct { uint32_t width, height; } present_tex_desc;
 typedef struct { present_tex_desc d; } tex_t;
 PRODUCTION_WINDOW_STRUCT
 
-static _Atomic uint64_t g_frame_seq, g_replayed_fence;
+static _Atomic uint64_t g_replayed_fence;
 static uint64_t g_lost_from_fence;
 static double g_present_at[256];
 static uint64_t g_frame_exec_ns, g_frame_cmds, g_op_ns[256], g_op_n[256];
@@ -125,9 +125,6 @@ static int fixture_jump_ready;
 static jmp_buf fixture_error_jump;
 
 extern void nvn_vk_pcprof_tick(void) __attribute__((weak));
-extern void s2a_adpf_discard(void) __attribute__((weak));
-extern void s2a_adpf_invisible(void) __attribute__((weak));
-extern void s2a_adpf_frame_end(int64_t, uint64_t) __attribute__((weak));
 extern int s2a_direct_vk_sync_window(void) __attribute__((weak));
 extern int s2a_direct_vk_try_attach_window(void) __attribute__((weak));
 

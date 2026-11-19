@@ -18,6 +18,7 @@ API_AVAILABLE(macos(26.0), ios(26.0))
 @public
     int w, h; NSUInteger hw, hh; MTLPixelFormat hpf; uint64_t n;
     id<MTLTexture> in_tex[2], mid_tex, depth, motion;   // 输入图两张轮换（这一帧 / 上一帧；同一队列按序，读写不会撞）、补出的帧、常数深度、运动矢量
+    id<MTLTexture> fsr_in;   // S2A_SCALING_FILTER=Fsr 且要做切镜头检查时：fsMid 先把「补出的帧 / 切镜头时的这一帧」画进它，再过 FSR（首次用时建）
     id mfx;   // MTL4FXFrameInterpolator：编进上屏那条 Metal 4 队列的命令缓冲
     id<MTLRenderPipelineState> psoCopy, psoMid;
     id<MTLComputePipelineState> mvDown, mvDown2, mvMatch, mvSpread, mvCut; id<MTLTexture> luma[2], luma16[2]; id<MTLBuffer> mvBlocks, mvCoarse, mvSad, mvFlag, mvArgs; id mvTab; int qw, qh, bw, bh, cw16, ch16, cbw, cbh;   // 自算运动矢量（DM_PRESENT_FI_MV）：亮度图随输入图轮换，上一帧的不重算
@@ -29,7 +30,10 @@ API_AVAILABLE(macos(26.0), ios(26.0))
     uint64_t unpaired, gpu_n, cuts; double gpu_sum, gpu_max; _Atomic uint64_t cut_seq;   // cuts / cut_seq：判成切镜头的次数 / 最近一次的帧号（完成回调里写；下一次插值据此重置历史）   // unpaired：上一帧没进输入图 / 没取到画布，这一帧只当下一帧的前一帧；gpu_*：插值那一槽（缩拷 + 运动矢量 + MetalFX + 画进画布）的 GPU 时间，完成回调里在 g_pq_mu 下累计（每 300 帧一行）
 }
 @end
-@implementation NvPresentFI @end
+@implementation NvPresentFI
+// fsr_in（FSR 补出帧的中间图）随这一代退休：同 NvPresentFSR 的 dealloc，交给 defer_obj_release，下一次游戏提交做完才出驻留集
+- (void)dealloc { if (fsr_in) defer_obj_release(fsr_in); }
+@end
 
 __attribute__((weak)) int s2a_fps_source(void) { return 1; }   // runtime/src/caps.c 给强定义（2 = 社区帧率补丁开着）；图形单测不链宿主时按「补帧」
 static int g_fi_state = -1;   // -1 没读开关；0 关 / 已回退；1 开
@@ -256,7 +260,7 @@ static NvPresentFI *fi_get(CAMetalLayer *layer, NSUInteger cw, NSUInteger ch) {
             [[c renderCommandEncoderWithDescriptor:rp] endEncoding]; [c commit]; [c waitUntilCompleted];
         }
         NSError *te = nil;
-        for (int i = 0; i < 4; i++) { f->uv[i] = [g_dev newBufferWithLength:8 * sizeof(float) options:MTLResourceStorageModeShared]; res_add(f->uv[i]); f->tab[i] = tab_new(i == 2 ? 2 : 1, i == 2 ? 2 : 1, 1, &te); if (!f->uv[i] || !f->tab[i]) { fi_off("cannot create the blit tables"); return nil; } }
+        for (int i = 0; i < 4; i++) { f->uv[i] = [g_dev newBufferWithLength:16 * sizeof(float) options:MTLResourceStorageModeShared]; res_add(f->uv[i]); f->tab[i] = tab_new(i == 2 ? 2 : 1, i == 2 ? 2 : 1, 1, &te); if (!f->uv[i] || !f->tab[i]) { fi_off("cannot create the blit tables"); return nil; } }   // PR3b：16 浮点（uv[2]/uv[3] 也喂 present_blit_m4 的共享着色器，Crop 全量读；fi_pass 自家 fsCopy/fsMid 的 32 字节 Crop 不变）
         for (int i = 0; i < 3; i++) { f->alloc[i] = [g_dev newCommandAllocator]; f->cb[i] = [g_dev newCommandBuffer]; f->slot_free[i] = dispatch_semaphore_create(1); if (!f->alloc[i] || !f->cb[i]) { fi_off("cannot create the command buffers"); return nil; } }
         f->last_seq = f->last_pair_seq = UINT64_MAX; atomic_store(&f->cut_seq, UINT64_MAX);
         if (!fi_copy_setup(f)) { fi_off("cannot create the copy pipeline"); return nil; }
@@ -368,6 +372,16 @@ static void fi_job(NvPresentFI *f, CAMetalLayer *layer, id<MTLTexture> src, fi_c
             if (!dm) return 1;
             if (dup) return present_blit_m4(cb, src, dm.texture, crop, f->uv[2], f->tab[2], flip, 1);
             int cut_check = use_fx && fi_mv_mode() && f->mvFlag;   // 切镜头时 GPU 上改画这一帧的输入图
+            if (g_present_fsr) {   // FSR 1（nvn_present_fsr.inc）：补出的帧与真帧一样过 FSR。切镜头检查在 GPU 上选图，先由 fsMid 画进同尺寸的 fsr_in 再过 FSR；
+                //   最后那次上屏拷贝用空着的 uv / tab 1（2 号这一遍已被 fsMid 占用）。-1 = 做不了（已报红），照原样
+                id<MTLTexture> fin = mid;
+                if (cut_check) {
+                    if (!f->fsr_in) f->fsr_in = fi_tex(MTLPixelFormatBGRA8Unorm, f->w, f->h, MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead);
+                    fin = f->fsr_in;
+                    if (fin && !fi_pass(cb, f->psoMid, f->tab[2], f->uv[2], mid, f->in_tex[k], fin, NULL, NO, 0, 0)) return 0;
+                }
+                if (fin) { int fr = present_fsr_encode(cb, fin, dm.texture, NULL, FSR_SLOT_FI_MID, NO, YES, 0, f->uv[1], f->tab[1], f); if (fr >= 0) return fr; }
+            }
             return fi_pass(cb, cut_check ? f->psoMid : f->psoCopy, f->tab[2], f->uv[2], mid, cut_check ? f->in_tex[k] : nil, dm.texture, NULL, NO, vw, vh);
         }, use_fx ? ^(int gok, double gms) {
             int cut = fi_mv_mode() && f->mvFlag && *(volatile uint32_t *)f->mvFlag.contents;
@@ -382,7 +396,9 @@ static void fi_job(NvPresentFI *f, CAMetalLayer *layer, id<MTLTexture> src, fi_c
     // 真帧（游戏原图直接画进画布）：有补出的帧就隔半个游戏周期再上
     double half = period > 0 ? period / 2 : 1.0 / 60;
     id<CAMetalDrawable> dr = [layer nextDrawable];
-    if (dr && fi_commit(f, 2, dr, ^int(id cb) { return present_blit_m4(cb, src, dr.texture, crop, f->uv[3], f->tab[3], flip, 1); }, ^(int ok2, double gms) { (void)ok2; (void)gms; fi_ticket_done(ticket); })) {
+    if (dr && fi_commit(f, 2, dr, ^int(id cb) {
+            if (g_present_fsr && !dup) { int fr = present_fsr_encode(cb, src, dr.texture, crop, FSR_SLOT_FI_REAL, flip, YES, 0, f->uv[3], f->tab[3], f); if (fr >= 0) return fr; }   // FSR 1，真帧
+            return present_blit_m4(cb, src, dr.texture, crop, f->uv[3], f->tab[3], flip, 1); }, ^(int ok2, double gms) { (void)ok2; (void)gms; fi_ticket_done(ticket); })) {
 #if !TARGET_OS_SIMULATOR
         present_note(dr, ticket); fi_count_on(dr, &g_fi_on_real);
         if (mid_shown) [dr presentAfterMinimumDuration:half]; else [dr present];

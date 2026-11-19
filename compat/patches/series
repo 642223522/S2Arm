@@ -642,3 +642,7 @@
 20261118-1950-gai-null-host-offline.patch
 20261116-2320-apple-audio-device-types.patch
 20261118-1759-apple-audio-recover-verify.patch
+20261119-0423-nvmap-id-reset-on-session-reset.patch
+20261119-0016-snap-nro-hash.patch
+20261119-0352-snap-horizon-domain-ids.patch
+20261118-2112-time-catchup-log.patch

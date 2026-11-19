@@ -1,4 +1,5 @@
 // iOS App 壳：UIKit 占主线程（s2a_front_run 覆盖 host_main.c 的弱缺省）。窗口与根视图在这里建；Metal 层与触屏 / 手柄由帧率能耗线、服务接入线挂到 s2a_ios_root_view()。
+#include "s2a_loadprog.h"   // 前台激活门
 #include <dlfcn.h>
 #import "s2a_l10n.h"
 #import <UIKit/UIKit.h>
@@ -798,7 +799,7 @@ static void audio_category_apply(void) {
         LOG("[心跳] 帧 %llu，热状态 %ld（0 正常 1 一般 2 严重 3 危急），进程实占 %llu MB，%s，持续执行档 %d（1 = 系统按稳态功率限制本进程，要权限 sustained-execution），低电量模式 %d，低区空洞合计 %llu MB、最大一块 %llu MB，文件句柄 %d / 软上限 %llu%s", (unsigned long long)s2a_ap_frames(), (long)NSProcessInfo.processInfo.thermalState,
             s2a_footprint_mb(), (const char *[]){"前台", "前台失焦", "后台"}[app_state],
             (int)[NSProcessInfo.processInfo hasPerformanceProfile:NSProcessPerformanceProfileSustained], (int)NSProcessInfo.processInfo.lowPowerModeEnabled, (unsigned long long)(lt >> 20), (unsigned long long)(ll >> 20), fn, (unsigned long long)fs, wins);
-        // 本款本机实测峰值（vawin.c s2a_guest_mem_note：只记没开文件后备那几局的进程实占，#783）：下一局起局按它判文件后备开不开
+        // 本局需求（vawin.c s2a_guest_mem_note：匿名局记实占、文件后备局记实占 + 窗口里在内存的客体页）：下一局起局结算进实测记录，按它判文件后备开不开（#1634）
         { void s2a_guest_mem_note(uint64_t footprint); s2a_guest_mem_note((uint64_t)s2a_footprint_mb() << 20); }
         int s2a_disk_io(uint64_t *rd, uint64_t *wr, uint64_t *pageins);   // energy.c（只此一处用，不进 native.h：那是出包抽取阶段的键）
         // 写盘量（11-05 能耗线，客体内存文件后备的代价）：本进程累计与近 10 秒，内存紧张时内核把文件脏页写回闪存的量在这里看
@@ -903,6 +904,8 @@ static void top_alert(UIWindow *w, NSString *title, NSString *body) {
 }
 @interface S2ASceneDelegate ()
 - (void)enterGame;
+- (void)bootFromScene;
+- (void)bootFromSceneState;
 @end
 static void library_play_go(const char *gid, S2ASceneDelegate *sd);
 // 崩了能恢复（11-13 维护者改定：补丁 / 金手指是玩家主动开的，开局前不再问；崩了下次进来自动关掉、告诉玩家关了什么，想用去设置里再开）：
@@ -1345,8 +1348,9 @@ static void cloud_sync_done(void *ctx) {
     S2ASceneDelegate *sd = (__bridge S2ASceneDelegate *)ctx;
     sd.cloudSyncing = NO;
     if (sd.previousRoot) { sd.window.rootViewController = sd.previousRoot; sd.previousRoot = nil; }
-    // App 正在后台：不起宿主，等系统下次真激活时调 sceneDidBecomeActive
-    if (sd.window.windowScene.activationState == UISceneActivationStateForegroundActive) [sd sceneDidBecomeActive:sd.window.windowScene];
+    // App 正在后台：不起宿主，等系统下次进前台时再起；前台（激活或弹框盖着未激活）就接着起，开跑前由前台激活门等激活
+    UISceneActivationState a = sd.window.windowScene.activationState;
+    if (a == UISceneActivationStateForegroundActive || a == UISceneActivationStateForegroundInactive) [sd bootFromSceneState];
 }
 // 主屏小组件点封面（s2arm://play/<游戏号>，11-16 维护者：小组件进 0.5.0；Info.plist 的 CFBundleURLTypes 见 runtime/build.mk）：
 //   游戏库还开着 → 同玩家点「开始」（library_play：崩溃恢复 → 起局前检查 → 起宿主；资源不在手机上的款照常说明为什么开不了）；
@@ -1417,7 +1421,7 @@ static void widget_open(NSURL *url, void *ctx) {
     note_build();
     if (g_help_args) help_build(g_help_args[0], g_help_args[1], g_help_args[2]);
     dguard_show_pending();
-    [self sceneDidBecomeActive:self.window.windowScene];
+    [self bootFromSceneState];
 }
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options {
     (void)session;
@@ -1492,8 +1496,24 @@ static void widget_open(NSURL *url, void *ctx) {
     const s2a_launch_ctx *lc = s2a_launch_ctx_get();
     s2a_shell_cloud_upload_background(lc && lc->game_id[0] ? lc->game_id : "");
 }
+// 场景进前台（还没激活：系统弹框可能盖着）就开始起宿主：加载照做，起游戏主线程前由前台激活门（loadprog.c s2a_load_front_wait）等激活
+- (void)sceneWillEnterForeground:(UIScene *)scene {
+    s2a_load_front_state(((UIWindowScene *)scene).activationState == UISceneActivationStateForegroundActive ? 2 : 1);
+    [self bootFromScene];
+}
 - (void)sceneDidBecomeActive:(UIScene *)scene {
     (void)scene;
+    s2a_load_front_state(2);
+    [self bootFromScene];
+}
+// 起宿主的那条路（游戏库 Play、云同步完、进前台、激活都走这里；领取续体只一次，重复进来是空操作）：门的状态按场景此刻实况设
+- (void)bootFromSceneState {
+    UISceneActivationState a = self.window.windowScene.activationState;
+    if (a == UISceneActivationStateForegroundActive) s2a_load_front_state(2);
+    else if (a == UISceneActivationStateForegroundInactive) s2a_load_front_state(1);
+    [self bootFromScene];
+}
+- (void)bootFromScene {
     if (!s2a_host_boot_pending()) return;
     if (s2a_launch_ctx_container() && !atomic_load(&g_game_picked)) return;   // 多款容器：等游戏库 Play（预热进程同样只显示库）
     if (self.managingSaves || self.cloudSyncing) return;

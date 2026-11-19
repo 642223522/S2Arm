@@ -71,11 +71,12 @@ namespace S2A.DirectCompiler
             {
                 if (!profile.Caps.SupportsGeometryShader)
                     throw new DirectCompileException("UNSUPPORTED_PROGRAM", "geometryShader is not enabled in the profile");
-                if (program.Graphics.State.Topology is InputTopology.LinesAdjacency or InputTopology.TrianglesAdjacency)
-                    throw new DirectCompileException("UNSUPPORTED_PROGRAM", "geometry adjacency topology is not implemented");
+                // 邻接图元：Vulkan 有原生邻接输入（翻译器按 InputTopology 出 InputLinesAdjacency / InputTrianglesAdjacency 执行模式），不拒。
+                // 直通型几何头（NV passthrough）：宿主不支持该扩展时翻译器生成等价的普通 GS（Ryujinx EmitterContext 的 passthrough 模拟，
+                //   以 profile 的 SupportsGeometryShaderPassthrough 为准），不拒。只校验这一段确实是几何着色器头。
                 uint header = BinaryPrimitives.ReadUInt32LittleEndian(gs.Code);
-                if (((header >> 10) & 15) != 4 || (header & (1u << 24)) != 0)
-                    throw new DirectCompileException("UNSUPPORTED_PROGRAM", "GS must have a non-passthrough geometry header");
+                if (((header >> 10) & 15) != 4)
+                    throw new DirectCompileException("UNSUPPORTED_PROGRAM", "GS slot does not hold a geometry shader header");
             }
             _ = sourceParserVersion;
 

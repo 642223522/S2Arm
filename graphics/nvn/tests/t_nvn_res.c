@@ -13,6 +13,8 @@
 #undef rp_shader_resolve
 #undef main
 #include <stdio.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 // 负对照开关：环境变量 T_NVN_RES_FLAGS_OFF=1 把三个省重开关都关掉（走改动前的旧行为）。
 // 正常跑（不设变量）：三个开关缺省开，全绿；设了变量再跑：贴图纪元 / 整组沿用 / 驱动段命中三处必须变红。
@@ -315,6 +317,44 @@ static void t_res_pipe_layout(void) {
     pass_fresh();
 }
 
+// ---------- ④ 贴图存储伸出内存池（rp_res.c tex_window / tex_src）----------
+// 真机（丝之歌等多款 Unity 游戏，苹果端红行「storage = pool + offset 0xffffffffffffffff」）：窗口那张 1920x1080 贴图的存储偏移是 -1，
+//   存储第一个字节落在池前一页，那页游戏没映射。用例照搬这个形态：池前一页 PROT_NONE，池内偏移 i 的字节 = pool_byte(i)（从不为 0）。
+//   改前：判内容扫全段 / 上传反交织都读池前那一字节，段错误。改后：池外字节按 0（同参照实现「读没映射的页得 0」），池内照取；写跟踪只罩池内那段。
+// 期望值不经被测实现：存储偏移 s 的字节 = s 在池外 ? 0 : pool_byte(s - 1)；第 0 行第 x 字节在 GOB 里的偏移按公开 GOB 公式（y = 0）= (x%64/32)·256 + (x%32/16)·32 + x%16。
+static uint8_t pool_byte(uint64_t i) { return (uint8_t)(i % 251 + 1); }
+static uint8_t store_byte(uint64_t s) { return s == 0 ? 0 : pool_byte(s - 1); }   // 偏移 -1：存储偏移 0 在池外
+static uint64_t gob_x(uint32_t x) { return (uint64_t)(x % 64 / 32) * 256 + (x % 32 / 16) * 32 + x % 16; }
+static void t_res_tex_before_pool(void) {
+    nvn_be_sub_begin(); res_fresh();
+    const size_t pg = (size_t)getpagesize();
+    uint8_t *m = mmap(NULL, 3 * pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    CHECK(m != MAP_FAILED);
+    if (m == MAP_FAILED) return;
+    CHECK(mprotect(m, pg, PROT_NONE) == 0);   // 池前一页：游戏没映射
+    pool_t pool; memset(&pool, 0, sizeof pool); pool.mem = m + pg; pool.size = 2 * pg; pool.flags = NVN_MEMORY_POOL_FLAGS_CPU_CACHED | NVN_MEMORY_POOL_FLAGS_GPU_CACHED;
+    for (size_t i = 0; i < pool.size; i++) pool.mem[i] = pool_byte(i);
+    // A：游戏用 CPU 写过（同真机 ser=3 被判 CPU 写过）→ 整张上传
+    tex_t a = mk_tex(7300, 0, NVN_FORMAT_RGBA8, 16, 8, 1, 0); a.pool = &pool; a.off = -1; a.mem = pool.mem - 1;
+    CHECK(a.L.size >= 512 && a.L.size <= pool.size);
+    nvn_be_tex_cpu_written(&a);
+    int n0 = g_nup;
+    CHECK(rp_tex_resolve(&a, &g_fake_cmd) != NULL && g_nup == n0 + 1);
+    CHECK(g_up[n0].pitch == 64 && g_up[n0].w == 16 && g_up[n0].h == 8);
+    { int ok = 1; for (uint32_t x = 0; x < 64; x++) ok &= g_up[n0].first[x] == store_byte(gob_x(x));
+      CHECK(ok); CHECK(g_up[n0].first[0] == 0 && g_up[n0].first[1] == pool_byte(0) && g_up[n0].first[16] == pool_byte(31) && g_up[n0].first[32] == pool_byte(255)); }
+    CHECK(g_prot_addr == pool.mem && g_prot_len == a.L.size - 1);   // 写跟踪罩的是池内那段：池外字节恒为 0，不用跟踪
+    nvn_be_tex_release(&a);
+    // B：没标过 CPU 写：首用判「存储里有没有 CPU 数据」要扫存储，同样只扫池内那段（池内非 0 → 当 CPU 贴图上传）
+    res_fresh();
+    tex_t b = mk_tex(7301, 0, NVN_FORMAT_RGBA8, 16, 8, 1, 0); b.pool = &pool; b.off = -1; b.mem = pool.mem - 1;
+    n0 = g_nup;
+    CHECK(rp_tex_resolve(&b, &g_fake_cmd) != NULL && g_nup == n0 + 1 && g_up[n0].first[0] == 0 && g_up[n0].first[1] == pool_byte(0));
+    nvn_be_tex_release(&b);
+    nvn_be_sub_commit(); fake_complete(NVN_GPU_DONE_OK);
+    munmap(m, 3 * pg);
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1], "--dirtylog-off")) g_flag_buf_dirtylog = 0;   // 整套以开关关再跑一遍：贴图核对走逐页退回路径
     t_res_tex_epoch();
@@ -322,6 +362,7 @@ int main(int argc, char **argv) {
     t_res_tex_unarmed();
     t_res_bind_fast();
     t_res_pipe_layout();
+    t_res_tex_before_pool();
     printf("t_nvn_res：%d 项检查，%d 项红\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

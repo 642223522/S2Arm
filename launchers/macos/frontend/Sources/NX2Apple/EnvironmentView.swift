@@ -81,6 +81,21 @@ struct EnvironmentView: View {
                                 .controllerID("settings.keys.import")
                         }
                     }
+                    // Xcode：现在用的是哪一份，可自己选（装在扩展硬盘等自动找不到的位置）；选过的优先用，可改回自动查找
+                    CardGroup(loc.t("s2arm.env.xcode.group")) {
+                        CardRow(loc.t("s2arm.env.xcode.title"), detail: xcodeDetail) {
+                            if model.chosenXcode != nil {
+                                LauncherRowActions {
+                                    Button(loc.t("s2arm.env.xcode.auto")) { model.setXcode(nil) }
+                                        .controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy || model.checking)
+                                        .accessibilityIdentifier("env.xcode.auto")
+                                    xcodeChooseButton
+                                }
+                            } else {
+                                xcodeChooseButton
+                            }
+                        }
+                    }
                     InstallModeCard(model: model)   // 装到 iPhone 的方式（v0.3.0：签名 / 安装入口收在这一处）
                     // 主屏小组件（11-16）：装到 iPhone / 更新 / 导出时带不带 iPhone 桌面的游戏机小组件；缺省开，关掉后请求里带 widget: false
                     CardGroup(loc.t("s2arm.env.widget.group")) {
@@ -279,6 +294,30 @@ struct EnvironmentView: View {
                 .accessibilityIdentifier("settings.updates.check")
             }
         }
+    }
+
+    private var xcodeChooseButton: some View {
+        Button(loc.t("s2arm.env.xcode.choose")) { chooseXcode() }
+            .controllerButtonStyle(LauncherSecondaryButtonStyle()).disabled(model.busy || model.checking)
+            .accessibilityIdentifier("env.xcode.choose")
+    }
+
+    private var xcodeDetail: String {
+        if let error = model.xcodeChooseError { return error.hasPrefix("s2arm.") ? loc.t(error) : loc.backend(error) }
+        let dev = model.activeDeveloperDir
+        let app = dev.hasSuffix("/Contents/Developer") ? String(dev.dropLast("/Contents/Developer".count)) : dev
+        if app.isEmpty { return loc.t("s2arm.env.xcode.none") }
+        return String(format: loc.t(model.chosenXcode != nil ? "s2arm.env.xcode.chosen" : "s2arm.env.xcode.found"), app)
+    }
+
+    private func chooseXcode() {
+        let panel = NSOpenPanel()
+        panel.title = loc.t("s2arm.env.xcode.choose")
+        panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.directoryURL = URL(fileURLWithPath: "/Volumes", isDirectory: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        model.setXcode(url)
     }
 
     private func chooseLibrary() {

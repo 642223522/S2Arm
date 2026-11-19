@@ -1,0 +1,28 @@
+<!-- 门禁手动：由 ohos/tests/audio-session/run.py 调用 -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <Nullable>disable</Nullable>
+    <NuGetAudit>false</NuGetAudit>
+    <UseSharedCompilation>false</UseSharedCompilation>
+    <RepoRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../../../'))</RepoRoot>
+    <SessionSource Condition="'$(SessionSource)' == ''">$(RepoRoot)ohos/cs/audio/OHAudioHardwareDeviceSession.cs</SessionSource>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="TestBoundary.cs" />
+    <Compile Include="$(SessionSource)" Link="Actual/OHAudioHardwareDeviceSession.cs" />
+    <Compile Include="$(RepoRoot)compat/tree/src/Ryujinx.Audio/Backends/Common/AudioSampleQueue.cs" />
+    <Compile Include="$(RepoRoot)compat/tree/src/Ryujinx.Audio/Backends/Common/DynamicRingBuffer.cs" />
+    <Compile Include="$(RepoRoot)compat/tree/src/Ryujinx.Audio/Backends/Common/HardwareDeviceSessionOutputBase.cs" />
+    <Compile Include="$(RepoRoot)compat/tree/src/Ryujinx.Audio/Backends/Common/BackendHelper.cs" />
+    <Compile Include="$(RepoRoot)compat/tree/src/Ryujinx.Audio/Common/AudioBuffer.cs" />
+    <Compile Include="$(RepoRoot)compat/tree/src/Ryujinx.Audio/Common/SampleFormat.cs" />
+    <Compile Include="$(RepoRoot)compat/tree/src/Ryujinx.Audio/Integration/IHardwareDeviceSession.cs" />
+    <Compile Include="$(RepoRoot)compat/tree/src/Ryujinx.Common/Utilities/BitUtils.cs" />
+    <Compile Include="$(RepoRoot)compat/tree/src/Ryujinx.Common/Memory/MemoryOwner.cs" />
+  </ItemGroup>
+</Project>

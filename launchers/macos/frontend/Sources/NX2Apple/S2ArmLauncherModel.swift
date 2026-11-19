@@ -130,7 +130,7 @@ struct QueuedExport {
     var location: String? = nil
     /// "export" = 这次出包是为了导出自签包（作业层步骤名照自签路写）
     var mode: String? = nil
-    /// 安卓出好装到哪台（adb 序列号）：控制口显式给的；nil = 界面上选的那台（androidPhone）
+    /// 安卓出好装到哪台（adb 序列号）：控制口显式给的；"" = 不装（控制口没给 serial）；nil = 界面上选的那台（androidPhone）
     var androidSerial: String? = nil
 }
 
@@ -923,7 +923,8 @@ public final class S2ArmLauncherModel: ObservableObject {
         if let target = item.target { plan["deviceTarget"] = target }
         if item.spaceOverride { plan["spaceOverride"] = true }
         if !sgradeOn(game.id) { plan["sgrade"] = false }   // 出包页取消「S 级优化（Beta）」：这次不带社区补丁与金手指（pack/jobs/patches.py prepare）
-        if platforms.contains(.android), let serial = item.androidSerial ?? androidPhone { plan["androidSerial"] = serial }   // 出好接着装到这台安卓手机（export_plan → installSerial）
+        // 出好接着装到这台安卓手机（export_plan → installSerial）：控制口给的 > 界面选的；"" = 明确不装
+        if platforms.contains(.android), let serial = item.androidSerial ?? androidPhone, !serial.isEmpty { plan["androidSerial"] = serial }
         start(session) { [weak self] sink in
             guard let self else { return nil }
             do { _ = try await self.provider.export(plan: plan, hasIPhone: platforms.contains(.ios), mode: item.mode, events: self.exportSink(sink)) }
@@ -1592,6 +1593,22 @@ public final class S2ArmLauncherModel: ObservableObject {
         homeWidgetError = nil
         objectWillChange.send()
         do { try provider.settings.setHomeWidget(on) } catch { homeWidgetError = error.localizedDescription }
+    }
+
+    // ---- 自己选择 Xcode（D-9WFW：装在扩展硬盘等自动找不到的位置；设置写 launch-settings.json 的 xcodeApp，选过就优先用）----
+
+    @Published private(set) var xcodeChooseError: String?
+    var chosenXcode: String? { provider.settings.xcodeApp }
+    /// 现在作业用的 Xcode（Contents/Developer）；还没找到为空串
+    var activeDeveloperDir: String { provider.client.environment.developerDir }
+
+    /// 选一份 Xcode.app（nil = 改回自动查找）；不是完整的 Xcode 不记、就近说原因。记下后重查环境，作业立刻改用它
+    func setXcode(_ app: URL?) {
+        xcodeChooseError = nil
+        if let app, XcodeLocator.developerDir(app: app.path) == nil { xcodeChooseError = "s2arm.env.xcode.invalid"; objectWillChange.send(); return }
+        objectWillChange.send()
+        do { try provider.settings.setXcodeApp(app?.path) } catch { xcodeChooseError = error.localizedDescription; return }
+        checkEnvironment()
     }
 
     // ---- 启动游戏时自动全屏（#575，缺省关；设置写 launch-settings.json 的 launchFullscreen，单款显式设过的照单款）----

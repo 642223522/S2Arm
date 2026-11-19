@@ -494,6 +494,7 @@ py_items() {
   HOOK_REST=1 job split_oodle_default timeout 30 "$PYV" graphics/tools/direct/tests/t_split_oodle_default.py
   HOOK_REST=1 job split_ctl_magic timeout 30 "$PYV" graphics/tools/direct/tests/t_split_ctl_magic.py
   HOOK_REST=1 job split_file_skip timeout 30 "$PYV" graphics/tools/direct/tests/t_split_file_skip.py
+  HOOK_REST=1 job falcom_pkg timeout 30 "$PYV" graphics/tools/direct/tests/t_falcom_pkg.py   # Falcom 资源包（.pkg）里的着色器进直连抽取
   HOOK_REST=1 job ue3_dnbc timeout 30 "$PYV" graphics/tools/direct/tests/t_ue3_dnbc.py
   HOOK_REST=1 job unity_layouts timeout 60 "$PYV" graphics/tools/direct/tests/t_unity_layouts.py
   HOOK_REST=1 job lib_pack_sys timeout 120 python3 graphics/tools/direct/tests/t_lib_pack.py

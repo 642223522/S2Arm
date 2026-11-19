@@ -1272,6 +1272,16 @@ static void nro_table(void) {   // 锁内调：起局（load_modules 定模块�
 static int nro_table_count(void) { pthread_mutex_lock(&g_nro_mu); nro_table(); int n = g_nnro; pthread_mutex_unlock(&g_nro_mu); return n; }
 #endif
 // 0 = 成功（*base = 映射基址）；1 = 包里没有这个 NRO（出包时 romfs 里没有 / 没改写进包）；2 = 大小或 bss 与包里不符；3 = 已经装着；4 = 模块表满；5 = 本平台未支持
+// 这个 NRO（按文件 SHA-256）在不在包里（nro_modules.tsv）：1 = 在。即时存档的请求日志据此只记哈希 + 头、不抄整个模块（services SnapLog.cs）
+__attribute__((visibility("default"), used)) int s2a_nro_known(const uint8_t sha[32]) {
+#if defined(__ANDROID__)
+    (void)sha; return 0;
+#else
+    pthread_mutex_lock(&g_nro_mu); nro_table(); int hit = 0;
+    for (int i = 0; i < g_nnro && !hit; i++) hit = !memcmp(g_nro[i].sha, sha, 32);
+    pthread_mutex_unlock(&g_nro_mu); return hit;
+#endif
+}
 __attribute__((visibility("default"), used)) int s2a_nro_map(const uint8_t sha[32], uint64_t size, uint64_t bss, uint64_t *base) {
 #if defined(__ANDROID__)
     (void)sha; (void)size; (void)bss; (void)base;

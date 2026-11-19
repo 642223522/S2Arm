@@ -124,8 +124,9 @@ $(OUT)/tests/widen_stubs.inc: $(ROOT)/graphics/widen/export/s2a_widen.h Makefile
 widen-stubs: $(OUT)/tests/widen_stubs.inc
 # 直连层单测链 libnvn.a 不链原生层：libnvn 引用的宿主符号放行参数只从源码「// 弱链接[nvntest]：<符号>」登记生成（同 runtime/build.mk NVN_TEST_WEAK，
 #   tools/weak_link_decl.py 一处口径；11-01 合入线：这里原先手抄 -U，帧录放加 3 个符号漏了一处，graphics/gate 直连两路冒烟链接红）。不要在链接行手写放行参数
-# nvn2_codec.c（Switch 2 视频解码接管）用 VideoToolbox / CoreMedia / CoreVideo 系统框架，同 runtime/build.mk NVN_TEST_WEAK 一起带上
-NVN_TEST_WEAK := $(shell python3 $(ROOT)/tools/weak_link_decl.py flags nvntest) -framework VideoToolbox -framework CoreMedia -framework CoreVideo
+# nvn2_codec.c（Switch 2 视频解码接管）用 VideoToolbox / CoreMedia / CoreVideo 系统框架，同 runtime/build.mk NVN_TEST_WEAK 一起带上；贴图内容快照压缩（nvn_frame_rec.inc fr_w_tex / fr_r_tex）用系统 libcompression，一起带上
+# 延迟求值（=）：只有链 t_nvn_m3 时才起 python3 扫登记；make mac 只编库不该读全部宿主源码（它算进只链库的单测的实读输入）
+NVN_TEST_WEAK = $(shell python3 $(ROOT)/tools/weak_link_decl.py flags nvntest) -framework VideoToolbox -framework CoreMedia -framework CoreVideo -lcompression
 $(OUT)/tests/t_nvn_m3: $(OUT)/mac/libnvn.a tests/t_nvn_m3.m tests/host_stubs.h $(OUT)/tests/widen_stubs.inc $(ROOT)/tools/weak_link_decl.py
 	clang $(PFX) -std=gnu11 -O1 -g -fobjc-arc -mmacosx-version-min=$(MACOSX_DEPLOYMENT_TARGET) -Wall $(INC) -I$(OUT)/tests -Itests -o $@ tests/t_nvn_m3.m $(OUT)/mac/libnvn.a \
 	  -framework Metal -framework Foundation -framework QuartzCore -framework CoreGraphics -framework ImageIO -framework UniformTypeIdentifiers -lc++ $(NVN_TEST_WEAK)

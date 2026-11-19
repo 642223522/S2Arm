@@ -43,6 +43,12 @@ void s2a_load_eta_text(int eta_s, char *out, size_t n);
 int s2a_front_warm_tick(long done, long total);
 // 直连层自己不再等了（上限到点，或清单全部领走、只剩在编的几条；不是这里的节拍说的）：页面转「进入游戏」，首帧已到过就直接收起
 void s2a_front_warm_released(void);
+// 前台激活门（11-19 定因：系统弹框「允许使用无线数据？」「Apple 账户验证」盖在 App 上时，场景一直「前台但未激活」，宿主原先停在「等待前台」，
+//   玩家应答弹框期间一点没加载）：场景进前台（未激活）就开始起宿主——C# 运行时、装模块、建内存、着色器预热这些不上屏的工作照做；
+//   只有起游戏主线程（真正开跑、开始上屏）前等激活。状态：0 未知（门开：不走 UIKit 场景的路径不受影响）、1 前台未激活（门关）、2 已激活（门开）
+void s2a_load_front_state(int st);        // app.m：sceneWillEnterForeground → 1，sceneDidBecomeActive → 2
+int s2a_load_front_wait(void);            // host_main.c 起游戏主线程前：门关着就等到激活；返回等了多少毫秒（没等 = 0）
 #ifdef __cplusplus
 }
+
 #endif

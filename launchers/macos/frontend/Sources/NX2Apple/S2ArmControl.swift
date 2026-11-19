@@ -123,7 +123,7 @@ import S2ArmAppleAdapter
             case "android":   // 开关后（作业层 androidDevices 回报，缺省关 → 照旧 409）：serial = 出好装到哪台（s2armctl build <gid> android --serial）
                 if !model.androidEnabled { await model.refreshAndroidPhones() }
                 guard model.androidEnabled else { return ControlReply(code: 409, body: ControlReply.json(["error": "即将上线，敬请期待", "comingSoon": true])) }
-                return blocked(model.export(g, platforms: [.android], spaceOverride: spaceOverride, androidSerial: str("serial")))
+                return blocked(model.export(g, platforms: [.android], spaceOverride: spaceOverride, androidSerial: str("serial") ?? ""))   // 不给 serial = 只出 APK、不装（不沿用界面自动选的那台；同 Windows 控制口）
             case "harmony", "ohos": return ControlReply(code: 409, body: ControlReply.json(["error": "即将上线，敬请期待", "comingSoon": true]))
             default: return .bad("target 只认 ios / mac / android / harmony")
             }

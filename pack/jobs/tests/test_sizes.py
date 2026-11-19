@@ -174,6 +174,7 @@ class Sizes(JobCase):
         write(ex / "S2Arm.ipa", 2 * MIB)
         write(L / "迁移记录.json", 1 * MIB)
         write(L / "hosts" / "mac" / "h.bin", 1 * MIB)
+        write(P / "tools" / "k" / "nx_unpack", 1 * MIB)   # 「准备引擎工具」编出的读取工具（私有目录）：归公共件工具缓存
         out = sizes.overview(self.context("storageOverview"))
         cat = {r["gameId"]: r for r in out["games"]}[GID]["sizes"]["categories"]
         imgs = 2 + 2 + 1 + 3 + 3   # mac 2 + kit 2 + pack 1 + game.img 3（硬链接只算一次）+ 镜像里的 romfs 3（它与解包是克隆：资源先量，共享块记在资源上）
@@ -187,7 +188,7 @@ class Sizes(JobCase):
         self.assertGreaterEqual(shared["other"], 1 * MIB)
         # 独立走一遍：默认位置与私有目录里 S2Arm 的东西（外部原件不在里面），按 (卷, inode) 去重、st_blocks 计
         seen, total = set(), 0
-        for top in (L, P / "logs", P / "jobs", P / "engines", P / "着色器缓存"):
+        for top in (L, P / "logs", P / "jobs", P / "engines", P / "tools", P / "着色器缓存"):
             for root, dirs, files in os.walk(top):
                 for n in dirs + files:
                     st = os.lstat(os.path.join(root, n))

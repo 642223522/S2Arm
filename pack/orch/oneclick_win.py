@@ -519,33 +519,56 @@ def dcache_lru(run, root, tid):
     except Fail as e: run.say(f'【黄】直连缓存淘汰没跑成（{e}），本单产物不受影响；缓存可能超预算')   # 淘汰是收尾附带的，不改本单结论
 
 
+def _win_mem():
+    """Windows GlobalMemoryStatusEx → (物理内存总量, 此刻可用：空闲 + 可回收的备用页) 字节；读不到 None"""
+    import ctypes
+    class MS(ctypes.Structure):
+        _fields_ = [('dwLength', ctypes.c_ulong), ('dwMemoryLoad', ctypes.c_ulong)] + \
+                   [(n, ctypes.c_ulonglong) for n in ('total', 'avail', 'pagefile', 'availpage', 'virt', 'availvirt', 'availext')]
+    m = MS(); m.dwLength = ctypes.sizeof(MS)
+    return (m.total, m.avail) if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)) and m.total else None
+
+
 def mem_gb():
     """本机物理内存（GB，取整）；读不到返回 None。S2A_MEM_TOTAL_GB 可手动指定（同 tools/cores.sh）"""
     v = os.environ.get('S2A_MEM_TOTAL_GB')
     if v and v.isdigit() and int(v) > 0:
         return int(v)
     if sys.platform == 'win32':   # 按真实平台（WIN 在单测里会被打桩成 True）
-        import ctypes
-        class MS(ctypes.Structure):
-            _fields_ = [('dwLength', ctypes.c_ulong), ('dwMemoryLoad', ctypes.c_ulong)] + \
-                       [(n, ctypes.c_ulonglong) for n in ('total', 'avail', 'pagefile', 'availpage', 'virt', 'availvirt', 'availext')]
-        m = MS(); m.dwLength = ctypes.sizeof(MS)
-        return int(m.total >> 30) if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)) and m.total else None
+        m = _win_mem()
+        return int(m[0] >> 30) if m else None
     try: return int(os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') >> 30) or None
     except (ValueError, OSError, AttributeError): return None
 
 
-def parallel(jobs, gb):
-    """(抽取 / 改写这类吃内存的重活路数 S2A_CPU_BAKE, 直连库编译路数 J)：同 Mac tools/cores.sh 的口径，按物理内存封顶。
+def mem_avail_mb():
+    """此刻可用的物理内存（MB，空闲 + 可回收的备用页）：Windows 才读（Mac 走 tools/cores.sh 与 mem_admit.sh）；读不到 / 别的平台 None。
+    S2A_MEM_AVAIL_MB 可手动指定"""
+    v = os.environ.get('S2A_MEM_AVAIL_MB')
+    if v and v.isdigit() and int(v) > 0:
+        return int(v)
+    if sys.platform != 'win32':
+        return None
+    m = _win_mem()
+    return int(m[1] >> 20) if m else None
+
+
+def parallel(jobs, gb, avail_mb=None):
+    """(抽取 / 改写这类吃内存的重活路数 S2A_CPU_BAKE, 直连库编译路数 J)：同 Mac tools/cores.sh 的口径，按内存封顶。
     #711（11-11）：原先两者都直接取 --jobs（缺省逻辑核数），16 GB / 16 核以上的 Windows 机抽取开满核数路、MemoryError。
     Windows 有提交上限（物理内存 + 页面文件），超了直接 MemoryError，不像 Mac 能靠交换区硬扛。
-    - 重活：min(jobs, 物理内存 × 3/4 ÷ 1.5 GB)
-    - 直连库：min(jobs, 1 + (物理内存 × 3/4 − dsh 主进程 1740 MB − 1 个 metal 峰值 1065 MB) ÷ metal p90 420 MB)
+    预算 = 物理内存 × 3/4，和「此刻可用内存 − 1 GB」取小（执行锁读写化后玩着一款时也能出包：那局占着的内存不算进来就会开过头；
+    机器空闲时可用内存比总量的 3/4 多，预算和原来一样）：
+    - 重活：min(jobs, 预算 GB ÷ 1.5 GB)
+    - 直连库：min(jobs, 1 + (预算 MB − dsh 主进程 1740 MB − 1 个 metal 峰值 1065 MB) ÷ metal p90 420 MB)
     都至少 1；环境给了 S2A_CPU_BAKE / S2A_DIRECT_J 就用给的；内存读不到按 jobs（不拦，照旧跑）"""
     bake = direct_j = jobs
     if gb:
-        bake = min(jobs, gb * 3 // 4 * 2 // 3)
-        direct_j = min(jobs, 1 + (gb * 1024 * 3 // 4 - 1740 - 1065) // 420)
+        budget_gb, budget_mb = gb * 3 // 4, gb * 1024 * 3 // 4
+        if avail_mb is not None:
+            budget_gb, budget_mb = min(budget_gb, max(0, avail_mb - 1024) // 1024), min(budget_mb, max(0, avail_mb - 1024))
+        bake = min(jobs, budget_gb * 2 // 3)
+        direct_j = min(jobs, 1 + (budget_mb - 1740 - 1065) // 420)
     env = lambda k, d: int(os.environ[k]) if os.environ.get(k, '').isdigit() and int(os.environ[k]) > 0 else d
     return max(1, env('S2A_CPU_BAKE', bake)), max(1, env('S2A_DIRECT_J', direct_j))
 
@@ -565,8 +588,8 @@ def direct(run, cur, target, jobs, tid=None, name='direct'):
     dp = cur / 'direct_profile.json'   # 配置推导阶段写的档（零配置生成的在产物根 direct-profile/<键>/，手写档在仓库 graphics/nvn/games）
     prof = json.loads(dp.read_text(encoding='utf-8')) if dp.is_file() else {}
     games = cur / prof['DM_GAMES_DIR'] if prof.get('DM_GAMES_DIR') else R / 'graphics/nvn/games'
-    gb = mem_gb(); bake, dj = parallel(jobs, gb)
-    run.say(f'并行度：核数 {jobs}、物理内存 {gb if gb else "读不到"} GB → 抽取 / 改写 {bake} 路、直连库编译 {dj} 路')
+    gb, avail = mem_gb(), mem_avail_mb(); bake, dj = parallel(jobs, gb, avail)
+    run.say(f'并行度：核数 {jobs}、物理内存 {gb if gb else "读不到"} GB、此刻可用 {f"{avail / 1024:.1f} GB" if avail else "读不到"} → 抽取 / 改写 {bake} 路、直连库编译 {dj} 路')
     env = dict(os.environ, PYTHONUTF8='1', S2A_DIRECT_TARGETS=target, S2A_DIRECT_PUBLISH=target, J=str(dj), S2A_CPU_BAKE=str(bake),
                DM_GAMES_DIR=mixed(games), DM_GAMES_FIRST='1',
                S2A_PY=sys.executable, S2A_PYTHON=sys.executable)
