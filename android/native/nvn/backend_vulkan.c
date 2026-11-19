@@ -352,6 +352,8 @@ struct nvn_gpu_vk {
     PFN_vkGetCalibratedTimestampsKHR report_calibrate;
     uint32_t report_bits;
     float report_period;
+    int64_t report_corr_ticks;   // 自校修正（计数）：驱动校准对的 DEVICE 值与查询计数器零点不一致时从校准 GPU 值里减掉（见 report_self_calibrate）
+    uint64_t report_corr_dev;    // 自校修正附带的不确定度（探针窗口半宽）
     pthread_t worker;
     int worker_started;
     int closing;
@@ -1372,6 +1374,58 @@ static int report_calibration(uint64_t t[2], uint64_t *deviation) {
     return g.report_calibrate && g.report_calibrate(g.d, 2, info, t, deviation) == VK_SUCCESS;
 }
 
+// 报告时间戳自校（11-19，Adreno 830 驱动 0x80320049 实测）：vkGetCalibratedTimestamps 的 DEVICE 值与 vkCmdWriteTimestamp 写出的
+// 计数零点差一个常数（7318 万计数 ≈ 3.81 秒），按驱动校准对换算的每个样本都落在录制窗口之前，回放层全部记 timestamp result_unavailable。
+// 这里提交一笔只写一个时间戳的探针段，提交前 / 完成后的主机时刻框住样本，取窗口中点与驱动换算之差当修正（连采 3 次取窗口最小的）。
+// 差在合并不确定度内就信驱动（修正 0、行为同以前）；探针本身失败也保持以前的行为。
+static void report_self_calibrate(void) {
+    struct s2a_vk_device *d = g.dev;
+    g.report_corr_ticks = 0; g.report_corr_dev = 0;
+    VkCommandPool pool = VK_NULL_HANDLE; VkCommandBuffer cb = VK_NULL_HANDLE; VkQueryPool qp = VK_NULL_HANDLE; VkFence fence = VK_NULL_HANDLE;
+    VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT; pci.queueFamilyIndex = d->queue_family;
+    VkQueryPoolCreateInfo qci = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO}; qci.queryType = VK_QUERY_TYPE_TIMESTAMP; qci.queryCount = 1;
+    VkFenceCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    if (vkCreateCommandPool(g.d, &pci, NULL, &pool) != VK_SUCCESS) goto out;
+    VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO}; ai.commandPool = pool; ai.commandBufferCount = 1;
+    if (vkAllocateCommandBuffers(g.d, &ai, &cb) != VK_SUCCESS || vkCreateQueryPool(g.d, &qci, NULL, &qp) != VK_SUCCESS ||
+        vkCreateFence(g.d, &fci, NULL, &fence) != VK_SUCCESS) goto out;
+    int have = 0; int64_t best_corr = 0; uint64_t best_extra = 0, best_win = UINT64_MAX;
+    for (int i = 0; i < 3; i++) {
+        VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if (vkBeginCommandBuffer(cb, &bi) != VK_SUCCESS) break;
+        vkCmdResetQueryPool(cb, qp, 0, 1);
+        vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qp, 0);
+        if (vkEndCommandBuffer(cb) != VK_SUCCESS) break;
+        VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO}; si.commandBufferCount = 1; si.pCommandBuffers = &cb;
+        pthread_mutex_lock(&g_submit_mu);
+        uint64_t begin = now_ns();
+        VkResult r = vkQueueSubmit(g.queue, 1, &si, fence);
+        pthread_mutex_unlock(&g_submit_mu);
+        if (r != VK_SUCCESS || vkWaitForFences(g.d, 1, &fence, VK_TRUE, 1000000000ull) != VK_SUCCESS) break;
+        uint64_t end = now_ns();
+        vkResetFences(g.d, 1, &fence);
+        uint64_t res[2] = {0, 0}, cal[2], dev;
+        if (vkGetQueryPoolResults(g.d, qp, 0, 1, sizeof res, res, sizeof res, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) != VK_SUCCESS ||
+            !res[1] || !report_calibration(cal, &dev)) continue;
+        int64_t corr; uint64_t extra;
+        if (!s2a_report_ts_self_offset(res[0], cal[0], cal[1], g.report_bits, g.report_period, begin, end, dev, &corr, &extra)) continue;
+        if (end - begin < best_win) { best_win = end - begin; best_corr = corr; best_extra = extra; have = 1; }
+    }
+    if (have && best_corr) {
+        // 修正折成计数减在 GPU 一侧：换算结果同「主机时刻 + 修正」，而校准主机时刻仍是真实取值（换算里还要拿它核时序）。取整误差 ≤ 半个计数，并进不确定度。
+        g.report_corr_ticks = (int64_t)llroundl((long double)best_corr / g.report_period);
+        g.report_corr_dev = best_extra + (uint64_t)(g.report_period / 2 + 1);
+        char line[200];
+        snprintf(line, sizeof line, "report_ts 自校：驱动校准对与查询计数器零点差 %.3f 毫秒，换算加修正（探针窗口 %llu 微秒）",
+                 (double)best_corr / 1e6, (unsigned long long)(best_win / 1000));
+        nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", line);
+    }
+out:
+    if (fence) vkDestroyFence(g.d, fence, NULL);
+    if (qp) vkDestroyQueryPool(g.d, qp, NULL);
+    if (pool) vkDestroyCommandPool(g.d, pool, NULL);
+}
 static void report_timestamp_open(void) {
     struct s2a_vk_device *d = g.dev;
     if (!d->calibrated_timestamps || !d->properties.limits.timestampComputeAndGraphics ||
@@ -1406,6 +1460,7 @@ static void report_timestamp_open(void) {
     if (!report_calibration(t, &deviation)) { g.report_calibrate = NULL; return; }
     g.report_bits = bits;
     g.report_period = d->properties.limits.timestampPeriod;
+    report_self_calibrate();
 }
 
 static void fill_caps(struct nvn_gpu_vk *vk, const nvn_gpu_open_desc *d) {
@@ -1557,17 +1612,17 @@ static void segment_done(struct vk_segment *s, int status, int code, const char 
                 VkResult qr = vkGetQueryPoolResults(g.d, c->report_ts, i, 1, sizeof result, result,
                         sizeof result, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
                 int why = qr != VK_SUCCESS ? 10 : !result[1] ? 11 :
-                          s2a_report_ts_convert_why(result[0], calibration[0], calibration[1],
-                              g.report_bits, g.report_period, c->report_begin_ns, end, deviation, &timestamps[i].host_ns);
+                          s2a_report_ts_convert_why(result[0], (calibration[0] - (uint64_t)g.report_corr_ticks) & s2a_ts_valid_mask(g.report_bits), calibration[1],
+                              g.report_bits, g.report_period, c->report_begin_ns, end, deviation + g.report_corr_dev, &timestamps[i].host_ns);
                 timestamps[i].valid = why == 0;
                 if (why) {
                     const uint64_t n = atomic_fetch_add(&ts_fail_n, 1) + 1;
                     if (!(n & (n - 1))) {
                         char line[360];
                         snprintf(line, sizeof line, "report_ts 换算拿不到（第 %llu 次）why=%d（10 查询失败 / 11 不可用 / 1 参数时序 / 2 窗口过半周期 / 3 越界 / 4 早于窗口 / 5 晚于窗口）"
-                                 " raw=%llu gpu=%llu host=%llu begin=%llu end=%llu dev=%llu bits=%u period=%.4f qr=%d",
+                                 " raw=%llu gpu=%llu host=%llu begin=%llu end=%llu dev=%llu bits=%u period=%.4f qr=%d corr=%lld",
                                  (unsigned long long)n, why, (unsigned long long)result[0], (unsigned long long)calibration[0], (unsigned long long)calibration[1],
-                                 (unsigned long long)c->report_begin_ns, (unsigned long long)end, (unsigned long long)deviation, g.report_bits, g.report_period, (int)qr);
+                                 (unsigned long long)c->report_begin_ns, (unsigned long long)end, (unsigned long long)deviation, g.report_bits, g.report_period, (int)qr, (long long)g.report_corr_ticks);
                         nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", line);
                     }
                 }
