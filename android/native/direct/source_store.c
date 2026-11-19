@@ -549,6 +549,17 @@ int s2a_source_pending_control(uint64_t prog_serial, uint32_t stage, const uint8
     return hit;
 }
 
+// 某（程序序号, 阶段）的源已存进源快照（keep 成功或已有完整条目）：自持控制段冗余，当场释放。
+//   同一程序对象重设着色器会换序号（hle_nvn.c SetShaders），旧序号只有 Finalize 才释放，反复重设会一直累积到安全阀
+//   （#1622 修后真机：进标题 3D 画面时过了 65536 条）。只留「键还没算出、源还没存」的阶段，表大小跟这类阶段数走。
+void s2a_source_drop_pending_stage(uint64_t prog_serial, uint32_t stage) {
+    if (stage >= 6) return;
+    pthread_mutex_lock(&g_mu);
+    struct pending_entry **pp = pending_find_locked(prog_serial, stage);
+    if (*pp) pending_unlink_free_locked(pp);
+    pthread_mutex_unlock(&g_mu);
+}
+
 void s2a_source_drop_pending(uint64_t prog_serial) {
     pthread_mutex_lock(&g_mu);
     for (uint32_t st = 0; st < 6; st++) {

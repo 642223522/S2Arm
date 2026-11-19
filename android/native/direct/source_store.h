@@ -107,6 +107,7 @@ int s2a_source_hold_pending(uint64_t prog_serial, uint32_t stage, const void *co
 // 取回 pending control 的借用指针（用于补算 key / keep）；命中返回 1。
 int s2a_source_pending_control(uint64_t prog_serial, uint32_t stage, const uint8_t **control, uint32_t *control_bytes);
 void s2a_source_drop_pending(uint64_t prog_serial);
+void s2a_source_drop_pending_stage(uint64_t prog_serial, uint32_t stage);   // 该阶段的源已存进源快照：释放它的自持控制段
 uint32_t s2a_source_pending_count(void);   // 现存自持控制段条数（单测 / 诊断用）
 
 void s2a_source_stats(uint32_t *entries, uint32_t *bytes, uint32_t *dropped);
