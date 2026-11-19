@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 S2Arm contributors
 """Library locks on both hosts: a non-blocking primitive (try_lock / unlock) and held(), which queues for the lock with a cap
-and records who holds it (启动器剃刀 H1 / H2，11-11：原先 7 把锁 7 种等待语义，拿不到就报「另一个任务正在使用游戏库」、不说是谁)."""
+and records who holds it (启动器剃刀 H1 / H2，11-11：原先 7 把锁 7 种等待语义，拿不到就报「另一个任务正在使用游戏库」、不说是谁).
+共享模式（读写锁，11-19）：shared=True 的几方可以同时拿着，独占的一方要等它们都放掉；独占拿着时共享的也拿不到。"""
 import contextlib
 import errno
 import json
@@ -11,10 +12,13 @@ import socket
 import time
 
 
-def try_lock(f):
+def try_lock(f, shared=False):
     if os.name == 'nt':
         import msvcrt
         f.seek(0)
+        if shared:
+            _win_lock_shared(f)
+            return
         try:
             msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
         except OSError as error:
@@ -23,7 +27,28 @@ def try_lock(f):
             raise
     else:
         import fcntl
-        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(f, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
+
+
+def _win_lock_shared(f):
+    """Windows 共享锁：msvcrt 只有独占（LockFile），共享要 LockFileEx 不带 LOCKFILE_EXCLUSIVE_LOCK。锁同一个字节 0：
+    和 msvcrt 的独占锁是同一套字节区锁，互相认得；放锁照旧走 unlock（UnlockFile 对 LockFileEx 锁的区也有效）"""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class Overlapped(ctypes.Structure):
+        _fields_ = [("Internal", ctypes.c_void_p), ("InternalHigh", ctypes.c_void_p), ("Offset", wintypes.DWORD),
+                    ("OffsetHigh", wintypes.DWORD), ("hEvent", wintypes.HANDLE)]
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.LockFileEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(Overlapped)]
+    kernel32.LockFileEx.restype = wintypes.BOOL
+    LOCKFILE_FAIL_IMMEDIATELY, ERROR_LOCK_VIOLATION = 0x1, 33
+    if not kernel32.LockFileEx(msvcrt.get_osfhandle(f.fileno()), LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, ctypes.byref(Overlapped())):
+        code = ctypes.get_last_error()
+        if code == ERROR_LOCK_VIOLATION:
+            raise BlockingIOError(errno.EACCES, 'Library lock is already held')
+        raise OSError(errno.EIO, f'LockFileEx failed (Windows error {code})')
 
 
 def unlock(f):
@@ -43,17 +68,45 @@ class Busy(BlockingIOError):
         self.holder = holder
 
 
-def holder_path(lock):
-    # 占锁者另写旁挂文件：Windows 上锁住的那一字节别的进程读不了，不能写进锁文件本身
+def holder_path(lock, shared=False):
+    # 占锁者另写旁挂文件：Windows 上锁住的那一字节别的进程读不了，不能写进锁文件本身。
+    #   共享的几方各写一份 <锁>.holder.<进程号>.<序号>（同时拿着的不止一个），独占的写 <锁>.holder
+    if shared:
+        global _shared_seq
+        _shared_seq += 1
+        return lock.with_name(f'{lock.name}.holder.{os.getpid()}.{_shared_seq}')
     return lock.with_name(lock.name + '.holder')
 
 
-def read_holder(lock):
+_shared_seq = 0
+
+
+def shared_holders(lock):
+    return sorted(lock.parent.glob(glob_escape(lock.name) + '.holder.*'))
+
+
+def glob_escape(name):
+    return ''.join('[' + ch + ']' if ch in '*?[' else ch for ch in name)
+
+
+def _read(path):
     try:
-        info = json.loads(holder_path(lock).read_text(encoding='utf-8'))
+        info = json.loads(path.read_text(encoding='utf-8'))
         return info if isinstance(info, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+def read_holder(lock):
+    """占锁者：独占的那份；没有就取共享里最新写下的一份（等的一方据此说清在等谁）；都没有 → {}"""
+    info = _read(holder_path(lock))
+    if info:
+        return info
+    for path in reversed(shared_holders(lock)):
+        info = _read(path)
+        if info:
+            return info
+    return {}
 
 
 def holder_is_stale(holder, *, current_host=None, windows=None, pid_start=None):
@@ -99,14 +152,16 @@ def holder_is_stale(holder, *, current_host=None, windows=None, pid_start=None):
 
 
 @contextlib.contextmanager
-def held(lock, *, wait_s=0.0, holder=None, on_wait=None, poll=0.5):
+def held(lock, *, wait_s=0.0, holder=None, on_wait=None, poll=0.5, shared=False):
     """拿 lock（Path）：拿不到每 poll 秒再试，最多等 wait_s 秒，期间占锁者变了就调 on_wait(holder, 已等秒数)；到上限抛 Busy。
-    拿到后写 holder（JSON）到旁挂文件，放锁时删掉（只删自己写的那份）。崩溃留下的旁挂文件不影响拿锁，下一个拿到的直接覆盖"""
+    拿到后写 holder（JSON）到旁挂文件，放锁时删掉（只删自己写的那份）。崩溃留下的旁挂文件不影响拿锁：
+    独占拿到时别人的旁挂文件（独占的、共享的）都不是活的，直接覆盖 / 清掉；共享拿到时独占的那份不是活的，清掉。
+    shared = True：共享模式（读写锁的「读」），见文件头"""
     with open(lock, 'a') as f:
         t0, seen = time.monotonic(), None
         while True:
             try:
-                try_lock(f)
+                try_lock(f, shared)
                 break
             except BlockingIOError:
                 info, waited = read_holder(lock), time.monotonic() - t0
@@ -116,7 +171,11 @@ def held(lock, *, wait_s=0.0, holder=None, on_wait=None, poll=0.5):
                     seen = info
                     on_wait(info, waited)
                 time.sleep(min(poll, max(0.0, wait_s - waited)))
-        mine = holder_path(lock)
+        mine = holder_path(lock, shared)
+        stale = [holder_path(lock)] if shared else shared_holders(lock)   # 拿着这把锁时不可能活着的那些旁挂文件
+        for path in stale:
+            with contextlib.suppress(OSError):
+                path.unlink()
         try:
             if holder is not None:
                 tmp = mine.with_name(mine.name + '.%d.tmp' % os.getpid())
@@ -124,7 +183,7 @@ def held(lock, *, wait_s=0.0, holder=None, on_wait=None, poll=0.5):
                 os.replace(tmp, mine)
             yield
         finally:
-            if holder is not None and read_holder(lock) == holder:
+            if holder is not None and _read(mine) == holder:
                 with contextlib.suppress(OSError):
                     mine.unlink()
             unlock(f)

@@ -1,7 +1,7 @@
 """Keep recent complete titles; evict cold reusable entries only under disk pressure.
 
 Logical file sizes are diagnostic only, never a trigger or a freed-space estimate.
-The caller holds the existing library execution lock (not a global producer lock).
+The caller holds the library produce lock (build.produce_locks) or the exclusive execution lock: no other trim or build overlaps.
 """
 from __future__ import annotations
 
