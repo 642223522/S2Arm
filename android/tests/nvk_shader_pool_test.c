@@ -23,6 +23,8 @@
 #include "direct/jv.h"
 #include "direct/program_cache.h"
 #include "nvn/nvn_vk_prog_warm.h"
+#include "dmsh_chain.h"   // DMSH_CHAIN：出包预编库目录 b-<链>-vk 与容器头的链号
+#include <sys/stat.h>
 #include "tbuf_spirv_fixtures.h"
 #include "gfx_plat/spirv_sampler_use.h"
 #include "sampler_use_fixtures.h"
@@ -45,6 +47,7 @@ void s2a_direct_diag_compile_end(uint64_t token, int success) { if (token) trace
 static unsigned fake_array_count;
 static int separate_fixture;
 static int fake_gs_success, fake_gs_result_mode, gs_loads[6], fake_geometry_enabled = 1, fake_depth_clip;
+static size_t gs_blob_bytes[6];   // 每个阶段最后一次装载的 SPIR-V 字节数（出包预编库命中时认出是哪一份）
 static int fake_gs_fact_deps;
 static int fixture_alias_flag = -1;   // 结果合并开关（debug.s2a.nvk_alias）：-1 = 取生产缺省，0 = 关
 static int fake_gs_result_tag;        // 非 0：结果里多带一个无关字段，同一份输入的结果字节（摘要）就不同
@@ -221,7 +224,7 @@ s2a_direct_compile_fn s2a_direct_bound_compile_any(void) { return fake_compile; 
 nvn_gpu_rc nvn_gpu_shader_load(const nvn_gpu_shader_src *s, nvn_gpu_shader *o, nvn_gpu_err *e) {
     (void)e;
     if (fake_gs_success && (unsigned)s->stage < 6) {
-        shader_load_count++; gs_loads[s->stage]++; *o = (nvn_gpu_shader)(uintptr_t)(s->stage + 1); return (nvn_gpu_rc){NVN_GPU_OK};
+        shader_load_count++; gs_loads[s->stage]++; gs_blob_bytes[s->stage] = s->bytes; *o = (nvn_gpu_shader)(uintptr_t)(s->stage + 1); return (nvn_gpu_rc){NVN_GPU_OK};
     }
     if (fake_array_count) { *o = (nvn_gpu_shader)(uintptr_t)1; return (nvn_gpu_rc){NVN_GPU_OK}; }
     if (fake_cs_success && s->stage == NVN_GPU_SH_CS) { cs_loads++; *o = (nvn_gpu_shader)(uintptr_t)7; return (nvn_gpu_rc){NVN_GPU_OK}; }
@@ -1058,6 +1061,100 @@ static void query_sampler_test(void) {
     fake_cs_success = 0;
 }
 
+// ---- 新层查出包预编库（LibPack，shaders/direct/b-<DMSH_CHAIN>-vk）的三段程序：vs + fs + gs ----
+// 容器在临时目录里现写（格式同 libpack_vk_test.c / LibPack.cs：头 48 字节 + 分片表 + (键, 种类) 升序记录），走真实 libpack_vk.c。
+// 期望手算：键按 NVN 位序紧排 vs / fs / gs；几何段按输入图元取 _vg<t>（种类 112+t / 120+t）——_vg0 是 24 字节（头 + 1 条 OpNop）、
+// _vg3 是 28 字节（头 + 2 条 OpNop），装载到 GS 的字节数就认出是哪一份；_vg1 不放，线输入必 miss。编译器替身此时会成功（fake_gs_success），
+// 所以「命中」的证据是编译器调用数不变，miss 的证据是编译器被调用一次。
+static void lp_put32(uint8_t *p, uint32_t v) { memcpy(p, &v, 4); }
+static void lp_put64(uint8_t *p, uint64_t v) { memcpy(p, &v, 8); }
+static int lp_write(const char *dir, uint64_t key[], const uint8_t kind[], const uint8_t *data[], const size_t len[], int n) {
+    char path[600]; snprintf(path, sizeof path, "%s/lib.000.pak", dir);
+    FILE *f = fopen(path, "wb"); if (!f) return -1;
+    uint64_t off[16], at = 0;
+    for (int i = 0; i < n; i++) { off[i] = at; fwrite(data[i], 1, len[i], f); at += len[i]; }
+    fclose(f);
+    uint8_t idx[48 + 16 + 24 * 16]; memset(idx, 0, sizeof idx);
+    memcpy(idx, "S2ALIB\0\0", 8); lp_put32(idx + 8, 1); lp_put32(idx + 12, (uint32_t)n); lp_put32(idx + 16, 1);
+    memcpy(idx + 24, DMSH_CHAIN, 12); lp_put64(idx + 48, at);
+    for (int i = 0; i < n; i++) {   // 调用方已按 (键, 种类) 升序给
+        uint8_t *r = idx + 64 + 24 * i;
+        lp_put64(r, key[i]); r[8] = kind[i]; r[9] = 0; lp_put32(r + 12, (uint32_t)len[i]); lp_put64(r + 16, off[i]);
+    }
+    snprintf(path, sizeof path, "%s/lib.idx", dir);
+    f = fopen(path, "wb"); if (!f) return -1;
+    fwrite(idx, 1, 64 + 24 * (size_t)n, f); fclose(f);
+    return 0;
+}
+static uint64_t lp_key(const uint8_t k[8]) { uint64_t v = 0; for (int i = 0; i < 8; i++) v = v << 8 | k[i]; return v; }
+static int gs_libpack_test(void) {
+    fake_depth_clip = 1;   // 深度 near=-w 也能用预编库（libpack_state_ok），夹具不带深度零
+    rp_shader_reset(); s2a_source_clear(); rp_state_reset(); nvn_unimpl_reset();
+    uint8_t k[3][8]; for (unsigned st = 0; st < 3; st++) gs_source(st, 0, k[st]);
+    memset(&gs_program, 0, sizeof gs_program); gs_program.magic = MAGIC('P','R','O','G'); gs_program.serial = 101; gs_program.nstage = 3;
+    memset(gs_stages, 0xff, sizeof gs_stages); memset(gs_keys, 0, sizeof gs_keys);
+    for (unsigned i = 0; i < 3; i++) { gs_stages[i] = (uint8_t)i; memcpy(gs_keys[i], k[i], 8); }
+    gs_keys_ok = 7; p_bind_program_id bind = {&gs_program, gs_program.serial, 0x1f, 0};
+    CHECK(rp_state_op(OP_BIND_PROGRAM, &bind, sizeof bind + 8), "libpack GS fixture binds program");
+    CHECK(rp_shader_graphics_stages() == 7, "libpack GS fixture stage mask is 0x7");
+    bind_pools(7);
+    // 容器：<根>/shaders/direct/b-<链>-vk
+    char root[256], dir[600];
+    snprintf(root, sizeof root, "%s/nvk_gs_libpack.XXXXXX", getenv("TMPDIR") && *getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
+    if (!mkdtemp(root)) { CHECK(0, "libpack temp root"); return 1; }
+    snprintf(dir, sizeof dir, "%s/shaders", root); mkdir(dir, 0700);
+    snprintf(dir, sizeof dir, "%s/shaders/direct", root); mkdir(dir, 0700);
+    snprintf(dir, sizeof dir, "%s/shaders/direct/b-%s-vk", root, DMSH_CHAIN); mkdir(dir, 0700);
+    static const uint32_t spv0[5] = {0x07230203u, 0x00010300u, 0, 1, 0};
+    static const uint32_t spv_vg0[6] = {0x07230203u, 0x00010300u, 0, 1, 0, 0x00010000u};
+    static const uint32_t spv_vg3[7] = {0x07230203u, 0x00010300u, 0, 1, 0, 0x00010000u, 0x00010000u};
+    char hx[3][17]; for (int st = 0; st < 3; st++) for (int b = 0; b < 8; b++) snprintf(hx[st] + 2 * b, 3, "%02x", k[st][b]);
+    char jvs[160], jfs[160], jg0[200], jg3[200];
+    snprintf(jvs, sizeof jvs, "{\"stage\":\"vs\",\"dm_ctl\":\"%s\",\"bindings\":[]}", hx[0]);
+    snprintf(jfs, sizeof jfs, "{\"stage\":\"ps\",\"dm_ctl\":\"%s\",\"bindings\":[]}", hx[1]);
+    snprintf(jg0, sizeof jg0, "{\"stage\":\"gs\",\"dm_ctl\":\"%s\",\"gs_input_topology\":0,\"bindings\":[]}", hx[2]);
+    snprintf(jg3, sizeof jg3, "{\"stage\":\"gs\",\"dm_ctl\":\"%s\",\"gs_input_topology\":3,\"bindings\":[]}", hx[2]);
+    struct { uint64_t key; uint8_t kind; const uint8_t *d; size_t n; } rec[8] = {
+        {lp_key(k[0]), 1, (const uint8_t *)jvs, strlen(jvs)}, {lp_key(k[0]), 52, (const uint8_t *)spv0, sizeof spv0},
+        {lp_key(k[1]), 1, (const uint8_t *)jfs, strlen(jfs)}, {lp_key(k[1]), 52, (const uint8_t *)spv0, sizeof spv0},
+        {lp_key(k[2]), 112, (const uint8_t *)jg0, strlen(jg0)}, {lp_key(k[2]), 115, (const uint8_t *)jg3, strlen(jg3)},
+        {lp_key(k[2]), 120, (const uint8_t *)spv_vg0, sizeof spv_vg0}, {lp_key(k[2]), 123, (const uint8_t *)spv_vg3, sizeof spv_vg3},
+    };
+    for (int i = 0; i < 8; i++) for (int j = i + 1; j < 8; j++)   // (键, 种类) 升序
+        if (rec[j].key < rec[i].key || (rec[j].key == rec[i].key && rec[j].kind < rec[i].kind)) { __typeof__(rec[0]) t = rec[i]; rec[i] = rec[j]; rec[j] = t; }
+    uint64_t keys[8]; uint8_t kinds[8]; const uint8_t *data[8]; size_t lens[8];
+    for (int i = 0; i < 8; i++) { keys[i] = rec[i].key; kinds[i] = rec[i].kind; data[i] = rec[i].d; lens[i] = rec[i].n; }
+    CHECK(lp_write(dir, keys, kinds, data, lens, 8) == 0, "libpack GS container written");
+    setenv("S2A_SHADER_REVISION_ROOT", root, 1); unsetenv("S2A_DIRECT_CACHE_DIR");
+    static const char prof_on[] = "{\"schema\":\"s2a-direct-profile-v1\",\"profileHash\":\"sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"capabilities\":{\"storageBufferOffsetAlignment\":16,\"supportsGeometryShader\":true}}";
+    static const char prof_off[] = "{\"schema\":\"s2a-direct-profile-v1\",\"profileHash\":\"sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"capabilities\":{\"storageBufferOffsetAlignment\":16,\"supportsGeometryShader\":false}}";
+    snprintf(external_profile, sizeof external_profile, "%s", prof_on);
+    fake_gs_success = 1;
+    const uint32_t prims[4] = {4, 0, 1, 4};   // 三角列表 / 点 / 线 / 三角列表但 profile 没开几何
+    const char *what[4] = {"triangles", "points", "lines", "triangles, geometryShader off"};
+    for (int c = 0; c < 4; c++) {
+        if (c == 3) snprintf(external_profile, sizeof external_profile, "%s", prof_off);
+        rp_shader_reset(); nvn_unimpl_reset(); compiler_calls = 0; memset(gs_loads, 0, sizeof gs_loads); memset(gs_blob_bytes, 0, sizeof gs_blob_bytes);
+        struct rp_shader_req q = {0}; q.prim = prims[c]; const struct rp_prog *p = NULL;
+        int rc = rp_shader_resolve(&q, &p);
+        CHECK(rc == 0 && p, "libpack GS %s: program resolves", what[c]);
+        CHECK(gs_loads[NVN_GPU_SH_VS] == 1 && gs_loads[NVN_GPU_SH_FS] == 1 && gs_loads[NVN_GPU_SH_GS] == 1, "libpack GS %s: three stages load", what[c]);
+        if (c < 2) {
+            CHECK(compiler_calls == 0, "libpack GS %s: hit from the library, compiler not called (calls=%d)", what[c], compiler_calls);
+            CHECK(gs_blob_bytes[NVN_GPU_SH_VS] == sizeof spv0 && gs_blob_bytes[NVN_GPU_SH_FS] == sizeof spv0, "libpack GS %s: vs / fs are the library's", what[c]);
+            CHECK(gs_blob_bytes[NVN_GPU_SH_GS] == (c == 0 ? sizeof spv_vg3 : sizeof spv_vg0),
+                  "libpack GS %s: GS stage is the _vg%d variant (%zu bytes)", what[c], c == 0 ? 3 : 0, gs_blob_bytes[NVN_GPU_SH_GS]);
+        } else {
+            CHECK(compiler_calls == 1, "libpack GS %s: library misses, live compile runs (calls=%d)", what[c], compiler_calls);
+        }
+    }
+    fake_gs_success = 0; external_profile[0] = 0; unsetenv("S2A_SHADER_REVISION_ROOT");
+    char path[700];
+    snprintf(path, sizeof path, "%s/lib.idx", dir); unlink(path); snprintf(path, sizeof path, "%s/lib.000.pak", dir); unlink(path);
+    rmdir(dir); snprintf(dir, sizeof dir, "%s/shaders/direct", root); rmdir(dir); snprintf(dir, sizeof dir, "%s/shaders", root); rmdir(dir); rmdir(root);
+    printf("nvk shader pool (libpack GS): %d checks, %d failures\n", checks, failures);
+    return failures ? 1 : 0;
+}
 static int diag_compile_test(void) {
     trace_on = 1; trace_begin_count = trace_end_count = 0; fake_gs_success = 0;
     gs_request_test();
@@ -1073,6 +1170,7 @@ static int diag_compile_test(void) {
 
 int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "--diag-compile")) return diag_compile_test();
+    if (argc == 2 && !strcmp(argv[1], "--gs-libpack")) return gs_libpack_test();
     if (argc == 2 && !strcmp(argv[1], "--compute-warm")) return compute_warm_test();
     if (argc == 2 && !strcmp(argv[1], "--compute-warm-off")) return compute_warm_off_test();
     if (argc == 2 && !strcmp(argv[1], "--legacy-bytes")) {
