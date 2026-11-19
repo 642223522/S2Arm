@@ -336,8 +336,7 @@ s2a_gate_step "$PY" "$android_dir/tests/graphics_request_name_test.py"
 # 新回放层：真实图形/计算请求生产入口的贴图池容量、超限与调试读数。
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py" --withdraw
-# 几何着色器走出包预编库（三段程序：顶点 + 几何 + 片元，按输入拓扑取几何变体）；负对照撤掉两处接线各一，必红
-s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py" --gs-libpack
+# 几何着色器走出包预编库的负对照（正例在上面无参那一步里单独起进程跑）：撤掉接线各一处，--gs-libpack 必红
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py" --gs-libpack-mutants
 # Shutdown admission, bounded waits and active-context retention (including negative controls).
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shutdown_test.py"
