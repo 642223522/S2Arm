@@ -7346,6 +7346,7 @@ static void shmap_load_once(void) {
     id<MTLLibrary> bflib; int bflib_tried; NSMutableDictionary<NSString *, id<MTLFunction>> *bffn;   // bflib: readable-tile version <key>_bf (merge B step 2)
     uint64_t mis[4];   // mis: texture slots 0-255 already reported for a type mismatch (tex_mis_note)
     uint64_t d2d[4];   // texture slots 0-255 whose sampler type the offline translation did not know and took as 2D (library resolution_scale_reasons "unknown_missing_fact:sampler_type:...slot=N"; audit #1534 P1-20 probe)
+    id<MTLLibrary> pull_lib; id<MTLFunction> pfn; int pfn_state, has_pull;   // 拉取式顶点库 <key>_bp（Pull.cs；pull_fn，nvn_hybrid.inc）：pfn_state 0 没试 / 1 载入 / 2 不可用；has_pull：反射里有 pull
     NSString *ventry, *fnpfx; id<MTLFunction> vfn; int vfn_state;   // fnpfx: a batched library's function name prefix s<key>_ (json fn_prefix, dmsh_build.py unity_flush); ventry stays the logical entry name
     uint32_t spill, spill_slot;
     NSString *mslnote, *mslsrc; uint8_t pkg_oldx, rt_tried; } @end   // pkg_oldx: a compute shader of the package's library made by another translator than this build's (cps_retrans); rt_tried: its retranslation was asked for   // spill: a compute shader's shared memory moved to a device buffer, bytes per threadgroup, bound at spill_slot (dmsh_build.py spill_fix; dispatch)   // vertex: the entry point loaded (by the depth mode); vfn: the same entry of the shadow-input library <key>_bv (vin_fn; state 0 untried, 1 loaded, 2 failed)
@@ -7811,6 +7812,7 @@ static NvShader *shader_build(NSString *pc, int stage, int layer, int depth_zero
             NSArray *ent = e[1]; if (ent.count > 32) continue;
             o->geo_tf_stride[b] = [e[0] unsignedIntValue]; o->geo_tf_n[b] = (uint32_t)ent.count;
             for (NSUInteger k = 0; k < ent.count; k++) { o->geo_tf_off[b][k] = [ent[k][0] unsignedIntValue]; o->geo_tf_comp[b][k] = [ent[k][1] unsignedIntValue]; } } }
+    if (stage == 0) o->has_pull = [j[@"pull"] isKindOfClass:[NSDictionary class]];   // 混合管线（nvn_hybrid.inc）
     o->fn = [lib newFunctionWithName:fnn(o, entry)]; o->plib = lib; o->stage = stage; o->load_depth_zero = depth_zero; strlcpy(o->key, pc.UTF8String, sizeof o->key); o->ventry = entry;
     if (stage == 5 && tensor_native_json(j)) {
         o->tensor = 3;
@@ -10350,6 +10352,7 @@ static void spec_probe(MTLRenderPipelineDescriptor *d, NvShader *vs, NvShader *f
             g_sp.base_ns / 1e6 / n, g_sp.spec_ns / 1e6 / n, g_sp.full_ns / 1e6 / n);
     } } });
 }
+#include "nvn_hybrid.inc"   // 混合管线：拉取式顶点 + 特化（hybrid_get、pull_bind）
 static void pso_pend_kick(const pso_key *k, NvShader *vs, NvShader *fs) {   // Called by the submit thread: kick only if it is neither in the cache nor in the table
     if (hm_get_id(&g_pso, k) || !pso_pair_ok(vs, fs, 0)) return;
     pthread_mutex_lock(&g_pp_mu);
@@ -10547,7 +10550,7 @@ static uint8_t g_pso_color_round;
 #define PSO_WHY(...) snprintf(g_pso_why, sizeof g_pso_why, __VA_ARGS__)
 static void *pso_get_vs_ptr(NvProg *pr, NvShader *vs) {   // borrowed: g_pso holds what it returns
     __unsafe_unretained NvShader *fs = pr->sh[1]; g_pso_why[0] = 0;
-    g_pso_color_round = 0;
+    g_pso_color_round = 0; g_pso_pull = 0;   // g_pso_pull 只在返回拉取管线那一处置 1
     if (!vs) { RED_ONCE(13, "program has no vertex shader (or it is not mapped)"); PSO_WHY("no vertex stage"); return NULL; }
     pso_key k; pso_key_fill(&k, vs, fs, g_pass.cfmt, g_pass.dfmt, g_pass.sfmt, g_pass.samples, g_pso_lmap != NULL);
     if (g_pso_lmap) { memcpy(k.lmap, g_pso_lmap, 8); k.fsfn = (__bridge void *)g_pso_fsfn; }
@@ -10575,6 +10578,10 @@ static void *pso_get_vs_ptr(NvProg *pr, NvShader *vs) {   // borrowed: g_pso hol
     if (!pso_pair_ok(vs, fs, 1)) {
         if (vp_ask(pr->gp, vs, pso_pair_miss(vs, fs))) { PSO_WHY("the vertex stage %s's padded variant is being made", vs->key); return NULL; }   // not failed: the next draw asks again
         hm_put_id(&g_pso_fail, &k, NSNull.null); PSO_WHY("the vertex stage %s does not write a user(locn) the fragment reads", vs->key); return NULL; }
+    // 混合管线（nvn_hybrid.inc）：精确管线后台编着、这一笔用拉取管线先画——比跳过（少画一帧）和当场等都好。拉取基础管线还没建好就照旧往下走（跳过或等）
+    if (!g_pso_lmap && !ms_fn && !g_pso_fsfn && !k.fc && vs == pr->sh[0] && vs->has_pull && hybrid_on()) {
+        if (!pso_pend_state(&k)) pso_pend_kick(&k, vs, fs);
+        if (pso_pend_state(&k) != 2) { __unsafe_unretained id<MTLRenderPipelineState> h = hybrid_get(&k, vs, fs); if (h) { g_pso_pull = 1; PSO_WHY("drawn with the pulling pipeline while its own compiles"); return (__bridge void *)h; } } }
     if (!g_pso_lmap && !ms_fn && !g_pso_fsfn && first_skip_ok(&k, vs, fs)) { PSO_WHY("compiling in the background (first-use skip)"); return NULL; }   // S2Arm first-use skip: no stand-in, the full pipeline compiles in the background (draw counts it)
     id<MTLRenderPipelineState> ps;
     NSError *e = nil; uint64_t bt = bp_now();
@@ -16187,7 +16194,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     if (defer_q_draw) defer_replay();
     if (skip_d) { g_stat_ds_omit++; if (mode == 3) g_stat_s_only++; else if (mode == 4) g_stat_d_only++; }
     // The pipeline depends only on (program, render pass targets, blend / color / write mask / multisample state, vertex layout): if these did not change, reuse the previous one
-    static id<MTLRenderPipelineState> cur_ps; static NvProg *cur_pr; static uint64_t cur_ps_pass; static int cur_ps_fc; static uint8_t cur_ps_round;
+    static id<MTLRenderPipelineState> cur_ps; static NvProg *cur_pr; static uint64_t cur_ps_pass; static int cur_ps_fc; static uint8_t cur_ps_round; static int cur_pull;   // cur_pull: cur_ps 是拉取管线（nvn_hybrid.inc）
     if (g_fz.active && !g_defer_replaying) { g_pso_lmap = g_fz.phase == 1 ? g_fz.lmap1 : g_fz.lmap2; g_pso_fsfn = g_fz.phase == 1 ? nil : fz_fn; g_pso_fz = g_fz.phase == 1 ? (pso_fz_desc){0} : g_fz_desc; g_pso_dirty = 1; }
     else if (g_fbt.on && g_enc && !g_defer_replaying) {   // ⑤ 遍内自采样片上读取：本笔用可读瓦片版（输出不搬位置）
         g_pso_lmap = g_fbt.lmap; g_pso_fsfn = g_fbt.fn; memset(&g_pso_fz, 0, sizeof g_pso_fz); g_pso_fz.kind = 1; g_pso_fz.fbmask = g_fbt.fbmask;
@@ -16200,7 +16207,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     if (g_mtk.on) {   // a task / mesh draw (mesh_tasks_draw): its own pipeline kind; the next draw fetches its own again (cur_pr nil)
         g_pso_fc = fc; cur_ps = mtk_pso(pr); cur_ps_round = g_pso_color_round; g_pso_fc = 0; cur_pr = nil;
         if (!cur_ps) { g_mtk.miss = 1; if (g_pso_lmap) { g_pso_lmap = NULL; g_pso_fsfn = nil; memset(&g_pso_fz, 0, sizeof g_pso_fz); g_pso_dirty = 1; } return; } }
-    else if (g_pso_dirty || pr != cur_pr || cur_ps_pass != g_pass.serial || fc != cur_ps_fc) { g_pso_fc = fc; cur_ps = pso_get(pr, nil); cur_ps_round = g_pso_color_round; g_pso_fc = 0; cur_pr = pr; cur_ps_pass = g_pass.serial; cur_ps_fc = fc; g_pso_dirty = !cur_ps; }
+    else if (g_pso_dirty || pr != cur_pr || cur_ps_pass != g_pass.serial || fc != cur_ps_fc) { g_pso_fc = fc; cur_ps = pso_get(pr, nil); cur_ps_round = g_pso_color_round; g_pso_fc = 0; cur_pr = pr; cur_ps_pass = g_pass.serial; cur_ps_fc = fc; cur_pull = g_pso_pull; g_pso_dirty = !cur_ps || cur_pull; }   // 拉取管线只顶一笔：下一笔再取，精确的编好就换上
     g_udc_lmap = g_pso_lmap; g_udc_fsfn = g_pso_fsfn != nil;   // udc_note_draw (below) judges this draw's writes by the map its pipeline used
     if (g_pso_lmap) { g_pso_lmap = NULL; g_pso_fsfn = nil; memset(&g_pso_fz, 0, sizeof g_pso_fz); g_pso_dirty = 1; }   // The next draw fetches again according to its own situation
     __unsafe_unretained id<MTLRenderPipelineState> ps = cur_ps;
@@ -16224,7 +16231,8 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     if (!draw_pass_state(en, pr->sh[1])) return;   // depth-stencil / viewport / scissor / cull / ... (shared with tess_draw ④): 0 = this draw draws nothing
     alpha_ref_bind(en, pr->sh[1]);   // gap family 34
     if (!g_mtk.on) bind_vbufs(en, pr->sh[0]);   // a task / mesh draw fetches no vertices
-    if (pr->sh[0]) vconv_bind(en, pr->sh[0], 0, dw, di);   // integer inputs fed float-type formats or 8 / 16-bit integers of the other sign (see vconv_ncomp, vconv_int)
+    if (cur_pull && !g_mtk.on) { pull_bind(en, pr->sh[0]); g_hy_draws++; }   // 拉取管线自己按布局块读顶点流：不做 CPU 转换（它按格式解码）
+    else if (pr->sh[0]) vconv_bind(en, pr->sh[0], 0, dw, di);   // integer inputs fed float-type formats or 8 / 16-bit integers of the other sign (see vconv_ncomp, vconv_int)
     g_kd_force = kd_draw(pr, dw, di);
     if (pr->sh[0]) encode_args(en, pr->sh[0], 0, 1);
     if (pr->sh[1]) encode_args(en, pr->sh[1], 1, 0);
