@@ -1,3 +1,4 @@
+// 系统库[nvntest]：-lcompression（贴图内容快照压缩 compression_encode_buffer / compression_decode_buffer；直连层单测链 libnvn.a 时带上）
 // 帧录放（10-31 维护者：满屏 / 画面改动不进游戏、不导航，录一帧反复回放出图）。nvn_mtl.m 末尾包含（要读回放层的静态表）。说明 graphics/nvn/docs/frame_replay.md。
 //
 // 录：S2A_FRAME_REC=<目录>，或 <出图次数>[,<出图次数>…]:<目录>。到点的那次 nvnQueuePresentTexture（hle_nvn.c 持提交锁调 nvn_frec_present）把这一帧落进 <目录>/<名>/：
