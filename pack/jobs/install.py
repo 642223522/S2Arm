@@ -1378,6 +1378,12 @@ def _update_name(img_file, lang):
     return img_file[:-4] + UPDATE_SUFFIX.get(lang, UPDATE_SUFFIX["en"])
 
 
+def _update_worth(c, pack):
+    sys.path.insert(0, str(c.engine / "pack"))
+    import img
+    return img.update_worth(str(pack))
+
+
 def _export_update(c, pack, dst):
     log = c.logs / (c.task + "-export.log")
     try:
@@ -1526,7 +1532,7 @@ def _readme_zh(games):
   可以用隔空投送、数据线（Mac 访达 / Windows 爱思助手等的文件共享）或网盘拷到手机，再在「文件」App 里挪进这个文件夹。
   文件名随便改，S2Arm 按文件内容认游戏。手机上已经有、也没重新打过 iPhone 包的游戏，不用再放。
 
-  只更新着色器：每款旁边还有一个「<游戏名> 着色器更新包.img」，只有几百 MB。手机上已经放过这款的完整 .img（游戏本身没换版本）、
+  只更新着色器：有着色器库的款旁边还有一个「<游戏名> 着色器更新包.img」，只有几百 MB（没有着色器库的款不出这个文件）。手机上已经放过这款的完整 .img（游戏本身没换版本）、
   后来只是着色器变了（升级 S2Arm 后重新导出），只放这个更新包就行，不用重拷几 GB 的完整 .img。
   手机上还没有这款的，先放完整的 .img（不带「着色器更新包」字样的那个）。
 
@@ -1556,7 +1562,7 @@ This folder contains:
   You can get them onto the phone with AirDrop, a cable (file sharing in the Mac Finder or a Windows tool) or a cloud drive, then move them into this folder in the Files app.
   The file names do not matter: S2Arm recognises each game by its contents. Games already on the phone that you have not rebuilt for iPhone do not need to be added again.
 
-  Shader-only updates: next to each game there is also a "<game name> shader update.img" of only a few hundred MB. If the phone already has this
+  Shader-only updates: next to each game that has a shader library there is also a "<game name> shader update.img" of only a few hundred MB (games without one do not get this file). If the phone already has this
   game's full .img (same game version) and only the shaders changed (you updated S2Arm and exported again), add just this update file instead of
   copying the multi-GB .img again. If the game is not on the phone yet, add the full .img first (the one without "shader update" in its name).
 
@@ -1711,10 +1717,13 @@ def export_phone(c, gid=None):
                 _export_img(c, layout.ios_pack(c, g), out / f)
                 fresh.append(f)   # 这次新写的（#1132 完成页点名「.img 只要拷这几个」；沿用的和上次导出逐字节相同，手机上已有就不用再拷）
             # 着色器更新包（维护者 11-13）：只含派生件，几百 MB；手机上已有这款同一版本体时只放它就能换着色器，不用重拷几 GB 的 .img
-            u = _update_name(f, ui_lang(c))
-            if not _reuse_export(prev / u, out / u, old_stamps.get(u), stamp):
+            #   没有着色器库 / 覆盖层的款不出（只剩索引的空包，pack/img.py update_worth）
+            u = _update_name(f, ui_lang(c)) if _update_worth(c, layout.ios_pack(c, g)) else None
+            if u and not _reuse_export(prev / u, out / u, old_stamps.get(u), stamp):
                 _export_update(c, layout.ios_pack(c, g), out / u)
-            stamps[f] = stamps[u] = stamp
+            stamps[f] = stamp
+            if u:
+                stamps[u] = stamp
             listed.append(dict(gameId=g, name=names.get(g, g), file=f, update=u))
         c.begin("写安装说明", 4, 4)
         lang = ui_lang(c); readme = EXPORT_READMES[lang]

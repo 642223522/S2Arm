@@ -470,6 +470,12 @@ def export(pack_dir, out_path):
 UPDATE_FORMAT = 2   # 着色器更新包（只含派生件）：手机按格式号 2 走「套到本机已有本体」（runtime/src/pack_apply.c img_update）；只认 1 的旧版 S2Arm 会说「请更新 S2Arm」
 
 
+def update_worth(pack_dir):
+    """这款值不值得出着色器更新包：资源包里有着色器库（shaders/）或界面覆盖层（romfs_overlay/）才出。只剩索引 / 偏移表的包
+    （没有直连着色器库的款）一百多 KB、什么都不换，导出了玩家以为坏了（诊断 #0c0f75）"""
+    return any(rel.startswith(('shaders/', 'romfs_overlay/')) for rel, _ in pack_rows(pack_dir))
+
+
 def update_pack(pack_dir, out_path):
     """自签导出的「着色器更新包」（维护者 11-13：几百 MB，不用重拷 5 GB 本体）：IMG 形态资源包里照旧按文件放的派生件（KEEP：着色器库、界面覆盖层、
     romfs.s2aidx）+ game.imgmap 写成一个格式号 2 的 IMG，头里的游戏号 / 资源包号照抄本体 game.img（资源包号只随游戏原始资源变，同款同构建才相同），
