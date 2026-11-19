@@ -84,12 +84,14 @@ ck "负对照：旧 make 规则（子串）会把 s2a_zz_hostlike 收进 host（
 py=$(cd "$T/c" && python3 tools/weak_link_decl.py flags nvntest)
 ck "系统库：nvntest 含 -lcompression 与三个框架" '[[ " $py " == *" -lcompression "* && " $py " == *" -framework VideoToolbox "* && " $py " == *" -framework CoreMedia "* && " $py " == *" -framework CoreVideo "* ]]'
 ck "系统库：host 场合不带它们" '! (cd "$T/c" && python3 tools/weak_link_decl.py flags host) | grep -qE -- "-lcompression|-framework"'
+if [ "$(uname -s)" = Darwin ]; then   # NVN_TEST_WEAK 在 runtime/build.mk 的 Darwin 分支里定义，别的系统上本来就空（同上面 S2A_HOST_WEAK 的说明）
 mkw=$(cd "$T/c" && make -s --no-print-directory -f - BUILD=$T/b s2a_print_nvn <<'EOF' 2>/dev/null
 include runtime/build.mk
 s2a_print_nvn:; @echo $(NVN_TEST_WEAK)
 EOF
 )
 ck "系统库：runtime/build.mk 的 NVN_TEST_WEAK 也含 -lcompression 与 VideoToolbox" '[[ " $mkw " == *" -lcompression "* && " $mkw " == *" -framework VideoToolbox "* ]]'
+fi
 sed -i.bak '/系统库\[nvntest\]：-lcompression/d' "$T/c/graphics/nvn/gfx/nvn/nvn_frame_rec.inc"; rm -f "$T/c/graphics/nvn/gfx/nvn/nvn_frame_rec.inc.bak"
 ck "系统库：撤掉登记 → -lcompression 消失" '! (cd "$T/c" && python3 tools/weak_link_decl.py flags nvntest) | grep -q -- "-lcompression"'
 sed -i.bak '1a\
