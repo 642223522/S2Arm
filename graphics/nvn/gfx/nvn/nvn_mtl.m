@@ -632,13 +632,32 @@ static void pidx_added(void) {   // g_pools[g_npool - 1] is the new pool
     int n = g_npool - 1, p = pidx_pos(g_pools[n].lo, n);
     memmove(g_pidx + p + 1, g_pidx + p, (size_t)(n - p) * sizeof *g_pidx); g_pidx[p] = n;
 }
+static int g_nbig; static void big_index_move(int gone, int from);   // 大池（下面）：池表挪条目时块表跟着改
 static void pidx_removing(int i) {   // before g_pools[i] = g_pools[--g_npool]: i's entry goes, the last pool's entry is renamed to i
+    if (g_nbig) big_index_move(i, g_npool - 1);
     if (!g_pidx_ok) return;
     int n = g_npool, last = n - 1, p = pidx_of(i, n);
     if (p < 0) { g_pidx_ok = 0; return; }
     memmove(g_pidx + p, g_pidx + p + 1, (size_t)(n - 1 - p) * sizeof *g_pidx);
     if (i != last) { int q = pidx_of(last, n - 1); if (q < 0) { g_pidx_ok = 0; return; } g_pidx[q] = i; }
 }
+// 大内存池按块用到才包（马车世界缺口 ②，照上游参考实现（MIT）nvn_mtl.m big_pool / big_lookup）：Metal 把驻留集里的零拷贝缓冲整块锁页，一个缓冲包住大池就把整池锁住，
+//   不管 GPU 读了多少。上游读数：一款大型赛车游戏 2,427 MB 的图形池，首场比赛 GPU 只碰过 1,111 MB；16 GB Mac 上驱动一半时间在锁页 / 解锁（6 秒里 3.2 秒），隔几帧就 100 ms 以上。
+//   BIG_MIN 以上的池（近区、不是远端影子）不建自己的缓冲：查找按地址所在的 BIG_S 步长现建一块零拷贝缓冲，覆盖到这次要读的末尾（向上取步长再多一个步长），只有查到的才锁页。
+//   块之间重叠，GPU 地址跨块不连续，所以查找要说读多远；不知道（长度 1：间接绘制的索引缓冲、原始存储地址）给 BIG_UNKNOWN。原始全局内存表（着色器自己查池表）要整池：big_full（gmem_map）。
+//   只为 CPU 读（addr_cpu）或只问在不在（pool_known）的查询不建块：块是 GPU 用的
+enum { BIG_MIN = 512u << 20, BIG_S = 16u << 20, BIG_UNKNOWN = 64u << 20, BIG_MAX = 32 };
+typedef struct { uintptr_t lo, hi, a, b; const void *mem; int *chunk, full; NSMutableArray *old; uint64_t dead; } big_pool;   // dead：游戏已释放、到这次提交序号才回收（同池条目的 dead，pool_reap）   // chunk：步长 → g_pools 下标 + 1；full：整池那条 + 1；old：被加长替换下来的缓冲，随池走
+static big_pool g_big[BIG_MAX]; static int g_nbig; static uint64_t g_big_chunks;   // g_big_chunks：建过的块（读数）
+// 池表删一条时（gone 走、末尾那条 from 改名为 gone）大池块表里的下标跟着改：块表记的是池表下标，别的池被删、挪进空位的若是某个大池的块，
+//   不改就指着别人的条目（GPU 地址落到别的缓冲上）；走的若正是块，块表那格清掉（下次查到再包）。调用方持 g_mu
+static void big_index_move(int gone, int from) {
+    for (int q = 0; q < g_nbig; q++) { big_pool *b = &g_big[q]; size_t nk = ((b->b - b->a) >> 24) + 1;
+        for (size_t k = 0; k < nk; k++) { if (b->chunk[k] == gone + 1) b->chunk[k] = 0; else if (b->chunk[k] == from + 1) b->chunk[k] = gone + 1; }
+        if (b->full == gone + 1) b->full = 0; else if (b->full == from + 1) b->full = gone + 1; }
+}
+static int big_of(uint64_t addr) { for (int i = 0; i < g_nbig; i++) if (addr >= g_big[i].lo && addr < g_big[i].hi) return i; return -1; }   // 调用方持 g_mu
+static int pool_chunks(void) { static int c = -1; if (c < 0) { const char *e = getenv("DM_NVN_POOL_CHUNKS"); c = !e || atoi(e); } return c; }   // DM_NVN_POOL_CHUNKS=0：大池照旧整块（对照用）
 static NSMutableArray *g_keep;                  // Holds the buffer references (pool_ent has non-owning pointers)
 static uint64_t g_pool_adds;
 static int g_pool_res_n;   // registered pools already in the residency set (for the memory readout; under g_mu)
@@ -988,6 +1007,13 @@ static void nvn_be_pool_add_body(const void *mem, uint64_t size) {
     //   pool_find「起点 ≤ 地址的最后一条」就是能装下它的终点最远的那块：池里不超过半块的资源总能整个落进某一块；更大又跨块的照旧找不到、按不在池里报红（不静默错绑）。
     //   S2A_POOL_MAXLEN_MB（单测 / 复现）把上限压小
     uint64_t total = (uint64_t)(b - a), lim = (uint64_t)g_dev.maxBufferLength;
+    if (total >= BIG_MIN && !view && ha == a && pool_chunks()) {   // 大池：不建自己的缓冲，查到哪包到哪（big_lookup）
+        pthread_mutex_lock(&g_mu);
+        int *ch = g_nbig < BIG_MAX ? calloc((size_t)((b - a) >> 24) + 1, sizeof *ch) : NULL;
+        if (ch) { g_big[g_nbig++] = (big_pool){lo, hi, a, b, mem, ch, 0, [NSMutableArray array]}; g_plast = -1; atomic_fetch_add(&g_pool_gen, 1); g_pool_adds++; }
+        pthread_mutex_unlock(&g_mu);
+        if (ch) { static int nl; if (nl++ < 8) MLOG("memory pool %p+%llu MB: in %u MB chunks, wired as far as GPU lookups reach", mem, (unsigned long long)(size >> 20), BIG_S >> 20); return; }
+    }
     { static uint64_t forced = ~0ull; if (forced == ~0ull) { const char *e = getenv("S2A_POOL_MAXLEN_MB"); forced = e && *e ? strtoull(e, NULL, 10) << 20 : 0; } if (forced && forced < lim) lim = forced; }
     lim &= ~(uint64_t)(pg - 1);
     uint64_t L = total <= lim || lim < 2 * (uint64_t)pg ? total : lim, stride = L == total ? total : (L / 2) & ~(uint64_t)(pg - 1);
@@ -1113,6 +1139,11 @@ static void pool_remove_at(int i);
 static void pool_reap(uintptr_t olo, uintptr_t ohi) {   // 调用方持 g_mu：到期的待删条目（ohi > olo 时另删与 [olo, ohi) 重叠的待删条目）
     for (int i = 0; i < g_npool; i++)
         if (g_pools[i].dead && (g_sub_serial >= g_pools[i].dead || (ohi > olo && g_pools[i].lo < ohi && olo < g_pools[i].hi))) { pool_remove_at(i); i = -1; }
+    for (int k = 0; k < g_nbig; k++) { big_pool *b = &g_big[k];   // 大池记录同样到期才走：块已随上面走（同 key、同 dead）；加长替下的旧块缓冲不在池表里，指着它们的别名（#1143 虚拟池别名）这里一并下表，再延后放
+        if (!b->dead || !(g_sub_serial >= b->dead || (ohi > olo && b->lo < ohi && olo < b->hi))) continue;
+        for (id<MTLBuffer> ob in b->old) { for (int i = 0; i < g_npool; i++) if (g_pools[i].alias && g_pools[i].buf == ob) { pool_unlist(i); i--; }
+            if (!xq_buf_hold_retire((__bridge void *)ob)) defer_obj_release(ob); }
+        free(b->chunk); g_big[k] = g_big[--g_nbig]; g_plast = -1; atomic_fetch_add(&g_pool_gen, 1); k--; }
 }
 static void nvn_be_pool_del_body(const void *mem) {
     dispatch_sync(ph_queue(), ^{});   // first-upload hashes still reading guest memory (see NvPkg ph): the game frees the pool's memory once this returns
@@ -1126,6 +1157,7 @@ static void nvn_be_pool_del_body(const void *mem) {
         { uint64_t q = g_freed_seq++; g_freed[q % FREED_RING].lo = g_pools[i].lo; g_freed[q % FREED_RING].hi = g_pools[i].hi; g_freed[q % FREED_RING].seq = q; }   // 取证环按游戏释放的时刻记
         g_pools[i].dead = g_sub_serial + 2;
     }
+    for (int k = 0; k < g_nbig; k++) if (g_big[k].mem == mem && !g_big[k].dead) g_big[k].dead = g_sub_serial + 2;   // 大池记录随池到期（pool_reap）
     pthread_mutex_unlock(&g_mu);
 }
 static void pool_remove_at(int i) {   // 调用方持 g_mu
@@ -1143,7 +1175,38 @@ static void pool_remove_at(int i) {   // 调用方持 g_mu
 
 // Address → pool: the last hit first, then a binary search over indices sorted by start address, and a full linear scan only when that fails (pools overlapping).
 // The Legend of Zelda: Breath of the Wild keeps about 1760 memory pools alive and every buffer binding of every draw looks one up; the old full scan took about 4% of the submit thread's samples (mtl_gpu_addr 222 / 6 s). The index is sorted the first time it is used and then follows each registration / removal in place (pidx_added / pidx_removing). Caller holds g_mu
+static int big_new(big_pool *b, uintptr_t lo, uintptr_t hi, uintptr_t end) {   // 调用方持 g_mu：池的 [lo, end) 一块，查找 [lo, hi) 的地址落到它（近区：宿主地址 = 游戏地址）
+    uint64_t lim = (uint64_t)g_dev.maxBufferLength & ~(uint64_t)(getpagesize() - 1); if (end - lo > lim) end = lo + lim;
+    id<MTLBuffer> buf = [g_dev newBufferWithBytesNoCopy:(void *)lo length:end - lo options:MTLResourceStorageModeShared deallocator:nil];
+    if (!buf) { MLOG("【红】 memory pool %p: the zero-copy chunk over %#lx..%#lx was refused", b->mem, (unsigned long)lo, (unsigned long)end); return -1; }
+    if (g_npool == g_cap) { int c = g_cap ? g_cap * 2 : 64; if (!GROW(g_pools, (size_t)c * sizeof *g_pools, "memory pool table")) return -1; g_cap = c; }
+    g_plast = -1; atomic_fetch_add(&g_pool_gen, 1);
+    g_pools[g_npool++] = (pool_ent){lo < b->lo ? b->lo : lo, end > b->hi ? b->hi : end, lo, buf, buf.gpuAddress, b->mem, 0, lo}; pidx_added();   // hi = 缓冲真盖到的地方（别的查找照常按它判装不装得下）
+    g_pools[g_npool - 1].dead = b->dead;   // 释放后、回收前包出的块随池一起到期
+    [g_keep addObject:buf]; g_big_chunks++;
+    (void)hi; return g_npool - 1;
+}
+// 大池里 [addr, addr + len) 的条目：所在步长的块，没有就建、不够长就加长（加长：旧块已经编进去的命令照用，旧缓冲随池走）；超出池尾 -1。调用方持 g_mu
+static int big_lookup(big_pool *b, uint64_t addr, uint64_t len) {
+    if (addr + len > b->hi) return -1;
+    if (b->full) return b->full - 1;
+    uintptr_t k = (addr - b->a) >> 24, lo = b->a + (k << 24);
+    uint64_t want = len > 1 ? len : BIG_UNKNOWN; uintptr_t end = (addr + want + BIG_S - 1) & ~(uintptr_t)(BIG_S - 1); end += BIG_S; if (end > b->b || end < lo) end = b->b;
+    int i = b->chunk[k] - 1;
+    if (i >= 0 && (g_pools[i].hi >= b->hi || g_pools[i].hi >= addr + want)) return i;
+    int n = big_new(b, lo, lo + BIG_S, end); if (n < 0) return i >= 0 && addr + len <= g_pools[i].hi ? i : -1;
+    if (i >= 0) {   // 加长：新条目挪进旧位（地址起点不变，下标索引仍有序），旧缓冲留到池走
+        [b->old addObject:g_pools[i].buf]; [g_keep removeObject:g_pools[i].buf]; int gs = g_pools[i].gslot; if (g_pools[i].res) g_pool_res_n--;   // 旧缓冲仍在驻留集里，随池走时放
+        pidx_removing(i); g_pools[i] = g_pools[--g_npool]; g_pools[i].gslot = gs; n = i; atomic_fetch_add(&g_pool_gen, 1);   // pidx_removing 的约定：i 走、末尾那条改名为 i
+    }
+    b->chunk[k] = n + 1;
+    return n;
+}
+// [addr, addr + len) 在不在某个池里，不建块（只问的调用方：贴图存储还在不在）。调用方持 g_mu
+static int pool_find(uint64_t addr, uint64_t len);
+static int pool_known(uint64_t addr, uint64_t len) { if (g_nbig) { int k = big_of(addr); if (k >= 0) return addr + len <= g_big[k].hi; } return pool_find(addr, len) >= 0; }
 static int pool_find(uint64_t addr, uint64_t len) {
+    if (g_nbig) { int k = big_of(addr); if (k >= 0) return big_lookup(&g_big[k], addr, len); }
     if (g_plast >= 0 && g_plast < g_npool && addr >= g_pools[g_plast].lo && addr + len <= g_pools[g_plast].hi) return g_plast;
     if (!g_pidx_ok) {
         if (g_pidx_cap < g_npool) { int c = g_npool * 2; if (!GROW(g_pidx, (size_t)c * sizeof *g_pidx, "pool address index")) { for (int i = 0; i < g_npool; i++) if (addr >= g_pools[i].lo && addr + len <= g_pools[i].hi) return g_plast = i; return -1; } g_pidx_cap = c; }   // no index: the full scan
@@ -1244,8 +1307,10 @@ static inline const uint8_t *addr_cpu(uint64_t addr, uint64_t len) {
     if (c) return (const uint8_t *)(c->host + (addr - c->base));
     const uint8_t *r = NULL;
     pthread_mutex_lock(&g_mu);
-    int i = pool_find(addr, len);
-    if (i >= 0) { pool_res(i); pc_put(i, addr); r = (const uint8_t *)(g_pools[i].host + (addr - g_pools[i].base)); }
+    int k = g_nbig ? big_of(addr) : -1;
+    if (k >= 0) { if (addr + len <= g_big[k].hi) r = (const uint8_t *)(uintptr_t)addr; }   // 大池（近区）：CPU 读不建块、不进驻留集
+    else { int i = pool_find(addr, len);
+        if (i >= 0) { pool_res(i); pc_put(i, addr); r = (const uint8_t *)(g_pools[i].host + (addr - g_pools[i].base)); } }
     pthread_mutex_unlock(&g_mu);
     if (!r) { void *mb; uint64_t mo; if (nvn_be_addr(addr, len, &mb, &mo)) r = (const uint8_t *)[(__bridge id<MTLBuffer>)mb contents] + mo; }   // a sparse shadow registered on the way (nvn_be_addr)
     return r;
@@ -4171,7 +4236,7 @@ static void tp_cand_add(const tex_t *t) {   // g_tp_lk held (tp_reg)
 }
 static int tp_storage_ok(const tex_t *t) {   // the texture's pool is still a pool and still registered (the object copy holds pointers into game memory)
     if (!t->pool || t->pool->magic != MAGIC('P', 'O', 'O', 'L') || !t->mem) return 0;
-    pthread_mutex_lock(&g_mu); int i = pool_find((uint64_t)(uintptr_t)t->mem, tex_rd_size(t)); pthread_mutex_unlock(&g_mu); return i >= 0;
+    pthread_mutex_lock(&g_mu); int i = pool_known((uint64_t)(uintptr_t)t->mem, tex_rd_size(t)); pthread_mutex_unlock(&g_mu); return i;
 }
 static void tp_demand(const tex_t *t, uint64_t fp) {   // submit thread: a first use (first upload, or the first use of one uploaded ahead), for the first-use list
     int kind = tp_kind(t); if (kind == LK_SPARSE || kind == LK_NOMEM) return;
@@ -4385,8 +4450,8 @@ static uint64_t g_up_src_n, g_up_src_bytes;   // such sources made, and their by
 static id<MTLBuffer> up_tex_src(uint64_t addr, uint64_t len, uint64_t *off) {
     if (!len) return nil;
     pthread_mutex_lock(&g_mu);
-    int i = pool_find(addr, len), in = i >= 0 && !g_pools[i].res && !addr_meets(g_pools[i].lo, g_pools[i].hi);
-    uintptr_t base = in ? g_pools[i].base : 0, host = in ? g_pools[i].host : 0;
+    int k = g_nbig ? big_of(addr) : -1, i = k >= 0 ? -1 : pool_find(addr, len), in = k >= 0 ? addr + len <= g_big[k].hi : i >= 0 && !g_pools[i].res && !addr_meets(g_pools[i].lo, g_pools[i].hi);
+    uintptr_t base = !in ? 0 : k >= 0 ? g_big[k].a : g_pools[i].base, host = !in ? 0 : k >= 0 ? g_big[k].a : g_pools[i].host;   // 大池：贴图上传读自己的一块源缓冲（随上传批走），不建块、不锁整池
     pthread_mutex_unlock(&g_mu);
     if (!in) return nil;
     // the pool's host bytes as its buffer has them (a far-alias pool: its shadow, or the one view of a split shadow, pool_host); the pool's buffer keeps a view alive past this one
@@ -11083,7 +11148,7 @@ static int tex_storage_live(const treg_t *r) {
     if (r->gone || (p && p->magic != MAGIC('P', 'O', 'O', 'L'))) return 0;
     if (p && nvn_sparse_pool(p)) return 1;
     if (!t->mem) return 0;
-    pthread_mutex_lock(&g_mu); int ok = pool_find((uint64_t)(uintptr_t)t->mem, t->L.size ? t->L.size : 1) >= 0; pthread_mutex_unlock(&g_mu);
+    pthread_mutex_lock(&g_mu); int ok = pool_known((uint64_t)(uintptr_t)t->mem, t->L.size ? t->L.size : 1); pthread_mutex_unlock(&g_mu);
     return ok;
 }
 // A handle read from game memory may name any registered texture, and on the console that costs nothing: the data is in the pool and a handle is a number. Here each is a Metal texture beside
@@ -11586,6 +11651,7 @@ static id<MTLBuffer> gmem_map(void) {
     uint64_t *gv = malloc(3 * sizeof(uint64_t) * GVA_MAX); int ng = gv ? nvn_gva_snapshot(gv, GVA_MAX) : 0;   // {GPU start, CPU start, bytes} sorted by GPU start (hle_nvn.c)
     pthread_mutex_lock(&g_mu);
     gmem_scan();   // bits set on the table this one replaces
+    for (int k = 0; k < g_nbig; k++) if (!g_big[k].full && addr_meets(g_big[k].lo, g_big[k].hi)) { int n = big_new(&g_big[k], g_big[k].a, g_big[k].b, g_big[k].b); if (n >= 0) g_big[k].full = n + 1; }   // 原始池表要整池（着色器自己查表；表里条目照旧访问到才常驻，gmem_scan）
     gen = atomic_load(&g_pool_gen); uint64_t rgen = g_gmem_rgen;
     gmem_ent *e = malloc(sizeof *e * (size_t)(g_npool * 2 + 1)); int ne = 0, cap = g_npool * 2 + 1, *pi = malloc(sizeof *pi * (size_t)(g_npool + 1));
     uint8_t *inwin = calloc((size_t)g_npool + 1, 1);
