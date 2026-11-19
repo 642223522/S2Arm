@@ -5820,7 +5820,7 @@ static int check_copy_params(const struct nvn_gpu_tex_s *t, uint32_t level, cons
 //   回放核心给每张贴图都要 NVN_GPU_TEX_VIEW_FMT（同一份存储会按别的格式看），所以按用途分三种：
 //   · 存储用途（原始位读写要跨类格式，且这类图本来难有 UBWC）/ BC 解码 / 采样格式与本格式不同：照旧自由 MUTABLE；
 //   · 深度 / 模板图：不开 MUTABLE（深度视图只能取本格式）；
-//   · 其余颜色图：MUTABLE + VkImageFormatListCreateInfo 只列本格式、采样格式与 sRGB / UNORM 孪生（Vulkan 1.2 核心）。
+//   · 其余颜色图：MUTABLE + VkImageFormatListCreateInfo 只列本格式、采样格式与 sRGB / UNORM 孪生（VK_KHR_image_format_list，见 vk_device.c）。
 //   列表外的视图格式退回本格式建视图、记一次红行并计数（tex_view_fallbacks），不让整笔跳掉。
 static VkFormat srgb_twin(VkFormat f) {
     switch (f) {
@@ -5848,6 +5848,7 @@ static VkFormat rb_swap_stand_in(const struct nvn_gpu_tex_s *t, VkFormat want) {
 }
 static uint64_t g_tex_view_fallbacks;   // 列表模式下视图格式不在列表、退回本格式的次数（验证读数）
 uint64_t nvn_vk_tex_view_fallbacks(void) { return g_tex_view_fallbacks; }
+int nvn_vk_tex_fmt_list_active(void) { return g.dev && g.dev->image_format_list_enabled; }   // 测试用：本设备是否走格式列表模式
 static int tex_fmt_allowed(const struct nvn_gpu_tex_s *t, VkFormat f) {
     if (f == t->sample_format || f == t->format || t->view_fmt) return 1;
     for (unsigned i = 0; i < t->fmt_n; i++) if (t->fmt_list[i] == f) return 1;
@@ -5924,7 +5925,7 @@ nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_g
     const int want_view = (d->usage & NVN_GPU_TEX_VIEW_FMT) != 0;
     const int plain = want_view && !bc_decoded && sample_fmt == fmt && !(usage & VK_IMAGE_USAGE_STORAGE_BIT);
     const int depth_fmt = nvn_vk_format_is_depth(fmt);
-    const int fmt_list = plain && !depth_fmt && g.dev->properties.apiVersion >= VK_API_VERSION_1_2;
+    const int fmt_list = plain && !depth_fmt && g.dev->image_format_list_enabled;   // 应用 apiVersion 1.1：按启用的扩展判，不按物理设备支持的版本
     const int any_fmt = (want_view && !plain) || (want_view && !depth_fmt && !fmt_list) || sample_fmt != fmt;
     const VkImageCreateFlags mut_flag = (any_fmt || fmt_list) ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0;
 
