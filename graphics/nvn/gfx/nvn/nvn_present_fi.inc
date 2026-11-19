@@ -406,7 +406,7 @@ static int fi_frame(id<MTLTexture> src, const int crop[4], CAMetalLayer *layer, 
     NvPresentFI *f = fi_get(layer, cw, ch); if (!f) return -1;
     uint64_t now = now_ns(); double gap = f->last_in_ns ? (now - f->last_in_ns) / 1e9 : 0; f->last_in_ns = now;
     int allow = dm_fi_should_interp(period, gap);   // 游戏声明的节拍（period，由交换间隔折成）+ 这一帧是否跑满；60 帧档一律不补
-    uint64_t seq = f->n++; BOOL flip = atomic_load_explicit(&g_origin_ll, memory_order_relaxed) != 0;
+    uint64_t seq = f->n++; BOOL flip = present_ll() != 0;   // the presented window's origin (nvn_mtl.m g_present_ll)
     fi_crop cr = {0}; if (crop) { cr.has = 1; memcpy(cr.c, crop, sizeof cr.c); }
     fi_inflight_add(1);   // 出图线程还在 g_classic_busy 里：显示链此刻挂不上
     fi_job(f, layer, src, cr, flip, (int)(seq & 1), seq, period, ticket, 1, allow);

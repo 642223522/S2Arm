@@ -8248,6 +8248,11 @@ static int g_tpool_n; static uint64_t g_stat_tex_oob;
 // convention itself (text rendered into textures for the title and the menus came out upside down, and a MIRROR_Y copy of the frame)
 static _Atomic int g_origin_ll;
 extern int s2a_nvn_rast_flip;   // hle_nvn.c nvnQueueInitialize: the submitting queue's front-face raster flip
+// The presented window's own origin (set at each present from the window, hle_nvn.c win_t.present_ll): its image rows were laid out by the origin current when the window was
+//   created, which stays its present flip even if the game changes the origin afterwards (drawing follows the change). -1 = no window has said (frame replay, GL): follow g_origin_ll
+static _Atomic int g_present_ll = -1;
+void nvn_be_set_present_lower_left(int on) { if (atomic_exchange(&g_present_ll, on) != on) MLOG("present flip: %s (the window's origin at WindowInitialize)", on ? "on (lower left)" : "off (upper left)"); }
+static inline int present_ll(void) { int p = atomic_load_explicit(&g_present_ll, memory_order_relaxed); return p >= 0 ? p : atomic_load_explicit(&g_origin_ll, memory_order_relaxed); }
 void nvn_be_set_origin_lower_left(int on) { if (atomic_exchange(&g_origin_ll, on) != on) MLOG("window origin: %s", on ? "lower left (GL: viewport flipped, winding reversed, present flipped)" : "upper left"); }
 void nvn_be_set_tex_pool_n(int n) { g_tpool_n = n; }
 // Borrowed (upstream (MIT) 7c7c45479): every texture it returns is the ID's view, which g_treg holds (rp->view, CFBridgingRetain). A view is let go only through defer_obj_unref
@@ -17769,7 +17774,7 @@ static void shot(id<MTLTexture> src, const char *path, int screen, const int cro
               toBuffer:buf destinationOffset:0 destinationBytesPerRow:row destinationBytesPerImage:row * h];
     [b endEncoding]; if (!cb_run(cb)) return;
     }
-    if (screen && read == src && atomic_load_explicit(&g_origin_ll, memory_order_relaxed)) {   // lower-left origin: the window image is stored bottom-up (see g_origin_ll)
+    if (screen && read == src && present_ll()) {   // lower-left origin: the window image is stored bottom-up (see g_origin_ll)
         uint8_t *p = buf.contents, *tmp = malloc(row);
         if (tmp) { for (size_t y = 0; y < h / 2; y++) { memcpy(tmp, p + y * row, row); memcpy(p + y * row, p + (h - 1 - y) * row, row); memcpy(p + (h - 1 - y) * row, tmp, row); } free(tmp); } }
     int bgra = read.pixelFormat == MTLPixelFormatBGRA8Unorm || read.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB;
@@ -18177,7 +18182,7 @@ static const int *rs_aa_crop(id<MTLTexture> src, id<MTLTexture> dst, const int c
 }
 static int present_encode_slot(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, const int crop[4], int slot) {
     present_options();
-    BOOL flip = atomic_load_explicit(&g_origin_ll, memory_order_relaxed) != 0;
+    BOOL flip = present_ll() != 0;   // the presented window's origin (see g_present_ll)
     NvPresentFX *fx = present_fx_for(slot, src, dst, crop, NO);
     if (!g_present_aa && !fx) return present_blit(cb, src, dst, crop, flip, 1);
     id<MTLTexture> out;
@@ -18205,7 +18210,7 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
 API_AVAILABLE(macos(26.0), ios(26.0))
 static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, const int crop[4], int slot) {
     present_options();
-    BOOL flip = atomic_load_explicit(&g_origin_ll, memory_order_relaxed) != 0;
+    BOOL flip = present_ll() != 0;   // the presented window's origin (see g_present_ll)
     NvPresentFX *fx = present_fx_for(slot, src, dst, crop, YES);
     if (!g_present_aa && !fx) return present_blit_m4(cb, src, dst, crop, g_present_uv[slot], g_present_args, flip, 1);
     id<MTLTexture> out;

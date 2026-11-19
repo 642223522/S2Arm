@@ -4753,6 +4753,12 @@ static void t_present(void) {   // 上屏：没有窗口按丢帧报；有窗口
     CHECK(g_last_pd.flip_y == 1 && g_last_pd.crop[1] == 0);           // 原点在左下（NVN 默认）：呈现时上下翻；裁剪按存储行号原样给
     CHECK(g_last_pd.crop[0] == 0 && g_last_pd.crop[2] == 320 && g_last_pd.crop[3] == 300 && g_last_pd.dst[0] == 256 && g_last_pd.dst[1] == 0 && g_last_pd.dst[2] == 768 && g_last_pd.dst[3] == 720);
     nvn_be_set_origin_lower_left(0); nvn_be_present(&t, 0, NULL); CHECK(g_last_pd.flip_y == 0); nvn_be_set_origin_lower_left(1);   // 原点在左上：不翻
+    // 上屏翻转按被上屏窗口建时的原点（hle_nvn.c win_t.present_ll → nvn_be_set_present_lower_left）：窗口建在左下、之后游戏改左上（01002EF01A316000），
+    //   绘制按左上、上屏仍翻；窗口建在左上、之后改回左下的反过来。期望按定义手写；收尾还原成「没有窗口说过」（-1，跟当前原点）
+    //   （直接查 rp_present.c 取翻转用的 rp_present_lower_left，不多上屏，免得挪动后面用例的序号与计数）
+    nvn_be_set_present_lower_left(1); nvn_be_set_origin_lower_left(0); CHECK(rp_present_lower_left() == 1 && rp_origin_lower_left() == 0);
+    nvn_be_set_present_lower_left(0); nvn_be_set_origin_lower_left(1); CHECK(rp_present_lower_left() == 0 && rp_origin_lower_left() == 1);
+    nvn_be_set_present_lower_left(-1); CHECK(rp_present_lower_left() == 1);   // 没有窗口说过：跟当前原点（左下）
     g_acq_i = 0; g_acq_script[0] = NVN_GPU_E_OUTDATED;              // 交换链过期：重建一次再取
     CHECK(nvn_be_present(&t, 0, NULL) == 5 && g_rebuilds == 1 && g_presents == 4 && nvn_be_presented_time(5) == 5.0);
     g_acq_i = 0; g_acq_script[0] = NVN_GPU_E_TIMEOUT;               // 没有空闲图：丢这一帧，不算故障
