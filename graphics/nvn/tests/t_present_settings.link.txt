@@ -176,3 +176,4 @@ dyn _s2a_vp8_open
 dyn _s2a_vp9_close
 dyn _s2a_vp9_decode
 dyn _s2a_vp9_open
+dyn _s2a_vpx_linked
