@@ -584,7 +584,7 @@ namespace S2A.Services
                 Dispatcher d = Dispatcher.Instance;
                 byte[] all = ReqLog.Load(File.ReadAllBytes(Marshal.PtrToStringUTF8((IntPtr)path)));   // 分块压缩的解开；旧快照原样
                 Ryujinx.HLE.S2AHooks.SnapReplayUndo.Clear(); Ryujinx.HLE.S2AHooks.SnapReplaying = true;
-                Dictionary<int, int[]> outIds = OutIdsOf(all); Dictionary<int, ulong[]> outCookies = SessionCookiesOf(all); int forcedLeft = 0; Ryujinx.HLE.S2AHooks.SnapForceDomainIdMiss = 0;
+                Dictionary<int, int[]> outIds = OutIdsOf(all); Dictionary<int, ulong[]> outCookies = SessionCookiesOf(all); int forcedLeft = 0; Ryujinx.HLE.S2AHooks.SnapForceDomainIdMiss = 0; Ryujinx.Horizon.S2AHorizonHooks.SnapForceDomainIdMiss = 0;
                 var r = new BinaryReader(new MemoryStream(all));
                 long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
                 while (r.BaseStream.Position < r.BaseStream.Length)
@@ -631,9 +631,10 @@ namespace S2A.Services
                         }
                     }
                     Ryujinx.HLE.S2AHooks.SnapForceDomainIds = outIds.TryGetValue(seq, out int[] want) ? new Queue<int>(want) : null;
+                    Ryujinx.Horizon.S2AHorizonHooks.SnapForceDomainIds = Ryujinx.HLE.S2AHooks.SnapForceDomainIds;   // 同一个队列：这条请求的目标是 HLE 域还是 Horizon 域，谁分对象谁取
                     bool tipc = (*(uint*)msgAddr & 0xFFFF) >= 0x10;   // 处理前看请求头的类型（处理完缓冲已是应答）
                     uint rc = d.SnapRequest(num, cookie, (byte*)msgAddr, size);
-                    forcedLeft += Ryujinx.HLE.S2AHooks.SnapForceDomainIds?.Count ?? 0; Ryujinx.HLE.S2AHooks.SnapForceDomainIds = null;
+                    forcedLeft += Ryujinx.HLE.S2AHooks.SnapForceDomainIds?.Count ?? 0; Ryujinx.HLE.S2AHooks.SnapForceDomainIds = null; Ryujinx.Horizon.S2AHorizonHooks.SnapForceDomainIds = null;
                     forcedLeft += d.SnapForceCookies?.Count ?? 0; d.SnapForceCookies = null;
                     if (rc != 0) { bad++; if (bad <= 20) Console.Error.WriteLine($"[s2a] 【黄】即时存档恢复：重放第 {seq} 条 {name}#{(uint)cmd} 回 0x{rc:X}"); }
                     else if (ReplyResult((byte*)msgAddr, size, tipc) is uint cr && cr != 0)
@@ -644,8 +645,9 @@ namespace S2A.Services
                     n++;
                 }
                 Ryujinx.HLE.S2AHooks.SnapReplaying = false;
-                if (forcedLeft > 0 || Ryujinx.HLE.S2AHooks.SnapForceDomainIdMiss > 0)
-                    Console.Error.WriteLine($"[s2a] 【黄】即时存档恢复：域对象按原号分配 没用上 {forcedLeft} 个、原号被占 {Ryujinx.HLE.S2AHooks.SnapForceDomainIdMiss} 个（对象号可能和存档时不同）");
+                int forcedMiss = Ryujinx.HLE.S2AHooks.SnapForceDomainIdMiss + Ryujinx.Horizon.S2AHorizonHooks.SnapForceDomainIdMiss;
+                if (forcedLeft > 0 || forcedMiss > 0)
+                    Console.Error.WriteLine($"[s2a] 【黄】即时存档恢复：域对象 / 会话按原号分配 没用上 {forcedLeft} 个、原号被占 {forcedMiss} 个（对象号可能和存档时不同）");
                 // 重放里为「当时打开成功、快照前已删」的路径建的空占位：按建的反序删掉，文件系统回到快照那一刻（删不掉的 = 游戏此刻还开着它，留着）
                 int ph = Ryujinx.HLE.S2AHooks.SnapReplayUndo.Count, kept = 0;
                 for (int i = ph - 1; i >= 0; i--) if (!Ryujinx.HLE.S2AHooks.SnapReplayUndo[i]()) kept++;
