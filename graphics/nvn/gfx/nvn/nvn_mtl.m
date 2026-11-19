@@ -3421,12 +3421,21 @@ static NSUInteger mtl_samples_supported(const tex_t *t) {
 }
 
 #include "../../texture_extent.inc"
-static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
+// 超上限缩建（nvn_rscale.inc 文件头）：GPU 写的二维 / 二维数组 / 矩形贴图边长超过设备上限时按 上限 ÷ 长边 缩建，返回这个比例（1 = 不缩建）。
+//   多重采样、块压缩、深度 / 层数 / 级数也超限的不走这条（照旧红行、建不出）
+static double rs_fit_tex(const tex_t *t) {
+    if (t->d.target != NVN_TEXTURE_TARGET_2D && t->d.target != NVN_TEXTURE_TARGET_2D_ARRAY && t->d.target != NVN_TEXTURE_TARGET_RECTANGLE) return 1.0;
+    if (t->d.samples > 1 || fmt_compressed(t->d.format) || t->d.depth > 2048 || t->d.levels > 15) return 1.0;
+    return rs_fit(t->d.width, t->d.height);
+}
+static MTLTextureDescriptor *tex_desc_fit(const tex_t *t, int packaged, double fit);
+static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) { return tex_desc_fit(t, packaged, 1.0); }
+static MTLTextureDescriptor *tex_desc_fit(const tex_t *t, int packaged, double fit) {   // fit < 1：超上限缩建，宽高按 ⌈边 × fit⌉（rs_fit_tex）
     uint32_t pf = 0; uint8_t swz[4];
     if (!nvn_fmt_to_mtl(t->d.format, &pf, swz) || !pf) { RED_ONCE(0, "texture format %#x has no Metal equivalent (first case)", t->d.format); return nil; }
     { uint32_t upf; int ubpp; if (fmt_unpack(t->d.format, &upf, &ubpp)) pf = upf; }   // stored in another format (fmt_unpack): that format (a decompressed BC is still never a render target: fmt_compressed below)
     // Metal's limits: 16384 in 2D, 2048 in 3D, 2048 array layers; beyond them Metal aborts the process on an assertion, so they are caught here with a red line
-    if (t->d.width > 16384 || t->d.height > 16384 || t->d.depth > 2048 || t->d.levels > 15) { RED_ONCE(71, "texture size exceeds Metal limits: %u×%u×%u levels %u format %#x target %d (first case ser=%llu)", t->d.width, t->d.height, t->d.depth, t->d.levels, t->d.format, t->d.target, (unsigned long long)t->serial); return nil; }
+    if (rs_up(t->d.width, fit) > 16384 || rs_up(t->d.height, fit) > 16384 || t->d.depth > 2048 || t->d.levels > 15) { RED_ONCE(71, "texture size exceeds Metal limits: %u×%u×%u levels %u format %#x target %d (first case ser=%llu)", t->d.width, t->d.height, t->d.depth, t->d.levels, t->d.format, t->d.target, (unsigned long long)t->serial); return nil; }
     MTLTextureDescriptor *d = [MTLTextureDescriptor new];
     d.pixelFormat = (MTLPixelFormat)pf;
     tex_extent extent = tex_extent_at(t, nil, 0, 0);
@@ -3450,6 +3459,7 @@ static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
         case 10: RED_ONCE(1, "buffer textures (TARGET_BUFFER) not implemented"); return nil;
         default: d.textureType = MTLTextureType2D; break;
     }
+    if (fit != 1.0) { d.width = rs_up(d.width, fit); d.height = rs_up(d.height, fit); }   // 超上限缩建：只有二维 / 二维数组 / 矩形走到这里（rs_fit_tex）
     // Mip count clamped to what the dimensions allow, as Ryujinx TexturePool.ClampLevels (log2 of the largest edge + 1; depth only for 3D, layers never):
     //   NVN accepts a level count past the dimensions (Tomodachi Life asks 15 levels for a 128×256 render target), Metal aborts the process on it (validateWithDevice)
     { NSUInteger mx = MAX(d.width, d.textureType == MTLTextureType3D ? MAX(d.height, d.depth) : d.height), ml = 1; while (mx >>= 1) ml++;
@@ -3528,7 +3538,7 @@ static id<MTLTexture> tex_upgrade(const tex_t *t, id<MTLTexture> asked, MTLTextu
     if (!upgraded) { RED_ONCE(45, "texture upgrade failed ser=%llu format %lu → %lu usage %#lx", t->serial, (unsigned long)base.pixelFormat, (unsigned long)view_pf, (unsigned long)d.usage); return asked; }
     if (!root && (d.usage & MTLTextureUsageShaderAtomic)) tex_note_atomic(upgraded);
     if (!root) res_add(upgraded);
-    { NvRsInfo *ri = rs_info(base); if (ri) rs_set_info(upgraded, ri->state, ri->cw, ri->ch); }   // S2Arm internal resolution: same size, same record (nvn_rscale.inc)
+    { NvRsInfo *ri = rs_info(base); if (ri) rs_set_info(upgraded, ri->state, ri->cw, ri->ch, ri->s); }   // S2Arm internal resolution: same size, same record (nvn_rscale.inc)
     id<MTL4ComputeCommandEncoder> b = base.buffer ? nil : blit();
     NSUInteger slices = base.textureType == MTLTextureType3D ? 1 : base.arrayLength * (base.textureType == MTLTextureTypeCube || base.textureType == MTLTextureTypeCubeArray ? 6 : 1);
     for (NSUInteger l = 0; !base.buffer && l < base.mipmapLevelCount; l++) {
@@ -5683,13 +5693,19 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
     id<MTLTexture> mt = tex_linear(t);
     if (!mt) mt = gstex_new(t);   // GPU 写的稀疏贴图：块只在游戏映射了内存处（nvn_stex.inc）
     if (!mt) {
-        MTLTextureDescriptor *d = tex_desc(t, 0);
+        double fit = rs_fit_tex(t);   // 边长超设备上限的按比例缩建（nvn_rscale.inc 文件头）
+        MTLTextureDescriptor *d = tex_desc_fit(t, 0, fit);
         if (!d) return nil;
         uint64_t stl0 = stl_now();
         mt = [g_dev newTextureWithDescriptor:d];
         stl_add(STL_GNEW, stl0);
         if (!mt) { RED_ONCE(2, "failed to create MTLTexture ser=%llu %ux%u format %#x target %d samples %d levels %u", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, t->d.target, t->d.samples, t->d.levels); return nil; }
-        res_add(mt); stl0 = stl_now(); int filled_ = tex_init_fill(t, mt); if (!filled_) tex_zero_fill(mt); stl_add(STL_FILL, stl0);
+        if (fit != 1.0) {   // 记成已缩（画布 = 游戏尺寸）；游戏内存里的内容按游戏尺寸排，缩建的存储不从它初始化，清零
+            atomic_store(&g_rs_over, 1); rs_set_info(mt, RS_SCALED, t->d.width, t->d.height, fit);
+            static int nf; if (nf++ < 8) MLOG("内部分辨率：渲染目标 ser=%llu %ux%u 格式 %#x 超过贴图上限 %lu，按 %.4f 缩建成 %lux%lu（画面完整，这张目标分辨率降一档）",
+                                               (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, (unsigned long)rs_dev_max(), fit, (unsigned long)mt.width, (unsigned long)mt.height);
+        }
+        res_add(mt); stl0 = stl_now(); int filled_ = fit == 1.0 && tex_init_fill(t, mt); if (!filled_) tex_zero_fill(mt); stl_add(STL_FILL, stl0);
         if (g_snap_newtex_log > 0) { g_snap_newtex_log--; MLOG("即时存档诊断：恢复后新建贴图 ser=%llu %ux%ux%u 级 %u 格式 %#x 目标 %d flags %#x 池 %p+%#llx 内容=%s", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.levels,
                                           t->d.format, t->d.target, t->d.flags, (void *)t->pool, (unsigned long long)t->off, filled_ ? "游戏内存" : "全零"); }   // register residency before filling (the copy destination must be resident too)
         if (big_tex_on() && mt.allocatedSize >= (4u << 20)) {   // 大贴图建立账（big_tex_res）：NVN 侧描述 + 存储有没有被游戏碰过（mincore，不读页）
@@ -6444,13 +6460,14 @@ static int tex_widen(const tex_t *t, NSUInteger r, NSUInteger rh) {   // 1 = the
     tex_extent cur = tex_extent_at(t, base, 0, 0);
     if (cur.canvas.width >= r && cur.canvas.height >= rh) return 1;
     tex_extent extent = tex_extent_grow(t, base, r, rh);
-    // internal resolution above 1: the widened canvas × s would pass the device's texture limit (Metal asserts on such a descriptor) → the storage goes back to 1 first and is widened unscaled
-    if (rs_up_on() && rs_state(base) == RS_SCALED && (extent.physical.width > rs_tex_max() || extent.physical.height > rs_tex_max())) {
+    // internal resolution: the widened canvas × s would pass the device's texture limit (Metal asserts on such a descriptor) → the storage goes back to 1 first and is widened unscaled
+    //   (a storage scaled to fit the limit at creation cannot go back: rs_rescale_to refuses, and it is not widened)
+    if (rs_state(base) == RS_SCALED && ((rs_up_on() && (extent.physical.width > rs_tex_max() || extent.physical.height > rs_tex_max())) || extent.physical.width > rs_dev_max() || extent.physical.height > rs_dev_max())) {
         rs_rescale(base, 0, "放宽后放大超过贴图上限"); base = tex_mtl(t);
         if (!base || rs_state(base) == RS_SCALED) { RED_ONCE(189, "widen: scaled render target ser=%llu not widened: %lux%lu is past the texture limit and it could not go back to 1", (unsigned long long)t->serial, (unsigned long)extent.physical.width, (unsigned long)extent.physical.height); return 0; }
         extent = tex_extent_grow(t, base, r, rh);
     }
-    int scaled = rs_state(base) == RS_SCALED; NSUInteger cw = extent.canvas.width, ch = extent.canvas.height;
+    int scaled = rs_state(base) == RS_SCALED; double ws = rs_of(base); NSUInteger cw = extent.canvas.width, ch = extent.canvas.height;
     r = extent.physical.width; rh = extent.physical.height;
     const char *why = tex_widen_why(t);
     if (why) {   // registered as widenable because the widened drawing fits (see tex_widen_why): drawn at its own width, a viewport past it is a red line (draw)
@@ -6467,7 +6484,7 @@ static int tex_widen(const tex_t *t, NSUInteger r, NSUInteger rh) {   // 1 = the
     id<MTLTexture> w = [g_dev newTextureWithDescriptor:d];
     if (!w) { RED_ONCE(112, "widen: render target ser=%llu %lu → %lu wide could not be created", (unsigned long long)t->serial, (unsigned long)base.width, (unsigned long)r); return 0; }
     res_add(w); tex_fill(w, wd_poison() != 0);
-    if (scaled) rs_set_info(w, RS_SCALED, cw, ch); else if (rs_state(base) == RS_BLACK) rs_set_info(w, RS_BLACK, 0, 0);   // the new storage keeps the internal resolution's record
+    if (scaled) rs_set_info(w, RS_SCALED, cw, ch, ws); else if (rs_state(base) == RS_BLACK) rs_set_info(w, RS_BLACK, 0, 0, 1.0);   // the new storage keeps the internal resolution's record
     id<MTL4ComputeCommandEncoder> b = blit();
     NSUInteger slices = base.arrayLength * (base.textureType == MTLTextureTypeCube || base.textureType == MTLTextureTypeCubeArray ? 6 : 1);
     for (NSUInteger l = 0; l < base.mipmapLevelCount; l++)
@@ -16498,7 +16515,7 @@ void nvn_be_read_texels(const tex_t *t, unsigned level, unsigned layer0, const N
           MLOG("ReadTexels of a GPU-written texture waited for the whole GPU queue: %llu reads so far, %.1f ms waited in all, longest %.2f ms (this one %.2f ms, %ux%u)",
                (unsigned long long)k, tot / 1e6, (d > m ? d : m) / 1e6, d / 1e6, (unsigned)r->width, (unsigned)r->height); }
     if (!is3d && bw == 1 && bh == 1 && rs_state(mt) == RS_SCALED) {   // S2Arm internal resolution: read the storage rectangle, then take each game texel's nearest storage texel on the CPU
-        double sc = g_rs; long sx = r->xoffset, sy = r->yoffset, sw = r->width, sh = r->height; rs_rect(sc, &sx, &sy, &sw, &sh);   // (this runs on the caller's thread: no copy draw)
+        double sc = rs_of(mt); long sx = r->xoffset, sy = r->yoffset, sw = r->width, sh = r->height; rs_rect(sc, &sx, &sy, &sw, &sh);   // (this runs on the caller's thread: no copy draw)
         long lw = (long)MAX(mt.width >> level, 1u), lh = (long)MAX(mt.height >> level, 1u);
         if (sc > 1.0 && !mtl_fmt_depth(mt.pixelFormat)) {   // an enlarged storage is scaled back linearly (rs_read_down); depth keeps the nearest texel below, as the depth copies do
             NSUInteger cw = 0, ch = 0; rs_canvas(mt, level, &cw, &ch);   // this level's own ratio (see rs_read_down)
@@ -18493,7 +18510,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     CGSize nolayer_sz = crop && crop[2] > 0 && crop[3] > 0 ? CGSizeMake(round((double)crop[2] * cvh / crop[3]), cvh) : CGSizeMake(cvw, cvh);
     int rsc[4]; if (crop && rs_src) {   // S2Arm internal resolution: a scaled present source takes the crop in storage texels
         long x = crop[0], y = crop[1], w = crop[2], h = crop[3]; if (!w && !h) { w = (long)cvw; h = (long)cvh; }
-        rs_rect(g_rs, &x, &y, &w, &h); rsc[0] = (int)x; rsc[1] = (int)y; rsc[2] = (int)w; rsc[3] = (int)h; crop = rsc; }
+        rs_rect(rs_of(src), &x, &y, &w, &h); rsc[0] = (int)x; rsc[1] = (int)y; rsc[2] = (int)w; rsc[3] = (int)h; crop = rsc; }
     // DM_NVN_REGLUM=x0,y0,x1,y1:file (normalized coordinates): read back this region on every present and record "present sequence number, present time ns, region mean luminance, subsampled grayscale thumbnail (hex)" (diagnostic: verify that animation speed is independent of frame rate).
     // Does not wait for the GPU and does not disturb frame pacing. Metal 4 with a window: the copy goes into this present's own command buffer, after the present blit and behind the same
     //   queue barrier, so the row is exactly the picture this present showed. A classic-queue command buffer (the only way before 11-06, still used without a window or on Metal 3) is not
