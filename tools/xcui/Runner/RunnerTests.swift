@@ -40,6 +40,8 @@ final class RunnerTests: XCTestCase {
                 let e = app.descendants(matching: .any)[id]
                 XCTAssertTrue(e.waitForExistence(timeout: timeout), "第 \(i + 1) 步：\(timeout) 秒没等到输入框 \(id)")
                 e.tap(); e.typeText(text); print("[xcui] \(i + 1) 在 \(id) 打字 \(text.count) 个")
+            case .orient(let landscape):
+                XCUIDevice.shared.orientation = landscape ? .landscapeLeft : .portrait; print("[xcui] \(i + 1) 转成\(landscape ? "横屏" : "竖屏")")
             }
         }
         print("[xcui] 完")
