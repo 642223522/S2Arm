@@ -31,7 +31,16 @@ import programs
 SCHEMA = 1
 # 0.6.0 起通用壳是唯一的装机方式（维护者 11-18 定）：装 App 只装壳，各款程序包推进手机 program/（install.push_programs）
 PACKAGE, SIGNED, CATALOGUE, KEY, META = "package", "signed", "catalogue.json", ".key", "meta.json"
-REASONS = ("missing", "abi", "rewriter", "sha", "team", "cert", "look")   # need() 可能给的原因；look = 玩家在启动器里改的游戏名 / 封面变了（只重推清单与图标）
+REASONS = ("missing", "abi", "rewriter", "sha", "team", "cert", "look")
+# Apple TV 也走通用壳（11-19）：同一份程序件，只是镜像包按 tvOS 平台标（ios/embed.py 看 S2A_APPLE_OS）、用 tvOS 壳的随包表；缓存与 iPhone 分开放
+PLATFORMS = ("ios", "tvos")
+
+
+def _dirs(platform):
+    """平台 → (未签名包目录名, 签好包目录名)：iPhone 照旧 package / signed，Apple TV 加 -tvos"""
+    if platform not in PLATFORMS:
+        raise ValueError(platform)
+    return (PACKAGE, SIGNED) if platform == "ios" else (PACKAGE + "-tvos", SIGNED + "-tvos")   # need() 可能给的原因；look = 玩家在启动器里改的游戏名 / 封面变了（只重推清单与图标）
 
 
 def image_name(gid):
@@ -66,8 +75,8 @@ def compat(c):
     return dict(host_abi=want["hostAbi"], chain=want["dmshChain"], rewriter_id=rewrite_refresh.rewriter_id(c))
 
 
-def _package_key(c, gid, kit=None, info=None, banner=None):
-    """未签名程序包的缓存键（build 与 sign 共用）→ (kit, info, banner, 键)。缓存键 = 约定号 + 链号 + 改写器指纹 + 程序件内容戳 + 横版封面"""
+def _package_key(c, gid, kit=None, info=None, banner=None, platform="ios"):
+    """未签名程序包的缓存键（build 与 sign 共用）→ (kit, info, banner, 键)。缓存键 = 约定号 + 链号 + 改写器指纹 + 程序件内容戳 + 横版封面（Apple TV 另加平台）"""
     kit = Path(kit) if kit else programs.kit_dir(c, gid)
     if not (kit / "main.npdm").is_file():
         raise Failure(f"{gid} 还没有 iPhone 程序件：先「打 iPhone 包」", code="container_stale")
@@ -77,19 +86,24 @@ def _package_key(c, gid, kit=None, info=None, banner=None):
         banner = layout.path(c, gid, "banner.jpg", create=False)
     banner = Path(banner) if banner and Path(banner).is_file() else None
     bst = [banner.stat().st_size, banner.stat().st_mtime_ns] if banner else None
-    key = hashlib.sha256(json.dumps(dict(info, kit=_kit_stamp(kit), banner=bst), sort_keys=True).encode()).hexdigest()
+    key = hashlib.sha256(json.dumps(dict(info, kit=_kit_stamp(kit), banner=bst, **({} if platform == "ios" else {"platform": platform})),
+                                    sort_keys=True).encode()).hexdigest()
     return kit, info, banner, key
 
 
-def build(c, gid, *, kit=None, shell=None, info=None, banner=None):
+def build(c, gid, *, kit=None, shell=None, info=None, banner=None, platform="ios"):
     """未签名程序包 → 目录 <cache>/package/（S2AImages-<号>.dylib、Games/<号>/、meta.json）。缓存键 = 约定号 + 链号 + 改写器指纹 + 程序件内容戳，
-    键没变不重出。kit / shell / info 单测可给（缺省：programs.kit_dir、本版 iPhone 壳、compat）"""
+    键没变不重出。kit / shell / info 单测可给（缺省：programs.kit_dir、本版 iPhone 壳、compat）。
+    platform = "tvos"：Apple TV 版（<cache>/package-tvos/），壳缺省取 tvOS 预编壳，出包子进程带 S2A_APPLE_OS=tvos（镜像包标 tvOS 平台，tvOS 的 dyld 不认标 iOS 的库）"""
     gid = gid.upper()
-    kit, info, banner, key = _package_key(c, gid, kit, info, banner)
-    dest = programs.cache(c, gid) / PACKAGE
+    kit, info, banner, key = _package_key(c, gid, kit, info, banner, platform)
+    dest = programs.cache(c, gid) / _dirs(platform)[0]
     if (dest / KEY).is_file() and (dest / KEY).read_text(encoding="utf-8") == key and (dest / image_name(gid)).is_file():
         return dest
-    if shell is None:
+    if shell is None and platform == "tvos":
+        import tvos
+        shell = tvos.tv_shell(c)[0]
+    elif shell is None:
         import ipa
         shell = ipa.container_shell(c, ipa.current_shell_id(c))
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -98,7 +112,7 @@ def build(c, gid, *, kit=None, shell=None, info=None, banner=None):
         log = c.logs / (c.task + "-program.log")
         out = work / "program"
         c.run([os.sys.executable, "-X", "utf8", "-B", Path(c.engine) / "pack/ship_ext.py", "program", "--shell", shell, "--root", kit, "--out", out]
-              + (["--banner", banner] if banner else []), log, c.env())
+              + (["--banner", banner] if banner else []), log, dict(c.env(), S2A_APPLE_OS="tvos") if platform == "tvos" else c.env())
         got = json.loads(log.read_text(encoding="utf-8", errors="replace").strip().splitlines()[-1])
         if got.get("gid") != gid:
             raise Failure(f"程序件 {kit} 的程序号是 {got.get('gid')}，不是 {gid}", code="job_failed")  # 非玩家句
@@ -126,17 +140,18 @@ def catalogue(gid, meta, image, team):
     return out
 
 
-def sign(c, gid, team, bundle, signer, *, pkg=None):
+def sign(c, gid, team, bundle, signer, *, pkg=None, platform="ios", kit=None):
     """未签名包 → <cache>/signed/<团队>/（同结构 + catalogue.json）。signer(dylib 路径, 团队, 包名) 原地签那个 dylib（Mac：mac_signer；
-    Windows：win_signer）。缓存键 = 未签名包的键 + 团队 + 包名，没变不重签。pkg 缺省 build(c, gid)"""
+    Windows：win_signer）。缓存键 = 未签名包的键 + 团队 + 包名，没变不重签。pkg 缺省 build(c, gid)。
+    platform = "tvos"：Apple TV 版（<cache>/signed-tvos/<团队>/，未签名包按 build(platform="tvos", kit=kit) 出）"""
     gid = gid.upper()
-    dest = programs.cache(c, gid) / SIGNED / team
+    dest = programs.cache(c, gid) / _dirs(platform)[1] / team
     own = pkg is None   # 自己出的未签名包：签好后删掉它的 dylib（0.6.0 程序缓存瘦身：推送只用签好的那份；换团队时按键重出，build 自己会出）
     if own:   # 签好的那份键对得上就直接用，不必先把未签名包重出一遍
-        hit = _package_key(c, gid)[3] + f"\t{team}\t{bundle}" + _signer_tag(signer)
+        hit = _package_key(c, gid, kit, platform=platform)[3] + f"\t{team}\t{bundle}" + _signer_tag(signer)
         if (dest / KEY).is_file() and (dest / KEY).read_text(encoding="utf-8") == hit and (dest / CATALOGUE).is_file():
             return dest
-    pkg = Path(pkg) if pkg else build(c, gid)
+    pkg = Path(pkg) if pkg else build(c, gid, kit=kit, platform=platform)
     meta = json.loads((pkg / META).read_text(encoding="utf-8"))
     key = (pkg / KEY).read_text(encoding="utf-8") + f"\t{team}\t{bundle}" + _signer_tag(signer)
     if (dest / KEY).is_file() and (dest / KEY).read_text(encoding="utf-8") == key and (dest / CATALOGUE).is_file():
