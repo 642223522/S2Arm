@@ -8,6 +8,9 @@
 //      最后一次补出的帧里亮（> 0.8）像素的中心落在前后两帧竖条中心的正中（±8 像素），且两帧竖条原位（不与正中重叠的那段）不亮（< 0.3）——
 //      只把两帧混合（零运动矢量）时两处各半亮、没有 > 0.8 的像素（红）。同样再跑一遍每帧右移 96 像素（超出单层搜索的 ±64，两层金字塔才追得上；单层时红）。
 //      这两遍判成切镜头 0 次。第三遍：前 8 帧同上（右移 32），第 8 帧起换成一张固定的噪点图（与竖条场景毫不相干）：判成切镜头正好 1 次（第 7→8 帧那一对），补成仍是 11
+//      第四遍（11-18）：同第一遍，倒数第二帧的交帧间隔给 1 秒、按规则不补（不补 1、补成 10，那一帧照样编码插值、不上屏，GPU 读数 11 次）；最后一对照样补出中间位置。
+//      原先不补的帧不编码，下一对重置 MetalFX 历史，出的是这一帧原图（中心 464）；只去掉重置、不编码，又偏向前一帧（中心 435、前一帧原位全亮）。
+//      各帧交帧间隔都由单测给定（一个周期），不看墙钟：满载门禁机上墙钟间隔超 1.25 倍周期会判不补，原先时有时无地红
 #ifndef FI_LINK_SOURCE
 #define FI_LINK_SOURCE "../gfx/nvn/nvn_mtl.m"
 #endif
@@ -51,8 +54,8 @@ int main(void) { @autoreleasepool {
         CHECK(r0 == 0 && l0 == 1 && r1 == 1 && l1 == 0 && l2 == 1 && l3 == 2, "④ 显示链跟补帧：局中关 → 不补、链 %d（期望 1）；再开 → 补、链 %d（期望 0）；回退 → 链 %d（期望 1）；120 Hz 链不动 → %d（期望 2）", l0, l1, l2, l3);
     }
     // ⑤ 补帧端到端
-    if (@available(macOS 26.0, iOS 26.0, *)) if (!g_m3) for (int run = 0; run < 3; run++) {
-        const int W = 1280, H = 720, BW = 24, STEP = run == 1 ? 96 : 32, X0 = 100, N = 12, CUT_AT = run == 2 ? 8 : N;
+    if (@available(macOS 26.0, iOS 26.0, *)) if (!g_m3) for (int run = 0; run < 4; run++) {
+        const int W = 1280, H = 720, BW = 24, STEP = run == 1 ? 96 : 32, X0 = 100, N = 12, CUT_AT = run == 2 ? 8 : N, LATE_AT = run == 3 ? N - 2 : -1;
         g_fi = nil;   // 每遍从头建（统计从 0 起）
         setenv("DM_PRESENT_FI", "1", 1); g_fi_state = -1; s2a_fi_set_live(1);
         CAMetalLayer *l = [CAMetalLayer layer]; l.device = g_dev; l.pixelFormat = MTLPixelFormatBGRA8Unorm; l.drawableSize = CGSizeMake(W, H); l.framebufferOnly = NO;
@@ -77,6 +80,9 @@ int main(void) { @autoreleasepool {
                 if (stuck) { CHECK(0, "⑤ 第 %d 遍第 %d 帧：等第 %d 帧的票 2 秒没等到（补帧卡住）", run, i, i - 2); break; }
             }
             [t replaceRegion:MTLRegionMake2D(0, 0, W, H) mipmapLevel:0 withBytes:px bytesPerRow:W * 4];
+            // 交帧间隔给定值，不看墙钟（满载机器上墙钟间隔会超规则的 1.25 倍周期、判「来晚了不补」，单测时有时无地红；规则本身由 t_nvn_fi_rule 测）：
+            //   每帧正好一个周期；第 3 遍第 LATE_AT 帧给 1 秒，按规则不补
+            if (g_fi) ((NvPresentFI *)g_fi)->last_in_ns = now_ns() - (i == LATE_AT ? 1000000000ull : 1000000000ull / 30);
             int r = fi_frame(t, NULL, l, 1.0 / 30, ticket0 + i);
             if (r < 0) break;
             { double wake = sched0 + (i + 1) / 30.0, nowt = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9; if (wake > nowt) usleep((useconds_t)((wake - nowt) * 1e6)); }
@@ -88,11 +94,11 @@ int main(void) { @autoreleasepool {
         usleep(100000);   // 插值那一槽的完成回调（切镜头标志、GPU 时间）可能晚于真帧那一槽记票
         pthread_mutex_lock(&g_pq_mu); uint64_t gn = f ? f->gpu_n : 0, cuts = f ? f->cuts : 0; double gsum = f ? f->gpu_sum : 0; pthread_mutex_unlock(&g_pq_mu);
         CHECK(cuts == (run == 2 ? 1u : 0u), "⑤ 第 %d 遍：判成切镜头 %llu 次（期望 %d）", run, (unsigned long long)cuts, run == 2 ? 1 : 0);
-        // 满载机器上偶尔一帧交得晚、按规则（nvn_fi_rule.h：间隔超过声明周期 1.25 倍）不补，这是正确行为：补成 + 按规则不补 = N - 1、不补的至多 1 帧
-        CHECK(ok_on && f && f->made + f->declined == (uint64_t)(N - 1) && f->declined <= 1 && f->unpaired == 0 && gn == f->made && done >= ticket0 + N - 1,
-              "⑤ 每帧右移 %d：补成 %llu + 按规则不补 %llu（期望合计 %d、不补 ≤ 1）、配不上 %llu（期望 0）、有 GPU 读数的插值 %llu 次（期望 = 补成，平均 %.2f ms）、票记到 %llu（期望 ≥ %llu）",
+        // 补成 + 按规则不补 = N - 1；不补的只有第 3 遍给了 1 秒间隔的那一帧
+        CHECK(ok_on && f && f->made + f->declined == (uint64_t)(N - 1) && f->declined == (run == 3 ? 1u : 0u) && f->unpaired == 0 && gn == f->made + (run == 3 ? 1u : 0u) && done >= ticket0 + N - 1,
+              "⑤ 每帧右移 %d：补成 %llu + 按规则不补 %llu（期望合计 %d、不补 = 第 3 遍 1 帧其余 0）、配不上 %llu（期望 0）、有 GPU 读数的插值 %llu 次（期望 = 补成，第 3 遍不补的那帧也编码、多 1，平均 %.2f ms）、票记到 %llu（期望 ≥ %llu）",
               STEP, f ? (unsigned long long)f->made : 0, f ? (unsigned long long)f->declined : 0, N - 1, f ? (unsigned long long)f->unpaired : 0, (unsigned long long)gn, gn ? gsum / gn : 0, (unsigned long long)done, (unsigned long long)(ticket0 + N - 1));
-        if (f && run < 2) {   // 读回最后一次补出的帧（私有图 → 共享缓冲）
+        if (f && run != 2) {   // 读回最后一次补出的帧（私有图 → 共享缓冲）；第 3 遍：上一帧按规则不补（照样编码插值、不上屏），这一对照样补出中间位置
             id<MTLBuffer> rb = [g_dev newBufferWithLength:(NSUInteger)W * H * 4 options:MTLResourceStorageModeShared];
             id<MTLCommandBuffer> c = [[g_dev newCommandQueue] commandBuffer]; id<MTLBlitCommandEncoder> b = [c blitCommandEncoder];
             [b copyFromTexture:f->mid_tex sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(W, H, 1) toBuffer:rb destinationOffset:0 destinationBytesPerRow:W * 4 destinationBytesPerImage:(NSUInteger)W * H * 4];

@@ -339,13 +339,17 @@ static void fi_job(NvPresentFI *f, CAMetalLayer *layer, id<MTLTexture> src, fi_c
     pthread_mutex_lock(&g_pq_mu); int mine = fi_may_take_drawable(); pthread_mutex_unlock(&g_pq_mu);
     if (!mine) { static _Atomic int said; if (!atomic_fetch_add(&said, 1)) MLOG("present frame interpolation: the display link owns the layer; this frame takes no drawable (frame %llu dropped, no two presenters)", (unsigned long long)seq);
                  f->last_seq = UINT64_MAX; fi_ticket_done(ticket); fi_inflight_add(-1); return; }
-    int pair = good && allow && seq > 0 && f->last_seq == seq - 1;   // 上一帧也写进了输入图（k ^ 1）
+    int cont = good && seq > 0 && f->last_seq == seq - 1;   // 上一帧也写进了输入图（k ^ 1）
+    int pair = cont && allow;
+    // 30 帧档里按规则不补的帧（来晚了）照样编码插值、不上屏：MetalFX 的历史要逐对连续。断一对时下一对只能重置历史，重置后输出的就是这一帧原图（白算一次、屏上重复一帧）；
+    //   接着上一对的旧历史不重置又会偏向前一帧（t_fi_link ⑤ 第 3 遍：竖条中心 435、前一帧原位全亮）。这一帧原先省下的插值挪到这里，下一对照常补；60 帧档不补也不编码
+    int prime = cont && !allow && dm_fi_tier(period);
     if (seq > 0 && !allow) f->declined++;
     else if (seq > 0 && good && !pair) f->unpaired++;
     int mid_shown = 0;
     if (good) {
         id<CAMetalDrawable> dm = pair ? [layer nextDrawable] : nil;
-        int use_fx = pair && dm && !dup && !novt;
+        int use_fx = ((pair && dm) || prime) && !dup && !novt;
         id<MTLTexture> mid = novt ? f->in_tex[k ^ 1] : f->mid_tex;
         // 补出帧的摆放比例要和真帧一致（#1165：自适应满屏补丁开着时真帧走 present_blit_m4 按 s2a_cpatch_present_aspect 拉满到屏幕画幅，补出帧按输入图 16:9 摆，
         //   两侧黑边隔一帧一有，看着闪）：有补丁画幅就按它，没有照旧按输入图比例
@@ -371,7 +375,7 @@ static void fi_job(NvPresentFI *f, CAMetalLayer *layer, id<MTLTexture> src, fi_c
             if (cut) atomic_store(&f->cut_seq, seq); } : nil);
         if (ok) {
             f->last_seq = seq;
-            if (use_fx) { f->last_pair_seq = seq; f->made++; }
+            if (use_fx) { f->last_pair_seq = seq; if (dm) f->made++; }
             if (dm) { fi_count_on(dm, &g_fi_on_mid); [dm present]; mid_shown = 1; f->shown_mid++; }
         } else f->last_seq = UINT64_MAX;   // 输入图没写成：下一帧不跟它配对
     } else f->last_seq = UINT64_MAX;
