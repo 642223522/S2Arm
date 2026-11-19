@@ -20,39 +20,37 @@ import frontend_layout
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def bundle_plumesign(resources, cache=None, fetch=None):
-    """Impactor 同版 plumesign 的 macOS 原版随启动器（0.6.0 通用壳：Mac 的 Apple ID 用它登录、签名，pack/jobs/install.py mac_plume）：
-    放 Resources/<impactor.BUNDLE_DIR>/。缓存（同 Windows 打包 launchers/windows/bundle_win.py impactor_cache）有就用，没有从官方发布页下；
-    SHA-256 不等于 impactor.BUNDLED_MAC 拒打。发版时 sign_release.sh 按文件头认 Mach-O、用我们的 Developer ID 重签外层签名（公证要求），内容不改"""
+def bundle_plumesign(resources, cache=None):
+    """Impactor 同版 plumesign 的 macOS 版随启动器（0.6.0 通用壳：Mac 的 Apple ID 用它登录、签名，pack/jobs/install.py mac_plume）：
+    放 Resources/<impactor.BUNDLE_DIR>/。用的是我们自编的修改版（上游 v{TESTED} + launchers/windows/third_party/impactor/patches/，
+    tools/plumesign_build.py 编出放进缓存，同 Windows 打包 launchers/windows/bundle_win.py impactor_cache 同一个目录）；不再从发布页下载。
+    缓存里没有或 SHA-256 不等于 impactor.BUNDLED_MAC 都拒打。发版时 sign_release.sh 按文件头认 Mach-O、用我们的 Developer ID 重签外层签名（公证要求），内容不改"""
     sys.path.insert(0, str(ROOT / "pack/jobs")); import impactor
-    cache = Path(cache or os.environ.get("S2A_IMPACTOR_CACHE") or Path(os.environ.get("S2A_RUN_ROOT") or Path.home() / ".s2arm/run") / "s2arm/cache/impactor" / ("v" + impactor.TESTED))
+    cache = Path(cache or os.environ.get("S2A_IMPACTOR_CACHE") or Path(os.environ.get("S2A_RUN_ROOT") or Path.home() / ".s2arm/run")
+                 / "s2arm/cache/impactor" / f"v{impactor.TESTED}-{impactor.OWN_BUILD}")
     dest = Path(resources) / impactor.BUNDLE_DIR
-    dest.mkdir(parents=True, exist_ok=True); cache.mkdir(parents=True, exist_ok=True)
-    if fetch is None:
-        import urllib.request
-        fetch = lambda url, to: urllib.request.urlretrieve(url, to)   # noqa: E731
+    dest.mkdir(parents=True, exist_ok=True)
     for name, want in impactor.BUNDLED_MAC.items():
         src = cache / name
         if not src.is_file():
-            print(f"[组装] 下载 {name}（官方发布页 v{impactor.TESTED}）", flush=True); tmp = src.with_suffix(".part")
-            try:
-                fetch(impactor.DOWNLOAD + name, tmp)
-            except OSError as e:
-                raise SystemExit(f"【红】取不到 {impactor.DOWNLOAD + name}（{e}）：下好放进 {cache}（或用 S2A_IMPACTOR_CACHE 指过去）再打")
-            tmp.replace(src)
+            raise SystemExit(f"【红】缓存里没有 {src}：先跑 python3 tools/plumesign_build.py（Mac 上编自编版 v{impactor.TESTED}-{impactor.OWN_BUILD}）再打")
         got = hashlib.sha256(src.read_bytes()).hexdigest()
         if got != want:
-            raise SystemExit(f"【红】{src} 的 SHA-256 是 {got}，钉的是 {want}（{impactor.RELEASE_PAGE}）：不是官方 v{impactor.TESTED} 原版，拒打")
+            raise SystemExit(f"【红】{src} 的 SHA-256 是 {got}，钉的是 {want}：不是自编 v{impactor.TESTED}-{impactor.OWN_BUILD}，拒打")
         shutil.copy2(src, dest / name); (dest / name).chmod(0o755)
-    for f in sorted((ROOT / "launchers/windows/third_party/impactor").glob("LICENSE-*.txt")):
+    lic = ROOT / "launchers/windows/third_party/impactor"
+    for f in sorted(lic.glob("LICENSE-*.txt")):
+        shutil.copy2(f, dest / f.name)
+    patches = sorted((lic / "patches").glob("*.patch"))
+    for f in patches:
         shutil.copy2(f, dest / f.name)
     (dest / "README-来源与许可.txt").write_text("\n".join([
-        f"plumesign v{impactor.TESTED}（Impactor 的官方命令行，第三方开源工具，作者 Samara M / claration，MIT 许可：LICENSE-Impactor-MIT.txt）",
-        "S2Arm 随附官方发布文件，只按 macOS 公证要求重签外层签名、内容未改，用于以你的 Apple ID 登录苹果开发者服务、签名并把 S2Arm 装到你的 iPhone；"
-        "密码只交给它向 Apple 登录，S2Arm 不保存。",
-        f"来源：{impactor.RELEASE_PAGE}",
-        "其中内嵌的 apple-codesign 0.29.0 以 MPL-2.0 发布（LICENSE-apple-codesign-MPL-2.0.txt），源码：",
-        f"  https://github.com/claration/impactor/tree/v{impactor.TESTED}/3rdparty/apple-codesign-0.29.0", ""]), encoding="utf-8")
+        f"plumesign v{impactor.TESTED}（Impactor 的命令行，第三方开源工具，作者 Samara M / claration，MIT 许可：LICENSE-Impactor-MIT.txt）的修改版，"
+        "用于以你的 Apple ID 登录苹果开发者服务、签名并把 S2Arm 装到你的 iPhone；密码只交给它向 Apple 登录，S2Arm 不保存。",
+        f"S2Arm 基于上游 v{impactor.TESTED} 源码打上以下补丁后自行编译（随附补丁原文）：" + "、".join(f.name for f in patches),
+        f"上游源码：{impactor.SOURCE_TREE}",
+        "其中内嵌的 apple-codesign 0.29.0（未修改）以 MPL-2.0 发布（LICENSE-apple-codesign-MPL-2.0.txt），源码：",
+        f"  {impactor.SOURCE_TREE}/3rdparty/apple-codesign-0.29.0", ""]), encoding="utf-8")
 
 
 def copy_launcher_resources(bindir, resources):

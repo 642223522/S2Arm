@@ -658,8 +658,9 @@ else()
     add_executable(direct_source_store_test tests/direct_source_store_test.c
         native/direct/source_store.c native/direct/sha256.c)
     target_include_directories(direct_source_store_test PRIVATE native ../runtime/include)
-    # 宿主夹具用小的 pinned 额外槽位跑“全 pin 后 keep 失败”，生产默认 16384。
-    target_compile_definitions(direct_source_store_test PRIVATE S2A_SOURCE_MAX_PINNED=64)
+    # 宿主夹具用小的 pinned 额外槽位跑“全 pin 后 keep 失败”，生产默认 16384；
+    # 字节安全阀用 96 MiB 跑“活 program 占满软预算后仍收、到安全阀才失败”，生产默认 512 MiB（宿主夹具不必真填 512 MiB）。
+    target_compile_definitions(direct_source_store_test PRIVATE S2A_SOURCE_MAX_PINNED=64 S2A_SOURCE_HARD_BYTES=100663296u)
     target_compile_options(direct_source_store_test PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(direct_source_store_test PRIVATE Threads::Threads)
     add_test(NAME android_direct_source_store COMMAND direct_source_store_test)

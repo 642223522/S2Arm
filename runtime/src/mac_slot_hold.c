@@ -46,5 +46,6 @@ void s2a_mac_slot_hold(const char *what) {
         exit(75); }
     strlcpy(g_mac_slot, out, sizeof g_mac_slot); atexit(mac_slot_drop);
     LOG("Mac 局槽：%s 拿到 %s", nm, g_mac_slot);
+    BOOT_MARK("等 Mac 局槽（只在我方机器排队）");   // 排队单独成一段：不打这行，排队时间全算进下一段「服务：C# 运行时起」，被读成运行时首启慢（11-18）
 }
 #endif

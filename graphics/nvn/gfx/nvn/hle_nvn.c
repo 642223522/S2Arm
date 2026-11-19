@@ -1434,6 +1434,8 @@ uint64_t nvn_prog_set_ns(uint64_t serial) {
 //   一款 Switch 2 游戏 108 支现编失败里 98 支的「控制段」连 NVN2 魔数都没有，宿主按 Switch 1 硬读（#1520 当成「新版控制段没认出」）。
 //   这里按内容去重拷一份自持，首用算键、首遇现编、补齐 / 输出类型变体都读它。同一份只存一份、不释放：总量以不同着色器数为界，程序快照也可能还引用着它。
 //   （DM_NVN_SHDUMP 诊断档一直整份拷控制段，所以开转存复现不出来；安卓走自己的自持控制段 s2a_source_hold_pending）
+// 弱链接[nvntest]：s2a_snap_handout_blob（runtime/src/snapshot.c 提供；图形单测不链宿主，链接行按这行放行未定义）
+void s2a_snap_handout_blob(const void *p, uint32_t n) __attribute__((weak));
 typedef struct ctl_own { struct ctl_own *next; uint32_t n; uint8_t md[CC_SHA256_DIGEST_LENGTH]; uint8_t bytes[0x880]; } ctl_own;
 static const void *ctl_intern(const void *ctl, uint32_t n) {
     enum { B = 4096 }; static ctl_own *tab[B]; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
@@ -1442,9 +1444,12 @@ static const void *ctl_intern(const void *ctl, uint32_t n) {
     pthread_mutex_lock(&mu);
     ctl_own *e = tab[h];
     while (e && (e->n != n || memcmp(e->md, md, sizeof md))) e = e->next;
-    if (!e && (e = calloc(1, sizeof *e))) { e->n = n; memcpy(e->md, md, sizeof md); memcpy(e->bytes, ctl, n); e->next = tab[h]; tab[h] = e; atomic_fetch_add(&g_ctl_uniq, 1); }
+    int fresh = 0;
+    if (!e && (e = calloc(1, sizeof *e))) { e->n = n; memcpy(e->md, md, sizeof md); memcpy(e->bytes, ctl, n); e->next = tab[h]; tab[h] = e; atomic_fetch_add(&g_ctl_uniq, 1); fresh = 1; }
     atomic_fetch_add(&g_ctl_held, 1);   // 0x880 以内没拷的部分是 0
     pthread_mutex_unlock(&mu);
+    // 这份拷贝的地址会写进游戏内存里的程序对象：即时存档按内容身份登记（整 0x880 字节，含补零），恢复时重建、游戏里的旧地址换成新的（runtime/src/snapshot.c）
+    if (fresh && s2a_snap_handout_blob) s2a_snap_handout_blob(e->bytes, (uint32_t)sizeof e->bytes);
     return e ? e->bytes : ctl;
 }
 // 要首用才算键的这一阶段，控制段该自持多少字节（0 = 不自持：已在 SetShaders 算出键、控制段指针不是地址或读不了）
@@ -3853,12 +3858,12 @@ __attribute__((weak)) int s2a_fps60_display_source(void) { return 0; }   // runt
 __attribute__((weak)) void s2a_qp_frame(uint32_t draws, int video, int cutscene, int game_itv) { (void)draws; (void)video; (void)cutscene; (void)game_itv; }   // runtime/src/qprompt_host.c；图形单测没有宿主
 static _Atomic int g_fps_game_itv;   // 这一帧按游戏自己设的间隔（不走 display 模式）
 // 社区帧率补丁改在 sdk 里 NVN 驱动的交换间隔（D-36F4：真机上游戏照旧调 nvnWindowSetPresentInterval(2)，被补丁改过的驱动按 1 交帧）：
-//   直连层接管了 NVN，sdk 里那段驱动代码不执行，游戏传的 2 原样进出图节拍、补丁开着仍 30 帧。补丁开着时 runtime/src/cpatch.c 经这里把间隔封到补丁意图（1），
+//   直连层接管了 NVN，sdk 里那段驱动代码不执行，游戏传的 2 原样进出图节拍、补丁开着仍 30 帧。补丁开着时 runtime/src/cpatch.c 经这里把间隔封到补丁意图（1；FPSLocker 配置同理，#1517：真机由 NX-FPS 插件锁游戏设的间隔），
 //   关掉 / 停帧救场时回 0（不封，跟游戏）。只封出图节拍用的间隔；游戏读回的 nvnWindowGetPresentInterval 仍是它自己设的（同真机：补丁改的是驱动交帧，不改游戏的变量）
 static _Atomic int g_itv_cap;
 void nvn_present_itv_cap(int cap) {
     if (cap < 0) cap = 0;
-    if (atomic_exchange(&g_itv_cap, cap) != cap) LOG("[nvn] 出图间隔上限 %d（%s）", cap, cap ? "社区帧率补丁改的是 sdk 里的驱动交帧，直连层按补丁意图交帧" : "不封，跟游戏设的间隔");
+    if (atomic_exchange(&g_itv_cap, cap) != cap) LOG("[nvn] 出图间隔上限 %d（%s）", cap, cap ? "社区帧率补丁开着（改 sdk 里驱动交帧的一类，或 FPSLocker 配置：真机 NX-FPS 插件锁游戏设的间隔），直连层按补丁意图交帧" : "不封，跟游戏设的间隔");
 }
 static int game_itv(const win_t *o) {
     int v = o->interval > 0 ? o->interval : 1, cap = atomic_load(&g_itv_cap);
