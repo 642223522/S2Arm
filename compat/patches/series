@@ -646,3 +646,5 @@
 20261119-0016-snap-nro-hash.patch
 20261119-0352-snap-horizon-domain-ids.patch
 20261118-2112-time-catchup-log.patch
+20261119-1012-snap-syncpoint-state.patch
+20261119-1057-snap-audout-queue.patch

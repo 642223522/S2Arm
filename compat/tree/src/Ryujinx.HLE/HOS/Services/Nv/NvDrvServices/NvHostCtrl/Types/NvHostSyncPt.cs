@@ -107,6 +107,19 @@ namespace Ryujinx.HLE.HOS.Services.Nv.NvDrvServices.NvHostCtrl
             return (uint)_counterMax[id];
         }
 
+        // S2A：即时存档同步点状态（S2ASyncptSnap）。恢复只往上抬计数、补上分配标记（重放已分配 / 推到的不回退）
+        internal bool S2AAssigned(uint id) => _assigned[id];
+        internal bool S2AClientManaged(uint id) => _clientManaged[id];
+        internal void S2ARestore(uint id, uint min, uint max, bool assigned, bool clientManaged)
+        {
+            lock (_syncpointAllocatorLock)
+            {
+                if (assigned && !_assigned[id]) { _assigned[id] = true; _clientManaged[id] = clientManaged; }
+            }
+            if ((uint)_counterMin[id] < min) Interlocked.Exchange(ref _counterMin[id], (int)min);
+            if ((uint)_counterMax[id] < max) Interlocked.Exchange(ref _counterMax[id], (int)max);
+        }
+
         private bool IsClientManaged(uint id)
         {
             if (id >= SynchronizationManager.MaxHardwareSyncpoints)
