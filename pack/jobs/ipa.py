@@ -518,7 +518,10 @@ def adopt_product(c):
     tmp = image / (layout.IOS_PACK + ".adopt")
     if tmp.exists():
         _rm(c, layout.root_of(c, gid), tmp)
-    shutil.copytree(src, tmp)   # 来源多半在别的卷：先拷到这款文件夹里，再同卷换（_swap_pack 用 os.replace）
+    # 逐个文件克隆进这款文件夹（core.clone：同一 APFS 卷 clonefile 不另占盘，跨卷 / Windows 退回普通复制），再同卷换（_swap_pack 用 os.replace）。
+    #   原先整份 copytree：测试链每台设备每款都多一整份资源包（11-19 一款大型开放世界游戏一份 17 GB，把内置盘写满）
+    from core import clone
+    shutil.copytree(src, tmp, copy_function=lambda s, d: clone(s, d))
     with program_locks(c, [gid]):
         _swap_pack(c, gid, tmp, want)
     finish_kit_state(c, gid)
