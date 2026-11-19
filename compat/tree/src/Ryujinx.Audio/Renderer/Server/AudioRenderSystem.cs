@@ -61,6 +61,8 @@ namespace Ryujinx.Audio.Renderer.Server
 
         // S2Arm: work buffer in native memory owned by this renderer (see AudioRendererManager.OpenAudioRenderer)
         private unsafe byte* _ownedWorkBuffer;
+        private int _ownedWorkBufferSize;
+        private bool _ownedWorkBufferWired;
 
         // S2Arm: voice slot diagnostics (S2A_AUDIO_VOICE_DIAG=1), read-only; null when off
         private S2AVoiceSlotDiag _s2aVoiceDiag;
@@ -86,7 +88,8 @@ namespace Ryujinx.Audio.Renderer.Server
 
         public unsafe Memory<byte> AllocateOwnedWorkBuffer(int size)
         {
-            _ownedWorkBuffer = (byte*)System.Runtime.InteropServices.NativeMemory.AllocZeroed((nuint)Math.Max(size, 1));
+            _ownedWorkBuffer = S2AWiredBuffer.Alloc(size, out _ownedWorkBufferWired);
+            _ownedWorkBufferSize = size;
             if (S2ASnapOn) (s_s2aOwnedSize ??= new()).AddOrUpdate(this, new System.Runtime.CompilerServices.StrongBox<int>(size));
 
             return new Ryujinx.Memory.NativeMemoryManager<byte>(_ownedWorkBuffer, size).Memory;
@@ -96,7 +99,7 @@ namespace Ryujinx.Audio.Renderer.Server
         {
             if (_ownedWorkBuffer != null)
             {
-                System.Runtime.InteropServices.NativeMemory.Free(_ownedWorkBuffer);
+                S2AWiredBuffer.Free(_ownedWorkBuffer, _ownedWorkBufferSize, _ownedWorkBufferWired);
                 _ownedWorkBuffer = null;
             }
         }
