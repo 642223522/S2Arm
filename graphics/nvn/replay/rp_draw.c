@@ -1200,7 +1200,7 @@ void rp_draw(nvn_gpu_cmd c, const p_draw *dr, const p_draw_idx *di, const void *
             if (e->count != 1 || e->src_reg2 >= g_prog->nusrc) { skip("uniform_handle_shape", rec); goto draw_done; }
             int tid = 0, sid = 0; const char *bad = usrc_ids(st, &g_prog->usrc[e->src_reg2], &tid, &sid);
             if (bad) { skip(bad, rec); goto draw_done; }
-            tv[st][i] = rp_view_by_id_decl(tid, g_prog->dtt[st][i], g_prog->dcls[st][i], 0, c, NULL);
+            tv[st][i] = rp_view_by_ubo_handle_decl(tid, g_prog->dtt[st][i], g_prog->dcls[st][i], c, NULL);   // 没登记的号绑零贴图（Ryujinx null 贴图），不跳整笔
             ts[st][i] = rp_samp_for_tex(sid, tid);
             // 立即数采样器池下标（#1594 片 3）没登记：具名跳过，不拿别的采样器顶替（同 c2 常量采样器）
             if (!ts[st][i] && g_prog->usrc[e->src_reg2].samp_pool) { skip("const_sampler_unresolved", rec); goto draw_done; }

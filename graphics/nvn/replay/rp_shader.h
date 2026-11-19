@@ -66,3 +66,5 @@ int rp_shader_prog_borrow(const uint8_t identity[32], const struct rp_prog **out
 void rp_shader_prog_return(const uint8_t identity[32]);
 int  rp_shader_prog_borrowed(void);   // 当前未归还的借用数（静默 / 收尾判据）
 void rp_shader_reset(void);     // 会话收尾：放掉全部着色器
+// 游戏常量缓冲里的贴图句柄指向没登记的号、按默认描述符给了编译事实的次数（信息计数，不是未接；会话收尾清零）。#1594 片 4
+uint64_t rp_shader_ubo_default_fact_count(void);
