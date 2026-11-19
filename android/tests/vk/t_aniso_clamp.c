@@ -37,8 +37,7 @@ int main(void) {
     VkDebugUtilsMessengerCreateInfoEXT debug = {
         .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
         .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
-        .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
-                       VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+        .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT,
         .pfnUserCallback = validation,
     };
     VkInstanceCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pNext = &debug,
@@ -52,6 +51,17 @@ int main(void) {
     REQUIRE(create_debug && destroy_debug);
     VkDebugUtilsMessengerEXT messenger;
     REQUIRE(create_debug(dev.instance, &debug, NULL, &messenger) == VK_SUCCESS);
+    PFN_vkSubmitDebugUtilsMessageEXT submit_debug = (PFN_vkSubmitDebugUtilsMessageEXT)
+        vkGetInstanceProcAddr(dev.instance, "vkSubmitDebugUtilsMessageEXT");
+    REQUIRE(submit_debug);
+    VkDebugUtilsMessengerCallbackDataEXT general = {
+        .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CALLBACK_DATA_EXT,
+        .pMessage = "aniso GENERAL/WARNING filtering probe",
+    };
+    submit_debug(dev.instance, VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT,
+                 VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT, &general);
+    REQUIRE(messages == 0);
+    printf("aniso GENERAL/WARNING probe validation-messages=%u PASS\n", messages);
     uint32_t n = 1;
     REQUIRE(vkEnumeratePhysicalDevices(dev.instance, &n, &dev.physical) == VK_SUCCESS && n == 1);
     vkGetPhysicalDeviceProperties(dev.physical, &dev.properties);
