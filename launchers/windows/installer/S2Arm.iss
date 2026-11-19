@@ -20,6 +20,12 @@
 #ifndef AppVersion
   #error 用 /DAppVersion=<版本号，如 0.3.0> 指定版本
 #endif
+; 文件属性里的版本（VersionInfoVersion）只收数字：测试版 0.6.0-test.2 取 0.6.0，产品版本 / 界面仍显示完整号（AppVersion）
+#if Pos("-", AppVersion) > 0
+  #define VerNum Copy(AppVersion, 1, Pos("-", AppVersion) - 1)
+#else
+  #define VerNum AppVersion
+#endif
 
 [Setup]
 ; AppId 定下就不能改：卸载信息、升级识别都靠它
@@ -31,7 +37,7 @@ AppPublisher=S2Arm contributors
 AppPublisherURL=https://s2arm.com
 AppSupportURL=https://github.com/jhaizhou-ops/S2Arm/issues
 AppUpdatesURL=https://s2arm.com
-VersionInfoVersion={#AppVersion}
+VersionInfoVersion={#VerNum}
 DefaultDirName={localappdata}\Programs\S2Arm
 PrivilegesRequired=lowest
 ; Inno Setup 6.7 起缺省给 Setup 自己开 Windows 的 RedirectionGuard（不让穿过普通用户建的目录联接 / 符号链接），
