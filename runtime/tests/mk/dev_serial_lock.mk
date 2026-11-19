@@ -3,6 +3,6 @@ NATIVE_TEST_OWN += dev_serial_lock
 .PHONY: native-test-dev_serial_lock
 native-test-dev_serial_lock:
 	@mkdir -p $(BUILD)/tests
-	$(CC) $(CFLAGS) -o $(BUILD)/tests/t_dev_serial_lock runtime/tests/t_dev_serial_lock.c
+	$(CC) $(CFLAGS) -Iruntime/include -o $(BUILD)/tests/t_dev_serial_lock runtime/tests/t_dev_serial_lock.c
 	$(BUILD)/tests/t_dev_serial_lock
 TEST_TARGETS += native-test-dev_serial_lock

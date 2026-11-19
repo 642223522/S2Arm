@@ -2,6 +2,7 @@
 //   ① 没有 $HOME/.s2arm/mac_game_lock → 返回 0、不等；② 配置了：第一个进程拿到（1），第二个进程同时起 → 要等第一个退出（等待 ≥ 1 秒、返回 2）；
 //   ③ S2A_MAC_GAME_LOCK_HELD=1 → 返回 0（外层已持）；④ 锁文件打不开 → -1、不等
 #include "../src/dev_serial_lock.h"
+#include "s2a_t_result.h"
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/wait.h>
@@ -34,6 +35,5 @@ int main(void) {
     f = fopen(cfg, "w"); fprintf(f, "/没有这个目录/x.flock\n"); fclose(f);
     t0 = now();
     CHECK(s2a_dev_serial_lock() == -1 && now() - t0 < 1, "④ 锁文件打不开 → -1、不等");
-    printf(fails ? "dev_serial_lock 单测有不通\n" : "dev_serial_lock 单测全过\n");
-    return fails != 0;
+    return S2A_T_RESULT("t_dev_serial_lock", fails);
 }
