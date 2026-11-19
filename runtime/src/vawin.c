@@ -403,11 +403,7 @@ static void guest_file_map(void) {
 //   只在窗口还原封不动（整段一块 PROT_NONE 的匿名保留）时才换：换成文件是整段 MAP_FIXED，窗口里已经有东西就会被抹掉，那种情形不换、照旧匿名。
 //   还是不够：报红，并在屏幕上告诉玩家差多少空间（不然这款几分钟后涨到单进程上限被系统收掉，没有崩溃报告，玩家只看到闪退）
 #ifdef S2A_UNIT_TEST
-// 只链 vawin.c 的单测不链 snapshot.c：这几项在单元测试里恒「不在快照流程中」（同 t_vawin_* 其它用例口径）
-int s2a_snap_restoring(void) { return 0; }
-int s2a_snap_mode(void) { return 0; }
-int s2a_snap_manifest_win(uint64_t *b, uint64_t *s) { (void)b; (void)s; return 1; }
-int s2a_snap_manifest_u64(const char *k, uint64_t *a, uint64_t *b) { (void)k; (void)a; (void)b; return 1; }
+// 快照相关的弱缺省已由本文件后部的通用定义提供（合并 upstream 后统一，勿在此重复定义）
 void s2a_guest_file_test_pending(void) { g_gfile_pending = 1; }
 void s2a_guest_file_test_late(void) { g_gfile_late = 1; }   // 单测（t_guest_file_retry ④）：造「多款容器、已选定游戏、要按本款再判」的状态   // 单测（t_guest_file_retry）：造「装游戏前要换成文件」的状态（真机只由多款容器按本款再判置位，Mac 上 room 0 走不到）
 #endif

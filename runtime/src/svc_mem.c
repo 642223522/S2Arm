@@ -284,9 +284,7 @@ static int span_busy(uint64_t lo, uint64_t hi) { for (int i = 0; i < g_nspan; i+
 static uint8_t *g_amask;   // 每宿主页一字节，低 4 位 = 哪几个 4 KB 子页已映射；按别名区大小懒建（calloc 大块走零页，用到才占内存）
 #ifdef S2A_UNIT_TEST
 static uint64_t g_amask_probes;
-// 只链 svc_mem.c + layout.c 的单测不链 snapshot.c：这几项在单元测试里恒「不在快照恢复中」（同 vawin 测试口径）
-int s2a_snap_restoring(void) { return 0; }
-void s2a_snap_mark_old(void) { }
+// 快照相关的弱缺省已由本文件后部的通用定义提供（合并 upstream 后统一，勿在此重复定义）
 #define AMASK_PROBE() (++g_amask_probes)
 #else
 #define AMASK_PROBE() ((void)0)
