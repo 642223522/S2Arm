@@ -148,6 +148,12 @@ extension S2ArmLauncherModel {
     }
 
     /// 关掉弹窗（以后再说 / 知道了 / 新功能大窗的关闭、跳过、去出包）：这一版 / 这一期不再弹
+    /// 「消息」里点「再看一遍」：把这一期新功能大窗再打开（关掉照常记看过，不影响别的弹窗）
+    func reopenFeature(_ feature: [String: Any]) {
+        guard feature["kind"] as? String == "feature" else { return }
+        updatePopup = feature
+    }
+
     func closeUpdatePopup() {
         updateGate = nil
         if updatePopup?["kind"] as? String == "feature", let id = updatePopup?["id"] as? String {

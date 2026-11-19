@@ -276,7 +276,7 @@ class FreshCheckTests(Base):
         self.assertEqual(info["update"], {"available": False})
         self.assertEqual(info["popup"], feature)
         self.assertEqual(info["banner"]["id"], "n1")
-        self.assertEqual([(message["id"], message["kind"]) for message in info["messages"]], [("n1", "notice")])
+        self.assertEqual([(message["id"], message["kind"]) for message in info["messages"]], [("n1", "notice"), ("feature-1", "feature")])   # 新功能大窗在消息里留一条可重看
         self.assertEqual(info["unread"], 1)
 
 
@@ -536,6 +536,32 @@ class FeatureTests(unittest.TestCase):
         win = self.root / "win/Engine"
         (win / "pack/jobs").mkdir(parents=True); (win / "docs/site").mkdir(parents=True)
         self.assertEqual(updater.site_dir(win / "pack/jobs"), win / "docs/site")
+
+    def test_page_platforms_upgrade_audience_and_labels(self):
+        # 0.6.0（11-19）：页可标给哪些平台看、只给升级上来的人看、三栏标题换字；看过后「消息」里留一条可重看
+        page = {"image": "feature/a.jpg", **{k: self.T for k in updater.FEATURE_TEXTS}}
+        knows = {"zh-Hans": "要知道", "en": "Good to know"}
+        self.write(platforms=["mac", "windows", "ios"], pages=[
+            dict(page, platforms=["mac", "windows", "ios"], labels={"where": knows, "bogus": knows}),
+            dict(page, platforms=["mac", "windows"], audience="upgrade"),
+            dict(page, platforms=["ios"])])
+        mac = self.spot()
+        self.assertEqual(len(mac["pages"]), 2)                                    # 只给 ios 的那页电脑上不要
+        self.assertEqual(mac["pages"][0]["labels"], {"where": knows})               # 只认 what / how / where
+        self.assertEqual(mac["pages"][1]["audience"], "upgrade")
+        fresh = updater.inbox("mac", "0.4.0", self.private, None, [], mac)
+        self.assertEqual(len(fresh["popup"]["pages"]), 1)                           # 新装（没有 seen.json）：升级页去掉
+        self.assertEqual([m["kind"] for m in fresh["messages"]], ["feature"])     # 消息里留一条可重看
+        updater.inbox_seen(self.private, notice="n1")                               # 本机记过看过什么 = 升级上来的
+        old = updater.inbox("mac", "0.4.0", self.private, None, [], mac)
+        self.assertEqual(len(old["popup"]["pages"]), 2)
+        updater.inbox_seen(self.private, feature="v0.4.0-x")
+        again = updater.inbox("mac", "0.4.0", self.private, None, [], mac)
+        self.assertIsNone(again["popup"])                                           # 看过不再弹
+        self.assertEqual(len(next(m for m in again["messages"] if m["kind"] == "feature")["pages"]), 2)   # 但消息里还能点开
+        self.write(platforms=["mac"], pages=[dict(page, audience="upgrade")])
+        self.private = self.root / "private2"
+        self.assertIsNone(updater.inbox("mac", "0.4.0", self.private, None, [], self.spot())["popup"])   # 新装且只有升级页：不弹
 
     def test_fresh_install_without_seen_file_shows_it(self):
         self.assertFalse((self.private / "updates/seen.json").exists())
