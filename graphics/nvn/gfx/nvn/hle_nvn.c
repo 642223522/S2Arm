@@ -28,6 +28,7 @@
 #include "../../../../runtime/include/s2a_lowva.h"   // #1143：虚拟池预留记进低区账（vpool_lv）
 #include <mach/mach_time.h>
 #include <CommonCrypto/CommonDigest.h>
+#include "../../../../runtime/src/snapfmt.h"   // 即时存档：布局指纹登记（hle_snap_fps）与按字段转的读入（snap_fread）
 #include <CoreFoundation/CoreFoundation.h>
 #include <mach/mach.h>
 #include <TargetConditionals.h>
@@ -1248,7 +1249,7 @@ int s2a_hle_pk_load(FILE *f) {
     uint64_t n = 0, ns = 0; if (fread(&n, 8, 1, f) != 1) return -1;
     for (uint64_t i = 0; i < n; i++) { pk_rec r; if (fread(&r, sizeof r, 1, f) != 1) return -1; prog_keys_t *k = pk_get((const void *)(uintptr_t)r.p, 1); *k = r.k; }
     if (fread(&ns, 8, 1, f) != 1) return -1;   // 11-01 前的录像没有快照表（它的 OP_BIND_PROGRAM 也是旧格式）：重录
-    for (uint64_t i = 0; i < ns; i++) { prog_t snap; prog_keys_t k; if (fread(&snap, sizeof snap, 1, f) != 1 || fread(&k, sizeof k, 1, f) != 1) return -1; prog_snap_put(&snap, k.key, k.ok, k.stage); }
+    for (uint64_t i = 0; i < ns; i++) { prog_t snap; prog_keys_t k; if (snap_fread(&snap, sizeof snap, 1, f, "nvn.prog") != 1 || fread(&k, sizeof k, 1, f) != 1) return -1; prog_snap_put(&snap, k.key, k.ok, k.stage); }
     return (int)n;
 }
 static void pk_drop(const void *p) {
@@ -1435,6 +1436,7 @@ uint64_t nvn_prog_set_ns(uint64_t serial) {
 //   一款 Switch 2 游戏 108 支现编失败里 98 支的「控制段」连 NVN2 魔数都没有，宿主按 Switch 1 硬读（#1520 当成「新版控制段没认出」）。
 //   这里按内容去重拷一份自持，首用算键、首遇现编、补齐 / 输出类型变体都读它。同一份只存一份、不释放：总量以不同着色器数为界，程序快照也可能还引用着它。
 //   （DM_NVN_SHDUMP 诊断档一直整份拷控制段，所以开转存复现不出来；安卓走自己的自持控制段 s2a_source_hold_pending）
+// 弱链接[nvntest]：s2a_snap_conv_fread（runtime/src/snapshot.c 提供，经 snapfmt.h snap_fread 用：快照布局变了按字段转；图形单测不链宿主）
 // 弱链接[nvntest]：s2a_snap_handout_blob（runtime/src/snapshot.c 提供；图形单测不链宿主，链接行按这行放行未定义）
 void s2a_snap_handout_blob(const void *p, uint32_t n) __attribute__((weak));
 typedef struct ctl_own { struct ctl_own *next; uint32_t n; uint8_t md[CC_SHA256_DIGEST_LENGTH]; uint8_t bytes[0x880]; } ctl_own;
@@ -5698,11 +5700,11 @@ int hle_snap_ft_restore(const void *(*lookup)(uint64_t ser)) {
     LOG("%s即时存档恢复：CPU 后填贴图重新登记 %d 个（找不到 %d）", miss ? "【黄】" : "", n, miss); return n;
 }
 
-// 即时存档：游戏内存里放着宿主定义的 NVN 对象（nvn_obj.h，游戏分配的对象内存里直接是这些结构）+ 本文件按整块存的表：布局指纹
-#include "../../../../runtime/src/snapfmt.h"
+// 即时存档：游戏内存里放着宿主定义的 NVN 对象（nvn_obj.h，游戏分配的对象内存里直接是这些结构）+ 本文件按整块存的表：布局指纹。
+//   首字段是 magic 的对象带上 magic 值：换版本布局变了时恢复处按它在游戏内存里找到对象原地转（runtime/src/snapshot.c conv_guest_objs）
 void hle_snap_fps(snap_fp_cb cb) {
-    cb("nvn.tex", SNAP_FP_TYPE(tex_t)); cb("nvn.cmd", SNAP_FP_TYPE(cmd_t)); cb("nvn.sync", SNAP_FP_TYPE(sync_t)); cb("nvn.pool", SNAP_FP_TYPE(pool_t));
-    cb("nvn.prog", SNAP_FP_TYPE(prog_t)); cb("nvn.samp", SNAP_FP_TYPE(samp_t)); cb("nvn.view", SNAP_FP_TYPE(view_t)); cb("nvn.win", SNAP_FP_TYPE(win_t));
-    cb("nvn.queue", SNAP_FP_TYPE(queue_t)); cb("nvn.dev", SNAP_FP_TYPE(dev_t_)); cb("nvn.ev", SNAP_FP_TYPE(ev_t)); cb("nvn.dpool", SNAP_FP_TYPE(dpool_t));
+    cb("nvn.tex", SNAP_FP_OBJ(tex_t, MAGIC('T', 'E', 'X', 0))); cb("nvn.cmd", SNAP_FP_OBJ(cmd_t, MAGIC('C', 'M', 'D', 'B'))); cb("nvn.sync", SNAP_FP_OBJ(sync_t, MAGIC('S', 'Y', 'N', 'C'))); cb("nvn.pool", SNAP_FP_OBJ(pool_t, MAGIC('P', 'O', 'O', 'L')));
+    cb("nvn.prog", SNAP_FP_OBJ(prog_t, MAGIC('P', 'R', 'O', 'G'))); cb("nvn.samp", SNAP_FP_OBJ(samp_t, MAGIC('S', 'M', 'P', 0))); cb("nvn.view", SNAP_FP_TYPE(view_t)); cb("nvn.win", SNAP_FP_OBJ(win_t, MAGIC('W', 'I', 'N', 'D')));
+    cb("nvn.queue", SNAP_FP_OBJ(queue_t, MAGIC('Q', 'U', 'E', 'U'))); cb("nvn.dev", SNAP_FP_OBJ(dev_t_, MAGIC('D', 'E', 'V', 0))); cb("nvn.ev", SNAP_FP_OBJ(ev_t, MAGIC('E', 'V', 'N', 'T'))); cb("nvn.dpool", SNAP_FP_TYPE(dpool_t));
     cb("hle.dpool_base", SNAP_FP_TYPE(struct dpool_base)); cb("hle.schunk", SNAP_FP_TYPE(schunk)); cb("hle.sblk", SNAP_FP_TYPE(sblk));
 }

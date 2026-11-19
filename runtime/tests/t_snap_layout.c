@@ -102,6 +102,36 @@ int main(void) {
       CHECK(!snap_lay_plan(&x, &x, st2, w2, sizeof w2) && st2[0] == x.n && !snap_lay_apply(&x, &s1, &x, &s2) && !memcmp(&s1, &s2, sizeof s1), "同布局逐字段搬回来逐字节相同（%u 个字段）", x.n);
       snap_lay_free(&x); }
 
+    printf("⑨ 游戏内存里的对象按 magic 原地转：认得出的转、文本 / 坏指针 / 越界 / 不对齐的不动\n");
+    { typedef struct { uint32_t magic; void *native; int32_t ntex; uint64_t presents; } o1_t;
+      typedef struct { uint32_t magic; int32_t mid; void *native; int32_t ntex; uint64_t presents; int32_t added; } n1_t;   // 中间插字段、尾部加字段
+      typedef struct { uint32_t magic, pad; float v[4]; } np_t;   // 没有指针字段：不扫
+      const uint32_t M = 'W' | 'I' << 8 | 'N' << 16 | 'D' << 24;
+      snap_lay lo, ln, lp; SNAP_LAY_TYPE_(o1_t, &lo); SNAP_LAY_TYPE_(n1_t, &ln); SNAP_LAY_TYPE_(np_t, &lp);
+      snap_conv e; memset(&e, 0, sizeof e); e.o = &lo; e.c = &ln; e.magic = M; snap_conv ep = e; ep.o = &lp; ep.c = &lp;
+      CHECK(!snap_conv_scannable(&e) && snap_conv_scannable(&ep), "有指针字段的可扫，没有的不扫（%s）", snap_conv_scannable(&ep) ? snap_conv_scannable(&ep) : "可扫");
+      static uint64_t mem[512]; uint8_t *m = (uint8_t *)mem; const size_t N = sizeof mem;
+      o1_t a1 = {M, (void *)(uintptr_t)0x100004000ull, 3, 77}, a2 = {M, NULL, 2, 5}, bad = {M, (void *)(uintptr_t)0x10, 1, 1};
+      memcpy(m + 64, &a1, sizeof a1); memcpy(m + 2048, &a2, sizeof a2); memcpy(m + 1024, &bad, sizeof bad);
+      memcpy(m + 512, "WINDOWS TEXT ok!WINDOWS TEXT ok!", 32);           // 首 4 字节恰是 magic 的文本：指针字段读成 0x20.. 打头，不认
+      memcpy(m + 1501, &a1, sizeof a1);                                    // 不对齐：不认
+      memcpy(m + N - 8, &M, 4);                                            // 对象放不下（越界）：不认
+      uint8_t before[sizeof mem]; memcpy(before, m, N); uint8_t tmp[64];
+      snap_conv *ev[1] = {&e}; snap_conv_scan(ev, 1, m, N, tmp);
+      n1_t r1, r2; memcpy(&r1, m + 64, sizeof r1); memcpy(&r2, m + 2048, sizeof r2);
+      CHECK(e.nobj == 2, "转了 2 个 → 真结果 %llu 个", (unsigned long long)e.nobj);
+      CHECK(r1.magic == M && r1.mid == 0 && r1.native == a1.native && r1.ntex == 3 && r1.presents == 77 && r1.added == 0,
+            "第 1 个按新布局：magic 保留、mid / added 取 0、native %p ntex 3 presents 77 → 真结果 mid %d native %p ntex %d presents %llu added %d", a1.native, r1.mid, r1.native, r1.ntex, (unsigned long long)r1.presents, r1.added);
+      CHECK(r2.native == NULL && r2.ntex == 2 && r2.presents == 5, "第 2 个（指针为 0）也转 → ntex %d presents %llu", r2.ntex, (unsigned long long)r2.presents);
+      CHECK(!memcmp(m + 512, before + 512, 32) && !memcmp(m + 1024, before + 1024, sizeof bad) && !memcmp(m + 1501, before + 1501, sizeof a1) && !memcmp(m + N - 8, before + N - 8, 8),
+            "文本、坏指针、不对齐、越界四处逐字节没动");
+      CHECK(e.nlossy == 0 && e.ndrop == 0, "无有损、无丢值 → %llu / %llu", (unsigned long long)e.nlossy, (unsigned long long)e.ndrop);
+      // 旧有新无的字段有值计「丢值」：新版删掉 presents
+      typedef struct { uint32_t magic; void *native; int32_t ntex; } n2_t; snap_lay l2; SNAP_LAY_TYPE_(n2_t, &l2);
+      snap_conv e2; memset(&e2, 0, sizeof e2); e2.o = &lo; e2.c = &l2; e2.magic = M; n2_t r3; snap_conv_one(&e2, &a1, &r3);
+      CHECK(e2.ndrop == 1 && r3.ntex == 3 && r3.native == a1.native, "删掉的 presents 旧值 77 非零计丢值 1 → %llu", (unsigned long long)e2.ndrop);
+      snap_lay_free(&lo); snap_lay_free(&ln); snap_lay_free(&lp); snap_lay_free(&l2); }
+
     snap_lay_free(&a); snap_lay_free(&b); snap_lay_free(&r);
     if (g_fail) printf("✗ t_snap_layout：%d 项不符（共 %d 项）\n", g_fail, g_ok + g_fail);
     else printf("✓ t_snap_layout：0 处不符（共 %d 项）\n", g_ok);

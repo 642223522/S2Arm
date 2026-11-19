@@ -553,7 +553,7 @@ static int man_get(const char *dir, const char *key, char *out, size_t n);
 // 按整块存的宿主结构（游戏内存里的 NVN 对象、图形回放状态、视频表等）的布局指纹：存档时全部记进清单，恢复前逐个比，不同即拒绝（C 档）
 void hle_snap_fps(fp_cb) __attribute__((weak_import)); void nvn_snap_fps(fp_cb) __attribute__((weak_import)); void nvn2_codec_snap_fps(fp_cb) __attribute__((weak_import)); void nvn2_snap_fps(fp_cb) __attribute__((weak_import));
 uint64_t S2A_SnapAudioFp(void) __attribute__((weak_import));   // SnapLog.cs：音频渲染器工作缓冲的布局指纹
-static void fps_all(fp_cb cb) { if (S2A_SnapAudioFp) cb("audio.renderer", (snap_fp){S2A_SnapAudioFp(), NULL}); if (hle_snap_fps) hle_snap_fps(cb); if (nvn_snap_fps) nvn_snap_fps(cb); if (nvn2_codec_snap_fps) nvn2_codec_snap_fps(cb); if (nvn2_snap_fps) nvn2_snap_fps(cb); }
+static void fps_all(fp_cb cb) { if (S2A_SnapAudioFp) cb("audio.renderer", (snap_fp){S2A_SnapAudioFp(), NULL, 0}); if (hle_snap_fps) hle_snap_fps(cb); if (nvn_snap_fps) nvn_snap_fps(cb); if (nvn2_codec_snap_fps) nvn2_codec_snap_fps(cb); if (nvn2_snap_fps) nvn2_snap_fps(cb); }
 // 存：指纹进清单；完整布局进 layouts.bin（换版本时按字段转用，见 snapfmt.h）。托管侧（音频）没有 C 布局，记「不明」
 static void fp_write(const char *name, snap_fp fp) {
     fprintf(g_fp_f, "布局指纹\t%s\t%016llx\n", name, (unsigned long long)fp.fp);
@@ -574,20 +574,48 @@ static const snap_lay *old_lay(const char *dir, const char *name) {
     for (int i = 0; i < g_old_lay_n; i++) if (!strcmp(g_old_lay[i].name, name)) return &g_old_lay[i].lay;
     return NULL;
 }
-static const char *g_fp_dir; static int g_fp_bad, g_fp_n;
+static const char *g_fp_dir; static int g_fp_bad, g_fp_n, g_fp_conv;
+// 布局转换表：快照里的布局与本版不同、能按字段转的结构。恢复处经 s2a_snap_conv_fread 读整块结构时按它转；
+//   带 magic 的（住在游戏内存里的对象）在页内容写回后整片找一遍、原地转（conv_guest_objs）
+static snap_conv g_conv[128]; static int g_nconv;
+static snap_conv *conv_find(const char *name) { for (int i = 0; i < g_nconv; i++) if (!strcmp(g_conv[i].name, name)) return &g_conv[i]; return NULL; }
+size_t s2a_snap_conv_fread(void *dst, size_t size, size_t n, FILE *f, const char *name) {
+    snap_conv *e = conv_find(name);
+    if (!e || e->c->size != size) return fread(dst, size, n, f);   // 布局相同（或调用方读的不是登记的那个结构）：原样读
+    uint8_t *tmp = malloc(e->o->size ? e->o->size : 1); size_t k = 0;
+    for (; k < n && tmp; k++) { if (fread(tmp, e->o->size, 1, f) != 1) break; snap_conv_one(e, tmp, (uint8_t *)dst + k * size); }
+    free(tmp); return k;
+}
+static void conv_guest_objs(const uint64_t *rg, int nrg) {   // rg：{起点, 长度} × nrg，按地址排好、相邻的已并成一段（跨记录的对象也在一段里）
+    snap_conv *ev[128]; int ne = 0; double t0 = now_s(); uint64_t scanned = 0; uint32_t omax = 0;
+    for (int i = 0; i < g_nconv; i++) if (g_conv[i].magic) { const char *why = snap_conv_scannable(&g_conv[i]);
+        if (why) { LOG("【黄】即时存档恢复：「%s」%s，游戏内存里的这种对象没转", g_conv[i].name, why); continue; }
+        ev[ne++] = &g_conv[i]; if (g_conv[i].o->size > omax) omax = g_conv[i].o->size; }
+    if (!ne) return;
+    uint8_t *tmp = malloc(omax);
+    for (int r = 0; r < nrg && tmp; r++) { snap_conv_scan(ev, ne, (uint8_t *)(uintptr_t)rg[2 * r], rg[2 * r + 1], tmp); scanned += rg[2 * r + 1]; }
+    free(tmp);
+    for (int j = 0; j < ne; j++) LOG("%s即时存档恢复：游戏内存里的「%s」按新布局原地转 %llu 个（旧 %u 字节 → 新 %u 字节；整数放不下 %llu 处、丢掉的旧字段有值 %llu 处）",
+        ev[j]->nlossy || ev[j]->ndrop ? "【黄】" : "", ev[j]->name, (unsigned long long)ev[j]->nobj, ev[j]->o->size, ev[j]->c->size, (unsigned long long)ev[j]->nlossy, (unsigned long long)ev[j]->ndrop);
+    LOG("即时存档恢复：按 magic 找对象扫了 %.0f MB，%.2f 秒", scanned / 1048576.0, now_s() - t0);
+}
+// 布局指纹核对：相同直接用；不同按两版完整布局给逐字段转换计划，能转的登记进转换表；接不上的（布局不明 / 字段类型变了）黄字点名、照常继续——
+//   校验不过不拒绝：那个结构恢复出来可能不对，真出错时由出错处报
 static void fp_check(const char *name, snap_fp sfp) {
     uint64_t fp = sfp.fp;
     FILE *f = open_in(g_fp_dir, "manifest.tsv", "r"); if (!f) { g_fp_bad++; return; }
     char line[512], want[160]; snprintf(want, sizeof want, "布局指纹\t%s\t", name); size_t wl = strlen(want); int found = 0;
     while (fgets(line, sizeof line, f)) if (!strncmp(line, want, wl)) { found = 1; uint64_t v = strtoull(line + wl, NULL, 16); g_fp_n++;
-        if (v != fp) {   // 布局变了：按两版完整布局给出逐字段转换计划。各结构的恢复处接上转换之前照旧拒绝，计划写进日志供看能不能转、卡在哪个字段
+        if (v != fp) {
             const snap_lay *o = old_lay(g_fp_dir, name); uint32_t st[4]; char why[256] = "";
             if (!o) snprintf(why, sizeof why, "快照里没有完整布局（旧版快照）");
             int ok = o && !snap_lay_plan(o, sfp.lay, st, why, sizeof why);
-            if (ok) LOG("【红】即时存档恢复：宿主结构「%s」布局与快照时不同（快照 %016llx，本版 %016llx）；按字段能转（原样 %u、换宽 / 精度 %u、新加取缺省 %u、丢掉 %u），这个结构的恢复还没接转换",
-                        name, (unsigned long long)v, (unsigned long long)fp, st[0], st[1], st[2], st[3]);
-            else LOG("【红】即时存档恢复：宿主结构「%s」布局与快照时不同（快照 %016llx，本版 %016llx），不能按字段转：%s", name, (unsigned long long)v, (unsigned long long)fp, why);
-            g_fp_bad++; } break; }
+            if (ok && g_nconv < (int)(sizeof g_conv / sizeof g_conv[0])) {
+                snap_conv *e = &g_conv[g_nconv++]; memset(e, 0, sizeof *e); snprintf(e->name, sizeof e->name, "%s", name); e->o = o; e->c = sfp.lay; e->magic = sfp.magic; g_fp_conv++;
+                LOG("即时存档恢复：宿主结构「%s」布局与快照时不同（快照 %016llx，本版 %016llx），按字段转（原样 %u、换宽 / 精度 %u、新加取缺省 %u、丢掉 %u）%s",
+                    name, (unsigned long long)v, (unsigned long long)fp, st[0], st[1], st[2], st[3], sfp.magic ? "；游戏内存里的这种对象写回后原地转" : ""); }
+            else { LOG("【黄】即时存档恢复：宿主结构「%s」布局与快照时不同（快照 %016llx，本版 %016llx），不能按字段转：%s；照原样继续", name, (unsigned long long)v, (unsigned long long)fp, ok ? "转换表满了" : why);
+                g_fp_bad++; } } break; }
     fclose(f);
     if (!found) LOG("即时存档恢复：宿主结构「%s」是本版新加的，快照里没有（按缺省）", name);
 }
@@ -632,8 +660,9 @@ int s2a_snap_restore_check(const char *dir) {
         if (gns) { uint64_t before = guest_ns(); s2a_guest_clock_set(gns); LOG("即时存档恢复：游戏时间接到快照时刻 %.3f s（不接是 %.3f s）", gns / 1e9, before / 1e9); }
     }
     if (!bad) { g_fp_dir = dir; g_fp_bad = 0; g_fp_n = 0; fps_all(fp_check);
-        if (g_fp_bad) { LOG("【红】即时存档恢复：这个快照是旧版存的，%d 个宿主结构布局接不上，拒绝恢复；游戏自己的存档不受影响", g_fp_bad); s2a_snap_mark_old(); bad++; }
-        else LOG("即时存档恢复：宿主结构布局指纹 %d 个全部一致", g_fp_n); }
+        if (g_fp_bad) LOG("【黄】即时存档恢复：这个快照是旧版存的，%d 个宿主结构布局接不上（见上），照常继续恢复", g_fp_bad);
+        if (g_fp_conv) LOG("即时存档恢复：宿主结构布局指纹 %d 个，%d 个按字段转", g_fp_n, g_fp_conv);
+        else if (!g_fp_bad) LOG("即时存档恢复：宿主结构布局指纹 %d 个全部一致", g_fp_n); }
     if (!bad) LOG("即时存档恢复：清单六项全部一致（构建号 %s、程序号 %s、窗口 %s、存档目录 %d 个文件）", id.build, id.prog, id.win, id.save_n);
     return bad ? -1 : 0;
 }
@@ -744,6 +773,13 @@ static int load_mem(const char *dir, uint64_t *raw_out) {
     LOG("%s即时存档恢复：交出的宿主指针按身份换算 %llu 个（同址 %llu、解析不了 %llu），数据段 %d 段，游戏内存里替换 %llu 处", nunres ? "【红】" : "", (unsigned long long)nm, (unsigned long long)nsame, (unsigned long long)nunres, nr2, (unsigned long long)nrep);
     LOG("即时存档恢复：页内容拆账 映射核对 + 放开写 %.2f、写回 + 指针换算 %.2f（秒）；经后备文件写 %d 段 %.0f MB、经映射写 %d 段", tp0 - t_lm0, tp1 - tp0, nviaf, bviaf / 1048576.0, nr - nviaf);
     free(hk); free(hv); free(from); free(to); free(rg); free(rgto); free(viaf); free(foff); bad += wbad;
+    {   // 布局变了的游戏内存对象：写回全部完成后按地址排序、相邻并段，整片找一遍原地转（没有要转的直接返回）
+        int need = 0; for (int i = 0; i < g_nconv; i++) need |= g_conv[i].magic != 0;
+        uint64_t *gr = need && !bad ? malloc(16 * (size_t)(nr ? nr : 1)) : NULL; int ng = 0;
+        if (gr) { int (^cmp)(const void *, const void *) = ^int(const void *x, const void *y) { uint64_t u = ((const rec_t *)x)->a, w = ((const rec_t *)y)->a; return u < w ? -1 : u > w; };
+            qsort_b(rv, (size_t)nr, sizeof *rv, cmp);
+            for (int i = 0; i < nr; i++) { if (ng && gr[2 * ng - 2] + gr[2 * ng - 1] == rv[i].a) gr[2 * ng - 1] += rv[i].n; else { gr[2 * ng] = rv[i].a; gr[2 * ng + 1] = rv[i].n; ng++; } }
+            conv_guest_objs(gr, ng); free(gr); } }
     munmap(m, (size_t)st.st_size); free(rv); *raw_out = raw;
     LOG("%s即时存档恢复：页内容 %d 段 %.0f MB 写回（放开写 %d 段，解压失败 %d）", bad ? "【红】" : "", nr, raw / 1048576.0, fixed, bad);
     return bad || hobad ? -1 : 0;

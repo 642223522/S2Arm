@@ -60,7 +60,7 @@ static void snap_put_pkg(const char *path, nvn_hmap *addr, int *put, int *miss) 
     typedef struct { __unsafe_unretained NvPkg *pk; __unsafe_unretained id<MTLTexture> mt; __unsafe_unretained id<MTLBuffer> b; fr_tex_hd hd; } pend_t;   // 对象由 keep 持住
     NSMutableArray *keep = [NSMutableArray array];   // 持住暂存缓冲与贴图，等这一批命令做完
     pend_t *pv = NULL; int np = 0, cap = 0;
-    while (fr_r(f, &hd, sizeof hd)) {
+    while (snap_fread(&hd, sizeof hd, 1, f, "mtl.tex_hd")) {
         const tex_t *t = nvn_hm_get(addr, &hd.ser);
         if (!t || t->serial != hd.ser || !tex_mtl(t)) { fseeko(f, (off_t)hd.bytes, SEEK_CUR); (*miss)++; continue; }
         __unsafe_unretained id o = tex_get(hd.ser); NvPkg *pk = [o isKindOfClass:[NvPkg class]] ? (NvPkg *)o : nil; id<MTLTexture> mt = pk ? pk->tex : nil;
@@ -129,7 +129,7 @@ static int snap_mtl_save(FILE *f) {
 }
 static int snap_mtl_restore(FILE *f) {
     uint32_t mg = 0; uint64_t ab[2]; if (!ms_r(f, &mg, 4) || mg != 0x31544D53u || !ms_r(f, ab, sizeof ab)) return -1;
-    int ok = ms_r(f, &S, sizeof S) && ms_r(f, &R, sizeof R) && ms_r(f, &g_bind_cache, sizeof g_bind_cache) && ms_r(f, &g_push_seq, 8);
+    int ok = snap_fread(&S, sizeof S, 1, f, "mtl.S") && snap_fread(&R, sizeof R, 1, f, "mtl.R") && snap_fread(&g_bind_cache, sizeof g_bind_cache, 1, f, "mtl.bind_cache") && ms_r(f, &g_push_seq, 8);
     if (!ok) return -1;
     uintptr_t abc = (uintptr_t)ab[0], bbc = (uintptr_t)&g_bind_cache, ar = (uintptr_t)ab[1], br = (uintptr_t)&R; int nrel = 0;
     #define MS_PROG(x) do { const void *o_ = (x); (x) = ms_rel(o_, abc, sizeof g_bind_cache, bbc); nrel += (x) != o_; } while (0)
@@ -143,12 +143,12 @@ static int snap_mtl_restore(FILE *f) {
     uint32_t n, nb = 0, nd = 0, no = 0, np = 0;
     pthread_mutex_lock(&g_gpw_mu);
     ok = ms_r(f, &g_gpw_gen, 8) && ms_r(f, &n, 4);
-    for (uint32_t i = 0; ok && i < n; i++) { uint64_t k; gpw_blk *b = calloc(1, sizeof *b); ok = b && ms_r(f, &k, 8) && ms_r(f, b, sizeof *b); if (ok) { nvn_hm_put(&g_gpw, &k, b); atomic_fetch_add(&g_gpw_nblk, 1); nb++; } }
+    for (uint32_t i = 0; ok && i < n; i++) { uint64_t k; gpw_blk *b = calloc(1, sizeof *b); ok = b && ms_r(f, &k, 8) && snap_fread(b, sizeof *b, 1, f, "mtl.gpw_blk"); if (ok) { nvn_hm_put(&g_gpw, &k, b); atomic_fetch_add(&g_gpw_nblk, 1); nb++; } }
     ok = ok && ms_r(f, &n, 4);
     for (uint32_t i = 0; ok && i < n; i++) { uint64_t k, gen; uint32_t dn; ok = ms_r(f, &k, 8) && ms_r(f, &gen, 8) && ms_r(f, &dn, 4); if (!ok) break;
         gpw_dd *d = calloc(1, sizeof *d + ((size_t)dn + 63) / 64 * 8); ok = d && ms_r(f, d->bits, ((size_t)dn + 63) / 64 * 8); if (ok) { d->gen = gen; d->n = dn; nvn_hm_put(&g_gpw_ser, &k, d); nd++; } }
     ok = ok && ms_r(f, &n, 4);
-    for (uint32_t i = 0; ok && i < n; i++) { uint64_t k; gpw_own *o = calloc(1, sizeof *o); ok = o && ms_r(f, &k, 8) && ms_r(f, o, sizeof *o); if (ok) { nvn_hm_put(&g_gpw_own, &k, o); no++; } }
+    for (uint32_t i = 0; ok && i < n; i++) { uint64_t k; gpw_own *o = calloc(1, sizeof *o); ok = o && ms_r(f, &k, 8) && snap_fread(o, sizeof *o, 1, f, "mtl.gpw_own"); if (ok) { nvn_hm_put(&g_gpw_own, &k, o); no++; } }
     pthread_mutex_unlock(&g_gpw_mu);
     ok = ok && ms_r(f, &n, 4);
     pthread_mutex_lock(&g_pool_gpuw_mu);
@@ -199,7 +199,7 @@ static id<MTLTexture> snap_al_load_x(FILE *f, int res);
 static id<MTLTexture> snap_al_load(FILE *f) { return snap_al_load_x(f, 1); }
 static id<MTLTexture> snap_al_load_x(FILE *f, int res) {   // 读一张：建同描述的贴图、写回内容；读坏返回 nil 且 errno = EIO。res：登记进本层常驻集（GL 出图层的贴图不登记）
     snap_al_x x; fr_tex_hd hd; errno = 0;
-    if (!fr_r(f, &x, sizeof x) || !fr_r(f, &hd, sizeof hd)) { errno = EIO; return nil; }
+    if (!fr_r(f, &x, sizeof x) || !snap_fread(&hd, sizeof hd, 1, f, "mtl.tex_hd")) { errno = EIO; return nil; }
     MTLTextureDescriptor *d = [MTLTextureDescriptor new];
     d.textureType = (MTLTextureType)hd.type; d.pixelFormat = (MTLPixelFormat)hd.fmt; d.width = hd.w; d.height = hd.h; d.depth = MAX(1u, hd.depth); d.mipmapLevelCount = hd.levels; d.sampleCount = 1;
     d.arrayLength = hd.type == MTLTextureTypeCube || hd.type == MTLTextureTypeCubeArray ? MAX(1u, hd.layers / 6) : hd.type == MTLTextureType3D ? 1 : MAX(1u, hd.layers);
@@ -226,7 +226,7 @@ int nvn_snap_tex_save(FILE *f, void *tex) {
 void *nvn_snap_tex_load(FILE *f) {
     uint8_t k; if (!fr_r(f, &k, 1)) return NULL;
     if (k == 1) { id<MTLTexture> t = snap_al_load_x(f, 0); return t ? (__bridge_retained void *)t : NULL; }
-    snap_al_x x; fr_tex_hd hd; if (!fr_r(f, &x, sizeof x) || !fr_r(f, &hd, sizeof hd)) return NULL;
+    snap_al_x x; fr_tex_hd hd; if (!fr_r(f, &x, sizeof x) || !snap_fread(&hd, sizeof hd, 1, f, "mtl.tex_hd")) return NULL;
     MTLTextureDescriptor *d = [MTLTextureDescriptor new];
     d.textureType = (MTLTextureType)hd.type; d.pixelFormat = (MTLPixelFormat)hd.fmt; d.width = MAX(1u, hd.w); d.height = MAX(1u, hd.h); d.depth = MAX(1u, hd.depth); d.mipmapLevelCount = MAX(1u, hd.levels); d.sampleCount = MAX(1u, hd.samples);
     d.arrayLength = hd.type == MTLTextureTypeCube || hd.type == MTLTextureTypeCubeArray ? MAX(1u, hd.layers / 6) : hd.type == MTLTextureType3D ? 1 : MAX(1u, hd.layers);
@@ -297,7 +297,7 @@ static int snap_alias_restore(const char *path) {
     NSMutableArray *objs = [NSMutableArray arrayWithCapacity:n];
     pthread_mutex_lock(&g_smu); if (!g_alias_set) g_alias_set = CFSetCreateMutable(NULL, 0, NULL); pthread_mutex_unlock(&g_smu);
     for (uint32_t i = 0; ok && i < n; i++) {
-        alias_key ak; uint8_t has; ok = fr_r(f, &ak, sizeof ak) && fr_r(f, &has, 1); if (!ok) break;
+        alias_key ak; uint8_t has; ok = snap_fread(&ak, sizeof ak, 1, f, "mtl.alias_key") && fr_r(f, &has, 1); if (!ok) break;
         id<MTLTexture> t = nil; if (has) { t = snap_al_load(f); if (!t && errno == EIO) { ok = 0; break; } }
         [objs addObject:t ? (id)t : (id)[NSNull null]];
         if (!t) { miss++; continue; }
@@ -322,7 +322,7 @@ static int snap_alias_restore(const char *path) {
 int gl_snap_used(void) __attribute__((weak)); void gl_snap_fps(snap_fp_cb cb) __attribute__((weak)); int gl_snap_save(const char *path) __attribute__((weak)); int gl_snap_restore(const char *path) __attribute__((weak));
 // Vulkan 出图层（graphics/nvn/gfx/vk/vk_snap.inc）；图形单测不链 Vulkan 片时为空
 int vk_snap_used(void) __attribute__((weak)); void vk_snap_fps(snap_fp_cb cb) __attribute__((weak)); int vk_snap_save(const char *path) __attribute__((weak)); int vk_snap_restore(const char *path) __attribute__((weak));
-// 本文件按整块存的后端结构的布局指纹（不同 = 布局变了，恢复拒绝；见 snapfmt.h）
+// 本文件按整块存的后端结构的布局指纹（不同 = 布局变了：读入处经 snap_fread 按字段转；见 snapfmt.h）
 void nvn_snap_fps(snap_fp_cb cb) {
     cb("mtl.S", SNAP_FP_OF(S)); cb("mtl.R", SNAP_FP_OF(R)); cb("mtl.bind_cache", SNAP_FP_OF(g_bind_cache)); cb("mtl.live", SNAP_FP_TYPE(nvn_snap_live));
     cb("mtl.gpw_blk", SNAP_FP_TYPE(gpw_blk)); cb("mtl.gpw_own", SNAP_FP_TYPE(gpw_own)); cb("mtl.tex_hd", SNAP_FP_TYPE(fr_tex_hd)); cb("mtl.alias_key", SNAP_FP_TYPE(alias_key));
@@ -378,7 +378,7 @@ int nvn_snap_restore(const char *dir) {
 #define SNAP_TG() (tg[ng < 9 ? ng++ : 8] = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9)
     g_snap_newtex_log = 600;
     if (s2a_gl_first_use) s2a_gl_first_use(); else MLOG("【红】 即时存档恢复：宿主没有着色器路径初始化入口");
-    { snprintf(p, sizeof p, "%s/gfx_live.bin", dir); FILE *f = fopen(p, "rb"); ok = f && fr_r(f, &lv, sizeof lv) && lv.magic == 0x31534E4Eu; if (f) fclose(f); }
+    { snprintf(p, sizeof p, "%s/gfx_live.bin", dir); FILE *f = fopen(p, "rb"); ok = f && snap_fread(&lv, sizeof lv, 1, f, "mtl.live") && lv.magic == 0x31534E4Eu; if (f) fclose(f); }
     if (!ok) { MLOG("【红】 即时存档恢复：图形计数器读不了"); return -1; }
     uint64_t ca = 0, cu = 0, vu = 0; if (s2a_snap_arena_get) s2a_snap_arena_get(&ca, &cu, &vu);
     if (ca != lv.ca_base) { MLOG("【红】 即时存档恢复：命令记录区基址不同（快照 %#llx，本进程 %#llx），命令句柄放不回原地址", (unsigned long long)lv.ca_base, (unsigned long long)ca); return -1; }
@@ -418,14 +418,14 @@ int nvn_snap_restore(const char *dir) {
         if (f) fclose(f);
         snprintf(p, sizeof p, "%s/gfx_gpu.bin", dir); f = fopen(p, "rb"); uint32_t mg = 0;
         if (f && fr_r(f, &mg, 4) && mg == FR_GPU_MAGIC) { fr_tex_hd hd;
-            while (fr_r(f, &hd, sizeof hd)) { const tex_t *t = nvn_hm_get(&addr, &hd.ser); if (t && t->serial == hd.ser && tex_mtl(t)) made++; fseeko(f, (off_t)hd.bytes, SEEK_CUR); } }
+            while (snap_fread(&hd, sizeof hd, 1, f, "mtl.tex_hd")) { const tex_t *t = nvn_hm_get(&addr, &hd.ser); if (t && t->serial == hd.ser && tex_mtl(t)) made++; fseeko(f, (off_t)hd.bytes, SEEK_CUR); } }
         if (f) fclose(f);
         snap_up_sync();
         fr_restore_gpu(p, &put, &miss);
         MLOG("即时存档恢复：GPU 私有贴图 按地址建 %d 张（地址表 %d 项），内容写回 %d 张、没写回 %d 张", made, na, put, miss);
         SNAP_TG();
         {   int qp = 0, qm = 0, qmade = 0; snprintf(p, sizeof p, "%s/gfx_plain.bin", dir); FILE *pf = fopen(p, "rb"); fr_tex_hd hd;
-            while (pf && fr_r(pf, &hd, sizeof hd)) {
+            while (pf && snap_fread(&hd, sizeof hd, 1, pf, "mtl.tex_hd")) {
                 const tex_t *tt = nvn_hm_get(&addr, &hd.ser); if (tt && tt->serial == hd.ser && tex_mtl(tt)) qmade++;
                 id o = tex_get(hd.ser); id<MTLTexture> mt = [o conformsToProtocol:@protocol(MTLTexture)] ? o : nil;
                 if (!mt || mt.width != hd.w || mt.height != hd.h || (uint32_t)mt.pixelFormat != hd.fmt || mt.mipmapLevelCount != hd.levels) { fseeko(pf, (off_t)hd.bytes, SEEK_CUR); qm++; continue; }
