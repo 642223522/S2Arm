@@ -1,0 +1,61 @@
+diff --git a/src/Ryujinx.Audio.Backends.Apple/AppleHardwareDeviceDriver.cs b/src/Ryujinx.Audio.Backends.Apple/AppleHardwareDeviceDriver.cs
+index b5b5bb0c9ab5bf88dd4694a8842d885264efb5ea..76c88457c59d585f80808808d671bd656e8557a3 100644
+--- a/src/Ryujinx.Audio.Backends.Apple/AppleHardwareDeviceDriver.cs
++++ b/src/Ryujinx.Audio.Backends.Apple/AppleHardwareDeviceDriver.cs
+@@ -379,5 +379,19 @@ namespace Ryujinx.Audio.Backends.Apple
+ 
+         public bool SupportsChannelCount(uint channelCount)
+             => channelCount != 6 || _supportSurroundConfiguration;
++
++        // S2Arm（#189 后续，5.1 虚拟环绕第二片）：游戏看到的 active device 名字按玩家显式选择的设备类型定（VirtualDeviceSessionRegistry）：
++        //   builtin → AudioBuiltInSpeakerOutput、headphones → AudioStereoJackOutput（USB / 蓝牙耳机选 Headphones 也报 StereoJack——
++        //   设备类型语义的简化，不逐设备另报真实接口名）；未显式选择（Auto）与 external 不给名字 → 缺省 AudioTvOutput（缺省路径
++        //   逐字节不变）。声道数不走这里：照旧看 SupportsChannelCount(6)（显式类型 + 虚拟环绕开时报 6，关时报 2）
++        public string? S2AActiveDeviceName()
++        {
++            return AppleAudioDeviceTypeSelector.FromEnvironment() switch
++            {
++                AppleAudioDeviceType.BuiltInSpeakers => "AudioBuiltInSpeakerOutput",
++                AppleAudioDeviceType.Headphones => "AudioStereoJackOutput",
++                _ => null,
++            };
++        }
+     }
+ }
+diff --git a/src/Ryujinx.Audio/Integration/IHardwareDeviceDriver.cs b/src/Ryujinx.Audio/Integration/IHardwareDeviceDriver.cs
+index 95b0e4e5e4f5d8f6236f3f24d7e8303c2b0f5cae..4f63d03bb2c2f8399bd3163d15e3c12fe57bbc69 100644
+--- a/src/Ryujinx.Audio/Integration/IHardwareDeviceDriver.cs
++++ b/src/Ryujinx.Audio/Integration/IHardwareDeviceDriver.cs
+@@ -28,6 +28,12 @@ namespace Ryujinx.Audio.Integration
+         bool SupportsSampleFormat(SampleFormat sampleFormat);
+         bool SupportsChannelCount(uint channelCount);
+ 
++        // S2Arm（#189 后续，5.1 虚拟环绕第二片）：游戏看到的 active device 名字（HLE AudioDevice / VirtualDeviceSessionRegistry）。
++        //   后端按玩家显式选择的输出设备类型给名字时返回它（如 Apple 后端：builtin → AudioBuiltInSpeakerOutput、
++        //   headphones → AudioStereoJackOutput），没给（null）时保持缺省 AudioTvOutput——缺省路径逐字节不变。
++        //   声道数照旧只看 SupportsChannelCount(6)，不走这里
++        string? S2AActiveDeviceName() => null;
++
+         static abstract bool IsSupported { get; }
+ 
+         IHardwareDeviceDriver GetRealDeviceDriver()
+diff --git a/src/Ryujinx.Audio/Renderer/Device/VirtualDeviceSessionRegistry.cs b/src/Ryujinx.Audio/Renderer/Device/VirtualDeviceSessionRegistry.cs
+index 5c42ed9911e976cf9fdccd4557d2108fa7fa70a6..7fa1c0880e6722d43fbe24a14f3e517d2cb89baf 100644
+--- a/src/Ryujinx.Audio/Renderer/Device/VirtualDeviceSessionRegistry.cs
++++ b/src/Ryujinx.Audio/Renderer/Device/VirtualDeviceSessionRegistry.cs
+@@ -38,7 +38,14 @@ namespace Ryujinx.Audio.Renderer.Device
+                 channelCount = 2;
+             }
+ 
+-            ActiveDevice = new VirtualDevice("AudioTvOutput", channelCount, false);
++            // S2Arm（#189 后续，5.1 虚拟环绕第二片）：名字按玩家显式选择的设备类型跟（后端 S2AActiveDeviceName：builtin →
++            //   AudioBuiltInSpeakerOutput、headphones → AudioStereoJackOutput），后端没给（null）保持缺省 AudioTvOutput——
++            //   未显式选择 = 按设备真实声道判，名字与缺省一致。声道数照旧只看 SupportsChannelCount(6)（显式类型 + 虚拟环绕开
++            //   时后端本就上报 6，见 AppleAudioDeviceType）；USB / 蓝牙设备选 Headphones 时也报 StereoJack——设备类型语义的简化，
++            //   不逐设备另报真实接口名
++            string? deviceName = driver.GetRealDeviceDriver().S2AActiveDeviceName();
++
++            ActiveDevice = new VirtualDevice(deviceName ?? "AudioTvOutput", channelCount, false);
+         }
+ 
+         /// <summary>

@@ -2,6 +2,7 @@ using Ryujinx.Audio;
 using Ryujinx.Audio.Backends.Apple;   // 平台例外：本用例只测 Apple 音频后端（#189 后续，设备类型 + 虚拟环绕），只在 macOS 上跑
 using Ryujinx.Audio.Backends.Apple.Native;   // 平台例外：本用例只测 Apple 音频后端（#189 后续），只在 macOS 上跑
 using Ryujinx.Audio.Common;
+using Ryujinx.Audio.Renderer.Device;   // 平台例外：本用例只测 Apple 音频后端（#189 后续，active device 名字映射），只在 macOS 上跑
 using Ryujinx.Audio.Integration;
 using Ryujinx.Memory;
 using System;
@@ -15,8 +16,8 @@ namespace S2A.Services.Tests
 {
     public static unsafe partial class Program
     {
-        // Pre-boot solo test（#189 后续）：设备类型选择器、驱动上报矩阵、会话路径接线（不出声：会话只建不播）、
-        //   AUSM 5.1 判据（处理器级手动拉取，纯 CPU 不出声）。读数基准 = 评估的裸 AUSM 手动渲染表
+        // Pre-boot solo test（#189 后续）：设备类型选择器、驱动上报矩阵、active device 名字/声道映射（第二片，§4.5）、
+        //   会话路径接线（不出声：会话只建不播）、AUSM 5.1 判据（处理器级手动拉取，纯 CPU 不出声）。读数基准 = 评估的裸 AUSM 手动渲染表
         //   （48 kHz / 997 Hz / 4800 帧跳过前 1200 帧）：显式 BuiltInSpeakers——FL +7.1 dB、C 等幅、LFE 0.000（移除）、
         //   BL 近等幅（-0.5 dB）；显式 Headphones——FL +8.0 dB、延迟约 0.4–1.4 ms（19–67 样本）、C 等幅、
         //   LFE 受衰减（约 7% 输入）；ExternalSpeakers / .auto——FL 仅左、BL +12.8 dB、0 延迟（普通平移，负对照见坑记录）。
@@ -184,7 +185,46 @@ namespace S2A.Services.Tests
                         $"设备 {deviceChannels} 声道（external 不虚拟环绕）");
                 }
 
-                // ③ S2A_AUDIO_CH2 仍最高优先级；S2A_AUDIO_OUT=sys 显式下混优先于设备类型
+                // ③ active device（第二片，计划 §4.5；游戏经 HLE AudioDevice 看到的名字 / 声道数，直接构造 VirtualDeviceSessionRegistry）：
+                //   名字按玩家显式选择的设备类型定（builtin → AudioBuiltInSpeakerOutput、headphones → AudioStereoJackOutput，
+                //   USB 等真实接口名不另报——设备类型语义的简化），声道数照旧只看 SupportsChannelCount(6)；
+                //   未显式选择（Auto）与 external 不给名字 → 缺省 AudioTvOutput，缺省路径逐字节不变
+                (uint Channels, string Name) ActiveDevice()
+                {
+                    using AppleHardwareDeviceDriver driver = new();   // 平台例外：本用例只测 Apple 音频后端（#189 后续），只在 macOS 上跑
+                    VirtualDevice device = new VirtualDeviceSessionRegistry(driver).ActiveDevice;   // 平台例外：同上
+                    return (device.ChannelCount, device.Name);
+                }
+
+                Set(null, null, null);
+                AppleHardwareDeviceDriver.S2ATestProbe = (0, 6, 0, 0);   // 平台例外：注入试建读数，模拟 6 声道设备
+                (uint ch, string name) = ActiveDevice();
+                Check("未显式选择 + 6 声道 → active device 照旧 AudioTvOutput 6 声道（缺省不变）", ch == 6 && name == "AudioTvOutput", $"{name} {ch}");
+                AppleHardwareDeviceDriver.S2ATestProbe = (0, 2, 0, 0);   // 平台例外：模拟 2 声道设备
+                (ch, name) = ActiveDevice();
+                Check("未显式选择 + 2 声道 → AudioTvOutput 2 声道（缺省不变）", ch == 2 && name == "AudioTvOutput", $"{name} {ch}");
+                Set("builtin", "1", null);
+                (ch, name) = ActiveDevice();
+                Check("builtin + VS 开 → AudioBuiltInSpeakerOutput 6 声道", ch == 6 && name == "AudioBuiltInSpeakerOutput", $"{name} {ch}");
+                Set("builtin", null, null);
+                (ch, name) = ActiveDevice();
+                Check("builtin + VS 关 → AudioBuiltInSpeakerOutput 2 声道", ch == 2 && name == "AudioBuiltInSpeakerOutput", $"{name} {ch}");
+                Set("headphones", null, "1");
+                (ch, name) = ActiveDevice();
+                Check("headphones + VS 开 → AudioStereoJackOutput 6 声道", ch == 6 && name == "AudioStereoJackOutput", $"{name} {ch}");
+                Set("headphones", null, null);
+                (ch, name) = ActiveDevice();
+                Check("headphones + VS 关 → AudioStereoJackOutput 2 声道", ch == 2 && name == "AudioStereoJackOutput", $"{name} {ch}");
+                Set("external", "1", "1");
+                AppleHardwareDeviceDriver.S2ATestProbe = (0, 6, 0, 0);   // 平台例外：模拟 6 声道设备
+                (ch, name) = ActiveDevice();
+                Check("external + 6 声道 → AudioTvOutput 6 声道（直通，VS 开关不改变名字）", ch == 6 && name == "AudioTvOutput", $"{name} {ch}");
+                AppleHardwareDeviceDriver.S2ATestProbe = (0, 2, 0, 0);   // 平台例外：模拟 2 声道设备
+                (ch, name) = ActiveDevice();
+                Check("external + 2 声道 → AudioTvOutput 2 声道（下混）", ch == 2 && name == "AudioTvOutput", $"{name} {ch}");
+                AppleHardwareDeviceDriver.S2ATestProbe = null;   // 平台例外：清注入，后面的用例走真探测
+
+                // ④ S2A_AUDIO_CH2 仍最高优先级；S2A_AUDIO_OUT=sys 显式下混优先于设备类型
                 Set("builtin", "1", null);
                 Environment.SetEnvironmentVariable("S2A_AUDIO_CH2", "1");
                 Check("builtin + VS 开 + S2A_AUDIO_CH2=1 仍强制立体声", !Reports6());
@@ -193,7 +233,7 @@ namespace S2A.Services.Tests
                 Check("builtin + VS 关 + S2A_AUDIO_OUT=sys 照报 5.1（显式下混优先）", Reports6());
                 Environment.SetEnvironmentVariable("S2A_AUDIO_OUT", null);
 
-                // ④ 会话路径接线（反射 _processor / _deviceChannelCount；会话只建不播，不出声）
+                // ⑤ 会话路径接线（反射 _processor / _deviceChannelCount；会话只建不播，不出声）
                 FieldInfo processorField = typeof(AppleHardwareDeviceSession).GetField("_processor", BindingFlags.NonPublic | BindingFlags.Instance)   // 平台例外：本用例只测 Apple 音频后端的会话接线（#189 后续），只在 macOS 上跑
                     ?? throw new InvalidOperationException("找不到 AppleHardwareDeviceSession._processor");   // 平台例外：同上，只在 macOS 上跑
                 FieldInfo deviceChannelsField = typeof(AppleHardwareDeviceSession).GetField("_deviceChannelCount", BindingFlags.NonPublic | BindingFlags.Instance)   // 平台例外：同上，只在 macOS 上跑
@@ -248,7 +288,7 @@ namespace S2A.Services.Tests
                 Check("未显式选择 + 只设 VS 开 + 6ch → 无处理器（VS 只在显式类型生效，走原 6ch 路径）",
                     mode == null && sessionChannels == 6, $"档 {mode?.ToString() ?? "无"}、设备声道 {sessionChannels}");
 
-                // ⑤ AUSM 5.1 判据（处理器级，无声）：裸 AUSM 手动拉取，读数基准见方法头注释
+                // ⑥ AUSM 5.1 判据（处理器级，无声）：裸 AUSM 手动拉取，读数基准见方法头注释
                 const int rate = 48000;
                 const int frames = 4800;
                 const int skip = 1200;
@@ -397,7 +437,7 @@ namespace S2A.Services.Tests
                         Check("耳机档 LFE 受衰减（非移除）", left > 0.003 * inputRms && left < 0.15 * inputRms && Math.Abs(RatioDb(left, right)) < 1,
                             $"L {RmsRatio(left):F4} R {RmsRatio(right):F4}×输入");
 
-                        // ⑥ 性能读数：ConvertSpatial 在交缓冲的生产方线程上同步跑（评审 11-16），典型片长给
+                        // ⑦ 性能读数：ConvertSpatial 在交缓冲的生产方线程上同步跑（评审 11-16），典型片长给
                         //   中位 / 最大；4800 帧一片（50 ms 设备缓冲，两片 2400）有门限 150 µs
                         byte[] bigSlice = new byte[frames * 6 * sizeof(short)];
                         long start = Stopwatch.GetTimestamp();

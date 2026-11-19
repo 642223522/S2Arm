@@ -173,17 +173,35 @@ char *s2a_shell_game_options_json(const char *game_id) {
             [cheats addObject:@{@"key": e[@"key"], @"name": e[@"name"], @"on": @([con containsObject:e[@"key"]]), @"note": [e[@"fixed"] boolValue] ? S2AL(@"cheats.fixedAddress") : @""}];
         // 游戏音量（#1186，同齿轮菜单「声音」）：0–100，没设过 = 100
         id vo = [d objectForKey:@"S2AGameVolume"]; NSInteger volume = vo ? MAX(0, MIN(100, [vo integerValue])) : 100;
-        return dup_json(@{@"fps": fps, @"fullscreen": full, @"patches": patches, @"cheats": cheats, @"volume": @(volume), @"language": game_language_json(gid, d)});
+        // 输出设备类型 + 两个虚拟环绕开关（#189 后续，5.1 虚拟环绕第二片；定义表 game_settings.v1.json 的 audioDevice / vsSpeakers /
+        //   vsHeadphones）：按游戏存（per_game_keys），没选过 = auto（按设备真实声道判，5.1 直通缺省不变）；两个开关各存各的，
+        //   只在对应显式类型下生效（驱动侧判），没拨过按关报
+        id ad = [d objectForKey:@"S2AAudioDevice"];
+        NSString *device = [ad isKindOfClass:NSString.class] && [@[@"builtin", @"headphones", @"external"] containsObject:ad] ? ad : @"auto";
+        id vsS = [d objectForKey:@"S2AAudioVsSpeakers"], vsH = [d objectForKey:@"S2AAudioVsHeadphones"];
+        return dup_json(@{@"fps": fps, @"fullscreen": full, @"patches": patches, @"cheats": cheats, @"volume": @(volume), @"language": game_language_json(gid, d),
+                          @"audio": @{@"device": device, @"vsSpeakers": @([vsS boolValue]), @"vsHeadphones": @([vsH boolValue])}});
     }
 }
 
-// kind = fps / fpspick / fullscreen / patch / cheat / volume / language；key = 补丁编号 / 「文件名/条目名」（fps、fullscreen 不看）。返回 1 存成 / 0 没存成
+// kind = fps / fpspick / fullscreen / patch / cheat / volume / language / audiodevice / audiovs；key = 补丁编号 / 「文件名/条目名」（fps、fullscreen 不看）。返回 1 存成 / 0 没存成
 int s2a_shell_game_option_set(const char *game_id, const char *kind, const char *key, int on) {
     @autoreleasepool {
         if (!gid_ok(game_id) || !kind) return 0;
         NSString *gid = @(game_id), *k = @(kind), *item = key ? @(key) : @"";
         if ([k isEqual:@"fps"]) { s2a_ios_set_fps60_for(gid, on != 0); return 1; }
         if ([k isEqual:@"volume"]) { [s2a_ios_settings_defaults_for(gid) setInteger:MAX(0, MIN(100, item.integerValue)) forKey:@"S2AGameVolume"]; return 1; }   // 游戏音量：key = 百分比，on 不看（#1186）
+        if ([k isEqual:@"audiodevice"]) {   // 输出设备类型：key = builtin / headphones / external，"auto" = 未选择（删掉这款的值），on 不看（#189 后续，5.1 虚拟环绕第二片）
+            if (![item isEqual:@"auto"] && ![item isEqual:@"builtin"] && ![item isEqual:@"headphones"] && ![item isEqual:@"external"]) return 0;
+            NSUserDefaults *gd = s2a_ios_settings_defaults_for(gid);
+            if ([item isEqual:@"auto"]) [gd removeObjectForKey:@"S2AAudioDevice"]; else [gd setObject:item forKey:@"S2AAudioDevice"];
+            return 1;
+        }
+        if ([k isEqual:@"audiovs"]) {   // 两个虚拟环绕开关：key = speakers / headphones，on = 开关值；各存各的（切换设备类型各自恢复），on 不看类型（驱动侧判）
+            if (![item isEqual:@"speakers"] && ![item isEqual:@"headphones"]) return 0;
+            [s2a_ios_settings_defaults_for(gid) setBool:(on != 0) forKey:[item isEqual:@"speakers"] ? @"S2AAudioVsSpeakers" : @"S2AAudioVsHeadphones"];
+            return 1;
+        }
         if ([k isEqual:@"language"]) {   // 游戏语言：key = 宿主枚举名，"system" = 跟随系统（删掉这款的值），on 不看（#1252）
             if (![s2a_ios_game_languages() containsObject:item]) return 0;
             NSUserDefaults *gd = s2a_ios_settings_defaults_for(gid);
