@@ -2,7 +2,7 @@
 # pack/refresh.sh 单测（各阶段换成桩，只验编排；约 10 秒）：bash tests/refresh_test.sh
 # 期望（10-25 维护者「一次出完整包」，按编排规则手写）：
 #   ① 只有直连（10-30 直连单轨；11-07 拆兼容模式、精简档与只服务通用模式的着色器阶段 / 客体代码表）：出直连库，不再跑 shaders / direct_gk；
-#     管线种子表 direct_seed（审计 #1534 P1-54）在直连库之后、只跑一次
+#     管线种子表 direct_seed（审计 #1534 P1-54）在直连库之后、只跑一次；计算管线归档 direct_cpso 在种子表之后、只跑一次、路数同直连库
 #   ② 直连库阶段退 0 却没出库（没有 shaders/direct/keys.tsv）→ 报红「直连单轨停在 直连库」、退出 1、不跑种子表（不退成通用包）
 #   ②b 抽取缺口出的运行时现编空库（keys.tsv 空、有 runtime_only.txt，11-05 维护者：直连库编不出也照出包）→ 照常退 0
 #   ④ 直连库段内容缺口（退 3）→ 报红「直连单轨停在 直连库：直连缺口：<类别>」、退出 1、不跑种子表；直连库段基础设施出错（退 1）→ 报红、退出 1、不跑种子表
@@ -18,7 +18,7 @@ mkdir -p "$T/repo/tools"; cp "$H/tools/pool_workers.py" "$T/repo/tools/"   # rom
 printf '#!/bin/bash\necho "原件核对桩 rc=${FAKE_SRCVER_RC:-0}"; exit ${FAKE_SRCVER_RC:-0}\n' > $T/repo/pack/srcver.sh   # 原件版本核对桩（pack/srcver.sh 自己的单测见 tests/srcver_test.sh）
 # 桩：记「阶段 起/止 时刻 开关」；stage_direct 按 FAKE_NODIRECT 决定出不出 keys.tsv；FAKE_FAIL=<阶段> 让那段退出 1（基础设施出错）；
 #   FAKE_GAP=<阶段> 让那段打「【黄】直连缺口：桩缺口 3 支」退出 3（内容缺口）；FAKE_DFAIL=<阶段> 让那段打「【红】直连库失败：…」退出 3（抽取：只有直连用的那两份抽不出）
-for s in rewrite sysdata uilayout aoc caps romfsidx direct_profile extract direct_seed direct; do
+for s in rewrite sysdata uilayout aoc caps romfsidx direct_profile extract direct_seed direct_cpso direct; do
   cat > $T/repo/pack/stage_$s.sh <<EOF
 #!/bin/bash
 echo "$s 起 \$(python3 -c 'import time;print(time.time())') \${S2A_SHADER_NO_PSO:-0}\${S2A_SHADER_NO_DL:-0} J=\${J:-无} DD=\${DEVELOPER_DIR:-无} LZ=\${S2A_SHADER_LAZY:-0} BK=\${S2A_CPU_BAKE:-无}" >> $T/log
@@ -39,7 +39,7 @@ R() { rm -f $T/log; S2A_REFRESH_LOCKS=$T/locks S2A_ROOTS=$T/roots S2A_ROOTS_SHAR
 t() { grep " $2 " $T/log | awk -v s="$1" '$1 == s { print $3; exit }'; }
 o=$(R); r=$?
 ck "① 只有直连：rc=${r}；不跑通用着色器阶段 / 客体代码表" '[ $r = 0 ] && ! grep -q "^shaders \|^direct_gk " $T/log && grep -q "^direct 起" $T/log'
-tl=$(grep '^⏱' <<< "$o"); miss=$(for s in rewrite sysdata uilayout aoc direct_profile romfsidx extract direct direct_seed; do [[ "$tl" == *"$s "[0-9]* ]] || printf '%s ' $s; done)
+tl=$(grep '^⏱' <<< "$o"); miss=$(for s in rewrite sysdata uilayout aoc direct_profile romfsidx extract direct direct_seed direct_cpso; do [[ "$tl" == *"$s "[0-9]* ]] || printf '%s ' $s; done)
 # 直连段只判「≥1 秒」（桩睡 1 秒 = 计时确实记上了）：不卡上界——10-26 #477 自检 gate-host 并行负载高时 direct 量到 3 秒判红，那是机器忙，不是计时错
 ck "① 退出时一行分阶段用时，各段都在（缺：${miss:-无}）、直连 ≥1 秒（桩睡 1 秒）：${tl}" '[ "$(grep -c "^⏱" <<< "$o")" = 1 ] && [ -z "$miss" ] && [[ "$tl" =~ \ direct\ [1-9][0-9]*\  ]] && [[ "$tl" == *"刷新共 "* ]]'
 jj() { grep ' 起 ' $T/log | awk -v s="$1" '$1 == s { sub("J=", "", $5); print $5; exit }'; }
@@ -51,10 +51,11 @@ o=$(S2A_DIRECT_J=7 S2A_CPU_BAKE=3 R); r=$?
 ck "① S2A_DIRECT_J=7、S2A_CPU_BAKE=3 → 直连 J=$(jj direct)、S2A_CPU_BAKE=$(bk direct)（期望 7 / 3）" '[ $r = 0 ] && [ "$(jj direct)" = 7 ] && [ "$(bk direct)" = 3 ]'
 # 阶段进度（10-25 维护者「能看到进度么」）：给 S2A_PROGRESS → 每完成一段追加一行「刷新各阶段 已完成 总数」
 o=$(S2A_PROGRESS=$T/prog R); r=$?; pg=$(cut -f3,4 $T/prog | tr '\t\n' '/ '); rm -f $T/prog
-#   11-06 依赖重排（快路）：追加内容 ‖ 界面布局 2 → 配置推导 + 抽取 4 → 直连库 5 → 种子表 6 → 汇合旁路（改写 / 系统数据 / 能力表 / RomFS 索引）10
-ck "① 阶段进度：${pg}" '[ $r = 0 ] && [ "$pg" = "2/10 4/10 5/10 6/10 10/10 " ]'
+#   11-06 依赖重排（快路）：追加内容 ‖ 界面布局 2 → 配置推导 + 抽取 4 → 直连库 5 → 种子表 6 → 计算管线归档 7 → 汇合旁路（改写 / 系统数据 / 能力表 / RomFS 索引）11
+ck "① 阶段进度：${pg}" '[ $r = 0 ] && [ "$pg" = "2/11 4/11 5/11 6/11 7/11 11/11 " ]'
 o=$(R); r=$?
 ck "① 管线种子表 direct_seed（审计 #1534 P1-54 B3）在直连库出完之后才跑、只跑一次" 'python3 -c "import sys; a,d=map(float,sys.argv[1:]); sys.exit(0 if a >= d else 1)" $(t direct_seed 起) $(t direct 止) && [ "$(grep -c "^direct_seed 起" $T/log)" = 1 ]'
+ck "① 计算管线归档 direct_cpso 在种子表出完之后才跑、只跑一次、路数同直连库（J=$(jj direct_cpso) / $(jj direct)）" 'python3 -c "import sys; a,d=map(float,sys.argv[1:]); sys.exit(0 if a >= d else 1)" $(t direct_cpso 起) $(t direct_seed 止) && [ "$(grep -c "^direct_cpso 起" $T/log)" = 1 ] && [ "$(jj direct_cpso)" = "$(jj direct)" ]'
 o=$(FAKE_NODIRECT=1 R); r=$?
 ck "② 直连库退 0 却没出库：rc=${r}（期望 1）、报红「直连单轨停在 直连库」、不跑种子表（不退成通用）" '[ $r = 1 ] && [[ "$o" == *"【红】acnh 直连单轨停在 直连库：直连库阶段退 0 但产物根里没有 shaders/direct/keys.tsv"* ]] && ! grep -q "^direct_seed" $T/log'
 o=$(FAKE_RTONLY=1 R); r=$?

@@ -1,0 +1,16 @@
+# direct_cpso 阶段（pack/stage_direct_cpso.sh：直连计算管线归档轻阶段）的源码输入声明：键 = 直连库阶段键 + 目标对 + 平台 + metal-tt 版本 + 本表「入」的文件（pack/stage_keyfiles.sh stage_files_key）。
+# 「入」= 改了会改产物（shaders/direct/pipelines/）；「外」= 基础设施或效果已按内容进键，第三列写理由。
+# 起点：pack/stage_direct_cpso.sh。tests/stage_keys_test.sh 用 tools/stage_inputs.py 从起点扫依赖闭包，闭包里有本表没列的文件就报红（新依赖要在这里归类）。
+入	pack/stage_direct_cpso.sh
+入	graphics/tools/direct/cs_pipelines.py	出归档（描述、文件名、metal-tt 参数）
+入	graphics/tools/direct/repair_compute.py	cs_pipelines.py 引入，读库容器
+入	tools/tt_env.sh	metal-tt 查询缓存后缀
+外	pack/jobs/archs.py	推目标对：推出的对（架构 / 大版本）按内容进键
+外	pack/jobs/toolchain.py	archs.py 引入，只找 Xcode：用的 metal-tt 版本按内容进键
+外	pack/roots.sh	产物根版本管理（建 / 提交 / 回滚）
+外	pack/stage_keyfiles.sh	算键脚本本身
+外	pack/srcs.sh	只取程序号定缓存目录
+外	tools/toolchain.sh	选 Xcode：用的 metal-tt 版本按内容进键
+外	tools/clonedir.py	roots.sh 用的 APFS 克隆工具，只搬文件
+外	tools/direct_shards.py	roots.sh 提交后记直连库分片清点日志，不改产物
+外	tools/plock.sh	roots.sh 的提交锁

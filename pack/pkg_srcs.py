@@ -147,6 +147,7 @@ def key(prefix, cur, g=None):
     rew = s('.stage_rewrite') + (f' caps={s(".stage_caps")}' if nonempty(f'{cur}/.stage_caps') else '')
     idx = s('.stage_romfsidx')
     idx += f' dual={s(".stage_direct")}' + (f'+seed={s(".stage_direct_seed")}' if nonempty(f'{cur}/.stage_direct_seed') else '')   # 种子表在 shaders/ 下（进包内容键不读），靠阶段键带进包键
+    idx += f'+cpso={s(".stage_direct_cpso")}' if nonempty(f'{cur}/.stage_direct_cpso') else ''   # 计算管线归档（shaders/direct/pipelines/）同上
     return f'{prefix}{vk} {rew} {s(".stage_uilayout")} {idx} res={res} sys={s(".stage_sysdata")} in={inp}'
 
 
