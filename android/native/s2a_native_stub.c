@@ -97,6 +97,7 @@ uint64_t s2a_process_id(void) { unbacked(__func__); return 0; }
 uint64_t s2a_program_id(void) { unbacked(__func__); return 0; }
 int s2a_register_cs(const s2a_cs_api *api) { (void)api; unbacked(__func__); return -1; }
 // nn::ro 装 / 卸 NRO（runtime/src/loader.c；返回码见 Ryujinx.HLE/S2AHooks.cs）：诊断目标不跑原生核心，按失败返回——1 = 包里没有这个 NRO / 没装载
+int s2a_nro_known(const uint8_t sha[32]) { (void)sha; return 0; }   // 安卓没有快照：请求日志照旧抄整个模块
 int s2a_nro_map(const uint8_t sha[32], uint64_t size, uint64_t bss, uint64_t *base) {
     (void)sha; (void)size; (void)bss; if (base) *base = 0; unbacked(__func__); return 1;
 }

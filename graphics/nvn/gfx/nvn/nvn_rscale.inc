@@ -37,26 +37,33 @@ static double rs_setting(void) {
     }
     return g_rs;
 }
-static inline int rs_on(void) { return (g_rs < 0 ? rs_setting() : g_rs) != 1.0; }   // 原为 < 1（只缩小）
+// 超贴图上限缩建（#1493 第 2 项，Metal 硬上限的降级）：游戏要的渲染目标边长超过设备二维贴图上限（Apple GPU 16384）时，Metal 建不出（描述符断言），
+//   原先整张拿不到、画面全黑。现在建时就按 上限 ÷ 长边 缩建、记成已缩（这份存储自带比例 s，见 NvRsInfo），之后的视口 / 裁剪 / 拷贝 / 上屏都按它换算，
+//   画面完整、只是这张目标的分辨率降一档。它退不回原尺寸（rs_rescale_to 见画布超上限就拒），同一遍的别的附件跟着换到它的比例（rs_rts）。
+//   设定比例为 1 时只有这类存储有记录；第一份建出来时 g_rs_over 置 1，rs_on() 从此为真，其余入口照常按每份存储自己的记录走
+static _Atomic int g_rs_over;
+static inline int rs_scaling(void) { return (g_rs < 0 ? rs_setting() : g_rs) != 1.0; }   // 设定了缩放比例（S2A_RES_SCALE ≠ 1）
+static inline int rs_on(void) { return rs_scaling() || atomic_load_explicit(&g_rs_over, memory_order_relaxed); }   // 原为 < 1（只缩小）；有超上限缩建的存储也算
 static inline int rs_up_on(void) { return (g_rs < 0 ? rs_setting() : g_rs) > 1.0; }   // 放大
 // 设备的二维贴图边长上限。Metal 没有查询接口，按苹果的特性表认 GPU 家族：Apple3 起（A9）与 Mac2 是 16384，更早的 8192。g_rs_texmax 非 0 = 单测调小的上限
 static int g_rs_texmax;
-static NSUInteger rs_tex_max(void) {
-    if (g_rs_texmax > 0) return (NSUInteger)g_rs_texmax;
+// rs_dev_max = 设备真上限（超上限缩建、退不回原尺寸用它，单测钩子不改）；rs_tex_max = 放大资格用的上限（g_rs_texmax 可调小）
+static NSUInteger rs_dev_max(void) {
     static NSUInteger m; if (!m) m = [g_dev supportsFamily:MTLGPUFamilyApple3] || [g_dev supportsFamily:MTLGPUFamilyMac2] ? 16384 : 8192;
     return m;
 }
+static NSUInteger rs_tex_max(void) { return g_rs_texmax > 0 ? (NSUInteger)g_rs_texmax : rs_dev_max(); }
 
 // 每份存储的缩放记录挂在 Metal 根贴图上（关联对象：存储释放时一起走，地址复用不会认错）
 enum { RS_NONE = 0, RS_SCALED = 1, RS_BLACK = 2 };
-@interface NvRsInfo : NSObject { @public int state; NSUInteger cw, ch; int fails; } @end   // fails = 这份缩放存储退回原尺寸失败过几次（rs_rescale_failed）
+@interface NvRsInfo : NSObject { @public int state; NSUInteger cw, ch; int fails; double s; } @end   // fails = 这份缩放存储退回原尺寸失败过几次（rs_rescale_failed）；s = 存储 ÷ 画布（已缩时；设定比例或超上限缩建的比例）
 @implementation NvRsInfo @end
 static char k_rs_info;
 static id<MTLTexture> rs_root(id<MTLTexture> t0) { id<MTLTexture> t = t0; while (t.parentTexture) t = t.parentTexture; return t; }
 static NvRsInfo *rs_info(id<MTLTexture> t) { return t ? objc_getAssociatedObject(rs_root(t), &k_rs_info) : nil; }
 static int rs_state(id<MTLTexture> t) { if (!t || !rs_on()) return RS_NONE; NvRsInfo *i = rs_info(t); return i ? i->state : RS_NONE; }
-static void rs_set_info(id<MTLTexture> t, int state, NSUInteger cw, NSUInteger ch) {
-    NvRsInfo *i = [NvRsInfo new]; i->state = state; i->cw = cw; i->ch = ch;
+static void rs_set_info(id<MTLTexture> t, int state, NSUInteger cw, NSUInteger ch, double s) {
+    NvRsInfo *i = [NvRsInfo new]; i->state = state; i->cw = cw; i->ch = ch; i->s = state == RS_SCALED ? s : 1.0;
     objc_setAssociatedObject(rs_root(t), &k_rs_info, i, OBJC_ASSOCIATION_RETAIN);
 }
 // 退回原尺寸失败满 RS_FAIL_MAX 次的缩放存储不再试（rs_rescale 直接返回、rs_image_slots 不再排队）：每试一次要建一份新存储，
@@ -64,7 +71,9 @@ static void rs_set_info(id<MTLTexture> t, int state, NSUInteger cw, NSUInteger c
 enum { RS_FAIL_MAX = 3 };
 static int rs_stuck(id<MTLTexture> t) { NvRsInfo *i = rs_info(t); return i && i->state == RS_SCALED && i->fails >= RS_FAIL_MAX; }
 // 这份存储相对画布的比例（没缩 = 1）
-static double rs_of(id<MTLTexture> t) { return rs_state(t) == RS_SCALED ? g_rs : 1.0; }
+static double rs_of(id<MTLTexture> t) { NvRsInfo *i = rs_state(t) == RS_SCALED ? rs_info(t) : nil; return i ? i->s : 1.0; }
+// 画布超过设备贴图上限的已缩存储（超上限缩建的）：退不回原尺寸，同一遍的附件跟它的比例
+static int rs_pinned(id<MTLTexture> t) { NvRsInfo *i = rs_state(t) == RS_SCALED ? rs_info(t) : nil; return i && (i->cw > rs_dev_max() || i->ch > rs_dev_max()); }
 // 画布尺寸（第 level 级，相对 t 自己的级；没缩 = 存储尺寸）
 static NSUInteger rs_mip(NSUInteger v, NSUInteger level) { return level < sizeof(v) * 8 ? MAX(v >> level, 1u) : 1; }
 static void rs_canvas(id<MTLTexture> t, NSUInteger level, NSUInteger *w, NSUInteger *h) {
@@ -77,6 +86,10 @@ static void rs_canvas(id<MTLTexture> t, NSUInteger level, NSUInteger *w, NSUInte
 static NSUInteger rs_cw(id<MTLTexture> t) { NSUInteger w, h; if (!t) return 0; rs_canvas(t, 0, &w, &h); return w; }
 static NSUInteger rs_ch(id<MTLTexture> t) { NSUInteger w, h; if (!t) return 0; rs_canvas(t, 0, &w, &h); return h; }
 static NSUInteger rs_up(NSUInteger v, double s) { NSUInteger r = (NSUInteger)ceil((double)v * s - 1e-9); return r ? r : 1; }   // Ryujinx：⌈v·s⌉
+// 画布 cw × ch 放进设备贴图上限要的比例（放得下 = 1）：上限 ÷ 长边，⌈边 × s⌉ ≤ 上限
+static double rs_fit(NSUInteger cw, NSUInteger ch) { NSUInteger m = MAX(cw, ch), mx = rs_dev_max(); return m > mx ? (double)mx / (double)m : 1.0; }
+// 这份画布缩放时用的比例：设定比例，换算后超上限的取放得下的那个
+static double rs_want(NSUInteger cw, NSUInteger ch) { double s = g_rs < 0 ? rs_setting() : g_rs, f = rs_fit(cw, ch); return rs_up(cw, s) > rs_dev_max() || rs_up(ch, s) > rs_dev_max() ? MIN(s, f) : s; }
 // 画布矩形 → 存储矩形（起点向下取整、终点向上取整，盖住画布矩形碰到的每个存储像素；同 Ryujinx 裁剪缩放）
 static void rs_rect(double s, long *x, long *y, long *w, long *h) {
     if (s == 1.0) return;

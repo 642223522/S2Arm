@@ -22,7 +22,7 @@ $(VK_TEST_DIR)/stubs.o: tests/vk_indirect_count/stubs.m graphics/nvn/tests/host_
 	clang -std=gnu11 -fobjc-arc $(VK_TEST_FLAGS) -c $< -o $@
 $(VK_TEST_DIR)/test: tests/vk_indirect_count/test.c tests/vk_indirect_count/Makefile $(VK_TEST_DIR)/stubs.o $(VK_TEST_LIB)
 	clang -std=gnu11 $(VK_TEST_FLAGS) -o $@ $< $(VK_TEST_DIR)/stubs.o $(VK_TEST_LIB) \
-	  -framework Metal -framework Foundation -framework QuartzCore -framework CoreGraphics -framework ImageIO -framework UniformTypeIdentifiers -lc++ $(NVN_TEST_WEAK)
+	  -framework Metal -framework Foundation -framework QuartzCore -framework CoreGraphics -framework ImageIO -framework UniformTypeIdentifiers -lc++ -lcompression $(NVN_TEST_WEAK)
 $(VK_TEST_DIR)/spv/tri.vert.spv: tests/vk_indirect_count/tri.vert
 	@mkdir -p $(dir $@)
 	glslangValidator -V --target-env vulkan1.1 -o $@ $<

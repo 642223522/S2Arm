@@ -254,6 +254,10 @@ NVN_TEST_HOST_SRCS := $(filter-out runtime/src/host_main.c,$(NATIVE_SRCS)) $(APP
 NVN_TEST_HOST_OBJS := $(addprefix $(NVN_TEST_DIR)/host/,$(addsuffix .o,$(NVN_TEST_HOST_SRCS)))
 NVN_TEST_LIB := $(NVN_TEST_DIR)/nvn/mac/libnvn.a
 NVN_TEST_WIDEN := $(NVN_TEST_DIR)/widen/S2Arm.Gfx.Widen.dylib
+# 宽屏核心 dylib 的 dotnet：不经 tools/gate.sh 的 dotnet 垫片直接 make native-test-*（脚本 / 门禁外的本机跑法）时 dotnet 常不在 PATH——
+#   按仓库惯例解析 ${DOTNET:-~/.dotnet/dotnet}（tools/gate.sh：各步大多按这个口径调，少数直接调 dotnet；直跑 make 就归到这里）。
+#   PATH 上有 dotnet（垫片或系统装）时行为不变
+DOTNET_CMD := $(or $(DOTNET),$(shell command -v dotnet 2>/dev/null),$(HOME)/.dotnet/dotnet)
 # Tests that include nvn_mtl.m use the same generated AA headers as their
 # production library prerequisite, including when BUILD selects another tree.
 $(BUILD)/tests/t_nvn_%: CFLAGS += -I$(abspath $(NVN_TEST_DIR)/nvn/gen)
@@ -263,14 +267,14 @@ $(BUILD)/tests/t_nvn_%: CFLAGS += -I$(abspath $(NVN_TEST_DIR)/nvn/gen)
 #   不带 Foundation 的单测也要链）；快照存档（runtime/src/snapshot.c）压缩内存块要 libcompression。没带上时这些单测全部链接失败
 #   （_SecPKCS12Import / _CFArrayGetCount / _compression_encode_buffer 等未定义）。宿主对象再加系统依赖就加在这里
 NVN_TEST_HOST_LIBS := -framework Security -framework CoreFoundation -lcompression
-NVN_TEST_WEAK := $(call S2A_WEAK_U,nvntest) -framework VideoToolbox -framework CoreMedia -framework CoreVideo $(NVN_TEST_HOST_LIBS)
+NVN_TEST_WEAK := $(call S2A_WEAK_U,nvntest) -framework VideoToolbox -framework CoreMedia -framework CoreVideo -lcompression $(NVN_TEST_HOST_LIBS)
 $(NVN_TEST_DIR)/host/%.o: % runtime/src/native.h $(wildcard runtime/include/*.h) platform/plat.h platform/plat_asm.h graphics/track/s2a_track.h $(BUILD)/.host_cfg
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(NATIVE_INC) -c $< -o $@
 $(NVN_TEST_LIB): $(if $(NVN_TEST_PREBUILT),,FORCE)
 	$(MAKE) -C graphics/nvn mac OUT=$(abspath $(NVN_TEST_DIR)/nvn)
 $(NVN_TEST_WIDEN): $(if $(NVN_TEST_PREBUILT),,FORCE)
-	dotnet publish graphics/widen/S2Arm.Gfx.Widen.csproj -c Release -r osx-arm64 -nodeReuse:false -p:UseSharedCompilation=false \
+	$(DOTNET_CMD) publish graphics/widen/S2Arm.Gfx.Widen.csproj -c Release -r osx-arm64 -nodeReuse:false -p:UseSharedCompilation=false \
 	  --artifacts-path $(abspath $(NVN_TEST_DIR)/widen-artifacts) \
 	  -o $(abspath $(NVN_TEST_DIR)/widen) -p:PublishAot=true -p:NativeLib=Shared -p:InvariantGlobalization=true
 # runtime/gate.sh 并行跑组前先建一次 NVN 组共用的前置（10-28 门禁提速）；之后各组带 NVN_TEST_PREBUILT=1，上面两个 FORCE 不再生效、不会多组同时重写同一个库

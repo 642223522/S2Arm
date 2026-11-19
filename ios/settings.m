@@ -279,7 +279,7 @@ NSArray<NSDictionary *> *s2a_ios_graphics_options(void) {
         @{@"key": @"S2AAntiAliasing", @"title": S2AL(@"gfx.antiAliasing"), @"initial": @"None",
           @"values": @[@"None", @"SmaaMedium", @"SmaaHigh"], @"labels": @[S2AL(@"gfx.antiAliasing.off"), S2AL(@"gfx.antiAliasing.medium"), S2AL(@"gfx.antiAliasing.high")]},
         @{@"key": @"S2AScalingFilter", @"title": S2AL(@"gfx.filter"), @"initial": @"Bilinear",
-          @"values": @[@"Bilinear", @"Nearest", @"MetalFX"], @"labels": @[S2AL(@"gfx.filter.bilinear"), S2AL(@"gfx.filter.nearest"), S2AL(@"gfx.filter.metalfx")]},
+          @"values": @[@"Bilinear", @"Nearest", @"MetalFX", @"Fsr"], @"labels": @[S2AL(@"gfx.filter.bilinear"), S2AL(@"gfx.filter.nearest"), S2AL(@"gfx.filter.metalfx"), S2AL(@"gfx.filter.fsr")]},   // Fsr：AMD FSR 1，只直连上屏认，通用模式按双线性
         @{@"key": @"S2AFrameRateLimit", @"title": S2AL(@"gfx.fpsLimit"), @"initial": @"0",
           @"values": @[@"30", @"60", @"120", @"0"], @"labels": @[@"30", @"60", @"120", S2AL(@"gfx.fpsLimit.none")]}
     ];
@@ -315,7 +315,7 @@ void s2a_ios_apply_graphics_settings(NSUserDefaults *defaults) {
     } options[] = {
         {@"S2AResolutionScale", "S2A_RES_SCALE", @"1", @[@"0.5", @"0.75", @"1", @"1.5", @"2"]},
         {@"S2AAntiAliasing", "S2A_ANTI_ALIASING", @"None", @[@"None", @"SmaaMedium", @"SmaaHigh"]},   // 不带 FXAA（10-30：NVIDIA FXAA 3.11 没有授权条款）；存过的 Fxaa 按无效值清除
-        {@"S2AScalingFilter", "S2A_SCALING_FILTER", @"Bilinear", @[@"Bilinear", @"Nearest", @"MetalFX"]},   // 画质提升：标准 / 2D 游戏专用 / 锐利放大（MetalFX 空间放大，graphics/nvn/gfx/nvn/nvn_present_fx.inc）
+        {@"S2AScalingFilter", "S2A_SCALING_FILTER", @"Bilinear", @[@"Bilinear", @"Nearest", @"MetalFX", @"Fsr"]},   // 画质提升：标准 / 2D 游戏专用 / 锐利放大（MetalFX 空间放大，graphics/nvn/gfx/nvn/nvn_present_fx.inc）/ FSR（AMD FSR 1，nvn_present_fsr.inc）
         {@"S2AFrameRateLimit", "S2A_FPS", @"0", @[@"30", @"60", @"120", @"0"]},
     };
 

@@ -64,7 +64,7 @@ static int feedback_make(struct nvn_gpu_cmd_s *c, struct feedback_copy *f) {
     td.d.target = s->target; td.d.format = s->nvn_format;
     td.d.width = s->w; td.d.height = s->h; td.d.depth = s->depth;
     td.d.levels = s->levels; td.d.samples = s->samples;
-    td.usage = NVN_GPU_TEX_SAMPLED | (s->view_fmt ? NVN_GPU_TEX_VIEW_FMT : 0);
+    td.usage = NVN_GPU_TEX_SAMPLED | ((s->view_fmt || s->fmt_n) ? NVN_GPU_TEX_VIEW_FMT : 0);   // 列表模式的源（保 UBWC）也要能按孪生格式看
     nvn_gpu_tex t = NULL; nvn_gpu_err err = {0};
     nvn_gpu_rc r = nvn_gpu_tex_create(&td, &t, &err);
     if (!nvn_gpu_ok(r)) { set_sticky(c, r.code, "feedback texture: %s", err.why); return 0; }

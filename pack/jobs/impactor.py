@@ -199,7 +199,7 @@ def exe_version(path):
     if not v.GetFileVersionInfoW(path, 0, n, buf): return None, None
     p, ln = ctypes.c_void_p(), w.UINT()
     if not v.VerQueryValueW(buf, '\\VarFileInfo\\Translation', ctypes.byref(p), ctypes.byref(ln)) or ln.value < 4: return None, None
-    lang, cp = ctypes.cast(p, ctypes.POINTER(ctypes.c_ushort * 2)).contents
+    lang, cp = ctypes.cast(p.value, ctypes.POINTER(ctypes.c_ushort * 2)).contents
     out = {}
     for k in ('ProductName', 'ProductVersion'):
         if v.VerQueryValueW(buf, f'\\StringFileInfo\\{lang:04x}{cp:04x}\\{k}', ctypes.byref(p), ctypes.byref(ln)) and ln.value:

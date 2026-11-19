@@ -38,24 +38,24 @@ class EngineHealTests(JobCase):
         c = self.context(); embedded.install(c)
         return c
 
-    def test_size_changed_copy_is_reinstalled_on_next_job(self):
-        c = self.installed()
-        (c.engine / PLIST).write_bytes(b"<plist>rewritten by something else</plist>")   # 玩家机上的现象：大小变了
-        c2 = self.installed()
-        self.assertEqual((c2.engine / PLIST).read_bytes(), b"<plist>original</plist>")
-        self.assertEqual(list(c2.engine.parent.glob("*.broken")), [])   # 坏副本挪开后删掉
-
-    def test_probe_uses_installed_copy_without_rechecking_build_still_heals(self):
-        # 剃刀 H4：只读探测（installCheck，装机页每 5 秒一次）有安装标记就直接用副本、不逐文件复核；同一个被改过的副本，下一个出包作业照旧复核、重解（#304 防线不丢）
+    def test_installed_copy_is_used_without_rechecking_and_heals_when_artifact_used(self):
+        # 11-19 维护者（「每次启动都很慢……这种校验是不是自己给自己挖的坑」）：装好的副本每个作业直接用，出包 / 起局 / 探测都不逐文件复核；
+        #   #304 那种被外部改了大小的宿主文件，真用到宿主（artifact）时当场从 App 包重解。期望手写：改过的副本下一个作业原样留着、标记 inode 不变，
+        #   artifact 之后变回 App 包里的原样
         from unittest.mock import patch
         c = self.installed()
-        (c.engine / PLIST).write_bytes(b"<plist>rewritten by something else</plist>")
-        probe = Context(dict(self.request, taskId="probe-1", operation="installCheck", engineBundle=str(self.bundle)))
-        with patch.object(embedded, "_ready", side_effect=AssertionError("探测作业去逐文件复核了")):
-            embedded.install(probe)
-        self.assertEqual(probe.engine, c.engine)
-        self.assertEqual((c.engine / PLIST).read_bytes(), b"<plist>rewritten by something else</plist>")   # 探测不动副本
-        self.assertEqual((self.installed().engine / PLIST).read_bytes(), b"<plist>original</plist>")   # 出包作业照旧重解
+        stamp = (c.engine / ".installed.json").stat().st_ino
+        (c.engine / PLIST).write_bytes(b"<plist>rewritten by something else</plist>")   # 玩家机上的现象：大小变了
+        for operation in ("launch", "build", "installCheck"):
+            job = Context(dict(self.request, taskId=f"use-{operation}", operation=operation, engineBundle=str(self.bundle)))
+            with patch.object(embedded, "_intact", side_effect=AssertionError(f"{operation} 作业开头去逐文件复核了")):
+                embedded.install(job)
+            self.assertEqual(job.engine, c.engine)
+        self.assertEqual((c.engine / PLIST).read_bytes(), b"<plist>rewritten by something else</plist>")   # 没用到宿主前不动副本
+        self.assertEqual((c.engine / ".installed.json").stat().st_ino, stamp)   # 没重解
+        self.assertEqual(embedded.artifact(job, "S2ArmGame.app"), c.engine / "Binaries/S2ArmGame.app")
+        self.assertEqual((c.engine / PLIST).read_bytes(), b"<plist>original</plist>")   # 用到时重解
+        self.assertEqual(list(c.engine.parent.glob("*.broken")), [])   # 坏副本挪开后删掉
 
     def test_size_changed_artifact_is_reinstalled_when_used(self):
         # v0.2.3 清理：用到产物时也只核大小（原先按摘要逐字节核，同大小改写现实里没出现过，#304 是大小变了）；大小变了照样从 App 包重解
@@ -106,7 +106,8 @@ class EngineHealTests(JobCase):
         c = self.installed()
         (c.engine / PLIST).write_bytes(b"x")
         (self.bundle / PLIST).write_bytes(b"also broken")   # App 包本身也坏了
-        c2 = self.installed()   # 不抛
+        c2 = self.installed()
+        embedded.artifact(c2, "S2ArmGame.app")   # 用到宿主时发现副本被改过 → 重解；App 包也对不上 → 不抛、黄字
         warned = [d for d in c2.job["diagnostics"] if d.get("code") == "engine_incomplete"]
         self.assertEqual(len(warned), 1)
         self.assertEqual(warned[0].get("severity"), "warning")

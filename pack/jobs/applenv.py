@@ -200,7 +200,7 @@ def main(argv):
     if as_json:
         print(json.dumps(out, ensure_ascii=False, indent=1))
     else:
-        print(f"Xcode：{dev}（iOS SDK {sdk}）" if dev else "Xcode：没找到（/Applications 下没有 Xcode*.app，xcode-select 也没指向可用的）")  # 非玩家句
+        print(f"Xcode：{dev}（iOS SDK {sdk}）" if dev else "Xcode：没找到（/Applications、~/Applications 与外接卷下都没有 Xcode*.app，xcode-select 也没指向可用的）")  # 非玩家句
         for x in checks:
             need = "、".join({"prepare": "打包", "launch": "启动", "ipa": "打 iPhone 包", "test": "只单测要"}.get(s, s) for s in x["requiredFor"])  # 非玩家句
             tag = "" if need in x["name"] else f"（{need}）"

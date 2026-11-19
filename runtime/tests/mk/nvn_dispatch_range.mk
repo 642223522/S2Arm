@@ -13,6 +13,7 @@ $(NVN_DRANGE_BINARY): graphics/nvn/tests/t_nvn_dispatch_range.m $(NVN_PRODUCER_S
 	  -framework ImageIO -framework UniformTypeIdentifiers -lc++
 .PHONY: native-test-nvn_dispatch_range
 native-test-nvn_dispatch_range: $(NVN_DRANGE_BINARY)
-	$(NVN_DRANGE_BINARY)
+	DM_NVN_DISPATCH_RANGE=range $(NVN_DRANGE_BINARY)
+	env -u DM_NVN_DISPATCH_RANGE $(NVN_DRANGE_BINARY)
 TEST_TARGETS += native-test-nvn_dispatch_range
 endif

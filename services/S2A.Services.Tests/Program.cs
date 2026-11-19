@@ -234,7 +234,6 @@ namespace S2A.Services.Tests
                 return failures == 0 ? 0 : 1;
             }
             if (args is ["--horizon-merge-lifecycle"]) return HorizonMergeLifecycleTest();
-            if (args is ["--filesystem-restart"]) return FileSystemRestart();
             if (args is ["--apple-audio-dispose"]) return AppleAudioDispose();
             if (IFileWriteLengthTest() != 0) return 1;
             FakeNative.Install();

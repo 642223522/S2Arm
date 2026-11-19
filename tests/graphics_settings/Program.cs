@@ -103,7 +103,7 @@ static unsafe class Program
             Check(modeHashes.Values.Distinct().Count() == modes.Length, "关闭、SMAA中、高实际输出不同");
             foreach (string mode in modes) Check(filterHashes[$"{mode}/Bilinear"] != filterHashes[$"{mode}/Nearest"], "双线性与最近邻实际缩放输出不同");
 
-            foreach ((string variable, string invalid) in new[] { (Variables[0], "0"), (Variables[0], "NaN"), (Variables[0], "1,5"), (Variables[1], "Msaa"), (Variables[2], "Fsr") })
+            foreach ((string variable, string invalid) in new[] { (Variables[0], "0"), (Variables[0], "NaN"), (Variables[0], "1,5"), (Variables[1], "Msaa"), (Variables[2], "Lanczos") })
             {
                 Environment.SetEnvironmentVariable(Variables[0], "1");
                 Environment.SetEnvironmentVariable(Variables[1], "None");

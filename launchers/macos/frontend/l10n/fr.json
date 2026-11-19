@@ -1744,5 +1744,13 @@
   "s2arm.env.fullscreen.title": "Lancer les jeux en plein écran",
   "s2arm.env.fullscreen.detail": "Activé : tous les jeux (y compris ceux ajoutés plus tard) s’ouvrent en plein écran ; un jeu doté de son propre réglage plein écran garde ce réglage.",
   "home.card.daysLeft": "Encore %d jours",
-  "home.card.expired": "Expiré"
+  "home.card.expired": "Expiré",
+  "s2arm.env.xcode.group": "Xcode",
+  "s2arm.env.xcode.title": "Xcode utilisé",
+  "s2arm.env.xcode.found": "Trouvé automatiquement : %@",
+  "s2arm.env.xcode.chosen": "Votre choix : %@",
+  "s2arm.env.xcode.none": "Aucun Xcode trouvé pour l’instant",
+  "s2arm.env.xcode.choose": "Choisir Xcode…",
+  "s2arm.env.xcode.auto": "Rechercher automatiquement",
+  "s2arm.env.xcode.invalid": "Ce n’est pas un Xcode complet (Contents/Developer/usr/bin/xcodebuild est requis). Rien n’a été modifié."
 }

@@ -2265,7 +2265,8 @@ static void t21_clear_int(void) {
 
 // C27b：视图覆盖格式的 clear 明确不支持（Vulkan 按 image 格式解释 clear 值）。
 static void t22_clear_view_fmt(void) {
-    nvn_gpu_tex t = make_tex(4, 4, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_VIEW_FMT);
+    // 带存储用途：自由可改格式（跨类原始位视图只在存储图上保留；普通颜色图走格式列表保 UBWC，见 t22b）
+    nvn_gpu_tex t = make_tex(4, 4, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_STORAGE | NVN_GPU_TEX_VIEW_FMT);
     view_t vd;
     memset(&vd, 0, sizeof vd);
     vd.set_format = 1;
@@ -2284,6 +2285,44 @@ static void t22_clear_view_fmt(void) {
     nvn_gpu_tex_release(t);
 }
 
+
+// 保 Adreno UBWC（格式列表代替自由 MUTABLE_FORMAT）：普通颜色图按 sRGB 孪生看照常建视图、不退回；
+//   跨类格式（RGBA8 → RGBA8UI）不在列表，退回图本身格式建视图并计数（不失败、不跳笔）；深度图不开 MUTABLE，按本格式看照常。
+//   期望（手算）：孪生视图 0 次退回；BGRA 视图 0 次（通道互换等效）；跨类视图 1 次；深度本格式视图 0 次。全程校验层 0 报错由 run.sh 检测器判。
+uint64_t nvn_vk_tex_view_fallbacks(void);
+int nvn_vk_tex_fmt_list_active(void);
+static void t22b_ubwc_format_list(void) {
+    nvn_gpu_caps cp; nvn_gpu_caps_get(&cp);
+    if (!nvn_vk_tex_fmt_list_active()) { printf("【未证】t22b：本设备没启用 VK_KHR_image_format_list，格式列表模式不生效，跳过\n"); return; }
+    uint64_t f0 = nvn_vk_tex_view_fallbacks();
+    nvn_gpu_tex t = make_tex(8, 8, NVN_FORMAT_RGBA8, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED | NVN_GPU_TEX_VIEW_FMT);
+    view_t vd; memset(&vd, 0, sizeof vd); vd.set_format = 1; vd.format = NVN_FORMAT_RGBA8_SRGB;
+    nvn_gpu_view v = NULL; nvn_gpu_err e = {0};
+    nvn_gpu_rc r = nvn_gpu_view_create(t, &vd, &v, &e);
+    CHECK(OK(r), "列表模式：sRGB 孪生视图创建 %d %s", r.code, e.why);
+    CHECK(nvn_vk_tex_view_fallbacks() == f0, "列表模式：孪生视图不应退回，实为 %llu 次", (unsigned long long)(nvn_vk_tex_view_fallbacks() - f0));
+    if (v) nvn_gpu_view_release(v);
+    // RGBA8 ↔ BGRA8：列表里不放 BGRA，按本格式 + 互换 R/B 的通道映射等效（像素读回由 t_feedback 第 8 种钉住），也不算退回
+    vd.format = NVN_FORMAT_BGRA8; v = NULL;
+    r = nvn_gpu_view_create(t, &vd, &v, &e);
+    CHECK(OK(r), "列表模式：BGRA 视图创建 %d %s", r.code, e.why);
+    CHECK(nvn_vk_tex_view_fallbacks() == f0, "列表模式：BGRA 视图应由通道互换等效、不退回，实为 %llu 次", (unsigned long long)(nvn_vk_tex_view_fallbacks() - f0));
+    if (v) nvn_gpu_view_release(v);
+    vd.format = NVN_FORMAT_RGBA8UI; v = NULL;
+    r = nvn_gpu_view_create(t, &vd, &v, &e);
+    CHECK(OK(r), "列表模式：跨类视图应退回本格式而不是失败 %d %s", r.code, e.why);
+    CHECK(nvn_vk_tex_view_fallbacks() == f0 + 1, "列表模式：跨类视图应退回 1 次，实为 %llu 次", (unsigned long long)(nvn_vk_tex_view_fallbacks() - f0));
+    if (v) nvn_gpu_view_release(v);
+    nvn_gpu_tex_release(t);
+    nvn_gpu_tex dt = make_tex(8, 8, NVN_FORMAT_DEPTH32F, NVN_GPU_TEX_RENDER | NVN_GPU_TEX_SAMPLED | NVN_GPU_TEX_VIEW_FMT);
+    memset(&vd, 0, sizeof vd); vd.set_format = 1; vd.format = NVN_FORMAT_DEPTH32F; v = NULL;
+    r = nvn_gpu_view_create(dt, &vd, &v, &e);
+    CHECK(OK(r), "深度图（不开 MUTABLE）：本格式视图创建 %d %s", r.code, e.why);
+    CHECK(nvn_vk_tex_view_fallbacks() == f0 + 1, "深度图本格式视图不应退回");
+    if (v) nvn_gpu_view_release(v);
+    nvn_gpu_tex_release(dt);
+    (void)cp;
+}
 
 // C76：单次分配上限必须来自 maxMemoryAllocationSize，不能与 maxStorageBufferRange 共用同一个值。
 // 以前两者相等（都是 128 MiB）：回放核心把内存池整池镜像成一块 CPU 可见缓冲，任何大于 SSBO 范围上限的池
@@ -10708,6 +10747,7 @@ int main(int argc, char **argv) {
     CHECK(OK(nvn_gpu_close(5000000000ull, &e5)), "t21 close：%d %s", e5.rc.code, e5.why);
     if (!open_backend()) return 1;
     t22_clear_view_fmt();
+    t22b_ubwc_format_list();
     nvn_gpu_err e6;
     CHECK(OK(nvn_gpu_close(5000000000ull, &e6)), "t22 close：%d %s", e6.rc.code, e6.why);
     if (!open_backend()) return 1;

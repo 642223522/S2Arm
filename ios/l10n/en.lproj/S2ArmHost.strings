@@ -391,6 +391,8 @@
 "gfx.filter.metalfx" = "Sharp upscaling (MetalFX)";
 "gfx.filter.metalfx.noDirect" = "This game doesn't use direct rendering, so sharp upscaling (MetalFX) isn't available.";
 "gfx.filter.metalfx.note" = "Sharp upscaling (MetalFX) adds a little GPU time every frame, so frame rate and battery use may be slightly affected.";
+"gfx.filter.fsr" = "FSR";
+"gfx.filter.fsr.noDirect" = "FSR isn't available either.";
 "gfx.filter.nearest" = "For 2D games";
 "gfx.fpsLimit" = "Frame rate limit";
 "gfx.fpsLimit.none" = "Unlimited";
