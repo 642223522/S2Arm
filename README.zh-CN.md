@@ -1,39 +1,75 @@
 <p align="center"><a href="https://s2arm.com"><img src="docs/images/s2arm-wordmark.png" width="420" alt="S2Arm"></a><br><a href="https://s2arm.com">s2arm.com</a></p>
 
+<p align="center">[简体中文](README.zh-CN.md) · [繁體中文](README.zh-TW.md) · [English](README.md) · [日本語](README.ja.md) · [Español](README.es.md) · [Français](README.fr.md)</p>
+
 > [!NOTE]
-> **好消息：[s2arm.com](https://s2arm.com) 已正式成为 S2Arm 官方网站。** S2Arm 免费开源，从不接受任何捐赠；请只从 [s2arm.com](https://s2arm.com) 或本 GitHub 仓库获取 S2Arm。
+> **[s2arm.com](https://s2arm.com) 是 S2Arm 的官方网站。** S2Arm 免费开源，从不接受任何捐赠；请只从 [s2arm.com](https://s2arm.com) 或本 GitHub 仓库获取 S2Arm。
 
-**把你自己的 Switch 游戏，原生带到 iPhone、iPad 和 Mac。** 游戏代码改写成原生 ARM64，直接在设备的处理器上执行；图形直连 Metal。整座游戏库装进一个 App，在 Mac 或 Windows 的图形启动器里点几下就能出包、装机、开玩。
+**把你自己的 Switch 游戏，原生带到 iPhone、iPad 和 Mac。** 游戏代码改写成原生 ARM64，直接在设备的处理器上执行；图形直连 Metal。0.6.0 起，手机上只装一个 S2Arm App，所有游戏都在它的游戏库里；在 Mac 或 Windows 的启动器里把游戏一款一款「推到 iPhone」就能玩。
 
-平台：iPhone / iPad（iOS / iPadOS 18 起）· Mac（Apple 芯片，macOS 15 起）· 在 Mac 或 Windows 上出包 · Android / 鸿蒙即将支持 · 许可：Apache-2.0 · **游戏原件自备**
+平台：iPhone / iPad（iOS / iPadOS 18 起）· Mac（Apple 芯片，macOS 15 起）· Mac 或 Windows 启动器 · 许可：Apache-2.0 · **游戏原件自备**
 
-[English](README.md) · [下载启动器](https://jhaizhou-ops.github.io/S2Arm/) · [全部版本](https://github.com/jhaizhou-ops/S2Arm/releases) · [证据页](docs/validation/证据.md)
+[下载启动器](https://s2arm.com) · [全部版本](https://github.com/jhaizhou-ops/S2Arm/releases) · [证据页](docs/validation/证据.md)
 
-<p align="center"><img src="docs/images/launcher-welcome.png" width="760" alt="S2Arm 启动器欢迎页"></p>
+<p align="center"><img src="docs/images/v060/poster-01.zh-Hans.png" width="420" alt="一个 App 装下所有游戏"></p>
 
-## 原生移植，不是模拟
+## 0.6.0 有什么新东西
 
-游戏自己的 ARM64 代码在出包时改写，然后直接在 iPhone、iPad 和 Mac 的处理器上运行，没有 CPU 模拟器夹在中间。图形调用直接翻译成 Metal，系统服务由原生宿主提供。快、凉、省电，都从这里来。[证据](docs/validation/证据.md#原生移植)
+### 一个 App，装下所有游戏
 
-## 一个 App，装下整个游戏库
+手机上只装一次 S2Arm，以后游戏一款一款推进去。S2Arm 更新、续签，都不用把游戏重装一遍，存档也都在。签名可以用免费或付费的 Apple ID、开发者证书，也可以自己签名后导入。
 
-所有游戏导入同一个 S2Arm App，打开后在游戏库里挑一款就玩。整座游戏库只占开发者账号的一个 App 名额：多加一款游戏，不多装一个 App，也不多占一个签名名额。[证据](docs/validation/证据.md#单壳游戏库)
+### 即时快照：存下这一刻，随时回来
 
-## 图形启动器，几乎零配置
+不用等游戏自己的存档点。游戏里轻点右上角的 ◉，当下这一刻就被存下来；长按它，选「回到上次存下的这一刻」就回去。下次打开游戏库，最上面的「从这一刻继续」点一下直接进。
 
-Mac 和 Windows 各有一个图形启动器。第一次打开，欢迎页把事情收成三步：准备这台电脑、放入密钥、添加游戏，任何时候只有一个主按钮。运行所需的组件要么已经内置，要么一键获取，全程不用打开命令行。
+- 每款游戏只留最新的一份，新存的会盖掉旧的。
+- 一份快照会占用手机空间（大小因游戏而异），长按就能删除、腾出空间；设置里也能关掉。
+- 快照只在存下它的那台设备上能用；S2Arm 更新之后照样能回去。
 
-点「一键出包」之后，每个阶段的进度、用时、剩余时间和磁盘占用都看得见；多款游戏可以排队连续出包。[证据](docs/validation/证据.md#零配置启动器)
+<p align="center"><img src="docs/images/v060/poster-02.zh-Hans.png" width="420" alt="即时快照"></p>
 
-<p align="center">
-  <img src="docs/images/launcher-oneclick.png" width="400" alt="一键出包">
-  <img src="docs/images/launcher-export.png" width="400" alt="出包进度">
-</p>
+### 一个文件，换台设备接着玩
 
-<p align="center">
-  <img src="docs/images/launcher-success.png" width="400" alt="出包完成">
-  <img src="docs/images/launcher-library.png" width="400" alt="游戏库">
-</p>
+每款游戏可以导出成 .s2arm 文件，放到你的另一台设备上导入就能玩，手机会自己完成签名。一款游戏只占一份空间，游戏、存档、快照各占多少，在「释放空间」里一目了然。
+
+### 着色器全覆盖：第一次玩就流畅
+
+推游戏时就把游戏要用的着色器备好，第一次进新场景不再卡一下。玩家诊断里收集到的 **14,466** 个历史上编译失败的着色器，现在能编出 **14,368** 个（**99.3%**）。
+
+### 修复、性能和画面
+
+从 0.5.0 到 0.6.0（口径见下）：
+
+| | 数字 | 口径 |
+|---|---|---|
+| 修复合入 | **258** 项 | 0.5.0 发布后合入 main 的修复提交 |
+| 玩家反馈处理 | **194** 条 | 0.5.0 发布后关闭的反馈帖 |
+| 社区贡献合入 | **94** 份 | 来自玩家与开发者的 PR |
+| GPU 渲染耗时 | **−50%** | 延迟光照场景，4.8–5.9 ms → 2.7 ms |
+| 出包内存峰值 | **−35%** | 大型游戏出包时的内存峰值 |
+
+另外还有：多类着色器问题根修、读档存档更可靠、补帧更顺，Windows 和 Mac 上装 App、签名、推送更稳。感谢每一位反馈问题的玩家。
+
+## 开始使用
+
+1. 从 [s2arm.com](https://s2arm.com) 下载 Mac 或 Windows 启动器，打开即用。
+2. 导入你自己的密钥和游戏；本体、更新和 DLC 放在同一个文件夹里一次导入。
+3. 连上 iPhone，点手机条上的「安装 S2Arm」，用你的 Apple ID 登录、签名，把 S2Arm 装到手机上。
+4. 选一款游戏，点「推到 iPhone」。
+5. 在手机上打开 S2Arm，在游戏库里选游戏开玩。
+
+在 Mac 上也能直接玩：选「这台 Mac」即可。不连手机的话，可以导出 .s2arm 文件，用 AirDrop 或「文件」App 放到手机上导入。
+
+### 从 0.5 升级
+
+你手机上原来的游戏、存档和游戏数据都会留着，不用重新出包，也不用重传游戏数据。
+
+1. Mac 玩家先在 S2Arm 里用 Apple ID 登录一次（0.5 用的是 Xcode 里的账号，0.6.0 改成直接在 S2Arm 里登录；Windows 玩家不用多做这一步）。
+2. 连上手机，点手机条上的「更新 S2Arm」：会先把各款存档备份到电脑，再换成新 App。用同一个 Apple ID 就是覆盖安装。
+3. 在总控台勾上标着「建议更新」的游戏，点「更新所选」：每款只补一小份程序，很快。
+
+第 3 步做完之前，这些游戏在手机上会显示「需要在电脑上更新」，不是丢了。用 AltStore 等自己签名的玩家：装新的 S2Arm 覆盖旧的，再把每款游戏的 .s2arm 导入一次。
 
 ## AI 可以直接驾驶
 
@@ -79,10 +115,9 @@ Mac 和 Windows 启动器都开放了控制接口 `s2armctl`：AI 助手可以�
 
 | 平台 | 支持 |
 |---|---|
-| iPhone / iPad | iOS / iPadOS 18 起，所有游戏在同一个 App 里选 |
-| Mac | Apple 芯片，macOS 15 起；本机出包，也能直接在 Mac 上玩 |
-| Windows | 图形启动器，为 iPhone / iPad 出包并装机 |
-| Android / 鸿蒙 | 即将支持 |
+| iPhone / iPad | iOS / iPadOS 18 起；一个 S2Arm App 里装所有游戏 |
+| Mac | Apple 芯片，macOS 15 起；启动器装 App、推游戏，也能直接在 Mac 上玩 |
+| Windows | 图形启动器：装 App、推游戏、导出 .s2arm |
 
 [证据](docs/validation/证据.md#平台与系统)
 
@@ -93,15 +128,6 @@ Mac 和 Windows 启动器都开放了控制接口 `s2armctl`：AI 助手可以�
 | 方案 | 项目 | 终端 | 约定 |
 |---|---|---|---|
 | D2R-Mobile | [jhaizhou-ops/d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile) | iPhone / iPad（iOS 26 起；安卓、鸿蒙接入中） | [docs/S2ARM.zh-CN.md](https://github.com/jhaizhou-ops/d2r-mobile/blob/main/docs/S2ARM.zh-CN.md) |
-
-## 开始使用
-
-1. 从[下载页](https://jhaizhou-ops.github.io/S2Arm/)下载 Mac 或 Windows 启动器，打开即用。在 Mac 上出 iPhone 包需要 App Store 免费的 Xcode，并在里面登录你的 Apple ID，启动器会一步步带你完成。
-2. 导入你自己的密钥和游戏；本体、更新和 DLC 放在同一个文件夹里一次导入。
-3. 选 iPhone / iPad 或这台 Mac，点「出包」。
-4. 按启动器提示用你自己的 Apple ID 签名装机（Windows 版已附带签名工具 Impactor），打开 S2Arm，在游戏库里选游戏开玩。
-
-更新 App 前先备份存档。正式版的 App 标识改为 `io.s2arm.*`，系统会把它当成一个新 App：测试版（beta）里的存档不会自动带过来。
 
 ## 诚实的边界
 
