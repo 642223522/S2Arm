@@ -88,6 +88,7 @@ struct nvn_gpu_tex_s {
     int array_compatible;
     int cube_compatible;   // P0-6：二维数组建图时带了 CUBE_COMPATIBLE（方形、≥6 层、单采样、设备收这个格式 / 用途 / 标志），可以建立方体（数组）视图
     int view_fmt, released, refs, bc_decoded;
+    VkFormat fmt_list[3]; uint8_t fmt_n;   // 格式列表模式（保 Adreno UBWC，见 tex_fmt_allowed）：view_fmt = 0 时视图只能取这几个格式；fmt_n = 0 = 没走列表
     uint8_t ext_usage;   // 建图带了 EXTENDED_USAGE（存储用途配本身不能存储的格式，见 NVN_GPU_CAP_STORAGE_SRGB_ALIAS）：每个视图按自己的格式剥用途
     VkBuffer bc_sbuf; VkDeviceMemory bc_smem;   // bc_decoded 贴图的压缩原数据影子（GPU 缓冲，按级、按层 / 3D 切片、行紧排；见 bc_shadow_layout）
     uint8_t fb_sample;   // 同一通道里既当附件又被采样过（反馈环）：这张图以后当附件一律 GENERAL（见「图像布局」）
@@ -5814,6 +5815,32 @@ static int check_copy_params(const struct nvn_gpu_tex_s *t, uint32_t level, cons
 
 // 建贴图（vkCreateImage + 要显存 + 建默认视图）在真机上单张 0.3–2 毫秒；走路/进新场景时会成批出现，
 // 所以超过 3 毫秒的单独记一行，用来和「长帧」对时间（见坑记录续 34）。
+// 保住 Adreno 的 UBWC 帧缓冲压缩：图带自由 MUTABLE_FORMAT 时 Adreno 会对它关掉 UBWC，渲染目标的带宽与 GPU 时间都上去
+//   （外部参考 nx2android gfx_vk_tex.c ubwc_mode，MIT：惊奇世界地图 Adreno 830 GPU 每帧 11.8 → 8.7 ms，另一款 -35~40%）。
+//   回放核心给每张贴图都要 NVN_GPU_TEX_VIEW_FMT（同一份存储会按别的格式看），所以按用途分三种：
+//   · 存储用途（原始位读写要跨类格式，且这类图本来难有 UBWC）/ BC 解码 / 采样格式与本格式不同：照旧自由 MUTABLE；
+//   · 深度 / 模板图：不开 MUTABLE（深度视图只能取本格式）；
+//   · 其余颜色图：MUTABLE + VkImageFormatListCreateInfo 只列本格式、采样格式与 sRGB / UNORM 孪生（Vulkan 1.2 核心）。
+//   列表外的视图格式退回本格式建视图、记一次红行并计数（tex_view_fallbacks），不让整笔跳掉。
+static VkFormat srgb_twin(VkFormat f) {
+    switch (f) {
+    case VK_FORMAT_R8G8B8A8_UNORM: return VK_FORMAT_R8G8B8A8_SRGB;
+    case VK_FORMAT_R8G8B8A8_SRGB: return VK_FORMAT_R8G8B8A8_UNORM;
+    case VK_FORMAT_B8G8R8A8_UNORM: return VK_FORMAT_B8G8R8A8_SRGB;
+    case VK_FORMAT_B8G8R8A8_SRGB: return VK_FORMAT_B8G8R8A8_UNORM;
+    case VK_FORMAT_A8B8G8R8_UNORM_PACK32: return VK_FORMAT_A8B8G8R8_SRGB_PACK32;
+    case VK_FORMAT_A8B8G8R8_SRGB_PACK32: return VK_FORMAT_A8B8G8R8_UNORM_PACK32;
+    default: return VK_FORMAT_UNDEFINED;
+    }
+}
+static uint64_t g_tex_view_fallbacks;   // 列表模式下视图格式不在列表、退回本格式的次数（验证读数）
+uint64_t nvn_vk_tex_view_fallbacks(void) { return g_tex_view_fallbacks; }
+static int tex_fmt_allowed(const struct nvn_gpu_tex_s *t, VkFormat f) {
+    if (f == t->sample_format || f == t->format || t->view_fmt) return 1;
+    for (unsigned i = 0; i < t->fmt_n; i++) if (t->fmt_list[i] == f) return 1;
+    return 0;
+}
+
 nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_gpu_err *err) {
     const uint64_t tc_t0 = now_ns();
     if (!session_accepting()) return fail(err, NVN_GPU_E_STOPPED, "会话正在关闭 / 未打开");
@@ -5880,6 +5907,13 @@ nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_g
         usage |= nvn_vk_format_is_depth(fmt) ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     }
     if (d->usage & NVN_GPU_TEX_STORAGE) usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+    // 可改格式的三种（见 tex_fmt_allowed 上的说明）：any_fmt = 自由 MUTABLE；fmt_list = MUTABLE + 格式列表；都不是 = 不开 MUTABLE
+    const int want_view = (d->usage & NVN_GPU_TEX_VIEW_FMT) != 0;
+    const int plain = want_view && !bc_decoded && sample_fmt == fmt && !(usage & VK_IMAGE_USAGE_STORAGE_BIT);
+    const int depth_fmt = nvn_vk_format_is_depth(fmt);
+    const int fmt_list = plain && !depth_fmt && g.dev->properties.apiVersion >= VK_API_VERSION_1_2;
+    const int any_fmt = (want_view && !plain) || (want_view && !depth_fmt && !fmt_list) || sample_fmt != fmt;
+    const VkImageCreateFlags mut_flag = (any_fmt || fmt_list) ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0;
 
     // 在 vkCreateImage 前按真实格式/usage 查询样本数；不把非法计数送到驱动或校验层。
     int ms_target = target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE || target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY;
@@ -5888,7 +5922,7 @@ nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_g
             (d->d.samples > 1 && (target == NVN_TEXTURE_TARGET_CUBEMAP || target == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY)))
             return fail(err, NVN_GPU_E_UNSUPPORTED, "多重采样计数/级数/目标不支持");
         VkImageFormatProperties ip = {0};
-        VkImageCreateFlags flags = iflags | (((d->usage & NVN_GPU_TEX_VIEW_FMT) || sample_fmt != fmt) ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0);
+        VkImageCreateFlags flags = iflags | mut_flag;
         if (vkGetPhysicalDeviceImageFormatProperties(g.phys, fmt, itype, VK_IMAGE_TILING_OPTIMAL, usage, flags, &ip) != VK_SUCCESS ||
             (uint32_t)d->d.width > ip.maxExtent.width || (uint32_t)d->d.height > ip.maxExtent.height || layers > ip.maxArrayLayers)
             return fail(err, NVN_GPU_E_UNSUPPORTED, "设备不支持该格式/usage 的 %u 重采样贴图", samples);
@@ -5913,7 +5947,7 @@ nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_g
     int cube_compat = 0;
     if (target == NVN_TEXTURE_TARGET_2D_ARRAY && layers >= 6 && d->d.width == d->d.height && samples == 1 && !bc_decoded) {
         VkImageFormatProperties ip = {0};
-        VkImageCreateFlags flags = iflags | VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT | ((d->usage & NVN_GPU_TEX_VIEW_FMT) ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0);
+        VkImageCreateFlags flags = iflags | VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT | mut_flag;
         if (vkGetPhysicalDeviceImageFormatProperties(g.phys, fmt, itype, VK_IMAGE_TILING_OPTIMAL, usage, flags, &ip) == VK_SUCCESS &&
             layers <= ip.maxArrayLayers && (uint32_t)d->d.width <= ip.maxExtent.width && levels <= ip.maxMipLevels) {
             iflags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT; cube_compat = 1;
@@ -5936,7 +5970,12 @@ nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_g
     t->cube_compatible = cube_compat;
     t->samples = samples;
     t->nvn_format = (uint32_t)d->d.format;
-    t->view_fmt = (d->usage & NVN_GPU_TEX_VIEW_FMT) != 0;
+    t->view_fmt = any_fmt;
+    if (fmt_list) {
+        t->fmt_list[t->fmt_n++] = fmt;
+        VkFormat tw = srgb_twin(fmt);
+        if (tw != VK_FORMAT_UNDEFINED) t->fmt_list[t->fmt_n++] = tw;
+    }
     t->ext_usage = (uint8_t)ext_usage;
     t->swz = d->swz;
     t->layout = VK_IMAGE_LAYOUT_GENERAL;   // 实际转换在创建后的第一次提交里（待转表）
@@ -5955,7 +5994,14 @@ nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_g
     ci.usage = usage;
     ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    if (t->view_fmt || sample_fmt != fmt) ci.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+    ci.flags |= mut_flag;
+    VkImageFormatListCreateInfo fl;
+    if (t->fmt_n) {
+        memset(&fl, 0, sizeof fl);
+        fl.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO;
+        fl.viewFormatCount = t->fmt_n; fl.pViewFormats = t->fmt_list;
+        fl.pNext = ci.pNext; ci.pNext = &fl;
+    }
     LIFE_T0;
     t->usage = ci.usage;
     if (vkCreateImage(g.d, &ci, NULL, &t->image) != VK_SUCCESS) {
@@ -6099,12 +6145,22 @@ nvn_gpu_rc nvn_gpu_view_create(nvn_gpu_tex th, const view_t *v, nvn_gpu_view *ou
     if (!plan.ok) return fail(err, NVN_GPU_E_ARG, "%s", plan.why);
     base_level = plan.base_level; levels = plan.nlevels;
     base_layer = plan.base_layer; layers = plan.nlayers; type = plan.type;
-    if (fmt != t->sample_format && !t->view_fmt)
-        return fail(err, NVN_GPU_E_UNSUPPORTED, "不同格式的视图需要创建时声明 NVN_GPU_TEX_VIEW_FMT");
+    int fmt_fell_back = 0;
+    if (!tex_fmt_allowed(t, fmt)) {
+        if (!t->fmt_n && !(t->usage & (VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)) && !nvn_vk_format_is_depth(t->format))
+            return fail(err, NVN_GPU_E_UNSUPPORTED, "不同格式的视图需要创建时声明 NVN_GPU_TEX_VIEW_FMT");
+        // 格式列表 / 深度图（保 UBWC，见 tex_fmt_allowed）：列表外的格式退回本格式，记一次红行
+        if (g_tex_view_fallbacks++ == 0 || (g_tex_view_fallbacks & (g_tex_view_fallbacks - 1)) == 0) {
+            char msg[200]; snprintf(msg, sizeof msg, "tex_view_fmt_fallback: 图 %d 的视图要格式 %d（不在保压缩的格式列表里），按图本身格式建视图（第 %llu 次）",
+                                    (int)t->format, (int)fmt, (unsigned long long)g_tex_view_fallbacks);
+            nvn_plat_log(NVN_PLAT_LOG_RED, "gpu", msg);
+        }
+        fmt = t->sample_format; fmt_fell_back = 1;
+    }
 
     struct nvn_gpu_view_s *o = calloc(1, sizeof *o);
     if (!o) return fail(err, NVN_GPU_E_OOM, "视图结构分配失败");
-    o->nvn_format = v && v->set_format ? (uint32_t)v->format : t->nvn_format;
+    o->nvn_format = v && v->set_format && !fmt_fell_back ? (uint32_t)v->format : t->nvn_format;
     o->format = fmt;
     VkImageViewCreateInfo ci;
     memset(&ci, 0, sizeof ci);
