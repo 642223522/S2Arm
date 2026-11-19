@@ -59,6 +59,9 @@ internal static unsafe class Program
     // LOP32I.OR Rd, Ra, imm32：顶层 opcode 000001（bit 58）、逻辑运算在 bit 53..54（1 = OR）、32 位立即数在 bit 20..51（InstTable / InstLop32i）。
     private static ulong Lop32iOr(int dest, int a, uint imm) =>
         0x0400000000000000UL | (1UL << 53) | ((ulong)imm << 20) | (7UL << 16) | ((ulong)a << 8) | (uint)dest;
+    // FMNMX Rd, Ra, Rb（寄存器形式 0x5c60，谓词 bit 39 = PT 取 MIN、bit 42 取反 = MAX；编码同 tests/shader_cases/run.py）。
+    private static ulong FmnmxR(int dest, int a, int b, bool max) =>
+        0x5C60000000000000UL | ((ulong)b << 20) | ((max ? 1UL : 0UL) << 42) | (7UL << 39) | (7UL << 16) | ((ulong)a << 8) | (uint)dest;
     private static ulong Ald4(int location) =>
         0xEFD8000000000000UL | (0xFFUL << 39) | (3UL << 47) | ((ulong)(0x80 + location * 16) << 20) | (7UL << 16) | (0xFFUL << 8);
     // TEX R0, R2, texture0：2D、坐标 R2/R3、写 RGBA。
@@ -753,6 +756,25 @@ internal static unsafe class Program
         byte[] vs = Guest(false, new[] { Ast(0) });
         byte[] fs = Guest(true, new[] { Ald(0) }, new[] { 0 });
         byte[] cs = ComputeGuest();
+
+        // 端到端：真编译器（DirectShaderCompiler.Compile）编一段读两个输入分量、做 FMNMX.MIN / MAX 的片元程序（读输入免得被常量折叠），
+        // 出来的片元 SPIR-V 必须有 GLSL NMin + NMax、没有 FMin / FMax（共用翻译器的 Clamp / Maximum / Minimum 若回到 F 版，这一项必红）。
+        {
+            using JsonDocument doc = ParseResult(DirectShaderCompiler.Compile(RequestJson(profile, "graphics", 1, 1, "nan-minmax",
+                Guest(false, new[] { Ald4(0), Ast4Pos(0) }),
+                Guest(true, new[] { Ald(0, 0, 4), Ald(0, 1, 5), FmnmxR(0, 4, 5, false), FmnmxR(1, 4, 5, true), Fadd32i(2, 0f), Fadd32i(3, 1f) }, new[] { 0 }))));
+            byte[] spv = doc.RootElement.GetProperty("content").GetProperty("stages")[1].GetProperty("spirv").GetBytesFromBase64();
+            var ops = new List<uint>(); var glsl = new HashSet<uint>();
+            for (int i = 5; i < spv.Length / 4;)
+            {
+                uint head = BinaryPrimitives.ReadUInt32LittleEndian(spv.AsSpan(i * 4)); int n = (int)(head >> 16); if (n == 0) break;
+                if ((head & 0xffff) == 11 && Encoding.ASCII.GetString(spv, (i + 2) * 4, (n - 2) * 4).TrimEnd('\0') == "GLSL.std.450") glsl.Add(BinaryPrimitives.ReadUInt32LittleEndian(spv.AsSpan((i + 1) * 4)));
+                if ((head & 0xffff) == 12 && glsl.Contains(BinaryPrimitives.ReadUInt32LittleEndian(spv.AsSpan((i + 3) * 4)))) ops.Add(BinaryPrimitives.ReadUInt32LittleEndian(spv.AsSpan((i + 4) * 4)));
+                i += n;
+            }
+            Check(ops.Contains(79) && ops.Contains(80) && !ops.Contains(37) && !ops.Contains(40),
+                  "real compile: FMNMX emits GLSL NMin / NMax, no FMin / FMax (GLSL ops " + string.Join(",", ops) + ")");
+        }
 
         if (args.Length == 1 && args[0] == "--legacy-artifact")
         {

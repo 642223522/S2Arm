@@ -648,3 +648,4 @@
 20261118-2112-time-catchup-log.patch
 20261119-1012-snap-syncpoint-state.patch
 20261119-1057-snap-audout-queue.patch
+20261119-0408-spirv-nan-minmax.patch
