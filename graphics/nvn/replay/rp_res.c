@@ -26,6 +26,7 @@ struct rp_tex {
     uint8_t log_ok;            // 在所属池的脏页追加日志上有游标（log_span / log_id / log_cur）：核对只读游标之后的事件、与本贴图范围求交
     uint8_t unarmed;           // 最近一次上传时有页加保护没落地（被并发的解保护挡住、此刻仍可写）：之后的写可能不缺页、不进日志也不推代号，这次上传不算同步
     uint8_t _rsv[1];
+    int nreg;                  // 登记表（g_treg）里视图建在这份存储上的项数：存储放掉时据此决定要不要扫登记表（见 tex_free）
     uint64_t uid;              // 创建序号（只增、不回收）：按存储取视图的表（g_vf）用它认存储——存储释放后新分配可能落在同一地址，不能拿指针当身份
     uint64_t seen;             // 共用表里的：最近一次被查到 / 新建时的提交号 + 1（alias_take_over 用）
     uint64_t wrote;            // 最近一次被 GPU 写时的提交号 + 1（0 = 没写过）
@@ -80,6 +81,7 @@ static void treg_drop_view(treg_t *r) {
         else { nvn_gpu_view_release(r->owned->view); free(r->owned); }
         r->owned = NULL;
     }
+    if (r->view && r->of && r->of->nreg > 0) r->of->nreg--;
     r->view = NULL; r->of = NULL;
 }
 void nvn_be_set_tex_pool_n(int n) { pthread_mutex_lock(&g_rmu); g_tpool_n = n; pthread_mutex_unlock(&g_rmu); }
@@ -476,10 +478,18 @@ static uint32_t usage_of(const tex_t *t, int cpu) {
 }
 
 static void vf_drop_of(const struct rp_tex *x);   // 按目标取视图的表里指着这份存储的项（定义在那张表后面）
+// 放掉一份存储（持 g_rmu）。三条放存储的路（tex_unref / alias_take_over / 池销毁）都走这里：建在它上面的核心视图先放——
+//   按目标取视图的表（g_vf）和贴图号登记表（g_treg）两处。登记表这一处原先只有 alias_take_over 放：另两条路放了存储，
+//   登记表里那一项的视图还在，后端贴图被视图引用着拆不掉（只记 released），游戏不重登记那个号就一直占着显存；
+//   而且 r->of 成了野指针，下一份存储若分在同一地址，rp_view_by_id 的「序号换了存储」判断（r->of != x）认不出，旧视图接着用。
+static void tex_free(struct rp_tex *x) {
+    vf_drop_of(x);   // 视图表按存储认视图：存储放掉之前，它名下的视图一并放（序号销毁时不再放，见 g_vf 一节）
+    for (int r = 0; r < g_ntreg && x->nreg > 0; r++) if (g_treg[r].of == x) treg_drop_view(&g_treg[r]);
+    nvn_gpu_tex_release(x->g); g_built--; free(x);
+}
 static void tex_unref(struct rp_tex *x) {
     if (--x->users > 0 || x->in_alias) return;   // 共用表里的存储由表持有：池销毁时才放（nvn_be_alias_drop_pool）
-    vf_drop_of(x);   // 视图表按存储认视图：存储放掉之前，它名下的视图一并放（序号销毁时不再放，见 g_vf 一节）
-    nvn_gpu_tex_release(x->g); g_built--; free(x);
+    tex_free(x);
 }
 
 // 新的共用存储占了同一段池内存时，放掉被它盖住的旧条目。照 iOS nvn_mtl.m 的 alias_take_over，两条规则：
@@ -527,9 +537,7 @@ static void alias_take_over(const alias_key *nk, uint64_t nsize) {
                 x->users = 0; g_alias_dead++;
             }
             nvn_hm_del(&g_alias, &k);   // 删除会挪动别的格：从头再扫
-            vf_drop_of(x);
-            for (int r = 0; r < g_ntreg; r++) if (g_treg[r].of == x) treg_drop_view(&g_treg[r]);
-            nvn_gpu_tex_release(x->g); g_built--; free(x); g_ser_gen++; g_alias_taken++;
+            tex_free(x); g_ser_gen++; g_alias_taken++;
             again = 1; break;
         }
     }
@@ -748,7 +756,7 @@ void nvn_be_alias_drop_pool(const void *pool) {
         for (uint32_t i = 0; i < g_alias.cap; i++) { if (!g_alias.vals[i]) continue;
             alias_key k; memcpy(&k, g_alias.keys + (size_t)i * sizeof k, sizeof k); if (k.pool != pk) continue;
             struct rp_tex *x = nvn_hm_del(&g_alias, &k); x->in_alias = 0;
-            if (x->users <= 0) { vf_drop_of(x); nvn_gpu_tex_release(x->g); g_built--; free(x); }
+            if (x->users <= 0) tex_free(x);
             again = 1; break; } }   // 删除会挪表项：从头再扫
     g_ser_gen++;
     pthread_mutex_unlock(&g_rmu);
@@ -774,7 +782,7 @@ nvn_gpu_view rp_view_by_id(int id, nvn_gpu_cmd c, tex_t *t_out) {
             struct registered_view *owned = calloc(1, sizeof *owned);
             if (!owned) nvn_unimpl("gpu", "registered_view_allocation", r);
             else if (nvn_gpu_ok(nvn_gpu_view_create(x->g, has_v ? &v : NULL, &owned->view, &err))) {
-                r->owned = owned; r->view = owned->view; r->of = x;
+                r->owned = owned; r->view = owned->view; r->of = x; x->nreg++;
             } else { free(owned); nvn_unimpl("gpu", "view_create", r); }
         }
         r->gen = g_ser_gen; out = r->view;

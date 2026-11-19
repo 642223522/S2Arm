@@ -137,7 +137,7 @@ nvn_gpu_rc nvn_gpu_cmd_commit(nvn_gpu_cmd c, uint64_t signal, nvn_gpu_done_fn do
     (void)err; fill_run_to(UINT64_MAX); c->live = 0; g_commits++; if (!c->is_pre) g_main_commits++; g_pend[g_npend].fn = done; g_pend[g_npend].user = user; g_pend[g_npend].signal = signal; g_pend[g_npend].nts = c->nts; memcpy(g_pend[g_npend].ts, c->ts, sizeof c->ts); g_npend++; return (nvn_gpu_rc){NVN_GPU_OK}; }
 nvn_gpu_rc nvn_gpu_fence_wait(uint64_t v, uint64_t timeout_ns, nvn_gpu_err *err) { (void)timeout_ns; (void)err; return (nvn_gpu_rc){v <= g_fdone ? NVN_GPU_OK : NVN_GPU_E_TIMEOUT}; }
 // 贴图 / 视图 / 采样器 / 上传：只记账
-struct nvn_gpu_tex_s { nvn_gpu_tex_desc d; uint64_t access_id; int ord; uint32_t px[4][4]; }; struct nvn_gpu_view_s { nvn_gpu_tex of; int has_v; int rid; view_t v; nvn_gpu_buf buf; uint64_t off, bytes; uint32_t format; }; struct nvn_gpu_samp_s { int x; };   // ord：后端贴图的递增序号；px：像素替身（4 个 mip × 4 层各一个 32 位字）；v：建视图时收到的视图记录
+struct nvn_gpu_tex_s { nvn_gpu_tex_desc d; uint64_t access_id; int ord; uint32_t px[4][4]; int views, released; }; struct nvn_gpu_view_s { nvn_gpu_tex of; int has_v; int rid; view_t v; nvn_gpu_buf buf; uint64_t off, bytes; uint32_t format; }; struct nvn_gpu_samp_s { int x; };   // ord：后端贴图的递增序号；px：像素替身（4 个 mip × 4 层各一个 32 位字）；v：建视图时收到的视图记录
 static int g_tex_creates, g_tex_releases, g_view_creates, g_view_releases, g_samp_creates, g_samp_releases, g_tex_create_fail, g_tex_ord;
 // 像素替身（视图表按存储认视图的用例用）：每份后端存储有一小块「像素」——4 个 mip × 4 层各一个 32 位字，初值 0。「画」= 往视图指到的（mip，层）那个字里写
 // 一个值；写进去的值要经过视图记录的签名（格式 / 通道映射不同的视图，同一次绘制写进去的字节不同，真 GPU 上也一样）；「读回」= 把存储的 16 个字原样取出。
@@ -156,9 +156,14 @@ static struct { uint32_t level, layer; uint64_t pitch, img; int y, w, h, pre; ui
 nvn_gpu_rc nvn_gpu_tex_create(const nvn_gpu_tex_desc *d, nvn_gpu_tex *out, nvn_gpu_err *err) {
     if (g_tex_create_fail) { snprintf(err->why, sizeof err->why, "替身：不支持"); *out = NULL; return (nvn_gpu_rc){NVN_GPU_E_UNSUPPORTED}; }
     g_tex_creates++; g_last_usage = d->usage; g_last_swz = d->swz; *out = calloc(1, sizeof **out); (*out)->d = *d; (*out)->ord = ++g_tex_ord; return (nvn_gpu_rc){NVN_GPU_OK}; }
-void nvn_gpu_tex_release(nvn_gpu_tex t) { g_tex_releases++; free(t); }
-nvn_gpu_rc nvn_gpu_view_create(nvn_gpu_tex t, const view_t *v, nvn_gpu_view *out, nvn_gpu_err *err) { (void)err; g_view_creates++; g_vw_last_has = v != NULL; if (v) g_vw_last = *v; *out = calloc(1, sizeof **out); (*out)->of = t; (*out)->has_v = v != NULL; if (v) (*out)->v = *v; (*out)->rid = ++g_vid; return (nvn_gpu_rc){NVN_GPU_OK}; }
-void nvn_gpu_view_release(nvn_gpu_view v) { g_view_releases++; if (v && g_nrel < 8192) g_released_id[g_nrel++] = v->rid; free(v); }
+// 引用语义同真后端（backend_vulkan.c：建视图 t->refs++，release 时还有视图就只记 released，最后一个视图拆掉时才拆）：
+// g_tex_held = 此刻「已 release、还被视图拿着」的后端贴图张数（真机显存账里的 dangling）。
+static int g_tex_held;
+void nvn_gpu_tex_release(nvn_gpu_tex t) { g_tex_releases++; if (t && t->views > 0) { t->released = 1; g_tex_held++; } else free(t); }
+nvn_gpu_rc nvn_gpu_view_create(nvn_gpu_tex t, const view_t *v, nvn_gpu_view *out, nvn_gpu_err *err) { (void)err; g_view_creates++; g_vw_last_has = v != NULL; if (v) g_vw_last = *v; *out = calloc(1, sizeof **out); (*out)->of = t; if (t) t->views++; (*out)->has_v = v != NULL; if (v) (*out)->v = *v; (*out)->rid = ++g_vid; return (nvn_gpu_rc){NVN_GPU_OK}; }
+void nvn_gpu_view_release(nvn_gpu_view v) { g_view_releases++; if (v && g_nrel < 8192) g_released_id[g_nrel++] = v->rid;
+    if (v && v->of && --v->of->views == 0 && v->of->released) { free(v->of); g_tex_held--; }
+    free(v); }
 // 环绕的替身语义同真后端（#976）：MIRROR_CLAMP / MIRROR_CLAMP_TO_BORDER 永远具名 UNSUPPORTED；g_samp_no_mce = 设备没有镜像夹到边的扩展。
 static int g_samp_no_mce, g_samp_tries, g_samp_fail_nearest; static samp_par g_samp_last;
 nvn_gpu_rc nvn_gpu_samp_create(const samp_par *p, nvn_gpu_samp *out, nvn_gpu_err *err) {
@@ -5660,6 +5665,61 @@ static void t_invalidated_attachment_pin(void) {
     res_fresh();
 }
 
+// 贴图号登记表（g_treg）上的视图随存储一起放（rp_res.c tex_free）。真机（01007EF00011E000 读档）：方形 8 层二维数组（1024x1024x8 R16）
+// 带上 CUBE_COMPATIBLE 后立方体视图建得出来，登记号上的视图就建在这些存储上；对象 Finalize、内存池 Finalize 放掉存储之后，
+// 登记表那一项的视图还拿着后端贴图（后端只记 released），110 张、2.36 GB 拆不掉，进程被系统按 GPU 显存上限杀掉。
+// 后端替身按真后端的引用语义（还有视图就只记 released，g_tex_held 计数）；期望值由用例自己的调用序列直接得出。
+static tex_t mk_cube_arr(uint64_t serial, int64_t off) {
+    tex_t t = mk_tex(serial, off, NVN_FORMAT_R16, 64, 64, 4, 0); t.d.target = NVN_TEXTURE_TARGET_2D_ARRAY; t.d.depth = 8; nvn_tex_layout(&t.d, &t.L); return t;
+}
+static void t_registered_view_freed_with_storage(void) {
+    res_fresh();
+    const int saved_nrel = g_nrel; g_nrel = 0;   // 「视图放掉」记录表从空记起（同 t_view_pin），结束时恢复
+    const int h0 = g_tex_held;
+    view_t cube; memset(&cube, 0, sizeof cube); cube.set_target = 1; cube.target = NVN_TEXTURE_TARGET_CUBEMAP; cube.set_layers = 1; cube.nlayers = 6;
+    // ① 共用存储（GPU 内容）：号 5 登记立方体视图、号 6 登记整图；两号各取一次，号 6 再按立方体声明取一次（按目标取视图的表 g_vf）
+    tex_t a = mk_cube_arr(83001, 0); nvn_be_tex_init(&a);
+    nvn_be_reg_tex(5, &a, &cube); nvn_be_reg_tex(6, &a, NULL);
+    nvn_gpu_view v5 = rp_view_by_id(5, &g_fake_cmd, NULL), v6 = rp_view_by_id(6, &g_fake_cmd, NULL);
+    nvn_gpu_view vd = rp_view_by_id_decl(6, NVN_TEXTURE_TARGET_CUBEMAP + 1, 0, 0, &g_fake_cmd, NULL);
+    CHECK(v5 && v6 && vd && v5->of == v6->of && vd->of == v5->of && v5->of->views == 3);
+    const int id5 = v5 ? v5->rid : 0, id6 = v6 ? v6->rid : 0, idd = vd ? vd->rid : 0, r0 = g_tex_releases;
+    nvn_be_tex_release(&a);   // 对照：对象 Finalize，存储还在共用表里（内存池没放）→ 后端贴图不放、视图都不放
+    CHECK(g_tex_releases == r0 && !was_view_released(id5) && !was_view_released(id6) && !was_view_released(idd));
+    nvn_be_alias_drop_pool(&g_tp);   // 内存池 Finalize：存储放掉，登记号 5 / 6 不重登记（游戏不清池里的描述符）
+    CHECK(g_tex_releases == r0 + 1);
+    CHECK(was_view_released(idd));                               // g_vf 的项原来就放（对照：这条修之前也绿）
+    CHECK(was_view_released(id5) && was_view_released(id6));     // 登记表的项也要放（修之前红）
+    CHECK(g_tex_held == h0);                                     // 后端贴图真拆了（修之前 h0 + 1）
+    // ② 窗口内已交出的登记视图：存储放掉时钉到窗口结束（不能当场放，后端还没拿到引用），窗口一结束后端贴图跟着拆
+    tex_t b = mk_cube_arr(83002, 0); nvn_be_tex_init(&b);
+    nvn_be_reg_tex(5, &b, &cube);
+    rp_view_pin_begin();
+    nvn_gpu_view w = rp_view_by_id(5, &g_fake_cmd, NULL); CHECK(w != NULL); const int idw = w ? w->rid : 0;
+    nvn_be_tex_release(&b); nvn_be_alias_drop_pool(&g_tp);
+    CHECK(!was_view_released(idw) && g_tex_held == h0 + 1);     // 对照：窗口内拿着 → 悬着是对的
+    rp_view_pin_end();
+    CHECK(was_view_released(idw) && g_tex_held == h0);
+    // ③ CPU 内容的存储（不进共用表）：对象 Finalize 就放存储（tex_unref），登记视图一并放
+    tex_t c = mk_cube_arr(83003, 0x10000); nvn_be_tex_init(&c); nvn_be_tex_cpu_written(&c);
+    nvn_be_reg_tex(7, &c, &cube);
+    nvn_gpu_view u = rp_view_by_id(7, &g_fake_cmd, NULL); CHECK(u != NULL); const int idu = u ? u->rid : 0;
+    const int r1 = g_tex_releases;
+    nvn_be_tex_release(&c);
+    CHECK(g_tex_releases == r1 + 1 && was_view_released(idu) && g_tex_held == h0);
+    // ④ 存储放掉后同一个号重登记一张新图：取到的是新图上的视图（不是旧视图），旧的不再被放第二次
+    tex_t d = mk_cube_arr(83004, 0); nvn_be_tex_init(&d);
+    nvn_be_reg_tex(6, &d, NULL);
+    const int vr0 = g_view_releases;
+    nvn_gpu_view v6b = rp_view_by_id(6, &g_fake_cmd, NULL);
+    CHECK(v6b != NULL && v6b->rid != id6 && g_view_releases == vr0);
+    nvn_be_tex_release(&d); nvn_be_alias_drop_pool(&g_tp);
+    CHECK(g_tex_held == h0);
+    nvn_be_unreg_tex_range(0, 16);
+    g_nrel = saved_nrel;
+    res_fresh();
+}
+
 static void t_sync_reuse_after_gpu_write(void) {
     g_flag_sync_lag = 1; g_buf_cpu_auto = 1;
     memset(g_pmem, 0x11, sizeof g_pmem);
@@ -5800,6 +5860,7 @@ int main(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1], "--sync-reuse")) { t_sync_reuse_after_gpu_write(); printf("sync reuse: %d checks, %d failures\n", g_checks, g_fail); return g_fail != 0; }
     t_invalidated_attachment_pin();
     t_registered_view_pin();
+    t_registered_view_freed_with_storage();
     t_state_persists();
     t_unimpl_names();
     t_one_commit_per_submit();
