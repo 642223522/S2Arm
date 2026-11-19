@@ -14,6 +14,22 @@ python ohos/tools/build_shell.py --studio "<DevEco Studio 安装目录>" --out "
 
 脚本复制源码到输出目录构建，失败保留日志；不会签名、安装、连接设备或加载本地引擎。成功后 `result.json` 给出本轮未签名 HAP 路径及 SHA256，`dependencies.log`、`build.log` 保留完整命令输出。已在 Windows + API 26 验证；macOS/Linux 工具安装布局尚待验证。
 
+### 不装 DevEco：公开 OpenHarmony SDK
+
+用 `ohos/tools/emu/setup.sh` 准备的公开 SDK（26.0.0）与锁版本 hvigor（6.26.20），不需要 DevEco Studio、HMS 或 ohpm。另需 PATH 上的 Node.js 与指向 JDK 17+ 的 `JAVA_HOME`。
+
+```sh
+python ohos/tools/build_shell.py --public-sdk --out "<新的空构建目录>"
+```
+
+默认读取 `$OHOS_EMU_HOME/sdk/26.0.0` 与 `$OHOS_EMU_HOME/hvigor`（与模拟器工具相同，未设置时为 `~/.cache/s2arm-ohos-emu`）；也可用 `--sdk-root <含 26.0.0 的目录>`、`--hvigor-dir <含 node_modules/@ohos/hvigor 的目录>` 指定。脚本只在构建副本里做三处适配，源码不变：
+
+1. `build-profile.json5`：`runtimeOS` 改为 `OpenHarmony`，加 `"compileSdkVersion": "26.0.0"`；
+2. `entry/src/main/module.json5`：`deviceTypes` 改为 `["default"]`（公开 SDK 没有 phone 能力集）；
+3. 不跑 ohpm，把 `entry/src/main/cpp/types/libs2aprobehost` 复制为 `entry/oh_modules/libs2aprobehost.so`，供 ArkTS 推导 `engine.*` 类型。
+
+产出的未签名 HAP 用 `ohos/tools/emu/sign.sh` 签名后可装到模拟器。
+
 ## 当前边界
 
 - 本部分能编译外壳；还不能单独运行游戏，也不证明 Vulkan 首帧。
