@@ -32,7 +32,10 @@
 #include <mach/mach_time.h>
 #else
 #include "../../android/native/runtime/fault/fault.h"
+// OHOS musl signal.h already provides these AArch64 context records.
+#if !defined(__OHOS__)
 #include <asm/sigcontext.h>
+#endif
 #include <linux/futex.h>
 #include <sys/syscall.h>
 #endif
@@ -148,6 +151,9 @@ typedef struct thr {
     arm_thread_state64_t pst; arm_neon_state64_t pns;
 #endif   // SetThreadActivity：在系统调用里的在出入口挂起；在游戏代码里的 Mach 挂起
     uint64_t *svc_regs; uint64_t svc_pc;   // 当前系统调用的门帧与原 svc 指令地址
+    _Atomic uint64_t sig_pc, sig_lr;   // 诊断：最近一次 SIGURG 落点（宿主区也记）
+    _Atomic uint64_t sig_bt[4];          // 诊断：落点往上 4 层帧指针链返回地址（只沿本栈 1 MiB 内的 fp 走）
+    _Atomic uint64_t blk_ra;   // 诊断：最外层 DM_BLOCK 的调用点（停世界到期时报出线程在哪段宿主活里）
     uint64_t tsd;                      // 本宿主线程 TSD 基址：别的线程据此读本线程的 K18 / KTLS / KTLR 槽
     void *tlr;                         // ThreadLocalRegion（窗口 TLS/IO 区，svc_mem.c 分配）
     const uint32_t *wh; int wn;        // WaitSynchronization 在等的句柄数组与个数（现场导出用）
@@ -810,7 +816,7 @@ static void *thread_main(void *p) {
     uint64_t here = ((uint64_t)__builtin_frame_address(0) - 0x400) & ~0xfull;
     sw_xstack_thread_init(here, hostent ? 0 : t->stack_top);
     s2a_thread_stop_point();
-#if defined(__ANDROID__)
+#if (defined(__ANDROID__) || defined(__OHOS__))
     int s2a_android_runtime_enter_guest_thread(void);
     if (s2a_android_runtime_enter_guest_thread()) die("Android guest线程准入失败");
 #endif
@@ -883,11 +889,11 @@ static void core_release(thr_t *t);
 #if defined(__APPLE__)
 static void wg_leave_self(void);   // 帧间隔工作组：线程退出前离开（见 wg_join_self）
 #endif
-#if defined(__ANDROID__)
+#if (defined(__ANDROID__) || defined(__OHOS__))
 extern void s2a_capacity_leave(int) __attribute__((weak));
 #endif
 static void thread_exit(thr_t *t) {
-#if defined(__ANDROID__)
+#if (defined(__ANDROID__) || defined(__OHOS__))
     if (t->is_main && s2a_capacity_leave) s2a_capacity_leave(0);
 #endif
 #if defined(__APPLE__)
@@ -1034,7 +1040,7 @@ void s2a_wg_frame(int fps) {
 #endif
 
 // 主线程登记，返回其句柄（nnosInitialize 的 x0）
-#if defined(__ANDROID__)
+#if (defined(__ANDROID__) || defined(__OHOS__))
 extern void s2a_capacity_enter(int) __attribute__((weak));
 extern void s2a_capacity_leave(int) __attribute__((weak));
 #endif
@@ -1053,7 +1059,7 @@ uint32_t s2a_thread_main_init(void) {
     if (wg_on() && g_wg_mode != 2) wg_join_self("游戏主线程");
 #endif
     thread_bind_host(t);
-#if defined(__ANDROID__)
+#if (defined(__ANDROID__) || defined(__OHOS__))
     if (s2a_capacity_enter) s2a_capacity_enter(0);
 #endif
 #if defined(__APPLE__)
@@ -1304,6 +1310,16 @@ static void on_preempt(int sig, siginfo_t *si, void *ctx) {
     thr_t *me = thread_current_or_null(); if (!me) return;
     ucontext_t *uc = ctx;
     uint64_t pc = uc->uc_mcontext.pc;
+    atomic_store_explicit(&me->sig_pc, pc, memory_order_relaxed); atomic_store_explicit(&me->sig_lr, uc->uc_mcontext.regs[30], memory_order_relaxed);
+    {
+        const uint64_t sp0 = uc->uc_mcontext.sp; uint64_t fp = uc->uc_mcontext.regs[29];
+        for (int k = 0; k < 4; ++k) {
+            uint64_t ra = 0;
+            if (fp >= sp0 && fp < sp0 + (1u << 20) && !(fp & 7)) { ra = ((const uint64_t *)(uintptr_t)fp)[1]; fp = ((const uint64_t *)(uintptr_t)fp)[0]; }
+            else fp = 0;
+            atomic_store_explicit(&me->sig_bt[k], ra, memory_order_relaxed);
+        }
+    }
     int guest = module_of((void *)(uintptr_t)pc) != NULL;
     if (atomic_load_explicit(&g_wd_enabled, memory_order_relaxed)) {
         atomic_fetch_add_explicit(&me->pause_sig_seen, 1, memory_order_relaxed);
@@ -1709,7 +1725,7 @@ void s2a_core_enter(void) { thr_t *t = thread_current_or_null(); if (t) { core_a
 //   S2A_LAZY_CORE=1 开、未设 / 0 = 旧行为（同一二进制运行期 A/B）。
 // entry.S 用 adrp/add 直接寻址它：ELF（Android 共享库）里这个对象不能被预占，否则 ld.lld 报
 //   relocation R_AARCH64_ADR_PREL_PG_HI21 cannot be used against symbol 'g_lazy_core'（同 xstack.c 的 g_xs_fn / g_xs_off）。
-#if defined(__ANDROID__)
+#if (defined(__ANDROID__) || defined(__OHOS__))
 #define S2A_ASM_INTERNAL __attribute__((visibility("hidden")))
 #else
 #define S2A_ASM_INTERNAL
@@ -1741,7 +1757,7 @@ static void wt_blk_add(uint64_t ra, uint64_t tid, uint64_t ns) {
         if (atomic_load(&g_wt_blk[i].key) == k || atomic_compare_exchange_strong(&g_wt_blk[i].key, &e, k) || e == k) {
             atomic_fetch_add(&g_wt_blk[i].ns, ns); atomic_fetch_add(&g_wt_blk[i].n, 1); return; } }
 }
-__attribute__((noinline)) void s2a_core_block_begin(void) { if (!t_blk++) { if (wt_on()) { t_wt_blk_t0 = thread_clock(); t_wt_blk_ra = (uint64_t)__builtin_return_address(0); } s2a_core_leave(); } }
+__attribute__((noinline)) void s2a_core_block_begin(void) { if (!t_blk++) { { thr_t *bt = thread_current_or_null(); if (bt) atomic_store_explicit(&bt->blk_ra, (uint64_t)__builtin_return_address(0), memory_order_relaxed); } if (wt_on()) { t_wt_blk_t0 = thread_clock(); t_wt_blk_ra = (uint64_t)__builtin_return_address(0); } s2a_core_leave(); } }
 // noinline：__builtin_return_address(0) 要拿到「DM_BLOCK_END 所在函数的返回点」，被内联进来就变成上一层调用点
 __attribute__((noinline)) void s2a_core_block_end(void) {
     if (!(t_blk > 0 && !--t_blk)) return;
@@ -1855,7 +1871,7 @@ static void svc_exit(thr_t *t) {
         if (t->tr_lastwake_t) { wt_bucket(1, thread_clock_ns(n - t->tr_lastwake_t)); t->tr_lastwake_t = 0; }   // 唤醒方：唤醒别人 → 自己回到游戏
         t->tr_ret_t = n; t->tr_ret_svc = t->last_svc; t->tr_cpu_ns = wt_cpu_ns(); t_wt_blk_snap = t_wt_blk_ns; t_wt_core_snap = t_wt_core_ns; }
 }
-#if defined(__ANDROID__)
+#if (defined(__ANDROID__) || defined(__OHOS__))
 // gate只为实际native-memory处理者配对；未处理号恢复原状态，不重复thread/C#的计数。
 static _Thread_local struct { int in_svc, last_svc; uint64_t *regs, last_lr; } android_memory_previous;
 void s2a_android_memory_svc_enter(int num, uint64_t *regs) {
@@ -3499,7 +3515,7 @@ uint32_t s2a_shmem_create(uint64_t size, void **host) {
 }
 // 后备由 C# 持有（如 Ryujinx KSharedMemory 的页）：原生层只发句柄，映射时别名过去；源地址按平台实际宿主页对齐。
 uint32_t s2a_shmem_wrap(void *host, uint64_t size) {
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) || defined(__OHOS__)
     // 与 plat_vm_alias 共用页大小；4 KB 设备上的合法源不必额外满足 Apple 的 16 KB 对齐。
     size_t page = plat_page_size();
     if (!page || !host || !size || (uintptr_t)host % page) { LOG("【红】s2a_shmem_wrap：后备 %p +%#llx 无效或未按宿主页 %#zx 对齐", host, (unsigned long long)size, page); return 0; }

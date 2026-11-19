@@ -3,7 +3,7 @@
 // 10-23 E01（PR #81，iPad mini 6，4 GB 物理内存）：权限签了，可用内存仍只有 2865 MB、窗口申请 ENOMEM，旧提示一律说「缺权限」，与事实不符。
 //   4500 MB 门槛原本只是「有没有签权限」的分界（6144 与 3376 之间），不是游戏的需求；所以现在先照实读权限、物理内存、地址上限，
 //   提示按读到的事实给：真没签才叫重签；签了仍不够就说本机型的系统上限不够。读数一行「自检：…」进 host.log 供健康表读。
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) || defined(__OHOS__)
 #include "../../android/native/runtime/platform/selfcheck_android.inc"
 #else
 #include "native.h"
